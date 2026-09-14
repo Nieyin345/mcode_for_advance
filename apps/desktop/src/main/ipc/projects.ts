@@ -21,6 +21,7 @@ import {
 import type { Project } from "@contracts/session";
 import { uid } from "@main/utils.js";
 import { ProjectRepo, SessionRepo } from "@main/store/repositories.js";
+import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { broadcastSessionChanged, broadcastSessionDeleted } from "@main/lib/sessionSync.js";
 import { cancelWorkflowRun } from "@main/orchestration/runner.js";
 import { dropBackflow } from "@main/lib/pendingBackflow.js";
@@ -114,6 +115,10 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
       if (cancelWorkflowRun(id)) stopped += 1;
       dropBackflow(id);
     }
+    // Release every session runtime BEFORE the SQL cascade removes the rows
+    // (disposeProject reads them to know what to dispose). Also interrupts a
+    // running turn instead of letting it stream into a deleted project.
+    runtimeManager.disposeProject(input.id);
     ProjectRepo.delete(input.id);
     // 手机端那边这几条会话也是"刚才还在列表里"的,一条一条告诉它 —— 和
     // `SESSION_DELETE` 同一个做法(那里逐条 `broadcastSessionDeleted`)。
@@ -179,10 +184,19 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
     // 先把可能还在跑的图停掉。**不能省**:图跑到一半时通常正卡在某个节点的问题上
     // (那个问题是以这个会话的名义问的),会话一删,答案就再也回不来 —— 节点会一直
     // 阻塞在审批池的 promise 上,整张图连同它的 node 会话永远不结束。
+    //
+    // ⚠️ 这两句必须排在下面 `runtimeManager.dispose` **之前**:dispose 会清掉审批池,
+    // 那时候节点还挂在 promise 上,顺序反了就是"图永远不结束"那个 bug 本身。
     cancelWorkflowRun(input.id);
     // 还没被带进下一轮的那段「并回主对话」的内容也一起清掉 —— 会话都没了,它永远等不到
     // 那个取用它的人(见 `lib/pendingBackflow.ts`)。
     dropBackflow(input.id);
+    // Release the runtime (interrupt + approval/bridge/snapshot cleanup)
+    // BEFORE the row goes. Without this the runtime entry leaked for the
+    // app's lifetime, and a running turn kept streaming into the dead
+    // session, re-inserting orphaned message rows. bindSession re-binds from
+    // the fresh row on any future send, so this is safe at any point.
+    runtimeManager.dispose(input.id);
     SessionRepo.delete(input.id);
     // Keep connected mobile clients' session lists in sync.
     broadcastSessionDeleted(input.id);
@@ -193,6 +207,11 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.SESSION_ARCHIVE, (_evt, raw) => {
     const input = ArchiveSessionSchema.parse(raw);
     SessionRepo.setArchived(input.id, input.archived);
+    // Archiving puts the thread away: release its runtime too (same leak as
+    // delete). Restoring re-binds lazily — the next send calls bindSession
+    // with the fresh row, and bind rehydrates the persisted subagent state,
+    // so unarchive → reopen → send just works.
+    if (input.archived) runtimeManager.dispose(input.id);
     const session = SessionRepo.get(input.id);
     if (!session) throw new Error(`session not found after archive: ${input.id}`);
     broadcastSessionChanged(session);

@@ -439,6 +439,10 @@ const HANDLERS: Record<string, RpcHandler> = {
   "session:archive": (raw) => {
     const input = ArchiveSessionSchema.parse(raw);
     SessionRepo.setArchived(input.id, input.archived);
+    // Archiving puts the thread away: release its runtime too (same leak as
+    // delete). Restoring re-binds lazily — the next send calls bindSession
+    // with the fresh row. Mirrors the desktop SESSION_ARCHIVE handler.
+    if (input.archived) runtimeManager.dispose(input.id);
     const session = SessionRepo.get(input.id);
     if (!session) throw new RpcError(`session not found after archive: ${input.id}`, 500);
     broadcastSessionChanged(session);
@@ -448,7 +452,12 @@ const HANDLERS: Record<string, RpcHandler> = {
   "session:delete": (raw) => {
     const input = DeleteSessionSchema.parse(raw);
     // 同桌面端:先停掉可能还在跑的图,否则卡在节点问题上的那张图永远不会结束。
+    // ⚠️ 必须排在下面 `runtimeManager.dispose` **之前** —— dispose 会清掉审批池,
+    // 那时节点还挂在 promise 上。桌面端 SESSION_DELETE 是同一条顺序。
     cancelWorkflowRun(input.id);
+    // Release the runtime (interrupt + approval/bridge/snapshot cleanup)
+    // BEFORE the row goes — mirrors the desktop SESSION_DELETE handler.
+    runtimeManager.dispose(input.id);
     SessionRepo.delete(input.id);
     broadcastSessionDeleted(input.id);
     return { ok: true };
@@ -468,6 +477,9 @@ const HANDLERS: Record<string, RpcHandler> = {
 
   "project:delete": (raw) => {
     const input = DeleteProjectSchema.parse(raw);
+    // Release every session runtime BEFORE the SQL cascade removes the rows —
+    // mirrors the desktop PROJECT_DELETE handler.
+    runtimeManager.disposeProject(input.id);
     ProjectRepo.delete(input.id);
     return { ok: true };
   },
