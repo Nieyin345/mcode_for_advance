@@ -19,11 +19,23 @@ Mcode is a **free, open-source desktop GUI for coding agents** — a three-pane 
 
 > **Search keywords:** Claude Code GUI · Claude desktop app · open-source Claude client · AI coding agent IDE · Agent SDK desktop UI · tool approval UI
 
+### This fork: research workbench
+
+This repository is a personal fork of upstream Mcode, extended into an **academic research workbench**. On top of upstream it adds:
+
+- 🧪 **Literature library** — papers / textbooks / notes with collections, per-item notes, citation metadata (volume / issue / pages / publisher), DOI & arXiv dedup, PDF→Markdown transcription; downloads go through a **multi-source open-access resolver chain** (arXiv / OpenAlex / Unpaywall / Europe PMC / Semantic Scholar / OpenAIRE / Crossref) plus the embedded browser (reusing logged-in sessions), trying candidates in order with `%PDF` magic-number verification.
+- 🔄 **Workflow orchestration** — a node-graph scheduler with pluggable node types and agent profiles, human-in-the-loop branch gates, and **resumable runs** (run snapshots persisted; a dead process resumes where it stopped).
+- 📚 **Search scripts** — literature-search clients seeded into the data root for the agent to call (Crossref / OpenAlex / Europe PMC / PubMed / bioRxiv / medRxiv paginated traversal, citation verification, **Chinese-DOI registration awareness** — ISTIC/CNKI-registered DOIs don't resolve on Crossref, which alone is not evidence a paper doesn't exist).
+- 🏛 **Institution access** — organization entry profiles (login page / domains / EZproxy prefix) for the embedded browser; **credentials live only in the browser-partition vault — the database holds none**.
+- 📐 **Templates library** — LaTeX / Word / PPT / code / image template assets with auto-generated manifest files.
+- 🤖 **Codex provider** — a third agent backend driven through `@openai/codex`'s app-server (JSON-RPC).
+- 🌱 **Unified data root** — chats, library, templates and workflows live under one relocatable data root.
+
 ![Mcode home - Claude Code desktop client GUI](docs/images/首页.png)
 
 ### Key highlights
 
-- 🎛 **Multi-provider** — Claude and Pi in one app; pick the agent before each session starts
+- 🎛 **Multi-provider** — Claude, Pi and Codex in one app; pick the agent before each session starts
 - ⚡ **Real-time streaming** — watch every token arrive as the agent works
 - ✅ **Tool approval UI** — allow / always-allow / deny with a per-session pending queue
 - 📋 **Plan mode** — the agent researches and presents a plan for your approval before executing
@@ -38,7 +50,7 @@ Mcode is a **free, open-source desktop GUI for coding agents** — a three-pane 
 
 #### 🤖 Multi-provider agents
 
-- Built-in **Claude** provider (`@anthropic-ai/claude-agent-sdk`) and **Pi** provider (`@earendil-works/pi-coding-agent`) — pick one in the composer before the first message of a session.
+- Built-in **Claude** provider (`@anthropic-ai/claude-agent-sdk`), **Pi** provider (`@earendil-works/pi-coding-agent`) and **Codex** provider (`@openai/codex` app-server over JSON-RPC) — pick one in the composer before the first message of a session.
 - Each provider declares its own capabilities and the UI adapts automatically: thinking levels, permission modes, built-in models, custom endpoints.
 - Per-role model assignment: normal chat, git commit-message generation, and merge-conflict resolution can each use a different model.
 
@@ -166,7 +178,7 @@ Mcode is a **free, open-source desktop GUI for coding agents** — a three-pane 
 #### 🔄 Other
 
 - Auto-update via `electron-updater` (pulls `latest*.yml` from GitHub Releases); manual check in **Settings → About**.
-- Provider abstraction layer (`AgentProvider`) — Claude and Pi today, easy to extend to other agent platforms.
+- Provider abstraction layer (`AgentProvider`) — Claude, Pi and Codex today, easy to extend to other agent platforms.
 
 ### FAQ
 
@@ -247,7 +259,7 @@ Pre-built binaries are published on [GitHub Releases](https://github.com/huangbh
 | Shell | Electron 33, electron-vite, electron-builder 25 |
 | Frontend | React 19, Zustand 5, Tailwind CSS 3, @base-ui/react, @tabler/icons |
 | Editor / Terminal | Monaco Editor, xterm.js + node-pty |
-| Agent | @anthropic-ai/claude-agent-sdk, @earendil-works/pi-coding-agent |
+| Agent | @anthropic-ai/claude-agent-sdk, @earendil-works/pi-coding-agent, @openai/codex |
 | Persistence | sql.js (SQLite in pure WASM) |
 | Contracts | zod (cross-process IPC validation) |
 | Tooling | pnpm 11, Turbo, TypeScript 5 (strict) |

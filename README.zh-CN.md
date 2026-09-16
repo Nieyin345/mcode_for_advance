@@ -19,11 +19,23 @@
 
 > **搜索关键词：** Claude Code 桌面版 · Claude 客户端 · 开源 AI IDE · AI 编程助手 · Agent SDK 桌面应用 · 工具审批 UI
 
+### 本 fork：科研工作台定制
+
+本仓库是上游 Mcode 的个人 fork，在其之上扩展成一个**学术科研工作台**，新增：
+
+- 🧪 **文献库** —— 论文 / 教材 / 笔记三类条目，分类树、条目笔记、引用元数据（卷 / 期 / 页码 / 出版商）、DOI 与 arXiv 去重、PDF→Markdown 转录；下载走**多源开放获取解析链**（arXiv / OpenAlex / Unpaywall / Europe PMC / Semantic Scholar / OpenAIRE / Crossref）+ 内嵌浏览器（复用登录态），候选逐个试、`%PDF` 魔数验收。
+- 🔄 **工作流编排** —— 节点图调度器：可插拔节点类型与 agent 档案、人在环上的岔路口决策、**断点续跑**（运行快照落库，进程死了重启能接着跑）。
+- 📚 **检索脚本** —— 随应用铺到数据根的文献检索客户端（Crossref / OpenAlex / Europe PMC / PubMed / bioRxiv / medRxiv 多源分页遍历、引用核验、**中文 DOI 归属判定** —— ISTIC/CNKI 注册的 DOI 在 Crossref 查不到不算不存在），供 agent 在会话与工作流里直接调用。
+- 🏛 **机构认证** —— 常用机构入口档案（登录页 / 域名 / EZproxy 前缀）供内嵌浏览器使用；**凭据只存在浏览器分区保管库里，数据库不含任何登录信息**。
+- 📐 **模板库** —— LaTeX / Word / PPT / 代码 / 图片五个类目的模板资产，带自动生成的清单文件。
+- 🤖 **Codex provider** —— 通过 `@openai/codex` 的 app-server（JSON-RPC）接入第三个 agent 后端。
+- 🌱 **统一数据根** —— 聊天记录 / 文献库 / 模板库 / 工作流集中在同一个数据根目录，支持整体搬迁。
+
 ![Mcode 首页 - AI 编程助手桌面客户端主界面](docs/images/首页.png)
 
 ### 核心亮点
 
-- 🎛 **多 Agent 支持** —— Claude 与 Pi 二合一，会话前自由切换
+- 🎛 **多 Agent 支持** —— Claude、Pi 与 Codex 三合一，会话前自由切换
 - ⚡ **实时流式输出** —— agent 的每一个 token 实时呈现
 - ✅ **工具审批界面** —— 允许 / 始终允许 / 拒绝，按会话维护待审批队列
 - 📋 **计划模式** —— 先只读调研、给出计划等你批准，再动手执行
@@ -38,7 +50,7 @@
 
 #### 🤖 多 Agent Provider
 
-- 内置 **Claude**（基于 `@anthropic-ai/claude-agent-sdk`）与 **Pi**（基于 `@earendil-works/pi-coding-agent`）两个 provider，会话首条消息前可在输入框选择。
+- 内置 **Claude**（基于 `@anthropic-ai/claude-agent-sdk`）、**Pi**（基于 `@earendil-works/pi-coding-agent`）与 **Codex**（基于 `@openai/codex` 的 app-server JSON-RPC）三个 provider，会话首条消息前可在输入框选择。
 - 每个 provider 声明自己的能力，UI 自动适配：思考级别、权限模式、内置模型、自定义端点支持。
 - 按角色分配模型：普通对话、提交信息生成、合并冲突解决可分别使用不同的模型。
 
@@ -166,7 +178,7 @@
 #### 🔄 其他
 
 - 自动更新：通过 `electron-updater` 从 GitHub Releases 拉 `latest*.yml`；也可在**设置 → 关于**手动检查。
-- Provider 抽象层（`AgentProvider`）——目前内置 Claude 与 Pi，易于扩展其他 agent 平台。
+- Provider 抽象层（`AgentProvider`）——目前内置 Claude、Pi 与 Codex，易于扩展其他 agent 平台。
 
 ### 常见问题
 
@@ -247,7 +259,7 @@ pnpm package
 | 壳层 | Electron 33、electron-vite、electron-builder 25 |
 | 前端 | React 19、Zustand 5、Tailwind CSS 3、@base-ui/react、@tabler/icons |
 | 编辑器/终端 | Monaco Editor、xterm.js + node-pty |
-| Agent | @anthropic-ai/claude-agent-sdk、@earendil-works/pi-coding-agent |
+| Agent | @anthropic-ai/claude-agent-sdk、@earendil-works/pi-coding-agent、@openai/codex |
 | 持久化 | sql.js（纯 WASM 的 SQLite） |
 | 契约 | zod（跨进程 IPC 校验） |
 | 工具链 | pnpm 11、Turbo、TypeScript 5（strict） |
