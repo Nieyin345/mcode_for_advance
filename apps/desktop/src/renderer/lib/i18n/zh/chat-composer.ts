@@ -28,7 +28,11 @@ export const zh = {
 
   // ── composer actions / placeholders ──
   "chat.jumpToBottom": "回到底部",
-  "chat.placeholderQueued": "排队输入…  (Enter 加入队列)",
+  // 一轮还在跑时的输入框提示。**两档**:引擎支持插话时把那个键也写出来(它在别处
+  // 没有任何入口,不写就没人知道);不支持时只提排队 —— 提示里写了一个按下去没用的键,
+  // 比不写更让人困惑。
+  "chat.placeholderQueued": "排队输入… Enter 排队 · Ctrl+Enter 直接插话",
+  "chat.placeholderQueuedPlain": "排队输入…  (Enter 加入队列)",
   "chat.placeholderIdle": "发送消息…  (@ 引用文件 · / 命令 · 粘贴图片)",
   "chat.attachFiles": "添加上下文文件",
   "chat.addImage": "添加图片",
@@ -379,4 +383,43 @@ export const zh = {
   "chat.worktree.badgeOrphan": "无会话引用",
   "chat.worktree.badgeDirty": "有未提交更改",
   "chat.worktree.badgeRefTitle": "引用该工作树的会话数",
+
+  // ── 输入框的工作模式选择器（默认 / 文献检索 / 文献精读 / 文献写作 / 文献评审 / 代码编辑）──
+  // 模式跟着会话走；除「默认」和「文献检索」外，其余会变成系统提示词片段。
+  "composer.mode.title": "选择工作模式",
+  "composer.mode.rowLabel": "模式",
+  "composer.mode.default": "默认",
+  "composer.mode.defaultHint": "普通对话，不附加任何指令",
+  "composer.mode.search": "文献检索",
+  "composer.mode.searchHint": "由 AI 主导：先问清研究方向，再联网检索、逐篇入库并写总结",
+  "composer.mode.read": "文献精读",
+  "composer.mode.readHint": "把一篇讲透：问题、方法、实验、局限，引用具体位置",
+  "composer.mode.write": "文献写作",
+  "composer.mode.writeHint": "按学术规范成稿；引用只允许库里真实存在的条目",
+  "composer.mode.review": "文献评审",
+  "composer.mode.reviewHint": "按审稿人标准逐条挑问题，给出位置和可执行的修改建议",
+  "composer.mode.code": "代码编辑",
+  "composer.mode.codeHint": "改代码：跟随既有约定，只做被要求的那一件事",
+
+  // 文献检索模式下输入框上方那条固定条件筛选条。这几项是"一贯的习惯"，选一次就
+  // 一直在（存进设置），AI 每轮读它，所以不必每个会话重新交代。
+  "chat.searchFilter.title": "检索条件",
+  "chat.searchFilter.year": "时间",
+  "chat.searchFilter.yearAny": "不限",
+  "chat.searchFilter.year3": "近三年",
+  "chat.searchFilter.year5": "近五年",
+  "chat.searchFilter.year10": "近十年",
+  "chat.searchFilter.tier": "期刊层次",
+  "chat.searchFilter.tierAny": "不限",
+  "chat.searchFilter.tierT1": "只要 T1",
+  "chat.searchFilter.tierT1T2": "T1 / T2",
+  "chat.searchFilter.if": "影响因子",
+  "chat.searchFilter.ifAny": "不限",
+  "chat.searchFilter.if3": "≥ 3",
+  "chat.searchFilter.if5": "≥ 5",
+  "chat.searchFilter.if10": "≥ 10",
+  "chat.searchFilter.limit": "每源条数",
+  "chat.searchFilter.limit10": "10 条",
+  "chat.searchFilter.limit20": "20 条",
+  "chat.searchFilter.limit50": "50 条",
 } as const;

@@ -35,10 +35,10 @@ import {
   SkillsScanSourcesSchema,
   SkillsImportSchema,
 } from "@contracts/ipc";
-import type { SkillInfo, SkillSource, ExternalSkillInfo, SkillTool } from "@contracts/ipc";
+import type { SkillInfo, SkillSource, ExternalSkillInfo, SkillTool, ReadOnlySkillSource } from "@contracts/ipc";
 import { ProjectRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
-import { getEnabledPluginSkillRoots } from "@main/plugins/pluginManager.js";
+import { getPluginSkillSources } from "@main/plugins/pluginManager.js";
 
 /** Case-insensitive, normalized equality for project-root matching — same
  *  helper logic the file handlers use (they inline it as `samePath`). Paths
@@ -243,7 +243,25 @@ async function scanLocalSkillDir(
     return;
   }
   // Case 2: treat as a skills root — scan each subdirectory.
+  const before = into.size;
   await scanExternalSkillsRoot(real, "local", into);
+  if (into.size > before) return;
+  // Case 3: nothing at the top level — look one level down at the conventional
+  // nested roots. Cloned skill *collections* (K-Dense-AI/scientific-agent-skills
+  // and friends) keep their ~150 skills under `skills/`, with README/docs/
+  // scripts as siblings; scanning only the top level finds zero and the picker
+  // silently reports "no skills", which reads as a broken import rather than a
+  // layout we don't know.
+  //
+  // Deliberately narrow and first-hit-wins: we only descend one level, only
+  // into these two conventional names, and we stop as soon as a root yields
+  // anything — a repo that happens to carry an unrelated nested tree must not
+  // have it enumerated. A directory that is itself a skill (Case 1) never
+  // reaches here.
+  for (const nested of ["skills", path.join(".claude", "skills")]) {
+    await scanExternalSkillsRoot(path.join(real, nested), "local", into);
+    if (into.size > before) return;
+  }
 }
 
 /** Scan a user-picked single FILE as a one-file skill (the import dialog's
@@ -421,50 +439,104 @@ export async function listSkillsForProject(projectPath: string | undefined): Pro
     // a broken skills dir must never break the composer.
     log.warn(`skills.list scan failed: ${(err as Error).message}`);
   }
-  // Enabled plugins' skills LAST — lowest precedence (project > global >
-  // plugin): scanned into a side map so a plugin skill never overrides a
+  // Contributed skills LAST — lowest precedence (project > global > plugin >
+  // builtin): scanned into a side map so a contributed skill never overrides a
   // same-named user skill, it only fills the gaps. The SDK loads these the
   // same way it loads user skills (`skills: "all"`), so a `/name` pill works
-  // identically for either source.
+  // identically for any source.
+  //
+  // 内置技能（随应用发布的那四个）标成 "builtin" 而不是 "plugin"，这样面板能把
+  // 它们标成「内置」—— 而"一个插件都没装"的时候它们照样在，用 "plugin" 会让人
+  // 以为是自己装过的哪个插件带来的。两者同样只读。
   try {
-    const pluginByName = new Map<string, SkillInfo>();
-    for (const dir of await getEnabledPluginSkillRoots()) {
-      await scanSkillsRoot(dir, "plugin", pluginByName);
+    const contributed = new Map<string, SkillInfo>();
+    for (const { rootDir, builtin } of await getPluginSkillSources()) {
+      await scanSkillsRoot(rootDir, builtin ? "builtin" : "plugin", contributed);
     }
-    for (const [name, info] of pluginByName) {
+    for (const [name, info] of contributed) {
       if (!byName.has(name)) byName.set(name, info);
     }
   } catch (err) {
     log.warn(`plugin skills scan failed: ${(err as Error).message}`);
   }
-  // Stable ordering: project-first then global, alphabetical within each,
-  // so the menu doesn't reshuffle between renders.
+  // Stable ordering: by source rank, then alphabetical within each — so the
+  // menu doesn't reshuffle between renders and user-owned skills always sort
+  // above contributed ones (内置固定垫底)。
+  const SOURCE_RANK: Record<SkillSource, number> = {
+    project: 0,
+    global: 1,
+    plugin: 2,
+    builtin: 3,
+  };
   return [...byName.values()].sort((a, b) => {
-    if (a.source !== b.source) return a.source === "project" ? -1 : 1;
+    const ra = SOURCE_RANK[a.source];
+    const rb = SOURCE_RANK[b.source];
+    if (ra !== rb) return ra - rb;
     return a.name.localeCompare(b.name);
   });
+}
+
+/** Read a skill directory's SKILL.md. Any failure → "" (the editor shows an
+ *  empty buffer rather than an error dialog for a dir without SKILL.md). */
+async function readSkillMd(skillDir: string): Promise<string> {
+  try {
+    return await fs.readFile(path.join(skillDir, "SKILL.md"), "utf-8");
+  } catch {
+    return "";
+  }
+}
+
+/** Locate a contributed ("plugin" / "builtin") skill's directory among the
+ *  enabled plugins' skill roots + the built-in one.
+ *
+ *  Contributed skills live at `<skillsRoot>/<name>/SKILL.md` — note the extra
+ *  level compared to global/project, where the resolved root already IS the
+ *  skills directory. Several roots can carry the same name (two plugins each
+ *  shipping a `pdf`); the first hit wins, mirroring the listing's gap-fill
+ *  order. Containment-guarded so a name like "../x" can't escape the root. */
+async function contributedSkillDir(
+  source: ReadOnlySkillSource,
+  name: string,
+): Promise<string | null> {
+  const wantBuiltin = source === "builtin";
+  for (const { rootDir, builtin } of await getPluginSkillSources()) {
+    if (builtin !== wantBuiltin) continue;
+    const dir = path.join(rootDir, name);
+    if (!pathWithin(rootDir, dir)) continue;
+    try {
+      const st = await fs.stat(path.join(dir, "SKILL.md"));
+      if (st.isFile()) return dir;
+    } catch {
+      /* not in this root — keep looking */
+    }
+  }
+  return null;
 }
 
 /** Shared skills-read core — used by both the desktop IPC handler and the
  *  mobile RPC whitelist. `projectPath` is only required for project-scoped
  *  skills; global skills resolve without it. Returns "" when a project skill
- *  is requested with no/unknown project or the skill dir escapes the root. */
+ *  is requested with no/unknown project or the skill dir escapes the root.
+ *
+ *  Contributed skills have no WRITABLE root (see `resolveSkillRootForRequest`)
+ *  but they are readable — the settings panel shows a built-in skill's
+ *  SKILL.md read-only, which is how a user finds out what the document skills
+ *  actually do. */
 export async function readSkillForProject(
   projectPath: string | undefined,
   source: SkillSource,
   name: string,
 ): Promise<string> {
+  if (source === "plugin" || source === "builtin") {
+    const dir = await contributedSkillDir(source, name);
+    return dir ? readSkillMd(dir) : "";
+  }
   const root = resolveSkillRootForRequest(source, projectPath);
   if (!root) return "";
   const skillDir = path.join(root, name);
   // Containment guard: the resolved skill dir must stay inside the root.
   if (!pathWithin(root, skillDir)) return "";
-  try {
-    return await fs.readFile(path.join(skillDir, "SKILL.md"), "utf-8");
-  } catch {
-    // Missing file (e.g. a skill dir without SKILL.md) → empty editor.
-    return "";
-  }
+  return readSkillMd(skillDir);
 }
 
 /** Resolve the skills root for a read/save/delete request, or null when the
@@ -475,10 +547,11 @@ function resolveSkillRootForRequest(
   source: SkillSource,
   projectPath: string | undefined,
 ): string | null {
-  // Plugin skills are read-only inventory contributed by enabled plugins —
-  // listed in the composer menu, but there is no user-editable file root
-  // (the files live under the plugin's install dir and vanish on uninstall).
-  if (source === "plugin") return null;
+  // Plugin + built-in skills are read-only inventory — listed in the composer
+  // menu, but there is no user-editable file root (plugin files live under the
+  // plugin's install dir and vanish on uninstall; built-in files live in the
+  // app's own resources and are replaced on upgrade).
+  if (source === "plugin" || source === "builtin") return null;
   if (source === "global") {
     return resolveSkillRoot("global", "");
   }

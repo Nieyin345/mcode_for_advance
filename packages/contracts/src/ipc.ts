@@ -5,6 +5,17 @@
  */
 import { z } from "zod";
 import type { RuntimeEvent } from "./runtime.js";
+import { WorkflowDocSchema, type WorkflowDoc, type WorkflowListEntry } from "./workflow.js";
+import { HookSpecSchema, type HookRun, type HookSpec } from "./hook.js";
+import { AgentProfileSchema, type AgentProfile, type AgentProfileCatalog } from "./agentProfile.js";
+import type { NodeTypeCatalog } from "./nodeType.js";
+import { INTEGRATION_IDS, type IntegrationId, type IntegrationPublic } from "./integrations.js";
+import {
+  TEMPLATE_KINDS,
+  type TemplateEntry,
+  type TemplateFileContent,
+  type TemplateKind,
+} from "./templates.js";
 import type { Project, Session, MessageRecord, TurnInput, ApprovalDecision, SessionBookmark } from "./session.js";
 import type { ProviderCapabilities, UserInputAnswers, BuiltinModelOption } from "./provider.js";
 import type { CustomModelPublic, CustomModelInput, TestCustomModelResult } from "./customModel.js";
@@ -13,6 +24,19 @@ import type { CodexProviderPublic } from "./codexModel.js";
 import type { ThemeName, EffectiveTheme, ThemeChangedMessage } from "./theme.js";
 import type { PairingStartResult, PairedDevice } from "./mobile.js";
 import type { RelayStatus, RelayVpsConfig, RelayVpsConfigInput } from "./relay.js";
+import type {
+  LibraryItem,
+  LibraryCollection,
+  InstitutionProfile,
+  DownloadJob,
+  DownloadStatus,
+  ExternalSearchResult,
+  FullTextMatch,
+  AuthSiteStatus,
+  LibraryConversionRow,
+  LibraryNote,
+} from "./library.js";
+import { LIBRARY_KINDS, type LibraryKind } from "./library.js";
 import type {
   PluginState,
   PluginMarketplaceState,
@@ -446,6 +470,40 @@ export const UI_RIGHT_PANEL_FONT_SIZE_SETTING_KEY = "ui.rightPanelFontSize";
 export const UI_PASTE_TAG_THRESHOLD_CHARS_SETTING_KEY = "ui.pasteTagThresholdChars";
 
 /**
+ * Setting key under which the workflow node concurrency cap is persisted.
+ * Value is a numeric string like "4".
+ *
+ * ## 为什么要有这个闸
+ *
+ * 一张图跑到某一步时,所有就绪的节点会**同时**起跑,而每个节点是一个独立的隐藏会话 +
+ * 一个 CLI 子进程 + 一路模型请求。所以"图有多宽"直接等于"同时烧几路" —— 一张 20 个
+ * 并列节点的图不限并发就是 20 路一起打出去,没有排队、没有确认。
+ *
+ * 到上限的节点**排队等,不是失败**(见 `scheduler.ts` 派发那一段)。
+ *
+ * 调度器**每次派发时现读**这个键(照 `AutoArchiver` 读 `AUTO_ARCHIVE_SETTING_KEY` 的
+ * 做法),所以改了设置下一批就生效,不需要任何推送同步。
+ *
+ * 默认值在 `main/orchestration/runner.ts`(`WORKFLOW_MAX_PARALLEL_DEFAULT`);渲染端
+ * 的设置界面用 {@link WORKFLOW_MAX_PARALLEL_MIN} / {@link WORKFLOW_MAX_PARALLEL_MAX}
+ * 钳制。
+ */
+export const WORKFLOW_MAX_PARALLEL_SETTING_KEY = "workflow.maxParallel";
+
+/**
+ * 并发上限的合法范围。
+ *
+ * 下限是 1(串行)——**不给 0**:那是"一个节点都不许跑",而调度循环会因为"没有在飞的、
+ * 也没有东西可动"直接退出,现象是"点了运行,什么都没发生"。真读到一个越界的值
+ * (手改的设置文件、老版本写坏的),调度器那边退回"不限",不会卡死。
+ *
+ * 上限 16 是个务实的天花板:再宽就不该是一张图的事了(那更像"跑 20 个独立任务"),
+ * 而且真按 20 路打出去,本机和额度两头都吃不消。
+ */
+export const WORKFLOW_MAX_PARALLEL_MIN = 1;
+export const WORKFLOW_MAX_PARALLEL_MAX = 16;
+
+/**
  * Setting key under which the default speech-recognition language is
  * persisted. Value is a BCP-47-ish tag like "zh-CN" or "en-US" (used to pick
  * the ASR model / decoder language). Hydrated into sessionStore.voiceLang.
@@ -586,8 +644,9 @@ export const UI_RIGHT_PANEL_TAB_SETTING_KEY = "ui.rightPanelTab";
 
 /** zod schema + TS union for the right-panel tab preference. "sidechat" (the
  *  side-chat Q&A tab) is session-only like "browser": hydrate ignores a
- *  persisted value so the ask tab never auto-opens at startup. */
-export const RightPanelTabSchema = z.enum(["files", "git", "browser", "turns", "sidechat"]);
+ *  persisted value so the ask tab never auto-opens at startup. "library" 同理
+ *  —— 文献库是被左栏点击唤起的,不该在启动时自己占住右栏。 */
+export const RightPanelTabSchema = z.enum(["files", "git", "browser", "turns", "sidechat", "library", "templates"]);
 export type RightPanelTab = z.infer<typeof RightPanelTabSchema>;
 
 /**
@@ -632,6 +691,62 @@ export const UI_IDE_EDITOR_MODE_SETTING_KEY = "ui.ideEditorMode";
  * against the current model lists (a deleted model falls back to auto).
  */
 export const UI_COMPOSER_MODEL_SETTING_KEY = "ui.composerModel";
+
+/**
+ * **文献检索的固定条件** —— 输入框下方的筛选条上选的,四组。
+ *
+ * ## 为什么是设置而不是让 AI 问
+ *
+ * 用户的原话:「不止是 2-4 个问题,需要比较详细的,包括时间范围,影响因子,论文层次
+ * 等等这些,**但是一般这些都是固定的习惯**」。既然是固定习惯,就不该每轮都问一遍 ——
+ * 问一次、存下来、每轮直接用。
+ *
+ * 所以分成两层:这几项(不变的习惯)由**界面**收集,放在输入框下方一眼看得见的地方;
+ * 每轮真正要问的只剩**研究方向**那一件。主进程把它们读出来注入提示词,AI 照着执行。
+ *
+ * 取值一律是短字符串码,不是数字 —— 界面换了选项之后旧值仍然可读(退化成"不限"),
+ * 不会因为解析失败把整条条件打没。
+ */
+export const SEARCH_YEAR_SPAN_SETTING_KEY = "search.yearSpan";
+export const SEARCH_TIER_SETTING_KEY = "search.tier";
+export const SEARCH_MIN_IF_SETTING_KEY = "search.minImpactFactor";
+export const SEARCH_LIMIT_SETTING_KEY = "search.perSourceLimit";
+
+/**
+ * 期刊数据(jcr.db)的路径。
+ *
+ * 这是一个 **22MB 的离线 SQLite**(JCR 影响因子/分区 + 中科院分区 + CCF + 预警名单),
+ * 由用户自己的 `模板库/期刊数据/fetch.py` 每年更新。**不随应用发布** —— 它是有版权的
+ * 商业数据,也是用户自己维护的东西。
+ *
+ * 解析顺序(见 `main/library/journalRank.ts`):本设置 → `<数据根>/workflows/jcr.db`。
+ * 两处都没有就**降级**:期刊层次/影响因子那两条筛选条件不生效,而且会**如实告诉用户
+ * 不生效** —— 宁可说"我查不了",也不能让模型凭印象编一个影响因子出来。
+ */
+export const SEARCH_JOURNAL_DB_SETTING_KEY = "search.journalRankDb";
+
+/** 时间跨度码 → 中文说法(注入提示词时用)。 */
+export const SEARCH_YEAR_SPAN_LABELS: Record<string, string> = {
+  any: "不限",
+  "3": "近三年",
+  "5": "近五年",
+  "10": "近十年",
+};
+
+/** 期刊层次码 → 中文说法。与 `journal_rank.py` 的 T1/T2 分档对齐。 */
+export const SEARCH_TIER_LABELS: Record<string, string> = {
+  any: "不限",
+  t1: "只要 T1(Q1 或中科院 1 区,或 Top)",
+  t1t2: "T1 或 T2(Q1/Q2,或中科院 1/2 区)",
+};
+
+/** 影响因子下限码 → 中文说法。 */
+export const SEARCH_MIN_IF_LABELS: Record<string, string> = {
+  any: "不限",
+  "3": "≥ 3",
+  "5": "≥ 5",
+  "10": "≥ 10",
+};
 
 /**
  * Setting key under which the custom-model id used for git-commit-message
@@ -865,6 +980,26 @@ export const SendTurnImageSchema = z.object({
 });
 export type SendTurnImage = z.infer<typeof SendTurnImageSchema>;
 
+/** 会话 / 这一轮选的工作流 id。
+ *
+ *  **开放字符串,不是枚举** —— 内置的那六个(`BUILTIN_WORKFLOW_IDS`)只是一个子集,
+ *  用户还能自建(`wf_` 前缀)。校验只保证"非空";**认不认识这个 id 由 host 决定**:
+ *  不认识就当作"没有流程",而不是报错。理由与节点类型同源 —— 一份别人分享来的工作流
+ *  引用了他没装的类型时,不该让整个会话打不开。 */
+export const WorkflowIdSchema = z.string().min(1);
+
+/** 取工作流 id,兼容旧字段名 `composerMode`。
+ *
+ *  **为什么要留这个别名**:手机端可能还开着改版前加载的页面,而 zod 对**没声明的键
+ *  是静默丢掉**的 —— 那会表现成"模式突然不生效了",不报错、也不易查。留着它,旧字段
+ *  只是过时,不会失灵。 */
+export function workflowIdFromInput(input: {
+  workflowId?: string;
+  composerMode?: string;
+}): string | undefined {
+  return input.workflowId ?? input.composerMode;
+}
+
 export const SendTurnSchema = z.object({
   sessionId: z.string(),
   prompt: z.string(),
@@ -877,6 +1012,13 @@ export const SendTurnSchema = z.object({
   model: z.string().optional(),
   effort: z.string().optional(),
   permissionMode: z.string().optional(),
+  /** 这一轮用的工作流。**刻意不折进 `prompt`** —— 会话标题是从 `prompt` 派生的,
+   *  折进去会让标题变成流程正文。见 main/orchestration/prompt.ts。 */
+  workflowId: WorkflowIdSchema.optional(),
+  /** 旧字段名,**接受一个版本**。手机端可能还开着改版前加载的页面,而 zod 对没声明
+   *  的键是**静默丢掉**的 —— 那会表现成"模式突然不生效了",不报错、也不易查。
+   *  handler 里取 `input.workflowId ?? input.composerMode`。 */
+  composerMode: WorkflowIdSchema.optional(),
   /** Override the session's bound custom model for this turn. null = clear
    *  (use built-in credential discovery); a string = bind to that config. */
   customModelId: z.string().nullable().optional(),
@@ -914,6 +1056,18 @@ export type SendTurnInput = z.infer<typeof SendTurnSchema>;
 
 export const InterruptSchema = z.object({ sessionId: z.string() });
 export type InterruptInput = z.infer<typeof InterruptSchema>;
+
+/**
+ * 往**正在跑的那一轮**里塞一句话(生成过程中插话)。
+ *
+ * 只收文本:`max(2000)` 是一个**防手滑**的上界(这条路没有附件、没有图片,也没有
+ * "太长就分成几条"的机制)。真要写长文,那本来就该是新开一轮,不是插话。
+ */
+export const InjectSchema = z.object({
+  sessionId: z.string(),
+  text: z.string().min(1).max(2000),
+});
+export type InjectInput = z.infer<typeof InjectSchema>;
 
 export const ApproveSchema = z.object({
   sessionId: z.string(),
@@ -995,6 +1149,9 @@ export const UpdateSessionSettingsSchema = z.object({
   model: z.string().optional(),
   effort: z.string().optional(),
   permissionMode: z.string().optional(),
+  workflowId: WorkflowIdSchema.optional(),
+  /** 旧字段名,接受一个版本 —— 理由见上面 SendTurnSchema 那段。 */
+  composerMode: WorkflowIdSchema.optional(),
   customModelId: z.string().nullable().optional(),
   /** Provider id (e.g. "claude-sdk"). Only honored while the session has no
    *  messages yet — once a turn has run the provider is fixed at creation, so
@@ -1210,6 +1367,19 @@ export const SessionMessagesSchema = z.object({
   beforeId: z.string().optional(),
 });
 export type SessionMessagesInput = z.infer<typeof SessionMessagesSchema>;
+
+/**
+ * 把一段对话分叉成新的一段(右键左栏的对话 → 复制一份)。
+ *
+ * 只多一个 `title`,而且**由渲染端给**:新对话要叫什么是一句界面文案(中文「X 副本」/
+ * 英文「X (copy)」),而主进程那一侧没有 i18n —— 那边写死一句中文,英文界面里就会冒出
+ * 一句中文。会话标题本来就是用户数据(重命名那条路也是渲染端传下来的),这里同一条。
+ */
+export const ForkSessionSchema = z.object({
+  id: z.string(),
+  title: z.string().min(1).max(200),
+});
+export type ForkSessionInput = z.infer<typeof ForkSessionSchema>;
 
 export const SaveMessagesSchema = z.object({
   sessionId: z.string(),
@@ -1939,6 +2109,11 @@ export type FileCopyInput = z.infer<typeof FileCopySchema>;
 export const DialogPickFilesSchema = z.object({
   /** Optional dialog title; defaults to a localized "选择文件" on the main side. */
   title: z.string().optional(),
+  /** 原生选择框的扩展名过滤,如 `[{ name: "PDF", extensions: ["pdf"] }]`。
+   *  不给就列所有文件(既有行为不变)。 */
+  filters: z
+    .array(z.object({ name: z.string(), extensions: z.array(z.string()) }))
+    .optional(),
 });
 export type DialogPickFilesInput = z.infer<typeof DialogPickFilesSchema>;
 
@@ -2516,8 +2691,23 @@ export interface GitWorktreeRemoveResult {
 /** Where a composer skill was discovered. "plugin" = contributed by an
  *  ENABLED plugin (read-only inventory: the composer menu lists it and the
  *  SDK loads it per-turn, but it has no user-editable file root — the skills
- *  read/save/delete handlers reject this source). */
-export type SkillSource = "global" | "project" | "plugin";
+ *  read/save/delete handlers reject this source). "builtin" = shipped inside
+ *  the app itself (the document skills; see main/plugins/builtinPlugins.ts) —
+ *  same read-only posture as "plugin", but it survives with no plugins
+ *  installed at all, so the UI labels it 「内置」 rather than by plugin name. */
+export const SKILL_READ_SOURCES = ["global", "project", "plugin", "builtin"] as const;
+export type SkillSource = (typeof SKILL_READ_SOURCES)[number];
+
+/** Sources a skill can be WRITTEN to — the two the user owns. Contributed
+ *  skills are replaced by a plugin update or an app upgrade, never by this
+ *  editor, so save/delete reject them at the schema level (not just in the
+ *  handler), and the UI hides the buttons. */
+export const SKILL_WRITE_SOURCES = ["global", "project"] as const;
+
+/** The sources that have no user-editable file root. Kept as one exported
+ *  alias so the renderer's editor type and the main-side read/save/delete
+ *  guard can never drift apart on which sources are read-only. */
+export type ReadOnlySkillSource = Extract<SkillSource, "plugin" | "builtin">;
 
 /** One registered AI backend surfaced to the renderer via `provider.list`.
  *  The capabilities descriptor drives which composer chips / dropdown entries
@@ -2575,8 +2765,11 @@ export const SkillsReadSchema = z.object({
    *  the caller's identity when source is "project"; the skill itself is
    *  resolved by `source` + `name`. */
   projectPath: z.string().optional(),
-  /** Which skills root to read from: user-global or the active project. */
-  source: z.enum(["global", "project"]),
+  /** Which skills root to read from. Wider than the write schemas below:
+   *  contributed skills (enabled plugins + the built-in plugin) have no
+   *  writable root but ARE readable — the settings panel shows a built-in
+   *  skill's SKILL.md read-only. */
+  source: z.enum(SKILL_READ_SOURCES),
   /** Skill name (= directory name under <root>/.claude/skills/). */
   name: z.string().regex(SKILL_NAME_RE, "invalid skill name"),
 });
@@ -2591,7 +2784,7 @@ export type SkillsReadInput = z.infer<typeof SkillsReadSchema>;
  *  "no projects yet" state). */
 export const SkillsSaveSchema = z.object({
   projectPath: z.string().optional(),
-  source: z.enum(["global", "project"]),
+  source: z.enum(SKILL_WRITE_SOURCES),
   name: z.string().regex(SKILL_NAME_RE, "invalid skill name"),
   /** Full SKILL.md text (frontmatter + body). Written verbatim. */
   content: z.string(),
@@ -2605,7 +2798,7 @@ export type SkillsSaveInput = z.infer<typeof SkillsSaveSchema>;
  *  only required for `source: "project"`. */
 export const SkillsDeleteSchema = z.object({
   projectPath: z.string().optional(),
-  source: z.enum(["global", "project"]),
+  source: z.enum(SKILL_WRITE_SOURCES),
   name: z.string().regex(SKILL_NAME_RE, "invalid skill name"),
 });
 export type SkillsDeleteInput = z.infer<typeof SkillsDeleteSchema>;
@@ -2875,6 +3068,23 @@ const MCP_NAME_RE = /^[A-Za-z0-9_-]+$/;
 
 /** Reserved server name — collides with the built-in in-process server. */
 export const MCP_RESERVED_NAME = "mcode-browser";
+
+/**
+ * 应用自带的两个**骨干** MCP 服务器(库操作 / 工作流操作)的注册名。
+ *
+ * 它们的定义放在契约层而不是各自的主进程文件里,是因为**渲染端也要认这两个名字**:
+ * 工作流节点的「MCP 服务器」参数要把它们从候选表里滤掉(见 `NODE_MCP_PARAM_KEY`)——
+ * 它们不是用户装的东西,始终挂着,列出来只会让人以为自己关得掉。名字有两份定义就会
+ * 漂移,而漂移的表现是"那个服务器又能被选了,选了却不生效"。
+ *
+ * `mcp/libraryServer.ts` 与 `mcp/mcodeServer.ts` 各自 export 一个同名常量指向这里,
+ * 主进程那一侧的既有引用不必改。
+ */
+export const MCP_LIBRARY_SERVER = "mcode-library";
+export const MCP_WORKFLOW_SERVER = "mcode-workflow";
+
+/** 骨干服务器名的清单 —— 「始终挂着、不进候选表」的那一组。 */
+export const MCP_ALWAYS_ON_SERVERS = [MCP_LIBRARY_SERVER, MCP_WORKFLOW_SERVER] as const;
 
 /** Add a user-scope server. Rejected when the name already exists (enabled in
  *  the config file or stashed as disabled). The config is written into
@@ -3267,6 +3477,86 @@ export interface RuntimeEventMessage {
   payload: RuntimeProgressPayload;
 }
 
+/* ── 文档工具链(外部依赖)──
+ *
+ * 四个内置文档技能(docx / pptx / xlsx / pdf)本身随应用发布,但它们**要用的
+ * 工具**不在应用里:pandoc、python 的若干包、zip、LibreOffice、poppler 都是
+ * 机器级的东西。换一台干净电脑,技能在那里、工具不在,一到要读 Word 就失败,
+ * 而且失败得莫名其妙。
+ *
+ * 这一节就是「设置 → 内核」里新加的那一块:检测 + 按需安装,与 agent 内核
+ * (claude / codex / pi)同一套思路。
+ *
+ * ## 哪些能由应用装,哪些只能指路
+ *
+ * `pandoc` 是**单个自包含可执行文件**,下下来塞进 `<userData>/tools/` 就能用 ——
+ * 不要管理员权限、不写系统目录、卸载应用即消失。`latex` 走 **TinyTeX**(TeX Live
+ * 的轻量发行版):同样落在应用自己的工具目录里,同样不需要管理员 —— 值得说明的
+ * 是它的 Windows 包虽然后缀是 `.exe`,但那是**自解压包**(官方脚本用 `-y` 调它,
+ * 注释写的是 "unbundle"),只把 `TinyTeX/` 解开到当前目录,不写注册表、不改 PATH。
+ * `python-deps` 正相反:包必须装进用户**已有的**解释器里,所以那一项是"检测 +
+ * 调他的 pip",不搬运解释器本身。zip / LibreOffice / poppler 都是要管理员权限的
+ * 系统级安装,只检测、给指引 —— 装不装由用户决定,应用不替他动系统。
+ */
+
+/** 有检测/安装意义的外部工具 —— 就是四个技能实际会调的那些(数过脚本里的
+ *  subprocess 与 SKILL.md 里的命令),不是拍脑袋列的。 */
+export const TOOLCHAIN_TOOL_IDS = [
+  "pandoc",
+  "latex",
+  "python-deps",
+  "zip-tools",
+  "soffice",
+  "pdftoppm",
+] as const;
+export type ToolchainToolId = (typeof TOOLCHAIN_TOOL_IDS)[number];
+
+/** 这个工具是从哪儿被找到的。 */
+export type ToolchainSource =
+  /** 应用自己下载并管理的副本(在 `<userData>/tools/` 下)。 */
+  | "managed"
+  /** 用户机器上本来就有的(系统 PATH 上的可执行文件 / 他的 python)。 */
+  | "system"
+  /** 没找到。 */
+  | "missing";
+
+export interface ToolchainToolState {
+  id: ToolchainToolId;
+  /** 可用 = 下面 components 里每一项都找到了。 */
+  ok: boolean;
+  source: ToolchainSource;
+  /** 主程序版本(pandoc --version 之类),拿不到就 null。 */
+  version: string | null;
+  /** 主程序的绝对路径(可执行文件 / python 解释器),展示用。 */
+  path: string | null;
+  /** 能不能由应用安装。false = 只检测并给出指引(zip / LibreOffice / poppler
+   *  都是要管理员权限的系统级安装,装不装由用户决定)。 */
+  installable: boolean;
+  installing: boolean;
+  /** 最近一次装/卸失败的尾巴。空 = 正常。 */
+  lastError: string;
+  /** 组成这个工具的可执行文件 / 宏包 / python 包,以及各自找到没有。
+   *
+   *  **名字是机器名**(`pandoc` / `unzip` / `openpyxl` / `ctex`),不是文案 ——
+   *  主进程不负责措辞,渲染端按 zh/en 自己拼("缺 openpyxl、markitdown")。 */
+  components: Array<{ name: string; found: boolean }>;
+}
+
+/** `toolchain:event` 载荷 —— 与 runtimes:event 同构,面板用同一套渲染。 */
+export interface ToolchainProgressPayload {
+  tool: ToolchainToolId;
+  phase: "downloading" | "extracting" | "installing" | "done" | "error";
+  /** 0..1(下载中);-1 表示 Content-Length 未知 / 该阶段没有进度。 */
+  progress: number;
+  error?: string;
+}
+
+export interface ToolchainEventMessage {
+  channel: "toolchain:event";
+  payload: ToolchainProgressPayload;
+}
+
+
 // -- RPC input schemas --
 
 export const RuntimesListSchema = z.object({});
@@ -3290,6 +3580,90 @@ export type RuntimesInstallLocalInput = z.infer<typeof RuntimesInstallLocalSchem
 
 export const RuntimesRemoveSchema = z.object({ agent: RuntimeAgentSchema });
 export type RuntimesRemoveInput = z.infer<typeof RuntimesRemoveSchema>;
+
+/* ── 文档工具链 RPC 入参 ── */
+
+/** 安装/卸载一个工具。只有应用真能装的那几项会被接受 —— 下面这个 enum 就是那道
+ *  门,handler 里不必再判一次。 */
+export const ToolchainToolSchema = z.enum(TOOLCHAIN_TOOL_IDS);
+export const ToolchainInstallSchema = z.object({ tool: ToolchainToolSchema });
+export type ToolchainInstallInput = z.infer<typeof ToolchainInstallSchema>;
+
+export const ToolchainRemoveSchema = z.object({ tool: ToolchainToolSchema });
+export type ToolchainRemoveInput = z.infer<typeof ToolchainRemoveSchema>;
+
+// `toolchain.check` **没有入参 schema** —— 它检测的是这台机器,不针对某个项目。
+
+/* ── 工作流 RPC 入参 ── */
+
+/** 取一份完整工作流(含 nodes / edges)。画布编辑器打开某一项时才调。 */
+export const WorkflowGetSchema = z.object({ id: z.string().min(1) });
+export type WorkflowGetInput = z.infer<typeof WorkflowGetSchema>;
+
+/** 存一份工作流。`workflow.id` 就是主键 —— 对内置 id 来说,存进去就是**覆盖它的
+ *  默认版**(所以内置工作流可以直接改);「恢复默认」= 删掉那条覆盖。 */
+export const WorkflowSaveSchema = z.object({ workflow: WorkflowDocSchema });
+export type WorkflowSaveInput = z.infer<typeof WorkflowSaveSchema>;
+
+/** 删一份工作流。对内置 id 来说**这就是「恢复默认」** —— 两种在存储层是同一个操作,
+ *  所以只有一个删除动词,见 `main/orchestration/library.ts` 的文件头。 */
+export const WorkflowRemoveSchema = z.object({ id: z.string().min(1) });
+export type WorkflowRemoveInput = z.infer<typeof WorkflowRemoveSchema>;
+
+/**
+ * 用户在**岔路口**上选了一条路(`mcode.branch` 那个节点正停在那儿等人)。
+ *
+ * ## 它是"回答",不是"发消息"
+ *
+ * 那次运行**还活着** —— 它挂在一个 promise 上等这个回答,而这个调用把它唤醒之后,
+ * 图从那儿接着往下跑,**不重跑整张图**。所以它和 `claude.send` 是两件事:后者开一次
+ * 新的运行(`graphRunIntent` 在运行中会直接报 busy)。
+ *
+ * ## 为什么要 `runId`
+ *
+ * 同一个节点在同一张图里每一轮跑的 id 都一样。只按 `nodeId` 认的话,用户在**上一轮
+ * 那张旧卡片**上点一下,会去唤醒这一轮的等待 —— 而这一轮问的根本不是同一件事。
+ * `runId` 每次运行都是新的(见 `runner.ts` 的 `ActiveRun.runId`),带上它就分得开。
+ */
+export const WorkflowChooseSchema = z.object({
+  sessionId: z.string().min(1),
+  runId: z.string().min(1),
+  nodeId: z.string().min(1),
+  /** 选中的那条**边**的 id。**不是节点 id** —— 两条出路可以通向同一步。 */
+  edgeId: z.string().min(1),
+  /** 用户顺手写的一句话(可以不写)。会拼进下一步的提示词。 */
+  comment: z.string().optional(),
+});
+export type WorkflowChooseInput = z.infer<typeof WorkflowChooseSchema>;
+
+/** 存一份代理档案。**整份给过来**(而不是"改哪个字段")—— 理由同 `HooksSaveSchema`:
+ *  档案是用户从头写的,局部更新在这里没有意义,而整份给过来能让校验只发生在一个地方
+ *  (`validateAgentProfile`)。 */
+export const AgentProfileSaveSchema = z.object({ profile: AgentProfileSchema });
+export type AgentProfileSaveInput = z.infer<typeof AgentProfileSaveSchema>;
+
+/** 删一份代理档案。**只按 id** —— 格式坏、读不出来的文件不在 `profiles` 里,但它照样
+ *  删得掉(`removeAgentProfile` 直接按 id 拼路径),那正是最该能删的一种。 */
+export const AgentProfileRemoveSchema = z.object({ id: z.string().regex(/^p_[a-z0-9_]+$/) });
+export type AgentProfileRemoveInput = z.infer<typeof AgentProfileRemoveSchema>;
+
+/** 存一条钩子。**整份给过来**(而不是"改哪个字段")—— 钩子是用户从头写的,
+ *  局部更新在这里没有意义,而整份给过来能让校验只在一个地方发生(`validateHook`)。 */
+export const HooksSaveSchema = z.object({ hook: HookSpecSchema });
+export type HooksSaveInput = z.infer<typeof HooksSaveSchema>;
+
+export const HooksRemoveSchema = z.object({ id: z.string().min(1) });
+export type HooksRemoveInput = z.infer<typeof HooksRemoveSchema>;
+
+/** 试跑。给的是**还没存下来**的那一份 —— 用户正是想在打开它之前看看会发生什么。 */
+export const HooksTestSchema = z.object({ hook: HookSpecSchema });
+export type HooksTestInput = z.infer<typeof HooksTestSchema>;
+
+// `workflow.list` **没有入参 schema** —— 它列的是本机的工作流库,不针对某个项目。
+// ⚠️ 与 `toolchain.check` 同一条纪律:无参 handler 里**不要 parse**,无参 invoke 时
+// handler 收到的是 `undefined`,`z.object({}).parse(undefined)` 会直接 invalid_type。
+// 与 `runtimes.list` 一致:无参 handler 不接 raw、也不 parse(不带参数 invoke 时
+// raw 是 undefined,`z.object({})` 会把 `undefined` 判为 invalid_type)。
 
 export interface ClaudeEventMessage {
   channel: "claude:event";
@@ -3495,7 +3869,13 @@ export type MainToRendererMessage =
   | RelayEventMessage
   | VoiceResultMessage
   | VoiceDownloadProgressMessage
-  | RuntimeEventMessage;
+  | RuntimeEventMessage
+  | ToolchainEventMessage
+  | LibraryJobChangedMessage
+  | LibraryChangedMessage
+  | TemplatesChangedMessage
+  | WorkflowChangedMessage
+  | ComposerAttachMessage;
 
 /* ── Integrated terminal (xterm.js + node-pty) ──
  *  PTY processes live in main. Renderer only sees opaque terminalIds and
@@ -3531,6 +3911,310 @@ export const BROWSER_DATA_DIR_SETTING_KEY = "browser.dataDir";
  *  native store works and the vault merely shadows it. Stored as "0" to
  *  disable; missing = enabled. */
 export const BROWSER_PERSIST_LOGIN_SETTING_KEY = "browser.persistLogin";
+
+/** 文献库根目录。缺失 → 默认 `<userData>/library`。
+ *  库内所有相对路径(pdfPath / mdPath)都相对它。用户可在界面上改位置 ——
+ *  改完只改指向、不搬文件(搬文件由用户自己决定,避免大批量 IO 中途失败)。 */
+export const LIBRARY_ROOT_SETTING_KEY = "library.root";
+
+/** 下载并发上限。缺失 → 默认 2。走内嵌浏览器下载,并发过高会与用户的手动浏览
+ *  抢同一个 WebContentsView,反而更慢。 */
+export const LIBRARY_DOWNLOAD_CONCURRENCY_SETTING_KEY = "library.downloadConcurrency";
+
+/** 外部集成的非密钥配置(JSON):`{ [id]: { baseUrl?, enabled, lastTest? } }`。
+ *  密钥不放这里 —— 见 INTEGRATIONS_KEYS_SETTING_KEY。 */
+export const INTEGRATIONS_SETTING_KEY = "integrations.config";
+
+/** 外部集成的密钥(JSON):`{ [id]: base64Ciphertext }`,safeStorage 加密。
+ *  与自定义模型那条路同一套做法,明文永不落盘。 */
+export const INTEGRATIONS_KEYS_SETTING_KEY = "integrations.keys";
+
+/** 模版库根目录。缺失 → 默认 `<userData>/templates`。 */
+export const TEMPLATE_ROOT_SETTING_KEY = "templates.root";
+
+/** 「回收站」那个集合的 id。
+ *
+ *  ⚠️ **按 id 记,不按名字找**:回收站是个**普通集合**(用户要求「只是一个叫回收站的
+ *  collection」),所以他能给它改名、也能把它删掉。靠名字匹配的话,改个名字语义就废了。
+ *  记 id 之后,名字随便改都不影响;集合被删了 id 就失效,下次要用时重建。 */
+export const LIBRARY_TRASH_COLLECTION_SETTING_KEY = "library.trashCollectionId";
+
+/**
+ * 回收站的设置键 —— **每个库一个**(论文的回收站和笔记的回收站是两回事)。
+ *
+ * 不带库的旧键仍然保留:`library.trashCollectionId` 是老数据里那个全局回收站的
+ * 位置(它建在论文库下),论文库会回退去读它,不然改完键就不认那个集合了。
+ */
+export function libraryTrashSettingKey(kind: LibraryKind): string {
+  return `${LIBRARY_TRASH_COLLECTION_SETTING_KEY}.${kind}`;
+}
+
+/**
+ * **统一数据根**。聊天记录(数据库)、文献库、模版库都放在它下面:
+ *
+ * ```
+ * <数据根>/mcode.db  ·  <数据根>/library/  ·  <数据根>/templates/
+ * ```
+ *
+ * 缺失 → 默认 `<用户主目录>/Mcode`。改它会触发**整体搬迁 + 重启应用** —— 数据库在
+ * 运行期一直被主进程持有(sql.js 在内存里),没法原地换地基。
+ */
+export const DATA_ROOT_SETTING_KEY = "app.dataRoot";
+
+/* ── 模版库 ── */
+
+export const TemplateKindSchema = z.enum(TEMPLATE_KINDS);
+
+/** 不传 kind = 列全部类目。 */
+export const TemplateListSchema = z.object({ kind: TemplateKindSchema.optional() });
+export type TemplateListInput = z.infer<typeof TemplateListSchema>;
+
+export const TemplateAddSchema = z.object({
+  kind: TemplateKindSchema,
+  name: z.string().min(1),
+  /** 要收进这个模版的文件 / 文件夹(绝对路径)。**文件夹会被整包复制** ——
+   *  LaTeX 模版往往是 .cls + .tex + 图片的一整套。 */
+  sourcePaths: z.array(z.string().min(1)).min(1).max(200),
+});
+export type TemplateAddInput = z.infer<typeof TemplateAddSchema>;
+
+/** 指向某一条模版:类目 + 目录名(目录名就是显示名)。 */
+export const TemplateEntryRefSchema = z.object({
+  kind: TemplateKindSchema,
+  dirName: z.string().min(1),
+});
+export type TemplateEntryRefInput = z.infer<typeof TemplateEntryRefSchema>;
+
+/**
+ * 给一条模版改名。
+ *
+ * 模版库是文件系统即事实源、目录名即显示名,所以"改名"就是**把那个目录改名** ——
+ * 与文献库那边改一个分类的名字是同一件事的两个形态(那边改的是数据库里一行,
+ * 这边改的是磁盘上一个目录)。渲染端只给新名字,净化与重名检查都在主进程做。
+ */
+export const TemplateRenameSchema = z.object({
+  kind: TemplateKindSchema,
+  /** 现在叫什么(定位用)。 */
+  dirName: z.string().min(1),
+  /** 要改成什么。会被 `sanitizeTemplateName` 净化,净化后为空则拒绝。 */
+  name: z.string().min(1),
+});
+export type TemplateRenameInput = z.infer<typeof TemplateRenameSchema>;
+
+/**
+ * 把一条模版挂到某次对话的输入框上 —— 左栏右键「添加到当前对话」。
+ *
+ * `sessionId` 要显式给:消息要发给**指定会话**的输入框,而左栏与那个输入框不是同一棵
+ * 组件树。主进程生成清单(每次重写)后用既有的 `composer:attach` 广播回去,那个会话
+ * 的 ChatPane 自己认领 —— 与「+ → 模版」和文献库那条路是同一条,所以两边效果必然一致。
+ */
+export const TemplatesAttachToChatSchema = z.object({
+  sessionId: z.string().min(1),
+  kind: TemplateKindSchema,
+  /** 省略 = 挂**整个类目**(「全部 LaTeX 模版」那一行),清单里列全这个类目的每一条。 */
+  dirName: z.string().min(1).optional(),
+});
+export type TemplatesAttachToChatInput = z.infer<typeof TemplatesAttachToChatSchema>;
+
+/**
+ * 指向某一条模版里的**一个文件**:类目 + 目录名 + 相对条目目录的路径。
+ *
+ * `relPath` 的写法与 `TemplateFile.relPath` 逐字一致(正斜杠分隔,可能带子目录)——
+ * 界面上的文件行拿到的就是它,原样传回来。**主进程必须把它当不可信输入**:解析出的
+ * 绝对路径要落在条目目录内部,而且必须是扫描时列出来的那些文件之一,否则一段构造过的
+ * 请求就能把机器上任意文件读成预览内容。
+ */
+export const TemplateFileRefSchema = z.object({
+  kind: TemplateKindSchema,
+  dirName: z.string().min(1),
+  relPath: z.string().min(1),
+});
+export type TemplateFileRefInput = z.infer<typeof TemplateFileRefSchema>;
+
+export const IntegrationIdSchema = z.enum(INTEGRATION_IDS);
+
+export const IntegrationSetKeySchema = z.object({
+  id: IntegrationIdSchema,
+  /** 明文密钥。**只有这一条通道会带明文进来**,主进程收到即加密,之后只回打码串。 */
+  key: z.string().min(1),
+});
+export type IntegrationSetKeyInput = z.infer<typeof IntegrationSetKeySchema>;
+
+export const IntegrationClearKeySchema = z.object({ id: IntegrationIdSchema });
+export type IntegrationClearKeyInput = z.infer<typeof IntegrationClearKeySchema>;
+
+export const IntegrationSetConfigSchema = z.object({
+  id: IntegrationIdSchema,
+  /** 覆盖默认 API 根地址(自建反代/镜像)。主进程会去掉尾部斜杠。 */
+  baseUrl: z.string().min(1).optional(),
+  enabled: z.boolean().optional(),
+});
+export type IntegrationSetConfigInput = z.infer<typeof IntegrationSetConfigSchema>;
+
+export const IntegrationTestSchema = z.object({ id: IntegrationIdSchema });
+export type IntegrationTestInput = z.infer<typeof IntegrationTestSchema>;
+
+/* ── 文献库:PDF 文件导入 + 转 Markdown ── */
+
+/** 三个平级的库(值域与 `contracts/library.ts` 的 `LIBRARY_KINDS` 一致)。 */
+export const LibraryKindSchema = z.enum(LIBRARY_KINDS);
+export type LibraryKindInput = z.infer<typeof LibraryKindSchema>;
+
+export const LibraryImportFilesSchema = z.object({
+  /** 用户从文件选择框里挑出来的绝对路径。上限 200 —— 再多就该分批了。 */
+  paths: z.array(z.string().min(1)).min(1).max(200),
+  /** 导入的文献归入哪些库(null/省略 = 只进总库)。 */
+  collectionIds: z.array(z.string()).optional(),
+  /** 入库后是否接着转 Markdown(默认转 —— 用户要的就是「导入即可被 AI 读」)。 */
+  convert: z.boolean().optional(),
+  /** 导入到哪个库。省略 = 论文库。 */
+  kind: LibraryKindSchema.optional(),
+});
+export type LibraryImportFilesInput = z.infer<typeof LibraryImportFilesSchema>;
+
+/**
+ * 导入笔记:直接收 **Markdown 文件**。
+ *
+ * 与 `importFiles`(PDF)分开是因为两件事的后续完全不同:PDF 要抓元数据、要排队下载、
+ * 要转 Markdown;笔记本身就是 Markdown,入库即完成 —— 没有元数据可抓,也不需要转录。
+ * 硬塞进一条 RPC 只会让两边都长出一串 `if (kind === "note")`。
+ */
+export const LibraryImportNotesSchema = z.object({
+  paths: z.array(z.string().min(1)).min(1).max(200),
+  collectionIds: z.array(z.string()).optional(),
+});
+export type LibraryImportNotesInput = z.infer<typeof LibraryImportNotesSchema>;
+
+export const LibraryConvertSchema = z.object({
+  /** 要转的条目;省略则转整个库(或某个集合)。 */
+  ids: z.array(z.string()).optional(),
+  collectionId: z.string().optional(),
+  /** 已经有 md 也重转。 */
+  force: z.boolean().optional(),
+});
+export type LibraryConvertInput = z.infer<typeof LibraryConvertSchema>;
+
+export const LibraryRevealFileSchema = z.object({
+  id: z.string().min(1),
+  /** 定位哪一个:PDF 还是转换出的 Markdown。默认 PDF。 */
+  which: z.enum(["pdf", "md"]).optional(),
+});
+export type LibraryRevealFileInput = z.infer<typeof LibraryRevealFileSchema>;
+
+/** 与 revealFile 同形:**入参只有条目 id**,路径由主进程从库里取。 */
+export const LibraryOpenFileSchema = LibraryRevealFileSchema;
+export type LibraryOpenFileInput = z.infer<typeof LibraryOpenFileSchema>;
+
+/**
+ * 读一篇文献的 Markdown 正文(应用内预览用)。
+ *
+ * 为什么必须走 IPC:渲染进程**读不了本地文件**(沙箱里没有 fs)。而且 md 里的图片是
+ * 相对路径 `images/xxx.jpg`(MinerU 的产物),渲染端连它的父目录都不知道,只有主进程
+ * 能把相对引用解析成真实字节。所以主进程一次把正文和**被引用到的图片**(base64
+ * data URL)一起交出来,渲染端不需要二次往返。
+ */
+export const LibraryReadMarkdownSchema = z.object({ id: z.string().min(1) });
+export type LibraryReadMarkdownInput = z.infer<typeof LibraryReadMarkdownSchema>;
+
+/**
+ * 读一篇文献的 PDF 字节(应用内 PDF 阅读器用)。
+ *
+ * 与 `readMarkdown` 同一个理由:渲染进程读不了本地文件。但这里**不走 base64** ——
+ * Electron 的 IPC 用结构化克隆,`Uint8Array` 可以原样过去;base64 会让体积涨三分之一,
+ * 而论文 PDF 常有十几 MB。pdf.js 的 `getDocument({ data })` 正好收 Uint8Array。
+ */
+/**
+ * 采纳一份**用户手上的** Markdown 作为这篇的转录产物。
+ *
+ * 为什么不复用 convert:转录要花 MinerU 额度,而且用户手上那份可能本就更好 ——
+ * 他要的是"挂上去",不是"再转一遍"(重转还会覆盖掉他更满意的那份)。
+ */
+/** 新建一篇笔记(笔记库里在应用内写的那种)。标题会写进正文的第一行。 */
+export const LibraryCreateNoteSchema = z.object({
+  title: z.string().min(1),
+  collectionIds: z.array(z.string()).optional(),
+});
+export type LibraryCreateNoteInput = z.infer<typeof LibraryCreateNoteSchema>;
+
+/**
+ * 把编辑器的内容写回笔记文件。
+ *
+ * 只对**笔记**开放(主进程会校验 kind):论文/教材的 md 是转录产物,让应用内的
+ * 编辑器直接覆盖它,"转录结果"和"用户改动"就再也分不清了。
+ */
+export const LibraryWriteNoteSchema = z.object({
+  id: z.string().min(1),
+  text: z.string(),
+});
+export type LibraryWriteNoteInput = z.infer<typeof LibraryWriteNoteSchema>;
+
+/** 列某个条目下的笔记。 */
+/** 给**单独一篇**生成一份清单(标题/作者/该读哪个文件/我的笔记)。 */
+/**
+ * 整个库的清单(「全部文献」那一行)—— 只要 kind。
+ *
+ * 与 `library.manifest`(一个分类)是同一件事的两个粒度:分类是用户分出来的组,
+ * 「全部<库>」是"这个库里的所有东西"。用户要求「和文档一样要有全部内容」,而那一行
+ * 也得能挂进对话,否则它就是个只能看不能用的摆设。
+ */
+export const LibraryKindManifestSchema = z.object({ kind: LibraryKindSchema });
+export type LibraryKindManifestInput = z.infer<typeof LibraryKindManifestSchema>;
+
+/** 整个模版类目的清单(「全部 LaTeX 模版」那一行)。 */
+export const TemplateKindManifestSchema = z.object({ kind: TemplateKindSchema });
+export type TemplateKindManifestInput = z.infer<typeof TemplateKindManifestSchema>;
+
+export const LibraryItemManifestSchema = z.object({ id: z.string().min(1) });
+export type LibraryItemManifestInput = z.infer<typeof LibraryItemManifestSchema>;
+
+export const LibraryNotesListSchema = z.object({ itemId: z.string().min(1) });
+export type LibraryNotesListInput = z.infer<typeof LibraryNotesListSchema>;
+
+/** 写一条笔记:带 id 是改,不带是新建。 */
+export const LibraryNoteSaveSchema = z.object({
+  id: z.string().min(1).optional(),
+  itemId: z.string().min(1),
+  content: z.string().min(1),
+});
+export type LibraryNoteSaveInput = z.infer<typeof LibraryNoteSaveSchema>;
+
+/**
+ * 改条目的显示标题。文献 / 教材 / 笔记都用它。
+ *
+ * **只改标题,不动磁盘上的文件**:文件名(尤其是笔记的)按条目 id 命名,跟着标题变
+ * 会让库内所有引用一起漂。用户看到的名字变了就够了。
+ */
+export const LibraryRenameItemSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+});
+export type LibraryRenameItemInput = z.infer<typeof LibraryRenameItemSchema>;
+
+export const LibraryNoteDeleteSchema = z.object({ id: z.string().min(1) });
+export type LibraryNoteDeleteInput = z.infer<typeof LibraryNoteDeleteSchema>;
+
+export const LibraryAdoptMarkdownSchema = z.object({
+  id: z.string().min(1),
+  /** 用户选中的 md 文件绝对路径。同级若有 `images/` 会一起搬。 */
+  path: z.string().min(1),
+});
+export type LibraryAdoptMarkdownInput = z.infer<typeof LibraryAdoptMarkdownSchema>;
+
+export const LibraryReadPdfSchema = z.object({ id: z.string().min(1) });
+export type LibraryReadPdfInput = z.infer<typeof LibraryReadPdfSchema>;
+
+/** 导出的引用格式 —— 与 `citation.ts` 的 `CITATION_STYLES` 一一对应。 */
+export const CitationStyleSchema = z.enum(["gb7714", "apa", "bibtex"]);
+
+export const LibraryExportSchema = z.object({
+  /** 只导出某个集合;省略则导出整个库。 */
+  collectionId: z.string().optional(),
+  style: CitationStyleSchema,
+  /** 导出后顺便打开所在文件夹。**由主进程自己拼路径** —— 渲染端始终拿不到
+   *  「打开任意路径」的能力(与 revealFile 同一条安全约定)。 */
+  reveal: z.boolean().optional(),
+});
+export type LibraryExportInput = z.infer<typeof LibraryExportSchema>;
 
 /** Setting key holding the browser cookie vault — a JSON array of
  *  `VaultCookie` snapshots written by BrowserManager (main only) and restored
@@ -3917,6 +4601,308 @@ export const BrowserAuthRespondSchema = z.object({
 });
 export type BrowserAuthRespondInput = z.infer<typeof BrowserAuthRespondSchema>;
 
+/* ── 文献库(library) ────────────────────────────────────────────────────
+   领域类型见 `library.ts`;这里只放跨 IPC 的校验 schema。
+   约定与既有分区一致:每个 schema 同时导出 `...Input` 类型。 */
+
+/** 作者。三选一:西文给 family/given,中日韩等给 literal(不做姓/名切分)。 */
+export const LibraryAuthorSchema = z.object({
+  family: z.string().optional(),
+  given: z.string().optional(),
+  literal: z.string().optional(),
+});
+
+export const LibraryItemTypeSchema = z.enum([
+  "article",
+  "inproceedings",
+  "book",
+  "thesis",
+  "preprint",
+  "report",
+  "other",
+]);
+
+/** 入库一条文献。`id` 由主进程生成 —— 渲染端/AI 只给标识符与元数据。
+ *  `doi`/`arxivId` 至少给一个,否则无法查重也无法定位 PDF。 */
+export const LibraryItemInputSchema = z
+  .object({
+    doi: z.string().optional(),
+    arxivId: z.string().optional(),
+    title: z.string().optional(),
+    authors: z.array(LibraryAuthorSchema).optional(),
+    year: z.number().int().optional(),
+    venue: z.string().optional(),
+    /** 卷 / 期 / 页码 / 出版商 —— 引用格式(GB/T 7714、APA、BibTeX)要用,
+     *  缺了就整段省略。全部按字符串收:页码有 `1234-1240`、`e0123456` 等形态。 */
+    volume: z.string().optional(),
+    issue: z.string().optional(),
+    page: z.string().optional(),
+    publisher: z.string().optional(),
+    abstract: z.string().optional(),
+    type: LibraryItemTypeSchema.optional(),
+    language: z.string().optional(),
+    url: z.string().optional(),
+    source: z.string().optional(),
+    license: z.string().optional(),
+    /** 归到哪个库。省略 = 论文库。 */
+    kind: LibraryKindSchema.optional(),
+    /** 一并归入的集合;省略则不归任何集合。 */
+    collectionIds: z.array(z.string()).optional(),
+    /** 入库后是否立刻排入下载队列。默认 true。 */
+    queueDownload: z.boolean().optional(),
+  })
+  .refine((v) => Boolean(v.doi?.trim() || v.arxivId?.trim() || v.title?.trim()), {
+    message: "至少需要 doi / arxivId / title 之一",
+  });
+export type LibraryItemInput = z.infer<typeof LibraryItemInputSchema>;
+
+export const LibraryAddItemsSchema = z.object({
+  items: z.array(LibraryItemInputSchema).min(1),
+});
+export type LibraryAddItemsInput = z.infer<typeof LibraryAddItemsSchema>;
+
+/** 列表筛选。`collectionId` 为 null 表示全部;`collectionId` 为字符串时只列该集合。 */
+export const LibraryListSchema = z.object({
+  collectionId: z.string().nullable().optional(),
+  /** 只看某个库。省略 = 不限库(全部)。 */
+  kind: LibraryKindSchema.optional(),
+  /** 搜索关键词(标题/作者/摘要/venue),大小写不敏感。 */
+  query: z.string().optional(),
+  /** 只列某种 PDF 状态(如 "none" 用于找缺 PDF 的)。 */
+  pdfState: z.enum(["none", "queued", "downloading", "ready", "needs_login", "failed"]).optional(),
+  limit: z.number().int().positive().max(1000).optional(),
+  offset: z.number().int().nonnegative().optional(),
+});
+export type LibraryListInput = z.infer<typeof LibraryListSchema>;
+
+export const LibraryItemIdSchema = z.object({ id: z.string().min(1) });
+export type LibraryItemIdInput = z.infer<typeof LibraryItemIdSchema>;
+
+export const LibraryDeleteItemsSchema = z.object({
+  ids: z.array(z.string().min(1)).min(1),
+  /** 是否连同磁盘上的 PDF/MD 一起删除。默认 false(只从库里移除记录)。 */
+  deleteFiles: z.boolean().optional(),
+});
+export type LibraryDeleteItemsInput = z.infer<typeof LibraryDeleteItemsSchema>;
+
+/** 集合:新建。`parentId` 为 null 表示顶层。 */
+export const CollectionCreateSchema = z.object({
+  name: z.string().min(1),
+  parentId: z.string().nullable().optional(),
+  /** 建在哪个库里。省略 = 论文库。 */
+  kind: LibraryKindSchema.optional(),
+});
+export type CollectionCreateInput = z.infer<typeof CollectionCreateSchema>;
+
+export const CollectionRenameSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+});
+export type CollectionRenameInput = z.infer<typeof CollectionRenameSchema>;
+
+export const CollectionDeleteSchema = z.object({ id: z.string().min(1) });
+export type CollectionDeleteInput = z.infer<typeof CollectionDeleteSchema>;
+
+/** 把文献加入/移出集合。一次可操作多条。 */
+export const CollectionAssignSchema = z.object({
+  collectionId: z.string().min(1),
+  itemIds: z.array(z.string().min(1)).min(1),
+  /** true = 加入,false = 移出。 */
+  add: z.boolean(),
+});
+export type CollectionAssignInput = z.infer<typeof CollectionAssignSchema>;
+
+/** 机构认证档案。⚠️ 不含任何凭据 —— 登录态在浏览器分区里,见 library.ts 的说明。 */
+export const InstitutionSaveSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().min(1),
+  loginUrl: z.string().optional(),
+  domains: z.array(z.string()).optional(),
+  proxyPrefix: z.string().optional(),
+  notes: z.string().optional(),
+});
+export type InstitutionSaveInput = z.infer<typeof InstitutionSaveSchema>;
+
+export const InstitutionDeleteSchema = z.object({ id: z.string().min(1) });
+export type InstitutionDeleteInput = z.infer<typeof InstitutionDeleteSchema>;
+
+/** 查询已登录站点。按域名聚合当前浏览器分区里的 cookie。 */
+export const InstitutionAuthStatusSchema = z.object({
+  /** 只看这些域名;省略则返回全部有 cookie 的域名。 */
+  domains: z.array(z.string()).optional(),
+});
+export type InstitutionAuthStatusInput = z.infer<typeof InstitutionAuthStatusSchema>;
+
+export const InstitutionClearCookiesSchema = z.object({
+  /** 要清除的域名。省略则清空整个浏览器分区(危险,UI 需二次确认)。 */
+  domains: z.array(z.string()).optional(),
+});
+export type InstitutionClearCookiesInput = z.infer<typeof InstitutionClearCookiesSchema>;
+
+/** 把文献排入下载队列。 */
+export const LibraryDownloadSchema = z.object({
+  ids: z.array(z.string().min(1)).min(1),
+  /** 已有 PDF 的是否强制重下。默认 false。 */
+  force: z.boolean().optional(),
+});
+export type LibraryDownloadInput = z.infer<typeof LibraryDownloadSchema>;
+
+/** 外部检索:AI 主导的关键词检索,走确定性 API。 */
+export const LibrarySearchSchema = z.object({
+  query: z.string().min(1),
+  sources: z
+    .array(z.enum(["arxiv", "crossref", "openalex", "europepmc"]))
+    .optional(),
+  limit: z.number().int().positive().max(100).optional(),
+  yearFrom: z.number().int().optional(),
+  yearTo: z.number().int().optional(),
+});
+export type LibrarySearchInput = z.infer<typeof LibrarySearchSchema>;
+
+/** 导入通道:DOI / arXiv ID / BibTeX 文本,批量解析入库。不用 AI 也能走的确定路径。 */
+export const LibraryImportSchema = z.object({
+  /** 原始文本,每行一个 DOI / arXiv ID,或一整段 BibTeX。格式由主进程嗅探。 */
+  text: z.string().min(1),
+  collectionIds: z.array(z.string()).optional(),
+  queueDownload: z.boolean().optional(),
+});
+export type LibraryImportInput = z.infer<typeof LibraryImportSchema>;
+
+/** 设置库根目录(用户要求「UI 上可以设置文献的位置」)。 */
+export const LibrarySetRootSchema = z.object({ path: z.string().min(1) });
+export type LibrarySetRootInput = z.infer<typeof LibrarySetRootSchema>;
+
+/**
+ * 为一个文献库生成/刷新清单文件,返回其绝对路径。
+ *
+ * 为什么需要它:把库加进对话上下文的方式**刻意与「添加上下文文件」完全一致** ——
+ * 提示词里只放一行 `@路径`,内容由 agent 用 Read 工具自己读,不预先内联。
+ * 所以库需要一个可读的文件来承载"这个库里有哪些文献、各自的 PDF 在哪"。
+ */
+export const LibraryManifestSchema = z.object({ collectionId: z.string().min(1) });
+export type LibraryManifestInput = z.infer<typeof LibraryManifestSchema>;
+
+/** 把一条附件挂到某个会话的**输入框**上(左栏右键「添加到当前对话」)。
+ *
+ *  `key` 就是附件键,与「+」菜单选择器、以及 AI 的 `library_attach_to_chat`
+ * 用的是**同一个**东西:
+ *   `c:<分类 id>` —— 挂一个分类(整库清单)
+ *   `i:<条目 id>` —— 挂单独一篇(单条清单)
+ *
+ *  为什么走主进程而不是渲染端直接改 store:消息要发给**指定会话**的输入框,而左栏
+ *  与那个输入框不是同一棵组件树。主进程生成清单后再用既有的 `composer:attach`
+ *  广播回去,该会话的 ChatPane 自己认领 —— 与 AI 挂库走的是同一条路,所以两边
+ *  效果必然一致(用户的要求)。 */
+export const LibraryAttachToChatSchema = z.object({
+  sessionId: z.string().min(1),
+  key: z.string().min(1),
+});
+export type LibraryAttachToChatInput = z.infer<typeof LibraryAttachToChatSchema>;
+
+/** 全文检索(走 ripgrep,非 SQLite —— sql.js 不含 FTS5)。 */
+export const LibraryFullTextSearchSchema = z.object({
+  query: z.string().min(1),
+  /** 限定在哪些集合内搜;省略则全库。 */
+  collectionIds: z.array(z.string()).optional(),
+  limit: z.number().int().positive().max(500).optional(),
+});
+export type LibraryFullTextSearchInput = z.infer<typeof LibraryFullTextSearchSchema>;
+
+/** 主进程 → 渲染端:某条文献的下载任务状态变了。
+ *  界面据此刷新进度条,并在变成 `needs_login` 时提示用户去重新登录。 */
+export interface LibraryJobChangedMessage {
+  channel: "library:jobChanged";
+  itemId: string;
+  status: DownloadStatus;
+  error?: string;
+}
+
+/**
+ * 库的内容变了(新建/改名/删除分类、条目进出、改标题、写笔记…)—— 由主进程在任何
+ * 一处改动之后广播,渲染端收到就整体重载。
+ *
+ * ## 为什么非有不可
+ *
+ * 界面上的库是渲染端自己缓存的一份(`libraryStore`),不是每次渲染都去问主进程。
+ * 以前只有**用户自己在界面上操作**会改这份数据,所以缓存永远是对的。现在 AI 也能
+ * 改(见 `mcp/libraryServer.ts` 的那套工具)—— 它改的是主进程里那份真相,渲染端的
+ * 缓存不会自己知道。少了这条广播,AI 建好的分类在左栏里根本不出现,用户会以为它
+ * 没干活。
+ *
+ * 用户的要求原话:「他对文件系统的操作要和用户在 ui 的操作一样」。
+ *
+ * 故意做得很粗:只报"变了",不报"变了什么"。细粒度的增量同步要维护两边的状态机,
+ * 而重载一次分类树加条目列表是毫秒级的 —— 这里不值得为性能引入出错的可能。
+ */
+export interface LibraryChangedMessage {
+  channel: "library:changed";
+  /** 变了什么。只用于日志与排查,渲染端一律整体重载。 */
+  reason: string;
+}
+
+/**
+ * 模版库变了(增 / 删)。
+ *
+ * 与 `library:changed` 同一个用途、同一个理由:模版有两个入口 —— 左栏那一段和
+ * 设置 → 数据位置 → 模版库。用户在后一个入口里加了一条,前一个的缓存不会自己知道
+ * (模版库是文件系统,没有 DB 层替它们对账)。少了这条广播,用户会觉得"加了没反应"。
+ *
+ * 同样故意做得很粗:只报"变了",渲染端整体重扫一遍。
+ */
+export interface TemplatesChangedMessage {
+  channel: "templates:changed";
+  /** 变了什么。只用于日志与排查,渲染端一律整体重载。 */
+  reason: string;
+}
+
+/**
+ * 工作流 / 自动化 / 代理档案 / 节点类型变了 —— 由主进程在任何一处改动之后广播,
+ * 渲染端收到就重拉列表。
+ *
+ * 与 `library:changed` 同一个理由:设置里那个工作流库是渲染端自己缓存的一份列表,
+ * 以前只有**用户自己在界面上操作**会改它,所以缓存永远是对的。现在 AI 也能改
+ * (见 `mcp/mcodeServer.ts` 的那套工具)—— 它改的是数据根里那份真相,渲染端的缓存
+ * 不会自己知道。少了这条广播,AI 建好的工作流要等用户关掉设置页再打开才出现,
+ * 而用户的原话是「他对文件系统的操作要和用户在 ui 的操作一样」。
+ *
+ * ⚠️ **渲染端只重拉列表,不重载正在编辑的那一份文档。** 画布上的改动有它自己的保存
+ * 时机(拖动后落盘、切走前 flush),被一条外部广播冲掉的话,用户刚拖的那一下会凭空
+ * 回去。正在编辑的那份由 `workflow:get` 决定何时读 —— 那是用户的动作,不是广播的。
+ */
+export interface WorkflowChangedMessage {
+  channel: "workflow:changed";
+  /** 变了什么。只用于日志与排查,渲染端一律重拉列表。 */
+  reason: string;
+}
+
+/**
+ * 往某次对话的输入框里挂一个附件(文献库分类 / 单篇,或模版库的一条模版)。
+ *
+ * 两个发起方:AI(走 MCP 工具的 `library_attach_to_chat`)和**用户自己**(左栏
+ * 右键「添加到当前对话」)。渲染端收到后按 `makeLibraryTag` / `makeTemplateTag`
+ * 造一个同款的 chip 加进输入框的标签区 —— 效果要和用户自己点「+ → 添加到上下文」
+ * **逐字一样**:同样能删、同样参与去重、同样随下一条消息作为 `@清单路径` 发出去。
+ *
+ * 为什么要绕这一圈,而不是让 AI 直接用工具读库:用户要看见。挂上来的东西必须和
+ * 他自己挂的长得一样、摆在同一处,否则"AI 到底读了什么"就成了只有 AI 知道的事。
+ */
+export interface ComposerAttachMessage {
+  channel: "composer:attach";
+  /** 只挂到发起这次工具调用的那个会话上 —— 别的会话不该凭空多一个附件。 */
+  sessionId: string;
+  /** 这条附件是哪个库的。渲染端据此选 `appendUniqueLibraryTags` 还是
+   *  `appendUniqueTemplateTags` 落成 chip —— 两种 chip 长得不一样、去重键也不同
+   *  (文献库是 `c:`/`i:`/`k:` 前缀,模版是 `t:` 前缀),所以不能只靠 key 猜。 */
+  kind: "library" | "template";
+  /** 附件键,与用户自己挂的同一套:文献库 `c:<分类 id>` / `i:<条目 id>` /
+   *  `k:<库>`(整个库),模版 `t:<类目>`(整个类目)/ `t:<类目>/<目录名>`。 */
+  key: string;
+  /** chip 上显示的短名。 */
+  name: string;
+  /** 主进程生成的清单绝对路径;渲染端把它包成 `@<路径>` 作为 tag 的 content。 */
+  manifestPath: string;
+}
+
 /* ──────────────────────────  RPC method map  ───────────────────────────────── */
 
 /** Revoke a paired mobile device. Input to `mobile.revokeDevice`. */
@@ -3932,6 +4918,12 @@ export interface RpcMap {
   /** Returns the (possibly retitled) session so the renderer can refresh. */
   "claude.sendTurn": (input: SendTurnInput) => Promise<{ session: Session }>;
   "claude.interrupt": (input: InterruptInput) => Promise<void>;
+  /**
+   * 往正在跑的那一轮里塞一句话。返回 `{ delivered }` —— **"收下了没有",不是"发出去了
+   * 没有"**:这一轮刚好收尾、或者引擎不支持,都是 `false`,渲染端据此**兜回普通的发送**
+   * (见 `sessionStore.injectPrompt`)。用户打了字而什么都没发生,是最糟的一种结果。
+   */
+  "claude.inject": (input: InjectInput) => Promise<{ delivered: boolean }>;
   "claude.approve": (input: ApproveInput) => Promise<void>;
   /** Submit the user's answers to a pending AskUserQuestion. */
   "claude.respondQuestion": (input: RespondQuestionInput) => Promise<void>;
@@ -3986,6 +4978,8 @@ export interface RpcMap {
   "session.archive": (input: { id: string; archived: boolean }) => Promise<{ session: Session }>;
   /** Rename a session (persist a user-edited title). Returns the updated row. */
   "session.rename": (input: RenameSessionInput) => Promise<{ session: Session }>;
+  /** 把一段对话复制成新的一段:上下文原样带过去,两边之后各走各的。 */
+  "session.fork": (input: ForkSessionInput) => Promise<{ session: Session }>;
   /** Pin/unpin a session (project-scoped). Returns the updated row. */
   "session.pin": (input: PinSessionInput) => Promise<{ session: Session }>;
   /** Replace a session's bookmark list (full-array write). Returns the updated row. */
@@ -4344,6 +5338,69 @@ export interface RpcMap {
   /** Delete an installed runtime from disk. Rejected while any turn is
    *  running. */
   "runtimes.remove": (input: RuntimesRemoveInput) => Promise<{ ok: boolean; error?: string }>;
+  // 文档工具链(设置 → 内核):内置文档技能要用的外部工具
+  /** 检测本机工具链:pandoc / python 包 / TeX / zip 各自找到没有、什么版本、
+   *  在哪。安装或卸载后重新调它即可刷新面板。 */
+  "toolchain.check": () => Promise<{ tools: ToolchainToolState[] }>;
+  /** 安装一个应用能管的工具(pandoc 由应用下载;python-deps 走用户解释器的
+   *  pip)。进度走 `toolchain:event`。 */
+  "toolchain.install": (
+    input: ToolchainInstallInput,
+  ) => Promise<{ ok: boolean; error?: string }>;
+  /** 删掉应用管理的那份(只对 managed 有效;用户自己装的 system 那份不动)。 */
+  "toolchain.remove": (input: ToolchainRemoveInput) => Promise<{ ok: boolean; error?: string }>;
+  // 工作流(设置 → 工作流):一张有向无环图,取代原来写死在 systemPrompt.ts 的五个模式
+  /** 全部工作流:内置打底 + 用户覆盖 + 自建。**不含 nodes / edges**,画布打开某一项
+   *  时才走 `workflow.get` 取完整文档。 */
+  "workflow.list": () => Promise<{ workflows: WorkflowListEntry[] }>;
+  /** 取一份完整工作流。找不到返回 null(比如列表之后被别处删了)。 */
+  "workflow.get": (input: WorkflowGetInput) => Promise<{ workflow: WorkflowDoc | null }>;
+  /** 当前可用的**节点类型**(内置 + 已启用插件 + 用户自写),以及读不进来的清单文件
+   *  和它们的错误。画布的"添加节点"菜单用前者;后者必须一起返回,否则用户写错一个
+   *  清单,界面上只会看到自己的类型凭空消失。
+   *
+   *  ⚠️ 无参 handler,同 `workflow.list`:不接 raw、不 parse。 */
+  "workflow.nodeTypes": () => Promise<NodeTypeCatalog>;
+  /** 存一份。**存盘前过 DAG 校验 + 每个节点的参数校验**,有环/悬空边/参数不合法
+   *  直接拒绝 —— 有环的图会让调度器永远等不到就绪节点,那不是报错是静默卡死。 */
+  "workflow.save": (input: WorkflowSaveInput) => Promise<{ ok: boolean; error?: string }>;
+  /** 删一份。删掉对内置工作流的覆盖 = 「恢复默认」;`wasBuiltin` 让界面能说对话
+   *  (「已恢复默认」而不是「已删除」)。 */
+  "workflow.remove": (input: WorkflowRemoveInput) => Promise<{ ok: boolean; wasBuiltin: boolean }>;
+  /** 代理档案:一份存下来的**子 agent 配置**(指令 / 技能 / 模型 / 引擎……)。建节点的
+   *  时候直接套一份,不用从空白开始填。
+   *
+   *  它是**值**不是类型 —— 删掉一份档案不会让任何已有的图跑不起来(节点身上已经有参数
+   *  了)。见 `@contracts/agentProfile` 的文件头。
+   *
+   *  ⚠️ 无参 handler,同 `workflow.list`。 */
+  "workflow.agentProfiles": () => Promise<AgentProfileCatalog>;
+  /** 存一份(按 id 覆盖)。整份给过来 —— 理由同 `hooks.save`。 */
+  "workflow.saveAgentProfile": (
+    input: AgentProfileSaveInput,
+  ) => Promise<{ ok: boolean; error?: string }>;
+  "workflow.removeAgentProfile": (input: AgentProfileRemoveInput) => Promise<{ ok: boolean }>;
+  /** 在**岔路口**上选一条路(`mcode.branch` 那个节点正停在那儿等着)。
+   *
+   *  它唤醒的是一个**还活着的运行**,不是开一次新的 —— 图从那个节点接着往下跑,
+   *  不重跑整张图。见 `@contracts/runtime` 的 `WorkflowNodeChoiceEvent`。
+   *
+   *  `ok: false` = 没有这样的等待(那张卡片过期了:这次运行已经结束或者被取消)。
+   *  **不报错**:点一张旧卡片是正常会发生的事,不该弹错误框。 */
+  "workflow.choose": (input: WorkflowChooseInput) => Promise<{ ok: boolean }>;
+  // 钩子(设置 → 钩子):某件事发生的时候跑一条你自己的命令。它是**宿主侧**的能力
+  // (理由见 `@contracts/hook`),所以对话、工作流节点、将来的自动化一视同仁。
+  /** 全部钩子 + 读得见但用不了的条目。**坏条目不静默丢弃** —— 用户写的钩子不生效时,
+   *  这一页是唯一能解释为什么的地方。 */
+  "hooks.list": () => Promise<{ hooks: HookSpec[]; problems: Array<{ where: string; error: string }> }>;
+  /** 最近的执行记录(新的在前)。**不进对话流** —— 一个挂在 `tool.use` 上的钩子一轮
+   *  会触发几十次,塞进消息流就是把对话刷屏;而节点会话是隐藏的,那些事件本来也不该
+   *  出现在父对话里。 */
+  "hooks.runs": () => Promise<{ runs: HookRun[] }>;
+  "hooks.save": (input: HooksSaveInput) => Promise<{ ok: boolean; error?: string }>;
+  "hooks.remove": (input: HooksRemoveInput) => Promise<{ ok: boolean; error?: string }>;
+  /** 拿一条**还没存下来**的配置试跑一次,把那一次的结果返回。 */
+  "hooks.test": (input: HooksTestInput) => Promise<{ run: HookRun }>;
   // ── Plugins (settings panel; docs/plugin-feasibility.md v1) ──
   /** List installed plugins (manifest + component summaries + enable state).
    *  Enabled plugins are delivered to providers at the next turn start. */
@@ -4424,6 +5481,260 @@ export interface RpcMap {
   "relay.disconnect": () => Promise<{ ok: true }>;
   /** Read the current relay status. */
   "relay.status": () => Promise<RelayStatus>;
+
+  // 文献库 —— 条目
+  /** 列出文献。`collectionId` 为 null/省略表示全部。 */
+  "library.list": (input: LibraryListInput) => Promise<{ items: LibraryItem[]; total: number }>;
+  /** 单条详情,附带最新一条下载任务(用于推导 PDF 状态)。 */
+  "library.get": (input: LibraryItemIdInput) => Promise<{ item: LibraryItem; job: DownloadJob | null }>;
+  /** 入库。返回新增/更新后的条目;已存在的(同 doi/arxivId)按更新处理。 */
+  "library.addItems": (input: LibraryAddItemsInput) => Promise<{ items: LibraryItem[] }>;
+  /** 从库中移除。`deleteFiles` 决定是否连磁盘文件一起删。 */
+  "library.deleteItems": (input: LibraryDeleteItemsInput) => Promise<{ items: LibraryItem[] }>;
+  /** 排入下载队列。返回受影响的任务列表。 */
+  "library.download": (input: LibraryDownloadInput) => Promise<{ jobs: DownloadJob[] }>;
+  /** 当前全部下载任务。 */
+  "library.jobs": () => Promise<{ jobs: DownloadJob[] }>;
+  /** 外部检索(arXiv/Crossref/OpenAlex/Europe PMC),返回候选,不直接入库。 */
+  "library.searchExternal": (input: LibrarySearchInput) => Promise<{ results: ExternalSearchResult[] }>;
+  /** 导入通道:DOI / arXiv ID / BibTeX 文本。 */
+  "library.import": (input: LibraryImportInput) => Promise<{ items: LibraryItem[] }>;
+  /** 从**本地 PDF 文件**导入 —— 用户手上大量是下载好的 PDF,没有 DOI 文本可粘。
+   *  逐份:校验 → 按 sha256 去重 → 复制进库 → 抽元数据 → 入库 → 可选转 Markdown。 */
+  "library.importFiles": (input: LibraryImportFilesInput) => Promise<{
+    items: LibraryItem[];
+    added: number;
+    skipped: number;
+    /** 失败原因(路径 + 人话);成功的不出现在这里。 */
+    errors: Array<{ path: string; error: string }>;
+    converted: { ok: number; failed: number };
+  }>;
+  /**
+   * 导入笔记(**Markdown 文件**,见 `LibraryImportNotesSchema`)。
+   *
+   * 与 importFiles 分开的理由:笔记入库即完成 —— 没有元数据要抓、没有 PDF 要下、
+   * 没有东西要转录。所以返回值里也没有 `converted`。
+   */
+  "library.importNotes": (input: LibraryImportNotesInput) => Promise<{
+    items: LibraryItem[];
+    added: number;
+    skipped: number;
+    errors: Array<{ path: string; error: string }>;
+  }>;
+  /** 把库里的 PDF 转成 Markdown(MinerU 优先,本地 pdf.js 兜底)。 */
+  "library.convert": (input: LibraryConvertInput) => Promise<{
+    converted: number;
+    failed: Array<{ id: string; error: string }>;
+  }>;
+  /** 在系统文件管理器里定位库里的文件(PDF 或转换出的 Markdown)。
+   *  **入参只有条目 id** —— 路径由主进程从库里取,渲染端无从指定任意路径。 */
+  "library.revealFile": (input: LibraryRevealFileInput) => Promise<{ ok: boolean; error?: string }>;
+  /** 用系统默认程序打开库里的文件 —— 主要用途是看 md 的渲染效果(「打开 md 预览」)。
+   *  同样只收条目 id,路径在 main 里拼。 */
+  "library.openFile": (input: LibraryOpenFileInput) => Promise<{ ok: boolean; error?: string }>;
+  /**
+   * 读一篇文献的 Markdown 正文,**在应用内预览**(不再跳外部编辑器)。
+   *
+   * 主进程同时把正文里引用到的图片解析成 data URL 一起返回 —— 渲染进程读不了本地
+   * 文件,而 md 里写的是 `images/xxx.jpg` 这种相对路径,只有主进程知道它相对于谁。
+   */
+  "library.readMarkdown": (input: LibraryReadMarkdownInput) => Promise<{
+    ok: boolean;
+    error?: string;
+    /** 正文。ok 为 false 时是空串。 */
+    markdown: string;
+    /** md 所在目录的绝对路径(界面上显示用,让用户知道这是哪份文件)。 */
+    dir: string;
+    /** 文件名,如 `full.md` / `<sha256>.md`。 */
+    fileName: string;
+    /** 相对引用 → data URL。键与 md 里的写法一致(如 `images/1.jpg`)。 */
+    images: Record<string, string>;
+    /** 因为过大/过多而没被内联的**本地**引用(远程图不算 —— 它本来就不需要内联)。
+     *  给出具体是哪些、而不是一个计数:界面上才能把它们就地标出来,而不是让用户
+     *  对着一篇少了几张图的正文猜是哪几张。 */
+    skipped: string[];
+  }>;
+  /**
+   * 读一篇文献的 PDF 字节,**在应用内用 pdf.js 阅读器打开**(见 `PdfPreview.tsx`)。
+   *
+   * 为什么不交给系统默认程序:用户读文献是「在库里翻」的连续动作,弹一个外部窗口
+   * 就断了;而且外部程序里拿不到我们库里的元数据/笔记。
+   */
+  /**
+   * 条目下的小笔记(读文献时随手记的),**与「笔记库」是两件事** ——
+   * 笔记库的条目本身就是一篇 Markdown,这里的笔记依附于某篇论文/教材。
+   */
+  "library.listNotes": (input: LibraryNotesListInput) => Promise<{ notes: LibraryNote[] }>;
+  /** 新建或修改一条笔记,返回该条目下的完整列表(与其它变更类接口同一约定)。 */
+  "library.saveNote": (input: LibraryNoteSaveInput) => Promise<{ notes: LibraryNote[] }>;
+  "library.deleteNote": (input: LibraryNoteDeleteInput) => Promise<{ notes: LibraryNote[] }>;
+  /** 改条目的显示标题(三个库通用)。 */
+  "library.renameItem": (input: LibraryRenameItemInput) => Promise<{ item: LibraryItem | null }>;
+
+  /** 新建一篇空笔记(笔记库)。文件会先落一份 `# 标题` 骨架。 */
+  "library.createNote": (input: LibraryCreateNoteInput) => Promise<{ item: LibraryItem | null }>;
+  /** 把编辑器的内容写回笔记文件(仅笔记)。 */
+  "library.writeNote": (input: LibraryWriteNoteInput) => Promise<{ ok: boolean; error?: string }>;
+  /**
+   * 直接把一份现成的 Markdown 挂到某条目上(不转录)。同级 `images/` 会一起搬。
+   */
+  "library.adoptMarkdown": (input: LibraryAdoptMarkdownInput) => Promise<{
+    ok: boolean;
+    error?: string;
+    imageCount: number;
+  }>;
+  "library.readPdf": (input: LibraryReadPdfInput) => Promise<{
+    ok: boolean;
+    error?: string;
+    /** PDF 原始字节。`ok` 为 false 时是 null。走结构化克隆,不做 base64。 */
+    bytes: Uint8Array | null;
+  }>;
+  /**
+   * 导出引用格式到库里的 `exports/` 目录,返回落盘路径。
+   *
+   * 为什么不弹「另存为」对话框:省一次交互,而且落在库根下和 PDF、Markdown 是
+   * 同一个位置 —— 用户要备份/搬库时它跟着一起走。
+   */
+  "library.exportCitations": (input: LibraryExportInput) => Promise<{
+    ok: boolean;
+    /** `ok` 为 true 时若还有值,表示**导出成功但没能打开文件夹** —— 文件是好的,
+     *  只是"顺手打开"那一步失败了,界面要分开说,不能让用户以为导出也失败了。 */
+    error?: string;
+    path: string;
+    count: number;
+  }>;
+  /** 批量检测转换情况:共多少篇 / 已转 Markdown / 还没转。
+   *  设置页的「批量转换」用它 —— 比把全库拉进渲染端再数省得多。 */
+  "library.conversionStats": () => Promise<{ total: number; converted: number; pending: number }>;
+  /** 逐篇的转换完整度(设置页的「转录检测」列表)。**完整 = md 有 + 它引用的图都在**。 */
+  "library.conversionReport": () => Promise<{
+    rows: LibraryConversionRow[];
+    total: number;
+    complete: number;
+    pending: number;
+  }>;
+
+  // ── 模版库(文件系统即事实源,见 contracts/src/templates.ts) ──
+  /** 列模版。不传 kind 就是全部类目。 */
+  "templates.list": (input: TemplateListInput) => Promise<{ entries: TemplateEntry[] }>;
+  /** 新建一条模版:建目录 + 把 sourcePaths 里的文件/文件夹复制进去。
+   *  返回该类目**新的完整列表**(与文献库一致的既定模式)。 */
+  "templates.add": (input: TemplateAddInput) => Promise<{ entries: TemplateEntry[] }>;
+  /** 给一条模版改名(目录名即显示名,所以改的是磁盘上那个目录)。
+   *  `ok:false` 是正常结果(重名 / 已经在磁盘上被删),渲染端把 error 显示出来。 */
+  "templates.rename": (input: TemplateRenameInput) => Promise<{
+    ok: boolean;
+    error?: string;
+    entries: TemplateEntry[];
+    /** 净化后的新目录名 —— 渲染端据此把"正在预览的那一条"的键也改掉。 */
+    dirName?: string;
+  }>;
+  /** **移进回收站**(可逆)。界面上那个「删除」走的是它 —— 与文献库一样,先留退路,
+   *  真正的删除只在回收站里做(`templates.purge`)。`entries` 是该类目的新列表,
+   *  `trashed` 是回收站的新列表 —— 一次调用把两边的缓存都换掉。 */
+  "templates.trash": (
+    input: TemplateEntryRefInput,
+  ) => Promise<{ entries: TemplateEntry[]; trashed: TemplateEntry[] }>;
+  /** 回收站里的全部模版。`kind` 是它**原来**属于的类目 —— 还原要用。 */
+  "templates.trashList": () => Promise<{ trashed: TemplateEntry[] }>;
+  /** 从回收站还原回原来的类目。目标位置已被占用时返回 ok:false,不覆盖。 */
+  "templates.restore": (
+    input: TemplateEntryRefInput,
+  ) => Promise<{ ok: boolean; error?: string; entries: TemplateEntry[]; trashed: TemplateEntry[] }>;
+  /** 从回收站**彻底删除**(目录连文件一起消失,不可还原)。 */
+  "templates.purge": (
+    input: TemplateEntryRefInput,
+  ) => Promise<{ ok: boolean; error?: string; entries: TemplateEntry[]; trashed: TemplateEntry[] }>;
+  /** 读一条模版里的**一个文件**,给应用内预览用。
+   *  文本/代码直接给正文,图片给 data URL,其余如实说明为什么看不了。 */
+  "templates.readFile": (input: TemplateFileRefInput) => Promise<TemplateFileContent>;
+  /** 用系统默认程序打开这个文件。Word / PPT / PDF 这类只能这么看。 */
+  "templates.openFile": (input: TemplateFileRefInput) => Promise<{ ok: boolean; error?: string }>;
+  /** 在系统文件管理器里定位这条模版的目录。路径由主进程拼,渲染端只给类目+目录名。 */
+  "templates.reveal": (input: TemplateEntryRefInput) => Promise<{ ok: boolean; error?: string }>;
+  /** 生成/刷新给 AI 读的模版清单,返回它的绝对路径(对话里只放 `@该路径`)。 */
+  "templates.manifest": (input: TemplateEntryRefInput) => Promise<{ path: string; fileCount: number }>;
+  /** 整个类目的清单(「全部 LaTeX 模版」那一行)。 */
+  "templates.kindManifest": (
+    input: TemplateKindManifestInput,
+  ) => Promise<{ path: string; fileCount: number }>;
+  /** 把一条模版挂到指定会话的输入框上(左栏右键「添加到当前对话」)。 */
+  "templates.attachToChat": (
+    input: TemplatesAttachToChatInput,
+  ) => Promise<{ ok: boolean; name?: string; fileCount?: number; error?: string }>;
+  "templates.getRoot": () => Promise<{ path: string }>;
+  /** 改模版库位置(与文献库同一条规则:只改指向,不搬已有文件)。 */
+  "templates.setRoot": (input: { path: string }) => Promise<{ path: string }>;
+
+  // ── 统一数据根 ──
+  /** 当前数据根,以及它下面三样东西的**实际路径**(设置页展示用)。 */
+  "app.getDataRoot": () => Promise<{
+    root: string;
+    dbPath: string;
+    libraryPath: string;
+    templatesPath: string;
+  }>;
+  /** 把整个数据根迁到新位置,**迁完自动重启应用**(数据库没法原地搬家)。
+   *  `ok:false` + `error` 时不重启,设置也不改。 */
+  "app.moveDataRoot": (input: { path: string }) => Promise<{ ok: boolean; error?: string }>;
+  /** 全文检索(ripgrep;sql.js 不含 FTS5)。 */
+  "library.fullTextSearch": (input: LibraryFullTextSearchInput) => Promise<{ matches: FullTextMatch[] }>;
+  /** 读当前库根目录。 */
+  "library.getRoot": () => Promise<{ path: string }>;
+  /** 改库根目录(用户要求「UI 上可以设置文献的位置」)。改完不搬文件,只改指向。 */
+  "library.setRoot": (input: LibrarySetRootInput) => Promise<{ path: string }>;
+  /** 生成/刷新某个库的清单 Markdown,返回其绝对路径(count = 收录条数)。
+   *  清单是给 agent 读的 —— 对话里只放 `@该路径`,与文件附件的机制一致。 */
+  "library.manifest": (input: LibraryManifestInput) => Promise<{ path: string; count: number }>;
+  /**
+   * 给**单独一篇**生成清单 —— 「+」菜单里的选择器可以展开分类、只挑其中一篇。
+   * 与整库清单同一套机制:只放一行 `@清单路径`,正文由 agent 自己读。
+   */
+  "library.itemManifest": (input: LibraryItemManifestInput) => Promise<{
+    path: string;
+    count: number;
+  }>;
+  /** 整个库的清单(「全部文献」那一行)。与「一个分类」同一套机制,只是范围是整个库。 */
+  "library.kindManifest": (input: LibraryKindManifestInput) => Promise<{
+    path: string;
+    count: number;
+  }>;
+  /** 把一条附件挂到指定会话的输入框上(左栏右键「添加到当前对话」)。
+   *  与 AI 的 `library_attach_to_chat` 共用同一份实现,所以效果一致。 */
+  "library.attachToChat": (
+    input: LibraryAttachToChatInput,
+  ) => Promise<{ ok: boolean; name?: string; count?: number; error?: string }>;
+
+  // ── 外部服务集成(自带 API Key) ──
+  /** 列出目录里每个集成的状态。**密钥明文永远不出现在返回值里**。 */
+  "integrations.list": () => Promise<{ integrations: IntegrationPublic[] }>;
+  /** 存/换密钥(明文只经这一条通道进来,存完即加密)。 */
+  "integrations.setKey": (input: IntegrationSetKeyInput) => Promise<{ integrations: IntegrationPublic[] }>;
+  "integrations.clearKey": (input: IntegrationClearKeyInput) => Promise<{ integrations: IntegrationPublic[] }>;
+  /** 改非密钥配置(base url / 是否启用)。 */
+  "integrations.setConfig": (input: IntegrationSetConfigInput) => Promise<{ integrations: IntegrationPublic[] }>;
+  /** 连通性测试 —— 用一次最便宜的调用验证密钥真的能用。 */
+  "integrations.test": (input: IntegrationTestInput) => Promise<{ integrations: IntegrationPublic[] }>;
+
+  // 文献库 —— 集合
+  "library.listCollections": () => Promise<{ collections: LibraryCollection[] }>;
+  /** 新建/改名/删除集合 —— 均返回**完整的新列表**,渲染端整体替换缓存(既定模式)。 */
+  "library.createCollection": (input: CollectionCreateInput) => Promise<{ collections: LibraryCollection[] }>;
+  /** 改名。`ok: false` 表示重名被拒(此时 collections 不变) —— 由调用方提示用户。 */
+  "library.renameCollection": (input: CollectionRenameInput) => Promise<{ collections: LibraryCollection[]; ok: boolean }>;
+  "library.deleteCollection": (input: CollectionDeleteInput) => Promise<{ collections: LibraryCollection[] }>;
+  /** 把文献加入/移出某集合(多对多,一篇可属多个集合)。 */
+  "library.assignCollection": (input: CollectionAssignInput) => Promise<{ collections: LibraryCollection[] }>;
+
+  // 机构认证
+  /** 已保存的机构入口档案。注意:档案不含凭据,登录态在浏览器分区里。 */
+  "institution.list": () => Promise<{ profiles: InstitutionProfile[] }>;
+  "institution.save": (input: InstitutionSaveInput) => Promise<{ profiles: InstitutionProfile[] }>;
+  "institution.delete": (input: InstitutionDeleteInput) => Promise<{ profiles: InstitutionProfile[] }>;
+  /** 从浏览器分区的 cookie 反推「已登录哪些站点」。 */
+  "institution.authStatus": (input: InstitutionAuthStatusInput) => Promise<{ sites: AuthSiteStatus[] }>;
+  /** 清除指定域名(或全部)的登录态。 */
+  "institution.clearCookies": (input: InstitutionClearCookiesInput) => Promise<{ sites: AuthSiteStatus[] }>;
 }
 
 /** The channel names used in invoke/handle and send/on. Keep these centralized
@@ -4434,6 +5745,7 @@ export const IPC = {
   CLAUDE_LIST_SIDE_CHATS: "claude:listSideChats",
   CLAUDE_SEND_TURN: "claude:sendTurn",
   CLAUDE_INTERRUPT: "claude:interrupt",
+  CLAUDE_INJECT: "claude:inject",
   CLAUDE_APPROVE: "claude:approve",
   CLAUDE_RESPOND_QUESTION: "claude:respondQuestion",
   CLAUDE_RESPOND_PLAN_APPROVAL: "claude:respondPlanApproval",
@@ -4450,6 +5762,7 @@ export const IPC = {
   SESSION_DELETE: "session:delete",
   SESSION_ARCHIVE: "session:archive",
   SESSION_RENAME: "session:rename",
+  SESSION_FORK: "session:fork",
   SESSION_PIN: "session:pin",
   SESSION_UPDATE_BOOKMARKS: "session:updateBookmarks",
   SESSION_LIST_PINNED: "session:listPinned",
@@ -4466,6 +5779,102 @@ export const IPC = {
   SETTING_GET: "setting:get",
   SETTING_SET: "setting:set",
   SETTING_GET_MANY: "setting:getMany",
+  // 文献库 —— 条目
+  LIBRARY_LIST: "library:list",
+  LIBRARY_GET: "library:get",
+  LIBRARY_ADD_ITEMS: "library:addItems",
+  LIBRARY_DELETE_ITEMS: "library:deleteItems",
+  LIBRARY_DOWNLOAD: "library:download",
+  LIBRARY_JOBS: "library:jobs",
+  LIBRARY_SEARCH_EXTERNAL: "library:searchExternal",
+  LIBRARY_IMPORT: "library:import",
+  LIBRARY_FULL_TEXT_SEARCH: "library:fullTextSearch",
+  LIBRARY_GET_ROOT: "library:getRoot",
+  LIBRARY_SET_ROOT: "library:setRoot",
+  // 外部服务集成(自带 API Key)
+  INTEGRATIONS_LIST: "integrations:list",
+  INTEGRATIONS_SET_KEY: "integrations:setKey",
+  INTEGRATIONS_CLEAR_KEY: "integrations:clearKey",
+  INTEGRATIONS_SET_CONFIG: "integrations:setConfig",
+  INTEGRATIONS_TEST: "integrations:test",
+  // 文献库:PDF 文件导入 / 转 Markdown
+  LIBRARY_IMPORT_FILES: "library:importFiles",
+  /** 导入 Markdown 笔记(笔记库)。 */
+  LIBRARY_IMPORT_NOTES: "library:importNotes",
+  LIBRARY_CONVERT: "library:convert",
+  LIBRARY_REVEAL_FILE: "library:revealFile",
+  LIBRARY_OPEN_FILE: "library:openFile",
+  LIBRARY_CONVERSION_STATS: "library:conversionStats",
+  LIBRARY_CONVERSION_REPORT: "library:conversionReport",
+  // 统一数据根
+  APP_GET_DATA_ROOT: "app:getDataRoot",
+  APP_MOVE_DATA_ROOT: "app:moveDataRoot",
+  // 模版库
+  TEMPLATES_LIST: "templates:list",
+  TEMPLATES_ADD: "templates:add",
+  /** 给一条模版改名(把目录改名)。 */
+  TEMPLATES_RENAME: "templates:rename",
+  /** 移进回收站(可逆)。界面上那个「删除」走它。 */
+  TEMPLATES_TRASH: "templates:trash",
+  TEMPLATES_TRASH_LIST: "templates:trashList",
+  /** 从回收站还原回原来的类目。 */
+  TEMPLATES_RESTORE: "templates:restore",
+  /** 从回收站彻底删除(不可还原)。 */
+  TEMPLATES_PURGE: "templates:purge",
+  /** 读一条模版里的一个文件(应用内预览)。 */
+  TEMPLATES_READ_FILE: "templates:readFile",
+  /** 用系统默认程序打开模版里的一个文件。 */
+  TEMPLATES_OPEN_FILE: "templates:openFile",
+  TEMPLATES_REVEAL: "templates:reveal",
+  TEMPLATES_MANIFEST: "templates:manifest",
+  /** 整个类目的清单(「全部<类目>」那一行)。 */
+  TEMPLATES_KIND_MANIFEST: "templates:kindManifest",
+  /** 把一条模版挂到指定会话的输入框上(左栏右键「添加到当前对话」)。 */
+  TEMPLATES_ATTACH_TO_CHAT: "templates:attachToChat",
+  /** 模版库变了(增 / 删)。与文献库那条广播同一个用途:设置页里加了一条模版之后,
+   *  左栏那一段的缓存不会自己知道 —— 少了它,用户会觉得"加了没反应"。 */
+  TEMPLATES_CHANGED: "templates:changed",
+  TEMPLATES_GET_ROOT: "templates:getRoot",
+  TEMPLATES_SET_ROOT: "templates:setRoot",
+  LIBRARY_ITEM_MANIFEST: "library:itemManifest",
+  /** 整个库的清单(「全部<库>」那一行)。 */
+  LIBRARY_KIND_MANIFEST: "library:kindManifest",
+  LIBRARY_MANIFEST: "library:manifest",
+  /** 把一条附件挂到指定会话的输入框上(左栏右键「添加到当前对话」)。 */
+  LIBRARY_ATTACH_TO_CHAT: "library:attachToChat",
+  /** 应用内 Markdown 预览:读正文 + 把相对引用的图片解析成 data URL。 */
+  LIBRARY_READ_MARKDOWN: "library:readMarkdown",
+  /** 应用内 PDF 阅读器:把 PDF 字节交给渲染端(结构化克隆,不做 base64)。 */
+  LIBRARY_READ_PDF: "library:readPdf",
+  /** 挂上一份现成的 Markdown(跳过转录)。 */
+  LIBRARY_ADOPT_MARKDOWN: "library:adoptMarkdown",
+  /** 新建笔记 / 写回笔记文件。 */
+  LIBRARY_RENAME_ITEM: "library:renameItem",
+  LIBRARY_LIST_NOTES: "library:listNotes",
+  LIBRARY_SAVE_NOTE: "library:saveNote",
+  LIBRARY_DELETE_NOTE: "library:deleteNote",
+  LIBRARY_CREATE_NOTE: "library:createNote",
+  LIBRARY_WRITE_NOTE: "library:writeNote",
+  /** 导出引用格式(GB/T 7714 / APA / BibTeX)到库根的 `exports/`。 */
+  LIBRARY_EXPORT_CITATIONS: "library:exportCitations",
+  // 文献库 —— 集合
+  LIBRARY_LIST_COLLECTIONS: "library:listCollections",
+  LIBRARY_CREATE_COLLECTION: "library:createCollection",
+  LIBRARY_RENAME_COLLECTION: "library:renameCollection",
+  LIBRARY_DELETE_COLLECTION: "library:deleteCollection",
+  LIBRARY_ASSIGN_COLLECTION: "library:assignCollection",
+  // 机构认证
+  INSTITUTION_LIST: "institution:list",
+  INSTITUTION_SAVE: "institution:save",
+  INSTITUTION_DELETE: "institution:delete",
+  INSTITUTION_AUTH_STATUS: "institution:authStatus",
+  INSTITUTION_CLEAR_COOKIES: "institution:clearCookies",
+  /** Main → renderer push:下载任务状态变化(进度/失败/需要登录)。 */
+  LIBRARY_JOB_CHANGED: "library:jobChanged",
+  /** Main → renderer push:库的内容变了(含 AI 改的)。渲染端据此整体重载。 */
+  LIBRARY_CHANGED: "library:changed",
+  /** Main → renderer push:AI 往这次对话挂了一个附件,渲染端加进输入框的标签区。 */
+  COMPOSER_ATTACH: "composer:attach",
   // Voice input
   VOICE_START: "voice:start",
   VOICE_FEED: "voice:feed",
@@ -4653,6 +6062,32 @@ export const IPC = {
   RUNTIMES_INSTALL_LOCAL: "runtimes:installLocal",
   RUNTIMES_REMOVE: "runtimes:remove",
   RUNTIMES_EVENT: "runtimes:event",
+  // 文档工具链(外部依赖):pandoc / python 包 / TeX / zip
+  TOOLCHAIN_CHECK: "toolchain:check",
+  TOOLCHAIN_INSTALL: "toolchain:install",
+  TOOLCHAIN_REMOVE: "toolchain:remove",
+  TOOLCHAIN_EVENT: "toolchain:event",
+  // 工作流(设置 → 工作流):图形式的对话流程,取代原来写死的五个模式
+  WORKFLOW_LIST: "workflow:list",
+  WORKFLOW_GET: "workflow:get",
+  WORKFLOW_NODE_TYPES: "workflow:nodeTypes",
+  WORKFLOW_SAVE: "workflow:save",
+  WORKFLOW_REMOVE: "workflow:remove",
+  // 代理档案:一份存下来的子 agent 配置,建节点时直接套用(见 contracts/agentProfile.ts)
+  WORKFLOW_AGENT_PROFILES: "workflow:agentProfiles",
+  WORKFLOW_SAVE_AGENT_PROFILE: "workflow:saveAgentProfile",
+  WORKFLOW_REMOVE_AGENT_PROFILE: "workflow:removeAgentProfile",
+  /** 在岔路口选一条路 —— **回答一个还活着的运行**,不是开一次新的。 */
+  WORKFLOW_CHOOSE: "workflow:choose",
+  /** Main → renderer push:工作流 / 自动化 / 代理档案 / 节点类型变了(含 AI 改的)。
+   *  渲染端据此重拉列表(见 `WorkflowChangedMessage` 那条 ⚠️)。 */
+  WORKFLOW_CHANGED: "workflow:changed",
+  // 钩子(设置 → 钩子):事件驱动的命令,宿主侧执行(见 contracts/hook.ts)
+  HOOKS_LIST: "hooks:list",
+  HOOKS_RUNS: "hooks:runs",
+  HOOKS_SAVE: "hooks:save",
+  HOOKS_REMOVE: "hooks:remove",
+  HOOKS_TEST: "hooks:test",
   // Plugins (settings panel): list/install (local/git/marketplace)/enable/
   // remove + marketplace management. No push channel — every RPC resolves
   // when done and the panel re-lists.

@@ -369,6 +369,10 @@ const claude: Api["claude"] = {
   listSideChats: (input) => rpc("claude:listSideChats", input),
   sendTurn: (input) => rpc("claude:sendTurn", input),
   interrupt: (input) => rpc("claude:interrupt", input),
+  // 手机上不支持插话(那一轮跑在桌面端,手机这边没有"正在跑的那一轮"这个概念)。
+  // 留着它是为了满足 `Api["claude"]` 的完整性 —— 调用方按 memory 里那条规矩包了
+  // try/catch,失败会退回普通的发送。
+  inject: (input) => rpc("claude:inject", input),
   approve: (input) => rpc("claude:approve", input),
   respondQuestion: (input) => rpc("claude:respondQuestion", input),
   respondPlanApproval: (input) => rpc("claude:respondPlanApproval", input),
@@ -398,6 +402,11 @@ const session: Api["session"] = {
   delete: (input) => rpc("session:delete", input),
   archive: (input) => rpc("session:archive", input),
   rename: (input) => rpc("session:rename", input),
+  // 手机端**没有**分叉这个入口(AppMobile 的会话列表里不放它),所以这条在手机上
+  // 只会以"服务端不认识这个方法"失败。留着它是为了满足 `Api["session"]` 的完整性 ——
+  // 调用方仍然必须按 memory 里那条规矩把 RPC 包在 try/catch 里(抛出去会让 React 19
+  // 把整棵树卸掉)。
+  fork: (input) => rpc("session:fork", input),
   pin: (input) => rpc("session:pin", input),
   updateBookmarks: (input) => rpc("session:updateBookmarks", input),
   listPinned: () => rpc("session:listPinned"),
@@ -422,6 +431,31 @@ const piModels: Api["piModels"] = {
   delete: () => webUnsupported("piModels.delete"),
   listAvailable: () => rpc("piModels:listAvailable"),
   getApiKey: () => webUnsupported("piModels.getApiKey"),
+};
+
+/** 工作流:手机端**只读** —— 输入框上那个下拉要能列出桌面端建的工作流(选了哪个
+ *  跟着会话走,存在 `sessions.composer_mode` 里)。编辑是桌面端的事:画布拖拽、
+ *  参数表单里的文件选择器都不是为触摸屏写的,所以除 `list` 之外一律 `webUnsupported`。
+ *
+ *  ⚠️ 这里**必须显式列出整个命名空间**。proxy 只对"没列出的名字"兜底报错,而已列出的
+ *  对象里少一个方法就是一次 `undefined is not a function` —— 共用的
+ *  `WorkflowDropdown` 在 effect 里调它,那会让 React 19 整棵卸载(见文件头)。 */
+const workflow: Api["workflow"] = {
+  list: () => rpc("workflow:list"),
+  get: () => webUnsupported("workflow.get"),
+  nodeTypes: () => webUnsupported("workflow.nodeTypes"),
+  save: () => webUnsupported("workflow.save"),
+  remove: () => webUnsupported("workflow.remove"),
+  // 代理档案也是桌面端的事(它是画布/检查器那一套的一部分)。**照样要列出来** ——
+  // 共用的 `WorkflowLibraryView` 在 effect 里拉它,少一个方法就是一次
+  // `undefined is not a function`,那会让 React 19 整棵卸载(见文件头)。
+  agentProfiles: () => webUnsupported("workflow.agentProfiles"),
+  saveAgentProfile: () => webUnsupported("workflow.saveAgentProfile"),
+  removeAgentProfile: () => webUnsupported("workflow.removeAgentProfile"),
+  // ⚠️ **这一条是 `rpc` 而不是 `webUnsupported`** —— 上面那几条"编辑动作"确实是桌面端
+  // 的事(画布拖拽、文件选择器),但**在岔路口上拍板不是编辑**:图正停在那个节点上等人,
+  // 而用户很可能就拿着手机。手机端实现了这条 RPC(见 `main/mobile/mobileRpc.ts`)。
+  choose: (input) => rpc("workflow:choose", input),
 };
 
 const skills: Api["skills"] = {
@@ -533,6 +567,10 @@ const on: Api["on"] = {
   lspEvent: () => () => {},
   // Runtimes progress is desktop-only (the phone never installs runtimes).
   runtimesEvent: () => () => {},
+  // 文档工具链同理:它是「设置 → 内核」里那一块,手机端根本不挂载那个面板。
+  // **必须留这个空实现** —— `on` 是显式带类型的对象,少一个键连类型检查都过不去;
+  // 而共用组件在 effect 里碰到会同步抛的 Proxy 会让 React 19 整棵卸载(见文件头)。
+  toolchainEvent: () => () => {},
   browserEvent: () => () => {},
   themeChanged: () => () => {},
   updateAvailable: () => () => {},
@@ -545,6 +583,19 @@ const on: Api["on"] = {
   // Voice ASR is desktop-only; the web shell never emits results.
   voiceResult: () => () => {},
   voiceDownloadProgress: () => () => {},
+  // 文献库下载进度是桌面端专属(手机端暂不展示文献库)。
+  // 若日后要在手机上看库,除了这里补实现,还要在 `base` 里加 library 命名空间。
+  libraryJobChanged: () => () => {},
+  // 同理:库变更广播与 AI 挂附件都是桌面端专属 —— 手机端没有那个文献库面板,
+  // 也没有输入框的标签区。**必须有这两个空实现**:手机端拿到的是 Proxy,访问
+  // 未列出的名字会**同步抛错**,而共用组件在 effect 里调用它会让 React 19 整棵
+  // 卸载(见本文件顶部)。
+  libraryChanged: () => () => {},
+  // 模版库同理:左栏那一段是桌面端专属(手机端只有会话抽屉,没有左栏)。
+  templatesChanged: () => () => {},
+  // 工作流那一摊同理:设置 → 工作流是桌面端专属的面板。
+  workflowsChanged: () => () => {},
+  composerAttach: () => () => {},
 };
 
 /* ────────────────────────── assembly ────────────────────────── */
@@ -559,6 +610,7 @@ export function createWebApi(): Api {
     provider,
     customModel,
     piModels,
+    workflow,
     skills,
     file,
     git,
@@ -573,6 +625,8 @@ export function createWebApi(): Api {
       source: string | null;
       command: string | null;
     }> => rpc("claude:healthCheck"),
+    /** 手机端没有本地文件系统,也就没有拖放 —— 返回空串,调用方按"拿不到路径"处理。 */
+    getPathForFile: (): string => "",
     on,
   };
 

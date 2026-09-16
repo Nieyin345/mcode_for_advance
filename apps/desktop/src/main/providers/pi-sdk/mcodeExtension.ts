@@ -60,7 +60,9 @@ import {
   formatAnswersForModel,
   ASK_NATIVE_TOOL_PROMPT,
 } from "@main/lib/askQuestion.js";
-import { PI_IDENTITY_PROMPT, joinPromptSections } from "@main/lib/systemPrompt.js";
+import { PI_IDENTITY_PROMPT, joinPromptSections, fileArchitecturePrompt } from "@main/lib/systemPrompt.js";
+import { dataRoot } from "@main/lib/dataRoot.js";
+import { scriptsDir } from "@main/workflows/seed.js";
 import {
   browserList,
   browserNavigate,
@@ -1030,6 +1032,9 @@ function registerSystemPromptInjector(
       const base = event.systemPrompt ?? "";
       const injected = joinPromptSections(
         PI_IDENTITY_PROMPT,
+        // The user's file architecture — see fileArchitecturePrompt. Re-read per
+        // turn (not cached) because the data root is user-settable.
+        fileArchitecturePrompt(dataRoot(), scriptsDir()),
         ASK_NATIVE_TOOL_PROMPT,
         PLAN_MODE_PROMPT,
         // Advertise the browser tools only when they are actually registered

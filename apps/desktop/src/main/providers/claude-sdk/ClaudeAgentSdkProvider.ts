@@ -22,7 +22,11 @@ import { SdkMessageAdapter, parseQuestions } from "./SdkMessageAdapter.js";
 import { buildCustomEnv, MCODE_CONFIG_DIR, resolveActiveModel } from "./customEnv.js";
 import type { ClaudeContextWindowTag } from "./claudeTokenUsage.js";
 import { ASK_SYSTEM_PROMPT } from "@main/lib/askQuestion.js";
-import { CLAUDE_IDENTITY_PROMPT, CLAUDE_PLAN_MODE_NUDGE, joinPromptSections } from "@main/lib/systemPrompt.js";
+import { CLAUDE_IDENTITY_PROMPT, CLAUDE_PLAN_MODE_NUDGE, fileArchitecturePrompt, joinPromptSections } from "@main/lib/systemPrompt.js";
+import { dataRoot } from "@main/lib/dataRoot.js";
+import { scriptsDir } from "@main/workflows/seed.js";
+import { searchCriteriaPrompt } from "@main/lib/searchPrefs.js";
+import { log } from "@main/lib/logger.js";
 import { bashPathHintFor, detectBashEnv } from "@main/lib/bashEnv.js";
 import { getFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
 import {
@@ -33,7 +37,13 @@ import {
 import { resolveSdkBinaryPath } from "./sdkBinaryPath.js";
 import { resolveGitBash } from "@main/lib/binaryResolve.js";
 import { samePath } from "@main/lib/pathGuard.js";
-import { getMcpManagement, readProjectMcpServers } from "@main/lib/mcpConfig.js";
+import {
+  getMcpManagement,
+  mcpServersOf,
+  parseMcpConfig,
+  readProjectMcpServers,
+  readUserClaudeJson,
+} from "@main/lib/mcpConfig.js";
 import { getOutputStyleSetting } from "@main/lib/outputStyleConfig.js";
 import { getEnabledPlugins, getPluginMcpServers } from "@main/plugins/pluginManager.js";
 import { resolveSubagentModelValue } from "@main/lib/subagentModel.js";
@@ -60,6 +70,19 @@ import {
   BROWSER_TOOL_SPECS,
   BROWSER_TOOLS_FLOW,
 } from "@main/browser/agentBrowserTools.js";
+import {
+  buildLibraryMcpServer,
+  LIBRARY_MCP_SERVER,
+  LIBRARY_MCP_PREFIX,
+  LIBRARY_READONLY_TOOLS,
+} from "@main/mcp/libraryServer.js";
+import {
+  buildWorkflowMcpServer,
+  WORKFLOW_MCP_SERVER,
+  WORKFLOW_MCP_PREFIX,
+  WORKFLOW_READONLY_TOOLS,
+} from "@main/mcp/mcodeServer.js";
+import { loadCreateMcpServer } from "@main/mcp/sdk.js";
 
 // Lazy-load the Agent SDK so the (large) module and its bundled claude binary
 // stay out of the main-process startup path. The SDK is only needed once the
@@ -73,6 +96,19 @@ async function loadQuery(): Promise<typeof import("@anthropic-ai/claude-agent-sd
     queryFn = sdk.query;
   }
   return queryFn;
+}
+
+// `forkSession` 与 `query` 从同一个模块出来,但**不在启动路径上**(用户右键分叉才会
+// 用到),所以单独懒加载 —— 跟着 query 一起预热的话,分叉用不上的人白付一次模块解析。
+let forkFn: typeof import("@anthropic-ai/claude-agent-sdk").forkSession | null = null;
+async function loadForkSession(): Promise<
+  typeof import("@anthropic-ai/claude-agent-sdk").forkSession
+> {
+  if (!forkFn) {
+    const sdk = await import("@anthropic-ai/claude-agent-sdk");
+    forkFn = sdk.forkSession;
+  }
+  return forkFn;
 }
 
 /** Anthropic image content-block media-type allowlist — mirrors
@@ -99,8 +135,23 @@ function makeSettleGate(): { promise: Promise<void>; release: () => void } {
 }
 
 /**
- * Build the SDK `prompt` argument for a turn: an AsyncIterable yielding ONE
- * user message (text block + any inline base64 image blocks — the same
+ * 这一轮的**输入通道** —— 一个能往里塞消息的 AsyncIterable(见 {@link makePromptChannel})。
+ */
+interface PromptChannel {
+  /** 交给 SDK 的 `prompt`。 */
+  stream: AsyncIterable<SDKUserMessage>;
+  /** 塞一条用户消息进去。返回"收下了没有"。 */
+  push(text: string): boolean;
+}
+
+/** 把一段文字包成 SDK 要的那条用户消息。 */
+function userMessage(content: SDKUserMessage["message"]["content"]): SDKUserMessage {
+  return { type: "user", message: { role: "user", content }, parent_tool_use_id: null };
+}
+
+/**
+ * Build the SDK `prompt` argument for a turn: an AsyncIterable yielding the
+ * user's message (text block + any inline base64 image blocks — the same
  * inline-encoding the Claude Code CLI uses for user-attached images), then
  * HOLDING OPEN until the turn settles.
  *
@@ -116,14 +167,29 @@ function makeSettleGate(): { promise: Promise<void>; release: () => void } {
  * the next turn can resume it. The hold races the abort signal so a user
  * stop never deadlocks the iterable.
  *
- * A new iterable + gate is created per call because the transport-retry path
+ * ## 顺带就是"生成过程中插话"那条路
+ *
+ * 既然 stdin 本来就是开着的,那么**再往里塞一条用户消息**就是 SDK 那边的"异步用户
+ * 消息":模型会在下一个安全点看到它,这一轮**不中断**。{@link PromptChannel.push} 就是
+ * 塞的动作 —— 用户的原话:「ai 生成的过程中插入」。
+ *
+ * 三条不能含糊的:
+ *
+ * 1. **只塞文本。** 图片要重新编码成 base64 内容块,而这条路(IPC → 这里)现在只传
+ *    字符串。要支持图片时,**改的是这个函数的入参形状**,不是在这里悄悄忽略掉它们。
+ * 2. **这一轮结束之后不能再塞。** 生成器一返回就等于关掉了 stdin,这时推进去的消息
+ *    没人读,用户会以为说过了。所以 `push` 在通道关闭后返回 `false`,由调用方决定
+ *    怎么兜(见 `RuntimeManager.injectMessage`:兜回普通的发送)。
+ * 3. **一条都不丢。** 队列 + 唤醒,而不是"上一次的推送被下一次覆盖"。
+ *
+ * A new channel + gate is created per call because the transport-retry path
  * needs a replayable source after recreating the query.
  */
-function buildPromptInput(
+function makePromptChannel(
   req: StartTurnRequest,
   gate: { promise: Promise<void> },
   signal: AbortSignal,
-): AsyncIterable<SDKUserMessage> {
+): PromptChannel {
   const content: (
     | { type: "text"; text: string }
     | { type: "image"; source: { type: "base64"; media_type: ImageMediaType; data: string } }
@@ -136,30 +202,53 @@ function buildPromptInput(
       source: { type: "base64", media_type: img.mimeType as ImageMediaType, data: img.data },
     });
   }
-  return (async function* () {
-    yield {
-      type: "user",
-      message: { role: "user", content },
-      parent_tool_use_id: null,
-    } satisfies SDKUserMessage;
-    await Promise.race([gate.promise, abortSignalPromise(signal)]);
+
+  const pending: SDKUserMessage[] = [];
+  let closed = false;
+  /** 生成器正卡在"还有没有新的"上时,由这里把它叫醒。 */
+  let wake: (() => void) | null = null;
+
+  const stream = (async function* (): AsyncIterable<SDKUserMessage> {
+    yield userMessage(content);
+    while (!closed) {
+      const next = pending.shift();
+      if (next) {
+        yield next;
+        continue;
+      }
+      // 三件事里先来哪一件就听哪一件:又塞进来一条 / 这一轮收尾了 / 用户按了停止。
+      // 后面两件都要让生成器**返回** —— 返回即关掉 stdin,SDK 那边才收得了尾。
+      const reason = await Promise.race([
+        new Promise<"push">((resolve) => {
+          wake = () => resolve("push");
+        }),
+        gate.promise.then(() => "gate" as const),
+        abortSignalPromise(signal).then(() => "abort" as const),
+      ]);
+      wake = null;
+      if (reason !== "push") {
+        closed = true;
+        return;
+      }
+    }
   })();
+
+  return {
+    stream,
+    push: (text) => {
+      // 关掉之后不能再收 —— 收了也没人读(见文件头第 2 条)。
+      if (closed || signal.aborted || text.trim().length === 0) return false;
+      pending.push(userMessage([{ type: "text", text }]));
+      wake?.();
+      return true;
+    },
+  };
 }
 
 // `createSdkMcpServer` builds an in-process MCP server that surfaces custom
-// tools to the model without spawning a subprocess. It's a pure constructor
-// (no binary, no I/O), but we lazy-load it alongside query() to keep the SDK
-// module out of the startup path.
-let createMcpServerFn: typeof import("@anthropic-ai/claude-agent-sdk").createSdkMcpServer | null = null;
-async function loadCreateMcpServer(): Promise<
-  typeof import("@anthropic-ai/claude-agent-sdk").createSdkMcpServer
-> {
-  if (!createMcpServerFn) {
-    const sdk = await import("@anthropic-ai/claude-agent-sdk");
-    createMcpServerFn = sdk.createSdkMcpServer;
-  }
-  return createMcpServerFn;
-}
+// tools to the model without spawning a subprocess. The loader lives in
+// `@main/mcp/sdk.js` — it's shared with the mcp/ servers themselves (see that
+// file for why), and `preloadClaudeSdk` below is what warms it.
 
 /** Warm the Agent SDK module in idle time, well after the window is visible.
  *  The lazy imports above keep the (large) module off the startup path, but
@@ -512,6 +601,22 @@ async function buildBrowserMcpServer(
  *  mode without prompting the user. Mirrors Claude Code's own grouping. */
 const FILE_EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
+/**
+ * 按名字清单筛一组带 `name` 的东西 —— **空/缺席 = 不限制,原样返回**。
+ *
+ * 三个"可选的东西"(技能 / MCP 服务器 / 插件)共用这一条读法:不填就是"全都给",
+ * 填了才是"只要这几个"。所以这里必须是"没要求就不动",而不是"没要求就一个都不给"
+ * —— 后者会让每一个没填过这个参数的旧节点突然失去全部插件。
+ *
+ * 名字对不上的项**静默丢掉**:插件可能在别的机器上没装(Mcode 的工作流是要能分享的),
+ * 那种情况该表现为"这个插件不生效",而不是整轮起不来。
+ */
+function narrowByName<T extends { name: string }>(items: T[], names: string[] | undefined): T[] {
+  if (!names || names.length === 0) return items;
+  const allow = new Set(names);
+  return items.filter((item) => allow.has(item.name));
+}
+
 /** The MCP server name under which the browser tools are registered (via
  *  `createSdkMcpServer` below). The SDK surfaces each tool to canUseTool as
  *  `mcp__<server>__<tool>`, so the composed prefix is `mcp__mcode-browser__`. */
@@ -543,6 +648,22 @@ function isReadOnlyBrowserTool(toolName: string): boolean {
   return BROWSER_READONLY_SUFFIXES.has(toolName.slice(BROWSER_MCP_PREFIX.length));
 }
 
+/** Read-only library tools (查分类 / 搜库 / 联网检索 / 列条目)—— 改不了任何东西,
+ *  与只读浏览器工具同一类,自动放行。写工具(建分类、导入、移动、移入回收站、
+ *  改名、写笔记)走审批:它们动的是用户的资料库,该让用户看见。 */
+function isReadOnlyLibraryTool(toolName: string): boolean {
+  if (!toolName.startsWith(LIBRARY_MCP_PREFIX)) return false;
+  return LIBRARY_READONLY_TOOLS.has(toolName.slice(LIBRARY_MCP_PREFIX.length));
+}
+
+/** Read-only workflow tools (列一份的定义 / 列节点类型 / 列代理档案)—— 改不了任何东西,
+ *  同一档自动放行。写工具(存/删工作流、写节点类型、存/删代理档案)走审批:它们动的是
+ *  用户自己画的东西。 */
+function isReadOnlyWorkflowTool(toolName: string): boolean {
+  if (!toolName.startsWith(WORKFLOW_MCP_PREFIX)) return false;
+  return WORKFLOW_READONLY_TOOLS.has(toolName.slice(WORKFLOW_MCP_PREFIX.length));
+}
+
 /** Decide whether a tool should be auto-approved (skip the prompt) based on
  *  the session's CURRENT permission mode. This runs in canUseTool on every
  *  call, so a mid-turn mode flip applies to the next tool immediately.
@@ -554,6 +675,10 @@ function shouldAutoApprove(mode: PermissionMode | undefined, toolName: string): 
   if (mode === "bypassPermissions" || mode === "dontAsk") return true;
   // Read-only browser tools never need approval — they can't change anything.
   if (isReadOnlyBrowserTool(toolName)) return true;
+  // Same for the read-only library tools (查库、联网检索)。
+  if (isReadOnlyLibraryTool(toolName)) return true;
+  // Same for the read-only workflow tools (看一眼有哪些工作流、有哪些节点类型)。
+  if (isReadOnlyWorkflowTool(toolName)) return true;
   if (mode === "acceptEdits") return FILE_EDIT_TOOLS.has(toolName);
   return false;
 }
@@ -630,6 +755,11 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     supportsStreaming: true,
     supportsMcp: true,
     supportsAskUserQuestion: true, // optimistic; may be negated at runtime
+    // 生成过程中可以插话(SDK 那侧是"异步用户消息",见 `makePromptChannel`)。
+    supportsInject: true,
+    // Claude 的会话文件可以整份复制成新的(SDK 的 `forkSession`),所以"复制一份对话"
+    // 在这个提供方上是**真的**带着上下文 —— 见下面 forkSession 的实现。
+    supportsFork: true,
     // Declarative descriptors for the renderer's dynamic dropdowns.
     thinkingLevels: [
       { value: "default", label: "Auto", hint: "让 Claude 自选" },
@@ -653,6 +783,32 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     ],
     supportsCustomEndpoint: true,
   };
+
+  /**
+   * 把一段 Claude 会话复制成新的一段(右键对话 → 复制一份)。
+   *
+   * ## 为什么在**分叉的这一刻**就复制,而不是等新对话的第一次发言
+   *
+   * SDK 的 `Options.forkSession` 也能做同一件事(配合 `resume`),但那是**每一轮**都要
+   * 判断的:新对话的第一次发言要带 `forkSession: true`、之后每次都不带。那个"第一次"
+   * 得**存下来**(应用重启后还得知道),而多一个状态就多一处会对不上的地方。
+   *
+   * 在这里早早复制完,新会话的 `claudeSessionId` 当场就是**它自己的** id —— 之后每一轮
+   * 都是一次普通的 resume,执行路径上一行都不用改。
+   *
+   * ## 复制的是会话**文件**
+   *
+   * SDK 那份实现会把源会话的转录逐条抄进新文件,并**重新编一遍消息 UUID**(保留
+   * parentUuid 链)。所以两边之后各走各的,谁也不会写到对方的文件里去。
+   *
+   * ⚠️ 已知的一点缺失:**撤销历史(文件快照)不复制**。也就是新对话里"撤销上一轮改动"
+   * 对分叉之前的那几轮不生效 —— SDK 就是这么定义的,不是这里漏了。
+   */
+  async forkSession(providerSessionId: string, opts: { cwd: string; title: string }): Promise<string> {
+    const forkSession = await loadForkSession();
+    const res = await forkSession(providerSessionId, { dir: opts.cwd, title: opts.title });
+    return res.sessionId;
+  }
 
   async startTurn(req: StartTurnRequest, ctx: ProviderContext): Promise<TurnHandle> {
     const ac = new AbortController();
@@ -1135,12 +1291,24 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     // becomes the base on every platform, with our fragments appended on top.
     const appends: string[] = [];
     appends.push(CLAUDE_IDENTITY_PROMPT);
+    // The user's file architecture — where 文献库/教材库/笔记库/模版库 live and how
+    // to read them. Every turn, every mode (the "读取层"; the modes are the
+    // 流程 layer on top of it). The 精读/写作/评审 flows all tell the model to
+    // check the library before citing anything, and that instruction is empty
+    // without this. Paths only (see fileArchitecturePrompt): the library changes
+    // between turns, so the model reads the manifests / queries with the script
+    // instead of being handed a list that would already be stale.
+    appends.push(fileArchitecturePrompt(dataRoot(), scriptsDir()));
     if (process.platform === "win32") {
       appends.push(bashPathHintFor(detectBashEnv("claude")));
     }
     if (isUiPlanMode) {
       appends.push(CLAUDE_PLAN_MODE_NUDGE);
     }
+    // 这次对话选的工作流。**host 已经把它解析成一段字符串了** —— 见
+    // main/orchestration/prompt.ts。提供方不再自己查表,只负责 append;这样 Pi / Codex
+    // 接上工作流只是加一个字段的事,而不是各实现一套查表逻辑。
+    if (req.workflowPrompt) appends.push(req.workflowPrompt);
     if (!this.capabilities.supportsAskUserQuestion) {
       appends.push(ASK_SYSTEM_PROMPT);
     }
@@ -1181,14 +1349,33 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     // One scan feeds both plugin consumers: the plugins option below and the
     // plugin-MCP merge (which accepts a precomputed set to avoid a second
     // directory scan).
-    const enabledPluginsPromise = getEnabledPlugins();
-    const [mcpState, browserServer, projectMcpRecord, outputStyle, enabledPlugins, pluginMcp] =
+    //
+    // **收窄在这里做,而且要在派发之前** —— 工作流节点可以只加载它选的那几个插件
+    // (见 `NodeRunInput.pluginNames`)。筛在这一步而不是筛 `options.plugins`:插件的
+    // MCP 服务器是**从同一份清单**里读出来的(下面 `getPluginMcpServers` 吃的就是这个
+    // promise),两处各筛一次迟早分家 —— 而分家的表现是"这个插件没加载,它的工具却还在",
+    // 正是这个参数想解决的那件事没解决。
+    const enabledPluginsPromise = getEnabledPlugins().then((plugins) =>
+      narrowByName(plugins, req.pluginNames),
+    );
+    const [mcpState, browserServer, libraryServer, workflowServer, projectMcpRecord, outputStyle, enabledPlugins, pluginMcp] =
       await Promise.all([
         getMcpManagement(),
         // Pure constructor after the (cached) SDK import — building it
         // unconditionally is free; only ATTACHING it below is gated on the
         // browserDisabled setting.
         buildBrowserMcpServer(req.cwd, ctx, req.sessionId, req.turnNumber),
+        // 库操作工具(mcode-library)。同样是纯构造,无条件建,下面无条件挂 ——
+        // 它是 AI 操作资料库的**唯一**通道(写操作必须回到主进程,理由见
+        // mcp/libraryServer.ts 文件头),关掉它文献检索流程就断了。危险性由
+        // shouldAutoApprove 兜着:只有只读的那几个自动放行,写操作一律要用户点头。
+        // 传 sessionId 是为了「AI 挂一个库到这次对话」时,界面能把附件加到**正确的**
+        // 会话上(见 library_attach_to_chat)。
+        buildLibraryMcpServer({ sessionId: req.sessionId }),
+        // 工作流那一摊(mcode-workflow)—— 让 AI 自己建/改工作流、节点类型、代理档案。
+        // 与库工具同一个形状:读工具自动放行,写工具一律要用户点头(见
+        // mcp/mcodeServer.ts 文件头,那里也写了为什么钩子/插件/MCP 安装**不在这里**)。
+        buildWorkflowMcpServer(),
         readProjectMcpServers(req.cwd),
         getOutputStyleSetting(),
         enabledPluginsPromise,
@@ -1198,6 +1385,12 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     if (!mcpState.browserDisabled) {
       options.mcpServers = { [BROWSER_MCP_SERVER]: browserServer };
     }
+    // 库工具与浏览器开关**无关** —— 它是学术流程的骨干,不是可选装饰。
+    options.mcpServers = {
+      ...(options.mcpServers ?? {}),
+      [LIBRARY_MCP_SERVER]: libraryServer,
+      [WORKFLOW_MCP_SERVER]: workflowServer,
+    };
     const projectMcpNames = Object.keys(projectMcpRecord);
     if (projectMcpNames.length > 0) {
       const enabledSet = new Set(
@@ -1261,6 +1454,69 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       }
     }
 
+    // --- 收窄:这一轮只挂哪几个 MCP 服务器(工作流节点填的 `mcp` 参数)---
+    //
+    // 空/缺席 = 不限制,这一段整个跳过 —— **普通对话与没填过这个参数的节点走的还是
+    // 上面那条老路,行为逐字不变**。只有节点明确列了几个名字时才切到下面的写法。
+    //
+    // 为什么非得这么麻烦:平时这几路服务器**不经过 `options.mcpServers`** ——
+    //   · 用户自己那几个在 ~/.mcode/.claude.json 里,二进制按 "user" 设置源自己读;
+    //   · 项目 `.mcp.json` 靠上面那两张审批表放行,也不是注入。
+    // 所以"少放几个进 options.mcpServers"挡不住任何东西,被排除的会从原路自己回来。
+    // 真正管用的是 `strictMcpConfig`(SDK 选项:只认 `mcpServers` 里显式给的,别的
+    // 一概不看)—— 但它的代价是**上面那两条路一起断掉**,于是被选中的那几个必须由
+    // 我们显式搬进来。两件事缺一不可,少做一件的表现都是"选了等于没选"。
+    const wantMcp = req.mcpServerNames ?? [];
+    if (wantMcp.length > 0) {
+      const allow = new Set(wantMcp);
+      const current = options.mcpServers ?? {};
+      const kept: NonNullable<Options["mcpServers"]> = {};
+      /** 收一份配置进来(够格的才收,认不出来的原样丢掉)。**先到的赢** —— 同名在
+       *  不同来源下是允许的(设置面板就分着列),而一个名字只能挂一份配置。先后顺序
+       *  写死在下面,免得"哪一份生效"取决于对象键的遍历顺序。 */
+      const take = (name: string, config: unknown): void => {
+        if (kept[name] !== undefined) return;
+        const parsed = parseMcpConfig(config);
+        if (parsed) kept[name] = parsed as unknown as NonNullable<Options["mcpServers"]>[string];
+      };
+
+      // ① 骨干两个:**永远在**,也不进节点的候选表(它们不是用户装的东西,列出来只会
+      //    让人以为自己关得掉,见 `NodeRunInput.mcpServerNames`)。它们的值是我们自己
+      //    构造的服务器对象,不是配置形状,所以走不了 `take` 的 schema 那一关。
+      for (const name of [LIBRARY_MCP_SERVER, WORKFLOW_MCP_SERVER]) {
+        const cfg = current[name];
+        if (cfg !== undefined) kept[name] = cfg;
+      }
+      // ② 内置浏览器服务器:设置面板的开关决定它建不建,这里再叠一层"这一步要不要"。
+      const browser = current[BROWSER_MCP_SERVER];
+      if (!mcpState.browserDisabled && browser !== undefined && allow.has(BROWSER_MCP_SERVER)) {
+        kept[BROWSER_MCP_SERVER] = browser;
+      }
+      // ③④⑤ 剩下三路都**按名字选**,而且越靠用户本人配置的越优先(与设置面板里列的
+      //       先后一致:用户 → 项目 → 插件)。
+      //       ③ 用户 config 文件里那几个 —— 平时二进制自己读,收窄后必须显式注入。
+      for (const [name, raw] of Object.entries(mcpServersOf(await readUserClaudeJson()))) {
+        if (allow.has(name)) take(name, raw);
+      }
+      //       ④ 项目 `.mcp.json` 里被选中的 —— 平时靠上面那两张审批表放行。
+      for (const [name, raw] of Object.entries(projectMcpRecord)) {
+        if (allow.has(name)) take(name, raw);
+      }
+      //       ⑤ 插件带来的那几个(`<插件>__<服务器>`)。它们**和别的服务器一样按名字
+      //          选**,不搞"选了插件就自动带上它的服务器"的特例 —— 那样一来「这一步能用
+      //          哪几个 MCP 服务器」这句话就有两个意思了,而两个意思的规则没人记得住。
+      for (const [name, config] of pluginMcp) {
+        if (allow.has(name)) take(name, config);
+      }
+
+      options.mcpServers = kept;
+      options.strictMcpConfig = true;
+      ctx.log.info(
+        `claude turn narrowed: session=${req.sessionId} mcp=[${Object.keys(kept).join(",")}] ` +
+          `plugins=[${enabledPlugins.map((p) => p.name).join(",")}]`,
+      );
+    }
+
     const gate = makeSettleGate();
     // Fallback cap for the stdin hold: if the settle signal never arrives
     // (CLI stops emitting task edges, unexpected states), release anyway so
@@ -1272,7 +1528,10 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     ctx.log.info(
       `claude turn start: session=${req.sessionId} uiMode=${req.permissionMode} sdkMode=${(typeof options.permissionMode === "string" ? options.permissionMode : "default")} settleGate=on`,
     );
-    const q = (await loadQuery())({ prompt: buildPromptInput(req, gate, ac.signal), options });
+    // 这一轮的输入通道。**`let` 而不是 `const`**:传输层重试会重建 query,那时也换一条
+    // 新的通道(见下面那一处),而 handle 上那个 `inject` 读的始终是当前这一条。
+    let channel = makePromptChannel(req, gate, ac.signal);
+    const q = (await loadQuery())({ prompt: channel.stream, options });
 
     // Resolve the user-declared context-window tag from the selected model's
     // `supports1m` flag. `resolveActiveModel` appends a `[1m]` suffix exactly
@@ -1368,7 +1627,12 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
               settleTimers.push(
                 setTimeout(() => retryGate?.release(), PROMPT_SETTLE_FALLBACK_MS),
               );
-              activeQuery = (await loadQuery())({ prompt: buildPromptInput(req, retryGate, ac.signal), options });
+              // 重试也要换一条**新的输入通道** —— 旧的那条跟着它那条死掉的 query 一起
+              // 作废了。不过重试是**从头再跑这一轮**,所以只带上最初那条用户消息:重试
+              // 之前插进来的那几句进不了这次重试(它们已经进了那一轮被丢弃的上下文)。
+              // 这是重试本来就有的取舍,不是插话这条新路带来的。
+              channel = makePromptChannel(req, retryGate, ac.signal);
+              activeQuery = (await loadQuery())({ prompt: channel.stream, options });
               activeAdapter = new SdkMessageAdapter(
                 ctx,
                 req.sessionId,
@@ -1417,6 +1681,9 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       done,
       interrupt: () => ac.abort(),
       isRunning: () => !finished && !ac.signal.aborted,
+      // 生成过程中插一句话 —— 见 `makePromptChannel`。这一轮已经收尾(或用户按了停止)
+      // 时返回 false,让调用方**兜回普通的发送**,而不是让这句话石沉大海。
+      inject: (text) => (!finished && !ac.signal.aborted ? channel.push(text) : false),
     };
   }
 

@@ -19,6 +19,8 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@renderer/lib/cn.js";
+import { LibrarySection } from "@renderer/components/library/LibrarySection.js";
+import { TemplateSection } from "@renderer/components/templates/TemplateSection.js";
 import {
   IconFolder,
   IconGitFork,
@@ -139,6 +141,7 @@ function LeftBarBase({
   const unreadBySession = useSessionStore((s) => s.unreadBySession);
   const renameSession = useSessionStore((s) => s.renameSession);
   const setSessionPinned = useSessionStore((s) => s.setSessionPinned);
+  const forkSession = useSessionStore((s) => s.forkSession);
   const renameProject = useSessionStore((s) => s.renameProject);
   const setProjectPinned = useSessionStore((s) => s.setProjectPinned);
   const projectView = useSessionStore((s) => s.projectView);
@@ -536,6 +539,13 @@ function LeftBarBase({
     (p: Project, sortable = true) => {
       const node = (
         <ProjectNode
+          // 列表里每个元素都要有 key:这个函数是给三处 `.map()` 用的
+          //(置顶 / 树 / 未分组),而 React 把缺 key 的数组报成"Check the render
+          // method of LeftBarBase" —— 元素是在这里造的,它只知道最外层那个组件。
+          // 键的写法与 DnD 那套 id 一致(`proj:<id>`),免得同一个项目在两处有
+          // 两种身份。dnd-kit 自己那份 id 在 SortableProjectNode 的 projectId 上,
+          // 与这里的 React key 是两件事,互不影响。
+          key={`proj:${p.id}`}
           project={p}
           sessions={sessionsByProject[p.id] ?? []}
           hasMore={!!sessionsHasMoreByProject[p.id]}
@@ -571,7 +581,9 @@ function LeftBarBase({
         />
       );
       return sortable ? (
-        <SortableProjectNode projectId={p.id}>{node}</SortableProjectNode>
+        <SortableProjectNode key={`proj-sortable:${p.id}`} projectId={p.id}>
+          {node}
+        </SortableProjectNode>
       ) : (
         node
       );
@@ -867,6 +879,22 @@ function LeftBarBase({
             </SortableContext>
           </DndContext>
         )}
+
+        {/* 文献库 —— 与「项目」并列的顶层分组,按要求排在项目段**下面**。
+            放在这个滚动容器**内部**(而不是容器外):库多、或者展开着几十篇
+            文献时,它跟着一起滚,不会把上面的项目列表挤扁。表头样式与项目段
+            逐字对齐,两段读起来是一个体系。
+            它跟着顶部那个切换图标一起变(树=分组可展开,会话流=平铺)。 */}
+        <div className="mt-3">
+          <LibrarySection />
+        </div>
+
+        {/* 模版库 —— 排在文献库**下面**。版式与上一段逐字对齐(表头、行、展开、
+            右键菜单都照抄 LibrarySection),所以这里只需要一个同样的分隔距离。
+            同样跟着顶部那个切换图标一起变(树=可展开,会话流=平铺)。 */}
+        <div className="mt-3">
+          <TemplateSection />
+        </div>
       </div>
 
       {/* Archived bin — archived projects first, then archived sessions
@@ -1004,6 +1032,10 @@ function LeftBarBase({
         onTogglePin={(s) => {
           setCtxMenu(null);
           void setSessionPinned(s.id, !s.pinnedAt);
+        }}
+        onFork={(s) => {
+          // 菜单的关闭由 `SessionContextMenu` 自己先做了(它要把浮层收掉再等主进程)。
+          void forkSession(s.id, t("layout.forkSessionTitle", { title: s.title }));
         }}
         onNewWorktreeSession={(s) => {
           setCtxMenu(null);

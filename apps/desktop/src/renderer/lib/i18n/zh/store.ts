@@ -14,4 +14,7 @@ export const zh = {
   "store.toast.turnComplete": "回合完成",
   "store.toast.turnCompleteBody": "Agent 已完成本轮任务",
   "store.toast.turnIncomplete": "任务提前中断",
+  // 复制对话失败。正文给的是主进程抛上来的那句具体原因(引擎不支持 / 会话文件不在了),
+  // 因为那是用户唯一能据此做点什么的信息。
+  "store.toast.forkFailed": "复制对话失败",
 } as const;

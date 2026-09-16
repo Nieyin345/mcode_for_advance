@@ -27,6 +27,7 @@ import type { Components } from "react-markdown";
 import { codeCacheKey, getCodeHtml, setCodeHtml } from "@renderer/lib/markdownCache.js";
 import { fileHrefToPath, isAbsolutePath, isLocalFileHref } from "@renderer/lib/fileLink.js";
 import { resolveRelativePath } from "@renderer/lib/path.js";
+import { convertHtmlTables } from "@renderer/lib/htmlTable.js";
 import { api } from "@renderer/lib/api.js";
 import { FileLink } from "./FileLink.js";
 
@@ -253,6 +254,59 @@ function walkAndTransform(children: HastNode[], skillRe: RegExp, inCode: boolean
   return out;
 }
 
+/**
+ * KaTeX 的排版**全靠行内 style**(`vlist` / `pstrut` / `strut` 上的 `height`、`top`、
+ * `margin-left` 就是它那套垂直堆叠算法的载体)。而 react-markdown 在 hast → React
+ * 那一步会用 `style-to-js` 把这些 style 字符串转成对象 —— 这一步在本项目的依赖树里
+ * **是坏的**:`hast-util-to-jsx-runtime` 拿到的不是函数而是被互操作包了一层的对象,
+ * 于是每次调用都抛错,而 react-markdown 又传了 `ignoreInvalidStyle: true` 把它吞掉。
+ *
+ * 净效果是:**公式的所有行内 style 被静默丢弃** —— 字形都在、位置全丢,表现为下标
+ * 掉到下一行、分式内容跑到行外、编号压在公式上。没有任何报错,所以极难定位。
+ *
+ * 解法是**绕开那次转换**:这里先把 style 字符串解析成对象写回 hast,运行时就走进
+ * `typeof value === 'object'` 那条分支,根本不调用 `style-to-js`。自己解析还有个
+ * 好处:KaTeX 的 style 全是 `kebab-case: value;` 这种最简形态,十几行就够,不必为
+ * 此引一个依赖、也不必跟 pnpm 的严格目录布局较劲。
+ */
+function rehypeStyleObjects() {
+  return function styleObjectsPlugin() {
+    return function transformer(tree: HastNode) {
+      const visit = (node: HastNode): void => {
+        if (node.type === "element" && node.properties) {
+          const raw = node.properties.style;
+          if (typeof raw === "string") {
+            node.properties.style = parseInlineStyle(raw);
+          }
+        }
+        for (const child of node.children ?? []) visit(child as HastNode);
+      };
+      visit(tree);
+    };
+  };
+}
+
+/**
+ * 把 `height:0.7em;vertical-align:-0.35em;` 解析成 React 接受的对象。
+ *
+ * 只处理这套输入需要的语法:分号分隔、第一个冒号分属性与值、`--x` 自定义属性原样
+ * 保留、其余转 camelCase。遇到没有冒号的片段直接跳过 —— 宁可少一个属性,也不能让
+ * 整条 style 因为一处怪写法被丢掉(那正是这个 bug 的教训)。
+ */
+function parseInlineStyle(style: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const decl of style.split(";")) {
+    const colon = decl.indexOf(":");
+    if (colon < 0) continue;
+    const prop = decl.slice(0, colon).trim();
+    const value = decl.slice(colon + 1).trim();
+    if (!prop || !value) continue;
+    out[prop.startsWith("--") ? prop : prop.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())] =
+      value;
+  }
+  return out;
+}
+
 /** Create a rehype plugin that highlights inline skill/command references.
  *  The plugin closes over `skillRe` so it can be recreated when the set of
  *  known skills changes. */
@@ -376,9 +430,25 @@ function MarkdownLocalImage({
  * in the system browser via the main window's window-open guard. Web URLs
  * keep the default behavior (http/https/mailto preserved, `javascript:` etc.
  * stripped).
+ *
+ * ## 为什么还要额外放行 `data:image/*`
+ *
+ * 文献库的**原文预览**把 Markdown 里引用的图片读成 data URL,在渲染前替换进正文
+ * (见 `library/MarkdownPreview.tsx`)。而 `defaultUrlTransform` 的白名单是
+ * `http(s)/irc/mailto/xmpp`,`data:` 不在其中 —— 它会把每一个内联图片的 src 抹成
+ * 空串,于是正文里所有图都变成裂图。这个坑很隐蔽:替换本身是对的,正文看着也在,
+ * 只有图不见了。
+ *
+ * **只放 `src`,不放 `href`。** 同一个函数也作用在链接的 href 上,而 `data:` 链接
+ * 被点开会在应用内**直接导航**到那个数据 URL(`data:text/html` 之类可携带脚本),
+ * 那是另一类风险。图片不一样:`<img src="data:...">` 里的 SVG 按规范不执行脚本,
+ * 是惰性的。所以按属性名区分,只开这一扇门。
  */
-function urlTransform(url: string): string {
+const DATA_IMAGE_URL = /^data:image\/[a-z0-9.+-]+;base64,/i;
+
+function urlTransform(url: string, key?: string): string {
   if (isLocalFileHref(url)) return url;
+  if (key === "src" && DATA_IMAGE_URL.test(url)) return url;
   return defaultUrlTransform(url);
 }
 
@@ -685,11 +755,18 @@ export const Markdown = memo(function Markdown({
     return new RegExp(`/(${escaped.join("|")})(?![A-Za-z0-9_-])`, "g");
   }, [skillNames]);
   const components = useMemo(() => buildComponents(), []);
+  // HTML 表格 → 管道表格。前提是 MinerU 那种 `<table>` 输出 —— react-markdown
+  // 默认会把 HTML 节点整个丢掉,表格会凭空消失(见 lib/htmlTable.ts 的说明)。
+  // memo 住:流式输出时 children 每个 token 都变,但这一步只对有 `<table` 的文本有开销。
+  const source = useMemo(() => convertHtmlTables(children), [children]);
   // rehype-katex is always active; the skill-inline plugin is added only when
   // we have known skill names to highlight. Recreated when `skillRe` changes
   // (i.e. when the skills list updates), so react-markdown re-parses.
   const rehypePlugins = useMemo(
-    () => (skillRe ? [rehypeKatex, rehypeSkillInline(skillRe)] : [rehypeKatex]),
+    () =>
+      skillRe
+        ? [rehypeKatex, rehypeStyleObjects(), rehypeSkillInline(skillRe)]
+        : [rehypeKatex, rehypeStyleObjects()],
     [skillRe],
   );
   // Block margins + line-height here are density-driven (--chat-md-gap-* /
@@ -716,7 +793,7 @@ export const Markdown = memo(function Markdown({
             urlTransform={urlTransform}
             components={components}
           >
-            {children}
+            {source}
           </ReactMarkdown>
         </MarkdownBaseDirContext.Provider>
       </MarkdownProjectContext.Provider>

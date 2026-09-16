@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { PANEL_MAX_W } from "./panelWidth.js";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -35,7 +36,7 @@ import {
 export function TerminalPanel() {
   const { t } = useI18n();
   return (
-    <section className="mx-auto w-full max-w-3xl space-y-4">
+    <section className={`mx-auto w-full ${PANEL_MAX_W.form} space-y-4`}>
       <PanelHeader title={t("settings.terminal.title")} />
       <ShellSection />
       <CommandsSection />

@@ -1,0 +1,38 @@
+/**
+ * 三个库在界面上的名字 —— **整个渲染端只有这一份**。
+ *
+ * 与 `@contracts/library` 的 `LIBRARY_KINDS` 一一对应。这个映射早先在三个文件里各
+ * 抄了一份(`LibrarySection` / `LibraryPanel` / `LibraryPicker`),每份上面都写着
+ * "类目名只有一处定义"。靠注释维系的约定会破,而且破得**不报错** —— 键名改了只会把
+ * `library.kind.paper` 这串原文显示给用户。这正是模版那边 `templateLabels.ts` 的同一个
+ * 处置(两个库的形状刻意对齐:它们是同一套东西的两种配置)。
+ */
+import type { Locale } from "@contracts/ipc";
+import { isLibraryKind, type LibraryKind } from "@contracts/library";
+import { translate, type MessageId } from "@renderer/lib/i18n/core.js";
+
+export const LIBRARY_KIND_LABEL: Record<LibraryKind, MessageId> = {
+  paper: "library.kind.paper",
+  textbook: "library.kind.textbook",
+  note: "library.kind.note",
+};
+
+/**
+ * 一条文献库附件在 chip 上该显示什么 —— 附件键 + 主进程给的 `name` → 界面文案。
+ *
+ *   `c:<分类 id>` / `i:<条目 id>` —— 显示名就是用户自己起的分类名 / 条目标题,
+ *                                   主进程给的 `name` 正是它,直接用;
+ *   `k:<库>`                      —— 键里只有库名,而主进程发来的 `name` 是它那份
+ *                                   清单的标题(中文,给模型读的)。拿它当界面文案会
+ *                                   让英文界面冒出中文,所以这里用界面语言自己拼。
+ *
+ * 认不出来的键就退回主进程给的 `name`(总比显示一个空 chip 强)。
+ */
+export function libraryAttachChipLabel(key: string, name: string, locale: Locale): string {
+  if (!key.startsWith("k:")) return name;
+  const kind = key.slice(2);
+  if (!isLibraryKind(kind)) return name;
+  return translate(locale, "library.view.allInKind", {
+    kind: translate(locale, LIBRARY_KIND_LABEL[kind]),
+  });
+}

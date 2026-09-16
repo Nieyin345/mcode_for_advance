@@ -377,13 +377,27 @@ ok(
 /* ── 3. enable + delivery queries ── */
 console.log("\n[3] enable + provider delivery queries");
 eq(setPluginEnabled("demo-plugin", true).ok, true, "setEnabled ok");
+// **数的时候要把内置插件摘出去。** 随应用发布的那一份(`mcode-document-skills`)恒为
+// 启用、不进 `listPlugins`、也卸不掉,所以"装了一个"永远等于列表长度减它。这几条断言
+// 早于内置插件存在,当时是直接数长度的 —— 那种写法在加了内置插件之后会把每一次运行都
+// 报成失败,而失败的原因和被测的东西毫无关系。
+const userEnabled = async (): Promise<string[]> =>
+  (await getEnabledPlugins()).filter((p) => !p.builtin).map((p) => p.name);
 const enabled = await getEnabledPlugins();
-eq(enabled.length, 1, "one enabled plugin");
+eq((await userEnabled()).length, 1, "one enabled plugin");
 eq(enabled[0].name, "demo-plugin", "enabled name");
 ok(enabled[0].hasHooks, "hasHooks true (hooks declared)");
+// 顺带守住另一半:内置的那份**确实在投递链里**(摘掉它只是为了让计数有意义,不是
+// 假装它不存在)。
+ok(enabled.some((p) => p.builtin === true), "内置插件也在投递链里");
+// 内置的那一份也带技能根(`resources/builtin-skills`),所以**不能数总数** —— 按路径
+// 挑出这个插件自己的那些。
 const skillRoots = await getEnabledPluginSkillRoots();
-eq(skillRoots.length, 1, "one plugin skill root");
-ok(skillRoots[0].endsWith(path.join("demo-plugin", "1.2.3", "skills")), "skill root path");
+eq(skillRoots.filter((r) => r.includes("demo-plugin")).length, 1, "one plugin skill root");
+ok(
+  skillRoots.some((r) => r.endsWith(path.join("demo-plugin", "1.2.3", "skills"))),
+  "skill root path",
+);
 
 const mcp = await getPluginMcpServers();
 eq(mcp.length, 1, "one namespaced MCP entry");
@@ -412,7 +426,7 @@ console.log("\n[5] install from zip");
 const zipInstall = await installFromLocal(zipPath);
 ok(zipInstall.ok, "zip install succeeds", zipInstall.error ?? "");
 eq(listPlugins().length, 1, "same-version reinstall replaced (still 1)");
-ok((await getEnabledPlugins()).length === 1, "still enabled after reinstall");
+ok((await userEnabled()).length === 1, "still enabled after reinstall");
 
 /* ── 6. git install ── */
 console.log("\n[6] install from git (file://)");
@@ -627,7 +641,7 @@ removeMarketplace("remote-mp");
 console.log("\n[9] remove cleanup");
 setPluginMcpDisabled("demo-plugin__fetcher", true);
 eq(removePlugin("demo-plugin").ok, true, "remove ok");
-eq((await getEnabledPlugins()).length, 0, "no longer delivered");
+eq((await userEnabled()).length, 0, "no longer delivered");
 eq(
   listPlugins().map((p) => p.name),
   ["escape-plugin", "git-plugin", "mono-plugin", "nested-plugin"],

@@ -4,6 +4,7 @@ import {
   PASTE_TAG_THRESHOLD_CHARS_MAX,
 } from "@renderer/stores/sessionStore.js";
 import { Select, Input, Switch, Button } from "@renderer/components/ui/index.js";
+import { PANEL_MAX_W } from "./panelWidth.js";
 import { IconSquare, IconStack2, IconList, IconListDetails, IconGripHorizontal, IconX } from "@renderer/lib/icons.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import type { ChatDensity, DisplayMode, AutoArchiveConfig, Locale } from "@contracts/ipc";
@@ -112,7 +113,7 @@ export function GeneralPanel() {
   );
 
   return (
-    <section className="mx-auto w-full max-w-3xl space-y-4">
+    <section className={`mx-auto w-full ${PANEL_MAX_W.form} space-y-4`}>
       <PanelHeader
         title={t("settings.general.title")}
       />

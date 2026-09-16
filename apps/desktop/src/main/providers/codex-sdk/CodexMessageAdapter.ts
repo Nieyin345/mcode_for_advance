@@ -43,7 +43,7 @@ import type {
   TurnDoneReason,
   ContextUsageEvent,
   SubagentSnapshot,
-  SubagentTranscriptBlock,
+  TranscriptBlock,
   SubagentUpdateEvent,
 } from "@contracts/runtime";
 import type { ProviderContext } from "@contracts/provider";
@@ -104,7 +104,7 @@ export class CodexMessageAdapter {
    *  sources: live item notifications for the subagent's thread (primary) and
    *  a thread/read reconciliation (bootstrap fallback — fires only while the
    *  live path has produced nothing for that thread). */
-  private transcripts = new Map<string, SubagentTranscriptBlock[]>();
+  private transcripts = new Map<string, TranscriptBlock[]>();
   /** Subagent threads that produced at least one live transcript item —
    *  disables the thread/read fallback for them (live owns the data). */
   private liveTranscriptThreads = new Set<string>();
@@ -724,7 +724,7 @@ export class CodexMessageAdapter {
         if (this.aborted || this.turnEnded) return;
         if (this.liveTranscriptThreads.has(threadId)) return;
         if (!Array.isArray(items) || items.length === 0) return;
-        let blocks: SubagentTranscriptBlock[] = [];
+        let blocks: TranscriptBlock[] = [];
         for (const it of items) blocks = appendSubagentBlock(blocks, it, true);
         if (blocks.length === 0 || blocks === this.transcripts.get(threadId)) return;
         this.transcripts.set(threadId, blocks);
@@ -985,7 +985,7 @@ function collabResultText(item: Extract<ThreadItem, { type: "collabAgentToolCall
  *  editor). Returns the SAME array reference when nothing changed so callers
  *  can skip flushes. `completed=true` folds rollout-fetched items (start
  *  edges never appear in history; tool calls land done/error directly). */
-function appendSubagentBlock(blocks: SubagentTranscriptBlock[], item: ThreadItem, completed: boolean): SubagentTranscriptBlock[] {
+function appendSubagentBlock(blocks: TranscriptBlock[], item: ThreadItem, completed: boolean): TranscriptBlock[] {
   switch (item.type) {
     case "agentMessage": {
       if (!completed || !item.text?.trim()) return blocks;

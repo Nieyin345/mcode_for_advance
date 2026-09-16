@@ -7,6 +7,8 @@ import {
   IconMessages,
   IconArrowsMaximize,
   IconArrowsMinimize,
+  IconBook,
+  IconTemplate,
 } from "@renderer/lib/icons.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { resolveShortcut, acceleratorToDisplayString } from "@renderer/lib/shortcuts.js";
@@ -15,6 +17,8 @@ import { GitPanel } from "@renderer/components/ide/GitPanel.js";
 import { TurnFlowPanel } from "@renderer/components/ide/TurnFlowPanel.js";
 import { BrowserPanel } from "@renderer/components/browser/BrowserPanel.js";
 import { SideChatPanel } from "@renderer/components/chat/SideChatPanel.js";
+import { LibraryPanel } from "@renderer/components/library/LibraryPanel.js";
+import { TemplatePanel } from "@renderer/components/templates/TemplatePanel.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 
 /** Right panel: a horizontal icon rail docked at the top + a main panel
@@ -106,6 +110,24 @@ export function RightPanel() {
         >
           <IconMessages size={16} className="shrink-0" />
         </RailButton>
+        {/* 文献库 —— 与左栏的「文献库」分组联动:在左栏点某个库,这里切到本标签
+            并显示该库的文献。仿照上面的 RailButton 写法,不改动其余标签的行为。 */}
+        <RailButton
+          active={tab === "library"}
+          onClick={() => setTab("library")}
+          title={t("library.title")}
+        >
+          <IconBook size={16} className="shrink-0" />
+        </RailButton>
+        {/* 模版 —— 与左栏的「模版」分组联动:在左栏点开一条模版、点里面的一个文件,
+            这里显示它的内容(应用内预览)。与文献库那个标签同一套做法。 */}
+        <RailButton
+          active={tab === "templates"}
+          onClick={() => setTab("templates")}
+          title={t("layout.tabTemplates")}
+        >
+          <IconTemplate size={16} className="shrink-0" />
+        </RailButton>
         {/* Wide-panel (3:7) mode - hide the left sidebar + center editor and
             split the workspace into this right panel (7/10) + the chat column
             (3/10). Toggled here, via the command palette / shortcut, or the
@@ -140,6 +162,8 @@ export function RightPanel() {
         {tab === "git" && <GitPanel />}
         {tab === "turns" && <TurnFlowPanel />}
         {tab === "sidechat" && <SideChatPanel />}
+        {tab === "library" && <LibraryPanel />}
+        {tab === "templates" && <TemplatePanel />}
         {tab === "browser" && <BrowserPanel mode="sidebar" />}
       </div>
     </div>

@@ -1,7 +1,7 @@
 import { forwardRef } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { IconClipboard, IconFile, IconCode, IconPhoto, IconX } from "@renderer/lib/icons.js";
+import { IconBook, IconClipboard, IconFile, IconCode, IconPhoto, IconTemplate, IconX } from "@renderer/lib/icons.js";
 import { isImageFile, type ContentTag } from "@renderer/lib/contentTag.js";
 
 /**
@@ -31,6 +31,10 @@ export const ContentTagChip = forwardRef<
   const { t } = useI18n();
   const isFile = tag.kind === "file";
   const isElement = tag.kind === "element";
+  const isLibrary = tag.kind === "library";
+  const isTemplate = tag.kind === "template";
+  // 文献库 / 模版都是"指向一份清单的 @路径",悬停给用户看那串实际会进提示词的引用
+  const isManifestRef = isLibrary || isTemplate;
   return (
     <span
       ref={ref}
@@ -49,9 +53,12 @@ export const ContentTagChip = forwardRef<
         title={
           isFile
             ? (tag.filePath ?? tag.preview)
-            : isElement
-              ? (open ? t("chat.tag.hidePreview") : t("chat.tag.viewElement"))
-              : open ? t("chat.tag.hidePreview") : t("chat.tag.viewContent")
+            : isManifestRef
+              // 和文件一样:悬停显示实际会进提示词的那串引用(@清单路径)
+              ? tag.content
+              : isElement
+                ? (open ? t("chat.tag.hidePreview") : t("chat.tag.viewElement"))
+                : open ? t("chat.tag.hidePreview") : t("chat.tag.viewContent")
         }
         className="flex items-center gap-1"
       >
@@ -61,6 +68,10 @@ export const ContentTagChip = forwardRef<
           ) : (
             <IconFile size={12} className="opacity-80" />
           )
+        ) : isLibrary ? (
+          <IconBook size={12} className="opacity-80" />
+        ) : isTemplate ? (
+          <IconTemplate size={12} className="opacity-80" />
         ) : isElement ? (
           <IconCode size={12} className="opacity-80" />
         ) : (

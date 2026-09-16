@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { PANEL_MAX_W } from "./panelWidth.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useTheme } from "@renderer/lib/theme.js";
 import { api } from "@renderer/lib/api.js";
@@ -197,7 +198,7 @@ export function AppearancePanel() {
   const effectiveLabel = t(effective === "dark" ? "settings.appearance.themeDark" : "settings.appearance.themeLight");
 
   return (
-    <section className="mx-auto w-full max-w-3xl space-y-4">
+    <section className={`mx-auto w-full ${PANEL_MAX_W.form} space-y-4`}>
       <PanelHeader
         title={t("settings.appearance.title")}
       />

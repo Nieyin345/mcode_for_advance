@@ -14,6 +14,7 @@
  */
 import { useMemo } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { PANEL_MAX_W } from "./panelWidth.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import {
   collectCommands,
@@ -85,7 +86,7 @@ export function GesturesPanel() {
   };
 
   return (
-    <section className="mx-auto w-full max-w-3xl space-y-4">
+    <section className={`mx-auto w-full ${PANEL_MAX_W.form} space-y-4`}>
       <PanelHeader
         title={t("settings.gestures.title")}
         action={

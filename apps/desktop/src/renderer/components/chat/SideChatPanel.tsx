@@ -16,7 +16,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@contracts/session";
-import type { SubagentSnapshot, SubagentTranscriptBlock } from "@contracts/runtime";
+import type { SubagentSnapshot } from "@contracts/runtime";
 import { cn } from "@renderer/lib/cn.js";
 import { formatRelativeTime } from "@renderer/lib/time.js";
 import {
@@ -30,6 +30,7 @@ import { useSessionStore, type Block } from "@renderer/stores/sessionStore.js";
 import { ConfirmDialog } from "@renderer/components/ui/index.js";
 import { ChatPane } from "@renderer/components/chat/ChatPane.js";
 import { MessageBlocks } from "./MessageBlocks.js";
+import { mapTranscriptBlock } from "./transcriptBlocks.js";
 import { SUBAGENT_STATUS_META, fmtUsage } from "./activityShared.js";
 
 export function SideChatPanel() {
@@ -351,22 +352,6 @@ function SideChatRow({
 }
 
 /* ── Subagent read-only transcript view ── */
-
-/** SubagentTranscriptBlock → renderer Block. The contracts type mirrors the
- *  renderer's Block members field-for-field — the explicit mapping (rather
- *  than a cast) keeps the drift surface visible and the strict style. */
-function mapTranscriptBlock(b: SubagentTranscriptBlock): Block {
-  if (b.kind === "text") return { kind: "text", text: b.text };
-  if (b.kind === "thinking") return { kind: "thinking", text: b.text };
-  return {
-    kind: "tool_use",
-    toolCallId: b.toolCallId,
-    toolName: b.toolName,
-    input: b.input,
-    status: b.status,
-    ...(b.result !== undefined ? { result: b.result } : {}),
-  };
-}
 
 function SubagentView({
   agent,

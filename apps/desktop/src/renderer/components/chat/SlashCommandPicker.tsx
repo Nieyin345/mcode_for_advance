@@ -252,7 +252,10 @@ export function SlashCommandPicker({
                   </span>
                 </span>
                 <span className="shrink-0 text-[10px] text-content-subtle">
-                  {isBuiltin
+                  {/* A built-in COMMAND and a built-in SKILL are both shipped with
+                      the app, so both read 「内置」 — checked together rather than
+                      adding a fifth arm to an already-deep ternary. */}
+                  {isBuiltin || (entry as SkillInfo).source === "builtin"
                     ? t("chat.slash.builtin")
                     : (entry as SkillInfo).source === "project"
                       ? t("chat.slash.project")

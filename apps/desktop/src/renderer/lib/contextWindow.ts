@@ -54,6 +54,22 @@ export function fmtTokens(n: number): string {
   return String(n);
 }
 
+/**
+ * Money. `null` / 非有限值 → `"—"`,**不是 `$0.00`**。
+ *
+ * 那个区别是要紧的:花费是**引擎报上来的**(本地没有价目表,见 `usageStats.ts`),
+ * 而有些第三方端点根本不报。显示 `$0.00` 会让人以为这一轮免费,而事实是**不知道**。
+ *
+ * 三位小数是因为一次工作流节点常常只花几分钱($0.004),两位会把它们全抹成 0.00。
+ * 上到一美元以上就给两位(那时候第三位没有信息量)。
+ */
+export function fmtCost(usd: number | null | undefined): string {
+  if (usd == null || !Number.isFinite(usd)) return "—";
+  if (usd >= 1) return `$${usd.toFixed(2)}`;
+  if (usd <= 0) return "$0.00";
+  return `$${usd.toFixed(3)}`;
+}
+
 /* ── warning → tailwind text color ── */
 
 /** Status-bar chip color for a context-warning level.

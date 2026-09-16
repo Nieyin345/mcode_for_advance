@@ -20,12 +20,23 @@ import {
   IconHandMove,
   IconPackage,
   IconPuzzle,
+  IconActivity,
+  IconArrowsSplit,
+  IconBolt,
+  IconDatabase,
+  IconPlugConnected,
+  IconShieldCheck,
   McpIcon,
   type TablerIconProps,
 } from "@renderer/lib/icons.js";
 import { CustomModelsPanel } from "./CustomModelsPanel.js";
+import { InstitutionAuthPanel } from "./InstitutionAuthPanel.js";
+import { IntegrationsPanel } from "./IntegrationsPanel.js";
+import { DataRootPanel } from "./DataRootPanel.js";
 import { RuntimesPanel } from "./RuntimesPanel.js";
 import { SkillsPanel } from "./SkillsPanel.js";
+import { WorkflowsPanel } from "./workflows/WorkflowsPanel.js";
+import { HooksPanel } from "./HooksPanel.js";
 import { McpPanel } from "./McpPanel.js";
 import { PluginsPanel } from "./PluginsPanel.js";
 import { AppearancePanel } from "./AppearancePanel.js";
@@ -50,14 +61,14 @@ import { AboutPanel } from "./AboutPanel.js";
  * left sidebar hosts the settings navigation instead of the project tree.
  *
  * The nav is grouped into 5 labeled clusters (通用 → AI 能力 → 输入与提醒 →
- * 工作台 → 系统) so 14 flat items don't read as one undifferentiated list;
- * the group eyebrow is inert (not selectable). Deep links via
+ * 工作台 → 系统) so the flat list of panels doesn't read as one undifferentiated
+ * wall; the group eyebrow is inert (not selectable). Deep links via
  * `setSettingsOpen(true, sectionId)` still address individual items.
  *
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "runtimes" | "custom-models" | "skills" | "mcp" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "usage" | "about";
+type SectionId = "general" | "data-root" | "runtimes" | "custom-models" | "institution" | "integrations" | "library" | "templates" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "usage" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -92,6 +103,17 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "runtimes", labelKey: "settings.nav.runtimes", icon: IconPackage },
       { id: "plugins", labelKey: "settings.nav.plugins", icon: IconPuzzle },
       { id: "skills", labelKey: "settings.nav.skills", icon: IconSparkles },
+      // 工作流紧挨着技能:两者都在回答"AI 按什么做事"(技能是动词,工作流是流程),
+      // 而节点类型由插件带来 —— 再往下一格就是插件。
+      { id: "workflows", labelKey: "settings.nav.workflows", icon: IconArrowsSplit },
+      // 自动化紧跟工作流:同一张图、同一个编辑器,差别只在**谁把它跑起来**
+      // (工作流跟着对话跑,自动化等一个事件)。排在一起,这个关系才看得出来 ——
+      // 隔着几格的话,"这两个页有什么关系"就得靠读文档回答了。
+      { id: "automation", labelKey: "settings.nav.automation", icon: IconBolt },
+      // 钩子跟在自动化后面:它们回答的都是"**什么时候**跑",而不是"跑什么"。
+      // 钩子比自动化更靠外一层 —— 它不属于任何一张图,对每一次对话、每一个工作流
+      // 节点都生效(见 `@contracts/hook`)。
+      { id: "hooks", labelKey: "settings.nav.hooks", icon: IconActivity },
       { id: "mcp", labelKey: "settings.nav.mcp", icon: McpIcon },
     ],
   },
@@ -107,6 +129,13 @@ const NAV_GROUPS: NavGroup[] = [
   {
     labelKey: "settings.navGroup.workbench",
     items: [
+      // 数据位置排在最前面 —— 它是"我的东西在哪"这个问题的唯一答案,其余设置都
+      // 建立在它之上(数据库、文献库、模版库都在它下面)。
+      { id: "data-root", labelKey: "settings.nav.dataRoot", icon: IconDatabase },
+      // 机构认证归在「工作台」组:它是使用场景(下载文献要先登录),
+      // 不是 AI 配置,放 ai 组会让人以为是模型相关设置。
+      { id: "institution", labelKey: "settings.nav.institution", icon: IconShieldCheck },
+      { id: "integrations", labelKey: "settings.nav.integrations", icon: IconPlugConnected },
       { id: "git", labelKey: "settings.nav.git", icon: IconBrandGit },
       { id: "terminal", labelKey: "settings.nav.terminal", icon: IconTerminal2 },
       { id: "browser", labelKey: "settings.nav.browser", icon: IconWorld },
@@ -131,7 +160,7 @@ export function SettingsPage() {
   // SettingsPage mounts fresh each time the modal opens (App.tsx conditionally
   // renders it on `settingsOpen`), so this useState reads the requested
   // section once per open. Callers pass a section via setSettingsOpen(true, id)
-  // — e.g. the composer's "管理模型…" entry targets "custom-models" / "pi-models".
+  // — e.g. the composer's "管理模型…" entry targets "custom-models".
   // A plain gear click (no section) lands on the first nav item ("常规") — the
   // default must NOT be "custom-models", or every plain open would jump to
   // the model-config tab.
@@ -223,10 +252,20 @@ export function SettingsPage() {
           {active === "general" && <GeneralPanel />}
           {active === "appearance" && <AppearancePanel />}
           {active === "custom-models" && <CustomModelsPanel />}
+          {/* 文献库 / 模版库 / 数据位置 是同一件事(数据根下的三样东西),合并成一页。
+              保留三个 id 是为了老的深链不落空。 */}
+          {(active === "data-root" || active === "library" || active === "templates") && (
+            <DataRootPanel />
+          )}
+          {active === "institution" && <InstitutionAuthPanel />}
+          {active === "integrations" && <IntegrationsPanel />}
           {active === "shortcuts" && <ShortcutsPanel />}
           {active === "gestures" && <GesturesPanel />}
           {active === "voice" && <VoicePanel />}
           {active === "skills" && <SkillsPanel />}
+          {active === "workflows" && <WorkflowsPanel purpose="workflow" />}
+          {active === "automation" && <WorkflowsPanel purpose="automation" />}
+          {active === "hooks" && <HooksPanel />}
           {active === "runtimes" && <RuntimesPanel />}
           {active === "mcp" && <McpPanel />}
           {active === "plugins" && <PluginsPanel />}

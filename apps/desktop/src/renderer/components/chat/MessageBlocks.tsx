@@ -35,6 +35,8 @@ import { Markdown } from "./Markdown.js";
 import { DiffView } from "./DiffView.js";
 import { PlanStreamBlock } from "./PlanStreamBlock.js";
 import { TurnFilesCard } from "./TurnFilesCard.js";
+import { WorkflowStepCard } from "./WorkflowStepCard.js";
+import { BranchChoiceCard } from "./BranchChoiceCard.js";
 import { CurrentOpTicker } from "./CurrentOpTicker.js";
 import { ModelBadge } from "./ModelAvatar.js";
 import { fmtTokens } from "@renderer/lib/contextWindow.js";
@@ -1154,6 +1156,15 @@ const BlockView = memo(function BlockView({
         </div>
       );
     }
+
+    case "workflow-node-result":
+      // 工作流图里的一步收场了(主进程调度器发来的事件,见 `WorkflowStepCard`)。
+      return <WorkflowStepCard block={block} />;
+
+    case "workflow-branch-choice":
+      // 图停在了一个岔路口上,等用户选一条路(见 `BranchChoiceCard`)。**和上面那张
+      // 是两类卡**:这一张是活的 —— 按钮点下去之前,那次运行没有结束。
+      return <BranchChoiceCard block={block} />;
 
     case "image":
       // An image block: either an agent-captured screenshot (browser_screenshot,

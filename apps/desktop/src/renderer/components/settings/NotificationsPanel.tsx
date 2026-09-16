@@ -16,6 +16,7 @@
  *  - 后台任务        (backgroundTasks)
  */
 import { useEffect, useState } from "react";
+import { PANEL_MAX_W } from "./panelWidth.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import type { NotificationPrefs } from "@contracts/ipc";
@@ -46,7 +47,7 @@ export function NotificationsPanel() {
   };
 
   return (
-    <section className="mx-auto w-full max-w-3xl space-y-4">
+    <section className={`mx-auto w-full ${PANEL_MAX_W.form} space-y-4`}>
       <PanelHeader title={t("settings.notifications.title")} />
 
       {/* Single category → one card of toggle rows. */}

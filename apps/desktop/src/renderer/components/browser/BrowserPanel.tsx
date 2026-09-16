@@ -89,6 +89,36 @@ function newTabId(): string {
   }
 }
 
+/**
+ * 「初始标签页」的**单飞**标记 —— 模块级,不是每个实例一份。
+ *
+ * ## 为什么必须是模块级
+ *
+ * Mcode 里同时挂着**两个** BrowserPanel:右栏那个(`mode="sidebar"`)和全屏覆盖层
+ * (`mode="overlay"`),谁 active 由 `browserPanelOpen` 决定。两个实例各有各的 refs,
+ * 而"该不该建第一个标签页"这件事是**全局的** —— 每个实例各判一次,就会各建一个。
+ *
+ * 早先这里用的是一个 `useRef` 守卫,注释里写着"StrictMode 会把挂载 effect 跑两次,
+ * 所以要挡一下"。它挡住了同一次挂载的两遍,但挡不住**跨实例**与**跨重渲染**:实测
+ * 一次点击建出了 4 个视图(主进程日志里四行 `browser created` 相隔 40ms)。
+ *
+ * 后果不只是"多了四个 about:blank":主进程里每个视图都是一个真的 WebContentsView,
+ * 建出来就不会自己消失,而"当前该显示哪一个"是靠渲染端 show/hide 维持唯一的 ——
+ * 多出来的视图会和真正的那个抢同一块屏幕,于是**有时候整个浏览器区域白屏**。
+ *
+ * ## 判据看 store,不看 ref
+ *
+ * `tabsRef` 要等一次渲染才同步到最新,而"还没同步"的那一小段正是重复创建发生的
+ * 窗口。所以这里读 `useSessionStore.getState().browserTabs` —— 真相只有一份。
+ *
+ * 两个标记的分工:
+ *   `initialTabInFlight` —— 有创建正在进行中(异步窗口);
+ *   `initialTabCreated`  —— 建过一次了,但 store 里还没看到(更短的窗口)。
+ * 两者都只在"一个标签页都不剩"时复位,所以用户手动关光标签页之后还能再建。
+ */
+let initialTabInFlight = false;
+let initialTabCreated = false;
+
 export function BrowserPanel({ mode }: BrowserPanelProps) {
   const { t } = useI18n();
   // Layout / mode state from the store.
@@ -183,11 +213,6 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
   useEffect(() => {
     pickedItemsRef.current = pickedItems;
   }, [pickedItems]);
-  /** In-flight guard for the initial-tab create. React StrictMode (dev) runs
-   *  mount effects twice back-to-back; without this the two runs both call
-   *  createTab() before the first tab lands in the store, opening the browser
-   *  with two duplicate tabs. */
-  const creatingTabRef = useRef(false);
   /** Monotonic token for freeze/unfreeze orchestration: each open or close
    *  bumps it, async steps compare against the value they captured, so a
    *  stale close-grace timer can't clear a newer freeze and a freeze that
@@ -516,13 +541,22 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
 
   // First time THIS container becomes active with no tabs at all: create the
   // initial tab. (Tabs are shared, so this only fires once per session no
-  // matter which container mounts first.) creatingTabRef skips the redundant
-  // run from StrictMode's double effect invocation on mount.
+  // matter which container mounts first.)
+  //
+  // 守卫是**模块级**的(见文件顶部 `initialTabInFlight` 的说明):这件事是全局的,
+  // 每个实例各判一次就会各建一个视图,而多出来的视图既让标签排里多出空标签页,
+  // 又让"当前显示哪个视图"失去唯一性(白屏)。判据读 store 而不是 ref —— ref 要等
+  // 一次渲染才同步,那正是重复创建的窗口。
   useEffect(() => {
     if (!isActive) return;
-    if (tabsRef.current.length > 0) return; // already have tabs
-    if (creatingTabRef.current) return; // an initial create is already in flight
-    creatingTabRef.current = true;
+    const live = useSessionStore.getState().browserTabs;
+    if (live.length > 0) {
+      // 已经有标签页了 → 复位标记,这样用户**手动关光**之后还能再建一个
+      initialTabCreated = false;
+      return;
+    }
+    if (initialTabInFlight || initialTabCreated) return;
+    initialTabInFlight = true;
     // If an external entry (e.g. file-tree "open in browser") staged a URL
     // before any tab existed, load it into this first tab instead of a blank.
     // Consume it SYNCHRONOUSLY, before the async create starts: addTab landing
@@ -532,6 +566,10 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
     const pending = useSessionStore.getState().pendingBrowserUrl;
     if (pending) useSessionStore.setState({ pendingBrowserUrl: null });
     void createTab(pending ?? undefined)
+      .then((tab) => {
+        // 建成才置位:失败(比如缺 projectPath)不该把后面的重试也挡掉
+        initialTabCreated = !!tab;
+      })
       .catch(() => {
         // Restore the URL if the initial create failed outright, so the
         // request isn't silently dropped (the pending effect will retry once
@@ -539,7 +577,7 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
         if (pending) useSessionStore.setState({ pendingBrowserUrl: pending });
       })
       .finally(() => {
-        creatingTabRef.current = false;
+        initialTabInFlight = false;
       });
   }, [isActive, createTab]);
 

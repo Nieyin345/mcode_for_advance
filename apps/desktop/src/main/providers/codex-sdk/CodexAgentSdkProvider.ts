@@ -61,7 +61,9 @@ import {
 } from "@main/lib/codexModelsStore.js";
 import { getOrSetFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
 import { getMcpManagement } from "@main/lib/mcpConfig.js";
-import { CODEX_IDENTITY_PROMPT, joinPromptSections } from "@main/lib/systemPrompt.js";
+import { CODEX_IDENTITY_PROMPT, joinPromptSections, fileArchitecturePrompt } from "@main/lib/systemPrompt.js";
+import { dataRoot } from "@main/lib/dataRoot.js";
+import { scriptsDir } from "@main/workflows/seed.js";
 import { ASK_NATIVE_TOOL_PROMPT } from "@main/lib/askQuestion.js";
 import {
   parseQuestions,
@@ -621,6 +623,10 @@ async function ensureCodexHomeIdentity(): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
   const content = `${joinPromptSections(
     CODEX_IDENTITY_PROMPT,
+    // The user's file architecture — see fileArchitecturePrompt. The drift check
+    // below means a data-root change rewrites AGENTS.md on the next call, so the
+    // paths here can't go stale silently.
+    fileArchitecturePrompt(dataRoot(), scriptsDir()),
     ASK_NATIVE_TOOL_PROMPT,
     PLAN_MODE_PROMPT,
     browserToolsUsagePrompt(),

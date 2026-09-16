@@ -3,6 +3,7 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { IconChartBar } from "@renderer/lib/icons.js";
 import { ModelDropdown } from "./ModelDropdown.js";
 import { EffortChip, PermissionChip } from "./EffortPermissionControl.js";
+import { WorkflowDropdown } from "./WorkflowDropdown.js";
 import { ContextRing } from "./ContextRing.js";
 import { AttachMenuButton } from "./AttachMenuButton.js";
 
@@ -47,6 +48,8 @@ export function ComposerToolbar({
   attachDisabled = false,
   onPickFiles,
   onPickImages,
+  onPickLibraries,
+  onPickTemplates,
   onSlashCommand,
 }: {
   sessionId: string;
@@ -62,6 +65,9 @@ export function ComposerToolbar({
    *  AttachMenuButton took in ChatPane). */
   onPickFiles?: () => void;
   onPickImages?: () => void;
+  onPickLibraries?: () => void;
+  /** 模版选择器 —— 与文献库并列的第二个「库」(见 TemplatePicker)。 */
+  onPickTemplates?: () => void;
   onSlashCommand?: () => void;
 }) {
   const { t } = useI18n();
@@ -92,6 +98,7 @@ export function ComposerToolbar({
         <ModelDropdown layout="row" />
         <EffortChip layout="row" />
         <PermissionChip layout="row" />
+        <WorkflowDropdown layout="row" />
         {contextSnapshot && (
           <div className="mt-1 flex items-center justify-between gap-2 border-t border-edge/60 px-2.5 pt-2">
             <span className="flex items-center gap-2 text-[13px] font-medium text-content-muted">
@@ -110,7 +117,8 @@ export function ComposerToolbar({
   // ring segments never collapse (the + and the ring must stay visible at
   // every width); labels collapse under `compact` via CSS grid shells keyed
   // off data-compact.
-  const hasAttach = !!onPickFiles && !!onPickImages && !!onSlashCommand;
+  const hasAttach =
+    !!onPickFiles && !!onPickImages && !!onPickLibraries && !!onPickTemplates && !!onSlashCommand;
   return (
     <div className="composer-minipill" data-compact={compact ? "1" : "0"}>
       {hasAttach && (
@@ -120,12 +128,19 @@ export function ComposerToolbar({
             disabled={attachDisabled}
             onPickFiles={onPickFiles}
             onPickImages={onPickImages}
+            onPickLibraries={onPickLibraries}
+            onPickTemplates={onPickTemplates}
             onSlashCommand={onSlashCommand}
           />
           <span className="composer-minipill-mid" aria-hidden />
         </>
       )}
       <ModelDropdown layout="pill" />
+      {/* 工作模式选择器（默认 / 文献检索 / 文献精读 / 文献写作 / 文献评审 / 代码编辑）。
+          模式跟着会话走，与模型选择同一套机制；除默认与检索外都会变成系统提示词片段。
+          绑哪个文献库仍由「+」菜单里的「文献库」负责 —— 药丸上不重复这个入口。 */}
+      <span className="composer-minipill-mid" aria-hidden />
+      <WorkflowDropdown layout="pill" />
       {hasEffort && (
         <>
           <span className="composer-minipill-mid" aria-hidden />

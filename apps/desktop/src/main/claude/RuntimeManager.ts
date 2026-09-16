@@ -7,13 +7,14 @@
  */
 import { sendToRenderer } from "@main/window.js";
 import { IPC } from "@contracts/ipc";
-import type { RuntimeEvent, PermissionMode, ContextSnapshot, TurnUsageRecord, TurnFileEntry, UserMessageEvent, UpstreamIssueEvent, SubagentTranscriptBlock, SubagentSnapshot } from "@contracts/runtime";
+import type { RuntimeEvent, PermissionMode, ContextSnapshot, TurnUsageRecord, TurnFileEntry, UserMessageEvent, UpstreamIssueEvent, TranscriptBlock, SubagentSnapshot } from "@contracts/runtime";
 import type { Session } from "@contracts/session";
 import type { ProviderContext, TurnHandle, StartTurnRequest, UserInputAnswers, PlanApprovalDecision } from "@contracts/provider";
 import { providerRegistry } from "@main/providers/registry.js";
 import { SessionRepo, ProjectRepo } from "@main/store/repositories.js";
 import { CustomModelStore } from "@main/lib/secretStore.js";
 import { ApprovalBridge } from "./ApprovalBridge.js";
+import { foldTranscript } from "./nodeTranscript.js";
 import { getFileSnapshot, dropFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
 import { restoreFiles } from "@main/lib/fileSnapshot.js";
 import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
@@ -21,6 +22,8 @@ import { mobileEventBus } from "@main/mobile/MobileEventBus.js";
 import { broadcastRuntimeEvent } from "@main/lib/sessionSync.js";
 import { invalidateUsageStats } from "@main/lib/usageStats.js";
 import { log } from "@main/lib/logger.js";
+import { backflowPrompt, clearBackflow, peekBackflow } from "@main/lib/pendingBackflow.js";
+import { resolveWorkflowPrompt } from "@main/orchestration/prompt.js";
 
 interface SessionRuntime {
   /** The TurnHandle for the currently running turn, if any. */
@@ -58,7 +61,7 @@ interface SessionRuntime {
    *  after each update. ACCUMULATES ACROSS TURNS — the side-panel subagent
    *  viewer is a review surface, entries live for the session's lifetime
    *  (replayed to the renderer at each turn start; see sendTurn). */
-  subagentTranscripts: Map<string, SubagentTranscriptBlock[]>;
+  subagentTranscripts: Map<string, TranscriptBlock[]>;
   /** Latest subagent roster (REPLACE snapshots from `subagent.update`).
    *  Accumulated across turns the same way as subagentTranscripts — a new
    *  turn's adapter starts with EMPTY state, so without this carry-over its
@@ -94,6 +97,42 @@ interface SessionRuntime {
 
 const approvalBridge = new ApprovalBridge();
 
+/**
+ * Re-address an event to another session. **Only the three interactive kinds are
+ * retargeted** — those are the ones a human has to answer, so they must surface
+ * where the human is looking (the conversation). Everything else (text / tool /
+ * usage / turn.done) stays on the session that produced it: that is the node's
+ * own transcript, and moving it would put the node's private stream into the
+ * parent's message list.
+ *
+ * Typed as a `switch` rather than a set-membership test so the compiler checks
+ * the spread against each variant, and so adding a variant to the union forces a
+ * decision here instead of silently falling through.
+ */
+/**
+ * Stamp the turn-end wall-clock ONCE so both consumers can agree: the usage
+ * record filed by the emit closure (keyed by this timestamp) and the renderer
+ * (which adopts it as `turnMeta.endedAt`). The renderer uses the match to show
+ * the turn's token count, and two independent `Date.now()` calls would never be
+ * equal.
+ */
+function stampTurnEnd(rawEvent: RuntimeEvent): RuntimeEvent {
+  return rawEvent.type === "turn.done" && rawEvent.endedAt === undefined
+    ? { ...rawEvent, endedAt: Date.now() }
+    : rawEvent;
+}
+
+function retargetEvent(e: RuntimeEvent, sessionId: string): RuntimeEvent {
+  switch (e.type) {
+    case "approval.request":
+    case "question.ask":
+    case "plan.approval_request":
+      return { ...e, sessionId };
+    default:
+      return e;
+  }
+}
+
 /** How long the turn.done handler waits before settling a stashed pending
  *  turn-end record with whatever snapshot is known. Must exceed the adapter's
  *  path-B control-channel race (CONTEXT_USAGE_PATH_B_TIMEOUT_MS = 3s) so an
@@ -101,17 +140,298 @@ const approvalBridge = new ApprovalBridge();
  *  first; the timer only backfills when no snapshot ever comes. */
 const TURN_END_SETTLE_GRACE_MS = 4_000;
 
+/** 同时在内存里留着的「节点过程」份数上限(见 `evictNodeTranscripts`)。64 是个手感值:
+ *  一张十来步的图跑几轮都装得下,同时又把"开一整天自动化"那种场景兜住了。 */
+const NODE_TRANSCRIPT_LIMIT = 64;
+
 class RuntimeManager {
   private sessions = new Map<string, SessionRuntime>();
-  /** Optional observer fired for every emitted RuntimeEvent (after the
-   *  renderer push + persistence). Used by the NotificationManager to decide
-   *  whether an OS notification is warranted. Set via {@link setObserver}. */
-  private observer: ((e: RuntimeEvent) => void) | null = null;
+  /**
+   * 每个**工作流节点**跑出来的过程,按节点会话 id 索引(见 `nodeTranscript.ts`)。
+   *
+   * 刻意挂在管理器上、而不是某个会话的 `SessionRuntime` 里:节点会话的运行时**跑完就被
+   * dispose**(见 `orchestration/runner.ts` 的收尾),而用户恰恰是**跑完之后**才想回头
+   * 看它干了什么 —— 挂在会话状态上的话,想看的那个时刻它刚好没了。
+   *
+   * 容量有上限(见 {@link NODE_TRANSCRIPT_LIMIT}),只在进程里活着,**不落盘**。
+   */
+  private nodeTranscripts = new Map<string, TranscriptBlock[]>();
+  /** Host-side event consumers (see {@link subscribe}). */
+  private subscribers = new Set<(e: RuntimeEvent) => void>();
+  /** nodeSessionId → parentSessionId, for interactive-event redirection
+   *  (see {@link setInteractiveProxy}). */
+  private interactiveProxy = new Map<string, string>();
+  /** sessionId → 挂起计数。**只有"对话节点跑在主对话里"这一种情况会用到** ——
+   *  见 {@link holdTurnEnd}。计数而不是布尔:同一段代码理论上可以嵌套着进来,
+   *  用布尔的话里层先解除就把外层的挂起一起抹掉了。 */
+  private heldTurnEnds = new Map<string, number>();
+  /** sessionId → 扣住文字推送的计数(见 {@link holdTurnText})。和上面那张分开,是因为
+   *  两者的判据完全不同:一个扣的是"这一轮结束了",一个扣的是"这一轮正在说什么"。 */
+  private heldTurnTexts = new Map<string, number>();
 
-  /** Register a global event observer. Only one at a time (the
-   *  NotificationManager). Pass null to detach. */
-  setObserver(fn: ((e: RuntimeEvent) => void) | null): void {
-    this.observer = fn;
+  /**
+   * 把这一轮面向界面的 `turn.done` **扣住不发**,返回解除用的函数(幂等)。
+   *
+   * ## 谁需要这个
+   *
+   * 「对话节点」(`runner.kind === "conversation"`)是**代替用户在主对话里说一句话**,
+   * 它跑在主对话那个会话上(见 `orchestration/runner.ts`)。它的流水——文本、工具、
+   * 回复——都**该**出现在聊天框里,所以那些事件照常推。
+   *
+   * 唯独 `turn.done` 不行:那一条在界面上表达的是"**用户这一轮**结束了"——渲染端收到
+   * 它就停掉"正在运行"、弹一句「回合完成」、把输入框解禁、并把这轮的消息落库。而一
+   * 张图可能还有五步没跑。放它过去,现象是图跑到一半界面就说"跑完了"。
+   *
+   * 整张图真正的收口由调度器在最后补一条(见 `orchestration/runner.ts` 收尾那一段),
+   * 那一处**不经过这里**。
+   *
+   * ## 扣住的只是"发给界面",不是"发生过的账"
+   *
+   * 落盘(用量记录、会话快照)、订阅者(调度器要拿这一步的产出,钩子/通知也都挂在上面)
+   * 一律照旧。判断"这一条要不要再通知一次"的消费者自己问
+   * {@link isTurnEndHeld} —— 现在有两处:**通知**(不然图跑到一半弹「回合完成」)和
+   * **钩子**(同一个道理)。
+   */
+  holdTurnEnd(sessionId: string): () => void {
+    this.heldTurnEnds.set(sessionId, (this.heldTurnEnds.get(sessionId) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const left = (this.heldTurnEnds.get(sessionId) ?? 1) - 1;
+      if (left > 0) this.heldTurnEnds.set(sessionId, left);
+      else this.heldTurnEnds.delete(sessionId);
+    };
+  }
+
+  /** 这一轮是不是被 {@link holdTurnEnd} 扣住了(见那里的说明)。 */
+  isTurnEndHeld(sessionId: string): boolean {
+    return (this.heldTurnEnds.get(sessionId) ?? 0) > 0;
+  }
+
+  /**
+   * 把这一轮**流式推给界面的文字**先扣住不发,返回解除用的函数(幂等,可嵌套)。
+   *
+   * ## 谁需要这个
+   *
+   * 「对话节点」声明过产出变量时,它那一轮交出来的是一段**结构化的东西**(见
+   * `@contracts/outputConstraint`)。逐字推给界面的话,用户会在聊天框里看着一段花括号
+   * 滚出来 —— 而那正是他明确说过不想看到的。
+   *
+   * 所以这一轮的文字先扣住,跑完之后由调度器解成一张读得懂的清单、一次性发出去
+   * (见 `orchestration/runner.ts` 的 `runInConversation`)。**扣住的只是"发给界面"**:
+   * 订阅者照收(调度器正是靠它攒产出),落盘照旧 —— 和 `holdTurnEnd` 同一条规矩。
+   *
+   * ## 只扣文字,不扣工具
+   *
+   * `tool.use` / `tool.result` 照常推:那一段是"它正在干什么",看得见是好事,而且它不
+   * 会因为产出是 JSON 而变得不可读。
+   */
+  holdTurnText(sessionId: string): () => void {
+    this.heldTurnTexts.set(sessionId, (this.heldTurnTexts.get(sessionId) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const left = (this.heldTurnTexts.get(sessionId) ?? 1) - 1;
+      if (left > 0) this.heldTurnTexts.set(sessionId, left);
+      else this.heldTurnTexts.delete(sessionId);
+    };
+  }
+
+  /** 这一轮的文字是不是被 {@link holdTurnText} 扣住了。 */
+  isTurnTextHeld(sessionId: string): boolean {
+    return (this.heldTurnTexts.get(sessionId) ?? 0) > 0;
+  }
+
+  /**
+   * 这一条事件要不要**先扣住、不推给界面** —— 见 {@link holdTurnEnd} 与
+   * {@link holdTurnText}。
+   *
+   * 两处判据放在一起,是因为它们改的是同一个地方(推给界面那一步),而分了家之后最容易
+   * 出的事是"新加一种扣法,只在一个分支里生效"。
+   */
+  private isHeldFromClients(sessionId: string, e: RuntimeEvent): boolean {
+    if (e.type === "turn.done") return this.isTurnEndHeld(sessionId);
+    // `message.complete` 不扣:渲染端根本不处理它(它只喂 `nodeTranscript` 那本账),
+    // 放过去不会让那段 JSON 露出来。
+    if (e.type === "text.delta" || e.type === "thinking") return this.isTurnTextHeld(sessionId);
+    return false;
+  }
+
+  /**
+   * 某个节点会话这一轮**干了什么**(折好的过程块)。
+   *
+   * 「并回主对话」选「过程和结果都并」时要它(见 `@contracts/nodeType` 的
+   * `NODE_RETURN_PARAM_KEY`)。取不到就返回空数组 —— 那几种情况都是正常的:节点压根没跑
+   * (skipped / cancelled)、或者它已经老到被容量上限裁掉了(见 `evictNodeTranscripts`)。
+   */
+  transcriptOf(nodeSessionId: string): readonly TranscriptBlock[] {
+    return this.nodeTranscripts.get(nodeSessionId) ?? [];
+  }
+
+  /**
+   * **某个会话这一轮花了多少。** 工作流那一步跑完时,卡片要靠它显示这一步的开销
+   * (见 `@contracts/runtime` 的 `WorkflowNodeResultEvent.usage`)。
+   *
+   * ## 为什么可能要等一会儿才有数
+   *
+   * 用量**不是**在 `turn.done` 那一刻落库的:那个回合的最终快照(含花费)是适配器在
+   * `turn.done` **之后**异步推上来的,由 `settlePendingTurnEnd` 结算(见那里的注释)。
+   * 所以这一步刚跑完就问,常常**还没有** —— 调用方要能接受 `undefined` 并在随后再问一次。
+   *
+   * 取**最后一条**:一个节点会话正常只跑一轮(它的寿命就是这一步),但真跑了两轮的话,
+   * 用户想看的显然是"这一步一共花了多少",而那更接近最后一条而不是第一条。多轮的情况
+   * 极少,不值得为它把契约做成数组。
+   */
+  usageOf(sessionId: string): TurnUsageRecord | undefined {
+    const rt = this.sessions.get(sessionId);
+    const history = rt?.usageHistory;
+    return history === undefined || history.length === 0
+      ? undefined
+      : history[history.length - 1];
+  }
+
+  /**
+   * Send an event to a session **from outside its provider turn**.
+   *
+   * Reaches exactly the same consumers as a provider event — renderer, mobile
+   * bus, every subscriber (so the NotificationManager still sees it) — but
+   * skips the per-session `emit` closure, which only exists for a session that
+   * actually ran a turn.
+   *
+   * The workflow scheduler needs this to close a graph run: the conversation
+   * never ran a provider turn, so there is no closure to borrow, yet its
+   * `turn.done` is what unblocks the composer, persists the turn's messages and
+   * tells the other clients (and the OS) that the turn ended. Emitting it with
+   * the bare `broadcastRuntimeEvent` helper instead would silently skip the
+   * observer — a finished graph run would never notify.
+   */
+  emitExternal(event: RuntimeEvent): void {
+    const e = stampTurnEnd(event);
+    this.fanOutToClients(e);
+    this.notifySubscribers(e);
+  }
+
+  /**
+   * Echo a user message to every client (phone ⇄ desktop).
+   *
+   * Shared by both send paths on purpose: a normal turn echoes inside
+   * {@link sendTurn}, and a graph run — which has no provider turn — echoes from
+   * the scheduler. Without it, sending from the phone leaves the desktop showing
+   * a column of result cards with no question above them.
+   */
+  echoUserMessage(
+    sessionId: string,
+    userMessage: { id: string; createdAt: number; blocks: unknown[]; editedMessageId?: string },
+  ): void {
+    this.emitExternal({
+      type: "user.message",
+      sessionId,
+      messageId: userMessage.id,
+      createdAt: userMessage.createdAt,
+      blocks: userMessage.blocks,
+      // Edit marker: receiving clients truncate their stale tail at this
+      // message before appending (see store ingestEvent).
+      ...(userMessage.editedMessageId ? { editedMessageId: userMessage.editedMessageId } : {}),
+    } satisfies UserMessageEvent);
+  }
+
+  /** 渲染端 + 手机。**界面消费的那一路** —— 节点会话自己的流水不走这里。 */
+  private fanOutToClients(e: RuntimeEvent): void {
+    sendToRenderer(IPC.CLAUDE_EVENT, { channel: IPC.CLAUDE_EVENT, sessionId: e.sessionId, event: e });
+    // Fan out to mobile clients over SSE. Same fire-and-forget contract — a
+    // thrown subscriber is swallowed inside broadcast(). No subscribers ⇒
+    // cheap no-op, so this is safe even when the mobile feature is unused.
+    try {
+      mobileEventBus.broadcast(e);
+    } catch (err) {
+      log.error(`mobile event bus error: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * 把一个节点会话的事件折进它的过程里,该推的时候推到**父对话**上。
+   *
+   * 收件人是父会话而不是节点自己:节点会话在界面上没有面板(它连列表都不进),那张卡片
+   * 长在父对话的消息流里 —— 和 `workflow.node.result` 的做法一致。
+   */
+  private publishNodeTranscript(session: Session, e: RuntimeEvent): void {
+    const prev = this.nodeTranscripts.get(session.id);
+    const folded = foldTranscript(prev ?? [], e);
+    if (!folded) return;
+    if (folded.blocks !== prev) {
+      this.nodeTranscripts.set(session.id, folded.blocks);
+      this.evictNodeTranscripts();
+    }
+    if (!folded.broadcast) return;
+    this.fanOutToClients({
+      type: "workflow.node.transcript",
+      sessionId: session.parentSessionId ?? session.id,
+      nodeSessionId: session.id,
+      blocks: folded.blocks,
+    });
+  }
+
+  /**
+   * 把活着的节点过程裁到上限。
+   *
+   * **必须裁**:这东西不落盘、进程活多久它活多久,而一张图跑一次就多一批 —— 用户开着
+   * 应用跑一整天自动化就是几十上百份。丢的是**最早见过的**那个(Map 的插入序),它的
+   * 卡片多半早已滚出屏幕,而"最近几步"才是回头看时想要的。
+   */
+  private evictNodeTranscripts(): void {
+    while (this.nodeTranscripts.size > NODE_TRANSCRIPT_LIMIT) {
+      const oldest = this.nodeTranscripts.keys().next();
+      if (oldest.done === true) return;
+      this.nodeTranscripts.delete(oldest.value);
+    }
+  }
+
+  /** host 侧的消费者(通知、工作流调度器)。**每个事件都要走** —— 包括节点会话
+   *  自己的:调度器正是靠它收集每个节点的最终输出(见 `orchestration/runner.ts`)。
+   *  火忘式:一个订阅者抛错不该把事件流带下去。 */
+  private notifySubscribers(e: RuntimeEvent): void {
+    for (const fn of this.subscribers) {
+      try {
+        fn(e);
+      } catch (err) {
+        log.error(`event subscriber error: ${(err as Error).message}`);
+      }
+    }
+  }
+  /** Subscribe to every event. The NotificationManager is one subscriber (it
+   *  decides whether an OS notification is warranted); the workflow scheduler is
+   *  another, and only while a graph run is in flight (it needs each node's final
+   *  text, which lives nowhere else in the main process: messages are persisted
+   *  by the renderer). Returns the unsubscribe function. */
+  subscribe(fn: (e: RuntimeEvent) => void): () => void {
+    this.subscribers.add(fn);
+    return () => {
+      this.subscribers.delete(fn);
+    };
+  }
+
+  /**
+   * Make this session's **interactive** events surface under another session.
+   *
+   * Workflow nodes are hidden sub-sessions, so a node's `AskUserQuestion` would
+   * otherwise pop up somewhere the user cannot see. Re-addressing just the event
+   * is enough to fix that: the *answer* needs no redirection at all, because
+   * `ApprovalBridge` keys pending requests by `requestId` and only reports the
+   * owning sessionId back for the cross-client close event (which
+   * {@link notifyRequestResolved} then re-addresses the same way).
+   *
+   * Persistence is unaffected: `emit` files capsule state under the closure-bound
+   * session id, so a node's tokens/todos land on the node's own row.
+   */
+  setInteractiveProxy(sessionId: string, parentSessionId: string | null): void {
+    if (parentSessionId) this.interactiveProxy.set(sessionId, parentSessionId);
+    else this.interactiveProxy.delete(sessionId);
+  }
+
+  private routeOf(sessionId: string): string {
+    return this.interactiveProxy.get(sessionId) ?? sessionId;
   }
 
   /** Create or reuse the runtime state for a GUI session. Idempotent. */
@@ -119,25 +439,28 @@ class RuntimeManager {
     if (this.sessions.has(session.id)) return;
 
     const emit = (rawEvent: RuntimeEvent) => {
-      // Stamp the turn-end wall-clock ONCE and share it with both consumers:
-      // the usage record filed below (keyed by this timestamp) and the renderer
-      // (which adopts it as turnMeta.endedAt). The renderer uses the match to
-      // show the turn's token count, and two independent Date.now() calls would
-      // never be equal. Stamped here because this is the single exit every
-      // provider event passes through — no per-adapter bookkeeping.
-      const e: RuntimeEvent =
-        rawEvent.type === "turn.done" && rawEvent.endedAt === undefined
-          ? { ...rawEvent, endedAt: Date.now() }
-          : rawEvent;
-      sendToRenderer(IPC.CLAUDE_EVENT, { channel: IPC.CLAUDE_EVENT, sessionId: e.sessionId, event: e });
-      // Fan out to mobile clients over SSE. Same fire-and-forget contract — a
-      // thrown subscriber is swallowed inside broadcast(). No subscribers ⇒
-      // cheap no-op, so this is safe even when the mobile feature is unused.
-      try {
-        mobileEventBus.broadcast(e);
-      } catch (err) {
-        log.error(`mobile event bus error: ${(err as Error).message}`);
+      const stamped = stampTurnEnd(rawEvent);
+      // 节点会话的**交互**事件代父对话提问 —— 没有代理时 `routeOf` 原样返回自己,
+      // 所以这句对普通会话是恒等的(见 `setInteractiveProxy` / `retargetEvent`)。
+      const e: RuntimeEvent = retargetEvent(stamped, this.routeOf(session.id));
+      // 工作流节点是**隐藏会话**:它自己的流水(text / tool / turn.done / usage)没有
+      // 任何界面消费 —— 推给渲染端只会变成幻影消息、点不掉的未读和"N 个回合完成"
+      // 的提示(见 `orchestration/runner.ts`)。所以**只有被改写过的交互事件**才发往
+      // 客户端。**落盘(下面那串 if)与订阅者照旧** —— 前者用会话自己的 id,后者是
+      // host 侧的消费者,调度器正是靠它收集节点的输出。
+      if (session.kind !== "node" || e !== stamped) {
+        // ……但「对话节点」跑在**主对话**上(见 `runner.kind === "conversation"`),
+        // 它的流水该看得见 —— 那正是它存在的意义,所以上面那条对它是恒等的,文本和
+        // 工具事件照常推。它唯独有两类要扣住:回合的收口(`holdTurnEnd`)和它正在说的话
+        // (`holdTurnText`)。
+        if (!this.isHeldFromClients(session.id, e)) this.fanOutToClients(e);
       }
+      // ……但"这一步到底干了什么"不能就这么没了。节点会话是**隐藏**的,`kinds==="node"`
+      // 让它连自己的对话面板都没有,所以那一步搜了什么、跑了哪些工具、在哪儿绕了路,
+      // 用户一概看不见(他报的原话是「能看见子代理在干嘛」)。折成一份只读的过程,走
+      // **子代理那条一模一样的通道**发出去 —— 按 id 索引、不进消息流,所以上面那条
+      // "幻影消息 / 点不掉的未读"的顾虑不受影响(见 `nodeTranscript.ts`)。
+      if (session.kind === "node") this.publishNodeTranscript(session, e);
       // Persist capsule state so the top-right status pill reloads on
       // session reopen. Each event type → one Repo call, fire-and-forget.
       // contextSnapshot / todos / subagents / planDraft are all JSON blobs.
@@ -278,14 +601,9 @@ class RuntimeManager {
           log.error(`failed to clear turn files after rewind: ${(err as Error).message}`);
         }
       }
-      // Notify the global observer (NotificationManager) after the renderer
-      // push + persistence. Fire-and-forget; errors in the observer must not
-      // disrupt the event stream.
-      try {
-        this.observer?.(e);
-      } catch (err) {
-        log.error(`notification observer error: ${(err as Error).message}`);
-      }
+      // Notify the host-side consumers (NotificationManager, and the workflow
+      // scheduler while a run is in flight) after the renderer push + persistence.
+      this.notifySubscribers(e);
     };
 
     const onProviderSessionId = (id: string) => {
@@ -388,6 +706,11 @@ class RuntimeManager {
       prompt: string;
       cwd: string;
       skills?: string[];
+      /** MCP 服务器 / 插件的允许清单 —— 空/缺席 = 不限制。和 `skills` 是同一套读法,
+       *  见 `StartTurnRequest` 上那两段。图型工作流的节点按自己的参数填这两个;
+       *  普通对话不填(它本来就该看得见用户装的全部东西)。 */
+      mcpServerNames?: string[];
+      pluginNames?: string[];
       images?: { data: string; mimeType: string }[];
       /** The originating client's user message (id / createdAt / display
        *  blocks). Echoed to every client as a `user.message` RuntimeEvent so
@@ -403,15 +726,15 @@ class RuntimeManager {
         editedMessageId?: string;
       };
     },
-  ): Promise<void> {
+  ): Promise<TurnHandle | null> {
     const rt = this.sessions.get(session.id);
     if (!rt) {
       log.warn(`sendTurn: no runtime bound for session ${session.id}`);
-      return;
+      return null;
     }
     if (rt.handle?.isRunning()) {
       log.warn(`sendTurn: session ${session.id} already running, ignoring`);
-      return;
+      return null;
     }
 
     const provider = providerRegistry.resolve(session.providerId);
@@ -546,31 +869,51 @@ class RuntimeManager {
 
     // Cross-client user-message echo — emitted BEFORE the provider turn
     // starts so the bubble lands on other clients ahead of the first
-    // assistant event. The originator ignores it by id match (see
-    // UserMessageEvent); every other client appends it verbatim.
+    // assistant event. Shared with the scheduler's graph path (which has no
+    // provider turn to echo from).
     if (input.userMessage) {
-      rt.ctx.emit({
-        type: "user.message",
-        sessionId: session.id,
-        messageId: input.userMessage.id,
-        createdAt: input.userMessage.createdAt,
-        blocks: input.userMessage.blocks,
-        // Edit marker: receiving clients truncate their stale tail at this
-        // message before appending (see store ingestEvent).
-        editedMessageId: input.userMessage.editedMessageId,
-      } satisfies UserMessageEvent);
+      this.echoUserMessage(session.id, input.userMessage);
     }
+
+    // 这一轮要追加的工作流片段。**解析放在 host** —— 提供方只负责 append 一段字符串,
+    // 见 `main/orchestration/prompt.ts`。
+    const workflowPrompt = resolveWorkflowPrompt(session.workflowId);
+    if (workflowPrompt) {
+      // 每轮一行,让"工作流到底有没有送到模型"从日志就能回答,不用调试器。
+      // (这行过去在提供方里,因为那儿的 `req` 还带着 id;搬过来之后 id 只有这里知道。)
+      log.info(`workflow active: ${session.workflowId}`);
+    }
+
+    // **「并回主对话」的内容在这里带进去**(见 `@contracts/nodeType` 的
+    // `NODE_RETURN_PARAM_KEY` 与 `lib/pendingBackflow.ts`)。
+    //
+    // 为什么是这里:主对话的上下文在**提供方那边**(CLI 自己的会话记录,靠 `resume` 续),
+    // 主进程没有往里面插一条的接口 —— 唯一能保证被看见的地方就是**下一次发出去的提示词**。
+    // 放在 `sendTurn` 而不是各个调用点上,是因为调用点有三个(桌面 IPC、手机 RPC、工作流
+    // 里那个对话节点),漏一个的表现是"手机端发的消息看不到图的结果"。
+    //
+    // **只看不取**(`peek`):回合真的起来了才清(见下面 `clearBackflow`)—— 先在发之前
+    // take 的话,回合没起成那一段就永久丢了,而用户只会发现助手"没记住刚才那些产出"。
+    const backflow = backflowPrompt(peekBackflow(session.id));
 
     const req: StartTurnRequest = {
       sessionId: session.id,
-      prompt: input.prompt,
+      prompt: backflow.length > 0 ? `${backflow}\n\n${input.prompt}` : input.prompt,
       cwd: input.cwd,
       model: modelForReq,
       effort: session.effort !== "default" ? session.effort : undefined,
       permissionMode: session.permissionMode !== "default" ? session.permissionMode : undefined,
+      // 工作流的提示词已经在上面的 `resolveWorkflowPrompt` 里拼好了;提供方拿到的
+      // 就是一段字符串,不再自己查表(那套查表原先只有 claude-sdk 实现,Pi / Codex
+      // 拿不到工作流)。
+      workflowPrompt,
       resumeProviderSessionId: rt.providerSessionId,
       apiConfig,
       skills: input.skills,
+      // 工作流节点收窄这一轮能看见的东西(见 `NodeRunInput`)。普通对话这两项是
+      // undefined = 不限制。
+      mcpServerNames: input.mcpServerNames,
+      pluginNames: input.pluginNames,
       // User-attached images (base64 content blocks) — forwarded verbatim to
       // the provider; each adapter maps them onto its SDK's image shape.
       images: input.images,
@@ -583,6 +926,8 @@ class RuntimeManager {
     };
 
     const handle = await provider.startTurn(req, rt.ctx);
+    // 回合起来了,那一段背景才算真的送到了 —— 见上面 `peekBackflow` 那段注释。
+    if (handle !== null && backflow.length > 0) clearBackflow(session.id);
     rt.handle = handle;
     // Remember the cwd for the rewind path (see rewindTurn below).
     rt.lastCwd = input.cwd;
@@ -591,12 +936,34 @@ class RuntimeManager {
     handle.done.catch((err) => {
       log.error(`turn failed: ${(err as Error).message}`);
     });
+    // 返回 handle:调用方通常不管(它只关心"turn 起来了"),但工作流调度器要等这个
+    // 节点跑完才发下游 —— `handle.done` 是"这一轮结束了"的唯一信号。
+    return handle;
   }
 
   interrupt(sessionId: string): void {
     const rt = this.sessions.get(sessionId);
     if (!rt?.handle) return;
     rt.handle.interrupt();
+  }
+
+  /**
+   * 往**正在跑的那一轮**里塞一句话(生成过程中插话)。返回"收下了没有"。
+   *
+   * 三种"没收下"都要如实返回 `false`,因为调用方(IPC → 渲染端)据此**兜回普通的发送**:
+   *
+   *  - 这个对话压根没在跑;
+   *  - 这一轮的引擎不支持插话(`supportsInject`,比如 Pi / Codex);
+   *  - 引擎那边说这一轮刚好收尾了(`TurnHandle.inject` 的说明)。
+   *
+   * 一声不响地丢掉是最坏的一种:用户打了字、按了回车,界面上什么也没发生,而他会以为
+   * 那句话已经说了。
+   */
+  injectMessage(sessionId: string, text: string): boolean {
+    const rt = this.sessions.get(sessionId);
+    const handle = rt?.handle;
+    if (!handle?.inject || !handle.isRunning()) return false;
+    return handle.inject(text);
   }
 
   dispose(sessionId: string): void {
@@ -608,6 +975,9 @@ class RuntimeManager {
       /* ignore */
     }
     approvalBridge.rejectAll(sessionId);
+    // 代理关系随运行时一起消失 —— 留着的话,后来复用的同一个 id 会莫名其妙地把
+    // 交互事件报到别的对话去。
+    this.interactiveProxy.delete(sessionId);
     // Release any OpenAI bridge this session was holding, so the ref count
     // drops and the shared server can shut down when no session needs it.
     if (rt.bridgeConfigId) {
@@ -747,7 +1117,14 @@ class RuntimeManager {
     requestId: string,
     kind: "approval" | "question" | "plan",
   ): void {
-    broadcastRuntimeEvent({ type: "request.resolved", sessionId, requestId, kind });
+    // 走代理:节点代父对话问的问题,关闭事件也得报到父对话去,否则那边的问题卡
+    // 收不掉(节点自己那边本来就没有卡片)。
+    broadcastRuntimeEvent({
+      type: "request.resolved",
+      sessionId: this.routeOf(sessionId),
+      requestId,
+      kind,
+    });
   }
 }
 

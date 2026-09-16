@@ -361,6 +361,36 @@ div:has(> [role="menu"]) {
   color: color-mix(in srgb, rgb(var(--content)) 70%, rgb(var(--content-muted)));
 }
 
+/* ───────────── 行间公式在窄容器里的排版 ─────────────
+ * KaTeX 的 `.katex-display` 默认是「居中 + white-space:nowrap + 编号绝对定位到右边缘」。
+ * 这在对话那种宽容器里没问题;一放进右栏文献原**文预览**这种 ~400px 的窄栏,长公式
+ * 比容器还宽,于是:① 公式被裁掉;② 更糟的是 `\tag` 的编号按 `right:0` 钉在**容器**
+ * 右边缘,而公式溢出去的部分正好在那里 —— 编号就印在公式上了(实测重叠 45px)。
+ *
+ * 三件事:
+ *   1. `overflow-x:auto` —— 每一条公式自己横向滚动,不再把整篇撑出横向滚动条。
+ *   2. `min-width:max-content` —— 让 `.katex` 的宽度跟着公式走。这样编号那层
+ *      (`.katex-html`)也变成公式那么宽,`right:0` 才有意义。
+ *   3. 编号从绝对定位改回**跟随公式**。这一步是为窄栏做的取舍:宽容器里编号不再
+ *      贴在右页边(论文式排版),而是跟在公式后面。换来的是**任何宽度下都不会压字** ——
+ *      纯 CSS 判断不出"这条公式超宽了没有",而压字是硬伤,少一点页边对齐只是观感。
+ *
+ * ★ 选择器必须同时覆盖 `.tag` 和 `.katex-tag`:`rehype-katex@7` 用的是它自带的
+ * katex@0.16(类名 `.tag`),而应用直接依赖的样式表版本是 0.16.47(已对齐)。
+ * 两个都写上,将来升级任一侧都不会静默失效。 */
+.chat-md .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.chat-md .katex-display > .katex {
+  min-width: max-content;
+}
+.chat-md .katex-display > .katex > .katex-html > .tag,
+.chat-md .katex-display > .katex > .katex-html > .katex-tag {
+  position: static;
+  margin-left: 1.5em;
+}
+
 /* ───────────── Font-weight ladder shifts ─────────────
  * Pairs with the base font-weight set on :root (500, light) and .dark (600,
  * dark). Because the inherited base is lifted, the raw Tailwind utilities
@@ -2209,5 +2239,77 @@ html.sketch body::after {
 }
 html.sketch.dark body::after {
   opacity: 0.55;
+}
+
+/* ───────────── 应用内预览(Word / Excel / PPT):别让全局样式插手 ─────────────
+ * 右栏那三个预览是**第三方渲染库**排出来的(见 `components/templates/`)。它们按
+ * "像素就是像素"来排版:**元素多大、在哪儿,都由库自己算好写成行内样式**。而应用
+ * 有一份 Tailwind 的 preflight,里面这条:
+ *
+ *     img, video { max-width: 100%; height: auto; }
+ *
+ * 对普通页面是好事(图片不会撑破容器),对这几个库是**灾难** —— 尤其是 PPT:
+ *
+ *   库实现"裁剪"的办法是「把图片按**原始尺寸**放进一个小的、`overflow:hidden` 的框里,
+ *   再用 left/top 的**负偏移**选出让哪一块露出来」(对应 OOXML 的 `a:srcRect`)。
+ *   下面这条链就是一张被裁过的图:
+ *
+ *     div  left:84px top:114px                       ← 位置
+ *       div  width:202px height:142px overflow:hidden ← 裁剪框
+ *         img  left:-47.8px top:-49.6px  (原始 308×205) ← 大图,露出一角
+ *
+ *   preflight 一来,`max-width:100%` 把这张 308 宽的图压成 202 宽,`height:auto` 又让
+ *   高度按比例掉到 134 —— 尺寸变了,那两个负偏移就**对不上**了。用户看到的是:图片
+ *   位置偏移、比例不对、整页乱掉。而**没有图片的那一页反而是对的**,现象就是这么来的。
+ *
+ * 所以预览区里的 `img` 把这条全局约束撤掉。`height` 不用管:库要的就是原始尺寸,
+ * 而 `auto` 正好等于原始尺寸。
+ *
+ * ⚠️ 别改成给所有 `img` 加豁免 —— 应用自己的界面还要靠 preflight 兜着。
+ * `.katex img { max-width:none }` 是同一个毛病的先例(见上面 KaTeX 那一节)。 */
+.mcode-preview img {
+  max-width: none;
+}
+
+/* ───────────── PPT 预览的默认字体(2026-09-16)─────────────
+ *
+ * 用户报的原话是「ppt 的预览排版有问题」,最后定位到的却是**字体**:
+ *
+ *   文件里那行标题写的是 48pt `Inter`,框宽 715px。实测各字体排下来需要多宽:
+ *
+ *     Inter(文件里写的那 个)  754.7px   ← 装不下
+ *     Segoe UI(现在的回落)    722.7px   ← 装不下,于是折行
+ *     Arial                    697.9px   ← 装得下
+ *     Calibri                  652.8px   ← 装得下
+ *
+ *   装不下就折成两行,而那个文本框只有 65px 高 —— 第二行溢出去,**正好压在下面
+ *   那行副标题上**。这就是他看到的"排版乱了"。
+ *
+ * 两件事叠在一起才成的这个毛病:
+ *
+ * 1. **`pptx-preview` 不认 `a:latin`。** 它取字体名的那行是
+ *    `e.typeface = c(t, ["a:ea", "attrs", "typeface"])` —— **只读 `a:ea`(东亚字体)**。
+ *    所以中文那一行(`微软雅黑`,在 ea 槽里)是对的,而拉丁文的 `Inter`(在 latin 槽里)
+ *    被整个丢掉,只能**继承容器的字体** —— 也就是应用的界面字体。
+ *
+ *    (要彻底修得改它的源码,而它的源码不公开、许可证也不许改。把 pptx 拆包、
+ *    把 latin 抄进 ea 再打回去是另一条路,但每看一份 pptx 都要拆装一次,不值。)
+ *
+ * 2. **这里的界面字体比 Office 的默认字体宽。** 用户拿 PowerPoint 看同一份文件
+ *    是**一行、不重叠**的 —— 因为 PowerPoint 在缺字体时按自己的规则替换,换到的
+ *    是 Calibri(新版 Office 主题的默认字体)。浏览器换成了 Segoe UI,宽 4%,就折了。
+ *
+ * 所以这一条做的事是:**把预览区的默认字体对齐到 Office 那套**。它只定"没人指定
+ * 字体时用什么",不碰任何显式指定的 —— 库给中文那一行写了行内 `font-family`,
+ * 行内样式优先级更高,中文仍然用它自己的字体。
+ *
+ * 为什么选 Calibri 打头:它比 Segoe UI 和 Arial 都**窄**。窄的失效方向是安全的
+ * (字排得紧一点),宽的失效方向是会折行、会重叠。机器上没装 Office 时链子会落到
+ * Segoe UI,也就是回到改之前的样子,不会更糟。
+ *
+ * ⚠️ 只加在 PPT 那份上(根元素带 `mcode-pptx`)。Word 那份是另一个库,它**认**
+ * 文档里的字体名,不该被这条兜底规则盖掉。 */
+.mcode-pptx {
+  font-family: Calibri, "Segoe UI", sans-serif;
 }
 

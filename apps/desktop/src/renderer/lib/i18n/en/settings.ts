@@ -7,6 +7,9 @@ export const en = {
   "settings.nav.shortcuts": "Shortcuts",
   "settings.nav.voice": "Voice Input",
   "settings.nav.skills": "Skills",
+  "settings.nav.workflows": "Workflows",
+  "settings.nav.automation": "Automations",
+  "settings.nav.hooks": "Hooks",
   "settings.nav.mcp": "MCP",
   "settings.nav.plugins": "Plugins",
   "settings.nav.notifications": "Notifications",
@@ -422,6 +425,31 @@ export const en = {
   "settings.nav.runtimes": "Agent",
   "settings.runtimes.title": "Agent",
   "settings.runtimes.section": "Claude / Codex / Pi",
+  "settings.toolchain.section": "Document toolchain",
+  "settings.toolchain.desc": "The built-in Word / PPT / Excel / PDF skills only work if these external tools are present — they are not part of the app, so a clean machine needs them set up first. Pandoc and the Python packages can be installed from here; the rest are system-level installs, so the app just reports what is missing.",
+  "settings.toolchain.checking": "Checking this machine…",
+  "settings.toolchain.recheck": "Check again",
+  "settings.toolchain.ready": "Ready",
+  "settings.toolchain.missing": "Missing",
+  "settings.toolchain.missingParts": "missing {names}",
+  "settings.toolchain.install": "Install",
+  "settings.toolchain.reinstall": "Reinstall",
+  "settings.toolchain.removeTitle": "Delete the copy the app installed",
+  "settings.toolchain.removeConfirm": "Delete the copy of {name} that the app installed? A copy you installed yourself, if any, is left alone.",
+  "settings.toolchain.installFailed": "Install failed",
+  "settings.toolchain.removeFailed": "Delete failed",
+  "settings.toolchain.tool.pandoc.what": "Word reading, writing and format conversion (the preferred path for reading .docx)",
+  "settings.toolchain.tool.pandoc.howto": "Click Install — the app downloads its own copy into its data directory.",
+  "settings.toolchain.tool.latex.what": "Compiling paper LaTeX templates (xelatex / pdflatex; bibliographies via biber; Chinese via ctex)",
+  "settings.toolchain.tool.latex.howto": "Click Install — the app downloads the full TinyTeX (~165 MB), then adds the Chinese typesetting chain (ctex + fonts) and the journal document classes paper templates use. Everything lands in the app's own data directory; no admin rights, roughly three to four minutes.",
+  "settings.toolchain.tool.pythonDeps.what": "The Python packages Excel / PPT reading needs (openpyxl, markitdown, python-pptx, …)",
+  "settings.toolchain.tool.pythonDeps.howto": "No usable Python found. Install Python yourself first, then come back and click Check again.",
+  "settings.toolchain.tool.zip.what": "Required to edit docx / pptx: unpack → edit the XML → repack",
+  "settings.toolchain.tool.zip.howto": "On Windows install Git for Windows (it ships unzip); macOS / Linux usually have both already.",
+  "settings.toolchain.tool.soffice.what": "Rendering and format conversion (LibreOffice's command line)",
+  "settings.toolchain.tool.soffice.howto": "Download the installer from libreoffice.org — it needs admin rights, so the app does not install it for you.",
+  "settings.toolchain.tool.pdftoppm.what": "Rasterises a PDF into images (used to eyeball the layout)",
+  "settings.toolchain.tool.pdftoppm.howto": "Install poppler (pdftoppm ships inside it). A TeX Live install usually brings it along.",
   "settings.runtimes.loading": "Loading runtime states…",
   "settings.runtimes.statusInstalled": "Installed",
   "settings.runtimes.statusNotInstalled": "Not installed",
@@ -692,6 +720,8 @@ export const en = {
   "settings.skills.noProjects": "No projects yet — only global skills can be managed",
   "settings.skills.sourceProject": "Project",
   "settings.skills.sourceGlobal": "Global",
+  "settings.skills.sourceBuiltin": "Built-in",
+  "settings.skills.builtinReadOnly": "Built-in skill — ships with the app, read-only",
   "settings.skills.noDesc": "(no description)",
   "settings.skills.newSkill": "New skill",
   "settings.skills.importSkill": "Import skills",
@@ -830,7 +860,333 @@ export const en = {
   "settings.usage.unknownVendor": "Unknown vendor",
   "settings.usage.empty": "No usage yet — stats appear here after your first completed turn.",
 
+  // ── Usage page: the workflow section (concurrency cap + cost) ──
+  "settings.usage.workflow.title": "Workflows",
+  "settings.usage.workflow.desc":
+    "Each step of a workflow is its own session, and it really does burn tokens.",
+  "settings.usage.maxParallel": "Max steps at once",
+  "settings.usage.maxParallelDesc":
+    "When a workflow reaches a step, every step that's ready starts together — this is how many may run at once. Once the cap is hit, the rest **queue**, they don't fail. Lower saves money; higher runs faster. Range {min}–{max}.",
+  "settings.usage.cost": "Total cost",
+  // ⚠️ Shown when the engine reported no cost (some third-party endpoints) —
+  // not "$0.00", which would read as "free".
+  "settings.usage.costUnknown": "—",
+
   // ── mobile settings sheet (MobileSettingsSheet) ──
   "settings.mobile.displayModeHint":
     "In tabs mode, a session tab strip appears above the chat for switching between open threads. This preference is shared with the desktop.",
+
+  // Unified data root (Settings -> Data location)
+  "settings.nav.dataRoot": "Data location",
+  "settings.dataRoot.title": "Data location",
+  "settings.dataRoot.locationTitle": "Data root",
+  "settings.dataRoot.desc":
+    "Chat history, the papers, textbooks and notes libraries, and templates all live under this one folder — copying it is a complete backup.",
+  "settings.dataRoot.currentPath": "Current location",
+  "settings.dataRoot.treeTitle": "Folder layout",
+  "settings.dataRoot.tree.db": "chat history · all settings",
+  "settings.dataRoot.tree.library": "home of the three libraries",
+  "settings.dataRoot.tree.papers":
+    "PDFs of the papers and textbooks libraries (content-addressed — importing the same file twice stores it once)",
+  "settings.dataRoot.tree.markdown": "converted Markdown — this is what the AI reads",
+  "settings.dataRoot.tree.notes": "notes library (one .md each, editable in the app)",
+  "settings.dataRoot.tree.collections": "manifests handed to the AI",
+  "settings.dataRoot.tree.exports": "exported citation files (.bib / .txt)",
+  "settings.dataRoot.tree.templates": "templates (slides / LaTeX / Word / code / images)",
+  "settings.dataRoot.move": "Move to a new location",
+  "settings.dataRoot.confirm": "Copy all data to {path} ? The app will restart once the copy finishes (the database cannot be moved while it is open). The old location is kept as a copy - delete it yourself once you have checked the new one.",
+  "settings.dataRoot.failed": "Move failed",
+  "settings.dataRoot.restarting": "Moved — restarting…",
+  "settings.dataRoot.manualTitle": "Moving it by hand",
+  "settings.dataRoot.manualHint": "You can also copy this folder elsewhere in your file manager, but come back and point the app at it afterwards — this button copies (not just points), and it will overwrite whatever is already in the target folder.",
+
+  // ── WorkflowsPanel (Settings → Workflows) ──
+  // A workflow is the editable form of what used to be a "chat mode": either a block
+  // of process text (prompt kind) or a node graph (graph kind — the canvas is the next
+  // batch). The six built-ins are NOT named here: their names come from
+  // `composer.mode.*`, shared with the composer dropdown (see lib/workflowLabels.tsx).
+  "settings.workflows.tabLibrary": "Library",
+  "settings.workflows.tabNodeTypes": "Node types",
+  "settings.workflows.loadFailed": "Could not read the workflow library: {error}",
+  "settings.workflows.openFailed": "Could not open this workflow: {error}",
+  "settings.workflows.listEmpty": "The library is empty.",
+  "settings.workflows.selectHint":
+    "Pick a workflow on the left. Select a node to configure it; click empty space to get back to the workflow itself.",
+  "settings.workflows.badgeBuiltin": "Built-in",
+  "settings.workflows.badgeEdited": "Edited",
+
+  // ── Canvas ──
+  "settings.workflows.addNode": "Add node",
+  "settings.workflows.relayout": "Tidy layout",
+  "settings.workflows.canvasEmpty":
+    "This graph is empty. Drop a node in with “Add node” above, then drag it where you want it — drag from the dot on a card's right edge onto another node to draw the arrow, and the arrow points at what runs next.",
+  "settings.workflows.graphSummary": "{nodes} nodes · {edges} dependencies",
+  "settings.workflows.portConnectHint": "Drag onto another node to make it wait for this one",
+  "settings.workflows.edgeRemoveHint": "Click to remove this dependency",
+
+  // ── Automations ──
+  // Same library, same canvas, same inspector as workflows — the only difference is
+  // what starts them (see `@contracts/workflow`). So only the trigger strings live
+  // here; everything else reuses `settings.workflows.*`.
+  "settings.automation.tabLibrary": "Automations",
+  "settings.automation.listEmpty": "No automations yet.",
+  "settings.automation.newAutomation": "New automation",
+  "settings.automation.newAutomationName": "New automation",
+  "settings.automation.fieldTrigger": "Trigger",
+  "settings.automation.trigger.manual": "Manual",
+  "settings.automation.trigger.schedule": "On a schedule",
+  "settings.automation.trigger.file": "On file changes",
+  "settings.automation.trigger.webhook": "On a webhook",
+  // Each trigger asks the user for something different, so these say what it will
+  // ask for later rather than a generic "not implemented" — those parameters are
+  // not designed yet (see the note on `WORKFLOW_TRIGGERS`).
+  "settings.automation.triggerHint.manual": "Runs only when you press Run.",
+  "settings.automation.triggerHint.schedule":
+    "Runs on its own when the time comes. Later on this will ask you for a schedule (\"every day at 9\", say).",
+  "settings.automation.triggerHint.file":
+    "Runs when a file changes. Later on this will ask you which folder to watch and which files count.",
+  "settings.automation.triggerHint.webhook":
+    "Runs when an HTTP request comes in. Later on this will hand you a callback URL.",
+  "settings.automation.notWired":
+    "The runner is not wired up yet: this saves the definition, but nothing runs in the background and none of the triggers above will fire.",
+
+  // ── Hooks (settings → hooks) ──
+  // Event-driven commands: when something happens, run one of your commands on this
+  // machine. Host-side (see `@contracts/hook`), so chats, workflow nodes and
+  // automations all get them.
+  "settings.hooks.intro":
+    "A hook belongs to no graph: it hangs off an event, so it fires for every chat and every workflow node. The command runs as you on this machine, and the event arrives on stdin as JSON.",
+  "settings.hooks.refreshRuns": "Refresh log",
+  "settings.hooks.newHook": "New hook",
+  "settings.hooks.loadFailed": "Could not read your hooks: {error}",
+  "settings.hooks.listTitle": "Hooks",
+  "settings.hooks.listEmpty": "No hooks yet.",
+  "settings.hooks.selectHint": "Pick one on the left, or create a new one.",
+
+  "settings.hooks.fieldName": "Name",
+  "settings.hooks.namePlaceholder": "What this hook is for",
+  "settings.hooks.fieldEvent": "When it runs",
+  // The matcher field's wording follows the event (tool name vs file path) — all three
+  // strings change together. A box labelled "Which tools" under `turn.files` only
+  // gets the user to fill in a tool name, and the hook then never fires.
+  "settings.hooks.matcherLabelTool": "Which tools",
+  "settings.hooks.matcherPlaceholderTool": "e.g. Edit,Write or mcp__*",
+  "settings.hooks.matcherHintTool": "Empty means every tool. `*` and `?` work; separate several with commas.",
+  "settings.hooks.matcherLabelPath": "Which files",
+  "settings.hooks.matcherPlaceholderPath": "e.g. *.ts, *package.json",
+  "settings.hooks.matcherHintPath":
+    "Empty means any file change. `*` and `?` work; separate several with commas. `*` crosses directories, so both `*.ts` and `src/*.ts` match — the pattern is tried against the absolute and the relative path.",
+  "settings.hooks.fieldCommand": "Command",
+  "settings.hooks.commandPlaceholder": "e.g. python ~/scripts/fmt.py",
+  "settings.hooks.commandHint":
+    "Runs in the session's working directory, through your system shell. The event goes to stdin (JSON), plus a few MCODE_* env vars.",
+  "settings.hooks.fieldTimeout": "Timeout (ms)",
+  "settings.hooks.fieldEnabled": "Enabled",
+
+  "settings.hooks.save": "Save",
+  "settings.hooks.saving": "Saving…",
+  "settings.hooks.saved": "Saved",
+  "settings.hooks.unsaved": "Unsaved changes",
+  "settings.hooks.saveFailed": "Could not save",
+  "settings.hooks.nameRequired": "Give it a name before saving",
+  "settings.hooks.commandRequired": "Give it a command before saving",
+
+  "settings.hooks.test": "Test run",
+  "settings.hooks.testing": "Running…",
+  "settings.hooks.testHint":
+    "A test run uses a fake payload: it is not recorded below, and you do not have to save first.",
+  "settings.hooks.remove": "Delete",
+  "settings.hooks.removeTitle": "Delete “{name}”?",
+  "settings.hooks.removeDesc": "This removes the hook from hooks.json. Past runs are not touched.",
+
+  "settings.hooks.runsTitle": "Recent runs",
+  "settings.hooks.runsEmpty": "Nothing has run yet.",
+  "settings.hooks.sessionNode": "node",
+  "settings.hooks.runStatus.ok": "ok",
+  "settings.hooks.runStatus.failed": "failed",
+  "settings.hooks.runStatus.timeout": "timeout",
+  "settings.hooks.runStatus.skipped": "skipped",
+  "settings.hooks.runStatus.running": "running",
+
+  "settings.hooks.event.userMessage": "Message sent",
+  "settings.hooks.event.toolUse": "Tool starts",
+  "settings.hooks.event.toolResult": "Tool finishes",
+  "settings.hooks.event.approvalRequest": "Awaiting approval",
+  "settings.hooks.event.requestResolved": "Request resolved",
+  "settings.hooks.event.questionAsk": "Agent asks",
+  "settings.hooks.event.planApprovalRequest": "Plan awaiting approval",
+  "settings.hooks.event.todoUpdate": "Todo list updated",
+  "settings.hooks.event.subagentUpdate": "Subagent status",
+  "settings.hooks.event.turnFiles": "Files changed",
+  "settings.hooks.event.turnIncomplete": "Turn incomplete",
+  "settings.hooks.event.turnDone": "Turn ends",
+  "settings.hooks.event.compactResult": "Context compacted",
+  "settings.hooks.event.error": "Error",
+  "settings.hooks.event.upstreamIssue": "Upstream retry",
+  "settings.hooks.event.workflowNodeResult": "Workflow node finished",
+  // Each hint names the moment, because a few are easy to mix up: "tool starts" is
+  // AFTER approval, "awaiting approval" only happens for tools that need it, and
+  // "turn incomplete" is not an error.
+  "settings.hooks.eventHint.userMessage": "When you hit send.",
+  "settings.hooks.eventHint.toolUse": "When the model decides to call a tool (approval has already happened).",
+  "settings.hooks.eventHint.toolResult": "When a tool returns, whether it succeeded or failed.",
+  "settings.hooks.eventHint.approvalRequest": "When a tool is waiting for you to approve it (only tools that need approval get here).",
+  "settings.hooks.eventHint.requestResolved": "When someone answers an approval or a question — from the desktop or a paired phone.",
+  "settings.hooks.eventHint.questionAsk": "When the agent asks you something and waits for an answer.",
+  "settings.hooks.eventHint.planApprovalRequest": "When the model has drafted a plan in plan mode and is waiting for your approval.",
+  "settings.hooks.eventHint.todoUpdate": "When the todo list changes (every TodoWrite update fires this).",
+  "settings.hooks.eventHint.subagentUpdate": "When the subagent roster changes — one starts, changes status, or ends.",
+  "settings.hooks.eventHint.turnFiles": "When a turn ends and it changed files. You can filter by file path.",
+  "settings.hooks.eventHint.turnIncomplete": "When a turn does not finish properly (a tool never returned, or the model said nothing). This is not an error.",
+  "settings.hooks.eventHint.turnDone": "When a turn ends — both a normal finish and an interrupt.",
+  "settings.hooks.eventHint.compactResult": "When the context window is compacted (manual /compact or automatic).",
+  "settings.hooks.eventHint.error": "When the turn errors out.",
+  "settings.hooks.eventHint.upstreamIssue": "When the upstream API is retrying, or when a retry succeeds.",
+  "settings.hooks.eventHint.workflowNodeResult": "When one node of a workflow finishes (fires on the conversation that started it).",
+
+  // ── Node ──
+  "settings.workflows.nodeInspectorTitle": "Node",
+  "settings.workflows.nodeTitle": "Title",
+  "settings.workflows.nodeCapability": "Capability",
+  "settings.workflows.nodeCapabilityDefault": "Follow the type ({fallback})",
+  "settings.workflows.nodeDeps": "Waits for",
+  "settings.workflows.nodeDepsAlone": "This is the only node in the graph, so there is nothing to wait for.",
+  "settings.workflows.nodeDepsCycle": "That would close a loop, so it cannot be ticked.",
+  "settings.workflows.nodeDependents": "Downstream: {names}",
+  // A branch node's exits (see WorkflowEdge's label/note). The options ARE the outgoing
+  // edges — so this section names existing lines rather than defining options; adding one
+  // means drawing a line from the node on the canvas.
+  "settings.workflows.branchOptions": "Where it can go",
+  "settings.workflows.branchNoOptions":
+    "No exits at all. Draw lines from this node to the next steps — each line is one option you pick from when the graph reaches here.",
+  "settings.workflows.branchOptionTo": "To “{name}”",
+  "settings.workflows.branchOptionLabel": "Option name (falls back to that step's title)",
+  "settings.workflows.branchOptionNote":
+    "One line for the next step when this option is taken (goes into its prompt). Can be left empty.",
+  // The separator between list items. It is dictionary text on purpose: a
+  // hardcoded 「、」 renders as `Downstream: A、B` in English.
+  "settings.workflows.listSeparator": ", ",
+  "settings.workflows.nodeRemove": "Delete node",
+  "settings.workflows.nodeTypeMissing": "Type not installed",
+  "settings.workflows.nodeTypeMissingDetail":
+    "The type this node references is not installed on this machine. The graph still saves and opens, but the node can neither be drawn properly nor run — install the plugin that brings it, or write a manifest into workflows/node-types under your data root.",
+  // The next two are the label on a canvas card, sharing its row with the type
+  // id — short is a hard requirement there (a truncated hint is no hint).
+  "settings.workflows.nodeParamsIncomplete": "Params incomplete",
+  "settings.workflows.nodeRunnerMissing": "Runner not implemented",
+  // The main agent: the graph's entry point. New workflows ship with one and it
+  // cannot be deleted (see isProtectedNode in workflowView).
+  "settings.workflows.mainNodeHint": "Main agent · this graph's entry point, cannot be deleted",
+  "settings.workflows.mainTypeMissing":
+    "The node-type catalog did not load, so a workflow cannot be created right now — a new graph would be missing its main agent. The catalog error is shown above.",
+  "settings.workflows.paramPick": "Pick one",
+  "settings.workflows.paramBrowse": "Browse…",
+  // The empty entry of the `model` picker = no override: the node runs on the
+  // model this chat selected.
+  "settings.workflows.paramRefUnset": "Not set",
+  "settings.workflows.paramRefEmpty":
+    "Nothing to pick from on this machine yet — typing a name works too.",
+  // Multi-select ref params (skills / MCP servers / plugins) rest as a single
+  // collapsed row: the answer is "leave it empty" nine times out of ten, and
+  // three open lists would eat most of the inspector. The collapsed row still
+  // says how many things there are to pick — hidden affordance, not hidden fact.
+  "settings.workflows.paramRefUnlimited": "No limit",
+  "settings.workflows.paramRefOptionCount": "{n} available",
+  "settings.workflows.paramRefSelectedCount": "{n} selected",
+  "settings.workflows.paramRefExpand": "Expand",
+  "settings.workflows.paramRefCollapse": "Collapse",
+  "settings.workflows.paramRefFilter": "Filter…",
+  "settings.workflows.paramRefNoMatch": "Nothing matches.",
+  "settings.workflows.paramRefAddPlaceholder": "Type a name, press Enter",
+  "settings.workflows.paramRefMissingHint": "Not on this machine — click to remove",
+  // The output-variable table (`kind: "variables"`) — rows of name + example.
+  // ⚠️ The word "JSON" is deliberately absent from the UI: it is JSON underneath,
+  // but that is the app's business. See contracts/outputConstraint.
+  "settings.workflows.varName": "Name",
+  "settings.workflows.varExample": "Example",
+  "settings.workflows.varAdd": "Add one",
+  "settings.workflows.varRemove": "Remove this row",
+  "settings.workflows.varEmpty": "Nothing yet. Add one and say what this step has to hand over.",
+  // "Insert variable": the candidates are the names *upstream steps* defined, so no
+  // concrete name appears here — hardcoding one would tie the feature to a vocabulary.
+  "settings.workflows.insertVar": "Insert variable",
+  "settings.workflows.insertVarEmpty":
+    "No steps above this one yet. Only variables defined upstream show up here — put a step before this one and fill in its “Output variables”.",
+  "settings.workflows.insertVarWholeOutput": "Whole result",
+  "settings.workflows.insertVarWholeOutputHint": "Everything that step handed over, as text",
+
+  // ── The workflow itself ──
+  "settings.workflows.fieldName": "Name",
+  "settings.workflows.nameRequired": "A name is required — not saved yet",
+  "settings.workflows.fieldDescription": "Description",
+  "settings.workflows.fieldPrompt": "Process text (optional)",
+  "settings.workflows.lockedHint":
+    "A built-in workflow's name and description follow the interface language and cannot be changed here — its process text and its node graph can.",
+  "settings.workflows.promptPlaceholder": "Write down this workflow's process…",
+  "settings.workflows.promptAutoSaveHint":
+    "A graph workflow's process lives in its nodes; this text is extra context appended on top of it, and is usually left empty. Changes are saved automatically.",
+  "settings.workflows.newWorkflow": "New workflow",
+  "settings.workflows.newWorkflowName": "New workflow",
+  "settings.workflows.actionFailed": "That did not work: {error}",
+  "settings.workflows.unknownError": "unknown error",
+  "settings.workflows.reset": "Restore default",
+  "settings.workflows.resetTitle": "Restore the default?",
+  "settings.workflows.resetDesc":
+    "Your changes to “{name}” will be discarded and the version shipped with the app comes back. This cannot be undone.",
+  "settings.workflows.deleteTitle": "Delete this workflow?",
+  "settings.workflows.deleteDesc": "“{name}” will be removed from the library. This cannot be undone.",
+
+  // ── Saving (explicit) ──
+  // The status line sits next to the Save button in the editor's title row.
+  "settings.workflows.savePending": "Unsaved changes",
+  "settings.workflows.saving": "Saving…",
+  "settings.workflows.saveBlocked": "Not saved",
+  "settings.workflows.discard": "Discard",
+  "settings.workflows.unsavedDot": "Unsaved changes",
+
+  // ── Node types tab ──
+  "settings.workflows.nodeTypesIntro":
+    "Every node in a workflow references a type: the type decides which parameters that step takes, what it is allowed to do, and how it runs. A manifest is ordinary JSON — you can write your own, or ship one inside a plugin.",
+  "settings.workflows.nodeTypesLoadFailed": "Could not read the node types: {error}",
+  "settings.workflows.nodeTypesEmpty": "There are no node types at all right now.",
+  "settings.workflows.nodeTypeNoParams": "no parameters",
+  "settings.workflows.outputVarsTerminal":
+    "Nothing runs after this step, so this table never gets used — there is no downstream to read these variables. Its output goes straight to the user, so write it the way a person should read it.",
+  "settings.workflows.nodeTypeRequired": "required",
+  "settings.workflows.nodeTypeFrom": "from {from}",
+  "settings.workflows.nodeTypeRunner": "Runner",
+  "settings.workflows.nodeTypeCapability": "Capability",
+  "settings.workflows.nodeTypeOther": "Other",
+
+  // ── Agent profiles ──
+  // A saved sub-agent configuration (instruction / skills / model / engine …) you can
+  // drop straight onto a new node.
+  "settings.workflows.addFromProfile": "New from profile",
+  "settings.workflows.fieldProfile": "Profile",
+  "settings.workflows.applyProfile": "Apply a profile…",
+  "settings.workflows.profileEmpty": "No profiles saved yet. Fill in the fields below, then hit “Save as profile”.",
+  "settings.workflows.saveAsProfile": "Save as profile",
+  "settings.workflows.profileNamePlaceholder": "Name this profile",
+  "settings.workflows.removeProfile": "Delete this profile",
+  "settings.workflows.profileSaveFailed": "Could not save",
+  "settings.workflows.profilesTitle": "Agent profiles",
+  "settings.workflows.profilesIntro":
+    "A saved sub-agent configuration. Set a node up on the canvas, hit “Save as profile”, then pick it when adding a node.",
+  "settings.workflows.profileNew": "New profile",
+  "settings.workflows.profilesEmpty": "No profiles yet. Set a node up on the canvas and hit “Save as profile”.",
+  "settings.workflows.profileTypeMissing": "type not installed",
+  "settings.workflows.profileTypeMissingDetail":
+    "This machine does not have the node type “{type}”, so this profile's parameters cannot be edited (the values are kept — they become editable once the type is installed).",
+  "settings.workflows.nodeTypeNotRunnable":
+    "Not runnable yet: the {kind} runner is not implemented, so a node of this type can only sit in a graph.",
+  "settings.workflows.problemsTitle": "{n} manifests could not be read",
+  "settings.workflows.problemsHint":
+    "These files are on disk but their contents are not valid, so they do not appear in the list above. Fix them using the errors below, then come back and refresh.",
+  "settings.workflows.emptyPlugin":
+    "No plugin brings node types yet — install one whose manifest declares nodeTypes and it will show up here.",
+  "settings.workflows.emptyLocal":
+    "No node types of your own yet — drop a manifest into workflows/node-types under your data root and it shows up here (that folder ships a README explaining how to write one).",
+  "settings.workflows.source.builtin": "built-in",
+  "settings.workflows.source.plugin": "plugin",
+  "settings.workflows.source.local": "local",
 } as const;

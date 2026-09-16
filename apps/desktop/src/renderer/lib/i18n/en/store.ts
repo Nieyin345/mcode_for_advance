@@ -11,4 +11,5 @@ export const en = {
   "store.toast.turnComplete": "Turn complete",
   "store.toast.turnCompleteBody": "The agent has finished this turn",
   "store.toast.turnIncomplete": "Task ended early",
+  "store.toast.forkFailed": "Couldn't duplicate the conversation",
 } as const;

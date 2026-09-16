@@ -165,6 +165,20 @@ export async function buildTerminalEnv(): Promise<TerminalEnvResult> {
   for (const [k, v] of Object.entries(process.env)) {
     if (typeof v === "string") env[k] = v;
   }
+  // One variable deliberately NOT inherited. `applyAgentEnvironment` puts it in
+  // the main process env (see that file's section 3) so the SDK's *in-process*
+  // helpers can find Mcode's session store — but a PTY is the user's shell, not
+  // one of our agent runs. Inheriting it would point a `claude` typed in there
+  // at ~/.mcode: their session list, MCP servers and credentials silently
+  // swapped for Mcode's. PATH and PYTHONUTF8 are safe to leak (they only make
+  // tools easier to find and python behave sanely); this one hands over the
+  // wrong data directory.
+  //
+  // Case-insensitive on purpose: Windows env names are, and the snapshot above
+  // may carry the user's own differently-cased spelling of this name.
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase() === "CLAUDE_CONFIG_DIR") delete env[key];
+  }
   if (process.platform !== "win32") {
     return { env, registryVarsApplied: null };
   }

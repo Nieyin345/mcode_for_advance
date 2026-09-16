@@ -37,6 +37,51 @@ export const zh = {
   "chatStream.compact.auto": "已自动压缩对话历史",
   "chatStream.compact.freed": "· 释放 {n} tokens",
 
+  // ── 工作流的一张步骤卡(见 `components/chat/WorkflowStepCard.tsx`)──
+  "chatStream.workflowStep.success": "已完成",
+  "chatStream.workflowStep.failed": "失败",
+  // 「未运行」而不是「跳过」:用户看到的因果是"上游没成,所以这一步没跑"。
+  "chatStream.workflowStep.skipped": "未运行",
+  // 和上面那句**必须分得开** —— 它是"用户在岔路口选了别的路",不是"哪一步炸了"。
+  // 两句混用的话,用户会去翻一个根本没跑的节点的日志,而那里什么也没有。
+  "chatStream.workflowStep.unselected": "没走这条路",
+  "chatStream.workflowStep.cancelled": "已取消",
+  "chatStream.workflowStep.empty": "这一步没有产出文本。",
+  // 这一步的开销。`{cost}` 在引擎没报花费时是 "—"（不是 $0.00）。
+  "chatStream.workflowStep.usage": "花了 {tokens} tokens · {cost}",
+  // 「过程」= 这一步在那个隐藏子会话里干了什么(工具调用 + 中间说的话)。见
+  // `WorkflowStepCard` 与 `@contracts/runtime` 的 `WorkflowNodeTranscriptEvent`。
+  "chatStream.workflowStep.process": "过程",
+  "chatStream.workflowStep.processSteps": "{n} 条",
+  // 过程只在内存里、有容量上限(见 `RuntimeManager` 的 `NODE_TRANSCRIPT_LIMIT`)——
+  // 说清楚是"不在了"而不是摆一个点开是空的入口让人以为坏了。
+  "chatStream.workflowStep.processGone": "这一步的过程已经不在内存里了(只留最近跑过的若干步)。",
+
+  // ── 岔路口那张卡(见 `components/chat/BranchChoiceCard.tsx`)──
+  // 它和上面的结果卡**长得不一样**:按钮点下去之前,这次运行**没有结束** —— 所以它
+  // 是活的,而不是一张"跑完了"的卡。用户原话:「需要用户提出意见,然后发送,然后继续」。
+  "chatStream.workflowChoice.prompt": "这一步你来定。选一条继续:",
+  "chatStream.workflowChoice.comment": "还想补充点什么？（可以不填）",
+  "chatStream.workflowChoice.confirm": "继续",
+  // **每个岔路口都自带的一条出路:不做选择。** 界面上给的,不是图上的一条边。
+  "chatStream.workflowChoice.stop": "就到这儿",
+  // 回头会让同一个岔路口被问好几次,每轮一张卡。这是卡片右上角那个小标。
+  "chatStream.workflowChoice.round": "第 {n} 轮",
+  "chatStream.workflowChoice.chosen": "你选了「{label}」",
+  "chatStream.workflowChoice.stopped": "你让它停在这儿了",
+  // 点了一张**已经过期**的卡(那次运行早就跑完或被取消了)。**不是报错** —— 用户点
+  // 历史里一张旧卡是正常会发生的事,所以只在他点的那张卡上说一句,不弹框。
+  "chatStream.workflowChoice.stale": "这条选择已经不适用了（那一步已经跑完或被取消）。",
+
+  // ── 「运行前先问我」那个弹窗（对话节点上的开关，见 `AskChoiceDialog`）──
+  // 它问的不是"往哪条路走"，而是"这一步现在要不要跑、怎么跑" —— 所以弹在**屏幕中间**，
+  // 而不是像岔路口那样只摆一张卡（卡也照摆：它是这一问留下的记录）。
+  "chatStream.workflowAsk.title": "这一步要不要跑？",
+  "chatStream.workflowAsk.desc": "「{title}」跑之前先问你一句。",
+  "chatStream.workflowAsk.confirm": "就按这个来",
+  // 关掉弹窗**不等于放弃** —— 聊天里那张卡还在，点它一样能选。
+  "chatStream.workflowAsk.dismiss": "先放一放",
+
   // ── MessageBlocks: images ──
   "chatStream.image.browserScreenshot": "浏览器截图",
   "chatStream.image.userImage": "用户图片",

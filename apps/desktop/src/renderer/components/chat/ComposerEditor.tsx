@@ -125,9 +125,12 @@ interface ComposerEditorProps {
   /** Called on every content change with the current plain-text-with-skills. */
   onChange: (text: string) => void;
   /** Called when the user presses Enter without Shift (the parent decides
-   *  send vs enqueue based on session state). Shift+Enter inserts a newline
-   *  and is NOT reported. */
-  onEnter: () => void;
+   *  send vs enqueue vs 插话 based on session state and `ctrl`). Shift+Enter
+   *  inserts a newline and is NOT reported.
+   *
+   *  `ctrl` 是 Ctrl 或 Cmd 按下的意思 —— 一个修饰键,两种平台习惯由这里抹平,
+   *  父组件只认"用户是不是按住了那个键"。 */
+  onEnter: (mods: { ctrl: boolean }) => void;
   /** Called when the user presses the bare Up arrow while `historyNavEnabled`
    *  is true — the parent recalls an OLDER sent message into the editor. */
   onHistoryUp?: () => void;
@@ -307,11 +310,12 @@ export const ComposerEditor = forwardRef<
       },
       // Enter sends (parent decides send vs enqueue); Shift+Enter = newline.
       // Suppress Enter during IME composition (so confirming a candidate
-      // doesn't send the message).
+      // doesn't send the message). Ctrl/Cmd+Enter is passed through as a
+      // modifier — the parent uses it for "插话"(塞进正在跑的那一轮)。
       handleKeyDown: (_view, event) => {
         if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
           event.preventDefault();
-          onEnterRef.current();
+          onEnterRef.current({ ctrl: event.ctrlKey || event.metaKey });
           return true;
         }
         // Bare Up/Down arrows (no modifier keys) are history recall when the

@@ -21,12 +21,19 @@ import { registerOutputStyleHandlers } from "./outputStyle.js";
 import { registerUsageHandlers } from "./usage.js";
 import { registerLspHandlers } from "./lsp.js";
 import { registerRuntimesHandlers } from "./runtimes.js";
+import { registerToolchainHandlers } from "./toolchain.js";
+import { registerWorkflowHandlers } from "./orchestration.js";
+import { registerHookHandlers } from "./hooks.js";
 import { registerPluginsHandlers } from "./plugins.js";
 import { registerBrowserHandlers } from "./browser.js";
 import { registerNotificationHandlers } from "./notifications.js";
 import { registerMobileHandlers } from "./mobile.js";
 import { registerRelayHandlers } from "./relay.js";
 import { registerVoiceHandlers } from "./voice.js";
+import { registerLibraryHandlers } from "./library.js";
+import { registerInstitutionAuthHandlers } from "./institutionAuth.js";
+import { registerIntegrationHandlers } from "./integrations.js";
+import { registerTemplateHandlers } from "./templates.js";
 
 /**
  * Wrap `ipcMain` so every `handle()` registration automatically awaits DB
@@ -74,12 +81,19 @@ export function registerIpcHandlers(): void {
   registerUsageHandlers(ipc);
   registerLspHandlers(ipc);
   registerRuntimesHandlers(ipc);
+  registerToolchainHandlers(ipc);
+  registerWorkflowHandlers(ipc);
+  registerHookHandlers(ipc);
   registerPluginsHandlers(ipc);
   registerBrowserHandlers(ipc);
   registerNotificationHandlers(ipc);
   registerMobileHandlers(ipc);
   registerRelayHandlers(ipc);
   registerVoiceHandlers(ipc);
+  registerLibraryHandlers(ipc);
+  registerInstitutionAuthHandlers(ipc);
+  registerIntegrationHandlers(ipc);
+  registerTemplateHandlers(ipc);
 }
 
 // Re-export channel constants so handlers stay aligned with the contract.

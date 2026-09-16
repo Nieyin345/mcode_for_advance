@@ -20,14 +20,17 @@ import {
   type UsageStatsPreset,
   type UsageStatsResult,
 } from "@contracts/ipc";
+import { PANEL_MAX_W } from "./panelWidth.js";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
-import { fmtTokens } from "@renderer/lib/contextWindow.js";
-import { Button, Card } from "@renderer/components/ui/index.js";
+import { fmtCost, fmtTokens } from "@renderer/lib/contextWindow.js";
+import { Button, Card, Input } from "@renderer/components/ui/index.js";
 import { IconChartBar, IconLoader2 } from "@renderer/lib/icons.js";
+import { WORKFLOW_MAX_PARALLEL_MAX, WORKFLOW_MAX_PARALLEL_MIN } from "@contracts/ipc";
 import { PanelHeader } from "./PanelHeader.js";
+import { SettingRow } from "./SettingRow.js";
 import { SettingsSection } from "./SettingsSection.js";
 
 const PRESETS: Array<{ id: UsageStatsPreset; labelKey: MessageId }> = [
@@ -79,6 +82,10 @@ function parseDateKey(key: string): Date {
 export function UsagePanel() {
   const { t } = useI18n();
   const locale = useSessionStore((s) => s.locale);
+  // 工作流那一节(见下面渲染树末尾):并发上限。**真正生效的那一份在主进程** ——
+  // 这里只是把同一个设置键读出来显示、改了写回去。
+  const maxParallel = useSessionStore((s) => s.workflowMaxParallel);
+  const setMaxParallel = useSessionStore((s) => s.setWorkflowMaxParallel);
 
   const [preset, setPreset] = useState<UsageStatsPreset>("7d");
   const [result, setResult] = useState<UsageStatsResult | null>(null);
@@ -171,14 +178,18 @@ export function UsagePanel() {
         { key: "outputTokens", label: t("settings.usage.summary.outputTokens"), value: fmtTokens(summary.outputTokens) },
         { key: "cacheRead", label: t("settings.usage.summary.cacheRead"), value: fmtTokens(summary.cacheReadTokens) },
         { key: "cacheWrite", label: t("settings.usage.summary.cacheWrite"), value: fmtTokens(summary.cacheCreationTokens) },
+        // **累计花费。** `buildUsageStats` 一直有算它(`summary.costUsd`),只是这里从来没
+        // 渲染过 —— 补上。引擎没报花费时(某些第三方端点)显示 `—` **而不是 $0.00**:
+        // 那会让人以为免费,而它是"不知道"。
+        { key: "cost", label: t("settings.usage.cost"), value: fmtCost(summary.costUsd) },
       ]
     : [];
 
   return (
     // Constrained width + centered (same pattern as LspLanguagesPanel):
     // the 53-week heatmap stretches by 1fr columns, so at full panel width
-    // the cells grow huge — max-w-3xl keeps them GitHub-sized.
-    <section className="mx-auto w-full max-w-3xl space-y-4">
+    // the cells grow huge — the form width keeps them GitHub-sized.
+    <section className={`mx-auto w-full ${PANEL_MAX_W.form} space-y-4`}>
       <PanelHeader
         title={t("settings.usage.title")}
         icon={IconChartBar}
@@ -370,6 +381,35 @@ export function UsagePanel() {
                 );
               })
             )}
+          </SettingsSection>
+
+          {/* ───────── 工作流 ─────────
+              一张图跑到某一步时,能并排跑的步骤会**一起起跑** —— 每个是一个独立会话,
+              会真的烧 token。这个数字就是那个闸。放在用量这一页,因为它和上面那些
+              统计说的是同一件事的两头:**花了多少** / **一次能同时烧几路**。 */}
+          <SettingsSection
+            title={t("settings.usage.workflow.title")}
+            desc={t("settings.usage.workflow.desc")}
+          >
+            <SettingRow
+              title={t("settings.usage.maxParallel")}
+              desc={t("settings.usage.maxParallelDesc", {
+                min: WORKFLOW_MAX_PARALLEL_MIN,
+                max: WORKFLOW_MAX_PARALLEL_MAX,
+              })}
+              htmlFor="setting-workflow-max-parallel"
+            >
+              <Input
+                id="setting-workflow-max-parallel"
+                type="number"
+                min={WORKFLOW_MAX_PARALLEL_MIN}
+                max={WORKFLOW_MAX_PARALLEL_MAX}
+                step={1}
+                value={maxParallel}
+                onChange={(e) => void setMaxParallel(Number(e.target.value))}
+                className="w-full"
+              />
+            </SettingRow>
           </SettingsSection>
         </>
       )}

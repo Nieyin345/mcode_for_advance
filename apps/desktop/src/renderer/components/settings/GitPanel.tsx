@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { PANEL_MAX_W } from "./panelWidth.js";
 import { cn } from "@renderer/lib/cn.js";
 import { Select } from "@renderer/components/ui/index.js";
 import { IconCode, IconSquare, IconCircleOff, IconRobot } from "@renderer/lib/icons.js";
@@ -75,7 +76,7 @@ export function GitPanel() {
   }, [customModels]);
 
   return (
-    <section className="mx-auto w-full max-w-3xl space-y-4">
+    <section className={`mx-auto w-full ${PANEL_MAX_W.form} space-y-4`}>
       <PanelHeader title="Git" />
 
       {/* ── Git 差异打开方式 ── */}

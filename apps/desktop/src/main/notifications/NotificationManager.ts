@@ -59,7 +59,7 @@ class NotificationManager {
     if (this.started) return;
     this.started = true;
     this.reloadPrefs();
-    runtimeManager.setObserver((e) => this.onEvent(e));
+    runtimeManager.subscribe((e) => this.onEvent(e));
     log.info("NotificationManager started");
   }
 
@@ -127,6 +127,16 @@ class NotificationManager {
       if (!this.prefs.turnComplete) return null;
       // Skip interrupted (user-initiated) and tool_use (intermediate) turns.
       if (e.reason === "interrupted" || e.reason === "tool_use") return null;
+      // 工作流节点是隐藏会话:一次运行会给每个节点弹一条「回合完成」,而用户既看不见
+      // 那些会话、也管不着它们。**只挡"完成"与"报错"这两类** —— 节点的审批与提问
+      // 在主进程里已经被改写成父对话的事件了(`setInteractiveProxy`),标题也对,
+      // 那两类必须照常弹。
+      if (this.isNodeSession(e.sessionId)) return null;
+      // 「对话节点」跑在主对话那个会话上(`runner.kind === "conversation"`),所以上面
+      // 那条挡不住它。它跑完的那一条 `turn.done` 是**图内部的一步**,不是用户这一轮
+      // 的结束 —— 图可能还有五步没跑,而这一条会弹一句「回合完成」。调度器把整张图
+      // 的收口扣住了(见 `RuntimeManager.holdTurnEnd`),这里照着那条判据挡一下。
+      if (runtimeManager.isTurnEndHeld(e.sessionId)) return null;
       return {
         title: "回合完成",
         body: `${this.sessionTitle(e.sessionId)}: Agent 已完成本轮任务`,
@@ -136,6 +146,8 @@ class NotificationManager {
     // Errors.
     if (e.type === "error") {
       if (!this.prefs.errors) return null;
+      // 同 turn.done:节点的报错已经由调度器变成对话里的一张卡了(见上)。
+      if (this.isNodeSession(e.sessionId)) return null;
       return {
         title: "发生错误",
         body: `${this.sessionTitle(e.sessionId)}: ${e.message}`,
@@ -154,6 +166,9 @@ class NotificationManager {
       });
       this.prevSubagents.set(e.sessionId, prev);
       if (!this.prefs.backgroundTasks || !justFinished) return null;
+      // 同 turn.done / error:工作流节点是隐藏会话,它的后台子代理跑完了也不该
+      // 打扰用户(节点自己的结果会以卡片的形式回到对话里)。
+      if (this.isNodeSession(e.sessionId)) return null;
       return {
         title: "后台任务完成",
         body: `${this.sessionTitle(e.sessionId)}: 子代理任务已结束`,
@@ -171,6 +186,16 @@ class NotificationManager {
       return s?.title || "会话";
     } catch {
       return "会话";
+    }
+  }
+
+  /** 是不是工作流节点会话(`kind: "node"`,见 `main/orchestration/runner.ts`)。
+   *  这类会话是隐藏的:它们的完成与报错不该打扰用户。 */
+  private isNodeSession(sessionId: string): boolean {
+    try {
+      return SessionRepo.get(sessionId)?.kind === "node";
+    } catch {
+      return false;
     }
   }
 

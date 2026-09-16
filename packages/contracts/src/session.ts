@@ -7,7 +7,7 @@ import type {
   EffortLevel,
   ContextSnapshot,
   SubagentSnapshot,
-  SubagentTranscriptBlock,
+  TranscriptBlock,
   PlanUpdateEvent,
   TurnFileEntry,
   TurnUsageRecord,
@@ -82,14 +82,24 @@ export interface Session {
   providerId: string;
   /** claude's own session id, used for `--resume`. Null until first turn. */
   claudeSessionId: string | null;
-  /** Session role: "chat" = a normal session shown in the left-bar list;
-   *  "side" = a side-chat Q&A session (right-panel ask tab). Side sessions
-   *  are excluded from every list/search/reuse query and are managed only by
-   *  the side-chat panel, keyed by their parent session. */
-  kind: "chat" | "side";
-  /** For side sessions (kind="side"): the id of the main session this Q&A
-   *  thread was opened from, for traceability. Null for main sessions; set
-   *  back to null when the parent is deleted (the side chat itself is kept). */
+  /** Session role. Three kinds, and the difference that matters is **who drives
+   *  it and whether the user sees it**:
+   *
+   *  - `"chat"` — a normal session, listed in the left bar, driven by the user.
+   *  - `"side"` — a side-chat Q&A session (right-panel ask tab), also driven by
+   *    the user but kept out of every list.
+   *  - `"node"` — a workflow-graph **node**: a hidden sub-session the host
+   *    scheduler spawns to run one step of a graph. The user never drives it and
+   *    never sees it in a list; it exists so a node gets its own concurrent
+   *    turn, its own approval bookkeeping and its own persisted transcript
+   *    (see `main/orchestration/`). Its interactive events are re-addressed to
+   *    the parent conversation, so a node's question pops up in the chat. */
+  kind: "chat" | "side" | "node";
+  /** For non-`chat` sessions: the main session this one hangs off.
+   *
+   *  `side` — the Q&A thread's origin, for traceability. Nulled (not cascaded)
+   *  when the parent is deleted, because the history has standalone value.
+   *  `node` — the conversation whose graph spawned it. Nulled the same way. */
   parentSessionId: string | null;
   title: string;
   status: SessionStatus;
@@ -98,6 +108,10 @@ export interface Session {
   /** Reasoning effort ("default" = don't pass --effort). → --effort. */
   effort: EffortLevel;
   permissionMode: PermissionMode;
+  /** 这个会话用的工作流。**开放字符串** —— 内置的那六个 id,或用户自建的 `wf_`。
+   *  像模型 / 权限那样**跟着会话存**,切回一个会话时它还在原来那个流程上。
+   *  "default" = 不追加任何流程。 */
+  workflowId: string;
   /** Id of the user's custom-model config bound to this session (null = use
    *  built-in credential discovery). Set when the user picks a custom model
    *  in the composer; persisted so a resumed session keeps its endpoint. */
@@ -153,7 +167,7 @@ export interface Session {
    *  Persisted so the side-panel subagent viewer still works after a session
    *  reopen; cleared when a new turn starts (mirrors the roster cycle).
    *  Null for sessions that never ran subagents. JSON-serialized in the DB. */
-  subagentTranscripts: Record<string, SubagentTranscriptBlock[]> | null;
+  subagentTranscripts: Record<string, TranscriptBlock[]> | null;
   createdAt: number;
   updatedAt: number;
 }

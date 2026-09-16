@@ -14,6 +14,7 @@
  * when recognition fails because no model is selected.
  */
 import { useCallback, useEffect, useState } from "react";
+import { PANEL_MAX_W } from "./panelWidth.js";
 import { api } from "@renderer/lib/api.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
@@ -173,7 +174,7 @@ export function VoicePanel() {
   const selected = list?.selected ?? "";
 
   return (
-    <section className="mx-auto w-full max-w-3xl space-y-4">
+    <section className={`mx-auto w-full ${PANEL_MAX_W.form} space-y-4`}>
       <PanelHeader
         title={t("settings.voice.title")}
         icon={IconMicrophone}

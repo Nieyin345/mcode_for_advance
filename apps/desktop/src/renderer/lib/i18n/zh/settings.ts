@@ -10,6 +10,9 @@ export const zh = {
   "settings.nav.shortcuts": "快捷键",
   "settings.nav.voice": "语音输入",
   "settings.nav.skills": "技能",
+  "settings.nav.workflows": "工作流",
+  "settings.nav.automation": "自动化",
+  "settings.nav.hooks": "钩子",
   "settings.nav.mcp": "MCP",
   "settings.nav.plugins": "插件",
   "settings.nav.notifications": "消息通知",
@@ -425,6 +428,31 @@ export const zh = {
   "settings.nav.runtimes": "Agent",
   "settings.runtimes.title": "Agent",
   "settings.runtimes.section": "Claude / Codex / Pi",
+  "settings.toolchain.section": "文档工具链",
+  "settings.toolchain.desc": "内置的 Word / PPT / Excel / PDF 技能靠这些外部工具才跑得动 —— 它们不在应用里，装到一台干净电脑上要先备齐。Pandoc 和 Python 文档库可以由应用代装；另外几个是系统级安装，应用只检测并告诉你装什么。",
+  "settings.toolchain.checking": "正在检测本机…",
+  "settings.toolchain.recheck": "重新检测",
+  "settings.toolchain.ready": "已就绪",
+  "settings.toolchain.missing": "缺失",
+  "settings.toolchain.missingParts": "缺 {names}",
+  "settings.toolchain.install": "安装",
+  "settings.toolchain.reinstall": "重装",
+  "settings.toolchain.removeTitle": "删掉应用装的这一份",
+  "settings.toolchain.removeConfirm": "确定删除应用安装的 {name}？系统里你自己装的那份不受影响。",
+  "settings.toolchain.installFailed": "安装失败",
+  "settings.toolchain.removeFailed": "删除失败",
+  "settings.toolchain.tool.pandoc.what": "Word 读写与格式互转（技能读 docx 的首选路径）",
+  "settings.toolchain.tool.pandoc.howto": "点右边的「安装」，应用自己下载一份放进自己的目录。",
+  "settings.toolchain.tool.latex.what": "论文 LaTeX 模版的编译（xelatex / pdflatex，参考文献走 biber；中文靠 ctex）",
+  "settings.toolchain.tool.latex.howto": "点右边的「安装」，应用会下载 TinyTeX 完整版（约 165 MB），接着补上中文排版链（ctex + 字体）和论文模版常用的期刊文档类。全程装在应用自己的目录里，不要管理员权限，大约三四分钟。",
+  "settings.toolchain.tool.pythonDeps.what": "Excel / PPT 读取要的 Python 包（openpyxl、markitdown、python-pptx 等）",
+  "settings.toolchain.tool.pythonDeps.howto": "没找到可用的 Python。先自己装一个 Python，再回来点「重新检测」。",
+  "settings.toolchain.tool.zip.what": "编辑 docx / pptx 的必经步骤：解包 → 改 XML → 重新打包",
+  "settings.toolchain.tool.zip.howto": "Windows 上装 Git for Windows（自带 unzip）；macOS / Linux 一般自带。",
+  "settings.toolchain.tool.soffice.what": "渲染与格式转换（LibreOffice 的命令行）",
+  "settings.toolchain.tool.soffice.howto": "到 libreoffice.org 下载安装包自己装 —— 它要管理员权限，应用不代劳。",
+  "settings.toolchain.tool.pdftoppm.what": "把 PDF 渲染成图片（核对排版时用）",
+  "settings.toolchain.tool.pdftoppm.howto": "装 poppler（pdftoppm 在它里面）；已经装了 TeX Live 的话一般自带。",
   "settings.runtimes.loading": "正在读取运行时状态…",
   "settings.runtimes.statusInstalled": "已安装",
   "settings.runtimes.statusNotInstalled": "未安装",
@@ -691,6 +719,8 @@ export const zh = {
   "settings.skills.noProjects": "暂无项目 — 仅可管理全局 skill",
   "settings.skills.sourceProject": "项目",
   "settings.skills.sourceGlobal": "全局",
+  "settings.skills.sourceBuiltin": "内置",
+  "settings.skills.builtinReadOnly": "内置技能 — 随应用发布,只读",
   "settings.skills.noDesc": "(无描述)",
   "settings.skills.newSkill": "新建 Skill",
   "settings.skills.importSkill": "导入 Skill",
@@ -829,7 +859,320 @@ export const zh = {
   "settings.usage.unknownVendor": "未知厂商",
   "settings.usage.empty": "暂无用量数据,完成一轮对话后此处会出现统计。",
 
+  // ── 用量页:工作流那一节(并发上限 + 花费)──
+  "settings.usage.workflow.title": "工作流",
+  "settings.usage.workflow.desc":
+    "跑一张流程图时,每一步都是一个**独立会话**,会真的烧 token。",
+  "settings.usage.maxParallel": "最多同时跑几步",
+  "settings.usage.maxParallelDesc":
+    "一张图跑到某一步时,能并排跑的步骤会一起起跑 —— 这个数字就是同时最多几个。到上限的**排队等**,不会失败。改小可以省钱,改大跑得快。范围 {min}–{max}。",
+  "settings.usage.cost": "累计花费",
+  // ⚠️ 引擎没报花费时(某些第三方端点)显示这个,不是 $0.00 —— 那会让人以为免费。
+  "settings.usage.costUnknown": "—",
+
   // ── mobile settings sheet (MobileSettingsSheet) ──
   "settings.mobile.displayModeHint":
     "Tab 模式下,聊天区顶部会显示会话标签条,用于在已打开的会话间切换;该偏好与电脑端共享。",
+
+  // 统一数据根(设置 → 数据位置)
+  "settings.nav.dataRoot": "数据位置",
+  "settings.dataRoot.title": "数据位置",
+  "settings.dataRoot.locationTitle": "数据根目录",
+  "settings.dataRoot.desc":
+    "聊天记录、论文库、教材库、笔记库、模版库，全都在这一个目录下面 —— 整个目录拷走就是一次完整备份。",
+  "settings.dataRoot.currentPath": "当前位置",
+  "settings.dataRoot.treeTitle": "目录结构",
+  "settings.dataRoot.tree.db": "聊天记录 · 全部设置",
+  "settings.dataRoot.tree.library": "三个库的家",
+  "settings.dataRoot.tree.papers": "论文库 · 教材库的 PDF（按内容哈希，同一份文件导两次只存一份）",
+  "settings.dataRoot.tree.markdown": "转录出的 Markdown —— AI 读的就是它",
+  "settings.dataRoot.tree.notes": "笔记库（每篇一个 .md，可在应用内直接编辑）",
+  "settings.dataRoot.tree.collections": "给 AI 读的库清单",
+  "settings.dataRoot.tree.exports": "导出的引用文件（.bib / .txt）",
+  "settings.dataRoot.tree.templates": "模版库（PPT / LaTeX / Word / 代码 / 图片）",
+  "settings.dataRoot.move": "迁移到新位置",
+  "settings.dataRoot.confirm": "把全部数据复制到：\n{path}\n\n复制完成后应用会自动重启一次（数据库没法在运行中搬家）。原来的位置会保留一份副本，确认没问题后你可以自己删掉。",
+  "settings.dataRoot.failed": "迁移失败",
+  "settings.dataRoot.restarting": "已迁移，正在重启…",
+  "settings.dataRoot.manualTitle": "手工迁移",
+  "settings.dataRoot.manualHint": "也可以自己在资源管理器里把这个目录整个拷到别处，但记得拷完再回来改这里 —— 这个按钮做的是「搬」，不是「指」，它会覆盖目标目录里已有的内容。",
+
+  // ── WorkflowsPanel(设置 → 工作流)──
+  // 工作流 = 原来的"对话模式"的可编辑形态:一段流程文字(提示词型),或者一张图
+  // (图型,画布在下一个批次)。内置那六个的名字**不在这里** —— 它们沿用
+  // `composer.mode.*`(与输入框那个选择器同源,见 lib/workflowLabels.tsx)。
+  "settings.workflows.tabLibrary": "工作流库",
+  "settings.workflows.tabNodeTypes": "节点类型",
+  "settings.workflows.loadFailed": "工作流库读不出来：{error}",
+  "settings.workflows.openFailed": "这个工作流打不开：{error}",
+  "settings.workflows.listEmpty": "库里还没有工作流。",
+  "settings.workflows.selectHint": "左边选一个工作流。选中一个节点可以配它，点空白处回到工作流本身。",
+  "settings.workflows.badgeBuiltin": "内置",
+  "settings.workflows.badgeEdited": "已修改",
+
+  // ── 画布 ──
+  "settings.workflows.addNode": "添加节点",
+  "settings.workflows.relayout": "整理布局",
+  "settings.workflows.canvasEmpty":
+    "这张图还是空的。用上面的「添加节点」放一个，再拖到合适的位置 —— 从卡片右边的圆点按住拖到另一个节点上就连上了箭头，箭头指的是先后。",
+  "settings.workflows.graphSummary": "{nodes} 个节点 · {edges} 条依赖",
+  "settings.workflows.portConnectHint": "按住往另一个节点拖，连一条依赖",
+  "settings.workflows.edgeRemoveHint": "点击删除这条依赖",
+
+  // ── 自动化 ──
+  // 与工作流**共用同一个库、同一张画布、同一个检查器**，差别只有"谁把它跑起来"：
+  // 工作流跟着一次对话跑，自动化等一个事件自己跑（见 `@contracts/workflow`）。
+  // 所以这里只有触发方式那几句，别的文案都复用 `settings.workflows.*`。
+  "settings.automation.tabLibrary": "自动化库",
+  "settings.automation.listEmpty": "还没有自动化。",
+  "settings.automation.newAutomation": "新建自动化",
+  "settings.automation.newAutomationName": "新自动化",
+  "settings.automation.fieldTrigger": "触发方式",
+  "settings.automation.trigger.manual": "手动",
+  "settings.automation.trigger.schedule": "定时",
+  "settings.automation.trigger.file": "文件变化",
+  "settings.automation.trigger.webhook": "Webhook",
+  // 四种触发要用户准备的东西完全不同，所以说的是**将来会问你要什么**，而不是一句
+  // 通用的"暂未实现"——那些参数还没设计出来（见 `WORKFLOW_TRIGGERS` 的注释）。
+  "settings.automation.triggerHint.manual": "只有你按「运行」的时候才跑。",
+  "settings.automation.triggerHint.schedule":
+    "到点自己跑。将来这里会问你要定时表达式（比如「每天 9 点」）。",
+  "settings.automation.triggerHint.file":
+    "文件变了就跑。将来这里会问你要盯着哪个目录、认哪些文件。",
+  "settings.automation.triggerHint.webhook":
+    "收到一个 HTTP 请求就跑。将来这里会给你一个回调地址。",
+  "settings.automation.notWired":
+    "执行器还没接：这里存下来的是定义，现在不会真的在后台跑起来，上面选的那种触发也不会发生。",
+
+  // ── 钩子（设置 → 钩子）──
+  // 事件驱动的命令：某件事发生的时候，在这台机器上跑一条你自己的命令。
+  // **宿主侧执行**（见 `@contracts/hook`），所以对话、工作流节点、自动化一视同仁。
+  "settings.hooks.intro":
+    "钩子不属于任何一张图：它挂在事件上，对每一次对话、每一个工作流节点都生效。命令以你的身份在这台机器上执行，事件内容从 stdin 传进去（JSON）。",
+  "settings.hooks.refreshRuns": "刷新记录",
+  "settings.hooks.newHook": "新建钩子",
+  "settings.hooks.loadFailed": "钩子读不出来：{error}",
+  "settings.hooks.listTitle": "钩子",
+  "settings.hooks.listEmpty": "还没有钩子。",
+  "settings.hooks.selectHint": "左边选一条，或者新建一条。",
+
+  "settings.hooks.fieldName": "名称",
+  "settings.hooks.namePlaceholder": "这条钩子是干什么的",
+  "settings.hooks.fieldEvent": "什么时候跑",
+  // 匹配规则那一栏的文案**跟着事件变**（比工具名 / 比文件路径），三处一起换 ——
+  // 一个写着「匹配哪些工具」的框摆在 turn.files 下面，用户只会填错。
+  "settings.hooks.matcherLabelTool": "匹配哪些工具",
+  "settings.hooks.matcherPlaceholderTool": "例如 Edit,Write 或 mcp__*",
+  "settings.hooks.matcherHintTool": "留空 = 所有工具。可以用 * 和 ?，多个用逗号分开。",
+  "settings.hooks.matcherLabelPath": "匹配哪些文件",
+  "settings.hooks.matcherPlaceholderPath": "例如 *.ts, *package.json",
+  "settings.hooks.matcherHintPath":
+    "留空 = 任何文件改动都算。可以用 * 和 ?，多个用逗号分开；* 能跨目录，所以 *.ts 和 src/*.ts 都认（绝对路径和相对路径各试一次）。",
+  "settings.hooks.fieldCommand": "命令",
+  "settings.hooks.commandPlaceholder": "例如 python ~/scripts/fmt.py",
+  "settings.hooks.commandHint":
+    "在会话的工作目录里、用系统 shell 跑。事件内容走 stdin（JSON），同时有几个 MCODE_* 环境变量。",
+  "settings.hooks.fieldTimeout": "超时（毫秒）",
+  "settings.hooks.fieldEnabled": "启用",
+
+  "settings.hooks.save": "保存",
+  "settings.hooks.saving": "保存中…",
+  "settings.hooks.saved": "已保存",
+  "settings.hooks.unsaved": "有改动还没保存",
+  "settings.hooks.saveFailed": "存不下去",
+  "settings.hooks.nameRequired": "名称不能为空，还没保存",
+  "settings.hooks.commandRequired": "命令不能为空，还没保存",
+
+  "settings.hooks.test": "试跑",
+  "settings.hooks.testing": "在跑…",
+  "settings.hooks.testHint": "试跑用的是假载荷，不会被记进下面的执行记录，也不需要先保存。",
+  "settings.hooks.remove": "删除",
+  "settings.hooks.removeTitle": "删除「{name}」？",
+  "settings.hooks.removeDesc": "这条钩子会从 hooks.json 里去掉。已经跑过的记录不受影响。",
+
+  "settings.hooks.runsTitle": "最近的执行",
+  "settings.hooks.runsEmpty": "还没有执行过。",
+  "settings.hooks.sessionNode": "节点",
+  "settings.hooks.runStatus.ok": "成功",
+  "settings.hooks.runStatus.failed": "失败",
+  "settings.hooks.runStatus.timeout": "超时",
+  "settings.hooks.runStatus.skipped": "跳过",
+  "settings.hooks.runStatus.running": "在跑",
+
+  "settings.hooks.event.userMessage": "用户发消息",
+  "settings.hooks.event.toolUse": "工具开始",
+  "settings.hooks.event.toolResult": "工具结束",
+  "settings.hooks.event.approvalRequest": "等待审批",
+  "settings.hooks.event.requestResolved": "审批有结果",
+  "settings.hooks.event.questionAsk": "Agent 提问",
+  "settings.hooks.event.planApprovalRequest": "计划等批准",
+  "settings.hooks.event.todoUpdate": "待办清单变了",
+  "settings.hooks.event.subagentUpdate": "子代理状态",
+  "settings.hooks.event.turnFiles": "改动了文件",
+  "settings.hooks.event.turnIncomplete": "一轮没跑完",
+  "settings.hooks.event.turnDone": "一轮结束",
+  "settings.hooks.event.compactResult": "上下文被压缩",
+  "settings.hooks.event.error": "出错",
+  "settings.hooks.event.upstreamIssue": "上游重试",
+  "settings.hooks.event.workflowNodeResult": "工作流节点跑完",
+  // 每种事件那句话说清**时机**，因为其中几条最容易搞混：工具开始是**审批之后**，
+  // 「等待审批」只在需要审批的工具上才有，「一轮没跑完」不是报错。
+  "settings.hooks.eventHint.userMessage": "用户按下发送的时候。",
+  "settings.hooks.eventHint.toolUse": "模型决定调用一个工具的时候（审批已经过了）。",
+  "settings.hooks.eventHint.toolResult": "工具返回结果的时候，不论成功还是失败。",
+  "settings.hooks.eventHint.approvalRequest": "有工具在等用户批准的时候（只有需要审批的工具才有这一步）。",
+  "settings.hooks.eventHint.requestResolved": "有人回答了审批或提问的时候（桌面或手机任一端答的都算）。",
+  "settings.hooks.eventHint.questionAsk": "Agent 向你提了一个问题、在等回答的时候。",
+  "settings.hooks.eventHint.planApprovalRequest": "模型在计划模式下写好了计划、在等你批准的时候。",
+  "settings.hooks.eventHint.todoUpdate": "待办清单变化的时候（每次 TodoWrite 更新都会触发）。",
+  "settings.hooks.eventHint.subagentUpdate": "子代理名册变化的时候（起一个、状态变、结束都会触发）。",
+  "settings.hooks.eventHint.turnFiles": "一轮结束、并且改动了文件的时候。可以按文件路径筛。",
+  "settings.hooks.eventHint.turnIncomplete": "一轮没正常跑完的时候（工具没回结果，或者模型什么都没说）—— 这不是报错。",
+  "settings.hooks.eventHint.turnDone": "一轮结束的时候（正常结束和被打断都会触发）。",
+  "settings.hooks.eventHint.compactResult": "上下文被压缩的时候（手动 /compact 或自动）。",
+  "settings.hooks.eventHint.error": "这一轮出错的时候。",
+  "settings.hooks.eventHint.upstreamIssue": "上游接口在重试、或者重试成功的时候。",
+  "settings.hooks.eventHint.workflowNodeResult": "工作流的一个节点跑完的时候（在发起那次对话的会话上触发）。",
+
+  // ── 节点 ──
+  "settings.workflows.nodeInspectorTitle": "节点",
+  "settings.workflows.nodeTitle": "标题",
+  "settings.workflows.nodeCapability": "能力",
+  "settings.workflows.nodeCapabilityDefault": "跟随类型（{fallback}）",
+  "settings.workflows.nodeDeps": "依赖哪些节点",
+  "settings.workflows.nodeDepsAlone": "图上只有这一个节点，没有可依赖的对象。",
+  "settings.workflows.nodeDepsCycle": "会连成一个环，不能勾。",
+  "settings.workflows.nodeDependents": "下游：{names}",
+  // 分支节点的出路(见 `WorkflowEdge` 的 label/note)。选项**就是出边** —— 所以这一段
+  // 是给已有的线起名字,不是另开一张表;要加一个选项得去画布上从它拉一根线。
+  "settings.workflows.branchOptions": "通向哪几条路",
+  "settings.workflows.branchNoOptions":
+    "一根出路都没有。从它往下一步拉几根线——每根线就是一个选项，跑到这里时你来点一条。",
+  "settings.workflows.branchOptionTo": "去往「{name}」",
+  "settings.workflows.branchOptionLabel": "选项名（留空就用那一步的标题）",
+  "settings.workflows.branchOptionNote":
+    "选了这条之后，给下一步的一句说明（会拼进它的提示词）。可以先不写。",
+  // 列表项之间的分隔符。**它也要进词典** —— 直接在代码里拼一个「、」，英文界面
+  // 里就会看到 `Downstream: A、B`（见 AGENTS.md 的文案规则）。
+  "settings.workflows.listSeparator": "、",
+  "settings.workflows.nodeRemove": "删除节点",
+  "settings.workflows.nodeTypeMissing": "类型未安装",
+  "settings.workflows.nodeTypeMissingDetail":
+    "这个节点引用的类型在这台机器上没有装。图照样能存能看，但它画不出也跑不了 —— 把对应的插件装上，或者自己写一份清单放进数据根的 workflows/node-types。",
+  // 下面这两句是**卡片上那一行**用的:它和类型 id 挤在同一行里,所以短是硬要求
+  // （长出来的部分会被截断，而截断的提示等于没提示）。
+  "settings.workflows.nodeParamsIncomplete": "参数没填完",
+  "settings.workflows.nodeRunnerMissing": "这个执行方式跑不了",
+  // 主代理:图的入口,新建的工作流自带一个、删不掉(见 workflowView 的 isProtectedNode)。
+  "settings.workflows.mainNodeHint": "主代理 · 这张图的入口，不能删",
+  "settings.workflows.mainTypeMissing":
+    "节点类型清单没读进来，暂时建不了工作流 —— 新建出来的图会缺了入口那个主代理。清单的错误在上面的提示里。",
+  // 参数的控件种类在清单里是封闭集合（text / longtext / number / boolean / select /
+  // file / dir / model），界面各自映到一个控件。
+  "settings.workflows.paramPick": "请选择",
+  "settings.workflows.paramBrowse": "选择…",
+  // 引用型参数（ref：模型 / 技能…）的空值 = 不指定。它**具体**意味着什么由清单的
+  // help 说（比如模型那项的空值是"跟着这次对话走"）—— 控件本身不认识是哪一种来源，
+  // 所以这里不能写成"用这次对话选的模型"。
+  "settings.workflows.paramRefUnset": "不指定",
+  "settings.workflows.paramRefEmpty": "这台机器上还没有可选的项，直接填名字也行。",
+  // 多选的引用型参数（技能 / MCP 服务器 / 插件）默认**收起成一行**——这三格里九成的
+  // 答案是留空，铺开三个列表会把整个检查器占掉大半。收起的那一行仍然写着"有多少可挑"，
+  // 所以它不是藏起来，只是不占地方。
+  "settings.workflows.paramRefUnlimited": "不限制",
+  "settings.workflows.paramRefOptionCount": "可选 {n} 个",
+  "settings.workflows.paramRefSelectedCount": "已选 {n} 个",
+  "settings.workflows.paramRefExpand": "展开",
+  "settings.workflows.paramRefCollapse": "收起",
+  "settings.workflows.paramRefFilter": "筛选…",
+  "settings.workflows.paramRefNoMatch": "没有匹配的。",
+  "settings.workflows.paramRefAddPlaceholder": "输入名字，回车添加",
+  // 存着、但这台机器上没有的那几个名字（分享来的图引用了没装的技能）。点它摘掉。
+  "settings.workflows.paramRefMissingHint": "这台机器上没有这一项，点击移除",
+  // 产出变量（`kind: "variables"`）—— 一张「名字 + 示例」的表。
+  // ⚠️ 界面上**故意不出现 JSON 这个词**：底下确实是 JSON，但那是软件的事。用户看到的
+  // 只是"这一步要交哪几样东西"。见 `@contracts/outputConstraint` 的文件头。
+  "settings.workflows.varName": "变量名",
+  "settings.workflows.varExample": "示例",
+  "settings.workflows.varAdd": "加一样",
+  "settings.workflows.varRemove": "删掉这一行",
+  "settings.workflows.varEmpty": "还没有。加一样，写清楚这一步要交出来什么。",
+  // 「插入变量」：候选是**上游那几步自己定过的变量名**，所以这里一个具体名字都不列
+  // —— 列出来就等于把这个能力绑死在某一套词汇上。
+  "settings.workflows.insertVar": "插入变量",
+  "settings.workflows.insertVarEmpty":
+    "这一步上面还没有别的步骤。只有上游定过的变量才会出现在这里 —— 先在前面放一个步骤，在那个步骤的「产出变量」里填上名字和示例。",
+  "settings.workflows.insertVarWholeOutput": "整段结果",
+  "settings.workflows.insertVarWholeOutputHint": "那一步交出来的整段文字",
+
+  // ── 工作流本体 ──
+  "settings.workflows.fieldName": "名称",
+  "settings.workflows.nameRequired": "名称不能为空，还没保存",
+  "settings.workflows.fieldDescription": "说明",
+  "settings.workflows.fieldPrompt": "流程文字（可选）",
+  "settings.workflows.lockedHint":
+    "内置工作流的名称与说明跟随界面语言，在这里改不了 —— 能改的是它的流程文字和它的节点图。",
+  "settings.workflows.promptPlaceholder": "写下这个工作流的流程……",
+  "settings.workflows.promptAutoSaveHint":
+    "图型工作流的流程由节点表达；这段文字是额外追加的说明，通常留空。改动会自动保存。",
+  "settings.workflows.newWorkflow": "新建工作流",
+  "settings.workflows.newWorkflowName": "新工作流",
+  "settings.workflows.actionFailed": "操作失败：{error}",
+  "settings.workflows.unknownError": "未知错误",
+  "settings.workflows.reset": "恢复默认",
+  "settings.workflows.resetTitle": "恢复默认？",
+  "settings.workflows.resetDesc": "将丢掉你对「{name}」的修改，回到应用自带的那一版。这一步不能撤销。",
+  "settings.workflows.deleteTitle": "删除工作流？",
+  "settings.workflows.deleteDesc": "「{name}」会从库里删掉，这一步不能撤销。",
+
+  // ── 保存（手点）──
+  // 状态行和「保存」那颗按钮并排，在编辑区标题行上。
+  "settings.workflows.savePending": "有未保存的改动",
+  "settings.workflows.saving": "保存中…",
+  "settings.workflows.saveBlocked": "保存受阻",
+  "settings.workflows.discard": "放弃改动",
+  "settings.workflows.unsavedDot": "有未保存的改动",
+
+  // ── 节点类型页 ──
+  "settings.workflows.nodeTypesIntro":
+    "工作流里每个节点都引用一个「类型」：类型决定这一步要填什么参数、要什么能力、怎么跑。清单是普通的 JSON —— 可以自己写，也可以随插件分发。",
+  "settings.workflows.nodeTypesLoadFailed": "节点类型读不出来：{error}",
+  "settings.workflows.nodeTypesEmpty": "当前一个节点类型都没有。",
+  "settings.workflows.nodeTypeNoParams": "无参数",
+  "settings.workflows.outputVarsTerminal":
+    "这一步后面没有别的步骤，所以这张表不会被用到 —— 没有下游来取这些变量。它的产出是直接给用户看的，按给人看的样子写就行。",
+  "settings.workflows.nodeTypeRequired": "必填",
+  "settings.workflows.nodeTypeFrom": "来自 {from}",
+  "settings.workflows.nodeTypeRunner": "执行方式",
+  "settings.workflows.nodeTypeCapability": "能力",
+  "settings.workflows.nodeTypeOther": "其他",
+
+  // ── 代理档案 ──
+  // 一份存下来的子 agent 配置(指令 / 技能 / 模型 / 引擎……),建节点时直接套用。
+  "settings.workflows.addFromProfile": "从档案新建",
+  "settings.workflows.fieldProfile": "档案",
+  "settings.workflows.applyProfile": "套用一份档案…",
+  "settings.workflows.profileEmpty": "还没有存过档案。把下面这些填好，再按「存为档案」。",
+  "settings.workflows.saveAsProfile": "存为档案",
+  "settings.workflows.profileNamePlaceholder": "这份档案叫什么",
+  "settings.workflows.removeProfile": "删掉这份档案",
+  "settings.workflows.profileSaveFailed": "存不下去",
+  "settings.workflows.profilesTitle": "代理档案",
+  "settings.workflows.profilesIntro":
+    "一份存下来的子 agent 配置。在画布上配好一个节点、按「存为档案」就能存一份，之后加节点时直接挑它。",
+  "settings.workflows.profileNew": "新建档案",
+  "settings.workflows.profilesEmpty": "还没有档案。在画布上配好一个节点，按「存为档案」试试。",
+  "settings.workflows.profileTypeMissing": "类型没装",
+  "settings.workflows.profileTypeMissingDetail":
+    "这台机器上没有装「{type}」这个节点类型，所以这份档案的参数改不了（值还留着，装上之后就能改）。",
+  "settings.workflows.nodeTypeNotRunnable": "当前跑不了：执行方式 {kind} 还没实现，画进图里也只能看。",
+  "settings.workflows.problemsTitle": "有 {n} 个清单读不进来",
+  "settings.workflows.problemsHint":
+    "这些文件在磁盘上但内容不对，所以没有出现在上面的列表里。按下面的错误改好，回来点刷新。",
+  "settings.workflows.emptyPlugin": "还没有插件带节点类型 —— 装一个清单里声明了 nodeTypes 的插件就会有。",
+  "settings.workflows.emptyLocal":
+    "还没有自己写的节点类型 —— 把清单放进数据根下的 workflows/node-types 就能在这里看到（那个目录里有一份 README 讲怎么写）。",
+  "settings.workflows.source.builtin": "内置",
+  "settings.workflows.source.plugin": "插件",
+  "settings.workflows.source.local": "本地",
 } as const;

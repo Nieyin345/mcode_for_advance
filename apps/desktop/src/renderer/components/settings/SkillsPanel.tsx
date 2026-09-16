@@ -44,6 +44,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
+import { PANEL_MAX_W } from "./panelWidth.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -58,7 +59,7 @@ import {
   IconFolder,
   IconFileText,
 } from "@renderer/lib/icons.js";
-import type { SkillInfo, SkillSource, ExternalSkillInfo, SkillTool } from "@contracts/ipc";
+import type { SkillInfo, SkillSource, ReadOnlySkillSource, ExternalSkillInfo, SkillTool } from "@contracts/ipc";
 
 /** Skill name charset — mirrored from the zod schema in the contract. The
  *  editor disables the name field for existing skills, so this only gates the
@@ -70,15 +71,32 @@ const SKILL_NAME_RE = /^[A-Za-z0-9_-]+$/;
  *  EMPTY_SKILLS). */
 const EMPTY_PANEL_SKILLS: SkillInfo[] = [];
 
-/** Selection in the left list. `"new"` = the transient create entry;
- *  `null` = empty state. An existing skill is keyed by `${source}:${name}`
- *  (a name can appear under both global + project; the key disambiguates). */
-/** The scopes this editor can read/write. Plugin-contributed skills are
- *  excluded — they're read-only inventory owned by the Plugins panel. */
-type EditableSkillSource = Exclude<SkillSource, "plugin">;
+/** The sources the panel can SHOW and read. Plugin-contributed skills are
+ *  excluded — they're read-only inventory owned by the Plugins panel (which
+ *  owns install / enable / uninstall). Built-in skills ARE included: no plugin
+ *  owns them, so this panel is the only place a user can read what `/docx`
+ *  actually does. */
+type PanelSkillSource = Exclude<SkillSource, "plugin">;
+
+/** The sources the new-skill form can CREATE into. Narrower than
+ *  {@link PanelSkillSource}: built-in skills ship with the app, so there is
+ *  nothing to create into. */
+type CreatableSkillSource = Exclude<PanelSkillSource, "builtin">;
+
+/** True for skills the editor must not offer to save or delete — neither has a
+ *  user-owned file root: a plugin skill lives in the plugin's install dir, a
+ *  built-in one in the app's own resources (replaced wholesale on upgrade).
+ *
+ *  A type predicate rather than a plain boolean so the write call sites narrow
+ *  `PanelSkillSource` down to the two writable sources after the guard — the
+ *  contract's write schemas accept only those, and this is what proves it to
+ *  the compiler instead of casting. */
+function isReadOnlySkill(source: SkillSource): source is ReadOnlySkillSource {
+  return source === "plugin" || source === "builtin";
+}
 
 type Selection =
-  | { kind: "skill"; source: EditableSkillSource; name: string }
+  | { kind: "skill"; source: PanelSkillSource; name: string }
   | { kind: "new" }
   | null;
 
@@ -86,13 +104,13 @@ interface NewForm {
   /** Where the skill will be created: project dir or the global ~/.mcode/skills.
    *  Defaults to "project" (current behavior); forced to "global" when no
    *  project exists at all (the only creatable scope then). */
-  scope: EditableSkillSource;
+  scope: CreatableSkillSource;
   name: string;
   description: string;
   body: string;
 }
 
-function emptyNewForm(scope: EditableSkillSource): NewForm {
+function emptyNewForm(scope: CreatableSkillSource): NewForm {
   return { scope, name: "", description: "", body: "" };
 }
 
@@ -173,7 +191,7 @@ export function SkillsPanel() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<{ source: EditableSkillSource; name: string } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{ source: PanelSkillSource; name: string } | null>(null);
   // Import dialog open state.
   const [importOpen, setImportOpen] = useState(false);
 
@@ -190,7 +208,7 @@ export function SkillsPanel() {
   const startEdit = async (skill: SkillInfo) => {
     // Plugin rows are filtered out of panelSkills, so the wide SkillSource
     // can only be global|project here.
-    setSelected({ kind: "skill", source: skill.source as EditableSkillSource, name: skill.name });
+    setSelected({ kind: "skill", source: skill.source as PanelSkillSource, name: skill.name });
     setNewForm(null);
     setError(null);
     setLoading(true);
@@ -200,7 +218,7 @@ export function SkillsPanel() {
         projectPath: projectPath ?? undefined,
         // Plugin rows are filtered out of panelSkills — only editable
         // sources reach this call.
-        source: skill.source as Exclude<SkillSource, "plugin">,
+        source: skill.source as PanelSkillSource,
         name: skill.name,
       });
       setEditContent(content);
@@ -230,6 +248,10 @@ export function SkillsPanel() {
   const saveEdit = async () => {
     const sel = selected;
     if (!sel || sel.kind !== "skill" || editContent === null) return;
+    // Read-only skills have no writable root. The save button is hidden for
+    // them, but guard here too — a stale selection could otherwise reach the
+    // write RPC (whose schema would reject it anyway).
+    if (isReadOnlySkill(sel.source)) return;
     setSaving(true);
     setError(null);
     try {
@@ -297,6 +319,8 @@ export function SkillsPanel() {
   const confirmDelete = async () => {
     const target = pendingDelete;
     if (!target) return;
+    // Same guard as saveEdit: read-only skills are never deletable.
+    if (isReadOnlySkill(target.source)) return;
     try {
       const res = await api.skills.delete({
         projectPath: projectPath ?? undefined,
@@ -324,7 +348,7 @@ export function SkillsPanel() {
   };
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-5xl min-h-0 flex-col">
+    <div className={cn("mx-auto flex h-full w-full min-h-0 flex-col", PANEL_MAX_W.form)}>
       <PanelHeader
         className="mb-3"
         title="Skills"
@@ -420,16 +444,7 @@ export function SkillsPanel() {
                     <span className="truncate text-[0.7857em] font-medium text-content">
                       {s.name}
                     </span>
-                    <span
-                      className={cn(
-                        "shrink-0 rounded px-1 text-[9px] leading-tight",
-                        s.source === "project"
-                          ? "bg-accent/12 text-accent"
-                          : "bg-surface-hover text-content-subtle",
-                      )}
-                    >
-                      {s.source === "project" ? t("settings.skills.sourceProject") : t("settings.skills.sourceGlobal")}
-                    </span>
+                    <SourceBadge source={s.source} />
                   </div>
                   <div className="flex items-center gap-1.5">
                     <span className="truncate text-[0.7143em] text-content-subtle">
@@ -500,7 +515,7 @@ export function SkillsPanel() {
                 );
                 // selected is editable-scope; the found row matches it.
                 if (target) {
-                  setPendingDelete({ source: target.source as EditableSkillSource, name: target.name });
+                  setPendingDelete({ source: target.source as PanelSkillSource, name: target.name });
                 }
               }}
             />
@@ -516,7 +531,9 @@ export function SkillsPanel() {
         description={
           <>
             {t("settings.skills.deleteDescPre")}
-            {pendingDelete?.source === "project" ? t("settings.skills.sourceProject") : t("settings.skills.sourceGlobal")}
+            {/* Reuse the badge rather than a third copy of the source→label
+                ternary: the dialog names the same thing the list does. */}
+            {pendingDelete && <SourceBadge source={pendingDelete.source} />}
             {t("settings.skills.deleteDescMid")}
             {pendingDelete?.name}
             {t("settings.skills.deleteDescPost")}
@@ -536,6 +553,33 @@ export function SkillsPanel() {
         onImported={() => void refreshAfterMutation()}
       />
     </div>
+  );
+}
+
+/** Source badge for a skill row / editor header. Single implementation so the
+ *  list and the editor can never disagree about what a source is called —
+ *  they each used to carry their own copy of the same ternary. */
+function SourceBadge({ source }: { source: SkillSource }) {
+  const { t } = useI18n();
+  const project = source === "project";
+  const builtin = source === "builtin";
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded px-1 text-[9px] leading-tight",
+        project
+          ? "bg-accent/12 text-accent"
+          : builtin
+            ? "bg-info/12 text-info"
+            : "bg-surface-hover text-content-subtle",
+      )}
+    >
+      {project
+        ? t("settings.skills.sourceProject")
+        : builtin
+          ? t("settings.skills.sourceBuiltin")
+          : t("settings.skills.sourceGlobal")}
+    </span>
   );
 }
 
@@ -575,24 +619,23 @@ function SkillSourceEditor({
   onDelete: () => void;
 }) {
   const { t } = useI18n();
+  // Read-only skills (built-in, shipped in the app's resources) are shown but
+  // not editable: the save/delete handlers reject them host-side, so offering
+  // the buttons would only produce an error dialog. Computed from `skill`
+  // rather than threaded in as a prop — there is exactly one reason to be
+  // read-only and it's a property of the source.
+  const readOnly = isReadOnlySkill(skill.source);
   return (
     <div className="flex min-h-full flex-col">
       <div className="mb-2 flex items-center justify-between">
         <div className="flex items-center gap-1.5">
           <IconSparkles size={14} className="text-content-muted" />
           <span className="text-[0.8571em] font-medium text-content">/{skill.name}</span>
-          <span
-            className={cn(
-              "rounded px-1 text-[9px]",
-              skill.source === "project"
-                ? "bg-accent/12 text-accent"
-                : "bg-surface-hover text-content-subtle",
-            )}
-          >
-            {skill.source === "project" ? t("settings.skills.sourceProject") : t("settings.skills.sourceGlobal")}
-          </span>
+          <SourceBadge source={skill.source} />
         </div>
-        <span className="text-[0.7143em] text-content-subtle">{t("settings.skills.rawSource")}</span>
+        <span className="text-[0.7143em] text-content-subtle">
+          {readOnly ? t("settings.skills.builtinReadOnly") : t("settings.skills.rawSource")}
+        </span>
       </div>
       {loading ? (
         <div className="flex items-center gap-2 py-8 text-[0.7857em] text-content-subtle">
@@ -604,25 +647,31 @@ function SkillSourceEditor({
           value={content ?? ""}
           onChange={(e) => onChange(e.target.value)}
           spellCheck={false}
+          readOnly={readOnly}
           className={cn(
-            "min-h-[300px] flex-1 resize-y rounded border border-edge bg-surface px-2.5 py-2 font-mono text-[0.7857em] leading-relaxed text-content placeholder:text-content-subtle focus:border-accent focus:outline-none",
+            "min-h-[300px] flex-1 resize-y rounded border border-edge px-2.5 py-2 font-mono text-[0.7857em] leading-relaxed text-content placeholder:text-content-subtle focus:border-accent focus:outline-none",
+            readOnly ? "cursor-default bg-surface-muted/40" : "bg-surface",
           )}
           placeholder={t("settings.skills.sourcePlaceholder")}
         />
       )}
       {error && <div className="mt-2 text-[0.7857em] text-danger">{error}</div>}
       <div className="mt-2 flex items-center gap-2">
-        <Button variant="danger" size="sm" onClick={onDelete} title={t("settings.skills.deleteSkillTitle")}>
-          <IconTrash size={12} />
-          {t("common.delete")}
-        </Button>
+        {!readOnly && (
+          <Button variant="danger" size="sm" onClick={onDelete} title={t("settings.skills.deleteSkillTitle")}>
+            <IconTrash size={12} />
+            {t("common.delete")}
+          </Button>
+        )}
         <div className="flex-1" />
         <Button variant="ghost" size="sm" onClick={onCancel}>
-          {t("common.cancel")}
+          {readOnly ? t("common.close") : t("common.cancel")}
         </Button>
-        <Button variant="primary" size="sm" onClick={onSave} disabled={saving || loading}>
-          {saving ? t("settings.saving") : t("common.save")}
-        </Button>
+        {!readOnly && (
+          <Button variant="primary" size="sm" onClick={onSave} disabled={saving || loading}>
+            {saving ? t("settings.saving") : t("common.save")}
+          </Button>
+        )}
       </div>
     </div>
   );
@@ -656,7 +705,7 @@ function NewSkillForm({
   const update = <K extends keyof NewForm>(key: K, value: NewForm[K]) =>
     setForm((prev) => (prev ? { ...prev, [key]: value } : prev));
   const { t } = useI18n();
-  const scopes: Array<{ value: EditableSkillSource; label: string; disabled?: boolean }> = [
+  const scopes: Array<{ value: CreatableSkillSource; label: string; disabled?: boolean }> = [
     { value: "project", label: t("settings.skills.sourceProject"), disabled: !canUseProject },
     { value: "global", label: t("settings.skills.sourceGlobal") },
   ];

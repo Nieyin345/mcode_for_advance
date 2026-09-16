@@ -1,0 +1,267 @@
+/**
+ * 文献库区域文案。键名遵循本区域的 `library.` 前缀约定。
+ * zh 是 `MessageId` 的事实源 —— 新增键先加在这里。
+ */
+export const zh = {
+  // 入口与标题
+  "library.title": "文献库",
+  "library.docs.title": "文档",
+  "library.subtitle": "管理本地文献集合，供 AI 阅读与引用",
+  "library.open": "文献库",
+
+  // 左栏:智能视图与集合
+  "library.view.all": "全部文献",
+  "library.view.recent": "最近添加",
+  "library.view.missingPdf": "未下载 PDF",
+  "library.view.needsLogin": "需要登录",
+  "library.collections": "集合",
+  "library.collection.new": "新建集合",
+  "library.collection.namePlaceholder": "集合名称",
+  "library.collection.create": "创建",
+  "library.collection.cancel": "取消",
+  "library.collection.duplicateName": "已有同名文献库",
+  "library.collection.rename": "重命名",
+  "library.collection.delete": "删除文献库",
+  "library.collection.deleteConfirm": "删除文献库「{name}」？库里的文献不会被删除，只是从这个分组里移出。",
+  "library.collection.empty": "这个集合还没有文献",
+
+  // 中栏:列表
+  "library.list.count": "{n} 篇",
+  "library.list.searchPlaceholder": "搜索标题、作者、摘要",
+  "library.list.selected": "已选中 {n} 篇",
+  "library.list.empty": "文献库还是空的",
+  "library.list.emptyHint": "导入本地的 PDF 文件（自动识别作者与期刊，并转成 Markdown），或用关键词检索、粘贴 DOI / arXiv ID / BibTeX。",
+  "library.list.noMatch": "没有匹配的文献",
+  "library.list.emptyInCollection": "分类只是视图 —— 东西还在库里，只是不属于这个分类。",
+  "library.list.showAll": "看全部",
+  "library.list.filteredOut": "{n} 条被筛选条件挡住了（不在这个视图里显示）",
+  "library.list.clearFilters": "清除筛选",
+  "library.kind.paper": "文献",
+  "library.kind.textbook": "教材",
+  "library.kind.note": "笔记",
+  "library.view.allInKind": "全部{kind}",
+
+  /* ── 笔记库 ── */
+  "library.import.pickNote": "选择 Markdown 文件…",
+  "library.import.noteHint": "收进来的 md 会复制一份进笔记库，原文件留在原处。",
+  "library.import.noteResult": "收进 {added} 篇 · 跳过 {skipped} 篇（同名）",
+  "library.note.new": "新建笔记",
+  "library.note.placeholder": "笔记标题",
+  "library.note.untitled": "未命名笔记",
+  "library.note.create": "新建",
+  "library.note.edit": "编辑",
+  "library.note.save": "保存",
+  "library.note.saved": "已保存",
+  "library.note.unsaved": "未保存",
+  "library.note.saveHint": "Ctrl+S",
+  "library.note.readFailed": "读不出这篇笔记",
+  "library.note.saveFailed": "保存失败",
+  "library.list.emptyNote": "笔记库还是空的",
+  "library.list.emptyHintNote": "收 Markdown 文件进笔记库；同一个库里同名的笔记会自动跳过。",
+  "library.list.needsMetaShort": "待补全",
+  "library.list.needsMeta": "缺作者 / 年份 / 期刊 —— 引用格式会不完整，点开可以看缺哪一项",
+
+  // 工具栏
+  "library.action.search": "检索",
+  "library.action.import": "导入",
+  "library.action.addToContext": "添加文献库到上下文",
+  "library.action.download": "下载 PDF",
+  "library.action.downloadSelected": "下载选中的 {n} 篇",
+  "library.action.deleteSelected": "移除选中的 {n} 篇",
+  "library.action.removeFromLibrary": "彻底删除",
+  "library.action.removeConfirm":
+    "从库中彻底删除选中的 {n} 篇？数据库记录和磁盘上的 PDF / Markdown 都会被删掉，不能还原。（只是不想让它们待在当前分组里的话，用右键的「从当前文献库移除」——那会把它们收进回收站。）",
+  "library.action.refresh": "刷新",
+
+  // 检索
+  "library.search.title": "检索外部数据库",
+  "library.search.scopeHint": "这里是在 Crossref / arXiv 上找**还没入库**的新文献。要搜已经在库里的，用列表上方的搜索框（搜标题/作者/摘要），或右栏的全文检索（搜已转 Markdown 的正文）。",
+  "library.search.placeholder": "关键词，如 graph neural network scheduling",
+  "library.search.submit": "检索",
+  "library.search.searching": "检索中…",
+  "library.search.noResult": "没有找到结果",
+  "library.search.addSelected": "加入文献库",
+  "library.search.source": "来源",
+
+  // 导入
+  "library.import.title": "导入文献",
+  "library.import.placeholder": "每行一个 DOI 或 arXiv ID，或粘贴整段 BibTeX",
+  "library.import.submit": "导入",
+  "library.import.importing": "导入中…",
+  "library.import.result": "导入 {added} 篇，跳过 {skipped} 篇重复",
+  "library.import.nothingParsed": "没有识别出任何 DOI / arXiv ID / BibTeX 条目",
+  "library.import.pickPdf": "选择 PDF 文件",
+  "library.import.autoConvert": "导入后自动转 Markdown",
+  "library.import.autoConvertHint": "（已经有转录好的 md？取消勾选，省一次额度 —— 导入后在详情页用「用本地 Markdown…」挂上你那份）",
+  "library.import.pdfResult": "导入 {added} 篇,跳过 {skipped} 篇重复",
+  "library.import.convertFailed": "{n} 篇转 Markdown 失败",
+  "library.import.pdfErrors": "{n} 份没能导入",
+  "library.import.importedCount": "导入 {n} 篇",
+  "library.import.dropHint": "也可以直接把 PDF 拖进来",
+  "library.import.dropHere": "松手导入 PDF",
+
+  // PDF 状态
+  "library.pdf.ready": "已有 PDF",
+  "library.pdf.none": "无 PDF",
+  "library.pdf.queued": "排队中",
+  "library.pdf.downloading": "下载中",
+  "library.pdf.needsLogin": "需要登录",
+  "library.pdf.failed": "下载失败",
+  "library.pdf.notFound": "找不到来源",
+  "library.pdf.retry": "重试",
+  "library.pdf.goLogin": "去登录",
+  "library.pdf.openFile": "打开 PDF",
+  "library.pdf.revealFile": "在文件夹中显示",
+  "library.convert.ready": "已转 Markdown",
+  "library.convert.none": "尚未转 Markdown",
+  "library.convert.run": "转 Markdown",
+  "library.convert.redo": "重新转换",
+  "library.convert.done": "已转换",
+  "library.convert.failed": "转换失败",
+  "library.convert.revealMd": "在文件夹中显示 Markdown",
+  "library.convert.adopt": "用本地 Markdown…",
+  "library.convert.adoptHint":
+    "已经有转录好的 md？直接挂上，不用再花一次转录额度。同级目录里的 images/ 会一起收进来。",
+  "library.convert.adoptDone": "已挂上（含 {n} 张配图）",
+
+  // 左栏文献行的右键菜单
+  "library.ctx.moveTo": "移动到",
+  "library.ctx.copyTo": "复制到",
+  "library.ctx.removeFrom": "从当前文献库移除",
+  // 回收站里的那个红色项 —— 与上面那句是**两件不同的事**:上面只是移出分组(能捞回来),
+  // 这句是记录加磁盘文件一起没。所以文案里必须点出"磁盘上的文件也会被删"。
+  "library.ctx.deleteForever": "彻底删除",
+  "library.ctx.deleteForeverConfirm":
+    "彻底删除《{title}》？数据库记录和磁盘上的 PDF / Markdown 都会被删掉，不能还原。",
+  "library.ctx.openFolder": "在文件夹中打开",
+  "library.ctx.openMd": "预览原文（应用内）",
+  "library.ctx.openMdMissing": "预览原文（还没转换）",
+  "library.ctx.openMdExternal": "用外部编辑器打开 Markdown",
+  "library.ctx.newNote": "新建笔记",
+  "library.ctx.noOtherCollection": "还没有别的文献库",
+  "library.ctx.attachToChat": "添加到当前对话",
+  "library.ctx.attachNoSession": "还没有打开的对话 —— 先在会话列表里选一个",
+  "library.ctx.attachFailed": "添加到当前对话失败",
+
+  // 详情
+  "library.detail.noSelection": "从左侧选一篇文献查看详情",
+  "library.detail.meta": "元数据",
+  "library.detail.overview": "概览",
+  "library.detail.abstract": "摘要",
+  "library.detail.notes": "笔记",
+  "library.itemNote.add": "添加笔记",
+  "library.itemNote.placeholder": "记点什么？例如「第三章的卷积推导没跟上」",
+  "library.itemNote.empty": "还没有笔记。读的时候随手记两句，对话时 AI 也能看到。",
+  "library.itemNote.deleteConfirm": "删除这条笔记？",
+  "library.itemNote.loadFailed": "读不出笔记",
+  "library.detail.notesSoon": "笔记功能将在后续版本提供",
+  "library.detail.collections": "所属集合",
+  "library.detail.doi": "DOI",
+  "library.detail.arxiv": "arXiv",
+  "library.detail.venue": "期刊 / 会议",
+  "library.detail.year": "年份",
+  "library.detail.authors": "作者",
+  "library.detail.license": "许可",
+  "library.detail.volumeIssue": "卷 / 期 / 页码",
+  "library.detail.publisher": "出版商",
+  "library.detail.preview": "原文",
+  "library.detail.pdf": "PDF",
+  "library.detail.missing": "元数据待补全：缺 {fields}。引用格式会因此不完整。",
+
+  /* ── 应用内 PDF 阅读器 ── */
+  "library.pdfViewer.prev": "上一页",
+  "library.pdfViewer.next": "下一页",
+  "library.pdfViewer.pageOf": "{n} / {total}",
+  "library.pdfViewer.zoomIn": "放大",
+  "library.pdfViewer.zoomOut": "缩小",
+  "library.pdfViewer.fitWidth": "适应宽度",
+  "library.pdfViewer.openExternal": "用外部程序打开",
+  "library.pdfViewer.failed": "打不开这个 PDF",
+
+  /* ── 引用格式 ── */
+  "library.cite.title": "引用格式",
+  "library.cite.gb7714": "GB/T 7714",
+  "library.cite.apa": "APA",
+  "library.cite.bibtex": "BibTeX",
+  "library.cite.copy": "复制这条引用",
+
+  /* ── 导出引用 ── */
+  "library.export.label": "导出引用",
+  "library.export.bibtex": "BibTeX（.bib）",
+  "library.export.gb7714": "GB/T 7714（.txt）",
+  "library.export.apa": "APA（.txt）",
+  "library.export.done": "已导出 {n} 条 → {path}",
+  "library.export.failed": "导出失败",
+  "library.export.revealFailed": "已导出，但没能打开文件夹：{msg}",
+  "library.export.openFolder": "打开所在文件夹",
+
+  /* ── 原文预览 ── */
+  "library.preview.failed": "读不出 Markdown 正文",
+  "library.preview.retry": "重试",
+  "library.preview.more": "已显示 {shown}/{total} 段 —— 继续向下滚动会接着加载",
+  "library.preview.noMarkdown": "这篇还没有 Markdown 转换产物，转换后才能预览。",
+  "library.preview.needPdf": "先得有 PDF 才能转换。",
+  "library.preview.imageCount": "{n} 张图",
+  "library.preview.skipped": "{n} 张图片没能内联（文件缺失、过大或不在同一目录），正文里已就地标出",
+  "library.preview.skippedMany": "文中另有 {n} 张图片未在此显示（数量超出预览上限）",
+
+
+  // 设置页:文献库
+  "settings.nav.library": "文献库",
+  "settings.library.title": "文献库",
+  "settings.library.layoutTitle": "目录结构",
+  "settings.library.layoutDesc":
+    "PDF 按内容哈希存放——同一篇文件导两次会落到同一个路径，天然去重。markdown/ 下同样结构放转换产物，AI 读的是它。collections/ 下是给 AI 读的文献清单。",
+
+  // 全文检索
+  "library.fulltext.placeholder": "在已转换的文献全文中搜索",
+  "library.fulltext.hint": "只搜已转成 Markdown 的文献；中文与英文都支持",
+  "library.fulltext.noMatch": "全文里没有匹配",
+  "library.fulltext.line": "第 {n} 行",
+
+  // 下载提示
+  "library.notice.needsLoginTitle": "有下载需要重新登录",
+  "library.notice.needsLoginBody": "这些文献拿回来的是网页而不是 PDF，通常是登录态过期了。请在内嵌浏览器里重新登录后重试。",
+
+  // 模式的标签与说明都在 chat-composer 的 composer.mode.* ——
+  // 输入框里不再有提示条，药丸上那个词就是全部指示。
+
+  // 输入框:让 AI 读哪个库
+  "library.chat.none": "不绑定文献库",
+  "library.chat.pick": "让 AI 读哪个文献库",
+  "library.chat.searchPlaceholder": "搜索文献库",
+  "library.chat.addN": "添加 {n} 个",
+  "library.chat.alreadyAdded": "已在上下文中",
+  "library.chat.current": "当前：{name}",
+
+  // 设置:机构认证
+  "settings.nav.institution": "机构认证",
+  "institution.title": "机构认证",
+  "institution.desc":
+    "在内嵌浏览器里登录一次（知网、学校图书馆代理、出版商等任意站点），登录态会被记住，下载文献时自动复用。这里不需要填写任何密码。",
+  "institution.loginButton": "打开浏览器登录",
+  "institution.profiles": "常用入口",
+  "institution.profilesHint": "只是方便记录入口地址的组织性记录，删掉不会登出任何站点。",
+  "institution.profile.new": "添加入口",
+  "institution.profile.name": "名称",
+  "institution.profile.namePlaceholder": "如：学校图书馆",
+  "institution.profile.loginUrl": "登录地址",
+  "institution.profile.domains": "适用域名",
+  "institution.profile.domainsHint": "逗号分隔，用于把登录态归到这个入口名下",
+  "institution.profile.proxyPrefix": "代理前缀（可选）",
+  "institution.profile.proxyPrefixHint": "如 EZproxy 的登录前缀",
+  "institution.profile.notes": "备注",
+  "institution.profile.save": "保存",
+  "institution.profile.delete": "删除",
+  "institution.authStatus": "已登录站点",
+  "institution.authStatusEmpty": "还没有登录任何站点",
+  "institution.authStatusHint": "从浏览器 cookie 实时读取。登出后这里会同步消失。",
+  "institution.cookieCount": "{n} 条 cookie",
+  "institution.expiresAt": "有效期至 {date}",
+  "institution.sessionCookie": "会话级（关闭浏览器即失效）",
+  "institution.clearDomain": "清除该站点登录态",
+  "institution.clearAll": "清除全部登录态",
+  "institution.clearAllConfirm": "清除内置浏览器里所有站点的登录态？这将影响全部已登录的网站。",
+  "institution.cleared": "已清除登录态",
+  "institution.reload": "刷新状态",
+} as const;

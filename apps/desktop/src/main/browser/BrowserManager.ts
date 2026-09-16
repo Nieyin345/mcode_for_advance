@@ -23,10 +23,11 @@
  * UA (the Electron/app tail is stripped) — sign-in flows refuse webview UAs.
  */
 import { randomUUID } from "node:crypto";
-import { mkdirSync, statSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 import {
   app,
+  BrowserWindow,
   ipcMain,
   safeStorage,
   shell,
@@ -40,7 +41,8 @@ import {
   type AuthInfo,
   type Debugger,
   type DownloadItem,
-} from "electron";import {
+} from "electron";
+import {
   IPC,
   resolveBrowserDeviceSpec,
   BROWSER_COOKIE_VAULT_SETTING_KEY,
@@ -416,6 +418,241 @@ function isPersistLoginEnabled(): boolean {
   return SettingRepo.get(BROWSER_PERSIST_LOGIN_SETTING_KEY) !== "0";
 }
 
+/**
+ * 读取共享浏览器分区的 cookie —— 「机构认证」功能的唯一数据源。
+ *
+ * 为什么走这个函数而不是读 cookie 保管库(`browser.cookieVault.enc`):
+ * 保管库每 5 分钟才刷新一次,用户刚登录完就查会读到过期快照。`ses.cookies.get()`
+ * 拿的是**实时**值。
+ *
+ * 为什么不做成 BrowserManagerImpl 的方法:该方法只需要 Session,不需要任何视图
+ * 状态;挂到类上会逼调用方先拿到 manager 实例,反而绕。也刻意**不动**
+ * saveCookieVault / restoreCookieVault —— 那套承担着「重启后登录态不丢」的职责
+ * (见其上方注释:Electron ≤40 不会为持久化分区自动落盘 cookie),任何改动都可能
+ * 让用户静默登出。
+ */
+export async function getBrowserCookies(
+  filter: { domain?: string; url?: string } = {},
+): Promise<Cookie[]> {
+  return browserSession().cookies.get(filter);
+}
+
+/**
+ * 按域名清除登录态(cookie)。返回实际删除的条数。
+ *
+ * 逐条 remove 而不是 `clearStorageData({storages:["cookies"]})` —— 后者是整分区
+ * 清空,会连带把用户在别的站点的登录一起干掉。`cookies.remove` 需要 url + name,
+ * 所以这里由 cookie 自身的 domain/path/secure 反推一个能匹配它的 url。
+ */
+export async function clearBrowserCookiesForDomains(domains: string[]): Promise<number> {
+  const ses = browserSession();
+  let removed = 0;
+  for (const domain of domains) {
+    const cookies = await ses.cookies.get({ domain });
+    for (const c of cookies) {
+      // Cookie.domain 在 Electron 类型里是可选的;没有域的条目无法推导出可匹配的
+      // url,remove 必然失败,直接跳过。
+      if (!c.domain) continue;
+      // 前导点表示父域匹配(.example.com),remove 的 url 不接受
+      const host = c.domain.startsWith(".") ? c.domain.slice(1) : c.domain;
+      const scheme = c.secure ? "https" : "http";
+      const url = `${scheme}://${host}${c.path || "/"}`;
+      try {
+        await ses.cookies.remove(url, c.name);
+        removed += 1;
+      } catch (err) {
+        // 单个 cookie 删不掉不该中断整批 —— 常见于域名与 url 推导不匹配
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warn(`cookie remove failed (${c.domain} / ${c.name}): ${msg}`);
+      }
+    }
+  }
+  return removed;
+}
+
+/* ─────────────────── 程序化下载(文献库用) ─────────────────── */
+
+/**
+ * 「下载意图」—— 让程序化发起的下载存到指定路径,而不是默认下载目录。
+ *
+ * 为什么需要它:共享分区上的 `will-download` 钩子(见 installDownloadListener)
+ * 会把**所有**下载都存到 `<downloads>/mcode-browser/` 并重命名去重。文献库需要
+ * 精确控制落点(要按 sha256 命名、放进库目录),所以下载前先登记一个意图,
+ * 钩子在 `setSavePath` 时优先采用它。
+ *
+ * 为什么走 `session.downloadURL()` 而不是新开一个 WebContentsView:
+ * 前者不需要视图 —— cookie 来自共享分区,代理、UA、重定向全部由 Chromium 处理,
+ * 且不会打断用户正在浏览的标签页。这正是「下载走内嵌浏览器」原则的最省事形态。
+ */
+interface DownloadIntent {
+  /** 期望的原始 URL。重定向后可能对不上,故下面还有兜底认领逻辑。 */
+  url: string;
+  savePath: string;
+  settled: boolean;
+  resolve: (r: { ok: boolean; path?: string; error?: string }) => void;
+}
+
+const downloadIntents = new Set<DownloadIntent>();
+
+/**
+ * 让模块级的 {@link downloadViaBrowser} 能保证 `will-download` 的钩子已经装上。
+ * 由下面的单例在模块加载时赋值 —— 见 `downloadViaBrowser` 里的说明。
+ */
+let ensureDownloadHandlerReady: (() => void) | null = null;
+
+/**
+ * 认领一个下载意图。
+ *
+ * 优先按 URL 精确匹配;匹配不到时,**若当前只有一个未认领的意图**则认领它 ——
+ * 这是为重定向准备的(`item.getURL()` 拿到的是最终地址,可能与请求地址不同)。
+ * 同时有多个意图且都不匹配 URL 时返回 null,宁可让这次下载走默认路径,
+ * 也不能把文件塞给错误的请求。
+ */
+function claimIntent(url: string): DownloadIntent | null {
+  for (const intent of downloadIntents) {
+    if (!intent.settled && intent.url === url) return intent;
+  }
+  const unclaimed = [...downloadIntents].filter((i) => !i.settled);
+  return unclaimed.length === 1 ? unclaimed[0] : null;
+}
+
+/**
+ * 用内嵌浏览器的会话来下载一个 URL,存到指定绝对路径。
+ *
+ * ⚠️ 这是**唯一**能在主进程拿到 cookie 的下载方式:裸 `fetch`(undici)既不带
+ * 会话 cookie 也不读代理环境变量。任何绕过它的自建 HTTP 下载都会在需要登录的
+ * 资源上失败。
+ *
+ * 调用方负责校验拿到的文件确实是要的东西(如 `%PDF` 魔数)—— 认证过期时
+ * Chromium 会老老实实把一个登录页 HTML 存下来,不会报错。
+ */
+export function downloadViaBrowser(req: {
+  url: string;
+  savePath: string;
+  timeoutMs?: number;
+}): Promise<{ ok: boolean; path?: string; error?: string }> {
+  const timeoutMs = req.timeoutMs ?? 120_000;
+  return new Promise((resolve) => {
+    let settled = false;
+    const intent: DownloadIntent = {
+      url: req.url,
+      savePath: req.savePath,
+      settled: false,
+      resolve: (r) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        downloadIntents.delete(intent);
+        resolve(r);
+      },
+    };
+    const timer = setTimeout(() => {
+      intent.settled = true;
+      log.warn(`browser download timed out after ${timeoutMs}ms: ${req.url}`);
+      intent.resolve({ ok: false, error: `下载超时(${Math.round(timeoutMs / 1000)} 秒)` });
+    }, timeoutMs);
+
+    downloadIntents.add(intent);
+    try {
+      /*
+       * ⚠️ **先保证 `will-download` 的钩子已经装上**,再发起下载。
+       *
+       * 这个钩子原来只在**创建浏览器视图**时装(见 `createBrowser` →
+       * `installDownloadListener`)。于是「点下载时还没打开过浏览器面板」—— 也就是
+       * 文献库最常见的用法 —— 会掉进 Chromium 的**默认下载行为**:
+       *
+       *   ① 弹出系统「另存为」对话框(而这里根本没人能回答它);
+       *   ② 把响应原样存到用户选的路径 —— 认证/反爬页返回的是 HTML,于是用户拿到
+       *      一个 .pdf 结尾的网页;
+       *   ③ 上面登记的 intent 永远等不到 `done` 回调,一直挂到超时,报「下载超时」。
+       *
+       * 三个症状是同一个原因。钩子本身是幂等的,这里调一次即可。
+       */
+      ensureDownloadHandlerReady?.();
+      // 在同一分区上发起 —— 会触发 will-download,由上面的钩子接管落点
+      void browserSession().downloadURL(req.url);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      intent.resolve({ ok: false, error: `发起下载失败:${msg}` });
+    }
+  });
+}
+
+/**
+ * 把一页**打印成 PDF** —— 自动化用户自己那套手工流程。
+ *
+ * ## 为什么需要它
+ *
+ * 有一类文献(用户实测的 Nature / Wiley / ScienceDirect / TechRxiv 等)**既不是付费墙,
+ * 也没有下载按钮**:点开就在浏览器里内联渲染出 PDF,人只能靠浏览器菜单的
+ * 「打印 → 另存为 PDF」才存得下来。而这类站点普遍挂着 Cloudflare 之类的**人机检测**,
+ * 程序化的 `session.downloadURL()` 要么挂到超时、要么被 0 字节中断 —— 这一层就是给
+ * 这种情况兜底的。
+ *
+ * 做法:开一个**隐藏窗口**、挂**同一个会话**(所以带着用户已经通过验证的 cookie),
+ * 打开那个地址,等 PDF 渲染出来,再走 Chromium 自己的打印管线导出。
+ *
+ * ## 代价,以及为什么只该当兜底
+ *
+ * 拿到的是**重新渲染**的 PDF,不是服务端的原始字节:批注、表单域、内嵌文件会丢,
+ * 书签结构也会变。所以只在直连下载**全部失败之后**才用它 —— 能拿原件就别拿这个。
+ */
+export async function printUrlToPdf(req: {
+  url: string;
+  savePath: string;
+  timeoutMs?: number;
+}): Promise<{ ok: boolean; error?: string }> {
+  const timeoutMs = req.timeoutMs ?? 45_000;
+  let win: BrowserWindow | null = null;
+  try {
+    win = new BrowserWindow({
+      show: false,
+      webPreferences: {
+        // 同一个会话 = 同一批 cookie。用户在内嵌浏览器里过掉的人机检测,这里也算数。
+        session: browserSession(),
+        sandbox: true,
+      },
+    });
+    await withTimeout(win.loadURL(req.url), timeoutMs, "打开页面超时");
+    // PDF 查看器是**异步渲染**的:`loadURL` 解析完文档时还没画完,不等这一下,
+    // printToPDF 很可能导出一页空白。
+    await new Promise((r) => setTimeout(r, 2000));
+    const pdf = await withTimeout(
+      win.webContents.printToPDF({ printBackground: true }),
+      timeoutMs,
+      "导出 PDF 超时",
+    );
+    mkdirSync(dirname(req.savePath), { recursive: true });
+    writeFileSync(req.savePath, pdf);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    try {
+      win?.destroy();
+    } catch {
+      /* 窗口可能已经没了 */
+    }
+  }
+}
+
+/** 给一个 promise 套上超时。用于 loadURL / printToPDF 这类可能永远不返回的原生调用。 */
+function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
 /** How often the cookie vault is refreshed in the background, so a force-kill
  *  (dev Ctrl+C, crash) loses at most one interval of sign-in state. */
 const PERSIST_LOGIN_INTERVAL_MS = 5 * 60 * 1000;
@@ -539,6 +776,42 @@ class BrowserManagerImpl {
   /** Background cookie-vault save timer (see saveCookieVault).
    *  Started once with the first browser view; never stopped (process exits). */
   private persistTimer: NodeJS.Timeout | null = null;
+  /** 渲染端重载时的清场钩子是否已装 —— 只装一次(见 installReloadCleanup)。 */
+  private reloadCleanupInstalled = false;
+
+  /**
+   * 渲染端**重新加载**时,把所有浏览器视图关掉。
+   *
+   * ## 为什么必须有这一步
+   *
+   * 标签页列表住在渲染端(zustand,不落盘),而视图住在主进程 —— 渲染端一重载,
+   * 那份列表就没了,主进程手里这些视图却都还活着:
+   *
+   *   - 用户看到的是"一打开浏览器就多出几个 `about:blank`"(每次重载攒一个,而
+   *     重载后新建的都是空白页);
+   *   - 更糟的是**白屏**:渲染端认定"当前该显示哪个视图"的唯一性没了,上一次重载
+   *     留下的视图会和新的那个抢同一块屏幕(WebContentsView 是 OS 层的面,叠在
+   *     渲染端 DOM 之上,z-index 管不着)。
+   *
+   * 重载之后这些视图对渲染端来说已经**不可达**了 —— 没人能再引用它们、没人会关它们。
+   * 留着只有坏处,所以一次全关。(开发期 HMR 的全量刷新也走这条路;用户手动刷新页面
+   * 同理 —— 标签页列表本来就丢了,把页面留着反而是"看得见却点不到"。)
+   *
+   * 装在 `did-finish-load` 上:它对主框架的**每次**加载都发(首次启动、重载),而首次
+   * 启动时一个视图都没有,直接跳过。
+   */
+  private installReloadCleanup(): void {
+    if (this.reloadCleanupInstalled) return;
+    const win = getMainWindow();
+    if (!win || win.isDestroyed()) return;
+    this.reloadCleanupInstalled = true;
+    win.webContents.on("did-finish-load", () => {
+      if (this.browsers.size === 0) return;
+      const n = this.browsers.size;
+      for (const id of [...this.browsers.keys()]) this.close(id);
+      log.info(`browser: renderer reloaded — closed ${n} orphan view(s)`);
+    });
+  }
 
   create(projectPath: string, initialDevice?: BrowserDevicePreset): BrowserCreateResult {
     const spawned = this.spawnView(projectPath);
@@ -650,6 +923,8 @@ class BrowserManagerImpl {
     });
 
     log.info(`browser created: ${id} project=${projectPath}`);
+    // 顺手保证"渲染端重载 → 视图清空"这条钩子装着(只装一次)
+    this.installReloadCleanup();
     void this.pinColorScheme(live);
     return { live };
   }
@@ -1409,51 +1684,92 @@ class BrowserManagerImpl {
   private readonly downloads: BrowserDownloadEntry[] = [];
   private downloadListenerInstalled = false;
 
-  /** Hook the shared browser session's will-download ONCE. Registered lazily
-   *  with the first spawned view (same pattern as the vault timer) because
-   *  `app.getPath("downloads")` isn't guaranteed before app ready. */
-  private installDownloadListener(): void {
+  /** Hook the shared browser session's will-download ONCE. Idempotent.
+   *
+   *  由两处调用:创建浏览器视图时(`createBrowser`),以及**发起程序化下载时**
+   *  (`downloadViaBrowser` —— 后者不能依赖前者,见那里的说明)。
+   *  之所以要等到运行时才装:`app.getPath("downloads")` 在 app ready 之前不保证可用。 */
+  installDownloadListener(): void {
     if (this.downloadListenerInstalled) return;
     this.downloadListenerInstalled = true;
     browserSession().on("will-download", (_event, item: DownloadItem, wc) => {
-      const browserId = wc.isDestroyed() ? "" : (this.wcToBrowser.get(wc.id) ?? "");
-      const dir = browserDownloadsDir();
+      /*
+       * 顺序很重要:**先 setSavePath,再做别的。**
+       *
+       * `will-download` 是唯一能抑制 Chromium「另存为」对话框的时机 —— 在这里同步
+       * 设好落点,下载就静默写到那个文件;没设,Electron 退回默认行为:弹系统对话框,
+       * 把响应原样存到用户挑的路径。
+       *
+       * 原来这段把 setSavePath 放在几行记账**之后**,而记账的第一行是
+       * `wc.isDestroyed()`。对 `session.downloadURL()` 发起的**程序化下载**
+       * (文献库走的正是这条),Electron 传进来的 `wc` 是 **undefined** —— 于是回调
+       * 一进门就抛异常,`setSavePath` 永远执行不到。用户看到的就是:弹保存对话框、
+       * 存下来的是 HTML(反爬页/登录页)、我们这边一直等到超时。
+       *
+       * 所以:① 落点先定;② `wc` 当可能为空处理;③ 记账失败不影响下载本身。
+       */
+      const intent = claimIntent(item.getURL());
+      if (intent) intent.settled = true;
+
+      const path = intent
+        ? intent.savePath
+        : uniqueDownloadPath(browserDownloadsDir(), item.getFilename());
       try {
-        mkdirSync(dir, { recursive: true });
+        mkdirSync(intent ? dirname(path) : browserDownloadsDir(), { recursive: true });
       } catch (err) {
-        log.warn(
-          `browser: download dir mkdir failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warn(`browser: download dir mkdir failed: ${msg}`);
+        // 目录建不出来时,程序化下载已经注定失败 —— 立刻回话,别让它挂到超时
+        intent?.resolve({ ok: false, error: `无法创建目标目录:${msg}` });
       }
-      const path = uniqueDownloadPath(dir, item.getFilename());
-      // Pre-allocate the save path: no dialog, deterministic location, name
-      // deduped against existing files (-1, -2 … before the extension).
       item.setSavePath(path);
-      const entry: BrowserDownloadEntry = {
-        id: randomUUID(),
-        browserId,
-        url: item.getURL(),
-        filename: item.getFilename(),
-        path,
-        state: "progressing",
-        receivedBytes: 0,
-        totalBytes: item.getTotalBytes(),
-        startedAt: Date.now(),
-      };
-      this.downloads.unshift(entry);
-      if (this.downloads.length > BrowserManagerImpl.DOWNLOADS_MAX) this.downloads.length = BrowserManagerImpl.DOWNLOADS_MAX;
-      this.pushDownload(entry);
-      log.info(`browser download started: ${entry.filename} → ${path}`);
+
+      let entry: BrowserDownloadEntry | null = null;
+      try {
+        const browserId = wc && !wc.isDestroyed() ? (this.wcToBrowser.get(wc.id) ?? "") : "";
+        entry = {
+          id: randomUUID(),
+          browserId,
+          url: item.getURL(),
+          filename: item.getFilename(),
+          path,
+          state: "progressing",
+          receivedBytes: 0,
+          totalBytes: item.getTotalBytes(),
+          startedAt: Date.now(),
+        };
+        this.downloads.unshift(entry);
+        if (this.downloads.length > BrowserManagerImpl.DOWNLOADS_MAX) {
+          this.downloads.length = BrowserManagerImpl.DOWNLOADS_MAX;
+        }
+        this.pushDownload(entry);
+        log.info(`browser download started: ${entry.filename} → ${path}`);
+      } catch (err) {
+        // 记账只是给界面和 agent 看的;它坏了不该让文件下不下来
+        log.warn(`browser: download bookkeeping failed: ${(err as Error).message}`);
+      }
+
       item.on("updated", (_e, state) => {
+        if (!entry) return;
         entry.receivedBytes = item.getReceivedBytes();
         if (state === "interrupted") entry.state = "interrupted";
       });
       item.once("done", (_e, state) => {
-        entry.state = state;
-        entry.receivedBytes = item.getReceivedBytes();
-        entry.endedAt = Date.now();
-        this.pushDownload(entry);
-        log.info(`browser download ${state}: ${entry.filename} (${entry.receivedBytes} bytes)`);
+        if (entry) {
+          entry.state = state;
+          entry.receivedBytes = item.getReceivedBytes();
+          entry.endedAt = Date.now();
+          this.pushDownload(entry);
+          log.info(`browser download ${state}: ${entry.filename} (${entry.receivedBytes} bytes)`);
+        }
+        // 程序化下载要把结果回传给等待中的调用方。注意 "completed" 只说明传输
+        // 结束,**不保证内容是期望的文件** —— 认证过期时这里同样是 completed,
+        // 只不过存下来的是一个登录页。内容校验是调用方的责任。
+        intent?.resolve(
+          state === "completed"
+            ? { ok: true, path }
+            : { ok: false, error: `下载${state === "cancelled" ? "被取消" : "中断"}` },
+        );
       });
     });
   }
@@ -2401,3 +2717,7 @@ class BrowserManagerImpl {
 
 /** Process-wide singleton. */
 export const BrowserManager = new BrowserManagerImpl();
+
+// 模块级的 downloadViaBrowser 通过这个钩子保证 will-download 已就绪 —— 它不能
+// 直接 import 单例(那样会成环),所以由这里在加载时把能力交出去。
+ensureDownloadHandlerReady = () => BrowserManager.installDownloadListener();

@@ -25,7 +25,7 @@ import type {
   PlanUpdateEvent,
   SubagentUpdateEvent,
   SubagentSnapshot,
-  SubagentTranscriptBlock,
+  TranscriptBlock,
   SubagentTranscriptEvent,
   UpstreamIssueEvent,
 } from "@contracts/runtime";
@@ -312,13 +312,13 @@ interface AdapterState {
    *  forwardSubagentText is on, flushed as replace-semantics
    *  `subagent.transcript` events. Per-turn lifetime like the rest of this
    *  state (the adapter is constructed per turn). */
-  subagentTranscripts: Map<string, SubagentTranscriptBlock[]>;
+  subagentTranscripts: Map<string, TranscriptBlock[]>;
   /** toolCallId → owning transcript key + the tool_use block awaiting its
    *  tool_result. Subagent tool_results arrive as separate forwarded user
    *  messages; this map routes the result back onto its block in place. */
   subagentPendingTools: Map<
     string,
-    { parent: string; block: Extract<SubagentTranscriptBlock, { kind: "tool_use" }> }
+    { parent: string; block: Extract<TranscriptBlock, { kind: "tool_use" }> }
   >;
   /** task_ids of non-agent tasks (bash commands, workflows) we deliberately
    *  keep OUT of the subagent roster. task_started tags them with task_type,
@@ -1560,7 +1560,7 @@ export class SdkMessageAdapter {
           list.push({ kind: b.type, text });
         }
       } else if (b.type === "tool_use" && b.id && b.name) {
-        const block: Extract<SubagentTranscriptBlock, { kind: "tool_use" }> = {
+        const block: Extract<TranscriptBlock, { kind: "tool_use" }> = {
           kind: "tool_use",
           toolCallId: b.id,
           toolName: b.name,

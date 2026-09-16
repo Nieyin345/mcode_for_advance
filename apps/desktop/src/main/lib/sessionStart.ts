@@ -103,6 +103,11 @@ export function createOrReuseSession(
       model: input.model ?? "default",
       effort: input.effort,
       permissionMode: input.permissionMode,
+      // A new thread always starts in 默认 — deliberately NOT inheriting the
+      // previous thread's composer mode: 文献检索 swallows the send entirely
+      // (no model call), so silently carrying it into a fresh chat would eat
+      // the user's first message. The mode is picked per thread.
+      workflowId: "default",
       customModelId: input.customModelId ?? null,
       archived: false,
       pinnedAt: null,
@@ -178,6 +183,8 @@ export function createOrReuseSession(
     model: input.model ?? "default",
     effort: input.effort,
     permissionMode: input.permissionMode,
+    // See the side-session literal above: new threads never inherit a mode.
+    workflowId: "default",
     customModelId: input.customModelId ?? null,
     // Isolated-environment intent; the worktree materializes on first turn.
     // Coerced to local for non-repo projects (see coerceEnvMode).

@@ -34,6 +34,53 @@ export const en = {
   "chatStream.compact.auto": "History compacted automatically",
   "chatStream.compact.freed": "· Freed {n} tokens",
 
+  // ── A workflow step card (see `components/chat/WorkflowStepCard.tsx`) ──
+  "chatStream.workflowStep.success": "Done",
+  "chatStream.workflowStep.failed": "Failed",
+  // "Not run" rather than "Skipped": what the user sees is the cause — an
+  // upstream step failed, so this one never ran.
+  "chatStream.workflowStep.skipped": "Not run",
+  // Must stay distinct from the line above — this one means "you picked a different
+  // path at the fork", not "something upstream blew up".
+  "chatStream.workflowStep.unselected": "Not taken",
+  "chatStream.workflowStep.cancelled": "Cancelled",
+  "chatStream.workflowStep.empty": "This step produced no text.",
+  // What this step cost. `{cost}` is "—" when the engine reported no cost (not $0.00).
+  "chatStream.workflowStep.usage": "{tokens} tokens · {cost}",
+  // "过程" = what this step actually did inside its hidden sub-session (tool calls plus
+  // the narration between them). See WorkflowStepCard / WorkflowNodeTranscriptEvent.
+  "chatStream.workflowStep.process": "Process",
+  "chatStream.workflowStep.processSteps": "{n} blocks",
+  "chatStream.workflowStep.processGone":
+    "This step's process is no longer in memory (only the most recent steps are kept).",
+
+  // ── The fork card (see `components/chat/BranchChoiceCard.tsx`) ──
+  // Deliberately unlike the result cards above: until the button is pressed, the run
+  // has NOT finished — so this card is live, not a "it's done" card.
+  "chatStream.workflowChoice.prompt": "This step is yours to decide. Pick one to continue:",
+  "chatStream.workflowChoice.comment": "Anything to add? (optional)",
+  "chatStream.workflowChoice.confirm": "Continue",
+  // Every fork carries this one built in: don't pick. It's a UI affordance, not an edge.
+  "chatStream.workflowChoice.stop": "Stop here",
+  // A loop-back asks the same fork again, one card per round. This is the small chip.
+  "chatStream.workflowChoice.round": "Round {n}",
+  "chatStream.workflowChoice.chosen": "You picked “{label}”",
+  "chatStream.workflowChoice.stopped": "You stopped here",
+  // Pressing a STALE card (that run already finished or was cancelled). NOT an error —
+  // clicking an old card in history is a normal thing to do, so say it on the card
+  // itself instead of popping a dialog.
+  "chatStream.workflowChoice.stale": "This choice no longer applies (that run already finished or was cancelled).",
+
+  // ── The "ask me before running" dialog (a switch on conversation nodes, see
+  //    `AskChoiceDialog`). It asks "should this step run at all", not "which way
+  //    do we go" — so it pops up centered instead of just sitting in the stream
+  //    (the card is still there: it is the record of what was asked).
+  "chatStream.workflowAsk.title": "Run this step?",
+  "chatStream.workflowAsk.desc": "“{title}” is about to run — checking with you first.",
+  "chatStream.workflowAsk.confirm": "Go with this",
+  // Closing the dialog is **not** giving up: the card is still in the chat.
+  "chatStream.workflowAsk.dismiss": "Later",
+
   // ── MessageBlocks: images ──
   "chatStream.image.browserScreenshot": "Browser screenshot",
   "chatStream.image.userImage": "User image",

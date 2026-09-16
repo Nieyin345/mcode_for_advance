@@ -47,6 +47,7 @@ export {
   IconChevronRight,
   IconArrowRight,
   IconArrowLeft,
+  IconArrowBackUp,
   IconArrowUp,
   IconArrowDown,
   IconArrowsExchange,
@@ -214,6 +215,8 @@ export {
   IconFlask,
   IconPalette,
   IconBrush,
+  // 模版库:一条模版 = 一包可复用的文件(PPT / LaTeX / Word / 代码 / 配图)
+  IconTemplate,
   IconDeviceFloppy,
   IconSelector,
   IconAdjustmentsHorizontal,
@@ -257,6 +260,9 @@ export {
   IconTarget,
   // "None / not supported" state (e.g. "no model selected" dropdown items)
   IconCircleOff,
+  // 变量(`{{...}}`)—— 花括号就是它的写法,别用别的图标凑合(见
+  // `settings/workflows/insertVariable.ts`)
+  IconBraces,
 } from "@tabler/icons-react";
 
 /* ───────── Shorthand aliases (commonly used) ───────── */

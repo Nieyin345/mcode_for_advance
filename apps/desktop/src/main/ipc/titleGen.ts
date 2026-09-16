@@ -212,7 +212,9 @@ export async function generateSessionTitle(
       title,
     });
     const updated = SessionRepo.get(session.id);
-    if (updated && updated.kind !== "side") broadcastSessionChanged(updated);
+    // 只有真正的用户会话才广播 —— side(右侧问答)与 node(工作流节点)都不进任何
+    // 列表,广播出去只会让客户端多一次无意义的 upsert。
+    if (updated && updated.kind === "chat") broadcastSessionChanged(updated);
     log.info(`titleGen: generated title for ${session.id}: "${title}"`);
     return title;
   } catch (err) {

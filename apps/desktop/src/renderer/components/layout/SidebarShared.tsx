@@ -16,6 +16,7 @@ import { Menu } from "@base-ui/react/menu";
 import {
   IconCopy,
   IconFolder,
+  IconGitBranch,
   IconGitFork,
   IconGitMerge,
   IconPencil,
@@ -28,6 +29,7 @@ import { Button, Dialog, Input } from "@renderer/components/ui/index.js";
 import { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
 import type { Session } from "@contracts/session";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
 
 /* ── Hover-revealed inline icon button (archive / delete) ── */
 
@@ -65,6 +67,9 @@ export interface SessionContextMenuProps {
   onCopyTitle: (session: Session) => void;
   onOpenFolder: (session: Session) => void;
   onTogglePin: (session: Session) => void;
+  /** 把这段对话复制成新的一段(带着一模一样的历史与上下文)。**只有当这段对话用的引擎
+   *  真的能交出自己的上下文时才会渲染** —— 见下面 `canFork`。 */
+  onFork?: (session: Session) => void;
   /** "New session in this worktree" — present only for materialized
    *  worktree sessions; spawns a sibling thread on the same checkout. */
   onNewWorktreeSession?: (session: Session) => void;
@@ -79,7 +84,7 @@ export interface SessionContextMenuProps {
 }
 
 export function SessionContextMenu({
-  ctxMenu, onClose, onRename, onCopyTitle, onOpenFolder, onTogglePin,
+  ctxMenu, onClose, onRename, onCopyTitle, onOpenFolder, onTogglePin, onFork,
   onNewWorktreeSession, onMergeWorktree, onRenameWorktree, onRemoveWorktree,
 }: SessionContextMenuProps) {
   const { t } = useI18n();
@@ -87,9 +92,25 @@ export function SessionContextMenu({
   // user right-clicked; frozen at the last coords during the exit transition.
   const anchor = useCursorAnchor(ctxMenu);
 
+  const providers = useSessionStore((s) => s.providers);
   const session = ctxMenu?.session;
   const isPinned = !!session?.pinnedAt;
   const isWorktree = !!session?.worktreePath;
+  /**
+   * 能不能"复制一份对话"。
+   *
+   * **由引擎说了算**(`supportsFork`),不是由这里说了算:复制的是**引擎那边的上下文**,
+   * 引擎交不出来(它没有可复制的会话状态)时,新对话会看起来带着同一段历史、而模型那边
+   * 是空的 —— 那比不提供这个菜单项糟得多。所以宁可不显示。
+   *
+   * `session.claudeSessionId` 为空也要挡住:那说明这段对话**一次都还没发过**,没有任何
+   * 上下文可分 —— 那种情况下用户要的是"新建一个",不是"复制一份"。
+   */
+  const canFork =
+    !!session &&
+    !!onFork &&
+    !!session.claudeSessionId &&
+    !!providers.find((p) => p.id === session.providerId)?.capabilities.supportsFork;
   const itemClass = cn(
     "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs outline-none select-none",
     "text-content-muted data-[highlighted]:bg-surface-muted",
@@ -125,6 +146,21 @@ export function SessionContextMenu({
               <IconPencil size={14} className="shrink-0" />
               {t("common.rename")}
             </Menu.Item>
+            {canFork && (
+              <Menu.Item
+                onClick={() => {
+                  // 菜单要先收:分叉要等主进程复制会话文件,期间这张浮层留在屏幕上会
+                  // 让人以为没点着。
+                  const target = session;
+                  onClose();
+                  if (target && onFork) onFork(target);
+                }}
+                className={itemClass}
+              >
+                <IconGitBranch size={14} className="shrink-0" />
+                {t("layout.forkSession")}
+              </Menu.Item>
+            )}
             <Menu.Item
               onClick={() => session && onCopyTitle(session)}
               className={itemClass}

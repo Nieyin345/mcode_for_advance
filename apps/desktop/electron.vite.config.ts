@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync, cpSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { constants as zlibConstants, brotliCompressSync, gzipSync } from "node:zlib";
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
@@ -93,6 +93,54 @@ const monacoPkgDir = resolve(
   "node_modules/monaco-editor",
 );
 
+/** `pdfjs-dist` 的包目录 —— 它的 cmaps / standard_fonts 要当静态资源发给渲染端。 */
+const pdfjsPkgDir = resolve(__dirname, "node_modules/pdfjs-dist");
+
+/**
+ * 把 pdfjs 的 `cmaps` 与 `standard_fonts` 复制进渲染端的 public 目录。
+ *
+ * ## 为什么需要这个
+ *
+ * 主进程用 pdf.js 抽文本时,cmaps 是**用 fs 直接读**的(见 `main/library/pdfText.ts`);
+ * 但渲染端的 pdf.js 是**用 fetch 拿**的,得有一个它能请求到的 URL。中文 PDF 常常靠
+ * CMap 才能把字形索引映射回字符(Identity-H 那类编码),少了它正文可能整片空白 ——
+ * 用户读的正是中文文献,这条不能省。
+ *
+ * ## 为什么不改成注册自定义协议
+ *
+ * `protocol.handle` + `registerSchemesAsPrivileged` 能做到,但那个注册**必须发生在
+ * app ready 之前**,是主进程启动路径上的新风险。而这批文件总共才 ~2.3MB(169 个 bcmap
+ * + 16 个标准字体),复制进 public 目录之后:开发时 Vite 直接伺服,打包时原样进
+ * `out/renderer/`,渲染端用**相对 URL** 就能取到 —— 两种情况都成立,主进程一行不用改。
+ *
+ * ## 只在版本变化或文件缺失时复制
+ *
+ * dev 每次启动都会调 buildStart;169 个文件每次都重写没必要。用一个写着包版本的
+ * 标记文件判断,升级 pdfjs 之后自动重新复制。
+ */
+function copyPdfjsAssets(): Plugin {
+  const publicDir = resolve(__dirname, "src/renderer/public/pdfjs");
+  const versionFile = join(publicDir, ".pdfjs-version");
+  const subdirs = ["cmaps", "standard_fonts"];
+  return {
+    name: "mcode:copy-pdfjs-assets",
+    buildStart() {
+      const version = JSON.parse(readFileSync(join(pdfjsPkgDir, "package.json"), "utf8")).version;
+      try {
+        if (readFileSync(versionFile, "utf8").trim() === version) return;
+      } catch {
+        // 标记不存在 = 还没复制过
+      }
+      for (const sub of subdirs) {
+        cpSync(join(pdfjsPkgDir, sub), join(publicDir, sub), { recursive: true });
+      }
+      writeFileSync(versionFile, version, "utf8");
+      // eslint-disable-next-line no-console
+      console.log(`[mcode:pdfjs] copied ${subdirs.join(" + ")} for pdfjs ${version}`);
+    },
+  };
+}
+
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
@@ -154,17 +202,17 @@ export default defineConfig({
       },
     },
     resolve: {
-      alias: {
-        "@contracts": resolve("../../packages/contracts/src"),
-        "@renderer": resolve("src/renderer"),
+      alias: [
+        { find: "@contracts", replacement: resolve("../../packages/contracts/src") },
+        { find: "@renderer", replacement: resolve("src/renderer") },
         // Monaco worker entries — alias the documented `esm/vs/...` import
         // paths straight to the on-disk files. Without this, monaco-editor's
         // `exports` wildcard re-maps them to a non-existent doubled path and
         // Vite's `?worker` resolver fails. The alias is path-prefix based, so
         // every worker import (`monaco-editor/esm/vs/.../x.worker?worker`)
         // lands at `${monacoPkgDir}/esm/vs/.../x.worker`.
-        "monaco-editor/esm/vs": resolve(monacoPkgDir, "esm/vs"),
-      },
+        { find: "monaco-editor/esm/vs", replacement: resolve(monacoPkgDir, "esm/vs") },
+      ],
     },
     // monaco-editor must be EXCLUDED from the dep optimizer: its worker
     // entries (`?worker` imports in monacoSetup.ts) can't be pre-bundled, and
@@ -182,6 +230,7 @@ export default defineConfig({
         },
       }),
       precompressAssets(),
+      copyPdfjsAssets(),
     ],
     worker: {
       // Monaco's workers are plain ESM modules; build them as ESM too so the

@@ -2,6 +2,7 @@ import { app, BrowserWindow, session } from "electron";
 import { createMainWindow } from "@main/window.js";
 import { registerIpcHandlers } from "@main/ipc/index.js";
 import { initDb, closeDb, awaitDb } from "@main/store/db.js";
+import { ensureTemplateDirs } from "@main/templates/store.js";
 import { initTheme } from "@main/lib/theme.js";
 import { TerminalManager } from "@main/terminal/TerminalManager.js";
 import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
@@ -14,11 +15,14 @@ import { SettingRepo } from "@main/store/repositories.js";
 import { initUpdater } from "@main/updater.js";
 import { initAutoArchiver } from "@main/session/AutoArchiver.js";
 import { notificationManager } from "@main/notifications/NotificationManager.js";
+import { hookRunner } from "@main/hooks/HookRunner.js";
 import { is } from "@main/utils.js";
 import { preloadClaudeSdk } from "@main/providers/claude-sdk/ClaudeAgentSdkProvider.js";
 import { logStartup } from "@main/lib/startupTimer.js";
 import { log } from "@main/lib/logger.js";
 import { setManagedRuntimeRoot } from "@main/runtimes/managedRuntimeRoots.js";
+import { setToolRoot } from "@main/env/managedToolRoots.js";
+import { applyAgentEnvironment } from "@main/env/agentEnv.js";
 import { join } from "node:path";
 
 // App identity for OS-level surfaces (desktop notifications, taskbar grouping,
@@ -40,6 +44,15 @@ app.setPath("userData", prevUserData);
 // userData/runtimes. Register the root early so the binary/library resolvers
 // can find installed runtimes from the very first turn.
 setManagedRuntimeRoot(join(app.getPath("userData"), "runtimes"));
+// 文档工具链(pandoc 等,设置 → 内核)的落点 —— 与 runtimes 并列但**分开**的
+// 一个根,理由见 env/managedToolRoots.ts 的文件头。
+//
+// 紧接着把已装工具挂到 PATH 上:必须在任何 spawn 之前做完,否则第一轮对话里
+// agent 敲 `pandoc` 还是找不到(三个 provider 都是 {...process.env},所以这一处
+// 覆盖它们全部)。这是一个纯同步操作(读几个目录 + 改一个字符串),放在启动路径
+// 上不会拖慢任何东西。
+setToolRoot(join(app.getPath("userData"), "tools"));
+applyAgentEnvironment();
 // Windows: AppUserModelId drives taskbar grouping + the AUMID the toast center
 // uses to attribute notifications. Harmless on macOS/Linux (ignored).
 if (process.platform === "win32") {
@@ -110,6 +123,10 @@ app.whenReady().then(async () => {
   // internally (see ipc/index.ts), so any request that arrives before the DB
   // is ready simply queues instead of failing.
   void initDb().then(() => {
+    // 模版库的骨架目录(库根 + 五个类目)在**启动时**就建好,而不是等用户点开设置页。
+    // 用户会直接从资源管理器往这些目录里丢文件(文件系统即事实源),所以它们应该一开始
+    // 就在 —— 否则用户照着界面上显示的路径去找会发现没有,以为坏了(实际发生过)。
+    ensureTemplateDirs();
     // Legacy cleanup: the browser password vault was removed; wipe any
     // credentials older builds persisted under this key (nothing reads it
     // anymore; SettingRepo has no delete, so overwrite with an empty map).
@@ -187,6 +204,18 @@ app.whenReady().then(async () => {
       notificationManager.start();
     } catch (err) {
       log.error(`NotificationManager failed to start: ${(err as Error).message}`);
+    }
+  })();
+
+  // 钩子(HookRunner):挂到同一事件流上。**它也要等数据库就绪** —— 每一条钩子都得
+  // 先查会话(种类、标题、工作目录)才知道拿什么跑、在哪个目录跑,而这几个查询都走 db。
+  // 不等的话,启动那几秒里的事件会静默地不触发钩子。
+  void (async () => {
+    try {
+      await awaitDb();
+      hookRunner.start();
+    } catch (err) {
+      log.error(`HookRunner failed to start: ${(err as Error).message}`);
     }
   })();
 

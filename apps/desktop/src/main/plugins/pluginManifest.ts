@@ -244,6 +244,13 @@ export function pluginMcpFiles(root: string, manifest: PluginManifest): string[]
   return resolveAllInRoot(root, componentPaths(manifest.mcpServers, ".mcp.json"));
 }
 
+/** The plugin's workflow node-type directories, if declared/defaulted and
+ *  present. Same in-root guard as every other component: a `nodeTypes` path
+ *  that escapes the plugin root is dropped rather than followed. */
+export function pluginNodeTypesDirs(root: string, manifest: PluginManifest): string[] {
+  return resolveAllInRoot(root, componentPaths(manifest.nodeTypes, "node-types"));
+}
+
 /* ── Component summaries ── */
 
 interface NamedSummary {

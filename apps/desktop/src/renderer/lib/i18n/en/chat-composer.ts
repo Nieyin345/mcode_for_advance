@@ -22,7 +22,8 @@ export const en = {
 
   // ── composer actions / placeholders ──
   "chat.jumpToBottom": "Jump to bottom",
-  "chat.placeholderQueued": "Queue a message…  (Enter to enqueue)",
+  "chat.placeholderQueued": "Queue a message… Enter queues · Ctrl+Enter interjects",
+  "chat.placeholderQueuedPlain": "Queue a message…  (Enter to enqueue)",
   "chat.placeholderIdle": "Send a message…  (@ files · / commands · paste images)",
   "chat.attachFiles": "Add context files",
   "chat.addImage": "Add image",
@@ -373,4 +374,44 @@ export const en = {
   "chat.worktree.badgeOrphan": "Unreferenced",
   "chat.worktree.badgeDirty": "Uncommitted changes",
   "chat.worktree.badgeRefTitle": "Sessions referencing this worktree",
+
+  // ── composer working-mode picker (default / search / read / write / review / code) ──
+  // The mode sticks to the session; everything except 默认 and 文献检索 becomes a
+  // system-prompt fragment.
+  "composer.mode.title": "Choose a working mode",
+  "composer.mode.rowLabel": "Mode",
+  "composer.mode.default": "Default",
+  "composer.mode.defaultHint": "Normal conversation, no extra instructions",
+  "composer.mode.search": "Paper search",
+  "composer.mode.searchHint": "AI-led: pins down the direction first, then searches, imports as it goes, and summarises each paper",
+  "composer.mode.read": "Paper reading",
+  "composer.mode.readHint": "Read one paper properly: problem, method, experiments, limits",
+  "composer.mode.write": "Paper writing",
+  "composer.mode.writeHint": "Academic prose; cite only entries that really exist in your library",
+  "composer.mode.review": "Paper review",
+  "composer.mode.reviewHint": "A reviewer's eye: name each problem with its location and a concrete fix",
+  "composer.mode.code": "Code editing",
+  "composer.mode.codeHint": "Follow the codebase's own conventions; change only what was asked",
+
+  // Standing search criteria shown above the composer in paper-search mode. Set once,
+  // read by the model every turn — so you don't restate them in every session.
+  "chat.searchFilter.title": "Criteria",
+  "chat.searchFilter.year": "Years",
+  "chat.searchFilter.yearAny": "Any",
+  "chat.searchFilter.year3": "Last 3",
+  "chat.searchFilter.year5": "Last 5",
+  "chat.searchFilter.year10": "Last 10",
+  "chat.searchFilter.tier": "Journal tier",
+  "chat.searchFilter.tierAny": "Any",
+  "chat.searchFilter.tierT1": "T1 only",
+  "chat.searchFilter.tierT1T2": "T1 / T2",
+  "chat.searchFilter.if": "Impact factor",
+  "chat.searchFilter.ifAny": "Any",
+  "chat.searchFilter.if3": "≥ 3",
+  "chat.searchFilter.if5": "≥ 5",
+  "chat.searchFilter.if10": "≥ 10",
+  "chat.searchFilter.limit": "Per source",
+  "chat.searchFilter.limit10": "10",
+  "chat.searchFilter.limit20": "20",
+  "chat.searchFilter.limit50": "50",
 } as const;

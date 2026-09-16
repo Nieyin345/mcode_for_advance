@@ -61,8 +61,22 @@ export const BUILTIN_MARKETPLACES: ReadonlyArray<{ name: string; url: string }> 
 
 /** Where a plugin's manifest is looked up, in probe order. The Claude layout
  *  is the canonical format (largest ecosystem); the other two are
- *  structurally identical, so a single parser covers all three. */
-export const PLUGIN_MANIFEST_DIRS = [".claude-plugin", ".zcode-plugin", ".codex-plugin"] as const;
+ *  structurally identical, so a single parser covers all three.
+ *
+ *  The trailing empty string is the **agent-plugins.org** layout: `plugin.json`
+ *  sitting directly at the repository root, naming its own schema with a
+ *  `$schema` key (K-Dense-AI/scientific-agent-skills ships this way, and the
+ *  `skills/` subdirectory it implies is already the manifest's default). It is
+ *  probed LAST on purpose — a canonical manifest in a subdirectory must always
+ *  win, so a stray root-level `plugin.json` can never shadow
+ *  `.claude-plugin/plugin.json`. `path.join(root, "", "plugin.json")` is
+ *  `<root>/plugin.json`, which is exactly the intent. */
+export const PLUGIN_MANIFEST_DIRS = [
+  ".claude-plugin",
+  ".zcode-plugin",
+  ".codex-plugin",
+  "",
+] as const;
 
 /** Plugin name charset — also guards the on-disk directory name (no path
  *  separators, no leading dot). */
@@ -93,6 +107,12 @@ export const PluginManifestSchema = z
     hooks: z.union([z.string(), z.array(z.string())]).optional(),
     /** MCP servers definition file(s), relative (default ".mcp.json" at root). */
     mcpServers: z.union([z.string(), z.array(z.string())]).optional(),
+    /** Mcode 工作流节点类型的定义目录 (default "node-types"). Unlike the other
+     *  component fields this one is consumed by **Mcode itself**, not forwarded
+     *  to a provider — see packages/contracts/src/nodeType.ts for the manifest
+     *  schema a file in that directory must satisfy. A plugin without the
+     *  directory simply contributes no node types. */
+    nodeTypes: z.union([z.string(), z.array(z.string())]).optional(),
   })
   .passthrough();
 export type PluginManifest = z.infer<typeof PluginManifestSchema>;

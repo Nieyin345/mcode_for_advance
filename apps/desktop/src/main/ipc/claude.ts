@@ -5,6 +5,7 @@ import {
   ListSideChatsSchema,
   SendTurnSchema,
   InterruptSchema,
+  InjectSchema,
   ApproveSchema,
   RespondQuestionSchema,
   RespondPlanApprovalSchema,
@@ -14,10 +15,12 @@ import {
   SaveMessagesSchema,
   UpsertMessagesSchema,
   TruncateAndInsertMessagesSchema,
+  ForkSessionSchema,
   GetSettingSchema,
   SetSettingSchema,
   GetManySettingsSchema,
   THEME_STYLE_SETTING_KEY,
+  workflowIdFromInput,
 } from "@contracts/ipc";
 import type {
   SaveMessagesInput,
@@ -30,8 +33,15 @@ import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { providerRegistry } from "@main/providers/registry.js";
 import { updateTitleBarOverlay } from "@main/window.js";
 import { log } from "@main/lib/logger.js";
+import { forkSession as forkSessionIntoNew } from "@main/lib/sessionFork.js";
 import { broadcastSessionChanged } from "@main/lib/sessionSync.js";
 import { createOrReuseSession } from "@main/lib/sessionStart.js";
+import {
+  cancelWorkflowRun,
+  graphRunIntent,
+  parkedRunTeardown,
+  startWorkflowRun,
+} from "@main/orchestration/runner.js";
 import { generateSessionTitle } from "@main/ipc/titleGen.js";
 import { createBranchedWorktree, createDetachedWorktree, nextWorktreeDir } from "@main/lib/worktreeOps.js";
 import { stat } from "node:fs/promises";
@@ -175,7 +185,9 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       const title = input.prompt.trim().slice(0, 40) + (input.prompt.trim().length > 40 ? "…" : "");
       SessionRepo.updateTitle(session.id, title);
       updated = { ...session, title };
-      if (session.kind !== "side") {
+      // 只有**真正的用户会话**才广播。side 与 node 都是"用户看不见的会话":
+      // 前者由右侧问答页签自己管,后者由调度器自己管。
+      if (session.kind === "chat") {
 	      // Keep connected mobile clients' session lists in sync.
 	      broadcastSessionChanged(updated);
       }
@@ -194,6 +206,12 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 	    }
 	    if (input.permissionMode !== undefined) {
 	      updated = { ...updated, permissionMode: input.permissionMode };
+	    }
+	    const workflowId = workflowIdFromInput(input);
+	    if (workflowId !== undefined) {
+	      // In-memory patch only — the row itself is persisted by the composer's
+	      // own `session.updateSettings` call (same split as permissionMode).
+	      updated = { ...updated, workflowId };
 	    }
     if (input.customModelId !== undefined) {
       updated = { ...updated, customModelId: input.customModelId };
@@ -220,6 +238,54 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       updated = SessionRepo.get(session.id) ?? updated;
     }
     runtimeManager.bindSession(updated);
+    // Background auto-title generation: on the first user message, fire a
+    // one-shot LLM call to produce a short Chinese title and overwrite the
+    // placeholder. Runs for main sessions AND side chats (both rewrite their own
+    // placeholder above; the truncated text is the fallback when the feature is
+    // off or fails). Fire-and-forget - never blocks the turn. See titleGen.ts.
+    //
+    // ⚠️ 放在**分岔之前**:图型工作流那一轮同样要起标题,而这件事和"这一轮跑不跑
+    // provider 回合"没有关系(放在分岔之后时,图型会话永远拿不到生成的标题)。
+    if (isFirstMessage) {
+      void generateSessionTitle(updated, input.prompt).catch((err) =>
+        log.warn(`title generation failed for ${session.id}: ${(err as Error).message}`),
+      );
+    }
+    // 图型工作流:这一轮**不跑会话自己的回合**,而是把那张图推一遍。节点各自跑在
+    // 自己的隐藏子会话里,它们的交互事件代这个对话提问(见 `orchestration/runner.ts`)。
+    //
+    // ⚠️ **不 await 整张图跑完** —— 用户可能要在中间回答某个节点的问题,那要几分钟;
+    // 这个 IPC 该立刻返回,让输入框回到可用状态。这一轮的收口由调度器最后补的那个
+    // `turn.done` 完成。
+    let run = graphRunIntent(updated);
+    if (run === "busy") {
+      // **图停在原地等人,而用户直接说了句话。** 没去点那些卡片本身就是一种回答 ——
+      // 放弃那一次,按他刚说的重来(见 `parkedRunTeardown`)。
+      //
+      // 有节点**真在跑**的时候它返回 null,照旧拦住:半路掐掉一个正在干活的步骤是
+      // 另一件事(那是「停止」按钮),不该由"我发了条消息"顺手做掉。
+      const teardown = parkedRunTeardown(updated.id);
+      if (teardown === null) {
+        // 上一轮图还没跑完(多半是某个节点正在干活)。**抛出去**,
+        // 别默默把这条消息丢掉 —— 渲染端会把 IPC 的拒绝弹成一句话(与上面
+        // `resolveSessionCwd` 那几处失败同一个做法)。正常情况下发送时输入框是禁用的,
+        // 这条兜的是手机端 / 竞态。
+        throw new Error("这个工作流还在跑:先回答它的问题,或者按停止");
+      }
+      // **等他收干净再起新的。** 那次运行的收尾会补一个 `turn.done`(渲染端靠它收掉
+      // 当前回合),不等的话它落在新那次中间。见 `parkedRunTeardown`。
+      await teardown;
+      run = "start";
+    }
+    if (run === "start") {
+      void startWorkflowRun({
+        session: updated,
+        cwd,
+        prompt: input.prompt,
+        userMessage: input.userMessage,
+      });
+      return { session: updated };
+    }
     await runtimeManager.sendTurn(updated, {
       prompt: input.prompt,
       cwd,
@@ -228,22 +294,6 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       // User-message echo payload from the renderer (cross-client bubble).
       userMessage: input.userMessage,
     });
-    // Background auto-title generation: on the first user message, fire a
-    // one-shot LLM call to produce a short Chinese title and overwrite the
-    // placeholder. Fire-and-forget - never blocks the turn, and if the feature
-    // is disabled (or fails) the placeholder title above already covers the
-    // UI. See titleGen.ts for the full rationale.
-    // Background auto-title generation: on the first user message, fire a
-    // one-shot LLM call to produce a short Chinese title and overwrite the
-    // placeholder. Runs for main sessions AND side chats (both rewrite their
-    // own placeholder above; the truncated text is the fallback when the
-    // feature is off or fails). Fire-and-forget - never blocks the turn. See
-    // titleGen.ts for the full rationale.
-    if (isFirstMessage) {
-      void generateSessionTitle(updated, input.prompt).catch((err) =>
-        log.warn(`title generation failed for ${session.id}: ${(err as Error).message}`),
-      );
-    }
     // Return the in-memory `updated` snapshot (it already carries every
     // per-turn override above — including providerId). Re-reading from the DB
     // here would hand back a stale providerId (the per-turn provider override
@@ -257,8 +307,27 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC.CLAUDE_INTERRUPT, async (_evt, raw) => {
     const input = InterruptSchema.parse(raw);
+    // 图型工作流没有"会话自己的回合"可以打断 —— 要停的是**整张图**:调度器不再
+    // 派发新的节点,并在飞的节点逐个 interrupt(见 `orchestration/runner.ts`)。
+    if (cancelWorkflowRun(input.sessionId)) {
+      SessionRepo.updateStatus(input.sessionId, "interrupted");
+      return;
+    }
     runtimeManager.interrupt(input.sessionId);
     SessionRepo.updateStatus(input.sessionId, "interrupted");
+  });
+
+  /**
+   * 生成过程中插一句话。**不打断这一轮** —— 模型在下一个安全点看到它(可能正在跑一个
+   * 工具,所以不是立刻)。
+   *
+   * 这里不写状态、不落库:那条用户消息由**渲染端**在收到 `delivered: true` 之后立刻
+   * 落库(和 `sendPrompt` 同一条规矩 —— 这一轮可能永远到不了终态,而"我补过一句什么"
+   * 不能跟着一起没掉)。主进程这边只管"塞进去了没有"。
+   */
+  ipcMain.handle(IPC.CLAUDE_INJECT, (_evt, raw) => {
+    const input = InjectSchema.parse(raw);
+    return { delivered: runtimeManager.injectMessage(input.sessionId, input.text) };
   });
 
   ipcMain.handle(IPC.CLAUDE_APPROVE, async (_evt, raw) => {
@@ -407,6 +476,18 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     return { messages: res.messages, hasMore: res.hasMore };
   });
 
+  /**
+   * 把一段对话分叉成新的一段(右键左栏的对话 → 复制一份)。
+   *
+   * 那一整套(先在引擎那边复制上下文、再建行、再抄消息,以及**顺序为什么不能反**)
+   * 在 `lib/sessionFork.ts` 里 —— 它要能在没有 Electron 的环境里被单跑一遍。
+   * 这里只解析参数。
+   */
+  ipcMain.handle(IPC.SESSION_FORK, async (_evt, raw) => {
+    const input = ForkSessionSchema.parse(raw);
+    return { session: await forkSessionIntoNew(input.id, input.title) };
+  });
+
   // ── Settings ──
   ipcMain.handle(IPC.SETTING_GET, (_evt, raw) => {
     const input = GetSettingSchema.parse(raw);
@@ -467,6 +548,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       model: input.model,
       effort: input.effort,
       permissionMode: input.permissionMode,
+      workflowId: workflowIdFromInput(input),
       customModelId: input.customModelId,
       providerId: input.providerId,
       envMode: input.envMode,

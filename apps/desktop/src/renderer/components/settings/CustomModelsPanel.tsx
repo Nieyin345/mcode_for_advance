@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { cn } from "@renderer/lib/cn.js";
+import { PANEL_MAX_W } from "./panelWidth.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
@@ -854,7 +855,7 @@ export function CustomModelsPanel() {
   };
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-5xl min-h-0 flex-col">
+    <div className={cn("mx-auto flex h-full w-full min-h-0 flex-col", PANEL_MAX_W.form)}>
       <PanelHeader
         className="mb-3"
         title={t("settings.customModels.title")}

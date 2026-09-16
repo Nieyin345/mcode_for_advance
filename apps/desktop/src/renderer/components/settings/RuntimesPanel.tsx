@@ -15,6 +15,7 @@
  * re-list so versions/disk bytes converge to the main-side truth.
  */
 import { useEffect, useState } from "react";
+import { PANEL_MAX_W } from "./panelWidth.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
@@ -22,6 +23,7 @@ import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { Button } from "@renderer/components/ui/index.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
+import { ToolchainSection } from "./ToolchainSection.js";
 import type { RuntimeAgentId, RuntimeAgentState } from "@contracts/ipc";
 import { getProviderIcon } from "@renderer/lib/providerIcon.js";
 import {
@@ -87,7 +89,7 @@ export function RuntimesPanel() {
   }, [applyRuntimeProgress, reloadRuntimes]);
 
   return (
-    <section className="mx-auto w-full max-w-3xl space-y-4">
+    <section className={`mx-auto w-full ${PANEL_MAX_W.form} space-y-4`}>
       <PanelHeader title={t("settings.runtimes.title")} icon={IconPackage} />
 
       <SettingsSection title={t("settings.runtimes.section")}>
@@ -102,6 +104,12 @@ export function RuntimesPanel() {
           ))
         )}
       </SettingsSection>
+
+      {/* 文档工具链 —— 内置的四个文档技能要用的外部工具(pandoc / python 包 /
+          zip / LibreOffice / poppler)。和内核是同一件事的两半:内核让 agent 跑
+          得起来,这些让它的文档技能真的能用。数据源不同(本机探测 vs store),
+          所以是独立组件,见 ToolchainSection.tsx 的文件头。 */}
+      <ToolchainSection />
     </section>
   );
 }

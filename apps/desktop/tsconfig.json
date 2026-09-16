@@ -12,5 +12,9 @@
     },
     "noEmit": true
   },
-  "include": ["src/**/*", "../../packages/contracts/src/**/*"]
+  // `scripts/**/*` 是那些无头冒烟脚本。它们用 esbuild 打包(只转译、不做类型检查),
+  // 而夹具是按真实契约写的(`const BUILTIN: WorkflowDoc`、`mkSession(): Session`),
+  // 所以契约一改,它们会**静默**写下过期的夹具 —— 这个目录曾经就这样漂了一轮
+  // (`workflowId` 改名、`ContextSnapshot` 换了家)。放进 include,typecheck 会替它们把关。
+  "include": ["src/**/*", "../../packages/contracts/src/**/*", "scripts/**/*"]
 }

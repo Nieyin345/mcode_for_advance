@@ -8,8 +8,10 @@ import type {
   ApprovalRequestEvent,
   PlanApprovalRequestEvent,
   PlanUpdateEvent,
+  WorkflowNodeResultEvent,
+  WorkflowChoiceOption,
   SubagentSnapshot,
-  SubagentTranscriptBlock,
+  TranscriptBlock,
   ContextSnapshot,
   TurnUsageRecord,
   SessionListEntry,
@@ -36,6 +38,9 @@ import {
   UI_CHAT_FONT_SIZE_SETTING_KEY,
   UI_RIGHT_PANEL_FONT_SIZE_SETTING_KEY,
   UI_PASTE_TAG_THRESHOLD_CHARS_SETTING_KEY,
+  WORKFLOW_MAX_PARALLEL_SETTING_KEY,
+  WORKFLOW_MAX_PARALLEL_MIN,
+  WORKFLOW_MAX_PARALLEL_MAX,
   UI_USER_MSG_COLOR_SETTING_KEY,
   UI_ACCENT_COLOR_SETTING_KEY,
   UI_RIGHT_PANEL_TAB_SETTING_KEY,
@@ -178,6 +183,11 @@ function isUnsupportedPath(filePath: string): boolean {
 
 /** Max entries per stack (matches VS Code's navigation-history cap). */
 const NAV_HISTORY_CAP = 50;
+
+/** Workflow-node transcripts kept in memory (`workflowNodeTranscripts`).
+ *  **用不着和主进程那条线对齐** —— 它只影响"回头看时还能查到多旧的",而超出的那些
+ *  卡片本来就滚出屏幕了。真正的上限在主进程那边(它同时管着渲染端收不到的那部分)。 */
+const NODE_TRANSCRIPT_KEEP = 64;
 
 /** True when two history entries point at the same spot (path + 1-based
  *  line/column). Used to dedup consecutive pushes and to skip snapshotting a
@@ -328,6 +338,101 @@ export type Block =
       postTokens?: number;
       /** How long the compaction took, in ms (may be absent). */
       durationMs?: number;
+    }
+  | {
+      /** 工作流图里的一步收场了。**一步一张卡**,和阶段卡同型 —— 事件从主进程的
+       *  调度器来(`main/orchestration/runner.ts`),节点自己跑在隐藏子会话里。 */
+      kind: "workflow-node-result";
+      /** 哪一次运行(`WorkflowNodeResultEvent.runId`)。带上它是为了**同一张图的卡片
+       *  能归到一起** —— 一张图跑几轮,节点 id 会重复。 */
+      runId: string;
+      nodeId: string;
+      /** 跑这一步的那个隐藏会话 id —— 卡片靠它去 `nodeTranscriptsBySession` 里取
+       *  "这一步的过程"。**可缺席**:`skipped` / `cancelled` 的节点根本没跑过。 */
+      nodeSessionId?: string;
+      /** 节点类型 id(`mcode.agent`)。等宽显示,不翻译。 */
+      nodeType: string;
+      title: string;
+      status: WorkflowNodeResultEvent["status"];
+      /** 这一步产出的文本。**也是喂给它下游节点的那一份**。 */
+      summary: string;
+      /** 这一步声明的**产出变量名**(没声明就是缺席)。
+       *
+       *  有它 = 这一步的产出**是一个对象**,内容全在变量里(见
+       *  `WorkflowNodeResultEvent.outputKeys`)。卡片据此**逐项渲染变量**,而不是把
+       *  原文摊出来 —— 那样摊出来的正好是用户说过不要看的那一坨。
+       *
+       *  只带名字不带值:值就在 `summary` 里,卡片用同一个解析器(`checkOutput`)
+       *  自己提,提出来的是**下游拿到的那一份**。 */
+      outputKeys?: string[];
+      /** 没成功时的原因。 */
+      error?: string;
+      /**
+       * **这一步花了多少。** 缺席有两种意思,而两种都不显示那一行:
+       * 没跑过(`skipped` / `cancelled`),或者跑完了但引擎没报花费。
+       *
+       * ⚠️ **它多半是"过一会儿才补上"的。** 用量要等那个回合结束之后才结算落库,而卡片
+       * 是在节点收场那一刻就画出来的 —— 所以先画出来的那张常常没有这一项,过几秒由
+       * `workflow.node.usage` 那条事件**原地补上**(见下面的分支)。用户看到的是卡片上
+       * 慢慢多出一行花费,而不是卡片闪一下重画。
+       */
+      usage?: { totalTokens: number; outputTokens: number; costUsd?: number };
+    }
+  | {
+      /**
+       * 一个**岔路口**在等用户拍板(`mcode.branch` 那个节点),或者一个开了
+       * 「运行前先问我」的**对话节点**在等用户发话(见下面 `ask`)。
+       *
+       * ## 它和上面那张结果卡是两种东西
+       *
+       * 结果卡是**收场** —— 事情已经发生完了。这一张是**活的**:按钮点下去之前,那次
+       * 运行**没有结束**,图就停在这个节点上等一个人。所以它摆的是按钮和输入框,而且
+       * 只能用一次。
+       *
+       * ## 一张卡,更新两次
+       *
+       * `workflow.node.choice` 会来**两次**:第一次没带 `chosen`(在等),第二次带上
+       * (选完了)。这里靠 `runId + nodeId + attempt` 认出原来那张**换掉**它 —— 追加
+       * 第二张的话,对话里会出现两个格子说同一件事,其中一个还摆着已经点过的按钮。
+       *
+       * ⚠️ **`attempt` 那一位不能省。** 一个分支在**同一次运行**里会被问很多次(回头,
+       * 见 `@contracts/workflow` 的「回头」),省掉的话第二轮的卡会去改**第一轮那张**
+       * —— 用户看到一个早就点过的卡片忽然换了内容,而他第一轮点的是什么就此消失。
+       *
+       * 这也是为什么分支节点**没有**一张 `workflow-node-result` 卡:它的卡就是这一张
+       * (见调度器 `settle` 里那条)。
+       */
+      kind: "workflow-branch-choice";
+      /** 哪一次运行。和结果卡同一个含义 —— 同一张图跑几轮,节点 id 会重复。 */
+      runId: string;
+      nodeId: string;
+      /** 节点类型 id(`mcode.branch`)。等宽显示,不翻译。 */
+      nodeType: string;
+      title: string;
+      /**
+       * 这一轮是这个岔路口**第几次问**(从 1 起)。回头绕第二圈时是 2。
+       *
+       * 卡片上会写一句「第 N 轮」—— 一列卡片摆在一起时,没有这个数字就看不出它们是
+       * 同一个岔路口在不同轮次问的。
+       */
+      attempt: number;
+      /** 待选的出路。`id` 是**边**的 id —— 点下去要把它原样发回主进程。 */
+      options: WorkflowChoiceOption[];
+      /**
+       * **这一次问是节点上「运行前先问我」来的**(见 `@contracts/runtime` 的同名说明)。
+       *
+       * 载荷和岔路口几乎一样,但主界面不一样:这一种**弹在屏幕正中间**(见
+       * `AskChoiceDialog`),因为它们问的不是"往哪条路走",而是"这一步现在要不要跑、
+       * 怎么跑" —— 那件事跟图上的走向无关,盯着画布看不出来。
+       *
+       * 聊天流里这张卡**照常摆**(它是这一问留下的记录,也是改天回看时唯一说得清
+       * "当时选了什么"的地方),弹窗只是主入口。
+       */
+      ask?: boolean;
+      /** 已经选过的那条边的 id。缺席 = 还在等。 */
+      chosen?: string;
+      /** 用户在选择时临时写的那句话(和 `chosen` 一起来)。 */
+      comment?: string;
     }
   | {
       kind: "image";
@@ -743,6 +848,14 @@ export interface SessionState {
    *  configured). The app never downloads models — the user fetches the files
    *  themselves and points Settings → 语音输入 → 模型目录 here. */
   voiceModelDir: string;
+  /**
+   * 工作流**最多同时跑几个节点**(见 `@contracts/ipc` 的
+   * `WORKFLOW_MAX_PARALLEL_SETTING_KEY`)。
+   *
+   * ⚠️ 这里存的是**给界面看的那个数** —— 真正生效的是主进程每次派发现读的那一份。
+   * 两边读同一个设置键,所以它们通常一致;不一致的窗口只有"改完还没落盘"那一瞬。
+   */
+  workflowMaxParallel: number;
   /** True when a voice model is both SELECTED and present on disk (from
    *  `voice.modelList`, which rescans the model root). The composer's mic
    *  button renders only while this is true — before the user downloads a
@@ -816,6 +929,27 @@ export interface SessionState {
    *  NOT persisted - it's transient: cleared on turn.done / error / interrupt
    *  / session delete, alongside runningBySession. */
   runningTurnStartedAt: Record<string, number>;
+  /**
+   * 这个对话里**有几处岔路口正挂着等人**。
+   *
+   * ## 为什么非有不可
+   *
+   * 图停在岔路口等人的时候,`runningBySession` 仍然是真(那一轮还没收尾),于是输入框
+   * 被当成"忙" —— 用户敲回车只是把话**排队**,而队列要等 `turn.done` 才排空,可那张图
+   * 正等着他点,永远不会自己收尾。现象就是用户的原话:「我无法发送消息了」。
+   *
+   * 而那个时刻**整张图唯一在做的事就是等他**,把它算成"忙"是不诚实的。所以这一格 0 的
+   * 时候,`ChatPane` 把 `sessionBusy` 放开(见那里),让他能直接说话。
+   *
+   * ## 为什么是计数不是布尔
+   *
+   * 两处岔路口可以**同时**挂在等人(它们互不依赖)—— 布尔的话,一处答完就把另一处的
+   * "有人在等"抹掉了。
+   *
+   * 只活在**活着的会话**里:重启之后它是空的,而那时确实没有任何图在等人(进程死过,
+   * 那一次运行已经没了)。要接着跑是另一条路 —— 点那张旧卡片,见 `runner.ts`。
+   */
+  waitingBranchesBySession: Record<string, number>;
   /** Send-time MODEL anchor: the resolved model id the in-flight turn was sent
    *  with (see resolveSendModel). Consumed by the same three isNewTurn stamping
    *  sites as runningTurnStartedAt to write `turnMeta.model`, so the stream can
@@ -970,6 +1104,10 @@ export interface SessionState {
    *  only surfaces the 4 user-facing ones. See PermissionMode in
    *  @contracts/runtime for the full list. */
   permissionMode: PermissionMode;
+  /** 当前会话用的工作流(内置的六个,或用户自建的 `wf_`)。和模型 / 权限一样是
+   *  **每会话一个**的槽位 —— `syncConfigFromSession` 在切换会话时重新灌进来。
+   *  开放字符串:内置 id(见 `BuiltinWorkflowId`)只是它的一个子集。 */
+  workflowId: string;
   /** Default working environment for NEW sessions: "local" (project root),
    *  "wt-detached" (isolated detached checkout — experimental verification)
    *  or "wt-branch" (isolated checkout on a generated `mcode/*` branch —
@@ -1066,7 +1204,23 @@ export interface SessionState {
    *  id as SubagentSnapshot.toolUseId). NOT persisted — process-lifetime
    *  data rebuilt each turn; cleared when a new turn starts (mirroring the
    *  roster's rebuild cycle). */
-  subagentTranscriptsBySession: Record<string, Record<string, SubagentTranscriptBlock[]>>;
+  subagentTranscriptsBySession: Record<string, Record<string, TranscriptBlock[]>>;
+  /** 每个**工作流节点**跑出来的过程,按**节点会话 id** 索引(`WorkflowNodeTranscriptEvent`)。
+   *  卡片上那个「过程」读它。
+   *
+   * ## 为什么是平铺一层,不是"父会话 → 节点"两层
+   *
+   * 读它的地方是对话里的那张卡片,而卡片手上只有 `block.nodeSessionId`(见
+   * `WorkflowNodeResultEvent`)。要按父会话索引就得把 sessionId 一路透传进
+   * `MessageBlocks` —— 那是个**刻意的纯展示组件**(不碰任何 per-session 状态桶)。
+   * 而节点会话 id 本来就全局唯一,一层就够,还省掉那条透传。
+   *
+   * ## 两条与 subagentTranscriptsBySession 不同的地方
+   *
+   * - **新回合开始时不清。** 子代理转录是"这一轮谁在干活",清掉正合适;而过程挂在
+   *   **消息流里的卡片**上,卡片留在历史里 —— 一清,上一轮的卡片点开就成空的了。
+   * - **有容量上限**(见 `NODE_TRANSCRIPT_KEEP`),因为不清就意味着它会随进程一直涨。 */
+  workflowNodeTranscripts: Record<string, TranscriptBlock[]>;
   /** Per-session context-window snapshot (from `token-usage.updated` events).
    *  The adapter already did all the math (usedTokens / maxTokens / pct /
    *  warning), so the renderer only stores + renders. Keyed by sessionId so
@@ -1360,6 +1514,9 @@ export interface SessionState {
    *  sections together). */
   loadWorktreeSessions: (projectId: string) => Promise<void>;
   startSession: (projectId?: string, overrides?: { providerId?: string; model?: string; customModelId?: string | null; worktreePath?: string; /** Force the working-environment intent (bypasses the composer's env chip — e.g. a conflict-resolution session must stay in the real checkout). */ envMode?: "local" | "worktree" }) => Promise<void>;
+  /** 把一段对话复制成新的一段(带着一模一样的历史与上下文)。`title` 由调用方给 ——
+   *  新对话叫什么是一句界面文案,主进程那侧没有 i18n。 */
+  forkSession: (sessionId: string, title: string) => Promise<void>;
   /** Move a FRESH local session to a different project (the directory
    *  switcher in the new-session composer panel). Main-side guards reject
    *  anything that already started (messages / materialized worktree / bad
@@ -1444,6 +1601,10 @@ export interface SessionState {
    *  in-memory session lists directly - the DB row is already updated by the
    *  main process, so no IPC round-trip. Mirrors renameSession's patching. */
   applySessionTitleUpdate: (sessionId: string, title: string) => void;
+  /** 往正在跑的那一轮里塞一句话(生成过程中插话)。返回"送出去了没有" —— `false`
+   *  的三种情形(没在跑 / 引擎不支持 / 刚好收尾)要求调用方**兜回 `sendPrompt`**。 */
+  injectPrompt: (sessionId: string, text: string) => Promise<boolean>;
+
   sendPrompt: (
     prompt: string,
     attachments?: { preview: string; content: string; attachmentKind?: "paste" | "file" | "quote"; filePath?: string }[],
@@ -1651,6 +1812,8 @@ export interface SessionState {
   /** Update the paste-to-card threshold (clamped to 50–5000 chars). Persists
    *  to the `settings` table. */
   setPasteTagThresholdChars: (n: number) => Promise<void>;
+  /** 改工作流并发上限(见 `workflowMaxParallel`)。钳制后落盘,主进程下次派发生效。 */
+  setWorkflowMaxParallel: (n: number) => Promise<void>;
   /** Re-check whether a voice model is selected AND downloaded
    *  (`voice.modelList` rescans disk) and update `voiceModelReady`. */
   refreshVoiceModelStatus: () => Promise<void>;
@@ -1701,6 +1864,9 @@ export interface SessionState {
   gestureRecording: string | null;
   setGestureRecording: (commandId: string | null) => void;
   setPermissionMode: (mode: PermissionMode) => void;
+  /** 给**当前会话**选一个工作流(输入框那个选择器)。像模型 / 权限一样存到会话行上。
+   *  ⚠️ id 是**开放字符串** —— 内置六个之外,用户自建的工作流(`wf_` 前缀)也走这条路。 */
+  setWorkflowId: (workflowId: string) => void;
   /** Pick the working-environment chip. When the ACTIVE session is an
    *  un-materialized intent, the choice edits THAT session's envMode + wtStyle
    *  (updateSettings) instead of the global default — the chip reads as
@@ -2306,6 +2472,27 @@ export function clampPasteTagThresholdChars(n: number): number {
   );
 }
 
+/** Clamp the workflow node-concurrency cap to the allowed range. **Same bounds the
+ *  scheduler's own guard uses** (`@contracts/ipc`) — the renderer clamps what it
+ *  writes, and the main process still defends against a hand-edited value. */
+export function clampWorkflowMaxParallel(n: number): number {
+  if (!Number.isFinite(n)) return WORKFLOW_MAX_PARALLEL_DEFAULT_RENDERER;
+  return Math.min(
+    WORKFLOW_MAX_PARALLEL_MAX,
+    Math.max(WORKFLOW_MAX_PARALLEL_MIN, Math.round(n)),
+  );
+}
+
+/**
+ * 默认值。**和主进程那份必须是同一个数**(`runner.ts` 的
+ * `WORKFLOW_MAX_PARALLEL_DEFAULT`)—— 渲染端拿它当"读不到设置时的兜底"。
+ *
+ * 两处各写一份是有意的:主进程那份是**真正生效**的那一个(调度器读的是它),
+ * 这一份只是界面上显示什么。真要改默认值,两处一起改 —— 不一致的表现是"设置页写着
+ * 4、实际跑的是别的数",而那种错没人会发现。
+ */
+export const WORKFLOW_MAX_PARALLEL_DEFAULT_RENDERER = 4;
+
 /* ─── Draggable pane-width bounds + clamps ───
  * Each pane's width is persisted (UI_PANE_WIDTHS_SETTING_KEY) and re-clamped
  * on hydrate so a corrupted/out-of-range stored value can't collapse a pane
@@ -2657,6 +2844,8 @@ function dropSessionBuckets(s: SessionState, id: string) {
   delete runningBySession[id];
   const runningTurnStartedAt = { ...s.runningTurnStartedAt };
   delete runningTurnStartedAt[id];
+  const waitingBranchesBySession = { ...s.waitingBranchesBySession };
+  delete waitingBranchesBySession[id];
   const runningTurnModelBySession = { ...s.runningTurnModelBySession };
   delete runningTurnModelBySession[id];
   const turnErrorBySession = { ...s.turnErrorBySession };
@@ -2716,6 +2905,7 @@ function dropSessionBuckets(s: SessionState, id: string) {
     historyLoadedBySession,
     runningBySession,
     runningTurnStartedAt,
+    waitingBranchesBySession,
     runningTurnModelBySession,
     turnErrorBySession,
     interruptedBySession,
@@ -2958,6 +3148,9 @@ function syncConfigFromSession(
     model: sess.model,
     effort: coerced.effort,
     permissionMode: coerced.permissionMode,
+    // Not provider-namespaced, so nothing to coerce — but a row written before
+    // the column existed reads back undefined, so fall back to "default".
+    workflowId: sess.workflowId ?? "default",
     customModelId: sess.customModelId,
     activeProjectId: sess.projectId,
   };
@@ -3846,22 +4039,98 @@ function upsertLiveTurnFilesBlock(messages: ChatMessage[], files: TurnFileEntry[
   return next;
 }
 
-/** Append a `compact-summary` block to the current turn's trailing assistant
- *  message. If no open-turn assistant message exists yet (compact_boundary
- *  arrives before any model text), create one WITH a turnMeta so it opens a
- *  proper turn in the stream - mirroring how tool.use creates a turn opener.
- *  Without the turnMeta the card would either attach to the PREVIOUS turn's
- *  message (wrong position) or float as an orphan (no stat row). */
-function appendCompactSummaryBlock(
+/** Append a turn-scoped CARD block (compact summary, workflow node result) to the
+ *  current turn's trailing assistant message. If no open-turn assistant message
+ *  exists yet (the event arrives before any model text), create one WITH a
+ *  turnMeta so it opens a proper turn in the stream - mirroring how tool.use
+ *  creates a turn opener. Without the turnMeta the card would either attach to
+ *  the PREVIOUS turn's message (wrong position) or float as an orphan (no stat
+ *  row). */
+/**
+ * 把某个岔路口那张卡**在原地**换成新的。找不到返回 `null`(由调用方去追加)。
+ *
+ * 原地而不是"替换最后一张":用户可能在它之后又收到了别的卡片(同一次运行里另一个
+ * 分支节点也在问),而那张旧卡还在上面 —— 只动最后一张会把别的卡改掉。
+ *
+ * 认的是 **`runId + nodeId + attempt`**。只看 `nodeId` 的话,同一张图跑第二轮时会把
+ * **上一轮那张旧卡**的内容改掉,而用户看到的是"一张早就点过的卡突然变了"。
+ * `attempt` 那一位同理,只是它拦的是**同一次运行里的下一个来回**(回头,见
+ * `Block` 里那个字段)。
+ */
+function patchBranchChoiceBlock(
+  messages: ChatMessage[],
+  runId: string,
+  nodeId: string,
+  attempt: number,
+  next: Block,
+): ChatMessage[] | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m) continue;
+    const at = m.blocks.findIndex(
+      (b) =>
+        b.kind === "workflow-branch-choice" &&
+        b.runId === runId &&
+        b.nodeId === nodeId &&
+        b.attempt === attempt,
+    );
+    if (at < 0) continue;
+    const out = messages.slice();
+    const blocks = m.blocks.slice();
+    blocks[at] = next;
+    out[i] = { ...m, blocks };
+    return out;
+  }
+  return null;
+}
+
+/**
+ * **给一张已经画出来的步骤卡补上花费,别的什么都不动。**
+ *
+ * 按 `runId + nodeId` 找 —— 和结果卡认卡用的是同一对(见 `workflow-node-result` 里那
+ * 两个字段的注释)。**找不到返回 `null`**(调用方据此原样返回 state,不触发重渲染)。
+ *
+ * 返回**新的数组**(而不是就地改):store 的订阅者比的是引用,就地改的话卡片不会重画。
+ */
+function patchNodeUsageBlock(
+  messages: ChatMessage[],
+  runId: string,
+  nodeId: string,
+  usage: { totalTokens: number; outputTokens: number; costUsd?: number },
+): ChatMessage[] | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m) continue;
+    const at = m.blocks.findIndex(
+      (b) => b.kind === "workflow-node-result" && b.runId === runId && b.nodeId === nodeId,
+    );
+    if (at < 0) continue;
+    const out = messages.slice();
+    const blocks = m.blocks.slice();
+    const prev = blocks[at];
+    if (!prev || prev.kind !== "workflow-node-result") continue;
+    // **只改 `usage` 那一项。** 其他字段一个都不碰 —— 这条事件的全部意思就是"补一个数",
+    // 顺手用事件里的别的东西覆盖卡片,等于给"补花费"开了一条能改卡片的暗路。
+    blocks[at] = { ...prev, usage };
+    out[i] = { ...m, blocks };
+    return out;
+  }
+  return null;
+}
+
+function appendTurnCardBlock(
   messages: ChatMessage[],
   block: Block,
   startedAt: number,
   /** Send-time model anchor (see upsertLivePlanBlock.modelAnchor). */
   model?: string,
+  /** Prefix for the synthesized opener's id - keeps the card kinds apart in
+   *  devtools, and makes a reloaded stream readable. */
+  idPrefix = "card",
 ): ChatMessage[] {
   // Look for an OPEN turn's trailing assistant message (turnMeta present,
   // endedAt undefined = turn.done hasn't landed). This is the correct target
-  // - the compact belongs to the CURRENT turn, not a previous one.
+  // - the card belongs to the CURRENT turn, not a previous one.
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m && m.role === "assistant" && m.turnMeta && m.turnMeta.endedAt === undefined) {
@@ -3870,12 +4139,11 @@ function appendCompactSummaryBlock(
       return next;
     }
   }
-  // No open-turn assistant message yet - the compact_boundary arrived before
-  // any model text. Create a turn-opener assistant message carrying the
-  // compact-summary block, stamped with turnMeta so it renders as the start
-  // of the current turn (with its own stat row, correct grouping, etc.).
+  // No open-turn assistant message yet - create a turn-opener assistant message
+  // carrying the card, stamped with turnMeta so it renders as the start of the
+  // current turn (with its own stat row, correct grouping, etc.).
   const opener: ChatMessage = {
-    id: `compact_${Date.now()}`,
+    id: `${idPrefix}_${Date.now()}`,
     sessionId: "",
     role: "assistant",
     blocks: [block],
@@ -4289,6 +4557,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   voiceEngine: "zipformer" as const,
   voiceMicPermission: "",
   voiceModelDir: "",
+  // 和主进程那份默认值必须一致(见 `WORKFLOW_MAX_PARALLEL_DEFAULT_RENDERER` 的注释)。
+  workflowMaxParallel: WORKFLOW_MAX_PARALLEL_DEFAULT_RENDERER,
   voiceModelReady: false,
   userMessageColor: null,
   accentColor: null,
@@ -4304,6 +4574,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     historyLoadedBySession: {},
   runningBySession: {},
   runningTurnStartedAt: {},
+  waitingBranchesBySession: {},
   runningTurnModelBySession: {},
   turnErrorBySession: {},
   // Stream sidebar cache: empty + dirty so the first mount fetches.
@@ -4357,6 +4628,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   bottomTerminalHeight: 280,
   editorWidthPct: 50,
   permissionMode: "default",
+  workflowId: "default",
     envChoice: "local",
   providerId: DEFAULT_PROVIDER_ID,
   model: "default",
@@ -4375,6 +4647,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   planApprovalDraftBySession: {},
   subagentsBySession: {},
   subagentTranscriptsBySession: {},
+  workflowNodeTranscripts: {},
   contextSnapshotBySession: {},
   usageHistoryBySession: {},
   pendingQuestionBySession: {},
@@ -4910,6 +5183,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           UI_VOICE_MODEL_DIR_SETTING_KEY,
           AUTO_ARCHIVE_SETTING_KEY,
           UI_GESTURES_SETTING_KEY,
+          WORKFLOW_MAX_PARALLEL_SETTING_KEY,
         ],
       })
       .catch((err) => {
@@ -4929,6 +5203,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (pasteThresholdRaw != null) {
         const n = Number(pasteThresholdRaw);
         if (Number.isFinite(n)) set({ pasteTagThresholdChars: clampPasteTagThresholdChars(n) });
+      }
+      const maxParallelRaw = ds[WORKFLOW_MAX_PARALLEL_SETTING_KEY];
+      if (maxParallelRaw != null) {
+        const n = Number(maxParallelRaw);
+        if (Number.isFinite(n)) set({ workflowMaxParallel: clampWorkflowMaxParallel(n) });
       }
       const colorRaw = ds[UI_USER_MSG_COLOR_SETTING_KEY];
       if (colorRaw && RGB_TRIPLET_RE.test(colorRaw)) set({ userMessageColor: colorRaw });
@@ -5510,6 +5789,76 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // on. Skipped in the normal path (slots were the row's source anyway) to
     // keep that behavior untouched.
     if (overrides) syncConfigFromSession(set, get, session.id);
+  },
+
+  /**
+   * 把一段对话复制成新的一段(右键左栏的对话 → 复制一份)。
+   *
+   * ## 主进程那边做了什么
+   *
+   * 两件事,而且顺序不能反:先在**引擎**那边把会话文件复制一份(上下文原样带过去,
+   * 消息 UUID 全部重编 —— 之后两边各写各的文件),再建一条新的 Mcode 会话行、把消息
+   * 行抄过去。所以这里拿到的 `session` 已经是一个**带着历史和上下文**的完整对话。
+   *
+   * ## 与 `startSession` 最关键的一处不同
+   *
+   * **不能把 `historyLoadedBySession` 标成 true。** 那个标志的意思是"这个会话一个 token
+   * 都还没发过,空桶就是它的全部历史"(见 `startSession` 里那条注释)。复制来的会话恰恰
+   * 相反 —— 它的历史在库里躺着,标成已加载会让打开的那一屏**是空的**,而用户明明刚
+   * 看着那段对话复制的。
+   */
+  forkSession: async (sessionId, title) => {
+    let fork: Session;
+    try {
+      ({ session: fork } = await api.session.fork({ id: sessionId, title }));
+    } catch (err) {
+      // 分叉会失败得很具体(引擎不支持、会话文件不在了),而那正是用户唯一能据此
+      // 做点什么的信息 —— 不能只吞掉了事。
+      useToastStore.getState().push({
+        kind: "error",
+        title: translate(get().locale, "store.toast.forkFailed"),
+        body: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+    const projectId = fork.projectId;
+    set((s) => {
+      // 与 `startSession` 的本地那一支同一套写法 —— 包括"`session.changed` 的广播可能
+      // 已经先一步把这一行插进去了,所以这里是 upsert 而不是 prepend"。那一段的来龙去脉
+      // (以及为什么必须是 upsert)见 `startSession`。
+      const prevList = s.sessionsByProject[projectId] ?? [];
+      const cached = prevList.find((x) => x.id === fork.id);
+      const upserted = cached
+        ? [{ ...cached, ...fork }, ...prevList.filter((x) => x.id !== fork.id)]
+        : [fork, ...prevList];
+      const nextByProject = { ...s.sessionsByProject, [projectId]: upserted };
+      const prevTotal = s.sessionsTotalByProject[projectId] ?? 0;
+      const nextTotal = cached ? prevTotal : prevTotal + 1;
+      const isactive = projectId === s.activeProjectId;
+      return {
+        sessionsByProject: nextByProject,
+        sessionsTotalByProject: { ...s.sessionsTotalByProject, [projectId]: nextTotal },
+        sessionsHasMoreByProject: {
+          ...s.sessionsHasMoreByProject,
+          [projectId]: nextTotal > SESSION_PAGE_SIZE,
+        },
+        sessions: isactive ? nextByProject[projectId] : s.sessions,
+        activeProjectId: projectId,
+        expandedProjects: { ...s.expandedProjects, [projectId]: true },
+        // 分叉出来的那一段跟源在同一台工作树里(主进程照抄了目录设置),所以左栏要
+        // 停在能看见它的那一侧 —— 与 `startSession` 里同一条理由。
+        worktreeViewByProject: {
+          ...s.worktreeViewByProject,
+          [projectId]: !!fork.worktreePath,
+        },
+        expandedWorktrees: fork.worktreePath
+          ? { ...s.expandedWorktrees, [normWorktreeKey(fork.worktreePath)]: true }
+          : s.expandedWorktrees,
+      };
+    });
+    // 打开它 —— `openTab` 会顺带把复制过来的那一段历史拉下来(上面刻意没标"已加载")
+    // 并按新行的配置同步那几个前台开关。
+    await get().openTab(fork.id);
   },
 
   /** Re-aim a fresh local session at another project (composer directory
@@ -6281,6 +6630,59 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
+  /**
+   * 往**正在跑的那一轮**里塞一句话(生成过程中插话)。返回"送出去了没有"。
+   *
+   * ## 与 `sendPrompt` 的分工
+   *
+   * 那一条是"说一句新的"(它自己会判断是发出去还是排队),这一条是"给正在跑的这一轮
+   * 补一句" —— 那一轮**不中断**。两件事都要有,所以界面上是两个入口。
+   *
+   * ## 返回 false 的三种情形,以及为什么调用方必须兜底
+   *
+   * 没在跑 / 引擎不支持 / 刚好收尾了。三种都**什么都没发生**,所以调用方应当退回
+   * `sendPrompt`(排队或直发),而不是把用户那句话丢掉 —— 打了字按了回车、界面上毫无
+   * 动静,是最糟的一种结果。
+   *
+   * ## 收下了才画,画了就落库
+   *
+   * 落库的规矩和 `sendPrompt` 里那条一模一样、理由也一样:**这一轮可能永远到不了终态**
+   * (用户中途按了停止),那时"我补过一句什么"不能跟着一起没掉。只写这一条而不是整份
+   * 快照,所以顺序上没有副作用。
+   *
+   * 注意**不动** `runningBySession` / `runningTurnStartedAt` —— 插话不是新的一轮。
+   */
+  injectPrompt: async (sessionId, text) => {
+    const trimmed = text.trim();
+    if (trimmed.length === 0) return false;
+    if (!get().runningBySession[sessionId]) return false;
+    let delivered = false;
+    try {
+      ({ delivered } = await api.claude.inject({ sessionId, text: trimmed }));
+    } catch {
+      // 手机端的 shim 没有这条 RPC —— 按"没送出去"处理,调用方会兜回普通的发送。
+      return false;
+    }
+    if (!delivered) return false;
+    const userMsg: ChatMessage = {
+      id: `u_${Date.now()}`,
+      sessionId,
+      role: "user",
+      blocks: [{ kind: "text", text: trimmed }],
+      createdAt: Date.now(),
+    };
+    set((s) => ({
+      messagesBySession: {
+        ...s.messagesBySession,
+        [sessionId]: [...(s.messagesBySession[sessionId] ?? []), userMsg],
+      },
+      // 这一轮还在跑,但**有新内容**了 —— 让左栏那条"有动静"的提示跟上。
+      streamDirty: true,
+    }));
+    void api.session.upsertMessages({ sessionId, messages: toRecords(sessionId, [userMsg]) });
+    return true;
+  },
+
   sendPrompt: async (prompt, attachments, displayText, skillsUsed, images, displayBlocks, sessionIdArg) => {
     const sessionId = sessionIdArg ?? get().activeSessionId;
     if (!sessionId) return false;
@@ -6385,6 +6787,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       interruptedBySession: { ...s.interruptedBySession, [sessionId]: false },
     }));
 
+    // 用户消息**立刻落库,不等终态**。
+    //
+    // 持久化原本只发生在 turn.done / error 上(见 ingestEvent 末尾那段注释)。但一轮
+    // 可能**永远到不了终态**:用户中途点了停止,或流被掐断。那时不仅助手的话没了,
+    // 连"我问过什么"都不见了 —— 用户报的就是这个。
+    //
+    // 只写这一条而不是整份快照:它正是这一轮的锚,终态那条增量 upsert 按
+    // `createdAt >= userMsg.createdAt` 挑尾巴,所以它先落库不会有任何副作用;而这一轮
+    // 哪怕一条助手消息都没产出,用户至少看得到自己问过什么。
+    void api.session.upsertMessages({ sessionId, messages: toRecords(sessionId, [userMsg]) });
+
 	    // 2. fire the turn; events stream back via ingestEvent. Run the IPC in
 	    //    the BACKGROUND and return true the moment the user message lands
 	    //    in the stream — the main handler awaits provider.startTurn (SDK
@@ -6400,7 +6813,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	    //    RuntimeManager always sees the latest UI state. The model pair
 	    //    comes from `resolvedModel` above (auto → first configured model).
 	    void (async () => {
-      const { effort, permissionMode, providerId } = get();
+      const { effort, permissionMode, workflowId, providerId } = get();
       let updated;
       try {
         ({ session: updated } = await api.claude.sendTurn({
@@ -6409,6 +6822,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           model: resolvedModel.model,
           effort,
           permissionMode,
+          workflowId,
           customModelId: resolvedModel.customModelId,
           // Per-turn provider override — lets the active provider drive
           // which backend handles this turn without persisting the change
@@ -6607,7 +7021,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     //    are already on screen, so don't block this action's completion on the
     //    main process's provider.startTurn round-trip.
     void (async () => {
-      const { effort, permissionMode, providerId } = get();
+      const { effort, permissionMode, workflowId, providerId } = get();
       let updated;
       try {
         ({ session: updated } = await api.claude.sendTurn({
@@ -6618,6 +7032,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           model: resolvedModel.model,
           effort,
           permissionMode,
+          workflowId,
           customModelId: resolvedModel.customModelId,
           providerId,
           skills: skillsUsed && skillsUsed.length > 0 ? skillsUsed : undefined,
@@ -6682,6 +7097,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   interrupt: async (sessionIdArg) => {
     const sessionId = sessionIdArg ?? get().activeSessionId;
     if (!sessionId) return;
+    // Capture the turn anchor BEFORE the set below deletes it — the persist at
+    // the end of this function filters this turn's messages by it.
+    const turnStartAt = get().runningTurnStartedAt[sessionId];
     await api.claude.interrupt({ sessionId });
     // Drop this session's buffered deltas: after abort, flushFinal may emit a
     // few straggler text.delta/thinking while the generator unwinds, but the
@@ -6740,6 +7158,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
     // User stopped the turn — drop any live upstream-retry hint with it.
     clearUpstreamIssue(set, sessionId);
+
+    // 中断的这一轮**也必须落库**。
+    //
+    // 消息的持久化原本只发生在终态事件(turn.done / error)上,而中止的一轮**不保证**
+    // 有终态事件到达 —— 用户点了停止、流被掐断,那一轮就一条都不留。用户报的正是
+    // 这个:「中断之后这里为什么没有显示记录呀,对话记录没有呀」—— 他试检索的两个
+    // 会话在库里是 **0 条消息**。
+    //
+    // 只存这一轮(按发送时的锚点过滤),不是整份快照:长会话整份存是 O(N),而这里
+    // 和终态那条持久化路径是同一个道理。锚点可能缺失(恢复出来的、或没走 sendPrompt
+    // 的一轮),那就退化成整份存 —— 宁可多写一次,也不能让记录丢掉。
+    const snapshot = get().messagesBySession[sessionId];
+    if (snapshot && snapshot.length > 0) {
+      const tail =
+        turnStartAt != null
+          ? snapshot.filter(
+              (m) => m.createdAt >= turnStartAt || m.turnMeta?.startedAt === turnStartAt,
+            )
+          : snapshot;
+      const toSave = tail.length > 0 ? tail : snapshot;
+      void api.session.upsertMessages({ sessionId, messages: toRecords(sessionId, toSave) });
+    }
   },
 
   ingestEvent: (e) => {
@@ -6985,6 +7425,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         });
         return;
       }
+      // 工作流节点会话(`kind: "node"`)同理,但**直接丢掉**:它没有对应的面板,
+      // 而下面那个 upsert 会把它物化进左栏(= 用户突然多出一个自己没建过的会话)。
+      //
+      // 正常情况下它根本走不到这里 —— 建节点会话的路径(`orchestration/runner.ts`)
+      // 不广播 `session.changed`,三个广播点也都按 `kind === "chat"` 收了口。这一句是
+      // **兜底**:以后多一个广播点,症状不该是"隐藏会话漏进侧栏"。
+      if (entry.kind === "node") return;
       set((s) => {
         const patch: Partial<SessionState> = {};
         let touched = false;
@@ -7336,6 +7783,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
       return;
     }
+    // workflow.node.transcript: REPLACE one workflow node's transcript (key = 跑那一步的
+    // 隐藏会话 id)。**替换语义** —— 主进程每次发全量,这里整体换掉,所以丢一条也不会让
+    // 界面停在半截状态。与 subagent.transcript 同一套做法,差别只在"新回合不清"和
+    // "有容量上限"(见 `workflowNodeTranscripts` 上那两条)。
+    if (e.type === "workflow.node.transcript") {
+      set((s) => {
+        if (s.workflowNodeTranscripts[e.nodeSessionId] === e.blocks) return {};
+        const next = { ...s.workflowNodeTranscripts, [e.nodeSessionId]: e.blocks };
+        // 只在**新键**上裁:替换已有的那个不会让表变大,而按插入序裁能保证"正在看的
+        // 这一步"永远裁不到。
+        const keys = Object.keys(next);
+        for (const stale of keys.slice(0, Math.max(0, keys.length - NODE_TRANSCRIPT_KEEP))) {
+          if (stale !== e.nodeSessionId) delete next[stale];
+        }
+        return { workflowNodeTranscripts: next };
+      });
+      return;
+    }
     // token-usage.updated: replace this session's context snapshot. The
     // adapter already normalized everything (usedTokens / maxTokens / pct /
     // warning), so we just store + the chip renders. Main also persists this
@@ -7492,7 +7957,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // seamlessly - same pattern as tool.use / text.delta. Falls back to
         // now if the anchor is missing (resumed/legacy turn).
         const startedAt = s.runningTurnStartedAt[sid] ?? Date.now();
-        const next = appendCompactSummaryBlock(list, block, startedAt, s.runningTurnModelBySession[sid]);
+        const next = appendTurnCardBlock(
+          list,
+          block,
+          startedAt,
+          s.runningTurnModelBySession[sid],
+          "compact",
+        );
         return next === list
           ? s
           : { messagesBySession: { ...s.messagesBySession, [sid]: next } };
@@ -7506,6 +7977,114 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           void api.session.upsertMessages({ sessionId: sid, messages: toRecords(sid, [last]) });
         }
       }
+      return;
+    }
+    if (e.type === "workflow.node.result") {
+      // 工作流图里的一步收场了。那一步跑在**自己的隐藏子会话**里(`kind: "node"`),
+      // 调度器把结果事件发到**这个对话**上,于是这里把它变成一张卡片。
+      //
+      // 不伪造成 assistant 消息 —— 那会破坏 `turn.done` 与用量记录的配对(见
+      // `@contracts/runtime` 的 `WorkflowNodeResultEvent`)。和 plan.update /
+      // compact.result 同一个做法:事件 → 卡片。
+      set((s) => {
+        const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
+        const block: Block = {
+          kind: "workflow-node-result",
+          runId: e.runId,
+          nodeId: e.nodeId,
+          ...(e.nodeSessionId ? { nodeSessionId: e.nodeSessionId } : {}),
+          nodeType: e.nodeType,
+          title: e.title,
+          status: e.status,
+          summary: e.summary,
+          ...(e.outputKeys && e.outputKeys.length > 0 ? { outputKeys: e.outputKeys } : {}),
+          ...(e.error ? { error: e.error } : {}),
+          ...(e.usage ? { usage: e.usage } : {}),
+        };
+        const startedAt = s.runningTurnStartedAt[sid] ?? Date.now();
+        const next = appendTurnCardBlock(
+          list,
+          block,
+          startedAt,
+          s.runningTurnModelBySession[sid],
+          "wfnode",
+        );
+        return next === list
+          ? s
+          : { messagesBySession: { ...s.messagesBySession, [sid]: next } };
+      });
+      // **不在这里落盘。** 每落一次 = 主进程把整个 sqlite 文件重写一遍,而一张图会
+      // 结算 N 个节点 —— 那就是 N 次整库重写。这一轮结束时调度器会补一个 `turn.done`,
+      // 而 turn.done 那条路本来就会把本轮新增的消息整批 upsert 下去(见文件末尾的
+      // 落盘分支),这些卡片就在里面。
+      return;
+    }
+    if (e.type === "workflow.node.usage") {
+      // **给已经画出来的那张卡补上花费**(见 `WorkflowNodeUsageEvent` 的文件头:
+      // 为什么不能重发结果事件、为什么要等一会儿才有数)。
+      //
+      // 按 `runId + nodeId` 找 —— 和结果卡认卡用的是同一对。**找不到就什么都不做**:
+      // 卡片可能被折了、被容量裁了、用户切走了会话。补花费是附加的,它不该凭空造一张卡。
+      set((s) => {
+        const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
+        const next = patchNodeUsageBlock(list, e.runId, e.nodeId, e.usage);
+        return next === null ? s : { messagesBySession: { ...s.messagesBySession, [sid]: next } };
+      });
+      return;
+    }
+    if (e.type === "workflow.node.choice") {
+      // 一个**岔路口**在等用户拍板(见 `Block` 里那个 `workflow-branch-choice`)。
+      //
+      // **同一个岔路口的同一轮只会有一张卡。** 这个事件来两次(第一次"在等"、第二次
+      // "选完了"),而第二次要找到原来那张**换掉**它 —— 追加的话对话里会出现两个格子
+      // 说同一件事,其中一个还摆着已经点过的按钮,而用户会去点它。
+      //
+      // **但下一轮是另一张卡**:回头会让同一个岔路口被问第二次(见 `e.attempt`),那一张
+      // 要**新开**格子 —— 换掉上一轮的话,用户第一轮点过什么就没了。
+      set((s) => {
+        const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
+        const block: Block = {
+          kind: "workflow-branch-choice",
+          runId: e.runId,
+          nodeId: e.nodeId,
+          nodeType: e.nodeType,
+          title: e.title,
+          attempt: e.attempt,
+          options: e.options,
+          // **是「运行前先问我」那一问的话,标出来。** 弹窗靠这一位认出"该我上场了"
+          // (见 `AskChoiceDialog`),而卡片照常摆 —— 它是记录,也是改天回看的唯一凭据。
+          ...(e.ask ? { ask: true } : {}),
+          ...(e.chosen ? { chosen: e.chosen } : {}),
+          ...(e.comment ? { comment: e.comment } : {}),
+        };
+        const patched = patchBranchChoiceBlock(list, e.runId, e.nodeId, e.attempt, block);
+        // **这一处岔路口在不在等人** —— 计数喂给 `sessionBusy`(见
+        // `waitingBranchesBySession`)。同一个岔路口的卡会来两次:先"在等"(没有
+        // `chosen`),后"选完了"(带 `chosen`)。所以 +1 / -1 正好抵消。夹到 0 以上是
+        // 兜"另一台设备点过了、这边只收到后一半"。
+        const delta = e.chosen ? -1 : 1;
+        const waiting = {
+          ...s.waitingBranchesBySession,
+          [sid]: Math.max(0, (s.waitingBranchesBySession[sid] ?? 0) + delta),
+        };
+        if (patched) {
+          return { messagesBySession: { ...s.messagesBySession, [sid]: patched }, waitingBranchesBySession: waiting };
+        }
+        const startedAt = s.runningTurnStartedAt[sid] ?? Date.now();
+        const next = appendTurnCardBlock(
+          list,
+          block,
+          startedAt,
+          s.runningTurnModelBySession[sid],
+          "wfbranch",
+        );
+        return {
+          messagesBySession: next === list ? s.messagesBySession : { ...s.messagesBySession, [sid]: next },
+          waitingBranchesBySession: waiting,
+        };
+      });
+      // **不在这里落盘** —— 理由同 `workflow.node.result`:这一轮结束时的 `turn.done`
+      // 会把本轮新增整批 upsert 下去,而每落一次 = 主进程把整个 sqlite 重写一遍。
       return;
     }
     if (e.type === "turn.rewound") {
@@ -7932,6 +8511,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                 delete m[sid];
                 return m;
               })(),
+              // 这一轮收尾了 —— 就算还有卡片显示"在等",那个等待也跟着这次运行一起
+              // 结束了(要么没人点、要么被取消)。**这一句是 `waitingBranchesBySession`
+              // 的兜底**:计数器靠两条事件配对,而"配对失败"的任何一种都会让它永远
+              // 大于 0 —— 那时输入框会一直不锁,用户能在图正干活的时候插话。
+              // 宁可少放松一次,不要多放松。
+              waitingBranchesBySession: { ...s.waitingBranchesBySession, [sid]: 0 },
               pendingApprovals: s.pendingApprovals.filter((p) => p.sessionId !== sid),
               pendingPlanApprovalBySession: restPlanApprovals,
               // Keep the plan card visible when the plan was APPROVED (phase
@@ -8533,6 +9118,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
+  setWorkflowMaxParallel: async (n) => {
+    const clamped = clampWorkflowMaxParallel(n);
+    set({ workflowMaxParallel: clamped });
+    try {
+      await api.setting.set({
+        key: WORKFLOW_MAX_PARALLEL_SETTING_KEY,
+        value: String(clamped),
+      });
+    } catch (err) {
+      console.error("setting.set(workflowMaxParallel) failed:", err);
+    }
+  },
+
   setVoiceLang: async (lang) => {
     set({ voiceLang: lang });
     try {
@@ -8762,6 +9360,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
     }
     persistComposerSelection(get());
+  },
+
+  /** Persist the ACTIVE session's composer working mode. Same optimistic slot +
+   *  fire-and-forget DB write as `setPermissionMode`.
+   *
+   *  Deliberately does NOT touch `lastModelByProvider`: 工作流不是按提供方分的,
+   *  新会话应该从「默认」开始,而不是悄悄继承上一个会话的意图
+   *  ("这条已经在评审了" 不是下一个会话的性质)。 */
+  setWorkflowId: (workflowId) => {
+    const sessionId = get().activeSessionId;
+    set({ workflowId });
+    if (sessionId) {
+      void api.session.updateSettings({ sessionId, workflowId }).catch((err) => {
+        console.error("updateSettings(workflowId) failed:", err);
+      });
+    }
   },
 
   setEnvChoice: (choice) => {

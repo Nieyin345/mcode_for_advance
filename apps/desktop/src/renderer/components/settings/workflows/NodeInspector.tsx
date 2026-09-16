@@ -1,0 +1,826 @@
+/**
+ * 右栏检查器:选中的是**节点**就编辑那个节点,什么都没选就编辑**工作流本体**。
+ *
+ * ## 参数表单是**按清单生成的**
+ *
+ * 这里没有任何一个字段是写死的。每个节点类型在它的清单里声明自己有哪些参数
+ * (`params: NodeParamSpec[]`),这个文件只负责把 `kind` 映射成控件 ——
+ * `text` / `longtext` / `number` / `boolean` / `select` / `file` / `dir` / `ref`。
+ *
+ * 唯一一类**候选不来自清单**的是 `ref`:它要的是"这台机器上有什么"(配了哪些模型、
+ * 装了哪些技能……)。那一份列表在 `useRefOptions.ts` 里,而**加一种来源改的是那个
+ * 文件**,不是这里 —— 见 `@contracts/nodeType` 的 `NODE_PARAM_REF_SOURCES`。
+ *
+ * 于是**第三方带着一份 JSON 进来就能有界面**,这也是"节点引用类型"那条设计
+ * (见 `@contracts/nodeType`)在渲染端的落点:加一种参数控件是往那个封闭集合里加
+ * 一个值,而不是给每个新类型写一遍表单。
+ *
+ * ## 依赖:画布上拉线为主,这里勾选是等价路径
+ *
+ * 两种都留着,而且**共用同一个 `setDependency`**(边的 id 怎么算只有一份实现)。
+ * 这里那组勾选框不是历史遗留:拉线没有键盘等价物,勾选框有 —— 去掉它,不用鼠标的人
+ * 就配不出依赖。反过来,拉线解决的是"图上直接连更顺手",以及拖到会成环的目标时当场
+ * 变红(见 `WorkflowCanvas`)。
+ * 两条路都会挡住成环的那一条,并在原地说明原因(`wouldCycle`),不用等到存盘被拒。
+ */
+import { useMemo, useState } from "react";
+import { Menu } from "@base-ui/react/menu";
+import { cn } from "@renderer/lib/cn.js";
+import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
+import { Button, Input, Select } from "@renderer/components/ui/index.js";
+import { paramsForProfile, type AgentProfile } from "@contracts/agentProfile";
+import {
+  NODE_FLOW_RECORD_PARAM_KEY,
+  NODE_PROMPT_PARAM_KEY,
+  isRunnerImplemented,
+  validateNodeParams,
+  type NodeTypeCatalog,
+  type NodeTypeEntry,
+} from "@contracts/nodeType";
+import { validateOutputRules, NODE_OUTPUT_VARS_KEY } from "@contracts/outputConstraint";
+import { insertableGroups } from "./insertVariable.js";
+import {
+  WORKFLOW_CAPABILITIES,
+  WORKFLOW_TRIGGERS,
+  buildAdjacency,
+  nodesOnLoopOf,
+  nodesWithDownstream,
+  type WorkflowCapability,
+  type WorkflowDoc,
+  type WorkflowNode,
+  type WorkflowTrigger,
+} from "@contracts/workflow";
+import {
+  IconAlertTriangle,
+  IconArrowsSplit,
+  IconCheck,
+  IconChevronDown,
+  IconPlus,
+  IconTrash,
+} from "@renderer/lib/icons.js";
+import {
+  findNodeType,
+  isIdentityLocked,
+  isLoopGate,
+  isProtectedNode,
+  nodeTitle,
+  removeActionOf,
+  type WorkflowPurpose,
+} from "./workflowView.js";
+import { wouldCycle } from "./workflowEdit.js";
+import { Field, GrowingTextarea, ParamField } from "./ParamField.js";
+import { workflowDisplayDescription, workflowDisplayName } from "@renderer/lib/workflowLabels.js";
+import { WorkflowBadge } from "./WorkflowBadge.js";
+
+/** 内置工作流的名称与说明走 i18n,界面上是只读的 —— 这一条样式就是那个只读态。 */
+const readOnlyCls = "cursor-default bg-surface-muted/40 text-content-muted focus:border-edge";
+
+export function NodeInspector({
+  doc,
+  catalog,
+  profiles,
+  profileError,
+  selectedNodeId,
+  purpose,
+  onUpdateNode,
+  onUpdateWorkflow,
+  onRemoveNode,
+  onSetDependency,
+  onUpdateEdge,
+  onSaveProfile,
+  onRemoveProfile,
+  onRemoveWorkflow,
+}: {
+  doc: WorkflowDoc;
+  catalog: NodeTypeCatalog;
+  /** 保存下来的子 agent 配置(见 `@contracts/agentProfile`)。 */
+  profiles: AgentProfile[];
+  /** 上一次存/删档案失败的原因。**由外面持有** —— 因为它不是"这个节点"的状态。 */
+  profileError: string | null;
+  selectedNodeId: string | null;
+  /** 在编的是工作流还是自动化 —— 只影响"工作流本体"那一块(自动化多一段触发方式)。
+   *  节点那一块完全一样:同一个节点类型库、同一个参数表单。 */
+  purpose: WorkflowPurpose;
+  onUpdateNode: (id: string, patch: Partial<Omit<WorkflowNode, "id">>) => void;
+  /** 改工作流本体的字段(名称/说明/流程文字/触发方式)。内置工作流的名称与说明走
+   *  i18n,界面上是只读的 —— 那只读态由 `isIdentityLocked` 决定,这里不重复判断。 */
+  onUpdateWorkflow: (patch: Partial<Omit<WorkflowDoc, "id">>) => void;
+  onRemoveNode: (id: string) => void;
+  onSetDependency: (nodeId: string, depId: string, on: boolean) => void;
+  /** 改一条出边上的选项名 / 说明。只有**分支节点**用得上(见 `WorkflowEdge`)。 */
+  onUpdateEdge: (edgeId: string, patch: { label?: string; note?: string }) => void;
+  onSaveProfile: (name: string) => Promise<void>;
+  onRemoveProfile: (id: string) => Promise<void>;
+  onRemoveWorkflow: () => void;
+}) {
+  const node = doc.nodes.find((n) => n.id === selectedNodeId) ?? null;
+
+  return (
+    <aside className="flex w-[300px] shrink-0 flex-col overflow-y-auto rounded-md border border-edge bg-surface/40 p-3">
+      {node ? (
+        <NodeSection
+          doc={doc}
+          node={node}
+          catalog={catalog}
+          profiles={profiles}
+          profileError={profileError}
+          onUpdateNode={onUpdateNode}
+          onRemoveNode={onRemoveNode}
+          onSetDependency={onSetDependency}
+          onUpdateEdge={onUpdateEdge}
+          onSaveProfile={onSaveProfile}
+          onRemoveProfile={onRemoveProfile}
+        />
+      ) : (
+        <WorkflowSection
+          doc={doc}
+          purpose={purpose}
+          onUpdateWorkflow={onUpdateWorkflow}
+          onRemoveWorkflow={onRemoveWorkflow}
+        />
+      )}
+    </aside>
+  );
+}
+
+/* ────────────────────────── 工作流本体 ────────────────────────── */
+
+/**
+ * 触发方式的两张表:下拉里那四个词,以及选中之后那句解释。
+ *
+ * 解释是**逐项**的,不是一句通用的话 —— 四种触发要用户准备的东西完全不同(一个定时
+ * 要你给时间,一个文件监听要你给路径),而它们的参数现在都还没设计出来。说清楚
+ * "将来会问你要什么",比一句"暂未实现"有用得多。
+ */
+const TRIGGER_LABELS: Record<WorkflowTrigger, MessageId> = {
+  manual: "settings.automation.trigger.manual",
+  schedule: "settings.automation.trigger.schedule",
+  file: "settings.automation.trigger.file",
+  webhook: "settings.automation.trigger.webhook",
+};
+
+const TRIGGER_HINTS: Record<WorkflowTrigger, MessageId> = {
+  manual: "settings.automation.triggerHint.manual",
+  schedule: "settings.automation.triggerHint.schedule",
+  file: "settings.automation.triggerHint.file",
+  webhook: "settings.automation.triggerHint.webhook",
+};
+
+function WorkflowSection({
+  doc,
+  purpose,
+  onUpdateWorkflow,
+  onRemoveWorkflow,
+}: {
+  doc: WorkflowDoc;
+  purpose: WorkflowPurpose;
+  onUpdateWorkflow: (patch: Partial<Omit<WorkflowDoc, "id">>) => void;
+  onRemoveWorkflow: () => void;
+}) {
+  const { t, locale } = useI18n();
+  const locked = isIdentityLocked(doc);
+  const name = workflowDisplayName(doc, locale);
+  /** 这颗按钮该叫「恢复默认」还是「删除」—— 标题与文字共用一个答案。 */
+  const reset = removeActionOf(doc) === "reset";
+  const isAutomation = purpose === "automation";
+  // 自动化一定有 trigger(那是它之所以是自动化的判据),但类型上它是可选的 ——
+  // 兜一个 manual 只是为了下拉有个值可显示。
+  const trigger = doc.trigger ?? "manual";
+
+  return (
+    <div className="flex flex-col">
+      <div className="flex items-center gap-1.5">
+        <span className="truncate text-[0.8571em] font-medium text-content">{name}</span>
+        {doc.builtin && (
+          <WorkflowBadge tone="info">{t("settings.workflows.badgeBuiltin")}</WorkflowBadge>
+        )}
+      </div>
+      <div className="mb-3 mt-0.5 flex items-center gap-2">
+        <code className="rounded bg-surface-muted px-1 text-[0.7143em] text-content-subtle">
+          {doc.id}
+        </code>
+      </div>
+
+      {/* 触发方式排在最前面:对一条自动化来说,"它怎么跑起来"比它叫什么重要得多。 */}
+      {isAutomation && (
+        <>
+          <Field label={t("settings.automation.fieldTrigger")}>
+            <Select.Root
+              value={trigger}
+              onValueChange={(value) =>
+                onUpdateWorkflow({ trigger: value as WorkflowTrigger })
+              }
+            >
+              <Select.Trigger className="w-full">
+                <Select.Value>
+                  {(value: string) => t(TRIGGER_LABELS[value as WorkflowTrigger])}
+                </Select.Value>
+              </Select.Trigger>
+              <Select.Portal>
+                <Select.Positioner className="z-50">
+                  <Select.Popup>
+                    <Select.List>
+                      {WORKFLOW_TRIGGERS.map((kind) => (
+                        <Select.Item key={kind} value={kind}>
+                          <Select.ItemText>{t(TRIGGER_LABELS[kind])}</Select.ItemText>
+                        </Select.Item>
+                      ))}
+                    </Select.List>
+                  </Select.Popup>
+                </Select.Positioner>
+              </Select.Portal>
+            </Select.Root>
+          </Field>
+          <p className="-mt-1 text-[0.7143em] leading-relaxed text-content-subtle">
+            {t(TRIGGER_HINTS[trigger])}
+          </p>
+          {/* ⚠️ 这段**必须显眼**。一份保存成功的定义和一件真在后台跑着的东西,在界面上
+              长得一模一样就是界面在说谎 —— 用户的图不会跑,而他会以为它跑了。执行器
+              接上之后删掉这一段(见 `@contracts/workflow` 的 `WORKFLOW_TRIGGERS`)。 */}
+          <p className="mt-2 mb-1 rounded border border-warning/40 bg-warning/10 px-2 py-1.5 text-[0.7143em] leading-relaxed text-warning">
+            {t("settings.automation.notWired")}
+          </p>
+        </>
+      )}
+
+      <Field label={t("settings.workflows.fieldName")}>
+        <Input
+          type="text"
+          // 锁住时显示界面上真正的名字(词条),而不是数据里的兜底中文。
+          value={locked ? name : doc.name}
+          readOnly={locked}
+          maxLength={60}
+          spellCheck={false}
+          onChange={(e) => onUpdateWorkflow({ name: e.target.value })}
+          // 收尾去空格放**失焦**而不是每次按键:`isDocDirty` 比的是引用与字面值,
+          // 边打字边 trim 会让"草稿"和"刚存下去的那份"永远差一点,于是**一直显示有未保存的改动**。
+          onBlur={locked ? undefined : () => onUpdateWorkflow({ name: doc.name.trim() })}
+          className={cn(locked && readOnlyCls)}
+        />
+      </Field>
+      <Field label={t("settings.workflows.fieldDescription")}>
+        <Input
+          type="text"
+          value={locked ? workflowDisplayDescription(doc, locale) : (doc.description ?? "")}
+          readOnly={locked}
+          maxLength={200}
+          spellCheck={false}
+          onChange={(e) => onUpdateWorkflow({ description: e.target.value })}
+          onBlur={
+            locked
+              ? undefined
+              : () => {
+                  // 清空写成 `undefined` 而不是空串:空串是"有一条空说明",`undefined`
+                  // 才是"没有说明",而 schema 里这个字段是可选的。
+                  const trimmed = (doc.description ?? "").trim();
+                  onUpdateWorkflow({ description: trimmed.length > 0 ? trimmed : undefined });
+                }
+          }
+          className={cn(locked && readOnlyCls)}
+        />
+      </Field>
+      {locked && (
+        <p className="-mt-1 mb-3 text-[0.7143em] leading-relaxed text-content-subtle">
+          {t("settings.workflows.lockedHint")}
+        </p>
+      )}
+
+      <Field label={t("settings.workflows.fieldPrompt")}>
+        <textarea
+          value={doc.prompt ?? ""}
+          spellCheck={false}
+          placeholder={t("settings.workflows.promptPlaceholder")}
+          onChange={(e) => onUpdateWorkflow({ prompt: e.target.value })}
+          className="min-h-[160px] w-full resize-y rounded border border-edge bg-surface px-2.5 py-2 text-[0.7857em] leading-relaxed text-content placeholder:text-content-subtle focus:border-accent focus:outline-none"
+        />
+      </Field>
+      <p className="-mt-1 text-[0.7143em] leading-relaxed text-content-subtle">
+        {t("settings.workflows.promptAutoSaveHint")}
+      </p>
+
+      <div className="mt-3 flex items-center gap-2">
+        <Button
+          variant="danger"
+          size="sm"
+          onClick={onRemoveWorkflow}
+          title={
+            reset
+              ? t("settings.workflows.resetDesc", { name })
+              : t("settings.workflows.deleteDesc", { name })
+          }
+        >
+          {reset ? t("settings.workflows.reset") : t("common.delete")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────────────── 代理档案 ────────────────────────── */
+
+/**
+ * 节点上的「档案」那一行:**套用一份存好的配置 / 把现在这份存下来 / 删掉一份**。
+ *
+ * ## 节点不记住自己是从哪份档案来的
+ *
+ * 这一行是个**动作**,不是一个绑定:套用之后节点和档案就没有关系了(改节点不影响档案,
+ * 改档案也不影响这个节点)。所以没有"当前选中的档案"这种状态 —— 有的话就得回答"用户
+ * 改了一个参数之后,它还算是那份档案吗",而那个问题的答案一点也不直观。
+ *
+ * 用 Menu 而不是 Select 也是同一个理由:Select 是有选中态的控件,而这里没有"选中"
+ * 可言,只有"执行一次套用"。
+ */
+function ProfileRow({
+  profiles,
+  error,
+  onApply,
+  onSave,
+  onRemove,
+}: {
+  profiles: AgentProfile[];
+  error: string | null;
+  onApply: (profile: AgentProfile) => void;
+  onSave: (name: string) => Promise<void>;
+  onRemove: (id: string) => Promise<void>;
+}) {
+  const { t } = useI18n();
+  const [menuOpen, setMenuOpen] = useState(false);
+  /** 非 null = 正在问名字。空串是合法中间态(还没打字)。 */
+  const [naming, setNaming] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const submitName = async (): Promise<void> => {
+    const name = (naming ?? "").trim();
+    if (name.length === 0) return;
+    setBusy(true);
+    await onSave(name);
+    setBusy(false);
+    setNaming(null);
+  };
+
+  return (
+    <div className="mb-3 flex flex-col gap-1">
+      <span className="text-[0.7143em] font-medium text-content-muted">
+        {t("settings.workflows.fieldProfile")}
+      </span>
+      <div className="flex items-center gap-1.5">
+        <Menu.Root open={menuOpen} onOpenChange={setMenuOpen}>
+          <Menu.Trigger
+            className={cn(
+              "flex flex-1 items-center justify-between gap-1 rounded border border-edge bg-surface px-2 py-1 text-[0.7857em]",
+              "text-content-muted transition-colors hover:bg-surface-hover/60 hover:text-content",
+            )}
+          >
+            <span className="truncate">{t("settings.workflows.applyProfile")}</span>
+            <IconChevronDown size={11} className="shrink-0 opacity-70" />
+          </Menu.Trigger>
+          <Menu.Portal>
+            <Menu.Positioner side="bottom" align="start" sideOffset={4} className="z-50">
+              <Menu.Popup className="max-h-[260px] min-w-[240px] overflow-y-auto rounded-lg border border-edge bg-surface py-1 shadow-2xl">
+                {profiles.length === 0 ? (
+                  <div className="px-3 py-1.5 text-[0.7143em] leading-snug text-content-subtle">
+                    {t("settings.workflows.profileEmpty")}
+                  </div>
+                ) : (
+                  profiles.map((profile) => (
+                    <div key={profile.id} className="flex items-center">
+                      <Menu.Item
+                        onClick={() => {
+                          onApply(profile);
+                          setMenuOpen(false);
+                        }}
+                        className={cn(
+                          "flex min-w-0 flex-1 flex-col gap-0.5 px-3 py-1.5 text-left outline-none select-none",
+                          "data-[highlighted]:bg-surface-muted",
+                        )}
+                      >
+                        <span className="truncate text-[0.8571em] font-medium text-content">
+                          {profile.name}
+                        </span>
+                        {profile.description && (
+                          <span className="truncate text-[0.7143em] text-content-subtle">
+                            {profile.description}
+                          </span>
+                        )}
+                      </Menu.Item>
+                      {/* 删除放在菜单里而不是别处:档案没有自己的页面,而"我想删掉的那份"
+                          正是在这里看见的。 */}
+                      <button
+                        type="button"
+                        title={t("settings.workflows.removeProfile")}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void onRemove(profile.id);
+                        }}
+                        className="mr-1 shrink-0 rounded p-1 text-content-subtle transition-colors hover:bg-surface-hover hover:text-danger"
+                      >
+                        <IconTrash size={11} />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </Menu.Popup>
+            </Menu.Positioner>
+          </Menu.Portal>
+        </Menu.Root>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={naming !== null}
+          onClick={() => setNaming("")}
+          className="shrink-0 gap-1"
+        >
+          <IconPlus size={11} />
+          {t("settings.workflows.saveAsProfile")}
+        </Button>
+      </div>
+
+      {naming !== null && (
+        <div className="flex items-center gap-1.5">
+          <Input
+            type="text"
+            autoFocus
+            value={naming}
+            maxLength={60}
+            spellCheck={false}
+            placeholder={t("settings.workflows.profileNamePlaceholder")}
+            onChange={(e) => setNaming(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void submitName();
+              if (e.key === "Escape") setNaming(null);
+            }}
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy || naming.trim().length === 0}
+            onClick={() => void submitName()}
+          >
+            <IconCheck size={12} />
+          </Button>
+        </div>
+      )}
+      {error !== null && (
+        <p className="text-[0.7143em] leading-relaxed text-danger">{error}</p>
+      )}
+    </div>
+  );
+}
+
+/* ────────────────────────── 单个节点 ────────────────────────── */
+
+function NodeSection({
+  doc,
+  node,
+  catalog,
+  profiles,
+  profileError,
+  onUpdateNode,
+  onRemoveNode,
+  onSetDependency,
+  onUpdateEdge,
+  onSaveProfile,
+  onRemoveProfile,
+}: {
+  doc: WorkflowDoc;
+  node: WorkflowNode;
+  catalog: NodeTypeCatalog;
+  profiles: AgentProfile[];
+  profileError: string | null;
+  onUpdateNode: (id: string, patch: Partial<Omit<WorkflowNode, "id">>) => void;
+  onRemoveNode: (id: string) => void;
+  onSetDependency: (nodeId: string, depId: string, on: boolean) => void;
+  /** 改一条出边上的选项名 / 说明(只有分支节点用得上)。 */
+  onUpdateEdge: (edgeId: string, patch: { label?: string; note?: string }) => void;
+  onSaveProfile: (name: string) => Promise<void>;
+  onRemoveProfile: (id: string) => Promise<void>;
+}) {
+  const { t } = useI18n();
+  const entry = findNodeType(catalog.entries, node.type);
+  // **分支节点**(见 `@contracts/nodeType` 的 `runner.kind`)。判据是**清单**而不是类型
+  // id —— 第三方可以带自己的分支类型进来,而它的选项一样住在出边上。
+  const isBranch = entry?.manifest.runner.kind === "branch";
+  /** 它的出路。顺序即文档顺序 = 卡片上按钮的先后(见 `outgoingEdgesOf`)。 */
+  const outEdges = doc.edges.filter((e) => e.from === node.id);
+  const paramsCheck = entry ? validateNodeParams(entry.manifest, node.params) : null;
+  // 产出约束那几个键**不是** `validateNodeParams` 管的(它只看清单声明过的形状),所以
+  // 要单独查一次 —— 否则"选了 JSON 数组又填了必备字段"这件事,用户只会在**存盘被拒**
+  // 或者某一步跑完之后才知道。
+  const rulesCheck = entry ? validateOutputRules(entry.manifest, node.params) : null;
+  // 这一步的指令里能插入哪些变量。**每次改图都要重算**(依赖一改,能引用的东西就变了),
+  // 而 `doc` 的引用在每次编辑时都是新的,所以这个 memo 实际上就是"跟着图走"。
+  const vars = useMemo(() => insertableGroups(doc, node.id, catalog), [doc, node.id, catalog]);
+  /**
+   * 图上**在环里**的那些节点 —— 「读流程记录」那一格的默认值来自它(在环上的默认开,
+   * 见 `@contracts/workflow` 的 `nodesOnLoopOf`)。
+   *
+   * ⚠️ **必须和调度器共用同一个函数**:这里画的是开关的默认态,而主进程按同一个判据
+   * 拼提示词。各算一遍的话,会出现"界面上显示关着、实际按开着跑" —— 那不报错,只在某
+   * 一步悄悄多带或少带一大段上下文时才看得出来。
+   */
+  const loopNodes = useMemo(
+    () => nodesOnLoopOf(doc.nodes, doc.edges, (id) => isLoopGate(catalog, doc, id)),
+    [doc, catalog],
+  );
+  const others = doc.nodes.filter((n) => n.id !== node.id);
+  const adjacency = buildAdjacency(doc.nodes, doc.edges);
+  // 这一步后面还有没有别的步骤。**判据和调度器共用同一个函数**(`nodesWithDownstream`)
+  // —— 这里提示的和提示词里那句"你是最后一步"必须是同一件事。终末节点不摆变量表
+  // (见 `scheduler.ts` 的 `withOutputCheck`),所以这里要说明白,不然用户填了表却没反应。
+  const isTerminal = !nodesWithDownstream(doc).has(node.id);
+  const deps = new Set(adjacency.deps.get(node.id) ?? []);
+  const dependents = (adjacency.dependents.get(node.id) ?? [])
+    .map((id) => doc.nodes.find((n) => n.id === id))
+    .filter((n): n is WorkflowNode => n !== undefined);
+
+  return (
+    <div className="flex flex-col">
+      <div className="mb-3 flex flex-col gap-0.5">
+        <span className="text-[0.8571em] font-medium text-content">
+          {t("settings.workflows.nodeInspectorTitle")}
+        </span>
+        <div className="flex items-center gap-1.5">
+          <code className="rounded bg-surface-muted px-1 text-[0.7143em] text-content-subtle">
+            {node.type}
+          </code>
+          {entry && <WorkflowBadge tone="muted">{entry.manifest.name}</WorkflowBadge>}
+          {/* 来源只在不是内置的时候说 —— 内置的就是随应用来的,再说一句是废话;
+              而"这个类型是哪个插件装的"在排查时是要问的第一个问题。 */}
+          {entry && entry.source !== "builtin" && (
+            <span className="truncate text-[0.7143em] text-content-subtle">
+              {t("settings.workflows.nodeTypeFrom", { from: entry.from })}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* 类型没装:一份别人分享来的工作流会走到这里。**不是错误**,但这个节点画不出
+          也跑不了,得说出来(见 `@contracts/workflow` 文件头)。 */}
+      {!entry && (
+        <div className="mb-3 flex items-start gap-1.5 text-[0.7143em] leading-relaxed text-warning">
+          <IconAlertTriangle size={12} className="mt-0.5 shrink-0" />
+          <span className="flex flex-col gap-0.5">
+            <span className="font-medium">{t("settings.workflows.nodeTypeMissing")}</span>
+            <span>{t("settings.workflows.nodeTypeMissingDetail")}</span>
+          </span>
+        </div>
+      )}
+      {entry && !isRunnerImplemented(entry.manifest.runner.kind) && (
+        <p className="mb-3 flex items-start gap-1.5 text-[0.7143em] leading-relaxed text-warning">
+          <IconAlertTriangle size={12} className="mt-0.5 shrink-0" />
+          {t("settings.workflows.nodeTypeNotRunnable", { kind: entry.manifest.runner.kind })}
+        </p>
+      )}
+
+      <Field label={t("settings.workflows.nodeTitle")}>
+        <Input
+          type="text"
+          value={node.title}
+          maxLength={80}
+          spellCheck={false}
+          placeholder={entry?.manifest.name ?? node.type}
+          onChange={(e) => onUpdateNode(node.id, { title: e.target.value })}
+        />
+      </Field>
+
+      {entry && (
+        <ProfileRow
+          // 只列**同类型**的档案:一份给别的类型存的参数套到这个节点上只会留下一堆
+          // 它不认识的键(而 `validateNodeParams` 看不出问题 —— 它只看清单声明过的)。
+          profiles={profiles.filter((p) => p.type === node.type)}
+          error={profileError}
+          onApply={(profile) =>
+            onUpdateNode(node.id, { params: paramsForProfile(entry.manifest, profile) })
+          }
+          onSave={onSaveProfile}
+          onRemove={onRemoveProfile}
+        />
+      )}
+
+      {entry?.manifest.params.map((spec) => (
+        <ParamField
+          key={spec.key}
+          spec={spec}
+          value={
+            // 「读流程记录」**没表过态时显示的是按图算出来的那个值** —— 直接读 `params`
+            // 的话,画一个环之后那一步明明会读记录,开关却显示关着,而用户只会以为自己没开。
+            // (一旦他手动拨过,值就落到参数里,从此以那个为准 —— 见 `flowRecordOf`。)
+            spec.key === NODE_FLOW_RECORD_PARAM_KEY && node.params[spec.key] === undefined
+              ? loopNodes.has(node.id)
+              : node.params[spec.key]
+          }
+          onChange={(value) =>
+            onUpdateNode(node.id, { params: { ...node.params, [spec.key]: value } })
+          }
+          // **只有「指令」给「插入变量」的候选。** 别的文本参数(「期望产出」那段说明)
+          // 解算器其实也认 `{{...}}`,但把菜单摊到每一处,只会让人以为哪儿都得插变量。
+          {...(spec.key === NODE_PROMPT_PARAM_KEY ? { insertables: vars } : {})}
+        />
+      ))}
+      {entry && isTerminal && entry.manifest.params.some((p) => p.key === NODE_OUTPUT_VARS_KEY) && (
+        // 摆在参数表**之后**:它说的是"上面那张表用不上",读完表再读它才是那个顺序。
+        <p className="mb-3 text-[0.7143em] leading-relaxed text-content-subtle">
+          {t("settings.workflows.outputVarsTerminal")}
+        </p>
+      )}
+      {entry && entry.manifest.params.length === 0 && (
+        <p className="mb-3 text-[0.7143em] leading-relaxed text-content-subtle">
+          {t("settings.workflows.nodeTypeNoParams")}
+        </p>
+      )}
+      {paramsCheck && !paramsCheck.ok && (
+        <p className="-mt-1 mb-3 text-[0.7143em] leading-relaxed text-warning">
+          {paramsCheck.error}
+        </p>
+      )}
+      {/* 两条校验的错**不合并**:参数缺了和产出约束配矛盾了,用户要改的是表单上不同的
+          两处。合成一句话他就得自己猜是哪一处。 */}
+      {rulesCheck && !rulesCheck.ok && (
+        <p className="-mt-1 mb-3 text-[0.7143em] leading-relaxed text-warning">
+          {rulesCheck.error}
+        </p>
+      )}
+
+      {/* 能力:留空 = 用清单声明的默认值。**两级默认值**的分工见 `@contracts/workflow`
+          的 `capability` 注释 —— 类型作者最清楚"我这脚本要不要写盘",而用户在某个
+          具体节点上可能要收紧。 */}
+      <Field label={t("settings.workflows.nodeCapability")}>
+        <Select.Root
+          value={node.capability ?? ""}
+          onValueChange={(value) =>
+            onUpdateNode(node.id, {
+              capability: value === "" ? undefined : (value as WorkflowCapability),
+            })
+          }
+        >
+          <Select.Trigger className="w-full">
+            <Select.Value>
+              {(value: string) =>
+                value === ""
+                  ? t("settings.workflows.nodeCapabilityDefault", {
+                      fallback: entry?.manifest.capability ?? "read",
+                    })
+                  : value
+              }
+            </Select.Value>
+          </Select.Trigger>
+          <Select.Portal>
+            <Select.Positioner className="z-50">
+              <Select.Popup>
+                <Select.List>
+                  <Select.Item value="">
+                    <Select.ItemText>
+                      {t("settings.workflows.nodeCapabilityDefault", {
+                        fallback: entry?.manifest.capability ?? "read",
+                      })}
+                    </Select.ItemText>
+                  </Select.Item>
+                  {WORKFLOW_CAPABILITIES.map((capability) => (
+                    <Select.Item key={capability} value={capability}>
+                      <Select.ItemText>{capability}</Select.ItemText>
+                    </Select.Item>
+                  ))}
+                </Select.List>
+              </Select.Popup>
+            </Select.Positioner>
+          </Select.Portal>
+        </Select.Root>
+      </Field>
+
+      {/* 依赖:勾一个上游。成环的那条当场禁用并说明(见文件头)。 */}
+      <div className="mb-1 mt-1 text-[0.7857em] font-medium text-content-muted">
+        {t("settings.workflows.nodeDeps")}
+      </div>
+      {others.length === 0 ? (
+        <p className="mb-3 text-[0.7143em] leading-relaxed text-content-subtle">
+          {t("settings.workflows.nodeDepsAlone")}
+        </p>
+      ) : (
+        <div className="mb-2 max-h-[180px] space-y-0.5 overflow-y-auto rounded border border-edge bg-surface p-1">
+          {others.map((other) => {
+            const on = deps.has(other.id);
+            const blocked = !on && wouldCycle(doc, node.id, other.id, (id) => isLoopGate(catalog, doc, id));
+            return (
+              <button
+                key={other.id}
+                type="button"
+                disabled={blocked}
+                title={blocked ? t("settings.workflows.nodeDepsCycle") : undefined}
+                onClick={() => onSetDependency(node.id, other.id, !on)}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-[0.7857em] transition-colors",
+                  on ? "text-content" : "text-content-muted",
+                  blocked
+                    ? "cursor-not-allowed opacity-40"
+                    : "hover:bg-surface-hover/60 hover:text-content",
+                )}
+              >
+                <span
+                  className={cn(
+                    "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border",
+                    on ? "border-accent bg-accent/15 text-accent" : "border-edge",
+                  )}
+                >
+                  {on && <IconCheck size={10} />}
+                </span>
+                <span className="min-w-0 flex-1 truncate">
+                  {nodeTitle(other, findNodeType(catalog.entries, other.type))}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {dependents.length > 0 && (
+        <p className="mb-3 text-[0.7143em] leading-relaxed text-content-subtle">
+          {t("settings.workflows.nodeDependents", {
+            // 分隔符走词典 —— 往界面上拼一个中文顿号,英文界面里就会看到
+            // `Downstream: A、B`(见 AGENTS.md 的文案规则)。
+            names: dependents
+              .map((n) => nodeTitle(n, findNodeType(catalog.entries, n.type)))
+              .join(t("settings.workflows.listSeparator")),
+          })}
+        </p>
+      )}
+
+      {/* 出路 —— **只有分支节点有**。
+
+          它的选项**就是它的出边**(见 `@contracts/workflow` 的 `WorkflowEdgeSchema`):
+          图上有几根线就是几个选项。不在这里另开一张"选项表",因为那会有两种真相 ——
+          表里填了三个、图上只拉了两根线,而"用户能选什么"要读哪一份就说不清了。
+
+          所以这一段做的是**给已有的线起名字**(外加一句给下一步的说明),而不是定义
+          选项本身;要加一个选项,去画布上从它拉一根线。 */}
+      {isBranch && (
+        <>
+          <div className="mb-1 mt-1 text-[0.7857em] font-medium text-content-muted">
+            {t("settings.workflows.branchOptions")}
+          </div>
+          {outEdges.length === 0 ? (
+            // 没有出路的岔路口是**坏图**:图会永远停在那儿等人,而用户看到的只是一张
+            // 没有按钮的卡片。调度器那一头也会以"没有出路"明确失败,但在这里先说。
+            <p className="mb-3 text-[0.7143em] leading-relaxed text-warning">
+              {t("settings.workflows.branchNoOptions")}
+            </p>
+          ) : (
+            <div className="mb-3 space-y-2">
+              {outEdges.map((edge) => {
+                const target = doc.nodes.find((n) => n.id === edge.to);
+                return (
+                  <div key={edge.id} className="rounded border border-edge bg-surface p-1.5">
+                    <div className="mb-1 flex items-center gap-1 text-[0.7857em] text-content-muted">
+                      <IconArrowsSplit size={11} className="shrink-0 text-content-subtle" />
+                      <span className="min-w-0 flex-1 truncate">
+                        {t("settings.workflows.branchOptionTo", {
+                          name: target
+                            ? nodeTitle(target, findNodeType(catalog.entries, target.type))
+                            : edge.to,
+                        })}
+                      </span>
+                    </div>
+                    {/* 选项名 = 按钮上那几个字。**留空就用目标节点的标题**(调度器那边
+                        兜底),所以框里空着不是错,只是没起名字。 */}
+                    <Input
+                      value={edge.label ?? ""}
+                      placeholder={t("settings.workflows.branchOptionLabel")}
+                      onChange={(ev) => onUpdateEdge(edge.id, { label: ev.target.value })}
+                    />
+                    <div className="mt-1">
+                      {/* 选了这条之后给**下一步**的一句说明(拼进它的提示词)。和用户
+                          在选择时临时写的那句话并存 —— 这句对这条路上的每一步都成立,
+                          那句只对这一次成立(见调度器里的 `Arrival`)。 */}
+                      <GrowingTextarea
+                        value={edge.note ?? ""}
+                        placeholder={t("settings.workflows.branchOptionNote")}
+                        onChange={(text) => onUpdateEdge(edge.id, { note: text })}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* 主代理删不掉(它是这张图的入口,见 `isProtectedNode`)。**不摆一个按了没反应
+          的按钮** —— 那看起来像坏了;把原因写在这儿,和画布卡片上那颗星对得上。 */}
+      {isProtectedNode(node) ? (
+        <p className="mt-1 text-[0.7857em] leading-snug text-content-subtle">
+          {t("settings.workflows.mainNodeHint")}
+        </p>
+      ) : (
+        <Button
+          variant="danger"
+          size="sm"
+          className="mt-1 self-start gap-1"
+          onClick={() => onRemoveNode(node.id)}
+        >
+          <IconTrash size={12} />
+          {t("settings.workflows.nodeRemove")}
+        </Button>
+      )}
+    </div>
+  );
+}

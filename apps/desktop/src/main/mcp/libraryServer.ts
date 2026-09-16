@@ -1,0 +1,563 @@
+/**
+ * **mcode-library** —— 库操作的进程内 MCP server,给模型一套"命令集"。
+ *
+ * ## 为什么是 MCP 工具,而不是一个脚本
+ *
+ * 用户在「+」菜单挂的附件、左栏的库、右栏的详情,读的都是**内存里那个 sql.js 实例**;
+ * 磁盘上的 `mcode.db` 只是它每次变更后整份重写的产物。所以:
+ *
+ *   - 让 Python 脚本**读** `mcode.db` 是安全的(`<数据根>/workflows/scripts/` 下那些
+ *     就是这么干的,快且不弹审批);
+ *   - 让 Python 脚本**写**是错的 —— 应用下一次保存会把整份文件覆盖掉,AI 以为建好了
+ *     分类,界面上什么都没有。
+ *
+ * 写操作必须回到主进程,和界面共用同一份 repos。进程内 MCP 是这条路子在本项目里
+ * 既有的形态(浏览器工具 `mcode-browser` 就是这么做的),模型看到的是
+ * `mcp__mcode-library__<名字>`。
+ *
+ * ## 工具的分工
+ *
+ * 读工具(自动放行,不弹审批):collections / search / items / templates_list。
+ * 写工具(需要用户点头;用户可以在审批时勾"始终允许"):create_collection /
+ * import / move / remove / rename / write_note / templates_attach_to_chat /
+ * templates_add。
+ *
+ * 刻意**不提供硬删除**:remove 是把条目移出所有分类、落进回收站,用户随时能捞回来。
+ * AI 的"删除"是它自己判断出来的动作,判断错了用户得有得救。
+ */
+import { z } from "zod";
+import { SEARCH_LIMIT_SETTING_KEY } from "@contracts/ipc";
+import type { LibraryItem, LibraryKind } from "@contracts/library";
+import { LibraryRepo, CollectionRepo, NoteRepo, SettingRepo } from "@main/store/repositories.js";
+import {
+  assignToCollection,
+  importIdentifiers,
+  removeItemsToTrash,
+  renameItem,
+  searchItems,
+} from "@main/library/operations.js";
+import { attachToChat } from "@main/library/manifest.js";
+import {
+  addTemplate,
+  attachTemplateToChat,
+  listTemplates,
+  notifyTemplatesChanged,
+} from "@main/templates/store.js";
+import { TEMPLATE_KINDS, type TemplateKind } from "@contracts/templates";
+import { MCP_LIBRARY_SERVER } from "@contracts/ipc";
+import { searchExternal } from "@main/library/metadata.js";
+import { rankJournals } from "@main/library/journalRank.js";
+import { notifyLibraryChanged } from "@main/library/broadcast.js";
+import { fail, loadCreateMcpServer, text, type SdkTool } from "./sdk.js";
+
+/** MCP server 名。SDK 把工具暴露成 `mcp__<这个名字>__<工具名>`。
+ *
+ *  字面量定义在 `@contracts/ipc` —— 渲染端也要认这个名字(工作流节点的 MCP 候选表
+ *  要把它滤掉,见 `NODE_MCP_PARAM_KEY`)。这里只是沿用主进程这一侧一直在用的名字。 */
+export const LIBRARY_MCP_SERVER = MCP_LIBRARY_SERVER;
+export const LIBRARY_MCP_PREFIX = `mcp__${LIBRARY_MCP_SERVER}__`;
+
+/**
+ * 只读工具 —— 在 `shouldAutoApprove` 里自动放行。
+ * 与浏览器的只读集合同一个道理:它们改不了任何东西,没理由每次都问用户。
+ */
+export const LIBRARY_READONLY_TOOLS = new Set([
+  "library_collections",
+  "library_search",
+  "library_search_online",
+  "library_journal_rank",
+  "library_items",
+  // 模版库那一段(与文献库同级别的另一段,见文件头)
+  "templates_list",
+]);
+
+/** 一条文献在工具输出里的一行 —— 一定要带 id(后续 move/note 都要用它)。 */
+function itemLine(i: LibraryItem): string {
+  const authors = i.authors
+    .map((a) => a.literal ?? [a.given, a.family].filter(Boolean).join(" "))
+    .slice(0, 3)
+    .join(", ");
+  const bits = [authors, i.year ? String(i.year) : "", i.venue ?? ""].filter(Boolean);
+  const state = [
+    i.mdPath ? "已转 Markdown" : i.pdfPath ? "有 PDF,未转 Markdown" : "无文件",
+    i.doi ? `DOI ${i.doi}` : i.arxivId ? `arXiv ${i.arxivId}` : "",
+  ]
+    .filter(Boolean)
+    .join(";");
+  return `- ${i.title}\n  id=${i.id}${bits.length ? `\n  ${bits.join(" · ")}` : ""}\n  ${state}`;
+}
+
+/** 分类树的一行。缩进表示层级,永远带 id —— 后续 assign 要用。 */
+function collectionLines(kind: LibraryKind): string[] {
+  const all = CollectionRepo.list(kind);
+  const byParent = new Map<string | null, typeof all>();
+  for (const c of all) {
+    const key = c.parentId ?? null;
+    const list = byParent.get(key) ?? [];
+    list.push(c);
+    byParent.set(key, list);
+  }
+  const out: string[] = [];
+  const walk = (parent: string | null, depth: number) => {
+    for (const c of byParent.get(parent) ?? []) {
+      out.push(`${"  ".repeat(depth)}- ${c.name}  id=${c.id}`);
+      walk(c.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  return out;
+}
+
+const KIND = z.enum(["paper", "textbook", "note"]);
+
+/**
+ * 构建这个 MCP server。与浏览器那个同构:惰性 import SDK(那个模块很大,不能挂在
+ * 启动路径上),一次性构造,按需挂到 options.mcpServers。
+ */
+export async function buildLibraryMcpServer(opts: { sessionId: string }) {
+  const createSdkMcpServer = await loadCreateMcpServer();
+
+  const tools = [
+      {
+        name: "library_collections",
+        description:
+          "列出资料库的分类树(论文 / 教材 / 笔记三个库各自的)。返回每个分类的名称与 id。" +
+          "要往某个分类里放东西、或想知道用户有哪些分类时先调它。",
+        inputSchema: { kind: KIND.optional().describe("只看某一个库;省略则三个库都列") },
+        handler: async (args: { kind?: LibraryKind }) => {
+          const kinds: LibraryKind[] = args.kind ? [args.kind] : ["paper", "textbook", "note"];
+          const out: string[] = [];
+          for (const k of kinds) {
+            const lines = collectionLines(k);
+            out.push(`${k}:`);
+            out.push(lines.length > 0 ? lines.join("\n") : "  (这个库还没有分类)");
+          }
+          return text(out.join("\n"));
+        },
+      },
+      {
+        name: "library_search",
+        description:
+          "在资料库里按关键词搜索条目(搜标题、作者、期刊、摘要、DOI、arXiv ID、年份)。" +
+          "判断「库里有没有某一篇」时用它 —— 不要凭记忆回答用户。返回的每条都带 id。",
+        inputSchema: {
+          query: z.string().describe("关键词;留空则列出全部"),
+          kind: KIND.optional(),
+        },
+        handler: async (args: { query: string; kind?: LibraryKind }) => {
+          const items = searchItems(args.query ?? "", args.kind);
+          if (items.length === 0) {
+            return text(`库里没有匹配「${args.query}」的条目。不要因此凭空引用 —— 如实告诉用户库里没有。`);
+          }
+          return text(`匹配 ${items.length} 条:\n\n${items.slice(0, 60).map(itemLine).join("\n")}`);
+        },
+      },
+      {
+        name: "library_search_online",
+        description:
+          "联网检索文献(**Crossref + arXiv + OpenAlex** 三源合并去重)。**这是找文献的正路** —— 不要把用户的整句中文丢进来," +
+          "英文元数据源匹配不到中文。做法:先把研究方向拆成概念块,每个概念块给出英文同义词组," +
+          "再用 AND 把概念块连起来(例如 'quantum key distribution' AND ('satellite' OR 'free-space') AND 'wavelength')。" +
+          "中文里没法翻译的专有词(如具体算法名)保留拉丁拼写。\n" +
+          "返回的是**候选**,还没入库;挑中的用 library_add_paper 逐条导入。",
+        inputSchema: {
+          query: z.string().describe("英文检索式:概念块之间用 AND,块内同义词用 OR,短语加引号"),
+          limit: z.number().optional().describe("每个源取多少条,默认 20"),
+          yearFrom: z.number().optional().describe("起始年份"),
+          yearTo: z.number().optional().describe("截止年份"),
+        },
+        handler: async (args: { query: string; limit?: number; yearFrom?: number; yearTo?: number }) => {
+          const q = (args.query ?? "").trim();
+          if (!q) return fail("检索式不能为空");
+          // 每源条数默认取用户在筛选条上设的那个 —— 不接上的话那个选择框就是个摆设,
+          // 界面上写着"50 条"、实际永远拿 20 条。
+          const configured = Number.parseInt(
+            SettingRepo.get(SEARCH_LIMIT_SETTING_KEY) ?? "",
+            10,
+          );
+          const limit = args.limit ?? (Number.isFinite(configured) && configured > 0 ? configured : 20);
+          const results = await searchExternal({
+            query: q,
+            limit,
+            yearFrom: args.yearFrom,
+            yearTo: args.yearTo,
+          });
+          if (results.length === 0) {
+            return text(
+              `没检索到结果。\n\n用过的检索式:${q}\n` +
+                "可以试试:减少概念块(先用最核心的一两个)、把窄词换成更通用的同义词、去掉年份限制。",
+            );
+          }
+          const lines = results.map((r, i) => {
+            const authors = r.authors
+              .map((a) => a.literal ?? [a.given, a.family].filter(Boolean).join(" "))
+              .slice(0, 3)
+              .join(", ");
+            const bits = [authors, r.year ? String(r.year) : "", r.venue ?? ""].filter(Boolean);
+            const id = r.doi ? `DOI ${r.doi}` : r.arxivId ? `arXiv ${r.arxivId}` : "(无 DOI / arXiv ID)";
+            const head = `[${i + 1}] ${r.title}\n    ${bits.join(" · ")}\n    ${id}   来源:${r.source}${
+              r.hasOpenAccessPdf ? "   [有开放获取 PDF]" : ""
+            }`;
+            return r.abstract ? `${head}\n    摘要:${r.abstract.slice(0, 400)}` : head;
+          });
+          return text(
+            `检索式:${q}\n命中 ${results.length} 条(合并去重后):\n\n${lines.join("\n\n")}\n\n` +
+              "逐条看:合适的立刻用 library_add_paper 导入并写总结,不要等全部挑完。",
+          );
+        },
+      },
+      {
+        name: "library_journal_rank",
+        description:
+          "查期刊档次:**JCR 分区 / 影响因子 / 中科院分区 / Top / CCF / 预警名单**,并给出分档" +
+          "(T1 = Q1 或中科院 1 区或 Top;T2 = Q2 或 2 区;T3 = 其余;EXCLUDE = 预警名单)。\n" +
+          "筛选检索结果时**必须用它**来判断期刊好不好 —— 绝不要凭印象说某个刊影响因子多少。\n" +
+          "一次可以传多个刊名(检索结果里的 venue 直接抄进来)。",
+        inputSchema: {
+          journals: z.array(z.string()).min(1).describe("期刊/会议名,可多个"),
+        },
+        handler: async (args: { journals: string[] }) => {
+          const { dbPath, ranks } = await rankJournals(args.journals);
+          if (!dbPath) {
+            return text(
+              "期刊数据不可用(jcr.db 没找到),所以**这次查不了期刊档次**。\n" +
+                "如实告诉用户这一点,不要凭印象编影响因子或分区。\n" +
+                "数据放在 Mcode 数据根的 workflows/jcr.db 下即可启用。",
+            );
+          }
+          const lines = ranks.map((r) => {
+            const bits = [
+              r.impactFactor != null ? `IF ${r.impactFactor}` : "",
+              r.jcrQuartile ? `JCR ${r.jcrQuartile}` : "",
+              r.casZone ? `中科院 ${r.casZone} 区` : "",
+              r.casTop === "是" ? "Top" : "",
+              r.ccf ? `CCF ${r.ccf}` : "",
+            ].filter(Boolean);
+            const warn = r.warn ? `\n    ⚠️ 预警名单(${r.warn})—— 不要收这一篇` : "";
+            return `- ${r.journal}\n    ${bits.length ? bits.join(" · ") : "(库里没有这个刊)"}    **分档:${r.tier}**${warn}`;
+          });
+          return text(`按 ${dbPath} 查:\n\n${lines.join("\n")}`);
+        },
+      },
+      {
+        name: "library_items",
+        description: "列出某个分类里的全部条目。返回的每条都带 id。",
+        inputSchema: { collectionId: z.string().describe("分类 id,来自 library_collections") },
+        handler: async (args: { collectionId: string }) => {
+          const items = LibraryRepo.listByCollection(args.collectionId);
+          if (items.length === 0) return text("(这个分类里还没有条目)");
+          return text(`${items.length} 条:\n\n${items.map(itemLine).join("\n")}`);
+        },
+      },
+      {
+        name: "library_create_collection",
+        description:
+          "新建一个分类。用户没有指定要把检索结果放哪儿时,先问他要叫什么名字,再用这个工具建出来。" +
+          "返回新分类的 id —— 后面的 library_import 要用它。",
+        inputSchema: {
+          name: z.string().describe("分类名(就是用户在左栏看到的名字)"),
+          kind: KIND.optional().describe("放进哪个库;默认 paper(论文库)"),
+          parentId: z.string().optional().describe("建成子分类时给父分类 id;省略则建在顶层"),
+        },
+        handler: async (args: { name: string; kind?: LibraryKind; parentId?: string }) => {
+          const name = (args.name ?? "").trim();
+          if (!name) return fail("分类名不能为空");
+          const kind = args.kind ?? "paper";
+          if (CollectionRepo.isNameTaken(name, kind, undefined)) {
+            // 重名会让用户分不清两个同名分类 —— 让模型换个名字再试,而不是静默建出来
+            return fail(`「${name}」在${kind}库里已经有一个同名分类了。换一个名字,或直接用现成的那个。`);
+          }
+          const c = CollectionRepo.create(name, args.parentId ?? null, kind);
+          notifyLibraryChanged(`create_collection:${c.name}`);
+          return text(`已新建分类「${c.name}」  id=${c.id}  (在${kind}库里)`);
+        },
+      },
+      {
+        name: "library_attach_to_chat",
+        description:
+          "**把一个分类挂到这次对话上** —— 效果和你让用户自己点「+ → 添加文献库到上下文」完全一样:" +
+          "对话里会多出一个附件,而且**用户界面上会立刻显示出来**。挂上之后你就能按它读这些文献," +
+          "下一条消息会把它作为清单路径一起发出去。\n" +
+          "用户没有挂任何分类、但你确实需要看某个库时用它;挂之前先问用户要挂哪个(用 library_collections 列出候选)," +
+          "不要自作主张挂一堆。挂重复了不会重复显示。",
+        inputSchema: {
+          collectionId: z.string().describe("要挂的分类 id;挂单独一篇时用 itemId"),
+          itemId: z.string().optional().describe("改挂单独一篇时给条目 id,与 collectionId 二选一"),
+        },
+        handler: async (args: { collectionId?: string; itemId?: string }) => {
+          if (!args.itemId && !args.collectionId) return fail("要给 collectionId 或 itemId");
+          // 实现只有一份(见 library/manifest.ts 的 attachToChat)—— 与左栏右键
+          // 「添加到当前对话」调的是同一个函数,所以 AI 挂的和你自己挂的必然一样。
+          const res = attachToChat(
+            opts.sessionId,
+            args.itemId ? `i:${args.itemId}` : `c:${args.collectionId}`,
+          );
+          if (!res.ok) return fail(res.error ?? "挂不上去");
+          return args.itemId
+            ? text(`已把《${res.name}》挂到这次对话的附件里(界面上应该已经出现)。`)
+            : text(
+                `已把分类「${res.name}」挂到这次对话的附件里(共 ${res.count} 篇,界面上应该已经出现)。\n` +
+                  "清单路径会随下一条消息一起发出去;要现在就读,直接 Read 那个清单文件。",
+              );
+        },
+      },
+      /* ────────────────────── 模版库(与文献库同级别的另一段)──────────────────────
+       *
+       * 「模版和文档是同级别的,只不过给 AI 的提示词不一样,只有这个区别」——
+       * 所以这一段也给 AI 一套和文献库对得上的工具:能列、能挂进对话、能把工作区里的
+       * 文件存成一条。**实现与用户界面走的是同几个函数**(templates/store.ts),
+       * 所以"AI 挂的"和"用户自己点「添加到当前对话」挂的"必然是同一种东西。 */
+      {
+        name: "templates_list",
+        description:
+          "**列出模版库里的模版**。模版库与文献库是同级的两段,分五个类目:" +
+          "ppt / latex / word / code / image;一条模版就是一个文件夹(目录名即名字)。" +
+          "要挂进对话、或者要看某一条里到底有什么文件,先用它拿到 类目 + 目录名。",
+        inputSchema: {
+          kind: z
+            .enum(TEMPLATE_KINDS)
+            .optional()
+            .describe("只看某个类目(ppt / latex / word / code / image);不给就全部"),
+          query: z.string().optional().describe("按名字过滤(不区分大小写)"),
+        },
+        handler: async (args: { kind?: TemplateKind; query?: string }) => {
+          const all = listTemplates(args.kind);
+          const q = args.query?.trim().toLowerCase();
+          const rows = q ? all.filter((e) => e.dirName.toLowerCase().includes(q)) : all;
+          if (rows.length === 0) {
+            return text(
+              all.length === 0
+                ? "模版库里还没有模版(用户可以在左栏「模版」那一段或设置里添加,也可以直接往模版文件夹里丢文件)。"
+                : `没有匹配「${args.query}」的模版(这一类目下共 ${all.length} 条)。`,
+            );
+          }
+          const lines = [`共 ${rows.length} 条模版:`, ""];
+          for (const e of rows) {
+            lines.push(
+              `- [${e.kind}] ${e.dirName} —— ${e.files.length} 个文件;位置 \`${e.path}\``,
+            );
+          }
+          lines.push("");
+          lines.push("要把它挂到这次对话上就用 templates_attach_to_chat(会生成一份清单给模型读)。");
+          return text(lines.join("\n"));
+        },
+      },
+      {
+        name: "templates_attach_to_chat",
+        description:
+          "**把一条模版(或某一整个类目)挂到这次对话上** —— 效果和用户自己点「添加到当前对话」" +
+          "完全一样:对话框里会多出一个附件,而且**用户界面上会立刻显示出来**。\n" +
+          "挂单条时会生成一份清单(文件列表 + 小文件的正文),挂整个类目时生成的是一份**索引**" +
+          "(这一类目下有哪些模版、各自那份清单在哪)。挂重复了不会重复显示。",
+        inputSchema: {
+          kind: z.enum(TEMPLATE_KINDS).describe("类目"),
+          dirName: z
+            .string()
+            .optional()
+            .describe("要挂的那一条的目录名;省略 = 挂整个类目(给的是索引)"),
+        },
+        handler: async (args: { kind: TemplateKind; dirName?: string }) => {
+          // 实现只有一份(见 templates/store.ts 的 attachTemplateToChat)—— 与左栏
+          // 右键「添加到当前对话」、设置页那个气泡调的是同一个函数。
+          const res = attachTemplateToChat(opts.sessionId, args.kind, args.dirName);
+          if (!res.ok) return fail(res.error ?? "挂不上去");
+          return args.dirName
+            ? text(
+                `已把模版「${res.name}」挂到这次对话的附件里(共 ${res.fileCount} 个文件,界面上应该已经出现)。\n` +
+                  "清单路径会随下一条消息一起发出去;要现在就读,直接 Read 那个清单文件 —— 里面已经把每个文件的绝对路径和小文件的正文都给全了。",
+              )
+            : text(
+                `已把「${res.name}」这一类模版挂到这次对话的附件里(${res.fileCount} 条,界面上应该已经出现)。\n` +
+                  "它给的是一份**索引**:先看有哪些模版,再按里面的路径去 Read 你真正需要的那一份清单。",
+              );
+        },
+      },
+      {
+        name: "templates_add",
+        description:
+          "**把工作区里的文件 / 文件夹存成一条模版**(复制进模版库,原文件留在原处)。" +
+          "适合「我把这套写作格式/模版存下来」这类请求:先在工作区里把文件写好,再整包存进来。" +
+          "一条模版 = 一个文件夹,所以改的名字会成为文件夹名(非法字符会被替换)。",
+        inputSchema: {
+          kind: z.enum(TEMPLATE_KINDS).describe("存进哪个类目"),
+          name: z.string().describe("模版名(会成为文件夹名)"),
+          sourcePaths: z
+            .array(z.string())
+            .min(1)
+            .describe("要收进来的文件 / 文件夹**绝对路径**;文件夹会整包复制"),
+        },
+        handler: async (args: { kind: TemplateKind; name: string; sourcePaths: string[] }) => {
+          const res = addTemplate(args.kind, args.name, args.sourcePaths);
+          if (!res.ok) return fail(res.error ?? "存不进去");
+          // 用户的左栏/设置页各有缓存 —— 与界面自己的新建走同一条广播
+          notifyTemplatesChanged(`agent_add:${args.kind}/${res.dirName}`);
+          const entry = res.entries.find((e) => e.dirName === res.dirName);
+          return text(
+            `已把「${res.dirName}」存进模版库的 ${args.kind} 类目(${entry?.files.length ?? 0} 个文件)。` +
+              "用户在左栏「模版」那一段就能看到它。",
+          );
+        },
+      },
+      {
+        name: "library_add_paper",
+        description:
+          "**导入一篇文献,并顺手把总结写进它的笔记**。检索流程里用这个:找到一个合适的就立刻导入," +
+          "不要等全部找完再一次性导入。\n" +
+          "给它一个 DOI 或 arXiv ID;元数据自动从 Crossref / arXiv 补齐;导入后应用会自动下载 PDF 并转录," +
+          "不需要你再管下载。summary 会显示在这一条的详情页笔记里。" +
+          "必须给 collectionId:导入的条目要有个归处,否则会掉进回收站。",
+        inputSchema: {
+          identifier: z.string().describe("一个 DOI 或 arXiv ID,不要带解释文字"),
+          collectionId: z.string().describe("放进哪个分类,来自 library_collections 或 library_create_collection"),
+          summary: z
+            .string()
+            .optional()
+            .describe("这篇的总结(为什么值得收进来、讲了什么、和用户的方向什么关系)。写上它,用户之后翻库时能一眼看懂。"),
+        },
+        handler: async (args: { identifier: string; collectionId: string; summary?: string }) => {
+          if (!CollectionRepo.list().some((c) => c.id === args.collectionId)) {
+            return fail(
+              `分类 ${args.collectionId} 不存在。先用 library_create_collection 建一个,或用 library_collections 看看有哪些。`,
+            );
+          }
+          const { items, failed } = await importIdentifiers(args.identifier, {
+            collectionIds: [args.collectionId],
+            queueDownload: true,
+          });
+          if (items.length === 0) {
+            return fail(failed[0]?.reason ?? "这一条没能解析成 DOI / arXiv ID");
+          }
+          const item = items[0]!;
+          const summary = (args.summary ?? "").trim();
+          if (summary) {
+            // 与"导入"同一次调用里写进去 —— 用户要的就是"导入的时候顺便把总结也写进去",
+            // 拆成两步会让模型在找到下一篇时忘掉上一篇的总结。
+            NoteRepo.save({ itemId: item.id, content: summary, origin: "ai" });
+          }
+          // 界面上要立刻多出这一条(左栏、右栏列表都读的是渲染端缓存)
+          notifyLibraryChanged(`add_paper:${item.title}`);
+          return text(
+            `已导入并排队下载:\n\n${itemLine(item)}` +
+              (summary ? `\n\n已写入总结(${summary.length} 字),显示在这一条的笔记里。` : ""),
+          );        },
+      },
+      {
+        name: "library_import",
+        description:
+          "**批量**导入:一次给多个 DOI / arXiv ID(每个元素一条),或一整段 BibTeX。" +
+          "只在用户一次就给了一串标识符时用它 —— 检索流程请用 library_add_paper,一次一篇。" +
+          "同样会自动下载,不需要你管。必须给 collectionId。",
+        inputSchema: {
+          identifiers: z
+            .array(z.string())
+            .min(1)
+            .describe("DOI / arXiv ID 的列表(每个元素一行,不要带解释文字)"),
+          collectionId: z.string().describe("放进哪个分类"),
+        },
+        handler: async (args: { identifiers: string[]; collectionId: string }) => {
+          if (!CollectionRepo.list().some((c) => c.id === args.collectionId)) {
+            return fail(
+              `分类 ${args.collectionId} 不存在。先用 library_create_collection 建一个,或用 library_collections 看看有哪些。`,
+            );
+          }
+          const { items, failed } = await importIdentifiers(args.identifiers.join("\n"), {
+            collectionIds: [args.collectionId],
+            queueDownload: true,
+          });
+          const parts = [`已导入 ${items.length} 条,已排队下载 PDF:`];
+          if (items.length > 0) parts.push(items.map(itemLine).join("\n"));
+          if (failed.length > 0) {
+            parts.push(`\n有 ${failed.length} 条没能导入:`);
+            for (const f of failed) parts.push(`- ${f.raw.slice(0, 120)} —— ${f.reason}`);
+          }
+          parts.push("\n下载与转录由应用自动完成,不需要你再操作。");
+          notifyLibraryChanged(`import:${items.length}`);
+          return text(parts.join("\n"));
+        },
+      },
+      {
+        name: "library_move",
+        description: "把条目移到某个分类。会顺手把它从回收站里摘出来。",
+        inputSchema: {
+          itemIds: z.array(z.string()).min(1),
+          collectionId: z.string().describe("目标分类 id"),
+        },
+        handler: async (args: { itemIds: string[]; collectionId: string }) => {
+          if (!CollectionRepo.list().some((c) => c.id === args.collectionId)) {
+            return fail(`分类 ${args.collectionId} 不存在`);
+          }
+          assignToCollection(args.collectionId, args.itemIds, true);
+          notifyLibraryChanged("move");
+          return text(`已把 ${args.itemIds.length} 条移到该分类。`);
+        },
+      },
+      {
+        name: "library_remove",
+        description:
+          "把条目从库里拿走 —— 移出所有分类,落进**回收站**(不是永久删除,用户随时能捞回来)。" +
+          "用户说「删掉/不要了」时用它。",
+        inputSchema: { itemIds: z.array(z.string()).min(1) },
+        handler: async (args: { itemIds: string[] }) => {
+          const moved = removeItemsToTrash(args.itemIds);
+          if (moved.length === 0) return fail("这些 id 一条都没找到");
+          notifyLibraryChanged("remove");
+          return text(`已把 ${moved.length} 条移进回收站(可在左栏的「回收站」分类里找回)。`);
+        },
+      },
+      {
+        name: "library_rename",
+        description: "改条目或分类的名字。",
+        inputSchema: {
+          target: z.enum(["item", "collection"]),
+          id: z.string(),
+          name: z.string().describe("新名字"),
+        },
+        handler: async (args: { target: "item" | "collection"; id: string; name: string }) => {
+          const name = (args.name ?? "").trim();
+          if (!name) return fail("新名字不能为空");
+          if (args.target === "item") {
+            if (!renameItem(args.id, name)) return fail(`找不到条目 ${args.id}`);
+            notifyLibraryChanged("rename:item");
+            return text(`已改名为「${name}」`);
+          }
+          const ok = CollectionRepo.rename(args.id, name);
+          if (!ok) return fail("改不了 —— 分类不存在,或同一个库里已经有同名分类");
+          notifyLibraryChanged("rename:collection");
+          return text(`分类已改名为「${name}」`);
+        },
+      },
+      {
+        name: "library_write_note",
+        description:
+          "给某一条文献写笔记。笔记显示在这一条的详情页(右栏「笔记」),用户和后续对话都看得到。" +
+          "**写摘要、写读完的要点、记下留待确认的问题,都用它** —— 直接给正文,不要写\"我可以帮你总结\"。",
+        inputSchema: {
+          itemId: z.string(),
+          content: z.string().describe("笔记正文,Markdown"),
+          origin: z.enum(["user", "ai"]).optional().describe("谁写的;AI 自动写时传 ai,默认 user"),
+        },
+        handler: async (args: { itemId: string; content: string; origin?: "user" | "ai" }) => {
+          const item = LibraryRepo.get(args.itemId);
+          if (!item) return fail(`找不到条目 ${args.itemId}`);
+          const content = (args.content ?? "").trim();
+          if (!content) return fail("笔记内容不能为空");
+          NoteRepo.save({ itemId: args.itemId, content, origin: args.origin ?? "user" });
+          notifyLibraryChanged("write_note");
+          return text(`已给《${item.title}》写好笔记(${content.length} 字)。`);
+        },
+      },
+  ];
+
+  return createSdkMcpServer({
+    name: LIBRARY_MCP_SERVER,
+    version: "1.0.0",
+    instructions:
+      "Mcode 资料库的操作工具,分**同级的两段**:文献库与模版库。\n" +
+      "文献库:三个平级的库 paper(论文)/textbook(教材)/note(笔记),每个库有各自的分类树与回收站;" +
+      "条目用 id 标识,要操作某一条先用 library_search / library_items 拿到它的 id。\n" +
+      "模版库:五个类目 ppt / latex / word / code / image,一条模版是一个文件夹(目录名即名字)," +
+      "用 templates_list 列出、templates_attach_to_chat 挂进对话。",
+    alwaysLoad: true,
+    tools: tools as SdkTool[],
+  });
+}

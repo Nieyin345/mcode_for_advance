@@ -22,6 +22,8 @@ import type { Project } from "@contracts/session";
 import { uid } from "@main/utils.js";
 import { ProjectRepo, SessionRepo } from "@main/store/repositories.js";
 import { broadcastSessionChanged, broadcastSessionDeleted } from "@main/lib/sessionSync.js";
+import { cancelWorkflowRun } from "@main/orchestration/runner.js";
+import { dropBackflow } from "@main/lib/pendingBackflow.js";
 import { log } from "@main/lib/logger.js";
 
 export function registerProjectHandlers(ipcMain: IpcMain): void {
@@ -145,6 +147,13 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
   // Hard-delete a session (cascades to its messages via DB FK).
   ipcMain.handle(IPC.SESSION_DELETE, (_evt, raw) => {
     const input = DeleteSessionSchema.parse(raw);
+    // 先把可能还在跑的图停掉。**不能省**:图跑到一半时通常正卡在某个节点的问题上
+    // (那个问题是以这个会话的名义问的),会话一删,答案就再也回不来 —— 节点会一直
+    // 阻塞在审批池的 promise 上,整张图连同它的 node 会话永远不结束。
+    cancelWorkflowRun(input.id);
+    // 还没被带进下一轮的那段「并回主对话」的内容也一起清掉 —— 会话都没了,它永远等不到
+    // 那个取用它的人(见 `lib/pendingBackflow.ts`)。
+    dropBackflow(input.id);
     SessionRepo.delete(input.id);
     // Keep connected mobile clients' session lists in sync.
     broadcastSessionDeleted(input.id);

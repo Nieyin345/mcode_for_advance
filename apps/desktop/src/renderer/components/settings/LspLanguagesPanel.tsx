@@ -14,6 +14,7 @@
  * re-listing every second while `installing` is true on any language.
  */
 import { useEffect, useState } from "react";
+import { PANEL_MAX_W } from "./panelWidth.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
@@ -99,7 +100,7 @@ export function LspLanguagesPanel() {
   }, [reloadLspLanguages]);
 
   return (
-    <section className="mx-auto w-full max-w-3xl space-y-4">
+    <section className={`mx-auto w-full ${PANEL_MAX_W.form} space-y-4`}>
       <PanelHeader title={t("settings.lsp.title")} icon={IconCode} />
 
       <SettingsSection title={t("settings.lsp.section")}>

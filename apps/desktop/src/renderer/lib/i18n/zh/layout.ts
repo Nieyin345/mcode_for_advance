@@ -47,6 +47,9 @@ export const zh = {
   "layout.deleteForever": "彻底删除",
   "layout.deleteShort": "删",
   "layout.copySessionTitle": "复制会话标题",
+  "layout.forkSession": "复制一份对话",
+  // 新对话的标题。`{title}` 是源对话的标题 —— 副本一眼看得出是从哪儿来的。
+  "layout.forkSessionTitle": "{title} 副本",
   "layout.openInFileManager": "在文件管理器中打开",
   "layout.renameThread": "重命名线程",
   "layout.renameThreadDesc": "为线程设置一个新标题。",
@@ -114,6 +117,8 @@ export const zh = {
   "layout.noOpenFiles": "无打开的文件",
   "layout.tabFiles": "文件",
   "layout.tabTurns": "轮次流程",
+  /** 右栏的模版预览标签 —— 与左栏「模版」段联动(点一个文件就在这儿打开)。 */
+  "layout.tabTemplates": "模版",
   "layout.openBrowser": "打开浏览器",
   "layout.closeSidebarBrowser": "关闭侧边栏浏览器",
 

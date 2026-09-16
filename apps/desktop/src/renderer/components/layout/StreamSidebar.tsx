@@ -64,6 +64,8 @@ import { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { WorktreeMergeBackDialog, WorktreeRemoveDialog } from "@renderer/components/chat/WorktreeMergeBack.js";
 import { ProjectManageMenuPopup, type ManageMenuState } from "./ProjectManageMenu.js";
+import { LibrarySection } from "@renderer/components/library/LibrarySection.js";
+import { TemplateSection } from "@renderer/components/templates/TemplateSection.js";
 import { SidebarQuickActions } from "./SidebarQuickActions.js";
 import { ArchivedRow, HoverIconButton, RenameDialog, SessionContextMenu } from "./SidebarShared.js";
 import { BrandLogo } from "./BrandLogo.js";
@@ -162,6 +164,7 @@ function StreamSidebarBase() {
   const archiveSession = useSessionStore((s) => s.archiveSession);
   const deleteSession = useSessionStore((s) => s.deleteSession);
   const setSessionPinned = useSessionStore((s) => s.setSessionPinned);
+  const forkSession = useSessionStore((s) => s.forkSession);
   const renameSession = useSessionStore((s) => s.renameSession);
   const renameWorktree = useSessionStore((s) => s.renameWorktree);
   const archiveProject = useSessionStore((s) => s.archiveProject);
@@ -792,6 +795,22 @@ function StreamSidebarBase() {
             )}
           </div>
         )}
+
+        {/* 文献库 —— 与项目并列的顶层分组,按要求排在项目/会话**下面**。
+            放在这个滚动容器**内部**,跟着会话列表一起滚:展开着几十篇文献时
+            也不会把上面的会话卡片挤扁。
+            它跟着顶部那个切换图标一起变 —— 会话流模式下这里是**平铺**的文献
+            列表(不分库),对应会话流的扁平语义。 */}
+        <div className="mt-3">
+          <LibrarySection />
+        </div>
+
+        {/* 模版库 —— 排在文献库**下面**。与左边那棵树里的同一个组件、同一套版式;
+            挂两处是必须的:顶部那个切换图标会在两套外壳之间换,只挂一处的话切过去
+            这一段就没了。 */}
+        <div className="mt-3">
+          <TemplateSection />
+        </div>
       </div>
 
       {/* Footer — same dock as the tree view. */}
@@ -855,6 +874,10 @@ function StreamSidebarBase() {
           if (proj) void api.shell.openPath({ path: proj.path });
         }}
         onTogglePin={(s) => { setCtxMenu(null); void setSessionPinned(s.id, s.pinnedAt == null); }}
+        onFork={(s) => {
+          // 菜单的关闭由 `SessionContextMenu` 自己先做了(它要把浮层收掉再等主进程)。
+          void forkSession(s.id, t("layout.forkSessionTitle", { title: s.title }));
+        }}
         onNewWorktreeSession={(s) => {
           setCtxMenu(null);
           void startSession(s.projectId, { worktreePath: s.worktreePath ?? undefined });

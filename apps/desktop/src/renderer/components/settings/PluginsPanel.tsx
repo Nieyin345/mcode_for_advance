@@ -42,6 +42,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Menu } from "@base-ui/react/menu";
+import { PANEL_MAX_W } from "./panelWidth.js";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
@@ -80,7 +81,7 @@ const EMPTY_MARKETPLACES: PluginMarketplaceState[] = [];
  *  scroll container per page keeps the title bar and every content block at
  *  exactly the same width, and `max-w-*` caps it no matter how long the list
  *  gets. */
-const PANEL_COLUMN = "mx-auto w-full max-w-3xl";
+const PANEL_COLUMN = `mx-auto w-full ${PANEL_MAX_W.form}`;
 
 /** Result shape shared by the three install RPCs. */
 interface InstallResult {

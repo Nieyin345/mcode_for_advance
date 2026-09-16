@@ -59,11 +59,13 @@ import {
   findPluginManifestDeep,
   findMarketplaceManifestFile,
   pluginSkillsDirs,
+  pluginNodeTypesDirs,
   pluginMcpFiles,
   pluginVersionOf,
   summarizeComponents,
   describePluginMcp,
 } from "./pluginManifest.js";
+import { getBuiltinPlugins } from "./builtinPlugins.js";
 
 export const PLUGINS_ROOT = path.join(MCODE_CONFIG_DIR, "plugins");
 const MARKETPLACES_DIR = path.join(PLUGINS_ROOT, "marketplaces");
@@ -949,12 +951,23 @@ export interface EnabledPlugin {
   /** True when the plugin declares hooks (parsed for display; v1 never
    *  executes them — the Claude provider's disableAllHooks is the backstop). */
   hasHooks: boolean;
+  /** True for plugins shipped inside the app (see builtinPlugins.ts). They are
+   *  always delivered, appear in no marketplace, and cannot be uninstalled —
+   *  the Plugins panel renders them as a read-only row. */
+  builtin?: boolean;
 }
 
-/** Resolve the currently enabled plugins (missing dirs silently skipped). */
+/**
+ * Resolve the currently enabled plugins (missing dirs silently skipped).
+ *
+ * 内置插件**永远在列表里**，与用户启用了几个无关 —— 注意下面那个 early
+ * return 是在追加内置项**之前**才成立的，所以它只能在 `enabledNames` 为空
+ * 时跳过"扫用户插件"这一步，不能顺手把整个函数返回掉。
+ */
 export async function getEnabledPlugins(): Promise<EnabledPlugin[]> {
+  const builtins: EnabledPlugin[] = getBuiltinPlugins();
   const enabledNames = new Set(readEnabledPlugins());
-  if (enabledNames.size === 0) return [];
+  if (enabledNames.size === 0) return builtins;
   const out: EnabledPlugin[] = [];
   for (const name of enabledNames) {
     const rootDir = installedRootOf(name);
@@ -968,18 +981,60 @@ export async function getEnabledPlugins(): Promise<EnabledPlugin[]> {
       /* invalid manifest on disk — skip this plugin for this turn */
     }
   }
+  return [...out, ...builtins];
+}
+
+/** 一个已启用插件的技能根，附带"是不是内置"的来源标记。
+ *  技能列表面板需要它来把内置的四个标成「内置」并禁止编辑。 */
+export interface PluginSkillSource {
+  rootDir: string;
+  builtin: boolean;
+}
+
+/** {@link PluginSkillSource} 版本 —— 需要来源标记的调用点用它。 */
+export async function getPluginSkillSources(): Promise<PluginSkillSource[]> {
+  const out: PluginSkillSource[] = [];
+  for (const p of await getEnabledPlugins()) {
+    for (const rootDir of pluginSkillsDirs(p.rootDir, p.manifest)) {
+      out.push({ rootDir, builtin: p.builtin === true });
+    }
+  }
   return out;
 }
 
-/** Existing skills directories of enabled plugins — appended to Codex's
- *  `skills/extraRoots/set` and Pi's `additionalSkillPaths`. A manifest may
- *  declare multiple skills roots (Claude's string[] form). */
+/** Existing skills directories of enabled plugins (+ the built-in plugin's) —
+ *  appended to Codex's `skills/extraRoots/set` and Pi's
+ *  `additionalSkillPaths`. A manifest may declare multiple skills roots
+ *  (Claude's string[] form). */
 export async function getEnabledPluginSkillRoots(): Promise<string[]> {
-  const roots: string[] = [];
+  return (await getPluginSkillSources()).map((s) => s.rootDir);
+}
+
+/** 一个已启用插件提供的工作流节点类型目录。
+ *
+ *  与 {@link PluginSkillSource} 字段一样,但**不合并成一个类型**:那个类型的名字说的是
+ *  技能,而这个东西既不投递给任何 provider、也不归技能体系管 —— 它是 Mcode 自己的
+ *  调度器要用的(见 `main/orchestration/nodeTypes.ts`)。共用一个叫 Skill 的类型,
+ *  下一个人在技能那边改字段时会以为跟节点类型无关。 */
+export interface PluginNodeTypeSource {
+  /** 插件名(清单里的名字)。节点类型列表拿它当"从哪来的"标签 —— 从 `rootDir`
+   *  反推名字要数三层目录,太脆。 */
+  name: string;
+  rootDir: string;
+  /** 随应用发布的内置插件。决定它在节点类型里的来源等级(builtin 还是 plugin)。 */
+  builtin: boolean;
+}
+
+/** 已启用插件的节点类型目录(+ 内置插件的)。**与技能不同:这里的东西一个都不往
+ *  provider 送**,只给 Mcode 自己的节点类型注册表读。 */
+export async function getEnabledPluginNodeTypeSources(): Promise<PluginNodeTypeSource[]> {
+  const out: PluginNodeTypeSource[] = [];
   for (const p of await getEnabledPlugins()) {
-    roots.push(...pluginSkillsDirs(p.rootDir, p.manifest));
+    for (const rootDir of pluginNodeTypesDirs(p.rootDir, p.manifest)) {
+      out.push({ name: p.name, rootDir, builtin: p.builtin === true });
+    }
   }
-  return roots;
+  return out;
 }
 
 /** Raw `[serverName, config]` pairs across every MCP definition file of a

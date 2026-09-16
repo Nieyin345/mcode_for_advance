@@ -53,6 +53,9 @@ const PI_VENDOR = "Pi";
 interface NormalizedTurn {
   sessionId: string;
   endedAt: number;
+  /** 这一轮跑在**隐藏会话**里(工作流节点,`kind = "node"`)。token 与成本照算 ——
+   *  那是真花掉的;但计"共几个会话"时要把它排除,见 `buildUsageStats`。 */
+  hiddenSession: boolean;
   /** Vendor/endpoint the turn ran under (null = unknown). */
   vendor: string | null;
   model: string | null;
@@ -157,6 +160,7 @@ function loadTurnRecords(): NormalizedTurn[] {
         out.push({
           sessionId: row.id,
           endedAt,
+          hiddenSession: row.kind === "node",
           vendor,
           model: r.model ?? null,
           totalTokens: diffCumulative(finiteNum(prev?.totalProcessedTokens), finiteNum(r.totalProcessedTokens)) ?? 0,
@@ -170,6 +174,7 @@ function loadTurnRecords(): NormalizedTurn[] {
         out.push({
           sessionId: row.id,
           endedAt,
+          hiddenSession: row.kind === "node",
           vendor,
           model: r.model ?? null,
           totalTokens: Math.max(0, finiteNum(r.totalProcessedTokens) ?? 0),
@@ -230,7 +235,9 @@ export function buildUsageStats(preset: UsageStatsPreset): UsageStatsResult {
   for (const r of records) {
     if (r.endedAt < from) continue;
     summary.turns += 1;
-    sessionIds.add(r.sessionId);
+    // **隐藏会话不计入"共几个会话"**:工作流节点跑在自己的子会话里,而那句统计
+    // 指的是"用户开过的对话"。token 与成本照常累计 —— 那些是真花掉的。
+    if (!r.hiddenSession) sessionIds.add(r.sessionId);
     summary.totalTokens += r.totalTokens;
     summary.subagentTokens += r.subagentTokens;
     summary.outputTokens += r.outputTokens;

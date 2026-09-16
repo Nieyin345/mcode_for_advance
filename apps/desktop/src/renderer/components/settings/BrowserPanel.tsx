@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { PANEL_MAX_W } from "./panelWidth.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, ConfirmDialog, Input, Switch } from "@renderer/components/ui/index.js";
@@ -34,7 +35,7 @@ import {
 export function BrowserPanel() {
   const { t } = useI18n();
   return (
-    <section className="mx-auto w-full max-w-3xl space-y-4">
+    <section className={`mx-auto w-full ${PANEL_MAX_W.form} space-y-4`}>
       <PanelHeader title={t("settings.browser.title")} />
 
       {/* 存储位置 — 截图目录与数据目录合并为一张卡(两行) */}

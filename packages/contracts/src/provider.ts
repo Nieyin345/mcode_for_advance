@@ -33,6 +33,24 @@ export interface ProviderCapabilities {
   /** Does it have native AskUserQuestion tool support? */
   supportsAskUserQuestion: boolean;
 
+  /**
+   * 能不能**把一段对话分叉成新的一段**(上下文原样带过去,两边之后各走各的)。
+   *
+   * 只有提供方**真的能复制自己的会话状态**时才为真 —— 这个字段存在的意义就是让界面
+   * 不去提供一个做不到的菜单项。做不到而硬做的话,新对话看起来带着同一段历史,模型
+   * 那边却是空的 —— 那比没有这个功能糟得多。
+   */
+  supportsFork?: boolean;
+
+  /**
+   * 生成的过程中能不能**再塞一句话进去**(那一轮不中断,模型在下一个安全点看到它)。
+   *
+   * 报了这个能力才实现 {@link TurnHandle.inject}。做不到的引擎(回合一旦开跑就关掉了
+   * 输入口)在界面上就不该出现那个入口 —— 用户打了字、按了,而什么也没发生,是最糟的
+   * 一种交互。
+   */
+  supportsInject?: boolean;
+
   // ── Declarative capability descriptors (UI renders from these) ──
   /** Thinking / effort levels this provider supports. Empty/undefined = hide
    *  the effort chip entirely. Each provider declares its own set so the UI
@@ -92,6 +110,13 @@ export interface StartTurnRequest {
   model?: string;
   effort?: EffortLevel;
   permissionMode?: PermissionMode;
+  /** 这一轮要追加的系统提示词片段。**由 host 解析好**
+   *  (`main/orchestration/prompt.ts`),提供方只负责把它 append 上去。
+   *
+   *  ⚠️ 这里过去是 `composerMode`,由**提供方**自己去查 `COMPOSER_MODE_PROMPTS` ——
+   *  结果是只有 claude-sdk 实现了那套查表,Pi / Codex 完全忽略。改成传字符串之后,
+   *  三个提供方的差别从"要不要实现一套查表逻辑"缩小成"append 一个字符串"。 */
+  workflowPrompt?: string;
   /** Provider's own conversation id, used to resume a prior conversation.
    * null = first turn of a new conversation. */
   resumeProviderSessionId?: string | null;
@@ -111,6 +136,22 @@ export interface StartTurnRequest {
    *  only and never trigger the Skill tool on their own. Omitted/empty falls
    *  back to `skills: "all"` (let the model self-discover). */
   skills?: string[];
+  /** MCP 服务器名的允许清单 —— **空/缺席 = 不限制**(和 `skills` 同一条读法)。
+   *
+   *  非空时提供方要保证这一轮**只有这几个**服务器的工具进得了模型:SDK 那边是
+   *  `Options.mcpServers` 只放这几个 + `strictMcpConfig: true`(后者让 SDK 不再去读
+   *  项目 `.mcp.json` / 用户设置 / 插件里的服务器 —— 少了它,被排除的服务器会从另一条
+   *  路自己回来,这个参数就等于没写)。
+   *
+   *  为什么值得做:MCP 服务器进上下文的不是名字,是**它全部的工具定义**,而模型每次
+   *  调用都要把上下文整段重发。一个「整理稿子」的步骤挂着浏览器工具,是每一步都在
+   *  白花的钱。 */
+  mcpServerNames?: string[];
+  /** 插件名的允许清单 —— **空/缺席 = 不限制**(和 `skills` 同一条读法)。
+   *
+   *  非空时只有这几个插件被加载(它们的技能 / 命令 / 子 agent 连同自带的 MCP 服务器
+   *  一起进来,或者说一起不进来)。 */
+  pluginNames?: string[];
   /** Persisted todos from the previous turn(s). The provider seeds its
    *  in-memory task list with these so that incremental TaskUpdate calls
    *  (which reference a 1-based taskId from earlier turns) still resolve
@@ -271,6 +312,19 @@ export interface TurnHandle {
   interrupt(): void;
   /** Whether the turn is still active. */
   isRunning(): boolean;
+  /**
+   * 往**正在跑的这一轮**里塞一句话(生成过程中插话)。
+   *
+   * 返回的是"**收下了没有**",而不是"发出去了没有":这一轮已经收尾、用户刚按了停止、
+   * 或者引擎压根不支持,都要老老实实返回 `false` —— 调用方据此**兜回普通的发送**,
+   * 而不是让用户以为说过了(`@contracts/provider` 的 `supportsInject`)。
+   *
+   * 收下之后模型**不保证立刻**看到它:它是在下一个安全点被读进去的(可能正在跑一个
+   * 工具)。所以这**不是**"打断",是"补一句"。
+   *
+   * 只有文本 —— 图片那条路(内容块编码)还没接进来,见 Claude 提供方那里的说明。
+   */
+  inject?(text: string): boolean;
 }
 
 /** Every AI backend implements this interface. */
@@ -285,6 +339,23 @@ export interface AgentProvider {
   /** Start a turn. Returns a handle immediately; events stream via ctx.emit.
    * The returned TurnHandle.done resolves when the turn finishes. */
   startTurn(req: StartTurnRequest, ctx: ProviderContext): Promise<TurnHandle>;
+
+  /**
+   * 把一段提供方那边的会话**复制成新的一段**,返回新的会话 id。
+   *
+   * 与 {@link ProviderCapabilities.supportsFork} 配套:报了这个能力才实现它。
+   * `providerSessionId` 是**提供方自己的**会话 id(宿主存在 `Session.claudeSessionId`),
+   * 不是 Mcode 的会话 id。
+   *
+   * `cwd` 是那段会话当时跑在哪个目录 —— 会话文件按项目目录分开放,给错了就找不到。
+   *
+   * **复制必须发生在分叉的那一刻**(而不是等到新对话的第一次发言):这样之后每一轮都是
+   * 一次普通的 resume,不需要在每轮的执行路径上多带一个"这次要分叉"的标志。
+   *
+   * 失败要**抛**——调用方据此放弃建这条新对话。半成品(建了行、上下文却是空的)比
+   * 报个错糟得多。
+   */
+  forkSession?(providerSessionId: string, opts: { cwd: string; title: string }): Promise<string>;
 
   /** Optional: quick health / version probe for settings UI. */
   healthCheck?(): Promise<{ ok: boolean; version?: string; error?: string }>;

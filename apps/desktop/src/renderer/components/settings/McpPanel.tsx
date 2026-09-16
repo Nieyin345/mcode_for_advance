@@ -14,6 +14,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
+import { PANEL_MAX_W } from "./panelWidth.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
@@ -289,7 +290,7 @@ export function McpPanel() {
   const builtin = servers.find((s) => s.scope === "builtin");
 
   return (
-    <section className="mx-auto w-full max-w-3xl space-y-4">
+    <section className={cn("mx-auto w-full space-y-4", PANEL_MAX_W.form)}>
       <PanelHeader
         title={t("settings.mcp.title")}
         icon={McpIcon}

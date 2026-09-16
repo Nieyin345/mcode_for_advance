@@ -5,6 +5,7 @@
  */
 
 import type { Session } from "./session.js";
+import type { NodeOutcomeStatus } from "./nodeType.js";
 
 /**
  * Permission modes are open strings so each provider can declare its own set
@@ -29,6 +30,23 @@ export const CLAUDE_PERMISSION_MODES = [
   "dontAsk",
   "auto",
 ] as const;
+
+/**
+ * 内置工作流的 id —— 输入框那个选择器里的固定几项。
+ *
+ * 与权限模式 / 思考档位不同,这几个**不是提供方声明的**:集合由应用定死,对每个提供方
+ * 含义相同。选择器从这里渲染;host 把选中的 id 变成一段系统提示词(见
+ * `main/orchestration/prompt.ts`),提供方只负责把那段字符串追加进去。
+ *
+ * ⚠️ **这份列表只有这一处。** `main/orchestration/builtins.ts` 用它打底生成内置工作流,
+ * 不再自己维护一份 —— 两份列表迟早会漂移,而漂移的表现是"选择器里选得到,却查不到
+ * 对应的工作流"。
+ *
+ * ⚠️ 会话上那个字段(`WorkflowIdSchema`)是**开放字符串**,不是这个联合类型:用户可以
+ * 自建工作流(`wf_` 前缀)。这个联合类型只用来约束"内置的那几个"。
+ */
+export const BUILTIN_WORKFLOW_IDS = ["default", "search", "read", "write", "review", "code"] as const;
+export type BuiltinWorkflowId = (typeof BUILTIN_WORKFLOW_IDS)[number];
 
 /**
  * Effort / thinking levels are open strings so each provider can declare its
@@ -514,14 +532,23 @@ export interface SubagentUpdateEvent {
 }
 
 /**
- * One rendered block of a subagent's live transcript. Field names and shapes
- * deliberately mirror the renderer store's `Block` union (text / thinking /
- * tool_use members) so the transcript can feed `MessageBlocks` directly —
- * only the members a subagent can produce are modeled. NOT persisted: the
- * transcript is process-lifetime data (rebuilt from scratch on a rerun);
- * the aggregated roster in `SubagentUpdateEvent` is what survives restarts.
+ * One rendered block of a **read-only transcript** — somebody else's
+ * conversation that the user only watches.
+ *
+ * 两个地方用它,形状一模一样,所以只有这一个类型:
+ *
+ *  - **子代理**(Claude 的 Task / Codex 的 thread):由各自的适配器从转发过来的
+ *    子消息折出来(`providers/<某家>/…MessageAdapter.ts`);
+ *  - **工作流节点**:一个节点是一个独立的隐藏会话,它的流水由宿主
+ *    (`claude/RuntimeManager.ts`)折出来 —— 折法在 `claude/nodeTranscript.ts`,
+ *    是纯函数,所以无头脚本喂得进。
+ *
+ * Field names and shapes deliberately mirror the renderer store's `Block` union
+ * (text / thinking / tool_use members) so the transcript can feed
+ * `MessageBlocks` directly — only the members a sub-agent can produce are
+ * modeled. NOT persisted: the transcript is process-lifetime data.
  */
-export type SubagentTranscriptBlock =
+export type TranscriptBlock =
   | { kind: "text"; text: string }
   | { kind: "thinking"; text: string }
   | {
@@ -529,7 +556,7 @@ export type SubagentTranscriptBlock =
       toolCallId: string;
       toolName: string;
       input: unknown;
-      /** "running" until the subagent's tool_result lands (status done/error). */
+      /** "running" until the tool_result lands (status done/error). */
       status: "running" | "done" | "error";
       result?: unknown;
     };
@@ -548,7 +575,40 @@ export interface SubagentTranscriptEvent {
   /** The originating Task tool_use id. */
   parentToolUseId: string;
   /** The full transcript so far (replace, not append). */
-  blocks: SubagentTranscriptBlock[];
+  blocks: TranscriptBlock[];
+}
+
+/**
+ * Replace-semantics transcript for ONE workflow node, keyed by the hidden
+ * node session that ran it.
+ *
+ * ## 为什么要有它
+ *
+ * 节点是**隐藏会话**(`kind: "node"`),它的流水刻意不发往客户端 —— 推过去会变成
+ * 幻影消息和点不掉的未读(见 `RuntimeManager.emit` 那段注释)。于是"这一步到底干了
+ * 什么"对用户是完全不可见的:卡片上只有一个最终结论,它搜了什么、跑了哪些工具、
+ * 在哪一步绕了远路,一概看不到。用户的原话是「能看见子代理在干嘛」。
+ *
+ * 所以走**和子代理完全一样的那条路**:不发进消息流,而是另开一条按 id 索引的通道,
+ * 由 `MessageBlocks` 只读地渲染(见 `TranscriptBlock`)。这样既不污染对话的配对规则
+ * (`turn.done` ↔ 用量结算挂在最后那条 assistant 消息上),又让每一步的过程可查。
+ *
+ * **粒度是"消息级",不是逐字流。** 与 `SubagentTranscriptEvent` 同一个取舍:它是
+ * 替换语义(每次带全量),逐字广播会让总字节数变成 O(n²),而这个通道的用途是"看它
+ * 干了什么",不是"看它正在打哪个字"。所以整段文本在 `message.complete` 时一次出现,
+ * 而工具调用是**一发生就出现**(那才是用户想实时看的部分)。
+ *
+ * ⚠️ **不落盘。** 进程生命周期数据,重启即失 —— 落盘是另一件事(要连"保留多久、
+ * 跑过几十次的图怎么办"一起想)。
+ */
+export interface WorkflowNodeTranscriptEvent {
+  type: "workflow.node.transcript";
+  /** 父对话的 sessionId,和 `WorkflowNodeResultEvent` 一样。 */
+  sessionId: string;
+  /** 跑这一步的那个隐藏会话(`kind: "node"`)的 id。 */
+  nodeSessionId: string;
+  /** 到目前为止的完整过程(替换语义,不是追加)。 */
+  blocks: TranscriptBlock[];
 }
 
 /** Emitted when a context compaction completes (manual `/compact` or auto).
@@ -565,6 +625,185 @@ export interface CompactResultEvent {
   postTokens?: number;
   /** How long the compaction took, in ms (may be absent). */
   durationMs?: number;
+}
+
+/** One step of a workflow graph settled. Emitted by the host scheduler
+ *  (`main/orchestration/`) onto the **parent conversation's** sessionId, so the
+ *  renderer shows a card in the message stream.
+ *
+ *  Deliberately NOT a fabricated assistant message: the node's own turn lives on
+ *  its own hidden session (`kind: "node"`), and pretending its output were an
+ *  assistant reply in the parent would corrupt `turn.done` ↔ usage pairing.
+ *  Same precedent as `plan.update` / `compact.result` — an event that becomes a
+ *  card. */
+export interface WorkflowNodeResultEvent {
+  type: "workflow.node.result";
+  /** The CONVERSATION session, not the node's. */
+  sessionId: string;
+  /** Which run this belongs to. One user message = one run; a later message
+   *  starts a new one, so the card can be read in order even if node ids repeat. */
+  runId: string;
+  /** 跑这一步的那个**隐藏节点会话**(`kind: "node"`)的 id。
+   *
+   *  卡片靠它去 `workflow.node.transcript` 那条通道里取"这一步的过程"(见
+   *  `WorkflowNodeTranscriptEvent`)。带上它而不是让渲染端拿 `nodeId` 去猜:节点 id 是
+   *  图里的局部记号,同一张图跑两次是同一个 id,而**会话 id 每次都是新的** —— 猜的话
+   *  第二次运行会看到第一次的过程。
+   *
+   *  **可缺席**:`skipped`(上游失败所以没跑)和 `cancelled`(还没轮到就被叫停)的节点
+   *  根本没建过会话,也就没有过程可看。那种情况下卡片不该摆一个点开是空的入口。 */
+  nodeSessionId?: string;
+  /** The graph node's id / type / title, straight off `WorkflowNode`. */
+  nodeId: string;
+  nodeType: string;
+  title: string;
+  status: NodeOutcomeStatus;
+  /** What the node produced. Also what gets fed to its downstream nodes. */
+  summary: string;
+  /** 这一步声明的**产出变量名**(`outputVars` 那张表的名字列;没声明就是缺席)。
+   *
+   *  卡片靠它决定"这段产出是给人读的,还是给下游取值的"。声明过的那一步,产出**就是
+   *  一个对象**(见 `@contracts/outputConstraint` 的 `describeOutputVars`),原文摊给
+   *  用户看正好是用户明确说过不要的那件事("别让我看见 JSON")。
+   *
+   *  ⚠️ **传名字,不传值。** 值就在 `summary` 里,渲染端用 `checkOutput`(同一份契约、
+   *  同一个解析器)自己提出来的就是**下游拿到的那一份** —— 传值等于把同一份内容在
+   *  库里存两遍,而变量值可能就是一篇文档。 */
+  outputKeys?: string[];
+  /** Present when the node did not succeed. */
+  error?: string;
+  /**
+   * **这一步花了多少。** 缺席 = 不知道(引擎没报、或者这一步压根没跑)。
+   *
+   * 只有 token 数与花费 —— 那两样是用户唯一看得懂、也唯一能拿去做决定的。**不搬整份
+   * `TurnUsageRecord`**(它还有 `usedTokens` / `durationMs` 之类给上下文仪表盘用的
+   * 字段),那些卡片上一个都不显示,搬过来只是把契约摊大。
+   *
+   * ⚠️ `costUsd` 可缺席**不等于 0**:有些第三方端点不报花费(`usageStats.ts` 那边
+   * 同一件事)。渲染端要显示 `—` 而不是 `$0.00` —— 那会让人以为这一步免费。
+   */
+  usage?: {
+    /** 这一步处理的全部 token(输入 + 缓存读 + 缓存写 + 输出)。 */
+    totalTokens: number;
+    outputTokens: number;
+    costUsd?: number;
+  };
+}
+
+/**
+ * **给已经画出来的那张步骤卡补上花费。**
+ *
+ * ## 为什么不能重发一条 `workflow.node.result`
+ *
+ * 那个事件是**"插入一张卡"**的意思(渲染端 `appendTurnCardBlock`),再发一条同样的会
+ * 在对话里出现**两张**卡片 —— 用户看到的是"同一步做了两次"。结果卡本来就没有"原地更新"
+ * 这条路(它描述的是"事情发生完了",一次性的事实)。
+ *
+ * ## 所以为什么需要它
+ *
+ * 用量**不是**在节点收场那一刻就有的:那个回合的最终快照(含花费)是适配器在
+ * `turn.done` **之后**异步推上来的,再由 `settlePendingTurnEnd` 结算落库。而计算花费
+ * 又必须等那个回合收场(否则拿到的是半截数)。两件事的先后逼出了一条"稍后再补"的通道。
+ *
+ * ## 渲染端怎么用它
+ *
+ * 按 `runId + nodeId` 找到那张卡,**只改 `usage` 那一项**。找不到(卡片被折了、被容量
+ * 裁了、用户切走了)就**静静地什么都不做** —— 补花费是附加的,它不该凭空造一张卡出来。
+ *
+ * 缺席 `usage`(补的时候还是没数)= 不发这个事件,卡片上就一直不显示花费那一行。
+ */
+export interface WorkflowNodeUsageEvent {
+  type: "workflow.node.usage";
+  /** 父对话的 sessionId。 */
+  sessionId: string;
+  runId: string;
+  nodeId: string;
+  /** 和结果事件里那个 `usage` 同一个形状。**这里一定存在**(没数就不发这条事件)。 */
+  usage: {
+    totalTokens: number;
+    outputTokens: number;
+    costUsd?: number;
+  };
+}
+
+/**
+ * 一个**分支节点**在等用户选一条路(`mcode.branch`,见 `@contracts/nodeType` 的
+ * `runner.kind`)。
+ *
+ * ## 它是"挂起",不是"跑完了"
+ *
+ * 调度器跑到分支节点就**停下等** —— 同一个 `runWorkflow` 调用还活着,只是没有节点在
+ * 跑。所以这个事件发出之后,那次运行既不是成功也不是失败,而是"等你说"。用户答了
+ * (走 `workflow:choose` IPC),调度器接着往下跑,**不需要重新跑整张图**。
+ *
+ * ⚠️ 这一点决定了卡片要长什么样:它不能是一个"跑完了"的结果卡,得是一个**还活着的**
+ * 交互卡 —— 按钮点完之前,这次运行没有结束。
+ *
+ * ## 发**两次**(选之前、选之后)
+ *
+ * - 不带 `chosen`:在等。卡片摆按钮。
+ * - 带 `chosen`:已经选了。卡片只显示结果。
+ *
+ * 第二次是**另一台设备**要的那一份:手机上的卡片得知道"这边已经选过了",而不是继续
+ * 摆一个点了没反应的按钮(同 `RequestResolvedEvent` 解决的那件事)。
+ */
+export interface WorkflowNodeChoiceEvent {
+  type: "workflow.node.choice";
+  /** 父对话的 sessionId,和 `WorkflowNodeResultEvent` 一样。 */
+  sessionId: string;
+  /** 哪一次运行。见 `WorkflowNodeResultEvent.runId`。 */
+  runId: string;
+  /** 分支节点的 id 与标题,直接来自 `WorkflowNode`。 */
+  nodeId: string;
+  nodeType: string;
+  title: string;
+  /**
+   * **这是第几轮问。** 从 1 开始。
+   *
+   * 只有 `1` 以外的值才有意义,而它必要的原因是**回头**(见 `@contracts/workflow` 的
+   * 「回头」):同一个分支在同一次运行里会被问很多次,而渲染端要靠 `runId + nodeId`
+   * 认出"这是同一张卡、把内容换掉"。没有这个数字的话,第二轮那张会把**第一轮那张**
+   * 替掉 —— 用户看到一个早就点过的卡片忽然变了个样子,而他第一轮点的是什么就此消失。
+   */
+  attempt: number;
+  /** 待选的出路 —— **就是这个分支节点的出边**(见 `WorkflowEdgeSchema`)。 */
+  options: WorkflowChoiceOption[];
+  /**
+   * **这一次问是节点上那个「运行前先问我」来的,不是边上的岔路。**
+   *
+   * 两者的载荷形状几乎一样(都是几个选项 + 一句可选的补充),但界面该长得不一样:
+   * 岔路是聊天流里的一张卡,这一种要弹在屏幕正中间(见 `AskChoiceDialog`)。所以要有
+   * 一个明确的判别字段。
+   *
+   * ⚠️ **不能拿 `nodeType` 来判。** 节点类型是插件可扩展的,第三方完全可以带一个自己的
+   * 类型、行为却是"先问再跑";反过来,将来也可能有别的内置类型开这个开关。这里说的是
+   * "代码打算怎么处理它",不是"它是谁"。
+   */
+  ask?: boolean;
+  /** 已经选过的那一条(边的 id)。缺席 = 还在等。 */
+  chosen?: string;
+  /** 用户在选择时临时写的那句话(和 `chosen` 一起来)。 */
+  comment?: string;
+}
+
+/** 分支节点上的一条出路。`id` 是**边**的 id —— 选择按它回来。 */
+export interface WorkflowChoiceOption {
+  id: string;
+  /** 选项名。边上的 `label`,没填就用目标节点的标题。 */
+  label: string;
+  /** 选了这一项之后给下一步的说明(边上的 `note`)。 */
+  note?: string;
+  /** 这条出路通向哪一步的标题 —— 按钮下面显示"→ 写作③"用。 */
+  next: string;
+  /**
+   * **这一项要一个输入框**,值是框里的提示语。没有就是不要框。
+   *
+   * 只有「运行前先问我」那四个选项会带它(见 `@contracts/nodeType` 的 `ASK_CHOICES`):
+   * "用这一步的指令"要写补充、"重复上一个任务"要说清哪里不对、"退出流程"要说退出后
+   * 想干嘛,而"跳过"什么都不用填。边上的岔路**不带** —— 它有一整个 `comment` 输入框
+   * 摆在选项下面(见 `WorkflowNodeChoiceEvent.comment`)。
+   */
+  input?: string;
 }
 
 /** An agent tool captured a screenshot (or other image) that should be shown
@@ -745,6 +984,7 @@ export type RuntimeEvent =
   | PlanUpdateEvent
   | SubagentUpdateEvent
   | SubagentTranscriptEvent
+  | WorkflowNodeTranscriptEvent
   | ContextUsageEvent
   | ErrorEvent
   | TurnDoneEvent
@@ -752,6 +992,9 @@ export type RuntimeEvent =
   | TurnFilesEvent
   | TurnRewoundEvent
   | CompactResultEvent
+  | WorkflowNodeResultEvent
+  | WorkflowNodeUsageEvent
+  | WorkflowNodeChoiceEvent
   | BrowserImageEvent
   | SessionChangedEvent
   | SessionDeletedEvent

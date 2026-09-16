@@ -29,6 +29,7 @@ import {
   RespondQuestionSchema,
   RespondPlanApprovalSchema,
   RewindTurnSchema,
+  WorkflowChooseSchema,
   ProjectSessionsSchema,
   SessionSearchSchema,
   BookmarkSearchSchema,
@@ -37,6 +38,7 @@ import {
   UpsertMessagesSchema,
   TruncateAndInsertMessagesSchema,
   UpdateSessionSettingsSchema,
+  workflowIdFromInput,
   RenameSessionSchema,
   PinSessionSchema,
   UpdateBookmarksSchema,
@@ -70,11 +72,21 @@ import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { log } from "@main/lib/logger.js";
 import { broadcastSessionChanged, broadcastSessionDeleted } from "@main/lib/sessionSync.js";
 import { createOrReuseSession } from "@main/lib/sessionStart.js";
+import {
+  cancelWorkflowRun,
+  graphRunIntent,
+  parkedRunTeardown,
+  resolveWorkflowChoice,
+  startWorkflowRun,
+} from "@main/orchestration/runner.js";
 import { CustomModelStore } from "@main/lib/secretStore.js";
 import { listAvailablePiModels } from "@main/ipc/piModels.js";
 import { listSkillsForProject, readSkillForProject } from "@main/ipc/skills.js";
 import { readFileGuarded, readBinaryGuarded, listDirGuarded, searchFilesGuarded } from "@main/ipc/files.js";
 import { generateSessionTitle } from "@main/ipc/titleGen.js";
+// 工作流库的清单。`main/orchestration/` 与 `main/workflows/`(数据根下那套 Python
+// 研究脚本)是两件事,别被名字带偏 —— 见 `main/ipc/orchestration.ts` 文件头。
+import { listWorkflows } from "@main/orchestration/library.js";
 
 /** Identity of the calling device, made available to every handler. */
 export interface DeviceContext {
@@ -146,6 +158,21 @@ const HANDLERS: Record<string, RpcHandler> = {
   // ── Composer config data (read-only, mirrors the desktop IPC handlers) ──
   "customModel:list": () => ({ models: CustomModelStore.listPublic() }),
 
+  // 工作流选择器要的那一份清单。**手机端必须能读** —— 否则输入框上那个下拉是空的,
+  // 而"选了哪个工作流"是要跟着会话走到手机上的(`sessions.composer_mode` 里存的就是
+  // 这个 id)。只读、无参,与 `runtimes.list` 同一个写法。
+  "workflow:list": () => ({ workflows: listWorkflows() }),
+
+  // 在岔路口上选一条路。**这条也必须是手机能回答的** —— 图停在那个节点上等一个人,
+  // 而用户多半不在电脑前面;那正是"工作流卡住了"最需要被解开的时刻。它是**回答一个
+  // 还活着的运行**,不是编辑工作流,所以和上面那些桌面专属的动作不是一类。
+  //
+  // `ok: false` 不是错:卡片可能已经过期(运行结束了、或者被取消了)。
+  "workflow:choose": (raw) => {
+    const input = WorkflowChooseSchema.parse(raw);
+    return { ok: resolveWorkflowChoice(input) };
+  },
+
   "piModels:listAvailable": async () => {
     const models = await listAvailablePiModels();
     return { models };
@@ -155,7 +182,6 @@ const HANDLERS: Record<string, RpcHandler> = {
     const input = SkillsListSchema.parse(raw);
     return listSkillsForProject(input.projectPath).then((skills) => ({ skills }));
   },
-
   "skills:read": async (raw) => {
     const input = SkillsReadSchema.parse(raw);
     const content = await readSkillForProject(input.projectPath, input.source, input.name);
@@ -236,8 +262,9 @@ const HANDLERS: Record<string, RpcHandler> = {
       const title = trimmed.slice(0, 40) + (trimmed.length > 40 ? "…" : "");
       SessionRepo.updateTitle(session.id, title);
       updated = { ...session, title };
-      // Sync the new title to every client (desktop renderer included).
-      broadcastSessionChanged(updated);
+      // Sync the new title to every client (desktop renderer included) —— 但只有
+      // 真正的用户会话值得广播:工作流节点会话(`kind: "node"`)不进任何列表。
+      if (session.kind === "chat") broadcastSessionChanged(updated);
     }
     // Apply per-turn overrides (mirrors the desktop IPC handler).
     if (input.model !== undefined) updated = { ...updated, model: input.model };
@@ -248,6 +275,39 @@ const HANDLERS: Record<string, RpcHandler> = {
 
     SessionRepo.updateStatus(session.id, "running");
     runtimeManager.bindSession(updated);
+    // Background auto-title generation — same one-shot LLM routine the desktop
+    // sendTurn fires (see titleGen.ts). Fire-and-forget. **放在分岔之前**:图型
+    // 工作流那一轮同样要起标题。
+    if (isFirstMessage) {
+      void generateSessionTitle(updated, input.prompt).catch((err) =>
+        log.warn(`mobile: title generation failed for ${session.id}: ${(err as Error).message}`),
+      );
+    }
+    // 图型工作流:与桌面端同一个判断(见 `graphRunIntent`)。手机上也能选工作流
+    // (`workflow:list` 那条 RPC),所以这里不能只有"跑一个普通回合"。
+    let run = graphRunIntent(updated);
+    if (run === "busy") {
+      // 与桌面端同一处判断:**图停在原地等人时,用户直接说话 = 放弃那一次、按他说的
+      // 重来**(见 `parkedRunTeardown`)。手机上尤其要紧 —— 图停在岔路口等人的时候,
+      // 用户多半不在电脑前面。
+      const teardown = parkedRunTeardown(updated.id);
+      if (teardown === null) {
+        // 有节点真在跑 —— 同桌面端:上一轮图还在跑就**明确拒绝**,别把这条消息丢掉。
+        throw new RpcError("这个工作流还在跑:先回答它的问题,或者按停止", 409);
+      }
+      await teardown;
+      run = "start";
+    }
+    if (run === "start") {
+      void startWorkflowRun({
+        session: updated,
+        cwd: project.path,
+        prompt: input.prompt,
+        userMessage: input.userMessage,
+      });
+      log.info(`mobile: workflow run started (${session.id}) by ${ctx.device.name}`);
+      return { session: updated };
+    }
     await runtimeManager.sendTurn(updated, {
       prompt: input.prompt,
       cwd: project.path,
@@ -256,20 +316,15 @@ const HANDLERS: Record<string, RpcHandler> = {
       // User-message echo payload from the phone (cross-client bubble).
       userMessage: input.userMessage,
     });
-    // Background auto-title generation — same one-shot LLM routine the
-    // desktop sendTurn fires (see titleGen.ts). Fire-and-forget.
-    if (isFirstMessage) {
-      void generateSessionTitle(updated, input.prompt).catch((err) =>
-        log.warn(`mobile: title generation failed for ${session.id}: ${(err as Error).message}`),
-      );
-    }
     log.info(`mobile: turn sent (${session.id}) by ${ctx.device.name}`);
     return { session: updated };
   },
 
   "claude:interrupt": (raw) => {
     const input = InterruptSchema.parse(raw);
-    runtimeManager.interrupt(input.sessionId);
+    // 图型工作流要停的是整张图(见 `orchestration/runner.ts`);
+    // `cancelWorkflowRun` 返回 false 才说明这是个普通回合。
+    if (!cancelWorkflowRun(input.sessionId)) runtimeManager.interrupt(input.sessionId);
     SessionRepo.updateStatus(input.sessionId, "interrupted");
     return { ok: true };
   },
@@ -287,7 +342,7 @@ const HANDLERS: Record<string, RpcHandler> = {
     return { restored };
   },
 
-  // Per-session composer config (model / effort / permissionMode /
+  // Per-session composer config (model / effort / permissionMode / workflowId /
   // customModelId / providerId). Mirrors the desktop IPC handler: persists to
   // the session row AND, when permissionMode is present, syncs the live value
   // into the ApprovalBridge so a mid-turn mode flip takes effect for the next
@@ -299,6 +354,9 @@ const HANDLERS: Record<string, RpcHandler> = {
       model: input.model,
       effort: input.effort,
       permissionMode: input.permissionMode,
+      // 选了哪个工作流**也要落库** —— 手机端的下拉现在列得出桌面端建的工作流
+      // (`workflow:list`),只写进本地 store 的话列表里选中的那一项刷新就回去了。
+      workflowId: workflowIdFromInput(input),
       customModelId: input.customModelId,
       providerId: input.providerId,
     });
@@ -376,6 +434,8 @@ const HANDLERS: Record<string, RpcHandler> = {
 
   "session:delete": (raw) => {
     const input = DeleteSessionSchema.parse(raw);
+    // 同桌面端:先停掉可能还在跑的图,否则卡在节点问题上的那张图永远不会结束。
+    cancelWorkflowRun(input.id);
     SessionRepo.delete(input.id);
     broadcastSessionDeleted(input.id);
     return { ok: true };

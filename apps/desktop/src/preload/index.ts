@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { IPC } from "@contracts/ipc";
 import type { RpcMap } from "@contracts/ipc";
 import type { MainToRendererMessage } from "@contracts/ipc";
@@ -18,6 +18,8 @@ const api = {
       ipcRenderer.invoke(IPC.CLAUDE_SEND_TURN, input)) as RpcMap["claude.sendTurn"],
     interrupt: ((input) =>
       ipcRenderer.invoke(IPC.CLAUDE_INTERRUPT, input)) as RpcMap["claude.interrupt"],
+    inject: ((input) =>
+      ipcRenderer.invoke(IPC.CLAUDE_INJECT, input)) as RpcMap["claude.inject"],
     approve: ((input) =>
       ipcRenderer.invoke(IPC.CLAUDE_APPROVE, input)) as RpcMap["claude.approve"],
     respondQuestion: ((input) =>
@@ -71,6 +73,7 @@ const api = {
       ipcRenderer.invoke(IPC.SESSION_ARCHIVE, input)) as RpcMap["session.archive"],
     rename: ((input) =>
       ipcRenderer.invoke(IPC.SESSION_RENAME, input)) as RpcMap["session.rename"],
+    fork: ((input) => ipcRenderer.invoke(IPC.SESSION_FORK, input)) as RpcMap["session.fork"],
     pin: ((input) =>
       ipcRenderer.invoke(IPC.SESSION_PIN, input)) as RpcMap["session.pin"],
     updateBookmarks: ((input) =>
@@ -186,10 +189,109 @@ const api = {
       ipcRenderer.invoke(IPC.THEME_SET, input)) as RpcMap["theme.set"],
   },
 
+  /** 文献库 —— 条目、集合、检索导入、全文检索、库位置。
+   *  变更类方法一律返回新的完整列表,渲染端整体替换缓存。 */
+  library: {
+    list: ((input) => ipcRenderer.invoke(IPC.LIBRARY_LIST, input)) as RpcMap["library.list"],
+    get: ((input) => ipcRenderer.invoke(IPC.LIBRARY_GET, input)) as RpcMap["library.get"],
+    addItems: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_ADD_ITEMS, input)) as RpcMap["library.addItems"],
+    deleteItems: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_DELETE_ITEMS, input)) as RpcMap["library.deleteItems"],
+    download: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_DOWNLOAD, input)) as RpcMap["library.download"],
+    jobs: (() => ipcRenderer.invoke(IPC.LIBRARY_JOBS)) as RpcMap["library.jobs"],
+    searchExternal: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_SEARCH_EXTERNAL, input)) as RpcMap["library.searchExternal"],
+    import: ((input) => ipcRenderer.invoke(IPC.LIBRARY_IMPORT, input)) as RpcMap["library.import"],
+    importFiles: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_IMPORT_FILES, input)) as RpcMap["library.importFiles"],
+    convert: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_CONVERT, input)) as RpcMap["library.convert"],
+    revealFile: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_REVEAL_FILE, input)) as RpcMap["library.revealFile"],
+    openFile: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_OPEN_FILE, input)) as RpcMap["library.openFile"],
+    readMarkdown: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_READ_MARKDOWN, input)) as RpcMap["library.readMarkdown"],
+    readPdf: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_READ_PDF, input)) as RpcMap["library.readPdf"],
+    renameItem: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_RENAME_ITEM, input)) as RpcMap["library.renameItem"],
+    listNotes: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_LIST_NOTES, input)) as RpcMap["library.listNotes"],
+    saveNote: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_SAVE_NOTE, input)) as RpcMap["library.saveNote"],
+    deleteNote: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_DELETE_NOTE, input)) as RpcMap["library.deleteNote"],
+    createNote: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_CREATE_NOTE, input)) as RpcMap["library.createNote"],
+    writeNote: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_WRITE_NOTE, input)) as RpcMap["library.writeNote"],
+    adoptMarkdown: ((input) =>
+      ipcRenderer.invoke(
+        IPC.LIBRARY_ADOPT_MARKDOWN,
+        input,
+      )) as RpcMap["library.adoptMarkdown"],
+    importNotes: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_IMPORT_NOTES, input)) as RpcMap["library.importNotes"],
+    exportCitations: ((input) =>
+      ipcRenderer.invoke(
+        IPC.LIBRARY_EXPORT_CITATIONS,
+        input,
+      )) as RpcMap["library.exportCitations"],
+    conversionStats: (() =>
+      ipcRenderer.invoke(IPC.LIBRARY_CONVERSION_STATS)) as RpcMap["library.conversionStats"],
+    conversionReport: (() =>
+      ipcRenderer.invoke(IPC.LIBRARY_CONVERSION_REPORT)) as RpcMap["library.conversionReport"],
+    fullTextSearch: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_FULL_TEXT_SEARCH, input)) as RpcMap["library.fullTextSearch"],
+    getRoot: (() => ipcRenderer.invoke(IPC.LIBRARY_GET_ROOT)) as RpcMap["library.getRoot"],
+    setRoot: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_SET_ROOT, input)) as RpcMap["library.setRoot"],
+    itemManifest: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_ITEM_MANIFEST, input)) as RpcMap["library.itemManifest"],
+    manifest: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_MANIFEST, input)) as RpcMap["library.manifest"],
+    kindManifest: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_KIND_MANIFEST, input)) as RpcMap["library.kindManifest"],
+    attachToChat: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_ATTACH_TO_CHAT, input)) as RpcMap["library.attachToChat"],
+    listCollections: (() =>
+      ipcRenderer.invoke(IPC.LIBRARY_LIST_COLLECTIONS)) as RpcMap["library.listCollections"],
+    createCollection: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_CREATE_COLLECTION, input)) as RpcMap["library.createCollection"],
+    renameCollection: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_RENAME_COLLECTION, input)) as RpcMap["library.renameCollection"],
+    deleteCollection: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_DELETE_COLLECTION, input)) as RpcMap["library.deleteCollection"],
+    assignCollection: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_ASSIGN_COLLECTION, input)) as RpcMap["library.assignCollection"],
+  },
+
+  /** 机构认证入口。⚠️ 这里**没有凭据管理** —— 登录态在内嵌浏览器的共享分区里,
+   *  这套 API 只维护「入口档案」并从 cookie 反推已登录站点。 */
+  institution: {
+    list: (() => ipcRenderer.invoke(IPC.INSTITUTION_LIST)) as RpcMap["institution.list"],
+    save: ((input) => ipcRenderer.invoke(IPC.INSTITUTION_SAVE, input)) as RpcMap["institution.save"],
+    delete: ((input) =>
+      ipcRenderer.invoke(IPC.INSTITUTION_DELETE, input)) as RpcMap["institution.delete"],
+    authStatus: ((input) =>
+      ipcRenderer.invoke(IPC.INSTITUTION_AUTH_STATUS, input)) as RpcMap["institution.authStatus"],
+    clearCookies: ((input) =>
+      ipcRenderer.invoke(IPC.INSTITUTION_CLEAR_COOKIES, input)) as RpcMap["institution.clearCookies"],
+  },
+
   /** App + runtime info (version, Electron/Node/Chromium, platform) for the
    *  About panel. Parameterless RPC. */
   app: {
     info: (() => ipcRenderer.invoke(IPC.APP_INFO)) as RpcMap["app.info"],
+    /** 统一数据根:数据库、文献库、模版库都在它下面。 */
+    getDataRoot: (() =>
+      ipcRenderer.invoke(IPC.APP_GET_DATA_ROOT)) as RpcMap["app.getDataRoot"],
+    /** 迁移整个数据根到新位置 —— **成功后会重启应用**。 */
+    moveDataRoot: ((input) =>
+      ipcRenderer.invoke(IPC.APP_MOVE_DATA_ROOT, input)) as RpcMap["app.moveDataRoot"],
     /** Check for updates on the GitHub Releases channel. */
     checkForUpdates: (() =>
       ipcRenderer.invoke(IPC.APP_CHECK_FOR_UPDATES)) as RpcMap["app.checkForUpdates"],
@@ -483,6 +585,58 @@ const api = {
   /** Output styles (settings panel): list built-in + user styles. The
    *  selection is persisted via the generic setting channels and applies to
    *  Claude sessions from the next turn. */
+  /** 外部服务集成(自带 API Key)。密钥只经 setKey 出去一次,回来的一律是打码串。 */
+  /** 模版库(PPT / LaTeX / Word / 代码 / 图片)。文件系统即事实源,没有 DB 表。 */
+  templates: {
+    list: ((input) => ipcRenderer.invoke(IPC.TEMPLATES_LIST, input)) as RpcMap["templates.list"],
+    add: ((input) => ipcRenderer.invoke(IPC.TEMPLATES_ADD, input)) as RpcMap["templates.add"],
+    /** 改名 = 把那个目录改名(目录名即显示名)。 */
+    rename: ((input) =>
+      ipcRenderer.invoke(IPC.TEMPLATES_RENAME, input)) as RpcMap["templates.rename"],
+    /** 删除 = 移进回收站(可逆)。真正的删除是下一条 `purge`。 */
+    trash: ((input) =>
+      ipcRenderer.invoke(IPC.TEMPLATES_TRASH, input)) as RpcMap["templates.trash"],
+    trashList: (() =>
+      ipcRenderer.invoke(IPC.TEMPLATES_TRASH_LIST)) as RpcMap["templates.trashList"],
+    restore: ((input) =>
+      ipcRenderer.invoke(IPC.TEMPLATES_RESTORE, input)) as RpcMap["templates.restore"],
+    purge: ((input) =>
+      ipcRenderer.invoke(IPC.TEMPLATES_PURGE, input)) as RpcMap["templates.purge"],
+    /** 应用内预览一个模版文件(文本/图片);Word/PPT/PDF 会回 unsupported。 */
+    readFile: ((input) =>
+      ipcRenderer.invoke(IPC.TEMPLATES_READ_FILE, input)) as RpcMap["templates.readFile"],
+    /** 用系统默认程序打开一个模版文件。 */
+    openFile: ((input) =>
+      ipcRenderer.invoke(IPC.TEMPLATES_OPEN_FILE, input)) as RpcMap["templates.openFile"],
+    reveal: ((input) =>
+      ipcRenderer.invoke(IPC.TEMPLATES_REVEAL, input)) as RpcMap["templates.reveal"],
+    manifest: ((input) =>
+      ipcRenderer.invoke(IPC.TEMPLATES_MANIFEST, input)) as RpcMap["templates.manifest"],
+    /** 整个类目的清单(「全部 LaTeX 模版」那一行)。 */
+    kindManifest: ((input) =>
+      ipcRenderer.invoke(IPC.TEMPLATES_KIND_MANIFEST, input)) as RpcMap["templates.kindManifest"],
+    attachToChat: ((input) =>
+      ipcRenderer.invoke(
+        IPC.TEMPLATES_ATTACH_TO_CHAT,
+        input,
+      )) as RpcMap["templates.attachToChat"],
+    getRoot: (() => ipcRenderer.invoke(IPC.TEMPLATES_GET_ROOT)) as RpcMap["templates.getRoot"],
+    setRoot: ((input) =>
+      ipcRenderer.invoke(IPC.TEMPLATES_SET_ROOT, input)) as RpcMap["templates.setRoot"],
+  },
+
+  integrations: {
+    list: (() => ipcRenderer.invoke(IPC.INTEGRATIONS_LIST)) as RpcMap["integrations.list"],
+    setKey: ((input) =>
+      ipcRenderer.invoke(IPC.INTEGRATIONS_SET_KEY, input)) as RpcMap["integrations.setKey"],
+    clearKey: ((input) =>
+      ipcRenderer.invoke(IPC.INTEGRATIONS_CLEAR_KEY, input)) as RpcMap["integrations.clearKey"],
+    setConfig: ((input) =>
+      ipcRenderer.invoke(IPC.INTEGRATIONS_SET_CONFIG, input)) as RpcMap["integrations.setConfig"],
+    test: ((input) =>
+      ipcRenderer.invoke(IPC.INTEGRATIONS_TEST, input)) as RpcMap["integrations.test"],
+  },
+
   outputStyle: {
     list: ((input) =>
       ipcRenderer.invoke(IPC.OUTPUT_STYLE_LIST, input)) as RpcMap["outputStyle.list"],
@@ -496,6 +650,14 @@ const api = {
   },
 
   /** Probe whether the default provider is functional. */
+  /**
+   * 把一个拖进来的 `File` 换成它在磁盘上的绝对路径。
+   *
+   * **Electron 32 起 `File.path` 被移除了** —— 从资源管理器往外拖文件(PDF 导入)
+   * 只能走 `webUtils`。它必须在渲染上下文里调用,所以放在 preload 这层。
+   */
+  getPathForFile: (file: File): string => webUtils.getPathForFile(file),
+
   claudeHealthCheck: (): Promise<{
     installed: boolean;
     source: string | null;
@@ -539,6 +701,56 @@ const api = {
       ipcRenderer.invoke(IPC.RUNTIMES_INSTALL_LOCAL, input)) as RpcMap["runtimes.installLocal"],
     remove: ((input) =>
       ipcRenderer.invoke(IPC.RUNTIMES_REMOVE, input)) as RpcMap["runtimes.remove"],
+  },
+
+  /** 文档工具链(设置 → 内核):四个内置文档技能要用的外部工具。
+   *  check() 探一遍本机,install/remove 只对应用能管的那几项有效
+   *  (pandoc 由应用下载,python-deps 走用户解释器的 pip);进度走
+   *  `on.toolchainEvent`。 */
+  toolchain: {
+    check: (() => ipcRenderer.invoke(IPC.TOOLCHAIN_CHECK)) as RpcMap["toolchain.check"],
+    install: ((input) =>
+      ipcRenderer.invoke(IPC.TOOLCHAIN_INSTALL, input)) as RpcMap["toolchain.install"],
+    remove: ((input) =>
+      ipcRenderer.invoke(IPC.TOOLCHAIN_REMOVE, input)) as RpcMap["toolchain.remove"],
+  },
+
+  /** 工作流(设置 → 工作流):用户画的流程图,取代原来写死的对话模式。 */
+  workflow: {
+    list: (() => ipcRenderer.invoke(IPC.WORKFLOW_LIST)) as RpcMap["workflow.list"],
+    get: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_GET, input)) as RpcMap["workflow.get"],
+    nodeTypes: (() =>
+      ipcRenderer.invoke(IPC.WORKFLOW_NODE_TYPES)) as RpcMap["workflow.nodeTypes"],
+    save: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_SAVE, input)) as RpcMap["workflow.save"],
+    remove: ((input) =>
+      ipcRenderer.invoke(IPC.WORKFLOW_REMOVE, input)) as RpcMap["workflow.remove"],
+    agentProfiles: (() =>
+      ipcRenderer.invoke(IPC.WORKFLOW_AGENT_PROFILES)) as RpcMap["workflow.agentProfiles"],
+    saveAgentProfile: ((input) =>
+      ipcRenderer.invoke(
+        IPC.WORKFLOW_SAVE_AGENT_PROFILE,
+        input,
+      )) as RpcMap["workflow.saveAgentProfile"],
+    removeAgentProfile: ((input) =>
+      ipcRenderer.invoke(
+        IPC.WORKFLOW_REMOVE_AGENT_PROFILE,
+        input,
+      )) as RpcMap["workflow.removeAgentProfile"],
+    // 岔路口上选一条路。**它不是"存一份工作流"那一类** —— 它回答的是一个**还活着的
+    // 运行**(那张卡片点下去之前,图一直停在那个节点上等),所以它和对话那边的
+    // `claude.respondPlanApproval` 是同一个形状,不是编辑动作。
+    choose: ((input) =>
+      ipcRenderer.invoke(IPC.WORKFLOW_CHOOSE, input)) as RpcMap["workflow.choose"],
+  },
+
+  /** 钩子(设置 → 钩子):某件事发生的时候跑一条你自己的命令。**宿主侧执行**,
+   *  所以对话、工作流节点、将来的自动化一视同仁(见 `contracts/hook.ts`)。 */
+  hooks: {
+    list: (() => ipcRenderer.invoke(IPC.HOOKS_LIST)) as RpcMap["hooks.list"],
+    runs: (() => ipcRenderer.invoke(IPC.HOOKS_RUNS)) as RpcMap["hooks.runs"],
+    save: ((input) => ipcRenderer.invoke(IPC.HOOKS_SAVE, input)) as RpcMap["hooks.save"],
+    remove: ((input) => ipcRenderer.invoke(IPC.HOOKS_REMOVE, input)) as RpcMap["hooks.remove"],
+    test: ((input) => ipcRenderer.invoke(IPC.HOOKS_TEST, input)) as RpcMap["hooks.test"],
   },
 
   /** Plugins (settings panel): install/enable/remove over ~/.mcode/plugins +
@@ -588,6 +800,16 @@ const api = {
       ipcRenderer.on(IPC.RUNTIMES_EVENT, listener);
       return () => {
         ipcRenderer.off(IPC.RUNTIMES_EVENT, listener);
+      };
+    },
+    /** 文档工具链的安装进度。按 `msg.payload.tool` / `phase` 过滤。 */
+    toolchainEvent(handler: (msg: Extract<MainToRendererMessage, { channel: "toolchain:event" }>) => void): () => void {
+      const listener = (_e: unknown, msg: MainToRendererMessage) => {
+        if (msg.channel === IPC.TOOLCHAIN_EVENT) handler(msg);
+      };
+      ipcRenderer.on(IPC.TOOLCHAIN_EVENT, listener);
+      return () => {
+        ipcRenderer.off(IPC.TOOLCHAIN_EVENT, listener);
       };
     },
     /** Subscribe to claude:event push channel. Returns an unsubscribe fn. */
@@ -664,6 +886,63 @@ const api = {
       ipcRenderer.on(IPC.THEME_CHANGED, listener);
       return () => {
         ipcRenderer.off(IPC.THEME_CHANGED, listener);
+      };
+    },
+    /** Fires when a library download job changes state. 界面据此更新进度,
+     *  并在 status 变成 "needs_login" 时提示用户去内嵌浏览器重新登录。 */
+    libraryJobChanged(handler: (msg: Extract<MainToRendererMessage, { channel: "library:jobChanged" }>) => void): () => void {
+      const listener = (_e: unknown, msg: MainToRendererMessage) => {
+        if (msg.channel === IPC.LIBRARY_JOB_CHANGED) handler(msg);
+      };
+      ipcRenderer.on(IPC.LIBRARY_JOB_CHANGED, listener);
+      return () => {
+        ipcRenderer.off(IPC.LIBRARY_JOB_CHANGED, listener);
+      };
+    },
+    /** 库的内容变了 —— **包括 AI 改的**。渲染端收到就重载分类树与条目列表:
+     *  用户在界面上操作时缓存自己对,AI 操作时缓存不会自己知道(见契约里的注释)。 */
+    libraryChanged(handler: (msg: Extract<MainToRendererMessage, { channel: "library:changed" }>) => void): () => void {
+      const listener = (_e: unknown, msg: MainToRendererMessage) => {
+        if (msg.channel === IPC.LIBRARY_CHANGED) handler(msg);
+      };
+      ipcRenderer.on(IPC.LIBRARY_CHANGED, listener);
+      return () => {
+        ipcRenderer.off(IPC.LIBRARY_CHANGED, listener);
+      };
+    },
+    /** 模版库变了(增 / 删)。模版有两个入口(左栏那一段、设置里的模版库面板),
+     *  谁改都得让另一边知道 —— 与 libraryChanged 同一个用途。 */
+    templatesChanged(handler: (msg: Extract<MainToRendererMessage, { channel: "templates:changed" }>) => void): () => void {
+      const listener = (_e: unknown, msg: MainToRendererMessage) => {
+        if (msg.channel === IPC.TEMPLATES_CHANGED) handler(msg);
+      };
+      ipcRenderer.on(IPC.TEMPLATES_CHANGED, listener);
+      return () => {
+        ipcRenderer.off(IPC.TEMPLATES_CHANGED, listener);
+      };
+    },
+    /** 工作流那一摊变了(工作流 / 自动化 / 代理档案 / 节点类型)—— **包括 AI 改的**。
+     *  设置里那份列表是渲染端自己缓存的,AI 走 MCP 改的是数据根里那份真相,缓存不会
+     *  自己知道。收到就重拉列表 —— ⚠️ **不要顺手重载正在编辑的那一份文档**,理由写在
+     *  `@contracts/ipc` 的 `WorkflowChangedMessage` 上。 */
+    workflowsChanged(handler: (msg: Extract<MainToRendererMessage, { channel: "workflow:changed" }>) => void): () => void {
+      const listener = (_e: unknown, msg: MainToRendererMessage) => {
+        if (msg.channel === IPC.WORKFLOW_CHANGED) handler(msg);
+      };
+      ipcRenderer.on(IPC.WORKFLOW_CHANGED, listener);
+      return () => {
+        ipcRenderer.off(IPC.WORKFLOW_CHANGED, listener);
+      };
+    },
+    /** AI 往这次对话挂了一个附件 —— 渲染端把它加成输入框里的一个标签,效果与用户
+     *  自己挂完全一致(能删、参与去重、随下一条消息发出去)。 */
+    composerAttach(handler: (msg: Extract<MainToRendererMessage, { channel: "composer:attach" }>) => void): () => void {
+      const listener = (_e: unknown, msg: MainToRendererMessage) => {
+        if (msg.channel === IPC.COMPOSER_ATTACH) handler(msg);
+      };
+      ipcRenderer.on(IPC.COMPOSER_ATTACH, listener);
+      return () => {
+        ipcRenderer.off(IPC.COMPOSER_ATTACH, listener);
       };
     },
     /** Fires when the updater finds a newer version on the release channel.

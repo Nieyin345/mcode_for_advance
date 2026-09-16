@@ -1,0 +1,58 @@
+/**
+ * `@main/store/repositories.js` 的替身 —— 一个内存版的 `WorkflowRepo`。
+ *
+ * 真的那一个要 sql.js + electron 的 `app`,无头脚本给不出来。这个 suite 要验的是
+ * **归一化 + 校验**这一段(`mcodeServer.ts` → `library.ts` 的 `saveWorkflow`),
+ * 而"存进表里"那一步的真相在 `repositories.ts`,不是这里要验的东西 —— 换掉它,
+ * 断言"存进去了没有"照样成立,还顺带避开了拿真 `mcode.db` 跑 `initDb()` 的风险
+ * (sql.js 会整份重写文件)。
+ *
+ * 只实现 `library.ts` 真正用到的四个方法。别的 repo(SettingRepo 之类)这里没有:
+ * 用到了就会在打包时炸出来,而那正说明图的形状变了,该回来看一眼。
+ */
+import type { WorkflowDoc } from "@contracts/workflow";
+
+export interface WorkflowRow {
+  id: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  builtin: boolean;
+  doc: WorkflowDoc;
+  updatedAt: number;
+}
+
+const rows = new Map<string, WorkflowRow>();
+
+export const WorkflowRepo = {
+  list(): WorkflowRow[] {
+    return [...rows.values()];
+  },
+
+  get(id: string): WorkflowRow | null {
+    return rows.get(id) ?? null;
+  },
+
+  save(doc: WorkflowDoc): void {
+    const existing = rows.get(doc.id);
+    rows.set(doc.id, {
+      id: doc.id,
+      name: doc.name,
+      description: doc.description ?? null,
+      icon: doc.icon ?? null,
+      // 与真表一致:**对内置 id 写的这一行就是"覆盖内置"**。
+      builtin: existing?.builtin ?? false,
+      doc,
+      updatedAt: doc.updatedAt,
+    });
+  },
+
+  remove(id: string): void {
+    rows.delete(id);
+  },
+};
+
+/** Smoke 专用:清空,让每段断言从同一张白纸开始。 */
+export function __resetWorkflowRepo(): void {
+  rows.clear();
+}

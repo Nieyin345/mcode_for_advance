@@ -47,6 +47,7 @@ export function registerDialogHandlers(ipcMain: IpcMain): void {
     const result = await dialog.showOpenDialog({
       title: input.title ?? "选择文件",
       properties: ["openFile", "multiSelections"],
+      ...(input.filters ? { filters: input.filters } : {}),
     });
     if (result.canceled || result.filePaths.length === 0) return { paths: [] };
     return { paths: result.filePaths };

@@ -20,6 +20,7 @@ import {
 } from "@renderer/lib/icons.js";
 import { useSessionStore, EMPTY_MESSAGES, EMPTY_TODOS, EMPTY_SUBAGENTS, EMPTY_CHAT_QUEUE, EMPTY_ELEMENT_QUEUE, EMPTY_PROMPT_QUEUE, EMPTY_BOOKMARKS, EMPTY_USAGE, type Block, type ChatMessage, type TodoItem, type TurnMeta, type QueuedPrompt } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
+import { useLibraryStore } from "@renderer/stores/libraryStore.js";
 import { api } from "@renderer/lib/api.js";
 import { findNormalizedTextRange, highlightRange } from "@renderer/lib/textFind.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -28,11 +29,15 @@ import { useComposerRowFit } from "@renderer/hooks/useComposerRowFit.js";
 import type { SubagentSnapshot } from "@contracts/runtime";
 import type { SessionBookmark } from "@contracts/session";
 import type { FileSearchEntry } from "@contracts/ipc";
+import type { TemplateKind } from "@contracts/templates";
 import { prepareImageForSend } from "@renderer/lib/imageResize.js";
 import type { PromptImage } from "@renderer/stores/sessionStore.js";
 import {
   type ContentTag,
   appendUniqueFileTags,
+  appendUniqueLibraryTags,
+  appendUniqueTemplateTags,
+  appendTemplateTagByKey,
   composePromptWithTags,
   makeContentTag,
   makeFileTag,
@@ -60,6 +65,11 @@ import { ComposerEditor, type ComposerEditorHandle } from "./ComposerEditor.js";
 import { ContentTagChip } from "./ContentTagChip.js";
 import { TagPopover } from "./TagPopover.js";
 import { FileMentionPicker, type FileMentionPickerMode } from "./FileMentionPicker.js";
+import { LibraryPicker } from "./LibraryPicker.js";
+import { SearchFilterBar } from "./SearchFilterBar.js";
+import { templateAttachChipLabel } from "@renderer/lib/templateLabels.js";
+import { libraryAttachChipLabel } from "@renderer/lib/libraryLabels.js";
+import { TemplatePicker } from "./TemplatePicker.js";
 import { EmptyThreadWelcome } from "./EmptyThreadWelcome.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { ActivityCluster } from "./ActivityCluster.js";
@@ -1083,12 +1093,17 @@ type SendAttachment = {
 /** Stream-facing attachment records from the composer tags. Element tags fold
  *  into "paste" for display purposes (they're inline content blocks, same as
  *  a paste); the "element" kind only matters inside the composer's
- *  ContentTag, not in the persisted attachment record. */
+ *  ContentTag, not in the persisted attachment record.
+ *
+ *  文献库 tag 归为 "file" —— 它在提示词里就是一行 `@路径`(指向库的清单文件),
+ *  与文件附件同构,展示成附件卡片比展示成一大块"粘贴内容"更贴切。模版 tag 同理
+ *  (`@清单路径`,清单里既有这份模版的全部文件路径、也有小文件的正文)。 */
 function composeSendAttachments(tags: ReadonlyArray<ContentTag>): SendAttachment[] {
   return tags.map((t) => ({
     preview: t.preview,
     content: t.content,
-    attachmentKind: t.kind === "file" ? "file" : "paste",
+    attachmentKind:
+      t.kind === "file" || t.kind === "library" || t.kind === "template" ? "file" : "paste",
     filePath: t.filePath,
   }));
 }
@@ -1272,6 +1287,9 @@ function ChatPaneForSession({
   const hasMoreMessages = useSessionStore((s) => !!s.hasMoreMessagesBySession[sessionId]);
   const loadingOlder = useSessionStore((s) => !!s.loadingOlderBySession[sessionId]);
   const loadOlderMessages = useSessionStore((s) => s.loadOlderMessages);
+  /** 当前会话的工作模式。只用来决定要不要显示检索条件条 —— 模式本身由主进程翻译
+   *  成系统提示词片段,渲染端不需要参与。 */
+  const workflowId = useSessionStore((s) => s.workflowId);
   // Per-thread "is running" — only true when THIS thread has a turn in flight.
   // A different thread's running turn must not lock the composer here.
   const isRunning = useSessionStore((s) => !!s.runningBySession[sessionId]);
@@ -1282,7 +1300,19 @@ function ChatPaneForSession({
   const hasRunningSubagents = useSessionStore(
     (s) => (s.subagentsBySession[sessionId] ?? EMPTY_SUBAGENTS).some((a) => a.status === "running"),
   );
-  const sessionBusy = isRunning || hasRunningSubagents;
+  /**
+   * 这个对话里有几处岔路口正挂着等人。
+   *
+   * **图停在那儿等人的时候,整张图什么都没在做** —— 不派发节点、不烧 token,只等一个
+   * 人。那时还把输入框算成"忙",用户敲回车就只是把话**排队**,而队列要等 `turn.done`
+   * 才排空,可那张图正等着他点、永远不会自己收尾。用户的原话就是:「我无法发送消息了」。
+   *
+   * 所以这一档整个让开:让他直接说话 —— 那等于**放弃这次运行、按他说的重来**(主进程
+   * 那一头做的,见 `runner.ts` 的 `parkedRunTeardown`)。有节点真在跑的时候这个数是 0
+   * (计数器只在"某处岔路口挂起"时加一,见 `workflow.node.choice` 那条分支),照旧锁着。
+   */
+  const waitingBranches = useSessionStore((s) => s.waitingBranchesBySession[sessionId] ?? 0);
+  const sessionBusy = waitingBranches > 0 ? false : isRunning || hasRunningSubagents;
   // Live upstream-transport retry (the OpenAI bridge retrying a connect
   // timeout / reset — UpstreamIssueEvent). Only meaningful while a turn is
   // streaming: rendered beside the streaming spinner so a 10s+ stall reads
@@ -1506,6 +1536,12 @@ function ChatPaneForSession({
     (s) => s.promptQueueBySession[sessionId] ?? EMPTY_PROMPT_QUEUE,
   );
   const enqueuePrompt = useSessionStore((s) => s.enqueuePrompt);
+  const injectPrompt = useSessionStore((s) => s.injectPrompt);
+  // 这一轮跑的那个引擎支不支持"生成过程中插话" —— 只用来决定输入框里那句提示怎么写。
+  // 按下去之后成不成还是以 `injectPrompt` 的返回值为准(它会兜回排队)。
+  const providers = useSessionStore((s) => s.providers);
+  const activeProviderId = useSessionStore((s) => s.providerId);
+  const canInject = !!providers.find((p) => p.id === activeProviderId)?.capabilities.supportsInject;
   const removeQueuedPrompt = useSessionStore((s) => s.removeQueuedPrompt);
   const clearPromptQueue = useSessionStore((s) => s.clearPromptQueue);
   const sendQueuedPromptNow = useSessionStore((s) => s.sendQueuedPromptNow);
@@ -1642,6 +1678,11 @@ function ChatPaneForSession({
   // "attach" mode: opened by the bottom-left + button (not by typing @). Same
   // UI as mention but multi-select and not tied to a textarea token.
   const [attachPickerOpen, setAttachPickerOpen] = useState(false);
+  /** 文献库选择器的开关。与 attachPickerOpen 平级 —— 两者都由「+」菜单唤起,
+   *  但选择器本体挂在 ChatPane 上(选中结果要落成 composer 的 tag)。 */
+  const [libraryPickerOpen, setLibraryPickerOpen] = useState(false);
+  /** 模版选择器 —— 同上,第二个「+」菜单入口。 */
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   const [attachPickerQuery, setAttachPickerQuery] = useState("");
   const [attachAnchor, setAttachAnchor] = useState<DOMRect | null>(null);
   // Content tags: long/multi-line pastes promoted to chips above the
@@ -2313,6 +2354,128 @@ function ChatPaneForSession({
     setAttachPickerOpen(true);
   }, [inputBlocked]);
 
+  /** 从「+」菜单打开文献库选择器。锚点复用 attachAnchor(同一个 + 按钮)。 */
+  const openLibraryPicker = useCallback(() => {
+    if (inputBlocked) return;
+    const rect = editorRef.current?.getRect();
+    if (rect) setAttachAnchor(rect);
+    setLibraryPickerOpen(true);
+  }, [inputBlocked]);
+
+  /**
+   * 文献库选择器确认:**整个分类**或**单独一篇**都能挂。
+   *
+   * 机制与文件附件**完全一致**:先在主进程生成一份清单 Markdown,然后落成一个
+   * content tag —— tag 的 content 只是一行 `@清单路径`,发送时进提示词,agent 用
+   * Read 工具自己读。所以加十个也不会把上下文撑爆。
+   *
+   * 键的前缀决定调哪条清单接口(`c:` 分类清单 / `i:` 单篇清单),两者生成的清单
+   * 内容不一样:前者是"库里有什么"的索引,后者是"这一篇怎么读"。
+   *
+   * 清单在**确认时**生成而不是选中时:内容随时在变,越接近发送时刻越新鲜。
+   */
+  const handlePickLibraries = useCallback(
+    async (picked: Array<{ key: string; name: string }>) => {
+      if (picked.length === 0) return;
+      const resolved: Array<{ collectionId: string; name: string; manifestPath: string }> = [];
+      for (const { key, name } of picked) {
+        try {
+          const res = key.startsWith("i:")
+            ? await api.library.itemManifest({ id: key.slice(2) })
+            : await api.library.manifest({ collectionId: key.slice(2) });
+          if (res.path) resolved.push({ collectionId: key, name, manifestPath: res.path });
+        } catch (err) {
+          // 单个失败不该拖垮整批 —— 其余的照常加进去
+          console.error(`library manifest failed for ${key}:`, err);
+        }
+      }
+      if (resolved.length === 0) return;
+      setTags((prev) => appendUniqueLibraryTags(prev, resolved));
+    },
+    [],
+  );
+
+  /**
+   * 有人往这次对话挂了一个附件 —— 落成输入框里的一个标签。
+   *
+   * 两个来源:AI(文献库的 `library_attach_to_chat` 工具)和**用户自己**(左栏的
+   * 右键「添加到当前对话」,文献库与模版都有)。两条都走 `composer:attach`,所以
+   * 这里只按 `msg.kind` 分到对应的去重函数上 —— 文献库和模版的 chip 长得不一样、
+   * 去重键也不同,别的行为(能删、随下一条消息作为 `@清单路径` 发出去)完全一样。
+   *
+   * 走的都是和用户自己点「+」(`handlePickLibraries` / `handlePickTemplates`)**同一个**
+   * 追加函数:同样的去重键、同样的 chip、同样能删。用户的原话是「ai 挂的话……就是
+   * 和用户操作一下的效果」—— 所以不另开一套呈现方式。
+   *
+   * 只认发给自己会话的那条:别的会话不该凭空多一个附件。挂的时候如果这个会话已经
+   * 挂过同一个库,去重函数自己会跳过。
+   */
+  useEffect(() => {
+    const off = window.api?.on?.composerAttach?.((msg) => {
+      if (msg.sessionId !== sessionId) return;
+      setTags((prev) =>
+        msg.kind === "template"
+          ? // 名字要按**界面语言**算:整个类目的键(`t:<类目>`)不含目录名,而主进程随
+            // 消息发来的 `msg.name` 是那份清单的标题(中文,给模型读的)—— 见
+            // templateLabels.ts 的说明
+            appendTemplateTagByKey(
+              prev,
+              msg.key,
+              msg.manifestPath,
+              templateAttachChipLabel(msg.key, msg.name, useSessionStore.getState().locale),
+            )
+          : appendUniqueLibraryTags(prev, [
+              {
+                collectionId: msg.key,
+                // 同模版那一路:挂整个库(`k:<库>`)时主进程给的是清单标题(中文),
+                // 界面上的字要按当前语言自己算 —— 见 lib/libraryLabels.ts
+                name: libraryAttachChipLabel(
+                  msg.key,
+                  msg.name,
+                  useSessionStore.getState().locale,
+                ),
+                manifestPath: msg.manifestPath,
+              },
+            ]),
+      );
+    });
+    return off;
+  }, [sessionId]);
+
+  /** 从「+」菜单打开模版选择器。锚点同样复用 attachAnchor(同一个 + 按钮)。 */
+  const openTemplatePicker = useCallback(() => {
+    if (inputBlocked) return;
+    const rect = editorRef.current?.getRect();
+    if (rect) setAttachAnchor(rect);
+    setTemplatePickerOpen(true);
+  }, [inputBlocked]);
+
+  /**
+   * 模版选择器确认 —— 逐字照搬上面的 `handlePickLibraries`。
+   *
+   * 每个模版先在主进程生成一份清单(列全文件 + 内联小文件的正文),然后落成一个
+   * content tag,tag 的 content 只有一行 `@清单路径`。所以一次加五份模版也不会把
+   * 上下文撑爆 —— AI 需要哪份再 Read 哪份,而且清单里已经有正文,往往连 Read 都省了。
+   */
+  const handlePickTemplates = useCallback(
+    async (picked: Array<{ kind: TemplateKind; dirName: string }>) => {
+      if (picked.length === 0) return;
+      const resolved: Array<{ kind: TemplateKind; dirName: string; manifestPath: string }> = [];
+      for (const p of picked) {
+        try {
+          const res = await api.templates.manifest({ kind: p.kind, dirName: p.dirName });
+          resolved.push({ kind: p.kind, dirName: p.dirName, manifestPath: res.path });
+        } catch (err) {
+          // 单个模版失败不该拖垮整批 —— 其余的照常加进去
+          console.error(`templates.manifest failed for ${p.kind}/${p.dirName}:`, err);
+        }
+      }
+      if (resolved.length === 0) return;
+      setTags((prev) => appendUniqueTemplateTags(prev, resolved));
+    },
+    [],
+  );
+
   /** 在光标处插入触发字符(`/` 或 `@`),交给 recomputePicker 打开对应的
    *  内联选择器 — 与手动输入走完全相同的链路,选中插入 / 关闭等行为全部
    *  复用。触发字符必须位于行首或空白之后才会被识别,光标前是普通字符时
@@ -2614,6 +2777,10 @@ function ChatPaneForSession({
     const text = editorText.trim();
     // Nothing to send if the editor, tag list, and staged images are all empty.
     if (!text && tags.length === 0 && pendingImages.length === 0) return;
+    // 注:文献检索模式以前在这里**短路**(不进模型,直接调 Crossref/arXiv → 入库 →
+    // 下载)。现在它跟其余四个模式一样发给模型 —— 因为检索流程要 AI 主导:先问清
+    // 研究方向、再构造检索式、逐篇判断该不该收。那段确定性流程做不到这些,而且它
+    // 只用原始消息当检索词,中文方向基本检索不出东西。
     // Don't allow sending while a turn (or a backgrounded subagent from a
     // prior turn) is still in flight — the stop button is the only valid
     // action in that state.
@@ -2744,10 +2911,48 @@ function ChatPaneForSession({
   };
 
   /** Enter handler wired into the editor: sends when idle, enqueues when busy.
-   *  Shift+Enter inserts a newline and never reaches here (handled by Tiptap). */
-  const handleEnter = () => {
-    if (sessionBusy) handleEnqueue();
-    else handleSend();
+   *  **Ctrl/Cmd+Enter** while busy is the other thing: 插话 —— 那句话被直接塞进正在跑
+   *  的那一轮,不排队也不打断它。Shift+Enter inserts a newline and never reaches here
+   *  (handled by Tiptap). */
+  const handleEnter = (mods: { ctrl: boolean }) => {
+    if (!sessionBusy) {
+      handleSend();
+      return;
+    }
+    if (mods.ctrl) {
+      void handleInject();
+      return;
+    }
+    handleEnqueue();
+  };
+
+  /**
+   * Ctrl+Enter:把这句话**直接塞进正在跑的那一轮**(不排队、不中断)。
+   *
+   * 两条限制,都是这条路本身的形状决定的:
+   *
+   *  - **只送文本。** 插话那条通道(IPC → SDK 的异步用户消息)只收一个字符串,所以带
+   *    附件或图片时**退回排队** —— 那些东西没法跟着一起塞进去,而"塞过去一半"比塞不
+   *    过去更难查。
+   *  - **`injectPrompt` 返回 false 时也退回排队**(引擎不支持 / 这一轮刚好收尾 / 压根
+   *    没在跑)。用户打了字按了键,界面上必须发生点什么。
+   */
+  const handleInject = async () => {
+    const { text: editorText } = editorRef.current?.serialize() ?? { text: value.trim() };
+    const text = editorText.trim();
+    if (!text) return;
+    if (tags.length > 0 || pendingImages.length > 0) {
+      await handleEnqueue();
+      return;
+    }
+    const injected = await injectPrompt(sessionId, text);
+    if (!injected) {
+      await handleEnqueue();
+      return;
+    }
+    editorRef.current?.clear();
+    setValue("");
+    setSendLaunching(true);
   };
 
   /** Submit an inline-edited user message. Reconstructs the full prompt from
@@ -3872,6 +4077,10 @@ function ChatPaneForSession({
                 ))}
               </div>
             )}
+            {/* 文献检索的固定条件(时间/期刊层次/影响因子/每源条数)。只在这个模式
+                下出现 —— 其余四个模式一次也用不到,常驻只会占地方。用户在别处挂的
+                附件不受影响,它是独立的一行。 */}
+            {workflowId === "search" && <SearchFilterBar />}
             {/* Editor-level boundary: a Tiptap render crash here used to take
                 down the whole tree (logged 2026-09-07 <ComposerEditor2>). The
                 fallback card loses the input box but keeps the app alive —
@@ -3884,7 +4093,11 @@ function ChatPaneForSession({
                   textareaLocked
                     ? "Claude is working…"
                     : sessionBusy
-                      ? t("chat.placeholderQueued")
+                      ? t(
+                          // 引擎交不出这么一条通道时**不提这个键** —— 提示里写了而按下去
+                          // 只是排队,那比不写更让人困惑(Pi / Codex 就是这种)。
+                          canInject ? "chat.placeholderQueued" : "chat.placeholderQueuedPlain",
+                        )
                       : t("chat.placeholderIdle")
                 }
                 onChange={handleChange}
@@ -3926,6 +4139,8 @@ function ChatPaneForSession({
                     attachDisabled={inputBlocked}
                     onPickFiles={openAttachPicker}
                     onPickImages={() => void handlePickImages()}
+                    onPickLibraries={openLibraryPicker}
+                    onPickTemplates={openTemplatePicker}
                     onSlashCommand={() => insertTriggerChar("/")}
                   />
                 )}
@@ -4054,6 +4269,29 @@ function ChatPaneForSession({
               .map((t) => t.filePath as string)}
             onPick={handleAttachPick}
             onClose={() => setAttachPickerOpen(false)}
+          />
+          {/* 文献库选择器 —— 与上面的文件选择器同款形态与定位,由「+」菜单唤起。
+              多选;确认时每个库生成一份清单并落成一个 tag(内容是一行 @清单路径)。 */}
+          <LibraryPicker
+            open={libraryPickerOpen}
+            anchorRect={attachAnchor}
+            excludeCollectionIds={tags
+              .filter((t) => t.kind === "library" && t.collectionId)
+              .map((t) => t.collectionId as string)}
+            onPick={(ids) => void handlePickLibraries(ids)}
+            onClose={() => setLibraryPickerOpen(false)}
+          />
+          {/* 模版选择器 —— 与文献库选择器同款,同样由「+」菜单唤起。区别只有两点:
+              多了类目(五个类目平铺在一条列表里,带类目标签、可被搜索),以及
+              每次打开重新扫盘(模版库是「文件系统即事实源」)。 */}
+          <TemplatePicker
+            open={templatePickerOpen}
+            anchorRect={attachAnchor}
+            excludeKeys={tags
+              .filter((t) => t.kind === "template" && t.templateKey)
+              .map((t) => t.templateKey as string)}
+            onPick={(entries) => void handlePickTemplates(entries)}
+            onClose={() => setTemplatePickerOpen(false)}
           />
         </div>
       </div>

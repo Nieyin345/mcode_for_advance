@@ -16,6 +16,18 @@ import type {
   SessionBookmark,
 } from "@contracts/session";
 import type { ContextSnapshot, SubagentSnapshot, TurnFileEntry, TurnUsageRecord } from "@contracts/runtime";
+import type { WorkflowDoc } from "@contracts/workflow";
+import type {
+  LibraryItem,
+  LibraryAuthor,
+  LibraryItemType,
+  LibraryKind,
+  LibraryCollection,
+  LibraryNote,
+  InstitutionProfile,
+  DownloadJob,
+  DownloadStatus,
+} from "@contracts/library";
 import { normPathKey } from "@main/lib/pathNorm.js";
 import { getDb, persist } from "./db.js";
 
@@ -231,6 +243,7 @@ interface SessionRow {
   model: string;
   effort: string;
   permission_mode: string;
+  composer_mode: string;
   custom_model_id: string | null;
   archived: number;
   pinned_at: number | null;
@@ -255,13 +268,18 @@ function rowToSession(r: SessionRow): Session {
     projectId: r.project_id,
     providerId: r.provider_id ?? "claude-sdk",
     claudeSessionId: r.claude_session_id,
-    kind: r.kind === "side" ? "side" : "chat",
+    // ⚠️ **三值,不是"是 side 吗"的二值。** 早先这里是 `r.kind === "side" ? "side" : "chat"`,
+    // 那会把任何它不认识的 kind 读成 `chat` —— 工作流节点会话(`kind = "node"`)会
+    // 当场变成普通会话涌进左栏。新增一种 kind 时**这里必须一起改**,否则症状出现在
+    // 离这里很远的地方。
+    kind: r.kind === "side" ? "side" : r.kind === "node" ? "node" : "chat",
     parentSessionId: r.parent_session_id ?? null,
     title: r.title,
     status: r.status as Session["status"],
     model: r.model,
     effort: r.effort as Session["effort"],
     permissionMode: r.permission_mode as Session["permissionMode"],
+    workflowId: (r.composer_mode as Session["workflowId"]) ?? "default",
     customModelId: r.custom_model_id ?? null,
     archived: !!r.archived,
     pinnedAt: r.pinned_at ?? null,
@@ -287,8 +305,8 @@ export const SessionRepo = {
   create(s: Session): void {
     getDb().run(
       `INSERT INTO sessions
-       (id, project_id, provider_id, claude_session_id, kind, parent_session_id, title, status, model, effort, permission_mode, custom_model_id, archived, pinned_at, context_snapshot, todos, subagents, plan_draft, turn_files, usage_history, bookmarks, subagent_transcripts, env_mode, worktree_path, wt_style, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, project_id, provider_id, claude_session_id, kind, parent_session_id, title, status, model, effort, permission_mode, composer_mode, custom_model_id, archived, pinned_at, context_snapshot, todos, subagents, plan_draft, turn_files, usage_history, bookmarks, subagent_transcripts, env_mode, worktree_path, wt_style, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         v(s.id),
         v(s.projectId),
@@ -301,6 +319,7 @@ export const SessionRepo = {
         v(s.model),
         v(s.effort),
         v(s.permissionMode),
+        v(s.workflowId ?? "default"),
         v(s.customModelId),
         v(s.archived ? 1 : 0),
         v(s.pinnedAt),
@@ -847,15 +866,17 @@ export const SessionRepo = {
    *  the raw string — the Array.isArray guard drops it). */
   listUsageRows(): Array<{
     id: string;
+    kind: string;
     providerId: string;
     customModelId: string | null;
     usageHistory: TurnUsageRecord[];
   }> {
     const stmt = getDb().prepare(
-      "SELECT id, provider_id, custom_model_id, usage_history FROM sessions WHERE usage_history IS NOT NULL",
+      "SELECT id, kind, provider_id, custom_model_id, usage_history FROM sessions WHERE usage_history IS NOT NULL",
     );
     const out: Array<{
       id: string;
+      kind: string;
       providerId: string;
       customModelId: string | null;
       usageHistory: TurnUsageRecord[];
@@ -863,6 +884,7 @@ export const SessionRepo = {
     while (stmt.step()) {
       const row = stmt.getAsObject() as unknown as {
         id: string;
+        kind: string | null;
         provider_id: string | null;
         custom_model_id: string | null;
         usage_history: string | null;
@@ -871,6 +893,7 @@ export const SessionRepo = {
       if (!Array.isArray(parsed)) continue;
       out.push({
         id: row.id,
+        kind: row.kind ?? "chat",
         providerId: row.provider_id ?? "claude-sdk",
         customModelId: row.custom_model_id ?? null,
         usageHistory: parsed as TurnUsageRecord[],
@@ -931,13 +954,14 @@ export const SessionRepo = {
    *  customModelId, providerId, project re-aim). */
   updateSettings(
     id: string,
-    patch: { model?: string; effort?: string; permissionMode?: string; customModelId?: string | null; providerId?: string; envMode?: string; wtStyle?: string | null; worktreePath?: string | null; projectId?: string },
+    patch: { model?: string; effort?: string; permissionMode?: string; workflowId?: string; customModelId?: string | null; providerId?: string; envMode?: string; wtStyle?: string | null; worktreePath?: string | null; projectId?: string },
   ): void {
     const sets: string[] = [];
     const vals: BindValue[] = [];
     if (patch.model !== undefined) { sets.push("model = ?"); vals.push(v(patch.model)); }
     if (patch.effort !== undefined) { sets.push("effort = ?"); vals.push(v(patch.effort)); }
     if (patch.permissionMode !== undefined) { sets.push("permission_mode = ?"); vals.push(v(patch.permissionMode)); }
+    if (patch.workflowId !== undefined) { sets.push("composer_mode = ?"); vals.push(v(patch.workflowId)); }
     if (patch.customModelId !== undefined) { sets.push("custom_model_id = ?"); vals.push(v(patch.customModelId)); }
     if (patch.providerId !== undefined) { sets.push("provider_id = ?"); vals.push(v(patch.providerId)); }
     // Directory re-aim (new-session panel's switcher). The FRESH-ONLY guard
@@ -1200,5 +1224,1194 @@ export const SettingRepo = {
       [v(key), v(value)],
     );
     persist();
+  },
+};
+
+/* ──────────────────────────────── 工作流 ───────────────────────────────── */
+
+/** 工作流表里的一行。
+ *
+ * **这一层只管存储** —— 与代码里那六个内置工作流的合并、以及「恢复默认」的语义,
+ * 都在 `main/orchestration/` 里做。放在这里会让"删一行"这种存储操作背上业务含义,
+ * 而调用方会以为自己在做存储。 */
+export interface WorkflowRow {
+  id: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  /** true = 这一行是对某个内置工作流的覆盖(不是用户新建的)。 */
+  builtin: boolean;
+  doc: WorkflowDoc;
+  updatedAt: number;
+}
+
+function rowToWorkflow(r: Record<string, BindValue>): WorkflowRow {
+  return {
+    id: String(r.id),
+    name: String(r.name),
+    description: r.description === null ? null : String(r.description),
+    icon: r.icon === null ? null : String(r.icon),
+    builtin: Number(r.builtin) === 1,
+    // payload 是我们自己写进去的 WorkflowDoc。解析失败说明文件被外部改坏了 ——
+    // 不抛异常(那会让整个列表打不开),退化成一份空文档,让它至少能被看见和删掉。
+    doc: parseWorkflowDoc(String(r.payload)),
+    updatedAt: Number(r.updated_at),
+  };
+}
+
+function parseWorkflowDoc(raw: string): WorkflowDoc {
+  try {
+    return JSON.parse(raw) as WorkflowDoc;
+  } catch {
+    return { id: "", name: "", nodes: [], edges: [], builtin: false, updatedAt: 0 };
+  }
+}
+
+function getWorkflowRow(id: string): WorkflowRow | null {
+  const stmt = getDb().prepare("SELECT * FROM workflows WHERE id = ?");
+  stmt.bind([v(id)]);
+  const found = stmt.step();
+  const row = found ? (stmt.getAsObject() as Record<string, BindValue>) : null;
+  stmt.free();
+  return row ? rowToWorkflow(row) : null;
+}
+
+export const WorkflowRepo = {
+  /** 全部行(用户对内置的覆盖 + 用户自建的)。内置的默认版不在这个表里。 */
+  list(): WorkflowRow[] {
+    const db = getDb();
+    const stmt = db.prepare(
+      "SELECT * FROM workflows ORDER BY sort_order ASC, created_at ASC",
+    );
+    const out: WorkflowRow[] = [];
+    while (stmt.step()) out.push(rowToWorkflow(stmt.getAsObject() as Record<string, BindValue>));
+    stmt.free();
+    return out;
+  },
+
+  get: getWorkflowRow,
+
+  /** 写入或覆盖一行。`doc.id` 就是主键 —— 对内置工作流来说,写一行就是"覆盖它的默认版"。 */
+  save(doc: WorkflowDoc): void {
+    const db = getDb();
+    // 用局部函数而不是 `this.get` —— 对象字面量的方法一旦被解构,`this` 就断了。
+    const existing = getWorkflowRow(doc.id);
+    // 新建的排在最后(和 projects 的 sort_order 同一条规则);覆盖时保持原位。
+    let sortOrder = 0;
+    if (existing === null) {
+      const stmt = db.prepare("SELECT COALESCE(MAX(sort_order), 0) + 1 AS next FROM workflows");
+      stmt.step();
+      sortOrder = Number((stmt.getAsObject() as { next: BindValue }).next);
+      stmt.free();
+    }
+    const now = Date.now();
+    db.run(
+      `INSERT INTO workflows (id, name, description, icon, builtin, payload, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name        = excluded.name,
+         description = excluded.description,
+         icon        = excluded.icon,
+         payload     = excluded.payload,
+         updated_at  = excluded.updated_at`,
+      [
+        v(doc.id),
+        v(doc.name),
+        v(doc.description ?? null),
+        v(doc.icon ?? null),
+        v(doc.builtin),
+        v(JSON.stringify(doc)),
+        v(sortOrder),
+        v(now),
+        v(now),
+      ],
+    );
+    persist();
+  },
+
+  /** 删掉一行。**删掉对某个内置工作流的覆盖,就等于「恢复默认」** —— 代码里的
+   *  默认版立刻回来,不需要在表里另存一份原版。 */
+  remove(id: string): void {
+    getDb().run("DELETE FROM workflows WHERE id = ?", [v(id)]);
+    persist();
+  },
+};
+
+/* ────────────────────────── 工作流的运行(续跑) ────────────────────────── */
+
+/**
+ * 一次运行的结局。
+ *
+ * 前两个是"活着的时候"写的,后三个是收尾写的,`interrupted` 则是**只有下次启动
+ * 才写得出来**的一种 —— 上一次进程死的时候它还在跑(见 `db.ts` 的 `migrate`)。
+ * 和 `cancelled` 分开是因为它们是两句不同的话:"你按了停止"和"上次断在这儿了"。
+ */
+export type WorkflowRunStatus = "running" | "interrupted" | "success" | "failed" | "cancelled";
+
+export interface WorkflowRunRow {
+  id: string;
+  sessionId: string;
+  workflowId: string;
+  status: WorkflowRunStatus;
+  /** 正停在哪几格等用户拍板。一个都没在等就是空数组。 */
+  awaiting: string[];
+  /** JSON 的 `RunSnapshot`。**这一层不认识它** —— 形状归 `orchestration/runStore.ts`,
+   *  这里只负责原样存取(同 `workflows.payload` 对 `WorkflowDoc` 的做法)。 */
+  payload: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+interface WorkflowRunDbRow {
+  id: string;
+  session_id: string;
+  workflow_id: string;
+  status: string;
+  awaiting_node: string | null;
+  payload: string;
+  created_at: number;
+  updated_at: number;
+}
+
+/**
+ * `awaiting_node` 那一列是**逗号分隔的一串节点 id**(见 `resumableFor`)。
+ *
+ * 空串和 NULL 都收成空数组 —— 库里两种都可能出现(没在等的运行写的是空数组,它
+ * `join` 出来就是空串;老一点的行可能是 NULL)。
+ */
+function splitAwaiting(raw: string | null): string[] {
+  if (raw === null) return [];
+  return raw.split(",").filter((s) => s.length > 0);
+}
+
+export const WorkflowRunRepo = {
+  /**
+   * 把这次运行**此刻的样子**写下来(第一次写就是建行)。开跑、每步定案、停在岔路口、
+   * 收尾,四处都走它 —— 分成 insert/update 两个入口的话,"这一行到底建出来没有"就有
+   * 两个答案,而漏建的那一条路只会在重启之后才暴露。
+   *
+   * `created_at` 只在第一次写时定下(upsert 的 DO UPDATE 不碰它),所以它是"这次
+   * 运行什么时候开始的"。
+   */
+  save(args: {
+    id: string;
+    sessionId: string;
+    workflowId: string;
+    status: WorkflowRunStatus;
+    payload: string;
+    /** 正停在等用户的那些节点。见 `WorkflowRunRow.awaiting`。 */
+    awaiting: readonly string[];
+  }): void {
+    const now = Date.now();
+    getDb().run(
+      `INSERT INTO workflow_runs
+         (id, session_id, workflow_id, status, awaiting_node, payload, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         status        = excluded.status,
+         awaiting_node = excluded.awaiting_node,
+         payload       = excluded.payload,
+         updated_at    = excluded.updated_at`,
+      [
+        v(args.id),
+        v(args.sessionId),
+        v(args.workflowId),
+        v(args.status),
+        v(args.awaiting.join(",")),
+        v(args.payload),
+        v(now),
+        v(now),
+      ],
+    );
+    persist();
+  },
+
+  /** 某个对话里的一条运行。没有返回 null。 */
+  get(id: string): WorkflowRunRow | null {
+    const stmt = getDb().prepare("SELECT * FROM workflow_runs WHERE id = ?");
+    stmt.bind([v(id)]);
+    const found = stmt.step();
+    const row = found ? (stmt.getAsObject() as unknown as WorkflowRunDbRow) : null;
+    stmt.free();
+    return row ? rowToWorkflowRun(row) : null;
+  },
+
+  /**
+   * 某个对话里、**正停在 `nodeId` 这一格**且被中断的那次运行。
+   *
+   * ## 为什么按节点查,而不是"最近一次被中断的运行"
+   *
+   * 用户点的是**某一张卡片**,而那张卡片属于哪一次运行是确定的。只按会话取最近一条
+   * 的话,一个对话里跑过两轮之后,点第一轮那张旧卡会去续第二轮 —— 而它们问的根本不是
+   * 同一件事。
+   *
+   * ## `awaiting_node` 是一张**列表**(逗号分隔)
+   *
+   * 两处岔路口可以同时就绪,于是两条都在等人(见 `RunState.awaiting`)—— 存单个的话,
+   * 用户点**先停下的那一处**会看到"这条选择已经不适用了"。
+   *
+   * 所以这里是"取出这个对话里所有被中断的,再在 JS 里找"而不是一条 SQL 的等值匹配。
+   * 代价可以忽略:`pruneSession` 把每个对话的行数压到十行以内,而这段代码一次点击才
+   * 跑一遍 —— 拿它换一条能读懂的查询是划算的。
+   *
+   * 取最新的一条:同一格可以断过好几次(续一次、又断一次)。
+   */
+  resumableFor(sessionId: string, nodeId: string): WorkflowRunRow | null {
+    const stmt = getDb().prepare(
+      `SELECT * FROM workflow_runs
+        WHERE session_id = ? AND status = 'interrupted'
+        ORDER BY updated_at DESC`,
+    );
+    stmt.bind([v(sessionId)]);
+    const rows: WorkflowRunRow[] = [];
+    while (stmt.step()) {
+      rows.push(rowToWorkflowRun(stmt.getAsObject() as unknown as WorkflowRunDbRow));
+    }
+    stmt.free();
+    return rows.find((r) => r.awaiting.includes(nodeId)) ?? null;
+  },
+
+  /** 一个对话只留最近 `keep` 次运行。**开跑时清一次** —— 运行行会一直堆下去,而
+   *  除了"最后一次能续跑的"以外,别的都只是历史。
+   *
+   *  `id` 那个次序是**并列时的决胜**:`created_at` 是毫秒,两次运行撞在同一毫秒上
+   *  虽然少见但不是不可能(测试里就撞),而并列时 SQLite 返回哪几条是没保证的 ——
+   *  同一个库两次跑出不同的结果,排查时会被自己误导。 */
+  pruneSession(sessionId: string, keep: number): void {
+    getDb().run(
+      `DELETE FROM workflow_runs
+        WHERE session_id = ?
+          AND id NOT IN (
+            SELECT id FROM workflow_runs
+             WHERE session_id = ?
+             ORDER BY created_at DESC, id DESC LIMIT ?
+          )`,
+      [v(sessionId), v(sessionId), v(keep)],
+    );
+    persist();
+  },
+};
+
+function rowToWorkflowRun(r: WorkflowRunDbRow): WorkflowRunRow {
+  return {
+    id: r.id,
+    sessionId: r.session_id,
+    workflowId: r.workflow_id,
+    status: r.status as WorkflowRunStatus,
+    awaiting: splitAwaiting(r.awaiting_node),
+    payload: r.payload,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+/* ──────────────────────────────── 文献库 ───────────────────────────────── */
+
+/** 生成带前缀的本地 id。与 customModel 的 `cm_...` 同构,前缀区分实体类型,
+ *  便于在日志与错误信息里一眼看出这是什么。 */
+function makeId(prefix: string): string {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** 把用户/AI 给的标识符规范化成存储形态。
+ *  DOI:去 `https://doi.org/` 前缀、去空白、小写(DOI 大小写不敏感)。
+ *  空串一律转 null —— 否则唯一索引会把「空串」当成一个真实值,导致第二条无 DOI
+ *  的记录插入失败。 */
+export function normalizeDoi(raw: string | undefined | null): string | null {
+  if (!raw) return null;
+  const s = raw.trim().replace(/^https?:\/\/(dx\.)?doi\.org\//i, "").trim();
+  return s ? s.toLowerCase() : null;
+}
+
+/** arXiv ID:去 `arXiv:` 前缀与 `arxiv.org/abs/` 前缀,去版本号后缀(v1/v2),
+ *  统一小写。去版本号是刻意的 —— 同一篇的 v1 与 v2 应当算同一条记录。 */
+export function normalizeArxivId(raw: string | undefined | null): string | null {
+  if (!raw) return null;
+  let s = raw.trim();
+  s = s.replace(/^https?:\/\/arxiv\.org\/(abs|pdf)\//i, "");
+  s = s.replace(/^arxiv:/i, "");
+  s = s.replace(/\.pdf$/i, "");
+  s = s.replace(/v\d+$/i, "");
+  s = s.trim().toLowerCase();
+  return s || null;
+}
+
+interface LibraryItemRow {
+  id: string;
+  kind: string | null;
+  doi: string | null;
+  arxiv_id: string | null;
+  title: string;
+  authors: string | null;
+  year: number | null;
+  venue: string | null;
+  volume: string | null;
+  issue: string | null;
+  page: string | null;
+  publisher: string | null;
+  abstract: string | null;
+  type: string;
+  language: string | null;
+  url: string | null;
+  pdf_path: string | null;
+  pdf_sha256: string | null;
+  md_path: string | null;
+  source: string | null;
+  license: string | null;
+  added_at: number;
+  updated_at: number;
+}
+
+function rowToLibraryItem(r: LibraryItemRow): LibraryItem {
+  return {
+    id: r.id,
+    // 建表时给了 DEFAULT 'paper',但老的库 ALTER 出来的列对已存在的行也是这个值;
+    // 万一读到 NULL(手工改过库),按论文处理 —— 论文是绝对多数
+    kind: (r.kind as LibraryKind | null) ?? "paper",
+    doi: r.doi ?? undefined,
+    arxivId: r.arxiv_id ?? undefined,
+    title: r.title,
+    authors: (safeJson(r.authors) as LibraryAuthor[] | undefined) ?? [],
+    year: r.year ?? undefined,
+    venue: r.venue ?? undefined,
+    volume: r.volume ?? undefined,
+    issue: r.issue ?? undefined,
+    page: r.page ?? undefined,
+    publisher: r.publisher ?? undefined,
+    abstract: r.abstract ?? undefined,
+    type: (r.type as LibraryItemType) || "article",
+    language: r.language ?? undefined,
+    url: r.url ?? undefined,
+    pdfPath: r.pdf_path ?? undefined,
+    pdfSha256: r.pdf_sha256 ?? undefined,
+    mdPath: r.md_path ?? undefined,
+    source: r.source ?? undefined,
+    license: r.license ?? undefined,
+    addedAt: r.added_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+/** 列表筛选条件。`collectionId === undefined` 表示不限集合;`null` 保留给
+ *  「不属于任何集合」这种未来可能的智能视图,当前与 undefined 同义。 */
+export interface LibraryListFilter {
+  collectionId?: string | null;
+  /** 只看某个库(论文 / 教材 / 笔记)。不传 = 不限库。 */
+  kind?: LibraryKind;
+  query?: string;
+  /** 按 PDF 可用性筛。`none` 用于快速找「还没下到 PDF」的条目。 */
+  pdfState?: "none" | "queued" | "downloading" | "ready" | "needs_login" | "failed";
+  limit?: number;
+  offset?: number;
+}
+
+/** PDF 状态在 SQL 里的等价条件(与 `derivePdfState` 的语义保持一致)。
+ *  单独抽出来是为了让 list 的 WHERE 拼接与 count 复用同一份判据。 */
+function pdfStateClause(state: NonNullable<LibraryListFilter["pdfState"]>): string {
+  const jobStatus = "(SELECT j.status FROM download_jobs j WHERE j.item_id = i.id)";
+  switch (state) {
+    case "ready":
+      return "i.pdf_path IS NOT NULL";
+    case "none":
+      return "i.pdf_path IS NULL AND (SELECT j.status FROM download_jobs j WHERE j.item_id = i.id) IS NULL";
+    case "queued":
+      return `i.pdf_path IS NULL AND ${jobStatus} = 'pending'`;
+    case "downloading":
+      return `i.pdf_path IS NULL AND ${jobStatus} = 'running'`;
+    case "needs_login":
+      return `i.pdf_path IS NULL AND ${jobStatus} = 'needs_login'`;
+    case "failed":
+      return `i.pdf_path IS NULL AND ${jobStatus} IN ('failed','not_found','rate_limited')`;
+    default:
+      return "1=1";
+  }
+}
+
+export const LibraryRepo = {
+  /** 按条件列出条目。`query` 在标题/作者/摘要/期刊上做大小写不敏感的子串匹配。
+   *  注意:这是**元数据**检索;正文全文检索走 ripgrep(见 main/library/fulltext.ts),
+   *  因为 sql.js 不含 FTS5。 */
+  list(filter: LibraryListFilter = {}): { items: LibraryItem[]; total: number } {
+    const db = getDb();
+    const where: string[] = [];
+    const params: BindValue[] = [];
+
+    if (filter.collectionId) {
+      where.push(
+        "i.id IN (SELECT ci.item_id FROM library_collection_items ci WHERE ci.collection_id = ?)",
+      );
+      params.push(v(filter.collectionId));
+    }
+    if (filter.kind) {
+      where.push("i.kind = ?");
+      params.push(v(filter.kind));
+    }
+    if (filter.query?.trim()) {
+      // LIKE 的转义:用户输入里的 % 和 _ 是通配符,必须转义才能当字面量搜
+      const needle = `%${filter.query.trim().toLowerCase().replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+      where.push(
+        `(LOWER(i.title) LIKE ? ESCAPE '\\' OR LOWER(IFNULL(i.authors,'')) LIKE ? ESCAPE '\\'
+          OR LOWER(IFNULL(i.abstract,'')) LIKE ? ESCAPE '\\' OR LOWER(IFNULL(i.venue,'')) LIKE ? ESCAPE '\\')`,
+      );
+      params.push(v(needle), v(needle), v(needle), v(needle));
+    }
+    if (filter.pdfState) {
+      where.push(pdfStateClause(filter.pdfState));
+    }
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+    const countStmt = db.prepare(`SELECT COUNT(*) AS n FROM library_items i ${whereSql}`);
+    countStmt.bind(params);
+    countStmt.step();
+    const total = Number((countStmt.getAsObject() as { n: number }).n ?? 0);
+    countStmt.free();
+
+    const limit = filter.limit ?? 200;
+    const offset = filter.offset ?? 0;
+    const stmt = db.prepare(
+      `SELECT i.* FROM library_items i ${whereSql} ORDER BY i.added_at DESC LIMIT ? OFFSET ?`,
+    );
+    stmt.bind([...params, v(limit), v(offset)]);
+    const items: LibraryItem[] = [];
+    while (stmt.step()) items.push(rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow));
+    stmt.free();
+    return { items, total };
+  },
+
+  /**
+   * 某个库的全部条目 —— **不分页**。
+   *
+   * 与 `list()` 只差一点:`list` 有 200 条的默认上限(左栏那棵树就是按页拉的),
+   * 而**给 AI 的那份清单必须是全量**。少几条比慢一点糟得多:模型会以为库里就这些,
+   * 用户也看不出少了什么,而两边都不会报错。
+   */
+  listByKind(kind: LibraryKind): LibraryItem[] {
+    const db = getDb();
+    const stmt = db.prepare("SELECT * FROM library_items WHERE kind = ? ORDER BY added_at DESC");
+    stmt.bind([v(kind)]);
+    const out: LibraryItem[] = [];
+    while (stmt.step()) out.push(rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow));
+    stmt.free();
+    return out;
+  },
+
+  /**
+   * 每个库内路径被多少条记录引用着(pdf 和 md 都算)。
+   *
+   * 「彻底删除」靠它判断一个文件还有没有别人在用,而**它不能由 `list()` 拼出来**:
+   * `list` 有 200 条的默认上限,拿它当"全库"用,大库上就会漏判 —— 漏判的后果是
+   * 删掉另一条记录的 PDF。
+   *
+   * 为什么真的会共用:PDF 按内容哈希寻址,**同一篇先用 DOI 导、又用 arXiv ID 导了
+   * 一次**就是两条记录指向同一个路径。删掉其中一条时那个文件必须留下。
+   */
+  pathRefCounts(): Map<string, number> {
+    const db = getDb();
+    const stmt = db.prepare("SELECT pdf_path, md_path FROM library_items");
+    const out = new Map<string, number>();
+    const bump = (p: unknown) => {
+      if (typeof p !== "string" || !p) return;
+      out.set(p, (out.get(p) ?? 0) + 1);
+    };
+    while (stmt.step()) {
+      const row = stmt.getAsObject() as { pdf_path: unknown; md_path: unknown };
+      bump(row.pdf_path);
+      bump(row.md_path);
+    }
+    stmt.free();
+    return out;
+  },
+
+  get(id: string): LibraryItem | null {
+    const db = getDb();
+    const stmt = db.prepare("SELECT * FROM library_items WHERE id = ?");
+    stmt.bind([v(id)]);
+    const found = stmt.step();
+    const row = found ? rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow) : null;
+    stmt.free();
+    return row;
+  },
+
+  /** 按 DOI / arXiv ID 查已有条目 —— 入库前查重与下载前判重的唯一入口。 */
+  findByDoi(doi: string): LibraryItem | null {
+    const normalized = normalizeDoi(doi);
+    if (!normalized) return null;
+    const db = getDb();
+    const stmt = db.prepare("SELECT * FROM library_items WHERE doi = ?");
+    stmt.bind([v(normalized)]);
+    const found = stmt.step();
+    const row = found ? rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow) : null;
+    stmt.free();
+    return row;
+  },
+
+  findByArxivId(arxivId: string): LibraryItem | null {
+    const normalized = normalizeArxivId(arxivId);
+    if (!normalized) return null;
+    const db = getDb();
+    const stmt = db.prepare("SELECT * FROM library_items WHERE arxiv_id = ?");
+    stmt.bind([v(normalized)]);
+    const found = stmt.step();
+    const row = found ? rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow) : null;
+    stmt.free();
+    return row;
+  },
+
+  /** 按 DOI 优先、arXiv 其次查重。两条都能命中时优先 DOI(它是更权威的标识)。 */
+  findExisting(ids: { doi?: string | null; arxivId?: string | null }): LibraryItem | null {
+    if (ids.doi) {
+      const byDoi = LibraryRepo.findByDoi(ids.doi);
+      if (byDoi) return byDoi;
+    }
+    if (ids.arxivId) return LibraryRepo.findByArxivId(ids.arxivId);
+    return null;
+  },
+
+  /** 按 PDF 内容的 sha256 查。
+   *
+   *  导入本地 PDF 时必须先查这个:那一批文件常常**没有** DOI/arXiv 可匹配(所以
+   *  findExisting 会返回 null),但同一份 PDF 导两次是完全可能的。内容寻址让它们
+   *  落到同一个 papers 路径上,这里再把「同内容」认出来,就不会多出一条重复条目。 */
+  findByPdfSha(sha256: string): LibraryItem | null {
+    if (!sha256) return null;
+    const db = getDb();
+    const stmt = db.prepare("SELECT * FROM library_items WHERE pdf_sha256 = ? LIMIT 1");
+    stmt.bind([v(sha256)]);
+    const found = stmt.step();
+    const row = found ? rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow) : null;
+    stmt.free();
+    return row;
+  },
+
+  /**
+   * 新增或更新一条文献。
+   *
+   * 查重后**只补空字段**,不覆盖已有值 —— 用户/AI 补的元数据不该被一次重新检索冲掉。
+   * 返回落库后的完整记录。
+   */
+  upsert(input: {
+    id?: string;
+    /** 归到哪个库。省略 = `paper`。**已存在的条目不会被改库**(见下方注释)。 */
+    kind?: LibraryKind;
+    doi?: string | null;
+    arxivId?: string | null;
+    title?: string;
+    authors?: LibraryAuthor[];
+    year?: number;
+    venue?: string;
+    volume?: string;
+    issue?: string;
+    page?: string;
+    publisher?: string;
+    abstract?: string;
+    type?: LibraryItemType;
+    language?: string;
+    url?: string;
+    source?: string;
+    license?: string;
+  }): LibraryItem {
+    const db = getDb();
+    const now = Date.now();
+    const doi = normalizeDoi(input.doi);
+    const arxivId = normalizeArxivId(input.arxivId);
+    const existing = LibraryRepo.findExisting({ doi, arxivId });
+
+    if (existing) {
+      // 只填空,不覆盖:已有值可能是用户手工修正过的。
+      // **kind 不在这里改** —— 同一篇 PDF 被再次导入到别的库时,命中的是已有条目,
+      // 把它搬到那个库会让用户原来那份凭空消失。要搬得走显式的「移动」动作。
+      db.run(
+        `UPDATE library_items SET
+           title = CASE WHEN (title IS NULL OR title = '') THEN ? ELSE title END,
+           authors = CASE WHEN (authors IS NULL OR authors = '' OR authors = '[]') THEN ? ELSE authors END,
+           year = COALESCE(year, ?),
+           venue = COALESCE(venue, ?),
+           volume = COALESCE(volume, ?),
+           issue = COALESCE(issue, ?),
+           page = COALESCE(page, ?),
+           publisher = COALESCE(publisher, ?),
+           abstract = CASE WHEN (abstract IS NULL OR abstract = '') THEN ? ELSE abstract END,
+           type = COALESCE(?, type),
+           language = COALESCE(language, ?),
+           url = COALESCE(url, ?),
+           doi = COALESCE(doi, ?),
+           arxiv_id = COALESCE(arxiv_id, ?),
+           updated_at = ?
+         WHERE id = ?`,
+        [
+          v(input.title ?? ""),
+          v(input.authors?.length ? JSON.stringify(input.authors) : null),
+          v(input.year), v(input.venue),
+          v(input.volume), v(input.issue), v(input.page), v(input.publisher),
+          v(input.abstract ?? ""),
+          v(input.type), v(input.language), v(input.url),
+          v(doi), v(arxivId), v(now), v(existing.id),
+        ],
+      );
+      persist();
+      return LibraryRepo.get(existing.id)!;
+    }
+
+    const id = input.id ?? makeId("li");
+    db.run(
+      `INSERT INTO library_items
+         (id, kind, doi, arxiv_id, title, authors, year, venue, volume, issue, page, publisher,
+          abstract, type, language, url, source, license, added_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        v(id), v(input.kind ?? "paper"), v(doi), v(arxivId), v(input.title ?? "(无标题)"),
+        v(input.authors?.length ? JSON.stringify(input.authors) : null),
+        v(input.year), v(input.venue),
+        v(input.volume), v(input.issue), v(input.page), v(input.publisher),
+        v(input.abstract),
+        v(input.type ?? "article"), v(input.language), v(input.url),
+        v(input.source), v(input.license), v(now), v(now),
+      ],
+    );
+    persist();
+    return LibraryRepo.get(id)!;
+  },
+
+  /** 写入 PDF 落盘结果。`sha256` 一并存下,便于内容寻址与去重审计。 */
+  setPdf(id: string, pdfRelPath: string, sha256: string): void {
+    getDb().run("UPDATE library_items SET pdf_path = ?, pdf_sha256 = ?, updated_at = ? WHERE id = ?", [
+      v(pdfRelPath), v(sha256), v(Date.now()), v(id),
+    ]);
+    persist();
+  },
+
+  /**
+   * 转换情况统计:总数 / 已转 Markdown / 还没转。
+   *
+   * 给设置页的「批量检测」用。**在 SQL 里数**而不是把全库拉进渲染端再数 ——
+   * 库上千篇时那是几 MB 的 IPC 流量换一个数字。
+   */
+  conversionStats(): { total: number; converted: number; pending: number } {
+    const db = getDb();
+    const countOf = (sql: string): number => {
+      const stmt = db.prepare(sql);
+      stmt.step();
+      const n = Number((stmt.getAsObject() as { n: number }).n ?? 0);
+      stmt.free();
+      return n;
+    };
+    const total = countOf("SELECT COUNT(*) AS n FROM library_items");
+    const converted = countOf(
+      "SELECT COUNT(*) AS n FROM library_items WHERE md_path IS NOT NULL AND md_path <> ''",
+    );
+    return { total, converted, pending: Math.max(0, total - converted) };
+  },
+
+  /** 写入 Markdown 转换产物(供 ripgrep 全文检索)。 */
+  /** 改标题。目前只给笔记用:用户在应用内编辑正文、改了 `# 标题` 时同步列表行。 */
+  setTitle(id: string, title: string): void {
+    getDb().run("UPDATE library_items SET title = ?, updated_at = ? WHERE id = ?", [
+      v(title), v(Date.now()), v(id),
+    ]);
+    persist();
+  },
+
+  /** 换掉这一条的来源地址。
+   *  真正会用到的场景只有一个:导入时拿到的是 doi.org 落地页,下载前查到开放获取的
+   *  PDF 直链之后把它写回去 —— 下次下载、以及详情页上那个"打开原文"的链接,都该是
+   *  能直接用的那个。 */
+  setUrl(id: string, url: string): void {
+    getDb().run("UPDATE library_items SET url = ?, updated_at = ? WHERE id = ?", [
+      v(url), v(Date.now()), v(id),
+    ]);
+    persist();
+  },
+
+  setMarkdown(id: string, mdRelPath: string): void {    getDb().run("UPDATE library_items SET md_path = ?, updated_at = ? WHERE id = ?", [
+      v(mdRelPath), v(Date.now()), v(id),
+    ]);
+    persist();
+  },
+
+  /** 从库中移除记录。磁盘文件由调用方决定是否删除 —— repo 不碰文件系统。 */
+  delete(ids: string[]): void {
+    if (ids.length === 0) return;
+    const db = getDb();
+    const stmt = db.prepare("DELETE FROM library_items WHERE id = ?");
+    for (const id of ids) stmt.run([v(id)]);
+    stmt.free();
+    persist();
+  },
+
+  /** 按 id 批量取 —— 给「AI 读某个 collection」的上下文拼装用。 */
+  getMany(ids: string[]): LibraryItem[] {
+    if (ids.length === 0) return [];
+    const db = getDb();
+    const stmt = db.prepare("SELECT * FROM library_items WHERE id = ?");
+    const out: LibraryItem[] = [];
+    for (const id of ids) {
+      stmt.bind([v(id)]);
+      if (stmt.step()) out.push(rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow));
+      stmt.reset();
+    }
+    stmt.free();
+    return out;
+  },
+
+  /** 某个集合内的全部条目(按加入时间倒序)。 */
+  listByCollection(collectionId: string): LibraryItem[] {
+    const db = getDb();
+    const stmt = db.prepare(
+      `SELECT i.* FROM library_items i
+       JOIN library_collection_items ci ON ci.item_id = i.id
+       WHERE ci.collection_id = ?
+       ORDER BY ci.added_at DESC`,
+    );
+    stmt.bind([v(collectionId)]);
+    const out: LibraryItem[] = [];
+    while (stmt.step()) out.push(rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow));
+    stmt.free();
+    return out;
+  },
+
+  /** 库内条目总数(界面概览用)。 */
+  count(): number {
+    const db = getDb();
+    const stmt = db.prepare("SELECT COUNT(*) AS n FROM library_items");
+    stmt.step();
+    const n = Number((stmt.getAsObject() as { n: number }).n ?? 0);
+    stmt.free();
+    return n;
+  },
+};
+
+/* ──────────────────────────────── 集合 ─────────────────────────────────── */
+
+interface CollectionRow {
+  id: string;
+  name: string;
+  kind: string | null;
+  parent_id: string | null;
+  sort_order: number;
+  created_at: number;
+}
+
+function rowToCollection(r: CollectionRow): LibraryCollection {
+  return {
+    id: r.id,
+    name: r.name,
+    kind: (r.kind as LibraryKind | null) ?? "paper",
+    parentId: r.parent_id ?? null,
+    sortOrder: r.sort_order ?? 0,
+    createdAt: r.created_at,
+    // 「是不是回收站」不是一列,而是由设置键 + 名字推出来的(见 trash.ts)。这里
+    // 没有那个信息,而且也不该有 —— trash.ts 依赖本模块,反过来 import 会成环。
+    // 真正标上它的是主进程返回分类列表那一层(`ipc/library.ts`)。
+    isTrash: false,
+  };
+}
+
+export const CollectionRepo = {
+  /** 列分类。`kind` 省略 = 所有库的分类(左栏要一次画出三个库,就用这个形态)。 */
+  list(kind?: LibraryKind): LibraryCollection[] {
+    const db = getDb();
+    const stmt = kind
+      ? db.prepare("SELECT * FROM library_collections WHERE kind = ? ORDER BY sort_order ASC, created_at ASC")
+      : db.prepare("SELECT * FROM library_collections ORDER BY sort_order ASC, created_at ASC");
+    stmt.bind(kind ? [v(kind)] : []);
+    const out: LibraryCollection[] = [];
+    while (stmt.step()) out.push(rowToCollection(stmt.getAsObject() as unknown as CollectionRow));
+    stmt.free();
+    return out;
+  },
+
+  /**
+   * 名字是否已被占用。
+   *
+   * **同一个库内唯一** —— 用户可能在论文库里有个「方法」分类,在笔记库里也想有一个;
+   * 那是两棵互不相干的树,重名不会让人分不清。但同一个库内的重名要挡掉:库名会出现在
+   * 上下文 chip、右侧面板标题、「+」菜单的选择器里,那些地方只显示名字。
+   *
+   * 比较用「去首尾空白 + 忽略大小写」:用户眼里 "ANN" 和 "ann" 是同一个名字。
+   */
+  isNameTaken(name: string, kind: LibraryKind, exceptId?: string): boolean {
+    const norm = name.trim().toLowerCase();
+    if (!norm) return false;
+    return CollectionRepo.list(kind).some(
+      (c) => c.id !== exceptId && c.name.trim().toLowerCase() === norm,
+    );
+  },
+
+  create(name: string, parentId: string | null = null, kind: LibraryKind = "paper"): LibraryCollection {
+    // 兜底守卫。渲染端已做即时校验,这里防的是绕过 UI 的调用(如将来的 AI 工具)。
+    if (CollectionRepo.isNameTaken(name, kind)) {
+      throw new Error(`这个库里已经有叫「${name.trim()}」的分类了`);
+    }
+    const db = getDb();
+    const id = makeId("lc");
+    // 追加到末尾:取同级当前最大 sort_order + 1(**同库内**同级)
+    const maxStmt = db.prepare(
+      parentId
+        ? "SELECT IFNULL(MAX(sort_order), -1) AS m FROM library_collections WHERE parent_id = ? AND kind = ?"
+        : "SELECT IFNULL(MAX(sort_order), -1) AS m FROM library_collections WHERE parent_id IS NULL AND kind = ?",
+    );
+    maxStmt.bind(parentId ? [v(parentId), v(kind)] : [v(kind)]);
+    maxStmt.step();
+    const nextOrder = Number((maxStmt.getAsObject() as { m: number }).m ?? -1) + 1;
+    maxStmt.free();
+
+    db.run(
+      "INSERT INTO library_collections (id, name, kind, parent_id, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      [v(id), v(name.trim()), v(kind), v(parentId), v(nextOrder), v(Date.now())],
+    );
+    persist();
+    return {
+      id,
+      name: name.trim(),
+      kind,
+      parentId,
+      sortOrder: nextOrder,
+      createdAt: Date.now(),
+      // 同上:回收站标记由主进程返回分类列表时统一标,这里没有那个信息
+      isTrash: false,
+    };
+  },
+
+  /** 改名。返回是否成功 —— 重名时返回 false,调用方负责提示用户。 */
+  rename(id: string, name: string): boolean {
+    // 重名只在**同一个库内**才算重名,所以要先取出这条分类属于哪个库
+    const current = CollectionRepo.list().find((c) => c.id === id);
+    if (!current) return false;
+    if (CollectionRepo.isNameTaken(name, current.kind, id)) return false;
+    getDb().run("UPDATE library_collections SET name = ? WHERE id = ?", [v(name.trim()), v(id)]);
+    persist();
+    return true;
+  },
+
+  /** 删除集合。子集合与成员关系由外键 CASCADE 一并清理;**文献本身不受影响**
+   *  —— 集合只是分组,删组不该删文献。 */
+  delete(id: string): void {
+    getDb().run("DELETE FROM library_collections WHERE id = ?", [v(id)]);
+    persist();
+  },
+
+  /** 把一批文献加入/移出某集合。已存在时重复加入是幂等的。 */
+  assign(collectionId: string, itemIds: string[], add: boolean): void {
+    if (itemIds.length === 0) return;
+    const db = getDb();
+    const now = Date.now();
+    db.run("BEGIN");
+    try {
+      if (add) {
+        const stmt = db.prepare(
+          `INSERT INTO library_collection_items (collection_id, item_id, added_at) VALUES (?, ?, ?)
+           ON CONFLICT(collection_id, item_id) DO NOTHING`,
+        );
+        for (const itemId of itemIds) stmt.run([v(collectionId), v(itemId), v(now)]);
+        stmt.free();
+      } else {
+        const stmt = db.prepare(
+          "DELETE FROM library_collection_items WHERE collection_id = ? AND item_id = ?",
+        );
+        for (const itemId of itemIds) stmt.run([v(collectionId), v(itemId)]);
+        stmt.free();
+      }
+      db.run("COMMIT");
+    } catch (err) {
+      db.run("ROLLBACK");
+      throw err;
+    }
+    persist();
+  },
+
+  /** 每条文献所属的集合 id 列表 —— 详情面板展示与「批量归组」用。 */
+  collectionsOfItem(itemId: string): string[] {
+    const db = getDb();
+    const stmt = db.prepare("SELECT collection_id FROM library_collection_items WHERE item_id = ?");
+    stmt.bind([v(itemId)]);
+    const out: string[] = [];
+    while (stmt.step()) {
+      out.push(String((stmt.getAsObject() as { collection_id: string }).collection_id));
+    }
+    stmt.free();
+    return out;
+  },
+};
+
+/* ────────────────────────────── 机构认证入口 ───────────────────────────── */
+
+interface InstitutionRow {
+  id: string;
+  name: string;
+  login_url: string | null;
+  domains: string | null;
+  proxy_prefix: string | null;
+  notes: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+function rowToInstitution(r: InstitutionRow): InstitutionProfile {
+  return {
+    id: r.id,
+    name: r.name,
+    loginUrl: r.login_url ?? undefined,
+    domains: (safeJson(r.domains) as string[] | undefined) ?? [],
+    proxyPrefix: r.proxy_prefix ?? undefined,
+    notes: r.notes ?? undefined,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+export const InstitutionRepo = {
+  list(): InstitutionProfile[] {
+    const db = getDb();
+    const stmt = db.prepare("SELECT * FROM institution_profiles ORDER BY created_at ASC");
+    const out: InstitutionProfile[] = [];
+    while (stmt.step()) out.push(rowToInstitution(stmt.getAsObject() as unknown as InstitutionRow));
+    stmt.free();
+    return out;
+  },
+
+  /** 新增或更新一个入口档案。⚠️ 这里**不存任何凭据** —— 登录态在浏览器分区里。 */
+  save(input: {
+    id?: string;
+    name: string;
+    loginUrl?: string;
+    domains?: string[];
+    proxyPrefix?: string;
+    notes?: string;
+  }): InstitutionProfile {
+    const db = getDb();
+    const now = Date.now();
+    const domains = JSON.stringify(input.domains ?? []);
+
+    if (input.id) {
+      db.run(
+        `UPDATE institution_profiles SET name = ?, login_url = ?, domains = ?, proxy_prefix = ?, notes = ?, updated_at = ?
+         WHERE id = ?`,
+        [v(input.name), v(input.loginUrl), v(domains), v(input.proxyPrefix), v(input.notes), v(now), v(input.id)],
+      );
+      persist();
+      const stmt = db.prepare("SELECT * FROM institution_profiles WHERE id = ?");
+      stmt.bind([v(input.id)]);
+      stmt.step();
+      const row = rowToInstitution(stmt.getAsObject() as unknown as InstitutionRow);
+      stmt.free();
+      return row;
+    }
+
+    const id = makeId("inst");
+    db.run(
+      `INSERT INTO institution_profiles (id, name, login_url, domains, proxy_prefix, notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [v(id), v(input.name), v(input.loginUrl), v(domains), v(input.proxyPrefix), v(input.notes), v(now), v(now)],
+    );
+    persist();
+    return {
+      id,
+      name: input.name,
+      loginUrl: input.loginUrl,
+      domains: input.domains ?? [],
+      proxyPrefix: input.proxyPrefix,
+      notes: input.notes,
+      createdAt: now,
+      updatedAt: now,
+    };
+  },
+
+  delete(id: string): void {
+    getDb().run("DELETE FROM institution_profiles WHERE id = ?", [v(id)]);
+    persist();
+  },
+};
+
+/* ────────────────────────────── 下载任务 ───────────────────────────────── */
+
+interface JobRow {
+  id: string;
+  item_id: string;
+  status: string;
+  attempts: number;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+function rowToJob(r: JobRow): DownloadJob {
+  return {
+    id: r.id,
+    itemId: r.item_id,
+    status: (r.status as DownloadStatus) || "pending",
+    attempts: r.attempts ?? 0,
+    error: r.error ?? undefined,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+export const DownloadJobRepo = {
+  list(): DownloadJob[] {
+    const db = getDb();
+    const stmt = db.prepare("SELECT * FROM download_jobs ORDER BY updated_at DESC");
+    const out: DownloadJob[] = [];
+    while (stmt.step()) out.push(rowToJob(stmt.getAsObject() as unknown as JobRow));
+    stmt.free();
+    return out;
+  },
+
+  /** 按状态取任务(下载器取 pending 队列用)。 */
+  listByStatus(status: DownloadStatus): DownloadJob[] {
+    const db = getDb();
+    const stmt = db.prepare("SELECT * FROM download_jobs WHERE status = ? ORDER BY created_at ASC");
+    stmt.bind([v(status)]);
+    const out: DownloadJob[] = [];
+    while (stmt.step()) out.push(rowToJob(stmt.getAsObject() as unknown as JobRow));
+    stmt.free();
+    return out;
+  },
+
+  getByItem(itemId: string): DownloadJob | null {
+    const db = getDb();
+    const stmt = db.prepare("SELECT * FROM download_jobs WHERE item_id = ?");
+    stmt.bind([v(itemId)]);
+    const found = stmt.step();
+    const row = found ? rowToJob(stmt.getAsObject() as unknown as JobRow) : null;
+    stmt.free();
+    return row;
+  },
+
+  /** 排入队列。已有任务则重置为 pending(用户手动重下时不该被旧状态挡住),
+   *  但**保留 attempts** —— 它记录的是历史重试次数,用于退避策略。 */
+  enqueue(itemId: string): DownloadJob {
+    const db = getDb();
+    const now = Date.now();
+    const existing = DownloadJobRepo.getByItem(itemId);
+    if (existing) {
+      db.run("UPDATE download_jobs SET status = 'pending', error = NULL, updated_at = ? WHERE item_id = ?", [
+        v(now), v(itemId),
+      ]);
+      persist();
+      return { ...existing, status: "pending", error: undefined, updatedAt: now };
+    }
+    const id = makeId("dj");
+    db.run(
+      "INSERT INTO download_jobs (id, item_id, status, attempts, created_at, updated_at) VALUES (?, ?, 'pending', 0, ?, ?)",
+      [v(id), v(itemId), v(now), v(now)],
+    );
+    persist();
+    return { id, itemId, status: "pending", attempts: 0, createdAt: now, updatedAt: now };
+  },
+
+  /**
+   * 把**上次运行遗留**的 running 任务打回 pending。返回打回了多少条。
+   *
+   * 下载是主进程里的异步操作,进程一退,正在跑的那次就地蒸发 —— 但数据库里那条
+   * 记录会永远停在 "running"。界面上表现为「一直显示下载中,永远不动」,而且队列
+   * 也不会再捡起它(`processDownloadQueue` 只取 pending)。
+   *
+   * 启动时调一次即可。打回 pending 而**不是**标失败:这些任务从没真正下成过,
+   * 重试才是对的;`attempts` 也保持不变,免得退避策略把它当成"已经试过很多次"。
+   */
+  resetStale(): number {
+    const stale = DownloadJobRepo.listByStatus("running").length;
+    if (stale === 0) return 0;
+    getDb().run(
+      "UPDATE download_jobs SET status = 'pending', error = NULL, updated_at = ? WHERE status = 'running'",
+      [v(Date.now())],
+    );
+    persist();
+    return stale;
+  },
+
+  /** 更新任务状态。`bumpAttempts` 仅在真正发起过一次下载时传 true。 */
+  setStatus(itemId: string, status: DownloadStatus, error?: string, bumpAttempts = false): void {    const now = Date.now();
+    getDb().run(
+      `UPDATE download_jobs SET status = ?, error = ?, attempts = attempts + ?, updated_at = ? WHERE item_id = ?`,
+      [v(status), v(error), v(bumpAttempts ? 1 : 0), v(now), v(itemId)],
+    );
+    persist();
+  },
+
+  /** 清掉某条文献的任务(文献被删除时用;外键 CASCADE 也会兜底)。 */
+  deleteByItem(itemId: string): void {
+    getDb().run("DELETE FROM download_jobs WHERE item_id = ?", [v(itemId)]);
+    persist();
+  },
+};
+
+/* ──────────────────────────────── 条目笔记 ─────────────────────────────── */
+/* 读文献时随手记的小段文字,挂在条目上。与「笔记库」的条目是两回事:
+   那边一条 = 一篇 Markdown 文件,这边一条 = 某个条目下的一句话。
+   表在建库时就有了(见 db.ts),这里只补上读写。 */
+
+interface NoteRow {
+  id: string;
+  item_id: string;
+  content: string;
+  origin: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+function rowToNote(r: NoteRow): LibraryNote {
+  return {
+    id: r.id,
+    itemId: r.item_id,
+    content: r.content,
+    origin: r.origin === "ai" ? "ai" : "user",
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+export const NoteRepo = {
+  /** 某个条目下的笔记。最近改过的排前面 —— 刚记的通常在找它。 */
+  listByItem(itemId: string): LibraryNote[] {
+    const stmt = getDb().prepare(
+      "SELECT * FROM library_notes WHERE item_id = ? ORDER BY updated_at DESC",
+    );
+    stmt.bind([v(itemId)]);
+    const out: LibraryNote[] = [];
+    while (stmt.step()) out.push(rowToNote(stmt.getAsObject() as unknown as NoteRow));
+    stmt.free();
+    return out;
+  },
+
+  /** 新建或改写一条。带 id 就改(不存在则当作新建,免得前端状态过期时报错)。
+   *  `origin` 只在**新插入**时生效 —— 改一条已有的不会改它的来源(用户改过的
+   *  AI 摘要仍然是一次 AI 摘要,反过来也一样)。默认 `user`。 */
+  save(input: { id?: string; itemId: string; content: string; origin?: "user" | "ai" }): void {
+    const db = getDb();
+    const now = Date.now();
+    if (input.id) {
+      const exists = db.prepare("SELECT id FROM library_notes WHERE id = ?");
+      exists.bind([v(input.id)]);
+      const found = exists.step();
+      exists.free();
+      if (found) {
+        db.run("UPDATE library_notes SET content = ?, updated_at = ? WHERE id = ?", [
+          v(input.content), v(now), v(input.id),
+        ]);
+        persist();
+        return;
+      }
+    }
+    db.run(
+      "INSERT INTO library_notes (id, item_id, content, origin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+      [v(makeId("ln")), v(input.itemId), v(input.content), v(input.origin ?? "user"), v(now), v(now)],
+    );
+    persist();
+  },
+
+  /** 删一条。**返回它原来挂在哪个条目上** —— 调用方要拿那个条目的新列表,
+   *  而删完就查不到了。找不到时返回 null。 */
+  delete(id: string): string | null {
+    const db = getDb();
+    const stmt = db.prepare("SELECT item_id FROM library_notes WHERE id = ?");
+    stmt.bind([v(id)]);
+    const found = stmt.step();
+    const itemId = found ? (stmt.getAsObject() as { item_id: string }).item_id : null;
+    stmt.free();
+    if (!itemId) return null;
+    db.run("DELETE FROM library_notes WHERE id = ?", [v(id)]);
+    persist();
+    return itemId;
   },
 };
