@@ -52,49 +52,22 @@ interface RunResult {
   stderr: string;
 }
 
-/** 跑一个子进程并收集输出。带超时强杀。 */
+/** 跑一个子进程并收集输出(stdout 按 utf8 转字符串)。带超时强杀。
+ *
+ *  只是 {@link runBuffer} 的字符串版:spawn、剥代理、超时强杀、finish 幂等守卫
+ *  那套逻辑只实现一遍(以前 run/runBuffer 各抄一份约 45 行,除 stdout 类型外
+ *  逐行相同),这里只做 Buffer → string 转换。 */
 function run(
   cmd: string,
   args: string[],
   opts: { timeoutMs: number; stripProxy: boolean },
 ): Promise<RunResult> {
-  return new Promise((resolve) => {
-    let env = process.env;
-    if (opts.stripProxy) {
-      env = { ...process.env };
-      for (const k of Object.keys(env)) {
-        if (/^(https?_proxy|all_proxy|no_proxy)$/i.test(k)) delete env[k];
-      }
-    }
-
-    const child = spawn(cmd, args, { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-    const out: Buffer[] = [];
-    const err: Buffer[] = [];
-    let settled = false;
-
-    const finish = (r: RunResult) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(r);
-    };
-
-    const timer = setTimeout(() => {
-      child.kill();
-      finish({ ok: false, code: null, stdout: "", stderr: `超时(${opts.timeoutMs}ms)` });
-    }, opts.timeoutMs);
-
-    child.stdout.on("data", (c: Buffer) => out.push(c));
-    child.stderr.on("data", (c: Buffer) => err.push(c));
-    child.on("error", (e) =>
-      finish({ ok: false, code: null, stdout: "", stderr: `无法启动 ${cmd}: ${e.message}` }),
-    );
-    child.on("close", (code) => {
-      const stdout = Buffer.concat(out).toString("utf8");
-      const stderr = Buffer.concat(err).toString("utf8");
-      finish({ ok: code === 0, code, stdout, stderr });
-    });
-  });
+  return runBuffer(cmd, args, opts).then((r) => ({
+    ok: r.ok,
+    code: r.code,
+    stdout: r.stdout.toString("utf8"),
+    stderr: r.stderr,
+  }));
 }
 
 /**
@@ -198,7 +171,8 @@ export interface HttpRawResult {
   error?: string;
 }
 
-/** 同 {@link run},但 stdout 保留为 Buffer。 */
+/** 子进程收集输出的**唯一实现**:stdout 保留为 Buffer(上传/下载要处理二进制,
+ *  按 utf8 转成字符串会毁掉内容)。要字符串版用 {@link run}。 */
 function runBuffer(
   cmd: string,
   args: string[],

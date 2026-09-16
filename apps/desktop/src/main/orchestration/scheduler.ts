@@ -124,6 +124,7 @@ import {
   NODE_OUTPUT_CONTRACT_KEY,
   checkOutput,
   describeOutputVars,
+  outputValueText,
   outputVarsOf,
   pickOutputs,
   validateOutputRules,
@@ -639,13 +640,9 @@ export function recordBodyOf(outcome: NodeOutcome): string {
   for (const name of names) {
     const value = outputs?.[name];
     // 值是数组/对象的原样 `JSON.stringify` —— 记录是散文式的日志,但**结构化状态该
-    // 保持结构**(同 Anthropic 那条"状态用结构化格式、进度用散文")。
-    const text =
-      typeof value === "string"
-        ? value.trim()
-        : value === undefined
-          ? ""
-          : JSON.stringify(value);
+    // 保持结构**(同 Anthropic 那条"状态用结构化格式、进度用散文")。转换收口在
+    // outputConstraint.outputValueText(runner 的变量卡片用同一条规则)。
+    const text = outputValueText(value);
     if (text.length === 0) continue;
     lines.push(`- ${name}:${text}`);
   }

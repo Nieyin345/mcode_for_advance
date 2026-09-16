@@ -26,6 +26,10 @@ import { downloadViaBrowser, printUrlToPdf } from "@main/browser/BrowserManager.
 import { log } from "@main/lib/logger.js";
 import { sendToRenderer } from "@main/window.js";
 import { arxivIdFromDoi, resolvePdfCandidates } from "./oaResolvers.js";
+// PDF 直链的两档正则收口在 pdfUrlHeuristics.ts(以前这里和 oaResolvers.ts 各抄
+// 一份)。这里 re-export 窄档,operations.ts 等老调用点不用改 import。
+import { PDF_URL_RE } from "./pdfUrlHeuristics.js";
+export { PDF_URL_RE };
 import { IPC } from "@contracts/ipc";
 import {
   ensureLibraryDirs,
@@ -113,36 +117,6 @@ export function verifyPdf(
 export function hashFile(filePath: string): string {
   return createHash("sha256").update(readFileSync(filePath)).digest("hex");
 }
-
-/**
- * 解析出可下载的 PDF 地址。
- *
- * v1 支持两条明确可靠的路径:
- *   - arXiv ID → `arxiv.org/pdf/<id>`(开放获取,无需认证)
- *   - 元数据里已带的、以 `.pdf` 结尾的 URL(来自检索结果或用户提供)
- *
- * 刻意**没有**做 OpenAlex/Unpaywall 的开放获取解析:前者 2026 年起强制 API key,
- * 后者需要一个真实邮箱。两者都是「需要用户先配置」的依赖,不该挡在开箱可用路径上。
- * 出版商落地页的 PDF 地址也不做自动嗅探 —— 那需要针对每个出版商写解析规则,
- * 维护成本远高于收益。这类文献让用户在内嵌浏览器里打开页面、点一次下载,
- * 或者把 PDF 地址直接给 AI。
- */
-/**
- * 形如 PDF 直链的地址。
- *
- * 不只看 `.pdf` 结尾 —— 好几个大出版商的直链根本不以 `.pdf` 收尾:
- *   Nature     https://www.nature.com/articles/s41567-...-.pdf        (.pdf)
- *   Wiley      https://onlinelibrary.wiley.com/doi/pdfdirect/10.1002/...
- *   TechRxiv   https://www.techrxiv.org/doi/pdf/10.36227/...
- *   arXiv      https://arxiv.org/pdf/2302.01934
- *   MDPI       https://www.mdpi.com/2076-3417/15/3/1308/pdf?version=...
- *   Elsevier   https://www.sciencedirect.com/science/article/pii/S.../pdfft
- * 这些 URL 是**开放获取解析器或出版商模板给的**,本来就保证是 PDF 而不是落地页 ——
- * 所以按形状放行,不要再要求 `.pdf` 后缀把它们全挡掉。
- * (实测:只用 `.pdf$` 时,Wiley / TechRxiv / arXiv / MDPI / Elsevier 那几个明明拿到了
- * 直链,却依然被判成"落地页"下不了。)
- */
-export const PDF_URL_RE = /\.pdf(\?|$)|\/pdf\/|\/pdfdirect\/|\/pdf\?|\/pdfft/i;
 
 /**
  * 给一个条目排出「可以试的 PDF 地址」,按可信度排序。
@@ -276,11 +250,14 @@ async function downloadOne(item: LibraryItem): Promise<boolean> {
   // ── ① 候选链:多源解析 + 内嵌浏览器逐个试 ──────────────────────────────
   const candidates = await pdfCandidates(item);
   if (candidates.length === 0) {
-    const final = failure ?? {
-      status: "not_found" as DownloadStatus,
-      error: "没有可用来源:这一篇没有公开的 PDF 版本(arXiv 副本 / 开放获取 / 出版商直链都没找到)。",
-    };
-    DownloadJobRepo.setStatus(item.id, final.status, final.error, true);
+    // 走到这说明连候选都没排出来(不是"试过都失败" —— 那在下面的循环里)。
+    // failure 在这里还必然是 null,别写成 failure ?? {...} 那样的死代码。
+    DownloadJobRepo.setStatus(
+      item.id,
+      "not_found" as DownloadStatus,
+      "没有可用来源:这一篇没有公开的 PDF 版本(arXiv 副本 / 开放获取 / 出版商直链都没找到)。",
+      true,
+    );
     return false;
   }
 

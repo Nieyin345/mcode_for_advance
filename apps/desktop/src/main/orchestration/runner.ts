@@ -64,7 +64,7 @@ import {
   type NodeReturnMode,
   type NodeTypeManifest,
 } from "@contracts/nodeType";
-import { checkOutput, outputVarsOf, pickOutputs, type OutputVar } from "@contracts/outputConstraint";
+import { checkOutput, outputValueText, outputVarsOf, pickOutputs, type OutputVar } from "@contracts/outputConstraint";
 import type { PermissionMode, WorkflowChoiceOption } from "@contracts/runtime";
 import type { WorkflowCapability, WorkflowNode } from "@contracts/workflow";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
@@ -1178,9 +1178,8 @@ function structuredReplyText(text: string, vars: readonly OutputVar[]): string {
   const picked = pickOutputs(check.value, vars);
   return vars
     .map((v) => {
-      const value = picked[v.name];
-      const shown =
-        typeof value === "string" ? value.trim() : value === undefined ? "" : JSON.stringify(value);
+      // 与 scheduler 的流程记录同一条转换规则(收口在 outputValueText)
+      const shown = outputValueText(picked[v.name]);
       return `**${v.name}**:${shown.length > 0 ? shown : "(空)"}`;
     })
     .join("\n\n");

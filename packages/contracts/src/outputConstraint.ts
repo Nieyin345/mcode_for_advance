@@ -299,6 +299,20 @@ export function pickOutputs(value: unknown, vars: readonly OutputVar[]): Record<
   return out;
 }
 
+/**
+ * 变量值 → 给人看的文本:字符串 trim、undefined 空串、数组/对象原样 `JSON.stringify`。
+ *
+ * 这条规则在两处各写过一份(runner 的 structuredReplyText 给用户的变量卡片、scheduler
+ * 的 recordBodyOf 写进流程记录),一处改了另一处忘了就会漂移 —— 收口到这里。
+ * "记录是散文式的日志,但**结构化状态该保持结构**"(同 Anthropic 那条"状态用结构化
+ * 格式、进度用散文")。
+ */
+export function outputValueText(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (value === undefined) return "";
+  return JSON.stringify(value);
+}
+
 /* ── 给模型看的那两段 ── */
 
 /**

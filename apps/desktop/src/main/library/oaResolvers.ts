@@ -34,6 +34,9 @@
  * 需要登录态的下载走内嵌浏览器(`downloadViaBrowser`),它自己带会话。
  */
 import { fetchJson, LIBRARY_UA, LIBRARY_MAILTO } from "./http.js";
+// PDF 直链的两档正则收口在 pdfUrlHeuristics.ts;这里用宽档(排序/过滤要额外认
+// PMC 渲染端点与机构库 bitstream)。
+import { LOOKS_LIKE_PDF_RE } from "./pdfUrlHeuristics.js";
 
 /** 一个候选直链。`via` 只用于日志/排查 —— 用户不需要看见是谁给的。 */
 export interface PdfCandidate {
@@ -61,11 +64,6 @@ export function arxivIdFromDoi(doi: string | undefined): string | undefined {
   const m = /^10\.48550\/arxiv\.(.+)$/i.exec((doi ?? "").trim());
   return m ? m[1] : undefined;
 }
-
-/** 像 PDF 直链的地址形状。与 downloader.ts 的 `PDF_URL_RE` 同源,这里更宽一点 ——
- *  还认 PMC 的渲染端点与机构库的 bitstream 路径。 */
-const LOOKS_LIKE_PDF_RE =
-  /\.pdf(\?|$)|\.pdf\/|\/pdf\/|\/pdfdirect\/|\/pdf\?|\/pdfft|\/pdf$|pdf=render|\/bitstream\/|\/download(\?|$)/i;
 
 /** 落地页/解析器站点 —— 它们永远不会直接吐 PDF,出现在仓库类结果里要剔掉。 */
 const LANDING_HOST_MARKERS = [
