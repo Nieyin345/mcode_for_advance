@@ -29,7 +29,7 @@ import { getWorkflow, saveWorkflow } from "@main/orchestration/library.js";
 import { backEdgesOf, forwardEdgesOf } from "@contracts/workflow";
 import { BUILTIN_WORKFLOWS } from "@main/orchestration/builtins.js";
 import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
-import { composeNodePrompt, planOf } from "@main/orchestration/scheduler.js";
+import { composeNodePrompt, planOf } from "@main/orchestration/schedulerPrompt.js";
 import { MAIN_NODE_TYPE_ID } from "@contracts/nodeType";
 // ⚠️ 这里**破例 import 一个渲染端的模块** —— `workflowEdit.ts` 才是"新建工作流"那条路
 // 的实现,而本套件要验的恰恰是"它种出来的东西能不能过**主进程**的校验"。两半各自单测

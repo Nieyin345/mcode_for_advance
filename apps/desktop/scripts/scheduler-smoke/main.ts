@@ -29,16 +29,19 @@ import {
   type ContextLookup,
 } from "@main/orchestration/contextInherit.js";
 import {
-  composeNodePrompt,
-  planOf,
   runWorkflow,
   type BranchChoice,
   type RunPorts,
   type RunReport,
   type RunResume,
   type RunState,
-  type WorkflowPlan,
 } from "@main/orchestration/scheduler.js";
+// 提示词拼装拆到了自己的模块 —— 这里测的就是它的公开接口。
+import {
+  composeNodePrompt,
+  planOf,
+  type WorkflowPlan,
+} from "@main/orchestration/schedulerPrompt.js";
 import { dirname, join, resolve } from "node:path";
 import {
   renderTemplate,
