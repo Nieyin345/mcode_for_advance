@@ -106,9 +106,19 @@ const PROTOCOL_OPTIONS: { value: Protocol; labelKey: MessageId; icon: ReactNode 
  * **刻意不复用那份表**：渲染端不 import 主进程模块（会把主进程代码拉进渲染
  * bundle）。一期只有 DeepSeek，等站点变多再把这份列表改成经 IPC 拉取。
  */
-const WEB_SITE_OPTIONS: { value: string; label: string }[] = [
-  { value: "deepseek", label: "DeepSeek 网页版" },
+const WEB_SITE_OPTIONS: { value: string; label: string; defaultModelId: string }[] = [
+  { value: "deepseek", label: "DeepSeek 网页版", defaultModelId: "deepseek-web" },
 ];
+
+/**
+ * 网页端的「模型 id」只是个显示名 —— 站点本身就是模型（DeepSeek 网页版没有让你
+ * 选模型的余地，对话页那边也用不上这个 id）。所以它有一个站点默认值：用户不填就
+ * 用这个，不该把人挡在保存门外。
+ */
+function defaultWebModelId(siteId: string): string {
+  const o = WEB_SITE_OPTIONS.find((x) => x.value === siteId);
+  return o?.defaultModelId ?? WEB_SITE_OPTIONS[0].defaultModelId;
+}
 
 /** Per-API-type brand icon for the Pi "API 类型" select (label stays the raw
  *  api string, e.g. "openai-completions"). Unknown api strings get no icon. */
@@ -677,13 +687,24 @@ export function CustomModelsPanel() {
     // 网页端不需要 Base URL / Token（上游是内嵌浏览器里的页面，不是某个 API），
     // 但必须选一个站点。
     const isWeb = claudeForm.protocol === "web";
-    if (!claudeForm.name.trim() || (!isWeb && !claudeForm.baseUrl.trim())) {
-      setError(t("settings.customModels.errNameBaseUrl"));
+    // 名称与地址分开报错：网页端根本没有 Base URL 这一栏，合起来报会让用户
+    // 对着一个不存在的输入框找半天（"保存还要填 Base URL？"）。
+    if (!claudeForm.name.trim()) {
+      setError(t("settings.customModels.errName"));
+      return;
+    }
+    if (!isWeb && !claudeForm.baseUrl.trim()) {
+      setError(t("settings.customModels.errBaseUrl"));
       return;
     }
     if (isWeb && !claudeForm.webSiteId) {
       setError(t("settings.customModels.errWebSite"));
       return;
+    }
+    // 网页端空着就补默认值：站点才是模型，这个 id 只是下拉里的显示名，没必要
+    // 让用户对着"DeepSeek 该填哪个模型"卡住。
+    if (isWeb && models.length === 0) {
+      models.push({ id: defaultWebModelId(claudeForm.webSiteId) });
     }
     if (models.length === 0) {
       setError(t("settings.customModels.errNeedModel"));
@@ -1292,7 +1313,23 @@ function ClaudeProviderForm({
   return (
     <div className="space-y-2.5">
       <Field label={t("settings.customModels.protocolLabel")}>
-        <Select.Root value={form.protocol} onValueChange={(v) => update("protocol", v as Protocol)}>
+        <Select.Root
+          value={form.protocol}
+          onValueChange={(v) => {
+            const next = v as Protocol;
+            // 切到网页端时顺手补一条模型 id：站点才是模型，这个 id 只是个显示名，
+            // 让用户对着空列表琢磨"DeepSeek 该填哪个模型"没有意义（保存时也会补）。
+            if (next === "web" && form.models.every((m) => !m.id.trim())) {
+              setForm({
+                ...form,
+                protocol: next,
+                models: [{ id: defaultWebModelId(form.webSiteId), supports1m: false }],
+              });
+              return;
+            }
+            update("protocol", next);
+          }}
+        >
           <Select.Trigger className="w-full">
             <Select.Value>
               {(val: Protocol) => {
@@ -1430,7 +1467,11 @@ function ClaudeProviderForm({
                 <Input
                   value={m.id}
                   onChange={(e) => updateModel(idx, { id: e.target.value })}
-                  placeholder={t("settings.customModels.modelIdPlaceholder")}
+                  placeholder={t(
+                    isWeb
+                      ? "settings.customModels.modelIdPlaceholderWeb"
+                      : "settings.customModels.modelIdPlaceholder",
+                  )}
                   spellCheck={false}
                 />
                 <label className="flex items-center gap-1 justify-self-center" title={t("settings.customModels.supports1mLabel")}>

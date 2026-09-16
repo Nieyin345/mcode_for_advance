@@ -479,7 +479,12 @@ export function ModelDropdown({
                 {customModels.map((m) => {
                   const cfgActive = customModelId === m.id;
                   const hasModels = modelsOf(m.id).length > 0;
-                  const rowTitle = `${m.baseUrl}\ntoken: ${m.authTokenMasked} (${m.authMode === "api_key" ? "x-api-key" : "Bearer"})`;
+                  // 网页端没有地址也没有 token —— 照 API 那样拼 tooltip 会留下一行空白
+                  // 和一句莫名其妙的 "token: (Bearer)"，这里改成站点名。
+                  const isWebCfg = m.protocol === "web";
+                  const rowTitle = isWebCfg
+                    ? `${t("chat.model.webBadge")} · ${m.webSiteId ?? ""}`
+                    : `${m.baseUrl}\ntoken: ${m.authTokenMasked} (${m.authMode === "api_key" ? "x-api-key" : "Bearer"})`;
                   const rowContent = (
                     <>
                       <span className="flex min-w-0 items-center gap-2">
@@ -487,10 +492,13 @@ export function ModelDropdown({
                         {m.protocol === "openai" && (
                           <span className="shrink-0 rounded bg-surface-muted px-1 text-[10px] text-content-subtle">OpenAI</span>
                         )}
+                        {isWebCfg && (
+                          <span className="shrink-0 rounded bg-surface-muted px-1 text-[10px] text-content-subtle">{t("chat.model.webBadge")}</span>
+                        )}
                         {cfgActive && <IconCheck size={14} className="shrink-0" />}
                       </span>
                       <span className="ml-2 flex shrink-0 items-center gap-1">
-                        <span className="truncate text-xs text-content-subtle">{hostOf(m.baseUrl)}</span>
+                        <span className="truncate text-xs text-content-subtle">{isWebCfg ? (m.webSiteId ?? "") : hostOf(m.baseUrl)}</span>
                         {hasModels && <IconChevronRight size={12} className="opacity-60" />}
                       </span>
                     </>

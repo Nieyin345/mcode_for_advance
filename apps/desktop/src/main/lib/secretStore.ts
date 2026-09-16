@@ -355,7 +355,12 @@ export const CustomModelStore = {
       };
       if (input.authToken) keys[input.id] = encrypt(input.authToken);
     } else {
-      if (!input.authToken) throw new Error("authToken is required when creating a custom model");
+      // 网页端（protocol: "web"）没有密钥可存 —— 它的上游是内嵌浏览器里的页面，
+      // 身份靠那个分区里的登录 cookie，不是 token。为它要 token 只会让用户卡死。
+      const isWebProtocol = resolveProtocol(input.protocol) === "web";
+      if (!isWebProtocol && !input.authToken) {
+        throw new Error("authToken is required when creating a custom model");
+      }
       const id = `cm_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
       metas.push({
         id,
@@ -371,7 +376,7 @@ export const CustomModelStore = {
         customHeaders,
         createdAt: now,
       });
-      keys[id] = encrypt(input.authToken);
+      if (input.authToken) keys[id] = encrypt(input.authToken);
     }
 
     writeMeta(metas);
@@ -409,9 +414,11 @@ export const CustomModelStore = {
     if (!meta) return undefined;
     const keys = readKeyMap();
     const cipher = keys[id];
-    if (!cipher) return undefined;
-    const authToken = decrypt(cipher);
-    if (!authToken) return undefined;
+    const authToken = cipher ? decrypt(cipher) : "";
+    const protocol = resolveProtocol(meta.protocol);
+    // 网页端（protocol: "web"）本来就没有 token —— 它的身份是浏览器分区里的登录
+    // cookie（见 bridge/webUpstream）。其他协议缺 token 就是配置不完整，发不出请求。
+    if (!authToken && protocol !== "web") return undefined;
     const models = meta.models.filter((m) => m.id.trim());
     if (models.length === 0) return undefined;
 
@@ -428,7 +435,7 @@ export const CustomModelStore = {
       baseUrl: meta.baseUrl,
       authToken,
       authMode: resolveAuthMode(meta.authMode),
-      protocol: resolveProtocol(meta.protocol),
+      protocol,
       webSiteId: meta.webSiteId,
       selectedModel,
       models,

@@ -163,6 +163,7 @@ export const zh = {
   "chat.model.selectTitle": "选择模型",
   "chat.model.builtin": "内置模型",
   "chat.model.list": "模型列表",
+  "chat.model.webBadge": "网页端",
   "chat.model.noneAvailable": "暂无可用模型",
   "chat.model.notConfigured": "尚未配置模型,点击下方添加",
   "chat.model.manage": "添加 / 管理模型…",

@@ -154,6 +154,7 @@ export const en = {
   "chat.model.selectTitle": "Select model",
   "chat.model.builtin": "Built-in models",
   "chat.model.list": "Models",
+  "chat.model.webBadge": "Web",
   "chat.model.noneAvailable": "No models available",
   "chat.model.notConfigured": "No model configured yet — add one below",
   "chat.model.manage": "Add / manage models…",
