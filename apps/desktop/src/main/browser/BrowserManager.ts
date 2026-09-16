@@ -435,6 +435,77 @@ function isPersistLoginEnabled(): boolean {
   return SettingRepo.get(BROWSER_PERSIST_LOGIN_SETTING_KEY) !== "0";
 }
 
+/** 登录窗口的单例引用 —— 不持着就会被 GC 连窗口一起销毁。 */
+let siteLoginWindow: BrowserWindow | null = null;
+
+/**
+ * 打开一个**独立窗口**，让用户登录某个站点（「设置 → 模型配置 → 打开登录窗口」，
+ * 以及"发消息时发现没登录"那条路）。
+ *
+ * 为什么不用引擎视图显形：引擎视图是主窗口的 `WebContentsView`，位置完全由渲染端
+ * 下发的 bounds 决定。用户点这个按钮时多半正站在**设置页**（全屏 overlay）上，
+ * 视图会被盖在底下 —— 症状就是"点了没反应"。独立窗口没有这个问题：它有自己的
+ * 边框、能拖动、也不会被主窗口的内容盖住，而且"登录就该弹个窗口"更符合直觉。
+ *
+ * 真正关键的一点：**必须跑在共享的浏览器分区上**（`browserSession()`）。登录窗口
+ * 写下的 cookie 落在同一个分区里，引擎视图之后加载站点时天然已是登录态 —— 两边
+ * 不需要任何通信。
+ */
+export function openSiteLoginWindow(opts: {
+  url: string;
+  title?: string;
+  /** 窗口被用户关掉之后的钩子（用来刷新同站点的引擎视图，见 webUpstream）。 */
+  onClosed?: () => void;
+}): { ok: boolean; error?: string } {
+  if (siteLoginWindow && !siteLoginWindow.isDestroyed()) {
+    // 已经开着就把它抬到前面并回到站点首页（用户可能已经在里面逛走了）。
+    siteLoginWindow.loadURL(opts.url).catch(() => {});
+    siteLoginWindow.focus();
+    return { ok: true };
+  }
+
+  let win: BrowserWindow;
+  try {
+    win = new BrowserWindow({
+      width: 1100,
+      height: 800,
+      minWidth: 420,
+      minHeight: 420,
+      title: opts.title ?? "登录",
+      autoHideMenuBar: true,
+      backgroundColor: BROWSER_BACKGROUND,
+      webPreferences: {
+        // 与内嵌视图同一个持久分区 —— 这是整件事成立的前提。
+        session: browserSession(),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.error(`site login window create failed: ${msg}`);
+    return { ok: false, error: `打开登录窗口失败：${msg}` };
+  }
+
+  // 与内嵌视图一致地清洗 UA：登录页（Google 等）会拒绝带 Electron 尾巴的 UA。
+  const rawUa = win.webContents.getUserAgent();
+  const chromeUa = chromeLikeUserAgent(rawUa);
+  if (chromeUa && chromeUa !== rawUa) win.webContents.setUserAgent(chromeUa);
+
+  siteLoginWindow = win;
+  win.on("closed", () => {
+    siteLoginWindow = null;
+    // 关窗 = "我登录完了"。立刻把 cookie 落进保管库，而不是等 5 分钟一次的定时器 ——
+    // 用户很可能登完就退出应用，那一次定时器根本没机会跑，下次启动又变回未登录。
+    void BrowserManager.saveCookieVault().catch(() => {});
+    opts.onClosed?.();
+  });
+  win.loadURL(opts.url).catch(() => {});
+  log.info(`site login window opened: ${opts.url}`);
+  return { ok: true };
+}
+
 /**
  * 读取共享浏览器分区的 cookie —— 「机构认证」功能的唯一数据源。
  *
@@ -1194,6 +1265,14 @@ class BrowserManagerImpl {
   private attachNavigationEvents(live: LiveBrowser): void {
     const wc = live.view.webContents;
     const id = live.id;
+    // 引擎视图（网页版模型）的加载结果只写日志、不推渲染端 —— 它平常停在离屏
+    // 1x1 上没人看，出问题时（站点改版、网络不通）日志是唯一的线索。
+    if (live.role === "engine") {
+      wc.on("did-finish-load", () => log.info(`browser engine loaded: ${id} url=${wc.getURL()}`));
+      wc.on("did-fail-load", (_e, code, desc, url) =>
+        log.warn(`browser engine load failed: ${id} ${code} ${desc} url=${url}`),
+      );
+    }
     const push = (type: "navigation" | "loading", payload: unknown) => {
       sendToRenderer(IPC.BROWSER_EVENT, {
         channel: IPC.BROWSER_EVENT,

@@ -308,7 +308,7 @@ export const en = {
   "settings.customModels.webSitePlaceholder": "Pick a site",
   "settings.customModels.webOpenLogin": "Open login window",
   "settings.customModels.webNote":
-    "No URL or key needed: the app opens the site in its embedded browser, types your question into its composer, and streams the answer back here — the same experience as an API model. Sign in once via the button above (the login is kept). Note: this automates a real web page, which may violate the site's terms of service, and it can break whenever the site changes.",
+    "No URL or key needed: the app opens the site in its embedded browser, types your question into its composer, and streams the answer back here — the same experience as an API model. Sign in once via the button above (it opens the site in a separate window; the login is kept, just close the window when done). Note: this automates a real web page, which may violate the site's terms of service, and it can break whenever the site changes.",
   "settings.customModels.errWebSite": "Pick a site for the web-page model",
   "settings.customModels.webTestHint": "No connection test needed for a web-page model: use \"Open login window\" and check that you can sign in.",
   "settings.customModels.openaiNote": "OpenAI-format endpoints (OpenAI official / Azure / vLLM / Ollama / one-api, …) enable the built-in protocol translation layer: Claude keeps speaking the Anthropic protocol while the app translates requests/responses to OpenAI format on the fly.",

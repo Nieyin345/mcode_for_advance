@@ -217,20 +217,17 @@ export class EngineSession {
   }
 
   /**
-   * 让用户看见这个视图（登录、验证码、二次确认都需要人来操作）。
+   * 站点相同时重新加载页面；站点不同（换了模型）则什么都不做。
    *
-   * 用 `notifyAgentOpened` 而不是裸 `show`：前者会让渲染端的浏览面板浮现并接管
-   * 这块区域，用户看到的是一个正常的浏览器面板，而不是一个悬空的面。
+   * 用在"用户在**独立的登录窗口**里登完并关掉窗口"之后：cookie 是分区级共享的，
+   * 但页面自己的 DOM 还停在未登录态（SPA 不会自己发现），必须重新加载才会进到
+   * 已登录界面。注入脚本是 CDP document-start 级别的，随导航自动重跑，不用重装。
    */
-  revealToUser(): void {
-    if (!this.browserId) return;
-    BrowserManager.show(this.browserId);
-    BrowserManager.notifyAgentOpened(this.browserId);
-  }
-
-  /** 收回离屏（登录完成后调用，让界面回到纯 mcode 的样子）。 */
-  conceal(): void {
-    if (this.browserId) BrowserManager.hide(this.browserId);
+  reloadIfSite(next: SiteAdapter): void {
+    if (this.adapter.id !== next.id || !this.browserId) return;
+    this.tapReady = false;
+    this.resetTurn();
+    BrowserManager.loadUrl(this.browserId, this.adapter.homeUrl);
   }
 
   /** 填入并提交。 */

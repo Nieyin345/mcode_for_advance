@@ -19,6 +19,12 @@
  * 网页模型会兴冲冲地输出工具调用标记，而 claude 侧收不到对应的 tool_use 块 ——
  * 用户看到的是"模型宣称要读文件，然后什么都没发生"，比不带系统提示更让人困惑。
  *
+ * ## 登录为什么是一个独立窗口
+ * 引擎视图是主窗口的 `WebContentsView`，位置由渲染端下发的 bounds 决定；而用户点
+ * 「打开登录窗口」时通常正站在设置页（全屏 overlay）上，视图会被盖住 —— 表现就是
+ * "点了没反应"。所以登录改走**独立的操作系统窗口**（`openSiteLoginWindow`）：它和
+ * 引擎视图共用同一个浏览器分区，cookie 天然互通，登完关掉窗口即可。
+ *
  * ## 一期限制（明确列出，避免被当成 bug）
  *  - 网页端是**纯对话**：claude 的工具能力用不上（上游不产出 tool_use）；
  *  - 视图被 LRU 淘汰或应用重启后，网页那边的上下文会重来（它会"忘记"前文）；
@@ -26,6 +32,7 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { homedir } from "node:os";
+import { openSiteLoginWindow } from "@main/browser/BrowserManager.js";
 import { log } from "@main/lib/logger.js";
 import { adapterById } from "@main/providers/web-agent/adapters/index.js";
 import type { SiteAdapter } from "@main/providers/web-agent/adapters/types.js";
@@ -128,15 +135,15 @@ export async function handleWebMessages(
 
     const probe = await session.probe();
     if (probe?.loggedOut) {
-      session.revealToUser();
+      openLoginWindowFor(adapter);
       throw new Error(
-        `需要先登录 ${adapter.label}：已在右侧打开站点页面，登录后重新发送即可（也可在「设置 → 模型配置」里点「打开登录窗口」）。`,
+        `需要先登录 ${adapter.label}：已弹出一个登录窗口，登录完成后关掉它、重新发送即可（也可在「设置 → 模型配置」里点「打开登录窗口」）。`,
       );
     }
     if (!probe?.input) {
-      session.revealToUser();
+      openLoginWindowFor(adapter);
       throw new Error(
-        `在 ${adapter.label} 页面上找不到输入框（${describeProbe(probe)}）。可能页面还没加载完，或站点已改版。`,
+        `在 ${adapter.label} 页面上找不到输入框（${describeProbe(probe)}）。已弹出登录窗口，可先在里面确认站点能正常打开并登录，然后重发。`,
       );
     }
 
@@ -189,19 +196,37 @@ export async function handleWebMessages(
 }
 
 /**
- * 让某个站点的引擎视图显形并交给用户操作（设置页的「打开登录窗口」按钮）。
+ * 让某个站点的登录窗口弹出来（设置页的「打开登录窗口」按钮，以及发消息时发现
+ * 未登录的那条路）。
  *
- * 用独立的 key（`login:<siteId>`）而不是某个会话的 key：用户是在"给这个站点
- * 登录"，不是在某个对话里。
+ * 用**独立的操作系统窗口**，不是把引擎视图显形：引擎视图是主窗口的
+ * `WebContentsView`，位置由渲染端下发的 bounds 决定，而用户此刻多半正在设置页
+ * （全屏 overlay）上 —— 视图会被盖在底下，表现为"点了没反应"。独立窗口没有这个
+ * 问题（见 BrowserManager.openSiteLoginWindow）。
+ *
+ * 不按会话 key 建视图：用户是在"给这个站点登录"，不是在某个对话里；登录态本身
+ * 是分区级共享的，登录一次之后所有会话的引擎视图都受益。
  */
 export async function revealSiteForLogin(siteId: string): Promise<{ ok: boolean; error?: string }> {
   const adapter = adapterById(siteId);
   if (!adapter) return { ok: false, error: `未知的网页版站点：${siteId}` };
-  const session = acquireSession(`login:${siteId}`, adapter);
-  const view = await session.ensureView();
-  if (!view.ok) return { ok: false, error: view.error };
-  session.revealToUser();
-  return { ok: true };
+  return openLoginWindowFor(adapter);
+}
+
+/**
+ * 弹出某个站点的登录窗口，并在窗口关闭后刷新该站点的引擎视图。
+ *
+ * 刷新是必需的：cookie 跟着分区即时生效，但已经加载过的那一页 DOM 仍停在未登录
+ * 态（SPA 不会自己发现），不重载的话下一轮仍然探不到输入框。
+ */
+function openLoginWindowFor(adapter: SiteAdapter): { ok: boolean; error?: string } {
+  return openSiteLoginWindow({
+    url: adapter.homeUrl,
+    title: `登录 ${adapter.label}`,
+    onClosed: () => {
+      for (const session of sessions.values()) session.reloadIfSite(adapter);
+    },
+  });
 }
 
 /** 关闭全部网页视图（应用退出时调用，与 BridgeRegistry.disposeAll 一同）。 */
