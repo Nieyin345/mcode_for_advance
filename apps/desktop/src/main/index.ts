@@ -12,6 +12,9 @@ import {
   ensureStarted,
   stopExtensionBridge,
 } from "@main/providers/bridge/extensionBridge.js";
+import { configureMcpToolHost } from "@main/providers/bridge/mcpEndpoint.js";
+import { createWebToolHost } from "@main/mcp/webToolHost.js";
+import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { lspManager } from "@main/lsp/LspManager.js";
 import { BrowserManager } from "@main/browser/BrowserManager.js";
 import { startMobileServer, stopMobileServer } from "@main/mobile/MobileHttpServer.js";
@@ -147,6 +150,13 @@ app.whenReady().then(async () => {
       get: () => SettingRepo.get(BRIDGE_TOKEN_SETTING_KEY),
       set: (value) => SettingRepo.set(BRIDGE_TOKEN_SETTING_KEY, value),
     });
+    // 网页版模型的工具通路:扩展从同一个服务的 `/mcp` 进来,拿 mcode 的工具表。
+    // 工具表和进程内那两个 server 是同一份,审批闸门也是同一个(见 webToolHost.ts
+    // 文件头)—— 这里只把"会话 → 闸门"接到 RuntimeManager 上。装配很轻(表在扩展
+    // 第一次 tools/list 时才转 JSON Schema),所以不必等设置页打开。
+    configureMcpToolHost(
+      createWebToolHost({ gateFor: (sessionId) => runtimeManager.webToolGate(sessionId) }),
+    );
     // 顺手把桥起起来，别等用户点开设置页才 listen：浏览器里的扩展是**主动来连**
     // 的一方，端口不开它就只能显示"未连接"，而用户并不知道要先去点一下设置页。
     // 失败也不拦启动（绑定失败已经写在 ensureStarted 里，只记日志）。

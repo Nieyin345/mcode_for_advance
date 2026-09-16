@@ -12,11 +12,65 @@
  * `text` / `fail` / `SdkTool` 跟着一起放,是因为它们与加载器服务于同一件事 —— 写一个
  * 进程内 MCP server。多一个 server 时,这一份就该是它 import 的第一样东西。
  */
+import type { z } from "zod";
 import type { createSdkMcpServer as CreateSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 
 /** 一个工具的返回值。MCP 只认这种形状的文本结果。 */
 export interface ToolResult {
   content: Array<{ type: "text"; text: string }>;
+}
+
+/** MCP 工具处理函数拿到的那点上下文。目前只有一样:**这是哪一次对话**。
+ *
+ *  绝大多数工具用不上它 —— 它们动的是库里/工作流里那份全局状态。用得上的是
+ *  「挂进这次对话」那类:附件是**按会话**存的,没有会话 id 就不知道该挂给谁。 */
+export interface McpToolContext {
+  sessionId: string;
+}
+
+/**
+ * 一个工具的**声明**,不含 SDK。
+ *
+ * 直接把内联数组交给 `createSdkMcpServer` 也可以,但那样工具表就只活在 SDK 的形状里。
+ * 网页端那条通路不过 SDK(它把工具表原样报给浏览器里的扩展),想用同一份表就得抄一遍 ——
+ * 而抄一遍的那份一定会在下次加工具时漂移。所以把"名字 + 说明 + 入参形状 + 处理函数"
+ * 收成这一个类型,两个 server 都用它声明,谁要用谁 map 一次。
+ *
+ * `inputSchema` 与 SDK 的 `inputSchema` 同形:**字段名 → zod 类型**的裸 shape
+ * (不是 `z.object(...)`,包裹由各自的消费方做)。
+ */
+export interface McpToolSpec {
+  name: string;
+  description: string;
+  inputSchema: Record<string, z.ZodTypeAny>;
+  /**
+   * ⚠️ `args` 是宽的,这不是偷懒:表里每个 handler 都写着自己的**具体形状**
+   * (`{ id: string }`、`{ journals: string[] }`…),而调用方是**按名字动态派发**的 ——
+   * 它拿到的是线上来的一个 JSON 对象,派发那一刻不知道也不该知道是哪一种。
+   * 真实校验发生在更前面:走 SDK 的那条路由 SDK 按 `inputSchema` 校验,走网页端的那条
+   * 由 webToolHost 用同一份 zod schema 校验。所以到 handler 里时形状**已经是对的**,
+   * 只是类型系统追不到那一步。
+   *
+   * 用 `Record<string, unknown>` 会立刻在二十几个 handler 上炸出 "缺属性" 的错误 ——
+   * 那是拿类型系统去否定一件它本来就看不见的事。与 {@link SdkTool} 那段是同一个取舍。
+   */
+  handler: (args: any, ctx: McpToolContext) => Promise<ToolResult> | ToolResult;
+}
+
+/**
+ * 把工具表按会话套成 SDK 要的形状 —— 两个 server 都走这一段。
+ *
+ * 会话在这里**闭合**进每个 handler:表本身是无状态的(它还得给网页端那条通路复用),
+ * "挂进哪次对话"由调用方给的那一次决定。多一层 `as` 是因为 SDK 的 handler 入参是宽的
+ * `{ [x: string]: unknown }`,而表里写的是具体形状(同 {@link SdkTool} 那段注释)。
+ */
+export function toSdkTools(specs: McpToolSpec[], ctx: McpToolContext): SdkTool[] {
+  return specs.map((spec) => ({
+    name: spec.name,
+    description: spec.description,
+    inputSchema: spec.inputSchema,
+    handler: (args: Record<string, unknown>) => spec.handler(args, ctx),
+  })) as SdkTool[];
 }
 
 /** 成功:把要说的写清楚。 */

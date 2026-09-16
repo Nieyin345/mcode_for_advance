@@ -88,7 +88,7 @@ import {
 import { getWorkflow, listWorkflows, removeWorkflow, saveWorkflow } from "@main/orchestration/library.js";
 import { NODE_AGENT_TYPE_ID, loadNodeTypes, localNodeTypesDir } from "@main/orchestration/nodeTypes.js";
 import { notifyWorkflowsChanged } from "@main/orchestration/broadcast.js";
-import { fail, loadCreateMcpServer, text, type SdkTool } from "./sdk.js";
+import { fail, loadCreateMcpServer, text, toSdkTools, type McpToolSpec } from "./sdk.js";
 
 /** MCP server 名。SDK 把工具暴露成 `mcp__<这个名字>__<工具名>`。
  *
@@ -408,13 +408,14 @@ function shapeLine(doc: WorkflowDoc): string {
 
 
 /**
- * 构建这个 MCP server。与库那个同构:惰性 import SDK(那个模块很大,不能挂在启动
- * 路径上),一次性构造,按需挂到 `options.mcpServers`。
+ * 这个 server 的工具表 —— **只有声明,不碰 SDK**。
+ *
+ * 抽出来的原因见 `./sdk.ts` 的 `McpToolSpec`:同一份表还要给网页端那条通路用
+ * (浏览器里的扩展直接向主进程要工具,不经过 SDK)。所以这里返回声明,
+ * {@link buildWorkflowMcpServer} 与 `main/mcp/webToolHost.ts` 各自 map 一次。
  */
-export async function buildWorkflowMcpServer() {
-  const createSdkMcpServer = await loadCreateMcpServer();
-
-  const tools = [
+export function workflowMcpTools(): McpToolSpec[] {
+  return [
     /* ─────────────── 读(自动放行)─────────────── */
     {
       name: "workflow_list",
@@ -677,6 +678,14 @@ export async function buildWorkflowMcpServer() {
       },
     },
   ];
+}
+
+/**
+ * 构建这个 MCP server。与库那个同构:惰性 import SDK(那个模块很大,不能挂在
+ * 启动路径上),一次性构造,按需挂到 `options.mcpServers`。
+ */
+export async function buildWorkflowMcpServer(opts: { sessionId: string }) {
+  const createSdkMcpServer = await loadCreateMcpServer();
 
   return createSdkMcpServer({
     name: WORKFLOW_MCP_SERVER,
@@ -700,6 +709,6 @@ export async function buildWorkflowMcpServer() {
     //
     // 库里/浏览器那两份仍然是常驻:它们是**每一轮都可能用到**的骨干(读一篇文献、看一眼
     // 网页),被检索挡一层反而会拖慢正常流程。判据是"用到的频率",不是"重不重要"。
-    tools: tools as SdkTool[],
+    tools: toSdkTools(workflowMcpTools(), { sessionId: opts.sessionId }),
   });
 }

@@ -48,7 +48,7 @@ import { MCP_LIBRARY_SERVER } from "@contracts/ipc";
 import { searchExternal } from "@main/library/metadata.js";
 import { rankJournals } from "@main/library/journalRank.js";
 import { notifyLibraryChanged } from "@main/library/broadcast.js";
-import { fail, loadCreateMcpServer, text, type SdkTool } from "./sdk.js";
+import { fail, loadCreateMcpServer, text, toSdkTools, type McpToolContext, type McpToolSpec } from "./sdk.js";
 
 /** MCP server 名。SDK 把工具暴露成 `mcp__<这个名字>__<工具名>`。
  *
@@ -111,13 +111,14 @@ function collectionLines(kind: LibraryKind): string[] {
 const KIND = z.enum(["paper", "textbook", "note"]);
 
 /**
- * 构建这个 MCP server。与浏览器那个同构:惰性 import SDK(那个模块很大,不能挂在
- * 启动路径上),一次性构造,按需挂到 options.mcpServers。
+ * 这个 server 的工具表 —— **只有声明,不碰 SDK**。
+ *
+ * 抽出来的原因见 `./sdk.ts` 的 `McpToolSpec`:同一份表还要给网页端那条通路用
+ * (浏览器里的扩展直接向主进程要工具,不经过 SDK)。所以这里返回声明,
+ * {@link buildLibraryMcpServer} 与 `main/mcp/webToolHost.ts` 各自 map 一次。
  */
-export async function buildLibraryMcpServer(opts: { sessionId: string }) {
-  const createSdkMcpServer = await loadCreateMcpServer();
-
-  const tools = [
+export function libraryMcpTools(): McpToolSpec[] {
+  return [
       {
         name: "library_collections",
         description:
@@ -284,12 +285,12 @@ export async function buildLibraryMcpServer(opts: { sessionId: string }) {
           collectionId: z.string().describe("要挂的分类 id;挂单独一篇时用 itemId"),
           itemId: z.string().optional().describe("改挂单独一篇时给条目 id,与 collectionId 二选一"),
         },
-        handler: async (args: { collectionId?: string; itemId?: string }) => {
+        handler: async (args: { collectionId?: string; itemId?: string }, ctx: McpToolContext) => {
           if (!args.itemId && !args.collectionId) return fail("要给 collectionId 或 itemId");
           // 实现只有一份(见 library/manifest.ts 的 attachToChat)—— 与左栏右键
           // 「添加到当前对话」调的是同一个函数,所以 AI 挂的和你自己挂的必然一样。
           const res = attachToChat(
-            opts.sessionId,
+            ctx.sessionId,
             args.itemId ? `i:${args.itemId}` : `c:${args.collectionId}`,
           );
           if (!res.ok) return fail(res.error ?? "挂不上去");
@@ -356,10 +357,10 @@ export async function buildLibraryMcpServer(opts: { sessionId: string }) {
             .optional()
             .describe("要挂的那一条的目录名;省略 = 挂整个类目(给的是索引)"),
         },
-        handler: async (args: { kind: TemplateKind; dirName?: string }) => {
+        handler: async (args: { kind: TemplateKind; dirName?: string }, ctx: McpToolContext) => {
           // 实现只有一份(见 templates/store.ts 的 attachTemplateToChat)—— 与左栏
           // 右键「添加到当前对话」、设置页那个气泡调的是同一个函数。
-          const res = attachTemplateToChat(opts.sessionId, args.kind, args.dirName);
+          const res = attachTemplateToChat(ctx.sessionId, args.kind, args.dirName);
           if (!res.ok) return fail(res.error ?? "挂不上去");
           return args.dirName
             ? text(
@@ -547,6 +548,14 @@ export async function buildLibraryMcpServer(opts: { sessionId: string }) {
         },
       },
   ];
+}
+
+/**
+ * 构建这个 MCP server。与浏览器那个同构:惰性 import SDK(那个模块很大,不能挂在
+ * 启动路径上),一次性构造,按需挂到 `options.mcpServers`。
+ */
+export async function buildLibraryMcpServer(opts: { sessionId: string }) {
+  const createSdkMcpServer = await loadCreateMcpServer();
 
   return createSdkMcpServer({
     name: LIBRARY_MCP_SERVER,
@@ -558,6 +567,6 @@ export async function buildLibraryMcpServer(opts: { sessionId: string }) {
       "模版库:五个类目 ppt / latex / word / code / image,一条模版是一个文件夹(目录名即名字)," +
       "用 templates_list 列出、templates_attach_to_chat 挂进对话。",
     alwaysLoad: true,
-    tools: tools as SdkTool[],
+    tools: toSdkTools(libraryMcpTools(), { sessionId: opts.sessionId }),
   });
 }

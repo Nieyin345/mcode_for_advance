@@ -30,6 +30,9 @@ import {
 } from "@main/providers/upstreamHeaders.js";
 import { anthropicToOpenAI } from "./requestTranslator.js";
 import { OpenAiToAnthropicSse } from "./responseTranslator.js";
+// 纯函数（只认一个请求头），静态 import 是安全的 —— 它不拉 electron，理由同 webUpstream
+// 那条动态 import 的注释。
+import { sessionIdOf } from "./mcpEndpoint.js";
 import type {
   AnthropicRequest,
   AnthropicSseEvent,
@@ -315,7 +318,10 @@ async function handleMessages(
     // 把它那一串（契约 + 日志 + 本地服务）拉进常驻依赖图。它现在不含 electron 依赖，
     // 但这个习惯留着 —— 上一版的网页上游正是靠它才没把无头 smoke 炸掉。
     const { handleWebMessages } = await import("./webUpstream.js");
-    await handleWebMessages(req, res, body, upstream);
+    // 会话 id 是 CLI 那边通过 `MCODE_SESSION_HEADER` 带进来的（见 customEnv.ts）。
+    // 只有网页这条路需要它 —— 扩展得知道"这次工具调用属于哪次对话"才能回头走审批闸门。
+    // 上面那条 OpenAI 转发不吃它：`upstreamHeaders` 是重新拼的，请求头不会漏到上游。
+    await handleWebMessages(req, res, body, upstream, sessionIdOf(req));
     return;
   }
 

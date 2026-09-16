@@ -329,3 +329,29 @@ export interface ExtensionBridgeStatus {
   /** 本次配对建立的时间戳（ms）；未配对为 null。 */
   pairedAt: number | null;
 }
+
+/**
+ * 「这次工具调用属于哪次对话」的请求头名。
+ *
+ * ## 为什么住在契约层
+ *
+ * 它是**跨进程的线协议字面量**：主进程写它（把会话 id 交给 CLI 子进程，见
+ * `main/providers/claude-sdk/customEnv.ts`）、主进程读它（从扩展发来的 `/mcp`
+ * 请求里认出会话）、扩展那个仓库里也照抄同一个名字（它镜像的是 mcode 定下的线
+ * 协议）。所以它和上面的站点目录一样属于"两端都要用的常量"。
+ *
+ * 具体地，它**不能**住在 `main/providers/bridge/mcpEndpoint.ts` 里 —— 那份 import
+ * 了 logger，而 logger 拉 electron；任何引它的纯模块都会把 electron 带进无头
+ * smoke（`agent-env-smoke` / `plugins-smoke` 就这么红过一次）。
+ *
+ * ## ⚠️ 这是唯一能说清"哪次对话"的东西
+ *
+ * 别指望从别处推：`/v1/messages` 那条路上唯一能拿到的身份是 CLI 塞在 body 里的
+ * `metadata.user_id`（`user_…_account__session_…`），而没有任何可信证据表明它尾巴上
+ * 那截等于 mcode 的会话 id —— 靠猜一次，将来某次升级就会让「挂到这次对话」挂错人，
+ * 而且是静默的。
+ *
+ * 所以显式带：值是**裸的 mcode 会话 id**（不加前缀 —— 这条头只在 mcode 与扩展之间
+ * 转一圈，不会发到任何上游）。
+ */
+export const MCODE_SESSION_HEADER = "x-mcode-session";

@@ -85,6 +85,9 @@ export async function handleWebMessages(
   res: ServerResponse,
   body: AnthropicRequest,
   upstream: UpstreamConfig,
+  /** mcode 的会话 id，来自 `MCODE_SESSION_HEADER`（见 `mcpEndpoint.ts`）。
+   *  扩展要拿它去填 `/mcp` 的会话头，否则它调回来的工具调用无从判定属于哪次对话。 */
+  mcodeSessionId: string | null,
 ): Promise<void> {
   const siteId = upstream.webSiteId ?? "";
   if (!webSiteById(siteId)) {
@@ -118,6 +121,7 @@ export async function handleWebMessages(
 
     await runPrompt({
       sessionKey: sessionKeyOf(body),
+      sessionId: mcodeSessionId ?? undefined,
       siteId,
       text: prompt,
       signal: ac.signal,

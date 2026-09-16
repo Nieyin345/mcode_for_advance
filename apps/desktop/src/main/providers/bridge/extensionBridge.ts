@@ -44,6 +44,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomBytes, randomUUID } from "node:crypto";
 import { log } from "@main/lib/logger.js";
+import { MCODE_SESSION_HEADER, MCP_ENDPOINT_PATH, handleMcpRequest } from "./mcpEndpoint.js";
 import type { ExtensionBridgeStatus } from "@contracts/customModel";
 
 /** 心跳间隔。扩展侧靠它区分"链路还活着但模型没吐字"和"mcode 没了"；
@@ -172,10 +173,21 @@ export function regenerateToken(): ExtensionBridgeStatus {
 }
 
 /**
+ * 优先用的端口。
+ *
+ * 端口是**要用户手抄进扩展设置里的东西**(扩展那边得知道连哪儿),所以它不能每次都
+ * 变 —— 随机端口意味着重启一次就要重配一次,而用户不会知道要重配,只会觉得"连不上了"。
+ * 挑的这个号落在私有段里、不撞常见服务(5173/8080 那类)。
+ *
+ * 被占了就退回随机(`listen(0)`)—— 宁可让用户偶尔重配一次,也不能因为端口冲突就
+ * 整个功能起不来。设置页显示的是**实际**监听到的地址(`bridgeStatus().url`),不是这个常量。
+ */
+const PREFERRED_PORT = 17831;
+
+/**
  * 确保服务在听。幂等 —— 并发调用共用同一个 promise，重复调用不重开端口。
  *
- * `listen(0)` 交给操作系统发一个空闲端口（照 `bridgeServer.ts` 的既有做法）：
- * 既不会和用户机器上别的东西撞车，也不用多一个配置项。
+ * 先试 {@link PREFERRED_PORT},占用则回退随机端口（照 `bridgeServer.ts` 的既有做法）。
  */
 export async function ensureStarted(): Promise<void> {
   if (server) return;
@@ -192,12 +204,8 @@ export async function ensureStarted(): Promise<void> {
         res.end(JSON.stringify({ error: "internal bridge error" }));
       });
     });
-    srv.on("error", (err) => {
-      starting = null;
-      log.error(`extension bridge: listen failed: ${err.message}`);
-      reject(err);
-    });
-    srv.listen(0, "127.0.0.1", () => {
+
+    const onListening = () => {
       const addr = srv.address();
       if (!addr || typeof addr !== "object") {
         starting = null;
@@ -208,7 +216,22 @@ export async function ensureStarted(): Promise<void> {
       localUrl = `http://127.0.0.1:${addr.port}`;
       log.info(`extension bridge: listening on ${localUrl}`);
       resolve();
+    };
+
+    let fellBack = false;
+    srv.on("error", (err) => {
+      // 只在**第一次**、且确实是"端口被占"时回退；回退之后再失败就是真起不来了。
+      if (!fellBack && (err as NodeJS.ErrnoException).code === "EADDRINUSE") {
+        fellBack = true;
+        log.info(`extension bridge: port ${PREFERRED_PORT} is taken, using a random one`);
+        srv.listen(0, "127.0.0.1", onListening);
+        return;
+      }
+      starting = null;
+      log.error(`extension bridge: listen failed: ${err.message}`);
+      reject(err);
     });
+    srv.listen(PREFERRED_PORT, "127.0.0.1", onListening);
   });
 
   return starting;
@@ -251,6 +274,18 @@ function dropClient(why: string): void {
 export interface RunPromptOptions {
   /** mcode 会话标识 —— 扩展据此维护「会话 ↔ 网页对话」映射。 */
   sessionKey: string;
+  /**
+   * mcode 的**会话 id**（与 `sessionKey` 不是一回事，见 `mcpEndpoint.ts` 的
+   * `MCODE_SESSION_HEADER`）。
+   *
+   * `sessionKey` 只够扩展自己分清"哪一页对应哪个对话"；而网页端要调 mcode 的工具时，
+   * 工具调用会带着会话 id 回来走审批闸门 —— 闸门是按会话记的（权限模式、「始终允许」），
+   * 所以扩展必须知道**真正**的那个 id。它从这条事件里学到，回头填进 `/mcp` 的请求头。
+   *
+   * 拿不到（老配置/理论上没有会话的路径）就是空 —— 那时工具调用会被明确拒掉，
+   * 而不是挂到一个猜出来的会话上。
+   */
+  sessionId?: string;
   /** 站点 id（见 contracts 的 WEB_SITES）。 */
   siteId: string;
   /** 本轮要问的话（只发最后一条 user 消息，上下文靠网页自己维持）。 */
@@ -315,6 +350,8 @@ export async function runPrompt(opts: RunPromptOptions): Promise<void> {
         type: "prompt",
         turnId: id,
         sessionKey: opts.sessionKey,
+        // 扩展要拿它去填 `/mcp` 的会话头，见 RunPromptOptions.sessionId。
+        sessionId: opts.sessionId ?? "",
         siteId: opts.siteId,
         text: opts.text,
       });
@@ -357,8 +394,15 @@ function applyCors(req: IncomingMessage, res: ServerResponse): void {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
   }
-  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  // 后两样是 `/mcp` 那条路要的:标准 MCP 客户端会带协议版本与（服务端给了才有的）
+  // 会话 id,而浏览器只有在预检里见过这两个名字才肯把它们发出去。
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    `Authorization, Content-Type, MCP-Protocol-Version, Mcp-Session-Id, ${MCODE_SESSION_HEADER}`,
+  );
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  // 预检要能看见这两个头,否则 `/mcp` 的响应头在扩展里读不到。
+  res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
   res.setHeader("Access-Control-Max-Age", "600");
 }
 
@@ -405,6 +449,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
   if (req.method === "POST" && url.pathname === "/v1/bridge/events") {
     await handleEvents(req, res);
+    return;
+  }
+  // MCP 端点与桥**同一个服务、同一个令牌**(见 mcpEndpoint.ts 文件头:用户已经为这一套
+  // 配过一次地址和令牌了,不该为了同一个扩展再配第二遍)。
+  if (url.pathname === MCP_ENDPOINT_PATH) {
+    await handleMcpRequest(req, res);
     return;
   }
   json(res, 404, { error: "not found" });

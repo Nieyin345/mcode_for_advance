@@ -86,6 +86,10 @@ import {
   parseCustomHeaderLines,
   resolveUpstreamHeaders,
 } from "@main/providers/upstreamHeaders.js";
+// 会话头字面量来自契约层。**不能**从 `main/providers/bridge/mcpEndpoint.js` 引 ——
+// 那份 import 了 logger，而 logger 拉 electron；这个文件被无头 smoke 直接 bundle
+// （agent-env-smoke / plugins-smoke），会把 electron 带进去当场崩掉。
+import { MCODE_SESSION_HEADER } from "@contracts/customModel";
 
 /** Mcode's own Claude config directory. We always set CLAUDE_CONFIG_DIR to
  *  this path so the bundled claude binary reads its user-level config
@@ -257,6 +261,20 @@ export function buildCustomEnv(
     if (Object.keys(upstreamHeaders).length > 0) {
       env.ANTHROPIC_CUSTOM_HEADERS = formatCustomHeaderLines(upstreamHeaders);
     }
+  } else if (opts?.sessionId) {
+    // 走本地桥的那两条协议（openai / web）：头是发给**本地桥**的，不是发给上游网关的，
+    // 所以只放我们自己的那一个会话头（见 `MCODE_SESSION_HEADER` 那段注释：这是网页端
+    // 回头调 mcode 工具时唯一能说清"属于哪次对话"的东西）。
+    //
+    // 用户的 `cfg.customHeaders` **不在这里加**：上游那一侧的头由桥自己注入
+    // （`upstreamHeaders` 重新拼一份），在这里加只会让它们寄给 localhost。
+    //
+    // 没有 sessionId 就**一个字都不写** —— 现编一个假的会让扩展把工具调用挂到不存在的
+    // 会话上，那时故障从"明确拒绝"变成"静默挂错"。
+    env.ANTHROPIC_CUSTOM_HEADERS = formatCustomHeaderLines({
+      ...parseCustomHeaderLines(env.ANTHROPIC_CUSTOM_HEADERS),
+      [MCODE_SESSION_HEADER]: opts.sessionId,
+    });
   }
 
   // Always redirect the claude binary's user-level config root to Mcode's

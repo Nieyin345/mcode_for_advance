@@ -24,6 +24,9 @@ import { invalidateUsageStats } from "@main/lib/usageStats.js";
 import { log } from "@main/lib/logger.js";
 import { backflowPrompt, clearBackflow, peekBackflow } from "@main/lib/pendingBackflow.js";
 import { resolveWorkflowPrompt } from "@main/orchestration/prompt.js";
+// 只借类型 —— `import type` 整条会被编译掉,那条链(工具表 → repositories → db →
+// electron)不会因此被拉进任何无头 smoke。
+import type { WebToolGate } from "@main/mcp/webToolHost.js";
 
 interface SessionRuntime {
   /** The TurnHandle for the currently running turn, if any. */
@@ -1234,6 +1237,40 @@ class RuntimeManager {
    *  `permissionMode` option can't be hot-swapped, but our host-side gate can). */
   setPermissionMode(sessionId: string, mode: PermissionMode): void {
     approvalBridge.setPermissionMode(sessionId, mode);
+  }
+
+  /**
+   * 网页端工具调用的闸门句柄 —— 浏览器里的扩展调 `/mcp` 时,由 `webToolHost` 来要。
+   *
+   * 它把**同一个** `approvalBridge` 的三个面按会话封起来:当前权限模式、「始终允许」
+   * 的记录、以及"弹一张卡并等用户点"。于是网页那条通路弹的就是界面上的审批卡,权限
+   * 模式与「始终允许」也**跟着 mcode 的设置走**(用户的原话:"这个决策和 mcode 的设置
+   * 一样啊")。
+   *
+   * 事件用 `rt.ctx.emit`(而不是 `emitExternal`)是有意的:那条闭包带着**改道**与
+   * **无人值守兜底**(`setInteractiveProxy` / `declineUnattended`)。网页版模型完全
+   * 可能跑在工作流的节点里,那时审批该代父对话问、或者在没有人在场时按拒绝落地 ——
+   * 绕开它就会挂在那儿等一个永远不会来的人。
+   *
+   * 会话还没跑过回合时(扩展在 mcode 重启后仍然连着,工具调用先到)现绑一次:
+   * 闸门的两个状态挂在 `SessionRuntime` 那一份上,不绑就没有落点。库里查不到就是
+   * 真没了 —— 给 null,让宿主去回绝(它不会在没有闸门的情况下放行)。
+   */
+  webToolGate(sessionId: string): WebToolGate | null {
+    let rt = this.sessions.get(sessionId);
+    if (!rt) {
+      const session = SessionRepo.get(sessionId);
+      if (!session) return null;
+      this.bindSession(session);
+      rt = this.sessions.get(sessionId);
+      if (!rt) return null;
+    }
+    const emit = rt.ctx.emit;
+    return {
+      permissionMode: () => approvalBridge.getPermissionMode(sessionId),
+      isAlwaysAllowed: (toolName) => approvalBridge.isAlwaysAllowed(sessionId, toolName),
+      requestApproval: approvalBridge.makeApprovalHandler(sessionId, emit),
+    };
   }
 
   /** Resolve a user-input request (AskUserQuestion answer). On success,
