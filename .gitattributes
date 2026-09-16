@@ -1,1 +1,20 @@
+# 统一换行:仓库与工作区一律 LF(原策略)。
 * text=auto eol=lf
+
+# cmd.exe 只认 CRLF,这两类文件例外
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# git 无法可靠自检的二进制类型,显式声明防止误归一化
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.node binary
+*.zip binary
+*.tar.gz binary
