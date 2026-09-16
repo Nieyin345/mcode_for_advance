@@ -30,21 +30,13 @@ import type {
 } from "@contracts/library";
 import { normPathKey } from "@main/lib/pathNorm.js";
 import { getDb, persist } from "./db.js";
+// sessions 表的列定义/绑定/读取全在 sessionSchema.ts(单一事实来源)。
+// v / safeJson / BindValue / SessionRow 也住在那儿 —— 仓库其余部分沿用。
+import { v, safeJson, SESSION_COLUMNS, type BindValue, type SessionRow } from "./sessionSchema.js";
 
 /* sql.js binds `?` params positionally as an array. Values must be
  * string | number | Uint8Array | null — booleans/undefined aren't accepted,
  * so we normalize values before binding. Nulls are passed through. */
-type BindValue = string | number | Uint8Array | null;
-function v(x: unknown): BindValue {
-  if (x === undefined || x === null) return null;
-  if (typeof x === "boolean") return x ? 1 : 0;
-  return x as BindValue;
-}
-
-function safeJson(x: unknown): unknown {
-  if (typeof x !== "string") return x;
-  try { return JSON.parse(x); } catch { return x; }
-}
 
 /* ─────────────────────────────── Projects ─────────────────────────────── */
 
@@ -231,112 +223,27 @@ export const ProjectRepo = {
 
 /* ─────────────────────────────── Sessions ─────────────────────────────── */
 
-interface SessionRow {
-  id: string;
-  project_id: string;
-  provider_id: string;
-  claude_session_id: string | null;
-  kind: string;
-  parent_session_id: string | null;
-  title: string;
-  status: string;
-  model: string;
-  effort: string;
-  permission_mode: string;
-  composer_mode: string;
-  custom_model_id: string | null;
-  archived: number;
-  pinned_at: number | null;
-  context_snapshot: string | null;
-  todos: string | null;
-  subagents: string | null;
-  plan_draft: string | null;
-  turn_files: string | null;
-  usage_history: string | null;
-  bookmarks: string | null;
-  subagent_transcripts: string | null;
-  env_mode: string;
-  worktree_path: string | null;
-  wt_style: string | null;
-  created_at: number;
-  updated_at: number;
-}
+// SessionRow 类型与每一列的 bind/read 都在 sessionSchema.ts —— 这里不再维护
+// 第二份列清单。rowToSession / SessionRepo.create 由 SESSION_COLUMNS 生成。
 
+/** 行 → Session。逐列调用 sessionSchema.ts 里定义的 read(枚举归一 / JSON 反
+ *  序列化都在那份定义里),不再手写字段映射 —— 新列只改 sessionSchema。 */
 function rowToSession(r: SessionRow): Session {
-  return {
-    id: r.id,
-    projectId: r.project_id,
-    providerId: r.provider_id ?? "claude-sdk",
-    claudeSessionId: r.claude_session_id,
-    // ⚠️ **三值,不是"是 side 吗"的二值。** 早先这里是 `r.kind === "side" ? "side" : "chat"`,
-    // 那会把任何它不认识的 kind 读成 `chat` —— 工作流节点会话(`kind = "node"`)会
-    // 当场变成普通会话涌进左栏。新增一种 kind 时**这里必须一起改**,否则症状出现在
-    // 离这里很远的地方。
-    kind: r.kind === "side" ? "side" : r.kind === "node" ? "node" : "chat",
-    parentSessionId: r.parent_session_id ?? null,
-    title: r.title,
-    status: r.status as Session["status"],
-    model: r.model,
-    effort: r.effort as Session["effort"],
-    permissionMode: r.permission_mode as Session["permissionMode"],
-    workflowId: (r.composer_mode as Session["workflowId"]) ?? "default",
-    customModelId: r.custom_model_id ?? null,
-    archived: !!r.archived,
-    pinnedAt: r.pinned_at ?? null,
-    contextSnapshot: (r.context_snapshot ? safeJson(r.context_snapshot) : null) as ContextSnapshot | null,
-    todos: (r.todos ? safeJson(r.todos) : null) as SessionTodoItem[] | null,
-    subagents: (r.subagents ? safeJson(r.subagents) : null) as SubagentSnapshot[] | null,
-    planDraft: (r.plan_draft ? safeJson(r.plan_draft) : null) as SessionPlanDraft | null,
-    turnFiles: (r.turn_files ? safeJson(r.turn_files) : null) as TurnFileEntry[] | null,
-    usageHistory: (r.usage_history ? safeJson(r.usage_history) : null) as TurnUsageRecord[] | null,
-    bookmarks: (r.bookmarks ? safeJson(r.bookmarks) : null) as SessionBookmark[] | null,
-    subagentTranscripts: (r.subagent_transcripts
-      ? safeJson(r.subagent_transcripts)
-      : null) as Session["subagentTranscripts"],
-    envMode: r.env_mode === "worktree" ? "worktree" : "local",
-    worktreePath: r.worktree_path ?? null,
-    wtStyle: r.wt_style === "branch" ? "branch" : r.wt_style === "detached" ? "detached" : null,
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
-  };
+  const out: Record<string, unknown> = {};
+  for (const col of SESSION_COLUMNS) out[col.key] = col.read(r);
+  return out as unknown as Session;
 }
 
 export const SessionRepo = {
   create(s: Session): void {
+    // 列名、占位符、绑定值全部由 SESSION_COLUMNS 生成 —— 列名和值来自同一个
+    // 数组项,位置对位错位从此在结构上不可能发生(以前这里手抄 28 个列名 +
+    // 28 个 `?` + 28 个 `v(...)`,错一位就是静默写错列)。
+    const cols = SESSION_COLUMNS.map((c) => c.name).join(", ");
+    const marks = SESSION_COLUMNS.map(() => "?").join(", ");
     getDb().run(
-      `INSERT INTO sessions
-       (id, project_id, provider_id, claude_session_id, kind, parent_session_id, title, status, model, effort, permission_mode, composer_mode, custom_model_id, archived, pinned_at, context_snapshot, todos, subagents, plan_draft, turn_files, usage_history, bookmarks, subagent_transcripts, env_mode, worktree_path, wt_style, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        v(s.id),
-        v(s.projectId),
-        v(s.providerId),
-        v(s.claudeSessionId),
-        v(s.kind),
-        v(s.parentSessionId),
-        v(s.title),
-        v(s.status),
-        v(s.model),
-        v(s.effort),
-        v(s.permissionMode),
-        v(s.workflowId ?? "default"),
-        v(s.customModelId),
-        v(s.archived ? 1 : 0),
-        v(s.pinnedAt),
-        v(s.contextSnapshot ? JSON.stringify(s.contextSnapshot) : null),
-        v(s.todos ? JSON.stringify(s.todos) : null),
-        v(s.subagents ? JSON.stringify(s.subagents) : null),
-        v(s.planDraft ? JSON.stringify(s.planDraft) : null),
-        v(s.turnFiles ? JSON.stringify(s.turnFiles) : null),
-        v(s.usageHistory ? JSON.stringify(s.usageHistory) : null),
-        v(s.bookmarks ? JSON.stringify(s.bookmarks) : null),
-        v(s.subagentTranscripts ? JSON.stringify(s.subagentTranscripts) : null),
-        v(s.envMode ?? "local"),
-        v(s.worktreePath ?? null),
-        v(s.wtStyle ?? null),
-        v(s.createdAt),
-        v(s.updatedAt),
-      ],
+      `INSERT INTO sessions (${cols}) VALUES (${marks})`,
+      SESSION_COLUMNS.map((c) => c.bind(s)),
     );
     persist();
   },

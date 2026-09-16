@@ -36,6 +36,9 @@ import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataRoot, DATA_DB_FILENAME } from "@main/lib/dataRoot.js";
 import { initDb, getDb } from "@main/store/db.js";
+import { SessionRepo } from "@main/store/repositories.js";
+import { SESSION_COLUMNS } from "@main/store/sessionSchema.js";
+import type { Session } from "@contracts/session";
 
 let failures = 0;
 let checks = 0;
@@ -213,6 +216,105 @@ eq(
   valueOf(d, "SELECT s.title FROM messages m JOIN sessions s ON s.id = m.session_id WHERE m.id='msg_old'"),
   "老对话",
 );
+
+// ⑦ **全字段 round-trip**(SessionRepo.create → get)。
+//
+// 这是防「INSERT 列名/占位符/绑定值位置错位」的那道闸:每个字段塞一个**互不相同**
+// 的哨兵值,整行写进去再整行读回来,任何一个字段串了列,断言当场红。以前 INSERT
+// 是手抄 28 个列名 + 28 个 `?` + 28 个 `v(...)`,错一位没有任何报错 —— 数据悄悄
+// 写进别的列;现在虽然列名和值已从同一个数组生成、结构上错不了,但只要有人改
+// sessionSchema 时漏了某列的 bind/read,或哪天绕开单一来源手写 SQL,这里就会抓住。
+console.log("db-migrate-smoke: 全字段 round-trip …");
+{
+  // 每个字段都用**别的字段没用过**的值,串列必然导致值对不上。
+  const full = {
+    id: "sess_full",
+    projectId: "proj_old",
+    providerId: "pi-sdk",
+    claudeSessionId: "cs-full-1",
+    kind: "side",
+    parentSessionId: "sess_old",
+    title: "全字段对话",
+    status: "active",
+    model: "test-model-full",
+    effort: "high",
+    permissionMode: "bypassPermissions",
+    workflowId: "wf-roundtrip",
+    customModelId: "cm-full-1",
+    archived: true,
+    pinnedAt: 4242,
+    contextSnapshot: { sentinel: "ctx-snap" },
+    todos: [{ sentinel: "todos" }],
+    subagents: [{ sentinel: "subagents" }],
+    planDraft: { sentinel: "plan-draft" },
+    turnFiles: [{ sentinel: "turn-files" }],
+    usageHistory: [{ sentinel: "usage-hist" }],
+    bookmarks: [{ sentinel: "bookmarks" }],
+    subagentTranscripts: { tu_1: [{ sentinel: "sub-tx" }] },
+    envMode: "worktree",
+    worktreePath: "C:/wt-full",
+    wtStyle: "branch",
+    createdAt: 1111,
+    updatedAt: 2222,
+  } as unknown as Session;
+
+  SessionRepo.create(full);
+  const back = SessionRepo.get("sess_full");
+  check("round-trip: 能读回来", back !== undefined);
+  if (back) {
+    eq("round-trip id", back.id, "sess_full");
+    eq("round-trip projectId", back.projectId, "proj_old");
+    eq("round-trip providerId", back.providerId, "pi-sdk");
+    eq("round-trip claudeSessionId", back.claudeSessionId, "cs-full-1");
+    eq("round-trip kind", back.kind, "side");
+    eq("round-trip parentSessionId", back.parentSessionId, "sess_old");
+    eq("round-trip title", back.title, "全字段对话");
+    eq("round-trip status", back.status, "active");
+    eq("round-trip model", back.model, "test-model-full");
+    eq("round-trip effort", back.effort, "high");
+    eq("round-trip permissionMode", back.permissionMode, "bypassPermissions");
+    eq("round-trip workflowId(composer_mode 列)", back.workflowId, "wf-roundtrip");
+    eq("round-trip customModelId", back.customModelId, "cm-full-1");
+    check("round-trip archived", back.archived === true);
+    eq("round-trip pinnedAt", back.pinnedAt, 4242);
+    // JSON 字段比较序列化后的形状(读回来是 parse 过的对象,逐键断言太啰嗦)。
+    for (const [label, a, b] of [
+      ["contextSnapshot", back.contextSnapshot, { sentinel: "ctx-snap" }],
+      ["todos", back.todos, [{ sentinel: "todos" }]],
+      ["subagents", back.subagents, [{ sentinel: "subagents" }]],
+      ["planDraft", back.planDraft, { sentinel: "plan-draft" }],
+      ["turnFiles", back.turnFiles, [{ sentinel: "turn-files" }]],
+      ["usageHistory", back.usageHistory, [{ sentinel: "usage-hist" }]],
+      ["bookmarks", back.bookmarks, [{ sentinel: "bookmarks" }]],
+      ["subagentTranscripts", back.subagentTranscripts, { tu_1: [{ sentinel: "sub-tx" }] }],
+    ] as const) {
+      check(`round-trip ${label}`, JSON.stringify(a) === JSON.stringify(b), a);
+    }
+    eq("round-trip envMode", back.envMode, "worktree");
+    eq("round-trip worktreePath", back.worktreePath, "C:/wt-full");
+    eq("round-trip wtStyle", back.wtStyle, "branch");
+    eq("round-trip createdAt", back.createdAt, 1111);
+    eq("round-trip updatedAt", back.updatedAt, 2222);
+  }
+  // 结构上的守门:SESSION_COLUMNS 必须恰好覆盖表里所有列 —— 多了(表里没有)
+  // 会让 INSERT 报 no such column,少了(表里有)会让 round-trip 读回 undefined。
+  const dbCols: string[] = [];
+  {
+    const stmt = d.prepare("SELECT name FROM pragma_table_info('sessions')");
+    while (stmt.step()) dbCols.push((stmt.getAsObject() as { name: string }).name);
+    stmt.free();
+  }
+  const defCols = SESSION_COLUMNS.map((c) => c.name).sort();
+  check(
+    "SESSION_COLUMNS 与表结构列数一致",
+    dbCols.length === defCols.length,
+    { dbCols: dbCols.length, defCols: defCols.length },
+  );
+  check(
+    "SESSION_COLUMNS 与表结构列名一致",
+    JSON.stringify(dbCols.slice().sort()) === JSON.stringify(defCols),
+  );
+}
 
 console.log(`\n${failures === 0 ? "PASS" : "FAIL"} — ${checks} checks, ${failures} failures`);
 process.exit(failures === 0 ? 0 : 1);

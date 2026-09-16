@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { log } from "@main/lib/logger.js";
 import { dataRoot, migrateLegacyIntoDataRoot, DATA_DB_FILENAME } from "@main/lib/dataRoot.js";
+import { SESSION_COLUMNS, sessionsCreateSql } from "./sessionSchema.js";
 
 let SQL: SqlJsStatic | null = null;
 let db: Database | null = null;
@@ -100,22 +101,9 @@ function migrate(database: Database): void {
       updated_at  INTEGER NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS sessions (
-      id                TEXT PRIMARY KEY,
-      project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-      provider_id       TEXT NOT NULL DEFAULT 'claude-sdk',
-      claude_session_id TEXT,
-      title             TEXT NOT NULL,
-      status            TEXT NOT NULL,
-      model             TEXT NOT NULL,
-      effort            TEXT NOT NULL DEFAULT 'default',
-      permission_mode   TEXT NOT NULL,
-      custom_model_id   TEXT,
-      archived          INTEGER NOT NULL DEFAULT 0,
-      pinned_at         INTEGER,
-      created_at        INTEGER NOT NULL,
-      updated_at        INTEGER NOT NULL
-    );
+    /* sessions 的列由 store/sessionSchema.ts 的 SESSION_COLUMNS 生成(单一事实
+       来源:CREATE / ALTER / INSERT / rowToSession 全从那一份定义出)。 */
+    ${sessionsCreateSql()};
     CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id);
 
     CREATE TABLE IF NOT EXISTS messages (
@@ -301,56 +289,15 @@ function migrate(database: Database): void {
   `);
   // Backward-compatible column adds for dbs created before these columns
   // existed (CREATE TABLE IF NOT EXISTS won't alter an existing table).
-  addColumnIfMissing(database, "sessions", "effort", "TEXT NOT NULL DEFAULT 'default'");
-  addColumnIfMissing(database, "sessions", "provider_id", "TEXT NOT NULL DEFAULT 'claude-sdk'");
-  addColumnIfMissing(database, "sessions", "context_snapshot", "TEXT");
-  // Capsule state (todos / subagents / plan draft) persisted so the
-  // top-right status capsule reloads on session reopen. JSON-serialized,
-  // nullable — same shape as context_snapshot.
-  addColumnIfMissing(database, "sessions", "todos", "TEXT");
-  addColumnIfMissing(database, "sessions", "subagents", "TEXT");
-  addColumnIfMissing(database, "sessions", "plan_draft", "TEXT");
-  addColumnIfMissing(database, "sessions", "custom_model_id", "TEXT");
-  addColumnIfMissing(database, "sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
-  // Pin timestamp for project-scoped session pinning (NULL = not pinned).
-  // Nullable so unpinned rows carry no value; listByProject orders by it DESC
-  // (SQLite puts NULLs last in DESC) to float pinned sessions to the top.
-  addColumnIfMissing(database, "sessions", "pinned_at", "INTEGER");
-  // Per-turn modified-files snapshot (the "本轮修改" card). JSON blob of
-  // TurnFileEntry[]; null after a rewind or for sessions that never edited.
-  addColumnIfMissing(database, "sessions", "turn_files", "TEXT");
-  // User-placed message bookmarks (capsule + timeline markers). JSON blob of
-  // SessionBookmark[]; null for sessions with no bookmarks.
-  addColumnIfMissing(database, "sessions", "bookmarks", "TEXT");
-  // Final subagent transcripts of the most recent turn (side-panel viewer).
-  // JSON blob of Record<toolUseId, TranscriptBlock[]>; cleared at
-  // the start of each new turn.
-  addColumnIfMissing(database, "sessions", "subagent_transcripts", "TEXT");
-  // Per-turn token/cost history. JSON array of TurnUsageRecord; appended at
-  // each turn-end so the context-stats history popover survives restart.
-  addColumnIfMissing(database, "sessions", "usage_history", "TEXT");
-  // Side-chat Q&A sessions (right-panel ask tab): role discriminator + the
-  // owning main session. 'chat' is the default so pre-migration rows and all
-  // existing creation paths stay main sessions. parent_session_id carries no
-  // DB-level FK — deleting a main session nulls the pointer in SessionRepo
-  // instead of cascading (the Q&A history is kept).
-  addColumnIfMissing(database, "sessions", "kind", "TEXT NOT NULL DEFAULT 'chat'");
-  addColumnIfMissing(database, "sessions", "parent_session_id", "TEXT");
-  // Isolated-agent-session environment: 'worktree' rows run their turns in a
-  // detached git worktree (created on first turn, path backfilled) instead of
-  // the project root. 'local' keeps every pre-migration row as-is.
-  addColumnIfMissing(database, "sessions", "env_mode", "TEXT NOT NULL DEFAULT 'local'");
-  addColumnIfMissing(database, "sessions", "worktree_path", "TEXT");
-  // Worktree FORM intent (only read while env_mode='worktree' and the path is
-  // still NULL): 'branch' materializes on a generated mcode/* branch, NULL or
-  // 'detached' keeps the classic detached checkout. Stops mattering once the
-  // worktree exists — the form is self-evident from the checkout.
-  addColumnIfMissing(database, "sessions", "wt_style", "TEXT");
-  // Composer working mode ('default' / 'search' / 'read' / 'write' / 'review' /
-  // 'code' — see BUILTIN_WORKFLOW_IDS in contracts). Persisted per session like the
-  // model/effort/permission slots, so returning to a thread restores the mode
-  // it was left in. 'default' keeps every pre-migration row directive-free.
-  addColumnIfMissing(database, "sessions", "composer_mode", "TEXT NOT NULL DEFAULT 'default'");
+  //
+  // sessions 的兼容列全部由 sessionSchema.ts 的 SESSION_COLUMNS 生成。**对全部
+  // 列都跑一遍** addColumnIfMissing,而不是只挑"不在 CREATE 里"的那些 —— 有些列
+  // (provider_id/effort/archived/pinned_at…)虽然是今天 CREATE 的一部分,却是
+  // 中途才加进建表语句的,更老的库照样缺它们。addColumnIfMissing 自带存在性
+  // 检查,列已在就跳过,28 次 pragma 查询开销可以忽略。
+  for (const col of SESSION_COLUMNS) {
+    addColumnIfMissing(database, "sessions", col.name, col.def);
+  }
   addColumnIfMissing(database, "projects", "archived", "INTEGER NOT NULL DEFAULT 0");
   // Optional user-assigned group name for the left-bar "grouped" view. NULL
   // means the project is ungrouped; the renderer treats "" / undefined as null.
