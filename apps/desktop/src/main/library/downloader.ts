@@ -26,7 +26,6 @@ import { downloadViaBrowser, printUrlToPdf } from "@main/browser/BrowserManager.
 import { log } from "@main/lib/logger.js";
 import { sendToRenderer } from "@main/window.js";
 import { arxivIdFromDoi, resolvePdfCandidates } from "./oaResolvers.js";
-import { downloadViaPaperFetch } from "./paperFetch.js";
 import { IPC } from "@contracts/ipc";
 import {
   ensureLibraryDirs,
@@ -151,7 +150,7 @@ export const PDF_URL_RE = /\.pdf(\?|$)|\/pdf\/|\/pdfdirect\/|\/pdf\?|\/pdfft/i;
  * 三档:
  *   ① 条目自己带的直链(arXiv ID 换算出来的、或检索时拿到的开放获取直链);
  *   ② 条目里只有落地页(最常见的是 `https://doi.org/...`)时,走多源解析
- *      (`oaResolvers.resolvePdfCandidates` —— 它还会调搬过来的 paper-fetch)。
+ *      (`oaResolvers.resolvePdfCandidates`)。
  *
  * **返回的是列表,不是一个地址**,因为"解析出地址"不等于"能下":真正的判据是
  * `verifyPdf` 的 `%PDF` 魔数。下载时会按顺序逐个试,第一个通过校验的就算成功 ——
@@ -274,45 +273,9 @@ async function downloadOne(item: LibraryItem): Promise<boolean> {
 
   let failure: { status: DownloadStatus; error: string } | null = null;
 
-  // ── ① 首选:交给 paper-fetch 自己下 ──────────────────────────────────
-  //
-  // 搬过来的那套脚本**本来就是干这个的**,而且干得比我们的浏览器路径好:它有自己
-  // 的 cookie 罐与重定向安全检查、`%PDF` 魔数自检(不合格自动换下一个源)、机构
-  // EZproxy 与 CDP 复用已登录浏览器两条备用通道。实测 Nat. Commun. 那篇 9 秒拿到
-  // 4MB 真 PDF,而我们的 `session.downloadURL()` 在同一篇上挂满 60 秒然后超时。
-  //
-  // 下面 ② 那条链只在它失败、或条目没有 DOI 时才走。
-  if (item.doi) {
-    DownloadJobRepo.setStatus(item.id, "running", undefined, true);
-    pushJobChanged(item.id, "running");
-    const outDir = join(dirname(tmpPath), `pf-${jobId}`);
-    try {
-      const pf = await downloadViaPaperFetch(item.doi, outDir);
-      if (pf.ok && pf.file) {
-        const rejected = finalize(item, pf.file, "paper-fetch");
-        if (!rejected) return true;
-        failure = mergeFailure(failure, rejected);
-        log.warn(`paper-fetch 下到的不是 PDF(${rejected.status}):${item.title}`);
-      } else if (pf.error) {
-        log.info(`paper-fetch 没能取到 ${item.doi}:${pf.error}`);
-      }
-    } catch (err) {
-      log.warn(`paper-fetch 下载异常:${(err as Error).message}`);
-    } finally {
-      // 它按"标题_年份_期刊"命名落盘;成功时文件已被 rename 进库,这里只剩空目录
-      try {
-        rmSync(outDir, { recursive: true, force: true });
-      } catch {
-        /* 清不掉不影响结果 */
-      }
-    }
-  }
-
-  // ── ② 退回 Mcode 自己的候选链 ──────────────────────────────────────
+  // ── ① 候选链:多源解析 + 内嵌浏览器逐个试 ──────────────────────────────
   const candidates = await pdfCandidates(item);
   if (candidates.length === 0) {
-    // paper-fetch 报过的错更具体(`not_a_pdf` / 没有开放获取副本…),优先用它 ——
-    // 报"没有公开版本"而实际原因不同,会让用户不知道该做什么。
     const final = failure ?? {
       status: "not_found" as DownloadStatus,
       error: "没有可用来源:这一篇没有公开的 PDF 版本(arXiv 副本 / 开放获取 / 出版商直链都没找到)。",

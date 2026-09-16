@@ -34,7 +34,6 @@
  * 需要登录态的下载走内嵌浏览器(`downloadViaBrowser`),它自己带会话。
  */
 import { fetchJson, LIBRARY_UA, LIBRARY_MAILTO } from "./http.js";
-import { resolveViaPaperFetch } from "./paperFetch.js";
 
 /** 一个候选直链。`via` 只用于日志/排查 —— 用户不需要看见是谁给的。 */
 export interface PdfCandidate {
@@ -422,13 +421,12 @@ export function publisherPdfCandidates(doi: string): PdfCandidate[] {
  *
  * 顺序不是按"哪个更权威",而是按**实测的成败率**:
  *
- *   ① **paper-fetch** —— 它只返回真正开放获取的地址,不需要登录就能下;
- *   ② **arXiv** —— 由 DOI 直接拼,没有反爬,稳;
- *   ③ 其余开放获取元数据源(OpenAlex / Unpaywall / Europe PMC / Semantic Scholar /
+ *   ① **arXiv** —— 由 DOI 直接拼,没有反爬,稳;
+ *   ② 其余开放获取元数据源(OpenAlex / Unpaywall / Europe PMC / Semantic Scholar /
  *      OpenAIRE)—— 同样是不需要登录的副本;
- *   ④ 从 Crossref 记录里挖出来的(Elsevier PII / IEEE);
- *   ⑤ **出版商直链模板** —— 放最后,见下;
- *   ⑥ 落地页 —— 根本下不了,只在前面全败时留个"人工点得进去"的念想。
+ *   ③ 从 Crossref 记录里挖出来的(Elsevier PII / IEEE);
+ *   ④ **出版商直链模板** —— 放最后,见下;
+ *   ⑤ 落地页 —— 根本下不了,只在前面全败时留个"人工点得进去"的念想。
  *
  * ## 为什么出版商模板排到后面
  *
@@ -461,7 +459,6 @@ export async function resolvePdfCandidates(doi: string): Promise<PdfCandidate[]>
 
   // 各自独立,并行跑;`allSettled` 保证一个源挂了不影响其余。
   const settled = await Promise.allSettled([
-    resolveViaPaperFetch(d),
     crossrefTask,
     openalexCandidates(d),
     unpaywallCandidates(d),
@@ -469,17 +466,15 @@ export async function resolvePdfCandidates(doi: string): Promise<PdfCandidate[]>
     semanticScholarCandidates(d),
     openaireCandidates(d),
   ]);
-  const [paperFetchResult, crossrefResult, ...oaResults] = settled;
-  const fromPaperFetch = paperFetchResult?.status === "fulfilled" ? paperFetchResult.value : [];
+  const [crossrefResult, ...oaResults] = settled;
   const fromCrossref = crossrefResult?.status === "fulfilled" ? crossrefResult.value : [];
   const fromOa = oaResults.flatMap((s) => (s.status === "fulfilled" ? s.value : []));
 
   const tiers: PdfCandidate[][] = [
-    fromPaperFetch, // ① 开放获取,已验证
-    fromArxiv, // ② 稳
-    fromOa, // ③ 开放获取副本
-    fromCrossref, // ④ 要机构订阅,但至少不卡
-    publisherPdfCandidates(d), // ⑤ 大概率卡在人机检测上
+    fromArxiv, // ① 稳
+    fromOa, // ② 开放获取副本
+    fromCrossref, // ③ 要机构订阅,但至少不卡
+    publisherPdfCandidates(d), // ④ 大概率卡在人机检测上
   ];
   const all = tiers.flat();
   // 落地页(doi.org、ieeexplore 的 document 页…)排最后 —— 它们下不了,但留着

@@ -722,9 +722,8 @@ async function searchEuropePmc(
 /* ───────────────────────── 找 PDF 直链 ─────────────────────────
  *
  * 整条多源解析链(`arxivIdFromDoi` / 出版商直链模板 / OpenAlex / Unpaywall /
- * Europe PMC / Semantic Scholar / OpenAIRE / 搬过来的 paper-fetch)都在
- * `oaResolvers.ts`。搬出去是因为它现在要调 `paperFetch.ts`,而那些代码与
- * "检索"是两件事 —— 这里只留一个入口给导入流程用。 */
+ * Europe PMC / Semantic Scholar / OpenAIRE)都在 `oaResolvers.ts` —— 它与
+ * "检索"是两件事,这里只留一个入口给导入流程用。 */
 
 /**
  * 按 DOI 找 PDF 直链(第一个候选)。找不到返回 null —— 那只是"这一篇没有现成的

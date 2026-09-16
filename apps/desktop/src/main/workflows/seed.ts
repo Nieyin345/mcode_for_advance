@@ -27,7 +27,6 @@ import { dirname, join } from "node:path";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { log } from "@main/lib/logger.js";
 import { LIBRARY_PY, CHECK_CITATIONS_PY } from "./assets.js";
-import { PAPER_FETCH_FILES } from "./paperFetchAssets.js";
 import { SEARCH_SCRIPT_FILES } from "./searchScriptsAssets.js";
 
 /** 流程目录。与 `library/`、`templates/` 平级,同在数据根下。 */
@@ -102,12 +101,6 @@ export function ensureWorkflows(): void {
     ["README.md", README],
     ["scripts/library.py", LIBRARY_PY],
     ["scripts/check_citations.py", CHECK_CITATIONS_PY],
-    // paper-fetch —— 整套下载脚本,原样搬过来的(见 paperFetchAssets.ts)。
-    // 放在 scripts/paper-fetch/ 下,与库里的解析链共用同一份实现:
-    // `main/library/paperFetch.ts` 直接调这个目录里的 paper_fetch.py。
-    ...PAPER_FETCH_FILES.map(
-      ([name, body]): [string, string] => [`scripts/paper-fetch/${name}`, body],
-    ),
     // 检索脚本 —— 从两个 skill 仓库原样搬过来的(见 searchScriptsAssets.ts):
     // research-clients(多源检索客户端 + 中文文献解析)与 lookup-tools(PubMed /
     // 引用核验 / BibTeX / 分页遍历)。都是纯标准库,不需要装依赖。
@@ -120,7 +113,7 @@ export function ensureWorkflows(): void {
     const abs = join(workflowsRoot(), rel);
     if (existsSync(abs)) continue; // 用户可能改过 —— 不覆盖
     try {
-      // paper-fetch 是嵌套目录,父目录可能还不存在
+      // search-scripts 是嵌套目录,父目录可能还不存在
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, body, "utf8");
       // 可执行位:非 Windows 上直接 ./library.py 就能跑。Windows 忽略它,不影响。
