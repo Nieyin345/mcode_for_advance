@@ -307,13 +307,13 @@ async function handleMessages(
     return;
   }
 
-  // 网页版上游走一条完全不同的路：不转发 HTTP，而是驱动内嵌浏览器里的页面。
-  // 在这里就分出去 —— 下面的 OpenAI 转换与上游 fetch 对它都没有意义。
+  // 网页版上游走一条完全不同的路：不转发 HTTP，而是把消息交给用户浏览器里的扩展
+  // （webUpstream → extensionBridge）。在这里就分出去 —— 下面的 OpenAI 转换与上游
+  // fetch 对它都没有意义。
   if (upstream.protocol === "web") {
-    // **动态加载**，不是静态 import：网页上游会把内嵌浏览器那一整条依赖拉进来
-    // （EngineSession → BrowserManager → electron），而 bridgeServer 本身也被无头
-    // 测试直接 import —— 静态引进来会让那些测试在 node 下因 require("electron")
-    // 而崩掉（upstream-headers-smoke 就这么炸过一次）。
+    // **动态加载**：网页这条路只有配了网页端配置的会话才走到，没必要让每次启动都
+    // 把它那一串（契约 + 日志 + 本地服务）拉进常驻依赖图。它现在不含 electron 依赖，
+    // 但这个习惯留着 —— 上一版的网页上游正是靠它才没把无头 smoke 炸掉。
     const { handleWebMessages } = await import("./webUpstream.js");
     await handleWebMessages(req, res, body, upstream);
     return;

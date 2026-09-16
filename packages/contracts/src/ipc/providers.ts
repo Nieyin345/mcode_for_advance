@@ -32,12 +32,14 @@ export const SaveCustomModelSchema = z.object({
   id: z.string().optional(),
   name: z.string().min(1),
   /** Endpoint base URL. **Not** required for `protocol: "web"` — a web-page
-   *  model has no endpoint at all (its "upstream" is a page in the embedded
-   *  browser). The rule lives in the superRefine below. */
+   *  model has no endpoint at all (its "upstream" is a chat page in the user's
+   *  own browser, driven by the Mcode bridge extension). The rule lives in the
+   *  superRefine below. */
   baseUrl: z.string(),
   authMode: AuthModeSchema.optional(),
   protocol: ProtocolSchema.optional(),
-  /** Required when `protocol: "web"`: which site adapter to drive. */
+  /** Required when `protocol: "web"`: which site the extension should drive
+   *  (an id from `WEB_SITES` in customModel.ts). */
   webSiteId: z.string().optional(),
   authToken: z.string().optional(),
   models: z.array(CustomModelEntrySchema).min(1),
@@ -99,9 +101,6 @@ export type TestCustomModelInput = z.infer<typeof TestCustomModelSchema>;
  *  the eye icon on an edit form. It MUST NOT be used by any background /
  *  turn-time path (those resolve the token in main via resolveApiConfig). */
 export const GetCustomModelTokenSchema = z.object({ id: z.string().min(1) });
-
-/** 网页端（protocol: "web"）—— 打开某个站点的视图让用户登录。 */
-export const OpenWebLoginSchema = z.object({ siteId: z.string().min(1) });
 export type GetCustomModelTokenInput = z.infer<typeof GetCustomModelTokenSchema>;
 
 /* ── Pi models (visual editor for ~/.pi/agent/models.json) ── */

@@ -15,6 +15,7 @@ import {
   IconEyeOff,
   IconLoader2,
   IconCheck,
+  IconCopy,
   IconKey,
   IconHash,
   IconBrandOpenai,
@@ -30,8 +31,10 @@ import type {
   CustomModelEntry,
   AuthMode,
   Protocol,
+  ExtensionBridgeStatus,
 } from "@contracts/customModel";
 import { isValidHeaderName, isValidHeaderValue } from "@contracts/customModel";
+import { copyText } from "@renderer/lib/clipboard.js";
 import { PanelHeader } from "./PanelHeader.js";
 import {
   PI_KNOWN_APIS,
@@ -89,9 +92,9 @@ const PROTOCOL_OPTIONS: { value: Protocol; labelKey: MessageId; icon: ReactNode 
     labelKey: "settings.customModels.protocolOpenai",
     icon: <IconBrandOpenai size={14} className="text-content-muted" />,
   },
-  // 网页端：上游不是某个 API，而是内嵌浏览器里真实运行的网页版大模型
-  // （见 main/providers/bridge/webUpstream.ts）。选它之后 Base URL / Token
-  // 都不再需要，改成一个站点选择 + 「打开登录窗口」。
+  // 网页端：上游不是某个 API，而是用户自己浏览器里那个真实运行的网页版大模型
+  // （由浏览器扩展桥驱动，见 main/providers/bridge/webUpstream.ts）。选它之后
+  // Base URL / Token 都不再需要，改成一个站点选择 + 扩展桥配对信息。
   {
     value: "web",
     labelKey: "settings.customModels.protocolWeb",
@@ -102,9 +105,9 @@ const PROTOCOL_OPTIONS: { value: Protocol; labelKey: MessageId; icon: ReactNode 
 /**
  * 网页端可选站点。
  *
- * 与 main 侧 `providers/web-agent/adapters/index.ts` 的注册表一一对应；这里
- * **刻意不复用那份表**：渲染端不 import 主进程模块（会把主进程代码拉进渲染
- * bundle）。一期只有 DeepSeek，等站点变多再把这份列表改成经 IPC 拉取。
+ * 与契约层 `WEB_SITES`（packages/contracts/src/customModel.ts）一一对应；这里
+ * 额外挂一个 `defaultModelId` —— 那是渲染端自己的事（站点即模型，这个 id 只是
+ * 显示名），契约层不该知道。一期只有 DeepSeek。
  */
 const WEB_SITE_OPTIONS: { value: string; label: string; defaultModelId: string }[] = [
   { value: "deepseek", label: "DeepSeek 网页版", defaultModelId: "deepseek-web" },
@@ -136,6 +139,43 @@ const THINKING_MODE_OPTIONS: { value: string; labelKey: MessageId; icon: ReactNo
 ];
 
 /* ════════════════════════ shared helpers ════════════════════════ */
+
+/** Read-only value + copy button, for the extension-bridge address / token pair.
+ *  Both are opaque strings the user has to move into the browser extension by
+ *  hand, so copyable beats pretty. */
+function BridgeRow({
+  label,
+  value,
+  copied,
+  onCopy,
+}: {
+  label: string;
+  value: string;
+  copied: boolean;
+  onCopy: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="w-20 shrink-0 text-[0.7143em] text-content-subtle">{label}</span>
+      <code
+        className={cn(
+          "min-w-0 flex-1 truncate rounded bg-surface-muted px-1.5 py-0.5 font-mono text-[0.7143em] text-content",
+          !value && "text-content-subtle",
+        )}
+        title={value}
+      >
+        {value || "—"}
+      </code>
+      <Button variant="ghost" size="sm" disabled={!value} onClick={onCopy} className="shrink-0">
+        {copied ? <IconCheck size={12} /> : <IconCopy size={12} />}
+        <span className="ml-1">
+          {copied ? t("settings.customModels.bridgeCopied") : t("settings.customModels.bridgeCopy")}
+        </span>
+      </Button>
+    </div>
+  );
+}
 
 /** Labeled form field wrapper. */
 function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
@@ -684,8 +724,8 @@ export function CustomModelsPanel() {
       seen.add(id);
       models.push(m.supports1m ? { id, supports1m: true } : { id });
     }
-    // 网页端不需要 Base URL / Token（上游是内嵌浏览器里的页面，不是某个 API），
-    // 但必须选一个站点。
+    // 网页端不需要 Base URL / Token（上游是浏览器扩展在用户自己浏览器里驱动的
+    // 那个页面，不是某个 API），但必须选一个站点。
     const isWeb = claudeForm.protocol === "web";
     // 名称与地址分开报错：网页端根本没有 Base URL 这一栏，合起来报会让用户
     // 对着一个不存在的输入框找半天（"保存还要填 Base URL？"）。
@@ -765,10 +805,19 @@ export function CustomModelsPanel() {
 
   const runClaudeTest = async (idx: number) => {
     if (!claudeForm) return;
-    // 网页端没有端点可探 —— 它的"连通性"就是有没有登录，那件事用「打开登录窗口」
-    // 里的页面自己看最直接；真去发一个探测请求只会得到一个看不懂的失败。
+    // 网页端没有端点可探 —— 它的"连通性"就是浏览器扩展有没有连上这条桥。
     if (claudeForm.protocol === "web") {
-      setTest({ status: "fail", error: t("settings.customModels.webTestHint") });
+      setTest({ status: "testing", idx });
+      try {
+        const s = await api.webBridge.status();
+        setTest(
+          s.paired
+            ? { status: "ok", detail: t("settings.customModels.webTestOk") }
+            : { status: "fail", error: t("settings.customModels.webTestHint") },
+        );
+      } catch (err) {
+        setTest({ status: "fail", error: (err as Error).message });
+      }
       return;
     }
     const timeoutMs = claudeForm.timeoutMs.trim() ? Number(claudeForm.timeoutMs.trim()) : undefined;
@@ -819,16 +868,6 @@ export function CustomModelsPanel() {
       );
     } catch (err) {
       setTest({ status: "fail", error: (err as Error).message });
-    }
-  };
-
-  /** 网页端：让站点视图显形，用户在里面登录（登录态由浏览器分区长期保存）。 */
-  const openWebLogin = async (siteId: string) => {
-    setError(null);
-    try {
-      await api.customModel.openWebLogin({ siteId });
-    } catch (err) {
-      setError((err as Error).message);
     }
   };
 
@@ -1042,7 +1081,7 @@ export function CustomModelsPanel() {
               onSave={() => void saveClaude()}
               onCancel={cancel}
               onDelete={claudeForm.id ? () => setPendingDelete({ kind: "claude", id: claudeForm.id! }) : undefined}
-              onOpenWebLogin={(siteId) => void openWebLogin(siteId)}
+              onError={setError}
             />
           ) : selection?.kind === "codex" && codexForm ? (
             <CodexProviderForm
@@ -1265,7 +1304,7 @@ function ClaudeProviderForm({
   onSave,
   onCancel,
   onDelete,
-  onOpenWebLogin,
+  onError,
 }: {
   form: ClaudeFormState;
   setForm: (f: ClaudeFormState | null) => void;
@@ -1277,9 +1316,9 @@ function ClaudeProviderForm({
   onSave: () => void;
   onCancel: () => void;
   onDelete?: () => void;
-  /** 网页端：打开站点视图让用户登录。实现在父组件 —— 那里有统一的错误条，
-   *  而"点了没反应"是这类按钮最糟的失败方式。 */
-  onOpenWebLogin: (siteId: string) => void;
+  /** 上报一条错误给父组件的统一错误条 —— 表单内部的按钮（重新生成令牌）
+   *  失败了也得让人看见，而错误条归父组件所有。 */
+  onError: (message: string) => void;
 }) {
   const isEdit = !!form.id;
   const isOpenAi = form.protocol === "openai";
@@ -1290,6 +1329,47 @@ function ClaudeProviderForm({
   const [advancedOpen, setAdvancedOpen] = useState(
     Boolean(form.timeoutMs) || form.customHeaders.length > 0,
   );
+  // 扩展桥配对信息：只在网页端需要。5s 轮询一次 —— "配上了"这件事发生在另一个
+  // 程序里（用户在浏览器里装扩展），主进程没有事件可推，只能问。
+  const [bridge, setBridge] = useState<ExtensionBridgeStatus | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [regenerating, setRegenerating] = useState(false);
+  useEffect(() => {
+    if (!isWeb) return;
+    let alive = true;
+    const poll = () => {
+      api.webBridge
+        .status()
+        .then((s) => {
+          if (alive) setBridge(s);
+        })
+        .catch(() => {
+          /* 主进程还没就绪 / 设置页正在关 —— 徽章保持上次的值就好 */
+        });
+    };
+    poll();
+    const timer = window.setInterval(poll, 5000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [isWeb]);
+  const copy = async (key: string, value: string) => {
+    if (await copyText(value)) {
+      setCopied(key);
+      window.setTimeout(() => setCopied((c) => (c === key ? null : c)), 1500);
+    }
+  };
+  const regenerate = async () => {
+    setRegenerating(true);
+    try {
+      setBridge(await api.webBridge.regenerateToken());
+    } catch (err) {
+      onError((err as Error).message);
+    } finally {
+      setRegenerating(false);
+    }
+  };
 
   const update = <K extends keyof ClaudeFormState>(key: K, value: ClaudeFormState[K]) =>
     setForm({ ...form, [key]: value });
@@ -1358,8 +1438,9 @@ function ClaudeProviderForm({
         <Input value={form.name} onChange={(e) => update("name", e.target.value)} placeholder={t("settings.customModels.namePlaceholder")} />
       </Field>
 
-      {/* 网页端没有 Base URL / Token —— 上游是内嵌浏览器里的页面，不是 API。
-          这两栏在这个协议下整块不渲染：留着只会让人以为还要填点什么。 */}
+      {/* 网页端没有 Base URL / Token —— 上游是浏览器扩展在用户自己浏览器里驱动
+          的那个页面，不是 API。这两栏在这个协议下整块不渲染：留着只会让人以为
+          还要填点什么；换成扩展桥的配对信息。 */}
       {isWeb ? (
         <>
           <Field label={t("settings.customModels.webSiteLabel")}>
@@ -1386,15 +1467,55 @@ function ClaudeProviderForm({
             </Select.Root>
           </Field>
 
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!form.webSiteId}
-            onClick={() => onOpenWebLogin(form.webSiteId)}
-          >
-            <IconWorld size={13} className="mr-1" />
-            {t("settings.customModels.webOpenLogin")}
-          </Button>
+          <div className="space-y-1.5 rounded border border-edge bg-surface/40 p-2.5">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[0.7857em] font-medium text-content-muted">
+                {t("settings.customModels.bridgeTitle")}
+              </span>
+              <span
+                className={cn(
+                  "rounded px-1.5 py-0.5 text-[0.7143em]",
+                  bridge?.paired ? "bg-accent/15 text-accent" : "bg-surface-muted text-content-subtle",
+                )}
+              >
+                {bridge?.paired
+                  ? t("settings.customModels.bridgePaired")
+                  : t("settings.customModels.bridgeUnpaired")}
+              </span>
+            </div>
+
+            <BridgeRow
+              label={t("settings.customModels.bridgeUrlLabel")}
+              value={bridge?.url ?? ""}
+              copied={copied === "url"}
+              onCopy={() => bridge && void copy("url", bridge.url)}
+            />
+            <BridgeRow
+              label={t("settings.customModels.bridgeTokenLabel")}
+              value={bridge?.token ?? ""}
+              copied={copied === "token"}
+              onCopy={() => bridge && void copy("token", bridge.token)}
+            />
+
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-0.5"
+              disabled={regenerating}
+              onClick={() => void regenerate()}
+            >
+              {regenerating ? (
+                <IconLoader2 size={13} className="mr-1 animate-spin" />
+              ) : (
+                <IconPlugConnected size={13} className="mr-1" />
+              )}
+              {t("settings.customModels.bridgeRegenerate")}
+            </Button>
+
+            <p className="text-[0.6428em] leading-relaxed text-content-subtle">
+              {t("settings.customModels.bridgeHint")}
+            </p>
+          </div>
 
           <p className="text-[0.6428em] leading-relaxed text-content-subtle">
             {t("settings.customModels.webNote")}

@@ -6,6 +6,12 @@ import { ensureTemplateDirs } from "@main/templates/store.js";
 import { initTheme } from "@main/lib/theme.js";
 import { TerminalManager } from "@main/terminal/TerminalManager.js";
 import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
+import {
+  BRIDGE_TOKEN_SETTING_KEY,
+  configureExtensionBridgeTokenStore,
+  ensureStarted,
+  stopExtensionBridge,
+} from "@main/providers/bridge/extensionBridge.js";
 import { lspManager } from "@main/lsp/LspManager.js";
 import { BrowserManager } from "@main/browser/BrowserManager.js";
 import { startMobileServer, stopMobileServer } from "@main/mobile/MobileHttpServer.js";
@@ -133,6 +139,18 @@ app.whenReady().then(async () => {
     if (SettingRepo.get("browser.credentials")) {
       SettingRepo.set("browser.credentials", "{}");
     }
+    // 扩展桥的配对令牌持久化到 settings 表 —— 必须跨重启稳定，否则 mcode 每次
+    // 启动都换一个令牌，浏览器里的扩展会静默掉线（用户只会看到"未连接"而不知道
+    // 为什么）。注入点必须在这儿：桥模块本身不能碰 db.ts，那会把 electron 拉进
+    // 无头 smoke（见 extensionBridge.ts 文件头）。
+    configureExtensionBridgeTokenStore({
+      get: () => SettingRepo.get(BRIDGE_TOKEN_SETTING_KEY),
+      set: (value) => SettingRepo.set(BRIDGE_TOKEN_SETTING_KEY, value),
+    });
+    // 顺手把桥起起来，别等用户点开设置页才 listen：浏览器里的扩展是**主动来连**
+    // 的一方，端口不开它就只能显示"未连接"，而用户并不知道要先去点一下设置页。
+    // 失败也不拦启动（绑定失败已经写在 ensureStarted 里，只记日志）。
+    void ensureStarted().catch(() => {});
   });
 
   // CSP only in production - in dev, Vite injects inline HMR scripts that a
@@ -283,6 +301,7 @@ app.on("before-quit", (event) => {
     return;
   }
   BridgeRegistry.disposeAll();
+  stopExtensionBridge();
   TerminalManager.disposeAll();
   lspManager.disposeAll();
   BrowserManager.disposeAll();

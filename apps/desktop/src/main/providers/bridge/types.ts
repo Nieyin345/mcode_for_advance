@@ -238,12 +238,13 @@ export interface UpstreamConfig {
    *  `upstreamHeaders()` so both delivery paths send one header set. */
   customHeaders?: Record<string, string>;
   /** Where this upstream actually is. Absent/`"openai"` → a real HTTP endpoint
-   *  (the original behaviour). `"web"` → **not an endpoint at all**: the app's
-   *  embedded browser drives a web chat page and the answer is re-framed as an
-   *  Anthropic stream (see webUpstream.ts). In that mode `baseUrl`/`authToken`
-   *  are unused and `webSiteId` decides which page to drive. */
+   *  (the original behaviour). `"web"` → **not an endpoint at all**: the browser
+   *  extension bridge sends the prompt into a web chat page in the user's own
+   *  browser and the answer is re-framed as an Anthropic stream (see
+   *  webUpstream.ts + extensionBridge.ts). In that mode `baseUrl`/`authToken`
+   *  are unused and `webSiteId` decides which site to drive. */
   protocol?: "anthropic" | "openai" | "web";
-  /** Which site adapter to drive when `protocol` is `"web"` (an id from
-   *  main/providers/web-agent/adapters). */
+  /** Which site to drive when `protocol` is `"web"` (an id from `WEB_SITES`
+   *  in @contracts/customModel). */
   webSiteId?: string;
 }

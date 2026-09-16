@@ -270,3 +270,62 @@ export interface TestCustomModelResult {
   /** Error message on failure (auth / network / timeout / bad model). */
   error?: string;
 }
+
+/* ─────────────────────────── 网页版站点与扩展桥 ─────────────────────────── */
+
+/**
+ * 一个网页版站点。
+ *
+ * 站点目录住在契约层（而不是 main 侧的适配器模块）是因为**两端都要用**：主进程
+ * 用它校验 `webSiteId`、出错时写出可读站点名；渲染端的设置页用它渲染站点下拉。
+ * 曾经这份清单在 `main/providers/web-agent/adapters/`，那份实现（内嵌浏览器 +
+ * CDP 注入）已拆除 —— 现在"驱动网页"这件事发生在用户自己浏览器里的扩展中，
+ * mcode 只剩这份目录。
+ */
+export interface WebSite {
+  /** 稳定 id，存在配置的 `webSiteId` 里，如 "deepseek"。 */
+  id: string;
+  /** UI 上显示的站点名。 */
+  label: string;
+  /** 站点首页 —— 扩展在浏览器里驱动的那一页。 */
+  homeUrl: string;
+}
+
+/** **顺序即 UI 顺序**，第一项是默认站点。 */
+export const WEB_SITES: readonly WebSite[] = [
+  { id: "deepseek", label: "DeepSeek", homeUrl: "https://chat.deepseek.com" },
+];
+
+/** 默认站点 id（新配置未选择时用它）。表恒非空，但取值为 undefined 时仍走兜底。 */
+export function defaultWebSiteId(): string {
+  return WEB_SITES[0]?.id ?? "deepseek";
+}
+
+/** 按 id 取站点；未知 id 返回 undefined（调用方负责快速失败）。 */
+export function webSiteById(id: string | undefined): WebSite | undefined {
+  if (!id) return undefined;
+  return WEB_SITES.find((s) => s.id === id);
+}
+
+/** 站点名，未知 id 时退回 id 本身（用于日志与报错文案，绝不抛）。 */
+export function webSiteLabel(id: string | undefined): string {
+  return webSiteById(id)?.label ?? (id || "(未选择)");
+}
+
+/**
+ * 扩展桥状态 —— 渲染端设置页显示的那一屏。
+ *
+ * `paired` 由主进程实时维护（扩展的 SSE 长连接挂着即视为已配对），所以这个对象
+ * 是**查询时快照**，不是持久化记录。`token` 明文：它要显示给用户复制进扩展，
+ * 且服务只绑 127.0.0.1（见 main/providers/bridge/extensionBridge.ts）。
+ */
+export interface ExtensionBridgeStatus {
+  /** 扩展要连的地址，如 `http://127.0.0.1:53124`。服务未起时为空串。 */
+  url: string;
+  /** 配对令牌。 */
+  token: string;
+  /** 扩展此刻是否挂着 SSE 连接。 */
+  paired: boolean;
+  /** 本次配对建立的时间戳（ms）；未配对为 null。 */
+  pairedAt: number | null;
+}

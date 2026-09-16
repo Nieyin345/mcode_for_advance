@@ -425,8 +425,13 @@ const customModel: Api["customModel"] = {
   delete: () => webUnsupported("customModel.delete"),
   test: () => webUnsupported("customModel.test"),
   getToken: () => webUnsupported("customModel.getToken"),
-  // 网页端登录需要在 PC 上开一个浏览器视图，移动端没有意义。
-  openWebLogin: () => webUnsupported("customModel.openWebLogin"),
+};
+
+/** 扩展桥:配对发生在 PC 上的浏览器里,手机端看不到也不该改 —— 但**必须显式列出**
+ *  整个命名空间(见上面 workflow 那段注释里的规矩)。 */
+const webBridge: Api["webBridge"] = {
+  status: () => webUnsupported("webBridge.status"),
+  regenerateToken: () => webUnsupported("webBridge.regenerateToken"),
 };
 
 const piModels: Api["piModels"] = {
@@ -613,6 +618,7 @@ export function createWebApi(): Api {
     session,
     provider,
     customModel,
+    webBridge,
     piModels,
     workflow,
     skills,

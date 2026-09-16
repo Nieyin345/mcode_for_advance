@@ -17,13 +17,16 @@ import {
   DeleteCustomModelSchema,
   TestCustomModelSchema,
   GetCustomModelTokenSchema,
-  OpenWebLoginSchema,
 } from "@contracts/ipc";
 import type { ApiConfig } from "@contracts/customModel";
 import { CustomModelStore } from "@main/lib/secretStore.js";
 import { buildCustomEnv, resolveActiveModel } from "@main/providers/claude-sdk/customEnv.js";
 import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
-import { revealSiteForLogin } from "@main/providers/bridge/webUpstream.js";
+import {
+  bridgeStatus,
+  ensureStarted,
+  regenerateToken,
+} from "@main/providers/bridge/extensionBridge.js";
 import { resolveSdkBinaryPath } from "@main/providers/claude-sdk/sdkBinaryPath.js";
 import { log } from "@main/lib/logger.js";
 
@@ -59,13 +62,18 @@ export function registerCustomModelHandlers(ipcMain: IpcMain): void {
     return { token: cfg?.authToken ?? null };
   });
 
-  // 网页端（protocol: "web"）：把站点视图显示出来让用户登录。登录态落在共用
-  // 浏览器分区，所以登一次长期有效 —— 设置页那个按钮通常只需要点一次。
-  ipcMain.handle(IPC.CUSTOM_MODEL_OPEN_WEB_LOGIN, async (_evt, raw) => {
-    const input = OpenWebLoginSchema.parse(raw);
-    const result = await revealSiteForLogin(input.siteId);
-    if (!result.ok) throw new Error(result.error ?? "无法打开登录窗口");
-    return { ok: true };
+  // 扩展桥（网页端协议的传输层）：设置页显示桥地址 + 令牌 + 配对徽章。
+  // status 会**顺带把服务拉起来** —— 用户打开设置页就该看到地址，而不是先去发一条
+  // 消息把桥唤醒。服务只绑 127.0.0.1，listen(0) 拿一个空闲端口。
+  ipcMain.handle(IPC.WEB_BRIDGE_STATUS, async () => {
+    await ensureStarted();
+    return bridgeStatus();
+  });
+
+  // 换令牌：旧令牌立刻失效，已连上的扩展会被断开（扩展侧应重新填入新令牌）。
+  ipcMain.handle(IPC.WEB_BRIDGE_REGENERATE_TOKEN, async () => {
+    await ensureStarted();
+    return regenerateToken();
   });
 
   ipcMain.handle(IPC.CUSTOM_MODEL_TEST, async (_evt, raw) => {

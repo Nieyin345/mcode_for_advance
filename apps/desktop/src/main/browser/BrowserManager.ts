@@ -322,15 +322,6 @@ export interface BrowserBounds extends Rectangle {}
 interface LiveBrowser {
   id: string;
   view: WebContentsView;
-  /** 这个视图是谁的 —— **面板类**（用户可见的浏览标签页，也是 agent 浏览工具
-   *  的操作目标）还是**引擎类**（web-agent provider 拿它跑网页版大模型，用户
-   *  平时看不见）。
-   *
-   *  两者有三处必须区分：① `list()` 不暴露引擎视图（否则 agent 的
-   *  `browser_snapshot/click` 会把正在跑对话的页面当成操作目标）；② 渲染端
-   *  重载时不能关闭引擎视图（一个回合可能正跑着）；③ CDP 单槽位归引擎独占
-   *  （见 `engineDebuggerAttached`）。 */
-  role: "panel" | "engine";
   /** Project root this browser is bound to (for consistency with terminal). */
   projectPath: string;
   /** Last applied bounds, so show() can restore after a hide(). */
@@ -354,14 +345,6 @@ interface LiveBrowser {
    *  the OS preference (see pinColorScheme). Released before the mobile UA
    *  override takes the (single) debugger slot. */
   csDebuggerAttached: boolean;
-  /** True while an **引擎**视图 holds the CDP session for document-start script
-   *  injection (see installDocumentStartScript).
-   *
-   *  为什么是第三个独立布尔而不是把上面两个收敛成一个枚举：引擎视图**根本不
-   *  参与**颜色方案/UA 那场单槽位接力（pinColorScheme 与 setDevice 对它们直接
-   *  早退），所以两者永远不会同时为真 —— 而保持面板路径逐字节不变，比"把三个
-   *  布尔合成一个枚举"这种形式上的整洁值钱得多。 */
-  engineDebuggerAttached: boolean;
   /** Resolves once the cookie vault has been restored into this view's
    *  session (or was skipped). Navigation must wait for it — see loadUrl. */
   ready: Promise<void>;
@@ -433,77 +416,6 @@ function browserSession(): Session {
  *  (`browser.persistLogin`; missing = on, "0" = off). */
 function isPersistLoginEnabled(): boolean {
   return SettingRepo.get(BROWSER_PERSIST_LOGIN_SETTING_KEY) !== "0";
-}
-
-/** 登录窗口的单例引用 —— 不持着就会被 GC 连窗口一起销毁。 */
-let siteLoginWindow: BrowserWindow | null = null;
-
-/**
- * 打开一个**独立窗口**，让用户登录某个站点（「设置 → 模型配置 → 打开登录窗口」，
- * 以及"发消息时发现没登录"那条路）。
- *
- * 为什么不用引擎视图显形：引擎视图是主窗口的 `WebContentsView`，位置完全由渲染端
- * 下发的 bounds 决定。用户点这个按钮时多半正站在**设置页**（全屏 overlay）上，
- * 视图会被盖在底下 —— 症状就是"点了没反应"。独立窗口没有这个问题：它有自己的
- * 边框、能拖动、也不会被主窗口的内容盖住，而且"登录就该弹个窗口"更符合直觉。
- *
- * 真正关键的一点：**必须跑在共享的浏览器分区上**（`browserSession()`）。登录窗口
- * 写下的 cookie 落在同一个分区里，引擎视图之后加载站点时天然已是登录态 —— 两边
- * 不需要任何通信。
- */
-export function openSiteLoginWindow(opts: {
-  url: string;
-  title?: string;
-  /** 窗口被用户关掉之后的钩子（用来刷新同站点的引擎视图，见 webUpstream）。 */
-  onClosed?: () => void;
-}): { ok: boolean; error?: string } {
-  if (siteLoginWindow && !siteLoginWindow.isDestroyed()) {
-    // 已经开着就把它抬到前面并回到站点首页（用户可能已经在里面逛走了）。
-    siteLoginWindow.loadURL(opts.url).catch(() => {});
-    siteLoginWindow.focus();
-    return { ok: true };
-  }
-
-  let win: BrowserWindow;
-  try {
-    win = new BrowserWindow({
-      width: 1100,
-      height: 800,
-      minWidth: 420,
-      minHeight: 420,
-      title: opts.title ?? "登录",
-      autoHideMenuBar: true,
-      backgroundColor: BROWSER_BACKGROUND,
-      webPreferences: {
-        // 与内嵌视图同一个持久分区 —— 这是整件事成立的前提。
-        session: browserSession(),
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-      },
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log.error(`site login window create failed: ${msg}`);
-    return { ok: false, error: `打开登录窗口失败：${msg}` };
-  }
-
-  // 与内嵌视图一致地清洗 UA：登录页（Google 等）会拒绝带 Electron 尾巴的 UA。
-  const rawUa = win.webContents.getUserAgent();
-  const chromeUa = chromeLikeUserAgent(rawUa);
-  if (chromeUa && chromeUa !== rawUa) win.webContents.setUserAgent(chromeUa);
-
-  siteLoginWindow = win;
-  win.on("closed", () => {
-    siteLoginWindow = null;
-    // 关窗 = "我登录完了"。立刻把 cookie 落进保管库，而不是等 5 分钟一次的定时器 ——
-    // 用户很可能登完就退出应用，那一次定时器根本没机会跑，下次启动又变回未登录。
-    void BrowserManager.saveCookieVault().catch(() => {});
-    opts.onClosed?.();
-  });
-  win.loadURL(opts.url).catch(() => {});
-  log.info(`site login window opened: ${opts.url}`);
-  return { ok: true };
 }
 
 /**
@@ -861,11 +773,6 @@ class BrowserManagerImpl {
   private readonly wcToBrowser = new Map<number, string>();
   /** Registered once; the picker-result listener keys off `event.sender`. */
   private pickerListenerInstalled = false;
-  /** 引擎抓流事件的订阅者（browserId → handler）。由 web-agent provider 经
-   *  `onEngineTap()` 注册 —— 页面主世界的 tap 数据一路回到 provider 就靠这张表。 */
-  private readonly tapHandlers = new Map<string, (data: unknown) => void>();
-  /** Registered once; the tap listener keys off `event.sender` too. */
-  private tapListenerInstalled = false;
   /** Background cookie-vault save timer (see saveCookieVault).
    *  Started once with the first browser view; never stopped (process exits). */
   private persistTimer: NodeJS.Timeout | null = null;
@@ -887,11 +794,8 @@ class BrowserManagerImpl {
    *     渲染端 DOM 之上,z-index 管不着)。
    *
    * 重载之后这些视图对渲染端来说已经**不可达**了 —— 没人能再引用它们、没人会关它们。
-   * 留着只有坏处,所以一次全关。(开发期 HMR 的全量刷新也走这条路;用户手动刷新页面
+   * 留着只有坏处，所以一次全关。(开发期 HMR 的全量刷新也走这条路;用户手动刷新页面
    * 同理 —— 标签页列表本来就丢了,把页面留着反而是"看得见却点不到"。)
-   *
-   * **引擎视图是例外**:它不属于渲染端的标签页列表,而可能正跑着一个回合 ——
-   * 热重载不该把用户问了一半的问题掐掉。所以对它们只 `hide()`(收回离屏),不关。
    *
    * 装在 `did-finish-load` 上:它对主框架的**每次**加载都发(首次启动、重载),而首次
    * 启动时一个视图都没有,直接跳过。
@@ -903,14 +807,8 @@ class BrowserManagerImpl {
     this.reloadCleanupInstalled = true;
     win.webContents.on("did-finish-load", () => {
       if (this.browsers.size === 0) return;
-      // 引擎视图不关、只收回隐藏态（理由见上面的文档注释）：一个可能正跑着的
-      // 回合不该被热重载掐断；但重载后没人能再给它量尺寸，所以别让它悬空可见。
       let closed = 0;
-      for (const [id, live] of [...this.browsers]) {
-        if (live.role === "engine") {
-          this.hide(id);
-          continue;
-        }
+      for (const [id] of [...this.browsers]) {
         this.close(id);
         closed += 1;
       }
@@ -939,57 +837,12 @@ class BrowserManagerImpl {
     return { ok: true, browserId: live.id };
   }
 
-  /**
-   * 创建一个**引擎视图** —— web-agent provider 用它加载网页版大模型站点。
-   *
-   * 与 `create()` 的区别：另一个 preload（引擎自己的桥，不是元素拾取器）、
-   * 关闭后台节流、并且**独占 CDP 槽位**用于 document-start 注入。
-   *
-   * 注入脚本在这里一并装好再导航 —— 顺序不能反：`addScriptToEvaluateOnNewDocument`
-   * 要抢在页面自己的脚本之前生效，导航已完成再注入就晚了（页面早把 `fetch`
-   * 缓存进闭包了）。也因此这里是**原子**的：注入失败就把刚建的视图关掉报错，
-   * 交出一个"能显示但抓不到流"的半残视图没有意义。
-   */
-  async createEngineView(opts: {
-    projectPath: string;
-    url: string;
-    preloadPath: string;
-    /** 注入页面**主世界**的脚本源码（见 `web-agent/tapScript.ts`）。 */
-    injectScript?: string;
-  }): Promise<BrowserCreateResult> {
-    const spawned = this.spawnView(opts.projectPath, {
-      role: "engine",
-      preloadPath: opts.preloadPath,
-    });
-    if ("error" in spawned) return { ok: false, error: spawned.error };
-    const live = spawned.live;
-
-    if (opts.injectScript) {
-      const injected = await this.installDocumentStartScript(live.id, opts.injectScript);
-      if (!injected.ok) {
-        this.close(live.id);
-        return { ok: false, error: injected.error };
-      }
-    }
-
-    this.loadUrl(live.id, opts.url);
-    return { ok: true, browserId: live.id };
-  }
-
-  /** Core view construction shared by the panel's create(), the window-open
-   *  ("open as a new tab") path, and createEngineView(). Creates the
-   *  WebContentsView on the shared browser session, registers it, wires
-   *  navigation events, and installs the window-open handler that turns
-   *  target=_blank / window.open into in-panel tabs (see handleWindowOpen).
-   *
-   *  `opts.role === "engine"` switches two things: the preload (engine views get
-   *  their own bridge instead of the element picker's) and backgroundThrottling
-   *  (an offscreen engine view must keep streaming at full speed). */
-  private spawnView(
-    projectPath: string,
-    opts?: { role?: "panel" | "engine"; preloadPath?: string },
-  ): { live: LiveBrowser } | { error: string } {
-    const role = opts?.role ?? "panel";
+  /** Core view construction shared by the panel's create() and the window-open
+   *  ("open as a new tab") path. Creates the WebContentsView on the shared
+   *  browser session, registers it, wires navigation events, and installs the
+   *  window-open handler that turns target=_blank / window.open into in-panel
+   *  tabs (see handleWindowOpen). */
+  private spawnView(projectPath: string): { live: LiveBrowser } | { error: string } {
     const win = getMainWindow();
     if (!win || win.isDestroyed()) {
       return { error: "主窗口未就绪，无法创建浏览器" };
@@ -1013,13 +866,10 @@ class BrowserManagerImpl {
           // fail to load, leaving window.mcodeBridge undefined. This mirrors the
           // main window's preload config (which is also sandbox:false + ESM).
           // The preload still grants no Node capability to the page itself.
-          preload: opts?.preloadPath ?? join(__dirname, "../preload/browserPicker.mjs"),
+          preload: join(__dirname, "../preload/browserPicker.mjs"),
           contextIsolation: true,
           nodeIntegration: false,
           sandbox: false,
-          // 引擎视图常驻离屏（1x1 停在窗口外），而 Chromium 默认会节流不可见
-          // 页面的定时器与渲染 —— 那会把流式回答拖成断断续续。面板视图维持默认。
-          backgroundThrottling: role !== "engine",
         },
       });
     } catch (err) {
@@ -1045,7 +895,6 @@ class BrowserManagerImpl {
     const live: LiveBrowser = {
       id,
       view,
-      role,
       projectPath,
       lastBounds: HIDDEN_BOUNDS,
       visible: false,
@@ -1055,7 +904,6 @@ class BrowserManagerImpl {
       defaultUserAgent: desktopUserAgent || rawUserAgent,
       uaDebuggerAttached: false,
       csDebuggerAttached: false,
-      engineDebuggerAttached: false,
       ready: this.restoreCookieVault(ses),
     };
     this.browsers.set(id, live);
@@ -1077,12 +925,10 @@ class BrowserManagerImpl {
       return { action: "deny" };
     });
 
-    log.info(`browser created: ${id} role=${role} project=${projectPath}`);
+    log.info(`browser created: ${id} project=${projectPath}`);
     // 顺手保证"渲染端重载 → 视图清空"这条钩子装着(只装一次)
     this.installReloadCleanup();
-    // 引擎视图的 CDP 槽位留给 document-start 注入（pinColorScheme 自身也会对
-    // role==="engine" 早退，这里只是免得起一次白跑的异步调用）。
-    if (role !== "engine") void this.pinColorScheme(live);
+    void this.pinColorScheme(live);
     return { live };
   }
 
@@ -1138,9 +984,6 @@ class BrowserManagerImpl {
    *  mobile preset is active and this method re-attaches when emulation returns
    *  to desktop. */
   private async pinColorScheme(live: LiveBrowser): Promise<void> {
-    // 引擎视图独占 CDP 槽位（document-start 注入），不参与颜色方案固定 ——
-    // 强行插一脚会把它自己刚 attach 的会话 detach 掉。
-    if (live.role === "engine") return;
     if (getThemePreference() === "system") return;
     const wc = live.view.webContents;
     if (wc.isDestroyed() || live.csDebuggerAttached) return;
@@ -1187,92 +1030,10 @@ class BrowserManagerImpl {
     });
   }
 
-  /**
-   * 订阅某个**引擎视图**的抓流事件。
-   *
-   * 链路：页面主世界的 tap 脚本 → preload 的 `mcodeBridge` → 主进程全局监听 →
-   * 按 `evt.sender` 反查 browserId → 这张表里的 handler。web-agent provider 每
-   * 建一个引擎视图注册一次。返回退订函数。
-   */
-  onEngineTap(browserId: string, handler: (data: unknown) => void): () => void {
-    this.tapHandlers.set(browserId, handler);
-    this.installTapListener();
-    return () => {
-      // 只在仍是同一个 handler 时删：否则"关闭旧视图 → 同一 id 重新注册"的
-      // 顺序下，旧的退订会把新的那个顺手删掉。
-      if (this.tapHandlers.get(browserId) === handler) this.tapHandlers.delete(browserId);
-    };
-  }
-
-  /** Install the global engine-tap listener once. Routes by sender. */
-  private installTapListener(): void {
-    if (this.tapListenerInstalled) return;
-    this.tapListenerInstalled = true;
-    ipcMain.on("__mcode_web_tap__", (evt: IpcMainEvent, data: unknown) => {
-      const browserId = this.wcToBrowser.get(evt.sender.id);
-      if (!browserId) return;
-      this.tapHandlers.get(browserId)?.(data);
-    });
-  }
-
-  /**
-   * 往页面**主世界**注入一段"每次文档创建时运行"的脚本（document-start）。
-   *
-   * 为什么非 CDP 不可：preload 跑在**隔离世界**，在里面改 `window.fetch` 对页面
-   * 完全无效（页面持有自己的 `fetch` 绑定）；`executeJavaScript` 又太晚 —— 页面
-   * 脚本早已把 `fetch` 引用缓存进闭包。只有 `Page.addScriptToEvaluateOnNewDocument`
-   * 能保证"每次导航、都在页面脚本之前、且在主世界"。
-   *
-   * CDP 会话**常驻不 detach**（引擎视图独占槽位，见 `LiveBrowser.role` 的注释），
-   * 由 `close()` 统一释放。
-   */
-  async installDocumentStartScript(
-    id: string,
-    source: string,
-  ): Promise<{ ok: true } | { ok: false; error: string }> {
-    const live = this.get(id);
-    if (!live) return { ok: false, error: "浏览器不存在或已关闭" };
-    const wc = live.view.webContents;
-    if (wc.isDestroyed()) return { ok: false, error: "浏览器已销毁" };
-
-    if (!live.engineDebuggerAttached) {
-      try {
-        wc.debugger.attach("1.3");
-        live.engineDebuggerAttached = true;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return { ok: false, error: `CDP 调试器被占用（DevTools 打开？）: ${msg}` };
-      }
-    }
-
-    try {
-      await wc.debugger.sendCommand("Page.enable");
-      await wc.debugger.sendCommand("Page.addScriptToEvaluateOnNewDocument", {
-        source,
-        // 对"脚本已注册但当前文档早已加载"的场景立即执行一次 —— 让重复注入
-        // 具备幂等性（tap 脚本自身也做了防重入，见 tapScript.ts）。
-        runImmediately: true,
-      });
-      return { ok: true };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log.warn(`browser document-start injection failed: ${id} ${msg}`);
-      return { ok: false, error: `注入页面脚本失败: ${msg}` };
-    }
-  }
-
   /** Wire navigation/loading events -> push to renderer as browser:event. */
   private attachNavigationEvents(live: LiveBrowser): void {
     const wc = live.view.webContents;
     const id = live.id;
-    // 引擎视图（网页版模型）的加载结果只写日志、不推渲染端 —— 它平常停在离屏
-    // 1x1 上没人看，出问题时（站点改版、网络不通）日志是唯一的线索。
-    if (live.role === "engine") {
-      wc.on("did-finish-load", () => log.info(`browser engine loaded: ${id} url=${wc.getURL()}`));
-      wc.on("did-fail-load", (_e, code, desc, url) =>
-        log.warn(`browser engine load failed: ${id} ${code} ${desc} url=${url}`),
-      );
-    }
     const push = (type: "navigation" | "loading", payload: unknown) => {
       sendToRenderer(IPC.BROWSER_EVENT, {
         channel: IPC.BROWSER_EVENT,
@@ -1537,9 +1298,6 @@ class BrowserManagerImpl {
   ): BrowserOpResult {
     const live = this.get(id);
     if (!live) return { ok: false, error: "浏览器不存在或已关闭" };
-    // 引擎视图不吃设备仿真：它会抢 CDP 槽位（引擎要用它做 document-start 注入），
-    // 而且仿真 UA/视口会让网页版大模型按移动端渲染，反而打乱抓流。
-    if (live.role === "engine") return { ok: false, error: "引擎视图不支持设备仿真" };
     const orientation = opts?.orientation ?? "portrait";
     const spec = resolveBrowserDeviceSpec(device, {
       width: opts?.width,
@@ -1702,15 +1460,6 @@ class BrowserManagerImpl {
       }
       live.csDebuggerAttached = false;
     }
-    if (live.engineDebuggerAttached) {
-      try {
-        live.view.webContents.debugger.detach();
-      } catch {
-        /* webContents already gone - ignore */
-      }
-      live.engineDebuggerAttached = false;
-    }
-    this.tapHandlers.delete(id);
     try {
       live.view.webContents.close();
     } catch (err) {
@@ -2176,18 +1925,6 @@ class BrowserManagerImpl {
     });
   }
 
-  /**
-   * 视图是否还活着。
-   *
-   * 引擎 provider 需要它：它缓存 `browserId` 复用同一个视图跑多轮，而视图可能
-   * 已被别处关掉（应用清理、异常）。拿一个失效 id 去操作只会得到一句
-   * "浏览器不存在或已关闭"，不如让调用方提前知道该重建。
-   */
-  has(id: string): boolean {
-    const live = this.browsers.get(id);
-    return !!live && !live.view.webContents.isDestroyed();
-  }
-
   /** List metadata for every live browser view, so an agent can discover the
    *  `browserId` to target. There is no "active" concept in the manager (the
    *  renderer tracks the active panel tab); the agent resolves a target by
@@ -2195,10 +1932,6 @@ class BrowserManagerImpl {
   list(): BrowserInfo[] {
     const out: BrowserInfo[] = [];
     for (const [id, live] of this.browsers) {
-      // 引擎视图**不**出现在这里：agent 的浏览工具在没指定 browserId 时会取
-      // 第一项当操作目标（见 agentBrowserTools 的 resolveBrowserId），把正在
-      // 跑对话的引擎页混进来，会让 `browser_snapshot/click` 打在它身上。
-      if (live.role === "engine") continue;
       const wc = live.view.webContents;
       out.push({
         browserId: id,

@@ -9,7 +9,7 @@
 import { z } from "zod";
 import type { Project, Session, MessageRecord } from "../session.js";
 import type { BuiltinModelOption } from "../provider.js";
-import type { CustomModelPublic, TestCustomModelResult } from "../customModel.js";
+import type { CustomModelPublic, ExtensionBridgeStatus, TestCustomModelResult } from "../customModel.js";
 import type { PiProviderPublic } from "../piModel.js";
 import type { CodexProviderPublic } from "../codexModel.js";
 import type { NodeTypeCatalog } from "../nodeType.js";
@@ -179,8 +179,10 @@ export interface RpcMap {
   "customModel.test": (input: TestCustomModelInput) => Promise<TestCustomModelResult>;
   /** Settings UI eye-icon only — returns cleartext token for display. */
   "customModel.getToken": (input: GetCustomModelTokenInput) => Promise<{ token: string | null }>;
-  /** 网页端协议：显示站点视图供用户登录（登录态长期保存）。 */
-  "customModel.openWebLogin": (input: { siteId: string }) => Promise<{ ok: boolean }>;
+  /** 设置页只读快照：扩展桥地址 / 令牌 / 是否已配对。会顺带把服务拉起来。 */
+  "webBridge.status": () => Promise<ExtensionBridgeStatus>;
+  /** 换一个配对令牌（旧令牌立刻失效，已连上的扩展会被断开重连）。 */
+  "webBridge.regenerateToken": () => Promise<ExtensionBridgeStatus>;
   // Pi models (visual editor for ~/.pi/agent/models.json)
   "piModels.list": () => Promise<{ providers: Record<string, PiProviderPublic> }>;
   "piModels.save": (input: SavePiProviderInput) => Promise<{ providers: Record<string, PiProviderPublic> }>;
@@ -1062,8 +1064,9 @@ export const IPC = {
   CUSTOM_MODEL_DELETE: "customModel:delete",
   CUSTOM_MODEL_TEST: "customModel:test",
   CUSTOM_MODEL_GET_TOKEN: "customModel:getToken",
-  /** 网页端协议：把站点视图显示出来让用户登录（登录态落在共用浏览器分区）。 */
-  CUSTOM_MODEL_OPEN_WEB_LOGIN: "customModel:openWebLogin",
+  // 扩展桥（网页端协议的传输层）：配对状态查询 + 换令牌
+  WEB_BRIDGE_STATUS: "webBridge:status",
+  WEB_BRIDGE_REGENERATE_TOKEN: "webBridge:regenerateToken",
   // Pi models (visual editor for ~/.pi/agent/models.json)
   PI_MODELS_LIST: "piModels:list",
   PI_MODELS_SAVE: "piModels:save",

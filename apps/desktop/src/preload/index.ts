@@ -152,12 +152,16 @@ const api = {
     /** Settings UI eye-icon only — returns cleartext token for display. */
     getToken: ((input) =>
       ipcRenderer.invoke(IPC.CUSTOM_MODEL_GET_TOKEN, input)) as RpcMap["customModel.getToken"],
-    /** 网页端协议：显示站点视图供用户登录。 */
-    openWebLogin: ((input) =>
+  },
+
+  /** 扩展桥（网页端协议的传输层）：配对状态 + 换令牌。桥地址与令牌就在返回值里，
+   *  设置页要显示给用户复制进浏览器扩展。 */
+  webBridge: {
+    status: (() => ipcRenderer.invoke(IPC.WEB_BRIDGE_STATUS)) as RpcMap["webBridge.status"],
+    regenerateToken: (() =>
       ipcRenderer.invoke(
-        IPC.CUSTOM_MODEL_OPEN_WEB_LOGIN,
-        input,
-      )) as RpcMap["customModel.openWebLogin"],
+        IPC.WEB_BRIDGE_REGENERATE_TOKEN,
+      )) as RpcMap["webBridge.regenerateToken"],
   },
 
   /** Pi models visual editor — reads/writes ~/.pi/agent/models.json.
