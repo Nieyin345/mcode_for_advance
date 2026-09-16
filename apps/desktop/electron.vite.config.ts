@@ -165,13 +165,23 @@ export default defineConfig({
   preload: {
     plugins: [externalizeDepsPlugin()],
     build: {
-      // Two preload bundles:
+      // Three preload bundles:
       //  - index: the main window's preload (contextBridge API).
       //  - browserPicker: a minimal preload for the embedded browser
       //    WebContentsView, exposing only `window.mcodeBridge.pickElement`
       //    so the picker script (injected into the page's main world) can
       //    forward clicked elements to main without leaking any Node API.
-      lib: { entry: { index: "src/preload/index.ts", browserPicker: "src/preload/browserPicker.ts" } },
+      //  - webAgentTap: same lockdown, different method — the web-agent engine
+      //    view forwards the SSE text its injected tap script overheard
+      //    (`window.mcodeBridge.dsTapEvent`) so main can frame + parse it.
+      lib: {
+        entry: {
+          index: "src/preload/index.ts",
+          browserPicker: "src/preload/browserPicker.ts",
+          // 网页版大模型引擎视图的 preload（tap 数据回传桥）。
+          webAgentTap: "src/preload/webAgentTap.ts",
+        },
+      },
       rollupOptions: { external: ["electron"] },
     },
     resolve: {

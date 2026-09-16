@@ -8,6 +8,7 @@ import type { AgentProvider } from "@contracts/provider";
 import { ClaudeAgentSdkProvider } from "./claude-sdk/ClaudeAgentSdkProvider.js";
 import { PiAgentSdkProvider } from "./pi-sdk/PiAgentSdkProvider.js";
 import { CodexAgentSdkProvider } from "./codex-sdk/CodexAgentSdkProvider.js";
+import { WebAgentProvider } from "./web-agent/WebAgentProvider.js";
 
 class ProviderRegistry {
   private providers = new Map<string, AgentProvider>();
@@ -49,3 +50,5 @@ export const providerRegistry = new ProviderRegistry();
 providerRegistry.register(new ClaudeAgentSdkProvider());
 providerRegistry.register(new PiAgentSdkProvider());
 providerRegistry.register(new CodexAgentSdkProvider());
+// 网页版大模型引擎（内嵌浏览器驱动真实网页，见 web-agent/WebAgentProvider.ts）。
+providerRegistry.register(new WebAgentProvider());
