@@ -425,6 +425,8 @@ const customModel: Api["customModel"] = {
   delete: () => webUnsupported("customModel.delete"),
   test: () => webUnsupported("customModel.test"),
   getToken: () => webUnsupported("customModel.getToken"),
+  // 网页端登录需要在 PC 上开一个浏览器视图，移动端没有意义。
+  openWebLogin: () => webUnsupported("customModel.openWebLogin"),
 };
 
 const piModels: Api["piModels"] = {

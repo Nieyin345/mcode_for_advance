@@ -52,8 +52,12 @@ export type AuthMode = "auth_token" | "api_key";
  *  directly via `ANTHROPIC_BASE_URL`. `openai` means the endpoint speaks
  *  OpenAI's `/v1/chat/completions`; the host runs an in-process bridge that
  *  impersonates an Anthropic endpoint and translates both directions, so the
- *  binary still thinks it's talking to Anthropic. */
-export type Protocol = "anthropic" | "openai";
+ *  binary still thinks it's talking to Anthropic. `web` means the "endpoint"
+ *  is a **web chat page driven by the app's embedded browser** (`webSiteId`
+ *  picks which site) — the bridge impersonates Anthropic the same way, but
+ *  instead of forwarding HTTP it types into the page and streams the answer
+ *  it overheard back. */
+export type Protocol = "anthropic" | "openai" | "web";
 
 /** Default protocol when a stored config predates the `protocol` field, or when
  *  the user creates one without choosing. `anthropic` keeps every existing
@@ -128,8 +132,11 @@ export interface ApiConfig {
   authToken: string;
   authMode: AuthMode;
   /** Wire protocol of the upstream endpoint. `anthropic` (default) talks to it
-   *  directly; `openai` activates the in-process protocol bridge. */
+   *  directly; `openai` and `web` activate the in-process protocol bridge. */
   protocol: Protocol;
+  /** 仅 `protocol: "web"` 有意义：驱动哪个网页版站点（取站点适配器的 id，
+   *  如 "deepseek"）。其他协议下不存在。 */
+  webSiteId?: string;
   /** The model id the session has selected for this turn (one of
    *  `models[].id`). It becomes ANTHROPIC_MODEL (with the `[1m]` suffix when
    *  the entry declares it). Falls back to the first entry. */
@@ -171,6 +178,8 @@ export interface CustomModel {
   authToken: string;
   authMode: AuthMode;
   protocol: Protocol;
+  /** 仅 `protocol: "web"`：驱动哪个网页版站点（站点适配器 id，如 "deepseek"）。 */
+  webSiteId?: string;
   models: CustomModelEntry[];
   disableNonEssentialTraffic: boolean;
   timeoutMs?: number;
@@ -189,6 +198,8 @@ export interface CustomModelPublic {
   authMode: AuthMode;
   /** Wire protocol (resolved to a concrete value, never undefined). */
   protocol: Protocol;
+  /** 仅 `protocol: "web"`：驱动哪个网页版站点（站点适配器 id，如 "deepseek"）。 */
+  webSiteId?: string;
   /** Masked token, e.g. "sk-***ab12". For display only. */
   authTokenMasked: string;
   models: CustomModelEntry[];
@@ -211,6 +222,8 @@ export interface CustomModelMeta {
   authMode: AuthMode;
   /** Wire protocol. Absent on legacy records; resolve via {@link resolveProtocol}. */
   protocol?: Protocol;
+  /** 仅 `protocol: "web"`：驱动哪个网页版站点（站点适配器 id，如 "deepseek"）。 */
+  webSiteId?: string;
   models: CustomModelEntry[];
   /** Task-subagent model pinned for this config, or undefined = follow the
    *  main session's model. See ApiConfig.subagentModel. */
@@ -232,6 +245,8 @@ export interface CustomModelInput {
   authMode?: AuthMode;
   /** Wire protocol. Optional for backward compat; defaults to "anthropic". */
   protocol?: Protocol;
+  /** 仅 `protocol: "web"` 需要：驱动哪个网页版站点（站点适配器 id）。 */
+  webSiteId?: string;
   /** Cleartext. Required on create; optional on update (omit = keep existing). */
   authToken?: string;
   /** The flat model list (≥1 entry, enforced by the IPC schema). */

@@ -18,6 +18,7 @@ import {
   IconKey,
   IconHash,
   IconBrandOpenai,
+  IconWorld,
   IconAdjustmentsHorizontal,
   IconCircleOff,
   IconArrowsExchange,
@@ -88,6 +89,25 @@ const PROTOCOL_OPTIONS: { value: Protocol; labelKey: MessageId; icon: ReactNode 
     labelKey: "settings.customModels.protocolOpenai",
     icon: <IconBrandOpenai size={14} className="text-content-muted" />,
   },
+  // 网页端：上游不是某个 API，而是内嵌浏览器里真实运行的网页版大模型
+  // （见 main/providers/bridge/webUpstream.ts）。选它之后 Base URL / Token
+  // 都不再需要，改成一个站点选择 + 「打开登录窗口」。
+  {
+    value: "web",
+    labelKey: "settings.customModels.protocolWeb",
+    icon: <IconWorld size={14} className="text-content-muted" />,
+  },
+];
+
+/**
+ * 网页端可选站点。
+ *
+ * 与 main 侧 `providers/web-agent/adapters/index.ts` 的注册表一一对应；这里
+ * **刻意不复用那份表**：渲染端不 import 主进程模块（会把主进程代码拉进渲染
+ * bundle）。一期只有 DeepSeek，等站点变多再把这份列表改成经 IPC 拉取。
+ */
+const WEB_SITE_OPTIONS: { value: string; label: string }[] = [
+  { value: "deepseek", label: "DeepSeek 网页版" },
 ];
 
 /** Per-API-type brand icon for the Pi "API 类型" select (label stays the raw
@@ -243,6 +263,8 @@ interface ClaudeFormState {
   baseUrl: string;
   authMode: AuthMode;
   protocol: Protocol;
+  /** 仅 `protocol === "web"`：驱动哪个网页版站点（站点适配器 id）。 */
+  webSiteId: string;
   authToken: string;
   /** Flat model list — mirrors the Pi form's models array. */
   models: ClaudeModelFormState[];
@@ -265,6 +287,7 @@ function emptyClaudeForm(): ClaudeFormState {
     baseUrl: "",
     authMode: "auth_token",
     protocol: "anthropic",
+    webSiteId: "",
     authToken: "",
     models: [],
     subagentModel: "",
@@ -281,6 +304,7 @@ function claudeFormFromConfig(m: CustomModelPublic): ClaudeFormState {
     baseUrl: m.baseUrl,
     authMode: m.authMode,
     protocol: m.protocol,
+    webSiteId: m.webSiteId ?? "",
     authToken: "",
     models: m.models.map((e) => ({ id: e.id, supports1m: Boolean(e.supports1m) })),
     subagentModel: m.subagentModel ?? "",
@@ -650,15 +674,22 @@ export function CustomModelsPanel() {
       seen.add(id);
       models.push(m.supports1m ? { id, supports1m: true } : { id });
     }
-    if (!claudeForm.name.trim() || !claudeForm.baseUrl.trim()) {
+    // 网页端不需要 Base URL / Token（上游是内嵌浏览器里的页面，不是某个 API），
+    // 但必须选一个站点。
+    const isWeb = claudeForm.protocol === "web";
+    if (!claudeForm.name.trim() || (!isWeb && !claudeForm.baseUrl.trim())) {
       setError(t("settings.customModels.errNameBaseUrl"));
+      return;
+    }
+    if (isWeb && !claudeForm.webSiteId) {
+      setError(t("settings.customModels.errWebSite"));
       return;
     }
     if (models.length === 0) {
       setError(t("settings.customModels.errNeedModel"));
       return;
     }
-    if (!claudeForm.id && !claudeForm.authToken.trim()) {
+    if (!isWeb && !claudeForm.id && !claudeForm.authToken.trim()) {
       setError(t("settings.customModels.errTokenRequired"));
       return;
     }
@@ -688,6 +719,9 @@ export function CustomModelsPanel() {
         baseUrl: claudeForm.baseUrl.trim(),
         authMode: claudeForm.authMode,
         protocol: claudeForm.protocol,
+        // 站点 id 只在网页端有意义 —— 换成别的协议时把它清掉，免得配置里留着
+        // 一个以后会被误读的残值。
+        webSiteId: claudeForm.protocol === "web" ? claudeForm.webSiteId : undefined,
         authToken: claudeForm.authToken.trim() || undefined,
         models,
         subagentModel,
@@ -710,6 +744,12 @@ export function CustomModelsPanel() {
 
   const runClaudeTest = async (idx: number) => {
     if (!claudeForm) return;
+    // 网页端没有端点可探 —— 它的"连通性"就是有没有登录，那件事用「打开登录窗口」
+    // 里的页面自己看最直接；真去发一个探测请求只会得到一个看不懂的失败。
+    if (claudeForm.protocol === "web") {
+      setTest({ status: "fail", error: t("settings.customModels.webTestHint") });
+      return;
+    }
     const timeoutMs = claudeForm.timeoutMs.trim() ? Number(claudeForm.timeoutMs.trim()) : undefined;
     if (timeoutMs != null && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
       setError(t("settings.customModels.errTimeout"));
@@ -758,6 +798,16 @@ export function CustomModelsPanel() {
       );
     } catch (err) {
       setTest({ status: "fail", error: (err as Error).message });
+    }
+  };
+
+  /** 网页端：让站点视图显形，用户在里面登录（登录态由浏览器分区长期保存）。 */
+  const openWebLogin = async (siteId: string) => {
+    setError(null);
+    try {
+      await api.customModel.openWebLogin({ siteId });
+    } catch (err) {
+      setError((err as Error).message);
     }
   };
 
@@ -971,6 +1021,7 @@ export function CustomModelsPanel() {
               onSave={() => void saveClaude()}
               onCancel={cancel}
               onDelete={claudeForm.id ? () => setPendingDelete({ kind: "claude", id: claudeForm.id! }) : undefined}
+              onOpenWebLogin={(siteId) => void openWebLogin(siteId)}
             />
           ) : selection?.kind === "codex" && codexForm ? (
             <CodexProviderForm
@@ -1193,6 +1244,7 @@ function ClaudeProviderForm({
   onSave,
   onCancel,
   onDelete,
+  onOpenWebLogin,
 }: {
   form: ClaudeFormState;
   setForm: (f: ClaudeFormState | null) => void;
@@ -1204,9 +1256,13 @@ function ClaudeProviderForm({
   onSave: () => void;
   onCancel: () => void;
   onDelete?: () => void;
+  /** 网页端：打开站点视图让用户登录。实现在父组件 —— 那里有统一的错误条，
+   *  而"点了没反应"是这类按钮最糟的失败方式。 */
+  onOpenWebLogin: (siteId: string) => void;
 }) {
   const isEdit = !!form.id;
   const isOpenAi = form.protocol === "openai";
+  const isWeb = form.protocol === "web";
   const { t } = useI18n();
   // Open by default when anything inside it is already configured, so an
   // existing value is never hidden behind a collapsed section.
@@ -1265,40 +1321,86 @@ function ClaudeProviderForm({
         <Input value={form.name} onChange={(e) => update("name", e.target.value)} placeholder={t("settings.customModels.namePlaceholder")} />
       </Field>
 
-      <Field label="Base URL">
-        <Input value={form.baseUrl} onChange={(e) => update("baseUrl", e.target.value)} placeholder={isOpenAi ? "https://api.openai.com/v1" : "https://api.deepseek.com/anthropic"} />
-      </Field>
+      {/* 网页端没有 Base URL / Token —— 上游是内嵌浏览器里的页面，不是 API。
+          这两栏在这个协议下整块不渲染：留着只会让人以为还要填点什么。 */}
+      {isWeb ? (
+        <>
+          <Field label={t("settings.customModels.webSiteLabel")}>
+            <Select.Root value={form.webSiteId} onValueChange={(v) => update("webSiteId", v as string)}>
+              <Select.Trigger className="w-full">
+                <Select.Value>
+                  {(val: string) => {
+                    const o = WEB_SITE_OPTIONS.find((x) => x.value === val);
+                    return (
+                      <span>
+                        {o ? o.label : t("settings.customModels.webSitePlaceholder")}
+                      </span>
+                    );
+                  }}
+                </Select.Value>
+              </Select.Trigger>
+              <Select.Portal><Select.Positioner><Select.Popup><Select.List>
+                {WEB_SITE_OPTIONS.map((o) => (
+                  <Select.Item key={o.value} value={o.value}>
+                    <Select.ItemText>{o.label}</Select.ItemText>
+                  </Select.Item>
+                ))}
+              </Select.List></Select.Popup></Select.Positioner></Select.Portal>
+            </Select.Root>
+          </Field>
 
-      <div className="grid grid-cols-[1fr_120px] gap-2">
-        <Field label="Token / API Key">
-          <SecretInput
-            value={form.authToken}
-            onChange={(v) => update("authToken", v)}
-            placeholder={isEdit ? t("settings.customModels.tokenKeepPlaceholder") : "sk-..."}
-            onReveal={revealToken}
-          />
-        </Field>
-        <Field label={t("settings.customModels.authLabel")}>
-          <Select.Root value={form.authMode} onValueChange={(v) => update("authMode", v as AuthMode)}>
-            <Select.Trigger className="w-full">
-              <Select.Value>
-                {(val: AuthMode) => {
-                  const o = AUTH_MODE_OPTIONS.find((x) => x.value === val) ?? AUTH_MODE_OPTIONS[0];
-                  return <span className="flex items-center gap-1.5">{o.icon}{o.label}</span>;
-                }}
-              </Select.Value>
-            </Select.Trigger>
-            <Select.Portal><Select.Positioner><Select.Popup><Select.List>
-              {AUTH_MODE_OPTIONS.map((o) => (
-                <Select.Item key={o.value} value={o.value}>
-                  {o.icon}
-                  <Select.ItemText>{o.label}</Select.ItemText>
-                </Select.Item>
-              ))}
-            </Select.List></Select.Popup></Select.Positioner></Select.Portal>
-          </Select.Root>
-        </Field>
-      </div>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!form.webSiteId}
+            onClick={() => onOpenWebLogin(form.webSiteId)}
+          >
+            <IconWorld size={13} className="mr-1" />
+            {t("settings.customModels.webOpenLogin")}
+          </Button>
+
+          <p className="text-[0.6428em] leading-relaxed text-content-subtle">
+            {t("settings.customModels.webNote")}
+          </p>
+        </>
+      ) : (
+        <>
+          <Field label="Base URL">
+            <Input value={form.baseUrl} onChange={(e) => update("baseUrl", e.target.value)} placeholder={isOpenAi ? "https://api.openai.com/v1" : "https://api.deepseek.com/anthropic"} />
+          </Field>
+
+          <div className="grid grid-cols-[1fr_120px] gap-2">
+            <Field label="Token / API Key">
+              <SecretInput
+                value={form.authToken}
+                onChange={(v) => update("authToken", v)}
+                placeholder={isEdit ? t("settings.customModels.tokenKeepPlaceholder") : "sk-..."}
+                onReveal={revealToken}
+              />
+            </Field>
+            <Field label={t("settings.customModels.authLabel")}>
+              <Select.Root value={form.authMode} onValueChange={(v) => update("authMode", v as AuthMode)}>
+                <Select.Trigger className="w-full">
+                  <Select.Value>
+                    {(val: AuthMode) => {
+                      const o = AUTH_MODE_OPTIONS.find((x) => x.value === val) ?? AUTH_MODE_OPTIONS[0];
+                      return <span className="flex items-center gap-1.5">{o.icon}{o.label}</span>;
+                    }}
+                  </Select.Value>
+                </Select.Trigger>
+                <Select.Portal><Select.Positioner><Select.Popup><Select.List>
+                  {AUTH_MODE_OPTIONS.map((o) => (
+                    <Select.Item key={o.value} value={o.value}>
+                      {o.icon}
+                      <Select.ItemText>{o.label}</Select.ItemText>
+                    </Select.Item>
+                  ))}
+                </Select.List></Select.Popup></Select.Positioner></Select.Portal>
+              </Select.Root>
+            </Field>
+          </div>
+        </>
+      )}
 
       {/* Models sub-list — flat rows mirroring the Pi form: model id + 1M
           toggle, with a per-row plug icon (next to delete) that fires the

@@ -17,11 +17,13 @@ import {
   DeleteCustomModelSchema,
   TestCustomModelSchema,
   GetCustomModelTokenSchema,
+  OpenWebLoginSchema,
 } from "@contracts/ipc";
 import type { ApiConfig } from "@contracts/customModel";
 import { CustomModelStore } from "@main/lib/secretStore.js";
 import { buildCustomEnv, resolveActiveModel } from "@main/providers/claude-sdk/customEnv.js";
 import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
+import { revealSiteForLogin } from "@main/providers/bridge/webUpstream.js";
 import { resolveSdkBinaryPath } from "@main/providers/claude-sdk/sdkBinaryPath.js";
 import { log } from "@main/lib/logger.js";
 
@@ -55,6 +57,15 @@ export function registerCustomModelHandlers(ipcMain: IpcMain): void {
     // here ONLY because the user clicked the eye icon in the settings form.
     const cfg = CustomModelStore.resolveApiConfig(input.id);
     return { token: cfg?.authToken ?? null };
+  });
+
+  // 网页端（protocol: "web"）：把站点视图显示出来让用户登录。登录态落在共用
+  // 浏览器分区，所以登一次长期有效 —— 设置页那个按钮通常只需要点一次。
+  ipcMain.handle(IPC.CUSTOM_MODEL_OPEN_WEB_LOGIN, async (_evt, raw) => {
+    const input = OpenWebLoginSchema.parse(raw);
+    const result = await revealSiteForLogin(input.siteId);
+    if (!result.ok) throw new Error(result.error ?? "无法打开登录窗口");
+    return { ok: true };
   });
 
   ipcMain.handle(IPC.CUSTOM_MODEL_TEST, async (_evt, raw) => {

@@ -12,7 +12,7 @@
  * it stays visible on the dark surface.
  */
 import type { ComponentType } from "react";
-import { SiClaude, IconTerminal, PiBrandIcon, OpenAIBrandIcon, IconWorld } from "@renderer/lib/icons.js";
+import { SiClaude, IconTerminal, PiBrandIcon, OpenAIBrandIcon } from "@renderer/lib/icons.js";
 
 export interface ProviderIconMeta {
   Icon: ComponentType<{ size?: number; className?: string }>;
@@ -38,8 +38,6 @@ const PROVIDER_ICONS: Record<string, ProviderIconMeta> = {
   "claude-sdk": { Icon: SiClaude, color: "text-[#D97757]", dot: "#D97757", label: "Claude" },
   "pi-sdk": { Icon: PiBrandIcon, color: "text-black dark:text-content", dot: "#A78BFA", label: "Pi" },
   "codex-sdk": { Icon: OpenAIBrandIcon, color: "text-content", dot: "#10A37F", label: "Codex" },
-  // 网页版引擎：没有品牌标记可用，用"网络"语义的通用图标 + 天空蓝。
-  "web-agent": { Icon: IconWorld, color: "text-sky-500", dot: "#38BDF8", label: "Web" },
 };
 
 export function getProviderIcon(providerId: string | null | undefined): ProviderIconMeta {

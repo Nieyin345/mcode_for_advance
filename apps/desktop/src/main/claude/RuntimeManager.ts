@@ -928,7 +928,9 @@ class RuntimeManager {
         // is completely unaware anything special is happening — it just sees an
         // Anthropic-compatible endpoint on localhost. The bridge is shared
         // across sessions via the registry (keyed by config id, ref-counted).
-        if (cfg.protocol === "openai") {
+        // `web` 与 `openai` 一样要走本地 bridge —— 区别只在 bridge 的"上游"是什么
+        // （HTTP 端点 vs 内嵌浏览器里的网页，见 bridge/webUpstream.ts）。
+        if (cfg.protocol === "openai" || cfg.protocol === "web") {
           // Release any bridge we're holding for a DIFFERENT config (the user
           // may have switched custom models mid-session), then acquire for the
           // current one. We hold exactly one bridge per session; same-config

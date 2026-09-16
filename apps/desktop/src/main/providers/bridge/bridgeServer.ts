@@ -307,6 +307,18 @@ async function handleMessages(
     return;
   }
 
+  // 网页版上游走一条完全不同的路：不转发 HTTP，而是驱动内嵌浏览器里的页面。
+  // 在这里就分出去 —— 下面的 OpenAI 转换与上游 fetch 对它都没有意义。
+  if (upstream.protocol === "web") {
+    // **动态加载**，不是静态 import：网页上游会把内嵌浏览器那一整条依赖拉进来
+    // （EngineSession → BrowserManager → electron），而 bridgeServer 本身也被无头
+    // 测试直接 import —— 静态引进来会让那些测试在 node 下因 require("electron")
+    // 而崩掉（upstream-headers-smoke 就这么炸过一次）。
+    const { handleWebMessages } = await import("./webUpstream.js");
+    await handleWebMessages(req, res, body, upstream);
+    return;
+  }
+
   const openaiReq: OpenAIRequest = anthropicToOpenAI(body);
   // Observability for image turns: count the image_url parts we forward so a
   // gateway that silently drops them (non-vision model behind an OpenAI-

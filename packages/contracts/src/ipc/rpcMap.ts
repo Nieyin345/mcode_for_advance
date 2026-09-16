@@ -179,6 +179,8 @@ export interface RpcMap {
   "customModel.test": (input: TestCustomModelInput) => Promise<TestCustomModelResult>;
   /** Settings UI eye-icon only — returns cleartext token for display. */
   "customModel.getToken": (input: GetCustomModelTokenInput) => Promise<{ token: string | null }>;
+  /** 网页端协议：显示站点视图供用户登录（登录态长期保存）。 */
+  "customModel.openWebLogin": (input: { siteId: string }) => Promise<{ ok: boolean }>;
   // Pi models (visual editor for ~/.pi/agent/models.json)
   "piModels.list": () => Promise<{ providers: Record<string, PiProviderPublic> }>;
   "piModels.save": (input: SavePiProviderInput) => Promise<{ providers: Record<string, PiProviderPublic> }>;
@@ -1060,6 +1062,8 @@ export const IPC = {
   CUSTOM_MODEL_DELETE: "customModel:delete",
   CUSTOM_MODEL_TEST: "customModel:test",
   CUSTOM_MODEL_GET_TOKEN: "customModel:getToken",
+  /** 网页端协议：把站点视图显示出来让用户登录（登录态落在共用浏览器分区）。 */
+  CUSTOM_MODEL_OPEN_WEB_LOGIN: "customModel:openWebLogin",
   // Pi models (visual editor for ~/.pi/agent/models.json)
   PI_MODELS_LIST: "piModels:list",
   PI_MODELS_SAVE: "piModels:save",

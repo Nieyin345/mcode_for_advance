@@ -92,6 +92,11 @@ export interface AnthropicRequest {
   stop_sequences?: string[];
   tools?: AnthropicTool[];
   tool_choice?: AnthropicToolChoice;
+  /** Anthropic's request metadata. Claude Code carries a `user_id` of the shape
+   *  `user_…_account__session_…` here — the web upstream uses it to give each
+   *  mcode session its own page view (see webUpstream.ts). Declared optional
+   *  because the field is not part of the translation path we mirror. */
+  metadata?: { user_id?: string; [k: string]: unknown };
 }
 
 /* ───────────────────────── OpenAI (what the bridge SENDS / RECEIVES) ───────────────────────── */
@@ -232,4 +237,13 @@ export interface UpstreamConfig {
   /** Extra headers to send upstream (the config's `customHeaders`). Merged by
    *  `upstreamHeaders()` so both delivery paths send one header set. */
   customHeaders?: Record<string, string>;
+  /** Where this upstream actually is. Absent/`"openai"` → a real HTTP endpoint
+   *  (the original behaviour). `"web"` → **not an endpoint at all**: the app's
+   *  embedded browser drives a web chat page and the answer is re-framed as an
+   *  Anthropic stream (see webUpstream.ts). In that mode `baseUrl`/`authToken`
+   *  are unused and `webSiteId` decides which page to drive. */
+  protocol?: "anthropic" | "openai" | "web";
+  /** Which site adapter to drive when `protocol` is `"web"` (an id from
+   *  main/providers/web-agent/adapters). */
+  webSiteId?: string;
 }

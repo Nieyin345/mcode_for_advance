@@ -36,6 +36,9 @@ function fingerprint(cfg: ApiConfig): string {
     authToken: cfg.authToken,
     authMode: cfg.authMode,
     timeoutMs: cfg.timeoutMs ?? null,
+    // 网页端（protocol: "web"）的"上游"由这个字段决定 —— 不含它的话，用户把
+    // 配置从 DeepSeek 改成别的站点时，运行中的 bridge 会继续驱动旧站点。
+    webSiteId: cfg.webSiteId ?? null,
     // Headers are baked into every upstream request this server makes, so an
     // edit that doesn't rebuild would keep sending the OLD set for the rest of
     // the bridge's life (it outlives the turn that created it).

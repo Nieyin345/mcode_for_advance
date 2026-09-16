@@ -17,7 +17,7 @@ const CustomModelEntrySchema = z.object({
 
 const AuthModeSchema = z.enum(["auth_token", "api_key"]);
 
-const ProtocolSchema = z.enum(["anthropic", "openai"]);
+const ProtocolSchema = z.enum(["anthropic", "openai", "web"]);
 
 /** Extra request headers for a custom endpoint, keyed by header name. Shape
  *  only — names/values are validated in main (see
@@ -31,9 +31,14 @@ const CustomHeadersSchema = z.record(z.string(), z.string());
 export const SaveCustomModelSchema = z.object({
   id: z.string().optional(),
   name: z.string().min(1),
-  baseUrl: z.string().min(1),
+  /** Endpoint base URL. **Not** required for `protocol: "web"` — a web-page
+   *  model has no endpoint at all (its "upstream" is a page in the embedded
+   *  browser). The rule lives in the superRefine below. */
+  baseUrl: z.string(),
   authMode: AuthModeSchema.optional(),
   protocol: ProtocolSchema.optional(),
+  /** Required when `protocol: "web"`: which site adapter to drive. */
+  webSiteId: z.string().optional(),
   authToken: z.string().optional(),
   models: z.array(CustomModelEntrySchema).min(1),
   /** Task-subagent model pin (one of models[].id); the store drops a value
@@ -42,6 +47,26 @@ export const SaveCustomModelSchema = z.object({
   disableNonEssentialTraffic: z.boolean().optional(),
   timeoutMs: z.number().optional(),
   customHeaders: CustomHeadersSchema.optional(),
+}).superRefine((val, ctx) => {
+  // 两条互斥的必填规则：普通协议要有地址，网页端要有站点。放在这里而不是字段上，
+  // 是因为 zod 的字段级校验看不到兄弟字段。
+  if (val.protocol === "web") {
+    if (!val.webSiteId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "网页端必须选择站点",
+        path: ["webSiteId"],
+      });
+    }
+    return;
+  }
+  if (!val.baseUrl.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "baseUrl is required",
+      path: ["baseUrl"],
+    });
+  }
 });
 export type SaveCustomModelInput = CustomModelInput;
 
@@ -74,6 +99,9 @@ export type TestCustomModelInput = z.infer<typeof TestCustomModelSchema>;
  *  the eye icon on an edit form. It MUST NOT be used by any background /
  *  turn-time path (those resolve the token in main via resolveApiConfig). */
 export const GetCustomModelTokenSchema = z.object({ id: z.string().min(1) });
+
+/** 网页端（protocol: "web"）—— 打开某个站点的视图让用户登录。 */
+export const OpenWebLoginSchema = z.object({ siteId: z.string().min(1) });
 export type GetCustomModelTokenInput = z.infer<typeof GetCustomModelTokenSchema>;
 
 /* ── Pi models (visual editor for ~/.pi/agent/models.json) ── */

@@ -152,6 +152,12 @@ const api = {
     /** Settings UI eye-icon only — returns cleartext token for display. */
     getToken: ((input) =>
       ipcRenderer.invoke(IPC.CUSTOM_MODEL_GET_TOKEN, input)) as RpcMap["customModel.getToken"],
+    /** 网页端协议：显示站点视图供用户登录。 */
+    openWebLogin: ((input) =>
+      ipcRenderer.invoke(
+        IPC.CUSTOM_MODEL_OPEN_WEB_LOGIN,
+        input,
+      )) as RpcMap["customModel.openWebLogin"],
   },
 
   /** Pi models visual editor — reads/writes ~/.pi/agent/models.json.
