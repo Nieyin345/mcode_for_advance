@@ -1,4 +1,5 @@
 import { useEffect, useState, type ComponentType } from "react";
+import type { ProviderCapabilities } from "@contracts/provider";
 import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
@@ -38,6 +39,7 @@ import { SkillsPanel } from "./SkillsPanel.js";
 import { WorkflowsPanel } from "./workflows/WorkflowsPanel.js";
 import { HooksPanel } from "./HooksPanel.js";
 import { McpPanel } from "./McpPanel.js";
+import { SubagentsPanel } from "./SubagentsPanel.js";
 import { PluginsPanel } from "./PluginsPanel.js";
 import { AppearancePanel } from "./AppearancePanel.js";
 import { ShortcutsPanel } from "./ShortcutsPanel.js";
@@ -68,12 +70,16 @@ import { AboutPanel } from "./AboutPanel.js";
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "data-root" | "runtimes" | "custom-models" | "institution" | "integrations" | "library" | "templates" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "usage" | "about";
+type SectionId = "general" | "data-root" | "runtimes" | "custom-models" | "institution" | "integrations" | "library" | "templates" | "skills" | "claude-subagents" | "workflows" | "automation" | "hooks" | "mcp" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "usage" | "about";
 
 interface NavItem {
   id: SectionId;
   labelKey: MessageId;
   icon: ComponentType<TablerIconProps>;
+  /** Capability gate: the item renders only when some provider declares it
+   *  (undefined = always shown). Keeps provider-specific pages (子代理) from
+   *  reading as broken entries when the engine can't serve them. */
+  requiresCapability?: (caps: ProviderCapabilities) => boolean;
 }
 
 interface NavGroup {
@@ -103,6 +109,14 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "runtimes", labelKey: "settings.nav.runtimes", icon: IconPackage },
       { id: "plugins", labelKey: "settings.nav.plugins", icon: IconPuzzle },
       { id: "skills", labelKey: "settings.nav.skills", icon: IconSparkles },
+      // 自定义子代理：Claude provider 专属能力（Options.agents），按能力位显隐 ——
+      // 没有引擎支持时整个入口消失，而不是给一页"用不了"的编辑器。
+      {
+        id: "claude-subagents",
+        labelKey: "settings.nav.subagents",
+        icon: IconRobot,
+        requiresCapability: (caps) => caps.supportsCustomSubagents === true,
+      },
       // 工作流紧挨着技能:两者都在回答"AI 按什么做事"(技能是动词,工作流是流程),
       // 而节点类型由插件带来 —— 再往下一格就是插件。
       { id: "workflows", labelKey: "settings.nav.workflows", icon: IconArrowsSplit },
@@ -157,6 +171,10 @@ const NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
 export function SettingsPage() {
   const { t } = useI18n();
   const setSettingsOpen = useSessionStore((s) => s.setSettingsOpen);
+  // Capability-gated nav items (子代理 etc.) read the provider list — present
+  // after the initial PROVIDER_LIST round-trip, empty on first paint (items
+  // then blink in; harmless).
+  const providers = useSessionStore((s) => s.providers);
   // SettingsPage mounts fresh each time the modal opens (App.tsx conditionally
   // renders it on `settingsOpen`), so this useState reads the requested
   // section once per open. Callers pass a section via setSettingsOpen(true, id)
@@ -194,7 +212,13 @@ export function SettingsPage() {
                 {t(group.labelKey)}
               </div>
               <div className="space-y-0.5">
-                {group.items.map((item) => {
+                {group.items
+                  .filter(
+                    (item) =>
+                      !item.requiresCapability ||
+                      providers.some((p) => item.requiresCapability!(p.capabilities)),
+                  )
+                  .map((item) => {
                   const isActive = item.id === active;
                   const Icon = item.icon;
                   return (
@@ -263,6 +287,9 @@ export function SettingsPage() {
           {active === "gestures" && <GesturesPanel />}
           {active === "voice" && <VoicePanel />}
           {active === "skills" && <SkillsPanel />}
+          {/* 面板本身不随导航隐藏:深链(setSettingsOpen(true, "claude-subagents"))即便
+              在入口被能力位滤掉的瞬间也应落在真实内容上,而不是一页空白。 */}
+          {active === "claude-subagents" && <SubagentsPanel />}
           {active === "workflows" && <WorkflowsPanel purpose="workflow" />}
           {active === "automation" && <WorkflowsPanel purpose="automation" />}
           {active === "hooks" && <HooksPanel />}

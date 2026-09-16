@@ -54,6 +54,13 @@ import { CodexAppServerClient } from "./CodexAppServerClient.js";
 import { CodexMessageAdapter } from "./CodexMessageAdapter.js";
 import { CodexFileSnapshot } from "./CodexFileSnapshot.js";
 import { resolveCodexBinaryPath } from "./codexBinaryResolve.js";
+import type { TurnDoneReason } from "@contracts/runtime";
+import {
+  buildStructuredOutputPrompt,
+  buildCorrectivePrompt,
+  parseStructuredOutput,
+  type StructuredOutputSpec,
+} from "@main/lib/structuredOutput.js";
 import {
   CodexModelsStore,
   codexHomePath,
@@ -303,6 +310,12 @@ export class CodexAgentSdkProvider implements AgentProvider {
       }
       return items as import("./CodexMessageAdapter.js").ThreadItem[];
     });
+    // 结构化输出（StartTurnRequest.structuredOutput）：Codex 没有原生
+    // structured-output —— schema 指令拼进输入文本，轮末 parse 校验；失败附
+    // 错误同 thread 追一轮纠错，再失败 turn.notice(structured_invalid) +
+    // turn.done error。defer 模式让 adapter 的 turn.done 等校验结束后再发。
+    const structuredSpec: StructuredOutputSpec | null = req.structuredOutput ?? null;
+    if (structuredSpec) adapter.setDeferTurnDone();
     // Set once the onExit handler has surfaced an unexpected process death,
     // so the done() catch doesn't emit a second (duplicate) error card.
     let crashEmitted = false;
@@ -440,9 +453,9 @@ export class CodexAgentSdkProvider implements AgentProvider {
         }
 
         // Turn input: text + images (local files — codex takes paths, not
-        // inline base64).
+        // inline base64). 结构化输出时把 schema 指令拼在 prompt 末尾。
         const input: Array<Record<string, unknown>> = [
-          { type: "text", text: req.prompt },
+          { type: "text", text: structuredSpec ? req.prompt + buildStructuredOutputPrompt(structuredSpec) : req.prompt },
         ];
         if (req.images?.length) {
           for (const img of req.images) {
@@ -455,48 +468,94 @@ export class CodexAgentSdkProvider implements AgentProvider {
         // Per-turn overrides: model/effort/sandbox/approvalPolicy are official
         // turn/start params. modelProvider is deliberately NOT sent here —
         // turn/start has no such field and silently drops it (provider
-        // switches ride thread/resume above).
-        const startedTurn = (await client.request("turn/start", {
-          threadId,
-          input,
+        // switches ride thread/resume above). 结构化输出的纠错轮复用同一组
+        // overrides，保证两轮跑在同一配置上。
+        const turnOverrides: Record<string, unknown> = {
           model: modelId,
           approvalPolicy,
           sandboxPolicy: { type: sandboxPolicyType(mode) },
           ...(req.effort && req.effort !== "default" ? { effort: req.effort } : {}),
-        })) as { turn?: { id?: string } } | undefined;
-        activeTurn.turnId = startedTurn?.turn?.id ?? null;
+        };
 
-        // turn/start returns immediately; the turn's real completion is
-        // notification-driven (adapter resolves waitTurnDone on
-        // turn/completed). Abort races the wait — on abort we request
-        // turn/interrupt and wait for the final state either way.
-        const abortedPromise = new Promise<"interrupted">((resolve) => {
-          if (ac.signal.aborted) resolve("interrupted");
-          else ac.signal.addEventListener("abort", () => resolve("interrupted"), { once: true });
-        });
-        const reason = await Promise.race([adapter.waitTurnDone(), abortedPromise]);
+        // 起一轮并等它终态：turn/start 立即返回，完成靠通知（waitTurnDone 在
+        // turn/completed 时 resolve）。abort 竞速等待 —— 中断时请求
+        // turn/interrupt，再给通知泵一小段宽限投递终态；仍未终态则按 abort
+        // 收尾。主轮与结构化输出的纠错轮共用。
+        const runTurnAndWait = async (
+          input: Array<Record<string, unknown>>,
+        ): Promise<TurnDoneReason> => {
+          const startedTurn = (await client.request("turn/start", {
+            threadId,
+            input,
+            ...turnOverrides,
+          })) as { turn?: { id?: string } } | undefined;
+          activeTurn.turnId = startedTurn?.turn?.id ?? null;
 
-        if (reason === "interrupted" && activeTurn.turnId) {
-          try {
-            await client.request("turn/interrupt", { threadId, turnId: activeTurn.turnId });
-          } catch {
-            /* turn may have completed concurrently */
+          const abortedPromise = new Promise<"interrupted">((resolve) => {
+            if (ac.signal.aborted) resolve("interrupted");
+            else ac.signal.addEventListener("abort", () => resolve("interrupted"), { once: true });
+          });
+          const turnReason = await Promise.race([adapter.waitTurnDone(), abortedPromise]);
+
+          if (turnReason === "interrupted" && activeTurn.turnId) {
+            try {
+              await client.request("turn/interrupt", { threadId, turnId: activeTurn.turnId });
+            } catch {
+              /* turn may have completed concurrently */
+            }
           }
-        }
 
-        // Give the notification pump a short grace to deliver the terminal
-        // turn/completed (it may still be in flight right after interrupt).
-        await Promise.race([
-          adapter.waitTurnDone(),
-          new Promise((r) => setTimeout(r, 2000)),
-        ]);
-        if (!adapter.hasTurnEnded) {
-          adapter.finalizeAborted();
+          // Give the notification pump a short grace to deliver the terminal
+          // turn/completed (it may still be in flight right after interrupt).
+          await Promise.race([
+            adapter.waitTurnDone(),
+            new Promise((r) => setTimeout(r, 2000)),
+          ]);
+          if (!adapter.hasTurnEnded) {
+            adapter.finalizeAborted();
+          }
+          return turnReason;
+        };
+
+        // 结构化输出守卫：轮末 parse 最终回复；失败附校验错误同 thread 追一轮
+        // 纠错，再失败 → turn.notice(structured_invalid)，turn 以 error 收尾。
+        const runStructuredGuard = async (): Promise<TurnDoneReason> => {
+          let parsed = parseStructuredOutput(adapter.getFinalTurnText(), structuredSpec!);
+          if (parsed.ok) return "end_turn";
+          ctx.log.warn(
+            `codex: structured output invalid, one corrective turn: ${parsed.error.slice(0, 200)}`,
+          );
+          adapter.beginCorrectiveTurn();
+          const corrective = structuredSpec
+            ? [{ type: "text", text: buildCorrectivePrompt(structuredSpec, parsed.error) }]
+            : [];
+          const retryReason = await runTurnAndWait(corrective);
+          if (retryReason !== "end_turn") return retryReason;
+          parsed = parseStructuredOutput(adapter.getFinalTurnText(), structuredSpec!);
+          if (parsed.ok) return "end_turn";
+          ctx.emit({
+            type: "turn.notice",
+            sessionId: req.sessionId,
+            kind: "structured_invalid",
+            message: `结构化输出（${structuredSpec!.name}）重试后仍不符合 schema，本轮按错误结束：${parsed.error}`,
+          });
+          return "error";
+        };
+
+        const reason = await runTurnAndWait(input);
+
+        let finalReason = reason;
+        if (structuredSpec && reason === "end_turn" && !ac.signal.aborted) {
+          finalReason = await runStructuredGuard();
         }
+        adapter.flushDeferredTurnDone(finalReason);
         await adapter.flushFinal();
       } catch (err) {
         if (ac.signal.aborted) {
           if (!adapter.hasTurnEnded) adapter.finalizeAborted();
+          // defer 模式（结构化输出）下 finishTurn 没发 turn.done，这里补上；
+          // 普通模式下是无害空操作。
+          adapter.flushDeferredTurnDone("interrupted");
           await adapter.flushFinal();
         } else {
           ctx.log.error(`codex turn failed: ${(err as Error).message}`);
@@ -511,6 +570,7 @@ export class CodexAgentSdkProvider implements AgentProvider {
             });
           }
           if (!adapter.hasTurnEnded) adapter.finalizeError();
+          adapter.flushDeferredTurnDone("error");
           await adapter.flushFinal();
         }
       } finally {

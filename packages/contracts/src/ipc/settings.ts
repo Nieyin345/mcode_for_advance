@@ -134,6 +134,40 @@ export const AUTO_ARCHIVE_SETTING_KEY = "session.autoArchive";
 export const SESSION_WORKTREE_DEFAULT_SETTING_KEY = "session.worktreeDefault";
 
 /**
+ * Setting key persisting the per-turn BUDGET CAPS, as a JSON object
+ * `{ maxTurns?: number; maxUsd?: number; maxTotalTokens?: number }`. Absent,
+ * empty object, or malformed JSON = caps off (default). Read fresh by
+ * RuntimeManager at every sendTurn, so a settings change applies from the
+ * NEXT turn on; a turn already in flight keeps the caps it started with.
+ * When a cap is crossed mid-turn the host emits `turn.notice`
+ * (kind="budget_limit") and interrupts via the normal stop path.
+ */
+export const TURN_BUDGET_SETTING_KEY = "runtime.turnBudget";
+
+/**
+ * Setting key persisting the FAILURE FALLBACK CHAIN, as a JSON array of model
+ * ids (same shape as `session.model`, e.g. "provider/model" or a built-in id).
+ * When a turn ends with reason="error", RuntimeManager retries it on the next
+ * model in the chain (chat sessions only — workflow nodes are excluded to
+ * avoid holdTurnEnd / scheduler entanglement). Absent, malformed, or empty =
+ * no fallback (default). Read fresh at every sendTurn, so a settings change
+ * applies from the NEXT turn on; the remaining chain drains across retries
+ * within one turn's failure episode.
+ */
+export const RUNTIME_FALLBACK_MODELS_SETTING_KEY = "runtime.fallbackModels";
+
+/**
+ * Setting key persisting CUSTOM SUBAGENT definitions for the Claude provider,
+ * as a JSON array of `{ name; description; prompt; tools?; model? }` objects
+ * (see SubagentDefinition in main/claude/subagentStore.ts). Read fresh at
+ * every claude-sdk startTurn and forwarded as the SDK's `Options.agents`.
+ * Only the Claude provider consumes this key — the Settings page shows the
+ * editor only for providers whose capabilities declare
+ * `supportsCustomSubagents`.
+ */
+export const CLAUDE_SUBAGENTS_SETTING_KEY = "claude.subagents";
+
+/**
  * Setting key persisting the managed ROOT directory for isolated-session
  * worktrees (absolute path; empty/absent = the default
  * <userData>/worktrees). Read fresh on every worktree creation, so a change

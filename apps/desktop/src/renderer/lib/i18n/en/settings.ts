@@ -7,6 +7,7 @@ export const en = {
   "settings.nav.shortcuts": "Shortcuts",
   "settings.nav.voice": "Voice Input",
   "settings.nav.skills": "Skills",
+  "settings.nav.subagents": "Subagents",
   "settings.nav.workflows": "Workflows",
   "settings.nav.automation": "Automations",
   "settings.nav.hooks": "Hooks",
@@ -30,6 +31,29 @@ export const en = {
   // ── GeneralPanel ──
   "settings.general.title": "General",
   "settings.general.desc": "Layout, message display, thread titles and other basic preferences.",
+
+  // ── SubagentsPanel (Claude custom subagents) ──
+  "settings.subagents.title": "Subagents",
+  "settings.subagents.sectionTitle": "Custom subagents (Claude)",
+  "settings.subagents.sectionDesc":
+    "Define subagents the main conversation can delegate to: a name, a description of when to use it, and its own system prompt. Applies from the next turn after saving.",
+  "settings.subagents.empty": "No custom subagents yet. Click \"Add subagent\" to create the first one.",
+  "settings.subagents.unnamed": "Unnamed",
+  "settings.subagents.name": "Name",
+  "settings.subagents.namePh": "e.g. test-runner (letters/digits/-/_) ",
+  "settings.subagents.description": "Description (guides when the model delegates)",
+  "settings.subagents.descriptionPh": "e.g. Runs tests and summarizes failures",
+  "settings.subagents.prompt": "System prompt",
+  "settings.subagents.promptPh": "This subagent's persona and way of working…",
+  "settings.subagents.tools": "Allowed tools (comma-separated, empty = inherit all)",
+  "settings.subagents.toolsPh": "e.g. Read, Grep, Bash",
+  "settings.subagents.model": "Model (optional)",
+  "settings.subagents.modelPh": "e.g. sonnet / opus / inherit",
+  "settings.subagents.add": "Add subagent",
+  "settings.subagents.save": "Save",
+  "settings.subagents.saving": "Saving…",
+  "settings.subagents.saved": "Saved",
+  "settings.subagents.delete": "Delete",
   "settings.general.sectionBasics": "Basics",
   "settings.general.sectionLanguage": "Language",
   "settings.general.sectionDisplay": "Display & Layout",
@@ -794,6 +818,27 @@ export const en = {
   "settings.terminal.namePlaceholder": "e.g. Start dev server",
   "settings.terminal.commandLabel": "Command",
   "settings.terminal.commandPlaceholder": "e.g. npm run dev",
+
+  // ── RuntimePolicyPanel (turn budget / failure fallback) ──
+  "settings.turnBudget.sectionTitle": "Turn Budget",
+  "settings.turnBudget.sectionDesc":
+    "Cap each turn by assistant rounds, spend, or total tokens. When a cap is crossed the turn stops automatically (same as pressing stop) with the context intact. Changes apply from the next turn on.",
+  "settings.turnBudget.enabled": "Enable turn budget",
+  "settings.turnBudget.enabledDesc": "When off, no caps apply (default).",
+  "settings.turnBudget.maxTurns": "Max rounds",
+  "settings.turnBudget.maxTurnsDesc": "How many rounds the model may run autonomously in one turn. Leave empty for no limit.",
+  "settings.turnBudget.maxUsd": "Spend cap (USD)",
+  "settings.turnBudget.maxUsdDesc": "Stop the turn once its cumulative cost exceeds this. Leave empty for no limit.",
+  "settings.turnBudget.maxTokens": "Total token cap",
+  "settings.turnBudget.maxTokensDesc": "Stop the turn once its cumulative processed tokens (incl. cache reads) exceed this. Leave empty for no limit.",
+  "settings.turnBudget.unset": "No limit",
+  "settings.fallback.sectionTitle": "Failure Fallback",
+  "settings.fallback.sectionDesc":
+    "When a turn fails with a model error, automatically retry the same input on the next model in the chain. Plain chat sessions only (workflow nodes and custom-gateway sessions never fall back). Changes apply from the next turn on.",
+  "settings.fallback.chain": "Fallback model chain",
+  "settings.fallback.chainDesc":
+    "Model ids in priority order, separated by commas or spaces (built-in aliases like sonnet / opus, or a model id from a gateway config). Tried in order only when the session's current model fails.",
+  "settings.fallback.chainPh": "e.g. sonnet, opus",
 
   // ── TitleGenPanel ──
   "settings.titleGen.sectionTitle": "Thread title generation",

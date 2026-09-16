@@ -94,6 +94,10 @@ export class PiMessageAdapter {
   /** contentIndex of the most recent text_delta — the fallback index used
    *  when flushing held-back text at message_end. */
   private lastTextContentIndex = 0;
+  /** 结构化输出守卫：延迟 turn.done（见 {@link setDeferTurnDone}）。 */
+  private deferTurnDone = false;
+  /** 终态 agent_end 时最后一帧 assistant 消息的文本（结构化输出校验用）。 */
+  private finalTurnText = "";
 
   constructor(
     private readonly ctx: ProviderContext,
@@ -108,6 +112,29 @@ export class PiMessageAdapter {
      *  and {@link flushFinal} freezes it into a `turn.files` event at turn end. */
     private readonly snapshots: FileSnapshot,
   ) {}
+
+  /**
+   * 结构化输出守卫：延迟 turn.done。设置后 handleAgentEnd 不再发
+   * token-usage 快照与 turn.done —— 提供方在轮末校验最终文本、可能追加一轮
+   * 纠错 prompt，最后用 {@link flushDeferredTurnDone} 收尾。未设置时行为与
+   * 原来完全一致。
+   */
+  setDeferTurnDone(): void {
+    this.deferTurnDone = true;
+  }
+
+  /** 终态 agent_end 时最后一帧 assistant 消息的文本（未经渲染分流的原文）。 */
+  getFinalTurnText(): string {
+    return this.finalTurnText;
+  }
+
+  /** 延迟收尾：token 快照 + turn.done。仅 defer 模式有意义 —— 普通轮的
+   *  turn.done 已由 handleAgentEnd 直发，这里不重复。 */
+  flushDeferredTurnDone(reason: TurnDoneReason): void {
+    if (!this.deferTurnDone) return;
+    this.emitTurnEndSnapshot();
+    this.emit({ type: "turn.done", sessionId: this.sessionId, reason });
+  }
 
   /** Dispatch a single Pi agent-session event into RuntimeEvents. */
   dispatch(event: AgentSessionEvent): void {
@@ -263,12 +290,37 @@ export class PiMessageAdapter {
       });
     }
 
+    // 结构化输出 defer 模式：记下最终文本后直接返回 —— token 快照与 turn.done
+    // 由提供方在轮末校验（可能还有一轮纠错 prompt）后经 flushDeferredTurnDone
+    // 发出，保证 turn.done 恰好一次且落在校验之后。
+    this.finalTurnText = this.extractFinalAssistantText(event.messages);
+    if (this.deferTurnDone) return;
+
     this.emitTurnEndSnapshot();
     this.emit({
       type: "turn.done",
       sessionId: this.sessionId,
       reason: this.pickDoneReason(),
     });
+  }
+
+  /** 从 agent_end 的 `messages` 里取最后一帧 assistant 消息的文本部分（结构
+   *  化输出校验用）。结构化读取（role/content），与 terminalErrorFromMessages
+   *  同一套防 union 漂移的窄访问。 */
+  private extractFinalAssistantText(messages: readonly unknown[] | undefined): string {
+    if (!messages || messages.length === 0) return "";
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i] as { role?: string; content?: unknown };
+      if (m.role !== "assistant") continue;
+      const parts = Array.isArray(m.content) ? m.content : [];
+      let text = "";
+      for (const part of parts) {
+        const p = part as { type?: string; text?: string };
+        if (p?.type === "text" && typeof p.text === "string") text += p.text;
+      }
+      return text;
+    }
+    return "";
   }
 
   /** Extract the terminal model error (if any) from an agent_end's `messages`.

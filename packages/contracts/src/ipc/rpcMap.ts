@@ -41,11 +41,19 @@ import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, AgentPro
 import type { LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibrarySetRootInput, LibraryManifestInput, LibraryItemManifestInput, LibraryKindManifestInput, TemplateKindManifestInput, LibraryAttachToChatInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
 import type { TemplateListInput, TemplateAddInput, TemplateRenameInput, TemplateEntryRefInput, TemplateFileRefInput, TemplatesAttachToChatInput } from "./templates.js";
 import type { IntegrationSetKeyInput, IntegrationClearKeyInput, IntegrationSetConfigInput, IntegrationTestInput } from "./integrations.js";
+import type { SubagentDefinition } from "../claudeSubagent.js";
+import type { ClaudeSubagentsSaveInput } from "../claudeSubagent.js";
 
 /* ──────────────────────────  RPC method map  ───────────────────────────────── */
 
 /** Revoke a paired mobile device. Input to `mobile.revokeDevice`. */
 export const RevokeMobileDeviceSchema = z.object({ deviceId: z.string().min(1) });
+
+/** Save the whole custom-subagent list (Settings → 子代理). Validated
+ *  main-side by subagentStore.saveSubagents — the zod layer only guards the
+ *  envelope; per-definition rules (name shape, non-empty prompts) live there
+ *  so load/save/SDK-mapping share one source of truth. */
+export const ClaudeSubagentsSaveSchema = z.object({ subagents: z.array(z.record(z.unknown())) });
 
 /** A typed map of all renderer→main RPC invocations. The preload exposes a
  * typed `window.api` matching this shape; the renderer imports it for safety. */
@@ -74,6 +82,10 @@ export interface RpcMap {
    *  Returns the list of paths that were actually restored (failed
    *  paths are silently logged in main). */
   "claude.rewindTurn": (input: RewindTurnInput) => Promise<{ restored: string[] }>;
+  /** Save the whole custom-subagent list (Settings → 子代理). Main validates
+   *  each definition and persists to `claude.subagents`; returns the saved
+   *  list so the editor can snap to what actually landed. */
+  "claude.saveSubagents": (input: ClaudeSubagentsSaveInput) => Promise<{ subagents: SubagentDefinition[] }>;
   /** Update the active session's model / effort / permissionMode / customModelId in-place. */
   "session.updateSettings": (input: UpdateSessionSettingsInput) => Promise<void>;
   // Projects
@@ -889,6 +901,7 @@ export const IPC = {
   CLAUDE_RESPOND_QUESTION: "claude:respondQuestion",
   CLAUDE_RESPOND_PLAN_APPROVAL: "claude:respondPlanApproval",
   CLAUDE_REWIND_TURN: "claude:rewindTurn",
+  CLAUDE_SUBAGENTS_SAVE: "claude:saveSubagents",
   PROJECT_CREATE: "project:create",
   PROJECT_LIST: "project:list",
   PROJECT_SESSIONS: "project:sessions",

@@ -299,6 +299,24 @@ export interface TurnDoneEvent {
 }
 
 /**
+ * A host-side advisory card shown in the chat transcript — informational,
+ * NOT a turn terminator. Emitted by RuntimeManager for lifecycle events the
+ * user should see inline (budget cap reached before interrupting, automatic
+ * model fallback, structured-output validation failing). The turn itself
+ * still ends via the normal turn.done (reason="interrupted"/"error").
+ *
+ * foldTranscript must ignore this type (it is UI-only, not part of the
+ * workflow node's process transcript).
+ */
+export interface TurnNoticeEvent {
+  type: "turn.notice";
+  sessionId: string;
+  kind: "budget_limit" | "fallback" | "structured_invalid";
+  /** Human-readable, already-localized message for the inline card. */
+  message: string;
+}
+
+/**
  * The turn ended with a "success" result but the stream shows the model never
  * finished its work — the classic third-party-gateway failure where the model
  * channel returns an empty completion that the CLI silently accepts as a
@@ -988,6 +1006,7 @@ export type RuntimeEvent =
   | ContextUsageEvent
   | ErrorEvent
   | TurnDoneEvent
+  | TurnNoticeEvent
   | TurnIncompleteEvent
   | TurnFilesEvent
   | TurnRewoundEvent

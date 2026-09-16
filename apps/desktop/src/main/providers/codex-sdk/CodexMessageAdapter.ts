@@ -73,6 +73,15 @@ export class CodexMessageAdapter {
    *  text; the splitter routes tagged content to thinking blocks so the raw
    *  tags never render as reply text. Keyed by itemId. */
   private agentSplitters = new Map<string, ThinkTagSplitter>();
+  /** itemId → 累计的主线程 agentMessage 文本（think 分流后的 text 段）。
+   *  Map 按插入序排列，{@link getFinalTurnText} 取最后一条 —— 即最终回复；
+   *  前面的条目是工具调用之间的旁白，不参与结构化输出校验。 */
+  private agentTexts = new Map<string, string>();
+  /** 结构化输出守卫的延迟收尾开关（见 {@link setDeferTurnDone}）。 */
+  private deferTurnDone = false;
+  /** turn.done 是否已真正发出（finishTurn 直发与 flushDeferredTurnDone 共用
+   *  这一道闸，保证任何路径下恰好一次）。 */
+  private turnDoneEmitted = false;
   /** itemId → dedicated message id for the thinking channel the splitter
    *  carved out of that agent message (thinking events need their own id;
    *  text keeps the itemId). */
@@ -126,6 +135,40 @@ export class CodexMessageAdapter {
 
   setMainThreadId(id: string): void {
     this.mainThreadId = id;
+  }
+
+  /**
+   * 结构化输出守卫：延迟 turn.done。设置后 finishTurn 只做清扫 + resolve
+   * waitTurnDone，不再直接发 turn.done —— 提供方在轮末校验最终文本、可能追加
+   * 一轮纠错（{@link beginCorrectiveTurn} 重挂轮生命周期），最后用
+   * {@link flushDeferredTurnDone} 收尾。未设置时行为与原来完全一致。
+   */
+  setDeferTurnDone(): void {
+    this.deferTurnDone = true;
+  }
+
+  /** 主线程最终回复文本（最后一条产出过 text 的 agentMessage item）。 */
+  getFinalTurnText(): string {
+    let text = "";
+    for (const t of this.agentTexts.values()) text = t;
+    return text;
+  }
+
+  /** 纠错轮前重挂轮生命周期：turn/started → turn/completed 这一套通知还会
+   *  再来一轮，turnEnded / waitTurnDone 要复位才能再等一次。文本按 itemId
+   *  累计，新 item 自然追加，无需清空。 */
+  beginCorrectiveTurn(): void {
+    this.turnEnded = false;
+    this.turnDoneResolve = null;
+  }
+
+  /** 延迟收尾：发出 turn.done（恰好一次）。非延迟模式（普通轮）下 turn.done
+   *  已由 finishTurn 直发，这里是无害的空操作。 */
+  flushDeferredTurnDone(reason: TurnDoneReason): void {
+    if (!this.deferTurnDone) return;
+    if (this.turnDoneEmitted) return;
+    this.emit({ type: "turn.done", sessionId: this.sessionId, reason });
+    this.turnDoneEmitted = true;
   }
 
   markAborted(): void {
@@ -549,6 +592,9 @@ export class CodexMessageAdapter {
         this.emit({ type: "thinking", sessionId: this.sessionId, messageId, text: seg.text });
       } else {
         this.agentTextSeen.add(itemId);
+        // 结构化输出守卫要读最终回复 —— 按 itemId 累计，getFinalTurnText
+        // 取最后一条。
+        this.agentTexts.set(itemId, (this.agentTexts.get(itemId) ?? "") + seg.text);
         this.emit({ type: "text.delta", sessionId: this.sessionId, messageId: itemId, text: seg.text });
       }
     }
@@ -837,7 +883,14 @@ export class CodexMessageAdapter {
     // Roster sweep BEFORE turn.done — the renderer's busy gate reads running
     // subagents when processing the turn end.
     this.closeRunningSubagents();
-    this.emit({ type: "turn.done", sessionId: this.sessionId, reason });
+    // 结构化输出守卫（deferTurnDone）模式下 turn.done 由提供方在轮末校验后经
+    // flushDeferredTurnDone 发出；普通模式维持原行为直发。
+    if (!this.deferTurnDone) {
+      if (!this.turnDoneEmitted) {
+        this.emit({ type: "turn.done", sessionId: this.sessionId, reason });
+        this.turnDoneEmitted = true;
+      }
+    }
     this.turnDoneResolve?.(reason);
     this.turnDoneResolve = null;
   }

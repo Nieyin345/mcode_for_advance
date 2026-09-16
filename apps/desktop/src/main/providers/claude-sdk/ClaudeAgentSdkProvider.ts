@@ -8,7 +8,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { is } from "@main/utils.js";
-import type { Options, CanUseTool, OnUserDialog, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { Options, CanUseTool, OnUserDialog, OnElicitation, ElicitationRequest, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
   AgentProvider,
   StartTurnRequest,
@@ -17,7 +17,7 @@ import type {
   ProviderCapabilities,
   UserInputAnswers,
 } from "@contracts/provider";
-import type { AskUserQuestionItem, PermissionMode } from "@contracts/runtime";
+import type { AskUserQuestionItem, AskUserQuestionOption, PermissionMode } from "@contracts/runtime";
 import { SdkMessageAdapter, parseQuestions } from "./SdkMessageAdapter.js";
 import { buildCustomEnv, MCODE_CONFIG_DIR, resolveActiveModel } from "./customEnv.js";
 import type { ClaudeContextWindowTag } from "./claudeTokenUsage.js";
@@ -48,6 +48,11 @@ import { getOutputStyleSetting } from "@main/lib/outputStyleConfig.js";
 import { getEnabledPlugins, getPluginMcpServers } from "@main/plugins/pluginManager.js";
 import { resolveSubagentModelValue } from "@main/lib/subagentModel.js";
 import { normalizeBashCommand } from "@main/lib/msysPath.js";
+import {
+  buildStructuredOutputPrompt,
+  parseStructuredOutput,
+  type StructuredOutputSpec,
+} from "@main/lib/structuredOutput.js";
 import {
   browserList,
   browserNavigate,
@@ -83,6 +88,7 @@ import {
   WORKFLOW_READONLY_TOOLS,
 } from "@main/mcp/mcodeServer.js";
 import { loadCreateMcpServer } from "@main/mcp/sdk.js";
+import { loadSubagents, subagentsToAgentsRecord } from "@main/claude/subagentStore.js";
 
 // Lazy-load the Agent SDK so the (large) module and its bundled claude binary
 // stay out of the main-process startup path. The SDK is only needed once the
@@ -755,6 +761,12 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     supportsStreaming: true,
     supportsMcp: true,
     supportsAskUserQuestion: true, // optimistic; may be negated at runtime
+    // MCP elicitation（服务器要用户输入/授权）：onElicitation 桥接进
+    // requestUserInput 弹窗（见 startTurn 里 onElicitation 一段）。
+    supportsElicitation: true,
+    // 自定义子代理（Settings → 子代理）：startTurn 读 `claude.subagents`
+    // 传给 SDK 的 Options.agents（见下面 agents 一段）。
+    supportsCustomSubagents: true,
     // 生成过程中可以插话(SDK 那侧是"异步用户消息",见 `makePromptChannel`)。
     supportsInject: true,
     // Claude 的会话文件可以整份复制成新的(SDK 的 `forkSession`),所以"复制一份对话"
@@ -875,7 +887,41 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       // forces synchronous control-channel flushing and eliminates the race.
       // See https://github.com/anthropics/claude-agent-sdk-typescript/issues/359
       debug: process.platform === "win32" ? true : undefined,
+      // 轮预算的 native 双保险（host 侧 enforceBudget 是主强制，这里照传）：
+      // SDK 在 maxTurns / maxBudgetUsd 触顶时自己收束回合（result 子类型
+      // error_max_turns / error_max_budget_usd），比 interrupt 更温和。两个
+      // 引擎里只有 Claude 有这两个 native 旋钮；token 上限谁都没有。
+      maxTurns: req.budget?.maxTurns,
+      maxBudgetUsd: req.budget?.maxUsd,
+      // 失败回退链的 native 双保险：SDK 在主模型失败（overload/unavailable）
+      // 时自行切到 fallbackModel 重试。host 侧 turn.done error 的整回合换
+      // 模型重发（RuntimeManager）是主路径；SDK 只有单槽位，递链首。
+      fallbackModel: req.fallbackModels?.[0],
     };
+
+    // 自定义子代理（Settings → 子代理，`claude.subagents`）。每轮现读：编辑
+    // 从下一轮生效；空列表不设键（别把 SDK 的 agents 语义搅成"覆盖为空"）。
+    // 校验/容错在 subagentStore（坏条目丢弃 + warn，不让一条脏配置弄瘫回合）。
+    const subagentDefs = loadSubagents();
+    if (subagentDefs.length > 0) {
+      options.agents = subagentsToAgentsRecord(subagentDefs);
+      ctx.log.info(`claude: ${subagentDefs.length} custom subagent(s) attached (${subagentDefs.map((d) => d.name).join(", ")})`);
+    }
+
+    // 结构化输出（StartTurnRequest.structuredOutput）：
+    //  - 默认 Anthropic 端点 → SDK 原生 `outputFormat`(json_schema)：CLI 用
+    //    end-turn 工具强制 schema，result 消息自带 structured_output 附件，
+    //    宿主无需再校验。
+    //  - 自定义网关（apiConfig 存在）→ outputFormat 依赖 CLI→网关的透传，
+    //    第三方网关不保证支持（风险表对策），降级为提示词注入 + 轮末校验。
+    const structuredFallback: StructuredOutputSpec | null = req.structuredOutput
+      ? req.apiConfig
+        ? req.structuredOutput
+        : null
+      : null;
+    if (req.structuredOutput && !req.apiConfig) {
+      options.outputFormat = { type: "json_schema", schema: req.structuredOutput.schema };
+    }
 
     // The runtime binary comes from the managed install
     // (userData/runtimes, downloaded via Settings → Agent Runtimes) or, in
@@ -1271,6 +1317,79 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     options.onUserDialog = onUserDialog;
     options.supportedDialogKinds = Array.from(EXIT_PLAN_DIALOG_KINDS);
 
+    // --- onElicitation bridge ---
+    // MCP elicitation（服务器向用户要输入/授权）。渲染端零改动：复用
+    // AskUserQuestion 的 requestUserInput 选项卡，把请求映射成一或多道题：
+    //  - url 模式 → 「打开链接」（accept）/「拒绝」（decline），URL 放在题面里
+    //    （限制：宿主不代开浏览器，用户从卡片里复制 —— 代开需要渲染端配合）；
+    //  - form 模式且 schema **每个**属性都带非空 enum → 逐属性出题（≤4），答案
+    //    按属性名收进 ElicitResult.content；否则退化为「同意」/「拒绝」，
+    //    accept 不带内容（服务器要么接受空表单，要么自行 decline）。
+    // 用户关掉卡片 → cancel（MCP 语义：用户取消，区别于服务器 decline）。
+    // 不设 onElicitation 时 SDK 会自动 decline —— 显式接桥后才有交互。
+    const onElicitation: OnElicitation = async (request: ElicitationRequest) => {
+      if (!requestUserInput) return { action: "decline" };
+      const schemaProps =
+        request.mode !== "url" && request.requestedSchema
+          ? (request.requestedSchema.properties as
+              | Record<string, { enum?: unknown; title?: string; description?: string }>
+              | undefined)
+          : undefined;
+      const propNames = schemaProps ? Object.keys(schemaProps) : [];
+      const props = schemaProps ?? {};
+      const allEnum =
+        propNames.length > 0 &&
+        propNames.every((n) => Array.isArray(props[n].enum) && (props[n].enum as unknown[]).length > 0);
+      let declineLabel: string | null = null;
+      let questions: AskUserQuestionItem[];
+      if (schemaProps && allEnum) {
+        questions = propNames.slice(0, 4).map((n) => {
+          const prop = props[n];
+          const text = `${prop.description ?? request.message}（${prop.title ?? n}）`;
+          return {
+            header: prop.title ?? n,
+            question: text,
+            multiSelect: false,
+            options: (prop.enum as unknown[]).map((v) => ({ label: String(v) })),
+          };
+        });
+      } else {
+        declineLabel = "拒绝";
+        questions = [
+          {
+            header: request.title ?? request.displayName ?? request.serverName,
+            question: request.mode === "url" && request.url ? `${request.message}\n${request.url}` : request.message,
+            multiSelect: false,
+            options:
+              request.mode === "url"
+                ? [{ label: "打开链接", description: request.url }, { label: "拒绝" }]
+                : [{ label: "同意" }, { label: "拒绝" }],
+          } satisfies AskUserQuestionItem & { options: AskUserQuestionOption[] },
+        ];
+      }
+      const decision = await requestUserInput({ requestId: randomUUID(), questions });
+      if (decision.dismissed) return { action: "cancel" };
+      if (declineLabel !== null) {
+        const refused = questions.some((q) => {
+          const a = decision.answers[q.question];
+          return Array.isArray(a) ? a.includes(declineLabel) : a === declineLabel;
+        });
+        if (refused) return { action: "decline" };
+      }
+      // enum 表单：答案按属性名回填（answers 以题面文本为键，映射时记录）。
+      const content: Record<string, unknown> = {};
+      if (schemaProps && allEnum) {
+        for (const n of propNames.slice(0, 4)) {
+          const prop = schemaProps[n];
+          const text = `${prop.description ?? request.message}（${prop.title ?? n}）`;
+          const a = decision.answers[text];
+          if (a != null) content[n] = Array.isArray(a) ? a.join(", ") : a;
+        }
+      }
+      return { action: "accept", content: Object.keys(content).length > 0 ? content : undefined };
+    };
+    options.onElicitation = onElicitation;
+
     // --- systemPrompt appends ---
     // (0) Claude identity: always appended (every platform, every turn) so the
     //     model answers "who/what are you" by introducing itself as Mcode's
@@ -1530,7 +1649,12 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     );
     // 这一轮的输入通道。**`let` 而不是 `const`**:传输层重试会重建 query,那时也换一条
     // 新的通道(见下面那一处),而 handle 上那个 `inject` 读的始终是当前这一条。
-    let channel = makePromptChannel(req, gate, ac.signal);
+    // 降级路径把 schema 指令直接拼在用户 prompt 末尾 —— makePromptChannel 只读
+    // req.prompt/images,扩展 req 是唯一无侵入的注入口。
+    const turnReq: StartTurnRequest = structuredFallback
+      ? { ...req, prompt: req.prompt + buildStructuredOutputPrompt(structuredFallback) }
+      : req;
+    let channel = makePromptChannel(turnReq, gate, ac.signal);
     const q = (await loadQuery())({ prompt: channel.stream, options });
 
     // Resolve the user-declared context-window tag from the selected model's
@@ -1587,6 +1711,24 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
             for await (const m of activeQuery) {
               await activeAdapter.dispatch(m);
             }
+            // 结构化输出降级路径（自定义网关）的轮末校验。原生路径
+            // （outputFormat）由 SDK 端到端保证，不经过这里；降级路径只校验
+            // 不重试 —— 到这一步轮已收尾，重试得再起一轮 resume query，复杂度
+            // 配不上"降级路径"的定位，校验失败按错误收尾并出 notice 卡片。
+            if (structuredFallback) {
+              const parsed = parseStructuredOutput(activeAdapter.getFinalAssistantText(), structuredFallback);
+              if (!parsed.ok) {
+                ctx.log.warn(`claude: structured output invalid: ${parsed.error.slice(0, 300)}`);
+                ctx.emit({
+                  type: "turn.notice",
+                  sessionId: req.sessionId,
+                  kind: "structured_invalid",
+                  message: `结构化输出（${structuredFallback.name}）校验失败，本轮按错误结束：${parsed.error}`,
+                });
+                await activeAdapter.flushFinal("error");
+                return;
+              }
+            }
             await activeAdapter.flushFinal();
             return;
           } catch (err) {
@@ -1631,7 +1773,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
               // 作废了。不过重试是**从头再跑这一轮**,所以只带上最初那条用户消息:重试
               // 之前插进来的那几句进不了这次重试(它们已经进了那一轮被丢弃的上下文)。
               // 这是重试本来就有的取舍,不是插话这条新路带来的。
-              channel = makePromptChannel(req, retryGate, ac.signal);
+              channel = makePromptChannel(turnReq, retryGate, ac.signal);
               activeQuery = (await loadQuery())({ prompt: channel.stream, options });
               activeAdapter = new SdkMessageAdapter(
                 ctx,

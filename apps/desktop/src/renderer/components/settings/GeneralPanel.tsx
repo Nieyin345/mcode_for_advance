@@ -14,6 +14,7 @@ import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { TitleGenPanel } from "./TitleGenPanel.js";
 import { OutputStylePanel } from "./OutputStylePanel.js";
+import { TurnBudgetPanel, FallbackModelsPanel } from "./RuntimePolicyPanel.js";
 
 /**
  * "常规" (General) settings panel.
@@ -23,6 +24,7 @@ import { OutputStylePanel } from "./OutputStylePanel.js";
  *  - 基础 (SettingsSection): 界面语言 + 中间面板显示模式 + 对话紧凑度 + 长文本折叠阈值
  *    (语言与显示合并为一组——单行小节不值得独占一张卡)
  *  - 会话自动归档 (SettingsSection): 开关 + 默认不活跃天数 + 按项目覆盖
+ *  - 回合预算 / 失败自动回退 (RuntimePolicyPanel, self-contained sections)
  *  - 会话标题生成 (TitleGenPanel, renders its own SettingsSection)
  *  - 输出风格 (OutputStylePanel, renders its own SettingsSection)
  *
@@ -380,6 +382,12 @@ export function GeneralPanel() {
           </SettingRow>
         )}
       </SettingsSection>
+
+      {/* ── 回合预算（自包含 section，读写 runtime.turnBudget） ── */}
+      <TurnBudgetPanel />
+
+      {/* ── 失败自动回退（自包含 section，读写 runtime.fallbackModels） ── */}
+      <FallbackModelsPanel />
 
       {/* ── 会话标题生成 (self-contained section) ── */}
       <TitleGenPanel />

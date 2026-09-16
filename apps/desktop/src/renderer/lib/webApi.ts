@@ -377,6 +377,8 @@ const claude: Api["claude"] = {
   respondQuestion: (input) => rpc("claude:respondQuestion", input),
   respondPlanApproval: (input) => rpc("claude:respondPlanApproval", input),
   rewindTurn: (input) => rpc("claude:rewindTurn", input),
+  // 手机端没有设置页的子代理编辑器 —— 与 rewindTurn 同理,仅为满足类型完整性。
+  saveSubagents: (input) => rpc("claude:saveSubagents", input),
 };
 
 const project: Api["project"] = {

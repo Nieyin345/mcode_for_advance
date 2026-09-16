@@ -68,6 +68,16 @@ export interface ProviderCapabilities {
    *  "添加/管理模型" entry in ModelDropdown). When false, the custom-model
    *  panel and its dropdown entry are hidden for this provider. */
   supportsCustomEndpoint?: boolean;
+  /** Whether the provider surfaces MCP elicitation requests (an MCP server
+   *  asking the user for form input / URL auth mid-turn) as an interactive
+   *  dialog. When false, elicitation requests are declined automatically by
+   *  the underlying engine and the UI never shows the flow. */
+  supportsElicitation?: boolean;
+  /** Whether the provider accepts programmatically-defined custom subagents
+   *  (AgentDefinition-style: name/description/prompt/tools). When true the
+   *  Settings page shows the subagent editor and StartTurnRequest.agents is
+   *  forwarded; when false both are hidden. */
+  supportsCustomSubagents?: boolean;
 }
 
 /** A selectable option for a provider's thinking-level / effort picker. */
@@ -169,6 +179,35 @@ export interface StartTurnRequest {
    *  ImageContent.mimeType. Empty/absent = text-only turn (the prompt string
    *  may still be empty for an image-only send). */
   images?: { data: string; mimeType: string }[];
+  /** Per-turn spend/length caps enforced by the HOST (RuntimeManager): when a
+   *  cap is crossed the host emits `turn.notice` (kind="budget_limit") and
+   *  interrupts via the same path as a user stop, so the turn ends with
+   *  reason="interrupted" and usage is persisted as usual. Providers that
+   *  have a native equivalent (Claude maxTurns/maxBudgetUsd) may pass it
+   *  through as a belt-and-suspenders second net; token caps are host-only.
+   *  Absent = no cap (default; the setting is off). */
+  budget?: { maxTurns?: number; maxUsd?: number; maxTotalTokens?: number };
+  /** Ordered model fallback chain for this turn: when the primary model's
+   *  turn fails with reason="error", the host retries the SAME user input on
+   *  the next model in the list (emitting `turn.notice` kind="fallback" per
+   *  hop). Claude additionally passes the first entry to the SDK's native
+   *  fallbackModel (same-turn provider-side failover). Chat sessions only —
+   *  the host does not apply fallbacks to workflow node sessions. */
+  fallbackModels?: string[];
+  /** Ask the model to produce a JSON document matching `schema` as the
+   *  turn's final answer. Providers with native structured-output support
+   *  (Claude: outputFormat json_schema) pass it through; others inject the
+   *  schema into the prompt and the host validates the final text against
+   *  the schema. Absent = plain-text turn. */
+  structuredOutput?: { name: string; schema: Record<string, unknown> };
+  /** Programmatically-defined custom subagents for this turn (name →
+   *  definition). Only forwarded by providers that declare
+   *  `supportsCustomSubagents`; ignored otherwise. Host loads them from the
+   *  `claude.subagents` setting (see subagentStore). */
+  agents?: Record<
+    string,
+    { description: string; prompt: string; tools?: string[]; model?: string }
+  >;
 }
 
 /** Approval request passed from provider → host (for canUseTool-style callbacks). */

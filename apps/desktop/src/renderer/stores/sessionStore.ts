@@ -282,6 +282,15 @@ export type Block =
     /** Display names of the tool calls that never got a result
      *  ("dangling-tools" only). */
     pendingToolNames: string[] }
+  | { kind: "turn-notice"; /** Mirrors TurnNoticeEvent.kind — "budget_limit" =
+    * the host stopped the turn after it crossed a per-turn budget cap;
+    * "fallback" = the model failed and the host is retrying the same input
+    * on the next model in the chain; "structured_invalid" = the
+    * structured-output JSON failed schema validation after a repair round.
+    * NOT a turn terminator — turn.done still follows and owns the cleanup. */
+    noticeKind: "budget_limit" | "fallback" | "structured_invalid";
+    /** Human-readable, already-localized message from the host. */
+    message: string }
   | { kind: "attachment"; preview: string; content: string; attachmentKind?: "paste" | "file" | "quote"; filePath?: string }
   | {
       kind: "plan";
@@ -8325,6 +8334,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             ),
           );
           set((s) => ({ turnIncompleteBySession: { ...s.turnIncompleteBySession, [sid]: true } }));
+          break;
+        }
+        case "turn.notice": {
+          // Host-side lifecycle notice (S2/S3/S4: structured output failed
+          // validation, per-turn budget cap reached, model fallback retry).
+          // NOT a turn terminator — turn.done still follows and owns the
+          // terminal cleanup. Append the inline card and surface it like any
+          // other stream output. For `fallback`, the turn.done(reason=
+          // "error") that preceded it already ran that cleanup (running=
+          // false, approvals dropped, …) — the host immediately retries the
+          // SAME input on the next model and events keep streaming, so
+          // re-arm the running flag here (the composer must stay locked).
+          next = [
+            ...next,
+            {
+              id: `tn_${Date.now()}`,
+              sessionId: sid,
+              role: "assistant",
+              blocks: [{ kind: "turn-notice", noticeKind: e.kind, message: e.message }],
+              createdAt: Date.now(),
+            },
+          ];
+          bumpUnread();
+          if (e.kind === "fallback") {
+            set((s) => ({ runningBySession: { ...s.runningBySession, [sid]: true } }));
+          }
           break;
         }
         case "error": {

@@ -101,6 +101,11 @@ export function foldTranscript(
       // 边界事件:块没变,但**攒着的文本该冲出去了**。
       if (FLUSH_AT.has(e.type)) return { blocks: prev as TranscriptBlock[], broadcast: true };
       return null;
+
+    case "turn.notice":
+      // 宿主侧的提示卡(预算到顶/回退/结构化校验失败),纯 UI 事件 —— 工作流节点的
+      // 过程块不收它。放在 default 后面是为了让"它是被显式忽略的"一眼可见。
+      return null;
   }
 }
 

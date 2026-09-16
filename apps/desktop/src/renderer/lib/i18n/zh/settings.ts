@@ -10,6 +10,7 @@ export const zh = {
   "settings.nav.shortcuts": "快捷键",
   "settings.nav.voice": "语音输入",
   "settings.nav.skills": "技能",
+  "settings.nav.subagents": "子代理",
   "settings.nav.workflows": "工作流",
   "settings.nav.automation": "自动化",
   "settings.nav.hooks": "钩子",
@@ -33,6 +34,29 @@ export const zh = {
   // ── GeneralPanel ──
   "settings.general.title": "常规",
   "settings.general.desc": "调整界面布局、消息显示与会话标题等基础偏好。",
+
+  // ── SubagentsPanel（Claude 自定义子代理）──
+  "settings.subagents.title": "子代理",
+  "settings.subagents.sectionTitle": "自定义子代理（Claude）",
+  "settings.subagents.sectionDesc":
+    "定义可被主对话调用的子代理：给名字、一段「什么时候派它上场」的描述和它自己的系统提示词。保存后从下一轮对话开始生效。",
+  "settings.subagents.empty": "还没有自定义子代理。点「添加子代理」创建第一个。",
+  "settings.subagents.unnamed": "未命名",
+  "settings.subagents.name": "名称",
+  "settings.subagents.namePh": "如 test-runner（字母/数字/下划线/连字符）",
+  "settings.subagents.description": "描述（主模型据此决定何时调用）",
+  "settings.subagents.descriptionPh": "如「跑测试并汇总失败原因」",
+  "settings.subagents.prompt": "系统提示词",
+  "settings.subagents.promptPh": "这个子代理的人设与工作方式…",
+  "settings.subagents.tools": "可用工具（逗号分隔，留空继承全部）",
+  "settings.subagents.toolsPh": "如 Read, Grep, Bash",
+  "settings.subagents.model": "模型（可选）",
+  "settings.subagents.modelPh": "如 sonnet / opus / inherit",
+  "settings.subagents.add": "添加子代理",
+  "settings.subagents.save": "保存",
+  "settings.subagents.saving": "保存中…",
+  "settings.subagents.saved": "已保存",
+  "settings.subagents.delete": "删除",
   "settings.general.sectionBasics": "基础",
   "settings.general.sectionLanguage": "语言",
   "settings.general.sectionDisplay": "显示与布局",
@@ -793,6 +817,27 @@ export const zh = {
   "settings.terminal.namePlaceholder": "例如:启动开发服务器",
   "settings.terminal.commandLabel": "命令",
   "settings.terminal.commandPlaceholder": "例如:npm run dev",
+
+  // ── RuntimePolicyPanel（回合预算 / 失败自动回退）──
+  "settings.turnBudget.sectionTitle": "回合预算",
+  "settings.turnBudget.sectionDesc":
+    "为每个回合设置轮数、花费或累计 token 上限。任一上限被超过时,当前回合会自动停止(等同手动点停),上下文完整保留。改动从下一个回合开始生效。",
+  "settings.turnBudget.enabled": "启用回合预算",
+  "settings.turnBudget.enabledDesc": "关闭时不设任何上限(默认)。",
+  "settings.turnBudget.maxTurns": "最大轮数",
+  "settings.turnBudget.maxTurnsDesc": "一个回合内模型最多自主执行的轮数。留空表示不限制。",
+  "settings.turnBudget.maxUsd": "花费上限(USD)",
+  "settings.turnBudget.maxUsdDesc": "一个回合累计花费超过该值时停止。留空表示不限制。",
+  "settings.turnBudget.maxTokens": "累计 token 上限",
+  "settings.turnBudget.maxTokensDesc": "一个回合累计处理 token(含缓存读)超过该值时停止。留空表示不限制。",
+  "settings.turnBudget.unset": "不限制",
+  "settings.fallback.sectionTitle": "失败自动回退",
+  "settings.fallback.sectionDesc":
+    "回合因模型错误失败时,自动按顺序切换到下一个模型重试同一输入。仅普通对话生效(工作流节点与自定义网关会话不回退)。改动从下一个回合开始生效。",
+  "settings.fallback.chain": "回退模型链",
+  "settings.fallback.chainDesc":
+    "按优先级填写模型 id,用逗号或空格分隔(如内置别名 sonnet / opus,或模型配置里的模型 id)。仅当会话当前模型失败时才会逐个尝试。",
+  "settings.fallback.chainPh": "例如: sonnet, opus",
 
   // ── TitleGenPanel ──
   "settings.titleGen.sectionTitle": "会话标题生成",

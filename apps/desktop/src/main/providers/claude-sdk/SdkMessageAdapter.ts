@@ -522,6 +522,13 @@ export class SdkMessageAdapter {
     return this.state.contentStarted;
   }
 
+  /** 最后一帧主 agent 文本（`state.lastAssistantText`，不含 thinking / 子 agent
+   *  转发）。结构化输出降级路径（自定义网关）在轮末拿它做 schema 校验 ——
+   *  原生 outputFormat 路径不经过这里。 */
+  getFinalAssistantText(): string {
+    return this.state.lastAssistantText;
+  }
+
   /** Wire the turn-settle gate (see ClaudeAgentSdkProvider.buildPromptInput):
    *  `release` unblocks the prompt iterable's stdin hold so the CLI process
    *  can exit. Called once per adapter construction; safe to call before or

@@ -228,6 +228,11 @@ export const zh = {
     "模型的收尾文本停在未写完的语句上，宣告的下一步没有发出。直接发送「继续」可从中断处恢复。",
   "chatStream.turnIncomplete.pendingTools": "未完成的调用：{tools}",
 
+  // ── MessageBlocks: turn-notice 系统通知卡（预算停 / 模型回退 / 结构化输出无效）──
+  "chatStream.turnNotice.budgetTitle": "已达回合预算上限",
+  "chatStream.turnNotice.fallbackTitle": "模型自动回退",
+  "chatStream.turnNotice.structuredTitle": "结构化输出未通过校验",
+
   // ── MessageBlocks: ExitPlanMode 审批通道故障警告 ──
   "chatStream.planApprovalBroken.title": "计划审批弹框未能弹出",
   "chatStream.planApprovalBroken.desc":

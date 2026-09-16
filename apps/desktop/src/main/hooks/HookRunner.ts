@@ -329,6 +329,9 @@ const HOOK_EVENT_OF: Record<RuntimeEvent["type"], HookEvent | null> = {
   "plan.update": null,
   // 每次 API 调用后都发,纯展示用。
   "token-usage.updated": null,
+  // 宿主侧的行内提示卡(预算到顶/模型回退/结构化校验失败),纯 UI 事件。挂钩子没有
+  // 意义:预算到顶那条的"回合结束了"时刻走 `turn.done`(reason="interrupted")。
+  "turn.notice": null,
   // 渲染层画一张图用的,不是"发生了什么"。
   "browser.image": null,
   // 内部同步信号(客户端之间对齐"哪些会话在跑"),不是事件。

@@ -28,6 +28,8 @@ const api = {
       ipcRenderer.invoke(IPC.CLAUDE_RESPOND_PLAN_APPROVAL, input)) as RpcMap["claude.respondPlanApproval"],
     rewindTurn: ((input) =>
       ipcRenderer.invoke(IPC.CLAUDE_REWIND_TURN, input)) as RpcMap["claude.rewindTurn"],
+    saveSubagents: ((input) =>
+      ipcRenderer.invoke(IPC.CLAUDE_SUBAGENTS_SAVE, input)) as RpcMap["claude.saveSubagents"],
   },
   project: {
     create: ((input) =>

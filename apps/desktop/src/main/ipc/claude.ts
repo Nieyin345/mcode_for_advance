@@ -21,7 +21,9 @@ import {
   GetManySettingsSchema,
   THEME_STYLE_SETTING_KEY,
   workflowIdFromInput,
+  ClaudeSubagentsSaveSchema,
 } from "@contracts/ipc";
+import { saveSubagents } from "@main/claude/subagentStore.js";
 import type {
   SaveMessagesInput,
   UpsertMessagesInput,
@@ -434,6 +436,17 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       input.targetFiles,
     );
     return { restored };
+  });
+
+  // ── Settings → 子代理：保存自定义子代理列表（Claude provider 专用，见
+  //    capabilities.supportsCustomSubagents）。main 侧严格校验（名称/描述/
+  //    提示词等，见 subagentStore），校验失败把错误抛给渲染端 toast；成功
+  //    返回规范化后的列表让编辑器对齐实际落盘内容。读取走通用 SETTING_GET。 ──
+  ipcMain.handle(IPC.CLAUDE_SUBAGENTS_SAVE, (_evt, raw) => {
+    const input = ClaudeSubagentsSaveSchema.parse(raw);
+    const res = saveSubagents(input.subagents);
+    if (!res.ok) throw new Error(res.error);
+    return { subagents: res.subagents };
   });
 
   // ── Provider listing ──

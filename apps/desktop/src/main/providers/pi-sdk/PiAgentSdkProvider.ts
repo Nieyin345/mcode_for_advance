@@ -33,7 +33,13 @@
  * ClaudeAgentSdkProvider and TerminalManager.
  */
 import type { AgentProvider, StartTurnRequest, ProviderContext, TurnHandle, ProviderCapabilities } from "@contracts/provider";
+import type { TurnDoneReason } from "@contracts/runtime";
 import type { PiProviderPublic } from "@contracts/piModel";
+import {
+  buildStructuredOutputPrompt,
+  buildCorrectivePrompt,
+  parseStructuredOutput,
+} from "@main/lib/structuredOutput.js";
 import { PiMessageAdapter } from "./PiMessageAdapter.js";
 import { PiModelsStore } from "@main/lib/piModelsStore.js";
 import { loadPiSdk } from "./piSdkLoader.js";
@@ -368,6 +374,12 @@ export class PiAgentSdkProvider implements AgentProvider {
     const snapshot = getFileSnapshot(req.sessionId);
 
     const adapter = new PiMessageAdapter(ctx, req.sessionId, provideTokenSnapshot, snapshot);
+    // 结构化输出（StartTurnRequest.structuredOutput）：Pi 没有原生
+    // structured-output —— schema 指令拼进 prompt，轮末 parse 校验；失败附
+    // 错误同会话追一轮 prompt，再失败 turn.notice + turn.done error。defer
+    // 模式让 adapter 的 turn.done 等校验结束后再发。
+    const structuredSpec = req.structuredOutput;
+    if (structuredSpec) adapter.setDeferTurnDone();
     const unsubscribe = session.subscribe((event) => {
       adapter.dispatch(event);
     });
@@ -379,6 +391,8 @@ export class PiAgentSdkProvider implements AgentProvider {
         // prompt (including retries). Streaming events arrive via subscribe.
         // `promptText` carries the `/skill:name`-rewritten leading token so Pi
         // expands an embedded skill pill (see rewriteSkillPrefix above).
+        // 结构化输出时把 schema 指令拼在末尾。
+        const turnText = structuredSpec ? promptText + buildStructuredOutputPrompt(structuredSpec) : promptText;
         const images = req.images;
         if (images && images.length > 0) {
           // User-attached images ride the message's content array as base64
@@ -386,7 +400,7 @@ export class PiAgentSdkProvider implements AgentProvider {
           // base64 source). sendUserMessage triggers the same single turn as
           // prompt(). Image-only turns omit the text part entirely.
           const parts = [
-            ...(promptText.trim() ? [{ type: "text" as const, text: promptText }] : []),
+            ...(turnText.trim() ? [{ type: "text" as const, text: turnText }] : []),
             ...images.map((img) => ({
               type: "image" as const,
               data: img.data,
@@ -395,7 +409,31 @@ export class PiAgentSdkProvider implements AgentProvider {
           ];
           await session.sendUserMessage(parts);
         } else {
-          await session.prompt(promptText);
+          await session.prompt(turnText);
+        }
+        // 结构化输出守卫：轮末 parse 最终回复；失败附校验错误同会话再 prompt
+        // 一轮，再失败 → turn.notice(structured_invalid) + turn.done error。
+        // defer 模式下 adapter 没在 agent_end 发 turn.done，由这里收尾。
+        if (structuredSpec) {
+          let finalReason: TurnDoneReason = "end_turn";
+          let parsed = parseStructuredOutput(adapter.getFinalTurnText(), structuredSpec);
+          if (!parsed.ok) {
+            ctx.log.warn(
+              `pi: structured output invalid, one corrective prompt: ${parsed.error.slice(0, 200)}`,
+            );
+            await session.prompt(buildCorrectivePrompt(structuredSpec, parsed.error));
+            parsed = parseStructuredOutput(adapter.getFinalTurnText(), structuredSpec);
+            if (!parsed.ok) {
+              ctx.emit({
+                type: "turn.notice",
+                sessionId: req.sessionId,
+                kind: "structured_invalid",
+                message: `结构化输出（${structuredSpec.name}）重试后仍不符合 schema，本轮按错误结束：${parsed.error}`,
+              });
+              finalReason = "error";
+            }
+          }
+          adapter.flushDeferredTurnDone(finalReason);
         }
         // End-of-turn finalization: freeze the file snapshot and emit
         // `turn.files` (the "本轮修改" card). agent_end has already emitted

@@ -1096,6 +1096,38 @@ const BlockView = memo(function BlockView({
         </div>
       );
 
+    case "turn-notice":
+      // Host-side lifecycle notice (budget cap / model fallback / structured
+      // output invalid). Amber for the two "something stopped" kinds, accent
+      // for `fallback` (self-healing — the turn is still running). The body
+      // message comes from the host, already localized on its side.
+      {
+        const isFallback = block.noticeKind === "fallback";
+        return (
+          <div
+            className={
+              isFallback
+                ? "flex flex-col gap-1 rounded-md border border-accent/50 bg-accent/10 px-3 py-2 [font-size:var(--chat-fs-sm)]"
+                : "flex flex-col gap-1 rounded-md border border-warning/50 bg-warning/10 px-3 py-2 [font-size:var(--chat-fs-sm)]"
+            }
+          >
+            <div className={`flex items-center gap-1.5 font-medium ${isFallback ? "text-accent" : "text-warning"}`}>
+              <IconAlertTriangle size={14} className="shrink-0" />
+              <span>
+                {t(
+                  block.noticeKind === "budget_limit"
+                    ? "chatStream.turnNotice.budgetTitle"
+                    : block.noticeKind === "fallback"
+                      ? "chatStream.turnNotice.fallbackTitle"
+                      : "chatStream.turnNotice.structuredTitle",
+                )}
+              </span>
+            </div>
+            <div className="whitespace-pre-wrap break-words text-content-muted">{block.message}</div>
+          </div>
+        );
+      }
+
     case "plan":
       // Inline read-only plan card that lives in the message stream as a
       // per-turn trailing block (drafting -> 待审阅 -> 已就绪). Clicking it

@@ -6,12 +6,12 @@
  * events to the renderer and async approval/user-input requests via ApprovalBridge.
  */
 import { sendToRenderer } from "@main/window.js";
-import { IPC } from "@contracts/ipc";
+import { IPC, TURN_BUDGET_SETTING_KEY, RUNTIME_FALLBACK_MODELS_SETTING_KEY } from "@contracts/ipc";
 import type { RuntimeEvent, PermissionMode, ContextSnapshot, TurnUsageRecord, TurnFileEntry, UserMessageEvent, UpstreamIssueEvent, TranscriptBlock, SubagentSnapshot } from "@contracts/runtime";
 import type { Session } from "@contracts/session";
 import type { ProviderContext, TurnHandle, StartTurnRequest, UserInputAnswers, PlanApprovalDecision } from "@contracts/provider";
 import { providerRegistry } from "@main/providers/registry.js";
-import { SessionRepo, ProjectRepo } from "@main/store/repositories.js";
+import { SessionRepo, ProjectRepo, SettingRepo } from "@main/store/repositories.js";
 import { CustomModelStore } from "@main/lib/secretStore.js";
 import { ApprovalBridge } from "./ApprovalBridge.js";
 import { foldTranscript } from "./nodeTranscript.js";
@@ -93,7 +93,46 @@ interface SessionRuntime {
    *  running state, so a retry that belongs to another session's request is
    *  harmless noise). Paired with acquire/release above. */
   bridgeStatusUnsubscribe?: () => void;
+  /** 轮预算（sendTurn 从 `runtime.turnBudget` 偏好解析，坏 JSON / 关闭 /
+   *  全空 → undefined）。HOST 侧强制：超限 emit `turn.notice(budget_limit)`
+   *  并沿用户点停同一条路 interrupt。 */
+  budget?: { maxTurns?: number; maxUsd?: number; maxTotalTokens?: number };
+  /** 本轮已观察到的 assistant 轮数（`message.complete` 计数）。每轮 sendTurn
+   *  归零 —— ContextSnapshot 的 tokens/usd 本身就是按轮累计的，直接比对；
+   *  轮数没有快照可读，只能在这里自己数。 */
+  budgetTurns: number;
+  /** 本轮已观察到的花费（USD，来自最新 `token-usage.updated` 快照）。 */
+  budgetUsd: number;
+  /** 本轮已观察到的累计处理 token（同上）。 */
+  budgetTokens: number;
+  /** 本轮预算闸是否已触发。防重入：interrupt 之后的收尾事件（残留的
+   *  message.complete / 最后一帧 usage 快照）不得二次触发。S4 回退链也读它
+   *  —— 预算停不算模型失败，不能换模型重试。 */
+  budgetFired: boolean;
+  /** S4 失败回退链的**剩余**部分（chat-only 会话才解析；custom 网关会话为
+   *  空 —— 链里的全局模型 id 对第三方配置没有意义）。turn.done reason="error"
+   *  时 shift 出下一个换模型重发；每轮 sendTurn 重新解析（回退重试的那轮
+   *  除外 —— 见 fallbackRetryModel，否则 shift 会被重置成完整链无限重试）。 */
+  fallbackModels: string[];
+  /** 回退重试的下一个模型。emit 闭包 shift 后经它递进 sendTurn；sendTurn
+   *  消费掉（置回 undefined）并据此跳过本轮回退链的重新解析。 */
+  fallbackRetryModel?: string;
+  /** 回退重发用的最小输入快照（sendTurn 每轮刷新）。**不含 userMessage**
+   *  —— 重试不得再回显用户气泡；prompt 用的是 req 里拼好的最终形态
+   *  （backflow 已在首轮消费，重发时 peek 为空、原样通过）。 */
+  lastTurnInput?: {
+    prompt: string;
+    cwd: string;
+    skills?: string[];
+    mcpServerNames?: string[];
+    pluginNames?: string[];
+    images?: { data: string; mimeType: string }[];
+  };
 }
+
+// 轮预算 / 回退链的解析与三判纯函数已拆到 `@main/lib/turnPolicy.js`
+// （无依赖、可被 budget-guard-smoke 直测），这里只留消费侧。
+import { budgetViolations, parseFallbackModels, parseTurnBudget } from "@main/lib/turnPolicy.js";
 
 const approvalBridge = new ApprovalBridge();
 
@@ -477,6 +516,20 @@ class RuntimeManager {
         if (rt) {
           rt.lastContextSnapshot = e.snapshot;
           this.settlePendingTurnEnd(session.id, rt);
+          // 轮预算：tokens/usd 直接读快照 —— ContextSnapshot 本身就是按轮
+          // 累计的，turn.done 后的收尾快照也走这里（此时闸已触发，空操作）。
+          rt.budgetTokens = e.snapshot.totalProcessedTokens;
+          rt.budgetUsd = e.snapshot.costUsd ?? rt.budgetUsd;
+          this.enforceBudget(session.id, rt);
+        }
+      } else if (e.type === "message.complete") {
+        // 轮预算：assistant 轮计数（三引擎的 message.complete 均只在主 agent
+        // 的 assistant 消息上发，作 maxTurns 的近似）。不落盘 —— 只是本轮的
+        // 计数器，下一轮 sendTurn 归零。
+        const rt = this.sessions.get(session.id);
+        if (rt) {
+          rt.budgetTurns++;
+          this.enforceBudget(session.id, rt);
         }
       } else if (e.type === "turn.done") {
         // Persist the per-turn token/cost history. The turn's FINAL snapshot
@@ -517,6 +570,31 @@ class RuntimeManager {
               /* settle already logs its own persistence errors */
             }
           }, TURN_END_SETTLE_GRACE_MS).unref();
+        }
+        // S4 失败回退链：模型失败（reason="error"）且还有链可换 → 换下一个
+        // 模型原样重发。预算停（budgetFired）不算模型失败；用户主动停走
+        // "interrupted"，天然不进这里。链在 sendTurn 侧每轮重置、失败逐跳
+        // 消耗，天然有界。回退只在 chat 会话解析出非空链（sendTurn 已过滤
+        // 节点 / 工作流 / custom 网关）。
+        if (rt && e.reason === "error" && !rt.budgetFired && rt.fallbackModels.length > 0 && rt.lastTurnInput) {
+          const nextModel = rt.fallbackModels.shift() as string;
+          const from = session.model !== "default" ? session.model : "默认模型";
+          log.warn(`turn failed on ${from}; falling back to ${nextModel} (${rt.fallbackModels.length} left in chain)`);
+          rt.ctx.emit({
+            type: "turn.notice",
+            sessionId: session.id,
+            kind: "fallback",
+            message: `模型 ${from} 本回合失败，自动改用 ${nextModel} 重试`,
+          });
+          const retryInput = rt.lastTurnInput;
+          rt.fallbackRetryModel = nextModel;
+          // 下一跳事件循环再发：让 turn.done 的落盘链路先走完，也别在 emit
+          // 调用栈里递归 sendTurn（那会让嵌套事件和持久化交错）。
+          setTimeout(() => {
+            void this.sendTurn(session, retryInput).catch((err) => {
+              log.error(`fallback resend failed: ${(err as Error).message}`);
+            });
+          }, 0).unref();
         }
       } else if (e.type === "todo.update") {
         try {
@@ -647,6 +725,11 @@ class RuntimeManager {
       turnSubagentTokens: 0,
       subagentTranscripts: new Map(),
       lastSubagents: [],
+      budgetTurns: 0,
+      budgetUsd: 0,
+      budgetTokens: 0,
+      budgetFired: false,
+      fallbackModels: [],
     });
   }
 
@@ -746,6 +829,24 @@ class RuntimeManager {
 
     // Record turn start time for per-turn usage history persistence.
     rt.turnStartedAt = Date.now();
+    // 轮预算：每轮重新解析偏好（改设置立即生效，无需重启），计数器归零、
+    // 防重入闸复位。
+    rt.budget = parseTurnBudget(SettingRepo.get(TURN_BUDGET_SETTING_KEY));
+    rt.budgetTurns = 0;
+    rt.budgetUsd = 0;
+    rt.budgetTokens = 0;
+    rt.budgetFired = false;
+    // S4 失败回退链：仅普通对话启用（节点/工作流禁用，避开 holdTurnEnd 与
+    // 调度器纠缠；custom 网关会话也不做 —— 链里的全局模型 id 对第三方配置
+    // 没有意义）。回退重试的那轮**不**重新解析 —— 否则 shift 掉的链会被
+    // 重置成完整链，同一个模型无限重试。
+    const isFallbackRetry = rt.fallbackRetryModel !== undefined;
+    if (!isFallbackRetry) {
+      rt.fallbackModels =
+        session.kind !== "node" && !session.workflowId && !session.customModelId
+          ? parseFallbackModels(SettingRepo.get(RUNTIME_FALLBACK_MODELS_SETTING_KEY))
+          : [];
+    }
     // 1-based turn counter for per-turn artifacts (browser screenshot dirs).
     rt.turnCount++;
 
@@ -807,8 +908,15 @@ class RuntimeManager {
     // declares 1M context). The binary reads ANTHROPIC_MODEL as its native
     // model-override channel, so passing --model too would just risk
     // disagreeing with the env var.
-    // For the built-in path it's the session's model unless "default".
-    let modelForReq: string | undefined = session.model !== "default" ? session.model : undefined;
+    // For the built-in path it's the session's model unless "default" —
+    // or the fallback chain's next model when this is a failure retry
+    // (consumed here; a fresh user-sent turn re-parses the chain instead).
+    let modelForReq: string | undefined = isFallbackRetry
+      ? rt.fallbackRetryModel
+      : session.model !== "default"
+        ? session.model
+        : undefined;
+    rt.fallbackRetryModel = undefined;
     if (session.customModelId) {
       const cfg = CustomModelStore.resolveApiConfig(session.customModelId, session.model);
       if (!cfg) {
@@ -923,11 +1031,29 @@ class RuntimeManager {
       initialTodos: session.todos ?? undefined,
       // Tag the turn for per-turn artifacts (browser screenshot dirs).
       turnNumber: rt.turnCount,
+      // 轮预算：host 侧统一强制（三引擎一致）；Claude native 的
+      // maxTurns / maxBudgetUsd 在 provider 里照着传，算双保险。
+      budget: rt.budget,
+      // 失败回退链的剩余部分（Claude native 的 Options.fallbackModel 双保险；
+      // host 侧 turn.done error 的重发是主路径）。空链不传。
+      fallbackModels: rt.fallbackModels.length > 0 ? rt.fallbackModels : undefined,
     };
 
     const handle = await provider.startTurn(req, rt.ctx);
     // 回合起来了,那一段背景才算真的送到了 —— 见上面 `peekBackflow` 那段注释。
     if (handle !== null && backflow.length > 0) clearBackflow(session.id);
+    // 回退重发的输入快照：req 里的最终形态（prompt 已拼好 backflow / 工作流
+    // 片段）。回合失败要原样重发，就从这里取。
+    if (handle !== null) {
+      rt.lastTurnInput = {
+        prompt: req.prompt,
+        cwd: req.cwd,
+        skills: req.skills,
+        mcpServerNames: req.mcpServerNames,
+        pluginNames: req.pluginNames,
+        images: req.images,
+      };
+    }
     rt.handle = handle;
     // Remember the cwd for the rewind path (see rewindTurn below).
     rt.lastCwd = input.cwd;
@@ -939,6 +1065,35 @@ class RuntimeManager {
     // 返回 handle:调用方通常不管(它只关心"turn 起来了"),但工作流调度器要等这个
     // 节点跑完才发下游 —— `handle.done` 是"这一轮结束了"的唯一信号。
     return handle;
+  }
+
+  /**
+   * 轮预算强制。三判齐全（开了预算 / 闸未触发 / 回合还在跑）才动作：置位
+   * `budgetFired`（防收尾事件的残留快照二次触发）→ 发 `turn.notice` → 沿
+   * 用户点停的同一条路 interrupt。放在 host 而不是各 provider：三个引擎
+   * 只有 Claude 有 native 的 maxTurns/maxBudgetUsd，token 上限更是谁都没有
+   * —— host 侧统一强制是唯一能三引擎一致的落点。
+   */
+  private enforceBudget(sessionId: string, rt: SessionRuntime): void {
+    const budget = rt.budget;
+    if (!budget || rt.budgetFired || !rt.handle?.isRunning()) return;
+    // 三判的纯判定在 turnPolicy.budgetViolations（可直测）；这里只管副作用：
+    // 置防重入闸 → 发通知 → 沿用户点停同一条路 interrupt。
+    const reasons = budgetViolations(budget, rt.budgetTurns, rt.budgetUsd, rt.budgetTokens);
+    if (reasons.length === 0) return;
+    rt.budgetFired = true;
+    log.warn(`turn budget reached for ${sessionId}: ${reasons.join(", ")}`);
+    rt.ctx.emit({
+      type: "turn.notice",
+      sessionId,
+      kind: "budget_limit",
+      message: `已达到本轮预算上限（${reasons.join("、")}），正在停止当前回合`,
+    });
+    try {
+      rt.handle.interrupt();
+    } catch (err) {
+      log.error(`budget interrupt failed: ${(err as Error).message}`);
+    }
   }
 
   interrupt(sessionId: string): void {

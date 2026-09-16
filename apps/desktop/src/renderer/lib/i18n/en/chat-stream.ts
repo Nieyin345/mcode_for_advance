@@ -227,6 +227,11 @@ export const en = {
     "The model's final text stops mid-sentence — the next step it announced never ran. Send “Continue” to resume from where it stopped.",
   "chatStream.turnIncomplete.pendingTools": "Unfinished calls: {tools}",
 
+  // ── MessageBlocks: turn-notice system card (budget stop / model fallback / structured output invalid) ──
+  "chatStream.turnNotice.budgetTitle": "Turn budget reached",
+  "chatStream.turnNotice.fallbackTitle": "Automatic model fallback",
+  "chatStream.turnNotice.structuredTitle": "Structured output failed validation",
+
   // ── MessageBlocks: ExitPlanMode approval-channel failure ──
   "chatStream.planApprovalBroken.title": "Plan approval prompt failed to show",
   "chatStream.planApprovalBroken.desc":
