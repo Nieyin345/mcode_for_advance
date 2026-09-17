@@ -972,7 +972,17 @@ class RuntimeManager {
           // Rewrite the apiConfig to point at the local bridge so the rest of
           // the pipeline (buildCustomEnv, the binary) is completely unaware —
           // it just sees an Anthropic-compatible endpoint on localhost.
-          apiConfig = { ...cfg, baseUrl: localUrl ?? cfg.baseUrl };
+          // `authToken` 一并补上占位串：本地 bridge 不校验凭据（只绑 127.0.0.1，
+          // 见 bridgeServer），但 Claude Code 手里一份凭据都没有时会直接以
+          // 「Not logged in · Please run /login」拒绝这一轮 —— 而网页端模型恰恰
+          // 没有 token（身份在浏览器那个分区的登录 cookie 里，secretStore 对 web
+          // 免除了 token 要求，见那里 `isWebProtocol` 分支）。openai 协议有真
+          // token，走到这里原样保留。
+          apiConfig = {
+            ...cfg,
+            baseUrl: localUrl ?? cfg.baseUrl,
+            authToken: cfg.authToken || "mcode-local-bridge",
+          };
         } else {
           apiConfig = cfg;
         }

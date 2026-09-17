@@ -8,8 +8,9 @@
  * against the real server (real `listen(0)` on 127.0.0.1, real HTTP). It opens the
  * SSE connection, receives `prompt`/`abort`, and posts back the events a real
  * extension would send. That is the entire contract — the layers above it
- * (webUpstream → OpenAiToAnthropicSse) and below it (the extension itself) are
- * covered elsewhere / by hand.
+ * (webUpstream → OpenAiToAnthropicSse) are driven directly here for the one thing
+ * they own on their own (streaming vs non-streaming replies); the rest of that
+ * translation and the extension itself are covered elsewhere / by hand.
  *
  * The scenarios that matter are the failure modes nobody sees until a user hits
  * them: a token that doesn't match, a *web page* trying to reach the port, a
@@ -28,6 +29,8 @@ import {
   stopExtensionBridge,
   abortTurn,
 } from "@main/providers/bridge/extensionBridge.js";
+import { handleWebMessages } from "@main/providers/bridge/webUpstream.js";
+import type { AnthropicRequest, UpstreamConfig } from "@main/providers/bridge/types.js";
 
 let passed = 0;
 const failures: string[] = [];
@@ -75,6 +78,43 @@ interface Frame {
   event: string;
   data: Record<string, unknown>;
 }
+
+/** 一个足够像 `node:http` 的收发对，用来直接调 `handleWebMessages` —— 那边只用到
+ *  `req.on` 和 `res.writeHead/write/end`。 */
+function makeReqRes() {
+  const chunks: string[] = [];
+  const state = { status: 0, headers: {} as Record<string, string> };
+  const req = { on: () => undefined };
+  const res = {
+    writeHead(status: number, headers: Record<string, string>) {
+      state.status = status;
+      Object.assign(state.headers, headers);
+      return res;
+    },
+    write(chunk: string) {
+      chunks.push(chunk);
+      return true;
+    },
+    end(chunk?: string) {
+      if (chunk) chunks.push(chunk);
+      return res;
+    },
+  };
+  return {
+    req: req as unknown as Parameters<typeof handleWebMessages>[0],
+    res: res as unknown as Parameters<typeof handleWebMessages>[1],
+    body: () => chunks.join(""),
+    state,
+  };
+}
+
+const WEB_UPSTREAM: UpstreamConfig = {
+  baseUrl: "",
+  authToken: "",
+  authMode: "auth_token",
+  protocol: "web",
+  webSiteId: "deepseek",
+};
 
 /** Split an SSE byte stream into events, skipping comment (heartbeat) frames. */
 function parseFrames(text: string): Frame[] {
@@ -329,6 +369,57 @@ const late = await postEvent(url, token, { type: "delta", turnId: "not-a-real-tu
 eq("late event for an unknown turn is 200", late.status, 200);
 eq("late event is ignored, not an error", late.body, { ok: true, ignored: true });
 
+/* ───────────── non-streaming requests get JSON, not a stream ───────────── */
+
+// claude 在流式那一轮失败后会补一次**非流式重试**。过去这条路一律回 SSE，于是它报
+// "the non-streaming request was answered with a stream" —— 一句把真正原因（扩展没连
+// 上）整个盖掉的错。这里钉住非流式的两条出口：成功回 Message、失败回非 2xx + error。
+
+const nsOk = makeReqRes();
+const nsOkRun = handleWebMessages(
+  nsOk.req,
+  nsOk.res,
+  {
+    model: "deepseek-web",
+    max_tokens: 16,
+    stream: false,
+    messages: [{ role: "user", content: "非流式" }],
+  } as AnthropicRequest,
+  WEB_UPSTREAM,
+  null,
+);
+const nsPrompt = await ext.next();
+eq("a non-streaming request still drives the page", nsPrompt?.event, "prompt");
+await postEvent(url, token, { type: "delta", turnId: nsPrompt?.data.turnId, text: "答案" });
+await postEvent(url, token, { type: "done", turnId: nsPrompt?.data.turnId });
+await withDeadline("non-streaming turn", nsOkRun);
+eq("a non-streaming success answers 200", nsOk.state.status, 200);
+eq("a non-streaming success is JSON", nsOk.state.headers["Content-Type"], "application/json");
+check("the answer is a message body, not an event stream", !nsOk.body().includes("event:"), nsOk.body());
+const nsMessage = JSON.parse(nsOk.body()) as {
+  type: string;
+  content: { type: string; text: string }[];
+};
+eq("the message is typed as a message", nsMessage.type, "message");
+eq("the message carries the streamed text", nsMessage.content[0]?.text, "答案");
+
+const nsFail = makeReqRes();
+// 没有 user 消息 → 这一轮直接失败，正是"扩展没连上"那类错误的同一条出口。
+await handleWebMessages(
+  nsFail.req,
+  nsFail.res,
+  { model: "deepseek-web", max_tokens: 16, stream: false, messages: [] } as AnthropicRequest,
+  WEB_UPSTREAM,
+  null,
+);
+eq("a non-streaming failure answers with an HTTP error status", nsFail.state.status, 502);
+check("the failure body is an error payload, not an event stream", !nsFail.body().includes("event:"), nsFail.body());
+check(
+  "the failure body carries the real reason",
+  (JSON.parse(nsFail.body()) as { error?: { message?: string } }).error?.message?.length ? true : false,
+  nsFail.body(),
+);
+
 /* ─────────────── error events, aborts, and a mid-turn disconnect ─────────────── */
 
 const failTurn = runPrompt({ sessionKey: "session-2", siteId: "deepseek", text: "会失败的" });
@@ -402,18 +493,26 @@ check(
 check("disconnect clears the paired flag", await waitFor(() => !bridgeStatus().paired));
 eq("pairedAt is cleared on disconnect", bridgeStatus().pairedAt, null);
 
-/* ────────────────────── unpaired, then token regeneration ─────────────────────── */
+/* ─────────── reconnecting: the grace period absorbs the gap ──────────── */
 
-const unpaired = await withDeadline(
-  "unpaired prompt",
-  runPrompt({ sessionKey: "session-7", siteId: "deepseek", text: "没人在听" }),
-  1500,
-);
-check(
-  "prompting with nothing paired fails immediately (never hangs)",
-  typeof unpaired === "string" && unpaired.startsWith("threw:") && /未连接/.test(unpaired),
-  String(unpaired),
-);
+// MV3 会把扩展的 service worker 回收，重连要等它被叫醒（实测空窗 20~30 秒）。所以
+// "此刻没连上"不该立刻判失败：宽限期内连回来，这一轮照常走完。
+const waiting = runPrompt({ sessionKey: "session-7", siteId: "deepseek", text: "重连之后再说" });
+const waitingResult = waiting.then(() => "resolved", (err: Error) => `threw:${err.message}`);
+await sleep(150);
+const reconnected = openStream(url, { token });
+await reconnected.ready;
+check("the grace period holds until the extension is back", await waitFor(() => bridgeStatus().paired));
+
+eq("the reconnected stream opens with hello", (await reconnected.next())?.event, "hello");
+const resumed = await reconnected.next();
+eq("the held turn is delivered to the reconnected extension", resumed?.data.sessionKey, "session-7");
+const resumedId = String(resumed?.data.turnId ?? "");
+await postEvent(url, token, { type: "delta", turnId: resumedId, text: "接着说" });
+await postEvent(url, token, { type: "done", turnId: resumedId });
+eq("the held turn completes instead of failing", await withDeadline("held turn", waitingResult), "resolved");
+reconnected.close();
+await waitFor(() => !bridgeStatus().paired);
 
 const ext2 = openStream(url, { token });
 await ext2.ready;
@@ -445,6 +544,21 @@ eq("a fresh install writes its token to settings", persisted.get(BRIDGE_TOKEN_SE
 // Simulate the next launch: same settings row, new process.
 configureExtensionBridgeTokenStore(settingsStore);
 eq("the token is reused after a restart", bridgeStatus().token, mintedForFreshInstall);
+
+/* ─────────── unpaired for good: the wait is bounded, then it fails ─────────── */
+
+// 宽限期不是无限挂起 —— 一直没人连上来，就按原来的措辞报错（只是晚了 35 秒）。
+// 这条要真等到宽限期用完，所以放在最后：前面的断言先给反馈。
+const abandoned = await withDeadline(
+  "unpaired prompt",
+  runPrompt({ sessionKey: "session-8", siteId: "deepseek", text: "没人在听" }),
+  40_000,
+);
+check(
+  "an unpaired prompt still fails with the unconnected message once the grace period ends",
+  typeof abandoned === "string" && abandoned.startsWith("threw:") && /未连接/.test(abandoned),
+  String(abandoned),
+);
 
 /* ─────────────────────────────── shutdown ─────────────────────────────── */
 

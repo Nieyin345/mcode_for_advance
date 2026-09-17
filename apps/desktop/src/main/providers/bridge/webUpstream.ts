@@ -23,10 +23,11 @@
  *
  * ## 一期限制（明确列出，避免被当成 bug）
  *  - 网页端是**纯对话**：claude 的工具能力用不上（上游不产出 tool_use）；
- *  - 扩展没开 / 没配对 → 立刻报错，不挂起（见 extensionBridge.runPrompt）；
+ *  - 扩展没开 / 没配对 → 等一段宽限期再报错（见 extensionBridge.runPrompt）；
  *  - 多轮上下文由扩展侧维护，mcode 重启不影响，但**换浏览器**会重来。
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import { webSiteLabel, webSiteById } from "@contracts/customModel";
 import { log } from "@main/lib/logger.js";
 import { runPrompt } from "./extensionBridge.js";
@@ -35,6 +36,11 @@ import type { AnthropicRequest, AnthropicSseEvent, OpenAIChunk, UpstreamConfig }
 
 function writeSseEvent(res: ServerResponse, ev: AnthropicSseEvent): void {
   res.write(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`);
+}
+
+function writeJson(res: ServerResponse, status: number, payload: unknown): void {
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(payload));
 }
 
 /** 从 Anthropic 请求里取出"这一轮要问什么"：最后一条 user 消息的文本。 */
@@ -98,24 +104,40 @@ export async function handleWebMessages(
 
   const prompt = promptFromAnthropicRequest(body);
   const translator = new OpenAiToAnthropicSse();
+  /**
+   * 流式还是非流式。claude 在流式那一轮失败之后会补一次**非流式重试**，而这条路
+   * 过去一律回 SSE —— 于是它报 "the non-streaming request was answered with a
+   * stream"，一句把真正原因（扩展没连上）整个盖掉的错。Anthropic 的非流式约定是
+   * 成功回一个 JSON Message、失败回非 2xx + JSON error 体，这里照办。
+   */
+  const streaming = body.stream !== false;
+  /** 非流式要攒出完整正文，所以无论哪条路都累加。 */
+  let text = "";
   const feed = (chunk: OpenAIChunk): void => {
+    // 非流式不发 SSE：正文靠上面的 text，头也在收尾时才写。
+    if (!streaming) return;
     for (const ev of translator.feed(chunk)) writeSseEvent(res, ev);
   };
   const delta = (d: { content?: string; reasoning_content?: string }): void => {
+    if (typeof d.content === "string") text += d.content;
     feed({ choices: [{ index: 0, delta: d }] });
   };
 
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-  });
+  if (streaming) {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+  }
 
   // claude 侧断开（用户点了停止）→ 顺带把中断下发给扩展，让它点网页的停止按钮。
   const ac = new AbortController();
   req.on("close", () => ac.abort());
 
   let produced = false;
+  /** 失败原因。流式当场写进流里，非流式留到收尾时定 HTTP 状态。 */
+  let failure: string | null = null;
   try {
     if (!prompt) throw new Error("这一轮没有可发送的用户消息");
 
@@ -150,12 +172,32 @@ export async function handleWebMessages(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error(`web upstream failed: ${message}`);
-    // 头已经发出去了，只能流内报错 —— 这是 Anthropic 的流式错误约定。
-    res.write(
-      `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message } })}\n\n`,
-    );
+    failure = message;
+    if (streaming) {
+      // 头已经发出去了，只能流内报错 —— 这是 Anthropic 的流式错误约定。
+      res.write(
+        `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message } })}\n\n`,
+      );
+    }
   } finally {
-    for (const ev of translator.finish()) writeSseEvent(res, ev);
-    res.end();
+    if (streaming) {
+      for (const ev of translator.finish()) writeSseEvent(res, ev);
+      res.end();
+    } else if (failure) {
+      // 非流式的头还没发出去，所以这里能给出**准确的错误**：claude 报的就是这句话，
+      // 用户看到"扩展没连上"而不是"malformed response"。
+      writeJson(res, 502, { type: "error", error: { type: "api_error", message: failure } });
+    } else {
+      writeJson(res, 200, {
+        id: `msg_${randomUUID()}`,
+        type: "message",
+        role: "assistant",
+        model: body.model,
+        content: [{ type: "text", text }],
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      });
+    }
   }
 }

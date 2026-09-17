@@ -107,6 +107,62 @@ interface Client {
 
 let client: Client | null = null;
 
+/**
+ * 等扩展连上来的人。{@link runPrompt} 在没连接时不立刻放弃，而是挂在这里 —— 见
+ * {@link CLIENT_WAIT_MS}。
+ */
+interface ClientWaiter {
+  resolve(arrived: boolean): void;
+}
+
+let clientWaiters: ClientWaiter[] = [];
+
+/**
+ * **未配对时的宽限期**。扩展跑在 MV3 的 service worker 里，那个 worker 空闲约 30 秒
+ * 就被浏览器回收，连人带线一起消失；重连要等下一次它被叫醒（实测空窗 20~30 秒）。
+ *
+ * 于是"此刻没连上"绝大多数情况等于"再等几秒就连上了"。立刻抛错会把一次可自愈的
+ * 抖动变成用户可见的失败，而且会连带触发 claude 侧的非流式重试，报出更难懂的错
+ * （"malformed response"）。35 秒足够覆盖一次完整的回收+重连周期。
+ */
+const CLIENT_WAIT_MS = 35_000;
+
+/** 新连接上台，唤醒所有等待者。 */
+function notifyClientAvailable(): void {
+  const waiters = clientWaiters;
+  clientWaiters = [];
+  for (const waiter of waiters) waiter.resolve(true);
+}
+
+/** 等一条连接出现；已连上立即返回，超时或被中断返回 false。 */
+function waitForClient(timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
+  if (client) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const entry: ClientWaiter = {
+      resolve(arrived) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        resolve(arrived);
+      },
+    };
+    const onAbort = (): void => entry.resolve(false);
+    const timer = setTimeout(() => {
+      const index = clientWaiters.indexOf(entry);
+      if (index >= 0) clientWaiters.splice(index, 1);
+      entry.resolve(false);
+    }, timeoutMs);
+    if (signal?.aborted) {
+      entry.resolve(false);
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+    clientWaiters.push(entry);
+  });
+}
+
 /** 扩展回传的事件处理口。webUpstream 把 delta/thinking 直接灌进翻译器。 */
 export interface PromptHandlers {
   onDelta?(text: string): void;
@@ -298,13 +354,12 @@ export interface RunPromptOptions {
 /**
  * 发起一轮网页版对话，等扩展把回答回完。
  *
- * **未配对时立刻抛错**，不静默挂起：用户看到的是"浏览器扩展未连接"，而不是一个
- * 转十分钟的圈。这是刻意选择 —— 挂起会让故障原因完全不可见。
+ * **未配对时最多等 {@link CLIENT_WAIT_MS} 再抛错**（理由见那个常量）—— 挂起的上界是
+ * 明确的，所以故障原因依然可见，只是把"扩展正在重连"这段抖动吸收掉了。
  */
 export async function runPrompt(opts: RunPromptOptions): Promise<void> {
   await ensureStarted();
-  const active = client;
-  if (!active) {
+  if (!client && !(await waitForClient(CLIENT_WAIT_MS, opts.signal))) {
     throw new Error(
       "浏览器扩展未连接：请在浏览器里安装并启用 Mcode 扩展桥，并在「设置 → 模型配置 → 网页端」填入桥地址与令牌。",
     );
@@ -345,8 +400,15 @@ export async function runPrompt(opts: RunPromptOptions): Promise<void> {
       opts.signal.addEventListener("abort", onAbort, { once: true });
     }
 
+    // 现取而不是用宽限期之前捕获的那条：等待期间可能正好有一次"旧的断、新的连"，
+    // 用旧连接写等于往一个已经关掉的响应里发数据。
+    const target = client;
+    if (!target) {
+      turn.finish(new Error("浏览器扩展连接已断开，本轮已中断。"));
+      return;
+    }
     try {
-      writeEvent(active.res, {
+      writeEvent(target.res, {
         type: "prompt",
         turnId: id,
         sessionKey: opts.sessionKey,
@@ -483,6 +545,8 @@ function openStream(req: IncomingMessage, res: ServerResponse): void {
     }
   }, HEARTBEAT_MS);
   client = { res, heartbeat, pairedAt };
+  // 叫醒还在宽限期里等的回合 —— 它们等的就是这个。
+  notifyClientAvailable();
   log.info("extension bridge: extension paired");
   notifyBridgeChange();
 
