@@ -12,6 +12,7 @@ export const en = {
   "settings.nav.automation": "Automations",
   "settings.nav.hooks": "Hooks",
   "settings.nav.mcp": "MCP",
+  "settings.nav.context": "Context",
   "settings.nav.plugins": "Plugins",
   "settings.nav.notifications": "Notifications",
   "settings.nav.git": "Git",
@@ -539,6 +540,10 @@ export const en = {
   "settings.mcp.userEmpty2": "Use \"Add\" or \"Import from Claude CLI\" below.",
   "settings.mcp.toggleOn": "Enable {name}",
   "settings.mcp.toggleOff": "Disable {name}",
+  "settings.mcp.engines": "Engines",
+  "settings.mcp.enginesHint": "Toggle which engines can see this server (takes effect next turn)",
+  "settings.mcp.engineOnHint": "{engine} can see and load this server",
+  "settings.mcp.engineOffHint": "Click to also let {engine} see this server",
   "settings.mcp.needsAuth": "Auth needed",
   "settings.mcp.authorize": "Sign in",
   "settings.mcp.authorizeHint": "This remote server requires an OAuth login — click to authorize in your browser",
@@ -550,14 +555,6 @@ export const en = {
   "settings.mcp.deleteServer": "Delete this server",
   "settings.mcp.importFromCli": "Import from Claude CLI",
   "settings.mcp.addServer": "Add MCP server",
-  "settings.mcp.projectSection": "Project-level",
-  "settings.mcp.projectSectionDesc1": "From the selected project's root ",
-  "settings.mcp.projectSectionDesc2": " (read-only; project files are never modified). Project servers are ",
-  "settings.mcp.projectSectionDesc3": "off by default",
-  "settings.mcp.projectSectionDesc4": " — enabling one approves loading it in every session of that project.",
-  "settings.mcp.noProjects": "No projects yet — open one to manage its .mcp.json here",
-  "settings.mcp.noProjectServers": "No MCP servers in this project's .mcp.json.",
-  "settings.mcp.projectOffSuffix": " · off by default — verify the source before enabling",
   "settings.mcp.builtinSection": "Built-in",
   "settings.mcp.builtinSectionDesc": "MCP servers bundled with the app, running in-process.",
   "settings.mcp.deleteTitle": "Delete MCP server",
@@ -565,6 +562,9 @@ export const en = {
   "settings.mcp.deleteDescMid": "\"? The entry will be removed from ",
   "settings.mcp.deleteDescPost": " (including stashed disabled configs). This cannot be undone.",
   "settings.mcp.addTitle": "Add MCP server",
+  "settings.mcp.editServer": "Edit this server",
+  "settings.mcp.editTitle": "Edit MCP server",
+  "settings.mcp.editBtn": "Save",
   "settings.mcp.addDescPre": "Adds to ",
   "settings.mcp.addDescPost": " (user-level, available to all projects)",
   "settings.mcp.fName": "Name",
@@ -757,12 +757,6 @@ export const en = {
   "settings.gestures.footer": "Note: gestures are unavailable over the title-bar drag area and the embedded browser; the terminal's right-click (copy/paste) is unaffected. Each gesture binds exactly one command; conflicts are detected while recording. A press only becomes a gesture after dragging past a threshold, so small jitter can't misfire.",
 
   // ── SkillsPanel ──
-  "settings.skills.desc1": "Manage Claude skills (SKILL.md). Project skills live in ",
-  "settings.skills.desc2": " of the selected project and are available to that project only. Global skills are imported from Claude Code / Codex / Zcode into ",
-  "settings.skills.desc3": " and are available to every project. Type ",
-  "settings.skills.desc4": " in the composer to invoke one.",
-  "settings.skills.noProjects": "No projects yet — only global skills can be managed",
-  "settings.skills.sourceProject": "Project",
   "settings.skills.sourceGlobal": "Global",
   "settings.skills.sourceBuiltin": "Built-in",
   "settings.skills.builtinReadOnly": "Built-in skill — ships with the app, read-only",
@@ -780,8 +774,6 @@ export const en = {
   "settings.skills.sourcePlaceholder": "# SKILL.md source",
   "settings.skills.deleteSkillTitle": "Delete this skill",
   "settings.skills.errDesc": "Fill in the description",
-  "settings.skills.newSkillIntro1": "Fill in the name, description and body; a standard frontmatter is generated on save. New skills are stored in the current project's ",
-  "settings.skills.newSkillIntro2": ". Later you can add advanced fields such as ",
   "settings.skills.newSkillIntro3": " in the editor.",
   "settings.skills.fieldName": "Name (skill name)",
   "settings.skills.fieldNameHintPre": "Letters, digits, underscores, hyphens only; becomes the ",
@@ -807,12 +799,31 @@ export const en = {
   "settings.skills.selectAll": "Select all",
   "settings.skills.deselectAll": "Deselect all",
   "settings.skills.localTabEmpty": "This tab imports skills from a local folder or a single .md file; click \"Choose folder\" / \"Choose file\" above to start.",
-  "settings.skills.fieldScope": "Scope",
-  "settings.skills.scopeProjectDisabled": "No projects yet — project skills unavailable",
-  "settings.skills.scopeProjectHint": "Stored in the selected project's .claude/skills; available to that project only",
-  "settings.skills.scopeGlobalHint": "Stored in ~/.mcode/skills; available to every project",
-  "settings.skills.newSkillGlobalIntro1": "Fill in the name, description and body; a standard frontmatter is generated on save. Global skills are stored in ",
-  "settings.skills.newSkillGlobalIntro2": " and are available to every project. Later you can add advanced fields such as ",
+  "settings.skills.newSkillGlobalIntro1": "Fill in the name, description and body; a standard frontmatter is generated on save. Skills are stored in ",
+  "settings.skills.newSkillGlobalIntro2": " — the one universal library shared by Claude / Codex / Pi; a new skill starts enabled for every engine. Later you can add advanced fields such as ",
+  "settings.skills.engines": "Engines",
+  "settings.skills.groupUniversal": "Universal",
+  "settings.skills.groupInternal": "{engine} internal",
+  "settings.skills.groupBuiltin": "Built-in",
+  "settings.skills.groupPlugin": "Plugin skills",
+  "settings.skills.groupUngrouped": "Other skills",
+  "settings.skills.modeBundle": "By source",
+  "settings.skills.modeEngine": "By engine",
+  "settings.skills.githubTitle": "Import a skill package from GitHub (one repo = one bundle, possibly many sub-skills)",
+  "settings.skills.githubPlaceholder": "github.com/owner/repo or owner/repo",
+  "settings.skills.githubImportBtn": "Import package",
+  "settings.skills.githubImporting": "Cloning…",
+  "settings.skills.githubDone": "Imported {n} skills into bundle \"{bundle}\"",
+  "settings.skills.githubSkip": "{n} skipped (name already exists): {list}",
+  "settings.skills.githubFailed": "GitHub import failed",
+  "settings.skills.groupDeleteTitle": "Delete whole group",
+  "settings.skills.groupDeleteDescPre": "This deletes ",
+  "settings.skills.groupDeleteDescMid": "skills of bundle \"",
+  "settings.skills.groupDeleteDescPost": "\" (including all their files). Plugin-contributed skills are not touched. This cannot be undone.",
+  "settings.skills.groupDeleteKeepPlugin": "({n} plugin skills are not affected)",
+  "settings.skills.enginesHint": "All on = universal; exactly one = engine-internal. Toggles change engine visibility only — files never move.",
+  "settings.skills.engineOnHint": "Available to {engine} (click to disable)",
+  "settings.skills.engineOffHint": "Disabled for {engine} (click to enable)",
 
   // ── TerminalPanel ──
   "settings.terminal.title": "Terminal",
@@ -897,6 +908,33 @@ export const en = {
   "settings.subagentModel.hint":
     "Claude sessions on this provider run Task-tool subagents with the picked model; applies from the next turn. \"Follow main session\" leaves it untouched.",
   "settings.subagentModel.follow": "Follow main session",
+
+  // ── ContextPanel ──
+  "settings.context.title": "Context",
+  "settings.context.instructionsSection": "Global instructions",
+  "settings.context.instructionsDesc":
+    "Standing instructions shared by every engine. The single source of truth lives at <data root>/context/instructions.md; saving materializes it automatically: Claude → ~/.mcode/CLAUDE.md, Codex → the AGENTS.md assembly chain, Pi → injected at session start. Changes apply from the next turn.",
+  "settings.context.instructionsPlaceholder":
+    "Standing requirements for every session, e.g.: reply in English; keep code comments in the repo's existing style; never suggest refactors unprompted…",
+  "settings.context.save": "Save instructions",
+  "settings.context.saveMemory": "Save memory",
+  "settings.context.saved": "Saved",
+  "settings.context.memoriesSection": "Project memories",
+  "settings.context.memoriesDesc":
+    "The engines' persistent per-project memories (~/.mcode/projects/<project>/memory/MEMORY.md). This edits the same files; injection itself stays with the engines.",
+  "settings.context.memoriesEmpty":
+    "No project memories yet. Entries appear here after the engines write memories during sessions.",
+  "settings.context.noMemorySelected": "Pick a project on the left to view or edit its memory.",
+  "settings.context.updatedAt": "Updated",
+  "settings.context.usageSection": "Tool usage",
+  "settings.context.usageDesc":
+    "Estimated context cost of tools in the selected engine, grouped by source.",
+  "settings.context.usageEngine": "Engine",
+  "settings.context.usageInprocess": "In-process tools",
+  "settings.context.usageUserMcp": "User MCP",
+  "settings.context.usagePluginMcp": "Plugin MCP",
+  "settings.context.usageBuiltin": "Built-in server",
+  "settings.context.usageTotal": "Total",
 
   // ── UsagePanel ──
   "settings.usage.title": "Usage",
@@ -1001,19 +1039,49 @@ export const en = {
   "settings.automation.trigger.manual": "Manual",
   "settings.automation.trigger.schedule": "On a schedule",
   "settings.automation.trigger.file": "On file changes",
+  "settings.automation.trigger.event": "On an event",
   "settings.automation.trigger.webhook": "On a webhook",
-  // Each trigger asks the user for something different, so these say what it will
-  // ask for later rather than a generic "not implemented" — those parameters are
-  // not designed yet (see the note on `WORKFLOW_TRIGGERS`).
-  "settings.automation.triggerHint.manual": "Runs only when you press Run.",
+  // The parameters live on the trigger node (see `TriggerSpec` in `@contracts/nodeType`),
+  // so these say what makes it fire; what to fill in is on that node's parameter panel.
+  "settings.automation.triggerHint.manual": "Runs only when you press Run once now.",
   "settings.automation.triggerHint.schedule":
-    "Runs on its own when the time comes. Later on this will ask you for a schedule (\"every day at 9\", say).",
+    "Runs on its own when the time comes. The timetable is the trigger node's cron expression (\"every day at 9\" = `0 9 * * *`). Nothing fires while the app is closed, and missed times are not caught up.",
   "settings.automation.triggerHint.file":
-    "Runs when a file changes. Later on this will ask you which folder to watch and which files count.",
+    "Runs when a watched file changes. Which files count (globs) and how long changes are merged both live on the trigger node.",
+  "settings.automation.triggerHint.event":
+    "Runs when things happen: turns, tools, tasks. Which events count, and whether to filter further by glob, all live on the trigger node.",
   "settings.automation.triggerHint.webhook":
-    "Runs when an HTTP request comes in. Later on this will hand you a callback URL.",
-  "settings.automation.notWired":
-    "The runner is not wired up yet: this saves the definition, but nothing runs in the background and none of the triggers above will fire.",
+    "Runs when an HTTP request comes in. This one is not wired up yet — it is kept only so older definitions still load.",
+  // This field is read-only: its value is derived from the trigger node (see deriveTrigger).
+  "settings.automation.triggerDerived":
+    "This follows the trigger node: to change the trigger, edit that node's parameters.",
+
+  // ── Automations: run once / what has run ──
+  "settings.automation.runNow": "Run once now",
+  "settings.automation.runNowHint":
+    "Starts one run from the trigger {name} — the same path it takes when it fires on its own. The result shows up in the history below.",
+  "settings.automation.runNoTrigger":
+    "This automation has no trigger, so it cannot run — add a trigger node and draw lines from it.",
+  "settings.automation.runFailed": "That run did not start.",
+  // `describeCron` quotes Chinese (same as the prose written by the main process), so this
+  // line only frames it.
+  "settings.automation.scheduleLine": "In words: {text}",
+  "settings.automation.problems": "These will not fire (save again after fixing):",
+  "settings.automation.skips": "Fired recently but did not run:",
+  "settings.automation.skipLine": "{time} \"{name}\" — {reason}",
+  "settings.automation.runHistory": "Run history",
+  "settings.automation.refresh": "Refresh",
+  "settings.automation.runHistoryEmpty": "Nothing has run yet.",
+  "settings.automation.runStatus.running": "Running",
+  "settings.automation.runStatus.interrupted": "Interrupted",
+  "settings.automation.runStatus.success": "Done",
+  "settings.automation.runStatus.failed": "Failed",
+  "settings.automation.runStatus.cancelled": "Cancelled",
+  "settings.automation.stepStatus.success": "Done",
+  "settings.automation.stepStatus.failed": "Failed",
+  "settings.automation.stepStatus.cancelled": "Cancelled",
+  "settings.automation.stepStatus.skipped": "Skipped",
+  "settings.automation.stepStatus.unselected": "Took another route",
 
   // ── Hooks (settings → hooks) ──
   // Event-driven commands: when something happens, run one of your commands on this
@@ -1089,6 +1157,7 @@ export const en = {
   "settings.hooks.event.error": "Error",
   "settings.hooks.event.upstreamIssue": "Upstream retry",
   "settings.hooks.event.workflowNodeResult": "Workflow node finished",
+  "settings.hooks.event.libraryItemImported": "Library item imported",
   // Each hint names the moment, because a few are easy to mix up: "tool starts" is
   // AFTER approval, "awaiting approval" only happens for tools that need it, and
   // "turn incomplete" is not an error.
@@ -1108,6 +1177,8 @@ export const en = {
   "settings.hooks.eventHint.error": "When the turn errors out.",
   "settings.hooks.eventHint.upstreamIssue": "When the upstream API is retrying, or when a retry succeeds.",
   "settings.hooks.eventHint.workflowNodeResult": "When one node of a workflow finishes (fires on the conversation that started it).",
+  "settings.hooks.eventHint.libraryItemImported":
+    "When an item enters the unified library (file import, search import, AI-created). It belongs to no session, so there is nothing for a matcher to filter on.",
 
   // ── Node ──
   "settings.workflows.nodeInspectorTitle": "Node",
@@ -1128,6 +1199,18 @@ export const en = {
   "settings.workflows.branchOptionLabel": "Option name (falls back to that step's title)",
   "settings.workflows.branchOptionNote":
     "One line for the next step when this option is taken (goes into its prompt). Can be left empty.",
+  // A decision node and a branch are two versions of the same thing — both pick one
+  // outgoing edge. The difference is who picks: a branch waits for you, a decision
+  // judges for itself and hands back the option name in its 出路 output variable.
+  "settings.workflows.decideOptions": "Options (it picks)",
+  "settings.workflows.decideNoOptions":
+    "No options at all, so there is nothing to pick — it will fail outright here. Draw lines from it to the next steps: every line is one option.",
+  "settings.workflows.decideOptionsHint":
+    "These are its options: the names are the values it must hand back as 出路 when it finishes. A name that matches none of them fails this step.",
+  // A trigger node is the starting point of the automation (see `deriveTrigger` in
+  // `main/orchestration/library.ts`: an incoming edge makes the save fail).
+  "settings.workflows.nodeTriggerHint":
+    "A trigger takes no upstream — it is where the run starts, so draw lines from it. One automation can hold several triggers; each has its own project and request.",
   // The separator between list items. It is dictionary text on purpose: a
   // hardcoded 「、」 renders as `Downstream: A、B` in English.
   "settings.workflows.listSeparator": ", ",
@@ -1172,6 +1255,23 @@ export const en = {
   "settings.workflows.varAdd": "Add one",
   "settings.workflows.varRemove": "Remove this row",
   "settings.workflows.varEmpty": "Nothing yet. Add one and say what this step has to hand over.",
+  // Input options (`kind: "options"`) — the main agent's "name + content + note" table.
+  // Name shows in the chat dropdown, content is inserted at the caret on pick,
+  // note is injected into the prompt for that run.
+  "settings.workflows.optName": "Option name",
+  "settings.workflows.optRemove": "Remove this option",
+  "settings.workflows.optContent": "Content (inserted at the caret on pick; variables allowed)",
+  "settings.workflows.optNote": "Note (tells the model what the user picked, for this run)",
+  "settings.workflows.optEmpty": "Nothing yet. Add one and it shows above the input box when chatting with this graph.",
+  "settings.workflows.optAdd": "Add option",
+  // Fixed criteria (`kind: "selects"`) — the main agent's dropdown-criteria definitions.
+  // One row = one dropdown; the picked value is injected into the prompt every turn,
+  // except "不限" (none).
+  "settings.workflows.critName": "Criteria",
+  "settings.workflows.critRemove": "Remove this criterion",
+  "settings.workflows.critChoices": "Choices (one per line; the picked value is injected into the prompt, except \"不限\")",
+  "settings.workflows.critEmpty": "Nothing yet. Add one and it becomes a dropdown above the chat input box.",
+  "settings.workflows.critAdd": "Add criterion",
   // "Insert variable": the candidates are the names *upstream steps* defined, so no
   // concrete name appears here — hardcoding one would tie the feature to a vocabulary.
   "settings.workflows.insertVar": "Insert variable",
@@ -1254,4 +1354,39 @@ export const en = {
   "settings.workflows.source.builtin": "built-in",
   "settings.workflows.source.plugin": "plugin",
   "settings.workflows.source.local": "local",
+
+  // ── LibraryTypesPanel (Settings → Library prompts) ──
+  "settings.nav.libraryTypes": "Library prompts",
+  "settings.libraryTypes.title": "Library prompts",
+  "settings.libraryTypes.desc":
+    "Create / delete / rename all live in the sidebar; this page only writes the AI prompts — leave one empty and there is none.",
+  "settings.libraryTypes.section.group": "Group prompts",
+  "settings.libraryTypes.section.type": "Type prompts",
+  "settings.libraryTypes.section.collection": "Collection prompts",
+  "settings.libraryTypes.ungroupedShort": "Ungrouped",
+  "settings.libraryTypes.noCollections": "No collections yet — create one in the sidebar.",
+  "settings.libraryTypes.collectionSaveFailed": "Could not save the prompt for “{name}”.",
+  "settings.libraryTypes.name": "Display name",
+  "settings.libraryTypes.icon": "Icon",
+  "settings.libraryTypes.iconPh": "Empty = default icon",
+  "settings.libraryTypes.prompt": "Prompt",
+  "settings.libraryTypes.promptPh": "What this kind is and what to watch out for when citing…",
+  "settings.libraryTypes.purpose.material": "Material",
+  "settings.libraryTypes.purpose.format": "Format",
+  "settings.libraryTypes.builtin": "Built-in",
+  "settings.libraryTypes.add": "Add type",
+  "settings.libraryTypes.newIdPh": "id (lowercase, starts with a letter)",
+  "settings.libraryTypes.up": "Move up",
+  "settings.libraryTypes.down": "Move down",
+  "settings.libraryTypes.delete": "Delete",
+  "settings.libraryTypes.save": "Save",
+  "settings.libraryTypes.saving": "Saving…",
+  "settings.libraryTypes.saved": "Saved",
+  "settings.libraryTypes.loadFailed": "Failed to load: {error}",
+  "settings.libraryTypes.groups": "Groups",
+  "settings.libraryTypes.groupsDesc": "The sidebar is split into groups: rename them, pick member types, add, remove and reorder. A type belongs to exactly one group; ungrouped types are hidden in the sidebar (data is kept).",
+  "settings.libraryTypes.newGroup": "New group",
+  "settings.libraryTypes.newGroupName": "New group",
+  "settings.libraryTypes.groupName": "Group name",
+  "settings.libraryTypes.ungrouped": "Ungrouped (hidden in sidebar)",
 } as const;

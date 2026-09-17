@@ -49,7 +49,7 @@ import type { MouseEvent as ReactMouseEvent } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import {
-  isRunnerImplemented,
+  isNodeRunnable,
   validateNodeParams,
   type NodeRunnerKind,
   type NodeTypeEntry,
@@ -59,6 +59,7 @@ import type { WorkflowNode } from "@contracts/workflow";
 import {
   IconAlertTriangle,
   IconArrowsSplit,
+  IconBolt,
   IconHelpCircle,
   IconMessages,
   IconRobotFace,
@@ -99,17 +100,35 @@ const ENTRY_LOOK: NodeLook = {
  * 每一种执行方式长什么样。
  *
  * 颜色的分工:**子 agent 最中性**(它是默认的那一种,一张图里多半全是它);对话节点
- * 是 `info`(它"跑到你的对话里去了",是四种里唯一会改变主对话的);分支是 `warning`
- * 同色系(它会让整张图**停下来**等人);没实现的 `command` 是 `danger`(它跑不了)。
+ * 是 `info`(它"跑到你的对话里去了");分支是 `warning` 同色系(它会让整张图**停下来**
+ * 等人 —— 「决定权给模型」的那种分支不等人,但图标与说明在检查器里,卡片同色不算说谎);
+ * 命令是 `success`(它真的**起一个进程**,"动手"的那一步 —— 绿灯放行的那种绿)。
  *
  * 底色用 `/<alpha>` 而不是实色:`--*` 那几个变量本身是"R G B"三元组,`bg-info/10`
  * 会在浅色和深色两套主题下各自算出合适的淡色,不用手写两份。
+ *
+ * 触发器 = `accent`。它是整张图的**开头**(那次运行就是从它开始的),和入口
+ * 节点(`ENTRY_LOOK`)同一档 —— 一张自动化里,"运行从哪儿开始"是第一个要看出来的。
+ *
+ * (决策节点并进了分支 —— 「决定权」长在分支的参数上,卡片不按它分色;模型选还是
+ * 用户选,检查器里那个下拉说了算。)
  */
 const KIND_LOOK: Record<NodeRunnerKind, NodeLook> = {
   prompt: { bar: "bg-edge", tint: "", icon: "text-content-subtle", Icon: IconRobotFace },
   conversation: { bar: "bg-info", tint: "bg-info/10", icon: "text-info", Icon: IconMessages },
   branch: { bar: "bg-warning", tint: "bg-warning/10", icon: "text-warning", Icon: IconArrowsSplit },
-  command: { bar: "bg-danger", tint: "bg-danger/10", icon: "text-danger", Icon: IconTerminal2 },
+  trigger: { bar: "bg-accent", tint: "bg-accent/10", icon: "text-accent", Icon: IconBolt },
+  command: { bar: "bg-success", tint: "bg-success/10", icon: "text-success", Icon: IconTerminal2 },
+};
+
+/** 跑不起来的节点(`isNodeRunnable` 不过:执行方式没实现、或命令写在清单自带的脚本里
+ *  还没接)。**danger 不看种类看死活** —— 以前 command 整种跑不了,danger 长在种类上;
+ *  现在命令节点能跑了,danger 改挂在"这一个跑不了"上,否则一颗地雷混在一图绿色里。 */
+const DEAD_LOOK: NodeLook = {
+  bar: "bg-danger",
+  tint: "bg-danger/10",
+  icon: "text-danger",
+  Icon: IconAlertTriangle,
 };
 
 export function WorkflowNodeCard({
@@ -142,18 +161,27 @@ export function WorkflowNodeCard({
   // 产出约束配矛盾了(选了 JSON 数组又填必备字段……)—— 和参数不齐一样,是**画布上
   // 就该看得见**的问题:它会让存盘被拒,而用户不会想到去看检查器里那一段。
   const badRules = entry ? !validateOutputRules(entry.manifest, node.params).ok : false;
-  const deadRunner = entry ? !isRunnerImplemented(entry.manifest.runner.kind) : false;
+  // 跑不跑得起来是**清单 + 参数**的事(命令节点里"命令来自参数"的能跑、"来自清单
+  // 自带脚本"的还不能)—— 判据收口在 `isNodeRunnable`,与调度器的拒绝同一份答案。
+  const deadRunner = entry ? !isNodeRunnable(entry.manifest) : false;
   const problem = missingType || badParams || badRules || deadRunner;
   const isEntry = isProtectedNode(node);
-  const look = missingType ? UNKNOWN_LOOK : isEntry ? ENTRY_LOOK : KIND_LOOK[entry.manifest.runner.kind];
+  const look = missingType
+    ? UNKNOWN_LOOK
+    : deadRunner
+      ? DEAD_LOOK
+      : isEntry
+        ? ENTRY_LOOK
+        : KIND_LOOK[entry.manifest.runner.kind];
   const { Icon } = look;
   /**
    * 能力标签(`read` / `write` / `exec`)**只在它真的算数时显示**。
    *
-   * `prompt` 与 `command` 才有"这一步能不能写盘"这回事;分支什么都不跑,对话节点用的
-   * 是主对话那套权限(它的清单里那一项是占位,注释写明了不生效)—— 给这两种显示一个
-   * `read`,是在说一句不成立的话。顺带也把这一行的宽度让给了类型 id,而它恰恰是最长
-   * 的那一个(`mcode.conversation`)。
+   * `prompt` / `command` 才有"这一步能不能写盘 / 动手"这回事 —— 前者真的跑一轮
+   * 模型,后者真的起一个进程。分支(不管决定权在谁)与触发器什么都不跑,对话节点
+   * 用的是主对话那套权限(它的清单里那一项是占位,注释写明了不生效)—— 给这几种
+   * 显示一个 `read`,是在说一句不成立的话。顺带也把这一行的宽度让给了类型 id,
+   * 而它恰恰是最长的那一个(`mcode.conversation`)。
    */
   const capability = node.capability ?? entry?.manifest.capability;
   const showsCapability =
@@ -228,15 +256,19 @@ export function WorkflowNodeCard({
         </div>
       </div>
 
-      {/* 入线口。**只是个记号** —— 见文件头最后一段。 */}
-      <span
-        aria-hidden
-        style={{ left: NODE_W / 2 - PORT / 2, top: -PORT / 2, width: PORT, height: PORT }}
-        className={cn(
-          "pointer-events-none absolute rounded-full border border-edge bg-surface-muted",
-          "opacity-70 transition-opacity group-hover:opacity-100",
-        )}
-      />
+      {/* 入线口。**只是个记号** —— 见文件头最后一段。主代理是图的入口,不可能有
+          入边 —— 上面那个圆点在它身上是个永远接不上线的空头承诺,所以不画;下面的
+          引出点不受影响。(触发器同样没有入边,但那是自动化那条线的地盘,这里不动。) */}
+      {!isEntry && (
+        <span
+          aria-hidden
+          style={{ left: NODE_W / 2 - PORT / 2, top: -PORT / 2, width: PORT, height: PORT }}
+          className={cn(
+            "pointer-events-none absolute rounded-full border border-edge bg-surface-muted",
+            "opacity-70 transition-opacity group-hover:opacity-100",
+          )}
+        />
+      )}
       {/* 出线口。按住往下拖,松在另一张卡片上就连上。 */}
       <span
         title={t("settings.workflows.portConnectHint")}

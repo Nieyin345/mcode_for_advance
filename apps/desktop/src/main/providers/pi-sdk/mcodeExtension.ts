@@ -61,6 +61,7 @@ import {
   ASK_NATIVE_TOOL_PROMPT,
 } from "@main/lib/askQuestion.js";
 import { PI_IDENTITY_PROMPT, joinPromptSections, fileArchitecturePrompt } from "@main/lib/systemPrompt.js";
+import { readInstructionsSource, instructionsSourcePath } from "@main/lib/appContext.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { scriptsDir } from "@main/workflows/seed.js";
 import {
@@ -1030,8 +1031,13 @@ function registerSystemPromptInjector(
     "before_agent_start",
     async (event: BeforeAgentStartEvent): Promise<BeforeAgentStartEventResult | void> => {
       const base = event.systemPrompt ?? "";
+      // 全局指令(设置面板的事实源,<dataRoot>/context/instructions.md):
+      // claude 物化到 ~/.mcode/CLAUDE.md,codex 并入 AGENTS.md 组装链 —— 三引擎
+      // 共用一条配置。逐轮重读,与 fileArchitecturePrompt 同一刷新策略。
+      const instructions = readInstructionsSource(instructionsSourcePath(dataRoot())).trim();
       const injected = joinPromptSections(
         PI_IDENTITY_PROMPT,
+        instructions,
         // The user's file architecture — see fileArchitecturePrompt. Re-read per
         // turn (not cached) because the data root is user-settable.
         fileArchitecturePrompt(dataRoot(), scriptsDir()),

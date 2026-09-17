@@ -28,11 +28,10 @@
  * 钩子要重启应用才生效 —— 而"改了没反应"是最难查的一类问题。
  */
 import { statSync } from "node:fs";
-import { relative } from "node:path";
 import type { RuntimeEvent } from "@contracts/runtime";
 import {
+  HOOK_EVENT_OF,
   matchesHook,
-  type HookEvent,
   type HookPayload,
   type HookRun,
   type HookSpec,
@@ -41,6 +40,7 @@ import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { ProjectRepo, SessionRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
 import { uid } from "@main/utils.js";
+import { createEventSubjects } from "./eventSubjects.js";
 import { runHookCommand } from "./runCommand.js";
 import { hooksFilePath, readHooks } from "./store.js";
 
@@ -54,12 +54,9 @@ class HookRunner {
   /** 正在跑的那些钩子 id。见文件头第 2 条不变量。 */
   private running = new Set<string>();
   private runs: HookRun[] = [];
-  /**
-   * `toolCallId → 工具名`。**只为了 `tool.result`**:那个事件本身不带工具名(三个
-   * 提供方都不带,见 `ToolResultEvent`),而"Write 跑完之后做点什么"是最自然的一种
-   * 钩子。用完即删,顺带把内存兜住。
-   */
-  private toolNames = new Map<string, string>();
+  /** 事件→匹配主语(`tool.result` 要回查工具名,所以它**有状态**)。与自动化触发器
+   *  共用一份逻辑,各持一个实例 —— 见 `eventSubjects.ts`。 */
+  private subjects = createEventSubjects();
 
   start(): void {
     if (this.started) return;
@@ -131,10 +128,16 @@ class HookRunner {
     const all = this.hooksNow();
     if (all.length === 0) return;
 
-    const session = this.sessionFacts(e.sessionId);
+    // 合成哨兵 "(system)" 放行(统一资料库的 `library.item.imported`):它**不属于
+    // 任何会话**(见 `@contracts/runtime` 的 `LibraryItemImportedEvent`),查不到会话
+    // 不是"会话没了"。给一条壳载荷 —— cwd 退回宿主目录,与试跑那条假载荷同一待遇。
+    const session =
+      e.sessionId === "(system)"
+        ? { id: "(system)", kind: "chat" as const, title: "资料库", projectId: "" }
+        : this.sessionFacts(e.sessionId);
     if (session === null) return; // 会话已经没了(删了 / 是别的进程留下的)——
     const cwd = this.cwdOf(session.projectId, e.sessionId);
-    const { toolName, subjects } = this.subjectOf(e, cwd);
+    const { toolName, subjects } = this.subjects.of(e, cwd);
     const hooks = all.filter((spec) => matchesHook(spec, event, subjects));
     if (hooks.length === 0) return;
 
@@ -235,140 +238,9 @@ class HookRunner {
     }
     return process.cwd();
   }
-
-  /**
-   * 这次事件的**主语**(`matcher` 拿去比的东西)和**工具名**(载荷里的 `toolName`)。
-   *
-   * 两件事一起做,是因为它们共用一份状态:工具名得先记下来,`tool.result` 那种只带
-   * `toolCallId` 的事件才查得到(见 `toolNames`)。
-   */
-  private subjectOf(
-    e: RuntimeEvent,
-    cwd: string,
-  ): { toolName?: string; subjects?: readonly string[] } {
-    switch (e.type) {
-      case "tool.use":
-      case "approval.request":
-        // 记下来给后面的 `tool.result` 用(见 `toolNames` 的注释)。
-        this.toolNames.set(e.toolCallId, e.toolName);
-        // 上界:异常情况下(结果一直没回来)不让它无限长。
-        if (this.toolNames.size > 500) this.toolNames.clear();
-        return { toolName: e.toolName, subjects: [e.toolName] };
-      case "tool.result": {
-        const name = this.toolNames.get(e.toolCallId);
-        this.toolNames.delete(e.toolCallId);
-        return name === undefined ? {} : { toolName: name, subjects: [name] };
-      }
-      case "turn.files":
-        return { subjects: fileSubjects(e.files.map((f) => f.filePath), cwd) };
-      default:
-        return {};
-    }
-  }
 }
 
 /* ────────────────────────── 纯工具 ────────────────────────── */
-
-/**
- * 每个 `RuntimeEvent` 对应哪个钩子事件;`null` = **故意不暴露**。
- *
- * 写成 `Record<RuntimeEvent["type"], …>` 而不是 `switch` + `default: null`,是为了让
- * "将来加了一个事件,要不要给它一个钩子"变成**编译期**的问题:`RuntimeEvent` 多一个
- * 成员,这张表就少一行,tsc 当场报错。`switch` 做不到 —— 它会安静地把新事件吞掉,而
- * "这个钩子怎么不响"是最难查的一类问题。
- */
-const HOOK_EVENT_OF: Record<RuntimeEvent["type"], HookEvent | null> = {
-  "user.message": "user.message",
-  "tool.use": "tool.use",
-  "tool.result": "tool.result",
-  "approval.request": "approval.request",
-  "request.resolved": "request.resolved",
-  "question.ask": "question.ask",
-  "plan.approval_request": "plan.approval_request",
-  "todo.update": "todo.update",
-  "subagent.update": "subagent.update",
-  "turn.files": "turn.files",
-  "turn.incomplete": "turn.incomplete",
-  "turn.done": "turn.done",
-  "compact.result": "compact.result",
-  error: "error",
-  "upstream.issue": "upstream.issue",
-  "workflow.node.result": "workflow.node.result",
-
-  /* ── 还没给,不是不该给 ── */
-
-  // 工作流停在岔路口等用户拍板(`runner.kind === "branch"` 的节点)。
-  //
-  // 这一条**将来会有**,而且大概是"自动化"那个场景下最该通知的一件事(没人看着的
-  // 时候,图停在那儿等一个回答,而外面什么迹象都没有)。现在不给是因为给一个钩子
-  // 事件要动四处(契约的 `HOOK_EVENTS`、这张表、`HooksPanel` 的两张标签表、中英各
-  // 两条词条),而它属于"自动化"那一摊 —— 放在这次改动里会让这次改动说不清边界。
-  //
-  // ⚠️ 放在这一段而不是下面那段,是怕后来的人读成"这是刻意不给的"。**它能给**,
-  // 只是还没轮到。
-  "workflow.node.choice": null,
-
-  /* ── 故意不暴露的(是"不该给",不是"还没来得及给")── */
-
-  // 太频繁:一次对话能来几万条,挂上就是每秒钟起一堆进程。
-  "text.delta": null,
-  thinking: null,
-  "subagent.transcript": null,
-  // 给已经画出来的那张步骤卡**补一个花费数字**。它是 `workflow.node.result` 的**后补**
-  // (用量要等那个回合结算才有,而卡片是节点收场那一刻就画出来的,见
-  // `@contracts/runtime` 的 `WorkflowNodeUsageEvent`)。所以挂钩子这件事它完全搭不上:
-  // 要挂的是"这一步跑完了",那一条已经给了 —— 再给一个"后来又知道了它的花费"只会让
-  // 同一个节点触发两次,而后一次什么新信息都没有(除了钱)。
-  "workflow.node.usage": null,
-  // 工作流节点跑的**过程**(工具调用、中间文本),给界面那张卡片看的。
-  // 挂钩子的话"这一步做了什么"该走 `workflow.node.result` —— 那是它跑完的那个点,
-  // 也是钩子作者真正想接的时刻;过程流本身是一次运行里最吵的东西。
-  "workflow.node.transcript": null,
-  // 计划草稿在计划模式里每变一次文本就发一次(和 `text.delta` 同级)。要挂就挂
-  // `plan.approval_request` —— 那才是"计划写好了"这个有意义的时间点。
-  "plan.update": null,
-  // 每次 API 调用后都发,纯展示用。
-  "token-usage.updated": null,
-  // 宿主侧的行内提示卡(预算到顶/模型回退/结构化校验失败),纯 UI 事件。挂钩子没有
-  // 意义:预算到顶那条的"回合结束了"时刻走 `turn.done`(reason="interrupted")。
-  "turn.notice": null,
-  // 渲染层画一张图用的,不是"发生了什么"。
-  "browser.image": null,
-  // 内部同步信号(客户端之间对齐"哪些会话在跑"),不是事件。
-  "session.runningSnapshot": null,
-  // 每次改名 / 置顶 / 归档都发,噪音大而钩子做不了什么。
-  "session.changed": null,
-  // 用户手点的一次回退,而且要紧的信息(哪些文件)在 `turn.files` 里已经有过了。
-  "turn.rewound": null,
-  // 助手一条消息写完 —— 与 `turn.done` 重叠(多数轮次只有一条消息)。要挂就挂后者。
-  "message.complete": null,
-  // 纯界面状态(切到计划模式之类)。
-  "mode.change": null,
-  // 下面两条**没有活着的会话**,而钩子载荷里的 `session` 是必填的:
-  // `session.deleted` 的会话已经没了;`git.changed` 压根不属于任何会话(它的
-  // `sessionId` 是空串)。硬塞一个空壳会让 `jq .session.id` 拿到 `""`,用户分不清
-  // "没有会话"和"会话 id 是空"。要给它们钩子,得先设计"不属于会话的事件"长什么样。
-  "session.deleted": null,
-  "git.changed": null,
-};
-
-/**
- * `turn.files` 的匹配主语:每个文件的**绝对路径**和**相对会话目录的路径**,都换成 `/`。
- *
- * 两份都给,是因为用户脑子里想的是哪种都有 —— `src/*.ts`(相对)和 `*.ts`(哪儿都
- * 算)。只给绝对路径的话前者永远匹配不上(它是 `D:/…/src/a.ts`);只给相对的则拿不到
- * 会话目录之外的文件。两边都试一次最省心,代价只是模式匹配多跑一遍。
- */
-function fileSubjects(paths: readonly string[], cwd: string): string[] {
-  const out: string[] = [];
-  for (const path of paths) {
-    const abs = path.replace(/\\/g, "/");
-    out.push(abs);
-    const rel = relative(cwd, path).replace(/\\/g, "/");
-    if (rel.length > 0 && rel !== abs) out.push(rel);
-  }
-  return out;
-}
 
 /** 试跑时给 `matcher` 编一个能匹配上的工具名 —— 只写 `Edit,Write` 的钩子,试跑要是
  *  因为"没有工具名"而不匹配,那个按钮就没有意义了。 */

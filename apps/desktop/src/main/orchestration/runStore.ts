@@ -52,6 +52,9 @@ const KEEP_RUNS_PER_SESSION = 10;
  *    `sessionStore.patchBranchChoiceBlock`)。
  *
  * (`runId` / `workflowId` 不在这里 —— 它们是那张表的列。)
+ *
+ * 「这次是哪个触发器起的」也在 `state` 里(见 `RunState.entry`)—— 它是这次运行的一部分,
+ * 和流程记录同居一处,不必在快照上再开一个字段。
  */
 export interface RunSnapshot {
   prompt: string;
@@ -93,6 +96,9 @@ export function decodeSnapshot(raw: string): RunSnapshot | null {
         awaiting: (Array.isArray(state.awaiting) ? state.awaiting : []).filter(
           (x): x is string => typeof x === "string",
         ),
+        // 「这次是哪个触发器起的」。**缺了就当没有** —— 它是本版新加的,老存档里没有
+        // (`RunState.entry` 是可选的);形状不对的也一律丢掉,而不是带进调度器。
+        ...(isRunEntry(state.entry) ? { entry: state.entry } : {}),
       },
       attempts: Array.isArray(parsed.attempts) ? parsed.attempts : [],
     };
@@ -100,6 +106,13 @@ export function decodeSnapshot(raw: string): RunSnapshot | null {
     log.warn(`workflow run snapshot unreadable: ${(err as Error).message}`);
     return null;
   }
+}
+
+/** 存档里的 `entry` 只信形状对的那一种(老存档没有这个字段,被手改坏的也可能有)。 */
+function isRunEntry(raw: unknown): raw is { nodeId: string; summary: string } {
+  if (typeof raw !== "object" || raw === null) return false;
+  const { nodeId, summary } = raw as { nodeId?: unknown; summary?: unknown };
+  return typeof nodeId === "string" && nodeId.length > 0 && typeof summary === "string";
 }
 
 /**

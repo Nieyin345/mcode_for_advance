@@ -86,10 +86,13 @@ export function SectionTabs<K extends string>({
   tabs,
   active,
   onChange,
+  onTabContextMenu,
 }: {
   tabs: ReadonlyArray<SectionTab<K>>;
   active: K;
   onChange: (key: K) => void;
+  /** 单个 tab 的右键(小类的管理菜单:新建 / 重命名 / 删除)。不给就没有右键行为。 */
+  onTabContextMenu?: (key: K, e: React.MouseEvent) => void;
 }) {
   return (
     <div className="mb-1 flex flex-wrap items-center gap-0.5 px-1">
@@ -99,6 +102,14 @@ export function SectionTabs<K extends string>({
           <button
             key={tab.key}
             onClick={() => onChange(tab.key)}
+            onContextMenu={
+              onTabContextMenu
+                ? (e) => {
+                    e.preventDefault();
+                    onTabContextMenu(tab.key, e);
+                  }
+                : undefined
+            }
             className={cn(
               "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors [font-size:var(--rp-fs-md)]",
               on

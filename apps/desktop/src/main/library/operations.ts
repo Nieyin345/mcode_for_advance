@@ -25,6 +25,7 @@ import { fetchByDoi, fetchByArxivId, findOpenAccessPdfUrl } from "./metadata.js"
 import { arxivIdFromDoi } from "./oaResolvers.js";
 import { enqueueDownloads, PDF_URL_RE } from "./downloader.js";
 import { allTrashCollectionIds, shouldSweepAfterRemoval, sweepToTrash } from "./trash.js";
+import { emitItemImported } from "./broadcast.js";
 import { log } from "@main/lib/logger.js";
 
 /**
@@ -118,6 +119,10 @@ export async function importIdentifiers(
         for (const cid of opts.collectionIds) assignToCollection(cid, [item.id], true);
       }
       items.push(item);
+      // 每条入库都发一条事件 —— automation 的「文献自动下载」靠它起跑。命中的已有
+      // 条目也算"入库成功"(去重的那条再次进了用户的视野),不发的话再导入同一篇
+      // 时自动下载就没有机会补下漏掉的 PDF。
+      emitItemImported(item);
     } catch (err) {
       failed.push({ raw: entry.raw, reason: (err as Error).message });
     }

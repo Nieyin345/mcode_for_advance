@@ -24,7 +24,7 @@ import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { Button } from "@renderer/components/ui/index.js";
 import type { AgentProfile, AgentProfileCatalog } from "@contracts/agentProfile";
 import {
-  isRunnerImplemented,
+  isNodeRunnable,
   type NodeTypeCatalog,
   type NodeTypeEntry,
   type NodeTypeSource,
@@ -186,7 +186,7 @@ export function NodeTypesView({
 function NodeTypeCard({ entry }: { entry: NodeTypeEntry }) {
   const { t } = useI18n();
   const m = entry.manifest;
-  const runnable = isRunnerImplemented(m.runner.kind);
+  const runnable = isNodeRunnable(m);
   return (
     <li className="rounded border border-edge bg-surface/40 p-2.5">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">

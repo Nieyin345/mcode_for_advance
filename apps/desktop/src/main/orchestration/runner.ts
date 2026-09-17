@@ -55,20 +55,28 @@ function displayTitle(node: WorkflowNode, manifest: NodeTypeManifest | undefined
  */
 import type { LibraryKind } from "@contracts/library";
 import type { Session } from "@contracts/session";
-import { WORKFLOW_MAX_PARALLEL_SETTING_KEY } from "@contracts/ipc";
+import { WORKFLOW_MAX_PARALLEL_SETTING_KEY, WORKFLOW_NODE_OPTION_SETTING_PREFIX } from "@contracts/ipc";
 import {
   ASK_EXIT_CHOICE,
+  injectModeOf,
+  injectTargetOf,
   isAskChoice,
+  isModelDecider,
+  MAIN_NODE_TYPE_ID,
+  NODE_CRITERIA_PARAM_KEY,
+  NODE_OPTIONS_PARAM_KEY,
   returnModeOf,
   type NodeOutcome,
   type NodeReturnMode,
   type NodeTypeManifest,
 } from "@contracts/nodeType";
-import { checkOutput, outputValueText, outputVarsOf, pickOutputs, type OutputVar } from "@contracts/outputConstraint";
+import { checkOutput, outputValueText, outputVarsFor, outputVarsOf, pickOutputs, type OutputVar } from "@contracts/outputConstraint";
 import type { PermissionMode, WorkflowChoiceOption } from "@contracts/runtime";
-import type { WorkflowCapability, WorkflowNode } from "@contracts/workflow";
+import { outgoingEdgesOf, type WorkflowCapability, type WorkflowNode } from "@contracts/workflow";
+import { nodeCriteriaPrompt, type CriteriaCondition } from "@main/lib/searchPrefs.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { transcriptText } from "@main/claude/nodeTranscript.js";
+import { runCommandNode } from "./commandRunner.js";
 import { libraryRoot } from "@main/library/paths.js";
 import { broadcastRuntimeEvent } from "@main/lib/sessionSync.js";
 import { queueBackflow } from "@main/lib/pendingBackflow.js";
@@ -76,12 +84,23 @@ import { log } from "@main/lib/logger.js";
 import { providerRegistry } from "@main/providers/registry.js";
 import { CollectionRepo, LibraryRepo, SessionRepo, SettingRepo } from "@main/store/repositories.js";
 import { templatesRoot } from "@main/templates/store.js";
+import {
+  kindDisplayName,
+  kindPurposeOf,
+} from "@main/library/kindRegistry.js";
 import { uid } from "@main/utils.js";
 import {
-  KIND_LABEL,
   inheritContextLines,
+  kindLabel,
+  setContextKindRegistry,
   type ContextLookup,
 } from "./contextInherit.js";
+
+// 统一资料库:把类型注册表的读法交给上下文继承链(见 `contextInherit.ts` 的
+// `setContextKindRegistry`)。模块加载时注册一次 —— 真正读 DB 发生在第一次查(那时
+// initDb 必已完成,注册 handler 前都会 awaitDb)。**无头冒烟不 import 本模块**,所以
+// 冒烟里 contextPurposeOf/kindLabel 走内置判据,行为与统一前一致。
+setContextKindRegistry({ label: kindDisplayName, purpose: kindPurposeOf });
 
 /**
  * 一张图默认**同时最多几个节点在跑**。
@@ -398,6 +417,13 @@ export async function startWorkflowRun(args: {
     nodeId: string;
     answer: BranchChoice;
   };
+  /**
+   * **这次是哪个触发器起的**(见 `scheduler.runWorkflow` 的 `entry`)。自动化执行器给 ——
+   * 手动跑一张图 / 续跑时不给。
+   *
+   * 载荷文本要跟着一起走,因为它就是**触发器那一步的产出**:下游读到的是"上游交了什么"。
+   */
+  entry?: { nodeId: string; summary: string };
 }): Promise<RunResult | null> {
   const { session, userMessage } = args;
   const resumed = args.resume;
@@ -414,8 +440,71 @@ export async function startWorkflowRun(args: {
   // **续跑时这两样以存档为准。** 点卡片的那一下手上只有一张卡片 —— 用户最初说了什么、
   // 那次是在哪个目录里跑的,都在存档里。以调用方给的为准的话,这里就多了一种"两边
   // 不一样"的坏法,而它不报错。
-  const prompt = resumed !== undefined ? resumed.snapshot.prompt : (args.prompt ?? "");
+  let prompt = resumed !== undefined ? resumed.snapshot.prompt : (args.prompt ?? "");
   const cwd = resumed !== undefined ? resumed.snapshot.cwd : (args.cwd ?? "");
+  // **「这次是哪个触发器起的」续跑时以存档为准** —— 同 `prompt` / `cwd` 那两样:点卡片
+  // 的那一下手上只有一张卡片,而"这次是哪条自动化入口起的"在存档里。
+  const entry = resumed?.snapshot.state.entry ?? args.entry;
+
+  // **主对话节点上那两样东西的注入** —— 「输入选项」的选中解释与「固定条件」,都在
+  // 这里、随**运行的最初那条提示词**进主节点:**一次**,之后不再重复(下游步骤从
+  // 上游产出里拿条件;渲染端见 `chat/NodeOptionsDropdown.tsx` 与
+  // `chat/SearchFilterBar.tsx`,选择分别落在 `WORKFLOW_NODE_OPTION_SETTING_PREFIX` /
+  // `WORKFLOW_NODE_PREFS_SETTING_PREFIX` + workflowId)。三道门,少一道都会注出不该注的:
+  //   - **续跑不注** —— 存档里的 prompt 当年已经带过这段,再注一遍就是重复段落;
+  //   - **输入选项:名字必须还在选项表里** —— 选项改了名/删了项之后,旧选择注出来
+  //     就是一句对不上号的话。读到的解释为空也不注:内容本身已经在用户那句话里;
+  //   - **固定条件:值为「不限」/没选的跳过** —— 拼出来的段为空就不动 prompt。
+  if (resumed === undefined) {
+    // ── 输入选项:选中项的解释 ──
+    // 自动化触发(entry 已设)不注 —— 触发器起跑时没有"用户在输入框上方选过什么"这回事。
+    if (args.entry === undefined && prompt.length > 0) {
+      try {
+        const optionKey = WORKFLOW_NODE_OPTION_SETTING_PREFIX + session.workflowId;
+        const raw = SettingRepo.get(optionKey);
+        const picked = raw
+          ? (JSON.parse(raw) as { name?: unknown; note?: unknown })
+          : undefined;
+        const pickedName = typeof picked?.name === "string" ? picked.name : "";
+        const pickedNote = typeof picked?.note === "string" ? picked.note : "";
+        const entryParams = doc.nodes.find((node) => node.type === MAIN_NODE_TYPE_ID)?.params;
+        const optionList = entryParams?.[NODE_OPTIONS_PARAM_KEY];
+        const stillThere =
+          Array.isArray(optionList) &&
+          optionList.some(
+            (item) =>
+              typeof item === "object" && item !== null && (item as { name?: unknown }).name === pickedName,
+          );
+        if (pickedName !== "" && pickedNote.trim() !== "" && stillThere) {
+          prompt += `\n\n## 用户在输入框上方选了「${pickedName}」\n${pickedNote}`;
+        }
+      } catch (err) {
+        // 坏值当没选 —— 选择是锦上添花,不能因为它挡住一次运行。
+        log.warn(`workflow: node-option selection unread, skipping injection: ${String(err)}`);
+      }
+    }
+    // ── 固定条件:选中值的清单 ──
+    // 自动化也注:条件是"一贯的习惯",定时跑的检索同样该按它筛。读设置失败不挡运行。
+    try {
+      const entryParams = doc.nodes.find((node) => node.type === MAIN_NODE_TYPE_ID)?.params;
+      const rawCriteria = entryParams?.[NODE_CRITERIA_PARAM_KEY];
+      if (Array.isArray(rawCriteria) && rawCriteria.length > 0) {
+        const conditions: CriteriaCondition[] = [];
+        for (const item of rawCriteria) {
+          if (typeof item !== "object" || item === null) continue;
+          const { name, choices } = item as { name?: unknown; choices?: unknown };
+          if (typeof name !== "string" || !Array.isArray(choices)) continue;
+          conditions.push({ name, choices: choices.filter((c): c is string => typeof c === "string") });
+        }
+        const criteria = nodeCriteriaPrompt(session.workflowId, conditions);
+        if (criteria.length > 0) {
+          prompt = prompt.length > 0 ? `${prompt}\n\n${criteria}` : criteria;
+        }
+      }
+    } catch (err) {
+      log.warn(`workflow: node criteria unread, skipping injection: ${String(err)}`);
+    }
+  }
 
   // **runId 沿用上一次那个。** 那张卡片是按 `runId + nodeId + attempt` 认的
   // (见 `sessionStore.patchBranchChoiceBlock`),换了 id 的话,"你选了 X"那一下会被
@@ -464,7 +553,10 @@ export async function startWorkflowRun(args: {
     prompt,
     cwd,
     attempts: [],
-    state: { record: [], rounds: [], picks: [], outcomes: [], awaiting: [] },
+    // `entry` 必须在**第一份**存档里:它是"这次由哪个触发器起"的唯一记录,而下面那句
+    // `writeRun("running", ...)` 是紧接着就写出去的(`stateOf` 之后每次都会带上它,
+    // 但那时已经过了开跑那一刻)。
+    state: { record: [], rounds: [], picks: [], outcomes: [], awaiting: [], ...(entry !== undefined ? { entry } : {}) },
   };
 
   /** 落一次盘。**写失败不抛** —— 见 `runStore.saveRun`。 */
@@ -635,38 +727,92 @@ export async function startWorkflowRun(args: {
   };
 
   /**
-   * 「对话节点」(`runner.kind === "conversation"`):把这一步的指令**当作主对话里的
-   * 一条用户消息**发出去,等主对话回完。
+   * 「对话节点」(`runner.kind === "conversation"`):把这一步的指令**当作一条用户消息**
+   * 发出去,等目标对话回完。
    *
-   * ## 它和上面那种节点的全部区别就在"在哪儿跑"
+   * ## 两个新参数(见 `@contracts/nodeType` 的注入那一段)
    *
-   * 上面那种新开一段会话(见 `createNodeSession`),产出回来进图、再由下游取。这一种
-   * 就在**用户自己的对话**里跑 —— 聊天框里出现的是一轮正常对话(一条用户消息 + 一条
-   * 回复),图的卡片另算。所以它**没有"看过程"入口**:过程就是聊天本身。
-   *
-   * 这是刻意的配套:需要"知道之前聊过什么"的步骤,隔离是做不到的;而一旦不隔离,
-   * 这一步的上下文就只增不减(读过的文件、工具的返回都留在主对话里),也不该再按节点
-   * 换引擎/限技能 —— 那些配置对这种节点没有意义(它的参数表里因此只有「指令」)。
+   * - **投递目标**(`injectTargetOf`):`self`(默认)发进正在跑这张图的那条会话,是
+   *   现状;`origin` 发进**发起会话** —— 通过会话界面的「守望」按钮起跑的自动化,把
+   *   按下按钮时的那条会话记在了 automation 会话的 `parentSessionId` 上。解析不到
+   *   **明确失败**(手动从设置里跑的自动化没有发起会话),而不是悄悄发进自己 —— 那种
+   *   "发到了,但发错了地方"比失败难查得多。
+   * - **注入模式**(`injectModeOf`):`ask`(默认)等这一轮说完再继续(现状);`auto`
+   *   是"自动注入" —— **发完即走**:消息投出去、那一轮在目标对话里自己跑,这一步立刻
+   *   记成成功往下走。它是"长任务守望"的最后一步:命令跑完了替你说一句话,没人(也不
+   *   需要)在这里等回答。⚠️ 代价:这一步拿不到那轮的产出 —— 需要它的流程别用 `auto`。
    */
   const runInConversation = async (
     node: WorkflowNode,
     manifest: NodeTypeManifest,
     input: NodeRunInput,
   ): Promise<NodeOutcome> => {
+    const auto = injectModeOf(node.params) === "auto";
+    // **解析投递目标。** 只在要真发的那一刻解析 —— parentSessionId 是起跑时记下的,
+    // 这里改不了它;但会话行是每次现查的(重启之后对象表是空的,按 id 重取)。
+    let target = session;
+    if (injectTargetOf(node.params) === "origin") {
+      const originId = session.parentSessionId;
+      if (originId === undefined || originId === null || originId.length === 0) {
+        return {
+          status: "failed",
+          summary: "",
+          error:
+            "这一步要注入到「发起会话」,但这次运行不是从某个对话里起的(没有记录发起人)—— 把它配成发进本会话,或用会话输入区的「守望」按钮起跑",
+        };
+      }
+      const origin = SessionRepo.get(originId);
+      if (origin === undefined) {
+        return {
+          status: "failed",
+          summary: "",
+          error: `发起会话(${originId})已经不在了 —— 它可能被删除了`,
+        };
+      }
+      target = origin;
+    }
+
+    if (auto) {
+      // **发完即走。** 不扣 `turn.done`(那一轮对目标对话来说是条**正常消息**,该几点收
+      // 就几点收)、不等回答、拿不到产出。取消也追不回已经发出去的消息 —— 中止信号拦住
+      // 的是"还没发的",不是"正在别人对话里跑的"。
+      observed.add(target.id);
+      log.info(
+        `workflow run ${runId}: 对话节点「${node.title || node.id}」自动注入到 ${target.id}`,
+      );
+      runtimeManager.bindSession(target);
+      runtimeManager.echoUserMessage(target.id, {
+        id: uid("u_"),
+        createdAt: Date.now(),
+        blocks: [
+          { kind: "text", text: input.prompt },
+          { kind: "text", text: "*—— 由自动化注入*" },
+        ],
+      });
+      const handle = await runtimeManager.sendTurn(target, { prompt: input.prompt, cwd });
+      if (!handle) {
+        return { status: "failed", summary: "", error: "目标对话没能接上(它正忙)—— 稍后再试一次" };
+      }
+      return {
+        status: "success",
+        summary: "已注入,不等回答(自动注入模式:那一轮在目标对话里自己跑)",
+      };
+    }
+
     // 产出是往 `text` 里**累加**的,而同一个会话会被好几个对话节点依次用到 —— 每开一次
     // 先把上一步留下的那几笔清掉,否则第二个节点拿到的是"两次说的话拼在一起"。
-    observed.add(session.id);
-    text.delete(session.id);
-    endReason.delete(session.id);
-    failure.delete(session.id);
+    observed.add(target.id);
+    text.delete(target.id);
+    endReason.delete(target.id);
+    failure.delete(target.id);
     // 这一行是给排查用的:**主对话突然多出一段自己没说过的话**时,日志里得看得出是
     // 哪张图的哪一步干的。
-    log.info(`workflow run ${runId}: 对话节点「${node.title || node.id}」跑在主对话上`);
+    log.info(`workflow run ${runId}: 对话节点「${node.title || node.id}」跑在 ${target.id}`);
 
     // 聊天框里要**看得见这一步说了什么** —— 一条和用户自己发的同一种形状的用户消息。
     // 这就是"代替用户在主对话里说话"的字面意思(见 `contracts/nodeType` 的
     // `runner.kind === "conversation"` 那一段)。
-    runtimeManager.echoUserMessage(session.id, {
+    runtimeManager.echoUserMessage(target.id, {
       id: uid("u_"),
       createdAt: Date.now(),
       blocks: [{ kind: "text", text: input.prompt }],
@@ -675,35 +821,37 @@ export async function startWorkflowRun(args: {
     // **这一步跑完的 `turn.done` 先别推给界面。** 那一条在界面上是"用户这一轮结束了"
     // —— 图可能还有五步没跑(见 `RuntimeManager.holdTurnEnd`)。整张图真正的收口由下面
     // 收尾那一段补,不走这里。落盘与订阅者不受影响,所以这一步的产出照样收得到。
-    const releaseEnd = runtimeManager.holdTurnEnd(session.id);
+    // ⚠️ 只对 `self` 扣:发进发起会话的那轮是**用户自己对话里的正常消息**,它的收尾
+    // 本来就该正常显示(扣了反而让那边"说了话却没下文")。
+    const releaseEnd = target.id === session.id ? runtimeManager.holdTurnEnd(target.id) : null;
     // **声明过产出变量时,它这一轮的话也先扣住。** 那种情况下它交出来的是一段结构化的
     // 东西(一个 JSON 对象),逐字滚给用户看的话,聊天框里就是一屏花括号 —— 而那正是
     // 他明确说过不想看到的。跑完之后在下面解成一张清单,一次性发出去(见 `holdTurnText`)。
     const vars = outputVarsOf(manifest, node.params);
-    const releaseText = vars.length > 0 ? runtimeManager.holdTurnText(session.id) : null;
+    const releaseText =
+      target.id === session.id && vars.length > 0 ? runtimeManager.holdTurnText(target.id) : null;
     /** 扣住之后要补发的那段。没扣就是 null(照常流式,不补)。 */
     let held: string | null = null;
     // 取消要打断**这一个回合**,和隔离节点同一个道理(见上面那段注释)。
-    const onAbort = (): void => runtimeManager.interrupt(session.id);
+    const onAbort = (): void => runtimeManager.interrupt(target.id);
     input.signal.addEventListener("abort", onAbort, { once: true });
     active.executing += 1;
     try {
-      // 主对话的运行时**正常路径上早就绑好了**(发消息那一下,见 `ipc/claude.ts`)——
-      // 图型工作流那一轮虽然不跑自己的回合,但绑定发生在分岔之前。这里补一次是为了
-      // **续跑**:用户点一张旧卡片时没有"发消息"那一下,而重启之后运行时表是空的。
-      // `bindSession` 是幂等的,已经绑过就是一句空操作。
-      runtimeManager.bindSession(session);
-      const handle = await runtimeManager.sendTurn(session, { prompt: input.prompt, cwd });
+      // 目标的运行时**正常路径上早就绑好了**(self 是发消息那一下绑的;origin 是用户
+      // 在那边聊过天)。这里补一次是为了**续跑**:用户点一张旧卡片时没有"发消息"那一下,
+      // 而重启之后运行时表是空的。`bindSession` 是幂等的,已经绑过就是一句空操作。
+      runtimeManager.bindSession(target);
+      const handle = await runtimeManager.sendTurn(target, { prompt: input.prompt, cwd });
       if (!handle) {
-        // 主对话正忙(上一轮还没收干净)时 `sendTurn` 返回 null。**如实说**,不要让这一步
+        // 目标正忙(上一轮还没收干净)时 `sendTurn` 返回 null。**如实说**,不要让这一步
         // 假装成功 —— 下游拿不到产出时,原因得看得出来。
-        return { status: "failed", summary: "", error: "主对话没能接上(它正忙)" };
+        return { status: "failed", summary: "", error: "目标对话没能接上(它正忙)" };
       }
       if (input.signal.aborted) onAbort();
       await handle.done;
       // 这一轮说了什么,已经攒在 `text` 里了(订阅者照收,只是没推给界面)。
       if (releaseText !== null) {
-        held = structuredReplyText((text.get(session.id) ?? "").trim(), vars);
+        held = structuredReplyText((text.get(target.id) ?? "").trim(), vars);
       }
     } catch (err) {
       return { status: "failed", summary: "", error: (err as Error).message };
@@ -714,19 +862,19 @@ export async function startWorkflowRun(args: {
       if (held !== null && held.length > 0) {
         runtimeManager.emitExternal({
           type: "text.delta",
-          sessionId: session.id,
+          sessionId: target.id,
           messageId: uid("m_"),
           text: held,
         });
       }
       releaseText?.();
       active.executing -= 1;
-      releaseEnd();
+      releaseEnd?.();
     }
-    // 这一步的产出 = 主对话这一轮说的话(和其他节点同一个口径,见 `outcomeOf`)。
+    // 这一步的产出 = 目标对话这一轮说的话(和其他节点同一个口径,见 `outcomeOf`)。
     // ⚠️ **拿到的是原文,不是补发出去的那张清单** —— 下游取的是产出变量,而变量是从
     // 原文里解出来的(`withOutputCheck` 也在查原文)。清单只是给人看的。
-    return outcomeOf(session.id);
+    return outcomeOf(target.id);
   };
 
   const ports: RunPorts = {
@@ -744,13 +892,25 @@ export async function startWorkflowRun(args: {
       if (kinds.length === 0) return [];
       const lines = inheritContextLines(prompt, kinds, lookup);
       log.info(
-        `workflow run ${runId}: 这一步要 ${kinds.map((k) => KIND_LABEL[k]).join("/")},` +
+        `workflow run ${runId}: 这一步要 ${kinds.map((k) => kindLabel(k)).join("/")},` +
           `主对话里有 ${lines.length} 份`,
       );
       return lines;
     },
 
     execute: async (node, manifest, input) => {
+      // **命令节点连会话都不建**:它就是起一个进程、等它退出(见 `commandRunner.ts`)。
+      // 放在分岔最前面,理由和对话节点一样 —— 下面那一行(换引擎、建会话、绑运行时)
+      // 对它全是反的。`cwd` 用这次运行的项目目录:`python train.py` 这种相对路径要落在
+      // 用户画图时想的那块地上(超时与中止都由执行器处理,见那边)。
+      if (manifest.runner.kind === "command") {
+        const cmd = input.command ?? { command: "", timeoutMs: 0 };
+        log.info(
+          `workflow run ${runId}: 命令节点「${node.title || node.id}」跑: ${cmd.command}` +
+            (cmd.timeoutMs > 0 ? `(超时 ${cmd.timeoutMs}ms)` : ""),
+        );
+        return await runCommandNode({ ...cmd, cwd, signal: input.signal });
+      }
       // **不隔离的那一种不走下面这条路**:它不发新的会话,指令直接进主对话(见
       // `runInConversation`)。分岔放在最前面,因为下面每一行(换引擎、建会话、绑运行时、
       // 挂交互代理)对它都是反的 —— 主对话本来就有运行时,也没有"代理到自己"这回事。
@@ -936,8 +1096,22 @@ export async function startWorkflowRun(args: {
       // `WorkflowNodeResultEvent.outputKeys`)。取的是**存下来的参数**:调度器那边
       // 已经按同一份参数查过产出了,这里只借名字,不参与判定。
       const manifest = manifests?.get(e.node.type);
+      // **模型选的分支的「出路」是 `outputVarsFor` 追加的那一项**,它不在用户的变量表里
+      // —— 追加的判据是"这条出边有没有名字",所以这里要把它那几条出路算出来(规则同
+      // 调度器的 `branchOptionsOf`:填了 label 用 label,没填用目标节点的标题)。名单在
+      // 这一处只影响那个示例值(卡片只要**名字**),但**算成空的话就会少一行「出路」**:
+      // 提示词里要了,卡片上没有,用户看到的是"这一步没给出方向"。
+      const options =
+        manifest !== undefined && isModelDecider(manifest, e.node.params)
+          ? outgoingEdgesOf(doc, e.node.id).map((edge) => {
+              const label = (edge.label ?? "").trim();
+              if (label.length > 0) return label;
+              const target = doc.nodes.find((n) => n.id === edge.to);
+              return target === undefined ? edge.to : displayTitle(target, manifests?.get(target.type));
+            })
+          : [];
       const outputKeys = manifest
-        ? outputVarsOf(manifest, e.node.params).map((v) => v.name)
+        ? outputVarsFor(manifest, e.node.params, options).map((v) => v.name)
         : [];
       // **这一步花了多少。** 尽量当场带上,但 ⚠️ **多半带不上** —— 用量是那个回合结束
       // 之后由适配器异步推上来、再经 `settlePendingTurnEnd` 落库的(见
@@ -1005,6 +1179,8 @@ export async function startWorkflowRun(args: {
       prompt,
       ports,
       signal: active.abort.signal,
+      // 这次由哪个触发器起(自动化执行器给的)。续跑时上面已经把它从存档里接回来了。
+      ...(entry !== undefined ? { entry } : {}),
       ...(resumed !== undefined
         ? {
             resume: {
@@ -1015,6 +1191,10 @@ export async function startWorkflowRun(args: {
               // 真正会重跑的只有"跑到一半被打断的那一个" —— 它压根没有结局。
               settled: resumed.snapshot.state.outcomes,
               answer: { nodeId: resumed.nodeId, choice: resumed.answer },
+              // 存档里有就以它为准(见 `runWorkflow` 里那一行:续跑是"同一次运行")。
+              ...(resumed.snapshot.state.entry !== undefined
+                ? { entry: resumed.snapshot.state.entry }
+                : {}),
             },
           }
         : {}),
@@ -1211,15 +1391,10 @@ function createNodeSession(
     model: sameEngine ? model : "",
     effort: conversation.effort,
     permissionMode: permissionModeForCapability(node.capability ?? manifest.capability),
-    // ⚠️ **继承父对话选的流程,不是 `"default"`。** 这不是为了"它也是一张图在跑"
-    // (它不是 —— `graphRunIntent` 那边拦掉了非对话会话),而是为了**那几条跑图之前
-    // 就定好的全局条件能拼进它的提示词**:`RuntimeManager.sendTurn` 拿 `session.workflowId`
-    // 去 `resolveWorkflowPrompt`,而图型工作流的正文是空的(流程在节点里),所以那次解析
-    // 出来的**正好只剩**「文献检索」筛选条那几条(时间范围 / 期刊层次 / 影响因子)。
-    //
-    // 写死 `"default"` 的话,干活的节点看不到那些条件,而它的指令里写着"按系统给的固定
-    // 条件过一遍" —— 那句话在节点那边就是一句空话,现象是"时间范围明明设了,检索结果里
-    // 还有 2015 年的"。
+    // ⚠️ **继承父对话选的流程,不是 `"default"`。** 节点会话带着同一张流程的 id,
+    // 任何按"这个会话属于哪张流程"读的东西(续跑、运行上下文)才不会认错。注意
+    // 「固定条件」**不**走这条路:它在 `startWorkflowRun` 里拼进运行最初那条提示词、
+    // 只进主节点一次(见上面注入那段),节点会话的系统提示词不再携带条件。
     workflowId: conversation.workflowId,
     customModelId: sameEngine ? conversation.customModelId : null,
     // **继承父会话的工作环境**,哪怕节点自己不隔离(v1 所有节点跑在父会话的 cwd)。

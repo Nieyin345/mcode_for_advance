@@ -401,26 +401,35 @@ export const zh = {
   "composer.mode.reviewHint": "按审稿人标准逐条挑问题，给出位置和可执行的修改建议",
   "composer.mode.code": "代码编辑",
   "composer.mode.codeHint": "改代码：跟随既有约定，只做被要求的那一件事",
+  // 内置工作流「长任务守望」的名字与一句话说明 —— 它不在上面六个模式里（有 manual
+  // 触发器，不进模式选择器），这两个键只给工作流库 / 运行历史用（见 workflowLabels.tsx）。
+  "composer.mode.watch": "长任务守望",
+  "composer.mode.watchHint": "绑定会话跑一条命令，跑完把退出码与输出尾部交回会话接着处理",
 
-  // 文献检索模式下输入框上方那条固定条件筛选条。这几项是"一贯的习惯"，选一次就
-  // 一直在（存进设置），AI 每轮读它，所以不必每个会话重新交代。
-  "chat.searchFilter.title": "检索条件",
-  "chat.searchFilter.year": "时间",
-  "chat.searchFilter.yearAny": "不限",
-  "chat.searchFilter.year3": "近三年",
-  "chat.searchFilter.year5": "近五年",
-  "chat.searchFilter.year10": "近十年",
-  "chat.searchFilter.tier": "期刊层次",
-  "chat.searchFilter.tierAny": "不限",
-  "chat.searchFilter.tierT1": "只要 T1",
-  "chat.searchFilter.tierT1T2": "T1 / T2",
-  "chat.searchFilter.if": "影响因子",
-  "chat.searchFilter.ifAny": "不限",
-  "chat.searchFilter.if3": "≥ 3",
-  "chat.searchFilter.if5": "≥ 5",
-  "chat.searchFilter.if10": "≥ 10",
-  "chat.searchFilter.limit": "每源条数",
-  "chat.searchFilter.limit10": "10 条",
-  "chat.searchFilter.limit20": "20 条",
-  "chat.searchFilter.limit50": "50 条",
+  // ── 长任务守望（会话输入区那颗按钮 + 起跑面板，桌面专属）──
+  "composer.watch.title": "长任务守望",
+  "composer.watch.rowLabel": "守望",
+  "composer.watch.intro": "在这里起跑一条命令；它退出后，退出码与输出尾部会交回本会话，由模型接着处理。",
+  "composer.watch.templateLabel": "命令模板",
+  "composer.watch.noTemplate": "不使用模板（现写）",
+  "composer.watch.commandLabel": "命令",
+  "composer.watch.commandPlaceholder": "要跑的命令；留空则沿用现存配置",
+  "composer.watch.messageLabel": "给模型的说明（可选）",
+  "composer.watch.messagePlaceholder": "留空则用默认说明",
+  "composer.watch.saveTemplate": "存为模板",
+  "composer.watch.templateNamePlaceholder": "模板名字",
+  "composer.watch.deleteTemplate": "删除这个模板",
+  "composer.watch.start": "开始守望",
+  "composer.watch.starting": "正在启动…",
+  "composer.watch.activeHint": "这个会话已有一个守望在跑",
+  "composer.watch.failed": "守望启动失败：{error}",
+  "composer.watch.failedGeneric": "守望启动失败",
+
+  // ── 输入选项下拉框(工作流主代理的「输入选项」,见 chat/NodeOptionsDropdown) ──
+  "chat.nodeOptions.title": "输入选项",
+  "chat.nodeOptions.none": "未选择",
+  "chat.nodeOptions.clear": "清除选择",
+
+  // ── 固定条件条(主对话节点「固定条件」参数的渲染端,见 chat/SearchFilterBar) ──
+  "chat.nodeCriteria.title": "固定条件",
 } as const;

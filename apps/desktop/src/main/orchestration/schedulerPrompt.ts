@@ -21,13 +21,16 @@
  */
 import { topoLayers, nodesWithDownstream, type WorkflowDoc } from "@contracts/workflow";
 import type { NodeOutcome } from "@contracts/nodeType";
-import { outputValueText } from "@contracts/outputConstraint";
+import { DECIDE_VAR_NAME, outputValueText } from "@contracts/outputConstraint";
+// 选项的形状来自运行时契约(与 `RunPorts.choose` 用的是同一个)—— 这一层只负责**怎么摆**,
+// 不关心它打哪儿来(分支的出边、还是那一问固定的几条)。
+import type { WorkflowChoiceOption } from "@contracts/runtime";
 // 资料的**形状**和那几个词来自 `contextInherit`(它是认类目那一端)。这一层只负责
 // **怎么摆** —— 不碰库,也不需要知道"哪个 id 属于哪一类"是怎么查出来的。
 import {
-  KIND_LABEL,
   LEVEL_LABEL,
   contextPurposeOf,
+  kindLabel,
   type ContextLine,
 } from "./contextInherit.js";
 
@@ -189,7 +192,7 @@ function renderContextLines(lines: readonly ContextLine[]): string {
     if (mine.length === 0) continue;
     out.push(group.head);
     for (const line of mine) {
-      out.push(`- 【${KIND_LABEL[line.kind]}·${LEVEL_LABEL[line.level]}】@${line.path}`);
+      out.push(`- 【${kindLabel(line.kind)}·${LEVEL_LABEL[line.level]}】@${line.path}`);
     }
     out.push("");
   }
@@ -227,6 +230,14 @@ export interface Arrival {
   note: string;
   /** 用户在选择时临时写的那句话(只对这一次成立)。 */
   comment: string;
+  /**
+   * 这条出路**是谁定的**。
+   *
+   * 不给 = 用户点的(老调用方零改动)。`"agent"` 是决策节点自己判的 —— 那一段必须换个
+   * 说法:说成"用户在岔路口选了 X"会让下一步以为**有人**拍过板,而它据此去揣摩"那个人
+   * 想要什么",实际上根本没有那个人。
+   */
+  by?: "user" | "agent";
 }
 
 /**
@@ -243,10 +254,47 @@ export interface Arrival {
 function arrivalSection(arrival: Arrival): string {
   const lines = [
     "## 本次执行的前置选择",
-    `上一处分支「${arrival.from}」中,用户选择的是「${arrival.label}」。`,
+    arrival.by === "agent"
+      ? `上一处决策「${arrival.from}」判的是「${arrival.label}」。`
+      : `上一处分支「${arrival.from}」中,用户选择的是「${arrival.label}」。`,
   ];
   if (arrival.note.length > 0) lines.push(arrival.note);
   if (arrival.comment.length > 0) lines.push(`用户补充说明:${arrival.comment}`);
+  return lines.join("\n");
+}
+
+/**
+ * `## 这一步要自己定:走哪条路` 那一段 —— **只有决定权给了模型的分支**
+ * (见 `@contracts/nodeType` 的 `isModelDecider`)才有。
+ *
+ * ## 它和"决定权给我"的分支那段话的关系
+ *
+ * 两者是同一件事的两种做法:**选项都是出边**(label = 选项名、note = 给下一步的说明,
+ * 见 `@contracts/workflow`),区别只在**谁来选** —— 那种停下来问用户,这种自己判。
+ *
+ * 所以这里非有不可的一句是"**不必也不该问人**":不写的话,模型面对一个"有几条路"的
+ * 问题,最省事的做法就是把问题抛回给用户 —— 而它所在的自动化**压根没有能回答的人**
+ * (见无人值守那条:自动化里的提问一律按拒绝处理)。它抛回来 = 这一步永远失败。
+ *
+ * ## 为什么逐条列出**去向**
+ *
+ * 光给名字("A / B / C")它选不了 —— 选路要靠"这条路的下一步是干什么的"。去向取的是
+ * 目标节点的标题,note 是画图时写在那条边上的说明:两样都是**用户自己写下的**,不是
+ * 这里编的。
+ */
+export function decisionSection(options: readonly WorkflowChoiceOption[]): string {
+  const lines = [
+    "## 这一步要自己定:走哪条路",
+    "这一步有几条出路,**走哪条由你判断后自己决定** —— 不必也不该问人,没有人会回答你。",
+    `跑完请在产出里把「${DECIDE_VAR_NAME}」交成下面**某一条的名字,一字不改**:`,
+    "",
+  ];
+  for (const option of options) {
+    const note = (option.note ?? "").trim();
+    lines.push(
+      `- **${option.label}** —— 走「${option.next ?? ""}」${note.length > 0 ? `:${note}` : ""}`,
+    );
+  }
   return lines.join("\n");
 }
 
@@ -305,6 +353,22 @@ export type FlowRecordEntry =
       note: string;
       /** 他当时另外写的那句话(只对这一次成立)。 */
       comment: string;
+    }
+  | {
+      /**
+       * 某一步**自己**判了一条路(决策节点)。与 `user` 那一支分开,是**必须**的:
+       * 这一节是给下一个助手读的,把"模型自己判的"写成"用户选的",它就会去揣摩一个
+       * 根本不存在的人的意图。
+       *
+       * 结构比 `user` 那一支少一个 `comment`:自主决策没有"他临时补的那句话"。
+       */
+      kind: "decision";
+      /** 那处决策叫什么(决策节点的标题)。 */
+      from: string;
+      /** 它判走的那条出路叫什么。 */
+      label: string;
+      /** 画图时写在那条边上的说明。 */
+      note: string;
     };
 
 /**
@@ -390,6 +454,12 @@ export function flowRecordSection(args: {
       if (entry.comment.length > 0) lines.push(`用户补充说明:${entry.comment}`);
       continue;
     }
+    if (entry.kind === "decision") {
+      lines.push("### 某一步自己的判定");
+      lines.push(`「${entry.from}」自己判定走「${entry.label}」。`);
+      if (entry.note.length > 0) lines.push(entry.note);
+      continue;
+    }
     lines.push(entry.round > 1 ? `### ${entry.title}(第 ${entry.round} 轮)` : `### ${entry.title}`);
     // **跑过但没交东西的步骤也要留一行。** 记录是"发生了什么的日志",缺一条比多一行
     // 更误导:后来的助手会以为这一步没做过 —— 而它可能正是"为什么某样东西不存在"的原因。
@@ -451,6 +521,13 @@ export function composeNodePrompt(args: {
   record?: string;
   /** 「这一步要产出什么」的**文字说明**(软约束,见 `@contracts/outputConstraint`)。 */
   outputContract?: string;
+  /**
+   * **「这一步要自己定走哪条路」那一节**(已经渲染好,见 {@link decisionSection})。
+   *
+   * 只有决策节点有。摆在**指令之后、产出要求之前** —— 它说的正是"这次要交的那一项
+   * 是什么",紧接着的是它的格式,顺着读下来才是那个顺序。
+   */
+  decision?: string;
   /** 「这一步要产出什么」的**变量表**(硬约束,已经渲染成给模型看的样例;空串 = 没有)。 */
   outputVars?: string;
 }): string {
@@ -500,6 +577,11 @@ export function composeNodePrompt(args: {
     );
   }
   sections.push(args.instruction.trim());
+  // **走哪条路由它自己定** —— 只对决策节点有。紧挨着产出要求,因为"要交出「出路」"
+  // 那句话就写在里面(见 `decisionSection`)。
+  if (args.decision !== undefined && args.decision.trim().length > 0) {
+    sections.push(args.decision.trim());
+  }
   // 产出要求放在**指令之后** —— 它是"做完这件事之后该交什么",顺着读下来才是那个
   // 顺序。两段(文字的说明 + 变量表拼出来的样例)合成**一节**:它们说的是同一件事,
   // 拆成两节会让模型以为要满足两组互不相干的要求。

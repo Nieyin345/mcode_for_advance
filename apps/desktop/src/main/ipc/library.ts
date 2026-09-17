@@ -39,6 +39,12 @@ import {
   LibrarySearchSchema,
   LibrarySetRootSchema,
   LibraryAttachToChatSchema,
+  LibraryTypesGetSchema,
+  LibraryTypesSaveSchema,
+  LibraryGroupsGetSchema,
+  LibraryGroupsSaveSchema,
+  LibraryImportGenericSchema,
+  LibraryReadFileSchema,
   LibraryManifestSchema,
   LibraryItemManifestSchema,
   LibraryKindManifestSchema,
@@ -70,6 +76,8 @@ import {
   markTrashCollections,
 } from "@main/library/trash.js";
 import { notifyLibraryChanged } from "@main/library/broadcast.js";
+import { loadLibraryTypes, saveLibraryTypes, loadLibraryGroups, saveLibraryGroups } from "@main/library/kindRegistry.js";
+import { importGenericFiles, readEntryFile } from "@main/library/fileImport.js";
 import { assignToCollection, importIdentifiers } from "@main/library/operations.js";
 import {
   attachToChat,
@@ -316,16 +324,23 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC.LIBRARY_CREATE_COLLECTION, async (_evt, raw) => {
     const input = CollectionCreateSchema.parse(raw);
-    CollectionRepo.create(input.name, input.parentId ?? null, input.kind ?? "paper");
+    CollectionRepo.create(input.name, input.parentId ?? null, input.kind ?? "paper", input.prompt);
     notifyLibraryChanged(`create_collection:${input.name}`);
     return { collections: collectionsForRenderer() };
   });
 
   ipcMain.handle(IPC.LIBRARY_RENAME_COLLECTION, async (_evt, raw) => {
     const input = CollectionRenameSchema.parse(raw);
+    // 名字与「给 AI 的说明」都可改,至少改一样(schema 的 refine 保证)。
     // 重名时 rename 返回 false —— 如实回传给渲染端提示,而不是静默失败
-    const ok = CollectionRepo.rename(input.id, input.name);
-    if (ok) notifyLibraryChanged(`rename_collection:${input.name}`);
+    let ok = true;
+    if (input.name !== undefined) {
+      ok = CollectionRepo.rename(input.id, input.name);
+    }
+    if (input.prompt !== undefined) {
+      CollectionRepo.setPrompt(input.id, input.prompt);
+    }
+    if (ok) notifyLibraryChanged(`rename_collection:${input.name ?? input.id}`);
     return { collections: collectionsForRenderer(), ok };
   });
 
@@ -721,6 +736,48 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.LIBRARY_KIND_MANIFEST, async (_evt, raw) => {
     const input = LibraryKindManifestSchema.parse(raw);
     return writeKindManifest(input.kind);
+  });
+
+  // 类型注册表:读是纯缓存读;写是整表替换(校验在 saveLibraryTypes 里,失败时把
+  // 那句说人话的原样交回去 —— 渲染端显示它,不做二次加工)。
+  ipcMain.handle(IPC.LIBRARY_TYPES_GET, async (_evt, raw) => {
+    LibraryTypesGetSchema.parse(raw ?? {});
+    return { types: loadLibraryTypes() };
+  });
+  ipcMain.handle(IPC.LIBRARY_TYPES_SAVE, async (_evt, raw) => {
+    const input = LibraryTypesSaveSchema.parse(raw);
+    return saveLibraryTypes(input.types);
+  });
+  ipcMain.handle(IPC.LIBRARY_GROUPS_GET, async (_evt, raw) => {
+    LibraryGroupsGetSchema.parse(raw ?? {});
+    return { groups: loadLibraryGroups() };
+  });
+  ipcMain.handle(IPC.LIBRARY_GROUPS_SAVE, async (_evt, raw) => {
+    const input = LibraryGroupsSaveSchema.parse(raw);
+    return saveLibraryGroups(input.groups);
+  });
+
+  // 通用文件条目:linked 只记路径、attached 复制进库(见 library/fileImport.ts)。
+  // 指定了 collectionIds 就顺手归组 —— 和文献导入同一个体验,不用用户再点一遍。
+  ipcMain.handle(IPC.LIBRARY_IMPORT_GENERIC, async (_evt, raw) => {
+    const input = LibraryImportGenericSchema.parse(raw);
+    const res = importGenericFiles({
+      paths: input.paths,
+      mode: input.mode,
+      kind: input.kind,
+    });
+    if (input.collectionIds?.length) {
+      for (const collectionId of input.collectionIds) {
+        assignToCollection(collectionId, res.items.map((i) => i.id), true);
+      }
+    }
+    notifyLibraryChanged(`import_generic:${res.added}`);
+    return res;
+  });
+
+  ipcMain.handle(IPC.LIBRARY_READ_FILE, async (_evt, raw) => {
+    const input = LibraryReadFileSchema.parse(raw);
+    return { content: readEntryFile(input.id, input.relPath) };
   });
 
   /**

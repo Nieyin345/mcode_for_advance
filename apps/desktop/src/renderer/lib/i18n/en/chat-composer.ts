@@ -393,26 +393,36 @@ export const en = {
   "composer.mode.reviewHint": "A reviewer's eye: name each problem with its location and a concrete fix",
   "composer.mode.code": "Code editing",
   "composer.mode.codeHint": "Follow the codebase's own conventions; change only what was asked",
+  // Built-in "long-task watch" workflow — NOT one of the six modes above (it has a
+  // manual trigger, so it stays out of the mode picker); used by the workflow
+  // library / run history (see workflowLabels.tsx).
+  "composer.mode.watch": "Long-task watch",
+  "composer.mode.watchHint": "Runs a command bound to this session; its code and output tail come back for the model to pick up",
 
-  // Standing search criteria shown above the composer in paper-search mode. Set once,
-  // read by the model every turn — so you don't restate them in every session.
-  "chat.searchFilter.title": "Criteria",
-  "chat.searchFilter.year": "Years",
-  "chat.searchFilter.yearAny": "Any",
-  "chat.searchFilter.year3": "Last 3",
-  "chat.searchFilter.year5": "Last 5",
-  "chat.searchFilter.year10": "Last 10",
-  "chat.searchFilter.tier": "Journal tier",
-  "chat.searchFilter.tierAny": "Any",
-  "chat.searchFilter.tierT1": "T1 only",
-  "chat.searchFilter.tierT1T2": "T1 / T2",
-  "chat.searchFilter.if": "Impact factor",
-  "chat.searchFilter.ifAny": "Any",
-  "chat.searchFilter.if3": "≥ 3",
-  "chat.searchFilter.if5": "≥ 5",
-  "chat.searchFilter.if10": "≥ 10",
-  "chat.searchFilter.limit": "Per source",
-  "chat.searchFilter.limit10": "10",
-  "chat.searchFilter.limit20": "20",
-  "chat.searchFilter.limit50": "50",
+  // ── long-task watch (the composer toolbar segment + start panel, desktop only) ──
+  "composer.watch.title": "Long-task watch",
+  "composer.watch.rowLabel": "Watch",
+  "composer.watch.intro": "Start a command here; when it exits, its code and output tail are handed back to this session for the model to pick up.",
+  "composer.watch.templateLabel": "Command templates",
+  "composer.watch.noTemplate": "No template (write it now)",
+  "composer.watch.commandLabel": "Command",
+  "composer.watch.commandPlaceholder": "Command to run; leave empty to keep the stored one",
+  "composer.watch.messageLabel": "Note for the model (optional)",
+  "composer.watch.messagePlaceholder": "Leave empty for the default note",
+  "composer.watch.saveTemplate": "Save as template",
+  "composer.watch.templateNamePlaceholder": "Template name",
+  "composer.watch.deleteTemplate": "Delete this template",
+  "composer.watch.start": "Start watch",
+  "composer.watch.starting": "Starting…",
+  "composer.watch.activeHint": "A watch is already running for this session",
+  "composer.watch.failed": "Watch failed to start: {error}",
+  "composer.watch.failedGeneric": "Watch failed to start",
+
+  // ── Node options dropdown (workflow main agent's "input options", see chat/NodeOptionsDropdown) ──
+  "chat.nodeOptions.title": "Input options",
+  "chat.nodeOptions.none": "None selected",
+  "chat.nodeOptions.clear": "Clear selection",
+
+  // ── Criteria bar (renderer of the main agent's "fixed criteria" param, see chat/SearchFilterBar) ──
+  "chat.nodeCriteria.title": "Fixed criteria",
 } as const;

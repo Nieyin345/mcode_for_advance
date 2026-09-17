@@ -27,6 +27,7 @@ import {
   IconBook,
   IconClipboardText,
   IconCode,
+  IconEye,
   IconMessage,
   IconPencil,
   IconWorldSearch,
@@ -61,6 +62,7 @@ export function isBuiltinWorkflowId(id: string): id is BuiltinWorkflowId {
 
 /** 界面语言下的名字:内置的查词条,自建的用作者写的 `name`。 */
 export function workflowDisplayName(w: { id: string; name: string }, locale: Locale): string {
+  if (isWatchWorkflowId(w.id)) return translate(locale, WATCH_WORKFLOW_LABEL);
   return isBuiltinWorkflowId(w.id)
     ? translate(locale, BUILTIN_WORKFLOW_LABEL[w.id])
     : w.name;
@@ -72,6 +74,7 @@ export function workflowDisplayDescription(
   w: { id: string; description?: string },
   locale: Locale,
 ): string {
+  if (isWatchWorkflowId(w.id)) return translate(locale, WATCH_WORKFLOW_HINT);
   if (isBuiltinWorkflowId(w.id)) return translate(locale, BUILTIN_WORKFLOW_HINT[w.id]);
   return w.description ?? "";
 }
@@ -88,8 +91,26 @@ const BUILTIN_WORKFLOW_ICON: Record<BuiltinWorkflowId, ComponentType<TablerIconP
   code: IconCode,
 };
 
-/** 图标:内置六个各有各的,其余(用户自建)一律用通用图标。 */
+/* ── 守望(第七个内置,但**不**在 BUILTIN_WORKFLOW_IDS 六个模式里)──
+ *
+ * 「长任务守望」有 manual 触发器,进不得模式选择器(见 WorkflowDropdown 的过滤),
+ * 所以它的 id 不进那个联合类型 —— 三张表也就收不下它,得单独走一遍。id 与
+ * `main/orchestration/builtins.ts` 的 WATCH_WORKFLOW_ID 按字面量对齐(main 代码
+ * 渲染端 import 不进来);名字与说明的键与六个模式同源(composer.mode.*)。 */
+const WATCH_WORKFLOW_ID = "watch";
+const WATCH_WORKFLOW_LABEL: MessageId = "composer.mode.watch";
+const WATCH_WORKFLOW_HINT: MessageId = "composer.mode.watchHint";
+
+function isWatchWorkflowId(id: string): boolean {
+  return id === WATCH_WORKFLOW_ID;
+}
+
+/** 图标:内置六个各有各的,守望一只眼睛,其余(用户自建)一律用通用图标。 */
 export function workflowIcon(id: string, size: number): ReactNode {
-  const Icon = isBuiltinWorkflowId(id) ? BUILTIN_WORKFLOW_ICON[id] : IconMessage;
+  const Icon = isWatchWorkflowId(id)
+    ? IconEye
+    : isBuiltinWorkflowId(id)
+      ? BUILTIN_WORKFLOW_ICON[id]
+      : IconMessage;
   return <Icon size={size} />;
 }

@@ -472,8 +472,14 @@ const skills: Api["skills"] = {
   read: (input) => rpc("skills:read", input),
   save: () => webUnsupported("skills.save"),
   delete: () => webUnsupported("skills.delete"),
+  // 矩阵编辑是桌面设置页的功能；手机端只读展示（与 save/delete 同一立场）。
+  // bundles 只读、随 list 一起展示；批量矩阵编辑同样是桌面端的事。
+  bundles: () => webUnsupported("skills.bundles"),
+  enginesSet: () => webUnsupported("skills.engines.set"),
+  enginesSetBulk: () => webUnsupported("skills.enginesSetBulk"),
   scanSources: () => webUnsupported("skills.scanSources"),
   import: () => webUnsupported("skills.import"),
+  importGithub: () => webUnsupported("skills.importGithub"),
 };
 
 const file: Api["file"] = {

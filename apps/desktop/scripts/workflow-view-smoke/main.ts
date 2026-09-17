@@ -117,6 +117,7 @@ import {
 import {
   MAIN_NODE_TYPE_ID,
   NODE_PARAM_REF_SOURCES,
+  isNodeRunnable,
   isRunnerImplemented,
   mcpServerNamesOf,
   pluginNamesOf,
@@ -404,6 +405,35 @@ check("多选里混进数字 → 拒", !validateNodeParams(AGENT_MANIFEST, { ins
 // 候选在**这台机器上**,所以**不查名字存不存在** —— 换台机器跑,那个技能可能没装。
 // 存盘时按"本机装没装"拒绝,等于让工作流没法分享(同"类型缺失不算错误"那条)。
 check("名字本机没装也放行", validateNodeParams(AGENT_MANIFEST, { instruction: "x", skills: ["ghost"] }).ok);
+
+console.log("\noptions 参数(输入选项那张表的形状校验)");
+// 夹具:在 agent 清单上多声明一个 `options` 参数 —— 真清单里只有主代理带它
+// (见 `nodeTypes.ts` 的 `optionsParam`),但校验只认 kind,不认"哪种节点"。
+const OPT_MANIFEST: NodeTypeManifest = {
+  ...AGENT_MANIFEST,
+  params: [...AGENT_MANIFEST.params, { key: "options", kind: "options", label: "输入选项" }],
+};
+check("名字+内容 → 通过", validateNodeParams(OPT_MANIFEST, { instruction: "x", options: [{ name: "深挖", content: "把这篇讲透" }] }).ok);
+check("带解释也通过(note 可选)", validateNodeParams(OPT_MANIFEST, { instruction: "x", options: [{ name: "深挖", content: "c", note: "n" }] }).ok);
+check("容忍没填完的空行", validateNodeParams(OPT_MANIFEST, { instruction: "x", options: [{ name: "", content: "", note: "" }, { name: "深挖", content: "c" }] }).ok);
+check("给了字符串 → 拒", !validateNodeParams(OPT_MANIFEST, { instruction: "x", options: "深挖" }).ok);
+check("一项缺名字 → 拒", !validateNodeParams(OPT_MANIFEST, { instruction: "x", options: [{ content: "c" }] }).ok);
+check("一项缺内容 → 拒", !validateNodeParams(OPT_MANIFEST, { instruction: "x", options: [{ name: "深挖" }] }).ok);
+check("数组里混进字符串 → 拒", !validateNodeParams(OPT_MANIFEST, { instruction: "x", options: ["深挖"] }).ok);
+
+console.log("\nselects 参数(固定条件那张表的形状校验)");
+// 夹具:在 agent 清单上多声明一个 `selects` 参数 —— 真清单里只有主代理带它
+// (见 `nodeTypes.ts` 的 `criteriaParam`),但校验只认 kind,不认"哪种节点"。
+const SEL_MANIFEST: NodeTypeManifest = {
+  ...AGENT_MANIFEST,
+  params: [...AGENT_MANIFEST.params, { key: "criteria", kind: "selects", label: "固定条件" }],
+};
+check("条件名+候选值 → 通过", validateNodeParams(SEL_MANIFEST, { instruction: "x", criteria: [{ name: "时间范围", choices: ["不限", "近三年"] }] }).ok);
+check("候选值不是字符串数组 → 拒", !validateNodeParams(SEL_MANIFEST, { instruction: "x", criteria: [{ name: "时间范围", choices: ["不限", 3] }] }).ok);
+check("候选值不是数组 → 拒", !validateNodeParams(SEL_MANIFEST, { instruction: "x", criteria: [{ name: "时间范围", choices: "不限" }] }).ok);
+check("一项缺条件名 → 拒", !validateNodeParams(SEL_MANIFEST, { instruction: "x", criteria: [{ choices: ["不限"] }] }).ok);
+check("容忍没填完的空行", validateNodeParams(SEL_MANIFEST, { instruction: "x", criteria: [{ name: "", choices: [] }, { name: "时间范围", choices: ["不限"] }] }).ok);
+check("给了字符串 → 拒", !validateNodeParams(SEL_MANIFEST, { instruction: "x", criteria: "时间范围" }).ok);
 
 console.log("\n引用型清单的校验(装进来的时候就挡住)");
 const refManifest = (params: unknown[]): unknown => ({ ...AGENT_MANIFEST, params });
@@ -1331,8 +1361,14 @@ console.log("\nNodeInspector(自动化:触发方式)");
 const autoPanelHtml = renderInspector(autoDoc, "zh", null, "automation");
 check("自动化:有触发方式一栏", autoPanelHtml.includes("触发方式"));
 check("自动化:当前触发方式显示出来了", autoPanelHtml.includes("手动"));
-check("自动化:解释当前这一种", autoPanelHtml.includes("只有你按「运行」的时候才跑"));
-check("自动化:说清执行器还没接", autoPanelHtml.includes("执行器还没接"));
+check("自动化:解释当前这一种", autoPanelHtml.includes("只有你按「立刻运行一次」的时候才跑"));
+// 「执行器还没接」那块警告删掉了(执行器接上了,见 `automationRunner.ts`)。取而代之:
+// 这一格**只读**(值由触发器节点反推,见 `library.ts` 的 `deriveTrigger`),下面跟着
+// 一句反推的说明,再往下就是运行区(「立刻运行一次」+ 运行历史)。
+check("自动化:说清这一格是反推的", autoPanelHtml.includes("这一格跟着触发器节点走"));
+check("自动化:不再说执行器还没接", !autoPanelHtml.includes("执行器还没接"));
+check("自动化:运行区在(立刻运行一次)", autoPanelHtml.includes("立刻运行一次"));
+check("自动化:运行历史在(空的)", autoPanelHtml.includes("还没跑过。"));
 const scheduleHtml = renderInspector({ ...autoDoc, trigger: "schedule" }, "zh", null, "automation");
 check("换了触发方式就换那句解释", scheduleHtml.includes("到点自己跑"));
 check("换了触发方式就不再提手动", !scheduleHtml.includes("只有你按「运行」的时候才跑"));
@@ -1420,6 +1456,12 @@ check("卡片:执行方式没实现会标出来", deadCard.includes("这个执�
     "四张摆在一起两两不同",
     new Set([barOf(plainCard), barOf(conversationCard), barOf(branchCard), barOf(deadCard)]).size === 4,
   );
+  // 入线口是个"永远接不上线"的空头承诺 —— 入口节点(主代理)没有入边,所以它身上
+  // 只画下面的出线口(见 `WorkflowNodeCard` 的入线口注释)。入线口的特征是
+  // `pointer-events-none`(它不接点击),出线口才有 `cursor-crosshair`。
+  check("卡片:主代理没有入线口", !mainCard.includes("pointer-events-none"));
+  check("卡片:主代理只剩出线口", (mainCard.match(/rounded-full border/g) ?? []).length === 1);
+  check("卡片:主代理出线口还在", mainCard.includes("cursor-crosshair"));
 }
 // 出线口是拉连线的起点。它是 `div` 不是 `button`,所以 `title` 是唯一的说明 ——
 // 少了它,卡片右边那个小圆点看上去只是个装饰。
@@ -1583,11 +1625,26 @@ check("plugins 是一种引用来源", (NODE_PARAM_REF_SOURCES as readonly strin
 
 // 执行方式那张**白名单**(`isRunnerImplemented`)。加一种新的 `runner.kind` 忘了登记,
 // 后果是"画布上画得出来、存得进去,一跑就被判成这种执行方式还没实现" —— 而报错听起来
-// 像是功能没做,不像是漏了一行。所以三种各钉一下。
+// 像是功能没做,不像是漏了一行。所以各钉一下。
 check("prompt 是实现了的执行方式", isRunnerImplemented("prompt"));
 check("conversation 也是(它跑得起来,只是跑在主对话里)", isRunnerImplemented("conversation"));
 check("branch 也是", isRunnerImplemented("branch"));
-check("command 仍然没实现 —— 这是没做,不是漏登记", !isRunnerImplemented("command"));
+check("command 也是(命令来自节点参数的那种)", isRunnerImplemented("command"));
+// 白名单的另一半:**不在名单上的要给 false**。`decide` 这个 kind 已经整个删了
+// (决策节点收编成分支的 `decider:"model"`),拿它钉"没登记的一律不实现"正合适。
+check("没登记过的执行方式一律 false", !(isRunnerImplemented as (k: string) => boolean)("decide"));
+
+// `isNodeRunnable` 是更细的那层:参数型 command 跑得起来,清单自带脚本(entry)的
+// command 只定了形状、还没实现 —— 两种说法必须收口成一个函数(调度器的拒绝与渲染端
+// 的"跑不了"徽标读同一份答案)。
+check(
+  "参数型 command 跑得起来",
+  isNodeRunnable({ runner: { kind: "command" } } as NodeTypeManifest),
+);
+check(
+  "entry 型 command 还跑不起来",
+  !isNodeRunnable({ runner: { kind: "command", entry: "run.sh" } } as NodeTypeManifest),
+);
 check("真清单里的引擎参数是 ref: providers", AGENT_MANIFEST.params.some((p) => p.from === "providers"));
 // 清单校验:ref 必须有 from,非 ref 不许有 from —— 新来源不能绕过这一条。
 check(

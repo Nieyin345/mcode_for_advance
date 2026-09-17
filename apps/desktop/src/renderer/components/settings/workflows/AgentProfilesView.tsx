@@ -24,7 +24,7 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, Input } from "@renderer/components/ui/index.js";
 import { Menu } from "@base-ui/react/menu";
 import { makeAgentProfileId, type AgentProfile } from "@contracts/agentProfile";
-import { defaultParamsOf, isRunnerImplemented, type NodeTypeCatalog } from "@contracts/nodeType";
+import { defaultParamsOf, isNodeRunnable, type NodeTypeCatalog } from "@contracts/nodeType";
 import { IconAlertTriangle, IconCheck, IconChevronDown, IconPlus, IconTrash } from "@renderer/lib/icons.js";
 import { Field, ParamField } from "./ParamField.js";
 import { WorkflowBadge } from "./WorkflowBadge.js";
@@ -83,9 +83,8 @@ export function AgentProfilesView({
 
   // 能拿来新建档案的类型:**跑得了的**那些。一个跑不了的类型存出来的档案,套到节点上
   // 也一样跑不了 —— 与其让它出现在这里,不如就让那个类型只出现在上面的清单里。
-  const runnableTypes = (catalog?.entries ?? []).filter((e) =>
-    isRunnerImplemented(e.manifest.runner.kind),
-  );
+  // 判据用 `isNodeRunnable`(清单 + 参数的形状),与调度器的拒绝同一份答案。
+  const runnableTypes = (catalog?.entries ?? []).filter((e) => isNodeRunnable(e.manifest));
 
   return (
     <section className="mt-5 border-t border-edge pt-4">

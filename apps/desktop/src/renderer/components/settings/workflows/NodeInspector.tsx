@@ -31,8 +31,10 @@ import { Button, Input, Select } from "@renderer/components/ui/index.js";
 import { paramsForProfile, type AgentProfile } from "@contracts/agentProfile";
 import {
   NODE_FLOW_RECORD_PARAM_KEY,
+  NODE_OPTIONS_PARAM_KEY,
   NODE_PROMPT_PARAM_KEY,
-  isRunnerImplemented,
+  isModelDecider,
+  isNodeRunnable,
   validateNodeParams,
   type NodeTypeCatalog,
   type NodeTypeEntry,
@@ -71,6 +73,7 @@ import { wouldCycle } from "./workflowEdit.js";
 import { Field, GrowingTextarea, ParamField } from "./ParamField.js";
 import { workflowDisplayDescription, workflowDisplayName } from "@renderer/lib/workflowLabels.js";
 import { WorkflowBadge } from "./WorkflowBadge.js";
+import { AutomationRunSection } from "./AutomationRunSection.js";
 
 /** 内置工作流的名称与说明走 i18n,界面上是只读的 —— 这一条样式就是那个只读态。 */
 const readOnlyCls = "cursor-default bg-surface-muted/40 text-content-muted focus:border-edge";
@@ -134,6 +137,7 @@ export function NodeInspector({
       ) : (
         <WorkflowSection
           doc={doc}
+          catalog={catalog}
           purpose={purpose}
           onUpdateWorkflow={onUpdateWorkflow}
           onRemoveWorkflow={onRemoveWorkflow}
@@ -148,14 +152,17 @@ export function NodeInspector({
 /**
  * 触发方式的两张表:下拉里那四个词,以及选中之后那句解释。
  *
- * 解释是**逐项**的,不是一句通用的话 —— 四种触发要用户准备的东西完全不同(一个定时
- * 要你给时间,一个文件监听要你给路径),而它们的参数现在都还没设计出来。说清楚
- * "将来会问你要什么",比一句"暂未实现"有用得多。
+ * `WorkflowDoc.trigger` 是一个**开关**(见 `@contracts/workflow`):它不再能在这儿被改
+ * —— 它的值由**触发器节点**反推写回(见 `main/orchestration/library.ts` 的
+ * `deriveTrigger`)。所以这两张表现在读的是"这条自动化是哪种触发"的**结果**,而用户改
+ * 那件事的地方是画布上那个触发器节点的参数。`Record<WorkflowTrigger, …>` 的完整性照样
+ * 有用:契约里多一个值,这两处就编译不过。
  */
 const TRIGGER_LABELS: Record<WorkflowTrigger, MessageId> = {
   manual: "settings.automation.trigger.manual",
   schedule: "settings.automation.trigger.schedule",
   file: "settings.automation.trigger.file",
+  event: "settings.automation.trigger.event",
   webhook: "settings.automation.trigger.webhook",
 };
 
@@ -163,16 +170,20 @@ const TRIGGER_HINTS: Record<WorkflowTrigger, MessageId> = {
   manual: "settings.automation.triggerHint.manual",
   schedule: "settings.automation.triggerHint.schedule",
   file: "settings.automation.triggerHint.file",
+  event: "settings.automation.triggerHint.event",
   webhook: "settings.automation.triggerHint.webhook",
 };
 
 function WorkflowSection({
   doc,
+  catalog,
   purpose,
   onUpdateWorkflow,
   onRemoveWorkflow,
 }: {
   doc: WorkflowDoc;
+  /** 节点类型表 —— 「立刻运行一次」要靠它认出**哪一格是触发器**(见 `AutomationRunSection`)。 */
+  catalog: NodeTypeCatalog;
   purpose: WorkflowPurpose;
   onUpdateWorkflow: (patch: Partial<Omit<WorkflowDoc, "id">>) => void;
   onRemoveWorkflow: () => void;
@@ -201,16 +212,16 @@ function WorkflowSection({
         </code>
       </div>
 
-      {/* 触发方式排在最前面:对一条自动化来说,"它怎么跑起来"比它叫什么重要得多。 */}
+      {/* 触发方式排在最前面:对一条自动化来说,"它怎么跑起来"比它叫什么重要得多。
+
+          ⚠️ **它是只读的**,虽然长得像个下拉。这个值由**触发器节点上的参数**反推写回
+          (见 `main/orchestration/library.ts` 的 `deriveTrigger`),能改那件事的地方是画布
+          上那个触发器节点的参数面板 —— 所以这里显示的是**结果**,不是输入。做成可点的话,
+          用户在这里选一个、存盘时被反推覆盖掉,而界面上不会有任何解释。 */}
       {isAutomation && (
         <>
           <Field label={t("settings.automation.fieldTrigger")}>
-            <Select.Root
-              value={trigger}
-              onValueChange={(value) =>
-                onUpdateWorkflow({ trigger: value as WorkflowTrigger })
-              }
-            >
+            <Select.Root value={trigger} disabled>
               <Select.Trigger className="w-full">
                 <Select.Value>
                   {(value: string) => t(TRIGGER_LABELS[value as WorkflowTrigger])}
@@ -234,12 +245,12 @@ function WorkflowSection({
           <p className="-mt-1 text-[0.7143em] leading-relaxed text-content-subtle">
             {t(TRIGGER_HINTS[trigger])}
           </p>
-          {/* ⚠️ 这段**必须显眼**。一份保存成功的定义和一件真在后台跑着的东西,在界面上
-              长得一模一样就是界面在说谎 —— 用户的图不会跑,而他会以为它跑了。执行器
-              接上之后删掉这一段(见 `@contracts/workflow` 的 `WORKFLOW_TRIGGERS`)。 */}
-          <p className="mt-2 mb-1 rounded border border-warning/40 bg-warning/10 px-2 py-1.5 text-[0.7143em] leading-relaxed text-warning">
-            {t("settings.automation.notWired")}
+          {/* 这一句是给"下拉点不动"的人的:值的真相在触发器节点的参数上(见
+              `main/orchestration/library.ts` 的 `deriveTrigger`)。 */}
+          <p className="text-[0.7143em] leading-relaxed text-content-subtle">
+            {t("settings.automation.triggerDerived")}
           </p>
+          <AutomationRunSection doc={doc} catalog={catalog} />
         </>
       )}
 
@@ -500,6 +511,15 @@ function NodeSection({
   // **分支节点**(见 `@contracts/nodeType` 的 `runner.kind`)。判据是**清单**而不是类型
   // id —— 第三方可以带自己的分支类型进来,而它的选项一样住在出边上。
   const isBranch = entry?.manifest.runner.kind === "branch";
+  /** **触发器节点**:整条自动化的起点 —— 那次运行就是从它开始的。它**不能有上游**
+   *  (存盘那一关会拒,见 `library.deriveTrigger`),所以这句话要在画的时候就说出来,
+   *  而不是等用户画完一条线再被拒。 */
+  const isTrigger = entry?.manifest.runner.kind === "trigger";
+  /** **决定权给了模型的分支**(见 `@contracts/nodeType` 的 `isModelDecider`):
+   *  它自己跑一轮,跑完按自己交出来的「出路」挑一条出边(见
+   *  `@contracts/outputConstraint` 的 `DECIDE_VAR_NAME`)。判据是**清单 + 参数** ——
+   *  「决定权」长在分支的参数上,选了「模型选」才走这一档。 */
+  const isDecide = entry !== undefined && isModelDecider(entry.manifest, node.params);
   /** 它的出路。顺序即文档顺序 = 卡片上按钮的先后(见 `outgoingEdgesOf`)。 */
   const outEdges = doc.edges.filter((e) => e.from === node.id);
   const paramsCheck = entry ? validateNodeParams(entry.manifest, node.params) : null;
@@ -565,7 +585,7 @@ function NodeSection({
           </span>
         </div>
       )}
-      {entry && !isRunnerImplemented(entry.manifest.runner.kind) && (
+      {entry && !isNodeRunnable(entry.manifest) && (
         <p className="mb-3 flex items-start gap-1.5 text-[0.7143em] leading-relaxed text-warning">
           <IconAlertTriangle size={12} className="mt-0.5 shrink-0" />
           {t("settings.workflows.nodeTypeNotRunnable", { kind: entry.manifest.runner.kind })}
@@ -612,15 +632,27 @@ function NodeSection({
           onChange={(value) =>
             onUpdateNode(node.id, { params: { ...node.params, [spec.key]: value } })
           }
-          // **只有「指令」给「插入变量」的候选。** 别的文本参数(「期望产出」那段说明)
-          // 解算器其实也认 `{{...}}`,但把菜单摊到每一处,只会让人以为哪儿都得插变量。
-          {...(spec.key === NODE_PROMPT_PARAM_KEY ? { insertables: vars } : {})}
+          // **只有「指令」和「输入选项」给「插入变量」的候选。** 别的文本参数
+          // (「期望产出」那段说明)解算器其实也认 `{{...}}`,但把菜单摊到每一处,
+          // 只会让人以为哪儿都得插变量。输入选项的「内容」里插变量是正餐 ——
+          // 选中一项后解算发生在运行时,上游产出就能拼进插到输入框的那段话里。
+          {...(spec.key === NODE_PROMPT_PARAM_KEY || spec.key === NODE_OPTIONS_PARAM_KEY
+            ? { insertables: vars }
+            : {})}
         />
       ))}
       {entry && isTerminal && entry.manifest.params.some((p) => p.key === NODE_OUTPUT_VARS_KEY) && (
         // 摆在参数表**之后**:它说的是"上面那张表用不上",读完表再读它才是那个顺序。
         <p className="mb-3 text-[0.7143em] leading-relaxed text-content-subtle">
           {t("settings.workflows.outputVarsTerminal")}
+        </p>
+      )}
+      {isTrigger && (
+        // 触发器是**起点**:它上面不该有线(有的话存盘会被拒 —— 见 `deriveTrigger`),
+        // 而一条自动化可以放好几个(它们的项目和请求各管各的)。这两句都不是这一格参数
+        // 的事,所以摆在参数表之后。
+        <p className="mb-3 text-[0.7143em] leading-relaxed text-content-subtle">
+          {t("settings.workflows.nodeTriggerHint")}
         </p>
       )}
       {entry && entry.manifest.params.length === 0 && (
@@ -744,24 +776,31 @@ function NodeSection({
         </p>
       )}
 
-      {/* 出路 —— **只有分支节点有**。
-
-          它的选项**就是它的出边**(见 `@contracts/workflow` 的 `WorkflowEdgeSchema`):
-          图上有几根线就是几个选项。不在这里另开一张"选项表",因为那会有两种真相 ——
-          表里填了三个、图上只拉了两根线,而"用户能选什么"要读哪一份就说不清了。
+      {/* 出路 —— **每个分支都有**,因为选项住在出边上(见 `@contracts/workflow` 的
+          `WorkflowEdgeSchema`):图上有几根线就是几个选项。不在这里另开一张"选项表",
+          因为那会有两种真相 —— 表里填了三个、图上只拉了两根线,而"用户能选什么"要读
+          哪一份就说不清了。
 
           所以这一段做的是**给已有的线起名字**(外加一句给下一步的说明),而不是定义
-          选项本身;要加一个选项,去画布上从它拉一根线。 */}
+          选项本身;要加一个选项,去画布上从它拉一根线。
+
+          **「决定权」说了算谁来挑**:给用户,岔路口挂起等他点;给模型,它自己判、把
+          选中的那条的名字交在「出路」这个产出变量里(见 `@contracts/outputConstraint`
+          的 `DECIDE_VAR_NAME`)。所以下面那句提示只在模型选的分支上出现 —— 对"等你
+          点"的分支说"名字就是你要交的值"是错的。 */}
       {isBranch && (
         <>
           <div className="mb-1 mt-1 text-[0.7857em] font-medium text-content-muted">
-            {t("settings.workflows.branchOptions")}
+            {isDecide ? t("settings.workflows.decideOptions") : t("settings.workflows.branchOptions")}
           </div>
           {outEdges.length === 0 ? (
-            // 没有出路的岔路口是**坏图**:图会永远停在那儿等人,而用户看到的只是一张
-            // 没有按钮的卡片。调度器那一头也会以"没有出路"明确失败,但在这里先说。
+            // 没有出路的岔路口是**坏图**:等用户的分支会永远停在那儿(而用户看到的只是
+            // 一张没有按钮的卡片),模型选的根本没法挑(调度器会以"没有出路"明确失败)。
+            // 两边的说法不同,所以是两条词条。
             <p className="mb-3 text-[0.7143em] leading-relaxed text-warning">
-              {t("settings.workflows.branchNoOptions")}
+              {isDecide
+                ? t("settings.workflows.decideNoOptions")
+                : t("settings.workflows.branchNoOptions")}
             </p>
           ) : (
             <div className="mb-3 space-y-2">
@@ -779,8 +818,10 @@ function NodeSection({
                         })}
                       </span>
                     </div>
-                    {/* 选项名 = 按钮上那几个字。**留空就用目标节点的标题**(调度器那边
-                        兜底),所以框里空着不是错,只是没起名字。 */}
+                    {/* 选项名 = 按钮上那几个字(用户选)/ 它要交出来的那个值(模型选)。
+                        **留空就用目标节点的标题**(调度器那边兜底),所以框里空着不是错,
+                        只是没起名字 —— 模型选那边匹配时也会拿标题兜一次(见
+                        `matchDecisionOption`)。 */}
                     <Input
                       value={edge.label ?? ""}
                       placeholder={t("settings.workflows.branchOptionLabel")}
@@ -800,6 +841,11 @@ function NodeSection({
                 );
               })}
             </div>
+          )}
+          {isDecide && (
+            <p className="mb-3 text-[0.7143em] leading-relaxed text-content-subtle">
+              {t("settings.workflows.decideOptionsHint")}
+            </p>
           )}
         </>
       )}

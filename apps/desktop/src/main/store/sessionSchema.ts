@@ -137,12 +137,23 @@ export const SESSION_COLUMNS: readonly SessionColumn[] = [
   { name: "usage_history", def: "TEXT", inCreate: false, key: "usageHistory",
     bind: (s) => v(s.usageHistory ? JSON.stringify(s.usageHistory) : null),
     read: (r) => (r.usage_history ? safeJson(r.usage_history) : null) as TurnUsageRecord[] | null },
-  // Session role discriminator ('chat' / 'side' / 'node'). 'chat' is the
-  // default so pre-migration rows and all existing creation paths stay main
-  // sessions. ⚠️ rowToSession 这端是**三值**归一:任何不认识的 kind 都归 "chat"。
+  // Session role discriminator ('chat' / 'side' / 'node' / 'automation'). 'chat' is
+  // the default so pre-migration rows and all existing creation paths stay main
+  // sessions. rowToSession 这端是**四值**归一:任何不认识的 kind 都归 "chat"。
+  //
+  // ⚠️ **漏一个值的表现是"隐藏会话冒进左栏"**(自动化后台会话混进对话列表),而它在
+  // 库里看不出错 —— 左栏那些查询本来就按 `kind = 'chat'` 过滤,归一漏了的话那一行会被
+  // 当成 chat 从而被列出来。所以加新 kind 时**这一行必须同时加**。
   { name: "kind", def: "TEXT NOT NULL DEFAULT 'chat'", inCreate: false, key: "kind",
     bind: (s) => v(s.kind),
-    read: (r) => (r.kind === "side" ? "side" : r.kind === "node" ? "node" : "chat") },
+    read: (r) =>
+      r.kind === "side"
+        ? "side"
+        : r.kind === "node"
+          ? "node"
+          : r.kind === "automation"
+            ? "automation"
+            : "chat" },
   // Side-chat / node sessions 的宿主会话。不设 DB 级 FK —— 删主会话时由
   // SessionRepo 手工置 NULL(Q&A 历史要保留),级联反而会删掉它们。
   { name: "parent_session_id", def: "TEXT", inCreate: false, key: "parentSessionId",

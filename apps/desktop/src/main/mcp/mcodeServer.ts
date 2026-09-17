@@ -88,6 +88,7 @@ import {
 import { getWorkflow, listWorkflows, removeWorkflow, saveWorkflow } from "@main/orchestration/library.js";
 import { NODE_AGENT_TYPE_ID, loadNodeTypes, localNodeTypesDir } from "@main/orchestration/nodeTypes.js";
 import { notifyWorkflowsChanged } from "@main/orchestration/broadcast.js";
+import { requestWorkflowReload } from "@main/orchestration/reloadRequest.js";
 import { fail, loadCreateMcpServer, text, toSdkTools, type McpToolSpec } from "./sdk.js";
 
 /** MCP server 名。SDK 把工具暴露成 `mcp__<这个名字>__<工具名>`。
@@ -526,6 +527,10 @@ export function workflowMcpTools(): McpToolSpec[] {
         if (!result.ok) return fail(result.error);
 
         notifyWorkflowsChanged(`mcp:workflow_save:${normalized.doc.id}`);
+        // 触发器在**后台**跑:AI 刚改完触发方式,执行器手里那份还是旧的。走
+        // `reloadRequest` 那条纯函数缝 —— 原因见那个文件头(这个模块无头也会被 import
+        // 并真被调用,直接 import 执行器会把 electron 拖进 `mcode-admin-smoke`)。
+        requestWorkflowReload(normalized.doc.id);
         const doc = normalized.doc;
         const head =
           doc.nodes.length > 0
@@ -547,6 +552,8 @@ export function workflowMcpTools(): McpToolSpec[] {
         if (!existing) return fail(`没有 id 为 \`${args.id}\` 的工作流 (用 workflow_list 看看有哪些)`);
         const { wasBuiltin } = removeWorkflow(args.id);
         notifyWorkflowsChanged(`mcp:workflow_remove:${args.id}`);
+        // 删掉之后同理 —— 执行器读不到这一份就把它的触发器撤掉(同 IPC 那条路)。
+        requestWorkflowReload(args.id);
         return text(
           wasBuiltin
             ? `已把内置工作流「${existing.name}」恢复成默认版本。`

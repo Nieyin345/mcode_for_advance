@@ -18,7 +18,9 @@
  * 图、还是这个编辑器,区别只在**谁把它跑起来** —— 工作流跟着一次对话跑,自动化等一个
  * 事件自己跑。所以它们共用 `WorkflowDoc`,只是多了一个可选的触发方式,而不是两套数据。
  *
- * ⚠️ v1 **只存不跑**:触发器现在只是定义,调度器还没接。
+ * 触发方式**长在图上**:一条自动化至少有一个**触发器节点**(`mcode.trigger`),它声明
+ * 等的是什么(定时 / 文件 / 事件 / 手动)以及这次运行要做什么。`trigger` 那个字段是
+ * 从它反推出来的一个**开关**(见 {@link WORKFLOW_TRIGGERS} 的注释)。
  *
  * ## 为什么放在 contracts 而不是主进程
  *
@@ -159,17 +161,23 @@ export function outgoingEdgesOf(doc: WorkflowDoc, nodeId: string): WorkflowEdge[
  *
  * 这是「自动化」和「工作流」唯一的差别所在:工作流是**跟着对话跑的** —— 用户发一条
  * 消息,调度器按依赖把图走完,这一次对话就是它的生命周期;自动化是**自己跑起来的**
- * —— 没有人发消息,它在后台被某个事件触发。
+ * —— 没有人发消息,它在后台被某个事件触发(见 `main/orchestration/automationRunner.ts`)。
  *
- * ⚠️ **v1 只存不跑。** 这几个值现在只回答"你打算让它怎么起来",真正的调度器(常驻
- * 进程、日志与指标、失败重试)还没接。界面必须把这件事说出来,不能让一份保存成功的
- * 定义看起来像一件已经在跑的东西(见 `settings.workflows.triggerNotWired`)。
+ * ## 这个字段现在只是一个**开关**
  *
- * 触发方式的**参数**(定时的表达式、监听的路径、回调的地址)也**不在这里** ——
- * 它们跟着执行器一起设计,现在先塞一个自由文本字段进去,等于把没想清楚的东西写进
- * 了持久化格式。所以这里只有"哪一种",没有"哪一天几点"。
+ * 触发方式的**参数**(定时的表达式、监听的路径、听哪些事件)长在**触发器节点**上
+ * (`mcode.trigger`,见 `@contracts/nodeType` 的 `NODE_TRIGGER_*` 那一组键)—— 因为一条
+ * 自动化可以有**多个**触发器,而"几点"、"监听哪"是每个触发器各自的事。
+ *
+ * 所以这里的值**由触发器节点反推写回**(`orchestration/library.ts` 的 `deriveTrigger`),
+ * 是唯一一个写入方。列表分栏、MCP、i18n 照旧读它,它们不必知道节点那一层的事。
+ *
+ * ## `webhook` 现在没有写入方
+ *
+ * 它要一个**对外**的 HTTP 入口(得动手机服务那一摊),属于另一件事。值保留在枚举里,
+ * 是为了老文档读得回来 —— 读得回来就不会在解析时炸,只是没人再写它。
  */
-export const WORKFLOW_TRIGGERS = ["manual", "schedule", "file", "webhook"] as const;
+export const WORKFLOW_TRIGGERS = ["manual", "schedule", "file", "event", "webhook"] as const;
 export type WorkflowTrigger = (typeof WORKFLOW_TRIGGERS)[number];
 export const WorkflowTriggerSchema = z.enum(WORKFLOW_TRIGGERS);
 

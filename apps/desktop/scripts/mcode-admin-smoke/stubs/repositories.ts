@@ -7,8 +7,12 @@
  * 断言"存进去了没有"照样成立,还顺带避开了拿真 `mcode.db` 跑 `initDb()` 的风险
  * (sql.js 会整份重写文件)。
  *
- * 只实现 `library.ts` 真正用到的四个方法。别的 repo(SettingRepo 之类)这里没有:
- * 用到了就会在打包时炸出来,而那正说明图的形状变了,该回来看一眼。
+ * 只实现 `library.ts` 真正用到的四个方法。别的 repo 这里没有:用到了就会在打包时
+ * 炸出来,而那正说明图的形状变了,该回来看一眼。
+ *
+ * ⚠️ `SettingRepo` 是统一资料库后**被迫**进来的:`nodeTypes.ts`(mcodeServer 的
+ * "有哪些节点类型"要走)读类型注册表(`kindRegistry`)做「资料」下拉,注册表真身
+ * 在 settings 表里。给一个内存版即可 —— 注册表读不到就退出厂表,正是我们要的兜底。
  */
 import type { WorkflowDoc } from "@contracts/workflow";
 
@@ -56,3 +60,19 @@ export const WorkflowRepo = {
 export function __resetWorkflowRepo(): void {
   rows.clear();
 }
+
+const settings = new Map<string, string>();
+
+export const SettingRepo = {
+  get(key: string): string | null {
+    return settings.get(key) ?? null;
+  },
+  getMany(keys: string[]): Record<string, string | null> {
+    const out: Record<string, string | null> = {};
+    for (const k of keys) out[k] = settings.get(k) ?? null;
+    return out;
+  },
+  set(key: string, value: string): void {
+    settings.set(key, value);
+  },
+};

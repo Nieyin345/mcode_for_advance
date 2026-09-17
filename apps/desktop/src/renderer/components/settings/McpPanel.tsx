@@ -1,13 +1,14 @@
 /**
  * MCP 服务器管理面板 — Settings 页 "MCP" 菜单。
  *
- * 列出三类 MCP server 并提供开关 / 新增 / 删除 / 导入:
+ * 列出两类 MCP server 并提供开关 / 新增 / 编辑 / 删除 / 导入:
  *  - 用户级:`~/.mcode/.claude.json` 的 mcpServers(所有项目可用,由 claude
  *    binary 自动加载)。关闭 = 配置移出文件暂存到 settings 表;开启 = 移回。
- *  - 项目级:所选项目根的 `.mcp.json`(只读,不写项目文件)。默认关闭——
- *    面板开关替代 CLI 的首次审批弹窗;每轮 startTurn 由 provider 按允许名单
- *    传 enabled/disabledMcpjsonServers。
  *  - 内置:进程内 mcode-browser server(应用内浏览器工具)。
+ *
+ * 项目级(`<projectRoot>/.mcp.json`)来源已整体移除:settingSources 钉在 ["user"] 后
+ * 二进制不再读项目 .mcp.json,Mcode 也不做项目白名单 —— 外部项目级 MCP 一律不继承,
+ * 用户可在下面把需要的服务器录成用户级(或从 CLI 配置里导进来)。
  *
  * 改动自下一轮对话起生效(startTurn 每轮重建 options);仅 Claude 会话生效,
  * Pi 会话使用扩展机制,不受此面板影响。
@@ -15,7 +16,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
-import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import {
@@ -34,9 +34,9 @@ import {
   IconTrash,
   IconDownload,
   IconLoader2,
-  IconFolder,
   IconExternalLink,
   IconLockOpen,
+  IconPencil,
 } from "@renderer/lib/icons.js";
 import {
   MCP_RESERVED_NAME,
@@ -91,6 +91,59 @@ function KindBadge({ kind }: { kind: McpKind }) {
     >
       {labelKey ? t(labelKey) : KIND_RAW[kind]}
     </span>
+  );
+}
+
+/** Per-engine visibility chips (claude / codex) — the same matrix the engines
+ *  load from (missing = enabled; pi has no MCP support so there is no third
+ *  chip). A dimmed, struck-through chip = that engine cannot see the server.
+ *  Shared by the user-scope and plugin sections; builtin rows have no chips
+ *  (they follow the browserDisabled toggle only). */
+function EngineVisibilityChips({
+  s,
+  busy,
+  onToggle,
+}: {
+  s: McpServerEntry;
+  busy: boolean;
+  onToggle: (s: McpServerEntry, engine: "claude" | "codex") => void;
+}) {
+  const { t } = useI18n();
+  const current = s.perEngine ?? { claude: true, codex: true };
+  return (
+    <div
+      className="flex shrink-0 items-center gap-1"
+      role="group"
+      aria-label={t("settings.mcp.engines")}
+      title={t("settings.mcp.enginesHint")}
+    >
+      {(["claude", "codex"] as const).map((engine) => {
+        const on = current[engine];
+        return (
+          <button
+            key={engine}
+            type="button"
+            role="switch"
+            aria-checked={on}
+            disabled={busy}
+            onClick={() => onToggle(s, engine)}
+            title={
+              on
+                ? t("settings.mcp.engineOnHint", { engine: engine === "claude" ? "Claude" : "Codex" })
+                : t("settings.mcp.engineOffHint", { engine: engine === "claude" ? "Claude" : "Codex" })
+            }
+            className={cn(
+              "rounded px-1.5 py-0.5 text-[10px] font-medium leading-tight transition-colors",
+              on
+                ? "bg-accent/15 text-accent"
+                : "bg-surface-hover text-content-subtle line-through decoration-content-subtle/60",
+            )}
+          >
+            {engine === "claude" ? "Claude" : "Codex"}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -159,17 +212,6 @@ function OAuthRowActions({
 
 export function McpPanel() {
   const { t } = useI18n();
-  const projects = useSessionStore((s) => s.projects);
-  const activeProjectId = useSessionStore((s) => s.activeProjectId);
-
-  // Panel-local project selection (SkillsPanel pattern): independent of the
-  // workspace's activeProjectId, defaults to it, scopes the project group.
-  const managedProjects = projects.filter((p) => !p.archived);
-  const [managedProjectId, setManagedProjectId] = useState<string | null>(
-    () => activeProjectId ?? managedProjects[0]?.id ?? null,
-  );
-  const managedProject = managedProjects.find((p) => p.id === managedProjectId);
-  const projectPath = managedProject?.path ?? null;
 
   const [servers, setServers] = useState<McpServerEntry[]>(EMPTY_SERVERS);
   const [loading, setLoading] = useState(false);
@@ -177,15 +219,15 @@ export function McpPanel() {
   // Row key of an in-flight toggle (disables that row's switch only).
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  // 非空 = 对话框处于编辑模式(预填该行 config,保存走 replace 通道)。
+  const [editServer, setEditServer] = useState<McpServerEntry | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<McpServerEntry | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const { servers: list } = await api.mcp.list(
-        projectPath ? { projectPath } : {},
-      );
+      const { servers: list } = await api.mcp.list({});
       setServers(list.length ? list : EMPTY_SERVERS);
     } catch (err) {
       console.error("McpPanel load failed:", err);
@@ -194,7 +236,7 @@ export function McpPanel() {
     } finally {
       setLoading(false);
     }
-  }, [projectPath]);
+  }, []);
 
   useEffect(() => {
     void load();
@@ -207,11 +249,32 @@ export function McpPanel() {
       const res = await api.mcp.toggle({
         name: s.name,
         scope: s.scope,
-        projectPath: s.scope === "project" ? projectPath ?? undefined : undefined,
         enabled: !s.enabled,
       });
       if (!res.ok) setError(res.error ?? t("settings.operationFailed"));
       await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  /** Toggle one server's per-engine visibility (claude/codex). The full
+   *  desired pair is sent; the resolved state comes back and updates the row
+   *  so the chips render exactly what's on disk. Both engine views
+   *  re-materialize main-side; each engine picks it up on its next turn. */
+  const setEngineVisibility = async (s: McpServerEntry, engine: "claude" | "codex") => {
+    const current: Record<"claude" | "codex", boolean> = s.perEngine ?? { claude: true, codex: true };
+    const wanted = { ...current, [engine]: !current[engine] };
+    setError(null);
+    setBusyKey(rowKey(s));
+    try {
+      const res = await api.mcp.enginesSet({ name: s.name, ...wanted });
+      const resolved = res.ok && res.perEngine ? res.perEngine : wanted;
+      setServers((prev) =>
+        prev.map((x) => (x.scope === s.scope && x.name === s.name ? { ...x, perEngine: resolved } : x)),
+      );
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -249,9 +312,8 @@ export function McpPanel() {
         kind: s.kind === "sse" ? "sse" : "http",
         // The main process resolves the server's real config (headers
         // included) by name; scope pins WHICH source to read, since a name can
-        // exist in both user and project scope.
+        // exist in both user and plugin scope.
         scope: s.scope,
-        projectPath: s.scope === "project" ? projectPath ?? undefined : undefined,
       });
       if (!res.ok) setError(t("settings.mcp.authorizeFailed", { error: res.error ?? "" }));
       await load();
@@ -273,7 +335,6 @@ export function McpPanel() {
         url: s.detail,
         kind: s.kind === "sse" ? "sse" : "http",
         scope: s.scope,
-        projectPath: s.scope === "project" ? projectPath ?? undefined : undefined,
       });
       if (!res.ok) setError(t("settings.mcp.unauthorizeFailed", { error: res.error ?? "" }));
       await load();
@@ -285,7 +346,6 @@ export function McpPanel() {
   };
 
   const userServers = servers.filter((s) => s.scope === "user");
-  const projectServers = servers.filter((s) => s.scope === "project");
   const pluginServers = servers.filter((s) => s.scope === "plugin");
   const builtin = servers.find((s) => s.scope === "builtin");
 
@@ -336,12 +396,29 @@ export function McpPanel() {
                 onAuthorize={() => void authorize(s)}
                 onUnauthorize={() => void unauthorize(s)}
               />
+              <EngineVisibilityChips
+                s={s}
+                busy={busyKey === rowKey(s)}
+                onToggle={(row, engine) => void setEngineVisibility(row, engine)}
+              />
               <Switch
                 checked={s.enabled}
                 onCheckedChange={() => void toggle(s)}
                 disabled={busyKey === rowKey(s)}
                 label={t(s.enabled ? "settings.mcp.toggleOff" : "settings.mcp.toggleOn", { name: s.name })}
               />
+              <Button
+                variant="ghost"
+                size="icon"
+                title={t("settings.mcp.editServer")}
+                disabled={!s.config}
+                onClick={() => {
+                  setEditServer(s);
+                  setAddOpen(true);
+                }}
+              >
+                <IconPencil size={13} className="text-content-subtle" />
+              </Button>
               <Button
                 variant="ghost"
                 size="icon"
@@ -363,102 +440,6 @@ export function McpPanel() {
             {t("settings.mcp.addServer")}
           </Button>
         </div>
-      </SettingsSection>
-
-      {/* ───────── 项目级 ───────── */}
-      <SettingsSection
-        title={t("settings.mcp.projectSection")}
-        desc={
-          <>
-            {t("settings.mcp.projectSectionDesc1")}
-            <code className="rounded bg-surface-muted px-0.5">.mcp.json</code>
-            {t("settings.mcp.projectSectionDesc2")}
-            <strong>{t("settings.mcp.projectSectionDesc3")}</strong>
-            {t("settings.mcp.projectSectionDesc4")}
-          </>
-        }
-      >
-        {managedProjects.length > 0 ? (
-          <div className="flex items-center gap-2 px-4 py-2.5">
-            <span className="text-[0.7857em] font-medium text-content-muted">{t("settings.projectLabel")}</span>
-            <Select.Root
-              value={managedProjectId ?? ""}
-              onValueChange={(v) => setManagedProjectId(v as string)}
-            >
-              <Select.Trigger className="min-w-0 flex-1">
-                <Select.Value>
-                  {(val: string) => {
-                    const p = managedProjects.find((x) => x.id === val) ?? managedProjects[0];
-                    return (
-                      <span className="flex items-center gap-1.5">
-                        <IconFolder size={14} className="text-content-muted" />
-                        {p ? `${p.name}${p.id === activeProjectId ? ` (${t("settings.currentWorkspace")})` : ""}` : ""}
-                      </span>
-                    );
-                  }}
-                </Select.Value>
-              </Select.Trigger>
-              <Select.Portal>
-                <Select.Positioner>
-                  <Select.Popup>
-                    <Select.List>
-                      {managedProjects.map((p) => (
-                        <Select.Item key={p.id} value={p.id}>
-                          <IconFolder size={14} className="text-content-muted" />
-                          <Select.ItemText>
-                            {p.name}
-                            {p.id === activeProjectId ? ` (${t("settings.currentWorkspace")})` : ""}
-                          </Select.ItemText>
-                        </Select.Item>
-                      ))}
-                    </Select.List>
-                  </Select.Popup>
-                </Select.Positioner>
-              </Select.Portal>
-            </Select.Root>
-          </div>
-        ) : (
-          <div className="px-4 py-4 text-center text-[0.7143em] text-content-subtle">
-            {t("settings.mcp.noProjects")}
-          </div>
-        )}
-        {projectPath &&
-          (projectServers.length === 0 ? (
-            <div className="px-4 py-4 text-center text-[0.7143em] leading-relaxed text-content-subtle">
-              {loading ? "…" : t("settings.mcp.noProjectServers")}
-            </div>
-          ) : (
-            projectServers.map((s) => (
-              <SettingRow
-                key={rowKey(s)}
-                title={
-                  <span className="flex items-center gap-1.5">
-                    <span className="font-mono">{s.name}</span>
-                    <KindBadge kind={s.kind} />
-                  </span>
-                }
-                desc={
-                  <span className="font-mono">
-                    {s.detail}
-                    {!s.enabled && t("settings.mcp.projectOffSuffix")}
-                  </span>
-                }
-              >
-                <OAuthRowActions
-                s={s}
-                busy={busyKey === rowKey(s)}
-                onAuthorize={() => void authorize(s)}
-                onUnauthorize={() => void unauthorize(s)}
-              />
-                <Switch
-                  checked={s.enabled}
-                  onCheckedChange={() => void toggle(s)}
-                  disabled={busyKey === rowKey(s)}
-                  label={t(s.enabled ? "settings.mcp.toggleOff" : "settings.mcp.toggleOn", { name: s.name })}
-                />
-              </SettingRow>
-            ))
-          ))}
       </SettingsSection>
 
       {/* ───────── 插件 ───────── */}
@@ -487,6 +468,11 @@ export function McpPanel() {
                 busy={busyKey === rowKey(s)}
                 onAuthorize={() => void authorize(s)}
                 onUnauthorize={() => void unauthorize(s)}
+              />
+              <EngineVisibilityChips
+                s={s}
+                busy={busyKey === rowKey(s)}
+                onToggle={(row, engine) => void setEngineVisibility(row, engine)}
               />
               <Switch
                 checked={s.enabled}
@@ -543,7 +529,11 @@ export function McpPanel() {
 
       <AddServerDialog
         open={addOpen}
-        onOpenChange={setAddOpen}
+        editServer={editServer}
+        onOpenChange={(open) => {
+          setAddOpen(open);
+          if (!open) setEditServer(null);
+        }}
         onSaved={() => void load()}
       />
       <ImportMcpDialog
@@ -603,10 +593,13 @@ function parseStringRecordJson(
 
 function AddServerDialog({
   open,
+  editServer,
   onOpenChange,
   onSaved,
 }: {
   open: boolean;
+  /** 非空 = 编辑模式:预填该行的 config,名字锁定,保存走 replace 通道。 */
+  editServer: McpServerEntry | null;
   onOpenChange: (open: boolean) => void;
   onSaved: () => void;
 }) {
@@ -621,18 +614,42 @@ function AddServerDialog({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Reset the form each time the dialog opens.
+  // Reset the form each time the dialog opens — from the edited row's config
+  // when editing, else blank.
   useEffect(() => {
     if (!open) return;
-    setName("");
-    setType("stdio");
-    setCommand("");
-    setArgs("");
-    setEnvJson("");
-    setUrl("");
-    setHeadersJson("");
+    const cfg = editServer?.config;
+    if (cfg) {
+      setName(editServer?.name ?? "");
+      // McpServerConfig 是带 passthrough 的 zod union：每个分支都带着
+      // [k: string]: unknown 索引签名，跨分支访问属性只会得到 unknown 而不是
+      // 报缺失 —— 必须用判别字段 type 收窄到具体分支后再取值。
+      if (cfg.type === "http" || cfg.type === "sse") {
+        setType(cfg.type);
+        setUrl(cfg.url ?? "");
+        setHeadersJson(cfg.headers ? JSON.stringify(cfg.headers, null, 2) : "");
+        setCommand("");
+        setArgs("");
+        setEnvJson("");
+      } else {
+        setType("stdio");
+        setCommand(cfg.command ?? "");
+        setArgs((cfg.args ?? []).join(" "));
+        setEnvJson(cfg.env ? JSON.stringify(cfg.env, null, 2) : "");
+        setUrl("");
+        setHeadersJson("");
+      }
+    } else {
+      setName("");
+      setType("stdio");
+      setCommand("");
+      setArgs("");
+      setEnvJson("");
+      setUrl("");
+      setHeadersJson("");
+    }
     setError(null);
-  }, [open]);
+  }, [open, editServer]);
 
   const save = async () => {
     setError(null);
@@ -681,7 +698,13 @@ function AddServerDialog({
     }
     setSaving(true);
     try {
-      const res = await api.mcp.save({ name: trimmedName, config });
+      // 编辑模式带 replace:同名覆盖写回(主进程同时清掉 stash 里的禁用副本,
+      // 编辑即重新启用 —— 面板会在保存后刷新看到)。
+      const res = await api.mcp.save({
+        name: trimmedName,
+        config,
+        ...(editServer ? { replace: true } : {}),
+      });
       if (!res.ok) {
         setError(res.error ?? t("settings.saveFailed"));
         return;
@@ -700,7 +723,9 @@ function AddServerDialog({
       <Dialog.Portal>
         <Dialog.Backdrop />
         <Dialog.Popup className="flex max-h-[80vh] w-[520px] flex-col p-0">
-          <Dialog.Title className="px-4 pt-4">{t("settings.mcp.addTitle")}</Dialog.Title>
+          <Dialog.Title className="px-4 pt-4">
+            {t(editServer ? "settings.mcp.editTitle" : "settings.mcp.addTitle")}
+          </Dialog.Title>
           <Dialog.Description className="px-4 pt-1">
             {t("settings.mcp.addDescPre")}
             <code className="rounded bg-surface-muted px-0.5">~/.mcode/.claude.json</code>
@@ -717,6 +742,7 @@ function AddServerDialog({
                 className={inputCls}
                 spellCheck={false}
                 autoFocus
+                disabled={editServer != null}
               />
             </Field>
             <Field label={t("settings.mcp.fType")}>
@@ -806,7 +832,9 @@ function AddServerDialog({
               {t("common.cancel")}
             </Button>
             <Button variant="primary" size="sm" onClick={() => void save()} disabled={saving}>
-              {saving ? t("settings.saving") : t("settings.mcp.addBtn")}
+              {saving
+                ? t("settings.saving")
+                : t(editServer ? "settings.mcp.editBtn" : "settings.mcp.addBtn")}
             </Button>
           </div>
         </Dialog.Popup>

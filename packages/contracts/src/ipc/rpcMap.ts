@@ -20,6 +20,7 @@ import type { PluginState, PluginMarketplaceState, PluginsInstallLocalInput, Plu
 import type { PairingStartResult, PairedDevice } from "../mobile.js";
 import type { RelayStatus, RelayVpsConfig, RelayVpsConfigInput } from "../relay.js";
 import type { LibraryItem, LibraryCollection, InstitutionProfile, DownloadJob, ExternalSearchResult, FullTextMatch, AuthSiteStatus, LibraryConversionRow, LibraryNote } from "../library.js";
+import type { LibraryTypeMeta, LibraryGroupMeta } from "../libraryTypes.js";
 import type { TemplateEntry, TemplateFileContent } from "../templates.js";
 import type { IntegrationPublic } from "../integrations.js";
 import type { GetSettingInput, SetSettingInput, GetManySettingsInput, GetManySettingsResult, GetVoiceModelDirInput, GetVoiceModelDirResult, SetVoiceModelDirInput, SetVoiceModelDirResult, NotificationPrefs } from "./settings.js";
@@ -32,13 +33,14 @@ import type { FileReadInput, FileReadBinaryInput, PickImagesInput, PickedImage, 
 import type { GitDiscoverReposInput, GitRepo, GitRepoPathInput, GitStatusResult, GitStageInput, GitOpResult, GitUnstageInput, GitCommitInput, GitDiffInput, GitFileBlobInput, GitDiscardInput, GitGenerateCommitInput, GitCancelGenerateCommitInput, GitLogInput, GitCommitInfo, GitShowCommitInput, GitCommitDetail, GitShowFileInput, GitBranchListResult, GitCheckoutInput, GitDeleteBranchInput, GitMergeInput, GitMergePreviewResult, GitMergeResult, GitWorktreeListInput, GitWorktreeInfo, GitWorktreeStatusInput, GitWorktreeMergeBackInput, GitWorktreeMergeBackResult, GitWorktreeRemoveInput, GitWorktreeRemoveResult } from "./git.js";
 import type { TerminalCreateInput, TerminalCreateResult, TerminalWriteInput, TerminalOpResult, TerminalResizeInput, TerminalKillInput, TerminalListInput, TerminalInfo } from "./terminal.js";
 import type { BrowserCreateInput, BrowserCreateResult, BrowserLoadUrlInput, BrowserOpResult, BrowserGoBackInput, BrowserGoForwardInput, BrowserReloadInput, BrowserSetBoundsInput, BrowserSetPickModeInput, BrowserShowInput, BrowserHideInput, BrowserCloseInput, BrowserCaptureFrameInput, BrowserCaptureFrameResult, BrowserBookmarkAddInput, BrowserBookmarkRemoveInput, BrowserSetDeviceInput, BrowserHistoryRemoveInput, BrowserHistoryClearInput, BrowserAuthRespondInput, BrowserDownloadActionInput } from "./browser.js";
-import type { SkillsListInput, SkillInfo, SkillsReadInput, SkillsSaveInput, SkillsDeleteInput, SkillsScanSourcesInput, ExternalSkillInfo, SkillsImportInput, ProviderInfo, OutputStyleListInput, OutputStyleEntry } from "./skills.js";
-import type { McpListInput, McpServerEntry, McpToggleInput, McpAuthorizeInput, McpUnauthorizeInput, McpSaveInput, McpRemoveInput, McpScanImportInput, McpImportSource, McpImportInput } from "./mcp.js";
+import type { SkillsListInput, SkillInfo, SkillsReadInput, SkillsSaveInput, SkillsDeleteInput, SkillsEnginesSetInput, SkillEngineState, SkillBundle, SkillsBundlesInput, SkillsEnginesSetBulkInput, SkillsScanSourcesInput, ExternalSkillInfo, SkillsImportInput, SkillsImportGithubInput, SkillsImportGithubResult, ProviderInfo, OutputStyleListInput, OutputStyleEntry } from "./skills.js";
+import type { McpListInput, McpServerEntry, McpToggleInput, McpAuthorizeInput, McpUnauthorizeInput, McpSaveInput, McpRemoveInput, McpScanImportInput, McpImportSource, McpImportInput, McpEnginesSetInput, McpEngineState } from "./mcp.js";
+import type { ContextGetInput, ContextSaveInput, ContextMemoriesListInput, ContextMemoryDir, ContextMemoryGetInput, ContextMemorySaveInput, ToolsUsageGetInput, ToolsUsageResult } from "./context.js";
 import type { UsageStatsInput, UsageStatsResult } from "./usage.js";
 import type { LspLanguageState, LspInstallInput, LspOpResult, LspInstallFromFileInput, LspUninstallInput, LspToggleInput, LspSetPathInput, LspHealthCheckInput, LspPrewarmInput, LspRestartInput, LspOpenDocInput, LspCloseDocInput, LspDidChangeInput, LspDidSaveInput, LspRequestInput, LspRequestResult } from "./lsp.js";
 import type { RuntimeAgentState, RuntimesInstallInput, RuntimesInstallLocalInput, RuntimesRemoveInput, ToolchainToolState, ToolchainInstallInput, ToolchainRemoveInput } from "./runtimes.js";
-import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, HooksSaveInput, HooksRemoveInput, HooksTestInput } from "./workflow.js";
-import type { LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibrarySetRootInput, LibraryManifestInput, LibraryItemManifestInput, LibraryKindManifestInput, TemplateKindManifestInput, LibraryAttachToChatInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
+import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchCommandTemplate } from "./workflow.js";
+import type { LibraryTypesGetInput, LibraryTypesSaveInput, LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibrarySetRootInput, LibraryManifestInput, LibraryItemManifestInput, LibraryKindManifestInput, TemplateKindManifestInput, LibraryAttachToChatInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
 import type { TemplateListInput, TemplateAddInput, TemplateRenameInput, TemplateEntryRefInput, TemplateFileRefInput, TemplatesAttachToChatInput } from "./templates.js";
 import type { IntegrationSetKeyInput, IntegrationClearKeyInput, IntegrationSetConfigInput, IntegrationTestInput } from "./integrations.js";
 import type { SubagentDefinition } from "../claudeSubagent.js";
@@ -380,9 +382,10 @@ export interface RpcMap {
    *  selected absolute paths; empty array when the user cancels. */
   "dialog.pickFiles": (input: DialogPickFilesInput) => Promise<{ paths: string[] }>;
   /** Discover skills for the composer `/` menu. Scans the user-global
-   *  `~/.claude/skills/` plus the active project's `.claude/skills/` and
-   *  parses each SKILL.md's frontmatter. Always resolves (degrades to an
-   *  empty list on any IO error). */
+   *  `~/.mcode/skills/` universal library and parses each SKILL.md's
+   *  frontmatter. Always resolves (degrades to an empty list on any IO
+   *  error). `projectPath` is accepted but ignored (single-scope since the
+   *  context-hosting rework). */
   "skills.list": (input: SkillsListInput) => Promise<{ skills: SkillInfo[] }>;
   /** Read one skill's full SKILL.md source (no truncation). Missing file →
    *  empty content. */
@@ -393,6 +396,23 @@ export interface RpcMap {
   /** Delete a skill directory (symlink → unlink link only; real dir → recursive
    *  remove). Returns ok:false + error on any IO failure. */
   "skills.delete": (input: SkillsDeleteInput) => Promise<{ ok: boolean; error?: string }>;
+  /** Set one universal skill's per-engine availability (claude/codex/pi).
+   *  Returns the resolved state as persisted (or ok:false + error). */
+  "skills.engines.set": (
+    input: SkillsEnginesSetInput,
+  ) => Promise<{ ok: boolean; error?: string; perEngine?: SkillEngineState }>;
+  /** Read the bundle manifest (import groups of the universal library).
+   *  Missing / unparsable manifest → empty list. */
+  "skills.bundles": (input: SkillsBundlesInput) => Promise<{ bundles: SkillBundle[] }>;
+  /** Set the per-engine availability for many skills at once (group-level
+   *  switch). Returns per-name resolved state (or ok:false + error). */
+  "skills.enginesSetBulk": (
+    input: SkillsEnginesSetBulkInput,
+  ) => Promise<{
+    ok: boolean;
+    error?: string;
+    perEngine?: Record<string, SkillEngineState>;
+  }>;
   /** Scan external tools (Claude Code / Codex / Zcode) for skills available
    *  for import into Mcode's own ~/.mcode/skills. Returns the full list of
    *  discoverable skills with their source paths. */
@@ -405,6 +425,12 @@ export interface RpcMap {
     skipped: string[];
     errors: Array<{ name: string; error: string }>;
   }>;
+  /** Import a whole skill package from a GitHub repo URL — shallow-clone,
+   *  discover every SKILL.md, copy each skill in, and group them all under
+   *  one bundle. Returns the bundle + per-skill lists. */
+  "skills.importGithub": (
+    input: SkillsImportGithubInput,
+  ) => Promise<SkillsImportGithubResult>;
   // MCP management (settings panel)
   /** List all MCP servers across the three sources (user config file, project
    *  .mcp.json, built-in mcode-browser) with their enabled state. */
@@ -413,6 +439,13 @@ export interface RpcMap {
    *  file and the management stash; project/builtin update the management
    *  state. Takes effect on the next turn. */
   "mcp.toggle": (input: McpToggleInput) => Promise<{ ok: boolean; error?: string }>;
+  /** Set an MCP server's per-engine visibility (claude/codex — pi has no MCP
+   *  support). Takes the full boolean pair; both engine views re-materialize
+   *  after the write, and the change lands on the next turn. Returns the
+   *  resolved state as persisted (or ok:false + error). */
+  "mcp.enginesSet": (
+    input: McpEnginesSetInput,
+  ) => Promise<{ ok: boolean; error?: string; perEngine?: McpEngineState }>;
   /** Run the OAuth browser login for a remote MCP server (claude mcp login).
    *  Opens the system browser; resolves when the CLI reports the flow done. */
   "mcp.authorize": (input: McpAuthorizeInput) => Promise<{ ok: boolean; error?: string }>;
@@ -432,6 +465,23 @@ export interface RpcMap {
     skipped: string[];
     errors: Array<{ name: string; error: string }>;
   }>;
+  // Context hosting (settings panel): global instructions + memory editor + tool usage
+  /** Read the global instructions (single source of truth file). Empty string
+   *  = never configured. */
+  "context.get": (input: ContextGetInput) => Promise<{ content: string }>;
+  /** Save the global instructions and materialize each engine's consume point
+   *  (CLAUDE.md for claude; the codex/pi prompt chains read the same source).
+   *  `warnings` carries per-target notes (e.g. an unmanaged hand-written file
+   *  was left untouched). */
+  "context.save": (input: ContextSaveInput) => Promise<{ ok: boolean; error?: string; warnings?: string[] }>;
+  /** List memory directories (the CLI's native auto-memory entries). */
+  "context.memoriesList": (input: ContextMemoriesListInput) => Promise<{ dirs: ContextMemoryDir[] }>;
+  /** Read one memory file's content. Missing file → empty content. */
+  "context.memoryGet": (input: ContextMemoryGetInput) => Promise<{ content: string }>;
+  /** Save one memory file's content. */
+  "context.memorySave": (input: ContextMemorySaveInput) => Promise<{ ok: boolean; error?: string }>;
+  /** Static per-tool context-usage estimate for one engine. */
+  "tools.usage": (input: ToolsUsageGetInput) => Promise<ToolsUsageResult>;
   /** Output styles (settings panel): list built-in + user styles. The
    *  selection itself is persisted via the generic setting.get/set channels
    *  under AGENT_OUTPUT_STYLE_SETTING_KEY. */
@@ -543,6 +593,37 @@ export interface RpcMap {
    *  `ok: false` = 没有这样的等待(那张卡片过期了:这次运行已经结束或者被取消)。
    *  **不报错**:点一张旧卡片是正常会发生的事,不该弹错误框。 */
   "workflow.choose": (input: WorkflowChooseInput) => Promise<{ ok: boolean }>;
+  // ── 自动化(设置 → 工作流 → 自动化那一栏)──
+  //
+  // 这三个是**桌面专属**:手机端(`main/mobile/mobileRpc.ts`)是手写白名单,不列即不暴露。
+  // 手动触发一次 = 冒充一个 `manual` 触发器,不是"编辑工作流" —— 理由写在
+  // `@contracts/ipc` 的 `AutomationRunSchema` 上。
+  /** **立刻跑一次**。走的就是那条自动化的 manual 那条路(见 `automationRunner.runNow`),
+   *  所以试出来的结果和它定时跑起来是同一样东西。
+   *
+   *  `ok: false` 时 `error` 是**给人看的句子**(比如"这个触发器不在一条已保存的自动化里"),
+   *  不是异常 —— 用户点了一个还没存过的触发器,该得到一句解释而不是一个错误框。 */
+  "automation.run": (input: AutomationRunInput) => Promise<{ ok: boolean; error?: string }>;
+  /** 运行历史(新的在前)。**从存档折出来**,不是另存的一份 —— 见 `AutomationRunEntry`。 */
+  "automation.runs": (
+    input: AutomationRunsInput,
+  ) => Promise<{ runs: AutomationRunEntry[] }>;
+  /** 这条自动化的后台会话 id(`kind: "automation"`)。**一次都没跑过时是 null** ——
+   *  那时它还不需要一个会话(见 `automationRunner.sessionOf`)。 */
+  "automation.sessions": (input: AutomationSessionsInput) => Promise<{ sessionId: string | null }>;
+  // ── 守望(会话输入区那颗「守望」按钮,D3/D4)──
+  //
+  // 同样**桌面专属**(手机白名单不列即不暴露)。起跑有**可见的副作用**:command /
+  // message 会被写进内置模板的节点参数(见 `automationRunner.startWatch` 的说明)。
+  /** 以某条会话为发起会话起一次守望。`ok: false` 时 `error` 是给人看的句子(不在跑、
+   *  发起会话没了、模板被改坏……),不是异常 —— 点按钮的人该得到解释而不是错误框。 */
+  "automation.watch": (input: WatchStartInput) => Promise<{ ok: boolean; error?: string }>;
+  /** 这条会话上有没有正在跑的守望(面板提示"上一次还在跑"用)。 */
+  "automation.watchStatus": (input: WatchStatusInput) => Promise<{ active: boolean }>;
+  /** 全部命令模板(守望面板的下拉)。**无参 handler**,同 `workflow.agentProfiles`。 */
+  "automation.watchTemplates": () => Promise<{ templates: WatchCommandTemplate[] }>;
+  /** 存整份命令模板列表。整份给过来 —— 理由同 `workflow.saveAgentProfile`。 */
+  "automation.watchTemplatesSave": (input: WatchTemplatesSaveInput) => Promise<{ ok: boolean }>;
   // 钩子(设置 → 钩子):某件事发生的时候跑一条你自己的命令。它是**宿主侧**的能力
   // (理由见 `@contracts/hook`),所以对话、工作流节点、将来的自动化一视同仁。
   /** 全部钩子 + 读得见但用不了的条目。**坏条目不静默丢弃** —— 用户写的钩子不生效时,
@@ -638,6 +719,23 @@ export interface RpcMap {
   "relay.status": () => Promise<RelayStatus>;
 
   // 文献库 —— 条目
+  /** 类型注册表:当前生效的全表(内置 8 类 + 用户自建,按保存顺序)。 */
+  "library.typesGet": (input: LibraryTypesGetInput) => Promise<{ types: LibraryTypeMeta[] }>;
+  /** 整表替换注册表。校验(内置不可删、id 规则)在主进程过 `parseLibraryTypesJson`。 */
+  "library.typesSave": (input: LibraryTypesSaveInput) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /** 左栏大类:当前生效的分组(已过滤掉引用了已删类型的行)。 */
+  "library.groupsGet": (input: LibraryGroupsGetInput) => Promise<{ groups: LibraryGroupMeta[] }>;
+  /** 整表替换大类。校验(一个类型只属一个组等)在主进程。 */
+  "library.groupsSave": (input: LibraryGroupsSaveInput) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /** 任意文件/目录导入为通用条目(linked = 引用原路径 / attached = 复制进库)。 */
+  "library.importGeneric": (input: LibraryImportGenericInput) => Promise<{
+    items: LibraryItem[];
+    added: number;
+    skipped: number;
+    errors: Array<{ path: string; error: string }>;
+  }>;
+  /** 读通用文件条目的内容(文本 / 图片与二进制 base64 / 目录列表)。 */
+  "library.readFile": (input: LibraryReadFileInput) => Promise<{ content: LibraryFileContent }>;
   /** 列出文献。`collectionId` 为 null/省略表示全部。 */
   "library.list": (input: LibraryListInput) => Promise<{ items: LibraryItem[]; total: number }>;
   /** 单条详情,附带最新一条下载任务(用于推导 PDF 状态)。 */
@@ -995,6 +1093,15 @@ export const IPC = {
   LIBRARY_ITEM_MANIFEST: "library:itemManifest",
   /** 整个库的清单(「全部<库>」那一行)。 */
   LIBRARY_KIND_MANIFEST: "library:kindManifest",
+  /** 类型注册表:读(返回当前生效的全表,含内置)/ 写(整表替换,校验在主进程)。 */
+  LIBRARY_TYPES_GET: "library:typesGet",
+  LIBRARY_TYPES_SAVE: "library:typesSave",
+  /** 左栏大类:读(合并校验后)/ 写(整表替换)。 */
+  LIBRARY_GROUPS_GET: "library:groupsGet",
+  LIBRARY_GROUPS_SAVE: "library:groupsSave",
+  /** 通用文件条目:导入(linked/attached)与内容读取(文本/图片/二进制分型)。 */
+  LIBRARY_IMPORT_GENERIC: "library:importGeneric",
+  LIBRARY_READ_FILE: "library:readFile",
   LIBRARY_MANIFEST: "library:manifest",
   /** 把一条附件挂到指定会话的输入框上(左栏右键「添加到当前对话」)。 */
   LIBRARY_ATTACH_TO_CHAT: "library:attachToChat",
@@ -1178,24 +1285,41 @@ export const IPC = {
   SHELL_OPEN_FILE: "shell:openFile",
   // Native multi-file picker (project-external files allowed) for the composer
   DIALOG_PICK_FILES: "dialog:pickFiles",
-  // Skill discovery for the composer `/` menu (scans ~/.claude/skills + project)
+  // Skill discovery for the composer `/` menu (scans the universal ~/.mcode/skills)
   SKILLS_LIST: "skills:list",
   // Skill management (settings panel): read / save / delete a single skill
   SKILLS_READ: "skills:read",
   SKILLS_SAVE: "skills:save",
   SKILLS_DELETE: "skills:delete",
+  // Per-engine availability matrix for the universal skill library
+  SKILLS_ENGINES_SET: "skills:enginesSet",
+  // Bundle manifest (import groups) for the universal skill library
+  SKILLS_BUNDLES: "skills:bundles",
+  // Per-engine availability for a WHOLE bundle of skills in one write
+  SKILLS_ENGINES_SET_BULK: "skills:enginesSetBulk",
   // Skill import (settings panel): scan external tools + copy into ~/.mcode/skills
   SKILLS_SCAN_SOURCES: "skills:scanSources",
   SKILLS_IMPORT: "skills:import",
+  // Import a whole skill package from a GitHub repo URL (one repo = one bundle)
+  SKILLS_IMPORT_GITHUB: "skills:importGithub",
   // MCP management (settings panel): list / toggle / add / remove / import
   MCP_LIST: "mcp:list",
   MCP_TOGGLE: "mcp:toggle",
+  // Per-engine visibility matrix for MCP servers (claude/codex; pi has no MCP)
+  MCP_ENGINES_SET: "mcp:enginesSet",
   MCP_AUTHORIZE: "mcp:authorize",
   MCP_UNAUTHORIZE: "mcp:unauthorize",
   MCP_SAVE: "mcp:save",
   MCP_REMOVE: "mcp:remove",
   MCP_SCAN_IMPORT: "mcp:scanImport",
   MCP_IMPORT: "mcp:import",
+  // Context hosting (settings panel): global instructions / memory editor / tool usage
+  CONTEXT_GET: "context:get",
+  CONTEXT_SAVE: "context:save",
+  CONTEXT_MEMORIES_LIST: "context:memoriesList",
+  CONTEXT_MEMORY_GET: "context:memoryGet",
+  CONTEXT_MEMORY_SAVE: "context:memorySave",
+  TOOLS_USAGE: "tools:usage",
   // Output styles (settings panel): list built-in + user styles
   OUTPUT_STYLE_LIST: "outputStyle:list",
   // Usage stats (settings panel): aggregated token/cost usage over time ranges
@@ -1238,6 +1362,23 @@ export const IPC = {
   WORKFLOW_REMOVE_AGENT_PROFILE: "workflow:removeAgentProfile",
   /** 在岔路口选一条路 —— **回答一个还活着的运行**,不是开一次新的。 */
   WORKFLOW_CHOOSE: "workflow:choose",
+  // 自动化(设置 → 工作流 → 自动化那一栏):触发器节点在后**台**起一条运行。
+  // 这三个只在桌面暴露(手机端那个 RPC 是手写白名单)。
+  /** **立刻跑一次** —— 冒充一个 manual 触发器。 */
+  AUTOMATION_RUN: "automation:run",
+  /** 这条自动化的运行历史(从存档折出来)。 */
+  AUTOMATION_RUNS: "automation:runs",
+  /** 这条自动化的后台会话 id(没跑过时 null)。 */
+  AUTOMATION_SESSIONS: "automation:sessions",
+  // 守望(会话输入区那颗「守望」按钮)。同样只在桌面暴露。
+  /** 以某条会话为发起会话,起一次内置模板「长任务守望」的运行。 */
+  AUTOMATION_WATCH: "automation:watch",
+  /** 这条会话上有没有正在跑的守望。 */
+  AUTOMATION_WATCH_STATUS: "automation:watchStatus",
+  /** 全部命令模板(守望面板的下拉)。 */
+  AUTOMATION_WATCH_TEMPLATES: "automation:watchTemplates",
+  /** 存整份命令模板列表。 */
+  AUTOMATION_WATCH_TEMPLATES_SAVE: "automation:watchTemplatesSave",
   /** Main → renderer push:工作流 / 自动化 / 代理档案 / 节点类型变了(含 AI 改的)。
    *  渲染端据此重拉列表(见 `WorkflowChangedMessage` 那条 ⚠️)。 */
   WORKFLOW_CHANGED: "workflow:changed",

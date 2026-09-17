@@ -2,9 +2,9 @@
  * Composer slash-command picker. Anchored above the textarea when the user
  * types `/` at line start or after whitespace. Lists two kinds of entries in
  * separate tabs:
- *  - **Skill**: skills discovered from the filesystem (user-global +
- *    project-level). Selecting inserts an atomic `/name` pill the user keeps
- *    typing after.
+ *  - **Skill**: skills discovered from the filesystem (the universal library
+ *    ~/.mcode/skills + plugin contributions). Selecting inserts an atomic
+ *    `/name` pill the user keeps typing after.
  *  - **命令** (built-in commands): fixed entries with bespoke behavior
  *    (`/compact`, `/init`). Selecting either executes immediately (`compact`)
  *    or fills the editor with an editable prompt (`init`).
@@ -254,14 +254,14 @@ export function SlashCommandPicker({
                 <span className="shrink-0 text-[10px] text-content-subtle">
                   {/* A built-in COMMAND and a built-in SKILL are both shipped with
                       the app, so both read 「内置」 — checked together rather than
-                      adding a fifth arm to an already-deep ternary. */}
+                      adding a fourth arm to an already-deep ternary. Project-scoped
+                      skills no longer exist (the universal library is the only
+                      user-owned scope). */}
                   {isBuiltin || (entry as SkillInfo).source === "builtin"
                     ? t("chat.slash.builtin")
-                    : (entry as SkillInfo).source === "project"
-                      ? t("chat.slash.project")
-                      : (entry as SkillInfo).source === "plugin"
-                        ? t("chat.slash.plugin")
-                        : t("chat.slash.global")}
+                    : (entry as SkillInfo).source === "plugin"
+                      ? t("chat.slash.plugin")
+                      : t("chat.slash.global")}
                 </span>
               </button>
             );

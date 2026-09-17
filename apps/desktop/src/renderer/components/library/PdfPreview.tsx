@@ -46,7 +46,7 @@ import {
 // 不设置这个的话 pdf.js 会退回主线程解析,大文件会把 UI 卡住。
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
-export function PdfPreview({ item }: { item: LibraryItem }) {
+export function PdfPreview({ item, bytes }: { item: LibraryItem; bytes?: Uint8Array }) {
   const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<HTMLDivElement>(null);
@@ -80,7 +80,11 @@ export function PdfPreview({ item }: { item: LibraryItem }) {
     // 抛错的,把异常甩出 effect 会让 React 19 整棵卸载(见 webApi.ts 的说明)
     void (async () => {
       try {
-        const res = await api.library.readPdf({ id: item.id });
+        // 字节可由调用方直接给(通用条目的 readFile 已把 base64 交上来,不必再走一次
+        // readPdf —— 那条路只认条目的 pdfPath)。不给才按老路读。
+        const res = bytes
+          ? { ok: true as const, error: undefined, bytes }
+          : await api.library.readPdf({ id: item.id });
         if (cancelled) return;
         if (!res.ok || !res.bytes) {
           setError(res.error ?? t("library.pdfViewer.failed"));
@@ -153,7 +157,7 @@ export function PdfPreview({ item }: { item: LibraryItem }) {
     };
     // 换一篇就重建整个阅读器 —— 复用 document 反而要处理分页残留
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [item.id, nonce]);
+  }, [item.id, bytes, nonce]);
 
   const step = useCallback((delta: number) => {
     const v = viewerHandle.current;

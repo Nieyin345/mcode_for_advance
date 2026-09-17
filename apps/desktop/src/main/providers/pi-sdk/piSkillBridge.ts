@@ -42,6 +42,14 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { bashPathHintFor, detectBashEnv } from "@main/lib/bashEnv.js";
 import { msysToWindowsPath } from "@main/lib/msysPath.js";
+import {
+  defaultSkillsRoot,
+  enabledSkillNames,
+  engineEnabled,
+  engineRestricted,
+  readEnginesMap,
+  skillNamesInRoot,
+} from "@main/lib/skillEngines.js";
 
 /** Suffix-free access to the Pi SDK module type (the provider already loads it
  *  via `loadPiSdk()` and hands us the resolved module). */
@@ -51,12 +59,13 @@ type PiSdk = typeof import("@earendil-works/pi-coding-agent");
  *  prompt rewrite. */
 export type PiResourceLoader = import("@earendil-works/pi-coding-agent").DefaultResourceLoader;
 
-/** The two Mcode skill roots, mirroring `ipc/skills.ts:resolveSkillRoot`. Kept
+/** Mcode's global skill root, mirroring `ipc/skills.ts:resolveSkillRoot`. Kept
  *  here (rather than importing from the IPC module) so the provider layer stays
  *  decoupled from IPC handler internals — and because these are plain path
- *  computations with no IPC dependency. */
-function mcodeSkillRoots(cwd: string): string[] {
-  return [path.join(homedir(), ".mcode", "skills"), path.join(cwd, ".claude", "skills")];
+ *  computations with no IPC dependency. 项目级 `<cwd>/.claude/skills` 不再进
+ *  这份列表:上下文统一托管(设置面板)后,外部工作区目录一律不继承。 */
+function mcodeSkillRoots(): string[] {
+  return [path.join(homedir(), ".mcode", "skills")];
 }
 
 export interface BuildPiSkillLoaderOptions {
@@ -81,10 +90,21 @@ export interface BuildPiSkillLoaderOptions {
   extensionFactories?: import("@earendil-works/pi-coding-agent").InlineExtension[];
 }
 
+/** True when `child` resolves inside `dir` (or equals it). Case-folded — Pi
+ *  injects `baseDir` verbatim from its own scan, and on Windows the same
+ *  directory can reach us with differing casing. Separator-aware so a
+ *  sibling prefix (`/foo/bar` vs `/foo/baz`) can't false-positive. */
+function isInsideDir(child: string, dir: string): boolean {
+  if (!child) return false;
+  const c = path.resolve(child).toLowerCase();
+  const d = path.resolve(dir).toLowerCase();
+  return c === d || c.startsWith(d + path.sep);
+}
+
 /**
  * Construct and reload a `DefaultResourceLoader` configured to discover Mcode's
- * skill directories in addition to Pi's own defaults, optionally filtered to an
- * allowlist of names.
+ * skill directories in addition to Pi's own defaults, filtered by the
+ * per-engine skill matrix and the user's composer picks.
  *
  * The returned loader is ready to pass as `createAgentSession({ resourceLoader
  * })` — the SDK skips its own default construction and does NOT call `reload()`
@@ -92,15 +112,55 @@ export interface BuildPiSkillLoaderOptions {
  * here exactly once.
  *
  * Never throws on a missing/unreadable skills dir: `DefaultResourceLoader`
- * treats unresolvable `additionalSkillPaths` as empty. The allowlist filter is a
- * best-effort name intersection; an unknown name in `allowNames` simply matches
+ * treats unresolvable `additionalSkillPaths` as empty. The override below is a
+ * best-effort name filter; an unknown name in `allowNames` simply matches
  * nothing (the model then sees no such skill — same as Claude's allowlist).
  */
 export async function buildPiSkillLoader(
   opts: BuildPiSkillLoaderOptions,
 ): Promise<PiResourceLoader> {
   const { sdk, cwd, allowNames, extraSkillPaths, extensionFactories } = opts;
-  const allow = allowNames && allowNames.length > 0 ? new Set(allowNames) : undefined;
+  // The effective name filter: composer picks win (an explicit selection is
+  // the user asking for exactly those); otherwise the universal library's
+  // per-engine matrix decides. null = unrestricted (no override needed).
+  const allowSet: Set<string> | null =
+    allowNames && allowNames.length > 0
+      ? new Set(allowNames)
+      : (() => {
+          const enabled = enabledSkillNames(defaultSkillsRoot(), "pi");
+          return enabled === null ? null : new Set(enabled);
+        })();
+
+  // The engines matrix applies to plugin contributions too: a plugin skill the
+  // user took away from pi must NOT show up. When the matrix is unrestricted on
+  // pi (no entry restricts it), every plugin name passes through — that
+  // matches the old behavior. Plugin roots are scanned by Pi's loader just
+  // like the universal root, so the allowSet filter below gates them the same
+  // way it gates the universal skills. (Builtin skills — the four shipped with
+  // the app — intentionally stay out of the matrix; they load under every
+  // engine regardless.)
+  const universalRoot = defaultSkillsRoot();
+  const enginesMap = readEnginesMap(universalRoot);
+  const matrixRestrictsPi = engineRestricted(enginesMap, "pi");
+  // Names the universal library actually carries, for the same-name dedupe:
+  // Pi also scans its own defaults (~/.pi/agent/skills), and a skill present
+  // in BOTH stores would load twice. The universal layer wins — the pi-local
+  // copy of the same name yields (mirrors the listing's global-first rank).
+  const universalNames = new Set(skillNamesInRoot(universalRoot).keys());
+  // When the matrix is restricted on pi, also merge in plugin skill names the
+  // matrix still allows — without this, a composer selection or matrix state
+  // that names a plugin skill would filter it out (the old bug: the allowSet
+  // only carried universal-library names, so every plugin skill vanished as
+  // soon as any restriction landed).
+  if (matrixRestrictsPi && extraSkillPaths) {
+    for (const root of extraSkillPaths) {
+      for (const name of skillNamesInRoot(root).keys()) {
+        if (engineEnabled(enginesMap, name, "pi")) {
+          if (allowSet) allowSet.add(name);
+        }
+      }
+    }
+  }
 
   const loader = new sdk.DefaultResourceLoader({
     cwd,
@@ -112,11 +172,12 @@ export async function buildPiSkillLoader(
     // / `pi.on` are live before the first agent turn. Mcode's extension
     // bridges host approval, AskUserQuestion, and system-prompt injection.
     extensionFactories: extensionFactories ?? [],
-    // Pull in Mcode's two roots (plus ENABLED plugin skill roots) alongside
+    // Pull in Mcode's global root (plus ENABLED plugin skill roots) alongside
     // Pi's defaults. We deliberately leave `noSkills` unset so Pi's own
     // `~/.pi/agent/skills` + `<cwd>/.pi/skills` keep working — existing Pi
-    // users aren't disrupted.
-    additionalSkillPaths: [...mcodeSkillRoots(cwd), ...(extraSkillPaths ?? [])],
+    // users aren't disrupted (modulo the same-name dedupe in the override
+    // below, where the universal layer takes precedence).
+    additionalSkillPaths: [...mcodeSkillRoots(), ...(extraSkillPaths ?? [])],
     // On Windows, append a path-style hint that matches the bash the SDK will
     // actually spawn — native (Git Bash: `/mnt/...` doesn't exist) or WSL
     // (`/mnt/...` is the only absolute form that resolves; `detectBashEnv`
@@ -129,20 +190,26 @@ export async function buildPiSkillLoader(
     ...(process.platform === "win32"
       ? { appendSystemPrompt: [bashPathHintFor(detectBashEnv("pi"))] }
       : {}),
-    // Mirror Claude's allowlist semantics: when the user picked specific
-    // skills, only those reach the model. Empty/undefined → no override, all
-    // discovered skills are available (Claude's `"all"` analogue).
-    ...(allow
-      ? {
-          skillsOverride: (base: {
-            skills: import("@earendil-works/pi-coding-agent").Skill[];
-            diagnostics: import("@earendil-works/pi-coding-agent").ResourceDiagnostic[];
-          }) => ({
-            skills: base.skills.filter((s) => allow.has(s.name)),
-            diagnostics: base.diagnostics,
-          }),
+    // ALWAYS supply the override (not just when a selection exists): it now
+    // does two jobs.
+    //   1. Same-name dedupe across stores — a skill discovered outside the
+    //      universal library (e.g. ~/.pi/agent/skills) yields to a same-named
+    //      universal skill.
+    //   2. The name filter — allowSet null (no picks, matrix unrestricted)
+    //      passes everything through, which reproduces the old no-override
+    //      behavior exactly.
+    skillsOverride: (base: {
+      skills: import("@earendil-works/pi-coding-agent").Skill[];
+      diagnostics: import("@earendil-works/pi-coding-agent").ResourceDiagnostic[];
+    }) => ({
+      skills: base.skills.filter((s) => {
+        if (!isInsideDir(s.baseDir ?? "", universalRoot) && universalNames.has(s.name)) {
+          return false;
         }
-      : {}),
+        return !allowSet || allowSet.has(s.name);
+      }),
+      diagnostics: base.diagnostics,
+    }),
   });
   await loader.reload();
   return loader;

@@ -183,6 +183,8 @@ for (const col of [
 }
 check("projects.group 在老行上是 NULL", valueOf(d, "SELECT [group] FROM projects WHERE id='proj_old'") === null);
 check("library_items.volume 在老行上是 NULL", valueOf(d, "SELECT volume FROM library_items WHERE id='item_old'") === null);
+eq("library_items.entry_mode 补成默认", valueOf(d, "SELECT entry_mode FROM library_items WHERE id='item_old'"), "attached");
+check("library_items.file_path 在老行上是 NULL", valueOf(d, "SELECT file_path FROM library_items WHERE id='item_old'") === null);
 
 // ④ 结构真的补齐了(列都在,不只是数据能查)
 const NEW_SESSION_COLS = [
@@ -195,7 +197,7 @@ for (const c of NEW_SESSION_COLS) check(`sessions.${c} 列存在`, hasColumn(d, 
 for (const c of ["archived", "group", "sort_order", "pinned_at"]) {
   check(`projects.${c} 列存在`, hasColumn(d, "projects", c));
 }
-for (const c of ["volume", "issue", "page", "publisher", "kind"]) {
+for (const c of ["volume", "issue", "page", "publisher", "kind", "entry_mode", "file_path"]) {
   check(`library_items.${c} 列存在`, hasColumn(d, "library_items", c));
 }
 

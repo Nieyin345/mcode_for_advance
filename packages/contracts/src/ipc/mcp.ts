@@ -7,22 +7,21 @@
 import { z } from "zod";
 
 /* ── MCP management (settings panel) ──
- *  The settings panel's "MCP" section lists three MCP server sources and lets
- *  the user toggle, add, remove and import them:
- *   - user scope: the `mcpServers` object of ~/.mcode/.claude.json — Mcode's
- *     redirected Claude config root (CLAUDE_CONFIG_DIR). The claude binary
- *     loads these automatically (settingSources default includes "user"), so
- *     the file is the source of truth; disabling a server moves its config
- *     out of the file into the management-state stash below, which is what
- *     keeps the binary from loading it.
- *   - project scope: <projectRoot>/.mcp.json (read-only, never rewritten).
- *     The CLI's native first-use approval dialog can't surface through our
- *     onUserDialog bridge (unknown kinds get cancelled), so this panel
- *     replaces it: project servers default to OFF and are recorded here when
- *     explicitly enabled; the provider passes per-turn
- *     enabledMcpjsonServers / disabledMcpjsonServers accordingly.
+ *  The settings panel's "MCP" section lists the MCP server sources and lets
+ *  the user toggle, add, edit, remove and import them:
+ *   - user scope: the source of truth lives in the management state
+ *     (`userServers` below, persisted under MCP_MANAGEMENT_SETTING_KEY); the
+ *     `mcpServers` object of ~/.mcode/.claude.json is a **derived view** the
+ *     claude binary loads automatically (settingSources is pinned to ["user"]).
+ *     Disabling a server moves it onto the userDisabled stash; enabling moves
+ *     it back. Both files are re-materialized after every mutation as
+ *     "enabled ∧ assigned to that engine" subsets (see McpEnginesSetSchema).
  *   - builtin: the in-process "mcode-browser" server injected by the Claude
- *     provider each turn; toggling gates that injection. */
+ *     provider each turn; toggling gates that injection.
+ *
+ *  项目级（<projectRoot>/.mcp.json）来源已整体移除：settingSources 钉在
+ *  ["user"] 后二进制不再读项目 .mcp.json，Mcode 也不做项目白名单 —— 外部
+ *  项目级 MCP 一律不继承，用户可在面板里把需要的服务器录成用户级。 */
 
 /** Setting key for the persisted MCP management state.
  *  Value = JSON.stringify(McpManagementState). */
@@ -62,23 +61,43 @@ export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
 export interface McpManagementState {
   /** Built-in mcode-browser server disabled. Absent/false = enabled. */
   browserDisabled?: boolean;
+  /** Source of truth for user-scope server configs, keyed by name — present
+   *  whether enabled or not. The `.claude.json` mcpServers object is a
+   *  derived view materialized from this + the engines map, never the other
+   *  way round. Written by save/import; read by list/materialization. */
+  userServers?: Record<string, McpServerConfig>;
   /** User-scope servers the user turned OFF. Their full configs are stashed
-   *  here (keyed by name) so re-enabling restores them exactly; the config
-   *  file meanwhile stays free of them, which is what keeps the binary from
+   *  here (keyed by name) so re-enabling restores them exactly; the derived
+   *  view meanwhile stays free of them, which is what keeps the binary from
    *  loading them. */
   userDisabled?: Record<string, McpServerConfig>;
-  /** Project .mcp.json servers the user explicitly turned ON. Project servers
-   *  default to OFF (this panel replaces the CLI's first-use approval dialog),
-   *  so an allowlist — not a denylist — is persisted. Matched against the
-   *  turn's cwd at startTurn. */
-  projectEnabled?: Array<{ projectPath: string; name: string }>;
 }
+
+/** Per-engine visibility for an MCP server — the engines that may load it.
+ *  pi has no MCP support (PiAgentSdkProvider.supportsMcp:false), so there are
+ *  only two switches. Absent = both true (missing = enabled, same semantics
+ *  as the skill engines map). */
+export interface McpEngineState {
+  claude: boolean;
+  codex: boolean;
+}
+
+/** Assign an MCP server to engines. `name` is the panel's row name — the
+ *  user-scope server name, the namespaced `<plugin>__<server>` form, or the
+ *  built-in `mcode-browser`. Takes the full boolean pair (no partial
+ *  updates) so a stale panel can't silently drop one engine's flag. */
+export const McpEnginesSetSchema = z.object({
+  name: z.string().min(1),
+  claude: z.boolean(),
+  codex: z.boolean(),
+});
+export type McpEnginesSetInput = z.infer<typeof McpEnginesSetSchema>;
 
 /** Which source a listed MCP server comes from. "plugin" = contributed by an
  *  enabled plugin (namespaced `<plugin>__<server>`); toggling it flips the
  *  per-server entry on the plugins.mcpDisabled list without touching the
  *  plugin's own enable state. */
-export type McpScope = "user" | "project" | "builtin" | "plugin";
+export type McpScope = "user" | "builtin" | "plugin";
 
 /** Transport kind shown in the panel badges; "builtin" = in-process server. */
 export type McpKind = "stdio" | "http" | "sse" | "builtin";
@@ -107,22 +126,25 @@ export interface McpServerEntry {
    *  connecting, so a stored token the runtime can't use (wrong credential
    *  key, expired, revoked) must not mask an unauthenticated server. */
   authorized?: boolean;
+  /** Full transport config, present on user-scope rows only — the edit dialog
+   *  prefills from it (env/header values included; this entry shape never
+   *  leaves the app, unlike the `detail` summary). */
+  config?: McpServerConfig;
+  /** Which engines may load this server. Absent on builtin rows (they follow
+   *  the browserDisabled toggle only); user/plugin rows always carry it —
+   *  absent flags mean enabled (missing = enabled). */
+  perEngine?: McpEngineState;
 }
 
-/** List MCP servers for the settings panel. `projectPath` scopes the project
- *  .mcp.json group and must match a persisted Project.path when present; the
- *  group is simply omitted when absent. */
-export const McpListSchema = z.object({
-  projectPath: z.string().optional(),
-});
+/** List MCP servers for the settings panel. */
+export const McpListSchema = z.object({});
 export type McpListInput = z.infer<typeof McpListSchema>;
 
-/** Toggle a server. `projectPath` is required for scope "project". Scope
- *  "plugin" toggles one plugin-contributed server (plugins.mcpDisabled). */
+/** Toggle a server. Scope "plugin" toggles one plugin-contributed server
+ *  (plugins.mcpDisabled). */
 export const McpToggleSchema = z.object({
   name: z.string().min(1),
-  scope: z.enum(["user", "project", "builtin", "plugin"]),
-  projectPath: z.string().optional(),
+  scope: z.enum(["user", "builtin", "plugin"]),
   enabled: z.boolean(),
 });
 export type McpToggleInput = z.infer<typeof McpToggleSchema>;
@@ -144,13 +166,10 @@ export const McpAuthorizeSchema = z.object({
   url: z.string().url(),
   kind: z.enum(["http", "sse"]),
   /** Source the clicked row came from. Scopes the main-side config lookup so a
-   *  name shared by two sources (a user and a project server both called
-   *  "github") resolves to the config that row actually points at — picking the
-   *  other one's url/headers would file the token under a key the server never
-   *  looks up. */
-  scope: z.enum(["user", "project", "builtin", "plugin"]).optional(),
-  /** Project whose .mcp.json the row came from (scope "project"). */
-  projectPath: z.string().optional(),
+   *  name shared by two sources resolves to the config that row actually
+   *  points at — picking the other one's url/headers would file the token
+   *  under a key the server never looks up. */
+  scope: z.enum(["user", "builtin", "plugin"]).optional(),
 });
 export type McpAuthorizeInput = z.infer<typeof McpAuthorizeSchema>;
 
@@ -186,12 +205,17 @@ export const MCP_WORKFLOW_SERVER = "mcode-workflow";
 /** 骨干服务器名的清单 —— 「始终挂着、不进候选表」的那一组。 */
 export const MCP_ALWAYS_ON_SERVERS = [MCP_LIBRARY_SERVER, MCP_WORKFLOW_SERVER] as const;
 
-/** Add a user-scope server. Rejected when the name already exists (enabled in
- *  the config file or stashed as disabled). The config is written into
- *  ~/.mcode/.claude.json. */
+/** Add a user-scope server, or overwrite an existing one when `replace` is
+ *  set (the edit path). Without `replace` a name that already exists — enabled
+ *  in the truth layer or stashed as disabled — is rejected. The config is
+ *  written into the management state (`userServers`) and both engine views
+ *  are re-materialized. */
 export const McpSaveSchema = z.object({
   name: z.string().regex(MCP_NAME_RE, "invalid MCP server name"),
   config: McpServerConfigSchema,
+  /** Edit mode: overwrite the existing entry (truth layer or stash) instead
+   *  of rejecting a duplicate name. */
+  replace: z.boolean().optional(),
 });
 export type McpSaveInput = z.infer<typeof McpSaveSchema>;
 

@@ -57,6 +57,117 @@ export type WorkflowChooseInput = z.infer<typeof WorkflowChooseSchema>;
 export const AgentProfileSaveSchema = z.object({ profile: AgentProfileSchema });
 export type AgentProfileSaveInput = z.infer<typeof AgentProfileSaveSchema>;
 
+/* ── 自动化 RPC 入参 ── */
+
+/**
+ * **手动运行一次。** 走的就是 `manual` 触发器那条路(`entry` = 指定的那个触发器节点),
+ * 所以它和自动触发在"哪个项目 / 哪句话 / 落在哪条会话上"三件事上完全一致 —— 用户可以
+ * 拿它先试一遍,再改成定时,看到的是同一件事(见 `automationRunner.runNow`)。
+ *
+ * 它是"开一次新的运行",不是"回答一个还活着的运行"(那是 `workflow.choose`)。
+ */
+export const AutomationRunSchema = z.object({
+  workflowId: z.string().min(1),
+  /** 用**哪个触发器**起这一次 —— 一条自动化可以有多个触发器,它们的工作目录和请求
+   *  都可能不一样,所以这里必须指名道姓。 */
+  triggerNodeId: z.string().min(1),
+});
+export type AutomationRunInput = z.infer<typeof AutomationRunSchema>;
+
+/** 取这条自动化的运行历史。 */
+export const AutomationRunsSchema = z.object({
+  workflowId: z.string().min(1),
+  /** 最多几条(新的在前)。不给就用主进程的默认值。 */
+  limit: z.number().int().min(1).max(50).optional(),
+});
+export type AutomationRunsInput = z.infer<typeof AutomationRunsSchema>;
+
+/** 取这条自动化的后台会话 id(`kind: "automation"`)。跑过零次的话是 null。 */
+export const AutomationSessionsSchema = z.object({ workflowId: z.string().min(1) });
+export type AutomationSessionsInput = z.infer<typeof AutomationSessionsSchema>;
+
+/* ── 守望(会话输入区那颗「守望」按钮,D3/D4)── */
+
+/**
+ * 一条**命令模板**:守望面板下拉里的一项(名字 + 命令)。存在 setting 里
+ * (D4:不单开设置页,面板里管)。
+ */
+export const WatchCommandTemplateSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  command: z.string().min(1),
+});
+export type WatchCommandTemplate = z.infer<typeof WatchCommandTemplateSchema>;
+
+/**
+ * **守望起跑**:以 `sessionId` 那条会话为**发起会话**,起一次内置模板
+ * 「长任务守望」的运行(见 `main/orchestration/automationRunner.ts` 的
+ * `startWatch`)。命令在发起会话的项目目录里跑,跑完注入回发起会话。
+ *
+ * `command` / `message` 不给 = 沿用模板里现在那条 —— 主进程会把给了的写进模板
+ * (节点参数就是配置的真相),所以这个调用**有可见的副作用**:库里那份模板显示的
+ * 就是上一次守望用的配置。
+ */
+export const WatchStartSchema = z.object({
+  sessionId: z.string().min(1),
+  command: z.string().min(1).optional(),
+  message: z.string().optional(),
+});
+export type WatchStartInput = z.infer<typeof WatchStartSchema>;
+
+/** 这条会话上有没有**正在跑的守望**(面板据此提示"上一次还在跑")。 */
+export const WatchStatusSchema = z.object({ sessionId: z.string().min(1) });
+export type WatchStatusInput = z.infer<typeof WatchStatusSchema>;
+
+/**
+ * 存**整份**命令模板列表(同 `AgentProfileSaveSchema` 的理由:模板是用户从头写的,
+ * 局部更新在这里没有意义,整份给过来让校验只发生在一个地方)。
+ */
+export const WatchTemplatesSaveSchema = z.object({
+  templates: z.array(WatchCommandTemplateSchema),
+});
+export type WatchTemplatesSaveInput = z.infer<typeof WatchTemplatesSaveSchema>;
+
+/**
+ * 一次运行的结局。与 `workflow_runs.status` 那一列**一一对应**
+ * (见 `main/store/repositories.ts` 的 `WorkflowRunStatus`)。
+ *
+ * 这里再写一份是因为 IPC 契约不能 import 存储层;两边真要漂了,主进程那边
+ * "把 `WorkflowRunRow.status` 赋给这个类型"的一行会编译不过 —— 那正是它存在的意义。
+ */
+export const AUTOMATION_RUN_STATUSES = [
+  "running",
+  "interrupted",
+  "success",
+  "failed",
+  "cancelled",
+] as const;
+export type AutomationRunStatus = (typeof AUTOMATION_RUN_STATUSES)[number];
+
+/** 运行历史里的一步。**从存档折出来的**,不是另存的一份 —— 只挑卡片上显示得下的那几样
+ *  (节点 id、名字、结局、摘要首行、错误)。 */
+export interface AutomationRunStep {
+  nodeId: string;
+  /** 这一步在图上叫什么(标题 > id)。只给 id 的话历史里没人认得出是哪一步。 */
+  title: string;
+  status: string;
+  /** 摘要的**首行**(整段摘要塞进一行列表里是噪声)。 */
+  summary: string;
+  /** 失败时的原因,原样给(里面往往就写着该怎么办)。 */
+  error?: string;
+}
+
+/** 运行历史里的一次运行。 */
+export interface AutomationRunEntry {
+  runId: string;
+  status: AutomationRunStatus;
+  /** 这次运行什么时候开始的。 */
+  startedAt: number;
+  /** 最后一次更新(收尾时刻)。 */
+  updatedAt: number;
+  steps: AutomationRunStep[];
+}
+
 /** 删一份代理档案。**只按 id** —— 格式坏、读不出来的文件不在 `profiles` 里,但它照样
  *  删得掉(`removeAgentProfile` 直接按 id 拼路径),那正是最该能删的一种。 */
 export const AgentProfileRemoveSchema = z.object({ id: z.string().regex(/^p_[a-z0-9_]+$/) });

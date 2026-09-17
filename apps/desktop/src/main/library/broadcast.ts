@@ -24,12 +24,49 @@
  * 更新。一次已经写成功的操作不该因为"没人听"而报错。
  */
 import { IPC } from "@contracts/ipc";
+import type { LibraryItem } from "@contracts/library";
 import { sendToRenderer } from "@main/window.js";
+import { runtimeManager } from "@main/claude/RuntimeManager.js";
+import { log } from "@main/lib/logger.js";
 
 export function notifyLibraryChanged(reason: string): void {
   try {
     sendToRenderer(IPC.LIBRARY_CHANGED, { channel: IPC.LIBRARY_CHANGED, reason });
   } catch {
     /* 没有窗口在听 —— 不是错误 */
+  }
+}
+
+/**
+ * 统一资料库:一条条目**入库成功** → 发一条 `library.item.imported`。
+ *
+ * ## 为什么走 `emitExternal` 而不是 `broadcastRuntimeEvent`
+ *
+ * 事件的长相是"广播给所有客户端"(同 `sessionSync.broadcastRuntimeEvent` 的那两条
+ * 通道),但它的**正经读者是 automation 的「事件发生时」触发器与钩子** —— 那两位挂在
+ * `runtimeManager.subscribe` 上,而 `broadcastRuntimeEvent` 恰恰不发观察者(见
+ * `runner.ts` 里 `workflow.node.usage` 那条同款注释)。所以走 `emitExternal`:两条
+ * 客户端通道 + 观察者,一次到位。
+ *
+ * ## `sessionId` 用合成哨兵 "(system)"
+ *
+ * 理由写在 `@contracts/runtime` 的 `LibraryItemImportedEvent` 上 —— 导入不属于任何
+ * 对话。渲染端对认不出的类型按未知事件忽略;`HookRunner` 对 "(system)" 有专门的
+ * 放行(会话查不到≠事件丢了)。
+ *
+ * 三个导入入口(`operations.importIdentifiers` / `pdfImport.importPdfFiles` /
+ * `fileImport.importGenericFiles`)都调这里 —— 事件语义只有一份,散在各入口迟早分叉。
+ */
+export function emitItemImported(item: LibraryItem): void {
+  try {
+    runtimeManager.emitExternal({
+      type: "library.item.imported",
+      sessionId: "(system)",
+      itemId: item.id,
+      kind: item.kind,
+      title: item.title,
+    });
+  } catch (err) {
+    log.warn(`[library] 发导入事件失败(${item.id}):${(err as Error).message}`);
   }
 }

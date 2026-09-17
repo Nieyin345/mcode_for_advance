@@ -25,15 +25,19 @@ import {
   IconArrowsSplit,
   IconBolt,
   IconDatabase,
+  IconBook,
   IconPlugConnected,
   IconShieldCheck,
   McpIcon,
+  IconBrain,
   type TablerIconProps,
 } from "@renderer/lib/icons.js";
 import { CustomModelsPanel } from "./CustomModelsPanel.js";
+import { ContextPanel } from "./ContextPanel.js";
 import { InstitutionAuthPanel } from "./InstitutionAuthPanel.js";
 import { IntegrationsPanel } from "./IntegrationsPanel.js";
 import { DataRootPanel } from "./DataRootPanel.js";
+import { LibraryTypesPanel } from "./LibraryTypesPanel.js";
 import { RuntimesPanel } from "./RuntimesPanel.js";
 import { SkillsPanel } from "./SkillsPanel.js";
 import { WorkflowsPanel } from "./workflows/WorkflowsPanel.js";
@@ -70,7 +74,7 @@ import { AboutPanel } from "./AboutPanel.js";
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "data-root" | "runtimes" | "custom-models" | "institution" | "integrations" | "library" | "templates" | "skills" | "claude-subagents" | "workflows" | "automation" | "hooks" | "mcp" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "usage" | "about";
+type SectionId = "general" | "data-root" | "library-types" | "runtimes" | "custom-models" | "institution" | "integrations" | "library" | "templates" | "skills" | "claude-subagents" | "workflows" | "automation" | "hooks" | "mcp" | "context" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "usage" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -129,6 +133,9 @@ const NAV_GROUPS: NavGroup[] = [
       // 节点都生效(见 `@contracts/hook`)。
       { id: "hooks", labelKey: "settings.nav.hooks", icon: IconActivity },
       { id: "mcp", labelKey: "settings.nav.mcp", icon: McpIcon },
+      // 上下文紧跟 MCP:两者都是"喂给引擎的全局上下文"(MCP 是工具,
+      // 上下文是常驻指令与记忆) —— 共用一条事实源,挨在一起才看得出来。
+      { id: "context", labelKey: "settings.nav.context", icon: IconBrain },
     ],
   },
   {
@@ -146,6 +153,9 @@ const NAV_GROUPS: NavGroup[] = [
       // 数据位置排在最前面 —— 它是"我的东西在哪"这个问题的唯一答案,其余设置都
       // 建立在它之上(数据库、文献库、模版库都在它下面)。
       { id: "data-root", labelKey: "settings.nav.dataRoot", icon: IconDatabase },
+      // 资料库类型紧跟数据位置:注册表决定「库里有哪几类」,而库本身就住在数据根下 ——
+      // 两个入口放在一起,「数据在哪」和「数据怎么分」一眼就看全。
+      { id: "library-types", labelKey: "settings.nav.libraryTypes", icon: IconBook },
       // 机构认证归在「工作台」组:它是使用场景(下载文献要先登录),
       // 不是 AI 配置,放 ai 组会让人以为是模型相关设置。
       { id: "institution", labelKey: "settings.nav.institution", icon: IconShieldCheck },
@@ -281,6 +291,7 @@ export function SettingsPage() {
           {(active === "data-root" || active === "library" || active === "templates") && (
             <DataRootPanel />
           )}
+          {active === "library-types" && <LibraryTypesPanel />}
           {active === "institution" && <InstitutionAuthPanel />}
           {active === "integrations" && <IntegrationsPanel />}
           {active === "shortcuts" && <ShortcutsPanel />}
@@ -295,6 +306,7 @@ export function SettingsPage() {
           {active === "hooks" && <HooksPanel />}
           {active === "runtimes" && <RuntimesPanel />}
           {active === "mcp" && <McpPanel />}
+          {active === "context" && <ContextPanel />}
           {active === "plugins" && <PluginsPanel />}
           {active === "notifications" && <NotificationsPanel />}
           {active === "git" && <GitPanel />}

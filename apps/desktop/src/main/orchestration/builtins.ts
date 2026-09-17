@@ -1,5 +1,6 @@
 /**
- * 内置工作流 —— 随应用发布的六个,id 沿用原来那五个模式的名字。
+ * 内置工作流 —— 六个对话模式 + 两条自动化(长任务守望、文献自动下载),
+ * id 沿用原来那五个模式的名字。
  *
  * ## id 沿用旧值是**故意的**
  *
@@ -47,7 +48,17 @@ import {
   type WorkflowNode,
 } from "@contracts/workflow";
 import { BUILTIN_WORKFLOW_IDS, type BuiltinWorkflowId } from "@contracts/runtime";
-import { NODE_FLOW_RECORD_PARAM_KEY } from "@contracts/nodeType";
+import {
+  NODE_CRITERIA_PARAM_KEY,
+  NODE_FLOW_RECORD_PARAM_KEY,
+  NODE_INJECT_MODE_KEY,
+  NODE_INJECT_TARGET_KEY,
+  NODE_PROMPT_PARAM_KEY,
+  NODE_TRIGGER_EVENTS_PARAM_KEY,
+  NODE_TRIGGER_FILTER_PARAM_KEY,
+  NODE_TRIGGER_PROJECT_PARAM_KEY,
+  NODE_TRIGGER_TASK_PARAM_KEY,
+} from "@contracts/nodeType";
 import { COMPOSER_MODE_PROMPTS } from "@main/lib/systemPrompt.js";
 
 /** 内置工作流的 id。**直接引用 contracts 那一份,不在这里复制一份。**
@@ -107,7 +118,7 @@ const SEARCH_NODES: readonly NodeSpec[] = [
         "- 有没有**明确排除**的方向;",
         "- 有没有**已知的关键工作**可以作为锚点。",
         "",
-        "⚠️ 时间范围、期刊层次、影响因子、每源条数这几项**留在筛选条上** —— 用户已经在输入框下方设定过,系统会单独告知后续步骤。用户已经说清楚的部分直接采用,不必再走一遍流程问一遍。",
+        "⚠️ 提示词末尾「这次的固定条件」一段给出的那几项(时间范围、期刊层次、影响因子、每源条数)是用户设好的习惯,**不要再问他**;而且**要把那几条原样转写进你的产出「检索方向」的末尾**(一行一条,如「- 时间范围:近三年」)—— 下游步骤全靠产出里带的这几条执行筛选,漏了就没了。用户已经说清楚的部分直接采用,不必再走一遍流程问一遍。",
         "",
         "**同时确认这批文献放进哪个分类。** 检查本次对话的附件里有没有文献库分类:",
         "",
@@ -122,6 +133,19 @@ const SEARCH_NODES: readonly NodeSpec[] = [
           example:
             "卫星量子密钥分发里的波长选择方案对比。要的是近三年把波长选择和星地链路衰减放在一起做的那些工作;不要纯粹的诱骗态协议改进。锚点:用户手上已有的一篇 2023 年 NP 的星地 QKD 综述。",
         },
+      ],
+      // **固定条件**:输入框上方那排下拉框的条目表。这四条原本写死在渲染端的
+      // `SearchFilterBar` 里,现在搬进主节点参数 —— 候选值可以在这里改,条件可以加删。
+      // 注入时机:每次运行最开始,随运行提示词进**这一步**(见 `runner.ts`),一次;
+      // 下游步骤从上游产出里拿条件 —— 所以上面的指令要求把这几条转写进产出。
+      [NODE_CRITERIA_PARAM_KEY]: [
+        { name: "时间范围", choices: ["不限", "近三年", "近五年", "近十年"] },
+        {
+          name: "期刊层次",
+          choices: ["不限", "只要 T1(Q1 或中科院 1 区,或 Top)", "T1 或 T2(Q1/Q2,或中科院 1/2 区)"],
+        },
+        { name: "影响因子", choices: ["不限", "≥ 3", "≥ 5", "≥ 10"] },
+        { name: "每源条数", choices: ["10 条", "20 条", "50 条"] },
       ],
     },
   },
@@ -160,11 +184,11 @@ const SEARCH_NODES: readonly NodeSpec[] = [
     title: "检索并按条件筛",
     params: {
       instruction: [
-        "用上游给出的检索式执行 `library_search_online`,每源条数按系统给定的固定条件。**把用过的检索式告知用户** —— 他需要知道你在搜什么才能纠正你。",
+        "用上游给出的检索式执行 `library_search_online`,每源条数按上游产出里带的固定条件。**把用过的检索式告知用户** —— 他需要知道你在搜什么才能纠正你。",
         "",
         "**命中为零或明显跑偏时换用词重试**:先减少概念块,再替换同义词,把几轮尝试走完再下结论。拿跑偏的结果凑数,后面每一步都会跟着偏。",
         "",
-        "取得命中之后,按系统给定的固定条件过一遍:",
+        "取得命中之后,按上游产出里带的固定条件过一遍:",
         "",
         "- 年份直接按元数据筛;",
         "- **期刊层次和影响因子用 `library_journal_rank` 查出来**,把候选的期刊名一次传入 —— 凭印象报的区号和影响因子会直接错;",
@@ -173,7 +197,7 @@ const SEARCH_NODES: readonly NodeSpec[] = [
         "",
         "交出筛选之后**仍然保留**的那一份清单,一篇一行,带齐后续判断需要的字段(标题、年份、期刊、DOI)。",
         "",
-        "**做完的样子**:清单上每一条都来自真实命中,而且都过了系统给定的那几项条件;用过的检索式已经告诉用户;筛选中的例外(数据缺失、条件过严)已经如实交代。清单为空也是一个说得出理由的结论。",
+        "**做完的样子**:清单上每一条都来自真实命中,而且都过了上游带来的那几项条件;用过的检索式已经告诉用户;筛选中的例外(数据缺失、条件过严)已经如实交代。清单为空也是一个说得出理由的结论。",
       ].join("\n"),
       outputVars: [
         {
@@ -348,7 +372,149 @@ const WRITE_EDGES: readonly WorkflowEdge[] = [
   }),
 ];
 
-/* ── 六个内置工作流 ── */
+/* ── 长任务守望(图型,内置模板)────────────────────────────── */
+
+/**
+ * 守望模板的 id 与**图上三个节点的 id** —— 「守望」按钮起跑时靠它们找到入口、
+ * 把这一次的命令与消息填进去(见 `automationRunner.startWatch`)。
+ *
+ * ⚠️ 它**不在** `BUILTIN_WORKFLOW_IDS` 里:那份列表是**对话模式下拉**的六个,
+ * 守望不是一种聊天模式,不该出现在那儿。它只出现在工作流库的「自动化」栏,
+ * 以及会话输入区那颗「守望」按钮后面。
+ */
+export const WATCH_WORKFLOW_ID = "watch";
+export const WATCH_TRIGGER_NODE_ID = "watch-trigger";
+export const WATCH_COMMAND_NODE_ID = "watch-command";
+export const WATCH_SAY_NODE_ID = "watch-say";
+
+/**
+ * 触发器上「这次要做什么」的兜底。用户把模板改到把这句话删了的时候,守望按钮
+ * 照这句话起跑 —— 而不是带着一句空请求跑出去。
+ */
+export const WATCH_DEFAULT_TASK =
+  "运行「跑命令」里写的那条命令,等它退出,把退出码与输出尾部交给下一步。";
+
+/**
+ * 注入那一步的默认指令。发进发起会话的是**完整的一轮提示词**(命令的退出码、
+ * 输出尾部这些上游产出由调度器拼在这句话后面),所以这里只需要把
+ * "为什么这条对话里突然冒出一条消息"交代清楚。
+ */
+export const WATCH_DEFAULT_MESSAGE =
+  "守望的命令已经跑完了。下面是这次守望的说明,以及命令的退出码与输出尾部 —— 请接着处理。";
+
+const WATCH_NODES: readonly NodeSpec[] = [
+  {
+    id: WATCH_TRIGGER_NODE_ID,
+    type: "mcode.trigger",
+    title: "守望入口",
+    params: {
+      triggerKind: "manual",
+      // ⚠️ **空是故意的**:内置模板没法预知这台机器上有哪些项目。守望按钮起跑时
+      // 会把**发起会话的项目**填进来并顺手存一份(见 `automationRunner.startWatch`)
+      // —— 所以用过一次之后,这一项就有着落了。在那之前想在库里手工「立刻运行一次」,
+      // 先在触发器上把项目填上(存盘那一关本来就要求它非空)。
+      [NODE_TRIGGER_PROJECT_PARAM_KEY]: "",
+      [NODE_TRIGGER_TASK_PARAM_KEY]: WATCH_DEFAULT_TASK,
+    },
+  },
+  {
+    id: WATCH_COMMAND_NODE_ID,
+    type: "mcode.command",
+    title: "跑命令",
+    params: {
+      // 面板每次起跑都会填(选的模板或现写的那条),这里只是让图开箱看着是个完整的东西。
+      command: "echo done",
+      timeoutMs: 0,
+    },
+  },
+  {
+    id: WATCH_SAY_NODE_ID,
+    type: "mcode.conversation",
+    title: "回话",
+    params: {
+      [NODE_PROMPT_PARAM_KEY]: WATCH_DEFAULT_MESSAGE,
+      // 守望的本职:发完就走,发回**发起会话**。想改成发完等一轮回答、或发进跑图的
+      // 会话,在节点上改这两个下拉(见 `@contracts/nodeType` 的 INJECT_*)。
+      [NODE_INJECT_MODE_KEY]: "auto",
+      [NODE_INJECT_TARGET_KEY]: "origin",
+    },
+  },
+];
+
+const WATCH_EDGES: readonly WorkflowEdge[] = [
+  wire(WATCH_TRIGGER_NODE_ID, WATCH_COMMAND_NODE_ID),
+  wire(WATCH_COMMAND_NODE_ID, WATCH_SAY_NODE_ID),
+];
+
+/* ── 文献自动下载(内置自动化,事件触发)────────────────────── */
+
+/**
+ * 与守望同款:它**不在** `BUILTIN_WORKFLOW_IDS` 里(那份是**对话模式下拉**的六个),
+ * 只出现在工作流库的「自动化」栏。触发源是统一资料库的 `library.item.imported`
+ * 事件(见 `@contracts/runtime` 的 `LibraryItemImportedEvent`)—— 每有一条条目
+ * 入库就起一次运行,把还没下到 PDF 的那几条排队下载。
+ */
+export const AUTO_DOWNLOAD_WORKFLOW_ID = "wf_auto_download";
+export const AUTO_DOWNLOAD_TRIGGER_NODE_ID = "auto-download-trigger";
+export const AUTO_DOWNLOAD_AGENT_NODE_ID = "auto-download-agent";
+
+/**
+ * 触发器上「这次要做什么」的兜底。被触发时这句话就是**这次运行的请求**(根节点
+ * 读到的那一句)。
+ */
+export const AUTO_DOWNLOAD_DEFAULT_TASK =
+  "资料库刚有新条目导入。把最新导入、还没有 PDF 的那几条排队下载,并汇报结果。";
+
+const AUTO_DOWNLOAD_NODES: readonly NodeSpec[] = [
+  {
+    id: AUTO_DOWNLOAD_TRIGGER_NODE_ID,
+    type: "mcode.trigger",
+    title: "导入触发",
+    params: {
+      triggerKind: "event",
+      // ⚠️ **空是故意的**(与守望同一条理由):内置模板没法预知这台机器上有哪些
+      // 项目。而且导入事件**不属于任何项目**,没有"运行时自动填"的入口 —— 所以
+      // 用之前要在触发器上把项目绑一次(存盘那一关本来就要求它非空;绑过之后
+      // 监听表才收它,见 `automationRunner.buildTriggers`)。
+      [NODE_TRIGGER_PROJECT_PARAM_KEY]: "",
+      [NODE_TRIGGER_TASK_PARAM_KEY]: AUTO_DOWNLOAD_DEFAULT_TASK,
+      // 听哪个事件,取值来自 `@contracts/hook` 的 HOOK_EVENTS。
+      [NODE_TRIGGER_EVENTS_PARAM_KEY]: "library.item.imported",
+      // 留空:这个事件没有可筛的主语(没工具名、没文件路径,见 hookSubjectOf),
+      // 填了也不会生效 —— validateTrigger 会直接拒。
+      [NODE_TRIGGER_FILTER_PARAM_KEY]: "",
+    },
+  },
+  {
+    id: AUTO_DOWNLOAD_AGENT_NODE_ID,
+    type: "mcode.agent",
+    title: "排队下载",
+    // **写能力**:排队下载是写操作(`library_download` 不在只读集合里)。默认的
+    // `read` 会把这一步按在计划模式里,连一次下载都排不上。
+    capability: "write",
+    params: {
+      instruction: [
+        "资料库里刚有新条目导入了。你的任务:找出**最新导入、还没有 PDF** 的条目,给它排队下载。",
+        "",
+        "做法:",
+        "",
+        "- 用 `library_search`(关键词留空)列出库里的条目,按导入时间取最新的一条或几条;",
+        "- 对**还没有 PDF** 的条目调用 `library_download` 排队下载 —— 它要求条目有 DOI / arXiv ID 或可用的链接;",
+        "- 两条标识都没有的条目下载不了,**如实说明缺了什么,不要编造 DOI**;",
+        "- 已有 PDF 的条目跳过,不要重复排队。",
+        "",
+        "**做完的样子**:该排队的都排上了,并向用户汇报 —— 排了几条、各自什么标题;" +
+          "下不了的说明原因。下载与转录由应用自动完成,不需要你等它下完。",
+      ].join("\n"),
+    },
+  },
+];
+
+const AUTO_DOWNLOAD_EDGES: readonly WorkflowEdge[] = [
+  wire(AUTO_DOWNLOAD_TRIGGER_NODE_ID, AUTO_DOWNLOAD_AGENT_NODE_ID),
+];
+
+/* ── 内置工作流(六个对话模式 + 两条自动化)── */
 
 /** 内置工作流的**默认版**。用户的修改不入这里 —— 它们存在 `workflows` 表里,
  *  同名 id 的一行覆盖这里的一份;「恢复默认」= 删掉那一行(见 `main/orchestration/`)。 */
@@ -429,6 +595,33 @@ export const BUILTIN_WORKFLOWS: readonly WorkflowDoc[] = [
     prompt: COMPOSER_MODE_PROMPTS.code,
     nodes: [],
     edges: [],
+    builtin: true,
+    updatedAt: 0,
+  },
+  {
+    // **不是对话模式**(见 WATCH_WORKFLOW_ID 上的说明):它没有 prompt、不出现在
+    // 模式下拉里。入口是会话输入区那颗「守望」按钮(D3),以及工作流库的自动化栏。
+    id: WATCH_WORKFLOW_ID,
+    name: "长任务守望",
+    // 会进流程记录的开头(同 search/write 的规矩),写的是这条流程是干什么的。
+    description: "跑一条命令,等它退出,把退出码与输出尾部注入发起会话。",
+    icon: "eye",
+    nodes: graph(WATCH_NODES, WATCH_EDGES),
+    edges: [...WATCH_EDGES],
+    trigger: "manual",
+    builtin: true,
+    updatedAt: 0,
+  },
+  {
+    // 同守望:**自动化**,不出现在模式下拉里(见 AUTO_DOWNLOAD_WORKFLOW_ID 上的说明)。
+    id: AUTO_DOWNLOAD_WORKFLOW_ID,
+    name: "文献自动下载",
+    // 会进流程记录的开头(同 search/write 的规矩),写的是这条流程是干什么的。
+    description: "资料库有新条目导入时,读出最新导入的条目,有 DOI/arXiv 或链接的就排队下载 PDF。",
+    icon: "download",
+    nodes: graph(AUTO_DOWNLOAD_NODES, AUTO_DOWNLOAD_EDGES),
+    edges: [...AUTO_DOWNLOAD_EDGES],
+    trigger: "event",
     builtin: true,
     updatedAt: 0,
   },

@@ -72,6 +72,7 @@ const EVENT_LABELS: Record<HookEvent, MessageId> = {
   error: "settings.hooks.event.error",
   "upstream.issue": "settings.hooks.event.upstreamIssue",
   "workflow.node.result": "settings.hooks.event.workflowNodeResult",
+  "library.item.imported": "settings.hooks.event.libraryItemImported",
 };
 
 /** 每种事件那句"什么时候跑"的解释。见词条里为什么逐条写。 */
@@ -92,6 +93,7 @@ const EVENT_HINTS: Record<HookEvent, MessageId> = {
   error: "settings.hooks.eventHint.error",
   "upstream.issue": "settings.hooks.eventHint.upstreamIssue",
   "workflow.node.result": "settings.hooks.eventHint.workflowNodeResult",
+  "library.item.imported": "settings.hooks.eventHint.libraryItemImported",
 };
 
 /**

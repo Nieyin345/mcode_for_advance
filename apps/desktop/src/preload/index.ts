@@ -204,6 +204,18 @@ const api = {
   /** 文献库 —— 条目、集合、检索导入、全文检索、库位置。
    *  变更类方法一律返回新的完整列表,渲染端整体替换缓存。 */
   library: {
+    typesGet: (() =>
+      ipcRenderer.invoke(IPC.LIBRARY_TYPES_GET, {})) as RpcMap["library.typesGet"],
+    typesSave: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_TYPES_SAVE, input)) as RpcMap["library.typesSave"],
+    groupsGet: (() =>
+      ipcRenderer.invoke(IPC.LIBRARY_GROUPS_GET, {})) as RpcMap["library.groupsGet"],
+    groupsSave: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_GROUPS_SAVE, input)) as RpcMap["library.groupsSave"],
+    importGeneric: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_IMPORT_GENERIC, input)) as RpcMap["library.importGeneric"],
+    readFile: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_READ_FILE, input)) as RpcMap["library.readFile"],
     list: ((input) => ipcRenderer.invoke(IPC.LIBRARY_LIST, input)) as RpcMap["library.list"],
     get: ((input) => ipcRenderer.invoke(IPC.LIBRARY_GET, input)) as RpcMap["library.get"],
     addItems: ((input) =>
@@ -553,9 +565,10 @@ const api = {
   pickFiles: ((input) =>
     ipcRenderer.invoke(IPC.DIALOG_PICK_FILES, input)) as RpcMap["dialog.pickFiles"],
 
-  /** Skill discovery + management. `list` scans ~/.mcode/skills + the active
-   *  project's .claude/skills; read/save/delete operate on a single skill.
-   *  scanSources/import support importing skills from external tools. */
+  /** Skill discovery + management. `list` scans the universal ~/.mcode/skills
+   *  library; read/save/delete operate on a single skill. `enginesSet` edits
+   *  the per-engine availability matrix. scanSources/import support importing
+   *  skills from external tools. */
   skills: {
     list: ((input) =>
       ipcRenderer.invoke(IPC.SKILLS_LIST, input)) as RpcMap["skills.list"],
@@ -565,10 +578,18 @@ const api = {
       ipcRenderer.invoke(IPC.SKILLS_SAVE, input)) as RpcMap["skills.save"],
     delete: ((input) =>
       ipcRenderer.invoke(IPC.SKILLS_DELETE, input)) as RpcMap["skills.delete"],
+    enginesSet: ((input) =>
+      ipcRenderer.invoke(IPC.SKILLS_ENGINES_SET, input)) as RpcMap["skills.engines.set"],
+    bundles: ((input) =>
+      ipcRenderer.invoke(IPC.SKILLS_BUNDLES, input)) as RpcMap["skills.bundles"],
+    enginesSetBulk: ((input) =>
+      ipcRenderer.invoke(IPC.SKILLS_ENGINES_SET_BULK, input)) as RpcMap["skills.enginesSetBulk"],
     scanSources: ((input) =>
       ipcRenderer.invoke(IPC.SKILLS_SCAN_SOURCES, input)) as RpcMap["skills.scanSources"],
     import: ((input) =>
       ipcRenderer.invoke(IPC.SKILLS_IMPORT, input)) as RpcMap["skills.import"],
+    importGithub: ((input) =>
+      ipcRenderer.invoke(IPC.SKILLS_IMPORT_GITHUB, input)) as RpcMap["skills.importGithub"],
   },
 
   /** MCP server management (settings panel): list the three server sources
@@ -580,6 +601,8 @@ const api = {
       ipcRenderer.invoke(IPC.MCP_LIST, input)) as RpcMap["mcp.list"],
     toggle: ((input) =>
       ipcRenderer.invoke(IPC.MCP_TOGGLE, input)) as RpcMap["mcp.toggle"],
+    enginesSet: ((input) =>
+      ipcRenderer.invoke(IPC.MCP_ENGINES_SET, input)) as RpcMap["mcp.enginesSet"],
     authorize: ((input) =>
       ipcRenderer.invoke(IPC.MCP_AUTHORIZE, input)) as RpcMap["mcp.authorize"],
     unauthorize: ((input) =>
@@ -592,6 +615,27 @@ const api = {
       ipcRenderer.invoke(IPC.MCP_SCAN_IMPORT, input)) as RpcMap["mcp.scanImport"],
     import: ((input) =>
       ipcRenderer.invoke(IPC.MCP_IMPORT, input)) as RpcMap["mcp.import"],
+  },
+
+  /** 上下文托管(设置面板):全局指令 + 记忆编辑器 + 工具上下文占用。
+   *  全局指令保存后由主进程物化到各引擎的消费点(CLAUDE.md / AGENTS.md 组装链);
+   *  记忆直接读写 CLI 原生 auto-memory 文件,注入仍由 CLI 自己完成。 */
+  context: {
+    get: ((input) =>
+      ipcRenderer.invoke(IPC.CONTEXT_GET, input)) as RpcMap["context.get"],
+    save: ((input) =>
+      ipcRenderer.invoke(IPC.CONTEXT_SAVE, input)) as RpcMap["context.save"],
+    memoriesList: ((input) =>
+      ipcRenderer.invoke(IPC.CONTEXT_MEMORIES_LIST, input)) as RpcMap["context.memoriesList"],
+    memoryGet: ((input) =>
+      ipcRenderer.invoke(IPC.CONTEXT_MEMORY_GET, input)) as RpcMap["context.memoryGet"],
+    memorySave: ((input) =>
+      ipcRenderer.invoke(IPC.CONTEXT_MEMORY_SAVE, input)) as RpcMap["context.memorySave"],
+  },
+
+  /** 工具上下文占用(设置面板):按引擎静态枚举 Mcode 可控的工具 schema 估算。 */
+  tools: {
+    usage: ((input) => ipcRenderer.invoke(IPC.TOOLS_USAGE, input)) as RpcMap["tools.usage"],
   },
 
   /** Output styles (settings panel): list built-in + user styles. The
@@ -753,6 +797,34 @@ const api = {
     // `claude.respondPlanApproval` 是同一个形状,不是编辑动作。
     choose: ((input) =>
       ipcRenderer.invoke(IPC.WORKFLOW_CHOOSE, input)) as RpcMap["workflow.choose"],
+  },
+
+  /** 自动化(设置 → 工作流 → 自动化那一栏):触发器节点在**后台**起一条运行,这一组
+   *  是那一栏要的三件事 —— 立刻跑一次、看历史、找到那条后台会话。
+   *
+   *  **手机端不暴露这三个**(那个 RPC 表是手写白名单,见 `main/mobile/mobileRpc.ts`):
+   *  手机上要解开的卡是"图停在岔路口等你点",而那件事走的是 `workflow.choose`。 */
+  automation: {
+    run: ((input) =>
+      ipcRenderer.invoke(IPC.AUTOMATION_RUN, input)) as RpcMap["automation.run"],
+    runs: ((input) =>
+      ipcRenderer.invoke(IPC.AUTOMATION_RUNS, input)) as RpcMap["automation.runs"],
+    sessions: ((input) =>
+      ipcRenderer.invoke(IPC.AUTOMATION_SESSIONS, input)) as RpcMap["automation.sessions"],
+    // 守望(会话输入区那颗按钮):起跑 / 活跃查询 / 命令模板两件。同上,桌面专属。
+    watch: ((input) =>
+      ipcRenderer.invoke(IPC.AUTOMATION_WATCH, input)) as RpcMap["automation.watch"],
+    watchStatus: ((input) =>
+      ipcRenderer.invoke(IPC.AUTOMATION_WATCH_STATUS, input)) as RpcMap["automation.watchStatus"],
+    watchTemplates: (() =>
+      ipcRenderer.invoke(
+        IPC.AUTOMATION_WATCH_TEMPLATES,
+      )) as RpcMap["automation.watchTemplates"],
+    saveWatchTemplates: ((input) =>
+      ipcRenderer.invoke(
+        IPC.AUTOMATION_WATCH_TEMPLATES_SAVE,
+        input,
+      )) as RpcMap["automation.watchTemplatesSave"],
   },
 
   /** 钩子(设置 → 钩子):某件事发生的时候跑一条你自己的命令。**宿主侧执行**,

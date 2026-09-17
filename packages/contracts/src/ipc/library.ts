@@ -6,7 +6,6 @@
  */
 
 import { z } from "zod";
-import { LIBRARY_KINDS } from "../library.js";
 import type { LibraryKind, DownloadStatus } from "../library.js";
 import { TemplateKindSchema } from "./templates.js";
 
@@ -38,9 +37,38 @@ export function libraryTrashSettingKey(kind: LibraryKind): string {
 
 /* ── 文献库:PDF 文件导入 + 转 Markdown ── */
 
-/** 三个平级的库(值域与 `contracts/library.ts` 的 `LIBRARY_KINDS` 一致)。 */
-export const LibraryKindSchema = z.enum(LIBRARY_KINDS);
+/**
+ * 库 kind 的 IPC 入参。**开放字符串**:统一资料库后 kind 的合法取值由类型注册表
+ * (见 `contracts/libraryTypes.ts`)决定,而注册表在主进程的 DB 里 —— 契约层拿不到,
+ * 所以这里只查"是个非空串",**注册表校验在 handler 层**做(见 main/library/kindRegistry)。
+ * 传一个没注册的 kind,handler 返回一条说人话的错误,而不是 schema 的泛泛拒绝。
+ */
+export const LibraryKindSchema = z.string().min(1);
 export type LibraryKindInput = z.infer<typeof LibraryKindSchema>;
+
+/* ── 类型注册表(统一资料库) ── */
+
+/** 读注册表。没有入参,但 IPC 调用约定仍带一个空对象(同 `context.get` 那一族)。 */
+export const LibraryTypesGetSchema = z.object({});
+export type LibraryTypesGetInput = z.infer<typeof LibraryTypesGetSchema>;
+
+/**
+ * 整表替换注册表。`types` 收**原始 JSON**(渲染端编辑器里就是一份结构化列表),
+ * 校验(内置不可删、id 规则、purpose 合法)由主进程过 `parseLibraryTypesJson` ——
+ * 校验规则是纯函数,渲染端将来要预检也用同一份,不会出现两边判据漂移。
+ */
+export const LibraryTypesSaveSchema = z.object({ types: z.unknown() });
+export type LibraryTypesSaveInput = z.infer<typeof LibraryTypesSaveSchema>;
+
+/* ── 大类(左栏分组) ── */
+
+/** 读大类表。返回的是**合并校验后**的(引用了已删类型的行已被过滤)。 */
+export const LibraryGroupsGetSchema = z.object({});
+export type LibraryGroupsGetInput = z.infer<typeof LibraryGroupsGetSchema>;
+
+/** 整表替换大类(形状与"一个类型只属一个组"的校验在 `parseLibraryGroupsJson`)。 */
+export const LibraryGroupsSaveSchema = z.object({ groups: z.unknown() });
+export type LibraryGroupsSaveInput = z.infer<typeof LibraryGroupsSaveSchema>;
 
 export const LibraryImportFilesSchema = z.object({
   /** 用户从文件选择框里挑出来的绝对路径。上限 200 —— 再多就该分批了。 */
@@ -105,6 +133,37 @@ export type LibraryReadMarkdownInput = z.infer<typeof LibraryReadMarkdownSchema>
  * Electron 的 IPC 用结构化克隆,`Uint8Array` 可以原样过去;base64 会让体积涨三分之一,
  * 而论文 PDF 常有十几 MB。pdf.js 的 `getDocument({ data })` 正好收 Uint8Array。
  */
+/**
+ * 读**通用文件条目**的内容(统一资料库)。
+ *
+ * 条目是目录时:返回目录列表(`files`),`relPath` 指向目录内的某个文件再读一次。
+ * 条目是文件时按扩展名分型:文本类给 `text`;图片/二进制(docx/pptx/xlsx/pdf …)
+ * 给 `mime` + base64(渲染端读不了本地文件,只有主进程拿得到字节;二进制走 base64
+ * 是因为这条 RPC 与逐字节大文件无关,预览的体积上限在主进程挡住)。
+ */
+export const LibraryReadFileSchema = z.object({
+  id: z.string().min(1),
+  /** 目录条目内要读的文件(相对该目录)。省略 = 读条目本体 / 列目录。 */
+  relPath: z.string().optional(),
+});
+export type LibraryReadFileInput = z.infer<typeof LibraryReadFileSchema>;
+
+export type LibraryFileContent =
+  | { type: "dir"; files: Array<{ name: string; isDir: boolean }> }
+  | { type: "text"; text: string }
+  | { type: "binary"; mime: string; base64: string }
+  | { type: "unsupported"; error: string };
+
+/* ── 通用文件条目(统一资料库) ── */
+
+/** 任意文件/目录导入为库条目。mode 见 `LibraryItem.entryMode`。 */
+export const LibraryImportGenericSchema = z.object({
+  paths: z.array(z.string().min(1)).min(1).max(200),
+  mode: z.enum(["linked", "attached"]).optional(),
+  kind: LibraryKindSchema.optional(),
+  collectionIds: z.array(z.string()).optional(),
+});
+export type LibraryImportGenericInput = z.infer<typeof LibraryImportGenericSchema>;
 /**
  * 采纳一份**用户手上的** Markdown 作为这篇的转录产物。
  *
@@ -288,13 +347,27 @@ export const CollectionCreateSchema = z.object({
   parentId: z.string().nullable().optional(),
   /** 建在哪个库里。省略 = 论文库。 */
   kind: LibraryKindSchema.optional(),
+  /** 这个分类的「给 AI 的说明」。省略 = 不写。 */
+  prompt: z.string().optional(),
 });
 export type CollectionCreateInput = z.infer<typeof CollectionCreateSchema>;
 
-export const CollectionRenameSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-});
+/**
+ * 编辑一个分类的**属性** —— 名字与「给 AI 的说明」。至少给一样。
+ *
+ * 「改名」的老语义原样保留(name 传了就改);`prompt` 是统一资料库加的第二层注入
+ * (类型说明之外、用户按集合写的那份)。都不传没意义,直接拒绝。
+ */
+export const CollectionRenameSchema = z
+  .object({
+    id: z.string().min(1),
+    name: z.string().min(1).optional(),
+    /** 传空串 = 清空说明(清单里不再注入这一层)。 */
+    prompt: z.string().optional(),
+  })
+  .refine((v) => v.name !== undefined || v.prompt !== undefined, {
+    message: "名字和说明至少要改一样",
+  });
 export type CollectionRenameInput = z.infer<typeof CollectionRenameSchema>;
 
 export const CollectionDeleteSchema = z.object({ id: z.string().min(1) });

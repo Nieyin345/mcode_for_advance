@@ -16,12 +16,12 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { IPC } from "@contracts/ipc";
 import {
-  isLibraryKind,
   formatAuthorList,
   type LibraryItem,
   type LibraryKind,
 } from "@contracts/library";
 import { trashCollectionId } from "./trash.js";
+import { kindDisplayName, kindGroupPromptOf, kindMeta } from "./kindRegistry.js";
 import { CollectionRepo, LibraryRepo, NoteRepo } from "@main/store/repositories.js";
 import { sendToRenderer } from "@main/window.js";
 import { libraryRoot, fromLibraryRelative } from "./paths.js";
@@ -177,26 +177,40 @@ export function writeCollectionManifest(collectionId: string): ManifestResult {
   const items = LibraryRepo.listByCollection(collectionId);
   const name = collection?.name ?? collectionId;
   const lines = [`# 文献库:${name}`, "", `共 ${items.length} 篇。`, ""];
+  // 提示词**三层叠加,从大到小**:大类(组)→ 类型 → 集合。有大类/类型说明时,集合
+  // 的行写在最前 —— 集合的说明最具体,最后读到的东西权重最高。哪层没写就跳过。
+  const groupPrompt = items[0] ? kindGroupPromptOf(items[0].kind) : undefined;
+  const typePrompt = items[0] ? kindMeta(items[0].kind)?.prompt : undefined;
+  for (const p of [groupPrompt, typePrompt]) {
+    const text = p?.trim();
+    if (text) lines.push(`> ${text}`, "");
+  }
+  // **这一组的说明**(用户按集合写的)紧跟其后 —— 模型一打开清单就先读到"这组东西
+  // 该怎么处理"。没有就不注这一段。
+  const prompt = collection?.prompt?.trim();
+  if (prompt) {
+    lines.push(`> 处理这一组时:${prompt}`, "");
+  }
   lines.push(...renderItemsManifest(items));
   return writeManifest(`${collectionId}.md`, lines, items.length, name);
 }
 
-/** 三个库各自的中文名 —— 清单是给模型读的中文内容,不是界面文案,所以不走 i18n。 */
-const KIND_LABEL_ZH: Record<LibraryKind, string> = {
-  paper: "文献",
-  textbook: "教材",
-  note: "笔记",
-};
+/** 三个库各自的中文名 —— 清单是给模型读的中文内容,不是界面文案,所以不走 i18n。
+ *  ⚠️ 统一资料库后 kind 开放注册,这里不再穷举:显示名一律走注册表
+ *  (`kindDisplayName`,内置 8 类的出厂名与这张表一致)。保留为空占位会被误用,删。 */
 
 /**
- * **整库清单** —— 「全部文献 / 全部教材 / 全部笔记」那一行挂进对话时用的。
+ * 整库清单 —— 「全部文献 / 全部教材 / 全部笔记」那一行挂进对话时用的。
  *
- * 与分类清单同一份排版,两处不同:
+ * 与分类清单同一份排版,三处不同:
  *
  *  1. 范围是整个库(`LibraryRepo.listByKind`,**不分页**) —— 那 200 条的默认上限是
  *     给左栏那棵树用的,清单必须全量,否则模型以为库里就这些;
  *  2. **回收站里的不算**。挂"全部文献"是要 AI 读用户留着的那些,把被丢进回收站的
- *     也塞给它,它就可能去引用一篇用户已经不要了的东西。剔掉多少如实写在开头。
+ *     也塞给它,它就可能去引用一篇用户已经不要了的东西。剔掉多少如实写在开头;
+ *  3. **类型说明跟着清单走** —— 标题用注册表的显示名(统一资料库后 kind 是开放的,
+ *     用户自建的类型同样有中文名),`prompt` 有内容就注在开头:模型一打开就知道
+ *     "这一类东西是什么、该怎么处理"。
  */
 export function writeKindManifest(kind: LibraryKind): ManifestResult {
   const all = LibraryRepo.listByKind(kind);
@@ -204,8 +218,17 @@ export function writeKindManifest(kind: LibraryKind): ManifestResult {
   const trashed = new Set(trashId ? LibraryRepo.listByCollection(trashId).map((i) => i.id) : []);
   const items = all.filter((i) => !trashed.has(i.id));
 
-  const label = KIND_LABEL_ZH[kind];
+  const label = kindDisplayName(kind);
   const lines = [`# 全部${label}`, "", `共 ${items.length} 篇。`, ""];
+  // 大类(组)说明在最外层,类型说明其次 —— 哪层写了就注,没写就跳过。
+  const groupPrompt = kindGroupPromptOf(kind);
+  if (groupPrompt) {
+    lines.push(`> ${groupPrompt.trim()}`, "");
+  }
+  const prompt = kindMeta(kind)?.prompt;
+  if (prompt) {
+    lines.push(`> 关于「${label}」这类资料:${prompt}`, "");
+  }
   if (trashed.size > 0) {
     lines.push(`(回收站里另有 ${trashed.size} 篇,不在这次范围内。)`, "");
   }
@@ -248,7 +271,7 @@ export function attachToChat(
   let res: ManifestResult;
   if (prefix === "i:" && id) res = writeItemManifest(id);
   else if (prefix === "c:" && id) res = writeCollectionManifest(id);
-  else if (prefix === "k:" && isLibraryKind(id)) res = writeKindManifest(id);
+  else if (prefix === "k:" && kindMeta(id) !== undefined) res = writeKindManifest(id);
   else return { ok: false, error: `无法识别的附件键:${key}` };
 
   if (!res.path) {

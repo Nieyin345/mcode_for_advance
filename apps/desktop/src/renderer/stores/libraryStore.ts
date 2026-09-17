@@ -21,12 +21,6 @@
  */
 import { create } from "zustand";
 import type { LibraryCollection, LibraryItem, LibraryKind } from "@contracts/library";
-import {
-  SEARCH_LIMIT_SETTING_KEY,
-  SEARCH_MIN_IF_SETTING_KEY,
-  SEARCH_TIER_SETTING_KEY,
-  SEARCH_YEAR_SPAN_SETTING_KEY,
-} from "@contracts/ipc";
 import { api } from "@renderer/lib/api.js";
 
 /** 左栏一次最多列多少篇。展开是浏览,不是检索 —— 再多就该去右栏搜了。 */
@@ -54,7 +48,8 @@ interface LibraryState {
    * 从**左栏的右键菜单**发出 —— 那里碰不到面板的局部状态。两边读写同一份,才不会
    * 出现"菜单说要预览、面板还停在元数据"。
    */
-  detailTab: "meta" | "preview" | "pdf" | "edit";
+  // "file" 是通用文件条目(linked/attached)的预览页,见 LibraryPanel 的 tabs。
+  detailTab: "meta" | "preview" | "pdf" | "file" | "edit";
   /** 当前对话绑定的库 —— 决定 AI 能读哪些文献。null = 不绑库。 */
   chatCollectionId: string | null;
   /** 首次加载是否已完成(用于区分「空库」与「还没加载」)。 */
@@ -84,7 +79,7 @@ interface LibraryState {
   setActiveCollection: (id: string | null) => void;
   setActiveKind: (kind: LibraryKind) => void;
   setActiveItem: (id: string | null) => void;
-  setDetailTab: (tab: "meta" | "preview" | "pdf" | "edit") => void;
+  setDetailTab: (tab: "meta" | "preview" | "pdf" | "file" | "edit") => void;
   /** 打开某一篇的原文预览 —— 左栏右键菜单用。一次写两个字段,避免出现
    *  「选中了新条目、标签还停在旧状态」的中间帧。 */
   openPreview: (id: string) => void;
@@ -98,48 +93,7 @@ interface LibraryState {
   loadEveryCollectionItems: () => Promise<void>;
   /** 文献增删后让左栏跟上(展开态保留,只刷新内容)。 */
   refreshItems: () => Promise<void>;
-
-  /**
-   * 文献检索模式的**固定条件** —— 输入框下方那条筛选条上选的。
-   *
-   * 存在这里而不是 sessionStore:它**不随会话变**。用户的原话是「不止是 2-4 个问题,
-   * 需要比较详细的,包括时间范围,影响因子,论文层次等等这些,**但是一般这些都是固定
-   * 的习惯**」。既然固定,就该在界面上一眼看得见、随时能改,而不是每轮让 AI 再问一遍。
-   *
-   * 持久化在 settings 表里;主进程每轮读出来注入提示词(见 `main/lib/searchPrefs.ts`)。
-   */
-  searchPrefs: SearchPrefs;
-  setSearchPref: <K extends keyof SearchPrefs>(key: K, value: SearchPrefs[K]) => void;
-  /** 从 settings 读一次。应用启动时调;缺省/非法值一律退回默认(全"不限")。 */
-  loadSearchPrefs: () => Promise<void>;
 }
-
-/** 文献检索的固定条件。取值是短码而不是数字 —— 换了选项之后旧值仍可读,退化成"不限"。 */
-export interface SearchPrefs {
-  /** 时间跨度:`any` / `3` / `5` / `10`(近 N 年)。 */
-  yearSpan: string;
-  /** 期刊层次:`any` / `t1` / `t1t2`。与 journal_rank 的 T1/T2 对齐。 */
-  tier: string;
-  /** 影响因子下限:`any` / `3` / `5` / `10`。 */
-  minImpactFactor: string;
-  /** 每个数据源取多少条:`10` / `20` / `50`。 */
-  perSourceLimit: string;
-}
-
-const SEARCH_PREF_DEFAULTS: SearchPrefs = {
-  yearSpan: "any",
-  tier: "any",
-  minImpactFactor: "any",
-  perSourceLimit: "20",
-};
-
-/** 设置键 ↔ 字段名。写成显式映射而不是拼模板串 —— 拼出来的键 TS 查不出来。 */
-const SEARCH_PREF_KEYS: Record<keyof SearchPrefs, string> = {
-  yearSpan: SEARCH_YEAR_SPAN_SETTING_KEY,
-  tier: SEARCH_TIER_SETTING_KEY,
-  minImpactFactor: SEARCH_MIN_IF_SETTING_KEY,
-  perSourceLimit: SEARCH_LIMIT_SETTING_KEY,
-};
 
 export const useLibraryStore = create<LibraryState>((set, get) => ({
   collections: [],
@@ -152,7 +106,6 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   expandedIds: {},
   itemsByCollection: {},
   allItemsByKind: {},
-  searchPrefs: { ...SEARCH_PREF_DEFAULTS },
 
   loadCollections: async () => {
     try {
@@ -260,46 +213,4 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       ...Object.keys(allItemsByKind).map((k) => loadAllItems(k as LibraryKind)),
     ]);
   },
-
-  setSearchPref: (key, value) => {
-    set((s) => ({ searchPrefs: { ...s.searchPrefs, [key]: value } }));
-    // 必须真的落盘:提示词里那几条条件是**主进程从设置表读**的,只改本地 state
-    // 会变成"界面上改了、AI 完全不受影响"—— 那种不一致最难发现。
-    void api.setting
-      .set({ key: SEARCH_PREF_KEYS[key], value: String(value) })
-      .catch((err: unknown) => console.error("save search pref failed:", err));
-  },
-
-  loadSearchPrefs: async () => {
-    const fields = Object.keys(SEARCH_PREF_KEYS) as Array<keyof SearchPrefs>;
-    try {
-      const results = await Promise.all(
-        fields.map((f) => api.setting.get({ key: SEARCH_PREF_KEYS[f] }).catch(() => null)),
-      );
-      const next = { ...SEARCH_PREF_DEFAULTS };
-      fields.forEach((field, i) => {
-        const raw = results[i]?.value;
-        // 只认已知的码。设置里存着别的(旧版本写的、用户手改的)一律退回默认 ——
-        // 把一个不认识的值塞进筛选条,那个下拉框会显示成空白。
-        if (typeof raw === "string" && allowedValues(field)[raw]) next[field] = raw;
-      });
-      set({ searchPrefs: next });
-    } catch {
-      // 首次启动还没有设置表 —— 用默认值,不抛
-    }
-  },
 }));
-
-/** 某一项允许的取值。用来挡住设置表里读出来的脏值。 */
-function allowedValues(field: keyof SearchPrefs): Record<string, true> {
-  switch (field) {
-    case "yearSpan":
-      return { any: true, "3": true, "5": true, "10": true };
-    case "tier":
-      return { any: true, t1: true, t1t2: true };
-    case "minImpactFactor":
-      return { any: true, "3": true, "5": true, "10": true };
-    case "perSourceLimit":
-      return { "10": true, "20": true, "50": true };
-  }
-}

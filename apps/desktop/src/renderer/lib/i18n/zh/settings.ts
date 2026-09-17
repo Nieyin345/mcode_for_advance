@@ -15,6 +15,7 @@ export const zh = {
   "settings.nav.automation": "自动化",
   "settings.nav.hooks": "钩子",
   "settings.nav.mcp": "MCP",
+  "settings.nav.context": "上下文",
   "settings.nav.plugins": "插件",
   "settings.nav.notifications": "消息通知",
   "settings.nav.git": "Git",
@@ -542,6 +543,10 @@ export const zh = {
   "settings.mcp.userEmpty2": "点击下方「新增」或「从 Claude CLI 导入」。",
   "settings.mcp.toggleOn": "开启 {name}",
   "settings.mcp.toggleOff": "关闭 {name}",
+  "settings.mcp.engines": "可用引擎",
+  "settings.mcp.enginesHint": "点开关控制哪个引擎能看到这个服务器（下轮对话生效）",
+  "settings.mcp.engineOnHint": "{engine} 可以看到并加载这个服务器",
+  "settings.mcp.engineOffHint": "点一下让 {engine} 也能看到这个服务器",
   "settings.mcp.needsAuth": "待授权",
   "settings.mcp.authorize": "去授权",
   "settings.mcp.authorizeHint": "该远程 server 需要 OAuth 登录,点击打开浏览器完成授权",
@@ -553,14 +558,6 @@ export const zh = {
   "settings.mcp.deleteServer": "删除此 server",
   "settings.mcp.importFromCli": "从 Claude CLI 导入",
   "settings.mcp.addServer": "新增 MCP Server",
-  "settings.mcp.projectSection": "项目级",
-  "settings.mcp.projectSectionDesc1": "来自所选项目根的 ",
-  "settings.mcp.projectSectionDesc2": "(只读,不会修改项目文件)。项目级 server ",
-  "settings.mcp.projectSectionDesc3": "默认关闭",
-  "settings.mcp.projectSectionDesc4": "——开启等同于批准其在该项目的所有会话中加载。",
-  "settings.mcp.noProjects": "暂无项目 — 打开项目后可在此管理其 .mcp.json",
-  "settings.mcp.noProjectServers": "当前项目的 .mcp.json 中没有 MCP server。",
-  "settings.mcp.projectOffSuffix": " · 默认关闭,确认来源后开启",
   "settings.mcp.builtinSection": "内置",
   "settings.mcp.builtinSectionDesc": "随应用内置、运行在本进程内的 MCP server。",
   "settings.mcp.deleteTitle": "删除 MCP server",
@@ -568,6 +565,9 @@ export const zh = {
   "settings.mcp.deleteDescMid": "」?该配置将从 ",
   "settings.mcp.deleteDescPost": " 中移除(含已关闭的暂存配置),此操作不可撤销。",
   "settings.mcp.addTitle": "新增 MCP Server",
+  "settings.mcp.editServer": "编辑此 server",
+  "settings.mcp.editTitle": "编辑 MCP Server",
+  "settings.mcp.editBtn": "保存",
   "settings.mcp.addDescPre": "添加到 ",
   "settings.mcp.addDescPost": "(用户级,所有项目可用)",
   "settings.mcp.fName": "名称",
@@ -756,12 +756,6 @@ export const zh = {
   "settings.shortcuts.reset": "恢复默认",
 
   // ── SkillsPanel ──
-  "settings.skills.desc1": "管理 Claude 技能(SKILL.md)。项目 skill 存放在所选项目的 ",
-  "settings.skills.desc2": ",仅该项目可用。全局 skill 通过「导入」功能从 Claude Code / Codex / Zcode 导入到 ",
-  "settings.skills.desc3": ",所有项目可用。在输入框输入 ",
-  "settings.skills.desc4": " 即可调用。",
-  "settings.skills.noProjects": "暂无项目 — 仅可管理全局 skill",
-  "settings.skills.sourceProject": "项目",
   "settings.skills.sourceGlobal": "全局",
   "settings.skills.sourceBuiltin": "内置",
   "settings.skills.builtinReadOnly": "内置技能 — 随应用发布,只读",
@@ -779,8 +773,6 @@ export const zh = {
   "settings.skills.sourcePlaceholder": "# SKILL.md 源码",
   "settings.skills.deleteSkillTitle": "删除此 skill",
   "settings.skills.errDesc": "请填写描述",
-  "settings.skills.newSkillIntro1": "填写名称、描述和正文,保存时会自动生成标准 frontmatter。新建 skill 存放到当前项目的 ",
-  "settings.skills.newSkillIntro2": "。之后可在编辑模式补充 ",
   "settings.skills.newSkillIntro3": " 等高级字段。",
   "settings.skills.fieldName": "名称 (Skill Name)",
   "settings.skills.fieldNameHintPre": "仅字母、数字、下划线、连字符;将作为 ",
@@ -806,12 +798,31 @@ export const zh = {
   "settings.skills.selectAll": "全选",
   "settings.skills.deselectAll": "取消全选",
   "settings.skills.localTabEmpty": "此 Tab 从本地文件夹或单个 .md 文件导入 skill,点上方「选择文件夹 / 选择文件」开始。",
-  "settings.skills.fieldScope": "作用域 (Scope)",
-  "settings.skills.scopeProjectDisabled": "暂无项目,无法创建项目 skill",
-  "settings.skills.scopeProjectHint": "存放到所选项目的 .claude/skills,仅该项目可用",
-  "settings.skills.scopeGlobalHint": "存放到 ~/.mcode/skills,所有项目可用",
-  "settings.skills.newSkillGlobalIntro1": "填写名称、描述和正文,保存时会自动生成标准 frontmatter。全局 skill 存放到 ",
-  "settings.skills.newSkillGlobalIntro2": ",所有项目可用。之后可在编辑模式补充 ",
+  "settings.skills.newSkillGlobalIntro1": "填写名称、描述和正文,保存时会自动生成标准 frontmatter。skill 存放到 ",
+  "settings.skills.newSkillGlobalIntro2": " —— Claude / Codex / Pi 共用的通用技能库,新建后对所有引擎启用。之后可在编辑模式补充 ",
+  "settings.skills.engines": "可用引擎",
+  "settings.skills.groupUniversal": "通用",
+  "settings.skills.groupInternal": "{engine} 内部",
+  "settings.skills.groupBuiltin": "内置",
+  "settings.skills.groupPlugin": "插件技能",
+  "settings.skills.groupUngrouped": "其他技能",
+  "settings.skills.modeBundle": "按来源包",
+  "settings.skills.modeEngine": "按引擎",
+  "settings.skills.githubTitle": "从 GitHub 导入技能包(一个仓库 = 一类,里面可以有多个子 skill)",
+  "settings.skills.githubPlaceholder": "github.com/owner/repo 或 owner/repo",
+  "settings.skills.githubImportBtn": "整包导入",
+  "settings.skills.githubImporting": "克隆中…",
+  "settings.skills.githubDone": "导入 {n} 个技能,归入「{bundle}」包",
+  "settings.skills.githubSkip": "{n} 个与现有技能重名,已跳过:{list}",
+  "settings.skills.githubFailed": "GitHub 导入失败",
+  "settings.skills.groupDeleteTitle": "删除整组技能",
+  "settings.skills.groupDeleteDescPre": "将删除「",
+  "settings.skills.groupDeleteDescMid": "」包里的 ",
+  "settings.skills.groupDeleteDescPost": " 个技能（及其全部文件）。插件自带的技能不受影响,此操作不可撤销。",
+  "settings.skills.groupDeleteKeepPlugin": "(插件自带的 N 个不受影响)",
+  "settings.skills.enginesHint": "全开 = 通用;只留一个 = 引擎内部。开关只改引擎可见性,文件不动。",
+  "settings.skills.engineOnHint": "{engine} 可使用该 skill(点击关闭)",
+  "settings.skills.engineOffHint": "{engine} 已禁用该 skill(点击启用)",
 
   // ── TerminalPanel ──
   "settings.terminal.title": "终端",
@@ -896,6 +907,33 @@ export const zh = {
   "settings.subagentModel.hint":
     "使用此供应商的 Claude 会话中,Task 子代理改用该模型运行;下一轮对话生效。跟随主会话时不干预。",
   "settings.subagentModel.follow": "跟随主会话",
+
+  // ── ContextPanel ──
+  "settings.context.title": "上下文",
+  "settings.context.instructionsSection": "全局指令",
+  "settings.context.instructionsDesc":
+    "所有引擎共用的常驻指令。唯一事实源存在数据根下的 context/instructions.md,保存后自动物化:Claude → ~/.mcode/CLAUDE.md,Codex → AGENTS.md 组装链,Pi → 会话启动注入。改动对下一轮对话生效。",
+  "settings.context.instructionsPlaceholder":
+    "写给所有会话的常驻要求,例如:回复用中文;代码注释遵循仓库既有风格;不要主动建议重构……",
+  "settings.context.save": "保存全局指令",
+  "settings.context.saveMemory": "保存记忆",
+  "settings.context.saved": "已保存",
+  "settings.context.memoriesSection": "项目记忆",
+  "settings.context.memoriesDesc":
+    "引擎的常驻项目记忆(~/.mcode/projects/<项目>/memory/MEMORY.md)。这里直接编辑同一份文件;记忆的注入仍由引擎按需自动完成。",
+  "settings.context.memoriesEmpty":
+    "还没有项目记忆。引擎在会话里自行沉淀记忆后,这里会出现对应条目。",
+  "settings.context.noMemorySelected": "在左侧选择一个项目,查看或编辑它的记忆。",
+  "settings.context.updatedAt": "更新于",
+  "settings.context.usageSection": "工具占用",
+  "settings.context.usageDesc":
+    "按来源估算所选引擎里工具占用的上下文开销。",
+  "settings.context.usageEngine": "引擎",
+  "settings.context.usageInprocess": "进程内工具",
+  "settings.context.usageUserMcp": "用户级 MCP",
+  "settings.context.usagePluginMcp": "插件 MCP",
+  "settings.context.usageBuiltin": "内置服务器",
+  "settings.context.usageTotal": "合计",
 
   // ── UsagePanel ──
   "settings.usage.title": "用量统计",
@@ -996,18 +1034,48 @@ export const zh = {
   "settings.automation.trigger.manual": "手动",
   "settings.automation.trigger.schedule": "定时",
   "settings.automation.trigger.file": "文件变化",
+  "settings.automation.trigger.event": "事件",
   "settings.automation.trigger.webhook": "Webhook",
-  // 四种触发要用户准备的东西完全不同，所以说的是**将来会问你要什么**，而不是一句
-  // 通用的"暂未实现"——那些参数还没设计出来（见 `WORKFLOW_TRIGGERS` 的注释）。
-  "settings.automation.triggerHint.manual": "只有你按「运行」的时候才跑。",
+  // 触发方式的**参数在触发器节点上**（见 `@contracts/nodeType` 的 `TriggerSpec`），所以
+  // 这几句说的是"它按什么响"，具体要填的东西在画布上那一格的参数面板里。
+  "settings.automation.triggerHint.manual": "只有你按「立刻运行一次」的时候才跑。",
   "settings.automation.triggerHint.schedule":
-    "到点自己跑。将来这里会问你要定时表达式（比如「每天 9 点」）。",
+    "到点自己跑。时刻表写在触发器节点的 cron 表达式上（比如「每天 9 点」= 0 9 * * *）。应用没开着就不会触发，错过的时刻不补跑。",
   "settings.automation.triggerHint.file":
-    "文件变了就跑。将来这里会问你要盯着哪个目录、认哪些文件。",
+    "盯着的文件变了就跑。哪些文件算数（glob）和连着变时合并多久，都在触发器节点上。",
+  "settings.automation.triggerHint.event":
+    "会话、工具、任务这些事发生的时候跑。挑哪几类事件、要不要再按 glob 筛一层，都在触发器节点上。",
   "settings.automation.triggerHint.webhook":
-    "收到一个 HTTP 请求就跑。将来这里会给你一个回调地址。",
-  "settings.automation.notWired":
-    "执行器还没接：这里存下来的是定义，现在不会真的在后台跑起来，上面选的那种触发也不会发生。",
+    "收到一个 HTTP 请求就跑。这一种还没接——留着只是为了老定义能读回来。",
+  // 触发方式那一格是**只读**的：值由触发器节点上的参数反推写回（见 deriveTrigger）。
+  "settings.automation.triggerDerived": "这一格跟着触发器节点走：要换一种触发，改那一格的参数。",
+
+  // ── 自动化：跑一次 / 跑过什么 ──
+  "settings.automation.runNow": "立刻运行一次",
+  "settings.automation.runNowHint":
+    "用触发器「{name}」起一次——它自己响起来时走的也是这条路。结果在下面的历史里。",
+  "settings.automation.runNoTrigger":
+    "这条自动化还没有触发器，跑不起来——先放一个触发器节点，从它往下拉线。",
+  "settings.automation.runFailed": "这一次没跑起来。",
+  // `describeCron` 说的是中文（和主进程那几段话一样，见 `@contracts/cron`），所以这里
+  // 只负责把"这句话在说什么"框一下。
+  "settings.automation.scheduleLine": "也就是说：{text}",
+  "settings.automation.problems": "这几处不会响（改好之后要再存一次）：",
+  "settings.automation.skips": "最近这几次响了却没跑：",
+  "settings.automation.skipLine": "{time}「{name}」—— {reason}",
+  "settings.automation.runHistory": "运行历史",
+  "settings.automation.refresh": "刷新",
+  "settings.automation.runHistoryEmpty": "还没跑过。",
+  "settings.automation.runStatus.running": "进行中",
+  "settings.automation.runStatus.interrupted": "被中断",
+  "settings.automation.runStatus.success": "完成",
+  "settings.automation.runStatus.failed": "失败",
+  "settings.automation.runStatus.cancelled": "已取消",
+  "settings.automation.stepStatus.success": "完成",
+  "settings.automation.stepStatus.failed": "失败",
+  "settings.automation.stepStatus.cancelled": "已取消",
+  "settings.automation.stepStatus.skipped": "跳过",
+  "settings.automation.stepStatus.unselected": "没走这条路",
 
   // ── 钩子（设置 → 钩子）──
   // 事件驱动的命令：某件事发生的时候，在这台机器上跑一条你自己的命令。
@@ -1080,6 +1148,9 @@ export const zh = {
   "settings.hooks.event.error": "出错",
   "settings.hooks.event.upstreamIssue": "上游重试",
   "settings.hooks.event.workflowNodeResult": "工作流节点跑完",
+  "settings.hooks.event.libraryItemImported": "资料入库",
+  "settings.hooks.eventHint.libraryItemImported":
+    "有一条资料进了统一资料库(导入文件、检索入库、AI 建条目都算)。它不属于任何会话,所以没有可筛的维度。",
   // 每种事件那句话说清**时机**，因为其中几条最容易搞混：工具开始是**审批之后**，
   // 「等待审批」只在需要审批的工具上才有，「一轮没跑完」不是报错。
   "settings.hooks.eventHint.userMessage": "用户按下发送的时候。",
@@ -1117,6 +1188,17 @@ export const zh = {
   "settings.workflows.branchOptionLabel": "选项名（留空就用那一步的标题）",
   "settings.workflows.branchOptionNote":
     "选了这条之后，给下一步的一句说明（会拼进它的提示词）。可以先不写。",
+  // 决策节点：它和分支是**同一件事的两个版本**（都从出边里挑一条），差别是**谁来挑**
+  // —— 分支停下来等你点，决策自己判完把选项名交在「出路」这个产出变量里。
+  "settings.workflows.decideOptions": "出路（它自己挑）",
+  "settings.workflows.decideNoOptions":
+    "一根出路都没有，它没得挑——跑到这里会直接失败。从它往下一步拉几根线，每根线就是一个选项。",
+  "settings.workflows.decideOptionsHint":
+    "这几条就是它的选项：名字就是它跑完要交出来的「出路」的值。它交的名字对不上任何一条，这一步就算失败。",
+  // 触发器节点：它是这条自动化的**起点**（见 `main/orchestration/library.ts` 的
+  // `deriveTrigger`：有入边的话存盘会被拒）。
+  "settings.workflows.nodeTriggerHint":
+    "触发器不要连上游——它是这次运行的起点，从它往下拉线。一条自动化可以放好几个触发器，它们各管各的项目和请求。",
   // 列表项之间的分隔符。**它也要进词典** —— 直接在代码里拼一个「、」，英文界面
   // 里就会看到 `Downstream: A、B`（见 AGENTS.md 的文案规则）。
   "settings.workflows.listSeparator": "、",
@@ -1162,6 +1244,21 @@ export const zh = {
   "settings.workflows.varAdd": "加一样",
   "settings.workflows.varRemove": "删掉这一行",
   "settings.workflows.varEmpty": "还没有。加一样，写清楚这一步要交出来什么。",
+  // 输入选项（`kind: "options"`）—— 主对话入口节点那张「名字 + 内容 + 解释」的表。
+  // 名字是菜单上显示的字，内容是选中后插进输入框的那段，解释是随这次运行进提示词的。
+  "settings.workflows.optName": "选项名",
+  "settings.workflows.optRemove": "删掉这一项",
+  "settings.workflows.optContent": "内容（选中后插进输入框光标处，可引用变量）",
+  "settings.workflows.optNote": "解释（随这次运行告诉模型用户选了什么）",
+  "settings.workflows.optEmpty": "还没有。加一样，它在用这张图聊天时会出现在输入框上方。",
+  "settings.workflows.optAdd": "加一项",
+  // 固定条件（`kind: "selects"`）—— 主对话入口节点那组下拉条件的定义表。
+  // 一行 = 一个条件，候选值一行一个；选中的值每轮随提示词注入，「不限」跳过。
+  "settings.workflows.critName": "条件名",
+  "settings.workflows.critRemove": "删掉这一条",
+  "settings.workflows.critChoices": "候选值（一行一个；选中的值会随提示词注入，「不限」不注入）",
+  "settings.workflows.critEmpty": "还没有。加一条，它会变成聊天输入框上方的一个下拉框。",
+  "settings.workflows.critAdd": "加一条",
   // 「插入变量」：候选是**上游那几步自己定过的变量名**，所以这里一个具体名字都不列
   // —— 列出来就等于把这个能力绑死在某一套词汇上。
   "settings.workflows.insertVar": "插入变量",
@@ -1240,4 +1337,39 @@ export const zh = {
   "settings.workflows.source.builtin": "内置",
   "settings.workflows.source.plugin": "插件",
   "settings.workflows.source.local": "本地",
+
+  // ── LibraryTypesPanel(设置 → 资料库提示词)──
+  "settings.nav.libraryTypes": "资料库提示词",
+  "settings.libraryTypes.title": "资料库提示词",
+  "settings.libraryTypes.desc":
+    "管理(新建/删除/重命名)都在左栏;这里只写给 AI 的提示词,不写就没有。",
+  "settings.libraryTypes.section.group": "大类提示词",
+  "settings.libraryTypes.section.type": "小类提示词",
+  "settings.libraryTypes.section.collection": "集合提示词",
+  "settings.libraryTypes.ungroupedShort": "未分组",
+  "settings.libraryTypes.noCollections": "还没有集合 —— 去左栏建一个。",
+  "settings.libraryTypes.collectionSaveFailed": "「{name}」的说明没存上。",
+  "settings.libraryTypes.name": "显示名",
+  "settings.libraryTypes.icon": "图标",
+  "settings.libraryTypes.iconPh": "留空用默认图标",
+  "settings.libraryTypes.prompt": "提示词",
+  "settings.libraryTypes.promptPh": "给 AI 的说明:这类东西是什么、引用时注意什么…",
+  "settings.libraryTypes.purpose.material": "资料",
+  "settings.libraryTypes.purpose.format": "格式",
+  "settings.libraryTypes.builtin": "内置",
+  "settings.libraryTypes.add": "添加类型",
+  "settings.libraryTypes.newIdPh": "id(小写字母开头的连字符)",
+  "settings.libraryTypes.up": "上移",
+  "settings.libraryTypes.down": "下移",
+  "settings.libraryTypes.delete": "删除",
+  "settings.libraryTypes.save": "保存",
+  "settings.libraryTypes.saving": "保存中…",
+  "settings.libraryTypes.saved": "已保存",
+  "settings.libraryTypes.loadFailed": "读取失败:{error}",
+  "settings.libraryTypes.groups": "大类",
+  "settings.libraryTypes.groupsDesc": "左栏按大类分段:改组名、勾选组里的类型、增删与排序。一个类型只能属于一个大类,未分组的类型在左栏隐藏(数据不丢)。",
+  "settings.libraryTypes.newGroup": "新建大类",
+  "settings.libraryTypes.newGroupName": "新大类",
+  "settings.libraryTypes.groupName": "组名",
+  "settings.libraryTypes.ungrouped": "未分组(左栏隐藏)",
 } as const;

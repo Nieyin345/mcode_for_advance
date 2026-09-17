@@ -13,21 +13,34 @@
  * `@main/workflows/*`,反之亦然。
  */
 import type { IpcMain } from "electron";
+import type { AutomationRunEntry, WatchCommandTemplate } from "@contracts/ipc";
 import {
   AgentProfileRemoveSchema,
   AgentProfileSaveSchema,
+  AutomationRunsSchema,
+  AutomationRunSchema,
+  AutomationSessionsSchema,
   IPC,
+  WatchCommandTemplateSchema,
+  WatchStartSchema,
+  WatchStatusSchema,
+  WatchTemplatesSaveSchema,
   WorkflowChooseSchema,
   WorkflowGetSchema,
   WorkflowRemoveSchema,
   WorkflowSaveSchema,
 } from "@contracts/ipc";
 import { readAgentProfiles, removeAgentProfile, saveAgentProfile } from "@main/orchestration/agentProfiles.js";
+import { automationRunner } from "@main/orchestration/automationRunner.js";
+import { log } from "@main/lib/logger.js";
 import { getWorkflow, listWorkflows, removeWorkflow, saveWorkflow } from "@main/orchestration/library.js";
 import { notifyWorkflowsChanged } from "@main/orchestration/broadcast.js";
+import { decodeSnapshot } from "@main/orchestration/runStore.js";
+import { requestWorkflowReload } from "@main/orchestration/reloadRequest.js";
 import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
 import { ensureLocalNodeTypesDir } from "@main/orchestration/nodeTypesSeed.js";
 import { resolveWorkflowChoice } from "@main/orchestration/runner.js";
+import { SessionRepo, SettingRepo, WorkflowRunRepo } from "@main/store/repositories.js";
 
 export function registerWorkflowHandlers(ipcMain: IpcMain): void {
   // 用户自写的节点类型目录 + 它的规范,随启动铺一次(已存在就跳过,不覆盖用户改过的)。
@@ -59,6 +72,14 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
     // 广播在这里是为了另一半:AI 走 MCP 时改的是同一个落点,而界面上可能还开着另一个
     // 面板/窗口。两边都发才谈得上"谁改了另一边都知道"(同 `library/broadcast.ts`)。
     if (res.ok) notifyWorkflowsChanged(`ipc:workflow_save:${input.workflow.id}`);
+    // 触发器是**后台**在跑的:`library.ts` 改完磁盘,`automationRunner` 手里那份还是旧的
+    // —— 用户刚把触发方式从"定时"改成"文件变化",后台却还在按老规矩起运行,而界面上
+    // 看不到任何异常。所以每次写成功都让它重读这一份。
+    //
+    // 走 `reloadRequest` 那条**纯函数**缝而不是直接调 `automationRunner`:另一半写者是
+    // MCP(`main/mcp/mcodeServer.ts`),而那个模块**无头也会被 import 并真被调用**
+    // (见 `scripts/mcode-admin-smoke`),直接 import 执行器会把 electron 拖进那套冒烟。
+    if (res.ok) requestWorkflowReload(input.workflow.id);
     return res;
   });
 
@@ -66,6 +87,8 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
     const input = WorkflowRemoveSchema.parse(raw);
     const res = removeWorkflow(input.id);
     notifyWorkflowsChanged(`ipc:workflow_remove:${input.id}`);
+    // 删掉/恢复默认之后同理 —— 执行器读不到这一份就把它的触发器撤掉(见 `apply`)。
+    requestWorkflowReload(input.id);
     return res;
   });
 
@@ -99,4 +122,132 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
     const input = WorkflowChooseSchema.parse(raw);
     return { ok: resolveWorkflowChoice(input) };
   });
+
+  // ─ 自动化 ──
+  //
+  // 触发器节点在**后台**起运行(见 `main/orchestration/automationRunner.ts`)。这一栏只
+  // 需要三件事:立刻跑一次、看它跑过什么、以及那条后台会话在哪儿(点进去看全过程)。
+
+  // 手动跑一次走的就是 `manual` 那条路,和它定时跑起来是同一件事 —— 用户可以先试一遍
+  // 再改成定时。`ok: false` 不是异常:点一个还没存过的触发器,该得到一句解释。
+  ipcMain.handle(IPC.AUTOMATION_RUN, async (_evt, raw) => {
+    const input = AutomationRunSchema.parse(raw);
+    return automationRunner.runNow(input.workflowId, input.triggerNodeId);
+  });
+
+  ipcMain.handle(IPC.AUTOMATION_RUNS, async (_evt, raw) => {
+    const input = AutomationRunsSchema.parse(raw);
+    return { runs: automationRunsOf(input.workflowId, input.limit ?? AUTOMATION_RUNS_LIMIT) };
+  });
+
+  // 还没跑过的自动化**没有会话** —— 那时返回 null,界面该显示"它还没跑过",而不是
+  // 现建一条空会话(那会在会话列表里凭空多出一个没人用过的对话)。
+  ipcMain.handle(IPC.AUTOMATION_SESSIONS, async (_evt, raw) => {
+    const input = AutomationSessionsSchema.parse(raw);
+    return { sessionId: SessionRepo.findAutomationByWorkflow(input.workflowId)?.id ?? null };
+  });
+
+  // ── 守望(会话输入区那颗「守望」按钮,D3/D4)──
+  //
+  // 起跑、查活跃、命令模板三件事。起跑有**可见的副作用**(command / message 会写进
+  // 内置模板的节点参数,见 `automationRunner.startWatch` 的说明);模板存 setting,
+  // **不单开设置页**(D4)—— 面板里管。
+
+  ipcMain.handle(IPC.AUTOMATION_WATCH, async (_evt, raw) => {
+    const input = WatchStartSchema.parse(raw);
+    return automationRunner.startWatch({
+      originSessionId: input.sessionId,
+      ...(input.command !== undefined ? { command: input.command } : {}),
+      ...(input.message !== undefined ? { message: input.message } : {}),
+    });
+  });
+
+  ipcMain.handle(IPC.AUTOMATION_WATCH_STATUS, async (_evt, raw) => {
+    const input = WatchStatusSchema.parse(raw);
+    return { active: automationRunner.activeWatchOf(input.sessionId) };
+  });
+
+  // 无参 handler,同 `WORKFLOW_AGENT_PROFILES`。
+  ipcMain.handle(IPC.AUTOMATION_WATCH_TEMPLATES, async () => ({ templates: loadWatchTemplates() }));
+
+  ipcMain.handle(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, async (_evt, raw) => {
+    const input = WatchTemplatesSaveSchema.parse(raw);
+    SettingRepo.set(WATCH_TEMPLATES_KEY, JSON.stringify(input.templates));
+    return { ok: true };
+  });
+}
+
+/* ── 命令模板的存取(D4:名字 + 命令的数组,存 setting)── */
+
+const WATCH_TEMPLATES_KEY = "automation.watch.templates";
+
+/** 读出来时**逐条过一遍 schema**:setting 是用户数据,手改坏了一条不该把整个面板
+ *  弄挂 —— 坏的丢掉,好的照常显示。 */
+function loadWatchTemplates(): WatchCommandTemplate[] {
+  const raw = SettingRepo.get(WATCH_TEMPLATES_KEY);
+  if (raw === null || raw.length === 0) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const out: WatchCommandTemplate[] = [];
+    for (const item of parsed) {
+      const check = WatchCommandTemplateSchema.safeParse(item);
+      if (check.success) out.push(check.data);
+    }
+    return out;
+  } catch {
+    log.warn(`[workflow] 命令模板存的是坏 JSON,当没有模板处理:${raw.slice(0, 80)}`);
+    return [];
+  }
+}
+
+/** 一次给界面看几条历史。窗口里只有一条列表,给多了也是滚 —— 二十条够看出"它在按时跑"。 */
+const AUTOMATION_RUNS_LIMIT = 20;
+
+/** 历史里那行摘要最多显示多少字。摘要可能是**整段文本**(它就是节点那句话的产出),
+ *  原样塞进一行列表里会把列表撑成一屏。 */
+const RUN_SUMMARY_MAX = 200;
+
+/**
+ * 一条自动化跑过什么。**从存档折出来**(见 `runStore.decodeSnapshot`),不是另存的一份
+ * —— 运行状态本来就写在 `workflow_runs.payload` 里,再存一份就得维护两个真相。
+ *
+ * 折不出来的一次运行(存档是更老的版本写的、或者被手改坏了)**照样列出这一条**,
+ * 只是没有步骤 —— 它跑过这件事本身仍然是真的,而"历史里凭空少了一次"更让人看不懂。
+ */
+function automationRunsOf(workflowId: string, limit: number): AutomationRunEntry[] {
+  const session = SessionRepo.findAutomationByWorkflow(workflowId);
+  if (session === undefined) return [];
+  const doc = getWorkflow(workflowId);
+  const titleOf = (nodeId: string): string => {
+    const node = doc?.nodes.find((n) => n.id === nodeId);
+    if (node === undefined) return nodeId;
+    // 与调度器的 `titleOf` 同一个规矩:有标题就用标题,没有就用 id —— 只给 id 的话
+    // 历史里没人认得出那是哪一步。
+    return node.title.trim().length > 0 ? node.title : nodeId;
+  };
+  return WorkflowRunRepo.listForSession(session.id, limit).map((row) => {
+    const snapshot = decodeSnapshot(row.payload);
+    return {
+      runId: row.id,
+      // 这一行赋值就是那两个类型的"对表":哪边多一个状态,这里就编译不过。
+      status: row.status,
+      startedAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      steps: (snapshot?.state.outcomes ?? []).map(([nodeId, outcome]) => ({
+        nodeId,
+        title: titleOf(nodeId),
+        status: outcome.status,
+        summary: firstLine(outcome.summary),
+        ...(outcome.error !== undefined ? { error: outcome.error } : {}),
+      })),
+    };
+  });
+}
+
+/** 摘要在历史里只留**首行**,再长的截断 —— 列表里要的是"它做了什么",不是全文。 */
+function firstLine(text: string): string {
+  const nl = text.indexOf("\n");
+  const line = (nl < 0 ? text : text.slice(0, nl)).trim();
+  return line.length > RUN_SUMMARY_MAX ? `${line.slice(0, RUN_SUMMARY_MAX)}…` : line;
 }

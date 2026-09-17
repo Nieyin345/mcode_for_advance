@@ -326,6 +326,29 @@ async function handleMessages(
   }
 
   const openaiReq: OpenAIRequest = anthropicToOpenAI(body);
+  // Per-request size diagnostics: the CLI→bridge body is the ground truth for
+  // "what did we actually ask the gateway to count". When the gateway's
+  // reported input_tokens for consecutive turns diverges wildly from the
+  // growth of this body (e.g. "你好" turn 1 = 54k, turn 2 = 80k with a
+  // ~2k-token delta of real conversation), this line decides whether the CLI
+  // really sent more (body grew) or the gateway over-counted (body stable).
+  // system/tools chars also expose prefix-cache breakage: if tools/system
+  // bytes differ between turns, the upstream's implicit prefix cache (proven
+  // to work on sensenova: 2nd request with identical prefix got
+  // cache_read=25600) can never hit — which is exactly what the real
+  // sessions show (cache_read=0 every turn).
+  {
+    const sysLen = typeof body.system === "string"
+      ? body.system.length
+      : Array.isArray(body.system)
+        ? body.system.reduce((n, b) => n + (b.text?.length ?? 0), 0)
+        : 0;
+    const toolsLen = body.tools ? JSON.stringify(body.tools).length : 0;
+    const msgsLen = JSON.stringify(body.messages).length;
+    log.info(
+      `bridge: req msgs=${body.messages.length}(${msgsLen}c) system=${sysLen}c tools=${body.tools?.length ?? 0}(${toolsLen}c) model=${body.model}`,
+    );
+  }
   // Observability for image turns: count the image_url parts we forward so a
   // gateway that silently drops them (non-vision model behind an OpenAI-
   // protocol endpoint) is diagnosable from main.log — the app-side chain is

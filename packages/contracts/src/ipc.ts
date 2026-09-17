@@ -134,6 +134,7 @@ export * from "./ipc/files.js";
 export * from "./ipc/git.js";
 export * from "./ipc/skills.js";
 export * from "./ipc/mcp.js";
+export * from "./ipc/context.js";
 export * from "./ipc/usage.js";
 export * from "./ipc/lsp.js";
 export * from "./ipc/runtimes.js";

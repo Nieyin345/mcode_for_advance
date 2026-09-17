@@ -26,7 +26,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getWorkflow, saveWorkflow } from "@main/orchestration/library.js";
-import { backEdgesOf, forwardEdgesOf } from "@contracts/workflow";
+import { backEdgesOf, forwardEdgesOf, type WorkflowDoc } from "@contracts/workflow";
 import { BUILTIN_WORKFLOWS } from "@main/orchestration/builtins.js";
 import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
 import { composeNodePrompt, planOf } from "@main/orchestration/schedulerPrompt.js";
@@ -140,7 +140,7 @@ interface Surface {
  * 真的坏了)。
  */
 async function toolSurface(): Promise<Surface> {
-  const server = await buildWorkflowMcpServer();
+  const server = await buildWorkflowMcpServer({ sessionId: "smoke-session" });
   const instance = (server as unknown as { instance?: { _registeredTools?: unknown; server?: unknown } })
     .instance;
   const bucket = instance?._registeredTools;
@@ -513,6 +513,56 @@ async function main(): Promise<void> {
       mainEntry?.manifest.params.some((p) => p.key === "instruction" && p.required === true) === true,
       mainEntry?.manifest.params,
     );
+    // 输入选项(`kind: "options"`)是主代理**独有**的参数:它就是聊天输入框上方那个
+    // 下拉框的条目表。声明在这里,聊天那头(`NodeOptionsDropdown`)才有东西可列。
+    check(
+      "主代理带「输入选项」参数",
+      mainEntry?.manifest.params.some((p) => p.kind === "options") === true,
+      mainEntry?.manifest.params,
+    );
+    const agentEntry = entries.find((e) => e.id === "mcode.agent");
+    check(
+      "子 agent 不带它(那个下拉框陪着入口,不陪步骤)",
+      agentEntry?.manifest.params.some((p) => p.kind === "options") === false,
+    );
+    // 固定条件(`kind: "selects"`)同样是主代理**独有**的参数:输入框上方那排下拉框
+    // 的条目表(接过文献检索写死的筛选条)。声明在这里,聊天那头(`SearchFilterBar`)
+    // 才有东西可渲染、注入那头(`searchPrefs.ts`)才有东西可注。
+    check(
+      "主代理带「固定条件」参数",
+      mainEntry?.manifest.params.some((p) => p.kind === "selects") === true,
+      mainEntry?.manifest.params,
+    );
+    check(
+      "子 agent 也不带它",
+      agentEntry?.manifest.params.some((p) => p.kind === "selects") === false,
+    );
+    // 内置检索图的主节点**预填**了那四条条件 —— 这是"定义搬进节点"的落点:界面上的
+    // 下拉框、注入提示词的内容,都从这份预填数据来。候选值里混进非字符串,渲染端和
+    // 注入端都会一起瞎。
+    const searchDoc = BUILTIN_WORKFLOWS.find((w) => w.id === "search");
+    const searchCriteria = searchDoc?.nodes
+      .find((n) => n.type === MAIN_NODE_TYPE_ID)
+      ?.params["criteria"];
+    check(
+      "内置检索图的主节点预填了条件表",
+      Array.isArray(searchCriteria) && searchCriteria.length >= 4,
+      searchCriteria,
+    );
+    check(
+      "预填的每条都是「条件名 + 非空候选值」",
+      Array.isArray(searchCriteria) &&
+        searchCriteria.every(
+          (item) =>
+            typeof item === "object" &&
+            item !== null &&
+            typeof (item as { name?: unknown }).name === "string" &&
+            (item as { name: string }).name !== "" &&
+            Array.isArray((item as { choices?: unknown }).choices) &&
+            (item as { choices: unknown[] }).choices.length > 0 &&
+            (item as { choices: unknown[] }).choices.every((c) => typeof c === "string" && c !== ""),
+        ),
+    );
     if (mainEntry) {
       const seeded = seedMainAgent(newWorkflowDoc("wf_seed", "种出来的"), mainEntry.manifest);
       eq("种出一个节点", seeded.nodes.length, 1);
@@ -666,6 +716,61 @@ async function main(): Promise<void> {
     }
   }
 
+  console.log("\n内置工作流:守望模板(起跑通道)");
+  // 「长任务守望」不进上面那张循环,因为它的存盘契约不一样:**触发器的「项目」故意
+  // 是空的** —— startWatch 起跑时按发起会话补上(见 `automationRunner` 的
+  // `startWatch`)。模板里写死哪个项目,守望就只会落在那儿,而它的意义恰恰是
+  // "这一回绑哪个会话就落哪"。所以这里验的是**起跑通道**:模板长什么样、起跑补上
+  // 项目之后过不过得了存盘那两道关 —— 不过的话,点「开始守望」的第一下就会报错,
+  // 而那是这个功能唯一的入口。
+  {
+    const byId = new Map(BUILTIN_WORKFLOWS.map((w) => [w.id, w]));
+    const typeIds = new Set((await loadNodeTypes()).entries.map((e) => e.id));
+    const watch = byId.get("watch");
+    check("内置的 watch 还在", watch !== undefined, [...byId.keys()]);
+    if (watch) {
+      check("watch 是图型(有节点)", watch.nodes.length > 0, watch.nodes.length);
+      eq("watch 没有 prompt(它不进对话模式下拉)", watch.prompt, undefined);
+      deepEq(
+        "watch:引用的类型都装了",
+        watch.nodes.filter((n) => !typeIds.has(n.type)).map((n) => n.type),
+        [],
+      );
+      const trigger = watch.nodes.find((n) => n.type === "mcode.trigger");
+      const command = watch.nodes.find((n) => n.type === "mcode.command");
+      const conversation = watch.nodes.find((n) => n.type === "mcode.conversation");
+      check(
+        "三步齐全:触发器 → 命令 → 对话",
+        trigger !== undefined && command !== undefined && conversation !== undefined,
+        watch.nodes.map((n) => n.type),
+      );
+      eq("触发器是手动", trigger?.params["triggerKind"], "manual");
+      eq("触发器的项目留空(起跑时补)", trigger?.params["project"], "");
+      check(
+        "命令写死在参数里",
+        typeof command?.params["command"] === "string" &&
+          (command.params["command"] as string).length > 0,
+        command?.params,
+      );
+      eq("命令不限时(0 = 不限)", command?.params["timeoutMs"], 0);
+      eq("对话节点是发完即走", conversation?.params["injectMode"], "auto");
+      eq("对话节点注回发起会话", conversation?.params["injectTarget"], "origin");
+
+      // **起跑通道**:startWatch 把发起会话的项目写进触发器参数再存盘(命令/说明
+      // 同理,给了才写)。这一步必须过得了存盘校验 —— task 模板里已带默认值,所以
+      // 只补 project。
+      const patched: WorkflowDoc = {
+        ...watch,
+        nodes: watch.nodes.map((n) =>
+          n.type === "mcode.trigger"
+            ? { ...n, params: { ...n.params, project: "prj_smoke" } }
+            : n,
+        ),
+      };
+      check("补上项目后过得了存盘校验", (await saveWorkflow(patched)).ok, await saveWorkflow(patched));
+    }
+  }
+
   console.log("\n提示词里的「完成判据」");
   // **每一段会送到模型面前的流程文字,末尾都要有一句「做到什么程度算完成」。**
   //
@@ -766,7 +871,15 @@ async function main(): Promise<void> {
   check("而且认任意键", "additionalProperties" in paramsSchema, paramsSchema);
   eq("edges 是一串", schemaAt(surface.listed, "workflow_save", "workflow", "edges").type, "array");
   eq("边有 from", schemaAt(surface.listed, "workflow_save", "workflow", "edges", "from").type, "string");
-  eq("trigger 的候选值就是那四个", schemaAt(surface.listed, "workflow_save", "workflow", "trigger").enum.join(","), "manual,schedule,file,webhook");
+  // 这一串是 `WorkflowDoc.trigger` 的候选值 —— 它现在是个**开关**(值从触发器节点反推,
+  // 见 `library.ts` 的 `deriveTrigger`),所以"哪几种"这件事在契约里仍然要完整。
+  // `webhook` 留着是为了**老文档读得回来**:它这一版不接(没有对外的 HTTP 入口),
+  // 新写的自动化选不到它(见 `@contracts/nodeType` 的 `TRIGGER_KINDS`)。
+  eq(
+    "trigger 的候选值就是那五个",
+    schemaAt(surface.listed, "workflow_save", "workflow", "trigger").enum.join(","),
+    "manual,schedule,file,event,webhook",
+  );
   eq("capability 的候选值就是那四个", schemaAt(surface.listed, "workflow_save", "workflow", "nodes", "capability").enum.join(","), "read,write,exec,net");
 
   // node_type_write 的 `params` 是一串**参数定义**(嵌套对象数组,而且 `NodeParamSpecSchema`

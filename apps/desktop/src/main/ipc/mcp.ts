@@ -1,11 +1,14 @@
 /**
  * IPC handlers for the settings panel's MCP management section.
  *
- * Six operations over the three server sources (see lib/mcpConfig.ts for the
- * storage design): list (aggregate user file + stash + project .mcp.json +
- * builtin), toggle, add, remove, scanImport (read ~/.claude.json) and import.
- * All mutations are read-modify-write over ~/.mcode/.claude.json so the CLI's
- * own keys in that file always survive; project .mcp.json is never written.
+ * Operations over the server sources (see lib/mcpConfig.ts for the storage
+ * design): list (truth layer + builtin + plugins), toggle, enginesSet
+ * (per-engine visibility), add, edit (replace), remove, scanImport (read
+ * ~/.claude.json) and import. Mutations write the truth layer
+ * (`McpManagementState.userServers`, settings table) and re-derive both
+ * engine views — the claude file's `mcpServers` object and codex's
+ * config.toml MCP section. 项目级 .mcp.json 来源已移除 —— settingSources 钉在
+ * ["user"]，外部项目级 MCP 一律不继承。
  */
 import type { IpcMain } from "electron";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -18,6 +21,7 @@ import {
   IPC,
   McpListSchema,
   McpToggleSchema,
+  McpEnginesSetSchema,
   McpSaveSchema,
   McpRemoveSchema,
   McpScanImportSchema,
@@ -29,8 +33,6 @@ import {
   type McpServerConfig,
   type McpServerEntry,
 } from "@contracts/ipc";
-import { ProjectRepo } from "@main/store/repositories.js";
-import { samePath } from "@main/lib/pathGuard.js";
 import { log } from "@main/lib/logger.js";
 import { MCODE_CONFIG_DIR } from "@main/providers/claude-sdk/customEnv.js";
 import { resolveSdkBinaryPath } from "@main/providers/claude-sdk/sdkBinaryPath.js";
@@ -46,19 +48,20 @@ import {
   mcpServersOf,
   parseMcpConfig,
   readCliMcpSources,
-  readProjectMcpServers,
-  getMcpManagement,
+  getMcpTruth,
+  ensureMcpTruthMigrated,
   saveMcpManagement,
+  materializeClaudeMcpView,
+  materializeAllMcpViews,
   describeMcpConfig,
 } from "@main/lib/mcpConfig.js";
-
-/** Resolve a known project root from a caller-supplied projectPath (same
- *  guard as skills.ts — ProjectRepo cross-check, case-insensitive match).
- *  Returns the canonical Project, whose `.path` is what we persist in the
- *  management state so later samePath matching stays stable. */
-function findKnownProject(projectPath: string) {
-  return ProjectRepo.list().find((p) => samePath(p.path, projectPath));
-}
+import {
+  applyUserMcpToggle,
+  readMcpEnginesMap,
+  writeMcpEnginesMap,
+  setMcpEnginesEntry,
+  mcpEngineEnabled,
+} from "@main/lib/mcpEngines.js";
 
 /** Description line for the built-in browser server row. */
 const BUILTIN_DETAIL = "browser_navigate / browser_snapshot / browser_click 等应用内浏览器工具";
@@ -203,7 +206,6 @@ async function resolveRemoteServerConfig(
   name: string,
   fallback: { kind: "http" | "sse"; url: string },
   scope?: McpScope,
-  projectPath?: string,
 ): Promise<{ type: "http" | "sse"; url: string; headers?: Record<string, string> }> {
   type Remote = { type: "http" | "sse"; url: string; headers?: Record<string, string> };
   const asRemote = (raw: unknown): Remote | null => {
@@ -212,31 +214,22 @@ async function resolveRemoteServerConfig(
     return { type: config.type, url: config.url, ...(config.headers ? { headers: config.headers } : {}) };
   };
 
-  // User scope: the config file (the CLI reads this one directly too), then the
-  // stash holding the configs of servers the user turned off.
+  // User scope: the truth layer (every user-scope config, enabled or not),
+  // then the derived claude view, then the disable stash (legacy leftovers).
+  const fromTruth = async () => asRemote((await getMcpTruth()).userServers?.[name]);
   const fromUserFile = async () => asRemote(mcpServersOf(await readUserClaudeJson())[name]);
-  const fromStash = async () => asRemote((await getMcpManagement()).userDisabled?.[name]);
+  const fromStash = async () => asRemote((await getMcpTruth()).userDisabled?.[name]);
   // Plugin scope: `<plugin>__<server>`, including servers on the per-server
   // disable list (the panel keeps showing their OAuth row).
   const fromPlugin = async () => asRemote(await getPluginMcpServerConfig(name));
-  // Project scope: the row's own project first, then any other known project.
-  const fromProjects = async () => {
-    const roots = projectPath ? [projectPath, ...ProjectRepo.list().map((p) => p.path)] : ProjectRepo.list().map((p) => p.path);
-    for (const root of roots) {
-      const found = asRemote((await readProjectMcpServers(root))[name]);
-      if (found) return found;
-    }
-    return null;
-  };
 
   // The clicked row's own source wins; the rest follow in a fixed order. Names
   // are only unique within a source, and a wrong pick silently misfiles the
   // token, so try the row's own scope first.
   const loaders: Array<() => Promise<Remote | null>> = [];
-  if (scope === "user") loaders.push(fromUserFile, fromStash);
+  if (scope === "user") loaders.push(fromTruth, fromStash);
   if (scope === "plugin") loaders.push(fromPlugin);
-  if (scope === "project") loaders.push(fromProjects);
-  loaders.push(fromUserFile, fromStash, fromPlugin, fromProjects);
+  loaders.push(fromTruth, fromUserFile, fromStash, fromPlugin);
 
   const tried = new Set<() => Promise<Remote | null>>();
   for (const load of loaders) {
@@ -424,10 +417,10 @@ function runCaptured(
 }
 
 export function registerMcpHandlers(ipcMain: IpcMain): void {
-  // ── List servers across all three sources ──
+  // ── List servers across all sources ──
   ipcMain.handle(IPC.MCP_LIST, async (_evt, raw) => {
-    const input = McpListSchema.parse(raw);
-    const state = await getMcpManagement();
+    McpListSchema.parse(raw);
+    const state = await getMcpTruth();
     const servers: McpServerEntry[] = [];
 
     // Remote rows carry their parsed config alongside, so the OAuth pass below
@@ -444,53 +437,51 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       });
     };
 
-    // User scope: enabled entries come from the config file; disabled ones
-    // from the stash. A name present in both (only possible via an external
-    // edit of the file) resolves to enabled — the file wins.
-    const cfg = await readUserClaudeJson();
-    const fileServers = mcpServersOf(cfg);
-    for (const [name, rawConfig] of Object.entries(fileServers)) {
+    // User scope: rows come from the truth layer (`userServers`), enabled =
+    // not on the disable stash. Each row carries its full config so the
+    // panel's edit dialog can prefill, and its per-engine visibility from the
+    // mcp-engines matrix. Configs failing our schema stay unlisted (their
+    // pre-migration behavior) but keep materializing into the engine views.
+    const enginesMap = readMcpEnginesMap();
+    const truthServers = state.userServers ?? {};
+    const disabled = state.userDisabled ?? {};
+    for (const [name, rawConfig] of Object.entries(truthServers)) {
       const config = parseMcpConfig(rawConfig);
       if (!config) continue;
       const { kind, detail } = describeMcpConfig(config);
       rememberRemote("user", name, config);
-      servers.push({ name, scope: "user", kind, detail, enabled: true });
-    }
-    for (const [name, config] of Object.entries(state.userDisabled ?? {})) {
-      if (name in fileServers) continue;
-      const { kind, detail } = describeMcpConfig(config);
-      rememberRemote("user", name, config);
-      servers.push({ name, scope: "user", kind, detail, enabled: false });
-    }
-
-    // Project scope: entries of the selected project's .mcp.json; enabled =
-    // explicitly recorded in the allowlist (project servers default to OFF).
-    if (input.projectPath) {
-      const project = findKnownProject(input.projectPath);
-      if (project) {
-        const enabledNames = new Set(
-          (state.projectEnabled ?? [])
-            .filter((e) => samePath(e.projectPath, project.path))
-            .map((e) => e.name),
-        );
-        for (const [name, rawConfig] of Object.entries(await readProjectMcpServers(project.path))) {
-          const config = parseMcpConfig(rawConfig);
-          if (!config) continue;
-          const { kind, detail } = describeMcpConfig(config);
-          rememberRemote("project", name, config);
-          servers.push({ name, scope: "project", kind, detail, enabled: enabledNames.has(name) });
-        }
-      }
+      servers.push({
+        name,
+        scope: "user",
+        kind,
+        detail,
+        enabled: !(name in disabled),
+        config,
+        perEngine: {
+          claude: mcpEngineEnabled(enginesMap, name, "claude"),
+          codex: mcpEngineEnabled(enginesMap, name, "codex"),
+        },
+      });
     }
 
     // Plugin-contributed servers: entries of ENABLED plugins, namespaced
     // "<plugin>__<server>". The per-server toggle flips the denylist in the
     // plugins settings; the plugin's own enable switch is the master gate.
     // One scan for every plugin server's config (the per-row lookup would
-    // re-walk the plugin tree once per row).
+    // re-walk the plugin tree once per row). Visibility switches ride the
+    // same matrix — plugin rows stay read-only apart from them.
     const pluginConfigs = new Map(await getPluginMcpServers());
     for (const entry of await listPluginMcpPanelEntries()) {
-      servers.push(entry);
+      // pluginManager's row type predates perEngine — spread into the full
+      // contract shape so the visibility chips can ride the same code path as
+      // user-scope rows.
+      servers.push({
+        ...entry,
+        perEngine: {
+          claude: mcpEngineEnabled(enginesMap, entry.name, "claude"),
+          codex: mcpEngineEnabled(enginesMap, entry.name, "codex"),
+        },
+      });
       const config = pluginConfigs.get(entry.name);
       if (config) rememberRemote("plugin", entry.name, config);
     }
@@ -545,7 +536,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
     }
 
     servers.sort((a, b) =>
-      a.scope === b.scope ? a.name.localeCompare(b.name) : a.scope === "user" ? -1 : b.scope === "user" ? 1 : a.scope === "project" ? -1 : b.scope === "plugin" ? -1 : 1,
+      a.scope === b.scope ? a.name.localeCompare(b.name) : a.scope === "user" ? -1 : b.scope === "user" ? 1 : a.scope === "plugin" ? -1 : 1,
     );
     return { servers };
   });
@@ -555,7 +546,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
     const input = McpToggleSchema.parse(raw);
     try {
       if (input.scope === "builtin") {
-        const state = await getMcpManagement();
+        const state = await getMcpTruth();
         state.browserDisabled = !input.enabled;
         saveMcpManagement(state);
         return { ok: true };
@@ -564,57 +555,47 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       if (input.scope === "plugin") {
         // Plugin-contributed server: flip its entry on the plugins.mcpDisabled
         // denylist. The config itself lives in the plugin tree and is never
-        // rewritten here.
-        return setPluginMcpDisabled(input.name, !input.enabled);
+        // rewritten here; the codex view re-derives from the denylist.
+        const res = setPluginMcpDisabled(input.name, !input.enabled);
+        if (res.ok) await materializeAllMcpViews();
+        return res;
       }
 
-      if (input.scope === "project") {
-        if (!input.projectPath) return { ok: false, error: "缺少 projectPath" };
-        const project = findKnownProject(input.projectPath);
-        if (!project) return { ok: false, error: "未知的项目路径" };
-        const state = await getMcpManagement();
-        const list = state.projectEnabled ?? [];
-        if (input.enabled) {
-          if (!list.some((e) => samePath(e.projectPath, project.path) && e.name === input.name)) {
-            list.push({ projectPath: project.path, name: input.name });
-          }
-          state.projectEnabled = list;
-        } else {
-          state.projectEnabled = list.filter(
-            (e) => !(samePath(e.projectPath, project.path) && e.name === input.name),
-          );
-        }
-        saveMcpManagement(state);
-        return { ok: true };
-      }
-
-      // User scope: move the config between the file (enabled) and the stash.
-      const cfg = await readUserClaudeJson();
-      const fileServers = mcpServersOf(cfg);
-      const state = await getMcpManagement();
-      const stash = state.userDisabled ?? {};
-      if (input.enabled) {
-        const config = stash[input.name];
-        if (!config) {
-          // Enabling something already enabled (or unknown) — idempotent ok
-          // only when the file actually has it; otherwise refuse.
-          if (!(input.name in fileServers)) return { ok: false, error: "未找到该 server 的配置" };
-          return { ok: true };
-        }
-        fileServers[input.name] = config;
-        delete stash[input.name];
-      } else {
-        const rawConfig = fileServers[input.name];
-        const config = parseMcpConfig(rawConfig);
-        if (!config) return { ok: false, error: "未找到该 server 的配置" };
-        delete fileServers[input.name];
-        stash[input.name] = config;
-      }
-      cfg.mcpServers = fileServers;
-      state.userDisabled = stash;
-      await writeUserClaudeJson(cfg);
-      saveMcpManagement(state);
+      // User scope: flip the name between the truth layer and the disable
+      // stash (applyUserMcpToggle carries the behavior), then re-derive both
+      // engine views (the claude file is a derived view now — it is never
+      // edited in place).
+      const state = await getMcpTruth();
+      const applied = applyUserMcpToggle(state, input.name, input.enabled);
+      if (!applied.ok) return { ok: false, error: applied.error };
+      saveMcpManagement(applied.state);
+      await materializeClaudeMcpView();
       return { ok: true };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  });
+
+  // ── Set a server's per-engine visibility (claude / codex) ──
+  // pi has no MCP support, so there is no third switch. Both engine views
+  // re-derive after the write; each engine picks the change up on its next
+  // turn (the claude binary reads the file at turn start, codex reads
+  // config.toml when its app-server spawns).
+  ipcMain.handle(IPC.MCP_ENGINES_SET, async (_evt, raw) => {
+    const input = McpEnginesSetSchema.parse(raw);
+    try {
+      const map = readMcpEnginesMap();
+      setMcpEnginesEntry(map, input.name, { claude: input.claude, codex: input.codex });
+      writeMcpEnginesMap(map);
+      const updated = readMcpEnginesMap();
+      await materializeAllMcpViews();
+      return {
+        ok: true,
+        perEngine: {
+          claude: mcpEngineEnabled(updated, input.name, "claude"),
+          codex: mcpEngineEnabled(updated, input.name, "codex"),
+        },
+      };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
@@ -638,7 +619,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
     const cfg = await readUserClaudeJson();
     const fileServers = mcpServersOf(cfg);
     const existed = fileServers[input.name];
-    const target = await resolveRemoteServerConfig(input.name, { kind: input.kind, url: input.url }, input.scope, input.projectPath);
+    const target = await resolveRemoteServerConfig(input.name, { kind: input.kind, url: input.url }, input.scope);
     try {
       // `claude mcp login` resolves the server from the config file, so
       // register it (user scope, exactly the namespaced name + url + headers
@@ -704,7 +685,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
     const cfg = await readUserClaudeJson();
     const fileServers = mcpServersOf(cfg);
     const existed = fileServers[input.name];
-    const target = await resolveRemoteServerConfig(input.name, { kind: input.kind, url: input.url }, input.scope, input.projectPath);
+    const target = await resolveRemoteServerConfig(input.name, { kind: input.kind, url: input.url }, input.scope);
     try {
       // `claude mcp logout` also resolves the server from the config file —
       // same temporary registration (name + url + headers, the credential
@@ -743,45 +724,51 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
     }
   });
 
-  // ── Add a user-scope server ──
+  // ── Add a user-scope server (or overwrite when input.replace is set) ──
   ipcMain.handle(IPC.MCP_SAVE, async (_evt, raw) => {
     const input = McpSaveSchema.parse(raw);
     if (input.name === MCP_RESERVED_NAME) {
       return { ok: false, error: `「${MCP_RESERVED_NAME}」是内置 server 的保留名` };
     }
     try {
-      const cfg = await readUserClaudeJson();
-      const fileServers = mcpServersOf(cfg);
-      const state = await getMcpManagement();
-      if (input.name in fileServers || state.userDisabled?.[input.name]) {
+      const state = await getMcpTruth();
+      const userServers = state.userServers ?? {};
+      const inTruth = input.name in userServers;
+      const inStash = Boolean(state.userDisabled?.[input.name]);
+      if (!input.replace && (inTruth || inStash)) {
         return { ok: false, error: "同名 server 已存在" };
       }
-      fileServers[input.name] = input.config;
-      cfg.mcpServers = fileServers;
-      await writeUserClaudeJson(cfg);
+      userServers[input.name] = input.config;
+      // Edit on a disabled server re-enables it: the config lives in the truth
+      // layer either way, so clear any stash copy to keep the two in sync.
+      if (inStash && state.userDisabled) {
+        delete state.userDisabled[input.name];
+      }
+      state.userServers = userServers;
+      saveMcpManagement(state);
+      await materializeClaudeMcpView();
       return { ok: true };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
   });
 
-  // ── Remove a user-scope server (file + stash) ──
+  // ── Remove a user-scope server (truth layer + stash) ──
   ipcMain.handle(IPC.MCP_REMOVE, async (_evt, raw) => {
     const input = McpRemoveSchema.parse(raw);
     try {
-      const cfg = await readUserClaudeJson();
-      const fileServers = mcpServersOf(cfg);
-      const state = await getMcpManagement();
+      const state = await getMcpTruth();
+      const userServers = state.userServers ?? {};
       const stash = state.userDisabled ?? {};
-      const inFile = input.name in fileServers;
+      const inTruth = input.name in userServers;
       const inStash = input.name in stash;
-      if (!inFile && !inStash) return { ok: false, error: "未找到该 server" };
-      if (inFile) delete fileServers[input.name];
+      if (!inTruth && !inStash) return { ok: false, error: "未找到该 server" };
+      if (inTruth) delete userServers[input.name];
       if (inStash) delete stash[input.name];
-      cfg.mcpServers = fileServers;
+      state.userServers = userServers;
       state.userDisabled = stash;
-      await writeUserClaudeJson(cfg);
       saveMcpManagement(state);
+      await materializeClaudeMcpView();
       return { ok: true };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
@@ -807,23 +794,23 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
     const skipped: string[] = [];
     const errors: Array<{ name: string; error: string }> = [];
     try {
-      const cfg = await readUserClaudeJson();
-      const fileServers = mcpServersOf(cfg);
-      const state = await getMcpManagement();
+      const state = await getMcpTruth();
+      const userServers = state.userServers ?? {};
       const stash = state.userDisabled ?? {};
       let changed = false;
       for (const item of input.servers) {
-        if (item.name in fileServers || item.name in stash) {
+        if (item.name in userServers || item.name in stash) {
           skipped.push(item.name);
           continue;
         }
-        fileServers[item.name] = item.config;
+        userServers[item.name] = item.config;
         imported.push(item.name);
         changed = true;
       }
       if (changed) {
-        cfg.mcpServers = fileServers;
-        await writeUserClaudeJson(cfg);
+        state.userServers = userServers;
+        saveMcpManagement(state);
+        await materializeClaudeMcpView();
       }
       return { imported, skipped, errors };
     } catch (err) {
@@ -834,4 +821,10 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       };
     }
   });
+
+  // Warm the truth-layer migration so the first panel open / codex turn never
+  // pays for it (idempotent; also pins the derived views at boot).
+  void ensureMcpTruthMigrated()
+    .then(() => materializeClaudeMcpView())
+    .catch((err) => log.warn(`mcp: boot migration failed: ${(err as Error).message}`));
 }

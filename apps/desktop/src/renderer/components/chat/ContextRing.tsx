@@ -89,7 +89,13 @@ export function ContextRing({
         <Tooltip.Trigger
           delay={200}
           // Button (not span) so the ring is keyboard-focusable; it carries
-          // the hover-driven "selected" affordance rather than a click action.
+          // the hover-driven "selected" affordance. Click opens the stats
+          // popover directly — the previous hover-only path (hover → wait →
+          // move into the tooltip → click 查看详情) was the only way in, and
+          // users read the ring as a button: clicking it did nothing, which
+          // surfaced as "上下文百分比经常点不开". On touch there is no hover
+          // at all, so the click path is the only reliable one.
+          onClick={openDetails}
           render={
             <button
               type="button"
@@ -98,7 +104,7 @@ export function ContextRing({
             />
           }
           className={cn(
-            "inline-flex cursor-default items-center gap-1 rounded-sm px-0.5 tabular-nums outline-none transition-colors",
+            "inline-flex cursor-pointer items-center gap-1 rounded-sm px-0.5 tabular-nums outline-none transition-colors",
             "hover:bg-surface-muted focus-visible:bg-surface-muted",
             colorClass,
             selected && "bg-surface-muted text-accent",

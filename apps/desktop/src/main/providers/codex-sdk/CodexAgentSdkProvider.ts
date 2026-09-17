@@ -37,7 +37,7 @@
  *     restored with thread/resume on subsequent turns.
  */
 import { randomUUID } from "node:crypto";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { promises as fs, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -70,6 +70,8 @@ import { getOrSetFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
 import { getMcpManagement } from "@main/lib/mcpConfig.js";
 import { CODEX_IDENTITY_PROMPT, joinPromptSections, fileArchitecturePrompt } from "@main/lib/systemPrompt.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
+import { readInstructionsSource, instructionsSourcePath } from "@main/lib/appContext.js";
+import { defaultSkillsRoot, enabledSkillDirs, engineEnabled, readEnginesMap, skillNamesInRoot } from "@main/lib/skillEngines.js";
 import { scriptsDir } from "@main/workflows/seed.js";
 import { ASK_NATIVE_TOOL_PROMPT } from "@main/lib/askQuestion.js";
 import {
@@ -241,7 +243,7 @@ export class CodexAgentSdkProvider implements AgentProvider {
     if (providers.length === 0) {
       return failTurn(ctx, req.sessionId, "CODEX_NO_MODEL", "Codex 未配置任何模型:请先在「设置 → 模型配置 → Codex」中添加模型端点后再发送。");
     }
-    await CodexModelsStore.ensureConfigMaterialized(req.cwd);
+    await CodexModelsStore.ensureConfigMaterialized();
     await ensureCodexHomeIdentity();
     const mcpManagement = await getMcpManagement();
     const browserToolsEnabled = !mcpManagement.browserDisabled;
@@ -440,13 +442,15 @@ export class CodexAgentSdkProvider implements AgentProvider {
         adapter.setMainThreadId(threadId);
         ctx.onProviderSessionId?.(threadId);
 
-        // Register Mcode's skill roots so the model can invoke user/project
-        // skills ($name), plus the skills directories of ENABLED plugins
-        // (settings → Plugins). Best-effort: failure only means no skills.
+        // Register Mcode's skill roots so the model can invoke user skills
+        // ($name) — the universal library filtered by the per-engine matrix
+        // (see skillRootsFor) — plus the skills directories of ENABLED
+        // plugins, filtered by the same matrix (see pluginSkillRootsFor).
+        // Best-effort: failure only means no skills.
         try {
           const { getEnabledPluginSkillRoots } = await import("@main/plugins/pluginManager.js");
           await client.request("skills/extraRoots/set", {
-            extraRoots: [...skillRootsFor(req.cwd), ...(await getEnabledPluginSkillRoots())],
+            extraRoots: [...skillRootsFor(), ...(await pluginSkillRootsFor())],
           });
         } catch (err) {
           ctx.log.warn(`codex: skills/extraRoots/set failed: ${(err as Error).message}`);
@@ -662,27 +666,66 @@ async function buildCodexEnv(ctx: ProviderContext): Promise<Record<string, strin
   return env;
 }
 
-/** Mcode skill roots made visible to codex: the global manager root plus
- *  the project's .claude/skills (same pair the Claude provider exposes via
- *  Options.skills discovery). Only existing dirs are sent. */
-function skillRootsFor(cwd: string): string[] {
-  const roots = [path.join(homedir(), ".mcode", "skills"), path.join(cwd, ".claude", "skills")];
-  return roots.filter((r) => {
+/** Mcode skill roots made visible to codex: the universal library
+ *  (~/.mcode/skills) filtered through the per-engine matrix. The project's
+ *  .claude/skills is gone — external workspaces are no longer inherited
+ *  (context-hosting rework).
+ *
+ *  Unrestricted → the whole root, codex's own scanner walks it (the
+ *  historical behavior, zero risk). Restricted → the enabled skills' own
+ *  directories, because `skills/extraRoots/set` has no name filter and each
+ *  root is delivered wholesale. ⚠️ Whether codex treats a root that directly
+ *  contains SKILL.md as one skill is UNVERIFIED (the 0.153.4 binary is
+ *  closed-source; the npm package ships no scanner source) — confirm on a
+ *  live session during acceptance. */
+function skillRootsFor(): string[] {
+  const universal = defaultSkillsRoot();
+  const restricted = enabledSkillDirs(universal, "codex");
+  if (restricted === null) {
     try {
-      return statSync(r).isDirectory();
+      return statSync(universal).isDirectory() ? [universal] : [];
     } catch {
-      return false;
+      return [];
     }
-  });
+  }
+  // skillNamesInRoot already verified each dir exists and carries SKILL.md.
+  return restricted;
+}
+
+/**
+ * Plugin skill roots for codex, filtered by the same per-engine matrix the
+ * universal library obeys: a root whose skills are all enabled is handed over
+ * whole (the historical behavior); one with only some enabled contributes just
+ * those skills' own directories (extraRoots has no name filter — each root is
+ * delivered wholesale); a root whose every skill is disabled for codex
+ * contributes nothing. Builtin skills stay out of the matrix and always pass.
+ */
+async function pluginSkillRootsFor(): Promise<string[]> {
+  const { getEnabledPluginSkillRoots } = await import("@main/plugins/pluginManager.js");
+  const enginesMap = readEnginesMap(defaultSkillsRoot());
+  const out: string[] = [];
+  for (const root of await getEnabledPluginSkillRoots()) {
+    const byName = skillNamesInRoot(root);
+    const enabled = [...byName.keys()].filter((n) => engineEnabled(enginesMap, n, "codex"));
+    if (enabled.length === byName.size) out.push(root);
+    else for (const n of enabled) out.push(byName.get(n)!);
+  }
+  return out;
 }
 
 /** Write CODEX_HOME/AGENTS.md — Codex's global instructions file, which we
- *  own inside the isolated home. Idempotent (writes only on drift). */
+ *  own inside the isolated home. Idempotent (writes only on drift).
+ *
+ *  组装链里并入「全局指令」(设置面板的事实源 <dataRoot>/context/instructions.md,
+ *  见 lib/appContext.ts):claude 的同名内容物化到 ~/.mcode/CLAUDE.md,pi 会话启动
+ *  时直读同一份 —— 三引擎共用一条指令配置。空内容时不加段(组装链语义)。 */
 async function ensureCodexHomeIdentity(): Promise<void> {
   const dir = codexHomePath();
   await fs.mkdir(dir, { recursive: true });
+  const instructions = readInstructionsSource(instructionsSourcePath(dataRoot())).trim();
   const content = `${joinPromptSections(
     CODEX_IDENTITY_PROMPT,
+    instructions,
     // The user's file architecture — see fileArchitecturePrompt. The drift check
     // below means a data-root change rewrites AGENTS.md on the next call, so the
     // paths here can't go stale silently.

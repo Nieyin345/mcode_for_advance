@@ -46,6 +46,8 @@
  * (比如拿 `error` 的 message 去比)不如不给。
  */
 import { z } from "zod";
+import type { RuntimeEvent } from "./runtime.js";
+import type { Session } from "./session.js";
 
 /* ── 事件 ── */
 
@@ -86,6 +88,9 @@ export const HOOK_EVENTS = [
   "upstream.issue",
   /** 工作流的一个节点跑完了(在**发起那次对话**的会话上触发)。 */
   "workflow.node.result",
+  /** 统一资料库:一条条目入库成功(三种导入入口共用;**不属于任何会话**,见
+   *  `@contracts/runtime` 的 `LibraryItemImportedEvent`)。 */
+  "library.item.imported",
 ] as const;
 export type HookEvent = (typeof HOOK_EVENTS)[number];
 export const HookEventSchema = z.enum(HOOK_EVENTS);
@@ -121,6 +126,100 @@ export const HOOK_TOOL_EVENTS = ["tool.use", "tool.result", "approval.request"] 
 export function hookEventHasTool(event: HookEvent): boolean {
   return hookSubjectOf(event) === "tool";
 }
+
+/**
+ * 每个 `RuntimeEvent` 对应哪个钩子事件;`null` = **故意不暴露**。
+ *
+ * 写成 `Record<RuntimeEvent["type"], …>` 而不是 `switch` + `default: null`,是为了让
+ * "将来加了一个事件,要不要给它一个钩子"变成**编译期**的问题:`RuntimeEvent` 多一个
+ * 成员,这张表就少一行,tsc 当场报错。`switch` 做不到 —— 它会安静地把新事件吞掉,而
+ * "这个钩子怎么不响"是最难查的一类问题。
+ *
+ * ## 为什么这张表在 contracts(原来在主进程的 `HookRunner` 里)
+ *
+ * 多了一个读它的人:**事件触发器**(`mcode.trigger` 的「事件发生时」那一类)。它要问
+ * 同一个问题 —— "这个运行时事件,对应用户能听的那个名字是什么"。两个读法各写一份的话,
+ * 迟早出现"钩子听得见、触发器听不见"(或者反过来),而那种差别不报错,只是某个功能
+ * 安静地不工作。
+ */
+export const HOOK_EVENT_OF: Record<RuntimeEvent["type"], HookEvent | null> = {
+  "user.message": "user.message",
+  "tool.use": "tool.use",
+  "tool.result": "tool.result",
+  "approval.request": "approval.request",
+  "request.resolved": "request.resolved",
+  "question.ask": "question.ask",
+  "plan.approval_request": "plan.approval_request",
+  "todo.update": "todo.update",
+  "subagent.update": "subagent.update",
+  "turn.files": "turn.files",
+  "turn.incomplete": "turn.incomplete",
+  "turn.done": "turn.done",
+  "compact.result": "compact.result",
+  error: "error",
+  "upstream.issue": "upstream.issue",
+  "workflow.node.result": "workflow.node.result",
+  // 统一资料库的入库事件。**不属于任何会话**(sessionId 是合成哨兵 "(system)",见
+  // `@contracts/runtime`),matcher 对它无意义 —— `hookSubjectOf` 走 default 返回 null。
+  // 它存在的主要理由是 automation 的「事件发生时」触发器(文献自动下载那条模板靠它)。
+  "library.item.imported": "library.item.imported",
+
+  /* ─ 还没给,不是不该给 ── */
+
+  // 工作流停在岔路口等用户拍板(`runner.kind === "branch"` 的节点)。
+  //
+  // 这一条**将来会有**,而且大概是"自动化"那个场景下最该通知的一件事(没人看着的
+  // 时候,图停在那儿等一个回答,而外面什么迹象都没有)。现在不给是因为给一个钩子
+  // 事件要动四处(本文件的 `HOOK_EVENTS`、这张表、`HooksPanel` 的两张标签表、中英各
+  // 两条词条),而它属于"自动化"那一摊 —— 放在这次改动里会让这次改动说不清边界。
+  //
+  // ️ 放在这一段而不是下面那段,是怕后来的人读成"这是刻意不给的"。**它能给**,
+  // 只是还没轮到。
+  "workflow.node.choice": null,
+
+  /* ── 故意不暴露的(是"不该给",不是"还没来得及给")── */
+
+  // 太频繁:一次对话能来几万条,挂上就是每秒钟起一堆进程。
+  "text.delta": null,
+  thinking: null,
+  "subagent.transcript": null,
+  // 给已经画出来的那张步骤卡**补一个花费数字**。它是 `workflow.node.result` 的**后补**
+  // (用量要等那个回合结算才有,而卡片是节点收场那一刻就画出来的,见
+  // `@contracts/runtime` 的 `WorkflowNodeUsageEvent`)。所以挂钩子这件事它完全搭不上:
+  // 要挂的是"这一步跑完了",那一条已经给了 —— 再给一个"后来又知道了它的花费"只会让
+  // 同一个节点触发两次,而后一次什么新信息都没有(除了钱)。
+  "workflow.node.usage": null,
+  // 工作流节点跑的**过程**(工具调用、中间文本),给界面那张卡片看的。
+  // 挂钩子的话"这一步做了什么"该走 `workflow.node.result` —— 那是它跑完的那个点,
+  // 也是钩子作者真正想接的时刻;过程流本身是一次运行里最吵的东西。
+  "workflow.node.transcript": null,
+  // 计划草稿在计划模式里每变一次文本就发一次(和 `text.delta` 同级)。要挂就挂
+  // `plan.approval_request` —— 那才是"计划写好了"这个有意义的时间点。
+  "plan.update": null,
+  // 每次 API 调用后都发,纯展示用。
+  "token-usage.updated": null,
+  // 宿主侧的行内提示卡(预算到顶/模型回退/结构化校验失败),纯 UI 事件。挂钩子没有
+  // 意义:预算到顶那条的"回合结束了"时刻走 `turn.done`(reason="interrupted")。
+  "turn.notice": null,
+  // 渲染层画一张图用的,不是"发生了什么"。
+  "browser.image": null,
+  // 内部同步信号(客户端之间对齐"哪些会话在跑"),不是事件。
+  "session.runningSnapshot": null,
+  // 每次改名 / 置顶 / 归档都发,噪音大而钩子做不了什么。
+  "session.changed": null,
+  // 用户手点的一次回退,而且要紧的信息(哪些文件)在 `turn.files` 里已经有过了。
+  "turn.rewound": null,
+  // 助手一条消息写完 —— 与 `turn.done` 重叠(多数轮次只有一条消息)。要挂就挂后者。
+  "message.complete": null,
+  // 纯界面状态(切到计划模式之类)。
+  "mode.change": null,
+  // 下面两条**没有活着的会话**,而钩子载荷里的 `session` 是必填的:
+  // `session.deleted` 的会话已经没了;`git.changed` 压根不属于任何会话(它的
+  // `sessionId` 是空串)。硬塞一个空壳会让 `jq .session.id` 拿到 `""`,用户分不清
+  // "没有会话"和"会话 id 是空"。要给它们钩子,得先设计"不属于会话的事件"长什么样。
+  "session.deleted": null,
+  "git.changed": null,
+};
 
 /* ── 一条钩子 ── */
 
@@ -164,6 +263,44 @@ function globToRegExp(pattern: string): RegExp {
 }
 
 /**
+ * 逗号分隔的一串 glob 拆成一条条。空项丢掉 —— 那个多半是多打了一个逗号。
+ *
+ * 单独拿出来是因为**两处要用同一份**:钩子的 `matcher` 与事件触发器的筛选规则
+ * (`@contracts/nodeType` 的 `NODE_TRIGGER_FILTER_PARAM_KEY`)。各写一遍的话,两处的
+ * "空项算不算限制"迟早会分家,而那种差别没有任何地方会报错。
+ */
+export function splitGlobList(patterns: string): string[] {
+  return patterns
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
+/**
+ * 这一串 glob 里有没有一条能命中这个值。**空模式串 = 不限制**(返回真)。
+ *
+ * "只写了逗号或空格也算"这一条是刻意的:那是个笔误,而两种解释里"不限制"是安全的那一种
+ * —— 它会跑起来,用户当场就看得见。反过来把笔误当成"什么都不匹配",钩子永远不响,那是
+ * 最难查的一种坏。
+ */
+export function matchesGlobList(patterns: string, value: string): boolean {
+  const list = splitGlobList(patterns);
+  if (list.length === 0) return true;
+  return list.some((pattern) => globToRegExp(pattern).test(value));
+}
+
+/**
+ * 这一串 glob 有没有命中**一组值里的任何一个**。
+ *
+ * `values` 为空 = **不匹配**(哪怕模式串是空的):调用方给不出主语,说明这次事件根本没有
+ * 可比的东西,而"没有主语"和"主语不限制"是两件事(见 {@link matchesHook})。
+ */
+export function matchesAnyGlob(patterns: string, values: readonly string[]): boolean {
+  if (values.length === 0) return false;
+  return values.some((value) => matchesGlobList(patterns, value));
+}
+
+/**
  * 这条钩子该不该为这次事件跑。
  *
  * `subjects` 是**这次事件里能拿来比的东西**(由宿主按事件挑,见下),`undefined` /
@@ -190,12 +327,7 @@ export function matchesHook(spec: HookSpec, event: HookEvent, subjects?: readonl
   if (patterns.length === 0) return true;
   // 没给主语却在 matcher 里写了东西 → 不匹配。这多半是配错了(见 `validateHook`,
   // 界面上会直接拦住),而"配错了却每次都跑"比"配错了不跑"危险得多。
-  if (subjects === undefined || subjects.length === 0) return false;
-  return patterns.some((pattern) => {
-    // 一个模式编译一次,再拿所有主语去试 —— 主语可能有一整个文件列表那么长。
-    const re = globToRegExp(pattern);
-    return subjects.some((subject) => re.test(subject));
-  });
+  return matchesAnyGlob(spec.matcher ?? "", subjects ?? []);
 }
 
 /** 一条钩子配得对不对。界面上存之前先过这一道,理由和 `validateDag` 一样:
@@ -230,10 +362,11 @@ export interface HookPayload {
   event: HookEvent;
   /** 事件发生的时刻(main 进程的墙上时间,ms)。 */
   at: number;
-  /** 这次事件来自哪个会话 —— 包括隐藏的工作流节点会话(`kind: "node"`)。 */
+  /** 这次事件来自哪个会话 —— 包括隐藏的那两种(`kind: "node"` 的工作流节点会话、
+   *  `kind: "automation"` 的自动化后台会话)。 */
   session: {
     id: string;
-    kind: "chat" | "side" | "node";
+    kind: Session["kind"];
     title: string;
     projectId: string;
   };
@@ -363,7 +496,7 @@ export interface HookRun {
   event: HookEvent;
   /** 哪个会话触发的。 */
   sessionId: string;
-  sessionKind: "chat" | "side" | "node";
+  sessionKind: Session["kind"];
   startedAt: number;
   durationMs?: number;
   status: HookRunStatus;

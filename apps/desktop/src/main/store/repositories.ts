@@ -584,6 +584,32 @@ export const SessionRepo = {
     return out;
   },
 
+  /** 这条自动化(`kind='automation'`)的隐藏会话。没有返回 undefined。
+   *
+   *  每条自动化**只留一个**后台会话:触发器每次 `fire()` 都先来这里取,取不到才建。
+   *  于是"跑第十次"不会在库里堆出十个会话,而是同一个会话里第十轮 —— 上下文也是
+   *  连续的(见 `automationRunner` 里的 D10)。
+   *
+   *  ⚠️ 归属那一列叫 `composer_mode`(列名在撒谎,它存的是 workflowId —— 见
+   *  {@link SESSION_COLUMNS} 里那一条的注释)。所以这里写的是 `composer_mode`,不是
+   *  `workflow_id`。
+   *
+   *  不可能有多条:同一 workflowId 只会被 `create()` 建一次(拿之前先查)。真出现多条
+   *  时取最新的那条 —— 老的那条会变成孤儿(里面有历史消息,不删)。 */
+  findAutomationByWorkflow(workflowId: string): Session | undefined {
+    const db = getDb();
+    const stmt = db.prepare(
+      `SELECT * FROM sessions
+       WHERE kind = 'automation' AND composer_mode = ?
+       ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+    );
+    stmt.bind([v(workflowId)]);
+    const found = stmt.step();
+    const row = found ? (stmt.getAsObject() as unknown as SessionRow) : undefined;
+    stmt.free();
+    return row ? rowToSession(row) : undefined;
+  },
+
   /** Persist claude's own session id so future turns can --resume. */
   updateClaudeSessionId(id: string, claudeSessionId: string): void {
     getDb().run("UPDATE sessions SET claude_session_id = ?, updated_at = ? WHERE id = ?", [
@@ -592,6 +618,44 @@ export const SessionRepo = {
       v(id),
     ]);
     persist();
+  },
+
+  /**
+   * 把一条自动化会话的发起会话记下来(守望起跑,见 `automationRunner.startWatch`)。
+   *
+   * 传 null = 抹掉 —— 与删除发起会话时那趟 `parent_session_id = NULL`(见本文件
+   * 「主会话已删除」那段)是同一个语义:解析不到发起会话时,「注入到发起会话」
+   * 那一步就该**明确失败**,而不是悄悄发到上一条会话里。
+   */
+  setParentSessionId(id: string, parentSessionId: string | null): void {
+    getDb().run("UPDATE sessions SET parent_session_id = ?, updated_at = ? WHERE id = ?", [
+      v(parentSessionId),
+      v(Date.now()),
+      v(id),
+    ]);
+    persist();
+  },
+
+  /**
+   * 以某条会话为发起会话的那条自动化会话(`kind='automation'`)。守望面板的
+   * 「上一次还在跑」按它查(见 `automationRunner.activeWatchOf`)。
+   *
+   * 只有守望起跑会把发起会话写到自动化会话上,所以这一查今天最多命中一条 ——
+   * 按 `parent_session_id` 建不了索引也不碍事(全表扫一条 kind 过滤,同
+   * `findAutomationByWorkflow`)。
+   */
+  findAutomationByOrigin(parentSessionId: string): Session | undefined {
+    const db = getDb();
+    const stmt = db.prepare(
+      `SELECT * FROM sessions
+       WHERE kind = 'automation' AND parent_session_id = ?
+       ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+    );
+    stmt.bind([v(parentSessionId)]);
+    const found = stmt.step();
+    const row = found ? (stmt.getAsObject() as unknown as SessionRow) : undefined;
+    stmt.free();
+    return row ? rowToSession(row) : undefined;
   },
 
   /** Backfill the materialized worktree path (first-turn materialization).
@@ -1344,6 +1408,29 @@ export const WorkflowRunRepo = {
   },
 
   /**
+   * 某个会话的**运行历史**,新的在前(自动化页要显示"最近几次")。
+   *
+   * 与 {@link resumableFor} 的区别是它**不挑状态**:那个只找"被中断且正等着某一步"
+   * 的(续跑用),这个把所有运行都列出来(看历史用)。`payload` 照样原样返回 ——
+   * 折叠成"每步的结局与摘要"是编排层的事(见 `orchestration/runStore.ts` 的
+   * `decodeSnapshot`),这一层不认识那个形状。
+   */
+  listForSession(sessionId: string, limit: number): WorkflowRunRow[] {
+    const stmt = getDb().prepare(
+      `SELECT * FROM workflow_runs
+        WHERE session_id = ?
+        ORDER BY updated_at DESC, id DESC LIMIT ?`,
+    );
+    stmt.bind([v(sessionId), v(limit)]);
+    const out: WorkflowRunRow[] = [];
+    while (stmt.step()) {
+      out.push(rowToWorkflowRun(stmt.getAsObject() as unknown as WorkflowRunDbRow));
+    }
+    stmt.free();
+    return out;
+  },
+
+  /**
    * 某个对话里、**正停在 `nodeId` 这一格**且被中断的那次运行。
    *
    * ## 为什么按节点查,而不是"最近一次被中断的运行"
@@ -1465,6 +1552,8 @@ interface LibraryItemRow {
   md_path: string | null;
   source: string | null;
   license: string | null;
+  entry_mode: string | null;
+  file_path: string | null;
   added_at: number;
   updated_at: number;
 }
@@ -1494,6 +1583,10 @@ function rowToLibraryItem(r: LibraryItemRow): LibraryItem {
     mdPath: r.md_path ?? undefined,
     source: r.source ?? undefined,
     license: r.license ?? undefined,
+    // 老库 ALTER 出来的行全是 DEFAULT 'attached' —— 旧的文献流本来就是"文件在库里",
+    // 语义正好对上。认不出(entry_mode 被手工改成别的)也按 attached:保守的那个方向。
+    entryMode: r.entry_mode === "linked" ? "linked" : "attached",
+    filePath: r.file_path ?? undefined,
     addedAt: r.added_at,
     updatedAt: r.updated_at,
   };
@@ -1716,6 +1809,10 @@ export const LibraryRepo = {
     url?: string;
     source?: string;
     license?: string;
+    /** 通用文件条目的落法。省略 = attached(旧的文献流就是这个语义)。 */
+    entryMode?: "linked" | "attached";
+    /** 通用文件路径:attached 相对库根 / linked 外部绝对路径(可为目录)。 */
+    filePath?: string | null;
   }): LibraryItem {
     const db = getDb();
     const now = Date.now();
@@ -1763,8 +1860,8 @@ export const LibraryRepo = {
     db.run(
       `INSERT INTO library_items
          (id, kind, doi, arxiv_id, title, authors, year, venue, volume, issue, page, publisher,
-          abstract, type, language, url, source, license, added_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          abstract, type, language, url, source, license, entry_mode, file_path, added_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         v(id), v(input.kind ?? "paper"), v(doi), v(arxivId), v(input.title ?? "(无标题)"),
         v(input.authors?.length ? JSON.stringify(input.authors) : null),
@@ -1772,7 +1869,8 @@ export const LibraryRepo = {
         v(input.volume), v(input.issue), v(input.page), v(input.publisher),
         v(input.abstract),
         v(input.type ?? "article"), v(input.language), v(input.url),
-        v(input.source), v(input.license), v(now), v(now),
+        v(input.source), v(input.license),
+        v(input.entryMode ?? "attached"), v(input.filePath ?? null), v(now), v(now),
       ],
     );
     persist();
@@ -1783,6 +1881,14 @@ export const LibraryRepo = {
   setPdf(id: string, pdfRelPath: string, sha256: string): void {
     getDb().run("UPDATE library_items SET pdf_path = ?, pdf_sha256 = ?, updated_at = ? WHERE id = ?", [
       v(pdfRelPath), v(sha256), v(Date.now()), v(id),
+    ]);
+    persist();
+  },
+
+  /** 写通用文件路径(attached 的相对库根路径;linked 不走这里,建条目时就带上)。 */
+  setFilePath(id: string, relPath: string): void {
+    getDb().run("UPDATE library_items SET file_path = ?, updated_at = ? WHERE id = ?", [
+      v(relPath), v(Date.now()), v(id),
     ]);
     persist();
   },
@@ -1893,6 +1999,7 @@ interface CollectionRow {
   id: string;
   name: string;
   kind: string | null;
+  prompt: string | null;
   parent_id: string | null;
   sort_order: number;
   created_at: number;
@@ -1902,6 +2009,7 @@ function rowToCollection(r: CollectionRow): LibraryCollection {
   return {
     id: r.id,
     name: r.name,
+    prompt: r.prompt ?? undefined,
     kind: (r.kind as LibraryKind | null) ?? "paper",
     parentId: r.parent_id ?? null,
     sortOrder: r.sort_order ?? 0,
@@ -1944,7 +2052,12 @@ export const CollectionRepo = {
     );
   },
 
-  create(name: string, parentId: string | null = null, kind: LibraryKind = "paper"): LibraryCollection {
+  create(
+    name: string,
+    parentId: string | null = null,
+    kind: LibraryKind = "paper",
+    prompt?: string,
+  ): LibraryCollection {
     // 兜底守卫。渲染端已做即时校验,这里防的是绕过 UI 的调用(如将来的 AI 工具)。
     if (CollectionRepo.isNameTaken(name, kind)) {
       throw new Error(`这个库里已经有叫「${name.trim()}」的分类了`);
@@ -1963,13 +2076,14 @@ export const CollectionRepo = {
     maxStmt.free();
 
     db.run(
-      "INSERT INTO library_collections (id, name, kind, parent_id, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-      [v(id), v(name.trim()), v(kind), v(parentId), v(nextOrder), v(Date.now())],
+      "INSERT INTO library_collections (id, name, kind, prompt, parent_id, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [v(id), v(name.trim()), v(kind), v(prompt ?? null), v(parentId), v(nextOrder), v(Date.now())],
     );
     persist();
     return {
       id,
       name: name.trim(),
+      ...(prompt ? { prompt } : {}),
       kind,
       parentId,
       sortOrder: nextOrder,
@@ -1988,6 +2102,14 @@ export const CollectionRepo = {
     getDb().run("UPDATE library_collections SET name = ? WHERE id = ?", [v(name.trim()), v(id)]);
     persist();
     return true;
+  },
+
+  /** 写「给 AI 的说明」。空串 = 清空(清单里就不再注入这一层)。 */
+  setPrompt(id: string, prompt: string | null): void {
+    getDb().run("UPDATE library_collections SET prompt = ? WHERE id = ?", [
+      v(prompt && prompt.trim().length > 0 ? prompt.trim() : null), v(id),
+    ]);
+    persist();
   },
 
   /** 删除集合。子集合与成员关系由外键 CASCADE 一并清理;**文献本身不受影响**

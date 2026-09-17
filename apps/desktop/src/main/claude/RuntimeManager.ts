@@ -175,6 +175,14 @@ function retargetEvent(e: RuntimeEvent, sessionId: string): RuntimeEvent {
   }
 }
 
+/** 一条**隐藏**会话的种类 —— 它的流水不上界面(node 与自动化后台会话)。
+ *
+ *  两处判据不同,别混:这里是"**不上界面**";而"要不要折成一份节点过程"仍然是
+ *  `kind === "node"` 那一处自己的事(自动化会话没有对应的面板,也就没有那一折)。 */
+function isHiddenSessionKind(kind: Session["kind"]): boolean {
+  return kind === "node" || kind === "automation";
+}
+
 /** How long the turn.done handler waits before settling a stashed pending
  *  turn-end record with whatever snapshot is known. Must exceed the adapter's
  *  path-B control-channel race (CONTEXT_USAGE_PATH_B_TIMEOUT_MS = 3s) so an
@@ -430,6 +438,58 @@ class RuntimeManager {
     }
   }
 
+  /**
+   * **无人值守的自动化:要人拍板的三类事件一律按"拒绝"落地**(fail-closed)。
+   *
+   * ## 为什么必须有个兜底
+   *
+   * 审批和提问都是**挂起等一个人**的:提问那一边是个 Deferred,不落地就永不 resolve
+   * —— 那一轮永远不收尾,这次运行永远停在"进行中"(而重入保护会因此把**以后每一次**
+   * 触发都跳过,这条自动化从此再也不跑)。所以不是"拒绝了不好看",是不落地就废。
+   *
+   * 为什么是**拒绝**而不是放行:放行等于无人看管地写盘、联网、运行命令。用户没有
+   * 在场表示同意,那就只能按"不同意"算 —— 与 elicitation 那条既有做法一致。
+   *
+   * ## 为什么排到事件流后面(`setTimeout(0)`)
+   *
+   * 落地走的是 `resolveApproval` / `dismissUserInput`,它们会**广播**一条
+   * `request.resolved`(见 `notifyRequestResolved`)。在这里同步调的话,那条"已解决"
+   * 会**插在这一条"请求"还没发完的时候**发出去 —— 订阅者(以及将来任何读这条流的人)
+   * 看到的是"先解决、后请求",顺序反了。排到下一个宏任务,它就落在这一条之后。
+   *
+   * 理由会进运行历史(用户事后能看见"这一步被人拍板的要求挡住了,系统按拒绝处理"),
+   * 这是这套机制**唯一**能让人发现"我的自动化缺了一个人在场"的地方。
+   *
+   * ⚠️ **判据是事件的"去处",不是 `session.kind`** —— 调用点已经按去处判过了(见
+   * `bindSession` 里那段):自动化运行里的节点会话也会走到这里,因为调度器把节点会话的
+   * 交互事件代给了**发起它的那条会话**(自动化会话)。
+   */
+  private declineUnattended(e: RuntimeEvent): void {
+    if (
+      e.type !== "approval.request" &&
+      e.type !== "question.ask" &&
+      e.type !== "plan.approval_request"
+    ) {
+      return;
+    }
+    const reason = "无人值守的自动化:这一步要人拍板,已按拒绝处理";
+    // 三类的 requestId 分开取:`question.ask` 那份是**可选**的(哨兵兜底那条路没有
+    // Deferred 可落地,见 `QuestionAskEvent`),没有就什么都不做。
+    const approvalId = e.type === "approval.request" ? e.requestId : undefined;
+    const planId = e.type === "plan.approval_request" ? e.requestId : undefined;
+    const questionId = e.type === "question.ask" ? e.requestId : undefined;
+    setTimeout(() => {
+      if (approvalId !== undefined) this.resolveApproval(approvalId, false, reason);
+      else if (planId !== undefined) {
+        this.resolvePlanApproval(planId, { approved: false, reason });
+      } else if (questionId !== undefined) {
+        // **dismiss 而不是"随便给个答案"**:它就是"没人回答"的正式表态,provider 会把它
+        // 变成一次 deny / 工具错误,而那一轮**继续**往下走(不会静默卡住)。
+        this.dismissUserInput(questionId);
+      }
+    }, 0);
+  }
+
   /** host 侧的消费者(通知、工作流调度器)。**每个事件都要走** —— 包括节点会话
    *  自己的:调度器正是靠它收集每个节点的最终输出(见 `orchestration/runner.ts`)。
    *  火忘式:一个订阅者抛错不该把事件流带下去。 */
@@ -476,6 +536,19 @@ class RuntimeManager {
     return this.interactiveProxy.get(sessionId) ?? sessionId;
   }
 
+  /** 一条事件改道到的那个会话**是什么种类**(见 `emit` 里那段"判据是去处")。
+   *
+   *  只在"真的改道过"时才被调用,所以这一次读库落在**交互事件**上(一轮里几次),
+   *  不在 `text.delta` 那种热路径上 —— 后者 `e === stamped`、直接用 `session.kind`。
+   *  读不到(会话已经没了)就退回发起者自己的种类:谁发的就按谁的规矩办。 */
+  private destinationKindOf(sessionId: string, fallback: Session): Session["kind"] {
+    try {
+      return SessionRepo.get(sessionId)?.kind ?? fallback.kind;
+    } catch {
+      return fallback.kind;
+    }
+  }
+
   /** Create or reuse the runtime state for a GUI session. Idempotent. */
   bindSession(session: Session): void {
     if (this.sessions.has(session.id)) return;
@@ -484,13 +557,29 @@ class RuntimeManager {
       const stamped = stampTurnEnd(rawEvent);
       // 节点会话的**交互**事件代父对话提问 —— 没有代理时 `routeOf` 原样返回自己,
       // 所以这句对普通会话是恒等的(见 `setInteractiveProxy` / `retargetEvent`)。
-      const e: RuntimeEvent = retargetEvent(stamped, this.routeOf(session.id));
+      const routed = this.routeOf(session.id);
+      const e: RuntimeEvent = retargetEvent(stamped, routed);
       // 工作流节点是**隐藏会话**:它自己的流水(text / tool / turn.done / usage)没有
       // 任何界面消费 —— 推给渲染端只会变成幻影消息、点不掉的未读和"N 个回合完成"
       // 的提示(见 `orchestration/runner.ts`)。所以**只有被改写过的交互事件**才发往
       // 客户端。**落盘(下面那串 if)与订阅者照旧** —— 前者用会话自己的 id,后者是
       // host 侧的消费者,调度器正是靠它收集节点的输出。
-      if (session.kind !== "node" || e !== stamped) {
+      //
+      // **自动化的后台会话同理**(它也是一条隐藏会话):它没有父对话可代问,于是
+      // `e === stamped` 恒成立、整条流水都会被推出去 —— 那是错的。二者在这里是同一条
+      // 规矩:**隐藏的会话,流水不上界面**。
+      //
+      // ⚠️ **判据是事件的"去处",不是 `session.kind`。** 去处 = 被改道到的那个会话
+      // (只有交互事件会改道),没改道时就是自己。这一条对**自动化运行里的节点会话**
+      // 是必须的:它的交互事件代的是**发起它的那条自动化会话**(见 `runner.ts` 的
+      // `setInteractiveProxy`),而它和自动化会话本身是同一条规矩 —— 看 `session.kind`
+      // 的话那一步的审批会挂在一个没人看得见的地方,而它**不落地就永不收尾**(那一轮
+      // 收不了场 → 重入保护随后把以后每一次触发都跳过 → 这条自动化从此再也不跑)。
+      const destinationKind = e === stamped ? session.kind : this.destinationKindOf(routed, session);
+      if (destinationKind === "automation") {
+        // 没人看得见,也没人能拍板 —— 与"隐藏会话的流水不上界面"是同一件事的两面。
+        this.declineUnattended(e);
+      } else if (!isHiddenSessionKind(destinationKind) || e !== stamped) {
         // ……但「对话节点」跑在**主对话**上(见 `runner.kind === "conversation"`),
         // 它的流水该看得见 —— 那正是它存在的意义,所以上面那条对它是恒等的,文本和
         // 工具事件照常推。它唯独有两类要扣住:回合的收口(`holdTurnEnd`)和它正在说的话

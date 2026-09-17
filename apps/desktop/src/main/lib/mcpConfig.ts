@@ -1,17 +1,16 @@
 /**
  * MCP config file IO + management state for the settings panel's MCP section.
  *
- * Three server sources (see contracts/ipc.ts "MCP management"):
+ * Server sources (see contracts/ipc/mcp.ts "MCP management"):
  *  - user scope: the `mcpServers` object of ~/.mcode/.claude.json. This is the
  *    CLI's own user-level config location (CLAUDE_CONFIG_DIR is always set to
  *    ~/.mcode), so whatever sits in the file is loaded automatically by the
  *    claude binary — the file itself is the enable mechanism. Disabling a
  *    server means moving its config OUT of the file into the settings-table
- *    stash (MCP_MANAGEMENT_SETTING_KEY), re-enabling moves it back.
- *  - project scope: <projectRoot>/.mcp.json, read-only here. The panel
- *    records explicit enables in the management state; the provider passes
- *    per-turn enabled/disabledMcpjsonServers so no CLI approval dialog is
- *    ever needed (our onUserDialog bridge cancels unknown kinds).
+ *    stash (MCP_MANAGEMENT_SETTING_KEY), re-enabling moves it back. All three
+ *    engines share this enable set, so a server is configured once and shows
+ *    up everywhere. (Project-level .mcp.json inheritance was deliberately cut:
+ *    the app manages context centrally instead of per-workspace files.)
  *  - builtin: the in-process mcode-browser server; only its disabled flag
  *    lives in the management state.
  *
@@ -34,6 +33,11 @@ import {
 import { MCODE_CONFIG_DIR } from "@main/providers/claude-sdk/customEnv.js";
 import { awaitDb } from "@main/store/db.js";
 import { SettingRepo } from "@main/store/repositories.js";
+import { log } from "@main/lib/logger.js";
+import {
+  deriveMcpEngineView,
+  readMcpEnginesMap,
+} from "@main/lib/mcpEngines.js";
 
 /** Mcode's own ~/.mcode/.claude.json — the CLI's user-level config file under
  *  the redirected CLAUDE_CONFIG_DIR. User-scope MCP servers live in its
@@ -145,13 +149,6 @@ export async function readCliMcpSources(): Promise<CliMcpSource[]> {
   return out;
 }
 
-/** Read a project's .mcp.json `mcpServers` record ({} when absent/broken).
- *  Read-only — the panel never rewrites a project file. */
-export async function readProjectMcpServers(projectRoot: string): Promise<Record<string, unknown>> {
-  const parsed = asRecord(await readJson(path.join(projectRoot, ".mcp.json")));
-  return parsed ? mcpServersOf(parsed) : {};
-}
-
 /** Read the persisted MCP management state (settings table). AwaitDb-guarded
  *  because the provider's startTurn also calls this outside an IPC context. */
 export async function getMcpManagement(): Promise<McpManagementState> {
@@ -164,6 +161,84 @@ export async function getMcpManagement(): Promise<McpManagementState> {
 /** Persist the MCP management state. */
 export function saveMcpManagement(state: McpManagementState): void {
   SettingRepo.set(MCP_MANAGEMENT_SETTING_KEY, JSON.stringify(state));
+}
+
+/* ── Truth layer migration + derived views ──
+ *
+ * Historically the enable mechanism WAS the `.claude.json` mcpServers object
+ * (the binary reads it via settingSources). With per-engine visibility that
+ * file becomes a derived view ("enabled ∧ assigned to claude"), so the source
+ * of truth moves into the management state's `userServers`. One idempotent
+ * migration lifts the pre-existing file/stash contents up; every mutation
+ * afterwards writes the truth layer and re-derives both engine views.
+ */
+
+let migrationPromise: Promise<void> | null = null;
+
+/** Lift `.claude.json` mcpServers + the disable stash into `userServers`
+ *  (once; a no-op when the truth layer already exists). Raw file entries are
+ *  carried over verbatim — configs failing our schema stay in the truth layer
+ *  and keep materializing, exactly their pre-migration behavior. */
+async function doMcpTruthMigration(): Promise<void> {
+  const state = await getMcpManagement();
+  if (state.userServers) return;
+  const cfg = await readUserClaudeJson();
+  const fileServers = mcpServersOf(cfg);
+  // File wins on a name present in both (the pre-migration list semantics).
+  // Raw file entries are carried verbatim (NOT schema-narrowed): an entry we
+  // can't model keeps materializing into the engine views, exactly its
+  // pre-migration behavior.
+  const merged = {
+    ...(state.userDisabled ?? {}),
+    ...fileServers,
+  } as Record<string, McpServerConfig>;
+  state.userServers = merged;
+  saveMcpManagement(state);
+  log.info(`mcp: truth layer migrated (${Object.keys(merged).length} user servers)`);
+}
+
+/** Await the (cached, idempotent) truth-layer migration. Every reader of the
+ *  truth layer goes through this — a turn-time materialization must never see
+ *  an unmigrated (empty) truth layer. */
+export function ensureMcpTruthMigrated(): Promise<void> {
+  migrationPromise ??= doMcpTruthMigration().catch((err) => {
+    // Reset so a later caller can retry (e.g. db briefly unavailable at boot).
+    migrationPromise = null;
+    throw err;
+  });
+  return migrationPromise;
+}
+
+/** The management state with the truth layer guaranteed to be migrated. */
+export async function getMcpTruth(): Promise<McpManagementState> {
+  await ensureMcpTruthMigrated();
+  return getMcpManagement();
+}
+
+/** Rewrite the claude engine's derived view: `.claude.json` mcpServers becomes
+ *  exactly the enabled∧assigned subset. Read-modify-write over the whole file
+ *  (the CLI keeps its own keys there — only `mcpServers` is ours to write). */
+export async function materializeClaudeMcpView(): Promise<void> {
+  const state = await getMcpTruth();
+  const view = deriveMcpEngineView(state, readMcpEnginesMap(), "claude");
+  const cfg = await readUserClaudeJson();
+  cfg.mcpServers = view;
+  await writeUserClaudeJson(cfg);
+}
+
+/** Re-derive both engine views: the claude config file and codex's
+ *  config.toml (whose materializer reads this module's truth layer). */
+export async function materializeAllMcpViews(): Promise<void> {
+  await materializeClaudeMcpView();
+  try {
+    const { CodexModelsStore } = await import("@main/lib/codexModelsStore.js");
+    await CodexModelsStore.ensureConfigMaterialized();
+  } catch (err) {
+    // Codex materialization is best-effort (its own body already swallows IO
+    // errors); a claude-view write must not be reported as a failure because
+    // codex could not follow.
+    log.warn(`mcp: codex view re-materialization failed: ${(err as Error).message}`);
+  }
 }
 
 /** Transport kind + secret-free one-line summary for display. Env and header

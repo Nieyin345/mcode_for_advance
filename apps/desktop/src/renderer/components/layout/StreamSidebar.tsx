@@ -64,8 +64,7 @@ import { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { WorktreeMergeBackDialog, WorktreeRemoveDialog } from "@renderer/components/chat/WorktreeMergeBack.js";
 import { ProjectManageMenuPopup, type ManageMenuState } from "./ProjectManageMenu.js";
-import { LibrarySection } from "@renderer/components/library/LibrarySection.js";
-import { TemplateSection } from "@renderer/components/templates/TemplateSection.js";
+import { LibrarySections } from "@renderer/components/library/LibrarySection.js";
 import { SidebarQuickActions } from "./SidebarQuickActions.js";
 import { ArchivedRow, HoverIconButton, RenameDialog, SessionContextMenu } from "./SidebarShared.js";
 import { BrandLogo } from "./BrandLogo.js";
@@ -796,20 +795,14 @@ function StreamSidebarBase() {
           </div>
         )}
 
-        {/* 文献库 —— 与项目并列的顶层分组,按要求排在项目/会话**下面**。
+        {/* 资料库 —— 与项目并列的顶层分组,按要求排在项目/会话**下面**。
             放在这个滚动容器**内部**,跟着会话列表一起滚:展开着几十篇文献时
             也不会把上面的会话卡片挤扁。
-            它跟着顶部那个切换图标一起变 —— 会话流模式下这里是**平铺**的文献
-            列表(不分库),对应会话流的扁平语义。 */}
+            段落按**大类**走(一段一个组,组表来自主进程、设置页可编辑);
+            旧的独立模版段不再单独挂 —— 它那五类已由主进程启动时自动迁移进
+            统一库,现在就是「模版」这个组。 */}
         <div className="mt-3">
-          <LibrarySection />
-        </div>
-
-        {/* 模版库 —— 排在文献库**下面**。与左边那棵树里的同一个组件、同一套版式;
-            挂两处是必须的:顶部那个切换图标会在两套外壳之间换,只挂一处的话切过去
-            这一段就没了。 */}
-        <div className="mt-3">
-          <TemplateSection />
+          <LibrarySections />
         </div>
       </div>
 

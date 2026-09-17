@@ -1,8 +1,7 @@
 /**
  * IPC handler for skill discovery. The composer's `/` menu lists skills the
- * user has installed; we discover them by scanning the local filesystem
- * (user-global `~/.mcode/skills/` + active-project `.claude/skills/`) and
- * parsing each skill's SKILL.md frontmatter.
+ * user has installed; we discover them by scanning the universal library
+ * `~/.mcode/skills/` and parsing each skill's SKILL.md frontmatter.
  *
  * We deliberately do NOT call the SDK's `Query.supportedCommands()` for the
  * listing: that method needs a running query handle, but this app spawns a
@@ -11,7 +10,7 @@
  * matches what the SDK itself scans when `skills: "all"` is passed (the
  * binary scans $CLAUDE_CONFIG_DIR/skills, which we point at ~/.mcode/skills).
  * Selecting a skill inserts `/name` into the textarea; the user sends it as a
- * normal turn and the SDK (started with `skills: "all"`) recognizes and runs it.
+ * normal turn and the engine recognizes and runs it.
  *
  * Additionally, the settings panel's "Import" feature scans external tools'
  * skill directories (Claude Code ~/.claude/skills, Codex ~/.codex/skills,
@@ -20,10 +19,21 @@
  * also point it at a local directory (a single skill or a collection) or a
  * single markdown file (imported as a one-file skill, materialized as
  * <name>/SKILL.md).
+ *
+ * ## Per-engine matrix
+ *
+ * The universal library is gated per engine by the central mapping
+ * `.mcode-engines.json` (see lib/skillEngines.ts): the listing attaches the
+ * resolved state to each global skill's `perEngine`, and SKILLS_ENGINES_SET
+ * edits it — 「移动到引擎内部 / 移回通用」 is a matrix edit, skill files never
+ * move. The three providers consume the same matrix at session start (claude:
+ * Options.skills allowlist; pi: skillsOverride; codex: extraRoots).
  */
 import type { IpcMain } from "electron";
+import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path, { sep } from "node:path";
 import {
   IPC,
@@ -32,21 +42,25 @@ import {
   SkillsReadSchema,
   SkillsSaveSchema,
   SkillsDeleteSchema,
+  SkillsEnginesSetSchema,
+  SkillsBundlesSchema,
+  SkillsEnginesSetBulkSchema,
   SkillsScanSourcesSchema,
   SkillsImportSchema,
+  SkillsImportGithubSchema,
 } from "@contracts/ipc";
-import type { SkillInfo, SkillSource, ExternalSkillInfo, SkillTool, ReadOnlySkillSource } from "@contracts/ipc";
-import { ProjectRepo } from "@main/store/repositories.js";
+import type { SkillInfo, SkillSource, ExternalSkillInfo, SkillTool, ReadOnlySkillSource, SkillEngineState, SkillBundle, SkillsImportGithubResult } from "@contracts/ipc";
 import { log } from "@main/lib/logger.js";
 import { getPluginSkillSources } from "@main/plugins/pluginManager.js";
-
-/** Case-insensitive, normalized equality for project-root matching — same
- *  helper logic the file handlers use (they inline it as `samePath`). Paths
- *  arrive with arbitrary case/trailing slashes from the renderer, so a raw
- *  `===` would falsely refuse legit roots on case-insensitive filesystems. */
-function samePath(a: string, b: string): boolean {
-  return path.normalize(a).toLowerCase() === path.normalize(b).toLowerCase();
-}
+import {
+  defaultSkillsRoot,
+  parseSkillFrontmatter,
+  readEnginesMap,
+  writeEnginesMap,
+  setEnginesEntry,
+  engineEnabled,
+  skillNamesInRoot,
+} from "@main/lib/skillEngines.js";
 
 /** True if `abs` is inside `root` (or equals it), after normalizing both.
  *  Containment check for write/delete ops — same logic as files.ts pathWithin.
@@ -58,27 +72,18 @@ function pathWithin(root: string, abs: string): boolean {
   return a.startsWith(r + sep);
 }
 
-/** Resolve a known project root from a caller-supplied projectPath, or null
- *  when it isn't a persisted Project. Centralizes the same containment guard
- *  every skills handler uses (mirrors files.ts / git.ts). */
-function findKnownProject(projectPath: string) {
-  return ProjectRepo.list().find((p) => samePath(p.path, projectPath));
-}
-
-/** Resolve the skills root directory for a given source. Global skills live
- *  under ~/.mcode/skills (Mcode's own CLAUDE_CONFIG_DIR); project skills under
- *  <project>/.claude/skills. Returns the absolute root path.
+/** The universal skills root: ~/.mcode/skills (Mcode's own CLAUDE_CONFIG_DIR
+ *  skills dir). This is the ONE user-owned store all three engines consume —
+ *  the former project branch (<project>/.claude/skills) is gone with external
+ *  workspace inheritance (context-hosting rework).
  *
  *  The global root moved from ~/.claude/skills to ~/.mcode/skills because
  *  CLAUDE_CONFIG_DIR is now always set to ~/.mcode - the SDK's bundled binary
  *  scans $CLAUDE_CONFIG_DIR/skills for user-level skills, so this is where
  *  imported skills must live to be discoverable (especially under custom
  *  endpoints, where ~/.claude/skills is no longer read). */
-function resolveSkillRoot(source: SkillSource, projectPath: string): string {
-  if (source === "global") {
-    return path.join(homedir(), ".mcode", "skills");
-  }
-  return path.join(projectPath, ".claude", "skills");
+function resolveSkillRoot(): string {
+  return defaultSkillsRoot();
 }
 
 /** Resolves to an absolute path, following symlinks. Returns null on any
@@ -108,59 +113,12 @@ async function readTextHead(filePath: string, maxBytes = 8192): Promise<string |
 }
 
 /**
- * Parse the YAML frontmatter of a SKILL.md file. We only need `name`,
- * `description`, and (optionally) `argument-hint` / `argumentHint`, so a
- * hand-rolled line scan is enough — no yaml dependency. The frontmatter is
- * the YAML block delimited by `---` lines at the top of the file.
- *
- * Returns whatever fields were found; the caller fills in fallbacks
- * (e.g. name ← directory name).
- */
-function parseSkillFrontmatter(md: string): {
-  name?: string;
-  description?: string;
-  argumentHint?: string;
-} {
-  // Frontmatter must be the very first thing in the file: "---\n".
-  if (!md.startsWith("---\n") && !md.startsWith("---\r\n")) return {};
-  // Find the closing "---" on its own line. Split on newlines so the leading
-  // "---" line isn't matched by the closing fence regex.
-  const lines = md.split(/\r?\n/);
-  let end = -1;
-  for (let i = 1; i < lines.length; i++) {
-    if (lines[i].trim() === "---") {
-      end = i;
-      break;
-    }
-  }
-  if (end === -1) return {};
-  const fm = lines.slice(1, end);
-
-  const out: { name?: string; description?: string; argumentHint?: string } = {};
-  for (const raw of fm) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const m = line.match(/^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*)$/);
-    if (!m) continue;
-    const key = m[1].toLowerCase();
-    // Strip surrounding quotes (single/double) and trailing whitespace.
-    let val = m[2].trim();
-    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-      val = val.slice(1, -1);
-    }
-    if (key === "name") out.name = val;
-    else if (key === "description") out.description = val;
-    else if (key === "argument-hint" || key === "argumenthint") out.argumentHint = val;
-  }
-  return out;
-}
-
-/**
  * Scan one skills root dir and append its skills to `into`. Each direct child
  * directory is treated as a skill; its SKILL.md frontmatter supplies the
  * metadata, with the directory name as the `name` fallback. Symlinks are
  * followed (realpath). Any IO error is caught and skipped — this function
- * never throws.
+ * never throws. Frontmatter parsing lives in lib/skillEngines.ts (shared
+ * with the engine providers' name scans).
  */
 async function scanSkillsRoot(rootDir: string, source: SkillSource, into: Map<string, SkillInfo>): Promise<void> {
   const root = await safeRealPath(rootDir);
@@ -196,8 +154,8 @@ async function scanSkillsRoot(rootDir: string, source: SkillSource, into: Map<st
     const md = await readTextHead(path.join(real, "SKILL.md"));
     const fm = md ? parseSkillFrontmatter(md) : {};
     const name = fm.name?.trim() || entry.name;
-    // Dedupe by name: project-scoped entries are scanned AFTER global ones,
-    // so a project skill naturally overrides a same-named global skill.
+    // Dedupe by name — first occurrence wins (the caller scans roots in
+    // precedence order into the same map).
     into.set(name, {
       name,
       description: fm.description?.trim() ?? "",
@@ -420,30 +378,34 @@ async function scanZcodePluginSkillDirs(): Promise<string[]> {
 }
 
 /** Shared skills-list core — used by both the desktop IPC handler and the
- *  mobile RPC whitelist. `projectPath` is optional: when omitted (or when it
- *  isn't a persisted Project root), only the user-global root is scanned —
- *  the settings panel relies on this to list global skills even with no
- *  projects at all. */
-export async function listSkillsForProject(projectPath: string | undefined): Promise<SkillInfo[]> {
-  const project = projectPath ? findKnownProject(projectPath) : null;
+ *  mobile RPC whitelist. `projectPath` is accepted for RPC signature
+ *  stability but IGNORED: the universal library is the only scope (external
+ *  workspace inheritance was cut with the context-hosting rework), so the
+ *  listing is identical no matter which project is active. */
+export async function listSkillsForProject(_projectPath: string | undefined): Promise<SkillInfo[]> {
+  // Per-engine availability for the universal library — resolved here once so
+  // both the composer menu and the settings panel see the same state.
+  const skillsRoot = resolveSkillRoot();
+  const enginesMap = readEnginesMap(skillsRoot);
+  const resolvedEngines = (name: string): SkillEngineState => ({
+    claude: engineEnabled(enginesMap, name, "claude"),
+    codex: engineEnabled(enginesMap, name, "codex"),
+    pi: engineEnabled(enginesMap, name, "pi"),
+  });
 
   const byName = new Map<string, SkillInfo>();
   try {
-    // Global first, then project — so project entries override.
-    await scanSkillsRoot(resolveSkillRoot("global", ""), "global", byName);
-    if (project) {
-      await scanSkillsRoot(resolveSkillRoot("project", project.path), "project", byName);
-    }
+    await scanSkillsRoot(skillsRoot, "global", byName);
   } catch (err) {
     // Should be unreachable (scanSkillsRoot never throws), but be defensive:
     // a broken skills dir must never break the composer.
     log.warn(`skills.list scan failed: ${(err as Error).message}`);
   }
-  // Contributed skills LAST — lowest precedence (project > global > plugin >
-  // builtin): scanned into a side map so a contributed skill never overrides a
-  // same-named user skill, it only fills the gaps. The SDK loads these the
-  // same way it loads user skills (`skills: "all"`), so a `/name` pill works
-  // identically for any source.
+  // Contributed skills LAST — lowest precedence (global > plugin > builtin):
+  // scanned into a side map so a contributed skill never overrides a
+  // same-named user skill, it only fills the gaps. The engines load these the
+  // same way they load user skills, so a `/name` pill works identically for
+  // any source.
   //
   // 内置技能（随应用发布的那四个）标成 "builtin" 而不是 "plugin"，这样面板能把
   // 它们标成「内置」—— 而"一个插件都没装"的时候它们照样在，用 "plugin" 会让人
@@ -459,14 +421,20 @@ export async function listSkillsForProject(projectPath: string | undefined): Pro
   } catch (err) {
     log.warn(`plugin skills scan failed: ${(err as Error).message}`);
   }
+  // Attach the resolved matrix to universal-library AND plugin skills — both
+  // are matrix-managed so an engine only sees what was assigned to it (plugin
+  // rows stay read-only apart from the switches). Builtin rows omit it: those
+  // ship with the app and are always offered.
+  for (const [name, info] of byName) {
+    if (info.source === "global" || info.source === "plugin") info.perEngine = resolvedEngines(name);
+  }
   // Stable ordering: by source rank, then alphabetical within each — so the
   // menu doesn't reshuffle between renders and user-owned skills always sort
   // above contributed ones (内置固定垫底)。
   const SOURCE_RANK: Record<SkillSource, number> = {
-    project: 0,
-    global: 1,
-    plugin: 2,
-    builtin: 3,
+    global: 0,
+    plugin: 1,
+    builtin: 2,
   };
   return [...byName.values()].sort((a, b) => {
     const ra = SOURCE_RANK[a.source];
@@ -514,9 +482,9 @@ async function contributedSkillDir(
 }
 
 /** Shared skills-read core — used by both the desktop IPC handler and the
- *  mobile RPC whitelist. `projectPath` is only required for project-scoped
- *  skills; global skills resolve without it. Returns "" when a project skill
- *  is requested with no/unknown project or the skill dir escapes the root.
+ *  mobile RPC whitelist. `projectPath` is accepted for RPC signature stability
+ *  but IGNORED (the universal library is the only scope). Returns "" when a
+ *  contributed skill doesn't exist or the skill dir escapes the root.
  *
  *  Contributed skills have no WRITABLE root (see `resolveSkillRootForRequest`)
  *  but they are readable — the settings panel shows a built-in skill's
@@ -531,7 +499,7 @@ export async function readSkillForProject(
     const dir = await contributedSkillDir(source, name);
     return dir ? readSkillMd(dir) : "";
   }
-  const root = resolveSkillRootForRequest(source, projectPath);
+  const root = resolveSkillRootForRequest(source);
   if (!root) return "";
   const skillDir = path.join(root, name);
   // Containment guard: the resolved skill dir must stay inside the root.
@@ -540,25 +508,231 @@ export async function readSkillForProject(
 }
 
 /** Resolve the skills root for a read/save/delete request, or null when the
- *  request is invalid: project-scoped ops need a persisted Project root,
- *  global ops never look at projectPath. Centralizes the source-dependent
- *  project guard the three mutation/read handlers share. */
-function resolveSkillRootForRequest(
-  source: SkillSource,
-  projectPath: string | undefined,
-): string | null {
-  // Plugin + built-in skills are read-only inventory — listed in the composer
-  // menu, but there is no user-editable file root (plugin files live under the
-  // plugin's install dir and vanish on uninstall; built-in files live in the
-  // app's own resources and are replaced on upgrade).
+ *  request is invalid. The only invalid case left is a contributed source
+ *  (plugin / builtin): those are read-only inventory with no user-editable
+ *  file root — plugin files live under the plugin's install dir and vanish on
+ *  uninstall; built-in files live in the app's own resources and are replaced
+ *  on upgrade. Universal-library ops always resolve to ~/.mcode/skills. */
+function resolveSkillRootForRequest(source: SkillSource): string | null {
   if (source === "plugin" || source === "builtin") return null;
-  if (source === "global") {
-    return resolveSkillRoot("global", "");
+  return resolveSkillRoot();
+}
+
+/** The bundle manifest lives next to the matrix file at the library root —
+ *  dot-prefixed like `.mcode-engines.json` so skill scanning skips it. */
+const BUNDLES_FILE = ".bundles.json";
+
+/** Read the import-bundle manifest (`.bundles.json`): which source directory
+ *  each skill was imported from. Purely a display/management concern — a
+ *  missing file (nobody imported anything), a bad JSON or a wrong shape all
+ *  degrade to an empty list, never an error. Individual entries that don't
+ *  match the shape are dropped rather than failing the whole table. */
+async function readBundlesManifest(root: string): Promise<SkillBundle[]> {
+  try {
+    const raw = await fs.readFile(path.join(root, BUNDLES_FILE), "utf8");
+    const parsed = JSON.parse(raw) as { bundles?: unknown };
+    if (!Array.isArray(parsed.bundles)) return [];
+    return parsed.bundles.filter(
+      (b): b is SkillBundle =>
+        !!b &&
+        typeof (b as SkillBundle).id === "string" &&
+        typeof (b as SkillBundle).label === "string" &&
+        Array.isArray((b as SkillBundle).skills),
+    );
+  } catch {
+    return [];
   }
-  if (!projectPath) return null;
-  const project = findKnownProject(projectPath);
-  if (!project) return null;
-  return resolveSkillRoot("project", project.path);
+}
+
+/* ── GitHub package import ──
+ *  "贴一个链接进来,导出来就是一类" —— 一个仓库往往是一个技能包(很多子 skill
+ *  组合而成)。浅克隆 → 递归找 SKILL.md → 每个技能目录整体拷入通用库 → 全部
+ *  归进同一个 bundle(<owner>--<repo>),面板按包管理(整包开关/查看归属)。 */
+
+/** execFile as a promise, stdout/stderr discarded (git progress noise). */
+function execFileP(cmd: string, args: string[], timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { windowsHide: true, timeout: timeoutMs }, (err) =>
+      err ? reject(err) : resolve(),
+    );
+  });
+}
+
+/** Parse the shapes the URL box accepts: `owner/repo`,
+ *  `https://github.com/owner/repo[.git]`, with an optional `/tree/<branch>`
+ *  suffix (the repo file browser's URL). Anything else → null (surfaced to
+ *  the user as "不是 GitHub 仓库链接"). */
+function parseGithubUrl(input: string): { owner: string; repo: string; branch?: string; httpsUrl: string } | null {
+  const s = input.trim();
+  const bare = /^([\w.-]+)\/([\w.-]+?)(?:\.git)?$/.exec(s);
+  if (bare) {
+    return { owner: bare[1], repo: bare[2], httpsUrl: `https://github.com/${bare[1]}/${bare[2]}` };
+  }
+  try {
+    const u = new URL(/^https?:\/\//.test(s) ? s : `https://${s}`);
+    if (u.hostname !== "github.com" && u.hostname !== "www.github.com") return null;
+    const seg = u.pathname.split("/").filter(Boolean);
+    if (seg.length < 2) return null;
+    const repo = seg[1].replace(/\.git$/, "");
+    // github.com/<owner>/<repo>/tree/<branch>[/<deep path>] — the file browser
+    // URL. Deep paths are ignored (whole repo is imported).
+    const branch = seg[2] === "tree" && seg.length > 3 ? seg[3] : undefined;
+    return { owner: seg[0], repo, branch, httpsUrl: `https://github.com/${seg[0]}/${repo}` };
+  } catch {
+    return null;
+  }
+}
+
+/** Directories never descended into when hunting for SKILL.md files. */
+const GITHUB_SCAN_SKIP = new Set([".git", "node_modules"]);
+
+/** Collect directories containing a SKILL.md, breadth-agnostic recursion.
+ *  Once a directory IS a skill (has SKILL.md) it is not descended into —
+ *  files under it belong to that skill, not to separate sub-skills. */
+async function findGithubSkillDirs(dir: string, out: string[]): Promise<void> {
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  if (entries.some((e) => e.isFile() && e.name === "SKILL.md")) {
+    out.push(dir);
+    return;
+  }
+  for (const e of entries) {
+    if (e.isDirectory() && !GITHUB_SCAN_SKIP.has(e.name)) {
+      await findGithubSkillDirs(path.join(dir, e.name), out);
+    }
+  }
+}
+
+/** Merge the imported skills into the bundle manifest (create the bundle when
+ *  first seen; merge names when re-importing an updated repo). Best-effort:
+ *  a manifest write failure must not fail an otherwise successful import. */
+async function upsertGithubBundle(
+  root: string,
+  bundleId: string,
+  label: string,
+  source: string,
+  importedNames: string[],
+): Promise<void> {
+  try {
+    const file = path.join(root, BUNDLES_FILE);
+    let bundles: SkillBundle[] = [];
+    try {
+      const parsed = JSON.parse(await fs.readFile(file, "utf8")) as { bundles?: SkillBundle[] };
+      if (Array.isArray(parsed.bundles)) bundles = parsed.bundles;
+    } catch {
+      // no manifest yet — start a fresh one
+    }
+    let b = bundles.find((x) => x.id === bundleId);
+    if (!b) {
+      b = { id: bundleId, label, skills: [], source };
+      bundles.push(b);
+    } else {
+      b.label = label;
+      b.source = source;
+    }
+    const names = new Set(b.skills);
+    for (const n of importedNames) names.add(n);
+    b.skills = [...names].sort();
+    await fs.writeFile(file, JSON.stringify({ version: 1, bundles }, null, 2) + "\n", "utf8");
+  } catch (err) {
+    log.warn(`bundle manifest update failed: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Import a whole skill package from a GitHub repository URL.
+ *
+ * Shallow-clones the repo into a temp dir, finds every SKILL.md (excluding
+ * .git/node_modules; a SKILL.md at the repo root makes the WHOLE repo one
+ * skill, named by its frontmatter `name` or the repo name), copies each
+ * skill directory into the universal library (existing names are skipped),
+ * and records everything under one `<owner>--<repo>` bundle. All failure
+ * paths return a structured result — nothing throws to the IPC boundary.
+ */
+async function importGithubPackage(input: { url: string }): Promise<SkillsImportGithubResult> {
+  const empty: Pick<SkillsImportGithubResult, "imported" | "skipped" | "errors"> = {
+    imported: [],
+    skipped: [],
+    errors: [],
+  };
+  const parsed = parseGithubUrl(input.url);
+  if (!parsed) {
+    return { ok: false, error: "不是可识别的 GitHub 仓库链接(支持 owner/repo 或完整 https 链接)", ...empty };
+  }
+  const { owner, repo, branch, httpsUrl } = parsed;
+  const root = resolveSkillRoot();
+  const tmp = path.join(tmpdir(), `mcode-gh-${randomUUID()}`);
+  try {
+    try {
+      await execFileP(
+        "git",
+        ["clone", "--depth", "1", "--single-branch", ...(branch ? ["--branch", branch] : []), `${httpsUrl}.git`, tmp],
+        180_000,
+      );
+    } catch (err) {
+      const msg = (err as Error).message;
+      return {
+        ok: false,
+        error: /ENOENT|not recognized|不在路径|not found/i.test(msg)
+          ? "本机没有可用的 git 命令,请先安装 Git"
+          : `克隆失败:${msg.split("\n")[0]}`,
+        ...empty,
+      };
+    }
+
+    // Discover skill directories. A SKILL.md at the repo root means the whole
+    // repo is ONE skill — name it by frontmatter (fallback: repo name).
+    const skillDirs: string[] = [];
+    await findGithubSkillDirs(tmp, skillDirs);
+    if (skillDirs.length === 0) {
+      return { ok: false, error: "仓库里没有找到任何 SKILL.md —— 它不是一个技能包", ...empty };
+    }
+    const rootIsSkill = skillDirs.includes(tmp);
+    let rootName = repo;
+    if (rootIsSkill) {
+      const front = parseSkillFrontmatter(await readSkillMd(tmp));
+      if (front?.name && SKILL_NAME_RE.test(front.name)) rootName = front.name;
+    }
+
+    const imported: string[] = [];
+    const skipped: string[] = [];
+    const errors: Array<{ name: string; error: string }> = [];
+    for (const dir of skillDirs) {
+      const name = dir === tmp ? rootName : path.basename(dir);
+      if (!SKILL_NAME_RE.test(name)) {
+        errors.push({ name, error: "名字含非法字符(只允许字母/数字/-/_)被跳过" });
+        continue;
+      }
+      const dest = path.join(root, name);
+      if (await fs.stat(dest).then(() => true, () => false)) {
+        skipped.push(name);
+        continue;
+      }
+      try {
+        await fs.cp(dir, dest, { recursive: true });
+        imported.push(name);
+      } catch (err) {
+        errors.push({ name, error: (err as Error).message });
+      }
+    }
+
+    if (imported.length === 0 && skipped.length === 0) {
+      return { ok: false, error: "仓库里的技能一个都没能导入(重名与非法名除外)", ...empty, errors };
+    }
+
+    const bundleId = `${owner}--${repo}`;
+    const bundleLabel = `${owner}/${repo}`;
+    await upsertGithubBundle(root, bundleId, bundleLabel, httpsUrl, imported);
+
+    log.info(`[skills] GitHub import ${bundleLabel}: ${imported.length} imported, ${skipped.length} skipped`);
+    return { ok: true, imported, skipped, errors, bundleId, bundleLabel };
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 export function registerSkillsHandlers(ipcMain: IpcMain): void {
@@ -566,6 +740,77 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
     const input = SkillsListSchema.parse(raw);
     const skills = await listSkillsForProject(input.projectPath);
     return { skills };
+  });
+
+  // ── Set one universal skill's per-engine availability ──
+  // 「移动到引擎内部 / 移回通用」is a matrix edit in .mcode-engines.json — skill
+  // files never move. The renderer sends the full desired {claude,codex,pi}
+  // state; we persist the minimal entry (only `false` keys, deleted entirely
+  // when nothing is disabled) and return the RESOLVED state so the UI can
+  // render exactly what's on disk. Failures degrade to { ok:false } — the
+  // matrix file being unwritable must not crash the panel.
+  ipcMain.handle(IPC.SKILLS_ENGINES_SET, async (_evt, raw) => {
+    const input = SkillsEnginesSetSchema.parse(raw);
+    try {
+      const root = resolveSkillRoot();
+      const map = readEnginesMap(root);
+      const wanted = { claude: input.claude, codex: input.codex, pi: input.pi };
+      setEnginesEntry(map, input.name, wanted);
+      writeEnginesMap(root, map);
+      const updated = readEnginesMap(root);
+      return {
+        ok: true,
+        perEngine: {
+          claude: engineEnabled(updated, input.name, "claude"),
+          codex: engineEnabled(updated, input.name, "codex"),
+          pi: engineEnabled(updated, input.name, "pi"),
+        } satisfies SkillEngineState,
+      };
+    } catch (err) {
+      log.warn(`skills.enginesSet failed: ${(err as Error).message}`);
+      return { ok: false, error: (err as Error).message };
+    }
+  });
+
+  // ── Read the bundle manifest (import groups) ──
+  // Display-only data for the settings panel's bundle grouping; degrades to
+  // an empty list on any IO/parse problem.
+  ipcMain.handle(IPC.SKILLS_BUNDLES, async (_evt, raw) => {
+    SkillsBundlesSchema.parse(raw);
+    return { bundles: await readBundlesManifest(resolveSkillRoot()) };
+  });
+
+  // ── Set the per-engine availability for MANY skills at once ──
+  // The group-level switches in the bundle view write a whole import bundle
+  // with ONE matrix read-modify-write (looping enginesSet per skill would
+  // rewrite .mcode-engines.json N times). Same semantics as enginesSet,
+  // applied to every name. Names are NOT checked against the library — the
+  // manifest may lag deletions (a stale key in the sparse matrix is harmless:
+  // missing = enabled, and the skill is gone anyway) and plugin-contributed
+  // skills live in the same matrix without being directories of the root.
+  // Returns each name's RESOLVED state so the UI renders what's on disk.
+  ipcMain.handle(IPC.SKILLS_ENGINES_SET_BULK, async (_evt, raw) => {
+    const input = SkillsEnginesSetBulkSchema.parse(raw);
+    try {
+      const root = resolveSkillRoot();
+      const map = readEnginesMap(root);
+      const wanted = { claude: input.claude, codex: input.codex, pi: input.pi };
+      for (const name of input.names) setEnginesEntry(map, name, wanted);
+      writeEnginesMap(root, map);
+      const updated = readEnginesMap(root);
+      const perEngine: Record<string, SkillEngineState> = {};
+      for (const name of input.names) {
+        perEngine[name] = {
+          claude: engineEnabled(updated, name, "claude"),
+          codex: engineEnabled(updated, name, "codex"),
+          pi: engineEnabled(updated, name, "pi"),
+        };
+      }
+      return { ok: true, perEngine };
+    } catch (err) {
+      log.warn(`skills.enginesSetBulk failed: ${(err as Error).message}`);
+      return { ok: false, error: (err as Error).message };
+    }
   });
 
   // ── Read one skill's full SKILL.md source ──
@@ -578,8 +823,8 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
   // ── Create or overwrite a skill's SKILL.md ──
   ipcMain.handle(IPC.SKILLS_SAVE, async (_evt, raw) => {
     const input = SkillsSaveSchema.parse(raw);
-    const root = resolveSkillRootForRequest(input.source, input.projectPath);
-    if (!root) return { ok: false, error: "未知的项目路径" };
+    const root = resolveSkillRootForRequest(input.source);
+    if (!root) return { ok: false, error: "该来源为只读" };
     const skillDir = path.join(root, input.name);
     if (!pathWithin(root, skillDir)) {
       return { ok: false, error: "无效的 skill 路径" };
@@ -597,8 +842,8 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
       const targetDir = input.newName && input.newName !== input.name
         ? path.join(root, input.newName)
         : skillDir;
-      // mkdir -p the skill dir (and the .claude/skills root if it's the first
-      // project-scoped skill). recursive:true is a no-op if it already exists.
+      // mkdir -p the skill dir (and the skills root if this is the first
+      // skill). recursive:true is a no-op if it already exists.
       await fs.mkdir(targetDir, { recursive: true });
       await fs.writeFile(path.join(targetDir, "SKILL.md"), input.content, "utf-8");
       return { ok: true };
@@ -610,8 +855,8 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
   // ── Delete a skill directory ──
   ipcMain.handle(IPC.SKILLS_DELETE, async (_evt, raw) => {
     const input = SkillsDeleteSchema.parse(raw);
-    const root = resolveSkillRootForRequest(input.source, input.projectPath);
-    if (!root) return { ok: false, error: "未知的项目路径" };
+    const root = resolveSkillRootForRequest(input.source);
+    if (!root) return { ok: false, error: "该来源为只读" };
     const skillDir = path.join(root, input.name);
     if (!pathWithin(root, skillDir)) {
       return { ok: false, error: "无效的 skill 路径" };
@@ -695,7 +940,7 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
   // so the UI can report precisely.
   ipcMain.handle(IPC.SKILLS_IMPORT, async (_evt, raw) => {
     const input = SkillsImportSchema.parse(raw);
-    const globalRoot = resolveSkillRoot("global", "");
+    const globalRoot = resolveSkillRoot();
     const imported: string[] = [];
     const skipped: string[] = [];
     const errors: Array<{ name: string; error: string }> = [];
@@ -750,5 +995,13 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
       }
     }
     return { imported, skipped, errors };
+  });
+
+  // ── Import a whole skill package from a GitHub repo URL ──
+  // One repo = one bundle: shallow-clone → find every SKILL.md → copy each
+  // skill in → record them all under `<owner>--<repo>` in the manifest.
+  ipcMain.handle(IPC.SKILLS_IMPORT_GITHUB, async (_evt, raw) => {
+    const input = SkillsImportGithubSchema.parse(raw);
+    return importGithubPackage(input);
   });
 }

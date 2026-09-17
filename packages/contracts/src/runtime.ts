@@ -987,6 +987,29 @@ export interface UpstreamIssueEvent {
   attempts: number;
 }
 
+/**
+ * 统一资料库:**一条条目入库成功**。三个导入入口(标识符导入 `importIdentifiers` /
+ * 本地 PDF 导入 `importPdfFiles` / 通用文件导入 `importGenericFiles`)共用这一种事件。
+ *
+ * ## sessionId 为什么是合成 id "(system)"
+ *
+ * 导入**不属于任何对话**:它可能来自用户点界面、AI 的 MCP 工具、自动化的后台运行,
+ * 甚至是还没开窗口的时候 —— 硬挂到某个会话上会让"这是谁触发的"变成猜谜。但每个
+ * `RuntimeEvent` 都要带 sessionId(envelope 兼容,同 `SessionRunningSnapshotEvent` 的
+ * 先例),所以给一个**永不与真实会话撞车**的哨兵。桌面渲染端对认不出的类型按未知事件
+ * 忽略(没有任何会话叫 "(system)"),它真正的读者是 automation 的「事件发生时」
+ * 触发器与钩子(见 `@contracts/hook` 的 `HOOK_EVENT_OF`)。
+ */
+export interface LibraryItemImportedEvent {
+  type: "library.item.imported";
+  sessionId: string;
+  /** 入库的那条条目。 */
+  itemId: string;
+  /** 条目的类型(注册表里的 kind)。 */
+  kind: string;
+  title: string;
+}
+
 /** The union of all runtime events. */
 export type RuntimeEvent =
   | TextDeltaEvent
@@ -1021,4 +1044,5 @@ export type RuntimeEvent =
   | SessionRunningSnapshotEvent
   | UserMessageEvent
   | UpstreamIssueEvent
-  | GitChangedEvent;
+  | GitChangedEvent
+  | LibraryItemImportedEvent;

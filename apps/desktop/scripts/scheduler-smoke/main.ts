@@ -2686,6 +2686,3 @@ console.log("\n运行前先问我");
 
 console.log(`\n${total - failures}/${total} passed`);
 if (failures > 0) process.exit(1);
-
-
-if (failures > 0) process.exit(1);

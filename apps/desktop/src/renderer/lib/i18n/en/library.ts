@@ -20,6 +20,24 @@ export const en = {
   "library.collection.deleteConfirm": "Delete the library “{name}”? Its papers are not deleted — they are only removed from this group.",
   "library.collection.empty": "No papers in this collection yet",
 
+  // Sidebar management: groups (sections) and sub-types (tabs) are managed by right-click in the sidebar
+  "library.group.rename": "Rename group",
+  "library.group.new": "New group",
+  "library.group.delete": "Delete group",
+  "library.group.deleteConfirm": "Delete group “{name}”? Its types become ungrouped (hidden in the sidebar); no data is deleted.",
+  "library.group.namePlaceholder": "Group name",
+  "library.group.emptyHint": "All groups were deleted — type a name to create one. Your data is still there.",
+  "library.kind.new": "New sub-type",
+  "library.kind.rename": "Rename sub-type",
+  "library.kind.delete": "Delete sub-type",
+  "library.kind.deleteConfirm": "Delete sub-type “{name}”? Its collections and items will no longer show; no data is deleted.",
+  "library.kind.builtinLocked": "Built-in types cannot be deleted",
+  "library.kind.namePlaceholder": "Sub-type name",
+  "library.kind.purpose.material": "For reading",
+  "library.kind.purpose.format": "For writing",
+  "library.collection.newSub": "New sub-collection",
+  "library.collection.createFailed": "Could not create it",
+
   "library.list.count": "{n} papers",
   "library.list.searchPlaceholder": "Search title, author, abstract",
   "library.list.selected": "{n} selected",
@@ -247,4 +265,15 @@ export const en = {
   "institution.clearAllConfirm": "Clear sign-in state for every site in the embedded browser?",
   "institution.cleared": "Sign-in state cleared",
   "institution.reload": "Refresh status",
+
+  // ── Unified library: generic file entries (linked / attached) ──
+  "library.detail.file": "File",
+  "library.action.importFiles": "Import files",
+  "library.action.importFolder": "Import folder",
+  "library.import.genericResult": "Imported {added}, skipped {skipped}",
+  "library.import.genericErrors": "{n} failed",
+  "library.file.back": "Up one level",
+  "library.file.emptyDir": "Empty folder",
+  "library.file.unknownMime": "No built-in preview ({mime})",
+  "library.file.loadFailed": "Failed to read",
 } as const;

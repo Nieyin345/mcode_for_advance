@@ -82,7 +82,7 @@ export interface Session {
   providerId: string;
   /** claude's own session id, used for `--resume`. Null until first turn. */
   claudeSessionId: string | null;
-  /** Session role. Three kinds, and the difference that matters is **who drives
+  /** Session role. Four kinds, and the difference that matters is **who drives
    *  it and whether the user sees it**:
    *
    *  - `"chat"` — a normal session, listed in the left bar, driven by the user.
@@ -93,13 +93,22 @@ export interface Session {
    *    never sees it in a list; it exists so a node gets its own concurrent
    *    turn, its own approval bookkeeping and its own persisted transcript
    *    (see `main/orchestration/`). Its interactive events are re-addressed to
-   *    the parent conversation, so a node's question pops up in the chat. */
-  kind: "chat" | "side" | "node";
+   *    the parent conversation, so a node's question pops up in the chat.
+   *  - `"automation"` — the hidden session a **backend automation** runs in
+   *    (see `main/orchestration/automationRunner.ts`): one per automation,
+   *    found by `workflowId`, reused across runs. Also invisible in every list,
+   *    and — unlike a node — it has **no conversation to ask**: nobody is
+   *    watching, so its approvals/questions are auto-declined (fail-closed,
+   *    see `RuntimeManager.autoDeclineIfUnattended`) and its run history is the
+   *    only thing the user ever reads back. */
+  kind: "chat" | "side" | "node" | "automation";
   /** For non-`chat` sessions: the main session this one hangs off.
    *
    *  `side` — the Q&A thread's origin, for traceability. Nulled (not cascaded)
    *  when the parent is deleted, because the history has standalone value.
-   *  `node` — the conversation whose graph spawned it. Nulled the same way. */
+   *  `node` — the conversation whose graph spawned it. Nulled the same way.
+   *  `automation` — **null**: a backend automation belongs to a *workflow*, not
+   *  to a conversation (its workflowId is what identifies it). */
   parentSessionId: string | null;
   title: string;
   status: SessionStatus;

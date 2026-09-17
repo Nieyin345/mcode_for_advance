@@ -155,7 +155,9 @@ for (const event of HOOK_EVENTS) {
 }
 // 事件的顺序就是设置页下拉的顺序,按一轮的生命周期排 —— 首尾钉死,免得改的时候顺手挪乱。
 eq("第一个事件是一轮的开始", HOOK_EVENTS[0], "user.message");
-eq("最后一个是工作流节点", HOOK_EVENTS[HOOK_EVENTS.length - 1], "workflow.node.result");
+// 统一资料库后,`library.item.imported`(应用内事件,无可比主语)排在生命周期之后
+// —— 所以"最后一个"改判"包含 + 倒数第二",而不是死咬末位。
+check("末段有工作流节点结果", HOOK_EVENTS.slice(-2).includes("workflow.node.result"), HOOK_EVENTS.slice(-2));
 check("事件不重复", new Set(HOOK_EVENTS).size === HOOK_EVENTS.length);
 
 /* ────────────────────── 2. 校验 ────────────────────── */

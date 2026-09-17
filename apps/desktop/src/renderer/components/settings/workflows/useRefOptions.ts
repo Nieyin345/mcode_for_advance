@@ -23,6 +23,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
+import { filterSkillsForEngine } from "@renderer/lib/engineFilter.js";
 import { MCP_ALWAYS_ON_SERVERS, type McpScope } from "@contracts/ipc";
 import type { NodeParamRefSource } from "@contracts/nodeType";
 
@@ -72,17 +73,22 @@ function useModelOptions(): RefOption[] {
  * 新鲜度会不一样。
  *
  * 技能名不带斜杠(清单里存的就是名字),与 `NODE_SKILLS_PARAM_KEY` 那一头的约定一致。
+ *
+ * **按当前会话引擎过滤**:被用户从某个引擎收走的技能,在那个引擎的运行里本来就
+ * 加载不到,候选表里列出来只会让人选一个不生效的项。检查器总是「为主对话当下
+ * 用的引擎」配参数,所以过滤跟 store 的 providerId 走。
  */
 function useSkillOptions(): RefOption[] {
   const skills = useSessionStore((s) => s.skills);
+  const providerId = useSessionStore((s) => s.providerId);
   return useMemo(
     () =>
-      skills.map((s) => ({
+      filterSkillsForEngine(skills, providerId).map((s) => ({
         id: s.name,
         label: s.name,
         ...(s.description ? { hint: s.description } : {}),
       })),
-    [skills],
+    [skills, providerId],
   );
 }
 
@@ -108,14 +114,37 @@ function useProviderOptions(): RefOption[] {
 }
 
 /**
+ * 左栏那张**项目**表。触发器节点的「在哪个项目里跑」用它(见 `@contracts/nodeType` 的
+ * `projects` 那一段)。
+ *
+ * 读 store 里那一份(和左栏同源),不自己发一次 `project.list` —— 理由同技能 / 引擎:
+ * 两处各拉一次,用户刚建完一个项目时两边的就会不一样。
+ *
+ * `hint` 给路径。节点上存的是**项目 id**,而用户挑的时候看的是项目名 —— 让路径一起
+ * 显示出来,"这个名字对应哪个目录"就不用去左栏核对了。
+ */
+function useProjectOptions(): RefOption[] {
+  const projects = useSessionStore((s) => s.projects);
+  return useMemo(
+    () =>
+      projects.map((p) => ({
+        id: p.id,
+        label: p.name.trim() || p.id,
+        hint: p.path,
+      })),
+    [projects],
+  );
+}
+
+/**
  * MCP 服务器 / 插件这两份候选 —— **store 里没有,要现拉**。
  *
  * ## 为什么不像上面那几个一样读 store
  *
  * 技能与引擎是全局的、而且别处也在用,所以 store 里本来就有一份(装完技能所有地方
- * 一起变)。MCP 的那份**跟着项目走**(同一个名字在不同项目下可以是不同的服务器),
- * 插件那份虽然全局、但只有这一个字段要它 —— 为它们各加一个 store 字段、再各写一处
- * 失效逻辑,换来的只是"点开检查器时少一次 IPC"。不值。
+ * 一起变)。MCP 的清单只有工作流检查器这一个消费点,插件那份虽然全局、但只有这一个
+ * 字段要它 —— 为它们各加一个 store 字段、再各写一处失效逻辑,换来的只是"点开检查器
+ * 时少一次 IPC"。不值。
  *
  * ## 缓存:一次进程内只拉一次
  *
@@ -126,12 +155,11 @@ function useProviderOptions(): RefOption[] {
 const refOptionCache = new Map<string, RefOption[]>();
 const EMPTY_REF_OPTIONS: RefOption[] = [];
 
-/** MCP 那份的来源名 —— 面板上也是这么分的(用户配的 / 项目里的 / 插件带的)。 */
+/** MCP 那份的来源名 —— 面板上也是这么分的(用户配的 / 内置 / 插件带的)。 */
 const MCP_SCOPE_LABEL: Record<McpScope, string> = {
   user: "用户配置",
-  project: "本项目",
-  plugin: "插件自带",
   builtin: "内置",
+  plugin: "插件自带",
 };
 
 /**
@@ -145,17 +173,11 @@ const MCP_SCOPE_LABEL: Record<McpScope, string> = {
  *    自己关得掉。
  */
 function useMcpOptions(enabled: boolean): RefOption[] {
-  const projects = useSessionStore((s) => s.projects);
-  const activeProjectId = useSessionStore((s) => s.activeProjectId);
-  const projectPath = activeProjectId
-    ? (projects.find((p) => p.id === activeProjectId)?.path ?? "")
-    : "";
-  const key = `mcp:${projectPath}`;
   const options = useCachedOptions(
     enabled,
-    key,
+    "mcp:all",
     async () => {
-      const { servers } = await api.mcp.list(projectPath ? { projectPath } : {});
+      const { servers } = await api.mcp.list({});
       return servers
         .filter(
           (s) => s.enabled && !s.needsAuth && !(MCP_ALWAYS_ON_SERVERS as readonly string[]).includes(s.name),
@@ -235,6 +257,7 @@ export function useRefOptions(from: NodeParamRefSource): RefOption[] {
   const models = useModelOptions();
   const skills = useSkillOptions();
   const providers = useProviderOptions();
+  const projects = useProjectOptions();
   const mcp = useMcpOptions(from === "mcp");
   const plugins = usePluginOptions(from === "plugins");
   switch (from) {
@@ -242,6 +265,8 @@ export function useRefOptions(from: NodeParamRefSource): RefOption[] {
       return skills;
     case "providers":
       return providers;
+    case "projects":
+      return projects;
     case "models":
       return models;
     case "mcp":

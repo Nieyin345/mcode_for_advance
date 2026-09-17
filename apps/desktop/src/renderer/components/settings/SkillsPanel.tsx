@@ -1,54 +1,41 @@
 /**
- * Two-column panel for managing Claude skills (SKILL.md). Lives in the Settings
+ * Two-column panel for managing skills (SKILL.md). Lives in the Settings
  * page under "Skills".
  *
- * The list shows BOTH project-scoped skills (<project>/.claude/skills) and
- * global skills (~/.mcode/skills, Mcode's own CLAUDE_CONFIG_DIR). Global skills
- * are populated by the "Import" feature, which scans external tools (Claude
- * Code, Codex, Zcode) and copies selected skills into ~/.mcode/skills so they
- * become available to the SDK (including under custom endpoints) — or created
- * directly via the new-skill form's scope selector. Both kinds can be viewed,
- * edited, and deleted here. With no project at all, the panel degrades to
- * global-only management (list / create / edit / delete all work without a
- * projectPath).
+ * The list shows the universal library (~/.mcode/skills — the ONE user-owned
+ * store all three engines consume, populated by the "Import" feature or the
+ * new-skill form) plus the built-in document skills (read-only). Global skills
+ * can be viewed, edited, and deleted here, and each one's per-engine
+ * availability (claude / codex / pi) is editable via the matrix in the editor
+ * header — 「移动到引擎内部 / 移回通用」 is a matrix edit; skill files never move.
  *
  * ## Layout
  *
- *   ┌─ project selector (dropdown) ──────────────────────────────┐
- *   ├─ left (skill list) ────┬─ right (editor / empty) ──────────┤
- *   │ • pdf       [全局]      │  - editing existing -             │
- *   │ • my-skill  [项目]      │  full SKILL.md source textarea    │
- *   │ + 新建 Skill            │  - or creating new -              │
- *   │ + 导入 Skill            │  scope / name / description / body│
- *   └─────────────────────────┤  · 保存/删除                      │
- *                              └───────────────────────────────────┘
+ *   ┌─ left (skill list) ────┬─ right (editor / empty) ─────────────────┤
+ *   │ • pdf       [全局]      │  - editing existing -                    │
+ *   │ • docx      [内置]      │  engine matrix (claude/codex/pi toggles) │
+ *   │ + 新建 Skill            │  full SKILL.md source textarea           │
+ *   │ + 导入 Skill            │  - or creating new -                     │
+ *   └─────────────────────────┤  name / description / body · 保存/删除    │
+ *                              └──────────────────────────────────────────┘
  *
- * ## Which project's skills are shown?
+ * 项目级根（<project>/.claude/skills）已随上下文统一托管移除：外部工作区目录
+ * 一律不再继承，Mcode 不往用户项目目录读写任何 skill 文件。
  *
- * The panel keeps its OWN "managed project" selection (independent of the
- * workspace's activeProjectId) so switching it here never disturbs the
- * workspace. It defaults to the workspace's active project on first open.
- * The project dropdown at the top makes this explicit: project-scoped skills
- * always belong to whichever project is shown there, removing the prior
- * ambiguity where the binding was invisible. Global skills are the same
- * regardless of which project is selected.
- *
- * The skill list is fetched locally (panelSkills state) keyed on the managed
- * project, NOT read from the session store's `skills` cache - that cache is
- * bound to activeProjectId for the composer `/` menu and must not be coupled
- * to this panel's selection. After a mutation, if the managed project happens
- * to be the active one, we also reload the store cache so the `/` menu stays
- * in sync.
+ * The skill list is fetched locally (panelSkills state), NOT read from the
+ * session store's `skills` cache - that cache feeds the composer `/` menu and
+ * must not be coupled to this panel. After a mutation we also reload the
+ * store cache so the `/` menu stays in sync.
  *
  * Mirrors CustomModelsPanel's two-column shape and ConfirmDialog-based delete.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { Button, ConfirmDialog, Dialog, Select } from "@renderer/components/ui/index.js";
+import { Button, ConfirmDialog, Dialog } from "@renderer/components/ui/index.js";
 import { PanelHeader } from "./PanelHeader.js";
 import {
   IconPlus,
@@ -58,8 +45,18 @@ import {
   IconDownload,
   IconFolder,
   IconFileText,
+  IconChevronDown,
+  IconChevronRight,
 } from "@renderer/lib/icons.js";
-import type { SkillInfo, SkillSource, ReadOnlySkillSource, ExternalSkillInfo, SkillTool } from "@contracts/ipc";
+import type {
+  SkillInfo,
+  SkillSource,
+  ReadOnlySkillSource,
+  ExternalSkillInfo,
+  SkillTool,
+  SkillEngineState,
+  SkillBundle,
+} from "@contracts/ipc";
 
 /** Skill name charset — mirrored from the zod schema in the contract. The
  *  editor disables the name field for existing skills, so this only gates the
@@ -75,13 +72,10 @@ const EMPTY_PANEL_SKILLS: SkillInfo[] = [];
  *  excluded — they're read-only inventory owned by the Plugins panel (which
  *  owns install / enable / uninstall). Built-in skills ARE included: no plugin
  *  owns them, so this panel is the only place a user can read what `/docx`
- *  actually does. */
+ *  actually does. Writable sources are just "global" — the universal library
+ *  is the only user-owned store (new skills are created there, always enabled
+ *  for every engine until the matrix says otherwise). */
 type PanelSkillSource = Exclude<SkillSource, "plugin">;
-
-/** The sources the new-skill form can CREATE into. Narrower than
- *  {@link PanelSkillSource}: built-in skills ship with the app, so there is
- *  nothing to create into. */
-type CreatableSkillSource = Exclude<PanelSkillSource, "builtin">;
 
 /** True for skills the editor must not offer to save or delete — neither has a
  *  user-owned file root: a plugin skill lives in the plugin's install dir, a
@@ -101,17 +95,13 @@ type Selection =
   | null;
 
 interface NewForm {
-  /** Where the skill will be created: project dir or the global ~/.mcode/skills.
-   *  Defaults to "project" (current behavior); forced to "global" when no
-   *  project exists at all (the only creatable scope then). */
-  scope: CreatableSkillSource;
   name: string;
   description: string;
   body: string;
 }
 
-function emptyNewForm(scope: CreatableSkillSource): NewForm {
-  return { scope, name: "", description: "", body: "" };
+function emptyNewForm(): NewForm {
+  return { name: "", description: "", body: "" };
 }
 
 /** Selection key for a SkillInfo — stable identity across reloads. */
@@ -119,69 +109,247 @@ function skillKey(s: { source: SkillSource; name: string }): string {
   return `${s.source}:${s.name}`;
 }
 
+const MATRIX_ENGINES = ["claude", "codex", "pi"] as const;
+type MatrixEngine = (typeof MATRIX_ENGINES)[number];
+
+function engineLabel(e: MatrixEngine): string {
+  return e === "claude" ? "Claude" : e === "codex" ? "Codex" : "Pi";
+}
+
+/** Sort key for a list group — universal first, then each engine's internal
+ *  group, then partial combinations, built-ins last. */
+function groupRank(id: string): number {
+  if (id === "universal") return 0;
+  if (id === "internal:claude") return 1;
+  if (id === "internal:codex") return 2;
+  if (id === "internal:pi") return 3;
+  if (id.startsWith("shared:")) return 4;
+  return 5;
+}
+
+/** Group-title engine switches (bundle view): one key per engine that toggles
+ *  the WHOLE group's visibility for that engine in a single click. The
+ *  aggregate shows "on" only when every skill in the group has that engine
+ *  enabled (missing = enabled, same rule as the matrix). */
+function GroupEngineSwitches({
+  skills,
+  busy,
+  onToggle,
+}: {
+  skills: SkillInfo[];
+  busy: boolean;
+  onToggle: (engine: MatrixEngine, want: boolean) => void;
+}) {
+  return (
+    <span className="ml-1 inline-flex shrink-0 items-center gap-0.5">
+      {MATRIX_ENGINES.map((e) => {
+        const allOn = skills.every((s) => s.perEngine?.[e] !== false);
+        return (
+          <button
+            key={e}
+            type="button"
+            disabled={busy}
+            title={engineLabel(e)}
+            onClick={(ev) => {
+              // The switches sit inside the collapsible group title — clicking
+              // one must not toggle the group's fold state.
+              ev.stopPropagation();
+              onToggle(e, !allOn);
+            }}
+            className={cn(
+              "rounded px-1 leading-4 text-[9px] font-semibold transition-colors",
+              allOn ? "bg-accent/15 text-accent" : "text-content-subtle/50 line-through hover:text-content-subtle",
+              busy && "opacity-50",
+            )}
+          >
+            {e === "claude" ? "C" : e === "codex" ? "X" : "P"}
+          </button>
+        );
+      })}
+    </span>
+  );
+}
+
 export function SkillsPanel() {
   const { t } = useI18n();
-  const projects = useSessionStore((s) => s.projects);
   const activeProjectId = useSessionStore((s) => s.activeProjectId);
   const reloadSkills = useSessionStore((s) => s.reloadSkills);
 
-  // Projects available to manage (non-archived). The dropdown lists these.
-  const managedProjects = projects.filter((p) => !p.archived);
-
-  // The panel's OWN project selection — independent of the workspace's
-  // activeProjectId so switching here never disturbs the workspace. Defaults
-  // to the active project; falls back to the first available project.
-  const [managedProjectId, setManagedProjectId] = useState<string | null>(
-    () => activeProjectId ?? managedProjects[0]?.id ?? null,
-  );
-  const managedProject = managedProjects.find((p) => p.id === managedProjectId);
-  const projectPath = managedProject?.path ?? null;
-
-  // Panel-local skill list, keyed on the managed project. NOT the store
-  // cache (that one follows activeProjectId for the composer `/` menu).
+  // Panel-local skill list (the universal library + built-ins). NOT the store
+  // cache (that one feeds the composer `/` menu).
   const [panelSkills, setPanelSkills] = useState<SkillInfo[]>(EMPTY_PANEL_SKILLS);
   const [listLoading, setListLoading] = useState(false);
+  // Bundle manifest (import groups) + which grouping the left list uses.
+  // Bundle grouping is the DEFAULT: with hundreds of imported skills, the
+  // engine-state groups flatten everything into one undifferentiated mass,
+  // while the bundle groups answer "这是什么、从哪个包来的" at a glance and
+  // carry the group-level engine switches.
+  const [bundles, setBundles] = useState<SkillBundle[]>([]);
+  const [groupMode, setGroupMode] = useState<"bundle" | "engine">("bundle");
+  const [bulkBusy, setBulkBusy] = useState(false);
+  // ── Collapsible groups ── Groups start COLLAPSED: with 266 skills in five
+  // bundles, an all-expanded list is exactly the wall the user complained
+  // about. "expanded" is an allowlist (empty = all collapsed), persisted in
+  // localStorage so the panel remembers which packages the user is working on.
+  const [expanded, setExpanded] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem("mcode.skills.expanded");
+      return raw ? new Set(JSON.parse(raw) as string[]) : new Set<string>();
+    } catch {
+      return new Set<string>();
+    }
+  });
+  const toggleGroupExpanded = (id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      try {
+        localStorage.setItem("mcode.skills.expanded", JSON.stringify([...next]));
+      } catch {
+        // storage unavailable (private mode etc.) — collapse state just
+        // won't persist; not worth surfacing.
+      }
+      return next;
+    });
+  };
+  // ── Resizable left column ── persisted width, dragged via the handle on
+  // the aside's right edge.
+  const [leftW, setLeftW] = useState<number>(() => {
+    const v = Number(localStorage.getItem("mcode.skills.leftW"));
+    return Number.isFinite(v) && v >= 160 && v <= 480 ? v : 220;
+  });
+  const dragRef = useRef<{ startX: number; startW: number } | null>(null);
+  const onDragHandleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    dragRef.current = { startX: e.clientX, startW: leftW };
+    const move = (ev: MouseEvent) => {
+      if (!dragRef.current) return;
+      const w = Math.min(480, Math.max(160, dragRef.current.startW + (ev.clientX - dragRef.current.startX)));
+      setLeftW(w);
+    };
+    const up = () => {
+      dragRef.current = null;
+      try {
+        localStorage.setItem("mcode.skills.leftW", String(leftWRef.current));
+      } catch {
+        // non-fatal, see above
+      }
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+  // Latest width for the drag-end persistence (the mouseup closure captures
+  // the handler-time value otherwise).
+  const leftWRef = useRef(leftW);
+  leftWRef.current = leftW;
+  // ── Group-level delete ── whole-package removal from the universal
+  // library. Plugin rows are excluded (owned by the Plugins panel), builtin
+  // rows are never offered the button.
+  const [pendingGroupDelete, setPendingGroupDelete] = useState<{
+    id: string;
+    label: string;
+    skills: SkillInfo[];
+  } | null>(null);
 
   const loadPanelSkills = useCallback(async () => {
     setListLoading(true);
     try {
-      // Without a project (no projects exist at all), list global skills only —
-      // projectPath is optional in the contract and main scans ~/.mcode/skills
-      // alone when it's absent.
-      const { skills } = await api.skills.list(
-        projectPath ? { projectPath } : {},
-      );
-      // Show both project-scoped and global skills. Global skills live under
-      // ~/.mcode/skills (populated by the Import feature or the new-skill
-      // form's global scope) and are editable/deletable here the same way
-      // project skills are. Plugin-contributed skills are excluded — they
-      // are read-only inventory owned by the Plugins panel (install/enable/
-      // uninstall there), and this editor's save/delete would reject them.
-      setPanelSkills(
-        skills.length ? skills.filter((s) => s.source !== "plugin") : EMPTY_PANEL_SKILLS,
-      );
+      // The universal library is the only scope — projectPath is gone. The
+      // response carries perEngine on global AND plugin skills (resolved from
+      // the .mcode-engines.json matrix). Plugin rows stay read-only apart from
+      // the engine matrix — they must show up here so the user can assign
+      // them per engine, with the 「插件」 badge telling them apart.
+      // Bundles load alongside; their failure must not blank the list.
+      const [listRes, bundleRes] = await Promise.all([
+        api.skills.list({}),
+        api.skills.bundles({}).catch(() => ({ bundles: [] as SkillBundle[] })),
+      ]);
+      setPanelSkills(listRes.skills.length ? listRes.skills : EMPTY_PANEL_SKILLS);
+      setBundles(bundleRes.bundles);
     } catch (err) {
       console.error("SkillsPanel load failed:", err);
       setPanelSkills(EMPTY_PANEL_SKILLS);
     } finally {
       setListLoading(false);
     }
-  }, [projectPath]);
+  }, []);
 
-  // (Re)load whenever the managed project changes, and once on mount.
+  // Load once on mount.
   useEffect(() => {
     void loadPanelSkills();
   }, [loadPanelSkills]);
 
-  // Switching the managed project also clears any in-flight edit/create, so a
-  // stale editor for project A doesn't linger while the list shows project B.
-  const switchProject = (id: string) => {
-    setManagedProjectId(id);
-    setSelected(null);
-    setEditContent(null);
-    setNewForm(null);
-    setError(null);
-  };
+  // skill name → its import bundle (from the manifest). Built once, shared by
+  // the bundle grouping and the group switches.
+  const bundleOf = useMemo(() => {
+    const m = new Map<string, SkillBundle>();
+    for (const b of bundles) for (const n of b.skills) m.set(n, b);
+    return m;
+  }, [bundles]);
+
+  // 左栏分组,两种模式:
+  // - bundle(默认):按「来源包」分组 —— 266 个导入技能平铺没有可读性,按包分组
+  //   回答"这是什么、从哪来的";组标题上挂三个引擎的整组开关,批量禁用一键完成。
+  // - engine(旧视图):矩阵全开 = 通用,只勾一个引擎 = 那个引擎的内部技能…归属随
+  //   矩阵开关即时移动(文件不动,只是各引擎的可见性变了)。
+  const groupedSkills = useMemo(() => {
+    const groups: Array<{ id: string; label: string; skills: SkillInfo[] }> = [];
+    const index = new Map<string, number>();
+    const push = (id: string, label: string, skill: SkillInfo): void => {
+      let i = index.get(id);
+      if (i === undefined) {
+        i = groups.length;
+        index.set(id, i);
+        groups.push({ id, label, skills: [] });
+      }
+      groups[i].skills.push(skill);
+    };
+    if (groupMode === "bundle") {
+      for (const s of panelSkills) {
+        if (s.source === "builtin") {
+          push("builtin", t("settings.skills.groupBuiltin"), s);
+          continue;
+        }
+        if (s.source === "plugin") {
+          push("plugin", t("settings.skills.groupPlugin"), s);
+          continue;
+        }
+        const b = bundleOf.get(s.name);
+        if (b) push(`bundle:${b.id}`, b.label, s);
+        else push("ungrouped", t("settings.skills.groupUngrouped"), s);
+      }
+      // 顺序:插件组 → manifest 里的包(按 manifest 顺序) → 未分组 → 内置垫底。
+      const orderOf = (id: string): number => {
+        if (id === "plugin") return -1;
+        if (id.startsWith("bundle:")) {
+          const i = bundles.findIndex((b) => `bundle:${b.id}` === id);
+          return i >= 0 ? i : bundles.length;
+        }
+        if (id === "ungrouped") return bundles.length + 1;
+        return Number.MAX_SAFE_INTEGER;
+      };
+      return groups.sort((a, b) => orderOf(a.id) - orderOf(b.id));
+    }
+    for (const s of panelSkills) {
+      if (s.source === "builtin") {
+        push("builtin", t("settings.skills.groupBuiltin"), s);
+        continue;
+      }
+      const pe = s.perEngine;
+      const on = pe ? MATRIX_ENGINES.filter((e) => pe[e]) : [...MATRIX_ENGINES];
+      if (on.length === MATRIX_ENGINES.length) {
+        push("universal", t("settings.skills.groupUniversal"), s);
+      } else if (on.length === 1) {
+        push(`internal:${on[0]}`, t("settings.skills.groupInternal", { engine: engineLabel(on[0]) }), s);
+      } else {
+        push(`shared:${on.join(",")}`, on.map(engineLabel).join(" · "), s);
+      }
+    }
+    return groups.sort((a, b) => groupRank(a.id) - groupRank(b.id));
+  }, [panelSkills, t, groupMode, bundles, bundleOf]);
 
   const [selected, setSelected] = useState<Selection>(null);
   // Full SKILL.md source for the skill being edited (null = not loaded yet).
@@ -195,19 +363,16 @@ export function SkillsPanel() {
   // Import dialog open state.
   const [importOpen, setImportOpen] = useState(false);
 
-  // After any mutation: refresh this panel's list, and (if the managed project
-  // is also the workspace's active one) refresh the store cache so the
+  // After any mutation: refresh this panel's list and the store cache so the
   // composer `/` menu sees the change too.
   const refreshAfterMutation = useCallback(async () => {
     await loadPanelSkills();
-    if (managedProjectId && managedProjectId === activeProjectId) {
-      void reloadSkills();
-    }
-  }, [loadPanelSkills, managedProjectId, activeProjectId, reloadSkills]);
+    void reloadSkills();
+  }, [loadPanelSkills, reloadSkills]);
 
   const startEdit = async (skill: SkillInfo) => {
     // Plugin rows are filtered out of panelSkills, so the wide SkillSource
-    // can only be global|project here.
+    // can only be global|builtin here.
     setSelected({ kind: "skill", source: skill.source as PanelSkillSource, name: skill.name });
     setNewForm(null);
     setError(null);
@@ -215,8 +380,7 @@ export function SkillsPanel() {
     setEditContent(null);
     try {
       const { content } = await api.skills.read({
-        projectPath: projectPath ?? undefined,
-        // Plugin rows are filtered out of panelSkills — only editable
+        // Plugin rows are filtered out of panelSkills — only readable
         // sources reach this call.
         source: skill.source as PanelSkillSource,
         name: skill.name,
@@ -232,8 +396,9 @@ export function SkillsPanel() {
 
   const startAdd = () => {
     setSelected({ kind: "new" });
-    // Default scope: the managed project; global-only when there is none.
-    setNewForm(emptyNewForm(projectPath ? "project" : "global"));
+    // New skills always land in the universal library, enabled for every
+    // engine (the matrix only records restrictions; none exist yet).
+    setNewForm(emptyNewForm());
     setEditContent(null);
     setError(null);
   };
@@ -256,7 +421,6 @@ export function SkillsPanel() {
     setError(null);
     try {
       const res = await api.skills.save({
-        projectPath: projectPath ?? undefined,
         source: sel.source,
         name: sel.name,
         content: editContent,
@@ -276,8 +440,6 @@ export function SkillsPanel() {
   const saveNew = async () => {
     const sel = selected;
     if (!sel || sel.kind !== "new" || !newForm) return;
-    // A project-scoped creation needs a project; global works without one.
-    if (newForm.scope === "project" && !projectPath) return;
     const name = newForm.name.trim();
     if (!SKILL_NAME_RE.test(name)) {
       setError(t("settings.nameCharsError"));
@@ -295,8 +457,7 @@ export function SkillsPanel() {
     setError(null);
     try {
       const res = await api.skills.save({
-        projectPath: projectPath ?? undefined,
-        source: newForm.scope,
+        source: "global",
         name,
         content,
       });
@@ -306,13 +467,115 @@ export function SkillsPanel() {
       }
       await refreshAfterMutation();
       // Land on the freshly created skill so the user sees it selected.
-      setSelected({ kind: "skill", source: newForm.scope, name });
+      setSelected({ kind: "skill", source: "global", name });
       setNewForm(null);
       setEditContent(content);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  /** Toggle one skill's per-engine availability (the matrix edit — 「移动到
+   *  引擎内部 / 移回通用」). Applies to universal-library AND plugin rows
+   *  (both are matrix-managed; plugin rows stay read-only apart from these
+   *  switches). The engine's full desired state is sent; the resolved state
+   *  comes back and updates the row so the toggles render exactly what's on
+   *  disk. */
+  const setSkillEngines = async (
+    name: string,
+    current: SkillEngineState,
+    engine: keyof SkillEngineState,
+  ) => {
+    const wanted = { ...current, [engine]: !current[engine] };
+    try {
+      const res = await api.skills.enginesSet({ name, ...wanted });
+      const resolved = res.ok && res.perEngine ? res.perEngine : wanted;
+      setPanelSkills((prev) =>
+        prev.map((s) => (s.name === name && s.source !== "builtin" ? { ...s, perEngine: resolved } : s)),
+      );
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  /** Group-level engine toggle: flip ONE engine for every editable skill in a
+   *  group (bundle / plugin view), leaving each skill's OTHER engine flags
+   *  untouched. The bulk RPC takes one uniform {claude,codex,pi} triple, so
+   *  the group is partitioned by the resulting desired state and each
+   *  partition is written with a single matrix read-modify-write. */
+  const setGroupEngines = async (
+    skills: SkillInfo[],
+    engine: keyof SkillEngineState,
+    want: boolean,
+  ) => {
+    const editable = skills.filter((s) => s.source !== "builtin");
+    if (!editable.length) return;
+    setBulkBusy(true);
+    try {
+      const byState = new Map<string, { names: string[]; state: SkillEngineState }>();
+      for (const s of editable) {
+        const state = {
+          ...(s.perEngine ?? { claude: true, codex: true, pi: true }),
+          [engine]: want,
+        };
+        const key = `${state.claude}|${state.codex}|${state.pi}`;
+        const bucket = byState.get(key);
+        if (bucket) bucket.names.push(s.name);
+        else byState.set(key, { names: [s.name], state });
+      }
+      const resolved: Record<string, SkillEngineState> = {};
+      await Promise.all(
+        [...byState.values()].map(async ({ names, state }) => {
+          const res = await api.skills.enginesSetBulk({ names, ...state });
+          if (!res.ok || !res.perEngine) throw new Error(res.error ?? "bulk toggle failed");
+          Object.assign(resolved, res.perEngine);
+        }),
+      );
+      setPanelSkills((prev) =>
+        prev.map((s) =>
+          (s.source === "global" || s.source === "plugin") && resolved[s.name]
+            ? { ...s, perEngine: resolved[s.name] }
+            : s,
+        ),
+      );
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  /** Group-level delete: remove every deletable skill of the group from the
+   *  universal library. Plugin rows are skipped (owned by the Plugins panel,
+   *  delete there); builtins are never offered this button. One IPC per
+   *  skill is fine (a recursive dir remove, sub-ms each); failures are
+   *  reported but do not abort the rest. */
+  const confirmGroupDelete = async () => {
+    const group = pendingGroupDelete;
+    if (!group) return;
+    const deletable = group.skills.filter((s) => s.source === "global");
+    if (deletable.length === 0) {
+      setPendingGroupDelete(null);
+      return;
+    }
+    setBulkBusy(true);
+    try {
+      let lastError: string | null = null;
+      for (const s of deletable) {
+        const res = await api.skills.delete({ source: s.source as "global", name: s.name });
+        if (!res.ok) lastError = res.error ?? lastError;
+      }
+      if (lastError) setError(lastError);
+      // The selection may have lived inside the deleted group.
+      if (selected?.kind === "skill") cancel();
+      await refreshAfterMutation();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBulkBusy(false);
+      setPendingGroupDelete(null);
     }
   };
 
@@ -323,7 +586,6 @@ export function SkillsPanel() {
     if (isReadOnlySkill(target.source)) return;
     try {
       const res = await api.skills.delete({
-        projectPath: projectPath ?? undefined,
         source: target.source,
         name: target.name,
       });
@@ -354,65 +616,43 @@ export function SkillsPanel() {
         title="Skills"
       />
 
-      {/* ───────── Project selector ───────── */}
-      {/* Makes the project binding explicit: project-scoped skills always
-          belong to the project shown here. Switching it reloads the list and
-          does NOT touch the workspace's active project. */}
-      <div className="mb-3 flex items-center gap-2">
-        <span className="text-[0.7857em] font-medium text-content-muted">{t("settings.projectLabel")}</span>
-        {managedProjects.length > 0 ? (
-          <Select.Root
-            value={managedProjectId ?? ""}
-            onValueChange={(v) => switchProject(v as string)}
-          >
-            <Select.Trigger className="min-w-0 flex-1">
-              <Select.Value>
-                {(val: string) => {
-                  const p =
-                    managedProjects.find((x) => x.id === val) ?? managedProjects[0];
-                  return (
-                    <span className="flex items-center gap-1.5">
-                      <IconFolder size={14} className="text-content-muted" />
-                      {p
-                        ? `${p.name}${p.id === activeProjectId ? ` (${t("settings.currentWorkspace")})` : ""}`
-                        : ""}
-                    </span>
-                  );
-                }}
-              </Select.Value>
-            </Select.Trigger>
-            <Select.Portal>
-              <Select.Positioner>
-                <Select.Popup>
-                  <Select.List>
-                    {managedProjects.map((p) => (
-                      <Select.Item key={p.id} value={p.id}>
-                        <IconFolder size={14} className="text-content-muted" />
-                        <Select.ItemText>
-                          {p.name}
-                          {p.id === activeProjectId ? ` (${t("settings.currentWorkspace")})` : ""}
-                        </Select.ItemText>
-                      </Select.Item>
-                    ))}
-                  </Select.List>
-                </Select.Popup>
-              </Select.Positioner>
-            </Select.Portal>
-          </Select.Root>
-        ) : (
-          <span className="text-[0.7857em] text-content-subtle">
-            {t("settings.skills.noProjects")}
-          </span>
-        )}
-      </div>
-
-      <div className="grid min-h-0 flex-1 grid-cols-[200px_1fr] gap-4">
-        {/* ───────── Left: skill list ───────── */}
-        <aside className="flex min-h-0 flex-col rounded-md border border-edge bg-surface/40">
+      <div className="grid min-h-0 flex-1 gap-4" style={{ gridTemplateColumns: `${leftW}px 1fr` }}>
+        {/* ───────── Left: skill list (width is user-draggable, persisted) ───────── */}
+        <aside className="relative flex min-h-0 flex-col rounded-md border border-edge bg-surface/40">
+          {/* Drag handle: sits in the grid gap along the aside's right edge;
+              mousedown → window-level move/up listeners drag the width. */}
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            onMouseDown={onDragHandleMouseDown}
+            className="absolute -right-2 top-0 z-10 h-full w-2 cursor-col-resize transition-colors hover:bg-accent/20"
+          />
           <div className="flex items-center justify-between px-2.5 py-2 text-[0.7143em] font-medium uppercase tracking-wide text-content-subtle">
             <span>Skills</span>
-            <span className="tabular-nums">
-              {listLoading ? "…" : panelSkills.length}
+            <span className="flex items-center gap-1.5">
+              {/* Grouping mode: bundle (by source) is the default — it answers
+                  "这是什么、从哪来的" and carries the group switches. */}
+              <button
+                type="button"
+                onClick={() => setGroupMode("bundle")}
+                className={cn(
+                  "rounded px-1.5 py-0.5 normal-case tracking-normal transition-colors",
+                  groupMode === "bundle" ? "bg-accent/15 text-accent" : "hover:text-content",
+                )}
+              >
+                {t("settings.skills.modeBundle")}
+              </button>
+              <button
+                type="button"
+                onClick={() => setGroupMode("engine")}
+                className={cn(
+                  "rounded px-1.5 py-0.5 normal-case tracking-normal transition-colors",
+                  groupMode === "engine" ? "bg-accent/15 text-accent" : "hover:text-content",
+                )}
+              >
+                {t("settings.skills.modeEngine")}
+              </button>
+              <span className="tabular-nums">{listLoading ? "…" : panelSkills.length}</span>
             </span>
           </div>
           <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
@@ -422,36 +662,89 @@ export function SkillsPanel() {
                 {t("settings.skills.newSkill")}
               </div>
             )}
-            {panelSkills.map((s) => {
-              const isActive =
-                selected?.kind === "skill" &&
-                selected.source === s.source &&
-                selected.name === s.name;
+            {groupedSkills.map((g) => {
+              const isCollapsed = !expanded.has(g.id);
+              // Deletable = universal-library rows. Plugin rows are owned by
+              // the Plugins panel; builtin rows are not deletable at all.
+              const deletableCount = g.skills.filter((s) => s.source === "global").length;
               return (
-                <button
-                  key={skillKey(s)}
-                  onClick={() => void startEdit(s)}
-                  className={cn(
-                    "relative block w-full rounded px-2.5 py-1.5 text-left transition-colors",
-                    isActive ? "bg-surface-hover" : "hover:bg-surface-hover/60",
-                  )}
+              <div key={g.id} className="pt-1.5">
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => toggleGroupExpanded(g.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") toggleGroupExpanded(g.id);
+                  }}
+                  className="flex cursor-pointer select-none items-center rounded px-2.5 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-content-subtle/80 hover:text-content-subtle"
                 >
-                  {isActive && (
-                    <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
+                  {isCollapsed ? (
+                    <IconChevronRight size={10} className="shrink-0" />
+                  ) : (
+                    <IconChevronDown size={10} className="shrink-0" />
                   )}
-                  <div className="flex items-center gap-1">
-                    <IconSparkles size={11} className="shrink-0 text-content-subtle" />
-                    <span className="truncate text-[0.7857em] font-medium text-content">
-                      {s.name}
-                    </span>
-                    <SourceBadge source={s.source} />
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate text-[0.7143em] text-content-subtle">
-                      {s.description || t("settings.skills.noDesc")}
-                    </span>
-                  </div>
-                </button>
+                  <span className="ml-1 truncate" title={g.label}>
+                    {g.label}
+                  </span>
+                  <span className="ml-1 shrink-0 tabular-nums normal-case">{g.skills.length}</span>
+                  {/* Group-level engine switches — shown on editable groups (not
+                      built-in peers, which are always offered to every engine). */}
+                  {groupMode === "bundle" && g.id !== "builtin" && (
+                    <GroupEngineSwitches
+                      skills={g.skills}
+                      busy={bulkBusy}
+                      onToggle={(engine, want) => void setGroupEngines(g.skills, engine, want)}
+                    />
+                  )}
+                  {groupMode === "bundle" && deletableCount > 0 && (
+                    <button
+                      type="button"
+                      title={t("settings.skills.groupDeleteTitle")}
+                      disabled={bulkBusy}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPendingGroupDelete({ id: g.id, label: g.label, skills: g.skills });
+                      }}
+                      className="ml-1 shrink-0 rounded p-0.5 text-content-subtle/50 transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-50"
+                    >
+                      <IconTrash size={10} />
+                    </button>
+                  )}
+                </div>
+                {!isCollapsed &&
+                  g.skills.map((s) => {
+                  const isActive =
+                    selected?.kind === "skill" &&
+                    selected.source === s.source &&
+                    selected.name === s.name;
+                  return (
+                    <button
+                      key={skillKey(s)}
+                      onClick={() => void startEdit(s)}
+                      className={cn(
+                        "relative block w-full rounded px-2.5 py-1.5 text-left transition-colors",
+                        isActive ? "bg-surface-hover" : "hover:bg-surface-hover/60",
+                      )}
+                    >
+                      {isActive && (
+                        <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
+                      )}
+                      <div className="flex items-center gap-1">
+                        <IconSparkles size={11} className="shrink-0 text-content-subtle" />
+                        <span className="truncate text-[0.7857em] font-medium text-content">
+                          {s.name}
+                        </span>
+                        <SourceBadge source={s.source} />
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate text-[0.7143em] text-content-subtle">
+                          {s.description || t("settings.skills.noDesc")}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                  })}
+              </div>
               );
             })}
             {panelSkills.length === 0 && !listLoading && selected?.kind !== "new" && (
@@ -493,7 +786,6 @@ export function SkillsPanel() {
             <NewSkillForm
               form={newForm}
               setForm={setNewForm}
-              canUseProject={!!projectPath}
               saving={saving}
               error={error}
               onSave={() => void saveNew()}
@@ -502,6 +794,19 @@ export function SkillsPanel() {
           ) : selected.kind === "skill" ? (
             <SkillSourceEditor
               skill={selected}
+              perEngine={
+                panelSkills.find(
+                  (s) => s.source === selected.source && s.name === selected.name,
+                )?.perEngine
+              }
+              onToggleEngine={(engine) => {
+                const info = panelSkills.find(
+                  (s) => s.source === selected.source && s.name === selected.name,
+                );
+                if (info?.perEngine) {
+                  void setSkillEngines(info.name, info.perEngine, engine);
+                }
+              }}
               content={editContent}
               loading={loading}
               saving={saving}
@@ -546,10 +851,32 @@ export function SkillsPanel() {
         onConfirm={() => void confirmDelete()}
       />
 
+      <ConfirmDialog
+        open={pendingGroupDelete != null}
+        title={t("settings.skills.groupDeleteTitle")}
+        danger
+        description={
+          <>
+            {t("settings.skills.groupDeleteDescPre")}
+            {pendingGroupDelete && (
+              <span className="font-medium text-content">{pendingGroupDelete.label}</span>
+            )}
+            {t("settings.skills.groupDeleteDescMid", {
+              n: pendingGroupDelete?.skills.filter((s) => s.source === "global").length ?? 0,
+            })}
+            {t("settings.skills.groupDeleteDescPost")}
+          </>
+        }
+        confirmText={t("common.delete")}
+        onOpenChange={(open) => {
+          if (!open) setPendingGroupDelete(null);
+        }}
+        onConfirm={() => void confirmGroupDelete()}
+      />
+
       <ImportSkillsDialog
         open={importOpen}
         onOpenChange={setImportOpen}
-        projectPath={projectPath}
         onImported={() => void refreshAfterMutation()}
       />
     </div>
@@ -561,24 +888,15 @@ export function SkillsPanel() {
  *  they each used to carry their own copy of the same ternary. */
 function SourceBadge({ source }: { source: SkillSource }) {
   const { t } = useI18n();
-  const project = source === "project";
   const builtin = source === "builtin";
   return (
     <span
       className={cn(
         "shrink-0 rounded px-1 text-[9px] leading-tight",
-        project
-          ? "bg-accent/12 text-accent"
-          : builtin
-            ? "bg-info/12 text-info"
-            : "bg-surface-hover text-content-subtle",
+        builtin ? "bg-info/12 text-info" : "bg-surface-hover text-content-subtle",
       )}
     >
-      {project
-        ? t("settings.skills.sourceProject")
-        : builtin
-          ? t("settings.skills.sourceBuiltin")
-          : t("settings.skills.sourceGlobal")}
+      {builtin ? t("settings.skills.sourceBuiltin") : t("settings.skills.sourceGlobal")}
     </span>
   );
 }
@@ -596,9 +914,12 @@ function EmptyDetail() {
   );
 }
 
-/** Editor for an existing skill — raw SKILL.md source in a single textarea. */
+/** Editor for an existing skill — engine matrix (universal skills) + raw
+ *  SKILL.md source in a single textarea. */
 function SkillSourceEditor({
   skill,
+  perEngine,
+  onToggleEngine,
   content,
   loading,
   saving,
@@ -609,6 +930,11 @@ function SkillSourceEditor({
   onDelete,
 }: {
   skill: { source: SkillSource; name: string };
+  /** Resolved per-engine availability — present only for universal-library
+   *  skills; absent (built-in) → the matrix is not rendered. */
+  perEngine?: SkillEngineState;
+  /** Toggle one engine's checkbox; the panel owns the RPC + state update. */
+  onToggleEngine: (engine: keyof SkillEngineState) => void;
   content: string | null;
   loading: boolean;
   saving: boolean;
@@ -637,6 +963,47 @@ function SkillSourceEditor({
           {readOnly ? t("settings.skills.builtinReadOnly") : t("settings.skills.rawSource")}
         </span>
       </div>
+      {/* Per-engine matrix — universal-library AND plugin skills. Each toggle
+          is an edit of .mcode-engines.json (files never move); all three
+          enabled = 通用, exactly one = 引擎内部. Built-ins are app-shipped
+          inventory and always offered, so they get no matrix. */}
+      {perEngine && (
+        <div className="mb-2 flex items-center gap-2 rounded border border-edge bg-surface/40 px-2.5 py-1.5">
+          <span className="text-[0.7143em] font-medium text-content-muted">
+            {t("settings.skills.engines")}
+          </span>
+          <div className="flex items-center gap-1" role="group" aria-label={t("settings.skills.engines")}>
+            {(Object.keys(perEngine) as Array<keyof SkillEngineState>).map((engine) => {
+              const on = perEngine[engine];
+              return (
+                <button
+                  key={engine}
+                  type="button"
+                  role="switch"
+                  aria-checked={on}
+                  onClick={() => onToggleEngine(engine)}
+                  title={
+                    on
+                      ? t("settings.skills.engineOnHint", { engine })
+                      : t("settings.skills.engineOffHint", { engine })
+                  }
+                  className={cn(
+                    "rounded px-1.5 py-0.5 text-[10px] font-medium leading-tight transition-colors",
+                    on
+                      ? "bg-accent/15 text-accent"
+                      : "bg-surface-hover text-content-subtle line-through decoration-content-subtle/60",
+                  )}
+                >
+                  {engine === "claude" ? "Claude" : engine === "codex" ? "Codex" : "Pi"}
+                </button>
+              );
+            })}
+          </div>
+          <span className="min-w-0 flex-1 truncate text-[10px] text-content-subtle">
+            {t("settings.skills.enginesHint")}
+          </span>
+        </div>
+      )}
       {loading ? (
         <div className="flex items-center gap-2 py-8 text-[0.7857em] text-content-subtle">
           <IconLoader2 size={14} className="animate-spin" />
@@ -677,14 +1044,12 @@ function SkillSourceEditor({
   );
 }
 
-/** Structured form for creating a new skill (scope / name / description /
- *  body). The scope selector picks between the managed project and the global
- *  ~/.mcode/skills root; the project option is disabled when no project
- *  exists (the form then locks to global). */
+/** Structured form for creating a new skill (name / description / body).
+ *  New skills always land in the universal library ~/.mcode/skills, enabled
+ *  for every engine until the editor's matrix says otherwise. */
 function NewSkillForm({
   form,
   setForm,
-  canUseProject,
   saving,
   error,
   onSave,
@@ -692,9 +1057,6 @@ function NewSkillForm({
 }: {
   form: NewForm;
   setForm: React.Dispatch<React.SetStateAction<NewForm | null>>;
-  /** False when no project exists — the project scope option is disabled and
-   *  global is the only choice. */
-  canUseProject: boolean;
   saving: boolean;
   error: string | null;
   onSave: () => void;
@@ -705,10 +1067,6 @@ function NewSkillForm({
   const update = <K extends keyof NewForm>(key: K, value: NewForm[K]) =>
     setForm((prev) => (prev ? { ...prev, [key]: value } : prev));
   const { t } = useI18n();
-  const scopes: Array<{ value: CreatableSkillSource; label: string; disabled?: boolean }> = [
-    { value: "project", label: t("settings.skills.sourceProject"), disabled: !canUseProject },
-    { value: "global", label: t("settings.skills.sourceGlobal") },
-  ];
   return (
     <div className="flex min-h-full flex-col">
       <div className="mb-2 flex items-center gap-1.5">
@@ -716,58 +1074,12 @@ function NewSkillForm({
         <span className="text-[0.8571em] font-medium text-content">{t("settings.skills.newSkill")}</span>
       </div>
       <p className="mb-2 text-[0.7143em] leading-relaxed text-content-subtle">
-        {form.scope === "project" ? (
-          <>
-            {t("settings.skills.newSkillIntro1")}
-            <code className="rounded bg-surface-muted px-0.5">.claude/skills</code>
-            {t("settings.skills.newSkillIntro2")}
-            <code className="rounded bg-surface-muted px-0.5">allowed-tools</code>
-            {t("settings.skills.newSkillIntro3")}
-          </>
-        ) : (
-          <>
-            {t("settings.skills.newSkillGlobalIntro1")}
-            <code className="rounded bg-surface-muted px-0.5">~/.mcode/skills</code>
-            {t("settings.skills.newSkillGlobalIntro2")}
-            <code className="rounded bg-surface-muted px-0.5">allowed-tools</code>
-            {t("settings.skills.newSkillIntro3")}
-          </>
-        )}
+        {t("settings.skills.newSkillGlobalIntro1")}
+        <code className="rounded bg-surface-muted px-0.5">~/.mcode/skills</code>
+        {t("settings.skills.newSkillGlobalIntro2")}
+        <code className="rounded bg-surface-muted px-0.5">allowed-tools</code>
+        {t("settings.skills.newSkillIntro3")}
       </p>
-
-      <Field label={t("settings.skills.fieldScope")}>
-        <div className="flex w-full gap-1" role="radiogroup" aria-label={t("settings.skills.fieldScope")}>
-          {scopes.map((s) => {
-            const active = form.scope === s.value;
-            return (
-              <button
-                key={s.value}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                disabled={s.disabled}
-                onClick={() => update("scope", s.value)}
-                title={
-                  s.disabled
-                    ? t("settings.skills.scopeProjectDisabled")
-                    : s.value === "project"
-                      ? t("settings.skills.scopeProjectHint")
-                      : t("settings.skills.scopeGlobalHint")
-                }
-                className={cn(
-                  "flex-1 rounded border px-2 py-1 text-[0.7857em] transition-colors",
-                  active
-                    ? "border-accent bg-accent/10 font-medium text-accent"
-                    : "border-edge bg-surface text-content-muted hover:bg-surface-hover/60 hover:text-content",
-                  s.disabled && "cursor-not-allowed opacity-50 hover:bg-surface hover:text-content-muted",
-                )}
-              >
-                {s.label}
-              </button>
-            );
-          })}
-        </div>
-      </Field>
 
       <Field label={t("settings.skills.fieldName")}>
         <input
@@ -874,12 +1186,10 @@ const TOOL_ORDER: SkillTool[] = ["claude-code", "codex", "zcode", "local"];
 function ImportSkillsDialog({
   open,
   onOpenChange,
-  projectPath,
   onImported,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  projectPath: string | null;
   onImported: () => void;
 }) {
   const { t } = useI18n();
@@ -902,6 +1212,17 @@ function ImportSkillsDialog({
   // Which agent's tab is showing. Reset on open; falls back to the first tab
   // that actually has skills when the stored one has none (see `activeTool`).
   const [activeToolRaw, setActiveToolRaw] = useState<SkillTool>("claude-code");
+  // GitHub package import ("贴链接进来,导出来就是一类"): the URL box sits above
+  // the tab flow because it is an independent path — one repo, one bundle, no
+  // per-skill picking. Result mirrors the local import's lists + bundle label.
+  const [ghUrl, setGhUrl] = useState("");
+  const [ghBusy, setGhBusy] = useState(false);
+  const [ghResult, setGhResult] = useState<{
+    imported: string[];
+    skipped: string[];
+    errors: Array<{ name: string; error: string }>;
+    bundleLabel?: string;
+  } | null>(null);
 
   // Scan external sources whenever the dialog opens or the local folder changes.
   useEffect(() => {
@@ -910,20 +1231,21 @@ function ImportSkillsDialog({
     setLoading(true);
     setError(null);
     setResult(null);
+    setGhUrl("");
+    setGhResult(null);
     if (localDir === null && localFile === null) setSelected(new Set());
     setExisting(new Set());
     setActiveToolRaw("claude-code");
     void (async () => {
       try {
         // Scan external tools (+ the picked local dir / file if any) and fetch
-        // the current global skills (projectPath optional — works with no
-        // project) to mark already-imported ones as "existing".
+        // the current universal library to mark already-imported ones.
         const [scanRes, listRes] = await Promise.all([
           api.skills.scanSources({
             ...(localDir ? { localDir } : {}),
             ...(localFile ? { localFile } : {}),
           }),
-          api.skills.list(projectPath ? { projectPath } : {}),
+          api.skills.list({}),
         ]);
         if (cancelled) return;
         setSources(scanRes.sources);
@@ -942,7 +1264,7 @@ function ImportSkillsDialog({
       cancelled = true;
     };
     // localDir/localFile are deps: picking a new folder/file re-scans with it.
-  }, [open, projectPath, localDir, localFile]);
+  }, [open, localDir, localFile]);
 
   // Selection key is sourcePath (unique per skill per tool).
   const toggle = (sourcePath: string) => {
@@ -1066,6 +1388,36 @@ function ImportSkillsDialog({
     setLocalFile(null);
   };
 
+  // GitHub package import: one repo → one bundle. Success refreshes the
+  // panel list via onImported (the parent reloads skills + bundles); the
+  // result card stays visible until the dialog reopens.
+  const doGithubImport = async () => {
+    const url = ghUrl.trim();
+    if (!url || ghBusy) return;
+    setGhBusy(true);
+    setError(null);
+    setGhResult(null);
+    try {
+      const res = await api.skills.importGithub({ url });
+      if (!res.ok) {
+        setError(res.error ?? t("settings.skills.githubFailed"));
+        return;
+      }
+      setGhResult({
+        imported: res.imported,
+        skipped: res.skipped,
+        errors: res.errors,
+        bundleLabel: res.bundleLabel,
+      });
+      setGhUrl("");
+      onImported();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setGhBusy(false);
+    }
+  };
+
   // The local-folder picker card — rendered inside the "本地" tab when tabs are
   // showing, and above the empty state when no external skills were found at
   // all (so the local-import path stays discoverable in either case).
@@ -1151,8 +1503,67 @@ function ImportSkillsDialog({
           </Dialog.Description>
           <Dialog.Close />
 
-          {/* Body: tab strip + scrollable skill list */}
+          {/* Body: GitHub package import + tab strip + scrollable skill list */}
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+            {/* ── GitHub package import — independent of the tab flow below:
+                one repo URL, one bundle, no per-skill picking. ── */}
+            <div className="mb-3 rounded border border-edge bg-surface/40 p-2">
+              <div className="text-[0.7143em] font-medium text-content-muted">
+                {t("settings.skills.githubTitle")}
+              </div>
+              <div className="mt-1.5 flex items-center gap-1.5">
+                <input
+                  type="text"
+                  value={ghUrl}
+                  onChange={(e) => setGhUrl(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void doGithubImport();
+                  }}
+                  placeholder={t("settings.skills.githubPlaceholder")}
+                  disabled={ghBusy}
+                  className="h-7 min-w-0 flex-1 rounded border border-edge bg-surface px-2 font-mono text-[0.7857em] text-content placeholder:text-content-subtle focus:border-accent focus:outline-none"
+                />
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => void doGithubImport()}
+                  disabled={ghBusy || !ghUrl.trim()}
+                  className="shrink-0 gap-1"
+                >
+                  {ghBusy && <IconLoader2 size={12} className="animate-spin" />}
+                  {ghBusy ? t("settings.skills.githubImporting") : t("settings.skills.githubImportBtn")}
+                </Button>
+              </div>
+              {ghResult && (
+                <div className="mt-1.5 space-y-0.5 text-[0.7143em]">
+                  {ghResult.imported.length > 0 && (
+                    <p className="text-accent">
+                      {t("settings.skills.githubDone", {
+                        n: ghResult.imported.length,
+                        bundle: ghResult.bundleLabel ?? "",
+                      })}
+                      {" "}
+                      <span className="text-content-subtle">
+                        ({ghResult.imported.join(", ")})
+                      </span>
+                    </p>
+                  )}
+                  {ghResult.skipped.length > 0 && (
+                    <p className="text-content-subtle">
+                      {t("settings.skills.githubSkip", { n: ghResult.skipped.length, list: ghResult.skipped.join(", ") })}
+                    </p>
+                  )}
+                  {ghResult.errors.length > 0 && (
+                    <p className="text-danger">
+                      {t("settings.importResultFailed", {
+                        n: ghResult.errors.length,
+                        list: ghResult.errors.map((e) => `${e.name}(${e.error})`).join("; "),
+                      })}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
             {loading ? (
               <div className="flex items-center justify-center gap-2 py-8 text-[0.7857em] text-content-subtle">
                 <IconLoader2 size={14} className="animate-spin" />

@@ -9,6 +9,7 @@
  */
 import type { Locale } from "@contracts/ipc";
 import { isLibraryKind, type LibraryKind } from "@contracts/library";
+import type { LibraryTypeMeta } from "@contracts/libraryTypes";
 import { translate, type MessageId } from "@renderer/lib/i18n/core.js";
 
 export const LIBRARY_KIND_LABEL: Record<LibraryKind, MessageId> = {
@@ -16,6 +17,25 @@ export const LIBRARY_KIND_LABEL: Record<LibraryKind, MessageId> = {
   textbook: "library.kind.textbook",
   note: "library.kind.note",
 };
+
+/**
+ * kind 的显示名 —— 统一资料库之后**注册表里的名字就是显示名**(用户可改,改完界面
+ * 直接跟着变,不走 i18n)。查不到注册表(还没拉到 / 这个 kind 已被删)再退回内置
+ * 三类的 i18n 名,最后退回 kind 本身,保证任何情况下都有一个能看的字符串。
+ *
+ * 注册表在调用方手里(`api.library.typesGet()` 拉的那份),这里不自己发请求 ——
+ * 左栏和右栏各有一份列表,共用一个请求反而要加缓存层,不值得。
+ */
+export function kindLibraryLabel(
+  kind: string,
+  metas: readonly LibraryTypeMeta[] | undefined,
+  locale: Locale,
+): string {
+  const meta = metas?.find((m) => m.id === kind);
+  if (meta) return meta.name;
+  const key = (LIBRARY_KIND_LABEL as Record<string, MessageId>)[kind];
+  return key ? translate(locale, key) : kind;
+}
 
 /**
  * 一条文献库附件在 chip 上该显示什么 —— 附件键 + 主进程给的 `name` → 界面文案。

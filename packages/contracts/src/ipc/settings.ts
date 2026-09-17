@@ -616,24 +616,36 @@ export const UI_IDE_EDITOR_MODE_SETTING_KEY = "ui.ideEditorMode";
 export const UI_COMPOSER_MODEL_SETTING_KEY = "ui.composerModel";
 
 /**
- * **文献检索的固定条件** —— 输入框下方的筛选条上选的,四组。
- *
- * ## 为什么是设置而不是让 AI 问
- *
- * 用户的原话:「不止是 2-4 个问题,需要比较详细的,包括时间范围,影响因子,论文层次
- * 等等这些,**但是一般这些都是固定的习惯**」。既然是固定习惯,就不该每轮都问一遍 ——
- * 问一次、存下来、每轮直接用。
- *
- * 所以分成两层:这几项(不变的习惯)由**界面**收集,放在输入框下方一眼看得见的地方;
- * 每轮真正要问的只剩**研究方向**那一件。主进程把它们读出来注入提示词,AI 照着执行。
- *
- * 取值一律是短字符串码,不是数字 —— 界面换了选项之后旧值仍然可读(退化成"不限"),
- * 不会因为解析失败把整条条件打没。
+ * **在线检索的每源默认条数** —— `library_search_online` 工具没收到 `limit` 参数时
+ * 用的兜底值(见 `main/mcp/libraryServer.ts`)。检索条件(含每源条数)的正式定义
+ * 已经搬进主对话节点的「固定条件」参数(`@contracts/nodeType`),随运行提示词进
+ * 模型;这里只剩工具层的最后一级兜底。
  */
-export const SEARCH_YEAR_SPAN_SETTING_KEY = "search.yearSpan";
-export const SEARCH_TIER_SETTING_KEY = "search.tier";
-export const SEARCH_MIN_IF_SETTING_KEY = "search.minImpactFactor";
 export const SEARCH_LIMIT_SETTING_KEY = "search.perSourceLimit";
+
+/**
+ * **工作流输入选项的选中项** —— 键是**前缀 + workflowId**,值是 JSON
+ * `{ name: 选项名, note: 解释 }`(选项表见 `@contracts/nodeType` 的
+ * `NODE_OPTIONS_PARAM_KEY`)。
+ *
+ * 界面收集、设置表落盘、主进程读出来注入提示词。按 workflowId 分键 —— 换一个
+ * 工作流,各自的选择互不串扰。注入时机:`startWorkflowRun` 每次起跑把解释拼进
+ * 运行最初那条提示词,**一次**,之后不再重复;「清除选择」写成空串(设置表只有
+ * upsert 没有删除;空串和坏 JSON 在读取侧同样按"没选"处理)。
+ */
+export const WORKFLOW_NODE_OPTION_SETTING_PREFIX = "workflow.nodeOption.";
+
+/**
+ * **工作流固定条件的选中值** —— 键是**前缀 + workflowId**,值是 JSON
+ * `{ [条件名]: 选中值 }`(条件表定义在主对话节点的 `NODE_CRITERIA_PARAM_KEY`
+ * 参数上,见 `@contracts/nodeType`)。
+ *
+ * 与选中项那个键(上面)同一个模式:固定条件是"一贯的习惯",每次运行**最开始**
+ * 随运行提示词注入一次(拼法见 `main/lib/searchPrefs.ts` 的 `nodeCriteriaPrompt`),
+ * 值为"不限"(或空串)的条件跳过不注,之后不再重复。按 workflowId 分键,换流程
+ * 互不串扰。
+ */
+export const WORKFLOW_NODE_PREFS_SETTING_PREFIX = "workflow.nodePrefs.";
 
 /**
  * 期刊数据(jcr.db)的路径。
@@ -647,29 +659,6 @@ export const SEARCH_LIMIT_SETTING_KEY = "search.perSourceLimit";
  * 不生效** —— 宁可说"我查不了",也不能让模型凭印象编一个影响因子出来。
  */
 export const SEARCH_JOURNAL_DB_SETTING_KEY = "search.journalRankDb";
-
-/** 时间跨度码 → 中文说法(注入提示词时用)。 */
-export const SEARCH_YEAR_SPAN_LABELS: Record<string, string> = {
-  any: "不限",
-  "3": "近三年",
-  "5": "近五年",
-  "10": "近十年",
-};
-
-/** 期刊层次码 → 中文说法。与 `journal_rank.py` 的 T1/T2 分档对齐。 */
-export const SEARCH_TIER_LABELS: Record<string, string> = {
-  any: "不限",
-  t1: "只要 T1(Q1 或中科院 1 区,或 Top)",
-  t1t2: "T1 或 T2(Q1/Q2,或中科院 1/2 区)",
-};
-
-/** 影响因子下限码 → 中文说法。 */
-export const SEARCH_MIN_IF_LABELS: Record<string, string> = {
-  any: "不限",
-  "3": "≥ 3",
-  "5": "≥ 5",
-  "10": "≥ 10",
-};
 
 /**
  * Setting key under which the custom-model id used for git-commit-message

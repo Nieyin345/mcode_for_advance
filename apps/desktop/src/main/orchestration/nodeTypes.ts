@@ -48,19 +48,40 @@ import { readdirSync, readFileSync } from "node:fs";
 import * as path from "node:path";
 import {
   BRANCH_NODE_TYPE_ID,
+  DECIDER_MODES,
+  DEFAULT_DECIDER_INSTRUCTION,
+  DEFAULT_TRIGGER_DEBOUNCE_MS,
+  INJECT_MODES,
+  INJECT_TARGETS,
   MAIN_NODE_TYPE_ID,
   NODE_ASK_PARAM_KEY,
+  NODE_COMMAND_PARAM_KEY,
+  NODE_COMMAND_TIMEOUT_KEY,
   NODE_CONTEXT_KINDS,
   NODE_CONTEXT_PARAM_KEY,
+  NODE_CRITERIA_PARAM_KEY,
+  NODE_DECIDER_KEY,
   NODE_FLOW_RECORD_PARAM_KEY,
+  NODE_INJECT_MODE_KEY,
+  NODE_INJECT_TARGET_KEY,
   NODE_MCP_PARAM_KEY,
+  NODE_OPTIONS_PARAM_KEY,
   NODE_PLUGINS_PARAM_KEY,
   NODE_PROMPT_PARAM_KEY,
   NODE_PROVIDER_PARAM_KEY,
   NODE_RETURN_PARAM_KEY,
   NODE_SKILLS_PARAM_KEY,
+  NODE_TRIGGER_CRON_PARAM_KEY,
+  NODE_TRIGGER_DEBOUNCE_PARAM_KEY,
+  NODE_TRIGGER_EVENTS_PARAM_KEY,
+  NODE_TRIGGER_FILTER_PARAM_KEY,
+  NODE_TRIGGER_KIND_PARAM_KEY,
+  NODE_TRIGGER_PATHS_PARAM_KEY,
+  NODE_TRIGGER_PROJECT_PARAM_KEY,
+  NODE_TRIGGER_TASK_PARAM_KEY,
   NODE_TYPE_SOURCE_RANK,
   RESERVED_NODE_TYPE_PREFIX,
+  TRIGGER_NODE_TYPE_ID,
   validateNodeTypeManifest,
   type NodeContextKind,
   type NodeParamSpec,
@@ -70,6 +91,7 @@ import {
   type NodeTypeSource,
 } from "@contracts/nodeType";
 import { dataRoot } from "@main/lib/dataRoot.js";
+import { loadLibraryTypes } from "@main/library/kindRegistry.js";
 import {
   NODE_OUTPUT_CONTRACT_KEY,
   NODE_OUTPUT_VARS_KEY,
@@ -93,20 +115,29 @@ export const NODE_AGENT_TYPE_ID = "mcode.agent";
 export const NODE_CONVERSATION_TYPE_ID = "mcode.conversation";
 
 /**
- * 上下文类目的中文名。**放在这里而不是 i18n** —— 它是**清单的一部分**(和参数的
- * `label` 一样由清单作者写),不是界面文案:一份第三方清单里同样会带中文名,而界面上
- * 显示的是清单写的那一份。
+ * 内置的"命令节点"类型 id —— 在本机跑一条 shell 命令的那一种(见
+ * `@contracts/nodeType` 的 `runner.kind === "command"` 的 `param` 形状)。
+ *
+ * 它是自动化里"动手"的那一步:起训练、跑评测、拉日志。跑什么写在节点参数里
+ * (`NODE_COMMAND_PARAM_KEY`),命令结束这一步才结束;退出码和输出尾部作为产出交给
+ * 下游 —— 要按成败分流,下游接一个决定权给模型的分支看「退出码」。
  */
-const CONTEXT_LABEL_ZH: Record<NodeContextKind, string> = {
-  paper: "文献",
-  textbook: "教材",
-  note: "笔记",
-  ppt: "PPT 模版",
-  latex: "LaTeX 模版",
-  word: "Word 模版",
-  code: "代码模版",
-  image: "配图模版",
-};
+export const NODE_COMMAND_TYPE_ID = "mcode.command";
+
+/**
+ * 「资料」下拉的候选 —— **类型注册表的现读**。
+ *
+ * 统一资料库之前这里是 `NODE_CONTEXT_KINDS`(内置八类)+ 一张写死的中文名表;现在
+ * kind 开放注册(见 `@contracts/libraryTypes` 与 `main/library/kindRegistry`),下拉
+ * 直接按注册表出 —— 用户自建的类型,勾资料时就能勾到。`loadLibraryTypes` 带缓存,
+ * 清单每次重新生成也不会反复读盘。
+ *
+ * 名字显示的是**注册表里的 name**(内置类型即出厂中文名) —— 它是清单的一部分,由
+ * 注册表作者(内置=我们,自定义=用户)写,不走 i18n,和清单里其他 label 同一规则。
+ */
+function contextOptions(): Array<{ value: string; label: string }> {
+  return loadLibraryTypes().map((t) => ({ value: t.id, label: t.name }));
+}
 
 /**
  * 「指令」那段说明 —— **子 agent** 版。
@@ -132,6 +163,15 @@ const MAIN_INSTRUCTION_HELP =
  */
 const CONVERSATION_INSTRUCTION_HELP =
   "这一步要说的那句话 —— 它会作为一条用户消息发进主对话。**主对话已经知道的不必重复**。";
+
+/**
+ * 「指令」那段说明 —— **分支(模型选)**版。
+ *
+ * 留空也行:留空时代码用 {@link DEFAULT_DECIDER_INSTRUCTION} 兜底(照着上游结果从选项
+ * 里挑一条)。这里写的是**判据** —— "按什么挑",不是"做什么"。
+ */
+const DECIDER_INSTRUCTION_HELP =
+  "选路的判据 —— 看上游的什么、按什么标准挑。留空则只要求它从选项里挑最合适的一条。";
 
 /**
  * 「这一步靠什么跑」那一组 —— 技能 / MCP / 插件 / 模型 / 引擎。
@@ -199,7 +239,7 @@ function ioParams(): NodeParamSpec[] {
       // 多选:一步常常既要文献又要模版(照着别人的格式写自己的内容)。
       multiple: true,
       label: "资料",
-      options: NODE_CONTEXT_KINDS.map((kind) => ({ value: kind, label: CONTEXT_LABEL_ZH[kind] })),
+      options: contextOptions(),
       help: "这一步要读哪几类资料。只有主对话已经挂载的那几类;没挂载就是没有。",
     },
     {
@@ -257,19 +297,57 @@ function returnToChatParam(): NodeParamSpec[] {
  * 四行以上没人读,反而把下面那个真的控件挤到屏幕外。要讲的道理写在
  * `node-types-README.md` 里 —— 那里才是给"想弄明白为什么"的人读的地方。
  */
-function agentParams(instructionHelp: string): NodeParamSpec[] {
+function agentParams(instructionHelp: string, extra: NodeParamSpec[] = []): NodeParamSpec[] {
   return [
     {
-      key: "instruction",
+      key: NODE_PROMPT_PARAM_KEY,
       kind: "longtext",
       label: "指令",
       required: true,
       help: instructionHelp,
     },
+    ...extra,
     ...capabilityParams(),
     ...ioParams(),
     ...returnToChatParam(),
   ];
+}
+
+/**
+ * 主对话入口节点的**输入选项** —— 聊天输入框上方那个下拉框的条目表。
+ *
+ * **只有入口节点有这一格**(见 {@link NODE_OPTIONS_PARAM_KEY} 的文件头):下拉框陪着
+ * "用户那句话进图的第一站",子 agent / 决策节点没有这个位置。每行三样 —— 名字是
+ * 菜单上显示的字,内容是选中后**插进输入框光标处**的那段(可以在检查器里用「插入变量」
+ * 引用上游产出,入口节点没有上游时菜单会给空态提示),解释是**随这次运行进提示词**
+ * 的那一句(告诉模型用户选了什么、意味着什么)。
+ */
+function optionsParam(): NodeParamSpec {
+  return {
+    key: NODE_OPTIONS_PARAM_KEY,
+    kind: "options",
+    label: "输入选项",
+    help: "配置后,用这张图聊天时输入框上方会出现一个下拉框:选中一项,它的内容插进输入框光标处,解释随这轮运行注入提示词。",
+  };
+}
+
+/**
+ * 主对话入口节点的**固定条件** —— 聊天输入框上方那一排下拉框的条目表。
+ *
+ * 每行 = 条件名 + 一串候选值(编辑器里一行一个),选中的值随**每次运行最开头**的
+ * 提示词注入**一次**、之后不再重复(见 `runner.ts` 的 `startWorkflowRun`),值为
+ * 「不限」的条件跳过 —— 这是"一贯的习惯,不要再问"的那套(原话见
+ * `main/lib/searchPrefs.ts` 的文件头)。它接过了文献检索写死的那条筛选条:那四个
+ * 条件现在是内置检索图主节点上的**预填数据**(见 `builtins.ts`),在这里可以改候选、
+ * 加条件、删条件 —— 定义在节点上,界面只是渲染。
+ */
+function criteriaParam(): NodeParamSpec {
+  return {
+    key: NODE_CRITERIA_PARAM_KEY,
+    kind: "selects",
+    label: "固定条件",
+    help: "配置后,输入框上方会出现一排下拉框:选中的值随这次运行注入一次,「不限」不注入。",
+  };
 }
 
 /**
@@ -291,7 +369,7 @@ const AGENT_USAGE_TAIL =
   "**填了表,这一步的产出就只有那个对象**(除此之外一个字都不写,内容全写在值里面) —— 那段原文不会摊给用户看,卡片渲染的是解出来的变量。**最后一步例外**:它没有下游、没有人来取那些变量,所以那张表既不发给模型也不检查(填了也不起作用,产出按给人看的样子写即可)。";
 
 /**
- * 随应用发布的节点类型。现在四种:
+ * 随应用发布的节点类型。现在六种:
  *
  * - **主代理**(图的入口,新建的工作流自带一个)与 **子 agent**(一个带独立指令的
  *   步骤)—— 都是"一轮对话里的一个步骤",寿命是一个 turn,**各自新开一段会话**。
@@ -300,20 +378,17 @@ const AGENT_USAGE_TAIL =
  * - **对话节点** —— 同样跑一轮模型,但**跑在主对话里**(见
  *   `@contracts/nodeType` 的 `runner.kind === "conversation"`)。它不是"另一种子
  *   agent",而是"代替用户说一句话":所以它的参数表里只有「指令」,产出直接留在对话里。
- * - **分支** —— 不跑模型,只把决定权交给用户(见 `@contracts/nodeType` 的
- *   `runner.kind` 那个 `branch` 变体)。它是这四种里唯一**寿命不止一个 turn** 的:
- *   它让这次运行停在那儿等人,等到为止。
+ * - **分支** —— 不跑东西的岔路口,选项就是它的出边。**决定权给谁**由 `decider`
+ *   参数说了算:默认 `user`(挂起等用户选,它是环上唯一合法的回头点);`model` 时
+ *   跑一轮模型自己选(过去的"决策节点"收编成了这种填法 —— 同一张清单,少一种类型)。
+ * - **触发器** —— 一条自动化的**起点**(见 `runner.kind === "trigger"`)。它不跑东西、
+ *   也不接上游:它声明"什么情况下起一次运行"。图里没有触发器时,这张图只能手动跑。
+ * - **命令** —— 在本机跑一条 shell 命令(见 `runner.kind === "command"` 的 `param`
+ *   形状):跑什么写在节点参数里,退出码和输出尾部是它的产出。**没有审批** —— 命令是
+ *   画图的人写死的配置,不是跑到一半才问的事;第三方那种自带脚本的 `entry` 形状
+ *   仍然没实现(调度器会明确拒绝,见 `isNodeRunnable`)。
  *
- * 前三种是原来"对话模式"里那几步的形态。
- *
- * ⚠️ **这里没有 `command`(跑本地脚本)类型,不是忘了。** 执行方式在
- * `@contracts/nodeType` 里已经定义好了形状(`runner: { kind: "command" }`),但
- * 真正跑起一个第三方脚本需要一整套还不存在的东西:统一的进程执行抽象(仓库里现在
- * 是 22 处各写各的 `spawn`)、`exec` 能力的实施、长跑进程的存活与重连。那是"自动化"
- * 那个功能自己的一摊,不属于这里。
- *
- * 所以现在只发这四种内置类型;**第三方带来的 `command` 节点能画、能存,但跑之前会被
- * 明确拒绝**(`isRunnerImplemented`),而不是假装跑过。
+ * 前三种是原来"对话模式"里那几步的形态;后三种是"自动化"那一摊的入口、岔路口和手。
  */
 const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
   {
@@ -328,7 +403,17 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
     // 与子 agent 同一个默认值,理由见下面那段。主代理通常更需要能读(先看看库里有什么
     // 再决定怎么拆),而写盘该由它在具体某张图上显式声明。
     capability: "read",
-    params: agentParams(MAIN_INSTRUCTION_HELP),
+    // 只有入口节点带「输入选项」和「固定条件」—— 那两样都长在聊天输入框上方,陪着
+    // 图的起点(见 `optionsParam` / `criteriaParam`)。子 agent 与决策节点不传
+    // `extra`,参数表保持原样。
+    // ⚠️ **getter 惰性求值,不能是顶层求值的属性。** params → agentParams → ioParams →
+    // contextOptions → loadLibraryTypes 要读 settings 表(DB):模块 import 期 initDb()
+    // 还没 resolve,顶层求值会在启动时炸(getDb() called before initDb() resolved)。
+    // getter 把首次读取推迟到 loadNodeTypes() 运行时 —— 那时调用方必已 await 过 Db。
+    // 附带的好处:用户自建的类型不再固化在启动快照里,改完注册表下一轮就能勾到。
+    get params() {
+      return agentParams(MAIN_INSTRUCTION_HELP, [optionsParam(), criteriaParam()]);
+    },
     outputs: [{ key: "summary", label: "结果文本", description: "这个步骤的最终输出,会传给下游节点" }],
     usage:
       "**入口节点。** 新建的工作流自带一个,一份图里只有它一个,而且删不掉 —— 用户那句话先到它这儿。它的活是**拆**不是做:把请求分成几步、写清每一步要什么,交给下游的子 agent;要是它自己把整件事做完了,下游就没得干了(这套图最容易踩的坑,所以指令里要写明「把活分给下游」这类话)。它可以接下游(几乎总是有下游,否则这张图就只有它一步,那不如直接跟对话说)。" +
@@ -346,7 +431,10 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
     // 是少数需要明确表达的动作。节点上可以覆盖(`WorkflowNode.capability`)——
     // 一个要产出文件的步骤应该显式声明 `write`,而不是继承一个宽松的默认值。
     capability: "read",
-    params: agentParams(AGENT_INSTRUCTION_HELP),
+    // getter 惰性求值,理由见主代理那段(顶层求值会在 initDb 之前碰 DB)。
+    get params() {
+      return agentParams(AGENT_INSTRUCTION_HELP);
+    },
     outputs: [{ key: "summary", label: "结果文本", description: "这个步骤的最终输出,会传给下游节点" }],
     usage:
       "最通用的节点。一次对话轮次,给它一段指令,它去做。**指令要写窄**(只写这一步,别去干整件事)——" +
@@ -365,7 +453,9 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
     // 权限用的是**主对话当前那一套**(见 `@contracts/nodeType` 的 `conversation` 那一段)。
     // 填最保守的值:万一将来有人拿这个字段做了什么,读到的是最不危险的那个。
     capability: "read",
-    params: [
+    // getter 惰性求值,理由见主代理那段(数组里的 `...ioParams()` 会在求值时碰 DB)。
+    get params(): NodeParamSpec[] {
+      return [
       {
         key: NODE_PROMPT_PARAM_KEY,
         kind: "longtext",
@@ -379,12 +469,33 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
         label: "运行前先问我",
         help: "打开后,跑到这一步会先弹个框问你怎么走:用它的指令 / 跳过 / 重复上一个任务 / 退出流程。",
       },
+      {
+        key: NODE_INJECT_MODE_KEY,
+        kind: "select",
+        label: "注入模式",
+        options: INJECT_MODES.map((m) => ({
+          value: m,
+          label: m === "ask" ? "先问一句,等回答" : "自动注入,发完就走",
+        })),
+        help: "默认等这一轮说完流程再往下走。「自动注入」是替你发一条消息,发完立刻算完成 —— 长任务守望用的就是它。",
+      },
+      {
+        key: NODE_INJECT_TARGET_KEY,
+        kind: "select",
+        label: "注入到",
+        options: INJECT_TARGETS.map((t) => ({
+          value: t,
+          label: t === "self" ? "本会话(跑这张图的)" : "发起会话(按守望按钮的那条)",
+        })),
+        help: "默认发进跑这张图的会话。「发起会话」只在用「守望」按钮起跑时有意义;手动跑的自动化没有发起人,这一步会明确失败。",
+      },
       // 「进来什么 / 出去什么」那一组和子 agent 完全共用(见 `ioParams`)—— 收到上游产出、
       // 按一张表交东西、声明产出变量给下游取,这几件事跟"在哪儿跑"没有关系。
       //
       // **但「回到主对话」那一个不给它**:它本来就在主对话里,内容和过程天然在那儿。
       ...ioParams(),
-    ],
+      ];
+    },
     outputs: [{ key: "summary", label: "结果文本", description: "主对话这一轮说的话,会传给下游节点" }],
     usage:
       "**在主对话里跑的一步。** 它不是子 agent —— 它没有自己的会话,而是**代替你说一句话**:指令原样作为一条用户消息发进当前这个对话,主对话带着全部历史回一轮。所以「这一步靠什么跑」那一组不用配(模型、技能、工具、权限,用的全是主对话当前那一套);**收什么、交什么是配的**,和子 agent 同一套。\n" +
@@ -400,22 +511,162 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
     manifestVersion: 1,
     name: "分支",
     description:
-      "跑到它就把决定权交给你:选一条出路继续,其余几条连同它们的下游一起作废。**选项就是它的出边** —— 从它拉几根线到下一步,每根线写一个选项名。",
+      "跑到它就在岔路口选一条出路继续,其余几条连同它们的下游一起作废。**选项就是它的出边** —— 从它拉几根线到下一步,每根线写一个选项名。**谁来选**由「决定权」说了算:弹出窗口等你点,或者跑一轮模型按判据自己挑。",
     icon: "split",
     category: "通用",
     runner: { kind: "branch" },
-    // 它什么都不跑,所以能力这一项没有实际作用。给 `read` 是**最保守的那个值** ——
-    // 万一将来有人给它加参数、或者别的实现拿这个字段做了什么,读到的是最不危险的那个。
+    // 它自己不跑东西(decider=user 时),模型选时跑的那一轮用的是主对话外的一次性派发,
+    // 能力这一项两种情况下都没有实际作用。给 `read` 是**最保守的那个值** —— 万一将来
+    // 有人给它加参数、或者别的实现拿这个字段做了什么,读到的是最不危险的那个。
     capability: "read",
-    // **没有参数。** 选项是**边**(见 `@contracts/workflow` 的 `WorkflowEdgeSchema`),
-    // 不是一张填在节点上的表 —— 表会有两种真相("填了三个选项、图上只拉了两根线"),
-    // 而边不会:每个选项必然通向某一步。
-    params: [],
+    // 选项是**边**(见 `@contracts/workflow` 的 `WorkflowEdgeSchema`),不是一张填在
+    // 节点上的表 —— 表会有两种真相("填了三个选项、图上只拉了两根线"),而边不会:
+    // 每个选项必然通向某一步。节点上只有两样:**决定权给谁**、以及**模型选时的判据**。
+    params: [
+      {
+        key: NODE_DECIDER_KEY,
+        kind: "select",
+        label: "决定权",
+        options: DECIDER_MODES.map((m) => ({
+          value: m,
+          label: m === "user" ? "弹出窗口,我来选" : "跑一轮模型,它来选",
+        })),
+        help: "默认等你点。给模型的话它跑一轮自己挑,挑完继续跑 —— 适合「看结果就知道往哪走」的无人值守分流。",
+      },
+      {
+        key: NODE_PROMPT_PARAM_KEY,
+        kind: "longtext",
+        label: "选路判据",
+        help: DECIDER_INSTRUCTION_HELP,
+      },
+    ],
     usage:
-      "**岔路口。** 跑到它就停下来问用户走哪条路,选中的那条继续跑,其余的连同它们拖着的**整条支路**一起作废(那些步骤在对话里会标成「没走这条路」,和「上游失败」是两句不同的话)。\n" +
+      "**岔路口。** 跑到它就选一条路:选中的那条继续跑,其余的连同它们拖着的**整条支路**一起作废(那些步骤在对话里会标成「没走这条路」,和「上游失败」是两句不同的话)。\n" +
       "  **选项就是它的出边**:从它往下一步拉几根线,每根线就是一个选项。线本身带两样东西 —— `label`(选项名,按钮上显示的字;不填就用目标节点的标题)、`note`(选了这条之后给下一步的一句说明,会拼进那一步的提示词)。\n" +
-      "  拿它做什么:一轮一轮的迭代(「再来一轮」还是「定稿,进查重」)、几条做法里挑一条、让人在关键处拍板。**用户还能在选择时临时写一句话**,那句话也会拼进下一步。\n" +
-      "  ⚠️ 两条支路**最后可以汇到同一步**(用户选哪条都会走到「导出」)—— 调度器把没走的那条当**不存在**,所以汇合的那一步照常跑。",
+      "  **「决定权」留默认(我来选)**:运行停在那儿弹一个框,你点哪条走哪条,**还能临时写一句话**拼进下一步。它是环上**唯一合法的回头点**(「再来一轮」的那根回边必须接在它后面)—— 因为环要有人看着才转得动。\n" +
+      "  **「决定权」给模型**:它跑一轮 —— 上游产出都在它眼前,判据写在「选路判据」里(留空就只要求它挑最合适的一条)—— 然后从出边里挑一条,**一字不改**地交出「出路」这个变量(下游能 `{{那一步.出路}}` 取到)。交的名字对不上任何一条出边,这一步**失败**,不会随便挑一条。⚠️ 它**不能当环的闸门**:让模型回头,它会一环一环自己转下去,没有人拦得住,只是账单在涨 —— 存盘时就会被拒绝。\n" +
+      "  ⚠️ 两条支路**最后可以汇到同一步**(选哪条都会走到「导出」)—— 调度器把没走的那条当**不存在**,所以汇合的那一步照常跑。",
+  },
+  {
+    id: NODE_COMMAND_TYPE_ID,
+    manifestVersion: 1,
+    name: "命令",
+    description:
+      "在本机跑一条 shell 命令,跑完才往下走。退出码和输出尾部交给下游 —— 要按成败分流,下游接一个「决定权给模型」的分支看退出码。",
+    icon: "terminal",
+    category: "自动化",
+    runner: { kind: "command" },
+    // **这一项是真的生效的**:它真起进程。默认 `exec` —— 命令节点的本职就是动手;
+    // 节点上可以覆盖,但一个命令节点改成 `read` 多半是画错了。
+    capability: "exec",
+    params: [
+      {
+        key: NODE_COMMAND_PARAM_KEY,
+        kind: "text",
+        label: "命令",
+        required: true,
+        help: "要跑的那条命令,在本机 shell 里执行。跑到它就执行,跑完(进程退出)才轮到下一步 —— 结束码是多少都算跑完。",
+      },
+      {
+        key: NODE_COMMAND_TIMEOUT_KEY,
+        kind: "number",
+        label: "超时(毫秒)",
+        help: "跑了这么久还没完就杀掉,这一步按失败算。留空或 0 = 不限时长,等它自己退出。",
+      },
+    ],
+    outputs: [
+      { key: "退出码", label: "退出码", description: "进程的结束码:0 通常是成功,非 0 通常是出了问题" },
+      { key: "输出", label: "输出尾部", description: "进程打印的最后一段内容(太长只留尾部),出错时先看这里" },
+    ],
+    usage:
+      "**动手的那一步。** 它起一个进程跑你写的那条命令,进程退出这一步才结束 —— 输出按行记着,下游能取到**退出码**和**输出尾部**(太长只留最后几 KB,早前的输出被丢掉,要看全请让命令自己写文件)。\n" +
+      "  ⚠️ **非零退出码不算这一步失败。** 命令挂了,这一步照样算跑完(失败的是命令,不是流程 —— 训练脚本退出码 1,你可能正想注入「重试一次」)。要按成败分流:下游接一个**决定权给模型**的分支,判据写「退出码是 0 走成功那条,不是 0 走失败那条」。\n" +
+      "  **没有审批**:命令是你画图时写死在这儿的那一条,不是跑到一半才问的事 —— 所以别把不认识的图里的命令节点当成无害的。这一步声明了 `exec` 能力,受工作流权限那一套约束。\n" +
+      "  **什么时候用它**:自动化的「手」—— 起训练、跑评测、拉日志、存一次盘。要模型读着结果说话,后面接子 agent;要无人值守地分流,后面接分支(模型选)。",
+  },
+  {
+    id: TRIGGER_NODE_TYPE_ID,
+    manifestVersion: 1,
+    name: "触发器",
+    description:
+      "一条自动化的**起点**:到点了、文件变了、某件事发生了,就按你写的那句话起一次运行。**它没有入边** —— 它是图的开头。",
+    icon: "zap",
+    category: "自动化",
+    runner: { kind: "trigger" },
+    // 它自己不跑任何东西(和「分支」一样),所以这一项没有实际作用。给 `read` 是**最保守
+    // 的那个值** —— 顺带也让它卡片上不显示能力标签(见 `WorkflowNodeCard` 的
+    // `showsCapability`)。
+    capability: "read",
+    params: [
+      {
+        key: NODE_TRIGGER_KIND_PARAM_KEY,
+        kind: "select",
+        label: "触发方式",
+        required: true,
+        options: [
+          { value: "manual", label: "手动运行" },
+          { value: "schedule", label: "定时" },
+          { value: "file", label: "文件变化" },
+          { value: "event", label: "事件发生时" },
+        ],
+        help: "「手动运行」= 只在列表里点「立刻跑一次」;另外三种是应用开着时自动起。",
+      },
+      {
+        key: NODE_TRIGGER_PROJECT_PARAM_KEY,
+        kind: "ref",
+        from: "projects",
+        label: "在哪个项目里跑",
+        required: true,
+        // 单值。见 `@contracts/nodeType` 的 `NODE_PARAM_REF_SOURCES` 里 `projects` 那一段:
+        // 一次运行只有一个工作目录。
+        help: "这次运行的工作目录,以及它的会话挂在哪。触发时问不了你,所以它必须写死在这儿。",
+      },
+      {
+        key: NODE_TRIGGER_TASK_PARAM_KEY,
+        kind: "longtext",
+        label: "这次要做什么",
+        required: true,
+        help: "触发时,这句话就是这次运行的**用户请求**(入口节点读到的那一句)。写成一句完整的话。",
+      },
+      {
+        key: NODE_TRIGGER_CRON_PARAM_KEY,
+        kind: "text",
+        label: "定时表达式",
+        help: "只在「定时」时看。5 段:分钟 小时 日 月 星期,如 `0 9 * * 1-5` = 工作日九点。应用没开着不补跑。",
+      },
+      {
+        key: NODE_TRIGGER_PATHS_PARAM_KEY,
+        kind: "text",
+        label: "监听哪些文件",
+        help: "只在「文件变化」时看。逗号分隔,相对项目目录,支持 `*`(如 `*.md, src/**/*.ts`)。",
+      },
+      {
+        key: NODE_TRIGGER_EVENTS_PARAM_KEY,
+        kind: "text",
+        label: "听哪些事件",
+        help: "只在「事件发生时」看。逗号分隔,取值和**钩子**那张表一样(如 `tool.use, turn.done`)。",
+      },
+      {
+        key: NODE_TRIGGER_FILTER_PARAM_KEY,
+        kind: "text",
+        label: "再筛一层",
+        help: "工具名或文件路径,逗号分隔,支持 `*`。只在听的事件带这两样时有用。",
+      },
+      {
+        key: NODE_TRIGGER_DEBOUNCE_PARAM_KEY,
+        kind: "number",
+        label: "合并窗口(毫秒)",
+        default: DEFAULT_TRIGGER_DEBOUNCE_MS,
+        help: "这么短的间隔里连着来好几次(存一次盘改了几个文件),合成一次运行。0 = 每次都跑。",
+      },
+    ],
+    usage:
+      "**自动化的起点。** 它声明「什么情况下起一次运行」,自己不跑任何东西 —— 触发之后,真正跑的是它下游那几步,而这次运行的**用户请求**就是你写在「这次要做什么」里的那句话(流程的入口节点读到的是它,和别人手打一句话没有区别)。\n" +
+      "  ⚠️ **它没有入边**,而且图里**可以有好几个**:每一份图最多有一条自动化记录(会话),几个触发器都指向同一段流程 —— 谁先命中谁起一次运行。\n" +
+      "  ⚠️ **没被触发的那些会标成「没走这条路」而不是失败。** 一次运行只有一个起点,其余的自然是没走的那条。所以你的图里没必要为「哪个触发的」写判断逻辑。\n" +
+      "  ⚠️ **桌面应用没开着就不会触发**,而且**错过的时间点不会补跑**(早上八点那条,你十点才打开应用,它不会补一次)。所以别拿它当定时任务的唯一保障。\n" +
+      "  触发方式和参数是**配对**的:「定时」只看表达式、「文件变化」只看监听哪些文件、「事件发生时」看事件名和筛选 —— 填了不在用的那几个不报错,但也不会生效,所以换触发方式时记得把上一组擦干净。\n" +
+      "  **「手动运行」不等于没有自动化**:它不自动起,但列表上那一个「立刻跑一次」按钮走的是同一条路(同样的项目、同样那句话),所以你可以拿它先试一遍再改成定时。",
   },
 ];
 

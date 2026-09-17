@@ -25,6 +25,24 @@ export const zh = {
   "library.collection.deleteConfirm": "删除文献库「{name}」？库里的文献不会被删除，只是从这个分组里移出。",
   "library.collection.empty": "这个集合还没有文献",
 
+  // 左栏管理:大类(段落)与小类(tab)的新建/删除/重命名都在左栏右键完成
+  "library.group.rename": "重命名大类",
+  "library.group.new": "新建大类",
+  "library.group.delete": "删除大类",
+  "library.group.deleteConfirm": "删除大类「{name}」？里面的类型会变成未分组（左栏不再显示），数据不会删。",
+  "library.group.namePlaceholder": "大类名称",
+  "library.group.emptyHint": "所有大类都被删掉了 —— 输入名字新建一个，数据都还在。",
+  "library.kind.new": "新建小类",
+  "library.kind.rename": "重命名小类",
+  "library.kind.delete": "删除小类",
+  "library.kind.deleteConfirm": "删除小类「{name}」？它名下的集合与条目不再显示，数据不会删。",
+  "library.kind.builtinLocked": "内置类型不能删除",
+  "library.kind.namePlaceholder": "小类名称",
+  "library.kind.purpose.material": "查资料用",
+  "library.kind.purpose.format": "照着写用",
+  "library.collection.newSub": "新建子集合",
+  "library.collection.createFailed": "创建失败",
+
   // 中栏:列表
   "library.list.count": "{n} 篇",
   "library.list.searchPlaceholder": "搜索标题、作者、摘要",
@@ -264,4 +282,15 @@ export const zh = {
   "institution.clearAllConfirm": "清除内置浏览器里所有站点的登录态？这将影响全部已登录的网站。",
   "institution.cleared": "已清除登录态",
   "institution.reload": "刷新状态",
+
+  // ── 统一资料库:通用文件条目(linked / attached)──
+  "library.detail.file": "文件",
+  "library.action.importFiles": "导入文件",
+  "library.action.importFolder": "导入文件夹",
+  "library.import.genericResult": "导入 {added} 项,跳过 {skipped} 项",
+  "library.import.genericErrors": "{n} 项没能导入",
+  "library.file.back": "返回上级",
+  "library.file.emptyDir": "空目录",
+  "library.file.unknownMime": "暂无内置预览({mime})",
+  "library.file.loadFailed": "读取失败",
 } as const;

@@ -214,6 +214,11 @@ function migrate(database: Database): void {
       md_path     TEXT,
       source      TEXT,
       license     TEXT,
+      -- 通用文件条目(统一资料库):entry_mode = attached(复制入库,相对库根)/
+      -- linked(引用原路径,文件不动,可为目录);file_path 是通用文件路径。
+      -- 旧的文献流(pdf_path/md_path)不受影响;老库 ALTER 出来的行缺省按 attached 读。
+      entry_mode  TEXT NOT NULL DEFAULT 'attached',
+      file_path   TEXT,
       added_at    INTEGER NOT NULL,
       updated_at  INTEGER NOT NULL
     );
@@ -233,6 +238,8 @@ function migrate(database: Database): void {
       name       TEXT NOT NULL,
       -- 分类也是分库的:三个库各有各的分类树(同一层级里不会混着论文和笔记)
       kind       TEXT NOT NULL DEFAULT 'paper',
+      -- 这个分类的「给 AI 的说明」(统一资料库):拼进该分类的清单。NULL = 没写。
+      prompt     TEXT,
       parent_id  TEXT REFERENCES library_collections(id) ON DELETE CASCADE,
       sort_order INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL
@@ -325,6 +332,14 @@ function migrate(database: Database): void {
   // 用户现有的东西本来就都是论文。
   addColumnIfMissing(database, "library_items", "kind", "TEXT NOT NULL DEFAULT 'paper'");
   addColumnIfMissing(database, "library_collections", "kind", "TEXT NOT NULL DEFAULT 'paper'");
+  // 分类的「给 AI 的说明」:拼进该分类的清单(统一资料库,类型说明之外的第二层)。
+  addColumnIfMissing(database, "library_collections", "prompt", "TEXT");
+
+  // 统一资料库的通用文件条目(见 contracts/src/library.ts 的 LibraryItem.entryMode):
+  // attached = 复制入库(相对库根),linked = 引用原路径(文件不动,可为目录)。
+  // 老库没有这两列;ALTER 出来的既有行按 DEFAULT 'attached' 读,语义不变。
+  addColumnIfMissing(database, "library_items", "entry_mode", "TEXT NOT NULL DEFAULT 'attached'");
+  addColumnIfMissing(database, "library_items", "file_path", "TEXT");
 
   // Composite index for paginated message reads (cursor on created_at). The
   // single-column idx_messages_session above serves the same queries but

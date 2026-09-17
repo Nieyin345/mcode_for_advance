@@ -9,33 +9,52 @@ import type { ProviderCapabilities } from "../provider.js";
 
 /* ── Skill discovery (composer slash-command menu) ──
  *  The composer's `/` menu lists skills discovered by scanning the local
- *  filesystem (`~/.claude/skills/` global + `<project>/.claude/skills/`
- *  project-scoped). Each skill's SKILL.md frontmatter supplies the name +
- *  description; we don't depend on a running SDK session for the listing, so
- *  the menu is instant. Selecting a skill inserts `/name` into the textarea
- *  and the user sends it as a normal turn (SDK is started with
- *  `skills: "all"`, so the agent recognizes and runs the skill). */
+ *  filesystem (`~/.mcode/skills/` — the one universal library all three
+ *  engines consume — plus plugin contributions). Each skill's SKILL.md
+ *  frontmatter supplies the name + description; we don't depend on a running
+ *  SDK session for the listing, so the menu is instant. Selecting a skill
+ *  inserts `/name` into the textarea and the user sends it as a normal turn
+ *  (the engine recognizes and runs the skill).
+ *
+ *  项目级根（<cwd>/.claude/skills）已随上下文统一托管移除：外部工作区目录
+ *  一律不再继承，Mcode 不往用户项目目录读写任何 skill 文件。 */
 
 /** Where a composer skill was discovered. "plugin" = contributed by an
  *  ENABLED plugin (read-only inventory: the composer menu lists it and the
- *  SDK loads it per-turn, but it has no user-editable file root — the skills
- *  read/save/delete handlers reject this source). "builtin" = shipped inside
- *  the app itself (the document skills; see main/plugins/builtinPlugins.ts) —
- *  same read-only posture as "plugin", but it survives with no plugins
- *  installed at all, so the UI labels it 「内置」 rather than by plugin name. */
-export const SKILL_READ_SOURCES = ["global", "project", "plugin", "builtin"] as const;
+ *  engine loads it per-turn, but it has no user-editable file root — the
+ *  skills read/save/delete handlers reject this source). "builtin" = shipped
+ *  inside the app itself (the document skills; see
+ *  main/plugins/builtinPlugins.ts) — same read-only posture as "plugin", but
+ *  it survives with no plugins installed at all, so the UI labels it 「内置」
+ *  rather than by plugin name. */
+export const SKILL_READ_SOURCES = ["global", "plugin", "builtin"] as const;
 export type SkillSource = (typeof SKILL_READ_SOURCES)[number];
 
-/** Sources a skill can be WRITTEN to — the two the user owns. Contributed
- *  skills are replaced by a plugin update or an app upgrade, never by this
- *  editor, so save/delete reject them at the schema level (not just in the
- *  handler), and the UI hides the buttons. */
-export const SKILL_WRITE_SOURCES = ["global", "project"] as const;
+/** The one source a skill can be WRITTEN to — the universal library the user
+ *  owns. Contributed skills are replaced by a plugin update or an app upgrade,
+ *  never by this editor, so save/delete reject them at the schema level (not
+ *  just in the handler), and the UI hides the buttons. */
+export const SKILL_WRITE_SOURCES = ["global"] as const;
 
 /** The sources that have no user-editable file root. Kept as one exported
  *  alias so the renderer's editor type and the main-side read/save/delete
  *  guard can never drift apart on which sources are read-only. */
 export type ReadOnlySkillSource = Extract<SkillSource, "plugin" | "builtin">;
+
+/** The three engines the universal skill library can be gated per. Mirrors
+ *  main's skillEngines matrix (contracts can't import app code — keep the
+ *  two lists in sync). */
+export const SKILL_ENGINE_IDS = ["claude", "codex", "pi"] as const;
+export type SkillEngineId = (typeof SKILL_ENGINE_IDS)[number];
+
+/** Resolved per-engine state for one skill — always complete (the main side
+ *  fills defaults), so the UI never needs to know the "missing = enabled"
+ *  rule of the underlying matrix file. */
+export interface SkillEngineState {
+  claude: boolean;
+  codex: boolean;
+  pi: boolean;
+}
 
 /** One registered AI backend surfaced to the renderer via `provider.list`.
  *  The capabilities descriptor drives which composer chips / dropdown entries
@@ -49,26 +68,31 @@ export interface ProviderInfo {
 }
 
 /** One discoverable skill surfaced in the composer `/` menu. Mirrors the
- *  fields the SDK's own `SlashCommand` exposes (name / description /
- *  argumentHint) plus a `source` discriminator so the UI can show whether a
- *  skill came from the user's global dir or the active project. */
+ *  fields the engine's own `SlashCommand` exposes (name / description /
+ *  argumentHint) plus a `source` discriminator so the UI can show where a
+ *  skill came from. */
 export interface SkillInfo {
   /** Skill name without the leading slash (e.g. "pdf"). Used as the slash
-   *  command the user sends, and as the dedupe key (project overrides global). */
+   *  command the user sends, and as the dedupe key. */
   name: string;
   /** Short description from SKILL.md frontmatter (may be empty when absent). */
   description: string;
   /** Hint for skill arguments (e.g. "<file>"), when present in frontmatter. */
   argumentHint?: string;
-  /** Where the skill was discovered: user-global vs the active project. */
+  /** Where the skill was discovered: the universal library or a plugin. */
   source: SkillSource;
+  /** Per-engine availability — set for `source: "global"` AND `source:
+   *  "plugin"` rows (both kinds of contributions are matrix-managed so an
+   *  engine only sees what was assigned to it; plugin rows stay read-only
+   *  apart from these switches). Builtin rows omit it (always offered).
+   *  Absent flags mean enabled (missing = enabled). */
+  perEngine?: SkillEngineState;
 }
 
-/** List skills for a project root. `projectPath` must match a persisted
- * Project.path (main cross-checks, same containment guard as file ops); it is
- * optional — when omitted, only the user-global root (~/.mcode/skills) is
- * scanned (the settings panel's "no projects yet" state still lists global
- * skills). */
+/** List skills for the composer `/` menu and the settings panel. Always
+ *  resolves (degrades to an empty list on IO errors). `projectPath` is
+ *  accepted for RPC signature stability but IGNORED — the universal library
+ *  is the only scope since external workspaces are no longer inherited. */
 export const SkillsListSchema = z.object({
   projectPath: z.string().optional(),
 });
@@ -83,22 +107,69 @@ export type SkillsListInput = z.infer<typeof SkillsListSchema>;
  *  fail just that item, not the whole batch via a zod parse error). */
 export const SKILL_NAME_RE = /^[A-Za-z0-9_-]+$/;
 
+/** Set one universal skill's per-engine availability (「移动到引擎内部 /
+ *  移回通用」= editing this matrix; skill files never move). All three
+ *  booleans are sent every time — the desired end state, not a delta. */
+export const SkillsEnginesSetSchema = z.object({
+  name: z.string().regex(SKILL_NAME_RE, "invalid skill name"),
+  claude: z.boolean(),
+  codex: z.boolean(),
+  pi: z.boolean(),
+});
+export type SkillsEnginesSetInput = z.infer<typeof SkillsEnginesSetSchema>;
+
+/** One import bundle — the group a skill arrived with. The bundle manifest
+ *  (.bundles.json in the universal library root) records which source
+ *  directory each skill was imported from, so the settings panel can group
+ *  them by origin ("这是哪个包的") and toggle a whole group per engine in
+ *  ONE call. Skills created in Mcode itself are absent from the manifest —
+ *  the panel shows those under their own group. */
+export interface SkillBundle {
+  /** Stable id, e.g. "scientific-agent-skills". Order in the manifest is
+   *  the display order. GitHub imports use `<owner>--<repo>`. */
+  id: string;
+  /** Human-readable label shown as the group title — for GitHub imports the
+   *  `owner/repo` pair, for pre-existing bundles the package's own name. */
+  label: string;
+  /** Skill names (directories under the universal library) in this bundle. */
+  skills: string[];
+  /** Origin URL when the bundle arrived via GitHub import. Purely
+   *  informational (tooltip / provenance display). */
+  source?: string;
+}
+
+/** Read the bundle manifest. Always resolves; a missing or unparsable
+ *  manifest degrades to an empty list — bundling is a display concern and
+ *  must never hard-fail the panel. */
+export const SkillsBundlesSchema = z.object({});
+export type SkillsBundlesInput = z.infer<typeof SkillsBundlesSchema>;
+
+/** Set the per-engine availability for MANY skills in one call — the
+ *  settings panel's group-level switches write a whole bundle at once
+ *  (looping 166 single-skill IPCs would thrash the matrix file). Same
+ *  semantics as enginesSet, applied to every name; names that don't exist
+ *  on disk are silently skipped (the manifest may lag deletions). */
+export const SkillsEnginesSetBulkSchema = z.object({
+  names: z.array(z.string().regex(SKILL_NAME_RE, "invalid skill name")).min(1),
+  claude: z.boolean(),
+  codex: z.boolean(),
+  pi: z.boolean(),
+});
+export type SkillsEnginesSetBulkInput = z.infer<typeof SkillsEnginesSetBulkSchema>;
+
 /** Read one skill's full SKILL.md source. Returns the complete file text (no
  *  truncation — skills can be large). A missing file resolves to empty
  *  content so the editor opens cleanly for a not-yet-written skill.
- *  `projectPath` is only required for `source: "project"` (it must match a
- *  persisted Project.path); global skills resolve without it. */
+ *  `projectPath` is accepted for RPC signature stability but IGNORED (the
+ *  universal library is the only scope). */
 export const SkillsReadSchema = z.object({
-  /** Project root (must match a persisted Project.path). Only used to verify
-   *  the caller's identity when source is "project"; the skill itself is
-   *  resolved by `source` + `name`. */
   projectPath: z.string().optional(),
   /** Which skills root to read from. Wider than the write schemas below:
    *  contributed skills (enabled plugins + the built-in plugin) have no
    *  writable root but ARE readable — the settings panel shows a built-in
    *  skill's SKILL.md read-only. */
   source: z.enum(SKILL_READ_SOURCES),
-  /** Skill name (= directory name under <root>/.claude/skills/). */
+  /** Skill name (= directory name under <root>/skills/). */
   name: z.string().regex(SKILL_NAME_RE, "invalid skill name"),
 });
 export type SkillsReadInput = z.infer<typeof SkillsReadSchema>;
@@ -106,10 +177,7 @@ export type SkillsReadInput = z.infer<typeof SkillsReadSchema>;
 /** Write (create or overwrite) a skill's SKILL.md. Creates the skill directory
  *  if absent; always writes the full file content (complete overwrite).
  *  `newName` is reserved for future rename support (when set and differs from
- *  `name`, the skill directory is moved first); v1 UI leaves it unset.
- *  `projectPath` is only required for `source: "project"`; a global skill can
- *  be created even when no project exists at all (settings panel's
- *  "no projects yet" state). */
+ *  `name`, the skill directory is moved first); v1 UI leaves it unset. */
 export const SkillsSaveSchema = z.object({
   projectPath: z.string().optional(),
   source: z.enum(SKILL_WRITE_SOURCES),
@@ -122,8 +190,7 @@ export type SkillsSaveInput = z.infer<typeof SkillsSaveSchema>;
 
 /** Delete a skill directory. For a symlinked skill only the link is removed
  *  (the target - e.g. a gstack checkout - is left intact); for a real
- *  directory the whole skill folder is removed recursively. `projectPath` is
- *  only required for `source: "project"`. */
+ *  directory the whole skill folder is removed recursively. */
 export const SkillsDeleteSchema = z.object({
   projectPath: z.string().optional(),
   source: z.enum(SKILL_WRITE_SOURCES),
@@ -196,6 +263,36 @@ export const SkillsImportSchema = z.object({
   skills: z.array(SkillsImportItemSchema),
 });
 export type SkillsImportInput = z.infer<typeof SkillsImportSchema>;
+
+/** Import a WHOLE skill package from a GitHub repository URL in one call —
+ *  "贴一个链接进来,导出来就是一类". The repo is shallow-cloned, every
+ *  SKILL.md inside it is discovered (nested layouts welcome — one repo
+ *  usually packages many sub-skills), and each skill directory is copied
+ *  into the universal library. All imported skills land in ONE bundle
+ *  (`<owner>--<repo>`), so the panel manages the package as a group. */
+export const SkillsImportGithubSchema = z.object({
+  /** GitHub repository URL. Accepted shapes: full https URL
+   *  (github.com/<owner>/<repo>[.git][/tree/<branch>]), or the bare
+   *  "<owner>/<repo>" shorthand (defaults to the default branch). */
+  url: z.string().min(1),
+});
+export type SkillsImportGithubInput = z.infer<typeof SkillsImportGithubSchema>;
+
+/** Result of a GitHub package import — mirrors the local import's
+ *  per-skill lists plus the bundle the skills landed in. */
+export interface SkillsImportGithubResult {
+  ok: boolean;
+  /** Human-readable failure reason when ok is false (URL parse, clone
+   *  failure, no SKILL.md found anywhere in the repo, ...). */
+  error?: string;
+  imported: string[];
+  skipped: string[];
+  errors: Array<{ name: string; error: string }>;
+  /** The bundle id the imported skills were grouped under. */
+  bundleId?: string;
+  /** The bundle label (owner/repo). */
+  bundleLabel?: string;
+}
 
 /* ── Output style (settings panel) ──
  *  Claude sessions can run with a different "output style" — the CLI rewrites

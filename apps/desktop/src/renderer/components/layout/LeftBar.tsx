@@ -19,8 +19,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@renderer/lib/cn.js";
-import { LibrarySection } from "@renderer/components/library/LibrarySection.js";
-import { TemplateSection } from "@renderer/components/templates/TemplateSection.js";
+import { LibrarySections } from "@renderer/components/library/LibrarySection.js";
 import {
   IconFolder,
   IconGitFork,
@@ -880,20 +879,15 @@ function LeftBarBase({
           </DndContext>
         )}
 
-        {/* 文献库 —— 与「项目」并列的顶层分组,按要求排在项目段**下面**。
+        {/* 资料库 —— 与「项目」并列的顶层分组,按要求排在项目段**下面**。
             放在这个滚动容器**内部**(而不是容器外):库多、或者展开着几十篇
             文献时,它跟着一起滚,不会把上面的项目列表挤扁。表头样式与项目段
             逐字对齐,两段读起来是一个体系。
-            它跟着顶部那个切换图标一起变(树=分组可展开,会话流=平铺)。 */}
+            段落按**大类**走(一段一个组,组表来自主进程、设置页可编辑):
+            旧的独立模版段不再单独挂 —— 它那五类已由主进程启动时自动迁移进
+            统一库,现在就是「模版」这个组。 */}
         <div className="mt-3">
-          <LibrarySection />
-        </div>
-
-        {/* 模版库 —— 排在文献库**下面**。版式与上一段逐字对齐(表头、行、展开、
-            右键菜单都照抄 LibrarySection),所以这里只需要一个同样的分隔距离。
-            同样跟着顶部那个切换图标一起变(树=可展开,会话流=平铺)。 */}
-        <div className="mt-3">
-          <TemplateSection />
+          <LibrarySections />
         </div>
       </div>
 

@@ -3,6 +3,7 @@ import { createMainWindow } from "@main/window.js";
 import { registerIpcHandlers } from "@main/ipc/index.js";
 import { initDb, closeDb, awaitDb } from "@main/store/db.js";
 import { ensureTemplateDirs } from "@main/templates/store.js";
+import { migrateTemplatesToLibraryOnce } from "@main/library/templateMigration.js";
 import { initTheme } from "@main/lib/theme.js";
 import { TerminalManager } from "@main/terminal/TerminalManager.js";
 import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
@@ -25,6 +26,7 @@ import { initUpdater } from "@main/updater.js";
 import { initAutoArchiver } from "@main/session/AutoArchiver.js";
 import { notificationManager } from "@main/notifications/NotificationManager.js";
 import { hookRunner } from "@main/hooks/HookRunner.js";
+import { automationRunner } from "@main/orchestration/automationRunner.js";
 import { is } from "@main/utils.js";
 import { preloadClaudeSdk } from "@main/providers/claude-sdk/ClaudeAgentSdkProvider.js";
 import { logStartup } from "@main/lib/startupTimer.js";
@@ -136,6 +138,10 @@ app.whenReady().then(async () => {
     // 用户会直接从资源管理器往这些目录里丢文件(文件系统即事实源),所以它们应该一开始
     // 就在 —— 否则用户照着界面上显示的路径去找会发现没有,以为坏了(实际发生过)。
     ensureTemplateDirs();
+    // 统一资料库(M4):旧模版一次性迁成 linked 条目。放在 ensureTemplateDirs 之后
+    // —— 迁移要扫模版目录,骨架得先在。没迁过才跑(幂等在 templateMigration 里),
+    // 失败只记日志,不拦启动。
+    migrateTemplatesToLibraryOnce();
     // Legacy cleanup: the browser password vault was removed; wipe any
     // credentials older builds persisted under this key (nothing reads it
     // anymore; SettingRepo has no delete, so overwrite with an empty map).
@@ -247,6 +253,18 @@ app.whenReady().then(async () => {
     }
   })();
 
+  // 自动化(AutomationRunner):把触发器节点上那句"什么情况下起一次运行"挂起来
+  // (定时 / 文件变化 / 事件)。**它也要等数据库就绪** —— 解触发器要读工作流表、
+  // 项目路径和清单;不等的话,启动那几秒里命中的定时会把那一次丢掉。
+  void (async () => {
+    try {
+      await awaitDb();
+      await automationRunner.start();
+    } catch (err) {
+      log.error(`AutomationRunner failed to start: ${(err as Error).message}`);
+    }
+  })();
+
   // Start the mobile companion HTTP server (LAN-facing). Fire-and-forget: it
   // awaits DB readiness internally to read its enabled/port settings, then
   // binds 0.0.0.0:<port>. If disabled (mobile.enabled=0) it resolves to an
@@ -316,6 +334,9 @@ app.on("before-quit", (event) => {
   lspManager.disposeAll();
   BrowserManager.disposeAll();
   relayManager.disposeAll();
+  // 关掉定时针、目录监听、事件订阅 —— 它们都挂在事件流 / 文件系统上,不关的话
+  // 退出过程中还可能起一次运行(而那时数据库已经在关了,见下面 `closeDb`)。
+  automationRunner.dispose();
   stopMobileServer();
   closeDb();
 });

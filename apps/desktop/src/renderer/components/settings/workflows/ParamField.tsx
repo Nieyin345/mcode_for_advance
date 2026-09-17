@@ -126,6 +126,10 @@ export function ParamField({
         />
       ) : spec.kind === "variables" ? (
         <VariableTable value={value} onChange={onChange} />
+      ) : spec.kind === "options" ? (
+        <OptionsTable value={value} onChange={onChange} insertables={insertables} />
+      ) : spec.kind === "selects" ? (
+        <SelectsTable value={value} onChange={onChange} />
       ) : spec.kind === "select" && spec.multiple ? (
         // 多选的下拉是**一个也选不中**的控件(`<select multiple>` 在触摸屏上尤其难用),
         // 所以走勾选列表 —— 和引用型多选是同一个(`CheckboxList`)。
@@ -199,7 +203,12 @@ export function ParamField({
           onChange={(e) => onChange(e.target.value)}
         />
       )}
-      {insertables && <InsertVarMenu groups={insertables} onPick={insertAt} />}
+      {/* 「插入变量」跟着 longtext 的框走(上面那个 areaRef)。options 的表**每行内容
+          各有自己的框**,菜单在 OptionsTable 行内 —— 走这里会把变量插错地方。selects
+          的候选值是给下拉框用的**字面量**(选中哪个原样注入),没有插变量的份。 */}
+      {insertables && spec.kind !== "options" && spec.kind !== "selects" && (
+        <InsertVarMenu groups={insertables} onPick={insertAt} />
+      )}
       {spec.help && (
         <p className="mt-0.5 text-[0.7143em] leading-relaxed text-content-subtle">{spec.help}</p>
       )}
@@ -326,10 +335,14 @@ export function GrowingTextarea({
   value,
   placeholder,
   onChange,
+  inputRef,
 }: {
   value: string;
   placeholder: string;
   onChange: (text: string) => void;
+  /** 外部要拿这个框的光标(「插入变量」插到光标处)时给一个回调 ref。可选 ——
+   *  不给就是原来的行为,已有调用方(AgentProfilesView 等)不受影响。 */
+  inputRef?: (el: HTMLTextAreaElement | null) => void;
 }) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
   const fit = (): void => {
@@ -341,7 +354,10 @@ export function GrowingTextarea({
   useEffect(fit, [value]);
   return (
     <textarea
-      ref={ref}
+      ref={(el) => {
+        ref.current = el;
+        inputRef?.(el);
+      }}
       value={value}
       rows={1}
       spellCheck={false}
@@ -425,6 +441,230 @@ function VariableTable({
       </Button>
     </div>
   );
+}
+
+/**
+ * 「名字 + 内容 + 解释」的表 —— `kind: "options"` 的控件。
+ *
+ * 它是主对话入口节点的**输入选项**:每一行会变成聊天输入框上方那个下拉框里的一项。
+ * 分工照着它在聊天那头的用途写 —— **名字**是菜单上显示的字;**内容**是选中后插进
+ * 输入框光标处的那段,所以带「插入变量」(和「指令」同一套 `insertSnippet`,插到光标处;
+ * 入口节点没有上游,菜单是空态提示,机制不分家);**解释**是随这次运行进提示词的那一句。
+ *
+ * 编辑态的读法与 `varRows` 同一条:**一行不丢** —— 刚点「加一样」出来的空行必须留得住。
+ */
+function OptionsTable({
+  value,
+  onChange,
+  insertables,
+}: {
+  value: unknown;
+  onChange: (value: unknown) => void;
+  insertables?: InsertableGroup[];
+}) {
+  const { t } = useI18n();
+  const rows = optionRows(value);
+  const write = (next: OptionRow[]): void => onChange(next);
+  const patch = (at: number, key: keyof OptionRow, text: string): void =>
+    write(rows.map((row, i) => (i === at ? { ...row, [key]: text } : row)));
+
+  // 每行内容框的 ref —— 「插入变量」要插到**那一行**的光标处。按行号存,行删了
+  // React 会用 null 把旧条目冲掉,不会留下悬空的框。
+  const contentRefs = useRef(new Map<number, HTMLTextAreaElement>());
+  const setContentRef = (at: number) => (el: HTMLTextAreaElement | null) => {
+    if (el) contentRefs.current.set(at, el);
+    else contentRefs.current.delete(at);
+  };
+
+  const insertAt = (at: number, snippet: string): void => {
+    const el = contentRefs.current.get(at);
+    const text = rows[at]?.content ?? "";
+    const start = el?.selectionStart ?? text.length;
+    const end = el?.selectionEnd ?? start;
+    const next = insertSnippet(text, start, end, snippet);
+    patch(at, "content", next.value);
+    // 光标落在插进来的那段后面 —— 等 React 把新值写回 DOM 再设(同 ParamField 的做法)。
+    requestAnimationFrame(() => {
+      const node = contentRefs.current.get(at);
+      if (!node) return;
+      node.focus();
+      node.setSelectionRange(next.caret, next.caret);
+    });
+  };
+
+  return (
+    <div className="space-y-2">
+      {rows.map((row, i) => (
+        <div key={i} className="space-y-1 rounded border border-edge/60 p-1.5">
+          <div className="flex items-center gap-1">
+            <Input
+              className="min-w-0 flex-1"
+              value={row.name}
+              maxLength={60}
+              spellCheck={false}
+              placeholder={t("settings.workflows.optName")}
+              onChange={(e) => patch(i, "name", e.target.value)}
+            />
+            <button
+              type="button"
+              title={t("settings.workflows.optRemove")}
+              aria-label={t("settings.workflows.optRemove")}
+              onClick={() => write(rows.filter((_, j) => j !== i))}
+              className="shrink-0 rounded p-1 text-content-subtle transition-colors hover:bg-surface-hover/60 hover:text-content"
+            >
+              <IconX size={12} />
+            </button>
+          </div>
+          <GrowingTextarea
+            value={row.content}
+            placeholder={t("settings.workflows.optContent")}
+            inputRef={setContentRef(i)}
+            onChange={(text) => patch(i, "content", text)}
+          />
+          <GrowingTextarea
+            value={row.note}
+            placeholder={t("settings.workflows.optNote")}
+            onChange={(text) => patch(i, "note", text)}
+          />
+          {insertables && (
+            <InsertVarMenu groups={insertables} onPick={(snippet) => insertAt(i, snippet)} />
+          )}
+        </div>
+      ))}
+      {rows.length === 0 && (
+        <p className="text-[0.7143em] leading-relaxed text-content-subtle">
+          {t("settings.workflows.optEmpty")}
+        </p>
+      )}
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={() => write([...rows, { name: "", content: "", note: "" }])}
+        className="gap-1"
+      >
+        <IconPlus size={12} />
+        {t("settings.workflows.optAdd")}
+      </Button>
+    </div>
+  );
+}
+
+/** 选项表在编辑态的一行。 */
+interface OptionRow {
+  name: string;
+  content: string;
+  note: string;
+}
+
+/** 读出选项表的每一行。**一行不丢地端上来** —— 理由见 {@link OptionsTable}。 */
+function optionRows(value: unknown): OptionRow[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    const row = (typeof item === "object" && item !== null ? item : {}) as {
+      name?: unknown;
+      content?: unknown;
+      note?: unknown;
+    };
+    return {
+      name: typeof row.name === "string" ? row.name : "",
+      content: typeof row.content === "string" ? row.content : "",
+      note: typeof row.note === "string" ? row.note : "",
+    };
+  });
+}
+
+/**
+ * 「条件名 + 候选值」的表 —— `kind: "selects"` 的控件。
+ *
+ * 它是主对话入口节点的**固定条件**:每一行会变成聊天输入框上方**一个**下拉框,选中
+ * 的值每轮随提示词注入。**候选值一行一个**(多行框):条件名是标识符级别的短词,而
+ * 候选值可能很长(「只要 T1(Q1 或中科院 1 区,或 Top)」),单行框装不下。
+ *
+ * 候选值是**字面量** —— 选中哪个,注入的就是哪个,所以这里**没有**「插入变量」:
+ * `{{...}}` 在下拉里不是个能选的值。与 `varRows`/`optionRows` 同一条读法:**一行不丢**。
+ */
+function SelectsTable({
+  value,
+  onChange,
+}: {
+  value: unknown;
+  onChange: (value: unknown) => void;
+}) {
+  const { t } = useI18n();
+  const rows = critRows(value);
+  const write = (next: CritRow[]): void => onChange(next);
+  const patch = (at: number, key: keyof CritRow, text: string): void =>
+    write(rows.map((row, i) => (i === at ? { ...row, [key]: text } : row)));
+
+  return (
+    <div className="space-y-2">
+      {rows.map((row, i) => (
+        <div key={i} className="space-y-1 rounded border border-edge/60 p-1.5">
+          <div className="flex items-center gap-1">
+            <Input
+              className="min-w-0 flex-1"
+              value={row.name}
+              maxLength={60}
+              spellCheck={false}
+              placeholder={t("settings.workflows.critName")}
+              onChange={(e) => patch(i, "name", e.target.value)}
+            />
+            <button
+              type="button"
+              title={t("settings.workflows.critRemove")}
+              aria-label={t("settings.workflows.critRemove")}
+              onClick={() => write(rows.filter((_, j) => j !== i))}
+              className="shrink-0 rounded p-1 text-content-subtle transition-colors hover:bg-surface-hover/60 hover:text-content"
+            >
+              <IconX size={12} />
+            </button>
+          </div>
+          <GrowingTextarea
+            value={row.choices}
+            placeholder={t("settings.workflows.critChoices")}
+            onChange={(text) => patch(i, "choices", text)}
+          />
+        </div>
+      ))}
+      {rows.length === 0 && (
+        <p className="text-[0.7143em] leading-relaxed text-content-subtle">
+          {t("settings.workflows.critEmpty")}
+        </p>
+      )}
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={() => write([...rows, { name: "", choices: "" }])}
+        className="gap-1"
+      >
+        <IconPlus size={12} />
+        {t("settings.workflows.critAdd")}
+      </Button>
+    </div>
+  );
+}
+
+/** 固定条件表在编辑态的一行。候选值按行存(编辑器里一行一个),写回时切行。 */
+interface CritRow {
+  name: string;
+  choices: string;
+}
+
+/** 读出条件表的每一行。**一行不丢地端上来** —— 理由同 {@link OptionsTable}。 */
+function critRows(value: unknown): CritRow[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    const row = (typeof item === "object" && item !== null ? item : {}) as {
+      name?: unknown;
+      choices?: unknown;
+    };
+    return {
+      name: typeof row.name === "string" ? row.name : "",
+      choices: Array.isArray(row.choices)
+        ? row.choices.filter((c): c is string => typeof c === "string").join("\n")
+        : "",
+    };
+  });
 }
 
 /**

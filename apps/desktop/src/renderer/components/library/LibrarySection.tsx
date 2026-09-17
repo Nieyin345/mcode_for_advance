@@ -1,5 +1,6 @@
 /**
- * 左栏的「文献库」分组(界面上叫「文档」)。
+ * 左栏「资料库」的一个**大类**段(「文档」「模版」那种段落),由同文件尾部的
+ * `LibrarySections` 按组表循环渲染。
  *
  * ## 与「项目」的关系:逐字照抄
  *
@@ -45,13 +46,21 @@
  * 选中它,并把**右侧面板**切到文献库标签(见 LibraryPanel 的说明:不做全屏页,
  * 不挤掉主区的对话)。这与点项目后主区开会话标签是同一套交互模式。
  */
-import { useEffect, useMemo, useState } from "react";
-import { LIBRARY_KIND_LABEL } from "@renderer/lib/libraryLabels.js";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { kindLibraryLabel } from "@renderer/lib/libraryLabels.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useLibraryStore } from "@renderer/stores/libraryStore.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
-import { LIBRARY_KINDS, type LibraryKind } from "@contracts/library";
+import { cn } from "@renderer/lib/cn.js";
+import { type LibraryKind } from "@contracts/library";
+import {
+  BUILTIN_LIBRARY_TYPES,
+  DEFAULT_LIBRARY_GROUPS,
+  type LibraryGroupMeta,
+  type LibraryTypeMeta,
+  type LibraryTypePurpose,
+} from "@contracts/libraryTypes";
 import type { LibraryCollection, LibraryItem } from "@contracts/library";
 import {
   IconArchive,
@@ -77,10 +86,73 @@ import {
 } from "@renderer/components/sidebar/Sidebar.js";
 import { LibraryItemContextMenu, type LibraryCtxTarget } from "./LibraryItemContextMenu.js";
 import { CollectionContextMenu, type CollectionCtxTarget } from "./CollectionContextMenu.js";
+import { GroupContextMenu, type GroupCtxTarget } from "./GroupContextMenu.js";
+import { KindContextMenu, type KindCtxTarget } from "./KindContextMenu.js";
+
+/**
+ * 管理输入行(大类/小类的新建与重命名)—— 与 `InlineInputRow` 同一套手感,但它渲染
+ * div:InlineInputRow 是 `<li>`,只能挂在列表里,而这里的输入挂在表头/tab 排下面。
+ */
+function MiniInput({
+  value,
+  onChange,
+  onSubmit,
+  onCancel,
+  onBlur,
+  placeholder,
+  error,
+  children,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+  /** 失焦也提交(与文献库行内输入同一语义:点别处就是"就改这个")。 */
+  onBlur?: () => void;
+  placeholder?: string;
+  error?: string | null;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="px-1 pb-1">
+      <input
+        autoFocus
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") onSubmit();
+          if (e.key === "Escape") onCancel();
+        }}
+        {...(onBlur ? { onBlur } : {})}
+        placeholder={placeholder}
+        className={cn(
+          "w-full rounded border bg-surface px-2 py-1 text-xs text-content focus:outline-none",
+          error ? "border-red-500" : "border-accent",
+        )}
+      />
+      {children}
+      {error && <div className="pt-0.5 text-[0.7143em] text-red-500">{error}</div>}
+    </div>
+  );
+}
 
 
-export function LibrarySection() {
-  const { t } = useI18n();
+export function LibrarySection({
+  group,
+  typeMetas,
+  groups,
+  onRefresh,
+}: {
+  /** 本段对应的大类(段名 + 段内哪些类型)。由 `LibrarySections` 按组表传入。 */
+  group: LibraryGroupMeta;
+  /** 类型注册表(上游拉一次后传下来):tab 名与「全部<类型>」的显示名都取自它。 */
+  typeMetas: readonly LibraryTypeMeta[];
+  /** 整份大类表 —— 新建/删除大类要在它上面增删,光有本段的 group 不够。 */
+  groups: readonly LibraryGroupMeta[];
+  /** 大类/小类的任何变更落库后调用:父层重拉组表与注册表,各段立即跟上。 */
+  onRefresh: () => void;
+}) {
+  const { locale, t } = useI18n();
   const collections = useLibraryStore((s) => s.collections);
   const activeKind = useLibraryStore((s) => s.activeKind);
   const setActiveKind = useLibraryStore((s) => s.setActiveKind);
@@ -122,19 +194,55 @@ export function LibrarySection() {
   const [namingNoteIn, setNamingNoteIn] = useState<string | null>(null);
   const [noteName, setNoteName] = useState("");
 
+  // ── 大类 / 小类的管理(用户要求:管理操作全部在左栏,设置页只留提示词)──
+  /** 大类标题行的右键菜单(坐标)。 */
+  const [ctxGroup, setCtxGroup] = useState<GroupCtxTarget | null>(null);
+  /** 小类 tab 的右键菜单(坐标 + 落在哪个类型上)。 */
+  const [ctxKind, setCtxKind] = useState<KindCtxTarget | null>(null);
+  /** 大类的新建 / 重命名输入。同时只有一个。 */
+  const [creatingGroup, setCreatingGroup] = useState(false);
+  const [renamingGroup, setRenamingGroup] = useState(false);
+  const [groupDraft, setGroupDraft] = useState("");
+  const [groupError, setGroupError] = useState<string | null>(null);
+  /** 小类的新建 / 重命名输入。新建要多一步:选用途(查资料用 / 照着写用)。 */
+  const [creatingKind, setCreatingKind] = useState(false);
+  const [newKindDraft, setNewKindDraft] = useState("");
+  const [newKindPurpose, setNewKindPurpose] = useState<LibraryTypePurpose>("material");
+  const [renamingKind, setRenamingKind] = useState<string | null>(null);
+  const [kindDraft, setKindDraft] = useState("");
+  const [kindError, setKindError] = useState<string | null>(null);
+  /** 菜单动作(删除等)失败时的提示 —— 那时没有输入行可挂,统一显示在段头下方。 */
+  const [manageError, setManageError] = useState<string | null>(null);
+  /** 正在哪个分类下新建**子集合**(分类 id)+ 输入中的名字。 */
+  const [creatingChildIn, setCreatingChildIn] = useState<string | null>(null);
+  const [childName, setChildName] = useState("");
+
   useEffect(() => {
     void loadCollections();
   }, [loadCollections]);
 
+  /**
+   * 本段当前生效的 kind。全局 activeKind 只有一个,而段有多个 —— 它落在哪个组,
+   * 哪个组就显示它;其余各段**各自记住**用户上次在本段点过的类型(点 tab 时记下),
+   * 没记过就退回本组第一个。这样几段并排各显各的内容,不会互相抢、也不会跟着
+   * 别段的选中跳。
+   */
+  const [localKind, setLocalKind] = useState<string | null>(null);
+  const kind = group.kinds.includes(activeKind)
+    ? activeKind
+    : localKind && group.kinds.includes(localKind)
+      ? localKind
+      : (group.kinds[0] ?? "");
+
   // 换库时收起「全部」那一层 —— 换了个库,上一层的展开态没有意义
   useEffect(() => {
     setAllOpen(false);
-  }, [activeKind]);
+  }, [kind]);
 
-  /** 当前这个库(论文 / 教材 / 笔记)的分类。三个库各有各的树,只画选中的那个。 */
+  /** 当前这个类型(论文 / 教材 / 笔记…)的分类。每类各有各的树,只画选中的那个。 */
   const kindCollections = useMemo(
-    () => collections.filter((c) => c.kind === activeKind),
-    [collections, activeKind],
+    () => collections.filter((c) => c.kind === kind),
+    [collections, kind],
   );
   /**
    * 回收站的集合 id。
@@ -160,15 +268,19 @@ export function LibrarySection() {
     return [...live, ...trash];
   }, [kindCollections]);
 
-  /** 每个库各有几个分类 —— 标签上显示,用户不用点进去就知道那边有没有东西。 */
+  /** 段内的 tab:**按 group.kinds 的顺序**渲染,名字取类型注册表的 name
+   *  (用户可改,不走 i18n);组里没这个类型的注册信息时退回 kind 串。 */
   const tabs: ReadonlyArray<SectionTab<LibraryKind>> = useMemo(
     () =>
-      LIBRARY_KINDS.map((k) => ({
-        key: k,
-        label: t(LIBRARY_KIND_LABEL[k]),
-        count: collections.reduce((n, c) => (c.kind === k ? n + 1 : n), 0),
-      })),
-    [collections, t],
+      group.kinds.map((id) => {
+        const meta = typeMetas.find((m) => m.id === id);
+        return {
+          key: id,
+          label: meta?.name ?? id,
+          count: collections.reduce((n, c) => (c.kind === id ? n + 1 : n), 0),
+        };
+      }),
+    [group.kinds, typeMetas, collections],
   );
 
   // 会话流模式一次要列出所有库的文献,所以进模式(以及库增删)时全量拉一次。
@@ -217,6 +329,9 @@ export function LibrarySection() {
    * toggleExpanded 里带着"没缓存才拉"的逻辑,所以展开时不需要额外请求。
    */
   const openCollection = (id: string) => {
+    // 全局 activeKind 跟着落到本段的 kind 上:右栏(LibraryPanel)按它决定
+    // 新建笔记的默认类型、搜索范围等 —— 看着哪段的库,全局就该停在哪个类型。
+    setActiveKind(kind);
     setActive(id);
     setRightPanelTab("library");
     setRightOpen(true);
@@ -227,6 +342,8 @@ export function LibrarySection() {
   const openItem = (item: LibraryItem, collectionId: string | null) => {
     if (collectionId) setActive(collectionId);
     setActiveItem(item.id);
+    // 同 openCollection:全局 kind 跟着这篇走(右栏按它取显示名与默认行为)
+    setActiveKind(item.kind);
     // 笔记点开就是要写/改它,直接落在编辑页;其余落在第一页(元数据 / 概览)
     useLibraryStore.getState().setDetailTab(item.kind === "note" ? "edit" : "meta");
     setRightPanelTab("library");
@@ -349,6 +466,143 @@ export function LibrarySection() {
     // 被删的正好是当前选中的 → 清掉选中,否则右栏会停在一个不存在的库上
     if (activeId === id) setActive(null);
     await loadCollections();
+  };
+
+  /* ── 大类(组)管理:新建 / 重命名 / 删除,全走 groupsSave 整表替换 ──
+     即时生效:保存成功立刻 onRefresh(父层重拉组表与注册表),不跳设置页。 */
+
+  /** 组表整表保存。失败把后端 error 原文摆出来(判据以它为准,不另造一套说法)。 */
+  const saveGroups = async (next: readonly LibraryGroupMeta[]): Promise<boolean> => {
+    const res = await api.library.groupsSave({ groups: next });
+    if (!res.ok) {
+      setManageError(res.error);
+      return false;
+    }
+    onRefresh();
+    return true;
+  };
+
+  /** 类型注册表整表保存(小类的新建 / 重命名 / 删除都要它)。 */
+  const saveTypes = async (next: readonly LibraryTypeMeta[]): Promise<boolean> => {
+    const res = await api.library.typesSave({ types: next });
+    if (!res.ok) {
+      setManageError(res.error);
+      return false;
+    }
+    return true;
+  };
+
+  const submitNewGroup = async () => {
+    const trimmed = groupDraft.trim();
+    setCreatingGroup(false);
+    setGroupDraft("");
+    if (!trimmed) return;
+    // id 现场生成(小写连字符,与设置页旧做法同一招);名字用用户给的那份
+    await saveGroups([...groups, { id: `group-${Date.now().toString(36)}`, name: trimmed, kinds: [] }]);
+  };
+
+  const submitRenameGroup = async () => {
+    const trimmed = groupDraft.trim();
+    setRenamingGroup(false);
+    setGroupDraft("");
+    if (!trimmed || trimmed === group.name) return;
+    await saveGroups(groups.map((g) => (g.id === group.id ? { ...g, name: trimmed } : g)));
+  };
+
+  const removeGroup = async () => {
+    if (!window.confirm(t("library.group.deleteConfirm", { name: group.name }))) return;
+    // 组删了,组里的类型只是变回"未分组"(左栏隐藏、数据不删)—— 所以只动组表
+    await saveGroups(groups.filter((g) => g.id !== group.id));
+  };
+
+  /* ── 小类(类型)管理:新建 / 重命名 / 删除。
+     变更走 typesSave + groupsSave 两次保存:先类型后组 —— 组保存失败时类型仍在
+     (只是未分组、左栏不显示),反过来则会留下指向不存在类型的空引用。 ── */
+
+  const submitNewKind = async () => {
+    const trimmed = newKindDraft.trim();
+    setCreatingKind(false);
+    setNewKindDraft("");
+    if (!trimmed) return;
+    const id = `type-${Date.now().toString(36)}`;
+    const ok = await saveTypes([
+      ...typeMetas.map((m) => ({ ...m })),
+      { id, name: trimmed, purpose: newKindPurpose, builtin: false },
+    ]);
+    if (!ok) return;
+    // 归入本段的大类(失败时 saveGroups 自己会把后端的话摆出来)。
+    // 即使归组失败也要重拉:类型已经落进注册表,只是"未分组"(左栏不显示、数据在)。
+    const grouped = await saveGroups(
+      groups.map((g) => (g.id === group.id ? { ...g, kinds: [...g.kinds, id] } : g)),
+    );
+    if (!grouped) onRefresh();
+    // 切到新建的小类,让用户立刻看到它
+    setLocalKind(id);
+    setActiveKind(id);
+  };
+
+  const submitRenameKind = async () => {
+    const id = renamingKind;
+    const trimmed = kindDraft.trim();
+    setRenamingKind(null);
+    setKindDraft("");
+    if (!id || !trimmed || trimmed === (typeMetas.find((m) => m.id === id)?.name ?? "")) return;
+    await saveTypes(typeMetas.map((m) => (m.id === id ? { ...m, name: trimmed } : m)));
+    onRefresh();
+  };
+
+  const removeKind = async (id: string) => {
+    const meta = typeMetas.find((m) => m.id === id);
+    // 内置类型不可删 —— 菜单项已置灰,这里再挡一道(防绕过 UI 的调用)
+    if (!meta || meta.builtin) return;
+    if (!window.confirm(t("library.kind.deleteConfirm", { name: meta.name }))) return;
+    const ok = await saveTypes(typeMetas.filter((m) => m.id !== id).map((m) => ({ ...m })));
+    if (!ok) return;
+    // 组表里挂着它的引用一并清掉,否则要等主进程下次合并校验才被过滤掉
+    const grouped = await saveGroups(
+      groups.map((g) => ({ ...g, kinds: g.kinds.filter((k) => k !== id) })),
+    );
+    if (!grouped) onRefresh();
+    if (kind === id) setLocalKind(null);
+  };
+
+  /* ── 子集合:右键分类 → 在它下面新建 ── */
+
+  const startNewChild = (c: LibraryCollection) => {
+    setCreatingChildIn(c.id);
+    setChildName("");
+    setError(null);
+  };
+
+  const submitNewChild = async (c: LibraryCollection) => {
+    const trimmed = childName.trim();
+    if (!trimmed) {
+      setCreatingChildIn(null);
+      setChildName("");
+      setError(null);
+      return;
+    }
+    if (nameTaken(trimmed)) {
+      // 保持输入框打开并提示,与新建根集合同一套手感
+      setError(t("library.collection.duplicateName"));
+      return;
+    }
+    try {
+      // 直接走 api 而不是 store 的 createCollection:那边按全局 activeKind 落库,
+      // 而子集合必须跟父集合同一个 kind —— 右键谁,建到谁下面、进谁的库。
+      const res = await api.library.createCollection({ name: trimmed, parentId: c.id, kind: c.kind });
+      await loadCollections();
+      setCreatingChildIn(null);
+      setChildName("");
+      setError(null);
+      // 与 store 同一个找法:同名同父里取最新的那条就是刚建的
+      const created = res.collections
+        .filter((x) => x.name === trimmed && x.parentId === c.id)
+        .sort((a, b) => b.createdAt - a.createdAt)[0];
+      if (created) openCollection(created.id);
+    } catch {
+      setError(t("library.collection.createFailed"));
+    }
   };
 
   /**
@@ -491,12 +745,15 @@ export function LibrarySection() {
    */
   const renderAllRow = () => {
     const on = activeId === null;
-    const items = allItemsByKind[activeKind];
-    const label = t("library.view.allInKind", { kind: t(LIBRARY_KIND_LABEL[activeKind]) });
+    const items = allItemsByKind[kind];
+    // 「全部<类型>」的名字同样按注册表来(自定义类拿不到 i18n key,退 kind 也能认)
+    const label = t("library.view.allInKind", {
+      kind: kindLibraryLabel(kind, typeMetas, locale),
+    });
     const openAll = () => {
       setAllOpen(true);
       // 展开时才拉整个库的条目(没展开过就不拉 —— 与分类的懒加载一致)
-      if (!allItemsByKind[activeKind]) void loadAllItems(activeKind);
+      if (!allItemsByKind[kind]) void loadAllItems(kind);
     };
     return (
       <li>
@@ -509,20 +766,21 @@ export function LibrarySection() {
           onToggleExpand={() => {
             const next = !allOpen;
             setAllOpen(next);
-            if (next && !allItemsByKind[activeKind]) void loadAllItems(activeKind);
+            if (next && !allItemsByKind[kind]) void loadAllItems(kind);
           }}
           expandTitle={t("layout.expand")}
           collapseTitle={t("layout.collapse")}
           onClick={() => {
             // 点名字 = 选中它 + **切换展开态** —— 与分类行逐字一致(那边是
             // toggleExpanded)。上一版只写了"没展开就展开",于是点第二下什么都不发生。
+            setActiveKind(kind);
             setActive(null);
             setRightPanelTab("library");
             setRightOpen(true);
             if (allOpen) setAllOpen(false);
             else openAll();
           }}
-          // 悬停那个气泡把**整个库**挂进当前对话 —— 与模版段的「全部<类目>」那一行
+          // 悬停那个气泡把**整个库**挂进当前对话 —— 与「全部<类目>」那一行
           // 逐字同款。附件键是 `k:<库>`,对应的清单是一份索引(库里有什么),
           // 与挂一个分类(`c:<id>`,那个分类里有什么)是同一个机制的两个范围。
           actions={
@@ -530,7 +788,7 @@ export function LibrarySection() {
               title={t("library.ctx.attachToChat")}
               onClick={(e) => {
                 e.stopPropagation();
-                void attachToCurrentChat(`k:${activeKind}`);
+                void attachToCurrentChat(`k:${kind}`);
               }}
             >
               <IconMessage size={12} />
@@ -644,6 +902,23 @@ export function LibrarySection() {
           />
         )}
 
+        {/* 新建子集合的起名行 —— 同样挂在这行下面:右键谁,就建到谁下面 */}
+        {creatingChildIn === c.id && (
+          <InlineInputRow
+            value={childName}
+            onChange={setChildName}
+            onSubmit={() => void submitNewChild(c)}
+            onCancel={() => {
+              setCreatingChildIn(null);
+              setChildName("");
+              setError(null);
+            }}
+            onBlur={() => void submitNewChild(c)}
+            placeholder={t("library.collection.namePlaceholder")}
+            error={error}
+          />
+        )}
+
         {/* 展开 —— 子列表的缩进/描边与 ProjectNode 展开会话列表时逐字一致 */}
         {isExpanded && (
           <SidebarList nested>
@@ -726,6 +1001,22 @@ export function LibrarySection() {
             </>
           }
         />
+        {/* 子集合的起名行 —— 流模式没有层级可展开,但它照样建得出来(挂在行下) */}
+        {creatingChildIn === c.id && (
+          <InlineInputRow
+            value={childName}
+            onChange={setChildName}
+            onSubmit={() => void submitNewChild(c)}
+            onCancel={() => {
+              setCreatingChildIn(null);
+              setChildName("");
+              setError(null);
+            }}
+            onBlur={() => void submitNewChild(c)}
+            placeholder={t("library.collection.namePlaceholder")}
+            error={error}
+          />
+        )}
         {/* 缩进与树模式一致,但不画左边那条竖线 —— 竖线是「层级」的记号,
             流模式里没有层级。 */}
         {items && items.length > 0 && (
@@ -739,31 +1030,143 @@ export function LibrarySection() {
 
   return (
     <>
-      {/* 表头在最上、三个库的标签在其下 —— 先有"这是什么"(文档),再有"看哪一类"
-          (文献 / 教材 / 笔记)。反过来会让人先看到三个并列的词、才反应过来它们在
-          给什么分类。表头与「项目」表头同款。 */}
-      <SectionHeader
-        title={t("library.docs.title")}
-        action={
-          <HeaderAction
-            title={t("library.collection.new")}
-            onClick={() => {
-              setCreating(true);
-              setError(null);
-            }}
-          >
-            {/* **常显**,不像项目段那样"悬停才出现"。
-                项目段的表头右侧还有一组常显的视图切换图标,所以"这里有点东西"是有暗示的;
-                这里的右侧**只有这一个按钮**,一隐藏就整块看不见 —— 用户报的就是"没有新建
-                collection 了"。 */}
-            <IconPlus size={12} />
-          </HeaderAction>
-        }
+      {/* 表头在最上、组内的类型标签在其下 —— 先有"这是什么"(组名),再有"看哪一类"
+          (文献 / 教材 / 笔记…)。反过来会让人先看到一排并列的词、才反应过来它们在
+          给什么分类。表头与「项目」表头同款;标题就是**组名**(左栏右键可改)。
+          右键表头 = 大类的管理菜单(重命名 / 新建 / 删除)—— 管理全在左栏。 */}
+      <div
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setManageError(null);
+          setCtxGroup({ x: e.clientX, y: e.clientY });
+        }}
+      >
+        <SectionHeader
+          title={group.name}
+          action={
+            <HeaderAction
+              title={t("library.collection.new")}
+              onClick={() => {
+                // 新建落在**本段当前**的 kind 上 —— store 的 createCollection 读的是
+                // 全局 activeKind,而本段在兜底态时两者可能不一致,先对齐再开输入行。
+                if (kind) setActiveKind(kind);
+                setCreating(true);
+                setError(null);
+              }}
+            >
+              {/* **常显**,不像项目段那样"悬停才出现"。
+                  项目段的表头右侧还有一组常显的视图切换图标,所以"这里有点东西"是有暗示的;
+                  这里的右侧**只有这一个按钮**,一隐藏就整块看不见 —— 用户报的就是"没有新建
+                  collection 了"。 */}
+              <IconPlus size={12} />
+            </HeaderAction>
+          }
+        />
+      </div>
+
+      {/* 组内平级的类型:同一排、同样的入口,只是不能同时展开 ——
+          把所有类型的树同时画出来会把左栏撑爆,而用户绝大多数时候只在一个类型里干活。
+          点 tab 时同时记进 localKind:activeKind 之后去了别的组,本段仍停在这里。
+          右键 tab = 小类的管理菜单(新建 / 重命名 / 删除)。 */}
+      <SectionTabs
+        tabs={tabs}
+        active={kind}
+        onChange={(k) => {
+          setLocalKind(k);
+          setActiveKind(k);
+        }}
+        onTabContextMenu={(k, e) => {
+          setManageError(null);
+          setCtxKind({ kind: k, x: e.clientX, y: e.clientY });
+        }}
       />
 
-      {/* 三个平级的库:文献 / 教材 / 笔记。同一排、同样的入口,只是不能同时展开 ——
-          把三棵树同时画出来会把左栏撑成三倍高,而用户绝大多数时候只在一个库里干活。 */}
-      <SectionTabs tabs={tabs} active={activeKind} onChange={setActiveKind} />
+      {/* 大类的新建 / 重命名输入 —— 菜单触发后就地摆一行(与集合行内输入同一套手感) */}
+      {(creatingGroup || renamingGroup) && (
+        <MiniInput
+          value={groupDraft}
+          onChange={(next) => {
+            setGroupDraft(next);
+            if (groupError) setGroupError(null);
+          }}
+          onSubmit={() => void (creatingGroup ? submitNewGroup() : submitRenameGroup())}
+          onCancel={() => {
+            setCreatingGroup(false);
+            setRenamingGroup(false);
+            setGroupDraft("");
+            setGroupError(null);
+          }}
+          onBlur={() => void (creatingGroup ? submitNewGroup() : submitRenameGroup())}
+          placeholder={t("library.group.namePlaceholder")}
+          error={groupError}
+        />
+      )}
+
+      {/* 小类的新建输入:名字 + 用途二选一 ——
+          查资料用(material)= 给 AI 读的资料;照着写用(format)= 让 AI 照着写的格式。 */}
+      {creatingKind && (
+        <MiniInput
+          value={newKindDraft}
+          onChange={(next) => {
+            setNewKindDraft(next);
+            if (kindError) setKindError(null);
+          }}
+          onSubmit={() => void submitNewKind()}
+          onCancel={() => {
+            setCreatingKind(false);
+            setNewKindDraft("");
+            setKindError(null);
+          }}
+          onBlur={() => void submitNewKind()}
+          placeholder={t("library.kind.namePlaceholder")}
+          error={kindError}
+        >
+          <div className="flex gap-1 pt-1 pl-4">
+            {(["material", "format"] as const).map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => setNewKindPurpose(p)}
+                className={cn(
+                  "rounded border px-1.5 py-0.5 text-[0.7857em] transition-colors",
+                  newKindPurpose === p
+                    ? "border-accent bg-surface-hover text-accent"
+                    : "border-edge text-content-subtle hover:text-content",
+                )}
+              >
+                {p === "material"
+                  ? t("library.kind.purpose.material")
+                  : t("library.kind.purpose.format")}
+              </button>
+            ))}
+          </div>
+        </MiniInput>
+      )}
+
+      {/* 小类的重命名输入 */}
+      {renamingKind && (
+        <MiniInput
+          value={kindDraft}
+          onChange={(next) => {
+            setKindDraft(next);
+            if (kindError) setKindError(null);
+          }}
+          onSubmit={() => void submitRenameKind()}
+          onCancel={() => {
+            setRenamingKind(null);
+            setKindDraft("");
+            setKindError(null);
+          }}
+          onBlur={() => void submitRenameKind()}
+          placeholder={t("library.kind.namePlaceholder")}
+          error={kindError}
+        />
+      )}
+
+      {/* 菜单动作(删除等)的失败提示 —— 那时没有输入行可挂,统一落在这里 */}
+      {manageError && !creatingGroup && !renamingGroup && !creatingKind && !renamingKind && (
+        <div className="px-2 pb-1 text-[0.7857em] text-red-500">{manageError}</div>
+      )}
 
       <ul className="space-y-0.5">
         {renderAllRow()}
@@ -784,14 +1187,158 @@ export function LibrarySection() {
         onDeleteForever={(item) => void deleteForever(item)}
       />
 
-      {/* 分类行的右键菜单:新建笔记(仅笔记库)/ 重命名 / 删除 */}
+      {/* 分类行的右键菜单:新建子集合 / 新建笔记(仅笔记库)/ 重命名 / 删除 */}
       <CollectionContextMenu
         target={ctxCollection}
         onClose={() => setCtxCollection(null)}
         onRename={(c) => startRename(c.id, c.name)}
         onDelete={(c) => void removeCollection(c.id, c.name)}
         onNewNote={startNewNote}
+        onNewSubcollection={startNewChild}
+      />
+
+      {/* 大类标题行的右键菜单:重命名 / 新建 / 删除大类(管理全在左栏) */}
+      <GroupContextMenu
+        target={ctxGroup}
+        onClose={() => setCtxGroup(null)}
+        onRename={() => {
+          setCreatingGroup(false);
+          setRenamingGroup(true);
+          setGroupDraft(group.name);
+          setGroupError(null);
+        }}
+        onCreate={() => {
+          setRenamingGroup(false);
+          setCreatingGroup(true);
+          setGroupDraft("");
+          setGroupError(null);
+        }}
+        onDelete={() => void removeGroup()}
+      />
+
+      {/* 小类 tab 的右键菜单:新建 / 重命名 / 删除(内置类型删除项置灰) */}
+      <KindContextMenu
+        target={ctxKind}
+        builtin={!!typeMetas.find((m) => m.id === ctxKind?.kind)?.builtin}
+        onClose={() => setCtxKind(null)}
+        onCreate={() => {
+          setCreatingKind(true);
+          setNewKindDraft("");
+          setNewKindPurpose("material");
+          setKindError(null);
+        }}
+        onRename={() => {
+          const meta = typeMetas.find((m) => m.id === ctxKind?.kind);
+          if (!meta) return;
+          setRenamingKind(meta.id);
+          setKindDraft(meta.name);
+          setKindError(null);
+        }}
+        onDelete={() => {
+          const id = ctxKind?.kind;
+          if (id) void removeKind(id);
+        }}
       />
     </>
+  );
+}
+
+/**
+ * 一个大类都没有时(全被删光)的兜底:至少给一个「新建大类」的入口。
+ * 不然组删完整个区域消失,用户就再也没有办法在左栏重新分层了。
+ */
+function NewGroupFallback({ onCreate }: { onCreate: (name: string) => void }) {
+  const { t } = useI18n();
+  const [name, setName] = useState("");
+  const submit = () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    onCreate(trimmed);
+    setName("");
+  };
+  return (
+    <div className="px-1 py-2">
+      <input
+        autoFocus
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") submit();
+        }}
+        onBlur={submit}
+        placeholder={t("library.group.namePlaceholder")}
+        className="w-full rounded border border-accent bg-surface px-2 py-1 text-xs text-content placeholder:text-content-subtle focus:outline-none"
+      />
+      <div className="pt-1 text-[0.7857em] text-content-subtle">{t("library.group.emptyHint")}</div>
+    </div>
+  );
+}
+
+/**
+ * 左栏的整个「资料库」区域:**一段一个大类**,按组表循环渲染 LibrarySection。
+ *
+ * 组表来自主进程(`groupsGet`;出厂两组「文档 / 模版」,左栏右键可增删改)。
+ * 旧的独立模版段(TemplateSection)已并进组里 —— 它那五类数据由主进程启动时自动
+ * 迁移进统一库(标记 `library.templatesMigrated`),组件文件保留但不再挂载。
+ *
+ * 类型注册表在这里拉**一次**、往下传:各段共用一份,不必每段自己发请求。
+ * 左栏的管理操作(大类/小类的新建删除改名)落库后回调 `reload` 重拉两份表,
+ * 所有段即时跟上。groupsGet 失败时退回出厂两组 —— 与类型注册表同一个兜底思路:
+ * 闪一下默认值比整段消失好。一个组都没有(全被删光)就给新建入口兜底。
+ */
+export function LibrarySections() {
+  const [groups, setGroups] = useState<readonly LibraryGroupMeta[] | null>(null);
+  const [typeMetas, setTypeMetas] = useState<readonly LibraryTypeMeta[]>(BUILTIN_LIBRARY_TYPES);
+
+  useEffect(() => {
+    void api.library
+      .typesGet({})
+      .then((res) => setTypeMetas(res.types))
+      .catch(() => {});
+    void api.library
+      .groupsGet({})
+      .then((res) => setGroups(res.groups))
+      .catch(() => setGroups(DEFAULT_LIBRARY_GROUPS));
+  }, []);
+
+  /** 左栏管理操作落库后的重拉:组表 + 类型注册表一起,各段即时跟上。 */
+  const reload = () => {
+    void api.library
+      .typesGet({})
+      .then((res) => setTypeMetas(res.types))
+      .catch(() => {});
+    void api.library
+      .groupsGet({})
+      .then((res) => setGroups(res.groups))
+      .catch(() => {});
+  };
+
+  // 还没拉到组表:先不画(一帧空白),避免闪一个错误的空状态
+  if (!groups) return null;
+  if (groups.length === 0) {
+    return (
+      <NewGroupFallback
+        onCreate={(name) => {
+          void api.library
+            .groupsSave({ groups: [{ id: `group-${Date.now().toString(36)}`, name, kinds: [] }] })
+            .then((res) => {
+              if (res.ok) reload();
+            });
+        }}
+      />
+    );
+  }
+  return (
+    <div className="space-y-3">
+      {groups.map((group) => (
+        <LibrarySection
+          key={group.id}
+          group={group}
+          typeMetas={typeMetas}
+          groups={groups}
+          onRefresh={reload}
+        />
+      ))}
+    </div>
   );
 }

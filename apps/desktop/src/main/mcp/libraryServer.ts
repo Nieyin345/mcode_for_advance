@@ -19,7 +19,7 @@
  *
  * 读工具(自动放行,不弹审批):collections / search / items / templates_list。
  * 写工具(需要用户点头;用户可以在审批时勾"始终允许"):create_collection /
- * import / move / remove / rename / write_note / templates_attach_to_chat /
+ * import / download / move / remove / rename / write_note / templates_attach_to_chat /
  * templates_add。
  *
  * 刻意**不提供硬删除**:remove 是把条目移出所有分类、落进回收站,用户随时能捞回来。
@@ -28,7 +28,7 @@
 import { z } from "zod";
 import { SEARCH_LIMIT_SETTING_KEY } from "@contracts/ipc";
 import type { LibraryItem, LibraryKind } from "@contracts/library";
-import { LibraryRepo, CollectionRepo, NoteRepo, SettingRepo } from "@main/store/repositories.js";
+import { LibraryRepo, CollectionRepo, NoteRepo, SettingRepo, DownloadJobRepo } from "@main/store/repositories.js";
 import {
   assignToCollection,
   importIdentifiers,
@@ -36,6 +36,8 @@ import {
   renameItem,
   searchItems,
 } from "@main/library/operations.js";
+import { enqueueDownloads } from "@main/library/downloader.js";
+import { loadLibraryTypes } from "@main/library/kindRegistry.js";
 import { attachToChat } from "@main/library/manifest.js";
 import {
   addTemplate,
@@ -108,7 +110,30 @@ function collectionLines(kind: LibraryKind): string[] {
   return out;
 }
 
-const KIND = z.enum(["paper", "textbook", "note"]);
+/**
+ * 类型枚举 —— **拼工具表时现算**,不存模块级常量:统一资料库后 kind 不再是写死的
+ * 三个值,合法取值 = 类型注册表的全部 id(用户可加可改名,见 `kindRegistry`)。枚举
+ * 跟着注册表走,新增的类型立刻能被 AI 选中,不用改这里一行。
+ */
+function kindEnum() {
+  // 内置类型不可删(parseLibraryTypesJson 拦着),注册表不可能为空,直接断言成元组。
+  const ids = loadLibraryTypes().map((t) => t.id) as [string, ...string[]];
+  return z.enum(ids);
+}
+
+/** 类型清单的一句话:「论文(paper) / 教材(textbook) / …」—— 工具描述与 server instructions 共用。 */
+function kindListText(): string {
+  return loadLibraryTypes()
+    .map((t) => `${t.name}(${t.id})`)
+    .join(" / ");
+}
+
+/** 资料类(material)的 id 集合 —— 旧"三个库"的接替者:分类树是按资料类铺的。 */
+function materialKindIds(): string[] {
+  return loadLibraryTypes()
+    .filter((t) => t.purpose === "material")
+    .map((t) => t.id);
+}
 
 /**
  * 这个 server 的工具表 —— **只有声明,不碰 SDK**。
@@ -122,11 +147,17 @@ export function libraryMcpTools(): McpToolSpec[] {
       {
         name: "library_collections",
         description:
-          "列出资料库的分类树(论文 / 教材 / 笔记三个库各自的)。返回每个分类的名称与 id。" +
+          "列出资料库的分类树(每个资料类库各自的)。返回每个分类的名称与 id。" +
           "要往某个分类里放东西、或想知道用户有哪些分类时先调它。",
-        inputSchema: { kind: KIND.optional().describe("只看某一个库;省略则三个库都列") },
+        inputSchema: {
+          kind: kindEnum()
+            .optional()
+            .describe("只看某一个库;省略则资料类的库都列"),
+        },
         handler: async (args: { kind?: LibraryKind }) => {
-          const kinds: LibraryKind[] = args.kind ? [args.kind] : ["paper", "textbook", "note"];
+          // 省略时列**资料类**的库(旧写死的 paper/textbook/note):format 类是"照着写"
+          // 的模版,不是用户收藏的资料,不在默认列表里。
+          const kinds: LibraryKind[] = args.kind ? [args.kind] : materialKindIds();
           const out: string[] = [];
           for (const k of kinds) {
             const lines = collectionLines(k);
@@ -143,7 +174,7 @@ export function libraryMcpTools(): McpToolSpec[] {
           "判断「库里有没有某一篇」时用它 —— 不要凭记忆回答用户。返回的每条都带 id。",
         inputSchema: {
           query: z.string().describe("关键词;留空则列出全部"),
-          kind: KIND.optional(),
+          kind: kindEnum().optional(),
         },
         handler: async (args: { query: string; kind?: LibraryKind }) => {
           const items = searchItems(args.query ?? "", args.kind);
@@ -257,7 +288,7 @@ export function libraryMcpTools(): McpToolSpec[] {
           "返回新分类的 id —— 后面的 library_import 要用它。",
         inputSchema: {
           name: z.string().describe("分类名(就是用户在左栏看到的名字)"),
-          kind: KIND.optional().describe("放进哪个库;默认 paper(论文库)"),
+          kind: kindEnum().optional().describe("放进哪个库;默认 paper(论文库)"),
           parentId: z.string().optional().describe("建成子分类时给父分类 id;省略则建在顶层"),
         },
         handler: async (args: { name: string; kind?: LibraryKind; parentId?: string }) => {
@@ -477,6 +508,47 @@ export function libraryMcpTools(): McpToolSpec[] {
         },
       },
       {
+        name: "library_download",
+        description:
+          "给排好队的条目**下载 PDF**(应用的下载管道:内嵌浏览器带登录态,成功后自动转录 Markdown)。" +
+          "要求条目有 DOI / arXiv ID 或可用的 PDF 链接,两条都没有的会以「没有可用来源」收场。\n" +
+          "library_add_paper / library_import 已经自动排队,**检索导入的流程不要调它**;" +
+          "它用于「把之前导入但还没下到 PDF 的那几条再试一次」。",
+        inputSchema: {
+          ids: z.array(z.string()).min(1).describe("条目 id 列表,来自 library_search / library_items"),
+        },
+        handler: async (args: { ids: string[] }) => {
+          // 排队本身是同步的(任务行当场落库),下载在后台慢慢跑 —— 这里只回报
+          // "排上了没有、现在什么状态",不等着它下完。
+          enqueueDownloads(args.ids);
+          const jobs = DownloadJobRepo.list();
+          const lines: string[] = [];
+          for (const id of args.ids) {
+            const item = LibraryRepo.get(id);
+            if (!item) {
+              lines.push(`- ${id} —— 库里没有这个 id`);
+              continue;
+            }
+            if (item.pdfPath) {
+              // enqueueDownloads 对已有 PDF 的条目直接跳过(force 才重下)—— 如实说,
+              // 别让用户以为又下了一遍。
+              lines.push(`- ${item.title}\n  id=${id}\n  已有 PDF,没有重复排队`);
+              continue;
+            }
+            const job = jobs.find((j) => j.itemId === id);
+            lines.push(
+              `- ${item.title}\n  id=${id}\n  下载任务:${
+                job ? `${job.id}(${job.status})` : "未能排队 —— 缺 DOI / arXiv ID,也没有可用链接"
+              }`,
+            );
+          }
+          return text(
+            `已处理 ${args.ids.length} 条:\n\n${lines.join("\n")}\n\n` +
+              "下载与转录由应用自动完成,不需要你再操作;下不了的(缺来源)如实转告用户。",
+          );
+        },
+      },
+      {
         name: "library_move",
         description: "把条目移到某个分类。会顺手把它从回收站里摘出来。",
         inputSchema: {
@@ -557,12 +629,16 @@ export function libraryMcpTools(): McpToolSpec[] {
 export async function buildLibraryMcpServer(opts: { sessionId: string }) {
   const createSdkMcpServer = await loadCreateMcpServer();
 
+  // 类型清单**建 server 时现读**:同一份注册表既是工具枚举(见 kindEnum)也是这里
+  // 的说明文字 —— 写死一份迟早跟用户的改名/自建类型对不上。
+  const materialIds = materialKindIds().join(" / ");
   return createSdkMcpServer({
     name: LIBRARY_MCP_SERVER,
     version: "1.0.0",
     instructions:
-      "Mcode 资料库的操作工具,分**同级的两段**:文献库与模版库。\n" +
-      "文献库:三个平级的库 paper(论文)/textbook(教材)/note(笔记),每个库有各自的分类树与回收站;" +
+      "Mcode 资料库的操作工具,分**同级的两段**:资料库与模版库。\n" +
+      `资料库:类型由用户的注册表决定(当前:${kindListText()});其中资料类(${materialIds})` +
+      "每个库有各自的分类树与回收站;" +
       "条目用 id 标识,要操作某一条先用 library_search / library_items 拿到它的 id。\n" +
       "模版库:五个类目 ppt / latex / word / code / image,一条模版是一个文件夹(目录名即名字)," +
       "用 templates_list 列出、templates_attach_to_chat 挂进对话。",

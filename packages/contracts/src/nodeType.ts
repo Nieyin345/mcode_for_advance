@@ -37,9 +37,10 @@
  * 要求 Mcode 执行任意代码。但这不构成限制:绝大多数第三方节点都能落进 `command`
  * (跑它自己带的脚本)。
  *
- * ⚠️ **`command` 目前只定义、未实现**(见 {@link IMPLEMENTED_RUNNER_KINDS})。声明它
- * 是为了把形状定死:将来加"自动化"(长跑脚本 / 训练进程)时,数据模型不用动。现在
- * 遇到 `command` 节点会**明确报错**,而不是假装跑了。
+ * ⚠️ **`command` 有两种形状,实现程度不同**(见 {@link IMPLEMENTED_RUNNER_KINDS}):
+ * 命令来自**节点参数**的(`entry` 缺省,内置的 `mcode.command` 那种)已实现;命令来自
+ * **清单自带脚本**的(`entry` 填了,第三方插件那种)仍只定形状、未实现 —— 遇到会**明确
+ * 报错**,而不是假装跑了。
  *
  * ## 三种来源与优先级
  *
@@ -68,7 +69,13 @@
 import { z } from "zod";
 import { LIBRARY_KINDS } from "./library.js";
 import { TEMPLATE_KINDS } from "./templates.js";
-import { WorkflowCapabilitySchema, type WorkflowCapability } from "./workflow.js";
+import { parseCron, type CronSpec } from "./cron.js";
+import { HOOK_EVENTS, hookSubjectOf, splitGlobList, type HookEvent } from "./hook.js";
+import {
+  WorkflowCapabilitySchema,
+  type WorkflowCapability,
+  type WorkflowTrigger,
+} from "./workflow.js";
 
 /* ── id ── */
 
@@ -120,6 +127,177 @@ export const MAIN_NODE_TYPE_ID = "mcode.main";
 export const BRANCH_NODE_TYPE_ID = "mcode.branch";
 
 /**
+ * 内置的**触发器**节点类型 id —— 一条自动化的起点。
+ *
+ * 与 {@link BRANCH_NODE_TYPE_ID} 同一个位置理由:三层要认同一个字符串(主进程声明内置
+ * 类型、渲染端在插入菜单里认出它、存下来的文档里它就是 `node.type`)。⚠️ 判"这是不是
+ * 触发器"**永远看 `runner.kind === "trigger"`**,不要看这个 id。
+ */
+export const TRIGGER_NODE_TYPE_ID = "mcode.trigger";
+
+/* ── 触发器 ─ */
+
+/**
+ * 触发方式(节点参数 `triggerKind` 的取值)。
+ *
+ * **四类,而且只有这四类**:手动点、到点了、文件变了、某件事发生了。`webhook` 不在这里
+ * —— 那要一个对外的 HTTP 入口(得动手机服务那一摊),属于另一件事,这一版不接。枚举里
+ * 保留该值(`@contracts/workflow` 的 `WORKFLOW_TRIGGERS`)只是为了老文档读得回来。
+ */
+export const TRIGGER_KINDS = ["manual", "schedule", "file", "event"] as const;
+export type TriggerKind = (typeof TRIGGER_KINDS)[number];
+
+export function isTriggerKind(value: unknown): value is TriggerKind {
+  return typeof value === "string" && (TRIGGER_KINDS as readonly string[]).includes(value);
+}
+
+export const NODE_TRIGGER_KIND_PARAM_KEY = "triggerKind";
+/** 在哪个项目里跑:后台会话的 `projectId` 与这次运行的工作目录都从它来。 */
+export const NODE_TRIGGER_PROJECT_PARAM_KEY = "project";
+/** 被触发时,整次运行的**用户请求**就是这段字(根节点读到的那一句)。 */
+export const NODE_TRIGGER_TASK_PARAM_KEY = "task";
+/** 只在「定时」时生效。5 段 cron,见 `@contracts/cron`。 */
+export const NODE_TRIGGER_CRON_PARAM_KEY = "cron";
+/** 只在「文件变化」时生效:逗号分隔的 glob,相对项目目录。 */
+export const NODE_TRIGGER_PATHS_PARAM_KEY = "paths";
+/** 只在「事件发生时」生效:逗号分隔,取值来自 `@contracts/hook` 的 `HOOK_EVENTS`。 */
+export const NODE_TRIGGER_EVENTS_PARAM_KEY = "events";
+/** 事件触发时的进一步筛选(工具名 / 文件路径,glob,规则同钩子)。 */
+export const NODE_TRIGGER_FILTER_PARAM_KEY = "eventFilter";
+/** 合并窗口(毫秒):文件连着变、事件连着来,合成一次运行。 */
+export const NODE_TRIGGER_DEBOUNCE_PARAM_KEY = "debounceMs";
+
+/**
+ * 触发器参数 →`WorkflowDoc.trigger` 的**唯一那张表**。
+ *
+ * `trigger` 字段在这一版**降级成了一个开关**:它不再有独立的真相,值一律由触发器节点
+ * 反推写回(见 `orchestration/library.ts` 的 `deriveTrigger`)。所以"哪一种"这件事只有
+ * 一个写入方,两处不可能矛盾 —— 而列表分栏、MCP、i18n 那些照旧读那个字段,一行都不用改。
+ */
+export const WORKFLOW_TRIGGER_OF_TRIGGER_KIND: Record<TriggerKind, WorkflowTrigger> = {
+  manual: "manual",
+  schedule: "schedule",
+  file: "file",
+  event: "event",
+};
+
+/** 从节点参数里取触发方式。认不出来的值 = `undefined`(调用方按"没配好"处理)。 */
+export function triggerKindOf(params: Record<string, unknown>): TriggerKind | undefined {
+  const raw = params[NODE_TRIGGER_KIND_PARAM_KEY];
+  return isTriggerKind(raw) ? raw : undefined;
+}
+
+/** 逗号分隔的一串 glob。空项丢掉;一个都没有 = 空数组。切分规则与钩子的 `matcher`
+ *  共用一份(见 `@contracts/hook` 的 `splitGlobList`)。 */
+export function patternListOf(raw: unknown): string[] {
+  return typeof raw === "string" ? splitGlobList(raw) : [];
+}
+
+/** 默认的合并窗口。够把"保存时连着改了三个文件"收成一次,又不至于让人等。 */
+export const DEFAULT_TRIGGER_DEBOUNCE_MS = 2000;
+
+/** 解析好的触发条件。判别联合 —— 调度器按 `kind` 分派,没有"哪几个字段这时候有效"的疑问。 */
+export type TriggerSpec =
+  | { kind: "manual" }
+  | { kind: "schedule"; cron: CronSpec }
+  | { kind: "file"; globs: string[]; debounceMs: number }
+  | { kind: "event"; events: HookEvent[]; matcher: string; debounceMs: number };
+
+/** 一次触发条件的解读结果。**存盘与执行器共用这一份判定**(见 `parseTriggerSpec`)。 */
+export type TriggerSpecCheck = { ok: true; spec: TriggerSpec } | { ok: false; error: string };
+
+/**
+ * 把触发器节点的参数解读成一份触发条件。**纯函数**,存盘前与真要挂监听时各跑一次。
+ *
+ * ## 为什么两处都跑同一份
+ *
+ * 存盘前跑,是为了**不允许存下一份永远不响的自动化**(cron 写错、glob 写空、事件名拼错
+ * —— 这些都不会报错,只会安安静静地不跑,而"我的自动化没反应"是最难查的一类)。
+ * 真要挂监听时再跑一次,是因为清单可以改、参数可以被 AI 或手改:存下的时候对,读出来
+ * 不一定还对。两处用**同一个函数**才谈得上"一致"。
+ *
+ * 报错的话术是给**配这个节点的人**看的(用「触发方式」「在哪个项目里跑」这些界面上的词),
+ * 而不是字段名。
+ */
+export function parseTriggerSpec(
+  manifest: NodeTypeManifest,
+  params: Record<string, unknown>,
+): TriggerSpecCheck {
+  if (manifest.runner.kind !== "trigger") {
+    return { ok: false, error: `「${manifest.name}」不是触发器类型的节点` };
+  }
+
+  const project = params[NODE_TRIGGER_PROJECT_PARAM_KEY];
+  if (typeof project !== "string" || project.trim().length === 0) {
+    return { ok: false, error: "「在哪个项目里跑」没填 —— 触发器要知道它该在哪个目录里工作" };
+  }
+  const task = params[NODE_TRIGGER_TASK_PARAM_KEY];
+  if (typeof task !== "string" || task.trim().length === 0) {
+    return { ok: false, error: "「这次要做什么」没填 —— 被触发时这句话就是这次运行的请求" };
+  }
+
+  const kind = triggerKindOf(params);
+  if (kind === undefined) {
+    return { ok: false, error: "「触发方式」没选(手动 / 定时 / 文件变化 / 事件发生时)" };
+  }
+  if (kind === "manual") return { ok: true, spec: { kind: "manual" } };
+
+  if (kind === "schedule") {
+    const text = params[NODE_TRIGGER_CRON_PARAM_KEY];
+    if (typeof text !== "string" || text.trim().length === 0) {
+      return { ok: false, error: "触发方式是「定时」,但表达式没填 —— 例如 `0 9 * * 1-5`" };
+    }
+    const parsed = parseCron(text);
+    if (!parsed.ok) return { ok: false, error: parsed.error };
+    return { ok: true, spec: { kind: "schedule", cron: parsed.spec } };
+  }
+
+  const debounce = debounceOf(params);
+  if (!debounce.ok) return { ok: false, error: debounce.error };
+
+  if (kind === "file") {
+    const globs = patternListOf(params[NODE_TRIGGER_PATHS_PARAM_KEY]);
+    if (globs.length === 0) {
+      return { ok: false, error: "触发方式是「文件变化」,但没写监听哪些文件 —— 逗号分隔,例如 `*.md, src/*.ts`" };
+    }
+    return { ok: true, spec: { kind: "file", globs, debounceMs: debounce.value } };
+  }
+
+  const names = patternListOf(params[NODE_TRIGGER_EVENTS_PARAM_KEY]);
+  if (names.length === 0) {
+    return { ok: false, error: "触发方式是「事件发生时」,但没写听哪些事件 —— 逗号分隔,取值见事件列表" };
+  }
+  const events: HookEvent[] = [];
+  for (const name of names) {
+    if (!(HOOK_EVENTS as readonly string[]).includes(name)) {
+      return { ok: false, error: `不认识的事件「${name}」—— 取值只能是:${HOOK_EVENTS.join(" / ")}` };
+    }
+    if (!events.includes(name as HookEvent)) events.push(name as HookEvent);
+  }
+  const matcher = params[NODE_TRIGGER_FILTER_PARAM_KEY];
+  const trimmedMatcher = typeof matcher === "string" ? matcher.trim() : "";
+  // 一轮挑一个**能筛**的事件来问 —— 这几个事件的主语是一回事(工具名或路径),所以
+  // 只要有一个能筛,这条筛选就有意义。
+  if (trimmedMatcher.length > 0 && events.every((e) => hookSubjectOf(e) === null)) {
+    return {
+      ok: false,
+      error: `选中的事件(${events.join("、")})都没有可筛的维度,筛选规则填了也不会生效 —— 要么清空它,要么选一个带工具名或文件路径的事件`,
+    };
+  }
+  return { ok: true, spec: { kind: "event", events, matcher: trimmedMatcher, debounceMs: debounce.value } };
+}
+
+/** 合并窗口:没填就用默认;填了必须是 0 以上的整数(0 = 不合并,立刻跑)。 */
+function debounceOf(params: Record<string, unknown>): { ok: true; value: number } | { ok: false; error: string } {
+  const raw = params[NODE_TRIGGER_DEBOUNCE_PARAM_KEY];
+  if (raw === undefined || raw === null || raw === "") return { ok: true, value: DEFAULT_TRIGGER_DEBOUNCE_MS };
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) {
+    return { ok: false, error: "「合并窗口」要是一个不小于 0 的毫秒数" };
+  }
+  return { ok: true, value: Math.round(raw) };
+}
+
+/**
  * 岔路口上那个**系统自带的**选项:「就到这儿」。
  *
  * ## 为什么它是**界面**加的,不是图上的边
@@ -164,6 +342,16 @@ export const NODE_PARAM_KINDS = [
   "dir", // 目录路径
   "ref", // 从**这台机器上有什么**里挑 —— 哪些模型、哪些技能……(见 NODE_PARAM_REF_SOURCES)
   "variables", // 一张「名字 + 示例」的表(节点产出的变量,见 @contracts/outputConstraint)
+  // 一张「名字 + 内容 + 解释」的表 —— 主对话入口节点的**输入选项**:每行会变成聊天
+  // 输入框上方那个下拉框里的一项,选中后内容插到光标处、解释注入提示词(见
+  // `main/orchestration/runner.ts` 的注入段)。与下面 `NodeParamSpecSchema` 的
+  // `options` 字段(select 的候选清单)只是撞名,两回事。
+  "options",
+  // 一组**下拉条件** —— 主对话入口节点的**固定条件**:每一行(条件名 + 一串候选值)
+  // 变成聊天输入框上方的一个下拉框,选中的值**每轮**随工作流提示词注入("一贯的习惯,
+  // 不要再问"那套)。与 `select` 的区别:`select` 是**一个**下拉、候选写在清单里、
+  // 谁都不注入;`selects` 是**一张条件表**、候选写在参数值里、值要进提示词。
+  "selects",
 ] as const;
 export type NodeParamKind = (typeof NODE_PARAM_KINDS)[number];
 export const NodeParamKindSchema = z.enum(NODE_PARAM_KINDS);
@@ -198,6 +386,12 @@ export const NODE_PARAM_REF_SOURCES = [
   // 同上:插件带的技能 / 命令 / 子 agent 会各自带一段说明进上下文,而一个只查库的
   // 步骤用不到文档排版那四个技能。
   "plugins",
+  // 这一步在**哪个项目**里跑 —— 自动化那条路要用(触发器得知道它该在哪个目录里工作,
+  // 见 `@contracts/nodeType` 的 `NODE_TRIGGER_PROJECT_PARAM_KEY`)。候选是左栏那张项目表。
+  //
+  // 它是唯一一个**不带 `multiple` 选项**的用例(值就是项目 id 那一个字符串):"在哪几个
+  // 目录里跑"这件事对一次运行没有意义 —— 一次运行只有一个工作目录。
+  "projects",
 ] as const;
 export type NodeParamRefSource = (typeof NODE_PARAM_REF_SOURCES)[number];
 export const NodeParamRefSourceSchema = z.enum(NODE_PARAM_REF_SOURCES);
@@ -257,14 +451,18 @@ export type NodeParamSpec = z.infer<typeof NodeParamSpecSchema>;
  *
  * - `prompt`:交给一个带独立指令的子 agent(一次对话轮次,**新开一段会话**)。
  * - `conversation`:同样跑一轮模型,但**跑在主对话里** —— 见下面那一段。
- * - `branch`:不跑东西,把决定权交给用户(选一条出边,其余支路作废)。
- * - `command`:在本机跑一个进程(第三方自带脚本)。
+ * - `branch`:不跑东西。出边选谁,由参数 `decider` 说了算 —— `user`(默认,把决定权
+ *   交给用户)或 `model`(跑一轮模型自己选,即过去的"决策节点")。
+ * - `trigger`:图的起点 —— "什么情况下起一次运行"。不跑东西,它是自动化的声明。
+ * - `command`:在本机跑一个进程。`param` 形状(**已实现**):跑什么由图上的参数写;
+ *   `entry` 形状(第三方自带脚本,**尚未实现**):调度器遇到会明确拒绝。
  *
  * `command` 的字段刻意只有最少的几个:`entry` 是**相对清单所在目录**的脚本路径
  * (解析时会拒绝逃出该目录的路径,规则抄 `pluginManifest.ts` 的 `resolveInRoot`)。
  */
 export const NodeRunnerSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("prompt") }),
+  z.object({ kind: z.literal("code"), language: z.enum(["python", "node", "shell", "powershell"]).default("python") }),
   /**
    * **对话节点**:跑一轮模型,指令**当作主对话里的一条用户消息发出去** —— 主对话
    * (连同它到此刻为止的全部历史)就像平时那样回一轮。
@@ -295,24 +493,64 @@ export const NodeRunnerSchema = z.discriminatedUnion("kind", [
    */
   z.object({ kind: z.literal("conversation") }),
   /**
-   * **分支**:不跑任何东西,只是把决定权交给用户。
+   * **分支**:把决定权交出去 —— 挂在岔路口,选中的那条出边照常,其余出边连同它们
+   * 拖着的整条支路一起作废(见 {@link NodeOutcomeStatus} 的 `unselected`)。
    *
-   * 跑到它就**挂住**,问用户"接下来走哪条路";用户点了之后,选中的那条出边照常,
-   * 其余出边连同它们拖着的整条支路一起作废(见 {@link NodeOutcomeStatus} 的
-   * `unselected`)。
+   * **决定权给谁**由参数 `{@link NODE_DECIDER_KEY}` 说了算:`user`(默认)挂起等用户
+   * 点(弹卡片),`model` 真跑一轮模型、按它交出的「出路」选边 —— 后者就是原来的
+   * "决策节点",现在只是分支的一种填法(见 {@link isModelDecider})。两种模式共用
+   * 同一套"选项=出边"的机制,差别只有一件事:**谁决定**。
    *
    * 它的**选项就是它的出边**(见 `@contracts/workflow` 的 `WorkflowEdgeSchema`)——
-   * 所以它不需要任何参数,也没有"几个选项"这个数:图上拉了几根线就是几个选项。
+   * 所以不需要"选项表"这个参数:图上拉了几根线就是几个选项。
    *
-   * 为什么是一种**执行原语**而不是一个普通的 prompt 节点:它不消费模型,而且它的
-   * 行为(挂起、等、作废整条支路)是调度器的能力,不是提示词能表达的 —— 提示词里的
-   * "如果用户选 A 就……"只是请求,而这里要让**代码**保证没走的那条路真的不跑。
+   * 为什么是一种**执行原语**而不是一个普通的 prompt 节点:用户选时不消费模型,而"挂起、
+   * 等、作废整条支路"是调度器的能力,不是提示词能表达的 —— 提示词里的"如果用户选 A
+   * 就……"只是请求,而这里要让**代码**保证没走的那条路真的不跑。
    */
   z.object({ kind: z.literal("branch") }),
+  /**
+   * **触发器**:图的**起点** —— "什么情况下起一次运行"。
+   *
+   * ## 它自己不跑任何东西
+   *
+   * 不跑模型、不建会话、不 fork 进程。它是一个**声明**:声明这条自动化等的是什么,以及
+   * 被触发时这次运行要干什么(见 {@link NODE_TRIGGER_TASK_PARAM_KEY})。真正的监听在
+   * `main/orchestration/automationRunner.ts`,那儿才是看时钟、看文件、订阅事件的地方。
+   *
+   * ## 为什么它必须是图上的一员,而不是文档上的一个字段
+   *
+   * `WorkflowDoc.trigger` 只能回答"哪一种",回答不了"几点"、"监听哪"、"这次要做什么" ——
+   * 那些是**参数**,而参数长在节点上。更要紧的是:**一条自动化可以有多个触发器**
+   * (「每天九点」+「我改完稿子」),一个字段说不出来两件事。
+   *
+   * ## 走到它的时候会发生什么
+   *
+   * 被触发的那一个:预置成已完成(`runWorkflow` 的 `entry`),不派发。同一条自动化里
+   * **别的**触发器:标 `unselected`(它们这次没走这条路,不是失败),它们**独自**拖着的
+   * 下游跟着作废,而汇合点照常跑。
+   */
+  z.object({ kind: z.literal("trigger") }),
+  /**
+   * **命令**:在本机跑一个进程,跑完把退出码与输出尾部交成产出变量。它是"直跑形态"
+   * 的那一步:工作流**自己**起命令,跑到它就停在那儿**等退出** —— 不需要任何监控。
+   *
+   * ## 两种形状,谁提供命令
+   *
+   * - **`entry` 缺省**(内置 `mcode.command` 那种):命令来自**节点参数**
+   *   (见 {@link NODE_COMMAND_PARAM_KEY}),跑什么由画图的人写。
+   * - **`entry` 填了**(第三方插件那种):跑清单目录里自带的脚本。这种**仍未实现**,
+   *   调度器遇到会明确拒绝(见 {@link isNodeRunnable} 的那条补刀)。
+   *
+   * ## 为什么它没有审批
+   *
+   * 命令是用户写死在节点上的配置,不是模型临时起意 —— 审批没有对象。代价是:把它挂到
+   * 定时/事件触发的自动化上 = 无人值守执行,清单的 usage 里要写明这件事。
+   */
   z.object({
     kind: z.literal("command"),
-    /** 相对清单目录的脚本/可执行文件路径。 */
-    entry: z.string().min(1),
+    /** 相对清单目录的脚本/可执行文件路径。**缺省 = 命令来自节点参数**(内置那种)。 */
+    entry: z.string().min(1).optional(),
     /** 显式解释器(如 `python`)。省略 = 直接执行 `entry`(需要可执行位)。 */
     interpreter: z.string().optional(),
     /** 固定附加的参数(不来自 params)。 */
@@ -336,6 +574,32 @@ export type NodeRunnerKind = NodeRunner["kind"];
  * 那个是整条流程的说明,这个是某一步的指令。
  */
 export const NODE_PROMPT_PARAM_KEY = "instruction";
+
+/**
+ * 主对话入口节点的**输入选项**参数键(`kind: "options"`) —— 每行是聊天输入框上方
+ * 那个下拉框里的一项:`{ name: 名字, content: 内容, note?: 解释 }`。选中后内容插进
+ * 输入框光标处,解释随这次运行进提示词(见 `main/orchestration/runner.ts`)。
+ *
+ * 和 {@link NODE_PROMPT_PARAM_KEY} 同一条约定:不是 schema 上的字段,是一个**键名**。
+ * 只有随应用发布的入口节点(`mcode.main`)带这个参数 —— 那个下拉框陪着"用户那句话
+ * 进图的第一站",别的节点没有这个位置。
+ */
+export const NODE_OPTIONS_PARAM_KEY = "options";
+
+/**
+ * 主对话入口节点的**固定条件**参数键 —— 聊天输入框上方那一排下拉框的条目表。
+ *
+ * 值是一张 `{ name: 条件名, choices: 候选值[] }` 的表:每一行变成输入框上方**一个**
+ * 下拉框,选中的值随**每次运行最开头**的提示词注入**一次**(`main/lib/searchPrefs.ts`
+ * 的 `nodeCriteriaPrompt`,注入点在 `runner.ts` 的 `startWorkflowRun`),之后不再重复。
+ * 它接过了文献检索那条**写死的筛选条**:那四个条件(时间范围 /
+ * 期刊层次 / 影响因子 / 每源条数)现在是内置检索图主节点上的预填数据,用户可以改候选、
+ * 加条件、删条件 —— 定义在节点上,界面只是渲染。
+ *
+ * 和 {@link NODE_PROMPT_PARAM_KEY} 同一条约定:不是 schema 上的字段,是一个**键名**。
+ * 只有入口节点(`mcode.main`)带这个参数。
+ */
+export const NODE_CRITERIA_PARAM_KEY = "criteria";
 
 /**
  * `runner.kind === "prompt"` 的节点,**这一步要用哪些技能**的参数键。
@@ -523,13 +787,19 @@ export function providerIdOf(params: Record<string, unknown>): string | undefine
 export const NODE_CONTEXT_PARAM_KEY = "context";
 
 /**
- * 节点能要求的上下文类目 —— **两个库的一级分类,一个不多一个不少**。
+ * 节点能要求的上下文类目 —— **出厂时的全集**:两个库的一级分类。
  *
  * 直接从 `LIBRARY_KINDS` / `TEMPLATE_KINDS` 拼出来,而不是在这里再抄一份:抄一份的
  * 那天,库里加了一个新分类,这个下拉里就不会有它,而没有任何地方会报错。
+ *
+ * ⚠️ **它是"出厂清单",不再是类型全集。** 统一资料库后 kind 开放注册(见
+ * `@contracts/libraryTypes`),用户自建的类型也要能被节点要求 —— 所以
+ * `NodeContextKind` 已放宽为 string;这个数组降级为**静态兜底**(没接注册表的调用方
+ * 拿它当内置全集用),`isNodeContextKind` 同理只认内置那八个。"动态全集"在
+ * `main/library/kindRegistry`(M2)接进上下文链。
  */
 export const NODE_CONTEXT_KINDS = [...LIBRARY_KINDS, ...TEMPLATE_KINDS] as const;
-export type NodeContextKind = (typeof NODE_CONTEXT_KINDS)[number];
+export type NodeContextKind = string;
 
 export function isNodeContextKind(value: unknown): value is NodeContextKind {
   return typeof value === "string" && (NODE_CONTEXT_KINDS as readonly string[]).includes(value);
@@ -607,6 +877,129 @@ export function askBeforeRunOf(params: Record<string, unknown>): boolean {
   return params[NODE_ASK_PARAM_KEY] === true;
 }
 
+/* ── 分支的「决定权」 ── */
+
+/**
+ * 分支节点参数 `decider` —— **谁来选那条出边**。
+ *
+ * ## 为什么是分支的一个参数,而不是第五种原语
+ *
+ * "分支"这个原语的全部价值在**岔路的机制**里:选项=出边、没走的路连下游一起作废、
+ * 上下游的活性按选中的那条算。这套机制对"用户点"和"模型判"**一字不差** —— 差的只有
+ * "谁来选"这一个决定。做成两种原语的话,同一段活性判定要写两遍,迟早漂移;做成参数,
+ * 判据收口在 {@link isModelDecider} 一个函数里,三处(调度器派发、产出校验、渲染端
+ * 徽标)读同一个答案。
+ *
+ * ⚠️ **模型选不能当环的闸门**(见 `library.ts` 的 `isLoopGate`):用户点一下就停得
+ * 下来,模型会一环一环自己转下去。这条不是约定,是 `validateDag` 的硬校验。
+ */
+export const NODE_DECIDER_KEY = "decider";
+
+/** `decider` 的两个取值。缺省 = `user`(老图的分支行为不变)。 */
+export const DECIDER_MODES = ["user", "model"] as const;
+export type DeciderMode = (typeof DECIDER_MODES)[number];
+
+/** 从节点参数里取决定权。认不出的值一律当 `user` —— 保守的那个方向。 */
+export function deciderOf(params: Record<string, unknown>): DeciderMode {
+  return params[NODE_DECIDER_KEY] === "model" ? "model" : "user";
+}
+
+/**
+ * 分支切到模型选、但**指令没填**时给模型的那句话。
+ *
+ * 指令是可空的:大多数岔路口不需要额外嘱咐,把上游产出摆给模型就够了。默认指令只做
+ * 一件事 —— 把"交出选项名、一字不改"这条硬约束的口气在提示词里立住。
+ */
+export const DEFAULT_DECIDER_INSTRUCTION =
+  "看看上游的结果,从下面的选项里选出最合适的一条。把选项的名字一字不改地交出来,不要自己发明别的说法。";
+
+/**
+ * 这个节点是不是"**模型选**"的分支 —— 三个调用点(调度器派发、产出校验、渲染端徽标)
+ * 必须给出同一个答案,所以收口在这里。`params` 必传:决定权长在节点参数上,只看清单
+ * 的话一个第三方分支会被误判。
+ */
+export function isModelDecider(
+  manifest: { runner: NodeRunner },
+  params: Record<string, unknown>,
+): boolean {
+  return manifest.runner.kind === "branch" && deciderOf(params) === "model";
+}
+
+/* ── 命令节点 ── */
+
+/**
+ * 命令节点(`runner.kind === "command"`、`entry` 缺省那种)**要跑的命令行**。
+ *
+ * 一段 shell 文本,宿主起进程执行。它跑在**发起会话的项目目录**里,吃的是用户自己写的
+ * 配置 —— 所以没有审批(见 `NodeRunnerSchema` 里 command 那段的说明)。
+ */
+export const NODE_COMMAND_PARAM_KEY = "command";
+
+export const NODE_CODE_PARAM_KEY = "code";
+export const NODE_CODE_LANGUAGE_KEY = "language";
+export const NODE_CODE_TIMEOUT_KEY = "timeoutMs";
+export const NODE_CODE_INPUT_KEY = "input";
+
+/** 命令节点参数 `timeoutMs` —— 超时上限,毫秒。**0 = 不限**(默认:训练动辄数小时)。 */
+export const NODE_COMMAND_TIMEOUT_KEY = "timeoutMs";
+
+/**
+ * 命令节点产出里**输出尾部**最多保留多少字符。
+ *
+ * 长任务的输出动辄几万行,全量进产出变量的话,一段训练日志就能把下游的提示词撑爆。
+ * 只留尾部:错误栈、进度条、最终几行结果都在最后面 —— 那才是"跑完了之后要看的东西"。
+ */
+export const COMMAND_OUTPUT_TAIL_CHARS = 8_000;
+
+/** 从节点参数里取命令行。空串当没填(必填校验在那边负责报错)。 */
+export function commandOf(params: Record<string, unknown>): string {
+  const raw = params[NODE_COMMAND_PARAM_KEY];
+  return typeof raw === "string" ? raw.trim() : "";
+}
+
+/** 从节点参数里取超时。负数、不是数字,一律当不限 —— 宁可多等,不误杀。 */
+export function commandTimeoutOf(params: Record<string, unknown>): number {
+  const raw = params[NODE_COMMAND_TIMEOUT_KEY];
+  return typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : 0;
+}
+
+/* ── 对话节点的注入 ── */
+
+/**
+ * 对话节点参数 `injectMode` —— **发出去之前问不问**。
+ *
+ * `ask`(默认)是现状:弹卡片四选一(见 {@link ASK_CHOICES});`auto` 是"自动注入":
+ * 把指令作为一条用户消息直接投进目标会话并起一轮,**发完即走** —— 不弹卡片、不等回答。
+ * 它就是"长任务守望"的最后一步:命令跑完了,替你说一句话,让对话自己继续。
+ */
+export const NODE_INJECT_MODE_KEY = "injectMode";
+
+export const INJECT_MODES = ["ask", "auto"] as const;
+export type InjectMode = (typeof INJECT_MODES)[number];
+
+/** 从节点参数里取注入模式。认不出的值一律当 `ask` —— 保守的那个方向。 */
+export function injectModeOf(params: Record<string, unknown>): InjectMode {
+  return params[NODE_INJECT_MODE_KEY] === "auto" ? "auto" : "ask";
+}
+
+/**
+ * 对话节点参数 `injectTarget` —— **发到哪个会话**。
+ *
+ * `self`(默认)是现状:发进正在跑这张图的那条会话;`origin` 是"发起会话" —— 通过
+ * 会话界面的「守望」按钮起跑的自动化,把按钮按下时的那条会话记在 automation 会话的
+ * `parentSessionId` 上,`origin` 就解析到它。解析不到(比如从设置里手动跑)这一步
+ * 明确失败,而不是悄悄发进自己。
+ */
+export const NODE_INJECT_TARGET_KEY = "injectTarget";
+
+export const INJECT_TARGETS = ["self", "origin"] as const;
+export type InjectTarget = (typeof INJECT_TARGETS)[number];
+
+/** 从节点参数里取投递目标。认不出的值一律当 `self`。 */
+export function injectTargetOf(params: Record<string, unknown>): InjectTarget {
+  return params[NODE_INJECT_TARGET_KEY] === "origin" ? "origin" : "self";
+}
+
 /**
  * 「运行前先问我」那四个选项。
  *
@@ -653,9 +1046,23 @@ export function isAskChoice(value: unknown): value is AskChoice {
  * 放在 contracts 而不是主进程,是因为渲染端也要用它:画布上那种节点要标出"这个节点
  * 当前跑不了",否则用户画好一张图、发消息,才发现有一格是死的。
  */
-export const IMPLEMENTED_RUNNER_KINDS = ["prompt", "conversation", "branch"] as const;
+export const IMPLEMENTED_RUNNER_KINDS = ["prompt", "conversation", "branch", "trigger", "command"] as const;
 export function isRunnerImplemented(kind: NodeRunnerKind): boolean {
   return (IMPLEMENTED_RUNNER_KINDS as readonly string[]).includes(kind);
+}
+
+/**
+ * 这个清单**真的跑得起来吗** —— 比 {@link isRunnerImplemented} 更细的一层。
+ *
+ * `command` 有两种形状:命令来自**节点参数**的(内置)已实现;命令来自**清单自带
+ * 脚本**的(`entry` 填了,第三方插件那种)只定了形状、还没实现。只看 kind 的话,
+ * 第三方的 command 节点会在画布上标成"能跑"、真跑起来却失败 —— 两种说法必须
+ * 收口成一个函数,调度器的拒绝与渲染端的"跑不了"徽标读同一份答案。
+ */
+export function isNodeRunnable(manifest: NodeTypeManifest): boolean {
+  if (!isRunnerImplemented(manifest.runner.kind)) return false;
+  if (manifest.runner.kind === "command" && manifest.runner.entry !== undefined) return false;
+  return true;
 }
 
 /* ── 清单 ── */
@@ -901,6 +1308,43 @@ export function validateNodeParams(
         return { ok: false, error: `参数「${spec.label}」里有一项不是「名字 + 示例」` };
       }
     }
+    // 输入选项表:一项一项的 `{ name, content, note? }`。**只查形状,容忍空行** ——
+    // 编辑态里"刚点了加号还没填"的那一行必须存得下来(和 `varRows` 的读法同一条),
+    // 名字空的行到了聊天那边自然不进下拉框。
+    if (spec.kind === "options") {
+      if (!Array.isArray(value)) {
+        return { ok: false, error: `参数「${spec.label}」应该是一张表` };
+      }
+      const bad = value.some(
+        (v) =>
+          typeof v !== "object" ||
+          v === null ||
+          typeof (v as { name?: unknown }).name !== "string" ||
+          typeof (v as { content?: unknown }).content !== "string",
+      );
+      if (bad) {
+        return { ok: false, error: `参数「${spec.label}」里有一项不是「名字 + 内容」` };
+      }
+    }
+    // 固定条件表:一项一项的 `{ name, choices[] }`。**只查形状,容忍空行** —— 编辑态里
+    // "刚点了加号还没填"的那一行必须存得下来;候选值空一行(用户打了个回车)也不算错,
+    // 渲染端会把空串滤掉。
+    if (spec.kind === "selects") {
+      if (!Array.isArray(value)) {
+        return { ok: false, error: `参数「${spec.label}」应该是一张表` };
+      }
+      const bad = value.some(
+        (v) =>
+          typeof v !== "object" ||
+          v === null ||
+          typeof (v as { name?: unknown }).name !== "string" ||
+          !Array.isArray((v as { choices?: unknown }).choices) ||
+          (v as { choices: unknown[] }).choices.some((c) => typeof c !== "string"),
+      );
+      if (bad) {
+        return { ok: false, error: `参数「${spec.label}」里有一项不是「条件名 + 一串候选值」` };
+      }
+    }
   }
   return { ok: true };
 }
@@ -925,7 +1369,12 @@ export function defaultParamsOf(manifest: NodeTypeManifest): Record<string, unkn
 
 /** 这个参数的值是不是一列东西(空值该给 `[]` 而不是空串)。 */
 function isListKind(spec: NodeParamSpec): boolean {
-  return spec.kind === "variables" || (spec.multiple === true && (spec.kind === "ref" || spec.kind === "select"));
+  return (
+    spec.kind === "variables" ||
+    spec.kind === "options" ||
+    spec.kind === "selects" ||
+    (spec.multiple === true && (spec.kind === "ref" || spec.kind === "select"))
+  );
 }
 
 /* ── 给模型看的目录 ── */
@@ -951,10 +1400,21 @@ function describeParam(p: NodeParamSpec): string {
   const help = p.help ? ` —— ${p.help}` : "";
   const options =
     p.kind === "select" && p.options && p.options.length > 0
-      ? `\n      可选值:${p.options.map((o) => o.value).join(" | ")}`
+      ? `
+      可选值:${p.options.map((o) => o.value).join(" | ")}`
       : "";
-  // 唯一一个"值既不是标量、也不是标量数组"的参数种类,形状单独说一句 —— 它猜不出来。
-  const shape = p.kind === "variables" ? `\n      值的形状:[{ name: 变量名, example: 示例 }]` : "";
+  // 值既不是标量、也不是标量数组的参数种类,形状单独说一句 —— 它猜不出来。
+  const shape =
+    p.kind === "variables"
+      ? `
+      值的形状:[{ name: 变量名, example: 示例 }]`
+      : p.kind === "options"
+        ? `
+      值的形状:[{ name: 选项名, content: 选中后插进输入框的内容, note: 给模型的一句解释 }]`
+        : p.kind === "selects"
+          ? `
+      值的形状:[{ name: 条件名, choices: ["候选值", ...] }] —— 一行一个下拉框,候选值就是下拉里能选的那些`
+          : "";
   return `${head}${help}${options}${shape}`;
 }
 
@@ -1000,5 +1460,6 @@ export function renderNodeTypeCatalog(entries: NodeTypeEntry[]): string {
       lines.push(`  ⚠️ 这个类型当前**跑不了**(执行方式 ${m.runner.kind} 尚未实现),只能画进图里。`);
     }
   }
-  return lines.join("\n");
+  return lines.join("
+");
 }

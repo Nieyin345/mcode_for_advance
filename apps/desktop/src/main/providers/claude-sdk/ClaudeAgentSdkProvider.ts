@@ -25,7 +25,6 @@ import { ASK_SYSTEM_PROMPT } from "@main/lib/askQuestion.js";
 import { CLAUDE_IDENTITY_PROMPT, CLAUDE_PLAN_MODE_NUDGE, fileArchitecturePrompt, joinPromptSections } from "@main/lib/systemPrompt.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { scriptsDir } from "@main/workflows/seed.js";
-import { searchCriteriaPrompt } from "@main/lib/searchPrefs.js";
 import { log } from "@main/lib/logger.js";
 import { bashPathHintFor, detectBashEnv } from "@main/lib/bashEnv.js";
 import { getFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
@@ -36,16 +35,16 @@ import {
 } from "@main/lib/fileSnapshot.js";
 import { resolveSdkBinaryPath } from "./sdkBinaryPath.js";
 import { resolveGitBash } from "@main/lib/binaryResolve.js";
-import { samePath } from "@main/lib/pathGuard.js";
 import {
   getMcpManagement,
   mcpServersOf,
   parseMcpConfig,
-  readProjectMcpServers,
   readUserClaudeJson,
 } from "@main/lib/mcpConfig.js";
 import { getOutputStyleSetting } from "@main/lib/outputStyleConfig.js";
-import { getEnabledPlugins, getPluginMcpServers } from "@main/plugins/pluginManager.js";
+import { getEnabledPlugins, getPluginMcpServers, getEnabledPluginSkillRoots } from "@main/plugins/pluginManager.js";
+import { defaultSkillsRoot, enabledSkillNames, engineEnabled, readEnginesMap, skillNamesInRoot } from "@main/lib/skillEngines.js";
+import { readMcpEnginesMap, mcpEngineEnabled } from "@main/lib/mcpEngines.js";
 import { resolveSubagentModelValue } from "@main/lib/subagentModel.js";
 import { normalizeBashCommand } from "@main/lib/msysPath.js";
 import {
@@ -78,15 +77,13 @@ import {
 import {
   buildLibraryMcpServer,
   LIBRARY_MCP_SERVER,
-  LIBRARY_MCP_PREFIX,
-  LIBRARY_READONLY_TOOLS,
 } from "@main/mcp/libraryServer.js";
 import {
   buildWorkflowMcpServer,
   WORKFLOW_MCP_SERVER,
-  WORKFLOW_MCP_PREFIX,
-  WORKFLOW_READONLY_TOOLS,
 } from "@main/mcp/mcodeServer.js";
+// 审批闸门(哪些工具不用问用户)只有一份 —— 它得与网页端那条通路共用,见该文件头。
+import { BROWSER_MCP_SERVER, shouldAutoApprove } from "@main/providers/toolGate.js";
 import { loadCreateMcpServer } from "@main/mcp/sdk.js";
 import { loadSubagents, subagentsToAgentsRecord } from "@main/claude/subagentStore.js";
 
@@ -603,10 +600,6 @@ async function buildBrowserMcpServer(
   });
 }
 
-/** Tools that mutate files on disk — auto-approved under `acceptEdits`
- *  mode without prompting the user. Mirrors Claude Code's own grouping. */
-const FILE_EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
-
 /**
  * 按名字清单筛一组带 `name` 的东西 —— **空/缺席 = 不限制,原样返回**。
  *
@@ -623,70 +616,28 @@ function narrowByName<T extends { name: string }>(items: T[], names: string[] | 
   return items.filter((item) => allow.has(item.name));
 }
 
-/** The MCP server name under which the browser tools are registered (via
- *  `createSdkMcpServer` below). The SDK surfaces each tool to canUseTool as
- *  `mcp__<server>__<tool>`, so the composed prefix is `mcp__mcode-browser__`. */
-const BROWSER_MCP_SERVER = "mcode-browser";
-const BROWSER_MCP_PREFIX = `mcp__${BROWSER_MCP_SERVER}__`;
-
-/** Read-only browser tools (can't mutate the page, navigate, or submit) —
- *  auto-approved in every mode, like the Pi provider's MCODE_BROWSER_READONLY
- *  set. scroll/wait/find are pure reading aids; save_pdf writes only into the
- *  managed artifacts dir with sanitized names (same class as screenshot's
- *  best-effort save). The side-effecting navigate/click/type/keys/select/
- *  upload_file/history/close_tab go through approval. */
-const BROWSER_READONLY_SUFFIXES = new Set([
-  "browser_list",
-  "browser_snapshot",
-  "browser_screenshot",
-  "browser_find",
-  "browser_scroll",
-  "browser_wait",
-  "browser_switch_tab",
-  "browser_save_pdf",
-  "browser_downloads",
-]);
-
-/** True for a canUseTool toolName that names one of our read-only browser MCP
- *  tools (i.e. `mcp__mcode-browser__browser_snapshot` etc). */
-function isReadOnlyBrowserTool(toolName: string): boolean {
-  if (!toolName.startsWith(BROWSER_MCP_PREFIX)) return false;
-  return BROWSER_READONLY_SUFFIXES.has(toolName.slice(BROWSER_MCP_PREFIX.length));
-}
-
-/** Read-only library tools (查分类 / 搜库 / 联网检索 / 列条目)—— 改不了任何东西,
- *  与只读浏览器工具同一类,自动放行。写工具(建分类、导入、移动、移入回收站、
- *  改名、写笔记)走审批:它们动的是用户的资料库,该让用户看见。 */
-function isReadOnlyLibraryTool(toolName: string): boolean {
-  if (!toolName.startsWith(LIBRARY_MCP_PREFIX)) return false;
-  return LIBRARY_READONLY_TOOLS.has(toolName.slice(LIBRARY_MCP_PREFIX.length));
-}
-
-/** Read-only workflow tools (列一份的定义 / 列节点类型 / 列代理档案)—— 改不了任何东西,
- *  同一档自动放行。写工具(存/删工作流、写节点类型、存/删代理档案)走审批:它们动的是
- *  用户自己画的东西。 */
-function isReadOnlyWorkflowTool(toolName: string): boolean {
-  if (!toolName.startsWith(WORKFLOW_MCP_PREFIX)) return false;
-  return WORKFLOW_READONLY_TOOLS.has(toolName.slice(WORKFLOW_MCP_PREFIX.length));
-}
-
-/** Decide whether a tool should be auto-approved (skip the prompt) based on
- *  the session's CURRENT permission mode. This runs in canUseTool on every
- *  call, so a mid-turn mode flip applies to the next tool immediately.
- *  - bypassPermissions / dontAsk → everything auto-approved
- *  - acceptEdits                  → file-editing tools auto-approved
- *  - default / plan / auto        → prompt the user (return false) */
-function shouldAutoApprove(mode: PermissionMode | undefined, toolName: string): boolean {
-  if (!mode) return false;
-  if (mode === "bypassPermissions" || mode === "dontAsk") return true;
-  // Read-only browser tools never need approval — they can't change anything.
-  if (isReadOnlyBrowserTool(toolName)) return true;
-  // Same for the read-only library tools (查库、联网检索)。
-  if (isReadOnlyLibraryTool(toolName)) return true;
-  // Same for the read-only workflow tools (看一眼有哪些工作流、有哪些节点类型)。
-  if (isReadOnlyWorkflowTool(toolName)) return true;
-  if (mode === "acceptEdits") return FILE_EDIT_TOOLS.has(toolName);
-  return false;
+/**
+ * claude 的 `Options.skills` 值（无 composer 显式点选时的默认态）。
+ *
+ * - 矩阵对该引擎**无限制** → "all"（现状：引擎自己全量发现，含 CLAUDE_CONFIG_DIR
+ *   下的用户技能与插件技能）。
+ * - 矩阵**有限制** → 显式 allowlist：启用的通用技能名 + 矩阵仍启用的插件技能的
+ *   `":name"` 后缀条目。显式列表模式下引擎按 canonical name（`<plugin>:<name>`）
+ *   精确匹配或 `":name"` 后缀匹配，所以插件贡献（含内置四件）也要逐个点名才会
+ *   加载。插件技能与通用技能共用同一张矩阵 —— 被用户从 claude 收走的插件技能
+ *   不进名单，引擎就看不到。
+ */
+async function claudeSkillsOption(): Promise<Options["skills"]> {
+  const enabled = enabledSkillNames(defaultSkillsRoot(), "claude");
+  if (enabled === null) return "all";
+  const enginesMap = readEnginesMap(defaultSkillsRoot());
+  const pluginNames = new Set<string>();
+  for (const root of await getEnabledPluginSkillRoots()) {
+    for (const name of skillNamesInRoot(root).keys()) {
+      if (engineEnabled(enginesMap, name, "claude")) pluginNames.add(name);
+    }
+  }
+  return [...enabled, ...[...pluginNames].map((n) => `:${n}`)];
 }
 
 /** Max provider-level retries for a TRANSPORT failure (stdio break, binary
@@ -876,10 +827,12 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       // `--input-format stream-json`, under which the CLI does NOT re-parse
       // `/name` slash commands from the prompt text — the `/name` literals the
       // composer inlines are display-only and would never trigger the Skill
-      // tool on their own. With no picks, fall back to 'all' so the model can
-      // still self-discover/autoloader skills. Do NOT also add 'Skill' to
+      // tool on their own. With no picks, the universal library's per-engine
+      // matrix decides (claudeSkillsOption): unrestricted → 'all' (the model
+      // can still self-discover/autoload skills), restricted → an allowlist of
+      // the enabled skills + plugin contributions. Do NOT also add 'Skill' to
       // allowedTools. See sdk.d.ts Options.skills.
-      skills: req.skills && req.skills.length > 0 ? req.skills : "all",
+      skills: req.skills && req.skills.length > 0 ? req.skills : await claudeSkillsOption(),
       // SDK #359: On Windows there is a timing/buffering race in the stdio
       // control-stream transport that causes "Tool permission request failed:
       // AbortError: Tool permission stream closed before response received"
@@ -1009,14 +962,14 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       }
     }
 
-    // NOTE: we do NOT set `settingSources` here. The default
-    // ["user","project","local"] is safe because CLAUDE_CONFIG_DIR points at
-    // ~/.mcode - the cc-switch-controlled ~/.claude/settings.json is never
-    // read (the config root moved). The "user" source now resolves to
-    // ~/.mcode/settings.json (which Mcode controls), and user-level skills
-    // under ~/.mcode/skills/ are discovered by the binary's auto-load. The
-    // previous settingSources:["project","local"] workaround is no longer
-    // needed and was actively harmful: it disabled user-level skill discovery.
+    // settingSources 显式钉在 ["user"]：Mcode 不继承任何外部项目级配置。
+    // 默认值是 ["user","project","local"]，其中 "project"/"local" 会让二进制从
+    // cwd 向上扫 CLAUDE.md、.claude/、.mcp.json —— 外部桌面端（或用户手放）的
+    // 项目级内容会被静默卷进每一轮（实测：外部 .mcp.json 的两个 stdio 服务器
+    // 懒枚举 ~110 个工具，一轮 +26k token，且工具块逐轮漂移打断前缀缓存）。
+    // 钉在 ["user"] 后：user 级仍解析到 CLAUDE_CONFIG_DIR=~/.mcode（skills、
+    // settings.json、CLAUDE.md 都还是 Mcode 托管的那份），项目级一律不读。
+    options.settingSources = ["user"];
 
     // Diagnostic: dump the effective env actually handed to the SDK
     // subprocess, so model-routing failures against third-party gateways can
@@ -1477,7 +1430,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     const enabledPluginsPromise = getEnabledPlugins().then((plugins) =>
       narrowByName(plugins, req.pluginNames),
     );
-    const [mcpState, browserServer, libraryServer, workflowServer, projectMcpRecord, outputStyle, enabledPlugins, pluginMcp] =
+    const [mcpState, browserServer, libraryServer, workflowServer, outputStyle, enabledPlugins, pluginMcp] =
       await Promise.all([
         getMcpManagement(),
         // Pure constructor after the (cached) SDK import — building it
@@ -1494,14 +1447,23 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
         // 工作流那一摊(mcode-workflow)—— 让 AI 自己建/改工作流、节点类型、代理档案。
         // 与库工具同一个形状:读工具自动放行,写工具一律要用户点头(见
         // mcp/mcodeServer.ts 文件头,那里也写了为什么钩子/插件/MCP 安装**不在这里**)。
-        buildWorkflowMcpServer(),
-        readProjectMcpServers(req.cwd),
+        buildWorkflowMcpServer({ sessionId: req.sessionId }),
         getOutputStyleSetting(),
         enabledPluginsPromise,
         enabledPluginsPromise.then((plugins) => getPluginMcpServers(plugins)),
       ]);
 
-    if (!mcpState.browserDisabled) {
+    // Per-engine visibility: which of the per-turn-injected servers (builtin
+    // browser + plugin) claude may see. The two backbone servers
+    // (mcode-library / mcode-workflow) are deliberately NOT filtered — they
+    // are the app's own machinery, not user-assigned assets. User-scope
+    // servers need no check here — they are read by the binary from
+    // .claude.json, which materialization already narrowed to claude's
+    // assignment.
+    const mcpEngines = readMcpEnginesMap();
+    const claudeMaySee = (name: string): boolean => mcpEngineEnabled(mcpEngines, name, "claude");
+
+    if (!mcpState.browserDisabled && claudeMaySee(BROWSER_MCP_SERVER)) {
       options.mcpServers = { [BROWSER_MCP_SERVER]: browserServer };
     }
     // 库工具与浏览器开关**无关** —— 它是学术流程的骨干,不是可选装饰。
@@ -1510,21 +1472,6 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       [LIBRARY_MCP_SERVER]: libraryServer,
       [WORKFLOW_MCP_SERVER]: workflowServer,
     };
-    const projectMcpNames = Object.keys(projectMcpRecord);
-    if (projectMcpNames.length > 0) {
-      const enabledSet = new Set(
-        (mcpState.projectEnabled ?? [])
-          .filter((e) => samePath(e.projectPath, req.cwd))
-          .map((e) => e.name),
-      );
-      // These approval lists live on the Settings interface (options.settings),
-      // not on Options itself.
-      options.settings = {
-        ...(typeof options.settings === "object" ? options.settings : {}),
-        enabledMcpjsonServers: projectMcpNames.filter((n) => enabledSet.has(n)),
-        disabledMcpjsonServers: projectMcpNames.filter((n) => !enabledSet.has(n)),
-      };
-    }
 
     // Output style (settings panel): same Settings-not-Options trap as the
     // MCP lists above. The CLI reads the style once at session start and has
@@ -1564,6 +1511,10 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       if (pluginMcp.length > 0) {
         const servers = options.mcpServers ?? {};
         for (const [name, config] of pluginMcp) {
+          // Per-engine visibility: a server the user took away from claude is
+          // not injected at all (the panel's switch writes the same matrix the
+          // codex view filters by).
+          if (!claudeMaySee(name)) continue;
           // Contracts McpServerConfig is transport-shape-compatible with the
           // SDK's McpServerConfig union (stdio/http/sse); the cast is for the
           // passthrough extras the SDK type doesn't model.
@@ -1579,8 +1530,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     // 上面那条老路,行为逐字不变**。只有节点明确列了几个名字时才切到下面的写法。
     //
     // 为什么非得这么麻烦:平时这几路服务器**不经过 `options.mcpServers`** ——
-    //   · 用户自己那几个在 ~/.mcode/.claude.json 里,二进制按 "user" 设置源自己读;
-    //   · 项目 `.mcp.json` 靠上面那两张审批表放行,也不是注入。
+    //   · 用户自己那几个在 ~/.mcode/.claude.json 里,二进制按 "user" 设置源自己读。
     // 所以"少放几个进 options.mcpServers"挡不住任何东西,被排除的会从原路自己回来。
     // 真正管用的是 `strictMcpConfig`(SDK 选项:只认 `mcpServers` 里显式给的,别的
     // 一概不看)—— 但它的代价是**上面那两条路一起断掉**,于是被选中的那几个必须由
@@ -1611,17 +1561,13 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       if (!mcpState.browserDisabled && browser !== undefined && allow.has(BROWSER_MCP_SERVER)) {
         kept[BROWSER_MCP_SERVER] = browser;
       }
-      // ③④⑤ 剩下三路都**按名字选**,而且越靠用户本人配置的越优先(与设置面板里列的
-      //       先后一致:用户 → 项目 → 插件)。
+      // ③④ 剩下两路都**按名字选**,而且越靠用户本人配置的越优先(与设置面板里列的
+      //       先后一致:用户 → 插件)。
       //       ③ 用户 config 文件里那几个 —— 平时二进制自己读,收窄后必须显式注入。
       for (const [name, raw] of Object.entries(mcpServersOf(await readUserClaudeJson()))) {
         if (allow.has(name)) take(name, raw);
       }
-      //       ④ 项目 `.mcp.json` 里被选中的 —— 平时靠上面那两张审批表放行。
-      for (const [name, raw] of Object.entries(projectMcpRecord)) {
-        if (allow.has(name)) take(name, raw);
-      }
-      //       ⑤ 插件带来的那几个(`<插件>__<服务器>`)。它们**和别的服务器一样按名字
+      //       ④ 插件带来的那几个(`<插件>__<服务器>`)。它们**和别的服务器一样按名字
       //          选**,不搞"选了插件就自动带上它的服务器"的特例 —— 那样一来「这一步能用
       //          哪几个 MCP 服务器」这句话就有两个意思了,而两个意思的规则没人记得住。
       for (const [name, config] of pluginMcp) {

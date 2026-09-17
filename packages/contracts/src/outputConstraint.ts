@@ -45,7 +45,7 @@
  * 提取规则是确定的、可断言的,不是"大概认得出来"。
  */
 import { z } from "zod";
-import type { NodeTypeManifest } from "./nodeType.js";
+import { isModelDecider, type NodeTypeManifest } from "./nodeType.js";
 import { RESERVED_VAR_NAMES } from "./nodeTemplate.js";
 
 /* ── 约定键 ── */
@@ -105,6 +105,72 @@ export function outputVarsOf(
   return normalizeVars(params[NODE_OUTPUT_VARS_KEY]);
 }
 
+/* ── 分支(模型选)的那一项固定产出 ── */
+
+/**
+ * 分支节点且**决定权给模型**时(见 `{@link isModelDecider}`)必须交出来的那一项,
+ * 名字就叫**「出路」**。
+ *
+ * ## 为什么走向要装在一个变量里
+ *
+ * 这种分支跑完要**自己**选一条出边,而"它选了哪条"必须是一份**可校验**的东西:交给模型
+ * 自由发挥的话,下游拿到的是一句"我觉得应该进入查重环节",而调度器要的是一个能对上某条
+ * 边的**名字**。把它做成产出变量,就复用了这条管道现成的一切 —— 少了一样这一步失败、
+ * 值写进 `NodeOutcome.outputs`、下游能 `{{那一步.出路}}` 取到。
+ *
+ * ## 值必须是某条出边的名字,一字不改
+ *
+ * 匹配顺序:先比出边的 `label`(选项名),再比目标节点的标题,两边都去空白、大小写不敏感。
+ * 编一个不在其中的名字 = 这一步**失败**,不是"猜一条最近的"。理由和产出约束那边一样:
+ * 含糊的走向比一个明确的失败危险得多 —— 后者当场看得见,前者要等下游全跑偏才暴露。
+ *
+ * ## 它不在 {@link RESERVED_VAR_NAMES} 里
+ *
+ * 那份名单的语义是"解算时内置字段优先"(撞上就永远取不到),与这里要表达的"不许重复
+ * 声明"是两件事。所以那条规矩写在 {@link validateOutputRules} 里,针对这一种分支单独一条。
+ */
+export const DECIDE_VAR_NAME = "出路";
+
+/**
+ * 这一步要交给模型的全部产出变量 —— 分支(模型选)会**追加**「出路」。
+ *
+ * ## 为什么收口成一个函数
+ *
+ * 三处要给出**同一个答案**:调度器发提示词时(要模型交出这几样)、调度器查产出时(要按
+ * 同样的名单查)、渲染端的结果卡摊变量时(要按同样的名单显示)。三处各拼一遍,迟早出现
+ * "提示词里要了、查的时候没算上"这种错 —— 而它的表现是这一步永远失败。
+ *
+ * `options` 是它**能有**的那几条出路的名字(出边的选项名,没填 label 时是目标节点标题)。
+ * 例子取第一条 —— 那是最直白的示范("照这个样子填").一条出路都没有时**不追加**:那种图
+ * 节点根本选不了路,该失败在"没有出边"那一条上,而不是逼模型交一个交不出来的值。
+ */
+export function outputVarsFor(
+  manifest: NodeTypeManifest,
+  params: Record<string, unknown>,
+  options: readonly string[] = [],
+): OutputVar[] {
+  const vars = outputVarsOf(manifest, params);
+  if (!isModelDecider(manifest, params) || options.length === 0) return vars;
+  return [...vars, { name: DECIDE_VAR_NAME, example: options[0] as string }];
+}
+
+/** 查产出时用的那一项(只有名字参与判定,例子在这一步没有意义)。 */
+export const DECIDE_OUTPUT_VAR: OutputVar = { name: DECIDE_VAR_NAME, example: "" };
+
+/** 把「出路」的值对上一条出边。**先比选项名,再比目标节点标题**,两边都去空白、
+ *  大小写不敏感。对不上返回 `undefined`(调用方负责报出一条能照着改的错)。 */
+export function matchDecisionOption(
+  raw: string,
+  options: ReadonlyArray<{ label: string; title: string }>,
+): string | undefined {
+  const want = raw.trim().toLowerCase();
+  if (want.length === 0) return undefined;
+  const hit =
+    options.find((o) => o.label.trim().toLowerCase() === want) ??
+    options.find((o) => o.title.trim().toLowerCase() === want);
+  return hit?.label;
+}
+
 /** 把任意脏值收成一张变量表:丢掉不是对象的、名字空的、名字重复的。 */
 export function normalizeVars(raw: unknown): OutputVar[] {
   if (!Array.isArray(raw)) return [];
@@ -159,6 +225,14 @@ export function validateOutputRules(
       return {
         ok: false,
         error: `产出变量不能叫「${trimmed}」—— 那是内置的名字(取结果文本、状态、错误、标题、用户请求用的),起了这个名字下游永远取到的是内置的那个`,
+      };
+    }
+    // 分支(模型选)自己那一项(见 {@link DECIDE_VAR_NAME})。**不是**加进 RESERVED_VAR_NAMES:
+    // 那份名单管的是"取不到",这一条管的是"不许重复声明" —— 两件事。
+    if (isModelDecider(manifest, params) && trimmed === DECIDE_VAR_NAME) {
+      return {
+        ok: false,
+        error: `「${DECIDE_VAR_NAME}」是这一步自己就要交的那一项(值就是它选的那条出路的名字),不用在表里再声明一遍`,
       };
     }
     if (BAD_VAR_CHARS.test(trimmed)) {

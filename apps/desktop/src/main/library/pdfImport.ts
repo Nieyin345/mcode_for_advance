@@ -25,6 +25,7 @@ import { hashFile, verifyPdf } from "@main/library/downloader.js";
 import { extractPdfMetadata } from "@main/library/pdfMetadata.js";
 import { pdfPathForHash, toLibraryRelative } from "@main/library/paths.js";
 import { LibraryRepo } from "@main/store/repositories.js";
+import { emitItemImported } from "./broadcast.js";
 import { log } from "@main/lib/logger.js";
 
 export interface ImportedFile {
@@ -96,6 +97,9 @@ async function importOne(rawPath: string, kind: LibraryKind = "paper"): Promise<
     });
     LibraryRepo.setPdf(item.id, rel, sha);
     log.info(`library: imported PDF ${basename(rawPath)} as ${item.id} (${meta.source})`);
+    // 成功点在这里:条目建好、PDF 也记上了。alreadyPresent 的不算 —— 那条本来就在库里,
+    // 之前入库时已经发过事件,再发一次会让自动下载重复排队。
+    emitItemImported(item);
     return { path: rawPath, item: { ...item, pdfPath: rel, pdfSha256: sha } };
   } catch (err) {
     return { path: rawPath, error: (err as Error).message };

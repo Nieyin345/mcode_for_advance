@@ -36,10 +36,24 @@ export interface LibraryAuthor {
  * 的差别用两个 `if` 就能表达。所以一个 `kind` 字段,配三个界面入口。
  */
 export const LIBRARY_KINDS = ["paper", "textbook", "note"] as const;
-export type LibraryKind = (typeof LIBRARY_KINDS)[number];
+/**
+ * 库条目的 kind。**历史上是上面那三个值的联合**;统一资料库之后它是开放字符串,
+ * 合法取值由类型注册表(见 `libraryTypes.ts` 的 `LibraryTypeMeta`)决定 —— 内置
+ * 8 类 + 用户自建。`LIBRARY_KINDS` 保留为**内置 material 子集**,供老判据与
+ * "这是不是出厂类"的判断使用;注册表校验在主进程(它才拿得到 DB),契约层不查。
+ */
+export type LibraryKind = string;
+/** 出厂那三类的**收窄视图**。只在判"是不是内置 material 类"的地方用 —— 收窄到它
+ *  之后能安全地赋给任何要 kind 的位置;别拿它当 kind 的全集(它早就不是了)。 */
+export type BuiltinLibraryKind = (typeof LIBRARY_KINDS)[number];
 
 /**
- * 这个字符串是不是一个库类目。
+ * 这个字符串是不是一个**内置 material 类**(paper/textbook/note)。
+ *
+ * ⚠️ 统一资料库后 kind 的全集由类型注册表决定(用户自建的也在内),这个函数只回答
+ * "是不是出厂那三个" —— `contextPurposeOf` 用它当 material 判据(M2 会改为查注册表),
+ * 其余把它当 kind 全集用的地方都要跟着改。收窄目标是 `BuiltinLibraryKind`,不是
+ * `LibraryKind`(后者已经是开放字符串,收窄到它等于没收)。
  *
  * 收 `unknown` 而不是 `string`:它多半是拿**外面的**值来问的(附件键、清单文件名的
  * 一段、参数里的自由数据),那些地方的值什么类型都可能是。先收窄再判,调用方就不用
@@ -48,7 +62,7 @@ export type LibraryKind = (typeof LIBRARY_KINDS)[number];
  * 放在 contracts 是因为它曾经在**两个地方各写了一遍**(主进程的清单生成、渲染端的
  * 标签映射)—— 再加一处就是第三份,而三份判据迟早对不上。
  */
-export function isLibraryKind(value: unknown): value is LibraryKind {
+export function isLibraryKind(value: unknown): value is BuiltinLibraryKind {
   return typeof value === "string" && (LIBRARY_KINDS as readonly string[]).includes(value);
 }
 
@@ -106,6 +120,17 @@ export interface LibraryItem {
   source?: string;
   /** PDF 的许可标识(如 `CC-BY-4.0`)。合规追溯用。 */
   license?: string;
+  /**
+   * 通用文件条目的落法:`attached` = 文件复制进了库(相对库根),`linked` = 只记
+   * 原路径、文件不动(可以是文件**或目录**)。统一资料库给 ppt/word/照片等开的口子
+   * —— 旧的文献流(pdfPath/mdPath)不受它影响,老数据缺省按 attached 读。
+   */
+  entryMode: "linked" | "attached";
+  /**
+   * 通用文件路径:attached 时相对库根(随库搬迁),linked 时外部绝对路径(可为
+   * 目录 —— 模版那种"目录即条目"的形状)。文献流用 pdfPath/mdPath,不填这里。
+   */
+  filePath?: string;
   addedAt: number;
   updatedAt: number;
 }
@@ -119,6 +144,12 @@ export interface LibraryItem {
 export interface LibraryCollection {
   id: string;
   name: string;
+  /**
+   * 这个分类的**给 AI 的说明**(「这个合集是精读队列,总结用中文」这类)。
+   * 拼进该分类的清单里,类型说明之后 —— 用户自己写的、关于"这一组东西怎么处理"的
+   * 话,只有它自己知道。空 = 不注入。
+   */
+  prompt?: string;
   /** 这个分类属于哪个库 —— 三个库各有各的分类树,互不串味。 */
   kind: LibraryKind;
   /** 顶层集合为 null。 */

@@ -89,12 +89,16 @@ import {
   ASK_RUN_CHOICE,
   ASK_SKIP_CHOICE,
   BRANCH_STOP_CHOICE,
+  DEFAULT_DECIDER_INSTRUCTION,
   NODE_PROMPT_PARAM_KEY,
   askBeforeRunOf,
+  commandOf,
+  commandTimeoutOf,
   contextKindsOf,
   flowRecordOf,
   isAskChoice,
-  isRunnerImplemented,
+  isModelDecider,
+  isNodeRunnable,
   mcpServerNamesOf,
   pluginNamesOf,
   providerIdOf,
@@ -119,9 +123,14 @@ import {
 import { referencedNodeNamesIn, renderTemplate, type NodeTemplateScope } from "@contracts/nodeTemplate";
 import type { WorkflowChoiceOption } from "@contracts/runtime";
 import {
+  DECIDE_OUTPUT_VAR,
+  DECIDE_VAR_NAME,
   NODE_OUTPUT_CONTRACT_KEY,
   checkOutput,
   describeOutputVars,
+  matchDecisionOption,
+  outputValueText,
+  outputVarsFor,
   outputVarsOf,
   pickOutputs,
   validateOutputRules,
@@ -137,6 +146,7 @@ import type { ContextLine } from "./contextInherit.js";
 import {
   askSection,
   composeNodePrompt,
+  decisionSection,
   findStep,
   flowRecordSection,
   planOf,
@@ -175,6 +185,15 @@ export interface NodeRunInput {
   returnMode: NodeReturnMode;
   /** 这一步要用的引擎(`provider` 约定键)。`undefined` = 跟着对话走。 */
   providerId?: string;
+  /**
+   * **只有命令节点有**:要跑的命令行与超时(毫秒,0 = 不限),解算过变量的那一份。
+   *
+   * 命令节点不跑模型 —— 它没有"提示词"可拼({@link NodeRunInput.prompt} 对它是空串),
+   * 执行器(route 到 `commandRunner.ts` 那一支)只看这一个字段。做成输入字段而不是让
+   * 执行器自己去 `node.params` 里翻,和上面每个字段是同一条规矩:**"节点参数 → 这一轮
+   * 怎么跑"只在一个地方发生一次**。
+   */
+  command?: { command: string; timeoutMs: number };
   /** 取消信号。执行器应当尽快停下来(真实实现里是 interrupt 那个回合)。 */
   signal: AbortSignal;
 }
@@ -278,6 +297,14 @@ export interface RunState {
   outcomes: [string, NodeOutcome][];
   /** 正在等用户拍板的那些节点。一个都没在等就是空数组。 */
   awaiting: string[];
+  /**
+   * 这次运行**是哪个触发器起的**(见 `runWorkflow` 的 `entry`)。没有就是没有 —— 比如
+   * 用户在对话里手动跑的一张图。
+   *
+   * 它必须落盘:续跑时"这次是哪一条自动化入口起的"仍然成立(触发器节点自己在
+   * `outcomes` 里睡着,其余触发器该标 `unselected` 还是照标)。
+   */
+  entry?: { nodeId: string; summary: string };
 }
 
 /**
@@ -311,6 +338,8 @@ export interface RunResume {
   settled: readonly (readonly [string, NodeOutcome])[];
   /** 用户刚点的那一下。**只对这一处生效一次** —— 回头之后同一个岔路口要重新问。 */
   answer?: { nodeId: string; choice: BranchChoice };
+  /** 上次是哪条触发器起的(见 {@link RunState.entry})。存档里有就以它为准。 */
+  entry?: { nodeId: string; summary: string };
 }
 
 /** 用户在分支节点上做的选择。 */
@@ -443,6 +472,14 @@ function nodeInputOf(
     record?: string;
     /** 「运行前先问我」那一次的回答,已渲染成整段。见 {@link askSection}。 */
     ask?: string;
+    /**
+     * **只有决策节点给**:它有哪几条出路(就是它的出边,同 {@link branchOptionsOf})。
+     *
+     * 两处要用它,而且必须是**同一份**名单:给模型的提示词里要它交出「出路」(见
+     * {@link decisionSection}),而这个值等下要拿去和选项名比对(见 `applyDecision`)。
+     * 分成两处各算一遍的话,报错时列出来的"可选名字"和提示词里给的可能不是一套。
+     */
+    decide?: { options: WorkflowChoiceOption[] };
     contextLines: (kinds: NodeContextKind[]) => ContextLine[];
   },
   signal: AbortSignal,
@@ -453,12 +490,43 @@ function nodeInputOf(
   const providerId = providerIdOf(params);
   const returnMode = returnModeOf(params);
   const context = ctx.contextLines(contextKindsOf(params));
-  const vars = outputVarsOf(manifest, params);
+  // **命令节点不拼提示词,提前走人。** 它不跑模型 —— 没有"指令"、没有技能、没有产出
+  // 约定,`instructionOf` 对它必然抛(参数表里没有那个键)。要带去执行器的只有**解算过
+  // 变量的命令行**(上游产出就长在命令文本里)和超时。输出变量表同样没有:产出
+  // (「退出码」「输出」)是代码直接给的,不走"声明了才查"那一套。
+  if (manifest.runner.kind === "command") {
+    return {
+      prompt: "",
+      skills: [],
+      mcpServerNames: [],
+      pluginNames: [],
+      returnMode: "none",
+      command: { command: commandOf(params), timeoutMs: commandTimeoutOf(params) },
+      signal,
+    };
+  }
+  // **决策节点的「出路」是从这儿进变量表的**(见 `outputVarsFor`)。不给 options 的话
+  // 它不追加 —— 一条出边都没有的图,那一步该失败在"没有出路"上,而不是逼它交一个
+  // 交不出来的值。
+  const vars = outputVarsFor(
+    manifest,
+    params,
+    (ctx.decide?.options ?? []).map((o) => o.label),
+  );
+  // **「选路判据」留空的模型选分支是合法的** —— 兜底用缺省文案(见
+  // `DEFAULT_DECIDER_INSTRUCTION`)。其他节点留空指令仍然是错误,`instructionOf` 会抛。
+  const instructionRaw = params[NODE_PROMPT_PARAM_KEY];
+  const instruction =
+    typeof instructionRaw === "string" && instructionRaw.trim().length > 0
+      ? instructionRaw
+      : isModelDecider(manifest, params)
+        ? DEFAULT_DECIDER_INSTRUCTION
+        : instructionOf(params, manifest);
   return {
     prompt: composeNodePrompt({
       userPrompt: ctx.userPrompt,
       upstream: ctx.upstream,
-      instruction: instructionOf(params, manifest),
+      instruction,
       nodeId: ctx.nodeId,
       plan: ctx.plan,
       skills,
@@ -466,6 +534,7 @@ function nodeInputOf(
       ...(ctx.arrival ? { arrival: ctx.arrival } : {}),
       ...(ctx.record ? { record: ctx.record } : {}),
       ...(ctx.ask ? { ask: ctx.ask } : {}),
+      ...(ctx.decide ? { decision: decisionSection(ctx.decide.options) } : {}),
       outputContract: stringParamOf(params, NODE_OUTPUT_CONTRACT_KEY),
       // **终末节点不发变量表**(见 {@link withOutputCheck})。
       outputVars: ctx.terminal ? "" : describeOutputVars(vars),
@@ -552,9 +621,25 @@ export async function runWorkflow(args: {
   signal: AbortSignal;
   /** 从上次被打断的地方接着跑。**不给就是全新的一次**(见 {@link RunResume})。 */
   resume?: RunResume;
+  /**
+   * **这次运行是哪个触发器起的**,以及那份事件载荷的文本。
+   *
+   * 自动化的一条流程上可以有**多个触发器**(「每天九点」和「文件改了」挂在同一张图上),
+   * 一次运行只由其中一个起 —— 其余那些这一次**压根没发生**,所以它们连同各自拖着的那条
+   * 支路一起标 `unselected`(不是 `skipped`:没有谁失败)。
+   *
+   * 做法是**把被触发的那个直接预置进 `outcomes`** —— 于是它不会被派发,而它的下游因为
+   * "上游成功了"照常起跑。和续跑(`resume.settled`)是同一套起手式。
+   *
+   * 不给 = 这次运行不是触发器起的(用户在对话里手动跑一张图)。那时**一个触发器都不预置**,
+   * 真被派发到了就明确失败(见 `executeOne`)—— 与其编一个载荷糊过去,不如说清楚。
+   */
+  entry?: { nodeId: string; summary: string };
 }): Promise<RunResult> {
   const { doc, prompt, ports, signal } = args;
   const resumed = args.resume;
+  // **续跑时以存档为准**:那次运行是哪个触发器起的,不会因为进程重启就换个说法。
+  const entry = resumed?.entry ?? args.entry;
   /** 上游邻接表。**不自己走一遍 `edges`** —— `buildForwardAdjacency` 是"谁依赖谁"的
    *  唯一来源(见 `@contracts/workflow`),和渲染端的勾选框用的是同一份。
    *
@@ -567,6 +652,20 @@ export async function runWorkflow(args: {
   // **续跑时从上次的结局起手** —— 上次已经定案的那些不重跑,而且不重判(见
   // `RunResume.settled`)。
   const outcomes = new Map<string, NodeOutcome>(resumed?.settled ?? []);
+  // **被触发的那个触发器:预置一个成功结局。** 它自己不跑东西,但它**发生了** —— 于是
+  // 它的下游照常起跑(就绪判断看的是"上游成功了")。预置而不是"特判放行",是因为下游
+  // 还有第二个问题要答案:"我上游交了什么" —— 那就是这次的事件载荷(见 `entry.summary`)。
+  //
+  // 结局里**不写 outputs**:载荷是给人/给模型读的一段描述,不是可以 `{{...}}` 取的变量。
+  //
+  // 只在图里真有这个节点、而且它还没定案时才预置(续跑时它已经在 `settled` 里了)。
+  if (
+    entry !== undefined &&
+    doc.nodes.some((n) => n.id === entry.nodeId) &&
+    !outcomes.has(entry.nodeId)
+  ) {
+    outcomes.set(entry.nodeId, { status: "success", summary: entry.summary });
+  }
   const inflight = new Map<string, Promise<void>>();
   /** 分支节点 → 用户选的那条出边(以及他临时写的那句话)。没跑到 / 没选的分支不在里面。
    *
@@ -623,6 +722,9 @@ export async function runWorkflow(args: {
     picks: [...chosen],
     outcomes: [...outcomes],
     awaiting: [...awaiting],
+    // 只有真有 entry 时才带上这个键 —— 老是塞一个 `entry: undefined` 的话,存档里
+    // 会多出一串空字段,而读的人分不清"没有触发器"和"这个字段没写"。
+    ...(entry !== undefined ? { entry } : {}),
   });
   const publish = (): void => ports.snapshot?.(stateOf());
 
@@ -675,6 +777,36 @@ export async function runWorkflow(args: {
   const isBranch = (id: string): boolean => {
     const node = nodeById.get(id);
     return node !== undefined && manifestOfCached(node.type)?.runner.kind === "branch";
+  };
+
+  /**
+   * 这个节点是不是**触发器** —— 同样只看 `runner.kind`。
+   *
+   * 触发器是图的**起点**:它不跑模型、不建会话,只声明"什么情况下起一次运行"。真正的
+   * 监听在 `automationRunner.ts`,而**一次运行只由一个触发器起**(见 `runWorkflow` 的
+   * `entry`):其余那些触发器这一次连"没走这条路"都算不上 —— 它们是另一条自动化入口,
+   * 所以标 `unselected`(见主循环第 1 步)。
+   */
+  const isTrigger = (id: string): boolean => {
+    const node = nodeById.get(id);
+    return node !== undefined && manifestOfCached(node.type)?.runner.kind === "trigger";
+  };
+
+  /**
+   * 这个分支节点是不是**决定权给了模型** —— 分支的一种填法:真跑一轮模型,跑完按它
+   * 自己交出来的「出路」选一条出边(见 `applyDecision`)。
+   *
+   * 过去的"决策节点"收编成了这种填法(见 `@contracts/nodeType` 的 `isModelDecider`),
+   * 所以判据读的是**同一个函数**:「分支 + decider=model」。️ **它和 {@link isBranch}
+   * 是包含关系,不是互斥** —— 模型选的分支也是分支。但"等用户"那一半只属于
+   * decider=user 的那种:模型选**不能当环的闸门**(它会自己转下去),环闸门、挂起、
+   * 回卷那些判定现在必须把这一层剥出来看清。
+   */
+  const isModelDeciderNode = (id: string): boolean => {
+    const node = nodeById.get(id);
+    if (node === undefined) return false;
+    const manifest = manifestOfCached(node.type);
+    return manifest !== undefined && isModelDecider(manifest, node.params);
   };
 
   /**
@@ -827,16 +959,27 @@ export async function runWorkflow(args: {
   };
 
   /**
+   * 这个节点**要在自己的出边里挑一条** —— 就是分支节点。
+   *
+   * 过去这里写的是 `isBranch(id) || isDecide(id)`:决策节点曾经是独立的一种。现在它
+   * 收编成了分支的一种填法(决定权给模型,见 {@link isModelDeciderNode}),判"挑不挑路"
+   * 只剩一个来源 —— **分支**。用户挑和模型挑共有这一半:选项就是出边、挑中的那条算活、
+   * 其余连同它们的下游一起作废;分开的那一半是"谁来挑"和"能不能当环的闸门"
+   * (见 {@link isBranch} / {@link isModelDeciderNode})。
+   */
+  const choosesEdge = (id: string): boolean => isBranch(id);
+
+  /**
    * 一条边**通不通**。
    *
-   * 非分支节点的出边永远是通的(它就是一条依赖)。**分支节点只"激活"用户选中的那一条**
-   * —— 其余几条连同它们拖着的整条支路一起作废(见下面第 1 步的传播)。
+   * 非分支/决策节点的出边永远是通的(它就是一条依赖)。**挑路的节点只"激活"它选中的
+   * 那一条** —— 其余几条连同它们拖着的整条支路一起作废(见下面第 1 步的传播)。
    *
-   * 还没选(`chosen` 里没有)时返回 `true`:那时分支节点自己还没定案,它的下游本来
-   * 就不会被派发(就绪要求"上游全都成功")。这个返回值只在**分支已经选完**之后才承重。
+   * 还没选(`chosen` 里没有)时返回 `true`:那时这个节点自己还没定案,它的下游本来
+   * 就不会被派发(就绪要求"上游全都成功")。这个返回值只在**它已经选完**之后才承重。
    */
   const edgeLive = (edge: WorkflowEdge): boolean => {
-    if (!isBranch(edge.from)) return true;
+    if (!choosesEdge(edge.from)) return true;
     const pick = chosen.get(edge.from);
     return pick === undefined || pick.edgeId === edge.id;
   };
@@ -899,7 +1042,7 @@ export async function runWorkflow(args: {
    */
   const arrivalOf = (nodeId: string): Arrival | undefined => {
     for (const edge of doc.edges) {
-      if (edge.to !== nodeId || !isBranch(edge.from)) continue;
+      if (edge.to !== nodeId || !choosesEdge(edge.from)) continue;
       const pick = lastPick.get(edge.from);
       if (pick === undefined || pick.edgeId !== edge.id) continue;
       return {
@@ -907,6 +1050,9 @@ export async function runWorkflow(args: {
         label: edgeLabelOf(edge),
         note: (edge.note ?? "").trim(),
         comment: (pick.comment ?? "").trim(),
+        // **这条出路是谁定的。** 模型选的分支没有"他临时补的那句话"(`comment` 恒为
+        // 空),而且下一步看到的措辞必须换个说法 —— 见 `Arrival.by`。
+        by: isModelDeciderNode(edge.from) ? "agent" : "user",
       };
     }
     return undefined;
@@ -978,7 +1124,11 @@ export async function runWorkflow(args: {
     //
     // 这里只管"选成功了"那一种:失败(没有出路 / 选了个不存在的)和 unselected
     // 都**照常发卡** —— 那几种情况下用户需要知道这一步出了什么事。
-    if (branch && outcome.status === "success") {
+    //
+    // ⚠️ **决定权给模型的分支不吃这一条**:它真跑了一轮(和从前的决策节点一样),用户
+    // 没见过什么选择卡,它的结局(含「出路」产出)得照常上报/落流程记录 —— 吞掉的话
+    // 运行历史里这一步是空的,下游也取不到 `{{那一步.出路}}`。
+    if (branch && !isModelDeciderNode(node.id) && outcome.status === "success") {
       publish();
       return;
     }
@@ -1127,6 +1277,89 @@ export async function runWorkflow(args: {
   };
 
   /**
+   * **模型选的分支:跑完了,自己挑一条出边。**
+   *
+   * ## 它与 {@link chooseOne} 的关系
+   *
+   * 前半段完全不同(那边是挂起等用户,这边是真跑了一轮模型),**后半段一模一样**:
+   * 选项就是出边、挑中的那条 `chosen` 记下来、其余连同下游一起作废、进流程记录。所以
+   * 两处共用同一套机器(`branchOptionsOf` / `edgeLive` / `lastPick`),而不是各写一遍
+   * —— 各写一遍的话,"没走的那条路"在两条路径上的传播迟早会长得不一样。
+   *
+   * ## 走向必须是**可校验的**,不能是"它说想去哪"
+   *
+   * 它交出来的「出路」要**一字不改**地对上某条出边的名字(先比选项名、再比目标节点标题,
+   * 去空白、大小写不敏感 —— 见 `matchDecisionOption`)。对不上就是这一步**失败**:含糊
+   * 的走向比一个明确的失败危险得多,后者当场看得见,前者要等下游全跑偏才暴露。
+   *
+   * ## 它**不**透传上游(和"决定权给我"的分支相反)
+   *
+   * 那种分支是"岔路口",它没跑过任何东西,所以产出只能是上游那几段拼起来带过去(否则
+   * 分叉就等于把东西丢了)。而模型选的**真跑了一轮**:产出就是它自己交的那一份 ——
+   * 上游内容它读得到,要不要往下带由它写在产出变量里决定。
+   *
+   * ## 它**不是环的闸门**
+   *
+   * 所以这里不碰 `pendingLoopBack`:环上必须有用户拍板的分支节点(决定权给用户那种)。
+   * 一张环只有模型选的分支的图,在存盘时就被 `validateDag` 拒了(见 `library.ts` 的
+   * `isLoopGate`),真跑到这里也只会以"依赖没有满足(图里是不是有环?)"收场。
+   */
+  const applyDecision = (
+    node: WorkflowNode,
+    options: readonly WorkflowChoiceOption[],
+    checked: NodeOutcome,
+  ): NodeOutcome => {
+    // 失败/取消/`unselected` 直接放行 —— 该报的原因已经报过了。⚠️ **这一步不能在
+    // `chosen` 里留东西**:留着的话它的出边会被当成"选过了",下游**全都跑起来**,而
+    // 这一次的运行其实是失败的(正确的传播是下游 `skipped`)。
+    if (checked.status !== "success") return checked;
+    if (options.length === 0) {
+      return {
+        status: "failed",
+        summary: checked.summary,
+        error: "这个岔路口的决定权在模型,但一根出路都没有 —— 从它往下一步拉几根线,每根线就是一个选项",
+      };
+    }
+    const parsed = checkOutput(checked.summary, [DECIDE_OUTPUT_VAR]);
+    if (!parsed.ok) return { status: "failed", summary: checked.summary, error: parsed.error };
+    const raw = (parsed.value as Record<string, unknown>)[DECIDE_VAR_NAME];
+    const text = typeof raw === "string" ? raw : outputValueText(raw);
+    const label = matchDecisionOption(
+      text,
+      options.map((o) => ({ label: o.label, title: o.next ?? "" })),
+    );
+    if (label === undefined) {
+      return {
+        status: "failed",
+        summary: checked.summary,
+        // 报错要**给出全部可选的名字** —— 这是用户照着改提示词/改边名唯一需要的东西。
+        error: `这一步没有走成任何一条路:它交的「${DECIDE_VAR_NAME}」是「${text.trim()}」,而这次可选的只有 ${options
+          .map((o) => `「${o.label}」`)
+          .join("、")}`,
+      };
+    }
+    // 同名的边取文档顺序第一条 —— 确定性(选项名本来就该是唯一的,重复是用户的疏忽)。
+    const picked = options.find((o) => o.label === label) ?? (options[0] as WorkflowChoiceOption);
+    const pick: BranchChoice = { edgeId: picked.id };
+    chosen.set(node.id, pick);
+    lastPick.set(node.id, pick);
+    // **它自己判的那一条进流程记录**,和用户的选择并列但**分开记**(见
+    // `FlowRecordEntry` 的 `decision` 那一支):下一个助手读到的是"某一步自己判的",
+    // 不是"用户选的" —— 措辞混了,它就会去揣摩一个根本不存在的人的意图。
+    record.push({
+      kind: "decision",
+      from: titleOf(node.id),
+      label: picked.label,
+      note: (picked.note ?? "").trim(),
+    });
+    // 产出里补上「出路」:下游可以 `{{那一步.出路}}` 取到它判了哪条路。
+    return {
+      ...checked,
+      outputs: { ...(checked.outputs ?? {}), [DECIDE_VAR_NAME]: picked.label },
+    };
+  };
+
+  /**
    * **跑这一步之前先问用户一句** —— 节点上开了「运行前先问我」才有这一次。
    *
    * ## 四个选项是代码给的,不是图上的边
@@ -1249,8 +1482,8 @@ export async function runWorkflow(args: {
     // 调度器会把它当成"还没跑"再派发一次,那就是死循环。
     try {
       if (signal.aborted) return cancelled();
-      // 类型没装 / 执行方式没实现 / 参数不齐 —— 三种都**明确失败**,不静默跳过
-      // (见 `@contracts/nodeType` 的 `isRunnerImplemented` 注释)。
+      // 类型没装 / 跑不起来 / 参数不齐 —— 都**明确失败**,不静默跳过
+      // (见 `@contracts/nodeType` 的 `isNodeRunnable` 注释)。
       // 清单是开跑前取的,取不到有两种,话要分开说:**没装这个类型**(别人分享来的图)
       // 和**清单文件坏了**(读的时候抛了)。
       const slot = manifests.get(node.type);
@@ -1261,16 +1494,36 @@ export async function runWorkflow(args: {
       if (!manifest) {
         return { status: "failed", summary: "", error: `节点类型「${node.type}」没有安装` };
       }
-      if (!isRunnerImplemented(manifest.runner.kind)) {
+      if (!isNodeRunnable(manifest)) {
         return {
           status: "failed",
           summary: "",
-          error: `执行方式「${manifest.runner.kind}」还没有实现`,
+          error:
+            manifest.runner.kind === "command" && manifest.runner.entry !== undefined
+              ? "脚本型命令节点(command 自带 runner.entry)还没有实现 —— 把脚本要干的活写进「命令」参数里就能跑"
+              : `执行方式「${manifest.runner.kind}」还没有实现`,
         };
       }
-      // **分支走另一条路**:它没有参数要验(选项在边上,见 `WorkflowEdgeSchema`)、
-      // 没有产出要查、也不建会话。放在参数校验前面,是因为那一整段对它都不成立。
-      if (manifest.runner.kind === "branch") return await chooseOne(node);
+      // **触发器自己不跑东西。** 正常路径下走不到这里:被触发的那个由 `entry` 预置了
+      // 结局,其余的在主循环第 1 步就标了 `unselected`。真派发到它说明**这次运行没有
+      // 说清是哪个触发器起的**(比如把一条自动化当普通工作流跑),或者图被手改坏了
+      // —— 两种情况都该明确失败,而不是让它"跑一个什么都不做的节点"糊过去。
+      if (manifest.runner.kind === "trigger") {
+        return {
+          status: "failed",
+          summary: "",
+          error:
+            "「触发器」是这条自动化的起点,它自己不跑东西 —— 这次运行要说清是哪一个触发器起的",
+        };
+      }
+      // **分支走两条路,决定权说了算**:决定权给用户(默认)就挂起等人 —— 它没有参数
+      // 要验(选项在边上,见 `WorkflowEdgeSchema`)、没有产出要查、也不建会话,那一整段
+      // 对它都不成立。**决定权给模型**的不进这个岔:它和别的步骤一样往下走参数校验
+      // (分支清单现在有「决定权」「选路判据」两个参数,判据还允许留空 —— 兜底在
+      // `nodeInputOf` 里),再落到模型轮那条路上。
+      if (manifest.runner.kind === "branch" && !isModelDeciderNode(node.id)) {
+        return await chooseOne(node);
+      }
       // **解算前再校验一次**:清单可能在这份文档存盘之后改过,老节点身上还带着
       // 旧参数(见 `validateNodeParams` 的注释)。
       const check = validateNodeParams(manifest, node.params);
@@ -1341,6 +1594,11 @@ export async function runWorkflow(args: {
           })
         : undefined;
 
+      // **模型选的分支有哪几条出路** —— 现算,而且**只算一次**:提示词里要它交出
+      // 「出路」(见 `decisionSection`)、产出回来又要拿这个值去比对(见 `applyDecision`),
+      // 两处必须是同一份名单(否则报错里列的名字和提示词里给的可能不是一套)。
+      const decideOptions = isModelDeciderNode(node.id) ? branchOptionsOf(node.id) : [];
+
       const outcome = await ports.execute(
         node,
         manifest,
@@ -1360,13 +1618,18 @@ export async function runWorkflow(args: {
             ...(askAnswer !== undefined
               ? { ask: askSection(titleOf(node.id), askAnswer) }
               : {}),
+            ...(isModelDeciderNode(node.id) ? { decide: { options: decideOptions } } : {}),
             contextLines: ports.contextLines,
           },
           signal,
         ),
       );
       // 产出回来,按**同一份**参数查硬约束。
-      return withOutputCheck(manifest, params, outcome, terminal);
+      const checked = withOutputCheck(manifest, params, outcome, terminal);
+      // **模型选的分支还要再走一步**:它得自己挑一条出边(见 `applyDecision`)。放在
+      // 产出检查**之后** —— 一个连产出都没交齐的节点,去问"它选了哪条路"没有意义。
+      if (!isModelDeciderNode(node.id)) return checked;
+      return applyDecision(node, decideOptions, checked);
     } catch (err) {
       // 执行器自己抛了 = 这个节点失败。**不往上抛** —— 一个节点炸掉不该让整张图
       // 停摆,它的下游会因为依赖不满足而跳过。
@@ -1401,6 +1664,19 @@ export async function runWorkflow(args: {
     let moved = false;
     for (const node of doc.nodes) {
       if (outcomes.has(node.id) || inflight.has(node.id)) continue;
+      // **这次不是它起的那个触发器:没走这条路。**
+      //
+      // 一条自动化可以挂好几个触发器(「每天九点」和「文件改了」),一次运行只由其中一个
+      // 起。其余那些这一次**压根没发生** —— 标 `unselected` 而不是 `skipped`:没有谁失败,
+      // 而两者的传播完全不同(见 `@contracts/nodeType` 的 `NodeOutcomeStatus`)。它独自拖着
+      // 的那条支路会跟着作废,而汇合点因为 `effectiveUpstreamOf` 会忽略 `unselected`,照常跑。
+      //
+      // 被触发的那个开跑前就预置了结局(见 `entry`),所以它在上面那一句 `continue` 里。
+      if (isTrigger(node.id) && node.id !== entry?.nodeId) {
+        settle(node, unselected("这次不是这个触发器起的"));
+        moved = true;
+        continue;
+      }
       const all = deps.get(node.id) ?? [];
       if (all.length === 0) continue; // 根节点没有"来路"可言,永远走得到。
       // **一条有效来路都没有** = 这一步不在用户走的那条路上。两种来源在这里合流了:

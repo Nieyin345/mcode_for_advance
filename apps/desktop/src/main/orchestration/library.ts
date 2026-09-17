@@ -23,10 +23,16 @@
 
 import type { WorkflowDoc, WorkflowListEntry } from "@contracts/workflow";
 import { validateDag } from "@contracts/workflow";
-import { validateNodeParams } from "@contracts/nodeType";
+import type { NodeTypeManifest } from "@contracts/nodeType";
+import {
+  deciderOf,
+  parseTriggerSpec,
+  validateNodeParams,
+  WORKFLOW_TRIGGER_OF_TRIGGER_KIND,
+} from "@contracts/nodeType";
 import { validateOutputRules } from "@contracts/outputConstraint";
 import { WorkflowRepo } from "@main/store/repositories.js";
-import { BUILTIN_WORKFLOWS, getBuiltinWorkflow, isBuiltinWorkflowId } from "./builtins.js";
+import { BUILTIN_WORKFLOWS, getBuiltinWorkflow } from "./builtins.js";
 import { loadNodeTypes } from "./nodeTypes.js";
 
 function summarize(doc: WorkflowDoc, builtin: boolean, edited: boolean): WorkflowListEntry {
@@ -56,9 +62,13 @@ export function listWorkflows(): WorkflowListEntry[] {
       : summarize(builtinDoc, true, false);
   });
 
-  // 自建的按表里的顺序(WorkflowRepo.list 已经按 sort_order 排好)
+  // 自建的按表里的顺序(WorkflowRepo.list 已经按 sort_order 排好)。
+  // 判重按**内置文档的实际 id 集合**,不是 `isBuiltinWorkflowId`:守望模板(`watch`)
+  // 是内置的,但故意不在 `BUILTIN_WORKFLOW_IDS` 里(那是对话模式下拉的名单,见
+  // `builtins.ts`)—— 按那份名单判的话,它的覆盖行会在下面再列一次。
+  const builtinIds = new Set(BUILTIN_WORKFLOWS.map((d) => d.id));
   for (const row of rows) {
-    if (isBuiltinWorkflowId(row.id)) continue;
+    if (builtinIds.has(row.id)) continue;
     out.push(summarize(row.doc, false, false));
   }
   return out;
@@ -102,10 +112,15 @@ export async function saveWorkflow(doc: WorkflowDoc): Promise<SaveResult> {
   //
   // 认不出的类型不算岔路口:一份引用了没装类型的工作流能存(见上面那条),而它要是
   // 恰好成了某个环的闸门,那个环就按"没闸门"拒 —— 拒了才知道要装什么,比存下来跑不动强。
+  //
+  // **闸门必须是"决定权给用户"的分支。** 决定权给模型的那种分支(见 `@contracts/nodeType`
+  // 的 `deciderOf`)不能回头:它自己判完自己转,没有人拦得住 —— 那正是环闸门要防的事。
   const check = validateDag(doc.nodes, doc.edges, {
     isLoopGate: (id) => {
       const node = doc.nodes.find((n) => n.id === id);
-      return node !== undefined && types.get(node.type)?.runner.kind === "branch";
+      if (node === undefined) return false;
+      const manifest = types.get(node.type);
+      return manifest !== undefined && manifest.runner.kind === "branch" && deciderOf(node.params) !== "model";
     },
   });
   if (!check.ok) return check;
@@ -126,8 +141,68 @@ export async function saveWorkflow(doc: WorkflowDoc): Promise<SaveResult> {
     }
   }
 
-  WorkflowRepo.save({ ...doc, updatedAt: Date.now() });
+  const derived = deriveTrigger(doc, types);
+  if (!derived.ok) return derived;
+
+  WorkflowRepo.save({ ...derived.doc, updatedAt: Date.now() });
   return { ok: true };
+}
+
+/**
+ * 把 `trigger` 那个字段从**触发器节点**反推出来。
+ *
+ * ## 为什么要有这一步
+ *
+ * `trigger` 在这一版**降级成了一个开关**(见 `@contracts/workflow` 的文件头):它不再有
+ * 独立的真相 —— 列表分栏、MCP、i18n 那些照旧读它,而它的值一律从图上的触发器节点推。
+ * 两处都能写的话,迟早出现"图上是个定时任务、列表里显示成事件触发"。
+ *
+ * ## 三条规则,每条都挡一个真问题
+ *
+ *  - **一个触发器都没有** → 删掉这个字段。它就是个普通工作流了,列表该分到另一栏。
+ *  - **触发器有入边** → 报错。触发器是这次运行的**起点**(见 `scheduler.ts` 的 `entry`),
+ *    它上游那些节点永远不会跑 —— 用户会以为图坏了,而图上看起来一切正常。
+ *  - **参数不过 {@link parseTriggerSpec}** → 原样把那个错报出去。存下一份**永远不响**的
+ *    自动化是最难查的一类问题:cron 写错、glob 写空都不会当场报错,只会安安静静地不跑。
+ *
+ * 一条自动化可以有多个触发器(它们在后台各听各的),而 `trigger` 只有一个值,所以按
+ * **文档顺序取第一个** —— 分栏只需要知道"它是不是自动化、大概是哪一种"。
+ *
+ * 返回的是一份**新的 doc**(不修改入参):`saveWorkflow` 存的就是这一份。写成纯函数是为了
+ * 冒烟能直接断言它,而不必去碰数据库(它也就因此不 import `automationRunner`,那个会拉到
+ * electron —— 见 `main/ipc/orchestration.ts` 那处 reload 的注释)。
+ */
+export function deriveTrigger(
+  doc: WorkflowDoc,
+  types: Map<string, NodeTypeManifest>,
+): { ok: true; doc: WorkflowDoc } | { ok: false; error: string } {
+  const triggers = doc.nodes.filter((n) => types.get(n.type)?.runner.kind === "trigger");
+
+  if (triggers.length === 0) {
+    if (doc.trigger === undefined) return { ok: true, doc };
+    const cleared: WorkflowDoc = { ...doc };
+    delete cleared.trigger;
+    return { ok: true, doc: cleared };
+  }
+
+  const first = triggers[0];
+  const where = `触发器「${first.title || first.id}」`;
+
+  // 触发器是这次运行的起点,上面不该有东西。判据是**边**,不是节点上的字段(依赖的
+  // 真相是 `edges`,见 `@contracts/workflow` 的说明)。
+  if (doc.edges.some((e) => e.to === first.id)) {
+    return {
+      ok: false,
+      error: `${where}有上游节点 —— 触发器是这次运行的起点,它等的那件事发生时整张图就从它开始跑,所以它前面不能接别的步骤`,
+    };
+  }
+
+  const manifest = types.get(first.type);
+  if (manifest === undefined) return { ok: true, doc }; // 认不出的类型不算错(同上面那条)
+  const check = parseTriggerSpec(manifest, first.params);
+  if (!check.ok) return { ok: false, error: `${where}:${check.error}` };
+
+  return { ok: true, doc: { ...doc, trigger: WORKFLOW_TRIGGER_OF_TRIGGER_KIND[check.spec.kind] } };
 }
 
 /**
@@ -140,7 +215,9 @@ export async function saveWorkflow(doc: WorkflowDoc): Promise<SaveResult> {
  * (「已恢复默认」而不是「已删除」)。
  */
 export function removeWorkflow(id: string): { ok: boolean; wasBuiltin: boolean } {
-  const wasBuiltin = isBuiltinWorkflowId(id);
+  // 按**内置文档的实际集合**判,不用 `isBuiltinWorkflowId`:守望模板是内置的
+  // (删除它的覆盖行 = 恢复默认),但它不在 `BUILTIN_WORKFLOW_IDS` 里。
+  const wasBuiltin = getBuiltinWorkflow(id) !== undefined;
   WorkflowRepo.remove(id);
   return { ok: true, wasBuiltin };
 }

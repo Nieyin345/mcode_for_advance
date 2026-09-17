@@ -129,6 +129,9 @@ export interface ContextLine extends ContextRef {
  * 两个库连根目录都不是同一个。所以这不是一条要维护的规则,是两个库本来就有的区别。
  */
 export function contextPurposeOf(kind: NodeContextKind): "material" | "format" {
+  // 注册表接上后,自定义类型按它自己声明的 purpose 走;没接(冒烟)或没注册的
+  // kind,退回老的内置判据 —— 行为与统一前逐字一致。
+  if (activeRegistry) return activeRegistry.purpose(kind);
   return isLibraryKind(kind) ? "material" : "format";
 }
 
@@ -244,6 +247,37 @@ export const KIND_LABEL: Record<NodeContextKind, string> = {
   code: "代码模版",
   image: "配图模版",
 };
+
+/**
+ * **类型注册表的可选扩展点**(统一资料库,见 `@contracts/libraryTypes`)。
+ *
+ * 本模块是**纯的**(无头冒烟直接打包运行),不能 import 主进程的 DB;而统一库之后
+ * kind 开放注册 —— 用户自建的类型,它的"用途"(material/format)和"显示名"只有
+ * 注册表知道。所以这里留一个注册口:宿主(`runner.ts`)启动时把注册表的读法交进来,
+ * 之后 `contextPurposeOf` / `kindLabel` 对自定义类型就能给出正确答案。**没注册时
+ * 全部走内置判据**,行为与统一前逐字一致 —— 冒烟正是靠这一点不接注册表也照跑。
+ */
+export interface ContextKindRegistry {
+  /** 一类的显示名(注册表的 `name`)。 */
+  label(kind: string): string;
+  /** 一类的用途:给 AI 读的资料,还是让 AI 照着写的格式。 */
+  purpose(kind: string): "material" | "format";
+}
+
+let activeRegistry: ContextKindRegistry | null = null;
+
+/** 宿主启动时调用(幂等,传 null 退回内置判据)。**只接受这一条注入路径** ——
+ *  别在本模块里直接 import 主进程的 store,那会把纯模块拖下水。 */
+export function setContextKindRegistry(registry: ContextKindRegistry | null): void {
+  activeRegistry = registry;
+}
+
+/** 一类在提示词里的显示名:注册表优先,内置表兜底,**最后退回 kind 原文** ——
+ *  显示一个没见过的 id 也比显示 undefined 强。 */
+export function kindLabel(kind: NodeContextKind): string {
+  if (activeRegistry) return activeRegistry.label(kind);
+  return KIND_LABEL[kind] ?? kind;
+}
 
 /** 一条清单覆盖的范围 → 提示词里那个词。见 {@link ContextLevel}。 */
 export const LEVEL_LABEL: Record<ContextLevel, string> = {

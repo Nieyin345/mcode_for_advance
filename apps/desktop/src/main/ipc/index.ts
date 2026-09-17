@@ -17,6 +17,7 @@ import { registerShellHandlers } from "./shell.js";
 import { registerUpdaterHandlers } from "./updater.js";
 import { registerSkillsHandlers } from "./skills.js";
 import { registerMcpHandlers } from "./mcp.js";
+import { registerContextHandlers } from "./context.js";
 import { registerOutputStyleHandlers } from "./outputStyle.js";
 import { registerUsageHandlers } from "./usage.js";
 import { registerLspHandlers } from "./lsp.js";
@@ -77,6 +78,7 @@ export function registerIpcHandlers(): void {
   registerUpdaterHandlers(ipc);
   registerSkillsHandlers(ipc);
   registerMcpHandlers(ipc);
+  registerContextHandlers(ipc);
   registerOutputStyleHandlers(ipc);
   registerUsageHandlers(ipc);
   registerLspHandlers(ipc);

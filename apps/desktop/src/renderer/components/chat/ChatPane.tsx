@@ -24,6 +24,7 @@ import { useLibraryStore } from "@renderer/stores/libraryStore.js";
 import { api } from "@renderer/lib/api.js";
 import { findNormalizedTextRange, highlightRange } from "@renderer/lib/textFind.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { filterSkillsForEngine } from "@renderer/lib/engineFilter.js";
 import { useNow } from "@renderer/hooks/useNow.js";
 import { useComposerRowFit } from "@renderer/hooks/useComposerRowFit.js";
 import type { SubagentSnapshot } from "@contracts/runtime";
@@ -67,6 +68,7 @@ import { TagPopover } from "./TagPopover.js";
 import { FileMentionPicker, type FileMentionPickerMode } from "./FileMentionPicker.js";
 import { LibraryPicker } from "./LibraryPicker.js";
 import { SearchFilterBar } from "./SearchFilterBar.js";
+import { NodeOptionsDropdown } from "./NodeOptionsDropdown.js";
 import { templateAttachChipLabel } from "@renderer/lib/templateLabels.js";
 import { libraryAttachChipLabel } from "@renderer/lib/libraryLabels.js";
 import { TemplatePicker } from "./TemplatePicker.js";
@@ -2211,8 +2213,15 @@ function ChatPaneForSession({
     sessionId ? s.chatFileQueueBySession[sessionId] ?? EMPTY_CHAT_QUEUE : EMPTY_CHAT_QUEUE,
   );
   // Cached skill list for the `/` menu. Loaded per active project by the store
-  // (initDeferred + selectProject); read here as a stable reference.
-  const skills = useSessionStore((s) => s.skills);
+  // (initDeferred + selectProject); read here as a stable reference. Filtered
+  // to what the CURRENT session's engine may load (per-engine matrix) — a
+  // skill taken away from this engine must not show up in its picker.
+  const allSkills = useSessionStore((s) => s.skills);
+  const pickerProviderId = useSessionStore((s) => s.providerId);
+  const skills = useMemo(
+    () => filterSkillsForEngine(allSkills, pickerProviderId),
+    [allSkills, pickerProviderId],
+  );
   const drainChatFileQueue = useSessionStore((s) => s.drainChatFileQueue);
   useEffect(() => {
     if (chatFileQueue.length === 0) return;
@@ -4077,10 +4086,19 @@ function ChatPaneForSession({
                 ))}
               </div>
             )}
-            {/* 文献检索的固定条件(时间/期刊层次/影响因子/每源条数)。只在这个模式
-                下出现 —— 其余四个模式一次也用不到,常驻只会占地方。用户在别处挂的
-                附件不受影响,它是独立的一行。 */}
-            {workflowId === "search" && <SearchFilterBar />}
+            {/* 固定条件条(输入框上方那排下拉):条件表长在**主对话节点**的参数上,
+                任何图型工作流配了条件它都出现;检索流程的主节点没条件表时退回写死的
+                四个(旧存档兜底)。其余情况整条不渲染,组件自己管。 */}
+            <SearchFilterBar workflowId={workflowId} />
+            {/* 主代理「输入选项」的下拉框 —— 用图聊天、且主代理配了选项才出现。
+                内容插进光标处由这里收口(它才有编辑器 ref),选项本身归组件管。 */}
+            <NodeOptionsDropdown
+              workflowId={workflowId}
+              onPick={(text) => {
+                editorRef.current?.insertText(text);
+                requestAnimationFrame(() => editorRef.current?.focus());
+              }}
+            />
             {/* Editor-level boundary: a Tiptap render crash here used to take
                 down the whole tree (logged 2026-09-07 <ComposerEditor2>). The
                 fallback card loses the input box but keeps the app alive —

@@ -18,8 +18,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Menu } from "@base-ui/react/menu";
 import type { LibraryItem, DownloadJob, PdfState, LibraryKind } from "@contracts/library";
 import { derivePdfState } from "@contracts/library";
+import { BUILTIN_LIBRARY_TYPES, type LibraryTypeMeta } from "@contracts/libraryTypes";
 import type { CitationStyle } from "@contracts/citation";
-import { LIBRARY_KIND_LABEL } from "@renderer/lib/libraryLabels.js";
+import { kindLibraryLabel } from "@renderer/lib/libraryLabels.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import type { MessageId } from "@renderer/lib/i18n/core.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
@@ -29,6 +30,8 @@ import { cn } from "@renderer/lib/cn.js";
 import {
   IconArrowLeft,
   IconBook,
+  IconFilePlus,
+  IconFolderPlus,
   IconSearch,
   IconShare,
   IconUpload,
@@ -38,12 +41,13 @@ import { ItemList } from "./ItemList.js";
 import { ItemDetail } from "./ItemDetail.js";
 import { MarkdownPreview } from "./MarkdownPreview.js";
 import { PdfPreview } from "./PdfPreview.js";
+import { FilePreview } from "./FilePreview.js";
 import { NoteEditor } from "./NoteEditor.js";
 import { SearchPanel } from "./SearchPanel.js";
 import { ImportBar } from "./ImportPanel.js";
 
 /** 详情屏的标签。取值域与 `libraryStore.detailTab` 一致。 */
-type DetailTab = "meta" | "preview" | "pdf" | "edit";
+type DetailTab = "meta" | "preview" | "pdf" | "file" | "edit";
 
 /** 面板当前展示哪一屏。窄栏一次只显示一屏。 */
 type Screen = { kind: "list" } | { kind: "detail" } | { kind: "search" };
@@ -59,7 +63,7 @@ const EXPORT_LABEL: Record<CitationStyle, MessageId> = {
 };
 
 export function LibraryPanel() {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const activeCollectionId = useLibraryStore((s) => s.activeCollectionId);
   const activeKind = useLibraryStore((s) => s.activeKind);
   const collections = useLibraryStore((s) => s.collections);
@@ -97,6 +101,16 @@ export function LibraryPanel() {
   const [lastExportStyle, setLastExportStyle] = useState<CitationStyle>("bibtex");
 
   const activeCollection = collections.find((c) => c.id === activeCollectionId) ?? null;
+
+  // 类型注册表 —— 「全部<库>」的下拉标签要按注册表的名字显示(用户可改名)。
+  // 拉一次;失败就退内置 8 类,不阻塞面板。
+  const [typeMetas, setTypeMetas] = useState<readonly LibraryTypeMeta[]>(BUILTIN_LIBRARY_TYPES);
+  useEffect(() => {
+    void api.library
+      .typesGet({})
+      .then((res) => setTypeMetas(res.types))
+      .catch(() => {});
+  }, []);
 
   const refresh = useCallback(async () => {
     const [listRes, jobRes] = await Promise.all([
@@ -142,9 +156,6 @@ export function LibraryPanel() {
 
   useEffect(() => {
     void loadCollections();
-    // 文献检索的固定条件也在这里读一次 —— 它和分类树一样属于"应用起来就该就位"的
-    // 状态,而且筛选条可能在用户从没打开过这个面板时就显示了。
-    void useLibraryStore.getState().loadSearchPrefs();
   }, [loadCollections]);
 
   // 下载状态推送:终态时重拉,拿回真实 pdfPath
@@ -213,6 +224,12 @@ export function LibraryPanel() {
    */
   const tabs: readonly DetailTab[] = useMemo(() => {
     if (!activeItem) return ["meta"];
+    // 通用文件条目(linked/attached)有 filePath:给一个「文件」页展示本体 ——
+    // 它没有 PDF 状态与转录那一套,老的三页(元数据/原文/PDF)在这里不成立;
+    // 笔记即使带着文件也仍要能进编辑器。
+    if (activeItem.filePath) {
+      return activeItem.kind === "note" ? ["edit", "preview", "file"] : ["meta", "file"];
+    }
     const base: readonly DetailTab[] =
       activeItem.kind === "note" ? ["edit", "preview"] : ["meta", "preview", "pdf"];
     return base.filter((tab) => tab !== "pdf" || Boolean(activeItem.pdfPath));
@@ -326,6 +343,48 @@ export function LibraryPanel() {
     }
   };
 
+  /**
+   * 通用导入:任意文件 / 文件夹以 **linked** 方式进库(文件留在原地,库只记路径;
+   * attached 是复制进库,主进程留给迁移用,UI 不开放)。归属当前选中的分类和
+   * 当前这个类型 —— 与拖 PDF 进来的行为一致:在哪个库视图里导入,就进哪个库。
+   */
+  const importGeneric = useCallback(
+    async (pick: "files" | "folder") => {
+      let paths: string[] = [];
+      if (pick === "folder") {
+        const res = await api.pickFolder();
+        paths = res.path ? [res.path] : [];
+      } else {
+        const res = await api.pickFiles({});
+        paths = res.paths;
+      }
+      if (paths.length === 0) return;
+      setBusy(true);
+      setDropMsg(null);
+      try {
+        const res = await api.library.importGeneric({
+          paths,
+          mode: "linked",
+          collectionIds: activeCollectionId ? [activeCollectionId] : undefined,
+          kind: activeKind,
+        });
+        const parts = [
+          t("library.import.genericResult", { added: res.added, skipped: res.skipped }),
+        ];
+        if (res.errors.length > 0) {
+          parts.push(t("library.import.genericErrors", { n: res.errors.length }));
+        }
+        setDropMsg(parts.join(" · "));
+        await refresh();
+        await loadCollections();
+        await refreshItems();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [activeCollectionId, activeKind, refresh, loadCollections, refreshItems, t],
+  );
+
   /** 拖入时覆盖在列表上的提示 —— 不然用户不知道松手会发生什么。 */
   const dropOverlay = dragOver && (
     <div className="pointer-events-none absolute inset-2 z-10 flex items-center justify-center rounded-md border-2 border-dashed border-accent bg-surface/90">
@@ -375,15 +434,17 @@ export function LibraryPanel() {
                   )}
                 >
                   {tab === "meta"
-                    ? // 教材那一页里只剩"PDF 状态 + 转换 + 笔记",叫元数据就不准了
+                    ? // 教材那一页里只剩"PDF 状态 + 转录 + 笔记",叫元数据就不准了
                       activeItem.kind === "textbook"
                       ? t("library.detail.overview")
                       : t("library.detail.meta")
                     : tab === "preview"
                       ? t("library.detail.preview")
-                      : tab === "pdf"
-                        ? t("library.detail.pdf")
-                        : t("library.note.edit")}
+                      : tab === "file"
+                        ? t("library.detail.file")
+                        : tab === "pdf"
+                          ? t("library.detail.pdf")
+                          : t("library.note.edit")}
                 </button>
               ))}
           </div>
@@ -393,6 +454,8 @@ export function LibraryPanel() {
             <NoteEditor item={activeItem} onChanged={() => void refresh()} />
           ) : shownTab === "pdf" && activeItem.pdfPath ? (
             <PdfPreview item={activeItem} />
+          ) : shownTab === "file" && activeItem.filePath ? (
+            <FilePreview item={activeItem} />
           ) : shownTab === "preview" ? (
             <MarkdownPreview item={activeItem} />
           ) : (
@@ -455,8 +518,9 @@ export function LibraryPanel() {
           onChange={(e) => setActiveCollection(e.target.value || null)}
           className="min-w-0 flex-1 cursor-pointer truncate rounded border border-transparent bg-transparent px-1 py-0.5 text-xs font-medium text-content hover:border-edge focus:border-accent focus:outline-none"
         >
-          {/* 「全部」= 不限定分类,仍然限定在**当前这个库**里。放在第一项,它是默认视图。 */}
-          <option value="">{t("library.view.allInKind", { kind: t(LIBRARY_KIND_LABEL[activeKind]) })}</option>
+          {/* 「全部」= 不限定分类,仍然限定在**当前这个库**里。放在第一项,它是默认视图。
+              库名按注册表显示(用户可改名,拿不到 i18n key 的自定义类也认得出)。 */}
+          <option value="">{t("library.view.allInKind", { kind: kindLibraryLabel(activeKind, typeMetas, locale) })}</option>
           {collections
             .filter((c) => c.kind === activeKind)
             .map((c) => (
@@ -483,6 +547,24 @@ export function LibraryPanel() {
         >
           <IconUpload size={13} />
           {t("library.action.import")}
+        </button>
+        {/* 通用导入:任意文件 / 文件夹进统一资料库(linked)。工具栏只有 400px 宽,
+            两个图标按钮,悬停看全称。 */}
+        <button
+          onClick={() => void importGeneric("files")}
+          title={t("library.action.importFiles")}
+          disabled={busy}
+          className="shrink-0 rounded p-1 text-content-muted hover:bg-surface-hover hover:text-content disabled:opacity-50"
+        >
+          <IconFilePlus size={14} />
+        </button>
+        <button
+          onClick={() => void importGeneric("folder")}
+          title={t("library.action.importFolder")}
+          disabled={busy}
+          className="shrink-0 rounded p-1 text-content-muted hover:bg-surface-hover hover:text-content disabled:opacity-50"
+        >
+          <IconFolderPlus size={14} />
         </button>
         {/* 导出引用 —— 三种格式放一个菜单里。做成图标按钮:工具栏只有 400px 宽,
             两个中文文字标签会把它挤爆,而导入比导出用得多,标签留给导入。 */}
