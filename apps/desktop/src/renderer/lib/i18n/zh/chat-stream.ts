@@ -102,6 +102,8 @@ export const zh = {
   "chatStream.workflowAsk.confirm": "就按这个来",
   // 关掉弹窗**不等于放弃** —— 聊天里那张卡还在，点它一样能选。
   "chatStream.workflowAsk.dismiss": "先放一放",
+  // 后面还排着几问。几个节点可以同时提问，`{n}` 是**不含当前这一问**的个数。
+  "chatStream.workflowAsk.queued": "后面还排着 {n} 问",
 
   // ── 右栏的「运行看板」(见 `components/chat/WorkflowBoardPanel.tsx`)──
   // 它和上面那些卡**看的是同一件事,但时候不同**:卡片是**收场后**才画的,而看板在

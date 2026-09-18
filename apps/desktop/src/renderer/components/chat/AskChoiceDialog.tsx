@@ -41,22 +41,34 @@ const EMPTY: ChatMessage[] = [];
 /**
  * 当前**还在等**的那一问(`ask` 那一类,且还没选)。
  *
- * 从后往前找:同时等着的可能有几处(它们互不依赖,见 `RunPorts.choose`),但**最近
- * 一次问的那个**才是用户此刻该看的 —— 弹窗一次只摆一个,先来后到在界面上说不清。
- * 前面那些没关掉之前,它们各自的卡还在聊天流里。
+ * **从前往后找 —— 先问的先答。** 几个节点可以同时挂在那儿等(它们互不依赖,见
+ * `RunPorts.choose`),而用户说的是"按照顺序排队":一个接一个,先来的先处理。
+ * 从后往前找是"后来的插队" —— 后来的问个不停时,最早那一问永远轮不上,而它挂着的
+ * 那个节点也永远不往下走。
+ *
+ * 答过的那一问 `chosen` 有值,自然被跳过;所以这个函数返回的就是**队列的头**。
  */
 function pendingAskOf(messages: readonly ChatMessage[]): ChoiceBlock | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (!m) continue;
-    for (let j = m.blocks.length - 1; j >= 0; j--) {
-      const b = m.blocks[j];
+  for (const m of messages) {
+    for (const b of m.blocks) {
       if (b && b.kind === "workflow-branch-choice" && b.ask === true && b.chosen === undefined) {
         return b;
       }
     }
   }
   return null;
+}
+
+/** 队列里还有几问(含正在显示的这一问)。给用户一个"后面还排着"的提示 ——
+ *  没有它的话,答完一问答出下一问会像是"它又问我一遍"。 */
+function queuedAsksOf(messages: readonly ChatMessage[]): number {
+  let n = 0;
+  for (const m of messages) {
+    for (const b of m.blocks) {
+      if (b && b.kind === "workflow-branch-choice" && b.ask === true && b.chosen === undefined) n++;
+    }
+  }
+  return n;
 }
 
 export function AskChoiceDialog() {
@@ -66,6 +78,8 @@ export function AskChoiceDialog() {
     s.activeSessionId === null ? EMPTY : (s.messagesBySession[s.activeSessionId] ?? EMPTY),
   );
   const pending = useMemo(() => pendingAskOf(messages), [messages]);
+  /** 后面还排着几问(不含正在显示的这一问)。 */
+  const behind = useMemo(() => Math.max(0, queuedAsksOf(messages) - 1), [messages]);
 
   /** 哪一问被"先放一放"收起来了。**按 runId:nodeId:attempt 认** —— 换一问就该重新弹。 */
   const [dismissed, setDismissed] = useState<string | null>(null);
@@ -143,6 +157,13 @@ export function AskChoiceDialog() {
             {pending.attempt > 1 ? (
               <span className="shrink-0 rounded bg-surface-muted px-1 text-[11px] text-content-subtle">
                 {t("chatStream.workflowChoice.round", { n: pending.attempt })}
+              </span>
+            ) : null}
+            {/* 后面还排着几问。**必须说出来** —— 几个节点同时提问时,用户答完这一问答出
+                下一问,不知道排队这回事的话会觉得"它怎么又问一遍"。 */}
+            {behind > 0 ? (
+              <span className="shrink-0 rounded bg-surface-muted px-1 text-[11px] text-content-subtle">
+                {t("chatStream.workflowAsk.queued", { n: behind })}
               </span>
             ) : null}
           </div>

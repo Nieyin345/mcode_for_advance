@@ -103,6 +103,8 @@ export const en = {
   "chatStream.workflowAsk.confirm": "Go with this",
   // Closing the dialog is **not** giving up: the card is still in the chat.
   "chatStream.workflowAsk.dismiss": "Later",
+  // More questions are waiting behind this one. `{n}` excludes the current one.
+  "chatStream.workflowAsk.queued": "{n} more waiting",
 
   // ── The right-panel run board (see `components/chat/WorkflowBoardPanel.tsx`) ──
   // It watches the SAME thing as the cards above, but at a different time: a card is
