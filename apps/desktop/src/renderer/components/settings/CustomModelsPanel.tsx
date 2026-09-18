@@ -115,7 +115,7 @@ const PROTOCOL_OPTIONS: { value: Protocol; labelKey: MessageId; icon: ReactNode 
  */
 const WEB_SITE_OPTIONS: { value: string; label: string; defaultModelId: string; driver: boolean }[] = [
   { value: "deepseek", label: "DeepSeek 网页版", defaultModelId: "deepseek-web", driver: true },
-  { value: "chatgpt", label: "ChatGPT 网页版", defaultModelId: "chatgpt-web", driver: false },
+  { value: "chatgpt", label: "ChatGPT 网页版", defaultModelId: "chatgpt-web", driver: true },
 ];
 
 /**

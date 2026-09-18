@@ -428,16 +428,18 @@ check(
 
 /* ───────────── 站点目录与驱动闸门 ─────────────── */
 
-// 「站点可配」与「扩展能驱动它」是两件事:目录里先立条目是为了让用户配得下、存得下,
-// 驱动没实现时必须**在 mcode 这一侧**就拒绝并说清原因 —— 放过去只会得到一句来自
-// 扩展站点白名单的、与站点无关的报错。
+// 「站点可配」与「扩展能驱动它」是两件事。目录里没有的要在 mcode 这侧就拒；
+// 目录里有且驱动已实现（两个站点现在都是）则放行转发。`webUpstream` 里那个
+// "有目录但 driver:false → 400 扩展还不支持" 的分支如今没有任何真实站点会走到
+// （chatgpt 的驱动已在扩展仓库补齐），它作为将来"先立目录、后补驱动"的防御
+// 分支保留，由契约层注释与 `webSiteDriven` 的查表逻辑覆盖。
 
 {
   eq("目录里有 deepseek", webSiteById("deepseek")?.label, "DeepSeek");
   eq("目录里有 chatgpt", webSiteById("chatgpt")?.label, "ChatGPT");
   check("chatgpt 的首页指向 chatgpt.com", (webSiteById("chatgpt")?.homeUrl ?? "").includes("chatgpt.com"));
   check("deepseek 有驱动", webSiteDriven("deepseek"));
-  check("chatgpt 还没驱动", !webSiteDriven("chatgpt"));
+  check("chatgpt 已有驱动", webSiteDriven("chatgpt"));
   check("不认识的站点一律没驱动", !webSiteDriven("no-such-site") && !webSiteDriven(undefined));
 
   // 目录里没有的站点:老那条路仍然按"配置无效"拒。
@@ -452,21 +454,29 @@ check(
   eq("不认识的站点 400", unknown.state.status, 400);
   check("报错带上站点名", unknown.body().includes("no-such-site"), unknown.body());
 
-  // 目录里有、驱动没有:拒,且原因指向扩展。
-  const undriven = makeReqRes();
-  await handleWebMessages(
-    undriven.req,
-    undriven.res,
-    { model: "chatgpt-web", max_tokens: 16, stream: false, messages: [] } as AnthropicRequest,
+  // chatgpt 已驱动:mcode 侧不拦,请求原样转发给扩展 —— 端到端走同一座假桥,
+  // 和上面 deepseek 的非流式测试同一条链路。
+  const driven = makeReqRes();
+  const drivenRun = handleWebMessages(
+    driven.req,
+    driven.res,
+    {
+      model: "chatgpt-web",
+      max_tokens: 16,
+      stream: false,
+      messages: [{ role: "user", content: "chatgpt 一轮" }],
+    } as AnthropicRequest,
     { ...WEB_UPSTREAM, webSiteId: "chatgpt" },
     null,
   );
-  eq("未驱动的站点 400", undriven.state.status, 400);
-  check(
-    "报错说清是扩展不支持(而不是站点不存在)",
-    undriven.body().includes("ChatGPT") && undriven.body().includes("驱动"),
-    undriven.body(),
-  );
+  const drivenPrompt = await ext.next();
+  eq("chatgpt 的请求到达扩展", drivenPrompt?.event, "prompt");
+  eq("转发携带 chatgpt 站点", drivenPrompt?.data.siteId, "chatgpt");
+  await postEvent(url, token, { type: "delta", turnId: drivenPrompt?.data.turnId, text: "GPT 答案" });
+  await postEvent(url, token, { type: "done", turnId: drivenPrompt?.data.turnId });
+  await withDeadline("chatgpt turn", drivenRun);
+  eq("chatgpt 过闸门后 200", driven.state.status, 200);
+  check("答案来自扩展流", driven.body().includes("GPT 答案"), driven.body());
 }
 
 /* ───────────── first-turn environment block, injected once per sessionKey ─────────────── */

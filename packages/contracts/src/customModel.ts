@@ -305,9 +305,9 @@ export interface WebSite {
 /** **顺序即 UI 顺序**，第一项是默认站点。 */
 export const WEB_SITES: readonly WebSite[] = [
   { id: "deepseek", label: "DeepSeek", homeUrl: "https://chat.deepseek.com", driver: true },
-  // ChatGPT 网页版：条目先立起来（用户选得到、配置存得下），驱动实现住在扩展
-  // 仓库的 `core/chatgpt/`，补齐前 driver 为 false。
-  { id: "chatgpt", label: "ChatGPT", homeUrl: "https://chatgpt.com", driver: false },
+  // ChatGPT 网页版：驱动已落在扩展仓库 `core/chatgpt/`（chatgpt-client.ts +
+  // sentinel.ts + page-context.ts），driver 翻 true —— 选中即可开跑。
+  { id: "chatgpt", label: "ChatGPT", homeUrl: "https://chatgpt.com", driver: true },
 ];
 
 /** 该站点在浏览器扩展里有没有可用的驱动。未知 id 一律 false（快速失败，
