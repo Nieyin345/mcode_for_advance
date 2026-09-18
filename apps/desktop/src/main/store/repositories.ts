@@ -25,6 +25,7 @@ import type {
   LibraryKind,
   LibraryCollection,
   LibraryNote,
+  LibraryItemLink,
   InstitutionProfile,
   DownloadJob,
   DownloadStatus,
@@ -2568,5 +2569,112 @@ export const LongTaskRepo = {
     ]);
     persist();
     return LongTaskRepo.get(id);
+  },
+};
+
+/* ─────────────────────────────── 条目关联 ─────────────────────────────── */
+/* 见 contracts/src/library.ts 的 `LibraryItemLink`,以及 db.ts 里那张表的注释。
+   形状是「一条条目 → 一批目标」,不是两两配对。 */
+
+interface LinkRow {
+  id: string;
+  item_id: string;
+  target_item_id: string | null;
+  target_path: string | null;
+  created_at: number;
+}
+
+function rowToLink(r: LinkRow): LibraryItemLink {
+  return {
+    id: r.id,
+    itemId: r.item_id,
+    // 两列恰好有一列非空(表上有 CHECK)。读的时候按同一个规则还原成可选字段。
+    ...(r.target_item_id !== null ? { targetItemId: r.target_item_id } : {}),
+    ...(r.target_path !== null ? { targetPath: r.target_path } : {}),
+    createdAt: r.created_at,
+  };
+}
+
+export const LibraryLinkRepo = {
+  /**
+   * 这条条目关联出去的全部目标,**以及指向它的那些**(反向)。
+   *
+   * 两个方向一起给,是因为界面上「关联」区要能双向看见:用户给 A 挂了 B,
+   * 打开 B 的时候也该看到"它被 A 关联着" —— 否则他会在 B 上再挂一次 A,
+   * 而那是同一条关系的两个方向。
+   *
+   * 返回里 `direction` 说明每一条是从哪边看过去的。
+   */
+  linksOf(itemId: string): Array<LibraryItemLink & { direction: "out" | "in" }> {
+    const db = getDb();
+    const out: Array<LibraryItemLink & { direction: "out" | "in" }> = [];
+    const stmt = db.prepare(
+      "SELECT * FROM library_item_links WHERE item_id = ? OR target_item_id = ?",
+    );
+    stmt.bind([v(itemId), v(itemId)]);
+    while (stmt.step()) {
+      const link = rowToLink(stmt.getAsObject() as unknown as LinkRow);
+      out.push({ ...link, direction: link.itemId === itemId ? "out" : "in" });
+    }
+    stmt.free();
+    return out;
+  },
+
+  /**
+   * 加一条关联。**幂等** —— 已经存在就返回那一条,不报错、不产生第二行
+   * (唯一索引也挡着;这里先查一次是为了拿到既有行的 id 给调用方)。
+   *
+   * `target` 两选一:给 `targetItemId` 就是关联库内条目,给 `targetPath` 就是关联
+   * 库外文件。两个都给或都不给都抛 —— 表上的 CHECK 也会拦,但在这里抛能给出
+   * 说得清的话(而不是一句 SQLite 约束错误)。
+   */
+  add(
+    itemId: string,
+    target: { targetItemId: string } | { targetPath: string },
+  ): LibraryItemLink {
+    const hasItem = "targetItemId" in target;
+    const hasPath = "targetPath" in target;
+    if (hasItem === hasPath) {
+      throw new Error("关联的目标要么是库内条目、要么是库外路径,不能两个都给或都不给");
+    }
+    const db = getDb();
+    const existing = db.prepare(
+      hasItem
+        ? "SELECT * FROM library_item_links WHERE item_id = ? AND target_item_id = ?"
+        : "SELECT * FROM library_item_links WHERE item_id = ? AND target_path = ?",
+    );
+    existing.bind([v(itemId), v(hasItem ? target.targetItemId : target.targetPath)]);
+    if (existing.step()) {
+      const found = rowToLink(existing.getAsObject() as unknown as LinkRow);
+      existing.free();
+      return found;
+    }
+    existing.free();
+
+    const link: LibraryItemLink = {
+      id: makeId("ll"),
+      itemId,
+      ...(hasItem ? { targetItemId: target.targetItemId } : { targetPath: target.targetPath }),
+      createdAt: Date.now(),
+    };
+    db.run(
+      "INSERT INTO library_item_links (id, item_id, target_item_id, target_path, created_at) VALUES (?, ?, ?, ?, ?)",
+      [v(link.id), v(link.itemId), v(link.targetItemId ?? null), v(link.targetPath ?? null), v(link.createdAt)],
+    );
+    persist();
+    return link;
+  },
+
+  /** 解除一条关联(按关联行自己的 id)。返回是否真的删掉了。 */
+  remove(linkId: string): boolean {
+    const db = getDb();
+    const before = db.prepare("SELECT id FROM library_item_links WHERE id = ?");
+    before.bind([v(linkId)]);
+    const exists = before.step();
+    before.free();
+    if (!exists) return false;
+    db.run("DELETE FROM library_item_links WHERE id = ?", [v(linkId)]);
+    persist();
+    return true;
   },
 };

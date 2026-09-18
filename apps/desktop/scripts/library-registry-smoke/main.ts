@@ -18,6 +18,7 @@
  * Run: scripts/library-registry-smoke/run.sh
  */
 import { initDb, getDb } from "@main/store/db.js";
+import { LibraryRepo, LibraryLinkRepo } from "@main/store/repositories.js";
 import {
   loadLibraryTypes,
   saveLibraryTypes,
@@ -143,6 +144,156 @@ await initDb();
   const types = loadLibraryTypes();
   eq("坏 JSON → 出厂 8 类", types.length, 8);
   eq("出厂名恢复", kindDisplayName("paper"), "论文");
+}
+
+console.log("\n条目关联 LibraryLinkRepo");
+
+{
+  const db = getDb();
+  const itemCount = (): number => {
+    const stmt = db.prepare("SELECT COUNT(*) AS n FROM library_items");
+    stmt.step();
+    const n = Number(stmt.getAsObject().n);
+    stmt.free();
+    return n;
+  };
+  const linkCount = (): number => {
+    const stmt = db.prepare("SELECT COUNT(*) AS n FROM library_item_links");
+    stmt.step();
+    const n = Number(stmt.getAsObject().n);
+    stmt.free();
+    return n;
+  };
+
+  eq("起点:没有条目", itemCount(), 0);
+
+  const a = LibraryRepo.upsert({ title: "论持久战", kind: "note" });
+  const b = LibraryRepo.upsert({ title: "附件转录", kind: "note" });
+  eq("两条条目已建", itemCount(), 2);
+
+  // 库内关联:加一条、读回来
+  const link = LibraryLinkRepo.add(a.id, { targetItemId: b.id });
+  eq("加一条后表里一行", linkCount(), 1);
+  eq("关联的起点对", link.itemId, a.id);
+  eq("关联的目标对", link.targetItemId, b.id);
+  check("库外路径字段是空的", link.targetPath === undefined);
+  check("带创建时间", typeof link.createdAt === "number" && link.createdAt > 0);
+
+  const ofA = LibraryLinkRepo.linksOf(a.id);
+  eq("A 看到一条", ofA.length, 1);
+  eq("A 那条是 out", ofA[0]?.direction, "out");
+
+  // 反向查询同样便宜 —— **存储只存一次**。B 那边看到的是同一条关联的 in 向。
+  const ofB = LibraryLinkRepo.linksOf(b.id);
+  eq("B 也看到一条(反向)", ofB.length, 1);
+  eq("B 那条是 in", ofB[0]?.direction, "in");
+  eq("两个方向是同一行", ofB[0]?.id, link.id);
+  eq("底层只有一行", linkCount(), 1);
+
+  // 幂等:同一对再挂一次不该产生第二行
+  const again = LibraryLinkRepo.add(a.id, { targetItemId: b.id });
+  eq("重复添加返回既有行", again.id, link.id);
+  eq("重复添加没多出行", linkCount(), 1);
+
+  // 一对多:A 还能再挂别人 —— 这正是「不是两两配对」的形状
+  const c = LibraryRepo.upsert({ title: "第三份", kind: "note" });
+  LibraryLinkRepo.add(a.id, { targetItemId: c.id });
+  LibraryLinkRepo.add(a.id, { targetPath: "D:/外面的一份参考.pdf" });
+  eq("A 一共三条出边", LibraryLinkRepo.linksOf(a.id).filter((l) => l.direction === "out").length, 3);
+  eq("表里一共三行", linkCount(), 3);
+
+  const pathLink = LibraryLinkRepo.linksOf(a.id).find((l) => l.direction === "out" && l.targetPath);
+  check("库外路径那条存下来了", pathLink?.targetPath === "D:/外面的一份参考.pdf", pathLink);
+  check("库外那条没有 targetItemId", pathLink?.targetItemId === undefined);
+  const pathAgain = LibraryLinkRepo.add(a.id, { targetPath: "D:/外面的一份参考.pdf" });
+  eq("库外路径的幂等", pathAgain.id, pathLink?.id);
+  eq("库外重复添加也没多行", linkCount(), 3);
+
+  // 两种指向二选一 —— 都给 / 都不给都要在进 DB 之前就被挡下
+  let threw = "";
+  try {
+    LibraryLinkRepo.add(a.id, { targetItemId: b.id, targetPath: "D:/x.pdf" } as never);
+  } catch (e) {
+    threw = e instanceof Error ? e.message : String(e);
+  }
+  check("两种指向都给 → 抛", threw.includes("不能两个都给"), threw);
+  threw = "";
+  try {
+    LibraryLinkRepo.add(a.id, {} as never);
+  } catch (e) {
+    threw = e instanceof Error ? e.message : String(e);
+  }
+  check("两种指向都不给 → 抛", threw.includes("不能两个都给"), threw);
+  eq("两次非法调用都没落库", linkCount(), 3);
+
+  // 解除
+  check("解除存在的关联返回 true", LibraryLinkRepo.remove(pathLink!.id) === true);
+  eq("解除后少一行", linkCount(), 2);
+  check("解除不存在的返回 false", LibraryLinkRepo.remove(pathLink!.id) === false);
+  eq("没再少行", linkCount(), 2);
+
+  // 级联:删掉 b,B 那一侧的关联行跟着走(来源侧)
+  LibraryRepo.delete([b.id]);
+  eq("删了 b 之后", itemCount(), 2);
+  eq("来源侧的关联级联删除", linkCount(), 1);
+  eq("A 只剩指向 c 的一条", LibraryLinkRepo.linksOf(a.id).length, 1);
+
+  // 级联:删掉 c —— 这一侧是**目标**,同样要级联
+  LibraryRepo.delete([c.id]);
+  eq("删了 c 之后表空", linkCount(), 0);
+  check("A 不再有关联", LibraryLinkRepo.linksOf(a.id).length === 0);
+
+  // 没有条目也能建关联表(空跑不炸)
+  eq("剩下的条目还在", itemCount(), 1);
+}
+
+console.log("\n持久化之后外键约束还在");
+
+{
+  // ⚠️ 这条测的是一个**踩过的坑**,不是新功能。
+  //
+  // sql.js 的 `db.export()` 会把连接状态整个重置,其中包含 `PRAGMA foreign_keys`,
+  // 而它是**连接级**的开关 —— 建库时开过的那一次不会在导出后自动回来。而 `persist()`
+  // 每次写盘都导出一次,于是"应用写过一次盘之后,所有 ON DELETE CASCADE 都不再生效",
+  // 且完全不报错:删了条目、挂在它下面的行静静地留着。
+  //
+  // 修法是把导出收进 `exportBytes()` 一处(导出后立刻把 pragma 开回去)。这条断言就是
+  // 那道防线的信号 —— 谁绕过 `exportBytes()` 直接 `db.export()`,这里会红。
+  const db = getDb();
+  const fkOn = (): boolean => {
+    const stmt = db.prepare("PRAGMA foreign_keys");
+    stmt.step();
+    const n = Number(stmt.getAsObject().foreign_keys);
+    stmt.free();
+    return n === 1;
+  };
+  const a = LibraryRepo.upsert({ title: "写盘之后 A", kind: "note" });
+  const b = LibraryRepo.upsert({ title: "写盘之后 B", kind: "note" });
+  check("刚 upsert 完外键还开着", fkOn());
+
+  await new Promise<void>((r) => setTimeout(r, 20));
+  LibraryLinkRepo.add(a.id, { targetItemId: b.id });
+  check("加关联之后外键还开着", fkOn());
+
+  const before = ((): number => {
+    const stmt = db.prepare("SELECT COUNT(*) AS n FROM library_item_links");
+    stmt.step();
+    const n = Number(stmt.getAsObject().n);
+    stmt.free();
+    return n;
+  })();
+  eq("前置:有一行关联", before, 1);
+
+  LibraryRepo.delete([b.id]);
+  const after = ((): number => {
+    const stmt = db.prepare("SELECT COUNT(*) AS n FROM library_item_links");
+    stmt.step();
+    const n = Number(stmt.getAsObject().n);
+    stmt.free();
+    return n;
+  })();
+  eq("写盘之后级联依然生效", after, 0);
+  check("外键仍然开着", fkOn());
 }
 
 console.log(`\n${checks - failures}/${checks} passed`);

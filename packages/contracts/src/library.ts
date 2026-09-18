@@ -136,6 +136,37 @@ export interface LibraryItem {
 }
 
 /**
+ * **条目之间的一条关联。**
+ *
+ * ## 形状是一对多，不是两两配对
+ *
+ * 一条条目可以关联**任意多个**目标（用户原话:「不是两两之间关联，可以一个关联多个文件」），
+ * 所以这是从 `itemId` 出发的一批出边，而不是"两个条目配对"。反向查询
+ * （`targetItemId = ?`）同样便宜，界面可以双向展示，但**存储只存一次** ——
+ * 不产生"两边都要维护同步"的一致性问题。
+ *
+ * ## 目标可以是库内条目，也可以是库外文件
+ *
+ * `targetItemId` 与 `targetPath` **恰好有一个**（数据库层有 CHECK 约束）。
+ *
+ *  - `targetItemId`：库里的另一条条目。用户要的"PDF 和它的 MD 关联"就是这种
+ *    （两份都在库里）。
+ *  - `targetPath`：库外的绝对路径。用户明确要「可以一个关联多个文件」—— 桌面上的
+ *    一份参考资料也该能挂上来。**UI 那条路会先把它导入成 `linked` 条目**
+ *    （见 `entryMode`），所以这一支主要留给绕过 UI 的调用（将来的 AI 工具）。
+ */
+export interface LibraryItemLink {
+  id: string;
+  /** 从哪条条目出发。 */
+  itemId: string;
+  /** 关联到库里的哪条条目。与 `targetPath` 恰好有一个。 */
+  targetItemId?: string;
+  /** 关联到库外的哪个绝对路径。与 `targetItemId` 恰好有一个。 */
+  targetPath?: string;
+  createdAt: number;
+}
+
+/**
  * 集合 —— Zotero 式的分组。
  *
  * 支持嵌套(`parentId`),一篇文献可同时属于多个集合(多对多),这是刻意的:
