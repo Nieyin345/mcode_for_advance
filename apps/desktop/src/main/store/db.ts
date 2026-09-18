@@ -266,6 +266,36 @@ function migrate(database: Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_library_notes_item ON library_notes(item_id);
 
+    /* 条目之间的关联 —— 一条条目指向一批别的文件。
+       形状是「一对多」而不是「两两配对」(用户原话:不是两两之间关联,可以一个关联
+       多个文件),所以是 item_id 指向若干目标,不是 A-B 配对表。
+
+       目标是两选一,CHECK 强制恰好有一种:
+         - target_item_id 非空 → 库里的另一条条目(经典的「PDF 和它的 MD」)
+         - target_path    非空 → 库外的绝对路径(桌面上一份参考资料也该挂得上)
+
+       级联只在条目这一侧(来源或目标条目被删,关联跟着走)。target_path 那一支
+       不级联 —— 那是文件系统的事,文件被移走时由读取方跳过。
+
+       唯一索引让"同一条目对同一个目标"只留一条,于是重复 add 是幂等的。 */
+    CREATE TABLE IF NOT EXISTS library_item_links (
+      id             TEXT PRIMARY KEY,
+      item_id        TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+      target_item_id TEXT REFERENCES library_items(id) ON DELETE CASCADE,
+      target_path    TEXT,
+      created_at     INTEGER NOT NULL,
+      CHECK ((target_item_id IS NULL) <> (target_path IS NULL))
+    );
+    -- 两个方向都要查:正向(这条关联了谁)与反向(谁关联了这条 —— 界面双向展示用)。
+    CREATE INDEX IF NOT EXISTS idx_library_item_links_item ON library_item_links(item_id);
+    CREATE INDEX IF NOT EXISTS idx_library_item_links_target
+      ON library_item_links(target_item_id) WHERE target_item_id IS NOT NULL;
+    -- 同一条目的同一个目标只留一条(重复 add 幂等,靠这条挡住)。
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_library_item_links_uniq_item
+      ON library_item_links(item_id, target_item_id) WHERE target_item_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_library_item_links_uniq_path
+      ON library_item_links(item_id, target_path) WHERE target_path IS NOT NULL;
+
     /* 机构认证入口档案。
        ⚠️ 本表**不含凭据** —— 真正的登录态在浏览器分区
        (persist:mcode-browser)的 cookie 里,由 BrowserManager 的保管库负责持久化。
@@ -425,6 +455,23 @@ function addColumnIfMissing(database: Database, table: string, column: string, d
 }
 
 /**
+ * 导出内存库的字节,**并把连接上的 `PRAGMA foreign_keys` 恢复回去**。
+ *
+ * ⚠️ 别直接用 `db.export()` —— sql.js 的导出会**整个重置连接状态**,其中就包括
+ * `foreign_keys`,而它是**连接级**的开关,建库时那一次 `ON` 不会在导出后自动回来。
+ * 后果是 silently 的:第一次写盘之后,所有 `ON DELETE CASCADE` 都不再触发,而
+ * 一切看起来正常 —— 直到某天发现删了条目、挂在它下面的行还在。
+ *
+ * 也没有"再开一次就好"的便宜路子:内联 `db.export(); db.run("PRAGMA ...")` 在
+ * 每个调用点各写一遍,迟早有人加第四个调用点忘了配。所以导出这件事只有这一个出口。
+ */
+function exportBytes(): Uint8Array {
+  const data = db!.export();
+  db!.run("PRAGMA foreign_keys = ON");
+  return data;
+}
+
+/**
  * 立刻把内存里的数据库写到磁盘,**但不关闭连接**。
  *
  * 与 `persist()` 的区别:那个是防抖的(等微任务),这个同步落盘。给「迁移整个数据根」
@@ -433,7 +480,7 @@ function addColumnIfMissing(database: Database, table: string, column: string, d
  */
 export function flushDb(): void {
   try {
-    if (db && dbPath) writeFileSync(dbPath, db.export());
+    if (db && dbPath) writeFileSync(dbPath, exportBytes());
   } catch (err) {
     log.error(`sqlite flush failed: ${(err as Error).message}`);
   }
@@ -467,7 +514,7 @@ export function persist(): void {
       persistFallback = null;
     }
     try {
-      const data = db!.export();
+      const data = exportBytes();
       // Ensure the userData dir exists (it should, but be defensive).
       const dir = join(dbPath!, "..");
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -511,7 +558,7 @@ export function closeDb(): void {
       persistFallback = null;
     }
     persistPending = false;
-    if (db && dbPath) writeFileSync(dbPath, db.export());
+    if (db && dbPath) writeFileSync(dbPath, exportBytes());
     db?.close();
   } catch {
     /* ignore — shutting down anyway */
