@@ -39,7 +39,7 @@ import type { ContextGetInput, ContextSaveInput, ContextMemoriesListInput, Conte
 import type { UsageStatsInput, UsageStatsResult } from "./usage.js";
 import type { LspLanguageState, LspInstallInput, LspOpResult, LspInstallFromFileInput, LspUninstallInput, LspToggleInput, LspSetPathInput, LspHealthCheckInput, LspPrewarmInput, LspRestartInput, LspOpenDocInput, LspCloseDocInput, LspDidChangeInput, LspDidSaveInput, LspRequestInput, LspRequestResult } from "./lsp.js";
 import type { RuntimeAgentState, RuntimesInstallInput, RuntimesInstallLocalInput, RuntimesRemoveInput, ToolchainToolState, ToolchainInstallInput, ToolchainRemoveInput } from "./runtimes.js";
-import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchCommandTemplate } from "./workflow.js";
+import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchCommandTemplate } from "./workflow.js";
 import type { AutomationTriggerFacts, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
 import { MEMORY_CATEGORIES_CHANNEL, MEMORY_DELETE_CHANNEL, MEMORY_LIST_CHANNEL, MEMORY_READ_CHANNEL, MEMORY_SAVE_CHANNEL, type MemoryDeleteInput, type MemoryFileMeta, type MemoryListInput, type MemoryReadInput, type MemorySaveInput } from "../memory.js";
 import type { LibraryTypesGetInput, LibraryTypesSaveInput, LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibrarySetRootInput, LibraryManifestInput, LibraryItemManifestInput, LibraryKindManifestInput, TemplateKindManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
@@ -596,6 +596,15 @@ export interface RpcMap {
    *  `ok: false` = 没有这样的等待(那张卡片过期了:这次运行已经结束或者被取消)。
    *  **不报错**:点一张旧卡片是正常会发生的事,不该弹错误框。 */
   "workflow.choose": (input: WorkflowChooseInput) => Promise<{ ok: boolean }>;
+  /**
+   * **从失败那一步接着往下跑。** 用户在失败卡片上点了「再试一次」,顺手写了句
+   * 「上次哪里不对」。重跑的是那一步**连同它的全部下游**(见 `WorkflowRetrySchema`)。
+   *
+   * `ok: false` 有四种原因,全都**不是错误**(界面上是一句"这张卡不适用了"):
+   * 找不到那次运行 / 它已经不是 `failed` / 存档读不回来 / 这个对话正有运行在跑。
+   * 最后那种要如实回 false —— `startWorkflowRun` 在运行中会静静地不做事。
+   */
+  "workflow.retry": (input: WorkflowRetryInput) => Promise<{ ok: boolean }>;
   // ── 自动化(设置 → 工作流 → 自动化那一栏)──
   //
   // 这三个是**桌面专属**:手机端(`main/mobile/mobileRpc.ts`)是手写白名单,不列即不暴露。
@@ -1430,6 +1439,8 @@ export const IPC = {
   WORKFLOW_REMOVE_AGENT_PROFILE: "workflow:removeAgentProfile",
   /** 在岔路口选一条路 —— **回答一个还活着的运行**,不是开一次新的。 */
   WORKFLOW_CHOOSE: "workflow:choose",
+  /** 从失败那一步接着往下跑(重跑那一步 + 它的全部下游)。 */
+  WORKFLOW_RETRY: "workflow:retry",
   // 自动化(设置 → 工作流 → 自动化那一栏):触发器节点在后**台**起一条运行。
   // 这三个只在桌面暴露(手机端那个 RPC 是手写白名单)。
   /** **立刻跑一次** —— 冒充一个 manual 触发器。 */

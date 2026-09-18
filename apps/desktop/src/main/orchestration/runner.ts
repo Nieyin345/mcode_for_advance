@@ -84,7 +84,7 @@ import { broadcastRuntimeEvent } from "@main/lib/sessionSync.js";
 import { queueBackflow } from "@main/lib/pendingBackflow.js";
 import { log } from "@main/lib/logger.js";
 import { providerRegistry } from "@main/providers/registry.js";
-import { CollectionRepo, LibraryRepo, SessionRepo, SettingRepo } from "@main/store/repositories.js";
+import { CollectionRepo, LibraryRepo, SessionRepo, SettingRepo, WorkflowRunRepo } from "@main/store/repositories.js";
 import { templatesRoot } from "@main/templates/store.js";
 import {
   kindDisplayName,
@@ -126,8 +126,10 @@ const USAGE_BACKFILL_DELAY_MS = 6_000;
 import { getWorkflow } from "./library.js";
 import { loadNodeTypes } from "./nodeTypes.js";
 import {
+  decodeSnapshot,
   pruneRuns,
   resumableRun,
+  retryableRun,
   saveRun,
   type RunSnapshot,
 } from "./runStore.js";
@@ -337,6 +339,71 @@ export function hasActiveRun(sessionId: string): boolean {
 }
 
 /**
+ * 用户在一张**失败**的卡片上点了「再试一次」,还写了一句"上次哪里不对"。
+ *
+ * ## 和「接着上次跑」是同一条路,只多一个 `rewind`
+ *
+ * 失败运行的存档里,`state.outcomes` 是**整张图的完整结局表**(失败那步 `failed`、
+ * 它的下游 `skipped`、前面成功的 `success` 全在)。所以 `settled` 本来就够用 ——
+ * 要做的只有一件事:**告诉调度器从哪一步开始重跑**(见 `RunResume.rewind`),由它把
+ * 那一步连同全部前进后代从结局表里抹掉。
+ *
+ * 展开闭包是**调度器**的事(它是唯一知道"谁是谁的后代"的地方),这里只给出起点。
+ *
+ * ## 三种"这张卡不适用了",全都**不是错误**
+ *
+ * 找不到那次运行 / 它已经跑完或不再是失败 / 存档读不回来 —— 与
+ * {@link resolveWorkflowChoice} 同一个口径:用户点一张旧卡是正常会发生的事,该得到
+ * 一句"已经不适用了",而不是一个错误框。
+ *
+ * 返回 `false` 的第四个理由更实在:**这个对话正有运行在跑**。`startWorkflowRun` 那句
+ * `runs.has` 的守卫会**静静地返回 null**(见那里的注释),而调用方照样会拿到 true ——
+ * 于是用户点了按钮、卡片变了、什么都没发生。所以这里**先查一次**,查到了就照实回 false。
+ */
+export function resolveWorkflowRetry(args: {
+  sessionId: string;
+  runId: string;
+  nodeId: string;
+  /** 用户写的那句话。空串 = 没写(那就只重跑,不往提示词里加东西)。 */
+  note?: string;
+}): boolean {
+  const session = SessionRepo.get(args.sessionId);
+  if (session === undefined) return false;
+  // **正有运行在跑** —— 见上面那段注释:`startWorkflowRun` 撞上这个会静静地不做事,
+  // 而调用方照样拿到 true。所以先查一次,查到了就照实回 false。
+  if (runs.has(args.sessionId)) return false;
+  // 四道门(找不到 / 不是 failed / 存档坏了 / 那一步没失败)全在 `retryableRun` 里,
+  // 与岔路口续跑的 `resumableRun` 并列 —— 那些判据值得单独测,不该埋在 IPC 后面。
+  const found = retryableRun(args.sessionId, args.runId, args.nodeId);
+  if (found === null) return false;
+  // 这个对话换过工作流了 —— 存档里那份状态是按**当时那张图**记的,拿去跑现在这张图
+  // 结果是随机的(同 `resumeRun` 里那一段)。
+  if (session.workflowId !== found.workflowId) {
+    log.warn(
+      `workflow run ${found.runId}: 会话现在用的是 ${session.workflowId},不是当时的 ` +
+        `${found.workflowId} —— 这张卡片按过期处理`,
+    );
+    return false;
+  }
+
+  const note = (args.note ?? "").trim();
+  log.info(`workflow run ${found.runId} retried from node ${args.nodeId} (${args.sessionId})`);
+  // **不 await** —— 同 `resumeRun`:这是一次可能跑几分钟的运行,IPC handler 该立刻返回。
+  void startWorkflowRun({
+    session,
+    resume: {
+      runId: found.runId,
+      snapshot: found.snapshot,
+      nodeId: args.nodeId,
+      // 起点只有失败这一步;闭包由调度器展开(见 `RunResume.rewind`)。
+      rewind: [args.nodeId],
+      ...(note.length > 0 ? { note: { nodeId: args.nodeId, text: note } } : {}),
+    },
+  });
+  return true;
+}
+
+/**
  * 这个对话的图**停着等人**吗 —— 没有任何节点在跑,只有几处岔路口挂着等人拍板。
  *
  * 这是"用户能不能直接说话"的判据。停着等人的时候,整张图唯一在做的事就是等他,而他
@@ -413,16 +480,30 @@ export async function startWorkflowRun(args: {
    *  另一台设备只会看到一串结果卡、上面没有那句提问。 */
   userMessage?: { id: string; createdAt: number; blocks: unknown[]; editedMessageId?: string };
   /**
-   * **从上次被打断的地方接着跑。** 只有 {@link resolveWorkflowChoice} 会给 —— 用户
-   * 在一张上一轮留下的岔路口卡片上点了一下(见 `runStore.resumableRun`)。
+   * **从上次停下的地方接着跑。** 两条来源:
+   *
+   *  - {@link resolveWorkflowChoice} —— 用户在一张上一轮留下的岔路口卡片上点了一下
+   *    (见 `runStore.resumableRun`)。这条路给 `nodeId` + `answer`。
+   *  - {@link resolveWorkflowRetry} —— 用户在一张**失败**的卡片上点了「再试一次」。
+   *    这条路给 `nodeId` + `rewind`(+ 可选的 `note`),**不给 `answer`** —— 重试
+   *    没有"在选项里挑一条"这回事。
+   *
+   * 两者共用同一个 `runId`:它是**同一次运行**的两次尝试(见下面那句注释 —— 卡片是按
+   * `runId + nodeId + attempt` 认的)。
    */
   resume?: {
     /** **沿用上一次那个 runId**,不是新生成一个。理由见下面的注释。 */
     runId: string;
     snapshot: RunSnapshot;
-    /** 他点的是哪一格。 */
+    /** 用户点的是哪一格。 */
     nodeId: string;
-    answer: BranchChoice;
+    /** 岔路口那一下选了什么。**重试那条路不给**(它没有选项)。 */
+    answer?: BranchChoice;
+    /** 要抹掉重跑的**起点** —— 失败那一步。展开成"它 + 全部前进后代"由调度器做
+     *  (见 `RunResume.rewind`)。重试那条路给,岔路口续跑不给。 */
+    rewind?: readonly string[];
+    /** 只给 `nodeId` 那一步看的一段话(用户写「上次哪里不对」)。见 `RunResume.note`。 */
+    note?: { nodeId: string; text: string };
   };
   /**
    * **这次是哪个触发器起的**(见 `scheduler.runWorkflow` 的 `entry`)。自动化执行器给 ——
@@ -1306,7 +1387,13 @@ export async function startWorkflowRun(args: {
               // **已经定过案的一律不重跑,也不重判**(见 `RunResume.settled`)。
               // 真正会重跑的只有"跑到一半被打断的那一个" —— 它压根没有结局。
               settled: resumed.snapshot.state.outcomes,
-              answer: { nodeId: resumed.nodeId, choice: resumed.answer },
+              // 岔路口那一下(存在才给)。重试那条路没有 `answer`。
+              ...(resumed.answer !== undefined
+                ? { answer: { nodeId: resumed.nodeId, choice: resumed.answer } }
+                : {}),
+              // **失败重试**:要抹掉重跑的那一段(见 `RunResume.rewind`)。
+              ...(resumed.rewind !== undefined ? { rewind: resumed.rewind } : {}),
+              ...(resumed.note !== undefined ? { note: resumed.note } : {}),
               // 存档里有就以它为准(见 `runWorkflow` 里那一行:续跑是"同一次运行")。
               ...(resumed.snapshot.state.entry !== undefined
                 ? { entry: resumed.snapshot.state.entry }

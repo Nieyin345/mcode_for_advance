@@ -30,6 +30,7 @@ import {
   RespondPlanApprovalSchema,
   RewindTurnSchema,
   WorkflowChooseSchema,
+  WorkflowRetrySchema,
   ProjectSessionsSchema,
   SessionSearchSchema,
   BookmarkSearchSchema,
@@ -77,6 +78,7 @@ import {
   graphRunIntent,
   parkedRunTeardown,
   resolveWorkflowChoice,
+  resolveWorkflowRetry,
   startWorkflowRun,
 } from "@main/orchestration/runner.js";
 import { CustomModelStore } from "@main/lib/secretStore.js";
@@ -171,6 +173,17 @@ const HANDLERS: Record<string, RpcHandler> = {
   "workflow:choose": (raw) => {
     const input = WorkflowChooseSchema.parse(raw);
     return { ok: resolveWorkflowChoice(input) };
+  },
+
+  // 从失败那一步接着跑。与上面那条同一个理由:图**卡在一个失败节点上**,而解开它
+  // 最需要有人拍板的时刻,用户多半不在电脑前面。它同样是"回答一次已经在跑的运行",
+  // 不是编辑工作流。
+  //
+  // 用户写的那句话在手机上传得过来(`note`),而且**只给失败的那一步看**。
+  // `ok: false` 不是错 —— 卡片过期了,或者这个对话正有运行在跑。
+  "workflow:retry": (raw) => {
+    const input = WorkflowRetrySchema.parse(raw);
+    return { ok: resolveWorkflowRetry(input) };
   },
 
   "piModels:listAvailable": async () => {

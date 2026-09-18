@@ -33,6 +33,7 @@ import {
   IconDatabase,
   IconFile,
   IconFolder,
+  IconRefresh,
 } from "@renderer/lib/icons.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
@@ -43,6 +44,8 @@ import { Markdown } from "./Markdown.js";
 import { MessageBlocks } from "./MessageBlocks.js";
 import { mapTranscriptBlock } from "./transcriptBlocks.js";
 import { outputRowsOf } from "./outputRows.js";
+import { Button } from "@renderer/components/ui/button.js";
+import { RetryNodeDialog } from "./RetryNodeDialog.js";
 
 type WorkflowStepBlock = Extract<Block, { kind: "workflow-node-result" }>;
 
@@ -95,11 +98,15 @@ const STATUS: Record<
 
 export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
   const { t } = useI18n();
+  // 重试要带 sessionId(见 `workflow.retry`)。取当前会话 —— 卡片本来就是它这一轮里的。
+  const sessionId = useSessionStore((s) => s.activeSessionId);
   const [open, setOpen] = useState(false);
   const [openProcess, setOpenProcess] = useState(false);
   // 「排队中」chip:节点进队没起跑的那段时间(见 `workflowQueued.ts`)。收场卡出现时
   // 队列事实多半已经摘掉 —— 留这个口子是为了排队→起跑的瞬间两张卡不会各说各的。
   const queued = useQueuedNode(block.runId, block.nodeId);
+  /** 失败卡片上那个「再试一次」窗口的开关。**按卡片持有** —— 两张失败卡各弹各的。 */
+  const [retryOpen, setRetryOpen] = useState(false);
 
   /**
    * 这一步**跑的过程** —— 它在那个隐藏子会话里搜了什么、调了哪些工具、中间说了什么。
@@ -175,6 +182,28 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
       {/* 失败的原因**不折起来** —— 它就是用户此刻唯一需要看到的东西。 */}
       {block.error && (
         <p className="mt-1 whitespace-pre-wrap break-words text-danger">{block.error}</p>
+      )}
+      {/* **「再试一次」** —— 从这一步接着往下跑(见 `RetryNodeDialog`)。
+          ⚠️ 判据是"这一步跑在自己的会话里"(`nodeSessionId` 在),**不是 `nodeType`** ——
+          类型是插件可扩展的,拿它当判据迟早漏掉别人写的节点。而**对话节点**跑在主对话里
+          (没有独立的 `nodeSessionId`),它"失败"多半是主对话正忙,重试没有意义 ——
+          用户确认过这个按钮只给子 agent 节点。 */}
+      {block.status === "failed" && block.nodeSessionId && sessionId && (
+        <div className="mt-2">
+          <Button variant="outline" size="sm" onClick={() => setRetryOpen(true)}>
+            <IconRefresh size={12} />
+            {t("chatStream.workflowStep.retry")}
+          </Button>
+        </div>
+      )}
+      {retryOpen && sessionId && (
+        <RetryNodeDialog
+          open={retryOpen}
+          onClose={() => setRetryOpen(false)}
+          sessionId={sessionId}
+          runId={block.runId}
+          nodeId={block.nodeId}
+        />
       )}
       {/* 声明了产出变量的那一步:**逐项摆变量**,不摆原文(原文就是那头一个对象,
           摊出来正是用户说过不要看的那一坨)。名字在上、值在下,和"一步一张卡"同一种

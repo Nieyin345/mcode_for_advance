@@ -154,6 +154,18 @@ import { buildNodeInput } from "./nodeInputBuilders.js";
 
 /* ────────────────────────── 端口 ────────────────────────── */
 
+/**
+ * 失败重试时,`askSection` 里那个"用户选了哪一项"的占位标签。
+ *
+ * 重试没有"在选项里挑一条"这回事 —— 它是用户在失败卡片上按了一个按钮。但
+ * `askSection` 的形态(`轮到「X」时,用户选择的是「Y」`)正是我们要说的那句话,
+ * 所以给它一个诚实的标签,而不是为此另写一段渲染。
+ *
+ * 只有**用户写了说明**时这段才会出现(见 `retryNote`):没写说明就没有信息要传达,
+ * 提示词里多一句"用户选择的是「再试一次」"只是噪音。
+ */
+const RETRY_ANSWER_LABEL = "再试一次";
+
 /** 调度器要问外面的六件事。真实实现在 `runner.ts`,冒烟脚本塞的是假的。 */
 export interface RunPorts {
   /** 拿一个节点类型的清单。没有 = 这个类型没装(别人分享来的图会走到这里)。 */
@@ -316,6 +328,36 @@ export interface RunResume {
   settled: readonly (readonly [string, NodeOutcome])[];
   /** 用户刚点的那一下。**只对这一处生效一次** —— 回头之后同一个岔路口要重新问。 */
   answer?: { nodeId: string; choice: BranchChoice };
+  /**
+   * **要抹掉重跑的节点** —— 失败那一步,以及它的全部前进后代。
+   *
+   * ## 为什么是闭包,不是那一步
+   *
+   * 失败运行落盘的 `outcomes` 是**整张图的完整结局表**:失败那步是 `failed`,它的
+   * 下游是 `skipped`(失败会往下传)。`settled` 把它们**全部**灌回来,于是下游留着一个
+   * 旧的 `skipped` —— 它既不会被重新派发(`settle` 看到"已经有结局了"),又拿不到新
+   * 上游。那是静默不一致:界面上那张卡永远停在"跳过",而没有任何地方说得出为什么。
+   *
+   * 所以摘的是整个闭包。**展开由调度器自己做**(`voidClosureOf`)—— 它是唯一知道
+   * "谁是谁的后代"的地方,调用方只该给出"从哪一步开始重跑"。
+   *
+   * ## 不给就是老行为
+   *
+   * 岔路口续跑(`answer`)那条路不带这个字段:它要的是"接着上次跑",不是"重跑一段"。
+   * 缺省 = 什么都不抹 —— 与加这个字段之前逐字一致。
+   */
+  rewind?: readonly string[];
+  /**
+   * **只给某一步看的一段话** —— 用户写「上次哪里不对」。
+   *
+   * 重试那一步重跑时,它的提示词是 `instruction` + 上游产出,**用户写的这句话两处
+   * 都不在**。所以显式接一条:渲染成「本次执行的前置选择」那一段(与
+   * `RunResume.answer` 那一路共用 `askSection`)—— 对模型来说它们说的是同一件事:
+   * "用户在这次执行之前拍过一个板"。
+   *
+   * `nodeId` 不匹配的任何步骤都看不到它:它是**这一步的**说明,不是全局指令。
+   */
+  note?: { nodeId: string; text: string };
   /** 上次是哪条触发器起的(见 {@link RunState.entry},含 `payload`)。存档里有就以它为准。 */
   entry?: { nodeId: string; summary: string; payload?: Record<string, unknown> };
 }
@@ -561,6 +603,8 @@ class Run {
   record!: FlowRecordEntry[];
   rounds!: Map<string, number>;
   presetChoices!: Map<string, BranchChoice>;
+  /** 失败重试时用户写的那句话(见 `RunResume.note`)。不点名就没有。 */
+  retryNote!: { nodeId: string; text: string } | undefined;
   awaiting!: Set<string>;
   pendingLoopBack!: string | null;
   manifests!: Map<string, ManifestSlot>;
@@ -1098,6 +1142,21 @@ class Run {
         if (this.signal.aborted) return cancelled();
       }
 
+      /**
+       * **失败重试时用户写的那句话** —— 只给被点名的那一步看(见 `RunResume.note`)。
+       *
+       * 与上面的 `askAnswer` 共用「本次执行的前置选择」那一段的渲染(见下面 `inputScope`
+       * 里那个三元):对模型来说它们说的是同一件事 —— "用户在这次执行之前拍过一个板"。
+       *
+       * 两者**不会同时出现在一步上**:`ask` 只对对话节点生效,而重试按钮只给子 agent
+       * 节点(用户定的)。真撞上了也不冲突 —— 提示词里那一段会带上后写的那一份,而
+       * "哪一步被点名了"本来就只有一个答案。
+       */
+      const retryNote =
+        this.retryNote !== undefined && this.retryNote.nodeId === node.id
+          ? this.retryNote.text
+          : undefined;
+
       // 这一步能引用什么。**每次派发时现算** —— 上游的结局和参数在这之前才刚定下来
       // (同一列里别的节点可能还在跑),提前算会拿到半张图。
       const scope: NodeTemplateScope = {
@@ -1192,11 +1251,23 @@ class Run {
         terminal,
         ...(arrival ? { arrival } : {}),
         ...(flowRecord !== undefined ? { record: flowRecord } : {}),
-        // 「运行前先问我」那一次的回答。**渲染在这儿而不是 `composeNodePrompt` 里**,
-        // 是因为那一段要用节点的标题,而标题只有这一层有(`titleOf`)。
+        // 「运行前先问我」那一次的回答,或者失败重试时用户写的那句话。**渲染在这儿
+        // 而不是 `composeNodePrompt` 里**,是因为那一段要用节点的标题,而标题只有这一层
+        // 有(`titleOf`)。
+        //
+        // 两条来源、同一段形态:`askAnswer` 说的是"这一步被问过、用户选了什么",
+        // `retryNote` 说的是"这一步上次炸了、用户说这次该注意什么"。对模型来说都是
+        // 「用户在这次执行之前拍过一个板」—— 所以共用 `askSection`。
         ...(askAnswer !== undefined
           ? { ask: askSection(this.titleOf(node.id), askAnswer) }
-          : {}),
+          : retryNote !== undefined
+            ? {
+                ask: askSection(this.titleOf(node.id), {
+                  label: RETRY_ANSWER_LABEL,
+                  comment: retryNote,
+                }),
+              }
+            : {}),
         ...(this.isModelDeciderNode(node.id) ? { decide: { options: decideOptions } } : {}),
         contextLines: this.ports.contextLines,
       };
@@ -1272,6 +1343,22 @@ class Run {
   // **续跑时从上次的结局起手** —— 上次已经定案的那些不重跑,而且不重判(见
   // `RunResume.settled`)。
   this.outcomes = new Map<string, NodeOutcome>(resumed?.settled ?? []);
+  /**
+   * **失败重试:把要重跑的那些从结局表里抹掉。**
+   *
+   * 抹的**不是一个节点,是一整个闭包** —— `rewind` 给的是"从哪一步开始重跑",展开成
+   * "它 + 它的全部前进后代"由 `voidClosureOf` 做(它是唯一知道"谁是谁的后代"的地方)。
+   *
+   * 只抹那一步的话,下游会留着上一轮的 `skipped`:失败会往下传,而那个 `skipped` 是
+   * **结局表里真实存在的一项** —— 于是下游既不会被重新派发(它已经有结局了),又拿不到
+   * 新上游。图会停在那儿,而屏幕上看不出任何原因。
+   *
+   * 顺序:在**预置触发器**之前。重跑集合里若含触发器那一步,抹掉之后下面会把它重新
+   * 预置成成功(它自己不跑东西,但"它发生了"这件事仍然成立)。
+   */
+  if (resumed?.rewind !== undefined && resumed.rewind.length > 0) {
+    this.voidClosureOf(resumed.rewind);
+  }
   // **被触发的那个触发器:预置一个成功结局。** 它自己不跑东西,但它**发生了** —— 于是
   // 它的下游照常起跑(就绪判断看的是"上游成功了")。预置而不是"特判放行",是因为下游
   // 还有第二个问题要答案:"我上游交了什么" —— 那就是这次的事件载荷(见 `entry.summary`)。
@@ -1329,6 +1416,9 @@ class Run {
   this.presetChoices = new Map<string, BranchChoice>(
     resumed?.answer ? [[resumed.answer.nodeId, resumed.answer.choice]] : [],
   );
+  /** 失败重试时用户写的那句话。**不是一次性的** —— 被点名的那一步每跑一次都该看到它
+   *  (它在环里的话会跑不止一次),所以不做"取走"那一套(对比 `presetChoices`)。 */
+  this.retryNote = resumed?.note;
   /**
    * 正在等用户拍板的那些节点。**是集合不是单个** —— 两处岔路口可以同时就绪(它们
    * 互不依赖),于是两条都在等人。见 {@link RunState.awaiting}。

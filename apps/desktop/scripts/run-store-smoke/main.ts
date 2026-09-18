@@ -35,7 +35,7 @@ import type { Session } from "@contracts/session";
 import type { NodeOutcome } from "@contracts/nodeType";
 import { initDb, getDb } from "@main/store/db.js";
 import { ProjectRepo, SessionRepo, WorkflowRunRepo } from "@main/store/repositories.js";
-import { decodeSnapshot, resumableRun, saveRun, type RunSnapshot } from "@main/orchestration/runStore.js";
+import { decodeSnapshot, resumableRun, retryableRun, saveRun, type RunSnapshot } from "@main/orchestration/runStore.js";
 
 let failures = 0;
 let total = 0;
@@ -253,6 +253,112 @@ if (MODE === "write") {
   eq("记录原样回来", found?.snapshot.state.record.length, 2);
   eq("结局原样回来", found?.snapshot.state.outcomes.length, 2);
   eq("岔路口的选择原样回来", found?.snapshot.state.picks[0]?.[1].edgeId, "e_F__D");
+
+  console.log("\n失败重试:四道门");
+
+  /**
+   * `retryableRun` 是「再试一次」唯一的判据来源,而它的四道门各自对应界面上一种
+   * "这张卡不适用了"。这里**每一道都正面撞一次** —— 少了任意一道,重跑会从一步
+   * 根本没跑过的地方开始,或者去续一次已经跑完的运行。
+   */
+  const FAILED_RUN = "run_failed";
+  const SESSION_FAILED = "s_failed";
+  /** 建一个能重试的对话:`B` 失败、`A` 成功。 */
+  {
+    const now = Date.now();
+    const session: Session = {
+      id: SESSION_FAILED,
+      projectId: PROJECT,
+      providerId: "claude-sdk",
+      claudeSessionId: null,
+      kind: "chat",
+      parentSessionId: null,
+      title: "重试",
+      status: "idle",
+      model: "",
+      effort: "default",
+      permissionMode: "default",
+      workflowId: "wf_test",
+      customModelId: null,
+      envMode: "local",
+      worktreePath: null,
+      archived: false,
+      pinnedAt: null,
+      contextSnapshot: null,
+      todos: null,
+      subagents: null,
+      planDraft: null,
+      turnFiles: null,
+      usageHistory: null,
+      bookmarks: null,
+      subagentTranscripts: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    SessionRepo.create(session);
+  }
+  saveRun({
+    runId: FAILED_RUN,
+    sessionId: SESSION_FAILED,
+    workflowId: "wf_test",
+    status: "failed",
+    snapshot: {
+      prompt: "跑一条链",
+      cwd: "D:\\proj",
+      attempts: [],
+      state: {
+        record: [],
+        rounds: [],
+        picks: [],
+        outcomes: [
+          ["A", { status: "success", summary: "A 的结果" }],
+          ["B", { status: "failed", summary: "", error: "B 炸了" }],
+          ["C", { status: "skipped", summary: "" }],
+        ],
+        awaiting: [],
+      },
+    },
+  });
+
+  // ① 这一道是**能重跑**的那一种。
+  const canRetry = retryableRun(SESSION_FAILED, FAILED_RUN, "B");
+  check("★ 失败的运行 + 失败的那一步 → 能重试", canRetry !== null);
+  eq("runId 就是它", canRetry?.runId, FAILED_RUN);
+  eq("存档里的结局表原样带出来", canRetry?.snapshot.state.outcomes.length, 3);
+
+  // ② 那一步没失败(是成功的 / 是下游的 skipped)→ 不重跑。
+  //    ⚠️ 这一道最要紧:少了它,用户点「再试一次」会从一步**根本没跑过**的地方重跑。
+  check("★ 成功了的那一步不能重跑", retryableRun(SESSION_FAILED, FAILED_RUN, "A") === null);
+  check("★ 下游那个 skipped 也不能重跑", retryableRun(SESSION_FAILED, FAILED_RUN, "C") === null);
+  check("★ 存档里根本没有的节点不能重跑", retryableRun(SESSION_FAILED, FAILED_RUN, "Z") === null);
+
+  // ③ 状态不是 failed → 不重跑(它跑成了 / 被取消了 / 还在跑)。
+  saveRun({
+    runId: "run_done",
+    sessionId: SESSION_FAILED,
+    workflowId: "wf_test",
+    status: "success",
+    snapshot: snapshotOf([]),
+  });
+  check("★ 跑成功的运行不能重试", retryableRun(SESSION_FAILED, "run_done", "B") === null);
+
+  // ④ 找不到那一行 / 不属于这个对话 → 不重跑。
+  check("★ 不存在的 runId 不能重试", retryableRun(SESSION_FAILED, "run_nope", "B") === null);
+  check(
+    "★ 别的对话的 runId 不能重试(卡片是别人的)",
+    retryableRun(SESSION_RESUMABLE, FAILED_RUN, "B") === null,
+  );
+
+  // ⑤ 存档读不回来 → 不重跑。**故意的坏数据**:那一行在,但 payload 不是 JSON。
+  saveRun({
+    runId: "run_broken",
+    sessionId: SESSION_FAILED,
+    workflowId: "wf_test",
+    status: "failed",
+    snapshot: snapshotOf([]),
+  });
+  getDb().run("UPDATE workflow_runs SET payload = ? WHERE id = ?", ["{oops", "run_broken"]);
+  check("★ 存档读不回来 → 不能重试", retryableRun(SESSION_FAILED, "run_broken", "B") === null);
 }
 
 console.log(`\n${total - failures}/${total} passed`);

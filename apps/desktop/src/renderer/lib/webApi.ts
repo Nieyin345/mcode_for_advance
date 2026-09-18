@@ -465,6 +465,9 @@ const workflow: Api["workflow"] = {
   // 的事(画布拖拽、文件选择器),但**在岔路口上拍板不是编辑**:图正停在那个节点上等人,
   // 而用户很可能就拿着手机。手机端实现了这条 RPC(见 `main/mobile/mobileRpc.ts`)。
   choose: (input) => rpc("workflow:choose", input),
+  // 同理:失败卡片上的「再试一次」也**必须是手机能按的**。图卡在一个炸掉的节点上,
+  // 而用户多半不在电脑前面 —— 那正是最需要有人拍板的时刻。
+  retry: (input) => rpc("workflow:retry", input),
 };
 
 const skills: Api["skills"] = {

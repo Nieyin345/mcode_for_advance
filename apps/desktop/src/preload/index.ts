@@ -815,6 +815,10 @@ const api = {
     // `claude.respondPlanApproval` 是同一个形状,不是编辑动作。
     choose: ((input) =>
       ipcRenderer.invoke(IPC.WORKFLOW_CHOOSE, input)) as RpcMap["workflow.choose"],
+    // 从失败那一步接着跑(失败卡片上的「再试一次」)。**与 `choose` 是同一类** ——
+    // 它也是"回答一次已经停在那儿的运行",不是编辑工作流。
+    retry: ((input) =>
+      ipcRenderer.invoke(IPC.WORKFLOW_RETRY, input)) as RpcMap["workflow.retry"],
   },
 
   /** 自动化(设置 → 工作流 → 自动化那一栏):触发器节点在**后台**起一条运行,这一组

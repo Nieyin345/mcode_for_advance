@@ -2260,6 +2260,10 @@ function resumeFrom(
 const roundOf = (state: RunState, id: string): number | undefined =>
   state.rounds.find(([n]) => n === id)?.[1];
 
+/** `RunState.outcomes` 是 `[id, NodeOutcome][]`(落盘友好),不是 Map —— 读的时候包一层。 */
+const settledOf = (state: RunState, id: string): NodeOutcome | undefined =>
+  state.outcomes.find(([n]) => n === id)?.[1];
+
 {
   // ── 第一次运行:停在「稿子怎么样」那一刻,应用被关掉了 ──
   const doc = loopDoc();
@@ -2685,6 +2689,144 @@ console.log("\n运行前先问我");
   // 把那次挂着的运行收掉,免得它一直挂在等待池里。
   parkedController.abort();
   await new Promise((r) => setTimeout(r, 20));
+}
+
+console.log("\n失败重试:只重跑失败那步 + 它的下游");
+
+/**
+ * 「第 8 步炸了」那个形状:A → B → C → D,其中 B 失败。
+ *
+ * 用户在一张**失败**的卡片上点「再试一次」、写一句话 —— 要的是:
+ * 前面成功的步骤(A)**一步不重做**,而失败那一步**连同它的全部下游**(C、D)重跑。
+ *
+ * 这就是 §一 那条 `rewind` 存在的理由:失败运行落盘的 `outcomes` 是**整张图的完整
+ * 结局表**,`settled` 会把它们全灌回去 —— 只摘 B 的话,C、D 留着上一轮的结局,
+ * 既不会被重新派发、又拿不到新上游(静默不一致)。
+ */
+function chainDoc(): WorkflowDoc {
+  return docOf(
+    [node("A"), node("B"), node("C"), node("D")],
+    [edge("A", "B"), edge("B", "C"), edge("C", "D")],
+  );
+}
+
+{
+  // ── 第一次:B 失败。整张图以 failed 收场 ──
+  const doc = chainDoc();
+  const h1 = makePorts({ fail: (id) => id === "B" });
+  const first = await runWorkflow({
+    doc,
+    prompt: "跑一条链",
+    ports: h1.ports,
+    signal: controller().signal,
+  });
+
+  eq("★ 第一步失败,整张图就是 failed", first.status, "failed");
+  eq("只有 A、B 跑过", h1.executed().join(","), "A,B");
+  eq("B 定案成 failed", outcomeOf(h1, "B")?.status, "failed");
+  // ⚠️ 失败的下游是 `skipped`(不是"缺席")—— 它得有个说得出口的答案。
+  eq("C 被标成 skipped", outcomeOf(h1, "C")?.status, "skipped");
+  eq("D 也是 skipped", outcomeOf(h1, "D")?.status, "skipped");
+
+  // ── 用户点了「再试一次」,还写了一句"上次哪里不对" ──
+  const h2 = makePorts({});
+  const second = await runWorkflow({
+    doc,
+    prompt: "跑一条链",
+    ports: h2.ports,
+    signal: controller().signal,
+    resume: {
+      record: first.state.record,
+      rounds: first.state.rounds,
+      picks: first.state.picks,
+      settled: first.state.outcomes,
+      rewind: ["B"],
+      note: { nodeId: "B", text: "别联网了，用本地那份" },
+    },
+  });
+
+  eq("★ 重跑之后整张图不再是 failed", second.status, "success");
+  // ★ 这是整件事的意义:前面成功的那一步**没重跑** —— 它的钱没白花。
+  check("★ 成功的上游一步都不重做", !h2.executed().includes("A"), h2.executed());
+  // ★ 而失败那一步**确实**重跑了。
+  eq("★ 失败那一步重跑了", h2.executed().filter((id) => id === "B").length, 1);
+  // ★ 它的下游也要重跑 —— 上游变了,下游拿到的输入就变了。
+  eq("★ 下游 C 也重跑", h2.executed().filter((id) => id === "C").length, 1);
+  eq("★ 再下游 D 也重跑", h2.executed().filter((id) => id === "D").length, 1);
+  eq("B 这次成功了", outcomeOf(h2, "B")?.status, "success");
+  eq("C 也定案了(不是留着旧的 skipped)", outcomeOf(h2, "C")?.status, "success");
+
+  // ★ 那句话**只给被点名的节点看**。
+  const bPrompt = h2.calls.find((c) => c.id === "B")?.prompt ?? "";
+  check("★ 用户写的那句话进了失败那一步的提示词", bPrompt.includes("别联网了，用本地那份"), bPrompt.slice(0, 600));
+  check("而且是以「本次执行的前置选择」那一段的形态", bPrompt.includes("本次执行的前置选择"), bPrompt.slice(0, 600));
+  // 别的步骤看不到 —— 它是"这一步的"说明,不是全局指令。
+  for (const other of ["A", "C", "D"]) {
+    const p = h2.calls.find((c) => c.id === other)?.prompt ?? "";
+    check(`★ 别的步骤看不到那句话(${other})`, !p.includes("别联网了"), p.slice(0, 300));
+  }
+}
+
+{
+  // ── 摘的必须是**整个闭包**,不只是失败那一步 ──
+  //
+  // 只摘 B 的话:C、D 留着一个旧的 `skipped`,`settle` 当初标的那一句还在。它们
+  // 既不会被重新派发(上游 B 重新跑完之前不就绪),而等 B 跑完之后 —— 关键就在这 ——
+  // `settle` 看到的是"已经有结局了"还是"没有"?答:旧结局会**挡住**新的派发。
+  // 所以这里正面断言:重跑之后 C、D 的结局是**新的 success**,而不是旧的 skipped。
+  const doc = chainDoc();
+  const h1 = makePorts({ fail: (id) => id === "B" });
+  const first = await runWorkflow({ doc, prompt: "x", ports: h1.ports, signal: controller().signal });
+
+  const h2 = makePorts({});
+  const second = await runWorkflow({
+    doc,
+    prompt: "x",
+    ports: h2.ports,
+    signal: controller().signal,
+    resume: {
+      record: first.state.record,
+      rounds: first.state.rounds,
+      picks: first.state.picks,
+      settled: first.state.outcomes,
+      rewind: ["B"],
+    },
+  });
+
+  eq("★ C 的新结局是 success(不是旧的 skipped)", settledOf(second.state, "C")?.status, "success");
+  eq("★ D 的新结局也是 success", settledOf(second.state, "D")?.status, "success");
+  // 不在闭包里的 A 保留原结局(它是从 `settled` 进来的,没被抹)。
+  eq("★ 闭包外的 A 保留原结局", settledOf(second.state, "A")?.status, "success");
+  check("★ 而 A 没有被重新执行过", !h2.executed().includes("A"), h2.executed());
+}
+
+{
+  // ── 不给 `rewind` 时,行为与今天**逐字一致**(老存档的回归)──
+  //
+  // 岔路口续跑那条路(见上面那几段)走的就是"只有 settled、没有 rewind"的老形状。
+  // 这里正面钉一下:那种调用不该抹掉任何结局。
+  const doc = chainDoc();
+  const h1 = makePorts({ fail: (id) => id === "B" });
+  const first = await runWorkflow({ doc, prompt: "x", ports: h1.ports, signal: controller().signal });
+
+  const h2 = makePorts({});
+  const second = await runWorkflow({
+    doc,
+    prompt: "x",
+    ports: h2.ports,
+    signal: controller().signal,
+    // 老形状:record / rounds / picks / settled,没有 rewind。
+    resume: {
+      record: first.state.record,
+      rounds: first.state.rounds,
+      picks: first.state.picks,
+      settled: first.state.outcomes,
+    },
+  });
+
+  eq("老形状下整张图仍然 failed(失败没被抹掉)", second.status, "failed");
+  eq("一个节点都没重跑", h2.executed().length, 0);
+  eq("B 还是 failed", settledOf(second.state, "B")?.status, "failed");
 }
 
 console.log(`\n${total - failures}/${total} passed`);

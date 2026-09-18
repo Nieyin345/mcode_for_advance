@@ -51,6 +51,19 @@ export const en = {
   "chatStream.workflowStep.empty": "This step produced no text.",
   // What this step cost. `{cost}` is "—" when the engine reported no cost (not $0.00).
   "chatStream.workflowStep.usage": "{tokens} tokens · {cost}",
+  // The button on a failed card — resume from this step (see RetryNodeDialog).
+  "chatStream.workflowStep.retry": "Try again",
+  // The dialog. `desc` states the re-run scope; `scope` says who the note is
+  // for — users assume it instructs the whole graph, which is the easy mix-up.
+  "chatStream.workflowRetry.title": "Resume from this step",
+  "chatStream.workflowRetry.desc":
+    "This step and everything downstream of it will run again. Steps that already succeeded are kept.",
+  "chatStream.workflowRetry.ph":
+    "What went wrong? e.g. \"no network this time, use the local copy\"",
+  "chatStream.workflowRetry.scope": "Only this step will see this note.",
+  "chatStream.workflowRetry.confirm": "Run again",
+  "chatStream.workflowRetry.stale":
+    "This card no longer applies — that run may have finished, or this chat already has a workflow running.",
   // "过程" = what this step actually did inside its hidden sub-session (tool calls plus
   // the narration between them). See WorkflowStepCard / WorkflowNodeTranscriptEvent.
   "chatStream.workflowStep.process": "Process",

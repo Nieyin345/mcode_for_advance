@@ -52,6 +52,19 @@ export const zh = {
   "chatStream.workflowStep.empty": "这一步没有产出文本。",
   // 这一步的开销。`{cost}` 在引擎没报花费时是 "—"（不是 $0.00）。
   "chatStream.workflowStep.usage": "花了 {tokens} tokens · {cost}",
+  // 失败卡片上那个按钮 —— 从这一步接着往下跑(见 `RetryNodeDialog`)。
+  "chatStream.workflowStep.retry": "再试一次",
+  // 那个窗口里的四句话。`desc` 说清白重跑范围,`scope` 说清那句话给谁看 ——
+  // 用户会以为它在给整张图下指令,而那正是最容易搞错的一处。
+  "chatStream.workflowRetry.title": "从这一步接着跑",
+  "chatStream.workflowRetry.desc":
+    "这一步会带着它的全部下游重新跑。前面已经跑成功的步骤不会重做。",
+  "chatStream.workflowRetry.ph":
+    "上次哪里不对？例如「别联网了，用本地那份」「这次分两段写」",
+  "chatStream.workflowRetry.scope": "这句话只会给这一步看到。",
+  "chatStream.workflowRetry.confirm": "再跑一次",
+  "chatStream.workflowRetry.stale":
+    "这张卡已经不适用了 —— 那次运行可能已经跑完，或者这个对话正有流程在跑。",
   // 「过程」= 这一步在那个隐藏子会话里干了什么(工具调用 + 中间说的话)。见
   // `WorkflowStepCard` 与 `@contracts/runtime` 的 `WorkflowNodeTranscriptEvent`。
   "chatStream.workflowStep.process": "过程",

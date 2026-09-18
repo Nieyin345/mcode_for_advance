@@ -27,6 +27,7 @@ import {
   WatchStatusSchema,
   WatchTemplatesSaveSchema,
   WorkflowChooseSchema,
+  WorkflowRetrySchema,
   WorkflowGetSchema,
   WorkflowRemoveSchema,
   WorkflowSaveSchema,
@@ -40,7 +41,7 @@ import { decodeSnapshot, runHistory } from "@main/orchestration/runStore.js";
 import { requestWorkflowReload } from "@main/orchestration/reloadRequest.js";
 import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
 import { ensureLocalNodeTypesDir } from "@main/orchestration/nodeTypesSeed.js";
-import { resolveWorkflowChoice } from "@main/orchestration/runner.js";
+import { resolveWorkflowChoice, resolveWorkflowRetry } from "@main/orchestration/runner.js";
 import { SessionRepo, SettingRepo, WorkflowRunRepo } from "@main/store/repositories.js";
 
 export function registerWorkflowHandlers(ipcMain: IpcMain): void {
@@ -122,6 +123,19 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.WORKFLOW_CHOOSE, async (_evt, raw) => {
     const input = WorkflowChooseSchema.parse(raw);
     return { ok: resolveWorkflowChoice(input) };
+  });
+
+  // ── 失败重试 ──
+  //
+  // 用户在失败卡片上点了「再试一次」、写了句"上次哪里不对"。**与上面那条是同一类**:
+  // 它回答的是一次已经停在那儿的运行,只是岔路口那一步是"选一条出路",而这一步是
+  // "从这儿重新跑一遍"(连同它的全部下游,见 `WorkflowRetrySchema`)。
+  //
+  // `ok: false` 的四种原因(找不到 / 不是 failed / 存档坏了 / 正有运行在跑)全都不是
+  // 错误 —— 界面上是一句"这张卡不适用了",不是红框。
+  ipcMain.handle(IPC.WORKFLOW_RETRY, async (_evt, raw) => {
+    const input = WorkflowRetrySchema.parse(raw);
+    return { ok: resolveWorkflowRetry(input) };
   });
 
   // ─ 自动化 ──

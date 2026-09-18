@@ -345,6 +345,53 @@ export function resumableRun(sessionId: string, nodeId: string): ResumableRun | 
   return { runId: row.id, workflowId: row.workflowId, snapshot };
 }
 
+/** 一次**可以从某一步重跑**的运行 —— 存档,以及为什么能重跑(失败的那一步)。 */
+export interface RetryableRun {
+  runId: string;
+  workflowId: string;
+  snapshot: RunSnapshot;
+}
+
+/**
+ * 用户在**一张失败的卡片**上点了「再试一次」—— 找那次运行,并确认它真的能重跑。
+ *
+ * 与 {@link resumableRun} 并列,判据的**形状也是并列的**:那个认"被中断且停在这格",
+ * 这个认"**失败了,而且那一步真的在存档里**"。
+ *
+ * 四道门,每一道都对应界面上的一种"这张卡不适用了"(全都**不是错误**):
+ *
+ *  1. **找不到那一行**(或它不属于这个对话)—— 卡片是别人的 / 已被清理;
+ *  2. **状态不是 `failed`** —— 它跑成了、被取消了、或者还在跑。界面上那个按钮本来
+ *     只在失败卡上出现,走到这儿说明界面上的状态是旧的;
+ *  3. **存档读不回来** —— 同 `resumableRun`:硬续一份缺胳膊少腿的状态,比说一句
+ *     "这张卡过期了"糟得多;
+ *  4. **失败的那一步不在存档的结局表里**(或它的状态不是 `failed`)—— 那说明这个
+ *     `nodeId` 对不上这次运行。**这一道最要紧**:少了它,重跑会从一步**根本没跑过**
+ *     的节点开始,而用户会以为他在重试刚才失败的那一步。
+ *
+ * 「这个对话正有运行在跑」那一道**不在这里** —— 它要查 `runner.ts` 里那张内存地图
+ * (`runs`),而这一层不认识它。调用方补(见 `resolveWorkflowRetry`)。
+ */
+export function retryableRun(sessionId: string, runId: string, nodeId: string): RetryableRun | null {
+  let row;
+  try {
+    row = WorkflowRunRepo.get(runId);
+  } catch (err) {
+    log.warn(`workflow retry lookup failed: ${(err as Error).message}`);
+    return null;
+  }
+  if (row === null || row.sessionId !== sessionId) return null;
+  if (row.status !== "failed") return null;
+  const snapshot = decodeSnapshot(row.payload);
+  if (snapshot === null) {
+    log.warn(`workflow run ${row.id}: 存档读不回来,这张卡片按过期处理`);
+    return null;
+  }
+  const failed = snapshot.state.outcomes.find(([id]) => id === nodeId)?.[1];
+  if (failed?.status !== "failed") return null;
+  return { runId: row.id, workflowId: row.workflowId, snapshot };
+}
+
 /**
  * 某个对话的 **run 历史** —— 一次运行一行,新的在前。
  *

@@ -51,6 +51,31 @@ export const WorkflowChooseSchema = z.object({
 });
 export type WorkflowChooseInput = z.infer<typeof WorkflowChooseSchema>;
 
+/**
+ * 用户在一张**失败**的卡片上点了「再试一次」。
+ *
+ * ## 与 `workflow.choose` 是同一件事的两种形态
+ *
+ * 两者都是"用户在一张旧卡片上拍了个板,把那次运行接回来接着跑" —— 只是岔路口那一步
+ * 是**选一条出路**,而失败那一步是**从这儿重新跑一遍**。所以都带 `runId`,都由
+ * `runner.ts` 里那对 `resolveWorkflow*` 接(它们共用同一个 `startWorkflowRun`)。
+ *
+ * ## 重跑范围由主进程算,不在这儿给
+ *
+ * 界面上只知道"这一步失败了"。要重跑的是**它 + 它的全部前进后代**(用户的决定)——
+ * 而"谁是谁的后代"是图的结构,只有主进程那一侧拿得到(而且它已经有现成的闭包函数)。
+ * 所以这里只给起点。
+ */
+export const WorkflowRetrySchema = z.object({
+  sessionId: z.string().min(1),
+  runId: z.string().min(1),
+  /** 失败的那一步。 */
+  nodeId: z.string().min(1),
+  /** 用户写的一句话:「上次哪里不对」。**只给这一步看**(可以不写)。 */
+  note: z.string().optional(),
+});
+export type WorkflowRetryInput = z.infer<typeof WorkflowRetrySchema>;
+
 /** 存一份代理档案。**整份给过来**(而不是"改哪个字段")—— 理由同 `HooksSaveSchema`:
  *  档案是用户从头写的,局部更新在这里没有意义,而整份给过来能让校验只发生在一个地方
  *  (`validateAgentProfile`)。 */
