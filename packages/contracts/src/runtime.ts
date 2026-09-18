@@ -5,7 +5,104 @@
  */
 
 import type { Session } from "./session.js";
-import type { NodeOutcomeStatus } from "./nodeType.js";
+import type { LongTaskUpdateEvent } from "./longTask.js";
+import type { NodeReturnMode, NodeTypeManifest } from "./nodeType.js";
+import type { WorkflowNode } from "./workflow.js";
+import type { NodeArtifact, NodeExecutionRecord, NodeOutcomeStatus } from "./nodeType.js";
+export type { NodeArtifact, NodeExecutionRecord } from "./nodeType.js";
+
+/**
+ * Normalized input crossing the scheduler/executor boundary. The scheduler
+ * resolves graph semantics before an executor sees this object; executors do
+ * not inspect WorkflowNode.params directly.
+ */
+export interface WorkflowDataContext {
+  userInput: string;
+  upstreamText: string;
+  upstreamOutputs: Record<string, Record<string, unknown>>;
+  upstreamArtifacts: NodeArtifact[];
+  /**
+   * 这一次运行**由哪个触发器起**的载荷事实(平面键值,键来自
+   * `main/orchestration/automationPayload.ts` 的 `payloadFactsOf`:kind / at / files /
+   * event / toolName / subjects)。自动化执行器把它放进 `entry.payload`,宿主在构建
+   * `NodeRunInput` 时递到这里,节点侧的 `{{trigger.<key>}}` 只认这里面的键。
+   * 手动跑一张图没有触发器 —— 缺席就是没有。
+   */
+  trigger?: Record<string, unknown>;
+}
+
+export interface NodeRunInput {
+  prompt: string;
+  data: WorkflowDataContext;
+  skills: string[];
+  mcpServerNames: string[];
+  pluginNames: string[];
+  returnMode: NodeReturnMode;
+  providerId?: string;
+  command?: { command: string; timeoutMs: number; input?: unknown };
+  code?: {
+    code: string;
+    language: "python" | "node" | "shell" | "powershell";
+    input?: unknown;
+    timeoutMs: number;
+  };
+}
+
+/**
+ * ## Runtime state / persistence contract(PAR-B 边界)
+ *
+ * 一次 workflow 运行的**身份层级**——三个 id 各管一层,谁也不能替谁:
+ *
+ * ```text
+ * WorkflowRunIdentity      sessionId ⊇ runId        一次图执行
+ * WorkflowNodeRunIdentity  sessionId ⊇ runId ⊇ nodeId  这次执行里的一个节点
+ * ```
+ *
+ * - `sessionId`:**对话**。节点事件永远发在父对话的 sessionId 上(隐藏节点会话的 id
+ *   走 `nodeSessionId` / transcript 通道,不属于这层身份)。
+ * - `runId`:一次图执行的 id,**续跑沿用旧 id** —— 卡片按它认领。
+ * - `nodeId`:图上的局部记号,同一张图跑两次 id 相同 —— 所以单说 nodeId 分不清
+ *   两次运行,"哪一步"永远要 `runId + nodeId` 一起说。
+ *
+ * **各自负责什么**(职责表,防止同一件事存两份真相):
+ *
+ * | 结构 | 负责 | 不负责 |
+ * |---|---|---|
+ * | `RunState`(scheduler) | 流程事实:record / rounds / picks / outcomes / awaiting / entry | 不含展示用的副本 |
+ * | `NodeOutcome`(nodeType) | 单节点定案:status / summary / outputs / artifacts / execution | 不含事件流、不含产物内容 |
+ * | `RunSnapshot`(runStore) | **可恢复的最小事实集合** + 版本信封(version/capturedAt) | 不重复存 NodeOutcome 以外的东西 |
+ * | `WorkflowRunStatus`(store) | 运行生命周期:running/interrupted/success/failed/cancelled | 不在快照里再存一份 |
+ *
+ * **artifact 是引用不是状态**:`NodeArtifact` 只携带 `uri` 等定位信息,字节留在外部;
+ * 任何持久化结构都不存产物内容。
+ */
+export interface WorkflowRunIdentity {
+  runId: string;
+  sessionId: string;
+}
+
+export interface WorkflowNodeRunIdentity extends WorkflowRunIdentity {
+  nodeId: string;
+}
+
+/**
+ * 快照信封版本。**编码随快照写入,读取必须接受没有这个字段的旧存档**(向后兼容)。
+ * 只在"读不回来会炸"的形状变化时递增;拒绝未来版本的是读方(`runStore.decodeSnapshot`)。
+ */
+export const WORKFLOW_RUN_SNAPSHOT_VERSION = 1 as const;
+
+/** 一个节点执行的完整身份(执行元数据、事件、进度都按它寻址)。 */
+export interface WorkflowExecutionMetadata extends WorkflowNodeRunIdentity {}
+
+/** The host-computed context supplied to a node executor. */
+export interface WorkflowExecutionContext {
+  node: WorkflowNode;
+  manifest: NodeTypeManifest;
+  input: NodeRunInput;
+  cwd: string;
+  metadata: WorkflowExecutionMetadata;
+}
+
 
 /**
  * Permission modes are open strings so each provider can declare its own set
@@ -645,6 +742,40 @@ export interface CompactResultEvent {
   durationMs?: number;
 }
 
+/**
+ * 一个节点**被排上了**(进入待派发,还没开始跑)。与 `workflow.node.progress` /
+ * `workflow.node.result` 同一条事件流、同一个 sessionId(父对话)。
+ *
+ * ## 为什么它只有身份、没有内容
+ *
+ * progress 是"跑的过程",result 是"跑完了",两者都到了执行之后;而监控/看板
+ * (排了几个、并发几个)要的是**派发那一刻**的事实 —— 哪怕这一步一秒就跑完,它也
+ * 曾"被排上"。所以只带 id 三件套,不带任何结果性的东西。
+ */
+export interface WorkflowNodeQueuedEvent {
+  type: "workflow.node.queued";
+  /** 父对话的 sessionId,和 `WorkflowNodeResultEvent` 一样。 */
+  sessionId: string;
+  /** 这张图的 id(设置 → 工作流里的那份),监控按它分组。 */
+  workflowId: string;
+  /** 哪一次运行。见 `WorkflowNodeResultEvent.runId`。 */
+  runId: string;
+  /** 被排上的节点。 */
+  nodeId: string;
+}
+
+export interface WorkflowNodeProgressEvent {
+  type: "workflow.node.progress";
+  sessionId: string;
+  runId: string;
+  nodeId: string;
+  nodeType: string;
+  title: string;
+  percent?: number;
+  message?: string;
+  phase?: string;
+}
+
 /** One step of a workflow graph settled. Emitted by the host scheduler
  *  (`main/orchestration/`) onto the **parent conversation's** sessionId, so the
  *  renderer shows a card in the message stream.
@@ -690,6 +821,15 @@ export interface WorkflowNodeResultEvent {
   outputKeys?: string[];
   /** Present when the node did not succeed. */
   error?: string;
+  execution?: NodeExecutionRecord;
+  /** Stable references to files, directories, or external data produced by this node. */
+  artifacts?: NodeArtifact[];
+  /**
+   * 这次运行由触发器起时的**载荷事实**(即 `data.trigger` 那一份,见
+   * `WorkflowDataContext.trigger`)。只有带着触发器载荷起跑的运行才有 —— 结果卡
+   * 靠它说清"这一步是被什么触发的",不必去运行史里猜。
+   */
+  input?: { trigger?: Record<string, unknown> };
   /**
    * **这一步花了多少。** 缺席 = 不知道(引擎没报、或者这一步压根没跑)。
    *
@@ -1034,6 +1174,8 @@ export type RuntimeEvent =
   | TurnFilesEvent
   | TurnRewoundEvent
   | CompactResultEvent
+  | WorkflowNodeQueuedEvent
+  | WorkflowNodeProgressEvent
   | WorkflowNodeResultEvent
   | WorkflowNodeUsageEvent
   | WorkflowNodeChoiceEvent
@@ -1045,4 +1187,5 @@ export type RuntimeEvent =
   | UserMessageEvent
   | UpstreamIssueEvent
   | GitChangedEvent
-  | LibraryItemImportedEvent;
+  | LibraryItemImportedEvent
+  | LongTaskUpdateEvent;

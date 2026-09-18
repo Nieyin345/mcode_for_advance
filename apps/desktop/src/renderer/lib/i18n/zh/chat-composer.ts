@@ -425,6 +425,23 @@ export const zh = {
   "composer.watch.failed": "守望启动失败：{error}",
   "composer.watch.failedGeneric": "守望启动失败",
 
+  // ── 长期任务循环（桌面专属）── 武装开关 + 会话状态条。
+  "composer.longtask.title": "长期任务",
+  "composer.longtask.rowLabel": "长任务",
+  "composer.longtask.pillLabel": "长任务",
+  "composer.longtask.armHint": "开启后，下一条发送的消息会作为目标，自动连续执行直到模型宣布完成",
+  "composer.longtask.armed": "已武装",
+  "composer.longtask.running": "执行中",
+  "composer.longtask.banner.goal": "目标",
+  "composer.longtask.banner.round": "第 {n}/{m} 轮",
+  "composer.longtask.banner.stop": "停止",
+  "composer.longtask.banner.stopping": "停止中…",
+  "composer.longtask.banner.dismiss": "关闭",
+  "composer.longtask.status.done": "已完成",
+  "composer.longtask.status.blocked": "受阻",
+  "composer.longtask.status.stopped": "已停止",
+  "composer.longtask.status.maxed": "轮次用尽",
+
   // ── 输入选项下拉框(工作流主代理的「输入选项」,见 chat/NodeOptionsDropdown) ──
   "chat.nodeOptions.title": "输入选项",
   "chat.nodeOptions.none": "未选择",

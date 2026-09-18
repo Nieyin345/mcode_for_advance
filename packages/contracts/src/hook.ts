@@ -176,6 +176,14 @@ export const HOOK_EVENT_OF: Record<RuntimeEvent["type"], HookEvent | null> = {
   // ️ 放在这一段而不是下面那段,是怕后来的人读成"这是刻意不给的"。**它能给**,
   // 只是还没轮到。
   "workflow.node.choice": null,
+  "workflow.node.progress": null,
+  // 节点**开始排队**的那一刻(G3 事件补齐新加,载荷见 `@contracts/runtime` 的
+  // `WorkflowNodeQueuedEvent`)。要挂"这一步跑完了"挂 `workflow.node.result`;排队
+  // 只比它早一瞬间,单独给一个钩子只会让同一步触发两次。
+  "workflow.node.queued": null,
+  // 长期任务的状态广播(见 `longTask.ts`)—— 钩子/触发器暂不暴露,和 `git.changed`
+  // 同一档"故意不给":它描述的是循环器内部进度,用户能表达的意图已经由 turn 级事件覆盖。
+  "longtask.update": null,
 
   /* ── 故意不暴露的(是"不该给",不是"还没来得及给")── */
 

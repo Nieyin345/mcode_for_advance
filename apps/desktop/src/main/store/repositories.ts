@@ -16,6 +16,7 @@ import type {
   SessionBookmark,
 } from "@contracts/session";
 import type { ContextSnapshot, SubagentSnapshot, TurnFileEntry, TurnUsageRecord } from "@contracts/runtime";
+import type { LongTask } from "@contracts/longTask";
 import type { WorkflowDoc } from "@contracts/workflow";
 import type {
   LibraryItem,
@@ -2442,5 +2443,130 @@ export const NoteRepo = {
     db.run("DELETE FROM library_notes WHERE id = ?", [v(id)]);
     persist();
     return itemId;
+  },
+};
+
+/* ──────────────────────────────── 长期任务 ─────────────────────────────── */
+/* 见 contracts/src/longTask.ts 与 main/longtask/taskRunner.ts。落库的意义:
+   状态条要能扛住重启(重启 sweep 会把 running 标成 stopped),运行历史要能翻。 */
+
+interface LongTaskRow {
+  id: string;
+  session_id: string;
+  project_id: string;
+  goal: string;
+  status: string;
+  iterations: number;
+  max_iterations: number;
+  note: string | null;
+  started_at: number;
+  updated_at: number;
+  finished_at: number | null;
+}
+
+function rowToLongTask(r: LongTaskRow): LongTask {
+  return {
+    id: r.id,
+    sessionId: r.session_id,
+    projectId: r.project_id,
+    goal: r.goal,
+    status: (r.status as LongTask["status"]) || "running",
+    iterations: r.iterations ?? 0,
+    maxIterations: r.max_iterations,
+    note: r.note,
+    startedAt: r.started_at,
+    updatedAt: r.updated_at,
+    finishedAt: r.finished_at,
+  };
+}
+
+export const LongTaskRepo = {
+  /** 按开始时间倒序,翻某个会话的历史(当前那条通常在最前)。 */
+  listBySession(sessionId: string): LongTask[] {
+    const stmt = getDb().prepare(
+      "SELECT * FROM long_tasks WHERE session_id = ? ORDER BY started_at DESC",
+    );
+    stmt.bind([v(sessionId)]);
+    const out: LongTask[] = [];
+    while (stmt.step()) out.push(rowToLongTask(stmt.getAsObject() as unknown as LongTaskRow));
+    stmt.free();
+    return out;
+  },
+
+  /** 会话的当前任务:最新一条(不管状态)。没有则 null。 */
+  latestOf(sessionId: string): LongTask | null {
+    const stmt = getDb().prepare(
+      "SELECT * FROM long_tasks WHERE session_id = ? ORDER BY started_at DESC, id DESC LIMIT 1",
+    );
+    stmt.bind([v(sessionId)]);
+    const found = stmt.step();
+    const row = found ? rowToLongTask(stmt.getAsObject() as unknown as LongTaskRow) : null;
+    stmt.free();
+    return row;
+  },
+
+  get(id: string): LongTask | null {
+    const stmt = getDb().prepare("SELECT * FROM long_tasks WHERE id = ?");
+    stmt.bind([v(id)]);
+    const found = stmt.step();
+    const row = found ? rowToLongTask(stmt.getAsObject() as unknown as LongTaskRow) : null;
+    stmt.free();
+    return row;
+  },
+
+  create(input: { sessionId: string; projectId: string; goal: string; maxIterations: number }): LongTask {
+    const db = getDb();
+    const now = Date.now();
+    const task: LongTask = {
+      id: makeId("ltask_"),
+      sessionId: input.sessionId,
+      projectId: input.projectId,
+      goal: input.goal,
+      status: "running",
+      iterations: 0,
+      maxIterations: input.maxIterations,
+      note: null,
+      startedAt: now,
+      updatedAt: now,
+      finishedAt: null,
+    };
+    db.run(
+      "INSERT INTO long_tasks (id, session_id, project_id, goal, status, iterations, max_iterations, note, started_at, updated_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [v(task.id), v(task.sessionId), v(task.projectId), v(task.goal), v(task.status),
+       v(task.iterations), v(task.maxIterations), v(task.note), v(task.startedAt), v(task.updatedAt), v(task.finishedAt)],
+    );
+    persist();
+    return task;
+  },
+
+  /** 收尾:状态 + 说明 + finished_at 一把写。running → 终态、以及 iterations 推进都走它。 */
+  finish(id: string, status: LongTask["status"], note: string | null): LongTask | null {
+    const db = getDb();
+    const now = Date.now();
+    db.run(
+      "UPDATE long_tasks SET status = ?, note = ?, finished_at = ?, updated_at = ? WHERE id = ?",
+      [v(status), v(note), v(status === "running" ? null : now), v(now), v(id)],
+    );
+    persist();
+    return LongTaskRepo.get(id);
+  },
+
+  /** 推进轮数计数(每轮 turn.done 后 +1)。 */
+  bumpIterations(id: string): LongTask | null {
+    const db = getDb();
+    db.run("UPDATE long_tasks SET iterations = iterations + 1, updated_at = ? WHERE id = ?", [
+      v(Date.now()), v(id),
+    ]);
+    persist();
+    return LongTaskRepo.get(id);
+  },
+
+  /** 只改 note(不碰状态/时间戳之外的字段)—— 续轮被 sendTurn 拒掉这类中间态用。 */
+  setNote(id: string, note: string | null): LongTask | null {
+    getDb().run("UPDATE long_tasks SET note = ?, updated_at = ? WHERE id = ?", [
+      v(note), v(Date.now()), v(id),
+    ]);
+    persist();
+    return LongTaskRepo.get(id);
   },
 };

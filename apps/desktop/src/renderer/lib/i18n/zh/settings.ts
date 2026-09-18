@@ -16,12 +16,18 @@ export const zh = {
   "settings.nav.hooks": "钩子",
   "settings.nav.mcp": "MCP",
   "settings.nav.context": "上下文",
+  // 记忆库紧跟上下文:两者都是"喂给引擎的全局上下文"(见 SettingsPage 的排布说明),
+  // 上下文是常驻指令与记忆的注入口,记忆库是那些记忆文件本体的浏览/编辑处。
+  "settings.nav.memory": "记忆库",
   "settings.nav.plugins": "插件",
   "settings.nav.notifications": "消息通知",
   "settings.nav.git": "Git",
   "settings.nav.terminal": "终端",
   "settings.nav.browser": "浏览器",
   "settings.nav.lsp": "LSP",
+  // 运行监控排在用量统计前面:两者都是"这台机器跑得怎么样"(用量看花了多少,
+  // 监控看跑成了什么样),放一组才看得出来是同一件事的两头。
+  "settings.nav.monitoring": "运行监控",
   "settings.nav.usage": "用量统计",
   "settings.nav.about": "关于",
 
@@ -310,6 +316,9 @@ export const zh = {
   "settings.customModels.protocolWeb": "网页端(借助浏览器扩展驱动网页版大模型)",
   "settings.customModels.webSiteLabel": "站点",
   "settings.customModels.webSitePlaceholder": "选择站点",
+  "settings.customModels.webSiteDriverPending": "(扩展暂不支持)",
+  "settings.customModels.webSiteDriverPendingHint":
+    "浏览器扩展还没实现驱动这个站点:配置可以保存,但选中它开跑会被明确拒绝。等扩展把驱动补齐后即可直接使用。",
   "settings.customModels.webNote":
     "网页端不用填地址和密钥:浏览器扩展会把你的问题填进该站点网页的输入框,再把回答流式接回这里 —— 和接 API 的体验一致。请求由你自己的浏览器发出(真实登录态与指纹),Mcode 不接触你的账号密码。注意:这仍属于自动化操作网页,可能违反站点服务条款,且站点改版后可能失效。",
   "settings.customModels.errWebSite": "请选择网页端站点",
@@ -1051,6 +1060,10 @@ export const zh = {
   "settings.automation.triggerDerived": "这一格跟着触发器节点走：要换一种触发，改那一格的参数。",
 
   // ── 自动化：跑一次 / 跑过什么 ──
+  "settings.automation.dashboard": "自动化状态",
+  "settings.automation.enabled": "已启用",
+  "settings.automation.lastRun": "最近运行",
+  "settings.automation.lastError": "最近错误",
   "settings.automation.runNow": "立刻运行一次",
   "settings.automation.runNowHint":
     "用触发器「{name}」起一次——它自己响起来时走的也是这条路。结果在下面的历史里。",
@@ -1076,6 +1089,32 @@ export const zh = {
   "settings.automation.stepStatus.cancelled": "已取消",
   "settings.automation.stepStatus.skipped": "跳过",
   "settings.automation.stepStatus.unselected": "没走这条路",
+
+  // ── 自动化：触发器事实（armed / lastFireAt / lastError）──
+  // 事实来自主进程的触发器事实表（`automation.statusAll`），回答的是"它挂上没有、
+  // 最近一次什么时候响的、最近一次为什么没跑成"。挂载侧的说法独立成词：
+  // 「已启用」说的是这条自动化在库里的状态，这里说的是**每一条触发器**。
+  "settings.automation.facts.armed": "已挂上",
+  "settings.automation.facts.disarmed": "没挂上",
+
+  // ── 运行历史面板（settings/workflows/RunHistorySection）──
+  // 与 `settings.automation.runHistory`（检查器里那段摘要）不同源：这里读的是
+  // 后台会话的 run 记录（`runs.history`）—— 轻量摘要，只有条数没有节点明细。
+  // 状态词沿用上面那张 `settings.automation.runStatus.*` 表，不另立一套。
+  "settings.runHistory.title": "运行历史",
+  "settings.runHistory.empty": "这个会话还没有运行记录。",
+  "settings.runHistory.nodeCount": "{n} 个节点",
+  "settings.runHistory.loadFailed": "运行历史读不出来：{error}",
+
+  // ── 变量菜单的「触发器」分组（settings/workflows/insertVariable）──
+  // 触发器带给这次运行的事实，只有图里挂着触发器时才出现这一组。
+  "settings.workflows.triggerGroup": "触发器",
+  "settings.workflows.triggerField.kind": "触发方式",
+  "settings.workflows.triggerField.at": "触发时刻",
+  "settings.workflows.triggerField.files": "变化的文件",
+  "settings.workflows.triggerField.event": "事件内容",
+  "settings.workflows.triggerField.toolName": "工具名",
+  "settings.workflows.triggerField.subjects": "涉及对象",
 
   // ── 钩子（设置 → 钩子）──
   // 事件驱动的命令：某件事发生的时候，在这台机器上跑一条你自己的命令。
@@ -1266,6 +1305,8 @@ export const zh = {
     "这一步上面还没有别的步骤。只有上游定过的变量才会出现在这里 —— 先在前面放一个步骤，在那个步骤的「产出变量」里填上名字和示例。",
   "settings.workflows.insertVarWholeOutput": "整段结果",
   "settings.workflows.insertVarWholeOutputHint": "那一步交出来的整段文字",
+  "settings.workflows.insertVarUser": "用户输入",
+  "settings.workflows.insertVarUserHint": "这次运行收到的原始输入",
 
   // ── 工作流本体 ──
   "settings.workflows.fieldName": "名称",

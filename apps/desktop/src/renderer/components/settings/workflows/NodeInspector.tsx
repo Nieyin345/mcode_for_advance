@@ -74,6 +74,7 @@ import { Field, GrowingTextarea, ParamField } from "./ParamField.js";
 import { workflowDisplayDescription, workflowDisplayName } from "@renderer/lib/workflowLabels.js";
 import { WorkflowBadge } from "./WorkflowBadge.js";
 import { AutomationRunSection } from "./AutomationRunSection.js";
+import { RunHistorySection } from "./RunHistorySection.js";
 
 /** 内置工作流的名称与说明走 i18n,界面上是只读的 —— 这一条样式就是那个只读态。 */
 const readOnlyCls = "cursor-default bg-surface-muted/40 text-content-muted focus:border-edge";
@@ -251,6 +252,10 @@ function WorkflowSection({
             {t("settings.automation.triggerDerived")}
           </p>
           <AutomationRunSection doc={doc} catalog={catalog} />
+          {/* 运行历史(带节点数、可展开看节点级信息)跟在自动化状态旁边:读的是同一个
+              后台会话,一份答"结果"、一份答"过程"。它从 `automation.sessions` 拿会话 id
+              —— 那是自动化专属的通道,普通工作流(跟着对话跑)没有这个会话,不挂。 */}
+          {isAutomation && <RunHistorySection workflowId={doc.id} />}
         </>
       )}
 

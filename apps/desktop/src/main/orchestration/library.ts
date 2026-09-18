@@ -22,18 +22,12 @@
  */
 
 import type { WorkflowDoc, WorkflowListEntry } from "@contracts/workflow";
-import { validateDag } from "@contracts/workflow";
 import type { NodeTypeManifest } from "@contracts/nodeType";
-import {
-  deciderOf,
-  parseTriggerSpec,
-  validateNodeParams,
-  WORKFLOW_TRIGGER_OF_TRIGGER_KIND,
-} from "@contracts/nodeType";
-import { validateOutputRules } from "@contracts/outputConstraint";
+import { parseTriggerSpec, WORKFLOW_TRIGGER_OF_TRIGGER_KIND } from "@contracts/nodeType";
 import { WorkflowRepo } from "@main/store/repositories.js";
 import { BUILTIN_WORKFLOWS, getBuiltinWorkflow } from "./builtins.js";
 import { loadNodeTypes } from "./nodeTypes.js";
+import { validateWorkflowDoc } from "./workflowValidation.js";
 
 function summarize(doc: WorkflowDoc, builtin: boolean, edited: boolean): WorkflowListEntry {
   return {
@@ -93,52 +87,34 @@ export function getWorkflowPrompt(id: string): string | undefined {
 
 export type SaveResult = { ok: true } | { ok: false; error: string };
 
-/** 存一份工作流。**存盘前必须过两道校验**:
+/** 存一份工作流。**存盘前必须过校验闸门**(`workflowValidation.ts`):
  *
- *  1. {@link validateDag} —— 出了环的图会让调度器永远等不到就绪节点,那不是报错,是
- *     静默卡死。**环上有一个岔路口就不算**(见 `@contracts/workflow` 的「回头」):
- *     那样绕一圈至少要有用户点一下,停得下来。
- *  2. 每个节点的参数对它那份**类型清单**的校验 —— 必填没填、下拉给了不存在的值,
- *     这些等到执行时才发现就太晚了(用户已经画完一整张图)。
+ *  环(且环上要有"决定权给用户"的岔路口)、悬空边、断链、分支无出路、每个节点对它
+ *  那份**类型清单**的参数合规、以及 `{{...}}` 引用存在性 —— 错误码与检查清单见那边。
+ *  这些错等到执行时才发现就太晚了(用户已经画完一整张图,或者 Agent 已经交了一份
+ *  跑不动的图)。
  *
  *  ⚠️ **类型认不出来不算错。** 一份别人分享来的工作流,在这台机器上可能引用了没装的
- *  节点类型(见 `@contracts/workflow` 文件头)。那种节点跳过参数校验,图照样能存能看
- *  —— 只是跑不了。把"类型缺失"做成硬错误会让工作流没法分享。 */
+ *  节点类型(见 `@contracts/workflow` 文件头)。那种节点只记 warning、跳过参数校验,
+ *  图照样能存能看 —— 只是跑不了。把"类型缺失"做成硬错误会让工作流没法分享。 */
 export async function saveWorkflow(doc: WorkflowDoc): Promise<SaveResult> {
   const types = new Map((await loadNodeTypes()).entries.map((e) => [e.id, e.manifest]));
 
-  // ⚠️ **顺序要紧**:取类型这件事**必须在 `validateDag` 之前** —— 判"环上有没有岔路口"
-  // 靠的就是这份类型表,拿不到的话一个合法的环会被当成死循环拒掉。
+  // **质量闸门(WF-09)**:整份文档先过一遍结构化校验(见 `workflowValidation.ts` 的
+  // 检查清单)。它把原来这里的 `validateDag` + `validateNodeParams` +
+  // `validateOutputRules` 三道合成一份带稳定错误码的报告,并新增了三类原来要等到
+  // 执行时才炸的检查:断链(无入边且非起点)、分支无出路、`{{...}}` 引用存在性
+  // (引用不到 = 那一步跑起来必失败,见 `@contracts/nodeTemplate`)。
   //
-  // 认不出的类型不算岔路口:一份引用了没装类型的工作流能存(见上面那条),而它要是
-  // 恰好成了某个环的闸门,那个环就按"没闸门"拒 —— 拒了才知道要装什么,比存下来跑不动强。
-  //
-  // **闸门必须是"决定权给用户"的分支。** 决定权给模型的那种分支(见 `@contracts/nodeType`
-  // 的 `deciderOf`)不能回头:它自己判完自己转,没有人拦得住 —— 那正是环闸门要防的事。
-  const check = validateDag(doc.nodes, doc.edges, {
-    isLoopGate: (id) => {
-      const node = doc.nodes.find((n) => n.id === id);
-      if (node === undefined) return false;
-      const manifest = types.get(node.type);
-      return manifest !== undefined && manifest.runner.kind === "branch" && deciderOf(node.params) !== "model";
-    },
-  });
-  if (!check.ok) return check;
-
-  for (const node of doc.nodes) {
-    const manifest = types.get(node.type);
-    if (!manifest) continue;
-    const paramsCheck = validateNodeParams(manifest, node.params);
-    if (!paramsCheck.ok) {
-      // 节点标题可能没填过,退回 id —— 报错信息要能让人在图上找到是哪一个。
-      return { ok: false, error: `节点「${node.title || node.id}」:${paramsCheck.error}` };
-    }
-    // 产出约束那几个键**不是** `validateNodeParams` 管的(它只看清单声明过的形状),
-    // 但配矛盾了同样要在这里拦:等跑到那一步才发现的话,用户已经在图上找了一圈了。
-    const rulesCheck = validateOutputRules(manifest, node.params);
-    if (!rulesCheck.ok) {
-      return { ok: false, error: `节点「${node.title || node.id}」:${rulesCheck.error}` };
-    }
+  // 两条从旧代码原样继承的规矩:
+  //  - **取类型必须在闸门之前** —— 判"环上有没有岔路口"靠的就是这份类型表;
+  //  - **类型认不出来不算硬错误**(见 `@contracts/workflow` 文件头):存盘这一关走
+  //    `unknownTypeSeverity: "warning"`,分享来的工作流照样能存能看。import 是另一条
+  //    门(那边默认 error)—— 环、参数、引用这些**硬错误**两处都拦。
+  const report = validateWorkflowDoc(doc, { types, unknownTypeSeverity: "warning" });
+  if (!report.ok) {
+    const first = report.errors[0];
+    return { ok: false, error: first ? first.message : "校验未通过" };
   }
 
   const derived = deriveTrigger(doc, types);

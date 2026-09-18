@@ -43,7 +43,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { Button, ConfirmDialog } from "@renderer/components/ui/index.js";
 import { makeAgentProfileId, profileFromParams, type AgentProfile } from "@contracts/agentProfile";
-import { MAIN_NODE_TYPE_ID, type NodeTypeCatalog } from "@contracts/nodeType";
+import { MAIN_NODE_TYPE_ID, TRIGGER_NODE_TYPE_ID, type NodeTypeCatalog } from "@contracts/nodeType";
 import type { WorkflowDoc, WorkflowListEntry, WorkflowNode, WorkflowPosition } from "@contracts/workflow";
 import { workflowDisplayName, workflowIcon } from "@renderer/lib/workflowLabels.js";
 import { isEditableTarget } from "@renderer/lib/shortcuts.js";
@@ -70,6 +70,7 @@ import {
   removeEdge,
   removeNode as removeNodeFrom,
   seedMainAgent,
+  seedTrigger,
   setDependency,
   updateEdge,
   updateNode,
@@ -437,7 +438,25 @@ export function WorkflowLibraryView({
         setSaveError(t("settings.workflows.mainTypeMissing"));
         return;
       }
-      const doc = seedMainAgent(construct(id, uniqueWorkflowName(t(labels.defaultName), taken)), main);
+      // 自动化比工作流**多一个触发器** —— 它是自动化的起点,而且保存闸门会拒绝一份没有
+      // 触发器的自动化(`graph.no-trigger-node`)。所以这里是"两个都种":先触发器、后主代理。
+      // 触发器清单同样缺了就不建:理由和主代理那条一样(见上面的注释)。
+      const trigger =
+        purpose === "automation"
+          ? catalog?.entries.find((e) => e.id === TRIGGER_NODE_TYPE_ID)?.manifest
+          : undefined;
+      if (purpose === "automation" && !trigger) {
+        setSaveError(t("settings.workflows.mainTypeMissing"));
+        return;
+      }
+      let doc = seedMainAgent(construct(id, uniqueWorkflowName(t(labels.defaultName), taken)), main);
+      if (trigger) {
+        // 「在哪个项目里跑」是触发器的必填项,而它是**用户环境里的事实**(工作目录),
+        // 编不出来 —— 挑用户列表里的第一个当起点,用户在检查器里改。一个项目都没有时
+        // 留空:存盘会拦下并说清原因,那比默认塞一个不存在的 id 好。
+        const res = await api.project.list().catch(() => null);
+        doc = seedTrigger(doc, trigger, res?.projects?.[0]?.id);
+      }
       // **这一下直接落盘,不算破坏"点了保存才写"的规矩**:它落的是**刚建出来的那份**,
       // 此刻它在内存里连草稿都还不是 —— 不写下去的话,这个工作流在库里根本不存在,
       // 用户关掉设置页再回来会以为自己刚才没建成。

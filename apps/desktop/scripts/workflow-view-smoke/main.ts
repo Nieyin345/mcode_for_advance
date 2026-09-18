@@ -1231,17 +1231,38 @@ const withVars = (doc: WorkflowDoc, id: string, vars: Array<{ name: string; exam
     { name: "标题", example: "量子" },
   ]);
   const groups = insertableGroups(doc, "B", CATALOG);
-  eq("一个上游一组", groups.length, 1);
-  eq("组名用的是那一步的标题", groups[0]?.title, "A");
+  // 「用户输入」不属于任何上游(解算器在查上游之前就接住 `{{user}}`),单独成组打头;
+  // 后面照旧一个上游一组。
+  eq("「用户输入」打头,后面一个上游一组", groups.length, 2);
+  eq("组名用的是那一步的标题", groups[1]?.title, "A");
   eq(
     "两个变量都列出来了",
-    groups[0]?.items.filter((i) => i.kind === "var").map((i) => i.name).join(","),
+    groups[1]?.items.filter((i) => i.kind === "var").map((i) => i.name).join(","),
     "年份,标题",
   );
-  eq("点一下插进去的是短写法", groups[0]?.items[0]?.insert, "{{A.年份}}");
-  // 「整段结果」是内置那一条,排在变量后面 —— 它不是一个具体的变量。
-  eq("最后一条是整段结果", groups[0]?.items[groups[0].items.length - 1]?.kind, "whole");
-  eq("它插的也是整段结果", groups[0]?.items[groups[0].items.length - 1]?.insert, "{{A.output}}");
+  eq("点一下插进去的是短写法", groups[1]?.items[0]?.insert, "{{A.年份}}");
+  // 夹具里 A 的「指令」参数填过值 → 列成 `params.instruction`(解算器认的
+  // `params.` 形状,要的是那一步的配置而不是产出)。表状参数(outputVars)不列。
+  check(
+    "填过值的参数列成 params.instruction",
+    groups[1]?.items.some((i) => i.kind === "param" && i.insert === "{{A.params.instruction}}") === true,
+    JSON.stringify(groups[1]?.items),
+  );
+  check(
+    "产出变量表不进参数候选",
+    groups[1]?.items.every((i) => i.insert !== "{{A.params.outputVars}") === true,
+    JSON.stringify(groups[1]?.items),
+  );
+  // 元信息三样 —— 解算器对它们不做"必须跑成功"的拦截。
+  eq(
+    "元信息照列",
+    groups[1]?.items.filter((i) => i.kind === "meta").map((i) => i.name).join(","),
+    "status,error,artifacts",
+  );
+  // 「整段结果」仍是这一组的收尾 —— 它不是一个具体的变量。
+  eq("最后一条是整段结果", groups[1]?.items[groups[1].items.length - 1]?.kind, "whole");
+  eq("它插的也是整段结果", groups[1]?.items[groups[1].items.length - 1]?.insert, "{{A.output}}");
+  eq("「用户输入」插的是 {{user}}", groups[0]?.items[0]?.insert, "{{user}}");
 }
 
 {
@@ -1250,22 +1271,29 @@ const withVars = (doc: WorkflowDoc, id: string, vars: Array<{ name: string; exam
   // 会说"不是这一步的上游"。
   const doc = withVars(DIAMOND, "A", [{ name: "年份", example: "2024" }]);
   const groups = insertableGroups(doc, "D", CATALOG);
-  eq("闭包里的三个上游都成组了", groups.map((g) => g.title).join(","), "A,B,C");
-  eq("隔了一层的那个也在", groups[0]?.items[0]?.insert, "{{A.年份}}");
+  eq("闭包里的三个上游都成组了(最前面是没名的「用户输入」)", groups.map((g) => g.title).join(","), ",A,B,C");
+  eq("隔了一层的那个也在", groups[1]?.items[0]?.insert, "{{A.年份}}");
 }
 
 {
-  // 上游**没填过变量** → 那一组只剩「整段结果」。不是不给这一组:那一步的整段结果本来
-  // 就是能引用的,只是里面没有可点名要的东西。
+  // 上游**没填过变量** → 那一组照样在:填过值的参数、元信息、整段结果。不是不给这一组
+  // —— 那一步的配置和整段结果本来就能引用,只是没有可点名要的产出变量。
   const groups = insertableGroups(DIAMOND, "B", CATALOG);
-  eq("一组还在", groups.length, 1);
-  eq("但只有整段结果", groups[0]?.items.length, 1);
-  eq("就是它", groups[0]?.items[0]?.kind, "whole");
+  eq("一组还在(外加打头的「用户输入」)", groups.length, 2);
+  const items = groups[1]?.items ?? [];
+  check(
+    "A 填过的指令参数列成 params.instruction",
+    items.some((i) => i.kind === "param" && i.insert === "{{A.params.instruction}}") === true,
+    JSON.stringify(items),
+  );
+  eq("整段结果还在收尾", items[items.length - 1]?.kind, "whole");
 }
 
 {
-  // 根节点没有上游 → 一个候选都没有(界面上据此说"上面还没有别的步骤")。
-  eq("根节点没有候选", insertableGroups(DIAMOND, "A", CATALOG).length, 0);
+  // 根节点没有上游 → 只剩「用户输入」一组:它不属于任何上游,谁都能引。
+  const root = insertableGroups(DIAMOND, "A", CATALOG);
+  eq("根节点只剩「用户输入」一组", root.length, 1);
+  eq("就是它", root[0]?.items[0]?.insert, "{{user}}");
 }
 
 {
@@ -1279,7 +1307,7 @@ const withVars = (doc: WorkflowDoc, id: string, vars: Array<{ name: string; exam
 
   // 先看不重名的:用**标题**(好认)。
   const ok = insertableGroups(titled(withVars(DIAMOND, "A", vars)), "B", CATALOG);
-  eq("没重名就用标题", ok[0]?.items[0]?.insert, "{{检索.年份}}");
+  eq("没重名就用标题", ok[1]?.items[0]?.insert, "{{检索.年份}}");
 
   // 再看 C 也叫「检索」—— 那这个名字就解不出来了(重名),所以退回 id。
   const dup: WorkflowDoc = {
@@ -1289,7 +1317,7 @@ const withVars = (doc: WorkflowDoc, id: string, vars: Array<{ name: string; exam
     ),
   };
   const groups = insertableGroups(dup, "B", CATALOG);
-  eq("重名了就退回 id", groups[0]?.items[0]?.insert, "{{A.年份}}");
+  eq("重名了就退回 id", groups[1]?.items[0]?.insert, "{{A.年份}}");
 }
 
 console.log("\ninsertSnippet(光标这件事全是边界情况)");

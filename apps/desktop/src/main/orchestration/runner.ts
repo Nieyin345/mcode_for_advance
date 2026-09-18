@@ -76,7 +76,9 @@ import { outgoingEdgesOf, type WorkflowCapability, type WorkflowNode } from "@co
 import { nodeCriteriaPrompt, type CriteriaCondition } from "@main/lib/searchPrefs.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { transcriptText } from "@main/claude/nodeTranscript.js";
-import { runCommandNode } from "./commandRunner.js";
+import { ExecutionEngine } from "./executionEngine.js";
+import { CodeExecutor } from "./codeExecutor.js";
+import { CommandExecutor } from "./commandExecutor.js";
 import { libraryRoot } from "@main/library/paths.js";
 import { broadcastRuntimeEvent } from "@main/lib/sessionSync.js";
 import { queueBackflow } from "@main/lib/pendingBackflow.js";
@@ -132,11 +134,16 @@ import {
 import {
   runWorkflow,
   type BranchChoice,
+  type CapabilityPreflight,
   type NodeRunInput,
   type RunPorts,
   type RunResult,
   type RunState,
 } from "./scheduler.js";
+// 能力预检的清单装配(G4/CAP):纯函数翻译层在 `capabilityResolver.ts`,已启用插件的
+// 清单来自 pluginManager(异步读盘,所以端口做成 Promise,并按次运行缓存)。
+import { collectCapabilityInventory } from "./capabilityResolver.js";
+import { getEnabledPlugins } from "@main/plugins/pluginManager.js";
 
 /**
  * 能力 → 权限模式的映射(方案「能力」那张表)。粗粒度是**刻意的**:v1 只到
@@ -423,7 +430,18 @@ export async function startWorkflowRun(args: {
    *
    * 载荷文本要跟着一起走,因为它就是**触发器那一步的产出**:下游读到的是"上游交了什么"。
    */
-  entry?: { nodeId: string; summary: string };
+  entry?: {
+    nodeId: string;
+    summary: string;
+    /**
+     * 触发器载荷的**事实键值**(G3/VAR-06,见 `automationPayload.ts` 的
+     * `payloadFactsOf`:kind / at / files / event / toolName / subjects)。它会:
+     * ① 随 entry 落进存档(续跑时变量还解得出来);② 被递进每个节点的
+     * `data.trigger`,节点参数里的 `{{trigger.<key>}}` 从这里取;③ 随节点结果事件
+     * 的 `input.trigger` 亮给界面。手动跑一张图没有这回事 —— 缺席就是没有。
+     */
+    payload?: Record<string, unknown>;
+  };
 }): Promise<RunResult | null> {
   const { session, userMessage } = args;
   const resumed = args.resume;
@@ -877,6 +895,100 @@ export async function startWorkflowRun(args: {
     return outcomeOf(target.id);
   };
 
+  /**
+   * 「隔离的模型轮」—— 绝大多数节点(普通 agent 节点、模型选的分支)的跑法:开一条
+   * 独立的节点会话,把指令发进去,等那一轮收完。
+   *
+   * 这一路原来是 `ports.execute` 里的一段内联代码,前面用 `kind === "conversation"`
+   * 和"注册表里有没有"两次分岔隔开。现在它是**兜底执行器**的本体(见下面的
+   * `runEngine`):分派链上不再有 kind 判断,注册表里没有专用执行器的 kind 全部落到
+   * 这里 —— 与"新增执行器只注册、调度器不加分支"是同一条规矩的另一半。
+   */
+  const runInNodeSession = async (
+    node: WorkflowNode,
+    manifest: NodeTypeManifest,
+    input: NodeRunInput,
+  ): Promise<NodeOutcome> => {
+    // 这一步换引擎时,先确认这台机器上真有那家。**在这里拦而不是在参数校验里**:参数
+    // 校验只看值的形状,而"装了没有"是这台机器的状态 —— 一份分享来的图在别人机器上
+    // 引用一个没装的引擎是正常的,它该在**跑的时候**说清楚为什么跑不了。
+    const engine = input.providerId;
+    if (engine !== undefined && !providerRegistry.get(engine)) {
+      return { status: "failed", summary: "", error: `这一步指定的引擎「${engine}」没有安装` };
+    }
+    const nodeSession = createNodeSession(session, node, manifest, engine);
+    active.nodeSessionIds.add(nodeSession.id);
+    observed.add(nodeSession.id);
+    active.nodeSessionOf.set(node.id, nodeSession.id);
+    // 先绑运行时**再**挂代理:反过来的话,`bindSession` 万一抛了,代理表里会留下
+    // 一条指向不存在运行时的记录,而 `dispose()` 对没有运行时的会话是直接返回的
+    // (那条记录就再也清不掉了)。
+    runtimeManager.bindSession(nodeSession);
+    runtimeManager.setInteractiveProxy(nodeSession.id, session.id);
+
+    // 取消要**打断正在跑的那个回合**,不能只做到"不再派发新的" —— 否则用户按了
+    // 停止之后它还会继续烧 token 直到模型自己收尾。监听先挂上再发起,中间那一瞬
+    // 的取消由 `if (signal.aborted)` 补齐。
+    const onAbort = (): void => runtimeManager.interrupt(nodeSession.id);
+    input.signal.addEventListener("abort", onAbort, { once: true });
+    // **从这一刻起整张图不再"停着等人"了**(见 `isRunParked`)。计数放在这里而不是
+    // 函数开头:上面那几行还没真正开始干活,而 `createNodeSession` 万一抛了,加在
+    // 开头的那一次就减不回来 —— 那个对话会永远显示"有节点在跑"。
+    active.executing += 1;
+    try {
+      const handle = await runtimeManager.sendTurn(nodeSession, {
+        prompt: input.prompt,
+        cwd,
+        // 这一步要用的技能 → 这一轮的技能允许清单(`@contracts/nodeType` 的
+        // `NODE_SKILLS_PARAM_KEY`)。**空数组是"不限制"而不是"一个都不许"** ——
+        // 契约那一头就是空的走 `skills: "all"`(见 `StartTurnRequest.skills`),
+        // 所以这里传 undefined 而不是空数组,把那个默认值留给提供方。
+        //
+        // 下面两个同理,而且是**同一句话的三个宾语**(技能 / MCP 服务器 / 插件):
+        // 不填 = 不限制。它们的差别只在"限制下去省的是什么" —— 技能省的是模型的选择
+        // 面,MCP 与插件省的是**上下文**(整份工具定义 + 每个组件各自的说明)。
+        ...(input.skills.length > 0 ? { skills: input.skills } : {}),
+        ...(input.mcpServerNames.length > 0 ? { mcpServerNames: input.mcpServerNames } : {}),
+        ...(input.pluginNames.length > 0 ? { pluginNames: input.pluginNames } : {}),
+      });
+      if (!handle) {
+        return { status: "failed", summary: "", error: "节点会话没能启动(运行时没绑上)" };
+      }
+      if (input.signal.aborted) onAbort();
+      await handle.done;
+    } catch (err) {
+      return { status: "failed", summary: "", error: (err as Error).message };
+    } finally {
+      input.signal.removeEventListener("abort", onAbort);
+      active.executing -= 1;
+    }
+    return outcomeOf(nodeSession.id);
+  };
+
+  /**
+   * **这一次运行自己的执行分派。** 本机的 ExecutionEngine 实例:内置本机执行器
+   * (code / command)每次现建 —— 它们无状态,按次建和共享单例等价,却让"每次运行
+   * 注册运行期执行器"成为可能:conversation(发进主对话)与兜底的模型轮都带着
+   * **这次运行的**会话与状态闭包,注册进共享单例会互相覆盖。
+   *
+   * 分派规则只有一条:`manifest.runner.kind` 在注册表里就交给它,没有就落兜底。
+   * **这里没有、也不允许再长出 `kind === xxx` 分支** —— 新增一种执行方式 = 在某个
+   * Registry(输入 builder 或这里的执行器)里注册,分派链一行不改。
+   */
+  const runEngine = new ExecutionEngine()
+    .register(new CommandExecutor())
+    .register(new CodeExecutor())
+    .register({
+      kind: "conversation",
+      // **不隔离的那一种**:它不发新的会话,指令直接进主对话(见 `runInConversation`
+      // —— 主对话本来就有运行时,也没有"代理到自己"这回事,上面那条模型轮的路对它
+      // 每一行都是反的)。
+      execute: ({ node, manifest, input }) => runInConversation(node, manifest, input),
+    })
+    .setDefault({
+      execute: ({ node, manifest, input }) => runInNodeSession(node, manifest, input),
+    });
+
   const ports: RunPorts = {
     // 清单**一次读完**再按 id 查:`loadNodeTypes()` 是刻意不缓存的(每次都要扫插件
     // 目录、读并解析每一个清单文件,而它底下还会把每个启用的插件的技能/命令/agent
@@ -898,78 +1010,36 @@ export async function startWorkflowRun(args: {
       return lines;
     },
 
+    // **执行分派只有一个入口**(见上面 `runEngine` 的注释):注册表里有这个 kind 就
+    // 交给它,没有落兜底的模型轮。`cwd` 用这次运行的项目目录;超时与中止都由具体
+    // 执行器处理。
     execute: async (node, manifest, input) => {
-      // **命令节点连会话都不建**:它就是起一个进程、等它退出(见 `commandRunner.ts`)。
-      // 放在分岔最前面,理由和对话节点一样 —— 下面那一行(换引擎、建会话、绑运行时)
-      // 对它全是反的。`cwd` 用这次运行的项目目录:`python train.py` 这种相对路径要落在
-      // 用户画图时想的那块地上(超时与中止都由执行器处理,见那边)。
-      if (manifest.runner.kind === "command") {
-        const cmd = input.command ?? { command: "", timeoutMs: 0 };
-        log.info(
-          `workflow run ${runId}: 命令节点「${node.title || node.id}」跑: ${cmd.command}` +
-            (cmd.timeoutMs > 0 ? `(超时 ${cmd.timeoutMs}ms)` : ""),
-        );
-        return await runCommandNode({ ...cmd, cwd, signal: input.signal });
-      }
-      // **不隔离的那一种不走下面这条路**:它不发新的会话,指令直接进主对话(见
-      // `runInConversation`)。分岔放在最前面,因为下面每一行(换引擎、建会话、绑运行时、
-      // 挂交互代理)对它都是反的 —— 主对话本来就有运行时,也没有"代理到自己"这回事。
-      if (manifest.runner.kind === "conversation") return runInConversation(node, manifest, input);
-
-      // 这一步换引擎时,先确认这台机器上真有那家。**在这里拦而不是在参数校验里**:参数
-      // 校验只看值的形状,而"装了没有"是这台机器的状态 —— 一份分享来的图在别人机器上
-      // 引用一个没装的引擎是正常的,它该在**跑的时候**说清楚为什么跑不了。
-      const engine = input.providerId;
-      if (engine !== undefined && !providerRegistry.get(engine)) {
-        return { status: "failed", summary: "", error: `这一步指定的引擎「${engine}」没有安装` };
-      }
-      const nodeSession = createNodeSession(session, node, manifest, engine);
-      active.nodeSessionIds.add(nodeSession.id);
-      observed.add(nodeSession.id);
-      active.nodeSessionOf.set(node.id, nodeSession.id);
-      // 先绑运行时**再**挂代理:反过来的话,`bindSession` 万一抛了,代理表里会留下
-      // 一条指向不存在运行时的记录,而 `dispose()` 对没有运行时的会话是直接返回的
-      // (那条记录就再也清不掉了)。
-      runtimeManager.bindSession(nodeSession);
-      runtimeManager.setInteractiveProxy(nodeSession.id, session.id);
-
-      // 取消要**打断正在跑的那个回合**,不能只做到"不再派发新的" —— 否则用户按了
-      // 停止之后它还会继续烧 token 直到模型自己收尾。监听先挂上再发起,中间那一瞬
-      // 的取消由 `if (signal.aborted)` 补齐。
-      const onAbort = (): void => runtimeManager.interrupt(nodeSession.id);
-      input.signal.addEventListener("abort", onAbort, { once: true });
-      // **从这一刻起整张图不再"停着等人"了**(见 `isRunParked`)。计数放在这里而不是
-      // 函数开头:上面那几行还没真正开始干活,而 `createNodeSession` 万一抛了,加在
-      // 开头的那一次就减不回来 —— 那个对话会永远显示"有节点在跑"。
-      active.executing += 1;
-      try {
-        const handle = await runtimeManager.sendTurn(nodeSession, {
-          prompt: input.prompt,
-          cwd,
-          // 这一步要用的技能 → 这一轮的技能允许清单(`@contracts/nodeType` 的
-          // `NODE_SKILLS_PARAM_KEY`)。**空数组是"不限制"而不是"一个都不许"** ——
-          // 契约那一头就是空的走 `skills: "all"`(见 `StartTurnRequest.skills`),
-          // 所以这里传 undefined 而不是空数组,把那个默认值留给提供方。
-          //
-          // 下面两个同理,而且是**同一句话的三个宾语**(技能 / MCP 服务器 / 插件):
-          // 不填 = 不限制。它们的差别只在"限制下去省的是什么" —— 技能省的是模型的选择
-          // 面,MCP 与插件省的是**上下文**(整份工具定义 + 每个组件各自的说明)。
-          ...(input.skills.length > 0 ? { skills: input.skills } : {}),
-          ...(input.mcpServerNames.length > 0 ? { mcpServerNames: input.mcpServerNames } : {}),
-          ...(input.pluginNames.length > 0 ? { pluginNames: input.pluginNames } : {}),
-        });
-        if (!handle) {
-          return { status: "failed", summary: "", error: "节点会话没能启动(运行时没绑上)" };
-        }
-        if (input.signal.aborted) onAbort();
-        await handle.done;
-      } catch (err) {
-        return { status: "failed", summary: "", error: (err as Error).message };
-      } finally {
-        input.signal.removeEventListener("abort", onAbort);
-        active.executing -= 1;
-      }
-      return outcomeOf(nodeSession.id);
+      // **触发器载荷进 `data.trigger`(G3/VAR-06)的兜底注入。** 调度器那边已经把
+      // `entry.payload` 递给了输入构造层(见 scheduler 的 scope 注入);这里再保证
+      // 一次"执行器拿到的 `NodeRunInput.data.trigger` 一定就位" —— 就算某个专用
+      // 输入 builder 没把 scope 里的 trigger 带进 data,合同也不破。`input` 是
+      // buildNodeInput 现建的对象,改它不影响别人。
+      if (entry?.payload !== undefined) input.data.trigger = entry.payload;
+      return runEngine.execute({
+        node,
+        manifest,
+        input,
+        cwd,
+        metadata: { runId, sessionId: session.id, nodeId: node.id },
+        emitProgress: (progress) => {
+          broadcastRuntimeEvent({
+            type: "workflow.node.progress",
+            sessionId: session.id,
+            runId,
+            nodeId: node.id,
+            nodeType: node.type,
+            title: displayTitle(node, manifest),
+            ...(progress.percent !== undefined ? { percent: progress.percent } : {}),
+            ...(progress.message ? { message: progress.message } : {}),
+            ...(progress.phase ? { phase: progress.phase } : {}),
+          });
+        },
+      });
     },
 
     /**
@@ -1085,6 +1155,16 @@ export async function startWorkflowRun(args: {
       // 的卡会把对话刷屏,而用户关心的是结果;但"哪几个节点同时被派发了"恰恰是排查
       // 并发问题时唯一想知道的,所以留给日志。
       if (e.kind === "node.started") {
+        // **入队即报一嗓子(G3)**:`workflow.node.queued` —— 监控/看板要的是"派发
+        // 那一刻"的事实,而 progress 要到 execute 才有、result 更要等收场。起跑依然
+        // 不出卡片(下面那行日志的理由不变),这条只进事件流,渲染端要不要画是它的事。
+        broadcastRuntimeEvent({
+          type: "workflow.node.queued",
+          sessionId: session.id,
+          workflowId: session.workflowId,
+          runId,
+          nodeId: e.node.id,
+        });
         log.info(`workflow run ${runId}: node ${e.node.id} (${e.node.type}) dispatched`);
         return;
       }
@@ -1133,6 +1213,11 @@ export async function startWorkflowRun(args: {
         summary: e.outcome.summary,
         ...(outputKeys.length > 0 ? { outputKeys } : {}),
         ...(e.outcome.error ? { error: e.outcome.error } : {}),
+        ...(e.outcome.execution ? { execution: e.outcome.execution } : {}),
+        ...(e.outcome.artifacts && e.outcome.artifacts.length > 0 ? { artifacts: e.outcome.artifacts } : {}),
+        // **这次运行是触发器起的,就把载荷事实亮出来(G3)**:结果卡说得出"它是被
+        // 什么触发的"。手动跑的图没有 entry.payload,这个字段就缺席。
+        ...(entry?.payload !== undefined ? { input: { trigger: entry.payload } } : {}),
         ...(usage ? { usage } : {}),
       });
       if (nodeSessionId && usage === undefined) scheduleUsageBackfill(nodeSessionId, e.node.id);
@@ -1170,6 +1255,37 @@ export async function startWorkflowRun(args: {
         return WORKFLOW_MAX_PARALLEL_DEFAULT;
       }
     },
+
+    // **能力预检的清单(G4/CAP)**:这台机器的 descriptor 全集,一次算好、这次运行
+    // 内复用(每次派发现读插件清单 = 把磁盘读 N 遍)。装配失败缓存住 undefined =
+    // 这次运行不预检 —— 检查本身不能变成新的故障源(见 `RunPorts.capabilityInventory`)。
+    //
+    // ⚠️ `executorKinds` 必须与上面 `runEngine` 的注册保持一致:只有真的会经
+    // Executor Registry 派发的 kind 才有资格当"executor 需求"(prompt 走兜底的
+    // 模型轮,不在此列 —— 见 `requirementsForNode` 那条规则)。
+    capabilityInventory: (() => {
+      let cache: Promise<CapabilityPreflight | undefined> | undefined;
+      return (): Promise<CapabilityPreflight | undefined> => {
+        cache ??= (async (): Promise<CapabilityPreflight | undefined> => {
+          try {
+            const plugins = (await getEnabledPlugins()).map((p) => ({ name: p.name, manifest: p.manifest }));
+            const executorKinds = ["command", "code", "conversation"] as const;
+            return {
+              inventory: collectCapabilityInventory({
+                providers: providerRegistry.list(),
+                plugins,
+                executorKinds: [...executorKinds],
+              }),
+              executorKinds,
+            };
+          } catch (err) {
+            log.warn(`workflow run ${runId}: 能力清单装配失败,这次运行跳过预检:${(err as Error).message}`);
+            return undefined;
+          }
+        })();
+        return cache;
+      };
+    })(),
   };
 
   let result: RunResult | null = null;

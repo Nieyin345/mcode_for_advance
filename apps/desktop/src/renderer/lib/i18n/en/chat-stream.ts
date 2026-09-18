@@ -44,6 +44,10 @@ export const en = {
   // path at the fork", not "something upstream blew up".
   "chatStream.workflowStep.unselected": "Not taken",
   "chatStream.workflowStep.cancelled": "Cancelled",
+  // "Queued": the node entered the run queue but hasn't started yet (the
+  // workflow.node.queued event, see `renderer/lib/workflowQueued.ts`). Kept
+  // distinct from "running" — a queued node burns no tokens.
+  "chatStream.workflowStep.queued": "Queued",
   "chatStream.workflowStep.empty": "This step produced no text.",
   // What this step cost. `{cost}` is "—" when the engine reported no cost (not $0.00).
   "chatStream.workflowStep.usage": "{tokens} tokens · {cost}",
@@ -53,6 +57,12 @@ export const en = {
   "chatStream.workflowStep.processSteps": "{n} blocks",
   "chatStream.workflowStep.processGone":
     "This step's process is no longer in memory (only the most recent steps are kept).",
+  // Execution metadata for this step (NodeExecutionRecord): which executor ran it, how long.
+  "chatStream.workflowStep.execution": "Executor {kind} · {duration}",
+  // External artifacts this step produced (NodeArtifact). file / directory get "Open";
+  // data references are listed without an action.
+  "chatStream.workflowStep.artifacts": "Artifacts",
+  "chatStream.workflowStep.open": "Open",
 
   // ── The fork card (see `components/chat/BranchChoiceCard.tsx`) ──
   // Deliberately unlike the result cards above: until the button is pressed, the run

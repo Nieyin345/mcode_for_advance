@@ -418,6 +418,23 @@ export const en = {
   "composer.watch.failed": "Watch failed to start: {error}",
   "composer.watch.failedGeneric": "Watch failed to start",
 
+  // ── long-task loop (desktop only) ── arm toggle + session banner.
+  "composer.longtask.title": "Long task",
+  "composer.longtask.rowLabel": "Long task",
+  "composer.longtask.pillLabel": "Long task",
+  "composer.longtask.armHint": "When on, the next message you send becomes a goal that runs turn after turn until the model declares it done",
+  "composer.longtask.armed": "Armed",
+  "composer.longtask.running": "Running",
+  "composer.longtask.banner.goal": "Goal",
+  "composer.longtask.banner.round": "Round {n}/{m}",
+  "composer.longtask.banner.stop": "Stop",
+  "composer.longtask.banner.stopping": "Stopping…",
+  "composer.longtask.banner.dismiss": "Dismiss",
+  "composer.longtask.status.done": "Done",
+  "composer.longtask.status.blocked": "Blocked",
+  "composer.longtask.status.stopped": "Stopped",
+  "composer.longtask.status.maxed": "Out of rounds",
+
   // ── Node options dropdown (workflow main agent's "input options", see chat/NodeOptionsDropdown) ──
   "chat.nodeOptions.title": "Input options",
   "chat.nodeOptions.none": "None selected",

@@ -55,6 +55,10 @@ import {
   INJECT_TARGETS,
   MAIN_NODE_TYPE_ID,
   NODE_ASK_PARAM_KEY,
+  NODE_CODE_INPUT_KEY,
+  NODE_CODE_LANGUAGE_KEY,
+  NODE_CODE_PARAM_KEY,
+  NODE_CODE_TIMEOUT_KEY,
   NODE_COMMAND_PARAM_KEY,
   NODE_COMMAND_TIMEOUT_KEY,
   NODE_CONTEXT_KINDS,
@@ -281,6 +285,28 @@ function returnToChatParam(): NodeParamSpec[] {
         { value: "full", label: "过程和结果都并" },
       ],
       help: "这一步跑完之后有多少东西并回主对话。并回去的内容下一轮才生效(那个助手那时才看得到)。",
+    },
+  ];
+}
+
+/**
+ * 「交出什么」—— **只有「产出变量」这一格**。
+ *
+ * ⚠️ **别把它和 `ioParams()` 混起来。** `ioParams()` 那一组(资料、读流程记录、
+ * 期望产出、产出变量)是给**和模型对话**的节点用的 —— 「资料」要读库、「读流程记录」
+ * 要读流程,而 **`code` / `command` 这两种节点既没有模型、也不读库资料和流程记录**,
+ * 把它们整组塞过去只会多出两个填了也不生效的控件。
+ *
+ * 它们真正需要的只有这一格:`code`/`command` 交出来的东西(退出码、stdout、stderr)
+ * 是固定的,但**要不要按一张表交东西给下游取**是它们自己的事 —— 和对话节点同一套读法。
+ */
+function outputVarsParam(): NodeParamSpec[] {
+  return [
+    {
+      key: NODE_OUTPUT_VARS_KEY,
+      kind: "variables",
+      label: "产出变量",
+      help: "这一步要交出来的东西,一样一行。填了下游才能用 `{{某步.变量名}}` 取到。",
     },
   ];
 }
@@ -573,16 +599,37 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
         label: "超时(毫秒)",
         help: "跑了这么久还没完就杀掉,这一步按失败算。留空或 0 = 不限时长,等它自己退出。",
       },
+      ...outputVarsParam(),
     ],
     outputs: [
-      { key: "退出码", label: "退出码", description: "进程的结束码:0 通常是成功,非 0 通常是出了问题" },
-      { key: "输出", label: "输出尾部", description: "进程打印的最后一段内容(太长只留尾部),出错时先看这里" },
+      { key: "exitCode", label: "退出码", description: "进程的结束码:0 通常是成功,非 0 通常是出了问题" },
+      { key: "stdout", label: "输出尾部", description: "进程打印的最后一段内容(太长只留尾部),出错时先看这里" },
     ],
     usage:
       "**动手的那一步。** 它起一个进程跑你写的那条命令,进程退出这一步才结束 —— 输出按行记着,下游能取到**退出码**和**输出尾部**(太长只留最后几 KB,早前的输出被丢掉,要看全请让命令自己写文件)。\n" +
       "  ⚠️ **非零退出码不算这一步失败。** 命令挂了,这一步照样算跑完(失败的是命令,不是流程 —— 训练脚本退出码 1,你可能正想注入「重试一次」)。要按成败分流:下游接一个**决定权给模型**的分支,判据写「退出码是 0 走成功那条,不是 0 走失败那条」。\n" +
       "  **没有审批**:命令是你画图时写死在这儿的那一条,不是跑到一半才问的事 —— 所以别把不认识的图里的命令节点当成无害的。这一步声明了 `exec` 能力,受工作流权限那一套约束。\n" +
       "  **什么时候用它**:自动化的「手」—— 起训练、跑评测、拉日志、存一次盘。要模型读着结果说话,后面接子 agent;要无人值守地分流,后面接分支(模型选)。",
+  },
+  {
+    id: "mcode.code",
+    manifestVersion: 1,
+    name: "Code",
+    description: "Execute Python, Node.js, Shell or PowerShell code.",
+    icon: "code",
+    category: "Automation",
+    runner: { kind: "code", language: "python" },
+    capability: "exec",
+    params: [
+      { key: NODE_CODE_LANGUAGE_KEY, kind: "select", label: "Language", default: "python", help: "Runtime used to run the code.", options: [{ value: "python", label: "Python" }, { value: "node", label: "Node.js" }, { value: "shell", label: "Shell" }, { value: "powershell", label: "PowerShell" }] },
+      { key: NODE_CODE_PARAM_KEY, kind: "longtext", label: "Code", required: true, help: "Program source. Input JSON arrives on stdin." },
+      { key: NODE_CODE_INPUT_KEY, kind: "longtext", label: "Input JSON", help: "Optional. Use {{upstream.output}} style templates." },
+      { key: NODE_CODE_TIMEOUT_KEY, kind: "number", label: "Timeout (ms)", help: "0 = unlimited." },
+      ...outputVarsParam(),
+    ],
+    outputs: [{ key: "exitCode", label: "Exit code" }, { key: "stdout", label: "Stdout" }, { key: "stderr", label: "Stderr" }],
+    usage:
+      "General-purpose code execution. Read JSON from stdin; emit @@mcode:result {summary,outputs,artifacts} and @@mcode:progress {percent,message} on stdout. artifacts uses {kind,uri,name?,mimeType?,sizeBytes?} references; bytes stay external.",
   },
   {
     id: TRIGGER_NODE_TYPE_ID,

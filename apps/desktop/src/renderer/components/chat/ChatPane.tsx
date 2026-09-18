@@ -55,6 +55,8 @@ import type { TurnUsageRecord } from "@contracts/runtime";
 import { RenderErrorBoundary } from "./RenderErrorBoundary.js";
 import { MicButton } from "./MicButton.js";
 import { ComposerToolbar } from "./ComposerToolbar.js";
+import { LongTaskBanner } from "./LongTaskBanner.js";
+import { isElectron } from "@renderer/lib/platform.js";
 import { WorktreeModeChip } from "./WorktreeModeChip.js";
 import { SessionDirectoryChip } from "./SessionDirectoryChip.js";
 import { ComposerToolbarToggle } from "./ComposerToolbarToggle.js";
@@ -3861,6 +3863,9 @@ function ChatPaneForSession({
               setTags((prev) => [...prev, makeFileTag(path)]);
             }}
           >
+            {/* 长期任务状态条(桌面专属):循环续轮时显示目标/轮次/停止 —— 卡在
+                composer 卡片顶部,与消息流不混;终局后停在原地直到用户关掉。 */}
+            {isElectron && <LongTaskBanner sessionId={sessionId} />}
             {queue.length > 0 && (
               <div className="border-b border-edge px-2 pt-2 pb-1.5">
                 <div className="mb-1 flex items-center justify-between">

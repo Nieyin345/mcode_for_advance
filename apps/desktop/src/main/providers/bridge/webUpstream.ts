@@ -21,14 +21,23 @@
  * 网页模型会兴冲冲地输出工具调用标记，而 claude 侧收不到对应的 tool_use 块，
  * 用户看到的是"模型宣称要读文件，然后什么都没发生"，比不带系统提示更让人困惑。
  *
- * ## 一期限制（明确列出，避免被当成 bug）
- *  - 网页端是**纯对话**：claude 的工具能力用不上（上游不产出 tool_use）；
+ * ## 首轮环境块
+ * 网页模型没有 claude 的原生工具感知,它需要知道"我有 agent_* 工具、cwd 在哪、
+ * `@路径` 挂载要自己读"。这份说明由 {@link buildWebEnvBlock} 生成,**只在该
+ * sessionKey 的第一条消息前拼接一次**(cwd 变了才重注 —— 对应"系统提示词第一次
+ * 对话告诉他,之后不要再说"的取舍:网页对话里反复贴同一段说明既费 token 也惹眼)。
+ * 注入状态按 sessionKey 记,而 cwd 按 mcode 会话查({@link WebEnvProvider},由
+ * `main/index.ts` 注入 —— 本文件不能碰 db/electron)。
+ *
+ * ## 一期限制(明确列出,避免被当成 bug)
+ *  - 网页模型的工具能力 = 扩展侧工具循环 + `/mcp` 工具表(见 webToolHost.ts)。
+ *    claude 的原生工具(Read/Bash 等)对它不可见,它要走 `agent_*` 那组等价物;
  *  - 扩展没开 / 没配对 → 等一段宽限期再报错（见 extensionBridge.runPrompt）；
  *  - 多轮上下文由扩展侧维护，mcode 重启不影响，但**换浏览器**会重来。
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
-import { webSiteLabel, webSiteById } from "@contracts/customModel";
+import { webSiteLabel, webSiteById, webSiteDriven } from "@contracts/customModel";
 import { log } from "@main/lib/logger.js";
 import { runPrompt } from "./extensionBridge.js";
 import { OpenAiToAnthropicSse } from "./responseTranslator.js";
@@ -79,6 +88,67 @@ function sessionKeyOf(body: AnthropicRequest): string {
   return typeof userId === "string" && userId.length > 0 ? userId : "default";
 }
 
+/* ───────────────────────── 环境块(首轮注入) ───────────────────────── */
+
+/**
+ * 会话环境的来源 —— 由 `main/index.ts` 注入(仿 `configureMcpToolHost` 的模式:
+ * 本文件刻意不 import db/claude 链,无头 smoke 才能直接驱动 handleWebMessages)。
+ */
+export interface WebEnvProvider {
+  /** mcode 会话 id → 工作目录。拿不到给 null(那时不注入环境块)。 */
+  cwdFor(sessionId: string): string | null;
+}
+
+let webEnvProvider: WebEnvProvider | null = null;
+
+/** 注入环境来源。不注入(或注入晚于第一条请求)就没有环境块 —— 纯对话照常工作。 */
+export function configureWebEnvProvider(provider: WebEnvProvider): void {
+  webEnvProvider = provider;
+}
+
+/** sessionKey → 上次已注入的 cwd。值相等就不重注;变了(用户换了项目)才重发一份。 */
+const injectedCwdByKey = new Map<string, string>();
+
+/**
+ * 首轮发给网页模型的操作说明。
+ *
+ * 写给**模型**看,不是写给人看 —— 所以每条都是动作指令而不是产品介绍。要点:
+ * 有哪些工具、`@路径` 挂载只是占位要自己读、技能怎么用、被拒绝后该怎么办。
+ */
+function buildWebEnvBlock(cwd: string): string {
+  return [
+    "[环境说明 —— 以下是给你的操作指引,不必向用户复述]",
+    `- 当前工作目录:${cwd}。所有相对路径都以它为基准。`,
+    "- 你可以通过工具调用操作这台机器,工具名以 agent_ 开头:agent_read_file 读文件(支持 offset/limit 分片,按行号返回)、agent_write_file 写文件(可 append 追加)、agent_edit_file 精确替换编辑(old_string 必须逐字匹配)、agent_list_dir 列目录、agent_glob 按文件名模式查找(如 src/**/*.ts)、agent_grep 按内容搜索、agent_bash 执行命令行(默认 120 秒超时)、agent_skill_list 列出可用的技能、agent_skill_read 读取某个技能的说明文档。",
+    "- 用户消息里形如 `@路径` 的挂载(资料库条目:文件/论文/笔记/模版等,由用户自定义分类)只是路径提示,内容不会自动附上 —— 需要内容时用 agent_read_file 自己读,mdPath/pdfPath 等字段里的路径同理。",
+    "- 用户提到某个技能时,先用 agent_skill_list 确认存在,再用 agent_skill_read 读它的说明文档,然后照着里面的步骤做。",
+    "- agent_write_file / agent_edit_file / agent_bash 这类有副作用的调用会先征求用户批准;用户拒绝了就停下来问清楚,不要换个说法重试同一个动作。",
+  ].join("\n");
+}
+
+/**
+ * 这一轮要不要拼环境块?拼了就顺手把"已注入"记下。
+ *
+ * 只有**有正文要发**时才调用 —— 否则一次空正文失败的请求也会把 cwd 记成已注入,
+ * 下一轮就再也不注入了。cwd 取不到(没有会话头 / 会话查不到项目)直接跳过。
+ */
+function webEnvBlockFor(sessionKey: string, mcodeSessionId: string | null): string | null {
+  const provider = webEnvProvider;
+  if (!provider || !mcodeSessionId) return null;
+  let cwd: string | null = null;
+  try {
+    cwd = provider.cwdFor(mcodeSessionId);
+  } catch (err) {
+    // 环境信息拿不到不该拦住对话本身 —— 记日志,当没注入。
+    log.warn(`web upstream: cwdFor(${mcodeSessionId}) 失败,跳过环境块:${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+  if (!cwd) return null;
+  if (injectedCwdByKey.get(sessionKey) === cwd) return null;
+  injectedCwdByKey.set(sessionKey, cwd);
+  return buildWebEnvBlock(cwd);
+}
+
 /**
  * 处理一条网页版上游请求。
  *
@@ -101,8 +171,22 @@ export async function handleWebMessages(
     res.end(`网页版配置的站点无效：${webSiteLabel(siteId)}`);
     return;
   }
+  // 站点在目录里、但浏览器扩展还没实现它的驱动（见 WebSite.driver）。这时**不能**
+  // 往下走：那会把问题交给扩展，而扩展那边的站点白名单会拒掉它、回一句和站点无关
+  // 的错。在 mcode 这一侧就说清楚"去哪补"，用户才知道该做什么。
+  if (!webSiteDriven(siteId)) {
+    res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end(
+      `浏览器扩展还不支持驱动「${webSiteLabel(siteId)}」网页版：` +
+        `请在扩展里补上该站点的驱动，或改用其它站点。`,
+    );
+    return;
+  }
 
   const prompt = promptFromAnthropicRequest(body);
+  // 环境块只在有正文要发时才算(见 webEnvBlockFor 的说明),拼在用户消息之前。
+  const envBlock = prompt ? webEnvBlockFor(sessionKeyOf(body), mcodeSessionId) : null;
+  const fullText = envBlock ? `${envBlock}\n\n${prompt}` : prompt;
   const translator = new OpenAiToAnthropicSse();
   /**
    * 流式还是非流式。claude 在流式那一轮失败之后会补一次**非流式重试**，而这条路
@@ -145,7 +229,7 @@ export async function handleWebMessages(
       sessionKey: sessionKeyOf(body),
       sessionId: mcodeSessionId ?? undefined,
       siteId,
-      text: prompt,
+      text: fullText,
       signal: ac.signal,
       handlers: {
         onDelta: (text) => {

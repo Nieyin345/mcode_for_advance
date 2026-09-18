@@ -61,8 +61,8 @@ console.log("\n真进程 · 正常退出");
 {
   const out = await runCommandNode({ command: NODE_EXIT0, timeoutMs: 0, signal: controller().signal });
   eq("非零才算失败之外的情况都是 success", out.status, "success");
-  eq("退出码 0 进产出", out.outputs?.["退出码"], 0);
-  eq("输出进了产出", out.outputs?.["输出"], "done");
+  eq("退出码 0 进产出", out.outputs?.["exitCode"], 0);
+  eq("输出进了产出", out.outputs?.["stdout"], "done");
   eq("摘要就是输出", out.summary, "done");
 }
 
@@ -71,9 +71,9 @@ console.log("\n真进程 · 非零退出码不算这一步失败");
 {
   const out = await runCommandNode({ command: NODE_EXIT3, timeoutMs: 0, signal: controller().signal });
   eq("退出码 3 仍然 success", out.status, "success");
-  eq("退出码原样进产出(分流是下游的事)", out.outputs?.["退出码"], 3);
+  eq("退出码原样进产出(分流是下游的事)", out.outputs?.["exitCode"], 3);
   // stderr 并进尾部 —— 报错的东西恰恰是"跑完了要看的东西"。
-  check("stderr 也进了输出尾部", String(out.outputs?.["输出"]).includes("boom-stderr"), out.outputs);
+  check("stderr 也进了输出尾部", String(out.outputs?.["stdout"]).includes("boom-stderr"), out.outputs);
 }
 
 console.log("\n真进程 · 超长只留尾部");
@@ -81,8 +81,8 @@ console.log("\n真进程 · 超长只留尾部");
 {
   const out = await runCommandNode({ command: NODE_FLOOD, timeoutMs: 0, signal: controller().signal });
   eq("仍然 success", out.status, "success");
-  eq("尾部不多不少就是上限", String(out.outputs?.["输出"]).length, COMMAND_OUTPUT_TAIL_CHARS);
-  check("结尾是最后写的那段(尾部语义,不是头部)", String(out.outputs?.["输出"]).endsWith("TAILMARK"), out.outputs);
+  eq("尾部不多不少就是上限", String(out.outputs?.["stdout"]).length, COMMAND_OUTPUT_TAIL_CHARS);
+  check("结尾是最后写的那段(尾部语义,不是头部)", String(out.outputs?.["stdout"]).endsWith("TAILMARK"), out.outputs);
 }
 
 console.log("\n真进程 · 超时杀掉");
@@ -225,7 +225,7 @@ console.log("\n假 spawn · 输出分多块到达时同样只留尾部");
     return child;
   }) as unknown as SpawnFn;
   const out = await runCommandNode({ command: "x", timeoutMs: 0, signal: controller().signal }, { spawn });
-  const text = String(out.outputs?.["输出"]);
+  const text = String(out.outputs?.["stdout"]);
   eq("success", out.status, "success");
   check("总长压在上限内", text.length <= COMMAND_OUTPUT_TAIL_CHARS, text.length);
   check("最后一块在", text.endsWith("LASTCHUNK"), text.slice(-40));

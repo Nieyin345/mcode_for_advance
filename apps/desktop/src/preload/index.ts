@@ -96,6 +96,14 @@ const api = {
     getMany: ((input) =>
       ipcRenderer.invoke(IPC.SETTING_GET_MANY, input)) as RpcMap["setting.getMany"],
   },
+  /** 长期任务 —— 挂/停/查,见 @contracts/longTask。 */
+  longtask: {
+    start: ((input) =>
+      ipcRenderer.invoke(IPC.LONGTASK_START, input)) as RpcMap["longtask.start"],
+    stop: ((input) =>
+      ipcRenderer.invoke(IPC.LONGTASK_STOP, input)) as RpcMap["longtask.stop"],
+    get: ((input) => ipcRenderer.invoke(IPC.LONGTASK_GET, input)) as RpcMap["longtask.get"],
+  },
   /** Speech-to-text (voice input) — drives sherpa-onnx ASR in main. The
    *  renderer streams 16 kHz mono PCM via `feed`; live results arrive on
    *  `voiceResult`. */
@@ -825,6 +833,35 @@ const api = {
         IPC.AUTOMATION_WATCH_TEMPLATES_SAVE,
         input,
       )) as RpcMap["automation.watchTemplatesSave"],
+    // 全部触发器的事实状态(自动化管理页回答「它怎么没反应」的那份)。
+    statusAll: (() =>
+      ipcRenderer.invoke(IPC.AUTOMATION_STATUS_ALL)) as RpcMap["automation.statusAll"],
+  },
+
+  /** 运行史(某个对话的全部图运行,新的在前):从存档折出来的轻量摘要,
+   *  监控/历史页用 —— 整份快照不为一行列表过 IPC(见 `PersistedWorkflowRunLite`)。 */
+  runs: {
+    history: ((input) =>
+      ipcRenderer.invoke(IPC.RUNS_HISTORY, input)) as RpcMap["runs.history"],
+  },
+
+  /** 记忆(对话记忆的直读直写):数据根下 `memory/<类目>/*.md` 当普通文件管,
+   *  全部按 memory 根下的**相对路径**寻址(契约见 `@contracts` 的 memory.ts)。 */
+  memory: {
+    list: ((input) => ipcRenderer.invoke(IPC.MEMORY_LIST, input)) as RpcMap["memory.list"],
+    read: ((input) => ipcRenderer.invoke(IPC.MEMORY_READ, input)) as RpcMap["memory.read"],
+    save: ((input) => ipcRenderer.invoke(IPC.MEMORY_SAVE, input)) as RpcMap["memory.save"],
+    delete: ((input) => ipcRenderer.invoke(IPC.MEMORY_DELETE, input)) as RpcMap["memory.delete"],
+    categories: (() =>
+      ipcRenderer.invoke(IPC.MEMORY_CATEGORIES)) as RpcMap["memory.categories"],
+  },
+
+  /** 监控(总览):正在跑几个、触发器挂得怎么样、最近的运行。 */
+  monitoring: {
+    overview: (() =>
+      ipcRenderer.invoke(IPC.MONITORING_OVERVIEW)) as RpcMap["monitoring.overview"],
+    runs: ((input) =>
+      ipcRenderer.invoke(IPC.MONITORING_RUNS, input)) as RpcMap["monitoring.runs"],
   },
 
   /** 钩子(设置 → 钩子):某件事发生的时候跑一条你自己的命令。**宿主侧执行**,

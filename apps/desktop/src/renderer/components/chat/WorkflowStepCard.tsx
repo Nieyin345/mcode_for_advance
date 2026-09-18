@@ -24,15 +24,20 @@
  * 显示的就是下游拿到的那一份,不会出现"界面说交齐了、下游说少一样"这种两套说法。
  */
 import { useMemo, useState } from "react";
-import { cn } from "@renderer/lib/cn.js";
-import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
+import { api } from "@renderer/lib/api.js";
 import {
   IconAlertTriangle,
   IconChevronDown,
   IconCircleCheck,
   IconCircleOff,
+  IconDatabase,
+  IconFile,
+  IconFolder,
 } from "@renderer/lib/icons.js";
+import { cn } from "@renderer/lib/cn.js";
+import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { useSessionStore, type Block } from "@renderer/stores/sessionStore.js";
+import { useQueuedNode } from "@renderer/lib/workflowQueued.js";
 import { fmtCost, fmtTokens } from "@renderer/lib/contextWindow.js";
 import { Markdown } from "./Markdown.js";
 import { MessageBlocks } from "./MessageBlocks.js";
@@ -44,6 +49,14 @@ type WorkflowStepBlock = Extract<Block, { kind: "workflow-node-result" }>;
 /** 超过这个长度就折起来。**数字本身不重要** —— 它只是"一眼能扫过去"的量级,
  *  真正的判据是"比这长的东西摊开之后会把这一屏占满"。 */
 const COLLAPSE_AT = 400;
+
+/** 一步的耗时怎么摆:不满一秒给毫秒,往上给秒。够用就好 —— 这是卡片上的一行小字,
+ *  不是计时器。引擎没报(负数/NaN)时摆个破折号,不摆 0。 */
+function fmtDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "—";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  return `${(ms / 1000).toFixed(1)} s`;
+}
 
 const STATUS: Record<
   WorkflowStepBlock["status"],
@@ -84,6 +97,9 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [openProcess, setOpenProcess] = useState(false);
+  // 「排队中」chip:节点进队没起跑的那段时间(见 `workflowQueued.ts`)。收场卡出现时
+  // 队列事实多半已经摘掉 —— 留这个口子是为了排队→起跑的瞬间两张卡不会各说各的。
+  const queued = useQueuedNode(block.runId, block.nodeId);
 
   /**
    * 这一步**跑的过程** —— 它在那个隐藏子会话里搜了什么、调了哪些工具、中间说了什么。
@@ -139,6 +155,11 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
         <span className="min-w-0 flex-1 truncate text-content">{block.title}</span>
         {/* 类型 id 等宽、不翻译 —— 与画布上的卡片一致(作者在 README 里读到的就是它)。 */}
         <code className="shrink-0 text-[0.9em] text-content-subtle">{block.nodeType}</code>
+        {queued && (
+          <span className="shrink-0 rounded bg-surface-muted px-1.5 py-0.5 text-[0.85em] text-content-muted">
+            {t("chatStream.workflowStep.queued")}
+          </span>
+        )}
         <span className={cn("shrink-0", status.tone)}>{t(status.labelKey)}</span>
         {collapsible && (
           <IconChevronDown
@@ -183,6 +204,17 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
         <p className="mt-1 text-content-subtle">{t("chatStream.workflowStep.empty")}</p>
       )}
 
+      {/* **这一步跑在哪种执行器上、跑了多久。**(`NodeExecutionRecord`,结果事件本来
+          就带着 —— 之前没人展示。)回答"哪一步最慢"时,这是卡片上的第一手数字。 */}
+      {block.execution && (
+        <p className="mt-1 text-[0.9em] tabular-nums text-content-subtle">
+          {t("chatStream.workflowStep.execution", {
+            kind: block.execution.executorKind,
+            duration: fmtDuration(block.execution.durationMs),
+          })}
+        </p>
+      )}
+
       {/* **这一步花了多少。** 一个节点是一个独立的隐藏会话,真的烧 token —— 而它在左栏
           不出现、用量页里也只汇成一个总数。不给这一行的话,"哪一步最贵"就完全看不见。
           ⚠️ 它**多半是过几秒才出现的**(用量要等那个回合结算,见 block 上 `usage` 的
@@ -196,9 +228,51 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
         </p>
       )}
 
-      {/* 看这一步的过程 —— 为什么要有它:这一步跑在一个**隐藏会话**里,它的流水不进
-          对话流(见 `@contracts/runtime` 的 `WorkflowNodeTranscriptEvent`),没有这个
-          入口的话用户能看到的就只有上面那句结论,"它到底干了什么"完全不可见。 */}
+      {/* 看这一步交出了哪些**外部产物** —— 它们不在 `summary` 里(契约只允许引用,
+          见 `@contracts/nodeType` 的 `NodeArtifact`:字节留在外面,卡片上摆的是稳定
+          引用)。三种 kind 各有各的看法:file / directory 给「打开」(用系统默认应用 /
+          文件管理器),`data` 没有本地路径可开,只把引用摆出来。 */}
+      {block.artifacts && block.artifacts.length > 0 && (
+        <div className="mt-2 border-t border-edge/60 pt-2">
+          <div className="mb-1 flex items-center gap-1.5 text-[0.9em] text-content-subtle">
+            <IconFile size={13} />
+            <span>{t("chatStream.workflowStep.artifacts")}</span>
+          </div>
+          <div className="space-y-1">
+            {block.artifacts.map((artifact, index) => {
+              const localPath = artifact.uri.replace(/^file:\/\//, "");
+              const ArtifactIcon = artifact.kind === "directory" ? IconFolder : artifact.kind === "data" ? IconDatabase : IconFile;
+              const openable =
+                (artifact.kind === "file" || artifact.kind === "directory") &&
+                (/^[A-Za-z]:[\\/]/.test(localPath) || localPath.startsWith("/"));
+              return (
+                <div key={`${artifact.uri}:${index}`} className="flex min-w-0 items-center gap-2 text-[0.85em]">
+                  <ArtifactIcon size={13} className="shrink-0 text-content-subtle" />
+                  <span className="min-w-0 flex-1 truncate" title={artifact.uri}>
+                    {artifact.name ?? artifact.uri}
+                    {artifact.sizeBytes !== undefined && (
+                      <span className="ml-1 text-content-muted">({artifact.sizeBytes.toLocaleString()} B)</span>
+                    )}
+                  </span>
+                  {openable && (
+                    <button
+                      type="button"
+                      className="shrink-0 rounded border border-edge px-1.5 py-0.5 text-content-subtle hover:bg-surface-hover hover:text-content"
+                      onClick={() =>
+                        void (artifact.kind === "directory"
+                          ? api.shell.openPath({ path: localPath })
+                          : api.shell.openFile({ path: localPath }))
+                      }
+                    >
+                      {t("chatStream.workflowStep.open")}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {block.nodeSessionId && (
         <>
           <button

@@ -99,12 +99,20 @@
 | `prompt` | `{ "kind": "prompt" }` | ✅ 一个带独立指令的子 agent,跑一轮对话(**另开一段会话**) |
 | `conversation` | `{ "kind": "conversation" }` | ✅ 同样跑一轮模型,但**跑在主对话里**(见下面「对话节点」) |
 | `branch` | `{ "kind": "branch" }` | ✅ 岔路口:不跑东西,把决定权交给用户(见下面「出路」) |
-| `command` | `{ "kind": "command", "entry": "./x.py", "interpreter": "python", "args": [] }` | ❌ **形状定好了,执行还没实现** |
+| `command`(命令进**参数**) | `{ "kind": "command" }` | ✅ **能跑** —— 内置的 `mcode.command` 就是这个形状:命令写在节点参数里,本机起进程跑 |
+| `command`(命令进**自带脚本**) | `{ "kind": "command", "entry": "./x.py", "interpreter": "python", "args": [] }` | ❌ **形状定好了,执行还没实现** |
+| `code` | `{ "kind": "code", "language": "python" }` | ✅ 能用 —— 内置的 `mcode.code`,写一段脚本跑,产出 `exitCode`/`stdout`/`stderr` |
 
 `command` 的 `entry` 是**相对本文档所在目录**的路径,逃出这个目录的路径会被拒绝。
 
-> ⚠️ 现在写 `command` 类型的节点**能画、能存**,但**跑不了** —— 画布上会明确标出来,
-> 执行时也会明确报错,不会假装跑过。
+> ⚠️ **注意区分两种 command**:
+>
+> - **命令写在参数里的**(`{"kind":"command"}`,内置 `mcode.command`)—— ✅ **能画、能存、能跑**。
+> - **命令来自自带脚本的**(`entry` 填了,第三方插件那种)—— 能画、能存,但**跑不了**;
+>   画布上会明确标出来,执行时也会明确报错,不会假装跑过。**要把脚本干的活写进「命令」参数里。**
+>
+> 判定这件事的**唯一函数**是 `isNodeRunnable`(见 `contracts/src/nodeType.ts`)—— 
+> 调度器的拒绝与渲染端的徽标读的都是它,不要只看 `runner.kind` 自己判。
 
 ### 对话节点:不隔离的那一种
 

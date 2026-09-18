@@ -266,6 +266,9 @@ export function buildCustomEnv(
     // 所以只放我们自己的那一个会话头（见 `MCODE_SESSION_HEADER` 那段注释：这是网页端
     // 回头调 mcode 工具时唯一能说清"属于哪次对话"的东西）。
     //
+    // 能走到这个 `else` 的只剩 `openai` / `web`：上面那一支把 `anthropic` 全接走了，
+    // `protocol` 又是二值枚举。所以这里不需要再判协议 —— 判了也是恒真。
+    //
     // 用户的 `cfg.customHeaders` **不在这里加**：上游那一侧的头由桥自己注入
     // （`upstreamHeaders` 重新拼一份），在这里加只会让它们寄给 localhost。
     //

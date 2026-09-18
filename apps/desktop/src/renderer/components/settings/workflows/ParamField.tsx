@@ -20,6 +20,7 @@ import { useEffect, useRef, useState } from "react";
 import { Menu } from "@base-ui/react/menu";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import type { MessageId } from "@renderer/lib/i18n/core.js";
 import { Button, Input, Select, Switch } from "@renderer/components/ui/index.js";
 import { api } from "@renderer/lib/api.js";
 import type { NodeParamSpec } from "@contracts/nodeType";
@@ -227,6 +228,19 @@ export function ParamField({
  * 关掉,而 `Select` 会把最后点的那个显示成"当前值",那是在说一件不存在的事。
  * (同 `NodeInspector` 的「套用档案」。)
  */
+/**
+ * 触发器事实字段 → 词典里的显示名(`settings.workflows.triggerField.*`)。触发器字段
+ * 不是用户起的变量名,是**固定字段**,所以值得翻译;认不出的字段(清单比界面新)退回原文。
+ */
+const TRIGGER_FIELD_LABELS: Partial<Record<string, MessageId>> = {
+  kind: "settings.workflows.triggerField.kind",
+  at: "settings.workflows.triggerField.at",
+  files: "settings.workflows.triggerField.files",
+  event: "settings.workflows.triggerField.event",
+  toolName: "settings.workflows.triggerField.toolName",
+  subjects: "settings.workflows.triggerField.subjects",
+};
+
 function InsertVarMenu({
   groups,
   onPick,
@@ -259,28 +273,60 @@ function InsertVarMenu({
                 {t("settings.workflows.insertVarEmpty")}
               </p>
             ) : (
-              groups.map((group, gi) => (
-                <div key={`${group.title}-${gi}`}>
-                  {gi > 0 && <div className="my-1 border-t border-edge" />}
-                  <div className="truncate px-3 py-1 text-[0.7143em] font-medium text-content-subtle">
-                    {group.title}
+              groups.map((group, gi) => {
+                // 组名:上游节点组用节点标题;内置组(触发器)的标题是词典 key
+                // (`titleKey`),由这里翻译。「用户输入」那组两者都没有 —— 名字写在
+                // 条目自己身上(和「整段结果」同一种画法),组名就不渲染。
+                const groupTitle =
+                  group.title !== ""
+                    ? group.title
+                    : group.titleKey !== undefined
+                      ? t(group.titleKey)
+                      : null;
+                return (
+                  <div key={`${group.title}-${gi}`}>
+                    {groupTitle !== null && (
+                      <div className="truncate px-3 py-1 text-[0.7143em] font-medium text-content-subtle">
+                        {groupTitle}
+                      </div>
+                    )}
+                    {gi > 0 && <div className="my-1 border-t border-edge" />}
+                    {group.items.map((item, i) => {
+                      // 触发器字段是固定字段不是用户起的变量名,所以走词典;
+                      // 认不出的字段名(清单比界面新)退回原文。
+                      const triggerLabel =
+                        item.kind === "trigger" && item.name !== undefined
+                          ? TRIGGER_FIELD_LABELS[item.name]
+                          : undefined;
+                      return (
+                        <Menu.Item key={i} onClick={() => onPick(item.insert)} className={rowCls}>
+                          {item.kind === "whole" ? (
+                            <span className="flex min-w-0 flex-col">
+                              <span>{t("settings.workflows.insertVarWholeOutput")}</span>
+                              <span className="text-[0.7143em] leading-snug text-content-subtle">
+                                {t("settings.workflows.insertVarWholeOutputHint")}
+                              </span>
+                            </span>
+                          ) : item.kind === "user" ? (
+                            <span className="flex min-w-0 flex-col">
+                              <span>{t("settings.workflows.insertVarUser")}</span>
+                              <span className="text-[0.7143em] leading-snug text-content-subtle">
+                                {t("settings.workflows.insertVarUserHint")}
+                              </span>
+                            </span>
+                          ) : item.kind === "trigger" ? (
+                            <span className="truncate">
+                              {triggerLabel !== undefined ? t(triggerLabel) : item.name}
+                            </span>
+                          ) : (
+                            <span className="truncate">{item.name}</span>
+                          )}
+                        </Menu.Item>
+                      );
+                    })}
                   </div>
-                  {group.items.map((item, i) => (
-                    <Menu.Item key={i} onClick={() => onPick(item.insert)} className={rowCls}>
-                      {item.kind === "whole" ? (
-                        <span className="flex min-w-0 flex-col">
-                          <span>{t("settings.workflows.insertVarWholeOutput")}</span>
-                          <span className="text-[0.7143em] leading-snug text-content-subtle">
-                            {t("settings.workflows.insertVarWholeOutputHint")}
-                          </span>
-                        </span>
-                      ) : (
-                        <span className="truncate">{item.name}</span>
-                      )}
-                    </Menu.Item>
-                  ))}
-                </div>
-              ))
+                );
+              })
             )}
           </Menu.Popup>
         </Menu.Positioner>

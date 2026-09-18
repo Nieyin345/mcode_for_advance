@@ -128,6 +128,16 @@ eq("parse ignores garbage lines", parseCustomHeaderLines("no-colon\nx-ok: yes"),
 
 /* ───────────────────── path 1: env (anthropic protocol) ───────────────────── */
 
+// **环境隔离**:下面的断言都要求 `ANTHROPIC_CUSTOM_HEADERS` 从一个已知状态出发
+// (要么是空的,要么是这一组自己设的那个值)。`buildCustomEnv` 会把**进程环境里继承
+// 的值**合并进来(见 customEnv.ts「Merged OVER any inherited OS-level value」那段),
+// 所以只要跑测试的进程本身带着这个变量——比如从 GUI 进程继承、或上一次测试遗留——
+// 「env var untouched」这类断言就会拿到脏值而失败,看起来像产品回归,其实是夹具没隔离。
+//
+// 清掉它,跑完在文件末尾恢复。中间第 182 行那组会自己设值、自己还原,不受影响。
+const inheritedHeaders = process.env.ANTHROPIC_CUSTOM_HEADERS;
+delete process.env.ANTHROPIC_CUSTOM_HEADERS;
+
 function cfgFor(protocol: "anthropic" | "openai", baseUrl: string, headers?: Record<string, string>): ApiConfig {
   const cfg: ApiConfig = {
     baseUrl,
@@ -302,6 +312,10 @@ try {
 }
 
 /* ───────────────────────────── report ───────────────────────────── */
+
+// 还原跑测试前继承的环境值(见 path 1 开头的环境隔离说明)。
+if (inheritedHeaders === undefined) delete process.env.ANTHROPIC_CUSTOM_HEADERS;
+else process.env.ANTHROPIC_CUSTOM_HEADERS = inheritedHeaders;
 
 if (failures.length > 0) {
   console.error(`\n✗ ${failures.length} failed, ${passed} passed`);

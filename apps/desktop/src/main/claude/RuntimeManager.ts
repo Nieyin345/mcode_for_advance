@@ -1355,6 +1355,25 @@ class RuntimeManager {
    * 闸门的两个状态挂在 `SessionRuntime` 那一份上,不绑就没有落点。库里查不到就是
    * 真没了 —— 给 null,让宿主去回绝(它不会在没有闸门的情况下放行)。
    */
+  /**
+   * 会话 id → 工作目录(agent_* 网页工具的相对路径基准,以及首轮环境块里报给网页
+   * 模型的那个 cwd)。解析顺序与 `rewindTurn` 同款:先活着的运行时在第一回合里记下的
+   * `lastCwd`(跟着 cd 走),回话没跑过就落到会话所属项目的路径;都没有给 null ——
+   * 调用方(agent 工具 / webUpstream 的环境块)各自决定"相对路径报错"或"跳过注入"。
+   */
+  cwdFor(sessionId: string): string | null {
+    let rt = this.sessions.get(sessionId);
+    if (!rt) {
+      const session = SessionRepo.get(sessionId);
+      if (!session) return null;
+      this.bindSession(session);
+      rt = this.sessions.get(sessionId);
+    }
+    if (rt?.lastCwd) return rt.lastCwd;
+    const project = ProjectRepo.get(SessionRepo.get(sessionId)?.projectId ?? "");
+    return project?.path ?? null;
+  }
+
   webToolGate(sessionId: string): WebToolGate | null {
     let rt = this.sessions.get(sessionId);
     if (!rt) {

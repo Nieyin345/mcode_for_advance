@@ -217,6 +217,27 @@ export const WorkflowDocSchema = z.object({
    * 老文档没有这个字段,解析出来就是 undefined,行为与从前完全一致 —— 不需要迁移。
    */
   trigger: WorkflowTriggerSchema.optional(),
+  /**
+   * 文档的**读写版本**(WF-05)。导出时写上,导入时按兼容规则核对:缺失或等于现值
+   * (见 `workflowValidation.ts` 的 `WORKFLOW_SCHEMA_VERSION`)即接受,别的值拒绝。
+   *
+   * **可选是刻意的**:老文档没有它,解析出来就是 undefined,行为与从前完全一致 ——
+   * 不需要迁移(同 `trigger` 那条的取舍)。它标记的是"这份序列化文件按哪套形状读",
+   * 不是"这份文档是哪一版生成的" —— 所以运行时语义从不看它,只有 import/export 看。
+   */
+  schemaVersion: z.string().optional(),
+  /**
+   * 这张图对**输入**的声明(WF-05,宽松形状) —— 描述"起一次运行该给什么":参数名、
+   * 类型、是否必填之类,JSON-Schema 风格的自由对象。
+   *
+   * 契约层**不解释**它的内容,也不按它拦截:它是给三处消费方看的元数据 —— Agent
+   * 生成工作流时自述"这张图吃什么"、调用方(mobile / webhook 那类)在起跑前核对入参、
+   * 以及分享出去时让人读。做成宽松的 record 而不是一套严格的 schema 类型,是因为
+   * 现在还没有一个真实的读方;等第一处消费方出现,再把形状收紧 —— 提前收紧必然猜错。
+   */
+  inputSchema: z.record(z.string(), z.unknown()).optional(),
+  /** 同 {@link WorkflowDocSchema.inputSchema},声明的是**产出**端:整张图跑完交什么。 */
+  outputSchema: z.record(z.string(), z.unknown()).optional(),
   nodes: z.array(WorkflowNodeSchema),
   edges: z.array(WorkflowEdgeSchema),
   /** true = 随应用发布的内置工作流(默认版在代码里,用户的修改存表里覆盖它)。 */
@@ -473,6 +494,33 @@ export function validateDag(
     };
   }
   return { ok: true };
+}
+
+/* ── 生成质量闸门(WF-05 / WF-08 / WF-09) ── */
+
+/**
+ * 校验报告里的一条问题。`code` 是**稳定字符串**(如 `graph.cycle` /
+ * `node.unknown-kind`),给程序读 —— Agent 生成工作流后要按 code 定位问题类型;
+ * `message` 是给人读的一句话,`nodeId` 能给时都给,让人在图上找得到是哪一个。
+ */
+export interface WorkflowValidationIssue {
+  /** 稳定错误码,取值见 `main/orchestration/workflowValidation.ts` 的检查清单。 */
+  code: string;
+  /** 问题落在哪个节点上(边级/文档级的问题没有这一项)。 */
+  nodeId?: string;
+  message: string;
+}
+
+/**
+ * 一次完整校验的结果(WF-09 的 Report 形状)。
+ *
+ * `ok` = **errors 为空**;warnings 不拦存盘/导入 —— 它是"能跑,但多半画错了"的那类
+ * 提示(典型:引用了没装的节点类型,见文件头"类型认不出来不算错误"那条)。
+ */
+export interface WorkflowValidationReport {
+  ok: boolean;
+  errors: WorkflowValidationIssue[];
+  warnings: WorkflowValidationIssue[];
 }
 
 /* ── 分层(自动布局用) ── */

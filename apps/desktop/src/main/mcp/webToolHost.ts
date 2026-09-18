@@ -3,10 +3,15 @@
  *
  * ## 它拿的是同一份工具表
  *
- * 工具表([libraryMcpTools] / [workflowMcpTools])就是进程内那两个 server 用的那份,
- * 这里只是**换一种包装**:那边包给 SDK(`toSdkTools`),这边包成
+ * 工具表([libraryMcpTools] / [workflowMcpTools] / [agentMcpTools])就是进程内那些
+ * server 用的那份,这里只是**换一种包装**:那边包给 SDK(`toSdkTools`),这边包成
  * {@link McpToolHost} 报给扩展。所以"网页端能调什么"永远等于"桌面端能调什么" ——
  * 加一个工具只需要在表里加一处,不会出现"桌面有、网页没有"的漏项。
+ *
+ * agent 工具段(`agent_*`,读/写/编辑/列目录/glob/grep/bash/技能)是网页端自己的
+ * "通用 agent 基础操作":桌面 claude 引擎有原生 Read/Write/Bash,网页模型没有 ——
+ * 这一组把同样的能力经 MCP 补给它。它们不在任何 SDK server 里注册(桌面端用不着),
+ * 只活在这张表里;cwd 从 `deps.cwdFor` 按会话取,相对路径一律相对会话的工作目录。
  *
  * 入参校验也用**同一份 zod shape**:SDK 那条路由 SDK 按 `inputSchema` 校验,这边由
  * {@link createWebToolHost} 自己 `z.object(shape).safeParse`。校验不过就当一次
@@ -53,6 +58,7 @@ import type {
 // 就换不掉,真那份会被打进 bundle 并且在模块载入时去找真的 sql.js 库。
 import { libraryMcpTools } from "@main/mcp/libraryServer.js";
 import { workflowMcpTools } from "@main/mcp/mcodeServer.js";
+import { agentMcpTools } from "@main/mcp/agentTools.js";
 import type { McpToolSpec } from "@main/mcp/sdk.js";
 
 /**
@@ -71,6 +77,9 @@ export interface WebToolGate {
 export interface WebToolHostDeps {
   /** 会话 id → 闸门。会话不存在(或已经收场)时给 null。 */
   gateFor(sessionId: string): WebToolGate | null;
+  /** 会话 id → 工作目录(agent_* 文件工具的相对路径基准)。
+   *  取不到(会话没跑过、项目没有路径)时给 null,agent 工具对相对路径报错。 */
+  cwdFor(sessionId: string): string | null;
 }
 
 /** 没带会话标识时的回话。写清楚"怎么修"——模型唯一能做的就是告诉用户。 */
@@ -109,7 +118,11 @@ function toJsonSchema(spec: McpToolSpec): Record<string, unknown> {
  * 应用启动的那条路上,而扩展连上来之前根本没人问这张表。
  */
 export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
-  const specs: McpToolSpec[] = [...libraryMcpTools(), ...workflowMcpTools()];
+  const specs: McpToolSpec[] = [
+    ...libraryMcpTools(),
+    ...workflowMcpTools(),
+    ...agentMcpTools({ cwdFor: deps.cwdFor }),
+  ];
   const byName = new Map(specs.map((spec) => [spec.name, spec]));
   let listed: McpToolInfo[] | null = null;
 

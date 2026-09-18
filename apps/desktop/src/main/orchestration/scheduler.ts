@@ -89,25 +89,14 @@ import {
   ASK_RUN_CHOICE,
   ASK_SKIP_CHOICE,
   BRANCH_STOP_CHOICE,
-  DEFAULT_DECIDER_INSTRUCTION,
-  NODE_PROMPT_PARAM_KEY,
   askBeforeRunOf,
-  commandOf,
-  commandTimeoutOf,
-  contextKindsOf,
   flowRecordOf,
   isAskChoice,
   isModelDecider,
   isNodeRunnable,
-  mcpServerNamesOf,
-  pluginNamesOf,
-  providerIdOf,
-  returnModeOf,
-  skillNamesOf,
   validateNodeParams,
   type NodeContextKind,
   type NodeOutcome,
-  type NodeReturnMode,
   type NodeTypeManifest,
 } from "@contracts/nodeType";
 import {
@@ -121,20 +110,24 @@ import {
   type WorkflowNode,
 } from "@contracts/workflow";
 import { referencedNodeNamesIn, renderTemplate, type NodeTemplateScope } from "@contracts/nodeTemplate";
-import type { WorkflowChoiceOption } from "@contracts/runtime";
+import { expandTriggerVars } from "./triggerVars";
+import type { NodeRunInput as ContractNodeRunInput, WorkflowChoiceOption } from "@contracts/runtime";
+export type NodeRunInput = ContractNodeRunInput & { signal: AbortSignal };
 import {
   DECIDE_OUTPUT_VAR,
   DECIDE_VAR_NAME,
-  NODE_OUTPUT_CONTRACT_KEY,
   checkOutput,
-  describeOutputVars,
   matchDecisionOption,
   outputValueText,
-  outputVarsFor,
   outputVarsOf,
   pickOutputs,
   validateOutputRules,
 } from "@contracts/outputConstraint";
+// 能力预检(G4/CAP):解析逻辑与诊断文案全部来自 contracts(`@contracts/capability`),
+// 需求推导与清单装配的翻译在 `capabilityResolver.ts`(纯函数,可冒烟)。调度器只做
+// "派发前对一对"这一件事,不发明第二套判定 —— 见 `capabilityResolver.ts` 文件头。
+import { describeCapabilityProblems, type CapabilityDescriptor } from "@contracts/capability";
+import { checkNodeCapabilities, requirementsForNode } from "./capabilityResolver.js";
 // 资料行的**形状**来自 `contextInherit`(它是认类目那一端):端口把它原样交进来,
 // 怎么摆是 `schedulerPrompt.ts` 的事 —— 调度器不碰库,也不需要知道"哪个 id 属于
 // 哪一类"是怎么查出来的。
@@ -145,8 +138,6 @@ import type { ContextLine } from "./contextInherit.js";
 // schedulerPrompt,反方向不允许 —— 那正是原来两件事挤一个文件里的根源。
 import {
   askSection,
-  composeNodePrompt,
-  decisionSection,
   findStep,
   flowRecordSection,
   planOf,
@@ -154,49 +145,13 @@ import {
   type Arrival,
   type AskAnswer,
   type FlowRecordEntry,
-  type WorkflowPlan,
 } from "./schedulerPrompt.js";
+// 参数 → `NodeRunInput` 的最后一次翻译在 `nodeInputBuilders.ts`(专用 builder 走
+// 注册表,其余落默认的模型轮构造)。调度器只负责在派发那一刻把**运行期上下文**
+// (上游结局、用户选择、流程记录)算出来递过去 —— 那些东西只有这一层知道。
+import { buildNodeInput } from "./nodeInputBuilders.js";
 
 /* ────────────────────────── 端口 ────────────────────────── */
-
-/** 交给执行器的一份输入。
- *
- *  **这里是"节点参数 → 这一轮怎么跑"的唯一映射点。** 每加一种影响执行的能力(技能、
- * 记忆、工具白名单……),步骤都是同一个:在 `@contracts/nodeType` 定一个约定键、在这里
- * 加一个字段并在 {@link nodeInputOf} 里取一次、执行器读这个字段。**不要让执行器自己
- * 去 `node.params` 里翻** —— 那等于同一条约定有两个读法,改一处忘一处就分家了。 */
-export interface NodeRunInput {
-  /** **已经拼好的**这一轮提示词,见 {@link composeNodePrompt}。执行器直接用它,
-   *  不再自己拼 —— 拼法(上游结果怎么摆、用户请求给谁)属于调度语义。 */
-  prompt: string;
-  /** 这一步要用的技能(来自约定键 `skills`,见 `@contracts/nodeType` 的
-   *  `NODE_SKILLS_PARAM_KEY`)。空数组 = 不限制。 */
-  skills: string[];
-  /** 这一步能用哪几个 **MCP 服务器**(约定键 `mcp`)。空数组 = 不限制(全部)。
-   *
-   *  和 `skills` 并列而不是塞进它:技能是"模型可以调用的东西",MCP 服务器是"整个工具面
-   *  有多大" —— 后者决定的是**上下文里躺着多少条工具定义**(见
-   *  `@contracts/provider` 的 `StartTurnRequest.mcpServerNames`)。 */
-  mcpServerNames: string[];
-  /** 这一步加载哪几个**插件**(约定键 `plugins`)。空数组 = 不限制(所有已启用的)。 */
-  pluginNames: string[];
-  /** 这一步跑完之后**有多少东西并回主对话**(约定键 `returnToChat`)。见
-   *  `@contracts/nodeType` 的 `NODE_RETURN_PARAM_KEY` —— 默认 `none`,也就是从前的行为。 */
-  returnMode: NodeReturnMode;
-  /** 这一步要用的引擎(`provider` 约定键)。`undefined` = 跟着对话走。 */
-  providerId?: string;
-  /**
-   * **只有命令节点有**:要跑的命令行与超时(毫秒,0 = 不限),解算过变量的那一份。
-   *
-   * 命令节点不跑模型 —— 它没有"提示词"可拼({@link NodeRunInput.prompt} 对它是空串),
-   * 执行器(route 到 `commandRunner.ts` 那一支)只看这一个字段。做成输入字段而不是让
-   * 执行器自己去 `node.params` 里翻,和上面每个字段是同一条规矩:**"节点参数 → 这一轮
-   * 怎么跑"只在一个地方发生一次**。
-   */
-  command?: { command: string; timeoutMs: number };
-  /** 取消信号。执行器应当尽快停下来(真实实现里是 interrupt 那个回合)。 */
-  signal: AbortSignal;
-}
 
 /** 调度器要问外面的六件事。真实实现在 `runner.ts`,冒烟脚本塞的是假的。 */
 export interface RunPorts {
@@ -265,6 +220,24 @@ export interface RunPorts {
    * token 一次** —— 真实实现那一头一次写盘就是重写整个数据库文件(见 `runner.ts`)。
    */
   snapshot?(state: RunState): void;
+  /**
+   * 这台机器的**能力清单**(G4/CAP):providers / 已启用插件 / 经 Executor Registry
+   * 派发的 executor kinds,由调用方装配好递进来(调度器不认识注册表,与
+   * {@link RunPorts.manifestOf} 同一个理由)。做成返回 `Promise` 是因为清单里有
+   * 异步来源;返回 `undefined` = **这次跳过预检** —— 端口没给(冒烟脚本的假端口)
+   * 或装配失败的那次运行,都不该被预检挡住。
+   */
+  capabilityInventory?(): Promise<CapabilityPreflight | undefined>;
+}
+
+/**
+ * 一次能力预检要的两样。`executorKinds` 是"哪些 runner.kind 真的会经 Executor
+ * Registry 派发" —— `requirementsForNode` 只给这些 kind 加 executor 需求(prompt /
+ * branch / trigger 走的是会话或不跑东西,给它们凭空加执行器需求只会制造假阳性)。
+ */
+export interface CapabilityPreflight {
+  inventory: CapabilityDescriptor[];
+  executorKinds: readonly string[];
 }
 
 /**
@@ -303,8 +276,12 @@ export interface RunState {
    *
    * 它必须落盘:续跑时"这次是哪一条自动化入口起的"仍然成立(触发器节点自己在
    * `outcomes` 里睡着,其余触发器该标 `unselected` 还是照标)。
+   *
+   * `payload` 是触发器载荷的**事实键值**(G3/VAR-06,键来自 `payloadFactsOf`):
+   * 调度器把它递进每个节点的 `data.trigger`,节点参数里的 `{{trigger.<key>}}` 从
+   * 这里取。它跟着 entry 一起落盘,续跑时变量才解得出来。
    */
-  entry?: { nodeId: string; summary: string };
+  entry?: { nodeId: string; summary: string; payload?: Record<string, unknown> };
 }
 
 /**
@@ -338,8 +315,8 @@ export interface RunResume {
   settled: readonly (readonly [string, NodeOutcome])[];
   /** 用户刚点的那一下。**只对这一处生效一次** —— 回头之后同一个岔路口要重新问。 */
   answer?: { nodeId: string; choice: BranchChoice };
-  /** 上次是哪条触发器起的(见 {@link RunState.entry})。存档里有就以它为准。 */
-  entry?: { nodeId: string; summary: string };
+  /** 上次是哪条触发器起的(见 {@link RunState.entry},含 `payload`)。存档里有就以它为准。 */
+  entry?: { nodeId: string; summary: string; payload?: Record<string, unknown> };
 }
 
 /** 用户在分支节点上做的选择。 */
@@ -415,6 +392,7 @@ function expandParams(
   node: WorkflowNode,
   manifest: NodeTypeManifest,
   scope: NodeTemplateScope,
+  trigger?: Record<string, unknown>,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = { ...node.params };
   for (const [key, value] of Object.entries(node.params)) {
@@ -422,7 +400,13 @@ function expandParams(
     // 报错要报**界面上那个名字**(「指令」),不是 `instruction` —— 用户看的是前者。
     const spec = manifest.params.find((p) => p.key === key);
     const where = spec ? `参数「${spec.label}」` : `参数 ${key}`;
-    const result = renderTemplate(value, scope, where);
+    // **触发器变量先于模板解算**:`{{trigger.*}}` 不指向图上任何节点,`renderTemplate`
+    // 不认识这个名字空间,留着它会按"引用不到"硬失败。展开器和 `buildNodeInput` 里
+    // 用的是**同一个** `expandTriggerVars` —— 名字空间各一个展开器,两边不会长歪。
+    // 解不出来(没载荷/载荷里没这个 key)会抛,由外层 catch 兜成这一步的失败,
+    // 和 `renderTemplate` 的"引用不到就明确失败"同一条路。
+    const detrig = expandTriggerVars({ [key]: value }, trigger);
+    const result = renderTemplate(detrig[key] as string, scope, where);
     if (!result.ok) throw new Error(result.error);
     out[key] = result.text;
   }
@@ -446,113 +430,9 @@ function referencedNodeNames(node: WorkflowNode): Set<string> {
   return names;
 }
 
-/**
- * 把一个节点翻译成执行器要的输入。**"节点参数 → 这一轮怎么跑"只在这里发生一次**
- * (见 {@link NodeRunInput})。
- *
- * `params` 是**已经解算过变量**的那一份(由 `executeOne` 解,见 {@link expandParams})。
- * 之所以在调用方解、不在这里解:产出回来之后还要按同一份参数查硬约束
- * (见 {@link withOutputCheck}),两处必须是**同一份值**,各解一次迟早分家。
- */
-function nodeInputOf(
-  params: Record<string, unknown>,
-  manifest: NodeTypeManifest,
-  ctx: {
-    userPrompt: string;
-    upstream: string;
-    /** 这一步是谁 / 整条流程长什么样 —— 「整条流程」那一节的内容,见 {@link planSection}。 */
-    nodeId: string;
-    plan: WorkflowPlan;
-    /** 这一步有没有下游(见 {@link PlanStep.isLast})。没有的话没人取它的产出变量。 */
-    terminal: boolean;
-    /** 它是从哪条出路来的(上游有分支节点时才有)。见 {@link Arrival}。 */
-    arrival?: Arrival;
-    /** 整条流程的记录(已渲染成整段)。只有开了那个开关的节点才有 —— 见
-     *  `NODE_FLOW_RECORD_PARAM_KEY`,以及 {@link flowRecordSection}。 */
-    record?: string;
-    /** 「运行前先问我」那一次的回答,已渲染成整段。见 {@link askSection}。 */
-    ask?: string;
-    /**
-     * **只有决策节点给**:它有哪几条出路(就是它的出边,同 {@link branchOptionsOf})。
-     *
-     * 两处要用它,而且必须是**同一份**名单:给模型的提示词里要它交出「出路」(见
-     * {@link decisionSection}),而这个值等下要拿去和选项名比对(见 `applyDecision`)。
-     * 分成两处各算一遍的话,报错时列出来的"可选名字"和提示词里给的可能不是一套。
-     */
-    decide?: { options: WorkflowChoiceOption[] };
-    contextLines: (kinds: NodeContextKind[]) => ContextLine[];
-  },
-  signal: AbortSignal,
-): NodeRunInput {
-  const skills = skillNamesOf(params);
-  const mcpServerNames = mcpServerNamesOf(params);
-  const pluginNames = pluginNamesOf(params);
-  const providerId = providerIdOf(params);
-  const returnMode = returnModeOf(params);
-  const context = ctx.contextLines(contextKindsOf(params));
-  // **命令节点不拼提示词,提前走人。** 它不跑模型 —— 没有"指令"、没有技能、没有产出
-  // 约定,`instructionOf` 对它必然抛(参数表里没有那个键)。要带去执行器的只有**解算过
-  // 变量的命令行**(上游产出就长在命令文本里)和超时。输出变量表同样没有:产出
-  // (「退出码」「输出」)是代码直接给的,不走"声明了才查"那一套。
-  if (manifest.runner.kind === "command") {
-    return {
-      prompt: "",
-      skills: [],
-      mcpServerNames: [],
-      pluginNames: [],
-      returnMode: "none",
-      command: { command: commandOf(params), timeoutMs: commandTimeoutOf(params) },
-      signal,
-    };
-  }
-  // **决策节点的「出路」是从这儿进变量表的**(见 `outputVarsFor`)。不给 options 的话
-  // 它不追加 —— 一条出边都没有的图,那一步该失败在"没有出路"上,而不是逼它交一个
-  // 交不出来的值。
-  const vars = outputVarsFor(
-    manifest,
-    params,
-    (ctx.decide?.options ?? []).map((o) => o.label),
-  );
-  // **「选路判据」留空的模型选分支是合法的** —— 兜底用缺省文案(见
-  // `DEFAULT_DECIDER_INSTRUCTION`)。其他节点留空指令仍然是错误,`instructionOf` 会抛。
-  const instructionRaw = params[NODE_PROMPT_PARAM_KEY];
-  const instruction =
-    typeof instructionRaw === "string" && instructionRaw.trim().length > 0
-      ? instructionRaw
-      : isModelDecider(manifest, params)
-        ? DEFAULT_DECIDER_INSTRUCTION
-        : instructionOf(params, manifest);
-  return {
-    prompt: composeNodePrompt({
-      userPrompt: ctx.userPrompt,
-      upstream: ctx.upstream,
-      instruction,
-      nodeId: ctx.nodeId,
-      plan: ctx.plan,
-      skills,
-      context,
-      ...(ctx.arrival ? { arrival: ctx.arrival } : {}),
-      ...(ctx.record ? { record: ctx.record } : {}),
-      ...(ctx.ask ? { ask: ctx.ask } : {}),
-      ...(ctx.decide ? { decision: decisionSection(ctx.decide.options) } : {}),
-      outputContract: stringParamOf(params, NODE_OUTPUT_CONTRACT_KEY),
-      // **终末节点不发变量表**(见 {@link withOutputCheck})。
-      outputVars: ctx.terminal ? "" : describeOutputVars(vars),
-    }),
-    skills,
-    mcpServerNames,
-    pluginNames,
-    returnMode,
-    ...(providerId !== undefined ? { providerId } : {}),
-    signal,
-  };
-}
-
-/** 一个字符串参数的当前值(没有就是空串)。 */
-function stringParamOf(params: Record<string, unknown>, key: string): string {
-  const value = params[key];
-  return typeof value === "string" ? value : "";
-}
+/* 节点参数 → `NodeRunInput` 的最后一次翻译在 `nodeInputBuilders.ts`(`buildNodeInput`):
+ * 专用 builder(code/command…)走注册表,其余落默认的模型轮构造。上面解算好的
+ * `params` 原样递过去 —— 产出回来之后 `withOutputCheck` 查的还是这同一份值。 */
 
 /**
  * 产出回来了,**当场按变量表查一遍**(见 `@contracts/outputConstraint`)。
@@ -633,8 +513,12 @@ export async function runWorkflow(args: {
    *
    * 不给 = 这次运行不是触发器起的(用户在对话里手动跑一张图)。那时**一个触发器都不预置**,
    * 真被派发到了就明确失败(见 `executeOne`)—— 与其编一个载荷糊过去,不如说清楚。
+   *
+   * `payload` 是载荷的**事实键值**(G3/VAR-06,见 `automationPayload.ts` 的
+   * `payloadFactsOf`):它进 {@link RunState.entry} 一起落盘,并被递进每个节点的
+   * `data.trigger`,节点参数里的 `{{trigger.<key>}}` 从这里取。
    */
-  entry?: { nodeId: string; summary: string };
+  entry?: { nodeId: string; summary: string; payload?: Record<string, unknown> };
 }): Promise<RunResult> {
   const { doc, prompt, ports, signal } = args;
   const resumed = args.resume;
@@ -1560,7 +1444,7 @@ export async function runWorkflow(args: {
             id: n.id,
             title: n.title,
             params: n.params,
-            ...(outcome ? { outcome } : {}),
+            ...(outcome ? { outcome, artifacts: outcome.artifacts } : {}),
           };
         }),
       };
@@ -1570,7 +1454,34 @@ export async function runWorkflow(args: {
       // 解不出来会抛,由下面那层的 catch 兜成这个节点的失败。
       // **引用要在解算前扫**(见 `referencedNodeNames`),解算完就看不出引过谁了。
       const referenced = referencedNodeNames(node);
-      const params = expandParams(node, manifest, scope);
+      // **载荷随 entry 进来**(自动化起跑时带上,见 `automationRunner`):参数里的
+      // `{{trigger.*}}` 在这一步就解成实际值,后面每一层(buildNodeInput / 执行器)
+      // 看到的都是解算后的参数 —— "哪几个参数解过了"永远只有一个答案。
+      const params = expandParams(node, manifest, scope, entry?.payload);
+
+      // **能力预检(G4/CAP):派发前的最后一道闸。** 需求 = 清单声明的 requirements +
+      // 参数推导(选了引擎 / 技能 / 插件 / 执行器),清单 = 调用方装配的这台机器的
+      // descriptor。端口缺席(冒烟的假端口)或装配失败 → **整个跳过** —— 预检是闸门,
+      // 不是新的故障源。有阻断性问题时按**现有的失败语义**定案(不新增节点状态),
+      // 它的下游会照常标 `skipped`,原因就写在这句错误里。
+      //
+      // ⚠️ skill / mcp 两类这一轮**不查**:宿主侧还没有"全部可用技能 / MCP"的可靠
+      // 清单来源(项目级技能是异步拿、MCP 宿主侧清单缺失),拿一份不完整的清单去对,
+      // 会把"选了技能"误判成"缺技能" —— 误伤比漏检难看得多。清单来源补齐后再放开。
+      if (ports.capabilityInventory !== undefined) {
+        const preflight = await ports.capabilityInventory().catch(() => undefined);
+        if (preflight !== undefined) {
+          const requirements = requirementsForNode(manifest, params, undefined, preflight.executorKinds).filter(
+            (r) => r.kind !== "skill" && r.kind !== "mcp",
+          );
+          const problems = describeCapabilityProblems(
+            checkNodeCapabilities(manifest, requirements, preflight.inventory),
+          );
+          if (problems.length > 0) {
+            return { status: "failed", summary: "", error: problems.join(";") };
+          }
+        }
+      }
 
       // 这一步是不是**终末**(没有下游)。它决定两件事:产出变量表发不发(见
       // {@link withOutputCheck})和产出要不要按变量表查。**和 `planSection` 用的是
@@ -1599,30 +1510,43 @@ export async function runWorkflow(args: {
       // 两处必须是同一份名单(否则报错里列的名字和提示词里给的可能不是一套)。
       const decideOptions = isModelDeciderNode(node.id) ? branchOptionsOf(node.id) : [];
 
+      // 名字叫 `inputScope`(而不是和上面模板解算的 `scope` 重名):上面那个是
+      // **变量解算**的词表(NodeTemplateScope),这个是**输入构造**的上下文
+      // (ModelInputScope 的形状)。两种 scope 一个块里都活着,重名会互相吃掉。
+      const inputScope = {
+        userPrompt: prompt,
+        upstream: upstreamTextOf(node, referenced),
+        upstreamArtifacts: (deps.get(node.id) ?? []).flatMap((up) => outcomes.get(up)?.artifacts ?? []),
+        upstreamOutputs: Object.fromEntries(
+          (deps.get(node.id) ?? [])
+            .map((up) => [up, outcomes.get(up)?.outputs] as const)
+            .filter((e): e is readonly [string, Record<string, unknown>] => e[1] !== undefined),
+        ),
+        nodeId: node.id,
+        plan,
+        terminal,
+        ...(arrival ? { arrival } : {}),
+        ...(flowRecord !== undefined ? { record: flowRecord } : {}),
+        // 「运行前先问我」那一次的回答。**渲染在这儿而不是 `composeNodePrompt` 里**,
+        // 是因为那一段要用节点的标题,而标题只有这一层有(`titleOf`)。
+        ...(askAnswer !== undefined
+          ? { ask: askSection(titleOf(node.id), askAnswer) }
+          : {}),
+        ...(isModelDeciderNode(node.id) ? { decide: { options: decideOptions } } : {}),
+        contextLines: ports.contextLines,
+      };
+      // **触发器载荷进变量(G3/VAR-06)**:自动化起跑时随 `entry` 带来的事实
+      // (kind / at / files / event / toolName / subjects)从这里递给输入构造层。
+      // 用交叉类型注入而不是改 `ModelInputScope` 的签名 —— 那个类型归
+      // `nodeInputBuilders.ts`(并行任务 M)所有;它把 `trigger?: Record<string, unknown>`
+      // 加进 `ModelInputScope` 之后,这个注入自动从"额外字段"变成正式字段,两边互不阻塞。
+      if (entry?.payload !== undefined) {
+        (inputScope as typeof inputScope & { trigger?: Record<string, unknown> }).trigger = entry.payload;
+      }
       const outcome = await ports.execute(
         node,
         manifest,
-        nodeInputOf(
-          params,
-          manifest,
-          {
-            userPrompt: prompt,
-            upstream: upstreamTextOf(node, referenced),
-            nodeId: node.id,
-            plan,
-            terminal,
-            ...(arrival ? { arrival } : {}),
-            ...(flowRecord !== undefined ? { record: flowRecord } : {}),
-            // 「运行前先问我」那一次的回答。**渲染在这儿而不是 `composeNodePrompt` 里**,
-            // 是因为那一段要用节点的标题,而标题只有这一层有(`titleOf`)。
-            ...(askAnswer !== undefined
-              ? { ask: askSection(titleOf(node.id), askAnswer) }
-              : {}),
-            ...(isModelDeciderNode(node.id) ? { decide: { options: decideOptions } } : {}),
-            contextLines: ports.contextLines,
-          },
-          signal,
-        ),
+        buildNodeInput(params, manifest, inputScope, signal),
       );
       // 产出回来,按**同一份**参数查硬约束。
       const checked = withOutputCheck(manifest, params, outcome, terminal);
@@ -1794,22 +1718,4 @@ function cancelledOrStuck(aborted: boolean): NodeOutcome {
   return aborted
     ? cancelled()
     : { status: "skipped", summary: "", error: "依赖没有满足(图里是不是有环?)" };
-}
-
-/**
- * 一个 `runner.kind === "prompt"` 的节点,这一轮要执行的指令从哪个参数来。
- *
- * 约定是 `instruction` 这个键(见 `@contracts/nodeType` 的 `NODE_PROMPT_PARAM_KEY`)。
- * **拿不到就明确失败** —— 一个提示词节点没有提示词,跑它没有意义,而"跑了个空的"
- * 比"报错说清楚"难查一百倍。
- *
- * (内置的 `mcode.agent` 把 `instruction` 声明成必填,所以正常路径下
- * `validateNodeParams` 会先一步拦下;这里兜的是"清单没把它标成必填"的那种清单。)
- */
-function instructionOf(params: Record<string, unknown>, manifest: NodeTypeManifest): string {
-  const value = params[NODE_PROMPT_PARAM_KEY];
-  if (typeof value === "string" && value.trim().length > 0) return value;
-  throw new Error(
-    `节点类型「${manifest.id}」没有填「${NODE_PROMPT_PARAM_KEY}」参数 —— 提示词节点必须有指令`,
-  );
 }

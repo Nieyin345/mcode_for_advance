@@ -293,6 +293,23 @@ function migrate(database: Database): void {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_download_jobs_item ON download_jobs(item_id);
     CREATE INDEX IF NOT EXISTS idx_download_jobs_status ON download_jobs(status);
+
+    /* 长期任务(contracts/src/longTask.ts)。一条会话同时只有一条 running(任务循环器
+       把关),但历史上可以有多条 —— 每次「长任务」开关发送都是一条新行。 */
+    CREATE TABLE IF NOT EXISTS long_tasks (
+      id             TEXT PRIMARY KEY,
+      session_id     TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      project_id     TEXT NOT NULL,
+      goal           TEXT NOT NULL,
+      status         TEXT NOT NULL,
+      iterations     INTEGER NOT NULL DEFAULT 0,
+      max_iterations INTEGER NOT NULL,
+      note           TEXT,
+      started_at     INTEGER NOT NULL,
+      updated_at     INTEGER NOT NULL,
+      finished_at    INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_long_tasks_session ON long_tasks(session_id, started_at);
   `);
   // Backward-compatible column adds for dbs created before these columns
   // existed (CREATE TABLE IF NOT EXISTS won't alter an existing table).
@@ -363,6 +380,14 @@ function migrate(database: Database): void {
   database.run(
     "UPDATE workflow_runs SET status = 'interrupted', updated_at = ? WHERE status = 'running'",
     [Date.now()],
+  );
+
+  // 长期任务同理:循环器是**内存里**的订阅者,进程没了循环就没了 —— 留着 running
+  // 只会让状态条显示一条永远不动的"进行中"。标成 stopped(带原因),不删:那条行
+  // 是"上一次干到第几轮"的凭据,续不续由用户重新开任务决定(上下文还在会话里)。
+  database.run(
+    "UPDATE long_tasks SET status = 'stopped', note = '应用重启,任务中断', finished_at = ?, updated_at = ? WHERE status = 'running'",
+    [Date.now(), Date.now()],
   );
 
   // 结构变更**立刻落盘**。

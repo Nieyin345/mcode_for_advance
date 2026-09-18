@@ -13,12 +13,18 @@ export const en = {
   "settings.nav.hooks": "Hooks",
   "settings.nav.mcp": "MCP",
   "settings.nav.context": "Context",
+  // Memory browser sits right after Context: both answer "what global context
+  // feeds the engine" — context injects it, the memory explorer edits the files.
+  "settings.nav.memory": "Memory",
   "settings.nav.plugins": "Plugins",
   "settings.nav.notifications": "Notifications",
   "settings.nav.git": "Git",
   "settings.nav.terminal": "Terminal",
   "settings.nav.browser": "Browser",
   "settings.nav.lsp": "LSP",
+  // Monitoring sits right before Usage: both answer "how is this machine
+  // running" — usage shows what it cost, monitoring shows what happened.
+  "settings.nav.monitoring": "Monitoring",
   "settings.nav.usage": "Usage",
   "settings.nav.about": "About",
 
@@ -307,6 +313,9 @@ export const en = {
   "settings.customModels.protocolWeb": "Web page (driven by a browser extension)",
   "settings.customModels.webSiteLabel": "Site",
   "settings.customModels.webSitePlaceholder": "Pick a site",
+  "settings.customModels.webSiteDriverPending": "(extension pending)",
+  "settings.customModels.webSiteDriverPendingHint":
+    "The browser extension does not drive this site yet: the config saves, but starting a turn on it is refused with a clear message. It becomes usable as soon as the extension ships the driver.",
   "settings.customModels.webNote":
     "No URL or key needed: the browser extension types your question into the site's composer and streams the answer back here — the same experience as an API model. The request is issued by your own browser (real session, real fingerprint); Mcode never sees your credentials. Note: this still automates a web page, which may violate the site's terms of service, and it can break whenever the site changes.",
   "settings.customModels.errWebSite": "Pick a site for the web-page model",
@@ -1057,6 +1066,10 @@ export const en = {
     "This follows the trigger node: to change the trigger, edit that node's parameters.",
 
   // ── Automations: run once / what has run ──
+  "settings.automation.dashboard": "Automation status",
+  "settings.automation.enabled": "Enabled",
+  "settings.automation.lastRun": "Last run",
+  "settings.automation.lastError": "Last error",
   "settings.automation.runNow": "Run once now",
   "settings.automation.runNowHint":
     "Starts one run from the trigger {name} — the same path it takes when it fires on its own. The result shows up in the history below.",
@@ -1082,6 +1095,33 @@ export const en = {
   "settings.automation.stepStatus.cancelled": "Cancelled",
   "settings.automation.stepStatus.skipped": "Skipped",
   "settings.automation.stepStatus.unselected": "Took another route",
+
+  // ── Automation: trigger facts (armed / lastFireAt / lastError) ──
+  // Facts come from main's trigger facts table (`automation.statusAll`). "Enabled"
+  // above describes the automation as a library entry; these describe each trigger.
+  "settings.automation.facts.armed": "Armed",
+  "settings.automation.facts.disarmed": "Not armed",
+
+  // ── Run history panel (settings/workflows/RunHistorySection) ──
+  // A different source from `settings.automation.runHistory` (the inspector's
+  // digest): this reads the background session's run records (`runs.history`) —
+  // lightweight summaries, node counts only, no node-level detail. Status
+  // wording reuses the `settings.automation.runStatus.*` table above.
+  "settings.runHistory.title": "Run history",
+  "settings.runHistory.empty": "No runs in this session yet.",
+  "settings.runHistory.nodeCount": "{n} nodes",
+  "settings.runHistory.loadFailed": "Failed to load run history: {error}",
+
+  // ── "Trigger" group of the variable menu (settings/workflows/insertVariable) ──
+  // Facts a trigger contributes to a run; the group only appears when the graph
+  // actually has a trigger node.
+  "settings.workflows.triggerGroup": "Trigger",
+  "settings.workflows.triggerField.kind": "Trigger kind",
+  "settings.workflows.triggerField.at": "Fired at",
+  "settings.workflows.triggerField.files": "Changed files",
+  "settings.workflows.triggerField.event": "Event payload",
+  "settings.workflows.triggerField.toolName": "Tool name",
+  "settings.workflows.triggerField.subjects": "Subjects",
 
   // ── Hooks (settings → hooks) ──
   // Event-driven commands: when something happens, run one of your commands on this
@@ -1279,6 +1319,8 @@ export const en = {
     "No steps above this one yet. Only variables defined upstream show up here — put a step before this one and fill in its “Output variables”.",
   "settings.workflows.insertVarWholeOutput": "Whole result",
   "settings.workflows.insertVarWholeOutputHint": "Everything that step handed over, as text",
+  "settings.workflows.insertVarUser": "User input",
+  "settings.workflows.insertVarUserHint": "The raw input this run received",
 
   // ── The workflow itself ──
   "settings.workflows.fieldName": "Name",

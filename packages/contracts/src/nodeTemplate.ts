@@ -46,7 +46,7 @@
  * 引用旁支,同一张图在改动依赖之后会给出不同的结果,而那种问题只在某些执行顺序下
  * 才出现。
  */
-import type { NodeOutcome } from "./nodeType.js";
+import type { NodeArtifact, NodeOutcome } from "./nodeType.js";
 
 /** 一个可引用的节点在这一刻的样子。 */
 export interface NodeTemplateNode {
@@ -55,6 +55,8 @@ export interface NodeTemplateNode {
   title: string;
   /** 已经跑完才有。没跑完的节点引用它 —— 一定是"不是上游",在别处就拦下了。 */
   outcome?: NodeOutcome;
+  /** Stable references to artifacts produced by this node. */
+  artifacts?: NodeArtifact[];
   /** 它的参数。`{{某步.params.目标}}` 取的就是这里。 */
   params: Record<string, unknown>;
 }
@@ -196,6 +198,13 @@ function resolveOne(
   if (field === "error") {
     return { ok: true, text: node.outcome?.error ?? "" };
   }
+  if (field === "artifacts") {
+    return { ok: true, text: stringify(node.artifacts ?? node.outcome?.artifacts ?? []) };
+  }
+  if (field.startsWith("artifacts.") || field.startsWith("artifacts[")) {
+    const path = field.slice("artifacts".length).replace(/^\./, "");
+    return readArtifactPath(node, path, where, name);
+  }
   if (field === "output") {
     if (!node.outcome) {
       // 上游没定案 —— 走不到这里(上游成功才会派发这一步)。真走到了说明调度出了
@@ -229,6 +238,32 @@ function resolveOne(
 }
 
 /** 取某一步的一个产出变量。取不到的话,把**它实际有的那些**列出来。 */
+function pathParts(path: string): string[] {
+  return path.match(/[^.\[\]]+|\[(\d+)\]/g)?.map((part) => part.startsWith("[") ? part.slice(1, -1) : part) ?? [];
+}
+
+function valueAt(root: unknown, path: string): { found: boolean; value?: unknown } {
+  let current: unknown = root;
+  for (const part of pathParts(path)) {
+    if (Array.isArray(current)) {
+      const index = Number(part);
+      if (!Number.isInteger(index) || index < 0 || index >= current.length) return { found: false };
+      current = current[index];
+      continue;
+    }
+    if (typeof current !== "object" || current === null || !Object.prototype.hasOwnProperty.call(current, part)) return { found: false };
+    current = (current as Record<string, unknown>)[part];
+  }
+  return { found: true, value: current };
+}
+
+function readArtifactPath(node: NodeTemplateNode, path: string, where: string, name: string): TemplateResult {
+  const artifacts = node.artifacts ?? node.outcome?.artifacts ?? [];
+  const result = valueAt(artifacts, path);
+  if (!result.found) return { ok: false, error: `${where}:\`${name}\` 没有可引用的产物路径 \`${path}\`` };
+  return { ok: true, text: stringify(result.value) };
+}
+
 function readVar(
   node: NodeTemplateNode,
   key: string,
@@ -244,17 +279,19 @@ function readVar(
       error: `${where}:\`${name}\` 还没有产出变量,所以取不到 \`${key}\` —— 去那一步的「产出变量」里把 \`${key}\` 填上(填了名字和示例,它的产出才有这个东西)`,
     };
   }
-  if (!Object.prototype.hasOwnProperty.call(outputs, key)) {
+  const result = valueAt(outputs, key);
+  if (!result.found) {
+    const root = key.split(/[.\[]/, 1)[0] ?? key;
     const have = Object.keys(outputs);
     return {
       ok: false,
       error:
         have.length > 0
-          ? `${where}:\`${name}\` 的产出里没有 \`${key}\` 这个变量,它有的是:${have.join("、")}`
-          : `${where}:\`${name}\` 的产出里没有 \`${key}\` 这个变量`,
+          ? `${where}:\`${name}\` 的产出里没有 \`${root}\` 这个变量,它有的是:${have.join("、")}`
+          : `${where}:\`${name}\` 的产出里没有 \`${root}\` 这个变量`,
     };
   }
-  return { ok: true, text: stringify(outputs[key]) };
+  return { ok: true, text: stringify(result.value) };
 }
 
 /**

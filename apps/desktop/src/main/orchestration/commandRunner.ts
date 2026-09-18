@@ -21,7 +21,67 @@
 
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { COMMAND_OUTPUT_TAIL_CHARS } from "@contracts/nodeType";
-import type { NodeOutcome } from "@contracts/nodeType";
+import { NODE_STDOUT_PROTOCOL_PREFIX, type NodeArtifact, type NodeOutcome } from "@contracts/nodeType";
+import { normalizeNodeArtifacts } from "./artifactRefs.js";
+
+export interface CommandProgress {
+  percent?: number;
+  message?: string;
+}
+
+interface ProtocolResult {
+  summary?: string;
+  outputs?: Record<string, unknown>;
+  artifacts?: NodeArtifact[];
+}
+
+function consumeProtocolLine(
+  line: string,
+  onProgress: ((progress: CommandProgress) => void) | undefined,
+  state: { result?: ProtocolResult },
+): boolean {
+  if (!line.startsWith(NODE_STDOUT_PROTOCOL_PREFIX)) return false;
+  const match = line.match(/^@@mcode:(progress|result)\s+(.+)$/);
+  if (!match) return true;
+  try {
+    const payload = JSON.parse(match[2]) as unknown;
+    if (match[1] === "progress" && payload && typeof payload === "object") {
+      const value = payload as Record<string, unknown>;
+      const progress: CommandProgress = {};
+      if (typeof value.percent === "number" && Number.isFinite(value.percent)) progress.percent = value.percent;
+      if (typeof value.message === "string") progress.message = value.message;
+      onProgress?.(progress);
+    } else if (match[1] === "result" && payload && typeof payload === "object") {
+      const value = payload as Record<string, unknown>;
+      state.result = {
+        ...(typeof value.summary === "string" ? { summary: value.summary } : {}),
+        ...(value.outputs && typeof value.outputs === "object" && !Array.isArray(value.outputs)
+          ? { outputs: value.outputs as Record<string, unknown> }
+          : {}),
+        ...(Array.isArray(value.artifacts) ? { artifacts: value.artifacts as NodeArtifact[] } : {}),
+      };
+    }
+  } catch {
+    // Protocol lines are control output; malformed payloads are ignored rather than crashing the runner.
+  }
+  return true;
+}
+
+function consumeChunk(
+  pending: string,
+  chunk: Buffer,
+  onProgress: ((progress: CommandProgress) => void) | undefined,
+  state: { result?: ProtocolResult },
+  append: (text: string) => void,
+): string {
+  const text = pending + chunk.toString("utf-8");
+  const lines = text.split(/\r?\n/);
+  const remainder = lines.pop() ?? "";
+  for (const line of lines) {
+    if (!consumeProtocolLine(line, onProgress, state)) append(line + "\n");
+  }
+  return remainder;
+}
 
 /** `node:child_process` 的 `spawn` 的形状 —— 留一个缝,冒烟脚本能塞假的进来。 */
 export type SpawnFn = typeof nodeSpawn;
@@ -59,14 +119,17 @@ function appendTail(buf: string, chunk: Buffer): string {
 export async function runCommandNode(
   args: {
     command: string;
+    /** Optional structured stdin payload from workflow inputs/upstream artifacts. */
+    input?: unknown;
     /** 毫秒。0 = 不限(见 `@contracts/nodeType` 的 `commandTimeoutOf`)。 */
     timeoutMs: number;
     cwd?: string;
     signal: AbortSignal;
+    onProgress?: (progress: CommandProgress) => void;
   },
   deps?: { spawn?: SpawnFn },
 ): Promise<NodeOutcome> {
-  const { command, timeoutMs, cwd, signal } = args;
+  const { command, input, timeoutMs, cwd, signal, onProgress } = args;
   const spawn = deps?.spawn ?? nodeSpawn;
   if (command.length === 0) {
     return { status: "failed", summary: "", error: "命令节点没有填要跑的命令" };
@@ -79,7 +142,7 @@ export async function runCommandNode(
       shell: true,
       windowsHide: true,
       ...(cwd !== undefined ? { cwd } : {}),
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     });
   } catch (err) {
     return { status: "failed", summary: "", error: `命令起不来:${(err as Error).message}` };
@@ -91,8 +154,13 @@ export async function runCommandNode(
   });
 
   let tail = "";
+  let stdoutPending = "";
+  const protocolState: { result?: ProtocolResult } = {};
+  const append = (text: string): void => {
+    tail = appendTail(tail, Buffer.from(text, "utf-8"));
+  };
   child.stdout?.on("data", (chunk: Buffer) => {
-    tail = appendTail(tail, chunk);
+    stdoutPending = consumeChunk(stdoutPending, chunk, onProgress, protocolState, append);
   });
   child.stderr?.on("data", (chunk: Buffer) => {
     tail = appendTail(tail, chunk);
@@ -122,7 +190,12 @@ export async function runCommandNode(
   if (timer !== undefined) clearTimeout(timer);
   signal.removeEventListener("abort", onAbort);
 
+  if (stdoutPending.length > 0) {
+    if (!consumeProtocolLine(stdoutPending, onProgress, protocolState)) append(stdoutPending);
+  }
   const text = tail.trim();
+  const protocol = protocolState.result;
+  const artifacts = normalizeNodeArtifacts(protocol?.artifacts, cwd ?? process.cwd());
   // **spawn 就没成**(ENOENT 那一类):shell 都没起来,谈不上"跑完了"。
   if (spawnError !== undefined && child.pid === undefined) {
     return { status: "failed", summary: text, error: `命令起不来:${spawnError.message}` };
@@ -145,7 +218,12 @@ export async function runCommandNode(
   }
   return {
     status: "success",
-    summary: text,
-    outputs: { 退出码: exit.code, 输出: text },
+    summary: protocol?.summary ?? text,
+    outputs: {
+      ...(protocol?.outputs ?? {}),
+      exitCode: exit.code,
+      stdout: text,
+    },
+    ...(artifacts.length > 0 ? { artifacts } : {}),
   };
 }

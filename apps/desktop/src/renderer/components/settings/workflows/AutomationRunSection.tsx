@@ -30,7 +30,7 @@
  * 为一件"这个平台没有的功能"常驻一条红字没有意义。
  */
 import { useCallback, useEffect, useState } from "react";
-import type { AutomationRunEntry, AutomationRunStatus } from "@contracts/ipc";
+import type { AutomationRunEntry, AutomationRunStatus, AutomationTriggerFacts } from "@contracts/ipc";
 import {
   NODE_OUTCOME_STATUSES,
   type NodeOutcomeStatus,
@@ -87,6 +87,11 @@ const STEP_STATUS_LABELS: Record<NodeOutcomeStatus, MessageId> = {
   unselected: "settings.automation.stepStatus.unselected",
 };
 
+/* ────────────────────────── 触发器事实 ────────────────────────── */
+
+// 事实行用的 `AutomationTriggerFacts` 来自 `@contracts/ipc`(orchestration 域的
+// 契约镜像),`api.automation.statusAll()` 直接给事实数组。
+
 export function AutomationRunSection({
   doc,
   catalog,
@@ -97,6 +102,9 @@ export function AutomationRunSection({
   const { t } = useI18n();
   const triggerNodeId = triggerNodeIdOf(doc, catalog);
   const [runs, setRuns] = useState<AutomationRunEntry[]>([]);
+  /** 触发器事实(armed / lastFireAt / lastError)。**读不到就当没有** —— 和历史同一
+   *  条降级纪律,见文件头最后一段。 */
+  const [facts, setFacts] = useState<AutomationTriggerFacts[]>([]);
   const [busy, setBusy] = useState(false);
   /** 上一次"运行一次"没跑起来的原因。跑起来了就没有话说(历史里那条自己会说明)。 */
   const [notice, setNotice] = useState<string | null>(null);
@@ -107,6 +115,13 @@ export function AutomationRunSection({
       setRuns(res.runs);
     } catch {
       // 见文件头最后一段:这不是错误,只是"这里看不到历史"。
+    }
+    try {
+      // 事实是**全量**的(主进程只有一张事实表),这里只留这条自动化自己的。
+      const all = await api.automation.statusAll();
+      setFacts(all.filter((f) => f.workflowId === doc.id));
+    } catch {
+      setFacts([]);
     }
   }, [doc.id]);
 
@@ -136,6 +151,11 @@ export function AutomationRunSection({
       ? t(STEP_STATUS_LABELS[status as NodeOutcomeStatus])
       : status;
 
+  // Dashboard facts come from persisted run history; there is no second status store.
+  const latestRun = runs[0] ?? null;
+  const lastError = latestRun?.steps.find((step) => step.error !== undefined)?.error ?? null;
+  const automationStatus = latestRun?.status ?? null;
+
   const trigger =
     triggerNodeId === null ? null : (doc.nodes.find((n) => n.id === triggerNodeId) ?? null);
 
@@ -143,8 +163,14 @@ export function AutomationRunSection({
     <div className="mt-3 border-t border-edge pt-3">
       <div className="mb-1 flex items-center gap-2">
         <span className="text-[0.7857em] font-medium text-content-muted">
-          {t("settings.automation.runHistory")}
+          {t("settings.automation.dashboard")}
         </span>
+        <span className="text-[0.7143em] text-success">{t("settings.automation.enabled")}</span>
+        {automationStatus !== null && (
+          <span className={cn("text-[0.7143em]", RUN_STATUS_TONE[automationStatus])}>
+            {t(RUN_STATUS_LABELS[automationStatus])}
+          </span>
+        )}
         <button
           type="button"
           title={t("settings.automation.refresh")}
@@ -181,6 +207,52 @@ export function AutomationRunSection({
       {notice !== null && (
         <p className="mt-1 text-[0.7143em] leading-relaxed text-warning">{notice}</p>
       )}
+
+      {lastError !== null && (
+        <p className="mt-1 truncate text-[0.7143em] leading-relaxed text-danger" title={lastError}>
+          {t("settings.automation.lastError")}: {lastError}
+        </p>
+      )}
+      {latestRun !== null && (
+        <p className="mt-1 text-[0.7143em] text-content-subtle" title={formatFullTime(latestRun.startedAt)}>
+          {t("settings.automation.lastRun")}: {formatRelativeTime(latestRun.startedAt)}
+        </p>
+      )}
+
+      {/* 触发器事实 —— 一条自动化可以有好几个触发器,事实**按条**说:挂上没有、最近
+          一次什么时候真的响过、最近一次为什么没跑成。运行史答不出"配置写坏了所以永远
+          不响"这种事,所以这里独立于上面的历史(见 `automationStatus.ts` 的文件头)。 */}
+      {facts.map((fact) => (
+        <div key={fact.key} className="mt-1 text-[0.7143em] leading-relaxed">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span
+              className={cn(
+                "h-1.5 w-1.5 shrink-0 rounded-full",
+                fact.armed ? "bg-success" : "bg-warning",
+              )}
+            />
+            <span className="min-w-0 truncate text-content-muted" title={fact.detail ?? fact.title}>
+              {fact.title}
+            </span>
+            <span className={cn("shrink-0", fact.armed ? "text-success" : "text-warning")}>
+              {t(fact.armed ? "settings.automation.facts.armed" : "settings.automation.facts.disarmed")}
+            </span>
+          </div>
+          {fact.lastFireAt !== undefined && (
+            <p
+              className="ml-3 text-content-subtle"
+              title={formatFullTime(fact.lastFireAt)}
+            >
+              {t("settings.automation.lastRun")}: {formatRelativeTime(fact.lastFireAt)}
+            </p>
+          )}
+          {fact.lastError !== undefined && (
+            <p className="ml-3 truncate text-danger" title={fact.lastError}>
+              {t("settings.automation.lastError")}: {fact.lastError}
+            </p>
+          )}
+        </div>
+      ))}
 
       {runs.length === 0 ? (
         <p className="mt-2 text-[0.7143em] leading-relaxed text-content-subtle">

@@ -107,10 +107,15 @@ const PROTOCOL_OPTIONS: { value: Protocol; labelKey: MessageId; icon: ReactNode 
  *
  * 与契约层 `WEB_SITES`（packages/contracts/src/customModel.ts）一一对应；这里
  * 额外挂一个 `defaultModelId` —— 那是渲染端自己的事（站点即模型，这个 id 只是
- * 显示名），契约层不该知道。一期只有 DeepSeek。
+ * 显示名），契约层不该知道。
+ *
+ * `driver` 是契约层的原样转述（浏览器扩展有没有实现这个站点的驱动）：false 的
+ * 站点**选得到、配置存得下**，但开跑会明确报"扩展还不支持"，所以标签后缀上
+ * 标出来，不让人以为是配错了。
  */
-const WEB_SITE_OPTIONS: { value: string; label: string; defaultModelId: string }[] = [
-  { value: "deepseek", label: "DeepSeek 网页版", defaultModelId: "deepseek-web" },
+const WEB_SITE_OPTIONS: { value: string; label: string; defaultModelId: string; driver: boolean }[] = [
+  { value: "deepseek", label: "DeepSeek 网页版", defaultModelId: "deepseek-web", driver: true },
+  { value: "chatgpt", label: "ChatGPT 网页版", defaultModelId: "chatgpt-web", driver: false },
 ];
 
 /**
@@ -1460,11 +1465,22 @@ function ClaudeProviderForm({
               <Select.Portal><Select.Positioner><Select.Popup><Select.List>
                 {WEB_SITE_OPTIONS.map((o) => (
                   <Select.Item key={o.value} value={o.value}>
-                    <Select.ItemText>{o.label}</Select.ItemText>
+                    <Select.ItemText>
+                      {o.driver
+                        ? o.label
+                        : `${o.label} ${t("settings.customModels.webSiteDriverPending")}`}
+                    </Select.ItemText>
                   </Select.Item>
                 ))}
               </Select.List></Select.Popup></Select.Positioner></Select.Portal>
             </Select.Root>
+            {/* 驱动没实现的站点：说清"能配但不能跑"，并把原因指到扩展那边 ——
+                否则用户会以为是 mcode 这里配坏了。 */}
+            {!WEB_SITE_OPTIONS.find((o) => o.value === form.webSiteId)?.driver && (
+              <p className="mt-1 text-[0.7857em] leading-relaxed text-content-subtle">
+                {t("settings.customModels.webSiteDriverPendingHint")}
+              </p>
+            )}
           </Field>
 
           <div className="space-y-1.5 rounded border border-edge bg-surface/40 p-2.5">

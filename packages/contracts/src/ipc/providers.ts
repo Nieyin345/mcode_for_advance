@@ -5,6 +5,7 @@
  */
 
 import { z } from "zod";
+import { webSiteById } from "../customModel.js";
 import type { CustomModelInput } from "../customModel.js";
 
 /* ── Custom model configs (user-defined Anthropic-compatible endpoints) ── */
@@ -57,6 +58,14 @@ export const SaveCustomModelSchema = z.object({
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "网页端必须选择站点",
+        path: ["webSiteId"],
+      });
+    } else if (!webSiteById(val.webSiteId)) {
+      // 目录里没有这个 id：多半是手改过配置文件，或者从别的版本带过来的。
+      // 拦在这里，而不是等到开跑时才在 bridge 里报一句看不懂的错。
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `不认识的网页端站点：${val.webSiteId}`,
         path: ["webSiteId"],
       });
     }

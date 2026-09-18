@@ -40,11 +40,14 @@ import type { UsageStatsInput, UsageStatsResult } from "./usage.js";
 import type { LspLanguageState, LspInstallInput, LspOpResult, LspInstallFromFileInput, LspUninstallInput, LspToggleInput, LspSetPathInput, LspHealthCheckInput, LspPrewarmInput, LspRestartInput, LspOpenDocInput, LspCloseDocInput, LspDidChangeInput, LspDidSaveInput, LspRequestInput, LspRequestResult } from "./lsp.js";
 import type { RuntimeAgentState, RuntimesInstallInput, RuntimesInstallLocalInput, RuntimesRemoveInput, ToolchainToolState, ToolchainInstallInput, ToolchainRemoveInput } from "./runtimes.js";
 import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchCommandTemplate } from "./workflow.js";
+import type { AutomationTriggerFacts, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
+import { MEMORY_CATEGORIES_CHANNEL, MEMORY_DELETE_CHANNEL, MEMORY_LIST_CHANNEL, MEMORY_READ_CHANNEL, MEMORY_SAVE_CHANNEL, type MemoryDeleteInput, type MemoryFileMeta, type MemoryListInput, type MemoryReadInput, type MemorySaveInput } from "../memory.js";
 import type { LibraryTypesGetInput, LibraryTypesSaveInput, LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibrarySetRootInput, LibraryManifestInput, LibraryItemManifestInput, LibraryKindManifestInput, TemplateKindManifestInput, LibraryAttachToChatInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
 import type { TemplateListInput, TemplateAddInput, TemplateRenameInput, TemplateEntryRefInput, TemplateFileRefInput, TemplatesAttachToChatInput } from "./templates.js";
 import type { IntegrationSetKeyInput, IntegrationClearKeyInput, IntegrationSetConfigInput, IntegrationTestInput } from "./integrations.js";
 import type { SubagentDefinition } from "../claudeSubagent.js";
 import type { ClaudeSubagentsSaveInput } from "../claudeSubagent.js";
+import type { LongTask, LongTaskStartInput, LongTaskStopInput, LongTaskGetInput } from "../longTask.js";
 
 /* ──────────────────────────  RPC method map  ───────────────────────────────── */
 
@@ -624,6 +627,31 @@ export interface RpcMap {
   "automation.watchTemplates": () => Promise<{ templates: WatchCommandTemplate[] }>;
   /** 存整份命令模板列表。整份给过来 —— 理由同 `workflow.saveAgentProfile`。 */
   "automation.watchTemplatesSave": (input: WatchTemplatesSaveInput) => Promise<{ ok: boolean }>;
+  /** 全部触发器的**事实状态**(挂没挂上 / 为什么 / 最近一次跑,见
+   *  `AutomationTriggerFacts`)。**无参 handler**,同 `workflow.agentProfiles`。 */
+  "automation.statusAll": () => Promise<AutomationTriggerFacts[]>;
+  // ── 运行史(某个对话的全部图运行)──
+  /** 某个对话的图运行历史(新的在前)。**从存档折出来**,只给轻量摘要 ——
+   *  见 `PersistedWorkflowRunLite`(整份快照不为一行列表过 IPC)。 */
+  "runs.history": (input: RunsHistoryInput) => Promise<PersistedWorkflowRunLite[]>;
+  // ── 记忆(对话记忆的直读直写)──
+  // 契约与渠道字符串都在 `../memory.ts`(固定六类,目录即类目)。这里的四条都是
+  // **按 memory 根下的相对路径寻址**,主进程侧会校验路径不逃出 memory 根。
+  /** 列记忆文件(可选按类目过滤),行形状见 `../memory.ts` 的 `MemoryFileMeta`。 */
+  "memory.list": (input: MemoryListInput) => Promise<{ files: MemoryFileMeta[] }>;
+  /** 读一条记忆的正文(含 frontmatter 原文)。 */
+  "memory.read": (input: MemoryReadInput) => Promise<{ content: string }>;
+  /** 存正文(frontmatter 由主进程维护)。 */
+  "memory.save": (input: MemorySaveInput) => Promise<{ ok: boolean; error?: string }>;
+  /** 删一条记忆。`ok: false` 时 `error` 是给人看的句子,不是异常。 */
+  "memory.delete": (input: MemoryDeleteInput) => Promise<{ ok: boolean; error?: string }>;
+  /** 类目清单(固定六类)。**无参 handler**。 */
+  "memory.categories": () => Promise<string[]>;
+  // ── 监控(总览)──
+  /** 监控总览的一次快照:正在跑几个、触发器挂得怎么样。**无参 handler**。 */
+  "monitoring.overview": () => Promise<MonitoringOverview>;
+  /** 最近的运行摘要(新的在前),监控列表用 —— 见 `MonitoringRunSummary`。 */
+  "monitoring.runs": (input: MonitoringRunsInput) => Promise<MonitoringRunSummary[]>;
   // 钩子(设置 → 钩子):某件事发生的时候跑一条你自己的命令。它是**宿主侧**的能力
   // (理由见 `@contracts/hook`),所以对话、工作流节点、将来的自动化一视同仁。
   /** 全部钩子 + 读得见但用不了的条目。**坏条目不静默丢弃** —— 用户写的钩子不生效时,
@@ -988,6 +1016,16 @@ export interface RpcMap {
   "institution.authStatus": (input: InstitutionAuthStatusInput) => Promise<{ sites: AuthSiteStatus[] }>;
   /** 清除指定域名(或全部)的登录态。 */
   "institution.clearCookies": (input: InstitutionClearCookiesInput) => Promise<{ sites: AuthSiteStatus[] }>;
+
+  // 长期任务
+  /** 把刚发出的这一轮挂成一条长期任务:turn.done 后没有完成标记就自动续轮。
+   *  调用方(渲染端)**先**正常走 `claude.sendTurn` 发起第一轮,**再**调这里 ——
+   *  循环器从第一个 turn.done 开始接管。任务已在跑时返回 ok:false。 */
+  "longtask.start": (input: LongTaskStartInput) => Promise<{ ok: boolean; task?: LongTask; error?: string }>;
+  /** 停止当前会话的长期任务(进行中才有效)。已停止的回合不会被续上。 */
+  "longtask.stop": (input: LongTaskStopInput) => Promise<{ ok: boolean; task?: LongTask; error?: string }>;
+  /** 会话当前(或最近一条)长期任务,没有则 null。 */
+  "longtask.get": (input: LongTaskGetInput) => Promise<{ task: LongTask | null }>;
 }
 
 /** The channel names used in invoke/handle and send/on. Keep these centralized
@@ -1132,6 +1170,10 @@ export const IPC = {
   INSTITUTION_DELETE: "institution:delete",
   INSTITUTION_AUTH_STATUS: "institution:authStatus",
   INSTITUTION_CLEAR_COOKIES: "institution:clearCookies",
+  // 长期任务 — invoke/handle (RPC)。
+  LONGTASK_START: "longtask:start",
+  LONGTASK_STOP: "longtask:stop",
+  LONGTASK_GET: "longtask:get",
   /** Main → renderer push:下载任务状态变化(进度/失败/需要登录)。 */
   LIBRARY_JOB_CHANGED: "library:jobChanged",
   /** Main → renderer push:库的内容变了(含 AI 改的)。渲染端据此整体重载。 */
@@ -1379,6 +1421,20 @@ export const IPC = {
   AUTOMATION_WATCH_TEMPLATES: "automation:watchTemplates",
   /** 存整份命令模板列表。 */
   AUTOMATION_WATCH_TEMPLATES_SAVE: "automation:watchTemplatesSave",
+  /** 全部触发器的事实状态(自动化管理页回答「它怎么没反应」的那份)。 */
+  AUTOMATION_STATUS_ALL: "automation:statusAll",
+  /** 某个对话的图运行历史(从存档折出来的轻量摘要)。 */
+  RUNS_HISTORY: "runs:history",
+  // 记忆(main/memory/):渠道字符串本体钉在 `../memory.ts` 的那几个
+  // MEMORY_*_CHANNEL 常量上 —— 这里只取值,不写第二份字符串。
+  MEMORY_LIST: MEMORY_LIST_CHANNEL,
+  MEMORY_READ: MEMORY_READ_CHANNEL,
+  MEMORY_SAVE: MEMORY_SAVE_CHANNEL,
+  MEMORY_DELETE: MEMORY_DELETE_CHANNEL,
+  MEMORY_CATEGORIES: MEMORY_CATEGORIES_CHANNEL,
+  // 监控(main/monitoring/):总览快照 + 最近的运行摘要。
+  MONITORING_OVERVIEW: "monitoring:overview",
+  MONITORING_RUNS: "monitoring:runs",
   /** Main → renderer push:工作流 / 自动化 / 代理档案 / 节点类型变了(含 AI 改的)。
    *  渲染端据此重拉列表(见 `WorkflowChangedMessage` 那条 ⚠️)。 */
   WORKFLOW_CHANGED: "workflow:changed",

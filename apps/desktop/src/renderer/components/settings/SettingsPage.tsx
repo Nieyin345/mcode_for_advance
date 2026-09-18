@@ -30,6 +30,7 @@ import {
   IconShieldCheck,
   McpIcon,
   IconBrain,
+  IconNotebook,
   type TablerIconProps,
 } from "@renderer/lib/icons.js";
 import { CustomModelsPanel } from "./CustomModelsPanel.js";
@@ -57,6 +58,8 @@ import { NotificationsPanel } from "./NotificationsPanel.js";
 import { VoicePanel } from "./VoicePanel.js";
 import { UsagePanel } from "./UsagePanel.js";
 import { AboutPanel } from "./AboutPanel.js";
+import { MonitoringPanel } from "../monitoring/MonitoringPanel.js";
+import { MemoryExplorerPanel } from "../memory/MemoryExplorerPanel.js";
 
 /**
  * Settings page with a left functional menu + right content panel layout.
@@ -74,7 +77,7 @@ import { AboutPanel } from "./AboutPanel.js";
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "data-root" | "library-types" | "runtimes" | "custom-models" | "institution" | "integrations" | "library" | "templates" | "skills" | "claude-subagents" | "workflows" | "automation" | "hooks" | "mcp" | "context" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "usage" | "about";
+type SectionId = "general" | "data-root" | "library-types" | "runtimes" | "custom-models" | "institution" | "integrations" | "library" | "templates" | "skills" | "claude-subagents" | "workflows" | "automation" | "hooks" | "mcp" | "context" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -136,6 +139,9 @@ const NAV_GROUPS: NavGroup[] = [
       // 上下文紧跟 MCP:两者都是"喂给引擎的全局上下文"(MCP 是工具,
       // 上下文是常驻指令与记忆) —— 共用一条事实源,挨在一起才看得出来。
       { id: "context", labelKey: "settings.nav.context", icon: IconBrain },
+      // 记忆库跟在上下文后面:两者都是"喂给引擎的长期信息"(上下文是常驻指令与
+      // 记忆的注入面,记忆库是记忆文件本身的管理面),挨在一起才看得出来。
+      { id: "memory", labelKey: "settings.nav.memory", icon: IconNotebook },
     ],
   },
   {
@@ -169,6 +175,9 @@ const NAV_GROUPS: NavGroup[] = [
   {
     labelKey: "settings.navGroup.system",
     items: [
+      // 运行监控排在用量前面:两者都是"看系统发生了什么"(用量看花了多少 token,
+      // 监控看自动化跑了成什么样),放一组,先看跑得怎么样、再看花销。
+      { id: "monitoring", labelKey: "settings.nav.monitoring", icon: IconActivity },
       { id: "usage", labelKey: "settings.nav.usage", icon: IconChartBar },
       { id: "about", labelKey: "settings.nav.about", icon: IconInfoCircle },
     ],
@@ -307,12 +316,14 @@ export function SettingsPage() {
           {active === "runtimes" && <RuntimesPanel />}
           {active === "mcp" && <McpPanel />}
           {active === "context" && <ContextPanel />}
+          {active === "memory" && <MemoryExplorerPanel />}
           {active === "plugins" && <PluginsPanel />}
           {active === "notifications" && <NotificationsPanel />}
           {active === "git" && <GitPanel />}
           {active === "terminal" && <TerminalPanel />}
           {active === "browser" && <BrowserPanel />}
           {active === "lsp-languages" && <LspLanguagesPanel />}
+          {active === "monitoring" && <MonitoringPanel />}
           {active === "usage" && <UsagePanel />}
           {active === "about" && <AboutPanel />}
         </div>

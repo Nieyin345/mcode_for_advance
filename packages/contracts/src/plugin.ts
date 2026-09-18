@@ -21,6 +21,7 @@
  * `plugins.*` channels; keep this file electron-free (pure zod + types).
  */
 import { z } from "zod";
+import { CapabilityDeclarationSchema } from "./capability.js";
 
 /* ── Settings keys (settings table) ── */
 
@@ -113,6 +114,10 @@ export const PluginManifestSchema = z
      *  schema a file in that directory must satisfy. A plugin without the
      *  directory simply contributes no node types. */
     nodeTypes: z.union([z.string(), z.array(z.string())]).optional(),
+    /** Declarative capabilities contributed by this plugin. Shape is shared
+     *  with the capability descriptor model (see `@contracts/capability`) —
+     *  the resolver turns each entry into a host capability descriptor. */
+    capabilities: z.array(CapabilityDeclarationSchema).optional(),
   })
   .passthrough();
 export type PluginManifest = z.infer<typeof PluginManifestSchema>;
@@ -171,6 +176,19 @@ export const PluginMarketplaceManifestSchema = z
 export type PluginMarketplaceManifest = z.infer<typeof PluginMarketplaceManifestSchema>;
 
 /* ── Component summaries (install review + panel display) ── */
+
+/** One declarative capability a plugin contributes (manifest `capabilities[]`).
+ *  Consumed by capability resolution (see `@contracts/capability`): the host
+ *  turns each entry into a CapabilityDescriptor so node requirements can match
+ *  against what installed plugins actually provide. */
+export interface PluginCapabilityDeclaration {
+  kind: "skill" | "mcp" | "plugin" | "executor" | "builtin" | "provider";
+  id: string;
+  capabilities?: string[];
+  nodeTypes?: string[];
+  runnerKinds?: string[];
+  providers?: string[];
+}
 
 /** A skill contributed by the plugin (from SKILL.md frontmatter). */
 export interface PluginSkillSummary {

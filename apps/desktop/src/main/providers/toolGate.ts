@@ -26,6 +26,11 @@
  * 底下是同一份清单。
  */
 import type { PermissionMode } from "@contracts/runtime";
+import {
+  AGENT_EDIT_TOOLS,
+  AGENT_MCP_SERVER,
+  AGENT_READONLY_TOOLS,
+} from "@main/mcp/agentTools.js";
 import { LIBRARY_MCP_SERVER, LIBRARY_READONLY_TOOLS } from "@main/mcp/libraryServer.js";
 import { WORKFLOW_MCP_SERVER, WORKFLOW_READONLY_TOOLS } from "@main/mcp/mcodeServer.js";
 
@@ -63,14 +68,15 @@ export const BROWSER_READONLY_SUFFIXES = new Set([
 /**
  * server 名 → 它的只读工具名。**唯一的一份清单。**
  *
- * 三个 server 各自的只读集合定义在它们自己那份文件里(mcodeServer / libraryServer 的
- * 文件头都解释了分档的理由)—— 这里只是把索引建起来,让"按名字判"这件事有个落点。
- * 加第四个 server 时,在这里挂一行。
+ * 各 server 自己的只读集合定义在它们自己那份文件里(mcodeServer / libraryServer /
+ * agentTools 的文件头都解释了分档的理由)—— 这里只是把索引建起来,让"按名字判"这件事
+ * 有个落点。加新 server 时,在这里挂一行。
  */
 const READONLY_BY_SERVER: Record<string, ReadonlySet<string>> = {
   [BROWSER_MCP_SERVER]: BROWSER_READONLY_SUFFIXES,
   [LIBRARY_MCP_SERVER]: LIBRARY_READONLY_TOOLS,
   [WORKFLOW_MCP_SERVER]: WORKFLOW_READONLY_TOOLS,
+  [AGENT_MCP_SERVER]: AGENT_READONLY_TOOLS,
 };
 
 /** `mcp__<server>__<tool>` 拆成两半。不是这个形状的(内置的 Read / Edit 等)返回 null。 */
@@ -82,9 +88,9 @@ const MCP_TOOL_NAME_RE = /^mcp__(.+?)__(.+)$/;
  * 两个入口共用它:`shouldAutoApprove` 先拆前缀再问,网页那条通路直接把裸名交进来 ——
  * 所以传进来的名字**必须是裸名**(前缀由调用方拆掉)。
  *
- * 名字在三个 server 之间是唯一的(库里一律 `library_` / `templates_` 开头,工作流一律
- * `workflow_` / `node_` / `agent_profile` 开头,浏览器一律 `browser_` 开头),所以这里
- * 不必再问"是哪个 server 的"。
+ * 名字在几个 server 之间是唯一的(库里一律 `library_` / `templates_` 开头,工作流一律
+ * `workflow_` / `node_` / `agent_profile` 开头,浏览器一律 `browser_` 开头,agent 工具一律
+ * `agent_` 开头但不含 `agent_profile`),所以这里不必再问"是哪个 server 的"。
  */
 export function isReadOnlyToolName(bareName: string): boolean {
   for (const set of Object.values(READONLY_BY_SERVER)) {
@@ -120,12 +126,17 @@ export function shouldAutoApprove(mode: PermissionMode | undefined, toolName: st
 /**
  * 网页那条通路的同一问 —— 名字是裸的(见文件头)。
  *
- * 与 `shouldAutoApprove` 分开写,是因为**这里少了一档**:网页端没有"改文件的工具"
- * (它调不了 Edit / Write),`acceptEdits` 那一档在它这儿没有对应物。合成一个函数再传
- * 两种名字形状进来,只会让那张"哪些模式放行哪些工具"的表在两个形状之间打结。
+ * 与 `shouldAutoApprove` 分开写,是因为两边对 `acceptEdits` 的回答不同:claude 那条
+ * 对 SDK 内置的 Edit / Write 放行;网页这条没有那些内置工具,但有自己的文件改写工具
+ * (`agent_write_file` / `agent_edit_file`)—— 同样只在 `acceptEdits` 档免问,其余档
+ * 照旧弹审批卡。`agent_bash` 永远不在自动放行之列(用户点过"始终允许"的除外,那是
+ * 闸门执行层的事,见 webToolHost)。合成一个函数再传两种名字形状进来,只会让那张
+ * "哪些模式放行哪些工具"的表在两个形状之间打结。
  */
 export function shouldAutoApproveWebTool(mode: PermissionMode | undefined, bareName: string): boolean {
   if (!mode) return false;
   if (mode === "bypassPermissions" || mode === "dontAsk") return true;
-  return isReadOnlyToolName(bareName);
+  if (isReadOnlyToolName(bareName)) return true;
+  if (mode === "acceptEdits" && AGENT_EDIT_TOOLS.has(bareName)) return true;
+  return false;
 }

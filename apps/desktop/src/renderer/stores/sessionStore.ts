@@ -2,6 +2,8 @@ import { create } from "zustand";
 import type { Project, Session, MessageRecord, SessionTodoItem, SessionPlanDraft, SessionBookmark } from "@contracts/session";
 import type {
   RuntimeEvent,
+  NodeArtifact,
+  NodeExecutionRecord,
   PermissionMode,
   EffortLevel,
   AskUserQuestionItem,
@@ -16,6 +18,7 @@ import type {
   TurnUsageRecord,
   SessionListEntry,
 } from "@contracts/runtime";
+import type { LongTask } from "@contracts/longTask";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import type { ContentTag } from "@renderer/lib/contentTag.js";
 import { isValidSnapshot } from "@renderer/lib/contextWindow.js";
@@ -349,6 +352,18 @@ export type Block =
       durationMs?: number;
     }
   | {
+      /** A live workflow node execution update. It is replaced by the settled result
+       *  with the same runId + nodeId, so the stream never shows duplicate cards. */
+      kind: "workflow-node-progress";
+      runId: string;
+      nodeId: string;
+      nodeType: string;
+      title: string;
+      percent?: number;
+      message?: string;
+      phase?: string;
+    }
+  | {
       /** 工作流图里的一步收场了。**一步一张卡**,和阶段卡同型 —— 事件从主进程的
        *  调度器来(`main/orchestration/runner.ts`),节点自己跑在隐藏子会话里。 */
       kind: "workflow-node-result";
@@ -376,6 +391,9 @@ export type Block =
       outputKeys?: string[];
       /** 没成功时的原因。 */
       error?: string;
+      execution?: NodeExecutionRecord;
+      /** Stable references to files, directories, or external data produced by the node. */
+      artifacts?: NodeArtifact[];
       /**
        * **这一步花了多少。** 缺席有两种意思,而两种都不显示那一行:
        * 没跑过(`skipped` / `cancelled`),或者跑完了但引擎没报花费。
@@ -981,6 +999,15 @@ export interface SessionState {
    *  effectively milliseconds — the adapter always emits turn.incomplete
    *  immediately before turn.done. NOT persisted. */
   turnIncompleteBySession: Record<string, boolean>;
+  /** Per-session 长期任务状态（longtask.update 事件的唯一消费点）。主进程
+   *  LongTaskRunner 是事实来源，这里只是投映 —— running 时 composer 上方挂
+   *  状态条（目标/轮次/停止按钮），终局后保留一陈子供人看结果。仅内存态：
+   *  重启后主进程 sweep 已把残留 running 标 stopped，这里空着正合适。 */
+  longTaskBySession: Record<string, LongTask>;
+  /** Per-session「下一轮挂上长期任务循环」的一次性武装开关。Composer 的
+   *  长任务段切换它；sendMessage 里 sendTurn 成功后若已武装则调
+   *  api.longtask.start 并自动解除 —— 循环器从那一轮的第一个 turn.done 接管。 */
+  longTaskArmedBySession: Record<string, boolean>;
   /** Per-session transient upstream-network issue (the OpenAI bridge's retry
    *  loop: connect timeout / reset / refused — see UpstreamIssueEvent). Set on
    *  `upstream.issue{kind:"retry"}`; cleared on kind:"ok", turn end (turn.done
@@ -1667,6 +1694,12 @@ export interface SessionState {
     images?: PromptImage[],
   ) => Promise<void>;
   interrupt: (sessionId?: string) => Promise<void>;
+  /** 切换某会话「下一条消息挂长期任务循环」的一次性武装开关。 */
+  toggleLongTaskArmed: (sessionId: string) => void;
+  /** 武装开关的显式清除（sendMessage 挂上循环器后自动解除；会话删除时清理）。 */
+  clearLongTaskArmed: (sessionId: string) => void;
+  /** 关掉会话状态条上已结束的任务记录（仅清投映，不动主进程事实）。 */
+  dismissLongTask: (sessionId: string) => void;
   ingestEvent: (e: RuntimeEvent) => void;
   /** Update the window-focus flag. Called from useClaudeEvents on Electron
    *  `window:focusChanged` + `document.visibilitychange`. When the window
@@ -2861,6 +2894,10 @@ function dropSessionBuckets(s: SessionState, id: string) {
   delete turnErrorBySession[id];
   const interruptedBySession = { ...s.interruptedBySession };
   delete interruptedBySession[id];
+  const longTaskBySession = { ...s.longTaskBySession };
+  delete longTaskBySession[id];
+  const longTaskArmedBySession = { ...s.longTaskArmedBySession };
+  delete longTaskArmedBySession[id];
   const upstreamIssueBySession = { ...s.upstreamIssueBySession };
   delete upstreamIssueBySession[id];
   // Also drop the hint's decay timer (module-level side effect — idempotent).
@@ -2918,6 +2955,8 @@ function dropSessionBuckets(s: SessionState, id: string) {
     runningTurnModelBySession,
     turnErrorBySession,
     interruptedBySession,
+    longTaskBySession,
+    longTaskArmedBySession,
     upstreamIssueBySession,
     unreadBySession,
     todosBySession,
@@ -4101,6 +4140,45 @@ function patchBranchChoiceBlock(
  *
  * 返回**新的数组**(而不是就地改):store 的订阅者比的是引用,就地改的话卡片不会重画。
  */
+function removeWorkflowNodeProgressBlock(
+  messages: ChatMessage[],
+  runId: string,
+  nodeId: string,
+): ChatMessage[] {
+  let changed = false;
+  const out = messages.map((m) => {
+    const blocks = m.blocks.filter(
+      (b) => !(b.kind === "workflow-node-progress" && b.runId === runId && b.nodeId === nodeId),
+    );
+    if (blocks.length !== m.blocks.length) {
+      changed = true;
+      return { ...m, blocks };
+    }
+    return m;
+  });
+  return changed ? out : messages;
+}
+
+function patchWorkflowNodeProgressBlock(
+  messages: ChatMessage[],
+  next: Extract<Block, { kind: "workflow-node-progress" }>,
+): ChatMessage[] | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m) continue;
+    const at = m.blocks.findIndex(
+      (b) => b.kind === "workflow-node-progress" && b.runId === next.runId && b.nodeId === next.nodeId,
+    );
+    if (at < 0) continue;
+    const blocks = m.blocks.slice();
+    blocks[at] = next;
+    const out = messages.slice();
+    out[i] = { ...m, blocks };
+    return out;
+  }
+  return null;
+}
+
 function patchNodeUsageBlock(
   messages: ChatMessage[],
   runId: string,
@@ -4597,6 +4675,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   worktreeInfoByRepo: {},
   interruptedBySession: {},
   turnIncompleteBySession: {},
+  longTaskBySession: {},
+  longTaskArmedBySession: {},
   upstreamIssueBySession: {},
   unreadBySession: {},
   isWindowFocused: true,
@@ -6868,6 +6948,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         get().drainPromptQueueIfIdle(sessionId);
         return;
       }
+      // 长期任务武装：这一轮已经发出去了，把循环器挂上（一次性开关）。
+      // 主进程 taskRunner 不自己发第一轮 —— 它从这轮的 turn.done 接管续轮。
+      // start 失败就默默解除（开关已经清了，用户再点一次即可），不留模糊态。
+      if (get().longTaskArmedBySession[sessionId]) {
+        get().clearLongTaskArmed(sessionId);
+        void api.longtask.start({ sessionId, goal: prompt }).catch(() => {});
+      }
       set((s) => {
         // Side chats never touch the left-bar caches — patch the ask tab's
         // per-parent bucket instead (the row carries the first-question
@@ -7101,6 +7188,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         };
       });
     })();
+  },
+
+  toggleLongTaskArmed: (sessionId) => {
+    set((s) => {
+      const next = { ...s.longTaskArmedBySession };
+      if (next[sessionId]) delete next[sessionId];
+      else next[sessionId] = true;
+      return { longTaskArmedBySession: next };
+    });
+  },
+
+  clearLongTaskArmed: (sessionId) => {
+    set((s) => {
+      if (!s.longTaskArmedBySession[sessionId]) return s;
+      const next = { ...s.longTaskArmedBySession };
+      delete next[sessionId];
+      return { longTaskArmedBySession: next };
+    });
+  },
+
+  dismissLongTask: (sessionId) => {
+    set((s) => {
+      if (!s.longTaskBySession[sessionId]) return s;
+      const next = { ...s.longTaskBySession };
+      delete next[sessionId];
+      return { longTaskBySession: next };
+    });
   },
 
   interrupt: async (sessionIdArg) => {
@@ -7988,6 +8102,30 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
       return;
     }
+    if (e.type === "workflow.node.progress") {
+      const progress: Block = {
+        kind: "workflow-node-progress",
+        runId: e.runId,
+        nodeId: e.nodeId,
+        nodeType: e.nodeType,
+        title: e.title,
+        ...(e.percent !== undefined ? { percent: Math.max(0, Math.min(100, e.percent)) } : {}),
+        ...(e.message ? { message: e.message } : {}),
+        ...(e.phase ? { phase: e.phase } : {}),
+      };
+      set((s) => {
+        const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
+        const patched = patchWorkflowNodeProgressBlock(
+          list,
+          progress as Extract<Block, { kind: "workflow-node-progress" }>,
+        );
+        if (patched) return { messagesBySession: { ...s.messagesBySession, [sid]: patched } };
+        const startedAt = s.runningTurnStartedAt[sid] ?? Date.now();
+        const next = appendTurnCardBlock(list, progress, startedAt, s.runningTurnModelBySession[sid], "wfprogress");
+        return next === list ? s : { messagesBySession: { ...s.messagesBySession, [sid]: next } };
+      });
+      return;
+    }
     if (e.type === "workflow.node.result") {
       // 工作流图里的一步收场了。那一步跑在**自己的隐藏子会话**里(`kind: "node"`),
       // 调度器把结果事件发到**这个对话**上,于是这里把它变成一张卡片。
@@ -8008,6 +8146,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           summary: e.summary,
           ...(e.outputKeys && e.outputKeys.length > 0 ? { outputKeys: e.outputKeys } : {}),
           ...(e.error ? { error: e.error } : {}),
+          ...(e.execution ? { execution: e.execution } : {}),
+          ...(e.artifacts && e.artifacts.length > 0 ? { artifacts: e.artifacts } : {}),
           ...(e.usage ? { usage: e.usage } : {}),
         };
         const startedAt = s.runningTurnStartedAt[sid] ?? Date.now();
@@ -8052,6 +8192,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // 要**新开**格子 —— 换掉上一轮的话,用户第一轮点过什么就没了。
       set((s) => {
         const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
+        const withoutProgress = removeWorkflowNodeProgressBlock(list, e.runId, e.nodeId);
         const block: Block = {
           kind: "workflow-branch-choice",
           runId: e.runId,
@@ -8081,7 +8222,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
         const startedAt = s.runningTurnStartedAt[sid] ?? Date.now();
         const next = appendTurnCardBlock(
-          list,
+          withoutProgress,
           block,
           startedAt,
           s.runningTurnModelBySession[sid],
@@ -8297,6 +8438,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             blocks.splice(tuIdx + 1, 0, imageBlock);
             return { ...m, blocks };
           });
+          break;
+        }
+        case "longtask.update": {
+          // 长期任务状态投映（主进程 LongTaskRunner 是事实来源）。只更新
+          // longTaskBySession，不动消息流 —— 状态条的展示交给 LongTaskBanner。
+          set((s) => ({ longTaskBySession: { ...s.longTaskBySession, [sid]: e.task } }));
           break;
         }
         case "turn.incomplete": {

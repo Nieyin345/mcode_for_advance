@@ -1218,7 +1218,7 @@ const TPL_SCOPE: NodeTemplateScope = {
     {
       id: "A",
       title: "检索",
-      outcome: { status: "success", summary: "找到三篇", outputs: { 年份: "2024" } },
+      outcome: { status: "success", summary: "找到三篇", outputs: { 年份: "2024", stats: { count: 3 } }, artifacts: [{ kind: "file", uri: "D:/work/report.pdf", name: "report.pdf", mimeType: "application/pdf" }] },
       params: { target: "量子", tags: ["a", "b"], n: 3 },
     },
     {
@@ -1248,6 +1248,9 @@ eq("params 取字符串", render("{{A.params.target}}"), "量子");
 // 多选那种参数存的是字符串数组 —— `["a","b"]` 直接进提示词很难看,所以用顿号连起来。
 eq("params 取数组 → 顿号连起来", render("{{A.params.tags}}"), "a、b");
 eq("params 取数字", render("{{A.params.n}}"), "3");
+eq("outputs 取嵌套对象", render("{{A.outputs.stats.count}}"), "3");
+eq("artifacts 取 URI", render("{{A.artifacts[0].uri}}"), "D:/work/report.pdf");
+eq("artifacts 取名称", render("{{A.artifacts[0].name}}"), "report.pdf");
 eq("取不存在的参数 = 空串", render("[{{A.params.没有}}]"), "[]");
 // 一句话里多处引用。
 eq("一句里多处", render("{{检索.output}},目标 {{A.params.target}}"), "找到三篇,目标 量子");

@@ -289,12 +289,32 @@ export interface WebSite {
   label: string;
   /** 站点首页 —— 扩展在浏览器里驱动的那一页。 */
   homeUrl: string;
+  /**
+   * 浏览器扩展有没有实现这个站点的驱动。
+   *
+   * 目录与驱动是**两件事**:桌面侧把站点列出来(用户能选、配置能存),驱动那一段
+   * 住在扩展仓库里(`mcode-bridge-ext` 的 `core/<site>/`)。站点先于驱动落地时,
+   * 这里写 `false` —— 配置照存,但选中它开跑会得到一句明确的"扩展还不支持"，
+   * 而不是一句来自 DeepSeek 解析器的、牛头不对马嘴的报错。
+   *
+   * 扩展把驱动补齐后把这里翻成 `true`(或直接删掉这个字段的 false 写法)。
+   */
+  driver: boolean;
 }
 
 /** **顺序即 UI 顺序**，第一项是默认站点。 */
 export const WEB_SITES: readonly WebSite[] = [
-  { id: "deepseek", label: "DeepSeek", homeUrl: "https://chat.deepseek.com" },
+  { id: "deepseek", label: "DeepSeek", homeUrl: "https://chat.deepseek.com", driver: true },
+  // ChatGPT 网页版：条目先立起来（用户选得到、配置存得下），驱动实现住在扩展
+  // 仓库的 `core/chatgpt/`，补齐前 driver 为 false。
+  { id: "chatgpt", label: "ChatGPT", homeUrl: "https://chatgpt.com", driver: false },
 ];
+
+/** 该站点在浏览器扩展里有没有可用的驱动。未知 id 一律 false（快速失败，
+ *  不假装能跑）。 */
+export function webSiteDriven(id: string | undefined): boolean {
+  return webSiteById(id)?.driver === true;
+}
 
 /** 默认站点 id（新配置未选择时用它）。表恒非空，但取值为 undefined 时仍走兜底。 */
 export function defaultWebSiteId(): string {

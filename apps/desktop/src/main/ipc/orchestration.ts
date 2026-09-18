@@ -13,7 +13,7 @@
  * `@main/workflows/*`,反之亦然。
  */
 import type { IpcMain } from "electron";
-import type { AutomationRunEntry, WatchCommandTemplate } from "@contracts/ipc";
+import type { AutomationRunEntry, AutomationTriggerFacts, PersistedWorkflowRunLite, WatchCommandTemplate } from "@contracts/ipc";
 import {
   AgentProfileRemoveSchema,
   AgentProfileSaveSchema,
@@ -21,6 +21,7 @@ import {
   AutomationRunSchema,
   AutomationSessionsSchema,
   IPC,
+  RunsHistorySchema,
   WatchCommandTemplateSchema,
   WatchStartSchema,
   WatchStatusSchema,
@@ -35,7 +36,7 @@ import { automationRunner } from "@main/orchestration/automationRunner.js";
 import { log } from "@main/lib/logger.js";
 import { getWorkflow, listWorkflows, removeWorkflow, saveWorkflow } from "@main/orchestration/library.js";
 import { notifyWorkflowsChanged } from "@main/orchestration/broadcast.js";
-import { decodeSnapshot } from "@main/orchestration/runStore.js";
+import { decodeSnapshot, runHistory } from "@main/orchestration/runStore.js";
 import { requestWorkflowReload } from "@main/orchestration/reloadRequest.js";
 import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
 import { ensureLocalNodeTypesDir } from "@main/orchestration/nodeTypesSeed.js";
@@ -145,6 +146,41 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.AUTOMATION_SESSIONS, async (_evt, raw) => {
     const input = AutomationSessionsSchema.parse(raw);
     return { sessionId: SessionRepo.findAutomationByWorkflow(input.workflowId)?.id ?? null };
+  });
+
+  // ── 触发器事实状态(AUTO-09)──
+  //
+  // 全部触发器的"挂没挂上 / 为什么 / 最近一次跑"。**无参 handler**,同
+  // `workflow.list`。返回值注成 contracts 的镜像类型(见 `AutomationTriggerFacts`):
+  // 主进程那份事实在 `automationStatus.ts`,哪边形状漂了,这一行赋值就编译不过。
+  ipcMain.handle(IPC.AUTOMATION_STATUS_ALL, async () => {
+    const facts: AutomationTriggerFacts[] = automationRunner.statusAll();
+    // **直接返回数组**(不包 `{ facts }`)—— preload 的 api 面与渲染端都按裸数组消费,
+    // 包一层只会让每一处调用点多一次解构。
+    return facts;
+  });
+
+  // ── 运行历史(某个对话的所有图运行)──
+  //
+  // 从存档折出来(见 `runStore.runHistory`,那份快照是唯一真相),丢掉 snapshot 本体、
+  // 换成 nodeCount —— 一行列表不该拖着整份快照过 IPC。存档读不回来的老运行照样列出,
+  // nodeCount 按 0 算。
+  ipcMain.handle(IPC.RUNS_HISTORY, async (_evt, raw) => {
+    const input = RunsHistorySchema.parse(raw);
+    const runs: PersistedWorkflowRunLite[] = runHistory(
+      input.sessionId,
+      input.limit ?? AUTOMATION_RUNS_LIMIT,
+    ).map((run) => ({
+      runId: run.runId,
+      sessionId: run.sessionId,
+      workflowId: run.workflowId,
+      status: run.status,
+      createdAt: run.createdAt,
+      updatedAt: run.updatedAt,
+      nodeCount: run.snapshot?.state.outcomes.length ?? 0,
+    }));
+    // **直接返回数组**(不包 `{ runs }`)—— 同 statusAll,渲染端按裸数组消费。
+    return runs;
   });
 
   // ── 守望(会话输入区那颗「守望」按钮,D3/D4)──

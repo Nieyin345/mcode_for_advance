@@ -27,6 +27,7 @@ import { initAutoArchiver } from "@main/session/AutoArchiver.js";
 import { notificationManager } from "@main/notifications/NotificationManager.js";
 import { hookRunner } from "@main/hooks/HookRunner.js";
 import { automationRunner } from "@main/orchestration/automationRunner.js";
+import { longTaskRunner } from "@main/longtask/taskRunner.js";
 import { is } from "@main/utils.js";
 import { preloadClaudeSdk } from "@main/providers/claude-sdk/ClaudeAgentSdkProvider.js";
 import { logStartup } from "@main/lib/startupTimer.js";
@@ -160,8 +161,13 @@ app.whenReady().then(async () => {
     // 工具表和进程内那两个 server 是同一份,审批闸门也是同一个(见 webToolHost.ts
     // 文件头)—— 这里只把"会话 → 闸门"接到 RuntimeManager 上。装配很轻(表在扩展
     // 第一次 tools/list 时才转 JSON Schema),所以不必等设置页打开。
+    // `cwdFor` 同源:agent_* 文件工具的相对路径与环境块里的工作目录都按会话从
+    // RuntimeManager 取(lastCwd → 项目路径)。
     configureMcpToolHost(
-      createWebToolHost({ gateFor: (sessionId) => runtimeManager.webToolGate(sessionId) }),
+      createWebToolHost({
+        gateFor: (sessionId) => runtimeManager.webToolGate(sessionId),
+        cwdFor: (sessionId) => runtimeManager.cwdFor(sessionId),
+      }),
     );
     // 顺手把桥起起来，别等用户点开设置页才 listen：浏览器里的扩展是**主动来连**
     // 的一方，端口不开它就只能显示"未连接"，而用户并不知道要先去点一下设置页。
@@ -265,6 +271,17 @@ app.whenReady().then(async () => {
     }
   })();
 
+  // 长期任务(LongTaskRunner):对话里挂上目标后,turn.done 没有完成标记就自动续轮。
+  // 等数据库就绪(它的续轮路径要读会话/项目表)。
+  void (async () => {
+    try {
+      await awaitDb();
+      longTaskRunner.start();
+    } catch (err) {
+      log.error(`LongTaskRunner failed to start: ${(err as Error).message}`);
+    }
+  })();
+
   // Start the mobile companion HTTP server (LAN-facing). Fire-and-forget: it
   // awaits DB readiness internally to read its enabled/port settings, then
   // binds 0.0.0.0:<port>. If disabled (mobile.enabled=0) it resolves to an
@@ -337,6 +354,7 @@ app.on("before-quit", (event) => {
   // 关掉定时针、目录监听、事件订阅 —— 它们都挂在事件流 / 文件系统上,不关的话
   // 退出过程中还可能起一次运行(而那时数据库已经在关了,见下面 `closeDb`)。
   automationRunner.dispose();
+  longTaskRunner.dispose();
   stopMobileServer();
   closeDb();
 });

@@ -46,6 +46,9 @@ export const zh = {
   // 两句混用的话,用户会去翻一个根本没跑的节点的日志,而那里什么也没有。
   "chatStream.workflowStep.unselected": "没走这条路",
   "chatStream.workflowStep.cancelled": "已取消",
+  // 「排队中」:节点进了队列还没起跑(workflow.node.queued 事件,见
+  // `renderer/lib/workflowQueued.ts`)。和「执行中」分得开 —— 排队不烧 token。
+  "chatStream.workflowStep.queued": "排队中",
   "chatStream.workflowStep.empty": "这一步没有产出文本。",
   // 这一步的开销。`{cost}` 在引擎没报花费时是 "—"（不是 $0.00）。
   "chatStream.workflowStep.usage": "花了 {tokens} tokens · {cost}",
@@ -56,6 +59,11 @@ export const zh = {
   // 过程只在内存里、有容量上限(见 `RuntimeManager` 的 `NODE_TRANSCRIPT_LIMIT`)——
   // 说清楚是"不在了"而不是摆一个点开是空的入口让人以为坏了。
   "chatStream.workflowStep.processGone": "这一步的过程已经不在内存里了(只留最近跑过的若干步)。",
+  // 这一步的执行元数据(`NodeExecutionRecord`):跑在哪种执行器上、跑了多久。
+  "chatStream.workflowStep.execution": "执行器 {kind} · {duration}",
+  // 这一步交出的外部产物(`NodeArtifact`)。file / directory 给「打开」,data 只摆引用。
+  "chatStream.workflowStep.artifacts": "产物",
+  "chatStream.workflowStep.open": "打开",
 
   // ── 岔路口那张卡(见 `components/chat/BranchChoiceCard.tsx`)──
   // 它和上面的结果卡**长得不一样**:按钮点下去之前,这次运行**没有结束** —— 所以它

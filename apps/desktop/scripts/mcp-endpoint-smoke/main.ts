@@ -22,6 +22,9 @@
  * Run: scripts/mcp-endpoint-smoke/run.sh
  */
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
   bridgeStatus,
   configureExtensionBridgeTokenStore,
@@ -260,14 +263,34 @@ function makeGate(): WebToolGate {
   };
 }
 
-const host = createWebToolHost({ gateFor: () => (gateKnown ? makeGate() : null) });
+/** agent 工具的工作目录 —— 临时目录,可切到 null 验"没有 cwd"的分支。 */
+const CWD = mkdtempSync(path.join(tmpdir(), "mcode-agent-smoke-"));
+let cwdValue: string | null = CWD;
+
+const host = createWebToolHost({
+  gateFor: () => (gateKnown ? makeGate() : null),
+  // agent_* 工具的 cwd:指到一个临时目录,读/写/搜索的真跑都在里面发生,
+  // 不碰用户机器上的任何真项目。
+  cwdFor: () => cwdValue,
+});
 
 /* ── 报出去的表 ── */
 const tools = host.listTools();
 const names = tools.map((t) => t.name);
 check("表里有替身库的工具", names.includes("library_probe"), names);
 check("表里也有真工作流的工具(同一份表)", names.includes("workflow_list"), names);
-check("工具数量 = 替身 3 + 真工作流 9", names.length === 12, names.length);
+check("agent 工具进表了(读/写/改/列/glob/grep/bash/技能)", [
+  "agent_read_file",
+  "agent_write_file",
+  "agent_edit_file",
+  "agent_list_dir",
+  "agent_glob",
+  "agent_grep",
+  "agent_bash",
+  "agent_skill_list",
+  "agent_skill_read",
+].every((n) => names.includes(n)), names);
+check("工具数量 = 替身 3 + 真工作流 9 + agent 9", names.length === 21, names.length);
 check(
   "同名工具只报一次",
   new Set(names).size === names.length,
@@ -384,7 +407,11 @@ eq("bypass 模式下写工具也不弹卡", approvalCalls.length, 0);
 mode = "acceptEdits";
 approvalCalls.length = 0;
 await host.callTool("library_write", { id: "p5" }, { sessionId: "s1" });
-eq("acceptEdits 在网页端没有对应档(网页端没有改文件的工具),照样要问", approvalCalls.length, 1);
+eq(
+  "acceptEdits 只放行 agent 改文件工具;库的写工具不在那一档,照样要问",
+  approvalCalls.length,
+  1,
+);
 mode = "default";
 
 /* ── 真工作流的写工具同样要问,而且拒了就不执行 ── */
@@ -395,6 +422,95 @@ eq("真工作流的写工具要弹卡", approvalCalls.length, 1);
 eq("…卡上的名字是裸名", approvalCalls[0].toolName, "workflow_remove");
 eq("…拒了就是 isError", wfDenied.isError, true);
 allowDecision = true;
+
+/* ══════════ agent 工具真跑:临时目录里读/写/改/搜/执行 ══════════
+ * 这一组要验的不是形状(schema 检查上面已覆盖),而是**它们真的动得了文件** ——
+ * 网页模型唯一的"手"就是这几个工具,假放行或假执行都会变成"模型说要读,然后什么都没发生"。
+ * cwd 全用相对路径,顺带验相对路径按 cwdFor 的目录解析。 */
+mode = "acceptEdits"; // 写/改在这一档免卡,正好把"写免卡、bash 弹卡"的分界也验了
+approvalCalls.length = 0; // 上一段 workflow_remove 的卡还挂在计数里,清零
+
+const wrote = await host.callTool(
+  "agent_write_file",
+  { path: "note.md", content: "第一行:桥冒烟\n第二行:替换前\n" },
+  { sessionId: "s1" },
+);
+eq("acceptEdits 档 agent_write_file 不弹卡", approvalCalls.length, 0);
+check("…并且真的写进了 cwd(临时目录)", wrote.text.includes(path.join(CWD, "note.md")), wrote.text);
+
+const readBack = await host.callTool("agent_read_file", { path: "note.md" }, { sessionId: "s1" });
+check(
+  "…agent_read_file 按行号读回来",
+  readBack.text.includes("1\t第一行:桥冒烟") && readBack.text.includes("2\t第二行:替换前"),
+  readBack.text,
+);
+
+const edited = await host.callTool(
+  "agent_edit_file",
+  { path: "note.md", old_string: "替换前", new_string: "替换后" },
+  { sessionId: "s1" },
+);
+eq("agent_edit_file 免卡执行(同档)", approvalCalls.length, 0);
+check("…报告了修改", edited.text.includes("已修改"), edited.text);
+const readAfter = await host.callTool("agent_read_file", { path: "note.md" }, { sessionId: "s1" });
+check("…文件内容真的变了", readAfter.text.includes("2\t第二行:替换后"), readAfter.text);
+
+const listed = await host.callTool("agent_list_dir", {}, { sessionId: "s1" });
+check("agent_list_dir 列出了刚写的文件", listed.text.includes("note.md"), listed.text);
+
+const globbed = await host.callTool("agent_glob", { pattern: "**/*.md" }, { sessionId: "s1" });
+check("agent_glob 按模式找到了它", globbed.text.includes("note.md"), globbed.text);
+
+const grepped = await host.callTool("agent_grep", { pattern: "桥冒烟" }, { sessionId: "s1" });
+check("agent_grep 按内容找到了行", grepped.text.includes("note.md:1:"), grepped.text);
+
+/* bash:acceptEdits 不放行(分界),弹卡;允许后真的跑出输出。 */
+approvalCalls.length = 0;
+const bashed = await host.callTool(
+  "agent_bash",
+  { command: "echo bridge-smoke-9876" },
+  { sessionId: "s1" },
+);
+eq("agent_bash 弹了卡(acceptEdits 不覆盖 bash)", approvalCalls.length, 1);
+eq("…卡上是裸名", approvalCalls[0].toolName, "agent_bash");
+check("…命令真的跑了,输出带回来了", bashed.text.includes("bridge-smoke-9876"), bashed.text);
+check("…退出码也报了", bashed.text.includes("exit: 0"), bashed.text);
+
+allowDecision = false;
+const bashDenied = await host.callTool(
+  "agent_bash",
+  { command: "echo 不该跑" },
+  { sessionId: "s1" },
+);
+eq("拒绝 bash → isError", bashDenied.isError, true);
+check("…拒绝消息带着用户的理由", bashDenied.text.includes("我现在不想动库里东西"), bashDenied.text);
+allowDecision = true;
+
+/* cwd 缺席:相对路径被明确拒绝,提示用绝对路径。 */
+cwdValue = null;
+const noCwd = await host.callTool("agent_read_file", { path: "note.md" }, { sessionId: "s1" });
+check("没有 cwd → 相对路径被拒并提示绝对路径", noCwd.text.includes("绝对路径"), noCwd.text);
+cwdValue = CWD;
+
+/* 技能:真跑(读的是机器上真实的 ~/.mcode/skills,只验形状不验内容 ——
+ * 用户装了什么技能不该进断言)。 */
+const skillList = await host.callTool("agent_skill_list", {}, { sessionId: "s1" });
+check(
+  "agent_skill_list 正常返回(空库也有话可说)",
+  !skillList.isError && skillList.text.length > 0,
+  skillList.text,
+);
+const skillMissing = await host.callTool("agent_skill_read", { name: "no-such-skill" }, { sessionId: "s1" });
+check(
+  "agent_skill_read 没有的技能给出指引",
+  skillMissing.text.includes("agent_skill_list"),
+  skillMissing.text,
+);
+const skillBad = await host.callTool("agent_skill_read", { name: "../escape" }, { sessionId: "s1" });
+check("带路径分隔的名字被拒", skillBad.text.includes("不合法"), skillBad.text);
+
+mode = "default";
+rmSync(CWD, { recursive: true, force: true });
 
 /* ── 报告 ── */
 configureMcpToolHost(null);

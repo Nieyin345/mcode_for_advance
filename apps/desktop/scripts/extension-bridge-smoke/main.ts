@@ -29,7 +29,8 @@ import {
   stopExtensionBridge,
   abortTurn,
 } from "@main/providers/bridge/extensionBridge.js";
-import { handleWebMessages } from "@main/providers/bridge/webUpstream.js";
+import { configureWebEnvProvider, handleWebMessages } from "@main/providers/bridge/webUpstream.js";
+import { webSiteById, webSiteDriven } from "@contracts/customModel";
 import type { AnthropicRequest, UpstreamConfig } from "@main/providers/bridge/types.js";
 
 let passed = 0;
@@ -115,6 +116,11 @@ const WEB_UPSTREAM: UpstreamConfig = {
   protocol: "web",
   webSiteId: "deepseek",
 };
+
+/* ── 环境块的来源:固定 cwd 的桩(真实实现是 RuntimeManager.cwdFor,由 main/index.ts
+ *    注入)。只对会话 sess-env-1 有 cwd;envCwd 可切换来验"变了才重注"。 ── */
+let envCwd: string | null = "D:\\proj\\web-smoke";
+configureWebEnvProvider({ cwdFor: (sid) => (sid === "sess-env-1" ? envCwd : null) });
 
 /** Split an SSE byte stream into events, skipping comment (heartbeat) frames. */
 function parseFrames(text: string): Frame[] {
@@ -419,6 +425,94 @@ check(
   (JSON.parse(nsFail.body()) as { error?: { message?: string } }).error?.message?.length ? true : false,
   nsFail.body(),
 );
+
+/* ───────────── 站点目录与驱动闸门 ─────────────── */
+
+// 「站点可配」与「扩展能驱动它」是两件事:目录里先立条目是为了让用户配得下、存得下,
+// 驱动没实现时必须**在 mcode 这一侧**就拒绝并说清原因 —— 放过去只会得到一句来自
+// 扩展站点白名单的、与站点无关的报错。
+
+{
+  eq("目录里有 deepseek", webSiteById("deepseek")?.label, "DeepSeek");
+  eq("目录里有 chatgpt", webSiteById("chatgpt")?.label, "ChatGPT");
+  check("chatgpt 的首页指向 chatgpt.com", (webSiteById("chatgpt")?.homeUrl ?? "").includes("chatgpt.com"));
+  check("deepseek 有驱动", webSiteDriven("deepseek"));
+  check("chatgpt 还没驱动", !webSiteDriven("chatgpt"));
+  check("不认识的站点一律没驱动", !webSiteDriven("no-such-site") && !webSiteDriven(undefined));
+
+  // 目录里没有的站点:老那条路仍然按"配置无效"拒。
+  const unknown = makeReqRes();
+  await handleWebMessages(
+    unknown.req,
+    unknown.res,
+    { model: "x", max_tokens: 16, stream: false, messages: [] } as AnthropicRequest,
+    { ...WEB_UPSTREAM, webSiteId: "no-such-site" },
+    null,
+  );
+  eq("不认识的站点 400", unknown.state.status, 400);
+  check("报错带上站点名", unknown.body().includes("no-such-site"), unknown.body());
+
+  // 目录里有、驱动没有:拒,且原因指向扩展。
+  const undriven = makeReqRes();
+  await handleWebMessages(
+    undriven.req,
+    undriven.res,
+    { model: "chatgpt-web", max_tokens: 16, stream: false, messages: [] } as AnthropicRequest,
+    { ...WEB_UPSTREAM, webSiteId: "chatgpt" },
+    null,
+  );
+  eq("未驱动的站点 400", undriven.state.status, 400);
+  check(
+    "报错说清是扩展不支持(而不是站点不存在)",
+    undriven.body().includes("ChatGPT") && undriven.body().includes("驱动"),
+    undriven.body(),
+  );
+}
+
+/* ───────────── first-turn environment block, injected once per sessionKey ─────────────── */
+
+// 网页模型没有 claude 的工具感知,环境块(工作目录 + agent_* 工具说明)要拼在它的
+// 第一条消息前。这里钉三条:首轮有、同 key 二轮没有、cwd 变了重注;外加
+// "没有 mcode 会话头就不注入"。
+
+/** 走一轮非流式请求,抓到下发给扩展的 prompt 文本。 */
+async function promptTextFor(text: string, sessionId: string | null): Promise<string> {
+  const rr = makeReqRes();
+  const run = handleWebMessages(
+    rr.req,
+    rr.res,
+    {
+      model: "deepseek-web",
+      max_tokens: 16,
+      stream: false,
+      metadata: { user_id: "user_env_account__session_env-1" },
+      messages: [{ role: "user", content: text }],
+    } as AnthropicRequest,
+    WEB_UPSTREAM,
+    sessionId,
+  );
+  const frame = await ext.next();
+  eq(`[${text}] prompt 下发了`, frame?.event, "prompt");
+  await postEvent(url, token, { type: "delta", turnId: frame?.data.turnId, text: "好" });
+  await postEvent(url, token, { type: "done", turnId: frame?.data.turnId });
+  await withDeadline(`env turn ${text}`, run);
+  return String(frame?.data.text ?? "");
+}
+
+const firstText = await promptTextFor("第一轮", "sess-env-1");
+check("首轮拼了环境块(有工作目录)", firstText.includes("D:\\proj\\web-smoke"), firstText);
+check("…也说了工具怎么用", firstText.includes("agent_read_file") && firstText.includes("agent_skill_list"), firstText);
+check("…用户正文还在", firstText.endsWith("第一轮"), firstText);
+
+const secondText = await promptTextFor("第二轮", "sess-env-1");
+eq("第二轮不再注入环境块(同 key,同 cwd)", secondText, "第二轮");
+
+envCwd = "D:\\proj\\web-smoke-2";
+const movedText = await promptTextFor("第三轮", "sess-env-1");
+check("cwd 变了 → 重新注入一份", movedText.includes("D:\\proj\\web-smoke-2"), movedText);
+
+const noHeaderText = await promptTextFor("第四轮", null);
+eq("没有会话头 → 不注入(也没法知道 cwd)", noHeaderText, "第四轮");
 
 /* ─────────────── error events, aborts, and a mid-turn disconnect ─────────────── */
 

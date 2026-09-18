@@ -16,6 +16,13 @@
  * | 文件变化 | 每个**项目目录只 `fs.watch(dir, {recursive:true})` 一次**,多个触发器共享(同 `lib/walkCache.ts`) | 事件先等 `WATCH_SETTLE_MS` 再按各自的合并窗口收口;目录不存在要**记日志**,不静默 |
  * | 事件发生时 | 复用既有事件流 + `HOOK_EVENT_OF` + `createEventSubjects()` | **不忽略来自本自动化自己会话的事件**(见下) |
  *
+ * ## 事实状态(AUTO-09)
+ *
+ * 每条触发器「挂没挂好 / 最近一次跑 / 最近一次为什么没跑成」记在 `automationStatus.ts`
+ * 的 `AutomationFacts` 里,`statusOf` / `statusAll` 是它的读口。挂载侧跟着 reload 重建,
+ * 运行侧只增不改 —— 界面那一栏的事实来源是它,不是从运行史再猜一遍:一条挂不上、从来
+ * 没跑过的自动化,运行史是空的,但这里说得出为什么。
+ *
  * ## 为什么忽略自己的事件是**错的**
  *
  * 事件触发器落在 `runtimeManager.subscribe` 上,而自动化自己跑起来的那些节点会话也在
@@ -43,6 +50,7 @@ import {
   NODE_TRIGGER_PROJECT_PARAM_KEY,
   NODE_TRIGGER_TASK_PARAM_KEY,
   parseTriggerSpec,
+  triggerKindOf,
   type NodeTypeManifest,
   type TriggerSpec,
 } from "@contracts/nodeType";
@@ -53,7 +61,16 @@ import { createEventSubjects, fileSubjects } from "@main/hooks/eventSubjects.js"
 import { log } from "@main/lib/logger.js";
 import { ProjectRepo, SessionRepo } from "@main/store/repositories.js";
 import { uid } from "@main/utils.js";
-import { describeTriggerPayload, type TriggerPayload } from "./automationPayload.js";
+import { describeTriggerPayload, payloadFactsOf, type TriggerPayload } from "./automationPayload.js";
+import {
+  AutomationFacts,
+  automationTriggerKey as triggerKey,
+  shouldFireThisMinute,
+  triggerSeedOf,
+  watcherDirsOf,
+  type AutomationFactsSeed,
+  type AutomationTriggerFacts,
+} from "./automationStatus.js";
 import {
   WATCH_COMMAND_NODE_ID,
   WATCH_DEFAULT_TASK,
@@ -121,10 +138,6 @@ interface WatcherEntry {
   watchOk: boolean;
 }
 
-function triggerKey(trigger: { workflowId: string; nodeId: string }): string {
-  return `${trigger.workflowId}:${trigger.nodeId}`;
-}
-
 class AutomationRunner {
   private started = false;
   /** 已经解好的触发条件:`workflowId → 该自动化的全部触发器`。 */
@@ -141,6 +154,11 @@ class AutomationRunner {
   private unsubscribe: (() => void) | null = null;
   /** 与钩子共用一份逻辑、各持一个实例 —— `tool.result` 要回查工具名,所以它**有状态**。 */
   private subjects = createEventSubjects();
+  /**
+   * **事实状态**(AUTO-09,见 `automationStatus.ts`):每条触发器挂没挂好、最近一次
+   * 什么时候跑的、最近一次为什么没跑成。reload 重建挂载侧,运行侧只增不改。
+   */
+  private facts = new AutomationFacts();
 
   /* ────────────────────────── 启停 ───────────────────────── */
 
@@ -205,6 +223,7 @@ class AutomationRunner {
     }
     this.pendingFires.clear();
     this.lastMinute.clear();
+    this.facts.clear();
     this.entries.clear();
     log.info("AutomationRunner disposed");
   }
@@ -281,15 +300,31 @@ class AutomationRunner {
    */
   private buildTriggers(workflowId: string, types: Map<string, NodeTypeManifest>): LoadedTrigger[] {
     const doc = getWorkflow(workflowId);
-    if (doc === null) return [];
+    if (doc === null) {
+      // 工作流没了:它的事实一起清掉,界面上不留幽灵行。
+      this.facts.retainWorkflow(workflowId, new Set());
+      return [];
+    }
     const out: LoadedTrigger[] = [];
+    /** 这次 reload 里**还在**的触发器(挂上的 + 挂不上的),reload 完拿它清事实表。 */
+    const seen = new Set<string>();
     for (const node of doc.nodes) {
       const manifest = types.get(node.type);
       if (manifest === undefined || manifest.runner.kind !== "trigger") continue;
       const where = `自动化「${doc.name}」的触发器「${node.title || node.id}」`;
+      // 事实登记要的信息。**挂不上的也要记**(AUTO-09):一条「存下来了却永远不响」的
+      // 自动化,跳过原因必须能被界面看见,而不只是一行日志。
+      const seed: AutomationFactsSeed = {
+        workflowId,
+        nodeId: node.id,
+        title: node.title || node.id,
+        kind: triggerKindOf(node.params) ?? "unknown",
+      };
+      seen.add(triggerKey(seed));
       const check = parseTriggerSpec(manifest, node.params);
       if (!check.ok) {
         log.warn(`[automation] ${where}跳过:${check.error}`);
+        this.facts.recordSetup(seed, false, check.error);
         continue;
       }
       const projectId = node.params[NODE_TRIGGER_PROJECT_PARAM_KEY];
@@ -298,8 +333,10 @@ class AutomationRunner {
       const project = ProjectRepo.get(projectId);
       if (project === undefined) {
         log.warn(`[automation] ${where}跳过:项目不在了(${projectId})`);
+        this.facts.recordSetup(seed, false, `项目不在了(${projectId})—— 这条自动化没有工作目录`);
         continue;
       }
+      this.facts.recordSetup(seed, true);
       out.push({
         workflowId,
         workflowName: doc.name,
@@ -311,6 +348,7 @@ class AutomationRunner {
         task: task.trim(),
       });
     }
+    this.facts.retainWorkflow(workflowId, seen);
     return out;
   }
 
@@ -331,12 +369,9 @@ class AutomationRunner {
    * 一次保存就多一条重复的事件。
    */
   private rebuildWatchers(): void {
-    const wanted = new Set<string>();
-    for (const trigger of this.all()) {
-      if (trigger.spec.kind === "file") wanted.add(trigger.cwd);
-    }
+    const wanted = watcherDirsOf(this.all());
     for (const [dir, entry] of this.watchers) {
-      if (wanted.has(dir)) continue;
+      if (wanted.includes(dir)) continue;
       try {
         entry.watcher?.close();
       } catch {
@@ -345,7 +380,14 @@ class AutomationRunner {
       this.watchers.delete(dir);
     }
     for (const dir of wanted) {
-      if (this.watchers.has(dir)) continue;
+      const existing = this.watchers.get(dir);
+      if (existing !== undefined) {
+        // **失效重试**(AUTO-06):上次挂失败(目录暂时不在 / 出错被关 / 平台不支持)
+        // 的话,这次 reload 再试一次 —— 目录回来了就该复活,而不是等到重启。失败的那
+        // 一侧继续在 `armWatcher` 里记日志与事实。
+        if (existing.watcher === null) this.armWatcher(dir);
+        continue;
+      }
       this.watchers.set(dir, { watcher: null, watchOk: false });
       this.armWatcher(dir);
     }
@@ -355,9 +397,16 @@ class AutomationRunner {
     const entry = this.watchers.get(dir);
     if (entry === undefined) return;
     // 递归监听只在 win32 / darwin 上有(Node >= 19.1)。别的平台上文件触发**不会响**
-    // —— 那是要**说出来**的事实,不是安静地少一个功能。
+    // —— 那是要**说出来**的事实,不是安静地少一个功能。事实表也要记上(AUTO-09):
+    // 挂载侧从这里起是「挂不上」,界面那栏不能再说它启用着。
     if (process.platform !== "win32" && process.platform !== "darwin") {
-      log.warn(`[automation] 这个平台不支持递归监听,文件触发不会响:${dir}`);
+      const why = "这个平台不支持递归监听,文件触发不会响";
+      log.warn(`[automation] ${why}:${dir}`);
+      for (const t of this.all()) {
+        if (t.spec.kind === "file" && t.cwd === dir) {
+          this.facts.recordSetup(triggerSeedOf(t), false, why);
+        }
+      }
       return;
     }
     try {
@@ -372,6 +421,13 @@ class AutomationRunner {
       watcher.on("error", (err) => {
         entry.watchOk = false;
         log.warn(`[automation] 监听 ${dir} 出错,文件触发在这个目录上停了:${err.message}`);
+        // **失效处理**(AUTO-06):这个目录上的文件触发器当场记成挂不住 —— 用户看着
+        // 一条填好的触发器等它响,是这一路最坏的坏法。
+        for (const t of this.all()) {
+          if (t.spec.kind === "file" && t.cwd === dir) {
+            this.facts.recordSetup(triggerSeedOf(t), false, `目录监听失效:${err.message}`);
+          }
+        }
         try {
           entry.watcher?.close();
         } catch {
@@ -381,10 +437,25 @@ class AutomationRunner {
       });
       entry.watcher = watcher;
       entry.watchOk = true;
+      // 挂上了:把上次「监听失效」记的那笔还回来(reload 重试成功的那条路走这里)。
+      for (const t of this.all()) {
+        if (t.spec.kind === "file" && t.cwd === dir) {
+          this.facts.recordSetup(triggerSeedOf(t), true);
+        }
+      }
     } catch (err) {
       // 目录不存在 / 权限不够都走到这里。**记一行日志** —— "监听目录不存在"要让用户
-      // 能在日志里看见,而不是对着一张填好的触发器等它响。
+      // 能在日志里看见,而不是对着一张填好的触发器等它响。事实表同步记上。
       log.warn(`[automation] 监听 ${dir} 失败(目录不存在?):${(err as Error).message}`);
+      for (const t of this.all()) {
+        if (t.spec.kind === "file" && t.cwd === dir) {
+          this.facts.recordSetup(
+            triggerSeedOf(t),
+            false,
+            `监听失败(目录不存在?):${(err as Error).message}`,
+          );
+        }
+      }
     }
   }
 
@@ -399,7 +470,7 @@ class AutomationRunner {
       if (!cronMatches(trigger.spec.cron, now)) continue;
       const key = triggerKey(trigger);
       // **同一分钟只跑一次**(30 秒一跳会看两次)。不去重的话 `*/1 * * * *` 一分钟两次。
-      if (this.lastMinute.get(key) === minute) continue;
+      if (!shouldFireThisMinute(this.lastMinute.get(key), minute)) continue;
       this.lastMinute.set(key, minute);
       this.fire(trigger, { kind: "schedule", at: now.getTime() });
     }
@@ -608,6 +679,26 @@ class AutomationRunner {
     );
   }
 
+  /* ────────────────────────── 事实状态(AUTO-09)────────────────────────── */
+
+  /**
+   * 一条自动化的**触发器事实**:挂没挂好、为什么挂不上、最近一次什么时候跑的、最近
+   * 一次为什么没跑成(形状见 `automationStatus.ts`)。界面那一栏的事实**来源**就是它
+   * —— 不是从运行史再猜一遍:一条挂不上、从来没跑过的自动化,运行史是空的,但这里
+   * 说得出为什么。
+   *
+   * ⚠️ 这份事实**经 `automation:statusAll` 通道送出去**(见 `main/ipc/orchestration.ts`
+   * 与 `@contracts/ipc` 的 `AutomationTriggerFacts` 镜像)—— 运行史只回答"跑过什么",
+   * 这里回答"它现在挂没挂上"。 */
+  statusOf(workflowId: string): AutomationTriggerFacts[] {
+    return this.facts.ofWorkflow(workflowId);
+  }
+
+  /** 全部触发器事实 —— 「所有自动化」那个列表视角用的。 */
+  statusAll(): AutomationTriggerFacts[] {
+    return this.facts.all();
+  }
+
   /* ────────────────────────── 起一次运行 ────────────────────────── */
 
   /** 攒着的那一格(同一个触发器同时只留一个计时器 —— 见 `rearm`)。 */
@@ -666,6 +757,9 @@ class AutomationRunner {
       const prompt = `${trigger.task}\n\n${payloadText}`;
       // 运行时可能还没绑(应用刚起来,或者这条自动化是新建的)—— `bindSession` 幂等。
       runtimeManager.bindSession(session);
+      // **起跑即记**(AUTO-09):这是「最近一次什么时候跑的」的那一笔。守望起跑那条
+      // ad-hoc 路径没有经过 buildTriggers 的登记,这一笔顺带就是它的登记。
+      this.facts.recordFired(triggerSeedOf(trigger), Date.now());
       log.info(
         `[automation] 「${trigger.workflowName}」/「${trigger.title}」起了一次运行(${payload.kind})`,
       );
@@ -676,20 +770,35 @@ class AutomationRunner {
         prompt,
         // 这一格就是这次运行的起点:调度器把它**预置进结局**,于是触发器节点自己
         // 不会被派发,别的触发器会连同它们独占的下游一起标成「没走这条路」。
-        entry: { nodeId: trigger.nodeId, summary: payloadText },
+        // `payload` 是载荷的**事实键值**(G3/VAR-06):调度器把它递进每个节点的
+        // `data.trigger`,节点参数里的 `{{trigger.<key>}}` 从这里取(键是平面事实
+        // kind / at / files / event / toolName / subjects,见 `payloadFactsOf`)。
+        entry: {
+          nodeId: trigger.nodeId,
+          summary: payloadText,
+          // `TriggerPayloadFacts` 是无索引签名的 interface,赋给键值记录要过一道断言;
+          // 形状本身是纯数据,这道断言不丢信息。
+          payload: payloadFactsOf(payload) as unknown as Record<string, unknown>,
+        },
       }).catch((err) => {
         log.warn(`[automation] 运行失败:${(err as Error).message}`);
+        // 起跑之后才失败的,`lastFire` 已经记了;这里补上「为什么没跑成」。
+        this.facts.recordBlocked(triggerSeedOf(trigger), `运行失败:${(err as Error).message}`, Date.now());
       });
       return { ok: true };
     } catch (err) {
       // 见文件头不变量 ①:从这里冒出去炸的是**事件流**(这条路是从 `subscribe` / 计时器进来的)。
       log.warn(`[automation] 起运行失败:${(err as Error).message}`);
+      this.facts.recordBlocked(triggerSeedOf(trigger), (err as Error).message, Date.now());
       return { ok: false, error: (err as Error).message };
     }
   }
 
   private skip(trigger: LoadedTrigger, reason: string): AutomationRunResult {
     log.info(`[automation] 「${trigger.workflowName}」/「${trigger.title}」这一次没跑:${reason}`);
+    // 「该跑而没跑成」也要让界面看见(AUTO-09):重入跳过尤其如此 —— 界面上只写
+    // 「上次运行:进行中」,而这里的原因是用户问「我改了文件它怎么没跑」的答案。
+    this.facts.recordBlocked(triggerSeedOf(trigger), reason, Date.now());
     return { ok: false, error: reason };
   }
 

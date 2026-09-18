@@ -52,6 +52,9 @@ export interface ProviderCapabilities {
   supportsInject?: boolean;
 
   // ── Declarative capability descriptors (UI renders from these) ──
+  /** Fine-grained capability ids used by workflow capability resolution. Optional for backward compatibility. */
+  capabilityIds?: string[];
+
   /** Thinking / effort levels this provider supports. Empty/undefined = hide
    *  the effort chip entirely. Each provider declares its own set so the UI
    *  never hardcodes provider-specific values. */

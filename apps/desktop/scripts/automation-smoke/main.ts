@@ -24,10 +24,15 @@
  *     `findAutomationByWorkflow` 按工作流找到的也是它。这一条要真库 —— 用
  *     `run-store-smoke` 的那两个 stub(`dataRoot` / `logger`)把数据根指到临时目录,
  *     跑完就删,不碰用户真正的数据。
+ *   - **自动化生命周期纯件**(AUTO-05/06/07/09/10):`payloadFactsOf` 的平面事实形状;
+ *     `shouldFireThisMinute` 的同分钟去重;`watcherDirsOf` 的目录归并;`AutomationFacts`
+ *     的「挂载侧跟着 reload、运行侧只增不改」两条不变量;事件触发对钩子契约
+ *     (`HOOK_EVENT_OF` + `createEventSubjects` + glob matcher)的复用。
  *
  * Run: scripts/automation-smoke/run.sh
  */
 import { parseCron, cronMatches, type CronSpec } from "@contracts/cron";
+import { HOOK_EVENT_OF, matchesAnyGlob } from "@contracts/hook";
 import {
   parseTriggerSpec,
   DEFAULT_TRIGGER_DEBOUNCE_MS,
@@ -38,7 +43,15 @@ import { validateDag } from "@contracts/workflow";
 import type { WorkflowDoc, WorkflowEdge, WorkflowNode } from "@contracts/workflow";
 import type { WorkflowChoiceOption } from "@contracts/runtime";
 import type { Session } from "@contracts/session";
-import { describeTriggerPayload } from "@main/orchestration/automationPayload.js";
+import { createEventSubjects } from "@main/hooks/eventSubjects.js";
+import { describeTriggerPayload, payloadFactsOf } from "@main/orchestration/automationPayload.js";
+import {
+  AutomationFacts,
+  automationTriggerKey,
+  shouldFireThisMinute,
+  triggerSeedOf,
+  watcherDirsOf,
+} from "@main/orchestration/automationStatus.js";
 import { deriveTrigger } from "@main/orchestration/library.js";
 import { runWorkflow, type RunPorts, type RunReport, type RunState } from "@main/orchestration/scheduler.js";
 import { initDb, getDb } from "@main/store/db.js";
@@ -661,6 +674,175 @@ console.log("\n会话 · 自动化会话的 kind 归一");
   );
   getDb().run("UPDATE sessions SET kind = 'weird' WHERE id = 's_chat'");
   eq("不认识的 kind 归一成 chat(不进左栏的秘密)", SessionRepo.get("s_chat")?.kind, "chat");
+}
+
+/* ────────────────────────── 8. 载荷的结构化事实(AUTO-10) ────────────────────────── */
+
+console.log("\npayloadFactsOf · 载荷的平面事实形状(给变量系统 VAR-06 消费)");
+
+{
+  eq("手动 = 只有 kind", JSON.stringify(payloadFactsOf({ kind: "manual" })), JSON.stringify({ kind: "manual" }));
+  eq("定时带 at", JSON.stringify(payloadFactsOf({ kind: "schedule", at: 1234 })), JSON.stringify({ kind: "schedule", at: 1234 }));
+
+  const fileFacts = payloadFactsOf({ kind: "file", files: ["D:\\proj\\a.md"] });
+  check("文件带 files", fileFacts.kind === "file" && fileFacts.files?.join() === "D:\\proj\\a.md", fileFacts);
+
+  const eventFacts = payloadFactsOf({ kind: "event", event: "tool.use", toolName: "Write", subjects: ["Write"] });
+  check(
+    "事件带 event/toolName/subjects",
+    eventFacts.event === "tool.use" && eventFacts.toolName === "Write" && eventFacts.subjects?.join() === "Write",
+    eventFacts,
+  );
+  const bareEvent = payloadFactsOf({ kind: "event", event: "turn.done" });
+  check("可选字段没有就不出现", bareEvent.toolName === undefined && bareEvent.subjects === undefined, bareEvent);
+
+  // **拷贝语义**:消费方改事实数组,不许动到执行器手里的原载荷。
+  const originalFiles = ["x.md"];
+  const copy = payloadFactsOf({ kind: "file", files: originalFiles });
+  (copy.files as string[]).push("y.md");
+  eq("facts 是拷贝,原载荷不受影响", originalFiles.length, 1);
+}
+
+/* ────────────────────────── 9. 定时:同一分钟只跑一次(AUTO-05) ────────────────────────── */
+
+console.log("\nshouldFireThisMinute · 30 秒 ticker 的同分钟去重");
+
+{
+  check("这一分钟第一次看:跑", shouldFireThisMinute(undefined, 1000));
+  check("同一分钟第二次看(30 秒后那一跳):不跑", !shouldFireThisMinute(1000, 1000));
+  check("下一分钟:跑", shouldFireThisMinute(1000, 1001));
+  check("不是刚跑过的那一分钟:跑(去重只对「刚跑过」生效)", shouldFireThisMinute(1002, 1001));
+}
+
+/* ────────────────────────── 10. 文件:监听目录归并(AUTO-06) ────────────────────────── */
+
+console.log("\nwatcherDirsOf · 每个目录一个 watcher");
+
+{
+  const triggers = [
+    { spec: { kind: "file" }, cwd: "D:\\proj" },
+    { spec: { kind: "file" }, cwd: "D:\\proj" }, // 一条自动化两个文件触发器,同一目录
+    { spec: { kind: "file" }, cwd: "D:\\other" }, // 另一条自动化盯另一个目录
+    { spec: { kind: "schedule" }, cwd: "D:\\proj" }, // 定时不开 watcher
+    { spec: { kind: "event" }, cwd: "D:\\proj" }, // 事件也不开
+  ];
+  eq("文件触发器的目录去重,其余不开", watcherDirsOf(triggers).join("|"), "D:\\proj|D:\\other");
+  eq("没有文件触发器 = 不开任何一个", watcherDirsOf([{ spec: { kind: "manual" }, cwd: "D:\\proj" }]).join("|"), "");
+}
+
+/* ────────────────────────── 11. 事实状态(AUTO-09) ────────────────────────── */
+
+console.log("\nAutomationFacts · 挂载侧跟着 reload、运行侧只增不改");
+
+{
+  const facts = new AutomationFacts();
+  const armed: Parameters<typeof facts.recordSetup>[0] = {
+    workflowId: "wf",
+    nodeId: "T1",
+    title: "盯文件",
+    kind: "file",
+  };
+  const broken: Parameters<typeof facts.recordSetup>[0] = {
+    workflowId: "wf",
+    nodeId: "T2",
+    title: "到点跑",
+    kind: "schedule",
+  };
+
+  facts.recordSetup(armed, true);
+  facts.recordSetup(broken, false, "「在哪个项目里跑」没填 —— 触发器要知道它该在哪个目录里工作");
+
+  const listed = facts.ofWorkflow("wf");
+  eq("挂上的、挂不上的都在(挂不上不是消失)", listed.length, 2);
+  const t1 = listed.find((f) => f.nodeId === "T1");
+  const t2 = listed.find((f) => f.nodeId === "T2");
+  eq("挂上的 armed", t1?.armed, true);
+  eq("挂不上的带着原因", t2?.detail, "「在哪个项目里跑」没填 —— 触发器要知道它该在哪个目录里工作");
+
+  // 运行侧:fired 记 lastFireAt;blocked 记 lastError。**blocked 不许把 armed 抹掉** ——
+  // 重入跳过是「这次没跑」,不是「这条触发器坏了」。
+  facts.recordFired(armed, 500);
+  facts.recordBlocked(
+    triggerSeedOf({ ...armed, spec: { kind: "file" } }),
+    "上一次还在跑,这一次触发已跳过",
+    600,
+  );
+  const afterFire = facts.ofWorkflow("wf").find((f) => f.nodeId === "T1");
+  eq("lastFireAt 记了", afterFire?.lastFireAt, 500);
+  eq("lastError 记了", afterFire?.lastError, "上一次还在跑,这一次触发已跳过");
+  eq("blocked 不改 armed", afterFire?.armed, true);
+
+  // watcher 失效 → 重试成功:armed 翻过去再翻回来,**运行史不动**。
+  facts.recordSetup(triggerSeedOf({ ...armed, spec: { kind: "file" } }), false, "目录监听失效:ENOENT");
+  const down = facts.ofWorkflow("wf").find((f) => f.nodeId === "T1");
+  eq("失效后 armed 翻 false", down?.armed, false);
+  eq("失效原因可读", down?.detail, "目录监听失效:ENOENT");
+  eq("失效不抹运行史", down?.lastFireAt, 500);
+  facts.recordSetup(armed, true);
+  const up = facts.ofWorkflow("wf").find((f) => f.nodeId === "T1");
+  eq("重新挂上后 armed 回 true", up?.armed, true);
+  eq("重新挂上后 detail 清掉", up?.detail, undefined);
+  eq("运行史还在", up?.lastFireAt, 500);
+
+  // retain:触发器从图上删掉,事实跟着走;同工作流里别的触发器不受牵连。
+  facts.retainWorkflow("wf", new Set([automationTriggerKey(broken)]));
+  eq("删掉的触发器事实清了", facts.ofWorkflow("wf").map((f) => f.nodeId).join(","), "T2");
+
+  // 工作流之间隔离;界面顺序按标题稳定排序。
+  facts.recordSetup({ workflowId: "wf2", nodeId: "A", title: "zzz", kind: "manual" }, true);
+  facts.recordSetup({ workflowId: "wf2", nodeId: "B", title: "aaa", kind: "manual" }, true);
+  eq("ofWorkflow 只看自己的工作流", facts.ofWorkflow("wf2").length, 2);
+  eq("按标题排序", facts.ofWorkflow("wf2").map((f) => f.nodeId).join(","), "B,A");
+  eq("all 是全部", facts.all().length, 3);
+
+  // 守望起跑那条 **ad-hoc** 路径:没有经过 buildTriggers 的登记,fired 本身就是登记。
+  facts.recordFired({ workflowId: "wf_watch", nodeId: "T", title: "守望入口", kind: "manual" }, 700);
+  const watch = facts.ofWorkflow("wf_watch")[0];
+  check("ad-hoc 起跑即登记(armed + lastFire)", watch?.armed === true && watch?.lastFireAt === 700, watch);
+
+  // 没登记过的触发器被拦截(项目没了),也要记下原因 —— 界面要能回答「它怎么没跑」。
+  facts.recordBlocked({ workflowId: "wf_x", nodeId: "T", title: "x", kind: "manual" }, "项目不在了", 800);
+  eq("未登记的 blocked 也落表", facts.ofWorkflow("wf_x")[0]?.lastError, "项目不在了");
+
+  facts.clear();
+  eq("clear 清干净(dispose 用)", facts.all().length, 0);
+}
+
+/* ────────────────────────── 12. 事件触发复用钩子契约(AUTO-07) ────────────────────────── */
+
+console.log("\n事件触发 · HOOK_EVENT_OF + 事件主语与钩子同源");
+
+{
+  const subjects = createEventSubjects();
+
+  const use = subjects.of(
+    { type: "tool.use", sessionId: "s", toolCallId: "tc1", toolName: "Write", input: {}, requiresApproval: false },
+    "D:\\proj",
+  );
+  eq("tool.use 映射成钩子事件名", HOOK_EVENT_OF["tool.use"], "tool.use");
+  eq("tool.use 的主语是工具名", use.toolName, "Write");
+  check("matcher 用钩子同一份 glob 匹配工具名", matchesAnyGlob("Wri*, Edit", [use.toolName ?? ""]));
+
+  const result = subjects.of(
+    { type: "tool.result", sessionId: "s", toolCallId: "tc1", isError: false, content: "" },
+    "D:\\proj",
+  );
+  eq("tool.result 回查到工具名(靠刚才那次 tool.use,与钩子共用这份状态)", result.toolName, "Write");
+
+  const files = subjects.of(
+    {
+      type: "turn.files",
+      sessionId: "s",
+      files: [{ filePath: "D:\\proj\\notes\\a.md", kind: "modified", adds: 1, dels: 0, before: "" }],
+    },
+    "D:\\proj",
+  );
+  eq("turn.files 映射成钩子事件名", HOOK_EVENT_OF["turn.files"], "turn.files");
+  check("主语含相对路径(相对项目目录)", (files.subjects ?? []).includes("notes/a.md"));
+  check("路径 matcher 用钩子同一份 glob 命中", matchesAnyGlob("*.md", files.subjects ?? []));
+
+  // 触发器**没有自己的一套事件表**:太吵的事件与钩子一样,被故意挡在外面。
+  eq("text.delta 故意不暴露(与钩子同一张表)", HOOK_EVENT_OF["text.delta"], null);
 }
 
 /* ────────────────────────── 收尾 ────────────────────────── */

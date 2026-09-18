@@ -16,7 +16,15 @@
  * 3. **边的 id 由两端推出**,所以同一条依赖重复勾不会变成两条边。
  */
 import { paramsForProfile, type AgentProfile } from "@contracts/agentProfile";
-import { MAIN_NODE_TYPE_ID, defaultParamsOf, type NodeTypeManifest } from "@contracts/nodeType";
+import {
+  MAIN_NODE_TYPE_ID,
+  NODE_TRIGGER_KIND_PARAM_KEY,
+  NODE_TRIGGER_PROJECT_PARAM_KEY,
+  NODE_TRIGGER_TASK_PARAM_KEY,
+  TRIGGER_NODE_TYPE_ID,
+  defaultParamsOf,
+  type NodeTypeManifest,
+} from "@contracts/nodeType";
 import {
   buildForwardAdjacency,
   makeNodeId,
@@ -112,6 +120,62 @@ export function seedMainAgent(doc: WorkflowDoc, manifest: NodeTypeManifest): Wor
   const node = seeded.nodes[seeded.nodes.length - 1];
   return updateNode(seeded, node.id, {
     params: { ...node.params, instruction: MAIN_DEFAULT_INSTRUCTION },
+  });
+}
+
+/**
+ * 新种下去的触发器**预填的「这次要做什么」**。
+ *
+ * ⚠️ **不能留空。** `task` 是必填的(`validateNodeParams` 把空串也当成"没填"),留空的
+ * 话新建出来的自动化**存不下去** —— 用户点「新建自动化」得到的是一个错误弹窗。
+ *
+ * 内容是一句**明确的待办**,不是假装填好的正文:用户一看就知道这是要改的。
+ */
+export const TRIGGER_DEFAULT_TASK = "把这句话改成这次要做什么。";
+
+/**
+ * 给一张新图种上**触发器** —— 新建出来的自动化不该是一张白纸。
+ *
+ * ## 为什么它和主代理一样是"种下去"的
+ *
+ * 触发器是**自动化的起点**(2026-09-18 产品裁定):什么时候起一次运行由它说。没有它,
+ * 这份图就不会自己跑 —— 而用户点的是「新建**自动化**」,那一栏里的东西天然该会自己动。
+ * 更硬的一层原因:保存闸门(`workflowValidation.ts` 的 `graph.no-trigger-node`)会**拒绝**
+ * 一份没有触发器的自动化,所以新建时不种,用户点完「新建」看到的就是一个错误弹窗。
+ *
+ * ## 坐标为什么是负的
+ *
+ * 它排在主代理**上面**一行(`autoLayout` 按依赖分层,触发器是主代理的上游),所以种在
+ * `y = -120`。用 `firstFreeSlot` 不行:那是给"往已有的图上加"用的,而这里要的是"新的
+ * 在图的上方",不是"找个空位塞进去"。
+ *
+ * ## 两个必填参数的预填
+ *
+ * 「这次要做什么」填 {@link TRIGGER_DEFAULT_TASK}(一句待办)。「在哪个项目里跑」**没有
+ * 默认值可编** —— 它是用户环境里的事实,所以由调用方从项目列表里挑一个传进来
+ * (`fallbackProjectId`);确实一个项目都没有时留空,存盘会拦下并说明原因。
+ *
+ * 默认触发方式 `manual`(手动运行)—— 和 `newAutomationDoc` 的 `trigger: "manual"` 同一个
+ * 值。选它是因为它**最不容易意外触发**:定时/文件/事件都会在应用开着时自己动,而用户
+ * 刚建完这份图还没来得及填内容。要自动跑,自己在检查器里改。
+ */
+export function seedTrigger(
+  doc: WorkflowDoc,
+  manifest: NodeTypeManifest,
+  fallbackProjectId?: string,
+): WorkflowDoc {
+  if (doc.nodes.some((n) => n.type === TRIGGER_NODE_TYPE_ID)) return doc;
+  const seeded = addNode(doc, manifest, { position: { x: 0, y: -120 } });
+  const node = seeded.nodes[seeded.nodes.length - 1];
+  return updateNode(seeded, node.id, {
+    params: {
+      ...node.params,
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "manual",
+      [NODE_TRIGGER_TASK_PARAM_KEY]: TRIGGER_DEFAULT_TASK,
+      ...(fallbackProjectId !== undefined && fallbackProjectId !== ""
+        ? { [NODE_TRIGGER_PROJECT_PARAM_KEY]: fallbackProjectId }
+        : {}),
+    },
   });
 }
 

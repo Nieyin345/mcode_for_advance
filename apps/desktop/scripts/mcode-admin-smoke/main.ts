@@ -30,7 +30,7 @@ import { backEdgesOf, forwardEdgesOf, type WorkflowDoc } from "@contracts/workfl
 import { BUILTIN_WORKFLOWS } from "@main/orchestration/builtins.js";
 import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
 import { composeNodePrompt, planOf } from "@main/orchestration/schedulerPrompt.js";
-import { MAIN_NODE_TYPE_ID } from "@contracts/nodeType";
+import { MAIN_NODE_TYPE_ID, TRIGGER_NODE_TYPE_ID } from "@contracts/nodeType";
 // ⚠️ 这里**破例 import 一个渲染端的模块** —— `workflowEdit.ts` 才是"新建工作流"那条路
 // 的实现,而本套件要验的恰恰是"它种出来的东西能不能过**主进程**的校验"。两半各自单测
 // 都过、合起来不过,是这一层最典型的坏法(种出来的节点少一个必填参数 → 用户点「新建」
@@ -40,6 +40,7 @@ import {
   newAutomationDoc,
   newWorkflowDoc,
   seedMainAgent,
+  seedTrigger,
 } from "@renderer/components/settings/workflows/workflowEdit.js";
 import {
   WORKFLOW_MCP_PREFIX,
@@ -183,12 +184,18 @@ async function call(tools: Map<string, RegisteredTool>, name: string, args: unkn
   return res.content.map((c) => c.text ?? "").join("\n");
 }
 
-/** 一份最简的图:`n1 → n2`。**故意不给坐标** —— 那是这条路上最常走的一步。 */
+/**
+ * 一份最简的图:`n1(主节点) → n2(子 agent)`。**故意不给坐标** —— 那是这条路上最常走的一步。
+ *
+ * ⚠️ 开头必须是**主节点**(`mcode.main`):工作流必须有且只有一个主节点 —— 它是用户
+ * 对话的入口(2026-09-18 产品裁定,见 `workflowValidation.ts` 的 `graph.no-main-node`)。
+ * 从前这里两个节点都是 `mcode.agent`,保存闸门不收。
+ */
 function twoStep(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     name: "查文献然后总结",
     nodes: [
-      { id: "n1", type: "mcode.agent", params: { instruction: "查" } },
+      { id: "n1", type: "mcode.main", params: { instruction: "查" } },
       { id: "n2", type: "mcode.agent", params: { instruction: "总结" } },
     ],
     edges: [{ from: "n1", to: "n2" }],
@@ -219,14 +226,19 @@ async function main(): Promise<void> {
   );
 
   console.log("\n归一化 · 节点");
+  // 开头放主节点(工作流的硬约束),后面两个才是这条用例要看的"没给 id/标题"的节点。
   const bare = await ok({
     name: "不给 id 和标题",
-    nodes: [{ type: "mcode.agent", params: {} }, { type: "mcode.agent" }],
+    nodes: [
+      { type: "mcode.main" },
+      { type: "mcode.agent", params: {} },
+      { type: "mcode.agent" },
+    ],
   });
-  check("两个节点各自拿到 id", bare.doc.nodes[0].id !== bare.doc.nodes[1].id);
-  check("id 是 n_ 开头的", bare.doc.nodes[0].id.startsWith("n_"));
-  eq("没给标题 → 退回类型名", bare.doc.nodes[0].title, "子 agent");
-  check("params 省略 → 空对象", Object.keys(bare.doc.nodes[1].params).length === 0);
+  check("两个节点各自拿到 id", bare.doc.nodes[1].id !== bare.doc.nodes[2].id);
+  check("id 是 n_ 开头的", bare.doc.nodes[1].id.startsWith("n_"));
+  eq("没给标题 → 退回类型名", bare.doc.nodes[1].title, "子 agent");
+  check("params 省略 → 空对象", Object.keys(bare.doc.nodes[2].params).length === 0);
 
   check(
     "两个节点用同一个 id → 拒",
@@ -282,7 +294,7 @@ async function main(): Promise<void> {
   const diamond = await ok({
     name: "并行三步",
     nodes: [
-      { id: "n1", type: "mcode.agent" },
+      { id: "n1", type: "mcode.main" },
       { id: "n2", type: "mcode.agent" },
       { id: "n3", type: "mcode.agent" },
       { id: "n4", type: "mcode.agent" },
@@ -304,7 +316,7 @@ async function main(): Promise<void> {
   const pinned = await ok({
     ...twoStep(),
     nodes: [
-      { id: "n1", type: "mcode.agent", position: { x: 999, y: 888 } },
+      { id: "n1", type: "mcode.main", position: { x: 999, y: 888 } },
       { id: "n2", type: "mcode.agent", position: { x: 777, y: 666 } },
     ],
   });
@@ -315,7 +327,7 @@ async function main(): Promise<void> {
   const mixed = await ok({
     ...twoStep(),
     nodes: [
-      { id: "n1", type: "mcode.agent", position: { x: 999, y: 888 } },
+      { id: "n1", type: "mcode.main", position: { x: 999, y: 888 } },
       { id: "n2", type: "mcode.agent" },
     ],
   });
@@ -326,7 +338,7 @@ async function main(): Promise<void> {
   const halfGiven = await ok({
     ...twoStep(),
     nodes: [
-      { id: "n1", type: "mcode.agent", position: { x: 999, y: 888 } },
+      { id: "n1", type: "mcode.main", position: { x: 999, y: 888 } },
       { id: "n2", type: "mcode.agent", position: { x: "5" } },
     ],
   });
@@ -360,7 +372,7 @@ async function main(): Promise<void> {
   const cyclic = await ok(
     twoStep({
       nodes: [
-        { id: "n1", type: "mcode.agent", params: { instruction: "查" } },
+        { id: "n1", type: "mcode.main", params: { instruction: "查" } },
         { id: "n2", type: "mcode.agent", params: { instruction: "总结" } },
       ],
       edges: [
@@ -378,7 +390,7 @@ async function main(): Promise<void> {
   const gated = await ok(
     twoStep({
       nodes: [
-        { id: "n1", type: "mcode.agent", params: { instruction: "写" } },
+        { id: "n1", type: "mcode.main", params: { instruction: "写" } },
         { id: "n2", type: "mcode.branch", params: {} },
       ],
       edges: [
@@ -396,7 +408,7 @@ async function main(): Promise<void> {
   const offCycle = await ok(
     twoStep({
       nodes: [
-        { id: "n1", type: "mcode.agent", params: { instruction: "写" } },
+        { id: "n1", type: "mcode.main", params: { instruction: "写" } },
         { id: "n2", type: "mcode.agent", params: { instruction: "改" } },
         { id: "n3", type: "mcode.branch", params: {} },
       ],
@@ -420,7 +432,7 @@ async function main(): Promise<void> {
   );
 
   const emptyInstruction = await saveWorkflow(
-    (await ok({ name: "少填了指令", nodes: [{ id: "n1", type: "mcode.agent", params: {} }] })).doc,
+    (await ok({ name: "少填了指令", nodes: [{ id: "n1", type: "mcode.main", params: {} }] })).doc,
   );
   check("必填的指令空着 → 拒", !emptyInstruction.ok);
   check(
@@ -436,7 +448,7 @@ async function main(): Promise<void> {
         nodes: [
           {
             id: "n1",
-            type: "mcode.agent",
+            type: "mcode.main",
             params: { instruction: "查", outputVars: [{ name: "年份", example: "" }] },
           },
         ],
@@ -453,7 +465,7 @@ async function main(): Promise<void> {
     name: "AI 建的四步",
     description: "先规划,再两条并行,最后汇总",
     nodes: [
-      { id: "plan", type: "mcode.agent", title: "规划", params: { instruction: "拆成几步" } },
+      { id: "plan", type: "mcode.main", title: "规划", params: { instruction: "拆成几步" } },
       { id: "search", type: "mcode.agent", title: "查文献", params: { instruction: "按规划查" } },
       { id: "calc", type: "mcode.agent", title: "算数据", params: { instruction: "按规划算" } },
       { id: "sum", type: "mcode.agent", title: "汇总", params: { instruction: "把两边合起来" } },
@@ -480,25 +492,28 @@ async function main(): Promise<void> {
   const forkDoc = await ok({
     name: "写作流程",
     nodes: [
+      { id: "main", type: "mcode.main", title: "主对话", params: { instruction: "写作" } },
       { id: "f", type: "mcode.branch", title: "下一步做什么" },
       { id: "again", type: "mcode.agent", title: "写作②", params: { instruction: "再改一轮" } },
       { id: "check", type: "mcode.agent", title: "查重", params: { instruction: "查重" } },
     ],
     edges: [
+      { from: "main", to: "f" },
       { from: "f", to: "again", label: "再来一轮", note: "在现有稿子上改。" },
       { from: "f", to: "check", label: "进查重" },
     ],
   });
-  eq("选项名穿过了归一化器", forkDoc.doc.edges[0]?.label, "再来一轮");
-  eq("说明也穿过了", forkDoc.doc.edges[0]?.note, "在现有稿子上改。");
-  eq("没写说明的那条就没有这个键", forkDoc.doc.edges[1]?.note, undefined);
+  // 边索引:0 是 main→f(主节点到岔路口),岔路口的两条出边是 1、2。
+  eq("选项名穿过了归一化器", forkDoc.doc.edges[1]?.label, "再来一轮");
+  eq("说明也穿过了", forkDoc.doc.edges[1]?.note, "在现有稿子上改。");
+  eq("没写说明的那条就没有这个键", forkDoc.doc.edges[2]?.note, undefined);
   const forkSaved = await saveWorkflow(forkDoc.doc);
   check("带岔路口的图存得下", forkSaved.ok, forkSaved);
   const forkBack = getWorkflow(forkDoc.doc.id);
-  eq("读回来选项名还在", forkBack?.edges[0]?.label, "再来一轮");
-  eq("说明也在", forkBack?.edges[0]?.note, "在现有稿子上改。");
+  eq("读回来选项名还在", forkBack?.edges[1]?.label, "再来一轮");
+  eq("说明也在", forkBack?.edges[1]?.note, "在现有稿子上改。");
   // 别的边上不该被顺手写上这两个字段 —— 它们只对**分支节点的出边**有意义。
-  check("普通依赖上没被塞东西", (forkBack?.edges[1]?.note ?? undefined) === undefined);
+  check("普通依赖上没被塞东西", (forkBack?.edges[2]?.note ?? undefined) === undefined);
 
   console.log("\n新建工作流:种下的主代理要真能存进去(跨层)");
   // 用户点「新建工作流」时,渲染端拿**这份内置清单**种一个主代理,然后走 `saveWorkflow`
@@ -588,9 +603,20 @@ async function main(): Promise<void> {
       }
 
       // 自动化走同一个视图、同一个构造器,只多一个 trigger —— 也要种。
-      const auto = seedMainAgent(newAutomationDoc("wf_seed_auto", "种出来的自动化"), mainEntry.manifest);
-      check("自动化也一样", (await saveWorkflow(auto)).ok);
+      // **触发器必须种上**:保存闸门(`graph.no-trigger-node`)会拒绝一份没有触发器的
+      // 自动化,而 2026-09-18 的产品裁定要求"新建自动化自带触发器"(见 `seedTrigger`)。
+      const triggerEntry = entries.find((e) => e.id === TRIGGER_NODE_TYPE_ID);
+      check("内置清单里有触发器", triggerEntry !== undefined, entries.map((e) => e.id));
+      const autoBase = seedMainAgent(newAutomationDoc("wf_seed_auto", "种出来的自动化"), mainEntry.manifest);
+      const auto = triggerEntry ? seedTrigger(autoBase, triggerEntry.manifest, "p_lt") : autoBase;
+      const autoSave = await saveWorkflow(auto);
+      check("自动化也一样", autoSave.ok, autoSave);
       eq("而且它仍然是一条自动化", auto.trigger, "manual");
+      check(
+        "新建的自动化自带触发器",
+        auto.nodes.some((n) => n.type === TRIGGER_NODE_TYPE_ID),
+        auto.nodes.map((n) => n.type),
+      );
     }
   }
 

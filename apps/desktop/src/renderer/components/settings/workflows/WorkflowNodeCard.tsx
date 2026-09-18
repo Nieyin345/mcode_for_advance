@@ -119,6 +119,7 @@ const KIND_LOOK: Record<NodeRunnerKind, NodeLook> = {
   branch: { bar: "bg-warning", tint: "bg-warning/10", icon: "text-warning", Icon: IconArrowsSplit },
   trigger: { bar: "bg-accent", tint: "bg-accent/10", icon: "text-accent", Icon: IconBolt },
   command: { bar: "bg-success", tint: "bg-success/10", icon: "text-success", Icon: IconTerminal2 },
+  code: { bar: "bg-success", tint: "bg-success/10", icon: "text-success", Icon: IconTerminal2 },
 };
 
 /** 跑不起来的节点(`isNodeRunnable` 不过:执行方式没实现、或命令写在清单自带的脚本里
@@ -186,7 +187,7 @@ export function WorkflowNodeCard({
   const capability = node.capability ?? entry?.manifest.capability;
   const showsCapability =
     entry !== undefined &&
-    (entry.manifest.runner.kind === "prompt" || entry.manifest.runner.kind === "command");
+    (entry.manifest.runner.kind === "prompt" || entry.manifest.runner.kind === "command" || entry.manifest.runner.kind === "code");
   const bad = connectHint === "blocked";
 
   // 三种问题最多同时出现一种(类型没装就没法查参数)。**顺序即优先级**:先报最靠前的

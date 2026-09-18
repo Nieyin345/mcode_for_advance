@@ -22,6 +22,52 @@ export type TriggerPayload =
   | { kind: "file"; files: readonly string[] }
   | { kind: "event"; event: HookEvent; toolName?: string; subjects?: readonly string[] };
 
+/* ── 结构化事实(AUTO-10)── */
+
+/**
+ * 触发载荷的**平面事实形状** —— 给变量系统(VAR-06)消费的那一份。
+ *
+ * `TriggerPayload` 本身已经是结构化的,但它长在后台执行器手里;变量系统要的是
+ * 「这次运行**为什么被触发、携带着什么**」的稳定命名:`kind` 是「为什么」,
+ * 其余字段是「带了什么」。全部是标量与字符串数组 —— 能直接 JSON 化、能逐个映射成
+ * `{{trigger.xxx}}` 一类的引用候选,**不掺实现细节**(绝对路径数组除外,那是文件
+ * 触发天然的事实;相对化是消费方按自己的项目目录做的事)。
+ *
+ * ⚠️ 这一版运行时还没把它接进 `NodeRunInput`(entry 仍只带载荷的**人话文本**,见
+ * `automationRunner.fire`)—— 接线要动 scheduler 的入口契约,归 Runtime 那边管。这里先
+ * 把形状**钉死并测住**,VAR-06 到时候直接消费,不用回头猜执行器内部长什么样。
+ */
+export interface TriggerPayloadFacts {
+  kind: TriggerPayload["kind"];
+  /** 「到点了」那一刻(ms)。只有 schedule 有。 */
+  at?: number;
+  /** 触发时攒下的文件(绝对路径)。只有 file 有。 */
+  files?: readonly string[];
+  /** 事件名(`@contracts/hook` 的 `HookEvent`)。只有 event 有。 */
+  event?: HookEvent;
+  toolName?: string;
+  subjects?: readonly string[];
+}
+
+/** 从载荷里取平面事实。**纯函数**:拷贝数组,调用方改不动原载荷。 */
+export function payloadFactsOf(payload: TriggerPayload): TriggerPayloadFacts {
+  switch (payload.kind) {
+    case "manual":
+      return { kind: "manual" };
+    case "schedule":
+      return { kind: "schedule", at: payload.at };
+    case "file":
+      return { kind: "file", files: [...payload.files] };
+    case "event":
+      return {
+        kind: "event",
+        event: payload.event,
+        ...(payload.toolName !== undefined ? { toolName: payload.toolName } : {}),
+        ...(payload.subjects !== undefined ? { subjects: [...payload.subjects] } : {}),
+      };
+  }
+}
+
 /** 把载荷渲染成一段平实的话(整段就是提示词里 `task` 之后那一半)。 */
 export function describeTriggerPayload(payload: TriggerPayload): string {
   switch (payload.kind) {

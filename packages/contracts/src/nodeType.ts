@@ -67,6 +67,7 @@
  */
 
 import { z } from "zod";
+import { CapabilityRequirementSchema } from "./capability.js";
 import { LIBRARY_KINDS } from "./library.js";
 import { TEMPLATE_KINDS } from "./templates.js";
 import { parseCron, type CronSpec } from "./cron.js";
@@ -1046,7 +1047,7 @@ export function isAskChoice(value: unknown): value is AskChoice {
  * 放在 contracts 而不是主进程,是因为渲染端也要用它:画布上那种节点要标出"这个节点
  * 当前跑不了",否则用户画好一张图、发消息,才发现有一格是死的。
  */
-export const IMPLEMENTED_RUNNER_KINDS = ["prompt", "conversation", "branch", "trigger", "command"] as const;
+export const IMPLEMENTED_RUNNER_KINDS = ["prompt", "conversation", "branch", "trigger", "command", "code"] as const;
 export function isRunnerImplemented(kind: NodeRunnerKind): boolean {
   return (IMPLEMENTED_RUNNER_KINDS as readonly string[]).includes(kind);
 }
@@ -1084,6 +1085,10 @@ export const NodeTypeManifestSchema = z.object({
   outputs: z
     .array(z.object({ key: z.string(), label: z.string(), description: z.string().optional() }))
     .optional(),
+  /** Declarative capability requirements checked before execution. Shape is
+   *  shared with the plugin capability declaration (see `@contracts/capability`)
+   *  so the two sides can never drift apart. */
+  requirements: z.array(CapabilityRequirementSchema).optional(),
   /** 供**模型**看的用法说明。会被 `renderNodeTypeCatalog` 拼进系统提示词,让 AI 知道
    *  有这个节点、什么时候用、参数怎么填。这是"让 AI 自己改工作流"的前提 —— 它得先
    *  知道有什么可用。 */
@@ -1163,12 +1168,31 @@ export type NodeOutcomeStatus = (typeof NODE_OUTCOME_STATUSES)[number];
  * 任何节点跑完都产出这个。**下游节点和对话里的结果卡片只看它**,不关心上游是子
  * agent 还是脚本 —— 这是"统一接口"在运行时的落点。
  */
+export interface NodeExecutionRecord {
+  executorKind: string;
+  startedAt: number;
+  finishedAt: number;
+  durationMs: number;
+}
+
+/** A stable reference to a node-produced artifact. The bytes remain external. */
+export interface NodeArtifact {
+  kind: "file" | "directory" | "data";
+  uri: string;
+  name?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+}
+
 export interface NodeOutcome {
   status: NodeOutcomeStatus;
   /** 给下游节点和卡片看的文本。会拼进下游的指令里。 */
   summary: string;
-  /** 结构化产物:文件路径、指标、任意 JSON。 */
+  /** 结构化值:指标、任意 JSON。 */
   outputs?: Record<string, unknown>;
+  /** 外部产物引用:文件、目录或数据资源。 */
+  artifacts?: NodeArtifact[];
+  execution?: NodeExecutionRecord;
   error?: string;
 }
 
@@ -1456,10 +1480,25 @@ export function renderNodeTypeCatalog(entries: NodeTypeEntry[]): string {
       for (const p of m.params) lines.push(describeParam(p));
     }
     if (m.usage) lines.push(`  用法:${m.usage}`);
-    if (!isRunnerImplemented(m.runner.kind)) {
-      lines.push(`  ⚠️ 这个类型当前**跑不了**(执行方式 ${m.runner.kind} 尚未实现),只能画进图里。`);
+    // 声明的能力依赖也进目录:模型(和读目录的人)得知道"用这种节点要装什么" ——
+    // 否则它画出一个引用了没装技能的节点,要到运行前才被告知跑不了。
+    if (m.requirements?.length) {
+      const text = m.requirements
+        .map((r) => `${r.kind}:${r.id}${r.capabilities?.length ? `(${r.capabilities.join("+")})` : ""}`)
+        .join(", ");
+      lines.push(`  依赖:${text}`);
+    }
+    if (!isNodeRunnable(m)) {
+      // **判据必须是 isNodeRunnable,不能只看 kind。** `command` 有两种形状:命令来自
+      // 节点参数的(内置 `mcode.command`)已实现,命令来自清单自带脚本的(`entry` 填了)
+      // 还没实现。只看 kind 会把内置 command 也说成"跑不了" —— 而模型是**照着这段字
+      // 建图的**,说错它就会绕开命令节点、改用又贵又慢的模型节点。
+      const why =
+        m.runner.kind === "command" && m.runner.entry !== undefined
+          ? "脚本型命令(command 自带 runner.entry)尚未实现"
+          : `执行方式 ${m.runner.kind} 尚未实现`;
+      lines.push(`  ⚠️ 这个类型当前**跑不了**(${why}),只能画进图里。`);
     }
   }
-  return lines.join("
-");
+  return lines.join("\n");
 }

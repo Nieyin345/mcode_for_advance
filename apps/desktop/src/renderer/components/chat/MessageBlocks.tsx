@@ -36,6 +36,7 @@ import { DiffView } from "./DiffView.js";
 import { PlanStreamBlock } from "./PlanStreamBlock.js";
 import { TurnFilesCard } from "./TurnFilesCard.js";
 import { WorkflowStepCard } from "./WorkflowStepCard.js";
+import { WorkflowNodeProgressCard } from "./WorkflowNodeProgressCard.js";
 import { BranchChoiceCard } from "./BranchChoiceCard.js";
 import { CurrentOpTicker } from "./CurrentOpTicker.js";
 import { ModelBadge } from "./ModelAvatar.js";
@@ -1188,6 +1189,9 @@ const BlockView = memo(function BlockView({
         </div>
       );
     }
+
+    case "workflow-node-progress":
+      return <WorkflowNodeProgressCard block={block} />;
 
     case "workflow-node-result":
       // 工作流图里的一步收场了(主进程调度器发来的事件,见 `WorkflowStepCard`)。

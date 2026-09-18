@@ -171,8 +171,11 @@ export async function handleMcpRequest(req: IncomingMessage, res: ServerResponse
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: "mcode", version: "1.0.0" },
         instructions:
-          "Mcode 桌面端的工具。文献库(检索、导入、分类、笔记、模版)与工作流" +
-          "(读/写工作流、节点类型、代理档案)都在这里。写操作会**弹在用户的 mcode 窗口里**" +
+          "Mcode 桌面端的工具。资料库(通用文件与资料管理:检索、导入、下载、分类、笔记、模版;" +
+          "分类由用户自定义)与工作流" +
+          "(读/写工作流、节点类型、代理档案)都在这里。agent_* 那组是通用基础操作" +
+          "(读/写/编辑文件、列目录、glob、grep、命令行、技能),相对路径以会话的工作目录为基准。" +
+          "写操作会**弹在用户的 mcode 窗口里**" +
           "等他确认 —— 所以一次写调用可能要过一会儿才回,而且用户可能拒绝。" +
           "被拒绝不是出错,是用户不同意,别换个说法重试同一个动作。",
       });
