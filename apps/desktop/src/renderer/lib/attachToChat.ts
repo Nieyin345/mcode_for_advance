@@ -49,14 +49,23 @@ function fail(err: unknown): void {
   toast("error", ATTACH_FAILED, err instanceof Error ? err.message : String(err));
 }
 
-/** 把文献库的一条附件挂到当前对话。`key` 是 `c:<分类 id>` 或 `i:<条目 id>`。 */
+/** 把文献库的一条附件挂到当前对话。`key` 是 `c:<分类 id>` 或 `i:<条目 id>`。
+ *
+ *  ⚠️ **`ok: true` 也可能带 `error`** —— 挂一条条目时会连它关联的一起挂(见主进程
+ *  `library/manifest.ts` 的 `attachToChat`),而那几条里可能有挂不上的(库外文件被
+ * 移走了)。那种情况入口挂上了、所以 `ok` 是 true,但少挂了几条必须让用户看见:
+ *  静默地少挂东西,是"AI 到底读了什么"说不清的开端。所以这里对**两种**都报，
+ *  只是成功的那个用 warning 而不是 error。 */
 export async function attachToCurrentChat(key: string): Promise<void> {
   const sessionId = currentSessionId();
   if (!sessionId) return;
   try {
     const res = await api.library.attachToChat({ sessionId, key });
-    // ok:false 只带一句话(主进程自己知道的失败原因),原样转出去
-    if (!res.ok) toast("error", ATTACH_FAILED, res.error);
+    if (!res.ok) {
+      toast("error", ATTACH_FAILED, res.error);
+      return;
+    }
+    if (res.error) toast("warning", ATTACH_FAILED, res.error);
   } catch (err) {
     // 移动端的 web shim 对没有映射的命名空间是同步抛错的,必须接住
     fail(err);

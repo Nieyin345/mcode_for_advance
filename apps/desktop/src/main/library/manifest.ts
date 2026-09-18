@@ -22,7 +22,8 @@ import {
 } from "@contracts/library";
 import { trashCollectionId } from "./trash.js";
 import { kindDisplayName, kindGroupPromptOf, kindMeta } from "./kindRegistry.js";
-import { CollectionRepo, LibraryRepo, NoteRepo } from "@main/store/repositories.js";
+import { CollectionRepo, LibraryLinkRepo, LibraryRepo, NoteRepo } from "@main/store/repositories.js";
+import { importGenericFiles } from "./fileImport.js";
 import { sendToRenderer } from "@main/window.js";
 import { libraryRoot, fromLibraryRelative } from "./paths.js";
 
@@ -261,6 +262,12 @@ export function writeKindManifest(kind: LibraryKind): ManifestResult {
  *   `c:<分类 id>`   一个分类(清单是"这个库里有什么")
  *   `i:<条目 id>`   单独一篇(清单是"这一篇该怎么读")
  *   `k:<库>`        整个库(「全部文献 / 全部教材 / 全部笔记」那一行)
+ *
+ * ## 挂一条条目时会**连它关联的一起挂上**(一跳)
+ *
+ * 见 `expandLinks`。用户的原话:「只要是引用的存在关联,就把关联的也挂上去,本身引用的
+ * 也要挂上去」—— 而且「所有的这些文件,包括最开始的都是平级的」:入口不被特殊对待,
+ * 它和它关联的东西各自写一份自己的清单、各推一次 attach,界面上就是多出几个平级的 chip。
  */
 export function attachToChat(
   sessionId: string,
@@ -279,6 +286,37 @@ export function attachToChat(
     return { ok: false, error: `找不到${what}` };
   }
 
+  // 关联的展开凑在**入口那一条先推出去之后**:入口一定是第一个 chip,后面才是它带来
+  // 的那一串。挂在别处(比如先算完再一起推)会让"哪个是用户点的"在界面上看不出来。
+  const attached = pushAttach(sessionId, key, res);
+  if (!attached.ok) return attached;
+
+  const extras = prefix === "i:" && id ? expandLinks(id) : { itemIds: [], failed: 0 };
+  let extraFailed = extras.failed;
+  for (const extraId of extras.itemIds) {
+    const extraRes = writeItemManifest(extraId);
+    if (!extraRes.path) {
+      extraFailed += 1;
+      continue;
+    }
+    // 关联来的条目用 `i:<id>` 键 —— **与用户自己挂的完全同一种 chip**、同样参与
+    // 去重。这正是用户要的"平级":入口与关联走同一条路,界面分不出也不必分。
+    if (!pushAttach(sessionId, `i:${extraId}`, extraRes).ok) extraFailed += 1;
+  }
+  if (extraFailed > 0) {
+    // 入口挂上了、有几条关联没挂上(条目刚被删、库外文件被移走)。**如实说**,
+    // 不静默 —— 少挂几条而用户不知道,是"AI 读了什么"说不清的开端。
+    return { ok: true, name: res.name, count: res.count, error: `另有 ${extraFailed} 条关联没能挂上` };
+  }
+  return { ok: true, name: res.name, count: res.count };
+}
+
+/** 推一条 attach 给渲染端。窗口没了就返回 ok:false,调用方自己决定怎么报。 */
+function pushAttach(
+  sessionId: string,
+  key: string,
+  res: ManifestResult,
+): { ok: boolean; name?: string; count?: number; error?: string } {
   try {
     sendToRenderer(IPC.COMPOSER_ATTACH, {
       channel: IPC.COMPOSER_ATTACH,
@@ -297,4 +335,51 @@ export function attachToChat(
     return { ok: false, error: "窗口没开着,挂不上去" };
   }
   return { ok: true, name: res.name, count: res.count };
+}
+
+/**
+ * 一条条目**直接关联的**条目 id —— 展开一跳的全部结果。
+ *
+ * ## 只展开一跳
+ *
+ * 关联可以成网,递归展开会在几张图之间无限绕,也会一次挂上几十条。一跳是
+ * 「我引用的东西,连同它直接依赖的东西」,符合直觉且可控。用户要的也正是这个:
+ * A→B→C 时引用 A 只该挂上 A 和 B。
+ *
+ * ## 库外路径**先导入成条目**
+ *
+ * 关联的目标可以是库外的一个绝对路径(用户桌面上的参考资料)。挂载时不把它当一条
+ * 裸路径塞进上下文,而是**先导入成 `linked` 条目**再按条目挂 —— 用户定的就是这个
+ * (「自动导入成 linked 条目」),而且这样 chip 只有一种形态、去重走的那套键也只有
+ * 一套,不必为"库外的"单开一路。`importGenericFiles` 按 `filePath` 去重,所以反复
+ * 引用同一个文件不会长出第二条。
+ *
+ * ## 目标没了就**数出来**,不抛也不吞
+ *
+ * 写关联时目标可能还在,读的时候已经不在(条目被删、库外文件被移走 —— 那是文件系统
+ * 的事,见 db.ts 里那张表的注释:库外路径不做级联)。这里不抛:一条关联坏掉不该让
+ * 整个挂载失败。但也**不静默吞掉** —— `failed` 数出来交给调用方,由它并进 `error`
+ * 报给用户。少挂几条而用户不知道,是"AI 到底读了什么"说不清的开端。
+ */
+function expandLinks(itemId: string): { itemIds: string[]; failed: number } {
+  const itemIds: string[] = [];
+  let failed = 0;
+  for (const link of LibraryLinkRepo.linksOf(itemId)) {
+    // **只看正向**。`linksOf` 把"谁关联了我"也一并返回(界面要双向展示),但挂载
+    // 只跟这个条目**自己指出去**的东西 —— 否则 A 引用了 B,挂 B 的时候会把 A 也带上,
+    // 那是"反向爆炸",用户要的不是这个。
+    if (link.direction !== "out") continue;
+    if (link.targetItemId) {
+      itemIds.push(link.targetItemId);
+      continue;
+    }
+    if (!link.targetPath) continue;
+    // 库外路径 → 导入成 linked 条目。**此处不建关联**(导入器不管关联)。
+    // 文件已经不在了的话导入器会把它记进 errors(不作抛),于是这里数成一条失败。
+    const imported = importGenericFiles({ paths: [link.targetPath], mode: "linked" });
+    const fresh = imported.items[0]?.id;
+    if (fresh) itemIds.push(fresh);
+    else failed += 1;
+  }
+  return { itemIds, failed };
 }

@@ -310,6 +310,8 @@ export function libraryMcpTools(): McpToolSpec[] {
           "**把一个分类挂到这次对话上** —— 效果和你让用户自己点「+ → 添加文献库到上下文」完全一样:" +
           "对话里会多出一个附件,而且**用户界面上会立刻显示出来**。挂上之后你就能按它读这些文献," +
           "下一条消息会把它作为清单路径一起发出去。\n" +
+          "挂单独一篇(itemId)时,**这一篇关联的东西会一起挂上** —— 用户给条目建过关联," +
+          "引用一条就意味着连它直接带的那几条一起读。\n" +
           "用户没有挂任何分类、但你确实需要看某个库时用它;挂之前先问用户要挂哪个(用 library_collections 列出候选)," +
           "不要自作主张挂一堆。挂重复了不会重复显示。",
         inputSchema: {
@@ -325,11 +327,14 @@ export function libraryMcpTools(): McpToolSpec[] {
             args.itemId ? `i:${args.itemId}` : `c:${args.collectionId}`,
           );
           if (!res.ok) return fail(res.error ?? "挂不上去");
+          // 挂单篇时会**连它关联的一起挂上**(见 library/manifest.ts 的一跳展开)。
+          // 少挂了几条的话 `res.error` 里说着 —— 一并转述给模型,免得它以为都挂上了。
+          const caveat = res.error ? `\n注意:${res.error}` : "";
           return args.itemId
-            ? text(`已把《${res.name}》挂到这次对话的附件里(界面上应该已经出现)。`)
+            ? text(`已把《${res.name}》挂到这次对话的附件里(界面上应该已经出现)。${caveat}`)
             : text(
                 `已把分类「${res.name}」挂到这次对话的附件里(共 ${res.count} 篇,界面上应该已经出现)。\n` +
-                  "清单路径会随下一条消息一起发出去;要现在就读,直接 Read 那个清单文件。",
+                  `清单路径会随下一条消息一起发出去;要现在就读,直接 Read 那个清单文件。${caveat}`,
               );
         },
       },
