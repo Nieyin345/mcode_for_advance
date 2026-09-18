@@ -23,12 +23,14 @@
  *
  * Run: scripts/attach-links-smoke/run.sh
  */
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initDb } from "@main/store/db.js";
-import { LibraryRepo, LibraryLinkRepo } from "@main/store/repositories.js";
-import { attachToChat } from "@main/library/manifest.js";
+import { CollectionRepo, LibraryRepo, LibraryLinkRepo } from "@main/store/repositories.js";
+import { attachToChat, writeCollectionManifest, writeKindManifest } from "@main/library/manifest.js";
+import { loadLibraryGroups } from "@main/library/kindRegistry.js";
+import { resetSuppressCacheForTest, saveSuppress } from "@main/library/suppress.js";
 import { sent, resetSent, setFailNext } from "./stubs/window.js";
 
 let failures = 0;
@@ -221,6 +223,116 @@ console.log("\n认不出的键 / 找不到的条目");
   const missing = attachToChat(SID, "i:no-such-item");
   check("找不到的条目被拒", !missing.ok, missing);
   eq("没推任何东西(第二次)", sent.length, 0);
+}
+
+console.log("\n屏蔽:硬过滤,入口与关联一视同仁");
+
+{
+  // 建一套有层级的东西:大类 docs → 类型 note → 集合「精读队列」。
+  // 三层的 id 都从现成的表里取 —— 组件里手写 id 的话,注册表一改这里就假绿。
+  const groups = loadLibraryGroups();
+  const docsGroup = groups.find((g) => g.id === "docs");
+  check("出厂有 docs 大类", docsGroup !== undefined, groups.map((g) => g.id));
+  check("docs 收着 note 类型", docsGroup?.kinds.includes("note") === true);
+
+  const coll = CollectionRepo.create("精读队列", null, "note");
+  const host = LibraryRepo.upsert({ title: "被屏蔽的宿主", kind: "note" });
+  const linked = LibraryRepo.upsert({ title: "被屏蔽的关联", kind: "note" });
+  CollectionRepo.assign(coll.id, [host.id, linked.id], true);
+
+  // ① 按**集合**屏蔽:挂在那个集合里的条目整个挂不上,而且原因说得清
+  resetSuppressCacheForTest();
+  saveSuppress({ nodes: [`collection:${coll.id}`], extensions: [] });
+  resetSent();
+  const blocked = attachToChat(SID, `i:${host.id}`);
+  check("被屏蔽的条目挂不上", !blocked.ok, blocked);
+  check("原因里有集合名", (blocked.error ?? "").includes("精读队列"), blocked);
+  check("原因说清了去哪儿改", (blocked.error ?? "").includes("设置"), blocked);
+  eq("一条都没推出去", sent.length, 0);
+
+  // ② **入口平级**:屏蔽的是"关联的那条"时,引用宿主 → 入口挂上、关联被挡下,
+  //    而且如实说"另有几条被挡"。**入口不被特殊对待**是用户明确要的。
+  resetSuppressCacheForTest();
+  saveSuppress({ nodes: [`collection:${coll.id}`], extensions: [] });
+  // 先把 host 移出集合(让入口放行),只留 linked 在里面
+  CollectionRepo.assign(coll.id, [host.id], false);
+  resetSuppressCacheForTest();
+  LibraryLinkRepo.add(host.id, { targetItemId: linked.id });
+  resetSent();
+  const partial = attachToChat(SID, `i:${host.id}`);
+  check("入口放行、整体成功", partial.ok, partial);
+  eq("只推了入口一条", sent.length, 1);
+  eq("推的是入口", keysOf()[0], `i:${host.id}`);
+  check("如实说有条被屏蔽挡下", (partial.error ?? "").includes("屏蔽"), partial);
+
+  // ③ **向下继承**:屏蔽「文档」大类 → 它下面的 note 条目同样挂不上
+  resetSuppressCacheForTest();
+  saveSuppress({ nodes: ["group:docs"], extensions: [] });
+  resetSent();
+  const byGroup = attachToChat(SID, `i:${host.id}`);
+  check("屏蔽大类后小类下的条目也挂不上(向下继承)", !byGroup.ok, byGroup);
+  check("原因指出是哪个大类", (byGroup.error ?? "").includes("文档"), byGroup);
+  eq("一条都没推出去(继承)", sent.length, 0);
+
+  // ④ 按**类型**屏蔽
+  resetSuppressCacheForTest();
+  saveSuppress({ nodes: ["type:note"], extensions: [] });
+  resetSent();
+  check("屏蔽类型后同样挂不上", !attachToChat(SID, `i:${host.id}`).ok);
+
+  // ⑤ 按**扩展名**屏蔽 —— 条目在类型/集合上都放行,但它的文件后缀被挡
+  resetSuppressCacheForTest();
+  saveSuppress({ nodes: [], extensions: [".pdf"] });
+  const pdfItem = LibraryRepo.upsert({ title: "一份 PDF", kind: "note" });
+  LibraryRepo.setPdf(pdfItem.id, `papers/aa/bb/${pdfItem.id}.pdf`, "sha-fake");
+  resetSent();
+  const byExt = attachToChat(SID, `i:${pdfItem.id}`);
+  check("按扩展名挡下", !byExt.ok, byExt);
+  check("原因说明是哪种文件", (byExt.error ?? "").includes(".pdf"), byExt);
+
+  // ⑥ **屏蔽是过滤,不是拒绝** —— 解除之后原来的挂载立刻恢复(这就是用户要的语义:
+  //    改设定即可,不用去重建关联)
+  resetSuppressCacheForTest();
+  saveSuppress({ nodes: [], extensions: [] });
+  resetSent();
+  const restored = attachToChat(SID, `i:${pdfItem.id}`);
+  check("解除屏蔽后恢复挂载", restored.ok, restored);
+  eq("入口 + 关联都回来了", sent.length, 1);
+}
+
+console.log("\n屏蔽:整库与分类清单也过筛子");
+
+{
+  const c = CollectionRepo.create("含 PDF 的集合", null, "note");
+  const md = LibraryRepo.upsert({ title: "Markdown 那份", kind: "note" });
+  const pdf = LibraryRepo.upsert({ title: "PDF 那份", kind: "note" });
+  LibraryRepo.setPdf(pdf.id, `papers/cc/dd/${pdf.id}.pdf`, "sha-fake-2");
+  CollectionRepo.assign(c.id, [md.id, pdf.id], true);
+
+  // 关闭屏蔽:两份都在清单里
+  resetSuppressCacheForTest();
+  saveSuppress({ nodes: [], extensions: [] });
+  const full = writeCollectionManifest(c.id);
+  eq("没屏蔽时两份都在", full.count, 2);
+
+  // 开启 .pdf 屏蔽:**分类清单**里也要少一份 —— 否则"挂一次分类"就绕过了屏蔽
+  resetSuppressCacheForTest();
+  saveSuppress({ nodes: [], extensions: [".pdf"] });
+  const filtered = writeCollectionManifest(c.id);
+  eq("分类清单也过筛子", filtered.count, 1);
+  const text = readFileSync(filtered.path, "utf8");
+  check("清单正文里只有留下那份", text.includes("Markdown 那份") && !text.includes("PDF 那份"), text.slice(0, 400));
+  check("说明里交代了剔掉几篇", text.includes("屏蔽规则挡掉了 1 篇"), text.slice(0, 400));
+
+  // 整库清单同理
+  const kindManifest = writeKindManifest("note");
+  const kindText = readFileSync(kindManifest.path, "utf8");
+  const pdfTitle = "PDF 那份";
+  check("整库清单里也没有被挡的那份", !kindText.includes(pdfTitle), kindText.slice(0, 300));
+
+  // 收尾:清掉屏蔽,免得影响别的段
+  resetSuppressCacheForTest();
+  saveSuppress({ nodes: [], extensions: [] });
 }
 
 console.log(`\n${checks - failures}/${checks} passed`);

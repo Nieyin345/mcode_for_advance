@@ -30,7 +30,11 @@ import {
 import {
   BUILTIN_LIBRARY_TYPES,
   LIBRARY_TYPES_SETTING_KEY,
+  normalizeSuppressExt,
   parseLibraryTypesJson,
+  parseSuppressJson,
+  parseSuppressNodeKey,
+  suppressNodeKey,
 } from "@contracts/libraryTypes";
 
 let failures = 0;
@@ -48,6 +52,11 @@ function check(name: string, cond: boolean, detail?: unknown): void {
 
 function eq(name: string, actual: unknown, expected: unknown): void {
   check(name, Object.is(actual, expected), { actual, expected });
+}
+
+/** 数组比较 —— `Object.is` 对两个内容相同的数组也是 false(不是同一个引用)。 */
+function eqList(name: string, actual: string[], expected: string[]): void {
+  check(name, actual.join("|") === expected.join("|"), { actual, expected });
 }
 
 console.log("\n纯校验 parseLibraryTypesJson");
@@ -294,6 +303,76 @@ console.log("\n持久化之后外键约束还在");
   })();
   eq("写盘之后级联依然生效", after, 0);
   check("外键仍然开着", fkOn());
+}
+
+console.log("\n屏蔽规则 parseSuppressJson");
+
+{
+  const parse = parseSuppressJson;
+
+  // ── 形状 ──
+  check("不是对象被拒", !parse([]).ok && !parse(null).ok && !parse("x").ok);
+  check("nodes 不是数组被拒", !parse({ nodes: "group:docs" }).ok);
+  check("extensions 不是数组被拒", !parse({ extensions: ".pdf" }).ok);
+
+  // ── 节点键:认不出的**丢掉这一条**,不废掉整份 ──
+  // 这是这个模块的口径与注册表/大类表刻意不同的地方:那两份是结构(少一条老数据
+  // 全线失语),所以宁可整个拒绝;屏蔽是一串独立勾选,某一条失效不该把用户其余的
+  // 屏蔽一起作废 —— 那等于偷偷放开一批他明确要挡的东西。
+  {
+    const res = parse({
+      nodes: ["group:docs", "bogus:whatever", "no-colon", "type:", "collection:c1"],
+      extensions: [],
+    });
+    check("认不出的前缀不废掉整份", res.ok, res);
+    if (res.ok) {
+      eqList("只剩两条合法的", res.rule.nodes, ["group:docs", "collection:c1"]);
+    }
+  }
+
+  // ── 扩展名规范化:补点、转小写 ──
+  {
+    const res = parse({ nodes: [], extensions: ["PDF", ".Zip", "  .md  ", "", "   "] });
+    check("扩展名过校验", res.ok, res);
+    if (res.ok) {
+      eqList("规范化 + 去空 + 去重", res.rule.extensions, [".pdf", ".zip", ".md"]);
+    }
+  }
+
+  // ── 去重但保持顺序(界面上的勾选顺序大体是用户的操作顺序,不重排)──
+  {
+    const res = parse({
+      nodes: ["type:note", "group:docs", "type:note"],
+      extensions: [".pdf", ".PDF"],
+    });
+    if (res.ok) {
+      eqList("节点去重保序", res.rule.nodes, ["type:note", "group:docs"]);
+      eqList("扩展名去重", res.rule.extensions, [".pdf"]);
+    } else {
+      check("去重那一份应该通过", false, res);
+    }
+  }
+
+  // ── 缺字段 = 空,不是错(用户从没配过时读到的是 `{}` 之类)──
+  {
+    const res = parse({});
+    check("空对象通过", res.ok, res);
+    if (res.ok) {
+      eq("空 nodes", res.rule.nodes.length, 0);
+      eq("空 extensions", res.rule.extensions.length, 0);
+    }
+  }
+
+  // ── 两个纯函数本身 ──
+  eq("拼键", suppressNodeKey("collection", "abc"), "collection:abc");
+  eq("拆键", JSON.stringify(parseSuppressNodeKey("group:docs")), '{"level":"group","id":"docs"}');
+  eq("认不出的前缀拆出 null", parseSuppressNodeKey("bogus:x"), null);
+  eq("没有冒号拆出 null", parseSuppressNodeKey("docs"), null);
+  eq("空 id 拆出 null", parseSuppressNodeKey("group:"), null);
+  eq("规范化:补点", normalizeSuppressExt("pdf"), ".pdf");
+  eq("规范化:转小写", normalizeSuppressExt("PDF"), ".pdf");
+  eq("规范化:去空白", normalizeSuppressExt("  .MD  "), ".md");
+  eq("规范化:空串 → 空串", normalizeSuppressExt("   "), "");
 }
 
 console.log(`\n${checks - failures}/${checks} passed`);

@@ -26,10 +26,12 @@ import type {
   LibraryCollection,
   LibraryNote,
   LibraryItemLink,
+  LibraryLinkView,
   InstitutionProfile,
   DownloadJob,
   DownloadStatus,
 } from "@contracts/library";
+import { basename } from "node:path";
 import { normPathKey } from "@main/lib/pathNorm.js";
 import { getDb, persist } from "./db.js";
 // sessions 表的列定义/绑定/读取全在 sessionSchema.ts(单一事实来源)。
@@ -2676,5 +2678,61 @@ export const LibraryLinkRepo = {
     db.run("DELETE FROM library_item_links WHERE id = ?", [v(linkId)]);
     persist();
     return true;
+  },
+
+  /**
+   * 界面上「关联」区的那些行 —— 关联本身 + **另一头**的摘要,一次查好。
+   *
+   * 为什么不在渲染端逐条拉:`linksOf` 的行有方向,另一头可能是条目、可能是路径,
+   * 而条目还可能已经被删了(关联会级联走,但反向那一侧的历史行未必)。主进程一次
+   * 查完,渲染端只管画。
+   *
+   * `suppressedReason` 由主进程填(它才拿得到屏蔽规则)——
+   * 这里留空,由 `ipc/library.ts` 补上。
+   */
+  viewsOf(itemId: string): LibraryLinkView[] {
+    const db = getDb();
+    const out: LibraryLinkView[] = [];
+    // 一次拿全部关联行,再按方向挑"另一头"。条目标题**批量**查(一次 IN),
+    // 免得十个关联发十条 SQL。
+    const rows = LibraryLinkRepo.linksOf(itemId);
+    const otherIds = rows
+      .map((l) => (l.itemId === itemId ? l.targetItemId : l.itemId))
+      .filter((x): x is string => typeof x === "string" && x.length > 0);
+    const titles = new Map<string, string>();
+    if (otherIds.length > 0) {
+      const stmt = db.prepare(
+        `SELECT id, title FROM library_items WHERE id IN (${otherIds.map(() => "?").join(",")})`,
+      );
+      stmt.bind(otherIds.map((x) => v(x)));
+      while (stmt.step()) {
+        const r = stmt.getAsObject() as { id: string; title: string };
+        titles.set(String(r.id), String(r.title));
+      }
+      stmt.free();
+    }
+
+    for (const link of rows) {
+      const isOut = link.direction === "out";
+      const otherItemId = isOut ? link.targetItemId : link.itemId;
+      const otherPath = isOut ? link.targetPath : undefined;
+      const title = otherItemId
+        ? (titles.get(otherItemId) ?? "")
+        : otherPath
+          ? basename(otherPath)
+          : "";
+      out.push({
+        id: link.id,
+        direction: link.direction,
+        ...(otherItemId ? { otherItemId } : {}),
+        ...(otherPath ? { otherPath } : {}),
+        title,
+        // 库内条目能挂进对话(与手动挂同一种键);库外路径没有可挂的东西 ——
+        // 它是"用户桌面上的一个文件",要挂得先导入,那是另一条路。
+        ...(otherItemId ? { attachKey: `i:${otherItemId}` } : {}),
+        createdAt: link.createdAt,
+      });
+    }
+    return out;
   },
 };

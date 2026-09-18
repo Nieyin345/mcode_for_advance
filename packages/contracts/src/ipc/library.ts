@@ -70,6 +70,45 @@ export type LibraryGroupsGetInput = z.infer<typeof LibraryGroupsGetSchema>;
 export const LibraryGroupsSaveSchema = z.object({ groups: z.unknown() });
 export type LibraryGroupsSaveInput = z.infer<typeof LibraryGroupsSaveSchema>;
 
+/* ── 屏蔽规则 ── */
+
+/** 读屏蔽规则(哪些资料不进上下文)。同 `typesGet` / `groupsGet`:无入参。 */
+export const LibrarySuppressGetSchema = z.object({});
+export type LibrarySuppressGetInput = z.infer<typeof LibrarySuppressGetSchema>;
+
+/** 整表替换屏蔽规则。形状与合法性由主进程过 `parseSuppressJson` —— 仍然是纯函数,
+ *  渲染端要预检就用同一份,判据不会漂移(同注册表那两条)。 */
+export const LibrarySuppressSaveSchema = z.object({ rule: z.unknown() });
+export type LibrarySuppressSaveInput = z.infer<typeof LibrarySuppressSaveSchema>;
+
+/* ── 条目关联 ── */
+
+/** 查一条条目的关联(**双向都返回** —— 界面上「它关联了谁」与「谁关联了它」都要看)。 */
+export const LibraryLinksOfSchema = z.object({ itemId: z.string().min(1) });
+export type LibraryLinksOfInput = z.infer<typeof LibraryLinksOfSchema>;
+
+/**
+ * 加一条关联。
+ *
+ * 目标两种形态**二选一**(表上有 CHECK):`targetItemId`(库里的另一条条目)、
+ * `targetPath`(库外的一个绝对路径)。这里用 `refine` 把"恰好一个"写成 schema 的
+ * 一部分 —— 与表上那条约束同一条规矩,免得 UI 传错时先写进库再被 SQLite 顶回来。
+ */
+export const LibraryLinkAddSchema = z
+  .object({
+    itemId: z.string().min(1),
+    targetItemId: z.string().min(1).optional(),
+    targetPath: z.string().min(1).optional(),
+  })
+  .refine((v) => (v.targetItemId === undefined) !== (v.targetPath === undefined), {
+    message: "关联目标要么是库内条目、要么是库外路径,不能两个都给或都不给",
+  });
+export type LibraryLinkAddInput = z.infer<typeof LibraryLinkAddSchema>;
+
+/** 解除一条关联(按关联行自己的 id)。 */
+export const LibraryLinkRemoveSchema = z.object({ linkId: z.string().min(1) });
+export type LibraryLinkRemoveInput = z.infer<typeof LibraryLinkRemoveSchema>;
+
 export const LibraryImportFilesSchema = z.object({
   /** 用户从文件选择框里挑出来的绝对路径。上限 200 —— 再多就该分批了。 */
   paths: z.array(z.string().min(1)).min(1).max(200),

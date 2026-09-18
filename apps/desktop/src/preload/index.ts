@@ -220,6 +220,16 @@ const api = {
       ipcRenderer.invoke(IPC.LIBRARY_GROUPS_GET, {})) as RpcMap["library.groupsGet"],
     groupsSave: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_GROUPS_SAVE, input)) as RpcMap["library.groupsSave"],
+    suppressGet: (() =>
+      ipcRenderer.invoke(IPC.LIBRARY_SUPPRESS_GET, {})) as RpcMap["library.suppressGet"],
+    suppressSave: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_SUPPRESS_SAVE, input)) as RpcMap["library.suppressSave"],
+    linksOf: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_LINKS_OF, input)) as RpcMap["library.linksOf"],
+    linkAdd: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_LINK_ADD, input)) as RpcMap["library.linkAdd"],
+    linkRemove: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_LINK_REMOVE, input)) as RpcMap["library.linkRemove"],
     importGeneric: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_IMPORT_GENERIC, input)) as RpcMap["library.importGeneric"],
     readFile: ((input) =>

@@ -19,8 +19,8 @@ import type { WorkflowDoc, WorkflowListEntry } from "../workflow.js";
 import type { PluginState, PluginMarketplaceState, PluginsInstallLocalInput, PluginsInstallGitInput, PluginsInstallMarketplaceInput, PluginsSetEnabledInput, PluginsRemoveInput, PluginsMarketplaceAddInput, PluginsMarketplaceRemoveInput, PluginsMarketplaceRefreshInput } from "../plugin.js";
 import type { PairingStartResult, PairedDevice } from "../mobile.js";
 import type { RelayStatus, RelayVpsConfig, RelayVpsConfigInput } from "../relay.js";
-import type { LibraryItem, LibraryCollection, InstitutionProfile, DownloadJob, ExternalSearchResult, FullTextMatch, AuthSiteStatus, LibraryConversionRow, LibraryNote } from "../library.js";
-import type { LibraryTypeMeta, LibraryGroupMeta } from "../libraryTypes.js";
+import type { LibraryItem, LibraryItemLink, LibraryLinkView, LibraryCollection, InstitutionProfile, DownloadJob, ExternalSearchResult, FullTextMatch, AuthSiteStatus, LibraryConversionRow, LibraryNote } from "../library.js";
+import type { LibraryTypeMeta, LibraryGroupMeta, LibrarySuppressRule } from "../libraryTypes.js";
 import type { TemplateEntry, TemplateFileContent } from "../templates.js";
 import type { IntegrationPublic } from "../integrations.js";
 import type { GetSettingInput, SetSettingInput, GetManySettingsInput, GetManySettingsResult, GetVoiceModelDirInput, GetVoiceModelDirResult, SetVoiceModelDirInput, SetVoiceModelDirResult, NotificationPrefs } from "./settings.js";
@@ -42,7 +42,7 @@ import type { RuntimeAgentState, RuntimesInstallInput, RuntimesInstallLocalInput
 import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchCommandTemplate } from "./workflow.js";
 import type { AutomationTriggerFacts, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
 import { MEMORY_CATEGORIES_CHANNEL, MEMORY_DELETE_CHANNEL, MEMORY_LIST_CHANNEL, MEMORY_READ_CHANNEL, MEMORY_SAVE_CHANNEL, type MemoryDeleteInput, type MemoryFileMeta, type MemoryListInput, type MemoryReadInput, type MemorySaveInput } from "../memory.js";
-import type { LibraryTypesGetInput, LibraryTypesSaveInput, LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibrarySetRootInput, LibraryManifestInput, LibraryItemManifestInput, LibraryKindManifestInput, TemplateKindManifestInput, LibraryAttachToChatInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
+import type { LibraryTypesGetInput, LibraryTypesSaveInput, LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibrarySetRootInput, LibraryManifestInput, LibraryItemManifestInput, LibraryKindManifestInput, TemplateKindManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
 import type { TemplateListInput, TemplateAddInput, TemplateRenameInput, TemplateEntryRefInput, TemplateFileRefInput, TemplatesAttachToChatInput } from "./templates.js";
 import type { IntegrationSetKeyInput, IntegrationClearKeyInput, IntegrationSetConfigInput, IntegrationTestInput } from "./integrations.js";
 import type { SubagentDefinition } from "../claudeSubagent.js";
@@ -755,6 +755,25 @@ export interface RpcMap {
   "library.groupsGet": (input: LibraryGroupsGetInput) => Promise<{ groups: LibraryGroupMeta[] }>;
   /** 整表替换大类。校验(一个类型只属一个组等)在主进程。 */
   "library.groupsSave": (input: LibraryGroupsSaveInput) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /** 屏蔽规则:当前生效的(哪些资料不进上下文)。没存过 = 空规则(什么都不挡)。 */
+  "library.suppressGet": (input: LibrarySuppressGetInput) => Promise<{ rule: LibrarySuppressRule }>;
+  /** 整表替换屏蔽规则。校验(前缀合法、扩展名规范化)在主进程过 `parseSuppressJson`。 */
+  "library.suppressSave": (input: LibrarySuppressSaveInput) => Promise<{ ok: true } | { ok: false; error: string }>;
+
+  // 文献库 —— 条目关联
+  /** 一条条目的关联,**双向都返回**(`direction` 区分)。界面上的「关联」区用它。
+   *
+   *  `target` 是目标那一条的摘要(**主进程一次查好**,渲染端不必再逐条拉)——
+   *  库内条目给标题,库外路径给文件名。`suppressed` 是"这条会被屏蔽规则挡住"的
+   *  原因(没被挡就是 undefined):界面据此把它**显示成灰态并说明为什么**,而不是
+   *  干脆不显示 —— 用户得看得见"它存在,只是被挡了",否则会以为关联丢了。 */
+  "library.linksOf": (input: LibraryLinksOfInput) => Promise<{
+    links: LibraryLinkView[];
+  }>;
+  /** 加一条关联。**幂等** —— 已有同一条就返回它,不产生第二行。 */
+  "library.linkAdd": (input: LibraryLinkAddInput) => Promise<{ link: LibraryItemLink }>;
+  /** 解除一条关联(按关联行自己的 id)。 */
+  "library.linkRemove": (input: LibraryLinkRemoveInput) => Promise<{ ok: boolean }>;
   /** 任意文件/目录导入为通用条目(linked = 引用原路径 / attached = 复制进库)。 */
   "library.importGeneric": (input: LibraryImportGenericInput) => Promise<{
     items: LibraryItem[];
@@ -1137,6 +1156,13 @@ export const IPC = {
   /** 左栏大类:读(合并校验后)/ 写(整表替换)。 */
   LIBRARY_GROUPS_GET: "library:groupsGet",
   LIBRARY_GROUPS_SAVE: "library:groupsSave",
+  /** 屏蔽规则(哪些资料不进上下文):读 / 写(整表替换,校验在主进程)。 */
+  LIBRARY_SUPPRESS_GET: "library:suppressGet",
+  LIBRARY_SUPPRESS_SAVE: "library:suppressSave",
+  /** 条目关联:查(双向)/ 加(幂等)/ 解除。 */
+  LIBRARY_LINKS_OF: "library:linksOf",
+  LIBRARY_LINK_ADD: "library:linkAdd",
+  LIBRARY_LINK_REMOVE: "library:linkRemove",
   /** 通用文件条目:导入(linked/attached)与内容读取(文本/图片/二进制分型)。 */
   LIBRARY_IMPORT_GENERIC: "library:importGeneric",
   LIBRARY_READ_FILE: "library:readFile",

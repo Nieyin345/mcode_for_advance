@@ -232,3 +232,133 @@ export function parseLibraryTypesJson(
   }
   return { ok: true, types: out };
 }
+
+/* ─────────────────────────────── 屏蔽规则 ─────────────────────────────── */
+
+/** 屏蔽规则存设置表的键(值 = JSON 的 `LibrarySuppressRule`)。 */
+export const LIBRARY_SUPPRESS_SETTING_KEY = "library.suppress";
+
+/**
+ * 屏蔽规则 —— **哪些资料不进上下文**。
+ *
+ * 用户的原话:「设置页面的资料库类型页……还有屏蔽集合的,屏蔽是合集,选择任意分级,
+ * 任意个数,同时选择文件类型」,以及「就算是我手动挂的一个文件,只要是屏蔽状态,
+ * 也挂不上去」—— 所以它是**硬过滤**:入口与关联一视同仁,手动挂的也算。
+ *
+ * ## 为什么是一个扁平的 `nodes` 数组而不是三个字段
+ *
+ * 要屏蔽的节点在**任意层级**上:大类 / 类型 / 集合,而且**任意个数**。做成三个字段
+ * (`groups` / `types` / `collections`)的话,"再加一个层级"就变成改契约 + 改界面 +
+ * 改存储。扁平数组 + 前缀是同一件事的更小表达,而前缀的合法性校验在 `parseSuppressJson`
+ * 里一处收敛。
+ *
+ * ## 向下继承
+ *
+ * 屏蔽一个节点 = 它自己**以及它下面的一切**都进不了上下文。屏蔽「文档」大类,它下面
+ * 的 `paper` 条目同样挂不上。判定的算法在 `main/library/suppress.ts`(要查祖先链,
+ * 那是它才做得了的事);契约这一层只负责形状与合法性。
+ */
+export interface LibrarySuppressRule {
+  /**
+   * 被屏蔽的节点,格式 `<层>:<id>`:
+   *
+   *   `group:docs`          大类
+   *   `type:paper`          类型
+   *   `collection:abc123`   集合
+   *
+   * 集合 id 是不透明的(不是 `ID_RE` 那种连字符串),所以**校验时只查前缀**,
+   * 不查 id 的形状 —— id 存不存在是主进程的事(它拿得到 DB)。
+   */
+  nodes: string[];
+  /**
+   * 额外按**文件扩展名**屏蔽(小写含点,如 `.zip` / `.pdf`)。
+   *
+   * 与 `nodes` 正交:前者按"这东西归哪儿"挡,后者按"它是什么文件"挡。用户两个都要
+   * (「同时选择文件类型」)。
+   */
+  extensions: string[];
+}
+
+/** 空规则 —— 什么都没屏蔽。用户没存过时读出来的就是它。 */
+export const EMPTY_LIBRARY_SUPPRESS: LibrarySuppressRule = { nodes: [], extensions: [] };
+
+/** 层前缀 —— 与 `LibrarySuppressRule.nodes` 里的三种取值一一对应。 */
+export const SUPPRESS_NODE_LEVELS = ["group", "type", "collection"] as const;
+export type SuppressNodeLevel = (typeof SUPPRESS_NODE_LEVELS)[number];
+
+/** 拼一个节点键。三处(界面、主进程、测试)都该用它,免得手写前缀写岔。 */
+export function suppressNodeKey(level: SuppressNodeLevel, id: string): string {
+  return `${level}:${id}`;
+}
+
+/** 拆一个节点键。前缀不合法返回 `null`(调用方据此跳过,而不是抛)。 */
+export function parseSuppressNodeKey(key: string): { level: SuppressNodeLevel; id: string } | null {
+  const at = key.indexOf(":");
+  if (at < 0) return null;
+  const level = key.slice(0, at) as SuppressNodeLevel;
+  const id = key.slice(at + 1);
+  if (!(SUPPRESS_NODE_LEVELS as readonly string[]).includes(level)) return null;
+  if (id.length === 0) return null;
+  return { level, id };
+}
+
+/**
+ * 扩展名规范化:补上开头的点、转小写。`zip` / `.ZIP` / `.zip` 都变成 `.zip`。
+ *
+ * 存之前统一过这一道,是为了让判定那一侧可以拿 `extname(p).toLowerCase()` 直接比
+ * —— 两边形状不一致的话,用户存了 `.ZIP` 而文件是 `.zip`,屏蔽会**静静地不生效**。
+ */
+export function normalizeSuppressExt(raw: string): string {
+  const t = raw.trim().toLowerCase();
+  if (t.length === 0) return "";
+  return t.startsWith(".") ? t : `.${t}`;
+}
+
+/**
+ * 校验一份屏蔽规则 JSON。**纯函数**(同 `parseLibraryTypesJson` / `parseLibraryGroupsJson`)。
+ *
+ * 校验口径与前两个刻意不同:**前缀不合法就丢掉那一条,不拒绝整份**。
+ *
+ * 理由是这两份东西的性质不一样:类型注册表/大类表是**结构**(少一个内置类,老数据
+ * 全线失语),所以宁可整个拒绝;屏蔽规则是一串**独立的勾选**,某一条失效(比如那个
+ * 集合已经被删了、或前缀是旧版本写的)不该把用户其余的屏蔽一起作废 —— 那等于偷偷
+ * 放开一批他明确要挡的东西,而这个模块的存在意义就是"别偷偷放开"。
+ *
+ * 去重后保持顺序(界面上的勾选顺序大体是用户的操作顺序,不重排)。
+ */
+export function parseSuppressJson(
+  raw: unknown,
+): { ok: true; rule: LibrarySuppressRule } | { ok: false; error: string } {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ok: false, error: "屏蔽规则应该是一个对象" };
+  }
+  const e = raw as Record<string, unknown>;
+
+  const nodesRaw = e.nodes ?? [];
+  if (!Array.isArray(nodesRaw)) return { ok: false, error: "屏蔽的节点应该是一组键" };
+  const seenNodes = new Set<string>();
+  const nodes: string[] = [];
+  for (const n of nodesRaw) {
+    if (typeof n !== "string") continue;
+    const parsed = parseSuppressNodeKey(n.trim());
+    if (!parsed) continue; // 前缀认不出 —— 丢掉这一条,不废掉整份
+    if (seenNodes.has(n.trim())) continue;
+    seenNodes.add(n.trim());
+    nodes.push(n.trim());
+  }
+
+  const extsRaw = e.extensions ?? [];
+  if (!Array.isArray(extsRaw)) return { ok: false, error: "屏蔽的扩展名应该是一组字符串" };
+  const seenExts = new Set<string>();
+  const extensions: string[] = [];
+  for (const x of extsRaw) {
+    if (typeof x !== "string") continue;
+    const norm = normalizeSuppressExt(x);
+    if (norm.length === 0) continue;
+    if (seenExts.has(norm)) continue;
+    seenExts.add(norm);
+    extensions.push(norm);
+  }
+
+  return { ok: true, rule: { nodes, extensions } };
+}

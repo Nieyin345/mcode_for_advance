@@ -43,6 +43,11 @@ import {
   LibraryTypesSaveSchema,
   LibraryGroupsGetSchema,
   LibraryGroupsSaveSchema,
+  LibrarySuppressGetSchema,
+  LibrarySuppressSaveSchema,
+  LibraryLinksOfSchema,
+  LibraryLinkAddSchema,
+  LibraryLinkRemoveSchema,
   LibraryImportGenericSchema,
   LibraryReadFileSchema,
   LibraryManifestSchema,
@@ -56,7 +61,7 @@ import {
 import type { FullTextMatch, LibraryCollection, LibraryItem } from "@contracts/library";
 import { LIBRARY_KINDS } from "@contracts/library";
 import { formatAuthorList } from "@contracts/library";
-import { LibraryRepo, CollectionRepo, DownloadJobRepo, NoteRepo, SettingRepo } from "@main/store/repositories.js";
+import { LibraryRepo, CollectionRepo, DownloadJobRepo, LibraryLinkRepo, NoteRepo, SettingRepo } from "@main/store/repositories.js";
 import { awaitDb } from "@main/store/db.js";
 import { rgGrep } from "@main/lib/rgSearch.js";
 import { log } from "@main/lib/logger.js";
@@ -77,6 +82,7 @@ import {
 } from "@main/library/trash.js";
 import { notifyLibraryChanged } from "@main/library/broadcast.js";
 import { loadLibraryTypes, saveLibraryTypes, loadLibraryGroups, saveLibraryGroups } from "@main/library/kindRegistry.js";
+import { loadSuppress, saveSuppress, suppressionReasonOfItem } from "@main/library/suppress.js";
 import { importGenericFiles, readEntryFile } from "@main/library/fileImport.js";
 import { assignToCollection, importIdentifiers } from "@main/library/operations.js";
 import {
@@ -755,6 +761,47 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.LIBRARY_GROUPS_SAVE, async (_evt, raw) => {
     const input = LibraryGroupsSaveSchema.parse(raw);
     return saveLibraryGroups(input.groups);
+  });
+
+  // 屏蔽规则 —— 与上面两条同一种形状(读走缓存、写是整表替换、校验在主进程)。
+  ipcMain.handle(IPC.LIBRARY_SUPPRESS_GET, async (_evt, raw) => {
+    LibrarySuppressGetSchema.parse(raw ?? {});
+    return { rule: loadSuppress() };
+  });
+  ipcMain.handle(IPC.LIBRARY_SUPPRESS_SAVE, async (_evt, raw) => {
+    const input = LibrarySuppressSaveSchema.parse(raw);
+    return saveSuppress(input.rule);
+  });
+
+  // 条目关联 —— 增删查。加/解除都**不改条目本身**,只动关联表。
+  ipcMain.handle(IPC.LIBRARY_LINKS_OF, async (_evt, raw) => {
+    const input = LibraryLinksOfSchema.parse(raw);
+    // 视图行 = 关联 + 另一头的摘要(`viewsOf` 查),再补上屏蔽原因 ——
+    // 屏蔽判定要读规则、查祖先链,那是主进程的事。**被屏蔽的照常返回**
+    // (带上原因):界面上要看得见"它存在,只是被挡了",否则用户会以为关联丢了。
+    const links = LibraryLinkRepo.viewsOf(input.itemId).map((v) => {
+      if (!v.otherItemId) return v;
+      const reason = suppressionReasonOfItem(v.otherItemId);
+      return reason ? { ...v, suppressedReason: reason } : v;
+    });
+    return { links };
+  });
+  ipcMain.handle(IPC.LIBRARY_LINK_ADD, async (_evt, raw) => {
+    const input = LibraryLinkAddSchema.parse(raw);
+    // schema 的 refine 已经保证二选一,这里按它分派 —— 两处用同一条规矩。
+    const target =
+      input.targetItemId !== undefined
+        ? { targetItemId: input.targetItemId }
+        : { targetPath: input.targetPath! };
+    const link = LibraryLinkRepo.add(input.itemId, target);
+    notifyLibraryChanged(`link_add:${input.itemId}`);
+    return { link };
+  });
+  ipcMain.handle(IPC.LIBRARY_LINK_REMOVE, async (_evt, raw) => {
+    const input = LibraryLinkRemoveSchema.parse(raw);
+    const ok = LibraryLinkRepo.remove(input.linkId);
+    if (ok) notifyLibraryChanged(`link_remove:${input.linkId}`);
+    return { ok };
   });
 
   // 通用文件条目:linked 只记路径、attached 复制进库(见 library/fileImport.ts)。

@@ -5,8 +5,8 @@
  * 所以 PDF 状态与对应动作(PDF 地址解析失败时的说明、登录过期时的「去登录」)
  * 放在最上方,元数据在下面。
  */
-import { useState } from "react";
-import type { LibraryItem, DownloadJob, PdfState } from "@contracts/library";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { LibraryItem, DownloadJob, PdfState, LibraryLinkView } from "@contracts/library";
 import { formatAuthorList, missingMetadataFields, type MissingMetadataField } from "@contracts/library";
 import { CITATION_STYLES, formatCitation, type CitationStyle } from "@contracts/citation";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -20,12 +20,16 @@ import {
   IconCheck,
   IconCopy,
   IconExternalLink,
+  IconEyeOff,
   IconFolderOpen,
   IconLoader2,
+  IconPlus,
   IconRefresh,
+  IconX,
 } from "@renderer/lib/icons.js";
 import { PdfBadge } from "./ItemList.js";
 import { ItemNotes } from "./ItemNotes.js";
+import { LibraryPicker } from "@renderer/components/chat/LibraryPicker.js";
 
 interface Props {
   item: LibraryItem | null;
@@ -162,6 +166,239 @@ function CitationBlock({ item }: { item: LibraryItem }) {
       <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[0.7857em] leading-relaxed text-content">
         {text}
       </pre>
+    </div>
+  );
+}
+
+/**
+ * 「关联」区 —— 这一条和别的条目之间挂着的线。
+ *
+ * ## 双向展示,但存储只存一行
+ *
+ * 数据是一对多、单向存的(见 `contracts/library.ts` 的 `LibraryItemLink`)。这里两个
+ * 方向都列:用户给 A 挂了 B,打开 B 的时候也该看到"它被 A 关联着" —— 否则他会在 B 上
+ * 再挂一次 A,而那是同一条关系的另一头。主进程的 `viewsOf` 已经把"另一头是谁"算好了
+ * (含方向),这里只管画。
+ *
+ * ## 被屏蔽的**照样显示**,只是灰掉并说明原因
+ *
+ * 用户明确要屏蔽是硬过滤(挂不上),但**看得见**是另一回事:一条关联从列表里凭空消失,
+ * 用户会以为是关联丢了、回头再挂一次。所以这里把屏蔽原因摆出来 —— 「它存在,只是被
+ * 挡了」比"什么都没有"好排查得多。
+ */
+function ItemLinks({ item, onChanged }: { item: LibraryItem; onChanged?: () => void }) {
+  const { t } = useI18n();
+  const [links, setLinks] = useState<LibraryLinkView[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  /** 选择器的开关与锚点 —— 复用「+ → 添加文献库到上下文」那个选择器。 */
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const addBtnRef = useRef<HTMLButtonElement>(null);
+
+  const reload = useCallback(async () => {
+    try {
+      const res = await api.library.linksOf({ itemId: item.id });
+      setLinks(res.links);
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }, [item.id]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const remove = async (linkId: string) => {
+    if (!window.confirm(t("library.links.removeConfirm"))) return;
+    setBusy(true);
+    try {
+      await api.library.linkRemove({ linkId });
+      await reload();
+      onChanged?.();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * 选择器确认 —— 选中的可能是分类、也可能是单独一篇(键 `c:` / `i:`)。
+   *
+   * **只接 `i:`**:关联的目标必须是"另一条条目"。用户挑了个分类的话,那不是一个可以
+   * 挂关联的对象(关联是条目对条目),所以这里逐个提示而不是静默丢掉 —— 他点了没反应
+   * 会以为功能坏了。
+   */
+  const handlePick = async (picked: Array<{ key: string; name: string }>) => {
+    setPickerOpen(false);
+    setBusy(true);
+    const failures: string[] = [];
+    try {
+      for (const p of picked) {
+        if (!p.key.startsWith("i:")) {
+          failures.push(t("library.links.addFailed"));
+          continue;
+        }
+        const targetItemId = p.key.slice(2);
+        if (targetItemId === item.id) continue; // 自己关联自己不算
+        try {
+          await api.library.linkAdd({ itemId: item.id, targetItemId });
+        } catch (err) {
+          failures.push((err as Error).message);
+        }
+      }
+      await reload();
+      onChanged?.();
+      if (failures.length > 0) setError(failures.join("\n"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * 从磁盘挑一个文件/目录关联上来。
+   *
+   * ## 为什么先导入再关联,而不是直接存路径
+   *
+   * 用户的原话是「可以一个关联多个文件,不只是挂 md 文件」。库外的东西**先导入成
+   * `linked` 条目**(只记绝对路径,文件原地不动),再关联到那个条目 —— 这样:
+   *
+   *   - 它在库里有了一个可查、可改名、可查看的条目(而不是一行裸路径);
+   *   - 挂载时与库内条目走**完全同一条路**(见 `expandLinks`),chip 也只有一种形态;
+   *   - 反正导入器按 `filePath` 去重,同一个文件选两次不会长出两条。
+   *
+   * `library.linkAdd` 那条吃 `targetPath` 的路留着,给绕过 UI 的调用(将来的 AI 工具)
+   * —— 界面这条路不走它。
+   */
+  const addFromDisk = async () => {
+    // 不传 filters = 列所有文件(用户要的是「任何文件」,不该替他预设类型)。
+    // 原生框本来就是多选(`multiSelections`),一次挑几个一起关联。
+    const picked = await api.pickFiles({});
+    if (picked.paths.length === 0) return;
+    setBusy(true);
+    try {
+      const res = await api.library.importGeneric({ paths: picked.paths, mode: "linked" });
+      for (const it of res.items) {
+        if (it.id === item.id) continue; // 选到了自己
+        await api.library.linkAdd({ itemId: item.id, targetItemId: it.id });
+      }
+      if (res.errors.length > 0) {
+        setError(res.errors.map((e) => `${e.path}:${e.error}`).join("\n"));
+      }
+      await reload();
+      onChanged?.();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** 已经在列表里的条目不再进选择器 —— 与 composer 的 chip 去重同一个意思。 */
+  const existingOut = (links ?? [])
+    .filter((l) => l.direction === "out" && l.otherItemId)
+    .map((l) => `i:${l.otherItemId}`);
+
+  return (
+    <div className="mt-4">
+      <div className="mb-1 flex items-center gap-1">
+        <span className="text-[0.7143em] font-medium uppercase tracking-wider text-content-subtle">
+          {t("library.links.title")}
+        </span>
+        <button
+          ref={addBtnRef}
+          onClick={() => {
+            const rect = addBtnRef.current?.getBoundingClientRect();
+            if (rect) setAnchor(rect);
+            setPickerOpen(true);
+          }}
+          disabled={busy}
+          className="ml-auto inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content disabled:opacity-50"
+        >
+          <IconPlus size={11} />
+          {t("library.links.add")}
+        </button>
+        {/* 库里没有的东西 —— 从磁盘挑一个文件/目录。它会被导入成 linked 条目
+            (文件原地不动),再关联上来:用户明确要「可以一个关联多个文件」。 */}
+        <button
+          onClick={() => void addFromDisk()}
+          disabled={busy}
+          title={t("library.links.addFromDiskHint")}
+          className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content disabled:opacity-50"
+        >
+          <IconFolderOpen size={11} />
+          {t("library.links.addFromDisk")}
+        </button>
+      </div>
+
+      <p className="mb-1.5 text-[0.7857em] leading-relaxed text-content-subtle">
+        {t("library.links.hint")}
+      </p>
+
+      {error && (
+        <div className="mb-1.5 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[0.7857em] text-red-600 dark:text-red-400">
+          {error}
+        </div>
+      )}
+
+      {!links ? (
+        <div className="flex items-center gap-1.5 py-1.5 text-[0.7857em] text-content-subtle">
+          <IconLoader2 size={11} className="animate-spin" />
+        </div>
+      ) : links.length === 0 ? (
+        <div className="py-1 text-[0.7857em] text-content-subtle">{t("library.links.empty")}</div>
+      ) : (
+        <div className="divide-y divide-edge/40 rounded border border-edge bg-surface/40">
+          {links.map((l) => (
+            <div key={l.id} className="group flex items-center gap-2 px-2 py-1.5">
+              {/* 方向标注 —— 「关联到」/「被关联」。存储只有一行,但这两件事对用户
+                  是不同的意思(我引用了它 / 它引用了我),所以分开标。 */}
+              <span className="shrink-0 text-[0.7143em] text-content-subtle">
+                {l.direction === "out" ? t("library.links.out") : t("library.links.in")}
+              </span>
+              <span
+                className={cn(
+                  "min-w-0 flex-1 truncate text-xs",
+                  l.suppressedReason ? "text-content-subtle line-through" : "text-content",
+                )}
+                title={l.otherPath ?? l.title}
+              >
+                {l.title || l.otherPath || l.otherItemId || "?"}
+              </span>
+              {/* 被屏蔽的标出来并说清原因 —— 看得见"它存在,只是被挡了" */}
+              {l.suppressedReason && (
+                <span
+                  title={t("library.links.suppressed", { reason: l.suppressedReason })}
+                  className="inline-flex shrink-0 items-center gap-0.5 text-[0.7143em] text-amber-600 dark:text-amber-400"
+                >
+                  <IconEyeOff size={11} />
+                  {l.suppressedReason}
+                </span>
+              )}
+              <button
+                onClick={() => void remove(l.id)}
+                disabled={busy}
+                title={t("library.links.remove")}
+                className="shrink-0 rounded p-0.5 text-content-subtle opacity-0 transition-opacity hover:text-content group-hover:opacity-100 disabled:opacity-50"
+              >
+                <IconX size={11} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 选择器复用「+ → 添加文献库到上下文」那一个 —— 同一套搜索/展开/多选,
+          用户不用学第二遍。已经关联过的不再列出来。 */}
+      <LibraryPicker
+        open={pickerOpen}
+        anchorRect={anchor}
+        excludeCollectionIds={existingOut}
+        onPick={(picked) => void handlePick(picked)}
+        onClose={() => setPickerOpen(false)}
+      />
     </div>
   );
 }
@@ -376,6 +613,10 @@ export function ItemDetail({ item, job, pdfState, onDownload, onChanged }: Props
           <div className="text-xs leading-relaxed text-content-muted">{item.abstract}</div>
         </>
       )}
+
+      {/* 关联 —— 放在笔记之前:它是"这条和哪些东西是一组",比随手记的笔记更靠前。
+          任何 kind 都有(笔记库的条目也能互相关联)。 */}
+      <ItemLinks item={item} onChanged={onChanged} />
 
       {/* 读文献时随手记的笔记(挂在**这一条**上)。笔记库的条目自己就是一篇
           Markdown,不需要再挂"笔记",所以那里不显示这一块。 */}

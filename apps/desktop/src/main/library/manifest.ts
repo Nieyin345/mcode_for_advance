@@ -24,6 +24,7 @@ import { trashCollectionId } from "./trash.js";
 import { kindDisplayName, kindGroupPromptOf, kindMeta } from "./kindRegistry.js";
 import { CollectionRepo, LibraryLinkRepo, LibraryRepo, NoteRepo } from "@main/store/repositories.js";
 import { importGenericFiles } from "./fileImport.js";
+import { suppressionReasonOfItem } from "./suppress.js";
 import { sendToRenderer } from "@main/window.js";
 import { libraryRoot, fromLibraryRelative } from "./paths.js";
 
@@ -175,7 +176,8 @@ function writeManifest(fileName: string, lines: string[], count: number, name: s
  */
 export function writeCollectionManifest(collectionId: string): ManifestResult {
   const collection = CollectionRepo.list().find((c) => c.id === collectionId);
-  const items = LibraryRepo.listByCollection(collectionId);
+  const all = LibraryRepo.listByCollection(collectionId);
+  const { items, suppressed } = dropSuppressed(all);
   const name = collection?.name ?? collectionId;
   const lines = [`# 文献库:${name}`, "", `共 ${items.length} 篇。`, ""];
   // 提示词**三层叠加,从大到小**:大类(组)→ 类型 → 集合。有大类/类型说明时,集合
@@ -192,8 +194,31 @@ export function writeCollectionManifest(collectionId: string): ManifestResult {
   if (prompt) {
     lines.push(`> 处理这一组时:${prompt}`, "");
   }
+  if (suppressed > 0) {
+    lines.push(`(屏蔽规则挡掉了 ${suppressed} 篇,不在这次范围内。)`, "");
+  }
   lines.push(...renderItemsManifest(items));
   return writeManifest(`${collectionId}.md`, lines, items.length, name);
+}
+
+/**
+ * 从一批条目里剔掉被屏蔽的。
+ *
+ * **整库与分类清单也要过这道筛子** —— 否则"屏蔽了某个集合"只在挂单篇时生效,
+ * 用户挂一次「全部文献」就把它整份带进来了。硬过滤的意思是**所有进上下文的路**,
+ * 不是"我能想到的那一条"。
+ *
+ * 返回剔掉了多少:调用方要把这个数写进清单开头 —— 少列了东西而模型不知道,
+ * 它会以为"库里就这些"。
+ */
+function dropSuppressed(items: LibraryItem[]): { items: LibraryItem[]; suppressed: number } {
+  const kept: LibraryItem[] = [];
+  let suppressed = 0;
+  for (const item of items) {
+    if (suppressionReasonOfItem(item.id)) suppressed += 1;
+    else kept.push(item);
+  }
+  return { items: kept, suppressed };
 }
 
 /** 三个库各自的中文名 —— 清单是给模型读的中文内容,不是界面文案,所以不走 i18n。
@@ -209,7 +234,10 @@ export function writeCollectionManifest(collectionId: string): ManifestResult {
  *     给左栏那棵树用的,清单必须全量,否则模型以为库里就这些;
  *  2. **回收站里的不算**。挂"全部文献"是要 AI 读用户留着的那些,把被丢进回收站的
  *     也塞给它,它就可能去引用一篇用户已经不要了的东西。剔掉多少如实写在开头;
- *  3. **类型说明跟着清单走** —— 标题用注册表的显示名(统一资料库后 kind 是开放的,
+ *  3. **屏蔽规则挡掉的不算** —— 同一条道理,而且用户明确要求屏蔽是硬过滤(见
+ *     `main/library/suppress.ts`)。这一条与上一条**都是"不该进来的东西不进来"**,
+ *     所以剔掉的数合在一处说;
+ *  4. **类型说明跟着清单走** —— 标题用注册表的显示名(统一资料库后 kind 是开放的,
  *     用户自建的类型同样有中文名),`prompt` 有内容就注在开头:模型一打开就知道
  *     "这一类东西是什么、该怎么处理"。
  */
@@ -217,7 +245,7 @@ export function writeKindManifest(kind: LibraryKind): ManifestResult {
   const all = LibraryRepo.listByKind(kind);
   const trashId = trashCollectionId(kind);
   const trashed = new Set(trashId ? LibraryRepo.listByCollection(trashId).map((i) => i.id) : []);
-  const items = all.filter((i) => !trashed.has(i.id));
+  const { items, suppressed } = dropSuppressed(all.filter((i) => !trashed.has(i.id)));
 
   const label = kindDisplayName(kind);
   const lines = [`# 全部${label}`, "", `共 ${items.length} 篇。`, ""];
@@ -232,6 +260,9 @@ export function writeKindManifest(kind: LibraryKind): ManifestResult {
   }
   if (trashed.size > 0) {
     lines.push(`(回收站里另有 ${trashed.size} 篇,不在这次范围内。)`, "");
+  }
+  if (suppressed > 0) {
+    lines.push(`(屏蔽规则挡掉了 ${suppressed} 篇,不在这次范围内。)`, "");
   }
   lines.push(...renderItemsManifest(items));
   return writeManifest(`kind-${kind}.md`, lines, items.length, `全部${label}`);
@@ -275,6 +306,22 @@ export function attachToChat(
 ): { ok: boolean; name?: string; count?: number; error?: string } {
   const prefix = key.slice(0, 2);
   const id = key.slice(2);
+
+  // **屏蔽是硬过滤,而且入口第一个过。** 用户的原话:「就算是我手动挂的一个文件,
+  // 只要是屏蔽状态,也挂不上去」—— 所以这道门在解析出目标之后、写清单之前,入口
+  // 与关联走的是同一个 `checkSuppressed`。不能等挂完再挑:写清单会把文件路径算出来,
+  // 那已经是"读了"。
+  //
+  // 只对 `i:` 判 —— 分类与整库没有"自己所属的集合/类型",它们是一组东西的入口,
+  // 组里的条目各自在展开时被判(见 `writeCollectionManifest` 那边?没有 —— 分类
+  // 清单整份就是给 agent 的索引,逐条过滤是下一步的事)。
+  if (prefix === "i:" && id) {
+    const reason = suppressionReasonOfItem(id);
+    if (reason) {
+      return { ok: false, error: `${reason}被屏蔽了(设置 → 资料库类型)` };
+    }
+  }
+
   let res: ManifestResult;
   if (prefix === "i:" && id) res = writeItemManifest(id);
   else if (prefix === "c:" && id) res = writeCollectionManifest(id);
@@ -293,7 +340,15 @@ export function attachToChat(
 
   const extras = prefix === "i:" && id ? expandLinks(id) : { itemIds: [], failed: 0 };
   let extraFailed = extras.failed;
+  // 挡掉了几条 —— 与"挂不上"分开数:一个是用户自己设的规矩生效了,一个是出了问题。
+  // 都值得说,但话不一样。
+  let extraSuppressed = 0;
   for (const extraId of extras.itemIds) {
+    // **关联过的是同一道门** —— 入口与关联在这里完全平级,没有任何一条享有豁免。
+    if (suppressionReasonOfItem(extraId)) {
+      extraSuppressed += 1;
+      continue;
+    }
     const extraRes = writeItemManifest(extraId);
     if (!extraRes.path) {
       extraFailed += 1;
@@ -303,10 +358,14 @@ export function attachToChat(
     // 去重。这正是用户要的"平级":入口与关联走同一条路,界面分不出也不必分。
     if (!pushAttach(sessionId, `i:${extraId}`, extraRes).ok) extraFailed += 1;
   }
-  if (extraFailed > 0) {
-    // 入口挂上了、有几条关联没挂上(条目刚被删、库外文件被移走)。**如实说**,
-    // 不静默 —— 少挂几条而用户不知道,是"AI 读了什么"说不清的开端。
-    return { ok: true, name: res.name, count: res.count, error: `另有 ${extraFailed} 条关联没能挂上` };
+
+  // 两种"少挂了"都如实说。用户设了屏蔽就该看见它真的起了作用(否则他会怀疑没生效),
+  // 而真的挂不上更要看见 —— 少挂几条而用户不知道,是"AI 到底读了什么"说不清的开端。
+  const notes: string[] = [];
+  if (extraSuppressed > 0) notes.push(`另有 ${extraSuppressed} 条关联被屏蔽规则挡下`);
+  if (extraFailed > 0) notes.push(`另有 ${extraFailed} 条关联没能挂上`);
+  if (notes.length > 0) {
+    return { ok: true, name: res.name, count: res.count, error: notes.join(";") };
   }
   return { ok: true, name: res.name, count: res.count };
 }

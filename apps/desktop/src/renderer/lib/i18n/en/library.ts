@@ -153,6 +153,24 @@ export const en = {
 
   "library.detail.noSelection": "Select a paper on the left to see details",
   "library.detail.meta": "Metadata",
+
+  // Links (the "Links" section in the detail panel)
+  "library.links.title": "Links",
+  "library.links.hint": "Attaching this one brings its links into the chat too.",
+  "library.links.add": "Add link",
+  "library.links.addFromDisk": "From disk",
+  "library.links.addFromDiskHint":
+    "Pick a file outside the library — it is imported as a linked entry; the file itself stays put",
+  "library.links.empty": "No links yet.",
+  "library.links.out": "Links to",
+  "library.links.in": "Linked from",
+  "library.links.remove": "Remove",
+  "library.links.removeConfirm": "Remove this link?",
+  "library.links.suppressed": "Suppressed: {reason}",
+  "library.links.loadFailed": "Could not load links",
+  "library.links.addFailed": "Could not add the link",
+  "library.links.addOk": "Link added",
+  "library.links.noneToAdd": "Nothing left to link",
   "library.detail.overview": "Overview",
   "library.detail.abstract": "Abstract",
   "library.detail.notes": "Notes",

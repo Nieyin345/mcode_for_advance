@@ -1387,6 +1387,17 @@ export const zh = {
   "settings.libraryTypes.section.group": "大类提示词",
   "settings.libraryTypes.section.type": "小类提示词",
   "settings.libraryTypes.section.collection": "集合提示词",
+  "settings.libraryTypes.section.suppress": "屏蔽",
+  "settings.libraryTypes.suppressHint":
+    "被屏蔽的东西**不会**进入 AI 的上下文 —— 哪怕你手动挂它。勾一个大类/小类/集合，它下面的全部内容都跟着被挡。",
+  "settings.libraryTypes.suppressNodes": "按分类屏蔽",
+  "settings.libraryTypes.suppressExts": "按文件类型屏蔽",
+  "settings.libraryTypes.suppressExtPh": "如 pdf，回车添加",
+  "settings.libraryTypes.suppressExtAdd": "添加",
+  "settings.libraryTypes.suppressExtHint":
+    "只对**有文件**的条目生效（Markdown 优先，其次是 PDF）。",
+  "settings.libraryTypes.suppressNone": "还没有屏蔽任何东西。",
+  "settings.libraryTypes.suppressBadKey": "认不出的条目，已忽略：{key}",
   "settings.libraryTypes.ungroupedShort": "未分组",
   "settings.libraryTypes.noCollections": "还没有集合 —— 去左栏建一个。",
   "settings.libraryTypes.collectionSaveFailed": "「{name}」的说明没存上。",

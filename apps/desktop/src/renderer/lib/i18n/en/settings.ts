@@ -1424,6 +1424,17 @@ export const en = {
   "settings.libraryTypes.save": "Save",
   "settings.libraryTypes.saving": "Saving…",
   "settings.libraryTypes.saved": "Saved",
+  "settings.libraryTypes.section.suppress": "Suppression",
+  "settings.libraryTypes.suppressHint":
+    "Suppressed items **never** enter the AI's context — even when you attach them by hand. Ticking a group/type/collection blocks everything under it.",
+  "settings.libraryTypes.suppressNodes": "By category",
+  "settings.libraryTypes.suppressExts": "By file type",
+  "settings.libraryTypes.suppressExtPh": "e.g. pdf, then Enter",
+  "settings.libraryTypes.suppressExtAdd": "Add",
+  "settings.libraryTypes.suppressExtHint":
+    "Applies only to items that have a file (Markdown first, then PDF).",
+  "settings.libraryTypes.suppressNone": "Nothing is suppressed yet.",
+  "settings.libraryTypes.suppressBadKey": "Unrecognized entry, ignored: {key}",
   "settings.libraryTypes.loadFailed": "Failed to load: {error}",
   "settings.libraryTypes.groups": "Groups",
   "settings.libraryTypes.groupsDesc": "The sidebar is split into groups: rename them, pick member types, add, remove and reorder. A type belongs to exactly one group; ungrouped types are hidden in the sidebar (data is kept).",

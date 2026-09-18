@@ -164,6 +164,23 @@ export const zh = {
   // 详情
   "library.detail.noSelection": "从左侧选一篇文献查看详情",
   "library.detail.meta": "元数据",
+
+  // 关联（详情面板里的「关联」区）
+  "library.links.title": "关联",
+  "library.links.hint": "引用这一条时，关联的东西会一起挂进对话。",
+  "library.links.add": "添加关联",
+  "library.links.addFromDisk": "从磁盘添加",
+  "library.links.addFromDiskHint": "挑库外的一个文件 —— 它会以「引用原路径」的方式进库，文件本身不动",
+  "library.links.empty": "还没有关联。",
+  "library.links.out": "关联到",
+  "library.links.in": "被关联",
+  "library.links.remove": "解除",
+  "library.links.removeConfirm": "解除这条关联？",
+  "library.links.suppressed": "已被屏蔽：{reason}",
+  "library.links.loadFailed": "读不出关联",
+  "library.links.addFailed": "添加关联失败",
+  "library.links.addOk": "已添加关联",
+  "library.links.noneToAdd": "没有可关联的东西了",
   "library.detail.overview": "概览",
   "library.detail.abstract": "摘要",
   "library.detail.notes": "笔记",
