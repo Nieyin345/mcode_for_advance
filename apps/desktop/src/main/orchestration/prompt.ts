@@ -13,10 +13,11 @@
  *
  * ## 固定条件(输入框上方那排下拉框)**不**在这里拼
  *
- * 它们随**运行的最初那条提示词**进主节点,一次,之后不再重复 —— 注入点在
- * `orchestration/runner.ts` 的 `startWorkflowRun`(拼法见 `main/lib/searchPrefs.ts`
- * 的 `nodeCriteriaPrompt`)。这里只负责工作流的**正文**:提示词型工作流的说明文字。
- * 图型工作流没有正文(流程在节点里),解析出来是空,提供方拿到的就是 `undefined`。
+ * 它们随**那次对话第一轮**的运行提示词进主节点,一次 —— 之后它已经在上下文里,不再
+ * 重复。注入点在 `orchestration/runner.ts` 的 `startWorkflowRun`(拼法见
+ * `main/lib/searchPrefs.ts` 的 `nodeCriteriaPrompt`)。这里只负责工作流的**正文**:
+ * 提示词型工作流的说明文字。图型工作流没有正文(流程在节点里),解析出来是空,提供方
+ * 拿到的就是 `undefined`。
  */
 import { getWorkflowPrompt } from "./library.js";
 

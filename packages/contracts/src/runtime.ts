@@ -38,6 +38,21 @@ export interface NodeRunInput {
   mcpServerNames: string[];
   pluginNames: string[];
   returnMode: NodeReturnMode;
+  /**
+   * **这一段提示词要不要在目标对话里当成"用户说的一句话"回声出去。**
+   *
+   * 缺省 `true` —— 那是「对话节点」的定义:它的指令**就是**一句用户会说的话
+   * (见 `@contracts/nodeType` 里 `CONVERSATION_INSTRUCTION_HELP`),所以聊天框里
+   * 该看得见它。
+   *
+   * 入口节点(主代理)是**唯一**一个给 `false` 的:它跑在主对话里(跑法与对话节点
+   * 相同),但那一段 `prompt` 是**代码拼的脚手架** —— 流程位置、用户的请求、上游
+   * 产出、产出要求,一大段用户没打过的字。原样贴进聊天框,他看到的是一屏莫名其妙
+   * 的话。而用户真正的原话由 `startWorkflowRun` 回声过了(跨客户端同步、编辑标记、
+   * 本机乐观追加的去重都挂在那一台上,见 `RuntimeManager.echoUserMessage`),所以
+   * 这里不再回声,聊天框里正好一条。
+   */
+  echoUserMessage?: boolean;
   providerId?: string;
   command?: { command: string; timeoutMs: number; input?: unknown };
   code?: {

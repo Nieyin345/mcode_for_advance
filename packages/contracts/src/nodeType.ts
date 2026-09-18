@@ -343,15 +343,12 @@ export const NODE_PARAM_KINDS = [
   "dir", // 目录路径
   "ref", // 从**这台机器上有什么**里挑 —— 哪些模型、哪些技能……(见 NODE_PARAM_REF_SOURCES)
   "variables", // 一张「名字 + 示例」的表(节点产出的变量,见 @contracts/outputConstraint)
-  // 一张「名字 + 内容 + 解释」的表 —— 主对话入口节点的**输入选项**:每行会变成聊天
-  // 输入框上方那个下拉框里的一项,选中后内容插到光标处、解释注入提示词(见
-  // `main/orchestration/runner.ts` 的注入段)。与下面 `NodeParamSpecSchema` 的
-  // `options` 字段(select 的候选清单)只是撞名,两回事。
-  "options",
-  // 一组**下拉条件** —— 主对话入口节点的**固定条件**:每一行(条件名 + 一串候选值)
-  // 变成聊天输入框上方的一个下拉框,选中的值**每轮**随工作流提示词注入("一贯的习惯,
-  // 不要再问"那套)。与 `select` 的区别:`select` 是**一个**下拉、候选写在清单里、
-  // 谁都不注入;`selects` 是**一张条件表**、候选写在参数值里、值要进提示词。
+  // 一组**下拉条件** —— 主对话入口节点的**固定条件**:每一行(条件名 + 一串候选值 +
+  // 一句可选的解释)变成聊天输入框上方的一个下拉框,选中的值随**那次对话第一轮**的
+  // 工作流提示词注入("一贯的习惯,不要再问"那套)。与 `select` 的区别:`select` 是
+  // **一个**下拉、候选写在清单里、谁都不注入;`selects` 是**一张条件表**、候选写在参数
+  // 值里、值要进提示词。输入框上方只有这一排东西 —— 曾经并排的「输入选项」机制
+  // (kind: "options")已删,它就是 `selects` 少一个解释字段的旧版本。
   "selects",
 ] as const;
 export type NodeParamKind = (typeof NODE_PARAM_KINDS)[number];
@@ -440,6 +437,23 @@ export const NodeParamSpecSchema = z.object({
    *  本来就是两件事 —— 一个类目表(「要哪几类上下文」)是多选的,而它的候选是固定的,
    *  没有任何理由逼它退化成 `ref`。 */
   multiple: z.boolean().optional(),
+  /**
+   * `kind: "ref"` 专用:**候选还要看另一个参数的脸色** —— 那个参数的 key 写在这里。
+   *
+   * 现在只有一处用它:「模型」的候选跟着「引擎」走。这两个参数都是引用型,而模型的
+   * 候选本来就是**按引擎分家**的 —— `piAvailableModels` 是 pi 的、`codexAvailableModels`
+   * 是 codex 的、`builtinModels` 是当前引擎的、自建端点又各自一份。从前那是四份列表
+   * 拍平成一个下拉,于是用户看到的是"这些模型和上面那个引擎毫无关系",选中一个不属于
+   * 该引擎的 id 只会在**跑的时候**失败(`runner.ts` 的 `createNodeSession` 拿它去解析,
+   * 解析不出来就没有模型可用)。
+   *
+   * 级联之后「引擎」那一格的意思变成"这一步在哪儿跑",「模型」那一格变成"在那个引擎
+   * 里挑哪个" —— 后者留空即"由那个引擎自己定"。
+   *
+   * ⚠️ **被指的那个参数必须排在这一条前面。** 值从**已经渲染过的**参数里读(见
+   * `ParamField` 的 `resolvedFrom`),排反了就会永远读到"还没选"。
+   */
+  fromParam: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]*$/).optional(),
   /** 只在 `runner.kind === "command"` 时有意义,见 {@link NodeParamBindingSchema}。 */
   bind: NodeParamBindingSchema.optional(),
 });
@@ -475,7 +489,16 @@ export const NodeRunnerSchema = z.discriminatedUnion("kind", [
    * ——别人拿到你的图,可没有你那半小时的聊天记录。
    *
    * 但有些步骤**恰恰需要那段聊天**:"按刚才聊定的思路改第三章"。隔离节点做不到这件事,
-   * 所以有这一种。
+   * 所以有这一种 —— 图的**入口节点**(主代理)也在其中,因为它就是用户正在说话的那个
+   * 对话框。
+   *
+   * ## 用户会看见的是哪一段(回声)
+   *
+   * 指令原样回声成一条用户消息,是给**对话节点**定的:它的指令本来就是"一句用户会说的
+   * 话"。入口节点不是 —— 它拿到的 `prompt` 是代码拼的脚手架(流程位置、用户的请求、
+   * 上游产出、产出要求)。所以 `NodeRunInput.echoUserMessage` 可以让执行器**不发这个
+   * 回声**:入口节点置 `false`,用户真正打的那句话由 `startWorkflowRun` 回声(见那里的
+   * `userMessage`)。模型读到的仍然是完整的那一段,只是聊天框里不多出一屏他没说过的话。
    *
    * ## 三个后果,都是这个选择的必然
    *
@@ -483,8 +506,13 @@ export const NodeRunnerSchema = z.discriminatedUnion("kind", [
    *    聊天框里看见的是**一轮正常对话**(一条用户消息 + 一条回复),外加流程图那一张
    *    步骤卡片。这一种节点**没有"看过程"按钮**:过程就是聊天本身。
    * 2. **上下文只增不减。** 这一步读过的文件、工具的每一次返回,都永久留在主对话里。
-   * 3. **节点上那些"换引擎 / 换模型 / 限技能"的配置对它没有意义** —— 它用的就是主对话
-   *    当前这一套。所以这种节点的参数表里只有「指令」。
+   * 3. **节点上那些"换引擎 / 换模型 / 限技能 / 限 MCP / 限插件"的配置对它没有意义** ——
+   *    它用的就是主对话当前这一套,所以它的参数表里不收那一组,只有「指令」加
+   *    「收什么 / 交什么」(资料、流程记录、产出约定)。
+   *
+   * 图的**入口节点**(主代理 `mcode.main`)用的也是这一种 —— 它**就是主对话**,用户
+   * 那句话进来的那一格。两者跑法一模一样,差别只在语义与参数表:入口多一格长在输入框
+   * 上方的配置(「固定条件」,见 `NODE_CRITERIA_PARAM_KEY`)。
    *
    * ## 它不产生"新的回合"
    *
@@ -577,22 +605,14 @@ export type NodeRunnerKind = NodeRunner["kind"];
 export const NODE_PROMPT_PARAM_KEY = "instruction";
 
 /**
- * 主对话入口节点的**输入选项**参数键(`kind: "options"`) —— 每行是聊天输入框上方
- * 那个下拉框里的一项:`{ name: 名字, content: 内容, note?: 解释 }`。选中后内容插进
- * 输入框光标处,解释随这次运行进提示词(见 `main/orchestration/runner.ts`)。
+ * 主对话入口节点的**固定条件**参数键 —— 聊天输入框上方那一排下拉框的条目表,也是
+ * 那一排东西的**唯一定义**(曾经并排的「输入选项」机制已删,2026-09-19)。
  *
- * 和 {@link NODE_PROMPT_PARAM_KEY} 同一条约定:不是 schema 上的字段,是一个**键名**。
- * 只有随应用发布的入口节点(`mcode.main`)带这个参数 —— 那个下拉框陪着"用户那句话
- * 进图的第一站",别的节点没有这个位置。
- */
-export const NODE_OPTIONS_PARAM_KEY = "options";
-
-/**
- * 主对话入口节点的**固定条件**参数键 —— 聊天输入框上方那一排下拉框的条目表。
- *
- * 值是一张 `{ name: 条件名, choices: 候选值[] }` 的表:每一行变成输入框上方**一个**
- * 下拉框,选中的值随**每次运行最开头**的提示词注入**一次**(`main/lib/searchPrefs.ts`
- * 的 `nodeCriteriaPrompt`,注入点在 `runner.ts` 的 `startWorkflowRun`),之后不再重复。
+ * 值是一张 `{ name: 条件名, choices: 候选值[], note?: 解释 }` 的表:每一行变成输入框
+ * 上方**一个**下拉框,选中的值随**那次对话第一轮**的提示词注入**一次**
+ * (`main/lib/searchPrefs.ts` 的 `nodeCriteriaPrompt`,注入点在 `runner.ts` 的
+ * `startWorkflowRun`),之后它已经在上下文里,不再重复注入。`note` 是给模型的一句
+ * 解释(这个条件是什么意思、按哪个口径执行),有就一并注入。
  * 它接过了文献检索那条**写死的筛选条**:那四个条件(时间范围 /
  * 期刊层次 / 影响因子 / 每源条数)现在是内置检索图主节点上的预填数据,用户可以改候选、
  * 加条件、删条件 —— 定义在节点上,界面只是渲染。
@@ -757,6 +777,34 @@ export function returnModeOf(params: Record<string, unknown>): NodeReturnMode {
  * "这个引擎没装"失败,而不是存不进去(同 `validateNodeParams` 对 `ref` 的处理)。
  */
 export const NODE_PROVIDER_PARAM_KEY = "provider";
+
+/**
+ * `runner.kind === "prompt"` 的节点,**这一步用哪个模型**的参数键。
+ *
+ * 留空 = 用**这个引擎**自己决定的那个(引擎跟着 `provider` 走,那一格也留空就是跟着
+ * 主对话走)。和 {@link NODE_PROVIDER_PARAM_KEY} 是一对:引擎管"在哪儿跑",模型管
+ * "在那个引擎里挑哪个"。**同一个模型 id 在不同引擎下不通用**,所以两格都留空是最稳的
+ * 写法。
+ *
+ * ⚠️ 引擎与模型在清单里的**顺序是有意义的**:模型的候选按引擎收窄(见
+ * `NodeParamSpecSchema.fromParam`),而候选是照已经渲染过的参数算的 —— 引擎必须排在
+ * 前面。
+ */
+export const NODE_MODEL_PARAM_KEY = "model";
+
+/**
+ * 「读流程记录」那一格的说明。
+ *
+ * **导出**是因为它有两个消费者:子 agent 的 `ioParams()`、以及跑在主对话里的那两种
+ * 节点(`mainParams()` / 对话节点的清单)。同一件事在两处各写一遍,迟早会漂成两句
+ * 不一样的话,而用户读到的就是两个不同的说法。
+ */
+export const NODE_FLOW_RECORD_HELP =
+  "开启后读到的是本流程至今每一步的产出,以及用户在各分支处做过的选择,而非仅直接上游。上下文会变长,按需开启;环上的步骤默认开启。";
+
+/** 「产出变量」那一格的说明。同上,**导出**给多个参数表共用。 */
+export const NODE_OUTPUT_VARS_HELP =
+  "以表格逐项声明本步骤要交出的内容。声明之后,下游才能用 `{{某步.变量名}}` 取到对应的值。";
 
 /** 从节点参数里取引擎 id。留空 = 跟着对话走。形状容忍度同 {@link skillNamesOf}。 */
 export function providerIdOf(params: Record<string, unknown>): string | undefined {
@@ -1066,6 +1114,40 @@ export function isNodeRunnable(manifest: NodeTypeManifest): boolean {
   return true;
 }
 
+/**
+ * 这个节点上的**「能力」那一项算不算数**。
+ *
+ * ## 只有 `prompt` 真正在用它
+ *
+ * `createNodeSession` 拿节点覆盖值或清单默认值推**权限模式**
+ * (`permissionModeForCapability`)—— 那条路只有隔离跑法的节点走得到。另外几种都只是
+ * 占位,各处的注释也各自写明了:
+ *
+ * | 跑法 | 这个值管什么 |
+ * |---|---|
+ * | `prompt`(子 agent) | **真的管** —— 推权限模式:`read` → 写操作弹审批、`write` → 直接改、`exec`/`net` → 默认那套 |
+ * | `conversation`(主代理 / 对话节点) | 不管 —— 跑在主对话里,权限用的是**主对话当前那一套** |
+ * | `branch` / `trigger` | 不管 —— 它们自己不跑任何东西 |
+ * | `command` / `code` | 不管 —— 起的是**进程**,而进程没有"权限模式"这回事:这一步能做什么由命令里写的那一条决定,改这个下拉框改不动它 |
+ *
+ * ## 为什么这一条要收口成一个函数
+ *
+ * 清单里那几个 `capability` 是**为了形状完整**填的(schema 必填),其不生效这件事在
+ * 主进程的注释里写得很清楚 —— 但**界面不能照抄那句话**:给一个不生效的字段摆一个下拉
+ * 框,等于承诺了一件做不到的事。而"摆不摆"这个判断有两个地方要做(检查器的表单、
+ * 卡片上的那枚标签),两处给不出同一个答案时的现象是:**卡片上写着 `read`,检查器里却
+ * 让你把它改成 `write`,而那个 `write` 不起任何作用** —— 用户按界面说的做了,行为一点
+ * 没变,还没有任何地方解释为什么。
+ *
+ * ## `manifest` 缺席时按**算数**处理
+ *
+ * 类型没装(一份别人分享来的图)时那份清单根本没读过,**不能断言它不生效**。用户把
+ * 类型装上之后,这时显示出来的值就该立刻是对的那个 —— 所以宁可先给控件。
+ */
+export function showsNodeCapability(manifest: NodeTypeManifest | undefined): boolean {
+  return manifest === undefined || manifest.runner.kind === "prompt";
+}
+
 /* ── 清单 ── */
 
 export const NodeTypeManifestSchema = z.object({
@@ -1332,27 +1414,9 @@ export function validateNodeParams(
         return { ok: false, error: `参数「${spec.label}」里有一项不是「名字 + 示例」` };
       }
     }
-    // 输入选项表:一项一项的 `{ name, content, note? }`。**只查形状,容忍空行** ——
-    // 编辑态里"刚点了加号还没填"的那一行必须存得下来(和 `varRows` 的读法同一条),
-    // 名字空的行到了聊天那边自然不进下拉框。
-    if (spec.kind === "options") {
-      if (!Array.isArray(value)) {
-        return { ok: false, error: `参数「${spec.label}」应该是一张表` };
-      }
-      const bad = value.some(
-        (v) =>
-          typeof v !== "object" ||
-          v === null ||
-          typeof (v as { name?: unknown }).name !== "string" ||
-          typeof (v as { content?: unknown }).content !== "string",
-      );
-      if (bad) {
-        return { ok: false, error: `参数「${spec.label}」里有一项不是「名字 + 内容」` };
-      }
-    }
-    // 固定条件表:一项一项的 `{ name, choices[] }`。**只查形状,容忍空行** —— 编辑态里
-    // "刚点了加号还没填"的那一行必须存得下来;候选值空一行(用户打了个回车)也不算错,
-    // 渲染端会把空串滤掉。
+    // 固定条件表:一项一项的 `{ name, choices[], note? }`。**只查形状,容忍空行** —— 编辑
+    // 态里"刚点了加号还没填"的那一行必须存得下来;候选值空一行(用户打了个回车)也不算
+    // 错,渲染端会把空串滤掉。`note`(给模型的一句解释)可选:老存档没有它,没填也合法。
     if (spec.kind === "selects") {
       if (!Array.isArray(value)) {
         return { ok: false, error: `参数「${spec.label}」应该是一张表` };
@@ -1363,7 +1427,9 @@ export function validateNodeParams(
           v === null ||
           typeof (v as { name?: unknown }).name !== "string" ||
           !Array.isArray((v as { choices?: unknown }).choices) ||
-          (v as { choices: unknown[] }).choices.some((c) => typeof c !== "string"),
+          (v as { choices: unknown[] }).choices.some((c) => typeof c !== "string") ||
+          !((v as { note?: unknown }).note === undefined ||
+            typeof (v as { note?: unknown }).note === "string"),
       );
       if (bad) {
         return { ok: false, error: `参数「${spec.label}」里有一项不是「条件名 + 一串候选值」` };
@@ -1395,7 +1461,6 @@ export function defaultParamsOf(manifest: NodeTypeManifest): Record<string, unkn
 function isListKind(spec: NodeParamSpec): boolean {
   return (
     spec.kind === "variables" ||
-    spec.kind === "options" ||
     spec.kind === "selects" ||
     (spec.multiple === true && (spec.kind === "ref" || spec.kind === "select"))
   );
@@ -1432,13 +1497,10 @@ function describeParam(p: NodeParamSpec): string {
     p.kind === "variables"
       ? `
       值的形状:[{ name: 变量名, example: 示例 }]`
-      : p.kind === "options"
+      : p.kind === "selects"
         ? `
-      值的形状:[{ name: 选项名, content: 选中后插进输入框的内容, note: 给模型的一句解释 }]`
-        : p.kind === "selects"
-          ? `
-      值的形状:[{ name: 条件名, choices: ["候选值", ...] }] —— 一行一个下拉框,候选值就是下拉里能选的那些`
-          : "";
+      值的形状:[{ name: 条件名, choices: ["候选值", ...], note: 给模型的一句解释(可选) }] —— 一行一个下拉框,候选值就是下拉里能选的那些`
+        : "";
   return `${head}${help}${options}${shape}`;
 }
 
@@ -1472,7 +1534,11 @@ export function renderNodeTypeCatalog(entries: NodeTypeEntry[]): string {
   for (const entry of [...entries].sort((a, b) => a.id.localeCompare(b.id))) {
     const m = entry.manifest;
     lines.push(`- \`${m.id}\` **${m.name}** —— ${m.description ?? "无说明"}`);
-    lines.push(`  能力:${m.capability}`);
+    // 能力那一项**只在它真的算数时才给**。模型是照着这段字建图的:给它一个在那种
+    // 跑法上不起作用的值,它会写进 `workflow_save` 的载荷里,以为自己在配置什么
+    // (见 `showsNodeCapability`)。分支与触发器什么都不跑、对话节点用主对话那套权限、
+    // 命令与 code 起的是进程 —— 这几种上那个值是占位。
+    if (showsNodeCapability(m)) lines.push(`  能力:${m.capability}`);
     if (m.params.length === 0) {
       lines.push(`  参数:无`);
     } else {

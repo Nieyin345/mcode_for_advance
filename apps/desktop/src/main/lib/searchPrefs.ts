@@ -17,12 +17,13 @@
  * 节点上有什么条件,这里就注什么条件 —— 曾经那条写死四下拉、只认 `search.*` 旧设置键
  * 的老路径已经拆掉,统一走这一条。
  *
- * ## 注入时机:随**运行的最初那条提示词**进主节点,一次
+ * ## 注入时机:随**那次对话第一轮**的运行提示词进主节点,一次
  *
  * 调用方是 `orchestration/runner.ts` 的 `startWorkflowRun`:条件拼进运行最初的提示词,
- * 交给入口(主)节点 —— **一次**,之后不再重复;下游步骤从上游产出里拿条件(内置检索
- * 图的主节点被要求把这几条原样写进产出,见 `builtins.ts` 的指令)。节点会话的系统提示词
- * **不**再携带这段(那是过去"每个节点都注一遍"的老做法)。
+ * 交给入口(主)节点 —— **只在对话还没有任何消息的那一轮注入**;之后它已经在上下文
+ * 里,不再重复(下游步骤从上游产出里拿条件,内置检索图的主节点被要求把这几条原样
+ * 写进产出,见 `builtins.ts` 的指令)。节点会话的系统提示词**不**再携带这段(那是过去
+ * "每个节点都注一遍"的老做法)。
  *
  * ## 一条硬规矩:查不了就说查不了
  *
@@ -34,10 +35,12 @@ import { journalDbPath } from "@main/library/journalRank.js";
 import { SettingRepo } from "@main/store/repositories.js";
 import { WORKFLOW_NODE_PREFS_SETTING_PREFIX } from "@contracts/ipc";
 
-/** 固定条件表在节点参数里的形状(见 `@contracts/nodeType` 的 `NODE_CRITERIA_PARAM_KEY`)。 */
+/** 固定条件表在节点参数里的形状(见 `@contracts/nodeType` 的 `NODE_CRITERIA_PARAM_KEY`)。
+ *  `note` 是这个条件的解释(它是什么意思、按哪个口径执行),可选 —— 老存档没有。 */
 export interface CriteriaCondition {
   name: string;
   choices: string[];
+  note?: string;
 }
 
 /**
@@ -74,7 +77,11 @@ export function nodeCriteriaPrompt(workflowId: string, conditions: CriteriaCondi
     if (!cond.name) continue;
     const value = (values[cond.name] ?? "").trim();
     if (value === "" || value === "不限") continue;
-    lines.push(`- ${cond.name}:${withYearNote(value)}`);
+    // 有解释的条件把解释挂在**行尾**,不能挤在值后面 —— 值那一格是 `withYearNote`
+    // 的地盘(它要整串恰好是「近N年」才换得出绝对年份),挤进去换算就静默失效了。
+    const note = (cond.note ?? "").trim();
+    const line = `- ${cond.name}:${withYearNote(value)}`;
+    lines.push(note === "" ? line : `${line} —— ${note}`);
   }
   if (lines.length === 0) return "";
 
@@ -108,11 +115,37 @@ export function nodeCriteriaPrompt(workflowId: string, conditions: CriteriaCondi
   return parts.join("\n");
 }
 
-/** 「近 N 年」→ 追加绝对年份。别的说法原样返回。 */
+/** 「近 N 年」→ 追加绝对年份。别的说法原样返回。
+ *
+ *  **两种数字写法都要认。** 内置检索图预填的候选值是**汉字数字**(`近三年` / `近五年` /
+ * `近十年`,见 `builtins.ts`),而这里原先只认 ASCII 数字 —— 于是换算对随应用发布的那
+ * 张图**从来没生效过**(相对词看起来明确,模型算错一年的事出过,这条注释写的就是它)。
+ * 认不出来就原样返回,不猜。 */
 function withYearNote(value: string): string {
-  const m = /^近(\d+)年$/.exec(value);
-  if (!m) return value;
-  const n = Number.parseInt(m[1] ?? "", 10);
-  if (!Number.isFinite(n) || n <= 0) return value;
+  const m = /^近(.+)年$/.exec(value);
+  const raw = m?.[1];
+  if (raw === undefined) return value;
+  const n = /^\d+$/.test(raw) ? Number.parseInt(raw, 10) : chineseNumber(raw);
+  if (n === null || !Number.isFinite(n) || n <= 0) return value;
   return `${value}(即 ${new Date().getFullYear() - n} 年以后)`;
+}
+
+/**
+ * 把 `三` / `十` / `十五` / `二十` / `二十三` 这类中文数字读成一个整数。
+ * **认不出来返回 `null`** —— 调用方原样返回,不猜(「近些年」不该被当成某个数字)。
+ */
+function chineseNumber(raw: string): number | null {
+  const DIGITS: Record<string, number> = {
+    一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9,
+  };
+  if (raw === "十") return 10;
+  const at = raw.indexOf("十");
+  if (at < 0) return DIGITS[raw] ?? null;
+  const head = raw.slice(0, at);
+  const tail = raw.slice(at + 1);
+  const tens = head === "" ? 1 : (DIGITS[head] ?? null);
+  if (tens === null) return null;
+  if (tail === "") return tens * 10;
+  const ones = DIGITS[tail];
+  return ones === undefined ? null : tens * 10 + ones;
 }

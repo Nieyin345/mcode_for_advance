@@ -98,8 +98,9 @@ import { WorkflowListRow } from "@renderer/components/settings/workflows/Workflo
 import { WorkflowNodeCard } from "@renderer/components/settings/workflows/WorkflowNodeCard.js";
 import { WorkflowCanvas } from "@renderer/components/settings/workflows/WorkflowCanvas.js";
 import { BranchChoiceCard } from "@renderer/components/chat/BranchChoiceCard.js";
-import { BRANCH_STOP_CHOICE } from "@contracts/nodeType";
+import { BRANCH_STOP_CHOICE } from "@contracts/nodeType";import type { RuntimeEvent } from "@contracts/runtime";import {  __applyWorkflowLiveEvent,  __resetWorkflowLive,  __workflowLiveSnapshot,  dismissSettled,} from "@renderer/lib/workflowLive.js";import type {  LiveNode,  WorkflowLiveSnapshot,} from "@renderer/lib/workflowLive.js";
 import { WorkflowsPanel } from "@renderer/components/settings/workflows/WorkflowsPanel.js";
+import { NodeTypesView } from "@renderer/components/settings/workflows/NodeTypesView.js";
 import {
   isBuiltinWorkflowId,
   workflowDisplayDescription,
@@ -185,11 +186,13 @@ const AGENT_MANIFEST: NodeTypeManifest = {
   capability: "read",
   params: [
     { key: "instruction", kind: "longtext", label: "指令", required: true, help: "这一步要做什么。" },
-    { key: "model", kind: "ref", from: "models", label: "模型" },
-    // 多选那种形态 —— 技能就是这个形状(`skills` + `multiple`)。
-    { key: "skills", kind: "ref", from: "skills", multiple: true, label: "技能" },
     // 引擎(提供方)。和真清单一样是 `ref: providers`,单选。
     { key: "provider", kind: "ref", from: "providers", label: "引擎" },
+    // 模型。**顺序和 `fromParam` 都照着真清单**:候选跟着上面那格选定的引擎收窄,而
+    // 候选是照**已经渲染过的**参数算的 —— 顺序反了,这一格就永远读到"还没选"。
+    { key: "model", kind: "ref", from: "models", fromParam: "provider", label: "模型" },
+    // 多选那种形态 —— 技能就是这个形状(`skills` + `multiple`)。
+    { key: "skills", kind: "ref", from: "skills", multiple: true, label: "技能" },
     // 产出那两项(和真清单一致,见 `@contracts/outputConstraint`)。**夹具要跟真清单一个
     // 形状**:少了它们,下面"表单有没有把产出变量渲染出来"就没得测了。
     { key: "outputContract", kind: "longtext", label: "期望产出" },
@@ -262,7 +265,7 @@ const CONVERSATION_ENTRY: NodeTypeEntry = {
 };
 
 const CATALOG: NodeTypeCatalog = {
-  entries: [AGENT_ENTRY, COMMAND_ENTRY, BRANCH_ENTRY],
+  entries: [AGENT_ENTRY, COMMAND_ENTRY, BRANCH_ENTRY, CONVERSATION_ENTRY],
   problems: [],
 };
 
@@ -406,21 +409,6 @@ check("多选里混进数字 → 拒", !validateNodeParams(AGENT_MANIFEST, { ins
 // 存盘时按"本机装没装"拒绝,等于让工作流没法分享(同"类型缺失不算错误"那条)。
 check("名字本机没装也放行", validateNodeParams(AGENT_MANIFEST, { instruction: "x", skills: ["ghost"] }).ok);
 
-console.log("\noptions 参数(输入选项那张表的形状校验)");
-// 夹具:在 agent 清单上多声明一个 `options` 参数 —— 真清单里只有主代理带它
-// (见 `nodeTypes.ts` 的 `optionsParam`),但校验只认 kind,不认"哪种节点"。
-const OPT_MANIFEST: NodeTypeManifest = {
-  ...AGENT_MANIFEST,
-  params: [...AGENT_MANIFEST.params, { key: "options", kind: "options", label: "输入选项" }],
-};
-check("名字+内容 → 通过", validateNodeParams(OPT_MANIFEST, { instruction: "x", options: [{ name: "深挖", content: "把这篇讲透" }] }).ok);
-check("带解释也通过(note 可选)", validateNodeParams(OPT_MANIFEST, { instruction: "x", options: [{ name: "深挖", content: "c", note: "n" }] }).ok);
-check("容忍没填完的空行", validateNodeParams(OPT_MANIFEST, { instruction: "x", options: [{ name: "", content: "", note: "" }, { name: "深挖", content: "c" }] }).ok);
-check("给了字符串 → 拒", !validateNodeParams(OPT_MANIFEST, { instruction: "x", options: "深挖" }).ok);
-check("一项缺名字 → 拒", !validateNodeParams(OPT_MANIFEST, { instruction: "x", options: [{ content: "c" }] }).ok);
-check("一项缺内容 → 拒", !validateNodeParams(OPT_MANIFEST, { instruction: "x", options: [{ name: "深挖" }] }).ok);
-check("数组里混进字符串 → 拒", !validateNodeParams(OPT_MANIFEST, { instruction: "x", options: ["深挖"] }).ok);
-
 console.log("\nselects 参数(固定条件那张表的形状校验)");
 // 夹具:在 agent 清单上多声明一个 `selects` 参数 —— 真清单里只有主代理带它
 // (见 `nodeTypes.ts` 的 `criteriaParam`),但校验只认 kind,不认"哪种节点"。
@@ -429,11 +417,73 @@ const SEL_MANIFEST: NodeTypeManifest = {
   params: [...AGENT_MANIFEST.params, { key: "criteria", kind: "selects", label: "固定条件" }],
 };
 check("条件名+候选值 → 通过", validateNodeParams(SEL_MANIFEST, { instruction: "x", criteria: [{ name: "时间范围", choices: ["不限", "近三年"] }] }).ok);
+check("带解释也通过(note 可选)", validateNodeParams(SEL_MANIFEST, { instruction: "x", criteria: [{ name: "时间范围", choices: ["不限"], note: "T1 = Q1 或中科院 1 区" }] }).ok);
+check("解释不是字符串 → 拒", !validateNodeParams(SEL_MANIFEST, { instruction: "x", criteria: [{ name: "时间范围", choices: ["不限"], note: 3 }] }).ok);
 check("候选值不是字符串数组 → 拒", !validateNodeParams(SEL_MANIFEST, { instruction: "x", criteria: [{ name: "时间范围", choices: ["不限", 3] }] }).ok);
 check("候选值不是数组 → 拒", !validateNodeParams(SEL_MANIFEST, { instruction: "x", criteria: [{ name: "时间范围", choices: "不限" }] }).ok);
 check("一项缺条件名 → 拒", !validateNodeParams(SEL_MANIFEST, { instruction: "x", criteria: [{ choices: ["不限"] }] }).ok);
 check("容忍没填完的空行", validateNodeParams(SEL_MANIFEST, { instruction: "x", criteria: [{ name: "", choices: [] }, { name: "时间范围", choices: ["不限"] }] }).ok);
 check("给了字符串 → 拒", !validateNodeParams(SEL_MANIFEST, { instruction: "x", criteria: "时间范围" }).ok);
+
+// ── 编辑态那对读写必须**互逆**(渲染成 DOM 之后再看一遍)────────────────────────
+//
+// 用户报的原话:「输入选项**不能回车**,说明写的是一行一个选项」。实测的机理:编辑框里
+// 敲下的那个回车在读侧被过滤掉(空串不是候选值),数组塌成一条,React 再把 props 写回
+// 框里 —— 光标那一行没了,后面打的字接到上一行尾巴上(打「不限」回车再打「近三年」,
+// 框里是 `不限近三年`)。所以断言的是**框里的文本一字不差地端回来**,而不只是"渲染出了
+// 一个 textarea"。
+//
+// 夹具走 `withNodeParams` 把条件表挂到 B 上(`DIAMOND` 里 B 是 agent 节点,本来没有
+// criteria),再照 `renderInspector` 的调用形状渲染一遍。
+const renderCriteria = (criteria: unknown[]): string =>
+  withLocale("zh", () =>
+    html(
+      createElement(NodeInspector, {
+        doc: withNodeParams(DIAMOND, "B", { criteria }),
+        catalog: {
+          entries: [{ ...AGENT_ENTRY, manifest: SEL_MANIFEST }],
+          problems: [],
+        },
+        profiles: [],
+        profileError: null,
+        selectedNodeId: "B",
+        purpose: "workflow",
+        onUpdateNode: () => {},
+        onUpdateWorkflow: () => {},
+        onRemoveNode: () => {},
+        onSetDependency: () => {},
+        onUpdateEdge: () => {},
+        onSaveProfile: async () => {},
+        onRemoveProfile: async () => {},
+        onRemoveWorkflow: async () => {},
+      } as never),
+    ),
+  );
+
+const critPanel = renderCriteria([
+  { name: "时间范围", choices: ["不限", "近三年"], note: "近N年按当前年份往前推" },
+]);
+check("条件名端上来了", critPanel.includes('value="时间范围"'), critPanel.slice(critPanel.indexOf("固定条件"), critPanel.indexOf("固定条件") + 400));
+check("候选值是**多行框**(不是单行输入)", critPanel.includes("<textarea"), critPanel);
+check("候选值按行端回来", critPanel.includes(">不限\n近三年</textarea>"), critPanel);
+check("解释也端回来", critPanel.includes(">近N年按当前年份往前推</textarea>"), critPanel);
+
+// **编辑到一半的空行必须留得住** —— 那正是用户按下的那个回车。留不住就是"按回车没反应"。
+const halfEdited = renderCriteria([{ name: "时间范围", choices: ["不限", "", "近三年"] }]);
+check("候选值里的空行原样端回来(按下的回车)", halfEdited.includes(">不限\n\n近三年</textarea>"), halfEdited);
+const blankRow = renderCriteria([{ name: "", choices: [], note: "" }]);
+check("刚点「加一条」出来的空行不丢", blankRow.includes("<textarea"), blankRow);
+check("空行的删除按钮也在", blankRow.includes('aria-label="删掉这一条"'), blankRow);
+
+// 老存档里的 `choices` 是字符串(被上面那个 bug 写坏的),读侧照旧拆行。
+check("字符串形状的老值照样读出来", renderCriteria([{ name: "旧", choices: "不限\n近三年" }]).includes(">不限\n近三年</textarea>"));
+
+// **盘上留着的空候选值不该在下拉里变成空选项**,也不该被注入 —— 过滤在显示那一侧。
+// 这里断言的是那一侧的正则口径(`SearchFilterBar` 的 `criteriaRowsOf`):空串和纯空白
+// 都滤掉,有内容的原样留(不 trim,候选值里的空格是用户写的)。
+const blankFilter = (choices: string[]): string[] =>
+  choices.filter((c) => c.trim() !== "");
+eq("下拉里的空候选值滤掉了", blankFilter(["不限", "", "  ", "近三年"]).join(","), "不限,近三年");
 
 console.log("\n引用型清单的校验(装进来的时候就挡住)");
 const refManifest = (params: unknown[]): unknown => ({ ...AGENT_MANIFEST, params });
@@ -506,6 +556,21 @@ check(
 // 下拉的候选值同理:模型看不到那个选择框,不列出来只能自己编一个,而校验会拒掉。
 check("下拉的候选值列出来", bothText.includes("可选值:a"), bothText);
 check("下拉也有中文名", bothText.includes("**目标**"), bothText);
+
+// 能力那一项**只在它真的算数时才给**(见 `showsNodeCapability`)。这份目录是模型建图的
+// 唯一依据:给它一个在那种跑法上不起作用的值,它会郑重其事地写进 `workflow_save` 的
+// 载荷里 —— 而那个值改不动任何东西。
+{
+  const agentCatalog = renderNodeTypeCatalog([AGENT_ENTRY]);
+  check("目录:子 agent 的能力给出来(它真的管用)", agentCatalog.includes("能力:read"));
+  const branchCatalog = renderNodeTypeCatalog([BRANCH_ENTRY]);
+  check("目录:分支不给能力(那个值管不着它)", !branchCatalog.includes("能力:"), branchCatalog);
+  // 但**别的行不能跟着一起丢**:目录是给模型读数用的,少一行它就少知道一件事。
+  check("目录:分支的执行方式还在", branchCatalog.includes("branch"), branchCatalog);
+  check("目录:分支的名字还在", branchCatalog.includes("**分支**"), branchCatalog);
+  const convCatalog = renderNodeTypeCatalog([CONVERSATION_ENTRY]);
+  check("目录:对话节点不给能力", !convCatalog.includes("能力:"), convCatalog);
+}
 
 console.log("\nremoveNode(连带删边)");
 const stripped = removeNode(DIAMOND, "B");
@@ -1067,7 +1132,11 @@ const nodePanel = renderInspector(DIAMOND, "zh", "B");
 check("说的是节点而不是工作流", nodePanel.includes("等待") || nodePanel.includes("Waits") || nodePanel.includes("标题"));
 check("显示类型 id", nodePanel.includes("mcode.agent"));
 check("显示类型中文名", nodePanel.includes("子 agent"));
-check("按清单生成了 instruction 的标签与说明", nodePanel.includes("指令") && nodePanel.includes("这一步要做什么。"));
+check("按清单生成了 instruction 的标签", nodePanel.includes("指令"));
+// **说明不再印在控件下面,而是挂在标题右边一个小图标上**(长悬停才浮出来,见
+// `ParamField` 的 HelpHint)。所以这里能断言的是**那个枢纽在**,而不是那段字 ——
+// `Tooltip.Popup` 只在打开时才进 DOM,SSR 下本来就读不到它。
+check("说明挂到了小图标上", nodePanel.includes('aria-label="参数说明"'), nodePanel);
 check("必填项打了星号", nodePanel.includes('text-warning">*'));
 check("按清单生成了 model 的标签", nodePanel.includes("模型"));
 check("节点标题可改", nodePanel.includes(`value="B"`));
@@ -1082,6 +1151,51 @@ const midPanel = renderInspector(DIAMOND, "zh", "B");
 check("有下游:不说什么用不上", !midPanel.includes("不会被用到"));
 const lastPanel = renderInspector(DIAMOND, "zh", "D");
 check("没有下游:说清这张表用不上", lastPanel.includes("不会被用到"));
+
+// ── 能力那一个下拉框:**只在它真的算数时才摆**(原子 / 后加的) ──────────────
+//
+// 四件都在骗人,而且是同一种骗法:清单里那一项是**为了形状完整**填的(schema 必填),
+// 摆出控件就等于承诺"改这里有用"。用户改完存盘、重跑,行为一点不变 —— 而没有任何地方
+// 解释为什么。尤其是**命令节点**:它真的动手(`exec`),那个值恰恰最容易让人以为"改成
+// `read` 它就只读了"。真实生效的只有子 agent(`prompt`)那一档,因为只有它走
+// `createNodeSession` 推权限模式那条路。
+//
+// ⚠️ 画布上的卡片有同一项(那枚标签)。两处给不出同一个答案时的现象是"检查器让你改、
+// 卡片却继续显示原来那个值" —— 所以两边的判据是**同一个函数**,这里的断言也成对写。
+{
+  const marker = ">能力</span>";
+  const agentPanel = renderInspector(DIAMOND, "zh", "B");
+  check("能力:子 agent 摆出来(它真的管用)", agentPanel.includes(marker));
+  // 候选在 `Select.Portal` 里,portal 只在弹出时才渲染 —— 静态标记里看不到那四个值,
+  // 所以只能断言到"它那一个框在,而且空值有自己的说法"(同 `model` 那个下拉)。
+  check("能力:没表过态时写清跟随类型", agentPanel.includes("跟随类型"));
+  const convPanel = renderInspector(
+    { ...CUSTOM, nodes: [node("V", 0, 0, CONVERSATION_MANIFEST.id)], edges: [] },
+    "zh",
+    "V",
+  );
+  check("能力:对话节点不摆(用的是主对话那套权限)", !convPanel.includes(marker));
+  // 「整块没被误伤」的判据是**那个参数控件还在**。说明本身已经收进悬停浮窗
+  // (SSR 下不进 DOM),拿它当探针会变成测浮窗实现,不是测这一格在不在。
+  check("能力:但它的指令还在(整块没被误伤)", convPanel.includes(">指令</span>"));
+  const branchPanel2 = renderInspector(
+    { ...CUSTOM, nodes: [node("F", 0, 0, BRANCH_MANIFEST.id)], edges: [] },
+    "zh",
+    "F",
+  );
+  check("能力:分支不摆(它自己不跑东西)", !branchPanel2.includes(marker));
+  // 分支的清单里**没有参数** —— 但它的参数长在出边上(选项名 + 说明,就在下面)。
+  // 一句"无参数"会让那一段看起来像另一种东西(见检查器那一处注释)。
+  check("分支节点不说自己「无参数」", !branchPanel2.includes(">无参数<"));
+  // 类型没装时不摆的能力控件不能顺手把整块吞掉 —— 那种情况下**该摆**(清单没读过,
+  // 不能断言它不生效,见 `showsNodeCapability` 最后一段)。
+  const missingPanel = renderInspector(
+    { ...CUSTOM, nodes: [node("X", 0, 0, "who.knows")], edges: [] },
+    "zh",
+    "X",
+  );
+  check("能力:类型没装时照样摆(不能断言它不生效)", missingPanel.includes(marker));
+}
 
 console.log("\nNodeInspector(选中节点:引用型参数 —— 单选下拉 / 多选可收起的列表)");
 // 单选(model)的候选在 `Select.Portal` 里,而 portal 只在弹出时才渲染 —— 静态标记里
@@ -1116,6 +1230,59 @@ const foreignSkills = withSkills(() =>
 );
 check("本机没装的技能仍然列出来", foreignSkills.includes(">ghost<"));
 check("而且说明了本机没有它", foreignSkills.includes("这台机器上没有这一项"));
+
+// **「模型」的候选跟着「引擎」收窄。** 从前两者都是把四份列表拍平成一个下拉,于是
+// 选了 Codex、下面「模型」里还列着 Claude 的别名,两个下拉看着互为副本(用户的原话:
+// 「模型和引擎重合了」)。候选住在 `Select.Portal` 里,SSR 下不进 DOM,所以这里断言的是
+// **它落到了哪个分支**:引擎选了 pi-sdk 时,唯一的那份候选是 pi 的模型 —— 有候选 =
+// 渲染成下拉(「不指定」+ 那个 id);没有候选 = 退回手填(见 `modelsForProvider`)。
+{
+  const state = useSessionStore.getInitialState() as unknown as {
+    providers: unknown[];
+    piAvailableModels: unknown[];
+    codexAvailableModels: unknown[];
+  };
+  const prev = {
+    providers: state.providers,
+    piAvailableModels: state.piAvailableModels,
+    codexAvailableModels: state.codexAvailableModels,
+  };
+  // 两个引擎各带一份**不同**的模型列表(真 store 里就是这个形状:builtinModels 挂在
+  // 引擎身上,pi / codex 各有一份自己的)。另外那两份哨兵故意取成对不上的值。
+  state.providers = [
+    {
+      id: "claude-sdk",
+      displayName: "Claude",
+      capabilities: { builtinModels: [{ id: "claude-sonnet-5", label: "Sonnet 5" }] },
+    },
+    { id: "pi-sdk", displayName: "PiEngine", capabilities: { builtinModels: [] } },
+  ];
+  state.piAvailableModels = [{ id: "pi-1", label: "PiOne" }];
+  state.codexAvailableModels = [{ id: "codex-1", label: "Codex One" }];
+  try {
+    const pick = (provider: string, model: string): string =>
+      renderInspector(withNodeParams(DIAMOND, "B", { provider, model }), "zh", "B");
+    // 引擎选了 Pi:模型那一格是**下拉**(pi 有候选),说明它没跟 claude 那一份混。
+    check("引擎选了 Pi 时,模型那一格有候选可挑", pick("pi-sdk", "").includes("不指定"));
+    // 引擎选了 Claude:也有候选(走 builtinModels 那一支)。
+    check("引擎选了 Claude 时也有候选", pick("claude-sdk", "").includes("不指定"));
+    // 换上**这台机器上谁都不认识**的引擎:那一份候选是空的 —— 模型那一格要退回手填,
+    // 而不是把别的引擎的模型列给它。这正是"重合"消失的证据。
+    const unknown = pick("ghost-sdk", "");
+    check("引擎不认得时,模型那一格不借用别人的候选", !unknown.includes("不指定") && unknown.includes("这台机器上还没有可选的项"));
+    // 已经选过的两个值要**照原样显示**(一个是引擎的显示名、一个是模型在 pi 那一份里的
+    // label)—— 换引擎不该让这一格看起来像没配过。
+    const stored = pick("pi-sdk", "pi-1");
+    check("存着的引擎值端上来了(显示名)", stored.includes("PiEngine"), stored.slice(0, 600));
+    check("存着的模型值端上来了", stored.includes("PiOne"), stored.slice(0, 600));
+    // ⚠️ 而**别的引擎的模型不该出现** —— 这正是"两个下拉看着互为副本"的反面。
+    check("不把别的引擎的模型混进来", !stored.includes("Sonnet 5") && !stored.includes("Codex One"));
+  } finally {
+    state.providers = prev.providers;
+    state.piAvailableModels = prev.piAvailableModels;
+    state.codexAvailableModels = prev.codexAvailableModels;
+  }
+}
 
 // **候选为空时给的是一个能打字的输入框。** 插件一个都没装、或者那几个 list RPC 还没
 // 就绪时就是这种状态。以前这里只画已选的标签,而提示语却写着「直接填名字也行」——
@@ -1449,6 +1616,21 @@ const plainCard = renderCard(node("n1", 0, 0), AGENT_ENTRY, "zh");
 check("卡片:标题", plainCard.includes(">n1<"));
 check("卡片:类型 id(等宽,不翻译)", plainCard.includes("mcode.agent"));
 check("卡片:能力标出来", plainCard.includes(">read<"));
+// 能力那枚标签**只在它真的算数时才摆** —— 也就是只有子 agent(`prompt`)。另外四种的
+// 清单里那一项是为了形状完整填的(见 `@contracts/nodeType` 的 `showsNodeCapability`),
+// 给它们显示一个 `read` 是在说一句不成立的话。
+check(
+  "卡片:命令节点不摆能力标签(那个值管不着它)",
+  !renderCard(node("n1b", 0, 0, COMMAND_MANIFEST.id), COMMAND_ENTRY, "zh").includes(">exec<"),
+);
+check(
+  "卡片:分支不摆能力标签",
+  !renderCard(node("n1c", 0, 0, BRANCH_MANIFEST.id), BRANCH_ENTRY, "zh").includes(">read<"),
+);
+check(
+  "卡片:对话节点不摆能力标签",
+  !renderCard(node("n1d", 0, 0, CONVERSATION_MANIFEST.id), CONVERSATION_ENTRY, "zh").includes(">read<"),
+);
 check("卡片:参数齐了就没有警告", !plainCard.includes("必填参数"));
 const badCard = renderCard({ ...node("n2", 0, 0), params: {} }, AGENT_ENTRY, "zh");
 check("卡片:参数没填齐会标出来", badCard.includes("参数没填完"));
@@ -1635,6 +1817,38 @@ check("自动化面板:节点类型那块整块不渲染", !autoPanel.includes('
 check("自动化面板:库那块挂在 automation- 前缀下", autoPanel.includes('id="automation-panel-library"'));
 check("工作流面板还是 workflows- 前缀", panelHtml.includes('id="workflows-panel-library"'));
 check("两个面板的页签 id 不重名", !autoPanel.includes('id="workflows-tab-library"'));
+
+/* ────────────────────── 节点类型页 ────────────────────── */
+
+console.log("\nNodeTypesView(这一种节点怎么用)");
+{
+  // 这一页是给"想弄明白这一种节点怎么用"的人读的,所以它上面写的每一行都会被当真。
+  // 「能力」那一项在分支 / 对话节点上是**占位**(见 `showsNodeCapability`):写出来,
+  // 读者会以为自己找到了一个开关,而那个开关改不动任何东西。
+  const view = (entries: NodeTypeEntry[]): string =>
+    withLocale("zh", () =>
+      html(
+        createElement(NodeTypesView, {
+          catalog: { entries, problems: [] },
+          loading: false,
+          error: null,
+          onRefresh: () => {},
+          profiles: [],
+          profileProblems: [],
+          profileError: null,
+          onSaveProfile: async () => {},
+          onRemoveProfile: async () => {},
+        }),
+      ),
+    );
+  const agentView = view([AGENT_ENTRY]);
+  check("子 agent:写清执行方式", agentView.includes(">prompt<"));
+  check("子 agent:写清能力(它真的管用)", agentView.includes(">read<"));
+  const branchView = view([BRANCH_ENTRY]);
+  check("分支:执行方式还在", branchView.includes(">branch<"));
+  check("分支:不写能力(那个值管不着它)", !branchView.includes(">read<"));
+  check("分支:名字照旧", branchView.includes("分支"));
+}
 
 /* ────────────────────── 代理档案 ────────────────────── */
 
@@ -1931,6 +2145,274 @@ console.log("\nBranchChoiceCard");
   const stopped = card({ chosen: BRANCH_STOP_CHOICE });
   check("★ 停下来的那张说人话", stopped.includes("你让它停在这儿了"), stopped.slice(0, 300));
   check("哨兵本身不露出来", !stopped.includes("__stop__"));
+}
+
+
+/* ─────────── 8. 运行看板的折叠器(`workflowLive`) ─────────── */
+
+// 用户要的右栏那两样 —— 一张小流程图(跑到哪一格在哪一格转圈)+ 一列分身 —— 数据都
+// 来自 `workflowLive` 对 `workflow.node.*` 几条事件的折叠。这一节验**折叠规则本身**:
+// 阶段怎么流转、`awaiting` 什么时候存什么时候清、收场清掉哪些字段、以及"这次运行停在
+// 哪儿"那句判断。
+//
+// 为什么直接喂事件而不走订阅:无头脚本用 `react-dom/server` 渲染,而
+// `useSyncExternalStore` 是在 **effect** 里订阅的 —— SSR 不跑 effect,`api.on.claudeEvent`
+// 永远不会挂上,一条事件也进不来。见 `__applyWorkflowLiveEvent` 的头注。
+console.log("\nworkflowLive(运行看板的折叠器)");
+{
+  const SID = "s_board";
+  const RUN = "run_board";
+  const WF = "wf_board";
+  const N = "n1";
+
+  /** 一条事件的最小载荷 —— 每条用例只写自己关心的那几位。 */
+  function ev(type: string, extra: Record<string, unknown>): RuntimeEvent {
+    return { type, sessionId: SID, runId: RUN, nodeId: N, ...extra } as unknown as RuntimeEvent;
+  }
+  /** 回到干净状态,再把这一格排上队。 */
+  function fresh(): WorkflowLiveSnapshot {
+    __resetWorkflowLive();
+    return __applyWorkflowLiveEvent(ev("workflow.node.queued", { workflowId: WF }));
+  }
+  /** 那一格此刻的样子。 */
+  function cell(s: WorkflowLiveSnapshot, run = RUN, node = N): LiveNode | undefined {
+    return s.runs[run]?.nodes[node];
+  }
+  const PROGRESS = { nodeType: "mcode.agent", title: "写初稿" };
+
+  {
+    const s = fresh();
+    eq("排队那一下不算在跑", cell(s)?.phase, "queued");
+    eq("但它已经在图上占了一格", s.runs[RUN]?.order.length, 1);
+    eq("那一格的阶段是 queued", cell(s)?.phase, "queued");
+    eq("workflowId 从排队那条带进来", s.runs[RUN]?.workflowId, WF);
+    eq("排队那一刻还没有标题(事件里没带)", cell(s)?.title, "");
+  }
+
+  {
+    fresh();
+    const s = __applyWorkflowLiveEvent(
+      ev("workflow.node.progress", { ...PROGRESS, percent: 40 }),
+    );
+    eq("起了就是在跑", cell(s)?.phase, "running");
+    eq("转圈看的是那一格自己的 phase", cell(s)?.phase, "running");
+    eq("标题跟着 progress 补上", cell(s)?.title, "写初稿");
+    eq("百分比也记着", cell(s)?.percent, 40);
+    check("起了就记开始时刻(看板拿它显示跑了多久)", typeof cell(s)?.startedAt === "number");
+  }
+
+  {
+    // **收场要清进度。** 不清的话跑完的那一行底下还挂着一个百分比 —— 那是跑着时才有的东西。
+    fresh();
+    __applyWorkflowLiveEvent(ev("workflow.node.progress", { ...PROGRESS, percent: 40 }));
+    const s = __applyWorkflowLiveEvent(
+      ev("workflow.node.result", {
+        ...PROGRESS,
+        status: "success",
+        summary: "写完了",
+        nodeSessionId: "sess_node_1",
+      }),
+    );
+    eq("收场之后阶段是 settled", cell(s)?.phase, "settled");
+    eq("结论记着", cell(s)?.status, "success");
+    eq("收场的那一格不再转圈(直接看 phase)", cell(s)?.phase, "settled");
+    eq("★ 进度被清掉了", cell(s)?.percent, undefined);
+    eq("★ 那句进度小字也被清掉了", cell(s)?.message, undefined);
+    eq("跑它的那个隐藏会话记着(卡片靠它取过程)", cell(s)?.nodeSessionId, "sess_node_1");
+    check("收场记了结束时刻", typeof cell(s)?.endedAt === "number");
+    check(
+      "开始时刻没被覆盖",
+      typeof cell(s)?.startedAt === "number" && (cell(s)?.endedAt ?? 0) >= (cell(s)?.startedAt ?? 0),
+    );
+  }
+
+  {
+    // **岔路口那两下。** 同一个事件发两次:不带 `chosen` 是在等,带了是选完了。
+    const OPTIONS = [{ id: "e_a", label: "再改一轮", next: "修订" }];
+    fresh();
+    const waiting = __applyWorkflowLiveEvent(
+      ev("workflow.node.choice", {
+        nodeType: "mcode.branch",
+        title: "稿子怎么样",
+        attempt: 1,
+        options: OPTIONS,
+      }),
+    );
+    eq("在等的那一格标着 awaiting", cell(waiting)?.awaiting, true);
+    eq("选项摆出来了", cell(waiting)?.options?.length, 1);
+    eq("★ 在等的那一格会被报成停住了", waiting.halted[SID]?.reason, "awaiting");
+    eq("并且指出是哪一格在等", waiting.halted[SID]?.nodeId, N);
+
+    const chosen = __applyWorkflowLiveEvent(
+      ev("workflow.node.choice", {
+        nodeType: "mcode.branch",
+        title: "稿子怎么样",
+        attempt: 1,
+        options: OPTIONS,
+        chosen: "e_a",
+        comment: "第三章太啰嗦",
+      }),
+    );
+    eq("★ 选完之后不再显示在等你", cell(chosen)?.awaiting, false);
+    eq("记着选了什么", cell(chosen)?.chosen, "e_a");
+    eq("用户补的那句话也留着", cell(chosen)?.comment, "第三章太啰嗦");
+    eq("★ 选完了就不再报停住了", chosen.halted[SID], undefined);
+  }
+
+  {
+    // 「运行前先问我」那一问和岔路口共用 `awaiting`,靠 `ask` 区分 —— 界面才知道该弹窗
+    // 还是摆卡。
+    fresh();
+    const s = __applyWorkflowLiveEvent(
+      ev("workflow.node.choice", {
+        nodeType: "mcode.conversation",
+        title: "定稿",
+        attempt: 1,
+        ask: true,
+        options: [{ id: "__ask_skip__", label: "跳过", next: "不跑这一步" }],
+      }),
+    );
+    eq("标着是先问我那一问", cell(s)?.ask, true);
+    eq("它也进停住表(图确实停着等人)", s.halted[SID]?.reason, "awaiting");
+  }
+
+  {
+    // **"停住了"那句不能报早。** 这一格失败了,但同一次运行里还有格子排着队 ——
+    // 那一刻图还在往下走,说"卡住了"是错的。
+    fresh();
+    __applyWorkflowLiveEvent(
+      ev("workflow.node.result", { ...PROGRESS, status: "failed", summary: "", error: "炸了" }),
+    );
+    const s = __applyWorkflowLiveEvent(
+      ev("workflow.node.queued", { workflowId: WF, nodeId: "n2" }),
+    );
+    eq("★ 还有格子排着队时不报停住了", s.halted[SID], undefined);
+  }
+
+  {
+    // 最后一格失败、此后没有新派发 → 报"停在这一步"。看板顶上那条提示就是它。
+    fresh();
+    const s = __applyWorkflowLiveEvent(
+      ev("workflow.node.result", { ...PROGRESS, status: "failed", summary: "", error: "炸了" }),
+    );
+    eq("★ 最后一格失败就报停住了", s.halted[SID]?.reason, "failed");
+    eq("指出是哪一格", s.halted[SID]?.nodeId, N);
+    eq("带上 runId(点它要能找到那次运行)", s.halted[SID]?.runId, RUN);
+  }
+
+  {
+    // 跑成功**不算**停住 —— 那是这次运行正常收场了。
+    fresh();
+    const s = __applyWorkflowLiveEvent(
+      ev("workflow.node.result", { ...PROGRESS, status: "success", summary: "好了" }),
+    );
+    eq("跑成功不报停住了", s.halted[SID], undefined);
+  }
+
+  {
+    // 取消是"停住"的一种:用户按了停止,他要有人告诉他停在哪了。
+    fresh();
+    const s = __applyWorkflowLiveEvent(
+      ev("workflow.node.result", { ...PROGRESS, status: "cancelled", summary: "" }),
+    );
+    eq("被取消也算停住", s.halted[SID]?.reason, "cancelled");
+  }
+
+  {
+    // **定案要清"在等人"。** 顺序是先 choice(在等)、再 result(定案)。不清的话那个节点
+    // 会永远显示"在等你",而它其实早跑完了。
+    fresh();
+    __applyWorkflowLiveEvent(
+      ev("workflow.node.choice", {
+        nodeType: "mcode.branch",
+        title: "稿子怎么样",
+        attempt: 1,
+        options: [{ id: "e_a", label: "再改一轮", next: "修订" }],
+      }),
+    );
+    const s = __applyWorkflowLiveEvent(
+      ev("workflow.node.result", {
+        nodeType: "mcode.branch",
+        title: "稿子怎么样",
+        status: "success",
+        summary: "",
+      }),
+    );
+    eq("★ 定案之后不再在等你", cell(s)?.awaiting, undefined);
+    eq("选项也清掉了", cell(s)?.options, undefined);
+  }
+
+  {
+    // **"跑完的直接清理掉"**:只抹看板上的现场,而且只抹收场的那些 —— 并行跑的几步里
+    // 先跑完的可以被清掉,还在跑的那一格不能跟着一起没。
+    fresh();
+    __applyWorkflowLiveEvent(
+      ev("workflow.node.result", { ...PROGRESS, status: "success", summary: "" }),
+    );
+    __applyWorkflowLiveEvent(ev("workflow.node.queued", { workflowId: WF, nodeId: "n2" }));
+    __applyWorkflowLiveEvent(
+      ev("workflow.node.progress", { nodeId: "n2", nodeType: "mcode.agent", title: "还在跑的" }),
+    );
+    dismissSettled(RUN);
+    const s = __workflowLiveSnapshot();
+    eq("★ 清完之后图里只剩还在跑的那一格", s.runs[RUN]?.order.length, 1);
+    eq("剩下的是对的", s.runs[RUN]?.order[0], "n2");
+    eq("清掉的那一格真没了", cell(s), undefined);
+    eq("还在跑的那一格照旧在转圈", cell(s, RUN, "n2")?.phase, "running");
+  }
+
+  {
+    // 一格都不剩时**整次运行一起忘掉** —— 留个空壳会让看板显示一张没有任何状态的图。
+    // 而且再调一次不能抛(按钮点两下是正常会发生的事)。
+    fresh();
+    __applyWorkflowLiveEvent(
+      ev("workflow.node.result", { ...PROGRESS, status: "success", summary: "" }),
+    );
+    dismissSettled(RUN);
+    dismissSettled(RUN);
+    const s = __workflowLiveSnapshot();
+    eq("★ 清空之后这次运行整个忘掉", s.runs[RUN], undefined);
+    eq("停在哪儿那句也一起没了", s.halted[SID], undefined);
+  }
+
+  {
+    // **上一次那格报的"停住了"要跟着一起消掉**,否则用户清完之后顶上还挂着一条指向
+    // 一个已经不在图上的格子的提示。
+    fresh();
+    __applyWorkflowLiveEvent(
+      ev("workflow.node.result", { ...PROGRESS, status: "failed", summary: "", error: "炸了" }),
+    );
+    eq("先确认它报着", __workflowLiveSnapshot().halted[SID]?.reason, "failed");
+    dismissSettled(RUN);
+    eq("★ 清掉之后那句提示也没了", __workflowLiveSnapshot().halted[SID], undefined);
+  }
+
+  {
+    // **两次运行的现场互不干扰。** 同一张图跑两轮,节点 id 会重复 —— 这正是 `runId`
+    // 存在的理由(卡片认卡、重试、看板归组全都按它)。
+    __resetWorkflowLive();
+    __applyWorkflowLiveEvent(
+      ev("workflow.node.result", {
+        runId: "runA",
+        nodeType: "mcode.agent",
+        title: "第一轮",
+        status: "success",
+        summary: "",
+      }),
+    );
+    const s = __applyWorkflowLiveEvent(
+      ev("workflow.node.result", {
+        runId: "runB",
+        nodeType: "mcode.agent",
+        title: "第二轮",
+        status: "success",
+        summary: "",
+      }),
+    );
+    eq("两次运行各占一份现场", Object.keys(s.runs).length, 2);
+    eq("第一轮还是第一轮", cell(s, "runA")?.title, "第一轮");
+    eq("第二轮是第二轮", cell(s, "runB")?.title, "第二轮");
+  }
 }
 
 console.log(`\n${checks - failures}/${checks} passed`);

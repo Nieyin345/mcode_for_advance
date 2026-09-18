@@ -975,7 +975,7 @@ export const en = {
   // ── Usage page: the workflow section (concurrency cap + cost) ──
   "settings.usage.workflow.title": "Workflows",
   "settings.usage.workflow.desc":
-    "Each step of a workflow is its own session, and it really does burn tokens.",
+    "Every step of a workflow is a real model turn, and it really does burn tokens.",
   "settings.usage.maxParallel": "Max steps at once",
   "settings.usage.maxParallelDesc":
     "When a workflow reaches a step, every step that's ready starts together — this is how many may run at once. Once the cap is hit, the rest **queue**, they don't fail. Lower saves money; higher runs faster. Range {min}–{max}.",
@@ -1067,7 +1067,6 @@ export const en = {
 
   // ── Automations: run once / what has run ──
   "settings.automation.dashboard": "Automation status",
-  "settings.automation.enabled": "Enabled",
   "settings.automation.lastRun": "Last run",
   "settings.automation.lastError": "Last error",
   "settings.automation.runNow": "Run once now",
@@ -1079,9 +1078,6 @@ export const en = {
   // `describeCron` quotes Chinese (same as the prose written by the main process), so this
   // line only frames it.
   "settings.automation.scheduleLine": "In words: {text}",
-  "settings.automation.problems": "These will not fire (save again after fixing):",
-  "settings.automation.skips": "Fired recently but did not run:",
-  "settings.automation.skipLine": "{time} \"{name}\" — {reason}",
   "settings.automation.runHistory": "Run history",
   "settings.automation.refresh": "Refresh",
   "settings.automation.runHistoryEmpty": "Nothing has run yet.",
@@ -1269,6 +1265,10 @@ export const en = {
     "The node-type catalog did not load, so a workflow cannot be created right now — a new graph would be missing its main agent. The catalog error is shown above.",
   "settings.workflows.paramPick": "Pick one",
   "settings.workflows.paramBrowse": "Browse…",
+  // Every parameter's explanation lives behind the small icon next to its label,
+  // shown after a one-second hover (see HelpHint in ParamField). This string is
+  // that icon's accessible name — without it a screen reader announces "graphic".
+  "settings.workflows.paramHelp": "Parameter help",
   // The empty entry of the `model` picker = no override: the node runs on the
   // model this chat selected.
   "settings.workflows.paramRefUnset": "Not set",
@@ -1287,6 +1287,12 @@ export const en = {
   "settings.workflows.paramRefNoMatch": "Nothing matches.",
   "settings.workflows.paramRefAddPlaceholder": "Type a name, press Enter",
   "settings.workflows.paramRefMissingHint": "Not on this machine — click to remove",
+  // A single-select ref param holds a value that is not among the current
+  // candidates: usually a shared workflow referencing a skill/model this machine
+  // lacks, or the "model" field after its engine changed. The value is kept and
+  // only flagged (a graph you cannot open elsewhere is a lock, not a workflow).
+  "settings.workflows.paramRefForeign":
+    "This value is not among the current candidates (the engine changed, or it is not installed here). Pick another, or keep it.",
   // The output-variable table (`kind: "variables"`) — rows of name + example.
   // ⚠️ The word "JSON" is deliberately absent from the UI: it is JSON underneath,
   // but that is the app's business. See contracts/outputConstraint.
@@ -1294,23 +1300,15 @@ export const en = {
   "settings.workflows.varExample": "Example",
   "settings.workflows.varAdd": "Add one",
   "settings.workflows.varRemove": "Remove this row",
-  "settings.workflows.varEmpty": "Nothing yet. Add one and say what this step has to hand over.",
-  // Input options (`kind: "options"`) — the main agent's "name + content + note" table.
-  // Name shows in the chat dropdown, content is inserted at the caret on pick,
-  // note is injected into the prompt for that run.
-  "settings.workflows.optName": "Option name",
-  "settings.workflows.optRemove": "Remove this option",
-  "settings.workflows.optContent": "Content (inserted at the caret on pick; variables allowed)",
-  "settings.workflows.optNote": "Note (tells the model what the user picked, for this run)",
-  "settings.workflows.optEmpty": "Nothing yet. Add one and it shows above the input box when chatting with this graph.",
-  "settings.workflows.optAdd": "Add option",
+  "settings.workflows.varEmpty": "None yet. Add a row and state what this step has to hand over.",
   // Fixed criteria (`kind: "selects"`) — the main agent's dropdown-criteria definitions.
-  // One row = one dropdown; the picked value is injected into the prompt every turn,
-  // except "不限" (none).
+  // One row = one dropdown; the picked value is injected once with the conversation's
+  // first turn, except "不限" (none).
   "settings.workflows.critName": "Criteria",
   "settings.workflows.critRemove": "Remove this criterion",
-  "settings.workflows.critChoices": "Choices (one per line; the picked value is injected into the prompt, except \"不限\")",
-  "settings.workflows.critEmpty": "Nothing yet. Add one and it becomes a dropdown above the chat input box.",
+  "settings.workflows.critChoices": "Choices (one per line; the picked value is injected once, except \"不限\")",
+  "settings.workflows.critNote": "Note (optional; tells the model how to apply this criterion)",
+  "settings.workflows.critEmpty": "None yet. Add one and it becomes a dropdown above the chat input box.",
   "settings.workflows.critAdd": "Add criterion",
   // "Insert variable": the candidates are the names *upstream steps* defined, so no
   // concrete name appears here — hardcoding one would tie the feature to a vocabulary.

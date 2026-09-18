@@ -70,7 +70,6 @@ import { TagPopover } from "./TagPopover.js";
 import { FileMentionPicker, type FileMentionPickerMode } from "./FileMentionPicker.js";
 import { LibraryPicker } from "./LibraryPicker.js";
 import { SearchFilterBar } from "./SearchFilterBar.js";
-import { NodeOptionsDropdown } from "./NodeOptionsDropdown.js";
 import { templateAttachChipLabel } from "@renderer/lib/templateLabels.js";
 import { libraryAttachChipLabel } from "@renderer/lib/libraryLabels.js";
 import { TemplatePicker } from "./TemplatePicker.js";
@@ -4092,18 +4091,9 @@ function ChatPaneForSession({
               </div>
             )}
             {/* 固定条件条(输入框上方那排下拉):条件表长在**主对话节点**的参数上,
-                任何图型工作流配了条件它都出现;检索流程的主节点没条件表时退回写死的
-                四个(旧存档兜底)。其余情况整条不渲染,组件自己管。 */}
+                任何图型工作流配了条件它都出现 —— 输入框上方只有这一排东西。
+                其余情况整条不渲染,组件自己管。 */}
             <SearchFilterBar workflowId={workflowId} />
-            {/* 主代理「输入选项」的下拉框 —— 用图聊天、且主代理配了选项才出现。
-                内容插进光标处由这里收口(它才有编辑器 ref),选项本身归组件管。 */}
-            <NodeOptionsDropdown
-              workflowId={workflowId}
-              onPick={(text) => {
-                editorRef.current?.insertText(text);
-                requestAnimationFrame(() => editorRef.current?.focus());
-              }}
-            />
             {/* Editor-level boundary: a Tiptap render crash here used to take
                 down the whole tree (logged 2026-09-07 <ComposerEditor2>). The
                 fallback card loses the input box but keeps the app alive —

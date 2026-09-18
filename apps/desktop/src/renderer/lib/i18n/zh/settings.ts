@@ -974,7 +974,7 @@ export const zh = {
   // ── 用量页:工作流那一节(并发上限 + 花费)──
   "settings.usage.workflow.title": "工作流",
   "settings.usage.workflow.desc":
-    "跑一张流程图时,每一步都是一个**独立会话**,会真的烧 token。",
+    "跑一张流程图时,每一步都是一轮真的模型调用,会真的烧 token。",
   "settings.usage.maxParallel": "最多同时跑几步",
   "settings.usage.maxParallelDesc":
     "一张图跑到某一步时,能并排跑的步骤会一起起跑 —— 这个数字就是同时最多几个。到上限的**排队等**,不会失败。改小可以省钱,改大跑得快。范围 {min}–{max}。",
@@ -1061,7 +1061,6 @@ export const zh = {
 
   // ── 自动化：跑一次 / 跑过什么 ──
   "settings.automation.dashboard": "自动化状态",
-  "settings.automation.enabled": "已启用",
   "settings.automation.lastRun": "最近运行",
   "settings.automation.lastError": "最近错误",
   "settings.automation.runNow": "立刻运行一次",
@@ -1073,9 +1072,6 @@ export const zh = {
   // `describeCron` 说的是中文（和主进程那几段话一样，见 `@contracts/cron`），所以这里
   // 只负责把"这句话在说什么"框一下。
   "settings.automation.scheduleLine": "也就是说：{text}",
-  "settings.automation.problems": "这几处不会响（改好之后要再存一次）：",
-  "settings.automation.skips": "最近这几次响了却没跑：",
-  "settings.automation.skipLine": "{time}「{name}」—— {reason}",
   "settings.automation.runHistory": "运行历史",
   "settings.automation.refresh": "刷新",
   "settings.automation.runHistoryEmpty": "还没跑过。",
@@ -1257,6 +1253,9 @@ export const zh = {
   // file / dir / model），界面各自映到一个控件。
   "settings.workflows.paramPick": "请选择",
   "settings.workflows.paramBrowse": "选择…",
+  // 每一格的解释都收在标题右边那个小图标里，鼠标停住一秒才浮出来（见 ParamField 的
+  // HelpHint）。这句是那个图标的无障碍名字——不给的话读屏用户只会听到"图形"。
+  "settings.workflows.paramHelp": "参数说明",
   // 引用型参数（ref：模型 / 技能…）的空值 = 不指定。它**具体**意味着什么由清单的
   // help 说（比如模型那项的空值是"跟着这次对话走"）—— 控件本身不认识是哪一种来源，
   // 所以这里不能写成"用这次对话选的模型"。
@@ -1275,6 +1274,11 @@ export const zh = {
   "settings.workflows.paramRefAddPlaceholder": "输入名字，回车添加",
   // 存着、但这台机器上没有的那几个名字（分享来的图引用了没装的技能）。点它摘掉。
   "settings.workflows.paramRefMissingHint": "这台机器上没有这一项，点击移除",
+  // 单选引用型参数上存着一个**不属于当前这一档候选**的值：常见于分享来的工作流引用了
+  // 本机没装的技能／模型，也见于「模型」那一格——引擎换了之后，原先选的模型不再属于
+  // 新引擎。**值保留、只提示**（换台机器打不开的图不叫工作流），但要说清它为什么不在
+  // 候选里。见 ParamField 的 RefControl。
+  "settings.workflows.paramRefForeign": "这一项不在当前的候选里（多半是换了引擎，或者本机没装）—— 换一个，或者留着。",
   // 产出变量（`kind: "variables"`）—— 一张「名字 + 示例」的表。
   // ⚠️ 界面上**故意不出现 JSON 这个词**：底下确实是 JSON，但那是软件的事。用户看到的
   // 只是"这一步要交哪几样东西"。见 `@contracts/outputConstraint` 的文件头。
@@ -1282,21 +1286,15 @@ export const zh = {
   "settings.workflows.varExample": "示例",
   "settings.workflows.varAdd": "加一样",
   "settings.workflows.varRemove": "删掉这一行",
-  "settings.workflows.varEmpty": "还没有。加一样，写清楚这一步要交出来什么。",
-  // 输入选项（`kind: "options"`）—— 主对话入口节点那张「名字 + 内容 + 解释」的表。
-  // 名字是菜单上显示的字，内容是选中后插进输入框的那段，解释是随这次运行进提示词的。
-  "settings.workflows.optName": "选项名",
-  "settings.workflows.optRemove": "删掉这一项",
-  "settings.workflows.optContent": "内容（选中后插进输入框光标处，可引用变量）",
-  "settings.workflows.optNote": "解释（随这次运行告诉模型用户选了什么）",
-  "settings.workflows.optEmpty": "还没有。加一样，它在用这张图聊天时会出现在输入框上方。",
-  "settings.workflows.optAdd": "加一项",
+  "settings.workflows.varEmpty": "尚未声明。添加一行，写明本步骤应交出的内容。",
   // 固定条件（`kind: "selects"`）—— 主对话入口节点那组下拉条件的定义表。
-  // 一行 = 一个条件，候选值一行一个；选中的值每轮随提示词注入，「不限」跳过。
+  // 一行 = 一个条件，候选值一行一个；选中的值随那次对话第一轮的提示词注入一次，
+  // 「不限」跳过。解释是给模型的说明（比如 T1 = Q1 或中科院 1 区或 Top）。
   "settings.workflows.critName": "条件名",
   "settings.workflows.critRemove": "删掉这一条",
-  "settings.workflows.critChoices": "候选值（一行一个；选中的值会随提示词注入，「不限」不注入）",
-  "settings.workflows.critEmpty": "还没有。加一条，它会变成聊天输入框上方的一个下拉框。",
+  "settings.workflows.critChoices": "候选值（一行一个；选中值随对话第一轮注入一次，「不限」不注入）",
+  "settings.workflows.critNote": "解释（可选；告诉模型这个条件按什么口径执行）",
+  "settings.workflows.critEmpty": "尚未配置。添加一条，它会成为聊天输入框上方的一个下拉框。",
   "settings.workflows.critAdd": "加一条",
   // 「插入变量」：候选是**上游那几步自己定过的变量名**，所以这里一个具体名字都不列
   // —— 列出来就等于把这个能力绑死在某一套词汇上。

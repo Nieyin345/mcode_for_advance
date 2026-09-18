@@ -435,11 +435,8 @@ export const en = {
   "composer.longtask.status.stopped": "Stopped",
   "composer.longtask.status.maxed": "Out of rounds",
 
-  // ── Node options dropdown (workflow main agent's "input options", see chat/NodeOptionsDropdown) ──
-  "chat.nodeOptions.title": "Input options",
-  "chat.nodeOptions.none": "None selected",
-  "chat.nodeOptions.clear": "Clear selection",
-
   // ── Criteria bar (renderer of the main agent's "fixed criteria" param, see chat/SearchFilterBar) ──
   "chat.nodeCriteria.title": "Fixed criteria",
+  "chat.nodeCriteria.hint":
+    "Your standing filters, applied whenever you chat with this graph. The selections are told to the model once, on the first turn of the conversation, and stay in context after that — no need to re-pick each turn. \"—\" means not set, and is not applied. To add or change them, edit the “Fixed criteria” param in settings.",
 } as const;

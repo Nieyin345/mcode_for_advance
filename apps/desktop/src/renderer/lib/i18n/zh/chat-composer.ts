@@ -442,11 +442,10 @@ export const zh = {
   "composer.longtask.status.stopped": "已停止",
   "composer.longtask.status.maxed": "轮次用尽",
 
-  // ── 输入选项下拉框(工作流主代理的「输入选项」,见 chat/NodeOptionsDropdown) ──
-  "chat.nodeOptions.title": "输入选项",
-  "chat.nodeOptions.none": "未选择",
-  "chat.nodeOptions.clear": "清除选择",
-
   // ── 固定条件条(主对话节点「固定条件」参数的渲染端,见 chat/SearchFilterBar) ──
+  // 这一句是**这一条的说明**,挂在左边那个小图标上(它是这一整排的统称,每个条件自己
+  // 还有名字)。说的是三件用户会问的事:这是什么、什么时候生效、在这儿还是回设置里改。
   "chat.nodeCriteria.title": "固定条件",
+  "chat.nodeCriteria.hint":
+    "这些是你设好的筛选习惯,用这张图聊天时按它们执行。选中的值在**这次对话的第一轮**告诉模型一次,之后一直留在上下文里,不必每轮重选。「—」表示没设,不会执行。要加要改回设置里的「固定条件」参数。",
 } as const;

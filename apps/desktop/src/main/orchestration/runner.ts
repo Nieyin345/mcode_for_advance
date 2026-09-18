@@ -55,16 +55,13 @@ function displayTitle(node: WorkflowNode, manifest: NodeTypeManifest | undefined
  */
 import type { LibraryKind } from "@contracts/library";
 import type { Session } from "@contracts/session";
-import { WORKFLOW_MAX_PARALLEL_SETTING_KEY, WORKFLOW_NODE_OPTION_SETTING_PREFIX } from "@contracts/ipc";
+import { WORKFLOW_MAX_PARALLEL_SETTING_KEY } from "@contracts/ipc";
 import {
   ASK_EXIT_CHOICE,
   injectModeOf,
   injectTargetOf,
   isAskChoice,
   isModelDecider,
-  MAIN_NODE_TYPE_ID,
-  NODE_CRITERIA_PARAM_KEY,
-  NODE_OPTIONS_PARAM_KEY,
   returnModeOf,
   type NodeOutcome,
   type NodeReturnMode,
@@ -73,7 +70,7 @@ import {
 import { checkOutput, outputValueText, outputVarsFor, outputVarsOf, pickOutputs, type OutputVar } from "@contracts/outputConstraint";
 import type { PermissionMode, WorkflowChoiceOption } from "@contracts/runtime";
 import { outgoingEdgesOf, type WorkflowCapability, type WorkflowNode } from "@contracts/workflow";
-import { nodeCriteriaPrompt, type CriteriaCondition } from "@main/lib/searchPrefs.js";
+import { injectEntryCriteria } from "./criteriaInject.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { transcriptText } from "@main/claude/nodeTranscript.js";
 import { ExecutionEngine } from "./executionEngine.js";
@@ -84,7 +81,7 @@ import { broadcastRuntimeEvent } from "@main/lib/sessionSync.js";
 import { queueBackflow } from "@main/lib/pendingBackflow.js";
 import { log } from "@main/lib/logger.js";
 import { providerRegistry } from "@main/providers/registry.js";
-import { CollectionRepo, LibraryRepo, SessionRepo, SettingRepo, WorkflowRunRepo } from "@main/store/repositories.js";
+import { CollectionRepo, LibraryRepo, MessageRepo, SessionRepo, SettingRepo, WorkflowRunRepo } from "@main/store/repositories.js";
 import { templatesRoot } from "@main/templates/store.js";
 import {
   kindDisplayName,
@@ -545,61 +542,23 @@ export async function startWorkflowRun(args: {
   // 的那一下手上只有一张卡片,而"这次是哪条自动化入口起的"在存档里。
   const entry = resumed?.snapshot.state.entry ?? args.entry;
 
-  // **主对话节点上那两样东西的注入** —— 「输入选项」的选中解释与「固定条件」,都在
-  // 这里、随**运行的最初那条提示词**进主节点:**一次**,之后不再重复(下游步骤从
-  // 上游产出里拿条件;渲染端见 `chat/NodeOptionsDropdown.tsx` 与
-  // `chat/SearchFilterBar.tsx`,选择分别落在 `WORKFLOW_NODE_OPTION_SETTING_PREFIX` /
-  // `WORKFLOW_NODE_PREFS_SETTING_PREFIX` + workflowId)。三道门,少一道都会注出不该注的:
-  //   - **续跑不注** —— 存档里的 prompt 当年已经带过这段,再注一遍就是重复段落;
-  //   - **输入选项:名字必须还在选项表里** —— 选项改了名/删了项之后,旧选择注出来
-  //     就是一句对不上号的话。读到的解释为空也不注:内容本身已经在用户那句话里;
-  //   - **固定条件:值为「不限」/没选的跳过** —— 拼出来的段为空就不动 prompt。
+  // **主对话节点上「固定条件」的注入** —— 随**运行的最初那条提示词**进主节点;渲染端
+  // 见 `chat/SearchFilterBar.tsx`,选择落在 `WORKFLOW_NODE_PREFS_SETTING_PREFIX` +
+  // workflowId。三道门(续跑不注 / 不是这个对话的第一轮不注 / 值为「不限」的跳过)与
+  // 拼装都在 `criteriaInject.ts` —— 那边一行桩都不用打就能无头验,而"只注一次"这条
+  // 正是最该被钉住的。这里只负责把两个判据算出来:**第一条判据**是这次运行是不是点卡片
+  // 接回来的,和上面 `prompt` / `cwd` / `entry` 那三样同源;**第二条**是消息表里有没有
+  // 任何一条 —— 有就说明这不是这个对话的第一轮,条件已经在上下文里了,再注就是同一段
+  // 话反复出现。自动化会话同样按这条走:它的会话是复用的,第一轮之后也只该注那一次。
   if (resumed === undefined) {
-    // ── 输入选项:选中项的解释 ──
-    // 自动化触发(entry 已设)不注 —— 触发器起跑时没有"用户在输入框上方选过什么"这回事。
-    if (args.entry === undefined && prompt.length > 0) {
-      try {
-        const optionKey = WORKFLOW_NODE_OPTION_SETTING_PREFIX + session.workflowId;
-        const raw = SettingRepo.get(optionKey);
-        const picked = raw
-          ? (JSON.parse(raw) as { name?: unknown; note?: unknown })
-          : undefined;
-        const pickedName = typeof picked?.name === "string" ? picked.name : "";
-        const pickedNote = typeof picked?.note === "string" ? picked.note : "";
-        const entryParams = doc.nodes.find((node) => node.type === MAIN_NODE_TYPE_ID)?.params;
-        const optionList = entryParams?.[NODE_OPTIONS_PARAM_KEY];
-        const stillThere =
-          Array.isArray(optionList) &&
-          optionList.some(
-            (item) =>
-              typeof item === "object" && item !== null && (item as { name?: unknown }).name === pickedName,
-          );
-        if (pickedName !== "" && pickedNote.trim() !== "" && stillThere) {
-          prompt += `\n\n## 用户在输入框上方选了「${pickedName}」\n${pickedNote}`;
-        }
-      } catch (err) {
-        // 坏值当没选 —— 选择是锦上添花,不能因为它挡住一次运行。
-        log.warn(`workflow: node-option selection unread, skipping injection: ${String(err)}`);
-      }
-    }
-    // ── 固定条件:选中值的清单 ──
-    // 自动化也注:条件是"一贯的习惯",定时跑的检索同样该按它筛。读设置失败不挡运行。
     try {
-      const entryParams = doc.nodes.find((node) => node.type === MAIN_NODE_TYPE_ID)?.params;
-      const rawCriteria = entryParams?.[NODE_CRITERIA_PARAM_KEY];
-      if (Array.isArray(rawCriteria) && rawCriteria.length > 0) {
-        const conditions: CriteriaCondition[] = [];
-        for (const item of rawCriteria) {
-          if (typeof item !== "object" || item === null) continue;
-          const { name, choices } = item as { name?: unknown; choices?: unknown };
-          if (typeof name !== "string" || !Array.isArray(choices)) continue;
-          conditions.push({ name, choices: choices.filter((c): c is string => typeof c === "string") });
-        }
-        const criteria = nodeCriteriaPrompt(session.workflowId, conditions);
-        if (criteria.length > 0) {
-          prompt = prompt.length > 0 ? `${prompt}\n\n${criteria}` : criteria;
-        }
-      }
+      prompt = injectEntryCriteria({
+        doc,
+        workflowId: session.workflowId,
+        prompt,
+        resumed: false,
+        firstTurn: !MessageRepo.hasAny(session.id),
+      });
     } catch (err) {
       log.warn(`workflow: node criteria unread, skipping injection: ${String(err)}`);
     }
@@ -826,8 +785,13 @@ export async function startWorkflowRun(args: {
   };
 
   /**
-   * 「对话节点」(`runner.kind === "conversation"`):把这一步的指令**当作一条用户消息**
-   * 发出去,等目标对话回完。
+   * 「跑在主对话里」那一种(`runner.kind === "conversation"`):把这一步的指令
+   * **当作一条用户消息**发出去,等目标对话回完。
+   *
+   * 用它的有两种节点:**入口节点**(主代理 `mcode.main`,图的第一格,它就是用户
+   * 正在说话的那个对话框)与**对话节点**(流程中段"需要用到之前聊过的东西"的那一步)。
+   * 两者的跑法一字不差,差别只有两处参数与一处回声 —— 入口那一段 `prompt` 是代码拼的
+   * 脚手架,所以它把 `echoUserMessage` 置 `false`(见下面那一段的注释)。
    *
    * ## 两个新参数(见 `@contracts/nodeType` 的注入那一段)
    *
@@ -911,11 +875,24 @@ export async function startWorkflowRun(args: {
     // 聊天框里要**看得见这一步说了什么** —— 一条和用户自己发的同一种形状的用户消息。
     // 这就是"代替用户在主对话里说话"的字面意思(见 `contracts/nodeType` 的
     // `runner.kind === "conversation"` 那一段)。
-    runtimeManager.echoUserMessage(target.id, {
-      id: uid("u_"),
-      createdAt: Date.now(),
-      blocks: [{ kind: "text", text: input.prompt }],
-    });
+    //
+    // ⚠️ **入口节点不回这一步**(见 `NodeRunInput.echoUserMessage`)。它同样跑在主对话
+    // 里,但手上那段 `prompt` 是**代码拼的脚手架** —— 流程位置、上游产出、产出要求,
+    // 一大段用户没打过的字。原样贴进聊天框,他看到的是一屏莫名其妙的话;而他自己那句
+    // 原话 `startWorkflowRun` 已经回声过了(跨客户端同步、编辑标记、本机乐观追加的
+    // 去重都挂在那一台上),所以这里让开,聊天框里正好一条。
+    //
+    // 顺带:发起方自己发的那条消息**已经被渲染端乐观追加过**了,而 `echoUserMessage`
+    // 走的是 `emitExternal` —— 它只 fanOut / notify,**不经过 `sendTurn` 里那个按 id
+    // 去重的分支**(见 `RuntimeManager.sendTurn` 的 `if (input.userMessage)`)。所以
+    // "谁来回声"必须是一个明确的答案,不能两边都发:这边也发就是聊天里两条一样的提问。
+    if (input.echoUserMessage !== false) {
+      runtimeManager.echoUserMessage(target.id, {
+        id: uid("u_"),
+        createdAt: Date.now(),
+        blocks: [{ kind: "text", text: input.prompt }],
+      });
+    }
 
     // **这一步跑完的 `turn.done` 先别推给界面。** 那一条在界面上是"用户这一轮结束了"
     // —— 图可能还有五步没跑(见 `RuntimeManager.holdTurnEnd`)。整张图真正的收口由下面

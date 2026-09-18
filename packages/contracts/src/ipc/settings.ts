@@ -568,8 +568,12 @@ export const UI_RIGHT_PANEL_TAB_SETTING_KEY = "ui.rightPanelTab";
 /** zod schema + TS union for the right-panel tab preference. "sidechat" (the
  *  side-chat Q&A tab) is session-only like "browser": hydrate ignores a
  *  persisted value so the ask tab never auto-opens at startup. "library" 同理
- *  —— 文献库是被左栏点击唤起的,不该在启动时自己占住右栏。 */
-export const RightPanelTabSchema = z.enum(["files", "git", "browser", "turns", "sidechat", "library", "templates"]);
+ *  —— 文献库是被左栏点击唤起的,不该在启动时自己占住右栏。
+ *
+ *  ⚠️ **"flow" 加在这里,hydrate 那里也要加一行**(`sessionStore` 里那个
+ *  `if (tabRaw === ...)` 白名单)。只在 schema 上加的话,用户选了它、重启之后右栏
+ *  悄悄回到 files —— 而没有任何地方说为什么。 */
+export const RightPanelTabSchema = z.enum(["files", "git", "browser", "turns", "sidechat", "library", "templates", "flow"]);
 export type RightPanelTab = z.infer<typeof RightPanelTabSchema>;
 
 /**
@@ -624,26 +628,15 @@ export const UI_COMPOSER_MODEL_SETTING_KEY = "ui.composerModel";
 export const SEARCH_LIMIT_SETTING_KEY = "search.perSourceLimit";
 
 /**
- * **工作流输入选项的选中项** —— 键是**前缀 + workflowId**,值是 JSON
- * `{ name: 选项名, note: 解释 }`(选项表见 `@contracts/nodeType` 的
- * `NODE_OPTIONS_PARAM_KEY`)。
- *
- * 界面收集、设置表落盘、主进程读出来注入提示词。按 workflowId 分键 —— 换一个
- * 工作流,各自的选择互不串扰。注入时机:`startWorkflowRun` 每次起跑把解释拼进
- * 运行最初那条提示词,**一次**,之后不再重复;「清除选择」写成空串(设置表只有
- * upsert 没有删除;空串和坏 JSON 在读取侧同样按"没选"处理)。
- */
-export const WORKFLOW_NODE_OPTION_SETTING_PREFIX = "workflow.nodeOption.";
-
-/**
  * **工作流固定条件的选中值** —— 键是**前缀 + workflowId**,值是 JSON
  * `{ [条件名]: 选中值 }`(条件表定义在主对话节点的 `NODE_CRITERIA_PARAM_KEY`
  * 参数上,见 `@contracts/nodeType`)。
  *
- * 与选中项那个键(上面)同一个模式:固定条件是"一贯的习惯",每次运行**最开始**
- * 随运行提示词注入一次(拼法见 `main/lib/searchPrefs.ts` 的 `nodeCriteriaPrompt`),
- * 值为"不限"(或空串)的条件跳过不注,之后不再重复。按 workflowId 分键,换流程
- * 互不串扰。
+ * 固定条件是"一贯的习惯",**那次对话的第一轮**随运行提示词注入一次(拼法见
+ * `main/lib/searchPrefs.ts` 的 `nodeCriteriaPrompt`),之后它已经在上下文里,不再
+ * 重复注入;值为"不限"(或空串)的条件跳过不注。按 workflowId 分键,换流程
+ * 互不串扰。曾经并存的工作流输入选项选中项键(`workflow.nodeOption.`)已随那套
+ * 机制一起删掉(2026-09-19);残留在设置表里的旧键没人再读,无害。
  */
 export const WORKFLOW_NODE_PREFS_SETTING_PREFIX = "workflow.nodePrefs.";
 

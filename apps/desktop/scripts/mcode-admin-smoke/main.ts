@@ -30,7 +30,7 @@ import { backEdgesOf, forwardEdgesOf, type WorkflowDoc } from "@contracts/workfl
 import { BUILTIN_WORKFLOWS } from "@main/orchestration/builtins.js";
 import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
 import { composeNodePrompt, planOf } from "@main/orchestration/schedulerPrompt.js";
-import { MAIN_NODE_TYPE_ID, TRIGGER_NODE_TYPE_ID } from "@contracts/nodeType";
+import { MAIN_NODE_TYPE_ID, NODE_MODEL_PARAM_KEY, NODE_PARAM_KINDS, NODE_PROVIDER_PARAM_KEY, TRIGGER_NODE_TYPE_ID } from "@contracts/nodeType";
 // ⚠️ 这里**破例 import 一个渲染端的模块** —— `workflowEdit.ts` 才是"新建工作流"那条路
 // 的实现,而本套件要验的恰恰是"它种出来的东西能不能过**主进程**的校验"。两半各自单测
 // 都过、合起来不过,是这一层最典型的坏法(种出来的节点少一个必填参数 → 用户点「新建」
@@ -528,18 +528,48 @@ async function main(): Promise<void> {
       mainEntry?.manifest.params.some((p) => p.key === "instruction" && p.required === true) === true,
       mainEntry?.manifest.params,
     );
-    // 输入选项(`kind: "options"`)是主代理**独有**的参数:它就是聊天输入框上方那个
-    // 下拉框的条目表。声明在这里,聊天那头(`NodeOptionsDropdown`)才有东西可列。
+    // ⚠️ **「输入选项」(`kind: "options"`)整套机制已删**(2026-09-19)。它和「固定
+    // 条件」是同一个位置上的两套东西,后者就是它多一个解释字段的版本 —— 两个并排只会
+    // 让用户理解成两种能力。参数种类从契约里移除了,断言钉住这件事:哪天它被顺手加
+    // 回来(参数种类复活、或清单里又出现这个 kind),这两条会红。
     check(
-      "主代理带「输入选项」参数",
-      mainEntry?.manifest.params.some((p) => p.kind === "options") === true,
+      "参数种类清单里没有「输入选项」了",
+      !(NODE_PARAM_KINDS as readonly string[]).includes("options"),
+      NODE_PARAM_KINDS,
+    );
+    check(
+      "主代理的参数里也没有它",
+      mainEntry?.manifest.params.every((p) => (p.kind as string) !== "options") === true,
       mainEntry?.manifest.params,
     );
     const agentEntry = entries.find((e) => e.id === "mcode.agent");
     check(
-      "子 agent 不带它(那个下拉框陪着入口,不陪步骤)",
-      agentEntry?.manifest.params.some((p) => p.kind === "options") === false,
+      "子 agent 也没有(它从来就没带过)",
+      agentEntry?.manifest.params.every((p) => (p.kind as string) !== "options") === true,
     );
+    // **「引擎」必须排在「模型」前面,而且模型要声明 `fromParam`。** 两件事缺一不可:
+    // 渲染端照**已经渲染过的**参数算候选(见 `NodeParamSpecSchema.fromParam`),顺序
+    // 反了就永远读到"还没选",列出来的还是全部模型 —— 现象正是用户报的「模型和引擎
+    // 重合了」。这条断言把顺序也一起钉住。
+    {
+      const params = agentEntry?.manifest.params ?? [];
+      const at = (key: string): number => params.findIndex((p) => p.key === key);
+      check(
+        "子 agent 的参数里有「引擎」和「模型」",
+        at(NODE_PROVIDER_PARAM_KEY) >= 0 && at(NODE_MODEL_PARAM_KEY) >= 0,
+        params.map((p) => p.key),
+      );
+      check(
+        "「引擎」排在「模型」前面",
+        at(NODE_PROVIDER_PARAM_KEY) < at(NODE_MODEL_PARAM_KEY),
+        params.map((p) => p.key),
+      );
+      check(
+        "「模型」的候选跟着「引擎」走(fromParam 指对了)",
+        params[at(NODE_MODEL_PARAM_KEY)]?.fromParam === NODE_PROVIDER_PARAM_KEY,
+        params[at(NODE_MODEL_PARAM_KEY)],
+      );
+    }
     // 固定条件(`kind: "selects"`)同样是主代理**独有**的参数:输入框上方那排下拉框
     // 的条目表(接过文献检索写死的筛选条)。声明在这里,聊天那头(`SearchFilterBar`)
     // 才有东西可渲染、注入那头(`searchPrefs.ts`)才有东西可注。
@@ -620,15 +650,21 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log("\n参数说明要短(它是控件下面的一行小字,不是文档)");
+  console.log("\n参数说明要短(它是悬停浮窗里的一段,不是文档)");
   // 用户原话:「每一个功能下面的解释太长了……简短的一两句就行了,现在都是一段话,6 行了都」。
   //
   // 这条盯的是**长度上界**,因为"说明写长了"没有任何报错:加一个参数时顺手多写两句,
   // 一年之后那个面板上就又全是六行的段落,把真正的控件挤到屏幕外。道理该写在
   // `node-types-README.md` 里 —— 那里才是给想弄明白的人读的地方。
+  //
+  // 上界从 60 放到 80(2026-09-18):说明**不再印在控件下面**了,改成标题右边一个小
+  // 图标、停住一秒才浮出来的小浮窗(`ParamField` 的 `HelpHint`,用户要求「解释隐藏起来」)。
+  // 那个浮窗宽 280px、正文 11px ≈ 一行 23 个汉字,80 字≈三行半 —— 仍然拦得住"一段话
+  // 写六行",但不再逼着把话说一半。压到 60 字会把「读流程记录」那种"开了之后读到的到底是
+  // 什么"的必要限定砍掉,那就不是简洁,是说得不清楚了。
   {
-    const MAX = 60;
-    // 参数面板宽 ~320px、说明字号 ~10px → 一行约 22 个汉字,60 字≈两行多一点。
+    const MAX = 80;
+    // 参数面板宽 ~320px;浮窗宽 280px、说明字号 ~11px → 一行约 23 个汉字,80 字≈三行半。
     const tooLong: string[] = [];
     const missing: string[] = [];
     for (const entry of (await loadNodeTypes()).entries) {

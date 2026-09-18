@@ -65,11 +65,13 @@ import {
   NODE_CONTEXT_PARAM_KEY,
   NODE_CRITERIA_PARAM_KEY,
   NODE_DECIDER_KEY,
+  NODE_FLOW_RECORD_HELP,
   NODE_FLOW_RECORD_PARAM_KEY,
   NODE_INJECT_MODE_KEY,
   NODE_INJECT_TARGET_KEY,
   NODE_MCP_PARAM_KEY,
-  NODE_OPTIONS_PARAM_KEY,
+  NODE_MODEL_PARAM_KEY,
+  NODE_OUTPUT_VARS_HELP,
   NODE_PLUGINS_PARAM_KEY,
   NODE_PROMPT_PARAM_KEY,
   NODE_PROVIDER_PARAM_KEY,
@@ -151,12 +153,19 @@ function contextOptions(): Array<{ value: string; label: string }> {
  * `node-types-README.md` 里(那是给要读的人读的地方),模型那一侧由 `usage` 兜着。
  */
 const AGENT_INSTRUCTION_HELP =
-  "这一步要做什么。**只写这一步**,末尾加一句「做完的样子」—— 少了它,模型容易做一半就停。";
+  "本步骤要完成的事。只描述本步骤;末尾写明「做完的样子」—— 缺了它,模型倾向于在中途停止。";
 
-/** 「指令」那段说明 —— **主代理**版。和上面那段是同一件事的两面:子 agent 怕它做多,
- *  主代理怕它做少(自己把活干完了,下游就没得干)。 */
+/**
+ * 「指令」那段说明 —— **主代理**版。
+ *
+ * 它是 `conversation` 跑法(见 {@link MAIN_NODE_TYPE_ID} 那一项),所以这段字说的是
+ * 一句**用户会说的话**:同一个对话里已经有全部聊天记录,不必重复交代背景。
+ *
+ * 而"拆活、别自己做完"那条仍然要写 —— 它一动手,下游就没得干了,这是这套图最容易
+ * 踩的坑。
+ */
 const MAIN_INSTRUCTION_HELP =
-  "用户的原话会原样送到这里,所以写「收到之后怎么处理」。**你的职责是拆解与分配**,把活分下去。";
+  "收到用户那句话后你首先说的一句。职责是**拆解与分配** —— 把工作派给下游节点,不要自己做完(做完下游就无事可做)。";
 
 /**
  * 「指令」那段说明 —— **对话节点**版。
@@ -166,7 +175,7 @@ const MAIN_INSTRUCTION_HELP =
  * 它就是要被当成用户说的那一句发出去的。
  */
 const CONVERSATION_INSTRUCTION_HELP =
-  "这一步要说的那句话 —— 它会作为一条用户消息发进主对话。**主对话已经知道的不必重复**。";
+  "本步骤要说的那句话,它会作为一条用户消息发进主对话。主对话已经掌握的内容不必重复。";
 
 /**
  * 「指令」那段说明 —— **分支(模型选)**版。
@@ -175,13 +184,22 @@ const CONVERSATION_INSTRUCTION_HELP =
  * 里挑一条)。这里写的是**判据** —— "按什么挑",不是"做什么"。
  */
 const DECIDER_INSTRUCTION_HELP =
-  "选路的判据 —— 看上游的什么、按什么标准挑。留空则只要求它从选项里挑最合适的一条。";
+  "选路的判据:依据上游的哪些内容、按什么标准取舍。留空则只要求模型从选项中选择最合适的一条。";
 
 /**
- * 「这一步靠什么跑」那一组 —— 技能 / MCP / 插件 / 模型 / 引擎。
+ * 「这一步靠什么跑」那一组 —— 技能 / MCP / 插件 / 引擎 / 模型。
  *
- * **只有隔离节点有这一组。** 它们全都是"给这一步单独配一套环境"的意思,而对话节点跑的
- * 就是主对话那一套,配了也不算数(见下面 `ioParams` 那段:对话节点只取另外一组)。
+ * **只有隔离跑法的节点有这一组**(子 agent,以及将来别的 `prompt` 类型)。它们全都是
+ * "给这一步单独配一套环境"的意思,而**跑在主对话里的节点**(`mcode.main` 与
+ * `mcode.conversation`)用的就是主对话那一套,配了也不算数 —— 它们的那份参数表见
+ * `mainParams` / 对话节点自己的清单,两处都刻意不收这一组。
+ *
+ * ## 「引擎」必须排在「模型」前面
+ *
+ * 这两格是**级联**的:模型那一格的候选跟着引擎走(见 `NodeParamSpecSchema` 的
+ * `fromParam`),而候选是照**已经渲染过的**参数算的 —— 顺序反了就会永远读到"还没选",
+ * 列出来的还是全部模型。从前它们就是分开的两个平铺下拉,看着互为副本(用户的说法是
+ * 「模型和引擎重合了」)。
  */
 function capabilityParams(): NodeParamSpec[] {
   return [
@@ -192,7 +210,7 @@ function capabilityParams(): NodeParamSpec[] {
       // 多选:一步用几个技能是正常的(先检索再精读)。
       multiple: true,
       label: "技能",
-      help: "这一步可以调用哪些技能。留空 = 不限制。",
+      help: "限定本步骤可调用的技能。留空即不限制,由模型自行判断。",
     },
     {
       key: NODE_MCP_PARAM_KEY,
@@ -200,7 +218,7 @@ function capabilityParams(): NodeParamSpec[] {
       from: "mcp",
       multiple: true,
       label: "MCP 服务器",
-      help: "这一步能用哪几个 MCP 服务器。留空 = 不限;少挂一个就少一份工具说明进上下文。",
+      help: "限定本步骤可用的 MCP 服务器。留空即不限制。每增加一个,其全部工具定义都会进入上下文并被反复重发。",
     },
     {
       key: NODE_PLUGINS_PARAM_KEY,
@@ -208,21 +226,23 @@ function capabilityParams(): NodeParamSpec[] {
       from: "plugins",
       multiple: true,
       label: "插件",
-      help: "这一步加载哪几个插件。留空 = 全部已启用的。",
-    },
-    {
-      key: "model",
-      kind: "ref",
-      from: "models",
-      label: "模型",
-      help: "留空则使用本次对话选定的模型。",
+      help: "限定本步骤加载的插件。留空即加载全部已启用的插件。",
     },
     {
       key: NODE_PROVIDER_PARAM_KEY,
       kind: "ref",
       from: "providers",
       label: "引擎",
-      help: "这一步交给哪家引擎执行。留空则与对话保持一致。",
+      help: "本步骤交由哪个引擎执行。留空则与当前对话一致。下方「模型」的可选项按此处的选择列出。",
+    },
+    {
+      key: NODE_MODEL_PARAM_KEY,
+      kind: "ref",
+      from: "models",
+      // 候选跟着上面那格选定的引擎走 —— 这一条是级联的声明,见 `fromParam` 的注释。
+      fromParam: NODE_PROVIDER_PARAM_KEY,
+      label: "模型",
+      help: "在「引擎」选定的模型范围内指定一个。留空则由该引擎自行决定。",
     },
   ];
 }
@@ -233,7 +253,8 @@ function capabilityParams(): NodeParamSpec[] {
  *
  * **这一组两种节点都有**(隔离的子 agent 与跑在主对话里的对话节点)。它们说的是同一件
  * 事的两端:**进来什么**(资料、流程记录)和**出去什么**(产出、以及跑完并回主对话多少),
- * 而这两件事跟"在哪儿跑"没关系 —— 对话节点同样会收到上游产出、同样可以按一张表交东西。
+ * 而这两件事跟"在哪儿跑"没关系 —— 主代理与对话节点同样会收到上游产出、同样可以按一张
+ * 表交东西。
  */
 function ioParams(): NodeParamSpec[] {
   return [
@@ -244,34 +265,35 @@ function ioParams(): NodeParamSpec[] {
       multiple: true,
       label: "资料",
       options: contextOptions(),
-      help: "这一步要读哪几类资料。只有主对话已经挂载的那几类;没挂载就是没有。",
+      help: "限定本步骤可读取的资料类别,可多选。可选项来自当前对话已挂载的类别;未挂载即无此项。",
     },
     {
       key: NODE_FLOW_RECORD_PARAM_KEY,
       kind: "boolean",
       label: "读流程记录",
-      help: "打开后读到的是本流程至今每一步的产出,而不只是直接上游。上下文会明显变长,按需打开。",
+      help: NODE_FLOW_RECORD_HELP,
     },
     {
       key: NODE_OUTPUT_CONTRACT_KEY,
       kind: "longtext",
       label: "期望产出",
-      help: "这一步要交出来的东西长什么样。**这段是说明,不强制** —— 会被检查的是下面那张表。",
+      help: "描述本步骤应交出的内容及其形式。此段为说明性文字,不作强制校验;实际校验以下方的产出变量表为准。",
     },
     {
       key: NODE_OUTPUT_VARS_KEY,
       kind: "variables",
       label: "产出变量",
-      help: "这一步要交出来的东西,一样一行。填了下游才能用 `{{某步.变量名}}` 取到。",
+      help: NODE_OUTPUT_VARS_HELP,
     },
   ];
 }
 
 /**
- * 「跑完并回主对话多少」—— **只有隔离节点有这一个**。
+ * 「跑完并回主对话多少」—— **只有隔离跑法的节点有这一个**(子 agent)。
  *
- * 对话节点不需要它:它本来就在主对话里说那一句,内容和过程天然就在那儿了。给它一个
- * 「不并回」的开关只会让人以为能"说完不留痕",而那是做不到的。
+ * 跑在主对话里的那两种不需要它:它们本来就在主对话里说那一句,内容和过程天然就在
+ * 那儿了。给它们一个「不并回」的开关只会让人以为能"说完不留痕",而那是做不到的。
+ * (主代理那一份表见 `mainParams`,理由同 `capabilityParams`。)
  */
 function returnToChatParam(): NodeParamSpec[] {
   return [
@@ -284,7 +306,7 @@ function returnToChatParam(): NodeParamSpec[] {
         { value: "result", label: "只并结果" },
         { value: "full", label: "过程和结果都并" },
       ],
-      help: "这一步跑完之后有多少东西并回主对话。并回去的内容下一轮才生效(那个助手那时才看得到)。",
+      help: "本步骤跑完之后并入主对话的内容量。并回的内容下一轮才生效(那个助手那时才看得到)。",
     },
   ];
 }
@@ -306,7 +328,9 @@ function outputVarsParam(): NodeParamSpec[] {
       key: NODE_OUTPUT_VARS_KEY,
       kind: "variables",
       label: "产出变量",
-      help: "这一步要交出来的东西,一样一行。填了下游才能用 `{{某步.变量名}}` 取到。",
+      // 文案与 `ioParams()` 那一格**共用同一个常量**:同一件事在两处各写一遍,迟早会
+      // 漂成两句不一样的话,而用户读到的就是两个不同的说法。
+      help: NODE_OUTPUT_VARS_HELP,
     },
   ];
 }
@@ -340,48 +364,71 @@ function agentParams(instructionHelp: string, extra: NodeParamSpec[] = []): Node
 }
 
 /**
- * 主对话入口节点的**输入选项** —— 聊天输入框上方那个下拉框的条目表。
+ * **主代理**(`mcode.main`)的参数表 —— 它跑在主对话里(`runner.kind ===
+ * "conversation"`),所以这一份是「对话节点那一套 + 入口独有的两格」。
  *
- * **只有入口节点有这一格**(见 {@link NODE_OPTIONS_PARAM_KEY} 的文件头):下拉框陪着
- * "用户那句话进图的第一站",子 agent / 决策节点没有这个位置。每行三样 —— 名字是
- * 菜单上显示的字,内容是选中后**插进输入框光标处**的那段(可以在检查器里用「插入变量」
- * 引用上游产出,入口节点没有上游时菜单会给空态提示),解释是**随这次运行进提示词**
- * 的那一句(告诉模型用户选了什么、意味着什么)。
+ * 为什么不是 `agentParams(...)`:那一份里有三样东西对跑在主对话里的节点**不生效** ——
+ * 技能 / MCP / 插件 / 模型 / 引擎(它用的就是主对话当前那一套,配了也不算数),以及
+ * 「回到主对话」(它本来就在主对话里说那一句,内容和过程天然在那儿)。
+ *
+ * 那些控件**不是被"永久取消"了**:`agentParams` 仍然是它们的家,子 agent 在用。等
+ * 「主代理是主对话、子节点跑在图里」这套跑顺了、要把那一组收回给入口节点时,把
+ * `...capabilityParams()` / `...returnToChatParam()` 加回下面这一份即可 ——
+ * `buildNodeInput` 里那些 `nameListOf(params…)` 读法一个字都不用改。
+ * (那也正是这份表当初从 `agentParams` 里拆出来的原因:拆分是机械的,合回去也是。)
+ *
+ * 剩下的那一格「固定条件」是入口**独有**的 —— 它长在聊天输入框上方,陪着图的起点
+ * (见 `criteriaParam`),子 agent 没有这个位置。
+ *
+ * ⚠️ **「输入选项」(kind: "options")已删**(2026-09-19)。它和「固定条件」本是同一
+ * 个位置上的两套东西,而固定条件就是它多一个解释字段的版本 —— 两个并排只会让用户
+ * 理解成两种能力。整套机制(参数种类、聊天侧下拉、注入、设置键)一并移除;老存档里
+ * 存着的 options 参数条目随"参数里没有声明的键"一起被忽略,不挡存盘。
  */
-function optionsParam(): NodeParamSpec {
-  return {
-    key: NODE_OPTIONS_PARAM_KEY,
-    kind: "options",
-    label: "输入选项",
-    help: "配置后,用这张图聊天时输入框上方会出现一个下拉框:选中一项,它的内容插进输入框光标处,解释随这轮运行注入提示词。",
-  };
+function mainParams(): NodeParamSpec[] {
+  return [
+    {
+      key: NODE_PROMPT_PARAM_KEY,
+      kind: "longtext",
+      label: "指令",
+      required: true,
+      help: MAIN_INSTRUCTION_HELP,
+    },
+    criteriaParam(),
+    ...ioParams(),
+  ];
 }
 
 /**
  * 主对话入口节点的**固定条件** —— 聊天输入框上方那一排下拉框的条目表。
  *
- * 每行 = 条件名 + 一串候选值(编辑器里一行一个),选中的值随**每次运行最开头**的
- * 提示词注入**一次**、之后不再重复(见 `runner.ts` 的 `startWorkflowRun`),值为
- * 「不限」的条件跳过 —— 这是"一贯的习惯,不要再问"的那套(原话见
- * `main/lib/searchPrefs.ts` 的文件头)。它接过了文献检索写死的那条筛选条:那四个
- * 条件现在是内置检索图主节点上的**预填数据**(见 `builtins.ts`),在这里可以改候选、
- * 加条件、删条件 —— 定义在节点上,界面只是渲染。
+ * 每行 = 条件名 + 一串候选值(编辑器里一行一个)+ 一句可选的解释,选中的值随**那次
+ * 对话第一轮**的提示词注入**一次**、之后它已经在上下文里不再重复(见 `runner.ts` 的
+ * `startWorkflowRun`),值为「不限」的条件跳过 —— 这是"一贯的习惯,不要再问"的那套
+ * (原话见 `main/lib/searchPrefs.ts` 的文件头)。它接过了文献检索写死的那条筛选条:
+ * 那四个条件现在是内置检索图主节点上的**预填数据**(见 `builtins.ts`),在这里可以改
+ * 候选、加条件、删条件 —— 定义在节点上,界面只是渲染。
  */
 function criteriaParam(): NodeParamSpec {
   return {
     key: NODE_CRITERIA_PARAM_KEY,
     kind: "selects",
     label: "固定条件",
-    help: "配置后,输入框上方会出现一排下拉框:选中的值随这次运行注入一次,「不限」不注入。",
+    help: "配置后,输入框上方出现一排下拉框:选中值随对话第一轮注入一次,「不限」不注入。",
   };
 }
 
 /**
  * 两种内置 agent 节点共用的**用法说明**尾巴 —— 从"每一轮开头代码会告诉你整条流程"
  * 那一段开始。前半段各写各的(主代理讲"你是入口",子 agent 讲"你只是一步")。
+ *
+ * ⚠️ **第一句必须两种跑法都成立。** 这条尾巴同时接在 `mcode.main`(跑在主对话里,
+ * 看得见全部聊天记录)和 `mcode.agent`(**另开一段独立会话**,什么都看不见)后面 ——
+ * 所以它说的是"**另开一段会话的那种**"看不见别的步骤,而不是"每个节点"。
+ * 写成后者,主代理的说明就跟它自己那段"你跑在主对话里"自相矛盾。
  */
 const AGENT_USAGE_TAIL =
-  "**每个节点都是独立会话**:它只能看到你写的指令和上游的产出,看不到其他步骤,也看不到用户在别处说过的话 —— 因此指令必须**自足**,写成「把上游给出的三篇文献整理成一张对照表」这样,而不是「把上面的结果整理一下」。" +
+  "**另开一段会话的那种节点(子 agent)是隔离的**:它只能看到你写的指令和上游的产出,看不到其他步骤,也看不到用户在别处说过的话 —— 因此指令必须**自足**,写成「把上游给出的三篇文献整理成一张对照表」这样,而不是「把上面的结果整理一下」;而跑在主对话里的节点(入口、对话节点)看得见全部聊天,可以写「按刚才定的思路改」。" +
   "每一轮开头,代码会告知它**整条流程**:有哪几步、它位于哪一格、后面还有谁(只给名字,不给各步各自的指令)。那份说明由代码从图算出,指令里不必重复。" +
   "上游各步的产出会自动接在指令之前(**被指令点名引用的那几步除外** —— 点了名就只提供那一份)。" +
   "要**引用**上游的产物时,用「插入变量」选取:可以取它的**结果文本**(`{{某步.output}}`)、**状态 / 错误 / 标题**(`.status` / `.error` / `.title`)、它的**配置**(`{{某步.params.某参数}}`),以及它声明过的**产出变量**(`{{某步.变量名}}`)。节点可以写 id,也可以写标题,**只能引用这一步上游的节点**;只有在那一步的「产出变量」里声明过的名字才取得出来。" +
@@ -397,13 +444,13 @@ const AGENT_USAGE_TAIL =
 /**
  * 随应用发布的节点类型。现在六种:
  *
- * - **主代理**(图的入口,新建的工作流自带一个)与 **子 agent**(一个带独立指令的
- *   步骤)—— 都是"一轮对话里的一个步骤",寿命是一个 turn,**各自新开一段会话**。
- *   两者的**参数完全一样**(见 `agentParams`),差别在语义和用法说明上:入口那个负责
- *   拆,其余那些负责做。
- * - **对话节点** —— 同样跑一轮模型,但**跑在主对话里**(见
- *   `@contracts/nodeType` 的 `runner.kind === "conversation"`)。它不是"另一种子
- *   agent",而是"代替用户说一句话":所以它的参数表里只有「指令」,产出直接留在对话里。
+ * - **主代理**(图的入口,新建的工作流自带一个)与 **对话节点** —— 都**跑在主对话
+ *   里**(`runner.kind === "conversation"`):把指令当成一条用户消息发进当前对话,主对话
+ *   带着全部历史回一轮,产出直接留在那儿。主代理是那张图的入口(它的指令写"收到之后
+ *   怎么拆"),对话节点是流程中段"需要用到之前聊过的东西"的那一步。
+ * - **子 agent** —— 一轮对话里的一个步骤,寿命是一个 turn,**新开一段会话**:隔离、
+ *   可重复跑、图能分享给别人。参数比上面两种多一组「这一步靠什么跑」(技能 / MCP /
+ *   插件 / 模型 / 引擎)和「回到主对话」。
  * - **分支** —— 不跑东西的岔路口,选项就是它的出边。**决定权给谁**由 `decider`
  *   参数说了算:默认 `user`(挂起等用户选,它是环上唯一合法的回头点);`model` 时
  *   跑一轮模型自己选(过去的"决策节点"收编成了这种填法 —— 同一张清单,少一种类型)。
@@ -414,7 +461,8 @@ const AGENT_USAGE_TAIL =
  *   画图的人写死的配置,不是跑到一半才问的事;第三方那种自带脚本的 `entry` 形状
  *   仍然没实现(调度器会明确拒绝,见 `isNodeRunnable`)。
  *
- * 前三种是原来"对话模式"里那几步的形态;后三种是"自动化"那一摊的入口、岔路口和手。
+ * 前三种是原来"对话模式"里那几步的形态 —— 其中**主代理与对话节点跑在主对话里**,
+ * 只有子 agent 另开会话;后三种是"自动化"那一摊的入口、岔路口和手。
  */
 const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
   {
@@ -422,27 +470,41 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
     manifestVersion: 1,
     name: "主代理",
     description:
-      "用户那句话进到图里的**第一站**:理解要什么、拆成几步、分给下游。一份工作流自带一个,删不掉。",
+      "即主对话本身。用户那句话先到这里,主对话带着此前的全部上下文回一轮,并把工作拆解给下游。每份工作流自带一个,不可删除。",
     icon: "message",
     category: "通用",
-    runner: { kind: "prompt" },
-    // 与子 agent 同一个默认值,理由见下面那段。主代理通常更需要能读(先看看库里有什么
-    // 再决定怎么拆),而写盘该由它在具体某张图上显式声明。
+    // **入口跑在主对话里**(`conversation`),不是一段隔离的会话。
+    //
+    // 理由只有一个:它**就是用户正在说话的那个对话框**。隔离跑法(旧行为)下,用户
+    // 那句话被回声进聊天框、同时又被送进一段他看不见的会话,主对话那边一个字都没接
+    // 到 —— 他看着自己的话挂在那儿没人理,而"跟他说话的那个助手"被晾在一边。轮到
+    // 下一步要问点什么时,那一步也问不到他。
+    //
+    // 跑在主对话里之后,`runInConversation` 会**扣住**这一轮的收口(`turn.done`)和
+    // 逐字流(声明了产出变量时),整张图跑完才由收尾补一条 —— 所以界面上不会中途冒出
+    // "回合完成"(见 `runner.ts` 的 `runInConversation`)。
+    runner: { kind: "conversation" },
+    // ⚠️ **这一项对它不生效,填 `read` 只是因为清单必须有一个**(同对话节点):
+    // 它跑在主对话里,权限用的是**主对话当前那一套**。
     capability: "read",
-    // 只有入口节点带「输入选项」和「固定条件」—— 那两样都长在聊天输入框上方,陪着
-    // 图的起点(见 `optionsParam` / `criteriaParam`)。子 agent 与决策节点不传
-    // `extra`,参数表保持原样。
-    // ⚠️ **getter 惰性求值,不能是顶层求值的属性。** params → agentParams → ioParams →
+    // 只有入口节点带「固定条件」—— 它长在聊天输入框上方,陪着图的起点(见
+    // `criteriaParam`)。子 agent 不传 `extra`,参数表保持原样。
+    //
+    // ⚠️ **getter 惰性求值,不能是顶层求值的属性。** params → mainParams → ioParams →
     // contextOptions → loadLibraryTypes 要读 settings 表(DB):模块 import 期 initDb()
     // 还没 resolve,顶层求值会在启动时炸(getDb() called before initDb() resolved)。
     // getter 把首次读取推迟到 loadNodeTypes() 运行时 —— 那时调用方必已 await 过 Db。
     // 附带的好处:用户自建的类型不再固化在启动快照里,改完注册表下一轮就能勾到。
     get params() {
-      return agentParams(MAIN_INSTRUCTION_HELP, [optionsParam(), criteriaParam()]);
+      return mainParams();
     },
-    outputs: [{ key: "summary", label: "结果文本", description: "这个步骤的最终输出,会传给下游节点" }],
+    outputs: [{ key: "summary", label: "结果文本", description: "主对话这一轮说的话,会传给下游节点" }],
     usage:
-      "**入口节点。** 新建的工作流自带一个,一份图里只有它一个,而且删不掉 —— 用户那句话先到它这儿。它的活是**拆**不是做:把请求分成几步、写清每一步要什么,交给下游的子 agent;要是它自己把整件事做完了,下游就没得干了(这套图最容易踩的坑,所以指令里要写明「把活分给下游」这类话)。它可以接下游(几乎总是有下游,否则这张图就只有它一步,那不如直接跟对话说)。" +
+      "**入口节点 —— 它跑在主对话里。** 新建的工作流自带一个,一份图里只有它一个,而且删不掉:用户选了这张图,那段对话的第一句就是发给它的。\n" +
+      "  **它不是一段独立的会话**:它的指令作为一条用户消息发进当前这个对话,主对话(连同之前聊过的全部内容)回一轮 —— 所以「这一步靠什么跑」那一组不用配(模型、技能、MCP、插件、引擎、权限,用的全是主对话当前那一套)。**收什么、交什么是配的**,和子 agent 同一套。\n" +
+      "  **它的活是拆不是做**:把请求分成几步、写清每一步要什么,交给下游的子 agent;要是它自己把整件事做完了,下游就没得干了(这套图最容易踩的坑,所以指令里要写明「把活分给下游」这类话)。它几乎总是有下游 —— 只有它一步的图,不如直接在对话里说。\n" +
+      "  ⚠️ **跑这一轮的时候用户插不进话**,而且它跑完**不会**让界面显示「这一轮结束了」 —— 那条要等整张图收尾。\n" +
+      "  ⚠️ **它的上下文只增不减。** 这一步读过的文件、工具的每一次返回,都永久留在这个对话里,后面每一轮都背着它。" +
       AGENT_USAGE_TAIL,
   },
   {
@@ -471,7 +533,7 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
     manifestVersion: 1,
     name: "对话节点",
     description:
-      "**不另开会话**:把指令当成你在主对话里说的一句话发出去,主对话(连同之前聊过的全部内容)回一轮。答案就留在对话里。",
+      "不另开会话:把指令当作你在主对话里说的一句话发出去,主对话(连同此前的全部上下文)回一轮。答案留在对话里。",
     icon: "message",
     category: "通用",
     runner: { kind: "conversation" },
@@ -493,7 +555,7 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
         key: NODE_ASK_PARAM_KEY,
         kind: "boolean",
         label: "运行前先问我",
-        help: "打开后,跑到这一步会先弹个框问你怎么走:用它的指令 / 跳过 / 重复上一个任务 / 退出流程。",
+        help: "打开后,运行到本步骤时先询问你的意见:采用它的指令(可补充若干句)、跳过本步骤、重复上一个任务、退出流程。",
       },
       {
         key: NODE_INJECT_MODE_KEY,
@@ -503,7 +565,7 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
           value: m,
           label: m === "ask" ? "先问一句,等回答" : "自动注入,发完就走",
         })),
-        help: "默认等这一轮说完流程再往下走。「自动注入」是替你发一条消息,发完立刻算完成 —— 长任务守望用的就是它。",
+        help: "默认等这一轮说完,流程再往下走。「自动注入」是替用户发一条消息,发完立即算完成 —— 长任务守望用的就是它。",
       },
       {
         key: NODE_INJECT_TARGET_KEY,
@@ -513,7 +575,7 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
           value: t,
           label: t === "self" ? "本会话(跑这张图的)" : "发起会话(按守望按钮的那条)",
         })),
-        help: "默认发进跑这张图的会话。「发起会话」只在用「守望」按钮起跑时有意义;手动跑的自动化没有发起人,这一步会明确失败。",
+        help: "默认发进运行这张图的会话。「发起会话」只在用「守望」按钮起跑时成立;手动运行的自动化没有发起人,本步骤会明确失败。",
       },
       // 「进来什么 / 出去什么」那一组和子 agent 完全共用(见 `ioParams`)—— 收到上游产出、
       // 按一张表交东西、声明产出变量给下游取,这几件事跟"在哪儿跑"没有关系。
@@ -537,7 +599,7 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
     manifestVersion: 1,
     name: "分支",
     description:
-      "跑到它就在岔路口选一条出路继续,其余几条连同它们的下游一起作废。**选项就是它的出边** —— 从它拉几根线到下一步,每根线写一个选项名。**谁来选**由「决定权」说了算:弹出窗口等你点,或者跑一轮模型按判据自己挑。",
+      "运行到此处即在岔路口选择一条出路继续,其余几条连同它们的下游一并作废。选项即它的出边 —— 从它向下游拉若干根线,每根线写一个选项名。由谁选择取决于「决定权」:弹出窗口等你点选,或由模型按判据自行判断。",
     icon: "split",
     category: "通用",
     runner: { kind: "branch" },
@@ -557,7 +619,7 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
           value: m,
           label: m === "user" ? "弹出窗口,我来选" : "跑一轮模型,它来选",
         })),
-        help: "默认等你点。给模型的话它跑一轮自己挑,挑完继续跑 —— 适合「看结果就知道往哪走」的无人值守分流。",
+        help: "默认等你点选。给模型则它自跑一轮自行挑选,选完继续 —— 适用于「看结果就知道往哪走」的无人值守分流。",
       },
       {
         key: NODE_PROMPT_PARAM_KEY,
@@ -578,7 +640,7 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
     manifestVersion: 1,
     name: "命令",
     description:
-      "在本机跑一条 shell 命令,跑完才往下走。退出码和输出尾部交给下游 —— 要按成败分流,下游接一个「决定权给模型」的分支看退出码。",
+      "在本机执行一条 shell 命令,进程退出后才继续。退出码与输出尾部交给下游 —— 要按成败分流,下游接一个「决定权给模型」的分支,依据退出码判断。",
     icon: "terminal",
     category: "自动化",
     runner: { kind: "command" },
@@ -591,13 +653,13 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
         kind: "text",
         label: "命令",
         required: true,
-        help: "要跑的那条命令,在本机 shell 里执行。跑到它就执行,跑完(进程退出)才轮到下一步 —— 结束码是多少都算跑完。",
+        help: "在本机 shell 中执行的命令。运行到本步骤即执行,进程退出后才轮到下一步 —— 结束码是多少都算跑完。",
       },
       {
         key: NODE_COMMAND_TIMEOUT_KEY,
         kind: "number",
         label: "超时(毫秒)",
-        help: "跑了这么久还没完就杀掉,这一步按失败算。留空或 0 = 不限时长,等它自己退出。",
+        help: "超过此时长仍未结束则终止,本步骤按失败计。留空或 0 = 不限时长,等它自行退出。",
       },
       ...outputVarsParam(),
     ],
@@ -636,7 +698,7 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
     manifestVersion: 1,
     name: "触发器",
     description:
-      "一条自动化的**起点**:到点了、文件变了、某件事发生了,就按你写的那句话起一次运行。**它没有入边** —— 它是图的开头。",
+      "一条自动化的起点:到点、文件变化、或事件发生时,按写定的那句话起一次运行。它没有入边 —— 它是图的开头。",
     icon: "zap",
     category: "自动化",
     runner: { kind: "trigger" },
@@ -656,7 +718,7 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
           { value: "file", label: "文件变化" },
           { value: "event", label: "事件发生时" },
         ],
-        help: "「手动运行」= 只在列表里点「立刻跑一次」;另外三种是应用开着时自动起。",
+        help: "「手动运行」只在列表里点「立刻跑一次」;另外三种在应用开着时自动触发。",
       },
       {
         key: NODE_TRIGGER_PROJECT_PARAM_KEY,
@@ -666,45 +728,45 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
         required: true,
         // 单值。见 `@contracts/nodeType` 的 `NODE_PARAM_REF_SOURCES` 里 `projects` 那一段:
         // 一次运行只有一个工作目录。
-        help: "这次运行的工作目录,以及它的会话挂在哪。触发时问不了你,所以它必须写死在这儿。",
+        help: "本次运行的工作目录,以及它的会话挂载位置。触发时无法询问,因此必须在此写定。",
       },
       {
         key: NODE_TRIGGER_TASK_PARAM_KEY,
         kind: "longtext",
         label: "这次要做什么",
         required: true,
-        help: "触发时,这句话就是这次运行的**用户请求**(入口节点读到的那一句)。写成一句完整的话。",
+        help: "触发时,这句话即本次运行的用户请求(入口节点读到的那一句)。写成一句完整的话。",
       },
       {
         key: NODE_TRIGGER_CRON_PARAM_KEY,
         kind: "text",
         label: "定时表达式",
-        help: "只在「定时」时看。5 段:分钟 小时 日 月 星期,如 `0 9 * * 1-5` = 工作日九点。应用没开着不补跑。",
+        help: "仅在「定时」时生效。5 段:分 时 日 月 周,如 `0 9 * * 1-5` = 工作日九点。应用没开着时不补跑。",
       },
       {
         key: NODE_TRIGGER_PATHS_PARAM_KEY,
         kind: "text",
         label: "监听哪些文件",
-        help: "只在「文件变化」时看。逗号分隔,相对项目目录,支持 `*`(如 `*.md, src/**/*.ts`)。",
+        help: "仅在「文件变化」时生效。逗号分隔,相对项目目录,支持 `*`(如 `*.md, src/**/*.ts`)。",
       },
       {
         key: NODE_TRIGGER_EVENTS_PARAM_KEY,
         kind: "text",
         label: "听哪些事件",
-        help: "只在「事件发生时」看。逗号分隔,取值和**钩子**那张表一样(如 `tool.use, turn.done`)。",
+        help: "仅在「事件发生时」生效。逗号分隔,取值与钩子那张表一致(如 `tool.use, turn.done`)。",
       },
       {
         key: NODE_TRIGGER_FILTER_PARAM_KEY,
         kind: "text",
         label: "再筛一层",
-        help: "工具名或文件路径,逗号分隔,支持 `*`。只在听的事件带这两样时有用。",
+        help: "工具名或文件路径,逗号分隔,支持 `*`。仅在所听事件带这两样时有意义。",
       },
       {
         key: NODE_TRIGGER_DEBOUNCE_PARAM_KEY,
         kind: "number",
         label: "合并窗口(毫秒)",
         default: DEFAULT_TRIGGER_DEBOUNCE_MS,
-        help: "这么短的间隔里连着来好几次(存一次盘改了几个文件),合成一次运行。0 = 每次都跑。",
+        help: "在此间隔内连续多次变化(存一次盘改动了若干文件)合并为一次运行。0 = 每次都跑。",
       },
     ],
     usage:

@@ -21,34 +21,92 @@ import { Menu } from "@base-ui/react/menu";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import type { MessageId } from "@renderer/lib/i18n/core.js";
-import { Button, Input, Select, Switch } from "@renderer/components/ui/index.js";
+import { Button, Input, Select, Switch, Tooltip } from "@renderer/components/ui/index.js";
 import { api } from "@renderer/lib/api.js";
 import type { NodeParamSpec } from "@contracts/nodeType";
-import { IconBraces, IconCheck, IconChevronDown, IconPlus, IconX } from "@renderer/lib/icons.js";
+import {
+  IconBraces,
+  IconCheck,
+  IconChevronDown,
+  IconInfoCircle,
+  IconPlus,
+  IconX,
+} from "@renderer/lib/icons.js";
 import {
   insertSnippet,
   type InsertableGroup,
 } from "./insertVariable.js";
 import { useRefOptions, type RefOption } from "./useRefOptions.js";
 
-/** 一个带标题的表单行。档案编辑器和节点检查器共用,所以标题的字号只有一份。 */
+/** 一个带标题的表单行。档案编辑器和节点检查器共用,所以标题的字号只有一份。
+ *
+ * ⚠️ **这里是 `<label>`,所以里面不能放"自己会变宽的块级元素"。**
+ *
+ * 原先它整行包在 `<label>` 里 —— 对「标题」那种一个 `<input>` 的行是对的(点标题也能
+ * 聚焦),但这一格装的并不总是输入框:`kind: "boolean"` 渲染的是 `Switch`,而
+ * `Switch` 的根是一个 `<span class="h-4 w-7">`。`<label>` 是**行内**元素,里面有块级
+ * 兄弟时它的匿名行盒会塌成零宽,于是那个 28×16 的开关**量出来是 0×0** —— 点不到、
+ * 看不见(实测:同一个元素挪出 label 立刻是 28×16)。用户报的「读取流程记录设置按钮,
+ * 没有显示」就是它。
+ *
+ * 改成 `<div>`:标题是普通文本,点标题不再聚焦输入框 —— 这是这一处换来的代价,而它
+ * 比"有个控件根本点不到"小得多。 */
 export function Field({
   label,
   required,
+  help,
   children,
 }: {
   label: string;
   required?: boolean;
+  /** 这一格的解释。**印在标题右侧的一个小图标上,鼠标停住一秒才浮出来** —— 不占版面,
+   *  扫过去的时候也不抢注意力(见 {@link HelpHint})。 */
+  help?: string;
   children: React.ReactNode;
 }) {
   return (
-    <label className="mb-2 block w-full">
-      <span className="mb-0.5 block text-[0.7857em] font-medium text-content-muted">
-        {label}
+    <div className="mb-2 block w-full">
+      <span className="mb-0.5 flex items-center text-[0.7857em] font-medium text-content-muted">
+        <span>{label}</span>
         {required && <span className="ml-0.5 text-warning">*</span>}
+        {help !== undefined && help !== "" && <HelpHint text={help} />}
       </span>
       {children}
-    </label>
+    </div>
+  );
+}
+
+/**
+ * 一个**解释**的悬停浮窗 —— 默认什么都不显示,鼠标停住**一秒**才浮出来。
+ *
+ * 为什么是一秒:这些解释动辄两三句,一列参数摆十几条的话,它们抢走的注意力比控件本身
+ * 还多(用户的原话:「设计页面的解释隐藏起来」)。而"停一会儿才出"这个门槛正好把
+ * "扫过"和"我要弄明白这一格"分开 —— `Tooltip.Trigger` 默认的 280ms 是给图标那种
+ * 一眼提示用的,对这种成段的说明太急。
+ *
+ * ⚠️ **枢纽是一个 `<span>`,不是一个按钮。** 解释不是可点的东西,摆一个按钮样子的
+ * 东西在那儿,用户会去点它。代价是它不进 Tab 序(键盘够不着)—— 内容本身不是操作,
+ * 够不着不影响任何事能做成。
+ */
+function HelpHint({ text }: { text: string }) {
+  const { t } = useI18n();
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger
+        delay={1000}
+        closeDelay={60}
+        render={<span tabIndex={-1} />}
+        aria-label={t("settings.workflows.paramHelp")}
+        className="ml-1 inline-flex cursor-help align-middle text-content-subtle hover:text-content-muted"
+      >
+        <IconInfoCircle size={11} />
+      </Tooltip.Trigger>
+      <Tooltip.Portal>
+        <Tooltip.Positioner side="left" align="start" sideOffset={6}>
+          <Tooltip.Popup className="max-w-[280px] leading-relaxed">{text}</Tooltip.Popup>
+        </Tooltip.Positioner>
+      </Tooltip.Portal>
+    </Tooltip.Root>
   );
 }
 
@@ -61,6 +119,7 @@ export function ParamField({
   value,
   onChange,
   insertables,
+  resolvedFrom,
 }: {
   spec: NodeParamSpec;
   value: unknown;
@@ -68,6 +127,9 @@ export function ParamField({
   /** 这个参数的文本框里能插哪些变量。**给了才渲染「插入变量」** —— 什么时候给由
    *  检查器决定(它才知道图长什么样),控件自己不认识工作流。 */
   insertables?: InsertableGroup[];
+  /** 清单写了 `fromParam` 时,那个参数**此刻的值** —— 候选要跟着它收窄(「模型」跟着
+   *  「引擎」走,见 `NodeParamSpecSchema.fromParam`)。 */
+  resolvedFrom?: string;
 }) {
   const { t } = useI18n();
   const [picking, setPicking] = useState(false);
@@ -109,7 +171,7 @@ export function ParamField({
   };
 
   return (
-    <Field label={spec.label} required={spec.required}>
+    <Field label={spec.label} required={spec.required} help={spec.help}>
       {spec.kind === "boolean" ? (
         <Switch
           checked={value === true}
@@ -127,8 +189,6 @@ export function ParamField({
         />
       ) : spec.kind === "variables" ? (
         <VariableTable value={value} onChange={onChange} />
-      ) : spec.kind === "options" ? (
-        <OptionsTable value={value} onChange={onChange} insertables={insertables} />
       ) : spec.kind === "selects" ? (
         <SelectsTable value={value} onChange={onChange} />
       ) : spec.kind === "select" && spec.multiple ? (
@@ -171,7 +231,7 @@ export function ParamField({
         // 引用型:候选是**这台机器上有什么**(见 `@contracts/nodeType` 的
         // `NODE_PARAM_REF_SOURCES`)。候选一个都没有时退回手填 —— 一份别人分享来的
         // 工作流引用了本机没装的技能/模型,值仍然要看得见、改得动。
-        <RefControl spec={spec} value={value} onChange={onChange} />
+        <RefControl spec={spec} value={value} onChange={onChange} resolvedFrom={resolvedFrom} />
       ) : spec.kind === "number" ? (
         <Input
           type="number"
@@ -204,14 +264,10 @@ export function ParamField({
           onChange={(e) => onChange(e.target.value)}
         />
       )}
-      {/* 「插入变量」跟着 longtext 的框走(上面那个 areaRef)。options 的表**每行内容
-          各有自己的框**,菜单在 OptionsTable 行内 —— 走这里会把变量插错地方。selects
-          的候选值是给下拉框用的**字面量**(选中哪个原样注入),没有插变量的份。 */}
-      {insertables && spec.kind !== "options" && spec.kind !== "selects" && (
+      {/* 「插入变量」跟着 longtext 的框走(上面那个 areaRef)。selects 的候选值是给
+          下拉框用的**字面量**(选中哪个原样注入),没有插变量的份。 */}
+      {insertables && spec.kind !== "selects" && (
         <InsertVarMenu groups={insertables} onPick={insertAt} />
-      )}
-      {spec.help && (
-        <p className="mt-0.5 text-[0.7143em] leading-relaxed text-content-subtle">{spec.help}</p>
       )}
     </Field>
   );
@@ -490,144 +546,24 @@ function VariableTable({
 }
 
 /**
- * 「名字 + 内容 + 解释」的表 —— `kind: "options"` 的控件。
+ * 「条件名 + 候选值 + 解释」的表 —— `kind: "selects"` 的控件。
  *
- * 它是主对话入口节点的**输入选项**:每一行会变成聊天输入框上方那个下拉框里的一项。
- * 分工照着它在聊天那头的用途写 —— **名字**是菜单上显示的字;**内容**是选中后插进
- * 输入框光标处的那段,所以带「插入变量」(和「指令」同一套 `insertSnippet`,插到光标处;
- * 入口节点没有上游,菜单是空态提示,机制不分家);**解释**是随这次运行进提示词的那一句。
- *
- * 编辑态的读法与 `varRows` 同一条:**一行不丢** —— 刚点「加一样」出来的空行必须留得住。
- */
-function OptionsTable({
-  value,
-  onChange,
-  insertables,
-}: {
-  value: unknown;
-  onChange: (value: unknown) => void;
-  insertables?: InsertableGroup[];
-}) {
-  const { t } = useI18n();
-  const rows = optionRows(value);
-  const write = (next: OptionRow[]): void => onChange(next);
-  const patch = (at: number, key: keyof OptionRow, text: string): void =>
-    write(rows.map((row, i) => (i === at ? { ...row, [key]: text } : row)));
-
-  // 每行内容框的 ref —— 「插入变量」要插到**那一行**的光标处。按行号存,行删了
-  // React 会用 null 把旧条目冲掉,不会留下悬空的框。
-  const contentRefs = useRef(new Map<number, HTMLTextAreaElement>());
-  const setContentRef = (at: number) => (el: HTMLTextAreaElement | null) => {
-    if (el) contentRefs.current.set(at, el);
-    else contentRefs.current.delete(at);
-  };
-
-  const insertAt = (at: number, snippet: string): void => {
-    const el = contentRefs.current.get(at);
-    const text = rows[at]?.content ?? "";
-    const start = el?.selectionStart ?? text.length;
-    const end = el?.selectionEnd ?? start;
-    const next = insertSnippet(text, start, end, snippet);
-    patch(at, "content", next.value);
-    // 光标落在插进来的那段后面 —— 等 React 把新值写回 DOM 再设(同 ParamField 的做法)。
-    requestAnimationFrame(() => {
-      const node = contentRefs.current.get(at);
-      if (!node) return;
-      node.focus();
-      node.setSelectionRange(next.caret, next.caret);
-    });
-  };
-
-  return (
-    <div className="space-y-2">
-      {rows.map((row, i) => (
-        <div key={i} className="space-y-1 rounded border border-edge/60 p-1.5">
-          <div className="flex items-center gap-1">
-            <Input
-              className="min-w-0 flex-1"
-              value={row.name}
-              maxLength={60}
-              spellCheck={false}
-              placeholder={t("settings.workflows.optName")}
-              onChange={(e) => patch(i, "name", e.target.value)}
-            />
-            <button
-              type="button"
-              title={t("settings.workflows.optRemove")}
-              aria-label={t("settings.workflows.optRemove")}
-              onClick={() => write(rows.filter((_, j) => j !== i))}
-              className="shrink-0 rounded p-1 text-content-subtle transition-colors hover:bg-surface-hover/60 hover:text-content"
-            >
-              <IconX size={12} />
-            </button>
-          </div>
-          <GrowingTextarea
-            value={row.content}
-            placeholder={t("settings.workflows.optContent")}
-            inputRef={setContentRef(i)}
-            onChange={(text) => patch(i, "content", text)}
-          />
-          <GrowingTextarea
-            value={row.note}
-            placeholder={t("settings.workflows.optNote")}
-            onChange={(text) => patch(i, "note", text)}
-          />
-          {insertables && (
-            <InsertVarMenu groups={insertables} onPick={(snippet) => insertAt(i, snippet)} />
-          )}
-        </div>
-      ))}
-      {rows.length === 0 && (
-        <p className="text-[0.7143em] leading-relaxed text-content-subtle">
-          {t("settings.workflows.optEmpty")}
-        </p>
-      )}
-      <Button
-        variant="secondary"
-        size="sm"
-        onClick={() => write([...rows, { name: "", content: "", note: "" }])}
-        className="gap-1"
-      >
-        <IconPlus size={12} />
-        {t("settings.workflows.optAdd")}
-      </Button>
-    </div>
-  );
-}
-
-/** 选项表在编辑态的一行。 */
-interface OptionRow {
-  name: string;
-  content: string;
-  note: string;
-}
-
-/** 读出选项表的每一行。**一行不丢地端上来** —— 理由见 {@link OptionsTable}。 */
-function optionRows(value: unknown): OptionRow[] {
-  if (!Array.isArray(value)) return [];
-  return value.map((item) => {
-    const row = (typeof item === "object" && item !== null ? item : {}) as {
-      name?: unknown;
-      content?: unknown;
-      note?: unknown;
-    };
-    return {
-      name: typeof row.name === "string" ? row.name : "",
-      content: typeof row.content === "string" ? row.content : "",
-      note: typeof row.note === "string" ? row.note : "",
-    };
-  });
-}
-
-/**
- * 「条件名 + 候选值」的表 —— `kind: "selects"` 的控件。
- *
- * 它是主对话入口节点的**固定条件**:每一行会变成聊天输入框上方**一个**下拉框,选中
- * 的值每轮随提示词注入。**候选值一行一个**(多行框):条件名是标识符级别的短词,而
- * 候选值可能很长(「只要 T1(Q1 或中科院 1 区,或 Top)」),单行框装不下。
+ * 它是主对话入口节点的**固定条件**:每一行会变成聊天输入框上方**一个**下拉框,选中的
+ * 值随**那次对话第一轮**的提示词注入一次。**候选值一行一个**(多行框):条件名是标识符
+ * 级别的短词,而候选值可能很长(「只要 T1(Q1 或中科院 1 区,或 Top)」),单行框装不下。
+ * **解释**是给模型的一句说明(比如「T1 = Q1 或中科院 1 区或 Top 期刊」),可空。
  *
  * 候选值是**字面量** —— 选中哪个,注入的就是哪个,所以这里**没有**「插入变量」:
- * `{{...}}` 在下拉里不是个能选的值。与 `varRows`/`optionRows` 同一条读法:**一行不丢**。
+ * `{{...}}` 在下拉里不是个能选的值。与 `varRows` 同一条读法:**一行不丢**。
+ *
+ * ⚠️ **写回去的必须是 `string[]`,不是那个多行框里的字符串。**
+ *
+ * 这一格和另外那张表不一样:它们一行的值本来就是字符串(`{name, example}`),而这里的
+ * `choices` 在**契约里是数组**(`validateNodeParams` 明写 `Array.isArray(row.choices)`,
+ * 运行时的注入也按数组一条一条读)。编辑态为了方便摆成"一行一个"的多行框,所以
+ * **读写之间必须切一次行**。少了切开这一步,每一次按键都会:写进一个字符串 → 再读回来
+ * 时 `Array.isArray` 为假 → 得到空 —— 用户看到的正是「候选值输入不进去」(实测:打进
+ * 一个 `Q1`,params 里是 `"Q1"`,框里已经空了)。
  */
 function SelectsTable({
   value,
@@ -638,7 +574,7 @@ function SelectsTable({
 }) {
   const { t } = useI18n();
   const rows = critRows(value);
-  const write = (next: CritRow[]): void => onChange(next);
+  const write = (next: CritRow[]): void => onChange(toCriteria(next));
   const patch = (at: number, key: keyof CritRow, text: string): void =>
     write(rows.map((row, i) => (i === at ? { ...row, [key]: text } : row)));
 
@@ -670,6 +606,11 @@ function SelectsTable({
             placeholder={t("settings.workflows.critChoices")}
             onChange={(text) => patch(i, "choices", text)}
           />
+          <GrowingTextarea
+            value={row.note}
+            placeholder={t("settings.workflows.critNote")}
+            onChange={(text) => patch(i, "note", text)}
+          />
         </div>
       ))}
       {rows.length === 0 && (
@@ -680,7 +621,7 @@ function SelectsTable({
       <Button
         variant="secondary"
         size="sm"
-        onClick={() => write([...rows, { name: "", choices: "" }])}
+        onClick={() => write([...rows, { name: "", choices: "", note: "" }])}
         className="gap-1"
       >
         <IconPlus size={12} />
@@ -690,27 +631,63 @@ function SelectsTable({
   );
 }
 
-/** 固定条件表在编辑态的一行。候选值按行存(编辑器里一行一个),写回时切行。 */
+/** 固定条件表在编辑态的一行。候选值按行存(编辑器里一行一个),写回时切行;note 是
+ *  给模型的一句解释,本来就是字符串,原样读写。 */
 interface CritRow {
   name: string;
   choices: string;
+  note: string;
 }
 
-/** 读出条件表的每一行。**一行不丢地端上来** —— 理由同 {@link OptionsTable}。 */
+/** 读出条件表的每一行。**一行不丢地端上来** —— 刚点「加一条」出来的空行必须留得住;
+ *  多行框里的空行也是(用户按下的那个回车),所以切行之后**不过滤空串**。
+ *
+ *  它和 {@link toCriteria} 是一对**互逆**的读写:中间任何一个方向少东西,编辑框里的
+ *  光标就会跳、回车就会失灵。
+ *
+ *  这里**已经容忍了字符串形状的 `choices`**:那种值是被上面那个 bug 写进去的,而它
+ *  确实存在(用户存过盘的工作流里就有)。按行拆开读出来,用户一编辑就会被改写成正确的
+ *  `string[]` —— 不必额外跑一次迁移。 */
 function critRows(value: unknown): CritRow[] {
   if (!Array.isArray(value)) return [];
   return value.map((item) => {
     const row = (typeof item === "object" && item !== null ? item : {}) as {
       name?: unknown;
       choices?: unknown;
+      note?: unknown;
     };
     return {
       name: typeof row.name === "string" ? row.name : "",
       choices: Array.isArray(row.choices)
         ? row.choices.filter((c): c is string => typeof c === "string").join("\n")
-        : "",
+        : typeof row.choices === "string"
+          ? row.choices
+          : "",
+      note: typeof row.note === "string" ? row.note : "",
     };
   });
+}
+
+/** 把编辑态那张表写成契约要的形状:多行框切行。
+ *
+ *  ⚠️ **这一对读写必须可逆**(`critRows` 是它的逆),所以这里**不 trim、不丢空行**。
+ *
+ *  原先这里是 `trim` + 滤掉空串,理由是"用户打个回车就留一个空串,留着会让下拉里多一个
+ *  看不见的空选项" —— **那个理由不成立**(渲染下拉的 `SearchFilterBar` 自己就把空候选
+ *  滤掉了,注入的那一段根本不看候选值),而它换来的是**按回车没反应**:编辑态多行框里的
+ *  空行是"正在写的那一条",切行时被丢掉、数组塌成一条、React 再把 props 写回框里 ——
+ *  光标那一行就没了,后面打的字全接到上一行尾巴上(实测:打「不限」回车再打「近三年」,
+ *  框里是 `不限近三年`)。
+ *
+ *  所以空的候选值**留在盘上**(它是编辑中的空位),显示与注入两处各自忽略它。 */
+function toCriteria(
+  rows: readonly CritRow[],
+): Array<{ name: string; choices: string[]; note?: string }> {
+  return rows.map((row) => ({
+    name: row.name,
+    choices: row.choices.split("\n"),
+    ...(row.note.trim() !== "" ? { note: row.note } : {}),
+  }));
 }
 
 /**
@@ -786,23 +763,30 @@ function RefControl({
   spec,
   value,
   onChange,
+  resolvedFrom,
 }: {
   spec: NodeParamSpec;
   value: unknown;
   onChange: (value: unknown) => void;
+  /** 级联的上游值(见 `NodeParamSpecSchema.fromParam`)。只有「模型」用它。 */
+  resolvedFrom?: string;
 }) {
   const { t } = useI18n();
   // `from` 缺了是**不该发生**的(清单校验会拒掉没写 `from` 的引用型参数)。真缺了就
   // 当成"没有候选"往下走 —— 宁可显示"这台机器上还没有可选的项",也不要随手挑一份
   // 别的来源的列表填上去(那会让一个坏清单看起来是好的)。
-  const options = useRefOptions(spec.from ?? "models");
-  const candidates = spec.from ? options : [];
+  const all = useRefOptions(spec.from ?? "models", spec.fromParam !== undefined ? resolvedFrom : undefined);
+  const candidates = spec.from ? all : [];
   const text = typeof value === "string" ? value : "";
   const selected = stringListOf(value);
 
   if (spec.multiple) {
     return <MultiRefValue candidates={candidates} selected={selected} onChange={onChange} />;
   }
+
+  // 值还在、但它不在这个引擎的候选里 —— **仍然要显示出来**(一份分享来的工作流引用了
+  // 这里没装的东西,那个值要看得见、改得动),只在下面说一句它不属于当前这一档。
+  const orphan = text !== "" && !candidates.some((option) => option.id === text);
 
   if (candidates.length === 0) {
     return (
@@ -822,33 +806,47 @@ function RefControl({
   }
 
   return (
-    <Select.Root value={text} onValueChange={(v) => onChange(v as string)}>
-      <Select.Trigger className="w-full">
-        <Select.Value>
-          {(value: string) =>
-            value === ""
-              ? t("settings.workflows.paramRefUnset")
-              : (candidates.find((option) => option.id === value)?.label ?? value)
-          }
-        </Select.Value>
-      </Select.Trigger>
-      <Select.Portal>
-        <Select.Positioner className="z-50">
-          <Select.Popup>
-            <Select.List>
-              <Select.Item value="">
-                <Select.ItemText>{t("settings.workflows.paramRefUnset")}</Select.ItemText>
-              </Select.Item>
-              {candidates.map((option) => (
-                <Select.Item key={option.id} value={option.id}>
-                  <Select.ItemText>{option.label}</Select.ItemText>
+    <>
+      <Select.Root value={text} onValueChange={(v) => onChange(v as string)}>
+        <Select.Trigger className="w-full">
+          <Select.Value>
+            {(value: string) =>
+              value === ""
+                ? t("settings.workflows.paramRefUnset")
+                : (candidates.find((option) => option.id === value)?.label ?? value)
+            }
+          </Select.Value>
+        </Select.Trigger>
+        <Select.Portal>
+          <Select.Positioner className="z-50">
+            <Select.Popup>
+              <Select.List>
+                <Select.Item value="">
+                  <Select.ItemText>{t("settings.workflows.paramRefUnset")}</Select.ItemText>
                 </Select.Item>
-              ))}
-            </Select.List>
-          </Select.Popup>
-        </Select.Positioner>
-      </Select.Portal>
-    </Select.Root>
+                {/* 认不出的那个值单列在最上面:它在候选里没有,所以下面的列表里选不中
+                    它,这一项是它唯一看得见的地方。 */}
+                {orphan && (
+                  <Select.Item value={text}>
+                    <Select.ItemText>{text}</Select.ItemText>
+                  </Select.Item>
+                )}
+                {candidates.map((option) => (
+                  <Select.Item key={option.id} value={option.id}>
+                    <Select.ItemText>{option.label}</Select.ItemText>
+                  </Select.Item>
+                ))}
+              </Select.List>
+            </Select.Popup>
+          </Select.Positioner>
+        </Select.Portal>
+      </Select.Root>
+      {orphan && (
+        <p className="mt-1 text-[0.7143em] leading-relaxed text-warning">
+          {t("settings.workflows.paramRefForeign")}
+        </p>
+      )}
+    </>
   );
 }
 
