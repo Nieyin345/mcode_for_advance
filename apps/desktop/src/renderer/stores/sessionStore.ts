@@ -1,6 +1,26 @@
 import { create } from "zustand";
 import type { Project, Session, MessageRecord, SessionTodoItem, SessionPlanDraft, SessionBookmark } from "@contracts/session";
 import type {
+  SessionRunningSnapshotEvent,
+  UserMessageEvent,
+  TodoUpdateEvent,
+  GitChangedEvent,
+  SessionChangedEvent,
+  SessionDeletedEvent,
+  RequestResolvedEvent,
+  ModeChangeEvent,
+  UpstreamIssueEvent,
+  SubagentUpdateEvent,
+  SubagentTranscriptEvent,
+  WorkflowNodeTranscriptEvent,
+  ContextUsageEvent,
+  AskUserQuestionEvent,
+  TurnFilesEvent,
+  CompactResultEvent,
+  WorkflowNodeProgressEvent,
+  WorkflowNodeUsageEvent,
+  WorkflowNodeChoiceEvent,
+  TurnRewoundEvent,
   RuntimeEvent,
   NodeArtifact,
   NodeExecutionRecord,
@@ -4575,6 +4595,820 @@ export function selectActiveEnvPath(s: {
   return s.projects.find((p) => p.id === pid)?.path ?? null;
 }
 
+/* ═══════════════ 事件归约:每一类事件一个具名函数 ═══════════════
+ *
+ * 这些原先**全部内联在 `ingestEvent` 里**（那个函数 1458 行、25 个早返回分支 +
+ * 一个 switch 大块）。内联的代价不是「丑」,是**改一处要读完整段**:想知道
+ * `turn.rewound` 做了什么，得先在一千多行里定位到它，还要一路确认前面那些分支
+ * 不会先把它拦掉。
+ *
+ * 现在每个事件有自己的名字。主函数只剩分派，而且**短路顺序一字未改** ——
+ * 早返回分支的先后本身是语义（有的分支专门抢在别的分支前面拦），不能重排。
+ *
+ * 函数体是**逐字节从原处搬过来的**，只把自由变量换成了 `ctx.` 前缀。
+ * ═══════════════════════════════════════════════════════════════ */
+
+/** 归约一个事件时用得着的那几样。**故意做窄** —— 只放这些分支真正用到的，
+ *  多一样都会让「这个归约函数能用什么」变得说不清。 */
+interface IngestCtx {
+  /** zustand 的 setter。 */
+  set: (partial: Partial<SessionState> | ((s: SessionState) => Partial<SessionState>)) => void;
+  /** zustand 的 getter。 */
+  get: () => SessionState;
+  /** 这条事件的会话 id（`e.sessionId`，主函数开头取好）。 */
+  sid: string;
+  /** 非当前会话 + 窗口没在看时，给左边栏红点加一。 */
+  bumpUnread: () => void;
+  /** 非当前会话 + 窗口聚焦时的应用内提示（窗口失焦时由主进程发系统通知）。 */
+  pushToast: (kind: "info" | "warning" | "error", title: string, body?: string) => void;
+}
+
+/** `e.type === "session.runningSnapshot"` */
+function reduceSessionRunningSnapshot(ctx: IngestCtx, e: SessionRunningSnapshotEvent): void {
+const running = new Set(e.running);
+      ctx.set((s) => {
+        const next: Record<string, boolean> = {};
+        for (const id of Object.keys(s.runningBySession)) next[id] = running.has(id);
+        for (const id of running) next[id] = true;
+        return { runningBySession: next };
+      });
+      return;
+    
+}
+
+/** `e.type === "user.message"` */
+function reduceUserMessage(ctx: IngestCtx, e: UserMessageEvent): void {
+ctx.bumpUnread();
+      ctx.set((s) => {
+        const list = s.messagesBySession[ctx.sid] ?? EMPTY_MESSAGES;
+        // Originator's own echo (id already present) — nothing to append (the
+        // originator already truncated + optimistically appended at edit time).
+        if (list.some((m) => m.id === e.messageId)) return s;
+        // Cross-client EDIT (e.g. edited on the phone, echoed here): drop the
+        // stale pre-edit tail — the message being replaced and everything
+        // after it — BEFORE appending the re-sent bubble. Without this, a
+        // second connected device keeps the old message + its old reply in
+        // memory, shows them live, and at its own turn.done re-persists that
+        // stale tail into the DB, resurrecting rows the originator truncated
+        // away (a later re-open then shows duplicates). Receivers that don't
+        // have the edited message (already truncated / not loaded) fall back
+        // to a plain append.
+        let base = list;
+        if (e.editedMessageId) {
+          const idx = base.findIndex((m) => m.id === e.editedMessageId);
+          if (idx !== -1) base = base.slice(0, idx);
+        }
+        const msg: ChatMessage = {
+          id: e.messageId,
+          sessionId: ctx.sid,
+          role: "user",
+          // Trusted payload from our own renderer/mobile peer, same as the
+          // persisted message content trusted by fromRecords on reload.
+          blocks: e.blocks as Block[],
+          createdAt: e.createdAt,
+        };
+        return { messagesBySession: { ...s.messagesBySession, [ctx.sid]: [...base, msg] } };
+      });
+      return;
+    
+}
+
+/** `e.type === "todo.update"` */
+function reduceTodoUpdate(ctx: IngestCtx, e: TodoUpdateEvent): void {
+ctx.set((s) => ({ todosBySession: { ...s.todosBySession, [ctx.sid]: e.todos } }));
+      return;
+    
+}
+
+/** `e.type === "git.changed"` */
+function reduceGitChanged(ctx: IngestCtx, e: GitChangedEvent): void {
+ctx.set((s) => ({
+        gitChangeVersionByRepo: {
+          ...s.gitChangeVersionByRepo,
+          [e.repoPath]: (s.gitChangeVersionByRepo[e.repoPath] ?? 0) + 1,
+        },
+      }));
+      return;
+    
+}
+
+/** `e.type === "session.changed"` */
+function reduceSessionChanged(ctx: IngestCtx, e: SessionChangedEvent): void {
+const entry = e.session;
+      // Side chats never belong in the left-bar caches. Main-side creation
+      // and title rewrites don't broadcast for them, but a patch arriving
+      // through some other path must not leak a side row into the lists —
+      // route it to the ask tab's per-parent bucket instead.
+      if (entry.kind === "side") {
+        ctx.set((s) => {
+          const parent = entry.parentSessionId;
+          const list = parent ? s.sideChatsByParent[parent] : undefined;
+          if (!parent || !list) return {};
+          return {
+            sideChatsByParent: {
+              ...s.sideChatsByParent,
+              [parent]: list.some((x) => x.id === entry.id)
+                ? list.map((x) => (x.id === entry.id ? { ...x, ...entry } : x))
+                : [materializeSessionEntry(entry), ...list],
+            },
+          };
+        });
+        return;
+      }
+      // 工作流节点会话(`kind: "node"`)同理,但**直接丢掉**:它没有对应的面板,
+      // 而下面那个 upsert 会把它物化进左栏(= 用户突然多出一个自己没建过的会话)。
+      //
+      // 正常情况下它根本走不到这里 —— 建节点会话的路径(`orchestration/runner.ts`)
+      // 不广播 `session.changed`,三个广播点也都按 `kind === "chat"` 收了口。这一句是
+      // **兜底**:以后多一个广播点,症状不该是"隐藏会话漏进侧栏"。
+      if (entry.kind === "node") return;
+      ctx.set((s) => {
+        const patch: Partial<SessionState> = {};
+        let touched = false;
+        // Global pinned bucket — upsert while the changed row is pinned AND
+        // active, evict otherwise (unpinned / archived). Maintained regardless
+        // of whether the owning project's window is loaded, since the pinned
+        // section is global. This is the echo path for remote pin toggles;
+        // local toggles also end here after applySessionPinnedState (no-op).
+        const inPinned = s.pinnedSessions.some((x) => x.id === entry.id);
+        const shouldBePinned = !entry.archived && entry.pinnedAt != null;
+        if (shouldBePinned) {
+          patch.pinnedSessions = inPinned
+            ? s.pinnedSessions.map((x) => (x.id === entry.id ? { ...x, ...entry } : x))
+            : sortPinnedByRecency([materializeSessionEntry(entry), ...s.pinnedSessions]);
+          touched = true;
+        } else if (inPinned) {
+          patch.pinnedSessions = s.pinnedSessions.filter((x) => x.id !== entry.id);
+          touched = true;
+        }
+        const activeList = s.sessionsByProject[entry.projectId];
+        if (activeList) {
+          // Two-section cache (see splitSessionSections): local threads are
+          // the paginated list the totals count; worktree-bound threads park
+          // behind them. Route the changed row into its section — a row that
+          // MIGRATES (worktree materialize on first turn / directory removal
+          // degrading back to local) leaves one section and enters the other.
+          const { local, worktree } = splitSessionSections(activeList);
+          const inLocalWindow = !entry.archived && entry.pinnedAt == null && !entry.worktreePath;
+          const inWorktreeWindow = !entry.archived && entry.pinnedAt == null && !!entry.worktreePath;
+          const wasLocal = local.some((x) => x.id === entry.id);
+          const shrinkLocalTotals = () => {
+            patch.sessionsTotalByProject = {
+              ...s.sessionsTotalByProject,
+              [entry.projectId]: Math.max((s.sessionsTotalByProject[entry.projectId] ?? 0) - 1, 0),
+            };
+            patch.sessionsHasMoreByProject = {
+              ...s.sessionsHasMoreByProject,
+              [entry.projectId]:
+                (s.sessionsTotalByProject[entry.projectId] ?? 0) - 1 >
+                [...local.filter((x) => x.id !== entry.id), ...worktree].filter(
+                  (x) => !x.worktreePath,
+                ).length,
+            };
+          };
+          let next: Session[];
+          if (inWorktreeWindow) {
+            // Upsert into the worktree section (prepend when new — newest
+            // first within it); a row that just materialized its worktreePath
+            // also leaves the local section, shrinking the LOCAL total.
+            next = [
+              ...local.filter((x) => x.id !== entry.id),
+              ...(worktree.some((x) => x.id === entry.id)
+                ? worktree.map((x) => (x.id === entry.id ? { ...x, ...entry } : x))
+                : [materializeSessionEntry(entry), ...worktree]),
+            ];
+            if (wasLocal) shrinkLocalTotals();
+          } else if (!inLocalWindow) {
+            // Left the active window — archived (moved to the bin) or pinned
+            // (moved to the global pinned section above the project tree);
+            // drop it from both sections; totals shrink only when it
+            // actually left the LOCAL section.
+            next = [
+              ...local.filter((x) => x.id !== entry.id),
+              ...worktree.filter((x) => x.id !== entry.id),
+            ];
+            if (wasLocal) shrinkLocalTotals();
+          } else if (wasLocal) {
+            // Merge the slim entry OVER the cached row so heavy payloads
+            // (contextSnapshot / turnFiles / …) survive the update.
+            next = [...local.map((x) => (x.id === entry.id ? { ...x, ...entry } : x)), ...worktree];
+          } else {
+            // A session created on another client — or a worktree row that
+            // just degraded back to local (directory removal) — materialize
+            // it at the head of the local window; the local total grows.
+            // Merge over the cached row (whichever section it sat in) so a
+            // degraded worktree row keeps its heavy payloads, and drop the
+            // stale copy it left behind: keeping the old worktree-bound row
+            // alive would re-bucket it into its dead worktree group and the
+            // left bar would keep rendering the removed worktree.
+            const prevRow = activeList.find((x) => x.id === entry.id);
+            next = [
+              prevRow ? { ...prevRow, ...entry } : materializeSessionEntry(entry),
+              ...local.filter((x) => x.id !== entry.id),
+              ...worktree.filter((x) => x.id !== entry.id),
+            ];
+            patch.sessionsTotalByProject = {
+              ...s.sessionsTotalByProject,
+              [entry.projectId]: (s.sessionsTotalByProject[entry.projectId] ?? 0) + 1,
+            };
+          }
+          patch.sessionsByProject = { ...s.sessionsByProject, [entry.projectId]: next };
+          touched = true;
+        }
+        const archivedList = s.archivedSessionsByProject[entry.projectId];
+        if (archivedList) {
+          const exists = archivedList.some((x) => x.id === entry.id);
+          if (!entry.archived) {
+            // Restored from the bin — drop it from the archived window.
+            const next = archivedList.filter((x) => x.id !== entry.id);
+            if (next.length !== archivedList.length) {
+              if (next.length > 0) {
+                patch.archivedSessionsByProject = { ...s.archivedSessionsByProject, [entry.projectId]: next };
+              } else {
+                const copy = { ...s.archivedSessionsByProject };
+                delete copy[entry.projectId];
+                patch.archivedSessionsByProject = copy;
+              }
+              touched = true;
+            }
+          } else if (exists) {
+            patch.archivedSessionsByProject = {
+              ...s.archivedSessionsByProject,
+              [entry.projectId]: archivedList.map((x) => (x.id === entry.id ? { ...x, ...entry } : x)),
+            };
+            touched = true;
+          }
+          // else: archived remotely but outside the loaded bin page — the
+          // refresh path will pick it up.
+        }
+        // Cached pre-change row (same id) — the gain/loss probes below
+        // compare it against the incoming entry.
+        const prevEntry =
+          s.sessionsByProject[entry.projectId]?.find((x) => x.id === entry.id) ??
+          s.pinnedSessions.find((x) => x.id === entry.id);
+        // Worktree-MATERIALIZE flip (gain direction): the entry just GAINED a
+        // worktreePath — its first turn created the isolated checkout
+        // (the composer-chip path materializes on sendTurn, long after the
+        // session was activated, so the activation-time flip never ran). If
+        // the materialized row is the ACTIVE session, the project's view
+        // must follow it into the fork view and reveal the group —
+        // otherwise the freshly materialized thread silently vanishes from
+        // the local list the user is looking at.
+        if (entry.worktreePath && !prevEntry?.worktreePath && entry.id === s.activeSessionId) {
+          if (!s.worktreeViewByProject[entry.projectId]) {
+            patch.worktreeViewByProject = {
+              ...s.worktreeViewByProject,
+              [entry.projectId]: true,
+            };
+          }
+          const gainedKey = normWorktreeKey(entry.worktreePath);
+          if (!s.expandedWorktrees[gainedKey]) {
+            patch.expandedWorktrees = {
+              ...s.expandedWorktrees,
+              [gainedKey]: true,
+            };
+          }
+        }
+        // Worktree-degenerate view flip: this entry just LOST its
+        // worktreePath — its directory was removed and clearWorktreePath
+        // degraded it back to local (each referenced session broadcasts its
+        // own changed event, so this fires once per row). When the project's
+        // LAST worktree-bound row degenerates, fall its left-bar view back
+        // to the local list — the fork view would otherwise render an empty
+        // "no threads" while every local thread sits hidden in the other
+        // view (the "删除工作树后会话不见了" trap).
+        if (!entry.worktreePath && prevEntry?.worktreePath) {
+          const stillBound =
+            (s.sessionsByProject[entry.projectId]?.some(
+              (x) => x.id !== entry.id && !!x.worktreePath,
+            ) ?? false) ||
+            s.pinnedSessions.some(
+              (x) => x.id !== entry.id && x.projectId === entry.projectId && !!x.worktreePath,
+            );
+          if (!stillBound && s.worktreeViewByProject[entry.projectId]) {
+            patch.worktreeViewByProject = {
+              ...s.worktreeViewByProject,
+              [entry.projectId]: false,
+            };
+            touched = true;
+          }
+        }
+        if (!touched) return {};
+        // Keep the derived `sessions` alias (active project's list) fresh.
+        if (s.activeProjectId === entry.projectId && patch.sessionsByProject) {
+          patch.sessions = patch.sessionsByProject[entry.projectId] ?? s.sessions;
+        }
+        // Config sync: if the changed row is the ACTIVE session, mirror its
+        // model/effort/permissionMode/customModelId/providerId into the
+        // composer's global slots — a change made on the OTHER client
+        // (phone/desktop via session:updateSettings) takes effect here
+        // immediately, matching the local setModel/setEffort/… actions.
+        if (entry.id === s.activeSessionId) {
+          patch.model = entry.model;
+          patch.effort = entry.effort;
+          patch.permissionMode = entry.permissionMode;
+          patch.customModelId = entry.customModelId;
+          patch.providerId = entry.providerId;
+        }
+        // Remote change reached the caches — the stream aggregate may be
+        // stale too (ordering / title / pin / worktree fields).
+        patch.streamDirty = true;
+        return patch;
+      });
+      return;
+    
+}
+
+/** `e.type === "session.deleted"` */
+function reduceSessionDeleted(ctx: IngestCtx, e: SessionDeletedEvent): void {
+ctx.set((s) => applySessionDeletedState(s, ctx.sid));
+      return;
+    
+}
+
+/** `e.type === "request.resolved"` */
+function reduceRequestResolved(ctx: IngestCtx, e: RequestResolvedEvent): void {
+ctx.set((s) => {
+        if (e.kind === "approval") {
+          const next = s.pendingApprovals.filter((p) => p.requestId !== e.requestId);
+          return next.length === s.pendingApprovals.length ? {} : { pendingApprovals: next };
+        }
+        if (e.kind === "question") {
+          const pending = s.pendingQuestionBySession[ctx.sid];
+          if (!pending || pending.requestId !== e.requestId) return {};
+          const bucket = { ...s.pendingQuestionBySession };
+          delete bucket[ctx.sid];
+          return { pendingQuestionBySession: bucket };
+        }
+        // plan
+        const pending = s.pendingPlanApprovalBySession[ctx.sid];
+        if (!pending || pending.requestId !== e.requestId) return {};
+        const bucket = { ...s.pendingPlanApprovalBySession };
+        delete bucket[ctx.sid];
+        return { pendingPlanApprovalBySession: bucket };
+      });
+      return;
+    
+}
+
+/** `e.type === "plan.update"` */
+function reducePlanUpdate(ctx: IngestCtx, e: PlanUpdateEvent): void {
+ctx.set((s) => {
+        const list = s.messagesBySession[ctx.sid] ?? EMPTY_MESSAGES;
+        const hasApproval = !!s.pendingPlanApprovalBySession[ctx.sid];
+        const next = upsertLivePlanBlock(
+          list,
+          e.plan,
+          e.phase,
+          hasApproval,
+          s.runningTurnStartedAt[ctx.sid] ?? Date.now(),
+          s.runningTurnModelBySession[ctx.sid],
+        );
+        return {
+          planBySession: {
+            ...s.planBySession,
+            [ctx.sid]: { plan: e.plan, phase: e.phase },
+          },
+          messagesBySession: next === list
+            ? s.messagesBySession
+            : { ...s.messagesBySession, [ctx.sid]: next },
+        };
+      });
+      return;
+    
+}
+
+/** `e.type === "mode.change"` */
+function reduceModeChange(ctx: IngestCtx, e: ModeChangeEvent): void {
+if (ctx.sid === ctx.get().activeSessionId) {
+        ctx.set({ permissionMode: e.mode });
+        void api.session.updateSettings({ sessionId: ctx.sid, permissionMode: e.mode }).catch((err) => {
+          console.error("updateSettings(mode.change) failed:", err);
+        });
+      }
+      return;
+    
+}
+
+/** `e.type === "upstream.issue"` */
+function reduceUpstreamIssue(ctx: IngestCtx, e: UpstreamIssueEvent): void {
+if (e.kind === "ok") {
+        clearUpstreamIssue(ctx.set, ctx.sid);
+        return;
+      }
+      ctx.set((s) => ({
+        upstreamIssueBySession: {
+          ...s.upstreamIssueBySession,
+          [ctx.sid]: { cause: e.cause, attempt: e.attempt, attempts: e.attempts },
+        },
+      }));
+      const prev = upstreamIssueDecayTimers.get(ctx.sid);
+      if (prev) clearTimeout(prev);
+      upstreamIssueDecayTimers.set(
+        ctx.sid,
+        setTimeout(() => {
+          upstreamIssueDecayTimers.delete(ctx.sid);
+          clearUpstreamIssue(ctx.set, ctx.sid);
+        }, UPSTREAM_ISSUE_DECAY_MS),
+      );
+      return;
+    
+}
+
+/** `e.type === "subagent.update"` */
+function reduceSubagentUpdate(ctx: IngestCtx, e: SubagentUpdateEvent): void {
+const prevAgents = ctx.get().subagentsBySession[ctx.sid] ?? [];
+      const prevRunning = new Set(prevAgents.filter((a) => a.status === "running").map((a) => a.taskId));
+      const justFinished = e.agents.some(
+        (a) => (a.status === "completed" || a.status === "failed") && prevRunning.has(a.taskId),
+      );
+      if (justFinished) {
+        ctx.bumpUnread();
+        ctx.pushToast("info", translate(ctx.get().locale, "store.toast.backgroundTaskDone"), translate(ctx.get().locale, "store.toast.backgroundTaskDoneBody"));
+      }
+      ctx.set((s) => {
+        const agents = s.interruptedBySession[ctx.sid]
+          ? e.agents.map((a) => (a.status === "running" ? { ...a, status: "killed" as const } : a))
+          : e.agents;
+        return { subagentsBySession: { ...s.subagentsBySession, [ctx.sid]: agents } };
+      });
+      return;
+    
+}
+
+/** `e.type === "subagent.transcript"` */
+function reduceSubagentTranscript(ctx: IngestCtx, e: SubagentTranscriptEvent): void {
+ctx.set((s) => {
+        const inner = s.subagentTranscriptsBySession[ctx.sid];
+        if (inner?.[e.parentToolUseId] === e.blocks) return {};
+        return {
+          subagentTranscriptsBySession: {
+            ...s.subagentTranscriptsBySession,
+            [ctx.sid]: { ...(inner ?? {}), [e.parentToolUseId]: e.blocks },
+          },
+        };
+      });
+      return;
+    
+}
+
+/** `e.type === "workflow.node.transcript"` */
+function reduceWorkflowNodeTranscript(ctx: IngestCtx, e: WorkflowNodeTranscriptEvent): void {
+ctx.set((s) => {
+        if (s.workflowNodeTranscripts[e.nodeSessionId] === e.blocks) return {};
+        const next = { ...s.workflowNodeTranscripts, [e.nodeSessionId]: e.blocks };
+        // 只在**新键**上裁:替换已有的那个不会让表变大,而按插入序裁能保证"正在看的
+        // 这一步"永远裁不到。
+        const keys = Object.keys(next);
+        for (const stale of keys.slice(0, Math.max(0, keys.length - NODE_TRANSCRIPT_KEEP))) {
+          if (stale !== e.nodeSessionId) delete next[stale];
+        }
+        return { workflowNodeTranscripts: next };
+      });
+      return;
+    
+}
+
+/** `e.type === "token-usage.updated"` */
+function reduceTokenUsageUpdated(ctx: IngestCtx, e: ContextUsageEvent): void {
+if (!isValidSnapshot(e.snapshot)) return;
+      ctx.set((s) => {
+        const patch: Partial<SessionState> = {
+          contextSnapshotBySession: { ...s.contextSnapshotBySession, [ctx.sid]: e.snapshot },
+        };
+        // Keep the in-memory session row cache in sync. Only touch the list
+        // entry actually found (no-op if this session isn't in the cache, e.g.
+        // archived / not yet loaded).
+        const cached = findSession(s.sessionsByProject, s.archivedSessionsByProject, s.pinnedSessions, s.streamSessions, ctx.sid);
+        if (cached && cached.contextSnapshot !== e.snapshot) {
+          patch.sessionsByProject = patchSessionInCache(
+            s.sessionsByProject, cached.projectId, ctx.sid, { contextSnapshot: e.snapshot },
+          );
+          // Pinned rows live in the global pinned bucket, not the per-project
+          // list — mirror the snapshot there too.
+          const pinnedIdx = s.pinnedSessions.findIndex((x) => x.id === ctx.sid);
+          if (pinnedIdx !== -1) {
+            patch.pinnedSessions = s.pinnedSessions.map((x, i) =>
+              i === pinnedIdx ? { ...x, contextSnapshot: e.snapshot } : x,
+            );
+          }
+        }
+        return patch;
+      });
+      return;
+    
+}
+
+/** `e.type === "question.ask"` */
+function reduceQuestionAsk(ctx: IngestCtx, e: AskUserQuestionEvent): void {
+ctx.bumpUnread();
+      ctx.pushToast("warning", translate(ctx.get().locale, "store.toast.agentQuestion"), e.questions[0]?.question);
+      ctx.set((s) => ({
+        pendingQuestionBySession: {
+          ...s.pendingQuestionBySession,
+          [ctx.sid]: { questions: e.questions, requestId: e.requestId },
+        },
+      }));
+      return;
+    
+}
+
+/** `e.type === "approval.request"` */
+function reduceApprovalRequest(ctx: IngestCtx, e: ApprovalRequestEvent): void {
+ctx.bumpUnread();
+      ctx.pushToast("warning", translate(ctx.get().locale, "store.toast.toolApprovalNeeded"), e.toolName);
+      ctx.set((s) => ({
+        pendingApprovals: [
+          ...s.pendingApprovals.filter((p) => p.requestId !== e.requestId),
+          e,
+        ],
+      }));
+      return;
+    
+}
+
+/** `e.type === "plan.approval_request"` */
+function reducePlanApprovalRequest(ctx: IngestCtx, e: PlanApprovalRequestEvent): void {
+ctx.bumpUnread();
+      ctx.pushToast("warning", translate(ctx.get().locale, "store.toast.planApprovalPending"), translate(ctx.get().locale, "store.toast.planApprovalPendingBody"));
+      ctx.set((s) => {
+        const list = s.messagesBySession[ctx.sid] ?? EMPTY_MESSAGES;
+        // The plan text on the approval request is the model's ExitPlanMode
+        // payload — re-sync the inline block so it shows exactly what the
+        // user is being asked to approve (phase stays "ready" per the prior
+        // plan.update emitted by the adapter on ExitPlanMode).
+        const next = upsertLivePlanBlock(
+          list,
+          e.plan,
+          "ready",
+          true,
+          s.runningTurnStartedAt[ctx.sid] ?? Date.now(),
+          s.runningTurnModelBySession[ctx.sid],
+        );
+        return {
+          pendingPlanApprovalBySession: {
+            ...s.pendingPlanApprovalBySession,
+            [ctx.sid]: e,
+          },
+          messagesBySession: next === list
+            ? s.messagesBySession
+            : { ...s.messagesBySession, [ctx.sid]: next },
+        };
+      });
+      return;
+    
+}
+
+/** `e.type === "turn.files"` */
+function reduceTurnFiles(ctx: IngestCtx, e: TurnFilesEvent): void {
+const changedMessages: ChatMessage[] = [];
+      ctx.set((s) => {
+        const list = s.messagesBySession[ctx.sid] ?? EMPTY_MESSAGES;
+        const next = upsertLiveTurnFilesBlock(list, e.files);
+        if (next !== list) {
+          // upsertLiveTurnFilesBlock only replaces/appends touched messages —
+          // every other row keeps its reference, so index-wise inequality is
+          // an exact changed-rows diff.
+          for (let i = 0; i < next.length; i++) {
+            if (next[i] !== list[i]) changedMessages.push(next[i]);
+          }
+        }
+        return {
+          turnFilesBySession: { ...s.turnFilesBySession, [ctx.sid]: e.files },
+          messagesBySession: next === list
+            ? s.messagesBySession
+            : { ...s.messagesBySession, [ctx.sid]: next },
+        };
+      });
+      // Persist the touched rows so the card survives restart. This is the
+      // ONLY persist some arrivals get: an interrupted turn's closing
+      // turn.done{interrupted} is dropped by the stale-guard above, so its
+      // late turn.files never gets a turn.done persist pass. IPC ordering
+      // preserves "last write wins" for the normal path (this lands after
+      // the turn.done persist, which already covers the card).
+      if (changedMessages.length > 0) {
+        void api.session.upsertMessages({ sessionId: ctx.sid, messages: toRecords(ctx.sid, changedMessages) });
+      }
+      return;
+    
+}
+
+/** `e.type === "compact.result"` */
+function reduceCompactResult(ctx: IngestCtx, e: CompactResultEvent): void {
+ctx.set((s) => {
+        const list = s.messagesBySession[ctx.sid] ?? EMPTY_MESSAGES;
+        const block: Block = {
+          kind: "compact-summary",
+          trigger: e.trigger,
+          preTokens: e.preTokens,
+          postTokens: e.postTokens,
+          durationMs: e.durationMs,
+        };
+        // Use the send-time anchor (stamped in sendPrompt) so the compact
+        // card's turnMeta continues the synthesized pendingTurn row's timing
+        // seamlessly - same pattern as tool.use / text.delta. Falls back to
+        // now if the anchor is missing (resumed/legacy turn).
+        const startedAt = s.runningTurnStartedAt[ctx.sid] ?? Date.now();
+        const next = appendTurnCardBlock(
+          list,
+          block,
+          startedAt,
+          s.runningTurnModelBySession[ctx.sid],
+          "compact",
+        );
+        return next === list
+          ? s
+          : { messagesBySession: { ...s.messagesBySession, [ctx.sid]: next } };
+      });
+      // Persist so the card survives reload. Incremental upsert: only the
+      // trailing assistant message (or a freshly-appended turn opener) changed.
+      {
+        const list = ctx.get().messagesBySession[ctx.sid];
+        if (list && list.length > 0) {
+          const last = list[list.length - 1];
+          void api.session.upsertMessages({ sessionId: ctx.sid, messages: toRecords(ctx.sid, [last]) });
+        }
+      }
+      return;
+    
+}
+
+/** `e.type === "workflow.node.progress"` */
+function reduceWorkflowNodeProgress(ctx: IngestCtx, e: WorkflowNodeProgressEvent): void {
+const progress: Block = {
+        kind: "workflow-node-progress",
+        runId: e.runId,
+        nodeId: e.nodeId,
+        nodeType: e.nodeType,
+        title: e.title,
+        ...(e.percent !== undefined ? { percent: Math.max(0, Math.min(100, e.percent)) } : {}),
+        ...(e.message ? { message: e.message } : {}),
+        ...(e.phase ? { phase: e.phase } : {}),
+      };
+      ctx.set((s) => {
+        const list = s.messagesBySession[ctx.sid] ?? EMPTY_MESSAGES;
+        const patched = patchWorkflowNodeProgressBlock(
+          list,
+          progress as Extract<Block, { kind: "workflow-node-progress" }>,
+        );
+        if (patched) return { messagesBySession: { ...s.messagesBySession, [ctx.sid]: patched } };
+        const startedAt = s.runningTurnStartedAt[ctx.sid] ?? Date.now();
+        const next = appendTurnCardBlock(list, progress, startedAt, s.runningTurnModelBySession[ctx.sid], "wfprogress");
+        return next === list ? s : { messagesBySession: { ...s.messagesBySession, [ctx.sid]: next } };
+      });
+      return;
+    
+}
+
+/** `e.type === "workflow.node.result"` */
+function reduceWorkflowNodeResult(ctx: IngestCtx, e: WorkflowNodeResultEvent): void {
+ctx.set((s) => {
+        const list = s.messagesBySession[ctx.sid] ?? EMPTY_MESSAGES;
+        const block: Block = {
+          kind: "workflow-node-result",
+          runId: e.runId,
+          nodeId: e.nodeId,
+          ...(e.nodeSessionId ? { nodeSessionId: e.nodeSessionId } : {}),
+          nodeType: e.nodeType,
+          title: e.title,
+          status: e.status,
+          summary: e.summary,
+          ...(e.outputKeys && e.outputKeys.length > 0 ? { outputKeys: e.outputKeys } : {}),
+          ...(e.error ? { error: e.error } : {}),
+          ...(e.execution ? { execution: e.execution } : {}),
+          ...(e.artifacts && e.artifacts.length > 0 ? { artifacts: e.artifacts } : {}),
+          ...(e.usage ? { usage: e.usage } : {}),
+        };
+        const startedAt = s.runningTurnStartedAt[ctx.sid] ?? Date.now();
+        const next = appendTurnCardBlock(
+          list,
+          block,
+          startedAt,
+          s.runningTurnModelBySession[ctx.sid],
+          "wfnode",
+        );
+        return next === list
+          ? s
+          : { messagesBySession: { ...s.messagesBySession, [ctx.sid]: next } };
+      });
+      // **不在这里落盘。** 每落一次 = 主进程把整个 sqlite 文件重写一遍,而一张图会
+      // 结算 N 个节点 —— 那就是 N 次整库重写。这一轮结束时调度器会补一个 `turn.done`,
+      // 而 turn.done 那条路本来就会把本轮新增的消息整批 upsert 下去(见文件末尾的
+      // 落盘分支),这些卡片就在里面。
+      return;
+    
+}
+
+/** `e.type === "workflow.node.usage"` */
+function reduceWorkflowNodeUsage(ctx: IngestCtx, e: WorkflowNodeUsageEvent): void {
+ctx.set((s) => {
+        const list = s.messagesBySession[ctx.sid] ?? EMPTY_MESSAGES;
+        const next = patchNodeUsageBlock(list, e.runId, e.nodeId, e.usage);
+        return next === null ? s : { messagesBySession: { ...s.messagesBySession, [ctx.sid]: next } };
+      });
+      return;
+    
+}
+
+/** `e.type === "workflow.node.choice"` */
+function reduceWorkflowNodeChoice(ctx: IngestCtx, e: WorkflowNodeChoiceEvent): void {
+ctx.set((s) => {
+        const list = s.messagesBySession[ctx.sid] ?? EMPTY_MESSAGES;
+        const withoutProgress = removeWorkflowNodeProgressBlock(list, e.runId, e.nodeId);
+        const block: Block = {
+          kind: "workflow-branch-choice",
+          runId: e.runId,
+          nodeId: e.nodeId,
+          nodeType: e.nodeType,
+          title: e.title,
+          attempt: e.attempt,
+          options: e.options,
+          // **是「运行前先问我」那一问的话,标出来。** 弹窗靠这一位认出"该我上场了"
+          // (见 `AskChoiceDialog`),而卡片照常摆 —— 它是记录,也是改天回看的唯一凭据。
+          ...(e.ask ? { ask: true } : {}),
+          ...(e.chosen ? { chosen: e.chosen } : {}),
+          ...(e.comment ? { comment: e.comment } : {}),
+        };
+        const patched = patchBranchChoiceBlock(list, e.runId, e.nodeId, e.attempt, block);
+        // **这一处岔路口在不在等人** —— 计数喂给 `sessionBusy`(见
+        // `waitingBranchesBySession`)。同一个岔路口的卡会来两次:先"在等"(没有
+        // `chosen`),后"选完了"(带 `chosen`)。所以 +1 / -1 正好抵消。夹到 0 以上是
+        // 兜"另一台设备点过了、这边只收到后一半"。
+        const delta = e.chosen ? -1 : 1;
+        const waiting = {
+          ...s.waitingBranchesBySession,
+          [ctx.sid]: Math.max(0, (s.waitingBranchesBySession[ctx.sid] ?? 0) + delta),
+        };
+        if (patched) {
+          return { messagesBySession: { ...s.messagesBySession, [ctx.sid]: patched }, waitingBranchesBySession: waiting };
+        }
+        const startedAt = s.runningTurnStartedAt[ctx.sid] ?? Date.now();
+        const next = appendTurnCardBlock(
+          withoutProgress,
+          block,
+          startedAt,
+          s.runningTurnModelBySession[ctx.sid],
+          "wfbranch",
+        );
+        return {
+          messagesBySession: next === list ? s.messagesBySession : { ...s.messagesBySession, [ctx.sid]: next },
+          waitingBranchesBySession: waiting,
+        };
+      });
+      // **不在这里落盘** —— 理由同 `workflow.node.result`:这一轮结束时的 `turn.done`
+      // 会把本轮新增整批 upsert 下去,而每落一次 = 主进程把整个 sqlite 重写一遍。
+      return;
+    
+}
+
+/** `e.type === "turn.rewound"` */
+function reduceTurnRewound(ctx: IngestCtx, e: TurnRewoundEvent): void {
+let rewoundLatest = false;
+      const rewoundChanged: ChatMessage[] = [];
+      ctx.set((s) => {
+        const list = s.messagesBySession[ctx.sid] ?? EMPTY_MESSAGES;
+        const targetSet = new Set(e.targetFiles);
+        let changed = false;
+        const next = list.map((m) => {
+          let touched = false;
+          const blocks = m.blocks.map((b) => {
+            if (
+              b.kind === "turn-files" &&
+              !b.rewound &&
+              b.files.length === targetSet.size &&
+              b.files.every((f) => targetSet.has(f.filePath))
+            ) {
+              touched = true;
+              if (b.isLatestTurn) rewoundLatest = true;
+              return { ...b, rewound: true };
+            }
+            return b;
+          });
+          if (!touched) return m;
+          changed = true;
+          const updated = { ...m, blocks };
+          rewoundChanged.push(updated);
+          return updated;
+        });
+        if (!changed) return s;
+        // If the rewound card was the live one, also clear the latest-turn
+        // bucket (its files are back on disk — no longer "this turn's").
+        return rewoundLatest
+          ? {
+              messagesBySession: { ...s.messagesBySession, [ctx.sid]: next },
+              turnFilesBySession: { ...s.turnFilesBySession, [ctx.sid]: [] },
+            }
+          : { messagesBySession: { ...s.messagesBySession, [ctx.sid]: next } };
+      });
+      // Persist the rewound state so the marker survives session reopen.
+      // (The card is kept, so this is a mutation, not a removal.) Incremental
+      // upsert: only the rows whose blocks actually changed need writing.
+      if (rewoundChanged.length > 0) {
+        void api.session.upsertMessages({ sessionId: ctx.sid, messages: toRecords(ctx.sid, rewoundChanged) });
+      }
+      return;
+    
+}
 export const useSessionStore = create<SessionState>((set, get) => ({
   projects: [],
   activeProjectId: null,
@@ -7340,6 +8174,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       useToastStore.getState().push({ kind, title, body, sessionId: sid });
     };
 
+    /** 归约上下文 —— 一次性备好，交给下面每个 `reduceXxx`。 */
+    const ctx: IngestCtx = { set, get, sid, bumpUnread, pushToast };
+
     // Terminal events: flush any buffered deltas before processing the
     // turn-end event so no content is lost when the stream closes.
     if (e.type === "turn.done" || e.type === "error") {
@@ -7448,13 +8285,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // persists correctly when its (possibly missed-then-resynced) turn.done
     // lands.
     if (e.type === "session.runningSnapshot") {
-      const running = new Set(e.running);
-      set((s) => {
-        const next: Record<string, boolean> = {};
-        for (const id of Object.keys(s.runningBySession)) next[id] = running.has(id);
-        for (const id of running) next[id] = true;
-        return { runningBySession: next };
-      });
+      reduceSessionRunningSnapshot(ctx, e);
       return;
     }
 
@@ -7468,44 +8299,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // open/restart — a hydrated session never re-fetched, so the bubble was
     // simply missing while the reply streamed in headerless.
     if (e.type === "user.message") {
-      bumpUnread();
-      set((s) => {
-        const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
-        // Originator's own echo (id already present) — nothing to append (the
-        // originator already truncated + optimistically appended at edit time).
-        if (list.some((m) => m.id === e.messageId)) return s;
-        // Cross-client EDIT (e.g. edited on the phone, echoed here): drop the
-        // stale pre-edit tail — the message being replaced and everything
-        // after it — BEFORE appending the re-sent bubble. Without this, a
-        // second connected device keeps the old message + its old reply in
-        // memory, shows them live, and at its own turn.done re-persists that
-        // stale tail into the DB, resurrecting rows the originator truncated
-        // away (a later re-open then shows duplicates). Receivers that don't
-        // have the edited message (already truncated / not loaded) fall back
-        // to a plain append.
-        let base = list;
-        if (e.editedMessageId) {
-          const idx = base.findIndex((m) => m.id === e.editedMessageId);
-          if (idx !== -1) base = base.slice(0, idx);
-        }
-        const msg: ChatMessage = {
-          id: e.messageId,
-          sessionId: sid,
-          role: "user",
-          // Trusted payload from our own renderer/mobile peer, same as the
-          // persisted message content trusted by fromRecords on reload.
-          blocks: e.blocks as Block[],
-          createdAt: e.createdAt,
-        };
-        return { messagesBySession: { ...s.messagesBySession, [sid]: [...base, msg] } };
-      });
+      reduceUserMessage(ctx, e);
       return;
     }
 
     // todo.update is an independent state slice — handle and skip the
     // message-accumulation logic below.
     if (e.type === "todo.update") {
-      set((s) => ({ todosBySession: { ...s.todosBySession, [sid]: e.todos } }));
+      reduceTodoUpdate(ctx, e);
       return;
     }
     // git.changed — a repo's git state changed on the host (any client).
@@ -7513,12 +8314,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // re-fetch in their own effects. No sessionId semantics — the host emits
     // "" (envelope compatibility, see SessionRunningSnapshotEvent).
     if (e.type === "git.changed") {
-      set((s) => ({
-        gitChangeVersionByRepo: {
-          ...s.gitChangeVersionByRepo,
-          [e.repoPath]: (s.gitChangeVersionByRepo[e.repoPath] ?? 0) + 1,
-        },
-      }));
+      reduceGitChanged(ctx, e);
       return;
     }
     // session.changed — cross-client list sync (a phone or another client
@@ -7527,234 +8323,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // whichever per-project cache is loaded. Unloaded projects are skipped —
     // their buckets are (re)fetched wholesale by loadSessions/selectProject.
     if (e.type === "session.changed") {
-      const entry = e.session;
-      // Side chats never belong in the left-bar caches. Main-side creation
-      // and title rewrites don't broadcast for them, but a patch arriving
-      // through some other path must not leak a side row into the lists —
-      // route it to the ask tab's per-parent bucket instead.
-      if (entry.kind === "side") {
-        set((s) => {
-          const parent = entry.parentSessionId;
-          const list = parent ? s.sideChatsByParent[parent] : undefined;
-          if (!parent || !list) return {};
-          return {
-            sideChatsByParent: {
-              ...s.sideChatsByParent,
-              [parent]: list.some((x) => x.id === entry.id)
-                ? list.map((x) => (x.id === entry.id ? { ...x, ...entry } : x))
-                : [materializeSessionEntry(entry), ...list],
-            },
-          };
-        });
-        return;
-      }
-      // 工作流节点会话(`kind: "node"`)同理,但**直接丢掉**:它没有对应的面板,
-      // 而下面那个 upsert 会把它物化进左栏(= 用户突然多出一个自己没建过的会话)。
-      //
-      // 正常情况下它根本走不到这里 —— 建节点会话的路径(`orchestration/runner.ts`)
-      // 不广播 `session.changed`,三个广播点也都按 `kind === "chat"` 收了口。这一句是
-      // **兜底**:以后多一个广播点,症状不该是"隐藏会话漏进侧栏"。
-      if (entry.kind === "node") return;
-      set((s) => {
-        const patch: Partial<SessionState> = {};
-        let touched = false;
-        // Global pinned bucket — upsert while the changed row is pinned AND
-        // active, evict otherwise (unpinned / archived). Maintained regardless
-        // of whether the owning project's window is loaded, since the pinned
-        // section is global. This is the echo path for remote pin toggles;
-        // local toggles also end here after applySessionPinnedState (no-op).
-        const inPinned = s.pinnedSessions.some((x) => x.id === entry.id);
-        const shouldBePinned = !entry.archived && entry.pinnedAt != null;
-        if (shouldBePinned) {
-          patch.pinnedSessions = inPinned
-            ? s.pinnedSessions.map((x) => (x.id === entry.id ? { ...x, ...entry } : x))
-            : sortPinnedByRecency([materializeSessionEntry(entry), ...s.pinnedSessions]);
-          touched = true;
-        } else if (inPinned) {
-          patch.pinnedSessions = s.pinnedSessions.filter((x) => x.id !== entry.id);
-          touched = true;
-        }
-        const activeList = s.sessionsByProject[entry.projectId];
-        if (activeList) {
-          // Two-section cache (see splitSessionSections): local threads are
-          // the paginated list the totals count; worktree-bound threads park
-          // behind them. Route the changed row into its section — a row that
-          // MIGRATES (worktree materialize on first turn / directory removal
-          // degrading back to local) leaves one section and enters the other.
-          const { local, worktree } = splitSessionSections(activeList);
-          const inLocalWindow = !entry.archived && entry.pinnedAt == null && !entry.worktreePath;
-          const inWorktreeWindow = !entry.archived && entry.pinnedAt == null && !!entry.worktreePath;
-          const wasLocal = local.some((x) => x.id === entry.id);
-          const shrinkLocalTotals = () => {
-            patch.sessionsTotalByProject = {
-              ...s.sessionsTotalByProject,
-              [entry.projectId]: Math.max((s.sessionsTotalByProject[entry.projectId] ?? 0) - 1, 0),
-            };
-            patch.sessionsHasMoreByProject = {
-              ...s.sessionsHasMoreByProject,
-              [entry.projectId]:
-                (s.sessionsTotalByProject[entry.projectId] ?? 0) - 1 >
-                [...local.filter((x) => x.id !== entry.id), ...worktree].filter(
-                  (x) => !x.worktreePath,
-                ).length,
-            };
-          };
-          let next: Session[];
-          if (inWorktreeWindow) {
-            // Upsert into the worktree section (prepend when new — newest
-            // first within it); a row that just materialized its worktreePath
-            // also leaves the local section, shrinking the LOCAL total.
-            next = [
-              ...local.filter((x) => x.id !== entry.id),
-              ...(worktree.some((x) => x.id === entry.id)
-                ? worktree.map((x) => (x.id === entry.id ? { ...x, ...entry } : x))
-                : [materializeSessionEntry(entry), ...worktree]),
-            ];
-            if (wasLocal) shrinkLocalTotals();
-          } else if (!inLocalWindow) {
-            // Left the active window — archived (moved to the bin) or pinned
-            // (moved to the global pinned section above the project tree);
-            // drop it from both sections; totals shrink only when it
-            // actually left the LOCAL section.
-            next = [
-              ...local.filter((x) => x.id !== entry.id),
-              ...worktree.filter((x) => x.id !== entry.id),
-            ];
-            if (wasLocal) shrinkLocalTotals();
-          } else if (wasLocal) {
-            // Merge the slim entry OVER the cached row so heavy payloads
-            // (contextSnapshot / turnFiles / …) survive the update.
-            next = [...local.map((x) => (x.id === entry.id ? { ...x, ...entry } : x)), ...worktree];
-          } else {
-            // A session created on another client — or a worktree row that
-            // just degraded back to local (directory removal) — materialize
-            // it at the head of the local window; the local total grows.
-            // Merge over the cached row (whichever section it sat in) so a
-            // degraded worktree row keeps its heavy payloads, and drop the
-            // stale copy it left behind: keeping the old worktree-bound row
-            // alive would re-bucket it into its dead worktree group and the
-            // left bar would keep rendering the removed worktree.
-            const prevRow = activeList.find((x) => x.id === entry.id);
-            next = [
-              prevRow ? { ...prevRow, ...entry } : materializeSessionEntry(entry),
-              ...local.filter((x) => x.id !== entry.id),
-              ...worktree.filter((x) => x.id !== entry.id),
-            ];
-            patch.sessionsTotalByProject = {
-              ...s.sessionsTotalByProject,
-              [entry.projectId]: (s.sessionsTotalByProject[entry.projectId] ?? 0) + 1,
-            };
-          }
-          patch.sessionsByProject = { ...s.sessionsByProject, [entry.projectId]: next };
-          touched = true;
-        }
-        const archivedList = s.archivedSessionsByProject[entry.projectId];
-        if (archivedList) {
-          const exists = archivedList.some((x) => x.id === entry.id);
-          if (!entry.archived) {
-            // Restored from the bin — drop it from the archived window.
-            const next = archivedList.filter((x) => x.id !== entry.id);
-            if (next.length !== archivedList.length) {
-              if (next.length > 0) {
-                patch.archivedSessionsByProject = { ...s.archivedSessionsByProject, [entry.projectId]: next };
-              } else {
-                const copy = { ...s.archivedSessionsByProject };
-                delete copy[entry.projectId];
-                patch.archivedSessionsByProject = copy;
-              }
-              touched = true;
-            }
-          } else if (exists) {
-            patch.archivedSessionsByProject = {
-              ...s.archivedSessionsByProject,
-              [entry.projectId]: archivedList.map((x) => (x.id === entry.id ? { ...x, ...entry } : x)),
-            };
-            touched = true;
-          }
-          // else: archived remotely but outside the loaded bin page — the
-          // refresh path will pick it up.
-        }
-        // Cached pre-change row (same id) — the gain/loss probes below
-        // compare it against the incoming entry.
-        const prevEntry =
-          s.sessionsByProject[entry.projectId]?.find((x) => x.id === entry.id) ??
-          s.pinnedSessions.find((x) => x.id === entry.id);
-        // Worktree-MATERIALIZE flip (gain direction): the entry just GAINED a
-        // worktreePath — its first turn created the isolated checkout
-        // (the composer-chip path materializes on sendTurn, long after the
-        // session was activated, so the activation-time flip never ran). If
-        // the materialized row is the ACTIVE session, the project's view
-        // must follow it into the fork view and reveal the group —
-        // otherwise the freshly materialized thread silently vanishes from
-        // the local list the user is looking at.
-        if (entry.worktreePath && !prevEntry?.worktreePath && entry.id === s.activeSessionId) {
-          if (!s.worktreeViewByProject[entry.projectId]) {
-            patch.worktreeViewByProject = {
-              ...s.worktreeViewByProject,
-              [entry.projectId]: true,
-            };
-          }
-          const gainedKey = normWorktreeKey(entry.worktreePath);
-          if (!s.expandedWorktrees[gainedKey]) {
-            patch.expandedWorktrees = {
-              ...s.expandedWorktrees,
-              [gainedKey]: true,
-            };
-          }
-        }
-        // Worktree-degenerate view flip: this entry just LOST its
-        // worktreePath — its directory was removed and clearWorktreePath
-        // degraded it back to local (each referenced session broadcasts its
-        // own changed event, so this fires once per row). When the project's
-        // LAST worktree-bound row degenerates, fall its left-bar view back
-        // to the local list — the fork view would otherwise render an empty
-        // "no threads" while every local thread sits hidden in the other
-        // view (the "删除工作树后会话不见了" trap).
-        if (!entry.worktreePath && prevEntry?.worktreePath) {
-          const stillBound =
-            (s.sessionsByProject[entry.projectId]?.some(
-              (x) => x.id !== entry.id && !!x.worktreePath,
-            ) ?? false) ||
-            s.pinnedSessions.some(
-              (x) => x.id !== entry.id && x.projectId === entry.projectId && !!x.worktreePath,
-            );
-          if (!stillBound && s.worktreeViewByProject[entry.projectId]) {
-            patch.worktreeViewByProject = {
-              ...s.worktreeViewByProject,
-              [entry.projectId]: false,
-            };
-            touched = true;
-          }
-        }
-        if (!touched) return {};
-        // Keep the derived `sessions` alias (active project's list) fresh.
-        if (s.activeProjectId === entry.projectId && patch.sessionsByProject) {
-          patch.sessions = patch.sessionsByProject[entry.projectId] ?? s.sessions;
-        }
-        // Config sync: if the changed row is the ACTIVE session, mirror its
-        // model/effort/permissionMode/customModelId/providerId into the
-        // composer's global slots — a change made on the OTHER client
-        // (phone/desktop via session:updateSettings) takes effect here
-        // immediately, matching the local setModel/setEffort/… actions.
-        if (entry.id === s.activeSessionId) {
-          patch.model = entry.model;
-          patch.effort = entry.effort;
-          patch.permissionMode = entry.permissionMode;
-          patch.customModelId = entry.customModelId;
-          patch.providerId = entry.providerId;
-        }
-        // Remote change reached the caches — the stream aggregate may be
-        // stale too (ordering / title / pin / worktree fields).
-        patch.streamDirty = true;
-        return patch;
-      });
+      reduceSessionChanged(ctx, e);
       return;
     }
     // session.deleted — a session row was hard-deleted on another client.
     // Same in-memory surgery as the local deleteSession action (tabs, buckets,
     // active-thread fallback all included).
     if (e.type === "session.deleted") {
-      set((s) => applySessionDeletedState(s, sid));
+      reduceSessionDeleted(ctx, e);
       return;
     }
     // request.resolved — a pending approval / question / plan request was
@@ -7763,25 +8339,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // longer be answered. The answering client's own local cleanup already ran
     // when it submitted, so the filter is a no-op there.
     if (e.type === "request.resolved") {
-      set((s) => {
-        if (e.kind === "approval") {
-          const next = s.pendingApprovals.filter((p) => p.requestId !== e.requestId);
-          return next.length === s.pendingApprovals.length ? {} : { pendingApprovals: next };
-        }
-        if (e.kind === "question") {
-          const pending = s.pendingQuestionBySession[sid];
-          if (!pending || pending.requestId !== e.requestId) return {};
-          const bucket = { ...s.pendingQuestionBySession };
-          delete bucket[sid];
-          return { pendingQuestionBySession: bucket };
-        }
-        // plan
-        const pending = s.pendingPlanApprovalBySession[sid];
-        if (!pending || pending.requestId !== e.requestId) return {};
-        const bucket = { ...s.pendingPlanApprovalBySession };
-        delete bucket[sid];
-        return { pendingPlanApprovalBySession: bucket };
-      });
+      reduceRequestResolved(ctx, e);
       return;
     }
     // plan.update: drives BOTH the activity capsule (planBySession) AND the
@@ -7796,27 +8354,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     //   phase "ready"    → live card with 已就绪 badge after ExitPlanMode.
     //   phase "cleared"  → remove the live block (plan mode exited / denied).
     if (e.type === "plan.update") {
-      set((s) => {
-        const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
-        const hasApproval = !!s.pendingPlanApprovalBySession[sid];
-        const next = upsertLivePlanBlock(
-          list,
-          e.plan,
-          e.phase,
-          hasApproval,
-          s.runningTurnStartedAt[sid] ?? Date.now(),
-          s.runningTurnModelBySession[sid],
-        );
-        return {
-          planBySession: {
-            ...s.planBySession,
-            [sid]: { plan: e.plan, phase: e.phase },
-          },
-          messagesBySession: next === list
-            ? s.messagesBySession
-            : { ...s.messagesBySession, [sid]: next },
-        };
-      });
+      reducePlanUpdate(ctx, e);
       return;
     }
     // mode.change: the model (or host) flipped the session's effective
@@ -7826,12 +8364,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // active session's chip is updated — other tabs keep their own config.
     // Persist fire-and-forget so a resumed turn starts in the right mode.
     if (e.type === "mode.change") {
-      if (sid === get().activeSessionId) {
-        set({ permissionMode: e.mode });
-        void api.session.updateSettings({ sessionId: sid, permissionMode: e.mode }).catch((err) => {
-          console.error("updateSettings(mode.change) failed:", err);
-        });
-      }
+      reduceModeChange(ctx, e);
       return;
     }
     // upstream.issue — transient transport trouble on the session's model
@@ -7841,69 +8374,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // kind "ok" (a retried request went through) and turn-end paths clear it,
     // plus the decay timer above as the safety net.
     if (e.type === "upstream.issue") {
-      if (e.kind === "ok") {
-        clearUpstreamIssue(set, sid);
-        return;
-      }
-      set((s) => ({
-        upstreamIssueBySession: {
-          ...s.upstreamIssueBySession,
-          [sid]: { cause: e.cause, attempt: e.attempt, attempts: e.attempts },
-        },
-      }));
-      const prev = upstreamIssueDecayTimers.get(sid);
-      if (prev) clearTimeout(prev);
-      upstreamIssueDecayTimers.set(
-        sid,
-        setTimeout(() => {
-          upstreamIssueDecayTimers.delete(sid);
-          clearUpstreamIssue(set, sid);
-        }, UPSTREAM_ISSUE_DECAY_MS),
-      );
+      reduceUpstreamIssue(ctx, e);
       return;
     }
     // subagent.update: REPLACE semantics — swap the full roster.
     if (e.type === "subagent.update") {
-      // If the user has manually interrupted this session, the abort unwinds
-      // late subagent.update events (from flushFinal / in-flight
-      // flushSubagents) whose roster may still carry `running` backgrounded
-      // subagents. Those would resurrect a "killed" subagent and re-lock the
-      // composer. Filter any `running` entry down to `killed` so the user's
-      // stop intent wins. REPLACE semantics otherwise.
-      // Bump unread when a backgrounded subagent just finished (transitioned
-      // to completed/failed) - the user asked something to run in the
-      // background and it's now done; they'd want to know without watching.
-      const prevAgents = get().subagentsBySession[sid] ?? [];
-      const prevRunning = new Set(prevAgents.filter((a) => a.status === "running").map((a) => a.taskId));
-      const justFinished = e.agents.some(
-        (a) => (a.status === "completed" || a.status === "failed") && prevRunning.has(a.taskId),
-      );
-      if (justFinished) {
-        bumpUnread();
-        pushToast("info", translate(get().locale, "store.toast.backgroundTaskDone"), translate(get().locale, "store.toast.backgroundTaskDoneBody"));
-      }
-      set((s) => {
-        const agents = s.interruptedBySession[sid]
-          ? e.agents.map((a) => (a.status === "running" ? { ...a, status: "killed" as const } : a))
-          : e.agents;
-        return { subagentsBySession: { ...s.subagentsBySession, [sid]: agents } };
-      });
+      reduceSubagentUpdate(ctx, e);
       return;
     }
     // subagent.transcript: REPLACE one subagent's transcript (inner key =
     // the spawning Task tool_use id). Process-lifetime data — no persistence,
     // cleared when the next turn starts (see sendPrompt).
     if (e.type === "subagent.transcript") {
-      set((s) => {
-        const inner = s.subagentTranscriptsBySession[sid];
-        if (inner?.[e.parentToolUseId] === e.blocks) return {};
-        return {
-          subagentTranscriptsBySession: {
-            ...s.subagentTranscriptsBySession,
-            [sid]: { ...(inner ?? {}), [e.parentToolUseId]: e.blocks },
-          },
-        };
-      });
+      reduceSubagentTranscript(ctx, e);
       return;
     }
     // workflow.node.transcript: REPLACE one workflow node's transcript (key = 跑那一步的
@@ -7911,17 +8394,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // 界面停在半截状态。与 subagent.transcript 同一套做法,差别只在"新回合不清"和
     // "有容量上限"(见 `workflowNodeTranscripts` 上那两条)。
     if (e.type === "workflow.node.transcript") {
-      set((s) => {
-        if (s.workflowNodeTranscripts[e.nodeSessionId] === e.blocks) return {};
-        const next = { ...s.workflowNodeTranscripts, [e.nodeSessionId]: e.blocks };
-        // 只在**新键**上裁:替换已有的那个不会让表变大,而按插入序裁能保证"正在看的
-        // 这一步"永远裁不到。
-        const keys = Object.keys(next);
-        for (const stale of keys.slice(0, Math.max(0, keys.length - NODE_TRANSCRIPT_KEEP))) {
-          if (stale !== e.nodeSessionId) delete next[stale];
-        }
-        return { workflowNodeTranscripts: next };
-      });
+      reduceWorkflowNodeTranscript(ctx, e);
       return;
     }
     // token-usage.updated: replace this session's context snapshot. The
@@ -7933,367 +8406,47 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // stale snapshot captured at list time (which could be null/invalid and
     // trigger the else-delete branch, hiding the ring until the next event).
     if (e.type === "token-usage.updated") {
-      if (!isValidSnapshot(e.snapshot)) return;
-      set((s) => {
-        const patch: Partial<SessionState> = {
-          contextSnapshotBySession: { ...s.contextSnapshotBySession, [sid]: e.snapshot },
-        };
-        // Keep the in-memory session row cache in sync. Only touch the list
-        // entry actually found (no-op if this session isn't in the cache, e.g.
-        // archived / not yet loaded).
-        const cached = findSession(s.sessionsByProject, s.archivedSessionsByProject, s.pinnedSessions, s.streamSessions, sid);
-        if (cached && cached.contextSnapshot !== e.snapshot) {
-          patch.sessionsByProject = patchSessionInCache(
-            s.sessionsByProject, cached.projectId, sid, { contextSnapshot: e.snapshot },
-          );
-          // Pinned rows live in the global pinned bucket, not the per-project
-          // list — mirror the snapshot there too.
-          const pinnedIdx = s.pinnedSessions.findIndex((x) => x.id === sid);
-          if (pinnedIdx !== -1) {
-            patch.pinnedSessions = s.pinnedSessions.map((x, i) =>
-              i === pinnedIdx ? { ...x, contextSnapshot: e.snapshot } : x,
-            );
-          }
-        }
-        return patch;
-      });
+      reduceTokenUsageUpdated(ctx, e);
       return;
     }
     if (e.type === "question.ask") {
-      bumpUnread();
-      pushToast("warning", translate(get().locale, "store.toast.agentQuestion"), e.questions[0]?.question);
-      set((s) => ({
-        pendingQuestionBySession: {
-          ...s.pendingQuestionBySession,
-          [sid]: { questions: e.questions, requestId: e.requestId },
-        },
-      }));
+      reduceQuestionAsk(ctx, e);
       return;
     }
     if (e.type === "approval.request") {
-      // Mirror the main-side ApprovalBridge queue: head = element 0.
-      // De-dup by requestId so a re-emitted event doesn't double-push.
-      bumpUnread();
-      pushToast("warning", translate(get().locale, "store.toast.toolApprovalNeeded"), e.toolName);
-      set((s) => ({
-        pendingApprovals: [
-          ...s.pendingApprovals.filter((p) => p.requestId !== e.requestId),
-          e,
-        ],
-      }));
+      reduceApprovalRequest(ctx, e);
       return;
     }
     if (e.type === "plan.approval_request") {
-      // ExitPlanMode: the model drafted a plan and is awaiting the user's
-      // approve/reject decision. One-at-a-time per session (the model calls
-      // ExitPlanMode once per plan). REPLACE so a re-emit doesn't stack.
-      // Also refresh the inline plan block's hasApproval flag -> true so its
-      // badge flips to 待审阅, mirroring the composer approval sheet.
-      bumpUnread();
-      pushToast("warning", translate(get().locale, "store.toast.planApprovalPending"), translate(get().locale, "store.toast.planApprovalPendingBody"));
-      set((s) => {
-        const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
-        // The plan text on the approval request is the model's ExitPlanMode
-        // payload — re-sync the inline block so it shows exactly what the
-        // user is being asked to approve (phase stays "ready" per the prior
-        // plan.update emitted by the adapter on ExitPlanMode).
-        const next = upsertLivePlanBlock(
-          list,
-          e.plan,
-          "ready",
-          true,
-          s.runningTurnStartedAt[sid] ?? Date.now(),
-          s.runningTurnModelBySession[sid],
-        );
-        return {
-          pendingPlanApprovalBySession: {
-            ...s.pendingPlanApprovalBySession,
-            [sid]: e,
-          },
-          messagesBySession: next === list
-            ? s.messagesBySession
-            : { ...s.messagesBySession, [sid]: next },
-        };
-      });
+      reducePlanApprovalRequest(ctx, e);
       return;
     }
     if (e.type === "turn.files") {
-      // Drives TWO things:
-      //  1. turnFilesBySession[sid] — the in-memory mirror of the LATEST
-      //     turn's files (used by rewindTurn's empty-check + the Write-diff
-      //     beforeMap until the block freezes). Kept as a single slot since
-      //     only the latest turn is rewindable.
-      //  2. A `kind: "turn-files"` block on the current turn's trailing
-      //     assistant message — the per-turn card the user actually sees in
-      //     the stream. Frozen in place at turn.done, persisted via the
-      //     blocks round-trip, so every turn keeps its own card in history.
-      // Collect the rows the card surgery actually touches so they can be
-      // persisted below — the carrier message is NOT always the last one in
-      // the array (on the interrupt-then-send path the queued prompt's user
-      // bubble is appended before this event lands), so persisting
-      // `list[length-1]` wrote the wrong row and lost the card from the DB.
-      const changedMessages: ChatMessage[] = [];
-      set((s) => {
-        const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
-        const next = upsertLiveTurnFilesBlock(list, e.files);
-        if (next !== list) {
-          // upsertLiveTurnFilesBlock only replaces/appends touched messages —
-          // every other row keeps its reference, so index-wise inequality is
-          // an exact changed-rows diff.
-          for (let i = 0; i < next.length; i++) {
-            if (next[i] !== list[i]) changedMessages.push(next[i]);
-          }
-        }
-        return {
-          turnFilesBySession: { ...s.turnFilesBySession, [sid]: e.files },
-          messagesBySession: next === list
-            ? s.messagesBySession
-            : { ...s.messagesBySession, [sid]: next },
-        };
-      });
-      // Persist the touched rows so the card survives restart. This is the
-      // ONLY persist some arrivals get: an interrupted turn's closing
-      // turn.done{interrupted} is dropped by the stale-guard above, so its
-      // late turn.files never gets a turn.done persist pass. IPC ordering
-      // preserves "last write wins" for the normal path (this lands after
-      // the turn.done persist, which already covers the card).
-      if (changedMessages.length > 0) {
-        void api.session.upsertMessages({ sessionId: sid, messages: toRecords(sid, changedMessages) });
-      }
+      reduceTurnFiles(ctx, e);
       return;
     }
     if (e.type === "compact.result") {
-      // A context compaction completed (manual /compact or auto-compact).
-      // Push a compact-summary block onto the current turn's trailing
-      // assistant message so the user sees what happened in the stream.
-      set((s) => {
-        const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
-        const block: Block = {
-          kind: "compact-summary",
-          trigger: e.trigger,
-          preTokens: e.preTokens,
-          postTokens: e.postTokens,
-          durationMs: e.durationMs,
-        };
-        // Use the send-time anchor (stamped in sendPrompt) so the compact
-        // card's turnMeta continues the synthesized pendingTurn row's timing
-        // seamlessly - same pattern as tool.use / text.delta. Falls back to
-        // now if the anchor is missing (resumed/legacy turn).
-        const startedAt = s.runningTurnStartedAt[sid] ?? Date.now();
-        const next = appendTurnCardBlock(
-          list,
-          block,
-          startedAt,
-          s.runningTurnModelBySession[sid],
-          "compact",
-        );
-        return next === list
-          ? s
-          : { messagesBySession: { ...s.messagesBySession, [sid]: next } };
-      });
-      // Persist so the card survives reload. Incremental upsert: only the
-      // trailing assistant message (or a freshly-appended turn opener) changed.
-      {
-        const list = get().messagesBySession[sid];
-        if (list && list.length > 0) {
-          const last = list[list.length - 1];
-          void api.session.upsertMessages({ sessionId: sid, messages: toRecords(sid, [last]) });
-        }
-      }
+      reduceCompactResult(ctx, e);
       return;
     }
     if (e.type === "workflow.node.progress") {
-      const progress: Block = {
-        kind: "workflow-node-progress",
-        runId: e.runId,
-        nodeId: e.nodeId,
-        nodeType: e.nodeType,
-        title: e.title,
-        ...(e.percent !== undefined ? { percent: Math.max(0, Math.min(100, e.percent)) } : {}),
-        ...(e.message ? { message: e.message } : {}),
-        ...(e.phase ? { phase: e.phase } : {}),
-      };
-      set((s) => {
-        const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
-        const patched = patchWorkflowNodeProgressBlock(
-          list,
-          progress as Extract<Block, { kind: "workflow-node-progress" }>,
-        );
-        if (patched) return { messagesBySession: { ...s.messagesBySession, [sid]: patched } };
-        const startedAt = s.runningTurnStartedAt[sid] ?? Date.now();
-        const next = appendTurnCardBlock(list, progress, startedAt, s.runningTurnModelBySession[sid], "wfprogress");
-        return next === list ? s : { messagesBySession: { ...s.messagesBySession, [sid]: next } };
-      });
+      reduceWorkflowNodeProgress(ctx, e);
       return;
     }
     if (e.type === "workflow.node.result") {
-      // 工作流图里的一步收场了。那一步跑在**自己的隐藏子会话**里(`kind: "node"`),
-      // 调度器把结果事件发到**这个对话**上,于是这里把它变成一张卡片。
-      //
-      // 不伪造成 assistant 消息 —— 那会破坏 `turn.done` 与用量记录的配对(见
-      // `@contracts/runtime` 的 `WorkflowNodeResultEvent`)。和 plan.update /
-      // compact.result 同一个做法:事件 → 卡片。
-      set((s) => {
-        const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
-        const block: Block = {
-          kind: "workflow-node-result",
-          runId: e.runId,
-          nodeId: e.nodeId,
-          ...(e.nodeSessionId ? { nodeSessionId: e.nodeSessionId } : {}),
-          nodeType: e.nodeType,
-          title: e.title,
-          status: e.status,
-          summary: e.summary,
-          ...(e.outputKeys && e.outputKeys.length > 0 ? { outputKeys: e.outputKeys } : {}),
-          ...(e.error ? { error: e.error } : {}),
-          ...(e.execution ? { execution: e.execution } : {}),
-          ...(e.artifacts && e.artifacts.length > 0 ? { artifacts: e.artifacts } : {}),
-          ...(e.usage ? { usage: e.usage } : {}),
-        };
-        const startedAt = s.runningTurnStartedAt[sid] ?? Date.now();
-        const next = appendTurnCardBlock(
-          list,
-          block,
-          startedAt,
-          s.runningTurnModelBySession[sid],
-          "wfnode",
-        );
-        return next === list
-          ? s
-          : { messagesBySession: { ...s.messagesBySession, [sid]: next } };
-      });
-      // **不在这里落盘。** 每落一次 = 主进程把整个 sqlite 文件重写一遍,而一张图会
-      // 结算 N 个节点 —— 那就是 N 次整库重写。这一轮结束时调度器会补一个 `turn.done`,
-      // 而 turn.done 那条路本来就会把本轮新增的消息整批 upsert 下去(见文件末尾的
-      // 落盘分支),这些卡片就在里面。
+      reduceWorkflowNodeResult(ctx, e);
       return;
     }
     if (e.type === "workflow.node.usage") {
-      // **给已经画出来的那张卡补上花费**(见 `WorkflowNodeUsageEvent` 的文件头:
-      // 为什么不能重发结果事件、为什么要等一会儿才有数)。
-      //
-      // 按 `runId + nodeId` 找 —— 和结果卡认卡用的是同一对。**找不到就什么都不做**:
-      // 卡片可能被折了、被容量裁了、用户切走了会话。补花费是附加的,它不该凭空造一张卡。
-      set((s) => {
-        const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
-        const next = patchNodeUsageBlock(list, e.runId, e.nodeId, e.usage);
-        return next === null ? s : { messagesBySession: { ...s.messagesBySession, [sid]: next } };
-      });
+      reduceWorkflowNodeUsage(ctx, e);
       return;
     }
     if (e.type === "workflow.node.choice") {
-      // 一个**岔路口**在等用户拍板(见 `Block` 里那个 `workflow-branch-choice`)。
-      //
-      // **同一个岔路口的同一轮只会有一张卡。** 这个事件来两次(第一次"在等"、第二次
-      // "选完了"),而第二次要找到原来那张**换掉**它 —— 追加的话对话里会出现两个格子
-      // 说同一件事,其中一个还摆着已经点过的按钮,而用户会去点它。
-      //
-      // **但下一轮是另一张卡**:回头会让同一个岔路口被问第二次(见 `e.attempt`),那一张
-      // 要**新开**格子 —— 换掉上一轮的话,用户第一轮点过什么就没了。
-      set((s) => {
-        const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
-        const withoutProgress = removeWorkflowNodeProgressBlock(list, e.runId, e.nodeId);
-        const block: Block = {
-          kind: "workflow-branch-choice",
-          runId: e.runId,
-          nodeId: e.nodeId,
-          nodeType: e.nodeType,
-          title: e.title,
-          attempt: e.attempt,
-          options: e.options,
-          // **是「运行前先问我」那一问的话,标出来。** 弹窗靠这一位认出"该我上场了"
-          // (见 `AskChoiceDialog`),而卡片照常摆 —— 它是记录,也是改天回看的唯一凭据。
-          ...(e.ask ? { ask: true } : {}),
-          ...(e.chosen ? { chosen: e.chosen } : {}),
-          ...(e.comment ? { comment: e.comment } : {}),
-        };
-        const patched = patchBranchChoiceBlock(list, e.runId, e.nodeId, e.attempt, block);
-        // **这一处岔路口在不在等人** —— 计数喂给 `sessionBusy`(见
-        // `waitingBranchesBySession`)。同一个岔路口的卡会来两次:先"在等"(没有
-        // `chosen`),后"选完了"(带 `chosen`)。所以 +1 / -1 正好抵消。夹到 0 以上是
-        // 兜"另一台设备点过了、这边只收到后一半"。
-        const delta = e.chosen ? -1 : 1;
-        const waiting = {
-          ...s.waitingBranchesBySession,
-          [sid]: Math.max(0, (s.waitingBranchesBySession[sid] ?? 0) + delta),
-        };
-        if (patched) {
-          return { messagesBySession: { ...s.messagesBySession, [sid]: patched }, waitingBranchesBySession: waiting };
-        }
-        const startedAt = s.runningTurnStartedAt[sid] ?? Date.now();
-        const next = appendTurnCardBlock(
-          withoutProgress,
-          block,
-          startedAt,
-          s.runningTurnModelBySession[sid],
-          "wfbranch",
-        );
-        return {
-          messagesBySession: next === list ? s.messagesBySession : { ...s.messagesBySession, [sid]: next },
-          waitingBranchesBySession: waiting,
-        };
-      });
-      // **不在这里落盘** —— 理由同 `workflow.node.result`:这一轮结束时的 `turn.done`
-      // 会把本轮新增整批 upsert 下去,而每落一次 = 主进程把整个 sqlite 重写一遍。
+      reduceWorkflowNodeChoice(ctx, e);
       return;
     }
     if (e.type === "turn.rewound") {
-      // Unified rewind handling: mark the matching `turn-files` card
-      // `rewound: true` IN PLACE and NEVER remove it — the card stays in
-      // the stream as a visible trace that this turn was rolled back
-      // (mirroring SDK checkpoint semantics: file rollback never rolls
-      // back the conversation). The card matches by path-set equality
-      // against `e.targetFiles` (the requested paths, before failures).
-      //
-      // The only difference between a latest-turn and a historical rewind
-      // is the latest-turn BUCKET (turnFilesBySession): when the marked
-      // card is the live one (isLatestTurn), the bucket is cleared so
-      // downstream consumers (file-tree dots, diff sources) stop treating
-      // those files as "this turn's changes". Historical cards leave the
-      // bucket alone — it belongs to a different, later turn.
-      let rewoundLatest = false;
-      const rewoundChanged: ChatMessage[] = [];
-      set((s) => {
-        const list = s.messagesBySession[sid] ?? EMPTY_MESSAGES;
-        const targetSet = new Set(e.targetFiles);
-        let changed = false;
-        const next = list.map((m) => {
-          let touched = false;
-          const blocks = m.blocks.map((b) => {
-            if (
-              b.kind === "turn-files" &&
-              !b.rewound &&
-              b.files.length === targetSet.size &&
-              b.files.every((f) => targetSet.has(f.filePath))
-            ) {
-              touched = true;
-              if (b.isLatestTurn) rewoundLatest = true;
-              return { ...b, rewound: true };
-            }
-            return b;
-          });
-          if (!touched) return m;
-          changed = true;
-          const updated = { ...m, blocks };
-          rewoundChanged.push(updated);
-          return updated;
-        });
-        if (!changed) return s;
-        // If the rewound card was the live one, also clear the latest-turn
-        // bucket (its files are back on disk — no longer "this turn's").
-        return rewoundLatest
-          ? {
-              messagesBySession: { ...s.messagesBySession, [sid]: next },
-              turnFilesBySession: { ...s.turnFilesBySession, [sid]: [] },
-            }
-          : { messagesBySession: { ...s.messagesBySession, [sid]: next } };
-      });
-      // Persist the rewound state so the marker survives session reopen.
-      // (The card is kept, so this is a mutation, not a removal.) Incremental
-      // upsert: only the rows whose blocks actually changed need writing.
-      if (rewoundChanged.length > 0) {
-        void api.session.upsertMessages({ sessionId: sid, messages: toRecords(sid, rewoundChanged) });
-      }
+      reduceTurnRewound(ctx, e);
       return;
     }
 
