@@ -53,8 +53,30 @@ const NODE_EXIT0 = `node -e "console.log('done')"`;
 const NODE_EXIT3 = `node -e "console.error('boom-stderr'); process.exit(3)"`;
 const NODE_FLOOD = `node -e "process.stdout.write('M'.repeat(9000)); process.stdout.write('TAILMARK')"`;
 const NODE_FOREVER = `node -e "setInterval(function(){},1000)"`;
+/**
+ * 先吐 UTF-8、再吐 GBK 的「命令」二字 —— **混着来**是真实场景(命令前半段是
+ * 程序自己的 UTF-8 输出,后半段是 cmd.exe 用控制台代码页打的中文提示)。
+ *
+ * `代码` 那种转义会经过 shell 再解析一遍,这里改用 `String.fromCharCode`
+ * 直接构造字节,绕开 shell 的引号与反斜杠。
+ */
+const NODE_MIXED_ENCODING = `node -e "process.stdout.write('utf8-part-ok\\n');process.stdout.write(Buffer.from([195,252,193,238]));process.stdout.write('\\n')"`;
 
 /* ────────────────────────── 1. 真进程:等它跑完 ────────────────────────── */
+
+console.log("\n真进程 · 编码判定(UTF-8 与 GBK 混着来)");
+
+{
+  const out = await runCommandNode({ command: NODE_MIXED_ENCODING, timeoutMs: 0, signal: controller().signal });
+  const text = String(out.outputs?.["stdout"] ?? "");
+  eq("成功", out.status, "success");
+  check("UTF-8 那半段照常解出来", text.includes("utf8-part-ok"), text);
+  // **这条是这次改造的核心收益。** 原先两个执行器都在裸调 `toString("utf-8")`,
+  // 那半段 GBK 会变成一串 U+FFFD —— 而用户唯一能拿到的线索正是那句话。
+  // 现在走 `lib/spawnRun` → `decodeOutput`,严格 UTF-8 解不出时退回 GBK。
+  check("GBK 那半段解出了中文(而不是一串替换字符)", text.includes("命令"), text);
+  check("整段没有替换字符", !text.includes("�"), text);
+}
 
 console.log("\n真进程 · 正常退出");
 
@@ -125,11 +147,16 @@ function fakeChild(opts: { pid?: number } = {}): ChildProcess {
   return ee as ChildProcess;
 }
 
-/** 收集到的 spawn 调用(命令 + 选项),给"选项契约"那组断言用。 */
-function recordingSpawn(child: ChildProcess): { spawn: SpawnFn; calls: Array<{ command: string; options: unknown }> } {
-  const calls: Array<{ command: string; options: unknown }> = [];
-  const spawn = ((command: string, options: unknown) => {
-    calls.push({ command, options });
+/** 收集到的 spawn 调用,给"选项契约"那组断言用。
+ *
+ * ⚠️ **签名是 Node 的三参数形**(`command, args, options`),不是两参数。统一进程层
+ * `lib/spawnRun.ts` 按 Node 自己的形状调用 —— shell 那条路 `args` 传空数组、命令整行
+ * 写在 `command` 里,非 shell 那条路才对 `args` 有真值。所以这里要**按位置**取,
+ * 早先那版两参数写法会把 `args` 当成 options。 */
+function recordingSpawn(child: ChildProcess): { spawn: SpawnFn; calls: Array<{ command: string; args: unknown; options: unknown }> } {
+  const calls: Array<{ command: string; args: unknown; options: unknown }> = [];
+  const spawn = ((command: string, args: unknown, options: unknown) => {
+    calls.push({ command, args, options });
     // 微任务里就退 —— runCommandNode 的同步段(spawn → 挂监听 → 等 exit)先跑完,
     // 这个 exit 才发得出去、也才有人接。
     queueMicrotask(() => {
@@ -157,6 +184,9 @@ console.log("\n假 spawn · 调用契约");
   eq("藏窗口", options?.windowsHide, true);
   eq("工作目录透传(相对路径的命令落在项目里)", options?.cwd, "D:/proj");
   eq("stdout/stderr 都要接住", JSON.stringify(options?.stdio), JSON.stringify(["ignore", "pipe", "pipe"]));
+  // shell 那条路**命令整行写在 command 里**,args 只给空数组占位
+  // (Node 的签名要求三个位置都在,但 shell 模式下 args 不参与解析)。
+  eq("shell 模式下 args 是空的", JSON.stringify(calls[0]?.args), JSON.stringify([]));
 }
 
 console.log("\n假 spawn · 空命令与预中止根本不起进程");

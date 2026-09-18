@@ -17,12 +17,16 @@
  *    进产出变量是把下游的提示词往死里撑;错误栈和最后几行结果都在尾部。
  * 3. **超时和中止都要连子进程一起杀。** `shell: true` 起的是 shell,shell 死了它带的
  *    孙进程不一定死 —— 用户按了停止之后训练还在偷偷跑,是这类功能最招恨的翻车方式。
+ *
+ * 这三条**只管规矩,不管怎么实现**:起进程、杀树、超时、编码判定全在
+ * `lib/spawnRun.ts`(与代码节点共用那一层)。这里只负责把它的结果翻译成节点语义 ——
+ * 尤其是第 1 条,那条规矩在代码节点那边是相反的(非零即失败)。
  */
 
-import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { COMMAND_OUTPUT_TAIL_CHARS } from "@contracts/nodeType";
 import { NODE_STDOUT_PROTOCOL_PREFIX, type NodeArtifact, type NodeOutcome } from "@contracts/nodeType";
 import { normalizeNodeArtifacts } from "./artifactRefs.js";
+import { spawnRun, type SpawnFn } from "@main/lib/spawnRun.js";
 
 export interface CommandProgress {
   percent?: number;
@@ -35,6 +39,13 @@ interface ProtocolResult {
   artifacts?: NodeArtifact[];
 }
 
+/**
+ * 认一行协议并消费掉它。返回 `true` = 这一行是协议行(不进输出尾部)。
+ *
+ * `@@mcode:progress` / `@@mcode:result` 的格式定义在 `@contracts/nodeType` ——
+ * 第三方脚本按它上报进展与结构化产出,格式一变已经写好的脚本就全废,所以它先于
+ * 消费者定死。
+ */
 function consumeProtocolLine(
   line: string,
   onProgress: ((progress: CommandProgress) => void) | undefined,
@@ -62,51 +73,13 @@ function consumeProtocolLine(
       };
     }
   } catch {
-    // Protocol lines are control output; malformed payloads are ignored rather than crashing the runner.
+    // 协议行是控制输出;坏掉的 payload 忽略即可,不该让整步崩掉。
   }
   return true;
 }
 
-function consumeChunk(
-  pending: string,
-  chunk: Buffer,
-  onProgress: ((progress: CommandProgress) => void) | undefined,
-  state: { result?: ProtocolResult },
-  append: (text: string) => void,
-): string {
-  const text = pending + chunk.toString("utf-8");
-  const lines = text.split(/\r?\n/);
-  const remainder = lines.pop() ?? "";
-  for (const line of lines) {
-    if (!consumeProtocolLine(line, onProgress, state)) append(line + "\n");
-  }
-  return remainder;
-}
-
 /** `node:child_process` 的 `spawn` 的形状 —— 留一个缝,冒烟脚本能塞假的进来。 */
-export type SpawnFn = typeof nodeSpawn;
-
-/** 杀进程树:Windows 用 `taskkill /T`(连孙进程),其余平台先 TERM 后 KILL。 */
-function killTree(child: ChildProcess): void {
-  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
-  if (process.platform === "win32") {
-    // /T = 连整棵树,/F = 强制。taskkill 找不到进程(已经退了)不算错。
-    nodeSpawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true });
-    return;
-  }
-  child.kill("SIGTERM");
-  setTimeout(() => {
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-  }, 2_000).unref();
-}
-
-/** 把一段新输出并进环形缓冲,超长只留尾部。 */
-function appendTail(buf: string, chunk: Buffer): string {
-  const next = buf + chunk.toString("utf-8");
-  return next.length > COMMAND_OUTPUT_TAIL_CHARS
-    ? next.slice(next.length - COMMAND_OUTPUT_TAIL_CHARS)
-    : next;
-}
+export type { SpawnFn };
 
 /**
  * 跑一条命令直到它退出。**这个 promise 一定 settle**:退出、超时、中止,三条路都通。
@@ -130,98 +103,60 @@ export async function runCommandNode(
   deps?: { spawn?: SpawnFn },
 ): Promise<NodeOutcome> {
   const { command, input, timeoutMs, cwd, signal, onProgress } = args;
-  const spawn = deps?.spawn ?? nodeSpawn;
   if (command.length === 0) {
     return { status: "failed", summary: "", error: "命令节点没有填要跑的命令" };
   }
+  // 预中止:**根本不 spawn** —— 用户已经按了停止,没有理由再起一个进程。
   if (signal.aborted) return { status: "cancelled", summary: "" };
 
-  let child: ChildProcess;
-  try {
-    child = spawn(command, {
-      shell: true,
-      windowsHide: true,
-      ...(cwd !== undefined ? { cwd } : {}),
-      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-    });
-  } catch (err) {
-    return { status: "failed", summary: "", error: `命令起不来:${(err as Error).message}` };
-  }
-  // `shell: true` 时 spawn 几乎不抛(错误走 error 事件),这一拦兜的是后一种。
-  let spawnError: Error | undefined;
-  child.on("error", (err: Error) => {
-    spawnError = err;
-  });
-
-  let tail = "";
-  let stdoutPending = "";
   const protocolState: { result?: ProtocolResult } = {};
-  const append = (text: string): void => {
-    tail = appendTail(tail, Buffer.from(text, "utf-8"));
-  };
-  child.stdout?.on("data", (chunk: Buffer) => {
-    stdoutPending = consumeChunk(stdoutPending, chunk, onProgress, protocolState, append);
+  const run = await spawnRun({
+    command,
+    shell: true,
+    ...(cwd !== undefined ? { cwd } : {}),
+    ...(input !== undefined ? { stdin: JSON.stringify(input ?? null) + "\n" } : {}),
+    timeoutMs,
+    signal,
+    limitBytes: COMMAND_OUTPUT_TAIL_CHARS,
+    // **两条流并成一段**:下游只认一段"输出尾部",不分 stdout/stderr
+    // (见文件头第 2 条)。协议行在任一线上出现都算。
+    mergeStreams: true,
+    onStdoutLine: (line) => consumeProtocolLine(line, onProgress, protocolState),
+    ...(deps?.spawn !== undefined ? { spawn: deps.spawn } : {}),
   });
-  child.stderr?.on("data", (chunk: Buffer) => {
-    tail = appendTail(tail, chunk);
-  });
 
-  const killedBy = { timeout: false, abort: false };
-  const timer =
-    timeoutMs > 0
-      ? setTimeout(() => {
-          killedBy.timeout = true;
-          killTree(child);
-        }, timeoutMs)
-      : undefined;
-  const onAbort = (): void => {
-    killedBy.abort = true;
-    killTree(child);
-  };
-  if (signal.aborted) onAbort();
-  else signal.addEventListener("abort", onAbort, { once: true });
-
-  const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-    (resolve) => {
-      child.once("exit", (code, sig) => resolve({ code, signal: sig }));
-    },
-  );
-
-  if (timer !== undefined) clearTimeout(timer);
-  signal.removeEventListener("abort", onAbort);
-
-  if (stdoutPending.length > 0) {
-    if (!consumeProtocolLine(stdoutPending, onProgress, protocolState)) append(stdoutPending);
-  }
-  const text = tail.trim();
+  const text = run.stdout.trim();
   const protocol = protocolState.result;
   const artifacts = normalizeNodeArtifacts(protocol?.artifacts, cwd ?? process.cwd());
+
   // **spawn 就没成**(ENOENT 那一类):shell 都没起来,谈不上"跑完了"。
-  if (spawnError !== undefined && child.pid === undefined) {
-    return { status: "failed", summary: text, error: `命令起不来:${spawnError.message}` };
+  // `pid` 有值说明进程真起来了再死的,那种情况下面按退出码走。
+  if (run.spawnError !== undefined && run.code === null && !run.killedBy.timeout && !run.killedBy.abort) {
+    return { status: "failed", summary: text, error: `命令起不来:${run.spawnError.message}` };
   }
-  if (killedBy.abort) return { status: "cancelled", summary: text };
-  if (killedBy.timeout) {
+  if (run.killedBy.abort) return { status: "cancelled", summary: text };
+  if (run.killedBy.timeout) {
     return {
       status: "failed",
       summary: text,
       error: `命令超过 ${timeoutMs} 毫秒还没完,被杀掉了 —— 要等它就别填超时,或把超时填大些`,
     };
   }
-  if (exit.code === null) {
+  if (run.code === null) {
     // 不是我们杀的(没有 abort/timeout 标记)却没拿到退出码 —— 被外部信号终止了。
     return {
       status: "failed",
       summary: text,
-      error: `命令被信号终止(${exit.signal ?? "未知"}),没有拿到退出码`,
+      error: `命令被信号终止(${run.signal ?? "未知"}),没有拿到退出码`,
     };
   }
+  // **非零退出码照样成功** —— 见文件头第 1 条。退出码进产出变量,分流是下游的事。
   return {
     status: "success",
     summary: protocol?.summary ?? text,
     outputs: {
       ...(protocol?.outputs ?? {}),
-      exitCode: exit.code,
+      exitCode: run.code,
       stdout: text,
     },
     ...(artifacts.length > 0 ? { artifacts } : {}),

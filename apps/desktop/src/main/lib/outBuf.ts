@@ -62,11 +62,22 @@ export class OutBuf {
 }
 
 /**
- * 去掉开头**落单的续字节**(0b10xxxxxx)。
+ * 去掉开头**落单的续字节**(`0b10xxxxxx`)—— **只在整段确实是 UTF-8 时才该做**。
  *
- * 窗口是从**中间**截出来的,所以开头可能正好落在某个多字节字符的中间。留着那几个续
- * 字节,严格 UTF-8 解码就会失败,于是整段被误判成"不是 UTF-8"而转去试 GBK —— 一段
- * 好端端的中文就变成了乱码。
+ * ## 为什么它不能无条件调用(这是踩过的坑)
+ *
+ * 这个判据假设"每个字节都属于 UTF-8"。可 **GBK 的首字节也可能落在 `0x80-0xBF`**
+ * (GBK 双字节的首字节范围是 `0x81-0xFE`,与 UTF-8 续字节的区间重叠)。于是 `0xbb`
+ * 这种合法的 GBK 首字节会被当成"落单的续字节"削掉,后面整段跟着错位 ——
+ * 「或批处理文件。」被削成「蚺砦募」。
+ *
+ * 它是为**窗口场景**写的:窗口从中间截出来,开头可能正好落在某个多字节字符的中间。
+ * 那种情况下确实该削。但"这段字节是 GBK 还是 UTF-8"要**解过才知道**,而这一刀在解之前
+ * 就落下了 —— 所以判据不能只看字节形状。
+ *
+ * 现在改成:**先按原样试严格 UTF-8**;失败了才说明这段可能不是 UTF-8,那时才允许削
+ * (见 {@link decodeOutput} 的调用顺序)。一刀切在 GBK 上的代价比留下半个字符大得多,
+ * 因为半个字符只会毁掉一个字符,而错位会毁掉整段。
  */
 function trimLeadingOrphans(buf: Buffer): Buffer {
   let start = 0;
@@ -113,28 +124,40 @@ function decodeUtf8Strict(buf: Buffer): string | null {
 /**
  * 把一条流的字节解成文本。
  *
- * 严格的 UTF-8 解得出就用它(干净、无歧义);解不出才按 GBK 再解一次,并在"GBK 的结果"
- * 和"有损 UTF-8 的结果"之间挑替换字符少的那个 —— 命令前半段吐 UTF-8、后半段吐 GBK
- * 这种混着来的情况,只能这样挑一个不那么烂的。
+ * ## 顺序是有讲究的(踩过坑)
+ *
+ * 1. **先原样试严格 UTF-8。** 这是唯一"解得出就一定对"的判据。**不能先削开头那几个
+ *    续字节** —— GBK 的首字节会落在 `0x80-0xBF`,先削就等于把一段好端端的 GBK 削错位
+ *    (见 {@link trimLeadingOrphans} 的注释)。
+ * 2. 失败了,才说明这段①可能不是 UTF-8,或者②开头确实落在半个字符上。削掉开头那几个
+ *    落单续字节**再试一次**严格 UTF-8 —— 这一支兜的是窗口从中间截出来的情况。
+ * 3. 还不行,就真的不是 UTF-8:在"GBK 的结果"和"有损 UTF-8 的结果"之间挑**替换字符少**
+ *    的那个。命令前半段吐 UTF-8、后半段吐 GBK 这种混着来的情况,只能这样挑一个不那么烂的。
  *
  * **不能穷举代码页**:非中文 Windows(Shift_JIS / CP866……)仍然会是乱码,因为 Node 的
  * ICU 认哪些编码要看构建,而每多试一个就多一分把好输出判成坏的风险。中文机器是这一版
  * 的目标。
- *
- * 首尾的**半截字符**在这一层切掉,而不是推给调用方 —— "给任意一段字节都能解对"是这个
- * 函数自己的承诺;靠调用方记得先切一刀,就迟早会有一条路径忘了切。
  */
 export function decodeOutput(raw: Buffer): string {
   if (raw.length === 0) return "";
-  const buf = trimLeadingOrphans(raw);
-  if (buf.length === 0) return "";
 
-  const utf8 = decodeUtf8Strict(buf);
+  const utf8 = decodeUtf8Strict(raw);
   if (utf8 !== null) return utf8;
 
-  const lossy = new TextDecoder("utf-8").decode(buf);
+  // 原样解不出 —— 这时才允许怀疑"开头落在半个字符上"。削完再试一次严格 UTF-8。
+  const trimmed = trimLeadingOrphans(raw);
+  if (trimmed.length !== raw.length && trimmed.length > 0) {
+    const retried = decodeUtf8Strict(trimmed);
+    if (retried !== null) return retried;
+  }
+
+  // ⚠️ GBK 那一支**必须用原始字节**,不能用削过的 `trimmed` —— 削的判据是 UTF-8 的
+  // 续字节形状,而 GBK 的首字节正落在同一个区间。拿削过的字节去解 GBK,就是把一段
+  // 好端端的中文错位(见 `trimLeadingOrphans` 的注释:这正是「或批处理文件。」变成
+  // 「蚺砦募」的原因)。
+  const lossy = new TextDecoder("utf-8").decode(raw);
   try {
-    const gbk = new TextDecoder("gbk").decode(buf);
+    const gbk = new TextDecoder("gbk").decode(raw);
     return countReplacement(gbk) < countReplacement(lossy) ? gbk : lossy;
   } catch {
     // 这份 Node 的 ICU 没带 gbk。退回有损 UTF-8 —— 至少 ASCII 部分是对的。
