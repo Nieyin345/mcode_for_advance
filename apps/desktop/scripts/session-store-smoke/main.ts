@@ -15,10 +15,11 @@
  */
 import "./prelude.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import type { ChatMessage } from "@renderer/stores/sessionStore.js";
 import { outputRowsOf } from "@renderer/components/chat/outputRows.js";
 import { normWorktreeKey } from "@renderer/lib/worktree.js";
 import type { Session } from "@contracts/session";
-import type { ContextSnapshot, SessionListEntry } from "@contracts/runtime";
+import type { ContextSnapshot, SessionListEntry, TurnFileEntry } from "@contracts/runtime";
 
 const PROJECT = "p1";
 const WT_OLD = "D:\\proj\\.worktrees\\wt-1";
@@ -611,6 +612,276 @@ console.log("\n[12] waiting branches counter: 图停着等人的时候输入框�
   });
   eq("★ 一轮收尾 → 清零", waiting(), 0);
 }
+
+// ── 13. ingestEvent:独立状态切片 ───────────────────────────────────────────
+//
+// 这个 suite 原先**只走 `session.changed` 一条路径**。而 `ingestEvent` 是个 30 分支的
+// 事件分派器(1458 行),其余分支一条断言都没有 —— 那意味着"改它"没有任何安全网。
+//
+// 这一节起补上覆盖,目标选的是**自包含、纯状态、不看时序**的那些分支:给一个事件、
+// 断言状态变成什么,不需要等 rAF、不需要 mock 流。时序敏感的那几条(text.delta 的
+// 合并、turn.done 的收尾)另立一节,它们要的顺序保证多一些。
+console.log("\n[13] ingestEvent:todo.update 整份替换");
+{
+  seed([mkSession("conv4")], { total: 1 });
+  const SID = "conv4";
+  const todos = (): unknown => useSessionStore.getState().todosBySession[SID];
+
+  eq("一开始没有待办", todos(), undefined);
+
+  const first = [
+    { content: "第一步", status: "pending" as const, priority: "high" as const },
+    { content: "第二步", status: "in_progress" as const, priority: "medium" as const },
+  ];
+  useSessionStore.getState().ingestEvent({ type: "todo.update", sessionId: SID, todos: first });
+  deepEq("派一次 → 整份记下", todos(), first);
+
+  // **REPLACE 语义,不是合并**:第二次给一份短的,原来那两条不该留痕。
+  // (合并语义下"删掉一条待办"就永远办不到 —— 少给一条会被当成"没提到"。)
+  const second = [{ content: "只剩这一条", status: "completed" as const, priority: "low" as const }];
+  useSessionStore.getState().ingestEvent({ type: "todo.update", sessionId: SID, todos: second });
+  deepEq("再派一份短的 → 是替换不是合并", todos(), second);
+
+  useSessionStore.getState().ingestEvent({ type: "todo.update", sessionId: SID, todos: [] });
+  deepEq("派空数组 → 清空(不是「没变化」)", todos(), []);
+}
+
+console.log("\n[14] ingestEvent:turn.rewound 标记那张卡片,但**不删**它");
+{
+  // 撤销本轮的文件回滚:那张"本轮修改"卡片要**留在流里**并打上 rewound,
+  // 而不是消失 —— 用户需要看得见"这一轮被撤了"。卡片靠**路径集合相等**认领。
+  seed([mkSession("conv5")], { total: 1 });
+  const SID = "conv5";
+  const files = [
+    { filePath: "D:\\p\\a.ts", kind: "modify" as const, added: 3, removed: 1 },
+    { filePath: "D:\\p\\b.ts", kind: "add" as const, added: 9, removed: 0 },
+  ];
+  // 两张卡片用**不同的路径集合** —— 认领判据是"路径集合相等",两张一样的话
+  // 就分不出"标的是这一张还是那一张"了(下面那条"历史那张没动"也就失去意义)。
+  const otherFiles = [{ filePath: "D:\\p\\c.ts", kind: "add" as const, added: 1, removed: 0 }];
+  const mkTurnFiles = (id: string, isLatestTurn: boolean, fs = files): ChatMessage => ({
+    id,
+    sessionId: SID,
+    role: "assistant",
+    createdAt: 1,
+    blocks: [{ kind: "turn-files", files: fs, isLatestTurn }] as unknown as ChatMessage["blocks"],
+  });
+
+  const blocksOf = (id: string): Array<Record<string, unknown>> => {
+    const list = useSessionStore.getState().messagesBySession[SID] ?? [];
+    const msg = list.find((m) => m.id === id);
+    return (msg?.blocks ?? []) as unknown as Array<Record<string, unknown>>;
+  };
+  const markRewound = (): void => {
+    useSessionStore.setState((s) => ({
+      messagesBySession: {
+        ...s.messagesBySession,
+        [SID]: [mkTurnFiles("m1", true), mkTurnFiles("m2", false, otherFiles)],
+      },
+      turnFilesBySession: {
+        ...s.turnFilesBySession,
+        [SID]: files as unknown as TurnFileEntry[],
+      },
+    }));
+  };
+
+  markRewound();
+  useSessionStore.getState().ingestEvent({
+    type: "turn.rewound",
+    sessionId: SID,
+    files: files.map((f) => f.filePath),
+    targetFiles: files.map((f) => f.filePath),
+  });
+  eq("最新的那张被标成 rewound", blocksOf("m1")[0]?.["rewound"], true);
+  eq("历史那张**没动**(它不是这一轮)", blocksOf("m2")[0]?.["rewound"], undefined);
+  eq("卡片还在流里(不是删掉)", (useSessionStore.getState().messagesBySession[SID] ?? []).length, 2);
+  deepEq(
+    "★ 被撤的是最新那轮 → 本轮文件桶跟着清空",
+    useSessionStore.getState().turnFilesBySession[SID],
+    [],
+  );
+
+  // 路径集合对不上就不该认领 —— 否则会误标一张无关的卡片。
+  markRewound();
+  useSessionStore.getState().ingestEvent({
+    type: "turn.rewound",
+    sessionId: SID,
+    files: ["D:\\p\\other.ts"],
+    targetFiles: ["D:\\p\\other.ts"],
+  });
+  eq("路径对不上 → 不标记", blocksOf("m1")[0]?.["rewound"], undefined);
+
+  // 历史卡片的回撤**不动**本轮文件桶(那个桶属于更晚的一轮)。
+  markRewound();
+  useSessionStore.setState((s) => ({
+    messagesBySession: { ...s.messagesBySession, [SID]: [mkTurnFiles("m1", false)] },
+  }));
+  useSessionStore.getState().ingestEvent({
+    type: "turn.rewound",
+    sessionId: SID,
+    files: files.map((f) => f.filePath),
+    targetFiles: files.map((f) => f.filePath),
+  });
+  eq("历史卡片被标记", blocksOf("m1")[0]?.["rewound"], true);
+  deepEq(
+    "历史卡片回撤 → 本轮文件桶不动",
+    useSessionStore.getState().turnFilesBySession[SID],
+    files as unknown as TurnFileEntry[],
+  );
+}
+
+console.log("\n[15] ingestEvent:user.message 追加 / 去重 / 编辑截断");
+{
+  seed([mkSession("conv6")], { total: 1 });
+  const SID = "conv6";
+  const list = (): ChatMessage[] => useSessionStore.getState().messagesBySession[SID] ?? [];
+  const userMsg = (id: string, text: string, extra: Record<string, unknown> = {}) => ({
+    type: "user.message" as const,
+    sessionId: SID,
+    messageId: id,
+    blocks: [{ kind: "text", text }] as never,
+    createdAt: 1,
+    ...extra,
+  });
+
+  useSessionStore.getState().ingestEvent(userMsg("u1", "第一句"));
+  eq("派一条 → 追加", list().length, 1);
+  eq("内容对", (list()[0]?.blocks?.[0] as { text?: string } | undefined)?.text, "第一句");
+  eq("角色是 user", list()[0]?.role, "user");
+
+  // **自己发的那条会被回显** —— 发起方早就乐观追加过一遍了,再追加就是两条。
+  // (手机端 / 另一个窗口共用这条路径。)
+  useSessionStore.getState().ingestEvent(userMsg("u1", "第一句"));
+  eq("★ 自己那条回显 → 不重复追加", list().length, 1);
+
+  useSessionStore.getState().ingestEvent(userMsg("u2", "第二句"));
+  useSessionStore.getState().ingestEvent(userMsg("u3", "第三句"));
+  eq("继续追加", list().length, 3);
+
+  // **跨端编辑**:别的设备把 u2 改了重发。它会带**新的 messageId**(编辑产生新消息),
+  // 外加 `editedMessageId: "u2"` 指明"我替代的是哪一条"。收到端的陈旧尾巴
+  // (旧的 u2 及其之后的 u3)必须在追加前砍掉。
+  //
+  // 不砍的话:另一台设备内存里留着旧 u2 + u3(以及它们的回复),它自己下一次
+  // turn.done 会把这段陈旧尾巴重新落库 —— 再次打开会话就看到重复。
+  useSessionStore.getState().ingestEvent(userMsg("u2b", "第二句(改过)", { editedMessageId: "u2" }));
+  const after = list();
+  eq("★ 编辑重发 → 截到被改的那条", after.length, 2);
+  eq("被改的那条是新的内容", (after[1]?.blocks?.[0] as { text?: string } | undefined)?.text, "第二句(改过)");
+  eq("后面那条被截掉了", after.some((m) => m.id === "u3"), false);
+
+  // 编辑一个**本地没有**的 id(还没加载到 / 已被截断)→ 退回普通追加,不炸也不清空。
+  useSessionStore.getState().ingestEvent(userMsg("u9", "全新", { editedMessageId: "不在场的id" }));
+  eq("编辑目标不在场 → 当普通追加", list().length, 3);
+}
+
+// ── 14. ingestEvent:时序敏感的那几条 ───────────────────────────────────────
+//
+// 上面三条是"给一个事件、断言状态"。这一节的三条不一样:**中间隔着 rAF 缓冲**,
+// 断言必须落在正确的时刻上,否则测的是自己的时序而不是产品的。
+//
+// 这两节包在 `async` IIFE 里 —— 它们要 `await` 一帧,而顶层块里的 `await` 不合法。
+console.log("\n[16] ingestEvent:text.delta 经 rAF 缓冲后落到消息上");
+await (async () => {
+  seed([mkSession("conv7")], { total: 1 });
+  const SID = "conv7";
+  const list = (): ChatMessage[] => useSessionStore.getState().messagesBySession[SID] ?? [];
+  const textOf = (): string =>
+    (list()[0]?.blocks?.[0] as { text?: string } | undefined)?.text ?? "";
+
+  useSessionStore.getState().ingestEvent({
+    type: "text.delta",
+    sessionId: SID,
+    messageId: "m-delta",
+    text: "你好",
+  });
+  // **缓冲还没落地** —— 这是 rAF 批处理的全部意义(一帧一次 setState,而不是一个字一次)。
+  // 不钉这一条的话,"缓冲还在"和"缓冲丢了"在断言上长得一模一样。
+  eq("★ 派完之后还没落地(攒在 rAF 缓冲里)", list().length, 0);
+
+  // 等一帧。prelude 把 requestAnimationFrame 接成了 setTimeout(…, 16)。
+  await new Promise((r) => setTimeout(r, 60));
+  eq("一帧之后落地", list().length, 1);
+  eq("内容拼起来了", textOf(), "你好");
+})();
+
+console.log("\n[17] ingestEvent:tool.use 之前先冲刷缓冲的叙述文本");
+await (async () => {
+  // 工具卡必须落在**它前面那段叙述之后**。缓冲没冲的话,无 messageId 的工具会挂到
+  // 更早的消息上,而缓冲的叙述稍后才materialize —— 中间面板会把那段叙述误判成
+  // "最终回复"并从过程区漏出去。
+  seed([mkSession("conv8")], { total: 1 });
+  const SID = "conv8";
+  const list = (): ChatMessage[] => useSessionStore.getState().messagesBySession[SID] ?? [];
+
+  useSessionStore.getState().ingestEvent({
+    type: "text.delta",
+    sessionId: SID,
+    messageId: "m-narrate",
+    text: "我先看一下文件。",
+  });
+  useSessionStore.getState().ingestEvent({
+    type: "tool.use",
+    sessionId: SID,
+    toolCallId: "tu-1",
+    toolName: "Read",
+    input: { file_path: "a.ts" },
+    requiresApproval: false,
+  });
+
+  const after = list();
+  eq("★ tool.use 一来就把缓冲冲了(不是等一帧)", after.length >= 1, true);
+  const allText = after.flatMap((m) => m.blocks).filter((b) => b.kind === "text");
+  eq("叙述文本没有丢", allText.length, 1);
+  eq("叙述内容是完整的", (allText[0] as { text?: string } | undefined)?.text, "我先看一下文件。");
+})();
+
+console.log("\n[18] ingestEvent:turn.done 收尾一个回合");
+await (async () => {
+  // 一轮结束时要把几样"这一轮的东西"收干净。这些是用户看得见的行为:
+  // 待审批卡片要消失、还挂着"running"的工具卡要标成完成、等着的岔路口要清零。
+  seed([mkSession("conv9")], { total: 1 });
+  const SID = "conv9";
+  const st = (): ReturnType<typeof useSessionStore.getState> => useSessionStore.getState();
+
+  // 摆好"这一轮正在进行"的样子:一张还跑着的工具卡 + 一处待审批 + 一处等着的岔路口。
+  useSessionStore.setState((s) => ({
+    messagesBySession: {
+      ...s.messagesBySession,
+      [SID]: [
+        {
+          id: "m-tool",
+          sessionId: SID,
+          role: "assistant",
+          createdAt: 1,
+          blocks: [{ kind: "tool_use", toolUseId: "tu-1", name: "Bash", status: "running" }],
+        } as unknown as ChatMessage,
+      ],
+    },
+    pendingApprovals: [
+      { sessionId: SID, requestId: "r1", toolName: "Bash" },
+      { sessionId: "别的会话", requestId: "r2", toolName: "Read" },
+    ] as unknown as ReturnType<typeof st>["pendingApprovals"],
+    waitingBranchesBySession: { ...s.waitingBranchesBySession, [SID]: 2 },
+    runningTurnStartedAt: { ...s.runningTurnStartedAt, [SID]: 1 },
+  }));
+
+  eq("摆好了:两处待审批", st().pendingApprovals.length, 2);
+  eq("摆好了:两处在等", st().waitingBranchesBySession[SID], 2);
+
+  st().ingestEvent({ type: "turn.done", sessionId: SID, reason: "end_turn", endedAt: 999 });
+
+  eq("★ 本会话的待审批被清掉", st().pendingApprovals.filter((p) => p.sessionId === SID).length, 0);
+  eq("别的会话的待审批**没动**", st().pendingApprovals.filter((p) => p.sessionId === "别的会话").length, 1);
+  eq("★ 等着的岔路口清零(兜底 —— 配对失败时它必须归零)", st().waitingBranchesBySession[SID], 0);
+  eq("这一轮的计时锚点被清掉", st().runningTurnStartedAt[SID], undefined);
+
+  const blocks = (st().messagesBySession[SID] ?? [])[0]?.blocks ?? [];
+  const tool = blocks.find((b) => b.kind === "tool_use") as { status?: string; result?: string } | undefined;
+  // 回合结束了却没有配对的 tool.result(计划模式 / 被中断)—— 那张卡不能永远转圈。
+  eq("★ 还跑着的工具卡被标成 done", tool?.status, "done");
+  check("并且留了一句说明(不是空着)", typeof tool?.result === "string" && tool.result.length > 0, tool?.result);
+})();
 
 console.log(`\n${checks - failures}/${checks} checks passed`);
 if (failures > 0) {
