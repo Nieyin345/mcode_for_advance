@@ -103,6 +103,50 @@ export const zh = {
   // 关掉弹窗**不等于放弃** —— 聊天里那张卡还在，点它一样能选。
   "chatStream.workflowAsk.dismiss": "先放一放",
 
+  // ── 右栏的「运行看板」(见 `components/chat/WorkflowBoardPanel.tsx`)──
+  // 它和上面那些卡**看的是同一件事,但时候不同**:卡片是**收场后**才画的,而看板在
+  // 跑的过程中就看得见 —— 所以这里的词都要经得起"正在跑"这个语境。
+  "chatStream.workflowBoard.title": "工作流",
+  "chatStream.workflowBoard.runningSection": "正在跑",
+  "chatStream.workflowBoard.doneSection": "跑完了",
+  // 把「跑完了」那一组从**看板上**清掉。**不是删除任何东西** —— 那些步骤的卡片、
+  // 过程、用量都还在对话和存档里,清掉的只是看板此刻还记着它们。
+  "chatStream.workflowBoard.clearDone": "从看板上清掉跑完的（记录都还在对话里）",
+  // 一步都还没派发时。**不说"没有运行"** —— 用户点进来是想知道下一步干什么。
+  "chatStream.workflowBoard.emptyTitle": "这张图还没跑起来",
+  "chatStream.workflowBoard.emptyHint": "在对话里发一句话,它就从主节点开始往下走。",
+  // 正在跑的那一步的过程。**"还在等它开口"** 比"暂无内容"准确:它确实在干活,
+  // 只是还没输出任何能被记录的东西。
+  "chatStream.workflowBoard.nodeWaiting": "还在跑,暂时没有可显示的内容。",
+  "chatStream.workflowBoard.awaiting": "在等你",
+  // 顶上那条提示。三句**不能合成一句**:失败要重试、在岔路口要选一条、被取消要重跑整张。
+  "chatStream.workflowBoard.haltedFailed": "「{title}」失败了 —— 点开看看,可以只重跑这一步。",
+  "chatStream.workflowBoard.haltedAwaiting": "「{title}」在等你定 —— 去对话里那张卡上选一条。",
+  "chatStream.workflowBoard.haltedCancelled": "这次运行被停在了「{title}」。",
+  // 详情里那两句话:岔路口 / 「运行前先问我」。**按钮不在这里** —— 真正能点的地方是
+  // 消息流里那张卡,这里是"该去哪儿点"的说明(两处都能点会让"点哪个"变成一个问题)。
+  "chatStream.workflowBoard.awaitingHint": "这一步停在这里等你选一条。按钮在对话里那张卡上:",
+  "chatStream.workflowBoard.awaitingAsk": "这一步开跑之前要先问你一句。去对话里那张卡上选:",
+  // 选完之后回头再看:这一格里记着用户**选了哪条**、补了什么话、是第几轮问的。
+  // `chosen` 存的是选项的 label(见 `workflowLive` 的 `choice` 事件折叠)。
+  "chatStream.workflowBoard.chosen": "你选了:{label}",
+  "chatStream.workflowBoard.chosenComment": "你补的话:{text}",
+  "chatStream.workflowBoard.chosenAttempt": "第 {n} 轮问的",
+  // 小流程图下面那条图例的四个词(见 `WorkflowFlowMini` 的 `WorkflowFlowLegend`)。
+  "chatStream.workflowBoard.legendDone": "跑完了",
+  "chatStream.workflowBoard.legendRunning": "在跑",
+  "chatStream.workflowBoard.legendAwaiting": "在等你",
+  "chatStream.workflowBoard.legendFailed": "出事了",
+  // ── 接管失败/被取消的那一步 ──
+  // 三件事:**结束**它(停下整张图)、**跟这一步说**(它接着干)、**跟主对话说**
+  // (塞进输入框,用户自己发)。
+  "chatStream.workflowBoard.takeover": "接管这一步",
+  "chatStream.workflowBoard.takeoverPlaceholder": "想跟谁说点什么…",
+  "chatStream.workflowBoard.takeoverSent": "已送去",
+  "chatStream.workflowBoard.takeoverStop": "停下这张图",
+  "chatStream.workflowBoard.talkToNode": "跟这一步说",
+  "chatStream.workflowBoard.talkToParent": "放进主对话的输入框",
+
   // ── MessageBlocks: images ──
   "chatStream.image.browserScreenshot": "浏览器截图",
   "chatStream.image.userImage": "用户图片",

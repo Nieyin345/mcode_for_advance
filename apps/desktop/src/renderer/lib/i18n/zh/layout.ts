@@ -117,6 +117,10 @@ export const zh = {
   "layout.noOpenFiles": "无打开的文件",
   "layout.tabFiles": "文件",
   "layout.tabTurns": "轮次流程",
+  /** 右栏的**运行看板** —— 这张图现在跑到哪一格、哪几个分身还在干活
+   *  (见 `components/chat/WorkflowBoardPanel.tsx`)。它和上面那个「轮次流程」是两回事:
+   *  那个讲**对话**这一轮做了什么,这个讲**图**跑到哪儿了。 */
+  "layout.tabFlow": "工作流运行",
   /** 右栏的模版预览标签 —— 与左栏「模版」段联动(点一个文件就在这儿打开)。 */
   "layout.tabTemplates": "模版",
   "layout.openBrowser": "打开浏览器",

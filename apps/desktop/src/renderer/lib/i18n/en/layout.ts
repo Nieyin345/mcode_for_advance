@@ -114,6 +114,11 @@ export const en = {
   "layout.tabFiles": "Files",
   "layout.tabTemplates": "Templates",
   "layout.tabTurns": "Turn Flow",
+  /** The right panel's run board — which cell of the graph is running right now
+   *  (see `components/chat/WorkflowBoardPanel.tsx`). Not the same thing as the
+   *  "Turn Flow" tab above: that one is about the CONVERSATION's turn, this one
+   *  about the GRAPH. */
+  "layout.tabFlow": "Workflow Run",
   "layout.openBrowser": "Open browser",
   "layout.closeSidebarBrowser": "Close sidebar browser",
 

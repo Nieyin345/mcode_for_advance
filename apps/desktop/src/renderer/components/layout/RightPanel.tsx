@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import {
   IconFolder,
@@ -9,12 +10,15 @@ import {
   IconArrowsMinimize,
   IconBook,
   IconTemplate,
+  IconListTree,
 } from "@renderer/lib/icons.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useWorkflowLive } from "@renderer/lib/workflowLive.js";
 import { resolveShortcut, acceleratorToDisplayString } from "@renderer/lib/shortcuts.js";
 import { FilesPanel } from "@renderer/components/ide/FilesPanel.js";
 import { GitPanel } from "@renderer/components/ide/GitPanel.js";
 import { TurnFlowPanel } from "@renderer/components/ide/TurnFlowPanel.js";
+import { WorkflowBoardPanel } from "@renderer/components/chat/WorkflowBoardPanel.js";
 import { BrowserPanel } from "@renderer/components/browser/BrowserPanel.js";
 import { SideChatPanel } from "@renderer/components/chat/SideChatPanel.js";
 import { LibraryPanel } from "@renderer/components/library/LibraryPanel.js";
@@ -43,6 +47,21 @@ export function RightPanel() {
   const browserTabCount = useSessionStore((s) => s.browserTabCount);
   const widePanelOpen = useSessionStore((s) => s.widePanelOpen);
   const setWidePanelOpen = useSessionStore((s) => s.setWidePanelOpen);
+  // 角标上的数:**当前对话**有几个节点在跑。订阅点在这里(而不是面板里)——
+  // 面板没打开时角标也得对。
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const live = useWorkflowLive();
+  const runningNodeCount = useMemo(() => {
+    if (!activeSessionId) return 0;
+    let n = 0;
+    for (const run of Object.values(live.runs)) {
+      if (run.sessionId !== activeSessionId) continue;
+      for (const id of run.order) {
+        if (run.nodes[id]?.phase === "running") n++;
+      }
+    }
+    return n;
+  }, [live.runs, activeSessionId]);
 
   // Append the effective shortcut for a command's tooltip (same pattern as the
   // Titlebar's hintFor; cheap - a handful of lookups per render).
@@ -102,6 +121,22 @@ export function RightPanel() {
         >
           <IconListDetails size={16} className="shrink-0" />
         </RailButton>
+        {/* 运行看板 —— 这张图现在跑到哪一格、哪几个分身还在干活。**带角标**:
+            有几个在跑就在图标上写几,用户不点开也知道。 */}
+        <div className="relative">
+          <RailButton
+            active={tab === "flow"}
+            onClick={() => setTab("flow")}
+            title={t("layout.tabFlow")}
+          >
+            <IconListTree size={16} className="shrink-0" />
+          </RailButton>
+          {runningNodeCount > 0 && (
+            <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-accent px-1 text-[9px] font-bold leading-none text-white">
+              {runningNodeCount}
+            </span>
+          )}
+        </div>
         {/* Side chat — quick Q&A beside the running main session. */}
         <RailButton
           active={tab === "sidechat"}
@@ -161,6 +196,7 @@ export function RightPanel() {
         {tab === "files" && <FilesPanel />}
         {tab === "git" && <GitPanel />}
         {tab === "turns" && <TurnFlowPanel />}
+        {tab === "flow" && <WorkflowBoardPanel />}
         {tab === "sidechat" && <SideChatPanel />}
         {tab === "library" && <LibraryPanel />}
         {tab === "templates" && <TemplatePanel />}

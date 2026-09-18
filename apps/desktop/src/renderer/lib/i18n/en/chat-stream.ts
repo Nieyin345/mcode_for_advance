@@ -104,6 +104,59 @@ export const en = {
   // Closing the dialog is **not** giving up: the card is still in the chat.
   "chatStream.workflowAsk.dismiss": "Later",
 
+  // ── The right-panel run board (see `components/chat/WorkflowBoardPanel.tsx`) ──
+  // It watches the SAME thing as the cards above, but at a different time: a card is
+  // only drawn once a step has settled, while the board is readable mid-run — so every
+  // string here has to hold up in the "still running" tense.
+  "chatStream.workflowBoard.title": "Workflow",
+  "chatStream.workflowBoard.runningSection": "Running",
+  "chatStream.workflowBoard.doneSection": "Finished",
+  // Clears the Finished group from the BOARD only — the cards, transcripts and usage
+  // stay in the conversation and the archive.
+  "chatStream.workflowBoard.clearDone": "Clear finished from the board (records stay in the chat)",
+  // Before anything has been dispatched. NOT "no runs" — someone opening this wants to
+  // know what happens next.
+  "chatStream.workflowBoard.emptyTitle": "This graph hasn't run yet",
+  "chatStream.workflowBoard.emptyHint":
+    "Send a message in the chat and it starts walking from the main node.",
+  // The transcript of a step that is still going. "Waiting for it to say something" is
+  // truer than "nothing here": it IS working, it just hasn't emitted anything yet.
+  "chatStream.workflowBoard.nodeWaiting": "Still running — nothing to show yet.",
+  "chatStream.workflowBoard.awaiting": "Waiting on you",
+  // The banner at the top. Three sentences that CANNOT be merged into one: a failure
+  // wants a retry, a fork wants a pick, a cancel wants the whole graph re-run.
+  "chatStream.workflowBoard.haltedFailed":
+    "“{title}” failed — open it to see why, and you can re-run just this step.",
+  "chatStream.workflowBoard.haltedAwaiting":
+    "“{title}” is waiting on you — pick a way forward on its card in the chat.",
+  "chatStream.workflowBoard.haltedCancelled": "This run stopped at “{title}”.",
+  // The two lines in the detail view: a fork, and the "ask me before running" switch.
+  // The BUTTONS are not here — the clickable thing is the card in the chat, and this
+  // just says where to go (two live buttons would make "which one" a real question).
+  "chatStream.workflowBoard.awaitingHint":
+    "This step stopped here for you to pick a way forward. The buttons are on its card in the chat:",
+  "chatStream.workflowBoard.awaitingAsk":
+    "This step checks with you before it starts. Pick on its card in the chat:",
+  // Looking back after the pick: the node remembers which one you chose, what you
+  // added, and which round of asking it was. `chosen` holds the option label.
+  "chatStream.workflowBoard.chosen": "You picked: {label}",
+  "chatStream.workflowBoard.chosenComment": "You added: {text}",
+  "chatStream.workflowBoard.chosenAttempt": "round {n}",
+  // The four words under the mini flow chart (WorkflowFlowLegend in WorkflowFlowMini).
+  "chatStream.workflowBoard.legendDone": "Done",
+  "chatStream.workflowBoard.legendRunning": "Running",
+  "chatStream.workflowBoard.legendAwaiting": "Waiting on you",
+  "chatStream.workflowBoard.legendFailed": "Failed",
+  // ── Taking over a failed / cancelled step ──
+  // Three things: **stop** it (which stops the whole graph), **talk to this step**
+  // (it keeps going), **talk to the main chat** (drops into the composer for you to send).
+  "chatStream.workflowBoard.takeover": "Take over this step",
+  "chatStream.workflowBoard.takeoverPlaceholder": "Say something to whoever…",
+  "chatStream.workflowBoard.takeoverSent": "Sent",
+  "chatStream.workflowBoard.takeoverStop": "Stop this graph",
+  "chatStream.workflowBoard.talkToNode": "Talk to this step",
+  "chatStream.workflowBoard.talkToParent": "Put in the chat composer",
+
   // ── MessageBlocks: images ──
   "chatStream.image.browserScreenshot": "Browser screenshot",
   "chatStream.image.userImage": "User image",
