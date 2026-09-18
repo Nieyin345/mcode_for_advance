@@ -107,6 +107,9 @@ function scopeOf(extra: Partial<ModelInputScope> = {}): ModelInputScope {
     upstreamOutputs: {},
     nodeId: "a",
     plan: [[{ id: "a", title: "第一步", isLast: true }]],
+    // 这一条 fixture 是**一步图**,所以它这一格就是根(计划第 0 层)。根节点在提示词
+    // 里带「用户的请求」,回主对话时也就不回声那条指令 —— 两个事实同源,见 `isRootOf`。
+    root: true,
     terminal: true,
     contextLines: () => [],
     ...extra,
@@ -302,6 +305,32 @@ eq("a 在传入序列前", titlePair !== undefined && titlePair.a === "rules/a.m
 const contentPair = pairs.find((p) => p.a === "rules/c.md" && p.b === "rules/d.md");
 check("近似正文过 0.85 线", contentPair !== undefined && contentPair.score >= 0.85, pairs);
 check("无关的两条不判重", !pairs.some((p) => p.a === "rules/e.md" || p.b === "rules/e.md"));
+
+/* ────────────────────────── 入口节点:那一段不进聊天框 ────────────────────────── */
+
+// 主代理(`mcode.main`)跑在主对话里,拿到的那段 `prompt` 是**代码拼的脚手架**
+// (流程位置 + 用户的请求 + 产出要求)。它回主对话时**不回声** —— 用户打的那句原话
+// 由 `startWorkflowRun` 回声,两边都发就是聊天里两条一样的提问。
+//
+// 两个断言是一件事的两面:**同一份 scope,根与非根给出的答案相反**。只钉一边的话,
+// 把这一行写成常量 `false` 也能过,而那会让下游的对话节点不说话。
+console.log("\n入口节点 · 回声开关");
+{
+  const rootInput = build({ instruction: "拆活" });
+  eq("根节点不回这条指令", rootInput.echoUserMessage, false);
+  // 那一句话得真的在:不是把它从提示词里删掉,而是只不发回声。
+  check("但提示词里照样带着用户的请求", rootInput.prompt.includes("用户的话"), rootInput.prompt);
+
+  const midInput = build({ instruction: "按刚才聊定的改" }, {
+    nodeId: "b",
+    plan: [
+      [{ id: "a", title: "第一步", isLast: false }],
+      [{ id: "b", title: "第二步", isLast: true }],
+    ],
+    root: false,
+  });
+  eq("(对照)中段的节点照常回声", midInput.echoUserMessage, undefined);
+}
 
 /* ────────────────────────── 汇总 ────────────────────────── */
 

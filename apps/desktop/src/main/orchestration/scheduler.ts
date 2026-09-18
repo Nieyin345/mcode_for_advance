@@ -140,6 +140,7 @@ import {
   askSection,
   findStep,
   flowRecordSection,
+  isRootOf,
   planOf,
   recordBodyOf,
   type WorkflowPlan,
@@ -1248,6 +1249,10 @@ class Run {
         ),
         nodeId: node.id,
         plan: this.plan,
+        // **这一格是不是根**(用户那句话进来的那一格)。提示词那一层用它决定要不要
+        // 带「用户的请求」,输入构造那一层用它决定回主对话时**不回声这条指令**
+        // (`NodeRunInput.echoUserMessage`)—— 两处读的是同一个判据(见 `isRootOf`)。
+        root: isRootOf(this.plan, node.id),
         terminal,
         ...(arrival ? { arrival } : {}),
         ...(flowRecord !== undefined ? { record: flowRecord } : {}),

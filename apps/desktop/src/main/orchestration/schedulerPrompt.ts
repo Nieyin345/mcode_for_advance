@@ -146,7 +146,25 @@ function planSection(plan: WorkflowPlan, nodeId: string, hasUpstreamText: boolea
   return lines.join("\n");
 }
 
-/** 这一步在流程里的哪一格。找不到返回 undefined(不该发生:`planOf` 是拿同一份图算的)。 */
+/**
+ * 这一步是不是**图的根**(计划第 0 层)—— 也就是"用户那句话进来的那一格"。
+ *
+ * 两处在读它,而且**必须是同一个答案**:
+ *  - 提示词要不要带「用户的请求」那一段(见 {@link composeNodePrompt});
+ *  - 回主对话时要不要**再回声一遍**这条指令(见 `NodeRunInput.echoUserMessage` ——
+ *    带了用户请求的那一段是代码拼的脚手架,不是用户说的话)。
+ *
+ * 对不上时的表现是"提示词里带着用户那句话、聊天框里却没有"或者反过来的错配,两种都
+ * 不报错。所以判据收口在这儿一个函数里,不在两处各写一遍 `findIndex`。
+ */
+export function isRootOf(plan: WorkflowPlan, nodeId: string): boolean {
+  // 层 = 上游层最大值 + 1,所以有上游的节点一定在 ≥1 层 —— 第 0 层就是根。
+  return plan.findIndex((layer) => layer.some((s) => s.id === nodeId)) === 0;
+}
+
+/**
+ * 这一步在流程里的哪一格。找不到返回 undefined(不该发生:`planOf` 是拿同一份图算的)。
+ */
 export function findStep(plan: WorkflowPlan, nodeId: string): PlanStep | undefined {
   for (const layer of plan) {
     const hit = layer.find((s) => s.id === nodeId);
@@ -482,7 +500,8 @@ export function flowRecordSection(args: {
  *
  * ## 「整条流程」这一段为什么非有不可
  *
- * 图上每个节点都是**各自独立的会话**,互相看不见。于是最常发生的一种跑法是:第一步
+ * 图上**多数节点是各自独立的会话**(`mcode.agent` 那种),互相看不见。于是最常发生
+ * 的一种跑法是:第一步
  * 收到"用户要一篇综述"+"让我生成计划",它**把整篇综述写完了** —— 因为从它的角度看,
  * 用户就是要一篇综述,而"生成计划"像是句补充说明。下游于是拿到一份成品,没活可干,
  * 用户看到的现象是"第一步就把活干完了,后面没传下去"。
@@ -532,7 +551,7 @@ export function composeNodePrompt(args: {
   outputVars?: string;
 }): string {
   // 第 0 层就是根:有上游的节点一定在 ≥1 层(层 = 上游层最大值 + 1)。
-  const isRoot = args.plan.findIndex((layer) => layer.some((s) => s.id === args.nodeId)) === 0;
+  const isRoot = isRootOf(args.plan, args.nodeId);
   const sections: string[] = [];
   const record = (args.record ?? "").trim();
   const hasRecord = record.length > 0;

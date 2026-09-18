@@ -140,6 +140,16 @@ export interface ModelInputScope {
   /** 这一步是谁 / 整条流程长什么样 —— 「整条流程」那一节的内容。 */
   nodeId: string;
   plan: WorkflowPlan;
+  /**
+   * **这一步是不是这张图的根**(`plan` 的第 0 层,也就是"用户那句话进来的那一格")。
+   *
+   * 只有一处在读它:根节点的提示词里带着**用户的请求**那一段(见 `composeNodePrompt`),
+   * 所以它不是"一句用户会说的话",回主对话时不该再回声一遍(见
+   * `NodeRunInput.echoUserMessage`)。判据取自计划分层,与 `composeNodePrompt` 里那个
+   * `isRoot` 是**同一个事实的两次读** —— 两处必须一起算,不然会出现"提示词里没带用户
+   * 那句话、却也没回声"或者反过来的错配。
+   */
+  root: boolean;
   /** 这一步有没有下游。没有的话没人取它的产出变量。 */
   terminal: boolean;
   /** 它是从哪条出路来的(上游有分支节点时才有)。 */
@@ -334,6 +344,20 @@ export function buildNodeInput(
     mcpServerNames,
     pluginNames,
     returnMode,
+    // **入口节点不回这一步的指令。** 图上只有它一个是不隔离的入口:用户那句话先到
+    // 它这儿,而上面拼出来的 `prompt` 里除了那句话还有脚手架(流程位置、上游产出、
+    // 产出要求)。那一段**只发给模型**,不进聊天框 —— 用户打的那句原话由
+    // `startWorkflowRun` 回声(见 `NodeRunInput.echoUserMessage`)。
+    //
+    // 放在**这条返回**上、不是那个共享的 `base` 上,是因为读它的只有 `conversation`
+    // 那一个跑法(`runInConversation`)—— 而 `prompt` 是在这条路上才拼出来的。专用
+    // builder(code / command)提前返回,它们拿到的是 `base`,也就没有这个字段。
+    //
+    // 判据用 `scope.root` 而不是节点类型 id:真正决定"该不该回声"的是**这一格拿到的
+    // 提示词是不是用户自己说的话**,而那个事实在调度器算出根节点时就定了 —— 下游的
+    // 对话节点拿到的 `prompt` 就是它自己的指令(一句人话),照旧回声。等哪一天有别的
+    // 入口类型,这一行一个字都不用改。
+    ...(scope.root ? { echoUserMessage: false } : {}),
     ...(providerId !== undefined ? { providerId } : {}),
     signal,
   };
