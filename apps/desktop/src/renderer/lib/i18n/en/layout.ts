@@ -203,6 +203,11 @@ export const en = {
   "layout.relayForwarderAuto": "Auto (socat first, python3 fallback)",
   "layout.relayForwarderSocat": "socat",
   "layout.relayForwarderPython3": "python3",
+  "layout.relayConnect": "Connect",
+  "layout.relayStateIdle": "Not connected",
+  "layout.relayStateConnecting": "Connecting to server…",
+  "layout.relayStateDeploying": "Deploying forwarder…",
+  "layout.relayStateError": "Connection failed",
   "layout.activeDevices": "{n} device(s) active",
 
   /* ── image preview (ui) ── */

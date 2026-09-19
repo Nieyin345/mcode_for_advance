@@ -16,12 +16,14 @@ import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { cn } from "@renderer/lib/cn.js";
 import type { FileTreeEntry } from "@contracts/ipc";
 import { FileViewerOverlay } from "./FileViewer.js";
+import { useI18n } from "@renderer/lib/i18n/index.js";
 import { IconFolder, IconFolderOpen, IconFile, IconChevronRight, IconArrowUp, IconLoader2 } from "@renderer/lib/icons.js";
 
 /** Full-screen read-only file viewer: images render inline; text files render
  *  through the shared Markdown fenced-code path (shiki highlighting). */
 
 export function MobileFilesScreen() {
+  const { t } = useI18n();
   const activeProjectId = useSessionStore((s) => s.activeProjectId);
   const projects = useSessionStore((s) => s.projects);
   const project = useMemo(
@@ -83,14 +85,16 @@ export function MobileFilesScreen() {
 
   if (!project) {
     return (
-      <ScreenShell title="文件">
-        <div className="p-6 text-center text-xs text-content-subtle">请先选择一个项目</div>
+      <ScreenShell title={t("layout.nav.files")}>
+        <div className="p-6 text-center text-xs text-content-subtle">
+          {t("browser.selectProjectFirst")}
+        </div>
       </ScreenShell>
     );
   }
 
   return (
-    <ScreenShell title="文件">
+    <ScreenShell title={t("layout.nav.files")}>
       {/* Breadcrumb */}
       <div className="flex min-h-0 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-edge px-2 py-1.5 text-xs [scrollbar-width:none]">
         {stack.length > 1 && (
@@ -98,7 +102,7 @@ export function MobileFilesScreen() {
             type="button"
             onClick={up}
             className="flex h-6 shrink-0 items-center gap-0.5 rounded px-1 text-content-muted hover:bg-surface-muted"
-            title="上一级"
+            title={t("mobile.files.up")}
           >
             <IconArrowUp size={13} />
           </button>
@@ -132,7 +136,9 @@ export function MobileFilesScreen() {
             <IconLoader2 size={16} className="animate-spin" />
           </div>
         ) : entries.length === 0 ? (
-          <div className="p-6 text-center text-xs text-content-subtle">空目录</div>
+          <div className="p-6 text-center text-xs text-content-subtle">
+            {t("ide.files.emptyDir")}
+          </div>
         ) : (
           entries.map((e) => (
             <button
@@ -161,6 +167,7 @@ export function MobileFilesScreen() {
 
 /** Shared header for the full-screen mobile utility pages (files / git). */
 function ScreenShell({ title, children }: { title: string; children: React.ReactNode }) {
+  const { t } = useI18n();
   return (
     <div className="flex h-full min-w-0 min-h-0 flex-1 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-edge px-3">
@@ -168,7 +175,7 @@ function ScreenShell({ title, children }: { title: string; children: React.React
         <span className="flex-1" />
         <span className="flex items-center gap-1 text-[10px] text-content-subtle">
           <IconFolderOpen size={12} />
-          只读浏览
+          {t("mobile.files.readOnly")}
         </span>
       </div>
       {children}

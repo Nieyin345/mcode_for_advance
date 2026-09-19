@@ -26,10 +26,10 @@ import {
   IconStack2,
 } from "@renderer/lib/icons.js";
 
-const THEME_OPTIONS: Array<{ value: ThemeName; label: string; icon: typeof IconSun }> = [
-  { value: "system", label: "跟随系统", icon: IconDeviceDesktop },
-  { value: "light", label: "浅色", icon: IconSun },
-  { value: "dark", label: "深色", icon: IconMoon },
+const THEME_OPTIONS: Array<{ value: ThemeName; labelKey: MessageId; icon: typeof IconSun }> = [
+  { value: "system", labelKey: "settings.appearance.themeSystem", icon: IconDeviceDesktop },
+  { value: "light", labelKey: "settings.appearance.themeLight", icon: IconSun },
+  { value: "dark", labelKey: "settings.appearance.themeDark", icon: IconMoon },
 ];
 
 /** Same two options (and dictionary keys) as the desktop GeneralPanel's
@@ -77,13 +77,13 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
       {/* Backdrop — tap to dismiss. */}
       <button
         type="button"
-        aria-label="关闭设置"
+        aria-label={t("mobile.settings.close")}
         className="absolute inset-0 bg-black/40"
         onClick={onClose}
       />
       <div className="absolute inset-x-0 bottom-0 flex max-h-[85vh] flex-col gap-4 overflow-y-auto rounded-t-2xl border-t border-edge bg-surface-muted p-4 pb-6 text-content">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold">设置</h2>
+          <h2 className="text-sm font-semibold">{t("layout.settings")}</h2>
           <button
             type="button"
             onClick={onClose}
@@ -95,7 +95,9 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
 
         {/* Theme */}
         <div className="flex flex-col gap-2">
-          <span className="text-xs font-medium text-content-muted">外观</span>
+          <span className="text-xs font-medium text-content-muted">
+            {t("settings.appearance.title")}
+          </span>
           <div className="grid grid-cols-3 gap-2">
             {THEME_OPTIONS.map((opt) => {
               const Icon = opt.icon;
@@ -113,7 +115,7 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
                   )}
                 >
                   <Icon size={18} />
-                  {opt.label}
+                  {t(opt.labelKey)}
                 </button>
               );
             })}
@@ -156,10 +158,16 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
 
         {/* Server */}
         <div className="flex flex-col gap-2">
-          <span className="text-xs font-medium text-content-muted">连接</span>
+          <span className="text-xs font-medium text-content-muted">
+            {t("mobile.settings.connection")}
+          </span>
           <div className="flex items-center gap-2 rounded-xl border border-edge bg-surface/50 px-3 py-2.5 text-xs text-content-muted">
             <IconLink size={14} className="shrink-0" />
-            <span className="truncate">已连接至 {window.location.origin || "未知服务器"}</span>
+            <span className="truncate">
+              {t("mobile.settings.connectedTo", {
+                origin: window.location.origin || t("mobile.settings.unknownServer"),
+              })}
+            </span>
           </div>
           {unpairConfirm ? (
             <div className="flex items-center gap-2">
@@ -168,14 +176,14 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
                 onClick={unpair}
                 className="flex h-8 flex-1 items-center justify-center rounded-lg bg-danger px-3 text-xs font-medium text-surface"
               >
-                确认解除配对
+                {t("mobile.settings.confirmUnpair")}
               </button>
               <button
                 type="button"
                 onClick={() => setUnpairConfirm(false)}
                 className="flex h-8 flex-1 items-center justify-center rounded-lg border border-edge px-3 text-xs text-content-muted"
               >
-                取消
+                {t("common.cancel")}
               </button>
             </div>
           ) : (
@@ -185,7 +193,7 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
               className="flex h-9 items-center justify-center gap-1.5 rounded-lg border border-edge px-3 text-xs text-danger hover:bg-surface-hover"
             >
               <IconUnlink size={14} />
-              解除与这台电脑的配对
+              {t("mobile.settings.unpair")}
             </button>
           )}
         </div>

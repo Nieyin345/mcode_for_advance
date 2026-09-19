@@ -121,9 +121,7 @@ export function MobileSessionDrawer({
   const { mounted, entered } = useEnterExit(open, 200);
 
   const [sheet, setSheet] = useState<SheetTarget | null>(null);
-  // Expand state for the pinned section (in-memory, defaults open). The rest
-  // of this drawer's copy is still hardcoded zh (pre-i18n surface); the new
-  // section's label goes through the dictionary so it isn't MORE hardcoded.
+  // Expand state for the pinned section (in-memory, defaults open).
   const [pinnedOpen, setPinnedOpen] = useState(true);
   const { t } = useI18n();
   // Project id → name lookup for the pinned section's owner hints.
@@ -236,7 +234,7 @@ export function MobileSessionDrawer({
     <div className="fixed inset-0 z-40">
       <button
         type="button"
-        aria-label="关闭会话列表"
+        aria-label={t("mobile.drawer.closeList")}
         onClick={onClose}
         className={cn(
           "absolute inset-0 bg-black/40 transition-opacity duration-200",
@@ -253,7 +251,8 @@ export function MobileSessionDrawer({
         {/* Header — the segmented view switcher takes the row a plain title
             used to occupy: it's the most visible slot in the drawer and the
             only way across views (the active segment doubles as the
-            "where am I" cue; 会话 is the way back from files/git). */}
+            "where am I" cue; the chat segment is the way back from
+            files/git). */}
         <div className="flex shrink-0 items-center gap-1 px-3 pb-1 pt-3">
           <div className="flex min-w-0 flex-1 items-center gap-0.5 rounded-xl bg-surface/60 p-0.5">
             {NAV_ITEMS.map(({ id, labelKey, icon: NavIcon }) => (
@@ -275,7 +274,7 @@ export function MobileSessionDrawer({
           </div>
           <button
             type="button"
-            aria-label="关闭"
+            aria-label={t("common.close")}
             onClick={onClose}
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-content-muted active:bg-surface-hover"
           >
@@ -290,7 +289,7 @@ export function MobileSessionDrawer({
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="搜索线程"
+              placeholder={t("mobile.drawer.searchThreads")}
               // text-base (16px): iOS Safari zooms the viewport on focusing
               // an input rendered below 16px — keep it at the threshold.
               className="min-w-0 flex-1 bg-transparent text-base text-content outline-none placeholder:text-content-subtle"
@@ -300,7 +299,7 @@ export function MobileSessionDrawer({
             ) : query ? (
               <button
                 type="button"
-                aria-label="清除搜索"
+                aria-label={t("ide.search.clear")}
                 onClick={() => setQuery("")}
                 className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-content-subtle active:bg-surface-hover"
               >
@@ -321,7 +320,7 @@ export function MobileSessionDrawer({
               className="flex h-10 w-full items-center justify-center gap-1.5 rounded-xl bg-accent text-sm font-medium text-surface active:opacity-80"
             >
               <IconPlus size={16} className="shrink-0" />
-              <span className="shrink-0">新建会话</span>
+              <span className="shrink-0">{t("layout.newSession")}</span>
               <span className="min-w-0 max-w-[150px] truncate text-xs font-normal text-surface/75">
                 · {projectNameById.get(newSessionProjectId)}
               </span>
@@ -336,7 +335,7 @@ export function MobileSessionDrawer({
             <ul className="px-1">
               {results.length === 0 ? (
                 <li className="px-3 py-8 text-center text-sm text-content-subtle">
-                  没有匹配的线程
+                  {t("mobile.drawer.noMatch")}
                 </li>
               ) : (
                 results.map((s) => renderSessionRow(s))
@@ -344,7 +343,7 @@ export function MobileSessionDrawer({
             </ul>
           ) : activeProjects.length === 0 ? (
             <div className="px-6 py-10 text-center text-sm leading-relaxed text-content-subtle">
-              暂无项目。项目在电脑端添加后，这里会显示它的会话。
+              {t("mobile.drawer.noProjects")}
             </div>
           ) : (
             <>
@@ -399,7 +398,9 @@ export function MobileSessionDrawer({
                     {expanded && (
                       <div className="ml-5 border-l border-edge/60 pl-1">
                         {sessions.length === 0 ? (
-                          <div className="px-3 py-2.5 text-sm text-content-subtle">暂无线程</div>
+                          <div className="px-3 py-2.5 text-sm text-content-subtle">
+                            {t("layout.noThreads")}
+                          </div>
                         ) : (
                           <ul>
                             {sessions.map((s) => renderSessionRow(s))}
@@ -410,8 +411,10 @@ export function MobileSessionDrawer({
                                   onClick={() => void loadMoreSessions(p.id)}
                                   className="flex min-h-[44px] w-full items-center rounded-lg px-3 text-left text-sm text-content-subtle active:bg-surface-hover"
                                 >
-                                  加载更多
-                                  {total > sessions.length ? `（还有 ${total - sessions.length} 条）` : ""}
+                                  {t("layout.loadMore")}
+                                  {total > sessions.length
+                                    ? t("mobile.drawer.moreCount", { n: total - sessions.length })
+                                    : ""}
                                 </button>
                               </li>
                             )}
@@ -439,7 +442,7 @@ export function MobileSessionDrawer({
                       )}
                     />
                     <IconArchive size={15} className="shrink-0 text-content-muted" />
-                    <span className="text-sm font-medium text-content">已归档</span>
+                    <span className="text-sm font-medium text-content">{t("layout.archived")}</span>
                     <span className="text-xs text-content-subtle">{archivedCount}</span>
                   </button>
                   {archiveOpen && (
@@ -654,6 +657,7 @@ function ActionSheet({
   onRestoreProject: (projectId: string) => void;
   onDeleteProject: (projectId: string) => void;
 }) {
+  const { t } = useI18n();
   const { entered } = useEnterExit(true, 0);
 
   let body: ReactNode;
@@ -665,23 +669,23 @@ function ActionSheet({
         <>
           <SheetItem
             icon={pinned ? <IconPinnedFilled size={18} /> : <IconPin size={18} />}
-            label={pinned ? "取消置顶" : "置顶"}
+            label={pinned ? t("layout.unpin") : t("layout.pin")}
             onClick={() => onTogglePin(s)}
           />
           <SheetItem
             icon={<IconPencil size={18} />}
-            label="重命名"
+            label={t("common.rename")}
             onClick={() => onRename(s)}
           />
           <SheetItem
             icon={<IconArchive size={18} />}
-            label="归档"
+            label={t("layout.archive")}
             onClick={() => onArchive(s)}
           />
           <SheetItem
             danger
             icon={<IconTrash size={18} />}
-            label={armDelete ? "再次点击确认删除" : "删除"}
+            label={armDelete ? t("mobile.drawer.confirmDelete") : t("common.delete")}
             onClick={() => (armDelete ? onDeleteSession(s) : onArmDelete())}
           />
         </>
@@ -694,13 +698,13 @@ function ActionSheet({
         <>
           <SheetItem
             icon={<IconArchive size={18} />}
-            label="恢复到列表"
+            label={t("layout.restoreToList")}
             onClick={() => onRestoreSession(s)}
           />
           <SheetItem
             danger
             icon={<IconTrash size={18} />}
-            label={armDelete ? "再次点击确认删除" : "彻底删除"}
+            label={armDelete ? t("mobile.drawer.confirmDelete") : t("layout.deleteForever")}
             onClick={() => (armDelete ? onDeleteSession(s) : onArmDelete())}
           />
         </>
@@ -713,13 +717,13 @@ function ActionSheet({
         <>
           <SheetItem
             icon={<IconArchive size={18} />}
-            label="恢复到列表"
+            label={t("layout.restoreToList")}
             onClick={() => onRestoreProject(p.id)}
           />
           <SheetItem
             danger
             icon={<IconTrash size={18} />}
-            label={armDelete ? "再次点击确认删除" : "彻底删除"}
+            label={armDelete ? t("mobile.drawer.confirmDelete") : t("layout.deleteForever")}
             onClick={() => (armDelete ? onDeleteProject(p.id) : onArmDelete())}
           />
         </>
@@ -729,13 +733,13 @@ function ActionSheet({
   }
 
   return (
-    <SheetShell entered={entered} onClose={onClose} closeLabel="关闭操作菜单">
+    <SheetShell entered={entered} onClose={onClose} closeLabel={t("mobile.drawer.closeActions")}>
       {body}
     </SheetShell>
   );
 }
 
-/* ── Rename sheet — one input, Enter or 保存 submits. ── */
+/* ── Rename sheet — one input, Enter or Save submits. ── */
 
 function RenameSheet({
   session,
@@ -746,6 +750,7 @@ function RenameSheet({
   onClose: () => void;
   onSubmit: (title: string) => void;
 }) {
+  const { t } = useI18n();
   const [value, setValue] = useState(session.title);
   const { entered } = useEnterExit(true, 0);
   const trimmed = value.trim();
@@ -754,13 +759,13 @@ function RenameSheet({
   };
 
   return (
-    <SheetShell entered={entered} onClose={onClose} closeLabel="取消重命名">
+    <SheetShell entered={entered} onClose={onClose} closeLabel={t("mobile.drawer.cancelRename")}>
       <div className="px-4 pb-3 pt-1">
-        <div className="mb-2 text-sm font-semibold text-content">重命名线程</div>
+        <div className="mb-2 text-sm font-semibold text-content">{t("layout.renameThread")}</div>
         <Input
           value={value}
           autoFocus
-          placeholder="线程标题"
+          placeholder={t("layout.threadTitlePlaceholder")}
           onChange={(e) => setValue((e.target as HTMLInputElement).value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
@@ -778,7 +783,7 @@ function RenameSheet({
             onClick={onClose}
             className="h-10 flex-1 rounded-xl border border-edge text-sm text-content-muted active:bg-surface-hover"
           >
-            取消
+            {t("common.cancel")}
           </button>
           <button
             type="button"
@@ -786,7 +791,7 @@ function RenameSheet({
             disabled={!trimmed}
             className="h-10 flex-1 rounded-xl bg-accent text-sm font-medium text-surface active:opacity-80 disabled:opacity-40"
           >
-            保存
+            {t("common.save")}
           </button>
         </div>
       </div>
@@ -815,6 +820,7 @@ function SessionRow({
   onPick: () => void;
   onMore: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <li className="flex items-stretch">
       <button
@@ -829,7 +835,7 @@ function SessionRow({
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="flex min-w-0 items-center gap-1.5">
             {session.pinnedAt != null && (
-              <IconPinnedFilled size={11} className="shrink-0 text-accent/80" aria-label="已置顶" />
+              <IconPinnedFilled size={11} className="shrink-0 text-accent/80" aria-label={t("layout.pinned")} />
             )}
             <span className="truncate text-sm text-content">{session.title}</span>
           </span>
@@ -848,7 +854,7 @@ function SessionRow({
       </button>
       <button
         type="button"
-        aria-label="更多操作"
+        aria-label={t("mobile.drawer.moreActions")}
         onClick={onMore}
         className="flex w-11 shrink-0 items-center justify-center self-stretch rounded-lg text-content-subtle active:bg-surface-hover"
       >
@@ -921,6 +927,7 @@ function ArchivedRow({
   title: string;
   onMore: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <li className="flex items-stretch">
       <div className="flex min-h-[44px] min-w-0 flex-1 items-center gap-2.5 py-1.5 pl-3 pr-1">
@@ -929,7 +936,7 @@ function ArchivedRow({
       </div>
       <button
         type="button"
-        aria-label="归档项操作"
+        aria-label={t("mobile.drawer.archivedActions")}
         onClick={onMore}
         className="flex w-11 shrink-0 items-center justify-center self-stretch rounded-lg text-content-subtle active:bg-surface-hover"
       >

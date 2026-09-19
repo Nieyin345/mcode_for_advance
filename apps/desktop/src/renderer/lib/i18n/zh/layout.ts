@@ -207,6 +207,11 @@ export const zh = {
   "layout.relayForwarderAuto": "自动（优先 socat，缺失时用 python3）",
   "layout.relayForwarderSocat": "socat",
   "layout.relayForwarderPython3": "python3",
+  "layout.relayConnect": "连接",
+  "layout.relayStateIdle": "未连接",
+  "layout.relayStateConnecting": "正在连接服务器…",
+  "layout.relayStateDeploying": "正在部署转发服务…",
+  "layout.relayStateError": "连接失败",
   "layout.activeDevices": "{n} 台设备活跃",
 
   /* ── image preview (ui) ── */

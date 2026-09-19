@@ -16,16 +16,18 @@ import { Markdown } from "@renderer/components/chat/Markdown.js";
 import { DiffView } from "@renderer/components/chat/DiffView.js";
 import { lineDiff } from "@renderer/lib/lineDiff.js";
 import { FileViewerContent } from "./FileViewer.js";
+import { useI18n } from "@renderer/lib/i18n/index.js";
 import { IconArrowUp, IconLoader2 } from "@renderer/lib/icons.js";
 
 export function MobileViewerOverlay() {
+  const { t } = useI18n();
   const target = useSessionStore((s) => s.mobileViewer);
   const close = useSessionStore((s) => s.closeMobileViewer);
   if (!target) return null;
 
   const title =
     target.kind === "plan"
-      ? "计划"
+      ? t("ide.editor.planTab")
       : target.kind === "file"
         ? target.name
         : basename(target.path);
@@ -39,7 +41,7 @@ export function MobileViewerOverlay() {
           className="flex h-8 items-center gap-1 rounded-lg px-2 text-xs text-content-muted hover:bg-surface-muted"
         >
           <IconArrowUp size={14} className="rotate-[-90deg]" />
-          返回
+          {t("mobile.file.back")}
         </button>
         <div
           className={
@@ -73,6 +75,7 @@ export function MobileViewerOverlay() {
  *  snapshot field — diffing is impossible then, so degrade to the plain
  *  read-only file view with a hint instead of crashing lineDiff. */
 function DiffContent({ path, before }: { path: string; before: string | undefined }) {
+  const { t } = useI18n();
   const [after, setAfter] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -97,7 +100,7 @@ function DiffContent({ path, before }: { path: string; before: string | undefine
     return (
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="shrink-0 border-b border-edge bg-surface-muted/60 px-3 py-1.5 text-center text-[11px] text-content-subtle">
-          该轮次缺少修改前快照（旧版本会话），以下为文件当前内容
+          {t("mobile.viewer.staleSnapshot")}
         </div>
         <FileViewerContent name={basename(path)} path={path} />
       </div>
@@ -106,7 +109,7 @@ function DiffContent({ path, before }: { path: string; before: string | undefine
   if (failed) {
     return (
       <div className="flex flex-1 items-center justify-center text-xs text-content-subtle">
-        无法读取文件（可能已被删除）
+        {t("mobile.viewer.readFailed")}
       </div>
     );
   }

@@ -13,6 +13,7 @@ import { zh as zhIntegrations } from "./zh/integrations.js";
 import { zh as zhTemplates } from "./zh/templates.js";
 import { zh as zhMonitoring } from "./zh/monitoring.js";
 import { zh as zhMemory } from "./zh/memory.js";
+import { zh as zhMobile } from "./zh/mobile.js";
 import { en as enCommon } from "./en/common.js";
 import { en as enLayout } from "./en/layout.js";
 import { en as enLib } from "./en/lib.js";
@@ -27,6 +28,7 @@ import { en as enIntegrations } from "./en/integrations.js";
 import { en as enTemplates } from "./en/templates.js";
 import { en as enMonitoring } from "./en/monitoring.js";
 import { en as enMemory } from "./en/memory.js";
+import { en as enMobile } from "./en/mobile.js";
 
 /**
  * Flat message catalogs, merged per locale. The zh catalog is the source of
@@ -53,6 +55,7 @@ const zh = {
   ...zhTemplates,
   ...zhMonitoring,
   ...zhMemory,
+  ...zhMobile,
 };
 
 export type MessageId = keyof typeof zh;
@@ -72,6 +75,7 @@ const en: Record<MessageId, string> = {
   ...enTemplates,
   ...enMonitoring,
   ...enMemory,
+  ...enMobile,
 };
 
 /**

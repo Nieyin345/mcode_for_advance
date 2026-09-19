@@ -50,6 +50,7 @@ export function FileViewerOverlay({
   path: string;
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-surface">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-edge px-2">
@@ -59,7 +60,7 @@ export function FileViewerOverlay({
           className="flex h-8 items-center gap-1 rounded-lg px-2 text-xs text-content-muted hover:bg-surface-muted"
         >
           <IconArrowUp size={14} className="rotate-[-90deg]" />
-          返回
+          {t("mobile.file.back")}
         </button>
         <div className="min-w-0 flex-1 truncate text-center font-mono text-xs text-content">
           {name}
@@ -131,7 +132,7 @@ export function FileViewerContent({ name, path }: { name: string; path: string }
   if (failed) {
     return (
       <div className="flex flex-1 items-center justify-center gap-1.5 text-xs text-content-subtle">
-        <IconPhoto size={14} /> 无法预览此文件
+        <IconPhoto size={14} /> {t("mobile.file.cannotPreview")}
       </div>
     );
   }

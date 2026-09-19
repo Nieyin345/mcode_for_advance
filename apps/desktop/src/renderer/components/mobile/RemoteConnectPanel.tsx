@@ -28,14 +28,16 @@ import { api } from "@renderer/lib/api.js";
 import { copyText } from "@renderer/lib/clipboard.js";
 import type { RelayStatus, RelayVpsConfig, RelayForwarderChoice } from "@contracts/ipc";
 import { RELAY_AUTO_START_SETTING_KEY } from "@contracts/relay";
-import { useI18n } from "@renderer/lib/i18n/index.js";
+import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 
-const STATE_LABELS: Record<RelayStatus["state"], string> = {
-  idle: "未连接",
-  connecting: "正在连接服务器…",
-  deploying: "正在部署转发服务…",
-  connected: "已连接",
-  error: "连接失败",
+/** Relay state → dictionary key. A key map (not resolved strings) because
+ *  this is a module-level table — it has no access to the locale hook. */
+const STATE_LABELS: Record<RelayStatus["state"], MessageId> = {
+  idle: "layout.relayStateIdle",
+  connecting: "layout.relayStateConnecting",
+  deploying: "layout.relayStateDeploying",
+  connected: "mobile.relay.connected",
+  error: "layout.relayStateError",
 };
 
 /** Options for the forwarder selector. Labels resolve the "auto" choice
@@ -218,8 +220,18 @@ export function RemoteConnectPanel() {
       <div className="flex items-start gap-2 rounded border border-edge bg-surface-muted/50 px-3 py-2 text-xs leading-relaxed text-content-muted">
         <IconServer size={14} className="mt-0.5 shrink-0 text-accent" />
         <span>
-          通过你自己的服务器（VPS）转发，手机可在任意网络访问。
-          服务器需有 SSH 访问权限，且安装了 <code className="font-mono text-content">socat</code> 或 <code className="font-mono text-content">python3</code>。
+          {/* The explicit {" "} is load-bearing: JSX drops the whitespace
+              between two adjacent expression containers, so without it the
+              English sentence renders as "…any network.The server needs…".
+              The other separators carry their own spaces in the dictionary
+              (prereqOr is " or ", prereqSuffix is "."), so that <code> sits
+              flush against them the way it does in the zh original. */}
+          {t("mobile.relay.intro")}{" "}
+          {t("mobile.relay.prereqPrefix")}
+          <code className="font-mono text-content">socat</code>
+          {t("mobile.relay.prereqOr")}
+          <code className="font-mono text-content">python3</code>
+          {t("mobile.relay.prereqSuffix")}
         </span>
       </div>
 
@@ -237,17 +249,17 @@ export function RemoteConnectPanel() {
         <div className="flex flex-col gap-3 rounded-lg border border-edge bg-surface-muted/30 p-4">
           <div className="grid grid-cols-2 gap-3">
             <label className="col-span-2 flex flex-col gap-1">
-              <span className="text-xs font-medium text-content-muted">服务器 IP / 域名</span>
+              <span className="text-xs font-medium text-content-muted">{t("mobile.relay.host")}</span>
               <input
                 value={form.host}
                 onChange={(e) => setForm({ ...form, host: e.target.value })}
-                placeholder="1.2.3.4 或 vps.example.com"
+                placeholder={t("mobile.relay.hostPlaceholder")}
                 className="rounded-lg border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
                 disabled={isBusy}
               />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-medium text-content-muted">SSH 端口</span>
+              <span className="text-xs font-medium text-content-muted">{t("mobile.relay.port")}</span>
               <input
                 value={form.sshPort}
                 onChange={(e) => setForm({ ...form, sshPort: e.target.value.replace(/\D/g, "") })}
@@ -256,7 +268,7 @@ export function RemoteConnectPanel() {
               />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-medium text-content-muted">用户名</span>
+              <span className="text-xs font-medium text-content-muted">{t("browser.username")}</span>
               <input
                 value={form.username}
                 onChange={(e) => setForm({ ...form, username: e.target.value })}
@@ -265,18 +277,18 @@ export function RemoteConnectPanel() {
               />
             </label>
             <label className="col-span-2 flex flex-col gap-1">
-              <span className="text-xs font-medium text-content-muted">密码</span>
+              <span className="text-xs font-medium text-content-muted">{t("browser.password")}</span>
               <input
                 type="password"
                 value={form.password}
                 onChange={(e) => setForm({ ...form, password: e.target.value })}
-                placeholder="SSH 登录密码"
+                placeholder={t("mobile.relay.passwordPlaceholder")}
                 className="rounded-lg border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
                 disabled={isBusy}
               />
             </label>
             <label className="col-span-2 flex flex-col gap-1">
-              <span className="text-xs font-medium text-content-muted">公网端口（手机访问的端口）</span>
+              <span className="text-xs font-medium text-content-muted">{t("mobile.relay.publicPort")}</span>
               <input
                 value={form.publicPort}
                 onChange={(e) => setForm({ ...form, publicPort: e.target.value.replace(/\D/g, "") })}
@@ -328,7 +340,7 @@ export function RemoteConnectPanel() {
         />
         <div className="min-w-0 flex-1">
           <div className="text-xs font-medium text-content">
-            {status ? STATE_LABELS[status.state] : "加载中…"}
+            {status ? t(STATE_LABELS[status.state]) : t("common.loading")}
           </div>
           {status?.endpoint && (
             <div className="truncate font-mono text-[11px] text-content-subtle">{status.endpoint}</div>
@@ -341,13 +353,13 @@ export function RemoteConnectPanel() {
           )}
           {status?.forwarderType && (
             <div className="text-[11px] text-content-subtle">
-              转发服务：{status.forwarderType}
+              {t("mobile.relay.forwarder", { type: status.forwarderType })}
             </div>
           )}
         </div>
         {isConnected ? (
           <Button variant="ghost" size="sm" onClick={() => void handleDisconnect()} disabled={busy}>
-            断开
+            {t("mobile.relay.disconnect")}
           </Button>
         ) : (
           <Button
@@ -356,7 +368,11 @@ export function RemoteConnectPanel() {
             disabled={isBusy || !form.host.trim()}
           >
             {isBusy ? <IconLoader2 size={14} className="animate-spin" /> : <IconWorld size={14} />}
-            {status?.state === "connecting" ? "连接中…" : status?.state === "deploying" ? "部署中…" : "连接"}
+            {status?.state === "connecting"
+              ? t("mobile.relay.connecting")
+              : status?.state === "deploying"
+                ? t("mobile.relay.deploying")
+                : t("layout.relayConnect")}
           </Button>
         )}
       </div>
@@ -367,10 +383,10 @@ export function RemoteConnectPanel() {
           <div className="flex flex-col items-center gap-2">
             <div className="rounded-lg border border-edge bg-white p-2">
               {qrDataUrl ? (
-                <img src={qrDataUrl} alt="远程配对二维码" className="h-[150px] w-[150px]" />
+                <img src={qrDataUrl} alt={t("mobile.relay.qrAlt")} className="h-[150px] w-[150px]" />
               ) : (
                 <div className="flex h-[150px] w-[150px] items-center justify-center text-xs text-content-subtle">
-                  生成中…
+                  {t("layout.generating")}
                 </div>
               )}
             </div>
@@ -380,7 +396,7 @@ export function RemoteConnectPanel() {
                 onClick={() => void handleRefreshPairing()}
                 className="flex items-center gap-1 text-xs text-content-muted hover:text-content"
               >
-                <IconRefresh size={12} /> 刷新
+                <IconRefresh size={12} /> {t("common.refresh")}
               </button>
               <button
                 type="button"
@@ -388,21 +404,21 @@ export function RemoteConnectPanel() {
                 className="flex items-center gap-1 text-xs text-content-muted hover:text-content"
               >
                 {copied ? <IconCheck size={12} /> : <IconCopy size={12} />}
-                {copied ? "已复制" : "复制链接"}
+                {copied ? t("common.copied") : t("mobile.relay.copyLink")}
               </button>
             </div>
           </div>
           <div className="flex min-w-0 flex-1 flex-col">
-            <div className="text-xs text-content-muted">验证码</div>
+            <div className="text-xs text-content-muted">{t("layout.verifyCode")}</div>
             <div className="mt-1 font-mono text-3xl font-bold tracking-[0.3em] text-content">
               {pairingCode ?? "------"}
             </div>
             <div className="mt-3 rounded border border-edge bg-surface-muted/30 px-3 py-2 text-[11px] leading-relaxed text-content-muted">
-              <p className="mb-1 font-medium text-content">远程配对步骤：</p>
+              <p className="mb-1 font-medium text-content">{t("mobile.relay.stepsTitle")}</p>
               <ol className="list-inside list-decimal space-y-0.5">
-                <li>将上面的链接发送到手机</li>
-                <li>在手机浏览器中打开</li>
-                <li>输入上面的验证码完成配对</li>
+                <li>{t("mobile.relay.step1")}</li>
+                <li>{t("mobile.relay.step2")}</li>
+                <li>{t("mobile.relay.step3")}</li>
               </ol>
             </div>
           </div>
