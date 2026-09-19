@@ -121,7 +121,24 @@ export async function saveWorkflow(doc: WorkflowDoc): Promise<SaveResult> {
   const derived = deriveTrigger(doc, types);
   if (!derived.ok) return derived;
 
-  WorkflowRepo.save({ ...derived.doc, updatedAt: Date.now() });
+  // ── 名字唯一 ──
+  //
+  // ⚠️ 这一步原来只在**导入**那条路上做(`importWorkflowInto`),而 `saveWorkflow`
+  // 是**三条路共用的那一道闸门**:界面「保存」、AI 的 `workflow_save`、导入。
+  // 于是"把 B 改名成和 A 一样"直接存下去,库里就有了两行同名 —— 而工作流选择器
+  // 上只显示名字(`uniqueWorkflowName` 自己的注释就是为这件事写的:"选择器、确认框
+  // 里都只显示名字,重名会让'删的是哪一条'变成一个要猜的问题")。
+  //
+  // 放在闸门里而不是各调用点:调用点将来还会加(AI 那边就是后加的),而这里的
+  // **入参已经归一**(deriveTrigger 返回的是一份新 doc),错过这一步的地方会静默出问题。
+  //
+  // 去重要绕开的是**别的行**,不含它自己 —— 保存一份没改名的图,它的名字当然和
+  // 库里这一行现在叫的一样,那不是重名。
+  const others = listWorkflows()
+    .filter((w) => w.id !== doc.id)
+    .map((w) => w.name);
+
+  WorkflowRepo.save({ ...derived.doc, name: uniqueWorkflowName(derived.doc.name, others), updatedAt: Date.now() });
   return { ok: true };
 }
 
