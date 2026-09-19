@@ -143,19 +143,86 @@ export const DECIDE_VAR_NAME = "出路";
  * `options` 是它**能有**的那几条出路的名字(出边的选项名,没填 label 时是目标节点标题)。
  * 例子取第一条 —— 那是最直白的示范("照这个样子填").一条出路都没有时**不追加**:那种图
  * 节点根本选不了路,该失败在"没有出边"那一条上,而不是逼模型交一个交不出来的值。
+ *
+ * ⚠️ **这里**只有"用户定的"和"分支的出路"两样 —— **清单声明的 `outputs` 不在内**。
+ * 那几样是**运行时填的**(`commandRunner` 往 `outcome.outputs` 里塞的 `exitCode`),
+ * 不是模型要交的东西;并进来会让每一个 agent 节点都被要求"只交一个 `{"summary": ...}`
+ * 的对象",而 `withOutputCheck` 那边压根不查它 —— 等于凭空给模型加了一道假约束。
+ * 菜单要列那几样是另一回事,见 {@link referenceableOutputsOf}。
  */
 export function outputVarsFor(
   manifest: NodeTypeManifest,
   params: Record<string, unknown>,
   options: readonly string[] = [],
 ): OutputVar[] {
-  const vars = outputVarsOf(manifest, params);
-  if (!isModelDecider(manifest, params) || options.length === 0) return vars;
-  return [...vars, { name: DECIDE_VAR_NAME, example: options[0] as string }];
+  return withDecideVar(outputVarsOf(manifest, params), manifest, params, options);
 }
 
 /** 查产出时用的那一项(只有名字参与判定,例子在这一步没有意义)。 */
 export const DECIDE_OUTPUT_VAR: OutputVar = { name: DECIDE_VAR_NAME, example: "" };
+
+/* ── 一个节点**能被取到**的产出(用户定的 + 清单声明的 + 分支的「出路」) ── */
+
+/**
+ * 模型选的分支要追加「出路」这一项。抽出来是因为**两种产出名单都要走这一步**
+ * ({@link outputVarsFor} 和 {@link referenceableOutputsOf}),而"什么算模型选的分支、
+ * 没有出路时追不追加"这两条判据只该有一份。
+ */
+function withDecideVar(
+  vars: OutputVar[],
+  manifest: NodeTypeManifest,
+  params: Record<string, unknown>,
+  options: readonly string[],
+): OutputVar[] {
+  if (!isModelDecider(manifest, params) || options.length === 0) return vars;
+  return [...vars, { name: DECIDE_VAR_NAME, example: options[0] as string }];
+}
+
+/**
+ * 清单里 `outputs` 声明的那几样,**当成产出变量**。
+ *
+ * ## 为什么必须并进来(2026-09-19)
+ *
+ * 命令节点(`runner.kind === "command"`)在清单里声明了 `exitCode` / `stdout`,而运行
+ * 时 `outcome.outputs` 里**真的有这两个键**(见 `commandRunner.ts`),存盘校验
+ * (`workflowValidation.declaredOutputsOf`)也把它们算进"这一步声明过的产出"、放行
+ * `{{某步.exitCode}}`。**三层里有两层认它,只有「插入变量」菜单不列** —— 于是这个
+ * 能取到、校验也通过的东西,用户在界面上看不见、只能靠猜。
+ *
+ * `example` 取那一条 `label`(命令节点的 `stdout` 就是「输出尾部」这种)。这几样由
+ * 运行时填,不是模型交的,所以它**只进菜单**,不进给模型看的那份({@link outputVarsFor})。
+ */
+export function manifestOutputVars(manifest: Pick<NodeTypeManifest, "outputs">): OutputVar[] {
+  return (manifest.outputs ?? []).map((o) => ({ name: o.key, example: o.label }));
+}
+
+/**
+ * 这个节点**下游引用得到的全部产出变量** —— 用户定的 + 清单声明的 + 分支的「出路」。
+ *
+ * ## 它和 {@link outputVarsFor} 差在哪、为什么必须有这一份
+ *
+ * 两者只差**清单声明的那几样**,而那几样恰好是"用户能不能从界面上发现它"的分水岭:
+ *
+ * | | 给模型看的 / 查产出的 | 菜单里列的 |
+ * |---|---|---|
+ * | `outputVarsFor` | ✅ 用户定的 + 出路 | ❌ 少列 `exitCode` / `stdout` |
+ * | 本函数 | — | ✅ 三样齐全 |
+ *
+ * 用 `outputVarsFor` 去列菜单的话,菜单里就少了清单声明的那几样 —— 命令节点的
+ * `{{那步.stdout}}` 能取到、存盘也放行,偏偏界面上没有,用户只能靠猜(这就是这个函数
+ * 被拆出来的原因)。反过来拿本函数去发提示词,就会逼着每个 agent 节点交一个
+ * `{"summary": ...}`(见 `outputVarsFor` 那段警告)。
+ *
+ * 一句话:**给人挑的名单 ⊇ 要模型交的名单**,多的那部分是运行时填的。
+ */
+export function referenceableOutputsOf(
+  manifest: NodeTypeManifest,
+  params: Record<string, unknown>,
+  options: readonly string[] = [],
+): OutputVar[] {
+  const vars = [...outputVarsOf(manifest, params), ...manifestOutputVars(manifest)];
+  return withDecideVar(vars, manifest, params, options);
+}
 
 /** 把「出路」的值对上一条出边。**先比选项名,再比目标节点标题**,两边都去空白、
  *  大小写不敏感。对不上返回 `undefined`(调用方负责报出一条能照着改的错)。 */

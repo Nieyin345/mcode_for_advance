@@ -22,10 +22,43 @@
  * (`@contracts/nodeTemplate` 的 `findNode`),所以这里插进去的必须是**一定能解出来**
  * 的那个写法。
  */
-import { buildAdjacency, upstreamClosure, type WorkflowDoc, type WorkflowNode } from "@contracts/workflow";
-import { outputVarsOf } from "@contracts/outputConstraint";
-import type { NodeTypeCatalog } from "@contracts/nodeType";
+import {
+  buildAdjacency,
+  outgoingEdgesOf,
+  upstreamClosure,
+  type WorkflowDoc,
+  type WorkflowNode,
+} from "@contracts/workflow";
+import { referenceableOutputsOf, type OutputVar } from "@contracts/outputConstraint";
+import type { NodeTypeCatalog, NodeTypeManifest } from "@contracts/nodeType";
 import type { MessageId } from "@renderer/lib/i18n/core.js";
+
+/**
+ * 这一步**能有**的那几条出路叫什么 —— 模型选的分支必交的那一项(「出路」)的取值
+ * 范围。
+ *
+ * 规则**和调度器逐字一致**(`scheduler.branchOptionsOf` / `edgeLabelOf`):填了 `label`
+ * 用 `label`,没填用**目标节点的名字**(标题,没起标题就用清单名、再退回类型 id ——
+ * 同 `runner.displayTitle`)。
+ *
+ * 这不是可选的美化:菜单里列的那个「出路」能不能对上,决定用户 `{{那步.出路}}` 之后
+ * 拿到的值**认不认得出下游**。两边算得不一样的话,菜单里看着对的选项跑起来会对不上,
+ * 而那种失败要等那一步跑完才暴露。
+ */
+function branchOptionNamesOf(
+  doc: WorkflowDoc,
+  node: WorkflowNode,
+  catalog: NodeTypeCatalog,
+): string[] {
+  return outgoingEdgesOf(doc, node.id).map((edge) => {
+    const label = (edge.label ?? "").trim();
+    if (label.length > 0) return label;
+    const target = doc.nodes.find((n) => n.id === edge.to);
+    if (target === undefined) return edge.to;
+    if (target.title.trim().length > 0) return target.title;
+    return catalog.entries.find((e) => e.id === target.type)?.manifest.name ?? target.type;
+  });
+}
 
 /**
  * 菜单里的一项。
@@ -143,7 +176,19 @@ export function insertableGroups(
     if (!upstream.has(node.id)) continue;
     const title = refNameOf(node, doc.nodes);
     const manifest = catalog.entries.find((e) => e.id === node.type)?.manifest;
-    const vars = manifest ? outputVarsOf(manifest, node.params) : [];
+    // **列的是 `referenceableOutputsOf`,不是 `outputVarsOf`。**(2026-09-19)
+    //
+    // 那几样「下游真的取得到的东西」里,`outputVarsOf` 只管第一样(用户自己定的那张
+    // 表)。另外两样 —— 清单声明的(`mcode.command` 的 `exitCode` / `stdout`)、模型选的
+    // 分支必交的「出路」—— 运行时真的会放进产出、存盘校验也认,只有这个菜单不列,于是
+    // 用户看不见、只能靠猜,或者干脆以为取不到。
+    //
+    // ⚠️ **不能直接用 `outputVarsFor`** —— 那一份是"要模型交什么",清单声明的那几样
+    // 是运行时填的、不在里面。共用它会让菜单少列(拿它发提示词则会凭空多要)。两者
+    // 的关系见那个函数的注释。
+    const vars: OutputVar[] = manifest
+      ? referenceableOutputsOf(manifest, node.params, branchOptionNamesOf(doc, node, catalog))
+      : [];
     // 只列**填过值**的参数:没填的解算出来是空串,列出来只会让人插一个寂寞。
     // 顺序跟清单走 —— 和参数表单同一个顺序,找起来不费劲。
     const params = manifest

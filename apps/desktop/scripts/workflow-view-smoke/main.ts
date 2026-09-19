@@ -218,6 +218,13 @@ const COMMAND_MANIFEST: NodeTypeManifest = {
     { key: "target", kind: "select", label: "目标", required: true, options: [{ value: "a", label: "A" }] },
     { key: "verbose", kind: "boolean", label: "详细" },
   ],
+  // **清单声明的产出** —— 运行时由 `commandRunner` 往 `outcome.outputs` 里填(不是模型
+  // 交的),存盘校验(`workflowValidation.declaredOutputsOf`)认它、解算器取得到,所以
+  // 「插入变量」菜单必须列。同 `mcode.command` 的真实清单(`main/orchestration/nodeTypes.ts`)。
+  outputs: [
+    { key: "exitCode", label: "Exit code" },
+    { key: "stdout", label: "Stdout" },
+  ],
 };
 
 const COMMAND_ENTRY: NodeTypeEntry = {
@@ -1502,6 +1509,49 @@ const withVars = (doc: WorkflowDoc, id: string, vars: Array<{ name: string; exam
   };
   const groups = insertableGroups(dup, "B", CATALOG);
   eq("重名了就退回 id", groups[1]?.items[0]?.insert, "{{A.年份}}");
+}
+
+console.log("\ninsertableGroups:清单声明的产出 / 分支的「出路」");
+
+{
+  // **清单声明的 `outputs` 是可引用的产出。** 命令节点真的会把 `exitCode` / `stdout`
+  // 放进 `outcome.outputs`(`commandRunner`),存盘校验(`declaredOutputsOf`)也把它们
+  // 算进"声明过的产出"、解算器照样解得出来 —— 偏偏菜单不列,用户只能靠猜。
+  const doc: WorkflowDoc = {
+    ...CUSTOM,
+    nodes: [node("A", 0, 0, COMMAND_MANIFEST.id), node("B", 0, 100)],
+    edges: [{ id: edgeId("A", "B"), from: "A", to: "B" }],
+  };
+  const groups = insertableGroups(doc, "B", CATALOG);
+  eq("命令节点那组列的是它的清单产出", groups[1]?.items.filter((i) => i.kind === "var").map((i) => i.insert).join(","), "{{A.exitCode}},{{A.stdout}}");
+  // 位置和用户自己定的变量一样(排在 params 之前),因为它俩在解算器眼里没有区别。
+  eq("排在这一组的开头", groups[1]?.items[0]?.kind, "var");
+}
+
+{
+  // **模型选的分支,「出路」是它必交的一项** —— 调度器拿 `DECIDE_OUTPUT_VAR` 查产出,
+  // 查不到这一步直接失败(「这一步要产出什么」那一段就是这么写的)。所以菜单必须列它,
+  // 否则用户只能手打一个汉字。
+  const doc: WorkflowDoc = {
+    ...CUSTOM,
+    nodes: [
+      { ...node("A", 0, 0, BRANCH_MANIFEST.id), params: { decider: "model" } },
+      node("B", 0, 100),
+    ],
+    edges: [{ id: edgeId("A", "B"), from: "A", to: "B", label: "深入" }],
+  };
+  const groups = insertableGroups(doc, "B", CATALOG);
+  const decide = groups[1]?.items.find((i) => i.kind === "var" && i.name === "出路");
+  eq("分支列出了「出路」", decide?.insert, "{{A.出路}}");
+  // **决定权在用户时不该列** —— 那时候它由点选产生,不要求模型交(见 `outputVarsFor`)。
+  const byUser: WorkflowDoc = {
+    ...doc,
+    nodes: doc.nodes.map((n) => (n.id === "A" ? { ...n, params: { decider: "user" } } : n)),
+  };
+  check(
+    "决定权在用户时不列",
+    insertableGroups(byUser, "B", CATALOG)[1]?.items.every((i) => i.name !== "出路") === true,
+  );
 }
 
 console.log("\ninsertSnippet(光标这件事全是边界情况)");

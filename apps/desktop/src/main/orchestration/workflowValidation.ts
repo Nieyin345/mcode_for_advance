@@ -45,10 +45,16 @@ import {
   BRANCH_NODE_TYPE_ID,
   MAIN_NODE_TYPE_ID,
   deciderOf,
+  isModelDecider,
   validateNodeParams,
   type NodeTypeManifest,
 } from "@contracts/nodeType";
-import { NODE_OUTPUT_VARS_KEY, normalizeVars, validateOutputRules } from "@contracts/outputConstraint";
+import {
+  DECIDE_VAR_NAME,
+  NODE_OUTPUT_VARS_KEY,
+  normalizeVars,
+  validateOutputRules,
+} from "@contracts/outputConstraint";
 
 /* ── schemaVersion(WF-05) ── */
 
@@ -111,8 +117,19 @@ function* stringValuesOf(params: Record<string, unknown>): Generator<string> {
 
 /**
  * 一个节点**声明过**的可引用产出:产出变量表(`outputVars`)+ 类型清单里声明的
- * outputs 键。类型认不出来时返回 undefined —— 不猜它交什么,引用检查对它跳过
- * (同"类型缺失不算错误"的分享语义)。
+ * outputs 键 + 模型选的分支必交的「出路」。类型认不出来时返回 undefined —— 不猜它
+ * 交什么,引用检查对它跳过(同"类型缺失不算错误"的分享语义)。
+ *
+ * ## 「出路」为什么在这里(2026-09-19)
+ *
+ * 模型选的分支**必须**交 `出路`(值就是它选的那条边的名字,见
+ * `@contracts/outputConstraint` 的 `DECIDE_VAR_NAME`),调度器拿它查产出、对边,
+ * 交不出来那一步直接失败。可这份名单以前不算它 —— 于是用户写下 `{{判断.出路}}`
+ * 去接那条路时会**存不下去**,报"「判断」没有声明产出变量「出路」"。一边逼模型交,
+ * 一边不让下游取,自相矛盾。
+ *
+ * 只对**模型选**的分支加:决定权在用户时那一项由点选产生,不要求模型交,追进去会
+ * 让一个取不到的写法通过校验(同 `outputVarsFor` 的判据)。
  */
 function declaredOutputsOf(
   node: WorkflowNode,
@@ -121,6 +138,9 @@ function declaredOutputsOf(
   const manifest = types?.get(node.type);
   const declared = new Set(normalizeVars(node.params[NODE_OUTPUT_VARS_KEY]).map((v) => v.name));
   for (const output of manifest?.outputs ?? []) declared.add(output.key);
+  if (manifest !== undefined && isModelDecider(manifest, node.params)) {
+    declared.add(DECIDE_VAR_NAME);
+  }
   if (declared.size === 0 && manifest === undefined) return undefined;
   return declared;
 }

@@ -180,6 +180,96 @@ check("引用不存在的节点 → ref.unknown-node", hasCode(refs, "ref.unknow
 check("上游未声明的变量 → ref.unknown-output", hasCode(refs, "ref.unknown-output", "C"), refs.errors);
 check("引用旁支 → ref.not-upstream", hasCode(refs, "ref.not-upstream", "D"), refs.errors);
 
+/* ── 4b. 「出路」是模型选的分支声明的产出(2026-09-19) ── */
+
+// 模型选的分支**必须**交「出路」(值 = 它选的那条边的名字,见
+// `@contracts/outputConstraint` 的 `DECIDE_VAR_NAME`),调度器拿它查产出、对边。
+// 这份名单以前不算它 —— 于是下游写 `{{BR.出路}}` 接那条路时会**存不下去**,报
+// "「BR」没有声明产出变量「出路」"。一边逼模型交,一边不让下游取。
+const decideRef = validateWorkflowDoc(
+  doc(
+    [
+      node("A", "mcode.main", SAY),
+      node("BR", "mcode.branch", { decider: "model" }),
+      node("C", "mcode.agent", { instruction: "按 {{BR.出路}} 这条走" }),
+    ],
+    [edge("e1", "A", "BR"), edge("e2", "BR", "C")],
+  ),
+  OPTS,
+);
+check("模型选的分支:下游能取「出路」", !hasCode(decideRef, "ref.unknown-output", "C"), decideRef.errors);
+
+// **决定权在用户时不放行** —— 那一项由点选产生,不要求模型交,追进去等于让一个
+// 取不到的写法通过校验。判据同 `outputVarsFor`(只对 `isModelDecider` 追加)。
+const userDecideRef = validateWorkflowDoc(
+  doc(
+    [
+      node("A", "mcode.main", SAY),
+      node("BR", "mcode.branch", { decider: "user" }),
+      node("C", "mcode.agent", { instruction: "按 {{BR.出路}} 这条走" }),
+    ],
+    [edge("e1", "A", "BR"), edge("e2", "BR", "C")],
+  ),
+  OPTS,
+);
+check(
+  "用户选的分支:「出路」不算声明过的产出",
+  hasCode(userDecideRef, "ref.unknown-output", "C"),
+  userDecideRef.errors,
+);
+
+// 分支那个 `decider` 参数**留空**时按 `deciderOf` 的兜底是"用户",所以也不放行 ——
+// 这一条盯的是"判据只有一份"(别处抄一份容易抄成"有 decider 参数就算")。
+const blankDecideRef = validateWorkflowDoc(
+  doc(
+    [
+      node("A", "mcode.main", SAY),
+      node("BR", "mcode.branch", {}),
+      node("C", "mcode.agent", { instruction: "按 {{BR.出路}} 这条走" }),
+    ],
+    [edge("e1", "A", "BR"), edge("e2", "BR", "C")],
+  ),
+  OPTS,
+);
+check(
+  "decider 留空(兜底=用户)时同样不放行",
+  hasCode(blankDecideRef, "ref.unknown-output", "C"),
+  blankDecideRef.errors,
+);
+
+// 清单里声明的 `outputs` 本来就该放行 —— 这一条是**回归网**:改动
+// `declaredOutputsOf` 时别把原来那一半弄丢。`mcode.agent` 的清单声明了 `summary`。
+const manifestRef = validateWorkflowDoc(
+  doc(
+    [
+      node("A", "mcode.main", SAY),
+      node("B", "mcode.agent", SAY),
+      node("C", "mcode.agent", { instruction: "看 {{B.summary}}" }),
+    ],
+    [edge("e1", "A", "B"), edge("e2", "B", "C")],
+  ),
+  OPTS,
+);
+check("清单声明的产出仍然取得到", !hasCode(manifestRef, "ref.unknown-output", "C"), manifestRef.errors);
+check(
+  "清单没声明的名字照样被拒",
+  hasCode(
+    validateWorkflowDoc(
+      doc(
+        [
+          node("A", "mcode.main", SAY),
+          node("B", "mcode.agent", SAY),
+          node("C", "mcode.agent", { instruction: "看 {{B.没这个}}" }),
+        ],
+        [edge("e1", "A", "B"), edge("e2", "B", "C")],
+      ),
+      OPTS,
+    ),
+    "ref.unknown-output",
+    "C",
+  ),
+);
+
 const dupTitle = validateWorkflowDoc(
   doc(
     [
