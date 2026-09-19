@@ -624,6 +624,40 @@ export function LibrarySection({
     await refreshItems();
   };
 
+  /**
+   * 右键菜单里点「下载 PDF」。
+   *
+   * ## 为什么失败要说一句话,而不是默默把菜单关掉
+   *
+   * 面板那一侧(`LibraryPanel.handleDownload`)是**乐观**的:它只更新 `jobs` 列表,
+   * 而下载任务的进度是靠 `libraryJobChanged` 广播推回来的。左栏**没有**那份状态
+   * —— 它是独立的一棵树。所以这里点了之后,用户在左栏能看到的唯一变化,是下载
+   * 真下了/真失败时那条广播带来的。中间那几分钟里 "什么都没发生" 是正常的,但
+   * **"排都没排上"也长得一模一样** —— 那就分不出来了。
+   *
+   * 而这条 RPC 确实会失败:条目在别的窗口被删了、库根不可写、参数没通过校验(比如
+   * 这是一条笔记 —— 菜单里已经挡掉了,但列表可能是旧的)。所以失败时报出来。
+   *
+   * ## 为什么进度不在这里显示
+   *
+   * 左栏是列表,一行放不下一个进度条,而用户真正的疑问是「它到底下没下」。那个
+   * 问题由每条文献自己的状态点回答(`derivePdfState`),它挂在 `libraryJobChanged`
+   * 上自动刷新 —— 不需要这里再维护一份。
+   */
+  const downloadOne = async (item: LibraryItem) => {
+    setError(null);
+    try {
+      await api.library.download({ ids: [item.id] });
+      // 排队之后立刻拉一次:下载任务可能**同步**就落库了(已有 PDF 会被跳过、
+      // 排不上返回的 jobs 里也没有它),而那条 `libraryJobChanged` 广播只在状态
+      // **变化**时发 —— 不拉这一次的话,一层没变的状态在界面上要等到下次刷新才出现。
+      await refreshItems();
+    } catch (err) {
+      // `setError` 是左栏顶部那条红色横条 —— 复用现成的那一个,不新造 UI。
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   /** 开始改一个条目的名字(右键菜单里点「重命名」)。 */
   const startItemRename = (item: LibraryItem) => {
     setRenamingItemId(item.id);
@@ -1185,6 +1219,7 @@ export function LibrarySection({
         onChanged={() => void refreshItems()}
         onRename={startItemRename}
         onDeleteForever={(item) => void deleteForever(item)}
+        onDownload={(item) => void downloadOne(item)}
       />
 
       {/* 分类行的右键菜单:新建子集合 / 新建笔记(仅笔记库)/ 重命名 / 删除 */}

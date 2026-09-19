@@ -45,6 +45,7 @@ import {
   IconArrowsExchange,
   IconBook,
   IconChevronRight,
+  IconDownload,
   IconExternalLink,
   IconFileText,
   IconFolderOpen,
@@ -82,6 +83,14 @@ interface Props {
   onRename: (item: LibraryItem) => void;
   /** 在回收站里彻底删掉这一条 —— 确认框与调接口都在左栏,这里只报"用户点了"。 */
   onDeleteForever: (item: LibraryItem) => void;
+  /**
+   * 现在就去下这一篇的 PDF。
+   *
+   * 这是用户最高频的一个动作,而它原来**没有右键入口** —— 得先点开详情页再点。
+   * 主进程那条 `library.download` 与 `library_download` 那个 MCP 工具共用同一份
+   * 实现(见 `library/downloader.ts`),所以这里只是把它接到菜单上。
+   */
+  onDownload: (item: LibraryItem) => void;
 }
 
 /** 面板当前显示哪一步。 */
@@ -94,6 +103,7 @@ export function LibraryItemContextMenu({
   onChanged,
   onRename,
   onDeleteForever,
+  onDownload,
 }: Props) {
   const { t } = useI18n();
   // 虚拟锚点钉在右键的坐标上;菜单退场动画期间冻结在最后的位置(见 useCursorAnchor)
@@ -220,6 +230,30 @@ export function LibraryItemContextMenu({
                   <IconMessage size={12} className="shrink-0" />
                   {t("library.ctx.attachToChat")}
                 </Menu.Item>
+
+                {/* 下载 PDF —— 用户最高频的一个动作,放在「挂到对话」之后、
+                    归组操作之前。
+                    ⚠️ **只在还没有 PDF 时出现。** 已经有 PDF 的条目再点一次会走
+                    `force:false` 那条路,主进程直接跳过(`enqueueDownloads` 里
+                    `if (item.pdfPath && !force) continue`)—— 也就是点了没反应,
+                    而菜单项看起来是能点的。那种"点了没动静"正是要避免的东西。
+                    已经有 PDF 时,「重新下载」是有意义但**少见得多**的动作,它留在
+                    详情页那一侧(`ItemDetail` 的 force 按钮),不占右键的位置。
+
+                    笔记没有 PDF 可下,`kind === "note"` 一并排除 —— 三个库共用
+                    这一个菜单,不按 kind 分会给笔记也长出一个下不了 PDF 的项。 */}
+                {item && item.kind !== "note" && !item.pdfPath && (
+                  <Menu.Item
+                    onClick={() => {
+                      onDownload(item);
+                      onClose();
+                    }}
+                    className={itemClass}
+                  >
+                    <IconDownload size={12} className="shrink-0" />
+                    {t("library.action.download")}
+                  </Menu.Item>
+                )}
                 <div className="my-1 border-t border-edge/60" />
 
                 <Menu.Item
