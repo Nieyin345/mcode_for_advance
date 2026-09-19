@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <title>probe 自检</title>
+    <style>
+      body { margin: 0; background: #fff; font: 13px/1.5 system-ui, sans-serif; }
+      /* 三块已知颜色 —— 解码器解错的话，读出来对不上，而不是"看着差不多" */
+      #red   { position: absolute; left: 20px;  top: 20px; width: 60px; height: 40px; background: #ff0000; }
+      #blue  { position: absolute; left: 100px; top: 20px; width: 60px; height: 40px; background: #0000ff; }
+      #half  { position: absolute; left: 180px; top: 20px; width: 60px; height: 40px; background: #808080; }
+      #txt   { position: absolute; left: 20px; top: 90px; width: 220px; color: #000; }
+      #lowc  { position: absolute; left: 20px; top: 130px; width: 220px; color: #c8c8c8; }
+      #btn   { position: absolute; left: 20px; top: 170px; width: 120px; height: 30px; }
+      #menu  { position: absolute; left: 20px; top: 220px; display: none; background: #eee; width: 120px; }
+      #clip  { position: absolute; left: 300px; top: 90px; width: 80px; height: 18px; overflow: hidden; white-space: nowrap; }
+      /* 真·行内元素:在文字流里,不是定位盒。这个仓库踩过的正是这一种 */
+      #para  { position: absolute; left: 300px; top: 130px; width: 220px; }
+    </style>
+  </head>
+  <body>
+    <div id="red"></div>
+    <div id="blue"></div>
+    <div id="half"></div>
+    <div id="txt">黑色的正文，够清楚</div>
+    <div id="lowc">这是浅灰的字，不够清楚</div>
+    <button id="btn">点我</button>
+    <div id="menu">菜单项一</div>
+    <!-- 空白分隔:flex/nowrap 保证这几个 inline 元素外面有空格文字节点，
+         行盒边缘的 text node 只贡献空格、没有自己的 rect —— 用来验 probe 能
+         如实报出"这个元素本身没有盒子" -->
+    <div id="ip" style="position:absolute;left:20px;top:255px;font-size:14px">前面有字<span id="ispan">中间的行内</span>后面有字</div>
+    <div id="empt" style="position:absolute;left:20px;top:280px;font-size:14px">左边<span id="espan"></span>右边</div>
+    <div id="cl" style="position:absolute;left:300px;top:255px;width:80px;height:18px;overflow:hidden;white-space:nowrap">这一段文字很长会被裁掉一部分</div>
+    <script>
+      window.__clicks = 0;
+      document.getElementById("btn").addEventListener("click", () => {
+        window.__clicks++;
+      });
+      // 菜单挂在**按钮**的 contextmenu 上 —— 和真实用法一致:右键事件是派给
+      // 那一行的,菜单(在 portal 里)不在这条冒泡路径上。挂在隐藏的菜单自己是
+      // 假夹具:菜单 `display:none` 时 elementFromPoint 根本找不到它,
+      // 于是"右键把菜单点出来"这件事在物理上就不可能发生。
+      document.getElementById("btn").addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        window.__ctx = (window.__ctx || 0) + 1;
+        document.getElementById("menu").style.display = "block";
+      });
+    </script>
+  </body>
+</html>

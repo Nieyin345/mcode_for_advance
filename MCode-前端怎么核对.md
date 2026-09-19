@@ -1,0 +1,111 @@
+# MCode-前端怎么核对.md
+
+**起因:** 用户问"截图为什么读不出来"。查完了 —— 不是图坏了,是**这个会话的
+Read 工具不支持看图**。
+
+证据:Chrome 的截图是合法 PNG(976×645、magic 正确);我又手写了一张 74 字节的
+纯色 PNG(零依赖,只有 zlib+struct,保证合法),`Read` 一样返回空。所以跟图的
+来源、大小、路径都无关。
+
+那就不靠眼睛,靠**测量**。
+
+## 一、现在用什么核对
+
+`apps/desktop/scripts/ui-probe/probe.mjs` —— 真 Chrome(CDP)+ 真鼠标键盘 +
+**能算的像素**。
+
+视觉上的每一句话几乎都能变成一次测量:
+
+| "看着对不对" | 变成 |
+|---|---|
+| 它是红的 | 取那个坐标的像素,比 RGB |
+| 这块画出来了没有 | 数那区域里非底色的像素占比(`inkRatio`) |
+| 这句字够不够清楚 | 算 WCAG 对比度(`regionContrast`) |
+| 文字被裁了没有 | 比 `scrollWidth` 与 `clientWidth` |
+| 点得到吗 | `hitTest` 先问"这个坐标上是谁" |
+
+```js
+import { launch, runDriver } from "./probe.mjs";
+
+await runDriver(async () => {
+  const probe = await launch({ page: "pdf.html", port: 9434, size: "1000,800" });
+
+  const badge = await probe.el("#badge");            // 文字 + 几何 + 颜色 + 是否被裁
+  probe.eq("徽章印的是「找不到来源」", badge.text, "找不到来源");
+
+  const px = await probe.pixelOf("#badge");          // → {r,g,b,a}
+  probe.check("它是暖色不是红的", px.r > 150 && px.g > 100, px);
+
+  await probe.clickEl("#btn");                       // 真鼠标,点元素正中央
+  probe.eq("点一下计数是 1", await probe.raw("window.__clicks"), 1);
+
+  await probe.shot("out.png");                       // 截图仍是副产品,给人看
+  return probe;
+});
+```
+
+退出码:`0` 全过 · `1` 有断言红了 · `2` 核对脚本自己崩了。
+
+## 二、凭什么信它
+
+`apps/desktop/scripts/ui-probe/` 下是它自己的自检:`agentprobe-selftest.mjs` +
+`selftest.html`。
+
+- **28 条自检** —— 已知颜色的方块读出来必须是那个颜色(解码器错了就看得见),
+  真鼠标点击真的触发 onClick,浅灰字必须被判成"不够清楚"。
+- **7 条变异**(`mut_probe.py`)—— 故意把 probe 弄坏(解码器忽略 filter、点击
+  只移动不按下、对比度恒返回 21……),7/7 都被真实断言失败抓住,源文件逐字节还原。
+
+> "跑绿了"不等于"验过了"。这份自检写完第一版是 11/18 —— 抓出来的 5 个问题里
+> 有 2 个是**我自己断言抄错了**,3 个是真陷阱。见下一节。
+
+## 三、它替你踩住的坑
+
+这几条都是 2026-09-20 实测出来的,不是抄来的:
+
+1. **`--window-size` 管的是窗口,不是视口。** headless 下视口比它小一截(给 800
+   高只拿到 165),而 CDP 鼠标事件按**视口坐标**命中测试。点在视口外会静默变成
+   "什么都没点" —— 事件照样派到 document,只是没有元素收到,**和"onClick 没接对"
+   长得一模一样**。现在用 `Emulation.setDeviceMetricsOverride` 钉死视口,并在
+   boot 时校验;`click()` 点视口外直接抛错。
+2. **右键有时真派 contextmenu,有时不派。** 原来无条件补一发 —— 那在"真派了"的
+   那次会变成两发,toggle 类菜单开了又关。现在先派真的、数一下,没到才补,并把
+   `synthesized` 返回出来。
+3. **行内元素的 `getComputedStyle().width` 恒为 `auto`。** 只有
+   `getBoundingClientRect` 能信。而"零宽"只发生在**空**的行内元素上,有文字的行内
+   span 有真实盒子(实测 52×16)。`el()` 只报 rect。
+4. **`Object.is` 比数组恒假。** 用 `eqList`。
+5. **`window.api` 的桩必须写在 HTML 的 `<script>` 里**,不能写在 `.tsx` 里 ——
+   `lib/api.ts` 在**模块求值那一刻**决定走 preload 还是 web shim,而 ES 的 import
+   先于模块体执行。
+6. **`.click()` 绕过 base-ui 的指针事件门**,会让"接错线"和"菜单根本没开"同形。
+   一律走 `clickEl()`。
+
+## 四、还得靠人眼的部分(老实说)
+
+测量能盖住"位置、大小、颜色、裁切、响应",盖不住这几样,**这几样要请用户看**:
+
+- 图标画得对不对(形状对不对,不是颜色对不对)
+- 字体渲染的观感、字重是否协调
+- 动画/过渡顺不顺
+- 一屏的整体构图是否舒服
+
+截图都落在 `apps/desktop/scripts/ui-probe/*.png`(以及各预览台自己的目录),直接
+打开就能看。
+
+## 五、还没并过来的
+
+`.tmp/card-preview/` 里现有 6 套 driver(`drive-ctx` / `drive-pdf` / `drive-fts` /
+`drive-bar` / `drive-crit` / `drive-critbar`)是各自手写的 CDP 循环,能跑、结论也
+有效。**没有并到 probe 上** —— 想并的时候按文件切,一次一套,别一次全动。
+
+## 六、怎么跑
+
+```bash
+cd apps/desktop/scripts/ui-probe
+node agentprobe-selftest.mjs          # 自检:28 条,必须全过
+python mut_probe.py                   # 变异:7 条,必须全被抓住
+```
+
+`ui-probe/` **刻意不以 `-smoke` 结尾** —— `run-all-smokes.sh` 按 `scripts/*-smoke`
+的 glob 发现套件,而这里要起真 Chrome,不该混进那批秒级的无头检查里。
