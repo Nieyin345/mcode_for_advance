@@ -449,11 +449,35 @@ function finalizeInstall(
   );
   // Keep only the installed version around — a stale 300-600MB copy isn't
   // worth disk space; rollback = reinstall the old version from the panel.
-  for (const other of listManagedVersions(agent)) {
+  //
+  // ⚠️ **This loop no longer doubles as staging cleanup.** It used to sweep
+  // `.staging-*` leftovers by accident (they were in `listManagedVersions`
+  // output); that listing now skips dotfiles, because a phantom "installed
+  // version" is worse than a leftover dir. So the sweep has to be explicit —
+  // and only for THIS agent, which is the one we just installed, so a
+  // concurrent install of a different agent is untouched.
+  for (const other of [...listManagedVersions(agent), ...stagingDirsOf(agent)]) {
     if (other === version) continue;
     rmSync(join(root, agent, other), { recursive: true, force: true });
   }
   return { finalDir, entry };
+}
+
+/** In-progress staging dirs for an agent — `<root>/<agent>/.<ver>.staging-<ms>/`.
+ *  Dot-prefixed on purpose (see the guard in `listManagedVersions`), which is
+ *  exactly why the prune loop has to name them explicitly. Returns bare names,
+ *  ready to `join(root, agent, name)`; `[]` when the dir is missing or unreadable. */
+function stagingDirsOf(agent: RuntimeAgentId): string[] {
+  const root = getManagedRuntimeRoot();
+  if (!root) return [];
+  const dir = join(root, agent);
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  return entries.filter((e) => e.startsWith("."));
 }
 
 /** Version dir name for an installed runtime. The codex platform package

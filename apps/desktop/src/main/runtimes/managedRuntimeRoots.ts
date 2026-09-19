@@ -52,7 +52,7 @@ export function compareVersions(a: string, b: string): number {
 
 /** Version subdirectories of `<root>/<agent>/` that actually exist on disk,
  *  sorted NEWEST first. A directory counts only when it's a real dir (guards
- *  against a stray file or a partially-renamed staging dir). */
+ *  against a stray file) and its name doesn't start with a dot — see below. */
 export function listManagedVersions(agent: RuntimeAgentId): string[] {
   if (!managedRoot) return [];
   const dir = join(managedRoot, agent);
@@ -64,6 +64,19 @@ export function listManagedVersions(agent: RuntimeAgentId): string[] {
   }
   const versions: string[] = [];
   for (const entry of entries) {
+    // ⚠️ **Dotfiles are never versions.** `finalizeInstall` unpacks into
+    // `.<version>.staging-<ms>/` and only then `rmSync(finalDir)` + `renameSync`
+    // into the real name — so a process killed mid-unpack leaves that staging
+    // dir behind. Without this guard it reads as an installed version, and
+    // because `compareVersions` falls back to string compare for the empty
+    // segment (".x" vs "9.9.9" → "." < "9"), the leftover ALWAYS sorts last.
+    // It therefore never wins while a real version exists — but it floats to
+    // the top the moment none does, and then the settings panel shows a
+    // phantom "installed v<garbage>" with `source = managed`, which sends the
+    // provider off to load a half-copied directory. `.staging-*` is a
+    // transient internal name, never a version, so excluding every dotfile is
+    // both the narrow fix and the one with no false negatives.
+    if (entry.startsWith(".")) continue;
     try {
       if (!statSync(join(dir, entry)).isDirectory()) continue;
     } catch {
