@@ -58,6 +58,14 @@ export function exportCitations(input: {
   const collection = input.collectionId
     ? CollectionRepo.list().find((c) => c.id === input.collectionId) ?? null
     : null;
+  // 指定了集合、但库里查不到它(典型:集合刚在别处被删掉,或者调用方拿的是几分钟前
+  // 的一份列表快照)—— 这要与"集合是空的"**分开报**。两者都会落到下面
+  // `items.length === 0` 那一句上,但原因完全不同:一个是"你还没往里放东西",
+  // 一个是"这个集合已经没了"。混成一句话的后果是:用户对着一个已删的集合反复去
+  // 建条目,而提示始终在说"这个范围里还没有文献",永远查不出真正的原因。
+  if (input.collectionId && !collection) {
+    return { ok: false, error: "这个集合已经不存在了", path: "", count: 0 };
+  }
   // limit 给足:导出是"整库"语义,不设上限会和列表分页的默认 200 撞车 —— 用户会
   // 得到一份"只有 200 条"的 bib,而且看不出来被截断了。
   const items = input.collectionId

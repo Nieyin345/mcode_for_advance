@@ -264,8 +264,15 @@ export async function fetchByArxivId(arxivId: string): Promise<ResolvedMetadata 
   if (!text) return null;
   const entry = text.match(/<entry>([\s\S]*?)<\/entry>/)?.[1];
   if (!entry) return null;
+  // arXiv 对**不存在的 id** 返回一个空 feed(没有 entry),上面那句就返回了;
+  // 但对**格式不对的 id** 它返回一条 entry:`id` 指向 `arxiv.org/api/errors#…`、
+  // 标题叫 `Error`、作者叫 `arXiv api core`(实测 `id_list=abc`)。不加这一道,
+  // 用户输错一个 ID 就会入库一条标题是 "Error"、作者是 "arXiv api core" 的文献,
+  // 而它的 `url` 指向那段错误说明、点开是 XML。这比"查不到"更坏:查不到用户会
+  // 当场发现自己打错了,而"一篇叫 Error 的论文"要到引文进了稿子才被发现。
+  if (/\/api\/errors#/.test(atomTag(entry, "id") ?? "")) return null;
   const parsed = parseArxivEntry(entry);
-  // arXiv 对不存在的 id 会返回一个空 entry;标题为空即视为未命中
+  // 标题为空同样视为未命中(两种空 entry 的兜底)
   return parsed.title ? parsed : null;
 }
 
@@ -639,9 +646,22 @@ interface EpmcResult {
   citedByCount?: number;
   isOpenAccess?: string;
   hasPDF?: string;
+  /**
+   * ⚠️ 我们请求的是 `resultType=core`,而 **core 记录顶层的 `journalTitle` 是 null**,
+   * 刊名被挪到了 `journalInfo.journal.title`(实测同一篇文章:`lite` 给顶层
+   * `journalTitle: "Nature"`,`core` 给 `null` + `journalInfo.journal.title: "Nature"`)。
+   * 只读顶层的话,**每一条 Europe PMC 结果的刊名都会丢** —— 而刊名正是用户判断
+   * "这篇值不值得看"的第一眼信息。见 `epmcJournalTitle()`。
+   */
+  journalInfo?: { journal?: { title?: string } };
   fullTextUrlList?: {
     fullTextUrl?: Array<{ documentStyle?: string; availability?: string; url?: string }>;
   };
+}
+
+/** 取刊名:顶层优先,core 记录回落到 `journalInfo.journal.title`。 */
+function epmcJournalTitle(r: EpmcResult): string | undefined {
+  return r.journalTitle?.trim() || r.journalInfo?.journal?.title?.trim() || undefined;
 }
 
 /** 从 fullTextUrlList 里挑一个**真正开放**的 PDF 直链。挑不到返回 undefined ——
@@ -696,7 +716,7 @@ async function searchEuropePmc(
           .filter(Boolean)
           .map((s) => ({ literal: s })),
         year: Number.isFinite(year) ? year : undefined,
-        venue: r.journalTitle || undefined,
+        venue: epmcJournalTitle(r),
         abstract: r.abstractText || undefined,
         citationCount: r.citedByCount ?? undefined,
         hasOpenAccessPdf: Boolean(pdf),
