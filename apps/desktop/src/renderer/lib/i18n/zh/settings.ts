@@ -1326,6 +1326,19 @@ export const zh = {
   "settings.workflows.deleteTitle": "删除工作流？",
   "settings.workflows.deleteDesc": "「{name}」会从库里删掉，这一步不能撤销。",
 
+  // ── 导入 / 导出（WF-08）──
+  // 导出导的是**磁盘上那一份**，不是画布上那份还没保存的草稿。
+  "settings.workflows.transferTitle": "导入 / 导出",
+  "settings.workflows.export": "导出",
+  "settings.workflows.exportFileSuffix": " 工作流",
+  "settings.workflows.exportedTo": "已导出到 {path}",
+  "settings.workflows.importNew": "从文件导入",
+  "settings.workflows.importOverwrite": "覆盖当前工作流",
+  "settings.workflows.importOverwriteTitle": "覆盖这一份？",
+  "settings.workflows.importOverwriteDesc":
+    "「{name}」的节点图、参数、流程文字会整份换成文件里那一份，现在的这一版就没了。这一步不能撤销。",
+  "settings.workflows.transferHint": "导出的是已经保存的那一版，画布上没保存的改动不会被带出去。",
+
   // ── 保存（手点）──
   // 状态行和「保存」那颗按钮并排，在编辑区标题行上。
   "settings.workflows.savePending": "有未保存的改动",

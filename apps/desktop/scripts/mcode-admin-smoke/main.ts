@@ -25,7 +25,8 @@
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getWorkflow, saveWorkflow } from "@main/orchestration/library.js";
+import { getWorkflow, importWorkflowInto, saveWorkflow } from "@main/orchestration/library.js";
+import { exportWorkflowDoc } from "@main/orchestration/workflowValidation.js";
 import { backEdgesOf, forwardEdgesOf, type WorkflowDoc } from "@contracts/workflow";
 import { BUILTIN_WORKFLOWS } from "@main/orchestration/builtins.js";
 import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
@@ -457,6 +458,84 @@ async function main(): Promise<void> {
   );
   check("产出变量没填示例 → 拒", !badVars.ok);
   check("错误里说得清是哪一条", !badVars.ok && badVars.error.includes("示例"), badVars);
+
+  console.log("\n导入 / 导出(WF-08)");
+  // 这一段的重点是**两条路共用同一道闸门**:导入能进来的东西,必须是当初存得下去的。
+  // 所以断言分三组 —— 文本进来得对、名字与 id 定得对、坏东西整份被拒且库里一个字节没变。
+  __resetWorkflowRepo();
+
+  const source = await ok(twoStep({ name: "文献综述" }));
+  check("打底:源文档存得下", (await saveWorkflow(source.doc)).ok);
+  const exported = exportWorkflowDoc(source.doc);
+  check("导出的是合法 JSON", (() => {
+    try {
+      JSON.parse(exported);
+      return true;
+    } catch {
+      return false;
+    }
+  })());
+  check("导出带上 schemaVersion", JSON.parse(exported).schemaVersion !== undefined);
+  // 缩进两格 —— 导出的东西是给人读、给人 diff 的(见 `exportWorkflowDoc` 的注释)。
+  check("导出是人读得懂的缩进", exported.includes("\n  "));
+
+  const freshImport = await importWorkflowInto(exported);
+  check("导入一份新的 → 成功", freshImport.ok, freshImport);
+  check(
+    "新 id 不是原来那个(新建,不是覆盖)",
+    freshImport.ok && freshImport.id !== source.doc.id,
+    freshImport,
+  );
+  check(
+    "外面那份的名字被保留(重名才加后缀)",
+    freshImport.ok && freshImport.name === "文献综述 2",
+    freshImport,
+  );
+  check("新建之后库里多了一行", WorkflowRepo.list().length === 2, WorkflowRepo.list().map((r) => r.id));
+
+  // 覆盖:原样导回来的那份**回到原来那一行**,不是新建。
+  const overwrite = await importWorkflowInto(exported, { id: source.doc.id });
+  check("带 id 导入 → 覆盖那一行", overwrite.ok && overwrite.id === source.doc.id, overwrite);
+  check(
+    "覆盖时名字不会变成「文献综述 2」(重名要绕开的是别人)",
+    overwrite.ok && overwrite.name === "文献综述",
+    overwrite,
+  );
+  check("覆盖不新增行", WorkflowRepo.list().length === 2, WorkflowRepo.list().map((r) => r.id));
+
+  // **给一个不存在的 id 必须报错**,不能悄悄新建 —— 界面上那条路叫「覆盖当前工作流」,
+  // 静默造出一份新的会让用户以为他覆盖的是原来那一份。
+  const ghost = await importWorkflowInto(exported, { id: "wf_nope" });
+  check("覆盖一个不存在的 id → 拒", !ghost.ok, ghost);
+  check("而且说得清是「没有这一份」", !ghost.ok && ghost.errors[0]!.includes("wf_nope"), ghost);
+
+  const before = WorkflowRepo.list().length;
+  const badJson = await importWorkflowInto("{ 这不是 JSON");
+  check("不是 JSON → 拒", !badJson.ok, badJson);
+  const badShape = await importWorkflowInto(JSON.stringify({ name: "" }));
+  check("形状不对(name 空)→ 拒", !badShape.ok, badShape);
+  const badVersion = await importWorkflowInto(
+    JSON.stringify({ ...JSON.parse(exported), schemaVersion: 999 }),
+  );
+  check("schemaVersion 不认识 → 拒", !badVersion.ok, badVersion);
+  const danglingEdge = await importWorkflowInto(
+    JSON.stringify({
+      ...JSON.parse(exported),
+      edges: [{ from: "n1", to: "n9" }],
+    }),
+  );
+  check("悬空的边 → 拒(和存盘同一道闸门)", !danglingEdge.ok, danglingEdge);
+  check("被拒之后库里一行都没变", WorkflowRepo.list().length === before, {
+    before,
+    after: WorkflowRepo.list().length,
+  });
+
+  // **类型认不出来只是 warning**(`saveWorkflow` 那一档是 `unknownTypeSeverity: "warning"`)——
+  // 别人分享来的图引用了没装的节点类型是常态,那种图照样收得下,只是跑不了。
+  const foreignDoc = JSON.parse(exported);
+  foreignDoc.nodes[1].type = "acme.没装过的类型";
+  const foreign = await importWorkflowInto(JSON.stringify(foreignDoc));
+  check("引用了没装的节点类型 → 照样收下(只记 warning)", foreign.ok, foreign);
 
   console.log("\n存盘 · 由 MCP 写的那份要走同一个落点");
   // `normalizeWorkflow` 出来的文档**就是** `saveWorkflow` 的入参类型 —— 中间没有第二份

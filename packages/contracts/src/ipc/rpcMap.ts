@@ -39,7 +39,7 @@ import type { ContextGetInput, ContextSaveInput, ContextMemoriesListInput, Conte
 import type { UsageStatsInput, UsageStatsResult } from "./usage.js";
 import type { LspLanguageState, LspInstallInput, LspOpResult, LspInstallFromFileInput, LspUninstallInput, LspToggleInput, LspSetPathInput, LspHealthCheckInput, LspPrewarmInput, LspRestartInput, LspOpenDocInput, LspCloseDocInput, LspDidChangeInput, LspDidSaveInput, LspRequestInput, LspRequestResult } from "./lsp.js";
 import type { RuntimeAgentState, RuntimesInstallInput, RuntimesInstallLocalInput, RuntimesRemoveInput, ToolchainToolState, ToolchainInstallInput, ToolchainRemoveInput } from "./runtimes.js";
-import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchCommandTemplate } from "./workflow.js";
+import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, WorkflowExportInput, WorkflowImportInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchCommandTemplate } from "./workflow.js";
 import type { AutomationTriggerFacts, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
 import { MEMORY_CATEGORIES_CHANNEL, MEMORY_DELETE_CHANNEL, MEMORY_LIST_CHANNEL, MEMORY_READ_CHANNEL, MEMORY_SAVE_CHANNEL, type MemoryDeleteInput, type MemoryFileMeta, type MemoryListInput, type MemoryReadInput, type MemorySaveInput } from "../memory.js";
 import type { LibraryTypesGetInput, LibraryTypesSaveInput, LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibrarySetRootInput, LibraryManifestInput, LibraryItemManifestInput, LibraryKindManifestInput, TemplateKindManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
@@ -575,6 +575,46 @@ export interface RpcMap {
   /** 删一份。删掉对内置工作流的覆盖 = 「恢复默认」;`wasBuiltin` 让界面能说对话
    *  (「已恢复默认」而不是「已删除」)。 */
   "workflow.remove": (input: WorkflowRemoveInput) => Promise<{ ok: boolean; wasBuiltin: boolean }>;
+  /** 把**磁盘上那一份**导出成 JSON 文本,走系统「另存为」框落盘。用户取消时
+   *  `canceled: true`,界面不该报错(取消不是失败)。路径**由主进程拿**,渲染端
+   *  始终没有"写任意路径"的能力(同 `library.exportCitations`)。 */
+  "workflow.export": (input: WorkflowExportInput) => Promise<{
+    ok: boolean;
+    canceled?: boolean;
+    /** 真写下去了才有。写成功后界面可以在它旁边说一句"存哪儿了"。 */
+    path?: string;
+    error?: string;
+  }>;
+  /** 收下一份导出的 JSON。**`id` 给了就是覆盖那一份**(必须已存在),不给就是新建
+   *  (id 现生成、重名自动加后缀)。 */
+  "workflow.import": (input: WorkflowImportInput) => Promise<{
+    ok: boolean;
+    /** 存下来的那一份的 id —— 界面据此打开它。 */
+    id?: string;
+    name?: string;
+    /** 原样带回来的校验报告(错误逐条 + 警告)。**整份拒绝**:过不了闸门的图不写库,
+     *  所以 `ok: false` 时库里什么都没变。 */
+    errors?: string[];
+    warnings?: string[];
+    error?: string;
+  }>;
+  /** 从**文件**导入 —— 主进程自己弹选择框并读文件。
+   *
+   *  为什么要这一条而不是让界面先 `file.readFile`:那条 RPC 被项目根闸门挡着,而用户
+   *  手上那份工作流多半存在项目外(下载目录、桌面)。选择框由用户亲手点,信任级别与
+   *  `dialog.pickFiles` 相同。`id` 同 `workflow.import`:给了就是覆盖。
+   *
+   *  ⚠️ 与 `workflow.import` 是**两条入口、同一段落库逻辑** —— 用户在文件管理器里
+   *  双击 `.json` 那条路(未来)只需要后者。 */
+  "workflow.importFromFile": (input: { id?: string }) => Promise<{
+    ok: boolean;
+    canceled?: boolean;
+    id?: string;
+    name?: string;
+    errors?: string[];
+    warnings?: string[];
+    error?: string;
+  }>;
   /** 代理档案:一份存下来的**子 agent 配置**(指令 / 技能 / 模型 / 引擎……)。建节点的
    *  时候直接套一份,不用从空白开始填。
    *
@@ -1433,6 +1473,9 @@ export const IPC = {
   WORKFLOW_NODE_TYPES: "workflow:nodeTypes",
   WORKFLOW_SAVE: "workflow:save",
   WORKFLOW_REMOVE: "workflow:remove",
+  WORKFLOW_EXPORT: "workflow:export",
+  WORKFLOW_IMPORT: "workflow:import",
+  WORKFLOW_IMPORT_FROM_FILE: "workflow:importFromFile",
   // 代理档案:一份存下来的子 agent 配置,建节点时直接套用(见 contracts/agentProfile.ts)
   WORKFLOW_AGENT_PROFILES: "workflow:agentProfiles",
   WORKFLOW_SAVE_AGENT_PROFILE: "workflow:saveAgentProfile",

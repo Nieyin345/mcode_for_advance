@@ -13,6 +13,8 @@
  * `@main/workflows/*`,反之亦然。
  */
 import type { IpcMain } from "electron";
+import { dialog } from "electron";
+import { readFile, writeFile } from "node:fs/promises";
 import type { AutomationRunEntry, AutomationTriggerFacts, PersistedWorkflowRunLite, WatchCommandTemplate } from "@contracts/ipc";
 import {
   AgentProfileRemoveSchema,
@@ -28,21 +30,51 @@ import {
   WatchTemplatesSaveSchema,
   WorkflowChooseSchema,
   WorkflowRetrySchema,
+  WorkflowExportSchema,
   WorkflowGetSchema,
+  WorkflowImportSchema,
   WorkflowRemoveSchema,
   WorkflowSaveSchema,
 } from "@contracts/ipc";
 import { readAgentProfiles, removeAgentProfile, saveAgentProfile } from "@main/orchestration/agentProfiles.js";
 import { automationRunner } from "@main/orchestration/automationRunner.js";
 import { log } from "@main/lib/logger.js";
-import { getWorkflow, listWorkflows, removeWorkflow, saveWorkflow } from "@main/orchestration/library.js";
+import {
+  getWorkflow,
+  importWorkflowInto,
+  listWorkflows,
+  removeWorkflow,
+  saveWorkflow,
+} from "@main/orchestration/library.js";
 import { notifyWorkflowsChanged } from "@main/orchestration/broadcast.js";
 import { decodeSnapshot, runHistory } from "@main/orchestration/runStore.js";
 import { requestWorkflowReload } from "@main/orchestration/reloadRequest.js";
 import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
 import { ensureLocalNodeTypesDir } from "@main/orchestration/nodeTypesSeed.js";
 import { resolveWorkflowChoice, resolveWorkflowRetry } from "@main/orchestration/runner.js";
+import { exportWorkflowDoc } from "@main/orchestration/workflowValidation.js";
 import { SessionRepo, SettingRepo, WorkflowRunRepo } from "@main/store/repositories.js";
+
+/**
+ * 把「建议的文件名」洗成一个能落盘的名字。
+ *
+ * 用户可见的名字里可以有任何东西(工作流叫「文献综述 / 第一版」很正常),而它们在
+ * Windows 上是**非法路径字符**、在别的系统上至少是个换行。洗不出来的话退回 `fallback`
+ * —— 文件名不该是"名字里有个斜杠就导不出来"的东西。
+ *
+ * 只洗**文件名那一层**:分隔符、控制字符、Windows 保留字符、结尾的点与空格。
+ */
+export function sanitizeFileBase(name: string | undefined, fallback: string): string {
+  const cleaned = (name ?? "")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[. ]+$/, "")
+    .slice(0, 80)
+    .trim();
+  return cleaned.length > 0 ? cleaned : fallback;
+}
 
 export function registerWorkflowHandlers(ipcMain: IpcMain): void {
   // 用户自写的节点类型目录 + 它的规范,随启动铺一次(已存在就跳过,不覆盖用户改过的)。
@@ -92,6 +124,76 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
     // 删掉/恢复默认之后同理 —— 执行器读不到这一份就把它的触发器撤掉(见 `apply`)。
     requestWorkflowReload(input.id);
     return res;
+  });
+
+  // ── 导出 / 导入(WF-08)──
+  //
+  // **两个文件对话框都在主进程**:渲染端读不了任意路径(读文件那条 `file.readFile`
+  // 被项目根闸门挡着,而用户挑的文件多半在项目外),也没有保存框那一层 API。所以
+  // 渲染端只给 id / 文本,挑路径和读写都由这里做。
+  ipcMain.handle(IPC.WORKFLOW_EXPORT, async (_evt, raw) => {
+    const input = WorkflowExportSchema.parse(raw);
+    // **导的是磁盘上那一份**,不是界面上那份可能带未保存改动的草稿(见契约里那条
+    // 注释)。读不到就直说 —— 静默写一个空文件比报错更坏。
+    const doc = getWorkflow(input.id);
+    if (doc === null) return { ok: false, error: `找不到 id 为「${input.id}」的工作流` };
+
+    const base = sanitizeFileBase(input.suggestedName ?? doc.name, doc.id);
+    const result = await dialog.showSaveDialog({
+      title: "导出工作流",
+      defaultPath: `${base}.json`,
+      filters: [{ name: "工作流 JSON", extensions: ["json"] }],
+    });
+    if (result.canceled || !result.filePath) return { ok: false, canceled: true };
+
+    try {
+      await writeFile(result.filePath, exportWorkflowDoc(doc), "utf8");
+    } catch (err) {
+      log.warn(`workflow.export failed for ${result.filePath}: ${(err as Error).message}`);
+      return { ok: false, error: (err as Error).message };
+    }
+    return { ok: true, path: result.filePath };
+  });
+
+  /**
+   * 导入的两种入口共用这一段收尾:写成功就广播 + 让执行器重读。
+   *
+   * 与「保存」那颗按钮走的是同一对通知(见上面的 `WORKFLOW_SAVE`)—— 导入在存储层
+   * 就是一次保存,漏掉通知的话,后台的触发器还按旧图跑。
+   */
+  const finishImport = (
+    res: Awaited<ReturnType<typeof importWorkflowInto>>,
+  ): { ok: true; id: string; name: string } | { ok: false; errors: string[]; warnings: string[] } => {
+    if (!res.ok) return res;
+    notifyWorkflowsChanged(`ipc:workflow_import:${res.id}`);
+    requestWorkflowReload(res.id);
+    return res;
+  };
+
+  ipcMain.handle(IPC.WORKFLOW_IMPORT, async (_evt, raw) => {
+    const input = WorkflowImportSchema.parse(raw);
+    return finishImport(await importWorkflowInto(input.text, input.id ? { id: input.id } : {}));
+  });
+
+  // 从文件导入:挑文件 + 读文本都在这里,读完就交给上面同一个函数 —— 两条路只有
+  // "文本从哪来"不同,解析/校验/落库一份都不重复。
+  ipcMain.handle(IPC.WORKFLOW_IMPORT_FROM_FILE, async (_evt, raw) => {
+    const input = WorkflowImportSchema.pick({ id: true }).parse(raw ?? {});
+    const picked = await dialog.showOpenDialog({
+      title: "导入工作流",
+      properties: ["openFile"],
+      filters: [{ name: "工作流 JSON", extensions: ["json"] }],
+    });
+    if (picked.canceled || picked.filePaths.length === 0) return { ok: false, canceled: true };
+
+    let text: string;
+    try {
+      text = await readFile(picked.filePaths[0], "utf8");
+    } catch (err) {
+      log.warn(`workflow.importFromFile failed for ${picked.filePaths[0]}: ${(err as Error).message}`);
+      return { ok: false, error: (err as Error).message };
+    }
+    return finishImport(await importWorkflowInto(text, input.id ? { id: input.id } : {}));
   });
 
   // ── 代理档案 ──

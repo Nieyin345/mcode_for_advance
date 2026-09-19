@@ -455,6 +455,12 @@ const workflow: Api["workflow"] = {
   nodeTypes: () => webUnsupported("workflow.nodeTypes"),
   save: () => webUnsupported("workflow.save"),
   remove: () => webUnsupported("workflow.remove"),
+  // 导出 / 导入(WF-08)。**桌面端的事**:两条路都要一个 OS 原生文件对话框(保存框 /
+  // 打开框),手机上既没有那一层也可能是沙箱目录 —— 导出来的文件用户拿不到。所以
+  // 三条一律挡在这儿,界面那边据此把它们画成不可点(见 `WorkflowLibraryView`)。
+  export: () => webUnsupported("workflow.export"),
+  import: () => webUnsupported("workflow.import"),
+  importFromFile: () => webUnsupported("workflow.importFromFile"),
   // 代理档案也是桌面端的事(它是画布/检查器那一套的一部分)。**照样要列出来** ——
   // 共用的 `WorkflowLibraryView` 在 effect 里拉它,少一个方法就是一次
   // `undefined is not a function`,那会让 React 19 整棵卸载(见文件头)。

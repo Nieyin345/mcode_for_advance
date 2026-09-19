@@ -1341,6 +1341,20 @@ export const en = {
   "settings.workflows.deleteTitle": "Delete this workflow?",
   "settings.workflows.deleteDesc": "“{name}” will be removed from the library. This cannot be undone.",
 
+  // ── Import / export (WF-08) ──
+  // Export writes the copy on disk, not the unsaved draft on the canvas.
+  "settings.workflows.transferTitle": "Import / export",
+  "settings.workflows.export": "Export",
+  "settings.workflows.exportFileSuffix": " workflow",
+  "settings.workflows.exportedTo": "Exported to {path}",
+  "settings.workflows.importNew": "Import from file",
+  "settings.workflows.importOverwrite": "Overwrite this workflow",
+  "settings.workflows.importOverwriteTitle": "Overwrite this one?",
+  "settings.workflows.importOverwriteDesc":
+    "“{name}” gets replaced wholesale — graph, parameters and process text — by what is in the file. The current version is gone. This cannot be undone.",
+  "settings.workflows.transferHint":
+    "Whatever is already saved is what gets exported; unsaved canvas changes are not included.",
+
   // ── Saving (explicit) ──
   // The status line sits next to the Save button in the editor's title row.
   "settings.workflows.savePending": "Unsaved changes",

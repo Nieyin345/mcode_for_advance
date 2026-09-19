@@ -110,17 +110,11 @@ export function forSave(working: WorkflowDoc, baseline: WorkflowDoc): WorkflowDo
 /**
  * 给新建的工作流起一个不重名的名字。
  *
- * 重名本身不会坏事(id 才是主键),但库里两行都叫「新工作流」时用户没法分辨哪个是
- * 哪个 —— 而重命名要先进去选中它,鸡生蛋。所以直接起成「新工作流 2」。
+ * **实现搬去了 `@contracts/workflow`** —— 导入那条路(主进程)也要用同一个规则,而
+ * 主进程 import 不到渲染端的组件目录。这里保留 re-export,是为了既有调用方与冒烟脚本
+ * 不用改 import 路径(`workflow-view-smoke` 一直从本模块取它)。
  */
-export function uniqueWorkflowName(base: string, taken: readonly string[]): string {
-  if (!taken.includes(base)) return base;
-  for (let n = 2; n <= taken.length + 2; n++) {
-    const candidate = `${base} ${n}`;
-    if (!taken.includes(candidate)) return candidate;
-  }
-  return `${base} ${taken.length + 2}`;
-}
+export { uniqueWorkflowName } from "@contracts/workflow";
 
 /* ── 「恢复默认」与「删除」 ── */
 

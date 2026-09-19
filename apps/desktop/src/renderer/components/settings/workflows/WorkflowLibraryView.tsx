@@ -511,6 +511,30 @@ export function WorkflowLibraryView({
     }
   };
 
+  /**
+   * 导入成功之后(新建或覆盖)交接一下。
+   *
+   * 两件事,少一件都会让用户觉得"导进来了但看不出来":
+   *
+   *  - **手上那份草稿先收进袋子** —— 导入成功意味着画布上原来那份未保存的改动已经
+   *    无从谈起了(它属于旧的那一份),同「新建」那条路,这里不替用户保存,只收好;
+   *  - **切到落库后的那个 id** —— 覆盖时 id 就是当前这个,`openWorkflow` 会重新读一遍
+   *    (拿到的是文件里那份,草稿袋里那份已经不脏了),新建时则落到新的一行上。
+   *
+   * 覆盖那条路上还有一件必须做的事:**草稿袋里那份按 id 存着,得先扔掉** —— 否则
+   * `openWorkflow` 会把刚被覆盖掉的旧草稿又放回画布,用户以为导入没生效。
+   */
+  const handleImported = useCallback(
+    (id: string) => {
+      stashDraft();
+      DRAFTS.delete(id);
+      refreshDrafts();
+      void loadList();
+      void openWorkflow(id);
+    },
+    [stashDraft, refreshDrafts, loadList, openWorkflow],
+  );
+
   /* ── 画布动作 ── */
 
   const handleAddNode = (typeId: string, profileId?: string) => {
@@ -784,6 +808,7 @@ export function WorkflowLibraryView({
                     onSaveProfile={handleSaveProfile}
                     onRemoveProfile={onRemoveProfile}
                     onRemoveWorkflow={() => setPendingRemove(true)}
+                    onImported={handleImported}
                   />
                 </>
               ) : catalogError !== null ? (

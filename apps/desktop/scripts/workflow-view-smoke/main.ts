@@ -1096,6 +1096,7 @@ function renderInspector(
         onSaveProfile: async () => {},
         onRemoveProfile: async () => {},
         onRemoveWorkflow: () => {},
+        onImported: () => {},
       }),
     ),
   );
@@ -1126,6 +1127,22 @@ const builtinEn = renderInspector(BUILTIN, "en");
 check("英文界面:内置的名字走词条", builtinEn.includes("Paper reading"));
 check("英文界面:不冒出中文名字", !builtinEn.includes("文献精读"));
 check("英文界面:不留中文提示", !builtinEn.includes("跟随界面语言"));
+
+console.log("\nNodeInspector(导入 / 导出那一段,WF-08)");
+// 这两个按钮**只在文档级那一块出现**(选中节点时换成节点表单,整段不在)—— 所以这里
+// 用自建那份面板(它同时是「覆盖」按钮唯一会出现的场合:内置那一条不显示它)。
+check("导出按钮在", button(customPanel, "导出").found);
+check("从文件导入按钮在", button(customPanel, "从文件导入").found);
+check("自建的能覆盖自己", button(customPanel, "覆盖当前工作流").found);
+check(
+  "内置的不显示「覆盖」",
+  !button(builtinPanel, "覆盖当前工作流").found,
+);
+// 导出导的是**磁盘上那一份**这句话必须写在界面上 —— 否则用户会以为画布上没保存的
+// 改动也一起出去了。
+check("说清导的是已保存的那一版", customPanel.includes("画布上没保存的改动不会被带出去"));
+check("英文界面跟着换", button(customEn, "Export").found);
+check("英文界面:覆盖也只给自建的", !button(builtinEn, "Overwrite this workflow").found);
 
 console.log("\nNodeInspector(选中节点:参数表单按清单生成)");
 const nodePanel = renderInspector(DIAMOND, "zh", "B");

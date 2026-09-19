@@ -75,6 +75,7 @@ import { workflowDisplayDescription, workflowDisplayName } from "@renderer/lib/w
 import { WorkflowBadge } from "./WorkflowBadge.js";
 import { AutomationRunSection } from "./AutomationRunSection.js";
 import { RunHistorySection } from "./RunHistorySection.js";
+import { TransferSection } from "./TransferSection.js";
 
 /** 内置工作流的名称与说明走 i18n,界面上是只读的 —— 这一条样式就是那个只读态。 */
 const readOnlyCls = "cursor-default bg-surface-muted/40 text-content-muted focus:border-edge";
@@ -94,6 +95,7 @@ export function NodeInspector({
   onSaveProfile,
   onRemoveProfile,
   onRemoveWorkflow,
+  onImported,
 }: {
   doc: WorkflowDoc;
   catalog: NodeTypeCatalog;
@@ -116,6 +118,8 @@ export function NodeInspector({
   onSaveProfile: (name: string) => Promise<void>;
   onRemoveProfile: (id: string) => Promise<void>;
   onRemoveWorkflow: () => void;
+  /** 导入成功之后叫一声(参数是落库后的 id)—— 见 `TransferSection`。 */
+  onImported: (id: string) => void;
 }) {
   const node = doc.nodes.find((n) => n.id === selectedNodeId) ?? null;
 
@@ -142,6 +146,7 @@ export function NodeInspector({
           purpose={purpose}
           onUpdateWorkflow={onUpdateWorkflow}
           onRemoveWorkflow={onRemoveWorkflow}
+          onImported={onImported}
         />
       )}
     </aside>
@@ -192,6 +197,7 @@ function WorkflowSection({
   purpose,
   onUpdateWorkflow,
   onRemoveWorkflow,
+  onImported,
 }: {
   doc: WorkflowDoc;
   /** 节点类型表 —— 「立刻运行一次」要靠它认出**哪一格是触发器**(见 `AutomationRunSection`)。 */
@@ -199,6 +205,8 @@ function WorkflowSection({
   purpose: WorkflowPurpose;
   onUpdateWorkflow: (patch: Partial<Omit<WorkflowDoc, "id">>) => void;
   onRemoveWorkflow: () => void;
+  /** 导入成功(新建或覆盖)之后叫一声 —— 让画布切到刚导进来的那一份。 */
+  onImported: (id: string) => void;
 }) {
   const { t, locale } = useI18n();
   const locked = isIdentityLocked(doc);
@@ -324,6 +332,8 @@ function WorkflowSection({
       <p className="-mt-1 text-[0.7143em] leading-relaxed text-content-subtle">
         {t("settings.workflows.promptAutoSaveHint")}
       </p>
+
+      <TransferSection doc={doc} onImported={onImported} />
 
       <div className="mt-3 flex items-center gap-2">
         <Button

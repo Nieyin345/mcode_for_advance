@@ -22,12 +22,13 @@
  */
 
 import type { WorkflowDoc, WorkflowListEntry } from "@contracts/workflow";
+import { makeWorkflowId, uniqueWorkflowName } from "@contracts/workflow";
 import type { NodeTypeManifest } from "@contracts/nodeType";
 import { parseTriggerSpec, WORKFLOW_TRIGGER_OF_TRIGGER_KIND } from "@contracts/nodeType";
 import { WorkflowRepo } from "@main/store/repositories.js";
 import { BUILTIN_WORKFLOWS, getBuiltinWorkflow } from "./builtins.js";
 import { loadNodeTypes } from "./nodeTypes.js";
-import { validateWorkflowDoc } from "./workflowValidation.js";
+import { importWorkflowDoc as parseWorkflowText, validateWorkflowDoc, exportWorkflowDoc } from "./workflowValidation.js";
 
 function summarize(doc: WorkflowDoc, builtin: boolean, edited: boolean): WorkflowListEntry {
   return {
@@ -196,4 +197,72 @@ export function removeWorkflow(id: string): { ok: boolean; wasBuiltin: boolean }
   const wasBuiltin = getBuiltinWorkflow(id) !== undefined;
   WorkflowRepo.remove(id);
   return { ok: true, wasBuiltin };
+}
+
+/* ── 导入 / 导出(WF-08) ── */
+
+/** 导入失败的形状。**整份拒绝** —— 过不了闸门的图不写库,库里一个字节都没变。 */
+export type WorkflowImportOutcome =
+  | { ok: true; id: string; name: string }
+  | { ok: false; errors: string[]; warnings: string[] };
+
+/**
+ * 收下一份导出的 JSON 文本。
+ *
+ * ## 两道关,分别由两个已经存在的函数把守
+ *
+ * 1. **文本 → 文档**:`workflowValidation.importWorkflowDoc`(纯函数,JSON 解析 +
+ *    契约形状 + schemaVersion + DAG 校验);
+ * 2. **文档 → 库**:{@link saveWorkflow} —— **和用户点「保存」走的是同一道闸门**。
+ *
+ * 第 2 条是刻意复用的:导入能进来的东西,必须是当初存得下去的。另写一份校验就会出现
+ * "导进来的图存不回去"这种自相矛盾,而且往往过一阵子才发现(用户后来点保存时才被拒)。
+ *
+ * ## 类型认不出来只是 warning
+ *
+ * 别人分享来的图引用了你没装的节点类型是常态 —— `saveWorkflow` 那一关的档位是
+ * `unknownTypeSeverity: "warning"`,所以那种图照样收得下、画得出来,只是跑不了。
+ *
+ * ## id 与名字在这两层定下来
+ *
+ * - **不给 `id`** → 新建:现生成一个 `wf_` id,名字重了自动加后缀。
+ * - **给 `id`** → 覆盖:那个 id **必须已经在库里**。给一个不存在的 id 会报错而不是
+ *   悄悄新建一份 —— 界面上那条路叫「覆盖当前工作流」,id 拼错时静默造出一份新的,
+ *   用户会以为他覆盖的是原来那一份。
+ *
+ * 名字的去重规则与界面上「新建」那颗按钮**共用** `uniqueWorkflowName`(它住在
+ * `settings/workflows/workflowView.ts`,两边都 import 得到)。两处各写一份迟早会分家,
+ * 而用户看到的都是"库里多了一行"。
+ */
+export async function importWorkflowInto(
+  text: string,
+  opts: { id?: string } = {},
+): Promise<WorkflowImportOutcome> {
+  const parsed = parseWorkflowText(text);
+  if (!parsed.ok) {
+    return { ok: false, errors: parsed.report.errors.map((e) => e.message), warnings: [] };
+  }
+  const doc = parsed.doc;
+
+  const overwrite = opts.id !== undefined;
+  const previous = overwrite ? getWorkflow(opts.id!) : null;
+  if (overwrite && previous === null) {
+    return {
+      ok: false,
+      errors: [`库里没有 id 为「${opts.id}」的工作流,覆盖不了不存在的一份`],
+      warnings: [],
+    };
+  }
+
+  const id = opts.id ?? makeWorkflowId();
+  // 重名要绕开的是**别的行**,不含它自己 —— 覆盖时文件里那个名字正好和这一行现在
+  // 叫的一样,那是常态,不该被改成「名字 2」。
+  const others = listWorkflows()
+    .filter((w) => w.id !== id)
+    .map((w) => w.name);
+  const name = uniqueWorkflowName(doc.name, others);
+
+  const res = await saveWorkflow({ ...doc, id, name, builtin: false });
+  if (!res.ok) return { ok: false, errors: [res.error], warnings: [] };
+  return { ok: true, id, name };
 }

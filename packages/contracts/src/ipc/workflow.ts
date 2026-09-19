@@ -26,6 +26,52 @@ export const WorkflowRemoveSchema = z.object({ id: z.string().min(1) });
 export type WorkflowRemoveInput = z.infer<typeof WorkflowRemoveSchema>;
 
 /**
+ * 把一份工作流导出成 JSON 文本(**导入导出,WF-08**)。
+ *
+ * ## 为什么给 id 而不是给整份文档
+ *
+ * 渲染端手上那份 `working` 可能带着没保存的改动。导出**磁盘上那一份**才对得上"导出"
+ * 这个词 —— 用户以为导出的是他存下来的东西。要导草稿,先点保存。
+ *
+ * 主进程那一侧只有 `id`,写出去的是它自己读出来的那份文档,于是"导出的是什么"和
+ * "库里有什么"永远是同一个答案(与 `library.openFile` 只收条目 id 同一个理由)。
+ */
+export const WorkflowExportSchema = z.object({
+  id: z.string().min(1),
+  /**
+   * 保存框的默认文件名(不带扩展名)。渲染端**按用户当前的语言**给,因为主进程不知道
+   * 他此刻的界面语言(同 `dialog.pickFiles` 的 `title`:文案由调用方给)。
+   *
+   * ⚠️ 只当**建议**用:主进程会把它洗一遍(路径分隔符、非法字符),洗不出来就退回
+   * 工作流 id。文件名不该是"用户填错一个字符就导不出来"的东西。
+   */
+  suggestedName: z.string().optional(),
+});
+export type WorkflowExportInput = z.infer<typeof WorkflowExportSchema>;
+
+/**
+ * 导入一份工作流。
+ *
+ * 文本由**渲染端读**、正文由主进程解析并落库 —— 渲染端不碰文件系统(它读不了任意
+ * 路径,读文件那条 `file.readFile` 又被项目根闸门挡着,而用户挑的文件多半在项目外)。
+ *
+ * ## 两道闸门合起来有两条路,由 `id` 分
+ *
+ * - **不给 `id`** → 新存一份。id 由主进程现生成(`wf_` 前缀),`name` 在库里重名时
+ *   自动加后缀(「(2)」)。
+ * - **给 `id`** → **覆盖**那一份。这是"把改过的图拿回来"那条路,所以 id 必须是库里
+ *   **已经有**的 —— 给一个不存在的 id 会报错而不是悄悄新建。判据在主进程
+ *   (`library.importWorkflowInto`),它读的是同一份库。
+ */
+export const WorkflowImportSchema = z.object({
+  /** 文件的 JSON 正文(渲染端读好了给过来)。 */
+  text: z.string(),
+  /** 覆盖哪一份。不给就是新建。 */
+  id: z.string().min(1).optional(),
+});
+export type WorkflowImportInput = z.infer<typeof WorkflowImportSchema>;
+
+/**
  * 用户在**岔路口**上选了一条路(`mcode.branch` 那个节点正停在那儿等人)。
  *
  * ## 它是"回答",不是"发消息"

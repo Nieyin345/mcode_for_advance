@@ -298,6 +298,27 @@ export function makeEdgeId(now: number = Date.now()): string {
   return `e_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/* ── 名字去重 ── */
+
+/**
+ * 给一份新建的工作流起一个不重名的名字。
+ *
+ * 重名本身不会坏事(id 才是主键),但库里两行都叫「新工作流」时用户没法分辨哪个是
+ * 哪个 —— 而重命名要先进去选中它,鸡生蛋。所以直接起成「新工作流 2」。
+ *
+ * 定在 contracts 是因为**两个写入方**:画布上的「新建」(渲染端)和导入
+ * (`main/orchestration/library.importWorkflowInto`)。两处各写一份迟早会分家,而
+ * 用户看到的都是"库里多了一行" —— 一边加后缀、另一边不加,那个差别没人会去查。
+ */
+export function uniqueWorkflowName(base: string, taken: readonly string[]): string {
+  if (!taken.includes(base)) return base;
+  for (let n = 2; n <= taken.length + 2; n++) {
+    const candidate = `${base} ${n}`;
+    if (!taken.includes(candidate)) return candidate;
+  }
+  return `${base} ${taken.length + 2}`;
+}
+
 /* ── 回头:分出去的一条线指回前面 ── */
 
 /**
