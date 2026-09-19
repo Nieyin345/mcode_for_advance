@@ -97,11 +97,18 @@ const EVENT_HINTS: Record<HookEvent, MessageId> = {
 };
 
 /**
- * 匹配规则那一栏:标题、占位、说明都**跟着事件变**。
+ * 匹配规则那一栏的**标题、占位、说明**。
  *
- * 同一个字段在不同事件上比的是不同的东西(`tool` 比工具名、`path` 比文件路径),所以
- * 三处文案都得换 —— 一个写着"匹配哪些工具"的输入框摆在 `turn.files` 下面,用户只会
- * 填进工具名,然后钩子安静地不响。
+ * ## 为什么还有一个 `path` 那一档(虽然现在没有事件用它)
+ *
+ * 三处的值都取自 `MATCHER_TEXT[主语]`,而主语是 `hookSubjectOf` 给的 —— 现在只有
+ * `tool`(`hookSubjectOf` 里 `turn.files` 那一档没给主语,见那边的注)。**留着 `path`
+ * 是对着那个类型写的**:`Record<HookSubject, …>` 少一档就编译不过,而哪天有事件真带上
+ * 路径主语时,这里现成就能用 —— 那个输入框的标题写着"匹配哪些工具"、摆在比路径的钩子
+ * 下面,是用户照着填错、钩子安静不响的最短路径。
+ *
+ * ⚠️ **`hint` 那一档现在没人读**(面板上没渲染它),但词条留着 —— 别以为它是死键删掉:
+ * 删词条要连 zh/en 两份和 `MessageId` 那张表一起动,而它随时会被接回界面。
  */
 const MATCHER_TEXT: Record<HookSubject, { label: MessageId; placeholder: MessageId; hint: MessageId }> = {
   tool: {
