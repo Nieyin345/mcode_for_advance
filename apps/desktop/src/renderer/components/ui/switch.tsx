@@ -36,7 +36,12 @@ const Switch = forwardRef<HTMLElement, SwitchProps>(
         aria-label={label}
         title={label}
         className={cn(
-          "relative h-4 w-7 shrink-0 rounded-full outline-none transition-colors",
+          // `block` 是必须的,不是装饰。`BaseSwitch.Root` 渲染的是 `<span>`,
+          // 默认 `display: inline`;而 `h-4 w-7` 在行内元素上**不生效** ——
+          // 宽高是算出来了(28×16),行盒却按零宽的空行内元素排,量出来 `0×0`:
+          // 看不见、也点不到。放进 flex 行里时会被自动块级化,所以只有
+          // **裸放在块级流里**的那些开关会塌(工作流检查器的「读流程记录」就是)。
+          "relative block h-4 w-7 shrink-0 rounded-full outline-none transition-colors",
           "focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-surface",
           checked ? "bg-accent" : "bg-surface-hover",
           disabled && "cursor-not-allowed opacity-50",

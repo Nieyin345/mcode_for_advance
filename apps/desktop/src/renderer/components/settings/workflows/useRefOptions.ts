@@ -21,7 +21,7 @@
  * 画一个空下拉 —— 空下拉比输入框更糟(它看着像有选项)。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useSessionStore, type SessionState } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
 import { filterSkillsForEngine } from "@renderer/lib/engineFilter.js";
 import { MCP_ALWAYS_ON_SERVERS, type McpScope } from "@contracts/ipc";
@@ -34,37 +34,79 @@ export interface RefOption {
   hint?: string;
 }
 
-/** 应用的模型列表 —— 与 `chat/ModelDropdown` 读的是同一组 store 字段。 */
-function useModelOptions(): RefOption[] {
-  const providerId = useSessionStore((s) => s.providerId);
+/**
+ * 应用的模型列表 —— **按当前引擎那一份**。
+ *
+ * 从前这里把四个来源拍平成一个下拉,于是「引擎」和「模型」看着互为副本(用户原话:
+ * 「子代理的模型和引擎重合了」)。现在分引擎取,见 {@link modelsForProvider}。
+ */
+function useModelOptions(providerId: string | undefined): RefOption[] {
   const providers = useSessionStore((s) => s.providers);
   const customModels = useSessionStore((s) => s.customModels);
+  const currentProviderId = useSessionStore((s) => s.providerId);
   const piAvailableModels = useSessionStore((s) => s.piAvailableModels);
   const codexAvailableModels = useSessionStore((s) => s.codexAvailableModels);
 
-  return useMemo(() => {
-    const out: RefOption[] = [];
-    const seen = new Set<string>();
-    const push = (id: string, label: string) => {
-      const key = id.trim();
-      if (key.length === 0 || seen.has(key)) return;
-      seen.add(key);
-      out.push({ id: key, label: label.trim() || key });
-    };
+  return useMemo(
+    () =>
+      modelsForProvider(
+        { providerId: currentProviderId, providers, customModels, piAvailableModels, codexAvailableModels },
+        providerId,
+      ),
+    [providerId, currentProviderId, providers, customModels, piAvailableModels, codexAvailableModels],
+  );
+}
 
-    // 内置别名(provider 声明的那几个)。
-    const provider = providers.find((p) => p.id === providerId);
-    for (const m of provider?.capabilities.builtinModels ?? []) push(m.id, m.label);
-    // pi / codex 的动态列表:两边都是"供应商 + 模型"的扁平投影,与上面同形。
-    for (const m of piAvailableModels) push(m.id, m.label);
-    for (const m of codexAvailableModels) push(m.id, m.label);
-    // 自定义端点里的模型。label 就用 id —— `ModelDropdown` 展开子菜单之后显示的
-    // 也正是这两个字段里的 `entry.id`。
-    for (const cfg of customModels) {
-      for (const entry of cfg.models) push(entry.id, entry.id);
-    }
+/**
+ * 某个**引擎**下可挑的模型 —— 「模型」那一格的候选。
+ *
+ * ## 为什么必须按引擎分
+ *
+ * 这四份列表在 store 里本来就是分家的:`builtinModels` 挂在当前引擎身上、
+ * `piAvailableModels` 是 pi 的、`codexAvailableModels` 是 codex 的、自建端点各一份
+ * (`customModels[].models`)。从前这里把它们**拍平成一个列表**,于是「引擎」选了
+ * Codex、下面「模型」里却还列着 Claude 的别名 —— 两个下拉看着互为副本,选下去的那个
+ * id 也不是这个引擎认得的,只有跑的时候才失败。
+ *
+ * 分工照着 `ModelDropdown` 与 `resolveSendModel` 已有的那套判据(`sessionStore.ts`):
+ * pi 只认 `piAvailableModels`、codex 只认 `codexAvailableModels`、其余引擎用自己声明的
+ * `builtinModels` 加自建端点。
+ *
+ * ## `undefined` = 跟着主对话走
+ *
+ * 引擎那一格留空时,这一步用的就是主对话当前的引擎 —— 所以列的是**当前引擎**的那一份。
+ * `""`(空串)是同一个意思:参数是自由数据,清空之后可能落成空串。
+ */
+export function modelsForProvider(
+  s: Pick<SessionState, "providerId" | "providers" | "customModels" | "piAvailableModels" | "codexAvailableModels">,
+  providerId: string | undefined,
+): RefOption[] {
+  const wanted = providerId !== undefined && providerId.trim().length > 0 ? providerId : s.providerId;
+  const provider = s.providers.find((p) => p.id === wanted);
+
+  const out: RefOption[] = [];
+  const seen = new Set<string>();
+  const push = (id: string, label: string) => {
+    const key = id.trim();
+    if (key.length === 0 || seen.has(key)) return;
+    seen.add(key);
+    out.push({ id: key, label: label.trim() || key });
+  };
+
+  if (provider?.id === "pi-sdk") {
+    for (const m of s.piAvailableModels) push(m.id, m.label);
     return out;
-  }, [providerId, providers, customModels, piAvailableModels, codexAvailableModels]);
+  }
+  if (provider?.id === "codex-sdk") {
+    for (const m of s.codexAvailableModels) push(m.id, m.label);
+    return out;
+  }
+  // 其余引擎:它自己声明的那几个别名 + 用户的端点里给这个引擎列的那几个模型。
+  for (const m of provider?.capabilities.builtinModels ?? []) push(m.id, m.label);
+  for (const cfg of s.customModels) {
+    for (const entry of cfg.models) push(entry.id, entry.id);
+  }
+  return out;
 }
 
 /**
@@ -247,14 +289,18 @@ function useCachedOptions(
   return options;
 }
 
-/** 一个 `ref` 参数的候选。**加一种来源 = 在这里加一个 case。** */
-export function useRefOptions(from: NodeParamRefSource): RefOption[] {
+/** 一个 `ref` 参数的候选。**加一种来源 = 在这里加一个 case。**
+ *
+ *  `providerId` 是**级联用**的:清单在「模型」那一格写了 `fromParam: "provider"`,控件
+ *  把用户在那个参数上选的值传进来,于是模型那份只列这个引擎认得的几个。没写
+ *  `fromParam` 的来源不看它。 */
+export function useRefOptions(from: NodeParamRefSource, providerId?: string): RefOption[] {
   // 五个 hook 都无条件调用 —— hooks 的规矩。多订阅几个 store 字段的代价可以忽略,
   // 而"按来源条件调用 hook"是错的(来源会随用户选中的节点变)。
   //
   // MCP 与插件那两份是**现拉的**,而且只在这一格真的用得上时才拉(`enabled`):一个
   // 节点检查器里有十来个参数,不筛的话每开一次就要发两轮用不上的 IPC。
-  const models = useModelOptions();
+  const models = useModelOptions(providerId);
   const skills = useSkillOptions();
   const providers = useProviderOptions();
   const projects = useProjectOptions();
