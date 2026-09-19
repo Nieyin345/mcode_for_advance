@@ -15,9 +15,14 @@
  *
  * ## 硬过滤
  *
- * 用户的原话:「就算是我手动挂的一个文件,只要是屏蔽状态,也挂不上去」。所以调用方
- * **入口和每个关联都过同一个 `isItemSuppressed`**,入口不被特殊对待 —— 那正是"平级"
- * 的另一面。
+ * 用户的原话:「就算是我手动挂的一个文件,只要是屏蔽状态,也挂不上去」。所以**入口和
+ * 每个关联都过同一道判定**,入口不被特殊对待 —— 那正是"平级"的另一面。
+ *
+ * 判定这份实现只导出**一个**入口:`suppressionReasonOfItem`(下面)。从前还有一个
+ * 返回布尔值的 `isItemSuppressed`,但**全仓库没有任何调用方** —— 调用方要的从来不是
+ * "是不是被挡了"这一个比特,而是"被挡了、因为哪一条"(仓规:坏东西显式报出来)。
+ * 于是它被删掉了:留着的话,下一个人会挑它("布尔值更顺手"),然后拿一个说不清原因的
+ * `false` 去回应用户。要布尔值请自己判 `!== null`。
  *
  * ## 与注册表的两个表同一种存法
  *
@@ -110,7 +115,7 @@ export function suppressKeysOfItem(itemId: string, kind: string): string[] {
 }
 
 /**
- * 这条条目该不该被挡在上下文之外。
+ * 挡住的**原因** —— 给用户看的一句话,而不是一个布尔值。
  *
  * 两把筛子,**任一命中即挡住**:
  *
@@ -121,39 +126,13 @@ export function suppressKeysOfItem(itemId: string, kind: string): string[] {
  * 有 markdown 就按 markdown(md 转换产物才是 agent 读的),否则 PDF,否则通用文件
  * 路径。这样"屏蔽 .md"挡住的正是 agent 会去读的那份,而不是一份它根本不会碰的。
  *
- * 条目不存在时返回 false(不挡)—— 找不到的东西由调用方按"找不到"报错,
- * 不该在这儿被说成"被屏蔽了",那是两句不同的话。
- */
-export function isItemSuppressed(itemId: string): boolean {
-  const rule = loadSuppress();
-  if (rule.nodes.length === 0 && rule.extensions.length === 0) return false;
-
-  const item = LibraryRepo.get(itemId);
-  if (!item) return false;
-
-  const nodeSet = new Set(rule.nodes);
-  for (const key of suppressKeysOfItem(itemId, item.kind)) {
-    if (nodeSet.has(key)) return true;
-  }
-
-  if (rule.extensions.length > 0) {
-    // 与清单给 agent 的路径同源:优先 markdown(那才是 agent 读的),再 PDF,
-    // 再通用文件路径。都不存在 = 这条还没有文件,扩展名这一筛子无从命中。
-    const p = item.mdPath ?? item.pdfPath ?? item.filePath;
-    if (p) {
-      const ext = extname(p).toLowerCase();
-      if (ext.length > 0 && rule.extensions.includes(ext)) return true;
-    }
-  }
-  return false;
-}
-
-/**
- * 挡住的**原因** —— 给用户看的一句话,而不是一个布尔值。
- *
  * 挂不上必须说清为什么(仓库纪律:坏清单要显式报出来,不静默跳过)。只说"被屏蔽了"
  * 用户还得自己去设置里翻是哪一条,所以这里尽力把命中的那个节点/扩展名说出来。
- * 返回 null = 没被挡。
+ * 返回 null = 没被挡;**条目不存在时也返回 null(不挡)** —— 找不到的东西由调用方
+ * 按"找不到"报错,不该在这儿被说成"被屏蔽了",那是两句不同的话。
+ *
+ * **这是本模块唯一的判定入口**(那个返回布尔的 `isItemSuppressed` 因为没人用已删)。
+ * 调用方一律写成 `if (reason) …`,顺带就有了要说出口的那句话。
  */
 export function suppressionReasonOfItem(itemId: string): string | null {
   const rule = loadSuppress();

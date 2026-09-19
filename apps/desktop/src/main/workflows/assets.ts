@@ -50,11 +50,21 @@ Mcode 把整个数据库放在内存里,任何一次变更都会把整份文件�
 
 默认从 Mcode 的记录里找数据根(APPDATA 下的 data-root.json);也可以显式给:
     python library.py --root "D:/destop/work_space/mcode" list
+
+屏蔽规则
+========
+用户在「设置 → 资料库类型」里可以把某些分类 / 类型 / 大类设为屏蔽,也可以按文件
+后缀屏蔽。被屏蔽的条目**不进这个脚本的任何结果**,判定与界面、与 AI 工具那边是同
+一套(主进程的 main/library/suppress.ts)。
+
+⚠️ 挡掉的条数会**显式写在结果开头**。看不到那几行就把"剩下的这些"当成整个库去向
+用户汇报,是错的 —— 用户设的屏蔽确实起了作用,而你以为库里就这些。
 """
 
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -97,7 +107,12 @@ def connect(root):
     if not db.exists():
         sys.exit("找不到数据库:" + str(db))
     # 只读方式打开。应用正在跑的时候也一样安全 —— 读不会打断它,写才会被覆盖。
-    return sqlite3.connect(db.absolute().as_uri() + "?mode=ro", uri=True)
+    conn = sqlite3.connect(db.absolute().as_uri() + "?mode=ro", uri=True)
+    # 行按列名取。判定那一层要拿 id / kind / md_path / pdf_path / file_path 五个
+    # 字段,而每条命令的 SELECT 顺序都不一样 —— 按下标取的话,加一列就是一次静默
+    # 错位。名字取就与顺序无关了。
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def author_names(raw):
@@ -132,15 +147,358 @@ def kind_filter(kind):
     return "", []
 
 
-def cmd_list(cur, root, args):
+# ─────────────────────────────── 屏蔽规则 ───────────────────────────────
+# 「哪些资料不进上下文」。规则存在 settings 表里(键 library.suppress),值是一份
+# JSON:{"nodes": [...], "extensions": [...]} —— 与契约(@contracts/libraryTypes)
+# 里那两个字段一一对应。
+#
+# 判定与主进程**同一套语义**(main/library/suppress.ts 的 suppressionReasonOfItem):
+#
+#     条目 → 它所属的全部集合 → 它的 kind → kind 所属的大类(可能不止一个)
+#
+# 链上任一段命中就挡住;extensions 再按文件后缀挡一层。集合那一层取的是**条目所
+# 属的全部集合** —— 一个条目可以同时在多个集合里,任一个被屏蔽都算。
+#
+# 规矩同主进程:读不出 / JSON 坏 / 形状不对 → **按"什么都没屏蔽"处理**,绝不抛。
+# 反过来的那条退路(坏数据当"全挡")会让用户的东西凭空消失,是更坏的一种错。
+#
+# ⚠️ 这里必须是**同一套判定**,不能"大约相当于":两边结论一旦不一样,用户看到的
+# 就是「界面里说屏蔽了、模型这边照读得到」,而这种事不会有人报错。
+
+SUPPRESS_SETTING_KEY = "library.suppress"
+GROUPS_SETTING_KEY = "library.groups"
+TYPES_SETTING_KEY = "library.types"
+
+# 出厂的两个大类。与契约的 DEFAULT_LIBRARY_GROUPS 逐字一致 —— 用户没动过大类表
+# 时它就是生效的那一份。
+DEFAULT_GROUPS = [
+    {"id": "docs", "name": "文档", "kinds": ["paper", "textbook", "note"]},
+    {"id": "templates", "name": "模版",
+     "kinds": ["document", "slides", "latex", "code", "image"]},
+]
+
+# 出厂类型的内置 id(契约 BUILTIN_LIBRARY_TYPES 的 id 集合)。
+BUILTIN_TYPE_IDS = ["paper", "textbook", "note", "document", "slides", "latex", "code", "image"]
+
+# 类型 / 大类的 id 规则(契约里的 ID_RE)。
+ID_RE = re.compile("^[a-z][a-z0-9-]*$")
+
+# 「这个设置键没存过」的哨兵。与 None(存了但值是 JSON 的 null)分开 —— 两者的处置
+# 都是退回出厂值,但只有后者该打印告警。
+_MISSING = object()
+
+
+def read_setting(cur, key):
+    """settings 表里的一行。老库没有 settings 表 / 查不动 → None(同"没存过")。"""
+    try:
+        row = cur.execute("SELECT value FROM settings WHERE key = ?", [key]).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None or row[0] is None:
+        return None
+    return str(row[0])
+
+
+def warn(text):
+    """坏数据的告警写 stderr,**不写 stdout** —— stdout 是给模型看的查询结果,在那里
+    插一句话会让它以为这次查询本身出了问题。写 stderr 则进得了对话记录(log.warn
+    在界面上的对应物)。"""
+    try:
+        print("[library.py] " + text, file=sys.stderr)
+    except Exception:
+        pass
+
+
+def load_json_setting(cur, key, what):
+    """读一个存 JSON 的设置键。没存过 → 哨兵;坏 JSON → None(并告警)。"""
+    raw = read_setting(cur, key)
+    if raw is None:
+        return _MISSING
+    try:
+        return json.loads(raw)
+    except Exception:
+        warn(what + "不是合法 JSON,这一层退回出厂值(键 " + key + ")")
+        return None
+
+
+def parse_registry_ids(value):
+    """类型注册表里的全部 kind id;不合法 → None(调用方退回出厂表)。
+
+    校验口径照契约的 parseLibraryTypesJson:**整份形状**任何一处不对就整份不认。
+    连 icon / prompt 那种"跟判定无关"的字段也看,是因为主进程那份校验器会因此整份
+    退回出厂表 —— 于是某个自定义 kind 就不再"注册表认得",引用它的组跟着被过滤掉。
+    这里跟着一起拒,两边的 known 集合才对得上。
+    """
+    if not isinstance(value, list):
+        return None
+    seen = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            return None
+        tid = entry.get("id")
+        if not isinstance(tid, str) or not ID_RE.match(tid) or tid in seen:
+            return None
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return None
+        if entry.get("purpose") not in ("material", "format"):
+            return None
+        for k in ("prompt", "icon"):
+            v = entry.get(k)
+            if v is not None and not isinstance(v, str):
+                return None
+        seen.append(tid)
+    # 内置类必须还在 —— 少了就是"注册表不完整",主进程同样整份拒绝。
+    for b in BUILTIN_TYPE_IDS:
+        if b not in seen:
+            return None
+    return seen
+
+
+def parse_groups(value):
+    """大类表;不合法 → None(调用方退回出厂两组)。口径照 parseLibraryGroupsJson:
+    id 合法且唯一、名字非空、kinds 是一组类型 id、**一个类型只能出现在一个组里**。"""
+    if not isinstance(value, list):
+        return None
+    out = []
+    seen_ids = set()
+    seen_kinds = set()
+    for entry in value:
+        if not isinstance(entry, dict):
+            return None
+        gid = entry.get("id")
+        if not isinstance(gid, str) or not ID_RE.match(gid) or gid in seen_ids:
+            return None
+        seen_ids.add(gid)
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return None
+        kinds = entry.get("kinds")
+        if not isinstance(kinds, list):
+            return None
+        for k in kinds:
+            if not isinstance(k, str) or not k:
+                return None
+            if k in seen_kinds:
+                return None
+            seen_kinds.add(k)
+        prompt = entry.get("prompt")
+        if prompt is not None and not isinstance(prompt, str):
+            return None
+        out.append({"id": gid, "name": name.strip(), "kinds": list(kinds)})
+    return out
+
+
+def load_kind_groups(cur):
+    """kind → 它所属的大类([{"id":..., "name":...}]),以及按 id 的反查表。
+
+    合并规则与主进程 kindRegistry.loadLibraryGroups() 一致:表取不到 / 坏 → 出厂
+    两组;组里那些**注册表不认识的 kind 过滤掉**(删一个类型不该被"还有组在引用它"
+    挡住);过滤空了整组丢掉。
+    """
+    known = parse_registry_ids(load_json_setting(cur, TYPES_SETTING_KEY, "类型注册表"))
+    if known is None:
+        known = list(BUILTIN_TYPE_IDS)
+    known_set = set(known)
+
+    groups = parse_groups(load_json_setting(cur, GROUPS_SETTING_KEY, "大类表"))
+    if groups is None:
+        groups = DEFAULT_GROUPS
+
+    by_kind = {}
+    by_id = {}
+    for g in groups:
+        kinds = [k for k in g["kinds"] if k in known_set]
+        if not kinds:
+            continue
+        by_id[g["id"]] = g["name"]
+        for k in kinds:
+            by_kind.setdefault(k, []).append(g)
+    return by_kind, by_id
+
+
+def load_suppress_rule(cur):
+    """当前屏蔽规则 → {"nodes": [...], "extensions": [...]}。
+
+    没存过 / JSON 坏 / 形状不对 → 空规则(什么都不挡),同主进程 loadSuppress。
+    单条坏(前缀认不出、类型不对)**只丢那一条**,不废掉整份 —— 那是契约
+    parseSuppressJson 的口径:屏蔽是一串独立的勾选,某一条失效不该偷偷把用户其余
+    的屏蔽一起放开。例外只有顶层形状(nodes / extensions 不是数组)时整份作废。
+    """
+    value = load_json_setting(cur, SUPPRESS_SETTING_KEY, "屏蔽规则")
+    if not isinstance(value, dict):
+        if value is not _MISSING and value is not None:
+            warn("屏蔽规则应该是一个对象,按\"什么都没屏蔽\"处理")
+        return {"nodes": [], "extensions": []}
+
+    raw_nodes = value.get("nodes")
+    if raw_nodes is None:
+        raw_nodes = []
+    if not isinstance(raw_nodes, list):
+        warn("屏蔽规则的 nodes 应该是一组键,按\"什么都没屏蔽\"处理")
+        return {"nodes": [], "extensions": []}
+    nodes = []
+    for n in raw_nodes:
+        if not isinstance(n, str):
+            continue
+        key = n.strip()
+        at = key.find(":")
+        if at < 0:
+            continue
+        if key[:at] not in ("group", "type", "collection"):
+            continue
+        if at + 1 >= len(key):
+            continue
+        if key not in nodes:
+            nodes.append(key)
+
+    raw_exts = value.get("extensions")
+    if raw_exts is None:
+        raw_exts = []
+    if not isinstance(raw_exts, list):
+        warn("屏蔽规则的 extensions 应该是一组字符串,按\"什么都没屏蔽\"处理")
+        return {"nodes": [], "extensions": []}
+    extensions = []
+    for x in raw_exts:
+        if not isinstance(x, str):
+            continue
+        ext = x.strip().lower()
+        if not ext:
+            continue
+        if not ext.startswith("."):
+            ext = "." + ext
+        if ext not in extensions:
+            extensions.append(ext)
+
+    return {"nodes": nodes, "extensions": extensions}
+
+
+def describe_node_key(cur, group_names, key):
+    """一个节点键 → 用户看得懂的名字。都查不到就退回键本身 —— 那说明这一条指向的
+    东西已经被删了,说清"是哪一条"比说一个空字符串有用。"""
+    at = key.find(":")
+    level, node_id = key[:at], key[at + 1:]
+    if level == "collection":
+        row = cur.execute("SELECT name FROM library_collections WHERE id = ?", [node_id]).fetchone()
+        return "「" + str(row[0]) + "」" if row else "已删除的分类(" + node_id + ")"
+    if level == "type":
+        return "类型「" + node_id + "」"
+    name = group_names.get(node_id)
+    return "「" + name + "」" if name else "已删除的大类(" + node_id + ")"
+
+
+def suppress_reason(cur, sup, rec):
+    """这条条目被挡的原因(人话);没被挡返回 None。
+
+    rec 是 as_rec 出来的那几列 —— 判定要 id / kind 和"实际会被读的那份文件"。
+    """
+    if not sup["nodes"] and not sup["extensions"]:
+        return None
+
+    # kind 那一列的 NULL 按 paper 读(主进程 rowToLibraryItem 的「?? "paper"」)。
+    # 空串**不**走这条退路 —— 两边对 NULL 与空串的处置必须一致。
+    kind = rec["kind"] if rec["kind"] is not None else "paper"
+    keys = []
+    # 条目 → 它所属的**全部**集合
+    for row in cur.execute(
+        "SELECT collection_id FROM library_collection_items WHERE item_id = ?", [rec["id"]]
+    ):
+        keys.append("collection:" + str(row[0]))
+    # 集合 → 类型:条目自己的 kind(不在任何集合里的条目靠它)
+    keys.append("type:" + kind)
+    # 类型 → 大类:反查哪些大类的 kinds 里有它。没进任何大类的类型到这儿为止。
+    for g in sup["kind_groups"].get(kind, []):
+        keys.append("group:" + g["id"])
+    for key in keys:
+        if key in sup["nodes"]:
+            return describe_node_key(cur, sup["group_names"], key)
+
+    # 扩展名那一层。看的是**条目实际会被读的那个文件** —— 与清单给模型的路径同源:
+    # 有 markdown 就按 markdown(那才是会被读的),否则 PDF,否则通用文件路径。
+    # ⚠️ 判据是"值是不是 None",与主进程的「??」**逐字同义**(空串不往下走)。
+    # 写成「rec["md"] or rec["pdf"]」的话,一条 md_path 为空串的条目会掉到 PDF 上去,
+    # 于是"屏蔽 .md"在它身上不生效 —— 而空串这一列真的存在(见 db.ts 的兼容列)。
+    p = rec["md"]
+    if p is None:
+        p = rec["pdf"]
+    if p is None:
+        p = rec["fp"]
+    if p:
+        ext = os.path.splitext(p)[1].lower()
+        if ext and ext in sup["extensions"]:
+            return ext + " 文件"
+    return None
+
+
+def as_rec(row):
+    """判定要用的那几列,从一行里取出来。
+
+    **每条命令都过它** —— 各写一份的话,迟早有一条命令漏带 file_path,于是"按后缀
+    屏蔽"在那一路上静静地不生效。
+    """
+    return {
+        "id": row["id"],
+        "kind": row["kind"],
+        "md": row["md_path"],
+        "pdf": row["pdf_path"],
+        "fp": row["file_path"],
+        "row": row,
+    }
+
+
+def split_suppressed(cur, sup, rows):
+    """把一批行分成「留下的」与「被挡的原因」。**各命令共用这一个**。
+
+    分成两份判定就等于有两个真相,迟早分叉 —— 而分叉的表现是"同一个库,list 里有、
+    files 里没有"。
+    """
+    kept = []
+    reasons = []
+    for row in rows:
+        reason = suppress_reason(cur, sup, as_rec(row))
+        if reason:
+            reasons.append(reason)
+        else:
+            kept.append(row)
+    return kept, reasons
+
+
+def report_suppressed(reasons):
+    """挡掉了几条、因为什么 —— **必须说出来**。
+
+    仓库的硬规矩:坏东西(这里是被挡掉的东西)要显式报出来,不静默跳过。模型看不见
+    这几行,就会拿"剩下这些"当整个库向用户汇报;而那是它给不出正确答案,不是它偷懒。
+    按原因归并成几行:挡掉五百条而原因只有一个时,逐条列出来只是噪声。
+    """
+    if not reasons:
+        return
+    order = []
+    counts = {}
+    for r in reasons:
+        if r not in counts:
+            counts[r] = 0
+            order.append(r)
+        counts[r] += 1
+    print("⚠️ 屏蔽规则挡掉了 " + str(len(reasons)) + " 条(设置 → 资料库类型),它们不在下面:")
+    for r in order:
+        print("    - " + r + ":" + str(counts[r]) + " 条")
+
+
+def cmd_list(cur, root, args, sup):
     where, params = kind_filter(args.kind)
     rows = cur.execute(
-        "SELECT id, title, authors, year, venue, md_path, pdf_path FROM library_items"
-        " WHERE 1=1" + where + " ORDER BY year DESC, title",
+        "SELECT id, title, authors, year, venue, md_path, pdf_path, file_path, kind"
+        " FROM library_items WHERE 1=1" + where + " ORDER BY year DESC, title",
         params,
     ).fetchall()
-    print("共 " + str(len(rows)) + " 条")
-    for iid, title, authors, year, venue, md, pdf in rows:
+    kept, reasons = split_suppressed(cur, sup, rows)
+    print("共 " + str(len(kept)) + " 条")
+    report_suppressed(reasons)
+    for row in kept:
+        iid, title, authors, year, venue, md, pdf =(
+            row["id"], row["title"], row["authors"], row["year"], row["venue"],
+            row["md_path"], row["pdf_path"],
+        )
         print("- " + title)
         bits = [author_names(authors), str(year) if year else "", venue or ""]
         head = " · ".join([b for b in bits if b])
@@ -149,56 +507,89 @@ def cmd_list(cur, root, args):
         print("    id=" + iid + "  文件:" + file_of(root, md, pdf))
 
 
-def cmd_find(cur, root, args):
+def cmd_find(cur, root, args, sup):
     q = "%" + args.query + "%"
     where, params = kind_filter(args.kind)
     rows = cur.execute(
-        "SELECT id, title, authors, year, venue, md_path, pdf_path FROM library_items"
+        "SELECT id, title, authors, year, venue, md_path, pdf_path, file_path, kind"
+        " FROM library_items"
         " WHERE (LOWER(title) LIKE LOWER(?) OR LOWER(IFNULL(authors,'')) LIKE LOWER(?)"
         "        OR LOWER(IFNULL(abstract,'')) LIKE LOWER(?) OR LOWER(IFNULL(venue,'')) LIKE LOWER(?))"
         + where + " ORDER BY year DESC, title",
         [q, q, q, q] + params,
     ).fetchall()
-    print('匹配 "' + args.query + '":' + str(len(rows)) + " 条")
-    for iid, title, authors, year, venue, md, pdf in rows:
+    kept, reasons = split_suppressed(cur, sup, rows)
+    print('匹配 "' + args.query + '":' + str(len(kept)) + " 条")
+    report_suppressed(reasons)
+    for row in kept:
+        iid, title, authors, year, venue, md, pdf =(
+            row["id"], row["title"], row["authors"], row["year"], row["venue"],
+            row["md_path"], row["pdf_path"],
+        )
         print("- " + title)
         bits = [author_names(authors), str(year) if year else "", venue or ""]
         head = " · ".join([b for b in bits if b])
         if head:
             print("    " + head)
         print("    id=" + iid + "  文件:" + file_of(root, md, pdf))
-    if not rows:
-        print("(库里没有匹配的条目。不要因此凭记忆引用 —— 要么换关键词再找,要么如实说库里没有。)")
+    if not kept:
+        if reasons:
+            # **"被屏蔽了"与"库里没有"是两句话。** 混成一句的话,模型会据此回答用户
+            # "库里没有这一篇" —— 而它在设置里明明留着。
+            print("(匹配的都在这几行屏蔽里,不在上面。如实告诉用户「被屏蔽了」,不要当它不存在,"
+                  "也不要凭空引用。)")
+        else:
+            print("(库里没有匹配的条目。不要因此凭记忆引用 —— 要么换关键词再找,要么如实说库里没有。)")
 
 
 def resolve_one(cur, query):
     """id 前缀优先,其次标题片段。返回匹配到的行(可能多条)。"""
+    cols = ("id, title, authors, year, venue, doi, arxiv_id, volume, issue, page, publisher,"
+            " abstract, type, url, md_path, pdf_path, file_path, kind")
     rows = cur.execute(
-        "SELECT id, title, authors, year, venue, doi, arxiv_id, volume, issue, page, publisher,"
-        " abstract, type, url, md_path, pdf_path FROM library_items WHERE id LIKE ?",
+        "SELECT " + cols + " FROM library_items WHERE id LIKE ?",
         [query + "%"],
     ).fetchall()
     if not rows:
         rows = cur.execute(
-            "SELECT id, title, authors, year, venue, doi, arxiv_id, volume, issue, page, publisher,"
-            " abstract, type, url, md_path, pdf_path FROM library_items"
-            " WHERE LOWER(title) LIKE LOWER(?)",
+            "SELECT " + cols + " FROM library_items WHERE LOWER(title) LIKE LOWER(?)",
             ["%" + query + "%"],
         ).fetchall()
     return rows
 
 
-def cmd_show(cur, root, args):
+def cmd_show(cur, root, args, sup):
     rows = resolve_one(cur, args.query)
     if not rows:
         sys.exit("库里没有匹配 " + args.query + " 的条目")
+    # 被屏蔽的**不能**当作"找不到"糊过去,也不能照常显示 —— 后者会把绝对路径交出去,
+    # 而"挂不上"这件事用户设的就是不让他上手。所以说清是屏蔽,并把原因点名。
+    kept = []
+    reasons = []
+    for row in rows:
+        reason = suppress_reason(cur, sup, as_rec(row))
+        if reason:
+            reasons.append(reason)
+        else:
+            kept.append(row)
+    if not kept:
+        sys.exit("匹配 " + args.query + " 的 " + str(len(reasons)) + " 条被屏蔽规则挡下了("
+                 + "、".join(dict.fromkeys(reasons)) + ")。要去掉屏蔽:设置 → 资料库类型。")
+    rows = kept
     if len(rows) > 1:
         print("匹配到 " + str(len(rows)) + " 条,请用更精确的 id 或标题:")
         for r in rows:
-            print("  " + r[0] + "  " + r[1])
+            print("  " + r["id"] + "  " + r["title"])
         return
-    (iid, title, authors, year, venue, doi, arxiv, volume, issue, page,
-     publisher, abstract, typ, url, md, pdf) = rows[0]
+    row = rows[0]
+    iid, title, authors, year, venue, doi, arxiv, volume, issue, page =(
+        row["id"], row["title"], row["authors"], row["year"], row["venue"], row["doi"],
+        row["arxiv_id"], row["volume"], row["issue"], row["page"],
+    )
+    publisher, abstract, typ, url, md, pdf =(
+        row["publisher"], row["abstract"], row["type"], row["url"],
+        row["md_path"], row["pdf_path"],
+    )
     print("# " + title)
     print("")
     for label, value in [
@@ -231,36 +622,59 @@ def cmd_show(cur, root, args):
             print("- " + " ".join(content.split()) + ("   [来源:" + origin + "]" if origin != "user" else ""))
 
 
-def cmd_files(cur, root, args):
+def cmd_files(cur, root, args, sup):
     where, params = kind_filter(args.kind)
     if args.missing_md:
         where += " AND (md_path IS NULL OR md_path = '')"
     rows = cur.execute(
-        "SELECT id, title, md_path, pdf_path FROM library_items WHERE 1=1" + where
+        "SELECT id, title, md_path, pdf_path, file_path, kind FROM library_items WHERE 1=1" + where
         + " ORDER BY title",
         params,
     ).fetchall()
-    for iid, title, md, pdf in rows:
-        print(file_of(root, md, pdf) + "    <- " + title + "  (id=" + iid + ")")
+    kept, reasons = split_suppressed(cur, sup, rows)
+    # 这一路最该说清:它给人的就是**绝对路径**,而被屏蔽的条目正是"不该把路径交出去"
+    # 的那些。
+    report_suppressed(reasons)
+    for row in kept:
+        print(file_of(root, row["md_path"], row["pdf_path"]) + "    <- " + row["title"]
+              + "  (id=" + row["id"] + ")")
 
 
-def cmd_notes(cur, root, args):
+def cmd_notes(cur, root, args, sup):
     rows = cur.execute(
-        "SELECT n.content, n.origin, i.title, i.id FROM library_notes n"
+        "SELECT n.content, n.origin, i.title, i.id, i.kind, i.md_path, i.pdf_path, i.file_path"
+        " FROM library_notes n"
         " LEFT JOIN library_items i ON i.id = n.item_id ORDER BY n.created_at",
     ).fetchall()
     if not rows:
         print("(还没有任何笔记)")
         return
-    for content, origin, title, iid in rows:
-        print("- [" + (title or "?") + "] " + " ".join(content.split()))
-        if origin != "user":
-            print("    来源:" + origin)
-        if iid:
-            print("    条目 id:" + iid)
+    kept = []
+    reasons = []
+    for row in rows:
+        # 条目已经不在了(LEFT JOIN 出 NULL)时**不挡** —— 判定不了的东西由"找不到"
+        # 去说,不该在这儿被说成"被屏蔽了",那是两句不同的话(同主进程的处置)。
+        if row["id"] is not None:
+            reason = suppress_reason(cur, sup, as_rec(row))
+            if reason:
+                reasons.append(reason)
+                continue
+        kept.append(row)
+    report_suppressed(reasons)
+    for row in kept:
+        print("- [" + (row["title"] or "?") + "] " + " ".join(row["content"].split()))
+        if row["origin"] != "user":
+            print("    来源:" + row["origin"])
+        if row["id"]:
+            print("    条目 id:" + row["id"])
 
 
-def cmd_collections(cur, root, args):
+def cmd_collections(cur, root, args, sup):
+    """分类树本身**不过屏蔽** —— 它是目录,不是资料。
+
+    用户屏蔽一个分类,意思是"里面的条目不进上下文";分类自己还得显示得出来,否则
+    他在设置页里根本找不到刚才屏蔽的那个。
+    """
     rows = cur.execute(
         "SELECT id, name, kind, parent_id FROM library_collections ORDER BY kind, sort_order, name",
     ).fetchall()
@@ -315,7 +729,19 @@ def main():
     root = find_data_root(args.root)
     conn = connect(root)
     try:
-        args.fn(conn.cursor(), root, args)
+        cur = conn.cursor()
+        # 规则与大类映射每个进程只读一次 —— 一批命令共用同一份判定。
+        # ⚠️ 只调**一次** load_suppress_rule:调两次的话,坏 JSON 那条告警会被打两遍
+        # (第一遍读 nodes、第二遍读 extensions),看起来像"两个地方都坏了"。
+        kind_groups, group_names = load_kind_groups(cur)
+        rule = load_suppress_rule(cur)
+        sup = {
+            "nodes": set(rule["nodes"]),
+            "extensions": rule["extensions"],
+            "kind_groups": kind_groups,
+            "group_names": group_names,
+        }
+        args.fn(cur, root, args, sup)
     finally:
         conn.close()
 

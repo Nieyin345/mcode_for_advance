@@ -160,6 +160,22 @@ function materialKindIds(): string[] {
 }
 
 /**
+ * 被屏蔽的条目在写工具里说的**同一句话**。
+ *
+ * 读工具(`library_search` / `library_items`)挡掉之后是**数**着说("另有 N 条被屏蔽
+ * 规则挡住了"),因为那几条本来就是一整批;这四条是**按条**点名给的 id,所以按条说。
+ *
+ * 措辞与 `library/manifest.ts` 里 `attachToChat` 那句**一字不差** —— 同一个规矩在
+ * 模型那里应该是同一句话,不该因为它这次是"挂载"还是"写笔记"就换一种说法。
+ *
+ * ⚠️ 判据本身只有一份(`library/suppress.ts` 的 `suppressionReasonOfItem`),
+ * 这里只负责把原因拼成一句人话,不重写判定。
+ */
+function suppressedNote(reason: string): string {
+  return `${reason}被屏蔽了(设置 → 资料库类型)`;
+}
+
+/**
  * 这个 server 的工具表 —— **只有声明,不碰 SDK**。
  *
  * 抽出来的原因见 `./sdk.ts` 的 `McpToolSpec`:同一份表还要给网页端那条通路用
@@ -579,17 +595,34 @@ export function libraryMcpTools(): McpToolSpec[] {
           ids: z.array(z.string()).min(1).describe("条目 id 列表,来自 library_search / library_items"),
         },
         handler: async (args: { ids: string[] }) => {
-          // 排队本身是同步的(任务行当场落库),下载在后台慢慢跑 —— 这里只回报
-          // "排上了没有、现在什么状态",不等着它下完。
-          enqueueDownloads(args.ids);
-          const jobs = DownloadJobRepo.list();
           const lines: string[] = [];
+          // **屏蔽是硬过滤,写工具一样过这道门。** 这一条从前只判"id 在不在库里",
+          // 于是被屏蔽的条目照样能被排进下载队列 —— 那是**真去抓网络**的动作
+          // (`enqueueDownloads` 会立刻起异步队列),不只是多读了一行。
+          //
+          // 判据只有一份(`library/suppress.ts`),这里不重写它。挡掉的那几条要
+          // **按条报出来**,而且不能说成"库里没有这个 id" —— 那是两回事,模型会
+          // 据此向用户汇报"这条不在库里"。
+          const allowed: string[] = [];
           for (const id of args.ids) {
             const item = LibraryRepo.get(id);
             if (!item) {
               lines.push(`- ${id} —— 库里没有这个 id`);
               continue;
             }
+            const reason = suppressionReasonOfItem(id);
+            if (reason) {
+              lines.push(`- 《${item.title}》\n  id=${id}\n  ${suppressedNote(reason)} —— 没有排队下载`);
+              continue;
+            }
+            allowed.push(id);
+          }
+          // 排队本身是同步的(任务行当场落库),下载在后台慢慢跑 —— 这里只回报
+          // "排上了没有、现在什么状态",不等着它下完。
+          enqueueDownloads(allowed);
+          const jobs = DownloadJobRepo.list();
+          for (const id of allowed) {
+            const item = LibraryRepo.get(id)!;
             if (item.pdfPath) {
               // enqueueDownloads 对已有 PDF 的条目直接跳过(force 才重下)—— 如实说,
               // 别让用户以为又下了一遍。
@@ -673,6 +706,14 @@ export function libraryMcpTools(): McpToolSpec[] {
         handler: async (args: { itemId: string; content: string; origin?: "user" | "ai" }) => {
           const item = LibraryRepo.get(args.itemId);
           if (!item) return fail(`找不到条目 ${args.itemId}`);
+          // **屏蔽是硬过滤。** 写笔记是"往库里加东西",被屏蔽的条目照写的话,用户
+          // 下次翻到它就会以为屏蔽规则失灵了 —— 而且模型写完会向用户汇报"已写好
+          // 笔记",那句话本身是错的(他并不想在这条上留东西)。
+          //
+          // 与"条目不存在"分开说:那是两句不同的话(判据只有一份,见
+          // `library/suppress.ts`)。
+          const reason = suppressionReasonOfItem(args.itemId);
+          if (reason) return fail(`没能给《${item.title}》写笔记:${suppressedNote(reason)}`);
           const content = (args.content ?? "").trim();
           if (!content) return fail("笔记内容不能为空");
           NoteRepo.save({ itemId: args.itemId, content, origin: args.origin ?? "user" });
@@ -699,6 +740,15 @@ export function libraryMcpTools(): McpToolSpec[] {
             const item = LibraryRepo.get(id);
             if (!item) {
               lines.push(`- ${id} —— 库里没有这个 id`);
+              continue;
+            }
+            // **屏蔽是硬过滤。** 这一条从前只判"条目在不在",被屏蔽的照样能转 ——
+            // 而转换是**往库里落文件**(`markdown/<ab>/<cd>/<sha>.md`),不只是读。
+            //
+            // 按条挡、按条说,不说成"库里没有这个 id"(判据见 `library/suppress.ts`)。
+            const reason = suppressionReasonOfItem(id);
+            if (reason) {
+              lines.push(`- 《${item.title}》\n  id=${id}\n  ${suppressedNote(reason)} —— 没有转换`);
               continue;
             }
             const res = await convertItemToMarkdown(item, { force: args.force });
@@ -741,6 +791,15 @@ export function libraryMcpTools(): McpToolSpec[] {
         handler: async (args: { itemId: string; path: string }) => {
           const item = LibraryRepo.get(args.itemId);
           if (!item) return fail(`库里没有这个 id:${args.itemId}`);
+          // **屏蔽是硬过滤,而且是这一步最要紧的门。** 挂转录产物是**覆盖式写**:
+          // 它会把整个 `markdown/imported/<id>/` 目录删掉重建(见
+          // `library/adoptMarkdown.ts` 的整目录替换),再把外部文件搬进来 —— 被屏蔽
+          // 的条目照挂的话,不只是多了一条记录,而是往用户明确说过"不要"的那条上
+          // 落了一整包文件。
+          //
+          // 与"库里没有这个 id"分开说(判据只有一份,见 `library/suppress.ts`)。
+          const reason = suppressionReasonOfItem(args.itemId);
+          if (reason) return fail(`没能挂上《${item.title}》:${suppressedNote(reason)}`);
           const res = adoptMarkdownFile(args.itemId, args.path);
           if (!res.ok) {
             // **逐种情况说人话** —— "失败"两个字让模型和用户都无从下手。
@@ -782,7 +841,8 @@ export function libraryMcpTools(): McpToolSpec[] {
             const dir = l.direction === "out" ? "→ 它关联的" : "← 关联它的";
             // **被屏蔽的要当场说**。仓储那一层不看屏蔽(`viewsOf` 是纯查询),而这件事
             // 对模型是有用的:它看到"这一条被屏蔽了"就不会白试一次挂载 —— 挂载那道门
-            // 是硬过滤,屏蔽的挂不上(`manifest.ts` 的 `checkSuppressed`)。界面上那句
+            // 是硬过滤,屏蔽的挂不上(`library/manifest.ts` 的 `attachToChat`,判据是
+            // `library/suppress.ts` 的 `suppressionReasonOfItem`)。界面上那句
             // 灰字也是同一个原因(`ipc/library.ts` 的 handler 补的是同一个字段)。
             const reason = l.otherItemId ? suppressionReasonOfItem(l.otherItemId) : null;
             return `- ${dir}:${who}\n  linkId=${l.id}${l.otherItemId ? `  条目 id=${l.otherItemId}` : ""}${
