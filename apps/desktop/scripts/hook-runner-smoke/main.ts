@@ -405,6 +405,61 @@ eq("会话查不到 → 不跑", i.hits(), 0);
 
 /* ──────────────── 收尾 ──────────────── */
 
+/* ──────────────── 7. 主语是纯的,事实是有状态的 ──────────────── */
+
+console.log("\noneEvent → 事实一次、主语可以算很多遍");
+
+// 这条盯的是 `automationRunner` 那个 bug 的形状:它对**每条触发器**各问一次主语,而
+// 问主语早先顺带消费了"`tool.result` 的工具名"那份状态 —— 于是第一条触发器取走工具名,
+// 后面几条拿到空,带 `matcher` 的**安静地不响**。修法是把 `eventSubjects` 拆成两半:
+// 有状态的 `factsOf`(一次事件只调一次)和纯的 `subjectsOf`(想算几遍算几遍)。
+//
+// 这里直接对着那个模块验 —— 它是钩子和自动化**共用**的那一份(`automation-smoke` 里
+// 也有一条同形状的,两边都钉住)。
+const { createEventSubjects } = await import("@main/hooks/eventSubjects.js");
+{
+  const es = createEventSubjects();
+  const use = {
+    type: "tool.use",
+    sessionId: "s",
+    toolName: "Write",
+    toolCallId: "c9",
+    input: {},
+    requiresApproval: false,
+  } as unknown as RuntimeEvent;
+  const result = {
+    type: "tool.result",
+    sessionId: "s",
+    toolCallId: "c9",
+    isError: false,
+    content: "ok",
+  } as unknown as RuntimeEvent;
+
+  const facts = es.factsOf(use);
+  eq("tool.use 的事实里有工具名", facts.toolName, "Write");
+  // 主语是纯的:同一个结果事件、不同 cwd 各算一遍,每一遍都该拿到那个工具名。
+  eq("第一遍主语", (es.subjectsOf(result, "D:/a", facts.toolName) ?? []).join(), "Write");
+  eq("第二遍主语还是它(纯的)", (es.subjectsOf(result, "D:/b", facts.toolName) ?? []).join(), "Write");
+
+  // 对照:`factsOf` 对 `tool.result` 是**回查即消费**的。所以"每条触发器各调一次
+  // factsOf"的做法下,第一条拿到工具名,后面几条拿到空 —— 这就是那个 bug 的形状,
+  // 也正是 `automationRunner` 现在只调一次、把结果传给纯的 `subjectsOf` 的原因。
+  const es2 = createEventSubjects();
+  es2.factsOf(use);
+  eq("第一次回查拿到工具名", es2.factsOf(result).toolName, "Write");
+  eq("第二次回查就没有了(消费过了)", es2.factsOf(result).toolName, undefined);
+
+  // 路径主语那条路与工具名无关,算几遍都一样(cwd 不同结果不同,这是**对的**)。
+  const files = {
+    type: "turn.files",
+    sessionId: "s",
+    files: [{ filePath: join(WORK, "src", "a.ts") }],
+  } as unknown as RuntimeEvent;
+  const s1 = es.subjectsOf(files, WORK, undefined) ?? [];
+  check("路径主语给出相对路径那一份", s1.includes("src/a.ts"), s1);
+  eq("同一个 cwd 再算一遍结果一样", JSON.stringify(es.subjectsOf(files, WORK, undefined)), JSON.stringify(s1));
+}
+
 check("hooks.json 确实落在(临时)数据根下", hooksFilePath().startsWith(DATA));
 
 rmSync(DATA, { recursive: true, force: true });

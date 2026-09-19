@@ -10,6 +10,20 @@
  *
  * 所以两边各持一个 {@link createEventSubjects} 的**实例**(状态是每次调用新起的,不共享),
  * 逻辑只有这一份。
+ *
+ * ## 为什么分成"事实"和"主语"两半
+ *
+ * 因为它们一个**有状态**、一个没有,而混在一个 `of()` 里会让"问主语"顺带消费状态 ——
+ * 于是**问第二遍的答案和第一遍不一样**。那不是理论问题:`automationRunner` 是对**每条
+ * 触发器**各问一次的(每条的项目目录不同,路径主语要按各自的算),而 `tool.result` 的
+ * 工具名是**回查即消费**的。混着用的结果是第一条触发器把工具名取走,后面几条拿到空,
+ * 带着 `matcher` 的触发器**安静地不响**。
+ *
+ * 所以:
+ *  - {@link EventSubjects.factsOf} —— 有状态,**一次事件只调一次**(谁调谁负责只调一次);
+ *  - {@link EventSubjects.subjectsOf} —— 纯函数,想算几遍算几遍,`cwd` 是它的入参;
+ *  - {@link EventSubjects.of} —— 两半合起来跑一遍,给"一条事件只处理一次"的调用方
+ *    (钩子就是这种:一条事件要么匹配某条钩子、要么不匹配,只问一次)。
  */
 import { relative } from "node:path";
 import type { RuntimeEvent } from "@contracts/runtime";
@@ -22,7 +36,26 @@ export interface EventSubjectsOf {
   subjects?: readonly string[];
 }
 
+/**
+ * 事件里那部分**与 cwd 无关**的事实。目前只有工具名。
+ *
+ * 单独拆出来,是因为它**有状态**(见下)而主语那部分没有 —— 混在一起的结果是调用方
+ * 每"问一次主语"就顺带消费一次状态,于是**问第二遍的答案和第一遍不一样**。
+ */
+export interface EventFacts {
+  toolName?: string;
+}
+
 export interface EventSubjects {
+  /** 事件里与 cwd 无关的事实。⚠️ **一次事件只调一次** —— 它是有状态的(见下)。 */
+  factsOf(e: RuntimeEvent): EventFacts;
+  /**
+   * `matcher` 拿去比的主语。**纯函数** —— 同一条事件、不同的 cwd 各算一遍都对,
+   * 想要几遍要几遍。`cwd` 只影响 `turn.files` 那种路径主语;工具名由调用方从
+   * {@link EventSubjects.factsOf} 取一次传进来。
+   */
+  subjectsOf(e: RuntimeEvent, cwd: string, toolName?: string): readonly string[] | undefined;
+  /** 一次算完 = `factsOf` + `subjectsOf`。一条事件只跑一遍的调用方(钩子)用这个。 */
   of(e: RuntimeEvent, cwd: string): EventSubjectsOf;
 }
 
@@ -37,32 +70,50 @@ export function createEventSubjects(): EventSubjects {
    */
   const toolNames = new Map<string, string>();
 
-  return {
-    /**
-     * 这次事件的**主语**(`matcher` 拿去比的东西)和**工具名**(载荷里的 `toolName`)。
-     *
-     * 两件事一起做,是因为它们共用一份状态:工具名得先记下来,`tool.result` 那种只带
-     * `toolCallId` 的事件才查得到(见 `toolNames`)。
-     */
-    of(e: RuntimeEvent, cwd: string): EventSubjectsOf {
-      switch (e.type) {
-        case "tool.use":
-        case "approval.request":
-          // 记下来给后面的 `tool.result` 用(见 `toolNames` 的注释)。
-          toolNames.set(e.toolCallId, e.toolName);
-          // 上界:异常情况下(结果一直没回来)不让它无限长。
-          if (toolNames.size > 500) toolNames.clear();
-          return { toolName: e.toolName, subjects: [e.toolName] };
-        case "tool.result": {
-          const name = toolNames.get(e.toolCallId);
-          toolNames.delete(e.toolCallId);
-          return name === undefined ? {} : { toolName: name, subjects: [name] };
-        }
-        case "turn.files":
-          return { subjects: fileSubjects(e.files.map((f) => f.filePath), cwd) };
-        default:
-          return {};
+  const factsOf = (e: RuntimeEvent): EventFacts => {
+    switch (e.type) {
+      case "tool.use":
+      case "approval.request":
+        // 记下来给后面的 `tool.result` 用(见 `toolNames` 的注释)。
+        toolNames.set(e.toolCallId, e.toolName);
+        // 上界:异常情况下(结果一直没回来)不让它无限长。
+        if (toolNames.size > 500) toolNames.clear();
+        return { toolName: e.toolName };
+      case "tool.result": {
+        const name = toolNames.get(e.toolCallId);
+        // ⚠️ **回查即消费。** 这就是"一次事件只能问一遍"的来源。
+        toolNames.delete(e.toolCallId);
+        return name === undefined ? {} : { toolName: name };
       }
+      default:
+        return {};
+    }
+  };
+
+  /** 纯的那一半 —— 只依赖事件本身、toolName 和 cwd,不碰 `toolNames`。 */
+  const subjectsOf = (
+    e: RuntimeEvent,
+    cwd: string,
+    toolName?: string,
+  ): readonly string[] | undefined => {
+    if (e.type === "turn.files") {
+      return fileSubjects(e.files.map((f) => f.filePath), cwd);
+    }
+    // 有工具名的事件:主语就是那个名字。查不到工具名的 `tool.result` 给 `undefined`
+    // —— "没有主语"和"主语不限制"是两件事(见 `matchesHook`)。
+    return toolName === undefined ? undefined : [toolName];
+  };
+
+  return {
+    factsOf,
+    subjectsOf,
+    of(e: RuntimeEvent, cwd: string): EventSubjectsOf {
+      const facts = factsOf(e);
+      const subjects = subjectsOf(e, cwd, facts.toolName);
+      return {
+        ...(facts.toolName !== undefined ? { toolName: facts.toolName } : {}),
+        ...(subjects !== undefined ? { subjects } : {}),
+      };
     },
   };
 }

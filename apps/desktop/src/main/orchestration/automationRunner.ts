@@ -531,11 +531,24 @@ class AutomationRunner {
     // `turn.done` 触发器叫起来十次。
     if (e.type === "turn.done" && runtimeManager.isTurnEndHeld(e.sessionId)) return;
 
+    // ⚠️ **一次事件只取一次事实。** `factsOf()` 是**有状态**的:`tool.result` 那个事件
+    // 本身不带工具名,靠前面那条 `tool.use` 记下来的小表回查,而**回查即消费**
+    // (见 `eventSubjects.ts`)。早先这里在循环里对每条触发器各调一次 `of()`,于是第一个
+    // 触发器就把工具名取走了,后面那些拿到的是空 —— 两条 `tool.result` 触发器盯着同一个
+    // 工具时,只有排在前面那条会响,而且是**安静地**不响。
+    //
+    // 事实取一次;主语是纯的,按每条触发器自己的 cwd 各算一遍(路径主语要看 cwd)。
+    const facts = this.subjects.factsOf(e);
+
     for (const trigger of this.all()) {
       if (trigger.spec.kind !== "event" || !trigger.spec.events.includes(event)) continue;
-      // ⚠️ 主语按**触发器自己的项目目录**算(相对路径那一份才有意义)。这同时意味着
-      // `tool.result` 那种要回查工具名的事件也走这份状态 —— 与钩子共用一份逻辑,不各记一份。
-      const { toolName, subjects } = this.subjects.of(e, trigger.cwd);
+      // 主语按**触发器自己的项目目录**算(相对路径那一份才有意义)。工具名那部分是
+      // 上面取过一次的事实,与钩子共用同一份逻辑,不各记一份。
+      const subjects = this.subjects.subjectsOf(e, trigger.cwd, facts.toolName);
+      const { toolName } = facts;
+      // `matcher` 是**分号/逗号分隔的一串**,按后缀 glob 比(见 `matchesAnyGlob`)。
+      // 留空 = 不限制。**没给主语却写了 matcher → 不匹配**("配错了不跑"比"配错了却
+      // 每次都跑"安全)。这与 `matchesAnyGlob` 对空主语返回 false 是同一条。
       if (trigger.spec.matcher.length > 0 && !matchesAnyGlob(trigger.spec.matcher, subjects ?? [])) {
         continue;
       }

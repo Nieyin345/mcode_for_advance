@@ -47,7 +47,7 @@ import {
 } from "@contracts/nodeType";
 import { validateDag } from "@contracts/workflow";
 import type { WorkflowDoc, WorkflowEdge, WorkflowNode } from "@contracts/workflow";
-import type { WorkflowChoiceOption } from "@contracts/runtime";
+import type { WorkflowChoiceOption, RuntimeEvent } from "@contracts/runtime";
 import type { Session } from "@contracts/session";
 import { createEventSubjects } from "@main/hooks/eventSubjects.js";
 import { describeTriggerPayload, payloadFactsOf } from "@main/orchestration/automationPayload.js";
@@ -997,6 +997,41 @@ console.log("\n事件触发 · HOOK_EVENT_OF + 事件主语与钩子同源");
 
   // 触发器**没有自己的一套事件表**:太吵的事件与钩子一样,被故意挡在外面。
   eq("text.delta 故意不暴露(与钩子同一张表)", HOOK_EVENT_OF["text.delta"], null);
+
+  // ⚠️ **一次事件只能取一次事实。** `factsOf` 对 `tool.result` 是回查即消费的,而
+  // `automationRunner.onEvent` 是对**每条触发器**各算一次主语的(每条的项目目录不同,
+  // 路径主语要按各自的算)。早先它在循环里对每条触发器各调一次有状态的 `of()`,于是
+  // 第一条触发器把工具名取走,后面几条拿到空 —— `matchesAnyGlob` 对空主语返回 false,
+  // 那几条带 matcher 的触发器**安静地不响**(两条盯同一个工具的触发器只有第一条会跑)。
+  // 现在事实取一次、主语那半是纯的,所以下面这样问几遍都对。
+  {
+    // ⚠️ **新起一个实例、新的 toolCallId。** 上面那个 `subjects` 已经把 `tc1` 消费掉了
+    // —— 拿它再问一遍等于在验证"消费过了就没有",而这条要验的恰恰相反。
+    const es = createEventSubjects();
+    const TC = "tc_purity";
+    es.factsOf({
+      type: "tool.use",
+      sessionId: "s",
+      toolCallId: TC,
+      toolName: "Write",
+      input: {},
+      requiresApproval: false,
+    } satisfies RuntimeEvent);
+    const res = {
+      type: "tool.result",
+      sessionId: "s",
+      toolCallId: TC,
+      isError: false,
+      content: "",
+    } satisfies RuntimeEvent;
+    const facts = es.factsOf(res);
+    eq("事实取一次:工具名在", facts.toolName, "Write");
+    const first = es.subjectsOf(res, "D:\\projA", facts.toolName);
+    const second = es.subjectsOf(res, "D:\\projB", facts.toolName);
+    eq("第一条触发器算出的主语", (first ?? []).join(), "Write");
+    eq("第二条触发器算出的主语也一样(纯的,不会被前一条消费掉)", (second ?? []).join(), "Write");
+    check("两条都能匹配上 matcher", matchesAnyGlob("Write", first ?? []) && matchesAnyGlob("Write", second ?? []));
+  }
 }
 
 /* ────────────────────────── 收尾 ────────────────────────── */
