@@ -16,10 +16,6 @@
  * 需要登录态的 PDF 下载走内嵌浏览器,不走这里 —— 见 `downloader.ts` 的说明。
  */
 import { spawn } from "node:child_process";
-import { rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 
 /** 代理连接被拒的 curl 报错特征。只在这种**明确的**代理故障时才绕过代理;
  *  代理在跑但因鉴权/DNS 失败的情况不该绕过,否则会掩盖真正的问题。
@@ -158,21 +154,10 @@ function shorten(s: string, max = 300): string {
   return one.length > max ? `${one.slice(0, max)}…` : one;
 }
 
-/* ─────────────── 通用请求(POST / 上传 / 下载字节) ─────────────── */
+/* ─────────────── 子进程收集输出 ─────────────── */
 
-/**
- * 一次原始请求的结果。`body` 是 **Buffer** —— 上传/下载要处理二进制(zip、PDF),
- * 按 utf8 转成字符串会毁掉内容。
- */
-export interface HttpRawResult {
-  ok: boolean;
-  status?: number;
-  body?: Buffer;
-  error?: string;
-}
-
-/** 子进程收集输出的**唯一实现**:stdout 保留为 Buffer(上传/下载要处理二进制,
- *  按 utf8 转成字符串会毁掉内容)。要字符串版用 {@link run}。 */
+/** 子进程收集输出的**唯一实现**:stdout 保留为 Buffer(取数要处理响应体,按
+ *  utf8 转成字符串会毁掉二进制内容)。要字符串版用 {@link run}。 */
 function runBuffer(
   cmd: string,
   args: string[],
@@ -216,86 +201,3 @@ function runBuffer(
   });
 }
 
-/**
- * 通用请求:POST / 上传字节 / 下载字节都走它。代理策略与 {@link fetchJson} 一致
- * ——先继承代理,只有在**确实是代理连接被拒**时才剥代理重试,避免掩盖真问题。
- *
- * `body` 是 Buffer 时写临时文件再用 `--data-binary @file` 喂给 curl:命令行参数
- * 传不了 200MB 的 PDF,Windows 上的引号/转义也会把它搞坏。
- *
- * ⚠️ MinerU 明确要求**上传时不要带 Content-Type** —— 所以这里默认不设,要设就由
- * 调用方在 `headers` 里显式给。
- */
-export async function curlRaw(
-  url: string,
-  opts: {
-    method?: string;
-    headers?: Record<string, string>;
-    body?: Buffer | string;
-    timeoutMs?: number;
-    /** 上传/下载大文件时用(默认 30s 对 200MB 的 PDF 不够)。 */
-  } = {},
-): Promise<HttpRawResult> {
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  let bodyFile: string | null = null;
-  const cleanup = () => {
-    if (bodyFile) {
-      try {
-        rmSync(bodyFile, { force: true });
-      } catch {
-        /* 临时文件清不掉不该让请求失败 */
-      }
-      bodyFile = null;
-    }
-  };
-
-  const args = [
-    "-sS", // 静默进度,但保留报错;不跟随重定向由 -L 控制
-    "-L",
-    "--fail-with-body",
-    "--max-time",
-    String(Math.ceil(timeoutMs / 1000)),
-  ];
-  if (opts.method) args.push("-X", opts.method);
-  for (const [k, v] of Object.entries(opts.headers ?? {})) args.push("-H", `${k}: ${v}`);
-  if (opts.body !== undefined) {
-    // ⚠️ curl 用 `--data-binary` 时会**自作主张加**一个
-    // `Content-Type: application/x-www-form-urlencoded`。
-    // 对签名敏感的**预签名上传 URL**(Aliyun OSS 这类)这是致命的:签名是照着
-    // "没有 Content-Type"算出来的,凭空多出这个头就 `SignatureDoesNotMatch`。
-    // MinerU 的文件上传正是这种情况 —— 它文档里那句「上传文件时无须设置
-    // Content-Type」说的其实是「**不许有**」。
-    // 所以:调用方没显式指定时,把 curl 默认的那个删掉(`-H "X:"` 是 curl 的
-    // "移除这个头"写法)。
-    const hasContentType = Object.keys(opts.headers ?? {}).some(
-      (k) => k.toLowerCase() === "content-type",
-    );
-    if (!hasContentType) args.push("-H", "Content-Type:");
-    if (typeof opts.body === "string") {
-      args.push("--data-binary", opts.body);
-    } else {
-      bodyFile = join(tmpdir(), `mcode-http-${randomUUID()}.bin`);
-      writeFileSync(bodyFile, opts.body);
-      args.push("--data-binary", `@${bodyFile}`);
-    }
-  }
-  args.push(url);
-
-  try {
-    const first = await runBuffer("curl", args, { timeoutMs, stripProxy: false });
-    if (first.ok) return { ok: true, body: first.stdout };
-    if (/无法启动/.test(first.stderr)) {
-      return { ok: false, error: `本机没有可用的 curl:${shorten(first.stderr)}` };
-    }
-    if (PROXY_REFUSED_RE.test(first.stderr)) {
-      const bypass = await runBuffer("curl", args, { timeoutMs, stripProxy: true });
-      if (bypass.ok) return { ok: true, body: bypass.stdout };
-      return { ok: false, error: `代理不可用,绕过代理直连也失败:${shorten(bypass.stderr)}` };
-    }
-    // --fail-with-body:HTTP 错误码时 curl 退出非 0,但 stdout 里带着错误详情
-    const detail = first.stdout.length > 0 ? first.stdout.toString("utf8") : first.stderr;
-    return { ok: false, status: first.code ?? undefined, error: shorten(detail) };
-  } finally {
-    cleanup();
-  }
-}
