@@ -877,7 +877,8 @@ class AutomationRunner {
     this.facts.recordSetup(triggerSeedOf(trigger), true);
   }
 
-  private skip(trigger: LoadedTrigger, reason: string): AutomationRunResult {    log.info(`[automation] 「${trigger.workflowName}」/「${trigger.title}」这一次没跑:${reason}`);
+  private skip(trigger: LoadedTrigger, reason: string): AutomationRunResult {
+    log.info(`[automation] 「${trigger.workflowName}」/「${trigger.title}」这一次没跑:${reason}`);
     // 「该跑而没跑成」也要让界面看见(AUTO-09):重入跳过尤其如此 —— 界面上只写
     // 「上次运行:进行中」,而这里的原因是用户问「我改了文件它怎么没跑」的答案。
     this.facts.recordBlocked(triggerSeedOf(trigger), reason, Date.now());

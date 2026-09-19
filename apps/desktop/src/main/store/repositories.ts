@@ -1939,7 +1939,8 @@ export const LibraryRepo = {
     persist();
   },
 
-  setMarkdown(id: string, mdRelPath: string): void {    getDb().run("UPDATE library_items SET md_path = ?, updated_at = ? WHERE id = ?", [
+  setMarkdown(id: string, mdRelPath: string): void {
+    getDb().run("UPDATE library_items SET md_path = ?, updated_at = ? WHERE id = ?", [
       v(mdRelPath), v(Date.now()), v(id),
     ]);
     persist();
@@ -2354,7 +2355,8 @@ export const DownloadJobRepo = {
   },
 
   /** 更新任务状态。`bumpAttempts` 仅在真正发起过一次下载时传 true。 */
-  setStatus(itemId: string, status: DownloadStatus, error?: string, bumpAttempts = false): void {    const now = Date.now();
+  setStatus(itemId: string, status: DownloadStatus, error?: string, bumpAttempts = false): void {
+    const now = Date.now();
     getDb().run(
       `UPDATE download_jobs SET status = ?, error = ?, attempts = attempts + ?, updated_at = ? WHERE item_id = ?`,
       [v(status), v(error), v(bumpAttempts ? 1 : 0), v(now), v(itemId)],

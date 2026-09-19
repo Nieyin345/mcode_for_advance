@@ -279,7 +279,8 @@ function moveDirInto(src: string, dest: string): void {
   }
 }
 
-/** 在解压目录里找 full.md(官方保证有,但结果可能在子目录里)。 */function findFullMd(dir: string): string | null {
+/** 在解压目录里找 full.md(官方保证有,但结果可能在子目录里)。 */
+function findFullMd(dir: string): string | null {
   const direct = join(dir, "full.md");
   if (existsSync(direct)) return direct;
   // 退一步:按目录名递归找一层(结果通常铺在根,个别情况在 <name>/ 下)

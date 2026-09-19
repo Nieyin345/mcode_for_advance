@@ -152,7 +152,8 @@ export function triggerSpecKeyOf(spec: TriggerSpec): string {
 /**
  * 现在有哪些目录该开着 `fs.watch`。**只有文件触发器的项目目录**,去重:
  * 两条自动化盯同一个项目、或一条自动化挂两个文件触发器,都只该有一个 watcher。
- */export function watcherDirsOf(
+ */
+export function watcherDirsOf(
   triggers: ReadonlyArray<{ spec: { kind: string }; cwd: string }>,
 ): string[] {
   const out: string[] = [];

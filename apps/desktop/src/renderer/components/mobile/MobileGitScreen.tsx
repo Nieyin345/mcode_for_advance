@@ -888,7 +888,8 @@ function BranchSheet({
 /** Git-operation error banner: multi-line-friendly message with copy (for
  *  pasting the failure into a search / chat) and dismiss affordances. Copy
  *  uses the shared helper so it works over the mobile shell's plain-HTTP
- *  LAN transport, where navigator.clipboard is unavailable. */function ErrorBanner({ message, onDismiss }: { message: string; onDismiss: () => void }) {
+ *  LAN transport, where navigator.clipboard is unavailable. */
+function ErrorBanner({ message, onDismiss }: { message: string; onDismiss: () => void }) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   useEffect(() => {
