@@ -1268,10 +1268,11 @@ export async function startWorkflowRun(args: {
       // 了一遍、而且**和调度器算的不是同一个词**:这一头给的是标题 ‖ **清单名**
       // (`子 agent`),调度器给的是标题 ‖ **类型 id**(`mcode.agent`)。
       //
-      // 下面马上 `.map(v => v.name)`、把 `example` 丢了,所以**今天还没炸**:提示词的
-      // 样板走的是 `nodeInputBuilders` → 调度器的 `branchOptionsOf`,一直是对的。但
-      // `example` 在接口上的用途就是"给模型当样板",谁哪天不再丢它,这一步就会教模型
-      // 一个调度器不认识的值 —— 于是必定失败且看不出为什么。一份实现没有这个面。
+      // 下面马上 `.map(v => v.name)`、把 `example` 丢了,所以**今天还没炸**:提示词里那
+      // 句"交出「出路」"与它列出的一串名字,是调度器拿**同一个 `edgeOptionNameOf`** 现
+      // 拼的(`branchOptionsOf` → `decisionSection`),一直是对的。但 `example` 在接口上
+      // 的用途就是"给模型当样板",谁哪天不再丢它,这一步就会教模型一个调度器不认识的值
+      // —— 于是必定失败且看不出为什么。一份实现没有这个面。
       const options =
         manifest !== undefined && isModelDecider(manifest, e.node.params)
           ? outgoingEdgesOf(doc, e.node.id).map((edge) =>
