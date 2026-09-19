@@ -169,10 +169,20 @@ export function SearchFilterBar({ workflowId }: { workflowId: string }) {
         return (
           <label key={cond.name} className="flex shrink-0 items-center gap-1.5">
             {/* 条件名上挂着解释(配置时写给模型的那句):悬停可见 —— 用户看得见
-                "选它是什么口径",不必切回设置页翻。 */}
+                "选它是什么口径",不必切回设置页翻。
+
+                **条件名自己也要能截断。** 它不给宽度上限的话,一个长名字(「文献类型与
+                出版状态」)会把那一格撑到一百多像素,而这一条是**横向滚**的 —— 屏幕宽
+                但条件多的时候,右边的条件就往看不见的地方跑。名字截断掉,腾出来的宽度
+                留给下拉(下拉里的字才是用户要读的那个)。
+
+                ⚠️ **是 `shrink-0` + `max-w` + `truncate`,不是 `shrink` + `truncate`。**
+                可收缩的 flex 项在地方不够时**会一路缩到 0**(`truncate` 的 `overflow:hidden`
+                让 `min-width:auto` 失效,于是没有下限)—— 实测窄屏下量到 `nameW: 0`:
+                一整排下拉全没有名字。挤不下应该横滑(这条本来就能横滑),不是把名字抹掉。 */}
             <span
-              className="shrink-0 text-[0.7857em] text-content-subtle"
-              title={cond.note !== "" ? `${cond.name} — ${cond.note}` : undefined}
+              className="max-w-[160px] shrink-0 truncate text-[0.7857em] text-content-subtle"
+              title={cond.note !== "" ? `${cond.name} — ${cond.note}` : cond.name}
             >
               {cond.name}
             </span>
@@ -188,7 +198,12 @@ export function SearchFilterBar({ workflowId }: { workflowId: string }) {
               title={current === "" ? undefined : current}
               // 原生的 select:它在这个位置比自绘弹层稳(输入框区域已经有一层
               // base-ui 的 portal),而这里要的就是"点开、选一个"这么简单的事。
-              className="max-w-[420px] rounded border border-edge bg-surface/40 px-1.5 py-0.5 text-[0.7857em] text-content-muted outline-none hover:text-content focus:border-accent"
+              //
+              // ⚠️ **`shrink-0` 不能少。** 父级 `label` 是 flex 项,默认 `min-width:auto`
+              // —— 这一格被压窄之后 `max-w-[420px]` 兜不住,长候选值会被浏览器在中间
+              // 截掉(实测:字被切在半个汉字上)。它是 `shrink-0`,所以"挤不下就横滑"
+              // 那条规矩在这里成立,而不是"挤不下就切字"。
+              className="max-w-[420px] shrink-0 rounded border border-edge bg-surface/40 px-1.5 py-0.5 text-[0.7857em] text-content-muted outline-none hover:text-content focus:border-accent"
             >
               {/* 未设的显示「—」:诚实的空态 —— 它在提示词里也不存在,两头一致。 */}
               {current === "" && <option value="">—</option>}
