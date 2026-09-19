@@ -69,7 +69,13 @@ import {
 } from "@contracts/nodeType";
 import { checkOutput, outputValueText, outputVarsFor, outputVarsOf, pickOutputs, type OutputVar } from "@contracts/outputConstraint";
 import type { PermissionMode, WorkflowChoiceOption } from "@contracts/runtime";
-import { outgoingEdgesOf, type WorkflowCapability, type WorkflowNode } from "@contracts/workflow";
+import {
+  edgeOptionNameOf,
+  outgoingEdgesOf,
+  workflowNodeRefName,
+  type WorkflowCapability,
+  type WorkflowNode,
+} from "@contracts/workflow";
 import { injectEntryCriteria } from "./criteriaInject.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { transcriptText } from "@main/claude/nodeTranscript.js";
@@ -1256,18 +1262,21 @@ export async function startWorkflowRun(args: {
       // 已经按同一份参数查过产出了,这里只借名字,不参与判定。
       const manifest = manifests?.get(e.node.type);
       // **模型选的分支的「出路」是 `outputVarsFor` 追加的那一项**,它不在用户的变量表里
-      // —— 追加的判据是"这条出边有没有名字",所以这里要把它那几条出路算出来(规则同
-      // 调度器的 `branchOptionsOf`:填了 label 用 label,没填用目标节点的标题)。名单在
-      // 这一处只影响那个示例值(卡片只要**名字**),但**算成空的话就会少一行「出路」**:
-      // 提示词里要了,卡片上没有,用户看到的是"这一步没给出方向"。
+      // —— 追加的判据是"这条出边有没有名字",所以这里要把它那几条出路算出来。
+      //
+      // ⚠️ **名字和调度器共用一份**(`edgeOptionNameOf`,2026-09-19)。这里原来自己写
+      // 了一遍、而且**和调度器算的不是同一个词**:这一头给的是标题 ‖ **清单名**
+      // (`子 agent`),调度器给的是标题 ‖ **类型 id**(`mcode.agent`)。
+      //
+      // 下面马上 `.map(v => v.name)`、把 `example` 丢了,所以**今天还没炸**:提示词的
+      // 样板走的是 `nodeInputBuilders` → 调度器的 `branchOptionsOf`,一直是对的。但
+      // `example` 在接口上的用途就是"给模型当样板",谁哪天不再丢它,这一步就会教模型
+      // 一个调度器不认识的值 —— 于是必定失败且看不出为什么。一份实现没有这个面。
       const options =
         manifest !== undefined && isModelDecider(manifest, e.node.params)
-          ? outgoingEdgesOf(doc, e.node.id).map((edge) => {
-              const label = (edge.label ?? "").trim();
-              if (label.length > 0) return label;
-              const target = doc.nodes.find((n) => n.id === edge.to);
-              return target === undefined ? edge.to : displayTitle(target, manifests?.get(target.type));
-            })
+          ? outgoingEdgesOf(doc, e.node.id).map((edge) =>
+              edgeOptionNameOf(edge, doc, workflowNodeRefName),
+            )
           : [];
       const outputKeys = manifest
         ? outputVarsFor(manifest, e.node.params, options).map((v) => v.name)

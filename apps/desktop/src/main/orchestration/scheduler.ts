@@ -101,10 +101,12 @@ import {
 } from "@contracts/nodeType";
 import {
   buildForwardAdjacency,
+  edgeOptionNameOf,
   loopBackEdgesOf,
   nodesOnLoopOf,
   outgoingEdgesOf,
   upstreamClosure,
+  workflowNodeRefName,
   type WorkflowDoc,
   type WorkflowEdge,
   type WorkflowNode,
@@ -632,7 +634,7 @@ class Run {
   titleOf = (id: string): string => {
     const node = this.doc.nodes.find((n) => n.id === id);
     if (!node) return id;
-    return node.title.trim().length > 0 ? node.title : node.type;
+    return workflowNodeRefName(node);
   };
 
   manifestOfCached = (typeId: string): NodeTypeManifest | undefined =>
@@ -731,7 +733,7 @@ class Run {
     this.liveUpstreamOf(nodeId).filter((up) => this.outcomes.get(up)?.status !== "unselected");
 
   edgeLabelOf = (edge: WorkflowEdge): string =>
-    (edge.label ?? "").trim() || this.titleOf(edge.to);
+    edgeOptionNameOf(edge, this.doc, workflowNodeRefName);
 
   branchOptionsOf = (nodeId: string): WorkflowChoiceOption[] =>
     outgoingEdgesOf(this.doc, nodeId).map((e) => {

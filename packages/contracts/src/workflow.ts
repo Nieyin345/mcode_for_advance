@@ -154,6 +154,72 @@ export function outgoingEdgesOf(doc: WorkflowDoc, nodeId: string): WorkflowEdge[
   return doc.edges.filter((e) => e.from === nodeId);
 }
 
+/** 「这一步叫什么」—— 出边没填 `label` 时要拿它当选项名,所以它属于契约层。 */
+export type NodeNameOf = (node: WorkflowNode) => string;
+
+/**
+ * 出边在**选项名**上用哪个值 —— 分支节点的「出路」是谁、报错里列的名字是什么、
+ * 模型要原样交回来让 `matchDecisionOption` 去对的那个词,全在这里定。
+ *
+ * ## 为什么收口成一个函数(2026-09-19)
+ *
+ * 这条规则**原来有五份**,而且其中两份算出来的**不是同一个词**:
+ *
+ * | 谁 | 没填 `label` 时 |
+ * |---|---|
+ * | `scheduler.edgeLabelOf`(真判定的) | 目标标题 ‖ **类型 id**(`mcode.agent`) |
+ * | `runner` 收场时算产出名字 | 目标标题 ‖ **清单名**(`子 agent`) |
+ * | 「插入变量」菜单 | 目标标题 ‖ **类型 id** |
+ * | `WorkflowCanvas`(连线上的字) | 只认 `label`,没填就不画 |
+ * | `NodeInspector`(输入框) | 只认 `label` |
+ *
+ * 后两份是纯显示(没填就显示空,该用户填),不构成问题。
+ *
+ * ## 那两份分叉**今天还没炸** —— 但它是这么炸的
+ *
+ * 说实话:`example` 在另外两处**当下都被丢掉了**。`runner` 拿到手立刻
+ * `.map(v => v.name)`,`example` 不要了;菜单那一项渲染的是 `item.name`
+ * (`ParamField` 压根不显示示例)。真正进提示词的样板只有一条路 ——
+ * `nodeInputBuilders` 拿 `scope.decide.options`,而那**直接来自调度器的
+ * `branchOptionsOf`**。所以提示词那一头一直是对的,**今天没有一条路径踩到这个分叉**。
+ *
+ * 留着修,是因为这个形状迟早会炸,而且炸得很难查:`example` 的用途在接口上就写着
+ * "给模型当样板"(`outputExampleOf` 把它拼进「照这个样子填」那一段)。将来有谁把那
+ * 两处丢弃改成使用 —— 这非常自然,东西就摆在那儿 —— 两份代码就当场对不上:模型被
+ * 教了一个调度器不认识的值,这一步**必定失败**,报「这一步没有走成任何一条路」,
+ * 而用户照着提示词怎么改都对不上。一份实现没有这个面。
+ *
+ * 第三方节点类型的清单名可以随便改,`title ?? 类型 id` 这条兜底只依赖
+ * `WorkflowNode.type`(稳定),所以契约层不需要认识清单。
+ *
+ * ⚠️ **这不是"显示名"**。渲染端那个给人看的名字(`workflowView.nodeTitle`)在标题
+ * 留空时给的是**清单名**,和这里**有意不同**:一个用来找人,一个用来当取值契约。
+ * 要改哪一份之前先想清楚是哪一种。
+ */
+export function edgeOptionNameOf(
+  edge: WorkflowEdge,
+  doc: Pick<WorkflowDoc, "nodes">,
+  nameOf: NodeNameOf,
+): string {
+  const label = (edge.label ?? "").trim();
+  if (label.length > 0) return label;
+  const target = doc.nodes.find((n) => n.id === edge.to);
+  if (target === undefined) return edge.to;
+  return nameOf(target);
+}
+
+/**
+ * 写进产物里的那个「这一步叫什么」—— `标题 ‖ 类型 id`。
+ *
+ * 见 {@link edgeOptionNameOf}:它和渲染端显示用的名字**不是一回事**,别混。类型 id
+ * 而不是类型名,是因为清单名是插件可以改的、id 不是 —— 存进产物/报错里的词不能因为
+ * 换个插件版本就变。
+ */
+export function workflowNodeRefName(node: Pick<WorkflowNode, "title" | "type">): string {
+  const title = node.title.trim();
+  return title.length > 0 ? title : node.type;
+}
+
 /* ── 自动化 ── */
 
 /**

@@ -24,40 +24,30 @@
  */
 import {
   buildAdjacency,
+  edgeOptionNameOf,
   outgoingEdgesOf,
   upstreamClosure,
+  workflowNodeRefName,
   type WorkflowDoc,
   type WorkflowNode,
 } from "@contracts/workflow";
 import { referenceableOutputsOf, type OutputVar } from "@contracts/outputConstraint";
-import type { NodeTypeCatalog, NodeTypeManifest } from "@contracts/nodeType";
+import type { NodeTypeCatalog } from "@contracts/nodeType";
 import type { MessageId } from "@renderer/lib/i18n/core.js";
 
 /**
  * 这一步**能有**的那几条出路叫什么 —— 模型选的分支必交的那一项(「出路」)的取值
- * 范围。
+ * 范围。规则在 `@contracts/workflow` 的 `edgeOptionNameOf` 里,**只有那一份**。
  *
- * 规则**和调度器逐字一致**(`scheduler.branchOptionsOf` / `edgeLabelOf`):填了 `label`
- * 用 `label`,没填用**目标节点的名字**(标题,没起标题就用清单名、再退回类型 id ——
- * 同 `runner.displayTitle`)。
- *
- * 这不是可选的美化:菜单里列的那个「出路」能不能对上,决定用户 `{{那步.出路}}` 之后
- * 拿到的值**认不认得出下游**。两边算得不一样的话,菜单里看着对的选项跑起来会对不上,
- * 而那种失败要等那一步跑完才暴露。
+ * ⚠️ **别在这里"顺手用渲染端那个名字"。** 渲染端显示用的名字(标题 ‖ 清单名)是**给人
+ * 找节点**的;而这个值是**取值契约**(调度器认的就是它),一个没起标题的节点上两者
+ * 分叉。菜单自己只拿这个值判"「出路」在不在"(示例不显示),但 `example` 在接口上的
+ * 用途是给模型当样板 —— 两边各写一份,等谁把那处用起来就会教错。
  */
-function branchOptionNamesOf(
-  doc: WorkflowDoc,
-  node: WorkflowNode,
-  catalog: NodeTypeCatalog,
-): string[] {
-  return outgoingEdgesOf(doc, node.id).map((edge) => {
-    const label = (edge.label ?? "").trim();
-    if (label.length > 0) return label;
-    const target = doc.nodes.find((n) => n.id === edge.to);
-    if (target === undefined) return edge.to;
-    if (target.title.trim().length > 0) return target.title;
-    return catalog.entries.find((e) => e.id === target.type)?.manifest.name ?? target.type;
-  });
+function branchOptionNamesOf(doc: WorkflowDoc, node: WorkflowNode): string[] {
+  return outgoingEdgesOf(doc, node.id).map((edge) =>
+    edgeOptionNameOf(edge, doc, workflowNodeRefName),
+  );
 }
 
 /**
@@ -187,7 +177,7 @@ export function insertableGroups(
     // 是运行时填的、不在里面。共用它会让菜单少列(拿它发提示词则会凭空多要)。两者
     // 的关系见那个函数的注释。
     const vars: OutputVar[] = manifest
-      ? referenceableOutputsOf(manifest, node.params, branchOptionNamesOf(doc, node, catalog))
+      ? referenceableOutputsOf(manifest, node.params, branchOptionNamesOf(doc, node))
       : [];
     // 只列**填过值**的参数:没填的解算出来是空串,列出来只会让人插一个寂寞。
     // 顺序跟清单走 —— 和参数表单同一个顺序,找起来不费劲。

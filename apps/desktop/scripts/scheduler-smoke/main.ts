@@ -2121,6 +2121,53 @@ const fork = docOf(
 }
 
 {
+  // **出边没填选项名时,取的是「标题 ‖ 类型 id」,而且报错里列的就是它**(2026-09-19)。
+  //
+  // 这个值是一条**取值契约**:模型要把它原样交回来,`matchDecisionOption` 拿它去对边;
+  // 对不上这一步就失败。原来这个规则在仓库里有五份,其中收场算产出名字那一份给的是
+  // 「标题 ‖ **清单名**」,和这里不一样。今天还没炸(那一份的 `example` 当场被丢了),
+  // 但 `example` 的用途就是给模型当样板 —— 两份摆着就是等谁用起来。现在共用一份。
+  //
+  // 目标节点**留空标题**才踩得到这条兜底 —— `addNode` 总会写上清单名,所以只有导入/
+  // 手写的图会这样,而那是合法的(`WorkflowNode.title` 的注释写着"留空则显示类型名")。
+  const h = makePorts({ summary: () => '{"出路": "mcode.agent"}' });
+  await runWorkflow({
+    doc: docOf(
+      [
+        { ...branchNode("F", "判断"), params: { decider: "model" } },
+        // 标题留空 —— 兜底就在这儿。`node()` 默认拿 id 当标题,所以要显式盖掉。
+        { ...node("B"), title: "" },
+      ],
+      [edge("F", "B")],
+    ),
+    prompt: "开始",
+    ports: h.ports,
+    signal: controller().signal,
+  });
+  eq("★ 没起标题的分支选得通(交的就是调度器认的那个名字)", outcomeOf(h, "B")?.status, "success");
+  // 反证:交**清单名**对不上。这条同时钉住"上面那条不是恒真"(否则随便交什么都过)。
+  const bad = makePorts({ summary: () => '{"出路": "子 agent"}' });
+  const badResult = await runWorkflow({
+    doc: docOf(
+      [
+        { ...branchNode("F", "判断"), params: { decider: "model" } },
+        { ...node("B"), title: "" },
+      ],
+      [edge("F", "B")],
+    ),
+    prompt: "开始",
+    ports: bad.ports,
+    signal: controller().signal,
+  });
+  eq("★ 交清单名走不通(证明上面那条不是恒真)", badResult.status, "failed");
+  check(
+    "报错里列的是调度器认的那个名字(用户照着改就有救)",
+    outcomeOf(bad, "F")?.error?.includes("mcode.agent") === true,
+    outcomeOf(bad, "F")?.error,
+  );
+}
+
+{
   // **挂在岔路口时被取消。** 这条只在真实现里才有意义(那里是一个真的 promise),
   // 但调度器这一头必须做到:取消之后这个节点**定案成 cancelled**,而且下游一个都不
   // 派发 —— 不定案的话它会永远停在"没跑",而 `RunResult` 里的收尾逻辑会把它当成

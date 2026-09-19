@@ -131,7 +131,14 @@ import {
   type NodeTypeEntry,
   type NodeTypeManifest,
 } from "@contracts/nodeType";
-import type { WorkflowDoc, WorkflowEdge, WorkflowListEntry, WorkflowNode } from "@contracts/workflow";
+import {
+  workflowNodeRefName,
+  type WorkflowDoc,
+  type WorkflowEdge,
+  type WorkflowListEntry,
+  type WorkflowNode,
+} from "@contracts/workflow";
+import { matchDecisionOption, referenceableOutputsOf } from "@contracts/outputConstraint";
 
 let failures = 0;
 let checks = 0;
@@ -2152,6 +2159,65 @@ console.log("\n分支节点:选项在出边上");
     "F",
   );
   check("没有出路时明确警告", orphanBranch.includes("一根出路都没有"));
+
+  // **「没填选项名时叫什么」只有一份实现**(2026-09-19)。
+  //
+  // 这条规则原来有五份,其中收场时算产出名字那一份给的是 **标题 ‖ 清单名**,而调度器
+  // 给的是 **标题 ‖ 类型 id**。今天还没炸(`example` 在那两处都被丢了),但 `example`
+  // 的用途就是给模型当样板 —— 两份摆着就是等谁用起来,而用起来的那天模型会被教一个
+  // 调度器不认识的值,这一步必定失败、且看不出为什么。
+  //
+  // 这里断言那条**跨层不变量**:菜单算出来的选项名,必须是 `matchDecisionOption` 认的
+  // 名字。夹具故意用一个**没起标题**的节点 —— 那正是两份曾经分叉的地方。
+  {
+    // F(分支)→ B(没起标题)→ C(**在这里插变量**)。
+    //
+    // 「出路」是**分支 F** 的产出,所以必须在 F 的下游那一格插才看得见它;而它的
+    // 取值来自 F 的出边指向谁 —— 也就是**没起标题的 B**。
+    const untitled: WorkflowDoc = {
+      ...CUSTOM,
+      nodes: [
+        { ...node("F", 0, 0, BRANCH_MANIFEST.id), params: { decider: "model" } },
+        // 标题留空是**合法**的(见 `WorkflowNode.title`),而这正是分叉点。
+        { ...node("B", 200, 0), title: "" },
+        node("C", 200, 100),
+      ],
+      edges: [
+        { id: edgeId("F", "B"), from: "F", to: "B" },
+        { id: edgeId("B", "C"), from: "B", to: "C" },
+      ],
+    };
+    const target = untitled.nodes[1] as WorkflowNode;
+    const optionName = workflowNodeRefName(target);
+    eq("名字兜底到类型 id,不是清单名", optionName, "mcode.agent");
+
+    // 菜单真的把这一项列出来了 —— 光有共享函数不够,还得看它有没有被用上(选项名算成
+    // 空的话「出路」压根不会出现,见 `withDecideVar`)。
+    const decide = insertableGroups(untitled, "C", CATALOG)
+      .flatMap((g) => g.items)
+      .find((i) => i.name === "出路");
+    check("没起标题的节点也列得出「出路」", decide !== undefined);
+    eq("插进去的写法带的是分支自己的名字", decide?.insert, "{{F.出路}}");
+    // 菜单那一项喂进去的示例值就是这个名字(它不是显示用的,但接口上写着是给模型当
+    // 样板的)。
+    const example = referenceableOutputsOf(BRANCH_MANIFEST, { decider: "model" }, [
+      optionName,
+    ]).find((v) => v.name === "出路")?.example;
+    eq("「出路」的样板就是这个名字", example, optionName);
+    // **关键**:这个值必须能对上一条边。旧代码给的是清单名「子 agent」,这条会红。
+    eq(
+      "调度器认这个值",
+      matchDecisionOption(optionName, [{ label: optionName, title: optionName }]),
+      optionName,
+    );
+    eq(
+      "清单名对不上(证明这条断言不是恒真)",
+      matchDecisionOption(BRANCH_MANIFEST.name, [
+        { label: optionName, title: optionName },
+      ]),
+      undefined,
+    );
+  }
 
   // 画布:选项名贴在线的中点上 —— 不然图上只有几根说不出名字的线。
   const branchCanvas = renderCanvas(doc, "zh");
