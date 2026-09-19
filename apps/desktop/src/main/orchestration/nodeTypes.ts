@@ -476,6 +476,21 @@ export function builtinTriggerManifest(): NodeTypeManifest {
   return found;
 }
 
+/**
+ * 内置的"命令"节点类型(见下方 `BUILTIN_NODE_TYPES` 里那一项)。
+ *
+ * 导出**只为一件事**:冒烟要能对着**真的那一份**断言两件事 —— 它的 `usage` 里不再
+ * 留着"受工作流权限约束"那句已经在实现里落空的话(它跟 `showsNodeCapability` 的
+ * 结论必须说同一件事),以及它的参数表里确实有「产出变量」这一格(下游 `{{那一步.某变量}}`
+ * 能不能取到值,取决于用户填不填这张表 —— 所以那一格在不在是**用户可见的契约**)。
+ * 手抄一份进夹具测的是抄本,抄本会跟真货漂开;这两条偏偏都只在真货上才有意义。
+ */
+export function builtinCommandManifest(): NodeTypeManifest {
+  const found = BUILTIN_NODE_TYPES.find((m) => m.id === NODE_COMMAND_TYPE_ID);
+  if (found === undefined) throw new Error("内置节点清单里没有命令 —— 上面那张表被改坏了");
+  return found;
+}
+
 const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
   {
     id: MAIN_NODE_TYPE_ID,
@@ -656,8 +671,12 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
     icon: "terminal",
     category: "自动化",
     runner: { kind: "command" },
-    // **这一项是真的生效的**:它真起进程。默认 `exec` —— 命令节点的本职就是动手;
-    // 节点上可以覆盖,但一个命令节点改成 `read` 多半是画错了。
+    // ⚠️ **这一项对它不生效,填 `exec` 只是因为清单必须有一个。** 它起的是**进程**,
+    // 而进程没有"权限模式"这回事 —— 这一步能做什么由命令里写的那一条决定,改这个
+    // 下拉框改不动它(见 `@contracts/nodeType` 的 `showsNodeCapability`,那张表把
+    // `command` 和 `code` 一并归到"不管")。填 `exec` 是**如实描述它多半会干什么**,
+    // 不是承诺;界面上也正因如此不给它摆那个控件 —— 摆一个不生效的框等于承诺一件
+    // 做不到的事。
     capability: "exec",
     params: [
       {
@@ -682,7 +701,7 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
     usage:
       "**动手的那一步。** 它起一个进程跑你写的那条命令,进程退出这一步才结束 —— 输出按行记着,下游能取到**退出码**和**输出尾部**(太长只留最后几 KB,早前的输出被丢掉,要看全请让命令自己写文件)。\n" +
       "  ⚠️ **非零退出码不算这一步失败。** 命令挂了,这一步照样算跑完(失败的是命令,不是流程 —— 训练脚本退出码 1,你可能正想注入「重试一次」)。要按成败分流:下游接一个**决定权给模型**的分支,判据写「退出码是 0 走成功那条,不是 0 走失败那条」。\n" +
-      "  **没有审批**:命令是你画图时写死在这儿的那一条,不是跑到一半才问的事 —— 所以别把不认识的图里的命令节点当成无害的。这一步声明了 `exec` 能力,受工作流权限那一套约束。\n" +
+      "  **没有审批,「能力」那一项也管不着它。** 命令是你画图时写死在这儿的那一条,不是跑到一半才问的事;而起的是**进程** —— 进程没有「权限模式」这回事,`exec` 那一项只是清单为了形状完整而声明的(见 `@contracts/nodeType` 的 `showsNodeCapability`),把它改成别的也改不动这条命令能做什么。**所以别把不认识的图里的命令节点当成无害的**:上面写的那条命令会在你的机器上原样跑起来,没人会先问你一句。\n" +
       "  **什么时候用它**:自动化的「手」—— 起训练、跑评测、拉日志、存一次盘。要模型读着结果说话,后面接子 agent;要无人值守地分流,后面接分支(模型选)。",
   },
   {

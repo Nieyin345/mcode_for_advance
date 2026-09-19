@@ -1,4 +1,5 @@
-import type { NodeTypeManifest } from "@contracts/nodeType";
+import { showsNodeCapability, type NodeTypeManifest, type NodeOutcome } from "@contracts/nodeType";
+import { checkOutput, outputVarsOf, referenceableOutputsOf, usesOutputRules } from "@contracts/outputConstraint";
 import type { WorkflowDoc, WorkflowEdge, WorkflowNode } from "@contracts/workflow";
 import {
   exportWorkflowDoc,
@@ -6,6 +7,16 @@ import {
   validateWorkflowDoc,
   WORKFLOW_SCHEMA_VERSION,
 } from "@main/orchestration/workflowValidation.js";
+// 4g / 4h 两段要断言的是**真货**:内置清单那一条 `mcode.command` 的 `usage` 文案,以及
+// 真调度器 + 真命令执行器跑一遍时,那张产出变量表到底被判成什么。手抄一份进夹具测的是
+// 抄本 —— 而这两条偏偏只在真货上才有意义(抄本没有"跟实现说同一件事"这回事)。
+// run.sh 为此带了 stubs + banner。
+import { builtinCommandManifest } from "@main/orchestration/nodeTypes.js";
+import { runCommandNode } from "@main/orchestration/commandRunner.js";
+import { runWorkflow, type RunPorts, type RunReport } from "@main/orchestration/scheduler.js";
+import type { SpawnFn } from "@main/lib/spawnRun.js";
+import { EventEmitter } from "node:events";
+import { Readable } from "node:stream";
 
 /* ── 断言骨架 ── */
 
@@ -21,6 +32,15 @@ function check(name: string, ok: boolean, detail?: unknown): void {
 }
 function hasCode(report: { errors: { code: string; nodeId?: string }[] }, code: string, nodeId?: string): boolean {
   return report.errors.some((e) => e.code === code && (nodeId === undefined || e.nodeId === nodeId));
+}
+/** `warnings` 可以整段缺席 —— 那正是「导入把提醒丢了」这个 bug 的形状,断言要能
+ *  把它报成一条 FAIL,而不是让冒烟自己崩在这儿。 */
+function hasWarning(
+  report: { warnings?: { code: string; nodeId?: string }[] },
+  code: string,
+  nodeId?: string,
+): boolean {
+  return (report.warnings ?? []).some((w) => w.code === code && (nodeId === undefined || w.nodeId === nodeId));
 }
 
 /* ── 夹具:一份最小的类型清单(纯数据,不读盘) ── */
@@ -477,6 +497,334 @@ check(
   paddedTitle.errors,
 );
 check("那份文档整体是干净的", paddedTitle.errors.length === 0, paddedTitle.errors);
+
+/* ── 4f. 导入也要走到「触发器不接上游」那条提醒(2026-09-20) ── */
+
+// **导入那条路原来把 warnings 整个丢了。** `validateWorkflowDoc` 明明算出了
+// `graph.trigger-has-in-edge`,而 `importWorkflowDoc` 的成功分支只回 `{ok, doc}`
+// —— 提醒一个字节都没传出去。于是同一张图:直接过校验器有提醒,从文件导进来
+// **一声不响**,图上那条永远不会生效的边谁都看不见。
+//
+// 这不是"把它升级成错误":那条检查的取舍写在它的注释里(保存闸门不能比旧语义更严,
+// 存量图里可能真有这种边)。要做的是**让导入也走到同一个检查**,并把它的提醒带回去。
+const importInEdge = importWorkflowDoc(
+  exportWorkflowDoc(
+    doc(
+      [
+        node("M", "mcode.main", SAY),
+        node("T", "mcode.trigger", { triggerKind: "schedule" }),
+        node("C", "mcode.agent", SAY),
+      ],
+      [edge("e1", "M", "T"), edge("e2", "T", "C")],
+    ),
+  ),
+  OPTS,
+);
+check(
+  "导入成功时带回 warnings(不再是 {ok, doc} 两键)",
+  importInEdge.ok && "warnings" in importInEdge,
+  importInEdge,
+);
+check(
+  "导入那条路也算得出来「触发器有入边」",
+  importInEdge.ok && hasWarning(importInEdge, "graph.trigger-has-in-edge", "T"),
+  importInEdge.ok ? importInEdge.warnings : importInEdge.report,
+);
+// **只提醒不拦**:这一条和上面那条是一对 —— 只断言"报出来了"的话,把它升级成
+// error 也照样过。存量图(_validateDag 从不查入边)必须还存得下、还进得来。
+check("而且导入照旧放行(没有升级成错误)", importInEdge.ok, importInEdge.ok ? undefined : importInEdge.report.errors);
+
+// 反面:触发器只往外出边是**正常**的,不能连这个也一起报。少了这条,"一律有触发器就提醒"
+// 那种写坏也会绿。
+const importNoInEdge = importWorkflowDoc(
+  exportWorkflowDoc(
+    doc(
+      [
+        node("M", "mcode.main", SAY),
+        node("T", "mcode.trigger", { triggerKind: "schedule" }),
+        node("C", "mcode.agent", SAY),
+      ],
+      [edge("e1", "T", "C")],
+    ),
+  ),
+  OPTS,
+);
+check(
+  "触发器没有入边 → 导入不带这条提醒(不误报)",
+  importNoInEdge.ok && !hasWarning(importNoInEdge, "graph.trigger-has-in-edge"),
+  importNoInEdge.ok ? importNoInEdge.warnings : importNoInEdge.report,
+);
+
+// **同一份判断,导入与校验器必须说同一句话。** 这一条盯的是"别在导入那条路里另写一遍
+// 判据" —— 两处各写一份,迟早一边报一边不报,而用户看到的是同一张图两种说法。
+const sideBySide = validateWorkflowDoc(
+  doc(
+    [
+      node("M", "mcode.main", SAY),
+      node("T", "mcode.trigger", { triggerKind: "schedule" }),
+      node("C", "mcode.agent", SAY),
+    ],
+    [edge("e1", "M", "T"), edge("e2", "T", "C")],
+  ),
+  OPTS,
+);
+check(
+  "导入与直接校验:同一张图、同一份警告",
+  importInEdge.ok &&
+    JSON.stringify((importInEdge.warnings ?? []).map((w) => [w.code, w.nodeId])) ===
+      JSON.stringify(sideBySide.warnings.map((w) => [w.code, w.nodeId])),
+  { imported: importInEdge.ok ? importInEdge.warnings : null, direct: sideBySide.warnings },
+);
+
+/* ── 4g. 命令节点的「能力」那一项:文案不能承诺一件实现里没有的事(2026-09-20) ──
+ *
+ * 起因:`mcode.command` 的 `usage` 里原本写着"这一步声明了 `exec` 能力,**受工作流权限
+ * 那一套约束**"。这句话跟实现**对不上**:
+ *
+ *  - 能力→权限模式只有 `prompt`(子 agent)那条路在用(`permissionModeForCapability`
+ *    只被 `createNodeSession` 调用);命令节点根本不建会话,它 `spawn` 一个进程,
+ *    进程没有"权限模式"这回事;
+ *  - `@contracts/nodeType` 的 `showsNodeCapability` 把 `command` / `code` 明确归到
+ *    **"不管"**那一档,界面据此**不给它摆那个控件**(摆一个不生效的框 = 承诺一件做
+ *    不到的事)。
+ *
+ * 于是同一件事有了两个说法:清单对模型说"受约束",界面 AND 契约说"管不着"。修的是
+ * 清单那一句(实现不动 —— 见报告里"为什么没有实现审批")。
+ *
+ * 这一段断言的是**两句话必须同一个方向**,而不是"某个词在不在":只钉"没有『受工作流
+ * 权限』"的话,以后把它换成"受权限约束"照样绿。所以先取契约的结论,再要求文案顺从它。
+ */
+const cmdForClaim = builtinCommandManifest();
+const capabilityCounts = showsNodeCapability(cmdForClaim);
+check(
+  "4g-1 契约:命令节点的「能力」那一项不管事(它就是 '不管' 那一档)",
+  capabilityCounts === false,
+  { showsNodeCapability: capabilityCounts, runner: cmdForClaim.runner.kind },
+);
+check(
+  "4g-2 文案与契约同向:不再说它受工作流权限约束",
+  !(cmdForClaim.usage ?? "").includes("受工作流权限"),
+  cmdForClaim.usage,
+);
+// 反过来,那句话**该说清的**是"没有审批" —— 它是这张图最招恨的翻车方式(不认识的图里
+// 一个命令节点会原样跑起来,没人先问一句)。删掉整段而不是改对,会让这一条红。
+check(
+  "4g-3 但「没有审批」这句警示还在(不能靠删掉了事)",
+  (cmdForClaim.usage ?? "").includes("没有审批"),
+  cmdForClaim.usage,
+);
+// 命令节点**没有任何审批闸门**这件事,在节点类型契约那边也是写死的口径 —— 这条把
+// 两处口径绑在一起,免得以后有人只改一边。
+check(
+  "4g-4 参数表里确实有「产出变量」那一格(下游能不能取值取决于用户填不填它)",
+  cmdForClaim.params.some((p) => p.key === "outputVars"),
+  cmdForClaim.params.map((p) => p.key),
+);
+
+/* ── 4h. 命令节点:那张产出变量表,在哪一步才变成下游能取到的值(2026-09-20) ──
+ *
+ * 起因是一条提醒:命令 / 终端节点会**静默跳过**产出变量表,下游 `{{某步.某变量}}`
+ * 永远取不到值,界面上也没有任何提示。分开验之后,**两半的结论是相反的**:
+ *
+ *  - 「终末节点跳过」**是设计,不是 bug**。`withOutputCheck` 只对**没有下游**的节点
+ *    跳过(表既不进提示词也不查):没有下游就没人取,硬查只会让最后一步平白失败。
+ *    `mcode.agent` 这类节点的终末一步也一样跳过 —— 它是**所有**节点的规矩,不是命令
+ *    节点被特殊对待。**这一半是伪问题。**
+ *
+ *  - 但**非终末**命令节点上,那张表确实只能被一种东西满足:命令自己**打印出一个 JSON
+ *    对象**。因为校验和取值(`checkOutput` / `pickOutputs`,在 `@contracts/outputConstraint`)
+ *    读的一直是 `outcome.summary`;而 `commandRunner` 的 `summary` = stdout 尾部
+ *    (协议里的 `summary` 有就优先)。**这一半是真问题**,而且缺口比"要打印 JSON"更深:
+ *    清单把 `@@mcode:result` 写成脚本上报结构化产出的正式办法、协议里明明白白有个
+ *    `outputs` 字段,可**只用协议、不写 summary**,值落在 `outcome.outputs` 上,校验却
+ *    读不到 —— 这一步反而**失败**。等于说:照文档做的脚本会翻车,把同一个值再
+ *    `JSON.stringify` 一遍塞进 `summary` 才行(4h-4 就是那个对照)。
+ *
+ * ⚠️ **这一段只钉事实,不钉"应该怎样",更不在这里动手修。** 坏的是取值那一侧
+ * (`scheduler.ts` / `outputConstraint.ts` 只认 summary),这两处都**不在**本次允许改的
+ * 文件清单里。把现状钉成回归网的用处是:真去修的时候,4h-3 会**反过来** —— 那正是
+ * "修对了"的证据,而不是把这条断言当成了需求。
+ */
+
+/** 假 spawn:`deps.spawn` 要的是**一个和 `node:child_process.spawn` 同形状的函数**,
+ *  不是它起出来的那个子进程(也不是自己现编的一个普通对象)。返回处按 `SpawnFn`
+ *  断言一次 —— 形状漂了在 tsc 就报,不用等跑起来才发现。
+ *  产出按 Buffer 给 —— 真解码器认的是字节,不是字符串(见 `spawnRun`)。 */
+function fakeSpawn(lines: string[]): SpawnFn {
+  return (() => {
+    const child = new EventEmitter() as never as Record<string, unknown>;
+    (child as { stdout: unknown }).stdout = Readable.from([Buffer.from(lines.join("\n") + "\n", "utf8")]);
+    (child as { stderr: unknown }).stderr = Readable.from([Buffer.alloc(0)]);
+    (child as { killed: boolean }).killed = false;
+    (child as { kill: () => void }).kill = () => undefined;
+    (child as { pid: number }).pid = 4242;
+    setTimeout(() => {
+      (child as unknown as EventEmitter).emit("exit", 0, null);
+      (child as unknown as EventEmitter).emit("close", 0, null);
+    }, 5);
+    return child;
+  }) as unknown as SpawnFn;
+}
+
+const cmdManifest = builtinCommandManifest();
+const cmdVars = outputVarsOf(cmdManifest, { outputVars: [{ name: "年份", example: "2024" }] });
+
+const CMD_TYPES = new Map<string, NodeTypeManifest>([
+  [cmdManifest.id, cmdManifest],
+  ["mcode.agent", agentManifest("mcode.agent")],
+]);
+
+/**
+ * 把「命令节点 A → 子 agent B」这张图**真跑一遍**(真调度器 + 假 spawn),把 A 的结局
+ * 和 B 收到的提示词一起带回来。这是唯一能同时看到"校验判了什么"和"下游取到了什么"的
+ * 玩法 —— 单跑 `runCommandNode` 看不到校验,单看 outcome 看不到下游。
+ */
+async function runCmdChain(lines: string[]): Promise<{ outcome?: NodeOutcome; bPrompt: string }> {
+  const workflow = doc(
+    [
+      node("A", cmdManifest.id, { command: "冒烟用的假命令", outputVars: [{ name: "年份", example: "2024" }] }),
+      node("B", "mcode.agent", { instruction: "用 A 交出来的年份" }),
+    ],
+    [edge("e1", "A", "B")],
+  );
+  const reports: RunReport[] = [];
+  let bPrompt = "<B 没跑>";
+  const ports: RunPorts = {
+    async manifestOf(type) {
+      return CMD_TYPES.get(type);
+    },
+    async execute(n, _m, input) {
+      if (n.id === "B") {
+        bPrompt = input.prompt;
+        return { status: "success", summary: "好" };
+      }
+      return runCommandNode(
+        { command: "冒烟用的假命令", timeoutMs: 0, signal: input.signal },
+        { spawn: fakeSpawn(lines) },
+      );
+    },
+    contextLines: () => [],
+    // 这两张图里没有分支节点,`choose` 调不到。真被调到说明夹具搭错了 —— 抛出来比
+    // 悄悄返回一个"选了第一条"更早暴露问题(CLAUDE.md:坏东西显式报出来)。
+    choose: () => {
+      throw new Error("冒烟夹具:这两张图里不该有分支节点");
+    },
+    report: (e) => void reports.push(e),
+  };
+  await runWorkflow({ doc: workflow, prompt: "开始", ports, signal: new AbortController().signal });
+  const settled = reports.find(
+    (r): r is Extract<RunReport, { kind: "node.settled" }> => r.kind === "node.settled" && r.node.id === "A",
+  );
+  return { ...(settled !== undefined ? { outcome: settled.outcome } : {}), bPrompt };
+}
+
+// 4h-1 · 表是**真被读的**:命令只打印一行普通文本 → 这一步失败、下游被跳过。
+// 失败本身是对的(表是一句承诺);这条只钉"不是静默跳过"。
+const plain = await runCmdChain(["版本 1.2.3,已就绪"]);
+check(
+  "4h-1 命令打印普通文本 → 这一步失败、下游不跑(表被读了,不是静默跳过)",
+  plain.outcome?.status === "failed" && plain.bPrompt === "<B 没跑>",
+  plain,
+);
+
+// 4h-2 · 表能取到值的**唯一**路径:命令自己打印一个 JSON 对象。
+const jsonLine = JSON.stringify({ 年份: "2024" });
+const asJson = await runCmdChain([jsonLine]);
+check(
+  "4h-2 命令打印一个 JSON 对象 → 这一步成功,下游能取到那个值",
+  asJson.outcome?.status === "success" && asJson.bPrompt.includes("2024"),
+  asJson,
+);
+
+// 4h-3 · **这条是那个真问题。** 清单把 `@@mcode:result` 写成正式上报办法,协议里
+// `outputs` 字段就是放结构化产出的(`commandRunner.consumeProtocolLine`)。但只走协议、
+// `summary` 留空时,值虽然进了 `outcome.outputs`(4h-3a),校验却只读 `summary` —— 于是
+// 这一步**失败**(4h-3b)。断言的是**现状**:修好之后这两条都要反过来。
+//
+// 两条要分开断:失败那条路会把 `outputs` 丢掉(`withOutputCheck` 造的是一个只有
+// `summary` / `error` 的新 outcome),所以"值确实被解出来了"只能在**执行器原样返回的
+// 那份 outcome** 上看 —— 那也正是这段链上唯一能证明"缺的不是解析、是取值口径"的证据。
+const protoLine = `@@mcode:result ${JSON.stringify({ outputs: { 年份: "2024" } })}`;
+const protoRaw = await runCommandNode(
+  { command: "冒烟用的假命令", timeoutMs: 0, signal: new AbortController().signal },
+  { spawn: fakeSpawn([protoLine]) },
+);
+check(
+  "4h-3a 执行器把协议里的 outputs 原样解了出来(值确实到了 outcome.outputs)",
+  protoRaw.status === "success" && (protoRaw.outputs as Record<string, unknown> | undefined)?.["年份"] === "2024",
+  protoRaw,
+);
+const protoOnly = await runCmdChain([protoLine]);
+check(
+  "4h-3b 但校验只读 summary → 这一步被自己的产出表判失败,下游不跑",
+  protoOnly.outcome?.status === "failed" && protoOnly.bPrompt === "<B 没跑>",
+  protoOnly,
+);
+
+// 4h-4 · 同一份协议内容,只是**顺手**把同一个值也写进 `summary`,就成功了。这条把 4h-3
+// 的因果钉死:差别只在字段落在哪,不在"命令做没做对"。
+const protoWithSummary = await runCmdChain([
+  `@@mcode:result ${JSON.stringify({ outputs: { 年份: "2024" }, summary: JSON.stringify({ 年份: "2024" }) })}`,
+]);
+check(
+  "4h-4 同一份协议,补一个 summary 就成功 —— 差别只在字段落在哪",
+  protoWithSummary.outcome?.status === "success" && protoWithSummary.bPrompt.includes("2024"),
+  protoWithSummary,
+);
+
+// 4h-5 · 清单声明的 `exitCode` / `stdout` 走的是**另一条路**:运行时真的进了
+// `outcome.outputs`,校验也放行 `{{某步.exitCode}}`,「插入变量」菜单也列它们
+// (`manifestOutputVars`)。这条钉住"这一半是通的",免得报告把两件事混成一件。
+check(
+  "4h-5 清单声明的 exitCode/stdout 真的在 outcome.outputs 里",
+  typeof (asJson.outcome?.outputs as Record<string, unknown> | undefined)?.exitCode === "number" &&
+    (asJson.outcome?.outputs as Record<string, unknown>)?.["stdout"] === jsonLine,
+  asJson.outcome?.outputs,
+);
+check(
+  "4h-5b 这两样对下游是可引用的(菜单 = 用户定的 + 清单声明的)",
+  JSON.stringify(referenceableOutputsOf(cmdManifest, {}, []).map((v) => v.name)) ===
+    JSON.stringify(["exitCode", "stdout"]) && usesOutputRules(cmdManifest),
+  referenceableOutputsOf(cmdManifest, {}, []),
+);
+
+// 4h-6 · **终末节点是另一条规矩**(这半是伪问题的那一边):同一张表,挂在**没有下游**的
+// 命令节点上时,不查也不拦 —— 这一步照样成功。少了这条,4h-1 那种"一律失败"的写坏
+// 也会绿,而它恰恰会把"最后一步"毁掉(用户看到的会是"少了一样",而它压根没被要求过)。
+const terminal = doc(
+  [node("A", cmdManifest.id, { command: "冒烟用的假命令", outputVars: [{ name: "年份", example: "2024" }] })],
+  [],
+);
+const terminalReports: RunReport[] = [];
+await runWorkflow({
+  doc: terminal,
+  prompt: "开始",
+  signal: new AbortController().signal,
+  ports: {
+    async manifestOf(type) {
+      return CMD_TYPES.get(type);
+    },
+    async execute(_n, _m, input) {
+      return runCommandNode(
+        { command: "冒烟用的假命令", timeoutMs: 0, signal: input.signal },
+        { spawn: fakeSpawn(["版本 1.2.3,已就绪"]) },
+      );
+    },
+    contextLines: () => [],
+    choose: () => {
+      throw new Error("冒烟夹具:终末那张图里没有分支节点");
+    },
+    report: (e) => void terminalReports.push(e),
+  },
+});
+const terminalOutcome = terminalReports.find(
+  (r): r is Extract<RunReport, { kind: "node.settled" }> => r.kind === "node.settled" && r.node.id === "A",
+)?.outcome;
+check(
+  "4h-6 终末命令节点:同一张表,不查也不拦,这一步照样成功",
+  terminalOutcome?.status === "success",
+  terminalOutcome,
+);
 
 /* ── 5. 导入 / 导出(WF-08) ── */
 

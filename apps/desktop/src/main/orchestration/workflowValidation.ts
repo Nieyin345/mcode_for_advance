@@ -592,7 +592,7 @@ export function exportWorkflowDoc(doc: WorkflowDoc): string {
 }
 
 export type WorkflowImportResult =
-  | { ok: true; doc: WorkflowDoc }
+  | { ok: true; doc: WorkflowDoc; warnings: WorkflowValidationIssue[] }
   | { ok: false; report: WorkflowValidationReport };
 
 /**
@@ -607,6 +607,18 @@ export type WorkflowImportResult =
  * 注意通过与否取决于 `opts`:默认档位下,用了这台机器没装的节点类型的文档**进不来**
  * (error);调用方想要"先收下、缺的以后装"的宽松语义,传
  * `{ unknownTypeSeverity: "warning" }`。
+ *
+ * ## 成功时**也**把 `warnings` 带回去(2026-09-20)
+ *
+ * 从前成功分支只回 `{ ok: true, doc }` —— `validateWorkflowDoc` 算出来的那些
+ * **只提醒不拦**的东西(触发器有入边、断链)在导入这条路上**整个丢掉**。后果是同一
+ * 张图两种说法:直接过校验器有提醒,从文件导进来一声不响,而那条"永远不会生效的边"
+ * 就挂在那儿没人知道。
+ *
+ * 这不是"把提醒升级成错误":那些检查的取舍(保存闸门不能比旧语义更严,见
+ * `graph.orphan-node` / `graph.trigger-has-in-edge` 的注释)原样不变,导入照旧放行
+ * —— 只是**把同一次校验已经算出来的东西递给调用方**,由它决定要不要显示。
+ * 判据只有 `validateWorkflowDoc` 一份,这里不新造任何检查。
  */
 export function importWorkflowDoc(text: string, opts: WorkflowValidationOptions = {}): WorkflowImportResult {
   let parsed: unknown;
@@ -656,5 +668,5 @@ export function importWorkflowDoc(text: string, opts: WorkflowValidationOptions 
 
   const report = validateWorkflowDoc(doc, opts);
   if (!report.ok) return { ok: false, report };
-  return { ok: true, doc: { ...doc, schemaVersion: WORKFLOW_SCHEMA_VERSION } };
+  return { ok: true, doc: { ...doc, schemaVersion: WORKFLOW_SCHEMA_VERSION }, warnings: report.warnings };
 }
