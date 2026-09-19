@@ -31,7 +31,6 @@ import { Button, Input, Select } from "@renderer/components/ui/index.js";
 import { paramsForProfile, type AgentProfile } from "@contracts/agentProfile";
 import {
   NODE_FLOW_RECORD_PARAM_KEY,
-  NODE_OPTIONS_PARAM_KEY,
   NODE_PROMPT_PARAM_KEY,
   isModelDecider,
   isNodeRunnable,
@@ -174,6 +173,17 @@ const TRIGGER_HINTS: Record<WorkflowTrigger, MessageId> = {
   event: "settings.automation.triggerHint.event",
   webhook: "settings.automation.triggerHint.webhook",
 };
+
+/**
+ * 参数值里那一段**文本**,给级联用(见 `NodeParamSpecSchema.fromParam`)。
+ *
+ * 参数是自由数据,存成数字、存成 null 都可能,而级联要的只是一个"选的是哪个" ——
+ * 认不出就当没选(空串),让它退回"跟着主对话走"那一档。**不是数组就是空**这条规矩
+ * 和 `ParamField` 里的 `stringListOf` 同源:一个脏值不该让整张表单崩掉。
+ */
+function asParamText(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
 
 function WorkflowSection({
   doc,
@@ -637,12 +647,15 @@ function NodeSection({
           onChange={(value) =>
             onUpdateNode(node.id, { params: { ...node.params, [spec.key]: value } })
           }
-          // **只有「指令」和「输入选项」给「插入变量」的候选。** 别的文本参数
-          // (「期望产出」那段说明)解算器其实也认 `{{...}}`,但把菜单摊到每一处,
-          // 只会让人以为哪儿都得插变量。输入选项的「内容」里插变量是正餐 ——
-          // 选中一项后解算发生在运行时,上游产出就能拼进插到输入框的那段话里。
-          {...(spec.key === NODE_PROMPT_PARAM_KEY || spec.key === NODE_OPTIONS_PARAM_KEY
-            ? { insertables: vars }
+          // **只有「指令」给「插入变量」的候选。** 别的文本参数(「期望产出」那段说明)
+          // 解算器其实也认 `{{...}}`,但把菜单摊到每一处,只会让人以为哪儿都得插变量。
+          {...(spec.key === NODE_PROMPT_PARAM_KEY ? { insertables: vars } : {})}
+          // 清单写了 `fromParam` 的参数,候选要跟着**它指的那个参数此刻的值**收窄 ——
+          // 今天只有「模型」用它(跟着「引擎」走,见 `NodeParamSpecSchema.fromParam`)。
+          // 读的是 `node.params` 里那个值本身:顺序在 `params[]` 里已经保证了引擎排在
+          // 模型前面,所以这里读到的就是用户在上一格刚选的那个。
+          {...(spec.fromParam !== undefined
+            ? { resolvedFrom: asParamText(node.params[spec.fromParam]) }
             : {})}
         />
       ))}
@@ -660,7 +673,10 @@ function NodeSection({
           {t("settings.workflows.nodeTriggerHint")}
         </p>
       )}
-      {entry && entry.manifest.params.length === 0 && (
+      {entry && entry.manifest.params.length === 0 && !isTrigger && !isBranch && (
+        // ⚠️ **分支节点不摆这一句。** 它清单里确实是空的,但空空如也的右上角会让用户
+        // 以为"这个节点没什么可配的" —— 而它的参数长在**出边**上(选项名 + 说明,
+        // 就在下面那一段)。写了这一句,下面那段就长得像另一种东西了。
         <p className="mb-3 text-[0.7143em] leading-relaxed text-content-subtle">
           {t("settings.workflows.nodeTypeNoParams")}
         </p>
@@ -678,51 +694,6 @@ function NodeSection({
         </p>
       )}
 
-      {/* 能力:留空 = 用清单声明的默认值。**两级默认值**的分工见 `@contracts/workflow`
-          的 `capability` 注释 —— 类型作者最清楚"我这脚本要不要写盘",而用户在某个
-          具体节点上可能要收紧。 */}
-      <Field label={t("settings.workflows.nodeCapability")}>
-        <Select.Root
-          value={node.capability ?? ""}
-          onValueChange={(value) =>
-            onUpdateNode(node.id, {
-              capability: value === "" ? undefined : (value as WorkflowCapability),
-            })
-          }
-        >
-          <Select.Trigger className="w-full">
-            <Select.Value>
-              {(value: string) =>
-                value === ""
-                  ? t("settings.workflows.nodeCapabilityDefault", {
-                      fallback: entry?.manifest.capability ?? "read",
-                    })
-                  : value
-              }
-            </Select.Value>
-          </Select.Trigger>
-          <Select.Portal>
-            <Select.Positioner className="z-50">
-              <Select.Popup>
-                <Select.List>
-                  <Select.Item value="">
-                    <Select.ItemText>
-                      {t("settings.workflows.nodeCapabilityDefault", {
-                        fallback: entry?.manifest.capability ?? "read",
-                      })}
-                    </Select.ItemText>
-                  </Select.Item>
-                  {WORKFLOW_CAPABILITIES.map((capability) => (
-                    <Select.Item key={capability} value={capability}>
-                      <Select.ItemText>{capability}</Select.ItemText>
-                    </Select.Item>
-                  ))}
-                </Select.List>
-              </Select.Popup>
-            </Select.Positioner>
-          </Select.Portal>
-        </Select.Root>
-      </Field>
 
       {/* 依赖:勾一个上游。成环的那条当场禁用并说明(见文件头)。 */}
       <div className="mb-1 mt-1 text-[0.7857em] font-medium text-content-muted">
