@@ -360,6 +360,65 @@ export const LibraryDeleteItemsSchema = z.object({
 });
 export type LibraryDeleteItemsInput = z.infer<typeof LibraryDeleteItemsSchema>;
 
+/**
+ * 一条**没能删掉**的库内文件。`library.deleteItems` 的返回里带上它。
+ *
+ * ## 为什么非有不可
+ *
+ * 那个 handler 原来返回 `{ items }`,而文件删除的失败被 `dropAbs` 里一个 try/catch
+ * 吞掉了 —— catch 只有 `log.warn`,写的是 `<userData>/logs/main.log`。**用户界面上
+ * 什么都看不到**:记录从列表里消失了,`<库根>/files/xxx.pptx` 却还躺在盘上,而用户
+ * 再也没有任何入口能把它删掉(记录没了就够不着了)。这是库里唯一不可逆的操作,
+ * 结果它同时是最不可见的那一个。
+ *
+ * 形状刻意与 `library.convert` 的 `failed: Array<{ id, error }>` 对齐 —— 同一个
+ * 「这一次有几个没成、各自为什么」的表达,渲染端不用为它长第二套解析。
+ */
+export interface LibraryDeleteFailure {
+  /** 哪个条目。**记录留没留要看 `error` 说的那一档**(见 `LibraryDeleteItemsResult`)。 */
+  id: string;
+  /** 哪一份文件:`pdf` / `markdown` / `file`。`file` 是通用条目的 `filePath`
+   *  (attached 复制进 `<库根>/files/` 的那一份;`linked` 条目也可能是它,那种情况
+   *  下面 `error` 会说明那是用户自己的文件、库没动)。 */
+  kind: "pdf" | "markdown" | "file";
+  /** 删不掉的那个路径。落点在库里时是**绝对路径**(可以直接展示给用户看);
+   *  `linked` 条目越界那一档给的是**用户自己那个绝对路径**。 */
+  path: string;
+  /** 原因。系统给的原因(errno 文案)或者一句说人话的"这个路径不在库里"。 */
+  error: string;
+}
+
+/**
+ * 彻底删除的结果。
+ *
+ * ## ⚠️ `failed` 的语义是「哪一份文件没被删掉」,**不是**「哪一条没删成功」
+ *
+ * 这一点调用方必须知道,因为两档的记录去留不同:
+ *
+ *  - **文件在库里却删不掉**(`rmSync` 抛了;典型是那个位置上蹲着一个目录,Windows 上
+ *    `rmSync` 不递归就直接 `EISDIR` 失败)→ **记录留着**。删掉记录却删不掉文件,用户
+ *    就**再也够不着**那个文件了(界面上没有任何入口指向它)。留下记录 = 用户还能看着
+ *    提示自己处理(去文件管理器里删掉,或者关掉「同时删除文件」)再试一次。
+ *  - **`linked` 条目指向库外**(用户自己那个文件/目录,库只记了个路径)→ **记录照删**,
+ *    而那条 `filePath` 一个字节都不动(它不归库管)。留住记录只会造成"永远删不掉的一条"。
+ *    这一档报出来是**必须的**:用户点了「同时删除文件」,而文件没被删,不报就成了
+ *    静默的假成功。
+ *  - **坏数据**(`entryMode: "attached"` 的路径却指到库外)→ 报出来**而且记录留着**:
+ *    那是记录被写坏了,证据不能连记录一起删掉。
+ *
+ * 所以渲染端那句提示要按语义写("有 N 个文件没能删掉"),不能写成"有 N 条没删掉" ——
+ * 库外的 `linked` 那几条**记录是真的删掉了**。
+ *
+ * 同一次调用里**成功的那几条照样成功**,不是整批回滚:一条卡的目录不该把另外九十九条
+ * 正常的删除一起拖住。
+ */
+export interface LibraryDeleteItemsResult {
+  /** 删完之后**完整**的列表 —— 与别的变更类 handler 同一条约定。 */
+  items: import("../library.js").LibraryItem[];
+  /** 有哪几条的文件没删掉。全部成功时是空数组 —— **不是 undefined**,免得调用方写 `?.`。 */
+  failed: LibraryDeleteFailure[];
+}
+
 /** 集合:新建。`parentId` 为 null 表示顶层。 */
 export const CollectionCreateSchema = z.object({
   name: z.string().min(1),

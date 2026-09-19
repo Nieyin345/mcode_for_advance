@@ -1700,7 +1700,7 @@ export const LibraryRepo = {
   },
 
   /**
-   * 每个库内路径被多少条记录引用着(pdf 和 md 都算)。
+   * 每个库内路径被多少条记录引用着(pdf / md / 通用文件三列都算)。
    *
    * 「彻底删除」靠它判断一个文件还有没有别人在用,而**它不能由 `list()` 拼出来**:
    * `list` 有 200 条的默认上限,拿它当"全库"用,大库上就会漏判 —— 漏判的后果是
@@ -1708,19 +1708,34 @@ export const LibraryRepo = {
    *
    * 为什么真的会共用:PDF 按内容哈希寻址,**同一篇先用 DOI 导、又用 arXiv ID 导了
    * 一次**就是两条记录指向同一个路径。删掉其中一条时那个文件必须留下。
+   *
+   * ## ⚠️ `file_path` 这一列非数不可
+   *
+   * 通用条目(`entryMode` 那条流)的文件落在 `file_path` 上,不是 pdf/md。少了这一列,
+   * 「彻底删除」在删 attached 副本时看到的是一张**不完整的引用表**:两条记录指着同一份
+   * 副本时,删除方会以为自己是唯一的引用者,把文件端走 —— 而另一条记录还在库里,
+   * 它从此指向一个不存在的文件(预览、打开、转录全部报"文件不在了")。
+   *
+   * **`linked` 的 `file_path` 是库外的绝对路径**,它也会被数进来。这是对的、且必须的:
+   * 同一条库外路径被两条记录引用时,删掉其中一条同样不该动它(而且那份根本不是库管的,
+   * 见 `ipc/library.ts` 的 `dropAbs`)。
+   *
+   * 数的是**记录的条数**而不是"有效引用数":一行 `file_path` 是 NULL 的行不该把计数
+   * 抬起来(bump 里已经挡了空值),否则一条没有文件的记录会让别人以为"还有人在用"。
    */
   pathRefCounts(): Map<string, number> {
     const db = getDb();
-    const stmt = db.prepare("SELECT pdf_path, md_path FROM library_items");
+    const stmt = db.prepare("SELECT pdf_path, md_path, file_path FROM library_items");
     const out = new Map<string, number>();
     const bump = (p: unknown) => {
       if (typeof p !== "string" || !p) return;
       out.set(p, (out.get(p) ?? 0) + 1);
     };
     while (stmt.step()) {
-      const row = stmt.getAsObject() as { pdf_path: unknown; md_path: unknown };
+      const row = stmt.getAsObject() as { pdf_path: unknown; md_path: unknown; file_path: unknown };
       bump(row.pdf_path);
       bump(row.md_path);
+      bump(row.file_path);
     }
     stmt.free();
     return out;
@@ -1996,13 +2011,60 @@ export const LibraryRepo = {
     return out;
   },
 
-  /** 某个集合内的全部条目(按加入时间倒序)。 */
+  /** 某个集合内的全部条目(按加入时间倒序)。
+   *
+   *  ⚠️ **只看这一层,不递归** —— 分类是树(`parent_id`),而"哪些条目会跟着这个分类
+   *  一起消失"要连子分类一起算。那种要用 {@link listByCollectionTree}。 */
   listByCollection(collectionId: string): LibraryItem[] {
     const db = getDb();
     const stmt = db.prepare(
       `SELECT i.* FROM library_items i
        JOIN library_collection_items ci ON ci.item_id = i.id
        WHERE ci.collection_id = ?
+       ORDER BY ci.added_at DESC`,
+    );
+    stmt.bind([v(collectionId)]);
+    const out: LibraryItem[] = [];
+    while (stmt.step()) out.push(rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow));
+    stmt.free();
+    return out;
+  },
+
+  /**
+   * 某个集合**以及它整棵子树**里的全部条目。
+   *
+   * ## 为什么与 `listByCollection` 是两个方法,而不是给它加个 `recursive` 开关
+   *
+   * 两个调用方的语义是**真的不同**,不是同一个问题的两种答案:
+   *
+   *  - 「打开这个分类,看看里面有什么」→ `listByCollection`(这一层)。左栏点一下
+   *    「方法」只该看到直接挂在「方法」上的那些;把子分类里的也摊进来,用户会以为
+   *    这个分类里凭空多了一堆东西。
+   *  - 「删掉这个分类,哪些条目会跟着没归属」→ 本方法。子分类是**跟着一起被 CASCADE
+   *    删掉的**,它们里面的成员关系也一起没了 —— 只看这一层就会漏掉一整棵子树,
+   *    那些条目从此既不在任何分类里、也没被收进回收站(见 `library/trash.ts` 文件头
+   *    警告的那种"界面上找不回来的僵尸记录")。
+   *
+   * ## 实现
+   *
+   * 递归 CTE。**实测 sql.js 支持 `WITH RECURSIVE`**(它是 SQLite 的编译期特性,不是
+   * 扩展),所以不需要在 JS 里一层层 BFS —— 那种写法要在应用层复刻一遍"树"的概念,
+   * 而树的真相在 `parent_id` 那一列上。
+   *
+   * `UNION`(不是 `UNION ALL`)顺带挡掉数据被写坏时的环(`a → b → a`):那种情况下
+   * `UNION ALL` 会一直递归下去把进程挂死。`parent_id` 上的外键不防环。
+   */
+  listByCollectionTree(collectionId: string): LibraryItem[] {
+    const db = getDb();
+    const stmt = db.prepare(
+      `WITH RECURSIVE subtree(id) AS (
+         SELECT id FROM library_collections WHERE id = ?
+         UNION
+         SELECT c.id FROM library_collections c JOIN subtree s ON c.parent_id = s.id
+       )
+       SELECT i.* FROM library_items i
+       JOIN library_collection_items ci ON ci.item_id = i.id
+       WHERE ci.collection_id IN (SELECT id FROM subtree)
        ORDER BY ci.added_at DESC`,
     );
     stmt.bind([v(collectionId)]);

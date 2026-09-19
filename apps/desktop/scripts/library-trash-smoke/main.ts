@@ -11,29 +11,35 @@
  *    又捞回来);
  *  - 收的时候要**按条目自己的库**分组 —— 教材进教材的回收站,不是三个库共用一个。
  *
- * ## 这一套要钉出来的那条缝
+ * ## 这一套钉住的那条缝(2026-09-20 已修)
  *
  * 分类是**树**(`library_collections.parent_id REFERENCES library_collections(id)
- * ON DELETE CASCADE`),但删分类那条 IPC 只查了 `listByCollection(父)`,而它是
- * **不递归**的。于是同一个用户动作("删掉这个分类")的结果取决于一个他看不见的结构
- * 细节:
+ * ON DELETE CASCADE`),而删分类那条 IPC 原来只查 `LibraryRepo.listByCollection(父)`,
+ * 那个查询**不递归**。于是同一个用户动作(「删掉这个分类」)的结果取决于一个他看不见
+ * 的结构细节:条目挂在被删的那一层就有人收,挂在**它的子分类**下就没人收 —— 成员关系
+ * 被 CASCADE 静默摘掉,条目从此既不在回收站里、也没被删,变成界面上找不回来的僵尸记录。
+ * 那正是 `trash.ts` 自己文件头警告过的东西。
  *
- *  - 条目直接挂在被删的那个分类下 → 会被收进回收站;
- *  - 条目挂在**它的子分类**下 → 成员关系被 CASCADE 静默摘掉,**没人收**。
+ * ## §4 走的是**真的那条 handler**,不是复述
  *
- * 后者正是这个模块自己文件头警告过的那种产物:「条目从此既不在回收站里、也没被删,
- * 变成界面上找不回来的僵尸记录」。本套**先把事实钉住**(§4 的两条对照),不改代码 ——
- * 是不是该修由人拍板。
+ * ⚠️ 第一版 §4 是复述的:自己写一句 `LibraryRepo.listByCollectionTree(父)` 再
+ * `sweepToTrash`,意思是"handler 现在就是这么查的"。**那验的是一份副本。** 有人把
+ * handler 里那个方法名换回不递归的那个,这套照样全绿 —— 因为本套从头到尾没碰过
+ * handler 一行。这正是 CLAUDE.md 里那句「套件跑绿但**根本没覆盖到**被改的文件」。
+ *
+ * 现在按 `library-delete-smoke` 的办法搭:`ipcMain` 的记名替身 + 按 channel 取回
+ * 注册进去的真函数,然后**调那个用户动作本身**。
  *
  * ## 它不碰用户真正的库
  *
- * 数据根换成 `mktemp -d`(复用 run-store-smoke 的 dataRoot/logger 桩),跑完就删。
+ * 数据根换成 `mktemp -d`,跑完就删。
  *
  * Run: scripts/library-trash-smoke/run.sh
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { IpcMain } from "electron";
 
 let failures = 0;
 let checks = 0;
@@ -52,7 +58,7 @@ function eq(name: string, actual: unknown, expected: unknown): void {
   check(name, Object.is(actual, expected), { actual, expected });
 }
 
-/** 数组/对象比较。`Object.is` 对两个内容相同的数组是 false —— 这一套里好几处断的是
+/** 数组比较。`Object.is` 对两个内容相同的数组是 false —— 这一套里好几处断的是
  *  "集合里正好是这几个",用 `eq` 会红得莫名其妙。 */
 function same(name: string, actual: unknown, expected: unknown): void {
   check(name, JSON.stringify(actual) === JSON.stringify(expected), { actual, expected });
@@ -60,6 +66,26 @@ function same(name: string, actual: unknown, expected: unknown): void {
 
 const DATA = mkdtempSync(join(tmpdir(), "mcode-trash-"));
 process.env.MCODE_SMOKE_DATA_ROOT = DATA;
+
+/* ──────────────── 0. 把真 handler 取出来 ──────────────── */
+
+/**
+ * `ipcMain` 的**记名替身**(抄 `library-delete-smoke` 的办法)。
+ *
+ * 删分类那条路的判据整个住在 handler 的**函数体**里,而它从来不是导出符号 —— 唯一
+ * 拿得到的办法就是调 `registerLibraryHandlers`,把注册进来的那批函数按 channel 收下来。
+ * 这是本套唯一需要的脚手架:不起 Electron,也没有真的 preload。
+ */
+const handlers = new Map<string, (event: unknown, raw: unknown) => unknown>();
+const fakeIpc = {
+  handle(channel: string, listener: (event: unknown, raw: unknown) => unknown): void {
+    handlers.set(channel, listener);
+  },
+} as unknown as IpcMain;
+
+const { IPC } = await import("@contracts/ipc");
+const { registerLibraryHandlers } = await import("@main/ipc/library.js");
+registerLibraryHandlers(fakeIpc);
 
 const { initDb } = await import("@main/store/db.js");
 const { LibraryRepo, CollectionRepo, SettingRepo } = await import("@main/store/repositories.js");
@@ -76,6 +102,16 @@ const { libraryTrashSettingKey, LIBRARY_TRASH_COLLECTION_SETTING_KEY } = await i
 );
 
 await initDb();
+
+function handlerFor(channel: string): (raw: unknown) => Promise<unknown> {
+  const fn = handlers.get(channel);
+  if (!fn) throw new Error(`registerLibraryHandlers 没有注册 ${channel}`);
+  return (raw: unknown) => Promise.resolve(fn(null, raw));
+}
+
+/** 「删掉这个分类」—— **真的那条 IPC**。§4 只走它。 */
+const deleteCollection = handlerFor(IPC.LIBRARY_DELETE_COLLECTION);
+check("拿到了 deleteCollection 的 handler", handlers.has(IPC.LIBRARY_DELETE_COLLECTION));
 
 /* ──────────────── 1. 找回回收站:三条来源,依次退 ──────────────── */
 
@@ -132,7 +168,7 @@ const noteItem = LibraryRepo.upsert({ kind: "note", title: "一条笔记", sourc
 // 两个都还没归属任何分类 = 孤儿,该被收。
 eq("收两个孤儿 → 真动了", sweepToTrash([paperItem, noteItem]), true);
 
-// **各回各的库**:教材不该跑到论文库的回收站里去(那是这一处改过的 bug)。
+// **各回各的库**:笔记不该跑到论文库的回收站里去。
 const inPaper = LibraryRepo.listByCollection(paperTrash).map((i) => i.id);
 const noteTrash = ensureTrashCollection("note");
 const inNote = LibraryRepo.listByCollection(noteTrash).map((i) => i.id);
@@ -152,49 +188,64 @@ eq("它没进回收站", LibraryRepo.listByCollection(paperTrash).some((i) => i.
 eq("空数组 → false", sweepToTrash([]), false);
 eq("全都不是孤儿 → false", sweepToTrash([kept]), false);
 
-/* ──────────────── 4. 删一个**父**分类,子分类里那些条目会怎样 ──────────────── */
+/* ──────────────── 4. 删一个**父**分类 —— 走真的那条 IPC ──────────────── */
 
-console.log("\n删父分类 · 子分类里的条目");
+console.log("\n删父分类 · 整棵子树的成员都要有归属");
 
-// 这一段是**事实记录**,不是期望值。两个对照跑的是同一个用户动作「删掉这个分类」,
-// 唯一的差别是条目挂在哪一层 —— 而那一层用户看不见。
-//
-// `CollectionRepo.delete` 的注释写着「子集合与成员关系由外键 CASCADE 一并清理」,
-// 而删分类那条 IPC(见 `ipc/library.ts` 的 LIBRARY_DELETE_COLLECTION)只查了
-// `listByCollection(被删的那个)` —— **不递归**。
+// 这一段**只做一个用户动作**:`await deleteCollection({ id: parent })`。下面所有断言
+// 都是它的**结果**,没有一句在复述 handler 内部的写法 —— 这样哪天有人把 handler 里
+// 那句查询换回不递归的版本,★ 那两条会立刻红。
 {
   const parent = CollectionRepo.create("父分类", null, "paper").id;
   const child = CollectionRepo.create("子分类", parent, "paper").id;
+  const grand = CollectionRepo.create("孙分类", child, "paper").id;
   const direct = LibraryRepo.upsert({ kind: "paper", title: "挂在父上", source: "manual" }).id;
   const under = LibraryRepo.upsert({ kind: "paper", title: "只挂在子上", source: "manual" }).id;
+  const deep = LibraryRepo.upsert({ kind: "paper", title: "只挂在孙子上", source: "manual" }).id;
   CollectionRepo.assign(parent, [direct], true);
   CollectionRepo.assign(child, [under], true);
+  CollectionRepo.assign(grand, [deep], true);
 
-  // 删分类那条 IPC 现在**就是这么查的**(见 handlers 里那两行)。这里复述它,是为了
-  // 让"少收了谁"变成一个能跑出来的事实,而不是靠读代码推。
-  const affected = LibraryRepo.listByCollection(parent).map((i) => i.id);
-  CollectionRepo.delete(parent);
-  sweepToTrash(affected);
+  await deleteCollection({ id: parent });
 
-  eq("挂在父上的被收进回收站", LibraryRepo.listByCollection(paperTrash).some((i) => i.id === direct), true);
-  // 子分类是**跟着一起没的**,而不是"查不到" —— `list()` 给的是数组,所以这里断的是
-  // "结果里没有它",不是 `undefined`(那不是这个 API 的返回形状)。
+  const inTrash = (id: string): boolean =>
+    LibraryRepo.listByCollection(paperTrash).some((i) => i.id === id);
+
+  eq("挂在父上的被收进回收站", inTrash(direct), true);
+  // ★ 下面两条是这一段存在的理由:它们在**树上更深的两层**,而用户看不出来差别。
+  eq("★ 只挂在子分类里的也被收进回收站了", inTrash(under), true);
+  eq("★ 只挂在孙分类里的也一样(整棵子树,不是只看一层)", inTrash(deep), true);
+
+  // 三个分类自己也确实跟着没了 —— 那是外键 CASCADE 在干,不是这次改的。
+  // ⚠️ `CollectionRepo.list()` 给的是数组,所以这里断的是"结果里没有它们",不是
+  // `undefined`(那不是这个 API 的返回形状)。
   eq(
-    "子分类本身跟着被删了(CASCADE)",
-    CollectionRepo.list("paper").some((c) => c.id === child || c.id === parent),
+    "父/子/孙三个分类都不在了(CASCADE)",
+    CollectionRepo.list("paper").some((c) => [parent, child, grand].includes(c.id)),
     false,
   );
+  // 条目本身还在库里 —— 删分类只动分组,不动文献。不收进回收站的话它们就是孤儿。
+  check(
+    "三条记录都还在库里(删分类不删文献)",
+    [direct, under, deep].every((id) => LibraryRepo.get(id) !== undefined),
+  );
+}
 
-  // ★ 下面这两条是这一套存在的理由。
-  const stillInChild = LibraryRepo.listByCollection(child).some((i) => i.id === under);
-  eq("CASCADE 把子分类的成员关系也摘了(所以它已经不是子分类的了)", stillInChild, false);
+// **从回收站本身删分类时不收** —— 否则条目被摘出来又立刻被捞回去,用户永远删不掉。
+// 判据仍是 `shouldSweepAfterRemoval`,这次改动一个字都没动它,但这条链路值得跑一遍真的。
+{
+  const orphan = LibraryRepo.upsert({ kind: "paper", title: "待会儿变孤儿的一条" }).id;
+  const sub = CollectionRepo.create("回收站里的子分类", paperTrash, "paper").id;
+  CollectionRepo.assign(sub, [orphan], true);
+
+  await deleteCollection({ id: paperTrash });
+
   eq(
-    "★ 而它没被收进回收站 —— 成了左栏里找不回来的孤儿",
-    LibraryRepo.listByCollection(paperTrash).some((i) => i.id === under),
+    "回收站本身删得掉(没有被重新建出来)",
+    CollectionRepo.list("paper").some((c) => c.id === paperTrash),
     false,
   );
-  // 它也确实还在库里(没被删掉),所以不是"数据没了",是"归不到任何地方"。
-  check("（它本身还在库里,只是不属于任何分类）", LibraryRepo.get(under) !== undefined);
+  check("从它里面删掉的条目没有被收回来(记录还在库里)", LibraryRepo.get(orphan) !== undefined);
 }
 
 /* ──────────────── 5. 给界面标「谁是回收站」 ──────────────── */
@@ -208,7 +259,7 @@ console.log("\n标给界面");
   const marked = markTrashCollections(cols);
   const flagged = marked.filter((c) => c.isTrash).map((c) => c.id).sort();
   const expected = allTrashCollectionIds().slice().sort();
-  eq("标出来的正好是那几个回收站", JSON.stringify(flagged), JSON.stringify(expected));
+  same("标出来的正好是那几个回收站", flagged, expected);
   check("普通分类没被误标", marked.some((c) => c.id === home && c.isTrash !== true));
   eq("原数组没被就地改", cols.some((c) => c.isTrash === true), false);
 }

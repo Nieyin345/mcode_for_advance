@@ -64,9 +64,8 @@ const ROOT = join(DATA, "library");
 const SRC = mkdtempSync(join(tmpdir(), "mcode-lib-mcp-src-"));
 
 const { initDb } = await import("@main/store/db.js");
-const { LibraryRepo, LibraryLinkRepo, CollectionRepo, SettingRepo } = await import(
-  "@main/store/repositories.js"
-);
+const { LibraryRepo, LibraryLinkRepo, CollectionRepo, SettingRepo, NoteRepo, DownloadJobRepo } =
+  await import("@main/store/repositories.js");
 const { libraryMcpTools, LIBRARY_READONLY_TOOLS } = await import("@main/mcp/libraryServer.js");
 const { libraryRoot, fromLibraryRelative, pdfPathForHash } = await import("@main/library/paths.js");
 const { saveSuppress, resetSuppressCacheForTest } = await import("@main/library/suppress.js");
@@ -522,6 +521,127 @@ check("并说了库里没有这个 id", ghostQuery.includes("库里没有条目"
 
 // 关联不影响条目本身:解除之后条目还在。
 check("解除关联没动条目", LibraryRepo.get(a.id)?.title === "甲");
+
+/* ──────────────── 7. 屏蔽对"会写东西的那四条"也必须生效 ──────────────── */
+
+console.log("\n屏蔽:会写东西的那四条");
+
+// **光阅读被挡住是不够的。** `library_convert` / `library_download` /
+// `library_adopt_markdown` / `library_write_note` 这四条从前只校验"条目是否存在"
+// —— 被屏蔽的条目照样能被转换、下载、挂转录产物、写笔记。而"屏蔽"在用户那里的意思是
+// **硬过滤**:他明确说过"就算是我手动挂的一个文件,只要是屏蔽状态,也挂不上去"。
+//
+// 这四条比翻库那两条更要紧:翻库只是**读**,这四条会把文件写进库里、把下载任务排进
+// 队列、把笔记写进条目 —— 屏蔽掉的东西被写进来,用户下次翻到它会以为规则失灵了。
+//
+// 口径与 `library_search` 一致,两条都要钉:
+//  1. **挡掉要说出来**(仓规:坏东西显式报出来,不静默跳过);
+//  2. **不能说成"库里没有这个条目"** —— 那是另外一件事,模型会据此给用户一个
+//     错误结论("这条不在库里"而不是"这条被你屏蔽了")。
+{
+  // 被屏蔽的一篇**特意带上真 PDF**:这样"转换"这条路本来是能成的,失败只可能是那道门。
+  //
+  // ⚠️ 标题里**故意不出现「屏蔽」两个字** —— 下面所有断言都用 `includes("被屏蔽")`
+  // 这类判据,标题若自带这两个字,每条都会"绿"得毫无意义(本套第 5 段已经吃过一次
+  // 这种亏,那里的注释写着"拿标题当判据会把自己的回显当成泄漏")。
+  const supId = seedPaper("不许碰的那一篇", "b".repeat(64));
+  const col3 = CollectionRepo.create("写工具屏蔽分类", null, "paper");
+  CollectionRepo.assign(col3.id, [supId], true);
+  saveSuppress({ nodes: [`collection:${col3.id}`], extensions: [] });
+  resetSuppressCacheForTest();
+
+  // 判据要钉的是**那道门的原话**,不是一个碰巧出现的词。写成同一个短语,四处共用。
+  const GATE = "被屏蔽了(设置 → 资料库类型)";
+
+  // 先用翻库那条路确认判据是活的 —— 否则下面四条即使红了也说明不了它在测屏蔽。
+  const asListed = await call("library_search", { query: "不许碰的那一篇" });
+  check("前提:这一篇确实进了屏蔽", !asListed.includes(supId), asListed);
+
+  // ① library_convert —— 不许转出 md。
+  const convText = await call("library_convert", { ids: [supId] });
+  check("library_convert:被屏蔽的要说出来", convText.includes(GATE), convText);
+  check("library_convert:不能说成「库里没有这个 id」", !convText.includes("库里没有这个 id"), convText);
+  check("library_convert:md 一个字都没写", !LibraryRepo.get(supId)!.mdPath, LibraryRepo.get(supId)!.mdPath);
+  check("library_convert:也没报成「已转好」", !convText.includes("已转好"), convText);
+
+  // ② library_download —— 不许排进下载队列(排了就是真去抓网络了)。
+  //
+  // 这一条**特意不带 PDF**:`enqueueDownloads` 对已有 PDF 的条目本来就跳过,
+  // 用带 PDF 的那一篇验"没排队"是空转,看不出门有没有生效。没有 PDF 且没有
+  // DOI / arXiv / url 时,队列之外也没有任何网络动作(`pdfCandidates` 会是空数组)。
+  const supDl = LibraryRepo.upsert({ kind: "paper", title: "不许碰、也没有 PDF 的那一篇" });
+  CollectionRepo.assign(col3.id, [supDl.id], true);
+  const dlText = await call("library_download", { ids: [supDl.id] });
+  check("library_download:被屏蔽的要说出来", dlText.includes(GATE), dlText);
+  check("library_download:不能说成「库里没有这个 id」", !dlText.includes("库里没有这个 id"), dlText);
+  eq("library_download:队列里没有这一条", DownloadJobRepo.getByItem(supDl.id), null);
+
+  // ③ library_adopt_markdown —— 不许把外部产物搬进库(那是写文件)。
+  const ADOPT_SRC = mkdtempSync(join(tmpdir(), "mcode-lib-mcp-sup-"));
+  writeFileSync(join(ADOPT_SRC, "full.md"), "# 不该被搬进来的那一份\n", "utf8");
+  const adoptSup = await call("library_adopt_markdown", {
+    itemId: supId,
+    path: join(ADOPT_SRC, "full.md"),
+  });
+  check("library_adopt_markdown:要拒", adoptSup.includes("失败"), adoptSup);
+  check("library_adopt_markdown:并说了被屏蔽", adoptSup.includes(GATE), adoptSup);
+  check("library_adopt_markdown:不能说成「库里没有」", !adoptSup.includes("库里没有"), adoptSup);
+  check("library_adopt_markdown:落点目录根本没建", !existsSync(join(ROOT, "markdown", "imported", supId)));
+  check("library_adopt_markdown:md_path 也没被改", !LibraryRepo.get(supId)!.mdPath);
+  rmSync(ADOPT_SRC, { recursive: true, force: true });
+
+  // ④ library_write_note —— 不许往条目上写笔记。
+  const noteText = await call("library_write_note", {
+    itemId: supId,
+    content: "这条笔记不该写得进去",
+    origin: "ai",
+  });
+  check("library_write_note:要拒", noteText.includes("失败"), noteText);
+  check("library_write_note:并说了被屏蔽", noteText.includes(GATE), noteText);
+  check("library_write_note:不能说成「找不到条目」", !noteText.includes("找不到条目"), noteText);
+  check("library_write_note:不能说成「库里没有」", !noteText.includes("库里没有"), noteText);
+  eq("library_write_note:笔记一条都没落库", NoteRepo.listByItem(supId).length, 0);
+
+  // **原因要指名道姓** —— 只说"被屏蔽了"用户还得自己去设置里翻是哪一条(与
+  // `library_links` 那边同一条要求)。
+  check("原因里点名了是哪个分类", convText.includes("写工具屏蔽分类"), convText);
+
+  // **一条被挡不该连坐同批的其它条目**:同一次调用里混着一条能做的,那条要照做。
+  {
+    const okish = seedPaper("同批里没被屏蔽的那一篇", "1".repeat(64));
+    const mixed = await call("library_convert", { ids: [supId, okish] });
+    check("同批里能做的照做", mixed.includes("已转好") || mixed.includes("已有 Markdown"), mixed);
+    check("同批里被挡的也没被瞒下", mixed.includes(GATE), mixed);
+    check("同批里能做的真的转出来了", Boolean(LibraryRepo.get(okish)!.mdPath));
+  }
+
+  // 收尾:清掉屏蔽,并把对照项还原,免得影响后面。
+  resetSuppressCacheForTest();
+  saveSuppress({ nodes: [], extensions: [] });
+}
+
+/* ──────────────── 7b. 那四条没被屏蔽时照常工作(门不是一堵死墙) ──────────────── */
+
+console.log("\n写工具的那道门只在有屏蔽时才拦");
+
+// 加了门之后最容易出的事是**拦过头**:规则为空时也拒,或者把存在性检查顺手写成了
+// "一律拒绝"。所以这里放两条对照组 —— `library_download` 与 `library_write_note`
+// 在本套别处没有别的断言(convert / adopt 在上面已有)。
+{
+  const plain = LibraryRepo.upsert({ kind: "paper", title: "没被屏蔽、能正常写的那一篇" });
+
+  const noteOk = await call("library_write_note", {
+    itemId: plain.id,
+    content: "正常路径的笔记",
+    origin: "ai",
+  });
+  check("library_write_note:没被屏蔽时正常写", noteOk.includes("已给"), noteOk);
+  eq("library_write_note:笔记真的落库了", NoteRepo.listByItem(plain.id).length, 1);
+
+  const dlOk = await call("library_download", { ids: [plain.id] });
+  check("library_download:没被屏蔽时正常排队", !dlOk.includes("被屏蔽了"), dlOk);
+  check("library_download:任务真的排上了", Boolean(DownloadJobRepo.getByItem(plain.id)), dlOk);
+}
 
 /* ──────────────── 收尾 ──────────────── */
 

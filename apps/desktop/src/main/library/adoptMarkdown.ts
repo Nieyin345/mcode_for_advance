@@ -27,9 +27,56 @@
  *
  * 与笔记同一个理由(见 `paths.ts` 的 `notePathForId`):用户手上的 md 可能还会再改、
  * 再替换一次。按 id 命名,替换就是覆盖同一个位置,引用和缓存都不用重算。
+ *
+ * ## ⚠️ 替换是**换上去**,不是"先删掉再拷"
+ *
+ * 这一条是 2026-09-20 修的一个**不可逆的数据丢失**。原来这里是:
+ *
+ * ```ts
+ * rmSync(destDir, { recursive: true, force: true });   // ← 老包在这一刻就没了
+ * mkdirSync(destDir, { recursive: true });
+ * cpSync(sourcePath, destMd);                           // ← 失败点
+ * ```
+ *
+ * 中间任何一步失败(源文件读不了、源被独占、磁盘满、权限、路径太长),老包**已经删了**,
+ * 新的也没进来,报的还是"复制失败:EPERM"这种看不出前因的话。用户点一下「改用这个
+ * Markdown」,原有产物**静默消失** —— 而这份产物可能是他花额度转出来的唯一一份。
+ *
+ * 现在是**先拷到旁边、成功了再换**:
+ *
+ * ```
+ * mkdir   <imported>/.adopt-<条目 id>-<随机>     ← 暂存(没有源文件读不出来这一说)
+ * cp/copy 正文 + 引用的配图 到暂存             ← 失败点**在动老包之前**
+ * rename 老包 → <imported>/.old-<条目 id>-<随机>   ← 退路
+ * rename 暂存 → 老包的位置                       ← 换上去
+ * rm     退路                                   ← 只有走到这里才真删
+ * ```
+ *
+ * 失败路径上有两件事要守住,顺序不能反:
+ *
+ *   - **换上去之前失败** → 只删暂存,老包**一个字节都没动**(而且它还在原地,不叫"恢复",
+ *     是"从来没动过")。这就是"拷到一半失败时原来那份包还在"的实现。
+ *   - **换上去之后失败**(退路删不掉)→ 新包已经生效,退路那一下失败**不该把成功报成失败**
+ *     —— 那是把一个已经完成的结果说成没完成。所以只记一行日志,照常 ok。
+ *
+ * ## 换不动时(Windows 的文件占用)
+ *
+ * `rename` 在 Windows 上会因目标被占用 / 被杀软扫到而失败(EPERM)。那时**整体放弃**:
+ * 老包原样不动、暂存清掉、如实报错 —— 不做"先删再用拷贝顶上"那种就地重试,因为那一步
+ * 又把"已经删了"的窗口打开了。用户关掉占用的程序再点一次即可。
  */
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { LibraryRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
 import { ensureLibraryDirs, libraryRoot, toLibraryRelative } from "./paths.js";
@@ -48,6 +95,21 @@ export interface AdoptResult {
 /** 采纳的产物落点:`<库根>/markdown/imported/<条目 id>/`。 */
 function importedDirForId(id: string): string {
   return join(libraryRoot(), "markdown", "imported", id);
+}
+
+/** 采纳那包东西的父目录 —— 暂存目录和退路目录都放在它下面,和落点同盘才能 rename。 */
+function importedParent(): string {
+  return join(libraryRoot(), "markdown", "imported");
+}
+
+/**
+ * 在**同一个文件系统**上临时占一个位置(`<父目录>/.adopt-<id>-<随机>`)。
+ *
+ * 为什么不用系统的临时目录:`rename` 跨盘会退化成"复制 + 删除",那就不是原子的了 ——
+ * 而"换上去"这一步的全部价值就是它要么整个成了、要么老包原样。
+ */
+function stagedDirFor(id: string, tag: string): string {
+  return mkdtempSync(join(importedParent(), `.${tag}-${id}-`));
 }
 
 /**
@@ -167,13 +229,13 @@ export function adoptMarkdownFile(itemId: string, sourcePath: string): AdoptResu
 
   const destDir = importedDirForId(itemId);
 
-  // ⚠️ **源文件落在这个条目的落点里时要拦下来。** 下面第一件事就是 `rmSync(destDir)`
-  // (整目录替换,见那里的理由)—— 而那样会**先删掉用户刚交上来的那份 md**,再去复制一个
-  // 已经不存在的文件,报的是"复制失败:ENOENT",看不出是路径的问题。
+  // ⚠️ **源文件落在这个条目的落点里时要拦下来。** 下面整包替换的第一步就是
+  // 把老包挪开(见文件头)—— 而源文件就在那个老包里面时,挪完之后它**已经被搬走了**,
+  // 再去复制一个不在原处的路径,报的是"复制失败:ENOENT",看不出是路径的问题。
   //
   // 这条不是假想的:条目详情页开着的时候,`mdPath` 指的就在这个目录里,用户很容易把
   // "库里那份"当成源文件再挂一次;模型也会 —— 它手上正好有那个路径。
-  // 那种情况**什么都不用做**(它已经在库里了),所以说清楚,而不是删了再报错。
+  // 那种情况**什么都不用做**(它已经在库里了),所以说清楚,而不是报一句复制失败。
   {
     const from = resolve(sourcePath);
     const to = resolve(destDir);
@@ -183,22 +245,85 @@ export function adoptMarkdownFile(itemId: string, sourcePath: string): AdoptResu
     }
   }
 
+  // 暂存与退路的位置。放这儿是为了 catch 里也能引用到(失败时要清掉暂存)。
+  let stageDir: string | null = null;
+  let backupDir: string | null = null;
+
   try {
     ensureLibraryDirs();
-    // 整目录替换:上一次采纳的文件不该和这一次混在一起(否则旧的 images/ 会留下,
-    // md 里若引用了同名图就会取到旧图 —— 那比报错更难查)
-    rmSync(destDir, { recursive: true, force: true });
-    mkdirSync(destDir, { recursive: true });
+    // 落点那一层父目录可能还不存在(第一次采纳这条)。上面那两件必须在**动 rename 之前**
+    // 备好,否则 rename 会因为父目录不存在而失败 —— 那报出来的话会像是"换不上去"。
+    mkdirSync(importedParent(), { recursive: true });
 
-    const fileName = basename(sourcePath);
-    const destMd = join(destDir, fileName);
-    cpSync(sourcePath, destMd);
+    // ── ① 先把新的一整包拷进暂存。**这一步失败时老包一个字节都没动。** ──
+    stageDir = stagedDirFor(itemId, "adopt");
+    const stagedMd = join(stageDir, basename(sourcePath));
+    cpSync(sourcePath, stagedMd);
 
     // 配图**按 md 里真实的引用**搬 —— 目录名不参与判断(见文件头)。
     const mdText = readFileSync(sourcePath, "utf8");
-    const { imageCount, missing } = copyReferencedAssets(sourcePath, mdText, destDir);
+    const { imageCount, missing } = copyReferencedAssets(sourcePath, mdText, stageDir);
 
-    const relPath = toLibraryRelative(destMd);
+    // ── ② 把老包挪到退路,再把暂存换到它的位置。两步都是 rename(同盘、原子)。 ──
+    const hadOld = existsSync(destDir);
+    if (hadOld) {
+      backupDir = stagedDirFor(itemId, "old");
+      // mkdtemp 建的是一个空目录,而 rename 要求目标不存在 —— 用完就删掉。
+      rmSync(backupDir, { recursive: true, force: true });
+      try {
+        renameSync(destDir, backupDir);
+      } catch (err) {
+        // 老包挪不动(Windows 上常见的是被别的程序占用)→ **整体放弃**。不做"就地删了再拷"
+        // 那种重试:那一步会把"已经删了"的窗口重新打开,正是这个文件要修的东西。
+        backupDir = null;
+        return fail(
+          `替换失败(老的那一份挪不动,可能正被别的程序占用;关掉它再试一次):${(err as Error).message}`,
+        );
+      }
+    }
+    try {
+      renameSync(stageDir, destDir);
+    } catch (err) {
+      // 换不上去(Windows 上多半是落点被占用 / 杀软扫到)。把老包**挪回原位**,再清掉暂存。
+      // 暂存里那份新内容是源文件的副本(源还在用户那儿),删掉不会丢东西 —— 但这一步
+      // 失败也照样记一行,别静默。
+      const stage = stageDir;
+      stageDir = null;
+      if (backupDir) {
+        try {
+          renameSync(backupDir, destDir);
+          backupDir = null;
+        } catch (restoreErr) {
+          // 挪不回去了。**退路目录是那份老包唯一的所在** —— 把路径如实报出来,那是它
+          // 仅剩的线索;静默丢掉它是最坏的结果。
+          const stranded = backupDir;
+          backupDir = null;
+          return fail(
+            `替换失败,而且老的那一份没能挪回原位(它还在 ${stranded}):${(restoreErr as Error).message}`,
+          );
+        }
+      }
+      try {
+        rmSync(stage, { recursive: true, force: true });
+      } catch (cleanupErr) {
+        log.warn(`library: 换不上去,暂存目录也没清掉(${stage}):${(cleanupErr as Error).message}`);
+      }
+      return fail(`替换失败(新的一份没能换上去):${(err as Error).message}`);
+    }
+    stageDir = null; // 暂存已经变成落点本身
+
+    // ── ③ 到这里替换已经成了。清掉退路 —— 这一步失败**不能把成功报成失败**。 ──
+    if (backupDir) {
+      const doomed = backupDir;
+      backupDir = null;
+      try {
+        rmSync(doomed, { recursive: true, force: true });
+      } catch (err) {
+        log.warn(`library: 替换完成,但旧的采纳产物没删掉(${doomed}):${(err as Error).message}`);
+      }
+    }
+
+    const relPath = toLibraryRelative(join(destDir, basename(sourcePath)));
     LibraryRepo.setMarkdown(itemId, relPath);
     log.info(
       `library: adopted markdown for ${itemId} from ${sourcePath} (${imageCount} images` +
@@ -206,6 +331,15 @@ export function adoptMarkdownFile(itemId: string, sourcePath: string): AdoptResu
     );
     return { ok: true, relPath, imageCount, missing };
   } catch (err) {
+    // 走到这里时**替换还没发生**(上面那两步的失败都在更内层处理掉了)—— 所以只需要
+    // 把暂存清干净,老包原样不动。
+    if (stageDir) {
+      try {
+        rmSync(stageDir, { recursive: true, force: true });
+      } catch (cleanupErr) {
+        log.warn(`library: 采纳失败,暂存目录也没清掉(${stageDir}):${(cleanupErr as Error).message}`);
+      }
+    }
     return fail(`复制失败:${(err as Error).message}`);
   }
 }

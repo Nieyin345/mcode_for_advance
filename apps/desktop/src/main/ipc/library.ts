@@ -56,6 +56,8 @@ import {
   CollectionRenameSchema,
 } from "@contracts/ipc";
 import type { FullTextMatch, LibraryCollection, LibraryItem } from "@contracts/library";
+// 删除的失败清单 —— 类型与它的上游 schema 住在同一处(`@contracts/ipc/library.ts`)。
+import type { LibraryDeleteFailure } from "@contracts/ipc";
 import { LIBRARY_KINDS } from "@contracts/library";
 import { formatAuthorList } from "@contracts/library";
 import { LibraryRepo, CollectionRepo, DownloadJobRepo, LibraryLinkRepo, NoteRepo } from "@main/store/repositories.js";
@@ -219,14 +221,14 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
   });
 
   /**
-   * **彻底删除**:数据库行 + 磁盘上的 PDF / Markdown。
+   * **彻底删除**:数据库行 + 磁盘上的 PDF / Markdown / 通用文件副本。
    *
    * 这是库里唯一不可逆的操作(回收站只是"不属于任何分类",记录和文件都还在)。
    *
    * ## 文件删除为什么要在这里手写
    *
    * `LibraryRepo.delete` 刻意不碰文件系统(见它的注释),所以编排落在这一层。而且
-   * 有两件事非处理不可 —— 它们都是"界面上删干净了、磁盘上却留着垃圾"的来源:
+   * 有三件事非处理不可 —— 它们都是"界面上删干净了、磁盘上却留着垃圾"的来源:
    *
    * ① **同一个文件可能被别的条目指着。** PDF 按内容哈希寻址,同一篇先用 DOI 导、
    *    又用 arXiv ID 导了一次,就是两条记录指向同一个路径。删之前先看还有没有幸存
@@ -235,14 +237,54 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
    *    几十张配图整包留在磁盘上,而且再也认不出是谁的。所以 md 落在
    *    `markdown/<2>/<2>/<sha>/` 或 `markdown/imported/<id>/` 里时,删的是那个目录。
    *    (软件自己只产平的那种;这两种目录形态分别来自遗留数据和外部工具转完挂回来的。)
+   * ③ **通用条目的 `filePath`**(2026-09-20 补上的一支)。attached 的副本落在
+   *    `<库根>/files/<条目 id>-<原名>`,而这一支早先**整个漏掉了** —— 删一条只有
+   *    `filePath` 的条目(ppt / word / 随便什么文件)时下面那个 `if (!mdRel …) continue`
+   *    直接跳过,数据库行没了、文件永远躺在盘上。
+   *
+   * ## `filePath` 与另外两列的**两处不同**,都不是细节
+   *
+   * 1. **它可能是库外的路径。** `linked` 条目的语义就是"只记路径、文件原地不动,
+   *    而且可以是目录"(用户自己那套模版)。那些**一个字都不该动** —— 所以
+   *    `isInsideLibrary` 这道守卫在这一支上是救命的,不是防御性代码。库外的路径
+   *    会走成一条 **失败**(见下),而不是静默略过:静默略过正是这个套件要根治的形状。
+   * 2. **它永远不递归删。** attached 的副本按构造就是一个**平文件**(`copyFileSync`
+   *    进扁平 + 条目 id 前缀的 `files/`),所以"不递归"是对的。反过来说,**绝不能
+   *    默认递归**:记录里的路径是可以被写坏的,`file_path = "files"` 那样一条脏数据
+   *    配上一个"是目录就递归"的判据,就会把整个 `files/` 目录端掉 —— 那是所有附件
+   *    副本。宁可删不掉、如实报出来。这一条与 `markdownArtifact` 里"认不出来只删
+   *    文件"是同一条原则(猜错的两种后果不对称)。
+   *
+   * ## 删不掉的时候:如实报出来 —— 记录留不留,按记录本身该不该留来分
+   *
+   * `failed` 的语义是**"哪一份文件没被删掉"**,不是"哪一条没删成功"。所以**大多数**
+   * 失败里那条记录会**整条回滚**:删掉记录却删不掉文件,用户就**再也够不着**那个文件
+   * 了 —— 界面上没有任何入口指向它。记录留着、文件留着,用户看着提示自己处理(去文件
+   * 管理器里删掉,或者关掉「同时删除文件」)再试一次。
+   *
+   * 唯一**不留记录**的是库外的 `linked` 条目:它本来就是"文件在库外、库只记了个路径",
+   * 用户点「彻底删除」要的就是把记录清掉,而那份原件一个字节都不该动(它也不归库管)
+   * —— 留住记录只会造成"永远删不掉的一条"。对应的坏数据(`attached` 的路径指到库外)
+   * 反过来**要留**:那是记录被写坏了,证据不能连记录一起删掉。
+   *
+   * 同一次调用里**成功的那几条照样成功** —— 一条卡的目录不该把另外九十九条拖住。
    */
   ipcMain.handle(IPC.LIBRARY_DELETE_ITEMS, async (_evt, raw) => {
     const input = LibraryDeleteItemsSchema.parse(raw);
+    /**
+     * 没能删掉的那些:条目 id → 失败详情。既用来回给调用方,也用来决定**哪几条记录
+     * 不许删**(下面 `LibraryRepo.delete` 拿的是过滤后的名单)。
+     */
+    const failures: LibraryDeleteFailure[] = [];
+    /** 这一批里**不许删记录**的 id(文件没删掉的那几条)。 */
+    const keepIds = new Set<string>();
+
     if (input.deleteFiles) {
       // 先删文件再删记录:反过来的话拿不到路径了
       /**
-       * 库内每个路径被多少条记录引用着。**不能拿 `LibraryRepo.list({})` 来数** ——
-       * 那个有 200 条的默认上限,大库上会漏判,而漏判的后果是删掉另一条记录的 PDF。
+       * 库内每个路径被多少条记录引用着(pdf / md / 通用文件三列都算)。
+       * **不能拿 `LibraryRepo.list({})` 来数** —— 那个有 200 条的默认上限,大库上会
+       * 漏判,而漏判的后果是删掉另一条记录的 PDF。
        */
       const refs = LibraryRepo.pathRefCounts();
       /** 这几条**自己**占的引用数。减掉它剩下的才是"别人还在用"。 */
@@ -255,27 +297,89 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
         if (!it) continue;
         bumpOwn(it.pdfPath);
         bumpOwn(it.mdPath);
+        // ⚠️ 通用文件那一列也进引用表。少了它,两条记录指着同一份副本时删除方会以为
+        // 自己是唯一引用者,把文件端走 —— 而另一条记录还在库里,从此指向一个不存在的
+        // 文件。(`linked` 的库外路径同样要进:那种一个字节都不该动,理由见下。)
+        bumpOwn(it.filePath);
       }
       /** 还有别的记录指着它 → 一个字节都不许动。 */
       const sharedWithSurvivor = (p: string) =>
         (refs.get(p) ?? 0) - (own.get(p) ?? 0) > 0;
 
       /**
-       * 删一个库内路径。
+       * 记一条失败。
        *
-       * **只删库内路径** —— 记录万一被写入过外来路径,这里会把它挡掉,而不是照着
-       * 删用户别处的文件。`recursive` 给"整包是一个目录"的产物用。
+       * `keepRecord` 决定这条记录**要不要留下** —— 它不是"严不严重",而是
+       * "记录本身是不是该留着"的依据,两档的语义不同:
+       *
+       *  - **文件在库里却删不掉**(`rmSync` 抛了)→ 留下记录。删掉记录却删不掉文件,
+       *    用户就再也够不着那个文件了(界面上没有任何入口指向它);
+       *  - **`linked` 条目指向库外** → 记录照删。那种条目的语义本来就是"文件在库外、
+       *    库只记了个路径",用户点「彻底删除」要的就是把这条记录清掉,而那份原件
+       *    一个字节都不该动(它本来也不归库管)—— 记录留着反而删不掉了。
+       *
+       * 唯一"不值得客气"的一档是**坏数据**:`attached` 的路径指到了库外。那种连
+       * `linked` 都算不上的记录留着没有意义,而且它就是库该清掉的东西。
+       */
+      const recordFailure = (
+        id: string,
+        kind: LibraryDeleteFailure["kind"],
+        path: string,
+        error: string,
+        keepRecord: boolean,
+      ): void => {
+        failures.push({ id, kind, path, error });
+        if (keepRecord) keepIds.add(id);
+      };
+
+      /**
+       * 删一个库内路径。**删掉了 / 本来就不在** → true;删不掉 → 记一条失败并给 false。
+       *
+       * **只删库内路径** —— 记录万一被写入过外来路径(或者 `linked` 条目本来就是指着
+       * 用户自己文件的),这里会把它挡掉,而不是照着删用户别处的文件。`recursive` 给
+       * "整包是一个目录"的 md 产物用(见 {@link markdownArtifact});通用文件那一支
+       * 一律不走它,理由见 handler 的头注释。
        *
        * 判据是 {@link isInsideLibrary},**不是** `toLibraryRelative(abs).startsWith("..")`
        * —— 那个条件恒假,一次都没拦住过(见 `paths.ts` 里 `toLibraryRelative` 的注释)。
+       *
+       * ⚠️ **失败不许静默跳过。** 原来整个函数包在 try/catch 里、catch 只 `log.warn`
+       * (那写的是 `<userData>/logs/main.log`),而 `!isInsideLibrary` 那一档直接
+       * return —— 用户在界面上什么都看不到,却有文件永远赖在盘上。现在两档都进
+       * `failures`,由 handler 回给调用方。
        */
-      const dropAbs = (abs: string, label: string, recursive: boolean) => {
+      const dropAbs = (
+        id: string,
+        kind: LibraryDeleteFailure["kind"],
+        abs: string,
+        recursive: boolean,
+        /**
+         * 库外路径时**要不要留记录**。默认留(`pdf` / `markdown` 那两档一旦越界就是
+         * 记录被写坏了);通用文件那一支另说 —— 见它的调用点。
+         */
+        keepRecordOnOutside = true,
+      ): boolean => {
+        if (!isInsideLibrary(abs)) {
+          // 库外路径**不是"失败了要重试"**,是"这一份不该由库来删"。但它仍然要说出来:
+          // 用户点了「同时删除文件」,而这份文件没有被删 —— 一声不响的话他以为删干净了,
+          // 或者反过来以为软件坏了。
+          recordFailure(
+            id,
+            kind,
+            abs,
+            "这个路径不在资料库目录里,所以没有删(它指向的是你自己的文件)",
+            keepRecordOnOutside,
+          );
+          return false;
+        }
+        if (!existsSync(abs)) return true; // 本来就不在 —— 没什么可删的,也不算失败
         try {
-          if (!isInsideLibrary(abs)) return;
-          if (!existsSync(abs)) return;
           rmSync(abs, { force: true, recursive });
+          return true;
         } catch (err) {
-          log.warn(`library delete ${label} failed (${abs}): ${(err as Error).message}`);
+          log.warn(`library delete ${kind} failed (${abs}): ${(err as Error).message}`);
+          recordFailure(id, kind, abs, (err as Error).message, true);
+          return false;
         }
       };
 
@@ -284,23 +388,50 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
         if (!item) continue;
 
         if (item.pdfPath && !sharedWithSurvivor(item.pdfPath)) {
-          dropAbs(fromLibraryRelative(item.pdfPath), "pdf", false);
+          dropAbs(id, "pdf", fromLibraryRelative(item.pdfPath), false);
         }
 
-        const mdRel = item.mdPath;
-        if (!mdRel || sharedWithSurvivor(mdRel)) continue;
-        // 一份 md 产物可能是一整个目录(外部工具转的 / 「采纳 Markdown」,里面还有 images/)。
-        // 该删哪个由 `markdownArtifact` 按**落点结构**决定 —— 早先这里按"父目录名像不像
-        // 一个 sha256"猜,猜不中「采纳」那一种,于是它的 images/ 永远留在磁盘上。
-        // 同哈希被两条记录引用时它们的 mdPath 是**同一个**,上面那道引用计数已经拦住了。
-        const artifact = markdownArtifact(fromLibraryRelative(mdRel));
-        dropAbs(artifact.path, "markdown", artifact.recursive);
+        if (item.mdPath && !sharedWithSurvivor(item.mdPath)) {
+          // 一份 md 产物可能是一整个目录(外部工具转的 / 「采纳 Markdown」,里面还有 images/)。
+          // 该删哪个由 `markdownArtifact` 按**落点结构**决定 —— 早先这里按"父目录名像不像
+          // 一个 sha256"猜,猜不中「采纳」那一种,于是它的 images/ 永远留在磁盘上。
+          // 同哈希被两条记录引用时它们的 mdPath 是**同一个**,上面那道引用计数已经拦住了。
+          const artifact = markdownArtifact(fromLibraryRelative(item.mdPath));
+          dropAbs(id, "markdown", artifact.path, artifact.recursive);
+        }
+
+        const fileRel = item.filePath;
+        if (fileRel && !sharedWithSurvivor(fileRel)) {
+          // 两档路径各按自己的语义还原成绝对路径:`linked` 存的就是**用户给的那个绝对
+          // 路径原样**,attached 存的是**相对库根**的(见 `fileImport.ts` 的 toRel)。
+          // 混用会把 attached 的 `files/xxx` 解析成相对 cwd 的路径 —— 那种路径既不在
+          // 库里(被守卫挡下),也就永远删不掉。
+          const linked = item.entryMode === "linked";
+          // ⚠️ 永远 `recursive: false`(理由见 handler 头注释):attached 的副本按构造
+          // 就是平文件,而"是目录就递归"配上一条被写坏的记录会把整个 `files/` 端掉。
+          // 目录真的落在那个位置上时 `rmSync` 会抛 EISDIR —— 那会**如实报成失败**,
+          // 记录也留着,用户看得见、也还够得着。
+          dropAbs(
+            id,
+            "file",
+            linked ? fileRel : fromLibraryRelative(fileRel),
+            false,
+            // 库外的 `linked` 条目:报出来,但**记录照删**(那种条目的文件和库无关,
+            // 留住记录就成了"永远删不掉的一条")。除它之外都留:越界的 `pdf` / `markdown`
+            // 是记录被写坏了,证据得留着;`rmSync` 抛了的那种更是必须留。
+            !linked,
+          );
+        }
       }
     }
-    LibraryRepo.delete(input.ids);
-    // 删掉的可能正是右栏正在看的那一篇 —— 广播出去,右栏自己会清掉悬空的选中态
-    notifyLibraryChanged(`delete:${input.ids.length}`);
-    return { items: LibraryRepo.list({}).items };
+
+    // 文件没删掉的那几条**记录也不删** —— 删了用户就再也够不着那个文件了。
+    const toDelete = input.ids.filter((id) => !keepIds.has(id));
+    LibraryRepo.delete(toDelete);
+    // 删掉的可能正是右栏正在看的那一篇 —— 广播出去,右栏自己会清掉悬空的选中态。
+    // 一条都没删成时不广播:那是一次什么都没发生的调用,没必要惊动界面重拉。
+    if (toDelete.length > 0) notifyLibraryChanged(`delete:${toDelete.length}`);
+    return { items: LibraryRepo.list({}).items, failed: failures };
   });
 
   ipcMain.handle(IPC.LIBRARY_DOWNLOAD, async (_evt, raw) => {
@@ -341,8 +472,15 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
     const input = CollectionDeleteSchema.parse(raw);
     // 删之前先记下这个库收了哪些文献 —— 删完它们可能就成了孤儿,要收进回收站。
     // (删的正好是回收站本身时不收:那会立刻把它又建出来,用户删不掉。)
+    //
+    // ⚠️ **必须连整棵子树一起收**(`listByCollectionTree`,不是 `listByCollection`)。
+    // 分类是树(`library_collections.parent_id … ON DELETE CASCADE`),而子分类是
+    // **跟着一起被删掉的** —— 它们的成员关系被 CASCADE 静默摘掉,没人收的话那些条目
+    // 从此既不在任何分类里、也没进回收站,变成左栏里找不回来的僵尸记录(`trash.ts`
+    // 文件头警告的正是这一种)。只见这一层的话,同一个用户动作"删掉这个分类"的结果
+    // 取决于一个他看不见的结构细节:条目挂在父上就没事,挂在子分类上就丢。
     const affected = shouldSweepAfterRemoval(input.id)
-      ? LibraryRepo.listByCollection(input.id).map((i) => i.id)
+      ? LibraryRepo.listByCollectionTree(input.id).map((i) => i.id)
       : [];
     // 只删分组,不动文献 —— 集合是视图,不是所有权
     CollectionRepo.delete(input.id);

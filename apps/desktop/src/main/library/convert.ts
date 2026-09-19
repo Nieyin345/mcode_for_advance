@@ -24,6 +24,24 @@
  *
  * 转换失败只返回人话错误,不动 PDF、不动条目 —— 「转换没成」和「文献没入库」
  * 是两件事,不该互相牵连。
+ *
+ * ## ⚠️ 用户**采纳**进来的那份,重转也不许覆盖
+ *
+ * 这一条是 2026-09-20 修的一个**覆盖用户成果**的 bug。`force` 从前是唯一的判据,而
+ * 「重转」这条路**永远带 force**(设置页的「重转这篇」、条目详情页的「重新转换」、
+ * AI 的 `library_convert {force:true}` 都带)。于是用户手动采纳进来、或自己改过的
+ * Markdown,会被本地抽取重新生成的顶掉 —— 而本地抽取只有纯文本(见文件头),
+ * 拿它去盖用户那份**是降级,不是重做**。他更满意的那份一个字都不剩。
+ *
+ * 判据**不新增字段**,用落点结构就够:采纳的产物落在
+ * `markdown/imported/<条目 id>/`(目录形态,同级有 `images/`),机器转的落在
+ * `markdown/<ab>/<cd>/<sha>.md`(平铺一个文件,内容寻址 —— 所以**没有"用户改过"
+ * 这一说**,重转本来就是"同一份 PDF 再抽一遍")。`conversionReport` 早就按同一条
+ * 判据分着 `imported` / `local` 两档了(见那里的 `source`),这里复用它,不发明新机制。
+ *
+ * 落到"不该覆盖"上时的动作是**如实跳过**,不是失败:那条命令本身没出错,只是没必要做
+ * (与 `alreadyDone` 同一种语义),而结果里要能把这件事**说出来** —— 静默跳过会让模型
+ * 向用户汇报一件没发生的事。
  */
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -37,16 +55,41 @@ import { log } from "@main/lib/logger.js";
 export type ConvertSource = "pdfjs";
 
 export type ConvertOutcome =
-  | { ok: true; source: ConvertSource; mdRelPath: string; chars: number; alreadyDone?: boolean }
+  | {
+      ok: true;
+      source: ConvertSource;
+      mdRelPath: string;
+      chars: number;
+      alreadyDone?: boolean;
+      /** 跳过的原因是"这份是用户采纳进来的" —— 与 `alreadyDone`(已经有 md 了)分开,
+       *  调用方据此才能对用户说清是哪一种跳过。 */
+      skipped?: boolean;
+    }
   | { ok: false; error: string };
 
 /** 同一篇正在转换时不要重复起一次(UI 可能连点,导入流程也可能并发触发)。 */
 const inFlight = new Set<string>();
 
 /**
+ * 这份 Markdown 是**用户采纳进来的**(而不是本地抽取生成的)吗。
+ *
+ * 唯一的判据是**落点结构**:`markdown/imported/<条目 id>/xxx.md` —— 这正是
+ * `conversionReport` 分 `imported` / `local` 两档用的那条(也是 `markdownArtifact`
+ * 认"整包"的那条)。用字面量 `imported` 而不是正则,是为了两边描述的是同一件事。
+ *
+ * 为什么"路径里有没有 `/imported/`"就够,不需要记一个 adopted 标记:`imported/`
+ * **是采纳那一路独占的落点**(`adoptMarkdownFile` 的 `importedDirForId` 是唯一往那里写
+ * 的),而机器那一路只能落在内容寻址的 `markdown/<ab>/<cd>/<sha>.md` 上。
+ */
+function isAdoptedMarkdown(mdRelPath: string): boolean {
+  return mdRelPath.split("/").filter(Boolean).includes("imported");
+}
+
+/**
  * 把一篇文献的 PDF 转成 Markdown。
  *
- * `force = true` 时即使已经有 md 也重转(用户手动要求)。
+ * `force = true` 时即使已经有 md 也重转(用户手动要求)—— **但用户采纳进来的那份除外**:
+ * 那种是用户自己的成果,重转只会拿纯文本把它盖掉(见文件头)。那种情况下如实跳过。
  */
 export async function convertItemToMarkdown(
   item: LibraryItem,
@@ -56,6 +99,36 @@ export async function convertItemToMarkdown(
   // 已经有转换结果就不重做 —— 转换是分钟级的,不该被 UI 的重复点击浪费
   if (!opts.force && item.mdPath && existsSync(fromLibraryRelative(item.mdPath))) {
     return { ok: true, source: "pdfjs", mdRelPath: item.mdPath, chars: 0, alreadyDone: true };
+  }
+  /**
+   * 已经有 md、还是**用户采纳**的那份 → force 也不动它。
+   *
+   * 两种子情况要分开说(见文件头),因为调用方要拿它给用户一句准话:
+   *   - 文件在盘上 → 跳过,理由是"那是用户自己的一份";
+   *   - **文件不在了**(用户删了/挪了库)→ 不能当作"跳过"混过去。那时 `md_path` 指向的
+   *     是一个不存在的文件,静默跳过会让这篇永远读不到正文、而谁也不知道;顺手转一份
+   *     "机器版"又是把用户那条记录改掉。所以如实说清、并指出去处 —— 至于要不要留一份
+   *     机器版,由用户自己决定(重转那条路上没有"我问过用户了"这个状态可用)。
+   */
+  if (opts.force && item.mdPath && isAdoptedMarkdown(item.mdPath)) {
+    if (existsSync(fromLibraryRelative(item.mdPath))) {
+      log.info(`library: 跳过重转 ${item.id} —— 这份 Markdown 是用户采纳进来的`);
+      // 两个字段都给:`alreadyDone` 是既有的"没有重转"语义(两条调用方都按它说人话),
+      // `skipped` 是"为什么跳过"那一档(采纳的)。多给一层不会让现状说错话 —— 只会让
+      // 将来那两处文案能说得更准(它们现在只认 alreadyDone)。
+      return {
+        ok: true,
+        source: "pdfjs",
+        mdRelPath: item.mdPath,
+        chars: 0,
+        alreadyDone: true,
+        skipped: true,
+      };
+    }
+    return {
+      ok: false,
+      error: "这份 Markdown 是用户自己挂进来的,而文件已经不在了 —— 要本地重新转一份的话,先把它挂回去一份(或者删掉这条记录上的 md)",
+    };
   }
   if (inFlight.has(item.id)) {
     return { ok: false, error: "这篇正在转换中" };
