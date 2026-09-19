@@ -1301,7 +1301,16 @@ export async function startWorkflowRun(args: {
       // 在 `turn.done` 时收口),而 `message.complete` 折出来的中间态也在 —— 所以拿到的
       // 不是半截。
       const transcript = nodeSessionId ? runtimeManager.transcriptOf(nodeSessionId) : undefined;
-      broadcastRuntimeEvent({
+      // ⚠️ **走 `emitExternal`,不能走 `broadcastRuntimeEvent`。** 两者对界面是一回事
+      // (都 `fanOutToClients`),但只有 `emitExternal` 会 `notifySubscribers` ——
+      // 而钩子(`HookRunner`)与自动化的「事件发生时」触发器**正是挂在订阅上**的。
+      //
+      // 这一条踩过:工作流的四个节点事件里,**只有这一个**在 `HOOK_EVENT_OF` 里给了
+      // 钩子事件名(`workflow.node.result`),另外三个是 `null`。于是设置里它被当成一个
+      // 正常事件列出来、还配了提示语,用户挂上去**永远不会响** —— 而"挂上了却不响"正是
+      // 仓库规矩第 3 条要禁的那种坏东西。同一处坑还有 `request.resolved`
+      // (`RuntimeManager.notifyRequestResolved`),那条另算。
+      runtimeManager.emitExternal({
         type: "workflow.node.result",
         sessionId: session.id,
         runId,

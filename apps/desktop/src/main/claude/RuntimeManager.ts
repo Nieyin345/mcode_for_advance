@@ -19,7 +19,6 @@ import { getFileSnapshot, dropFileSnapshot } from "@main/lib/fileSnapshotRegistr
 import { restoreFiles } from "@main/lib/fileSnapshot.js";
 import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
 import { mobileEventBus } from "@main/mobile/MobileEventBus.js";
-import { broadcastRuntimeEvent } from "@main/lib/sessionSync.js";
 import { invalidateUsageStats } from "@main/lib/usageStats.js";
 import { log } from "@main/lib/logger.js";
 import { backflowPrompt, clearBackflow, peekBackflow } from "@main/lib/pendingBackflow.js";
@@ -1431,7 +1430,19 @@ class RuntimeManager {
   ): void {
     // 走代理:节点代父对话问的问题,关闭事件也得报到父对话去,否则那边的问题卡
     // 收不掉(节点自己那边本来就没有卡片)。
-    broadcastRuntimeEvent({
+    // ⚠️ **走 `emitExternal`,不能走 `broadcastRuntimeEvent`。** 两者对界面是一回事
+    // (都 `fanOutToClients` —— 别的客户端照旧收到"这张卡可以关了"),但只有
+    // `emitExternal` 会 `notifySubscribers`,而钩子(`HookRunner`)与自动化的
+    // 「事件发生时」触发器**正是挂在订阅上**的。
+    //
+    // 这里踩过:该函数早先直接调 `broadcastRuntimeEvent`,于是 `request.resolved`
+    // 作为一个**在设置里列得出来、配了提示语**的钩子事件,挂上去永远不响 ——
+    // 而"挂上了却不响"正是仓库规矩第 3 条要禁的那种坏东西。同款还有
+    // `workflow.node.result`(见 `orchestration/runner.ts` 里那条注释)。
+    //
+    // 三个订阅者都不处理它(通知 / 长任务 / 调度器各自只认自己关心的那几种),
+    // 所以改这一处不会顺带弹出别的东西。
+    this.emitExternal({
       type: "request.resolved",
       sessionId: this.routeOf(sessionId),
       requestId,
