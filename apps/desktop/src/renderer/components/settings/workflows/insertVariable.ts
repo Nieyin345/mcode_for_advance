@@ -23,7 +23,7 @@
  * 的那个写法。
  */
 import {
-  buildAdjacency,
+  buildForwardAdjacency,
   edgeOptionNameOf,
   outgoingEdgesOf,
   upstreamClosure,
@@ -162,7 +162,17 @@ export function insertableGroups(
   nodeId: string,
   catalog: NodeTypeCatalog,
 ): InsertableGroup[] {
-  const deps = buildAdjacency(doc.nodes, doc.edges).deps;
+  // ⚠️ **要 `buildForwardAdjacency`,不是 `buildAdjacency`(2026-09-19)。**
+  //
+  // 两者只差回边,而回边在这件事上差得很实:菜单的判据是"这一步的上游",而回边从**环的
+  // 出口指回入口** —— 含它的话,一个环上的节点会把自己和环上所有下游都算成"上游",于是
+  // 菜单列出**这一步自己**(`{{它自己.output}}`,永远取不到)和**还没跑的下游**。
+  //
+  // 而调度器和存盘校验用的都是不含回边的那一份(`scheduler.deps`、
+  // `workflowValidation` 的 `forward`),所以菜单插进去的东西会被判 `ref.not-upstream`
+  // —— **选得到、插得进、存不下去**。scheduler 那段注释还写着"和渲染端的勾选框用的是
+  // 同一份",那句话在改这里之前是**假的**。
+  const deps = buildForwardAdjacency(doc.nodes, doc.edges).deps;
   const upstream = upstreamClosure(deps, nodeId);
 
   const groups: InsertableGroup[] = [

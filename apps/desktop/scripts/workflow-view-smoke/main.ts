@@ -132,6 +132,8 @@ import {
   type NodeTypeManifest,
 } from "@contracts/nodeType";
 import {
+  buildForwardAdjacency,
+  upstreamClosure,
   workflowNodeRefName,
   type WorkflowDoc,
   type WorkflowEdge,
@@ -1689,6 +1691,49 @@ console.log("\ninsertableGroups:「触发器」那一组跟着触发方式走");
   // 一个触发器节点都没有、只有文档级的 `trigger`(老图/手写的图)时按那个字段算。
   const docLevel: WorkflowDoc = { ...CUSTOM, trigger: "schedule", nodes: [node("B", 0, 0)], edges: [] };
   eq("文档级 trigger=schedule 也算得对", triggerItems(docLevel).sort().join(","), "{{trigger.at}},{{trigger.kind}}");
+}
+
+console.log("\ninsertableGroups:环上那一步的上游,不能把自己算进去");
+
+{
+  // `buildAdjacency`(含回边)和 `buildForwardAdjacency`(不含)只差回边,而回边从**环的
+  // 出口指回入口** —— 用错那一份的话,环上的节点会把自己和环上所有下游都算成"上游":
+  // 菜单里列出**这一步自己**(`{{它自己.output}}`,永远取不到)和**还没跑的下游**。
+  //
+  // 而调度器和存盘校验用的都是不含回边的那一份,所以插进去的东西会被判
+  // `ref.not-upstream` —— 选得到、插得进、**存不下去**。
+  //
+  // A → B → C → D → C(回边),C 是决定权给用户的分支 = 闸门,环合法。
+  const loop: WorkflowDoc = {
+    ...CUSTOM,
+    nodes: [
+      node("A", 0, 0),
+      node("B", 0, 100),
+      { ...node("C", 0, 200, BRANCH_MANIFEST.id), params: { decider: "user" } },
+      node("D", 0, 300),
+    ],
+    edges: [
+      { id: edgeId("A", "B"), from: "A", to: "B" },
+      { id: edgeId("B", "C"), from: "B", to: "C" },
+      { id: edgeId("C", "D"), from: "C", to: "D" },
+      { id: edgeId("D", "C"), from: "D", to: "C" },
+    ],
+  };
+
+  const titles = insertableGroups(loop, "C", CATALOG)
+    .map((g) => g.title)
+    .filter((t) => t !== "");
+  eq("C 的上游只有 A 和 B", titles.join(","), "A,B");
+  check("★ C 不把自己列成上游", !titles.includes("C"), titles);
+  check("★ C 不把它自己的下游 D 列成上游", !titles.includes("D"), titles);
+
+  // 存盘校验那一边(不含回边)看得见的就是这两步 —— 菜单必须和它一致。
+  const forward = buildForwardAdjacency(loop.nodes, loop.edges).deps;
+  eq(
+    "与校验用的那一份逐字一致",
+    titles.slice().sort().join(","),
+    [...upstreamClosure(forward, "C")].sort().join(","),
+  );
 }
 
 console.log("\ninsertSnippet(光标这件事全是边界情况)");

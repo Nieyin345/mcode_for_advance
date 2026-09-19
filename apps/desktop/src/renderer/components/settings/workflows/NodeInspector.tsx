@@ -44,7 +44,7 @@ import { insertableGroups } from "./insertVariable.js";
 import {
   WORKFLOW_CAPABILITIES,
   WORKFLOW_TRIGGERS,
-  buildAdjacency,
+  buildForwardAdjacency,
   nodesOnLoopOf,
   nodesWithDownstream,
   type WorkflowCapability,
@@ -569,7 +569,13 @@ function NodeSection({
     [doc, catalog],
   );
   const others = doc.nodes.filter((n) => n.id !== node.id);
-  const adjacency = buildAdjacency(doc.nodes, doc.edges);
+  // ⚠️ **要 `buildForwardAdjacency`,不是 `buildAdjacency`(2026-09-19)。**
+  //
+  // 两者只差回边,而这一处的两半都会被回边弄错,方向还相反:回边从**环的出口指回入口**,
+  // 于是环上的节点会把**自己的下游**显示成「依赖」(它明明在我的下游),同时把**环的
+  // 出口**(那才是正经理当的下一站)从「下游」那一行里去掉 —— 两者都直接显示在界面上。
+  // 调度器(`scheduler.deps`)与存盘校验用的都是不含回边的那一份。
+  const adjacency = buildForwardAdjacency(doc.nodes, doc.edges);
   // 这一步后面还有没有别的步骤。**判据和调度器共用同一个函数**(`nodesWithDownstream`)
   // —— 这里提示的和提示词里那句"你是最后一步"必须是同一件事。终末节点不摆变量表
   // (见 `scheduler.ts` 的 `withOutputCheck`),所以这里要说明白,不然用户填了表却没反应。
