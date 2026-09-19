@@ -68,6 +68,7 @@ import {
   automationTriggerKey as triggerKey,
   shouldFireThisMinute,
   triggerSeedOf,
+  triggerSpecKeyOf,
   watcherDirsOf,
   type AutomationFactsSeed,
   type AutomationTriggerFacts,
@@ -290,8 +291,14 @@ class AutomationRunner {
 
     // 已经不在表里的那些,攒着的触发要一起丢掉 —— 否则"改完触发方式"之后,旧配置
     // 那次还没跑出去的触发会按**旧条件**起一次运行(而那正是用户刚改掉的东西)。
+    //
+    // ⚠️ **"还在表里"不等于"还是那份配置"。** 触发器的身份是 `workflowId:nodeId`,
+    // 而用户改的恰恰是**同一个节点上的参数**(glob、事件名、cron、合并窗口)—— 按身份
+    // 判的话,这种改动攒着的那一次**判不出来**,几秒后照旧按旧条件跑。所以还要比
+    // 一份**条件签名**(见 `triggerSpecKeyOf`):签名变了就当作"这一条已经不是它了"。
     for (const [key, pending] of this.pendingFires) {
-      if (!this.isLoaded(pending.trigger)) {
+      const current = this.findLoaded(pending.trigger);
+      if (current === undefined || triggerSpecKeyOf(current.spec) !== triggerSpecKeyOf(pending.trigger.spec)) {
         if (pending.timer !== null) clearTimeout(pending.timer);
         this.pendingFires.delete(key);
       }
@@ -942,9 +949,10 @@ class AutomationRunner {
     return out;
   }
 
-  private isLoaded(trigger: LoadedTrigger): boolean {
+  /** 表里**现在**这一格(按身份找:同一工作流、同一节点 id)。找不到 = 它已经没了。 */
+  private findLoaded(trigger: LoadedTrigger): LoadedTrigger | undefined {
     const list = this.entries.get(trigger.workflowId);
-    return list !== undefined && list.some((t) => t.nodeId === trigger.nodeId);
+    return list?.find((t) => t.nodeId === trigger.nodeId);
   }
 }
 

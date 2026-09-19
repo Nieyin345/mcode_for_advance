@@ -32,7 +32,7 @@
  * Run: scripts/automation-smoke/run.sh
  */
 import { parseCron, cronMatches, type CronSpec } from "@contracts/cron";
-import { HOOK_EVENT_OF, matchesAnyGlob } from "@contracts/hook";
+import { HOOK_EVENT_OF, matchesAnyGlob, type HookEvent } from "@contracts/hook";
 import {
   parseTriggerSpec,
   DEFAULT_TRIGGER_DEBOUNCE_MS,
@@ -44,6 +44,7 @@ import {
   type NodeOutcome,
   type NodeTypeManifest,
   type TriggerKind,
+  type TriggerSpec,
 } from "@contracts/nodeType";
 import { validateDag } from "@contracts/workflow";
 import type { WorkflowDoc, WorkflowEdge, WorkflowNode } from "@contracts/workflow";
@@ -56,6 +57,7 @@ import {
   automationTriggerKey,
   shouldFireThisMinute,
   triggerSeedOf,
+  triggerSpecKeyOf,
   watcherDirsOf,
 } from "@main/orchestration/automationStatus.js";
 import { deriveTrigger } from "@main/orchestration/library.js";
@@ -870,6 +872,111 @@ console.log("\nAutomationFacts · 挂载侧跟着 reload、运行侧只增不改
 
   facts.clear();
   eq("clear 清干净(dispose 用)", facts.all().length, 0);
+}
+
+/* ────────────────── 11a-3. 改了配置,攒着的那一次不该按旧条件跑 ────────────────── */
+
+console.log("\ntriggerSpecKeyOf · 攒着的触发要认得出「这条配置已经改了」");
+
+{
+  // `pendingFires` 里可能攒着一次还没到点的触发(合并窗口最长几秒),而用户完全可能
+  // 在这几秒里改了触发方式并存盘。`apply()` 只丢掉"触发器没了"的那些 —— 改了 glob /
+  // 改了事件名的**不会**被丢掉,于是几秒后它按**旧条件**起一次运行(旧条件正是用户
+  // 刚改掉的东西)。签名就是拿来认这个的。
+
+  const fileSpec = (globs: string[], debounceMs = DEFAULT_TRIGGER_DEBOUNCE_MS): TriggerSpec => ({
+    kind: "file",
+    globs,
+    debounceMs,
+  });
+  const key = triggerSpecKeyOf(fileSpec(["src/*.ts"]));
+
+  // 同一个条件算几遍都一样(纯函数)。
+  eq("同一条 spec 算两遍结果一样", triggerSpecKeyOf(fileSpec(["src/*.ts"])), key);
+  // 换掉 glob = 用户改的就是这个 → 签名必须变。
+  check("换了 glob 签名就变了", triggerSpecKeyOf(fileSpec(["src/*.md"])) !== key);
+  // 加一个 glob 也要变(不是"包含关系",是"一模一样")。
+  check("多一个 glob 签名也变", triggerSpecKeyOf(fileSpec(["src/*.ts", "*.md"])) !== key);
+  // **顺序不同算不算改?** 算 —— 攒着的那次与新的那次不是同一份配置,重跑一遍是最省心
+  // 且不会漏的解释(glob 之间是并集,重跑的结果与"按新配置攒"一致)。
+  check("顺序变了签名也变(重跑一遍不吃亏)", triggerSpecKeyOf(fileSpec(["a", "b"])) !== triggerSpecKeyOf(fileSpec(["b", "a"])));
+  // 合并窗口也是配置的一部分:从 2000 改成 0 是用户在说"别等,每次都跑"。
+  check("合并窗口变了签名也变", triggerSpecKeyOf(fileSpec(["src/*.ts"], 0)) !== key);
+
+  // 分隔符不能靠逗号:glob 里本来就有逗号(`a,b` 是"任意一个"的写法见 `splitGlobList`)。
+  // 用逗号拼的话 `["a","b"]` 与 `["a,b"]` 会撞成同一个签名 —— 那一改就成了**漏判**。
+  check(
+    "glob 里的逗号不会把两个不同的配置拼成同一个签名",
+    triggerSpecKeyOf(fileSpec(["a", "b"])) !== triggerSpecKeyOf(fileSpec(["a,b"])),
+  );
+
+  // 事件那一路:`matcher` 与事件集合都参与判定。
+  const ev = (events: HookEvent[], matcher = ""): TriggerSpec => ({
+    kind: "event",
+    events,
+    matcher,
+    debounceMs: DEFAULT_TRIGGER_DEBOUNCE_MS,
+  });
+  check("改了事件集合签名就变", triggerSpecKeyOf(ev(["tool.use"])) !== triggerSpecKeyOf(ev(["tool.result"])));
+  check("改了 matcher 签名就变", triggerSpecKeyOf(ev(["tool.use"])) !== triggerSpecKeyOf(ev(["tool.use"], "Write")));
+  eq("同一个事件配置算两遍一样", triggerSpecKeyOf(ev(["tool.use"], "Write")), triggerSpecKeyOf(ev(["tool.use"], "Write")));
+
+  // 定时那一路看 cron 文本(解析后的字段就是它的函数,文本变了字段必变)。
+  const cronA = (parseCron("0 9 * * *") as { ok: true; spec: CronSpec }).spec;
+  const cronB = (parseCron("30 9 * * *") as { ok: true; spec: CronSpec }).spec;
+  eq("同一条 cron 签名一样", triggerSpecKeyOf({ kind: "schedule", cron: cronA }), triggerSpecKeyOf({ kind: "schedule", cron: cronA }));
+  check("换了 cron 签名就变", triggerSpecKeyOf({ kind: "schedule", cron: cronA }) !== triggerSpecKeyOf({ kind: "schedule", cron: cronB }));
+
+  // 不同的**类型**之间不该撞(改触发方式是最常见的一种"改了配置")。
+  const keys = [
+    triggerSpecKeyOf({ kind: "manual" }),
+    triggerSpecKeyOf({ kind: "schedule", cron: cronA }),
+    triggerSpecKeyOf(fileSpec(["src/*.ts"])),
+    triggerSpecKeyOf(ev(["tool.use"])),
+  ];
+  eq("四种触发方式两两不同", new Set(keys).size, 4);
+}
+
+/* ────────────────── 11a-2. 重新挂载不该抹掉「它上周跑过」 ────────────────── */
+
+console.log("\nreload 重新登记挂载侧 · 不许动运行侧");
+
+{
+  // `buildTriggers` **每一次 reload 都对每条解开的触发器登记一遍**挂载侧(`recordSetup(seed, true)`),
+  // 而 reload 触发得很频繁:启动一次、每存一次工作流一次、`reloadAll` 又各来一次。
+  // 运行侧那两笔(`lastFireAt` / `lastError`)是**另一个维度**的事实,重新登记挂载不该把它抹掉
+  // —— 抹掉之后界面上「最近一次运行」会变回空白,而那条自动化明明上周跑过。
+  const facts = new AutomationFacts();
+  const seed: Parameters<typeof facts.recordSetup>[0] = {
+    workflowId: "wf_rearm",
+    nodeId: "T",
+    title: "盯文件",
+    kind: "file",
+    enabled: true,
+  };
+
+  facts.recordSetup(seed, true);
+  facts.recordFired(seed, 1000);
+  eq("跑过之后有 lastFire", facts.ofWorkflow("wf_rearm")[0]?.lastFireAt, 1000);
+
+  // 用户改了个无关的节点 → 存盘 → reload。挂载侧重新登记(还是挂得好好的)。
+  facts.recordSetup(seed, true);
+  eq("重新挂上不该抹掉「最近一次运行」", facts.ofWorkflow("wf_rearm")[0]?.lastFireAt, 1000);
+  eq("重登之后仍然是响着的", facts.ofWorkflow("wf_rearm")[0]?.armed, true);
+
+  // 失败那一侧同理。先记一次「上一次还在跑,跳过了」,再走一次 reload。
+  facts.recordBlocked(seed, "上一次还在跑,这一次触发已跳过", 2000);
+  facts.recordSetup(seed, true);
+  const after = facts.ofWorkflow("wf_rearm")[0];
+  eq("重新挂上不该抹掉「最近一次为什么没跑成」", after?.lastError, "上一次还在跑,这一次触发已跳过");
+  eq("那句原因的时刻也留着", after?.lastErrorAt, 2000);
+
+  // 对照:`ready: false`(真的挂不上了)**要**当场改掉挂载侧 —— 这条不变量不能被上面那条读丢。
+  facts.recordSetup(seed, false, "目录监听失效:ENOENT");
+  const broken = facts.ofWorkflow("wf_rearm")[0];
+  eq("挂不上时 armed 变 false", broken?.armed, false);
+  eq("挂不上时说的是那个原因", broken?.detail, "目录监听失效:ENOENT");
+  eq("挂不上也仍然不动运行侧", broken?.lastFireAt, 1000);
 }
 
 /* ────────────────────────── 11b. 触发器上的「启用」开关(C3) ────────────────────────── */
