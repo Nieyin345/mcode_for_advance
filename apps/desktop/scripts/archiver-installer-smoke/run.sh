@@ -61,6 +61,7 @@ if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
   --tsconfig=tsconfig.json \
   --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
   --alias:electron=./scripts/library-delete-smoke/stubs/electron.ts \
+  --alias:@main/claude/RuntimeManager.js=./scripts/archiver-installer-smoke/stubs/runtimeManager.ts \
   --alias:@main/lib/dataRoot.js=./scripts/archiver-installer-smoke/stubs/dataRoot.ts \
   --alias:@main/lib/logger.js=./scripts/archiver-installer-smoke/stubs/logger.ts \
   --alias:@main/window.js=./scripts/archiver-installer-smoke/stubs/window.ts \

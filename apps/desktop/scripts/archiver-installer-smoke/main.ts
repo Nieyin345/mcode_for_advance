@@ -98,6 +98,7 @@ const { ProjectRepo, SessionRepo, SettingRepo } = await import("@main/store/repo
 const { AUTO_ARCHIVE_SETTING_KEY } = await import("@contracts/ipc");
 const { runAutoArchive } = await import("@main/session/AutoArchiver.js");
 const { broadcastIds } = await import("./stubs/sessionSync.js");
+const { disposedIds, resetRuntimeStub } = await import("./stubs/runtimeManager.js");
 
 await initDb();
 
@@ -175,6 +176,7 @@ mkSession("s_already", "pA", 40, { archived: true });
 
 setRules(true, 30);
 broadcastIds.length = 0;
+resetRuntimeStub();
 
 const n1 = await runAutoArchive();
 
@@ -187,11 +189,23 @@ check("workflow 节点会话不在候选里(kind != chat)", SessionRepo.get("s_n
 check("已经在归档箱里的不动", SessionRepo.get("s_already")?.archived === true);
 eq("返回值 = 这一趟真正归档的条数", n1, 1);
 eq("归档过的会话被广播给界面了(每个客户端据此把它挪进归档箱)", broadcastIds.join(","), "s_stale");
+// 归档之后要**放掉运行时**(2026-09-20 上游合并带进来的那一句)。不放的话那条会话的
+// 进程内状态(transcript / 用量历史 / 上一轮的文件快照)会一直驻留到删除为止 ——
+// 用户看不见,但那是实打实的内存泄漏,而且自动归档每次跑都在添。
+//
+// ⚠️ 判据是**只有那一条**:不区分的话,桩只要被调过就绿,而"每次归档顺手把整个列表
+// 都 dispose 一遍"是另一种错(它会掐掉别的会话正在跑的回合)。
+eq("★ 归档完之后放掉了运行时(而且只放了被归档那一条)", disposedIds().join(","), "s_stale");
+
 
 // 幂等:紧接着再跑一趟,一条都不该动。
 broadcastIds.length = 0;
+resetRuntimeStub();
 eq("★ 紧接着再跑一趟:0 条(归档自身抬了 updated_at,不会来回搬)", await runAutoArchive(), 0);
 eq("第二趟没有再广播(界面不会抖)", broadcastIds.length, 0);
+// 一条都没归档的那一趟**不该放任何运行时** —— 放的是"会话进归档箱"那个动作的收尾,
+// 不是每趟都跑一遍的清理。这里空过的话,上面那条"只放了 s_stale"就只是碰巧对了。
+eq("没归档任何东西的那一趟,一条运行时都没放", disposedIds().length, 0);
 
 // 阈值 0 = 永不。
 mkSession("s_zero", "pA", 400);

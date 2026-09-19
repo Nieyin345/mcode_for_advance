@@ -101,3 +101,45 @@ export function cancelWorkflowRun(sessionId: string): boolean {
   if (claimed) stoppedRuns.push(sessionId);
   return claimed;
 }
+
+/* ── 岔路口 / 重试 ────────────────────────────────────────────────────────────
+ *
+ * 加这两个是因为 **`ipc/index.ts` 的总注册表把 `ipc/orchestration.ts` 也串了进来**
+ * (本套要验"注册表里没漏域",就得让 37 个 register* 全都 import 得过)。那个域从
+ * `@main/orchestration/runner.js` 具名 import 了这两个函数,少一个就是一句 esbuild
+ * 的 `No matching export` —— 而那条错误会盖住本套真正要报的东西。
+ *
+ * ⚠️ 语义**照抄真的那一份**(见 `orchestration/runner.ts`):两者都是"认领成功回 true,
+ * 这张卡过期了回 false",**不抛**。真实现里那四道门(找不到 / 不是 failed / 存档坏了 /
+ * 那一步没失败)归 `workflow-validation-smoke` 管,这边只用它们把返回值摆住。
+ */
+let choiceResult = false;
+let retryResult = false;
+
+export function setWorkflowChoiceResult(v: boolean): void {
+  choiceResult = v;
+}
+export function setWorkflowRetryResult(v: boolean): void {
+  retryResult = v;
+}
+
+/** 用户点岔路口卡片上某个选项。 */
+export function resolveWorkflowChoice(_args: {
+  sessionId: string;
+  runId: string;
+  nodeId: string;
+  edgeId: string;
+  comment?: string;
+}): boolean {
+  return choiceResult;
+}
+
+/** 用户在一张**失败**的卡片上点「再试一次」。 */
+export function resolveWorkflowRetry(_args: {
+  sessionId: string;
+  runId: string;
+  nodeId: string;
+  note?: string;
+}): boolean {
+  return retryResult;
+}
