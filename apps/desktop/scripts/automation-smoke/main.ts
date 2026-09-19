@@ -31,15 +31,20 @@
  *
  * Run: scripts/automation-smoke/run.sh
  */
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { parseCron, cronMatches, type CronSpec } from "@contracts/cron";
 import { HOOK_EVENT_OF, eventItemFactKeysOf, eventItemFactsOf, matchesAnyGlob, type HookEvent } from "@contracts/hook";
 import { latestFailureOf } from "@contracts/ipc";
 import {
   parseTriggerSpec,
   DEFAULT_TRIGGER_DEBOUNCE_MS,
+  NODE_TRIGGER_CRON_PARAM_KEY,
+  NODE_TRIGGER_DEBOUNCE_PARAM_KEY,
   NODE_TRIGGER_ENABLED_PARAM_KEY,
   NODE_TRIGGER_EVENTS_PARAM_KEY,
   NODE_TRIGGER_KIND_PARAM_KEY,
+  NODE_TRIGGER_PATHS_PARAM_KEY,
   NODE_TRIGGER_PROJECT_PARAM_KEY,
   TRIGGER_KINDS,
   triggerEnabledOf,
@@ -63,7 +68,7 @@ import {
   triggerSpecKeyOf,
   watcherDirsOf,
 } from "@main/orchestration/automationStatus.js";
-import { deriveTrigger } from "@main/orchestration/library.js";
+import { deriveTrigger, saveWorkflow } from "@main/orchestration/library.js";
 import type { AutomationFactsSeed } from "@main/orchestration/automationStatus.js";
 import { builtinTriggerManifest } from "@main/orchestration/nodeTypes.js";
 import {
@@ -74,7 +79,13 @@ import {
 } from "@main/orchestration/builtins.js";
 import { runWorkflow, type RunPorts, type RunReport, type RunState } from "@main/orchestration/scheduler.js";
 import { initDb, getDb } from "@main/store/db.js";
-import { ProjectRepo, SessionRepo } from "@main/store/repositories.js";
+import { ProjectRepo, SessionRepo, SettingRepo, WorkflowRepo } from "@main/store/repositories.js";
+// ⚠️ **执行器本体**(`automationRunner.ts`)不是纯件:它真开 `fs.watch`、真起会话、
+// 真读 settings 表。这一套的后半段(见第 13 节)直接 `new` 它来验「重启后同一分钟不
+// 再触发」与「删掉的文件不进载荷」——那两条的实现全在实例状态里,不真跑一遍验不到。
+import { automationRunner } from "@main/orchestration/automationRunner.js";
+import { resetRuns, runs, runsOfNode } from "./stubs/runner.js";
+import { boundSessionIds, runtimeManager } from "./stubs/runtimeManager.js";
 
 let failures = 0;
 let total = 0;
@@ -1649,6 +1660,438 @@ console.log("\n内置自动化 · 参数解得开、项目留空也挂得上");
   facts.recordSetup(seed, true);
   eq("没绑项目的事件触发器登记成「响着」", facts.ofWorkflow(AUTO_CONVERT_WORKFLOW_ID)[0]?.armed, true);
   eq("而且没有 detail(不是坏掉了)", facts.ofWorkflow(AUTO_CONVERT_WORKFLOW_ID)[0]?.detail, undefined);
+}
+
+/* ────────── 13. 后台执行器本体的两条回归网(2026-09-20)────────── */
+
+/**
+ * 前 12 节验的全是**纯件**(`cron` / `parseTriggerSpec` / `automationStatus` /
+ * `mergeEventPayload` / 调度器)。`automationRunner.ts` 那个**真的会跑起来的执行器**
+ * 一直没有任何断言守着 —— 本套 268 条一条都不碰它。
+ *
+ * 这一节补上其中两处的回归网(两处都是最近修好、当时用一次性探针验完就删掉的):
+ *
+ *  - **① 定时触发器重启后重复触发**:去重记忆以前是进程里的 Map,重启就没了。
+ *  - **② 文件触发器把已删除的文件名交给模型**:`fs.watch` 的 `rename` 对新建 / 删除 /
+ *    改名一律报 `"rename"`(判不了方向),现在改判"此刻在不在"。
+ *
+ * ## 为什么要 `new` 一个真的执行器
+ *
+ * 这两条的实现全在实例状态里(`lastMinute` 这张表、`pendingFires` 那一格),而它们
+ * **不存在于任何纯函数里** —— `shouldFireThisMinute` 只是那条规则的一半,另一半是
+ * 执行器持有 / 落盘 / 修剪这张表的方式。所以这里拿真的类 `new` 实例(单例在
+ * `automationRunner.ts` 末尾,`main/index.ts` 也是 `new` 出来用的),只把会话与引擎
+ * 那一侧换成桩(见 `stubs/runner.ts`)。
+ *
+ * ## 时钟与数据根
+ *
+ *  - **时钟**:定时那一节的判据是"哪一分钟",真拿 `new Date()` 跑会随机器时刻漂移
+ *    (跨分钟的那一瞬断言会翻)。所以每次 `onTick` 都把 `Date` 冻结在**指定的那一分钟**
+ *    上(本地构造,同 `@contracts/cron` 文件头那条规矩)。
+ *  - **数据根**:`lastMinute` 落盘走 `SettingRepo.set` → `persist()`,那是**重写整个
+ *    `mcode.db`**。所以整套跑在一个 `mktemp -d` 出来的临时目录里(由 `run.sh` 的
+ *    `MCODE_SMOKE_DATA_ROOT` 指过来),绝不碰用户的真库。
+ */
+console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件不进载荷(②)");
+
+{
+  /** 执行器的内部表面 —— 这两条断言要按"哪一分钟"与"攒着什么"看,而它们都不是公开 API。 */
+  interface RunnerInternals {
+    lastMinute: Map<string, number>;
+    pendingFires: Map<string, { files: string[] }>;
+    onTick(): void;
+    onFsChange(dir: string, filename: string | null): void;
+    start(): Promise<void>;
+    reloadAll(): Promise<void>;
+    dispose(): void;
+  }
+  // 单例是由同一个类 `new` 出来的,只是没导出那个类。拿到原型上的构造器 = 拿到类本身
+  // (这样被测的是**真实的那个类**,不是另抄一份)。
+  const RunnerCtor = Object.getPrototypeOf(automationRunner).constructor as new () => RunnerInternals;
+
+  const newRunner = (): RunnerInternals => new RunnerCtor();
+
+  /** 把 `Date` 冻结在这一刻(毫秒),跑完 `fn` 再装回去。见上面那段注释。 */
+  function withClock<T>(ms: number, fn: () => T): T {
+    const Real = Date;
+    const Frozen = function (...args: unknown[]): Date {
+      if (args.length === 0) return new Real(ms);
+      return new (Real as unknown as new (...a: unknown[]) => Date)(...args);
+    };
+    (Frozen as unknown as { now: () => number }).now = () => ms;
+    (globalThis as unknown as { Date: typeof Date }).Date = Frozen as unknown as typeof Date;
+    try {
+      return fn();
+    } finally {
+      (globalThis as unknown as { Date: typeof Date }).Date = Real;
+    }
+  }
+
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+  /**
+   * 文件事件从到达算起、到真的 flush,要等的**上限**。
+   *
+   * 实现里是 `WATCH_SETTLE_MS + trigger.spec.debounceMs`(`automationRunner` 里那个
+   * 300ms 的常量,故意没导出),而本套**不 import 它**:这里要的是"等得比它久"这个
+   * 粗量,不是那个精确值。抄一个常量进断言的话,实现一改这个数就会变成偶发红 —— 而
+   * 偶发红是最没人信的一种断言。给足余量,只用于"别在还没到点时就断言"。
+   */
+  const FLUSH_SLACK_MS = 900;
+
+  const LAST_MINUTE_KEY = "automation.lastMinute";
+  /** 读盘上那张表(执行器的私有格式:JSON 小映射)。 */
+  const onDisk = (): Record<string, unknown> => {
+    const raw = SettingRepo.get(LAST_MINUTE_KEY);
+    return raw === null || raw.length === 0 ? {} : (JSON.parse(raw) as Record<string, unknown>);
+  };
+
+  /** 每个场景一个工作流 id + 项目 id,互不干扰(表是按 `workflowId:nodeId` 索引的)。 */
+  let seq = 0;
+  const nextId = (): string => `wf_runner_${(seq += 1)}`;
+  const PROJ_ID = "p_runner";
+  const PROJ_DIR = join(process.env.MCODE_SMOKE_DATA_ROOT ?? ".", "watched-project");
+  mkdirSync(PROJ_DIR, { recursive: true });
+
+  /** 建一条自动化存进库里:`spec` 决定它是哪种触发器。 */
+  const makeAutomation = (args: {
+    workflowId: string;
+    nodeId: string;
+    params: Record<string, unknown>;
+  }): void => {
+    WorkflowRepo.save({
+      id: args.workflowId,
+      name: `执行器冒烟 ${args.workflowId}`,
+      builtin: false,
+      updatedAt: Date.now(),
+      nodes: [
+        {
+          id: args.nodeId,
+          type: "mcode.trigger",
+          title: "触发器",
+          params: {
+            [NODE_TRIGGER_PROJECT_PARAM_KEY]: PROJ_ID,
+            ...args.params,
+          },
+          position: { x: 0, y: 0 },
+        },
+      ],
+      edges: [],
+    });
+  };
+
+  /** 起一个执行器(`start()` 会把库里的触发器全解一遍、把落盘的去重表读回来)。 */
+  const startRunner = async (): Promise<RunnerInternals> => {
+    const r = newRunner();
+    await r.start();
+    return r;
+  };
+
+  await initDb();
+  if (ProjectRepo.get(PROJ_ID) === undefined) {
+    const now = Date.now();
+    ProjectRepo.create({
+      id: PROJ_ID,
+      name: "执行器冒烟项目",
+      path: PROJ_DIR,
+      archived: false,
+      group: null,
+      sortOrder: 0,
+      pinnedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+  // 数据根是临时目录,但**上一个场景留下的 settings 行**会跨场景活着 —— 场景一那一段
+  // 刻意要看到它,别的地方则各自用新工作流 id,互不影响。
+
+  /* ── ① 定时:同一分钟 tick 两次只跑一次 ── */
+
+  // 语法上写死一个"每分钟都命中"的表达式,时刻由冻结的时钟来控制(见 `withClock`)。
+  const EVERY_MINUTE = "* * * * *";
+
+  {
+    resetRuns();
+    const wf = nextId();
+    const nodeId = "t_sched";
+    makeAutomation({
+      workflowId: wf,
+      nodeId,
+      params: {
+        [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
+        [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
+        task: "到点了跑一次",
+      },
+    });
+
+    const runner = await startRunner();
+    const minute = 1_000_000; // 冻结的那一分钟(毫秒 = minute * 60_000)
+    const at = minute * 60_000;
+
+    // **同一分钟内 tick 两次** —— ticker 30 秒一跳,同一分钟真的会被看两次(见 TICK_MS
+    // 的注释)。不去重的话「每分钟一次」会变成一分钟两次。
+    withClock(at, () => runner.onTick());
+    withClock(at + 20_000, () => runner.onTick());
+
+    eq("同一分钟 tick 两次,只起一次运行", runsOfNode(nodeId).length, 1);
+    eq("第一次那一跳真的起跑了(不是闸门关过头)", runs.length, 1);
+    eq("载荷是「到点了」那一种", runs[0]?.entry?.payload?.kind, "schedule");
+    eq("去重记忆落在盘上(不是进程里的 Map)", onDisk()[`${wf}:${nodeId}`], minute);
+
+    // 下一分钟照常跑(去重只管"刚跑过的那一分钟"那一格)。
+    withClock((minute + 1) * 60_000, () => runner.onTick());
+    eq("下一分钟照跑", runsOfNode(nodeId).length, 2);
+    eq("盘上那一格跟着翻到新的一分钟", onDisk()[`${wf}:${nodeId}`], minute + 1);
+
+    runner.dispose();
+
+    /* ── 重启:新建一个实例(进程重开),同一分钟**不再**触发 ── */
+
+    const revived = await startRunner();
+    const restartMinute = 2_000_000;
+    const restartAt = restartMinute * 60_000;
+    // 先在新实例的正常时钟下补一次「这一分钟跑过」——用冻结时钟把它钉在 restartMinute。
+    withClock(restartAt, () => revived.onTick());
+    const beforeRestart2 = runsOfNode(nodeId).length;
+    eq("重启前:这一分钟跑过一次", beforeRestart2, 3);
+    revived.dispose();
+
+    // **再起一个进程**(磁盘上那张表就是唯一的记忆)。这一跳若还是"本分钟没见过",
+    // 就会多起一次运行 —— 那正是"每次开应用那个每分钟的自动化多跑一次"的症状。
+    const second = await startRunner();
+    withClock(restartAt + 10_000, () => second.onTick());
+    eq("重启之后同一分钟不再触发", runsOfNode(nodeId).length, 3);
+    second.dispose();
+  }
+
+  /* ── ①b 上限:超过 60 条时滚掉最老的,而且**内存里也看不到** ── */
+
+  {
+    resetRuns();
+
+    // 先把盘上那张表清空 —— 也把内存清空(`startRunner` 从盘上读回)。前面场景留下的
+    // 那几条 key 分钟序号大得多,不清的话"滚掉的是哪几条"就由它们决定了;这一节要的是
+    // **我塞进去的 65 条**这个确定的形状。
+    SettingRepo.set(LAST_MINUTE_KEY, "{}");
+
+    // 真挂一条定时自动化:下面要验的不只是"表里有几条",而是**被滚掉的那条还起不起得来**
+    // —— 那需要一个真在 `all()` 里、cron 命中的触发器。
+    const wf = "wf_trim";
+    const nodeId = "t1";
+    makeAutomation({
+      workflowId: wf,
+      nodeId,
+      params: {
+        [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
+        [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
+        task: "被滚掉之后还该能跑",
+      },
+    });
+
+    // 这一节要直接调私有的写入口(上限是 60 条,建 61 条自动化再各跑一遍太绕)。
+    interface WithWrite {
+      lastMinute: Map<string, number>;
+      rememberLastMinute(key: string, minute: number | null): void;
+    }
+    const runner = (await startRunner()) as unknown as RunnerInternals & WithWrite;
+    eq("起手读回的是空表(盘上那份刚清过)", runner.lastMinute.size, 0);
+
+    // 65 条,分钟序号递增 —— 越晚跑的越新。抬到 5_000_000 之上:前面场景留下的序号到
+    // 2_000_010 为止,这样"谁被滚掉"只由这一节决定。
+    const base = 5_000_000;
+    for (let i = 1; i <= 65; i += 1) runner.rememberLastMinute(`wf_trim:t${i}`, base + i);
+
+    eq("盘上留的是上限条数", Object.keys(onDisk()).length, 60);
+    eq("内存里也只剩 60 条(不是盘上少了、内存还留着)", runner.lastMinute.size, 60);
+    // **被滚掉的是最久没跑过的那几条**(分钟序号最小的那五条)。
+    check(
+      "滚掉的是最久没跑过的那几条",
+      !runner.lastMinute.has("wf_trim:t1") &&
+        !runner.lastMinute.has("wf_trim:t5") &&
+        runner.lastMinute.has("wf_trim:t6") &&
+        runner.lastMinute.has("wf_trim:t65"),
+      [...runner.lastMinute.keys()].slice(0, 3),
+    );
+    check(
+      "最新那一条还在(去重靠它)",
+      onDisk()["wf_trim:t65"] === base + 65,
+      onDisk()["wf_trim:t65"],
+    );
+
+    // ⚠️ **这一条是那个 bug 的形状,而且必须是"跑起来看得见"的那一种。**
+    //
+    // 被滚掉的 key 若只在盘上消失、内存里还挡着,下一次**同分钟**的那一条就会被它吞掉
+    // (判去重读的是内存那一份 `this.lastMinute.get(key)`,见 `onTick`)—— 症状是明明
+    // 在跑着的定时自动化**再也不响**。所以判据不能写成"表里还在不在那个 key":那样
+    // `rememberLastMinute` 里那句无条件 `set` 会替它挡过去(写什么都过,断言是假的),
+    // 必须**真的 tick 一下,看那一分钟还起不起来**。
+    withClock((base + 1) * 60_000, () => runner.onTick());
+    eq("被滚掉的 key 真的不在内存里了(同一个分钟还能再跑起来)", runsOfNode(nodeId).length, 1);
+    runner.dispose();
+  }
+
+  /* ── ①c 盘上的表坏了不抛,按「什么都没记」处理 ── */
+
+  {
+    // 与 `SettingRepo` 那边的降级口径一致(见 `loadWatchTemplates`:setting 是用户数据,
+    // 可能被手改坏 —— 坏的丢掉、按空处理,不让整个面板挂掉)。这里的口径是
+    // `readLastMinutes`:读不回来当空表,退化成"重启后可能多跑一次"。
+    resetRuns();
+    const wf = nextId();
+    const nodeId = "t_badjson";
+    makeAutomation({
+      workflowId: wf,
+      nodeId,
+      params: {
+        [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
+        [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
+        task: "坏表也要能起",
+      },
+    });
+
+    // ① 不是合法 JSON。
+    SettingRepo.set(LAST_MINUTE_KEY, "{ 这不是 json");
+
+    // ⚠️ **`start()` 必须包起来**:这一句验的正是"坏表不该把 `start()` 炸掉"。不包的话,
+    // 实现一旦退回"直接抛",整个冒烟文件会以一个未捕获的 `SyntaxError` 结束(退出码 1,
+    // 一条 FAIL 都打不出来)—— 那种形状看不出是哪条断言在红,也就谈不上"确认红"。包成
+    // 一个可判的失败,红的时候才有 `FAIL 坏 JSON:不当成抛错…` 这一行。
+    const bad = await startRunner().then(
+      (r) => ({ runner: r, error: null as string | null }),
+      (err: unknown) => ({ runner: null, error: (err as Error).message }),
+    );
+    check(
+      "坏 JSON:不当成抛错(表读不回来就按空的走)",
+      bad.error === null,
+      bad.error ?? "没抛",
+    );
+    if (bad.runner !== null) {
+      const r1 = bad.runner;
+      eq("坏 JSON:当空表(这条触发器照挂上)", r1.lastMinute.size, 0);
+      const at = 3_000_000 * 60_000;
+      withClock(at, () => r1.onTick());
+      eq(
+        "坏 JSON 之后照常触发(退化成「重启后可能多跑一次」,但不静默停摆)",
+        runsOfNode(nodeId).length,
+        1,
+      );
+      r1.dispose();
+    } else {
+      // 抛了就没法接着往后验 —— 把后面两条也各记一条红,免得"少跑了"看起来像"没红"。
+      check("坏 JSON:当空表(这条触发器照挂上)", false, "start() 抛了,拿不到实例");
+      check("坏 JSON 之后照常触发(退化成「重启后可能多跑一次」,但不静默停摆)", false, "同上");
+    }
+
+    // ② 是合法 JSON,但形状不对(数组 / 值是字符串 / 值是 NaN)。
+    for (const [what, bad] of [
+      ["数组", "[1,2,3]"],
+      ["值是字符串", '{"a":"100"}'],
+      ["值是 null", '{"a":null}'],
+      ["是一个字符串", '"nope"'],
+    ] as const) {
+      SettingRepo.set(LAST_MINUTE_KEY, bad);
+      const r = await startRunner();
+      eq(`坏形状(${what}):当空表,不抛`, r.lastMinute.size, 0);
+      r.dispose();
+    }
+
+    // ③ 对照:一份**形状对**的表照常读回来(别把降级写成"一律丢")。
+    SettingRepo.set(LAST_MINUTE_KEY, JSON.stringify({ "wf_ok:t": 42 }));
+    const r3 = await startRunner();
+    eq("形状对的表照常读回来", r3.lastMinute.get("wf_ok:t"), 42);
+    r3.dispose();
+  }
+
+  /* ── ② 文件:事件到达时路径已经不在了 → 不攒 ── */
+
+  {
+    resetRuns();
+    const wf = nextId();
+    const nodeId = "t_filedel";
+    makeAutomation({
+      workflowId: wf,
+      nodeId,
+      params: {
+        [NODE_TRIGGER_KIND_PARAM_KEY]: "file",
+        [NODE_TRIGGER_PATHS_PARAM_KEY]: "*.md",
+        // 合并窗口压到最小,免得断言要等两秒。
+        [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0,
+        task: "有文件变了就看看",
+      },
+    });
+
+    const runner = await startRunner();
+    const pendingKey = `${wf}:${nodeId}`;
+
+    // `fs.watch` 的 `rename` 对**删除**也是 `"rename"`(判不了方向),于是删掉的路径
+    // 从前照样进载荷 —— 模型拿着它去读,得到"文件不存在",而它本该去办这一批里别的
+    // 文件(**悄悄少办一件事**)。
+    const gone = join(PROJ_DIR, "already-deleted.md");
+    rmSync(gone, { force: true });
+    runner.onFsChange(PROJ_DIR, "already-deleted.md");
+    eq("事件到达时已经不在的路径:不攒", runner.pendingFires.get(pendingKey)?.files.length ?? 0, 0);
+
+    // ⚠️ 等到**真的越过那两个窗口**再断言"没攒" —— 只等几十毫秒的话,这条断言在
+    // "还没来得及攒"时也会通过,那它证明不了任何事。窗口 = `WATCH_SETTLE_MS`(300)
+    // + 这条触发器的 `debounceMs`(这里写 0)。
+    await sleep(FLUSH_SLACK_MS);
+    eq("而且不会攒出一次空载荷的运行", runsOfNode(nodeId).length, 0);
+
+    // 对照:真新建的文件照常攒(别把闸门关过头)。
+    const real = join(PROJ_DIR, "brand-new.md");
+    writeFileSync(real, "# 新写的");
+    runner.onFsChange(PROJ_DIR, "brand-new.md");
+    eq("真新建的文件照常攒", runner.pendingFires.get(pendingKey)?.files.length ?? 0, 1);
+    check("攒的是它的绝对路径", runner.pendingFires.get(pendingKey)?.files[0] === real, runner.pendingFires.get(pendingKey)?.files);
+
+    await sleep(FLUSH_SLACK_MS);
+    eq("照常起一次运行", runsOfNode(nodeId).length, 1);
+    check(
+      "载荷里交给模型的就是那个真文件",
+      (runsOfNode(nodeId)[0]?.entry?.payload?.files as string[] | undefined)?.includes(real) === true,
+      runsOfNode(nodeId)[0]?.entry?.payload,
+    );
+
+    /* ── ②b 攒着的那几秒里被删掉 → flush 时不交给模型 ── */
+
+    // 事件到达时文件在(所以攒下了),但**还没到 flush** 就被删了 —— 那一段由
+    // `rearm` 里的 `existingFilesOf` 管(两边管的是不同的缝,见 `automationRunner`
+    // 那段注释)。这里把合并窗口放长,好在那中间把文件删掉。
+    const wf2 = nextId();
+    const nodeId2 = "t_flushdel";
+    makeAutomation({
+      workflowId: wf2,
+      nodeId: nodeId2,
+      params: {
+        [NODE_TRIGGER_KIND_PARAM_KEY]: "file",
+        [NODE_TRIGGER_PATHS_PARAM_KEY]: "*.md",
+        [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 400,
+        task: "攒着的这批",
+      },
+    });
+    await runner.reloadAll();
+
+    const doomed = join(PROJ_DIR, "vanishes-later.md");
+    writeFileSync(doomed, "# 待会儿就没了");
+    runner.onFsChange(PROJ_DIR, "vanishes-later.md");
+    eq("到达时它还在,所以攒下了", runner.pendingFires.get(`${wf2}:${nodeId2}`)?.files.length ?? 0, 1);
+
+    // 攒着的那几秒里它被删了(`WATCH_SETTLE_MS` + `debounceMs` 都还没到)。
+    rmSync(doomed, { force: true });
+    await sleep(700); // 越过 300(settle)+ 400(debounce)
+
+    const fired = runsOfNode(nodeId2);
+    eq("flush 时不再把它交给模型", (fired[0]?.entry?.payload?.files as string[] | undefined)?.length ?? -1, 0);
+    check(
+      "那一次运行照跑,只是载荷里没有它(取舍见注释:不因此取消整批)",
+      fired.length === 1 && !JSON.stringify(fired[0]?.entry?.payload ?? {}).includes("vanishes-later"),
+      fired[0]?.entry?.payload,
+    );
+
+    runner.dispose();
+  }
+
+  /* ── 收尾:这一节的实例都 dispose 了,别让 timer / watcher 挂着 ── */
 }
 
 /* ────────────────────────── 收尾 ────────────────────────── */
