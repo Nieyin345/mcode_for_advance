@@ -30,7 +30,10 @@ npx tsc --noEmit -p packages/contracts/tsconfig.json
 ### 验证（做完一件事的标准）
 
 ```bash
-bash apps/desktop/scripts/run-all-smokes.sh   # 全量 40 套，0 失败是基线
+bash apps/desktop/scripts/run-all-smokes.sh   # 全量，0 失败是基线（当前 42 套）
+
+# 改一处小东西时**别跑全量** —— 先问哪几套覆盖它：
+bash apps/desktop/scripts/smokes-for.sh src/main/<改动的文件>.ts
 ```
 
 跑单套：
@@ -42,7 +45,11 @@ bash apps/desktop/scripts/<name>-smoke/run.sh
 
 很多主进程套件走「esbuild 打包 + stubs 换桩」的无头模式——验证主进程逻辑不需要起 Electron。渲染端组件可用 `.tmp/` 下现成的预览台（`ask-preview` / `retry-preview` / `card-preview`）在真浏览器里核对。
 
-**两样都干净才算完：40 套 smoke + 双包 typecheck。**
+**两样都干净才算完：全量 smoke + 双包 typecheck。**
+
+⚠️ **别把「跑绿了」当成「验过了」。** 新写的断言要先撤掉修复、看它真的红，再装回去。
+这个仓库里已经有过两次「测试绿着而问题还在」：一次是断言测的是**别人的职责**，
+一次是套件跑绿但**根本没覆盖到**被改的文件（`smokes-for.sh` 就是为它写的）。
 
 ## 架构大图
 
@@ -76,7 +83,7 @@ preload (contextBridge + zod 校验)
 
 - **sql.js 的 `db.export()` 会重置连接上的 pragma（含外键）**——导出只有 `exportBytes()` 一个出口，新增导出点必须走它，否则 `ON DELETE CASCADE` 静默失效。
 - 主进程里**没有 cookie 的 HTTP 请求做不到**（要走内嵌浏览器那条路）。
-- **API 并发上限 1**：**绝对不要**开子代理 / 并行工具调用（超限会静默返回空，看起来像"这个任务没结果"），多路调研一律自己串行读。这条优先于任何"并行 fan-out"的编排建议。
+- **子代理返回空 ≠ 失败。** 曾经这里写着「API 并发上限 1，绝对不要开子代理 / 并行工具调用」，那是**读错了**：几次子代理立刻返回空被当成"被掐掉"，而同一批里有三个是过了 **20～40 分钟**才带着完整报告回来的 —— 空只是"还没干完"。用户说的实际上限是 **30**。真正要守的是**派活按文件切、不按问题切**（每个代理只给"改哪个文件的哪个函数、改成什么样、别碰别的"），并且**别让两个代理改同一个文件** —— 那才是并行会咬人的地方。
 - 手机端（`AppMobile.tsx` + `webApi.ts`）是**独立组件树**，走无 preload 的 HTTP 桥。共用组件里每加一个 RPC 都要在 `webApi.ts` 补一项，漏了会同步抛错、React 19 整棵卸载。
 - preload 不热更：改 preload 后「新命名空间 = undefined」说明没真正重启 dev，不是写错了。
 - Windows 子进程输出是控制台代码页（中文机器 GBK）：解码先严格试 UTF-8、失败退回 GBK，用原始字节，别数替换字符。
