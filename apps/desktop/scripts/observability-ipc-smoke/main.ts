@@ -442,9 +442,13 @@ console.log("\n长期任务 · stop 一个没有活任务的会话");
   // 关键:error 统一是"这个会话没有进行中的长期任务",不是"会话不存在"
   // —— 后者会让用户以为会话被删了。
   let threw: string | null = null;
-  let ghost: { ok?: unknown; task?: unknown; error?: unknown } | null = null;
+  // ⚠️ 那个 `as typeof ghost` 不能写在 try 里面 —— `ghost` 在那儿的类型已经被
+  // `= null` 收窄成 `null` 了,`as typeof ghost` 于是断言成 `null`,后面 `ghost?.ok`
+  // 全落在 `never` 上。类型写在**外面**的那个别名上。
+  type StopResult = { ok?: unknown; task?: unknown; error?: unknown };
+  let ghost: StopResult | null = null;
   try {
-    ghost = (await longtaskStop({ sessionId: "s_压根没有这个会话" })) as typeof ghost;
+    ghost = (await longtaskStop({ sessionId: "s_压根没有这个会话" })) as StopResult;
   } catch (err) {
     threw = (err as Error).message;
   }

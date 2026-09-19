@@ -36,11 +36,13 @@ import {
 import type { MonitoringCollectorDeps } from "../../../src/main/monitoring/collector.js";
 
 export { RealCollector as MonitoringCollector };
+export type { MonitoringCollectorDeps } from "../../../src/main/monitoring/collector.js";
+// ⚠️ 那两个 summary 类型**不是** `collector.ts` 导出的 —— 它只是从 `./types.js`
+// 本地 import 了一下,从没 re-export。真正的出处在 `monitoring/types.ts`。
 export type {
-  MonitoringCollectorDeps,
   MonitoringNodeSummary,
   MonitoringRunSummary,
-} from "../../../src/main/monitoring/collector.js";
+} from "../../../src/main/monitoring/types.js";
 
 interface Call {
   deps: MonitoringCollectorDeps;

@@ -37,8 +37,9 @@ import {
 import type {
   MonitoringNodeSummary,
   MonitoringRunSummary,
-} from "../../../src/main/monitoring/store.js";
+} from "../../../src/main/monitoring/types.js";
 
+// 同上:出处在 `monitoring/types.ts`,`store.ts` 只是本地 import 了没 re-export。
 export type { MonitoringNodeSummary, MonitoringRunSummary };
 export { monitoringDir } from "../../../src/main/monitoring/store.js";
 
