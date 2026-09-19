@@ -856,11 +856,17 @@ export interface WorkflowNodeResultEvent {
   status: NodeOutcomeStatus;
   /** What the node produced. Also what gets fed to its downstream nodes. */
   summary: string;
-  /** 这一步声明的**产出变量名**(`outputVars` 那张表的名字列;没声明就是缺席)。
+  /** 这一步**要模型交**的产出变量名(`outputVars` 那张表的名字列 + 模型选的分支必交的
+   *  「出路」;没声明就是缺席)。
    *
    *  卡片靠它决定"这段产出是给人读的,还是给下游取值的"。声明过的那一步,产出**就是
    *  一个对象**(见 `@contracts/outputConstraint` 的 `describeOutputVars`),原文摊给
    *  用户看正好是用户明确说过不要的那件事("别让我看见 JSON")。
+   *
+   *  ⚠️ **这不是"下游能引用的一切"。** 清单声明的 `outputs`(命令节点的 `exitCode` /
+   *  `stdout`、三个模型类型的 `summary`)是**运行时**填的、或者根本住在 `outcome` 的
+   *  外层 —— 它们不在产出对象里,算进来会让 `checkOutput` 判"少一样"、卡片退回原文。
+   *  要那份宽的名单(`referenceableOutputsOf`)的地方是「插入变量」菜单,不是这里。
    *
    *  ⚠️ **传名字,不传值。** 值就在 `summary` 里,渲染端用 `checkOutput`(同一份契约、
    *  同一个解析器)自己提出来的就是**下游拿到的那一份** —— 传值等于把同一份内容在

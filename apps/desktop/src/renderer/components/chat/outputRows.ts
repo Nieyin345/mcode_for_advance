@@ -36,6 +36,21 @@ function asText(value: unknown): string {
  *
  * 提取用的是 `checkOutput` —— 和调度器校验产出**同一个解析器**,所以卡片上显示的就是
  * 下游拿到的那一份,不会出现"界面说交齐了、下游说少一样"这种两套说法。
+ *
+ * ## `keys` 是"要模型交的那一份",**不是**「插入变量」菜单那份(2026-09-19)
+ *
+ * 两者差在**清单声明的 `outputs`**(命令节点的 `exitCode` / `stdout`、三个模型类型的
+ * `summary`)。那几样**不能**进这里:
+ *
+ *  - `summary` 压根不在 `outcome.outputs` 里(它在 `outcome` 的外层,是那一轮的原文)。
+ *    把它算进来,`checkOutput` 就会要求产出对象里有 `summary` 这个键 —— 而模型交的
+ *    `{"年份": "2024"}` 没有 —— 于是**每一个填了产出变量表的步骤都会退回原文**,
+ *    正好是用户说过不要看见的那一坨。这是"菜单要列、卡片不能要"的活例子。
+ *  - `exitCode` / `stdout` 是运行时填的,同样不在 `summary` 那段文本里,提不出来。
+ *
+ * 所以这里的名单和提示词/查产出那边**共用 `outputVarsFor`**:要模型交什么,就按什么
+ * 摆。菜单那份宽一些(`referenceableOutputsOf`),因为那回答的是另一个问题 ——
+ * "下游能写什么"。
  */
 export function outputRowsOf(
   summary: string,

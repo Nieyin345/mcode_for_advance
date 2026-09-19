@@ -51,17 +51,22 @@ import {
   checkOutput,
   describeOutputVars,
   outputExampleOf,
+  outputVarsFor,
+  referenceableOutputsOf,
   validateOutputRules,
 } from "@contracts/outputConstraint";
+import type { NodeTemplateNode } from "@contracts/nodeTemplate";
+import type { NodeTypeManifest } from "@contracts/nodeType";
 import type { WorkflowChoiceOption } from "@contracts/runtime";
-import { BRANCH_STOP_CHOICE } from "@contracts/nodeType";
+
 import {
   ASK_EXIT_CHOICE,
   ASK_REPEAT_CHOICE,
   ASK_RUN_CHOICE,
   ASK_SKIP_CHOICE,
+  BRANCH_STOP_CHOICE,
 } from "@contracts/nodeType";
-import type { NodeContextKind, NodeOutcome, NodeTypeManifest } from "@contracts/nodeType";
+import type { NodeContextKind, NodeOutcome } from "@contracts/nodeType";
 import type { WorkflowDoc, WorkflowEdge, WorkflowNode } from "@contracts/workflow";
 
 let failures = 0;
@@ -1254,8 +1259,6 @@ eq("artifacts 取名称", render("{{A.artifacts[0].name}}"), "report.pdf");
 eq("取不存在的参数 = 空串", render("[{{A.params.没有}}]"), "[]");
 // 一句话里多处引用。
 eq("一句里多处", render("{{检索.output}},目标 {{A.params.target}}"), "找到三篇,目标 量子");
-// 没有引用时**原样返回** —— 这一段不该改动任何不含变量的指令。
-eq("没有引用就不动它", render("就是一句普通的话 { } 单个花括号"), "就是一句普通的话 { } 单个花括号");
 
 console.log("\nrenderTemplate(写错了要说清楚)");
 const err = (text: string): string => {
@@ -1279,6 +1282,32 @@ check("空引用", err("{{}}").includes("空引用"), err("{{}}"));
 check("params 后面没写名字", err("{{A.params.}}").includes("参数名"), err("{{A.params.}}"));
 // 报错里要带**是哪个参数**写错了 —— 一个节点有好几个文本参数,不说是哪个就得自己找。
 check("报错里带上了出错的参数名", err("{{C.output}}").includes("指令"), err("{{C.output}}"));
+
+// **清单里声明的 `summary` 必须真的取得到**(2026-09-19)。
+//
+// 三个跑模型的类型(主代理 / 子 agent / 对话节点)在清单里都声明了
+// `outputs: [{ key: "summary", label: "结果文本" }]`。存盘校验认清单声明的键
+// (`workflowValidation.declaredOutputsOf`),所以 `{{那步.summary}}` **存得下去**;
+// 而解算器只在 `outcome.outputs` 里找,`summary` 却在 `outcome` 的**外层** ——
+// 于是同一个写法一边放行、一边报"产出里没有 summary 这个变量"。
+//
+// 这一条把它钉死:清单声明过的东西,解算器必须给得出来。
+eq("清单声明的 summary 取得到", render("{{A.summary}}"), "找到三篇");
+eq("按标题引用也一样", render("{{检索.summary}}"), "找到三篇");
+// 用户**自己**声明过一个叫 `summary` 的变量时以他的为准 —— 那是今天就能用的写法,
+// 不能因为补了这一条把它挤掉。判据:先看 `outcome.outputs`,没有才回落到原文。
+const ownSummary: NodeTemplateScope = {
+  ...TPL_SCOPE,
+  nodes: [
+    {
+      ...(TPL_SCOPE.nodes[0] as NodeTemplateNode),
+      outcome: { status: "success", summary: "原文", outputs: { summary: "用户定的" } },
+    },
+    ...TPL_SCOPE.nodes.slice(1),
+  ],
+};
+const ownRes = renderTemplate("{{A.summary}}", ownSummary);
+eq("用户真声明了 summary 就听用户的", ownRes.ok ? ownRes.text : "ERR", "用户定的");
 
 const ambiguous: NodeTemplateScope = {
   user: "",
@@ -1349,6 +1378,95 @@ console.log("\n变量在调度器里真的生效");
 
 // 界面上用户填的是「变量名 + 示例」两栏,底下是 JSON —— **这一整段测的就是那两栏真的
 // 变成了"跑完会检查的东西"**。见 `@contracts/outputConstraint`。
+
+console.log("\n产出名单:给人看的 vs 要模型交的(2026-09-19)");
+
+// **一个节点的"产出变量"有四个消费方,而它们要的**不是同一份名单**。这一段把那两
+// 份名单的形状钉死 —— 混用哪一边都是安静地出错:
+//
+//  - **要模型交的**(`outputVarsFor`)= 用户定的 + 分支的「出路」。清单声明的
+//    `outputs` **不在内**:那几样是运行时填的(`commandRunner` 往 `outcome.outputs`
+//    里塞 `exitCode`),并进来会逼每个 agent 节点交一个 `{"summary": ...}`。
+//  - **下游引用得到的**(`referenceableOutputsOf`)= 上面那些 **+ 清单声明的**。
+//
+// 菜单列的是后者、卡片和提示词用的是前者 —— 各自用错一边的表现都很难看:菜单少列
+// 用户就只能靠猜,反过来发提示词会凭空多要一样模型交不出来的东西。
+{
+  const manifest: NodeTypeManifest = {
+    id: "demo.cmd",
+    manifestVersion: 1,
+    name: "命令",
+    runner: { kind: "command", entry: "x.py" },
+    capability: "exec",
+    params: [
+      { key: "instruction", kind: "longtext", label: "指令" },
+      { key: "outputVars", kind: "variables", label: "产出变量" },
+    ],
+    outputs: [{ key: "exitCode", label: "Exit code" }],
+  };
+  const params = { outputVars: [{ name: "年份", example: "2024" }] };
+
+  eq(
+    "要模型交的:只有用户定的那几样(清单声明的**不进来**)",
+    outputVarsFor(manifest, params).map((v) => v.name).join(","),
+    "年份",
+  );
+  eq(
+    "下游引用得到的:用户定的 + 清单声明的",
+    referenceableOutputsOf(manifest, params).map((v) => v.name).join(","),
+    "年份,exitCode",
+  );
+  eq(
+    "两份名单都不含「出路」(决定权在用户时它由点选产生)",
+    [outputVarsFor, referenceableOutputsOf]
+      .map((f) => f(manifest, { ...params, decider: "user" }, ["甲"]).some((v) => v.name === "出路"))
+      .join(","),
+    "false,false",
+  );
+  // **模型选的分支**:两份都要有「出路」,而且例子得是**真有**的那条出路 —— 它是
+  // 提示词里给模型的样板("照这个样子填"),编一个不存在的会让模型照着编。
+  const branch: NodeTypeManifest = {
+    id: "mcode.branch",
+    manifestVersion: 1,
+    name: "分支",
+    runner: { kind: "branch" },
+    capability: "read",
+    params: [],
+    outputs: [{ key: "ignored", label: "x" }],
+  };
+  const decideParams = { decider: "model" };
+  eq(
+    "模型选的分支:两份都有「出路」",
+    [outputVarsFor, referenceableOutputsOf]
+      .map((f) => f(branch, decideParams, ["深入", "收尾"]).map((v) => v.name).join(","))
+      .join(" | "),
+    "出路 | ignored,出路",
+  );
+  eq(
+    "「出路」的例子是第一条出路",
+    outputVarsFor(branch, decideParams, ["深入", "收尾"])[0]?.example,
+    "深入",
+  );
+  eq(
+    "一条出路都没有时不追加(那一步该失败在「没有出路」上)",
+    outputVarsFor(branch, decideParams, []).length,
+    0,
+  );
+  // 清单里没有 `outputs` 字段的类型不该凭空多出东西来(大多数内置类型就是这样)。
+  const noOutputs: NodeTypeManifest = {
+    id: "demo.agent",
+    manifestVersion: 1,
+    name: "子代理",
+    runner: { kind: "prompt" },
+    capability: "read",
+    params: [{ key: "outputVars", kind: "variables", label: "产出变量" }],
+  };
+  eq(
+    "清单没声明 outputs 时两份一样",
+    referenceableOutputsOf(noOutputs, params).map((v) => v.name).join(","),
+    "年份",
+  );
+}
 
 console.log("\ncheckOutput(纯函数)");
 

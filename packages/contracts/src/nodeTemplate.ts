@@ -111,6 +111,16 @@ function stringify(value: unknown): string {
  *  的拦截直接引这一份,免得两张表各自长歪。 */
 export const RESERVED_VAR_NAMES = ["output", "status", "error", "title", "user"] as const;
 
+/**
+ * 清单里给"这一步的结果文本"用的那个键(`mcode.main` / `mcode.agent` /
+ * `mcode.conversation` 的 `outputs` 都写着它)。
+ *
+ * 它**不在** {@link RESERVED_VAR_NAMES} 里,因为它不是"内置字段优先",而是
+ * **回落到 `outcome.summary`** —— 用户自己声明了同名变量时听用户的。区别见
+ * {@link readVar} 那一段。
+ */
+export const SUMMARY_OUTPUT_KEY = "summary";
+
 /** 把一个名字(id 或标题)解析成节点。重名返回 `"ambiguous"`。 */
 function findNode(
   scope: NodeTemplateScope,
@@ -271,6 +281,23 @@ function readVar(
   name: string,
 ): TemplateResult {
   const outputs = node.outcome?.outputs;
+  // **`summary` 是清单声明过的产出,而它住在 `outcome` 的外层**(2026-09-19)。
+  //
+  // 主代理 / 子 agent / 对话节点这三种在清单里都写着
+  // `outputs: [{ key: "summary", label: "结果文本" }]` —— 存盘校验认清单声明的键
+  // (`workflowValidation.declaredOutputsOf`),所以 `{{那步.summary}}` **存得下去**;
+  // 可 `summary` 在运行时是 `outcome.summary`(那一轮的原文),不在 `outcome.outputs`
+  // 里(那里只有按变量表解出来的东西)。于是同一个写法一边放行、一边报错。
+  //
+  // 判据**先看产出**:用户自己声明过一个叫 `summary` 的变量时以他的为准(那是今天就能
+  // 用的写法),他没有才回落到原文 —— 而回落到的正好是"这一步给出了什么"。
+  const declared = valueAt(outputs ?? {}, key);
+  if (key === SUMMARY_OUTPUT_KEY && !declared.found) {
+    if (node.outcome === undefined) {
+      return { ok: false, error: `${where}:\`${name}\` 还没有结果` };
+    }
+    return { ok: true, text: node.outcome.summary };
+  }
   if (outputs === undefined) {
     // **这是最容易撞上的一种错,所以话术要说清怎么修。** 结构化产出不是白来的:它是
     // 那一步填了产出变量表、跑完之后被解出来的结果(见 `@contracts/outputConstraint`)。
