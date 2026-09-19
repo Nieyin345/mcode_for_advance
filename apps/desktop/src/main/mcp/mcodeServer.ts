@@ -197,8 +197,9 @@ const MANIFEST_IN = z.object({
   description: z.string().optional(),
   icon: z.string().optional(),
   category: z.string().optional().describe("插入菜单里的分组;省略归入「其他」"),
-  // 省略时补 `{ kind: "prompt" }`。`command` 现在能存、能画,**但跑不了** ——
-  // 见 `@contracts/nodeType` 的 `isRunnerImplemented`。
+  // 省略时补 `{ kind: "prompt" }`(起一个子 agent)。其余几种原语见
+  // `@contracts/nodeType` 的 `IMPLEMENTED_RUNNER_KINDS` —— **自带脚本的 `command`**
+  // (填了 `entry`)是唯一"能存、能画、跑不了"的形状,见 `isNodeRunnable`。
   runner: NodeRunnerSchema.optional(),
   capability: z
     .enum(WORKFLOW_CAPABILITIES)
@@ -511,12 +512,14 @@ export function workflowMcpTools(): McpToolSpec[] {
         // 用户在界面上点「新建」时,渲染端会**自动种一个** mcode.main 进去(`workflowEdit.ts`
         // 的 `seedMainAgent`)。AI 这条路不自动种 —— 往一份已经连好边的图里插一个节点并重新
         // 接线,正是最容易插错的活;模型自己建反而更准。所以这里只把规矩说清楚。
-        "**新图的头一步通常是 `mcode.main`(主代理)** —— 它是这张图的入口,用户那句话先到它这儿。" +
+        "**新图的头一步必须是 `mcode.main`(主代理)** —— 它是这张图的入口,用户那句话先到它这儿。" +
+        "**普通工作流一个都不能少**(存盘时会查 `graph.no-main-node`),而且只能有一个;自动化不查这条,它的入口是触发器。" +
         "界面上的「新建」会自动带一个,你造的图也请照这个形状来:主代理在最前面负责拆任务,后面每个 `mcode.agent` 只做一步。\n" +
         "坐标不用写 —— 不给 `position` 的节点会按依赖自动排好。`builtin`、`updatedAt`、边的 id 也都不用写,代码会补。\n" +
-        "写之前请先想清楚:**每个节点是一个独立会话**,它只看得到你写在 `params.instruction` 里的那段话" +
-        "(和上游传下来的结果),看不到别的步骤、也看不到用户在对话里说过的话。所以每步的指令要**自足**、也要**写窄** ——" +
-        "别让第一步就把整件事做完。\n" +
+        "写之前请先想清楚**哪些步骤是隔离的**:`mcode.agent` 是**独立会话**,它只看得到你写在 `params.instruction` 里的那段话" +
+        "(和上游传下来的结果),看不到别的步骤、也看不到用户在对话里说过的话 —— 所以它的指令要**自足**、也要**写窄**。" +
+        "而 `mcode.main` 与 `mcode.conversation` **跑在主对话里**,那一整段聊天记录它们都看得见,指令可以写成「按刚才定的思路改第三章」这样的话。\n" +
+        "不论哪种,**别让第一步就把整件事做完** —— 做完了下游就没得干。\n" +
         "存盘前会跑两道校验(图不能有环、每步的参数要符合它那个类型的要求),不通过会告诉你是哪一步、哪里不对,照着改再存一次。",
       inputSchema: { workflow: WORKFLOW_IN },
       handler: async (args: { workflow: Obj }) => {
@@ -637,8 +640,9 @@ export function workflowMcpTools(): McpToolSpec[] {
       description:
         "写一份**节点类型清单** —— 定义一种新的节点(画布「添加节点」菜单里会多出一项)。" +
         "用户在设置里把它写好了、让你存成类型,或者你想要一种现有的类型表达不了的节点时用它。\n" +
-        "⚠️ 只能写**数据**,写不了代码:清单只声明「这个类型要填哪些参数」,执行方式现在只有 `prompt`(起一个子 agent)。" +
-        "`command` 那种能存、能画进图里,**但跑不了**。要生成一个**工作流**请用 `workflow_save`,不是这个。",
+        "⚠️ 只能写**数据**,写不了代码:清单只声明「这个类型要填哪些参数」,**执行方式只能用现成的原语** —— " +
+        "省略 `runner` 就是 `prompt`(起一个子 agent);`conversation`(跑在主对话里)、`branch`(岔路口)、`command`、`code` 也都能用。" +
+        "但**自带脚本的 `command`**(填了 `entry`)能存、能画进图里,**跑不了**。要生成一个**工作流**请用 `workflow_save`,不是这个。",
       inputSchema: { manifest: MANIFEST_IN },
       handler: async (args: { manifest: Obj }) => {
         const raw = args.manifest ?? {};
@@ -699,9 +703,10 @@ export async function buildWorkflowMcpServer(opts: { sessionId: string }) {
     version: "1.0.0",
     instructions:
       "Mcode 自己的工作流那一摊的操作工具。管四样东西:\n" +
-      "**工作流 / 自动化** —— 用户画的一张有向无环图,每个节点是一个独立会话(一段指令 + 上游的结果)。" +
+      "**工作流 / 自动化** —— 用户画的一张有向无环图,每个节点是一段指令 + 上游的结果。" +
+      "**多数节点另开一段独立会话**(`mcode.agent`),互相看不见;入口节点 `mcode.main` 与 `mcode.conversation` 例外,它们跑在主对话里。\n" +
       "`workflow_list` 看有哪些、`workflow_get` 看一份的完整内容、`workflow_save` 整份存回去、`workflow_remove` 删。\n" +
-      "**节点类型** —— 节点能是哪种东西(现在只有 `mcode.agent`:一个带指令的子 agent)。写工作流前先 `node_types_list`。\n" +
+      "**节点类型** —— 节点能是哪种东西(`mcode.agent` 是最常用的子 agent,另外还有主代理、对话节点、岔路口、命令、脚本)。写工作流前先 `node_types_list`。\n" +
       "**代理档案** —— 一组预先填好的节点参数,建节点时套用。\n" +
       "写操作都要用户点头才生效。动手改之前先把用户的意图问清楚 —— 那是他自己画的东西。",
     // ⚠️ **故意不写 `alwaysLoad: true`**(库里和浏览器那两个写了)。

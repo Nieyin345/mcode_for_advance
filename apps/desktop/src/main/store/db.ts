@@ -191,7 +191,8 @@ function migrate(database: Database): void {
 
     CREATE TABLE IF NOT EXISTS library_items (
       id          TEXT PRIMARY KEY,
-      -- 属于哪个库:paper / textbook / note(见 contracts/src/library.ts 的 LibraryKind)
+      -- 属于哪个类型:开放字符串注册表(内置 8 类,用户可自建,见 contracts 的 BUILTIN_LIBRARY_TYPES)。
+      -- 「paper / textbook / note」只是最早的三个内置值,不是全集。
       kind        TEXT NOT NULL DEFAULT 'paper',
       doi         TEXT,
       arxiv_id    TEXT,

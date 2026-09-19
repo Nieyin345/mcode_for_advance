@@ -11,9 +11,8 @@
  *
  * 打开时拉全三份数据,编辑只改内存里的草稿;点「保存」一次性落库:
  *   - 小类说明随整表 `typesSave` 走(类型表本来就存设置里,prompt 是其中一列);
- *   - 大类说明随整表 `groupsSave` 走 —— 大类目前**还没有 prompt 字段**,这里把
- *     prompt 多带在 groups 对象里交上去(主进程的 parseLibraryGroupsJson 会忽略
- *     多余字段,不会报错);契约补上该字段之前,这一层先这样交,UI 不用再改;
+ *   - 大类说明随整表 `groupsSave` 走 —— 大类同样有 `prompt` 字段(`LibraryGroupMeta`,
+ *     `parseLibraryGroupsJson` 会 trim 并校验),不是多余字段;
  *   - 集合说明**只提交改过的**那些:逐条 `renameCollection({ id, prompt })`,
  *     失败逐条列出后端 error 原文,不中断其余的。
  *
@@ -147,8 +146,7 @@ export function LibraryTypesPanel() {
         setTypePrompts(tp);
         const gp: Record<string, string> = {};
         for (const g of gr.groups) {
-          // 大类的 prompt 字段契约里还没有(见文件头):先按"可能有"读,没有就空着
-          gp[g.id] = (g as LibraryGroupMeta & { prompt?: string }).prompt ?? "";
+          gp[g.id] = g.prompt ?? "";
         }
         setGroupPrompts(gp);
         const cp: Record<string, string> = {};
