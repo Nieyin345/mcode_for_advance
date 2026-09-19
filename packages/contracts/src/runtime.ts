@@ -817,6 +817,22 @@ export interface WorkflowNodeResultEvent {
    *  **可缺席**:`skipped`(上游失败所以没跑)和 `cancelled`(还没轮到就被叫停)的节点
    *  根本没建过会话,也就没有过程可看。那种情况下卡片不该摆一个点开是空的入口。 */
   nodeSessionId?: string;
+  /** 收场那一刻这一步的**过程快照**(同 `WorkflowNodeTranscriptEvent.blocks`)。
+   *
+   *  ## 为什么结果事件要再带一份过程
+   *
+   *  过程本来走的是另一条通道(按 `nodeSessionId` 索引的替换语义),渲染端自己拼得
+   *  出来。但那个通道是**进程生命周期**的:主进程那边有容量上限、渲染端重开一次就是
+   *  空的。而卡片是**落盘**的 —— 会话重开之后用户点开那张卡,看到他的是"过程已经不在
+   *  内存里了",可那一步明明是他昨天跑的。
+   *
+   *  所以收场这一刻**拷一份进卡片**。这是一份冗余,换来的是"跑完的每一步都还查得到
+   *  它干了什么"。
+   *
+   *  ⚠️ **可缺席**:没跑过的节点(skipped / cancelled)没有会话、也就没有过程;过程
+   *  为空时同样不带。消费方**不能**把缺席读成"过程是空的"。
+   */
+  transcript?: TranscriptBlock[];
   /** The graph node's id / type / title, straight off `WorkflowNode`. */
   nodeId: string;
   nodeType: string;

@@ -451,10 +451,14 @@ function NodeDetail({
   onBack: () => void;
 }) {
   const { t } = useI18n();
+  // 活的那份优先,查不到退回这一步收场时拷下来的快照(`LiveNode.nodeTranscript`)——
+  // 与消息流里那张卡**同一条规矩**(见 `WorkflowStepCard`)。两边判断不一致的话,同一
+  // 步在看板里有过程、在卡片上没有(或者反过来),用户没法解释。
   const rawBlocks = useSessionStore((s) =>
     node.nodeSessionId ? s.workflowNodeTranscripts[node.nodeSessionId] : undefined,
   );
-  const blocks = useMemo(() => (rawBlocks ?? []).map(mapTranscriptBlock), [rawBlocks]);
+  const source = rawBlocks ?? node.nodeTranscript;
+  const blocks = useMemo(() => (source ?? []).map(mapTranscriptBlock), [source]);
   const [retryOpen, setRetryOpen] = useState(false);
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
@@ -594,18 +598,33 @@ function NodeDetail({
         )}
         {blocks.length === 0 ? (
           <p className="px-1 py-3 text-[11px] leading-relaxed text-content-subtle">
+            {/* 三句话,不是两句:"正在跑但还没开口" / "跑过、过程丢了" / "压根没跑"
+                (没建过会话的节点)。最后那一句和中间那句读起来像两回事 —— 说成"丢了"
+                会让人去找一个从来不存在的东西。 */}
             {live
               ? t("chatStream.workflowBoard.nodeWaiting")
-              : t("chatStream.workflowStep.processGone")}
+              : t(
+                  node.nodeSessionId
+                    ? "chatStream.workflowStep.processGone"
+                    : "chatStream.workflowStep.noTranscript",
+                )}
           </p>
         ) : (
           <MessageBlocks blocks={blocks} />
         )}
         {/* 收场时那一句结论。失败的原因往往**不在过程里**(它可能一个字都还没输出就炸了),
-            所以单独摆一条。 */}
-        {!live && node.message && (
+            所以单独摆一条。
+            ⚠️ 是两个字段,不是二选一:`summary` 是这一步交出的东西,`error` 是它为什么
+            没交出来。失败时两个都可能非空(跑了半截才炸),两段都要摆 —— 只留一段的话
+            "它做了什么"和"它为什么停"会有一半看不见。 */}
+        {!live && node.error && (
+          <div className="mt-2 rounded-md border border-danger/40 bg-danger/5 px-2 py-1.5 text-[11px] leading-relaxed text-danger">
+            <Markdown>{node.error}</Markdown>
+          </div>
+        )}
+        {!live && node.summary && (
           <div className="mt-2 rounded-md border border-edge bg-surface/60 px-2 py-1.5 text-[11px] leading-relaxed text-content-muted">
-            <Markdown>{node.message}</Markdown>
+            <Markdown>{node.summary}</Markdown>
           </div>
         )}
       </div>

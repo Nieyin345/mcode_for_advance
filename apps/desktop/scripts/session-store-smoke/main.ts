@@ -307,6 +307,10 @@ console.log("\n[9] workflow node transcripts");
     title: "查文献",
     status: "success",
     summary: "查到了 3 篇",
+    // 结果事件**自带一份过程快照**。收场这一刻渲染端手上那份就是主进程刚发过来的,
+    // 契约上的 `transcript` 是同一份内容(见 `WorkflowNodeResultEvent.transcript`)——
+    // 这里两个都给,验的是"谁在的时候用谁"(下面的断言分两种情况)。
+    transcript: blocksB,
   });
   const cards = (useSessionStore.getState().messagesBySession[SID] ?? [])
     .flatMap((m) => m.blocks)
@@ -317,6 +321,30 @@ console.log("\n[9] workflow node transcripts");
     "卡片带上了那张表的钥匙(nodeSessionId)",
     card?.kind === "workflow-node-result" && card.nodeSessionId === NODE_SESSION,
     card,
+  );
+  // **过程被裁掉之后,卡片上还留着收场那一刻的那一份。** 这是"跑完的每一步都还查得到
+  // 它干了什么"的全部依仗:活的那张表(`workflowNodeTranscripts`)是进程生命周期的,
+  // 而卡片落盘 —— 会话重开之后活的那份是空的,只能靠卡片自己带。
+  eq(
+    "收场时把过程拷进了卡片",
+    card?.kind === "workflow-node-result" ? card.nodeTranscript?.length : undefined,
+    2,
+  );
+  // 活的那份被顶掉(容量裁的、或者重开之后根本没有)之后,卡片依然是唯一来源。
+  useSessionStore.setState({
+    workflowNodeTranscripts: Object.fromEntries(
+      Object.entries(useSessionStore.getState().workflowNodeTranscripts).filter(
+        ([k]) => k !== NODE_SESSION,
+      ),
+    ),
+  });
+  const afterEvict = (useSessionStore.getState().messagesBySession[SID] ?? [])
+    .flatMap((m) => m.blocks)
+    .filter((b) => b.kind === "workflow-node-result")[0];
+  eq(
+    "活的那份没了,卡片上的快照还在(用户照样看得见它干了什么)",
+    afterEvict?.kind === "workflow-node-result" ? afterEvict.nodeTranscript?.length : undefined,
+    2,
   );
 
   // 没跑过的节点(skipped)不带它 —— 卡片于是不会摆一个点开是空的入口。
@@ -336,6 +364,11 @@ console.log("\n[9] workflow node transcripts");
   check(
     "skip 掉的节点没有它(它压根没建过会话)",
     skipped?.kind === "workflow-node-result" && skipped.nodeSessionId === undefined,
+    skipped,
+  );
+  check(
+    "也没带过程快照(没跑过,没有过程可拷)",
+    skipped?.kind === "workflow-node-result" && skipped.nodeTranscript === undefined,
     skipped,
   );
 

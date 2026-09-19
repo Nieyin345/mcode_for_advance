@@ -962,6 +962,26 @@ export async function startWorkflowRun(args: {
    * `runEngine`):分派链上不再有 kind 判断,注册表里没有专用执行器的 kind 全部落到
    * 这里 —— 与"新增执行器只注册、调度器不加分支"是同一条规矩的另一半。
    */
+  /** 报一条**这一步**的粗进度。执行器拿到的 `emitProgress` 和模型轮开头那一条
+   *  走的是这里 —— 同一件事(节点进度事件)只有一个出口,不然两边的字段迟早对不上。 */
+  const emitNodeProgress = (
+    node: WorkflowNode,
+    manifest: NodeTypeManifest | undefined,
+    progress: { percent?: number; message?: string; phase?: string },
+  ): void => {
+    broadcastRuntimeEvent({
+      type: "workflow.node.progress",
+      sessionId: session.id,
+      runId,
+      nodeId: node.id,
+      nodeType: node.type,
+      title: displayTitle(node, manifest),
+      ...(progress.percent !== undefined ? { percent: progress.percent } : {}),
+      ...(progress.message ? { message: progress.message } : {}),
+      ...(progress.phase ? { phase: progress.phase } : {}),
+    });
+  };
+
   const runInNodeSession = async (
     node: WorkflowNode,
     manifest: NodeTypeManifest,
@@ -983,6 +1003,19 @@ export async function startWorkflowRun(args: {
     // (那条记录就再也清不掉了)。
     runtimeManager.bindSession(nodeSession);
     runtimeManager.setInteractiveProxy(nodeSession.id, session.id);
+
+    // **先报一条粗进度:它现在在起跑。**
+    //
+    // 卡片上那一行小字(`message`)只有 `emitProgress` 能写,而内置执行器里只有
+    // command / code 那两种会调它 —— 模型轮这一路(也就是**绝大多数节点**)从头到尾
+    // 一条都不发。于是"跑得久"的那些卡片上就只有「执行中」三个字,而用户的原话是
+    // 「看不出它具体在干嘛」。过程(工具调用)要等模型真的开始调工具才有,开头这段
+    // 静默期恰恰是最让人怀疑"是不是死了"的时候。
+    //
+    // 报的是**这一步的标题**而不是"正在思考"这种空话 —— 看板上并排跑着好几格时,
+    // 用户要的是"我点开的是哪一格"。**故意不带 `percent`**:这一步的总量无从估算,
+    // 编一个数字出来只会让进度条走到 99% 然后停住。
+    emitNodeProgress(node, manifest, { message: displayTitle(node, manifest) });
 
     // 取消要**打断正在跑的那个回合**,不能只做到"不再派发新的" —— 否则用户按了
     // 停止之后它还会继续烧 token 直到模型自己收尾。监听先挂上再发起,中间那一瞬
@@ -1084,19 +1117,7 @@ export async function startWorkflowRun(args: {
         input,
         cwd,
         metadata: { runId, sessionId: session.id, nodeId: node.id },
-        emitProgress: (progress) => {
-          broadcastRuntimeEvent({
-            type: "workflow.node.progress",
-            sessionId: session.id,
-            runId,
-            nodeId: node.id,
-            nodeType: node.type,
-            title: displayTitle(node, manifest),
-            ...(progress.percent !== undefined ? { percent: progress.percent } : {}),
-            ...(progress.message ? { message: progress.message } : {}),
-            ...(progress.phase ? { phase: progress.phase } : {}),
-          });
-        },
+        emitProgress: (progress) => emitNodeProgress(node, manifest, progress),
       });
     },
 
@@ -1259,11 +1280,25 @@ export async function startWorkflowRun(args: {
       // (渲染端按 `runId + nodeId` 原地换掉那张卡,见 `sessionStore` 的 `workflow-node-result`
       // 分支 —— 那次是**不换卡、只补字段**)。没补上的话卡片上只是不显示花费,不影响别的。
       const usage = nodeSessionId ? usageOfSession(nodeSessionId) : undefined;
+      // **过程快照跟着结果事件一起走。** 卡片要"跑完还能看见这一步干了什么",而活的那
+      // 一份(渲染端按 `nodeSessionId` 索引的那张表)会随容量被裁、重开应用也没了 ——
+      // 拷一份进卡片是唯一能跨这两件事的路(见 `WorkflowNodeResultEvent.transcript`)。
+      //
+      // 放在结果事件上而不是另发一条:两者是**同一刻的同一件事**,分开走的话中间那一
+      // 瞬界面会拿到"卡片已经有了、过程还没到"的空档。
+      //
+      // ⚠️ 这里读到的是**此刻**那一份。`turn.done` 已经把最终文本折进去了(`text` 那一路
+      // 在 `turn.done` 时收口),而 `message.complete` 折出来的中间态也在 —— 所以拿到的
+      // 不是半截。
+      const transcript = nodeSessionId ? runtimeManager.transcriptOf(nodeSessionId) : undefined;
       broadcastRuntimeEvent({
         type: "workflow.node.result",
         sessionId: session.id,
         runId,
         ...(nodeSessionId ? { nodeSessionId } : {}),
+        // 拷成可变数组:通道那一头是 `readonly`(主进程的那份不许别人改),
+        // 而事件要过 IPC 序列化,合同上是可变的。
+        ...(transcript && transcript.length > 0 ? { transcript: [...transcript] } : {}),
         nodeId: e.node.id,
         nodeType: e.node.type,
         title: displayTitle(e.node, manifests?.get(e.node.type)),

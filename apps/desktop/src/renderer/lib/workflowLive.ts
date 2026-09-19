@@ -30,7 +30,7 @@
  * **此刻**,这张图的哪几格在转圈。
  */
 import { useSyncExternalStore } from "react";
-import type { RuntimeEvent, WorkflowChoiceOption } from "@contracts/runtime";
+import type { RuntimeEvent, TranscriptBlock, WorkflowChoiceOption } from "@contracts/runtime";
 import { api } from "@renderer/lib/api.js";
 
 /** 一步此刻的样子。和消息流里那张卡的状态**不是同一套** —— 这里多了"正在排队"和
@@ -60,6 +60,21 @@ export interface LiveNode {
   status?: LiveNodeStatus;
   /** 跑这一步的隐藏子会话,卡片和过程面板靠它取内容。**没跑过的节点没有**。 */
   nodeSessionId?: string;
+  /** 收场那一刻的过程快照(见 `sessionStore` 的 `NODE_ARCHIVE_KEEP` 那一段)。
+   *
+   *  看板的详情面板和消息流里那张卡读的是**同一份**过程,所以这里也得带上它 ——
+   *  只认 `nodeSessionId` 的话,过程被容量裁掉之后(或者会话重开之后)点开详情是空的,
+   *  而消息流里那张同样的卡却有内容。两处不一致比两处都空更难解释。 */
+  nodeTranscript?: TranscriptBlock[];
+  /** 这一步**交出了什么**(结果事件的 `summary`,失败时是空的)。
+   *
+   *  详情面板上"收场时那一句结论"读的就是它。之前那一格读的是 `message`,而
+   *  `message` 只跟着 progress 来、收场时被 `patchNode` 清掉 —— 于是那一格**从来没
+   *  显示过**(`!live && node.message` 恒假)。产出因此只在消息流那张卡上有,看板里
+   *  点开某一步反而看不到它做了什么。 */
+  summary?: string;
+  /** 失败的原因(结果事件的 `error`)。成功/跳过的节点没有。 */
+  error?: string;
   /** 跑起来的时刻(ms)。看板拿它显示"跑了多久"。 */
   startedAt?: number;
   /** 收场的时刻(ms)。 */
@@ -179,6 +194,10 @@ function patchNode(
     if (patch.nodeSessionId === undefined && prevNode.nodeSessionId !== undefined) {
       merged.nodeSessionId = prevNode.nodeSessionId;
     }
+    // 同 `nodeSessionId`:补充事件(补花费那条不带过程)不该把它抹掉。
+    if (patch.nodeTranscript === undefined && prevNode.nodeTranscript !== undefined) {
+      merged.nodeTranscript = prevNode.nodeTranscript;
+    }
     return {
       ...runs,
       [runId]: {
@@ -289,7 +308,12 @@ function apply(e: RuntimeEvent): void {
             title: e.title,
             phase: "running",
             startedAt: runs[e.runId]?.nodes[e.nodeId]?.startedAt ?? Date.now(),
-            ...(e.percent !== undefined ? { percent: e.percent } : {}),
+            // 夹到 0..100:**和消息流那张卡同一个上限**(见 `sessionStore` 的
+            // `reduceWorkflowNodeProgress`)。不夹的话同一份进度在两处显示成不同的
+            // 数,而进度条那边按百分比算宽度,超了会画出格子。
+            ...(e.percent !== undefined
+              ? { percent: Math.max(0, Math.min(100, e.percent)) }
+              : {}),
             ...(e.message ? { message: e.message } : {}),
           }),
         ),
@@ -305,8 +329,16 @@ function apply(e: RuntimeEvent): void {
               title: e.title,
               phase: "settled",
               status: e.status,
+              summary: e.summary,
+              ...(e.error ? { error: e.error } : {}),
               endedAt: Date.now(),
               ...(e.nodeSessionId !== undefined ? { nodeSessionId: e.nodeSessionId } : {}),
+              // 过程快照跟着结果事件一起到(见 `sessionStore` 与 `@contracts/runtime`
+              // 的 `WorkflowNodeResultEvent.transcript`)—— 看板拿它当 `nodeSessionId`
+              // 查不到时的退路。
+              ...(e.transcript !== undefined && e.transcript.length > 0
+                ? { nodeTranscript: e.transcript }
+                : {}),
             }),
           ),
         ),

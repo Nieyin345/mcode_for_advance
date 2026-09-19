@@ -70,6 +70,9 @@ export const en = {
   "chatStream.workflowStep.processSteps": "{n} blocks",
   "chatStream.workflowStep.processGone":
     "This step's process is no longer in memory (only the most recent steps are kept).",
+  // A settled step that never had a session (skipped / not selected by a branch) has
+  // no process to show, and should not offer an entry that opens onto nothing.
+  "chatStream.workflowStep.noTranscript": "This step has no process to show (it never ran).",
   // Execution metadata for this step (NodeExecutionRecord): which executor ran it, how long.
   "chatStream.workflowStep.execution": "Executor {kind} · {duration}",
   // External artifacts this step produced (NodeArtifact). file / directory get "Open";

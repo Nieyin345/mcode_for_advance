@@ -2244,6 +2244,72 @@ console.log("\nworkflowLive(运行看板的折叠器)");
   }
 
   {
+    // **收场那一刻带回来的三样东西。** 看板详情面板读的就是它们:
+    //  - `summary` / `error` —— 这一步交出了什么 / 为什么没交出来;
+    //  - `nodeTranscript` —— 过程快照,活的那张表查不到时的退路。
+    //
+    // ⚠️ `summary`/`error` 这条曾经是坏的:面板上写的是 `node.message`,而 `message`
+    // 是**进度**那一行的字段,收场时被 `patchNode` 清掉 —— 于是那一格从来没显示过。
+    fresh();
+    const ok = __applyWorkflowLiveEvent(
+      ev("workflow.node.result", {
+        ...PROGRESS,
+        status: "success",
+        summary: "写完了,一共三节",
+        nodeSessionId: "sess_node_1",
+        transcript: [{ kind: "text", text: "先列个提纲" }],
+      }),
+    );
+    eq("★ 产出记在那一格上", cell(ok)?.summary, "写完了,一共三节");
+    eq("没失败就没有失败原因", cell(ok)?.error, undefined);
+    eq(
+      "★ 过程快照跟着结果事件过来",
+      cell(ok)?.nodeTranscript?.length,
+      1,
+    );
+
+    // **补充事件不该把快照抹掉。** 收场之后还会来别的(补花费、别的格子的进度),
+    // 那些事件不带 `nodeTranscript` —— 沿用上一次的,和 `nodeSessionId` 同一条规矩。
+    // ⚠️ 这一条必须**紧挨着上面那一格**写:`fresh()` 会把整个看板清掉。
+    const after = __applyWorkflowLiveEvent(
+      ev("workflow.node.progress", { ...PROGRESS, message: "别的动静" }),
+    );
+    eq(
+      "★ 后面来的事件不会把快照抹掉",
+      cell(after)?.nodeTranscript?.length,
+      1,
+    );
+    eq("产出也没被后面来的进度事件清掉", cell(after)?.summary, "写完了,一共三节");
+
+    fresh();
+    const bad = __applyWorkflowLiveEvent(
+      ev("workflow.node.result", {
+        ...PROGRESS,
+        status: "failed",
+        summary: "",
+        error: "上游没给到年份",
+      }),
+    );
+    eq("★ 失败原因记在那一格上", cell(bad)?.error, "上游没给到年份");
+  }
+
+  {
+    // 百分比**夹在 0..100**:和消息流那张卡同一个上限(见 `sessionStore` 的
+    // `reduceWorkflowNodeProgress`)。不夹的话同一份进度在两处显示成不同的数,
+    // 而看板上的进度条按百分比算宽度,超了会画出格子。
+    fresh();
+    const high = __applyWorkflowLiveEvent(
+      ev("workflow.node.progress", { ...PROGRESS, percent: 140 }),
+    );
+    eq("超过 100 夹到 100", cell(high)?.percent, 100);
+    fresh();
+    const low = __applyWorkflowLiveEvent(
+      ev("workflow.node.progress", { ...PROGRESS, percent: -5 }),
+    );
+    eq("负数夹到 0", cell(low)?.percent, 0);
+  }
+
+  {
     // **岔路口那两下。** 同一个事件发两次:不带 `chosen` 是在等,带了是选完了。
     const OPTIONS = [{ id: "e_a", label: "再改一轮", next: "修订" }];
     fresh();

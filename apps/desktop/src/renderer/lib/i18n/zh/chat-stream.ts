@@ -72,6 +72,10 @@ export const zh = {
   // 过程只在内存里、有容量上限(见 `RuntimeManager` 的 `NODE_TRANSCRIPT_LIMIT`)——
   // 说清楚是"不在了"而不是摆一个点开是空的入口让人以为坏了。
   "chatStream.workflowStep.processGone": "这一步的过程已经不在内存里了(只留最近跑过的若干步)。",
+  // 收场的那一步**根本没建过会话**(跳过 / 路由没选它),所以它既没有过程、也不该
+  // 摆一个点开是空的入口。和 `processGone` 分开:那句话读起来像"东西本该在,丢了",
+  // 而这里是一条事实。
+  "chatStream.workflowStep.noTranscript": "这一步没有过程可以看(它没跑)。",
   // 这一步的执行元数据(`NodeExecutionRecord`):跑在哪种执行器上、跑了多久。
   "chatStream.workflowStep.execution": "执行器 {kind} · {duration}",
   // 这一步交出的外部产物(`NodeArtifact`)。file / directory 给「打开」,data 只摆引用。

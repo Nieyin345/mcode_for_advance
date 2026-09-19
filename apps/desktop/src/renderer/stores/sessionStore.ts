@@ -212,6 +212,22 @@ const NAV_HISTORY_CAP = 50;
  *  卡片本来就滚出屏幕了。真正的上限在主进程那边(它同时管着渲染端收不到的那部分)。 */
 const NODE_TRANSCRIPT_KEEP = 64;
 
+/** 已经收场的那一步,过程**留一份在卡片上**(`NODE_ARCHIVE_KEEP`)。
+ *
+ *  两件事一起决定要有它:
+ *
+ *  1. `workflowNodeTranscripts` 只按会话 id 索引,而**过程是活的**——主进程那边超过
+ *     `NODE_TRANSCRIPT_LIMIT` 会把最早的丢掉,渲染端这边也按 `NODE_TRANSCRIPT_KEEP` 裁。
+ *     用户在几十步之后回头看第五步,`nodeSessionId` 还在卡片上,过程却查不到了 ——
+ *     卡片上摆着一个点开空空的入口。
+ *  2. 卡片**落盘**(见 `reduceWorkflowNodeResult` 上面那段),会话重开之后
+ *     `workflowNodeTranscripts` 是空的,不落盘的话"每一步的过程"重开一次就全没了。
+ *
+ *  所以收场那一刻把过程**拷进卡片**(见 `reduceWorkflowNodeResult`)。代价是每步几十 KB
+ *  的卡片数据,上限 `NODE_ARCHIVE_KEEP` 条,超了按块数从大到小丢 —— 那是"最占地方的那些"
+ *  (一张几百条 transcript 的卡),用户往回翻多半是要看最近那几步。 */
+const NODE_ARCHIVE_KEEP = 200;
+
 /** True when two history entries point at the same spot (path + 1-based
  *  line/column). Used to dedup consecutive pushes and to skip snapshotting a
  *  "current" location that equals the reveal target. */
@@ -394,6 +410,11 @@ export type Block =
       /** 跑这一步的那个隐藏会话 id —— 卡片靠它去 `nodeTranscriptsBySession` 里取
        *  "这一步的过程"。**可缺席**:`skipped` / `cancelled` 的节点根本没跑过。 */
       nodeSessionId?: string;
+      /** 收场那一刻的过程**快照**(见 `NODE_ARCHIVE_KEEP` 那条注释)。
+       *
+       *  和 `nodeSessionId` 是**两条路**,不是二选一:会话还在(`nodeSessionId` 查得到)
+       *  时优先读活的那份(它最新),查不到了退回这一份。所以两个字段都要留着。 */
+      nodeTranscript?: TranscriptBlock[];
       /** 节点类型 id(`mcode.agent`)。等宽显示,不翻译。 */
       nodeType: string;
       title: string;
@@ -4260,6 +4281,57 @@ function appendTurnCardBlock(
   return [...messages, opener];
 }
 
+/**
+ * 给"已经收场的那一步"的过程快照封顶(见 `NODE_ARCHIVE_KEEP`)。
+ *
+ * 数的是**块数**不是字节数:块的大小差好几个量级(一条 `text` 几百字,一条 `tool_use`
+ * 里的 `input` 可以是一整份文件),而这里要挡的是"一张图跑了一整天之后,消息表被这些
+ * 快照撑大"。块数是个够用的代理量,而且**不用把数据序列化一遍去数** —— 这个函数在每次
+ * 节点收场时都会跑。
+ *
+ * 超了就丢**块数最多的那些**,保留原本的顺序(`NODE_ARCHIVE_KEEP` 那条注释说了
+ * 为什么是按大小而不是按新旧)。
+ *
+ * 没超的时候返回**原数组**(引用相等)—— 调用方靠它跳过重渲染。
+ */
+function capNodeArchives(messages: ChatMessage[]): ChatMessage[] {
+  let total = 0;
+  const holders: Array<{ messageAt: number; blockAt: number; size: number }> = [];
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (!m) continue;
+    for (let j = 0; j < m.blocks.length; j++) {
+      const b = m.blocks[j];
+      if (b?.kind !== "workflow-node-result" || !b.nodeTranscript) continue;
+      total += b.nodeTranscript.length;
+      holders.push({ messageAt: i, blockAt: j, size: b.nodeTranscript.length });
+    }
+  }
+  if (total <= NODE_ARCHIVE_KEEP) return messages;
+
+  holders.sort((a, b) => b.size - a.size);
+  const drop = new Set<string>();
+  let left = total;
+  for (const h of holders) {
+    if (left <= NODE_ARCHIVE_KEEP) break;
+    drop.add(`${h.messageAt}:${h.blockAt}`);
+    left -= h.size;
+  }
+  if (drop.size === 0) return messages;
+
+  return messages.map((m, i) => {
+    if (!m.blocks.some((_b, j) => drop.has(`${i}:${j}`))) return m;
+    return {
+      ...m,
+      blocks: m.blocks.map((b, j) =>
+        drop.has(`${i}:${j}`) && b.kind === "workflow-node-result"
+          ? { ...b, nodeTranscript: undefined }
+          : b,
+      ),
+    };
+  });
+}
+
 /** Demote EVERY turn-files block's `isLatestTurn` to false. Called when a new
  *  turn opens (the previous "latest" card is no longer the latest — only the
  *  most recent completed turn is rewindable). The new turn's own card, once it
@@ -5264,11 +5336,25 @@ const progress: Block = {
 function reduceWorkflowNodeResult(ctx: IngestCtx, e: WorkflowNodeResultEvent): void {
 ctx.set((s) => {
         const list = s.messagesBySession[ctx.sid] ?? EMPTY_MESSAGES;
+        // **收场这一刻把过程拷进卡片**(`NODE_ARCHIVE_KEEP` 那条注释讲了两条理由)。
+        //
+        // **优先用事件自己带的那一份**,而不是去活的那张表里查。两处内容在正常时序下
+        // 是同一份,但事件那份不依赖时序:活表有容量上限(见 `NODE_TRANSCRIPT_KEEP`),
+        // 一张图跑几十步之后前面几步的过程可能**在结果事件到达之前就被顶掉了**,那时
+        // 查表拿到的是 undefined,卡片上永远留不下那一步的过程。查表只当兜底 —— 事件
+        // 没带(比如某个调用方没填)时还能从表里捞一把。
+        const archived =
+          e.transcript && e.transcript.length > 0
+            ? e.transcript
+            : e.nodeSessionId
+              ? s.workflowNodeTranscripts[e.nodeSessionId]
+              : undefined;
         const block: Block = {
           kind: "workflow-node-result",
           runId: e.runId,
           nodeId: e.nodeId,
           ...(e.nodeSessionId ? { nodeSessionId: e.nodeSessionId } : {}),
+          ...(archived && archived.length > 0 ? { nodeTranscript: archived } : {}),
           nodeType: e.nodeType,
           title: e.title,
           status: e.status,
@@ -5287,16 +5373,17 @@ ctx.set((s) => {
           s.runningTurnModelBySession[ctx.sid],
           "wfnode",
         );
-        return next === list
-          ? s
-          : { messagesBySession: { ...s.messagesBySession, [ctx.sid]: next } };
+        if (next === list) return s;
+        // 带上限 —— 这东西跟着卡片一起落盘(见 `NODE_ARCHIVE_KEEP`)。
+        const capped = capNodeArchives(next);
+        return { messagesBySession: { ...s.messagesBySession, [ctx.sid]: capped } };
       });
       // **不在这里落盘。** 每落一次 = 主进程把整个 sqlite 文件重写一遍,而一张图会
       // 结算 N 个节点 —— 那就是 N 次整库重写。这一轮结束时调度器会补一个 `turn.done`,
       // 而 turn.done 那条路本来就会把本轮新增的消息整批 upsert 下去(见文件末尾的
       // 落盘分支),这些卡片就在里面。
       return;
-    
+
 }
 
 /** `e.type === "workflow.node.usage"` */

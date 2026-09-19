@@ -111,14 +111,19 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
   /**
    * 这一步**跑的过程** —— 它在那个隐藏子会话里搜了什么、调了哪些工具、中间说了什么。
    *
-   * 过程是**跑完之后**才有的(卡片本身也是那时候才出现的,`workflow.node.result`),
-   * 所以这里基本是取一份已经完整的东西。取不到有两种情况,都是正常的:节点压根没跑
-   * (skipped / cancelled,`nodeSessionId` 缺席),或者它已经老到被容量上限裁掉了。
+   * 两条路,**活的优先**:`workflowNodeTranscripts` 里那份是跟着事件长的(最新),
+   * 查不到就退回卡片自己带的那份快照(`nodeTranscript`,收场那一刻拷进去的)。
+   * 后者管两种情况:过程被容量裁掉了,以及**会话重开之后**(内存里那份是空的,而卡片
+   * 是落盘的)。
+   *
+   * 取不到只有一种情况,而且是正常的:节点压根没跑(skipped / cancelled,
+   * `nodeSessionId` 缺席,也就没有过程可拷)。
    */
   const rawProcess = useSessionStore((s) =>
     block.nodeSessionId ? s.workflowNodeTranscripts[block.nodeSessionId] : undefined,
   );
-  const process = useMemo(() => (rawProcess ?? []).map(mapTranscriptBlock), [rawProcess]);
+  const source = rawProcess ?? block.nodeTranscript;
+  const process = useMemo(() => (source ?? []).map(mapTranscriptBlock), [source]);
 
   const status = STATUS[block.status];
   const Icon = status.icon;
@@ -302,7 +307,10 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
           </div>
         </div>
       )}
-      {block.nodeSessionId && (
+      {/* 入口的条件是「**有过程可看**」,不是「有会话 id」:节点没跑过(skipped /
+          unselected / cancelled)时两样都没有,一个有会话 id 但过程还没攒到的节点
+          也暂时没东西可看。之前按 `nodeSessionId` 判,那两处都点开是空的。 */}
+      {(process.length > 0 || block.nodeSessionId) && (
         <>
           <button
             type="button"
@@ -327,7 +335,11 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
               </div>
             ) : (
               <p className="mt-1 pl-4 text-content-subtle">
-                {t("chatStream.workflowStep.processGone")}
+                {t(
+                  block.nodeSessionId
+                    ? "chatStream.workflowStep.processGone"
+                    : "chatStream.workflowStep.noTranscript",
+                )}
               </p>
             ))}
         </>
