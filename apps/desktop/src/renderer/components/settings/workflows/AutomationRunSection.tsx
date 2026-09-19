@@ -181,8 +181,10 @@ export function AutomationRunSection({
       ? t(STEP_STATUS_LABELS[status as NodeOutcomeStatus])
       : status;
 
-  // Dashboard facts come from persisted run history; there is no second status store.
   const latestRun = runs[0] ?? null;
+  /** 最近一次运行里**第一个**出错的步骤。放在这里当"头条",下面每条运行里还会逐步骤
+   *  再列一遍 —— 这是刻意的重复:用户按了「运行一次」之后扫一眼这里就够了,不必去
+   *  下面那一摞里找哪一行是红的。 */
   const lastError = latestRun?.steps.find((step) => step.error !== undefined)?.error ?? null;
   const automationStatus = latestRun?.status ?? null;
 
