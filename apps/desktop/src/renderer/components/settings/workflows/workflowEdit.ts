@@ -268,9 +268,11 @@ export function setDependency(
  *
  * ## 成环**不一律**是错的
  *
- * 环上有一个岔路口就放行(见 `@contracts/workflow` 的「回头」)—— 那正是"再改一轮"
- * 这种画法。判据和存盘那一关**是同一个**:环上有没有闸门。两处对不上的话,就会出现
- * "画布上拉得出来、存盘被拒"或者反过来,而两种都很难查。
+ * 环上有一个**闸门**就放行(见 `@contracts/workflow` 的「回头」)—— 那正是"再改一轮"
+ * 这种画法。判据和存盘那一关**是同一个**:闸门 = 岔路口 + 决定权在用户手上,两半缺一
+ * 不可,收口在 `@contracts/workflow` 的 `isLoopGateNode`。这里只负责把"谁是闸门"
+ * ({@link isLoopGate},它要读节点类型清单)传进去;自己再判一遍就会漂 —— 这个函数
+ * 早先那版就是因为少判了"决定权"那一半,画布上放行的环存盘时被拒。
  *
  * 上游邻接表**不自己建**:`buildForwardAdjacency` 就是"每个节点依赖谁"的唯一来源
  * (见 `@contracts/workflow`)。自己再走一遍 `edges` 是第二份实现 —— 两份迟早会在
@@ -280,7 +282,8 @@ export function wouldCycle(
   doc: WorkflowDoc,
   nodeId: string,
   depId: string,
-  /** 这个节点是不是岔路口(分支)。判"环上有没有闸门"靠它,由调用方从节点类型表里取。 */
+  /** 这个节点是不是**环的闸门**(见上)。由调用方从节点类型表里取,契约层的
+   *  `isLoopGateNode` 是那个唯一判据。 */
   isLoopGate: (nodeId: string) => boolean,
 ): boolean {
   if (nodeId === depId) return true;
@@ -288,7 +291,7 @@ export function wouldCycle(
   // 新边是 `depId → nodeId`。成环 ⟺ `nodeId` 本来就能沿着边走到 `depId`。
   const after = reachableFrom(dependents, nodeId);
   if (!after.has(depId)) return false;
-  // 环上的节点 = 「nodeId 的下游」与「depId 的上游」的交。里面有一个岔路口就放行 ——
+  // 环上的节点 = 「nodeId 的下游」与「depId 的上游」的交。里面有一个闸门就放行 ——
   // 绕这一圈必须经过它,而它要用户点一下,所以停得下来。
   const before = reachableFrom(deps, depId);
   for (const id of after) {

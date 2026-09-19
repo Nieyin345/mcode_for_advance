@@ -2341,18 +2341,41 @@ const runsOf = (h: Harness, id: string): Call[] => h.calls.filter((c) => c.id ==
 {
   // **环上没有岔路口** —— 坏图。存盘时 `validateDag` 会拒,但真到了调度器这一层,
   // 它不能被当成一条直线悄悄跑一遍(用户画的明明是个死循环),也不能永远挂着。
-  const h = makePorts();
-  const result = await runWorkflow({
-    doc: docOf([node("A"), node("B")], [edge("A", "B"), edge("B", "A")]),
-    prompt: "跑",
-    ports: h.ports,
-    signal: controller().signal,
-  });
-  eq("没闸门的环:两个都有结局(不留空)", result.outcomes.size, 2);
-  check(
-    "而且说的是实话(不是「失败」,是「依赖没满足」)",
-    outcomeOf(h, "A")?.error?.includes("环") === true,
-    outcomeOf(h, "A")?.error,
+  //
+  // ⚠️ 闸门是**两半**:是岔路口,而且决定权在用户手上(见 `@contracts/workflow` 的
+  // `isLoopGateNode`)。判"闸门"时漏掉后半句的代价,就是这一组要钉的:一张全靠**模型选**
+  // 分支的环会被当成"有闸门",回边照收 —— 而模型会在环里一环一环自己转下去,一次都不过
+  // 人手,正是这条规则要拦的那种图。
+  //
+  // 除了"真跑起来会转飞",还有一个当场看得见的症状:**每一步都必须定案**。没有闸门的环
+  // 走的是"依赖永远满足不了"那条路,收尾时会给出那句「依赖没有满足(图里是不是有环?)」
+  // —— 认错了闸门的话,A 会被当成正常的岔路口**真跑一轮**,拿不到「出路」,报的是另一句
+  // 关于产出的错(用户据此完全找不到方向)。
+  const stuck = async (doc: WorkflowDoc, name: string): Promise<void> => {
+    const h = makePorts();
+    const result = await runWorkflow({
+      doc,
+      prompt: "跑",
+      ports: h.ports,
+      signal: controller().signal,
+    });
+    eq(`${name}:两个都有结局(不留空)`, result.outcomes.size, 2);
+    check(
+      `${name}:而且说的是实话(不是「失败」,是「依赖没满足」)`,
+      outcomeOf(h, "A")?.error?.includes("环") === true,
+      outcomeOf(h, "A")?.error,
+    );
+  };
+  await stuck(docOf([node("A"), node("B")], [edge("A", "B"), edge("B", "A")]), "没闸门的环");
+  await stuck(
+    docOf(
+      [
+        { ...branchNode("A"), params: { decider: "model" } },
+        { ...branchNode("B"), params: { decider: "model" } },
+      ],
+      [edge("A", "B"), edge("B", "A")],
+    ),
+    "★ 只有模型选分支的环(不是闸门)",
   );
 }
 

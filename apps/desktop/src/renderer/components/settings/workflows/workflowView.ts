@@ -18,7 +18,11 @@ import {
   type NodeTypeEntry,
   type NodeTypeSource,
 } from "@contracts/nodeType";
-import type { WorkflowDoc, WorkflowTrigger } from "@contracts/workflow";
+import {
+  isLoopGateNode,
+  type WorkflowDoc,
+  type WorkflowTrigger,
+} from "@contracts/workflow";
 
 /* ── 工作流 / 自动化 ── */
 
@@ -169,18 +173,38 @@ export function findNodeType(
 }
 
 /**
- * 图上的这个节点是不是**岔路口**(`runner.kind === "branch"`)。
+ * 图上的这个节点是不是**环的闸门** —— 界面这边只有一处要用它:判"新拉的这条边会不会成
+ * 一个**合法**的环"(`wouldCycle`)。
  *
- * 界面这边只有一处要用它:判"新拉的这条边会不会成一个**合法**的环"(`wouldCycle`)——
- * 环上有岔路口就合法,见 `@contracts/workflow` 的「回头」。
+ * ## 两半,和存盘校验**同一个判据**
+ *
+ * 是**岔路口**(`runner.kind === "branch"`)只是候补那一半;另一半是**决定权得在用户手上**
+ * —— 模型选的分支自己判完自己转,没有人拦得住,它当闸门的环根本停不下来(见
+ * `@contracts/workflow` 的「回头」)。
+ *
+ * ⚠️ **这后半句以前漏在这儿**(2026-09-19),于是出现"画布上拉得出来、存盘被拒":从一个
+ * 决定权给模型的分支拉一根回头线,这里放行;点保存时 `validateWorkflowDoc` 算成"无闸门
+ * 的环",报一句"环上必须有一个岔路口"。
+ *
+ * 所以这条规则**只从契约层取**(`isLoopGateNode`)—— 两边各写一遍就是这次事故的成因。
+ * "谁是分支"仍要在这里判(读的是节点类型清单,契约层够不到),所以回调照传。
  *
  * 判据是**清单**而不是节点类型 id:第三方可以随插件带自己的分支类型进来,认 id 的话
  * 那些节点在界面上拉不出回边,而它们跑起来和内置那个一模一样(同 `scheduler.ts` 里
  * `isBranch` 那条)。
  */
 export function isLoopGate(catalog: NodeTypeCatalog, doc: WorkflowDoc, nodeId: string): boolean {
-  const node = doc.nodes.find((n) => n.id === nodeId);
-  return node !== undefined && findNodeType(catalog.entries, node.type)?.manifest.runner.kind === "branch";
+  return isLoopGateNode(
+    (id) => {
+      const node = doc.nodes.find((n) => n.id === id);
+      return (
+        node !== undefined &&
+        findNodeType(catalog.entries, node.type)?.manifest.runner.kind === "branch"
+      );
+    },
+    (id) => doc.nodes.find((n) => n.id === id)?.params,
+    nodeId,
+  );
 }
 
 /** 画布上那张卡片显示什么标题:用户起的 > 清单里的名字 > 类型 id。 */

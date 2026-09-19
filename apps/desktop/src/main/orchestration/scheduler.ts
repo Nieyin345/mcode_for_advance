@@ -102,6 +102,7 @@ import {
 import {
   buildForwardAdjacency,
   edgeOptionNameOf,
+  isLoopGateNode,
   loopBackEdgesOf,
   nodesOnLoopOf,
   outgoingEdgesOf,
@@ -644,6 +645,18 @@ class Run {
     const node = this.nodeById.get(id);
     return node !== undefined && this.manifestOfCached(node.type)?.runner.kind === "branch";
   };
+
+  /**
+   * 这个节点**拦不拦得住一次回头** —— 环的闸门。`isBranch` 只是候补那一半。
+   *
+   * ⚠️ **和存盘校验、画布上是同一个判据**(`@contracts/workflow` 的 `isLoopGateNode`)。
+   * 原来这里传的**就是 `isBranch`**,也就是只问了"它是不是分支" —— 于是一张全靠模型选的
+   * 环在这里被当成"有闸门":回边照收,而模型会在环里**一环一环自己转下去**,一次都不过
+   * 人手。存盘校验本来会拦住那种图,但这层的注释自己写着"真出现了要**说出来**而不是让它
+   * 卡死" —— 那就更不能把它当成一张能停下来的环。
+   */
+  isLoopGate = (id: string): boolean =>
+    isLoopGateNode(this.isBranch, (want) => this.nodeById.get(want)?.params, id);
 
   isTrigger = (id: string): boolean => {
     const node = this.nodeById.get(id);
@@ -1526,7 +1539,7 @@ class Run {
    * 它会被**当成一条直线跑一遍**,而用户画的明明是个死循环。让它继续当普通依赖,它就
    * 会走到收尾那句「依赖没有满足(图里是不是有环?)」—— 那才是用户需要看到的话。
    */
-  const loopBack = loopBackEdgesOf(this.doc.nodes, this.doc.edges, this.isBranch);
+  const loopBack = loopBackEdgesOf(this.doc.nodes, this.doc.edges, this.isLoopGate);
   this.loopBackIds = new Set(loopBack.map((b) => b.edge.id));
   /** 回边的 id → 它闭出来的那个环(环上的全部节点)。见 `@contracts/workflow`。 */
   this.cycleOf = new Map(loopBack.map((b) => [b.edge.id, b.cycle]));
@@ -1537,7 +1550,7 @@ class Run {
    * 判据来自 `@contracts/workflow`,因为**检查器要显示同一个答案**:那边画的是那个开关
    * 的默认态。两处各算一遍的话,会出现"界面上显示关着、实际按开着跑",而那不报错。
    */
-  this.onLoop = nodesOnLoopOf(this.doc.nodes, this.doc.edges, this.isBranch);
+  this.onLoop = nodesOnLoopOf(this.doc.nodes, this.doc.edges, this.isLoopGate);
 
   /**
    * 这一步要不要读整条流程的记录。

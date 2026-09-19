@@ -35,6 +35,7 @@ import {
   WorkflowDocSchema,
   backEdgesOf,
   buildForwardAdjacency,
+  isLoopGateNode,
   upstreamClosure,
   type WorkflowDoc,
   type WorkflowNode,
@@ -44,7 +45,6 @@ import {
 import {
   BRANCH_NODE_TYPE_ID,
   MAIN_NODE_TYPE_ID,
-  deciderOf,
   isModelDecider,
   validateNodeParams,
   type NodeTypeManifest,
@@ -238,13 +238,19 @@ export function validateWorkflowDoc(
   // 认不出的类型**不算**闸门(同 `library.ts` 那条:拒了才知道要装什么,但环照样是环 ——
   // 而未知类型在存盘档位是 warning,不能反过来把环也放行)。没有类型清单时一律无闸门
   // (老行为,同 `validateDag` 的默认)。
-  const isLoopGate = (id: string): boolean => {
+  //
+  // ⚠️ **这里只回答"它是不是分支"**(2026-09-19)。"决定权给模型不算闸门"那半句在
+  // `@contracts/workflow` 的 `validateDag` 里判 —— 就在这个函数下游一步。原来这一行
+  // 自己带了 `deciderOf(...) !== "model"`,看着更保险,其实是**同一件事在三个地方各写
+  // 一遍**:渲染端那份就漏了,于是画布上拉得出来的环存不下去。判据现在只有一份。
+  const isBranchNode = (id: string): boolean => {
     const node = byId.get(id);
     if (!node) return false;
-    const manifest = manifestOf(node);
-    return manifest !== undefined && manifest.runner.kind === "branch" && deciderOf(node.params) !== "model";
+    return manifestOf(node)?.runner.kind === "branch";
   };
-  const openBack = backEdgesOf(nodes, edges).filter((b) => !b.cycle.some(isLoopGate));
+  const openBack = backEdgesOf(nodes, edges).filter(
+    (b) => !b.cycle.some((id) => isLoopGateNode(isBranchNode, (want) => byId.get(want)?.params, id)),
+  );
   if (openBack.length > 0) {
     const onCycle = [...new Set(openBack.flatMap((b) => b.cycle))].sort();
     fail({

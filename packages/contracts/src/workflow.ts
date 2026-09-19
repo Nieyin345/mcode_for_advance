@@ -526,13 +526,69 @@ export function nodesOnLoopOf(
 
 export type DagCheck = { ok: true } | { ok: false; error: string };
 
+/**
+ * 环上的"闸门"这条规则的**两半**,分开给出、也能合起来用。
+ *
+ * ## 为什么是"决定权给人"的分支,而不是"分支"
+ *
+ * 闸门的意思是**绕这一圈至少要有一次人点一下**,所以图上画得出来、也一定停得下来。
+ * 决定权给**模型**的分支不算:模型选完接着往下跑,这一圈可以一次都不过人手。
+ *
+ * ⚠️ **判据只有这一份**(2026-09-19)。在这之前,主进程的存盘校验、调度器和渲染端画布
+ * 三处各写各的,而**其中两份漏了"决定权给模型不算"**。后果分两头:
+ *
+ *  - **画布**:从一个决定权给模型的分支拉一根回头线,界面 `wouldCycle` 判"环上有闸门"、
+ *    放行,用户看着那条线画上去了;点保存时存盘校验算成"无闸门的环",报一句"环上必须
+ *    有一个岔路口"。线明明在那儿,界面还告诉他有闸门。
+ *  - **调度器**:那里传的是 `isBranch`,连"决定权是不是给了模型"都没问,于是把模型选的
+ *    环当成能停下来的那种 —— 它绕起来**一次都不过人手**,和这条规则说的正好相反。
+ *
+ * 放在契约层是因为它是**图的性质**,不是主进程的实现细节;而渲染端够不到 `@main`。
+ * "谁是分支"仍由调用方注入(要读节点类型清单,那是主进程/画布各自已有的东西)。
+ *
+ * ⚠️ 与 `@contracts/nodeType` 的 `isModelDecider` 是**同一条判据的两种问法**:
+ * 那边问"这个分支的决定权是不是模型",这边问"它还算不算闸门"。契约层不能反过来 import
+ * `nodeType`(`nodeType` 已经 import 了本文件,反过来就成环),所以这里按 `params` 直接
+ * 判 —— 字段名必须与 `NODE_DECIDER_KEY`(`"decider"`)、取值必须与 `deciderOf` 的
+ * (`"model"` / 其余=用户)保持一致。
+ */
+export const NODE_GATE_DECIDER_KEY = "decider";
+
+export function isUserGateBranch(params: Record<string, unknown>): boolean {
+  return params[NODE_GATE_DECIDER_KEY] !== "model";
+}
+
+/**
+ * 那两半合起来 —— 这个节点**拦不拦得住一次回头**。
+ *
+ * 收成一个函数是因为**三处调用必须给出同一个答案**(存盘校验、调度器、画布),
+ * 而它们各自都能拿到"谁是分支"、也都拿得到节点参数 —— 差的就是有人会漏掉后半句。
+ * 漏掉的后半句不报错,只让一张"模型选的环"在界面上画得出来、存得下去,然后绕起来。
+ *
+ * `paramsOf` 拿不到那个节点的参数时(节点不在图里)按**最保守**算:不算闸门。
+ */
+export function isLoopGateNode(
+  isBranch: (nodeId: string) => boolean,
+  paramsOf: (nodeId: string) => Record<string, unknown> | undefined,
+  nodeId: string,
+): boolean {
+  if (!isBranch(nodeId)) return false;
+  const params = paramsOf(nodeId);
+  return params !== undefined && isUserGateBranch(params);
+}
+
 /** 校验图时要知道的那点外部事实。不传 = **任何环都不放行**(老行为)。 */
 export interface DagCheckOptions {
   /**
-   * 这个节点是不是**岔路口**(分支节点)—— 环上的"闸门"。
+   * 这个节点是不是**岔路口**(分支节点)——
+   * 环上"闸门"的**候补**,最终由 {@link validateDag} 用 {@link isUserGateBranch} 定夺。
    *
    * 做成回调而不是在这一层查节点类型,是因为"谁是分支"要读节点类型清单,而那是主进程
    * 的事(`orchestration/nodeTypes.ts` 要读盘)。contracts 这边只认"有人告诉我它是"。
+   *
+   * ⚠️ **回调只能回答"它是不是分支"。** "决定权是不是给了模型"不用回调管 —— 那一半由
+   * 本层直接判(见 {@link isUserGateBranch})。**别在这里把后半句也带上**:带上了就是把
+   * 同一件事在调用方再说一遍,而渲染端正是那么漏掉的。
    */
   isLoopGate?: (nodeId: string) => boolean;
 }
@@ -570,8 +626,16 @@ export function validateDag(
 
   // **有回边 ⟺ 有环**(深度优先的标准结论),所以一次 DFS 就够了,不用再跑一遍消解。
   // 报错时按 id 排序,保证同样输入报同样的节点。
+  //
+  // ⚠️ **"谁是分支"由 `opts` 注入,"决定权给谁"在这一层判**(2026-09-19,见
+  // {@link isUserGateBranch})。两半合起来才叫闸门 —— 只问"是不是分支"的话,一张全靠
+  // 模型选分支的环会被放行,而那正是"环上必须有闸门"要拦的那种图。
+  const paramsById = new Map(nodes.map((n) => [n.id, n.params]));
+  // 没给回调 = 谁都不是分支(老行为:任何环都不放行)。
+  const isBranch = opts?.isLoopGate ?? (() => false);
   const open = backEdgesOf(nodes, edges).filter(
-    (b) => !b.cycle.some((id) => opts?.isLoopGate?.(id) ?? false),
+    (b) =>
+      !b.cycle.some((id) => isLoopGateNode(isBranch, (want) => paramsById.get(want), id)),
   );
   if (open.length > 0) {
     const onCycle = [...new Set(open.flatMap((b) => b.cycle))].sort();

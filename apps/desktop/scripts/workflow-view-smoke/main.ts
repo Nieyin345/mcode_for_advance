@@ -36,6 +36,7 @@ import {
   groupNodeTypes,
   isDocDirty,
   isIdentityLocked,
+  isLoopGate,
   isNodeDeleteKey,
   isProtectedNode,
   missingRequiredName,
@@ -717,6 +718,52 @@ check(
   "有闸门也不等于什么都能连(不成环还是不成环)",
   !wouldCycle(chain4, "n3", "n1", gateIs("n2")),
 );
+
+console.log("\n环的闸门:决定权给模型的分支不算(2026-09-19)");
+{
+  // **闸门是两半**:是岔路口,而且要**停下来等人**。模型选的分支是岔路口,但它自己判完
+  // 自己转 —— 绕一圈一次都不过人手,所以它挡不住一个环(`@contracts/workflow` 的「回头」)。
+  //
+  // 界面上原来只判了前一半(`isLoopGate` 看 `runner.kind === "branch"`),后果是具体的:
+  // 从一个**决定权给模型**的分支拉一根回头线,画布上放行、线画上去了;点保存时
+  // `validateWorkflowDoc` 按完整判据算成"无闸门的环",报一句"环上必须有一个岔路口"。
+  // 用户看到的是"我这明明有个分支"。
+  const branchDoc = (decider?: string): WorkflowDoc => ({
+    ...CUSTOM,
+    nodes: [
+      { ...node("A", 0, 0, BRANCH_MANIFEST.id), params: decider === undefined ? {} : { decider } },
+      node("B", 0, 100),
+    ],
+    edges: [{ id: edgeId("A", "B"), from: "A", to: "B" }],
+  });
+
+  // 先把"这一圈上确实有个认得出来的分支节点"钉住 —— 否则下面几条可能只是因为
+  // `isLoopGate` 恒假而通过(那不是修好了,是判据没了)。
+  check("★ 决定权给用户的分支:是闸门", isLoopGate(CATALOG, branchDoc("user"), "A"));
+  check("decider 留空(兜底=用户)也是闸门", isLoopGate(CATALOG, branchDoc(), "A"));
+  check("★ 决定权给模型的分支:不是闸门", !isLoopGate(CATALOG, branchDoc("model"), "A"));
+  check("普通节点不是闸门", !isLoopGate(CATALOG, branchDoc("user"), "B"));
+
+  // 端到端那一下:`B → A` 这条回头线。同一个环,只换决定权。
+  const withBack = (decider: string): WorkflowDoc => ({
+    ...branchDoc(decider),
+    edges: [
+      { id: edgeId("A", "B"), from: "A", to: "B" },
+      { id: edgeId("B", "A"), from: "B", to: "A" },
+    ],
+  });
+  const gate = (doc: WorkflowDoc) => (id: string): boolean => isLoopGate(CATALOG, doc, id);
+  const byUser = withBack("user");
+  const byModel = withBack("model");
+  check(
+    "决定权给用户 → 回头线放行",
+    !wouldCycle(byUser, "A", "B", gate(byUser)),
+  );
+  check(
+    "★ 决定权给模型 → 回头线拒(和存盘校验同一个答案)",
+    wouldCycle(byModel, "A", "B", gate(byModel)),
+  );
+}
 
 console.log("\nconnect / removeEdge(画布上拉线与点线走的那条路)");
 const pulled = connect(CHAIN_BASE, "n1", "n2");
