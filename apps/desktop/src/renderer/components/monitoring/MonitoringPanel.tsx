@@ -36,6 +36,7 @@ import {
   IconRefresh,
 } from "@renderer/lib/icons.js";
 import { formatFullTime, formatRelativeTime } from "@renderer/lib/time.js";
+import { formatDuration } from "@renderer/components/chat/activityShared.js";
 import { PANEL_MAX_W } from "../settings/panelWidth.js";
 import { PanelHeader } from "../settings/PanelHeader.js";
 import { SettingsSection } from "../settings/SettingsSection.js";
@@ -44,13 +45,19 @@ import { RUN_STATUS_META } from "../settings/workflows/RunHistorySection.js";
 /** 最近运行列表的条数。概览看趋势,细节去自动化页看单图 —— 20 条够了。 */
 const RECENT_RUNS_LIMIT = 20;
 
-/** 毫秒 → 读得懂的时长。监控是给人扫一眼的,精确到秒就够;不足一秒给毫秒。 */
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  const s = ms / 1000;
-  if (s < 60) return `${s < 10 ? s.toFixed(1) : Math.round(s)}s`;
-  return `${Math.floor(s / 60)}m${Math.round(s % 60)}s`;
-}
+/** 时长格式化用的是 `activityShared.ts` 里的那一份,在下面 import 进来。
+ *
+ *  ⚠️ **别在这儿自己写一份。** 这里原来有一份独立的实现,它把秒四舍五入而分钟向下
+ *  取整 —— `s % 60` 进得到 60,却永远进不了位,于是 119.5 秒显示成 `1m60s`、
+ *  3599.6 秒显示成 `59m60s`。谁都读不出那是对的。
+ *
+ *  共用的那份文件头写着「Shared vocabulary for the chat activity rail + console ...
+ *  One copy is what keeps "运行中" the same colour and wording everywhere」——
+ *  时长也在它管的范围里。
+ *
+ *  (`WorkflowBoardPanel.tsx` 里还有一份自己写的,但那份用 `sec % 60` 取模、不进位,
+ *  所以出不了 60 —— 是另一种写法,不是同一个 bug。)
+ */
 
 /** `MonitoringNodeSummary.status` 透传 `NodeOutcomeStatus`(开放字符串):认不出的
  *  值原样显示,这张表只兜契约里的集合(同 `AutomationRunSection` 的那张 step 表)。 */

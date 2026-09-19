@@ -21,6 +21,22 @@ const PRESET_LABEL_KEYS: Partial<Record<BrowserDevicePreset, MessageId>> = {
   custom: "browser.customDevice",
 };
 
+/** 自定义宽高输入框里那个数:取整、抬到 ≥1、认不出的用默认值。
+ *
+ *  ⚠️ 契约那边是 `z.number().int().min(1)`(`BrowserSetBoundsSchema`)—— **整数**。
+ *  所以 `1.5` 也会被拒,不只是负数和 0。`Number("") || 0` 那条老写法只挡得住空串
+ *  和 0,手打进去的 `-5` / `1.5` 都是真值,会原样发出去被 zod 拒掉。
+ *
+ *  为什么不能省这道:被拒之后用户看到的是浏览器面板**正中间一屏 zod JSON**,
+ *  还看不出是哪一项不对。既然边界是知道的,就发一个边界内的出去。
+ *
+ *  (那个 `min={1}` 属性管不住这个 —— HTML 的 min/max 只约束方向键微调和表单校验,
+ *  手打的字照样进 onChange。) */
+function clampViewportPx(n: number, fallback: number): number {
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.round(n));
+}
+
 /**
  * Device toolbar — the browser panel's "Toggle device toolbar" equivalent
  * (Chrome DevTools-style). A single row under the address bar carrying the
@@ -142,7 +158,17 @@ export function DeviceToolbar({
       </div>
 
       {/* Custom dims inputs — visible only when "custom" is selected. Changing
-          them re-emits the viewport so main re-applies emulation live. */}
+          them re-emits the viewport so main re-applies emulation live.
+
+          ⚠️ `Number(...) || 默认值` **只挡得住 0 和 NaN**(空输入框),挡不住手打进去的
+          负数和 1.5 —— `-5` 和 `1.5` 都是真值,会原样发出去。而契约那一侧是
+          `z.number().int().min(1)`,于是这份入参直接被拒,用户看到的是浏览器面板
+          **正中间糊着一屏 zod JSON**,还看不出是哪一项不对(见 `ipc/browser.ts` 的
+          `describeInputError`)。
+
+          下面 `min={1}` 那个属性管不住这个:HTML 的 min/max 只约束**方向键微调**和
+          表单校验,手打的字照样进 onChange。要挡住的是**发出去的那个值**,所以在这里
+          夹:先取整(`Math.round`),再抬到 ≥1。 */}
       {device === "custom" && (
         <div className="flex shrink-0 items-center gap-1">
           <input
@@ -150,7 +176,7 @@ export function DeviceToolbar({
             min={1}
             value={customWidth ?? 390}
             onChange={(e) => {
-              const w = Number(e.target.value) || 390;
+              const w = clampViewportPx(Number(e.target.value), 390);
               onViewportChange("custom", { width: w, height: customHeight ?? 844, orientation });
             }}
             title={t("browser.customWidthTitle")}
@@ -163,7 +189,7 @@ export function DeviceToolbar({
             min={1}
             value={customHeight ?? 844}
             onChange={(e) => {
-              const h = Number(e.target.value) || 844;
+              const h = clampViewportPx(Number(e.target.value), 844);
               onViewportChange("custom", { width: customWidth ?? 390, height: h, orientation });
             }}
             title={t("browser.customHeightTitle")}

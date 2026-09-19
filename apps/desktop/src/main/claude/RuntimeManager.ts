@@ -1264,7 +1264,13 @@ class RuntimeManager {
    *  cascaded session leaks its transcripts/usage history/snapshot exactly
    *  like a never-disposed session). */
   disposeProject(projectId: string): void {
-    for (const id of SessionRepo.idsByProject(projectId)) {
+    // ⚠️ 用 `listIdsByProject`,**不要**用 `idsByProject` —— 那两个是同一条 SQL
+    // (`SELECT id FROM sessions WHERE project_id = ?`)、同一个用途,是两份实现。
+    // `listIdsByProject` 是本仓库本来的写法(走 `stmt.step()`/`getAsObject()`,
+    // 和这个文件里其它几十处一致);`idsByProject` 是上游后加的,它调的
+    // `stmt.all(...)` 在 sql.js 的 `Statement` 上**不存在** —— 类型检查一直红着,
+    // 只是没人跑到。仓库硬规矩第 2 条:共享实现只有一份。
+    for (const id of SessionRepo.listIdsByProject(projectId)) {
       this.dispose(id);
     }
   }
