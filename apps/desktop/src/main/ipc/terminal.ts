@@ -22,6 +22,30 @@ import { isKnownWorkspaceRoot, pathWithin } from "@main/lib/pathGuard.js";
 import { SettingRepo } from "@main/store/repositories.js";
 import { TerminalManager } from "@main/terminal/TerminalManager.js";
 import { log } from "@main/lib/logger.js";
+import { z } from "zod";
+
+/**
+ * 把校验错翻译成**一行人话**。
+ *
+ * ⚠️ 不能直接把 `err.message` 交出去:zod 的 `ZodError.message` 是一整段 JSON 数组文本
+ * (`[{"code":"too_small","minimum":1,…,"path":["projectPath"]}]`),而这一层的 error 会被
+ * 渲染端原样写进 xterm(`TerminalView.tsx` 那句 `term.writeln(… ${result.error})`)。
+ * 用户看到的就是一屏 JSON —— 那不是"报错说清楚了",那是把内部错误对象的形状漏了出去。
+ *
+ * 格式与本仓库既有的那处一致(`mcp/webToolHost.ts` 的 `describeIssues` 也是
+ * `字段名: 那句话`,只是那边多个字段用 `;` 串起来 —— 这里给用户看第一句就够)。
+ */
+function describeInputError(err: z.ZodError): string {
+  const first = err.issues[0];
+  const where = first && first.path.length > 0 ? `${first.path.join(".")}: ` : "";
+  return `入参不合法(${where}${first?.message ?? "没通过校验"})`;
+}
+
+/** catch 里唯一的出口 —— zod 走人话,别的照原样(那些 message 本来就是人写的)。 */
+function errText(err: unknown): string {
+  if (err instanceof z.ZodError) return describeInputError(err);
+  return err instanceof Error ? err.message : String(err);
+}
 
 export function registerTerminalHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.TERMINAL_CREATE, async (_evt, raw) => {
@@ -49,7 +73,7 @@ export function registerTerminalHandlers(ipcMain: IpcMain): void {
         shellSetting,
       });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errText(err);
       log.error(`terminal.create failed: ${msg}`);
       return { ok: false as const, error: msg };
     }
@@ -61,7 +85,7 @@ export function registerTerminalHandlers(ipcMain: IpcMain): void {
       const ok = TerminalManager.write(input.terminalId, input.data);
       return ok ? { ok: true as const } : { ok: false as const, error: "终端不存在或已退出" };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errText(err);
       return { ok: false as const, error: msg };
     }
   });
@@ -72,7 +96,7 @@ export function registerTerminalHandlers(ipcMain: IpcMain): void {
       const ok = TerminalManager.resize(input.terminalId, input.cols, input.rows);
       return ok ? { ok: true as const } : { ok: false as const, error: "终端不存在或已退出" };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errText(err);
       return { ok: false as const, error: msg };
     }
   });
@@ -84,7 +108,7 @@ export function registerTerminalHandlers(ipcMain: IpcMain): void {
       // Killing an already-gone id is still ok from the renderer's POV.
       return { ok: true as const, ...(ok ? {} : { error: "终端不存在或已退出" }) };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errText(err);
       return { ok: false as const, error: msg };
     }
   });
@@ -95,7 +119,7 @@ export function registerTerminalHandlers(ipcMain: IpcMain): void {
       const projectPath = input.projectPath ? resolve(input.projectPath) : undefined;
       return { terminals: TerminalManager.list(projectPath) };
     } catch (err) {
-      log.warn(`terminal.list failed: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn(`terminal.list failed: ${errText(err)}`);
       return { terminals: [] };
     }
   });
