@@ -79,7 +79,7 @@ import {
   ensureTrashCollection,
   markTrashCollections,
 } from "@main/library/trash.js";
-import { notifyLibraryChanged } from "@main/library/broadcast.js";
+import { notifyLibraryChanged, emitItemImported } from "@main/library/broadcast.js";
 import { loadLibraryTypes, saveLibraryTypes, loadLibraryGroups, saveLibraryGroups } from "@main/library/kindRegistry.js";
 import { loadSuppress, saveSuppress, suppressionReasonOfItem } from "@main/library/suppress.js";
 import { importGenericFiles, readEntryFile } from "@main/library/fileImport.js";
@@ -185,6 +185,22 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
     const input = LibraryAddItemsSchema.parse(raw);
     const items: LibraryItem[] = [];
     for (const entry of input.items) {
+      // ⚠️ **入库前先看一眼它是不是新的。** 下面那条 `library.item.imported`
+      // 事件是无人值守那条链的起点(`wf_auto_download` / `wf_auto_convert`),
+      // 而"重复入库"是这条路上最常见的动作:检索面板勾一份已经勾过的结果、
+      // AI 反复把同一篇往库里塞。老老实实每次都发,结果是那几条自动化被同一条
+      // 文献反复触发起跑。同族的 `pdfImport.ts:100-102` 对这件事的判断是一样的
+      // ——"alreadyPresent 的不算,再发一次会让自动下载重复排队"。
+      //
+      // 查重用 `findExisting` —— 它**就是 `upsert` 自己那一句**(DOI 优先,退回
+      // arXiv ID),所以这里的判断与"这条会不会真的新建"必然一致,不会因为两处
+      // 各写一套归一化而分家。
+      //
+      // 判据取"**已经有没有 pdfPath**"而不是"upsert 有没有改行":下载器只在真的
+      // 下到 PDF 之后才写 `pdfPath`,所以它是"这一篇已经办妥了"的现成信号。
+      // 另加一列去记"发过没有"要多一次迁移,而信息是重复的。
+      const before = LibraryRepo.findExisting({ doi: entry.doi, arxivId: entry.arxivId });
+      const hadPdf = Boolean(before?.pdfPath);
       const item = LibraryRepo.upsert({
         kind: entry.kind,
         doi: entry.doi,
@@ -208,6 +224,9 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
         for (const cid of entry.collectionIds) CollectionRepo.assign(cid, [item.id], true);
       }
       items.push(item);
+      // 见上面 `hadPdf` 那段:新条目、或者已经在库里但**还没有 PDF** 的条目
+      // (再导入同一篇正是补下漏掉那个 PDF 的机会),才发事件。
+      if (!hadPdf) emitItemImported(item);
     }
     // 入库后按需排队下载 —— 默认排队,调用方可显式关掉
     const toDownload = input.items
