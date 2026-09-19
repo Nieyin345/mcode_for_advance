@@ -347,6 +347,62 @@ console.log("\n循环器 · 闸门与收场");
   check("残留 running 被 stop 收场", staleStop.ok && staleStop.task?.id === stale.id, staleStop);
   eq("残留行状态 stopped", LongTaskRepo.get(stale.id)?.status, "stopped");
 
+  // **同一毫秒建的两条,「最新一条」必须是后建的那条。**
+  //
+  // ⚠️ 这条盯的是一个**偶发**故障:排序原来兜的是 `id DESC`,而 id 是
+  // `ltask_<时间>_<随机>` —— 毫秒相同的两条按 id 排等于按随机串排,于是一半的机会
+  // `latestOf` 返回旧那条。上面那一段"残留 running 被 stop 收场"踩的就是它
+  // (五跑一红)。一次建 20 条,同毫秒的概率接近 1 —— 旧代码下这条几乎必红。
+  {
+    // 这一格要真建 20 条 `long_tasks` 行,而那张表对会话有外键 —— 先给它一个会话。
+    // 形状照着上面那个 `sessionOf` 闭包抄(它在另一个块里,这里够不着),字段一个都
+    // 不能少:`SessionRepo.create` 是**整份**写进去的。
+    const now2 = Date.now();
+    SessionRepo.create({
+      id: "s_order",
+      projectId: "p_lt",
+      providerId: "claude-sdk",
+      claudeSessionId: null,
+      kind: "chat",
+      parentSessionId: null,
+      title: "排序用例",
+      status: "idle",
+      model: "",
+      effort: "default",
+      permissionMode: "default",
+      workflowId: "wf_smoke",
+      customModelId: null,
+      envMode: "local",
+      worktreePath: null,
+      archived: false,
+      pinnedAt: null,
+      contextSnapshot: null,
+      todos: null,
+      subagents: null,
+      planDraft: null,
+      turnFiles: null,
+      usageHistory: null,
+      bookmarks: null,
+      subagentTranscripts: null,
+      createdAt: now2,
+      updatedAt: now2,
+    });
+    const built = [];
+    for (let i = 0; i < 20; i++) {
+      built.push(
+        LongTaskRepo.create({
+          sessionId: "s_order",
+          projectId: "p_lt",
+          goal: `第 ${i} 条`,
+          maxIterations: 5,
+        }),
+      );
+    }
+    const last = built[built.length - 1]!;
+    eq("同毫秒连建 20 条,最新的那条就是最后建的那条", LongTaskRepo.latestOf("s_order")?.id, last.id);
+    eq("历史列表的第一条也是它", LongTaskRepo.listBySession("s_order")[0]?.id, last.id);
+  }
+
   // 没任务也没残留 → 明确失败。
   const nothing = longTaskRunner.stop("s_chat");
   check("没有任务时 stop 报错", !nothing.ok, nothing);

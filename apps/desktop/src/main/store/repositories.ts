@@ -2484,10 +2484,14 @@ function rowToLongTask(r: LongTaskRow): LongTask {
 }
 
 export const LongTaskRepo = {
-  /** 按开始时间倒序,翻某个会话的历史(当前那条通常在最前)。 */
+  /** 按开始时间倒序,翻某个会话的历史(当前那条通常在最前)。
+   *
+   *  `started_at` 只到毫秒,而 id 是 `ltask_<时间>_<随机>` —— 同一毫秒建的两条,
+   *  按 id 排等于按随机串排。所以用 `rowid` 兜底:SQLite 的隐式插入序,**后插的更大**,
+   *  这才是"谁更新"的正确答案(见下面 {@link latestOf} 那条一样的注释)。 */
   listBySession(sessionId: string): LongTask[] {
     const stmt = getDb().prepare(
-      "SELECT * FROM long_tasks WHERE session_id = ? ORDER BY started_at DESC",
+      "SELECT rowid AS _seq, * FROM long_tasks WHERE session_id = ? ORDER BY started_at DESC, _seq DESC",
     );
     stmt.bind([v(sessionId)]);
     const out: LongTask[] = [];
@@ -2496,10 +2500,16 @@ export const LongTaskRepo = {
     return out;
   },
 
-  /** 会话的当前任务:最新一条(不管状态)。没有则 null。 */
+  /** 会话的当前任务:最新一条(不管状态)。没有则 null。
+   *
+   *  ⚠️ **兜底的必须是 `rowid`,不能是 `id`。** id 里带的是时间 + **随机**串,所以
+   *  "同一毫秒建的两条谁在后"按 id 排是随机的 —— 长跑脚本里连着建两个任务时,有一半
+   *  机会"最新一条"返回的是**旧那条**。这不是理论上的:长期任务的 stop 靠它找残留的
+   *  `running` 行,拿错了就报"这个会话没有进行中的长期任务"(见 `taskRunner.stop`)。
+   *  `rowid` 是 SQLite 的隐式插入序,后插的一定更大,与"谁更新"同义。 */
   latestOf(sessionId: string): LongTask | null {
     const stmt = getDb().prepare(
-      "SELECT * FROM long_tasks WHERE session_id = ? ORDER BY started_at DESC, id DESC LIMIT 1",
+      "SELECT rowid AS _seq, * FROM long_tasks WHERE session_id = ? ORDER BY started_at DESC, _seq DESC LIMIT 1",
     );
     stmt.bind([v(sessionId)]);
     const found = stmt.step();
