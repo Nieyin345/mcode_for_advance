@@ -310,6 +310,27 @@ export const SessionRepo = {
     return out;
   },
 
+  /**
+   * 这个项目下**所有**会话的 id(分页用的 `countByProject` 同款过滤口径)。
+   *
+   * ⚠️ 存在的理由只有一个:删项目时要在**真正删之前**拿到这批 id。删完之后
+   * `ON DELETE CASCADE` 已经把行带走了,那时候再想把每个会话的收尾做掉就没地方问了
+   * (见 `ipc/projects.ts` 的 `PROJECT_DELETE`,以及 `SESSION_DELETE` 上那句"不能省")。
+   *
+   * 这里**不**按 `kind = 'chat'` 收窄 —— `SESSION_DELETE` 对什么会话都得收尾,
+   * 侧边问答也一样。`listByProject` 那句 `kind = 'chat'` 是**左侧列表**的口径
+   * (侧栏问答由右栏管理,不进项目树),拿它当"该收尾的会话"会漏掉侧栏那些。
+   */
+  listIdsByProject(projectId: string): string[] {
+    const db = getDb();
+    const stmt = db.prepare("SELECT id FROM sessions WHERE project_id = ?");
+    stmt.bind([v(projectId)]);
+    const out: string[] = [];
+    while (stmt.step()) out.push(String((stmt.getAsObject() as { id: string }).id));
+    stmt.free();
+    return out;
+  },
+
   /** Count sessions for a project, optionally filtered by archived flag and
    *  worktree binding. Used to compute `hasMore` for pagination. Matches
    *  {@link listByProject}'s filters: the active count (`archived === false`)

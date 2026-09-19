@@ -90,8 +90,37 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
   // Hard-delete a project (cascades to its sessions + messages via DB FKs).
   ipcMain.handle(IPC.PROJECT_DELETE, (_evt, raw) => {
     const input = DeleteProjectSchema.parse(raw);
+    // ⚠️ 级联会把这个项目下的会话**全部**带走,所以每个会话都欠一遍收尾 ——
+    // 和 `SESSION_DELETE` 上那两句注释说的完全是同一件事,不能因为"不是逐条点的"
+    // 就省掉:
+    //
+    //   - `cancelWorkflowRun` —— 图跑到一半时通常正卡在某个节点的问题上(那个问题是以
+    //     这个会话的名义问的)。会话被级联删掉之后,答案再也回不来,节点一直阻塞在审批池
+    //     的 promise 上,**整张图连同它的 node 会话永远不结束**;
+    //   - `dropBackflow` —— 还没被带进下一轮的那段「并回主对话」的内容永远等不到取用
+    //     它的那个人。
+    //
+    // 必须**先**取 id 再删:删完 `ON DELETE CASCADE` 已经把行带走了,那时候再想问
+    // "这个项目下原来有哪些会话"就没地方问了(所以加了 `listIdsByProject`)。
+    //
+    // ⚠️ 循环体里那两句是**分别**被测的:`projects-ipc-smoke` §2 里"只停甲不停乙"
+    // 和"乙的待并回内容也在"是两条独立断言,拿掉其中一句只红对应那条。别指望
+    // 套件能抓"整块删掉"—— 那要另外加断言,而且循环体删掉时下一句会 SyntaxError,
+    // 那是**崩掉**不是**静默变绿**,读起来完全不一样。
+    const doomed = SessionRepo.listIdsByProject(input.id);
+    let stopped = 0;
+    for (const id of doomed) {
+      // 返回值这里**不再丢掉**了 —— 它说的正是"这个会话上真有一张图被掐掉"。
+      if (cancelWorkflowRun(id)) stopped += 1;
+      dropBackflow(id);
+    }
     ProjectRepo.delete(input.id);
-    log.info(`project deleted: ${input.id}`);
+    // 手机端那边这几条会话也是"刚才还在列表里"的,一条一条告诉它 —— 和
+    // `SESSION_DELETE` 同一个做法(那里逐条 `broadcastSessionDeleted`)。
+    for (const id of doomed) broadcastSessionDeleted(id);
+    // 收尾结果进日志:删项目是一次性把整个项目连带几十条会话抹掉,事后想查
+    // "当时有几张图是被从这个项目里掐掉的"只能指望这一行。
+    log.info(`project deleted: ${input.id} (${doomed.length} sessions, ${stopped} runs stopped)`);
   });
 
   // Set a project's archived flag (soft-delete; restorable).
