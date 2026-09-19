@@ -6,7 +6,7 @@
 >
 > - 项目根目录：`D:\destop\work_space\work_for_reseach\mcode`
 > - 基线日期：**2026-09-18**
-> - 基线状态：全量 **34 套 smoke 0 失败**；双包 typecheck 0 错误
+> - 基线状态：全量 **35 套 smoke 0 失败**；双包 typecheck 0 错误
 
 ---
 
@@ -49,7 +49,7 @@ Mcode 是一个**本地优先的通用 Agent 桌面客户端**（Electron + Reac
 | TypeScript 文件 | 727 |
 | 主进程模块 | 26 个目录（`orchestration` / `library` / `memory` / `mobile` / `plugins` / `browser` / `lsp` / `terminal` / `relay` …） |
 | IPC 方法（`RpcMap`） | 322 |
-| headless smoke 套件 | **34**（`bash scripts/run-all-smokes.sh`） |
+| headless smoke 套件 | **35**（`bash scripts/run-all-smokes.sh`） |
 
 ---
 
@@ -143,7 +143,7 @@ Mcode 是一个**本地优先的通用 Agent 桌面客户端**（Electron + Reac
 | 三个进程执行器各自为政 | 收口到 `lib/spawnRun.ts`（**顺带修了两个真 bug**：`exit` 时尾部输出丢失、`close` 被孙进程挂死） |
 | GBK/UTF-8 解码 | 修了一个真实解码 bug（`trimLeadingOrphans` 会削坏 GBK 首字节） |
 | **外键约束静默失效** | **修了一个既有 bug**：`db.export()` 会重置 `PRAGMA foreign_keys`，导致写盘一次之后所有 `ON DELETE CASCADE` 不再生效 |
-| smoke 覆盖 | 33 → **34 套**；`scheduler-smoke` 426 → 450 条；`library-registry-smoke` 27 → 94 条 |
+| smoke 覆盖 | 33 → **35 套**；`scheduler-smoke` 426 → 450 条；`library-registry-smoke` 27 → 94 条 |
 
 **做这些重构用的方法**（值得沿用）：TypeScript AST 定边界 → 函数体逐字节搬运 →
 注释当探针核对 → 先补测试再动刀。
@@ -161,7 +161,7 @@ Mcode 是一个**本地优先的通用 Agent 桌面客户端**（Electron + Reac
 | ~~A1~~ | ~~**同一步跑很多轮时，卡片会堆叠**~~ **已做（2026-09-19）** | 定案报告带 `round`（1 起，第 1 轮不带），渲染端按 `runId + nodeId` 认卡、第 2 轮起原地换掉。留下的永远是最后一版 | — |
 | ~~A2~~ | ~~**跑很久时看不出它具体在干嘛**~~ **已做（2026-09-19）** | 结果事件带上收场那刻的过程快照（`transcript`），卡片落了盘所以过程不会随进程消失；模型轮开跑时也报一次 `progress`（带步骤名） | — |
 | A3 | **一个对话同时只能跑一张图** | `runs` 是 `sessionId → run` 的一对一映射 | 想同时跑两条互不相干的线做不到。**影响面比 A1/A2 大**：要处理多张图同时等人、同时占输入框、状态怎么显示 |
-| A4 | **`flowRecord` 默认只对环上的节点开** | `flowRecordOf(node.params) ?? onLoop.has(node.id)` —— 不在环上的步骤默认读不到整条流程的记录 | 有些线性流程也希望每步都看得见前面发生过什么 |
+| ~~A4~~ | ~~**`flowRecord` 默认只对环上的节点开**~~ **不是缺陷** | `flowRecordOf(node.params) ?? onLoop.has(node.id)` 是**刻意的**默认，理由写在 `nodeTypes.ts` 里那段参数说明上（整条流程记录是给"回头再来一轮"的节点看的，线性流程每步都塞一份会把提示词撑爆） | 想要的话在节点上勾选就行 |
 | A5 | **`scheduler-smoke` 已经 450 条断言、单文件 2833 行** | 按主题拆成几个套件 | 现在改一处要等它全跑完，失败信息也难定位 |
 
 ### B. 生态与扩展
@@ -170,7 +170,7 @@ Mcode 是一个**本地优先的通用 Agent 桌面客户端**（Electron + Reac
 |---|---|---|---|
 | B1 | **触发器与事件源可扩展** | 方向已定：走 hook 事件表扩展，而不是新增触发器枚举 | 用户明确提过"触发不该被项目绑死，要能监控终端、监控某种状态" |
 | B2 | **通用条件节点**（对变量做布尔运算，决定下游走不走） | 未做。多个触发器的逻辑运算要靠它 | 你当时选了方案 B（通用条件节点，而非触发器专用聚合） |
-| B3 | **工作流导入导出接线** | 后端纯函数已实现，契约 / preload / 界面三层全缺 | 分享与备份。工程量小 |
+| B3 | ~~**工作流导入导出接线**~~ **已完成** | **本文这一行曾是错的**（2026-09-19 核实）：契约 / preload / 界面三层**全都在**（`rpcMap.ts` 的 `workflow_export` / `workflow_import` / `workflow_import_from_file`、`preload/index.ts` 的白名单、`TransferSection.tsx` 的「导出 / 导入为新 / 覆盖当前」），提交是 `914214c feat(workflow): 工作流能导出去、也能导进来了（WF-08 接线）` | 分享与备份。已落地 |
 | B4 | **executor 插件扩展点** | `ExecutionEngine.register()` 已经在了，但没有对第三方开放的正式约定 | 别人写的执行器接进来 |
 | B5 | **学术能力继续从 core 抽离** | 文献检索 / 下载 / 转录目前既是资料库能力、也是 agent 工具 | 让它们彻底变成"工作流可以调用的能力" |
 
@@ -208,7 +208,7 @@ bash apps/desktop/scripts/run-all-smokes.sh
 npx tsc --noEmit -p apps/desktop/tsconfig.json && npx tsc --noEmit -p packages/contracts/tsconfig.json
 ```
 
-两样都必须干净才算做完一件事。**34 套 smoke 的正确数字是基线**，不是"大概过了"。
+两样都必须干净才算做完一件事。**35 套 smoke 的正确数字是基线**，不是"大概过了"。
 
 ### 几条硬规矩
 
