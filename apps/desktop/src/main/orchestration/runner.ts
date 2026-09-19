@@ -1299,6 +1299,9 @@ export async function startWorkflowRun(args: {
         // 拷成可变数组:通道那一头是 `readonly`(主进程的那份不许别人改),
         // 而事件要过 IPC 序列化,合同上是可变的。
         ...(transcript && transcript.length > 0 ? { transcript: [...transcript] } : {}),
+        // **回头绕上来的第二圈起才带。** 第 1 轮不带,是因为没有环的图永远是第 1 轮 ——
+        // 字段不占地方,老行为一个字不改(见 `WorkflowNodeResultEvent.round`)。
+        ...(e.round > 1 ? { round: e.round } : {}),
         nodeId: e.node.id,
         nodeType: e.node.type,
         title: displayTitle(e.node, manifests?.get(e.node.type)),

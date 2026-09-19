@@ -807,6 +807,22 @@ export interface WorkflowNodeResultEvent {
   /** Which run this belongs to. One user message = one run; a later message
    *  starts a new one, so the card can be read in order even if node ids repeat. */
   runId: string;
+  /** 这是这个节点在第几轮跑出来的(**1 起**)。第 1 轮不带,第 2 轮起带上。
+   *
+   *  ## 为什么只在回头的时候带
+   *
+   *  一张环回的图(写稿 → 审稿 → 回去改)绕三圈就会产出三张同一个节点的卡,每张都
+   *  带一大段产出 —— 对话被刷得看不见流程走到哪了。渲染端要靠一个**轮次**才认得出
+   *  "这是同一格又跑了一遍",从而把上一张**换掉**而不是再插一张。第 1 轮不带,是因为
+   *  没有环的图(绝大多数)永远是第 1 轮:字段不占地方,老行为一个字不改。
+   *
+   *  ## 为什么它跟 `runId` 一起用
+   *
+   *  轮次是**每次运行自己数的**(见 `RunState.rounds`),跨运行会从 1 重新开始。卡片
+   *  认卡用的是 `runId + nodeId`,两者配得上 —— 否则上一次运行留下的卡会被这一次
+   *  改掉。
+   */
+  round?: number;
   /** 跑这一步的那个**隐藏节点会话**(`kind: "node"`)的 id。
    *
    *  卡片靠它去 `workflow.node.transcript` 那条通道里取"这一步的过程"(见

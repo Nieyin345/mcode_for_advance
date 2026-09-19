@@ -2109,9 +2109,15 @@ const runsOf = (h: Harness, id: string): Call[] => h.calls.filter((c) => c.id ==
   const cards = h.reports.filter((r) => r.kind === "node.settled" && r.node.id === "F");
   eq("岔路口一张结果卡都不发", cards.length, 0);
   eq("岔路口起了三次(证明真的重新派发了)", h.reports.filter((r) => r.kind === "node.started" && r.node.id === "F").length, 3);
-  // 每一轮的产出都留一张卡 —— 迭代了几轮,对话里就看得见几版(这是有意的:
-  // 用户要能回头翻"上一次那版长什么样")。
-  eq("成稿留下三张结果卡", h.reports.filter((r) => r.kind === "node.settled" && r.node.id === "D").length, 3);
+  // **每一轮都报一次定案** —— 调度器该报的照报(渲染端拿 `round` 决定是换卡还是
+  // 插卡,见 `WorkflowNodeResultEvent.round`)。这里钉的是**上报次数**和**轮次**:
+  // 少报一轮,界面就看不见那一轮;轮次数错,渲染端会把新一版当成新一轮插一张新的。
+  const done = h.reports.filter(
+    (r): r is Extract<RunReport, { kind: "node.settled" }> =>
+      r.kind === "node.settled" && r.node.id === "D",
+  );
+  eq("每一轮都报一次定案(三张)", done.length, 3);
+  eq("轮次从 1 数到 3", done.map((r) => r.round).join(","), "1,2,3");
 }
 
 {

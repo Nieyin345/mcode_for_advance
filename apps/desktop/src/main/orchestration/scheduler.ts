@@ -384,7 +384,13 @@ interface ManifestSlot {
 
 export type RunReport =
   | { kind: "node.started"; node: WorkflowNode }
-  | { kind: "node.settled"; node: WorkflowNode; outcome: NodeOutcome };
+  /**
+   * 这一步定案了。`round` 是**它在这次运行里跑过的第几轮**(1 起,见
+   * `WorkflowNodeResultEvent.round`)—— 调度器是**唯一**知道这件事的地方
+   * (`rounds` 在它的闭包里),不交出来的话渲染端只能靠"同一格又收场了"去猜,
+   * 而"同一格收场两次"在续跑、重试、补花费那几条路上都会发生。
+   */
+  | { kind: "node.settled"; node: WorkflowNode; outcome: NodeOutcome; round: number };
 
 export interface RunResult {
   /** 全成功 = success;有失败 = failed;被取消 = cancelled。
@@ -821,7 +827,15 @@ class Run {
     // 空的会让后面的助手以为这一步做过并交了东西。(跑过、但确实没交出文本的**要**记,
     // 那一条在 `flowRecordSection` 里会写成"(这一步没有产出文本)"。)
     if (outcome.status === "success") this.appendStep(node, outcome);
-    this.ports.report({ kind: "node.settled", node, outcome });
+    // 轮次取的是 `appendStep` 刚写下的那个数;失败/没走这条路的不进流程记录,
+    // 也就没有轮次 —— 那些**本来就不该有第二张卡**(同一轮里它只会定案一次),
+    // 报 1 即可。
+    this.ports.report({
+      kind: "node.settled",
+      node,
+      outcome,
+      round: this.rounds.get(node.id) ?? 1,
+    });
     this.publish();
   };
 

@@ -410,6 +410,12 @@ export type Block =
       /** 跑这一步的那个隐藏会话 id —— 卡片靠它去 `nodeTranscriptsBySession` 里取
        *  "这一步的过程"。**可缺席**:`skipped` / `cancelled` 的节点根本没跑过。 */
       nodeSessionId?: string;
+      /** 这是这个节点在这次运行里的**第几轮**(1 起;第 1 轮不带)。
+       *
+       *  环回的图回到同一格时会再收场一次 —— 带上轮次,渲染端才认得出"这是同一格
+       *  又跑了一遍",从而把上一张**换掉**而不是再插一张(见
+       *  `WorkflowNodeResultEvent.round`)。 */
+      round?: number;
       /** 收场那一刻的过程**快照**(见 `NODE_ARCHIVE_KEEP` 那条注释)。
        *
        *  和 `nodeSessionId` 是**两条路**,不是二选一:会话还在(`nodeSessionId` 查得到)
@@ -4174,6 +4180,49 @@ function patchBranchChoiceBlock(
 }
 
 /**
+ * **同一格回头绕第二圈:把上一轮那张卡换成这一轮的。**
+ *
+ * 环回的图(写稿 → 审稿 → 回去改)会让同一个节点反复收场,每张卡都带一大段产出 ——
+ * 三圈下来对话里就是三张大差不多的卡,用户要往下滚很久才看得见流程走到哪。留下的是
+ * **最后一版**(环回的意义就是"改完之后那一版")。
+ *
+ * ## 认卡按 `runId + nodeId`
+ *
+ * **轮次不进认卡的身份**,它是被换上去的内容之一。第一轮先插一张,第二轮换了它,
+ * 第三轮再换 —— 三圈下来从头到尾只有一张,带的是最后一轮的轮次。
+ *
+ * 轮次**不能**当身份:拿它去匹配等于"找一张标着第 N 轮的卡",而每次来的都是 N+1,
+ * 于是永远找不着自己上一轮那张,一圈插一张,叠卡这个毛病等于没修。
+ *
+ * ⚠️ 同一格在同一轮里收场两次(续跑、补花费)会命中同一张卡、原地覆盖一遍 —— 无害,
+ * 内容本来就是要覆盖的那个。
+ *
+ * **找不到返回 `null`**,调用方据此走"插一张新的"。
+ */
+function patchWorkflowNodeResultBlock(
+  messages: ChatMessage[],
+  next: Extract<Block, { kind: "workflow-node-result" }>,
+): ChatMessage[] | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m) continue;
+    const at = m.blocks.findIndex(
+      (b) =>
+        b.kind === "workflow-node-result" &&
+        b.runId === next.runId &&
+        b.nodeId === next.nodeId,
+    );
+    if (at < 0) continue;
+    const out = messages.slice();
+    const blocks = m.blocks.slice();
+    blocks[at] = next;
+    out[i] = { ...m, blocks };
+    return out;
+  }
+  return null;
+}
+
+/**
  * **给一张已经画出来的步骤卡补上花费,别的什么都不动。**
  *
  * 按 `runId + nodeId` 找 —— 和结果卡认卡用的是同一对(见 `workflow-node-result` 里那
@@ -5353,6 +5402,7 @@ ctx.set((s) => {
           kind: "workflow-node-result",
           runId: e.runId,
           nodeId: e.nodeId,
+          ...(e.round !== undefined ? { round: e.round } : {}),
           ...(e.nodeSessionId ? { nodeSessionId: e.nodeSessionId } : {}),
           ...(archived && archived.length > 0 ? { nodeTranscript: archived } : {}),
           nodeType: e.nodeType,
@@ -5365,6 +5415,15 @@ ctx.set((s) => {
           ...(e.artifacts && e.artifacts.length > 0 ? { artifacts: e.artifacts } : {}),
           ...(e.usage ? { usage: e.usage } : {}),
         };
+        // **回头绕上来的那一圈:原地换掉上一轮那张。** 换掉了就不再插新的(见
+        // `patchWorkflowNodeResultBlock`)。第一轮永远换不到,于是照旧往对话末尾插。
+        const replaced = patchWorkflowNodeResultBlock(
+          list,
+          block as Extract<Block, { kind: "workflow-node-result" }>,
+        );
+        if (replaced) {
+          return { messagesBySession: { ...s.messagesBySession, [ctx.sid]: capNodeArchives(replaced) } };
+        }
         const startedAt = s.runningTurnStartedAt[ctx.sid] ?? Date.now();
         const next = appendTurnCardBlock(
           list,

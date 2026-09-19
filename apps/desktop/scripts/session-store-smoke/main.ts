@@ -397,6 +397,90 @@ console.log("\n[9] workflow node transcripts");
   );
 }
 
+// ── 9b. 同一步回头绕第二圈:换卡,不是再插一张(A1) ─────────────────────
+//
+// 环回的图(写稿 → 审稿 → 回去改)会让同一个节点反复收场。每张卡都带一大段产出,
+// 三圈下来对话里就是三张大差不多的卡 —— 用户要往下滚很久才看得见流程走到哪。
+// 留下的是**最后一版**(环回的意义就是"改完之后那一版")。
+console.log("\n[9b] workflow node round: 叠卡还是换卡");
+{
+  seed([mkSession("conv_round")], { total: 1 });
+  const SID = "conv_round";
+  const mkResult = (round: number | undefined, summary: string) => ({
+    type: "workflow.node.result" as const,
+    sessionId: SID,
+    runId: "runR",
+    nodeId: "nD",
+    ...(round !== undefined ? { round } : {}),
+    nodeType: "mcode.agent",
+    title: "写初稿",
+    status: "success" as const,
+    summary,
+  });
+
+  useSessionStore.getState().ingestEvent(mkResult(undefined, "第一版"));
+  const cardsAfter1 = (useSessionStore.getState().messagesBySession[SID] ?? [])
+    .flatMap((m) => m.blocks)
+    .filter((b) => b.kind === "workflow-node-result");
+  eq("第一轮:插一张卡", cardsAfter1.length, 1);
+  // **第 1 轮不带 `round`** —— 没有环的图永远是第 1 轮,字段不占地方、老行为不改。
+  eq(
+    "第一轮那张卡上没有 round",
+    cardsAfter1[0]?.kind === "workflow-node-result" ? cardsAfter1[0].round : "MISSING",
+    undefined,
+  );
+
+  useSessionStore.getState().ingestEvent(mkResult(2, "第二版"));
+  const cardsAfter2 = (useSessionStore.getState().messagesBySession[SID] ?? [])
+    .flatMap((m) => m.blocks)
+    .filter((b) => b.kind === "workflow-node-result");
+  // **还是那一张** —— 换掉而不是插。旧实现这里是 2 张,三圈就 3 张。
+  eq("★ 第二圈:还是那一张(没多出来)", cardsAfter2.length, 1);
+  eq(
+    "★ 而且换成了第二版",
+    cardsAfter2[0]?.kind === "workflow-node-result" ? cardsAfter2[0].summary : "",
+    "第二版",
+  );
+
+  useSessionStore.getState().ingestEvent(mkResult(3, "第三版"));
+  const cardsAfter3 = (useSessionStore.getState().messagesBySession[SID] ?? [])
+    .flatMap((m) => m.blocks)
+    .filter((b) => b.kind === "workflow-node-result");
+  eq("★ 第三圈:也还是一张", cardsAfter3.length, 1);
+  eq(
+    "★ 留下的是最后一版",
+    cardsAfter3[0]?.kind === "workflow-node-result" ? cardsAfter3[0].summary : "",
+    "第三版",
+  );
+  eq(
+    "轮次也跟着更新",
+    cardsAfter3[0]?.kind === "workflow-node-result" ? cardsAfter3[0].round : undefined,
+    3,
+  );
+
+  // **另一次运行不受影响。** 轮次是每次运行自己数的(跨运行从 1 重来),卡片认卡用的是
+  // `runId + nodeId` —— 少了 runId 这一半,上一次运行留下的卡会被这一次改掉。
+  useSessionStore.getState().ingestEvent({
+    type: "workflow.node.result",
+    sessionId: SID,
+    runId: "runOther",
+    nodeId: "nD",
+    nodeType: "mcode.agent",
+    title: "写初稿",
+    status: "success",
+    summary: "另一次运行的第一版",
+  });
+  const allCards = (useSessionStore.getState().messagesBySession[SID] ?? [])
+    .flatMap((m) => m.blocks)
+    .filter((b) => b.kind === "workflow-node-result");
+  eq("★ 另一次运行自己一张(没把上一次那张改掉)", allCards.length, 2);
+  eq(
+    "上一次那张还是第三版",
+    allCards[0]?.kind === "workflow-node-result" ? allCards[0].summary : "",
+    "第三版",
+  );
+}
+
 // ── 10. 卡片上摆什么:变量还是原文 ────────────────────────────────────────
 //
 // `outputRowsOf` 是那张卡片的唯一一个判断,而这正是用户报过的那件事:「我规定了主代理
