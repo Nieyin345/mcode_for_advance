@@ -30,7 +30,7 @@ npx tsc --noEmit -p packages/contracts/tsconfig.json
 ### 验证（做完一件事的标准）
 
 ```bash
-bash apps/desktop/scripts/run-all-smokes.sh   # 全量 35 套，0 失败是基线
+bash apps/desktop/scripts/run-all-smokes.sh   # 全量 40 套，0 失败是基线
 ```
 
 跑单套：
@@ -42,7 +42,7 @@ bash apps/desktop/scripts/<name>-smoke/run.sh
 
 很多主进程套件走「esbuild 打包 + stubs 换桩」的无头模式——验证主进程逻辑不需要起 Electron。渲染端组件可用 `.tmp/` 下现成的预览台（`ask-preview` / `retry-preview` / `card-preview`）在真浏览器里核对。
 
-**两样都干净才算完：35 套 smoke + 双包 typecheck。**
+**两样都干净才算完：40 套 smoke + 双包 typecheck。**
 
 ## 架构大图
 
@@ -51,13 +51,13 @@ bash apps/desktop/scripts/<name>-smoke/run.sh
    ↕ 唯一桥:window.api
 preload (contextBridge + zod 校验)
    ↕ IPC
-主进程 (Node.js): 26 个模块目录
+主进程 (Node.js): 25 个模块目录
    orchestration/ library/ memory/ mobile/ plugins/ browser/ lsp/ terminal/ relay/ …
 ```
 
 看懂这几条才动得了手：
 
-1. **契约先行**。IPC 方法（`RpcMap` 322 个）的 schema 定义在 `packages/contracts/src/ipc/`（按域拆 23 个模块）→ preload 白名单 → 主进程 handler。加一条 IPC 要走全三层，缺一层调用端就看不到。
+1. **契约先行**。IPC 方法（`RpcMap` 313 个）的 schema 定义在 `packages/contracts/src/ipc/`（按域拆 22 个模块）→ preload 白名单 → 主进程 handler。加一条 IPC 要走全三层，缺一层调用端就看不到。
 2. **AgentProvider 抽象**。每家引擎一个 Provider + 一个 MessageAdapter，把各家事件归一成 provider 中立的 `RuntimeEvent`。行为对齐（预算、回退、结构化输出、子代理、elicitation）在各 Provider 里做。第四个 provider 是网页模型（浏览器扩展桥驱动真实网页 LLM 页面）。
 3. **工作流编排**。图模型 + 调度器（就绪即派发、并发上限默认 4）+ 七个内置节点类型（`nodeTypes.ts` 的 `BUILTIN_NODE_TYPES`）。执行分派只有一个入口：`manifest.runner.kind` 查注册表，没有就落兜底（模型轮）。插件可注册自己的节点类型。关键区分：**子 agent 节点跑在隐藏子会话；主代理（`mcode.main`）与对话节点跑在主对话里**，用户看得见。
 4. **sql.js 持久化**（纯 WASM SQLite，**没有 FTS5**，全文检索走 ripgrep）。统一数据根。

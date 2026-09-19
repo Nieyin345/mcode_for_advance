@@ -6,7 +6,7 @@
 >
 > - 项目根目录：`D:\destop\work_space\work_for_reseach\mcode`
 > - 基线日期：**2026-09-18**
-> - 基线状态：全量 **35 套 smoke 0 失败**；双包 typecheck 0 错误
+> - 基线状态：全量 **40 套 smoke 0 失败**；双包 typecheck 0 错误
 
 ---
 
@@ -46,10 +46,10 @@ Mcode 是一个**本地优先的通用 Agent 桌面客户端**（Electron + Reac
 
 | | 数量 |
 |---|---|
-| TypeScript 文件 | 727 |
-| 主进程模块 | 26 个目录（`orchestration` / `library` / `memory` / `mobile` / `plugins` / `browser` / `lsp` / `terminal` / `relay` …） |
-| IPC 方法（`RpcMap`） | 322 |
-| headless smoke 套件 | **35**（`bash scripts/run-all-smokes.sh`） |
+| TypeScript 文件 | 744 |
+| 主进程模块 | 25 个目录（`orchestration` / `library` / `memory` / `mobile` / `plugins` / `browser` / `lsp` / `terminal` / `relay` …） |
+| IPC 方法（`RpcMap`） | 313 |
+| headless smoke 套件 | **40**（`bash scripts/run-all-smokes.sh`） |
 
 ---
 
@@ -58,7 +58,7 @@ Mcode 是一个**本地优先的通用 Agent 桌面客户端**（Electron + Reac
 ### 1. 三个进程 + 三家引擎 + 网页模型
 
 - Electron 主进程 / 渲染端 / preload 三层，`contextIsolation` 开启，typescript + zod
-  契约层（`packages/contracts/src/ipc/` 按域拆成 23 个模块）。
+  契约层（`packages/contracts/src/ipc/` 按域拆成 22 个模块）。
 - **三家本地引擎**：Claude Code SDK、Pi、Codex —— 在预算、回退、结构化输出、子代理、
   elicitation 上行为对齐。
 - **网页模型**（第四个 provider）：通过浏览器扩展桥驱动真实网页 LLM 页面。DeepSeek 与
@@ -143,7 +143,7 @@ Mcode 是一个**本地优先的通用 Agent 桌面客户端**（Electron + Reac
 | 三个进程执行器各自为政 | 收口到 `lib/spawnRun.ts`（**顺带修了两个真 bug**：`exit` 时尾部输出丢失、`close` 被孙进程挂死） |
 | GBK/UTF-8 解码 | 修了一个真实解码 bug（`trimLeadingOrphans` 会削坏 GBK 首字节） |
 | **外键约束静默失效** | **修了一个既有 bug**：`db.export()` 会重置 `PRAGMA foreign_keys`，导致写盘一次之后所有 `ON DELETE CASCADE` 不再生效 |
-| smoke 覆盖 | 33 → **35 套**；`scheduler-smoke` 426 → 450 条；`library-registry-smoke` 27 → 94 条 |
+| smoke 覆盖 | 33 → **40 套**；`scheduler-smoke` 426 → 450 条；`library-registry-smoke` 27 → 94 条 |
 
 **做这些重构用的方法**（值得沿用）：TypeScript AST 定边界 → 函数体逐字节搬运 →
 注释当探针核对 → 先补测试再动刀。
@@ -172,13 +172,13 @@ Mcode 是一个**本地优先的通用 Agent 桌面客户端**（Electron + Reac
 | B2 | **通用条件节点**（对变量做布尔运算，决定下游走不走） | 未做。多个触发器的逻辑运算要靠它 | 你当时选了方案 B（通用条件节点，而非触发器专用聚合） |
 | B3 | ~~**工作流导入导出接线**~~ **已完成** | **本文这一行曾是错的**（2026-09-19 核实）：契约 / preload / 界面三层**全都在**（`rpcMap.ts` 的 `workflow_export` / `workflow_import` / `workflow_import_from_file`、`preload/index.ts` 的白名单、`TransferSection.tsx` 的「导出 / 导入为新 / 覆盖当前」），提交是 `914214c feat(workflow): 工作流能导出去、也能导进来了（WF-08 接线）` | 分享与备份。已落地 |
 | B4 | **executor 插件扩展点** | `ExecutionEngine.register()` 已经在了，但没有对第三方开放的正式约定 | 别人写的执行器接进来 |
-| B5 | **学术能力继续从 core 抽离** | 文献检索 / 下载 / 转录目前既是资料库能力、也是 agent 工具 | 让它们彻底变成"工作流可以调用的能力" |
+| B5 | **学术能力继续从 core 抽离** | **转录那半边已做完**（2026-09-19）：MinerU 客户端与「下载完自动转录」那条写死的钩子全删了，改成「下载完成」事件 + 内置自动化 + `library_adopt_markdown` 挂回库；剩下的文献**检索 / 下载**仍是资料库能力兼 agent 工具 | 让它们彻底变成"工作流可以调用的能力" |
 
 ### C. 工程质量
 
 | # | 事项 | 现状 |
 |---|---|---|
-| C1 | **`browser/` 等模块零 smoke 覆盖** | `main/browser/`（2726 行的 `BrowserManager`）、`mobile/`、`relay/`、`lsp/`、`terminal/`、`voice/`、`integrations/` 全部零覆盖。工程量最大的一项 |
+| C1 | **`browser/` 等模块零 smoke 覆盖** | `main/browser/`（2726 行的 `BrowserManager`）、`mobile/`、`relay/`、`lsp/`、`terminal/`、`voice/` 全部零覆盖。工程量最大的一项（`integrations/` 整个目录已随 MinerU 一起删掉，不必再算） |
 | ~~C2~~ | ~~**死接口**（preload 暴露但渲染端无人调用）~~ **已做（2026-09-19）** | 删了 8 个（7 个死名字 + `templates.setRoot`），连带清掉只剩死名字引用的 schema 与设置键。其中 `getRoot`/`setRoot` 其实是**已失效的功能**（统一数据根架空了它们，写进去也没人读）。**另一半点反过来做**：`library.fullTextSearch` 后端写完了、界面没接，已补上「库内全文检索」面板 | — |
 | ~~C3~~ | ~~**per-trigger 启停没做**~~ **已做（2026-09-19）** | 触发器节点上加了「启用」勾选框（参数键 `enabled`，**缺席 = 开** —— 老存档升级那一刻不许静默停摆）。关掉的**只挡自动那三条路**，手动「立刻运行一次」照跑。事实行因此分成三种说法：「已挂上」/「已关闭」（你自己关的，灰）/「没挂上」（坏了，黄）—— 关掉的和坏掉的 `armed` 都是 false，光看它分不清 |
 | C4 | **运行事件标准化** | `started / progress / settled / error` 四类事件的形状还不统一 |
@@ -208,7 +208,7 @@ bash apps/desktop/scripts/run-all-smokes.sh
 npx tsc --noEmit -p apps/desktop/tsconfig.json && npx tsc --noEmit -p packages/contracts/tsconfig.json
 ```
 
-两样都必须干净才算做完一件事。**35 套 smoke 的正确数字是基线**，不是"大概过了"。
+两样都必须干净才算做完一件事。**40 套 smoke 的正确数字是基线**，不是"大概过了"。
 
 ### 几条硬规矩
 
