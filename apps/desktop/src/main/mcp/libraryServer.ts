@@ -464,7 +464,7 @@ export function libraryMcpTools(): McpToolSpec[] {
         description:
           "**导入一篇文献,并顺手把总结写进它的笔记**。检索流程里用这个:找到一个合适的就立刻导入," +
           "不要等全部找完再一次性导入。\n" +
-          "给它一个 DOI 或 arXiv ID;元数据自动从 Crossref / arXiv 补齐;导入后应用会自动下载 PDF 并转录," +
+          "给它一个 DOI 或 arXiv ID;元数据自动从 Crossref / arXiv 补齐;导入后应用会自动排队下载 PDF," +
           "不需要你再管下载。summary 会显示在这一条的详情页笔记里。" +
           "必须给 collectionId:导入的条目要有个归处,否则会掉进回收站。",
         inputSchema: {
@@ -531,7 +531,7 @@ export function libraryMcpTools(): McpToolSpec[] {
             parts.push(`\n有 ${failed.length} 条没能导入:`);
             for (const f of failed) parts.push(`- ${f.raw.slice(0, 120)} —— ${f.reason}`);
           }
-          parts.push("\n下载与转录由应用自动完成,不需要你再操作。");
+          parts.push("\n下载由应用自动排队,不需要你再操作。");
           notifyLibraryChanged(`import:${items.length}`);
           return text(parts.join("\n"));
         },
@@ -539,7 +539,7 @@ export function libraryMcpTools(): McpToolSpec[] {
       {
         name: "library_download",
         description:
-          "给排好队的条目**下载 PDF**(应用的下载管道:内嵌浏览器带登录态,成功后自动转录 Markdown)。" +
+          "给排好队的条目**下载 PDF**(应用的下载管道:内嵌浏览器带登录态)。" +
           "要求条目有 DOI / arXiv ID 或可用的 PDF 链接,两条都没有的会以「没有可用来源」收场。\n" +
           "library_add_paper / library_import 已经自动排队,**检索导入的流程不要调它**;" +
           "它用于「把之前导入但还没下到 PDF 的那几条再试一次」。",
@@ -573,7 +573,7 @@ export function libraryMcpTools(): McpToolSpec[] {
           }
           return text(
             `已处理 ${args.ids.length} 条:\n\n${lines.join("\n")}\n\n` +
-              "下载与转录由应用自动完成,不需要你再操作;下不了的(缺来源)如实转告用户。",
+              "下载由应用自动排队,不需要你再操作;下不了的(缺来源)如实转告用户。",
           );
         },
       },

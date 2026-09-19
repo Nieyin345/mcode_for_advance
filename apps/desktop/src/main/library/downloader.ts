@@ -215,10 +215,11 @@ function finalize(
   log.info(
     `library download ok: ${item.title} (${sha.slice(0, 12)}…) via ${source} → ${toLibraryRelative(dest)}`,
   );
-  // 下载完就该**说一句**。用户的要求是「导入之后是软件自动下载，自动转录的，不需要
-  // ai 去管」—— 但"转录"这一步现在**不写在软件里**:这里只发一条
-  // `library.item.downloaded`,想干什么由用户在钩子或自动化的「事件发生时」触发器里
-  // 自己配(软件里那条内置自动化就是这么搭的)。
+  // 下载完就该**说一句**。这里只发一条 `library.item.downloaded` —— "转录"这一步
+  // **不在软件里**:想干什么由用户在钩子或自动化的「事件发生时」触发器里自己配
+  // (软件里那条内置自动化就是这么搭的,见 `orchestration/builtins.ts` 的
+  // `AUTO_CONVERT_*`)。从前它是写死在这条路上的,那时用户想接自己那套转录工具
+  // 只能改源码。
   //
   // ⚠️ **同步调用**。这是下载线程,发事件不能卡住队列:下面那句 try/catch 保证
   // 发不出去也只是记一行日志(`finalize` 的返回值是"这次下载成不成",与通知无关)。

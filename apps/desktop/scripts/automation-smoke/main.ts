@@ -38,7 +38,9 @@ import {
   parseTriggerSpec,
   DEFAULT_TRIGGER_DEBOUNCE_MS,
   NODE_TRIGGER_ENABLED_PARAM_KEY,
+  NODE_TRIGGER_EVENTS_PARAM_KEY,
   NODE_TRIGGER_KIND_PARAM_KEY,
+  NODE_TRIGGER_PROJECT_PARAM_KEY,
   TRIGGER_KINDS,
   triggerEnabledOf,
   triggerFactKeysOf,
@@ -62,7 +64,14 @@ import {
   watcherDirsOf,
 } from "@main/orchestration/automationStatus.js";
 import { deriveTrigger } from "@main/orchestration/library.js";
+import type { AutomationFactsSeed } from "@main/orchestration/automationStatus.js";
 import { builtinTriggerManifest } from "@main/orchestration/nodeTypes.js";
+import {
+  AUTO_CONVERT_WORKFLOW_ID,
+  AUTO_DOWNLOAD_WORKFLOW_ID,
+  WATCH_WORKFLOW_ID,
+  getBuiltinWorkflow,
+} from "@main/orchestration/builtins.js";
 import { runWorkflow, type RunPorts, type RunReport, type RunState } from "@main/orchestration/scheduler.js";
 import { initDb, getDb } from "@main/store/db.js";
 import { ProjectRepo, SessionRepo } from "@main/store/repositories.js";
@@ -1253,7 +1262,74 @@ console.log("\n事件触发 · HOOK_EVENT_OF + 事件主语与钩子同源");
   }
 }
 
-/* ────────────────────────── 收尾 ────────────────────────── */
+/* ────────────── 12. 内置自动化真的能武装起来 ────────────── */
 
+console.log("\n内置自动化 · 参数解得开、项目留空也挂得上");
+
+{
+  // 这一节钉的是一个**已经发生过**的故障,而且它当初是静默的:内置模板预置不出项目 id
+  // (项目 id 是建项目时现生成的 `uid("proj_")`),而 `parseTriggerSpec` 曾经对**每一种**
+  // 触发方式都要求项目非空 —— 于是两条内置自动化一条也挂不上,界面上却参数填得好好的,
+  // 没有任何地方说得出为什么。**这条断言就是那次故障的哨兵。**
+  const types = new Map<string, NodeTypeManifest>([
+    [TRIGGER.id, builtinTriggerManifest()],
+    [AGENT.id, AGENT],
+  ]);
+
+  // ⚠️ **守望不在这一轮里**,而这不是漏了:它的触发器**故意**是"项目没填"的
+  // (见 `WATCH_NODES` 那段注释)—— 起跑时由 `startWatch` 把发起会话的项目写进去,
+  // 在那之前它本来就该是"挂不上"的。硬把它塞进来只会逼着模板去编一个项目 id。
+  for (const [id, what] of [
+    [AUTO_DOWNLOAD_WORKFLOW_ID, "导入后自动下载"],
+    [AUTO_CONVERT_WORKFLOW_ID, "下载完自动转录"],
+  ] as const) {
+    const doc = getBuiltinWorkflow(id);
+    check(`内置工作流「${what}」还在`, doc !== undefined, id);
+    if (!doc) continue;
+    // `deriveTrigger` 就是**存盘那一关**跑的那个函数 —— 它拒了就说明这份内置图在界面上
+    // 一存就报错;它过了才谈得上"能跑"。
+    const derived = deriveTrigger(doc, types);
+    check(`「${what}」的触发器解得开`, derived.ok, derived.ok ? undefined : derived.error);
+    if (!derived.ok) continue;
+    // 触发器节点在 → `trigger` 字段必须被反推出来(反推不出来 = 它在列表里会被分错栏)。
+    eq(`「${what}」的 trigger 字段反推出来了`, derived.doc.trigger !== undefined, true);
+  }
+
+  check("内置工作流「守望」还在", getBuiltinWorkflow(WATCH_WORKFLOW_ID) !== undefined);
+
+  // 「下载完自动转录」听的是**下载完成**那个事件,不是导入 —— 导入那一下文件还没下来,
+  // 挂错了的话这条自动化永远转不出东西,而且不报错。
+  const convertDoc = getBuiltinWorkflow(AUTO_CONVERT_WORKFLOW_ID);
+  const convertTrigger = convertDoc?.nodes.find((n) => n.type === "mcode.trigger");
+  const events = String(convertTrigger?.params[NODE_TRIGGER_EVENTS_PARAM_KEY] ?? "");
+  eq("「下载完自动转录」听的是 library.item.downloaded", events, "library.item.downloaded");
+  // 项目**故意留空** —— 它做的事(转录、挂回库)拿的都是绝对路径,不需要工作目录。
+  // 「没绑项目」在这个仓里**一直**是空串这一个编码(守望那块也是),`buildTriggers`
+  // 就是看它长度是不是 0 决定跳不跳查表。所以判据是"等于空串",不是"字段不存在"。
+  //
+  // 哪天有人"顺手"给它填个项目,这一条会红:内置模板预置不出项目 id(项目 id 是建
+  // 项目时现生成的 `uid("proj_")`),填了反而挂不上 —— 就是这次修掉的那个故障。
+  eq(
+    "「下载完自动转录」没绑项目(空串 = 没绑)",
+    String(convertTrigger?.params[NODE_TRIGGER_PROJECT_PARAM_KEY] ?? "x"),
+    "",
+  );
+
+  // 纯件那一侧:一条**没绑项目**的事件触发器,挂载登记应当是"响着"的。
+  // 这是上一条的另一半 —— 参数解得开还不够,`buildTriggers` 那一关也得放它过去。
+  const facts = new AutomationFacts();
+  const seed: AutomationFactsSeed = {
+    workflowId: AUTO_CONVERT_WORKFLOW_ID,
+    nodeId: "auto-convert-trigger",
+    title: "下载完成触发",
+    kind: "event",
+    enabled: true,
+  };
+  facts.recordSetup(seed, true);
+  eq("没绑项目的事件触发器登记成「响着」", facts.ofWorkflow(AUTO_CONVERT_WORKFLOW_ID)[0]?.armed, true);
+  eq("而且没有 detail(不是坏掉了)", facts.ofWorkflow(AUTO_CONVERT_WORKFLOW_ID)[0]?.detail, undefined);
+}
+
+/* ────────────────────────── 收尾 ────────────────────────── */
 console.log(`\nautomation-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exit(1);
