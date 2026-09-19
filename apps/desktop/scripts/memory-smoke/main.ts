@@ -241,7 +241,16 @@ const withTrigger = build(
   { instruction: "处理 {{trigger.toolName}}" },
   { trigger: { toolName: "mcp_a", kind: "manual" } },
 );
-check("buildNodeInput 展开进提示词", withTrigger.prompt.includes("处理 mcp_a"), withTrigger.prompt);
+// **`expandTriggerVars` 是纯函数,单独试过了(上面那几条);这里不试它。**
+//
+// `buildNodeInput` 从前会自己再跑一遍它兜底,所以拿"`{{trigger.*}}` 进了提示词没有"
+// 当 `buildNodeInput` 的断言是成立的。2026-09-20 那遍兜底删了 —— 参数**到这儿时已经
+// 解完了**(调度器的 `expandParams` 是唯一解参数的地方,`{{trigger.*}}` 只是 `{{...}}`
+// 的一种,见 `@contracts/nodeTemplate` 的 `resolveOne`)。所以这一条不再是它该管的事,
+// 留着就是一条**测着别人职责的**断言 —— 哪天有人把兜底加回来,它会绿着通过而问题还在。
+// 解算那一段的断言在 `scheduler-smoke`(解算器)与那边调度器一级的用例里。
+//
+// 这一格现在只剩一件事要管:**载荷原样进 `data`**(节点自己读 `data.trigger`),就是下面那条。
 deep("载荷进 data.trigger", (withTrigger.data as unknown as Record<string, unknown>).trigger, { toolName: "mcp_a", kind: "manual" });
 const noTrigger = build({ instruction: "做点事" });
 check("手动跑 data 里没有 trigger 键", !("trigger" in noTrigger.data));

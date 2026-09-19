@@ -264,15 +264,16 @@ export function buildNodeInput(
   scope: ModelInputScope,
   signal: AbortSignal,
 ): RunnableNodeInput {
-  // **触发器变量先解**。解算必须发生在任何参数消费之前 —— 技能名、上下文类目、产出
-  // 约束都可能写在 `{{trigger.*}}` 里,而"哪些参数是解过的"如果有两种答案,迟早分家
-  // (同 `scheduler.expandParams` 那句话,那是上游变量的同一条规矩)。
-  // `scope.trigger` 不健康(不是对象)就当没有 —— 载荷来自后台执行器,坏一份不该拖垮派发。
-  const trigger =
-    scope.trigger !== null && typeof scope.trigger === "object" && !Array.isArray(scope.trigger)
-      ? (scope.trigger as Record<string, unknown>)
-      : undefined;
-  const expanded = expandTriggerVars(params, trigger);
+  // **参数到这里时 `{{...}}` 已经全解完了**(调度器的 `expandParams`,那一步是
+  // **唯一**解参数的地方)。从前这里还要再跑一遍 `expandTriggerVars` 兜底 —— 兜底本身
+  // 没害处(它是幂等的),但它把"哪个名字空间谁负责"这件事说成了两句不同的话:那句注释
+  // 写着「触发器变量先解」,而真解它的地方在调度器,`{{trigger.*}}` 只是 `{{...}}` 的
+  // 一种(见 `@contracts/nodeTemplate` 的 `resolveOne`)。两处都宣称自己解,改的时候
+  // 就会只改一处。2026-09-20 收成一处。
+  //
+  // `scope.trigger` 那一格没删是**另一件事**:除了解参数,它还要把**载荷原样**放进
+  // `data.trigger` 给节点自己读(下面那个 `DataWithTrigger`)。
+  const expanded = params;
   const skills = skillNamesOf(expanded);
   const mcpServerNames = mcpServerNamesOf(expanded);
   const pluginNames = pluginNamesOf(expanded);
@@ -283,7 +284,14 @@ export function buildNodeInput(
    * 触发器载荷原样进 `data`。本地交叉类型而不是直接改 `WorkflowDataContext`:载荷字段
    * 落在 runtime 契约那边的归属(R 侧),这里先按「多带一个键」的形状给 —— 契约补上
    * `trigger?` 字段后,这一行一个字都不用改。
+   *
+   * 它**只服务这一件事**(参数解算在调度器那边已经做完了)。`scope.trigger` 不健康
+   * (不是对象)就当没有 —— 载荷来自后台执行器,坏一份不该拖垮派发。
    */
+  const trigger =
+    scope.trigger !== null && typeof scope.trigger === "object" && !Array.isArray(scope.trigger)
+      ? (scope.trigger as Record<string, unknown>)
+      : undefined;
   type DataWithTrigger = WorkflowDataContext & { trigger?: Record<string, unknown> };
   const data: DataWithTrigger = {
     userInput: scope.userPrompt,

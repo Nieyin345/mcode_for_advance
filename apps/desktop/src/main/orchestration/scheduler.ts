@@ -113,7 +113,6 @@ import {
   type WorkflowNode,
 } from "@contracts/workflow";
 import { referencedNodeNamesIn, renderTemplate, type NodeTemplateScope } from "@contracts/nodeTemplate";
-import { expandTriggerVars } from "./triggerVars";
 import type { NodeRunInput as ContractNodeRunInput, WorkflowChoiceOption } from "@contracts/runtime";
 export type NodeRunInput = ContractNodeRunInput & { signal: AbortSignal };
 import {
@@ -440,12 +439,18 @@ function upstreamNames(
  * 解不出来就**抛**,由 `executeOne` 兜成这个节点的失败 —— 和 `instructionOf` 同一条
  * 路。理由也一样:原样留着的话,模型会看见一句带 `{{...}}` 的指令,然后自己脑补一个
  * 值填进去,而那个值来自它的想象。
+ *
+ * ⚠️ **`{{trigger.*}}` 由 `renderTemplate` 一次解掉**(2026-09-20),这里不再先跑一遍
+ * `expandTriggerVars`。从前是两个展开器接力,**同一个字符串里两种名字空间混着写就废了**:
+ * 第一个只认 `{{trigger.*}}`、认不出 `{{检索.年份}}` 所以原样交出去,第二个再把
+ * `{{trigger.at}}` 当节点名报「引用不到」。各自都对,拼在一起是一个用不了的写法,
+ * 而用户写 `"上游是 {{检索.年份}},这次是 {{trigger.at}} 触发的"` 再自然不过。
+ * 载荷进 `scope.trigger`,解算与报错都只有一份实现。
  */
 function expandParams(
   node: WorkflowNode,
   manifest: NodeTypeManifest,
   scope: NodeTemplateScope,
-  trigger?: Record<string, unknown>,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = { ...node.params };
   for (const [key, value] of Object.entries(node.params)) {
@@ -453,13 +458,7 @@ function expandParams(
     // 报错要报**界面上那个名字**(「指令」),不是 `instruction` —— 用户看的是前者。
     const spec = manifest.params.find((p) => p.key === key);
     const where = spec ? `参数「${spec.label}」` : `参数 ${key}`;
-    // **触发器变量先于模板解算**:`{{trigger.*}}` 不指向图上任何节点,`renderTemplate`
-    // 不认识这个名字空间,留着它会按"引用不到"硬失败。展开器和 `buildNodeInput` 里
-    // 用的是**同一个** `expandTriggerVars` —— 名字空间各一个展开器,两边不会长歪。
-    // 解不出来(没载荷/载荷里没这个 key)会抛,由外层 catch 兜成这一步的失败,
-    // 和 `renderTemplate` 的"引用不到就明确失败"同一条路。
-    const detrig = expandTriggerVars({ [key]: value }, trigger);
-    const result = renderTemplate(detrig[key] as string, scope, where);
+    const result = renderTemplate(value, scope, where);
     if (!result.ok) throw new Error(result.error);
     out[key] = result.text;
   }
@@ -1189,6 +1188,11 @@ class Run {
 
       // 这一步能引用什么。**每次派发时现算** —— 上游的结局和参数在这之前才刚定下来
       // (同一列里别的节点可能还在跑),提前算会拿到半张图。
+      //
+      // `trigger` 是**这次触发载荷的平面事实**(自动化起跑时随 entry 进来,见
+      // `automationRunner` 的 `payloadFactsOf`),没被触发器起就是 `undefined`。
+      // 它与上游那两张表**不是一回事** —— `{{trigger.*}}` 解在 `renderTemplate` 里
+      // (见那边 `resolveOne` 的第一段),所以这里把它挂在 scope 上而不是塞进 nodes。
       const scope: NodeTemplateScope = {
         user: this.prompt,
         upstream: upstreamNames(this.deps, this.titleOf, node.id),
@@ -1201,6 +1205,7 @@ class Run {
             ...(outcome ? { outcome, artifacts: outcome.artifacts } : {}),
           };
         }),
+        ...(this.entry?.payload !== undefined ? { trigger: this.entry.payload } : {}),
       };
 
       // 先解变量,后面每一步都看解算后的参数 —— 技能名、上下文类目、产出约束都可能
@@ -1208,10 +1213,7 @@ class Run {
       // 解不出来会抛,由下面那层的 catch 兜成这个节点的失败。
       // **引用要在解算前扫**(见 `referencedNodeNames`),解算完就看不出引过谁了。
       const referenced = referencedNodeNames(node);
-      // **载荷随 entry 进来**(自动化起跑时带上,见 `automationRunner`):参数里的
-      // `{{trigger.*}}` 在这一步就解成实际值,后面每一层(buildNodeInput / 执行器)
-      // 看到的都是解算后的参数 —— "哪几个参数解过了"永远只有一个答案。
-      const params = expandParams(node, manifest, scope, this.entry?.payload);
+      const params = expandParams(node, manifest, scope);
 
       // **能力预检(G4/CAP):派发前的最后一道闸。** 需求 = 清单声明的 requirements +
       // 参数推导(选了引擎 / 技能 / 插件 / 执行器),清单 = 调用方装配的这台机器的

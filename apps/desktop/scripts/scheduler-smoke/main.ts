@@ -1324,6 +1324,58 @@ console.log("\n转义(指令里真要写 {{)");
 eq("\\{{ 是字面的 {{", render("用 \\{{变量}} 表示占位"), "用 {{变量}} 表示占位");
 eq("转义和真引用可以混着用", render("{{A.output}} 要写成 \\{{output}}"), "找到三篇 要写成 {{output}}");
 
+console.log("\n触发器变量({{trigger.*}} —— 另一个名字空间)");
+{
+  // 调度器把这次触发的载荷放进 `scope.trigger`(见 `scheduler.ts` 里 scope 的构造),
+  // 而**解算它的是 `renderTemplate` 的同一遍遍历**(2026-09-20)。
+  //
+  // 从前这里是**两个展开器接力**:调度器先跑 `expandTriggerVars`,认不出 `{{检索.年份}}`
+  // 所以把整串**原样交出去**;再跑 `renderTemplate`,它把 `{{trigger.at}}` 当节点名报
+  // 「引用不到」。两个展开器各自都对,拼在一起就是"一个用不了的写法" —— 而用户写
+  // `"上游是 {{检索.年份}},这次是 {{trigger.at}} 触发的"` 再自然不过。
+  const trigScope: NodeTemplateScope = {
+    ...TPL_SCOPE,
+    trigger: { kind: "schedule", at: "2026-09-20 08:00", files: ["a.md", "b.md"], n: 3 },
+  };
+  const rt = (text: string): string => {
+    const res = renderTemplate(text, trigScope);
+    return res.ok ? res.text : `ERR:${res.error}`;
+  };
+
+  eq("{{trigger.键}} 取载荷", rt("{{trigger.at}}"), "2026-09-20 08:00");
+  eq("数字也取得到", rt("{{trigger.n}}"), "3");
+  eq("字符串数组用顿号连", rt("{{trigger.files}}"), "a.md、b.md");
+  // **这一条就是那次改动的全部理由**:两种名字空间在同一句话里,一遍解完。
+  eq(
+    "同一句话里两种名字空间一起解",
+    rt("上游是 {{检索.年份}},这次是 {{trigger.at}} 触发的"),
+    "上游是 2024,这次是 2026-09-20 08:00 触发的",
+  );
+  eq("和 params 混着写也行", rt("{{A.params.target}} / {{trigger.kind}}"), "量子 / schedule");
+
+  // **没有载荷**(手动发消息跑的工作流)要说清"这次不是触发器起的" —— 那句话把人
+  // 支去配触发器;报成节点引用("图上没有 trigger 这个节点")只会让人去改图,而图没问题。
+  const noTrig = renderTemplate("{{trigger.at}}", TPL_SCOPE);
+  check(
+    "没有载荷 → 说「不是触发器起的」",
+    !noTrig.ok && noTrig.error.includes("不是触发器起的"),
+    noTrig.ok ? noTrig : noTrig.error,
+  );
+  check(
+    "没有载荷时报的**不是**节点引用那套话",
+    !noTrig.ok && !noTrig.error.includes("图上没有"),
+    noTrig.ok ? noTrig : noTrig.error,
+  );
+
+  // 载荷在、键拼错了 → 把**实际有的**列出来(与 `expandTriggerVars` 同一套话术)。
+  const badKey = renderTemplate("{{trigger.不存在}}", trigScope);
+  check(
+    "键拼错 → 列出载荷里实际有的",
+    !badKey.ok && badKey.error.includes("载荷里没有这一项") && badKey.error.includes("{{trigger.at}}"),
+    badKey.ok ? badKey : badKey.error,
+  );
+}
+
 console.log("\n变量在调度器里真的生效");
 {
   // A → B。B 的指令里引用了 A 的产出,而 B 的提示词里应该出现**解算后**的那句话。

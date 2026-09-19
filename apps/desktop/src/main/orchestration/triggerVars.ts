@@ -11,14 +11,21 @@
  * **同一份实现**,不存在长歪的可能。
  */
 
+import { TRIGGER_REF_NAMESPACE } from "@contracts/nodeTemplate";
+
 /**
  * `{{trigger.<key>}}` —— 参数里引用**这次触发载荷**的写法。与 `{{某步.某变量}}` 同一套
- * 花括号词法,但名字空间不同:它不指向图上任何节点,指向的是触发载荷里那份
+ * 花括号词法,但名字空间不同(见 `@contracts/nodeTemplate` 的
+ * {@link TRIGGER_REF_NAMESPACE}):它不指向图上任何节点,指向的是触发载荷里那份
  * 平面事实(`kind` / `at` / `files` / `event` / `toolName` / `subjects`,见
  * `automationPayload.ts` 的 `TriggerPayloadFacts`)。
  *
  * ⚠️ **哪几种触发带得出哪几个键,判据在 `@contracts/nodeType` 的
  * `triggerFactKeysOf`** —— 界面上「插入变量」列候选用它。这里只认词法,不认识种类。
+ *
+ * ⚠️ **同一个字符串里两种名字空间混着写是常态**,而解算它的是 `renderTemplate` 的
+ * **一次**遍历(`scope.trigger` 那一格,2026-09-20)。这个展开器因此只剩一个用处:
+ * 给 `expandTriggerVars` 的直接调用方(与 `renderTemplate` 共用同一份词法)。
  */
 const TRIGGER_REF_RE = /\{\{\s*trigger\.([A-Za-z0-9_.\-]+?)\s*\}\}/g;
 

@@ -43,7 +43,27 @@ const TYPES = new Map<string, NodeTypeManifest>([
   ["mcode.main", agentManifest("mcode.main")],
   ["mcode.agent", agentManifest("mcode.agent")],
   ["mcode.branch", { id: "mcode.branch", manifestVersion: 1, name: "分支", runner: { kind: "branch" }, capability: "read", params: [] }],
-  ["mcode.trigger", { id: "mcode.trigger", manifestVersion: 1, name: "触发器", runner: { kind: "trigger" }, capability: "read", params: [] }],
+  ["mcode.trigger", {
+    id: "mcode.trigger",
+    manifestVersion: 1,
+    name: "触发器",
+    runner: { kind: "trigger" },
+    capability: "read",
+    // `triggerKind` 这一格是**必须的**:`triggerFactKeysOf` 读它算「能插哪些
+    // `{{trigger.*}}`」,校验器要靠同一份答案放行(见下面 4c 那一段)。`options` 也要给
+    // —— `select` 的取值不在候选里是 `param.invalid`,那条会把 4c 的断言淹掉。
+    params: [{
+      key: "triggerKind",
+      kind: "select",
+      label: "触发方式",
+      options: [
+        { value: "manual", label: "手动" },
+        { value: "schedule", label: "定时" },
+        { value: "file", label: "文件变动" },
+        { value: "event", label: "事件" },
+      ],
+    }],
+  }],
 ]);
 
 /* ── 夹具:文档构造 ── */
@@ -198,6 +218,53 @@ const decideRef = validateWorkflowDoc(
   OPTS,
 );
 check("模型选的分支:下游能取「出路」", !hasCode(decideRef, "ref.unknown-output", "C"), decideRef.errors);
+
+/* ── 4c. `{{trigger.*}}` 是**另一个名字空间**,校验器原来不认识它(2026-09-20) ── */
+
+// 界面「插入变量」菜单按 `triggerFactKeysOf` 列出候选(它读触发器节点上的
+// `triggerKind`),运行时按同一张表解算(`expandTriggerVars`,取不到是硬失败)。
+// 唯独**存盘校验**不认识这个名字空间:它把 `trigger.kind` 拆成节点名 `trigger` 去查表,
+// 报「图上没有「trigger」这个节点」—— 于是**菜单让你插、运行时认,插完却存不下去**。
+const trigOk = validateWorkflowDoc(
+  doc(
+    [
+      node("M", "mcode.main", SAY),
+      node("T", "mcode.trigger", { triggerKind: "schedule" }),
+      node("C", "mcode.agent", { instruction: "上次跑是 {{trigger.at}},方式是 {{trigger.kind}}" }),
+    ],
+    [edge("e1", "T", "C")],
+  ),
+  OPTS,
+);
+check(
+  "触发器载荷里有的 → 放行(菜单插得出来,这里就得过)",
+  !hasCode(trigOk, "ref.unknown-node", "C") && trigOk.ok,
+  trigOk.errors,
+);
+
+// 反面:拼错的键仍然要拦。它不是节点引用,所以话术得说「触发载荷里没有」,
+// 而不是「图上没有这个节点」——后者会把用户支去改图,而图没问题。
+const trigBad = validateWorkflowDoc(
+  doc(
+    [
+      node("M", "mcode.main", SAY),
+      node("T", "mcode.trigger", { triggerKind: "schedule" }),
+      node("C", "mcode.agent", { instruction: "看 {{trigger.不存在的键}}" }),
+    ],
+    [edge("e1", "T", "C")],
+  ),
+  OPTS,
+);
+check("拼错的键 → ref.unknown-trigger-fact", hasCode(trigBad, "ref.unknown-trigger-fact", "C"), trigBad.errors);
+check("拼错的键不再报成「图上没有 trigger 这个节点」", !hasCode(trigBad, "ref.unknown-node", "C"), trigBad.errors);
+
+// 取候选的那一份实现在 `@contracts/nodeType` 的 `triggerFactKeysOf`(界面菜单用的就是它)。
+// 校验器必须用**同一份** —— 自己再列一张表就会长歪:菜单列得出、存盘拦得下。
+check(
+  "校验器与菜单同源(候选里没有的键,两边都不认)",
+  !trigBad.ok && trigOk.ok,
+  { bad: trigBad.errors.map((e) => e.code), ok: trigOk.ok },
+);
 
 // **决定权在用户时不放行** —— 那一项由点选产生,不要求模型交,追进去等于让一个
 // 取不到的写法通过校验。判据同 `outputVarsFor`(只对 `isModelDecider` 追加)。

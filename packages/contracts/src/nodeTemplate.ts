@@ -68,6 +68,20 @@ export interface NodeTemplateScope {
   upstream: ReadonlySet<string>;
   /** 图上所有节点(不止上游)。留着是为了在报错时说清楚"这个节点在,但不是你的上游"。 */
   nodes: readonly NodeTemplateNode[];
+  /**
+   * **这次触发载荷的平面事实**(`{{trigger.<键>}}`),没被触发器起就是 `undefined`。
+   *
+   * 它**不是节点**,所以不走 `upstream` / `nodes` 那两张表 —— 见下面 `resolveOne` 里
+   * 那一段。这一格的存在是因为**同一个字符串里两种名字空间混着写是常态**:
+   * 调度器给的指令是 `"上游是 {{检索.年份}},这次是 {{trigger.at}} 触发的"`,
+   * 而解算这条指令的是**一次** `renderTemplate`。
+   *
+   * ⚠️ 从前这两个名字空间是**两个展开器**(调度器先跑 `expandTriggerVars`、再跑这一支),
+   * 于是整串里只要混了一处 `{{trigger.*}}`,第一个展开器就把这一整串**原样交出去**
+   * (它认不出 `{{检索.年份}}`,只能不碰),第二个展开器再把 `{{trigger.at}}` 当节点名
+   * 报「引用不到」。两个展开器各自都对,拼在一起就是"一个用不了的写法"。
+   */
+  trigger?: Readonly<Record<string, unknown>>;
 }
 
 /** 一次解算的结果。失败时 `error` 是**可以直接显示给用户**的一句话。 */
@@ -75,6 +89,16 @@ export type TemplateResult = { ok: true; text: string } | { ok: false; error: st
 
 /** `{{ ... }}`,中间不含花括号。 */
 const REF_RE = /\{\{([^{}]*)\}\}/g;
+
+/**
+ * `{{trigger.*}}` 的**名字空间**(点号前面那个词),与 `{{某步.某变量}}` 不同源。
+ *
+ * 抽成导出常量是因为它有**四个**消费方,而它们必须给出同一个答案:这里的解算器、
+ * `main/orchestration/triggerVars.ts` 的展开器与词法、存盘校验
+ * (`workflowValidation.ts` 要认出"这不是节点引用"),以及界面上「插入变量」那两句提示。
+ * 各写一遍字符串,改名那天就会漏掉一处 —— 而漏掉的后果是"菜单插得出来、跑起来却解不了"。
+ */
+export const TRIGGER_REF_NAMESPACE = "trigger";
 
 /** 转义后的 `{{` —— 解算时先把它换成这个占位符,最后再换回来。 */
 const ESCAPED_OPEN = "\u0000mcode-lbrace\u0000";
@@ -174,6 +198,30 @@ function resolveOne(
   const dot = spec.indexOf(".");
   const name = (dot < 0 ? spec : spec.slice(0, dot)).trim();
   const field = dot < 0 ? "output" : spec.slice(dot + 1).trim();
+
+  // **`{{trigger.<键>}}` 是另一个名字空间**:它不指向图上任何节点,指向这次触发的载荷。
+  // 所以它在查那两张节点表**之前**就被接走 —— 否则会报成"图上没有 trigger 这个节点",
+  // 那句话会把用户支去改图,而图没问题,该改的是那个键(或者是他还没给这条图配触发器)。
+  if (name === TRIGGER_REF_NAMESPACE) {
+    if (scope.trigger === undefined) {
+      return {
+        ok: false,
+        error: `${where}:引用不到 \`{{${spec}}}\` —— 这次运行不是触发器起的(手动发消息跑的工作流没有触发载荷),所以没有触发器变量可用`,
+      };
+    }
+    if (!Object.prototype.hasOwnProperty.call(scope.trigger, field)) {
+      const have = Object.keys(scope.trigger);
+      return {
+        ok: false,
+        error:
+          `${where}:引用不到 \`{{${spec}}}\` —— 这次触发的载荷里没有这一项` +
+          (have.length > 0
+            ? `,可用的有:${have.map((k) => `{{${TRIGGER_REF_NAMESPACE}.${k}}}`).join("、")}`
+            : "(载荷是空的)"),
+      };
+    }
+    return { ok: true, text: stringify(scope.trigger[field]) };
+  }
 
   if (!scope.upstream.has(name)) {
     // 报错要说清是哪一种:**图上有、但不是你的上游** 和 **图上根本没有**,用户要

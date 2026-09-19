@@ -46,6 +46,7 @@ import {
   BRANCH_NODE_TYPE_ID,
   MAIN_NODE_TYPE_ID,
   isModelDecider,
+  triggerFactKeysOf,
   validateNodeParams,
   type NodeTypeManifest,
 } from "@contracts/nodeType";
@@ -55,6 +56,7 @@ import {
   normalizeVars,
   validateOutputRules,
 } from "@contracts/outputConstraint";
+import { TRIGGER_REF_NAMESPACE } from "@contracts/nodeTemplate";
 
 /* ── schemaVersion(WF-05) ── */
 
@@ -181,6 +183,8 @@ function isMetaField(field: string): boolean {
  * | `ref.ambiguous-title` | error | 引用名同时是多个节点的标题 |
  * | `ref.not-upstream` | error | 引用的节点在图上但不是这一步的上游 |
  * | `ref.unknown-output` | error | 引用的产出变量,上游没声明过 |
+ * | `ref.unknown-trigger-fact` | error | `{{trigger.<键>}}` 里的键不在这次触发方式的载荷里(候选与界面「插入变量」同源:`triggerFactKeysOf`) |
+ * | `ref.reserved-name` | error | 有节点的 id 或标题叫 `trigger` / `user` —— 这两个词分别被触发载荷名字空间和内置字段占了,同名引用会有两种意思 |
  *
  * 不检查 runner.kind 是否在执行器注册表里:执行器注册表带**兜底执行器**
  * (`ExecutionEngine.setDefault`),任何 kind 都有路可跑;类型能不能跑是**类型**的问题,
@@ -384,6 +388,22 @@ export function validateWorkflowDoc(
 
   // "上游"用前进边邻接表算(回边不算依赖)—— 与调度器的求值顺序同一份答案。
   const forward = buildForwardAdjacency(nodes, edges);
+
+  // **`{{trigger.*}}` 是另一个名字空间**,它不指向图上任何节点,指向的是这次触发的载荷
+  // (`expandTriggerVars`,见 `triggerVars.ts`)。候选键在**每一个**触发器节点上算,
+  // 取并集 —— 哪一条触发器起这次运行是运行时的,一份图可以同时挂几种触发。
+  //
+  // ⚠️ **候选必须来自 `triggerFactKeysOf`(界面「插入变量」菜单用的就是它)。** 自己再
+  // 列一张表就会长歪:菜单列得出、这里拦得下 —— 而这一条踩过:原先这个名字空间在这里
+  // **完全没被认出来**,`trigger.kind` 被拆成节点名 `trigger` 去查表,报
+  // 「图上没有「trigger」这个节点」。症状是**菜单让你插、运行时也认、插完存不下去**。
+  const triggerFacts = new Set<string>();
+  for (const node of nodes) {
+    const manifest = manifestOf(node);
+    if (manifest?.runner.kind !== "trigger") continue;
+    for (const key of triggerFactKeysOf(node.params)) triggerFacts.add(key);
+  }
+
   for (const node of nodes) {
     const upstream = upstreamClosure(forward.deps, node.id);
     for (const text of stringValuesOf(node.params)) {
@@ -399,6 +419,45 @@ export function validateWorkflowDoc(
         const field = dot < 0 ? "output" : spec.slice(dot + 1).trim();
         if (name.length === 0) {
           fail({ code: "ref.empty", nodeId: node.id, message: `节点「${labelOf(node)}」里有一处引用没写节点名:\`{{${spec}}}\`` });
+          continue;
+        }
+
+        // **触发器载荷**(`{{trigger.<键>}}`):在节点表里查之前先认它。
+        //
+        // 它**不属于任何节点**,所以既不该报「不是上游」也不该报「没有这个产出」——
+        // 那些话会把用户支去改图,而图没问题,该改的是那个键。
+        if (name === TRIGGER_REF_NAMESPACE) {
+          if (!triggerFacts.has(field)) {
+            const have = [...triggerFacts];
+            fail({
+              code: "ref.unknown-trigger-fact",
+              nodeId: node.id,
+              message:
+                `节点「${labelOf(node)}」要取 \`{{${spec}}}\` —— 触发载荷里没有这一项` +
+                (have.length > 0
+                  ? `,可用的有:${have.map((k) => `{{trigger.${k}}}`).join("、")}`
+                  : "(这张图上没有可用的触发器事实 —— 图里一个「触发器」节点都没有)"),
+            });
+          }
+          continue;
+        }
+
+        // **保留名**:`{{trigger.*}}` 是触发载荷那个名字空间,`{{user}}` 是内置字段。
+        // 一个 id 或标题叫这两个词的**普通节点**,会让同名引用有两种意思 —— 而两种
+        // 判据必然打架:校验按节点解,运行时 `expandTriggerVars`(或 `{{user}}`)先接手。
+        // 于是校验放行的图跑起来报「触发载荷里没有它」/「引用不到」。
+        //
+        // 拦在**引用处**而不是"拦在起名处"是一个取舍:起名的入口有两个(界面 `addNode`
+        // 现生成的 id、AI 通过 MCP 建图时自己写的 id),拦引用处一处就够,而且存量
+        // 坏图(已经起了这个名)在新代码下也会被明确拦下、而不是安静地跑歪。
+        if (name === TRIGGER_REF_NAMESPACE || name === "user") {
+          fail({
+            code: "ref.reserved-name",
+            nodeId: node.id,
+            message:
+              `有节点的 id 或标题是 \`${name}\` —— ${name === "user" ? "`{{user}}` 是内置字段:用户这次发的请求" : "`{{trigger.*}}` 是触发载荷的名字空间"},` +
+              `这个名字被它占了。把那个节点的 id 或标题改掉。`,
+          });
           continue;
         }
 
