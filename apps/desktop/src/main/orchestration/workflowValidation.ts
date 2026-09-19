@@ -35,8 +35,10 @@ import {
   WorkflowDocSchema,
   backEdgesOf,
   buildForwardAdjacency,
+  edgeOptionNameOf,
   isLoopGateNode,
   upstreamClosure,
+  workflowNodeRefName,
   type WorkflowDoc,
   type WorkflowNode,
   type WorkflowValidationIssue,
@@ -175,7 +177,9 @@ function isMetaField(field: string): boolean {
  * | `graph.no-main-node` | error | 工作流一个主节点(主代理 `mcode.main`)都没有 —— 它是用户对话的入口,缺了这张图就没有"用户那一头"。**只查普通工作流**(有 `trigger` 的自动化不查,它的入口是触发器) |
  * | `graph.multiple-main-nodes` | error | 主节点超过一个 —— 只能有一个,多一个就说不清用户那句话听谁的 |
  * | `graph.no-trigger-node` | error | 自动化一个触发器都没有。从前这是**静默降级**(`deriveTrigger` 悄悄删掉 `trigger` 字段、当成普通工作流存),现在明确拒绝 |
+ * | `graph.trigger-has-in-edge` | warning | 有边连进触发器。触发器是起点、不接上游,运行时那条边**等于不存在**(被触发的那个由 `entry` 直接预置成成功)。只提醒不拦,理由同 `graph.orphan-node` |
  * | `branch.no-options` | error | 分支节点一条出边都没有 —— 选项就是出边,没得出可选 |
+ * | `branch.duplicate-option` | error | 分支有两条出边算出同一个选项名。模型选完要拿**名字**回来对上边(见 `applyDecision`),重名就没人对得上 —— 判据是与调度器同一份的 `edgeOptionNameOf`,没填 `label` 的边也算 |
  * | `node.unknown-kind` | 见 opts | 节点类型不在注入的清单里(存盘=warning,导入=error) |
  * | `param.missing` / `param.invalid` | error | 参数对类型清单不合规(必填缺失/形状不对) |
  * | `ref.empty` | error | 空引用 `{{}}` |
@@ -333,6 +337,41 @@ export function validateWorkflowDoc(
     }
   }
 
+  // **触发器不接上游 —— 有边连进去要说出来。**
+  //
+  // 它是自动化的**起点**:它不跑东西、也不等谁(`@contracts/nodeType` 与 `nodeTypes.ts`
+  // 的说明都写着这一条)。而**运行时就是这么做的**:被触发的那个由 `entry` 直接预置成
+  // 成功(见 `scheduler.ts` 里 `entry.nodeId` 那一段),**根本不看它的入边**;同一张图上
+  // 其余触发器一律标 `unselected`。
+  //
+  // 于是给触发器连一条入边,画布上看着像"上游跑完它才起",运行时那条边**等于不存在**。
+  // 这正是"坏东西要显式报出来"该管的:图的样子和实际行为对不上,而界面上看不出来。
+  //
+  // ⚠️ **只提醒不拦**,理由同 `graph.orphan-node`:保存闸门不能比旧语义更严 —— 存量图里
+  // 可能真有这种边,拦下会让它突然存不回去,而它本来跑得好好的(那条边被忽略而已)。
+  // 报出来是为了让画图的人知道那条线没用,不是为了罚他。
+  {
+    const inEdgesOf = new Map<string, string[]>();
+    for (const edge of edges) {
+      const list = inEdgesOf.get(edge.to);
+      if (list === undefined) inEdgesOf.set(edge.to, [edge.id]);
+      else list.push(edge.id);
+    }
+    for (const node of nodes) {
+      if (manifestOf(node)?.runner.kind !== "trigger") continue;
+      const incoming = inEdgesOf.get(node.id);
+      if (incoming === undefined || incoming.length === 0) continue;
+      hint({
+        code: "graph.trigger-has-in-edge",
+        nodeId: node.id,
+        message:
+          `触发器「${labelOf(node)}」有 ${incoming.length} 条边连进来,但触发器不接上游 —— ` +
+          "什么时候起一次运行由它自己说(定时/文件变化/事件发生时),上游跑没跑完跟它没关系。" +
+          "这几条边不会生效:删掉它们,或者把上游接到触发器**下面**那一步上。",
+      });
+    }
+  }
+
   /* ── 节点类型与参数 ── */
 
   for (const node of nodes) {
@@ -349,14 +388,45 @@ export function validateWorkflowDoc(
 
   // 分支节点的**选项就是它的出边**(contracts 的 edge 模型):一条出边都没有 = 没得出
   // 可选,这一步必然卡死。反过来(普通边带 label "填了不显示")契约层明确不拦,这里也不拦。
+  //
+  // **选项名字不许重。** 模型选的那条路要在产出里交出「出路」(值 = 他选的那条边的名字,
+  // 见 `@contracts/outputConstraint` 的 `DECIDE_VAR_NAME`),调度器拿**名字**回来对上边
+  // (见 `applyDecision`)。两个选项同名的话,"他选了「通过」"这句话对应哪条边有两种答案
+  // —— 而且它不会报错,只会挑一条。用户选的那条虽然不走名字(走边的 id),但画布上两个
+  // 一样的按钮本身就没法点。
+  //
+  // 判据用**和调度器同一个**:`@contracts/workflow` 的 `edgeOptionNameOf`(边没填 `label`
+  // 时兜底成"目标标题 ‖ 类型 id",那个函数的注释里有一张表,列着这条规则原来散成五份、
+  // 其中两份算出的**不是同一个词**的历史)。这里自己再写一遍就会长歪 —— 而歪的后果正是
+  // 上面说的那件事:校验放行的图,模型交回来的名字对不上边。
   for (const node of nodes) {
     const manifest = manifestOf(node);
     const isBranch = manifest ? manifest.runner.kind === "branch" : node.type === BRANCH_NODE_TYPE_ID;
-    if (isBranch && !edges.some((e) => e.from === node.id)) {
+    const out = edges.filter((e) => e.from === node.id);
+    if (isBranch && out.length === 0) {
       fail({
         code: "branch.no-options",
         nodeId: node.id,
         message: `分支「${labelOf(node)}」一条出边都没有 —— 选项就是它的出边,从它拉几根线到下一步才有路可选`,
+      });
+    }
+    if (!isBranch || out.length < 2) continue;
+    const byLabel = new Map<string, string[]>();
+    for (const edge of out) {
+      const label = edgeOptionNameOf(edge, doc, workflowNodeRefName);
+      const list = byLabel.get(label);
+      if (list === undefined) byLabel.set(label, [edge.id]);
+      else list.push(edge.id);
+    }
+    for (const [label, edgeIds] of byLabel) {
+      if (edgeIds.length < 2) continue;
+      fail({
+        code: "branch.duplicate-option",
+        nodeId: node.id,
+        message:
+          `分支「${labelOf(node)}」有两个选项都叫「${label}」(${edgeIds.join("、")})—— ` +
+          "选项名字是模型选完路之后**报回来的凭据**,重名的话「它选了哪一个」就没人对得上边了。" +
+          "给其中一条改个名字,或者把两条合成一条。",
       });
     }
   }

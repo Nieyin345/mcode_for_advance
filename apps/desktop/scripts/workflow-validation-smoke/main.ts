@@ -266,6 +266,109 @@ check(
   { bad: trigBad.errors.map((e) => e.code), ok: trigOk.ok },
 );
 
+/* ── 4d. 触发器不接上游 —— 有条边连进去要说出来(2026-09-20) ── */
+
+// 触发器是自动化**起点**:它不跑东西、也不等谁。`@contracts/nodeType` 与
+// `nodeTypes.ts` 的说明都写着这一条,而**运行时就是这么做的** —— 被触发的那个由
+// `entry` 直接预置成成功(见 `scheduler.ts` 里 `entry.nodeId` 那一段),**根本不看
+// 它的入边**;其余触发器一律标 `unselected`。
+//
+// 于是给触发器连一条入边,界面看着像"上游跑完它才起",运行时那条边**等于不存在**。
+// 这是"坏东西要显式报出来"的典型:图的样子和实际行为对不上,而看不出来。
+//
+// ⚠️ **只提醒不拦**(warning),理由同 `graph.orphan-node`:保存闸门不能比旧语义更严
+// —— 存量图里可能真有这种边,拦下会让它存不回去,而它本来跑得好好的(边被忽略而已)。
+const triggerInEdge = validateWorkflowDoc(
+  doc(
+    [
+      node("M", "mcode.main", SAY),
+      node("T", "mcode.trigger", { triggerKind: "schedule" }),
+      node("C", "mcode.agent", SAY),
+    ],
+    [edge("e1", "M", "T"), edge("e2", "T", "C")],
+  ),
+  OPTS,
+);
+check(
+  "有边连进触发器 → 提醒(这条边不会生效)",
+  triggerInEdge.warnings.some((w) => w.code === "graph.trigger-has-in-edge" && w.nodeId === "T"),
+  { errors: triggerInEdge.errors, warnings: triggerInEdge.warnings },
+);
+check("而且不拦(存量图照存)", triggerInEdge.ok, triggerInEdge.errors);
+
+// 反面:边从触发器**出去**是正常的(它的下游就该这么接),不能连这个也一起报。
+check(
+  "触发器往下游的边照常(不误报)",
+  !triggerInEdge.warnings.some((w) => w.nodeId === "C" && w.code === "graph.trigger-has-in-edge"),
+  triggerInEdge.warnings,
+);
+
+/* ── 4e. 分支的选项不许重名(2026-09-20) ── */
+
+// 模型选的那条路要在产出里交出「出路」(值 = 那条边的**名字**),调度器拿名字回来对上边
+// (见 `applyDecision`)。两个选项同名 = "他选了「通过」"对应哪条边有两种答案,而它不会
+// 报错,只会挑一条。用户选的那条虽然走边的 id,但画布上两个一样的按钮也没法点。
+const dupOpt = validateWorkflowDoc(
+  doc(
+    [
+      node("A", "mcode.main", SAY),
+      node("BR", "mcode.branch", { decider: "model" }),
+      node("C1", "mcode.agent", SAY),
+      node("C2", "mcode.agent", SAY),
+    ],
+    [
+      edge("e1", "A", "BR"),
+      { ...edge("e2", "BR", "C1"), label: "通过" },
+      { ...edge("e3", "BR", "C2"), label: "通过" },
+    ],
+  ),
+  OPTS,
+);
+check("两个选项同名 → branch.duplicate-option", hasCode(dupOpt, "branch.duplicate-option", "BR"), dupOpt.errors);
+
+// 反面:名字不一样就放行。这条同时盯"别把整块改坏"。
+const okOpt = validateWorkflowDoc(
+  doc(
+    [
+      node("A", "mcode.main", SAY),
+      node("BR", "mcode.branch", { decider: "model" }),
+      node("C1", "mcode.agent", SAY),
+      node("C2", "mcode.agent", SAY),
+    ],
+    [
+      edge("e1", "A", "BR"),
+      { ...edge("e2", "BR", "C1"), label: "通过" },
+      { ...edge("e3", "BR", "C2"), label: "驳回" },
+    ],
+  ),
+  OPTS,
+);
+check("名字不同 → 放行", !hasCode(okOpt, "branch.duplicate-option", "BR"), okOpt.errors);
+
+// **没填 `label` 的边也要能撞上。** 判据是 `edgeOptionNameOf` —— 它给没填 label 的边
+// 兜底一个名字(目标标题 ‖ 类型 id)。两条边都指向**同名**节点、又都没填 label,
+// 兜底出来的就是同一个词,一样对不上边。
+//
+// 这一条是**同源检查**:校验器要是自己写一遍"没 label 就取标题",两处迟早分家,
+// 而分家的表现正是上面那句 —— 校验放行的图,模型交回的名字对不上。
+const dupFallback = validateWorkflowDoc(
+  doc(
+    [
+      node("A", "mcode.main", SAY),
+      node("BR", "mcode.branch", { decider: "model" }),
+      node("C1", "mcode.agent", SAY, "同名"),
+      node("C2", "mcode.agent", SAY, "同名"),
+    ],
+    [edge("e1", "A", "BR"), edge("e2", "BR", "C1"), edge("e3", "BR", "C2")],
+  ),
+  OPTS,
+);
+check(
+  "没填 label、但兜底出来的名字撞了 → 同样报",
+  hasCode(dupFallback, "branch.duplicate-option", "BR"),
+  dupFallback.errors,
+);
+
 // **决定权在用户时不放行** —— 那一项由点选产生,不要求模型交,追进去等于让一个
 // 取不到的写法通过校验。判据同 `outputVarsFor`(只对 `isModelDecider` 追加)。
 const userDecideRef = validateWorkflowDoc(
