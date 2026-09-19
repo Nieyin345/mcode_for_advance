@@ -12,8 +12,8 @@
  * | 触发方式 | 怎么挂 | 不变量 |
  * |---|---|---|
  * | 手动 | **什么都不挂** —— 只在列表上点「立刻运行一次」时找得到它 | —— |
- * | 定时 | 一个**全局 30 秒只读 ticker**(`unref`),把全部定时触发器的 cron 求一遍 | 应用没开就不触发;错过的时间点**不补跑**(D13);同一分钟只跑一次(见 `onTick`) |
- * | 文件变化 | 每个**项目目录只 `fs.watch(dir, {recursive:true})` 一次**,多个触发器共享(同 `lib/walkCache.ts`) | 事件先等 `WATCH_SETTLE_MS` 再按各自的合并窗口收口;目录不存在要**记日志**,不静默 |
+ * | 定时 | 一个**全局 30 秒只读 ticker**(`unref`),把全部定时触发器的 cron 求一遍 | 应用没开就不触发;错过的时间点**不补跑**(D13);同一分钟只跑一次,而这条记忆**跨重启**(见 `onTick` / `rememberLastMinute`) |
+ * | 文件变化 | 每个**项目目录只 `fs.watch(dir, {recursive:true})` 一次**,多个触发器共享(同 `lib/walkCache.ts`) | 事件先等 `WATCH_SETTLE_MS` 再按各自的合并窗口收口;载荷里**只留还存在的文件**(见 `existingFilesOf`);目录不存在要**记日志**,不静默 |
  * | 事件发生时 | 复用既有事件流 + `HOOK_EVENT_OF` + `createEventSubjects()` | **不忽略来自本自动化自己会话的事件**(见下) |
  *
  * ## 事实状态(AUTO-09)
@@ -39,7 +39,7 @@
  * 事后唯一读得到的东西。
  */
 
-import { watch, type FSWatcher } from "node:fs";
+import { existsSync, watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import { cronMatches } from "@contracts/cron";
 import { HOOK_EVENT_OF, eventItemFactsOf, matchesAnyGlob, matchesGlobList, type HookEvent } from "@contracts/hook";
@@ -60,7 +60,7 @@ import type { Session } from "@contracts/session";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { createEventSubjects, fileSubjects } from "@main/hooks/eventSubjects.js";
 import { log } from "@main/lib/logger.js";
-import { ProjectRepo, SessionRepo } from "@main/store/repositories.js";
+import { ProjectRepo, SessionRepo, SettingRepo } from "@main/store/repositories.js";
 import { uid } from "@main/utils.js";
 import { describeTriggerPayload, mergeEventPayload, payloadFactsOf, type TriggerPayload } from "./automationPayload.js";
 import {
@@ -102,6 +102,87 @@ const TICK_MS = 30_000;
  * `debounceMs: 0`(用户明确要求"每次都跑")那条配置会对着半个文件跑一次。
  */
 const WATCH_SETTLE_MS = 300;
+
+/**
+ * 「这一条定时触发器上一次是在哪一分钟跑的」存在这个 settings 键下。
+ *
+ * ## 为什么必须落盘
+ *
+ * 这条记忆原本是执行器里一个 Map(`lastMinute`),**应用一关就没了**。而它要挡的那件
+ * 事恰恰发生在重启那一下:去重只对「最近这个分钟已经跑过」生效(`shouldFireThisMinute`),
+ * 记忆一没,重启后那一跳看到的就是「本分钟没见过」—— 于是**同一分钟里的第二个进程**
+ * 又跑一次。症状是「每次开应用,那个「每分钟一次」的自动化就额外多跑一次」,而日志里
+ * 两次运行的时间戳只差几秒,看不出是哪来的。
+ *
+ * ## 为什么存 settings,不是新开一张表
+ *
+ * 形状是**一张小映射**(`触发器的 key → 分钟序号`),不是"一次运行的存档" —— 与
+ * `browser.addressHistory` / `browser.bookmarks` 同一类东西,那两处都走 `SettingRepo`。
+ * 开一张新表要动 `store/db.ts`(建表 + 迁移)再加一个 Repo,而换来的只是"能按列查" ——
+ * 这里没有任何按列查的需求(每次都是整张读进来、整张写回去)。
+ *
+ * ⚠️ **`SettingRepo.set` 内部会 `persist()`(重写整个数据库文件)**,所以这张表必须
+ * 按分钟变一次才写、值没变就不写 —— 按 tick(30 秒)无条件写就是每天几万次整库重写,
+ * 见 `rememberLastMinute`。
+ *
+ * 键名沿用 `automation.watch.templates` 那种 `automation.` 前缀(按模块分空域),不插进
+ * contracts 的 `*_SETTING_KEY` 那一堆 —— 那边是**界面也要读**的偏好项;这一份是执行器
+ * 的内部状态,没有第二个读者,放这儿离用它的人最近。
+ */
+const LAST_MINUTE_SETTING_KEY = "automation.lastMinute";
+
+/**
+ * 落盘的那张表最多留多少条。
+ *
+ * **上限类逻辑的坑在追加那一侧**:一条跑过几百个定时触发器的机器,这张表会一直涨
+ * (删掉的触发器换一个 key 就再进一条),而 `persist()` 是重写整库 —— 没人修剪的话它
+ * 一辈子只增不减。60 条是"每一条活跃的定时触发器都留得下"的粗估(定时触发器通常个位数),
+ * 超出的按**最久没跑过**的丢。
+ */
+const LAST_MINUTE_KEEP = 60;
+
+/**
+ * 落盘那份能读的判据。读不回来**不抛**,当空表 —— 见 `readLastMinutes`。
+ */
+function isLastMinutes(raw: unknown): raw is Record<string, number> {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
+  return Object.entries(raw).every(
+    ([key, value]) => key.length > 0 && typeof value === "number" && Number.isFinite(value),
+  );
+}
+
+/**
+ * 文件触发那一路:一个**刚被创建、还没来得及写完**的文件不该被当成"不存在"。
+ *
+ * 症状(问题 2):`fs.watch` 的 `rename` 事件同时覆盖新建与删除,载荷里于是可能带着一个
+ * **已经被删掉的路径**,模型拿着它去读,得到"文件不存在";而它本该去办的是这一批里
+ * 别的文件 —— 一个不存在的路径不会让运行失败,只是**悄悄少办一件事**。
+ *
+ * ## 取舍:判"此刻在不在",不判"这个事件是新建还是删"
+ *
+ * 不判方向是因为 `fs.watch` 给不出方向 —— `rename` 对新建、删除、改名一律是
+ * `"rename"`。而"文件此刻在不在"是这件事里唯一确定的事实。
+ *
+ * 为什么不误伤**刚创建、还没来得及写完**的那个:文件节点在创建那一刻就存在了(写内容
+ * 发生在后面),所以 `existsSync` 当场是 true,不会被丢掉。真正会漏掉的只有"创建后在
+ * 合并窗口内又被删掉"的那种 —— 而那种本来就不该跑。
+ *
+ * ## 为什么问两遍(事件到达时 + flush 前)
+ *
+ * 两边管的是不同的缝:
+ *
+ *  - **事件到达时**(`onFsChange`)决定"这一次要不要攒起来"。拦在这里,一次纯删除不会
+ *    攒出一次**空载荷**的运行(模型被叫起来却没有任何要办的事)。
+ *  - **flush 前**(`rearm`)管攒着的那几秒里被删掉的路径 —— 那期间文件可能又没了,
+ *    而载荷是按 flush 那一刻现拼的。
+ *
+ * 代价(明说):一个文件被删除到 flush 之间的删除事件**不会**让已经攒着的那一次取消,
+ * 它只是从载荷里消失 —— 如果整批都这样,这次运行带着空载荷照跑。要更严就得在"攒着的
+ * 那几秒里全空了"时把这一次整个丢掉,那会让"新建 + 改动"变成"删掉一半"的正常批被吞。
+ */
+function existingFilesOf(files: readonly string[]): string[] {
+  return files.filter((file) => existsSync(file));
+}
 
 /** 一条自动化的**触发条件(已解好)** —— 执行器要的全部信息。 */
 interface LoadedTrigger {
@@ -164,7 +245,13 @@ class AutomationRunner {
   private watchers = new Map<string, WatcherEntry>();
   /** 攒着的触发:key 是 `workflowId:nodeId`。 */
   private pendingFires = new Map<string, PendingFire>();
-  /** 定时那一类**这一分钟跑过没有**(见 `onTick`)。 */
+  /**
+   * 定时那一类**这一分钟跑过没有**(见 `onTick`)。
+   *
+   * 存在**磁盘上**(`LAST_MINUTE_SETTING_KEY`),不是进程里 —— 重启之后同一个分钟要
+   * 接着认得出「这一分钟已经跑过了」,否则开一次应用就多跑一次。读进来一次(`start`),
+   * 之后这一份就是内存里的真相,写由 `rememberLastMinute` 负责(它按分钟落一次盘)。
+   */
   private lastMinute = new Map<string, number>();
   /** 每条自动化连续 reload 的序号,防止慢的那次覆盖快的那次。 */
   private reloadSeq = new Map<string, number>();
@@ -202,6 +289,12 @@ class AutomationRunner {
         log.warn(`[automation] 重读「${workflowId}」失败:${(err as Error).message}`);
       });
     });
+
+    // **把上一次进程留下的"哪一分钟跑过"读回来。** 这一步必须在 ticker 起来**之前**
+    // 做 —— 反过来的话,第一跳就会把重启前那一分钟当成"没见过",于是同分钟跑第二次,
+    // 而那次多跑正是要挡的东西。读失败不是致命的:`readLastMinutes` 内部兜成空表,
+    // 退化成"重启后可能多跑一次"的老行为。
+    this.lastMinute = this.readLastMinutes();
 
     this.ticker = setInterval(() => {
       try {
@@ -306,7 +399,13 @@ class AutomationRunner {
     for (const key of [...this.lastMinute.keys()]) {
       if (!key.startsWith(`${workflowId}:`)) continue;
       const still = triggers.some((t) => triggerKey(t) === key);
-      if (!still) this.lastMinute.delete(key);
+      if (still) continue;
+      this.lastMinute.delete(key);
+      // **删掉的这一笔要落盘**(与 `onTick` 记的那一笔是同一个道理):不落的话重启
+      // 之后它又会被 `readLastMinutes` 读回来,而那时这张表里已经没有这条触发器了 ——
+      // 它只是白占一格,直到被 `LAST_MINUTE_KEEP` 修剪掉。落一下更省事,也让它不再
+      // 有可能撞上一个**新**触发器(节点 id 被复用时 key 会一样)。
+      this.rememberLastMinute(key, null);
     }
   }
 
@@ -515,9 +614,93 @@ class AutomationRunner {
       if (!cronMatches(trigger.spec.cron, now)) continue;
       const key = triggerKey(trigger);
       // **同一分钟只跑一次**(30 秒一跳会看两次)。不去重的话 `*/1 * * * *` 一分钟两次。
+      // 这条记忆**跨重启**(见 `lastMinute` 的说明):重启后那一跳看到的还是"本分钟
+      // 已经跑过",所以不会因为开了一次应用而多跑一次。
       if (!shouldFireThisMinute(this.lastMinute.get(key), minute)) continue;
-      this.lastMinute.set(key, minute);
+      this.rememberLastMinute(key, minute);
       this.fire(trigger, { kind: "schedule", at: now.getTime() });
+    }
+  }
+
+  /**
+   * 记下「这一条定时触发器刚刚在这一分钟跑过」,并把这张表落到磁盘(见
+   * `LAST_MINUTE_SETTING_KEY`)。
+   *
+   * `minute` 给 `null` = 这条触发器没了(被删 / 改了触发方式),把它那一格抹掉。
+   *
+   * ## 为什么值没变就不写
+   *
+   * ticker 是 30 秒一跳,而 `SettingRepo.set` 内部会 `persist()` —— **重写整个数据库
+   * 文件**。每条定时触发器每个 tick 都写一次的话,一台挂十条定时自动化的机器就是每天
+   * 近三万次整库重写,而这表里绝大多数时候一个字都没变(同一分钟里第二跳的 `minute`
+   * 与第一跳完全相同)。所以这里只在**真的变了**的时候落盘,而"变了"按分钟算 ——
+   * 一秒最多一次,而且只发生在确实起了一次运行的那一刻(`onTick` 调的这条路)。
+   */
+  private rememberLastMinute(key: string, minute: number | null): void {
+    if (minute === null) {
+      if (!this.lastMinute.has(key)) return;
+      this.lastMinute.delete(key);
+    } else {
+      if (this.lastMinute.get(key) === minute) return;
+      this.lastMinute.set(key, minute);
+    }
+    this.writeLastMinutes();
+  }
+
+  /**
+   * 把 `lastMinute` 写进 settings。**写不进去只记一行日志** —— 这一份坏掉不该让
+   * 定时触发整个停摆(它只影响"重启后可能多跑一次"这一种退化)。
+   *
+   * ## 上限是给谁准备的
+   *
+   * 上限之所以必要:`persist()` 重写整库,而 `apply` 只清"这个工作流里没了的那条触发器
+   * 的 key"(那一路是按 reload 走的)。**整个工作流被删掉**时它的那些 key 就再没人来清
+   * —— 启动时的 `reloadAll` 只遍历现在还在的工作流。一条 old key 本身无害(它只在"新建
+   * 的触发器恰好复用了同一个 `workflowId:nodeId`"时才会误吞一次,而那些 id 都是 `uid()`
+   * 现生成的),但攒着就是白占一次整库重写的字节。所以修剪放在写入前,按"最久没跑过"丢。
+   */
+  private writeLastMinutes(): void {
+    try {
+      // 超过上限时丢**最久没跑过**的那几条 —— 近期跑过的那些才是去重要用的。
+      const rows = [...this.lastMinute.entries()].sort((a, b) => b[1] - a[1]);
+      const kept = rows.slice(0, LAST_MINUTE_KEEP);
+      if (kept.length < rows.length) {
+        // **内存那一份也跟着收窄**,不只是写出去的那一份 —— 否则被丢掉的 key 还在
+        // 内存里挡着,下一次同分钟的那一条会被它吞掉(落盘与内存分家是这一处最容易
+        // 出的错)。
+        this.lastMinute = new Map(kept);
+      }
+      SettingRepo.set(LAST_MINUTE_SETTING_KEY, JSON.stringify(Object.fromEntries(kept)));
+    } catch (err) {
+      log.warn(`[automation] 定时去重表写不进去(重启后同一分钟可能多跑一次):${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * 读回上一次进程留下的那张表。**读不回来当空表**,不抛(同 `db.ts` 的 `persist`
+   * 与 `automationStatus` 的读法:执行器启动时的一处坏数据不该让整个自动化挂不上)。
+   *
+   * ⚠️ **`SettingRepo.get` 在库还没就绪时会抛**(`getDb()` 的"called before initDb
+   * resolved")。本执行器由 `main/index.ts` 在 `awaitDb()` 之后才 `start()`,所以正常
+   * 走到这里是就绪的;但这条读被包在 try 里,是为了让"顺序被改动过"这件事表现为
+   * "重启后可能多跑一次",而不是让整个 `start()` 炸掉、所有触发器一条都不挂。
+   */
+  private readLastMinutes(): Map<string, number> {
+    try {
+      const raw = SettingRepo.get(LAST_MINUTE_SETTING_KEY);
+      if (raw === null || raw.length === 0) return new Map();
+      const parsed: unknown = JSON.parse(raw);
+      if (!isLastMinutes(parsed)) {
+        // setting 是用户数据,可能被手改坏 —— 坏的一整份丢掉(与 `loadWatchTemplates`
+        // 逐条过 schema 同一个立场,只是这里没有"坏的那一条还能用"这回事:
+        // 一格坏值就让整张表当空,代价只是重启后可能多跑一次)。
+        log.warn("[automation] 定时去重表读不回来(形状不对),当空表");
+        return new Map();
+      }
+      return new Map(Object.entries(parsed));
+    } catch (err) {
+      log.warn(`[automation] 定时去重表读不回来,当空表:${(err as Error).message}`);
+      return new Map();
     }
   }
 
@@ -532,6 +715,21 @@ class AutomationRunner {
       // 用户写下的是 `src/*.ts` 还是 `*.ts`,两种都有)。
       const subjects = fileSubjects([abs], trigger.cwd);
       if (!trigger.spec.globs.some((glob) => subjects.some((s) => matchesGlobList(glob, s)))) continue;
+      // **删掉的文件不进载荷**(问题 2,取舍见 `existingFilesOf`)。`fs.watch` 的 `rename`
+      // 事件同时覆盖新建与删除,而这里**从前不区分** —— 于是删掉的路径也会进去,模型去读
+      // 一个不存在的文件。
+      //
+      // 判**存在性**而不是"这个事件是新建还是删除":`fs.watch` 给的那个 `eventType` 对
+      // 新建 / 删除 / 改名一律是 `"rename"`,拿它判方向必然漏掉改名;而"文件此刻在不在"
+      // 是这件事里唯一确定的事实。
+      //
+      // 顺序是**先 glob 后问盘**:glob 是纯字符串比,`existsSync` 是一次系统调用 ——
+      // 项目里绝大多数事件都匹配不上任何一条 glob(编译产物、临时文件),那些走不到 stat。
+      //
+      // 拦在这一层的收益是**这一次运行压根不起**:只在载荷那一侧过滤的话,一个"文件被删"
+      // 的事件照样会攒起一次运行,载荷却是空的 —— 模型被叫起来却没有任何要办的事。
+      // flush 时还会再问一遍(见 `rearm`),管的是攒着这几秒里被删掉的那些。
+      if (!existsSync(abs)) continue;
       const pending = this.pendingOf(trigger);
       if (!pending.files.includes(abs)) pending.files.push(abs);
       this.rearm(pending, WATCH_SETTLE_MS + trigger.spec.debounceMs);
@@ -801,7 +999,11 @@ class AutomationRunner {
       const trigger = this.findLoaded(pending.trigger) ?? pending.trigger;
       const payload =
         trigger.spec.kind === "file"
-          ? ({ kind: "file", files: [...pending.files] } as const)
+          // **载荷按 flush 这一刻现拼,并丢掉此刻已经不在了的那些**(见 `existingFilesOf`)。
+          // 攒着的那几秒里文件可能又被删掉 —— 事件到达时判过一次,这里再判一次,管的是
+          // 那一段。`pending.files` 本身**不动**:留着它,下一次 flush 时那些路径要是又
+          // 回来了(重命名来回、编辑器"写临时文件再改名"那种)就还在。
+          ? ({ kind: "file", files: existingFilesOf(pending.files) } as const)
           : (pending.event ?? { kind: "manual" });
       this.fire(trigger, payload);
     }, Math.max(0, delayMs));

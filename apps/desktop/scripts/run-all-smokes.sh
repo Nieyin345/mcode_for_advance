@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# 全量 smoke。**改一处小东西时别跑这个** —— 跑覆盖那几套就够了:
+#
+#   bash apps/desktop/scripts/smokes-for.sh <改动的文件>      # 哪几套覆盖它
+#   bash apps/desktop/scripts/smokes-for.sh --all             # 全部文件→套件 的映射
+#
+# 全量留给"提交前"和"改动跨了模块"这两件事。它慢,而每个小改动都等它几分钟的代价
+# 不是时间本身 —— 是人开始攒着改,而攒着改是 bug 的温床。
+
 # 一次跑完所有 headless smoke(suite 失败不影响后面的继续跑)。
 #
 # 每个套件的输出留在 /tmp/smoke_<name>.log,控制台只打一行结果,失败时贴最后几行。
