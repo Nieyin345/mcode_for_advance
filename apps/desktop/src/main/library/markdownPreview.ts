@@ -3,16 +3,17 @@
  *
  * ## 为什么必须由主进程读
  *
- * 渲染进程在沙箱里**没有 fs**。而 MinerU 产出的正文里写的是 `![](images/1.jpg)`
+ * 渲染进程在沙箱里**没有 fs**。而带图产物的正文里写的是 `![](images/1.jpg)`
  * 这种**相对路径** —— 渲染端连它相对于哪个目录都不知道,更别说读字节了。所以这里
  * 一次把正文与图片(base64 data URL)一起交出去,渲染端不需要二次往返。
  *
  * ## 图片只认 md 同目录子树里的
  *
- * `![]()` 里的路径是从**文件内容**里解析出来的,不是我们拼的。虽然目前的 md 都由
- * MinerU/pdf.js 生成,但把它当**不可信输入**处理是应有的姿态:解析出的绝对路径必须
- * 落在 md 所在目录的内部,越界的一律跳过并计入 `skippedImages`。否则一段构造过的
- * md 就能把机器上任意文件读成 data URL。
+ * `![]()` 里的路径是从**文件内容**里解析出来的,不是我们拼的。这些 md 现在多半是
+ * **外部工具转完挂回来的**(`library_adopt_markdown`),内容更是够不着的东西;
+ * 即便它出自本地 pdf.js,把它当**不可信输入**处理也是应有的姿态:解析出的绝对路径
+ * 必须落在 md 所在目录的内部,越界的一律跳过并计入 `skippedImages`。否则一段构造过
+ * 的 md 就能把机器上任意文件读成 data URL。
  *
  * ## 为什么要报「跳过了几张图」
  *
@@ -80,7 +81,7 @@ function inlineImage(absMdDir: string, ref: string): string | null {
   const mime = IMAGE_MIME[extname(ref).toLowerCase()];
   if (!mime) return null;
 
-  // 百分号编码的路径(MinerU 偶尔给中文文件名做转义)
+  // 百分号编码的路径(外部工具给中文文件名做转义是常事)
   let rel = ref;
   try {
     rel = decodeURIComponent(ref);

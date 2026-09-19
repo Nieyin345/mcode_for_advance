@@ -414,9 +414,12 @@ export function ItemDetail({ item, job, pdfState, onDownload, onChanged }: Props
   /**
    * 手动(重)转 Markdown。
    *
-   * 为什么需要这个按钮:导入时已经自动转过一次,但那次可能走的是本地兜底(没配
-   * MinerU、或 MinerU 当时失败)。重新导入同一份 PDF 会被去重挡下、**不会**重转,
-   * 所以没有这个入口的话,用户就再也换不成 MinerU 的结果了。
+   * 为什么需要这个按钮:导入时已经自动转过一次,但那次可能没转成(扫描件没文本层、
+   * 或当时失败了)。重新导入同一份 PDF 会被去重挡下、**不会**重转,所以没有这个入口
+   * 的话,用户就再也没有第二次机会了。
+   *
+   * ⚠️ 这条按钮跑的是**软件自己那套本地抽取**(纯文本)。想要配图与排版的,该让 AI 用
+   * 外部工具转一份再 `library_adopt_markdown` 挂回来 —— 那条路会**覆盖**这里的结果。
    */
   const runConvert = async () => {
     if (!item) return;
@@ -439,9 +442,9 @@ export function ItemDetail({ item, job, pdfState, onDownload, onChanged }: Props
   /**
    * 挂上用户**已经转录好的** Markdown,不重新转录。
    *
-   * 为什么需要:转录要花 MinerU 额度,而且同一份 PDF 的结果未必比用户手上那份好 ——
-   * 他可能早就转过了、或者拿的是别人的高质量版本。重转一遍既费额度,还会**覆盖掉他
-   * 更满意的那份**。同类文件里的 `images/` 会一起搬过来,免得正文里的图全断。
+   * 为什么需要:重新转一遍既有成本、结果又未必更好 —— 他可能早就用自己的工具转过、
+   * 或者拿的是别人给的高质量版本。硬转一遍还会**覆盖掉他更满意的那份**。正文里
+   * 引用到的图会一起搬过来(按引用搬,不认目录名),免得预览里全是断图。
    */
   const adoptMarkdown = async () => {
     if (!item) return;
@@ -539,7 +542,7 @@ export function ItemDetail({ item, job, pdfState, onDownload, onChanged }: Props
       </div>
 
       {/* Markdown 转换 —— 这一段决定「AI 能不能读」,所以单独摆出来而不是塞进
-          元数据列表里。配了 MinerU 走 MinerU,没配走本地 pdf.js。 */}
+          元数据列表里。软件自己只会本地抽纯文本;带图的那些是外部工具转完挂回来的。 */}
       <div className="mb-3 rounded border border-edge bg-surface/40 p-2.5">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[0.7857em] text-content-muted">

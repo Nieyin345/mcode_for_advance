@@ -3,7 +3,8 @@
  *
  * ## 为什么需要这一步
  *
- * MinerU 转录论文时,表格出来的是 HTML(`<table><tr><td>…`),不是管道表格。而
+ * 外部转录工具(把论文转成 Markdown 的那一类)输出表格时,给的常常是
+ * HTML(`<table><tr><td>…`),不是管道表格。而
  * react-markdown 默认**不渲染 HTML**:remark-rehype 在没有 `allowDangerousHtml` 时
  * 会把 `html` 节点**整个丢掉** —— 于是表格凭空消失,看起来就像"表格显示不出来"。
  *

@@ -231,9 +231,10 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
    * ① **同一个文件可能被别的条目指着。** PDF 按内容哈希寻址,同一篇先用 DOI 导、
    *    又用 arXiv ID 导了一次,就是两条记录指向同一个路径。删之前先看还有没有幸存
    *    者指着它,有就一个字节都不动。
-   * ② **MinerU 的产物是一整个目录**(`full.md` 加 `images/`)。只删 `full.md` 会把
+   * ② **带图的产物是一整个目录**(`full.md` 加 `images/`)。只删 `full.md` 会把
    *    几十张配图整包留在磁盘上,而且再也认不出是谁的。所以 md 落在
-   *    `markdown/<2>/<2>/<sha>/` 里时,删的是那个目录。
+   *    `markdown/<2>/<2>/<sha>/` 或 `markdown/imported/<id>/` 里时,删的是那个目录。
+   *    (软件自己只产平的那种;这两种目录形态分别来自遗留数据和外部工具转完挂回来的。)
    */
   ipcMain.handle(IPC.LIBRARY_DELETE_ITEMS, async (_evt, raw) => {
     const input = LibraryDeleteItemsSchema.parse(raw);
@@ -263,7 +264,7 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
        * 删一个库内路径。
        *
        * **只删库内路径** —— 记录万一被写入过外来路径,这里会把它挡掉,而不是照着
-       * 删用户别处的文件。`recursive` 给 MinerU 那种"整包是一个目录"的产物用。
+       * 删用户别处的文件。`recursive` 给"整包是一个目录"的产物用。
        *
        * 判据是 {@link isInsideLibrary},**不是** `toLibraryRelative(abs).startsWith("..")`
        * —— 那个条件恒假,一次都没拦住过(见 `paths.ts` 里 `toLibraryRelative` 的注释)。
@@ -288,7 +289,7 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
 
         const mdRel = item.mdPath;
         if (!mdRel || sharedWithSurvivor(mdRel)) continue;
-        // 一份 md 产物可能是一整个目录(MinerU / 「采纳 Markdown」,里面还有 images/)。
+        // 一份 md 产物可能是一整个目录(外部工具转的 / 「采纳 Markdown」,里面还有 images/)。
         // 该删哪个由 `markdownArtifact` 按**落点结构**决定 —— 早先这里按"父目录名像不像
         // 一个 sha256"猜,猜不中「采纳」那一种,于是它的 images/ 永远留在磁盘上。
         // 同哈希被两条记录引用时它们的 mdPath 是**同一个**,上面那道引用计数已经拦住了。
@@ -367,8 +368,8 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
    * 这一条是他们的主入口。
    *
    * `convert` 默认开:导入完就转 Markdown,这样「加进对话让 AI 读」立刻就能用。
-   * 转换是分钟级的,所以这里**串行**跑 —— 并发几份 PDF 会把带宽和 MinerU 的
-   * 队列都占满,反而更慢。
+   * 转换是分钟级的(pdf.js 同线程跑),所以这里**串行** —— 并发几份 PDF 只会互相
+   * 抢 CPU,反而更慢。
    */
   ipcMain.handle(IPC.LIBRARY_IMPORT_FILES, async (_evt, raw) => {
     const input = LibraryImportFilesSchema.parse(raw);
@@ -422,7 +423,7 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
    * 把库里已有的 PDF 批量转 Markdown(存量文献的补转入口)。
    *
    * 不传 ids 就转整个库 / 某个集合 —— 但**已经有 md 的会跳过**(除非 force),
-   * 所以重复点这个按钮不会白烧 MinerU 的额度。
+   * 所以重复点这个按钮不会做白工。
    */
   ipcMain.handle(IPC.LIBRARY_CONVERT, async (_evt, raw) => {
     const input = LibraryConvertSchema.parse(raw);

@@ -755,7 +755,7 @@ export const Markdown = memo(function Markdown({
     return new RegExp(`/(${escaped.join("|")})(?![A-Za-z0-9_-])`, "g");
   }, [skillNames]);
   const components = useMemo(() => buildComponents(), []);
-  // HTML 表格 → 管道表格。前提是 MinerU 那种 `<table>` 输出 —— react-markdown
+  // HTML 表格 → 管道表格。前提是外部转录工具那种 `<table>` 输出 —— react-markdown
   // 默认会把 HTML 节点整个丢掉,表格会凭空消失(见 lib/htmlTable.ts 的说明)。
   // memo 住:流式输出时 children 每个 token 都变,但这一步只对有 `<table` 的文本有开销。
   const source = useMemo(() => convertHtmlTables(children), [children]);

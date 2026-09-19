@@ -152,7 +152,7 @@ export type LibraryOpenFileInput = z.infer<typeof LibraryOpenFileSchema>;
  * 读一篇文献的 Markdown 正文(应用内预览用)。
  *
  * 为什么必须走 IPC:渲染进程**读不了本地文件**(沙箱里没有 fs)。而且 md 里的图片是
- * 相对路径 `images/xxx.jpg`(MinerU 的产物),渲染端连它的父目录都不知道,只有主进程
+ * 相对路径 `images/xxx.jpg`(带图产物的常态),渲染端连它的父目录都不知道,只有主进程
  * 能把相对引用解析成真实字节。所以主进程一次把正文和**被引用到的图片**(base64
  * data URL)一起交出来,渲染端不需要二次往返。
  */
@@ -200,7 +200,7 @@ export type LibraryImportGenericInput = z.infer<typeof LibraryImportGenericSchem
 /**
  * 采纳一份**用户手上的** Markdown 作为这篇的转录产物。
  *
- * 为什么不复用 convert:转录要花 MinerU 额度,而且用户手上那份可能本就更好 ——
+ * 为什么不复用 convert:重转一遍既费时间又未必更好,而且用户手上那份可能本就更好 ——
  * 他要的是"挂上去",不是"再转一遍"(重转还会覆盖掉他更满意的那份)。
  */
 /** 新建一篇笔记(笔记库里在应用内写的那种)。标题会写进正文的第一行。 */

@@ -865,7 +865,8 @@ export interface RpcMap {
     skipped: number;
     errors: Array<{ path: string; error: string }>;
   }>;
-  /** 把库里的 PDF 转成 Markdown(MinerU 优先,本地 pdf.js 兜底)。 */
+  /** 把库里的 PDF 转成 Markdown(**软件自己那套本地抽取,纯文本**)。
+   *  带图/带排版的高质量转录由外部工具做,再用 `library.adoptMarkdown` 挂回来。 */
   "library.convert": (input: LibraryConvertInput) => Promise<{
     converted: number;
     failed: Array<{ id: string; error: string }>;

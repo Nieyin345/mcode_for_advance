@@ -129,7 +129,7 @@ export function fromLibraryRelative(relPath: string): string {
  * | 落点 | 是什么样的 |
  * |---|---|
  * | `markdown/<2>/<2>/<sha>.md` | 平的,本地 pdf.js 兜底转出来的 |
- * | `markdown/<2>/<2>/<sha>/full.md` | MinerU,同级还有 `images/` |
+ * | `markdown/<2>/<2>/<sha>/full.md` | 整包(遗留),同级还有 `images/` |
  * | `markdown/imported/<条目 id>/xxx.md` | 「采纳 Markdown」收进来的,同级还有 `images/` |
  *
  * 后两种里,正文靠 `![](images:…)` 相对引用配图 —— 只删那个 `.md` 的话,几十张图会
@@ -138,7 +138,7 @@ export function fromLibraryRelative(relPath: string): string {
  * ## 为什么按结构认,不按名字认
  *
  * 早先这段判断写在 `ipc/library.ts`,判据是"父目录名像不像一个 sha256"
- * (`/^[0-9a-f]{64}$/.test(basename(dirname(md)))`)。它对 MinerU 成立,对**采纳的那包
+ * (`/^[0-9a-f]{64}$/.test(basename(dirname(md)))`)。它对「整包」那种成立,对**采纳的那包
  * 不成立**(目录名是 `li_…`)—— 于是采纳的 md 一删,`images/` 就永远留下。名字是猜;
  * 下面按**落点结构**认,三种形态各归各位,加第四种时也一眼看得出该往哪一档放。
  *
@@ -172,7 +172,7 @@ export function markdownArtifact(absMdPath: string): { path: string; recursive: 
   if (rel.length === 2 && (rel[0] ?? "").length === 2 && (rel[1] ?? "").length === 2) {
     return flat(abs);
   }
-  // MinerU:`markdown/<2>/<2>/<sha>/full.md` —— 父目录是那条 sha 的目录,**三层**。
+  // 整包(遗留):`markdown/<2>/<2>/<sha>/full.md` —— 父目录是那条 sha 的目录,**三层**。
   // 前两层是哈希前缀(与 `hashedPath` 一致),第三层是完整 sha。
   if (rel.length === 3 && isPrefix(rel[0]) && isPrefix(rel[1]) && SHA256.test(rel[2] ?? "")) {
     return { path: parent, recursive: true };
@@ -213,12 +213,19 @@ export function markdownPathForHash(sha256: string): string {
 }
 
 /**
- * MinerU 那次转换的**整包落点**(目录)。
+ * 「整包产物」的**目录**落点 —— 正文 `.md` 与它同级的 `images/`。
  *
- * 为什么需要它:本地 pdf.js 抽出来的是纯文本,一个 `.md` 文件就够了;但 MinerU 给出
- * 的是 `full.md` **加上 `images/`** —— 正文里几十处 `![](images/xxx.jpg)`。只把
- * `full.md` 捞走、把图丢了的话,md 里全是断链。所以 MinerU 的产物必须按**目录**
- * 落地,让相对路径 `images/…` 自然成立。
+ * 为什么需要它:本地 pdf.js 抽出来的是纯文本,一个 `.md` 文件就够了;但带图的产物
+ * 是 `full.md` **加上 `images/`** —— 正文里几十处 `![](images/xxx.jpg)`。只把
+ * `full.md` 捞走、把图丢了的话,md 里全是断链。所以这类产物必须按**目录**落地,
+ * 让相对路径 `images/…` 自然成立。
+ *
+ * ⚠️ **软件自己不再产出这种形态了**(从前产出它的是写死的 MinerU,已删)。
+ * 现在唯一的来路是外部工具(用户的 `mineru` CLI、别的什么都行)转完之后
+ * `library_adopt_markdown` 挂回来,而那条路落在 `markdown/imported/<条目 id>/`
+ * —— 按条目 id 而不是 sha,因为外部工具跑的哪份 PDF 未必等于库里存的那份。
+ * 这个函数现在只作为**遗留目录形态**存在:老库里已有的 `<sha>/full.md` 还要能被
+ * 认出来、被删干净(`markdownArtifact` 那一档),冒烟也拿它当夹具。
  *
  * 两种形态并存没问题:`mdPath` 指向各自真正的那份 `.md`(平的或目录里的),
  * 全文检索扫的是 `markdown/**\/*.md`,两种都能扫到。

@@ -3,10 +3,11 @@
  *
  * 两个用途:
  *
- *   1. **元数据探针** —— 读 XMP/Info + 首页文本,找 DOI / arXiv 号。离线、不花
- *      MinerU 的额度,是分层采集的第一道。
- *   2. **Markdown 兜底** —— 没配 MinerU(或它失败)时,至少把正文抽出来写进
- *      `md_path`,让全文检索能用。
+ *   1. **元数据探针** —— 读 XMP/Info + 首页文本,找 DOI / arXiv 号。离线、不联网,
+ *      是分层采集的第一道。
+ *   2. **Markdown 兜底** —— 本地只抽得出纯文本(排版/公式/表格都不保留),但总比
+ *      没有强:写进 `md_path` 之后全文检索能用、AI 能读到正文。想要好结果的用户
+ *      自己用外部工具转一份更好的,再挂回库(`library_adopt_markdown`)。
  *
  * ## 两个必须记住的坑
  *
@@ -34,7 +35,7 @@ import { createRequire } from "node:module";
 import { readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-/** 超过这个大小直接拒 —— MinerU 的 200MB 上限之外,本地解析也不该吃这么多内存。 */
+/** 超过这个大小直接拒 —— 本地解析不该为一份超大 PDF 吃掉这么多内存。 */
 const MAX_BYTES = 200 * 1024 * 1024;
 /** 首页文本少于这个字数就认为「没有文本层」(扫描件)。 */
 const TEXT_LAYER_MIN_CHARS = 80;
