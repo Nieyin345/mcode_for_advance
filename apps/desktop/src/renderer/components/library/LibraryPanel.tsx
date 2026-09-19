@@ -31,6 +31,7 @@ import {
   IconArrowLeft,
   IconBook,
   IconFilePlus,
+  IconFileText,
   IconFolderPlus,
   IconSearch,
   IconShare,
@@ -44,13 +45,20 @@ import { PdfPreview } from "./PdfPreview.js";
 import { FilePreview } from "./FilePreview.js";
 import { NoteEditor } from "./NoteEditor.js";
 import { SearchPanel } from "./SearchPanel.js";
+import { FullTextSearchPanel } from "./FullTextSearchPanel.js";
 import { ImportBar } from "./ImportPanel.js";
 
 /** 详情屏的标签。取值域与 `libraryStore.detailTab` 一致。 */
 type DetailTab = "meta" | "preview" | "pdf" | "file" | "edit";
 
 /** 面板当前展示哪一屏。窄栏一次只显示一屏。 */
-type Screen = { kind: "list" } | { kind: "detail" } | { kind: "search" };
+type Screen =
+  | { kind: "list" }
+  | { kind: "detail" }
+  /** 去 Crossref / arXiv 找**新**文献。 */
+  | { kind: "search" }
+  /** 搜**已转 Markdown 的正文**(ripgrep)。 */
+  | { kind: "fullText" };
 type StatusFilter = "all" | "missingPdf" | "needsLogin";
 
 /** 导出菜单里三个格式的文案 id。写成显式映射而不是 `` `library.export.${style}` ``:
@@ -152,6 +160,19 @@ export function LibraryPanel() {
   // 所以这里是「跟随」而不是「各存一份」。
   useEffect(() => {
     if (activeId) setScreen({ kind: "detail" });
+  }, [activeId]);
+
+  // **这条得放在上面那条之后。** 从全文检索里点一条命中也只写 `activeItemId`,
+  // 切详情交给上面那个 effect(follow,而不是各写一遍) —— 所以那条 effect 跑完时
+  // 屏幕已经是 detail 了,这里再把它改回 list 就会当场把用户弹回列表。
+  //
+  // 为什么要这一条:检索面板是**整栏**的一块,没有"回列表"的出口就出不去了 ——
+  // 点了命中之后停在详情上,用户按返回才回到列表(那时 `activeId` 已经有值,上面
+  // 那条不会再来抢)。**如果只改了 `activeId` 而没有这一条**,屏幕仍停在 fullText,
+  // 而 fullText 那一支不看 `activeId`,用户会觉得点了没反应。
+  useEffect(() => {
+    if (screen.kind === "fullText") setScreen({ kind: "list" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
 
   useEffect(() => {
@@ -392,6 +413,10 @@ export function LibraryPanel() {
     </div>
   );
 
+  // ── 库内全文检索(占满整栏) ──
+  if (screen.kind === "fullText") {
+    return <FullTextSearchPanel onClose={() => setScreen({ kind: "list" })} />;
+  }
   // ── 检索 / 导入(占满整栏) ──
   if (screen.kind === "search") {
     return (
@@ -532,12 +557,21 @@ export function LibraryPanel() {
         <span className="shrink-0 text-[0.7857em] tabular-nums text-content-subtle">
           {items.length}
         </span>
+        {/* 两个搜索图标并排 —— 一个是"去外面找新文献",一个是"在库里找正文"。
+            只有 tooltip 区分不够(用户点错过),所以第二个用了不同的图标。 */}
         <button
           onClick={() => setScreen({ kind: "search" })}
           title={t("library.action.search")}
           className="shrink-0 rounded p-1 text-content-muted hover:bg-surface-hover hover:text-content"
         >
           <IconSearch size={14} />
+        </button>
+        <button
+          onClick={() => setScreen({ kind: "fullText" })}
+          title={t("library.action.fullText")}
+          className="shrink-0 rounded p-1 text-content-muted hover:bg-surface-hover hover:text-content"
+        >
+          <IconFileText size={14} />
         </button>
         {/* 导入带文字标签 —— 原来是个光秃秃的图标,用户找不到入口(实际发生过)。 */}
         <button

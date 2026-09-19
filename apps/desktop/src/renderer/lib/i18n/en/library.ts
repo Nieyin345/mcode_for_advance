@@ -76,6 +76,7 @@ export const en = {
     "Missing authors / year / venue — citations will be incomplete. Open it to see which.",
 
   "library.action.search": "Search",
+  "library.action.fullText": "Search text",
   "library.action.import": "Import",
   "library.action.addToContext": "Add a library to context",
   "library.action.download": "Download PDF",
@@ -294,4 +295,12 @@ export const en = {
   "library.file.emptyDir": "Empty folder",
   "library.file.unknownMime": "No built-in preview ({mime})",
   "library.file.loadFailed": "Failed to read",
+  /* ── In-library full-text search (searches converted Markdown) ── */
+  "library.fullText.title": "Search inside library",
+  "library.fullText.scopeHint":
+    "Searches the **converted Markdown text** (PDFs themselves cannot be searched; anything not yet converted will not show up). Use this to find which paper mentions a term; use the box above the list to find whether a paper is in the library at all.",
+  "library.fullText.placeholder": "Term to search, e.g. attention",
+  "library.fullText.searching": "Searching…",
+  "library.fullText.noResult": "Not found in any text (that paper may not be converted yet)",
+  "library.fullText.count": "{n} matches",
 } as const;

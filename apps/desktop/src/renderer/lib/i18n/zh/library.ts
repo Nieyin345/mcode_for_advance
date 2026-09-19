@@ -81,6 +81,7 @@ export const zh = {
 
   // 工具栏
   "library.action.search": "检索",
+  "library.action.fullText": "全文检索",
   "library.action.import": "导入",
   "library.action.addToContext": "添加文献库到上下文",
   "library.action.download": "下载 PDF",
@@ -310,4 +311,12 @@ export const zh = {
   "library.file.emptyDir": "空目录",
   "library.file.unknownMime": "暂无内置预览({mime})",
   "library.file.loadFailed": "读取失败",
+  /* ── 库内全文检索(搜已转 Markdown 的正文)── */
+  "library.fullText.title": "库内全文检索",
+  "library.fullText.scopeHint":
+    "搜的是**已转成 Markdown 的正文**(PDF 本身搜不了,没转换的条目搜不到)。找「哪篇里提过这个词」用它;找「库里有没有某一篇」用列表上方的搜索框。",
+  "library.fullText.placeholder": "要搜的词,如 attention",
+  "library.fullText.searching": "检索中…",
+  "library.fullText.noResult": "正文里没有找到这个词(也可能那一篇还没转成 Markdown)",
+  "library.fullText.count": "命中 {n} 处",
 } as const;
