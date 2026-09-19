@@ -214,10 +214,13 @@ export function edgeOptionNameOf(
  * 见 {@link edgeOptionNameOf}:它和渲染端显示用的名字**不是一回事**,别混。类型 id
  * 而不是类型名,是因为清单名是插件可以改的、id 不是 —— 存进产物/报错里的词不能因为
  * 换个插件版本就变。
+ *
+ * ⚠️ **判据看 trim 过的,交出来的还是原样的标题**(`title.trim()` 只用来判"空不空")。
+ * 这是三处原来一致的写法,照搬过来了 —— 别顺手改成返回 trim 过的:那会动到
+ * `arrivalOf.from`、流程记录、报错文案里显示的每一个标题。
  */
 export function workflowNodeRefName(node: Pick<WorkflowNode, "title" | "type">): string {
-  const title = node.title.trim();
-  return title.length > 0 ? title : node.type;
+  return node.title.trim().length > 0 ? node.title : node.type;
 }
 
 /* ── 自动化 ── */

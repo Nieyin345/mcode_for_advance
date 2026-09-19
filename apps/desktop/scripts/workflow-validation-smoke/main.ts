@@ -284,6 +284,30 @@ const dupTitle = validateWorkflowDoc(
 );
 check("标题重名 → ref.ambiguous-title", hasCode(dupTitle, "ref.ambiguous-title", "C"), dupTitle.errors);
 
+// **标题带空白时,存盘校验和解算器得说同一句话**(2026-09-19)。
+//
+// 标题是**原样存**的(渲染端 `NodeInspector` → `updateNode`,不 trim),所以盘上会有
+// `"  检索  "`。而解算器取引用名时自己 trim(`resolveOne`)、`findNode` 也比 trim 过的
+// —— 校验这一头原来逐字比,于是这种节点会被判成「引用不到」:**能跑的写法存不下去**。
+// 三道判据(id / 标题重名 / 标题命中)必须和 `findNode` 完全一致。
+const paddedTitle = validateWorkflowDoc(
+  doc(
+    [
+      node("A", "mcode.main", { instruction: "拆" }),
+      node("B", "mcode.agent", { ...SAY, outputVars: [{ name: "年份", example: "2024" }] }, "  检索  "),
+      node("C", "mcode.agent", { instruction: "取 {{检索.年份}}" }),
+    ],
+    [edge("e1", "A", "B"), edge("e2", "B", "C")],
+  ),
+  OPTS,
+);
+check(
+  "标题带空白也认得出来(不会误报引用不到)",
+  !hasCode(paddedTitle, "ref.unknown-node", "C"),
+  paddedTitle.errors,
+);
+check("那份文档整体是干净的", paddedTitle.errors.length === 0, paddedTitle.errors);
+
 /* ── 5. 导入 / 导出(WF-08) ── */
 
 const badJson = importWorkflowDoc("{oops", OPTS);

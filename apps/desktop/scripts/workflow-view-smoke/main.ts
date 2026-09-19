@@ -139,6 +139,7 @@ import {
   type WorkflowNode,
 } from "@contracts/workflow";
 import { matchDecisionOption, referenceableOutputsOf } from "@contracts/outputConstraint";
+import { renderTemplate, type NodeTemplateScope } from "@contracts/nodeTemplate";
 
 let failures = 0;
 let checks = 0;
@@ -1516,6 +1517,55 @@ const withVars = (doc: WorkflowDoc, id: string, vars: Array<{ name: string; exam
   };
   const groups = insertableGroups(dup, "B", CATALOG);
   eq("重名了就退回 id", groups[1]?.items[0]?.insert, "{{A.年份}}");
+
+  // **标题带空白时,菜单插的和解算器认的必须是同一个名字**(2026-09-19)。
+  //
+  // 标题输入框**原样存**(`NodeInspector` → `updateNode`,不 trim),所以盘上会有
+  // `"  检索  "`。而解算器取引用名时**自己 trim 了**(`resolveOne` 的
+  // `spec.slice(0, dot).trim()`)、调度器拼上游名单时也 trim(`upstreamNames`)——
+  // 只有 `findNode` 比的是没 trim 的原文。三层里两层去空白、一层不去,这种节点就
+  // **永远引用不到**,报的还是「图上没有这个节点」:用户盯着那个明明在图上的方块。
+  //
+  // 修法是让 `findNode` 跟另外两层对齐(trim 后比)。菜单这一头原本就是 trim 的,
+  // 所以它插出来的 `{{检索.年份}}` 从今天起真的解得开 —— 下面拿解算器验。
+  const spaced: WorkflowDoc = {
+    ...withVars(DIAMOND, "A", vars),
+    nodes: withVars(DIAMOND, "A", vars).nodes.map((n) =>
+      n.id === "A" ? { ...n, title: "  检索  " } : n,
+    ),
+  };
+  const insert = insertableGroups(spaced, "B", CATALOG)[1]?.items[0]?.insert ?? "";
+  eq("标题带空白时插的是去掉空白的那个名字", insert, "{{检索.年份}}");
+  // **关键那一条**:插出来的写法解算器真的解得开 —— 光比字符串不够,得拿解算器验。
+  // scope 照调度器拼的那样给(`upstream` 里放的是 **trim 过的**标题,见 `upstreamNames`)。
+  const spacedScope = {
+    user: "u",
+    upstream: new Set(["A", "检索"]),
+    nodes: [
+      {
+        id: "A",
+        title: "  检索  ",
+        params: {},
+        outcome: { status: "success", summary: "s", outputs: { 年份: "2024" } },
+      },
+    ],
+  } as unknown as NodeTemplateScope;
+  eq("解算器认这个名字(这就是那个 bug 的形状)", renderTemplate(insert, spacedScope, "测试").ok, true);
+  // 顺带钉住 `findNode` 那一层也 trim:直接写没去空白的名字同样解得开(两条路都通,
+  // 因为三层现在都 trim)。
+  eq(
+    "原文(带空白)也解得开",
+    renderTemplate("{{  检索  .年份}}", spacedScope, "测试").ok,
+    true,
+  );
+  // 全空白的标题 = 没起名字 → 退 id(id 一定解得开)。
+  const blank: WorkflowDoc = {
+    ...withVars(DIAMOND, "A", vars),
+    nodes: withVars(DIAMOND, "A", vars).nodes.map((n) =>
+      n.id === "A" ? { ...n, title: "   " } : n,
+    ),
+  };
+  eq("空白标题退回 id", insertableGroups(blank, "B", CATALOG)[1]?.items[0]?.insert, "{{A.年份}}");
 }
 
 console.log("\ninsertableGroups:清单声明的产出 / 分支的「出路」");

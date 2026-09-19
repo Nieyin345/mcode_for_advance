@@ -214,6 +214,12 @@ export function insertableGroups(
  *
  * 标题重名时**退回 id**:解算器对重名标题是直接报错的,所以这里插进去的必须是那个
  * 一定能解出来的写法。没起标题的同样退 id。
+ *
+ * ⚠️ **两边都按 trim 过的标题比**(和 `@contracts/nodeTemplate` 的 `findNode` /
+ * `@contracts/workflow` 的 `upstreamNames` 一致)。标题输入框是原样存的
+ * (`NodeInspector` → `updateNode`,不 trim),所以盘上会有 `"  检索  "` 这种;而解算
+ * 器取引用名时**自己 trim**(`spec.slice(0, dot).trim()`),于是它那边的"标题"永远是
+ * 去空白的那个 —— 这里不跟着 trim 就会插出一个解不开的名字。
  */
 function refNameOf(node: WorkflowNode, all: readonly WorkflowNode[]): string {
   const title = node.title.trim();

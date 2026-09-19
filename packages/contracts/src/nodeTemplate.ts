@@ -121,14 +121,32 @@ export const RESERVED_VAR_NAMES = ["output", "status", "error", "title", "user"]
  */
 export const SUMMARY_OUTPUT_KEY = "summary";
 
-/** 把一个名字(id 或标题)解析成节点。重名返回 `"ambiguous"`。 */
+/**
+ * 按引用名找一个节点:id 优先,标题兜底。重名返回 `"ambiguous"`。
+ *
+ * ## ⚠️ 标题**两边都要 trim**(2026-09-19)
+ *
+ * 节点标题是**原样存**的(渲染端 `NodeInspector` → `updateNode`,不 trim),所以盘上
+ * 会有 `"  检索  "` 这种值。而取引用名的那一层**已经 trim 了**:
+ *
+ *  - 解算这边 `resolveOne` 自己 `spec.slice(0, dot).trim()`;
+ *  - 调度器拼上游名单时 `upstreamNames` 也 `titleOf(id).trim()`。
+ *
+ * 只有这里比的是**没 trim 过的原文** —— 于是三层里两层去空白、一层不去,一个标题带
+ * 空白的节点就**永远引用不到**,而且报的是「图上没有这个节点」:用户盯着那个明明在
+ * 图上的方块,名字一字不差(他看不见那几个空格)。实测三种写法全解不开,只有 id 行。
+ *
+ * 所以这里跟另外两层对齐:比的是 trim 过的标题。`name` 那一头也 trim 一次,是为了
+ * 不依赖调用方已经去过空白(这个函数是导出的,谁都可以直接调)。
+ */
 function findNode(
   scope: NodeTemplateScope,
   name: string,
 ): NodeTemplateNode | "ambiguous" | undefined {
-  const byId = scope.nodes.find((n) => n.id === name);
+  const want = name.trim();
+  const byId = scope.nodes.find((n) => n.id === want);
   if (byId) return byId;
-  const byTitle = scope.nodes.filter((n) => n.title === name);
+  const byTitle = scope.nodes.filter((n) => n.title.trim() === want);
   if (byTitle.length > 1) return "ambiguous";
   return byTitle[0];
 }

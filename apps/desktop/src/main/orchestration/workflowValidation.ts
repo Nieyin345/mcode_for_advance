@@ -397,9 +397,16 @@ export function validateWorkflowDoc(
         }
 
         // 名字按 id 优先、标题兜底来认(同 nodeTemplate 的解法;重名标题解算必炸,这里拦下)。
+        //
+        // ⚠️ **标题两边都 trim**(2026-09-19):标题是原样存的,而解算器取引用名时自己
+        // trim(`resolveOne` 的 `spec.slice(0, dot).trim()`)、`findNode` 也比 trim 过的
+        // (`@contracts/nodeTemplate`)。这里原来逐字比,于是标题写成 `"  检索  "` 的节点
+        // 会被判成「引用不到」—— **存都存不下去**,而同一个写法跑起来其实是解得开的。
+        // 三道判据(id / 标题重名 / 标题命中)必须和 `findNode` 完全一致,否则就是"存盘
+        // 拦下一个能跑的写法"或者反过来。
         let target = byId.get(name);
         if (!target) {
-          const byTitle = nodes.filter((n) => n.title === name);
+          const byTitle = nodes.filter((n) => n.title.trim() === name);
           if (byTitle.length > 1) {
             fail({ code: "ref.ambiguous-title", nodeId: node.id, message: `节点「${labelOf(node)}」引用的 \`${name}\` 同时是多个节点的标题 —— 改用它俩的 id` });
             continue;
