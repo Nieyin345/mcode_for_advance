@@ -23,10 +23,18 @@
  *
  *  - `isInsideLibrary` — the predicate that means what those call sites meant,
  *    over a table of inside / outside / traversing / prefix-collision paths;
- *  - the two real call sites' *behaviour* (`writeNote` refusing, `dropAbs`
- *    refusing) where they can be reached without a full app;
+ *  - **一个**真实调用点的行为:`writeNote` 拒掉越界路径(§4),而且断言**库外那个
+ *    文件一个字节都没动** —— 拒绝本身不算数,没写下去才算;
  *  - `toLibraryRelative` / `fromLibraryRelative` round-tripping, so tightening
  *    the guard cannot quietly break the path storage everything else reads.
+ *
+ * ## 这里原本写着覆盖了"两个"调用点,那是吹的
+ *
+ * 另一个调用点是 `ipc/library.ts` 里删条目时那个 **`dropAbs` 局部闭包**(约 351 行),
+ * 它拿不到、也起不来(要整个 IPC 环境)。本套实际能做的只有**替它验判据**——
+ * `markdownArtifact` 会给它算"该删文件还是整目录"(§5/§6),`isInsideLibrary` 是它
+ * 该用的那道闸门。**`dropAbs` 自己的行为至今零覆盖**,而它删的是用户磁盘上的东西。
+ * 哪天有人给它补上,记得把这一段改掉。
  *
  * Run: scripts/library-paths-smoke/run.sh
  */
@@ -150,7 +158,7 @@ for (const [what, p] of LONGER_OUTSIDE) {
   );
 }
 
-/* ──────────────── 4. 两个真实调用点的行为 ──────────────── */
+/* ──────────────── 4. 一个真实调用点的行为 ──────────────── */
 
 console.log("\n真实调用点:writeNote 拒掉越界路径");
 
@@ -214,7 +222,11 @@ eq("③ 和 ① 的层数确实一样(所以层数不是判据)",
   relative(join(ROOT, "markdown"), dirname(FLAT_MD)).split(sep).length);
 
 // 相对路径来自数据库(可被写坏),两种极端都不能把根目录或库外的东西卷进去。
-check("库外路径解析出来的东西仍在库外(交给 dropAbs 拦)", !isInsideLibrary("/etc/passwd-md"));
+//
+// ⚠️ 这一条**替 `dropAbs` 验判据**(它在 `ipc/library.ts` 里是个局部闭包,本套够不着
+// —— 见文件头)。也就是说这里证明的是"闸门本身是好的",**不是**"`dropAbs` 用了它"。
+// 两者之间那道缝没人守着,别把这一条读成"dropAbs 验过了"。
+check("库外路径解析出来的东西仍在库外(dropAbs 该用的那道闸门挡得住)", !isInsideLibrary("/etc/passwd-md"));
 check("库根本身不会被当成某一份产物", markdownArtifact(join(ROOT, "markdown", "x.md")).path !== ROOT);
 
 /* ──────────────── 6. 认不出来的落点一律**只删文件** ──────────────── */
