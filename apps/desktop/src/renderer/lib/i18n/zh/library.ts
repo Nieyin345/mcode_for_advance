@@ -252,6 +252,32 @@ export const zh = {
   "settings.library.layoutDesc":
     "PDF 按内容哈希存放——同一篇文件导两次会落到同一个路径，天然去重。markdown/ 下同样结构放转换产物，AI 读的是它。collections/ 下是给 AI 读的文献清单。",
 
+  // ── 设置:转换情况(文档管理)──
+  // 原先长在「外部集成」那一页上(那一页随写死的 MinerU 一起删了)。搬到这里是因为
+  // 它查的是**库里哪些文献还没转成 Markdown**,与「数据放在哪 / 怎么分」同属库本身
+  // 的事。文案里去掉了"MinerU 额度"那套说法 —— 现在花的是用户自己那套工具的成本。
+  "settings.convert.title": "转换情况",
+  "settings.convert.desc":
+    "统计库里有多少篇已经转成 Markdown。没有转换产物的文献，AI 读不到正文、全文检索也搜不到。",
+  "settings.convert.total": "库里共 {n} 篇",
+  "settings.convert.converted": "已转 {n} 篇",
+  "settings.convert.pending": "未转 {n} 篇",
+  "settings.convert.empty": "库里还没有文献",
+  "settings.convert.localNote":
+    "本地转换只取纯文本——排版、公式、表格都不保留，扫描件还会直接说拿不到正文。要高质量的，让 AI 用工作流或对话调你自己装的工具（mineru 命令行、pip 装的库都行）转出 Markdown，再用「用本地 Markdown…」挂回来。",
+  "settings.convert.reasonNoMd": "还没转 Markdown",
+  "settings.convert.reasonNoAssets": "有 {n} 张图没落盘",
+  "settings.convert.runPending": "转换未转的 {n} 篇",
+  "settings.convert.rerunAll": "全部重转",
+  "settings.convert.rerunConfirm":
+    "把库里所有文献都重新转换一遍？已有的 Markdown 会被覆盖（共 {n} 篇）。只想补没转的点「转换未转的」。",
+  "settings.convert.running": "转换中…",
+  "settings.convert.done": "已转换 {n} 篇",
+  "settings.convert.failed": "{n} 篇失败",
+  "settings.convert.nonePending": "没有待转换的文献",
+  "settings.convert.rerunOne": "重转这篇",
+  "settings.convert.rerunOneTitle": "这份 Markdown 不完整（缺图或没转过），重新转一次",
+
   // 全文检索
   "library.fulltext.placeholder": "在已转换的文献全文中搜索",
   "library.fulltext.hint": "只搜已转成 Markdown 的文献；中文与英文都支持",

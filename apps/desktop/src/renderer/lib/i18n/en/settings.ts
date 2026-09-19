@@ -1423,11 +1423,14 @@ export const en = {
   "settings.workflows.source.plugin": "plugin",
   "settings.workflows.source.local": "local",
 
-  // ── LibraryTypesPanel (Settings → Library prompts) ──
-  "settings.nav.libraryTypes": "Library prompts",
-  "settings.libraryTypes.title": "Library prompts",
+  // ── LibraryTypesPanel (Settings → Documents) ──
+  // This page now covers two things: the prompts the library hands the AI, and
+  // which papers have no Markdown yet (that section used to live on the
+  // integrations page, which went away with the hardcoded MinerU client).
+  "settings.nav.libraryTypes": "Documents",
+  "settings.libraryTypes.title": "Documents",
   "settings.libraryTypes.desc":
-    "Create / delete / rename all live in the sidebar; this page only writes the AI prompts — leave one empty and there is none.",
+    "Two things about the library: which papers the AI still cannot read (conversion status), and the tiered prompts it gets. Create / delete / rename all live in the sidebar; this page only writes the prompts — leave one empty and there is none.",
   "settings.libraryTypes.section.group": "Group prompts",
   "settings.libraryTypes.section.type": "Type prompts",
   "settings.libraryTypes.section.collection": "Collection prompts",

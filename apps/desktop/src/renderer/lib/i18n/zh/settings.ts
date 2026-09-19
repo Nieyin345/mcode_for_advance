@@ -1406,11 +1406,13 @@ export const zh = {
   "settings.workflows.source.plugin": "插件",
   "settings.workflows.source.local": "本地",
 
-  // ── LibraryTypesPanel(设置 → 资料库提示词)──
-  "settings.nav.libraryTypes": "资料库提示词",
-  "settings.libraryTypes.title": "资料库提示词",
+  // ── LibraryTypesPanel(设置 → 文档管理)──
+  // 这一页现在管两件事:资料库给 AI 的**提示词**,以及**哪些文献还没转 Markdown**
+  // (转换情况原先长在集成页上,集成页随写死的 MinerU 一起删了)。
+  "settings.nav.libraryTypes": "文档管理",
+  "settings.libraryTypes.title": "文档管理",
   "settings.libraryTypes.desc":
-    "管理(新建/删除/重命名)都在左栏;这里只写给 AI 的提示词,不写就没有。",
+    "资料库这一套的两件事:哪些文献 AI 还读不到(转换情况),以及给 AI 的分级提示词。类型与大类的管理(新建/删除/重命名)都在左栏,这里只写提示词,不写就没有。",
   "settings.libraryTypes.section.group": "大类提示词",
   "settings.libraryTypes.section.type": "小类提示词",
   "settings.libraryTypes.section.collection": "集合提示词",

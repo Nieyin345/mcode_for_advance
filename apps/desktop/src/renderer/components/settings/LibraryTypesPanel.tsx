@@ -1,11 +1,19 @@
 /**
- * 设置 → 资料库提示词 —— 给 AI 的**分级说明**(大类 / 小类 / 集合)。
+ * 设置 → 文档管理 —— 资料库这一套的两件事:**给 AI 的分级说明**(大类 / 小类 /
+ * 集合)与**转换情况**(哪些文献还没有 Markdown)。
  *
  * ## 管理与提示词分家
  *
  * 用户新的分工:类型与大类的**管理**(新建 / 删除 / 重命名)全部收进左栏右键,
  * 设置页里不再放任何编辑表单 —— 这里只剩一件事:**给 AI 写说明**。三个层级各一段,
  * 每行一个 textarea,不写就没有(清单里不注入这一层)。
+ *
+ * ## 为什么转换情况也在这页
+ *
+ * 它原先长在「外部集成」那一页上(与 MinerU 的密钥框挤在一起)—— 那一页随写死的
+ * MinerU 一起删了,而这块要留住:用户得看得见"还差几篇没转",那是配合外部转录
+ * 工具用的。放这里是因为它与上面三段是同一件事的两面:**资料库拿什么喂给 AI**
+ * (提示词)和**资料库里有多少东西 AI 根本读不到**(没转的)。
  *
  * ## 保存模型:草稿 + 一次交回
  *
@@ -29,6 +37,7 @@ import { api } from "@renderer/lib/api.js";
 import { Button } from "@renderer/components/ui/index.js";
 import { IconBook, IconLoader2, IconX } from "@renderer/lib/icons.js";
 import { PanelHeader } from "./PanelHeader.js";
+import { ConversionSection } from "./ConversionSection.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
 
@@ -312,6 +321,11 @@ export function LibraryTypesPanel() {
       <p className="px-1 text-[0.7857em] leading-relaxed text-content-subtle">
         {t("settings.libraryTypes.desc")}
       </p>
+
+      {/* ── 转换情况:哪些文献 AI 读不到 ──
+          放在提示词**前面**:它是这一页里唯一有"操作"的一段,也是用户更常来的原因。
+          提示词是配一次就不动的,没转的文献是天天在涨的。 */}
+      <ConversionSection />
 
       {saved && !saveError && (
         <div className="text-[0.7857em] text-emerald-600 dark:text-emerald-400">

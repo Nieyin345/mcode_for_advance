@@ -239,6 +239,32 @@ export const en = {
   "settings.library.layoutDesc":
     "PDFs are stored by content hash — importing the same file twice lands on the same path, so duplicates collapse naturally. markdown/ mirrors that layout for the converted text the AI actually reads. collections/ holds the manifests handed to the AI.",
 
+  // ── Settings: conversion status (document management) ──
+  // Used to live on the "Integrations" page, which went away with the hardcoded
+  // MinerU client. It belongs here: what it reports is which papers in the
+  // library have no Markdown yet — the library's own business.
+  "settings.convert.title": "Conversion status",
+  "settings.convert.desc":
+    "How many papers in the library have been converted to Markdown. Papers with no converted text are invisible to the AI and to full-text search.",
+  "settings.convert.total": "{n} in the library",
+  "settings.convert.converted": "{n} converted",
+  "settings.convert.pending": "{n} pending",
+  "settings.convert.empty": "The library is empty",
+  "settings.convert.localNote":
+    "Local conversion is plain text only — no layout, formulas or tables, and scanned PDFs report outright that there is no text layer. For better output, have the AI run your own tool (a mineru CLI, a pip-installed library, anything) via a workflow or plain chat, then attach the result with “Use local Markdown…”.",
+  "settings.convert.reasonNoMd": "No Markdown yet",
+  "settings.convert.reasonNoAssets": "{n} images not on disk",
+  "settings.convert.runPending": "Convert the {n} pending",
+  "settings.convert.rerunAll": "Re-convert all",
+  "settings.convert.rerunConfirm":
+    "Re-convert every paper in the library? Existing Markdown gets overwritten ({n} items). To fill in only the missing ones, use “Convert pending”.",
+  "settings.convert.running": "Converting…",
+  "settings.convert.done": "Converted {n}",
+  "settings.convert.failed": "{n} failed",
+  "settings.convert.nonePending": "Nothing pending",
+  "settings.convert.rerunOne": "Re-convert",
+  "settings.convert.rerunOneTitle": "This Markdown is incomplete (missing images, or never converted) — run it again",
+
   "library.fulltext.placeholder": "Search inside converted paper text",
   "library.fulltext.hint": "Only papers already converted to Markdown; Chinese and English both supported",
   "library.fulltext.noMatch": "No match in full text",
