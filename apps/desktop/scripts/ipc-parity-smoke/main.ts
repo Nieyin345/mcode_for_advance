@@ -418,8 +418,14 @@ eqArr("契约声明的请求类渠道,主进程都注册了(漏注册的在这�
  */
 const webApiText = read(join(SRC, "renderer", "lib", "webApi.ts"));
 const mobileOnly = new Set<string>([...webApiText.matchAll(/rpc\(\s*"([^"]+)"/g)].map((m) => m[1]));
-// 手机端的 HTTP 桥直接打主进程注册的渠道,所以主进程里那些只有手机端用的
-// (`claude:healthCheck`)也算豁免。
+/**
+ * 字面量形式的 `invoke("claude:healthCheck")` —— preload 里有**少数几条**刻意不走
+ * `IPC.*` 常量(见 §4 末尾那条说明)。上面那个 `preloadBound` 循环只认标识符和
+ * `IPC.KEY`,字面量会让它们被算成"没放行"。这里补上。
+ *
+ * (第一版这行写在别处、还摆成了一个事后补丁的样子,结果同一个集合被算了两次 ——
+ * 挪到这里跟它的同类放一起。)
+ */
 for (const m of preloadText.matchAll(/invoke\(\s*"([^"]+)"/g)) preloadInvoked.add(m[1]);
 
 const notSurfaced = [...mainChannels.keys()]
