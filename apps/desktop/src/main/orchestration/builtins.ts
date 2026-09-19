@@ -449,7 +449,7 @@ const WATCH_EDGES: readonly WorkflowEdge[] = [
   wire(WATCH_COMMAND_NODE_ID, WATCH_SAY_NODE_ID),
 ];
 
-/* ── 文献自动下载与转录(内置自动化,链式事件触发)────────────── */
+/* ── 文献自动下载(内置自动化,事件触发)──────────────────────── */
 
 /**
  * 与守望同款:它**不在** `BUILTIN_WORKFLOW_IDS` 里(那份是**对话模式下拉**的六个),
@@ -460,14 +460,15 @@ const WATCH_EDGES: readonly WorkflowEdge[] = [
  * 因为它要听的是**两个不同的时机**:
  *
  *  1. `library.item.imported` —— 库里多了一条,但**文件还没下来**。这时能做的是
- *     "给它排队下载";
+ *     "给它排队下载"(就是这一条);
  *  2. `library.item.downloaded` —— PDF **真到本地了**(见 `@contracts/runtime` 的
  *     `LibraryItemDownloadedEvent`)。想对着 PDF 做事(转录)只能等这一刻,导入那一下
- *     动手只会扑空。
+ *     动手只会扑空 —— 那是下面那条 `AUTO_CONVERT_*` 听的。
  *
- * 中间那一步——下载——**不是自动化干的**:条目一入库,库自己的下载队列就接手了
- * (见 `operations.importIdentifiers` 里那句 `enqueueDownloads`)。所以这两条之间
- * 靠的是**事件**,不是图里的边:一条排上队,另一条等它下完。
+ * `imported` 这一半是**兜底**:按标识符导入(DOI / arXiv)那条路自己会排队
+ * (`operations.importIdentifiers` 末尾那句 `enqueueDownloads`),而按文件导入、
+ * 手动加条目、以及"当时下不动"的那批都不会。所以这条自动化是给它们留的第二次机会
+ * —— 用户也可以把它关掉。
  *
  * ## 它们与「事件发生时」那条放宽是配对的
  *
@@ -535,7 +536,7 @@ const AUTO_DOWNLOAD_EDGES: readonly WorkflowEdge[] = [
   wire(AUTO_DOWNLOAD_TRIGGER_NODE_ID, AUTO_DOWNLOAD_AGENT_NODE_ID),
 ];
 
-/* ── 下载完自动转录(内置自动化,事件触发)────────────────────── */
+/* ── 下载完自动转 Markdown(内置自动化,事件触发)───────────────── */
 
 /**
  * 这条自动化是**软件原来写死的那件事**的替代品。
@@ -732,7 +733,7 @@ export const BUILTIN_WORKFLOWS: readonly WorkflowDoc[] = [
     // 与上一条**配对**:上一条负责"把 PDF 弄下来",这一条负责"下完之后转 Markdown"。
     // 分开是因为它们听的是两个不同的时机(见 AUTO_DOWNLOAD_WORKFLOW_ID 上的说明)。
     id: AUTO_CONVERT_WORKFLOW_ID,
-    name: "下载完自动转录",
+    name: "下载完自动转 Markdown",
     description: "资料库某条目的 PDF 下载完成时,把它转成 Markdown 并挂回该条目。",
     icon: "file-text",
     nodes: graph(AUTO_CONVERT_NODES, AUTO_CONVERT_EDGES),

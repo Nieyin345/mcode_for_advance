@@ -395,7 +395,7 @@ console.log("\nparseTriggerSpec · 「事件发生时」可以不绑项目");
 
 // ⚠️ 这一条是踩出来的。以前四种触发方式一律要求项目非空,而**内置模板预置不出项目 id**
 // (项目 id 是建项目时现生成的 `uid("proj_")`,模板没法知道这台机器上有哪些项目)。
-// 于是内置的「下载完自动转录」**永远挂不上** —— 用户对着一张参数填得好好的触发器等
+// 于是内置的「下载完自动转 Markdown」**永远挂不上** —— 用户对着一张参数填得好好的触发器等
 // 它响,而没有任何地方说得出为什么。
 //
 // 「事件发生时」不需要工作目录:它要做的事(转录、抽图、送外部工具)都是拿绝对路径去
@@ -1281,7 +1281,7 @@ console.log("\n内置自动化 · 参数解得开、项目留空也挂得上");
   // 在那之前它本来就该是"挂不上"的。硬把它塞进来只会逼着模板去编一个项目 id。
   for (const [id, what] of [
     [AUTO_DOWNLOAD_WORKFLOW_ID, "导入后自动下载"],
-    [AUTO_CONVERT_WORKFLOW_ID, "下载完自动转录"],
+    [AUTO_CONVERT_WORKFLOW_ID, "下载完自动转 Markdown"],
   ] as const) {
     const doc = getBuiltinWorkflow(id);
     check(`内置工作流「${what}」还在`, doc !== undefined, id);
@@ -1297,12 +1297,12 @@ console.log("\n内置自动化 · 参数解得开、项目留空也挂得上");
 
   check("内置工作流「守望」还在", getBuiltinWorkflow(WATCH_WORKFLOW_ID) !== undefined);
 
-  // 「下载完自动转录」听的是**下载完成**那个事件,不是导入 —— 导入那一下文件还没下来,
+  // 「下载完自动转 Markdown」听的是**下载完成**那个事件,不是导入 —— 导入那一下文件还没下来,
   // 挂错了的话这条自动化永远转不出东西,而且不报错。
   const convertDoc = getBuiltinWorkflow(AUTO_CONVERT_WORKFLOW_ID);
   const convertTrigger = convertDoc?.nodes.find((n) => n.type === "mcode.trigger");
   const events = String(convertTrigger?.params[NODE_TRIGGER_EVENTS_PARAM_KEY] ?? "");
-  eq("「下载完自动转录」听的是 library.item.downloaded", events, "library.item.downloaded");
+  eq("「下载完自动转 Markdown」听的是 library.item.downloaded", events, "library.item.downloaded");
   // 项目**故意留空** —— 它做的事(转录、挂回库)拿的都是绝对路径,不需要工作目录。
   // 「没绑项目」在这个仓里**一直**是空串这一个编码(守望那块也是),`buildTriggers`
   // 就是看它长度是不是 0 决定跳不跳查表。所以判据是"等于空串",不是"字段不存在"。
@@ -1310,7 +1310,7 @@ console.log("\n内置自动化 · 参数解得开、项目留空也挂得上");
   // 哪天有人"顺手"给它填个项目,这一条会红:内置模板预置不出项目 id(项目 id 是建
   // 项目时现生成的 `uid("proj_")`),填了反而挂不上 —— 就是这次修掉的那个故障。
   eq(
-    "「下载完自动转录」没绑项目(空串 = 没绑)",
+    "「下载完自动转 Markdown」没绑项目(空串 = 没绑)",
     String(convertTrigger?.params[NODE_TRIGGER_PROJECT_PARAM_KEY] ?? "x"),
     "",
   );

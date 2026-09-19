@@ -401,7 +401,7 @@ export const en = {
   // The two built-in automations (same as watch: not among the six modes above).
   "composer.mode.autoDownload": "Auto-download papers",
   "composer.mode.autoDownloadHint": "When items enter the library, queue downloads for the ones that have no PDF yet",
-  "composer.mode.autoConvert": "Transcribe after download",
+  "composer.mode.autoConvert": "Convert to Markdown after download",
   "composer.mode.autoConvertHint": "When an item's PDF finishes downloading, turn it into Markdown and attach it back to that item",
 
   // ── long-task watch (the composer toolbar segment + start panel, desktop only) ──
