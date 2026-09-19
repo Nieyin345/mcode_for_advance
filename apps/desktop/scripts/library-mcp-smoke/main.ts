@@ -464,7 +464,54 @@ check("解一条不存在的关联 → 拒", removeGhost.includes("失败"), rem
   eq("一共两条关联(库外那份 + 被屏蔽的)", LibraryLinkRepo.viewsOf(a.id).length, 2);
 }
 
-/* ──────────────── 4. 长尾:调用方最可能踩的两个错 ──────────────── */
+/* ──────────────── 5. 屏蔽对"翻库"这两条也必须生效 ──────────────── */
+
+console.log("\n屏蔽:翻库的路");
+
+// **`library_search` 与 `library_items` 是模型"翻库"的两个出口**,而它们直连仓储
+// (`searchItems` / `LibraryRepo.listByCollection`)、从前一次屏蔽判定都不过。
+//
+// 这不是"多列了一条":屏蔽在设置里是**硬过滤**,左栏那条右键的路早就挡住了
+// (`manifest.ts` 里那句"就算是我手动挂的一个文件,只要是屏蔽状态,也挂不上去")。
+// 而这两条路不但把条目列出来,`itemLine` 还**顺手带上了 PDF 的绝对路径** —— 模型
+// 拿到路径就能自己 Read/shell 打开,屏蔽等于白设。
+//
+// 挡法上还有一条不那么显眼的要求:挡掉之后**要当场说出来**,不能静默少几条。模型
+// 看不见的那几条若一声不响,它会向用户汇报一份"库里只有这些"的错误结论 —— 而那正是
+// `library_search` 的说明里点名的用法("判断库里有没有某一篇时用它")。
+{
+  // 上面那段留下的屏蔽还在(分类 `col` 里的 `c`)。再补一条**没有分类**的,专门盯
+  // `library_items` 那条路 —— 它按分类列,所以得让被屏蔽的那篇真的在某个分类里。
+  const solo = LibraryRepo.upsert({ kind: "paper", title: "翻库要被挡的那篇" });
+  const col2 = CollectionRepo.create("翻库屏蔽分类", null, "paper");
+  CollectionRepo.assign(col2.id, [solo.id], true);
+  saveSuppress({ nodes: [`collection:${col2.id}`], extensions: [] });
+  resetSuppressCacheForTest();
+
+  const hit = await call("library_search", { query: "翻库要被挡的那篇" });
+  // ⚠️ 判据用 **id**,不用标题:被挡时那句话会把用户的查询词原样回显
+  // (`匹配「翻库要被挡的那篇」的 1 条都在屏蔽列表里`),拿标题当判据会把自己的回显
+  // 当成泄漏。真正不能出现的是**条目本身**(`id=` 那一行)。
+  check("library_search:被屏蔽的不出现在结果里", !hit.includes(solo.id), hit);
+  check("library_search:并说了挡掉几条", hit.includes("屏蔽"), hit);
+  // 关键的那半句:模型得知道"查不到"不等于"库里没有"。
+  check("library_search:说明了那是屏蔽,不是没有", !hit.includes("库里没有匹配"), hit);
+
+  const listed = await call("library_items", { collectionId: col2.id });
+  check("library_items:被屏蔽的也不出现", !listed.includes(solo.id), listed);
+  check("library_items:并说了挡掉几条", listed.includes("屏蔽"), listed);
+
+  // 绝对路径那条线:库外被屏蔽的关联本来是 `linked` 条目,`itemLine` 会给 PDF 路径。
+  // 这里只确认"被挡的条目整个不出现"就够了 —— 路径自然也就跟着没了。
+  const searchAll = await call("library_search", { query: "" });
+  check("library_search:留空列全部时也过筛子", !searchAll.includes(solo.id), searchAll.slice(0, 600));
+
+  // 收尾:清掉屏蔽,免得影响后面(以及别的段)的判断。
+  resetSuppressCacheForTest();
+  saveSuppress({ nodes: [], extensions: [] });
+}
+
+/* ──────────────── 6. 长尾:调用方最可能踩的两个错 ──────────────── */
 
 console.log("\n长尾");
 

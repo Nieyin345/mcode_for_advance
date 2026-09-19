@@ -1469,10 +1469,13 @@ export async function startWorkflowRun(args: {
     //
     // 调度器自己抛了的话 `result` 是 null —— 那时最后一次 `snapshot` 端口调用的内容
     // 就是最新的,照实报 `failed` 即可。
-    writeRun(
-      result === null ? "failed" : result.status,
-      result?.state ?? latest.state,
-    );
+    //
+    // ⚠️ **算一次,下面那条收口的 reason 也读它。** 那两处曾经各算各的(这里是
+    // `result === null ? "failed" : result.status`,那里是 `result?.status === "cancelled" ? …`),
+    // 而"图定案为 failed、发出去的却是 end_turn"正是两处判据分家的那半截。收成一个
+    // 变量之后,以后谁改了其中一处,另一处不会悄悄漂走。
+    const settled: RunResult["status"] = result === null ? "failed" : result.status;
+    writeRun(settled, result?.state ?? latest.state);
 
     // 这一轮对用户来说结束了。**用既有的 `turn.done` 收口**,不另发明一个事件:
     // 渲染端的"运行中"状态、这一轮消息的落盘、其他客户端的同步、以及系统通知全都挂在
@@ -1481,6 +1484,30 @@ export async function startWorkflowRun(args: {
     // ⚠️ 走 `emitExternal` 而**不是** `broadcastRuntimeEvent`:后者不发观察者,图跑完了
     // 永远不弹通知(用户切走了就再也等不到)。父会话没有 provider 回合,所以这里不能
     // 借它的 `emit` 闭包 —— 这也正是 `emitExternal` 存在的原因。
+    //
+    // **三种收场,三个不同的 reason。** 从前只有两种:`cancelled → interrupted` 和
+    // **"其余全部 → end_turn"** —— 而那张图失败的次数比成功多得多(一个节点炸了整张图
+    // 就定案 failed),于是用户离开电脑回来看到的是「Agent 已完成本轮任务」。通知那头
+    // 说的是一句谎话,而它恰恰是用户唯一能看到的信号。这不是措辞不好,是**失败被当成
+    // 了成功报出去**。
+    //
+    // 收成 `error` 而不是新造一个取值:`TurnDoneReason` 里本来就有它(见
+    // `@contracts/runtime`),三家适配器在轮末失败时发的就是它(Claude 的
+    // `SdkMessageAdapter` 那条 error 结果、Codex 的 `CodexMessageAdapter`、Pi 的
+    // `PiAgentSdkProvider`),`runner.ts` 自己读节点的收场也在读它(见 `outcomeOf`
+    // 的 `reason === "error"`)。新增一个只给工作流用的取值会让每个消费方都要多认一个
+    // 分支,而**没有任何一处**会因为"这是工作流失败"而做出与"这一轮失败"不同的反应。
+    // 语义上它就是同一件事。
+    //
+    // ⚠️ **别顺手再补一条 `error` 事件。** 那条路看起来"更明确",但它是**第二条**
+    // 终态:渲染端在 `error` 分支里既 `bumpUnread()` 又落一次盘、还会把
+    // `runningBySession` 关掉 —— 同一个收场发两条,未读会加两次,而且那两处各自
+    // 做一遍的清理会互相打架。`turn.done` 的 reason 才是"这一轮怎么了"的唯一出口,
+    // 失败也一样。
+    //
+    // 回退链不受影响:`rt.fallbackModels` 对工作流会话是空的(见 `RuntimeManager`
+    // 里那条 `!session.workflowId` 的判据),而且 `emitExternal` 绕开了 `emit` 闭包、
+    // 那条链压根挂不上 —— 不会有"发个 error 就自动换个模型重跑一遍图"这回事。
     //
     // 取消收成 `interrupted` 而不是 `end_turn`:渲染端靠这个 reason 区分"正常跑完"和
     // "用户按了停止"(它据此决定要不要弹「回合完成」、要不要记未读)。
@@ -1492,7 +1519,7 @@ export async function startWorkflowRun(args: {
     runtimeManager.emitExternal({
       type: "turn.done",
       sessionId: session.id,
-      reason: result?.status === "cancelled" ? "interrupted" : "end_turn",
+      reason: settled === "cancelled" ? "interrupted" : settled === "failed" ? "error" : "end_turn",
       endedAt: Date.now(),
     });
 

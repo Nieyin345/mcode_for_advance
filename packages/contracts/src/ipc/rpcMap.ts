@@ -1023,10 +1023,16 @@ export interface RpcMap {
   /**
    * 给**单独一篇**生成清单 —— 「+」菜单里的选择器可以展开分类、只挑其中一篇。
    * 与整库清单同一套机制:只放一行 `@清单路径`,正文由 agent 自己读。
+   *
+   * `path` 为空串表示没挂上,`blockedReason` 说明是不是被用户自己设的屏蔽挡住了
+   * (与 `library.attachToChat` 同一个判据)。**被挡住时要如实说**,不能静默地少挂
+   * 一个 —— 否则用户只会觉得"点了没反应"。
    */
   "library.itemManifest": (input: LibraryItemManifestInput) => Promise<{
     path: string;
     count: number;
+    /** 有值 = 这条被屏蔽规则挡住了,值是挡住它的原因(给用户看的那句话)。 */
+    blockedReason?: string;
   }>;
   /** 把一条附件挂到指定会话的输入框上(左栏右键「添加到当前对话」)。
    *  与 AI 的 `library_attach_to_chat` 共用同一份实现,所以效果一致。 */

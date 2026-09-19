@@ -127,6 +127,22 @@ class NotificationManager {
       if (!this.prefs.turnComplete) return null;
       // Skip interrupted (user-initiated) and tool_use (intermediate) turns.
       if (e.reason === "interrupted" || e.reason === "tool_use") return null;
+      // **`error` 不在这里弹出「已完成本轮任务」。** 工作流整张图定案为 failed 时,
+      // 收口发的就是 `turn.done reason:"error"`(见 `orchestration/runner.ts` 里
+      // `settled` 那一段)——那个 reason 从前一路掉到下面那句写死的文案上,用户离开
+      // 电脑回来看见的是「Agent 已完成本轮任务」,而图其实炸了。失败被当成成功报出去,
+      // 这不是措辞问题。
+      //
+      // **挡在这里、而不是给它换一句「本轮失败」**:同一件事上面已经有一条 `error`
+      // 事件的通知了(标题「发生错误」、正文带 message,信息也更全)。两条事件都弹,
+      // 用户一次失败会收到**两条**通知 —— 那是把一个错换成了另一个错。
+      //
+      // ⚠️ 这条挡的是**已经有一条 `error` 事件在它前面**的那条路。三家引擎与工作流
+      // 收口都是成对发的(见 `PiAgentSdkProvider`、`CodexAgentSdkProvider`、
+      // `runner.ts`),所以今天没有漏报。以后谁想出**只发 `turn.done reason:"error"`、
+      // 不发 `error` 事件**的收场,失败就会变成一声不响 —— 那时候要做的不是把这里
+      // 放开,而是在那条路上把 `error` 事件补齐。
+      if (e.reason === "error") return null;
       // 工作流节点是隐藏会话:一次运行会给每个节点弹一条「回合完成」,而用户既看不见
       // 那些会话、也管不着它们。**只挡"完成"与"报错"这两类** —— 节点的审批与提问
       // 在主进程里已经被改写成父对话的事件了(`setInteractiveProxy`),标题也对,

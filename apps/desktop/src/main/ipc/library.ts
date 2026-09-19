@@ -705,6 +705,16 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
    */
   ipcMain.handle(IPC.LIBRARY_ITEM_MANIFEST, async (_evt, raw) => {
     const input = LibraryItemManifestSchema.parse(raw);
+    // **屏蔽是硬过滤,这道门与 `attachToChat` 是同一个判据、同一个函数。**
+    //
+    // 用户在「+」菜单里展开分类、只挑一篇时走的是这里 —— 而 `attachToChat` 那条路
+    // 早就挡了(`manifest.ts` 里那句「就算是我手动挂的一个文件,只要是屏蔽状态,也挂
+    // 不上去」)。同一个意图的两个入口,一个挡一个不挡,结果就是"屏蔽"这件事在界面上
+    // 时灵时不灵:左栏右键挂不上,「+」菜单挑得中。挡不住的那条还把文件路径写进了清单。
+    //
+    // 判据只有一份(见 `library/suppress.ts`),这里不重写它。
+    const reason = suppressionReasonOfItem(input.id);
+    if (reason) return { path: "", count: 0, name: "", blockedReason: reason };
     // 实现在 library/manifest.ts —— AI 也能挂库(见 mcp/libraryServer.ts 的
     // library_attach_to_chat),两边共用同一份,免得长出两种清单格式。
     return writeItemManifest(input.id);

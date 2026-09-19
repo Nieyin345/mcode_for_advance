@@ -202,10 +202,30 @@ export function libraryMcpTools(): McpToolSpec[] {
         },
         handler: async (args: { query: string; kind?: LibraryKind }) => {
           const items = searchItems(args.query ?? "", args.kind);
-          if (items.length === 0) {
+          // **屏蔽是硬过滤,这里也必须过。** `searchItems` 是纯仓储查询(纯 SQL,
+          // 见 `library/operations.ts`),它不看屏蔽规则 —— 而这一条是模型"翻库"的
+          // 主要出口,工具说明里还写着"判断库里有没有某一篇时用它"。不过这道门,
+          // 被屏蔽的条目会照常列出来,而且 `itemLine` 顺手带上 PDF 的**绝对路径**:
+          // 模型拿着它 Read / shell 一下就绕过去了,用户在设置里设的屏蔽等于白设。
+          //
+          // 判定只有一份(`library/suppress.ts`),这里不重写它。
+          const kept = items.filter((i) => !suppressionReasonOfItem(i.id));
+          const dropped = items.length - kept.length;
+          if (kept.length === 0) {
+            // 挡掉的和"库里没有"必须分开说 —— 前者是用户自己设的规矩在管事,模型
+            // 不该据此回答"库里没有这一篇"(那是 `library_search` 最要紧的那个用途,
+            // 见工具说明)。
+            if (dropped > 0) {
+              return text(
+                `匹配「${args.query}」的 ${dropped} 条都在屏蔽列表里(设置 → 资料库类型)。` +
+                  `如实告诉用户"被屏蔽了",不要当不存在,也不要凭空引用。`,
+              );
+            }
             return text(`库里没有匹配「${args.query}」的条目。不要因此凭空引用 —— 如实告诉用户库里没有。`);
           }
-          return text(`匹配 ${items.length} 条:\n\n${items.slice(0, 60).map(itemLine).join("\n")}`);
+          const tail =
+            dropped > 0 ? `\n\n(另有 ${dropped} 条被屏蔽规则挡住了,没有列出来。)` : "";
+          return text(`匹配 ${kept.length} 条:\n\n${kept.slice(0, 60).map(itemLine).join("\n")}${tail}`);
         },
       },
       {
@@ -300,9 +320,21 @@ export function libraryMcpTools(): McpToolSpec[] {
         description: "列出某个分类里的全部条目。返回的每条都带 id。",
         inputSchema: { collectionId: z.string().describe("分类 id,来自 library_collections") },
         handler: async (args: { collectionId: string }) => {
-          const items = LibraryRepo.listByCollection(args.collectionId);
-          if (items.length === 0) return text("(这个分类里还没有条目)");
-          return text(`${items.length} 条:\n\n${items.map(itemLine).join("\n")}`);
+          const all = LibraryRepo.listByCollection(args.collectionId);
+          // 同 `library_search`:这条也是直连仓储,而它给出的每一条同样带着 PDF 绝对
+          // 路径。屏蔽判定只有一份(见 `library/suppress.ts`)。
+          const items = all.filter((i) => !suppressionReasonOfItem(i.id));
+          const dropped = all.length - items.length;
+          if (items.length === 0) {
+            if (dropped > 0) {
+              return text(
+                `这个分类里的 ${dropped} 条都在屏蔽列表里(设置 → 资料库类型)。如实告诉用户。`,
+              );
+            }
+            return text("(这个分类里还没有条目)");
+          }
+          const tail = dropped > 0 ? `\n\n(另有 ${dropped} 条被屏蔽规则挡住了,没有列出来。)` : "";
+          return text(`${items.length} 条:\n\n${items.map(itemLine).join("\n")}${tail}`);
         },
       },
       {

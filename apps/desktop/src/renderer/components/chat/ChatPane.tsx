@@ -2388,16 +2388,39 @@ function ChatPaneForSession({
     async (picked: Array<{ key: string; name: string }>) => {
       if (picked.length === 0) return;
       const resolved: Array<{ collectionId: string; name: string; manifestPath: string }> = [];
+      // 没挂上的分两类,话不一样:一类是用户自己设的屏蔽生效了(那是规矩在管事),
+      // 一类是压根没找到(那是出了问题)。搁一起报会让人分不清该不该去改设置。
+      const blocked: string[] = [];
+      const missing: string[] = [];
       for (const { key, name } of picked) {
         try {
           const res = key.startsWith("i:")
             ? await api.library.itemManifest({ id: key.slice(2) })
             : await api.library.manifest({ collectionId: key.slice(2) });
+          // **被屏蔽的条目挂不上,而且要说出来。** 静默跳过的话,用户点了一篇、
+          // 输入框上什么都没多出来,只能自己猜是点了没反应还是软件坏了。同一句话
+          // 左栏右键那条路已经会说了(见 `library.attachToChat` 的返回),这里是它的
+          // 另一个入口,话得一样 —— 判据也是同一个(主进程给的 `blockedReason`)。
           if (res.path) resolved.push({ collectionId: key, name, manifestPath: res.path });
+          else if ("blockedReason" in res && res.blockedReason) blocked.push(`${name}:${res.blockedReason}`);
+          else missing.push(name);
         } catch (err) {
           // 单个失败不该拖垮整批 —— 其余的照常加进去
           console.error(`library manifest failed for ${key}:`, err);
         }
+      }
+      if (blocked.length > 0) {
+        useToastStore.getState().push({
+          kind: "warning",
+          title: `这些被屏蔽了,没挂上:${blocked.join(";")}`,
+          body: "设置 → 资料库类型 里可以改屏蔽规则。",
+        });
+      }
+      if (missing.length > 0) {
+        useToastStore.getState().push({
+          kind: "warning",
+          title: `这些没找到,没挂上:${missing.join("、")}`,
+        });
       }
       if (resolved.length === 0) return;
       setTags((prev) => appendUniqueLibraryTags(prev, resolved));
