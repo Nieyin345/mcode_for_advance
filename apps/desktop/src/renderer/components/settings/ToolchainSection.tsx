@@ -38,11 +38,13 @@ import {
   IconTrash,
 } from "@renderer/lib/icons.js";
 
-/** 显示名 —— 都是专有名词,不翻译(与同页的 AGENT_META 同一约定)。 */
-const TOOL_META: Record<ToolchainToolId, { label: string }> = {
+/** 显示名 —— 除 Python 那一项以外都是专有名词,原样显示(与同页的 AGENT_META
+ *  同一约定);Python 那一项是**说法**不是名词("Python 文档库"指的是这堆包
+ *  *给什么用*),所以走词典键。表在模块顶层,拿不到语言 hook,故存键、渲染时 t()。 */
+const TOOL_META: Record<ToolchainToolId, { label: string } | { labelKey: MessageId }> = {
   pandoc: { label: "Pandoc" },
   latex: { label: "LaTeX" },
-  "python-deps": { label: "Python 文档库" },
+  "python-deps": { labelKey: "settings.toolchain.tool.pythonDeps.label" },
   "zip-tools": { label: "zip / unzip" },
   soffice: { label: "LibreOffice" },
   pdftoppm: { label: "poppler" },
@@ -170,6 +172,7 @@ function ToolRow({
   const [actionError, setActionError] = useState<string | null>(null);
 
   const meta = TOOL_META[state.id];
+  const metaLabel = "labelKey" in meta ? t(meta.labelKey) : meta.label;
   const installing = busy || state.installing;
   const missing = state.components.filter((c) => !c.found).map((c) => c.name);
 
@@ -188,7 +191,7 @@ function ToolRow({
   };
 
   const doRemove = async () => {
-    if (!confirm(t("settings.toolchain.removeConfirm", { name: meta.label }))) return;
+    if (!confirm(t("settings.toolchain.removeConfirm", { name: metaLabel }))) return;
     setBusy(true);
     setActionError(null);
     try {
@@ -217,7 +220,7 @@ function ToolRow({
 
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
-            <span className="truncate text-[0.8571em] font-medium text-content">{meta.label}</span>
+            <span className="truncate text-[0.8571em] font-medium text-content">{metaLabel}</span>
             <span
               className={cn(
                 "shrink-0 rounded px-1 text-[9px] leading-tight",

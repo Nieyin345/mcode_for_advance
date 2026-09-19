@@ -312,6 +312,8 @@ export const en = {
   "settings.customModels.protocolOpenai": "OpenAI (/v1/chat/completions, translated locally)",
   "settings.customModels.protocolWeb": "Web page (driven by a browser extension)",
   "settings.customModels.webSiteLabel": "Site",
+  "settings.customModels.webSiteDeepseek": "DeepSeek web",
+  "settings.customModels.webSiteChatgpt": "ChatGPT web",
   "settings.customModels.webSitePlaceholder": "Pick a site",
   "settings.customModels.webSiteDriverPending": "(extension pending)",
   "settings.customModels.webSiteDriverPendingHint":
@@ -496,6 +498,7 @@ export const en = {
   "settings.toolchain.tool.pandoc.howto": "Click Install — the app downloads its own copy into its data directory.",
   "settings.toolchain.tool.latex.what": "Compiling paper LaTeX templates (xelatex / pdflatex; bibliographies via biber; Chinese via ctex)",
   "settings.toolchain.tool.latex.howto": "Click Install — the app downloads the full TinyTeX (~165 MB), then adds the Chinese typesetting chain (ctex + fonts) and the journal document classes paper templates use. Everything lands in the app's own data directory; no admin rights, roughly three to four minutes.",
+  "settings.toolchain.tool.pythonDeps.label": "Python document library",
   "settings.toolchain.tool.pythonDeps.what": "The Python packages Excel / PPT reading needs (openpyxl, markitdown, python-pptx, …)",
   "settings.toolchain.tool.pythonDeps.howto": "No usable Python found. Install Python yourself first, then come back and click Check again.",
   "settings.toolchain.tool.zip.what": "Required to edit docx / pptx: unpack → edit the XML → repack",
@@ -1297,6 +1300,10 @@ export const en = {
   // only flagged (a graph you cannot open elsewhere is a lock, not a workflow).
   "settings.workflows.paramRefForeign":
     "This value is not among the current candidates (the engine changed, or it is not installed here). Pick another, or keep it.",
+  // Origin tag prefixed to each MCP candidate's own detail line.
+  "settings.workflows.paramRefScopeUser": "User config",
+  "settings.workflows.paramRefScopeBuiltin": "Built-in",
+  "settings.workflows.paramRefScopePlugin": "From plugin",
   // The output-variable table (`kind: "variables"`) — rows of name + example.
   // ⚠️ The word "JSON" is deliberately absent from the UI: it is JSON underneath,
   // but that is the app's business. See contracts/outputConstraint.

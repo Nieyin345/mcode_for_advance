@@ -41,13 +41,21 @@ import {
 } from "@renderer/lib/icons.js";
 
 /** Display metadata per language id (icon + label + download fallback info).
- *  downloadUrl is opened in the browser when the package-manager install
- *  fails; downloadHintKey translates what the user should look for. Labels
- *  are proper nouns and stay untranslated; `hint` is technical text except
- *  for Java, which carries a `hintKey`. */
+ *  `downloadUrl` is opened in the browser when the package-manager install
+ *  fails; `downloadHintKey` translates what the user should look for.
+ *
+ *  `label` is a proper noun and stays untranslated. `hint` is the
+ *  "server · how it's installed" line; for every language but Java that line
+ *  is technical text with no prose in it ("gopls · go install"), so it is a
+ *  plain string. Java's carries actual prose ("auto-matched to your JDK
+ *  version"), so it goes through `hintKey` instead — **and it must not also
+ *  carry a `hint`**, or the two would be free to drift apart (the render site
+ *  picks whichever branch the union resolves to, so a stale `hint` would never
+ *  show up in testing and only surface if someone later removed the key). */
 const LANG_META: Record<
   LspLanguageId,
-  { label: string; hint: string; hintKey?: MessageId; downloadUrl: string; downloadHintKey: MessageId }
+  | { label: string; hint: string; downloadUrl: string; downloadHintKey: MessageId }
+  | { label: string; hintKey: MessageId; downloadUrl: string; downloadHintKey: MessageId }
 > = {
   typescript: {
     label: "TypeScript / JavaScript",
@@ -69,7 +77,6 @@ const LANG_META: Record<
   },
   java: {
     label: "Java",
-    hint: "jdtls · 自动匹配 JDK 版本",
     hintKey: "settings.lsp.hintJava",
     downloadUrl: "https://download.eclipse.org/jdtls/milestones/",
     downloadHintKey: "settings.lsp.dlHintJava",
@@ -283,7 +290,7 @@ function LanguageRow({
           className="min-w-0 flex-1 truncate text-left text-[0.7857em] text-content-subtle hover:text-content-muted"
           title={state.serverPath ?? undefined}
         >
-          {meta.hintKey ? t(meta.hintKey) : meta.hint}
+          {"hintKey" in meta ? t(meta.hintKey) : meta.hint}
         </button>
 
         {/* Actions */}

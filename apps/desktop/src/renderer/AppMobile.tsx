@@ -147,7 +147,7 @@ function MobileShell() {
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-edge bg-surface-muted px-1.5">
         <button
           type="button"
-          aria-label="打开会话列表"
+          aria-label={t("mobile.drawer.openList")}
           onClick={() => setDrawerOpen(true)}
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-content-muted hover:bg-surface-muted"
         >
@@ -180,7 +180,7 @@ function MobileShell() {
         </div>
         <button
           type="button"
-          aria-label="设置"
+          aria-label={t("layout.settings")}
           onClick={() => setSettingsOpen(true)}
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-content-muted hover:bg-surface-muted"
         >

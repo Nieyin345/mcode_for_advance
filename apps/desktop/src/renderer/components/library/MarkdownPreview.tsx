@@ -37,7 +37,15 @@ import { IconFolderOpen, IconLoader2, IconRefresh } from "@renderer/lib/icons.js
  * 打开预览直接卡死(用户报的正是这个)。现在改成:一遍正则扫出所有 `![]()` 的地址,
  * 查表决定换成什么 —— 与图片数量成线性,和正文长度也只是一遍。
  */
-function inlineImages(markdown: string, images: Record<string, string>, skipped: string[]): string {
+function inlineImages(
+  markdown: string,
+  images: Record<string, string>,
+  skipped: string[],
+  /** 就地那句「图片未内联:xxx」的**渲染器**。由调用方从 `t` 传进来 —— 这是个普通
+   *  函数,拿不到语言 hook;而它编译进正文之后,`splitMarkdownChunks` 会按它切段、
+   *  `Markdown` 会把那段当成 md 渲染(所以那句用全角括号括起来,别让 md 语法吃掉)。 */
+  notInlined: (ref: string) => string,
+): string {
   if (Object.keys(images).length === 0 && skipped.length === 0) return markdown;
   const skippedSet = new Set(skipped);
   /**
@@ -56,7 +64,7 @@ function inlineImages(markdown: string, images: Record<string, string>, skipped:
       const url = images[ref];
       if (url) return `${pre ?? pre2 ?? ""}${url}${post ?? post2 ?? ""}`;
       if (skippedSet.has(ref)) {
-        return quietSkip ? "" : `${pre ?? pre2 ?? ""}（图片未内联:${ref}）${post ?? post2 ?? ""}`;
+        return quietSkip ? "" : `${pre ?? pre2 ?? ""}${notInlined(ref)}${post ?? post2 ?? ""}`;
       }
       // 远程图或本来就没内联的 —— 原样留着
       return whole;
@@ -157,8 +165,13 @@ export function MarkdownPreview({ item }: { item: LibraryItem }) {
 
   /** 图片已内联好的**完整**正文;分段在下面做。 */
   const body = useMemo(
-    () => (data ? inlineImages(data.markdown, data.images, data.skipped) : ""),
-    [data],
+    () =>
+      data
+        ? inlineImages(data.markdown, data.images, data.skipped, (ref) =>
+            t("library.preview.imageNotInlined", { ref }),
+          )
+        : "",
+    [data, t],
   );
   const chunks = useMemo(() => (body ? splitMarkdownChunks(body) : []), [body]);
   /** 已经渲染了几段。换文档 / 重转后回到首屏那几段。 */

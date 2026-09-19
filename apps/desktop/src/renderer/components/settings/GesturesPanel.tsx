@@ -19,6 +19,8 @@ import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import {
   collectCommands,
   COMMAND_GROUPS,
+  COMMAND_GROUP_LABELS,
+  groupForId,
   type CommandDef,
   type CommandGroup,
 } from "@renderer/lib/commands.js";
@@ -77,13 +79,7 @@ export function GesturesPanel() {
     );
   }, [commands]);
 
-  const groupLabel: Record<CommandGroup, MessageId> = {
-    "会话": "settings.shortcuts.groupSession",
-    "视图": "settings.shortcuts.groupView",
-    "布局": "settings.shortcuts.groupLayout",
-    "编辑器": "settings.shortcuts.groupEditor",
-    "外观": "settings.shortcuts.groupAppearance",
-  };
+  const groupLabel = COMMAND_GROUP_LABELS;
 
   return (
     <section className={`mx-auto w-full ${PANEL_MAX_W.form} space-y-4`}>
@@ -198,12 +194,3 @@ const FALLBACK_LABELS: Record<string, MessageId> = {
   "layout.toggle-right": "lib.commands.toggleRight",
   "layout.toggle-bottom-terminal": "lib.commands.toggleTerminal",
 };
-
-/** The group a command belongs to, used for the filtered-out fallback.
- *  Mirrors ShortcutsPanel's groupForId. */
-function groupForId(id: string): CommandGroup {
-  if (id.startsWith("session.") || id.startsWith("tab.") || id.startsWith("voice.")) return "会话";
-  if (id.startsWith("layout.")) return "布局";
-  if (id.startsWith("appearance.")) return "外观";
-  return "视图";
-}

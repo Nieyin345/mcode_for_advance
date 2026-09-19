@@ -227,6 +227,10 @@ export const en = {
   "library.preview.skipped":
     "{n} images could not be inlined (missing, too large, or outside the folder) — marked in place in the text",
   "library.preview.skippedMany": "{n} more images are not shown here (over the preview limit)",
+  // Marker spliced into the prose itself (only when few images were skipped).
+  // Do NOT use square or ASCII round brackets: this text is handed to the
+  // Markdown renderer and `[..](..)` gets parsed as a link.
+  "library.preview.imageNotInlined": "(image not inlined: {ref})",
 
   // Settings page: library
   "settings.nav.library": "Library",

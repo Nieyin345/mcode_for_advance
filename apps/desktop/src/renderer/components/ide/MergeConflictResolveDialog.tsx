@@ -39,7 +39,11 @@ function findProjectIdForRepo(
 }
 
 /** Kickoff prompt for the resolution session. The file list is a snapshot
- *  from click time — the agent re-probes the live unmerged set itself. */
+ *  from click time — the agent re-probes the live unmerged set itself.
+ *
+ *  Model-facing prompt text, so it is deliberately NOT in the i18n
+ *  dictionaries (same rule as `buildPlanKickoffPrompt` in the session store:
+ *  only UI chrome is translated). */
 function buildConflictPrompt(repoPath: string, snapshotFiles: string[]): string {
   const fileList = snapshotFiles.map((f) => `- ${f}`).join("\n");
   return [

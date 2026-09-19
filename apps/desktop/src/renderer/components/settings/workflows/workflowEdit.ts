@@ -89,6 +89,13 @@ export function newAutomationDoc(id: string, name: string): WorkflowDoc {
  *
  * 不能靠代码在拼提示词时改这句 —— 指令是**用户改过的文本**,运行时不该悄悄改写它。
  * 所以写成**条件句**,让模型自己判:图长什么样,它每一轮都看得见(`## 整条流程`)。
+ *
+ * ## 为什么中文,不进 i18n
+ *
+ * 这一条和下面的 `TRIGGER_DEFAULT_TASK` **故意不进词典**,虽然它们确实出现在界面上
+ * (节点参数框里,用户看得见)。理由和 store 里的 `buildPlanKickoffPrompt` 一样:它们
+ * 是**要发给模型的文本**,不是界面文字 —— 译文会把措辞改掉,而提示词的效力就在措辞上,
+ * 换界面语言顺手换掉一条提示词等于让没验证过的指令上生产。
  */
 export const MAIN_DEFAULT_INSTRUCTION =
   "先弄清用户这次到底要什么,把它拆成几步,写清每一步交给谁、那一步要交出什么。" +

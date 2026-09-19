@@ -315,6 +315,10 @@ export const zh = {
   "settings.customModels.protocolOpenai": "OpenAI(/v1/chat/completions,经本地协议翻译)",
   "settings.customModels.protocolWeb": "网页端(借助浏览器扩展驱动网页版大模型)",
   "settings.customModels.webSiteLabel": "站点",
+  // 站点名（下拉里那两项）。名字本身是专有名词，但「网页版」这个后缀是说法，
+  // 所以整体走词典而不是在渲染处拼。
+  "settings.customModels.webSiteDeepseek": "DeepSeek 网页版",
+  "settings.customModels.webSiteChatgpt": "ChatGPT 网页版",
   "settings.customModels.webSitePlaceholder": "选择站点",
   "settings.customModels.webSiteDriverPending": "(扩展暂不支持)",
   "settings.customModels.webSiteDriverPendingHint":
@@ -499,6 +503,7 @@ export const zh = {
   "settings.toolchain.tool.pandoc.howto": "点右边的「安装」，应用自己下载一份放进自己的目录。",
   "settings.toolchain.tool.latex.what": "论文 LaTeX 模版的编译（xelatex / pdflatex，参考文献走 biber；中文靠 ctex）",
   "settings.toolchain.tool.latex.howto": "点右边的「安装」，应用会下载 TinyTeX 完整版（约 165 MB），接着补上中文排版链（ctex + 字体）和论文模版常用的期刊文档类。全程装在应用自己的目录里，不要管理员权限，大约三四分钟。",
+  "settings.toolchain.tool.pythonDeps.label": "Python 文档库",
   "settings.toolchain.tool.pythonDeps.what": "Excel / PPT 读取要的 Python 包（openpyxl、markitdown、python-pptx 等）",
   "settings.toolchain.tool.pythonDeps.howto": "没找到可用的 Python。先自己装一个 Python，再回来点「重新检测」。",
   "settings.toolchain.tool.zip.what": "编辑 docx / pptx 的必经步骤：解包 → 改 XML → 重新打包",
@@ -1283,6 +1288,10 @@ export const zh = {
   // 新引擎。**值保留、只提示**（换台机器打不开的图不叫工作流），但要说清它为什么不在
   // 候选里。见 ParamField 的 RefControl。
   "settings.workflows.paramRefForeign": "这一项不在当前的候选里（多半是换了引擎，或者本机没装）—— 换一个，或者留着。",
+  // MCP 那个引用参数里，每个候选的来源标签（拼在服务器自己那句 detail 前面）。
+  "settings.workflows.paramRefScopeUser": "用户配置",
+  "settings.workflows.paramRefScopeBuiltin": "内置",
+  "settings.workflows.paramRefScopePlugin": "插件自带",
   // 产出变量（`kind: "variables"`）—— 一张「名字 + 示例」的表。
   // ⚠️ 界面上**故意不出现 JSON 这个词**：底下确实是 JSON，但那是软件的事。用户看到的
   // 只是"这一步要交哪几样东西"。见 `@contracts/outputConstraint` 的文件头。

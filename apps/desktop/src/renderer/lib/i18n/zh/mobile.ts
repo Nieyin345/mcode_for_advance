@@ -68,6 +68,7 @@ export const zh = {
   "mobile.git.dismissError": "关闭错误提示",
 
   /* ── session drawer ── */
+  "mobile.drawer.openList": "打开会话列表",
   "mobile.drawer.closeList": "关闭会话列表",
   "mobile.drawer.searchThreads": "搜索线程",
   "mobile.drawer.noMatch": "没有匹配的线程",

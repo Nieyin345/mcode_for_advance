@@ -26,6 +26,7 @@ import { api } from "@renderer/lib/api.js";
 import { filterSkillsForEngine } from "@renderer/lib/engineFilter.js";
 import { MCP_ALWAYS_ON_SERVERS, type McpScope } from "@contracts/ipc";
 import type { NodeParamRefSource } from "@contracts/nodeType";
+import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 
 export interface RefOption {
   id: string;
@@ -197,11 +198,14 @@ function useProjectOptions(): RefOption[] {
 const refOptionCache = new Map<string, RefOption[]>();
 const EMPTY_REF_OPTIONS: RefOption[] = [];
 
-/** MCP 那份的来源名 —— 面板上也是这么分的(用户配的 / 内置 / 插件带的)。 */
-const MCP_SCOPE_LABEL: Record<McpScope, string> = {
-  user: "用户配置",
-  builtin: "内置",
-  plugin: "插件自带",
+/** MCP 那份的来源名 —— 面板上也是这么分的(用户配的 / 内置 / 插件带的)。
+ *
+ *  值在**装载时**就 `t()` 成字,所以这份清单的缓存键必须带上语言(见
+ *  `useMcpOptions`)—— 否则用户切了语言,缓存命中、这一行会一直停在旧语言。 */
+const MCP_SCOPE_LABEL: Record<McpScope, MessageId> = {
+  user: "settings.workflows.paramRefScopeUser",
+  builtin: "settings.workflows.paramRefScopeBuiltin",
+  plugin: "settings.workflows.paramRefScopePlugin",
 };
 
 /**
@@ -215,16 +219,22 @@ const MCP_SCOPE_LABEL: Record<McpScope, string> = {
  *    自己关得掉。
  */
 function useMcpOptions(enabled: boolean): RefOption[] {
+  const { t, locale } = useI18n();
+  // 缓存键带上语言:这一份的 hint 里含翻译过的来源名,而缓存活得比一次语言切换久。
   const options = useCachedOptions(
     enabled,
-    "mcp:all",
+    `mcp:all:${locale}`,
     async () => {
       const { servers } = await api.mcp.list({});
       return servers
         .filter(
           (s) => s.enabled && !s.needsAuth && !(MCP_ALWAYS_ON_SERVERS as readonly string[]).includes(s.name),
         )
-        .map((s) => ({ id: s.name, label: s.name, hint: `${MCP_SCOPE_LABEL[s.scope]} · ${s.detail}` }));
+        .map((s) => ({
+          id: s.name,
+          label: s.name,
+          hint: `${t(MCP_SCOPE_LABEL[s.scope])} · ${s.detail}`,
+        }));
     },
   );
   return options;

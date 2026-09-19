@@ -24,8 +24,7 @@
  * plain `label: string`. `keywords` deliberately keep BOTH languages — they
  * are search targets (matched by `commandMatches`), never rendered, so a
  * Chinese query still finds commands while the UI is in English.
- * `COMMAND_GROUPS` values stay as-is: they double as stable bucket
- * identifiers for the settings shortcuts panel.
+ * `COMMAND_GROUPS` are ids too, resolved through `COMMAND_GROUP_LABELS`.
  */
 import type { ComponentType } from "react";
 import type { Accelerator, Locale } from "@contracts/ipc";
@@ -63,15 +62,48 @@ import {
   IconMicrophone,
 } from "@renderer/lib/icons.js";
 
-/** Visual grouping label shown as a section header in the palette. */
+/** Visual grouping of commands in the palette and the settings panels.
+ *
+ *  These are stable IDENTIFIERS, not display text — the panels bucket by them
+ *  (`map.set(g, [])`) and render `COMMAND_GROUP_LABELS[g]`. Only the ids are
+ *  persisted anywhere (shortcut bindings key on command ids, never groups),
+ *  so what the id literally spells out doesn't matter; it used to be the
+ *  Chinese display words, which meant the values were load-bearing *and*
+ *  untranslatable at the same time. */
 export const COMMAND_GROUPS = [
-  "会话",
-  "视图",
-  "布局",
-  "编辑器",
-  "外观",
+  "session",
+  "view",
+  "layout",
+  "editor",
+  "appearance",
 ] as const;
 export type CommandGroup = (typeof COMMAND_GROUPS)[number];
+
+/** Group id → dictionary key. A key map (not resolved text) so this stays a
+ *  plain module-level table; the palette resolves it via `translate`, the two
+ *  settings panels via their `t`. */
+export const COMMAND_GROUP_LABELS: Record<CommandGroup, MessageId> = {
+  session: "settings.shortcuts.groupSession",
+  view: "settings.shortcuts.groupView",
+  layout: "settings.shortcuts.groupLayout",
+  editor: "settings.shortcuts.groupEditor",
+  appearance: "settings.shortcuts.groupAppearance",
+};
+
+/** The group a command id belongs to. Used by the settings panels to place a
+ *  command that `collectCommands` filtered out (one gated behind `available`,
+ *  e.g. "close tab" with no tabs open) — such a command has no live
+ *  definition to read a group off, so it's derived from the id prefix.
+ *
+ *  Lives here, next to `COMMAND_GROUPS`, because it encodes knowledge about
+ *  how ids are named; it used to be duplicated verbatim in both panels, which
+ *  meant a new id prefix had to be added in two places. */
+export function groupForId(id: string): CommandGroup {
+  if (id.startsWith("session.") || id.startsWith("tab.") || id.startsWith("voice.")) return "session";
+  if (id.startsWith("layout.")) return "layout";
+  if (id.startsWith("appearance.")) return "appearance";
+  return "view";
+}
 
 export interface CommandDef {
   /** Stable id for keying / dedup. Also the key into the shortcut bindings. */
@@ -140,7 +172,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "session.new",
     labelKey: "layout.newSession",
-    group: "会话",
+    group: "session",
     keywords: ["new", "session", "chat", "thread", "新建", "对话"],
     icon: IconPlus,
     defaultAccelerator: DEFAULT_SHORTCUTS["session.new"],
@@ -152,7 +184,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "tab.close",
     labelKey: "lib.commands.closeTab",
-    group: "会话",
+    group: "session",
     keywords: ["close", "tab", "关闭", "标签"],
     icon: IconX,
     defaultAccelerator: DEFAULT_SHORTCUTS["tab.close"],
@@ -179,7 +211,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "session.close",
     labelKey: "lib.commands.closeSession",
-    group: "会话",
+    group: "session",
     keywords: ["close", "session", "chat", "thread", "关闭", "会话"],
     icon: IconX,
     // Unlike tab.close (a center-tab command, tabs display-mode only), this
@@ -212,7 +244,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "voice.dictation",
     labelKey: "lib.commands.voiceDictation",
-    group: "会话",
+    group: "session",
     keywords: ["voice", "dictation", "mic", "speech", "asr", "语音", "听写", "说话", "麦克风"],
     icon: IconMicrophone,
     defaultAccelerator: DEFAULT_SHORTCUTS["voice.dictation"],
@@ -232,7 +264,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "command.palette",
     labelKey: "lib.commands.openPalette",
-    group: "视图",
+    group: "view",
     keywords: ["command", "palette", "search", "命令", "面板"],
     icon: IconKeyboard,
     defaultAccelerator: DEFAULT_SHORTCUTS["command.palette"],
@@ -243,7 +275,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "view.display-mode.single",
     labelKey: "lib.commands.displaySingle",
-    group: "视图",
+    group: "view",
     keywords: ["single", "display", "mode", "单", "模式"],
     icon: IconMessage,
     perform: (s) => {
@@ -254,7 +286,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "view.display-mode.tabs",
     labelKey: "lib.commands.displayTabs",
-    group: "视图",
+    group: "view",
     keywords: ["tabs", "display", "mode", "标签", "多开", "模式"],
     icon: IconColumns3,
     perform: (s) => {
@@ -265,7 +297,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "view.display-mode.toggle",
     labelKey: "lib.commands.displayToggle",
-    group: "视图",
+    group: "view",
     keywords: ["toggle", "display", "mode", "切换", "模式"],
     icon: IconArrowsExchange,
     defaultAccelerator: DEFAULT_SHORTCUTS["view.display-mode.toggle"],
@@ -277,7 +309,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "view.right-panel.files",
     labelKey: "lib.commands.rightPanelFiles",
-    group: "视图",
+    group: "view",
     keywords: ["files", "right", "panel", "文件", "右栏"],
     icon: IconFolder,
     perform: (s) => {
@@ -288,7 +320,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "files.search",
     labelKey: "lib.commands.searchFiles",
-    group: "视图",
+    group: "view",
     keywords: ["search", "files", "grep", "搜索", "查找", "文件"],
     icon: IconSearch,
     defaultAccelerator: DEFAULT_SHORTCUTS["files.search"],
@@ -300,7 +332,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "view.right-panel.git",
     labelKey: "lib.commands.rightPanelGit",
-    group: "视图",
+    group: "view",
     keywords: ["git", "right", "panel", "右栏"],
     icon: IconGitBranch,
     perform: (s) => {
@@ -311,7 +343,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "view.right-panel.turns",
     labelKey: "lib.commands.rightPanelTurns",
-    group: "视图",
+    group: "view",
     keywords: ["turns", "flow", "timeline", "usage", "轮次", "流程", "时间线", "右栏"],
     icon: IconListDetails,
     perform: (s) => {
@@ -322,7 +354,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "view.settings",
     labelKey: "lib.commands.openSettings",
-    group: "视图",
+    group: "view",
     keywords: ["settings", "preferences", "设置", "偏好"],
     icon: IconSettings,
     defaultAccelerator: DEFAULT_SHORTCUTS["view.settings"],
@@ -333,7 +365,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "chat.focus-input",
     labelKey: "lib.commands.focusComposer",
-    group: "视图",
+    group: "view",
     keywords: ["focus", "chat", "input", "composer", "聚焦", "输入"],
     icon: IconFocus,
     defaultAccelerator: DEFAULT_SHORTCUTS["chat.focus-input"],
@@ -352,7 +384,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "layout.toggle-left",
     labelKey: "lib.commands.toggleLeft",
-    group: "布局",
+    group: "layout",
     keywords: ["left", "sidebar", "toggle", "左侧", "侧栏"],
     icon: IconLayoutSidebarLeftExpand,
     defaultAccelerator: DEFAULT_SHORTCUTS["layout.toggle-left"],
@@ -366,7 +398,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "layout.toggle-right",
     labelKey: "lib.commands.toggleRight",
-    group: "布局",
+    group: "layout",
     keywords: ["right", "sidebar", "panel", "toggle", "右侧", "右栏"],
     icon: IconLayoutSidebarRightExpand,
     defaultAccelerator: DEFAULT_SHORTCUTS["layout.toggle-right"],
@@ -377,7 +409,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "layout.toggle-bottom-terminal",
     labelKey: "lib.commands.toggleTerminal",
-    group: "布局",
+    group: "layout",
     keywords: ["terminal", "bottom", "toggle", "终端", "底部"],
     icon: IconTerminal2,
     defaultAccelerator: DEFAULT_SHORTCUTS["layout.toggle-bottom-terminal"],
@@ -388,7 +420,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "layout.toggle-browser",
     labelKey: "lib.commands.toggleBrowser",
-    group: "布局",
+    group: "layout",
     keywords: ["browser", "web", "toggle", "浏览器", "网页"],
     icon: IconWorld,
     defaultAccelerator: DEFAULT_SHORTCUTS["layout.toggle-browser"],
@@ -403,7 +435,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "sidechat.open",
     labelKey: "lib.commands.openSideChat",
-    group: "布局",
+    group: "layout",
     keywords: ["sidechat", "subsession", "sub-session", "quick ask", "question", "ask", "子会话", "问答", "提问", "快速问答"],
     icon: IconMessageChatbot,
     defaultAccelerator: DEFAULT_SHORTCUTS["sidechat.open"],
@@ -417,7 +449,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "layout.toggle-wide-panel",
     labelKey: "lib.commands.toggleWide",
-    group: "布局",
+    group: "layout",
     keywords: ["wide", "panel", "fullscreen", "width", "宽屏", "全屏", "3:7", "右栏"],
     icon: IconArrowsMaximize,
     defaultAccelerator: DEFAULT_SHORTCUTS["layout.toggle-wide-panel"],
@@ -433,7 +465,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "editor.nav-back",
     labelKey: "lib.commands.navBack",
-    group: "编辑器",
+    group: "editor",
     keywords: ["back", "navigate", "history", "editor", "返回", "上一处", "后退", "编辑器"],
     icon: IconArrowLeft,
     defaultAccelerator: DEFAULT_SHORTCUTS["editor.nav-back"],
@@ -446,7 +478,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "editor.nav-forward",
     labelKey: "lib.commands.navForward",
-    group: "编辑器",
+    group: "editor",
     keywords: ["forward", "navigate", "history", "editor", "前进", "下一处", "编辑器"],
     icon: IconArrowRight,
     defaultAccelerator: DEFAULT_SHORTCUTS["editor.nav-forward"],
@@ -459,7 +491,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "appearance.theme.light",
     labelKey: "lib.commands.themeLight",
-    group: "外观",
+    group: "appearance",
     keywords: ["theme", "light", "主题", "浅色", "亮色"],
     icon: IconSun,
     perform: () => {
@@ -469,7 +501,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "appearance.theme.dark",
     labelKey: "lib.commands.themeDark",
-    group: "外观",
+    group: "appearance",
     keywords: ["theme", "dark", "主题", "深色", "暗色"],
     icon: IconMoon,
     perform: () => {
@@ -479,7 +511,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
   {
     id: "appearance.theme.toggle",
     labelKey: "lib.commands.themeToggle",
-    group: "外观",
+    group: "appearance",
     keywords: ["toggle", "theme", "切换", "主题"],
     icon: IconArrowsExchange,
     defaultAccelerator: DEFAULT_SHORTCUTS["appearance.theme.toggle"],
@@ -546,7 +578,7 @@ export function collectCommands(s: SessionState): CommandDef[] {
     cmds.push({
       id: `session.switch.${sess.id}`,
       label: translate(locale, "lib.commands.switchToSession", { title }),
-      group: "会话",
+      group: "session",
       keywords: ["switch", "session", "open", "tab", "切换", "跳转", title],
       icon: IconList,
       perform: (store) => {

@@ -308,7 +308,12 @@ export function makeElementTag(el: PickedElement): ContentTag {
       : el.preview;
   // Delimited block mirroring the paste format, but labeled as a page element
   // with its selector + source URL so the model knows exactly what it's seeing.
-  const content = `--- 页面元素 (${el.selector}) ---\n来源: ${el.url}\n${el.outerHTML}\n--- end ---`;
+  //
+  // Model-facing text: never translated (same rule as the `--- pasted content
+  // N ---` marker just below and `buildPlanKickoffPrompt` in the store). The
+  // `来源:` line used to be Chinese while its sibling markers were English,
+  // which read as two different conventions in one block.
+  const content = `--- page element (${el.selector}) ---\nsource: ${el.url}\n${el.outerHTML}\n--- end ---`;
   return {
     id: cryptoRandomId(),
     kind: "element",

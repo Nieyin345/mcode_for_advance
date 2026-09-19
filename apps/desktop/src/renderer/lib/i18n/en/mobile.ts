@@ -54,6 +54,7 @@ export const en = {
   "mobile.git.dismissError": "Dismiss error",
 
   /* ── session drawer ── */
+  "mobile.drawer.openList": "Open session list",
   "mobile.drawer.closeList": "Close session list",
   "mobile.drawer.searchThreads": "Search threads",
   "mobile.drawer.noMatch": "No matching threads",

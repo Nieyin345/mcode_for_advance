@@ -40,12 +40,28 @@ import {
 } from "@renderer/lib/icons.js";
 import {
   MCP_RESERVED_NAME,
+  type McpImportOrigin,
   type McpImportSource,
   type McpKind,
   type McpScope,
   type McpServerConfig,
   type McpServerEntry,
 } from "@contracts/ipc";
+
+/** Group key for the global scope. A plain string so the project-path groups
+ *  and this one can live in the same record; the sentinel shares no shape
+ *  with a real path (absolute paths start with a drive letter or a slash),
+ *  so it cannot collide. Written as visible text, not an escape, so the file
+ *  stays plain ASCII and git never mistakes it for binary. */
+const GLOBAL_ORIGIN_KEY = "<global>";
+
+/** Group/sort/selection key for a scan source. Both the grouping record and
+ *  the selection Set (`origin:name`) key on this, so it must be stable across
+ *  renders — deriving it from the contract shape rather than formatting the
+ *  origin for display is what keeps it so. */
+function originKey(origin: McpImportOrigin): string {
+  return origin.kind === "global" ? GLOBAL_ORIGIN_KEY : origin.path;
+}
 
 /** MCP server name charset — mirrored from the zod schema in the contract. */
 const MCP_NAME_RE = /^[A-Za-z0-9_-]+$/;
@@ -904,7 +920,7 @@ function ImportMcpDialog({
 
   // Selection key is `origin:name` (the same name can exist globally and in
   // several projects; both are offered, first import wins the name).
-  const sourceKey = (s: McpImportSource) => `${s.origin}:${s.name}`;
+  const sourceKey = (s: McpImportSource) => `${originKey(s.origin)}:${s.name}`;
   const toggle = (key: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -916,11 +932,12 @@ function ImportMcpDialog({
 
   // Group by origin — global scope first, then project paths.
   const groups = sources.reduce<Record<string, McpImportSource[]>>((acc, s) => {
-    (acc[s.origin] ??= []).push(s);
+    const k = originKey(s.origin);
+    (acc[k] ??= []).push(s);
     return acc;
   }, {});
   const groupKeys = Object.keys(groups).sort((a, b) =>
-    a === "全局" ? -1 : b === "全局" ? 1 : a.localeCompare(b),
+    a === GLOBAL_ORIGIN_KEY ? -1 : b === GLOBAL_ORIGIN_KEY ? 1 : a.localeCompare(b),
   );
 
   const selectedCount = selected.size;
@@ -981,15 +998,15 @@ function ImportMcpDialog({
                       <span
                         className={cn(
                           "rounded px-1.5 py-0.5 text-[10px] font-medium",
-                          origin === "全局"
+                          origin === GLOBAL_ORIGIN_KEY
                             ? "bg-accent/12 text-accent"
                             : "bg-surface-hover text-content-subtle",
                         )}
-                        title={origin === "全局" ? undefined : origin}
+                        title={origin === GLOBAL_ORIGIN_KEY ? undefined : origin}
                       >
-                        {/* "全局" is the literal origin tag emitted by the scan
-                            RPC — a data comparison, not display text. */}
-                        {origin === "全局" ? t("settings.mcp.originGlobal") : origin}
+                        {origin === GLOBAL_ORIGIN_KEY
+                          ? t("settings.mcp.originGlobal")
+                          : origin}
                       </span>
                       <span className="text-[0.7143em] text-content-subtle">
                         {t("settings.mcp.count", { n: groups[origin].length })}

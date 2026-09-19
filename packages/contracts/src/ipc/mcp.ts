@@ -226,14 +226,23 @@ export const McpRemoveSchema = z.object({
 });
 export type McpRemoveInput = z.infer<typeof McpRemoveSchema>;
 
+/** Where an importable server came from: the global scope, or a project path.
+ *
+ *  The global case is a **tag, not a path** — it used to be the Chinese word
+ *  "全局" travelling over the wire as the discriminator, which meant the
+ *  renderer compared against a display string (`origin === "全局"`) and had
+ *  to strip it back out for the English UI. A tagged union keeps the
+ *  discriminator untranslatable and unambiguous: a project whose directory
+ *  happens to be named "全局" is now just a path, as it should be. */
+export type McpImportOrigin = { kind: "global" } | { kind: "project"; path: string };
+
 /** A server discovered in the local Claude CLI config (~/.claude.json),
- *  offered by the import dialog. `origin` labels where it came from: the
- *  global scope or the project path it was configured for. */
+ *  offered by the import dialog. */
 export interface McpImportSource {
   name: string;
   kind: McpKind;
   detail: string;
-  origin: string;
+  origin: McpImportOrigin;
   config: McpServerConfig;
 }
 

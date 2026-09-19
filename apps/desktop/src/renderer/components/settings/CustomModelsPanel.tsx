@@ -113,9 +113,9 @@ const PROTOCOL_OPTIONS: { value: Protocol; labelKey: MessageId; icon: ReactNode 
  * 站点**选得到、配置存得下**，但开跑会明确报"扩展还不支持"，所以标签后缀上
  * 标出来，不让人以为是配错了。
  */
-const WEB_SITE_OPTIONS: { value: string; label: string; defaultModelId: string; driver: boolean }[] = [
-  { value: "deepseek", label: "DeepSeek 网页版", defaultModelId: "deepseek-web", driver: true },
-  { value: "chatgpt", label: "ChatGPT 网页版", defaultModelId: "chatgpt-web", driver: true },
+const WEB_SITE_OPTIONS: { value: string; labelKey: MessageId; defaultModelId: string; driver: boolean }[] = [
+  { value: "deepseek", labelKey: "settings.customModels.webSiteDeepseek", defaultModelId: "deepseek-web", driver: true },
+  { value: "chatgpt", labelKey: "settings.customModels.webSiteChatgpt", defaultModelId: "chatgpt-web", driver: true },
 ];
 
 /**
@@ -1456,7 +1456,7 @@ function ClaudeProviderForm({
                     const o = WEB_SITE_OPTIONS.find((x) => x.value === val);
                     return (
                       <span>
-                        {o ? o.label : t("settings.customModels.webSitePlaceholder")}
+                        {o ? t(o.labelKey) : t("settings.customModels.webSitePlaceholder")}
                       </span>
                     );
                   }}
@@ -1467,8 +1467,8 @@ function ClaudeProviderForm({
                   <Select.Item key={o.value} value={o.value}>
                     <Select.ItemText>
                       {o.driver
-                        ? o.label
-                        : `${o.label} ${t("settings.customModels.webSiteDriverPending")}`}
+                        ? t(o.labelKey)
+                        : `${t(o.labelKey)} ${t("settings.customModels.webSiteDriverPending")}`}
                     </Select.ItemText>
                   </Select.Item>
                 ))}

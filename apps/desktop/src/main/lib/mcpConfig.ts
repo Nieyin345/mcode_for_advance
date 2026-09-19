@@ -28,6 +28,7 @@ import {
   MCP_MANAGEMENT_SETTING_KEY,
   type McpKind,
   type McpManagementState,
+  type McpImportOrigin,
   type McpServerConfig,
 } from "@contracts/ipc";
 import { MCODE_CONFIG_DIR } from "@main/providers/claude-sdk/customEnv.js";
@@ -117,8 +118,9 @@ export function mcpServersOf(cfg: Record<string, unknown>): Record<string, unkno
 export interface CliMcpSource {
   name: string;
   config: McpServerConfig;
-  /** "全局" for the global scope, else the project path it was scoped to. */
-  origin: string;
+  /** Global scope or the project path it was scoped to. See
+   *  `McpImportOrigin` — a tag, never a display string. */
+  origin: McpImportOrigin;
 }
 
 /** Scan the real Claude CLI's ~/.claude.json (read-only) for importable MCP
@@ -133,7 +135,7 @@ export async function readCliMcpSources(): Promise<CliMcpSource[]> {
   const globalServers = mcpServersOf(parsed);
   for (const [name, raw] of Object.entries(globalServers)) {
     const config = parseMcpConfig(raw);
-    if (config) out.push({ name, config, origin: "全局" });
+    if (config) out.push({ name, config, origin: { kind: "global" } });
   }
   const projects = asRecord(parsed.projects);
   if (projects) {
@@ -142,7 +144,7 @@ export async function readCliMcpSources(): Promise<CliMcpSource[]> {
       if (!projectCfg) continue;
       for (const [name, raw] of Object.entries(mcpServersOf(projectCfg))) {
         const config = parseMcpConfig(raw);
-        if (config) out.push({ name, config, origin: projectPath });
+        if (config) out.push({ name, config, origin: { kind: "project", path: projectPath } });
       }
     }
   }

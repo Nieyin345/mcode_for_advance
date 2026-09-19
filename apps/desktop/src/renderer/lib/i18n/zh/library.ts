@@ -240,6 +240,9 @@ export const zh = {
   "library.preview.imageCount": "{n} 张图",
   "library.preview.skipped": "{n} 张图片没能内联（文件缺失、过大或不在同一目录），正文里已就地标出",
   "library.preview.skippedMany": "文中另有 {n} 张图片未在此显示（数量超出预览上限）",
+  // 就地插进正文的标记（少数几张没能内联时用）。**不要用方括号或半角括号** ——
+  // 这段文字会交给 Markdown 渲染器，`[..](..)` 会被当成链接语法吃掉。
+  "library.preview.imageNotInlined": "（图片未内联:{ref}）",
 
 
   // 设置页:文献库

@@ -44,10 +44,18 @@ const PRESETS: Array<{ id: UsageStatsPreset; labelKey: MessageId }> = [
  *  so the grid stretches to fill the available width; the fixed 3px gap (not
  *  em) keeps spacing stable across font-size settings. */
 
-const MONTHS_EN = [
-  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
+/* 月份缩写走 Intl 而不是手写表:这是一份**语言数据**,不是说法。中英两份本来
+ * 就是 `Intl.DateTimeFormat` 的输出(zh → "1月"、en → "Jan"),自己维护一张表
+ * 只会漏掉别的语言。按 `<html lang>` 的风格取短名,和 `lib/time.ts` 里那条
+ * "交给平台" 的路子一致。 */
+const MONTH_LABEL: Record<string, Intl.DateTimeFormat> = {};
+function monthLabel(locale: string, month: number): string {
+  const tag = locale === "zh" ? "zh-CN" : "en";
+  const fmt = (MONTH_LABEL[tag] ??= new Intl.DateTimeFormat(tag, { month: "short" }));
+  // 固定用 2021 那一年取名字:这里只要月名,年份不进结果,而写死年份才不会
+  // 因为"跨年那一周"取到 12 月/1 月的歧义。
+  return fmt.format(new Date(2021, month, 1));
+}
 
 function pad2(n: number): string {
   return String(n).padStart(2, "0");
@@ -160,7 +168,7 @@ export function UsagePanel() {
       const prevWeek = i > 0 ? weeks[i - 1].find((c) => c != null) : undefined;
       const prevMonth = prevWeek ? parseDateKey(prevWeek.date).getMonth() : null;
       if (prevMonth === month) return null;
-      return locale === "zh" ? `${month + 1}月` : MONTHS_EN[month];
+      return monthLabel(locale, month);
     });
 
     return { cells, weeks, monthLabels, dailyMax: max };
