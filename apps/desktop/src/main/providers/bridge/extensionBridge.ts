@@ -44,6 +44,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomBytes, randomUUID } from "node:crypto";
 import { log } from "@main/lib/logger.js";
+import { listenOnDialablePort } from "@main/lib/loopbackPort.js";
 import { MCODE_SESSION_HEADER, MCP_ENDPOINT_PATH, handleMcpRequest } from "./mcpEndpoint.js";
 import type { ExtensionBridgeStatus } from "@contracts/customModel";
 
@@ -274,13 +275,27 @@ export async function ensureStarted(): Promise<void> {
       resolve();
     };
 
+    // 回退到随机端口时不能只 `listen(0)`：浏览器(扩展那一侧)和 Node 一样执行 fetch
+    // 规范的 bad-port 名单，落到名单上的号**扩展一连接就失败**，而这边看不出任何异常。
+    // 见 lib/loopbackPort.ts。
+    const listenRandom = () => {
+      void listenOnDialablePort(srv).then(
+        () => onListening(),
+        (err: Error) => {
+          starting = null;
+          log.error(`extension bridge: listen failed: ${err.message}`);
+          reject(err);
+        },
+      );
+    };
+
     let fellBack = false;
     srv.on("error", (err) => {
       // 只在**第一次**、且确实是"端口被占"时回退；回退之后再失败就是真起不来了。
       if (!fellBack && (err as NodeJS.ErrnoException).code === "EADDRINUSE") {
         fellBack = true;
         log.info(`extension bridge: port ${PREFERRED_PORT} is taken, using a random one`);
-        srv.listen(0, "127.0.0.1", onListening);
+        listenRandom();
         return;
       }
       starting = null;

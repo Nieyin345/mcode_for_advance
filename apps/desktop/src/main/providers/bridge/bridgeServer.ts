@@ -17,11 +17,14 @@
  * ## Why a fresh port per server
  *
  * `listen(0)` lets the OS hand back a free ephemeral port, so we never clash
- * with anything the user is running, and never need a config knob.
+ * with anything the user is running, and never need a config knob. "Free" is
+ * not the same as "usable", though — see `lib/loopbackPort.ts` for why the
+ * bind is retried until the draw is one clients will actually dial.
  */
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
 import { log } from "@main/lib/logger.js";
+import { isBlockedPort, listenOnDialablePort } from "@main/lib/loopbackPort.js";
 import {
   hasHeader,
   requiresSessionHeader,
@@ -558,13 +561,12 @@ export async function startBridge(upstream: UpstreamConfig): Promise<BridgeHandl
     res.end(JSON.stringify({ type: "error", error: { message: "not found" } }));
   });
 
-  const port = await new Promise<number>((resolve, reject) => {
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      if (addr && typeof addr === "object") resolve(addr.port);
-      else reject(new Error("failed to bind bridge server"));
-    });
+  // The Claude binary dials this with Node's fetch, so the port must survive
+  // the fetch spec's bad-port blocklist — see lib/loopbackPort.ts. Log the
+  // blocked draws: otherwise the only trace of this is a rebind that looks
+  // arbitrary.
+  const port = await listenOnDialablePort(server, (p) => {
+    if (isBlockedPort(p)) log.info(`bridge: OS handed out blocked port ${p}; rebinding`);
   });
 
   const routeToken = randomBytes(12).toString("hex");
