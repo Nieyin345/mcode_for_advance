@@ -631,19 +631,22 @@ check(
  *    `mcode.agent` 这类节点的终末一步也一样跳过 —— 它是**所有**节点的规矩,不是命令
  *    节点被特殊对待。**这一半是伪问题。**
  *
- *  - 但**非终末**命令节点上,那张表确实只能被一种东西满足:命令自己**打印出一个 JSON
- *    对象**。因为校验和取值(`checkOutput` / `pickOutputs`,在 `@contracts/outputConstraint`)
- *    读的一直是 `outcome.summary`;而 `commandRunner` 的 `summary` = stdout 尾部
- *    (协议里的 `summary` 有就优先)。**这一半是真问题**,而且缺口比"要打印 JSON"更深:
+ *  - 非终末命令节点上,那张表**曾经**只能被一种东西满足:命令自己**打印出一个 JSON
+ *    对象**。因为校验和取值读的一直是 `outcome.summary`;而 `commandRunner` 的
+ *    `summary` = stdout 尾部(协议里的 `summary` 有就优先)。缺口比"要打印 JSON"更深:
  *    清单把 `@@mcode:result` 写成脚本上报结构化产出的正式办法、协议里明明白白有个
  *    `outputs` 字段,可**只用协议、不写 summary**,值落在 `outcome.outputs` 上,校验却
  *    读不到 —— 这一步反而**失败**。等于说:照文档做的脚本会翻车,把同一个值再
- *    `JSON.stringify` 一遍塞进 `summary` 才行(4h-4 就是那个对照)。
+ *    `JSON.stringify` 一遍塞进 `summary` 才行。
  *
- * ⚠️ **这一段只钉事实,不钉"应该怎样",更不在这里动手修。** 坏的是取值那一侧
- * (`scheduler.ts` / `outputConstraint.ts` 只认 summary),这两处都**不在**本次允许改的
- * 文件清单里。把现状钉成回归网的用处是:真去修的时候,4h-3 会**反过来** —— 那正是
- * "修对了"的证据,而不是把这条断言当成了需求。
+ * **这个已经修了**(`scheduler.ts` 的 `checkOutputFrom`):原文解不出时退回
+ * `outcome.outputs`,只看**表里点名的**那几样在不在,齐了就算交差。于是:
+ *
+ *  - 4h-1、4h-2 不受影响 —— 走的是原文本那条老路,回归网证明没被这条退路削弱。
+ *  - 4h-3b **反过来了**:只用协议的脚本现在成功,下游也取到了值。这正是当初写下
+ *    "真去修的时候 4h-3 会反过来"时说的那个证据,不是把断言改成了需求。
+ *  - 4h-4 从"对照组"降级成"也通的一条路",留着是为了钉第四条:**运行时已经填好的值
+ *    不许被原文里的同名键盖掉** —— 它和 4h-3b 两个方向合起来才是完整的口径。
  */
 
 /** 假 spawn:`deps.spawn` 要的是**一个和 `node:child_process.spawn` 同形状的函数**,
@@ -679,10 +682,13 @@ const CMD_TYPES = new Map<string, NodeTypeManifest>([
  * 和 B 收到的提示词一起带回来。这是唯一能同时看到"校验判了什么"和"下游取到了什么"的
  * 玩法 —— 单跑 `runCommandNode` 看不到校验,单看 outcome 看不到下游。
  */
-async function runCmdChain(lines: string[]): Promise<{ outcome?: NodeOutcome; bPrompt: string }> {
+async function runCmdChain(
+  lines: string[],
+  vars: { name: string; example?: string }[] = [{ name: "年份", example: "2024" }],
+): Promise<{ outcome?: NodeOutcome; bPrompt: string }> {
   const workflow = doc(
     [
-      node("A", cmdManifest.id, { command: "冒烟用的假命令", outputVars: [{ name: "年份", example: "2024" }] }),
+      node("A", cmdManifest.id, { command: "冒烟用的假命令", outputVars: vars }),
       node("B", "mcode.agent", { instruction: "用 A 交出来的年份" }),
     ],
     [edge("e1", "A", "B")],
@@ -719,7 +725,8 @@ async function runCmdChain(lines: string[]): Promise<{ outcome?: NodeOutcome; bP
 }
 
 // 4h-1 · 表是**真被读的**:命令只打印一行普通文本 → 这一步失败、下游被跳过。
-// 失败本身是对的(表是一句承诺);这条只钉"不是静默跳过"。
+// 失败本身是对的(表是一句承诺);这条只钉"不是静默跳过"。**它同时是那条退路的反例**:
+// 退回 `outcome.outputs` 之后,这里仍然必须红 —— 否则不叫"退回",叫"不查了"。
 const plain = await runCmdChain(["版本 1.2.3,已就绪"]);
 check(
   "4h-1 命令打印普通文本 → 这一步失败、下游不跑(表被读了,不是静默跳过)",
@@ -727,7 +734,7 @@ check(
   plain,
 );
 
-// 4h-2 · 表能取到值的**唯一**路径:命令自己打印一个 JSON 对象。
+// 4h-2 · 原文本那条路:命令自己打印一个 JSON 对象,照样能交差。
 const jsonLine = JSON.stringify({ 年份: "2024" });
 const asJson = await runCmdChain([jsonLine]);
 check(
@@ -736,14 +743,13 @@ check(
   asJson,
 );
 
-// 4h-3 · **这条是那个真问题。** 清单把 `@@mcode:result` 写成正式上报办法,协议里
-// `outputs` 字段就是放结构化产出的(`commandRunner.consumeProtocolLine`)。但只走协议、
-// `summary` 留空时,值虽然进了 `outcome.outputs`(4h-3a),校验却只读 `summary` —— 于是
-// 这一步**失败**(4h-3b)。断言的是**现状**:修好之后这两条都要反过来。
+// 4h-3 · **这就是当初查出来的那个真问题。** 清单把 `@@mcode:result` 写成正式上报办法,
+// 协议里 `outputs` 字段就是放结构化产出的(`commandRunner.consumeProtocolLine`),值确实
+// 进了 `outcome.outputs`(4h-3a)。修之前校验只读 `summary`,于是这一步**失败**(4h-3b)。
 //
-// 两条要分开断:失败那条路会把 `outputs` 丢掉(`withOutputCheck` 造的是一个只有
-// `summary` / `error` 的新 outcome),所以"值确实被解出来了"只能在**执行器原样返回的
-// 那份 outcome** 上看 —— 那也正是这段链上唯一能证明"缺的不是解析、是取值口径"的证据。
+// 两条要分开断,因为 4h-3a 检的是**执行器原样返回的那份 outcome**,而校验失败时
+// `withOutputCheck` 造的是一个只有 `summary` / `error` 的新 outcome(会把 `outputs`
+// 丢掉)—— 那也正是这段链上唯一能证明"缺的不是解析、是取值口径"的证据。
 const protoLine = `@@mcode:result ${JSON.stringify({ outputs: { 年份: "2024" } })}`;
 const protoRaw = await runCommandNode(
   { command: "冒烟用的假命令", timeoutMs: 0, signal: new AbortController().signal },
@@ -756,20 +762,50 @@ check(
 );
 const protoOnly = await runCmdChain([protoLine]);
 check(
-  "4h-3b 但校验只读 summary → 这一步被自己的产出表判失败,下游不跑",
-  protoOnly.outcome?.status === "failed" && protoOnly.bPrompt === "<B 没跑>",
+  "4h-3b 只用协议、不写 summary 的脚本也能交差 —— 下游真的取到了值",
+  protoOnly.outcome?.status === "success" && protoOnly.bPrompt.includes("2024"),
   protoOnly,
 );
 
-// 4h-4 · 同一份协议内容,只是**顺手**把同一个值也写进 `summary`,就成功了。这条把 4h-3
-// 的因果钉死:差别只在字段落在哪,不在"命令做没做对"。
+// 4h-4 · 另一条也通的路:协议 + 顺手把同一个值也写进 `summary`。
+//
+// 它现在钉的是**第四条规矩**:`outcome.outputs` 里已经填好的值不许被原文里的同名键
+// 盖掉。这里两边恰好同值,看不出差别;真正会出事的形状是"协议给的是算出来的结果,
+// 原文里那一段只是它的另一种写法" —— 那时候拿原文去盖,用户拿到的就不是命令交的那个
+// 值了。所以 `checkOutputFrom` 命中运行时产出时返回 `value: undefined`,调用方原样返回
+// outcome、一个字节都不重写。4h-3b 与它合起来才是完整口径:两个方向都通,且都不改写。
 const protoWithSummary = await runCmdChain([
   `@@mcode:result ${JSON.stringify({ outputs: { 年份: "2024" }, summary: JSON.stringify({ 年份: "2024" }) })}`,
 ]);
 check(
-  "4h-4 同一份协议,补一个 summary 就成功 —— 差别只在字段落在哪",
-  protoWithSummary.outcome?.status === "success" && protoWithSummary.bPrompt.includes("2024"),
+  "4h-4 协议之外又写了 summary 也成功(并且两边同值时以运行时那份为准)",
+  protoWithSummary.outcome?.status === "success" &&
+    (protoWithSummary.outcome.outputs as Record<string, unknown> | undefined)?.["年份"] === "2024" &&
+    protoWithSummary.bPrompt.includes("2024"),
   protoWithSummary,
+);
+
+// 4h-4b · **退路的边界**:退回去看的只是表里**点名的**那几样。命令交了个别的东西、
+// 唯独没有点名的那一样 → 仍然要失败。少了这条,"只要 outputs 非空就放行"那种写坏
+// 也会绿,而它会把这张表彻底废掉。
+const protoWrongKey = await runCmdChain([`@@mcode:result ${JSON.stringify({ outputs: { 月份: "3" } })}`]);
+check(
+  "4h-4b 协议里交的是别的东西、没有点名的那一样 → 仍然失败(退路只认表里点名的键)",
+  protoWrongKey.outcome?.status === "failed" && protoWrongKey.bPrompt === "<B 没跑>",
+  protoWrongKey,
+);
+
+// 4h-4c · **表里点名的必须全都到位。** 上面几条表里只有一样,`every` 和 `some` 在这种
+// 表上分不出来 —— 少了这条,退回逻辑写成"点名的**任意一样**在 outputs 里就放行"也会
+// 绿,而那张表就成了一句空话(用户要两样,拿到一样也算交差)。
+const protoHalf = await runCmdChain(
+  [`@@mcode:result ${JSON.stringify({ outputs: { 年份: "2024" } })}`],
+  [{ name: "年份", example: "2024" }, { name: "月份", example: "3" }],
+);
+check(
+  "4h-4c 表里点名两样、只交了一样 → 仍然失败(是 every,不是 some/非空)",
+  protoHalf.outcome?.status === "failed" && protoHalf.bPrompt === "<B 没跑>",
+  protoHalf,
 );
 
 // 4h-5 · 清单声明的 `exitCode` / `stdout` 走的是**另一条路**:运行时真的进了

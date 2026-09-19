@@ -121,6 +121,8 @@ import {
   checkOutput,
   matchDecisionOption,
   outputValueText,
+  type OutputCheck,
+  type OutputVar,
   outputVarsOf,
   pickOutputs,
   validateOutputRules,
@@ -526,7 +528,7 @@ function withOutputCheck(
   const vars = outputVarsOf(manifest, params);
   if (vars.length === 0) return outcome;
 
-  const checked = checkOutput(outcome.summary, vars);
+  const checked = checkOutputFrom(outcome, vars);
   if (!checked.ok) {
     // **留一个 failed,不抛。** 抛会走到 `executeOne` 的 catch 里,那条路是给"宿主
     // 实现有 bug"用的,而这里是一个正常的、说得清的结局。
@@ -541,6 +543,80 @@ function withOutputCheck(
   // 解出来的东西留下来:下游的 `{{某步.某变量}}` 取的就是它。**这是产出变量真正的
   // 回报** —— 没有它,那张表只是"更好看的一段文本"。
   return { ...outcome, outputs: { ...(outcome.outputs ?? {}), ...pickOutputs(checked.value, vars) } };
+}
+
+/**
+ * 按变量表查这一步的产出 —— **原文与运行时产出两处都算命中**。
+ *
+ * ## 为什么要看 `outcome.outputs`(2026-09-20)
+ *
+ * 原来只 `checkOutput(outcome.summary, vars)`,而这是**假设了产出一定长在原文里**。
+ * 那个假设对模型节点成立(它就交一段文本),对**命令节点不成立**:它的清单把
+ * `@@mcode:result` 写成脚本上报结构化产出的正式办法,协议里的 `outputs` 字段就是放
+ * 结构化产出的地方,`commandRunner` 也确实把它解到了 `outcome.outputs` 上 ——
+ * **可校验读的是 `summary`,读不到**。
+ *
+ * 结果是**照文档做的脚本反而翻车**:只用协议、值落在 `outputs` 上 → 这一步被自己的
+ * 产出表判失败,而把同一个值再 `JSON.stringify` 一遍塞进 `summary` 反而就好了。
+ * 差别只在字段落在哪,不在命令做没做对。
+ *
+ * ## 为什么在这里判、不在执行器里判
+ *
+ * `vars` 只有调度器手上有(`withOutputCheck` 的入参就是它)。执行器不知道用户要什么,
+ * 让它去猜"我这次该不该填 summary"只会把同一条规矩拆成两份。而且这一条对**所有**
+ * 执行器都成立:谁往 `outcome.outputs` 里填了齐的那几样,谁就交差了。
+ *
+ * ## 齐了就不再解析原文
+ *
+ * `value: undefined` 是刻意的 —— 调用方看到它就**原样返回 outcome**(见上面那句
+ * `if (checked.value === undefined) return outcome`)。运行时已经填好的值不该被
+ * `pickOutputs` 拿原文里的同名键盖掉:那些值可能来自协议(python 脚本算的),而原文里
+ * 那一段可能只是同一个东西的另一种写法。
+ */
+function checkOutputFrom(outcome: NodeOutcome, vars: readonly OutputVar[]): OutputCheck {
+  const outputs = outcome.outputs;
+  if (outputs !== undefined && vars.every((v) => v.name in outputs)) {
+    return { ok: true };
+  }
+  return checkOutput(outcome.summary, vars);
+}
+
+/**
+ * 把一份结局渲染成"它交出来的东西" —— **原文优先,原文空时退回产出**。
+ *
+ * ## 为什么非这样不可(2026-09-20,和 `checkOutputFrom` 同一个根)
+ *
+ * 这条流程上有三处都在问同一个问题("这一步交了什么"),而它们**曾经各写一遍**:
+ * 流程记录走 `recordBodyOf`(会看产出),而**直接上游那一节**(`upstreamTextOf`)和
+ * **岔路口透传**(`carriedTextOf`)只看 `summary`。
+ *
+ * 对一个只用 `@@mcode:result` 上报、不写 `summary` 的命令节点,后果是**同一个结局在
+ * 这三处显示得不一样**:流程记录里有,直接上游那一节里没有。而最要命的一处正是它 ——
+ * 一条直线 `A → B` 上,B 的指令里写着"用 A 交出来的年份",它看到的却是一片空白,
+ * 于是要么反问、要么自己编一个。
+ *
+ * ## 为什么是"原文优先"而不是"两个都拼"
+ *
+ * 原文非空时**一个字节都不改** —— 那是绝大多数节点的形状(模型节点就交一段文本),
+ * 老行为必须逐字保住。只有原文是空的、而产出里有东西时,才换成变量表那种
+ * `- 名字:值` 的写法(和 `recordBodyOf` 同一种,用 `outputValueText` 同一个转换)。
+ *
+ * 也因此**不是**把 `outputs` 全倒出来:`commandRunner` 每次都填 `exitCode` / `stdout`,
+ * 在提示词里塞一段 `- exitCode:0` 对读的人毫无用处。命令节点那种"交了个对象"的形状,
+ * 意义全在下游的 `{{某步.某变量}}` 上,不在这一节里。
+ */
+function producedTextOf(outcome: NodeOutcome): string {
+  const summary = outcome.summary.trim();
+  if (summary.length > 0) return summary;
+  const outputs = outcome.outputs;
+  if (outputs === undefined) return "";
+  const lines: string[] = [];
+  for (const [name, value] of Object.entries(outputs)) {
+    const text = outputValueText(value);
+    if (text.length === 0) continue;
+    lines.push(`- ${name}:${text}`);
+  }
+  return lines.join("\n");
 }
 
 /* ────────────────────────── 调度 ────────────────────────── */
@@ -794,9 +870,9 @@ class Run {
     for (const up of this.deps.get(nodeId) ?? []) {
       const outcome = this.outcomes.get(up);
       if (outcome?.status !== "success") continue;
-      const summary = outcome.summary.trim();
-      if (summary.length === 0) continue;
-      parts.push(this.labelUpstreamText(up, summary));
+      const body = producedTextOf(outcome);
+      if (body.length === 0) continue;
+      parts.push(this.labelUpstreamText(up, body));
     }
     return parts.join("\n\n");
   };
@@ -861,9 +937,9 @@ class Run {
       if (upTitle.length > 0 && referenced.has(upTitle)) continue;
       const outcome = this.outcomes.get(up);
       if (outcome?.status !== "success") continue;
-      const summary = outcome.summary.trim();
-      if (summary.length === 0) continue;
-      parts.push(this.labelUpstreamText(up, summary));
+      const body = producedTextOf(outcome);
+      if (body.length === 0) continue;
+      parts.push(this.labelUpstreamText(up, body));
     }
     return parts.join("\n\n");
   };
