@@ -17,10 +17,10 @@
  *
  * ## 工具的分工
  *
- * 读工具(自动放行,不弹审批):collections / search / items / templates_list。
+ * 读工具(自动放行,不弹审批):collections / search / items / links / templates_list。
  * 写工具(需要用户点头;用户可以在审批时勾"始终允许"):create_collection /
- * import / download / move / remove / rename / write_note / templates_attach_to_chat /
- * templates_add。
+ * import / download / convert / move / remove / rename / write_note /
+ * link_add / link_remove / templates_attach_to_chat / templates_add。
  *
  * 刻意**不提供硬删除**:remove 是把条目移出所有分类、落进回收站,用户随时能捞回来。
  * AI 的"删除"是它自己判断出来的动作,判断错了用户得有得救。
@@ -28,7 +28,7 @@
 import { z } from "zod";
 import { SEARCH_LIMIT_SETTING_KEY } from "@contracts/ipc";
 import type { LibraryItem, LibraryKind } from "@contracts/library";
-import { LibraryRepo, CollectionRepo, NoteRepo, SettingRepo, DownloadJobRepo } from "@main/store/repositories.js";
+import { LibraryRepo, CollectionRepo, NoteRepo, SettingRepo, DownloadJobRepo, LibraryLinkRepo } from "@main/store/repositories.js";
 import {
   assignToCollection,
   importIdentifiers,
@@ -37,6 +37,7 @@ import {
   searchItems,
 } from "@main/library/operations.js";
 import { enqueueDownloads } from "@main/library/downloader.js";
+import { convertItemToMarkdown } from "@main/library/convert.js";
 import { loadLibraryTypes } from "@main/library/kindRegistry.js";
 import { attachToChat } from "@main/library/manifest.js";
 import {
@@ -50,6 +51,7 @@ import { MCP_LIBRARY_SERVER } from "@contracts/ipc";
 import { searchExternal } from "@main/library/metadata.js";
 import { rankJournals } from "@main/library/journalRank.js";
 import { notifyLibraryChanged } from "@main/library/broadcast.js";
+import { suppressionReasonOfItem } from "@main/library/suppress.js";
 import { fail, loadCreateMcpServer, text, toSdkTools, type McpToolContext, type McpToolSpec } from "./sdk.js";
 
 /** MCP server 名。SDK 把工具暴露成 `mcp__<这个名字>__<工具名>`。
@@ -69,6 +71,8 @@ export const LIBRARY_READONLY_TOOLS = new Set([
   "library_search_online",
   "library_journal_rank",
   "library_items",
+  // 看关联是只读的(增删是另外两条写工具)
+  "library_links",
   // 模版库那一段(与文献库同级别的另一段,见文件头)
   "templates_list",
 ]);
@@ -622,6 +626,118 @@ export function libraryMcpTools(): McpToolSpec[] {
           NoteRepo.save({ itemId: args.itemId, content, origin: args.origin ?? "user" });
           notifyLibraryChanged("write_note");
           return text(`已给《${item.title}》写好笔记(${content.length} 字)。`);
+        },
+      },
+      {
+        name: "library_convert",
+        description:
+          "把文献的 PDF 转成 Markdown(自动化的「转录」那一步用它)。转换是**分钟级**的,这条工具会一直等到转完才返回。\n" +
+          "已配 MinerU 就走 MinerU(排版/公式/表格保留,但要上传到 mineru.net);没配或 MinerU 失败则退回本地抽取(只有纯文本)。\n" +
+          "**已经有 Markdown 的会跳过** —— 重复调用不白烧 MinerU 的额度;确实要重转才把 force 打开。\n" +
+          "⚠️ 它**不下载** PDF:`library_add_paper` / `library_import` 导入时已经自动排队下载,这条只管「已经在本地的 PDF → Markdown」。条目还没有 PDF 时如实转告用户,别自己去抓。",
+        inputSchema: {
+          ids: z.array(z.string()).min(1).describe("要转的条目 id,来自 library_search / library_items"),
+          force: z.boolean().optional().describe("已经有 Markdown 也重转(默认关)"),
+        },
+        handler: async (args: { ids: string[]; force?: boolean }) => {
+          const lines: string[] = [];
+          let converted = 0;
+          for (const id of args.ids) {
+            const item = LibraryRepo.get(id);
+            if (!item) {
+              lines.push(`- ${id} —— 库里没有这个 id`);
+              continue;
+            }
+            const res = await convertItemToMarkdown(item, { force: args.force });
+            if (res.ok) {
+              converted += 1;
+              // 已经有 md 时是 `alreadyDone`,别把它说成"这次转了一遍"。
+              lines.push(
+                res.alreadyDone
+                  ? `- 《${item.title}》\n  id=${id}\n  已有 Markdown,没有重转`
+                  : `- 《${item.title}》\n  id=${id}\n  已转好(${res.source === "mineru" ? "MinerU" : "本地抽取"}${res.chars ? `,${res.chars} 字节` : ""})`,
+              );
+              continue;
+            }
+            lines.push(`- 《${item.title}》\n  id=${id}\n  没转成:${res.error}`);
+          }
+          if (converted > 0) notifyLibraryChanged(`convert:${converted}`);
+          return text(
+            `已处理 ${args.ids.length} 条:\n\n${lines.join("\n")}\n\n` +
+              "转好的条目这一条的详情页就能读到 Markdown,右栏的全文检索也找得到它。",
+          );
+        },
+      },
+      {
+        name: "library_links",
+        description:
+          "看某一条**关联了谁、又被谁关联**。关联是双向展示、单向存的 —— 打开 B 的时候看得到「A 关联了我」。\n" +
+          "每行带 `linkId`,要解除就用 library_link_remove 给这个 id。",
+        inputSchema: {
+          itemId: z.string().describe("看哪一条的关联,来自 library_search / library_items"),
+        },
+        handler: async (args: { itemId: string }) => {
+          const item = LibraryRepo.get(args.itemId);
+          if (!item) return fail(`库里没有条目 ${args.itemId}`);
+          const links = LibraryLinkRepo.viewsOf(args.itemId);
+          if (links.length === 0) return text(`《${item.title}》还没有任何关联。`);
+          const rows = links.map((l) => {
+            const who = l.otherItemId ? `《${l.title}》` : `${l.title}(库外文件)`;
+            const dir = l.direction === "out" ? "→ 它关联的" : "← 关联它的";
+            // **被屏蔽的要当场说**。仓储那一层不看屏蔽(`viewsOf` 是纯查询),而这件事
+            // 对模型是有用的:它看到"这一条被屏蔽了"就不会白试一次挂载 —— 挂载那道门
+            // 是硬过滤,屏蔽的挂不上(`manifest.ts` 的 `checkSuppressed`)。界面上那句
+            // 灰字也是同一个原因(`ipc/library.ts` 的 handler 补的是同一个字段)。
+            const reason = l.otherItemId ? suppressionReasonOfItem(l.otherItemId) : null;
+            return `- ${dir}:${who}\n  linkId=${l.id}${l.otherItemId ? `  条目 id=${l.otherItemId}` : ""}${
+              reason ? `\n  ⚠️ ${reason}被屏蔽了 —— 它进不了上下文,挂到对话上也挂不上` : ""
+            }`;
+          });
+          return text(`《${item.title}》的关联(${links.length} 条):\n\n${rows.join("\n")}`);
+        },
+      },
+      {
+        name: "library_link_add",
+        description:
+          "给一条条目挂一条关联。**目标二选一**:库内条目给 `targetItemId`;用户桌面/别处的文件给 `targetPath`(绝对路径)。\n" +
+          "这个关联在界面上是看得见的(详情页的「关联」区),而且**用户把 A 挂进对话时会连它关联的一起挂上** —— 所以只挂真的相关的。\n" +
+          "已经存在的同一条关联不会重复建(幂等),给回的是原来那一条。",
+        inputSchema: {
+          itemId: z.string().describe("从哪一条挂出去"),
+          targetItemId: z.string().optional().describe("库内条目 id"),
+          targetPath: z.string().optional().describe("库外文件的绝对路径"),
+        },
+        handler: async (args: { itemId: string; targetItemId?: string; targetPath?: string }) => {
+          const item = LibraryRepo.get(args.itemId);
+          if (!item) return fail(`库里没有条目 ${args.itemId}`);
+          const hasItem = args.targetItemId !== undefined;
+          const hasPath = args.targetPath !== undefined;
+          if (hasItem === hasPath) {
+            return fail("关联的目标要么是库内条目(targetItemId)、要么是库外路径(targetPath),不能两个都给或都不给");
+          }
+          if (hasItem && !LibraryRepo.get(args.targetItemId!)) {
+            return fail(`库里没有条目 ${args.targetItemId} —— 关联的目标必须已经在库里`);
+          }
+          const link = LibraryLinkRepo.add(
+            args.itemId,
+            hasItem ? { targetItemId: args.targetItemId! } : { targetPath: args.targetPath! },
+          );
+          notifyLibraryChanged(`link_add:${args.itemId}`);
+          const other = hasItem ? `《${LibraryRepo.get(args.targetItemId!)!.title}》` : args.targetPath!;
+          return text(`已让《${item.title}》关联 ${other}。\nlinkId=${link.id}`);
+        },
+      },
+      {
+        name: "library_link_remove",
+        description: "解除一条关联(按关联行自己的 id,先从 library_links 拿到)。**只解除关联,两边的条目都还在。**",
+        inputSchema: {
+          linkId: z.string().describe("关联行 id,来自 library_links"),
+        },
+        handler: async (args: { linkId: string }) => {
+          const ok = LibraryLinkRepo.remove(args.linkId);
+          if (!ok) return fail(`没有这条关联:${args.linkId}`);
+          notifyLibraryChanged(`link_remove:${args.linkId}`);
+          return text("已解除这条关联(两边的条目都还在)。");
         },
       },
   ];
