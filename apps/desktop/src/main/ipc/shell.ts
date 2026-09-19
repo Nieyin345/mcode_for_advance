@@ -16,21 +16,17 @@
  */
 import type { IpcMain } from "electron";
 import { shell } from "electron";
-import { resolve, sep } from "node:path";
 import { IPC, OpenPathSchema, ShowItemInFolderSchema, OpenFileSchema } from "@contracts/ipc";
 import { ProjectRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
-
-/** True if `abs` is inside `root` (or equals it), after normalizing both.
- *  Mirrors the containment check in `files.ts` so both surfaces share one
- *  security rule. The separator-aware prefix check prevents "/foo/bar" from
- *  matching root "/foo/ba". */
-function pathWithin(root: string, abs: string): boolean {
-  const r = resolve(root);
-  const a = resolve(abs);
-  if (a === r) return true;
-  return a.startsWith(r + sep);
-}
+// ⚠️ 这里**不再自己抄一份 `pathWithin`**。抄的那份只做了 `resolve` 就比,少了
+// win32/darwin 的**大小写归一** —— 于是项目根存 `D:\Proj\Foo`、渲染端从 Monaco/LSP
+// 拿到小写 `d:\proj\foo\a.txt` 时,一个合法路径被判成"在项目根外面":
+// 用户点「在文件管理器里显示」**点了没反应**(不弹窗、不报错)。
+// 共享的那份把这条规则写在注释里("a lowercased drive letter from Monaco/LSP
+// (`d:\foo`) still matches a project stored with an uppercase letter"),而且
+// files/git/terminal/lsp 全走它 —— 围栏规则只该有一份,抄第二份就是等着两边漂开。
+import { samePath, pathWithin } from "@main/lib/pathGuard.js";
 
 export function registerShellHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.SHELL_OPEN_PATH, async (_evt, raw) => {
@@ -40,7 +36,7 @@ export function registerShellHandlers(ipcMain: IpcMain): void {
     // differences between the folder picker and the persisted Project.path.
     const known = ProjectRepo.list()
       .filter((p) => !p.archived)
-      .some((p) => resolve(p.path) === resolve(input.path));
+      .some((p) => samePath(p.path, input.path));
     if (!known) {
       log.warn(`shell.openPath refused (not a project root): ${input.path}`);
       return;

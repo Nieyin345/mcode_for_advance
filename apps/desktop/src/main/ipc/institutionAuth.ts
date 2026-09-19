@@ -16,6 +16,7 @@
  * 共用分区正好满足 —— 在哪里登录都算数,无需先声明机构才能登录。
  */
 import type { IpcMain } from "electron";
+import { z } from "zod";
 import {
   IPC,
   InstitutionSaveSchema,
@@ -27,6 +28,33 @@ import type { AuthSiteStatus, InstitutionProfile } from "@contracts/library";
 import { InstitutionRepo } from "@main/store/repositories.js";
 import { getBrowserCookies, clearBrowserCookiesForDomains } from "@main/browser/BrowserManager.js";
 import { log } from "@main/lib/logger.js";
+
+/**
+ * 把校验错翻译成**一行人话**:`字段名: 那句话`。
+ *
+ * ⚠️ 不能直接把 `err.message` 交出去:zod 的 `ZodError.message` 是一整段 JSON 数组
+ * 文本(`[{"code":"too_small","minimum":1,…,"path":["name"]}]`),而这条 IPC 的 reject
+ * 会被渲染端原样甩到用户脸上(InstitutionAuthPanel 的 saveDraft 只有
+ * `finally { setLoading(false) }`,**没有 catch**)—— 用户看到的就是一屏 JSON。
+ * 那不是"报错说清楚了",那是把内部错误对象的形状漏了出去。
+ *
+ * 格式与本仓库既有的那三处一致(`ipc/terminal.ts` / `ipc/runtimes.ts` /
+ * `ipc/toolchain.ts` 的 `describeInputError` 也是 `字段名: 那句话`,只是那边多个字段
+ * 用 `;` 串起来 —— 这里给用户看第一句就够)。措辞再往细里做(把 zod 自带的英文 message
+ * 翻成中文)要按 `issue.code` 映射一张表,那是整个 `main/ipc/` 的收口,不该由这一个文件
+ * 单独开头 —— 十几处各写一份不一致的比现在还糟。
+ */
+function describeInputError(err: z.ZodError): string {
+  const first = err.issues[0];
+  const where = first && first.path.length > 0 ? `${first.path.join(".")}: ` : "";
+  return `入参不合法(${where}${first?.message ?? "没通过校验"})`;
+}
+
+/** catch 里唯一的出口 —— zod 走人话,别的照原样(那些 message 本来就是人写的)。 */
+function errText(err: unknown): string {
+  if (err instanceof z.ZodError) return describeInputError(err);
+  return err instanceof Error ? err.message : String(err);
+}
 
 /** 去掉 cookie domain 的前导点(`.example.com` → `example.com`),便于展示与匹配。 */
 function bareDomain(domain: string): string {
@@ -88,7 +116,12 @@ export function registerInstitutionAuthHandlers(ipcMain: IpcMain): void {
   });
 
   ipcMain.handle(IPC.INSTITUTION_SAVE, async (_evt, raw) => {
-    const input = InstitutionSaveSchema.parse(raw);
+    let input;
+    try {
+      input = InstitutionSaveSchema.parse(raw);
+    } catch (err) {
+      throw new Error(errText(err));
+    }
     InstitutionRepo.save({
       id: input.id,
       name: input.name,
@@ -102,14 +135,24 @@ export function registerInstitutionAuthHandlers(ipcMain: IpcMain): void {
   });
 
   ipcMain.handle(IPC.INSTITUTION_DELETE, async (_evt, raw) => {
-    const input = InstitutionDeleteSchema.parse(raw);
+    let input;
+    try {
+      input = InstitutionDeleteSchema.parse(raw);
+    } catch (err) {
+      throw new Error(errText(err));
+    }
     // 注意:删档案**不会**登出任何站点 —— 档案与登录态是两回事
     InstitutionRepo.delete(input.id);
     return { profiles: InstitutionRepo.list() };
   });
 
   ipcMain.handle(IPC.INSTITUTION_AUTH_STATUS, async (_evt, raw) => {
-    const input = InstitutionAuthStatusSchema.parse(raw ?? {});
+    let input;
+    try {
+      input = InstitutionAuthStatusSchema.parse(raw ?? {});
+    } catch (err) {
+      throw new Error(errText(err));
+    }
     let sites = await deriveAuthSites(InstitutionRepo.list());
     if (input.domains?.length) {
       sites = sites.filter((s) => input.domains!.some((d) => domainMatches(s.domain, d)));
@@ -118,9 +161,25 @@ export function registerInstitutionAuthHandlers(ipcMain: IpcMain): void {
   });
 
   ipcMain.handle(IPC.INSTITUTION_CLEAR_COOKIES, async (_evt, raw) => {
-    const input = InstitutionClearCookiesSchema.parse(raw ?? {});
+    let input;
     try {
-      if (input.domains?.length) {
+      input = InstitutionClearCookiesSchema.parse(raw ?? {});
+    } catch (err) {
+      throw new Error(errText(err));
+    }
+    try {
+      // ⚠️ 分支判据是 `Array.isArray`(「有没有给域名列表」),**不是** `.length`。
+      //
+      // 契约里写的是「**省略**则清空整个浏览器分区(危险,UI 需二次确认)」—— 说话的是
+      // "有没有这个字段",而不是"这个数组里有几项"。原来这里判 `input.domains?.length`,
+      // 于是 `domains: []`(空数组)和 `domains: undefined`(省略)落进了**同一个**清空
+      // 整个分区的分支:调用方给了一个明确的空列表,收到的却是"全清"。一个字符之差触发
+      // 全量登出,而两种结果在界面上长得一模一样(返回的空列表在两种语义下都是空)。
+      //
+      // 想清全部的调用方有明确写法:省略 `domains`(preload 的 `clearCookies({})`)。
+      if (Array.isArray(input.domains)) {
+        // 空列表 = 没有要清的域,什么都不做(也别去碰 cookie 存储)。
+        if (input.domains.length === 0) return { sites: await deriveAuthSites(InstitutionRepo.list()) };
         const removed = await clearBrowserCookiesForDomains(input.domains);
         log.info(`institution: cleared ${removed} cookies across ${input.domains.length} domains`);
       } else {

@@ -181,6 +181,19 @@ class RelayManagerImpl {
       const conn = new Client();
       this.conn = conn;
 
+      // ⚠️ **`connect()` 的 promise 必须**一定**settle —— 每条出口都走这里。**
+      //    少了它有一个会让界面**永久卡住**的缺口:用户在握手还没完时点了"断开",
+      //    `disconnect()` 走的是 `conn.end()`(干净收尾,**不触发 `error`**),于是
+      //    只有 `ready` 与 `error` 两条出口的写法会让这个 promise 永远悬着。
+      //    调用方是渲染端的 `handleConnect()`,它 `await api.relay.connect()` 之后
+      //    才在 `finally` 里清 `busy` —— 悬着 = 那颗按钮永远转着圈点不动,直到重启应用。
+      let settled = false;
+      const settle = (r: { ok: boolean; error?: string }): void => {
+        if (settled) return;
+        settled = true;
+        resolve(r);
+      };
+
       const connectOpts: Record<string, unknown> = {
         host: cfg.host,
         port: cfg.sshPort,
@@ -220,21 +233,37 @@ class RelayManagerImpl {
           await this.deployForwarder(conn, cfg);
           await this.setupForwardIn(conn, cfg);
           this.reconnectAttempts = 0;
-          resolve({ ok: true });
+          settle({ ok: true });
         } catch (err) {
           const msg = (err as Error).message;
           log.error(`relay: setup failed: ${msg}`);
-          this.setState({ state: "error", error: msg });
-          resolve({ ok: false, error: msg });
+          // Don't repaint the panel after the user asked to disconnect (or the
+          // app is shutting down) — this attempt is already abandoned, and
+          // flipping the panel back to "错误" would contradict the "未连接"
+          // they just got.
+          if (!this.intentionalDisconnect) {
+            this.setState({ state: "error", error: msg });
+          }
+          settle({ ok: false, error: msg });
         }
       });
 
       conn.on("error", (err: Error) => {
         log.error(`relay: SSH error: ${err.message}`);
         if (this.status.state === "connecting") {
-          // Connection phase failure → resolve with error.
-          resolve({ ok: false, error: friendlySshError(err) });
+          // Connection phase failure → resolve with error, and **say why**.
+          //
+          // ⚠️ 这句 `setState` 是用户能不能看到失败原因的唯一途径。渲染端的
+          //    `RemoteConnectPanel.handleConnect()` 只把 `result.error` 打到 console,
+          //    面板显示的**只有** `status.error`。少了这一推,用户在连接阶段看到的
+          //    先是"正在重连(1/5)…"(下面那行 scheduleReconnect 立刻盖掉),几十秒后
+          //    是一条泛泛的"重试 5 次后放弃" —— 于是他永远不知道到底是密码错了,
+          //    还是地址错了。
+          if (!this.intentionalDisconnect) {
+            this.setState({ state: "error", error: friendlySshError(err) });
+          }
         }
+        settle({ ok: false, error: friendlySshError(err) });
         if (!this.intentionalDisconnect) {
           this.scheduleReconnect();
         }
@@ -244,6 +273,9 @@ class RelayManagerImpl {
         log.info("relay: SSH closed");
         this.conn = null;
         this.tunnelPort = 0;
+        // 握手还没完就断了(用户按了断开、或者对端直接挂断且没给 `error`)——
+        // 调用方还等着一个答复,给不出"连上了"就只能说没连上。
+        if (!settled) settle({ ok: false, error: "SSH 连接已断开" });
         if (!this.intentionalDisconnect) {
           this.scheduleReconnect();
         }

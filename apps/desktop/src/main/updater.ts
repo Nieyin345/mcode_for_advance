@@ -26,7 +26,7 @@
  */
 import { app } from "electron";
 import { createRequire } from "node:module";
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 // electron-updater ships as CommonJS and exposes `autoUpdater` as a
 // getter-defined named export on `module.exports`:
 //   Object.defineProperty(exports, "autoUpdater", { enumerable: true, get() {...} })
@@ -82,6 +82,33 @@ let pendingVersion: string | null = null;
  *  discovery (pop the card) from a user-initiated one (panel already shows it). */
 let lastCheckSource: "auto" | "manual" = "manual";
 
+/** 交给用户看的那句话 —— **只留首行**。
+ *
+ *  这个模块的 error 来自 electron-updater / builder-util-runtime,而它们的
+ *  `HttpError.message` 是一整段多行文本(实测):
+ *
+ *      404 Not Found
+ *      "method: GET url: https://api.github.com/repos/x/y/releases\n\nPlease double check …"
+ *      Headers: {
+ *        "content-type": "application/json"
+ *      }
+ *
+ *  这一整段会被渲染端**原样**填进 About 面板那句「更新检查失败:{message}」,于是
+ *  用户为一次「网络不通」看到的是十几行原始响应 + 一串 headers —— 那不是在把话说
+ *  清楚,是把内部错误对象的形状漏了出去。给用户看第一句就够(状态码或人写的那句),
+ *  后面的形状留在日志里(`log.error` 那边仍然打全文)。
+ *
+ *  同 `ipc/terminal.ts` 的 `errText`:原来那些 message 本来就是人写的,所以只收口
+ *  **多行**这一种形状,不重写内容。 */
+function errText(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const first = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  return first ?? "未知错误";
+}
+
 /** Version currently being downloaded (set when download starts, cleared on
  *  *  completion/error). Used to tag download-progress events with a version. */
 let downloadingVersion: string | null = null;
@@ -111,10 +138,30 @@ function detectManualInstallRequired(): boolean {
   try {
     // `codesign -dv` writes the signing info to STDERR (not stdout) and exits
     // 0 on success. TeamIdentifier is "not set" for ad-hoc ("-") signatures.
-    const output = execFileSync("codesign", ["-dv", app.getAppPath()], {
+    //
+    // ⚠️ 两条都必须按住了,少一条这段就失效(实测):
+    //
+    //  1. 读 **stderr**,不是返回值。原先写的是 `execFileSync(…, { encoding:
+    //     "utf8", stdio: ["ignore", "ignore", "pipe"] })` —— 第三项接的是 stderr,
+    //     而 stdout 被 ignore 之后**返回值是 `null`**(实测,即使设了 encoding),
+    //     于是 `/TeamIdentifier…/` 在 `null` 上永远不命中。真实后果是
+    //     **没有任何一台 macOS 机器被判成 ad-hoc**:用本项目 `build/adhoc-sign.cjs`
+    //     签出来的那些用户拿到的是「重启安装」按钮,而 Squirrel.Mac 装不上 ad-hoc
+    //     的包 —— 按下去就是没反应,也没人引导他们去发布页。下面 `catch` 里那句
+    //     "任何 codesign 失败都保守地当作要手动安装,免得用户对着一个没反应的按钮"
+    //     说的正是这个现场,而这条路**永远走不到**(二进制在就返回 null,不在就抛)。
+    //  2. `spawnSync` 与 `execFileSync` 不同:**二进制不存在时它不抛**。失败躺在返回
+    //     值里 —— `error` 有值、`status` 是 `null`。不显式抛出去,"问不出来"又会被
+    //     当成"签名是好的"(空输出里当然没有 TeamIdentifier),与那条 catch 的意图
+    //     正相反。`status !== 0` 同理。
+    const res = spawnSync("codesign", ["-dv", app.getAppPath()], {
       encoding: "utf8",
       stdio: ["ignore", "ignore", "pipe"],
     });
+    if (res.error || res.status !== 0) {
+      throw res.error ?? new Error(`codesign exited with status ${res.status}`);
+    }
+    const output = `${res.stderr ?? ""}${res.stdout ?? ""}`;
     const isAdhoc = /TeamIdentifier\s*=\s*not set/.test(output);
     manualInstallRequiredCache = isAdhoc;
     log.info(`updater: macOS ad-hoc signature detected (manual install ${isAdhoc ? "required" : "not required"})`);
@@ -243,8 +290,18 @@ export async function initUpdater(): Promise<void> {
  *  `update-available` push can tell the renderer whether this was a background
  *  (auto) or user-initiated (manual) discovery. */
 export async function checkForUpdates(source: "auto" | "manual" = "manual"): Promise<CheckForUpdatesResult> {
-  if (!is.prod || !initialized) {
+  // dev: electron-updater has no app-update.yml to read, so "up-to-date" is the
+  // documented, intentional answer here. (见文件头:`pnpm dev` 下更新器不激活。)
+  if (!is.prod) {
     return { status: "up-to-date", version: app.getVersion() };
+  }
+  // prod,但 `initUpdater()` 没成 —— 那条路只在 catch 里留一行日志。此时再报
+  // 「已是最新版本」就是**在骗用户**:更新器根本没在跑,后面有没有新版本谁也不知道
+  // (文件头警告过的正是这个形状:"the app claim it's on the newest release even
+  // when a newer exists")。如实报错,让面板说「更新检查失败:…」。
+  if (!initialized) {
+    log.error("updater: checkForUpdates called while the updater is not initialized");
+    return { status: "error", error: "更新器未启动" };
   }
 
   lastCheckSource = source;
@@ -263,8 +320,11 @@ export async function checkForUpdates(source: "auto" | "manual" = "manual"): Pro
     const version = result?.updateInfo?.version ?? app.getVersion();
     return { status: "up-to-date", version };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log.error(`updater: checkForUpdates failed ${msg}`);
+    const msg = errText(err);
+    // 日志留全文(形状在这里有用),交给用户的那句只留首行。
+    log.error(
+      `updater: checkForUpdates failed ${err instanceof Error ? err.message : String(err)}`,
+    );
     return { status: "error", error: msg };
   }
 }
@@ -286,11 +346,15 @@ export async function downloadUpdate(): Promise<void> {
   } catch (err) {
     downloadingVersion = null;
     clearPersistedUpdateState();
-    log.error(`updater: downloadUpdate failed ${err instanceof Error ? err.message : String(err)}`);
+    // 日志留全文;交给用户的那句只留首行(同 checkForUpdates —— 下载失败也走
+    // `HttpError`,原来那段原始响应会原样出现在面板里)。
+    log.error(
+      `updater: downloadUpdate failed ${err instanceof Error ? err.message : String(err)}`,
+    );
     // Re-throw so the initiator (About panel / notification card) can restore
     // its UI — otherwise the RPC resolves as success and the card is stuck on
     // a 0% progress bar forever.
-    throw err;
+    throw new Error(errText(err));
   }
 }
 

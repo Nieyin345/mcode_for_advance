@@ -411,6 +411,9 @@ function runSelfExtractor(exePath: string, cwd: string): Promise<void> {
  * "解包"那一步 —— Windows 是执行官方自解压包,其余平台是 tar。
  */
 async function installLatex(): Promise<void> {
+  // 同 `installPandoc`:根没注册就当场拒,别等下载完再说(见那一段的注释)。
+  const destRoot = getToolRoot();
+  if (!destRoot) throw new Error("工具根目录还没注册(应用启动流程没走完?)");
   emit("latex", "downloading", -1);
   const asset = await fetchTinytexRelease();
   const sources = [asset.url, ...GITHUB_MIRRORS.map((to) => to(asset.url))];
@@ -447,8 +450,7 @@ async function installLatex(): Promise<void> {
       throw new Error("解出来的内容里没有 TinyTeX 目录 —— 上游打包方式变了?");
     }
 
-    const root = getToolRoot();
-    if (!root) throw new Error("工具根目录还没注册(应用启动流程没走完?)");
+    const root = destRoot;
     const destDir = join(root, "latex", asset.version);
     rmSync(destDir, { recursive: true, force: true });
     mkdirSync(join(root, "latex"), { recursive: true });
@@ -581,6 +583,12 @@ async function installTinytexPackages(binDir: string): Promise<void> {
  * 出来(只报最后一条会让人以为是同一个错误反复发生)。
  */
 async function installPandoc(): Promise<void> {
+  // 工具根还没注册 = 应用启动流程没走完。**必须在下载之前挡住**:
+  // 下面那句同样内容的检查在 `downloadVerified` **之后** —— 走到那儿用户已经等了
+  // 半天(中间还有一次换源失败),最后拿到的却是一句"工具根目录还没注册",白等
+  // 而且看不懂。它也不能直接退回 `app.getPath("userData")`:那是用户真实的目录。
+  const destRoot = getToolRoot();
+  if (!destRoot) throw new Error("工具根目录还没注册(应用启动流程没走完?)");
   emit("pandoc", "downloading", -1);
   const asset = await fetchPandocRelease();
   const sources = [asset.url, ...GITHUB_MIRRORS.map((to) => to(asset.url))];
@@ -616,8 +624,7 @@ async function installPandoc(): Promise<void> {
       throw new Error("解出来的包里没有 pandoc 可执行文件 —— 上游命名变了?");
     }
 
-    const root = getToolRoot();
-    if (!root) throw new Error("工具根目录还没注册(应用启动流程没走完?)");
+    const root = destRoot;
     const destDir = join(root, "pandoc", asset.version);
     // 同版本重装:先清掉旧的,免得留半个旧文件混在新的里面
     rmSync(destDir, { recursive: true, force: true });

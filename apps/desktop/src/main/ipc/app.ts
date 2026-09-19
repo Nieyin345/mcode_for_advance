@@ -17,6 +17,31 @@ import { copyDataRootTo, dataRoot, dbPath, setDataRoot } from "@main/lib/dataRoo
 import { libraryRoot } from "@main/library/paths.js";
 import { templatesRoot } from "@main/templates/store.js";
 
+/** Node 在 Windows 上把交给 `cpSync` 的路径展开成的**长路径前缀**。
+ *  源码里这个字面量就是四个字符:`\` `\` `?` `\`。 */
+const LONG_PATH_PREFIX = "\\\\?\\";
+
+/**
+ * 复制失败的那句话**不能原样送到界面上** —— 它带着 Node 的长路径前缀。
+ *
+ * `cpSync` 内部走的是 `toNamespacedPath()`,所以抛出来的信息里每个路径都顶着
+ * `\\?\`。用户点「迁移」被拒时在设置页看到的是:
+ *
+ * ```
+ * 复制失败:Cannot overwrite non-directory \\?\C:\…\a.txt with directory \\?\C:\…\Mcode
+ * ```
+ *
+ * `\\?\` 是**内核**认的写法(绕过 MAX_PATH),不是用户认的写法 —— 他会以为自己
+ * 选错了什么特殊路径。前面几档有自己中文话的拒绝(非绝对路径 / 不是空目录 /
+ * 互相嵌套)本来就不带它;只有真的走到复制这一步失败时才漏出来,而那恰恰是最需要
+ * 用户看懂"我选的目录怎么了"的一档。
+ *
+ * 只摘前缀,原因那句话**原样保留** —— 那是系统给的事实,不该在这儿改写。
+ */
+function readableCopyError(message: string): string {
+  return message.split(LONG_PATH_PREFIX).join("");
+}
+
 export function registerAppHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.APP_INFO, (): AppInfoResult => ({
     appVersion: app.getVersion(),
@@ -51,7 +76,7 @@ export function registerAppHandlers(ipcMain: IpcMain): void {
     const input = z.object({ path: z.string().min(1) }).parse(raw);
     flushDb();
     const err = copyDataRootTo(input.path);
-    if (err) return { ok: false, error: err };
+    if (err) return { ok: false, error: readableCopyError(err) };
     setDataRoot(input.path);
     closeDb();
     log.info(`dataRoot: switching to ${input.path}; relaunching`);

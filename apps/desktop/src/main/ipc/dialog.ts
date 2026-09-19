@@ -31,14 +31,29 @@ import { log } from "@main/lib/logger.js";
  *  anything past this would only waste memory crossing IPC. */
 const PICK_IMAGE_MAX_BYTES = 15 * 1024 * 1024;
 
-/** Extension → allowlist mime (mirrors SendTurnImageSchema.mimeType). */
-const PICK_IMAGE_MIME: Record<string, PickedImage["mimeType"]> = {
+/** Extension → allowlist mime (mirrors SendTurnImageSchema.mimeType).
+ *
+ *  ⚠️ 查表**必须**走 `hasOwn`,不能直接 `PICK_IMAGE_MIME[ext]`。`ext` 是从文件名里
+ *  剥出来的**任意字符串**,而字面量对象的查表范围包含 `Object.prototype` ——
+ *  文件名叫 `照片.constructor` / `x.__proto__` / `a.valueOf` 时,下标命中的是原型上的
+ *  成员,拿到的是个**函数或对象**而不是 `undefined`:白名单判断为假,它被当合格图片
+ *  **读进内存**,渲染端还收到一个 `mimeType` 不是字符串的图,拼出来是
+ *  `data:function Object() {...};base64,...` 这种打不开的 `<img>`。
+ *  (同时把类型收成 `string | undefined`,让查表结果不能悄悄变成别的类型。) */
+const PICK_IMAGE_MIME: Record<string, PickedImage["mimeType"] | undefined> = {
   png: "image/png",
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
   gif: "image/gif",
   webp: "image/webp",
 };
+
+/** 白名单查表 —— 只认自己那五个键,原型链上的一律当"不认识"。 */
+function pickImageMime(ext: string): PickedImage["mimeType"] | undefined {
+  return Object.prototype.hasOwnProperty.call(PICK_IMAGE_MIME, ext)
+    ? PICK_IMAGE_MIME[ext]
+    : undefined;
+}
 
 export function registerDialogHandlers(ipcMain: IpcMain): void {
   // ── multi-file picker (project-external files allowed) ──
@@ -77,7 +92,7 @@ export function registerDialogHandlers(ipcMain: IpcMain): void {
     for (const filePath of result.filePaths) {
       const name = basename(filePath);
       const ext = name.includes(".") ? name.split(".").pop()!.toLowerCase() : "";
-      const mimeType = PICK_IMAGE_MIME[ext];
+      const mimeType = pickImageMime(ext);
       if (!mimeType) {
         skipped.push(name);
         continue;

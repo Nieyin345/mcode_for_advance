@@ -334,17 +334,33 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
 const WATCH_TEMPLATES_KEY = "automation.watch.templates";
 
 /** 读出来时**逐条过一遍 schema**:setting 是用户数据,手改坏了一条不该把整个面板
- *  弄挂 —— 坏的丢掉,好的照常显示。 */
+ *  弄挂 —— 坏的丢掉,好的照常显示。
+ *
+ *  ⚠️ **丢掉的那几条要说话。** 以前这里只有 `catch` 那条坏 JSON 打了日志,逐条被
+ *  `safeParse` 挡下的**一声不响** —— 用户看到的现象是"我在 setting 里加的那条模板不见
+ *  了",而日志里一个线索都没有(硬规矩第 3 条,同 `nodeTypes.ts` 的 `problems`)。
+ *  返回值那一层没有 `problems` 这个通道(契约 `automation.watchTemplates` 只声明了
+ *  `{ templates }`,加字段要动 `@contracts`,不在这次改的范围里),所以至少**日志里要有**。 */
 function loadWatchTemplates(): WatchCommandTemplate[] {
   const raw = SettingRepo.get(WATCH_TEMPLATES_KEY);
   if (raw === null || raw.length === 0) return [];
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
+    if (!Array.isArray(parsed)) {
+      log.warn(`[workflow] 命令模板存的不是数组,当没有模板处理:${raw.slice(0, 80)}`);
+      return [];
+    }
     const out: WatchCommandTemplate[] = [];
+    const dropped: string[] = [];
     for (const item of parsed) {
       const check = WatchCommandTemplateSchema.safeParse(item);
       if (check.success) out.push(check.data);
+      else dropped.push(check.error.issues[0]?.message ?? "形状不对");
+    }
+    if (dropped.length > 0) {
+      log.warn(
+        `[workflow] 命令模板里有 ${dropped.length} 条读不了,已跳过(好的照常显示):${dropped.join(" / ")}`,
+      );
     }
     return out;
   } catch {
