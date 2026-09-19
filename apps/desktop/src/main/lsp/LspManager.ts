@@ -94,6 +94,10 @@ interface ServerHandle {
   initReject: (e: Error) => void;
   /** Resolves the initialized promise on handshake success. */
   initResolve: () => void;
+  /** True once the launch attempt has already been counted as a failure, so a
+   *  process that fails AND exits (or fails AND its initialize rejects) is
+   *  recorded once, not twice — see `recordFailureOnce`. */
+  failureRecorded: boolean;
   /** True if we intentionally killed the process (suppress crash recovery). */
   intentionalStop: boolean;
 }
@@ -162,7 +166,21 @@ class LspManagerImpl {
       }
     }
     // Merge: ensure every language has an entry; unknown entries dropped.
-    const byLang = new Map(parsed.filter((c) => LANGUAGE_SPECS[c.language]).map((c) => [c.language, c]));
+    // ⚠️ The per-entry guard is not paranoia: the stored value is reachable from
+    // the renderer through the generic `setting.set` IPC, so a malformed array
+    // (null / string / missing `language`) would otherwise throw a TypeError
+    // here and take down list/toggle/setPath AND every server start — the
+    // language-server panel would go blank with nothing to act on. A bad entry
+    // is dropped so the language falls back to its default (disabled).
+    const byLang = new Map(
+      parsed
+        .filter(
+          (c): c is LspServerConfig =>
+            !!c && typeof c === "object" && typeof (c as LspServerConfig).language === "string",
+        )
+        .filter((c) => LANGUAGE_SPECS[c.language])
+        .map((c) => [c.language, c]),
+    );
     return ALL_LANGUAGE_SPECS.map((spec) => ({
       language: spec.language,
       enabled: byLang.get(spec.language)?.enabled ?? false,
@@ -1094,6 +1112,7 @@ class LspManagerImpl {
       initialized,
       initReject,
       initResolve,
+      failureRecorded: false,
       intentionalStop: false,
     };
     this.servers.set(key, handle);
@@ -1120,7 +1139,7 @@ class LspManagerImpl {
       log.error(`lsp[${language}] spawn error: ${err.message}`);
       this.lastErrors.set(language, err.message);
       handle.initReject(err);
-      this.recordSpawnFailure(key);
+      this.recordFailureOnce(key, handle);
       this.removeServer(key, handle);
       this.pushStateEvent(workspacePath, language, {
         phase: "stopped",
@@ -1152,7 +1171,7 @@ class LspManagerImpl {
       }
       this.removeServer(key, handle);
       if (wasInitializing) {
-        this.recordSpawnFailure(key);
+        this.recordFailureOnce(key, handle);
       }
       // Always notify: both crashes (with the recorded reason) and intentional
       // stops (settings toggle / dispose) clear any "starting" indicator.
@@ -1178,7 +1197,7 @@ class LspManagerImpl {
       log.error(`lsp[${language}]: initialize failed: ${(err as Error).message}`);
       initReject(err as Error);
       this.lastErrors.set(language, (err as Error).message);
-      this.recordSpawnFailure(key);
+      this.recordFailureOnce(key, handle);
       // A concurrent restart may have swapped this slot for a fresh handle;
       // only tear down the one this initialize flow still owns.
       if (this.servers.get(key) === handle) {
@@ -1212,6 +1231,25 @@ class LspManagerImpl {
       count: (prev?.count ?? 0) + 1,
       lastAttempt: Date.now(),
     });
+  }
+
+  /** Record a failure **once per launch attempt**.
+   *
+   *  One failed launch can reach here from up to three places: the `error`
+   *  handler (spawn failed), the `exit` handler (process died before the
+   *  handshake) and the `initialize` catch (the handshake itself failed or was
+   *  torn down). A server that starts then exits immediately — jdtls with an
+   *  incompatible JDK does exactly this — trips two of them on a single
+   *  attempt, so the raw counter reached the limit in half the real tries and
+   *  the message shown to the user ("连续启动失败 N 次") rolled the tries up
+   *  too fast: he gets two attempts, is told it failed four times, and goes
+   *  looking for failures that never happened.
+   *
+   *  The handle is the unit of "one launch attempt", so the flag lives on it. */
+  private recordFailureOnce(key: string, handle: ServerHandle): void {
+    if (handle.failureRecorded) return;
+    handle.failureRecorded = true;
+    this.recordSpawnFailure(key);
   }
 
   /** Clear the crash-loop guard for a language (all workspaces). Called when
@@ -1280,11 +1318,13 @@ class LspManagerImpl {
       void id;
     }
     handle.pending.clear();
-    try {
-      handle.proc.kill();
-    } catch {
-      // already dead
-    }
+    // ⚠️ `handle.proc.kill()` is NOT enough on Windows. The spawn above used
+    // `shell: true`, so `proc` is the cmd.exe wrapper and the real server is
+    // its child: killing the wrapper orphans the server, which keeps its
+    // workspace index in memory forever (jdtls alone is 1GB+). `killProbeTree`
+    // already exists for exactly this shape and documents the rule -- reuse it
+    // rather than growing a second, subtly different copy.
+    killProbeTree(handle.proc);
     this.servers.delete(key);
   }
 
@@ -1304,11 +1344,11 @@ class LspManagerImpl {
       this.removeServer(key, handle);
     }
     for (const [, install] of this.installs) {
-      try {
-        install.proc.kill();
-      } catch {
-        // ignore
-      }
+      // Same tree rule as removeServer: the install spawn also used
+      // `shell: true` on win32, so `kill()` alone leaves the package manager
+      // running (and it holds the npm cache lock, so the next install fails
+      // with a confusing EBUSY/lock error).
+      killProbeTree(install.proc);
     }
     this.installs.clear();
     log.info("lsp: disposed all servers");
