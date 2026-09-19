@@ -116,6 +116,40 @@ setContextKindRegistry({ label: kindDisplayName, purpose: kindPurposeOf });
 export const WORKFLOW_MAX_PARALLEL_DEFAULT = 4;
 
 /**
+ * 节点跑着的时候,主进程**多久检查一次**卡片上那行字该不该换。
+ *
+ * 这是「检查」的节拍,不是「发言」的节拍 —— 真正发出去多少由下面那两道闸门决定。
+ * 检查只是在内存里算一个字符串,比一次 IPC 便宜得多,所以它可以密。
+ */
+export const NODE_PROGRESS_TICK_MS = 1_000;
+
+/**
+ * 一步都不动的时候(没有新工具、没有新子代理),卡片上那行字**最少隔多久**动一次。
+ *
+ * ## 为什么必须有这道闸门
+ *
+ * 这一类的节点(模型轮)跑 20~40 分钟是常事,而这期间引擎可能很久不吐一条流水:
+ * 工具调用之间往往隔着好几分钟,子代理派出去之后主代理更是一个字都不发。**那段静默
+ * 恰恰是最像卡死的时候**,所以秒表得自己走 —— 用户的原话是「转圈转了四十分钟,看起来
+ * 和卡死没有区别」。
+ *
+ * 但「自己走」不能变成「一秒一条」:40 分钟就是两千多条,每一条都要走一遍
+ * `ingestEvent` → 折叠进卡片 → React 重渲染。渲染端扛得住这个量,可拿消息流倒这么
+ * 多条只承载「又一个秒过去了」的东西,就是把信噪比做没了 —— 而**内容真变了**(换了
+ * 工具、换了子代理)的那几条,恰恰会被淹在里面看不见。
+ *
+ * ## 5 秒是怎么定的
+ *
+ * 用户盯着看的是一串在变的数字,5 秒一跳足够让人确信它活着(再快也只是让同一句话
+ * 重复得更密)。稳态下 40 分钟最多 480 条,比「一秒一条」少一个数量级,而「有没有在动」
+ * 这件事一个字都没减。
+ *
+ * **信息量不受这个窗口约束**:工具 / 子代理换了按 {@link NODE_PROGRESS_TICK_MS} 那道
+ * 更短的闸门走 —— 那是内容,不是节拍。
+ */
+export const NODE_PROGRESS_HEARTBEAT_MS = 5_000;
+
+/**
  * 节点收场之后**过多久再回来问一次花费**。
  *
  * 用量是那个回合结束之后异步推上来、再结算落库的,而结算有一个**宽限计时器**
@@ -666,6 +700,24 @@ export async function startWorkflowRun(args: {
   const endReason = new Map<string, string>();
   const failure = new Map<string, string>();
   /**
+   * 节点会话**此刻在干什么** —— 最后一个工具名,或者正在跑的那个子代理。
+   *
+   * 这是卡片上那行字里唯一"具体"的那半截(另外半截是已跑时长,见 `runInNodeSession`)。
+   * 它只是个**近似的当前状态**,不是流水:工具调完了也不清(清了会退回"没有信息"),
+   * 下一次 `tool.use` 直接盖掉。这样卡片上永远写着**最近一次**发生的事,而不是闪回空白。
+   */
+  const activity = new Map<string, string>();
+  /**
+   * 这次运行里还活着的**进度心跳**(每个正在跑的节点各一个)。
+   *
+   * `runInNodeSession` 自己的 `finally` 会清掉自己那一个,所以正常路径上这里是空的。
+   * 留这一份是为了"运行以别的方式死掉"那一类(收尾那段 `finally` 里也扫一遍)——
+   * **一个还在走的时间戳计时器是个最坏的幽灵**:卡片早换成结果卡了,它还在每秒算一遍
+   * 时长,一旦哪个分支漏了清,现象是"跑完的卡片上秒数还在跳",而那种 bug 一旦漏出去
+   * 极难查。两份都清,代价是一行。
+   */
+  const heartbeats = new Set<ReturnType<typeof setInterval>>();
+  /**
    * **要收产出的那几段会话。**
    *
    * 和 `active.nodeSessionIds` 分开是必须的:后者还有一个用途是**收尾时放掉运行时**,
@@ -748,6 +800,25 @@ export async function startWorkflowRun(args: {
       endReason.set(e.sessionId, e.reason);
     } else if (e.type === "error") {
       failure.set(e.sessionId, e.message);
+    } else if (e.type === "tool.use") {
+      // 记下"这一步此刻在干什么"给卡片用(见 `activity` 那张表)。**`observed` 里的是节点
+      // 自己的会话**(订阅者拿到的那条事件带的是节点会话的 id,见 `runInNodeSession`
+      // 里那段注释),`conversation` 那种跑在主对话上的节点也在 `observed` 里 —— 它
+      // 的工具名同样是实话,不必再分一道。
+      activity.set(e.sessionId, e.toolName);
+    } else if (e.type === "subagent.update") {
+      // 子代理是**这一轮里最长的静默期**:主代理派出去等着的时候,它自己一个字都不发。
+      // 拿名单上那个还在跑的代理名报出去,比停在最后一个工具名上准确得多 —— 用户看到
+      // 的「正在跑 Explore」正是"它在干嘛"。
+      //
+      // `agents` 是**全量替换**语义(见 `SubagentUpdateEvent` 的注释):名单空了就是
+      // "都回来了",这时清掉而不是留着上一批,否则卡片会一直挂着一个早就结束的代理。
+      //
+      // 显示名取 `subagentType`(「Explore」这种),没有再退到 `description` —— 描述
+      // 可能是一整句话,塞进那行小字里会把"已跑多久"挤没影。
+      const busy = e.agents.find((a) => a.status === "running");
+      if (busy) activity.set(e.sessionId, `子代理 ${busy.subagentType ?? busy.description}`);
+      else activity.delete(e.sessionId);
     }
   });
 
@@ -1023,6 +1094,58 @@ export async function startWorkflowRun(args: {
     // 编一个数字出来只会让进度条走到 99% 然后停住。
     emitNodeProgress(node, manifest, { message: displayTitle(node, manifest) });
 
+    /* ── 跑起来之后:让卡片上那行字**一直有东西在动** ──
+     *
+     * 前面那一条报完之后,这里开始定期把"已跑多久 + 此刻在干嘛"报出去。**这是这段
+     * 代码存在的全部理由**:没有它,一个跑 40 分钟的节点在界面上和卡死完全一样。
+     *
+     * ## 那行字是怎么拼的
+     *
+     * `已跑 3 分 12 秒 · Bash`(还没调过工具时只有前半截)。分两半是刻意的:
+     * **时长是"它还活着"的证据**,工具名是"它在干嘛"的答案 —— 用户问的正是后者,
+     * 而前者是唯一能在毫无流水时也继续往前走的东西。
+     *
+     * ## 两道闸门(见上面两个常量的注释)
+     *
+     * - 内容变了(新工具 / 新子代理)→ 最快 {@link NODE_PROGRESS_TICK_MS} 一条;
+     * - 内容没变 → 最快 {@link NODE_PROGRESS_HEARTBEAT_MS} 一条,纯粹是给秒表出声。
+     *
+     * 合起来:一秒看一次有没有新东西,没有就等够 5 秒再说一遍。两道闸门都记在
+     * **`sentAt`(上一次真发出去的时刻)**上,所以"刚报完工具名"和"该报秒数了"不会
+     * 各自算一套。
+     *
+     * ## 为什么不用 `setTimeout` 排一串
+     *
+     * 这个函数**必须能被打断** —— 节点收场(正常 / 失败 / 取消)之后一次都不许再发。
+     * 一个拿得住、清得掉的句柄是唯一稳的写法(见下面 `finally` 里的 `clearInterval`)。
+     */
+    let lastLine: string | null = null;
+    let lastActivity: string | undefined;
+    const startedAt = Date.now();
+    let sentAt = startedAt;
+    const tick = (): void => {
+      const now = Date.now();
+      const seconds = Math.max(0, Math.round((now - startedAt) / 1000));
+      const doing = activity.get(nodeSession.id);
+      const elapsed = seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+      const line = doing ? `已跑 ${elapsed} · ${doing}` : `已跑 ${elapsed}`;
+      if (line === lastLine) return;
+      // 内容变了可以快报,没变就得等够心跳那一档。**两道闸门都要看** —— 少了后一道,
+      // 内容不变的话 `line !== lastLine` 那一关本来就挡住了;真正靠它挡的是"分钟数
+      // 一分钟才跳一格,而秒针每 5 秒都在催"这条:催出来的重复句由它吞掉。
+      const changed = doing !== undefined && doing !== lastActivity;
+      if (now - sentAt < (changed ? NODE_PROGRESS_TICK_MS : NODE_PROGRESS_HEARTBEAT_MS)) return;
+      lastLine = line;
+      lastActivity = doing;
+      sentAt = now;
+      emitNodeProgress(node, manifest, { message: line });
+    };
+    const heartbeat = setInterval(tick, NODE_PROGRESS_TICK_MS);
+    heartbeats.add(heartbeat);
+    // **别吊住进程。** 用户关掉应用时不该因为卡片上那行秒数卡住退出(同
+    // `scheduleUsageBackfill` 那次 `unref()`)。
+    heartbeat.unref?.();
+
     // 取消要**打断正在跑的那个回合**,不能只做到"不再派发新的" —— 否则用户按了
     // 停止之后它还会继续烧 token 直到模型自己收尾。监听先挂上再发起,中间那一瞬
     // 的取消由 `if (signal.aborted)` 补齐。
@@ -1056,6 +1179,14 @@ export async function startWorkflowRun(args: {
     } catch (err) {
       return { status: "failed", summary: "", error: (err as Error).message };
     } finally {
+      // **收场第一件事:让那张卡片停下来。**
+      //
+      // 卡片这一刻已经换成结果卡了(渲染端 `patchWorkflowNodeProgressBlock` 跟着
+      // `workflow.node.result` 走),再发一条就是幽灵事件 —— 而且 `runs` 里那条也删了,
+      // 发出去的东西**没有任何一处认领**。这个计时器是这一路唯一"活着"的东西,所以
+      // 它必须在最前面清掉,不能等到下面那几行(它们中间任何一处抛了都轮不到)。
+      clearInterval(heartbeat);
+      heartbeats.delete(heartbeat);
       input.signal.removeEventListener("abort", onAbort);
       active.executing -= 1;
     }
@@ -1443,6 +1574,10 @@ export async function startWorkflowRun(args: {
     log.error(`workflow run ${runId} crashed: ${(err as Error).message}`);
   } finally {
     unsubscribe();
+    // 兜底清一遍进度心跳(见 `heartbeats` 的注释)。正常路径上 `runInNodeSession`
+    // 自己的 `finally` 已经清过了,这里扫到的只可能是"运行以别的方式死掉"留下的。
+    for (const timer of heartbeats) clearInterval(timer);
+    heartbeats.clear();
     // ⚠️ **认身份再删。** "用户在它等人时又说话了"那条路会**先**把条目摘掉、再等这里
     // 收完(见 `parkedRunTeardown`);不认身份的话,这一句会把**新那一次**从地图上
     // 抹掉 —— 而新的还在跑,于是这个对话再发消息会叠第二张图。
