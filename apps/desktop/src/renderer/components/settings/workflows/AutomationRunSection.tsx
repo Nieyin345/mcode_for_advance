@@ -165,7 +165,8 @@ export function AutomationRunSection({
         <span className="text-[0.7857em] font-medium text-content-muted">
           {t("settings.automation.dashboard")}
         </span>
-        <span className="text-[0.7143em] text-success">{t("settings.automation.enabled")}</span>
+        {/* 不摆「已启用」徽标:它之前是恒真的字面量,而 per-trigger 启停这个功能并不
+            存在 —— 每条触发器真挂没挂上,下面那排事实行(`facts.armed`)才是真话。 */}
         {automationStatus !== null && (
           <span className={cn("text-[0.7143em]", RUN_STATUS_TONE[automationStatus])}>
             {t(RUN_STATUS_LABELS[automationStatus])}

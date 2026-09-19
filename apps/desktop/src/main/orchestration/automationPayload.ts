@@ -33,9 +33,9 @@ export type TriggerPayload =
  * `{{trigger.xxx}}` 一类的引用候选,**不掺实现细节**(绝对路径数组除外,那是文件
  * 触发天然的事实;相对化是消费方按自己的项目目录做的事)。
  *
- * ⚠️ 这一版运行时还没把它接进 `NodeRunInput`(entry 仍只带载荷的**人话文本**,见
- * `automationRunner.fire`)—— 接线要动 scheduler 的入口契约,归 Runtime 那边管。这里先
- * 把形状**钉死并测住**,VAR-06 到时候直接消费,不用回头猜执行器内部长什么样。
+ * 已经接进了 `NodeRunInput`:载荷事实经 `runner.entry.payload` 进 scheduler
+ * (展开参数 + 注入 `data.trigger`),再由 `nodeInputBuilders.expandTriggerVars`
+ * 在节点参数里展开 `{{trigger.*}}`(见那两处的接线)。
  */
 export interface TriggerPayloadFacts {
   kind: TriggerPayload["kind"];
