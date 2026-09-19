@@ -11,6 +11,8 @@
  * 这里照样维护一个 `activeRuns`,让返回值**有意义**:一律返回 true 的桩会让
  * 「图上没有图时不认领」这类断言永远绿,而那正是 `claude-ipc-smoke` 踩过的坑。
  */
+import { traceCall } from "./callTrace.js";
+
 const activeRuns = new Set<string>();
 
 /** 被问过的会话 id,按顺序(可能重复)。 */
@@ -31,6 +33,7 @@ export function markRunActive(sessionId: string): void {
 
 export function cancelWorkflowRun(sessionId: string): boolean {
   cancelAsked.push(sessionId);
+  traceCall("cancel", sessionId);
   const claimed = activeRuns.delete(sessionId);
   if (claimed) stoppedRuns.push(sessionId);
   return claimed;

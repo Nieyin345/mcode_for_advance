@@ -44,6 +44,12 @@ import { eventsOfType, resetSent, sentChannels } from "./stubs/window.js";
 import { mobileEvents, resetMobileEvents } from "./stubs/mobileEventBus.js";
 import { cancelAsked, markRunActive, resetRunnerStub, stoppedRuns } from "./stubs/runner.js";
 import { dropped, queueBackflow, resetBackflowStub } from "./stubs/pendingBackflow.js";
+import { callTrace, resetCallTrace } from "./stubs/callTrace.js";
+import {
+  disposedIds,
+  disposedProjectIds,
+  resetRuntimeStub,
+} from "./stubs/runtimeManager.js";
 
 const DATA = mkdtempSync(join(tmpdir(), "projects-ipc-smoke-"));
 
@@ -142,6 +148,8 @@ function fresh(): void {
   resetMobileEvents();
   resetRunnerStub();
   resetBackflowStub();
+  resetRuntimeStub();
+  resetCallTrace();
 }
 
 /** 建一个项目,返回 id。 */
@@ -335,6 +343,32 @@ console.log("\n2. 删项目 —— 级联删掉的每一条会话,收尾做全�
     [a, b, side].every((id) => deletedIds.includes(id)),
     deletedIds,
   );
+
+  // 4) 运行时也要放掉(2026-09-20 上游合并带进来的那一句)。
+  //
+  // 不放的后果是:主进程 `sessions` 那张表里的条目**驻留到应用退出**,而且删掉的
+  // 会话上还在跑的回合会继续往死会话里写事件、把孤儿消息行插回去。都是用户看得见的。
+  //
+  // ⚠️ 这里钉的**不是**"调过一次",而是"**每一条**都被放了" —— 项目级那条路走的是
+  // `disposeProject`,它自己去列会话;而逐条放过没有,只有桩的记录能说明。
+  // 判据落在 `disposedProjectIds`(项目级)上,因为项目删除走的就是这一句。
+  check(
+    "删项目时**项目级**放了一次运行时(不是逐条放)",
+    disposedProjectIds().includes(pid),
+    disposedProjectIds(),
+  );
+}
+
+{
+  // 删项目那条路上,**逐条**的 `dispose` 不该被调 —— 上游给的是 `disposeProject`,
+  // 它内部自己去列。这条是防止有人"顺手"再补一个循环(那会做两遍,而且第二遍是对
+  // 已经不存在的会话做的)。
+  fresh();
+  const pid = mkProject("只放一次");
+  mkSession("s_x", pid);
+  mkSession("s_y", pid);
+  await call(IPC.PROJECT_DELETE, { id: pid });
+  eq("项目级放一次就够,没有逐条再放一遍", disposedIds().length, 0);
 }
 
 {
@@ -377,6 +411,24 @@ console.log("\n3. 删一条会话");
   eq("图被停了", stoppedRuns.length, 1);
   check("停的是这一条", stoppedRuns[0] === s, stoppedRuns);
   check("待并回内容清了", dropped.includes(s), dropped);
+  check(
+    "运行时也放掉了(逐条的那一句 —— 会话级的 dispose)",
+    disposedIds().includes(s),
+    disposedIds(),
+  );
+  // ⚠️ 顺序:掐图必须在放运行时**之前**。反过来的话,`dispose` 清审批池的时候节点
+  // 还挂在 promise 上 —— 那正是"图永远不结束"那个 bug 本身。
+  //
+  // 判据读的是**同一条流水**(`callTrace`),不是拿两个各自独立的数组比下标 ——
+  // `cancelAsked` 是跨用例累计的,它的下标跟 `disposedIds()` 根本不可比,第一版
+  // 那么写红了一条假 FAIL。
+  const iStop = callTrace.indexOf(`cancel:${s}`);
+  const iDispose = callTrace.indexOf(`dispose:${s}`);
+  check(
+    "先掐图、再放运行时(顺序反了就是'图永远不结束'那个 bug)",
+    iStop !== -1 && iDispose !== -1 && iStop < iDispose,
+    { iStop, iDispose, callTrace },
+  );
   check(
     "手机端收到这条会话的删除",
     mobileEvents.some((e) => e.type === "session.deleted" && (e as { sessionId: string }).sessionId === s),
