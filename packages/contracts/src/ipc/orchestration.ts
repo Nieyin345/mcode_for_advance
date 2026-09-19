@@ -77,6 +77,34 @@ export interface AutomationTriggerFacts {
   lastErrorAt?: number;
 }
 
+/**
+ * 「最近一次为什么没跑成」该不该显示。
+ *
+ * ⚠️ **不能只看 `lastError` 在不在。** 主进程那侧 `recordFired` 是**只增不改**的
+ * (见 `automationStatus.ts` 类头那条不变量):它不会把 `lastError` 清掉。而重入跳过
+ * ("上一次还在跑")这种东西,一条**经常**触发的自动化一两天就会攒下一条 —— 无条件显示
+ * 的话,那条触发器上永远挂着一行红字说它"最近一次没跑成",而它其实一直在正常跑。
+ * 用户消不掉它(除非删了重建),只能学会无视它。
+ *
+ * 判据是**谁的更近**:起跑之后,那次失败就成了旧账。同毫秒算"跑过了"(`<` 而不是
+ * `<=`)—— 两个时刻都是调用方给的 `Date.now()`,同毫秒完全可能,而那种情况下判成
+ * "还在失败"会让红字赖着不走。
+ *
+ * 放在契约里而不是各写一份:主进程(`automationStatus.ts` 的 `latestFailureOf` 就是
+ * 这个函数)与渲染端(设置页那一栏)读的是**同一份事实** —— 一处判"该显示"、另一处判
+ * "不该",这种分家只会在界面上显形,而且看起来像"主进程记错了"。
+ *
+ * 返回那句话本身(而不是布尔):调用方要的就是它,少一层间接。
+ */
+export function latestFailureOf(facts: AutomationTriggerFacts): string | undefined {
+  if (facts.lastError === undefined) return undefined;
+  const at = facts.lastErrorAt;
+  // 没记时刻(不该发生,但事实是外部来的)时照旧显示 —— 宁可多显示一句,也不静默吞掉。
+  if (at === undefined) return facts.lastError;
+  if (facts.lastFireAt !== undefined && facts.lastFireAt >= at) return undefined;
+  return facts.lastError;
+}
+
 /* ── 监控(monitoring.*)── */
 
 /**

@@ -31,6 +31,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AutomationRunEntry, AutomationRunStatus, AutomationTriggerFacts } from "@contracts/ipc";
+import { latestFailureOf } from "@contracts/ipc";
 import {
   NODE_OUTCOME_STATUSES,
   type NodeOutcomeStatus,
@@ -290,7 +291,9 @@ export function AutomationRunSection({
               {t("settings.automation.lastRun")}: {formatRelativeTime(fact.lastFireAt)}
             </p>
           )}
-          {fact.lastError !== undefined && (
+          {/* ⚠️ 用 `latestFailureOf` 而不是直接看 `lastError` —— 起跑之后那次失败就是
+              旧账了,一直挂着会让这行红字变成背景噪音(理由见契约里那个函数的注解)。 */}
+          {latestFailureOf(fact) !== undefined && (
             <p className="ml-3 truncate text-danger" title={fact.lastError}>
               {t("settings.automation.lastError")}: {fact.lastError}
             </p>

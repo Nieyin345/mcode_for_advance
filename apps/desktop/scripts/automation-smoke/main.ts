@@ -33,6 +33,7 @@
  */
 import { parseCron, cronMatches, type CronSpec } from "@contracts/cron";
 import { HOOK_EVENT_OF, matchesAnyGlob, type HookEvent } from "@contracts/hook";
+import { latestFailureOf } from "@contracts/ipc";
 import {
   parseTriggerSpec,
   DEFAULT_TRIGGER_DEBOUNCE_MS,
@@ -872,6 +873,62 @@ console.log("\nAutomationFacts · 挂载侧跟着 reload、运行侧只增不改
 
   facts.clear();
   eq("clear 清干净(dispose 用)", facts.all().length, 0);
+}
+
+/* ──────────── 11a-1. 「最近一次为什么没跑成」不能比「最近一次运行」还旧 ──────────── */
+
+console.log("\nlatestFailureOf · 陈年旧账不能一直挂在界面上");
+
+{
+  // `recordFired` 是**只增不改**的(见类头那条不变量):它不会把 `lastError` 清掉。
+  // 而重入跳过("上一次还在跑")这种东西,一条**经常**触发的自动化一两天就会攒下一条
+  // —— 早先界面无条件显示它,于是那条触发器上永远挂着一行红字,说它"最近一次没跑成",
+  // 而它其实一直在跑。用户没法把红字消掉(除非删了重建),只能学会无视它。
+  //
+  // 判据是**谁的更近**:跑过之后那次失败就成了旧账,不再显示;跑之前那次失败仍然显示
+  // (那才是"为什么刚才没响"的答案)。
+  const facts = new AutomationFacts();
+  const seed: Parameters<typeof facts.recordSetup>[0] = {
+    workflowId: "wf_latest",
+    nodeId: "T",
+    title: "盯文件",
+    kind: "file",
+    enabled: true,
+  };
+  facts.recordSetup(seed, true);
+
+  const row = (): ReturnType<typeof facts.ofWorkflow>[number] => facts.ofWorkflow("wf_latest")[0];
+
+  // ① 刚起跑就被跳过:没有 lastFire,失败就是最新的 → 显示。
+  facts.recordBlocked(seed, "上一次还在跑,这一次触发已跳过", 1000);
+  eq("没跑过时,失败显示出来", latestFailureOf(row()), "上一次还在跑,这一次触发已跳过");
+
+  // ② 后来又真的跑起来了(那次运行结束了)→ 陈年旧账不该再挂在那儿。
+  facts.recordFired(seed, 2000);
+  eq("跑过之后,旧的那条不再显示", latestFailureOf(row()), undefined);
+  check("旧账本身没有被抹掉(只是不显示)", row()?.lastError !== undefined, row()?.lastError);
+
+  // ③ 跑完之后又失败了一次 → 新的那条是**最新**的,该显示。
+  facts.recordBlocked(seed, "项目不在了", 3000);
+  eq("跑完之后新出的失败照常显示", latestFailureOf(row()), "项目不在了");
+
+  // ④ 同一毫秒也要能判(用 `<` 而不是 `<=` 的话这里会翻车)——
+  //    `recordFired` 与 `recordBlocked` 都收调用方给的 `Date.now()`,同毫秒完全可能。
+  const tie = new AutomationFacts();
+  tie.recordSetup(seed, true);
+  tie.recordBlocked({ ...seed, workflowId: "wf_tie" }, "上一次还在跑", 5000);
+  tie.recordFired({ ...seed, workflowId: "wf_tie" }, 5000);
+  eq(
+    "同一毫秒算「跑过了」(不然重入跳过会赖着不走)",
+    latestFailureOf(tie.ofWorkflow("wf_tie")[0]),
+    undefined,
+  );
+
+  // ⑤ 从来没失败过 → 当然没有。
+  const clean = new AutomationFacts();
+  clean.recordSetup(seed, true);
+  clean.recordFired({ ...seed, workflowId: "wf_clean" }, 100);
+  eq("没失败过就没有那句", latestFailureOf(clean.ofWorkflow("wf_clean")[0]), undefined);
 }
 
 /* ────────────────── 11a-3. 改了配置,攒着的那一次不该按旧条件跑 ────────────────── */
