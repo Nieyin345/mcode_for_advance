@@ -32,7 +32,7 @@
  * Run: scripts/automation-smoke/run.sh
  */
 import { parseCron, cronMatches, type CronSpec } from "@contracts/cron";
-import { HOOK_EVENT_OF, matchesAnyGlob, type HookEvent } from "@contracts/hook";
+import { HOOK_EVENT_OF, eventItemFactKeysOf, eventItemFactsOf, matchesAnyGlob, type HookEvent } from "@contracts/hook";
 import { latestFailureOf } from "@contracts/ipc";
 import {
   parseTriggerSpec,
@@ -54,7 +54,7 @@ import type { WorkflowDoc, WorkflowEdge, WorkflowNode } from "@contracts/workflo
 import type { WorkflowChoiceOption, RuntimeEvent } from "@contracts/runtime";
 import type { Session } from "@contracts/session";
 import { createEventSubjects } from "@main/hooks/eventSubjects.js";
-import { describeTriggerPayload, payloadFactsOf } from "@main/orchestration/automationPayload.js";
+import { describeTriggerPayload, mergeEventPayload, payloadFactsOf } from "@main/orchestration/automationPayload.js";
 import {
   AutomationFacts,
   automationTriggerKey,
@@ -474,6 +474,68 @@ console.log("\ndescribeTriggerPayload · 载荷的人话版本");
   eq("事件(什么都不带)", describeTriggerPayload({ kind: "event", event: "turn.done" }), "发生了「turn.done」。");
   const many = describeTriggerPayload({ kind: "event", event: "turn.files", subjects: churn });
   check("事件的主语也截断", many.includes("…(还有 2 项)"), many);
+
+  // 「这件事是关于哪一条」—— 资料库那两个事件带得出,而**这正是那条内置自动化
+  // 赖以知道该转哪一篇的东西**(见 `AUTO_CONVERT_*` 的指令:它让模型看下面这段载荷)。
+  eq(
+    "事件(带条目:下载完成)",
+    describeTriggerPayload({
+      kind: "event",
+      event: "library.item.downloaded",
+      items: [{ itemId: "lib_1", itemKind: "paper", itemTitle: "注意力就是全部", pdfPath: "pdf/ab/cd.pdf" }],
+    }),
+    "发生了「library.item.downloaded」。\n条目:注意力就是全部(类型 paper,id=lib_1)\nPDF(库内相对路径):pdf/ab/cd.pdf",
+  );
+  // **合并窗口里进来的几条全都要办。** 下载是并发的,两篇同时下完就落在同一个窗口 ——
+  // 只列一条的话,另一篇永远没人转,而且不报错。
+  eq(
+    "事件(带条目:两条一起下来)",
+    describeTriggerPayload({
+      kind: "event",
+      event: "library.item.downloaded",
+      items: [
+        { itemId: "lib_1", itemKind: "paper", itemTitle: "第一篇", pdfPath: "pdf/a.pdf" },
+        { itemId: "lib_2", itemKind: "paper", itemTitle: "第二篇", pdfPath: "pdf/b.pdf" },
+      ],
+    }),
+    [
+      "发生了「library.item.downloaded」。",
+      "一共有 2 条,这次都要办:",
+      "条目1:第一篇(类型 paper,id=lib_1)",
+      "PDF(库内相对路径):pdf/a.pdf",
+      "条目2:第二篇(类型 paper,id=lib_2)",
+      "PDF(库内相对路径):pdf/b.pdf",
+    ].join("\n"),
+  );
+  // 导入那一下**文件还没下来**,所以没有 `pdfPath` 这一行 —— 有的话就是在骗模型。
+  eq(
+    "事件(带条目:只有导入)",
+    describeTriggerPayload({
+      kind: "event",
+      event: "library.item.imported",
+      items: [{ itemId: "lib_2", itemKind: "note", itemTitle: "随手记" }],
+    }),
+    "发生了「library.item.imported」。\n条目:随手记(类型 note,id=lib_2)",
+  );
+  // 缺项不塌成 `undefined` 串进去。
+  eq(
+    "事件(条目缺标题)",
+    describeTriggerPayload({ kind: "event", event: "library.item.imported", items: [{ itemId: "lib_3" }] }),
+    "发生了「library.item.imported」。\n条目:(没给标题)(id=lib_3)",
+  );
+  // 空数组 = 没有条目,不许凭空多出一个空块。
+  eq(
+    "事件(条目是空数组:不多出空块)",
+    describeTriggerPayload({ kind: "event", event: "library.item.imported", items: [] }),
+    "发生了「library.item.imported」。",
+  );
+  // ⚠️ 反例:没有条目那种事件,**渲染结果必须和改之前一模一样** ——
+  // 不带条目的路(19 个事件里的 17 个)一点都不能被这条改动碰到。
+  eq(
+    "事件(无条目时不多出空块)",
+    describeTriggerPayload({ kind: "event", event: "tool.use", toolName: "Write", subjects: ["a.md"] }),
+    "发生了「tool.use」,工具:Write,涉及:a.md。",
+  );
 }
 
 /* ────────────────────────── 4. 决定权给模型的分支 ────────────────────────── */
@@ -770,6 +832,41 @@ console.log("\npayloadFactsOf · 载荷的平面事实形状(给变量系统 VAR
   const bareEvent = payloadFactsOf({ kind: "event", event: "turn.done" });
   check("可选字段没有就不出现", bareEvent.toolName === undefined && bareEvent.subjects === undefined, bareEvent);
 
+  // **条目那几项是拍平的**。变量系统认的是平面的 `{{trigger.<key>}}`(`expandTriggerVars`
+  // 按字面查一个键),嵌一层的话用户得写 `{{trigger.item.itemId}}`,永远解不出来。
+  const itemFacts = payloadFactsOf({
+    kind: "event",
+    event: "library.item.downloaded",
+    items: [{ itemId: "lib_1", itemKind: "paper", itemTitle: "标题", pdfPath: "pdf/a.pdf" }],
+  });
+  eq("事件:条目那几项拍平在顶层(不是嵌一层 item)", itemFacts.itemId, "lib_1");
+  check(
+    "事件:四项都在顶层",
+    itemFacts.itemKind === "paper" && itemFacts.itemTitle === "标题" && itemFacts.pdfPath === "pdf/a.pdf",
+    itemFacts,
+  );
+  check("事件:没有嵌一层 item 对象", !Object.prototype.hasOwnProperty.call(itemFacts, "item"), Object.keys(itemFacts));
+  // 只有一条时不报数(`itemCount` 是给"这次有好几条"用的)。
+  check("事件:只有一条时不带 itemCount", itemFacts.itemCount === undefined, itemFacts);
+  // 合并窗口里来了两条:单数那几项 take 第一条(数组摊成 `a、b` 对 `{{trigger.itemId}}`
+  // 毫无意义),但**必须带上条数** —— 否则模型以为只有一条,少办的那篇永远没人转。
+  const multiFacts = payloadFactsOf({
+    kind: "event",
+    event: "library.item.downloaded",
+    items: [
+      { itemId: "lib_1", itemTitle: "第一篇" },
+      { itemId: "lib_2", itemTitle: "第二篇" },
+    ],
+  });
+  eq("事件:多条时单数项取第一条", multiFacts.itemId, "lib_1");
+  eq("事件:多条时报出条数", multiFacts.itemCount, 2);
+  // 反例:不带条目的那种事件,一个 item* 键都不许凭空冒出来。
+  const noItem = payloadFactsOf({ kind: "event", event: "tool.use", toolName: "Write" });
+  check("事件:没条目时不多出 item* 键", !Object.keys(noItem).some((k) => k.startsWith("item")), Object.keys(noItem));
+  // 空数组同样不算有条目。
+  const emptyItems = payloadFactsOf({ kind: "event", event: "library.item.imported", items: [] });
+  check("事件:条目是空数组也不多出 item* 键", !Object.keys(emptyItems).some((k) => k.startsWith("item")), Object.keys(emptyItems));
+
   // **拷贝语义**:消费方改事实数组,不许动到执行器手里的原载荷。
   const originalFiles = ["x.md"];
   const copy = payloadFactsOf({ kind: "file", files: originalFiles });
@@ -790,20 +887,30 @@ console.log("\npayloadFactsOf · 载荷的平面事实形状(给变量系统 VAR
 console.log("\ntriggerFactKeysOf · 菜单列的每一项都得真的取得到");
 {
   // 每种触发造一份"最全"的载荷(可选字段都带上),再看候选是不是都在里面。
+  // `event` 这一份**必须连着 `item` 一起造** —— 不然下面那条"菜单列的每一项都取得到"
+  // 会对着一个结构上取不到条目事实的载荷去验,而 8c 刚把 `itemId` 那几项列进了菜单。
+  const richestEvent = payloadFactsOf({
+    kind: "event",
+    event: "library.item.downloaded",
+    toolName: "Write",
+    subjects: ["Write"],
+    items: [{ itemId: "lib_1", itemKind: "paper", itemTitle: "标题", pdfPath: "pdf/a.pdf" }],
+  });
   const richestPayload: Record<TriggerKind, Record<string, unknown>> = {
     manual: payloadFactsOf({ kind: "manual" }) as unknown as Record<string, unknown>,
     schedule: payloadFactsOf({ kind: "schedule", at: 1234 }) as unknown as Record<string, unknown>,
     file: payloadFactsOf({ kind: "file", files: ["a.md"] }) as unknown as Record<string, unknown>,
-    event: payloadFactsOf({
-      kind: "event",
-      event: "tool.use",
-      toolName: "Write",
-      subjects: ["Write"],
-    }) as unknown as Record<string, unknown>,
+    event: richestEvent as unknown as Record<string, unknown>,
   };
 
   for (const kind of TRIGGER_KINDS) {
-    const keys = triggerFactKeysOf({ [NODE_TRIGGER_KIND_PARAM_KEY]: kind });
+    // ⚠️ 事件那一种的候选**还取决于听的是哪个事件**(8c),所以这里得拿一个真听得见
+    // 条目事实的事件来配 —— 拿 `turn.done` 配的话,菜单只会列事件自己那几项。
+    const params =
+      kind === "event"
+        ? { [NODE_TRIGGER_KIND_PARAM_KEY]: kind, [NODE_TRIGGER_EVENTS_PARAM_KEY]: "library.item.downloaded" }
+        : { [NODE_TRIGGER_KIND_PARAM_KEY]: kind };
+    const keys = triggerFactKeysOf(params);
     const payload = richestPayload[kind];
     const missing = keys.filter((k) => !Object.prototype.hasOwnProperty.call(payload, k));
     eq(`${kind}:候选都取得到(缺的是 ${missing.join() || "无"})`, missing.length, 0);
@@ -830,6 +937,220 @@ console.log("\ntriggerFactKeysOf · 菜单列的每一项都得真的取得到")
     const keys = triggerFactKeysOf({ [NODE_TRIGGER_KIND_PARAM_KEY]: kind });
     check(`${kind}:有 kind 且不重复`, keys.includes("kind") && new Set(keys).size === keys.length, keys);
   }
+}
+
+/* ── 8c. 事件那一种还要看"听的是哪几个事件"(2026-09-19) ── */
+
+// 「这件事是关于哪一条」那几项只有**资料库那两个事件**带得出,而听哪些事件写在参数里。
+// 所以按种类写死的那张表不够 —— 一个听 `library.item.downloaded` 的触发器,菜单里得摆着
+// `itemId`,而一个听 `turn.done` 的**不能**摆(取不到 = 那一步跑不起来)。
+//
+// 这条不变量直接对着新版内置自动化:`AUTO_CONVERT_*` 的指令里写着"是哪一条见下面那段
+// 载荷",而载荷里到底有没有那几项,判据就是这里。
+console.log("\ntriggerFactKeysOf · 事件那一种按「听哪个事件」算");
+{
+  const evt = (events: string): readonly string[] =>
+    triggerFactKeysOf({ [NODE_TRIGGER_KIND_PARAM_KEY]: "event", [NODE_TRIGGER_EVENTS_PARAM_KEY]: events });
+
+  const dl = evt("library.item.downloaded");
+  check("下载完成:列 itemId/itemTitle/itemKind/pdfPath", ["itemId", "itemTitle", "itemKind", "pdfPath"].every((k) => dl.includes(k)), dl);
+  check("下载完成:也留着事件自己那几项", dl.includes("event"), dl);
+
+  const imp = evt("library.item.imported");
+  check("导入:列 itemId/itemTitle/itemKind", ["itemId", "itemTitle", "itemKind"].every((k) => imp.includes(k)), imp);
+  // ⚠️ **导入那条不该列 `pdfPath`** —— 导入那一下文件还没下来,`eventItemFactsOf` 从
+  // `LibraryItemImportedEvent` 里取不到它(那个接口压根没有这个字段)。
+  check("导入:不列 pdfPath(那一刻文件还没下来)", !imp.includes("pdfPath"), imp);
+
+  // 听 `turn.done` 这种不带条目的 —— 一项都不该列,否则插进指令必炸。
+  const done = evt("turn.done");
+  check("一轮结束:不列任何条目事实", !done.some((k) => ["itemId", "itemKind", "itemTitle", "pdfPath"].includes(k)), done);
+
+  // 听多个事件时取**交集**:哪条响是运行时的事,指令只能写"哪条响都取得到"的。
+  const both = evt("library.item.imported,library.item.downloaded");
+  check("导入+下载:交集 = 只共有的那几项", ["itemId", "itemTitle", "itemKind"].every((k) => both.includes(k)) && !both.includes("pdfPath"), both);
+
+  // 认不出来的事件名不掺和(那一关由 parseTriggerSpec 把整条触发器拒掉)。
+  const bogus = evt("library.item.downloaded,nope");
+  check("混了不认识的事件名:按认识的那个算", bogus.includes("itemId"), bogus);
+  check("一个都不认识:不列条目事实", !evt("nope,alsonope").some((k) => k.startsWith("item")), evt("nope,alsonope"));
+  check("没填听哪些事件:不列条目事实", !evt("").some((k) => k.startsWith("item")), evt(""));
+}
+
+/* ── 8d. 那几项**真能从事件里取出来**(2026-09-19) ── */
+
+// ⚠️ 这一节是补一个**已经犯过的错**:`eventItemFactsOf` 起初照着键名去事件上搬字段,
+// 而事件上那两个字段叫 `kind` / `title`,不叫 `itemKind` / `itemTitle` —— 于是它们
+// **永远取不到**,而 `pdfPath` / `itemId` 恰好同名所以看着是好的。
+//
+// 那种错**测不出来**:8c 只验"表上列着哪几项",载荷里少两行模型照样能干活(只拿到一个
+// id),没有任何东西会响。真正能钉住它的是**拿事件本身当夹具** —— 下面每一段都从
+// `@contracts/runtime` 那两个接口的**实际字段**出发,而不是我手写的键名。
+console.log("\neventItemFactsOf · 拿真事件当夹具(不是手写的键名)");
+{
+  // 换掉 `itemKind`/`itemTitle` 这两个字段名,下面必红。
+  const imported: RuntimeEvent = {
+    type: "library.item.imported",
+    sessionId: "(system)",
+    itemId: "lib_1",
+    kind: "paper",
+    title: "导入的那一篇",
+  } as unknown as RuntimeEvent;
+  const importedFacts = eventItemFactsOf(imported);
+  eq("导入:id 从 itemId 取得", importedFacts?.itemId, "lib_1");
+  eq("导入:类型从 kind 取得(不是 itemKind)", importedFacts?.itemKind, "paper");
+  eq("导入:标题从 title 取得(不是 itemTitle)", importedFacts?.itemTitle, "导入的那一篇");
+  check("导入:没有 pdfPath 这一项", importedFacts?.pdfPath === undefined, importedFacts);
+
+  const downloaded: RuntimeEvent = {
+    type: "library.item.downloaded",
+    sessionId: "(system)",
+    itemId: "lib_2",
+    kind: "paper",
+    title: "下完的那一篇",
+    pdfPath: "papers/ab/abcdef.pdf",
+  } as unknown as RuntimeEvent;
+  const dlFacts = eventItemFactsOf(downloaded);
+  eq("下载:四项全取到", JSON.stringify(dlFacts), JSON.stringify({
+    itemId: "lib_2",
+    itemKind: "paper",
+    itemTitle: "下完的那一篇",
+    pdfPath: "papers/ab/abcdef.pdf",
+  }));
+
+  // **表与取法必须对得上**:8c 列出来的每一项,拿真事件都得取得到。这条不变量把
+  // "表里加了键、取的时候漏了"这类错钉死在原地 —— 上面那个 bug 正是这个形状。
+  for (const [event, sample] of [
+    ["library.item.imported", imported],
+    ["library.item.downloaded", downloaded],
+  ] as const) {
+    const promised = eventItemFactKeysOf(event);
+    const got = eventItemFactsOf(sample) ?? {};
+    const lost = promised.filter((k) => got[k] === undefined);
+    eq(`${event}:表上列的都取得到(丢的是 ${lost.join() || "无"})`, lost.length, 0);
+  }
+
+  // `pdfPath` 空串当没有 —— 事件的 `pdfPath` 是 `item.pdfPath ?? ""`,而"这篇有 PDF,
+  // 路径是空的"对模型是句假话。
+  const emptyPath = eventItemFactsOf({
+    type: "library.item.downloaded",
+    sessionId: "(system)",
+    itemId: "lib_3",
+    kind: "paper",
+    title: "没有路径的那一篇",
+    pdfPath: "",
+  } as unknown as RuntimeEvent);
+  check("下载:空串路径不算有", emptyPath?.pdfPath === undefined, emptyPath);
+  eq("下载:其余照样有", emptyPath?.itemId, "lib_3");
+
+  // 不带条目的事件一律 `undefined` —— 不许凭空造。
+  eq("别的钩子事件:没有条目事实", eventItemFactsOf({ type: "turn.done", sessionId: "s" } as unknown as RuntimeEvent), undefined);
+  eq("不带条目的事实键:空(不是 undefined 串)", eventItemFactKeysOf("turn.done").length, 0);
+}
+
+/* ── 8e. 合并窗口里的几条**不会互相顶掉**(2026-09-19) ── */
+
+// ⚠️ 这一节也是补**已经犯过的错**:`pending.event` 起初是直接赋值,而触发器有合并窗口
+// (默认 2 秒)—— 下载是并发跑的,两篇同时下完就落在同一个窗口里,于是**后一条静默顶掉
+// 前一条**:载荷里只剩一条,模型只转一条,另一篇再也没人管,而且不报错。
+//
+// 文件那一路(`pending.files` 是 push 的)本来就没这毛病,事件这一路漏了。
+//
+// 真正能钉住它的是**拿两次事件喂同一个触发器**,再看载荷里是不是两条都在 —— 断言写在
+// `automationRunner` 那一侧(真起 timer),而那要起会话;这里验的是**它依赖的那件事**:
+// 载荷本身装得下多条、`payloadFactsOf` 也照实报出条数。
+console.log("\n事件载荷 · 合并窗口里的多条");
+{
+  // 渲染:两条都在、条数写明白了。
+  const two = describeTriggerPayload({
+    kind: "event",
+    event: "library.item.downloaded",
+    items: [
+      { itemId: "lib_1", itemTitle: "第一篇", pdfPath: "pdf/a.pdf" },
+      { itemId: "lib_2", itemTitle: "第二篇", pdfPath: "pdf/b.pdf" },
+    ],
+  });
+  check("两条:两个标题都在", two.includes("第一篇") && two.includes("第二篇"), two);
+  check("两条:两个 id 都在", two.includes("id=lib_1") && two.includes("id=lib_2"), two);
+  check("两条:明说一共几条(不然模型只办一条)", two.includes("一共有 2 条"), two);
+
+  // 平面事实:单数项取第一条,但**条数必须报出来**。
+  const facts = payloadFactsOf({
+    kind: "event",
+    event: "library.item.downloaded",
+    items: [{ itemId: "lib_1", itemTitle: "第一篇" }, { itemId: "lib_2", itemTitle: "第二篇" }],
+  });
+  eq("两条:itemCount 报出 2", facts.itemCount, 2);
+  eq("两条:单数的 itemId 取第一条(数组摊成顿号对 {{trigger.itemId}} 没意义)", facts.itemId, "lib_1");
+
+  // 一条时不报数 —— 凭空出现「一共 1 条」会让模型以为还有什么要办。
+  const one = payloadFactsOf({ kind: "event", event: "library.item.downloaded", items: [{ itemId: "x" }] });
+  check("一条:没有 itemCount", one.itemCount === undefined, one);
+}
+
+/* ── 8f. 合并窗口里连着来的两条**都留着**(2026-09-19) ── */
+
+// ⚠️ 这一节补的是**已经犯过的错**,而且是这一整块里最安静的那一个:
+// `pending.event` 起初是**直接赋值**。触发器有合并窗口(默认 2 秒),而下载是并发跑的
+// —— 两篇论文同时下完,两条事件落在同一个窗口里,于是**后一条静默顶掉前一条**:载荷里
+// 只剩一条,模型只转一条,另一篇**再也没人管**,而且一个字都不报。
+//
+// 文件那一路(`pending.files` 是 push 的)本来就没这毛病,事件这一路漏了 —— 正是"同一件
+// 事两条路各自实现"才会有的那种漏。所以这回把攒载荷这段拆成纯函数,在这儿钉死。
+console.log("\nmergeEventPayload · 合并窗口里的两条都留着");
+{
+  const item1 = { itemId: "lib_1", itemTitle: "第一篇", itemKind: "paper" };
+  const item2 = { itemId: "lib_2", itemTitle: "第二篇", itemKind: "paper" };
+
+  // 第一条:累加(空 → 一条)。
+  const first = mergeEventPayload(undefined, "library.item.downloaded", {}, item1);
+  eq("第一条:载荷里一条", first.kind === "event" ? first.items?.length : -1, 1);
+
+  // **第二条必须还在,不能顶掉第一条。** 这一行就是那个 bug 的判据 —— 把它改回
+  // `pending.event = {...}` 那种写法,这里必红。
+  const second = mergeEventPayload(first, "library.item.downloaded", {}, item2);
+  eq("第二条:两条都在(不是顶掉)", second.kind === "event" ? second.items?.length : -1, 2);
+  check(
+    "第二条:两条各自带自己的 id",
+    second.kind === "event" && second.items?.[0]?.itemId === "lib_1" && second.items?.[1]?.itemId === "lib_2",
+    second,
+  );
+  // 顺序照来的先后 —— 模型照着念的顺序该和发生的一致。
+  check(
+    "第二条:标题也在、顺序照来的先后",
+    second.kind === "event" && second.items?.[0]?.itemTitle === "第一篇" && second.items?.[1]?.itemTitle === "第二篇",
+    second,
+  );
+
+  // 攒起来之后**渲染出来的就是两条**,不是一条。
+  const rendered = describeTriggerPayload(second);
+  check("攒两条之后渲染出「一共有 2 条」", rendered.includes("一共有 2 条"), rendered);
+
+  // 同一条重复通知(重试 / 两次 finalize)**不该办两遍**。
+  const dup = mergeEventPayload(second, "library.item.downloaded", {}, item1);
+  eq("同一条重复通知:去重(还是一条)", dup.kind === "event" ? dup.items?.length : -1, 2);
+
+  // 事件名 / 工具名 / 主语是**覆盖**:它们说的是"这是个什么事件",窗口里最后那条为准。
+  const withTool = mergeEventPayload(
+    mergeEventPayload(undefined, "tool.use", { toolName: "Write", subjects: ["a.md"] }, undefined),
+    "tool.use",
+    { toolName: "Bash", subjects: ["b.sh"] },
+    undefined,
+  );
+  check(
+    "工具名与主语是覆盖(最后一条为准)",
+    withTool.kind === "event" && withTool.toolName === "Bash" && withTool.subjects?.join() === "b.sh",
+    withTool,
+  );
+  check("没有条目的那条:载荷上压根没有 items", withTool.kind === "event" && withTool.items === undefined, withTool);
+
+  // 上一条是文件触发(载荷不是 event)**也不会把它的东西串进来**。
+  const afterFile = mergeEventPayload({ kind: "file", files: ["x.md"] }, "library.item.downloaded", {}, item2);
+  check(
+    "上一条不是事件载荷时:干净地重开",
+    afterFile.kind === "event" && afterFile.items?.length === 1 && afterFile.items[0]?.itemId === "lib_2",
+    afterFile,
+  );
 }
 
 /* ────────────────────────── 9. 定时:同一分钟只跑一次(AUTO-05) ────────────────────────── */

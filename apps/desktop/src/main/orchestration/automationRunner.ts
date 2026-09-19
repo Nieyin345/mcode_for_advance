@@ -42,7 +42,7 @@
 import { watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import { cronMatches } from "@contracts/cron";
-import { HOOK_EVENT_OF, matchesAnyGlob, matchesGlobList, type HookEvent } from "@contracts/hook";
+import { HOOK_EVENT_OF, eventItemFactsOf, matchesAnyGlob, matchesGlobList, type HookEvent } from "@contracts/hook";
 import { DEFAULT_PROVIDER_ID } from "@contracts/ipc";
 import {
   NODE_COMMAND_PARAM_KEY,
@@ -62,7 +62,7 @@ import { createEventSubjects, fileSubjects } from "@main/hooks/eventSubjects.js"
 import { log } from "@main/lib/logger.js";
 import { ProjectRepo, SessionRepo } from "@main/store/repositories.js";
 import { uid } from "@main/utils.js";
-import { describeTriggerPayload, payloadFactsOf, type TriggerPayload } from "./automationPayload.js";
+import { describeTriggerPayload, mergeEventPayload, payloadFactsOf, type TriggerPayload } from "./automationPayload.js";
 import {
   AutomationFacts,
   automationTriggerKey as triggerKey,
@@ -555,6 +555,9 @@ class AutomationRunner {
     //
     // 事实取一次;主语是纯的,按每条触发器自己的 cwd 各算一遍(路径主语要看 cwd)。
     const facts = this.subjects.factsOf(e);
+    // "这件事是关于哪一条"同样是**事件本身**的事实(资料库那两个事件有,其余没有)。
+    // 与上面那条同理取一次 —— 它不是主语,不进 matcher(那两个事件压根没有可筛的维度)。
+    const item = eventItemFactsOf(e);
 
     for (const trigger of this.all()) {
       if (trigger.spec.kind !== "event" || !trigger.spec.events.includes(event)) continue;
@@ -569,12 +572,19 @@ class AutomationRunner {
         continue;
       }
       const pending = this.pendingOf(trigger);
-      pending.event = {
-        kind: "event",
+      // **这件事是关于哪一条**。与工具名同一条判据:它是**事件本身**的事实,与哪条触发器
+      // 无关,所以只取一次。
+      //
+      // ⚠️ 攒载荷这件事**必须累加,不是覆盖** —— 合并窗口(默认 2 秒)里连着来的几条是
+      // 这次运行要办的**全部**,而下载是并发跑的,两篇同时下完就落在同一个窗口里。直接
+      // 赋值的话后一条会**静默顶掉**前一条,另一篇再也没人管。这段逻辑在
+      // `mergeEventPayload` 里(纯函数,冒烟钉得住)—— 别再在这儿手写一遍。
+      pending.event = mergeEventPayload(
+        pending.event,
         event,
-        ...(toolName !== undefined ? { toolName } : {}),
-        ...(subjects !== undefined ? { subjects } : {}),
-      };
+        { toolName, subjects },
+        item,
+      );
       this.rearm(pending, trigger.spec.debounceMs);
     }
   }

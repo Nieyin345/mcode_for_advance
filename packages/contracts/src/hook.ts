@@ -133,6 +133,96 @@ export function hookEventHasTool(event: HookEvent): boolean {
   return hookSubjectOf(event) === "tool";
 }
 
+/* ── 事件的「这是关于哪一条」 ── */
+
+/**
+ * 「这件事是关于哪一条」那几项事实的**键名**。
+ *
+ * 目前只有资料库的两个事件用得上(见 {@link HOOK_EVENT_ITEM_FACT_FIELDS}),但这几个键是
+ * **跨模块共用的字面量**:它同时是事件载荷的字段名、是 `TriggerPayload` 的字段名、
+ * 也是用户写在指令里的 `{{trigger.itemId}}`。三处各写一遍字符串的话,改一处漏一处
+ * 的表现是"指令里那个名字解不出来",而那种失败只在跑的时候才出现。
+ */
+export const EVENT_ITEM_FACT_KEYS = ["itemId", "itemKind", "itemTitle", "pdfPath"] as const;
+export type EventItemFactKey = (typeof EVENT_ITEM_FACT_KEYS)[number];
+
+/**
+ * **哪些事件带得出"这是关于哪一条"** —— 事件 → 那几项事实**分别躺在事件的哪个字段上**。
+ *
+ * ## 为什么它得单独存在(而不是塞进 `subjects`)
+ *
+ * `subjects` 是 `matcher` 拿去比的东西(工具名 / 文件路径),而资料库这两个事件
+ * **没有可筛的维度**(见 {@link hookSubjectOf} 返回 null)。把条目 id 塞进 `subjects`
+ * 等于凭空造出一个"能筛"的假象:用户照着它写一条匹配规则,`validateHook` 却照样拦下来
+ * 说"这个事件没有可比的东西" —— 两处互相打脸。
+ *
+ * 而「事件发生时」的自动化**真的需要它**。从前载荷里只有一句「发生了
+ * 「library.item.downloaded」」,一条「下载完转 Markdown」的自动化于是不知道**是哪一条**
+ * 下完了 —— 它只能靠"库里最新的那一条"去猜,一次下载失败、或者两条同时下来,它转的就
+ * 是错的那篇,而且**不报错**。
+ *
+ * ## 为什么表里存的是「键 → 事件字段名」而不是光一串键名
+ *
+ * ⚠️ **事件里的字段名和事实键名并不总是一样**:事件上叫 `kind` / `title`,而事实键叫
+ * `itemKind` / `itemTitle`。差别是**必须**的 —— `{{trigger.kind}}` 已经是"这次触发的
+ * 种类"(取值 `"event"`),条目自己的 kind 不加前缀就会和它撞在同一个名字空间里,后写的
+ * 静默盖掉先写的。
+ *
+ * 早先这里只存一串键名、取的时候照着名字去事件上搬,于是 `itemKind` / `itemTitle`
+ * **永远搬不到**(事件上根本没有这两个字段)—— 而失败的样子是"载荷里少两行",模型只收到
+ * 一个 id,照样能干活,只是干得笨。所以键名和取法现在写在**同一张表**里:少了哪一项、
+ * 它从哪来,都在这一行上看得见。
+ *
+ * `pdfPath` 例外地没带前缀:它就是这一个字段的唯一含义,而事件里那个键也叫这个名字
+ * (钩子脚本 `jq .data.pdfPath` 与指令里 `{{trigger.pdfPath}}` 于是对得上)。⚠️ 它是
+ * **库内相对路径**,要拿给外部工具用得自己拼库根 —— 绝对路径从 `library_items` 拿。
+ */
+export const HOOK_EVENT_ITEM_FACT_FIELDS: Partial<
+  Record<HookEvent, Partial<Record<EventItemFactKey, string>>>
+> = {
+  "library.item.imported": { itemId: "itemId", itemKind: "kind", itemTitle: "title" },
+  // 下载完的那一条**多一个 `pdfPath`** —— 导入那一下文件还没下来,那时给路径是骗人。
+  "library.item.downloaded": { itemId: "itemId", itemKind: "kind", itemTitle: "title", pdfPath: "pdfPath" },
+};
+
+/**
+ * 这个事件带得出哪几项(顺序照 {@link EVENT_ITEM_FACT_KEYS},稳定)。带不出就是空。
+ *
+ * 给「插入变量」那张菜单用:菜单列的每一项,这一种触发都得真取得到 ——
+ * `expandTriggerVars` 对取不到的 key 是硬失败,列错一项的代价是那一步跑不起来。
+ */
+export function eventItemFactKeysOf(event: HookEvent): readonly EventItemFactKey[] {
+  const fields = HOOK_EVENT_ITEM_FACT_FIELDS[event];
+  if (fields === undefined) return [];
+  return EVENT_ITEM_FACT_KEYS.filter((key) => fields[key] !== undefined);
+}
+
+/**
+ * 从**运行时事件**里取出「这是关于哪一条」的那几项。取不到就是 `undefined`。
+ *
+ * 与 {@link HOOK_EVENT_ITEM_FACT_FIELDS} 放在一起,是因为那张表说的是**有哪些键、各自
+ * 躺在哪**,这里说的是**照着搬出来** —— 分两个文件的话,给某个事件加了键却忘了在取的
+ * 地方补一行,表现是"表上列着、跑起来解不出来",而那种失败只在被触发的那一刻才出现。
+ *
+ * 空串当没有:下载完成那条事件的 `pdfPath` 是 `item.pdfPath ?? ""`,而"空字符串"当路径
+ * 喂给模型等于告诉它"这篇有 PDF,路径是空的"。
+ */
+export function eventItemFactsOf(e: RuntimeEvent): Partial<Record<EventItemFactKey, string>> | undefined {
+  const event = HOOK_EVENT_OF[e.type];
+  if (event === null) return undefined;
+  const fields = HOOK_EVENT_ITEM_FACT_FIELDS[event];
+  if (fields === undefined) return undefined;
+  const source = e as unknown as Record<string, unknown>;
+  const out: Partial<Record<EventItemFactKey, string>> = {};
+  for (const key of EVENT_ITEM_FACT_KEYS) {
+    const field = fields[key];
+    if (field === undefined) continue;
+    const value = source[field];
+    if (typeof value === "string" && value.length > 0) out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 /**
  * 每个 `RuntimeEvent` 对应哪个钩子事件;`null` = **故意不暴露**。
  *

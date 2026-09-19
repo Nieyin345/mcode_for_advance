@@ -71,7 +71,7 @@ import { CapabilityRequirementSchema } from "./capability.js";
 import { LIBRARY_KINDS } from "./library.js";
 import { TEMPLATE_KINDS } from "./templates.js";
 import { parseCron, type CronSpec } from "./cron.js";
-import { HOOK_EVENTS, hookSubjectOf, splitGlobList, type HookEvent } from "./hook.js";
+import { HOOK_EVENTS, eventItemFactKeysOf, hookSubjectOf, splitGlobList, type HookEvent } from "./hook.js";
 import {
   WorkflowCapabilitySchema,
   type WorkflowCapability,
@@ -243,11 +243,39 @@ export const TRIGGER_PAYLOAD_FACTS_OF: Record<TriggerKind, readonly string[]> = 
  *
  * 没配好触发方式(认不出来)时**只给 `manual`** —— 不猜。那种图本来就跑不起来
  * (`graph.no-trigger-node` 那类),再列一串取不到的字段只会把问题搅浑。
+ *
+ * ## 事件那一种还要再看**听的是哪几个事件**(2026-09-19)
+ *
+ * 「这件事是关于哪一条」那几项(`itemId` / `itemKind` / `itemTitle` / `pdfPath`)只有
+ * 资料库那两个事件带得出,而**哪些事件**写在参数里 —— 所以这一层不能靠
+ * {@link TRIGGER_PAYLOAD_FACTS_OF} 那张按种类写死的表。
+ *
+ * 听了好几个事件时取**交集**:哪一条响是运行时的事(C2 那条多事件触发器),指令要写就
+ * 得写"哪条响都取得到"的那些。这与「插入变量」跨多条触发器取交集是同一条规矩 ——
+ * 而 `expandTriggerVars` 对取不到的 key 是硬失败,列错一项的代价是那一步跑不起来。
  */
 export function triggerFactKeysOf(params: Record<string, unknown>): readonly string[] {
   const kind = triggerKindOf(params);
   const own = kind === undefined ? [] : TRIGGER_PAYLOAD_FACTS_OF[kind];
-  return [...new Set(["kind", ...own])];
+  const eventOwn = kind === "event" ? eventFactKeysOf(params) : [];
+  return [...new Set(["kind", ...own, ...eventOwn])];
+}
+
+/**
+ * 这条「事件发生时」触发器听的那几个事件**都**带得出的条目事实(交集)。听不出事件时是空。
+ *
+ * 读的是 {@link NODE_TRIGGER_EVENTS_PARAM_KEY} 那一格 —— 用户在里面挑的就是事件名,
+ * 而「哪个事件带得出哪几项」是按事件名索引的（`@contracts/hook` 的
+ * `eventItemFactKeysOf`）。认不出来的名字不掺和(`parseTriggerSpec`
+ * 那关本来就会把整条触发器拒掉,这里再报一次没有意义)。
+ */
+function eventFactKeysOf(params: Record<string, unknown>): readonly string[] {
+  const names = patternListOf(params[NODE_TRIGGER_EVENTS_PARAM_KEY]).filter((name) =>
+    (HOOK_EVENTS as readonly string[]).includes(name),
+  );
+  if (names.length === 0) return [];
+  const perEvent = names.map((name) => eventItemFactKeysOf(name as HookEvent));
+  return perEvent.reduce((a, b) => a.filter((key) => b.includes(key)));
 }
 
 /**
