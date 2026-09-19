@@ -29,6 +29,7 @@ import {
   MOBILE_DEFAULT_PORT,
   MOBILE_PORT_SETTING_KEY,
   MOBILE_ENABLED_SETTING_KEY,
+  MOBILE_PAIRED_DEVICES_SETTING_KEY,
   SSE_HEARTBEAT_INTERVAL_MS,
   PairingVerifyInputSchema,
   type MobileRpcRequest,
@@ -111,18 +112,26 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
 }
 
 /** Extract + validate the device token. Prefers the `Authorization: Bearer`
- *  header; falls back to a `?token=` query param so `EventSource` (which
- *  cannot set request headers) can authenticate the SSE stream. Returns the
- *  device on success, null on any failure (caller sends 401). */
-async function authorize(req: IncomingMessage): Promise<PairedDevice | null> {
+ *  header; for GET `/api/events` only, falls back to a `?token=` query param —
+ *  `EventSource` cannot set request headers, so the SSE stream has no other way
+ *  to authenticate.
+ *
+ *  ⚠️ **The query-param fallback is restricted to the SSE route.** It used to
+ *  apply to every route, which put the device token in the URL of ordinary RPC
+ *  calls: URLs land in `Referer`, in proxy/access logs, and in browser history.
+ *  A token in a URL is a token leaked to anything that can read a log line —
+ *  and this token is a full pass to `/api/rpc` (chats, session content,
+ *  settings). `EventSource` is the only client that needs it; nothing else
+ *  may authenticate that way. */
+async function authorize(req: IncomingMessage, allowQueryToken = false): Promise<PairedDevice | null> {
   let token: string | null = null;
   const header = req.headers["authorization"];
   if (header && typeof header === "string") {
     const match = /^Bearer\s+(.+)$/i.exec(header.trim());
     if (match) token = match[1];
   }
-  if (!token) {
-    // Query-param fallback for EventSource (no header support).
+  if (!token && allowQueryToken) {
+    // Query-param fallback for EventSource (no header support) — SSE only.
     const u = req.url ?? "";
     const q = u.split("?", 2)[1];
     if (q) {
@@ -132,6 +141,34 @@ async function authorize(req: IncomingMessage): Promise<PairedDevice | null> {
   }
   if (!token) return null;
   return pairingManager.validateToken(token);
+}
+
+/** Setting keys the **LAN-facing** surface must never read or write.
+ *
+ *  `mobile.pairedDevices` holds every paired device's token **in plaintext**
+ *  (see {@link PairingManager}). `setting:get` / `setting:getMany` are on the
+ *  mobile whitelist because the phone shell reads its own preferences — so
+ *  without this guard any one paired phone could ask for that key and read
+ *  **every other phone's token**, then use it. Symmetrically, `setting:set`
+ *  would let a phone rewrite the list: wipe every device (denial of service) or
+ *  inject a record with a token of its choosing.
+ *
+ *  This is scoped to the HTTP bridge on purpose. The desktop renderer keeps its
+ *  read access to the same key — it is local, and the DB file it reads from is
+ *  already the user's own trust boundary (see the note in PairingManager). The
+ *  difference here is the **network**: the bridge is reachable by every device
+ *  on the LAN, so it must not hand out other devices' credentials. */
+const LAN_UNREADABLE_SETTING_KEYS = new Set<string>([MOBILE_PAIRED_DEVICES_SETTING_KEY]);
+
+/** True if this RPC request carries a setting key the LAN surface must not
+ *  touch — checked for **every** method, not just the `setting:*` family, so a
+ *  future handler that forwards a key can't reopen the hole by accident. */
+function touchesBlockedSetting(body: MobileRpcRequest): boolean {
+  const input = body.input as { key?: unknown; keys?: unknown } | null | undefined;
+  if (!input || typeof input !== "object") return false;
+  const keys: unknown[] = [input.key];
+  if (Array.isArray(input.keys)) keys.push(...input.keys);
+  return keys.some((k) => typeof k === "string" && LAN_UNREADABLE_SETTING_KEYS.has(k));
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -238,6 +275,14 @@ async function handleRpc(req: IncomingMessage, res: ServerResponse, device: Pair
     sendJson(res, 400, { ok: false, error: "missing method", status: 400 });
     return;
   }
+  // One key is off-limits over the LAN (see LAN_UNREADABLE_SETTING_KEYS): it
+  // holds every device's token in plaintext, so a single paired phone reading
+  // it would own every other phone.
+  if (touchesBlockedSetting(body)) {
+    log.warn(`mobile: rpc ${body.method} refused — setting key is not reachable over the LAN bridge`);
+    sendJson(res, 403, { ok: false, error: "forbidden setting key", status: 403 });
+    return;
+  }
   const ctx: DeviceContext = { device };
   // Entry/exit tracing. git:* calls are user-triggered slow ops (LLM rounds,
   // network) — always logged so a hung request is visible in main.log. Other
@@ -264,38 +309,20 @@ async function handleRpc(req: IncomingMessage, res: ServerResponse, device: Pair
   sendRpcResult(res, traced);
 }
 
-/** Start the mobile server. Resolves with a handle (running:false if disabled
- *  or DB unavailable). Safe to call once at app start. */
-export async function startMobileServer(): Promise<MobileServerHandle> {
-  if (currentHandle) return currentHandle;
-
-  // Wait for DB so settings (enabled flag, port) are readable.
-  try {
-    await awaitDb();
-  } catch (err) {
-    log.error(`mobile: DB not ready, server not started: ${(err as Error).message}`);
-    return makeIdleHandle();
-  }
-
-  const enabled = await readEnabled();
-  if (!enabled) {
-    log.info("mobile: disabled by setting (mobile.enabled=0); server not started");
-    return makeIdleHandle();
-  }
-
-  // Register the git subset into the mobile RPC whitelist (idempotent — the
-  // table absorbs the extra handlers). Done once per server start.
-  try {
-    registerMobileGitRpc();
-  } catch (err) {
-    log.warn(`mobile: git RPC registration failed: ${(err as Error).message}`);
-  }
-
-  const port = await resolvePort();
-  const lanIp = detectLanIp();
-  const endpoint = lanIp ? `http://${lanIp}:${port}` : `http://localhost:${port}`;
-
-  const server: Server = createServer((req, res) => {
+/** The request router: routing table + the per-route auth gate.
+ *
+ *  Extracted from {@link startMobileServer} verbatim so the routing and — above
+ *  all — the auth gate can be exercised without starting the process-wide
+ *  listener (which binds `0.0.0.0` and would therefore expose the machine under
+ *  test to the LAN). `scripts/mobile-pairing-smoke` builds its own
+ *  `createServer(createMobileRequestHandler(...))` on `127.0.0.1:0` with it.
+ *
+ *  `endpoint` is only used for the URLs echoed back in `/api/health` and the
+ *  pairing result — nothing in routing/auth depends on it. */
+export function createMobileRequestHandler(
+  endpoint: string,
+): (req: IncomingMessage, res: ServerResponse) => void {
+  return (req, res) => {
     // All API responses get a permissive CSP-free header set as needed. The
     // mobile bundle is served with its own meta CSP (Phase 4).
     const rawUrl = req.url ?? "/";
@@ -327,8 +354,9 @@ export async function startMobileServer(): Promise<MobileServerHandle> {
 
     // ── Authenticated routes ────────────────────────────────────────────
     if (path.startsWith("/api/")) {
-      // Authorize first.
-      const authPromise = authorize(req);
+      // Authorize first. The `?token=` fallback is SSE-only (EventSource cannot
+      // set headers) — every other route must carry `Authorization: Bearer`.
+      const authPromise = authorize(req, path === "/api/events");
       // SSE handler keeps the connection open, so handle it inline.
       if (path === "/api/events" && req.method === "GET") {
         authPromise.then((device) => {
@@ -362,7 +390,41 @@ export async function startMobileServer(): Promise<MobileServerHandle> {
 
     // ── Static mobile bundle (SPA) ──────────────────────────────────────
     serveMobileAsset(req, res);
-  });
+  };
+}
+
+/** Start the mobile server. Resolves with a handle (running:false if disabled
+ *  or DB unavailable). Safe to call once at app start. */
+export async function startMobileServer(): Promise<MobileServerHandle> {
+  if (currentHandle) return currentHandle;
+
+  // Wait for DB so settings (enabled flag, port) are readable.
+  try {
+    await awaitDb();
+  } catch (err) {
+    log.error(`mobile: DB not ready, server not started: ${(err as Error).message}`);
+    return makeIdleHandle();
+  }
+
+  const enabled = await readEnabled();
+  if (!enabled) {
+    log.info("mobile: disabled by setting (mobile.enabled=0); server not started");
+    return makeIdleHandle();
+  }
+
+  // Register the git subset into the mobile RPC whitelist (idempotent — the
+  // table absorbs the extra handlers). Done once per server start.
+  try {
+    registerMobileGitRpc();
+  } catch (err) {
+    log.warn(`mobile: git RPC registration failed: ${(err as Error).message}`);
+  }
+
+  const port = await resolvePort();
+  const lanIp = detectLanIp();
+  const endpoint = lanIp ? `http://${lanIp}:${port}` : `http://localhost:${port}`;
+
+  const server: Server = createServer(createMobileRequestHandler(endpoint));
 
   try {
     await new Promise<void>((resolve, reject) => {
