@@ -16,24 +16,16 @@
  * 花括号词法,但名字空间不同:它不指向图上任何节点,指向的是触发载荷里那份
  * 平面事实(`kind` / `at` / `files` / `event` / `toolName` / `subjects`,见
  * `automationPayload.ts` 的 `TriggerPayloadFacts`)。
+ *
+ * ⚠️ **哪几种触发带得出哪几个键,判据在 `@contracts/nodeType` 的
+ * `triggerFactKeysOf`** —— 界面上「插入变量」列候选用它。这里只认词法,不认识种类。
  */
 const TRIGGER_REF_RE = /\{\{\s*trigger\.([A-Za-z0-9_.\-]+?)\s*\}\}/g;
 
 /**
- * 触发器变量的**候选名单**:载荷里有的每个 key 一条,形如 `{{trigger.kind}}`,按 key
- * 排序(名单稳定,界面分组不跳)。没有载荷(手动跑)返回空 —— 那一组整个不出现。
- *
- * 渲染端的「插入变量」用它拼"触发器"那一组;调度层不需要它(解算是按 key 现查的)。
+ * 载荷值 → 文本,与 `@contracts/nodeTemplate` 的 `stringify` 同一套规则(字符串原样、
+ *  字符串数组用「、」连、其余 JSON)。那边的没导出,这份是触发器自己的名字空间。
  */
-export function triggerVarCandidates(trigger: Record<string, unknown> | undefined): string[] {
-  if (trigger === undefined) return [];
-  return Object.keys(trigger)
-    .sort()
-    .map((key) => `{{trigger.${key}}}`);
-}
-
-/** 载荷值 → 文本,与 `@contracts/nodeTemplate` 的 `stringify` 同一套规则(字符串原样、
- *  字符串数组用「、」连、其余 JSON)。那边的没导出,这份是触发器自己的名字空间。 */
 function stringifyTriggerValue(value: unknown): string {
   if (value === undefined || value === null) return "";
   if (typeof value === "string") return value;

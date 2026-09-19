@@ -1,7 +1,7 @@
 import type { NodeRunInput, WorkflowChoiceOption, WorkflowDataContext } from "@contracts/runtime";
 import { MEMORY_PARAM_KEY } from "@contracts/memory";
 import { memorySnapshotFor } from "../memory/retrieval.js";
-import { expandTriggerVars, triggerVarCandidates } from "./triggerVars.js";
+import { expandTriggerVars } from "./triggerVars.js";
 import {
   DEFAULT_DECIDER_INSTRUCTION,
   NODE_CODE_INPUT_KEY,
@@ -183,12 +183,19 @@ function stringParamOf(params: Record<string, unknown>, key: string): string {
 /* ────────────────────────── 触发器变量(memory / VAR-06)────────────────────────── */
 
 /**
- * `{{trigger.*}}` 的词法、候选名单与展开器住在 `./triggerVars.ts` —— **零依赖叶子模块**
+ * `{{trigger.*}}` 的词法与展开器住在 `./triggerVars.ts` —— **零依赖叶子模块**
  * (见那边的文件头:scheduler 直接 import 它,不能经由本文件把 memory/electron 拖进
  * 冒烟打包图)。这里 import + re-export:`buildNodeInput` 用 `expandTriggerVars` 做
- * 第二遍兜底展开,老的外部引用(冒烟/渲染端候选)也继续从本模块拿,路径不变。
+ * 第二遍兜底展开,老的外部引用继续从本模块拿,路径不变。
+ *
+ * ⚠️ **候选名单不在那边了**(2026-09-19)。原来这里还导出一个 `triggerVarCandidates`,
+ * 说是"渲染端的「插入变量」用它拼触发器那一组" —— **那句话从来不是真的**:渲染端够不到
+ * `@main`(它 import 不到这个模块),那边自己抄了一份六个字段的名单,于是定时触发器里也
+ * 摆着「涉及哪些对象」,点一下插进指令、下次到点必炸。现在候选按**触发方式**算,判据在
+ * `@contracts/nodeType` 的 `triggerFactKeysOf`(渲染端够得到契约层),那个导出没人用了,
+ * 删掉。
  */
-export { expandTriggerVars, triggerVarCandidates };
+export { expandTriggerVars };
 
 /* ────────────────────────── 记忆注入(MEM-02)────────────────────────── */
 

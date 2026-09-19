@@ -199,6 +199,58 @@ export function triggerEnabledOf(params: Record<string, unknown>): boolean {
 }
 
 /**
+ * **哪种触发会往载荷里带哪些事实** —— `{{trigger.<key>}}` 的候选范围。
+ *
+ * ## 为什么这张表必须和"哪种触发"绑在一起(2026-09-19)
+ *
+ * 载荷里**不是**恒有那六个键:定时只有 `kind`/`at`,文件只有 `kind`/`files`,事件只有
+ * `kind`/`event` 以及可能有的 `toolName`/`subjects`。而 `expandTriggerVars` 对取不到的
+ * key 是**硬失败**(`这次触发的载荷里没有它,可用的有:…`),所以列错一项的代价是那一步
+ * **跑不起来**,不是显示不好看。
+ *
+ * 界面上「插入变量」的「触发器」那一组原来把六个字段全列出来,判据只有"图里挂着触发器
+ * 吗" —— 于是一个**定时**触发器,菜单里也摆着「涉及哪些对象」,点一下插进指令,下次到点
+ * 必炸。而用户点菜单的用意恰恰是"我不想记错名字"。
+ *
+ * ## 为什么还留着 `manual`
+ *
+ * `manual` 是「立刻运行一次」那条路(`automationRunner.runNow`),它**不看这条触发器
+ * 配的是哪种** —— 任何一种都能手动跑,载荷就是 `{ kind: "manual" }`。所以只写
+ * `triggerKindOf()` 是不够的:那样一个定时自动化点手动跑,菜单会照样摆着「触发时刻」。
+ *
+ * `manual` 那一行里没有 `at` 是刻意的:**手动跑时载荷里真的没有时刻**
+ * (`payloadFactsOf` 只给 `kind`),而用户心里那个"刚才"不需要从这里取 —— 要写进指令
+ * 的话,让模型自己看当前时间更实在。
+ *
+ * ⚠️ 这张表说的是**可能有哪些**,不是"一定有":`toolName`/`subjects` 只在事件本身带得出
+ * 主语时才有(`eventSubjects.of` 对 `turn.done` 这类返回空)。所以 `{{trigger.toolName}}`
+ * 写在事件触发器上**仍然可能**失败 —— 那种失败是模型/用户该在跑的时候看见的,菜单拦不住。
+ * 这里只把**按种类就注定取不到**的那些挡掉。
+ */
+export const TRIGGER_PAYLOAD_FACTS_OF: Record<TriggerKind, readonly string[]> = {
+  manual: ["kind"],
+  schedule: ["kind", "at"],
+  file: ["kind", "files"],
+  event: ["kind", "event", "toolName", "subjects"],
+};
+
+/**
+ * 这一步的指令里**能插哪些触发器事实** —— 按 **`manual` 加这条触发器自己那一种** 算。
+ *
+ * 为什么是两者相并而不是只用配置的那一种:选哪一个跑是**运行时的**,不是配置里的
+ * (见 {@link TRIGGER_PAYLOAD_FACTS_OF} 里 `manual` 那一段)。两条路都可能走,那么两份
+ * 候选都是"可能解得出"的,列出来不算骗人。
+ *
+ * 没配好触发方式(认不出来)时**只给 `manual`** —— 不猜。那种图本来就跑不起来
+ * (`graph.no-trigger-node` 那类),再列一串取不到的字段只会把问题搅浑。
+ */
+export function triggerFactKeysOf(params: Record<string, unknown>): readonly string[] {
+  const kind = triggerKindOf(params);
+  const own = kind === undefined ? [] : TRIGGER_PAYLOAD_FACTS_OF[kind];
+  return [...new Set(["kind", ...own])];
+}
+
+/**
  * 触发器参数 →`WorkflowDoc.trigger` 的**唯一那张表**。
  *
  * `trigger` 字段在这一版**降级成了一个开关**:它不再有独立的真相,值一律由触发器节点

@@ -279,8 +279,29 @@ const CONVERSATION_ENTRY: NodeTypeEntry = {
   manifest: CONVERSATION_MANIFEST,
 };
 
+/**
+ * 触发器。夹具里**只需要 `runner.kind`** —— 认它的一律是这个判据(见
+ * `insertVariable.hasTrigger`),参数表用不上(候选是按节点自己那袋参数算的)。
+ */
+const TRIGGER_MANIFEST: NodeTypeManifest = {
+  id: "mcode.trigger",
+  manifestVersion: 1,
+  name: "触发器",
+  description: "一条自动化的起点。",
+  runner: { kind: "trigger" },
+  capability: "read",
+  params: [],
+};
+
+const TRIGGER_ENTRY: NodeTypeEntry = {
+  id: TRIGGER_MANIFEST.id,
+  source: "builtin",
+  from: "mcode",
+  manifest: TRIGGER_MANIFEST,
+};
+
 const CATALOG: NodeTypeCatalog = {
-  entries: [AGENT_ENTRY, COMMAND_ENTRY, BRANCH_ENTRY, CONVERSATION_ENTRY],
+  entries: [AGENT_ENTRY, COMMAND_ENTRY, BRANCH_ENTRY, CONVERSATION_ENTRY, TRIGGER_ENTRY],
   problems: [],
 };
 
@@ -1611,8 +1632,66 @@ console.log("\ninsertableGroups:清单声明的产出 / 分支的「出路」");
   );
 }
 
-console.log("\ninsertSnippet(光标这件事全是边界情况)");
+console.log("\ninsertableGroups:「触发器」那一组跟着触发方式走");
 
+{
+  // 载荷里**不是**恒有那六个键:定时只有 `kind`/`at`,文件只有 `kind`/`files`。而
+  // `expandTriggerVars` 对取不到的 key 是硬失败,所以菜单列错一项 = 那一步跑不起来。
+  // 原来那一组把六个字段全列出来(判据只有"挂着触发器吗"),于是一个定时触发器里
+  // 也摆着「涉及哪些对象」—— 用户点它正是因为不想记错名字,菜单却教了个一定错的名字。
+  const triggerDoc = (kind: string, id = "T"): WorkflowDoc => ({
+    ...CUSTOM,
+    nodes: [
+      { ...node(id, 0, 0, TRIGGER_MANIFEST.id), params: { triggerKind: kind } },
+      node("B", 0, 100),
+    ],
+    edges: [],
+  });
+  const triggerItems = (doc: WorkflowDoc): string[] =>
+    (insertableGroups(doc, "B", CATALOG).find((g) => g.titleKey !== undefined)?.items ?? []).map(
+      (i) => i.insert,
+    );
+
+  const sched = triggerItems(triggerDoc("schedule"));
+  eq("定时:列 kind + at", sched.sort().join(","), "{{trigger.at}},{{trigger.kind}}");
+  // ★ 这几项必须**不在** —— 定时那一路载荷里真的没有它们。
+  // (`toolName`/`subjects` 在事件那一种里是**可能**有,所以只对定时断言"没有"。)
+  for (const bad of ["{{trigger.files}}", "{{trigger.event}}", "{{trigger.toolName}}", "{{trigger.subjects}}"]) {
+    check(`定时:不列 ${bad}`, !sched.includes(bad), sched);
+  }
+
+  const file = triggerItems(triggerDoc("file"));
+  eq("文件变化:列 kind + files", file.sort().join(","), "{{trigger.files}},{{trigger.kind}}");
+  check("文件变化:不列 at", !file.includes("{{trigger.at}}"), file);
+
+  const ev = triggerItems(triggerDoc("event"));
+  eq(
+    "事件:四个字段全列",
+    ev.sort().join(","),
+    "{{trigger.event}},{{trigger.kind}},{{trigger.subjects}},{{trigger.toolName}}",
+  );
+
+  const manual = triggerItems(triggerDoc("manual"));
+  eq("手动:只有 kind", manual.join(), "{{trigger.kind}}");
+
+  // **多个触发器时取交集**:哪一条响是运行时的事,指令要写就得写"哪条响都取得到"的。
+  const both: WorkflowDoc = {
+    ...CUSTOM,
+    nodes: [
+      { ...node("T1", 0, 0, TRIGGER_MANIFEST.id), params: { triggerKind: "schedule" } },
+      { ...node("T2", 0, 100, TRIGGER_MANIFEST.id), params: { triggerKind: "file" } },
+      node("B", 0, 200),
+    ],
+    edges: [],
+  };
+  eq("两个触发器(定时 + 文件):只剩 kind", triggerItems(both).join(), "{{trigger.kind}}");
+
+  // 一个触发器节点都没有、只有文档级的 `trigger`(老图/手写的图)时按那个字段算。
+  const docLevel: WorkflowDoc = { ...CUSTOM, trigger: "schedule", nodes: [node("B", 0, 0)], edges: [] };
+  eq("文档级 trigger=schedule 也算得对", triggerItems(docLevel).sort().join(","), "{{trigger.at}},{{trigger.kind}}");
+}
+
+console.log("\ninsertSnippet(光标这件事全是边界情况)");
 {
   const r = insertSnippet("把填进去", 1, 1, "{{A.年份}}");
   eq("插在光标处", r.value, "把{{A.年份}}填进去");

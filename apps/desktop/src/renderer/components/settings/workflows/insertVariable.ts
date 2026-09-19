@@ -32,7 +32,12 @@ import {
   type WorkflowNode,
 } from "@contracts/workflow";
 import { referenceableOutputsOf, type OutputVar } from "@contracts/outputConstraint";
-import type { NodeTypeCatalog } from "@contracts/nodeType";
+import {
+  TRIGGER_PAYLOAD_FACTS_OF,
+  isTriggerKind,
+  triggerFactKeysOf,
+  type NodeTypeCatalog,
+} from "@contracts/nodeType";
 import type { MessageId } from "@renderer/lib/i18n/core.js";
 
 /**
@@ -98,11 +103,29 @@ export function snippetFor(refName: string, varName: string): string {
 const META_FIELDS = ["status", "error", "artifacts"] as const;
 
 /**
- * 触发器带给这次运行的**事实字段** —— 菜单列的每一项都是调度器拼触发器上下文时
- * 真的会带的(`{{trigger.<key>}}`)。触发方式、触发时刻、文件触发器变化的文件、
- * 事件触发器的事件体、工具名、涉及对象。
+ * 这张图**现在能插哪些触发器事实**。
+ *
+ * ⚠️ **不是恒定的那六个**(2026-09-19)。载荷里有什么**跟着触发方式走**:定时只有
+ * `kind`/`at`,文件只有 `kind`/`files`,事件才有 `event`/`toolName`/`subjects`。而
+ * `expandTriggerVars` 对取不到的 key 是**硬失败**,所以列错一项的代价是那一步跑不起来
+ * —— 而用户点菜单的用意恰恰是"我不想记错名字"。判据在 `@contracts/nodeType` 的
+ * `triggerFactKeysOf`,**只有那一份**。
+ *
+ * 多个触发器时取**交集**:哪一条响是运行时的事,指令要写就得写"哪条响都取得到"的那些。
+ * 一个触发器节点都没有(老图/手写的图,只有文档级的 `trigger`)时按那个字段算。
  */
-const TRIGGER_FIELDS = ["kind", "at", "files", "event", "toolName", "subjects"] as const;
+function triggerFactKeys(doc: WorkflowDoc, catalog: NodeTypeCatalog): readonly string[] {
+  const triggers = doc.nodes.filter(
+    (node) =>
+      catalog.entries.find((e) => e.id === node.type)?.manifest.runner.kind === "trigger",
+  );
+  if (triggers.length === 0) {
+    return isTriggerKind(doc.trigger) ? TRIGGER_PAYLOAD_FACTS_OF[doc.trigger] : ["kind"];
+  }
+  return triggers
+    .map((node) => triggerFactKeysOf(node.params))
+    .reduce((a, b) => a.filter((key) => b.includes(key)));
+}
 
 /**
  * 这张图现在**挂着触发器吗**。两个判据,满足其一就算:
@@ -149,10 +172,11 @@ export function insertableGroups(
   // 触发器的事实与上游无关:挂在图上就有,和「用户输入」一样是运行时喂进来的输入侧。
   // 组名走词典(`titleKey`),渲染由组件翻译 —— 这个模块是纯函数,碰不到 hook。
   if (hasTrigger(doc, catalog)) {
+    const facts = triggerFactKeys(doc, catalog);
     groups.push({
       title: "",
       titleKey: "settings.workflows.triggerGroup",
-      items: TRIGGER_FIELDS.map((f) => ({
+      items: facts.map((f) => ({
         kind: "trigger" as const,
         name: f,
         insert: `{{trigger.${f}}}`,

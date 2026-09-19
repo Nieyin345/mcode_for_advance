@@ -38,9 +38,12 @@ import {
   DEFAULT_TRIGGER_DEBOUNCE_MS,
   NODE_TRIGGER_ENABLED_PARAM_KEY,
   NODE_TRIGGER_KIND_PARAM_KEY,
+  TRIGGER_KINDS,
   triggerEnabledOf,
+  triggerFactKeysOf,
   type NodeOutcome,
   type NodeTypeManifest,
+  type TriggerKind,
 } from "@contracts/nodeType";
 import { validateDag } from "@contracts/workflow";
 import type { WorkflowDoc, WorkflowEdge, WorkflowNode } from "@contracts/workflow";
@@ -705,6 +708,61 @@ console.log("\npayloadFactsOf · 载荷的平面事实形状(给变量系统 VAR
   const copy = payloadFactsOf({ kind: "file", files: originalFiles });
   (copy.files as string[]).push("y.md");
   eq("facts 是拷贝,原载荷不受影响", originalFiles.length, 1);
+}
+
+/* ── 8b. 「插入变量」列的那几项,这一种触发真的带得出(2026-09-19) ── */
+
+// 界面的「触发器」那一组原来把六个字段**全列**出来,判据只有"图里挂着触发器吗"。于是
+// 一个**定时**触发器,菜单里也摆着「涉及哪些对象」—— 点一下插进指令,下次到点必炸:
+// `expandTriggerVars` 对取不到的 key 是硬失败(`载荷里没有它,可用的有:…`)。
+// 用户点菜单的用意恰恰是"我不想记错名字",结果菜单教了一个一定错的名字。
+//
+// 下面的**判据不是比对着一张写死的名单**,而是拿 `payloadFactsOf` 现算一份载荷 ——
+// 名单写死就只是把同一份错误抄第二遍(`TRIGGER_FIELDS` 那个形状)。真正的不变量是:
+// **菜单列的每一项,这一种触发产出的载荷里都真有**。
+console.log("\ntriggerFactKeysOf · 菜单列的每一项都得真的取得到");
+{
+  // 每种触发造一份"最全"的载荷(可选字段都带上),再看候选是不是都在里面。
+  const richestPayload: Record<TriggerKind, Record<string, unknown>> = {
+    manual: payloadFactsOf({ kind: "manual" }) as unknown as Record<string, unknown>,
+    schedule: payloadFactsOf({ kind: "schedule", at: 1234 }) as unknown as Record<string, unknown>,
+    file: payloadFactsOf({ kind: "file", files: ["a.md"] }) as unknown as Record<string, unknown>,
+    event: payloadFactsOf({
+      kind: "event",
+      event: "tool.use",
+      toolName: "Write",
+      subjects: ["Write"],
+    }) as unknown as Record<string, unknown>,
+  };
+
+  for (const kind of TRIGGER_KINDS) {
+    const keys = triggerFactKeysOf({ [NODE_TRIGGER_KIND_PARAM_KEY]: kind });
+    const payload = richestPayload[kind];
+    const missing = keys.filter((k) => !Object.prototype.hasOwnProperty.call(payload, k));
+    eq(`${kind}:候选都取得到(缺的是 ${missing.join() || "无"})`, missing.length, 0);
+  }
+
+  // 定时**不该**列出 `files`/`event` —— 这几个是原来那份名单里多出来的那几项。
+  const sched = triggerFactKeysOf({ [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule" });
+  check("定时不列 files/event/toolName/subjects", !sched.includes("files") && !sched.includes("event") && !sched.includes("toolName") && !sched.includes("subjects"), sched);
+  eq("定时 = kind + at", [...sched].sort().join(","), "at,kind");
+  check("文件变化列 files、不列 at", triggerFactKeysOf({ [NODE_TRIGGER_KIND_PARAM_KEY]: "file" }).includes("files") && !triggerFactKeysOf({ [NODE_TRIGGER_KIND_PARAM_KEY]: "file" }).includes("at"));
+
+  // **`manual` 必须并进来。** 「立刻运行一次」对**任何一种**触发器都能点
+  // (`automationRunner.runNow`),载荷恒是 `{kind:"manual"}` —— 只按配置那一种算的话,
+  // 一个定时自动化手动跑时,菜单会照样摆着「触发时刻」,又炸一次。
+  const manualKeys = triggerFactKeysOf({ [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule" });
+  check("定时那条也留着 kind(kind 是两种跑法都有的)", manualKeys.includes("kind"), manualKeys);
+
+  // 没配好触发方式 = 只给 `kind`,不猜。
+  eq("认不出的触发方式只给 kind", triggerFactKeysOf({}).join(), "kind");
+  eq("乱填的触发方式同样只给 kind", triggerFactKeysOf({ [NODE_TRIGGER_KIND_PARAM_KEY]: "nope" }).join(), "kind");
+
+  // 每一种都有 `kind`(手动与自动的共同项),而且都不重复。
+  for (const kind of TRIGGER_KINDS) {
+    const keys = triggerFactKeysOf({ [NODE_TRIGGER_KIND_PARAM_KEY]: kind });
+    check(`${kind}:有 kind 且不重复`, keys.includes("kind") && new Set(keys).size === keys.length, keys);
+  }
 }
 
 /* ────────────────────────── 9. 定时:同一分钟只跑一次(AUTO-05) ────────────────────────── */

@@ -26,7 +26,6 @@ import type { NodeTypeManifest } from "@contracts/nodeType";
 import {
   buildNodeInput,
   expandTriggerVars,
-  triggerVarCandidates,
   type ModelInputScope,
   type RunnableNodeInput,
 } from "@main/orchestration/nodeInputBuilders.js";
@@ -237,12 +236,6 @@ throws("无载荷明确失败", () => expandTriggerVars({ instruction: "{{trigge
 const untouched = expandTriggerVars({ count: 3, list: ["{{trigger.kind}}"], flag: true }, { kind: "x" });
 eq("非字符串参数原样(数字)", untouched.count, 3);
 eq("非字符串参数原样(数组)", (untouched.list as string[])[0], "{{trigger.kind}}");
-deep(
-  "候选按 key 排序",
-  triggerVarCandidates({ files: 1, at: 2, kind: 3 }),
-  ["{{trigger.at}}", "{{trigger.files}}", "{{trigger.kind}}"],
-);
-deep("无载荷候选为空", triggerVarCandidates(undefined), []);
 
 const withTrigger = build(
   { instruction: "处理 {{trigger.toolName}}" },
@@ -252,7 +245,12 @@ check("buildNodeInput 展开进提示词", withTrigger.prompt.includes("处理 m
 deep("载荷进 data.trigger", (withTrigger.data as unknown as Record<string, unknown>).trigger, { toolName: "mcp_a", kind: "manual" });
 const noTrigger = build({ instruction: "做点事" });
 check("手动跑 data 里没有 trigger 键", !("trigger" in noTrigger.data));
-deep("候选(同载荷)可用于界面分组", triggerVarCandidates({ toolName: "mcp_a", kind: "manual" }), ["{{trigger.kind}}", "{{trigger.toolName}}"]);
+// 候选名单(`triggerVarCandidates`)那两条断言搬走了(2026-09-19):那个导出**从来没人
+// 真的用过** —— 它注释里写"渲染端的「插入变量」用它拼触发器那一组",而渲染端够不到
+// `@main`。真正拼那一组的是渲染端自己抄的六个字段,判据只有"挂着触发器吗",于是定时
+// 触发器里也摆着「涉及哪些对象」,点一下插进指令、下次到点必炸。现在候选按**触发方式**
+// 算,判据在 `@contracts/nodeType` 的 `triggerFactKeysOf`,断言在 `automation-smoke`
+// 与 `workflow-view-smoke`(那两处能同时看到契约与菜单)。
 
 /* ────────────────────────── 5. 记忆注入开/关 ────────────────────────── */
 
