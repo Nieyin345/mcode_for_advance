@@ -79,6 +79,7 @@ import {
   NODE_SKILLS_PARAM_KEY,
   NODE_TRIGGER_CRON_PARAM_KEY,
   NODE_TRIGGER_DEBOUNCE_PARAM_KEY,
+  NODE_TRIGGER_ENABLED_PARAM_KEY,
   NODE_TRIGGER_EVENTS_PARAM_KEY,
   NODE_TRIGGER_FILTER_PARAM_KEY,
   NODE_TRIGGER_KIND_PARAM_KEY,
@@ -108,7 +109,6 @@ import { getEnabledPluginNodeTypeSources } from "@main/plugins/pluginManager.js"
 
 /** 内置的"子 agent"节点类型 id。 */
 export const NODE_AGENT_TYPE_ID = "mcode.agent";
-
 /**
  * 内置的"对话节点"类型 id —— **在主对话里跑**的那一种(见
  * `@contracts/nodeType` 的 `runner.kind === "conversation"`)。
@@ -464,6 +464,18 @@ const AGENT_USAGE_TAIL =
  * 前三种是原来"对话模式"里那几步的形态 —— 其中**主代理与对话节点跑在主对话里**,
  * 只有子 agent 另开会话;后三种是"自动化"那一摊的入口、岔路口和手。
  */
+/**
+ * 内置的"触发器"节点类型(见下方 `BUILTIN_NODE_TYPES` 里那一项)。
+ *
+ * 导出**只为一件事**:冒烟要能断言它参数表的顺序 —— 「启用」必须排在「触发方式」前面。
+ * 理由见那一项的注释。
+ */
+export function builtinTriggerManifest(): NodeTypeManifest {
+  const found = BUILTIN_NODE_TYPES.find((m) => m.id === TRIGGER_NODE_TYPE_ID);
+  if (found === undefined) throw new Error("内置节点清单里没有触发器 —— 上面那张表被改坏了");
+  return found;
+}
+
 const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
   {
     id: MAIN_NODE_TYPE_ID,
@@ -707,6 +719,16 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
     // `showsCapability`)。
     capability: "read",
     params: [
+      // **「启用」排在「触发方式」前面。** 不是随手放的:一个关掉的触发器,下面那些
+      // 「触发方式 / cron / 目录」填得再全也不会响 —— 开关摆在最上面,用户扫一眼就知道
+      // 症结在哪。反过来放的话,得先把一整屏参数看完才发现根因在最底下。
+      {
+        key: NODE_TRIGGER_ENABLED_PARAM_KEY,
+        kind: "boolean",
+        label: "启用",
+        default: true,
+        help: "关掉之后这条触发器不响,但留在图里、参数原样保留 —— 调试图的时候先让它安静一会儿用这个。**手动「立刻运行一次」不受它影响。**",
+      },
       {
         key: NODE_TRIGGER_KIND_PARAM_KEY,
         kind: "select",

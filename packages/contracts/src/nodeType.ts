@@ -169,6 +169,36 @@ export const NODE_TRIGGER_FILTER_PARAM_KEY = "eventFilter";
 export const NODE_TRIGGER_DEBOUNCE_PARAM_KEY = "debounceMs";
 
 /**
+ * 这条触发器**开不开**。关掉的留在图里,只是不响。
+ *
+ * ## 为什么是一个参数,而不是删掉这条触发器
+ *
+ * 顶上那一格「触发方式」选的是**怎么触发**,这一格选的是**现在还响不响** ——
+ * 两件事。调试一条自动化的时候要的恰恰是后者:图不改、参数不动,先让它安静一会儿,
+ * 验完下游再放回来。删掉再建一遍的话,`task`、`paths`、cron 都得重填一次。
+ *
+ * ## 默认开着
+ *
+ * 缺席 = 开(见 {@link triggerEnabledOf})。这是刻意的:老存档里没有这个键,而它们
+ * 存下来的时候本来就在响 —— 读成"关"会让所有已有自动化**在升级那一刻静默停摆**,
+ * 而那是最难查的一类故障。取消勾选才会写进参数里。
+ *
+ * ⚠️ **它管的是"自动响不响",不管手动。** 界面上那个「立刻运行一次」照跑:用户正
+ * 盯着那个按钮,点了就是"我现在要它跑" —— 被一个看不见的开关挡回去只会让人以为坏了。
+ */
+export const NODE_TRIGGER_ENABLED_PARAM_KEY = "enabled";
+
+/**
+ * 这条触发器开不开。**缺席 = 开**(理由见 {@link NODE_TRIGGER_ENABLED_PARAM_KEY})。
+ *
+ * 只有明确写了 `false` 才算关 —— 认不出来的值(字符串、数字、老存档里的 null)一律
+ * 当成开,和缺席同一条路。
+ */
+export function triggerEnabledOf(params: Record<string, unknown>): boolean {
+  return params[NODE_TRIGGER_ENABLED_PARAM_KEY] !== false;
+}
+
+/**
  * 触发器参数 →`WorkflowDoc.trigger` 的**唯一那张表**。
  *
  * `trigger` 字段在这一版**降级成了一个开关**:它不再有独立的真相,值一律由触发器节点

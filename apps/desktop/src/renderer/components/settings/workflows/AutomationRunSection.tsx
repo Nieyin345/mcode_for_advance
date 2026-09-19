@@ -29,7 +29,7 @@
  * `api.automation` 是个一调就抛的代理。拉历史失败就**当没有历史**:右栏是常用面板,
  * 为一件"这个平台没有的功能"常驻一条红字没有意义。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AutomationRunEntry, AutomationRunStatus, AutomationTriggerFacts } from "@contracts/ipc";
 import {
   NODE_OUTCOME_STATUSES,
@@ -129,6 +129,35 @@ export function AutomationRunSection({
     void refresh();
   }, [refresh]);
 
+  /**
+   * 用户在触发器节点上拨了「启用」开关 → 重新拉一次事实。
+   *
+   * ## 为什么是这么个笨办法
+   *
+   * 事实是**主进程内存里**的一张表(`AutomationFacts`),只有 `reload` 会重建它 ——
+   * 拨开关本身不推任何事件过来。不重拉的话,用户关掉一条自动化之后,这一栏会一直
+   * 说着「已挂上」,而那正是这条改动要消灭的那种谎话。
+   *
+   * 取巧的做法(在渲染端自己按 `doc` 算一遍 `facts`)不写是有理由的:那个算法是
+   * 「参数解不解得开 + 项目在不在 + 目录监听挂没挂上」,前两条要靠主进程的清单与项目表,
+   * 渲染端算不全。宁可多问一次,也不要两处各算一个近似答案。
+   *
+   * 判据只看**参数袋的引用**:节点参数是不可变的,拨一下换一个对象(`NodeInspector`
+   * 那条 `onChange` 就是整袋替换),所以对象没换就是没动过 —— 拖节点、改标题都不会
+   * 白白多几次 IPC。
+   *
+   * `useRef` 用挂载那一刻的值起手,所以**第一次不重拉**(上面那条 effect 已经拉过了)。
+   * 依赖里的 `refresh` 只用来认「换了一条自动化」:那种情况上面那条 effect 会接手,
+   * 这里不必再抢一次。
+   */
+  const triggerParams = doc.nodes.find((n) => n.id === triggerNodeId)?.params;
+  const prevParams = useRef(triggerParams);
+  useEffect(() => {
+    if (prevParams.current === triggerParams) return;
+    prevParams.current = triggerParams;
+    void refresh();
+  }, [triggerParams, refresh]);
+
   const runNow = async (): Promise<void> => {
     if (triggerNodeId === null) return;
     setBusy(true);
@@ -166,7 +195,8 @@ export function AutomationRunSection({
           {t("settings.automation.dashboard")}
         </span>
         {/* 不摆「已启用」徽标:它之前是恒真的字面量,而 per-trigger 启停这个功能并不
-            存在 —— 每条触发器真挂没挂上,下面那排事实行(`facts.armed`)才是真话。 */}
+            存在 —— 每条触发器真挂没挂上,下面那排事实行(`facts.armed`)才是真话。
+            现在启停真有了,但它仍然是**每一条各自**的事,一个标题级的徽标概括不了。 */}
         {automationStatus !== null && (
           <span className={cn("text-[0.7143em]", RUN_STATUS_TONE[automationStatus])}>
             {t(RUN_STATUS_LABELS[automationStatus])}
@@ -226,17 +256,30 @@ export function AutomationRunSection({
       {facts.map((fact) => (
         <div key={fact.key} className="mt-1 text-[0.7143em] leading-relaxed">
           <div className="flex min-w-0 items-center gap-1.5">
+            {/* 三种状态各自的颜色:响着是绿、你自己关的是灰、坏了才是黄。
+                关掉的那条**不能**跟坏掉的一个色 —— 那会让人以为应用出问题了。 */}
             <span
               className={cn(
                 "h-1.5 w-1.5 shrink-0 rounded-full",
-                fact.armed ? "bg-success" : "bg-warning",
+                fact.armed ? "bg-success" : fact.enabled === false ? "bg-content-subtle" : "bg-warning",
               )}
             />
             <span className="min-w-0 truncate text-content-muted" title={fact.detail ?? fact.title}>
               {fact.title}
             </span>
-            <span className={cn("shrink-0", fact.armed ? "text-success" : "text-warning")}>
-              {t(fact.armed ? "settings.automation.facts.armed" : "settings.automation.facts.disarmed")}
+            <span
+              className={cn(
+                "shrink-0",
+                fact.armed ? "text-success" : fact.enabled === false ? "text-content-subtle" : "text-warning",
+              )}
+            >
+              {t(
+                fact.armed
+                  ? "settings.automation.facts.armed"
+                  : fact.enabled === false
+                    ? "settings.automation.facts.off"
+                    : "settings.automation.facts.disarmed",
+              )}
             </span>
           </div>
           {fact.lastFireAt !== undefined && (

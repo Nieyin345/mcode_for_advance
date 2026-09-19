@@ -179,8 +179,8 @@ Mcode 是一个**本地优先的通用 Agent 桌面客户端**（Electron + Reac
 | # | 事项 | 现状 |
 |---|---|---|
 | C1 | **`browser/` 等模块零 smoke 覆盖** | `main/browser/`（2726 行的 `BrowserManager`）、`mobile/`、`relay/`、`lsp/`、`terminal/`、`voice/`、`integrations/` 全部零覆盖。工程量最大的一项 |
-| C2 | **死接口**（preload 暴露但渲染端无人调用） | 2026-09-18 实测：**7 个确定是死的** —— `library.getRoot` / `library.setRoot` / `library.kindManifest` / `library.fullTextSearch` / `templates.getRoot` / `templates.kindManifest` / `mobile.getPairing`（这些方法名在整个渲染端一次都没出现过）。另有一批只在注释或别处出现过、拿不准是否真被调用。多为"旧方案已被替代"（统一数据根架空了 `getRoot`/`setRoot`）。**删之前要确认没有手机端 / 扩展依赖** |
-| C3 | **per-trigger 启停没做** | 2026-09-19 实测：开关整个不存在（既无持久化也无内存态，仪表盘原"已启用"徽标是恒真的字面量、已删）。事实表只记"挂上没有/最近一次/报错"三种事实 |
+| ~~C2~~ | ~~**死接口**（preload 暴露但渲染端无人调用）~~ **已做（2026-09-19）** | 删了 8 个（7 个死名字 + `templates.setRoot`），连带清掉只剩死名字引用的 schema 与设置键。其中 `getRoot`/`setRoot` 其实是**已失效的功能**（统一数据根架空了它们，写进去也没人读）。**另一半点反过来做**：`library.fullTextSearch` 后端写完了、界面没接，已补上「库内全文检索」面板 | — |
+| ~~C3~~ | ~~**per-trigger 启停没做**~~ **已做（2026-09-19）** | 触发器节点上加了「启用」勾选框（参数键 `enabled`，**缺席 = 开** —— 老存档升级那一刻不许静默停摆）。关掉的**只挡自动那三条路**，手动「立刻运行一次」照跑。事实行因此分成三种说法：「已挂上」/「已关闭」（你自己关的，灰）/「没挂上」（坏了，黄）—— 关掉的和坏掉的 `armed` 都是 false，光看它分不清 |
 | C4 | **运行事件标准化** | `started / progress / settled / error` 四类事件的形状还不统一 |
 | C5 | **观察名单 2 项** | ~~`longtask-smoke` 偶发时序抖动~~ **已修（2026-09-19）**：根因是 `latestOf` 的排序兜底用了带随机串的 `id`，同毫秒建的两条「最新一条」拿到旧那条。剩下 `mcp-endpoint-smoke` 连跑偶发、`upstream-headers-smoke` 端口竞态。**复现再查** |
 

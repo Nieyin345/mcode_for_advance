@@ -19,7 +19,7 @@
  * 事实当场重建),而"最近一次跑"在运行史里本来就有 —— 那是 PAR-B 的持久化边界,不在这里
  * 存第二份真相。
  */
-import { isTriggerKind, type TriggerKind } from "@contracts/nodeType";
+import { isTriggerKind, triggerEnabledOf, type TriggerKind } from "@contracts/nodeType";
 
 /** 一条触发器在后台执行器里的**事实**。 */
 export interface AutomationTriggerFacts {
@@ -31,9 +31,22 @@ export interface AutomationTriggerFacts {
   title: string;
   /** 触发方式。`"unknown"` = 参数里连触发方式都认不出来(多半是清单变了)。 */
   kind: TriggerKind | "unknown";
-  /** 配置侧:这条触发器现在**能不能被触发**。 */
+  /**
+   * **用户在图上开着**这条触发器(见 `NODE_TRIGGER_ENABLED_PARAM_KEY`)。
+   *
+   * 缺席 = 开 —— 老存档里没有这个键,而它们存下来的时候本来就在响。
+   */
+  enabled?: boolean;
+  /**
+   * 配置侧:这条触发器现在**自动响不响**。**已经把 {@link enabled} 算进去了** ——
+   * 用户关掉的,这里一定是 `false`,哪怕它的目录监听挂得好好的。
+   *
+   * 这两个字段分开是因为它们答的是两个问题:「是你关的吗」和「它现在响不响」。
+   * 合成一个的话界面只能二选一地说 —— 说"已关闭"就藏起了"目录也没挂上",
+   * 说"没挂上"又像是应用坏了,而其实是用户自己关的。
+   */
   armed: boolean;
-  /** `armed: false` 的原因(参数解不开 / 项目不在了 / 目录监听失效)。 */
+  /** `armed: false` 的原因(用户关掉了 / 参数解不开 / 项目不在了 / 目录监听失效)。 */
   detail?: string;
   /** 最近一次**真的起跑**的时刻(ms)。没有 = 它从来没跑过。 */
   lastFireAt?: number;
@@ -48,7 +61,18 @@ export interface AutomationFactsSeed {
   nodeId: string;
   title: string;
   kind: TriggerKind | "unknown";
+  /** 用户在图上开着这条触发器没有(见 `NODE_TRIGGER_ENABLED_PARAM_KEY`)。 */
+  enabled: boolean;
 }
+
+/**
+ * 用户关掉的那条触发器,事实里那句 `detail`。
+ *
+ * **只有一个地方写它**(`AutomationFacts.recordSetup`),因为只有一个地方读得对:
+ * 挂载登记、目录监听重试成功、监听失效 —— 三条路都会重新登记同一条触发器,各写各的
+ * 说法迟早分家,而界面就是拿这一句认「这条是你关的,不是坏了」的。
+ */
+export const TRIGGER_DISABLED_DETAIL = "已关闭(在触发器节点上打开「启用」才会自动响)";
 
 /**
  * 一条触发器的 key(`workflowId:nodeId`)。**同一个函数**给 pendingFires、lastMinute、
@@ -62,18 +86,23 @@ export function automationTriggerKey(trigger: { workflowId: string; nodeId: stri
  * 执行器手里的触发器记录(带 `spec`)→ 事实登记的 seed。
  *
  * `kind` 从 `spec.kind` 来;认不出来(清单变了之类)就落 `"unknown"`,不猜。
+ *
+ * `enabled` **问的是 `params`** —— 记录里那个 `disarmed` 是它的取反,再取回来只是绕一圈。
+ * 而且这两处都读同一个键(RUN-VAR 那条规矩):真相是用户在图上填的那个勾。
  */
 export function triggerSeedOf(trigger: {
   workflowId: string;
   nodeId: string;
   title: string;
   spec: { kind: unknown };
+  params: Record<string, unknown>;
 }): AutomationFactsSeed {
   return {
     workflowId: trigger.workflowId,
     nodeId: trigger.nodeId,
     title: trigger.title,
     kind: isTriggerKind(trigger.spec.kind) ? trigger.spec.kind : "unknown",
+    enabled: triggerEnabledOf(trigger.params),
   };
 }
 
@@ -102,6 +131,22 @@ export function watcherDirsOf(
 }
 
 /**
+ * 这一条事实最后写什么 `detail`。三种情形,一处决定:
+ *
+ *  - **响着** —— 没有 `detail`。
+ *  - **开着却没挂上** —— 调用方给的原因(参数解不开 / 项目不在了 / 目录监听失效)。
+ *  - **用户关掉了** —— 永远先说「是你关的」。调用方那侧的原因**附在后面**:用户回头
+ *    打开「启用」时会撞上它,提前说出来比到时候再猜强;但绝不能让「项目不在了」把
+ *    「是你关的」顶掉 —— 后者才是他现在看到这行的原因。
+ */
+function setupDetail(enabled: boolean, ready: boolean, detail?: string): string | undefined {
+  if (ready && enabled) return undefined;
+  if (enabled) return detail;
+  if (!ready && detail !== undefined) return `${TRIGGER_DISABLED_DETAIL};另外 —— ${detail}`;
+  return TRIGGER_DISABLED_DETAIL;
+}
+
+/**
  * 事实表。**只有写它的执行器会碰它** —— 读走 `ofWorkflow` / `all`,写走下面那几个动词。
  *
  * 两条不变量:
@@ -115,10 +160,15 @@ export class AutomationFacts {
   /**
    * 登记配置侧状态:挂好了(`armed: true`,不带 `detail`),或为什么挂不上。
    * **保留**运行侧字段 —— 见类头那条不变量。
+   *
+   * `armed` **在用户关掉时强制是 `false`**(见类头的 `enabled`)—— 调用方只管说
+   * "它自己坏没坏",用户那一票在这里合进来。合在这一处,免得四个 `recordSetup` 调用点
+   * 各记各的。
    */
-  recordSetup(seed: AutomationFactsSeed, armed: boolean, detail?: string): void {
+  recordSetup(seed: AutomationFactsSeed, ready: boolean, detail?: string): void {
     const key = automationTriggerKey(seed);
     const existing = this.entries.get(key);
+    const armed = ready && seed.enabled;
     this.entries.set(key, {
       ...(existing ?? { key, lastFireAt: undefined, lastError: undefined, lastErrorAt: undefined }),
       key,
@@ -126,13 +176,23 @@ export class AutomationFacts {
       nodeId: seed.nodeId,
       title: seed.title,
       kind: seed.kind,
+      enabled: seed.enabled,
       armed,
-      ...(armed || detail === undefined ? { detail: undefined } : { detail }),
+      // 关掉的时候**由 `setupDetail`** 决定那句话,不看调用方传了什么:目录监听那一侧
+      // 里外里会报三次(「失效:ENOENT」「失效:EPERM」「挂上了」),而用户关掉的那条
+      // 从头到尾就该是同一句「是你关的」。
+      detail: setupDetail(seed.enabled, ready, detail),
     });
   }
 
-  /** 真的起跑了一次。**顺带把 `armed` 立回 true**:能跑就说明它活着(守望起跑那条
-   *  ad-hoc 路径没有经过 buildTriggers 的登记,这一笔就是它的登记)。 */
+  /**
+   * 真的起跑了一次。
+   *
+   * `armed` 跟着**用户那一票**走,而不是一律立回 true:手动运行一条关掉的触发器是
+   * 允许的(见 `NODE_TRIGGER_ENABLED_PARAM_KEY`),但那不代表它从此会自动响。守望起跑
+   * 那条 **ad-hoc** 路径没有经过 `buildTriggers` 的登记,`seed.enabled` 是 true,
+   * 这一笔就顺带是它的登记。
+   */
   recordFired(seed: AutomationFactsSeed, at: number): void {
     const key = automationTriggerKey(seed);
     const existing = this.entries.get(key);
@@ -143,8 +203,9 @@ export class AutomationFacts {
       nodeId: seed.nodeId,
       title: seed.title,
       kind: existing?.kind ?? seed.kind,
-      armed: true,
-      detail: undefined,
+      enabled: seed.enabled,
+      armed: seed.enabled,
+      detail: seed.enabled ? undefined : existing?.detail,
       lastFireAt: at,
     });
   }
@@ -157,6 +218,7 @@ export class AutomationFacts {
     this.entries.set(key, {
       ...(existing ?? {
         key,
+        enabled: seed.enabled,
         armed: false,
         detail: reason,
         kind: seed.kind,
@@ -167,6 +229,7 @@ export class AutomationFacts {
       nodeId: seed.nodeId,
       title: existing?.title ?? seed.title,
       kind: existing?.kind ?? seed.kind,
+      enabled: seed.enabled,
       lastError: reason,
       lastErrorAt: at,
     });

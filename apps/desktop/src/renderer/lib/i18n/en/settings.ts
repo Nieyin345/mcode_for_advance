@@ -1097,6 +1097,10 @@ export const en = {
   // above describes the automation as a library entry; these describe each trigger.
   "settings.automation.facts.armed": "Armed",
   "settings.automation.facts.disarmed": "Not armed",
+  // "Off" vs "Not armed": the first is your own doing (the trigger node's Enable
+  // checkbox is cleared), the second means the config itself is broken — the
+  // reason is in that row's tooltip. One word for both reads as a broken app.
+  "settings.automation.facts.off": "Off",
 
   // ── Run history panel (settings/workflows/RunHistorySection) ──
   // A different source from `settings.automation.runHistory` (the inspector's

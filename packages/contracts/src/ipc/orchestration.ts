@@ -59,9 +59,16 @@ export interface AutomationTriggerFacts {
   title: string;
   /** 触发方式。`"unknown"` = 参数里连触发方式都认不出来(多半是清单变了)。 */
   kind: TriggerKind | "unknown";
-  /** 配置侧:这条触发器现在**能不能被触发**。 */
+  /**
+   * **用户在图上开着**这条触发器。缺席 = 开(老存档里没有这个键)。
+   *
+   * 界面靠它把「你自己关的」和「它坏了」分开说 —— 两者 `armed` 都是 `false`,
+   * 光看 `armed` 分不清。
+   */
+  enabled?: boolean;
+  /** 配置侧:这条触发器现在**自动响不响**(已经把 `enabled` 算进去了)。 */
   armed: boolean;
-  /** `armed: false` 的原因(参数解不开 / 项目不在了 / 目录监听失效)。 */
+  /** `armed: false` 的原因(用户关掉了 / 参数解不开 / 项目不在了 / 目录监听失效)。 */
   detail?: string;
   /** 最近一次**真的起跑**的时刻(ms)。缺席 = 它从来没跑过。 */
   lastFireAt?: number;

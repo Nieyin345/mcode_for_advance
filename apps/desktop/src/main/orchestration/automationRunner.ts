@@ -50,6 +50,7 @@ import {
   NODE_TRIGGER_PROJECT_PARAM_KEY,
   NODE_TRIGGER_TASK_PARAM_KEY,
   parseTriggerSpec,
+  triggerEnabledOf,
   triggerKindOf,
   type NodeTypeManifest,
   type TriggerSpec,
@@ -116,6 +117,22 @@ interface LoadedTrigger {
   cwd: string;
   /** 「这次要做什么」—— 整次运行的用户请求。 */
   task: string;
+  /**
+   * 触发器节点上的**完整参数袋**。只为 `triggerSeedOf` 登记事实时读「启用」那一格
+   * (`NODE_TRIGGER_ENABLED_PARAM_KEY`)—— 它按**键**读,所以这里存一份比再拆一个
+   * 布尔字段更省事:事实那边的 `enabled` 与下面 `disarmed` 于是永远不会漂。
+   *
+   * ad-hoc 那条路(守望入口)不在图上、没有参数袋,给空对象 —— 缺席即开,
+   * 与它本来就在响的事实一致。
+   */
+  params: Record<string, unknown>;
+  /**
+   * 用户在图上**关掉了**这条触发器(见 `NODE_TRIGGER_ENABLED_PARAM_KEY`)。
+   *
+   * 关掉的照样进这张表、照样登记事实 —— 界面上要看得见"有这一条,是你关的",
+   * 而不是整行消失(那和"触发器没了"分不清)。只是**自动那三条路不派发它**。
+   */
+  disarmed: boolean;
 }
 
 /** 攒着还没跑的那一次。文件连着变、事件连着来时,同一格只留一个计时器。 */
@@ -319,6 +336,10 @@ class AutomationRunner {
         nodeId: node.id,
         title: node.title || node.id,
         kind: triggerKindOf(node.params) ?? "unknown",
+        // 用户那一票。`recordSetup` 会把它合进 `armed`,所以下面**不用**再为"关掉了"
+        // 单独写一支 —— 关掉的和参数坏掉的最后都落在 `armed: false` 上,
+        // 只是 `detail` 那句话不一样(`markDisarmed`)。
+        enabled: triggerEnabledOf(node.params),
       };
       seen.add(triggerKey(seed));
       const check = parseTriggerSpec(manifest, node.params);
@@ -336,6 +357,11 @@ class AutomationRunner {
         this.facts.recordSetup(seed, false, `项目不在了(${projectId})—— 这条自动化没有工作目录`);
         continue;
       }
+      // **关掉的照样进表。** 第二参数说的是"我这一侧有没有问题"—— 这里没有
+      // (参数解开了、项目在),用户那一票在 `seed.enabled` 里,由 `recordSetup` 合进去
+      // 并写上一句「是你关的」。不写这一句的话,一条关掉的文件触发器会显示成光秃秃的
+      // 「没挂上」,和"它坏了"分不清。
+      const off = !triggerEnabledOf(node.params);
       this.facts.recordSetup(seed, true);
       out.push({
         workflowId,
@@ -346,6 +372,8 @@ class AutomationRunner {
         projectId,
         cwd: project.path,
         task: task.trim(),
+        params: node.params,
+        disarmed: off,
       });
     }
     this.facts.retainWorkflow(workflowId, seen);
@@ -438,9 +466,10 @@ class AutomationRunner {
       entry.watcher = watcher;
       entry.watchOk = true;
       // 挂上了:把上次「监听失效」记的那笔还回来(reload 重试成功的那条路走这里)。
+      // **经 `markArmed`**:用户关掉的那条不会被这笔说成"响着"。
       for (const t of this.all()) {
         if (t.spec.kind === "file" && t.cwd === dir) {
-          this.facts.recordSetup(triggerSeedOf(t), true);
+          this.markArmed(t);
         }
       }
     } catch (err) {
@@ -540,7 +569,7 @@ class AutomationRunner {
     if (trigger === undefined) {
       return { ok: false, error: "这个触发器不在一条已保存的自动化里(存一次再试)" };
     }
-    return this.fire(trigger, { kind: "manual" });
+    return this.fire(trigger, { kind: "manual" }, { manual: true });
   }
 
   /**
@@ -659,9 +688,15 @@ class AutomationRunner {
         projectId: project.id,
         cwd: project.path,
         task,
+        // 守望模板的参数袋照实带上(它**就在图上**)。守望这条路的 `disarmed` 是写死的
+        // false —— 点在按钮上的那一下不看「启用」开关(见
+        // `NODE_TRIGGER_ENABLED_PARAM_KEY`),但事实里那条记录仍该照模板说真话:
+        // 模板上的开关关着,它就不会自动响。
+        params: triggerNode?.params ?? {},
+        disarmed: false,
       },
       { kind: "manual" },
-      { originSessionId: origin.id },
+      { originSessionId: origin.id, manual: true },
     );
   }
 
@@ -738,9 +773,18 @@ class AutomationRunner {
   private fire(
     trigger: LoadedTrigger,
     payload: TriggerPayload,
-    opts?: { originSessionId?: string },
+    opts?: { originSessionId?: string; manual?: boolean },
   ): AutomationRunResult {
     try {
+      // **关掉的只挡自动那三条路,不挡手动。** 用户正盯着「立刻运行一次」那个按钮,
+      // 点了就是"我现在要它跑" —— 被一个他在别的页面上设过的开关挡回去,只会让人
+      // 以为坏了(见 `NODE_TRIGGER_ENABLED_PARAM_KEY`)。
+      //
+      // 不写成"手动那条路绕开 fire"是因为其余每一条判定(项目在不在、上一次还在不在跑)
+      // 手动这条路**都要**。所以挡的是这里,不是调用方。
+      if (trigger.disarmed && opts?.manual !== true) {
+        return { ok: true };
+      }
       // 项目**每次现读**:建会话时用的是它,而用户完全可能把项目移走。
       const project = ProjectRepo.get(trigger.projectId);
       if (project === undefined) {
@@ -794,8 +838,18 @@ class AutomationRunner {
     }
   }
 
-  private skip(trigger: LoadedTrigger, reason: string): AutomationRunResult {
-    log.info(`[automation] 「${trigger.workflowName}」/「${trigger.title}」这一次没跑:${reason}`);
+  /**
+   * 把「目录监听重新挂上了」登记进事实表。
+   *
+   * 手上只有 `LoadedTrigger`、没有 seed,所以走 `triggerSeedOf` 现拼一个 —— 它按
+   * **参数袋**读「启用」那一格,于是用户关掉的那条不会在这笔登记里被说成"响着"
+   * (理由见 `AutomationFacts.recordSetup`)。
+   */
+  private markArmed(trigger: LoadedTrigger): void {
+    this.facts.recordSetup(triggerSeedOf(trigger), true);
+  }
+
+  private skip(trigger: LoadedTrigger, reason: string): AutomationRunResult {    log.info(`[automation] 「${trigger.workflowName}」/「${trigger.title}」这一次没跑:${reason}`);
     // 「该跑而没跑成」也要让界面看见(AUTO-09):重入跳过尤其如此 —— 界面上只写
     // 「上次运行:进行中」,而这里的原因是用户问「我改了文件它怎么没跑」的答案。
     this.facts.recordBlocked(triggerSeedOf(trigger), reason, Date.now());

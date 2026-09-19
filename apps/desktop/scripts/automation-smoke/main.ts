@@ -36,6 +36,9 @@ import { HOOK_EVENT_OF, matchesAnyGlob } from "@contracts/hook";
 import {
   parseTriggerSpec,
   DEFAULT_TRIGGER_DEBOUNCE_MS,
+  NODE_TRIGGER_ENABLED_PARAM_KEY,
+  NODE_TRIGGER_KIND_PARAM_KEY,
+  triggerEnabledOf,
   type NodeOutcome,
   type NodeTypeManifest,
 } from "@contracts/nodeType";
@@ -53,6 +56,7 @@ import {
   watcherDirsOf,
 } from "@main/orchestration/automationStatus.js";
 import { deriveTrigger } from "@main/orchestration/library.js";
+import { builtinTriggerManifest } from "@main/orchestration/nodeTypes.js";
 import { runWorkflow, type RunPorts, type RunReport, type RunState } from "@main/orchestration/scheduler.js";
 import { initDb, getDb } from "@main/store/db.js";
 import { ProjectRepo, SessionRepo } from "@main/store/repositories.js";
@@ -741,12 +745,14 @@ console.log("\nAutomationFacts · 挂载侧跟着 reload、运行侧只增不改
     nodeId: "T1",
     title: "盯文件",
     kind: "file",
+    enabled: true,
   };
   const broken: Parameters<typeof facts.recordSetup>[0] = {
     workflowId: "wf",
     nodeId: "T2",
     title: "到点跑",
     kind: "schedule",
+    enabled: true,
   };
 
   facts.recordSetup(armed, true);
@@ -763,7 +769,7 @@ console.log("\nAutomationFacts · 挂载侧跟着 reload、运行侧只增不改
   // 重入跳过是「这次没跑」,不是「这条触发器坏了」。
   facts.recordFired(armed, 500);
   facts.recordBlocked(
-    triggerSeedOf({ ...armed, spec: { kind: "file" } }),
+    triggerSeedOf({ ...armed, spec: { kind: "file" }, params: {} }),
     "上一次还在跑,这一次触发已跳过",
     600,
   );
@@ -773,7 +779,7 @@ console.log("\nAutomationFacts · 挂载侧跟着 reload、运行侧只增不改
   eq("blocked 不改 armed", afterFire?.armed, true);
 
   // watcher 失效 → 重试成功:armed 翻过去再翻回来,**运行史不动**。
-  facts.recordSetup(triggerSeedOf({ ...armed, spec: { kind: "file" } }), false, "目录监听失效:ENOENT");
+  facts.recordSetup(triggerSeedOf({ ...armed, spec: { kind: "file" }, params: {} }), false, "目录监听失效:ENOENT");
   const down = facts.ofWorkflow("wf").find((f) => f.nodeId === "T1");
   eq("失效后 armed 翻 false", down?.armed, false);
   eq("失效原因可读", down?.detail, "目录监听失效:ENOENT");
@@ -789,23 +795,113 @@ console.log("\nAutomationFacts · 挂载侧跟着 reload、运行侧只增不改
   eq("删掉的触发器事实清了", facts.ofWorkflow("wf").map((f) => f.nodeId).join(","), "T2");
 
   // 工作流之间隔离;界面顺序按标题稳定排序。
-  facts.recordSetup({ workflowId: "wf2", nodeId: "A", title: "zzz", kind: "manual" }, true);
-  facts.recordSetup({ workflowId: "wf2", nodeId: "B", title: "aaa", kind: "manual" }, true);
+  facts.recordSetup({ workflowId: "wf2", nodeId: "A", title: "zzz", kind: "manual", enabled: true }, true);
+  facts.recordSetup({ workflowId: "wf2", nodeId: "B", title: "aaa", kind: "manual", enabled: true }, true);
   eq("ofWorkflow 只看自己的工作流", facts.ofWorkflow("wf2").length, 2);
   eq("按标题排序", facts.ofWorkflow("wf2").map((f) => f.nodeId).join(","), "B,A");
   eq("all 是全部", facts.all().length, 3);
 
   // 守望起跑那条 **ad-hoc** 路径:没有经过 buildTriggers 的登记,fired 本身就是登记。
-  facts.recordFired({ workflowId: "wf_watch", nodeId: "T", title: "守望入口", kind: "manual" }, 700);
+  facts.recordFired({ workflowId: "wf_watch", nodeId: "T", title: "守望入口", kind: "manual", enabled: true }, 700);
   const watch = facts.ofWorkflow("wf_watch")[0];
   check("ad-hoc 起跑即登记(armed + lastFire)", watch?.armed === true && watch?.lastFireAt === 700, watch);
 
   // 没登记过的触发器被拦截(项目没了),也要记下原因 —— 界面要能回答「它怎么没跑」。
-  facts.recordBlocked({ workflowId: "wf_x", nodeId: "T", title: "x", kind: "manual" }, "项目不在了", 800);
+  facts.recordBlocked({ workflowId: "wf_x", nodeId: "T", title: "x", kind: "manual", enabled: true }, "项目不在了", 800);
   eq("未登记的 blocked 也落表", facts.ofWorkflow("wf_x")[0]?.lastError, "项目不在了");
 
   facts.clear();
   eq("clear 清干净(dispose 用)", facts.all().length, 0);
+}
+
+/* ────────────────────────── 11b. 触发器上的「启用」开关(C3) ────────────────────────── */
+
+console.log("\n触发器的「启用」开关 · 缺席 = 开,关掉的只挡自动、不挡手动");
+
+{
+  // ── 契约侧:读法只有一处(`triggerEnabledOf`),缺席 = 开 ──
+  eq("参数袋里没有这个键 = 开", triggerEnabledOf({}), true);
+  eq("明确写 true = 开", triggerEnabledOf({ [NODE_TRIGGER_ENABLED_PARAM_KEY]: true }), true);
+  eq("明确写 false = 关", triggerEnabledOf({ [NODE_TRIGGER_ENABLED_PARAM_KEY]: false }), false);
+  // 老存档里那一格可能是什么都可能(当年没有这个键,或者被手改成了字符串)。
+  // **只认 `false` 这一个值** —— 认不出来的当开,和缺席同一条路:读成"关"会让一条
+  // 本来在响的自动化在升级那一刻静默停摆,那是最难查的一类故障。
+  eq("写字符串 false(手改过的存档)= 开", triggerEnabledOf({ [NODE_TRIGGER_ENABLED_PARAM_KEY]: "false" }), true);
+  eq("写 null(老存档的默认值)= 开", triggerEnabledOf({ [NODE_TRIGGER_ENABLED_PARAM_KEY]: null }), true);
+  eq("写 0 = 开", triggerEnabledOf({ [NODE_TRIGGER_ENABLED_PARAM_KEY]: 0 }), true);
+
+  // ── seed:真相取自参数袋,不另存一份 ──
+  const base = { workflowId: "wf", nodeId: "T", title: "盯文件", spec: { kind: "file" } };
+  eq("seed 认参数袋", triggerSeedOf({ ...base, params: {} }).enabled, true);
+  eq(
+    "种子上的 enabled 就是关掉那一格",
+    triggerSeedOf({ ...base, params: { [NODE_TRIGGER_ENABLED_PARAM_KEY]: false } }).enabled,
+    false,
+  );
+
+  // ── 事实表:关掉的**照样进表**,只是换成「你自己关的」那句话 ──
+  const facts = new AutomationFacts();
+  const off = triggerSeedOf({ ...base, params: { [NODE_TRIGGER_ENABLED_PARAM_KEY]: false } });
+  const on = triggerSeedOf({ ...base, nodeId: "T2", params: {} });
+  // 第二个参数说的是**执行器那一侧**有没有问题(参数解开了、项目在),这里都说"没有";
+  // 用户那一票在 seed 里,由 `recordSetup` 合进去。
+  facts.recordSetup(off, true);
+  facts.recordSetup(on, true);
+  const offRow = facts.ofWorkflow("wf").find((f) => f.nodeId === "T");
+  eq("关掉的进表(不是整行消失)", offRow !== undefined, true);
+  eq("关掉的 enabled 是 false", offRow?.enabled, false);
+  eq("关掉的 armed 也是 false —— 它真的不响", offRow?.armed, false);
+  eq(
+    "关掉的原因说的是「是你关的」,不是「坏了」",
+    offRow?.detail,
+    "已关闭(在触发器节点上打开「启用」才会自动响)",
+  );
+  eq("没关的那条照旧 armed", facts.ofWorkflow("wf").find((f) => f.nodeId === "T2")?.armed, true);
+
+  // ── 手动跑一次关掉的:允许,但**不许**把事实说成"它又自动响着了" ──
+  facts.recordFired(off, 900);
+  const afterManual = facts.ofWorkflow("wf").find((f) => f.nodeId === "T");
+  eq("手动跑过之后 lastFireAt 记了", afterManual?.lastFireAt, 900);
+  eq("手动跑一次**不会**把它说成自动响着", afterManual?.armed, false);
+  eq("关着的那句话还在", afterManual?.detail, "已关闭(在触发器节点上打开「启用」才会自动响)");
+
+  // ── 三条路都在登记同一条触发器:用户关掉的那句话**说了算** ──
+  // 目录监听那条路里外里会报三次(失效:ENOENT / 失效:EPERM / 挂上了),而用户关掉的
+  // 那条从头到尾只该有一句话。所以 `detail` 由 `recordSetup` 一处决定,不看调用方。
+  facts.recordSetup(off, false, "目录监听失效:ENOENT");
+  const whileDown = facts.ofWorkflow("wf").find((f) => f.nodeId === "T");
+  check("监听失效也盖不掉「是你关的」", (whileDown?.detail ?? "").startsWith("已关闭"), whileDown?.detail);
+  check("监听的原因附在后面(回头开「启用」时会撞上它)", (whileDown?.detail ?? "").includes("ENOENT"), whileDown?.detail);
+  facts.recordSetup(off, true);
+  eq(
+    "监听重试成功之后还是那一句",
+    facts.ofWorkflow("wf").find((f) => f.nodeId === "T")?.detail,
+    "已关闭(在触发器节点上打开「启用」才会自动响)",
+  );
+  eq("重试成功也不会把它说成自动响着", facts.ofWorkflow("wf").find((f) => f.nodeId === "T")?.armed, false);
+
+  facts.clear();
+}
+
+/* ────────────────────────── 11c. 「启用」在参数表最上面(C3 的界面侧) ────────────────────────── */
+
+console.log("\n触发器的参数表 · 「启用」排在「触发方式」前面");
+
+{
+  const manifest = builtinTriggerManifest();
+  const keys = manifest.params.map((p) => p.key);
+  eq("第一格就是「启用」", keys[0], NODE_TRIGGER_ENABLED_PARAM_KEY);
+  // 顺序不是审美问题:关掉的触发器,下面那些参数填得再全也不会响。开关摆在最上面,
+  // 症状一眼可见;摆最下面的话得把一整屏看完才发现根因。
+  check(
+    "「启用」在「触发方式」之前",
+    keys.indexOf(NODE_TRIGGER_ENABLED_PARAM_KEY) < keys.indexOf(NODE_TRIGGER_KIND_PARAM_KEY),
+    keys,
+  );
+  const enableParam = manifest.params[0];
+  eq("是勾选框(不是开关控件 —— 没有那种 kind)", enableParam?.kind, "boolean");
+  // 默认**开**:新拖一个触发器节点出来就该是响的,否则用户会以为它坏了。
+  eq("默认开着", enableParam?.default, true);
 }
 
 /* ────────────────────────── 12. 事件触发复用钩子契约(AUTO-07) ────────────────────────── */

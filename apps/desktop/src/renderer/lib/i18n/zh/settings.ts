@@ -1092,6 +1092,10 @@ export const zh = {
   // 「已启用」说的是这条自动化在库里的状态，这里说的是**每一条触发器**。
   "settings.automation.facts.armed": "已挂上",
   "settings.automation.facts.disarmed": "没挂上",
+  // 「关了」与「坏了」是两回事：前者是你在触发器节点上取消勾了「启用」，后者是参数
+  // 解不开 / 项目不在了 / 目录监听失效（原因在那一行的悬停提示里）。分开说，是因为
+  // 一句「没挂上」摆在你自己关掉的那条旁边，看着像应用坏了。
+  "settings.automation.facts.off": "已关闭",
 
   // ── 运行历史面板（settings/workflows/RunHistorySection）──
   // 与 `settings.automation.runHistory`（检查器里那段摘要）不同源：这里读的是
