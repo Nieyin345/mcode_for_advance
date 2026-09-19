@@ -11,6 +11,7 @@
  */
 import type { IpcMain } from "electron";
 import { dataRoot } from "@main/lib/dataRoot.js";
+import { log } from "@main/lib/logger.js";
 import { SessionRepo } from "@main/store/repositories.js";
 import { startMonitoringCollector } from "@main/monitoring/collector.js";
 import { readRunSummaries } from "@main/monitoring/store.js";
@@ -34,11 +35,21 @@ function ensureCollector(): void {
   collectorStarted = true;
   startMonitoringCollector({
     root: dataRoot,
-    // 事件不带 workflowId,只能查会话行;数据库没起来/行没了 → 空串,采集继续
+    // 事件不带 workflowId,只能查会话行;数据库没起来/行没了 → undefined,采集继续
     lookupWorkflowId: (sessionId) => {
       try {
         return SessionRepo.get(sessionId)?.workflowId;
-      } catch {
+      } catch (err) {
+        // ⚠️ **不能静默。** 这里吞掉的正是"数据库没起来"——启动那几秒里发生的
+        // 收口会全部记成空 workflowId,**面板上那张卡看不出跟的是哪张图**,而
+        // 界面上没有任何东西提示"这段时间的监控数据是残的"。采集器的设计是
+        // "查不到不拦着登记",不是"查不到别说":它自己那条同款 catch 有日志
+        // (`collector.ts` 的 "工作流 id 查不到"),存储那条同款 catch 也有
+        // (`store.ts` 的 "写盘失败")。三条路一个口径 —— 旁路可以带伤继续,
+        // 但伤情要留在 main.log 里,否则排障时唯一的线索就没了。
+        log.warn(
+          `monitoring: 会话 ${sessionId} 的工作流 id 查不到,这次收口的 workflowId 记空: ${(err as Error).message}`,
+        );
         return undefined;
       }
     },
