@@ -9,9 +9,10 @@
  *    验超时杀树、输出上限、stdin 载荷、环境变量、退出码。它是唯一会起进程的一段,
  *    写错了会在用户机器上留僵尸进程或者卡住一次对话。
  *
- * 仍然**没有**覆盖的:`HookRunner` 自己(事件匹配 → 执行记录的环、同一条钩子的并发
- * 互斥、按 mtime 重读 hooks.json)。那几样要活的 RuntimeManager 和真会话,无头脚本给
- * 不出诚实的替身 —— 靠手点设置页的「试跑」和「执行记录」验。
+ * `HookRunner` 自己(事件匹配 → 执行记录的环、并发互斥、按 mtime 重读)在
+ * **`scripts/hook-runner-smoke`** 里 —— 那一段原先写在这里说"要活的 RuntimeManager
+ * 和真会话,验不了",后来发现整条链上真正会出错的那几段都不需要真会话,只要换掉
+ * RuntimeManager 那一个模块就能全走一遍。这一套只管到 `runHookCommand` 为止。
  *
  * Run: scripts/hooks-smoke/run.sh
  */
