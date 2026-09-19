@@ -256,6 +256,25 @@ check("条目不在要拒", ghostItem.includes("失败"), ghostItem);
   rmSync(FIRST, { recursive: true, force: true });
 }
 
+// **源文件就在落点里时要拦下来，而且不许把自己删掉。**
+//
+// 落点是 `markdown/imported/<id>/`，而下面第一件事是整目录 `rmSync`。没有这道拦截的话，
+// 用户/模型把"库里那份 md"当源文件再挂一次 —— 那是**很容易发生**的一次操作（条目详情页
+// 正开着，手上就是那个路径，模型手上也正好有它）—— 会**先删掉它再复制一个已经不存在的
+// 文件**，报一句 `复制失败：ENOENT`，看不出是路径的问题。而这一份是用户唯一的转录产物。
+{
+  const inPlace = LibraryRepo.get(target)!.mdPath!;
+  const abs = fromLibraryRelative(inPlace);
+  const before = readFileSync(abs, "utf8");
+  const again = await call("library_adopt_markdown", { itemId: target, path: abs });
+  check("源文件就在落点里：拒绝", again.includes("失败"), again);
+  check("说的是「已经在库里了」，不是一句复制失败", again.includes("已经在"), again);
+  // ⚠️ **文件必须还在，而且内容一字未动** —— 这道拦截漏了的话，这里读到的是 ENOENT。
+  check("那份 md 没有被误删", existsSync(abs), abs);
+  eq("内容一字未动", readFileSync(abs, "utf8"), before);
+  eq("库里的 md_path 也没被改坏", LibraryRepo.get(target)!.mdPath, inPlace);
+}
+
 /* ──────────────── 2b. 图床目录名不能写死 ──────────────── */
 
 console.log("\nlibrary_adopt_markdown · 图床不叫 images 也要带上");

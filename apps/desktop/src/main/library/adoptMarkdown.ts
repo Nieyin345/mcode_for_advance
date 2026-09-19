@@ -166,6 +166,23 @@ export function adoptMarkdownFile(itemId: string, sourcePath: string): AdoptResu
   if (!existsSync(sourcePath) || !statSync(sourcePath).isFile()) return fail("文件不存在");
 
   const destDir = importedDirForId(itemId);
+
+  // ⚠️ **源文件落在这个条目的落点里时要拦下来。** 下面第一件事就是 `rmSync(destDir)`
+  // (整目录替换,见那里的理由)—— 而那样会**先删掉用户刚交上来的那份 md**,再去复制一个
+  // 已经不存在的文件,报的是"复制失败:ENOENT",看不出是路径的问题。
+  //
+  // 这条不是假想的:条目详情页开着的时候,`mdPath` 指的就在这个目录里,用户很容易把
+  // "库里那份"当成源文件再挂一次;模型也会 —— 它手上正好有那个路径。
+  // 那种情况**什么都不用做**(它已经在库里了),所以说清楚,而不是删了再报错。
+  {
+    const from = resolve(sourcePath);
+    const to = resolve(destDir);
+    const inside = relative(to, from);
+    if (inside === "" || (!inside.startsWith("..") && !/^[A-Za-z]:/.test(inside) && !inside.startsWith(sep))) {
+      return fail("这份文件已经在这个条目的库里了,不用再挂一次");
+    }
+  }
+
   try {
     ensureLibraryDirs();
     // 整目录替换:上一次采纳的文件不该和这一次混在一起(否则旧的 images/ 会留下,
