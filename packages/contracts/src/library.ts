@@ -456,7 +456,7 @@ export interface AuthSiteStatus {
  * ## 什么叫「完整」
  *
  * 用户的要求是「**md 和图床都有**才算完整」—— 但"有图"不能一概而论:很多论文本来
- * 就没有插图,MinerU 也就不会产出 `images/`。所以判据是:
+ * 就没有插图,转录工具也就不会产出 `images/`。所以判据是:
  *
  *   **有 md,且 md 里引用到的图片在磁盘上都在。**
  *
@@ -474,7 +474,19 @@ export interface LibraryConversionRow {
   imageRefs: number;
   /** md 与图床都齐 —— 这才算「完整」。 */
   complete: boolean;
-  /** 转换产物的形态:mineru 出的是目录(full.md + images/),pdfjs 是平铺的 .md。 */
-  source: "mineru" | "pdfjs" | "none";
+  /**
+   * 转换产物的形态 —— **按落点分,不按谁转的**。
+   *
+   * | 值 | 落点 | 谁产的 |
+   * |---|---|---|
+   * | `local` | `markdown/<ab>/<cd>/<sha>.md`(平铺一个文件) | 本地 pdf.js 抽取 |
+   * | `imported` | `markdown/imported/<条目 id>/xxx.md`(目录,同级有 `images/`) | 外部工具转好之后挂进来的 |
+   * | `none` | 还没有 md | — |
+   *
+   * ⚠️ **不记"是哪个外部工具转的"**:Mcode 不再内置任何转录服务,谁转的是用户自己的事,
+   * 软件看不见也不该猜。它只需要知道"这份 md 是不是一整包"—— 那决定了删条目时
+   * 该删文件还是删目录(见 `main/library/paths.ts` 的 `markdownArtifact`)。
+   */
+  source: "local" | "imported" | "none";
 }
 

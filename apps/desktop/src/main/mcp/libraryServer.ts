@@ -631,9 +631,10 @@ export function libraryMcpTools(): McpToolSpec[] {
       {
         name: "library_convert",
         description:
-          "把文献的 PDF 转成 Markdown(自动化的「转录」那一步用它)。转换是**分钟级**的,这条工具会一直等到转完才返回。\n" +
-          "已配 MinerU 就走 MinerU(排版/公式/表格保留,但要上传到 mineru.net);没配或 MinerU 失败则退回本地抽取(只有纯文本)。\n" +
-          "**已经有 Markdown 的会跳过** —— 重复调用不白烧 MinerU 的额度;确实要重转才把 force 打开。\n" +
+          "把文献的 PDF 转成 Markdown —— **本地抽取,只有纯文本**(排版、公式、表格都不保留)。\n" +
+          "要高质量的转录(公式 / 多栏 / 表格)不走这条:用 code 节点调你自己装的外部工具转出 `full.md`,\n" +
+          "再拿 `library_adopt_markdown` 挂回库 —— 那条路才认图床。\n" +
+          "**已经有 Markdown 的会跳过**;确实要重转才把 force 打开。\n" +
           "⚠️ 它**不下载** PDF:`library_add_paper` / `library_import` 导入时已经自动排队下载,这条只管「已经在本地的 PDF → Markdown」。条目还没有 PDF 时如实转告用户,别自己去抓。",
         inputSchema: {
           ids: z.array(z.string()).min(1).describe("要转的条目 id,来自 library_search / library_items"),
@@ -655,7 +656,7 @@ export function libraryMcpTools(): McpToolSpec[] {
               lines.push(
                 res.alreadyDone
                   ? `- 《${item.title}》\n  id=${id}\n  已有 Markdown,没有重转`
-                  : `- 《${item.title}》\n  id=${id}\n  已转好(${res.source === "mineru" ? "MinerU" : "本地抽取"}${res.chars ? `,${res.chars} 字节` : ""})`,
+                  : `- 《${item.title}》\n  id=${id}\n  已转好(本地抽取${res.chars ? `,${res.chars} 字节` : ""})`,
               );
               continue;
             }

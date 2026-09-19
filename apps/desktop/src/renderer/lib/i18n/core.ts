@@ -9,7 +9,6 @@ import { zh as zhBrowser } from "./zh/browser.js";
 import { zh as zhSettings } from "./zh/settings.js";
 import { zh as zhStore } from "./zh/store.js";
 import { zh as zhLibrary } from "./zh/library.js";
-import { zh as zhIntegrations } from "./zh/integrations.js";
 import { zh as zhTemplates } from "./zh/templates.js";
 import { zh as zhMonitoring } from "./zh/monitoring.js";
 import { zh as zhMemory } from "./zh/memory.js";
@@ -24,7 +23,6 @@ import { en as enBrowser } from "./en/browser.js";
 import { en as enSettings } from "./en/settings.js";
 import { en as enStore } from "./en/store.js";
 import { en as enLibrary } from "./en/library.js";
-import { en as enIntegrations } from "./en/integrations.js";
 import { en as enTemplates } from "./en/templates.js";
 import { en as enMonitoring } from "./en/monitoring.js";
 import { en as enMemory } from "./en/memory.js";
@@ -51,7 +49,6 @@ const zh = {
   ...zhSettings,
   ...zhStore,
   ...zhLibrary,
-  ...zhIntegrations,
   ...zhTemplates,
   ...zhMonitoring,
   ...zhMemory,
@@ -71,7 +68,6 @@ const en: Record<MessageId, string> = {
   ...enSettings,
   ...enStore,
   ...enLibrary,
-  ...enIntegrations,
   ...enTemplates,
   ...enMonitoring,
   ...enMemory,

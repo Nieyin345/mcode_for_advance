@@ -1,12 +1,18 @@
 /**
  * 把库里的 PDF 转成 Markdown,写进 `library_items.md_path`。
  *
- * ## 两级来源
+ * ## 只有一条来源:pdf.js 本地抽取
  *
- *   1. **MinerU**(设置里配了密钥且启用)—— 排版、公式、表格、多栏都能保留,
- *      是主力。代价是**要把 PDF 上传到 mineru.net**。
- *   2. **pdf.js 本地抽取**(没配密钥,或 MinerU 失败)—— 只有纯文本,但**零上传、
- *      零额度**,而且足够让全文检索用起来。不想外传的文献就走它。
+ * 它**零上传、零外部依赖**,但只有纯文本 —— 排版、公式、表格都不保留。
+ *
+ * 想要高质量的转录(公式、多栏、表格),**不在这条路上做**:Mcode 不再内置任何
+ * 转录服务(从前的那份 MinerU 客户端已经删掉)。做法是让 AI 在对话/工作流里用
+ * **code 节点调你自己装的工具**(`mineru` CLI、`pip install` 的库、什么都行),
+ * 转出 `full.md` 之后再走 `library_adopt_markdown` 挂回库里 ——
+ * 挂载那一步是 `adoptMarkdownFile`(`library/adoptMarkdown.ts`),界面上的
+ * 「用本地 Markdown…」走的是同一个函数。
+ *
+ * 这条分工是有意的:**Mcode 只管「文件在哪」和「怎么挂回库」,不管「谁转的」。**
  *
  * ## 为什么要落 md_path
  *
@@ -19,27 +25,20 @@
  * 转换失败只返回人话错误,不动 PDF、不动条目 —— 「转换没成」和「文献没入库」
  * 是两件事,不该互相牵连。
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { LibraryConversionRow, LibraryItem } from "@contracts/library";
-import {
-  markdownPathForHash,
-  markdownDirForHash,
-  fromLibraryRelative,
-  toLibraryRelative,
-} from "@main/library/paths.js";
+import { markdownPathForHash, fromLibraryRelative, toLibraryRelative } from "@main/library/paths.js";
 import { hashFile } from "@main/library/downloader.js";
 import { extractPdfText } from "@main/library/pdfText.js";
-import { mineruConvert } from "@main/integrations/mineru.js";
-import { IntegrationStore } from "@main/integrations/store.js";
 import { LibraryRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
 
-export type ConvertSource = "mineru" | "pdfjs";
+export type ConvertSource = "pdfjs";
 
 export type ConvertOutcome =
   | { ok: true; source: ConvertSource; mdRelPath: string; chars: number; alreadyDone?: boolean }
-  | { ok: false; error: string; /** 没配 MinerU 密钥 —— 调用方可以据此提示去设置里配 */ needsKey?: boolean };
+  | { ok: false; error: string };
 
 /** 同一篇正在转换时不要重复起一次(UI 可能连点,导入流程也可能并发触发)。 */
 const inFlight = new Set<string>();
@@ -47,7 +46,7 @@ const inFlight = new Set<string>();
 /**
  * 把一篇文献的 PDF 转成 Markdown。
  *
- * `force = true` 时即使已经有 md 也重转(MinerU 升级、或用户手动要求)。
+ * `force = true` 时即使已经有 md 也重转(用户手动要求)。
  */
 export async function convertItemToMarkdown(
   item: LibraryItem,
@@ -69,62 +68,27 @@ export async function convertItemToMarkdown(
     // 内容寻址需要一个 sha。下载来的条目本来就带;没有就现算(也顺手补上)。
     const sha = item.pdfSha256 ?? hashFile(abs);
 
-    const cfg = IntegrationStore.resolve("mineru");
-    const useMineru = cfg.enabled && cfg.key.length > 0;
-
-    /** 最终那份 .md 的绝对路径 —— 由哪条路成功决定。 */
-    let mdAbs: string | null = null;
-    let source: ConvertSource = "pdfjs";
-    let mineruError: string | null = null;
-
-    if (useMineru) {
-      // MinerU 的产物是**一个目录**(full.md + images/),不是单个文件 ——
-      // 正文里几十处 ![](images/…),只捞 full.md 会让图全部断链。
-      const destDir = markdownDirForHash(sha);
-      const res = await mineruConvert({ key: cfg.key, baseUrl: cfg.baseUrl }, abs, destDir);
-      if (res.ok) {
-        source = "mineru";
-        mdAbs = res.markdownPath;
-        // MinerU 的包里附带一份**原始 PDF 的副本**(`*_origin.pdf`)—— 我们库里
-        // 已经按内容哈希存过一份了,再留一份等于每篇白占几 MB。删掉。
-        // (其余 json 保留:`*_content_list.json` / `*_model.json` 体积小,以后做
-        //  版面相关的功能可能用得上。)
-        pruneRedundantOriginPdf(destDir);
-        // 上一次本地兜底留下的平铺 <sha>.md 现在是孤儿(两者路径不同),清掉,
-        // 否则 markdown/ 下会同时躺着两份同一篇的转换结果。
-        try {
-          rmSync(markdownPathForHash(sha), { force: true });
-        } catch {
-          /* 清不掉不影响结果 */
-        }
-      } else {
-        mineruError = res.error;
-        log.warn(`mineru convert failed for ${item.id}, falling back to pdf.js: ${res.error}`);
-      }
+    const local = await extractPdfText(abs);
+    if (!local.ok) {
+      return { ok: false, error: local.error };
     }
-
-    if (mdAbs === null) {
-      const local = await extractPdfText(abs);
-      if (!local.ok) {
-        return {
-          ok: false,
-          error: mineruError ? `MinerU 失败(${mineruError});本地抽取也失败(${local.error})` : local.error,
-        };
-      }
-      if (!local.text.trim()) {
-        // 扫描件:解析"成功"但没文本层。这是**一类结果**,不是错误 —— 如实说明,
-        // 别让用户以为是软件坏了。
-        return { ok: false, error: "这个 PDF 没有文本层(扫描件?),需要 OCR —— 当前不做" };
-      }
-      mdAbs = markdownPathForHash(sha);
-      mkdirSync(dirname(mdAbs), { recursive: true });
-      writeFileSync(mdAbs, renderLocalMarkdown(item, local.text), "utf8");
+    if (!local.text.trim()) {
+      // 扫描件:解析"成功"但没文本层。这是**一类结果**,不是错误 —— 如实说明,
+      // 别让用户以为是软件坏了。顺带指出那条出路:外部工具(OCR)转好之后可以
+      // 挂进来(见文件头)。
+      return {
+        ok: false,
+        error: "这个 PDF 没有文本层(扫描件?),本地抽取拿不到正文 —— 要用 OCR 的话,拿外部工具转好 Markdown 再挂进来",
+      };
     }
+    const mdAbs = markdownPathForHash(sha);
+    mkdirSync(dirname(mdAbs), { recursive: true });
+    writeFileSync(mdAbs, renderLocalMarkdown(item, local.text), "utf8");
 
     LibraryRepo.setMarkdown(item.id, toLibraryRelative(mdAbs));
     const chars = statSync(mdAbs).size;
-    log.info(`library: converted ${item.id} via ${source} (${chars}B)`);
-    return { ok: true, source, mdRelPath: toLibraryRelative(mdAbs), chars };
+    log.info(`library: converted ${item.id} via pdfjs (${chars}B)`);
+    return { ok: true, source: "pdfjs", mdRelPath: toLibraryRelative(mdAbs), chars };
   } catch (err) {
     return { ok: false, error: `转换出错:${(err as Error).message}` };
   } finally {
@@ -166,12 +130,13 @@ export function conversionReport(): LibraryConversionRow[] {
       }
     }
 
-    // 产物形态:MinerU 落的是目录里的 `full.md`,本地兜底是平铺的 `<sha>.md`
-    const source: "mineru" | "pdfjs" | "none" = !hasMd
+    // 产物形态:本地抽取落的是平铺的 `<sha>.md`;而在 `markdown/imported/<id>/`
+    // 下面那种(外部工具转好之后挂进来的)是**目录**形态。两者都算已转。
+    const source: "local" | "imported" | "none" = !hasMd
       ? "none"
-      : item.mdPath!.endsWith("/full.md")
-        ? "mineru"
-        : "pdfjs";
+      : item.mdPath!.includes("/imported/")
+        ? "imported"
+        : "local";
 
     return {
       id: item.id,
@@ -184,29 +149,6 @@ export function conversionReport(): LibraryConversionRow[] {
       source,
     };
   });
-}
-
-/** 没配 MinerU 时有没有本地兜底可用 —— 给 UI 决定要不要提示「去配密钥」。 */
-export function hasMineruConfigured(): boolean {
-  const cfg = IntegrationStore.resolve("mineru");
-  return cfg.enabled && cfg.key.length > 0;
-}
-
-/**
- * 删掉 MinerU 附带的那份 `*_origin.pdf`。
- *
- * 它是**我们已经存过的 PDF 的重复副本** —— 库里那份在 `papers/<ab>/<cd>/<sha>.pdf`,
- * 内容寻址、天然去重;MinerU 再塞一份进来只是让每篇多占几 MB(实测一篇 3.4MB)。
- * 删失败也只是多占点空间,不该让整次转换失败。
- */
-function pruneRedundantOriginPdf(dir: string): void {
-  try {
-    for (const name of readdirSync(dir)) {
-      if (/_origin\.pdf$/i.test(name)) rmSync(join(dir, name), { force: true });
-    }
-  } catch {
-    /* 尽力而为 */
-  }
 }
 
 /**

@@ -22,7 +22,6 @@ import type { RelayStatus, RelayVpsConfig, RelayVpsConfigInput } from "../relay.
 import type { LibraryItem, LibraryItemLink, LibraryLinkView, LibraryCollection, InstitutionProfile, DownloadJob, ExternalSearchResult, FullTextMatch, AuthSiteStatus, LibraryConversionRow, LibraryNote } from "../library.js";
 import type { LibraryTypeMeta, LibraryGroupMeta, LibrarySuppressRule } from "../libraryTypes.js";
 import type { TemplateEntry, TemplateFileContent } from "../templates.js";
-import type { IntegrationPublic } from "../integrations.js";
 import type { GetSettingInput, SetSettingInput, GetManySettingsInput, GetManySettingsResult, GetVoiceModelDirInput, GetVoiceModelDirResult, SetVoiceModelDirInput, SetVoiceModelDirResult, NotificationPrefs } from "./settings.js";
 import type { StartSessionInput, ListSideChatsInput, SendTurnInput, InterruptInput, InjectInput, ApproveInput, RespondQuestionInput, RespondPlanApprovalInput, RewindTurnInput, UpdateSessionSettingsInput, CreateProjectInput, ProjectSessionsInput, SessionListAllInput, SetProjectGroupInput, ReorderProjectsInput, PinProjectInput, RenameProjectInput, SessionSearchInput, BookmarkSearchInput, BookmarkSearchResult, SessionMessagesInput, SaveMessagesInput, UpsertMessagesInput, TruncateAndInsertMessagesInput, RenameSessionInput, ForkSessionInput, PinSessionInput, UpdateBookmarksInput, OpenPathInput, ShowItemInFolderInput, OpenFileInput } from "./session.js";
 import type { VoiceStartInput, VoiceFeedInput, VoiceStopInput, VoiceStopResult, VoiceCancelInput, VoiceModelListResult, VoiceDownloadModelInput } from "./voice.js";
@@ -44,7 +43,6 @@ import type { AutomationTriggerFacts, MonitoringOverview, MonitoringRunSummary, 
 import { MEMORY_CATEGORIES_CHANNEL, MEMORY_DELETE_CHANNEL, MEMORY_LIST_CHANNEL, MEMORY_READ_CHANNEL, MEMORY_SAVE_CHANNEL, type MemoryDeleteInput, type MemoryFileMeta, type MemoryListInput, type MemoryReadInput, type MemorySaveInput } from "../memory.js";
 import type { LibraryTypesGetInput, LibraryTypesSaveInput, LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibraryManifestInput, LibraryItemManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
 import type { TemplateListInput, TemplateAddInput, TemplateRenameInput, TemplateEntryRefInput, TemplateFileRefInput, TemplatesAttachToChatInput } from "./templates.js";
-import type { IntegrationSetKeyInput, IntegrationClearKeyInput, IntegrationSetConfigInput, IntegrationTestInput } from "./integrations.js";
 import type { SubagentDefinition } from "../claudeSubagent.js";
 import type { ClaudeSubagentsSaveInput } from "../claudeSubagent.js";
 import type { LongTask, LongTaskStartInput, LongTaskStopInput, LongTaskGetInput } from "../longTask.js";
@@ -1035,17 +1033,6 @@ export interface RpcMap {
     input: LibraryAttachToChatInput,
   ) => Promise<{ ok: boolean; name?: string; count?: number; error?: string }>;
 
-  // ── 外部服务集成(自带 API Key) ──
-  /** 列出目录里每个集成的状态。**密钥明文永远不出现在返回值里**。 */
-  "integrations.list": () => Promise<{ integrations: IntegrationPublic[] }>;
-  /** 存/换密钥(明文只经这一条通道进来,存完即加密)。 */
-  "integrations.setKey": (input: IntegrationSetKeyInput) => Promise<{ integrations: IntegrationPublic[] }>;
-  "integrations.clearKey": (input: IntegrationClearKeyInput) => Promise<{ integrations: IntegrationPublic[] }>;
-  /** 改非密钥配置(base url / 是否启用)。 */
-  "integrations.setConfig": (input: IntegrationSetConfigInput) => Promise<{ integrations: IntegrationPublic[] }>;
-  /** 连通性测试 —— 用一次最便宜的调用验证密钥真的能用。 */
-  "integrations.test": (input: IntegrationTestInput) => Promise<{ integrations: IntegrationPublic[] }>;
-
   // 文献库 —— 集合
   "library.listCollections": () => Promise<{ collections: LibraryCollection[] }>;
   /** 新建/改名/删除集合 —— 均返回**完整的新列表**,渲染端整体替换缓存(既定模式)。 */
@@ -1130,12 +1117,6 @@ export const IPC = {
   LIBRARY_SEARCH_EXTERNAL: "library:searchExternal",
   LIBRARY_IMPORT: "library:import",
   LIBRARY_FULL_TEXT_SEARCH: "library:fullTextSearch",
-  // 外部服务集成(自带 API Key)
-  INTEGRATIONS_LIST: "integrations:list",
-  INTEGRATIONS_SET_KEY: "integrations:setKey",
-  INTEGRATIONS_CLEAR_KEY: "integrations:clearKey",
-  INTEGRATIONS_SET_CONFIG: "integrations:setConfig",
-  INTEGRATIONS_TEST: "integrations:test",
   // 文献库:PDF 文件导入 / 转 Markdown
   LIBRARY_IMPORT_FILES: "library:importFiles",
   /** 导入 Markdown 笔记(笔记库)。 */

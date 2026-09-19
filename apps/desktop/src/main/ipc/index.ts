@@ -33,7 +33,6 @@ import { registerRelayHandlers } from "./relay.js";
 import { registerVoiceHandlers } from "./voice.js";
 import { registerLibraryHandlers } from "./library.js";
 import { registerInstitutionAuthHandlers } from "./institutionAuth.js";
-import { registerIntegrationHandlers } from "./integrations.js";
 import { registerTemplateHandlers } from "./templates.js";
 import { registerMemoryHandlers } from "./memory.js";
 import { registerMonitoringHandlers } from "./monitoring.js";
@@ -97,7 +96,6 @@ export function registerIpcHandlers(): void {
   registerVoiceHandlers(ipc);
   registerLibraryHandlers(ipc);
   registerInstitutionAuthHandlers(ipc);
-  registerIntegrationHandlers(ipc);
   registerTemplateHandlers(ipc);
   registerMemoryHandlers(ipc);
   registerMonitoringHandlers(ipc);

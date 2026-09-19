@@ -26,7 +26,6 @@ import {
   IconBolt,
   IconDatabase,
   IconBook,
-  IconPlugConnected,
   IconShieldCheck,
   McpIcon,
   IconBrain,
@@ -36,7 +35,6 @@ import {
 import { CustomModelsPanel } from "./CustomModelsPanel.js";
 import { ContextPanel } from "./ContextPanel.js";
 import { InstitutionAuthPanel } from "./InstitutionAuthPanel.js";
-import { IntegrationsPanel } from "./IntegrationsPanel.js";
 import { DataRootPanel } from "./DataRootPanel.js";
 import { LibraryTypesPanel } from "./LibraryTypesPanel.js";
 import { RuntimesPanel } from "./RuntimesPanel.js";
@@ -77,7 +75,7 @@ import { MemoryExplorerPanel } from "../memory/MemoryExplorerPanel.js";
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "data-root" | "library-types" | "runtimes" | "custom-models" | "institution" | "integrations" | "library" | "templates" | "skills" | "claude-subagents" | "workflows" | "automation" | "hooks" | "mcp" | "context" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
+type SectionId = "general" | "data-root" | "library-types" | "runtimes" | "custom-models" | "institution" | "library" | "templates" | "skills" | "claude-subagents" | "workflows" | "automation" | "hooks" | "mcp" | "context" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -165,7 +163,6 @@ const NAV_GROUPS: NavGroup[] = [
       // 机构认证归在「工作台」组:它是使用场景(下载文献要先登录),
       // 不是 AI 配置,放 ai 组会让人以为是模型相关设置。
       { id: "institution", labelKey: "settings.nav.institution", icon: IconShieldCheck },
-      { id: "integrations", labelKey: "settings.nav.integrations", icon: IconPlugConnected },
       { id: "git", labelKey: "settings.nav.git", icon: IconBrandGit },
       { id: "terminal", labelKey: "settings.nav.terminal", icon: IconTerminal2 },
       { id: "browser", labelKey: "settings.nav.browser", icon: IconWorld },
@@ -302,7 +299,6 @@ export function SettingsPage() {
           )}
           {active === "library-types" && <LibraryTypesPanel />}
           {active === "institution" && <InstitutionAuthPanel />}
-          {active === "integrations" && <IntegrationsPanel />}
           {active === "shortcuts" && <ShortcutsPanel />}
           {active === "gestures" && <GesturesPanel />}
           {active === "voice" && <VoicePanel />}

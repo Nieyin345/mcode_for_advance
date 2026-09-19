@@ -9,7 +9,6 @@ import { WorkflowDocSchema, type WorkflowDoc, type WorkflowListEntry } from "./w
 import { HookSpecSchema, type HookRun, type HookSpec } from "./hook.js";
 import { AgentProfileSchema, type AgentProfile, type AgentProfileCatalog } from "./agentProfile.js";
 import type { NodeTypeCatalog } from "./nodeType.js";
-import { INTEGRATION_IDS, type IntegrationId, type IntegrationPublic } from "./integrations.js";
 import {
   TEMPLATE_KINDS,
   type TemplateEntry,
@@ -143,7 +142,6 @@ export * from "./ipc/events.js";
 export * from "./ipc/terminal.js";
 export * from "./ipc/browser.js";
 export * from "./ipc/library.js";
-export * from "./ipc/integrations.js";
 export * from "./ipc/templates.js";
 // 记忆契约(存储/检索/维护共用的那一份,渠道字符串钉在里面)。
 export * from "./memory.js";

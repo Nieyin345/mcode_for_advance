@@ -8,7 +8,6 @@ export * from "./mobile.js";
 export * from "./relay.js";
 export * from "./library.js";
 export * from "./citation.js";
-export * from "./integrations.js";
 export * from "./templates.js";
 export * from "./claudeSubagent.js";
 export * from "./capability.js";

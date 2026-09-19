@@ -689,18 +689,6 @@ const api = {
       )) as RpcMap["templates.attachToChat"],
   },
 
-  integrations: {
-    list: (() => ipcRenderer.invoke(IPC.INTEGRATIONS_LIST)) as RpcMap["integrations.list"],
-    setKey: ((input) =>
-      ipcRenderer.invoke(IPC.INTEGRATIONS_SET_KEY, input)) as RpcMap["integrations.setKey"],
-    clearKey: ((input) =>
-      ipcRenderer.invoke(IPC.INTEGRATIONS_CLEAR_KEY, input)) as RpcMap["integrations.clearKey"],
-    setConfig: ((input) =>
-      ipcRenderer.invoke(IPC.INTEGRATIONS_SET_CONFIG, input)) as RpcMap["integrations.setConfig"],
-    test: ((input) =>
-      ipcRenderer.invoke(IPC.INTEGRATIONS_TEST, input)) as RpcMap["integrations.test"],
-  },
-
   outputStyle: {
     list: ((input) =>
       ipcRenderer.invoke(IPC.OUTPUT_STYLE_LIST, input)) as RpcMap["outputStyle.list"],

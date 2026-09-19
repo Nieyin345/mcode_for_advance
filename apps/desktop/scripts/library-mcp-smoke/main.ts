@@ -70,7 +70,6 @@ const { LibraryRepo, LibraryLinkRepo, CollectionRepo, SettingRepo } = await impo
 const { libraryMcpTools, LIBRARY_READONLY_TOOLS } = await import("@main/mcp/libraryServer.js");
 const { libraryRoot, fromLibraryRelative, pdfPathForHash } = await import("@main/library/paths.js");
 const { saveSuppress, resetSuppressCacheForTest } = await import("@main/library/suppress.js");
-const { INTEGRATIONS_SETTING_KEY, INTEGRATIONS_KEYS_SETTING_KEY } = await import("@contracts/ipc");
 
 await initDb();
 eq("库根就是临时数据根下面那个", libraryRoot(), ROOT);
@@ -165,24 +164,6 @@ check("不存在的 id 说了「库里没有这个 id」", missingText.includes(
 const noPdf = LibraryRepo.upsert({ kind: "paper", title: "还没有 PDF 的一篇" });
 const noPdfText = await call("library_convert", { ids: [noPdf.id] });
 check("没有 PDF 时说的是「先下载或导入一份」", noPdfText.includes("先下载或导入一份"), noPdfText);
-
-/* ──────────────── 2. library_convert · 配了 MinerU 但密钥是坏的 ──────────────── */
-
-console.log("\nlibrary_convert · MinerU 失败要如实退回");
-
-{
-  // 密钥写成没法用的样子(空 baseUrl 会走到兜底地址,请求必然失败)。
-  // ⚠️ 这里**不是**在验 MinerU 本身,而是验"它挂了之后这条路怎么办" ——
-  // 用户配错密钥是常事,那时他要看见的是"退回本地了",而不是"转换失败"。
-  const cfg = { enabled: true, key: "sk-smoke-not-a-real-key", baseUrl: "http://127.0.0.1:1" };
-  SettingRepo.set(INTEGRATIONS_SETTING_KEY, JSON.stringify(cfg));
-  SettingRepo.set(INTEGRATIONS_KEYS_SETTING_KEY, JSON.stringify({ mineru: "sk-smoke-not-a-real-key" }));
-}
-
-const item2 = seedPaper("配了坏密钥的那一篇", "b".repeat(64));
-const badKeyText = await call("library_convert", { ids: [item2] });
-check("MinerU 挂了仍然转成了(退回本地)", badKeyText.includes("已转好"), badKeyText);
-check("而且说明了是「本地抽取」", badKeyText.includes("本地抽取"), badKeyText);
 
 /* ──────────────── 3. 关联那三条 ──────────────── */
 
