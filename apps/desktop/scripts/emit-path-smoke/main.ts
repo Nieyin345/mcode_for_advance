@@ -79,11 +79,49 @@ function check(name: string, cond: boolean, detail?: unknown): void {
 
 /* ────────────────── 扫描器:一个发出点 = (文件, 行, 通路, 事件名) ────────────────── */
 
-/** 把字符串字面量挖空(等长占位)。数括号深度时不能把字符串里的 `(` 算进去。 */
+/**
+ * 把字符串字面量挖空(等长占位)。数括号深度时不能把字符串里的 `(` 算进去。
+ *
+ * ⚠️ **注释也必须一起挖空,而且不是洁癖 —— 少这一步整套会静默失效。**
+ *
+ * 这个仓库的注释密度很高,里面大量出现英文所有格(`turn's` / `doesn't` /
+ * `agent's`)。那个孤撇号在扫描器眼里就是一个**字符串起点**:从它开始往后找
+ * 配对的 `'`,一路吞掉几百行真代码挖成空格。实测 `RuntimeManager.ts` 第 39 行
+ * `doesn't expose it` 的那一撇,把后面 500 多行全吞了 —— `emitExternal(...)`
+ * 连同对象字面量一起消失,于是"扫到了 12 个发出点"里根本没有 `request.resolved`。
+ *
+ * 而失败的**长相**极具误导性:两条断言报 `— []`(没有发出点),看起来像"代码里
+ * 真没有这个调用"或"扫描器的正则写错了",于是去翻源码、去改正则 —— 都白搭,
+ * 源码是对的、正则也是对的,是**输入**被提前吃掉了。这个坑从这一套落地那天就在
+ * (见 `a900928`),一直红着。
+ *
+ * 所以顺序是:先按「注释 → 字符串」两种区间一起扫,遇到 `//` 吃到行尾、遇到
+ * `/*` 吃到 `*\/`,遇到引号吃到配对引号。挖空的只是内容,`//` 与引号本身留一个
+ * 字符占位,免得把两边的 token 粘成一个。
+ */
 function blankStrings(text: string): string {
   const out = text.split("");
+  const blank = (from: number, to: number): void => {
+    for (let k = from; k < Math.min(to, out.length); k += 1) out[k] = " ";
+  };
   let i = 0;
   while (i < text.length) {
+    // 行注释:吃到行尾(不含换行本身,换行留着给下面的行号计算)。
+    if (text[i] === "/" && text[i + 1] === "/") {
+      const eol = text.indexOf("\n", i);
+      const end = eol < 0 ? text.length : eol;
+      blank(i, end);
+      i = end;
+      continue;
+    }
+    // 块注释:吃到 `*/`。注释里的撇号/反引号从此不再参与配对。
+    if (text[i] === "/" && text[i + 1] === "*") {
+      const close = text.indexOf("*/", i + 2);
+      const end = close < 0 ? text.length : close + 2;
+      blank(i, end);
+      i = end;
+      continue;
+    }
     const c = text[i];
     if (c === '"' || c === "'" || c === "`") {
       let j = i + 1;
@@ -95,7 +133,7 @@ function blankStrings(text: string): string {
         if (text[j] === c) break;
         j += 1;
       }
-      for (let k = i + 1; k < Math.min(j, text.length); k += 1) out[k] = " ";
+      blank(i + 1, j);
       i = j + 1;
       continue;
     }
@@ -271,6 +309,62 @@ console.log("\n扫描器自检(能不能认出把通路写错的那种)");
     wrong,
   );
   check("不把函数定义本身当成一个发出点", decl.length === 0, decl);
+
+  // ⚠️ 这一条是**本套曾经静默失效一整天**的那个原因,单独钉住。
+  // 注释里的英文所有格(`doesn't` / `turn's`)是一个孤撇号;老版 `blankStrings`
+  // 不看注释,把它当成字符串起点,从那儿往后吞掉几百行真代码挖成空格 ——
+  // 于是 `request.resolved` 的发出点连人带对象字面量一起消失,断言报 `— []`,
+  // 看起来像"源码里没这个调用"(去翻源码就白搭,源码是对的)。
+  const apostropheInComment = scanSource(
+    [
+      "/** The TurnHandle doesn't expose it. */",
+      "class X {",
+      "  private m() { this.emitExternal({ type: \"request.resolved\", sessionId: \"s\" }); }",
+      "}",
+      "// agent's value is monotonic — 中文注释里也可以有",
+      "class Y {",
+      "  private n() { broadcastRuntimeEvent({ type: \"session.deleted\", sessionId: \"s\" }); }",
+      "}",
+    ].join("\n"),
+    "<自检:注释里有撇号>",
+  );
+  check(
+    "★ 注释里的撇号不许把后面的真代码吞掉(本套就死在这上面)",
+    apostropheInComment.length === 2 &&
+      apostropheInComment[0].type === "request.resolved" &&
+      apostropheInComment[0].path === "external" &&
+      apostropheInComment[1].type === "session.deleted" &&
+      apostropheInComment[1].path === "broadcast",
+    apostropheInComment,
+  );
+
+  // 反引号同理:注释里写 `` `turn.done` `` 是老版第二个翻车点。
+  const backtickInComment = scanSource(
+    [
+      "/** Fires at `turn.done`; see `emitExternal` below. */",
+      "class X {",
+      "  private m() { this.emitExternal({ type: \"turn.done\", sessionId: \"s\" }); }",
+      "}",
+    ].join("\n"),
+    "<自检:注释里有反引号>",
+  );
+  check(
+    "★ 注释里的反引号同理(注释说的事不许影响扫描结果)",
+    backtickInComment.length === 1 && backtickInComment[0].type === "turn.done",
+    backtickInComment,
+  );
+
+  // 反过来也要对:真的写在一对引号**里面**的调用名,得照样不算发出点。
+  // (否则修完上面两条会把"字符串里的注释"变成新的一类误报。)
+  const nameInsideString = scanSource(
+    `const help = "调用 emitExternal({ type: 'nope' }) 就行";\nclass X { private m() { this.emitExternal({ type: "turn.done", sessionId: "s" }); } }`,
+    "<自检:字符串里提到调用名>",
+  );
+  check(
+    "★ 字符串字面量里提到的调用名不算发出点(挖空还得挖对)",
+    nameInsideString.length === 1 && nameInsideString[0].type === "turn.done",
+    nameInsideString,
+  );
 }
 
 /* ────────────────── 检查 1:名字对不上 = 契约表整个漏了 ────────────────── */
