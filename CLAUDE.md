@@ -76,7 +76,7 @@ preload (contextBridge + zod 校验)
 
 - **sql.js 的 `db.export()` 会重置连接上的 pragma（含外键）**——导出只有 `exportBytes()` 一个出口，新增导出点必须走它，否则 `ON DELETE CASCADE` 静默失效。
 - 主进程里**没有 cookie 的 HTTP 请求做不到**（要走内嵌浏览器那条路）。
-- **API 并发上限 2**：不要并行派多个 subagent（会静默返回空），多路调研串行读更稳。
+- **API 并发上限 1**：**绝对不要**开子代理 / 并行工具调用（超限会静默返回空，看起来像"这个任务没结果"），多路调研一律自己串行读。这条优先于任何"并行 fan-out"的编排建议。
 - 手机端（`AppMobile.tsx` + `webApi.ts`）是**独立组件树**，走无 preload 的 HTTP 桥。共用组件里每加一个 RPC 都要在 `webApi.ts` 补一项，漏了会同步抛错、React 19 整棵卸载。
 - preload 不热更：改 preload 后「新命名空间 = undefined」说明没真正重启 dev，不是写错了。
 - Windows 子进程输出是控制台代码页（中文机器 GBK）：解码先严格试 UTF-8、失败退回 GBK，用原始字节，别数替换字符。

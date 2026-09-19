@@ -36,7 +36,7 @@
  *
  * Run: scripts/library-mcp-smoke/run.sh
  */
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -119,7 +119,13 @@ const call = async (name: string, args: unknown): Promise<string> => {
   return res.content.map((c) => c.text).join("\n");
 };
 
-for (const name of ["library_convert", "library_links", "library_link_add", "library_link_remove"]) {
+for (const name of [
+  "library_convert",
+  "library_adopt_markdown",
+  "library_links",
+  "library_link_add",
+  "library_link_remove",
+]) {
   check(`工具表里有 ${name}`, byName.has(name));
 }
 // 名字不许重复 —— 表里两个同名工具时,SDK 那边的行为是"后面那个赢",静默顶掉一个。
@@ -128,6 +134,10 @@ eq("工具名没有重复", new Set(tools.map((t) => t.name)).size, tools.length
 // 读工具漏在外面 = 每次查询都打扰用户一次。
 check("library_links 是只读工具", LIBRARY_READONLY_TOOLS.has("library_links"));
 check("library_convert 不是只读工具(它会写 md)", !LIBRARY_READONLY_TOOLS.has("library_convert"));
+check(
+  "library_adopt_markdown 不是只读工具(它会写库、会往库里搬文件)",
+  !LIBRARY_READONLY_TOOLS.has("library_adopt_markdown"),
+);
 check("library_link_add 不是只读工具", !LIBRARY_READONLY_TOOLS.has("library_link_add"));
 check("library_link_remove 不是只读工具", !LIBRARY_READONLY_TOOLS.has("library_link_remove"));
 for (const name of LIBRARY_READONLY_TOOLS) {
@@ -164,6 +174,194 @@ check("不存在的 id 说了「库里没有这个 id」", missingText.includes(
 const noPdf = LibraryRepo.upsert({ kind: "paper", title: "还没有 PDF 的一篇" });
 const noPdfText = await call("library_convert", { ids: [noPdf.id] });
 check("没有 PDF 时说的是「先下载或导入一份」", noPdfText.includes("先下载或导入一份"), noPdfText);
+
+/* ──────────────── 2. library_adopt_markdown · 把外部转好的挂回库 ──────────────── */
+
+console.log("\nlibrary_adopt_markdown · 外部工具转好的挂回库");
+
+// 模拟一个外部工具（mineru CLI 之类）的产物目录：`full.md` 加一个同级 `images/`。
+const TOOL_OUT = mkdtempSync(join(tmpdir(), "mcode-lib-mcp-tool-"));
+{
+  mkdirSync(join(TOOL_OUT, "images"), { recursive: true });
+  writeFileSync(
+    join(TOOL_OUT, "full.md"),
+    "# 外部转录的正文\n\n![图一](images/a.jpg)\n\n正文。\n",
+    "utf8",
+  );
+  // 写点真字节，好验"图真的搬过来了"而不只是改了库字段。
+  writeFileSync(join(TOOL_OUT, "images", "a.jpg"), Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]));
+}
+
+const target = seedPaper("外部转录挂回来的那一篇", "c".repeat(64));
+
+const adoptText = await call("library_adopt_markdown", {
+  itemId: target,
+  path: join(TOOL_OUT, "full.md"),
+});
+check("挂载成功说的是已挂上", adoptText.includes("已挂上"), adoptText);
+check("并报了几张图", adoptText.includes("1 张图"), adoptText);
+
+const after = LibraryRepo.get(target)!;
+eq("md_path 落到了 imported/<id>/ 下面", after.mdPath, `markdown/imported/${target}/full.md`);
+check("落点是目录形态（删条目时该整目录删）", after.mdPath!.includes("/imported/"));
+
+// **图真的搬到库里了** —— 只改库字段的话预览全是断链，而这件事在数据库里看不出任何异常。
+const landedImg = join(ROOT, "markdown", "imported", target, "images", "a.jpg");
+check("图床一起搬进库了", existsSync(landedImg), landedImg);
+check("搬的是真内容，不是空文件", existsSync(landedImg) && statSync(landedImg).size === 7);
+
+// 正文也在。
+check(
+  "正文读得出来",
+  existsSync(fromLibraryRelative(after.mdPath!)) &&
+    readFileSync(fromLibraryRelative(after.mdPath!), "utf8").includes("外部转录的正文"),
+);
+
+// 非 md 要拒（说清是扩展名的问题，不是一句"失败"）。
+const txtPath = join(TOOL_OUT, "notes.txt");
+writeFileSync(txtPath, "不是 markdown", "utf8");
+const notMd = await call("library_adopt_markdown", { itemId: target, path: txtPath });
+check("非 md 拒绝", notMd.includes("失败"), notMd);
+check("并说了是扩展名的问题", notMd.includes("Markdown"), notMd);
+
+// 文件不在要拒。
+const ghostFile = await call("library_adopt_markdown", {
+  itemId: target,
+  path: join(TOOL_OUT, "根本没有这份.md"),
+});
+check("文件不在要拒", ghostFile.includes("失败"), ghostFile);
+
+// 条目不在要拒。
+const ghostItem = await call("library_adopt_markdown", {
+  itemId: "li_根本没有这条",
+  path: join(TOOL_OUT, "full.md"),
+});
+check("条目不在要拒", ghostItem.includes("失败"), ghostItem);
+
+// 笔记不用挂（它自己就是 md）。
+{
+  const note = LibraryRepo.upsert({ kind: "note", title: "一条笔记" }).id;
+  const onNote = await call("library_adopt_markdown", { itemId: note, path: join(TOOL_OUT, "full.md") });
+  check("笔记要拒（它自己就是 Markdown）", onNote.includes("失败"), onNote);
+}
+
+// **覆盖语义**：再挂一次要整目录替换，旧的图不许留下。
+{
+  const FIRST = mkdtempSync(join(tmpdir(), "mcode-lib-mcp-tool2-"));
+  writeFileSync(join(FIRST, "full.md"), "# 第二版\n\n没有图了。\n", "utf8");
+  await call("library_adopt_markdown", { itemId: target, path: join(FIRST, "full.md") });
+  check("再挂一次：旧那包被整个换掉（md 换了）",
+    readFileSync(fromLibraryRelative(LibraryRepo.get(target)!.mdPath!), "utf8").includes("第二版"));
+  check("再挂一次：旧 images/ 不留残渣", !existsSync(join(ROOT, "markdown", "imported", target, "images")));
+  rmSync(FIRST, { recursive: true, force: true });
+}
+
+/* ──────────────── 2b. 图床目录名不能写死 ──────────────── */
+
+console.log("\nlibrary_adopt_markdown · 图床不叫 images 也要带上");
+
+// 用户的工具可能把图放 `figures/`、`assets/` 或者跟 md 不同级。只认 `images/` 的话，
+// 图会丢，预览全断链 —— 而"软件认不出我的目录名"是用户完全没法自救的一类问题。
+{
+  const ALT = mkdtempSync(join(tmpdir(), "mcode-lib-mcp-alt-"));
+  mkdirSync(join(ALT, "figures"), { recursive: true });
+  writeFileSync(join(ALT, "paper.md"), "# 图在 figures/ 里\n\n![图](figures/x.png)\n", "utf8");
+  writeFileSync(join(ALT, "figures", "x.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 9]));
+
+  const altTarget = seedPaper("图床目录名不同的那一篇", "d".repeat(64));
+  const altText = await call("library_adopt_markdown", {
+    itemId: altTarget,
+    path: join(ALT, "paper.md"),
+  });
+  check("挂上了", altText.includes("已挂上"), altText);
+  check(
+    "figures/ 一起搬进来了",
+    existsSync(join(ROOT, "markdown", "imported", altTarget, "figures", "x.png")),
+    altText,
+  );
+  check("并且数得到那张图", altText.includes("1 张图"), altText);
+  rmSync(ALT, { recursive: true, force: true });
+}
+
+
+/* ──────────────── 2c. 引用不到的图必须报出来 ──────────────── */
+
+console.log("\nlibrary_adopt_markdown · 缺图要报，不静默丢");
+
+// 仓规第 3 条：坏东西显式报出来。md 里引了一张源目录里没有的图时，软件**不能**
+// 假装没事 —— 用户看到的会是一份断图的 md，而没人告诉他为什么。
+{
+  const BROKEN = mkdtempSync(join(tmpdir(), "mcode-lib-mcp-broken-"));
+  writeFileSync(
+    join(BROKEN, "full.md"),
+    "# 有断链的一篇\n\n![在的](images/ok.png)\n\n![不在的](images/gone.png)\n",
+    "utf8",
+  );
+  mkdirSync(join(BROKEN, "images"), { recursive: true });
+  writeFileSync(join(BROKEN, "images", "ok.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 1]));
+
+  const brokenTarget = seedPaper("有一张图丢了的那一篇", "e".repeat(64));
+  const brokenText = await call("library_adopt_markdown", {
+    itemId: brokenTarget,
+    path: join(BROKEN, "full.md"),
+  });
+  check("照样挂上了（一张缺图不该让整次挂载失败）", brokenText.includes("已挂上"), brokenText);
+  check("在的那张搬到了", existsSync(join(ROOT, "markdown", "imported", brokenTarget, "images", "ok.png")));
+  check("缺的那张**报出来了**", brokenText.includes("gone.png"), brokenText);
+  check("并说清了是「找不到」", brokenText.includes("找不到"), brokenText);
+  rmSync(BROKEN, { recursive: true, force: true });
+}
+
+/* ──────────────── 2d. 越界引用不搬 ──────────────── */
+
+console.log("\nlibrary_adopt_markdown · 源目录外面的东西不跟着进来");
+
+// `../` 往外爬的引用是**别的目录**里的东西，不是这份产物的配图。跟着搬的话，
+// 一份别人发来的 md 能把任意路径的文件拷进用户库里。
+{
+  const OUTER = mkdtempSync(join(tmpdir(), "mcode-lib-mcp-outer-"));
+  const INNER = join(OUTER, "product");
+  mkdirSync(INNER, { recursive: true });
+  writeFileSync(join(OUTER, "secret.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 42]));
+  writeFileSync(
+    join(INNER, "full.md"),
+    "# 往外爬的引用\n\n![外面的](secret.png)\n\n![爬上去的](../secret.png)\n",
+    "utf8",
+  );
+
+  const outerTarget = seedPaper("有越界引用的那一篇", "f".repeat(64));
+  const outerText = await call("library_adopt_markdown", {
+    itemId: outerTarget,
+    path: join(INNER, "full.md"),
+  });
+  check("挂上了", outerText.includes("已挂上"), outerText);
+  check(
+    "源目录外面的图**没有**被拷进来",
+    !existsSync(join(ROOT, "markdown", "imported", outerTarget, "secret.png")) &&
+      !existsSync(join(ROOT, "markdown", "imported", outerTarget, "..", "secret.png")),
+  );
+  rmSync(OUTER, { recursive: true, force: true });
+}
+
+/* ──────────────── 2e. 工具输出要给出 PDF 的绝对路径 ──────────────── */
+
+console.log("\nitemLine · 外部转录要拿得到文件路径");
+
+// 没有路径的话，"拿这篇的 PDF 去转"这件事根本无从下手 —— 模型只能去猜库根
+// 加内容哈希的拼法。
+{
+  const pathText = await call("library_search", {});
+  check("工具输出里有 PDF 的路径", pathText.includes("PDF:"), pathText.slice(0, 400));
+  // 给的是**绝对**路径（外部工具在库外跑，相对路径是相对谁的它无从判断）。
+  check(
+    "给的是绝对路径",
+    new RegExp(`PDF:\\s*[A-Za-z]:[\\\\/]`).test(pathText) ||
+      new RegExp(`PDF:\\s*/`).test(pathText),
+    pathText.slice(0, 400),
+  );
+}
+
+rmSync(TOOL_OUT, { recursive: true, force: true });
 
 /* ──────────────── 3. 关联那三条 ──────────────── */
 

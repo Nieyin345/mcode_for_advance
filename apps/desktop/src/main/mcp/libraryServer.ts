@@ -19,8 +19,11 @@
  *
  * 读工具(自动放行,不弹审批):collections / search / items / links / templates_list。
  * 写工具(需要用户点头;用户可以在审批时勾"始终允许"):create_collection /
- * import / download / convert / move / remove / rename / write_note /
- * link_add / link_remove / templates_attach_to_chat / templates_add。
+ * import / download / convert / **adopt_markdown** / move / remove / rename /
+ * write_note / link_add / link_remove / templates_attach_to_chat / templates_add。
+ *
+ * `adopt_markdown` 是**外部转录那条路的终点**:软件自己不认识任何转录服务,高质量转录
+ * 由用户装的工具做(用 code / 命令节点跑),转出来的 md 靠这条挂回库 —— 配图一起搬。
  *
  * 刻意**不提供硬删除**:remove 是把条目移出所有分类、落进回收站,用户随时能捞回来。
  * AI 的"删除"是它自己判断出来的动作,判断错了用户得有得救。
@@ -38,6 +41,8 @@ import {
 } from "@main/library/operations.js";
 import { enqueueDownloads } from "@main/library/downloader.js";
 import { convertItemToMarkdown } from "@main/library/convert.js";
+import { adoptMarkdownFile } from "@main/library/adoptMarkdown.js";
+import { fromLibraryRelative } from "@main/library/paths.js";
 import { loadLibraryTypes } from "@main/library/kindRegistry.js";
 import { attachToChat } from "@main/library/manifest.js";
 import {
@@ -77,7 +82,20 @@ export const LIBRARY_READONLY_TOOLS = new Set([
   "templates_list",
 ]);
 
-/** 一条文献在工具输出里的一行 —— 一定要带 id(后续 move/note 都要用它)。 */
+/**
+ * 一条文献在工具输出里的一行 —— 一定要带 id(后续 move/note 都要用它)。
+ *
+ * ## 为什么把 PDF 的**绝对路径**给出来
+ *
+ * 这条路径是外部转录接得上的唯一入口:模型要"拿这篇的 PDF 去转",它得先知道文件在
+ * 哪儿。不给的话它只能去猜(库根 + 内容哈希的拼法),而猜错的后果是把一份不存在的
+ * 路径喂给外部工具。
+ *
+ * 给绝对路径而不是库内相对路径,是因为**外部工具在库外运行** —— `mineru x.pdf` 要的
+ * 是一个当下就能打开的路径,而相对路径是相对谁的,从工具的视角根本无从判断。
+ *
+ * ⚠️ 拼接走 `fromLibraryRelative`(**库根拼法只有那一处说了算**)。
+ */
 function itemLine(i: LibraryItem): string {
   const authors = i.authors
     .map((a) => a.literal ?? [a.given, a.family].filter(Boolean).join(" "))
@@ -90,7 +108,9 @@ function itemLine(i: LibraryItem): string {
   ]
     .filter(Boolean)
     .join(";");
-  return `- ${i.title}\n  id=${i.id}${bits.length ? `\n  ${bits.join(" · ")}` : ""}\n  ${state}`;
+  // PDF 路径单独一行 —— 它长、而且还可能带空格,混在状态那行里读不清。
+  const pdfLine = i.pdfPath ? `\n  PDF: ${fromLibraryRelative(i.pdfPath)}` : "";
+  return `- ${i.title}\n  id=${i.id}${bits.length ? `\n  ${bits.join(" · ")}` : ""}\n  ${state}${pdfLine}`;
 }
 
 /** 分类树的一行。缩进表示层级,永远带 id —— 后续 assign 要用。 */
@@ -666,6 +686,49 @@ export function libraryMcpTools(): McpToolSpec[] {
           return text(
             `已处理 ${args.ids.length} 条:\n\n${lines.join("\n")}\n\n` +
               "转好的条目这一条的详情页就能读到 Markdown,右栏的全文检索也找得到它。",
+          );
+        },
+      },
+      {
+        name: "library_adopt_markdown",
+        description:
+          "把**一份现成的 Markdown 挂到某一条文献上**(跳过转录)。给外部工具转好的产物用:\n" +
+          "用 code / 命令节点调你自己装的工具(OCR、mineru CLI、任何东西)转出 `full.md`,\n" +
+          "再拿这条把它挂回库里 —— 挂上之后条目详情页读得到、右栏全文检索也搜得到。\n" +
+          "**配图会一起搬**:`full.md` 同级/下级目录里的图片(不管目录叫什么)都跟着复制过来,\n" +
+          "所以 `![](figures/x.png)` 这类相对引用挂完仍然成立 —— 只搬 md 的话预览里全是断图。\n" +
+          "⚠️ 这是**覆盖**:同一条再挂一次会把上一次那整包换掉。不转格式、不改内容,原样搬。",
+        inputSchema: {
+          itemId: z.string().describe("挂到哪一条,来自 library_search / library_items"),
+          path: z
+            .string()
+            .describe(
+              "那份 Markdown 的**绝对路径**(`.md` / `.markdown`)。转录产物是 `full.md` 加同级配图目录时,给 `full.md` 的路径。",
+            ),
+        },
+        handler: async (args: { itemId: string; path: string }) => {
+          const item = LibraryRepo.get(args.itemId);
+          if (!item) return fail(`库里没有这个 id:${args.itemId}`);
+          const res = adoptMarkdownFile(args.itemId, args.path);
+          if (!res.ok) {
+            // **逐种情况说人话** —— "失败"两个字让模型和用户都无从下手。
+            return fail(`没能挂上《${item.title}》:${res.error}`);
+          }
+          notifyLibraryChanged(`adopt:${args.itemId}`);
+          const imgs = res.imageCount > 0 ? `,连同 ${res.imageCount} 张图` : "(这份没有配图)";
+          // **引用不到的要报出来**(仓规:坏东西显式报出来,不静默跳过)。不报的话
+          // 用户看到的是一份断图的 md,而软件什么也没说过。
+          const missLine =
+            res.missing.length > 0
+              ? `\n⚠️ 有 ${res.missing.length} 处配图在源目录里找不到,那几处预览会是断图:` +
+                res.missing.slice(0, 10).map((m) => `\n  - ${m}`).join("") +
+                (res.missing.length > 10 ? `\n  (还有 ${res.missing.length - 10} 处)` : "")
+              : "";
+          return text(
+            `已挂上《${item.title}》${imgs}。\n` +
+              `落点:markdown/imported/${args.itemId}/\n\n` +
+              "这条的详情页现在读得到它,右栏的全文检索也找得到。" +
+              missLine,
           );
         },
       },
