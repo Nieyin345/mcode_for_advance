@@ -27,7 +27,9 @@ import {
   IconBook,
   IconClipboardText,
   IconCode,
+  IconDownload,
   IconEye,
+  IconFileText,
   IconMessage,
   IconPencil,
   IconWorldSearch,
@@ -62,7 +64,8 @@ export function isBuiltinWorkflowId(id: string): id is BuiltinWorkflowId {
 
 /** 界面语言下的名字:内置的查词条,自建的用作者写的 `name`。 */
 export function workflowDisplayName(w: { id: string; name: string }, locale: Locale): string {
-  if (isWatchWorkflowId(w.id)) return translate(locale, WATCH_WORKFLOW_LABEL);
+  const entry = NON_MODE_WORKFLOWS[w.id];
+  if (entry) return translate(locale, entry.label);
   return isBuiltinWorkflowId(w.id)
     ? translate(locale, BUILTIN_WORKFLOW_LABEL[w.id])
     : w.name;
@@ -74,7 +77,8 @@ export function workflowDisplayDescription(
   w: { id: string; description?: string },
   locale: Locale,
 ): string {
-  if (isWatchWorkflowId(w.id)) return translate(locale, WATCH_WORKFLOW_HINT);
+  const entry = NON_MODE_WORKFLOWS[w.id];
+  if (entry) return translate(locale, entry.hint);
   if (isBuiltinWorkflowId(w.id)) return translate(locale, BUILTIN_WORKFLOW_HINT[w.id]);
   return w.description ?? "";
 }
@@ -91,26 +95,42 @@ const BUILTIN_WORKFLOW_ICON: Record<BuiltinWorkflowId, ComponentType<TablerIconP
   code: IconCode,
 };
 
-/* ── 守望(第七个内置,但**不**在 BUILTIN_WORKFLOW_IDS 六个模式里)──
+/* ── 守望与两条自动化(内置,但**不**在 BUILTIN_WORKFLOW_IDS 六个模式里)──
  *
- * 「长任务守望」有 manual 触发器,进不得模式选择器(见 WorkflowDropdown 的过滤),
- * 所以它的 id 不进那个联合类型 —— 三张表也就收不下它,得单独走一遍。id 与
- * `main/orchestration/builtins.ts` 的 WATCH_WORKFLOW_ID 按字面量对齐(main 代码
- * 渲染端 import 不进来);名字与说明的键与六个模式同源(composer.mode.*)。 */
-const WATCH_WORKFLOW_ID = "watch";
-const WATCH_WORKFLOW_LABEL: MessageId = "composer.mode.watch";
-const WATCH_WORKFLOW_HINT: MessageId = "composer.mode.watchHint";
+ * 它们都有触发器,进不得模式选择器(见 WorkflowDropdown 的过滤),所以 id 不进那个
+ * 联合类型 —— 上面三张表也就收不下,得单独走一遍。id 与 `main/orchestration/builtins.ts`
+ * 的常量按字面量对齐(main 代码渲染端 import 不进来);名字与说明的键与六个模式同源
+ * (composer.mode.*)。
+ *
+ * ⚠️ **加一条内置自动化,只改这一张表。** 名字 / 说明 / 图标三样收在一起,就是为了
+ * 别再散成三处 —— 漏了大不了退回数据里那份中文 `name`,界面不会报错,英文语言下
+ * 冒出「文献自动下载」只能靠人眼发现。
+ */
+const NON_MODE_WORKFLOWS: Record<
+  string,
+  { label: MessageId; hint: MessageId; icon: ComponentType<TablerIconProps> }
+> = {
+  watch: {
+    label: "composer.mode.watch",
+    hint: "composer.mode.watchHint",
+    icon: IconEye,
+  },
+  wf_auto_download: {
+    label: "composer.mode.autoDownload",
+    hint: "composer.mode.autoDownloadHint",
+    icon: IconDownload,
+  },
+  wf_auto_convert: {
+    label: "composer.mode.autoConvert",
+    hint: "composer.mode.autoConvertHint",
+    icon: IconFileText,
+  },
+};
 
-function isWatchWorkflowId(id: string): boolean {
-  return id === WATCH_WORKFLOW_ID;
-}
-
-/** 图标:内置六个各有各的,守望一只眼睛,其余(用户自建)一律用通用图标。 */
+/** 图标:内置六个各有各的,这张表里的三个各有各的,其余(用户自建)用通用图标。 */
 export function workflowIcon(id: string, size: number): ReactNode {
-  const Icon = isWatchWorkflowId(id)
-    ? IconEye
-    : isBuiltinWorkflowId(id)
-      ? BUILTIN_WORKFLOW_ICON[id]
-      : IconMessage;
+  const Icon =
+    NON_MODE_WORKFLOWS[id]?.icon ??
+    (isBuiltinWorkflowId(id) ? BUILTIN_WORKFLOW_ICON[id] : IconMessage);
   return <Icon size={size} />;
 }

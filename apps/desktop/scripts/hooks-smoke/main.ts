@@ -156,9 +156,16 @@ for (const event of HOOK_EVENTS) {
 }
 // 事件的顺序就是设置页下拉的顺序,按一轮的生命周期排 —— 首尾钉死,免得改的时候顺手挪乱。
 eq("第一个事件是一轮的开始", HOOK_EVENTS[0], "user.message");
-// 统一资料库后,`library.item.imported`(应用内事件,无可比主语)排在生命周期之后
-// —— 所以"最后一个"改判"包含 + 倒数第二",而不是死咬末位。
-check("末段有工作流节点结果", HOOK_EVENTS.slice(-2).includes("workflow.node.result"), HOOK_EVENTS.slice(-2));
+// 统一资料库那几个事件(应用内事件,不属于任何会话、也没有可比主语)一律排在生命周期
+// **之后**。所以这里不咬末位(`slice(-2)` 那种写法每加一个库事件就要改一行,改到后来
+// 只会照着结果凑数),而是钉真正的不变量:**`workflow.node.result` 后面不许再出现
+// 一轮里的事**。多一个库事件它照样过,多一个 `turn.*` 它立刻红。
+const afterLifecycle = HOOK_EVENTS.slice(HOOK_EVENTS.indexOf("workflow.node.result") + 1);
+check(
+  "工作流节点结果之后只剩资料库事件",
+  afterLifecycle.length > 0 && afterLifecycle.every((e) => e.startsWith("library.")),
+  afterLifecycle,
+);
 check("事件不重复", new Set(HOOK_EVENTS).size === HOOK_EVENTS.length);
 
 /* ────────────────────── 2. 校验 ────────────────────── */

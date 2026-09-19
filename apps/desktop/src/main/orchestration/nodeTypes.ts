@@ -747,10 +747,13 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
         kind: "ref",
         from: "projects",
         label: "在哪个项目里跑",
-        required: true,
+        // ⚠️ **不是必填** —— 「事件发生时」那一路不需要工作目录(它要做的事都是拿绝对
+        // 路径去操作库里的文件),而**内置模板预置不出项目 id**(项目 id 是建项目时现
+        // 生成的),所以必填的话内置自动化永远挂不上。留空时退回宿主目录。
+        // 定时 / 文件变化仍然要填:`parseTriggerSpec` 会当场拒。
         // 单值。见 `@contracts/nodeType` 的 `NODE_PARAM_REF_SOURCES` 里 `projects` 那一段:
         // 一次运行只有一个工作目录。
-        help: "本次运行的工作目录,以及它的会话挂载位置。触发时无法询问,因此必须在此写定。",
+        help: "本次运行的工作目录,以及它的会话挂载位置。定时与文件变化必须填(它们按目录算);「事件发生时」可以留空,留空时在宿主目录里跑。",
       },
       {
         key: NODE_TRIGGER_TASK_PARAM_KEY,

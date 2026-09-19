@@ -91,6 +91,12 @@ export const HOOK_EVENTS = [
   /** 统一资料库:一条条目入库成功(三种导入入口共用;**不属于任何会话**,见
    *  `@contracts/runtime` 的 `LibraryItemImportedEvent`)。 */
   "library.item.imported",
+  /** 统一资料库:一条条目的 **PDF 下载完成**(**不属于任何会话**,见
+   *  `@contracts/runtime` 的 `LibraryItemDownloadedEvent`)。
+   *
+   *  它是「导入之后自动做点什么」(转录、抽图、送外部工具)的**唯一正确时机** ——
+   *  导入那一下文件还没下下来。 */
+  "library.item.downloaded",
 ] as const;
 export type HookEvent = (typeof HOOK_EVENTS)[number];
 export const HookEventSchema = z.enum(HOOK_EVENTS);
@@ -163,6 +169,10 @@ export const HOOK_EVENT_OF: Record<RuntimeEvent["type"], HookEvent | null> = {
   // `@contracts/runtime`),matcher 对它无意义 —— `hookSubjectOf` 走 default 返回 null。
   // 它存在的主要理由是 automation 的「事件发生时」触发器(文献自动下载那条模板靠它)。
   "library.item.imported": "library.item.imported",
+  // 下载完成。同属资料库、同用哨兵 —— 但它是**另一件事**:导入时文件还没下下来,
+  // 而对 PDF 本身的处理(转录、抽图)只能在这一刻做。两条都给,是因为确实有
+  // 「导入就该干点什么」的用法(建占位笔记、按标题归类),它不需要等 PDF。
+  "library.item.downloaded": "library.item.downloaded",
 
   /* ─ 还没给,不是不该给 ── */
 

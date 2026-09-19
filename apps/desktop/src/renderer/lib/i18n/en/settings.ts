@@ -1201,6 +1201,7 @@ export const en = {
   "settings.hooks.event.upstreamIssue": "Upstream retry",
   "settings.hooks.event.workflowNodeResult": "Workflow node finished",
   "settings.hooks.event.libraryItemImported": "Library item imported",
+  "settings.hooks.event.libraryItemDownloaded": "Library download finished",
   // Each hint names the moment, because a few are easy to mix up: "tool starts" is
   // AFTER approval, "awaiting approval" only happens for tools that need it, and
   // "turn incomplete" is not an error.
@@ -1222,6 +1223,8 @@ export const en = {
   "settings.hooks.eventHint.workflowNodeResult": "When one node of a workflow finishes (fires on the conversation that started it).",
   "settings.hooks.eventHint.libraryItemImported":
     "When an item enters the unified library (file import, search import, AI-created). It belongs to no session, so there is nothing for a matcher to filter on.",
+  "settings.hooks.eventHint.libraryItemDownloaded":
+    "When an item's PDF actually lands on disk. Listen to this one to do anything with the PDF itself (transcribe, extract figures, hand it to an external tool) — at import time the file is not there yet. It belongs to no session, so there is nothing for a matcher to filter on.",
 
   // ── Node ──
   "settings.workflows.nodeInspectorTitle": "Node",

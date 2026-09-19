@@ -25,6 +25,7 @@ import { LibraryRepo, DownloadJobRepo } from "@main/store/repositories.js";
 import { downloadViaBrowser, printUrlToPdf } from "@main/browser/BrowserManager.js";
 import { log } from "@main/lib/logger.js";
 import { sendToRenderer } from "@main/window.js";
+import { emitItemDownloaded } from "./broadcast.js";
 import { arxivIdFromDoi, resolvePdfCandidates } from "./oaResolvers.js";
 // PDF 直链的两档正则收口在 pdfUrlHeuristics.ts(以前这里和 oaResolvers.ts 各抄
 // 一份)。这里 re-export 窄档,operations.ts 等老调用点不用改 import。
@@ -214,16 +215,21 @@ function finalize(
   log.info(
     `library download ok: ${item.title} (${sha.slice(0, 12)}…) via ${source} → ${toLibraryRelative(dest)}`,
   );
-  // 下载完就该自动转录 —— 用户的要求是「导入之后是软件自动下载，自动转录的，不需要
-  // ai 去管」。这里只发通知,具体怎么做由注册进来的钩子决定(见 setDownloadCompleteHook)。
-  if (onDownloadComplete) {
-    try {
-      // 重新读一次:上面的 setPdf 刚写完,手上这个 item 还停在下载前的状态
-      const fresh = LibraryRepo.get(item.id);
-      if (fresh) onDownloadComplete(fresh);
-    } catch (err) {
-      log.warn(`library download hook failed: ${(err as Error).message}`);
-    }
+  // 下载完就该**说一句**。用户的要求是「导入之后是软件自动下载，自动转录的，不需要
+  // ai 去管」—— 但"转录"这一步现在**不写在软件里**:这里只发一条
+  // `library.item.downloaded`,想干什么由用户在钩子或自动化的「事件发生时」触发器里
+  // 自己配(软件里那条内置自动化就是这么搭的)。
+  //
+  // ⚠️ **同步调用**。这是下载线程,发事件不能卡住队列:下面那句 try/catch 保证
+  // 发不出去也只是记一行日志(`finalize` 的返回值是"这次下载成不成",与通知无关)。
+  //
+  // 重新读一次再发:上面的 `setPdf` 刚写完,手上这个 item 还停在下载前的状态,
+  // 而事件的载荷里要带 `pdfPath`。
+  try {
+    const fresh = LibraryRepo.get(item.id);
+    if (fresh) emitItemDownloaded(fresh);
+  } catch (err) {
+    log.warn(`library download event failed: ${(err as Error).message}`);
   }
   return null;
 }
@@ -323,24 +329,6 @@ async function downloadOne(item: LibraryItem): Promise<boolean> {
   DownloadJobRepo.setStatus(item.id, final.status, detail, false);
   pushJobChanged(item.id, final.status, detail);
   return false;
-}
-
-/**
- * 下载成功后的钩子。启动时注册(见 `main/ipc/library.ts`)。
- *
- * ## 为什么是钩子而不是直接 import
- *
- * 要做的事是「转 Markdown」,而 `convert.ts` 反过来要 import 本模块的 `hashFile` ——
- * 两边直接互相 import 就成了环。钩子把依赖方向拉直:downloader 只管"下载完了",
- * 不知道谁会拿它做什么。
- *
- * 钩子在**下载线程里同步调用**,所以实现方必须立刻返回、把活儿丢到后台去 ——
- * 它是 `void` 的,没有 await 的口子,这是刻意的。
- */
-let onDownloadComplete: ((item: LibraryItem) => void) | null = null;
-
-export function setDownloadCompleteHook(fn: ((item: LibraryItem) => void) | null): void {
-  onDownloadComplete = fn;
 }
 
 function safeUnlink(p: string): void {

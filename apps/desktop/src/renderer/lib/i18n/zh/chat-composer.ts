@@ -405,6 +405,12 @@ export const zh = {
   // 触发器，不进模式选择器），这两个键只给工作流库 / 运行历史用（见 workflowLabels.tsx）。
   "composer.mode.watch": "长任务守望",
   "composer.mode.watchHint": "绑定会话跑一条命令，跑完把退出码与输出尾部交回会话接着处理",
+  // 内置的两条自动化（同守望：不在上面六个模式里）。名字与说明同样走词条 ——
+  // 数据里那份 `name` 只是兜底，英文界面下冒出「文献自动下载」是坏的。
+  "composer.mode.autoDownload": "文献自动下载",
+  "composer.mode.autoDownloadHint": "资料库有新条目导入时，把还没有 PDF 的那几条排队下载",
+  "composer.mode.autoConvert": "下载完自动转录",
+  "composer.mode.autoConvertHint": "条目 PDF 下载完成时，把它转成 Markdown 并挂回该条目",
 
   // ── 长任务守望（会话输入区那颗按钮 + 起跑面板，桌面专属）──
   "composer.watch.title": "长任务守望",

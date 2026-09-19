@@ -358,8 +358,16 @@ class AutomationRunner {
       const projectId = node.params[NODE_TRIGGER_PROJECT_PARAM_KEY];
       const task = node.params[NODE_TRIGGER_TASK_PARAM_KEY];
       if (typeof projectId !== "string" || typeof task !== "string") continue; // `parseTriggerSpec` 已经查过,这里只为收窄类型
-      const project = ProjectRepo.get(projectId);
-      if (project === undefined) {
+      // **项目可以留空** —— 只有「事件发生时」允许(`parseTriggerSpec` 会拦住另外三种)。
+      // 缺项目时退回宿主目录:那条运行要做的事(转录、抽图、送外部工具)都是拿绝对路径
+      // 去操作库里的文件,根本不需要工作目录。而**内置模板预置不出项目 id**(项目 id 是
+      // 建项目时现生成的),所以以前"一律要求项目"的写法让内置自动化**永远挂不上** ——
+      // 用户对着一条参数填得好好的触发器等它响,却没有任何地方说得出为什么。
+      //
+      // `projectId` 仍然记成空串:它唯一的用处是 `fire()` 里现读一次项目(确认还在),
+      // 而空串的语义就是"没有项目",那条查表据此跳过。
+      const project = projectId.length > 0 ? ProjectRepo.get(projectId) : undefined;
+      if (projectId.length > 0 && project === undefined) {
         log.warn(`[automation] ${where}跳过:项目不在了(${projectId})`);
         this.facts.recordSetup(seed, false, `项目不在了(${projectId})—— 这条自动化没有工作目录`);
         continue;
@@ -377,7 +385,8 @@ class AutomationRunner {
         title: node.title || manifest.name,
         spec: check.spec,
         projectId,
-        cwd: project.path,
+        // 没绑项目时退回宿主目录 —— 见上面那段。只可能是「事件发生时」。
+        cwd: project?.path ?? process.cwd(),
         task: task.trim(),
         params: node.params,
         disarmed: off,
@@ -814,11 +823,16 @@ class AutomationRunner {
         return { ok: true };
       }
       // 项目**每次现读**:建会话时用的是它,而用户完全可能把项目移走。
-      const project = ProjectRepo.get(trigger.projectId);
-      if (project === undefined) {
+      //
+      // **可以没有项目**(空串 = 触发器没绑)—— 见 `buildTriggers` 里那段:只有
+      // 「事件发生时」允许留空,那种运行不需要工作目录。下面统一用 `cwd`(缺省时是
+      // 宿主目录),会话也照建 —— 只是它的 `projectId` 是空串。
+      const project = trigger.projectId.length > 0 ? ProjectRepo.get(trigger.projectId) : undefined;
+      if (trigger.projectId.length > 0 && project === undefined) {
         return this.skip(trigger, `项目不在了(${trigger.projectId})—— 这条自动化没有工作目录`);
       }
-      const session = this.sessionOf(trigger, project.id, opts?.originSessionId);
+      const cwd = project?.path ?? process.cwd();
+      const session = this.sessionOf(trigger, project?.id ?? "", opts?.originSessionId);
       // **重入保护(D12):上一次还在跑就跳过这一次。** 排队会让"文件改了十次"变成
       // 十次运行,而界面上「上次运行:进行中」已经把这件事说清楚了。
       if (hasActiveRun(session.id)) {
@@ -838,7 +852,7 @@ class AutomationRunner {
       // **不 await**(同 `runner.startWorkflowRun` 的约定):一次运行可能好几分钟。
       void startWorkflowRun({
         session,
-        cwd: project.path,
+        cwd,
         prompt,
         // 这一格就是这次运行的起点:调度器把它**预置进结局**,于是触发器节点自己
         // 不会被派发,别的触发器会连同它们独占的下游一起标成「没走这条路」。

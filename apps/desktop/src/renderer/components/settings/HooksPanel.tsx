@@ -73,6 +73,7 @@ const EVENT_LABELS: Record<HookEvent, MessageId> = {
   "upstream.issue": "settings.hooks.event.upstreamIssue",
   "workflow.node.result": "settings.hooks.event.workflowNodeResult",
   "library.item.imported": "settings.hooks.event.libraryItemImported",
+  "library.item.downloaded": "settings.hooks.event.libraryItemDownloaded",
 };
 
 /** 每种事件那句"什么时候跑"的解释。见词条里为什么逐条写。 */
@@ -94,6 +95,7 @@ const EVENT_HINTS: Record<HookEvent, MessageId> = {
   "upstream.issue": "settings.hooks.eventHint.upstreamIssue",
   "workflow.node.result": "settings.hooks.eventHint.workflowNodeResult",
   "library.item.imported": "settings.hooks.eventHint.libraryItemImported",
+  "library.item.downloaded": "settings.hooks.eventHint.libraryItemDownloaded",
 };
 
 /**

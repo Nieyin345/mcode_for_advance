@@ -398,6 +398,11 @@ export const en = {
   // library / run history (see workflowLabels.tsx).
   "composer.mode.watch": "Long-task watch",
   "composer.mode.watchHint": "Runs a command bound to this session; its code and output tail come back for the model to pick up",
+  // The two built-in automations (same as watch: not among the six modes above).
+  "composer.mode.autoDownload": "Auto-download papers",
+  "composer.mode.autoDownloadHint": "When items enter the library, queue downloads for the ones that have no PDF yet",
+  "composer.mode.autoConvert": "Transcribe after download",
+  "composer.mode.autoConvertHint": "When an item's PDF finishes downloading, turn it into Markdown and attach it back to that item",
 
   // ── long-task watch (the composer toolbar segment + start panel, desktop only) ──
   "composer.watch.title": "Long-task watch",

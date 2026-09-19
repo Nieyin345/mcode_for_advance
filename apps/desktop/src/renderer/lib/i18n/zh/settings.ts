@@ -1193,8 +1193,11 @@ export const zh = {
   "settings.hooks.event.upstreamIssue": "上游重试",
   "settings.hooks.event.workflowNodeResult": "工作流节点跑完",
   "settings.hooks.event.libraryItemImported": "资料入库",
+  "settings.hooks.event.libraryItemDownloaded": "资料下载完成",
   "settings.hooks.eventHint.libraryItemImported":
     "有一条资料进了统一资料库(导入文件、检索入库、AI 建条目都算)。它不属于任何会话,所以没有可筛的维度。",
+  "settings.hooks.eventHint.libraryItemDownloaded":
+    "有一条资料的 PDF 真下到本地了。想对着 PDF 做事(转录、抽图、送去外部工具)就听这一个 —— 入库那一下文件还没下来。它不属于任何会话,所以没有可筛的维度。",
   // 每种事件那句话说清**时机**，因为其中几条最容易搞混：工具开始是**审批之后**，
   // 「等待审批」只在需要审批的工具上才有，「一轮没跑完」不是报错。
   "settings.hooks.eventHint.userMessage": "用户按下发送的时候。",

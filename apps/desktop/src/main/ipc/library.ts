@@ -87,7 +87,7 @@ import {
   writeCollectionManifest,
   writeItemManifest,
 } from "@main/library/manifest.js";
-import { enqueueDownloads, processDownloadQueue, setDownloadCompleteHook, resumeDownloadsOnStartup } from "@main/library/downloader.js";
+import { enqueueDownloads, processDownloadQueue, resumeDownloadsOnStartup } from "@main/library/downloader.js";
 import { ensureLibraryDirs, libraryRoot, fromLibraryRelative, isInsideLibrary, markdownArtifact } from "@main/library/paths.js";
 import { ensureWorkflows } from "@main/workflows/seed.js";
 
@@ -128,21 +128,15 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
   // —— DB 先好就正常,否则整块被 catch 吞掉、队列根本不启动,表现成"点了下载没反应"。
   void awaitDb().then(() => resumeDownloadsOnStartup());
 
-  // 下载完 → 自动转录 Markdown。用户的要求是「导入之后是软件自动下载，自动转录的，
-  // 不需要 ai 去管」，所以这里**没有开关**：接了 MinerU 就走 MinerU，没接就走本地
-  // pdf.js 抽文本(便宜、快)。
+  // ⚠️ **这里不再有「下载完自动转录」那一段。** 它原来是一个注册进来的钩子
+  // (`setDownloadCompleteHook`),做的事写死在这个文件里 —— 用户想接自己那套
+  // 高质量转录工具就只能改源码。
   //
-  // 重复触发是安全的：convertItemToMarkdown 自己会跳过"已经有 md 的"条目，也有一份
-  // in-flight 去重(见 convert.ts 的 inFlight)。钩子是同步调用，所以这里立刻返回、
-  // 把活儿丢进后台 —— 转录是分钟级的(MinerU 要上传解析)，不能卡住下载队列。
-  setDownloadCompleteHook((item) => {
-    void convertItemToMarkdown(item)
-      .then((res) => {
-        if (!res.ok) log.warn(`auto-convert failed (${item.title}): ${res.error}`);
-        else log.info(`auto-convert ok: ${item.title} (${res.source})`);
-      })
-      .catch((err: unknown) => log.warn(`auto-convert threw: ${(err as Error).message}`));
-  });
+  // 现在拆成两截:下载线程发一条 `library.item.downloaded` 事件(见
+  // `library/broadcast.ts`),至于下完该干什么,由用户在**钩子**或**自动化的
+  // 「事件发生时」触发器**里自己配。软件不再规定转录这件事 —— 它只提供"下完了"
+  // 这个信号,和「把转录产物挂回库」那两条工具(`library_adopt_markdown` /
+  // `convertItemToMarkdown`)。
 
   // 三个库的**回收站分类**也在启动时建好。
   //

@@ -311,18 +311,32 @@ export function parseTriggerSpec(
   }
 
   const project = params[NODE_TRIGGER_PROJECT_PARAM_KEY];
-  if (typeof project !== "string" || project.trim().length === 0) {
+  const task = params[NODE_TRIGGER_TASK_PARAM_KEY];
+  // ⚠️ **先取触发方式、但不在这里报错** —— 它决定了「项目」那一格是不是必填,而下面
+  // 三条报错的**先后顺序是有意义的**(它同时是界面上从上到下的填写顺序:先选方式,
+  // 再决定在哪跑,再写要做什么)。所以顺序是:取 kind → 查项目 → 查任务 → 报 kind。
+  const kind = triggerKindOf(params);
+  // ⚠️ **「在哪个项目里跑」对「事件发生时」不是必填。**
+  //
+  // 这一条是踩出来的:以前四种触发方式一律要求项目非空,而**内置模板预置不出项目 id**
+  // (项目 id 是建项目时现生成的 `uid("proj_")`,内置模板没法知道这台机器上有哪些项目)。
+  // 于是「下载完自动转录」那条内置自动化**永远是挂不上的** —— 用户看到一条参数填得
+  // 好好的触发器,它就是不响,而且没有任何地方说得出为什么。
+  //
+  // 缺项目时退回**宿主目录**(`process.cwd()`)跑:对"资料库下载完了"这类事件来说,
+  // 运行根本不需要工作目录 —— 它要做的事(转录、抽图、送外部工具)都是拿绝对路径去
+  // 操作库里的文件。定时 / 文件变化仍然要求填:那两个**按目录算**("相对项目目录的
+  // glob"、"在项目目录里跑命令"),留空就成了一个含义不明的自动化。
+  if (kind !== "event" && (typeof project !== "string" || project.trim().length === 0)) {
     return { ok: false, error: "「在哪个项目里跑」没填 —— 触发器要知道它该在哪个目录里工作" };
   }
-  const task = params[NODE_TRIGGER_TASK_PARAM_KEY];
   if (typeof task !== "string" || task.trim().length === 0) {
     return { ok: false, error: "「这次要做什么」没填 —— 被触发时这句话就是这次运行的请求" };
   }
-
-  const kind = triggerKindOf(params);
   if (kind === undefined) {
     return { ok: false, error: "「触发方式」没选(手动 / 定时 / 文件变化 / 事件发生时)" };
   }
+
   if (kind === "manual") return { ok: true, spec: { kind: "manual" } };
 
   if (kind === "schedule") {

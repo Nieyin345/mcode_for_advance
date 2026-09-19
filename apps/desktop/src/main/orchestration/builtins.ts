@@ -449,13 +449,31 @@ const WATCH_EDGES: readonly WorkflowEdge[] = [
   wire(WATCH_COMMAND_NODE_ID, WATCH_SAY_NODE_ID),
 ];
 
-/* ── 文献自动下载(内置自动化,事件触发)────────────────────── */
+/* ── 文献自动下载与转录(内置自动化,链式事件触发)────────────── */
 
 /**
  * 与守望同款:它**不在** `BUILTIN_WORKFLOW_IDS` 里(那份是**对话模式下拉**的六个),
- * 只出现在工作流库的「自动化」栏。触发源是统一资料库的 `library.item.imported`
- * 事件(见 `@contracts/runtime` 的 `LibraryItemImportedEvent`)—— 每有一条条目
- * 入库就起一次运行,把还没下到 PDF 的那几条排队下载。
+ * 只出现在工作流库的「自动化」栏。
+ *
+ * ## 它为什么是两条自动化,而不是一条
+ *
+ * 因为它要听的是**两个不同的时机**:
+ *
+ *  1. `library.item.imported` —— 库里多了一条,但**文件还没下来**。这时能做的是
+ *     "给它排队下载";
+ *  2. `library.item.downloaded` —— PDF **真到本地了**(见 `@contracts/runtime` 的
+ *     `LibraryItemDownloadedEvent`)。想对着 PDF 做事(转录)只能等这一刻,导入那一下
+ *     动手只会扑空。
+ *
+ * 中间那一步——下载——**不是自动化干的**:条目一入库,库自己的下载队列就接手了
+ * (见 `operations.importIdentifiers` 里那句 `enqueueDownloads`)。所以这两条之间
+ * 靠的是**事件**,不是图里的边:一条排上队,另一条等它下完。
+ *
+ * ## 它们与「事件发生时」那条放宽是配对的
+ *
+ * 两个事件都**不属于任何项目**,而内置模板预置不出项目 id(项目 id 是建项目时现生成
+ * 的)。所以「在哪个项目里跑」留空,由 `parseTriggerSpec` 放行、运行退回宿主目录 ——
+ * 这两条要做的事(排队、转录)都是拿条目 id 去操作库里的文件,不需要工作目录。
  */
 export const AUTO_DOWNLOAD_WORKFLOW_ID = "wf_auto_download";
 export const AUTO_DOWNLOAD_TRIGGER_NODE_ID = "auto-download-trigger";
@@ -475,10 +493,10 @@ const AUTO_DOWNLOAD_NODES: readonly NodeSpec[] = [
     title: "导入触发",
     params: {
       triggerKind: "event",
-      // ⚠️ **空是故意的**(与守望同一条理由):内置模板没法预知这台机器上有哪些
-      // 项目。而且导入事件**不属于任何项目**,没有"运行时自动填"的入口 —— 所以
-      // 用之前要在触发器上把项目绑一次(存盘那一关本来就要求它非空;绑过之后
-      // 监听表才收它,见 `automationRunner.buildTriggers`)。
+      // ⚠️ **空是故意的,而且现在是对的。** 内置模板没法预知这台机器上有哪些项目,
+      // 而导入事件**不属于任何项目**。早先这里空着等于这条自动化**永远挂不上**
+      // (`parseTriggerSpec` 一律要求项目非空);现在「事件发生时」允许留空,运行退回
+      // 宿主目录 —— 这一步要做的只是"排队下载",不需要工作目录。
       [NODE_TRIGGER_PROJECT_PARAM_KEY]: "",
       [NODE_TRIGGER_TASK_PARAM_KEY]: AUTO_DOWNLOAD_DEFAULT_TASK,
       // 听哪个事件,取值来自 `@contracts/hook` 的 HOOK_EVENTS。
@@ -507,7 +525,7 @@ const AUTO_DOWNLOAD_NODES: readonly NodeSpec[] = [
         "- 已有 PDF 的条目跳过,不要重复排队。",
         "",
         "**做完的样子**:该排队的都排上了,并向用户汇报 —— 排了几条、各自什么标题;" +
-          "下不了的说明原因。下载与转录由应用自动完成,不需要你等它下完。",
+          "下不了的说明原因。下载由应用自动完成,不需要你等它下完。",
       ].join("\n"),
     },
   },
@@ -515,6 +533,88 @@ const AUTO_DOWNLOAD_NODES: readonly NodeSpec[] = [
 
 const AUTO_DOWNLOAD_EDGES: readonly WorkflowEdge[] = [
   wire(AUTO_DOWNLOAD_TRIGGER_NODE_ID, AUTO_DOWNLOAD_AGENT_NODE_ID),
+];
+
+/* ── 下载完自动转录(内置自动化,事件触发)────────────────────── */
+
+/**
+ * 这条自动化是**软件原来写死的那件事**的替代品。
+ *
+ * 早先「下载完就转录 Markdown」是一个注册进下载线程的钩子,做的事(pdf.js 抽文本)
+ * 写在 `ipc/library.ts` 里 —— 用户改不了、换不掉,想接自己那套高质量转录工具只能去
+ * 动源码。现在软件只发一条 `library.item.downloaded` 事件,转录这件事**变成一张用户
+ * 看得见、改得动的图**。他可以把这一步换掉(改成调自己装的 OCR 工具)、加一步、或者
+ * 干脆把这条自动化关掉。
+ *
+ * ## 为什么让模型去调工具,而不是写一段固定脚本
+ *
+ * 因为「转录」在这个软件里的**合法做法只有一条**:产生一份 `.md`(配图一起),然后用
+ * `library_adopt_markdown` 挂回条目。而"哪条路能转出这份 md"是用户环境里的事实 ——
+ * 他装的是 `mineru`,你装的是别的,第三个人干脆用手上的网页版转好再丢进来。
+ * 让模型按条目状态决定调哪个工具,比在软件里枚举"支持哪些转录工具"要活得久。
+ *
+ * ⚠️ **这一步不能失败得无声无息。** 它跑在后台,用户不在场 —— 指令里要求"下不了的
+ * 如实说明原因",就是为了让它至少有一条能查的痕迹(节点卡片上的产出)。
+ */
+export const AUTO_CONVERT_WORKFLOW_ID = "wf_auto_convert";
+export const AUTO_CONVERT_TRIGGER_NODE_ID = "auto-convert-trigger";
+export const AUTO_CONVERT_AGENT_NODE_ID = "auto-convert-agent";
+
+export const AUTO_CONVERT_DEFAULT_TASK =
+  "资料库里有一篇的 PDF 刚下载完。把它转成 Markdown 并挂回这条目。";
+
+const AUTO_CONVERT_NODES: readonly NodeSpec[] = [
+  {
+    id: AUTO_CONVERT_TRIGGER_NODE_ID,
+    type: "mcode.trigger",
+    title: "下载完成触发",
+    params: {
+      triggerKind: "event",
+      // 同上面那条:事件不属于任何项目,留空跑在宿主目录。
+      [NODE_TRIGGER_PROJECT_PARAM_KEY]: "",
+      [NODE_TRIGGER_TASK_PARAM_KEY]: AUTO_CONVERT_DEFAULT_TASK,
+      // ⚠️ **必须是 `downloaded`,不能是 `imported`。** 导入那一下 PDF 还没下来,
+      // 拿它当转录时机只会扑空 —— 而"扑空"的表现是安静地什么都没发生。
+      [NODE_TRIGGER_EVENTS_PARAM_KEY]: "library.item.downloaded",
+      [NODE_TRIGGER_FILTER_PARAM_KEY]: "",
+    },
+  },
+  {
+    id: AUTO_CONVERT_AGENT_NODE_ID,
+    type: "mcode.agent",
+    title: "转录并挂回库",
+    // **写能力**:转录产物要挂回条目(`library_adopt_markdown` 是写工具)。默认的
+    // `read` 会把这一步按在计划模式里 —— 无人值守时计划模式等于拒绝执行。
+    capability: "write",
+    params: {
+      instruction: [
+        "资料库里有一条的 PDF 刚下载完(这次运行就是它触发的,条目信息见下面那段载荷)。",
+        "你的任务:**把它转成 Markdown,挂回这条条目**。",
+        "",
+        "先拿条目 id 调 `library_search`(关键词留空)或 `library_items`,从返回里读出它的",
+        "PDF **绝对路径**(工具输出里那行 `PDF:`)—— 外部的转录工具要的是路径。",
+        "",
+        "然后按你手上的条件选一条路:",
+        "",
+        "1. **本机装了转录工具**(比如 `mineru`,或你自己装的别的)—— 跑它。跑外部命令用",
+        "   Code 节点或命令行节点,或者你自己的 shell 工具;",
+        "2. **没有工具** —— 调 `library_convert`,它做本地 pdf.js 抽文本(便宜、快)。",
+        "   扫描件抽不出正文,那一步会如实说\"没有文本层\",**这正是该报给用户的话**;",
+        "3. **两条都不成** —— 如实说明卡在哪(缺工具 / 是扫描件),不要假装成功。",
+        "",
+        "转出 `.md` 之后调和它同级的配图一起搬:调 `library_adopt_markdown`,`itemId` 是",
+        "这条条目、`path` 是那份 `.md` 的路径。**配图按 md 里的引用搬,不用你挑目录** ——",
+        "但你得把 `full.md` 指对(不是它旁边那个 `images/`)。",
+        "",
+        "**做完的样子**:条目已经有 Markdown 了(条目详情页能读到),并向用户汇报 —— " +
+          "用的是哪条路、多少字、几张图;没转成的说明为什么。**已经转过的不必重转。**",
+      ].join("\n"),
+    },
+  },
+];
+
+const AUTO_CONVERT_EDGES: readonly WorkflowEdge[] = [
+  wire(AUTO_CONVERT_TRIGGER_NODE_ID, AUTO_CONVERT_AGENT_NODE_ID),
 ];
 
 /* ── 内置工作流(六个对话模式 + 两条自动化)── */
@@ -624,6 +724,19 @@ export const BUILTIN_WORKFLOWS: readonly WorkflowDoc[] = [
     icon: "download",
     nodes: graph(AUTO_DOWNLOAD_NODES, AUTO_DOWNLOAD_EDGES),
     edges: [...AUTO_DOWNLOAD_EDGES],
+    trigger: "event",
+    builtin: true,
+    updatedAt: 0,
+  },
+  {
+    // 与上一条**配对**:上一条负责"把 PDF 弄下来",这一条负责"下完之后转 Markdown"。
+    // 分开是因为它们听的是两个不同的时机(见 AUTO_DOWNLOAD_WORKFLOW_ID 上的说明)。
+    id: AUTO_CONVERT_WORKFLOW_ID,
+    name: "下载完自动转录",
+    description: "资料库某条目的 PDF 下载完成时,把它转成 Markdown 并挂回该条目。",
+    icon: "file-text",
+    nodes: graph(AUTO_CONVERT_NODES, AUTO_CONVERT_EDGES),
+    edges: [...AUTO_CONVERT_EDGES],
     trigger: "event",
     builtin: true,
     updatedAt: 0,

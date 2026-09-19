@@ -70,3 +70,51 @@ export function emitItemImported(item: LibraryItem): void {
     log.warn(`[library] 发导入事件失败(${item.id}):${(err as Error).message}`);
   }
 }
+
+/**
+ * 统一资料库:一条条目的 **PDF 真下到本地了** → 发一条 `library.item.downloaded`。
+ *
+ * ## 为什么要有这一条(以及它在替掉什么)
+ *
+ * 用户的要求是「导入之后是软件自动下载，自动转录的，不需要 ai 去管」。早先这件事是
+ * **写死**在软件里的:下载线程直接调一个注册进来的函数,而那个函数做的事(本地 pdf.js
+ * 抽文本)写在 `ipc/library.ts` 里。用户改不了它 —— 想接自己那套高质量转录工具,只能
+ * 去动源码。
+ *
+ * 现在拆成两截:这里只**说一句"下完了"**,至于下完该干什么,由用户在**钩子**或
+ * **自动化的「事件发生时」触发器**里自己配。软件不再规定转录这件事。
+ *
+ * ## 为什么不能复用 `library.item.imported`
+ *
+ * 那个事件在**文件还不存在**的时候就发了 —— 导入只是"库里多了这一条",PDF 是随后
+ * 才下来的。拿导入当转录时机,只会扑空。两者都留着是因为「导入就该干点什么」的用法
+ * 确实存在(建占位笔记、按标题归类),它不需要等文件。
+ *
+ * ## 与导入同一条通道、同一个哨兵
+ *
+ * `emitExternal` 而不是 `broadcastRuntimeEvent`:理由与 {@link emitItemImported} 一字
+ * 不差(正经读者是钩子和触发器,它们挂在 `runtimeManager.subscribe` 上)。`sessionId`
+ * 同样是 `"(system)"` —— 下载跑在后台线程里,不属于任何对话。
+ *
+ * ## 为什么是同步的(调用方要留意)
+ *
+ * 它**在下载线程里被同步调用**(见 `downloader.ts` 的 `finalize`)。`emitExternal` 自己
+ * 是同步派发,但真正的读者是异步的(钩子起进程、触发器起运行)—— 所以这里立刻返回,
+ * 不阻塞下载队列往下走。
+ */
+export function emitItemDownloaded(item: LibraryItem): void {
+  try {
+    runtimeManager.emitExternal({
+      type: "library.item.downloaded",
+      sessionId: "(system)",
+      itemId: item.id,
+      kind: item.kind,
+      title: item.title,
+      // 库里存的就是**相对路径**(见 `LibraryItem.pdfPath`)—— 原样给出去,别在这里
+      // 拼绝对路径:那会把一台机器的磁盘布局散进会被分享的钩子脚本里。
+      pdfPath: item.pdfPath ?? "",
+    });
+  } catch (err) {
+    log.warn(`[library] 发下载完成事件失败(${item.id}):${(err as Error).message}`);
+  }
+}

@@ -1203,6 +1203,45 @@ export interface LibraryItemImportedEvent {
   title: string;
 }
 
+/**
+ * 统一资料库:**一条条目的 PDF 真下到本地了**。
+ *
+ * ## 为什么「导入」和「下载完」是两件事
+ *
+ * 导入只说明"目录里多了这一条",它手上不一定有 PDF —— 下载是随后的一件事(可能要
+ * 几十秒、可能要登录态、可能失败重试)。而**想对 PDF 本身做点什么的时机只有下载完
+ * 这一个**:转录、抽图表、送进外部 OCR。「导入」那一下文件还不存在,那时动手只会扑空。
+ *
+ * 早先这条通知是**写死**的:下载线程直接调一个注册进来的函数,而那个函数做的事
+ * (本地 pdf.js 抽文本)写在 `main/ipc/library.ts` 里。用户改不了、换不掉,想接自己那套
+ * 高质量转录工具也没有入口 —— 只能去动源码。现在它是一个**正式事件**,和导入同一条
+ * 通道,于是:钩子听得见、自动化的「事件发生时」触发器听得见,想干什么由用户自己配
+ * (内置的「下载完自动转录」那条自动化就是这么搭出来的)。
+ *
+ * ## 载荷字段为什么只有这几个
+ *
+ * 全是**能拿去用**的东西:id 能回查整条记录,`pdfPath` 是**库内相对路径**
+ * (`papers/ab/cdef….pdf`)—— 绝对路径要消费方自己拼库根,而库根是随数据根变的。
+ * 不给绝对路径是有意的:把它写进事件载荷就等于把一台机器的磁盘布局散给钩子脚本,
+ * 那些脚本会被分享、会被复制到另一台机器上。
+ *
+ * ## sessionId 同样是合成哨兵 "(system)"
+ *
+ * 与 {@link LibraryItemImportedEvent} 同一条理由:下载不属于任何对话(它跑在后台线程
+ * 里,可能是应用启动时恢复的队列)。读 `@contracts/hook` 的 `HOOK_EVENT_OF` 那一行。
+ */
+export interface LibraryItemDownloadedEvent {
+  type: "library.item.downloaded";
+  sessionId: string;
+  /** 下到 PDF 的那条条目。 */
+  itemId: string;
+  /** 条目的类型(注册表里的 kind)。 */
+  kind: string;
+  title: string;
+  /** PDF 在**库内的相对路径**(`LibraryItem.pdfPath` 的原样)。 */
+  pdfPath: string;
+}
+
 /** The union of all runtime events. */
 export type RuntimeEvent =
   | TextDeltaEvent
@@ -1241,4 +1280,5 @@ export type RuntimeEvent =
   | UpstreamIssueEvent
   | GitChangedEvent
   | LibraryItemImportedEvent
+  | LibraryItemDownloadedEvent
   | LongTaskUpdateEvent;

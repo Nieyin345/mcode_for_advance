@@ -382,6 +382,61 @@ console.log("\nparseTriggerSpec · 四种触发方式");
   check("不带筛选也解得过(matcher 空)", plain.ok && plain.spec.kind === "event" && plain.spec.matcher === "");
 }
 
+console.log("\nparseTriggerSpec · 「事件发生时」可以不绑项目");
+
+// ⚠️ 这一条是踩出来的。以前四种触发方式一律要求项目非空,而**内置模板预置不出项目 id**
+// (项目 id 是建项目时现生成的 `uid("proj_")`,模板没法知道这台机器上有哪些项目)。
+// 于是内置的「下载完自动转录」**永远挂不上** —— 用户对着一张参数填得好好的触发器等
+// 它响,而没有任何地方说得出为什么。
+//
+// 「事件发生时」不需要工作目录:它要做的事(转录、抽图、送外部工具)都是拿绝对路径去
+// 操作库里的文件。另外三种仍要 —— 定时/文件变化是**按目录算**的。
+{
+  const noProject = { task: "下完了就转" };
+  const eventNoProject = parseTriggerSpec(TRIGGER, {
+    ...noProject,
+    triggerKind: "event",
+    events: "library.item.downloaded",
+  });
+  check(
+    "事件触发没绑项目解得过",
+    eventNoProject.ok && eventNoProject.spec.kind === "event",
+    eventNoProject,
+  );
+  check(
+    "解出来的事件名就是它",
+    eventNoProject.ok &&
+      eventNoProject.spec.kind === "event" &&
+      eventNoProject.spec.events.join(",") === "library.item.downloaded",
+    eventNoProject,
+  );
+
+  // 另外三种**仍然要项目** —— 放宽是有边界的,不能顺手放开全部。
+  const scheduleNoProject = parseTriggerSpec(TRIGGER, {
+    ...noProject,
+    triggerKind: "schedule",
+    cron: "0 9 * * *",
+  });
+  check(
+    "定时没绑项目仍然要拒(它按目录算)",
+    !scheduleNoProject.ok && scheduleNoProject.error.includes("在哪个项目里跑"),
+    scheduleNoProject,
+  );
+  const fileNoProject = parseTriggerSpec(TRIGGER, { ...noProject, triggerKind: "file", paths: "*.md" });
+  check(
+    "文件变化没绑项目仍然要拒",
+    !fileNoProject.ok && fileNoProject.error.includes("在哪个项目里跑"),
+    fileNoProject,
+  );
+
+  // 任务那句话仍然必填 —— 它是被触发时唯一的请求。
+  const noTaskEither = parseTriggerSpec(TRIGGER, {
+    triggerKind: "event",
+    events: "library.item.downloaded",
+  });
+  check("没绑项目也没写任务 → 仍然拒", !noTaskEither.ok && noTaskEither.error.includes("这次要做什么"), noTaskEither);
+}
+
 /* ────────────────────────── 3. describeTriggerPayload ────────────────────────── */
 
 console.log("\ndescribeTriggerPayload · 载荷的人话版本");

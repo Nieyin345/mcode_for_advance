@@ -460,6 +460,36 @@ const { createEventSubjects } = await import("@main/hooks/eventSubjects.js");
   eq("同一个 cwd 再算一遍结果一样", JSON.stringify(es.subjectsOf(files, WORK, undefined)), JSON.stringify(s1));
 }
 
+
+/* ──────────────── 8. 不属于任何会话的两条资料库事件 ──────────────── */
+
+console.log("\n资料库事件(合成哨兵 \"(system)\" 那一路)");
+
+// 「导入」与「下载完」都**不属于任何对话** —— 它们可能来自用户点界面、AI 的 MCP 工具、
+// 或者后台下载线程。会话查不到不等于事件丢了,所以 HookRunner 对哨兵有一条专门的放行
+// (见 `onEvent` 里那段)。这条放行是这两个事件**唯一**的活路:少了它,
+// `sessionFacts` 返回 null,整条事件在查会话那一步就被丢掉 —— 而表现是"钩子安静地不响",
+// 用户配得好好的、一个字都不报。
+//
+// 用户要的用法正是这个:**不让软件写死"下载完就转录"**,而是让他在钩子里自己写一条。
+const sysHook = makeCmd({ tag: "downloaded" });
+writeHooks([
+  spec({ command: sysHook.command, tag: "downloaded", event: "library.item.downloaded" }),
+]);
+rt.emit({
+  type: "library.item.downloaded",
+  sessionId: "(system)",
+  itemId: "lib_item_smoke",
+  kind: "paper",
+  title: "刚下完的那一篇",
+  pdfPath: "papers/ab/abcdef.pdf",
+} as unknown as RuntimeEvent);
+await until("下载完的事件触发了钩子", () => sysHook.hits() === 1);
+eq("资料库事件(不属于任何会话)照样能触发", sysHook.hits(), 1);
+
+// 收尾前先把这条钩子撤掉 —— 它听着一个哨兵事件,留着会影响下面的断言阅读。
+writeHooks([]);
+
 check("hooks.json 确实落在(临时)数据根下", hooksFilePath().startsWith(DATA));
 
 rmSync(DATA, { recursive: true, force: true });
