@@ -253,6 +253,10 @@ export const TRIGGER_PAYLOAD_FACTS_OF: Record<TriggerKind, readonly string[]> = 
  * 听了好几个事件时取**交集**:哪一条响是运行时的事(C2 那条多事件触发器),指令要写就
  * 得写"哪条响都取得到"的那些。这与「插入变量」跨多条触发器取交集是同一条规矩 ——
  * 而 `expandTriggerVars` 对取不到的 key 是硬失败,列错一项的代价是那一步跑不起来。
+ *
+ * ⚠️ `itemCount`(载荷里那句「一共有 N 条」)**故意不进这张表**:它只在窗口里真攒了
+ * 两条以上时才出现,列进菜单等于让用户插一个多半取不到的名字。而那句话本来就是写给
+ * 模型读的(见 `describeTriggerPayload`),不是给 `{{...}}` 用的。
  */
 export function triggerFactKeysOf(params: Record<string, unknown>): readonly string[] {
   const kind = triggerKindOf(params);
