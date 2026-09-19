@@ -132,7 +132,7 @@ export function fromLibraryRelative(relPath: string): string {
  * | `markdown/<2>/<2>/<sha>/full.md` | MinerU,同级还有 `images/` |
  * | `markdown/imported/<条目 id>/xxx.md` | 「采纳 Markdown」收进来的,同级还有 `images/` |
  *
- * 后两种里,正文靠 `![](images/…)` 相对引用配图 —— 只删那个 `.md` 的话,几十张图会
+ * 后两种里,正文靠 `![](images:…)` 相对引用配图 —— 只删那个 `.md` 的话,几十张图会
  * 整包留在磁盘上,而且再也认不出是谁的。所以那两种要删**整个目录**。
  *
  * ## 为什么按结构认,不按名字认
@@ -140,22 +140,61 @@ export function fromLibraryRelative(relPath: string): string {
  * 早先这段判断写在 `ipc/library.ts`,判据是"父目录名像不像一个 sha256"
  * (`/^[0-9a-f]{64}$/.test(basename(dirname(md)))`)。它对 MinerU 成立,对**采纳的那包
  * 不成立**(目录名是 `li_…`)—— 于是采纳的 md 一删,`images/` 就永远留下。名字是猜;
- * 下面按**相对 `markdown/` 的第几层**认,三种形态各归各位,加第四种时也一眼看得出该往
- * 哪一档放。
+ * 下面按**落点结构**认,三种形态各归各位,加第四种时也一眼看得出该往哪一档放。
+ *
+ * ## ⚠️ 认不出来时**只删文件**,默认不能是"删目录"
+ *
+ * 这一条是 2026-09-19 修的一个**数据丢失**:`mdPath` 是笔记时是 `<根>/notes/<id>.md`,
+ * 而它**不在 `markdown/` 下面** —— 于是早期这版从 `markdown/` 数层数,数出来是 0 层,
+ * 落进"整个目录"那一支,算出 `<根>/notes` 加递归。删一篇笔记会把**用户其它所有笔记**
+ * 一起删掉。库根正下方、`exports/` 里那几种同样能一路算到库根本身。
+ *
+ * 根子上的错不是"少判了一种形状",而是**默认选错了一边**。两种猜错的后果不对称:
+ * 猜成文件而其实是目录 → 那一包 `images/` 留下(看得见的垃圾,还能再删一次);
+ * 猜成目录而其实是文件 → 不可恢复。所以判据反过来了:**只有明确认得出是那两种目录
+ * 形状时才递归,其余一律只删传递进来的那个文件。**
  */
 export function markdownArtifact(absMdPath: string): { path: string; recursive: boolean } {
   const abs = resolve(absMdPath);
+  const root = resolve(libraryRoot());
   const parent = dirname(abs);
-  const rel = relative(join(resolve(libraryRoot()), "markdown"), parent)
-    .split(/[/\\]/)
-    .filter(Boolean);
+  // 从 `markdown/` 往下数 —— 但**先确认它真在 `markdown/` 下面**。不在的话下面数出来的
+  // 层数是没有意义的(短路成 0 层后会被读成"整个目录"),而那种路径只可能是笔记那一类。
+  const relFromMarkdown = relative(join(root, "markdown"), parent);
+  const inside =
+    relFromMarkdown === "" ||
+    (!relFromMarkdown.startsWith("..") && !isAbsolute(relFromMarkdown));
+  if (!inside) return flat(abs);
+  const rel = relFromMarkdown.split(/[/\\]/).filter(Boolean);
   // 平的那种:正好两层,且两层都是两位的哈希前缀目录。
   // ⚠️ 两个条件**都要**判 —— 只看层数的话 `imported/<条目 id>` 也是两层,会被误判成
   // 平的那种,于是那一包的 `images/` 又漏掉了。
   if (rel.length === 2 && (rel[0] ?? "").length === 2 && (rel[1] ?? "").length === 2) {
-    return { path: abs, recursive: false };
+    return flat(abs);
   }
-  return { path: parent, recursive: true };
+  // MinerU:`markdown/<2>/<2>/<sha>/full.md` —— 父目录是那条 sha 的目录,**三层**。
+  // 前两层是哈希前缀(与 `hashedPath` 一致),第三层是完整 sha。
+  if (rel.length === 3 && isPrefix(rel[0]) && isPrefix(rel[1]) && SHA256.test(rel[2] ?? "")) {
+    return { path: parent, recursive: true };
+  }
+  // 采纳的:`markdown/imported/<条目 id>/xxx.md` —— 两层,头一层是字面量 `imported`。
+  if (rel.length === 2 && rel[0] === "imported" && (rel[1] ?? "").length > 0) {
+    return { path: parent, recursive: true };
+  }
+  // 认不出来 —— **不猜**。只删这个文件,不碰它周围的东西。
+  return flat(abs);
+}
+
+/** 两位的哈希前缀目录(与 `hashedPath` 的分段一致)。 */
+function isPrefix(s: string | undefined): boolean {
+  return s !== undefined && /^[0-9a-f]{2}$/.test(s);
+}
+
+/** 完整的 sha256 小写十六进制。认不出形状时是**拒**,所以这里宁可窄一点。 */
+const SHA256 = /^[0-9a-f]{64}$/;
+
+function flat(abs: string): { path: string; recursive: boolean } {
+  return { path: abs, recursive: false };
 }
 
 /** 两级 hash 前缀的落点。`ext` 不带点。 */

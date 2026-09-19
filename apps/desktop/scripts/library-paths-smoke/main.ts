@@ -217,6 +217,52 @@ eq("③ 和 ① 的层数确实一样(所以层数不是判据)",
 check("库外路径解析出来的东西仍在库外(交给 dropAbs 拦)", !isInsideLibrary("/etc/passwd-md"));
 check("库根本身不会被当成某一份产物", markdownArtifact(join(ROOT, "markdown", "x.md")).path !== ROOT);
 
+/* ──────────────── 6. 认不出来的落点一律**只删文件** ──────────────── */
+
+console.log("\nmarkdownArtifact · 不认识的形状不能猜成目录");
+
+// 这一段的形状是 2026-09-19 发现的真实数据丢失:`mdPath` 是笔记时是
+// `<根>/notes/<id>.md`,而它**不在 `markdown/` 下面** —— 于是"从 markdown 数层数"
+// 那条判据数出来是 0 层,落到"整个目录"那一支,算出 `<根>/notes` + 递归。
+// 删一篇笔记就把**用户其它所有笔记**一起删了。
+//
+// 根子上的错是**默认选错了一边**:不认识的时候猜"目录",而猜错的两种后果不对称 ——
+// 删少了只是留点垃圾(看得见、还能再删),删多了是不可恢复的。所以判据反过来:
+// **只有明确认得出是那两种目录形状时才递归,其余一律只删那个文件。**
+const NOTE_MD = join(ROOT, "notes", "li_notekey.md");
+const note = markdownArtifact(NOTE_MD);
+eq("笔记 → 删那个文件本身", note.path, NOTE_MD);
+eq("笔记 → 不递归", note.recursive, false);
+check("笔记那条路绝不能碰到 notes/ 目录(那里面是别的笔记)", note.path !== join(ROOT, "notes"));
+
+// 认不出来的落点(NOTES 之外的目录、或者谁手改过数据库)同理 —— 只删文件。
+for (const [what, p] of [
+  ["库根正下方", join(ROOT, "随便.md")],
+  ["exports 里", join(ROOT, "exports", "引文.bib.md")],
+  ["markdown 下面但只有一层", join(ROOT, "markdown", "一层", "a.md")],
+  ["markdown 下面三层但中间不是 sha", join(ROOT, "markdown", "imported", "li_x", "再来一层", "a.md")],
+] as const) {
+  const art = markdownArtifact(p);
+  eq(`${what} → 只删文件`, art.path, p);
+  eq(`${what} → 不递归`, art.recursive, false);
+}
+
+// 反过来:两种真目录形状**必须**认出来,否则 images/ 会永远留在磁盘上。
+eq("MinerU 那一种仍然递归", markdownArtifact(MINERU_MD).recursive, true);
+eq("采纳那一种仍然递归", markdownArtifact(IMPORTED_MD).recursive, true);
+
+// 递归的那两种,删的目录**必须是那个产物的目录**,不能往上多爬一级 ——
+// `markdown/<ab>/<cd>/` 那一层是所有同前缀论文共用的。
+check(
+  "MinerU 删的是 sha 那一层,不是它上面的 markdown/ab/ab",
+  markdownArtifact(MINERU_MD).path === markdownDirForHash(sha) &&
+    markdownArtifact(MINERU_MD).path !== dirname(markdownDirForHash(sha)),
+);
+check(
+  "采纳删的是条目目录,不是整个 imported/",
+  markdownArtifact(IMPORTED_MD).path !== join(ROOT, "markdown", "imported"),
+);
+
 /* ──────────────── 收尾 ──────────────── */
 
 rmSync(DATA, { recursive: true, force: true });
