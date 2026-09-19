@@ -7,12 +7,6 @@
 
 import { z } from "zod";
 import type { LibraryKind, DownloadStatus } from "../library.js";
-import { TemplateKindSchema } from "./templates.js";
-
-/** 文献库根目录。缺失 → 默认 `<userData>/library`。
- *  库内所有相对路径(pdfPath / mdPath)都相对它。用户可在界面上改位置 ——
- *  改完只改指向、不搬文件(搬文件由用户自己决定,避免大批量 IO 中途失败)。 */
-export const LIBRARY_ROOT_SETTING_KEY = "library.root";
 
 /** 下载并发上限。缺失 → 默认 2。走内嵌浏览器下载,并发过高会与用户的手动浏览
  *  抢同一个 WebContentsView,反而更慢。 */
@@ -230,20 +224,6 @@ export type LibraryWriteNoteInput = z.infer<typeof LibraryWriteNoteSchema>;
 
 /** 列某个条目下的笔记。 */
 /** 给**单独一篇**生成一份清单(标题/作者/该读哪个文件/我的笔记)。 */
-/**
- * 整个库的清单(「全部文献」那一行)—— 只要 kind。
- *
- * 与 `library.manifest`(一个分类)是同一件事的两个粒度:分类是用户分出来的组,
- * 「全部<库>」是"这个库里的所有东西"。用户要求「和文档一样要有全部内容」,而那一行
- * 也得能挂进对话,否则它就是个只能看不能用的摆设。
- */
-export const LibraryKindManifestSchema = z.object({ kind: LibraryKindSchema });
-export type LibraryKindManifestInput = z.infer<typeof LibraryKindManifestSchema>;
-
-/** 整个模版类目的清单(「全部 LaTeX 模版」那一行)。 */
-export const TemplateKindManifestSchema = z.object({ kind: TemplateKindSchema });
-export type TemplateKindManifestInput = z.infer<typeof TemplateKindManifestSchema>;
-
 export const LibraryItemManifestSchema = z.object({ id: z.string().min(1) });
 export type LibraryItemManifestInput = z.infer<typeof LibraryItemManifestSchema>;
 
@@ -476,10 +456,6 @@ export const LibraryImportSchema = z.object({
   queueDownload: z.boolean().optional(),
 });
 export type LibraryImportInput = z.infer<typeof LibraryImportSchema>;
-
-/** 设置库根目录(用户要求「UI 上可以设置文献的位置」)。 */
-export const LibrarySetRootSchema = z.object({ path: z.string().min(1) });
-export type LibrarySetRootInput = z.infer<typeof LibrarySetRootSchema>;
 
 /**
  * 为一个文献库生成/刷新清单文件,返回其绝对路径。

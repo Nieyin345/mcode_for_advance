@@ -28,7 +28,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import { SettingRepo } from "@main/store/repositories.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
-import { LIBRARY_ROOT_SETTING_KEY, LIBRARY_DOWNLOAD_CONCURRENCY_SETTING_KEY } from "@contracts/ipc";
+import { LIBRARY_DOWNLOAD_CONCURRENCY_SETTING_KEY } from "@contracts/ipc";
 
 /**
  * 库根目录 —— **统一数据根下的 `library/`**(`<数据根>/library`)。

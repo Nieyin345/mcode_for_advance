@@ -38,10 +38,6 @@ export function registerMobileHandlers(ipcMain: IpcMain): void {
     return { pairing: { ...pairing, mode: "lan" as const } };
   });
 
-  ipcMain.handle(IPC.MOBILE_GET_PAIRING, async () => {
-    return { pairing: pairingManager.getPending() };
-  });
-
   ipcMain.handle(IPC.MOBILE_CANCEL_PAIRING, async () => {
     pairingManager.cancelPairing();
     return { ok: true as const };

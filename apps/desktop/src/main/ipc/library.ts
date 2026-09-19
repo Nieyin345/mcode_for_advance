@@ -13,7 +13,6 @@ import { basename, dirname, join } from "node:path";
 import { shell, type IpcMain } from "electron";
 import {
   IPC,
-  LIBRARY_ROOT_SETTING_KEY,
   LibraryAddItemsSchema,
   LibraryDeleteItemsSchema,
   LibraryDownloadSchema,
@@ -37,7 +36,6 @@ import {
   LibraryItemIdSchema,
   LibraryListSchema,
   LibrarySearchSchema,
-  LibrarySetRootSchema,
   LibraryAttachToChatSchema,
   LibraryTypesGetSchema,
   LibraryTypesSaveSchema,
@@ -52,7 +50,6 @@ import {
   LibraryReadFileSchema,
   LibraryManifestSchema,
   LibraryItemManifestSchema,
-  LibraryKindManifestSchema,
   CollectionAssignSchema,
   CollectionCreateSchema,
   CollectionDeleteSchema,
@@ -61,7 +58,7 @@ import {
 import type { FullTextMatch, LibraryCollection, LibraryItem } from "@contracts/library";
 import { LIBRARY_KINDS } from "@contracts/library";
 import { formatAuthorList } from "@contracts/library";
-import { LibraryRepo, CollectionRepo, DownloadJobRepo, LibraryLinkRepo, NoteRepo, SettingRepo } from "@main/store/repositories.js";
+import { LibraryRepo, CollectionRepo, DownloadJobRepo, LibraryLinkRepo, NoteRepo } from "@main/store/repositories.js";
 import { awaitDb } from "@main/store/db.js";
 import { rgGrep } from "@main/lib/rgSearch.js";
 import { log } from "@main/lib/logger.js";
@@ -89,7 +86,6 @@ import {
   attachToChat,
   writeCollectionManifest,
   writeItemManifest,
-  writeKindManifest,
 } from "@main/library/manifest.js";
 import { enqueueDownloads, processDownloadQueue, setDownloadCompleteHook, resumeDownloadsOnStartup } from "@main/library/downloader.js";
 import { ensureLibraryDirs, libraryRoot, fromLibraryRelative, toLibraryRelative } from "@main/library/paths.js";
@@ -700,15 +696,6 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
     return { matches };
   });
 
-  /* ─────────────────────────── 库位置 ───────────────────────── */
-
-  ipcMain.handle(IPC.LIBRARY_GET_ROOT, async () => ({ path: libraryRoot() }));
-  ipcMain.handle(IPC.LIBRARY_SET_ROOT, async (_evt, raw) => {
-    const input = LibrarySetRootSchema.parse(raw);
-    SettingRepo.set(LIBRARY_ROOT_SETTING_KEY, input.path);
-    return { path: libraryRoot() };
-  });
-
   /**
    * 生成/刷新某个库的清单 Markdown,并返回它的绝对路径。
    *
@@ -736,12 +723,6 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
     const input = LibraryManifestSchema.parse(raw);
     // 同上:实现搬去 library/manifest.ts,与 AI 的挂库共用。
     return writeCollectionManifest(input.collectionId);
-  });
-
-  /** 整个库的清单 —— 「全部文献 / 全部教材 / 全部笔记」那一行挂进对话时用的。 */
-  ipcMain.handle(IPC.LIBRARY_KIND_MANIFEST, async (_evt, raw) => {
-    const input = LibraryKindManifestSchema.parse(raw);
-    return writeKindManifest(input.kind);
   });
 
   // 类型注册表:读是纯缓存读;写是整表替换(校验在 saveLibraryTypes 里,失败时把

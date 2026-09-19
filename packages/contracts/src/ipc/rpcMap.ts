@@ -42,7 +42,7 @@ import type { RuntimeAgentState, RuntimesInstallInput, RuntimesInstallLocalInput
 import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, WorkflowExportInput, WorkflowImportInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchCommandTemplate } from "./workflow.js";
 import type { AutomationTriggerFacts, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
 import { MEMORY_CATEGORIES_CHANNEL, MEMORY_DELETE_CHANNEL, MEMORY_LIST_CHANNEL, MEMORY_READ_CHANNEL, MEMORY_SAVE_CHANNEL, type MemoryDeleteInput, type MemoryFileMeta, type MemoryListInput, type MemoryReadInput, type MemorySaveInput } from "../memory.js";
-import type { LibraryTypesGetInput, LibraryTypesSaveInput, LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibrarySetRootInput, LibraryManifestInput, LibraryItemManifestInput, LibraryKindManifestInput, TemplateKindManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
+import type { LibraryTypesGetInput, LibraryTypesSaveInput, LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibraryManifestInput, LibraryItemManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
 import type { TemplateListInput, TemplateAddInput, TemplateRenameInput, TemplateEntryRefInput, TemplateFileRefInput, TemplatesAttachToChatInput } from "./templates.js";
 import type { IntegrationSetKeyInput, IntegrationClearKeyInput, IntegrationSetConfigInput, IntegrationTestInput } from "./integrations.js";
 import type { SubagentDefinition } from "../claudeSubagent.js";
@@ -763,9 +763,6 @@ export interface RpcMap {
      *  is what the manual "refresh QR" buttons need to bypass. */
     force?: boolean;
   }) => Promise<{ pairing: PairingStartResult }>;
-  /** Read the current pending pairing (for the dialog to rehydrate after a
-   *  close/reopen). Null when no pairing is active. */
-  "mobile.getPairing": () => Promise<{ pairing: { code: string; expiresAt: number } | null }>;
   /** Cancel the active pairing (clears the nonce). */
   "mobile.cancelPairing": () => Promise<{ ok: true }>;
   /** List paired devices (token stripped). */
@@ -1003,17 +1000,10 @@ export interface RpcMap {
   "templates.reveal": (input: TemplateEntryRefInput) => Promise<{ ok: boolean; error?: string }>;
   /** 生成/刷新给 AI 读的模版清单,返回它的绝对路径(对话里只放 `@该路径`)。 */
   "templates.manifest": (input: TemplateEntryRefInput) => Promise<{ path: string; fileCount: number }>;
-  /** 整个类目的清单(「全部 LaTeX 模版」那一行)。 */
-  "templates.kindManifest": (
-    input: TemplateKindManifestInput,
-  ) => Promise<{ path: string; fileCount: number }>;
   /** 把一条模版挂到指定会话的输入框上(左栏右键「添加到当前对话」)。 */
   "templates.attachToChat": (
     input: TemplatesAttachToChatInput,
   ) => Promise<{ ok: boolean; name?: string; fileCount?: number; error?: string }>;
-  "templates.getRoot": () => Promise<{ path: string }>;
-  /** 改模版库位置(与文献库同一条规则:只改指向,不搬已有文件)。 */
-  "templates.setRoot": (input: { path: string }) => Promise<{ path: string }>;
 
   // ── 统一数据根 ──
   /** 当前数据根,以及它下面三样东西的**实际路径**(设置页展示用)。 */
@@ -1028,10 +1018,6 @@ export interface RpcMap {
   "app.moveDataRoot": (input: { path: string }) => Promise<{ ok: boolean; error?: string }>;
   /** 全文检索(ripgrep;sql.js 不含 FTS5)。 */
   "library.fullTextSearch": (input: LibraryFullTextSearchInput) => Promise<{ matches: FullTextMatch[] }>;
-  /** 读当前库根目录。 */
-  "library.getRoot": () => Promise<{ path: string }>;
-  /** 改库根目录(用户要求「UI 上可以设置文献的位置」)。改完不搬文件,只改指向。 */
-  "library.setRoot": (input: LibrarySetRootInput) => Promise<{ path: string }>;
   /** 生成/刷新某个库的清单 Markdown,返回其绝对路径(count = 收录条数)。
    *  清单是给 agent 读的 —— 对话里只放 `@该路径`,与文件附件的机制一致。 */
   "library.manifest": (input: LibraryManifestInput) => Promise<{ path: string; count: number }>;
@@ -1040,11 +1026,6 @@ export interface RpcMap {
    * 与整库清单同一套机制:只放一行 `@清单路径`,正文由 agent 自己读。
    */
   "library.itemManifest": (input: LibraryItemManifestInput) => Promise<{
-    path: string;
-    count: number;
-  }>;
-  /** 整个库的清单(「全部文献」那一行)。与「一个分类」同一套机制,只是范围是整个库。 */
-  "library.kindManifest": (input: LibraryKindManifestInput) => Promise<{
     path: string;
     count: number;
   }>;
@@ -1149,8 +1130,6 @@ export const IPC = {
   LIBRARY_SEARCH_EXTERNAL: "library:searchExternal",
   LIBRARY_IMPORT: "library:import",
   LIBRARY_FULL_TEXT_SEARCH: "library:fullTextSearch",
-  LIBRARY_GET_ROOT: "library:getRoot",
-  LIBRARY_SET_ROOT: "library:setRoot",
   // 外部服务集成(自带 API Key)
   INTEGRATIONS_LIST: "integrations:list",
   INTEGRATIONS_SET_KEY: "integrations:setKey",
@@ -1188,17 +1167,13 @@ export const IPC = {
   TEMPLATES_REVEAL: "templates:reveal",
   TEMPLATES_MANIFEST: "templates:manifest",
   /** 整个类目的清单(「全部<类目>」那一行)。 */
-  TEMPLATES_KIND_MANIFEST: "templates:kindManifest",
   /** 把一条模版挂到指定会话的输入框上(左栏右键「添加到当前对话」)。 */
   TEMPLATES_ATTACH_TO_CHAT: "templates:attachToChat",
   /** 模版库变了(增 / 删)。与文献库那条广播同一个用途:设置页里加了一条模版之后,
    *  左栏那一段的缓存不会自己知道 —— 少了它,用户会觉得"加了没反应"。 */
   TEMPLATES_CHANGED: "templates:changed",
-  TEMPLATES_GET_ROOT: "templates:getRoot",
-  TEMPLATES_SET_ROOT: "templates:setRoot",
   LIBRARY_ITEM_MANIFEST: "library:itemManifest",
   /** 整个库的清单(「全部<库>」那一行)。 */
-  LIBRARY_KIND_MANIFEST: "library:kindManifest",
   /** 类型注册表:读(返回当前生效的全表,含内置)/ 写(整表替换,校验在主进程)。 */
   LIBRARY_TYPES_GET: "library:typesGet",
   LIBRARY_TYPES_SAVE: "library:typesSave",
@@ -1539,7 +1514,6 @@ export const IPC = {
   PLUGINS_MARKETPLACE_REFRESH: "plugins:marketplaceRefresh",
   // Mobile companion (LAN pairing + device management) — invoke/handle (RPC).
   MOBILE_START_PAIRING: "mobile:startPairing",
-  MOBILE_GET_PAIRING: "mobile:getPairing",
   MOBILE_CANCEL_PAIRING: "mobile:cancelPairing",
   MOBILE_LIST_DEVICES: "mobile:listDevices",
   MOBILE_REVOKE_DEVICE: "mobile:revokeDevice",

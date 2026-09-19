@@ -7,9 +7,6 @@
 import { z } from "zod";
 import { TEMPLATE_KINDS } from "../templates.js";
 
-/** 模版库根目录。缺失 → 默认 `<userData>/templates`。 */
-export const TEMPLATE_ROOT_SETTING_KEY = "templates.root";
-
 /* ── 模版库 ── */
 
 export const TemplateKindSchema = z.enum(TEMPLATE_KINDS);

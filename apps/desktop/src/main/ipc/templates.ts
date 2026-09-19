@@ -8,21 +8,16 @@ import { log } from "@main/lib/logger.js";
 import { openDirectory } from "@main/lib/reveal.js";
 import {
   IPC,
-  TEMPLATE_ROOT_SETTING_KEY,
-  LibrarySetRootSchema,
   TemplateAddSchema,
   TemplateEntryRefSchema,
   TemplateFileRefSchema,
-  TemplateKindManifestSchema,
   TemplateListSchema,
   TemplateRenameSchema,
   TemplatesAttachToChatSchema,
 } from "@contracts/ipc";
-import { SettingRepo } from "@main/store/repositories.js";
 import {
   addTemplate,
   attachTemplateToChat,
-  ensureTemplateDirs,
   listTemplates,
   listTrashedTemplates,
   notifyTemplatesChanged,
@@ -30,9 +25,7 @@ import {
   renameTemplate,
   restoreTemplate,
   templateEntryDir,
-  templatesRoot,
   trashTemplate,
-  writeTemplateKindManifest,
   writeTemplateManifest,
 } from "@main/templates/store.js";
 import { readTemplateFile, resolveTemplateFilePath } from "@main/templates/read.js";
@@ -135,12 +128,6 @@ export function registerTemplateHandlers(ipcMain: IpcMain): void {
     return writeTemplateManifest(input.kind, input.dirName);
   });
 
-  /** 整个类目的清单 —— 「全部 LaTeX 模版」那一行挂进对话时用的。 */
-  ipcMain.handle(IPC.TEMPLATES_KIND_MANIFEST, (_evt, raw) => {
-    const input = TemplateKindManifestSchema.parse(raw);
-    return writeTemplateKindManifest(input.kind);
-  });
-
   /**
    * 把一条模版挂到指定会话的输入框上 —— 左栏右键「添加到当前对话」。
    *
@@ -184,11 +171,4 @@ export function registerTemplateHandlers(ipcMain: IpcMain): void {
     return err ? { ok: false, error: err } : { ok: true };
   });
 
-  ipcMain.handle(IPC.TEMPLATES_GET_ROOT, () => ({ path: ensureTemplateDirs() }));
-  ipcMain.handle(IPC.TEMPLATES_SET_ROOT, (_evt, raw) => {
-    // 与文献库同一条规则:只改指向,不搬已有文件(搬文件由用户自己决定)
-    const input = LibrarySetRootSchema.parse(raw);
-    SettingRepo.set(TEMPLATE_ROOT_SETTING_KEY, input.path);
-    return { path: templatesRoot() };
-  });
 }

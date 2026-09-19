@@ -288,15 +288,10 @@ const api = {
       ipcRenderer.invoke(IPC.LIBRARY_CONVERSION_REPORT)) as RpcMap["library.conversionReport"],
     fullTextSearch: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_FULL_TEXT_SEARCH, input)) as RpcMap["library.fullTextSearch"],
-    getRoot: (() => ipcRenderer.invoke(IPC.LIBRARY_GET_ROOT)) as RpcMap["library.getRoot"],
-    setRoot: ((input) =>
-      ipcRenderer.invoke(IPC.LIBRARY_SET_ROOT, input)) as RpcMap["library.setRoot"],
     itemManifest: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_ITEM_MANIFEST, input)) as RpcMap["library.itemManifest"],
     manifest: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_MANIFEST, input)) as RpcMap["library.manifest"],
-    kindManifest: ((input) =>
-      ipcRenderer.invoke(IPC.LIBRARY_KIND_MANIFEST, input)) as RpcMap["library.kindManifest"],
     attachToChat: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_ATTACH_TO_CHAT, input)) as RpcMap["library.attachToChat"],
     listCollections: (() =>
@@ -687,16 +682,11 @@ const api = {
     manifest: ((input) =>
       ipcRenderer.invoke(IPC.TEMPLATES_MANIFEST, input)) as RpcMap["templates.manifest"],
     /** 整个类目的清单(「全部 LaTeX 模版」那一行)。 */
-    kindManifest: ((input) =>
-      ipcRenderer.invoke(IPC.TEMPLATES_KIND_MANIFEST, input)) as RpcMap["templates.kindManifest"],
     attachToChat: ((input) =>
       ipcRenderer.invoke(
         IPC.TEMPLATES_ATTACH_TO_CHAT,
         input,
       )) as RpcMap["templates.attachToChat"],
-    getRoot: (() => ipcRenderer.invoke(IPC.TEMPLATES_GET_ROOT)) as RpcMap["templates.getRoot"],
-    setRoot: ((input) =>
-      ipcRenderer.invoke(IPC.TEMPLATES_SET_ROOT, input)) as RpcMap["templates.setRoot"],
   },
 
   integrations: {
@@ -744,7 +734,6 @@ const api = {
   mobile: {
     startPairing: ((input) =>
       ipcRenderer.invoke(IPC.MOBILE_START_PAIRING, input)) as RpcMap["mobile.startPairing"],
-    getPairing: (() => ipcRenderer.invoke(IPC.MOBILE_GET_PAIRING)) as RpcMap["mobile.getPairing"],
     cancelPairing: (() => ipcRenderer.invoke(IPC.MOBILE_CANCEL_PAIRING)) as RpcMap["mobile.cancelPairing"],
     listDevices: (() => ipcRenderer.invoke(IPC.MOBILE_LIST_DEVICES)) as RpcMap["mobile.listDevices"],
     revokeDevice: ((input) =>
