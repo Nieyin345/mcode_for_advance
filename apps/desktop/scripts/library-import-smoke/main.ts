@@ -80,6 +80,22 @@ eq("重复导入被跳过", again.skipped, 1);
 eq("而且没有新增", again.added, 0);
 eq("给回来的是原来那一条", again.items[0]?.id, linkedItem?.id);
 
+// **同一个来源、两种落法**:linked 是"只记路径",attached 是"复制进库"。
+// 它们查重查的不是同一个字段(linked 比绝对路径,attached 比库内相对路径),
+// 所以**不该**互相算重复 —— 用户完全可能既要引用原件、又要在库里留一份副本。
+const bothWays = importGenericFiles({ paths: [linkedSrc], mode: "attached" });
+eq("同源文件另存一份 attached", bothWays.added, 1);
+check("而且是一条新条目", bothWays.items[0]?.id !== linkedItem?.id, bothWays.items[0]?.id);
+
+// 一次导入**同一个文件两遍**:只该进去一条。去重表是在这一趟开始时拍的快照
+// (所以不能用数据库查),同一批里重复的路径必须靠它挡掉。
+const twiceSrc = join(SRC, "同一批里出现两次.md");
+writeFileSync(twiceSrc, "x", "utf8");
+const twice = importGenericFiles({ paths: [twiceSrc, twiceSrc], mode: "linked" });
+eq("同一批里出现两次 → 只进一条", twice.added, 1);
+eq("另一条算跳过", twice.skipped, 1);
+eq("两次给回来的是同一条目", twice.items[0]?.id, twice.items[1]?.id);
+
 // 路径不存在 —— 要**说出来**,不能安静地少一条。
 const missing = importGenericFiles({ paths: [join(SRC, "没有这个文件.pdf")], mode: "linked" });
 eq("不存在的路径没有导入", missing.added, 0);
@@ -162,6 +178,29 @@ check("落在库根的 files/ 下面", copiedAbs.startsWith(join(ROOT, "files") 
 const reread = readEntryFile(attachedItem.id);
 eq("attached 条目读得动", reread.type, "text");
 
+// ⚠️ **这里曾经想断言"同一个文件再按 attached 导入一次会跳过",但那个断言是错的** ——
+// 记一笔免得以后有人再写一遍。`attached` 的 `file_path` 是
+// `<库根>/files/<条目 id>-<原名>`,而 id 是**新建时**才生成的;库里也不记来源路径。
+// 所以"这个文件是不是已经复制进库过"**事后问不出答案**,跨调用的重复认不出来。
+// (早先的写法是拿绝对路径去比这个相对路径列,那一支恒假 —— 也是假的,只是假在
+// 另一头:它连同一趟里的重复都不挡。)
+//
+// 能挡住的是**同一趟里**的重复(用户拖一个文件夹,里面两个东西指同一个文件;或者
+// 手滑点两次)—— 见上面 `twice` 那一段。
+const attachAgain = importGenericFiles({ paths: [attachSrc], mode: "attached" });
+eq("attached 跨调用认不出重复(已知的形态代价,不是这次修的)", attachAgain.added, 1);
+
+// 但**同一趟里**的重复必须挡住 —— 拖进来一个文件夹时里面两个东西指同一个文件是常事。
+// 这一条是 `seen` 那张表存在的唯一理由:`linked` 有键可查(建条目时就把绝对路径写上
+// 了),`attached` **没有** —— 它的 `file_path` 要等条目建出来、文件复制过去才写得上,
+// 所以同一批里的第二次走到查库那一步时,第一次那条还查不到。
+const twiceAttachSrc = join(SRC, "同一批里出现两次.md");
+writeFileSync(twiceAttachSrc, "y", "utf8");
+const twiceAttach = importGenericFiles({ paths: [twiceAttachSrc, twiceAttachSrc], mode: "attached" });
+eq("attached 同一批里出现两次 → 只进一条", twiceAttach.added, 1);
+eq("另一条算跳过", twiceAttach.skipped, 1);
+eq("两次给回来的是同一条目", twiceAttach.items[0]?.id, twiceAttach.items[1]?.id);
+
 // 文件类型不认识要**说出来**,不能让用户对着空白发呆。
 const weirdPath = join(SRC, "奇怪.xyzzy");
 writeFileSync(weirdPath, "x", "utf8");
@@ -185,11 +224,20 @@ const emitted = importedIds();
 check("attached 那条发了", emitted.includes(attachedItem.id), { emitted, want: attachedItem.id });
 check("linked 那条发了", emitted.includes(linkedItem!.id), { emitted, want: linkedItem!.id });
 check("目录条目也发了", emitted.includes(dirItem.id), { emitted, want: dirItem.id });
-// 一次导入一条,不多不少:**四条**进过库(linked 的文件、那个目录、attached 的 md、
-// 那个不认识的扩展名)。上面被跳过的那次重复导入和那个不存在的路径都**不该**发 ——
+// 一次导入一条,不多不少:**八条**进过库(linked 的文件、那个目录、linked 同源另存的
+// attached 副本、同一批里那第二条路径首次入库、attached 的 md、那个不认识的扩展名、
+// 上面那条 attached 重复导入(它确实又进了一条,那是这个落法的形态代价)、以及
+// attached 同一批里的第二条路径首次入库)。上面被跳过的那三次(重复导入、同一批里的
+// 第二次、同源另存之后再按 attached 存一次)以及那个不存在的路径都**不该**发 ——
 // 计数正好把这一点也钉住(数目对不上就是"跳过/失败也发了",那种假信号会让自动化
 // 对着一条根本没进库的东西跑起来)。
-eq("一次导入一条,不多不少", emitted.length, 4);
+eq("一次导入一条,不多不少", emitted.length, 8);
+
+// 而 attached 那条**真的复制了一份进库** —— 去重若按来源路径判,这里会被当成
+// "已经导过"而跳过,文件就不会出现在库里(条目还在,点开是空的)。
+const bothWaysCopy = entryFileAbsPath(bothWays.items[0]!);
+check("另存的副本真的落了盘", bothWaysCopy !== null && existsSync(bothWaysCopy), bothWaysCopy);
+eq("两份内容一致", bothWaysCopy ? readFileSync(bothWaysCopy, "utf8") : "", "假装是 ppt");
 // 事件的形状:会话是合成哨兵"(system)"(导入不属于任何对话),模型侧靠它认。
 eq("会话用 (system) 哨兵", (externals[0] as { sessionId?: string })?.sessionId, "(system)");
 

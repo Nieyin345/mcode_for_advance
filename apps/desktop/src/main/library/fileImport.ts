@@ -55,6 +55,17 @@ export function importGenericFiles(input: {
   const errors: Array<{ path: string; error: string }> = [];
   let added = 0;
   let skipped = 0;
+  /**
+   * 这一趟里**已经处理过的来源路径** → 它对应的条目(`null` = 处理过但没入库)。
+   *
+   * 一次导入**同一个路径两遍**是用户的常态(拖进来一个文件夹,里面两个快捷方式指
+   * 同一个文件;或者手滑点两次)。光靠 `findExisting` 挡不住:它是查库的,而库里
+   * 要到这一条**处理完**才有记录 —— 同一批里的第二次走到那儿时,第一次那条还没写进去。
+   *
+   * 存条目而不是存 `true`,是因为**给回来的东西要和上一次一致**:用户重复导入同一个
+   * 文件,拿到的那一条该是同一条,不能第二次给回 `undefined`。
+   */
+  const seen = new Map<string, LibraryItem | null>();
 
   for (const p of input.paths) {
     const abs = path.resolve(p);
@@ -64,12 +75,17 @@ export function importGenericFiles(input: {
         continue;
       }
       const isDir = statSync(abs).isDirectory();
-      // 同一路径已经进过库(linked 按 filePath 查)就不重复建 —— 用户对同一个
-      // 目录点两次"导入"是常态,不挡的话会出现两个标题一样的条目。
-      const dup = LibraryRepo.list({ limit: 1000 }).items.find(
-        (i) => i.entryMode === mode && i.filePath === abs,
-      );
+      if (seen.has(abs)) {
+        skipped += 1;
+        const first = seen.get(abs);
+        if (first) items.push(first);
+        continue;
+      }
+      // 查库只对 `linked` 有意义(理由见 `findExisting`)。`attached` 的重复只靠
+      // 上面那张本趟的表挡。
+      const dup = mode === "linked" ? findExisting(abs) : undefined;
       if (dup) {
+        seen.set(abs, dup);
         skipped += 1;
         items.push(dup);
         continue;
@@ -90,6 +106,7 @@ export function importGenericFiles(input: {
         if (!isDir) copyFileSync(abs, dest);
         LibraryRepo.setFilePath(item.id, toRel(dest));
         const fresh = LibraryRepo.get(item.id)!;
+        seen.set(abs, fresh);
         items.push(fresh);
         added += 1;
         emitItemImported(fresh);
@@ -104,6 +121,7 @@ export function importGenericFiles(input: {
       });
       items.push(item);
       added += 1;
+      seen.set(abs, item);
       // 与 attached 分支同一条事件 —— automation 的「文献自动下载」与钩子都以
       // "有条目入库"为准,不区分落法。
       emitItemImported(item);
@@ -121,6 +139,30 @@ export function importGenericFiles(input: {
 function toRel(abs: string): string {
   const root = libraryRoot();
   return abs.startsWith(root) ? abs.slice(root.length + 1).split(path.sep).join("/") : abs;
+}
+
+/**
+ * 这个来源路径有没有**已经以 `linked` 落过库**。
+ *
+ * ## 只查 `linked`,而且只在这一趟内查得到
+ *
+ * `linked` 的 `file_path` 存的是用户给的**绝对路径原样**,所以有键可查 —— 用户对
+ * 同一个文件点两次「导入」是常态,不挡的话会出现两个标题一样的条目。
+ *
+ * ## `attached` 那一支为什么没有这个键(所以去重只能靠这一趟自己)
+ *
+ * 它的 `file_path` 是 `<库根>/files/<条目 id>-<原名>`,而 **id 是新建时才生成的**
+ * —— 落盘之前根本算不出来。库里也不记来源路径,所以"这个文件是不是已经复制进库过"
+ * 事后问不出答案。早先这里两种模式都拿 `filePath === abs` 去比,于是 attached 那一支
+ * **恒假**(存的是相对路径,拿绝对路径比,永远是 undefined),同一个文件拖两次就进
+ * 两条、各自复制一份 —— 而入口那几处都是 `linked`,所以一直没人撞见。
+ *
+ * 修法不是硬造一个键,而是**把去重挪到这一趟自己的表上**(见 `seen`):一次导入里
+ * 同一个路径出现两次,第二条挡掉。跨调用的那份重复仍认不出来 —— 那是这个存储形态的
+ * 真实代价(改成按内容哈希命名才能根治,那是另一个量级的改动),不假装它被修好了。
+ */
+function findExisting(abs: string): LibraryItem | undefined {
+  return LibraryRepo.findLinkedByPath(abs);
 }
 
 /** linked/attached 共用的"这条条目该读什么":文件本身,或目录下的文件列表。 */

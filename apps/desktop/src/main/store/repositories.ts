@@ -1889,6 +1889,31 @@ export const LibraryRepo = {
     persist();
   },
 
+  /**
+   * 按通用文件路径找一条 `linked` 条目(通用导入器的去重口)。
+   *
+   * 只服务 `linked`:它的 `file_path` 存的是**用户给的那个绝对路径原样**,所以有键可查。
+   * `attached` 存的是 `<库根>/files/<条目 id>-<原名>` —— **id 是新建时才生成的**,
+   * 落盘之前算不出来,而且库里不记来源路径,所以那一支没有可查的键(理由见
+   * `fileImport.ts` 的 `findExisting`)。
+   *
+   * 直查而不是 `list()`:后者有 200 条上限(超了就翻不到,于是"重复导入"静默变成
+   * "又建了一条"),而且要 `SELECT i.*` 拉回整表 —— 一次拖进 200 个文件就是 200 次
+   * 全表读。这里按列查,走得上索引。
+   */
+  findLinkedByPath(absPath: string): LibraryItem | undefined {
+    const db = getDb();
+    const stmt = db.prepare(
+      "SELECT * FROM library_items WHERE entry_mode = 'linked' AND file_path = ? LIMIT 1",
+    );
+    stmt.bind([v(absPath)]);
+    const found = stmt.step()
+      ? rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow)
+      : undefined;
+    stmt.free();
+    return found;
+  },
+
   /** 写通用文件路径(attached 的相对库根路径;linked 不走这里,建条目时就带上)。 */
   setFilePath(id: string, relPath: string): void {
     getDb().run("UPDATE library_items SET file_path = ?, updated_at = ? WHERE id = ?", [
