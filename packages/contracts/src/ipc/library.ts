@@ -6,7 +6,7 @@
  */
 
 import { z } from "zod";
-import type { LibraryKind, DownloadStatus } from "../library.js";
+import { PDF_STATES, type LibraryKind, type DownloadStatus } from "../library.js";
 
 /** 下载并发上限。缺失 → 默认 2。走内嵌浏览器下载,并发过高会与用户的手动浏览
  *  抢同一个 WebContentsView,反而更慢。 */
@@ -343,8 +343,10 @@ export const LibraryListSchema = z.object({
   kind: LibraryKindSchema.optional(),
   /** 搜索关键词(标题/作者/摘要/venue),大小写不敏感。 */
   query: z.string().optional(),
-  /** 只列某种 PDF 状态(如 "none" 用于找缺 PDF 的)。 */
-  pdfState: z.enum(["none", "queued", "downloading", "ready", "needs_login", "failed"]).optional(),
+  /** 只列某种 PDF 状态(如 "none" 用于找缺 PDF 的)。
+   *  ⚠️ 名单从 `PDF_STATES` 生成,不要手抄 —— 这里原来手抄的那份漏了 `not_found`,
+   *  于是那一档在 IPC 层就被拒,界面上永远筛不出来。见 `PDF_STATES` 的说明。 */
+  pdfState: z.enum(PDF_STATES).optional(),
   limit: z.number().int().positive().max(1000).optional(),
   offset: z.number().int().nonnegative().optional(),
 });

@@ -523,12 +523,16 @@ export function ItemDetail({ item, job, pdfState, onDownload, onChanged }: Props
               </button>
             ) : (
               <button
-                onClick={() => onDownload(item.id, pdfState === "failed")}
+                onClick={() => onDownload(item.id, pdfState === "failed" || pdfState === "not_found")}
                 disabled={pdfState === "queued" || pdfState === "downloading"}
                 className="inline-flex items-center gap-1 rounded border border-edge px-2 py-0.5 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content disabled:opacity-50"
               >
                 <IconRefresh size={12} />
-                {pdfState === "failed" ? t("library.pdf.retry") : t("library.action.download")}
+                {/* 找不到来源时不写「重试」—— 那句话是在请用户去点一个没用的按钮。
+                    见 `derivePdfState` 里那段说明。 */}
+                {pdfState === "failed" || pdfState === "not_found"
+                  ? t("library.pdf.retry")
+                  : t("library.action.download")}
               </button>
             )}
           </div>

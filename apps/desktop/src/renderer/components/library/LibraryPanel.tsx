@@ -33,6 +33,7 @@ import {
   IconFilePlus,
   IconFileText,
   IconFolderPlus,
+  IconLock,
   IconSearch,
   IconShare,
   IconUpload,
@@ -719,6 +720,23 @@ export function LibraryPanel() {
             {t("library.action.removeFromLibrary")}
           </button>
         </div>
+      )}
+
+      {/* 「需要登录」要说清下一步 —— 光一个琥珀色锁图标,用户看到的是"这软件坏了"。
+          i18n 里这两句是为它写的,一直没人读。点它直接切到「需要登录」那一档,
+          再进去点「去登录」就落到内嵌浏览器 —— 收藏夹里那个入口没有名字,找不着。 */}
+      {needsLoginCount > 0 && status !== "needsLogin" && (
+        <button
+          onClick={() => setStatus("needsLogin")}
+          className="flex w-full shrink-0 items-start gap-1.5 border-b border-edge bg-amber-500/10 px-3 py-1.5 text-left text-[0.7857em] leading-relaxed text-amber-700 hover:bg-amber-500/20 dark:text-amber-400"
+        >
+          <IconLock size={12} className="mt-0.5 shrink-0" />
+          <span className="min-w-0 flex-1">
+            <span className="font-medium">{t("library.notice.needsLoginTitle")}</span>
+            {" "}
+            {t("library.notice.needsLoginBody")}
+          </span>
+        </button>
       )}
 
       {/* 被挡住时说清楚 —— 空列表和"被筛选挡住"长得一模一样,而后者能自己解决 */}

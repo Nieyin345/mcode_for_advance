@@ -303,9 +303,60 @@ export interface DownloadJob {
  * 都不够:有任务不代表有文件(可能还在跑或已失败),有文件也不代表任务已完成
  * (可能是手动导入的)。
  */
-export type PdfState = "none" | "queued" | "downloading" | "ready" | "needs_login" | "failed";
+export type PdfState =
+  | "none"
+  | "queued"
+  | "downloading"
+  | "ready"
+  | "needs_login"
+  /** 五个源都翻过、确实没有开放版本 —— 不是"下砸了",用户自己改不了什么。 */
+  | "not_found"
+  | "failed";
 
-/** 由文献记录与最新下载任务推导 PDF 状态。 */export function derivePdfState(
+/**
+ * 全部 `PdfState`,**这是唯一的一份名单**。
+ *
+ * 加一档状态时只改这里。这份名单原先被手抄了**四遍**,而它们全都漏了 `not_found`
+ * (`derivePdfState` 把它折进了 `failed`,手抄的人也就没抄它):
+ *
+ *   1. `LibraryListFilter.pdfState`(主进程的过滤参数) → 已改成引用 `PdfState`
+ *   2. `pdfStateClause` 的 switch                      → 已改成显式列举 + default 抛出
+ *   3. IPC 的 `LibraryListSchema.pdfState`(zod)       → 由这一份生成
+ *   4. 界面上那一排筛选 chip                            → 由这一份驱动
+ *
+ * 四处漏一处就是一条静默走不通的路:筛选面板上根本没有那一档、或者选中了却返回
+ * 整个库。所以现在是 `as const` 的数组 + `satisfies`,顺手还能直接给 zod 用。
+ */
+export const PDF_STATES = [
+  "none",
+  "queued",
+  "downloading",
+  "needs_login",
+  "not_found",
+  "failed",
+  "ready",
+] as const satisfies readonly PdfState[];
+
+// 编译期护栏:`satisfies` 只保证表里的都在 `PdfState` 里,不保证一个不漏。
+// 这一句反过来断言"一个不漏"—— 给 `PdfState` 加了新状态而忘了加进这张表,
+// 这里直接 typecheck 失败。
+type _ListedPdfState = (typeof PDF_STATES)[number];
+type _MissingPdfState = Exclude<PdfState, _ListedPdfState>;
+const _noMissingPdfState: _MissingPdfState extends never ? true : ["PDF_STATES 漏了状态", _MissingPdfState] = true;
+void _noMissingPdfState;
+
+/**
+ * 由文献记录与最新下载任务推导 PDF 状态。
+ *
+ * ⚠️ **`not_found` 与 `failed` 必须分开。** 它俩的下载任务状态本来就不同
+ * (`DownloadJob.status` 里就是两个值),可这里原来把 `not_found` 一起折进
+ * `failed`,于是界面上只说得出「下载失败」三个字 —— 而那句话会把用户引向
+ * 一个没有用的动作:重试。五个源都找过而没有开放版本的文献,再点几次重试
+ * 结果一样。i18n 里「找不到来源」那句就是为这个状态写的。
+ *
+ * 分不分得出来只在这一个函数上,所以和 `DownloadJob.status` 是一一对应的。
+ */
+export function derivePdfState(
   item: Pick<LibraryItem, "pdfPath">,
   job: Pick<DownloadJob, "status"> | null,
 ): PdfState {
@@ -322,6 +373,7 @@ export type PdfState = "none" | "queued" | "downloading" | "ready" | "needs_logi
     case "needs_login":
       return "needs_login";
     case "not_found":
+      return "not_found";
     case "rate_limited":
     case "failed":
       return "failed";

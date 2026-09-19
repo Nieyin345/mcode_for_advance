@@ -30,6 +30,7 @@ import type {
   InstitutionProfile,
   DownloadJob,
   DownloadStatus,
+  PdfState,
 } from "@contracts/library";
 import { basename } from "node:path";
 import { normPathKey } from "@main/lib/pathNorm.js";
@@ -1638,31 +1639,56 @@ export interface LibraryListFilter {
   /** 只看某个库(论文 / 教材 / 笔记)。不传 = 不限库。 */
   kind?: LibraryKind;
   query?: string;
-  /** 按 PDF 可用性筛。`none` 用于快速找「还没下到 PDF」的条目。 */
-  pdfState?: "none" | "queued" | "downloading" | "ready" | "needs_login" | "failed";
+  /** 按 PDF 可用性筛。`none` 用于快速找「还没下到 PDF」的条目。
+   *
+   *  ⚠️ **这里引用 `PdfState`,不要再抄一份联合类型。** 原来它是一份手抄的名单,
+   *  而 `PdfState` 加了 `not_found` 之后这一份没跟上 —— 于是筛选面板里根本没有
+   *  这一档,`pdfStateClause` 的 `not_found` 分支连调都调不到。类型别名是唯一
+   *  不会漂的写法。 */
+  pdfState?: PdfState;
   limit?: number;
   offset?: number;
 }
 
 /** PDF 状态在 SQL 里的等价条件(与 `derivePdfState` 的语义保持一致)。
- *  单独抽出来是为了让 list 的 WHERE 拼接与 count 复用同一份判据。 */
+ *  单独抽出来是为了让 list 的 WHERE 拼接与 count 复用同一份判据。
+ *
+ *  ⚠️ **每一档都必须显式列出,`default` 不许回落成 `1=1`。**
+ *  这里原来有个 `default: return "1=1"` 兜底,而 switch 里漏了 `not_found`
+ *  —— 于是按「找不到来源」筛会返回**整个库**。谁也不会发现:列表看起来是满的,
+ *  只是那条筛选没有生效。而这个函数签名的入参类型就是 `PdfState`,加一档状态
+ *  时 TS 不会提醒这里的 switch 少了一个 case(`default` 把缺口吃掉了)。
+ *  现在 default 抛出来,漏一档是当场一条错误,不是某天一个筛不对的列表。
+ *
+ *  两侧"哪几档"的名单在 `lib/pdfState.ts` 的 `PDF_STATE_ORDER`,
+ *  `pdf-state-smoke` 拿同一组夹具走一遍 TS、走一遍真 SQL 逐档比对。 */
 function pdfStateClause(state: NonNullable<LibraryListFilter["pdfState"]>): string {
   const jobStatus = "(SELECT j.status FROM download_jobs j WHERE j.item_id = i.id)";
   switch (state) {
     case "ready":
       return "i.pdf_path IS NOT NULL";
+    // 没有文件、也没有**有效**的任务行。`done` 要算进来:`derivePdfState` 把
+    // 「任务说完成了但没有文件」(文件被外部删了)判成 none,让用户重下 ——
+    // 只认 `jobStatus IS NULL` 的话这条会掉出所有档,在界面上变成一个既不属于
+    // 「缺 PDF」也不属于任何筛选的幽灵。
     case "none":
-      return "i.pdf_path IS NULL AND (SELECT j.status FROM download_jobs j WHERE j.item_id = i.id) IS NULL";
+      return `i.pdf_path IS NULL AND (${jobStatus} IS NULL OR ${jobStatus} = 'done')`;
     case "queued":
       return `i.pdf_path IS NULL AND ${jobStatus} = 'pending'`;
     case "downloading":
       return `i.pdf_path IS NULL AND ${jobStatus} = 'running'`;
     case "needs_login":
       return `i.pdf_path IS NULL AND ${jobStatus} = 'needs_login'`;
+    // ★ 这一档原先**不存在**,上面那个 default 把它静默吃掉了。
+    case "not_found":
+      return `i.pdf_path IS NULL AND ${jobStatus} = 'not_found'`;
     case "failed":
-      return `i.pdf_path IS NULL AND ${jobStatus} IN ('failed','not_found','rate_limited')`;
-    default:
-      return "1=1";
+      return `i.pdf_path IS NULL AND ${jobStatus} IN ('failed','rate_limited')`;
+    default: {
+      // 到了这里说明 `PdfState` 加了新状态而上面没跟。宁可炸,不可筛错。
+      const never: never = state;
+      throw new Error(`pdfStateClause 漏了一档 PDF 状态:${String(never)}`);
+    }
   }
 }
 

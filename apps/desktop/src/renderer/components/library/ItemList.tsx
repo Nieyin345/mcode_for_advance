@@ -75,6 +75,14 @@ export function PdfBadge({ state, compact = false }: { state: PdfState; compact?
       label: t("library.pdf.needsLogin"),
       cls: "text-amber-600 dark:text-amber-500",
     },
+    // 找不到来源也走暖色、也用警告图标,但**不说「失败」** —— 五个源都翻过而
+    // 确实没有开放版本,这不是"下砸了",用户重试多少次结果都一样。
+    // 见 `derivePdfState` 里那段说明。
+    not_found: {
+      icon: <IconAlertTriangle size={13} />,
+      label: t("library.pdf.notFound"),
+      cls: "text-amber-600 dark:text-amber-500",
+    },
     failed: {
       icon: <IconAlertTriangle size={13} />,
       label: t("library.pdf.failed"),
