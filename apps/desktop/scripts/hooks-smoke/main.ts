@@ -16,9 +16,9 @@
  *
  * Run: scripts/hooks-smoke/run.sh
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   DEFAULT_HOOK_TIMEOUT_MS,
   HOOK_EVENTS,
@@ -27,11 +27,20 @@ import {
   matchesHook,
   parseHooksFile,
   validateHook,
+  type HookEvent,
   type HookPayload,
   type HookSpec,
 } from "@contracts/hook";
 import { decodeOutput, runHookCommand } from "@main/hooks/runCommand.js";
 import { readHooks, removeHook, saveHook } from "@main/hooks/store.js";
+// 面板那张「哪个引擎不发哪一类」的表 —— 它是**渲染端**的事实源(契约里放不下:
+// `packages/contracts/src/hook.ts` 讲的是"事件是什么",不是"哪个引擎实现得了")。
+// 这里 import 它是为了跟主进程的真实发出点对账,不是为了渲染。
+import {
+  hookEventUnsupportedBy,
+  HOOK_EVENT_UNSUPPORTED_BY,
+  type HookEngineId,
+} from "@renderer/components/settings/hooksView.js";
 
 let failures = 0;
 let checks = 0;
@@ -487,6 +496,105 @@ try {
 } finally {
   rmSync(dataDir, { recursive: true, force: true });
 }
+
+/* ────────── 7. 「哪个引擎不发哪一类」那张表,和代码里的事实对账 ────────── */
+
+console.log("\n事件 × 引擎(panel 上那句「谁不发」不能是手抄的)");
+
+// 面板上要说清"这个事件哪个引擎根本不发"—— 否则用户给那个引擎挂一条,写好了命令、
+// 保存成功、界面上一应俱全,它永远不会响,而且没有任何地方告诉他。
+//
+// 这张表**必须**和主进程里真实的发出点一致,所以这里不手抄第二份:直接扫三个 provider
+// 目录里的 `type: "xxx"` 发出点,再和 `hooksView` 那张表对账。
+// 扫的是**字面量**——`ctx.emit({ type: "tool.use", … })`。注释里提到事件名的地方用的是
+// 反引号(`\`todo.update\``),不会命中;为稳妥起见先把行注释削掉。
+const PROVIDERS: Array<{ engine: HookEngineId; dir: string }> = [
+  { engine: "claude", dir: "claude-sdk" },
+  { engine: "pi", dir: "pi-sdk" },
+  { engine: "codex", dir: "codex-sdk" },
+];
+
+/**
+ * **宿主侧发的、对三个引擎都成立**的事件。
+ *
+ * 这几条不在 provider 目录里发,是由主进程按会话统一发的(审批桥、提问桥、计划桥、
+ * 用户消息回声、工作流节点结果、资料库入库/下载)。三个引擎走的是同一份代码,所以
+ * 引擎之间没有差别。
+ *
+ * ⚠️ **`upstream.issue` 故意不在这张表里**:它虽然在宿主侧也有一个发出点,
+ * 但那一个住在 `RuntimeManager` 的**自定义模型桥接**分支里,而只有 claude 会话会走到
+ * 那里(Pi / Codex 自己管模型清单,`supportsCustomEndpoint: false`,拿不到
+ * `customModelId`)。所以它按 provider 扫描的结果算 —— 只有 claude 会发。
+ * 同款还有 `subagent.update` 在 `RuntimeManager` 里那次**重放**:它只在
+ * `rt.lastSubagents` 非空时才发,而那份名册本身就来自 `subagent.update` ——
+ * Pi 的名册永远是空的,于是那次重放对 Pi 也是不发的。
+ */
+const HOST_EMITTED_FOR_ALL: readonly HookEvent[] = [
+  "user.message",
+  "approval.request",
+  "request.resolved",
+  "question.ask",
+  "plan.approval_request",
+  "workflow.node.result",
+  "library.item.imported",
+  "library.item.downloaded",
+];
+
+/** 这个 provider 目录里发过哪些事件(只认 `type: "字面量"`)。 */
+function emittedBy(engineDir: string): Set<string> {
+  const base = resolve(process.cwd(), "src/main/providers", engineDir);
+  const out = new Set<string>();
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".ts")) {
+        for (const raw of readFileSync(full, "utf-8").split("\n")) {
+          // 行注释削掉(块注释里没出现过 `type: "…"`,逐行削就够)。
+          const line = raw.replace(/\/\/.*$/, "");
+          for (const m of line.matchAll(/type:\s*"([a-z][a-zA-Z0-9_.\-]*)"/g)) out.add(m[1]);
+        }
+      }
+    }
+  };
+  walk(base);
+  return out;
+}
+
+const emitted: Record<string, Set<string>> = {};
+for (const p of PROVIDERS) emitted[p.engine] = emittedBy(p.dir);
+
+// 哨兵:扫描器得先证明它**扫得动**。三个目录都读不出东西时下面的对账会"全过",
+// 而那正是"改了目录名/换成正则"之后的样子。
+check(
+  "扫描器读到了发出点(否则下面每一条都是假绿)",
+  PROVIDERS.every((p) => emitted[p.engine].has("tool.use") && emitted[p.engine].has("turn.done")),
+  PROVIDERS.map((p) => `${p.engine}:${emitted[p.engine].size}`),
+);
+
+for (const event of HOOK_EVENTS) {
+  const unsupported = hookEventUnsupportedBy(event);
+  const expected: HookEngineId[] = HOST_EMITTED_FOR_ALL.includes(event)
+    ? []
+    : PROVIDERS.filter((p) => !emitted[p.engine].has(event)).map((p) => p.engine);
+  eq(
+    `${event} → 不发的引擎`,
+    [...unsupported].sort().join(","),
+    [...expected].sort().join(","),
+  );
+}
+
+// 问题里点名的那两条,单独钉一遍 —— 上面的对账是"表 == 代码",而这两条是"代码本来就
+// 该是那样"(万一三个 provider 都被改得不再发 todo.update,对账照样会绿)。
+eq("待办清单:Pi 不发", hookEventUnsupportedBy("todo.update").join(","), "pi");
+eq("子代理状态:Pi 不发", hookEventUnsupportedBy("subagent.update").join(","), "pi");
+eq("上下文压缩:Codex 不发", hookEventUnsupportedBy("compact.result").join(","), "codex");
+eq("一轮没跑完:Pi、Codex 都不发", [...hookEventUnsupportedBy("turn.incomplete")].sort().join(","), "codex,pi");
+eq("上游重试:Pi、Codex 都不发", [...hookEventUnsupportedBy("upstream.issue")].sort().join(","), "codex,pi");
+// 反向的一条:别把"没查出问题"写成"全都不支持"。
+eq("工具开始:三个引擎都发", hookEventUnsupportedBy("tool.use").length, 0);
+eq("一轮结束:三个引擎都发", hookEventUnsupportedBy("turn.done").length, 0);
+check("表里每一个键都是真事件", Object.keys(HOOK_EVENT_UNSUPPORTED_BY).every((e) => HOOK_EVENTS.includes(e as HookEvent)));
 
 /* ────────────────────── 收尾 ────────────────────── */
 

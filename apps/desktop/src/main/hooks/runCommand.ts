@@ -24,7 +24,7 @@
  *  - `cwd` **可能已经不存在了**(工作树被删掉、项目被移除),那种情况要让命令在宿主
  *    当前目录里跑,而不是起不来。
  */
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import {
   DEFAULT_HOOK_TIMEOUT_MS,
   HOOK_ENV,
@@ -51,10 +51,14 @@ export async function runHookCommand(spec: HookSpec, payload: HookPayload): Prom
     command: spec.command,
     // `shell: true`:钩子写的就是 shell 命令(`python x.py --flag`、管道都该能用)。
     shell: true,
-    // 工作目录**可能已经不存在了**(工作树被删掉、项目被移除)。给一个不存在的
+    // 工作目录**可能已经不在那儿了**(工作树被删掉、项目被移除)。给一个不存在的
     // cwd 会让 spawn 直接失败,而那和"命令自己写错了"是两件事 —— 所以先探一下,
     // 不在了就让命令在宿主当前的目录里跑。
-    ...(existsSync(payload.cwd) ? { cwd: payload.cwd } : {}),
+    //
+    // ⚠️ 探的是**目录**不是"存在"(`isDirectory`):一个**文件**也能通过 `existsSync`,
+    // 于是它会被原样交给 spawn,而报错是 `ENOENT`。那句话指着 cmd.exe 说"找不到",
+    // 用户去看自己写的命令,怎么看都是对的 —— 一个把排查方向带偏的错。
+    ...(isDirectory(payload.cwd) ? { cwd: payload.cwd } : {}),
     env: { ...process.env, ...envOf(payload) },
     // 载荷走 stdin。命令没读 stdin 也不会卡住(写完就 end)。
     stdin: JSON.stringify(payload, null, 2),
@@ -66,14 +70,24 @@ export async function runHookCommand(spec: HookSpec, payload: HookPayload): Prom
 
   const stdout = run.stdout;
   const stderr = run.stderr;
+  // 输出一起走:三条路都带上,超时那条也要(见下面那段注释)。
+  const output: Partial<HookRun> = {
+    ...(stdout.length > 0 ? { stdout: markTail(stdout, run.stdoutTruncated) } : {}),
+    ...(stderr.length > 0 ? { stderr: markTail(stderr, run.stderrTruncated) } : {}),
+  };
 
   if (run.spawnError !== undefined) {
-    return { status: "failed", error: `起不来:${run.spawnError.message}` };
+    return { status: "failed", ...output, error: `起不来:${run.spawnError.message}` };
   }
   if (run.killedBy.timeout) {
+    // ⚠️ **超时也要带上已经收到的输出。** 它是用户回答"我的钩子为什么卡住"的唯一线索:
+    // 一个跑到一半挂住的脚本,卡住之前那几行(下到第几个文件、正在等哪个接口)正是现场,
+    // 而底层(`lib/spawnRun`)是收着的 —— 早先这里把它丢掉,设置页上就只剩一句"超过
+    // N ms 被中止",一个字的现场都没有。
     return {
       status: "timeout",
       ...(run.code !== null ? { exitCode: run.code } : {}),
+      ...output,
       error: `超过 ${timeout}ms 被中止`,
     };
   }
@@ -81,9 +95,17 @@ export async function runHookCommand(spec: HookSpec, payload: HookPayload): Prom
     status: run.code === 0 ? "ok" : "failed",
     ...(run.code !== null ? { exitCode: run.code } : {}),
     ...(run.code === 0 ? {} : { error: `退出码 ${run.code ?? "未知"}` }),
-    ...(stdout.length > 0 ? { stdout: markTail(stdout, run.stdoutTruncated) } : {}),
-    ...(stderr.length > 0 ? { stderr: markTail(stderr, run.stderrTruncated) } : {}),
+    ...output,
   };
+}
+
+/** 这个路径存在**而且是个目录**吗。`spawn` 的 `cwd` 只接受目录,别的都给 `ENOENT`。 */
+function isDirectory(path: string): boolean {
+  try {
+    return existsSync(path) && statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /** 命令拿到的环境变量。`data` 那种大块东西走 stdin,不塞进环境(有大小上限)。 */

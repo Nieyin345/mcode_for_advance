@@ -1136,6 +1136,14 @@ export const zh = {
   "settings.hooks.fieldName": "名称",
   "settings.hooks.namePlaceholder": "这条钩子是干什么的",
   "settings.hooks.fieldEvent": "什么时候跑",
+  // 有的钩子事件不是每个引擎都会发（Pi 没有待办清单，Codex 不报上下文压缩……）。
+  // 这类事件**照旧列出来**（换个引擎它是能用的），但选中时把「谁不发」说清楚 ——
+  // 给那个引擎挂一条，命令写好了、保存成功、界面上一应俱全，而它永远不会响。
+  "settings.hooks.eventUnsupported": "{engines} 不会发这类事件，挂在这类事件上的钩子对它们不会响。",
+  // 下拉里那行小字，选之前就看得见。
+  "settings.hooks.eventItemUnsupported": "{engines} 不发",
+  // 引擎名之间那个顿号。英文那边是 ", "。
+  "settings.hooks.engineSeparator": "、",
   // 匹配规则那一栏的文案**跟着事件变**（比工具名 / 比文件路径），三处一起换 ——
   // 一个写着「匹配哪些工具」的框摆在 turn.files 下面，用户只会填错。
   "settings.hooks.matcherLabelTool": "匹配哪些工具",

@@ -47,7 +47,15 @@ import {
   IconTrash,
 } from "@renderer/lib/icons.js";
 import { PanelHeader } from "./PanelHeader.js";
-import { formatRunTime, hookDraftProblem, isHookDirty, newHookDraft } from "./hooksView.js";
+import {
+  formatRunTime,
+  hookDraftProblem,
+  hookEventUnsupportedBy,
+  HOOK_ENGINE_LABEL,
+  isHookDirty,
+  newHookDraft,
+  type HookEngineId,
+} from "./hooksView.js";
 
 /**
  * 事件 → 词条。**两张表都标成 `MessageId` 而不是 `string`** —— 那样键名写错时 tsc
@@ -482,7 +490,14 @@ function HookEditor({
   const { t } = useI18n();
   // 事件决定这一栏比的是什么(工具名 / 文件路径),`null` = 这个事件没有可比的东西。
   const subject = hookSubjectOf(draft.event);
+  // 这个事件有没有哪个引擎**根本不发**。有的话就说出来 —— 用户给那个引擎挂一条,
+  // 命令写好了、保存成功、界面上一应俱全,而它永远不会响。
+  const unsupportedBy = hookEventUnsupportedBy(draft.event);
   const canSave = problem === null && !saving;
+
+  /** 几个引擎名拼成一串,用当前语言的顿号 / 逗号。 */
+  const enginesText = (engines: readonly HookEngineId[]): string =>
+    engines.map((e) => HOOK_ENGINE_LABEL[e]).join(t("settings.hooks.engineSeparator"));
 
   return (
     <div className="flex flex-col">
@@ -511,13 +526,23 @@ function HookEditor({
             <Select.Positioner className="z-50">
               <Select.Popup>
                 <Select.List>
-                  {HOOK_EVENTS.map((event) => (
-                    <Select.Item key={event} value={event}>
-                      <Select.ItemText>
-                        {t(EVENT_LABELS[event])}
-                      </Select.ItemText>
-                    </Select.Item>
-                  ))}
+                  {HOOK_EVENTS.map((event) => {
+                    // 下拉里也标一下:选之前就该看见"这个引擎不发这类",而不是选完再被
+                    // 下面那行小字告知。**不灰掉、不禁用** —— 换个引擎它是能用的。
+                    const missing = hookEventUnsupportedBy(event);
+                    return (
+                      <Select.Item key={event} value={event}>
+                        <Select.ItemText>{t(EVENT_LABELS[event])}</Select.ItemText>
+                        {missing.length > 0 && (
+                          <span className="ml-auto shrink-0 pl-3 text-[0.9em] text-content-subtle">
+                            {t("settings.hooks.eventItemUnsupported", {
+                              engines: missing.map((e) => HOOK_ENGINE_LABEL[e]).join(t("settings.hooks.engineSeparator")),
+                            })}
+                          </span>
+                        )}
+                      </Select.Item>
+                    );
+                  })}
                 </Select.List>
               </Select.Popup>
             </Select.Positioner>
@@ -527,6 +552,19 @@ function HookEditor({
       <p className="-mt-1 mb-2 text-[0.7143em] leading-relaxed text-content-subtle">
         {t(EVENT_HINTS[draft.event])}
       </p>
+
+      {/* 「这个引擎不发这类事件」——**选中时**必须说出来。理由见 `hooksView.ts` 那张表:
+          能挂、能存、看着都对,就是不会响,而没有任何地方告诉他。
+          用 warning 色而不是 subtle:它是一条"你现在这么配不会起作用"的警告,和上面那句
+          "什么时候跑"不是一回事 —— 同款配色见这一页顶上的 problems 区。 */}
+      {unsupportedBy.length > 0 && (
+        <div className="-mt-1 mb-3 flex items-start gap-2 rounded border border-warning/40 bg-warning/10 px-2.5 py-2 text-[0.7143em] leading-relaxed text-warning">
+          <IconAlertTriangle size={13} className="mt-0.5 shrink-0" />
+          <span>
+            {t("settings.hooks.eventUnsupported", { engines: enginesText(unsupportedBy) })}
+          </span>
+        </div>
+      )}
 
       {/* 匹配规则只对**有主语的事件**有意义。不适用时**藏起来而不是禁用**:
           一个灰着的输入框会让人以为"这里能填,只是现在不让",而它其实永远填不了。 */}

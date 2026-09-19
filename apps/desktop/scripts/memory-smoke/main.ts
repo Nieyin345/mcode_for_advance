@@ -339,6 +339,59 @@ console.log("\n入口节点 · 回声开关");
   eq("(对照)中段的节点照常回声", midInput.echoUserMessage, undefined);
 }
 
+/* ────────────── 流程记录:这一层的职责边界 ──────────────
+ *
+ * 「谁该读整条流程的记录」**不在这里判** —— 那个默认值由调度器按图的结构算
+ * (`scheduler.ts` 的 `readsRecord`:`flowRecordOf(params) ?? onLoop.has(id)`),渲染也在
+ * 那边(`flowRecordSection`)。这一层只做一件事:**给了就原样放进去,没给就不给**。
+ *
+ * 钉这三条是因为它挡着一个很容易做反的改法:这一层够不着「其它步骤的产出」——
+ * `ModelInputScope` 里只有**直接上游**那一段(`upstream`),没有整条流程的日志。想在这
+ * 一层"顺手让线性图的节点也读记录",能造出来的只有**把上游那一段套个 `## 流程记录`
+ * 的标题** —— 那不是记录(没有「本流程」、没有用户最初的要求、没有更早的步骤),是一份
+ * 长得像记录的假东西。下面第 ① 条就是这个改法的钉子。
+ */
+console.log("\n流程记录:这一层只负责照搬,不自己判谁该读");
+{
+  // 一条线性链:上游(第一步)已经跑完。`upstream` 是**直接上游**那一段,记录没给 ——
+  // 线性图的默认就是这样(它不在环上)。
+  const MID = {
+    nodeId: "b",
+    plan: [
+      [{ id: "a", title: "第一步", isLast: false }],
+      [{ id: "b", title: "第二步", isLast: true }],
+    ],
+    root: false,
+    upstream: "### 第一步\n第一步的结果",
+  };
+
+  // ① 调度器没给记录 → 给的是**直接上游**那一段,而且**不能**凭空冒出一个记录节。
+  const noRecord = build({ instruction: "做点事" }, MID);
+  check("线性下游拿到的是「上游步骤的产出」", noRecord.prompt.includes("## 上游步骤的产出"), noRecord.prompt);
+  check("★ 而且没有「流程记录」那一段(它不在环上,默认不该读)", !noRecord.prompt.includes("## 流程记录"), noRecord.prompt);
+  check("直接上游的正文在里面", noRecord.prompt.includes("第一步的结果"), noRecord.prompt);
+
+  // ② 调度器给了记录 → 它**替代**上游那一段(见 `composeNodePrompt`:两段都给就是同一
+  //    份内容出现两遍)。「替代」是**全程 vs 直接上游**这两条互斥取法的另一半,所以
+  //    这里也要钉住 —— 只钉"给了就出现"的话,把两段都塞进去的改法会绿着通过。
+  const RECORD = "## 流程记录\n**本流程**:测试流程\n\n### 第一步\n第一步的结果";
+  const withRecord = build({ instruction: "做点事" }, { ...MID, record: RECORD });
+  check("给了记录就一定进提示词", withRecord.prompt.includes("## 流程记录"), withRecord.prompt);
+  check("★ 记录替代了「上游步骤的产出」", !withRecord.prompt.includes("## 上游步骤的产出"), withRecord.prompt);
+  check("记录原文照给(不重排、不截断)", withRecord.prompt.includes(RECORD), withRecord.prompt);
+  // 这一层**不认识「本流程」是谁** —— 那两行是调度器渲染记录时写进去的(它才拿得到
+  // 图与文档名)。没给记录时,这一层不该凭空造出一行「**本流程**:…」来。
+  // (注意别拿"本流程"三个字当判据:流程位置那一节开头就是「本流程共 N 步」。)
+  const blank2 = build({ instruction: "做点事" }, MID);
+  check("没给记录时不凭空写「本流程」那一行", !blank2.prompt.includes("**本流程**"), blank2.prompt);
+
+  // ③ 空白记录等于没给。记录只有两行表头时摆出来是纯噪音(同 `readsRecord` 里那条
+  //    "记录还是空的时候一律不给"),所以判据是**trim 过之后有没有东西**。
+  const blank = build({ instruction: "做点事" }, { ...MID, record: "   " });
+  check("空白记录等于没给", !blank.prompt.includes("## 流程记录"), blank.prompt);
+  check("那时上游产出照给", blank.prompt.includes("## 上游步骤的产出"), blank.prompt);
+}
+
 /* ────────────────────────── 汇总 ────────────────────────── */
 
 console.log(`\n${total - failures}/${total} passed`);

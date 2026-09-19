@@ -1142,6 +1142,11 @@ export const en = {
   "settings.hooks.fieldName": "Name",
   "settings.hooks.namePlaceholder": "What this hook is for",
   "settings.hooks.fieldEvent": "When it runs",
+  // Wording note: "{engines}" can be one engine or several, so the sentence is
+  // built to read right either way ("never comes from Pi" / "…from Pi, Codex").
+  "settings.hooks.eventUnsupported": "This event never comes from {engines} — a hook set to it will never fire for them.",
+  "settings.hooks.eventItemUnsupported": "not from {engines}",
+  "settings.hooks.engineSeparator": ", ",
   // The matcher field's wording follows the event (tool name vs file path) — all three
   // strings change together. A box labelled "Which tools" under `turn.files` only
   // gets the user to fill in a tool name, and the hook then never fires.

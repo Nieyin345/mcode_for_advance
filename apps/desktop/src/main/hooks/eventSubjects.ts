@@ -119,19 +119,42 @@ export function createEventSubjects(): EventSubjects {
 }
 
 /**
- * `turn.files` 的匹配主语:每个文件的**绝对路径**和**相对会话目录的路径**,都换成 `/`。
+ * `turn.files` 的匹配主语:每个文件的**绝对路径**和**相对会话目录的路径**。
  *
- * 两份都给,是因为用户脑子里想的是哪种都有 —— `src/*.ts`(相对)和 `*.ts`(哪儿都
- * 算)。只给绝对路径的话前者永远匹配不上(它是 `D:/…/src/a.ts`);只给相对的则拿不到
- * 会话目录之外的文件。两边都试一次最省心,代价只是模式匹配多跑一遍。
+ * ## 为什么要给两种「写法」而不只是两种「路径」
+ *
+ * 路径那两种(绝对/相对)是因为用户脑子里想的是哪种都有 —— `src/*.ts`(相对)和
+ * `*.ts`(哪儿都算)。只给绝对路径的话前者永远匹配不上(它是 `D:/…/src/a.ts`);
+ * 只给相对的则拿不到会话目录之外的文件。
+ *
+ * ⚠️ 而**分隔符也有两种,这一层必须都给** —— 这是踩过的坑。事件里的路径在 Windows 上
+ * 是**反斜杠**过来的(`D:\proj\src\a.ts`),而用户填 `matcher` 时有两条路都会写出反斜杠:
+ *
+ *  1. 从界面上粘一个路径进来,或者照着资源管理器里的写法填 —— 那时手里就是反斜杠;
+ *  2. 想到"绝对路径",于是照着事件里看到的样子写。
+ *
+ * 早先这里把路径一律换成 `/` 再发出去,于是上面两种写法**一条都匹配不上**,而且
+ * **一个字都不报** —— 用户看到的就是"我的钩子该响的时候没响"。所以现在:每个路径
+ * **按原样**发一份,再发一份换成 `/` 的;相对路径同理。多出来的条数只在 Windows 上
+ * 才出现(那里的输入本身就是反斜杠),而匹配多跑一遍正则的代价远小于一条安静的钩子。
+ *
+ * 顺序稳定(绝对、相对,各自原样在前),所以调用方的断言看得见它。
  */
 export function fileSubjects(paths: readonly string[], cwd: string): string[] {
   const out: string[] = [];
+  const seen = new Set<string>();
+  /** 按原样和换成 `/` 两种写法各发一份,空串与重复的丢掉。 */
+  const push = (value: string): void => {
+    if (value.length === 0) return;
+    for (const form of value.includes("\\") ? [value, value.replace(/\\/g, "/")] : [value]) {
+      if (seen.has(form)) continue;
+      seen.add(form);
+      out.push(form);
+    }
+  };
   for (const path of paths) {
-    const abs = path.replace(/\\/g, "/");
-    out.push(abs);
-    const rel = relative(cwd, path).replace(/\\/g, "/");
-    if (rel.length > 0 && rel !== abs) out.push(rel);
+    push(path);
+    push(relative(cwd, path));
   }
   return out;
 }

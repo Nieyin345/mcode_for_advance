@@ -71,6 +71,65 @@ export function isHookDirty(draft: HookSpec, saved: HookSpec | undefined): boole
   );
 }
 
+/** 哪个引擎。与 `lib/engineFilter.ts` 的 `MatrixEngine` 同一套取值(那边管技能矩阵)。 */
+export type HookEngineId = "claude" | "pi" | "codex";
+
+/**
+ * **哪些事件,哪个引擎根本不发。**
+ *
+ * ## 为什么需要这样一张表
+ *
+ * 面板把 `HOOK_EVENTS` 整个列出来,而钩子是**宿主侧**的东西 —— 它对三个引擎的会话都
+ * 生效。可是有些事件只有部分引擎会发:Pi 没有待办清单,也不报子代理,`todo.update` /
+ * `subagent.update` 在它那儿一次都不会出现。
+ *
+ * 不知道这件事的人给 Pi 挂一条"待办更新时",命令写好了、保存成功、界面上一应俱全,
+ * **它永远不会响** —— 而且没有任何地方告诉他。这属于"坏东西不报出来"那一类。
+ *
+ * 不删选项(那也是一种错:换个引擎它是能用的),而是**如实标出来**。
+ *
+ * ## 这张表怎么核出来的 / 为什么它不算在契约里
+ *
+ * 按三个 provider 目录里**真实的发出点**(`ctx.emit({ type: "…" })`)数出来的,不是
+ * 猜的 —— `scripts/hooks-smoke` 现在会扫那三个目录跟这张表对账,所以它抄不动。
+ *
+ * 不放进 `@contracts/hook`:那份契约讲的是"钩子事件是什么、载荷长什么样",对三个引擎
+ * 都成立;而"哪个引擎实现得了"是**主进程实现的现状**,会随引擎升级变。放契约里会让
+ * 一份讲语义的文件背上"某家 SDK 今天做了什么"这种会过期的事实。
+ *
+ * ⚠️ **宿主侧发的事件不在表里** —— 用户消息、审批/提问/计划那几条、工作流节点结果、
+ * 资料库入库/下载,都是主进程按会话统一发的,三个引擎走同一份代码,没有差别。
+ *
+ * ⚠️ **`upstream.issue` 在表里,理由不直观**:宿主侧也有一个它的发出点,但那一个住在
+ * `RuntimeManager` 的**自定义模型桥接**分支里 —— 只有 claude 会话会走到那里(Pi /
+ * Codex 自管模型清单,`supportsCustomEndpoint: false`,拿不到 `customModelId`)。
+ */
+export const HOOK_EVENT_UNSUPPORTED_BY: Partial<Record<HookEvent, readonly HookEngineId[]>> = {
+  // Pi 没有待办清单这个东西(它的 adapter 里连 `todo` 这个词都没有)。
+  "todo.update": ["pi"],
+  // Pi 不报子代理名册。宿主那次"重放"也救不了:名册本身就来自这个事件。
+  "subagent.update": ["pi"],
+  // "一轮没跑完"是 claude 那套截断检测的产物(工具没回结果 / 末段文本像被切断)。
+  // Codex 与 Pi 各自的 adapter 没有这一步。
+  "turn.incomplete": ["pi", "codex"],
+  // 上下文压缩:codex 的 adapter 明确把 `context_compaction` 丢掉。
+  "compact.result": ["codex"],
+  // 上游重试提示:见上面那条 ⚠️(只有 claude 走自定义模型桥接那条路)。
+  "upstream.issue": ["pi", "codex"],
+};
+
+/** 引擎名(专有名词,两个语言都不译 —— 与 `RuntimesPanel` 的 `AGENT_META` 同款)。 */
+export const HOOK_ENGINE_LABEL: Record<HookEngineId, string> = {
+  claude: "Claude",
+  pi: "Pi",
+  codex: "Codex",
+};
+
+/** 这个事件**哪些引擎根本不会发**。空数组 = 三个引擎都会发。 */
+export function hookEventUnsupportedBy(event: HookEvent): HookEngineId[] {
+  return [...(HOOK_EVENT_UNSUPPORTED_BY[event] ?? [])];
+}
+
 /** 一次执行的时间戳怎么显示 —— 只到秒,钩子的记录不需要毫秒。 */
 export function formatRunTime(at: number): string {
   const d = new Date(at);
