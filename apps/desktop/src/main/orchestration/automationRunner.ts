@@ -772,11 +772,19 @@ class AutomationRunner {
     pending.timer = setTimeout(() => {
       pending.timer = null;
       this.pendingFires.delete(triggerKey(pending.trigger));
+      // ⚠️ **按现在这一份跑,不是攒着的那一份。** 攒下这条触发之后、计时器到点之前,
+      // 用户可能改过这个节点(换了项目、改了「这次要做什么」、把「启用」勾掉),也可能
+      // 存过盘(`apply` 会把 `entries` 换成新解的那一批)。`pending.trigger` 是**旧对象**
+      // —— 拿它起跑就是按旧配置跑,而那正是用户刚改掉的东西。
+      //
+      // 表里找不到它时退回攒着的那一份:多半是 ad-hoc 那条路(守望起跑,压根不在表里),
+      // 它本来就该照带来的那份跑。
+      const trigger = this.findLoaded(pending.trigger) ?? pending.trigger;
       const payload =
-        pending.trigger.spec.kind === "file"
+        trigger.spec.kind === "file"
           ? ({ kind: "file", files: [...pending.files] } as const)
           : (pending.event ?? { kind: "manual" });
-      this.fire(pending.trigger, payload);
+      this.fire(trigger, payload);
     }, Math.max(0, delayMs));
     // 攒着的那一下不该拖着进程不退出(退出时这一跑本来就该丢 —— 它还没开始)。
     pending.timer.unref();
