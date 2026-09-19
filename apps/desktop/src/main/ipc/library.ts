@@ -88,7 +88,7 @@ import {
   writeItemManifest,
 } from "@main/library/manifest.js";
 import { enqueueDownloads, processDownloadQueue, setDownloadCompleteHook, resumeDownloadsOnStartup } from "@main/library/downloader.js";
-import { ensureLibraryDirs, libraryRoot, fromLibraryRelative, toLibraryRelative } from "@main/library/paths.js";
+import { ensureLibraryDirs, libraryRoot, fromLibraryRelative, isInsideLibrary, markdownArtifact } from "@main/library/paths.js";
 import { ensureWorkflows } from "@main/workflows/seed.js";
 
 /**
@@ -270,10 +270,13 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
        *
        * **只删库内路径** —— 记录万一被写入过外来路径,这里会把它挡掉,而不是照着
        * 删用户别处的文件。`recursive` 给 MinerU 那种"整包是一个目录"的产物用。
+       *
+       * 判据是 {@link isInsideLibrary},**不是** `toLibraryRelative(abs).startsWith("..")`
+       * —— 那个条件恒假,一次都没拦住过(见 `paths.ts` 里 `toLibraryRelative` 的注释)。
        */
       const dropAbs = (abs: string, label: string, recursive: boolean) => {
         try {
-          if (toLibraryRelative(abs).startsWith("..")) return;
+          if (!isInsideLibrary(abs)) return;
           if (!existsSync(abs)) return;
           rmSync(abs, { force: true, recursive });
         } catch (err) {
@@ -291,19 +294,12 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
 
         const mdRel = item.mdPath;
         if (!mdRel || sharedWithSurvivor(mdRel)) continue;
-        const mdAbs = fromLibraryRelative(mdRel);
-        const parent = dirname(mdAbs);
-        // 父目录名是 64 位十六进制 → 只可能是内容哈希的目录形态(MinerU 那一包,
-        // 里面是 `full.md` 加 `images/`)。平的那种是 `markdown/<2>/<2>/<sha>.md`,
-        // 上一级只有两位,永远不会命中。
-        //
-        // 同哈希被两条记录引用时它们的 mdPath 是**同一个**,上面那道引用计数已经拦住
-        // 了 —— 所以这里不需要再看别的条目。
-        if (/^[0-9a-f]{64}$/.test(basename(parent))) {
-          dropAbs(parent, "markdown dir", true);
-          continue;
-        }
-        dropAbs(mdAbs, "markdown", false);
+        // 一份 md 产物可能是一整个目录(MinerU / 「采纳 Markdown」,里面还有 images/)。
+        // 该删哪个由 `markdownArtifact` 按**落点结构**决定 —— 早先这里按"父目录名像不像
+        // 一个 sha256"猜,猜不中「采纳」那一种,于是它的 images/ 永远留在磁盘上。
+        // 同哈希被两条记录引用时它们的 mdPath 是**同一个**,上面那道引用计数已经拦住了。
+        const artifact = markdownArtifact(fromLibraryRelative(mdRel));
+        dropAbs(artifact.path, "markdown", artifact.recursive);
       }
     }
     LibraryRepo.delete(input.ids);

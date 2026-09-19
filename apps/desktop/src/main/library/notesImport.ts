@@ -23,7 +23,7 @@ import { basename, dirname, extname } from "node:path";
 import type { LibraryItem } from "@contracts/library";
 import { CollectionRepo, LibraryRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
-import { ensureLibraryDirs, fromLibraryRelative, notePathForId, noteRelPathForId, toLibraryRelative } from "./paths.js";
+import { ensureLibraryDirs, fromLibraryRelative, isInsideLibrary, notePathForId, noteRelPathForId, toLibraryRelative } from "./paths.js";
 
 export interface NoteImportSummary {
   items: LibraryItem[];
@@ -135,6 +135,9 @@ export function createNote(title: string, collectionIds?: string[]): LibraryItem
  * 两道守卫:① **只允许改笔记** —— 论文/教材的 md 是转录产物,应用内的编辑器覆盖它
  * 会让"转录结果"和"用户改动"再也分不清;② 目标路径必须落在库内,防记录被写坏之后
  * 顺着越界路径覆盖到用户别处的文件。
+ *
+ * ②那一道用 {@link isInsideLibrary},**不是** `toLibraryRelative(abs).startsWith("..")`
+ * —— 后者恒假(见 `paths.ts` 里那个函数的注释)。
  */
 export function writeNote(id: string, text: string): { ok: boolean; error?: string } {
   const item = LibraryRepo.get(id);
@@ -142,7 +145,7 @@ export function writeNote(id: string, text: string): { ok: boolean; error?: stri
   if (item.kind !== "note") return { ok: false, error: "只有笔记能在应用内编辑" };
   if (!item.mdPath) return { ok: false, error: "这篇笔记还没有对应的文件" };
   const abs = fromLibraryRelative(item.mdPath);
-  if (toLibraryRelative(abs).startsWith("..")) return { ok: false, error: "路径越界,拒绝写入" };
+  if (!isInsideLibrary(abs)) return { ok: false, error: "路径越界,拒绝写入" };
   try {
     writeFileSync(abs, text, "utf8");
     // 正文里的第一个标题变了 → 列表行也跟着变,不然两处显示对不上
