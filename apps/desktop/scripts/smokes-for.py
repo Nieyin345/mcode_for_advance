@@ -92,13 +92,32 @@ def coverage() -> dict[str, set[Path]]:
 def main() -> None:
     suites = coverage()
     if len(sys.argv) > 1 and sys.argv[1] == "--uncovered":
-        by_file: dict[Path, int] = {}
+        # ⚠️ **这里原来是反的(2026-09-20 修)。** 旧实现把 `by_file` 建成"被覆盖过的
+        # 文件 → 0",然后把它当未覆盖的列出来 —— 于是 `--uncovered` 打印的是 `--all`
+        # 的同一份文件集合(实测:332 行 vs 331 行,差的只是标题那一行),而**真正零
+        # 覆盖的文件一个都不在里面**。这个模式的全部用处就是回答"哪里没有回归网",
+        # 答反了比没有更坏:它会让人以为 `src/main/index.ts`、`ipc/library.ts` 这些
+        # 都已经有人守着。
+        covered: set[Path] = set()
         for cov in suites.values():
-            for f in cov:
-                by_file[f] = 0
+            covered |= cov
+        # 判据:主进程目录下的 `.ts`,没有任何套件 import 到。用 rglob 走全树而不是
+        # 只看顶层 —— 这个仓库的代码都住在子目录里,只看顶层会得到一份空名单,而那
+        # 看起来跟"全都有覆盖"一模一样。
+        #
+        # ⚠️ 两个数**要在同一个口径里**,否则加起来对不上:`covered` 里还混着
+        # `src/main` **之外**的文件(某条相对 import 会跑到 `../renderer/` 或
+        # `../../packages/` 去)。所以下面报的"覆盖到几个"是 `main_files ∩ covered`,
+        # 不是 `len(covered)`。
+        main_files = set(MAIN.rglob("*.ts"))
+        uncovered = sorted(main_files - covered, key=lambda p: str(p))
         print("# 没有任何套件覆盖到的源码文件(改这里没有回归网):")
-        for f in sorted(by_file, key=lambda p: str(p)):
+        if not uncovered:
+            print("  (一个都没有 —— 主进程下每个 .ts 都至少被一套套件 import 到)")
+            return
+        for f in uncovered:
             print(f"  {f.relative_to(ROOT).as_posix()}")
+        print(f"\n  共 {len(uncovered)} 个;主进程下覆盖到的 {len(main_files) - len(uncovered)} 个。")
         return
 
     if len(sys.argv) > 1 and sys.argv[1] != "--all":
