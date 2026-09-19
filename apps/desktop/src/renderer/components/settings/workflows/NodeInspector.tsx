@@ -34,6 +34,7 @@ import {
   NODE_PROMPT_PARAM_KEY,
   isModelDecider,
   isNodeRunnable,
+  showsNodeCapability,
   validateNodeParams,
   type NodeTypeCatalog,
   type NodeTypeEntry,
@@ -694,6 +695,54 @@ function NodeSection({
         </p>
       )}
 
+      {/* 能力:**只在它真的算数时才摆这一个下拉框**(见 `showsNodeCapability`)。
+          另外四种跑法上它是占位 —— 摆出来就等于承诺了一件做不到的事:用户在这里把
+          `read` 改成 `write`,行为一点不变(子 agent 的那条路根本走不到),而画布上的
+          卡片还会继续显示原来那个值。 */}
+      {showsNodeCapability(entry?.manifest) && (
+        <Field label={t("settings.workflows.nodeCapability")}>
+          <Select.Root
+            value={node.capability ?? ""}
+            onValueChange={(value) =>
+              onUpdateNode(node.id, {
+                capability: value === "" ? undefined : (value as WorkflowCapability),
+              })
+            }
+          >
+            <Select.Trigger className="w-full">
+              <Select.Value>
+                {(value: string) =>
+                  value === ""
+                    ? t("settings.workflows.nodeCapabilityDefault", {
+                        fallback: entry?.manifest.capability ?? "read",
+                      })
+                    : value
+                }
+              </Select.Value>
+            </Select.Trigger>
+            <Select.Portal>
+              <Select.Positioner className="z-50">
+                <Select.Popup>
+                  <Select.List>
+                    <Select.Item value="">
+                      <Select.ItemText>
+                        {t("settings.workflows.nodeCapabilityDefault", {
+                          fallback: entry?.manifest.capability ?? "read",
+                        })}
+                      </Select.ItemText>
+                    </Select.Item>
+                    {WORKFLOW_CAPABILITIES.map((capability) => (
+                      <Select.Item key={capability} value={capability}>
+                        <Select.ItemText>{capability}</Select.ItemText>
+                      </Select.Item>
+                    ))}
+                  </Select.List>
+                </Select.Popup>
+              </Select.Positioner>
+            </Select.Portal>
+          </Select.Root>
+        </Field>
+      )}
 
       {/* 依赖:勾一个上游。成环的那条当场禁用并说明(见文件头)。 */}
       <div className="mb-1 mt-1 text-[0.7857em] font-medium text-content-muted">

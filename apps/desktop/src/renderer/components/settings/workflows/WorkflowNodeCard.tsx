@@ -50,6 +50,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import {
   isNodeRunnable,
+  showsNodeCapability,
   validateNodeParams,
   type NodeRunnerKind,
   type NodeTypeEntry,
@@ -176,18 +177,21 @@ export function WorkflowNodeCard({
         : KIND_LOOK[entry.manifest.runner.kind];
   const { Icon } = look;
   /**
-   * 能力标签(`read` / `write` / `exec`)**只在它真的算数时显示**。
+   * 能力标签(`read` / `write` / `exec`)**只在它真的算数时显示** —— 也就是**只有
+   * 子 agent**(`prompt`)。
    *
-   * `prompt` / `command` 才有"这一步能不能写盘 / 动手"这回事 —— 前者真的跑一轮
-   * 模型,后者真的起一个进程。分支(不管决定权在谁)与触发器什么都不跑,对话节点
-   * 用的是主对话那套权限(它的清单里那一项是占位,注释写明了不生效)—— 给这几种
-   * 显示一个 `read`,是在说一句不成立的话。顺带也把这一行的宽度让给了类型 id,
+   * 另外四种的清单里那一项都是**为了形状完整**填的:分支与触发器什么都不跑、对话节点
+   * 与主代理用的是主对话那套权限、命令与 code 起的是进程(而进程没有"权限模式"这回事)。
+   * 给它们显示一个 `read`,是在说一句不成立的话。顺带也把这一行的宽度让给了类型 id,
    * 而它恰恰是最长的那一个(`mcode.conversation`)。
+   *
+   * ⚠️ **判据不能在这儿自己写。** 检查器里也有同一项(那个下拉框),两边给不出同一个
+   * 答案时的现象是"卡片上写着 `read`、检查器里却让你改成 `write`,而那个 `write` 不
+   * 起任何作用" —— 用户按界面说的做了,行为一点没变。所以两处都读
+   * `@contracts/nodeType` 的 `showsNodeCapability`。
    */
   const capability = node.capability ?? entry?.manifest.capability;
-  const showsCapability =
-    entry !== undefined &&
-    (entry.manifest.runner.kind === "prompt" || entry.manifest.runner.kind === "command" || entry.manifest.runner.kind === "code");
+  const showsCapability = showsNodeCapability(entry?.manifest) && capability !== undefined;
   const bad = connectHint === "blocked";
 
   // 三种问题最多同时出现一种(类型没装就没法查参数)。**顺序即优先级**:先报最靠前的
@@ -249,7 +253,7 @@ export function WorkflowNodeCard({
               「两行,不三行」。 */}
           {problemLabel !== null ? (
             <span className="shrink-0 truncate text-warning">{problemLabel}</span>
-          ) : showsCapability && capability ? (
+          ) : showsCapability ? (
             <span className="shrink-0 rounded bg-surface-muted px-1 leading-tight text-content-subtle">
               {capability}
             </span>

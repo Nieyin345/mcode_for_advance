@@ -25,6 +25,7 @@ import { Button } from "@renderer/components/ui/index.js";
 import type { AgentProfile, AgentProfileCatalog } from "@contracts/agentProfile";
 import {
   isNodeRunnable,
+  showsNodeCapability,
   type NodeTypeCatalog,
   type NodeTypeEntry,
   type NodeTypeSource,
@@ -241,10 +242,16 @@ function NodeTypeCard({ entry }: { entry: NodeTypeEntry }) {
         <span>
           {t("settings.workflows.nodeTypeRunner")} <code className="text-content-muted">{m.runner.kind}</code>
         </span>
-        <span>
-          {t("settings.workflows.nodeTypeCapability")}{" "}
-          <code className="text-content-muted">{m.capability}</code>
-        </span>
+        {/* 能力那一项**只在它真的算数时才写**(见 `showsNodeCapability`)。这里的读者是
+            "想弄明白这一种节点怎么用"的人 —— 他按这一行去配节点,而另外四种跑法上那个值
+            是占位(分支与触发器什么都不跑、对话节点用主对话那套权限、命令与 code 起的是
+            进程)。写出来他会以为自己找到了一个开关,而那个开关改不动任何东西。 */}
+        {showsNodeCapability(m) && (
+          <span>
+            {t("settings.workflows.nodeTypeCapability")}{" "}
+            <code className="text-content-muted">{m.capability}</code>
+          </span>
+        )}
       </div>
 
       {!runnable && (
