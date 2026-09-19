@@ -1051,11 +1051,21 @@ export const MessageRepo = {
       return { messages: out, hasMore: false };
     }
 
-    // Paginated path: fetch `limit + 1` rows descending from the cursor, so
-    // the extra row (if any) signals `hasMore`. Then reverse to ascending.
+    // 取数一律降序:多取的那一条(判 `hasMore` 用的探针)**永远在降序结果的末尾**
+    // —— 它是紧挨着窗口下面那一条,也就是比这一页更老的一条。丢掉末尾、剩下的反转
+    // 成升序,就是这一页。
+    //
+    // ⚠️ 这里踩过(`rows.slice(1)`):`slice(1)` 丢的是**开头**,而降序结果的开头是
+    // 这一页**最新**的那条。症状分两种,都不显眼:
+    //   - 第一页:返回的是最老的 n 条而不是最新的 n 条,而且 `hasMore` 报 true,
+    //     界面于是"打开一段长对话看到的是它的开头";
+    //   - 往上翻页:每页都漏掉紧挨着游标的那一条,连翻几页之后越漏越多
+    //     (实测 450 条的对话只翻出 400 条,丢的 50 条正好散在页边界上)。
+    // 两个分支的形状是一样的,所以两处都要 `slice(0, -1)`。
     const fetchN = limit + 1;
     const rows: MessageRecord[] = [];
     if (before == null || beforeId == null) {
+      // 第一页 = 最新的 n+1 条。
       const stmt = db.prepare(
         "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
       );
@@ -1063,6 +1073,10 @@ export const MessageRepo = {
       while (stmt.step()) rows.push(rowToMessage(stmt.getAsObject() as unknown as MessageRow));
       stmt.free();
     } else {
+      // 游标支:游标 `(beforeCreatedAt, beforeId)` 指向**已加载那一段最老的那条**
+      // (渲染端传的是 `list[0]`,见 sessionStore 的 `loadOlderMessages`),要取的是比
+      // 它**更老**的一整页 —— 所以是 `created_at < 游标` 的降序前 n+1 条。
+      //
       // Tiebreaker: (created_at, id) so rows with identical createdAt still
       // page cleanly without skipping or duplicating.
       const stmt = db.prepare(
@@ -1075,7 +1089,7 @@ export const MessageRepo = {
       stmt.free();
     }
     const hasMore = rows.length === fetchN;
-    const page = hasMore ? rows.slice(1) : rows;
+    const page = hasMore ? rows.slice(0, -1) : rows;
     page.reverse();
     return { messages: page, hasMore };
   },
