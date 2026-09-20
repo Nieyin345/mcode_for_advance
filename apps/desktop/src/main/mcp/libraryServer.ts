@@ -152,11 +152,26 @@ function kindListText(): string {
     .join(" / ");
 }
 
-/** 资料类(material)的 id 集合 —— 旧"三个库"的接替者:分类树是按资料类铺的。 */
+/**
+ * AI 能读的库 —— **现在就是全部**（2026-09-21）。
+ *
+ * ## 原来按 `purpose` 过滤，现在不滤了
+ *
+ * 早先只把 `purpose === "material"`（"查资料用"）的库算作资料，「照着写用」那一类
+ * 被排除在检索之外。用户否掉了这个区分：
+ *
+ *   > 「我的文件系统不就是给 ai 读的吗，不给 ai 看难道给我看吗，那我建这个系统
+ *   >  有什么意义」
+ *
+ * 说得对 —— 两个类别**都是给 AI 读的**，区别只在"读来干嘛"（读内容 vs 读格式），
+ * 而那不该变成"这个库不给 AI 看"。所以这里返回全部。
+ *
+ * ⚠️ `purpose` 这个字段**还在**（`libraryTypes` 的注册表里），只是不再拿它做这道
+ * 过滤。工作流那边（`schedulerPrompt` 的分组、`contextInherit`）还在用它排版，
+ * 那两处是**展示分组**，不是"给不给读"。
+ */
 function materialKindIds(): string[] {
-  return loadLibraryTypes()
-    .filter((t) => t.purpose === "material")
-    .map((t) => t.id);
+  return loadLibraryTypes().map((t) => t.id);
 }
 
 /**

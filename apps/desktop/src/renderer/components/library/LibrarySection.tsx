@@ -279,7 +279,6 @@ export function LibrarySection({
   /** 小类的新建 / 重命名输入。新建要多一步:选用途(查资料用 / 照着写用)。 */
   const [creatingKind, setCreatingKind] = useState(false);
   const [newKindDraft, setNewKindDraft] = useState("");
-  const [newKindPurpose, setNewKindPurpose] = useState<LibraryTypePurpose>("material");
   const [renamingKind, setRenamingKind] = useState<string | null>(null);
   const [kindDraft, setKindDraft] = useState("");
   const [kindError, setKindError] = useState<string | null>(null);
@@ -738,7 +737,8 @@ export function LibrarySection({
     const id = `type-${Date.now().toString(36)}`;
     const ok = await saveTypes([
       ...typeMetas.map((m) => ({ ...m })),
-      { id, name: trimmed, purpose: newKindPurpose, builtin: false },
+      // 用途固定 `material` —— 界面不再问（见 `libraryServer.materialKindIds` 那段）。
+      { id, name: trimmed, purpose: "material", builtin: false },
     ]);
     if (!ok) return;
     // 归入本段的大类(失败时 saveGroups 自己会把后端的话摆出来)。
@@ -1341,33 +1341,12 @@ export function LibrarySection({
                   onCancel={() => {
                     setCreatingKind(false);
                     setNewKindDraft("");
-                    setNewKindPurpose("material");
                     setKindError(null);
                   }}
                   onBlur={() => void submitNewKind()}
                   placeholder={t("library.kind.namePlaceholder")}
                   error={kindError}
-                >
-                  {/* 用途二选一 —— 查资料用(material)= 给 AI 读的资料;
-                      照着写用(format)= 让 AI 照着写的格式。 */}
-                  <div className="mt-1 flex gap-1 px-0.5">
-                    {(["material", "format"] as const).map((p) => (
-                      <button
-                        key={p}
-                        type="button"
-                        onClick={() => setNewKindPurpose(p)}
-                        className={cn(
-                          "rounded px-1.5 py-0.5 transition-colors [font-size:var(--rp-fs-sm)]",
-                          newKindPurpose === p
-                            ? "bg-accent/15 text-accent"
-                            : "text-content-subtle hover:bg-surface-hover/60",
-                        )}
-                      >
-                        {t(p === "material" ? "library.kind.purpose.material" : "library.kind.purpose.format")}
-                      </button>
-                    ))}
-                  </div>
-                </MiniInput>
+                />
               ) : renamingKind ? (
                 /* 重命名的输入框**和新建同一处** —— 它改的就是这一排里那个 tab，
                    摆在这里用户才知道自己在改哪一个。 */
@@ -1556,7 +1535,6 @@ export function LibrarySection({
         onNewKind={() => {
           setCreatingKind(true);
           setNewKindDraft("");
-          setNewKindPurpose("material");
           setKindError(null);
         }}
         // 挂**本段**(整个大类,附件键 `g:<组 id>`)—— 用户要求每一级都能挂。
