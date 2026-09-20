@@ -44,6 +44,10 @@ export const en = {
   "layout.deleteForever": "Delete permanently",
   "layout.deleteShort": "Del",
   "layout.copySessionTitle": "Copy session title",
+  /** Copy the session id so the user can paste it into ANOTHER chat; that side's
+   *  model can then read this session's log by id. */
+  "layout.copySessionId": "Copy session id",
+  "layout.copiedSessionId": "Session id copied",
   "layout.forkSession": "Duplicate conversation",
   "layout.forkSessionTitle": "{title} (copy)",
   "layout.openInFileManager": "Open in file manager",

@@ -257,7 +257,7 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
   /** 编排在下面 `deleteItemsCore`(那段有三块长说明,放这儿会把注册段撑散)。 */
   ipcMain.handle(IPC.LIBRARY_DELETE_ITEMS, async (_evt, raw) => {
     const input = LibraryDeleteItemsSchema.parse(raw);
-    return deleteItemsCore(input.ids, !!input.deleteFiles);
+    return deleteItemsCore(input.ids, !!input.deleteFiles, input.keepLinks);
   });
 
   /**
@@ -329,7 +329,13 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
    *
    * 同一次调用里**成功的那几条照样成功** —— 一条卡的目录不该把另外九十九条拖住。
    */
-function deleteItemsCore(ids: string[], deleteFiles: boolean): LibraryDeleteItemsResult {
+function deleteItemsCore(
+  ids: string[],
+  deleteFiles: boolean,
+  /** 用户**不想**跟着断掉的关联（`library.deletePreview` 给出的目标 id / 路径）。
+   *  默认全断 —— 那才是"彻底删除"的本来语义，这份是例外。见下面那一段注释。 */
+  keepLinks?: Array<{ targetItemId?: string; targetPath?: string }>,
+): LibraryDeleteItemsResult {
     /**
      * 没能删掉的那些:条目 id → 失败详情。既用来回给调用方,也用来决定**哪几条记录
      * 不许删**(下面 `LibraryRepo.delete` 拿的是过滤后的名单)。
@@ -486,6 +492,45 @@ function deleteItemsCore(ids: string[], deleteFiles: boolean): LibraryDeleteItem
 
     // 文件没删掉的那几条**记录也不删** —— 删了用户就再也够不着那个文件了。
     const toDelete = ids.filter((id) => !keepIds.has(id));
+
+    /**
+     * **先断关联，再删记录。**
+     *
+     * ## 为什么要有这一步
+     *
+     * 用户的原话：「如果删 A 的话会有一个列表显示当前 A 链接的文件，**可以选择性的删或者
+     * 不删**」。也就是说"删一条文献"这件事，除了它自己那一包文件，还会带走**它挂出去的
+     * 关联记录** —— 而 `LibraryRepo.delete` 只管自己的行，不碰关联表，所以得在这里补。
+     *
+     * ## 传进来的是"**不要删的**"（`keepLinks`）
+     *
+     * 默认全断（那才是"彻底删除"的本来语义），`keepLinks` 是用户勾掉的那些例外。
+     * 反过来传"要删的"的话，界面漏渲染一条就等于**静默地不删**、而用户以为删了。
+     *
+     * ## 只断**正方向**（`item_id` 在本批里的那些）
+     *
+     * 用户要的是"把我删的这条挂出去的东西一起收掉"。**反方向不断** —— A 关联了 B，
+     * 在 B 那里删 B 不该把 A 也删了（那是"别人指着它"，不是"它指着别人"）。
+     *
+     * ⚠️ 顺序：必须在 `LibraryRepo.delete` **之前**跑。删完记录之后那些行还在，
+     * 但已经没人认得它们指向哪儿了（外键 CASCADE 也指望不上，见文件头那条）。
+     */
+    const kept = new Set(
+      (keepLinks ?? []).map((l) => l.targetItemId ?? l.targetPath ?? "").filter((s) => s.length > 0),
+    );
+    if (kept.size > 0 || toDelete.length > 0) {
+      for (const id of toDelete) {
+        for (const view of LibraryLinkRepo.viewsOf(id)) {
+          // 只断**正方向**（`direction: "out"` = 这条挂出去的那一头）。
+          // 反方向（别人指着它）不断 —— 见上面那段。
+          if (view.direction !== "out") continue;
+          const key = view.otherItemId ?? view.otherPath ?? "";
+          if (kept.has(key)) continue;
+          LibraryLinkRepo.remove(view.id);
+        }
+      }
+    }
+
     LibraryRepo.delete(toDelete);
     // 删掉的可能正是右栏正在看的那一篇 —— 广播出去,右栏自己会清掉悬空的选中态。
     // 一条都没删成时不广播:那是一次什么都没发生的调用,没必要惊动界面重拉。

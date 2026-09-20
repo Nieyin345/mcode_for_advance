@@ -86,6 +86,7 @@ import {
   saveAgentProfile,
 } from "@main/orchestration/agentProfiles.js";
 import { getWorkflow, listWorkflows, removeWorkflow, saveWorkflow } from "@main/orchestration/library.js";
+import { MessageRepo, SessionRepo } from "@main/store/repositories.js";
 import { NODE_AGENT_TYPE_ID, loadNodeTypes, localNodeTypesDir } from "@main/orchestration/nodeTypes.js";
 import { notifyWorkflowsChanged } from "@main/orchestration/broadcast.js";
 import { requestWorkflowReload } from "@main/orchestration/reloadRequest.js";
@@ -236,6 +237,49 @@ function isObj(v: unknown): v is Obj {
 /** 取一个字符串字段并去掉首尾空白。**不是字符串就当没给** —— 数字、布尔一律不算值。 */
 function str(v: unknown): string {
   return typeof v === "string" ? v.trim() : "";
+}
+
+/**
+ * 把一条消息的 `content` 抽成**给模型读的纯文本**（`session_read_log` 用）。
+ *
+ * ## 为什么不能直接把 `content` JSON.stringify 出去
+ *
+ * 存的是引擎原始形状（Anthropic 的块数组），里面有 tool_use / tool_result /
+ * base64 图片 —— 全塞给模型既费 token 又没意义（他要的是"那条对话聊了什么"，
+ * 不是重放一次工具调用）。所以只取**文本**，其余跳过。
+ *
+ * ## 形状是开放的，一律防御着读
+ *
+ * 不同引擎的存法不完全一样（有的是数组、有的是 `{ content: [...] }` 包一层、
+ * 有的直接是字符串）。这里**不假装知道全部形状**：认不出来的就跳过，最后拼不出东西
+ * 时返回空串（调用方会写"(这条没有文本内容)"）。**宁可少给，也不编**。
+ */
+function messageTextOf(content: unknown): string {
+  const out: string[] = [];
+
+  const take = (v: unknown): void => {
+    if (typeof v === "string") {
+      const s = v.trim();
+      if (s) out.push(s);
+      return;
+    }
+    if (Array.isArray(v)) {
+      for (const item of v) take(item);
+      return;
+    }
+    if (!isObj(v)) return;
+    const type = typeof v["type"] === "string" ? (v["type"] as string) : "";
+    // 只认文本那几类。tool_use / tool_result / image 一律跳过 —— 见上面那段。
+    if (type === "text" || type === "thinking") {
+      take(v["text"]);
+      return;
+    }
+    // 没有 type 但有 `content`（引擎包了一层）→ 往里看一眼。
+    if (type === "" && v["content"] !== undefined) take(v["content"]);
+  };
+
+  take(content);
+  return out.join("\n\n").trim();
 }
 
 interface Normalized {
@@ -438,6 +482,41 @@ export function workflowMcpTools(): McpToolSpec[] {
           return `- ${r.name}  id=\`${r.id}\`  (${bits.join(" · ")})\n  ${r.description ?? "无说明"}`;
         });
         return text(`共 ${rows.length} 份:\n\n${lines.join("\n")}`);
+      },
+    },
+    {
+      name: "session_read_log",
+      description:
+        "按 **id 读另一条对话的记录**（用户会在别处把那条对话的 id 复制给你）。" +
+        "只在**用户明确让你去读某条对话**时用它 —— 平时不要自己去找 id、也不要拿它当" +
+        "\"翻一翻别人聊了什么\"的工具。返回按时间正序的消息，每条只有角色和正文，" +
+        "工具调用那类内部细节不进正文。",
+      inputSchema: {
+        sessionId: z.string().describe("要读的那条对话的 id（形如 sess_…）"),
+        limit: z.number().int().min(1).max(200).optional().describe("最多返回多少条，默认 50（取**最后**这些条）"),
+      },
+      handler: async (args: { sessionId: string; limit?: number }) => {
+        const session = SessionRepo.get(args.sessionId);
+        if (!session) {
+          return fail(`没有 id 为 \`${args.sessionId}\` 的对话 —— 确认一下 id 抄对了没有。`);
+        }
+        const all = MessageRepo.listBySession(args.sessionId).messages;
+        const limit = args.limit ?? 50;
+        // 取**最后** N 条：用户说"看看那条对话"时，他要的多半是最近的进展，
+        // 而不是开场白。
+        const picked = all.length > limit ? all.slice(-limit) : all;
+        if (picked.length === 0) {
+          return text(`对话「${session.title}」还没有消息。`);
+        }
+        const lines = picked.map((m) => {
+          const body = messageTextOf(m.content);
+          const who = m.role === "user" ? "用户" : m.role === "assistant" ? "助手" : "系统";
+          return `### ${who}\n\n${body || "(这条没有文本内容)"}`;
+        });
+        const head =
+          `对话「${session.title}」（id ${session.id}）` +
+          (all.length > picked.length ? `，共 ${all.length} 条，下面是最后 ${picked.length} 条` : `，共 ${picked.length} 条`);
+        return text(`${head}\n\n${lines.join("\n\n")}`);
       },
     },
     {

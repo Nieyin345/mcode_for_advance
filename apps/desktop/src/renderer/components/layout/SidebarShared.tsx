@@ -15,6 +15,7 @@ import { useEffect, useState } from "react";
 import { Menu } from "@base-ui/react/menu";
 import {
   IconCopy,
+  IconKey,
   IconFolder,
   IconGitBranch,
   IconGitFork,
@@ -65,6 +66,8 @@ export interface SessionContextMenuProps {
   onClose: () => void;
   onRename: (session: Session) => void;
   onCopyTitle: (session: Session) => void;
+  /** 拷走会话 id —— 用户把它粘进**别的**对话,那一边的模型就能按 id 读这条的记录。 */
+  onCopyId: (session: Session) => void;
   onOpenFolder: (session: Session) => void;
   onTogglePin: (session: Session) => void;
   /** 把这段对话复制成新的一段(带着一模一样的历史与上下文)。**只有当这段对话用的引擎
@@ -84,7 +87,7 @@ export interface SessionContextMenuProps {
 }
 
 export function SessionContextMenu({
-  ctxMenu, onClose, onRename, onCopyTitle, onOpenFolder, onTogglePin, onFork,
+  ctxMenu, onClose, onRename, onCopyTitle, onCopyId, onOpenFolder, onTogglePin, onFork,
   onNewWorktreeSession, onMergeWorktree, onRenameWorktree, onRemoveWorktree,
 }: SessionContextMenuProps) {
   const { t } = useI18n();
@@ -167,6 +170,16 @@ export function SessionContextMenu({
             >
               <IconCopy size={14} className="shrink-0" />
               {t("layout.copySessionTitle")}
+            </Menu.Item>
+            {/* 复制 id —— 用户粘到**别的**对话里,那一边的模型按 id 去读这条的记录
+                (读取工具是 `session_read_log`)。与「复制标题」并列:两个都是"把
+                这条对话指给别人"的手段,一个给人看、一个给模型读。 */}
+            <Menu.Item
+              onClick={() => session && onCopyId(session)}
+              className={itemClass}
+            >
+              <IconKey size={14} className="shrink-0" />
+              {t("layout.copySessionId")}
             </Menu.Item>
             {session?.worktreePath && onNewWorktreeSession && (
               <Menu.Item

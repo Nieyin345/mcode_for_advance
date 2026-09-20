@@ -71,6 +71,7 @@ import { BrandLogo } from "./BrandLogo.js";
 import type { Project, Session } from "@contracts/session";
 import type { GitWorktreeInfo } from "@contracts/ipc";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 
 /** mm:ss (h:mm:ss past an hour) for the running-turn duration label. */
 function formatRunningDuration(ms: number): string {
@@ -861,6 +862,11 @@ function StreamSidebarBase() {
         onClose={() => setCtxMenu(null)}
         onRename={(s) => { setCtxMenu(null); setRenaming({ id: s.id, title: s.title, kind: "session" }); }}
         onCopyTitle={(s) => { void navigator.clipboard.writeText(s.title); setCtxMenu(null); }}
+        onCopyId={(s) => {
+          void navigator.clipboard.writeText(s.id);
+          setCtxMenu(null);
+          useToastStore.getState().push({ kind: "info", title: t("layout.copiedSessionId") });
+        }}
         onOpenFolder={(s) => {
           setCtxMenu(null);
           const proj = projectById.get(s.projectId);

@@ -47,6 +47,10 @@ export const zh = {
   "layout.deleteForever": "彻底删除",
   "layout.deleteShort": "删",
   "layout.copySessionTitle": "复制会话标题",
+  /** 把会话 id 拷走 —— 用户粘到**别的**对话里,那一边的模型就能按 id 去读这条的记录
+   *  (读取工具见 `session_read_log`)。 */
+  "layout.copySessionId": "复制会话 id",
+  "layout.copiedSessionId": "已复制对话 id",
   "layout.forkSession": "复制一份对话",
   // 新对话的标题。`{title}` 是源对话的标题 —— 副本一眼看得出是从哪儿来的。
   "layout.forkSessionTitle": "{title} 副本",

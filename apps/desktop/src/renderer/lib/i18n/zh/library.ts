@@ -158,6 +158,17 @@ export const zh = {
   "library.ctx.deleteForever": "彻底删除",
   "library.ctx.deleteForeverConfirm":
     "彻底删除《{title}》？数据库记录和磁盘上的 PDF / Markdown 都会被删掉，不能还原。",
+  /** 删除确认框（接 `library.deletePreview`）。**这是库里唯一不可逆的操作**，
+   *  所以它先把"会跟着一起没的东西"摆出来，让用户一件件勾。 */
+  "library.del.title": "删除《{title}》",
+  "library.del.ownLine": "这一条本身（记录 + 磁盘文件）一定会删。",
+  "library.del.linksHead": "这些也会跟着没 —— 不想删的就把勾去掉：",
+  "library.del.form.item": "库内条目",
+  "library.del.form.path": "库外文件（只删关联记录，不动你的文件）",
+  "library.del.form.transcript": "转录产物 + 图床（{n} 张图）",
+  "library.del.noLinks": "它没有关联别的东西。",
+  "library.del.confirm": "删除",
+  "library.del.cancel": "取消",
   "library.ctx.openFolder": "在文件夹中打开",
   "library.ctx.openMd": "预览原文（应用内）",
   "library.ctx.openMdMissing": "预览原文（还没转换）",

@@ -63,6 +63,7 @@ import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
 import type { Project, Session } from "@contracts/session";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 
 /**
  * Left bar — a tree of projects → sessions, with archive (soft) / delete (hard)
@@ -1018,6 +1019,13 @@ function LeftBarBase({
         onClose={() => setCtxMenu(null)}
         onRename={(s) => { setCtxMenu(null); setRenaming({ id: s.id, title: s.title, kind: "session" }); }}
         onCopyTitle={(s) => { void navigator.clipboard.writeText(s.title); setCtxMenu(null); }}
+        // 复制 id：用户把它粘进**别的**对话，那一边的模型就能按 id 读这条的记录。
+        // 给一句 toast 是因为 id 是一串无意义的字符 —— 拷没拷成，光看剪贴板看不出来。
+        onCopyId={(s) => {
+          void navigator.clipboard.writeText(s.id);
+          setCtxMenu(null);
+          useToastStore.getState().push({ kind: "info", title: t("layout.copiedSessionId") });
+        }}
         onOpenFolder={(s) => {
           setCtxMenu(null);
           const proj = findProject(s.projectId);

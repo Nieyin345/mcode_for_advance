@@ -378,6 +378,28 @@ export const LibraryDeleteItemsSchema = z.object({
   ids: z.array(z.string().min(1)).min(1),
   /** 是否连同磁盘上的 PDF/MD 一起删除。默认 false(只从库里移除记录)。 */
   deleteFiles: z.boolean().optional(),
+  /**
+   * 用户**不想**跟着一起删的那些关联 —— 传 `library.deletePreview` 给出的
+   * `targetItemId` / `targetPath`。
+   *
+   * ## 为什么是"不要删的"而不是"要删的"
+   *
+   * 默认**全删**是这件操作的本来语义(用户在回收站里点"彻底删除",意思是这一条
+   * 连它那一包都别留)。清单只是给他一个**反悔的机会** —— 所以传的是**例外**。
+   * 反过来传"勾了哪些"的话,界面漏渲染一条就等于**静默地不删**,而用户以为删了。
+   *
+   * ⚠️ **转录产物(`form: "transcript"`)不在这里**:它和正文是一个整体
+   * (md 里的 `![](images/…)` 指着它),没有"留图不留正文"这种半截状态 ——
+   * 见 `LibraryDeletePreviewLink` 那一段。所以清单里它可以不显示勾,或者显示成禁用。
+   */
+  keepLinks: z
+    .array(
+      z.object({
+        targetItemId: z.string().min(1).optional(),
+        targetPath: z.string().min(1).optional(),
+      }),
+    )
+    .optional(),
 });
 export type LibraryDeleteItemsInput = z.infer<typeof LibraryDeleteItemsSchema>;
 

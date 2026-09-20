@@ -85,6 +85,7 @@ import {
   type SectionTab,
 } from "@renderer/components/sidebar/Sidebar.js";
 import { LibraryItemContextMenu, type LibraryCtxTarget } from "./LibraryItemContextMenu.js";
+import { DeleteItemsDialog } from "./DeleteItemsDialog.js";
 import { CollectionContextMenu, type CollectionCtxTarget } from "./CollectionContextMenu.js";
 import { GroupContextMenu, type GroupCtxTarget } from "./GroupContextMenu.js";
 import { KindContextMenu, type KindCtxTarget } from "./KindContextMenu.js";
@@ -142,6 +143,7 @@ export function LibrarySection({
   typeMetas,
   groups,
   onRefresh,
+  isLastSection = false,
 }: {
   /** 本段对应的大类(段名 + 段内哪些类型)。由 `LibrarySections` 按组表传入。 */
   group: LibraryGroupMeta;
@@ -151,6 +153,8 @@ export function LibrarySection({
   groups: readonly LibraryGroupMeta[];
   /** 大类/小类的任何变更落库后调用:父层重拉组表与注册表,各段立即跟上。 */
   onRefresh: () => void;
+  /** 是不是最后一段 —— **回收站只在最后一段画**(整片区域的最底部)。见那处注释。 */
+  isLastSection?: boolean;
 }) {
   const { locale, t } = useI18n();
   const collections = useLibraryStore((s) => s.collections);
@@ -209,6 +213,10 @@ export function LibrarySection({
   const [ctxMenu, setCtxMenu] = useState<LibraryCtxTarget | null>(null);
   /** 分类行的右键菜单目标(新建笔记 / 重命名 / 删除)。 */
   const [ctxCollection, setCtxCollection] = useState<CollectionCtxTarget | null>(null);
+  /** 正在等用户确认的**彻底删除**（`DeleteItemsDialog` 开着的时候非 null）。
+   *  带着 `activeItemId` 是因为删完要清掉可能悬空的选中态 —— 而这个组件在这一刻
+   *  已经被重渲染了，不能指望从 `activeItemId` 现读。 */
+  const [deleting, setDeleting] = useState<{ ids: string[]; activeItemId: string | null } | null>(null);
   /** 正在改名的**条目** id + 输入中的标题(三个库通用;分类改名是另一套)。 */
   const [renamingItemId, setRenamingItemId] = useState<string | null>(null);
   const [itemTitleDraft, setItemTitleDraft] = useState("");
@@ -286,10 +294,26 @@ export function LibrarySection({
     () => kindCollections.filter((c) => !c.isTrash),
     [kindCollections],
   );
-  /** 回收站。**永远排在整棵树的后面**(用户原话:「全部内容始终在最上面,回收站在最下面」)。 */
+  /**
+   * 回收站 —— **只在最后一段画**(2026-09-21 改)。
+   *
+   * ## 为什么不能每段各画各的
+   *
+   * 原先每段 `kindCollections.filter(isTrash)`,而 `kind` 是**每段各自选中的 tab** ——
+   * 同屏两个大类时各画一次;而且回收站落库时带的那个 `kind` 只属于某一个库,切到别的
+   * tab 就找不到了。用户读到的现象是"回收站飘忽不定、有时候找不到"。
+   *
+   * ## 为什么落在最后一段的末尾,而不是提到 `LibrarySections` 外面
+   *
+   * 这一行要复用本段的一堆内部状态(展开态、条目表、右键菜单、行内改名…),把它抽到
+   * 外面等于把那套东西全搬一遍。而**最后一段的末尾就是整片区域的最底部** ——
+   * 用户要的「所有回收站统一在一起,放在最底部」,位置上一模一样,代价小得多。
+   *
+   * `isLastSection` 由 `LibrarySections` 按组表顺序传下来。
+   */
   const trashCollections = useMemo(
-    () => kindCollections.filter((c) => c.isTrash),
-    [kindCollections],
+    () => (isLastSection ? collections.filter((c) => c.isTrash) : []),
+    [collections, isLastSection],
   );
 
   /**
@@ -741,10 +765,14 @@ export function LibrarySection({
    * 与 `removeCollection` 一样,删完要清掉可能悬空的选中态,再重拉列表。
    */
   const deleteForever = async (item: LibraryItem) => {
-    if (!window.confirm(t("library.ctx.deleteForeverConfirm", { title: item.title }))) return;
-    await api.library.deleteItems({ ids: [item.id], deleteFiles: true });
-    // 删掉的可能正是右栏正在看的那一篇 —— 不清掉的话右栏会停在一个不存在的条目上
-    if (activeItemId === item.id) setActiveItem(null);
+    // 先摆清单再删（见 `DeleteItemsDialog`）—— 原先这里是 `window.confirm` 一句
+    // "确定吗"，而这条操作**不可逆**、还会连带它挂出去的关联与那一包转录产物。
+    setDeleting({ ids: [item.id], activeItemId: item.id });
+  };
+
+  /** 确认框那边真删完之后：清掉可能悬空的选中态，再重拉列表。 */
+  const afterDeleteItems = async (deletedActiveId: string | null) => {
+    if (deletedActiveId !== null && activeItemId === deletedActiveId) setActiveItem(null);
     await loadCollections();
     await refreshItems();
   };
@@ -1198,14 +1226,13 @@ export function LibrarySection({
        * 三个级各有一个「新建」的**菜单入口**,菜单项顺序一律是「先建下一级、再管自己」
        * (见三个 ContextMenu 的文件头)。输入框则各贴各的父级:
        *
-       *   三级(分类,段根下) → creatingRootInput —— 它不属于任何分类行,所以放在树外
-       *                        (紧贴 tab 排下方:用户是右键 tab 触发的这一下)
+       *   三级(分类,段根下) → creatingRootInput —— **在树里**(它即将成为的那一行,
+       *                        见下面 `<ul>` 里那处;2026-09-21 从列表外挪进去)
        *   二级(小类)         → 下面的 creatingKind
        *   四级(子分类)       → 树里那一行正下方的 InlineInputRow(必须挨着父行)
        *   一级(大类)         → 不在这里 —— 它是**整片区域的**一级,入口在
        *                        `LibrarySections` 最下面那一行「+」(见那边的注释)
        */}
-      {creatingRootInput}
 
       {/* 大类的新建 / 重命名输入 —— 菜单触发后就地摆一行(与集合行内输入同一套手感) */}
       {(creatingGroup || renamingGroup) && (
@@ -1306,6 +1333,13 @@ export function LibrarySection({
           ) : (
             <>
               {rootCollections.map((c) => renderCollectionRow(c))}
+              {/* **新建分类的输入框就在树里**(2026-09-21 挪进来)。
+                  用户原话:「选择新建的时候要在对应的位置出现输入框,**现在的情况是
+                  位置全部设置在了 collection 列表里面**」（指的是全都堆在列表外面、
+                  表头下面那一坨）。它即将成为的那一行就是这里 —— 树的末尾。
+                  ⚠️ 它**在回收站之前**:新建出来的是一条普通分类,而回收站永远钉在
+                  整棵树的最后。 */}
+              {creatingRootInput}
               {/* 回收站**永远在最后** —— 它不参与嵌套(树里只画普通分类),
                   所以由这里统一摆在整棵树的下面。数据库给的行序是任意的
                   (它就是一条普通记录),排序只能在渲染端做。 */}
@@ -1319,6 +1353,14 @@ export function LibrarySection({
 
       {/* 文献行的右键菜单:移动 / 复制到别的库、从当前库移除(在回收站里则是彻底删除)、
           打开文件夹、打开 md */}
+      {/* 彻底删除的确认框 —— 摆出会跟着一起没的关联与转录产物，让用户勾（见那个文件头）。 */}
+      <DeleteItemsDialog
+        open={deleting !== null}
+        ids={deleting?.ids ?? []}
+        onOpenChange={(open) => { if (!open) setDeleting(null); }}
+        onConfirmed={() => void afterDeleteItems(deleting?.activeItemId ?? null)}
+      />
+
       <LibraryItemContextMenu
         ctxMenu={ctxMenu}
         collections={kindCollections}
@@ -1558,13 +1600,15 @@ export function LibrarySections() {
   }
   return (
     <div className="space-y-3">
-      {groups.map((group) => (
+      {groups.map((group, i) => (
         <LibrarySection
           key={group.id}
           group={group}
           typeMetas={typeMetas}
           groups={groups}
           onRefresh={reload}
+          // 回收站钉在**最后一段**的末尾 —— 那就是整片区域的最底部。
+          isLastSection={i === groups.length - 1}
         />
       ))}
 

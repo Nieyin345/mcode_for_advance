@@ -148,6 +148,17 @@ export const en = {
   "library.ctx.deleteForever": "Delete permanently",
   "library.ctx.deleteForeverConfirm":
     "Permanently delete “{title}”? The database record and the PDF / Markdown on disk are both deleted, and this cannot be undone.",
+  /** Delete-confirm dialog (wired to `library.deletePreview`). This is the ONLY
+   *  irreversible operation in the library, so it lists what else would go. */
+  "library.del.title": "Delete “{title}”",
+  "library.del.ownLine": "This item itself (record + files on disk) is always deleted.",
+  "library.del.linksHead": "These go too — untick any you want to keep:",
+  "library.del.form.item": "Library item",
+  "library.del.form.path": "File outside the library (removes the link only; your file stays)",
+  "library.del.form.transcript": "Transcript + its images ({n} images)",
+  "library.del.noLinks": "It is not linked to anything else.",
+  "library.del.confirm": "Delete",
+  "library.del.cancel": "Cancel",
   "library.ctx.openFolder": "Open containing folder",
   "library.ctx.openMd": "Preview full text (in app)",
   "library.ctx.openMdMissing": "Preview full text (not converted yet)",
