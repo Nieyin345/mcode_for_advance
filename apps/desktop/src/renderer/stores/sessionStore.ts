@@ -1743,8 +1743,6 @@ export interface SessionState {
   interrupt: (sessionId?: string) => Promise<void>;
   /** 切换某会话「下一条消息挂长期任务循环」的一次性武装开关。 */
   toggleLongTaskArmed: (sessionId: string) => void;
-  /** 武装开关的显式清除（sendMessage 挂上循环器后自动解除；会话删除时清理）。 */
-  clearLongTaskArmed: (sessionId: string) => void;
   /** 关掉会话状态条上已结束的任务记录（仅清投映，不动主进程事实）。 */
   dismissLongTask: (sessionId: string) => void;
   ingestEvent: (e: RuntimeEvent) => void;
@@ -7958,17 +7956,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         get().drainPromptQueueIfIdle(sessionId);
         return;
       }
-      // 长期任务武装：这一轮已经发出去了，把循环器挂上（一次性开关）。
-      // 主进程 taskRunner 不自己发第一轮 —— 它从这轮的 turn.done 接管续轮。
-      // start 失败就默默解除（开关已经清了，用户再点一次即可），不留模糊态。
+      // 长期任务循环：**开着就一直管用**（2026-09-21 改）。
       //
-      // ⚠️ **曾经这里还有一条"网页模型自动武装"，2026-09-21 撤掉了。**
-      // 那条的判据只有"这次是不是走网页模型"，于是**随口说一句「你好」也被当成
-      // 任务书**跑了整整 20 轮（用户截图报的）。教训：**"这条消息是不是在派活"
-      // 是用户才知道的事，代码猜不准** —— 判据换成"用户自己说了算"（那个开关），
-      // 不按来源猜。见 `MCode-优化方向-第二批.md` 的 A 节。
+      // ⚠️ 从前这里是"用完就清"（`clearLongTaskArmed`）—— 那条武装只管**下一条**
+      // 消息。用户的原话是「这个不能删，而且**一直是开启的状态**」：他要的是"打开
+      // 这个会话的长任务模式，之后每条都是任务"，而不是每条消息前都去点一次。
+      // 所以现在**不清除**，由用户自己关（`toggleLongTaskArmed`）。
+      //
+      // ⚠️ **绝不能按"来源"自动开**（曾经的 `isWebModelSend` 就是这么干的，已撤）：
+      // 那样随口一句「你好」也被当成任务书跑了 20 轮。判据只能是**用户自己按的开关**
+      // —— 他开着就知道自己在干什么，也随时能关。
       if (get().longTaskArmedBySession[sessionId]) {
-        get().clearLongTaskArmed(sessionId);
         void api.longtask.start({ sessionId, goal: prompt }).catch(() => {});
       }
       set((s) => {
@@ -8211,15 +8209,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const next = { ...s.longTaskArmedBySession };
       if (next[sessionId]) delete next[sessionId];
       else next[sessionId] = true;
-      return { longTaskArmedBySession: next };
-    });
-  },
-
-  clearLongTaskArmed: (sessionId) => {
-    set((s) => {
-      if (!s.longTaskArmedBySession[sessionId]) return s;
-      const next = { ...s.longTaskArmedBySession };
-      delete next[sessionId];
       return { longTaskArmedBySession: next };
     });
   },

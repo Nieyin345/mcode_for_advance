@@ -432,7 +432,9 @@ export const en = {
   "composer.longtask.title": "Long task",
   "composer.longtask.rowLabel": "Long task",
   "composer.longtask.pillLabel": "Long task",
-  "composer.longtask.armHint": "When on, the next message you send becomes a goal that runs turn after turn until the model declares it done",
+  /** NOTE: means "EVERY message from now on is a goal", not "the next one" — it
+   *  stays on until the user turns it off. */
+  "composer.longtask.armHint": "When on, every message you send becomes a goal that runs turn after turn until the model declares it done; tap again to turn it off",
   "composer.longtask.armed": "Armed",
   "composer.longtask.running": "Running",
   "composer.longtask.banner.goal": "Goal",

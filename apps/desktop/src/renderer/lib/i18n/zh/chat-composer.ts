@@ -439,7 +439,9 @@ export const zh = {
   "composer.longtask.title": "长期任务",
   "composer.longtask.rowLabel": "长任务",
   "composer.longtask.pillLabel": "长任务",
-  "composer.longtask.armHint": "开启后，下一条发送的消息会作为目标，自动连续执行直到模型宣布完成",
+  /** ⚠️ 语义是「**之后每条**都算任务」，不是「下一条」—— 打开之后一直有效，
+   *  由用户自己关（用户原话：「一直是开启的状态」）。 */
+  "composer.longtask.armHint": "开启后，你发的每条消息都会被当成任务目标，自动连续执行直到模型宣布完成；再点一次可关掉",
   "composer.longtask.armed": "已武装",
   "composer.longtask.running": "执行中",
   "composer.longtask.banner.goal": "目标",
