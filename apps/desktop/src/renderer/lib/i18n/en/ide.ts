@@ -287,6 +287,33 @@ export const en = {
   "ide.term.commandLabel": "Command",
   "ide.term.commandPlaceholder": "e.g. npm run dev",
 
+  /* ── task list PAGE (a right-panel tab: terminals + subagents + workflow nodes) ── */
+  "ide.task.pageTitle": "Running now",
+  "ide.task.pageDesc":
+    "Terminals you open, tasks agents dispatch, and the workflow step that's running all live here",
+  "ide.task.empty": "Nothing is running right now",
+  "ide.task.emptyHint": "Open a terminal or dispatch a subagent and it will show up here",
+  "ide.task.refresh": "Refresh",
+  "ide.task.listMore": "{n} more not shown (they exist — this list just caps at 8 per group)",
+  "ide.task.groupTerminals": "Terminals",
+  "ide.task.groupAgents": "Subagents",
+  "ide.task.groupNodes": "Workflow nodes",
+  "ide.task.view": "View",
+  "ide.task.back": "Back to the list",
+  "ide.task.agentUntitled": "(untitled task)",
+  "ide.task.originUser": "Opened by you",
+  "ide.task.originSession": "Opened by “{name}”",
+  "ide.task.originSessionUnknown": "Opened by session {name}",
+  "ide.task.originNode": "Workflow node",
+  "ide.task.detailTerminal": "Terminal output",
+  "ide.task.readOnly": "Read-only view (switch to the owning panel to type)",
+  "ide.task.following": "Following this terminal's output",
+  "ide.task.gone": "This terminal has exited",
+  "ide.task.transcriptWaiting": "This subagent has no output yet",
+  "ide.task.transcriptNotStarted": "This step hasn't started yet",
+  "ide.task.transcriptRunning": "This step is running; its transcript hasn't reached this view yet",
+  "ide.task.transcriptTrimmed": "Its transcript is no longer in memory (only recent ones are kept)",
+
   /* ── turn flow panel (right-panel "turns" tab) ── */
   "ide.turns.title": "Turn Flow",
   "ide.turns.summaryTurns": "{n} turns",

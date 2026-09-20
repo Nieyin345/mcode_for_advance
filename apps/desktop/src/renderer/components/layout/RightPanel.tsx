@@ -11,6 +11,7 @@ import {
   IconBook,
   IconTemplate,
   IconListTree,
+  IconTerminal2,
 } from "@renderer/lib/icons.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useWorkflowLive } from "@renderer/lib/workflowLive.js";
@@ -18,6 +19,7 @@ import { resolveShortcut, acceleratorToDisplayString } from "@renderer/lib/short
 import { FilesPanel } from "@renderer/components/ide/FilesPanel.js";
 import { GitPanel } from "@renderer/components/ide/GitPanel.js";
 import { TurnFlowPanel } from "@renderer/components/ide/TurnFlowPanel.js";
+import { TaskListPanel } from "@renderer/components/ide/TaskListPanel.js";
 import { WorkflowBoardPanel } from "@renderer/components/chat/WorkflowBoardPanel.js";
 import { BrowserPanel } from "@renderer/components/browser/BrowserPanel.js";
 import { SideChatPanel } from "@renderer/components/chat/SideChatPanel.js";
@@ -137,6 +139,16 @@ export function RightPanel() {
             </span>
           )}
         </div>
+        {/* 任务列表 —— 所有终端 + 代理派出去的任务 + 工作流正在跑的那一步,点开看输出。
+            与「工作流运行」是两个问题:那个讲**这张图**跑到哪一格,这个讲**这台机器
+            此刻在跑什么**(谁开的、跑完了没)。 */}
+        <RailButton
+          active={tab === "tasks"}
+          onClick={() => setTab("tasks")}
+          title={t("layout.tabTasks")}
+        >
+          <IconTerminal2 size={16} className="shrink-0" />
+        </RailButton>
         {/* Side chat — quick Q&A beside the running main session. */}
         <RailButton
           active={tab === "sidechat"}
@@ -197,6 +209,7 @@ export function RightPanel() {
         {tab === "git" && <GitPanel />}
         {tab === "turns" && <TurnFlowPanel />}
         {tab === "flow" && <WorkflowBoardPanel />}
+        {tab === "tasks" && <TaskListPanel />}
         {tab === "sidechat" && <SideChatPanel />}
         {tab === "library" && <LibraryPanel />}
         {tab === "templates" && <TemplatePanel />}

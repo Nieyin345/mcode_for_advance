@@ -345,29 +345,48 @@ export function resumableRun(sessionId: string, nodeId: string): ResumableRun | 
   return { runId: row.id, workflowId: row.workflowId, snapshot };
 }
 
-/** 一次**可以从某一步重跑**的运行 —— 存档,以及为什么能重跑(失败的那一步)。 */
+/** 一次**可以从某一步重跑**的运行 —— 存档,以及为什么能重跑。 */
 export interface RetryableRun {
   runId: string;
   workflowId: string;
   snapshot: RunSnapshot;
+  /**
+   * 那一步上次是什么结局。**调用方要它来分清两种重跑**:
+   *
+   *  - `"failed"` —— 用户在失败卡片上点「再试一次」;
+   *  - 别的 —— 用户在图上看中一步,说"从这儿往下走"。
+   *
+   * 两者后面走的是同一条路(抹掉那一步 + 它的全部后代,再跑一遍),**只有那一句提示
+   * 词不一样**:重试要带上用户写的「上次哪里不对」,挑起点不需要。所以这里把结局交出来,
+   * 由调用方决定要不要 `note` —— 而不是在这一层替它判断"这次算不算重试"。
+   */
+  outcome: NodeOutcome;
 }
 
 /**
- * 用户在**一张失败的卡片**上点了「再试一次」—— 找那次运行,并确认它真的能重跑。
+ * 用户在**一步上**点了「从这儿接着跑」—— 找那次运行,并确认它真的能重跑。
  *
  * 与 {@link resumableRun} 并列,判据的**形状也是并列的**:那个认"被中断且停在这格",
- * 这个认"**失败了,而且那一步真的在存档里**"。
+ * 这个认"**这一步在存档里**"。
  *
- * 四道门,每一道都对应界面上的一种"这张卡不适用了"(全都**不是错误**):
+ * ## 三道门,每一道都对应界面上的一种"这张卡不适用了"(全都**不是错误**)
  *
  *  1. **找不到那一行**(或它不属于这个对话)—— 卡片是别人的 / 已被清理;
- *  2. **状态不是 `failed`** —— 它跑成了、被取消了、或者还在跑。界面上那个按钮本来
- *     只在失败卡上出现,走到这儿说明界面上的状态是旧的;
- *  3. **存档读不回来** —— 同 `resumableRun`:硬续一份缺胳膊少腿的状态,比说一句
+ *  2. **存档读不回来** —— 同 `resumableRun`:硬续一份缺胳膊少腿的状态,比说一句
  *     "这张卡过期了"糟得多;
- *  4. **失败的那一步不在存档的结局表里**(或它的状态不是 `failed`)—— 那说明这个
- *     `nodeId` 对不上这次运行。**这一道最要紧**:少了它,重跑会从一步**根本没跑过**
- *     的节点开始,而用户会以为他在重试刚才失败的那一步。
+ *  3. **那一步不在存档的结局表里** —— 那说明这个 `nodeId` 对不上这次运行。**这一道
+ *     最要紧**:少了它,重跑会从一步**根本没跑过**的节点开始,而用户会以为他在接着
+ *     刚才那一步往下走。
+ *
+ * ## 为什么**不**再要求"那次运行是失败的"、"那一步是失败的"
+ *
+ * 这两道原先都有,是给「再试一次」那一张卡用的。但用户要的是**从任一步接着往下走**:
+ * 一张跑完了的图,他看中中间某一步、想从那儿重来一遍 —— 那正是迭代写作的常规动作。
+ * 拦着它的两道门(运行不是 `failed`、那一步不是 `failed`)把这件事表达成了"这张卡
+ * 不适用",而它明明适用。
+ *
+ * ⚠️ **放弃这两道门的代价是"能重跑"不再等于"上次出过错"** —— 调用方要拿
+ * {@link RetryableRun.outcome} 自己分辨(见那里的注释)。
  *
  * 「这个对话正有运行在跑」那一道**不在这里** —— 它要查 `runner.ts` 里那张内存地图
  * (`runs`),而这一层不认识它。调用方补(见 `resolveWorkflowRetry`)。
@@ -381,15 +400,14 @@ export function retryableRun(sessionId: string, runId: string, nodeId: string): 
     return null;
   }
   if (row === null || row.sessionId !== sessionId) return null;
-  if (row.status !== "failed") return null;
   const snapshot = decodeSnapshot(row.payload);
   if (snapshot === null) {
     log.warn(`workflow run ${row.id}: 存档读不回来,这张卡片按过期处理`);
     return null;
   }
-  const failed = snapshot.state.outcomes.find(([id]) => id === nodeId)?.[1];
-  if (failed?.status !== "failed") return null;
-  return { runId: row.id, workflowId: row.workflowId, snapshot };
+  const outcome = snapshot.state.outcomes.find(([id]) => id === nodeId)?.[1];
+  if (outcome === undefined) return null;
+  return { runId: row.id, workflowId: row.workflowId, snapshot, outcome };
 }
 
 /**

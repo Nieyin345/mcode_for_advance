@@ -3075,5 +3075,233 @@ function chainDoc(): WorkflowDoc {
   eq("B 还是 failed", settledOf(second.state, "B")?.status, "failed");
 }
 
+console.log("\n从图上挑一步往下走:分支要重新问,入口不再问");
+
+/**
+ * ## 为什么这两段非有不可
+ *
+ * 上面那几段验的是"重跑的范围对不对"(抹掉闭包)。这里验的是**另外两件**会被闭包
+ * 顺带影响、但方向相反的事 —— 它们都能静默错一整天:
+ *
+ *  1. **被重跑的分支要重新变成"还没决定"。** `chosen` 是存档里带回来的,不清的话,
+ *     重跑的那一片**来路只剩当初选的那一条**:用户刚写了「上次哪里不对」,而图照着
+ *     上一轮的选择又走了一遍,根本没给他重选的机会。屏幕上什么都看不出来。
+ *  2. **图的入口不再问"运行前先问我"。** 用户在图上指着入口说"从这儿往下",那是
+ *     已经拍过的板 —— 再弹一次四选一,而答"跳过"会让整张图一步都不跑。
+ *
+ * 两段的判据都立在人看得见的那一处:①那边是"另一条支路有没有被标死",②那边是
+ * "他到底点没点、以及模型读到的是哪句话"。
+ */
+
+/** A → B,而 **A 是岔路口**、两条出路通向 B 和 C。B、C 之后汇到 D。 */
+function forkDoc(): WorkflowDoc {
+  return docOf(
+    // ⚠️ A **只出现一次**:`docOf` 不去重,同名两次会让"哪一个是 A"没有唯一答案,
+    //    而下游断言看的就是 A 的结局。
+    [branchNode("A"), node("B"), node("C"), node("D")],
+    [
+      // 两条出边:一条去 B(选了它),一条去 C(没选)。
+      { id: "e_AB", from: "A", to: "B", label: "走 B" },
+      { id: "e_AC", from: "A", to: "C", label: "走 C" },
+      edge("B", "D"),
+      edge("C", "D"),
+    ],
+  );
+}
+
+{
+  // ── ① 重跑一个**含岔路口**的闭包:那个岔路口要重新问 ──
+  const doc = forkDoc();
+  // 第一次:用户选了"走 B",B 失败,D 跟着 skipped。
+  const h1 = makePorts({
+    fail: (id) => id === "B",
+    pick: () => ({ edgeId: "e_AB" }),
+  });
+  const first = await runWorkflow({ doc, prompt: "x", ports: h1.ports, signal: controller().signal });
+
+  eq("★ 用户选了 B 那条路", settledOf(first.state, "B")?.status, "failed");
+  eq("★ 没选的那条(C)被标成 unselected", settledOf(first.state, "C")?.status, "unselected");
+  eq("★ 存档里记着「选了哪条」", first.state.picks.length, 1);
+
+  // 第二次:**从 A 重跑** —— 也就是把那个岔路口自己也抹掉。
+  //
+  // ⚠️ 这里给的是 `rewind: ["A"]`,闭包是 {A, B, C, D} —— 那个岔路口在闭包里,
+  // 所以要重新问(而不是照抄上一轮的答案)。
+  const h2 = makePorts({ pick: () => ({ edgeId: "e_AC" }) });
+  const second = await runWorkflow({
+    doc,
+    prompt: "x",
+    ports: h2.ports,
+    signal: controller().signal,
+    resume: {
+      record: first.state.record,
+      rounds: first.state.rounds,
+      picks: first.state.picks,
+      settled: first.state.outcomes,
+      rewind: ["A"],
+    },
+  });
+
+  // ★ **这一条就是那件事**:岔路口被重新问了一次 —— 用户这次能选另一条路。
+  eq("★ 重跑的分支被重新问了一遍(而不是照抄上一轮)", h2.choicesAsked.length, 1);
+  eq("★ 用户这次选了另一条", h2.choicesAsked[0]?.options.length, 2);
+  eq("★ 于是走的是 C 那条路", settledOf(second.state, "C")?.status, "success");
+  eq("★ 而 B 这次没走", settledOf(second.state, "B")?.status, "unselected");
+  // ⚠️ **`presetSeen` 必须是空的** —— 那才是"重新问"的准确判据。`choicesAsked` 在
+  //    预置答案那一路**同样会出现**(见 Harness 的注释),所以只看它分不出"问了"和
+  //    "直接给了答案"。这里正面钉一下:这一问是真的走了一遍用户。
+  eq("★ 而且是真问的,不是拿预置答案顶的", h2.presetSeen.length, 0);
+}
+
+{
+  // ── ① 的反面:**不在**闭包里的岔路口**不许**重新问 ──
+  //
+  // 用户点的是下游某一步,而岔路口在它前面(没被抹)。那种情况下照抄上一轮的选择是
+  // **对的** —— 他这次没说要改那条路,重新问一遍等于把已经定过的事又翻出来。
+  const doc = forkDoc();
+  const h1 = makePorts({ fail: (id) => id === "D", pick: () => ({ edgeId: "e_AB" }) });
+  const first = await runWorkflow({ doc, prompt: "x", ports: h1.ports, signal: controller().signal });
+
+  // 从 D 重跑 —— A 在闭包**外**。
+  const h2 = makePorts({});
+  await runWorkflow({
+    doc,
+    prompt: "x",
+    ports: h2.ports,
+    signal: controller().signal,
+    resume: {
+      record: first.state.record,
+      rounds: first.state.rounds,
+      picks: first.state.picks,
+      settled: first.state.outcomes,
+      rewind: ["D"],
+    },
+  });
+
+  eq("★ 闭包外的岔路口不重新问(照抄上一轮的选择)", h2.choicesAsked.length, 0);
+  check("★ 而且 A 一步都没重跑", !h2.executed().includes("A"), h2.executed());
+}
+
+{
+  // ── ② 图的入口开着「运行前先问我」:从它往下走时**不再问** ──
+  //
+  // 入口是 `mcode.main`(主代理),而它是**对话节点** —— 那个开关只长在对话节点上
+  // (`askBeforeRunOf` 只被 conversation 那一支读)。别的重跑起点不会有这一问。
+  const doc = docOf(
+    [
+      node("A", CONVERSATION.id, "A 做什么", { askBeforeRun: true }),
+      node("B"),
+    ],
+    [edge("A", "B")],
+  );
+  const h1 = makePorts({ fail: (id) => id === "B" });
+  const first = await runWorkflow({ doc, prompt: "x", ports: h1.ports, signal: controller().signal });
+
+  // 从入口 A 重跑 —— 它的闭包是整张图。
+  const h2 = makePorts({});
+  await runWorkflow({
+    doc,
+    prompt: "x",
+    ports: h2.ports,
+    signal: controller().signal,
+    resume: {
+      record: first.state.record,
+      rounds: first.state.rounds,
+      picks: first.state.picks,
+      settled: first.state.outcomes,
+      rewind: ["A"],
+    },
+  });
+
+  // ★ **那一问的答案是预置的,不是现场问出来的。**
+  //
+  // ⚠️ 这里**不能**拿 `choicesAsked.length === 0` 当判据 —— 那是错的。端口照样收到
+  //    一次调用(它要据此把界面上那张卡**原地**改成"你选了 X"),`choicesAsked` 因此
+  //    同样会 +1(见 Harness 上 `presetSeen` 那段注释)。分得开这两件事的只有
+  //    `presetSeen`:**不为空** = 这一问没等用户。
+  eq("★ 那一问是预置的,没让用户再拍一次板", h2.presetSeen.length, 1);
+  eq("★ 预置的答案就是「用这一步的指令」", h2.presetSeen[0]?.edgeId, ASK_RUN_CHOICE);
+  eq("★ 那一格就是入口", h2.presetSeen[0]?.nodeId, "A");
+  check("★ 入口这一步照跑(不是被跳过)", h2.executed().includes("A"), h2.executed());
+  // 而他"点了它"这件事要说得出来 —— 模型读到的应当是"从这一步往下",不是"用这一步的指令"。
+  const aPrompt = h2.calls.find((c) => c.id === "A")?.prompt ?? "";
+  check(
+    "★ 入口那一步的提示词里说的是「从这一步往下走」",
+    aPrompt.includes("从这一步往下走"),
+    aPrompt.slice(0, 500),
+  );
+  check("★ 而且是以「本次执行的前置选择」那一段的形态", aPrompt.includes("本次执行的前置选择"), aPrompt.slice(0, 500));
+  // ★ **反面钉一下**:那句"用这一步的指令"(选项自己的文案)不许露出来 —— 那说的是
+  //    "这一步怎么跑",而用户表达的是"从这一步往下",两件事。漏了替换就会是这样。
+  check(
+    "★ 没有退回到选项自己的文案「用这一步的指令」",
+    !aPrompt.includes("用这一步的指令"),
+    aPrompt.slice(0, 500),
+  );
+}
+
+{
+  // ── ③ 入口是**岔路口**时,绝不许预置 ──
+  //
+  // ⚠️ 这条是**真踩过的**:`entryCandidates` 只看"谁没有入边",**不看类型**,而画一张
+  //    以分支开头的图是完全合法的。往里塞一个 `ASK_RUN_CHOICE`,分支那一头会拿它去
+  //    自己的出边里找 —— 四选一的答案 vs 出边,**一条都对不上**,于是整张图一开跑就
+  //    判失败:"选的那条出路不在这个分支上"。加了 `isAskBeforeRun` 那道闸才拦住。
+  //
+  // 判据立在用户看得见的那一处:**那次运行成不成,以及他到底有没有被问**。
+  const doc = forkDoc();
+  const h1 = makePorts({ fail: (id) => id === "D", pick: () => ({ edgeId: "e_AB" }) });
+  const first = await runWorkflow({ doc, prompt: "x", ports: h1.ports, signal: controller().signal });
+
+  const h2 = makePorts({ pick: () => ({ edgeId: "e_AB" }) });
+  const second = await runWorkflow({
+    doc,
+    prompt: "x",
+    ports: h2.ports,
+    signal: controller().signal,
+    resume: {
+      record: first.state.record,
+      rounds: first.state.rounds,
+      picks: first.state.picks,
+      settled: first.state.outcomes,
+      rewind: ["A"],
+    },
+  });
+
+  eq("★ 以分支为入口的图从入口重跑,不能因为预置而失败", second.status, "success");
+  eq("★ 那个岔路口是真问的(分支不接受预置答案)", h2.presetSeen.length, 0);
+  eq("★ 问的就是它", h2.choicesAsked[0]?.nodeId, "A");
+  check("★ 而且照常往下走了", h2.executed().includes("B"), h2.executed());
+}
+
+{
+  // ── ② 的反面:入口**没开着**那个开关时,什么都没变 ──
+  const doc = docOf([node("A"), node("B")], [edge("A", "B")]);
+  const h1 = makePorts({ fail: (id) => id === "A" });
+  const first = await runWorkflow({ doc, prompt: "x", ports: h1.ports, signal: controller().signal });
+
+  const h2 = makePorts({});
+  await runWorkflow({
+    doc,
+    prompt: "x",
+    ports: h2.ports,
+    signal: controller().signal,
+    resume: {
+      record: first.state.record,
+      rounds: first.state.rounds,
+      picks: first.state.picks,
+      settled: first.state.outcomes,
+      rewind: ["A"],
+    },
+  });
+
+  eq("★ 没开那个开关就没有那一问", h2.choicesAsked.length, 0);
+  eq("★ 也没有预置答案(那一段不该凭空冒出来)", h2.presetSeen.length, 0);
+  check("★ A 照跑", h2.executed().includes("A"), h2.executed());
+  // 提示词里**不该**凭空多出那一段 —— 那会告诉模型"用户拍过一个板",而他没有。
+  const aPrompt = h2.calls.find((c) => c.id === "A")?.prompt ?? "";
+  check("★ 而且提示词里没有凭空多出那一段", !aPrompt.includes("本次执行的前置选择"), aPrompt.slice(0, 400));
+}
+
 console.log(`\n${total - failures}/${total} passed`);
 if (failures > 0) process.exit(1);

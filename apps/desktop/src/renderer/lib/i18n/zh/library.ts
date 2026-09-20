@@ -38,10 +38,16 @@ export const zh = {
   "library.kind.deleteConfirm": "删除小类「{name}」？它名下的集合与条目不再显示，数据不会删。",
   "library.kind.builtinLocked": "内置类型不能删除",
   "library.kind.namePlaceholder": "小类名称",
+  "library.kind.showAll": "全部显示",
+  "library.kind.showCollections": "只看分类",
   "library.kind.purpose.material": "查资料用",
   "library.kind.purpose.format": "照着写用",
   "library.collection.newSub": "新建子集合",
   "library.collection.createFailed": "创建失败",
+  "library.collection.moveTo": "移动到",
+  "library.collection.moveToTop": "移到最外层",
+  "library.collection.moveFailed": "移动失败",
+  "library.collection.linkCount": "{n} 条关联",
 
   // 中栏:列表
   "library.list.count": "{n} 篇",

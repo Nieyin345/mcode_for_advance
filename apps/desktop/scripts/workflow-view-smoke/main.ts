@@ -95,6 +95,7 @@ import {
   insertableGroups,
 } from "@renderer/components/settings/workflows/insertVariable.js";
 import { AgentProfilesView } from "@renderer/components/settings/workflows/AgentProfilesView.js";
+import { groupProfiles } from "@renderer/components/settings/workflows/agentProfileGroups.js";
 import { WorkflowListRow } from "@renderer/components/settings/workflows/WorkflowListRow.js";
 import { WorkflowNodeCard } from "@renderer/components/settings/workflows/WorkflowNodeCard.js";
 import { WorkflowCanvas } from "@renderer/components/settings/workflows/WorkflowCanvas.js";
@@ -2101,12 +2102,22 @@ check(
   panelClass("workflows-panel-nodeTypes"),
 );
 check("没有用 hidden 属性(它压不过 .flex)", !panelHtml.includes('hidden=""'));
+// 代理档案是**第三个页签**(2026-09-20 从节点类型那一页的下半部分搬出来)。它默认也
+// 得是 hidden 的类 —— 三个页签同时挂载,漏一个就是两页叠在一起。
+check(
+  "代理档案那一块默认带 hidden 类",
+  panelClass("workflows-panel-profiles").split(" ").includes("hidden"),
+  panelClass("workflows-panel-profiles"),
+);
+check("工作流那边有三个页签(库 / 类型 / 档案)", panelHtml.includes('id="workflows-tab-profiles"'));
 
 console.log("\nWorkflowsPanel(自动化:同一块面板的另一种用法)");
 const autoPanel = withLocale("zh", () => html(createElement(WorkflowsPanel, { purpose: "automation" })));
 check("自动化面板:标题换了", autoPanel.includes("自动化"));
 check("自动化面板:页签只剩「库」", !autoPanel.includes('id="automation-tab-nodeTypes"'));
 check("自动化面板:节点类型那块整块不渲染", !autoPanel.includes('id="automation-panel-nodeTypes"'));
+// 档案那一页同样不渲染:自动化那一页根本画不出能套档案的节点(它的起点是触发器)。
+check("自动化面板:代理档案那块整块不渲染", !autoPanel.includes('id="automation-panel-profiles"'));
 // id 带前缀 —— 两个用途的面板各自挂在自己的设置页上,id 撞了就是同一份 DOM id 出现
 // 两次(按 id 找元素的地方会被第一个截胡)。
 check("自动化面板:库那块挂在 automation- 前缀下", autoPanel.includes('id="automation-panel-library"'));
@@ -2128,11 +2139,6 @@ console.log("\nNodeTypesView(这一种节点怎么用)");
           loading: false,
           error: null,
           onRefresh: () => {},
-          profiles: [],
-          profileProblems: [],
-          profileError: null,
-          onSaveProfile: async () => {},
-          onRemoveProfile: async () => {},
         }),
       ),
     );
@@ -2301,14 +2307,19 @@ check(
 // 「两档宽度不一样」不在这里断言 —— 它是**字面量类型**,两者相同的话 tsc 当场报
 // "条件恒假"。运行时那句话是空的,编译期那句话是真的。
 
-console.log("\n代理档案页(节点类型页签里的那一块)");
-/** 一份档案的列表 / 编辑器。三个用例只差数据,所以只有一个渲染口。 */
-const renderProfiles = (profiles: AgentProfile[], problems: Array<{ file: string; error: string }> = []) =>
+console.log("\n代理档案页(自己的一页:左边分类、右边这一类)");
+/** 一份档案的列表 / 编辑器。几个用例只差数据,所以只有一个渲染口。 */
+const renderProfiles = (
+  profiles: AgentProfile[],
+  problems: Array<{ file: string; error: string }> = [],
+  loading = false,
+) =>
   withLocale("zh", () =>
     html(
       createElement(AgentProfilesView, {
         catalog: CATALOG,
         profiles,
+        loading,
         problems,
         error: null,
         onSave: async () => {},
@@ -2322,16 +2333,64 @@ check("列表里有那份档案", profilesHtml.includes("读论文"));
 check("能编辑(二次编辑)", profilesHtml.includes("编辑"));
 check("能删", profilesHtml.includes("删掉这份档案"));
 check("能从这一页新建", profilesHtml.includes("新建档案"));
+// 左栏列的是**这一份的节点类型**(不是它的名字)—— 分类的判据就是类型,见
+// `agentProfileGroups`。子 agent 那一行必须有一个计数,否则"这一组里有几份"看不出来。
+check("左栏列出它所属的节点类型", profilesHtml.includes("子 agent"));
+check("左栏那一组带计数", profilesHtml.includes("tablenums") || profilesHtml.includes("tabular-nums"));
+check("右栏说清这是哪一类", profilesHtml.includes("mcode.agent"));
+// 空列表与"还在读"必须是两句不同的话 —— 混成一个的话每次打开这一页都会先闪一下
+// "还没有档案"(见 `loading` 的注释)。
 const profilesEmptyHtml = renderProfiles([]);
 check("空的时候说的是怎么才能有", profilesEmptyHtml.includes("还没有档案"));
+const profilesLoadingHtml = renderProfiles([], [], true);
+check("还在读的时候转圈,不说「还没有档案」", !profilesLoadingHtml.includes("还没有档案"));
 // 档案引用了没装的类型 —— **不是错误**,但它跑不了,得说出来(同工作流里"类型缺失
-// 不算错误")。这一条同时验证"没装也照样列得出来、删得掉"。
-const orphanHtml = renderProfiles([{ ...PROFILE, id: makeAgentProfileId(), type: "demo.没装" }]);
+// 不算错误")。这一条同时验证"没装也照样列得出来、删得掉":它的类型不在清单里,
+// 于是左栏那一组的标题回落到**类型 id 本身**(总得有个东西可读)。
+const uninstalled = { ...PROFILE, id: makeAgentProfileId(), type: "demo.没装" };
+const orphanHtml = renderProfiles([uninstalled]);
 check("类型没装的档案照样列出来", orphanHtml.includes("读论文"));
+check("分组标题回落到类型 id", orphanHtml.includes("demo.没装"));
 check("而且标出类型没装", orphanHtml.includes("类型没装"));
 // 坏文件不静默丢弃 —— 档案"不见了"时这一页是唯一能解释为什么的地方。
 const brokenHtml = renderProfiles([], [{ file: "p_x.json", error: "不是合法的 JSON" }]);
 check("读不进来的档案文件会显示出来", brokenHtml.includes("p_x.json"));
+
+console.log("\ngroupProfiles(档案按节点类型分类)");
+{
+  const mk = (type: string, name: string): AgentProfile =>
+    profileFromParams({ id: makeAgentProfileId(), name, type, params: {}, createdAt: 0 });
+  // 三份:两个子 agent(mcode.agent,分类「通用」)、一个命令(demo.parse,清单里没写
+  // 分类)、一个**这台机器上没装的**类型。
+  const a1 = mk(AGENT_MANIFEST.id, "读论文");
+  const a2 = mk(AGENT_MANIFEST.id, "读论文(快)");
+  const cmd = mk(COMMAND_MANIFEST.id, "解析 PDF");
+  const gone = mk("demo.没装", "别人分享来的");
+
+  // **传进来的次序故意与排好序的次序不同**(没装的排最前、有分类的排最后)——
+  // 否则"排过序"这件事在这组断言里是看不出来的:不过脑子直接返回也会全绿。
+  const grouped = groupProfiles([gone, cmd, a1, a2], CATALOG);
+  eq("三个类型分成三组", grouped.length, 3);
+  eq("有分类的排最前", grouped[0]?.typeId, AGENT_MANIFEST.id);
+  eq("组标题是清单名", grouped[0]?.title, AGENT_MANIFEST.name);
+  eq("分类照清单带出来(给左栏那一行小字用)", grouped[0]?.category, "通用");
+  eq("组内保持传进来的次序(最近改的在前)", grouped[0]?.profiles[0]?.name, "读论文");
+  // 清单在、只是没写分类 → 排在"有分类"之后、"没装"之前。
+  eq("没写分类的排在中间", grouped[1]?.typeId, COMMAND_MANIFEST.id);
+  eq("没写分类就是空串", grouped[1]?.category, "");
+  // 没装清单的类型**照样成组**,只是标题没有更好的选择 —— 回落成 id,而不是空串。
+  // 它排在最后:认不出来的东西不该夹在认得出来的中间。
+  eq("没装的类型排最后", grouped[2]?.typeId, "demo.没装");
+  eq("没装的类型标题回落到 id", grouped[2]?.title, "demo.没装");
+  // 清单读不到(`null`)时不是崩,是退化成"一族一组、标题是 id" —— 档案在磁盘上,
+  // 看得见比等清单更重要。
+  const bare = groupProfiles([a1, cmd], null);
+  eq("没有清单也能分组", bare.length, 2);
+  eq("没有清单时标题是类型 id", bare.find((g) => g.typeId === AGENT_MANIFEST.id)?.title, "mcode.agent");
+  eq("空输入给空数组", groupProfiles([], CATALOG).length, 0);
+  // 同一类型的两份**必须在一组里** —— 这正是"分不出哪个是哪个"那个毛病的反面。
+  eq("同类型的两份在同一组", groupProfiles([a1, a2], CATALOG)[0]?.profiles.length, 2);
+}
 
 // ── 岔路口:选项住在**出边**上 ──────────────────────────────────────────
 //

@@ -314,7 +314,7 @@ const { CollectionRepo } = await import("@main/store/repositories.js");
 const { ensureTrashCollection } = await import("@main/library/trash.js");
 // 回收站得先存在 —— 不然下面"有没有进回收站"断的全是 false(什么都没进,因为
 // 压根没有那个集合),而那读起来像"这段改坏了"。
-const paperTrash = ensureTrashCollection("paper");
+const paperTrash = ensureTrashCollection();
 const parentCol = CollectionRepo.create("要被删的父分类", null, "paper").id;
 const childCol = CollectionRepo.create("子分类", parentCol, "paper").id;
 const grandCol = CollectionRepo.create("孙分类", childCol, "paper").id;

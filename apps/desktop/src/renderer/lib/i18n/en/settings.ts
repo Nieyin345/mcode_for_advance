@@ -7,15 +7,11 @@ export const en = {
   "settings.nav.shortcuts": "Shortcuts",
   "settings.nav.voice": "Voice Input",
   "settings.nav.skills": "Skills",
-  "settings.nav.subagents": "Subagents",
   "settings.nav.workflows": "Workflows",
   "settings.nav.automation": "Automations",
   "settings.nav.hooks": "Hooks",
   "settings.nav.mcp": "MCP",
-  "settings.nav.context": "Context",
-  // Memory browser sits right after Context: both answer "what global context
-  // feeds the engine" — context injects it, the memory explorer edits the files.
-  "settings.nav.memory": "Memory",
+  "settings.nav.memory": "Memory & Context",
   "settings.nav.plugins": "Plugins",
   "settings.nav.notifications": "Notifications",
   "settings.nav.git": "Git",
@@ -40,27 +36,6 @@ export const en = {
   "settings.general.desc": "Layout, message display, thread titles and other basic preferences.",
 
   // ── SubagentsPanel (Claude custom subagents) ──
-  "settings.subagents.title": "Subagents",
-  "settings.subagents.sectionTitle": "Custom subagents (Claude)",
-  "settings.subagents.sectionDesc":
-    "Define subagents the main conversation can delegate to: a name, a description of when to use it, and its own system prompt. Applies from the next turn after saving.",
-  "settings.subagents.empty": "No custom subagents yet. Click \"Add subagent\" to create the first one.",
-  "settings.subagents.unnamed": "Unnamed",
-  "settings.subagents.name": "Name",
-  "settings.subagents.namePh": "e.g. test-runner (letters/digits/-/_) ",
-  "settings.subagents.description": "Description (guides when the model delegates)",
-  "settings.subagents.descriptionPh": "e.g. Runs tests and summarizes failures",
-  "settings.subagents.prompt": "System prompt",
-  "settings.subagents.promptPh": "This subagent's persona and way of working…",
-  "settings.subagents.tools": "Allowed tools (comma-separated, empty = inherit all)",
-  "settings.subagents.toolsPh": "e.g. Read, Grep, Bash",
-  "settings.subagents.model": "Model (optional)",
-  "settings.subagents.modelPh": "e.g. sonnet / opus / inherit",
-  "settings.subagents.add": "Add subagent",
-  "settings.subagents.save": "Save",
-  "settings.subagents.saving": "Saving…",
-  "settings.subagents.saved": "Saved",
-  "settings.subagents.delete": "Delete",
   "settings.general.sectionBasics": "Basics",
   "settings.general.sectionLanguage": "Language",
   "settings.general.sectionDisplay": "Display & Layout",
@@ -922,7 +897,6 @@ export const en = {
   "settings.subagentModel.follow": "Follow main session",
 
   // ── ContextPanel ──
-  "settings.context.title": "Context",
   "settings.context.instructionsSection": "Global instructions",
   "settings.context.instructionsDesc":
     "Standing instructions shared by every engine. The single source of truth lives at <data root>/context/instructions.md; saving materializes it automatically: Claude → ~/.mcode/CLAUDE.md, Codex → the AGENTS.md assembly chain, Pi → injected at session start. Changes apply from the next turn.",
@@ -938,17 +912,6 @@ export const en = {
     "No project memories yet. Entries appear here after the engines write memories during sessions.",
   "settings.context.noMemorySelected": "Pick a project on the left to view or edit its memory.",
   "settings.context.updatedAt": "Updated",
-  "settings.context.usageSection": "Tool usage",
-  "settings.context.usageDesc":
-    "Estimated context cost of tools in the selected engine, grouped by source.",
-  "settings.context.usageEngine": "Engine",
-  "settings.context.usageInprocess": "In-process tools",
-  "settings.context.usageUserMcp": "User MCP",
-  "settings.context.usagePluginMcp": "Plugin MCP",
-  "settings.context.usageBuiltin": "Built-in server",
-  "settings.context.usageTotal": "Total",
-
-  // ── UsagePanel ──
   "settings.usage.title": "Usage",
   "settings.usage.desc": "Token usage aggregated from every session's turn history. Pi sessions are counted as increments.",
   "settings.usage.range.today": "Today",

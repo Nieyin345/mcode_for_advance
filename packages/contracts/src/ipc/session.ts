@@ -66,6 +66,23 @@ export const StartSessionSchema = z.object({
    *  session already references (main validates); ignored otherwise. Only
    *  meaningful together with envMode="worktree". */
   worktreePath: z.string().optional(),
+  /** kind="side" + 一份代理档案:这个子对话**是谁**。
+   *
+   *  **只传 id**(`p_xxxx`),主进程按它去 `<数据根>/workflows/agents/` 读那份档案。
+   *  刻意不把 `name` / `instruction` 走 IPC 传过来:那样渲染端就成了"指令的第二个来
+   *  源地",而档案是**磁盘上的文件**、用户会在编辑器里直接改它 —— 两个来源迟早分家。
+   *
+   *  读不到、类型不对、参数过不了校验时**明确失败**(handler 抛错),不退回"建一个没有
+   *  角色的空会话":那会让用户拿到一个看着建成了、实际没有角色的对话,而他完全没有线索。 */
+  agentProfileId: z.string().optional(),
+  /** kind="side" + 「档案+记忆」:建会话时把记忆库的一份快照挂进去(第一轮带上)。
+   *
+   *  ⚠️ **只是"要不要挂"的意图,具体内容由主进程现取** —— 与 `agentProfileId` 那边
+   *  "渲染端不提供内容"同一条规矩。快照的取法见 `applyAgentProfileToSession`。
+   *
+   *  不给、给 false = 不注记忆。**「空白」和「不带记忆的档案」是两件事**,前者连
+   *  `agentProfileId` 都没有,后者有指令只是不注记忆 —— 别把它们合成一个。 */
+  memory: z.boolean().optional(),
 });
 export type StartSessionInput = z.infer<typeof StartSessionSchema>;
 

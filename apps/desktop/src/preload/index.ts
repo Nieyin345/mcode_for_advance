@@ -230,6 +230,8 @@ const api = {
       ipcRenderer.invoke(IPC.LIBRARY_SUPPRESS_SAVE, input)) as RpcMap["library.suppressSave"],
     linksOf: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_LINKS_OF, input)) as RpcMap["library.linksOf"],
+    linkCounts: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_LINK_COUNTS, input)) as RpcMap["library.linkCounts"],
     linkAdd: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_LINK_ADD, input)) as RpcMap["library.linkAdd"],
     linkRemove: ((input) =>
@@ -244,6 +246,10 @@ const api = {
       ipcRenderer.invoke(IPC.LIBRARY_ADD_ITEMS, input)) as RpcMap["library.addItems"],
     deleteItems: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_DELETE_ITEMS, input)) as RpcMap["library.deleteItems"],
+    restoreItems: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_RESTORE_ITEMS, input)) as RpcMap["library.restoreItems"],
+    deletePreview: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_DELETE_PREVIEW, input)) as RpcMap["library.deletePreview"],
     download: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_DOWNLOAD, input)) as RpcMap["library.download"],
     jobs: (() => ipcRenderer.invoke(IPC.LIBRARY_JOBS)) as RpcMap["library.jobs"],
@@ -306,6 +312,8 @@ const api = {
       ipcRenderer.invoke(IPC.LIBRARY_RENAME_COLLECTION, input)) as RpcMap["library.renameCollection"],
     deleteCollection: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_DELETE_COLLECTION, input)) as RpcMap["library.deleteCollection"],
+    moveCollection: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_MOVE_COLLECTION, input)) as RpcMap["library.moveCollection"],
     assignCollection: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_ASSIGN_COLLECTION, input)) as RpcMap["library.assignCollection"],
   },

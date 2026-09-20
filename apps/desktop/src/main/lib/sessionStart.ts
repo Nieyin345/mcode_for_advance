@@ -6,6 +6,14 @@ import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { log } from "@main/lib/logger.js";
 import { broadcastSessionChanged } from "@main/lib/sessionSync.js";
 import { normPathKey } from "@main/lib/pathNorm.js";
+import { dropBackflow, peekBackflow, queueBackflow } from "@main/lib/pendingBackflow.js";
+import { agentProfilesDir } from "@main/orchestration/agentProfiles.js";
+import {
+  loadAgentProfileForSession,
+  profileSeedOf,
+  sessionMemorySnapshot,
+  type SessionProfileSeed,
+} from "@main/lib/sessionAgentProfile.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -56,6 +64,72 @@ function coerceEnvMode(input: StartSessionInput): "local" | "worktree" {
   return "worktree";
 }
 
+/** 建一个「带角色的子对话」时要落进会话行的那一份。见 `sessionAgentProfile.ts`。 */
+export interface AgentSeededSideInput {
+  /** 挑中的档案 —— **读不到就直接抛**,不退回"没有角色的空会话"(见 handler 的注释)。 */
+  profileId: string;
+  /** 「档案+记忆」那一档:建会话时把记忆快照挂进第一轮。 */
+  memory: boolean;
+}
+
+/**
+ * 「新建子对话」这一条路要的档案快照。**在复用判断之前解出来** —— 理由有两条:
+ *
+ *  1. 档案读不到时,这一条会话**根本不该建出来**(也不该复用到一条旧的),所以必须在
+ *     动任何一行之前就失败;
+ *  2. 复用那条路要拿档案名去认"上一次为这份档案开的那个空壳"(见 `findFresh...` 的
+ *     `agent_profile` 判据),所以名字得先有。
+ */
+function resolveProfileSeed(profileId: string): SessionProfileSeed {
+  const loaded = loadAgentProfileForSession(profileId, agentProfilesDir());
+  if (!loaded.ok) throw new Error(loaded.error);
+  return profileSeedOf(loaded.profile);
+}
+
+/** 「复用」不能跨角色。见 {@link createOrReuseSession} 里 side 那一段的注释。 */
+function sameProfile(session: Session, seed: SessionProfileSeed | null): boolean {
+  const stored = session.agentProfile ?? null;
+  if (seed === null) return stored === null;
+  return stored !== null && stored.id === seed.ref.id;
+}
+
+/**
+ * 「档案+记忆」那一档:把记忆库**此刻**的一份快照挂到这个新会话上,让它随**第一轮**的
+ * 用户消息进上下文(机制见 `lib/pendingBackflow.ts` —— 主对话的上下文在提供方那边,主
+ * 进程唯一能确定被看见的地方就是下一次发出去的提示词)。
+ *
+ * ⚠️ **只挂这一次,之后不刷新。** 这个对话的第一轮建在"建会话那一刻"的记忆上,之后你在
+ * 记忆面板里改了什么,已经开着的这个对话**不会知道** —— 想用新的就再建一个子对话。
+ * 这与**节点**那边正相反(节点每轮重取 `memorySectionOf`,因为每一轮都是独立执行)。
+ *
+ * ⚠️ 走的是「并回主对话」同一条队列,**故意的**:那条路的取用时机(peek 后再 clear、
+ * 回合真起来了才清)、失败时序都在 `RuntimeManager.sendTurn` 里验过了,没有第二个入口
+ * 要维护。代价是内容被 `backflowPrompt` 统一包上一句"这不是用户刚说的话"的背景说明 ——
+ * 那句在这里改不动(它属于队列那一层)。结果是模型读到的是**原样的记忆条目**(不会有
+ * `## 长期记忆` 那种小标题):这一节是**这个对话的身份背景**,不是"本步可参考的资料",
+ * 少一层标题反而更贴切。
+ */
+function queueSessionMemory(sessionId: string): void {
+  const snapshot = sessionMemorySnapshot().trim();
+  if (snapshot.length === 0) return;
+  // ⚠️ **上一次挂的那份还在,就换掉它,不是再挂一份。** 复用那个空壳时这个函数会被再调
+  // 一次,而上一次挂的那份**还没被取走**(壳里没有消息 = 还没有过第一个回合,没人清过
+  // 队列)。不判一下的话,连点两次「档案+记忆」会让第一轮里出现两份一模一样的记忆。
+  //
+  // 为什么可以整队丢掉再挂:这个队列里此刻只可能有记忆 —— 会话还没开过口,而别的东西
+  // (工作流产出)是并回**主对话**的,进不了这条 side 会话。两次点击之间用户改过记忆时,
+  // 以**现在**这份为准(与"复用不会让记忆变旧"那句一致)。
+  //
+  // 判在**这一段**而不是 `queueBackflow` 里:队列是"按顺序追加的一次性待办",两段文字
+  // 相同不代表是同一件事(同一张工作流可以跑两遍),去重不该是它的职责。
+  const queued = peekBackflow(sessionId);
+  if (queued.length > 0) {
+    if (queued === snapshot) return;
+    dropBackflow(sessionId);
+  }
+  queueBackflow(sessionId, snapshot);
+}
+
 export function createOrReuseSession(
   input: StartSessionInput,
   source: "desktop" | "mobile",
@@ -68,9 +142,18 @@ export function createOrReuseSession(
   // design; the desktop ask tab consumes the IPC return value directly and
   // mobile doesn't manage side chats at all.
   if (input.kind === "side") {
+    // 「新建子对话 → 档案 / 档案+记忆」:建会话那一刻把档案抄成一份快照(见
+    // `sessionAgentProfile.ts` 的文件头 —— 为什么是快照不是每轮回读)。
+    const seed = input.agentProfileId ? resolveProfileSeed(input.agentProfileId) : null;
     if (input.parentSessionId) {
-      const fresh = SessionRepo.findFreshSideByParent(input.parentSessionId);
-      if (fresh) {
+      // `seed === null` 传 null(「空白」只跟"同样没有角色"的壳复用),`undefined` 会
+      // 退回"不看角色"的老行为 —— 那正是这里要避免的,所以这个参数必须**总是**给。
+      const fresh = SessionRepo.findFreshSideByParent(input.parentSessionId, seed ? seed.ref.id : null);
+      // ⚠️ **复用要看角色对不对得上。** 「空白」「档案甲」「档案甲+记忆」都是同一个
+      // kind="side"、同一个占位标题,所以如果只按标题复用,用户点「档案甲」会拿到上一次
+      // 点「空白」留下的那个空壳 —— 而那个壳**看不见**角色是否存在(建完就打开了,用户
+      // 只会发现"它不是那个角色")。对不上的时候宁可不复用:多一个空壳,也不要一个错的。
+      if (fresh && sameProfile(fresh, seed)) {
         // Re-aim at the current composer config (updateSettings skips
         // undefined fields and bumps updated_at; the ask tab sorts by
         // created_at, so the row stays in place in its list).
@@ -82,6 +165,9 @@ export function createOrReuseSession(
           customModelId: input.customModelId ?? null,
         });
         const session = SessionRepo.get(fresh.id) ?? fresh;
+        // 记忆**每一次都重新挂**:复用的那个壳还没有任何消息(它的占位标题就是"没发过
+        // 言"的判据),所以现在取的那份快照仍然会进真正的第一轮 —— 复用不会让记忆变旧。
+        if (input.memory === true) queueSessionMemory(session.id);
         runtimeManager.bindSession(session);
         log.info(`side chat reused: ${session.id} (parent ${input.parentSessionId}, project ${input.projectId}, ${source})`);
         return { session, reused: true };
@@ -96,10 +182,16 @@ export function createOrReuseSession(
       kind: "side",
       parentSessionId: input.parentSessionId ?? null,
       nodeId: null,
+      agentProfile: seed?.ref ?? null,
       // Placeholder until the first question rewrites it (sendTurn truncates
       // the first prompt to ~40 chars — same rule as main-session auto-title,
       // but no generateSessionTitle LLM call).
-      title: "Quick ask",
+      //
+      // ⚠️ **带角色的那两档不占位**:用档案名当标题,并且**不**参与"还没发过言"的判据
+      // (那个判据只看 `title === "Quick ask"`)—— 于是它第一次发言时不会被那 40 个字
+      // 覆盖掉。用户挑的是"它叫这个、它是这个角色",把名字换成他打的第一句话等于把他
+      // 挑的那件事抹掉。
+      title: seed?.title ?? "Quick ask",
       status: "idle",
       model: input.model ?? "default",
       effort: input.effort,
@@ -124,6 +216,9 @@ export function createOrReuseSession(
       updatedAt: now,
     };
     SessionRepo.create(session);
+    // 记忆挂在**建行之后** —— `bindSession` 会建一样新东西(`RuntimeState`),顺序在这里
+    // 只关系到"取用之前队列里已经有没有"。队列本身是按 sessionId 的,先建后挂不影响。
+    if (input.memory === true) queueSessionMemory(session.id);
     runtimeManager.bindSession(session);
     log.info(
       `side chat started: ${session.id} (parent ${input.parentSessionId ?? "?"}, project ${input.projectId}, ${source})`,

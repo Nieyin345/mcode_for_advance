@@ -7,6 +7,7 @@ import { zh as zhChatComposer } from "./zh/chat-composer.js";
 import { zh as zhIde } from "./zh/ide.js";
 import { zh as zhBrowser } from "./zh/browser.js";
 import { zh as zhSettings } from "./zh/settings.js";
+import { zh as zhAgentProfiles } from "./zh/agentProfiles.js";
 import { zh as zhStore } from "./zh/store.js";
 import { zh as zhLibrary } from "./zh/library.js";
 import { zh as zhTemplates } from "./zh/templates.js";
@@ -21,6 +22,7 @@ import { en as enChatComposer } from "./en/chat-composer.js";
 import { en as enIde } from "./en/ide.js";
 import { en as enBrowser } from "./en/browser.js";
 import { en as enSettings } from "./en/settings.js";
+import { en as enAgentProfiles } from "./en/agentProfiles.js";
 import { en as enStore } from "./en/store.js";
 import { en as enLibrary } from "./en/library.js";
 import { en as enTemplates } from "./en/templates.js";
@@ -47,6 +49,7 @@ const zh = {
   ...zhIde,
   ...zhBrowser,
   ...zhSettings,
+  ...zhAgentProfiles,
   ...zhStore,
   ...zhLibrary,
   ...zhTemplates,
@@ -66,6 +69,7 @@ const en: Record<MessageId, string> = {
   ...enIde,
   ...enBrowser,
   ...enSettings,
+  ...enAgentProfiles,
   ...enStore,
   ...enLibrary,
   ...enTemplates,

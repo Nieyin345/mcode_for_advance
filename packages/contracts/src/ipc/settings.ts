@@ -570,10 +570,13 @@ export const UI_RIGHT_PANEL_TAB_SETTING_KEY = "ui.rightPanelTab";
  *  persisted value so the ask tab never auto-opens at startup. "library" 同理
  *  —— 文献库是被左栏点击唤起的,不该在启动时自己占住右栏。
  *
+ *  "tasks"(任务列表)是**用户主动点右栏那个图标**才进来的,不是被别处唤起的,
+ *  所以它跟 files / git 一样持久化:上次开着,重启还开着。
+ *
  *  ⚠️ **"flow" 加在这里,hydrate 那里也要加一行**(`sessionStore` 里那个
  *  `if (tabRaw === ...)` 白名单)。只在 schema 上加的话,用户选了它、重启之后右栏
  *  悄悄回到 files —— 而没有任何地方说为什么。 */
-export const RightPanelTabSchema = z.enum(["files", "git", "browser", "turns", "sidechat", "library", "templates", "flow"]);
+export const RightPanelTabSchema = z.enum(["files", "git", "browser", "turns", "sidechat", "library", "templates", "flow", "tasks"]);
 export type RightPanelTab = z.infer<typeof RightPanelTabSchema>;
 
 /**

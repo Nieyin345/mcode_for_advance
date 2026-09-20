@@ -21,7 +21,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { MEMORY_CATEGORIES } from "@contracts/memory";
+import { MEMORY_CATEGORIES, MEMORY_PARAM_KEY } from "@contracts/memory";
 import type { NodeTypeManifest } from "@contracts/nodeType";
 import {
   buildNodeInput,
@@ -37,6 +37,8 @@ import {
   saveMemoryFile,
 } from "@main/memory/store.js";
 import { BODY_CAP, DEFAULT_LIMIT, SNAPSHOT_CAP, memorySnapshotFor } from "@main/memory/retrieval.js";
+// 5b 段要断言的是**真货**的参数表(内置清单那六种),手抄一份测的是抄本。
+import { builtinManifestById } from "@main/orchestration/nodeTypes.js";
 import { findStale, suggestDedup, type DedupCandidate } from "@main/memory/maintenance.js";
 
 let failures = 0;
@@ -97,6 +99,7 @@ const AGENT: NodeTypeManifest = {
   capability: "read",
   params: [{ key: "instruction", kind: "longtext", label: "指令", required: true }],
 };
+
 
 function scopeOf(extra: Partial<ModelInputScope> = {}): ModelInputScope {
   return {
@@ -280,6 +283,47 @@ check("不传不注入", !build({ instruction: "做点事" }).prompt.includes("#
 
 process.env.MCODE_SMOKE_DATA_ROOT = DATA3;
 check("空库 + on → 整节不出现", !build({ instruction: "做点事", memory: "on" }).prompt.includes("## 长期记忆"));
+
+/* ────────────────────────── 5b. 「注入记忆」摆没摆到参数表上 ────────────────────────── */
+
+/**
+ * ## 为什么这一段非有不可
+ *
+ * 读取那一端(`memoryEnabled` / `memorySectionOf`)2026-09 就写好了,上面那段也在
+ * 验它 —— **但那时参数表里根本没有这一格**。界面上没有控件 → `params` 里永远没有
+ * `memory` 这个键 → `memoryEnabled` 恒为 false。一整条功能**等于不存在**,而且不报错。
+ *
+ * ⚠️ 所以上面那一整段断言**证明不了任何事**:它是拿手写的 `{ memory: "on" }` 喂进去
+ * 的,而那个键**用户永远填不出来**。这里的判据必须立在不同的一层上 —— **用户看得见
+ * 的那个控件在不在**。这正是 `smokes-for` 那个"套件跑绿但根本没覆盖到"的老形状。
+ */
+console.log("场景 5b:参数表里有没有「注入记忆」这一格");
+
+const KEY = MEMORY_PARAM_KEY;
+/** 某一格在不在那张表里(按 key)。 */
+const hasKey = (id: string): boolean => {
+  const m = builtinManifestById(id);
+  if (!m) return false;
+  return m.params.some((p) => p.key === KEY);
+};
+/** 那一格的形状 —— 摆错种类的话(比如摆成了文本框)用户填不出 `"on"`。 */
+const specOf = (id: string) => builtinManifestById(id)?.params.find((p) => p.key === KEY);
+
+for (const id of ["mcode.agent", "mcode.main", "mcode.conversation"]) {
+  check(`★ ${id} 的参数表里有「${KEY}」这一格(界面才有那个开关)`, hasKey(id), builtinManifestById(id)?.params.map((p) => p.key));
+  eq(`${id} 那一格是开关(布尔)`, specOf(id)?.kind, "boolean");
+}
+check("★ 而且它有中文标签(用户看到的那行字)", (specOf("mcode.agent")?.label ?? "").length > 0, specOf("mcode.agent"));
+
+/**
+ * **`code` / `command` 不给这一格** —— 它们不走模型,整段 `prompt` 拼好了也没人读。
+ * 摆上去就是一个填了不生效的控件,那正是这一格当初被漏掉时犯的同一个错,方向反过来。
+ * `branch` 的模型那一轮只做一件事(照判据从几条出路里挑一条),把整本记忆塞进一个
+ * 选路问题里既没用又白花一份上下文。
+ */
+for (const id of ["mcode.code", "mcode.command", "mcode.branch"]) {
+  check(`★ ${id} 不给这一格(它那一段没有模型在读)`, !hasKey(id), builtinManifestById(id)?.params.map((p) => p.key));
+}
 
 /* ────────────────────────── 6. 维护纯函数 ────────────────────────── */
 

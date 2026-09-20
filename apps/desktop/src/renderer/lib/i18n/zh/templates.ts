@@ -66,12 +66,14 @@ export const zh = {
   /** 还原 / 彻底删除失败时弹的那一条的标题(正文是主进程给的原因)。 */
   "templates.ctx.actionFailed": "操作失败",
   "templates.ctx.openExternal": "用外部程序打开",
-  /** 文件行右键的第一项 —— 读正文显示在右栏(见 TemplatePanel)。 */
+  /** 文件行右键的第一项 —— 读正文显示在**中间**(见 `FileViewer`)。 */
   "templates.ctx.preview": "应用内预览",
 
-  /* ── 右栏的「模版」面板:应用内预览一个模版文件 ──
+  /* ── 应用内预览一个模版文件(中间栏那个 `FileViewer`)──
      文本 / 代码、图片、**Word / Excel / PPT(真渲染版式)**都在应用内看;PDF 没有
-     应用内预览 —— 那一种如实说明并给「用外部程序打开」。 */
+     应用内预览 —— 那一种如实说明并给「用外部程序打开」。
+     ⚠️ 2026-09-20 前这一套住在右栏的「模版」面板里(`TemplatePanel`),现在那个面板
+     已经不再渲染预览本体。 */
   "templates.preview.title": "模版文件",
   "templates.preview.empty": "在左栏的「模版」里点一个文件,内容显示在这里",
   "templates.preview.rendering": "正在排版…",

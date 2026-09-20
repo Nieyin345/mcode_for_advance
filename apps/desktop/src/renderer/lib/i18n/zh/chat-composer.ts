@@ -454,4 +454,25 @@ export const zh = {
   "chat.nodeCriteria.title": "固定条件",
   "chat.nodeCriteria.hint":
     "这些是你设好的筛选习惯,用这张图聊天时按它们执行。选中的值在**这次对话的第一轮**告诉模型一次,之后一直留在上下文里,不必每轮重选。「—」表示没设,不会执行。要加要改回设置里的「固定条件」参数。",
+
+  // ── 新建子对话(「+」菜单里那一项,见 chat/NewSubChatPicker)──
+  // 菜单项一行字;选择器里的三档各自一行。**「空白」和「不带记忆的档案」是两件事**,
+  // 文案上必须能看出区别:前者没有任何指令,后者有指令、只是不注记忆。
+  "chat.newSubChat": "新建子对话",
+  "chat.newSubChat.blank": "空白",
+  "chat.newSubChat.blankHint": "一个什么角色都不是的对话",
+  // 勾了记忆时「空白」那一档上显示的**原因**(它同时是 tooltip)——
+  // 记忆是注给某个角色的背景说明,没有角色的对话不带它。
+  "chat.newSubChat.blankNoMemory": "空白对话没有角色,记忆注不进去",
+  "chat.newSubChat.searchPlaceholder": "搜索档案…",
+  "chat.newSubChat.loadFailed": "档案列表读不出来",
+  "chat.newSubChat.noProfiles": "还没有档案",
+  "chat.newSubChat.noProfilesHint": "在「设置 → 代理档案」里建一份,或用工作流画布上的节点存一份",
+  "chat.newSubChat.noMatch": "没有匹配的档案",
+  "chat.newSubChat.withMemory": "带记忆",
+  "chat.newSubChat.memoryOn": "带上长期记忆",
+  "chat.newSubChat.memoryHint": "建会话时取一份记忆快照,随第一轮带进去;之后改动不再刷新",
+  // 那一行右边显示的快捷键 —— **必须**与选择器 keydown 里响应的键一致(不然是在骗人)。
+  "chat.newSubChat.memoryKey": "Alt+M",
+  "chat.newSubChat.createFailed": "建不出来：{error}",
 } as const;

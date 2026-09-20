@@ -15,8 +15,9 @@ import {
 } from "@dnd-kit/sortable";
 import { basename } from "@renderer/lib/path.js";
 import { cn } from "@renderer/lib/cn.js";
-import { IconClipboard, IconX } from "@renderer/lib/icons.js";
+import { IconClipboard, IconEye, IconX } from "@renderer/lib/icons.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useFileViewStore } from "@renderer/stores/fileViewStore.js";
 import { TabBarChevronButton, TabBarOverflowMenu } from "./TabBarChrome.js";
 import { SortableSessionTab, findSession } from "./SessionTabs.js";
 import {
@@ -86,6 +87,7 @@ export function UnifiedTabsBar() {
 
   // ── Editor focus + plan pseudo-tab (scoped to the active session) ──
   const centerTabFocus = useSessionStore((s) => s.centerTabFocus);
+  const setCenterTabFocus = useSessionStore((s) => s.setCenterTabFocus);
   const planText = useSessionStore(
     (s) => (activeId ? s.planDrawerPlanBySession[activeId] ?? null : null),
   );
@@ -101,6 +103,19 @@ export function UnifiedTabsBar() {
   // visibility gate so the bar's active highlighting never disagrees with
   // what's on screen.
   const editorFocused = centerTabFocus === "editor" && (!!activeFile || planTabActive);
+
+  // ── 预览标签(2026-09-20)──
+  //
+  // 中间开着的任意文件(文献库条目 / 模版库文件 / 项目文件)在这条标签条上也占
+  // 一格。**它和 `editorFocused` 是两个独立的"中间在显示什么"**:
+  //   · 可编辑的 .md → `openFiles` + `ideActiveFile`(`sessionStore`)
+  //   · 只读预览     → `fileViewStore.target`
+  // 两者都由 `centerTabFocus === "editor"` 让出中间那块地方,所以高亮判据要带上它,
+  // 否则预览打开时会话标签会跟着一起亮。
+  const fileView = useFileViewStore((s) => s.target);
+  const closeFileView = useFileViewStore((s) => s.close);
+  const fileViewFocused =
+    centerTabFocus === "editor" && fileView !== null && !activeFile && !planTabActive;
 
   // Right-click context menu state for file tabs (lifted to the bar level,
   // same pattern as OpenTabsBar).
@@ -379,6 +394,50 @@ export function UnifiedTabsBar() {
                   planTabActive && editorFocused
                     ? "inline-flex"
                     : "hidden group-hover:inline-flex",
+                )}
+                title={t("common.close")}
+              >
+                <IconX size={10} />
+              </button>
+            </div>
+          )}
+
+          {/* 预览标签 —— 在中间开着的**任意文件**(文献库条目 / 模版库文件 /
+              项目文件)。它排在文件标签组的最右边,和它们是一类(都是"在看一个
+              文件"),但不是可编辑的那一种:
+                · 不可拖拽(它不在 `openFiles` 那个可排序集合里)
+                · 没有"脏"状态(预览不改盘)
+                · × 关掉它就回原来的会话标签(见 `fileViewStore.close`)
+              2026-09-20 加的。加它是因为**文件预览整个搬到了中间**:预览原住在
+              右栏,开三四个也不占道;搬过来之后中间一次只显示一个,不摆一个标签
+              的话用户会以为"点了没反应"。 */}
+          {fileView !== null && (
+            <div
+              role="tab"
+              aria-selected={fileViewFocused}
+              title={fileView.name}
+              onClick={() => setCenterTabFocus("editor")}
+              className={cn(
+                "group flex max-w-[200px] cursor-pointer select-none items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] transition-colors",
+                multiRow ? "min-w-[170px] flex-1" : "min-w-0 shrink-0",
+                fileViewFocused
+                  ? "bg-accent/15 text-content ring-1 ring-inset ring-accent/40 dark:text-accent"
+                  : "bg-surface-muted/60 text-content-muted hover:bg-surface-hover/70 hover:text-content",
+              )}
+            >
+              <IconEye size={12} className="shrink-0 text-accent" />
+              <span className="min-w-0 flex-1 truncate">{fileView.name}</span>
+              <button
+                type="button"
+                aria-label={t("common.close")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closeFileView();
+                }}
+                onPointerDown={(e) => e.stopPropagation()}
+                className={cn(
+                  "ml-0.5 h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle hover:bg-surface-hover hover:text-content",
+                  fileViewFocused ? "inline-flex" : "hidden group-hover:inline-flex",
                 )}
                 title={t("common.close")}
               >

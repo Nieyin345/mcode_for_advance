@@ -17,7 +17,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { IconBookmark, IconCheck, IconCopy, IconMessages } from "@renderer/lib/icons.js";
+import { IconBookmark, IconCheck, IconCopy, IconMessages, IconQuote } from "@renderer/lib/icons.js";
 
 /** What the owning ChatPane captured at mouseup: a viewport-space snapshot of
  *  the selection plus the message it belongs to (resolved from
@@ -34,6 +34,7 @@ export function SelectionToolbar({
   state,
   onAddBookmark,
   onAskSideChat,
+  onQuote,
   onClose,
 }: {
   state: SelectionToolbarState;
@@ -44,6 +45,10 @@ export function SelectionToolbar({
   /** Send the selection to the side chat (opens the ask tab and seeds its
    *  composer with the text). */
   onAskSideChat: (s: SelectionToolbarState) => void;
+  /** Open the target picker (current session + its node sessions) — owning
+   *  pane lifts it into `SelectionQuoteMenu`. The selection is deliberately
+   *  NOT cleared here: the picked target needs `state.text`. */
+  onQuote: (s: SelectionToolbarState) => void;
   onClose: () => void;
 }) {
   const { t } = useI18n();
@@ -142,6 +147,15 @@ export function SelectionToolbar({
         className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-accent"
       >
         <IconMessages size={12} />
+      </button>
+      <span className="h-3 w-px bg-edge/60" />
+      <button
+        type="button"
+        onClick={() => onQuote(state)}
+        title={t("chatStream.quote.action")}
+        className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+      >
+        <IconQuote size={12} />
       </button>
     </div>,
     document.body,

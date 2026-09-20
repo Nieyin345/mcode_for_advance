@@ -1381,6 +1381,16 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     // main/orchestration/prompt.ts。提供方不再自己查表,只负责 append;这样 Pi / Codex
     // 接上工作流只是加一个字段的事,而不是各实现一套查表逻辑。
     if (req.workflowPrompt) appends.push(req.workflowPrompt);
+    // 「这个对话是谁」—— 代理档案里那段指令,**每一轮都带**(host 已经从会话行上的快照
+    // 解析好了,见 main/orchestration/prompt.ts 的 `resolveAgentPrompt`)。
+    //
+    // 放在工作流**后面**:这是身份,不是任务。工作流那一段是"这一轮怎么做事",角色是
+    // "你是谁" —— 身份先立住、任务再叠上去,冲突时后写的读起来更像这一轮的要求。
+    //
+    // ⚠️ Pi / Codex 目前都没读这个字段(它们连 `workflowPrompt` 都没读),所以「档案」
+    // 建出来的子对话在那两个引擎上**只有标题、没有角色**。这是已知边界,不是这里漏了:
+    // 接上去各自只差一行 append。
+    if (req.agentPrompt) appends.push(req.agentPrompt);
     if (!this.capabilities.supportsAskUserQuestion) {
       appends.push(ASK_SYSTEM_PROMPT);
     }

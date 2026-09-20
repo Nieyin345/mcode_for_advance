@@ -327,14 +327,32 @@ if (MODE === "write") {
   check("★ 失败的运行 + 失败的那一步 → 能重试", canRetry !== null);
   eq("runId 就是它", canRetry?.runId, FAILED_RUN);
   eq("存档里的结局表原样带出来", canRetry?.snapshot.state.outcomes.length, 3);
+  eq("★ 结局一起交出来(调用方靠它分辨两种重跑)", canRetry?.outcome.status, "failed");
 
-  // ② 那一步没失败(是成功的 / 是下游的 skipped)→ 不重跑。
-  //    ⚠️ 这一道最要紧:少了它,用户点「再试一次」会从一步**根本没跑过**的地方重跑。
-  check("★ 成功了的那一步不能重跑", retryableRun(SESSION_FAILED, FAILED_RUN, "A") === null);
-  check("★ 下游那个 skipped 也不能重跑", retryableRun(SESSION_FAILED, FAILED_RUN, "C") === null);
+  /**
+   * ② **成功过的那一步也能重跑** —— 用户在图上看中一步说"从这儿往下走"。
+   *
+   * ⚠️ 这一条**以前是反的**(这里原先断言的是"成功了的那一步不能重跑")。改成现在
+   * 这样是因为用户要的是"从任一步接着往下":一张跑完了的图,他看中中间某一步、想从
+   * 那儿重来一遍 —— 那正是迭代写作的常规动作。拦着它的是 `retryableRun` 里那两道
+   * "必须是 failed"的门,而它们把这件事表达成了"这张卡不适用了",它明明适用。
+   *
+   * 判据仍要立得住的那一条是**"那一步得在存档的结局表里"**:少了它,重跑会从一步
+   * 根本没跑过的地方开始(见下面 `Z`)。
+   */
+  const fromSuccess = retryableRun(SESSION_FAILED, FAILED_RUN, "A");
+  check("★ 成功过的那一步也能重跑(图上挑起点)", fromSuccess !== null);
+  eq("★ 它的结局是 success —— 调用方据此不带 note", fromSuccess?.outcome.status, "success");
+  // `skipped` 也照样:它在结局表里,而"从这一步往下"对用户是一句有效的话 ——
+  // 他要的是"重跑这一片",这一步上次是跳过还是失败不影响那个意图。
+  const fromSkipped = retryableRun(SESSION_FAILED, FAILED_RUN, "C");
+  check("★ 上次被跳过的也能重跑", fromSkipped !== null);
+  eq("它的结局是 skipped", fromSkipped?.outcome.status, "skipped");
+  // ⚠️ **这一道不能松**:存档里根本没有的节点,重跑会从一步没跑过的地方开始。
   check("★ 存档里根本没有的节点不能重跑", retryableRun(SESSION_FAILED, FAILED_RUN, "Z") === null);
 
-  // ③ 状态不是 failed → 不重跑(它跑成了 / 被取消了 / 还在跑)。
+  // ③ **跑成功的运行照样能从那一步重跑** —— 这就是"图跑完了还能接着迭代"那条路。
+  //    (以前这一条是反的:那时只有失败卡的按钮会走到这里。)
   saveRun({
     runId: "run_done",
     sessionId: SESSION_FAILED,
@@ -342,7 +360,15 @@ if (MODE === "write") {
     status: "success",
     snapshot: snapshotOf([]),
   });
-  check("★ 跑成功的运行不能重试", retryableRun(SESSION_FAILED, "run_done", "B") === null);
+  check(
+    "★ 跑成功的运行里、有结局的那一步能重跑",
+    retryableRun(SESSION_FAILED, "run_done", "A") !== null,
+  );
+  // 反过来的那一道还得在:那一步不在这次运行的结局表里,照样不能重跑。
+  check(
+    "★ 跑成功的运行里、没有结局的那一步仍然不能重跑",
+    retryableRun(SESSION_FAILED, "run_done", "Z") === null,
+  );
 
   // ④ 找不到那一行 / 不属于这个对话 → 不重跑。
   check("★ 不存在的 runId 不能重试", retryableRun(SESSION_FAILED, "run_nope", "B") === null);

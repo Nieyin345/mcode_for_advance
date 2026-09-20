@@ -98,26 +98,38 @@ export const WorkflowChooseSchema = z.object({
 export type WorkflowChooseInput = z.infer<typeof WorkflowChooseSchema>;
 
 /**
- * 用户在一张**失败**的卡片上点了「再试一次」。
+ * 用户**在某一步上**点了「从这儿接着跑」。
+ *
+ * ## 两种入口,同一条路
+ *
+ *  - **失败卡片上的「再试一次」** —— 那一步失败了,用户还写了句「上次哪里不对」;
+ *  - **图上挑一步说"从这儿往下走"** —— 图可能已经跑完了,那一步是成功的,用户就是想
+ *    从那儿重来一遍(迭代写作的常规动作)。
+ *
+ * 两者都是"从某一步开始重跑它 + 它的全部前进后代",判据与执行路径完全一样 ——
+ * 区别只有 `note` 带不带(见下)。
  *
  * ## 与 `workflow.choose` 是同一件事的两种形态
  *
  * 两者都是"用户在一张旧卡片上拍了个板,把那次运行接回来接着跑" —— 只是岔路口那一步
- * 是**选一条出路**,而失败那一步是**从这儿重新跑一遍**。所以都带 `runId`,都由
+ * 是**选一条出路**,而这一个是**从这儿重新跑一遍**。所以都带 `runId`,都由
  * `runner.ts` 里那对 `resolveWorkflow*` 接(它们共用同一个 `startWorkflowRun`)。
  *
  * ## 重跑范围由主进程算,不在这儿给
  *
- * 界面上只知道"这一步失败了"。要重跑的是**它 + 它的全部前进后代**(用户的决定)——
+ * 界面上只知道"用户点的是这一步"。要重跑的是**它 + 它的全部前进后代** ——
  * 而"谁是谁的后代"是图的结构,只有主进程那一侧拿得到(而且它已经有现成的闭包函数)。
  * 所以这里只给起点。
  */
 export const WorkflowRetrySchema = z.object({
   sessionId: z.string().min(1),
   runId: z.string().min(1),
-  /** 失败的那一步。 */
+  /** 从哪一步开始重跑。 */
   nodeId: z.string().min(1),
-  /** 用户写的一句话:「上次哪里不对」。**只给这一步看**(可以不写)。 */
+  /** 用户写的一句话:「上次哪里不对」。**只给这一步看**(可以不写)。
+   *
+   *  ⚠️ 主进程只在那一步**上次真的失败**时才用它(见 `resolveWorkflowRetry`:
+   * 从图上挑起点时界面压根没写过,带了也是空串)。 */
   note: z.string().optional(),
 });
 export type WorkflowRetryInput = z.infer<typeof WorkflowRetrySchema>;

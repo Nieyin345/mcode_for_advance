@@ -175,6 +175,9 @@ export {
   // Communication
   IconMessage,
   IconMessages,
+  // 「新建子对话」那一项用的图标:一个带星的小人 —— 读出来是"一个有角色的对话",
+  // 比 IconPlus(再来一个)或 IconMessage(发消息)更贴近它真正做的事。
+  IconUserStar,
   IconMail,
   IconBell,
   IconSettings,

@@ -1,0 +1,402 @@
+/**
+ * **统一文件预览** —— 所有文件在中间栏走的就是这一个组件。
+ *
+ * ## 它合并了哪两份
+ *
+ * 从前应用里有**两套**文件预览,都在右栏,各写各的:
+ *
+ *   `library/FilePreview.tsx`  ── 文献库条目。字节走 `library.readFile`(base64),
+ *                                  office 三种格式**在渲染端**解 base64 再喂预览组件。
+ *   `templates/TemplatePanel.tsx` ── 模版库文件。字节走 `templates.readFile`,
+ *                                  **主进程已经分好类**(office 直接给 `Uint8Array`),
+ *                                  渲染端只管画。
+ *
+ * 同一张 pptx,从文献库点开和从模版库点开,走的是两份代码、两条形状不同的数据。
+ * 这个文件把两者收成一条:**按来源取数 → 归一到 `ViewData` → 一套渲染分支**。
+ *
+ * ## 为什么要归一,而不是"两边各留一份、外面套个壳"
+ *
+ * 因为**渲染分支才是重复的大头**(文本/图片/pdf/office/目录/不支持,六路)。留着两份
+ * 取数、一份渲染,等于把两条路合并到"用哪条路读"这一格上 —— 那一格本来就只有一行。
+ * 反过来(一份取数、两份渲染)才会留下两套会各自跑偏的画法。
+ *
+ * ## 目录只有文献库有
+ *
+ * `library.readFile` 对目录回一份文件名列表;模版库里没有"目录条目"这个概念
+ * (`templates.list` 已经摊平到文件一层)。所以 `relPath` 只对 `library` 那一支有意义,
+ * 模版那一支恒为根。
+ *
+ * ## 两个 `onOpenExternal` 为什么不一样
+ *
+ * 文献库的条目落在数据根下,模版文件落在模版库里 —— 各有各的"用系统程序打开"通道,
+ * 而且**只有模版那条有现成的 IPC**(`templates.openFile`)。文献库那一条主进程还没有,
+ * 所以那一支给的是 no-op(与 `FilePreview` 当年的处理一字不差,只是把原因写在了这里)。
+ *
+ * 顶栏上那两条出口也因此**只对模版画** —— 一个按下去什么都不发生的按钮比没有更坏
+ * (PDF 那个组件内部的出口同理,见它签名那段)。
+ */
+import { useCallback, useEffect, useState } from "react";
+import { api } from "@renderer/lib/api.js";
+import { useI18n } from "@renderer/lib/i18n/index.js";
+import { Markdown } from "@renderer/components/chat/Markdown.js";
+import { PdfPreview } from "./PdfPreview.js";
+import { DocxPreview } from "@renderer/components/templates/DocxPreview.js";
+import { PptxPreview } from "@renderer/components/templates/PptxPreview.js";
+import { XlsxPreview } from "@renderer/components/templates/XlsxPreview.js";
+import {
+  IconArrowLeft,
+  IconExternalLink,
+  IconFile,
+  IconFolder,
+  IconFolderOpen,
+  IconLoader2,
+} from "@renderer/lib/icons.js";
+import { extOf, type FileViewTarget } from "@renderer/stores/fileViewStore.js";
+
+/**
+ * 归一之后的预览数据。**两条来源都落到这里**,下面的渲染分支只认这个类型。
+ *
+ * 与 `LibraryFileContent` 的差别只有一处,但很要紧:二进制那一支给的是**字节**
+ * (`bytes`),不是 base64。文献库那条路回来的是 base64,在这里就地解掉 —— 于是
+ * office 预览组件不必知道自己是"从哪条路来的",也省掉下游每个分支各解一次。
+ */
+type ViewData =
+  | { type: "dir"; files: Array<{ name: string; isDir: boolean }> }
+  | { type: "text"; text: string }
+  | { type: "binary"; mime: string; bytes: Uint8Array; base64: string }
+  | { type: "unsupported"; error: string };
+
+/** base64 → 字节。预览体积上限在主进程挡着,这个循环最多几十毫秒。 */
+function base64ToBytes(base64: string): Uint8Array {
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+export function FileViewer({ target }: { target: FileViewTarget }) {
+  const { t } = useI18n();
+  /** 文献库目录条目:正在往下翻到哪一层(`/` 分隔)。模版那一支恒为 null。 */
+  const [relPath, setRelPath] = useState<string | null>(
+    target.source.kind === "library" ? (target.source.relPath ?? null) : null,
+  );
+  const [data, setData] = useState<ViewData | null>(null);
+  const [name, setName] = useState(target.name);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  // 换目标回到根 —— 上一个目录里翻到一半的子文件对这一条没有意义。
+  useEffect(() => {
+    setRelPath(target.source.kind === "library" ? (target.source.relPath ?? null) : null);
+    setName(target.name);
+  }, [target]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    void (async () => {
+      try {
+        const next = await loadViewData(target, relPath);
+        if (!cancelled) {
+          setData(next.data);
+          if (next.name !== undefined) setName(next.name);
+        }
+      } catch (err) {
+        if (!cancelled) setError((err as Error).message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [target, relPath]);
+
+  /** 用系统默认程序打开。**只有模版那条有通道**(见文件头那段)。 */
+  const openExternal = useCallback(async () => {
+    if (target.source.kind !== "template") return;
+    setBusy(true);
+    try {
+      const res = await api.templates.openFile({
+        kind: target.source.ref.kind as never,
+        dirName: target.source.ref.dirName,
+        relPath: target.source.ref.relPath,
+      });
+      if (!res.ok) setError(res.error ?? t("templates.preview.actionFailed"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [target, t]);
+
+  /** 在系统文件管理器里定位。同样只有模版那条有。 */
+  const reveal = useCallback(async () => {
+    if (target.source.kind !== "template") return;
+    setBusy(true);
+    try {
+      const res = await api.templates.reveal({
+        kind: target.source.ref.kind as never,
+        dirName: target.source.ref.dirName,
+      });
+      if (!res.ok) setError(res.error ?? t("templates.preview.actionFailed"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [target, t]);
+
+  const ext = extOf(name);
+
+  // ── 顶栏:文件名 + 两条出口。**一直在** —— 加载中/失败时用户也要知道在看哪个文件,
+  //    以及能从这里出去。这也是它比原来那两份强的地方:那两份的顶栏只在成功时画。
+  //
+  //    ⚠️ 两条出口**只对模版那一支画**:文献库还没有对应的 IPC(见文件头那段)。
+  //    从前这里画了但点不动 —— 一个能按下去、按了什么都不发生的按钮,比没有更坏。
+  //    什么时候主进程给文献库补上 `openFile` / `revealFile` 那个"从条目拿绝对路径"的
+  //    通道,什么时候再把它放回来。
+  const header = (
+    <div className="flex shrink-0 items-center gap-1.5 border-b border-edge px-3 py-1.5">
+      <IconFile size={13} className="shrink-0 text-content-subtle" />
+      <span className="min-w-0 flex-1 truncate text-xs text-content" title={name}>
+        {name}
+      </span>
+      {target.source.kind === "template" && (
+        <>
+          <button
+            onClick={() => void reveal()}
+            disabled={busy}
+            title={t("settings.templates.reveal")}
+            className={headerBtn}
+          >
+            <IconFolderOpen size={12} />
+          </button>
+          <button
+            onClick={() => void openExternal()}
+            disabled={busy}
+            title={t("templates.ctx.openExternal")}
+            className={headerBtn}
+          >
+            <IconExternalLink size={12} />
+          </button>
+        </>
+      )}
+    </div>
+  );
+
+  const body = (() => {
+    if (loading) {
+      return (
+        <div className="flex flex-1 items-center justify-center text-content-subtle">
+          <IconLoader2 size={14} className="animate-spin" />
+        </div>
+      );
+    }
+    if (error !== null) {
+      return (
+        <div className="flex flex-1 items-start justify-center p-6">
+          <span className="break-all text-center text-xs text-danger">{error}</span>
+        </div>
+      );
+    }
+    if (data === null) return null;
+
+    if (data.type === "unsupported") {
+      return (
+        <div className="flex flex-1 items-start justify-center p-6">
+          <span className="break-all text-center text-xs text-danger">{data.error}</span>
+        </div>
+      );
+    }
+
+    // ── 目录:文件名列表,点子文件/子目录用 relPath 再读一次 ──
+    if (data.type === "dir") {
+      return (
+        <div className="flex min-h-0 flex-1 flex-col">
+          {relPath !== null && (
+            <div className="flex shrink-0 items-center gap-1 border-b border-edge px-2 py-1">
+              <button
+                onClick={() => setRelPath(relPath.includes("/") ? relPath.slice(0, relPath.lastIndexOf("/")) : null)}
+                className="flex items-center gap-1 rounded px-1 py-0.5 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content"
+              >
+                <IconArrowLeft size={12} />
+                {t("library.file.back")}
+              </button>
+              <span className="min-w-0 truncate font-mono text-[0.7857em] text-content-subtle">
+                {relPath}
+              </span>
+            </div>
+          )}
+          <div className="min-h-0 flex-1 overflow-y-auto p-2">
+            {data.files.length === 0 ? (
+              <div className="px-2 py-1 text-[0.7857em] text-content-subtle">
+                {t("library.file.emptyDir")}
+              </div>
+            ) : (
+              data.files.map((f) => (
+                <button
+                  key={f.name}
+                  onClick={() => setRelPath(relPath === null ? f.name : `${relPath}/${f.name}`)}
+                  className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs text-content-muted hover:bg-surface-hover hover:text-content"
+                >
+                  {f.isDir ? (
+                    <IconFolder size={13} className="shrink-0 text-content-subtle" />
+                  ) : (
+                    <IconFile size={13} className="shrink-0 text-content-subtle" />
+                  )}
+                  <span className="min-w-0 truncate">{f.name}</span>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    if (data.type === "text") {
+      // 空文件要说出来 —— 一张白板子和"坏了"在界面上长得一模一样(同 TemplatePanel)。
+      if (data.text.trim().length === 0) {
+        return (
+          <div className="p-4 text-[0.8571em] text-content-muted">{t("templates.preview.emptyFile")}</div>
+        );
+      }
+      // md 走聊天那套渲染(标题/表格/代码块都在);其余原样等宽摆出来。
+      // ⚠️ 不把 .tex / .cls 之类也塞进 Markdown 渲染:`#` 在 LaTeX 里是宏参数,
+      //    重排之后那份源码就没法读了(同 TemplatePanel 当年那条注释)。
+      if (ext === "md" || ext === "markdown") {
+        return (
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+            <Markdown>{data.text}</Markdown>
+          </div>
+        );
+      }
+      return (
+        <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-4 font-mono text-[0.8571em] leading-relaxed text-content">
+          {data.text}
+        </pre>
+      );
+    }
+
+    // ── 二进制 ──
+    const { bytes, mime } = data;
+    if (mime.startsWith("image/")) {
+      return (
+        <div className="min-h-0 flex-1 overflow-auto p-3">
+          <img
+            src={`data:${mime};base64,${data.base64}`}
+            alt={name}
+            className="mx-auto max-h-full max-w-full"
+          />
+        </div>
+      );
+    }
+    if (mime === "application/pdf" || ext === "pdf") {
+      return <PdfPreview item={itemOf(target)} bytes={bytes} onOpenExternal={openExternal} />;
+    }
+    // office 三种:预览组件吃字节,自己管滚动和缩放,所以不吃外面的容器样式。
+    // 渲染不出来时的那条出口一律指向 `openExternal` —— 模版那一支有 `templates.openFile`
+    // 通道,文献库那一支还没有,所以那里是 no-op(见文件头那段)。
+    if (mime.includes("wordprocessingml") || ext === "docx" || ext === "dotx") {
+      return <DocxPreview data={bytes} relPath={name} onOpenExternal={() => void openExternal()} />;
+    }
+    if (mime.includes("presentationml") || ext === "pptx" || ext === "ppsx" || ext === "potx") {
+      return <PptxPreview data={bytes} relPath={name} onOpenExternal={() => void openExternal()} />;
+    }
+    if (mime.includes("spreadsheetml") || ext === "xlsx" || ext === "xlsm" || ext === "xltx") {
+      return <XlsxPreview data={bytes} relPath={name} onOpenExternal={() => void openExternal()} />;
+    }
+    return (
+      <div className="flex flex-1 items-start justify-center p-6">
+        <span className="text-center text-xs text-content-muted">
+          {t("library.file.unknownMime", { mime })}
+        </span>
+      </div>
+    );
+  })();
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-surface">
+      {header}
+      {body}
+    </div>
+  );
+}
+
+const headerBtn =
+  "shrink-0 rounded p-1 text-content-subtle transition-colors hover:bg-surface-hover hover:text-content disabled:opacity-40";
+
+/**
+ * `PdfPreview` 只认一个条目 id(见它签名那段)。这里给一个**只够它画**的壳:
+ * 文献库那一支给条目 id(「用系统程序打开」要用它去找路径);模版那一支没有条目,
+ * 给空串 —— 那条出口由 `onOpenExternal` 接管。
+ */
+function itemOf(target: FileViewTarget): { id: string } {
+  return { id: target.source.kind === "library" ? target.source.ref : "" };
+}
+
+/**
+ * 按**来源**取数,归一到 `ViewData`。
+ *
+ * 这是两条路唯一的交汇点 —— 上面所有渲染分支都只认归一后的形状。
+ */
+async function loadViewData(
+  target: FileViewTarget,
+  relPath: string | null,
+): Promise<{ data: ViewData; name?: string }> {
+  if (target.source.kind === "library") {
+    const res = await api.library.readFile({
+      id: target.source.ref,
+      relPath: relPath ?? undefined,
+    });
+    const c = res.content;
+    if (c.type === "dir") return { data: { type: "dir", files: c.files } };
+    if (c.type === "text") return { data: { type: "text", text: c.text } };
+    if (c.type === "unsupported") return { data: { type: "unsupported", error: c.error } };
+    return {
+      data: {
+        type: "binary",
+        mime: c.mime,
+        base64: c.base64,
+        // ⚠️ 这里解一次就够 —— 下游每个分支再解一次是白烧 CPU(大 PDF 十几 MB)。
+        bytes: base64ToBytes(c.base64),
+      },
+    };
+  }
+
+  const res = await api.templates.readFile({
+    kind: target.source.ref.kind as never,
+    dirName: target.source.ref.dirName,
+    relPath: target.source.ref.relPath,
+  });
+  // 模版那条**主进程已经分好类**:office 直接给 Uint8Array,连 mime 都是现成的。
+  // 但它没有 mime 字段,所以 office 那三支靠扩展名认(下面的渲染分支两种都认)。
+  if (res.kind === "text") return { data: { type: "text", text: res.text } };
+  if (res.kind === "image") {
+    // data URL → base64 那一段。`image` 那一支和 `binary` 共用渲染分支。
+    const comma = res.dataUrl.indexOf(",");
+    const base64 = comma >= 0 ? res.dataUrl.slice(comma + 1) : "";
+    const mime = /^data:([^;,]+)/.exec(res.dataUrl)?.[1] ?? "image/png";
+    return { data: { type: "binary", mime, base64, bytes: base64ToBytes(base64) } };
+  }
+  if (res.kind === "unsupported") {
+    return {
+      data: {
+        type: "unsupported",
+        error:
+          res.reason === "tooLarge"
+            ? `文件太大,看不了(${Math.round(res.size / 1024 / 1024)} MB)`
+            : "这个格式没法在应用里预览。",
+      },
+    };
+  }
+  const mime =
+    res.kind === "docx"
+      ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      : res.kind === "pptx"
+        ? "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  return { data: { type: "binary", mime, base64: "", bytes: res.data } };
+}

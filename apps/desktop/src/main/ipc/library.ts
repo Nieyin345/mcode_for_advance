@@ -15,6 +15,8 @@ import {
   IPC,
   LibraryAddItemsSchema,
   LibraryDeleteItemsSchema,
+  LibraryDeletePreviewSchema,
+  LibraryRestoreItemsSchema,
   LibraryDownloadSchema,
   LibraryFullTextSearchSchema,
   LibraryImportSchema,
@@ -44,6 +46,7 @@ import {
   LibrarySuppressGetSchema,
   LibrarySuppressSaveSchema,
   LibraryLinksOfSchema,
+  LibraryLinkCountsSchema,
   LibraryLinkAddSchema,
   LibraryLinkRemoveSchema,
   LibraryImportGenericSchema,
@@ -53,12 +56,18 @@ import {
   CollectionAssignSchema,
   CollectionCreateSchema,
   CollectionDeleteSchema,
+  CollectionMoveSchema,
   CollectionRenameSchema,
 } from "@contracts/ipc";
 import type { FullTextMatch, LibraryCollection, LibraryItem } from "@contracts/library";
 // 删除的失败清单 —— 类型与它的上游 schema 住在同一处(`@contracts/ipc/library.ts`)。
-import type { LibraryDeleteFailure } from "@contracts/ipc";
-import { LIBRARY_KINDS } from "@contracts/library";
+import type {
+  LibraryDeleteFailure,
+  LibraryDeleteItemsResult,
+  LibraryDeletePreviewEntry,
+  LibraryDeletePreviewLink,
+  LibraryDeletePreviewResult,
+} from "@contracts/ipc";
 import { formatAuthorList } from "@contracts/library";
 import { LibraryRepo, CollectionRepo, DownloadJobRepo, LibraryLinkRepo, NoteRepo } from "@main/store/repositories.js";
 import { awaitDb } from "@main/store/db.js";
@@ -78,6 +87,8 @@ import {
   shouldSweepAfterRemoval,
   ensureTrashCollection,
   markTrashCollections,
+  restoredTargetOf,
+  restoreItemsFromTrash,
 } from "@main/library/trash.js";
 import { notifyLibraryChanged, emitItemImported } from "@main/library/broadcast.js";
 import { loadLibraryTypes, saveLibraryTypes, loadLibraryGroups, saveLibraryGroups } from "@main/library/kindRegistry.js";
@@ -90,7 +101,7 @@ import {
   writeItemManifest,
 } from "@main/library/manifest.js";
 import { enqueueDownloads, processDownloadQueue, resumeDownloadsOnStartup } from "@main/library/downloader.js";
-import { ensureLibraryDirs, libraryRoot, fromLibraryRelative, isInsideLibrary, markdownArtifact } from "@main/library/paths.js";
+import { ensureLibraryDirs, libraryRoot, fromLibraryRelative, isInsideLibrary, markdownArtifact, markdownArtifactsOfItem, countImageFiles } from "@main/library/paths.js";
 import { ensureWorkflows } from "@main/workflows/seed.js";
 
 /**
@@ -140,17 +151,21 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
   // 这个信号,和「把转录产物挂回库」那两条工具(`library_adopt_markdown` /
   // `convertItemToMarkdown`)。
 
-  // 三个库的**回收站分类**也在启动时建好。
+  // 「回收站」分类也在启动时建好 —— **全库共用一个**(2026-09-20 改;原来是三个库
+  // 各一个)。用户的要求是「共用一个,放在最下面固定住」,所以它是整片资料库区域的
+  // 一个,而不是每段的尾巴。
   //
-  // 用户的要求是「论文、教材、笔记都要有回收站这个分类」—— 而回收站原本是"第一次有
-  // 东西掉进去"时才懒创建的,所以教材/笔记库里根本看不到它。这里先建出来,用户随时
-  // 能看到、也能自己往里拖东西。
+  // 用户能看到它随时在、也能自己往里拖东西:回收站原本是"第一次有东西掉进去"时
+  // 才懒创建的,所以新装的库里根本看不到它。
+  //
+  // `ensureTrashCollection` 顺手把老数据里那几个(每库一个)合并过来 —— 不合并的话
+  // 界面上只画一个,另一个里面的东西就再也够不着了(见那个函数的注释)。
   //
   // 走 awaitDb():这个函数在数据库就绪**之前**就会跑(handler 注册阶段),直接读库
   // 会抛。所以挂到 ready promise 上,失败也不阻断启动 —— 回收站晚一点建出来不是大事。
   void awaitDb()
     .then(() => {
-      for (const k of LIBRARY_KINDS) ensureTrashCollection(k);
+      ensureTrashCollection();
     })
     .catch((err: unknown) => log.warn(`trash: ensure failed: ${(err as Error).message}`));
 
@@ -239,6 +254,32 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
     return { items };
   });
 
+  /** 编排在下面 `deleteItemsCore`(那段有三块长说明,放这儿会把注册段撑散)。 */
+  ipcMain.handle(IPC.LIBRARY_DELETE_ITEMS, async (_evt, raw) => {
+    const input = LibraryDeleteItemsSchema.parse(raw);
+    return deleteItemsCore(input.ids, !!input.deleteFiles);
+  });
+
+  /**
+   * 从回收站里**还原** —— 放回最后删除的那个分类。
+   *
+   * 与 `deleteItems` 是一对,但语义完全相反:那条把东西真的抹掉,这条把它们捞回来。
+   * 走 `restoreItemsFromTrash`(放回目标分类 + 从回收站摘掉,两件事必须一起做,
+   * 否则它们会被 `sweepToTrash` 立刻收回去 —— 用户看到的是"点了还原什么都没发生")。
+   */
+  ipcMain.handle(IPC.LIBRARY_RESTORE_ITEMS, async (_evt, raw) => {
+    const input = LibraryRestoreItemsSchema.parse(raw);
+    const moved = restoreItemsFromTrash(input.ids);
+    if (moved.length > 0) notifyLibraryChanged(`restore:${moved.length}`);
+    return { items: LibraryRepo.list({}).items };
+  });
+
+  /** 预览的编排在下面 `deletePreviewCore`。 */
+  ipcMain.handle(IPC.LIBRARY_DELETE_PREVIEW, async (_evt, raw) => {
+    const input = LibraryDeletePreviewSchema.parse(raw);
+    return deletePreviewCore(input.ids);
+  });
+
   /**
    * **彻底删除**:数据库行 + 磁盘上的 PDF / Markdown / 通用文件副本。
    *
@@ -288,8 +329,7 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
    *
    * 同一次调用里**成功的那几条照样成功** —— 一条卡的目录不该把另外九十九条拖住。
    */
-  ipcMain.handle(IPC.LIBRARY_DELETE_ITEMS, async (_evt, raw) => {
-    const input = LibraryDeleteItemsSchema.parse(raw);
+function deleteItemsCore(ids: string[], deleteFiles: boolean): LibraryDeleteItemsResult {
     /**
      * 没能删掉的那些:条目 id → 失败详情。既用来回给调用方,也用来决定**哪几条记录
      * 不许删**(下面 `LibraryRepo.delete` 拿的是过滤后的名单)。
@@ -298,7 +338,7 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
     /** 这一批里**不许删记录**的 id(文件没删掉的那几条)。 */
     const keepIds = new Set<string>();
 
-    if (input.deleteFiles) {
+    if (deleteFiles) {
       // 先删文件再删记录:反过来的话拿不到路径了
       /**
        * 库内每个路径被多少条记录引用着(pdf / md / 通用文件三列都算)。
@@ -311,7 +351,7 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
       const bumpOwn = (p: string | undefined) => {
         if (p) own.set(p, (own.get(p) ?? 0) + 1);
       };
-      for (const id of input.ids) {
+      for (const id of ids) {
         const it = LibraryRepo.get(id);
         if (!it) continue;
         bumpOwn(it.pdfPath);
@@ -402,7 +442,7 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
         }
       };
 
-      for (const id of input.ids) {
+      for (const id of ids) {
         const item = LibraryRepo.get(id);
         if (!item) continue;
 
@@ -445,20 +485,82 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
     }
 
     // 文件没删掉的那几条**记录也不删** —— 删了用户就再也够不着那个文件了。
-    const toDelete = input.ids.filter((id) => !keepIds.has(id));
+    const toDelete = ids.filter((id) => !keepIds.has(id));
     LibraryRepo.delete(toDelete);
     // 删掉的可能正是右栏正在看的那一篇 —— 广播出去,右栏自己会清掉悬空的选中态。
     // 一条都没删成时不广播:那是一次什么都没发生的调用,没必要惊动界面重拉。
     if (toDelete.length > 0) notifyLibraryChanged(`delete:${toDelete.length}`);
     return { items: LibraryRepo.list({}).items, failed: failures };
-  });
+}
+
+/**
+ * 删除**之前**看一眼:这一批会带走什么。
+   *
+   * ## 为什么要有这一条
+   *
+   * 用户的原话:「删除的时候会把当前要删除的文档所链接的其他文献也展示出来,可以选择性
+   * 的把连接的文档也删除,尤其是对于转录成 md 的文档…这个链接是 md 和图床一起的,要删
+   * 都一起删掉,可以批量删除,批量删除的时候会有个浮窗展示当前的链接情况,每个文档都能
+   * 选择」。
+   *
+   * 所以弹窗要画的是"每个文档一组勾选",而**只读查询**先行:用户点取消时不希望库里
+   * 有任何东西被动过。
+   *
+   * ## `deleteFiles: false` 时这一条不适用
+   *
+   * 只删记录(不动磁盘)时不展示转录那一项 —— 那时候 `！[](images/…)` 还指着盘上还在的
+   * 文件,把 md 列进去说"会一起删"是假话。界面按同一个开关决定要不要问。
+   */
+function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
+  const entries: LibraryDeletePreviewEntry[] = [];
+  const inBatch = new Set(ids);
+  const linksOfBatch = LibraryLinkRepo.viewsOfMany(ids);
+  for (const id of ids) {
+    const item = LibraryRepo.get(id);
+    if (!item) continue;
+    const links: LibraryDeletePreviewLink[] = [];
+
+    // ① 关联表里的东西 —— 有几行就报几行。批量删的时候 A→B 而 B 也在这一批里,
+    //    B 本来就要没了,再列一次只会让用户以为漏了一条。
+    for (const view of linksOfBatch[id] ?? []) {
+      if (view.otherItemId) {
+        if (inBatch.has(view.otherItemId)) continue;
+        links.push({ form: "item", targetItemId: view.otherItemId, title: view.title });
+        continue;
+      }
+      if (view.otherPath) {
+        links.push({ form: "path", targetPath: view.otherPath, title: view.title });
+      }
+    }
+
+    // ② 这份文献自己的 Markdown 转录产物。**md 和它那一包图床是一个整体**
+    //    (用户原话「这个链接是 md 和图床一起的,要删都一起删掉」),所以界面上它是
+    //    一个勾。`md_path` 只有一个值,而盘上可能有**两版**(先本地转一版、后来采纳
+    //    一版),两版都列出来 —— 见 `markdownArtifactsOfItem`。
+    //
+    //    ⚠️ **只报真在盘上的**。删除那一步本来就不把"不在"当失败(`dropAbs` 里
+    //    `!existsSync` 直接算成功),把一条不存在的产物列进"会一起删"的清单里,
+    //    用户勾了它会以为自己删掉了什么 —— 那是假话。
+    for (const artifact of markdownArtifactsOfItem(item)) {
+      if (!existsSync(artifact.path)) continue;
+      const images = artifact.recursive ? countImageFiles(artifact.path) : 0;
+      links.push({
+        form: "transcript",
+        title: basename(artifact.path),
+        ...(images > 0 ? { imageCount: images } : {}),
+      });
+    }
+
+    entries.push({ id, title: item.title, links });
+  }
+  return { entries };
+}
 
   ipcMain.handle(IPC.LIBRARY_DOWNLOAD, async (_evt, raw) => {
     const input = LibraryDownloadSchema.parse(raw);
     enqueueDownloads(input.ids, input.force);
     return { jobs: DownloadJobRepo.list() };
   });
-
   ipcMain.handle(IPC.LIBRARY_JOBS, async () => ({ jobs: DownloadJobRepo.list() }));
 
   /* ─────────────────────────── 集合 ─────────────────────────── */
@@ -506,6 +608,19 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
     if (affected.length > 0) sweepToTrash(affected);
     notifyLibraryChanged(`delete_collection:${input.id}`);
     return { collections: collectionsForRenderer() };
+  });
+
+  ipcMain.handle(IPC.LIBRARY_MOVE_COLLECTION, async (_evt, raw) => {
+    const input = CollectionMoveSchema.parse(raw);
+    // 判环、判重名、重排同级次序都在 `CollectionRepo.move` 一处 —— 它返回 ok/原因,
+    // 这里原样回传(与 renameCollection 同一条口径:拒了就说为什么,不静默不动)。
+    const res = CollectionRepo.move(input.id, input.parentId);
+    if (res.ok) notifyLibraryChanged(`move_collection:${input.id}`);
+    return {
+      collections: collectionsForRenderer(),
+      ok: res.ok,
+      ...(res.ok ? {} : { error: res.error }),
+    };
   });
 
   ipcMain.handle(IPC.LIBRARY_ASSIGN_COLLECTION, async (_evt, raw) => {
@@ -924,6 +1039,12 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
       return reason ? { ...v, suppressedReason: reason } : v;
     });
     return { links };
+  });
+  // 一批条目的关联条数 —— 左栏行尾的徽标。**只数不查摘要**:徽标只显示一个数字,
+  // 摘要等用户点开右栏时再按 `linksOf` 拉(那是单条的、带缓存的)。
+  ipcMain.handle(IPC.LIBRARY_LINK_COUNTS, async (_evt, raw) => {
+    const input = LibraryLinkCountsSchema.parse(raw);
+    return { counts: LibraryLinkRepo.countsOf(input.itemIds) };
   });
   ipcMain.handle(IPC.LIBRARY_LINK_ADD, async (_evt, raw) => {
     const input = LibraryLinkAddSchema.parse(raw);

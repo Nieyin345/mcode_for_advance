@@ -25,7 +25,11 @@ import { log } from "@main/lib/logger.js";
 /** sessionId → 还没被带进去的那几段。**按顺序**,先跑完的在前。 */
 const pending = new Map<string, string[]>();
 
-/** 挂一段并回内容。空的一律丢掉 —— 上层算出来是空的,不该在白名单里占一个位置。 */
+/** 挂一段并回内容。空的一律丢掉 —— 上层算出来是空的,不该在白名单里占一个位置。
+ *
+ *  ⚠️ **不去重。** 队列是"按顺序追加的一次性待办",两段文字相同不代表是同一件事
+ *  (用户可以把同一张工作流跑两遍)。要避免重复的调用方自己判 —— 见
+ *  `sessionStart.ts` 的 `queueSessionMemory`。 */
 export function queueBackflow(sessionId: string, text: string): void {
   const body = text.trim();
   if (body.length === 0) return;

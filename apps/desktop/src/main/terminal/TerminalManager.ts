@@ -11,7 +11,8 @@ import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import type { IPty } from "node-pty";
 import { IPC } from "@contracts/ipc";
-import type { TerminalInfo } from "@contracts/ipc";
+import type { TerminalInfo, TerminalOrigin } from "@contracts/ipc";
+import { TERMINAL_BUFFER_CHARS, USER_TERMINAL_ORIGIN } from "@contracts/ipc";
 import { sendToRenderer } from "@main/window.js";
 import { log } from "@main/lib/logger.js";
 import { resolveDefaultShell } from "./shellResolve.js";
@@ -28,6 +29,13 @@ export interface CreateTerminalOpts {
   shell?: string;
   /** Settings-level shell override (used when per-create shell is absent). */
   shellSetting?: string | null;
+  /** 谁开的。不传 = 用户手点的(见 `USER_TERMINAL_ORIGIN`)。
+   *
+   *  ⚠️ **这是这条终端唯一的身份来源**,所以只有这一个入口能写它:代理 / 子代理 /
+   *  工作流节点要开终端时,把自己那条会话 id 带上(`{ kind: "session", sessionId }`),
+   *  而不是新造一个"代理 id"。终端自己仍是 `randomUUID` —— 一个会话能同时开好几条,
+   *  拿 sessionId 当终端 id 会让第二条把第一条顶掉。 */
+  origin?: TerminalOrigin;
 }
 
 export interface CreateTerminalSuccess {
@@ -47,6 +55,10 @@ interface LiveTerminal {
   id: string;
   pty: IPty;
   info: TerminalInfo;
+  /** 输出的环(见 `TERMINAL_BUFFER_CHARS`)。**只在这个进程里**,不落盘 ——
+   *  它存在的唯一目的是"列表里点开某一条终端时,那个新挂的 xterm 里得有东西",
+   *  而不是给终端做归档。所以退出即丢,重启应用也丢。 */
+  buffer: string;
 }
 
 /** Lazy-load node-pty so a missing native binary doesn't crash app boot —
@@ -98,6 +110,19 @@ function ensureSpawnHelperExecutable(): void {
     // resolve failed / unexpected layout — fall through; node-pty will throw
     // its own (typed) error from loadNativeModule instead.
   }
+}
+
+/** 往输出尾巴里追加一段,超了就**从头部**丢掉溢出的那部分。
+ *
+ *  按**字符**截,不是按行 —— 一条刷屏的构建日志里,最后那几行往往是不完整的
+ *  (光标控制序列也按字符进来),按行截会把它们切得更碎。20k 字符这个量级下,
+ *  一个 String 的切片比自己维护一个数组便宜,而且天然是"最近的在后"。
+ *
+ *  ⚠️ 别换成"保留前 N 个字符" —— 那留下来的全是开屏那行欢迎语,用户点进去看到的
+ *  是一条早就跑远的终端。 */
+function appendToBuffer(buffer: string, data: string): string {
+  const next = buffer + data;
+  return next.length <= TERMINAL_BUFFER_CHARS ? next : next.slice(next.length - TERMINAL_BUFFER_CHARS);
 }
 
 class TerminalManagerImpl {
@@ -171,14 +196,19 @@ class TerminalManagerImpl {
       shell: resolved.label,
       pid: pty.pid,
       projectPath: opts.projectPath,
+      // 不传就是"用户手点的" —— 于是 `list()` 交出来的每一条都说得出来历,
+      // 终端列表不需要在渲染端猜。
+      origin: opts.origin ?? USER_TERMINAL_ORIGIN,
     };
 
-    const live: LiveTerminal = { id, pty, info };
+    const live: LiveTerminal = { id, pty, info, buffer: "" };
     this.terminals.set(id, live);
 
     pty.onData((data) => {
       // Drop if already removed (race with kill/exit).
       if (!this.terminals.has(id)) return;
+      // 先记尾巴再推 —— 顺序反过来的话,刚创建就被接入的那一瞬会缺最后几行。
+      live.buffer = appendToBuffer(live.buffer, data);
       sendToRenderer(IPC.TERMINAL_DATA, {
         channel: IPC.TERMINAL_DATA,
         terminalId: id,
@@ -250,11 +280,22 @@ class TerminalManagerImpl {
     return true;
   }
 
-  list(projectPath?: string): TerminalInfo[] {
+  /**
+   * 列出活着的终端。
+   *
+   * @param projectPath 只列这个项目根下的(不传 = 全部)。
+   * @param bufferFor 这一条终端**额外带上输出尾巴**(终端列表点开某一条时才用得上;
+   *                  平时的轮询不该把每条终端的输出都搬一遍 IPC)。
+   */
+  list(projectPath?: string, bufferFor?: string): TerminalInfo[] {
     const all = [...this.terminals.values()].map((t) => t.info);
-    if (!projectPath) return all;
-    const norm = projectPath;
-    return all.filter((t) => t.projectPath === norm);
+    const scoped = !projectPath ? all : all.filter((t) => t.projectPath === projectPath);
+    if (!bufferFor) return scoped;
+    return scoped.map((info) =>
+      info.terminalId === bufferFor
+        ? { ...info, buffer: this.terminals.get(info.terminalId)?.buffer ?? "" }
+        : info,
+    );
   }
 
   /** Kill every live PTY — call on app quit. */

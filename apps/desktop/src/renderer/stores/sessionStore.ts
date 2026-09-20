@@ -2152,6 +2152,27 @@ export interface SessionState {
    *  view. Reuses the composer's global config slots (the user's current
    *  model/provider), mirroring sendPrompt's send-model guard. */
   createSideChat: () => Promise<void>;
+  /** 「新建子对话」—— 从「+」菜单里那一项开出来的子对话,三档都在这里收口:
+   *
+   *   - `profile === null` → **空白**(与 `createSideChat` 建出来的同一个东西);
+   *   - `profile` + `memory: false` → **档案**(角色提示词每轮都带);
+   *   - `profile` + `memory: true` → **档案 + 记忆**(再加一份建会话那一刻的记忆快照)。
+   *
+   *  与 `createSideChat` **同一个落点**(kind="side"、挂在当前主会话下),但**不复用它的
+   *  空壳**:角色对不上时那边会重用一个不对的壳,而这里挑的是"这个对话是谁",认错了比
+   *  多建一个空壳坏得多(见 main/lib/sessionStart.ts 里 `sameProfile` 那段)。
+   *
+   *  建完**不自动打开**:这个对话在右侧「问答」页签的列表里等着,用户想聊了再点进去 ——
+   *  从输入框的「+」菜单里点一下就把整个右侧面板抢过去,会打断他正在打的字。
+   *
+   *  返回建出来的那一条;`null` = **根本没开始建**(没有当前主会话 / 没配模型 —— 后者
+   *  会自己把配置弹窗叫起来,见 `raiseModelGuard`)。**真的建失败了会抛**(档案被删了、
+   *  档案没填指令 —— 消息来自主进程,原样带上原因),调用方据此把红字显示出来。
+   *  这条路刻意不吞错误:用户点了一下,界面上要么多出一个对话,要么说清为什么没有。 */
+  createSubChat: (choice: {
+    profile: { id: string; name: string } | null;
+    memory: boolean;
+  }) => Promise<Session | null>;
   /** Enter a side chat's chat view (lazy-loads its persisted history). */
   selectSideChat: (sessionId: string) => Promise<void>;
   /** Leave the chat view, back to the ask tab's list view. */
@@ -6378,7 +6399,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const titleGenEnabledRaw = ds[UI_TITLE_GEN_ENABLED_SETTING_KEY];
       const titleGenModelRaw = ds[UI_TITLE_GEN_MODEL_SETTING_KEY];
 
-      if (tabRaw === "files" || tabRaw === "git" || tabRaw === "turns" || tabRaw === "flow")
+      // ⚠️ 这里的白名单必须与 `RightPanelTabSchema` 同步。只在 schema 上加一个值、
+      // 忘了这一行的话,用户选了它、重启后右栏**悄悄**回到 files —— 没有报错、没有
+      // 日志,像是那个标签根本不存在。
+      if (
+        tabRaw === "files" ||
+        tabRaw === "git" ||
+        tabRaw === "turns" ||
+        tabRaw === "flow" ||
+        tabRaw === "tasks"
+      )
         set({ rightPanelTab: tabRaw });
       if (modeRaw === "tabs" || modeRaw === "replace") set({ ideEditorMode: modeRaw });
       if (diffModeRaw === "center" || diffModeRaw === "dialog") set({ gitDiffOpenMode: diffModeRaw });
@@ -10886,6 +10916,74 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set({ activeSideChatId: sessionId });
     // Lazy-load persisted history (no-op when already hydrated / live).
     await get().prefetchSessionMessages(sessionId);
+  },
+
+  /**
+   * 「新建子对话」—— 见接口上那段。实现上**与 `createSideChat` 共用同一段 upsert**
+   * (列表插入位置、空历史桶、`historyLoaded` 三条都一样),差别只有三处:发下去的
+   * `agentProfileId`/`memory`、标题不再被判定为占位符、以及**不抢右侧面板**(建完不进
+   * 它的 chat 视图,用户正在打的字不被打断)。
+   */
+  createSubChat: async (choice) => {
+    const s = get();
+    const parentSessionId = s.activeSessionId;
+    if (!parentSessionId) return null;
+    // 「空白 + 记忆」不是一个界面上的组合(选择器里勾了记忆就把「空白」那一档关掉了)。
+    // 拦在这里而不是"信任调用方":记忆是注给某个角色的背景说明,没有角色的对话带上它
+    // 就是一段没有主语的背景 —— 与其悄悄注进去,不如把构造出来的组合拒掉。
+    if (!choice.profile && choice.memory) {
+      throw new Error("空白子对话不带记忆 —— 记忆要注给一个角色");
+    }
+    // 与 createSideChat / sendPrompt 同一条守卫:没选模型就不开新会话(开了也发不出
+    // 第一条消息,而用户会以为它坏了)。
+    const resolvedModel = resolveSendModel(s);
+    if (!resolvedModel) {
+      raiseModelGuard();
+      return null;
+    }
+    const parentRow =
+      s.sessionsByProject[s.activeProjectId ?? ""]?.find((x) => x.id === parentSessionId) ??
+      s.pinnedSessions.find((x) => x.id === parentSessionId);
+    if (!parentRow) return null;
+    try {
+      const { session } = await api.claude.startSession({
+        projectId: parentRow.projectId,
+        kind: "side",
+        parentSessionId,
+        providerId: s.providerId,
+        model: resolvedModel.model,
+        effort: s.effort,
+        permissionMode: s.permissionMode,
+        customModelId: resolvedModel.customModelId,
+        // 只传 id,**不传内容**:档案是磁盘上的文件,内容只能有一个来源(见
+        // StartSessionSchema 上那段)。主进程读不到会抛错,不静默降级成"没有角色"。
+        ...(choice.profile ? { agentProfileId: choice.profile.id } : {}),
+        // 记忆只在有档案时才是有意义的组合(「空白 + 记忆」不是一个界面上的选项);
+        // 传上去也不会有害,但界面上给不出来的东西别从代码里造出来。
+        ...(choice.profile && choice.memory ? { memory: true } : {}),
+      });
+      set((st) => {
+        const existing = st.sideChatsByParent[parentSessionId] ?? [];
+        return {
+          // 插入位置与 createSideChat 逐字同款:主进程复用了空壳就原地更新,否则前插
+          // (与 listSideByParent 的 DESC 一致)。
+          sideChatsByParent: {
+            ...st.sideChatsByParent,
+            [parentSessionId]: existing.some((x) => x.id === session.id)
+              ? existing.map((x) => (x.id === session.id ? session : x))
+              : [session, ...existing],
+          },
+          // 本地刚建(或复用了一个空壳)——空桶就是完整历史。
+          messagesBySession: { ...st.messagesBySession, [session.id]: [] },
+          hasMoreMessagesBySession: { ...st.hasMoreMessagesBySession, [session.id]: false },
+          historyLoadedBySession: { ...st.historyLoadedBySession, [session.id]: true },
+        };
+      });
+      return session;
+    } catch (err) {
+      console.error("createSubChat failed:", err);
+      throw err;
+    }
   },
 
   closeSideChatView: () => set({ activeSideChatId: null }),

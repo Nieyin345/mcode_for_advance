@@ -20,8 +20,8 @@ import {
   type LibraryItem,
   type LibraryKind,
 } from "@contracts/library";
-import { trashCollectionId } from "./trash.js";
-import { kindDisplayName, kindGroupPromptOf, kindMeta } from "./kindRegistry.js";
+import { trashedItemIds } from "./trash.js";
+import { kindDisplayName, kindGroupPromptOf, kindMeta, loadLibraryGroups } from "./kindRegistry.js";
 import { CollectionRepo, LibraryLinkRepo, LibraryRepo, NoteRepo } from "@main/store/repositories.js";
 import { importGenericFiles } from "./fileImport.js";
 import { suppressionReasonOfItem } from "./suppress.js";
@@ -226,6 +226,72 @@ function dropSuppressed(items: LibraryItem[]): { items: LibraryItem[]; suppresse
  *  (`kindDisplayName`,内置 8 类的出厂名与这张表一致)。保留为空占位会被误用,删。 */
 
 /**
+ * 整个**大类**的清单 —— 左栏右键大类标题「添加到当前对话」时用的。
+ *
+ * 用户的要求是「每一级右键都可以选择加入到当前对话」。大类是**最外那一级**,它的
+ * 范围是"这个大类下注册着的每个小类"(用户自己的组表说了算,见 `loadLibraryGroups`)。
+ *
+ * 与整库清单同一套规矩(那是这条路的最近亲,只差一个范围):
+ *
+ *  1. 逐个小类取全量(`listByKind`,不分页);
+ *  2. **回收站里的不算** —— 每个小类各有各的回收站,逐个剔;
+ *  3. **屏蔽规则挡掉的不算**,剔掉的数如实写在开头;
+ *  4. 大类自己的 `prompt` 排在最前(它是这一层最外层的说明),各小类的说明跟在
+ *     对应小节的标题下 —— 模型读到哪一类就看到哪一类的处理方式。
+ *
+ * ## 为什么按小类**分节**,而不是把所有条目混成一长串
+ *
+ * 大类底下的东西本来就不止一类(「文档」下面有论文 / 教材 / 笔记…),而每类各有各的
+ * 说明与用途(`purpose`)。混成一串的话,模型分不出哪几篇是"照着写的格式"、哪几篇是
+ * "读的资料"。分节也不额外花什么 —— 标题本来就只是一行。
+ */
+export function writeGroupManifest(groupId: string): ManifestResult {
+  const group = loadLibraryGroups().find((g) => g.id === groupId);
+  if (!group) return { path: "", count: 0, name: "" };
+
+  const lines: string[] = [`# ${group.name}`, ""];
+  const groupPrompt = group.prompt?.trim();
+  if (groupPrompt) lines.push(`> ${groupPrompt}`, "");
+
+  // 回收站**全库共用一个**,而条目的 kind 与它躺在哪个回收站里早已没有关系 ——
+  // 所以这道筛子按**条目 id** 过(`trashedItemIds`),不再"逐个小类去问它的回收站
+  // 是哪个"。后者在共用之后会漏:回收站建在论文库下,而里面躺着一条教材。
+  const trashed = trashedItemIds();
+  let total = 0;
+  let trashedTotal = 0;
+  let suppressedTotal = 0;
+  for (const kind of group.kinds) {
+    const all = LibraryRepo.listByKind(kind);
+    if (all.length === 0) continue;
+    const inGroup = all.filter((i) => trashed.has(i.id));
+    const { items, suppressed } = dropSuppressed(all.filter((i) => !trashed.has(i.id)));
+    trashedTotal += inGroup.length;
+    suppressedTotal += suppressed;
+    if (items.length === 0) continue;
+
+    const label = kindDisplayName(kind);
+    lines.push(`## ${label}`, "");
+    const prompt = kindMeta(kind)?.prompt?.trim();
+    if (prompt) lines.push(`> ${prompt}`, "");
+    lines.push(...renderItemsManifest(items));
+    total += items.length;
+  }
+
+  // 少列了东西而模型不知道,它会以为"库里就这些" —— 与另两条清单一句话都不差。
+  if (trashedTotal > 0) {
+    lines.push("", `(回收站里另有 ${trashedTotal} 篇,不在这次范围内。)`);
+  }
+  if (suppressedTotal > 0) {
+    lines.push("", `(屏蔽规则挡掉了 ${suppressedTotal} 篇,不在这次范围内。)`);
+  }
+  // 一件都没有:标题下面如实说,而不是给一份只有标题的空清单
+  if (total === 0 && trashedTotal === 0 && suppressedTotal === 0) {
+    lines.push("(这个大类下还没有资料。)");
+  }
+  return writeManifest(`group-${groupId}.md`, lines, total, group.name);
+}
+
+/**
  * 整库清单 —— 「全部文献 / 全部教材 / 全部笔记」那一行挂进对话时用的。
  *
  * 与分类清单同一份排版,三处不同:
@@ -243,8 +309,10 @@ function dropSuppressed(items: LibraryItem[]): { items: LibraryItem[]; suppresse
  */
 export function writeKindManifest(kind: LibraryKind): ManifestResult {
   const all = LibraryRepo.listByKind(kind);
-  const trashId = trashCollectionId(kind);
-  const trashed = new Set(trashId ? LibraryRepo.listByCollection(trashId).map((i) => i.id) : []);
+  // 同 `writeGroupManifest`:回收站是全库共用的一个,所以按**条目 id** 过筛,
+  // 不按"这个库的回收站是哪个"。
+  const trashed = trashedItemIds();
+  const trashedCount = all.filter((i) => trashed.has(i.id)).length;
   const { items, suppressed } = dropSuppressed(all.filter((i) => !trashed.has(i.id)));
 
   const label = kindDisplayName(kind);
@@ -258,8 +326,8 @@ export function writeKindManifest(kind: LibraryKind): ManifestResult {
   if (prompt) {
     lines.push(`> 关于「${label}」这类资料:${prompt}`, "");
   }
-  if (trashed.size > 0) {
-    lines.push(`(回收站里另有 ${trashed.size} 篇,不在这次范围内。)`, "");
+  if (trashedCount > 0) {
+    lines.push(`(回收站里另有 ${trashedCount} 篇,不在这次范围内。)`, "");
   }
   if (suppressed > 0) {
     lines.push(`(屏蔽规则挡掉了 ${suppressed} 篇,不在这次范围内。)`, "");
@@ -287,12 +355,16 @@ export function writeKindManifest(kind: LibraryKind): ManifestResult {
  *
  * ## 附件键的词汇表
  *
- * 三个前缀,与渲染端 `contentTag.ts` 里那份**必须一致**(算出来不一样的话,同一份
+ * 四个前缀,与渲染端 `contentTag.ts` 里那份**必须一致**(算出来不一样的话,同一份
  * 东西会被当成两样,去重就失效了):
  *
  *   `c:<分类 id>`   一个分类(清单是"这个库里有什么")
  *   `i:<条目 id>`   单独一篇(清单是"这一篇该怎么读")
  *   `k:<库>`        整个库(「全部文献 / 全部教材 / 全部笔记」那一行)
+ *   `g:<大类 id>`   整个大类(左栏那一**段**,含段下所有小类的资料)
+ *
+ * 四级前缀与左栏那四级一一对应 —— 用户的要求是「每一级右键都可以选择加入到当前对话」,
+ * 所以每一级都得有一个键。`g:` 是最后补上的那一级(它范围最大:一个大类下所有小类)。
  *
  * ## 挂一条条目时会**连它关联的一起挂上**(一跳)
  *
@@ -314,12 +386,21 @@ export function attachToChat(
   //
   // 只对 `i:` 判 —— 分类与整库没有"自己所属的集合/类型",它们是一组东西的入口。
   // **组里的条目各自在展开时被判**:分类清单走 `dropSuppressed`(见它上面那段),
-  // 整库清单同样走它(回收站与屏蔽在那里一起剔,剔掉的数写在清单开头)。也就是说
-  // 这里不判**不是**漏了 —— 那两处有它们自己的一道门,而且是逐条的。
+  // 整库 / 大类清单同样走它(回收站与屏蔽在那里一起剔,剔掉的数写在清单开头)。也就是说
+  // 这里不判**不是**漏了 —— 那三处有它们自己的一道门,而且是逐条的。
   if (prefix === "i:" && id) {
     const reason = suppressionReasonOfItem(id);
     if (reason) {
       return { ok: false, error: `${reason}被屏蔽了(设置 → 资料库类型)` };
+    }
+    // **回收站里的挂不上**，与屏蔽同一条理由：用户在左栏把一篇丢进回收站，意思就是
+    // "我不要它了"。挂进上下文是"让 AI 读它"，两件事直接冲突 —— 而它比屏蔽更隐蔽：
+    // 回收站里的条目在左栏是**看得见**的（它就摆在回收站那一行下面），所以没有任何
+    // 视觉提示告诉用户"这一条挂不上"。分类 / 整库 / 大类那三条路则由清单生成时的
+    // `trashedItemIds()` 逐条剔掉（剔掉的数写在清单开头）。逐条挂的那条路没有清单
+    // 可剔，所以这道门必须在这里。
+    if (trashedItemIds().has(id)) {
+      return { ok: false, error: "它在回收站里 —— 先还原出来再挂到对话上" };
     }
   }
 
@@ -327,10 +408,18 @@ export function attachToChat(
   if (prefix === "i:" && id) res = writeItemManifest(id);
   else if (prefix === "c:" && id) res = writeCollectionManifest(id);
   else if (prefix === "k:" && kindMeta(id) !== undefined) res = writeKindManifest(id);
+  else if (prefix === "g:" && id) res = writeGroupManifest(id);
   else return { ok: false, error: `无法识别的附件键:${key}` };
 
   if (!res.path) {
-    const what = prefix === "i:" ? `条目 ${id}` : prefix === "c:" ? `分类 ${id}` : `库 ${id}`;
+    const what =
+      prefix === "i:"
+        ? `条目 ${id}`
+        : prefix === "c:"
+          ? `分类 ${id}`
+          : prefix === "k:"
+            ? `库 ${id}`
+            : `大类 ${id}`;
     return { ok: false, error: `找不到${what}` };
   }
 

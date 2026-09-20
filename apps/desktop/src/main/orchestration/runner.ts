@@ -376,24 +376,35 @@ export function hasActiveRun(sessionId: string): boolean {
 }
 
 /**
- * 用户在一张**失败**的卡片上点了「再试一次」,还写了一句"上次哪里不对"。
+ * 用户**在某一步上**点了「从这儿接着跑」—— 可能是一张失败卡上的「再试一次」,也可能是
+ * 在图上挑了一步说"从这儿往下走"。
  *
  * ## 和「接着上次跑」是同一条路,只多一个 `rewind`
  *
- * 失败运行的存档里,`state.outcomes` 是**整张图的完整结局表**(失败那步 `failed`、
- * 它的下游 `skipped`、前面成功的 `success` 全在)。所以 `settled` 本来就够用 ——
- * 要做的只有一件事:**告诉调度器从哪一步开始重跑**(见 `RunResume.rewind`),由它把
- * 那一步连同全部前进后代从结局表里抹掉。
+ * 存档里 `state.outcomes` 是**整张图的完整结局表**(哪一步成功、哪一步失败、哪一步
+ * 没走,全在)。所以 `settled` 本来就够用 —— 要做的只有一件事:**告诉调度器从哪一步
+ * 开始重跑**(见 `RunResume.rewind`),由它把那一步连同全部前进后代从结局表里抹掉。
  *
  * 展开闭包是**调度器**的事(它是唯一知道"谁是谁的后代"的地方),这里只给出起点。
  *
- * ## 三种"这张卡不适用了",全都**不是错误**
+ * ## 两种起点,区别只在那一句提示词
  *
- * 找不到那次运行 / 它已经跑完或不再是失败 / 存档读不回来 —— 与
+ * 判据是那一步上次的结局({@link RetryableRun.outcome}):
+ *
+ *  - `failed` —— 用户点的是失败卡片,他多半还写了「上次哪里不对」。那句话要带上
+ *    ({@link RunResume.note}),而且**只给被点名的那一步看**。
+ *  - 别的 —— 用户在图上挑的起点。**不带 `note`**:他没写,而且"从这一步往下"这句话
+ *    本身已经由调度器那边补上了(见它 `init` 里 `presetChoices` 那一段)。
+ *
+ * 两条后面走的是**同一份代码**。分开写的话,"重跑一段"这件事迟早会有两种行为。
+ *
+ * ## 几种"这张卡不适用了",全都**不是错误**
+ *
+ * 找不到那次运行 / 那一步不在存档里 / 存档读不回来 —— 与
  * {@link resolveWorkflowChoice} 同一个口径:用户点一张旧卡是正常会发生的事,该得到
  * 一句"已经不适用了",而不是一个错误框。
  *
- * 返回 `false` 的第四个理由更实在:**这个对话正有运行在跑**。`startWorkflowRun` 那句
+ * 返回 `false` 的另一个理由更实在:**这个对话正有运行在跑**。`startWorkflowRun` 那句
  * `runs.has` 的守卫会**静静地返回 null**(见那里的注释),而调用方照样会拿到 true ——
  * 于是用户点了按钮、卡片变了、什么都没发生。所以这里**先查一次**,查到了就照实回 false。
  */
@@ -409,8 +420,8 @@ export function resolveWorkflowRetry(args: {
   // **正有运行在跑** —— 见上面那段注释:`startWorkflowRun` 撞上这个会静静地不做事,
   // 而调用方照样拿到 true。所以先查一次,查到了就照实回 false。
   if (runs.has(args.sessionId)) return false;
-  // 四道门(找不到 / 不是 failed / 存档坏了 / 那一步没失败)全在 `retryableRun` 里,
-  // 与岔路口续跑的 `resumableRun` 并列 —— 那些判据值得单独测,不该埋在 IPC 后面。
+  // 三道门(找不到 / 存档坏了 / 那一步不在结局表里)全在 `retryableRun` 里,与岔路口
+  // 续跑的 `resumableRun` 并列 —— 那些判据值得单独测,不该埋在 IPC 后面。
   const found = retryableRun(args.sessionId, args.runId, args.nodeId);
   if (found === null) return false;
   // 这个对话换过工作流了 —— 存档里那份状态是按**当时那张图**记的,拿去跑现在这张图
@@ -423,8 +434,17 @@ export function resolveWorkflowRetry(args: {
     return false;
   }
 
-  const note = (args.note ?? "").trim();
-  log.info(`workflow run ${found.runId} retried from node ${args.nodeId} (${args.sessionId})`);
+  /**
+   * **用户写的那句话,只在"上一次真的失败过"时才带。**
+   *
+   * 从图上挑起点时他压根没写过 —— 而界面那一头调的是同一条 RPC,`note` 缺席。真按
+   * "有没有 note"判的话,一次普通的"从这儿往下"会被当成重试,而提示词里会多出一段
+   * 「用户选择的是「再试一次」」—— 说的是他没做过的事。
+   */
+  const note = found.outcome.status === "failed" ? (args.note ?? "").trim() : "";
+  log.info(
+    `workflow run ${found.runId}: 从 ${args.nodeId} 重跑(${found.outcome.status}) (${args.sessionId})`,
+  );
   // **不 await** —— 同 `resumeRun`:这是一次可能跑几分钟的运行,IPC handler 该立刻返回。
   void startWorkflowRun({
     session,
@@ -432,7 +452,7 @@ export function resolveWorkflowRetry(args: {
       runId: found.runId,
       snapshot: found.snapshot,
       nodeId: args.nodeId,
-      // 起点只有失败这一步;闭包由调度器展开(见 `RunResume.rewind`)。
+      // 起点只有这一步;闭包由调度器展开(见 `RunResume.rewind`)。
       rewind: [args.nodeId],
       ...(note.length > 0 ? { note: { nodeId: args.nodeId, text: note } } : {}),
     },

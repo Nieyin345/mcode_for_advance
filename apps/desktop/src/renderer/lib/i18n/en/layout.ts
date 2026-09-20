@@ -119,6 +119,8 @@ export const en = {
    *  "Turn Flow" tab above: that one is about the CONVERSATION's turn, this one
    *  about the GRAPH. */
   "layout.tabFlow": "Workflow Run",
+  /** The right panel's terminal/task list tab (see TaskListPanel.tsx). */
+  "layout.tabTasks": "Tasks",
   "layout.openBrowser": "Open browser",
   "layout.closeSidebarBrowser": "Close sidebar browser",
 

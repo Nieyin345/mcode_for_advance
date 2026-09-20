@@ -49,7 +49,12 @@ import { SearchPanel } from "./SearchPanel.js";
 import { FullTextSearchPanel } from "./FullTextSearchPanel.js";
 import { ImportBar } from "./ImportPanel.js";
 
-/** 详情屏的标签。取值域与 `libraryStore.detailTab` 一致。 */
+/**
+ * 详情屏的标签。取值域与 `libraryStore.detailTab` 一致。
+ *
+ * `pdf` / `file` 这两支**已经不再出现在 `tabs` 里**(文件本体搬到中间了,见下面
+ * `tabs` 那段),但类型里留着 —— store 里那个值可能是上一版界面写的,留一个能认它的
+ * 分支,不会当场白屏。 */
 type DetailTab = "meta" | "preview" | "pdf" | "file" | "edit";
 
 /** 面板当前展示哪一屏。窄栏一次只显示一屏。 */
@@ -243,18 +248,21 @@ export function LibraryPanel() {
    * `detailTab` 存在 store 里(左栏右键"预览原文"要能远程切页),所以它可能是**上一个
    * 条目**留下的值 —— 比如刚看完论文(PDF 页)再点开一篇笔记,PDF 这一页不在笔记的
    * 档里。这里做一次回退,不合法就落到本档的第一页。
+   *
+   * ## 2026-09-20 起:「文件」与「PDF」两页**不在这一档里了**
+   *
+   * 这两页看的是**文件本体**,而文件本体整体搬到了中间(左栏点条目就走
+   * `libraryStore.openFileView` → 中间那个 `FileViewer`)。右栏这里再留一个入口,就会
+   * 出现"同一个 PDF 有两个地方能看,而且两处的工具条还不一样" —— 那正是这次要合并掉的
+   * 东西。所以只留下**改条目**的那几页:元数据、原文(转录)、笔记编辑。
+   *
+   * 这里还留着 `shownTab` 那层回退:store 里那个 `detailTab` 可能是上一版界面留下的
+   * `"pdf"`,不合法就落到本档第一页。
    */
   const tabs: readonly DetailTab[] = useMemo(() => {
     if (!activeItem) return ["meta"];
-    // 通用文件条目(linked/attached)有 filePath:给一个「文件」页展示本体 ——
-    // 它没有 PDF 状态与转录那一套,老的三页(元数据/原文/PDF)在这里不成立;
-    // 笔记即使带着文件也仍要能进编辑器。
-    if (activeItem.filePath) {
-      return activeItem.kind === "note" ? ["edit", "preview", "file"] : ["meta", "file"];
-    }
-    const base: readonly DetailTab[] =
-      activeItem.kind === "note" ? ["edit", "preview"] : ["meta", "preview", "pdf"];
-    return base.filter((tab) => tab !== "pdf" || Boolean(activeItem.pdfPath));
+    // 笔记即使带着文件也仍要能进编辑器(它的"本体"就是那份 md)。
+    return activeItem.kind === "note" ? ["edit", "preview"] : ["meta", "preview"];
   }, [activeItem]);
   const shownTab: DetailTab = tabs.includes(detailTab) ? detailTab : (tabs[0] ?? "meta");
 
@@ -476,6 +484,9 @@ export function LibraryPanel() {
           </div>
         </div>
         <div className="min-h-0 flex-1 overflow-hidden">
+          {/* 「文件」与「PDF」两页已经搬去中间(`FileViewer`),这一档只剩改条目的几页。
+              下面这两支的判据仍留着 —— store 里那个 `detailTab` 可能是上一版留下的值,
+              匹配上就还能画出旧的那一屏,不至于当场白屏。 */}
           {shownTab === "edit" && activeItem.kind === "note" ? (
             <NoteEditor item={activeItem} onChanged={() => void refresh()} />
           ) : shownTab === "pdf" && activeItem.pdfPath ? (

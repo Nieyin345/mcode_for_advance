@@ -13,6 +13,9 @@
  *     `terminal:exit`**、以及 `list()` 里那一条有没有真的消失。
  *  3. **IPC handler 报回去的那行字** —— 判据立在**用户看到的那句话**上,不是立在
  *     "有没有抛"。见 §6。
+ *  4. **「这条终端是谁开的」与输出尾巴** —— 终端列表要列**所有**终端并说清来路,
+ *     而"代理开的终端"目前一条都没有(唯一的创建入口是用户手点的那个面板),所以
+ *     这条来路只能由调用方**传进来**、由主进程**原样留着**。见 §8。
  *
  * ## 它不验什么(诚实清单)
  *
@@ -831,9 +834,169 @@ if (realPty) {
   );
 }
 
-/* ───────────────────────── 8. 空过守卫 + 收尾 ───────────────────────── */
+/* ───────────────────────── 8. 「谁开的」与输出尾巴(终端列表的地基) ─────────────────────────
+ *
+ * 终端列表要回答的那个问题 —— 「这条终端是谁开的」—— 在**主进程这一层**只有一件事
+ * 可验:那个字段**留着了吗、原样吗、缺省时落在哪一档**。列表画成什么样是渲染端的事。
+ *
+ * ## 这一段的判据为什么立在这里
+ *
+ * 因为现在**没有任何代理会开终端**(全仓库唯一的创建入口是用户手点的
+ * `TerminalPanel` → `TerminalView`,另外两处真 PTY 是 MCP 登录与钩子,都不进这个池子)。
+ * 也就是说"代理开的终端"这条路径**今天没有生产者**,而这个字段就是它将来的插口 —— 所以
+ * 断言只能在**契约边界**上钉:传 `session` 档进来,看它有没有原样出现在 `list()` 里。
+ *
+ * ## 输出尾巴
+ *
+ * 渲染端拿到输出是**纯推送**(`terminal:data`),一条不属于当前面板的终端在那一边是
+ * 空的。列表点开某一条时要看得见它**此刻**的样子,靠的就是主进程这段尾巴 —— 所以
+ * 「环里有东西了」和「不点名就不带上它」两件事都得钉住:前者错了是"点开一片空白",
+ * 后者错了是每次 2 秒的轮询都白搬 20 KB 文本。
+ */
 
-section("8. 守卫:有没有断言在空过");
+section("8. 「谁开的」与输出尾巴 —— 终端列表的两块地基");
+
+TerminalManager.disposeAll();
+await flushAsync();
+ptyStub.resetSpawns();
+windowStub.resetSent();
+
+// 8a. **不传 origin** ⇒ 落"用户手点的"那一档。
+//
+// ⚠️ 这一条钉的是**缺省不许是空的**:渲染端那个 `originLabel` 是穷尽的 switch,一旦
+// 这个字段冒出来是 undefined,列表里就会出现一行既不写"用户"也不写会话名的东西。
+ptyStub.resetSpawns();
+const noOrigin = await create({ projectPath: PROJECT });
+eq("不传 origin → 建得出来", noOrigin.ok, true);
+const listedDefault = ((await list({ projectPath: PROJECT })).terminals as Array<{
+  terminalId: string;
+  origin: { kind: string };
+}>).find((t) => t.terminalId === noOrigin.terminalId);
+same("不传 origin ⇒ list 里那条是 { kind: \"user\" }(留一条来路,不许是空的)", listedDefault?.origin, {
+  kind: "user",
+});
+
+// 8b. **传 session 档** ⇒ 原样留着 —— 这一条是"以后代理开终端"的插口。
+//
+// `nodeSessionId` 是可选的那一半:同一个会话里的子代理要能说出自己是谁,但它不是
+// 另一条身份线。两条都带上,顺带钉住"可选字段没被吞"。
+const sessionOrigin = {
+  kind: "session" as const,
+  sessionId: "sess_smoke_1",
+  title: "论文精读",
+  nodeSessionId: "node_smoke_7",
+};
+ptyStub.resetSpawns();
+const withOrigin = await create({ projectPath: PROJECT, origin: sessionOrigin });
+eq("传 session 档的 origin → 建得出来", withOrigin.ok, true);
+const listedSession = ((await list({ projectPath: PROJECT })).terminals as Array<{
+  terminalId: string;
+  origin: unknown;
+}>).find((t) => t.terminalId === withOrigin.terminalId);
+same("传进来的 origin 原样出现在 list 里(含 title 与 nodeSessionId)", listedSession?.origin, sessionOrigin);
+
+// 8c. **坏 origin 要被挡掉,而不是变成一条说不出来路的记录。**
+// 判别式里没有 `kind: "agent"` 这一档 —— 如果它被放行了,渲染端那个穷尽 switch 就会
+// 静默落进"用户开的"那一支,列表里说了一句**不真**的话。宁可创建失败。
+const badOrigin = await create({ projectPath: PROJECT, origin: { kind: "agent" } });
+eq("origin 的 kind 不在那两档里 → ok:false(不许静默落成'用户开的')", badOrigin.ok, false);
+check(
+  "…而且报回来的话里指出了是 origin",
+  String(badOrigin.error ?? "").includes("origin"),
+  { error: badOrigin.error },
+);
+// 校验没过的那一次不该在台面上留下一条半截终端。
+eq(
+  "…校验失败没有留下终端",
+  ((await list({ projectPath: PROJECT })).terminals as unknown[]).length,
+  2,
+);
+
+// 8d. **尾巴:不点名就不带。**
+// 每次轮询都带上 20 KB 文本的话,那条 2 秒一次的 list 就成了搬垃圾的。
+const plain = (await list({ projectPath: PROJECT })).terminals as Array<Record<string, unknown>>;
+check(
+  "不传 bufferFor → list 里每一条都**没有** buffer 字段(轮询不该白搬 20 KB)",
+  plain.length === 2 && plain.every((t) => t.buffer === undefined),
+  { buffers: plain.map((t) => (t.buffer === undefined ? null : String(t.buffer).length)) },
+);
+
+// 8e. **点名才带,而且带的只给那一条。**
+ptyStub.resetSpawns();
+const tailed = await create({ projectPath: PROJECT });
+const ptyTail = ptyStub.spawns[0].pty;
+windowStub.resetSent();
+ptyTail.__emitData("hello from shell\r\n");
+const withBuf = (await list({ bufferFor: tailed.terminalId })).terminals as Array<{
+  terminalId: string;
+  buffer?: string;
+}>;
+const target = withBuf.find((t) => t.terminalId === tailed.terminalId);
+eq("点名的那一条带回了 buffer", target?.buffer, "hello from shell\r\n");
+check(
+  "…而且只有它带,别的不带",
+  withBuf.filter((t) => t.buffer !== undefined).length === 1,
+  { withBuffer: withBuf.filter((t) => t.buffer !== undefined).map((t) => t.terminalId) },
+);
+
+// 8f. **尾巴是"最近的那一段",不是从开天辟地起。**
+//
+// 环的容量见 `TERMINAL_BUFFER_CHARS`。这条钉的是**裁剪方向**:留下的必须是**尾部**
+// (最近吐的),裁掉的必须是开头。裁反了的话,点开终端看到的是它几分钟前刚启动时的
+// 那段欢迎语,而当前正在刷的输出全没了 —— 那比一片空白更难解释。
+const { TERMINAL_BUFFER_CHARS } = await import("@contracts/ipc");
+// ⚠️ **两端各放一个标记**。只用 "A" 铺满的话,"开头被裁掉了"这条判据是**写不出来的**
+// —— 裁完剩下的还是 "A",`startsWith("A")` 恒真。本套第一版就是这么写的,它红了一条
+// 与实现无关的断言(留下的确实是尾部,只是"开头"也是 A)。
+const HEAD = "HEAD-MARKER-START";
+const TAIL = "TAIL-MARKER-END";
+ptyStub.resetSpawns();
+const big = await create({ projectPath: PROJECT });
+const ptyBig = ptyStub.spawns[0].pty;
+ptyBig.__emitData(HEAD);
+ptyBig.__emitData("A".repeat(TERMINAL_BUFFER_CHARS + 5_000));
+ptyBig.__emitData(TAIL);
+const bigInfo = ((await list({ bufferFor: big.terminalId })).terminals as Array<{
+  terminalId: string;
+  buffer?: string;
+}>).find((t) => t.terminalId === big.terminalId);
+const bigBuf = bigInfo?.buffer ?? "";
+eq("远超容量的输出之后,尾巴长度正好是容量", bigBuf.length, TERMINAL_BUFFER_CHARS);
+check(
+  "…留下的是**最近**那一段(结尾那个标记原样在)",
+  bigBuf.endsWith(TAIL),
+  { tail: bigBuf.slice(-40) },
+);
+check(
+  "…开头那段被裁掉了(不是把新内容裁了、留下启动时的欢迎语)",
+  !bigBuf.includes(HEAD),
+  { head: bigBuf.slice(0, 40) },
+);
+
+// 8g. **退出的终端连尾巴一起没了** —— 它本来就不该再出现在列表里。
+ptyBig.__exit(0);
+await flushAsync();
+const afterBigExit = (await list({ bufferFor: big.terminalId })).terminals as Array<{
+  terminalId: string;
+}>;
+check(
+  "退出之后点名要它的尾巴 → 列表里根本没有这一条(不是回一条空的)",
+  !afterBigExit.some((t) => t.terminalId === big.terminalId),
+  { ids: afterBigExit.map((t) => t.terminalId) },
+);
+
+// 8h. **空过守卫**:§8 那几条尾巴断言依赖"真的有输出流过这一段";如果替身的
+// `__emitData` 没能打到 `TerminalManager` 挂的监听上,`buffer` 会永远是空串,而
+// "长度正好是容量"那条会以**另一个数字**的形式红 —— 红得和被测代码无关。
+check(
+  "守卫:§8 的输出确实真的从替身流进了那一层(§8e/§8f 不是拿空串在算)",
+  (target?.buffer ?? "").length > 0 && bigBuf.length > 0,
+  { small: (target?.buffer ?? "").length, big: bigBuf.length },
+);
+
+/* ───────────────────────── 10. 空过守卫 + 收尾 ───────────────────────── */
+
+section("10. 守卫:有没有断言在空过");
 
 // `§6f` 依赖"设置里那条坏路径被读到过" —— 如果 resolveOverride 根本没被调到,
 // 那条断言就变成空过(建终端会走默认档,一样绿)。这里正面确认一次。

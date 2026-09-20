@@ -78,6 +78,7 @@ import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { ActivityCluster } from "./ActivityCluster.js";
 import { MessageTimeline, type UserItemIndexMap } from "./MessageTimeline.js";
 import { SelectionToolbar, type SelectionToolbarState } from "./SelectionToolbar.js";
+import { SelectionQuoteMenu, type QuoteTarget } from "./SelectionQuoteMenu.js";
 import { BookmarkFly } from "./BookmarkFly.js";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 
@@ -1339,6 +1340,24 @@ function ChatPaneForSession({
   );
   const sendPrompt = useSessionStore((s) => s.sendPrompt);
   const openSideChatPanel = useSessionStore((s) => s.openSideChatPanel);
+  const selectSideChat = useSessionStore((s) => s.selectSideChat);
+  /**
+   * 「+」菜单里新建了一个子对话。**把右栏切过去**。
+   *
+   * 用户点「新建子对话」是有意为之,不是路过 —— 建完什么都不发生,读起来就是"点了没
+   * 反应"(这一类"按下去没动静"的毛病用户已经报过好几次)。所以这里两个动作都做:
+   * 先把右栏打开并切到「问答」那一格,再选中刚建的那一个。
+   *
+   * `selectSideChat` 是 async 的(它要去库里读这个子对话的消息),**不能 await** ——
+   * 这是从一次菜单点击里调出来的,不阻塞界面,失败了它自己收拾。
+   */
+  const onNewSubChatCreated = useCallback(
+    ({ id }: { id: string }) => {
+      openSideChatPanel();
+      void selectSideChat(id);
+    },
+    [openSideChatPanel, selectSideChat],
+  );
   const interrupt = useSessionStore((s) => s.interrupt);
   const editAndResendMessage = useSessionStore((s) => s.editAndResendMessage);
   const claudeInstalled = useSessionStore((s) => s.claudeInstalled);
@@ -1482,6 +1501,23 @@ function ChatPaneForSession({
   // receive the mouseup that opens the toolbar (background tabs are
   // display:none, no mouse events).
   const [selectionToolbar, setSelectionToolbar] = useState<SelectionToolbarState | null>(null);
+  // 「引用」那一层:点工具条上的引用按钮之后,选区快照搬到这里。**工具条不关**,
+  // 否则 `SelectionToolbar` 的卸载会连它自己的 portal 一起拆掉,而这一层还得靠那
+  // 份快照里的文字。两层同时活着,`state` 就是这两层之间的那根线。
+  const [quoteState, setQuoteState] = useState<SelectionToolbarState | null>(null);
+  // This session's display title — the first row of the quote-target list is
+  // the current session itself, and that row has to read as something the user
+  // recognises. Same resolution chain as projectPath/projectName below (the
+  // session may live in a per-project slice or in the pinned bucket).
+  // `ChatPane`'s own wrapper is always `pinnedSessions` + `sessionsByProject`,
+  // so no other bucket can hold it.
+  const sessionDisplayTitle = useSessionStore((s) => {
+    for (const list of Object.values(s.sessionsByProject)) {
+      const found = list?.find((x) => x.id === sessionId);
+      if (found) return found.title;
+    }
+    return s.pinnedSessions.find((x) => x.id === sessionId)?.title ?? "";
+  });
   // Fly-to-capsule animation: a small dot travels from the selection to the
   // status capsule right after adding a bookmark. Carries only the start
   // point; the target rect is read live (the capsule segment may be mounting
@@ -1945,6 +1981,62 @@ function ChatPaneForSession({
       setSelectionToolbar(null);
     },
     [askInSideChat],
+  );
+
+  /** Selection-toolbar「引用到上下文」: open the target picker. The toolbar
+   *  stays mounted — it is the picker's anchor (see `quoteState`) — but the
+   *  live selection is collapsed now, so the picker's own close list has to be
+   *  the scroll listener, not the toolbar's selectionchange one. */
+  const handleQuote = useCallback((sel: SelectionToolbarState) => {
+    window.getSelection()?.removeAllRanges();
+    setQuoteState(sel);
+  }, []);
+
+  /**
+   * 选中一段文字 → 落进**某个目标会话**的输入框草稿。
+   *
+   * 「哪个目标」由 `SelectionQuoteMenu` 决定(当前会话 + 它名下的节点会话,数据来自
+   * `session.listNodes`)。这里只管落点,而且**只落草稿、不替他发** —— 与看板那个
+   * 「跟主对话说」逐字同一个做法(见 `WorkflowBoardPanel.talkToParent`,那里的注释
+   * 讲清了为什么:"我先看看再发"才是更稳的那一步)。
+   *
+   * ⚠️ 有一种情况这里**办不到**,所以宁可如实说一句、也不假装成功:目标会话的
+   * `ChatPane` 已经挂着的时候,它的草稿还原 effect 只在 `sessionId` 变化时跑 —
+   * 草稿写进去了,那个输入框不会当场变。
+   *
+   * 当前会话是例外,而且是可以办到的那一半:这块面板自己就带着那个编辑器的句柄
+   * (`editorRef`),直接插到光标处,所见即所得。所以两条路分开写 —— 能当场做到的
+   * 就当场做,做不到的至少把话说清楚(与 bookmark 那条「加书签」不同,那条无论
+   * 目标是谁都只存一份数据,不存在"看不见"的问题)。
+   */
+  const handleQuotePick = useCallback(
+    (target: QuoteTarget, text: string) => {
+      const quoted = text.trim();
+      setQuoteState(null);
+      setSelectionToolbar(null);
+      if (!quoted) return;
+      if (target.id === sessionId) {
+        // 插到光标处而不清空 —— 引用的常见用法是"再补一句问他",删掉用户已经
+        // 打好的半句话是最坏的默认。
+        editorRef.current?.insertText(quoted);
+        editorRef.current?.focus();
+        return;
+      }
+      // 别的会话:落草稿。类型上只可能是当前会话或它的节点会话,所以再挡一道。
+      const prev = useSessionStore.getState().composerDraftBySession[target.id];
+      useSessionStore.getState().saveComposerDraft(target.id, {
+        text: prev?.text ? `${prev.text}\n\n${quoted}` : quoted,
+        html: "",
+        tags: prev?.tags ?? [],
+      });
+      useToastStore.getState().push({
+        kind: "info",
+        title: t("chatStream.quote.doneToast", { name: target.title }),
+        body: t("chatStream.quote.otherSession"),
+        sessionId: target.id,
+      });
+    },
+    [sessionId, t],
   );
 
   // Side-chat seed: text sent from a main-session selection. ChatPane mounts
@@ -3711,14 +3803,29 @@ function ChatPaneForSession({
         />
       )}
 
-      {/* Floating [copy | add bookmark] toolbar over the current text
-          selection (portals to body — see SelectionToolbar). */}
+      {/* Floating [copy | add bookmark | ask side chat | quote] toolbar over
+          the current text selection (portals to body — see SelectionToolbar). */}
       {selectionToolbar && (
         <SelectionToolbar
           state={selectionToolbar}
           onAddBookmark={handleAddBookmark}
           onAskSideChat={handleAskSideChat}
+          onQuote={handleQuote}
           onClose={() => setSelectionToolbar(null)}
+        />
+      )}
+
+      {/* 第二层:引用给谁。工具条不卸载(见 quoteState),这一层压在它上面。 */}
+      {quoteState && (
+        <SelectionQuoteMenu
+          state={quoteState}
+          sessionId={sessionId}
+          currentTitle={sessionDisplayTitle}
+          onPick={handleQuotePick}
+          onClose={() => {
+            setQuoteState(null);
+            setSelectionToolbar(null);
+          }}
         />
       )}
 
@@ -4178,6 +4285,7 @@ function ChatPaneForSession({
                     onPickLibraries={openLibraryPicker}
                     onPickTemplates={openTemplatePicker}
                     onSlashCommand={() => insertTriggerChar("/")}
+                    onNewSubChat={onNewSubChatCreated}
                   />
                 )}
               </div>

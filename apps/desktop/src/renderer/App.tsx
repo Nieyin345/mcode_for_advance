@@ -30,6 +30,8 @@ import { useTheme } from "./lib/theme.js";
 import { useChatAppearance, useRightPanelAppearance, useThemeStyle } from "./lib/appearance.js";
 import { useI18n } from "./lib/i18n/index.js";
 import { OpenTabsBar } from "./components/ide/OpenTabsBar.js";
+import { FileViewer } from "./components/library/FileViewer.js";
+import { useFileViewStore } from "./stores/fileViewStore.js";
 
 // Lazy-load the Monaco-backed editor, diff dialog and plan viewer so the large
 // monaco-editor library (and its web workers) stay out of the initial renderer
@@ -429,11 +431,15 @@ function UnifiedTabbedPane({ wide }: { wide: boolean }) {
     (s) => (activeSessionId ? s.planTabActiveBySession[activeSessionId] ?? false : false),
   );
   const centerTabFocus = useSessionStore((s) => s.centerTabFocus);
+  // 只读预览(文献库条目 / 模版库文件 / 项目文件)。**与可编辑文件是两回事** ——
+  // 见 `fileViewStore` 开头那段:可编辑的走 `openFiles` + `ideActiveFile`,预览走这里。
+  const fileView = useFileViewStore((s) => s.target);
   // The editor owns the content area only while focused AND it has content.
   // The content check makes a stale "editor" focus (e.g. the last file was
   // closed by a path that didn't recompute the flag) fall back to the chat
-  // instead of showing an empty editor.
+  // instead of showing an empty editor. 预览也算"有内容"。
   const showEditor = centerTabFocus === "editor" && (!!activeFile || planTabActive);
+  const showFileView = centerTabFocus === "editor" && fileView !== null && !showEditor;
   // Wide mode: only a FILE editor stays mounted (hidden keep-alive). A plan
   // tab's surface is owned by the WidePlanDialog overlay — keeping a second
   // hidden PlanViewer here would double the markdown/Monaco work on every
@@ -441,6 +447,9 @@ function UnifiedTabbedPane({ wide }: { wide: boolean }) {
   // wide-mode surface, matching isSessionChatOnScreen's wide semantics.
   const editorMounted = showEditor && !(wide && !activeFile);
   const editorVisible = showEditor && !wide;
+  // 预览:**宽模式里也留着**(它不是 Monaco,没有"重建一次要几百毫秒"的成本);
+  // 而且预览恰恰是宽模式最该看的东西 —— 宽模式就是给"边看边聊"用的。
+  const fileViewVisible = showFileView;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -451,10 +460,10 @@ function UnifiedTabbedPane({ wide }: { wide: boolean }) {
             key={sid}
             className={cn(
               "absolute inset-0",
-              sid === activeSessionId && !editorVisible ? "" : "hidden",
+              sid === activeSessionId && !editorVisible && !fileViewVisible ? "" : "hidden",
             )}
           >
-            <ChatPane sessionId={sid} isActive={sid === activeSessionId && !editorVisible} />
+            <ChatPane sessionId={sid} isActive={sid === activeSessionId && !editorVisible && !fileViewVisible} />
           </div>
         ))}
         {editorMounted && (
@@ -469,6 +478,15 @@ function UnifiedTabbedPane({ wide }: { wide: boolean }) {
                 mode the strip is SessionTabs, and the hidden host renders
                 no bar at all. */}
             <EditorColumn filePath={activeFile} hideTabsBar />
+          </div>
+        )}
+        {/* 只读预览的宿主。与编辑器**并列**、不共用那一格 —— 两者由
+            `centerTabFocus` 互斥(`showFileView` 只在没有可编辑文件时才真),
+            所以同时最多只有一个可见。分开写是因为它们各自要管的生命周期差很远:
+            编辑器要保 Monaco 的挂载态,预览每换一个文件就该重读一次。 */}
+        {showFileView && (
+          <div className="absolute inset-0 flex min-h-0 flex-col">
+            <FileViewer target={fileView} />
           </div>
         )}
       </div>

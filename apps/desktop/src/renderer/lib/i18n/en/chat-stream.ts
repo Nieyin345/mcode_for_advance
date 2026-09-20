@@ -147,11 +147,23 @@ export const en = {
   "chatStream.workflowBoard.chosen": "You picked: {label}",
   "chatStream.workflowBoard.chosenComment": "You added: {text}",
   "chatStream.workflowBoard.chosenAttempt": "round {n}",
-  // The four words under the mini flow chart (WorkflowFlowLegend in WorkflowFlowMini).
-  "chatStream.workflowBoard.legendDone": "Done",
-  "chatStream.workflowBoard.legendRunning": "Running",
-  "chatStream.workflowBoard.legendAwaiting": "Waiting on you",
-  "chatStream.workflowBoard.legendFailed": "Failed",
+  // Right-clicking a node on the chart. Same backend path as the retry button on a
+  // failed card (`workflow.retry`: rerun that step plus everything downstream of it),
+  // just a second entry point on the chart.
+  "chatStream.workflowBoard.runFromHere": "Run from here",
+  // Right-clicked a step with no live run behind it (a stored row after a restart) —
+  // greyed out with the reason shown, not hidden: hiding it leaves you unable to tell
+  // "this feature doesn't exist" from "this step doesn't support it".
+  "chatStream.workflowBoard.runFromHereStale": "That run is gone — can't start from here.",
+  // Tried to run from a step and main refused (the run already finished, or another is
+  // already going).
+  "chatStream.workflowBoard.runFromHereFailed": "Couldn't start from here — that run has ended.",
+  // The divider between the chart and the card list.
+  "chatStream.workflowBoard.dragHint": "Drag to resize the chart (double-click to reset)",
+  // A step that hasn't run in THIS run at all (a stored row read back after a restart,
+  // with nothing live behind it). Not "done" and not "failed": this describes "not
+  // moving right now", not the verdict of the last run.
+  "chatStream.workflowBoard.notRun": "Not running",
   // ── Talking to a step ──
   // Three things: **stop** it (which stops the whole graph), **talk to this step**
   // (it keeps going), **talk to the main chat** (drops into the composer for you to send).
@@ -159,12 +171,18 @@ export const en = {
   // Offered for a **successful** step too, not just a failed one: iterating on a step
   // the user just watched is the normal case, not a recovery path.
   "chatStream.workflowBoard.takeover": "Talk to this step",
-  // The board's live state dies with the process; the node sessions in the DB don't.
-  // This block re-lists the steps that still have one, so "keep talking to that step"
-  // survives a restart.
-  "chatStream.workflowBoard.stepsTitle": "Steps with a session",
-  "chatStream.workflowBoard.stepsHint": "Talk to any of them — each runs in its own session, which outlives a restart.",
-  "chatStream.workflowBoard.stepsOpen": "Open and keep talking",
+  // ⚠️ **The line shown when an expanded card has no context at all.** This is a REAL
+  // gap, not a wording problem: node transcripts never reach the DB, so a step read back
+  // from the DB after a restart genuinely has no transcript. The only recovery is the
+  // snapshot archived on the settle card in the main conversation, and once that has
+  // aged out there is nothing left. So this says "it wasn't kept" AND states the other
+  // half of the fact (live steps DO show it) — otherwise people think the feature is
+  // broken when the step simply isn't running.
+  //
+  // Kept separate from `workflowStep.processGone`, which means "there was one, memory
+  // evicted it". Mixing them up gets the reason wrong.
+  "chatStream.workflowBoard.contextGone":
+    "This step's context wasn't kept. Only steps that are running right now show what they said.",
   "chatStream.workflowBoard.takeoverPlaceholder": "Say something to whoever…",
   "chatStream.workflowBoard.takeoverSent": "Sent",
   "chatStream.workflowBoard.takeoverStop": "Stop this graph",
@@ -303,6 +321,17 @@ export const en = {
   "chatStream.bookmark.renamePlaceholder": "Bookmark name",
   "chatStream.bookmark.stale": "Message removed",
   "chatStream.bookmark.addedToast": "Bookmark added",
+
+  // ── Quote to context (select text → pick a target session, lands in its composer draft) ──
+  "chatStream.quote.action": "Quote to context",
+  "chatStream.quote.title": "Quote to",
+  "chatStream.quote.searchPlaceholder": "Search sessions…",
+  "chatStream.quote.current": "current",
+  "chatStream.quote.empty": "No matching session",
+  "chatStream.quote.untitled": "Untitled session",
+  "chatStream.quote.loadFailed": "Couldn't read this session's nodes — only the current session is listed",
+  "chatStream.quote.otherSession": "The quote target isn't the current session",
+  "chatStream.quote.doneToast": "Placed in the composer of “{name}”",
 
   // ── ChatPane: streaming spinner hint ──
   "chatStream.upstreamRetry": "Upstream connection issue — retrying ({attempt}/{attempts})",

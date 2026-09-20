@@ -444,4 +444,23 @@ export const en = {
   "chat.nodeCriteria.title": "Fixed criteria",
   "chat.nodeCriteria.hint":
     "Your standing filters, applied whenever you chat with this graph. The selections are told to the model once, on the first turn of the conversation, and stay in context after that — no need to re-pick each turn. \"—\" means not set, and is not applied. To add or change them, edit the “Fixed criteria” param in settings.",
+
+  // ── new sub-conversation (the "+" menu item; see chat/NewSubChatPicker) ──
+  "chat.newSubChat": "New sub-conversation",
+  "chat.newSubChat.blank": "Blank",
+  "chat.newSubChat.blankHint": "A conversation with no role at all",
+  // Shown on the "Blank" row when memory is checked — it is also the tooltip.
+  // Memory is background for a role; a conversation with no role carries none.
+  "chat.newSubChat.blankNoMemory": "A blank conversation has no role, so memory can't go in",
+  "chat.newSubChat.searchPlaceholder": "Search profiles…",
+  "chat.newSubChat.loadFailed": "Could not load the profile list",
+  "chat.newSubChat.noProfiles": "No profiles yet",
+  "chat.newSubChat.noProfilesHint": "Create one under Settings → Agent profiles, or save one from a node on the workflow canvas",
+  "chat.newSubChat.noMatch": "No matching profile",
+  "chat.newSubChat.withMemory": "With memory",
+  "chat.newSubChat.memoryOn": "Include long-term memory",
+  "chat.newSubChat.memoryHint": "A memory snapshot is taken when the conversation is created and carried into its first turn; later edits are not picked up",
+  // Shown at the right of that row — MUST be the same key the picker's keydown answers.
+  "chat.newSubChat.memoryKey": "Alt+M",
+  "chat.newSubChat.createFailed": "Could not create it: {error}",
 } as const;

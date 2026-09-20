@@ -10,15 +10,11 @@ export const zh = {
   "settings.nav.shortcuts": "快捷键",
   "settings.nav.voice": "语音输入",
   "settings.nav.skills": "技能",
-  "settings.nav.subagents": "子代理",
   "settings.nav.workflows": "工作流",
   "settings.nav.automation": "自动化",
   "settings.nav.hooks": "钩子",
   "settings.nav.mcp": "MCP",
-  "settings.nav.context": "上下文",
-  // 记忆库紧跟上下文:两者都是"喂给引擎的全局上下文"(见 SettingsPage 的排布说明),
-  // 上下文是常驻指令与记忆的注入口,记忆库是那些记忆文件本体的浏览/编辑处。
-  "settings.nav.memory": "记忆库",
+  "settings.nav.memory": "记忆与上下文",
   "settings.nav.plugins": "插件",
   "settings.nav.notifications": "消息通知",
   "settings.nav.git": "Git",
@@ -43,27 +39,6 @@ export const zh = {
   "settings.general.desc": "调整界面布局、消息显示与会话标题等基础偏好。",
 
   // ── SubagentsPanel（Claude 自定义子代理）──
-  "settings.subagents.title": "子代理",
-  "settings.subagents.sectionTitle": "自定义子代理（Claude）",
-  "settings.subagents.sectionDesc":
-    "定义可被主对话调用的子代理：给名字、一段「什么时候派它上场」的描述和它自己的系统提示词。保存后从下一轮对话开始生效。",
-  "settings.subagents.empty": "还没有自定义子代理。点「添加子代理」创建第一个。",
-  "settings.subagents.unnamed": "未命名",
-  "settings.subagents.name": "名称",
-  "settings.subagents.namePh": "如 test-runner（字母/数字/下划线/连字符）",
-  "settings.subagents.description": "描述（主模型据此决定何时调用）",
-  "settings.subagents.descriptionPh": "如「跑测试并汇总失败原因」",
-  "settings.subagents.prompt": "系统提示词",
-  "settings.subagents.promptPh": "这个子代理的人设与工作方式…",
-  "settings.subagents.tools": "可用工具（逗号分隔，留空继承全部）",
-  "settings.subagents.toolsPh": "如 Read, Grep, Bash",
-  "settings.subagents.model": "模型（可选）",
-  "settings.subagents.modelPh": "如 sonnet / opus / inherit",
-  "settings.subagents.add": "添加子代理",
-  "settings.subagents.save": "保存",
-  "settings.subagents.saving": "保存中…",
-  "settings.subagents.saved": "已保存",
-  "settings.subagents.delete": "删除",
   "settings.general.sectionBasics": "基础",
   "settings.general.sectionLanguage": "语言",
   "settings.general.sectionDisplay": "显示与布局",
@@ -923,7 +898,6 @@ export const zh = {
   "settings.subagentModel.follow": "跟随主会话",
 
   // ── ContextPanel ──
-  "settings.context.title": "上下文",
   "settings.context.instructionsSection": "全局指令",
   "settings.context.instructionsDesc":
     "所有引擎共用的常驻指令。唯一事实源存在数据根下的 context/instructions.md,保存后自动物化:Claude → ~/.mcode/CLAUDE.md,Codex → AGENTS.md 组装链,Pi → 会话启动注入。改动对下一轮对话生效。",
@@ -939,17 +913,6 @@ export const zh = {
     "还没有项目记忆。引擎在会话里自行沉淀记忆后,这里会出现对应条目。",
   "settings.context.noMemorySelected": "在左侧选择一个项目,查看或编辑它的记忆。",
   "settings.context.updatedAt": "更新于",
-  "settings.context.usageSection": "工具占用",
-  "settings.context.usageDesc":
-    "按来源估算所选引擎里工具占用的上下文开销。",
-  "settings.context.usageEngine": "引擎",
-  "settings.context.usageInprocess": "进程内工具",
-  "settings.context.usageUserMcp": "用户级 MCP",
-  "settings.context.usagePluginMcp": "插件 MCP",
-  "settings.context.usageBuiltin": "内置服务器",
-  "settings.context.usageTotal": "合计",
-
-  // ── UsagePanel ──
   "settings.usage.title": "用量统计",
   "settings.usage.desc": "汇总各会话每轮对话的 token 用量。Pi 会话按增量折算。",
   "settings.usage.range.today": "今天",

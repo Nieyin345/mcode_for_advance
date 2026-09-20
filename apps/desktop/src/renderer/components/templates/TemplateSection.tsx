@@ -52,10 +52,13 @@
  *
  * ## 文件行也能点、也能右键
  *
- * 与文献库里那一篇文献一样:左键点开 = **右栏**预览它(见 TemplatePanel),右键 =
+ * 与文献库里那一篇文献一样:左键点开 = **中间**预览它(见 `FileViewer`),右键 =
  * 应用内预览 / 在文件夹中打开 / 用外部程序打开(见 TemplateFileContextMenu)。
- * 预览落在右栏而不是就地展开,是照文献库那套来的 —— 左栏两百来像素宽,一屏 LaTeX
- * 源在这儿根本不够看。
+ * 预览落在中间而不是左栏就地展开,是照文献库那套来的 —— 左栏两百来像素宽,一屏
+ * LaTeX 源在这儿根本不够看。
+ *
+ * ⚠️ 2026-09-20:预览本体**从右栏搬到了中间**(用户要"文件在中间、右栏留给对话"),
+ * 所以 `templateStore.previewFile` 现在只剩"左栏树里给当前文件高亮"这一个用处。
  *
  * ## 两种呈现,跟着顶部那个切换图标走
  *
@@ -80,6 +83,7 @@ import { TEMPLATE_KIND_LABEL } from "@renderer/lib/templateLabels.js";
 import { api } from "@renderer/lib/api.js";
 import { attachTemplateToCurrentChat } from "@renderer/lib/attachToChat.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useFileViewStore, basenameOf } from "@renderer/stores/fileViewStore.js";
 import { useTemplateStore } from "@renderer/stores/templateStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import {
@@ -140,6 +144,8 @@ export function TemplateSection() {
   const leftBarMode = useSessionStore((s) => s.leftBarMode);
   const setRightPanelTab = useSessionStore((s) => s.setRightPanelTab);
   const setRightOpen = useSessionStore((s) => s.setRightOpen);
+  const setCenterTabFocus = useSessionStore((s) => s.setCenterTabFocus);
+  const openFileView = useFileViewStore((s) => s.open);
 
   /** 正在新建(输入框态)。 */
   const [creating, setCreating] = useState(false);
@@ -312,16 +318,30 @@ export function TemplateSection() {
   };
 
   /**
-   * 在右栏预览一个文件 —— 与文献库点一篇文献**同一套**:选中它,再把右栏切到对应的
-   * 标签并打开。
+   * 点一个模版文件 —— **2026-09-20 起改在中间打开**(与文献库点一篇文件同一套)。
    *
-   * 选中态存在 `templateStore`(右栏那棵树读它),而"右栏开着没有、在哪一页"是会话
-   * store 的 —— 左栏与右栏不是同一棵子树,只能这么传。
+   * 用户的原话:「要把之前的文献预览的页面,还有模版预览的页面合并成一个通用的,
+   * 所有的文件的预览都走同一个右边栏类里面,然后…点开会在中间页面显示出来」。
+   * 所以两处现在都落到同一个 `FileViewer`(按来源选一条 RPC),中间显示,右栏腾给
+   * 对话。
+   *
+   * `templateStore.previewFile` **照旧写一份**:右栏那个「模版」标签里的树还在读它
+   * (那份树要显示"现在看的是哪个文件"),只是预览本体搬走了。两份状态指向同一个
+   * 文件,不冲突。
+   *
+   * 右栏**不再被强行拉出来**(`setRightOpen(true)` 去掉了)—— 用户要的正是"文件在
+   * 中间的时候,右栏还能跟子代理说话"。
    */
   const openPreview = (entry: TemplateEntry, relPath: string) => {
     openFile(entry, relPath);
-    setRightPanelTab("templates");
-    setRightOpen(true);
+    openFileView({
+      source: {
+        kind: "template",
+        ref: { kind: entry.kind, dirName: entry.dirName, relPath },
+      },
+      name: basenameOf(relPath),
+    });
+    setCenterTabFocus("editor");
   };
 
   /** 一条模版的次要说明:「N 个文件」/「M 张图 · K 份代码」。 */
@@ -349,7 +369,7 @@ export function TemplateSection() {
       <SidebarRow
         icon={<IconFileText size={12} className="shrink-0" />}
         label={label}
-        // 点开是在**右栏**预览(与文献库一致:左栏导航、右栏内容)。左栏两百来
+        // 点开是在**中间**预览(与文献库一致:左栏导航、中间看内容)。左栏两百来
         // 像素宽,一屏 LaTeX 源在这儿根本不够看。
         title={`${label}\n${t("templates.ctx.preview")}`}
         active={on ? "fill" : false}

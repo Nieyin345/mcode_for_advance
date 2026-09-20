@@ -138,24 +138,36 @@ export const zh = {
   "chatStream.workflowBoard.chosen": "你选了:{label}",
   "chatStream.workflowBoard.chosenComment": "你补的话:{text}",
   "chatStream.workflowBoard.chosenAttempt": "第 {n} 轮问的",
-  // 小流程图下面那条图例的四个词(见 `WorkflowFlowMini` 的 `WorkflowFlowLegend`)。
-  "chatStream.workflowBoard.legendDone": "跑完了",
-  "chatStream.workflowBoard.legendRunning": "在跑",
-  "chatStream.workflowBoard.legendAwaiting": "在等你",
-  "chatStream.workflowBoard.legendFailed": "出事了",
+  // 图上右键某一格。**和失败卡片上那个「再试一次」是同一条后端路径**
+  // (`workflow.retry`:从某一步重跑它 + 它的全部下游),只是入口在图上。
+  "chatStream.workflowBoard.runFromHere": "从这一步开始跑",
+  // 右键了但这一步没有活着的运行可接(重启之后从库里读回来的那些)—— **置灰并说明原因**,
+  // 不是隐藏:隐藏的话用户分不清"没有这个功能"和"这一步不支持"。
+  "chatStream.workflowBoard.runFromHereStale": "这一趟已经不在了,没法从它开始。",
+  // 点了「从这一步开始跑」但主进程拒绝了(这次运行已经结束 / 正有运行在执行)。
+  "chatStream.workflowBoard.runFromHereFailed": "没能从这一步开始 —— 这次运行已经结束了。",
+  // 拖分隔条时鼠标悬停的提示。
+  "chatStream.workflowBoard.dragHint": "上下拖,调流程图的高度(双击还原)",
+  // 一步**还没有在这次运行里执行过**(重启之后从库里读回来的那一行,看板上只有它)。
+  // 不说"已完成"也不说"失败" —— 这一档描述的是"这一步现在没在执行",而不是上次的结论。
+  "chatStream.workflowBoard.notRun": "没在跑",
   // ── 跟某一步说话 ──
-  // 三件事:**结束**它(停下整张图)、**跟这一步说**(它接着干)、**跟主对话说**
-  // (塞进输入框,用户自己发)。
+  // 三件事:**结束**它(停下整张图)、**跟这一步说**(它接着做)、**跟主对话说**
+  // (放进输入框,用户自己发)。
   //
-  // **跑成功的那一步也给**。原来只给失败/被取消的,理由是"跑成功的没什么要接管的";
-  // 用户要的却是"三方不断迭代" —— 看到某一步做得不对,当场叫它改,本来就是常态,
-  // 而不是只有出事时才用得上的补救。
+  // **成功的那一步也给**。原来只给失败/被取消的,理由是"成功的那一步没什么要接管的";
+  // 用户要的却是"三方不断迭代" —— 看到某一步做得不对,当场叫它修改,本来就是常态,
+  // 而不是只有失败时才用得上的补救。
   "chatStream.workflowBoard.takeover": "跟这一步说",
-  // 重启之后看板是空的(现场跟着进程活),而库里那些会话还在。这一格把"哪一步留过
-  // 会话"重新列出来,点进去照样能接着说 —— 没有它,"常驻"只在没关过软件的期间成立。
-  "chatStream.workflowBoard.stepsTitle": "这些步骤留着会话",
-  "chatStream.workflowBoard.stepsHint": "跟哪一步都能接着说 —— 它跑在自己的会话里,重启之后也还在。",
-  "chatStream.workflowBoard.stepsOpen": "点开接着聊",
+  // ⚠️ **展开之后没有任何上下文的那一句。** 这是**真实的缺口**,不是措辞问题:
+  // 节点会话的转录不进库,所以重启之后从库里读回来的那一步,过程确实拿不到 ——
+  // 唯一的补救是主对话里那张结束卡留的存档,存档也被容量裁掉时就只剩这一句。
+  // 所以它说的是"没有留下来",而且**把另一半事实也说出来**(现场那几步看得到)——
+  // 否则用户会以为这个功能坏了,而其实只是那一步没有在内存里。
+  //
+  // 和 `workflowStep.processGone` 分开:那一句说的是"曾经有、被内存裁掉了",这一句
+  // 说的是"这一步的上下文从来没有留下来过"。混用会把原因说错。
+  "chatStream.workflowBoard.contextGone": "这一步的上下文没有留下来。只有正在跑的那几步看得到它说了什么。",
   "chatStream.workflowBoard.takeoverPlaceholder": "想跟谁说点什么…",
   "chatStream.workflowBoard.takeoverSent": "已送去",
   "chatStream.workflowBoard.takeoverStop": "停下这张图",
@@ -294,6 +306,17 @@ export const zh = {
   "chatStream.bookmark.renamePlaceholder": "书签名称",
   "chatStream.bookmark.stale": "原消息已移除",
   "chatStream.bookmark.addedToast": "已添加书签",
+
+  // ── 引用到上下文(选中文字 → 选一个目标会话,落进它的输入框草稿)──
+  "chatStream.quote.action": "引用到上下文",
+  "chatStream.quote.title": "引用给",
+  "chatStream.quote.searchPlaceholder": "搜索会话…",
+  "chatStream.quote.current": "当前",
+  "chatStream.quote.empty": "没有匹配的会话",
+  "chatStream.quote.untitled": "未命名会话",
+  "chatStream.quote.loadFailed": "没读到这个会话的节点，只列出了当前会话",
+  "chatStream.quote.otherSession": "引用的目标不是当前会话",
+  "chatStream.quote.doneToast": "已放进「{name}」的输入框",
 
   // ── ChatPane: streaming spinner hint ──
   "chatStream.upstreamRetry": "上游连接异常，正在重试（{attempt}/{attempts}）",

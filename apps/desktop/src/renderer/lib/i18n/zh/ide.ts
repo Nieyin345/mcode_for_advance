@@ -289,6 +289,35 @@ export const zh = {
   "ide.term.commandLabel": "命令",
   "ide.term.commandPlaceholder": "例如:npm run dev",
 
+  /* ── 任务列表**页**(右栏一个标签:终端 + 子代理 + 工作流节点,一个地方看) ──
+   *  与「终端为一条线」的 terminal 段刻意分开:`ide.term.*` 里是**一条终端自己的**
+   *  按钮与提示,`ide.task.*` 是**这个跨来源页面**的措辞。将来列表里多一类来源
+   *  (自动化、插件),加的键也落在这里,不会去动 terminal 那一段。 */
+  "ide.task.pageTitle": "正在跑的",
+  "ide.task.pageDesc": "你开的终端、代理派出去的任务、工作流正在跑的那一步,都在这儿",
+  "ide.task.empty": "现在没有在跑的东西",
+  "ide.task.emptyHint": "开一个终端,或者派一个子代理,这里就会列出来",
+  "ide.task.refresh": "刷新",
+  "ide.task.listMore": "还有 {n} 个未展开(点上面那个「刷新」也不会多出来,它们只是没在这一屏)",
+  "ide.task.groupTerminals": "终端",
+  "ide.task.groupAgents": "子代理",
+  "ide.task.groupNodes": "工作流节点",
+  "ide.task.view": "查看",
+  "ide.task.back": "返回列表",
+  "ide.task.agentUntitled": "(未命名任务)",
+  "ide.task.originUser": "用户开的",
+  "ide.task.originSession": "「{name}」开的",
+  "ide.task.originSessionUnknown": "会话 {name} 开的",
+  "ide.task.originNode": "工作流节点",
+  "ide.task.detailTerminal": "终端输出",
+  "ide.task.readOnly": "只读查看(要打字请切到这条终端所在的面板)",
+  "ide.task.following": "正在跟随输出",
+  "ide.task.gone": "这条终端已经退出了",
+  "ide.task.transcriptWaiting": "这个子代理还没有输出",
+  "ide.task.transcriptNotStarted": "这一步还没开始跑",
+  "ide.task.transcriptRunning": "这一步正在跑,过程还没传到这一屏",
+  "ide.task.transcriptTrimmed": "过程已经不在内存里了(只保留最近这些)",
+
   /* ── turn flow panel (right-panel "turns" tab) ── */
   "ide.turns.title": "轮次流程",
   "ide.turns.summaryTurns": "{n} 轮",

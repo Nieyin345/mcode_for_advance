@@ -26,7 +26,7 @@
  * ⚠️ "存相对路径"只解决**挪库**,不解决**越界** —— 记录里那个相对路径仍可能被人为
  * 写坏(`../../…`),读写前一律用 {@link isInsideLibrary} 判一道。
  */
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { SettingRepo } from "@main/store/repositories.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
@@ -193,8 +193,77 @@ function isPrefix(s: string | undefined): boolean {
 /** 完整的 sha256 小写十六进制。认不出形状时是**拒**,所以这里宁可窄一点。 */
 const SHA256 = /^[0-9a-f]{64}$/;
 
+/**
+ * 一条文献的 PDF 对应的**全部可能 Markdown 落点** —— 不止 `mdPath` 指的那一份。
+ *
+ * ## 为什么需要它:有些产物不在 `mdPath` 上
+ *
+ * `md_path` 那一列**只有一个值**。一份 PDF 先被本地抽成一版(`markdown/<2>/<2>/<sha>.md`),
+ * 后来用户拿外部工具(OCR / MinerU)重转一份并「采纳」进来 —— 列的指向换了,而**前
+ * 一版仍然躺在盘上**。转录就是同一份文献的另一种形态,删的时候要一起收(用户的原话:
+ * 「这个链接是 md 和图床一起的,要删都一起删掉」)。
+ *
+ * 所以这里按 PDF 的 sha 把两处都算出来,由调用方去重、去重后再删:
+ *
+ *   1. 内容寻址那一份(以及它那一种的整包目录形态)—— 由 `pdfSha256` 算;
+ *   2. `mdPath` 自己指的落点。
+ *
+ * ⚠️ **同 sha 的 PDF 只有一份**(内容寻址),所以由 ① 算出来的路径天然是"这份 PDF 的
+ * 档案,不管哪条记录指着它"。第二条按记录来 —— 采纳的那一包是按**条目 id** 落地的,
+ * 别的记录不会有它。
+ *
+ * 返回值可能为空(既没有 sha 也没有 mdPath),调用方按空处理。
+ */
+export function markdownArtifactsOfItem(item: {
+  pdfSha256?: string;
+  mdPath?: string;
+}): Array<{ path: string; recursive: boolean }> {
+  const out: Array<{ path: string; recursive: boolean }> = [];
+  const sha = item.pdfSha256;
+  if (sha && SHA256.test(sha)) {
+    // ① 平的:内容寻址那一份 `.md`
+    out.push(flat(markdownPathForHash(sha)));
+    // ② 整包(遗留):同 sha 的目录 `<2>/<2>/<sha>/full.md`
+    out.push({ path: join(markdownDirForHash(sha), "full.md"), recursive: true });
+  }
+  if (item.mdPath) {
+    const artifact = markdownArtifact(fromLibraryRelative(item.mdPath));
+    out.push(artifact);
+  }
+  return out;
+}
+
 function flat(abs: string): { path: string; recursive: boolean } {
   return { path: abs, recursive: false };
+}
+
+/**
+ * 数一数一个目录里有多少张图片(**只用于回报,不做筛选逻辑**)。
+ *
+ * 两个调用方,要的是同一个数:
+ *   - `adoptMarkdown` 采纳完回报"收进来几张";
+ *   - 删除前的预览回报"这一包图床有多大" —— 用户点「彻底删除」时要知道那一个勾
+ *     带走的是几十张图还是空目录。
+ *
+ * 所以它住在这一层而不是各自一份:两处口径必须一致,否则"采纳时说 12 张、
+ * 删除预览说 13 张"这种事迟早发生(而它们说的其实是同一个目录)。
+ *
+ * 读不动就返回已数到的那些 —— 它只是回报,不该让调用方失败。
+ */
+export function countImageFiles(dir: string): number {
+  let n = 0;
+  const walk = (d: string): void => {
+    for (const entry of readdirSync(d, { withFileTypes: true })) {
+      if (entry.isDirectory()) walk(join(d, entry.name));
+      else if (/\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i.test(entry.name)) n += 1;
+    }
+  };
+  try {
+    walk(dir);
+  } catch {
+    /* 读不动就算了 —— 图片计数只是回报 */
+  }
+  return n;
 }
 
 /** 两级 hash 前缀的落点。`ext` 不带点。 */

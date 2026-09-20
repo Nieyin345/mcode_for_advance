@@ -30,13 +30,55 @@ import type { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
 
 /* ─────────────────────────── 表头 ─────────────────────────── */
 
-/** 段落标题 —— 与「项目」段的表头同款(小号、大写、字幕色)。 */
-export function SectionHeader({ title, action }: { title: string; action?: ReactNode }) {
+/** 段落标题 —— 与「项目」段的表头同款(小号、大写、字幕色)。
+ *
+ * ## 整段能不能折叠
+ *
+ * 给了 `onToggleCollapse` 才画左边那个箭头(`collapsed` 是它的朝向)。用户要的是
+ * 「每一级都能折叠」—— 大类是**最外面那一级**,它不能折的话,库多起来时整片区域
+ * 只能一直全开着,一层层往下滚。
+ *
+ * 箭头**位置**与行内那些完全一致(w-3 槽 + 10px chevron + `rotate-90`):段头和
+ * 它下面那些行要看起来是"同一套东西",箭头错开半格就很明显。没有 `onToggleCollapse`
+ * 时一个像素都不变(模版段不传) —— 它自己那一层没有"里面还有几段"这回事。
+ */
+export function SectionHeader({
+  title,
+  action,
+  collapsed,
+  onToggleCollapse,
+  expandTitle,
+  collapseTitle,
+}: {
+  title: string;
+  action?: ReactNode;
+  /** 折叠态。只在给了 `onToggleCollapse` 时有意义。 */
+  collapsed?: boolean;
+  /** 不给就不画箭头(模版段)。 */
+  onToggleCollapse?: () => void;
+  /** 箭头的悬停提示。由调用方传(这一层没有 i18n)。 */
+  expandTitle?: string;
+  collapseTitle?: string;
+}) {
   return (
     <div className="group mb-1 flex items-center justify-between px-1">
-      <h3 className="font-semibold uppercase tracking-wide text-content-subtle [font-size:var(--rp-fs-md)]">
-        {title}
-      </h3>
+      <div className="flex min-w-0 items-center">
+        {onToggleCollapse && (
+          <button
+            onClick={onToggleCollapse}
+            title={collapsed ? expandTitle : collapseTitle}
+            className="flex w-3 shrink-0 items-center justify-center text-content-subtle hover:text-content"
+          >
+            <IconChevronRight
+              size={10}
+              className={cn("transition-transform", !collapsed && "rotate-90")}
+            />
+          </button>
+        )}
+        <h3 className="truncate font-semibold uppercase tracking-wide text-content-subtle [font-size:var(--rp-fs-md)]">
+          {title}
+        </h3>
+      </div>
       {action}
     </div>
   );
@@ -81,6 +123,19 @@ export interface SectionTab<K extends string> {
  * 一排类目标签(文献 / 教材 / 笔记,或 PPT / LaTeX / Word / 代码 / 图片 / 回收站)。
  *
  * `flex-wrap` 不能省:那边三个塞得下,这边六个不一定 —— 窄侧栏下挤成一条会很难点。
+ *
+ * **这一层不带「新建」的「+」** —— 用户定下的入口分工是「**右键第 N 级 → 新建第 N+1
+ * 级**,外加**整片区域最下面留一个「+」新建第一级**」:
+ *
+ *   最下面那个「+」  → 新建第**一**级(大类)
+ *   右键大类标题     → 新建第**二**级(小类)
+ *   右键小类 tab     → 新建第**三**级(分类)
+ *   右键分类行       → 新建第**四**级(子分类)
+ *
+ * 早先这里挂过一个「+」当第二级的可见入口,被用户撤掉了:「三级三个加号,太不合理」。
+ * 现在每一级**只有右键一条路**,唯一的可见「+」在整片区域的末尾(见
+ * `LibrarySection.tsx` 尾部 `LibrarySections`)。所以这一层只管画标签与转发右键,
+ * 谁要"再加一个"由右键菜单负责。
  */
 export function SectionTabs<K extends string>({
   tabs,
@@ -91,7 +146,7 @@ export function SectionTabs<K extends string>({
   tabs: ReadonlyArray<SectionTab<K>>;
   active: K;
   onChange: (key: K) => void;
-  /** 单个 tab 的右键(小类的管理菜单:新建 / 重命名 / 删除)。不给就没有右键行为。 */
+  /** 单个 tab 的右键(小类的管理菜单:新建分类 / 重命名 / 删除)。不给就没有右键行为。 */
   onTabContextMenu?: (key: K, e: React.MouseEvent) => void;
 }) {
   return (
@@ -151,6 +206,7 @@ export function SidebarRow({
   expandDisabled = false,
   expandTitle,
   collapseTitle,
+  badge,
   onClick,
   onContextMenu,
   actions,
@@ -169,6 +225,15 @@ export function SidebarRow({
   /** 箭头的悬停提示。由调用方传(这一层没有 i18n)。 */
   expandTitle?: string;
   collapseTitle?: string;
+  /**
+   * 行尾的小标记(目前是「N 条关联」)。
+   *
+   * 与 `actions` 的区别是**它不做任何事**:只是一行字,所以不占悬停才出现的那一
+   * 条逻辑 —— 要一直看得见才有意义(用户扫一眼列表就知道哪几篇有关联)。
+   * 排在 `actions` **前面**:动作按钮是悬停才冒出来的,徽标要是排在它们后面,
+   * 鼠标一移上来数字就被挤走。
+   */
+  badge?: string;
   onClick?: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
   /** 悬停才出现的行内按钮。 */
@@ -183,6 +248,16 @@ export function SidebarRow({
         ? "text-accent hover:bg-surface-hover/60"
         : "text-content-muted hover:bg-surface-hover/60";
 
+  const badgeNode = badge ? (
+    <span
+      className="shrink-0 text-content-subtle tabular-nums [font-size:0.7857em]"
+      // 徽标不抢标题的宽度,但也别被截断 —— `max-w` 给了就没有"挤到看不见"这回事
+      title={badge}
+    >
+      {badge}
+    </span>
+  ) : null;
+
   // 叶子行:整行一个按钮
   if (!onToggleExpand && !actions) {
     return (
@@ -194,6 +269,7 @@ export function SidebarRow({
       >
         {icon}
         <span className="truncate">{label}</span>
+        {badgeNode}
       </button>
     );
   }
@@ -222,6 +298,7 @@ export function SidebarRow({
         {icon}
         <span className="truncate">{label}</span>
       </button>
+      {badgeNode}
       {actions && (
         <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">{actions}</span>
       )}

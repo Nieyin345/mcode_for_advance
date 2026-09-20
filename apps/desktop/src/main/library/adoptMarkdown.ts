@@ -72,14 +72,13 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  readdirSync,
   renameSync,
   rmSync,
   statSync,
 } from "node:fs";
 import { LibraryRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
-import { ensureLibraryDirs, libraryRoot, toLibraryRelative } from "./paths.js";
+import { ensureLibraryDirs, libraryRoot, toLibraryRelative, countImageFiles } from "./paths.js";
 
 export interface AdoptResult {
   ok: boolean;
@@ -182,7 +181,7 @@ function copyReferencedAssets(
       // 目录也搬(少数工具会把图放成 `figures/` 而引用写成 `figures/`)
       cpSync(abs, dest, { recursive: true });
       if (statSync(dest).isDirectory()) {
-        imageCount += countImages(dest);
+        imageCount += countImageFiles(dest);
       } else {
         imageCount += 1;
       }
@@ -191,23 +190,6 @@ function copyReferencedAssets(
     }
   }
   return { imageCount, missing };
-}
-
-/** 数一数目录里的图片文件(只用于回报,不做筛选逻辑)。 */
-function countImages(dir: string): number {
-  let n = 0;
-  const walk = (d: string): void => {
-    for (const entry of readdirSync(d, { withFileTypes: true })) {
-      if (entry.isDirectory()) walk(join(d, entry.name));
-      else if (/\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i.test(entry.name)) n += 1;
-    }
-  };
-  try {
-    walk(dir);
-  } catch {
-    /* 读不动就算了 —— 图片计数只是回报 */
-  }
-  return n;
 }
 
 export function adoptMarkdownFile(itemId: string, sourcePath: string): AdoptResult {

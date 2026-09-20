@@ -171,6 +171,17 @@ import { buildNodeInput } from "./nodeInputBuilders.js";
  */
 const RETRY_ANSWER_LABEL = "再试一次";
 
+/**
+ * 用户**在图上看中一步、点着它说"从这儿往下走"**时,那一问的标签。
+ *
+ * 它替代的是「用这一步的指令」那句选项文案。两者说的不是一件事:选项文案回答"这一步
+ * 怎么跑",而用户表达的是"从这一步往下" —— 而模型读到的应当是后者。
+ *
+ * 用它的地方只有一处:从**图的入口**往下跑,而入口开着「运行前先问我」(见 `init` 里
+ * `presetChoices` 那一段)。
+ */
+const RESTART_FROM_STEP_LABEL = "从这一步往下走";
+
 /** 调度器要问外面的六件事。真实实现在 `runner.ts`,冒烟脚本塞的是假的。 */
 export interface RunPorts {
   /** 拿一个节点类型的清单。没有 = 这个类型没装(别人分享来的图会走到这里)。 */
@@ -688,6 +699,18 @@ class Run {
   record!: FlowRecordEntry[];
   rounds!: Map<string, number>;
   presetChoices!: Map<string, BranchChoice>;
+  /**
+   * **用户在图上看中一步、点着它说"从这儿往下走"** 的那些节点。
+   *
+   * 与 `presetChoices` 是一对,但要分开记:那个只装"答案",而这里装的是"**这个答案是
+   * 怎么来的**"。`askOne` 解释答案时要据此换一句标签 —— 同一个 `ASK_RUN_CHOICE`,从
+   * 卡片上点出来是「用这一步的指令」,从图上挑起点是「从这一步往下走」,而模型读到的
+   * 话不该是前者。
+   *
+   * 一次运行里只会有一个(图的入口)。用 `Set` 而不是单个字段,是因为"入口"这个概念只
+   * 在 `init` 那一处算得出来,这里只想说"这几格是挑起点来的"。
+   */
+  restartFromStep!: Set<string>;
   /** 失败重试时用户写的那句话(见 `RunResume.note`)。不点名就没有。 */
   retryNote!: { nodeId: string; text: string } | undefined;
   awaiting!: Set<string>;
@@ -767,10 +790,26 @@ class Run {
     return [...seen];
   };
 
-  voidClosureOf = (ids: Iterable<string>): void => {
+  /**
+   * 把一组节点连同它们的**全部前进后代**从结局表里抹掉 —— 「这一步没做过」。
+   *
+   * 抹的不是一个节点而是一个闭包,理由见 {@link RunResume.rewind}:只抹起点的话,
+   * 下游会留着上一轮的 `skipped` / `unselected` —— 它们**是结局表里真实存在的一项**,
+   * 于是那些节点既不会被重新派发(已经有结局了),又拿不到新上游,图停在那儿而屏幕上
+   * 看不出任何原因。
+   *
+   * **返回抹掉的那一整片**(起点 + 后代)。调用方多半不看,但「抹掉的分支要重新问一遍」
+   * 那一段要看 —— 它需要知道哪些岔路口被卷进来了(见 `init` 里那一句)。
+   */
+  voidClosureOf = (ids: Iterable<string>): Set<string> => {
+    const voided = new Set<string>();
     for (const id of ids) {
-      for (const each of [id, ...this.forwardDescendantsOf(id)]) this.outcomes.delete(each);
+      for (const each of [id, ...this.forwardDescendantsOf(id)]) {
+        this.outcomes.delete(each);
+        voided.add(each);
+      }
     }
+    return voided;
   };
 
   rewindLoop = (fromId: string, marker: string): void => {
@@ -1096,7 +1135,25 @@ class Run {
       };
     }
     const comment = (pick.comment ?? "").trim();
-    const label = options.find((o) => o.id === pick.edgeId)?.label ?? "";
+    /**
+     * **"从这一步往下走"—— 用户在图上看中一步,点着它说从这儿开始。**
+     *
+     * 这一问本来会弹一张四选一的卡。但用户**刚刚用鼠标指过这一步**:那一问只是把同样
+     * 的问题再问一遍,而答"跳过"会让整张图一步都不跑。所以从图上点起点的时候,答案
+     * 是预置进 `presetChoices` 的(见 `init` 里那一段),这里只是认出来"这一问的答案
+     * 不是他刚点的,而是他挑起点那一下"。
+     *
+     * **标签换成他真正说的那句话**,不沿用选项自己的文案:「用这一步的指令」说的是
+     * "这一步怎么跑",而用户表达的是"从这一步往下" —— 那是两件事,而模型读到的应当
+     * 是后者。
+     *
+     * 他挑起点时要是顺手写了句话,那句话照样带上(`comment` 不动)—— 两个来源说的是
+     * 同一件事:"用户在这次执行之前拍过一个板"。
+     */
+    const label =
+      pick.edgeId === ASK_RUN_CHOICE && this.restartFromStep?.has(node.id) === true
+        ? RESTART_FROM_STEP_LABEL
+        : (options.find((o) => o.id === pick.edgeId)?.label ?? "");
 
     // **跳过**:这一步不跑,但不是因为它坏了。标 `unselected` 而不是 `skipped`,是
     // 刻意的 —— 两者对下游的传播完全不同:"没走这条路"会被下游的汇合点忽略掉,而
@@ -1467,10 +1524,15 @@ class Run {
    *
    * 顺序:在**预置触发器**之前。重跑集合里若含触发器那一步,抹掉之后下面会把它重新
    * 预置成成功(它自己不跑东西,但"它发生了"这件事仍然成立)。
+   *
+   * ⚠️ 抹掉的那一片要留着给下面用 —— **分支的清空在那之后**(`chosen` 是再往下才建的)。
+   * 在这里顺手清会**被下面那一句赋值整个盖掉**,而现象是"重跑的分支照样照着上一轮的
+   * 选择走",看不出是漏清还是清早了。
    */
-  if (resumed?.rewind !== undefined && resumed.rewind.length > 0) {
-    this.voidClosureOf(resumed.rewind);
-  }
+  const voidedByRewind =
+    resumed?.rewind !== undefined && resumed.rewind.length > 0
+      ? this.voidClosureOf(resumed.rewind)
+      : undefined;
   // **被触发的那个触发器:预置一个成功结局。** 它自己不跑东西,但它**发生了** —— 于是
   // 它的下游照常起跑(就绪判断看的是"上游成功了")。预置而不是"特判放行",是因为下游
   // 还有第二个问题要答案:"我上游交了什么" —— 那就是这次的事件载荷(见 `entry.summary`)。
@@ -1485,6 +1547,7 @@ class Run {
   ) {
     this.outcomes.set(entry.nodeId, { status: "success", summary: entry.summary });
   }
+
   this.inflight = new Map<string, Promise<void>>();
   /** 分支节点 → 用户选的那条出边(以及他临时写的那句话)。没跑到 / 没选的分支不在里面。
    *
@@ -1528,6 +1591,8 @@ class Run {
   this.presetChoices = new Map<string, BranchChoice>(
     resumed?.answer ? [[resumed.answer.nodeId, resumed.answer.choice]] : [],
   );
+  /** 「这几格的答案是**用户挑起点**来的」—— 见 {@link restartFromStep} 那段。 */
+  this.restartFromStep = new Set<string>();
   /** 失败重试时用户写的那句话。**不是一次性的** —— 被点名的那一步每跑一次都该看到它
    *  (它在环里的话会跑不止一次),所以不做"取走"那一套(对比 `presetChoices`)。 */
   this.retryNote = resumed?.note;
@@ -1629,6 +1694,97 @@ class Run {
    * 的默认态。两处各算一遍的话,会出现"界面上显示关着、实际按开着跑",而那不报错。
    */
   this.onLoop = nodesOnLoopOf(this.doc.nodes, this.doc.edges, this.isLoopGate);
+
+  /**
+   * **要被重跑的分支:重新变成"还没决定"。**
+   *
+   * ## 为什么非要清
+   *
+   * `chosen` 是从存档里带回来的,而它**同时**担着两件事:
+   *
+   *  - "这一步是从哪条路来的" —— 这个**不能丢**(所以 `lastPick` 另存一份,见下面);
+   *  - "这个岔路口的其它出路都作废"({@link edgeLive}:没选的那几条边上的节点会被标
+   *    `unselected`)—— 重跑的那一片恰恰**要**把它清掉。
+   *
+   * 不清的话:被抹掉的那些节点会重新被派发,**但它们的来路只剩当初选的那一条** ——
+   * 于是"从这一步重跑"变成"照着**上一轮**的选择再走一遍"。用户刚在 `note` 里写了
+   * 「上次哪里不对」,而图根本没给他重选的机会。屏幕上什么都看不出来。
+   *
+   * ## 为什么是"看这个分支在不在被抹的闭包里",不是"看它是不是起点"
+   *
+   * 用户点的那一步可能是**合并点下游**的一个节点,中间隔着好几个岔路口。只看起点的话
+   * 那些岔路口原样留着,沿路走下去还是那条老路。闭包才是"这一片要重来"的准确范围。
+   *
+   * ## 顺序
+   *
+   * 必须在 `this.chosen` **建好之后** —— 在 `init` 前半段清的话,会被这一句赋值整个
+   * 盖掉,而现象是"重跑的分支照样照着上一轮走",看不出是漏清还是清早了。
+   *
+   * `lastPick` **不动**:它只回答"从哪条路来的",而且回卷(`rewindLoop`)也不清它 ——
+   * 那是刻意分开的两份(见下面那段)。
+   */
+  for (const id of voidedByRewind ?? []) {
+    if (this.choosesEdge(id)) this.chosen.delete(id);
+  }
+
+  /* ── 图的入口节点:从它重跑时,那一问已经有答案了 ── */
+
+  /**
+   * 谁是这张图的**入口** —— 没有入边的那个节点。**并列时按文档取第一个**:入口本来就
+   * 只该有一个(界面上画出来的图自带一个主代理节点),真有并列时"图的前后顺序"是
+   * 唯一说得通的裁决,而随机挑一个会让同一张图每次重跑的起点不一样。
+   *
+   * 回边不算入边:环的出口在结构上指着环的入口,但那是"绕回来"不是"从那儿开始" ——
+   * 口径与调度器其它地方一致(见上面 `forward` 取的是不含回边的那一份)。
+   */
+  const entryCandidates = this.doc.nodes.filter(
+    (n) => !this.doc.edges.some((e) => e.to === n.id && !this.loopBackIds.has(e.id)),
+  );
+  const entryNode = entryCandidates[0];
+  /**
+   * **「从这一步往下走」而这一步是图的入口** —— 那一问的答案已经有了,不用再弹。
+   *
+   * ## 为什么这一处要特判,别的重跑起点不要
+   *
+   * 入口节点是 `mcode.main`(主代理),它是**对话节点**,而对话节点可以开着「运行前先
+   * 问我」;别的节点类型没有那个开关。于是在图上点着入口说"从这儿往下"时,用户会先
+   * 撞上一个四选一的弹窗 —— 他刚刚已经用鼠标指过这一步了,那一问只是把同样的问题
+   * 再问一遍。更要命的是答"跳过"会让**整张图一步都不跑**。
+   *
+   * ## 答案不是凭空造的
+   *
+   * 用现成的 `presetChoices` 那条路(与岔路口续跑共用):它就是"这个岔路口已经有答案
+   * 了"的机制,而且**只生效一次**(进 `askUser` 时取走)—— 回头绕上来第二次,该问的
+   * 照问,因为那时"他刚点过它"这件事已经不成立了。所以这里不去碰 `outcomes`:
+   * **入口这一步照跑**,只是不问他"跑不跑"。
+   *
+   * 标签取的是用户这次说的那句原话(见 `userChoiceOf`)—— 他点那一步就是他的那块板。
+   *
+   * ## ⚠️ 必须是**对话节点**才行 —— 这里真踩过一次
+   *
+   * `presetChoices` 是**岔路口**那套机制的入口,而 `askOne`(对话节点那一问)和
+   * `chooseOne`(分支那一问)**共用它**。把一个 `ASK_RUN_CHOICE` 塞给一个**分支**
+   * 节点,`chooseOne` 会拿它去 `options` 里找 —— 那是四选一的答案,而分支的选项是
+   * 它的出边,**两边一条都对不上**,那个分支直接判失败:"选的那条出路不在这个分支上"。
+   *
+   * 而 `entryCandidates` 只看"谁没有入边",**不看类型** —— 一张以分支开头的图(完全
+   * 合法)正好撞上。所以这里必须自己把类型判上,判据用 `isAskBeforeRun`(它查的就是
+   * `runner.kind === "conversation"` 加那个开关),与 `askOne` 自己那道**同一个函数**:
+   * 两处各写一遍,迟早出现"预置了但那一问根本不看"。
+   *
+   * ⚠️ 顺序:必须在 `outcomes` 建好、`rewind` 抹完之后判。抹掉的入口没有结局,才轮到
+   * "它要重新跑、而且不用再问"这一说。
+   */
+  if (
+    entryNode !== undefined &&
+    this.isAskBeforeRun(entryNode.id) &&
+    resumed?.rewind?.includes(entryNode.id) === true &&
+    !this.outcomes.has(entryNode.id)
+  ) {
+    this.presetChoices.set(entryNode.id, { edgeId: ASK_RUN_CHOICE });
+    this.restartFromStep.add(entryNode.id);
+  }
+
 
   /**
    * 这一步要不要读整条流程的记录。

@@ -22,7 +22,7 @@ import { mobileEventBus } from "@main/mobile/MobileEventBus.js";
 import { invalidateUsageStats } from "@main/lib/usageStats.js";
 import { log } from "@main/lib/logger.js";
 import { backflowPrompt, clearBackflow, peekBackflow } from "@main/lib/pendingBackflow.js";
-import { resolveWorkflowPrompt } from "@main/orchestration/prompt.js";
+import { resolveAgentPrompt, resolveWorkflowPrompt } from "@main/orchestration/prompt.js";
 // 只借类型 —— `import type` 整条会被编译掉,那条链(工具表 → repositories → db →
 // electron)不会因此被拉进任何无头 smoke。
 import type { WebToolGate } from "@main/mcp/webToolHost.js";
@@ -1101,6 +1101,20 @@ class RuntimeManager {
       log.info(`workflow active: ${session.workflowId}`);
     }
 
+    // 「这个对话是谁」—— 建会话时从代理档案抄下来的角色提示词,**每轮都带**。
+    //
+    // 每轮而不是只在第一轮,是这条路与**节点**那边最关键的一处不同:节点是一个步骤
+    // (指令只在入口发一次),而对话是一个**持续的身份** —— 只拼第一轮的话,它第二轮就
+    // 不知道自己是谁了,而用户看到的是"它怎么忘了"。
+    //
+    // 读的是**会话行上那份快照**,不是现读档案:改了档案不该影响已经开出去的对话
+    // (理由与代价写在 `main/lib/sessionAgentProfile.ts` 的文件头)。所以这里没有"档案
+    // 读不到"的分支 —— 内容早就在行里了。
+    const agentPrompt = resolveAgentPrompt(session.agentProfile);
+    if (agentPrompt) {
+      log.info(`agent profile active: ${session.agentProfile?.name ?? session.agentProfile?.id ?? "?"}`);
+    }
+
     // **「并回主对话」的内容在这里带进去**(见 `@contracts/nodeType` 的
     // `NODE_RETURN_PARAM_KEY` 与 `lib/pendingBackflow.ts`)。
     //
@@ -1124,6 +1138,10 @@ class RuntimeManager {
       // 就是一段字符串,不再自己查表(那套查表原先只有 claude-sdk 实现,Pi / Codex
       // 拿不到工作流)。
       workflowPrompt,
+      // 角色提示词(代理档案那份快照)。**与 prompt 分开传**:提供方那边是 append 到
+      // 系统提示词上的,不是拼在用户这句话前面 —— 拼在 prompt 里的话模型会把它当成
+      // "用户这一轮说的话",而它其实是"你是谁"。
+      agentPrompt,
       resumeProviderSessionId: rt.providerSessionId,
       apiConfig,
       skills: input.skills,

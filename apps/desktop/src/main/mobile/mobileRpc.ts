@@ -11,7 +11,9 @@
  * ## Security
  * The whitelist is explicit and minimal. Anything NOT in {@link HANDLERS}
  * returns a 404 — there is no fallthrough. Dangerous operations (file write/
- * delete/rename, terminal, browser, lsp, shell, dialog, clipboard, custom-
+ * delete/rename, terminal create/write/kill — only the read-only
+ * `terminal:list` is served, so the phone can *see* the terminals but never
+ * type into one, browser, lsp, shell, dialog, clipboard, custom-
  * model save/getToken, piModels save/getApiKey, endpoint presets, app
  * updates) are simply absent. The per-request {@link DeviceContext} is
  * available to handlers for future audit logging, but authorization is "any
@@ -87,6 +89,7 @@ import { CustomModelStore } from "@main/lib/secretStore.js";
 import { listAvailablePiModels } from "@main/ipc/piModels.js";
 import { listSkillsForProject, readSkillForProject } from "@main/ipc/skills.js";
 import { readFileGuarded, readBinaryGuarded, listDirGuarded, searchFilesGuarded } from "@main/ipc/files.js";
+import { TerminalManager } from "@main/terminal/TerminalManager.js";
 import { generateSessionTitle } from "@main/ipc/titleGen.js";
 // 工作流库的清单。`main/orchestration/` 与 `main/workflows/`(数据根下那套 Python
 // 研究脚本)是两件事,别被名字带偏 —— 见 `main/ipc/orchestration.ts` 文件头。
@@ -236,6 +239,17 @@ const HANDLERS: Record<string, RpcHandler> = {
     const input = FileSearchSchema.parse(raw);
     return searchFilesGuarded(input);
   },
+
+  /** 终端列表 —— **只读的一条**,手机端拿它显示"这台电脑上开着哪些终端、谁开的"。
+   *
+   *  ⚠️ 这里刻意**只开 list**:`terminal:create` / `write` / `kill` 仍然不在白名单里。
+   *  终端列表在手机上是个只读的观察窗(用户想看"我的代理在跑什么"),而在手机上
+   *  往某台电脑的 PTY 里打字是另一件事 —— 那需要键盘/尺寸/焦点一整套,不是这一条
+   *  该顺带给的。写操作留在桌面上、由用户本人操作。
+   *
+   *  与桌面端 `IPC.TERMINAL_LIST` 走同一个 `TerminalManager.list()`,所以两边看到的
+   *  是同一份事实(不是两条会漂移的实现)。 */
+  "terminal:list": () => ({ terminals: TerminalManager.list() }),
 
   // ── Settings (app-level prefs shared with the desktop DB) ──
   "setting:get": (raw) => {

@@ -1,27 +1,40 @@
 /**
- * 右栏的**运行看板** —— 上方一张小流程图,下方一列"分身"。
+ * 右栏的**运行看板** —— 上面一张小流程图,下面一列**这一步的卡**。
  *
  * ## 它解决的是哪件事
  *
- * 图跑起来之后,对话流里只有**收场了的**那些卡(一步跑完才画一张)。在那之前用户看不到
- * 任何东西:不知道现在跑到第几步、同时有几个在跑、卡在哪一格等人,也不知道哪一步的产出
- * 正在喂给谁。这一页把这三件事摆出来:
+ * 图跑起来之后,对话流里只有**已经收场的**那些卡(一步跑完才画一张)。在那之前用户看不到
+ * 任何信息:不知道当前执行到第几步、同时有几个在跑、卡在哪一格等人,也不知道哪一步的产出
+ * 正在交给谁。这一页把这三件事列出来:
  *
- *  1. **小流程图** —— 哪一格在转、哪几格成了、哪一格炸了、数据从哪儿流到哪儿;
- *  2. **分身列表** —— 正在跑的排在最上(带进度和走时),跑完的在下面(整组可折叠);
- *  3. **要你接管的那一格** —— 失败或被取消时顶上顶一条,点一下直接跳到那一步。
+ *  1. **小流程图** —— 哪一步在执行、哪几步已完成、哪一步失败、数据从哪儿流向哪儿;
+ *  2. **一步一张卡** —— 执行中的排最上面,已收场的在下面;点开**原地**展开它说过什么、
+ *     调了什么工具,想跟它说话就在那里说;
+ *  3. **需要用户接管的那一格** —— 失败或被取消时顶部展示一条,点击直接展开那一步。
+ *
+ * ## 一条数据:现场 + 库里,按节点 id **合成一张卡**(2026-09-20 重做)
+ *
+ * 上一版是**两栏**:上面"这次运行的现场"(`workflow.node.*` 事件折出来的,跟着进程存活),
+ * 下面"这些步骤留着会话"(`session.listNodes` 读回来的,已落盘)。两栏都列了同一批
+ * 步骤 —— 而且 `nodeSessionOf` **复用**同一个 `(对话, 节点)` 会话,所以现场那一格和
+ * 库里那一行往往指**同一段对话**:用户在上面点进去,下面那行还写着同一个名字。
+ *
+ * 现在按 `nodeId` 合成**一张卡**:现场那份有就填现场那几项(阶段、进度、耗时),没有就
+ * 退回库里那几项(会话 id、上次更新时间)。两条路的**内容**不同,卡片都放得下 ——
+ * 见 `WorkflowNodeCard` 文件头那张表。
  *
  * ## 数据只有一份:主进程发来的事件
  *
- * 全部来自 `workflowLive`(见那个文件的头注)—— 它折的是 `workflow.node.*` 那几条
- * 事件。这里**不重新读库**:事件是"此刻"的真相,而库里那份是"上次存下来"的。两者混用
- * 会出现"看板上说在跑、其实早停了"。
+ * 现场那部分全部来自 `workflowLive`(见那个文件的头注)—— 它折的是 `workflow.node.*`
+ * 那几条事件。这里**不重新读库**:事件是"此刻"的真相,而库里那份是"上次存下来"的。
+ * 两者混用会出现"看板上说在执行、其实早已停止"。库里那份只在**现场完全没有这一步**时
+ * 才补位(重启之后)。
  *
  * ## 图长什么样是另读一次
  *
  * 形状(有哪几步、怎么连的)在 `workflow.get` 里,它不跟事件走 —— 用户在设置里改了图,
- * 这里下次打开才看得到新形状。这是**刻意**的:跑起来的那次运行按的是**当时**那份图,
- * 中途把形状换掉反而会让看板和实际跑的步骤对不上。
+ * 这里下次打开才看得到新形状。这是**刻意**的:那次运行按的是**当时**那份图,
+ * 中途换掉形状反而会让看板和实际执行的步骤对不上。
  *
  * ## 手机端要包住
  *
@@ -29,91 +42,93 @@
  * (见 `lib/webApi.ts` 的文件头),所以那个调用包在 try/catch 里。这里少一张图,
  * 但列表照常显示。
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Menu } from "@base-ui/react/menu";
 import type { WorkflowDoc } from "@contracts/workflow";
-import type { Session } from "@contracts/session";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
-import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
+import { useI18n } from "@renderer/lib/i18n/index.js";
+import { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
+import { MENU_ITEM_CLASS, SidebarMenu } from "@renderer/components/sidebar/Sidebar.js";
 import { useWorkflowLive, dismissSettled, type LiveNode, type LiveRun } from "@renderer/lib/workflowLive.js";
-import { useQueuedNode } from "@renderer/lib/workflowQueued.js";
-import { Markdown } from "@renderer/components/chat/Markdown.js";
-import { MessageBlocks } from "@renderer/components/chat/MessageBlocks.js";
-import { mapTranscriptBlock } from "@renderer/components/chat/transcriptBlocks.js";
-import { RetryNodeDialog } from "@renderer/components/chat/RetryNodeDialog.js";
-import { Button } from "@renderer/components/ui/button.js";
+import { Divider } from "@renderer/components/layout/Divider.js";
 import {
-  WorkflowFlowLegend,
+  FLOW_DIVIDER_CLASS,
+  FLOW_H_MAX,
+  FLOW_H_MIN,
+  FLOW_MAX_H,
   WorkflowFlowMini,
+  type FlowContextTarget,
 } from "@renderer/components/chat/WorkflowFlowMini.js";
 import {
+  WorkflowNodeCard,
+  phaseOf,
+  type NodeView,
+} from "@renderer/components/chat/WorkflowNodeCard.js";
+import {
   IconAlertTriangle,
-  IconArrowLeft,
-  IconChevronDown,
-  IconChevronRight,
-  IconCircleCheck,
-  IconCircleOff,
-  IconMessage,
-  IconPlayerStop,
-  IconRefresh,
+  IconPlayerPlay,
   IconRobotFace,
   IconSparkles,
   IconTrash,
-  SpinnerIcon,
 } from "@renderer/lib/icons.js";
 
-/** 一步在列表里的样子。**四个阶段 + 收场后的五种结论**,都收在这里 —— 每种给一个
- *  图标、一个颜色、一句词,漏了会在界面上显示成空白(所以是 `Record` 而不是几个 if)。 */
-const PHASE_META: Record<keyof typeof PHASE_LABEL, { cls: string; spin?: boolean; icon: "check" | "warn" | "off" }> = {
-  queued: { cls: "text-content-subtle", icon: "off" },
-  running: { cls: "text-accent", spin: true, icon: "off" },
-  awaiting: { cls: "text-warning", icon: "warn" },
-  success: { cls: "text-accent", icon: "check" },
-  failed: { cls: "text-danger", icon: "warn" },
-  skipped: { cls: "text-content-subtle", icon: "off" },
-  unselected: { cls: "text-content-subtle", icon: "off" },
-  cancelled: { cls: "text-content-muted", icon: "off" },
-};
+/** 图那一块的高度存在哪个 setting 键下。和右栏宽度用同一个做法:面板自己的一个
+ *  小偏好,不值得单开一个设置页。 */
+const FLOW_HEIGHT_SETTING_KEY = "ui.workflowBoard.flowHeight";
 
-const PHASE_LABEL: Record<string, MessageId> = {
-  queued: "chatStream.workflowStep.queued",
-  running: "chatStream.ledgerRunning",
-  awaiting: "chatStream.workflowBoard.awaiting",
-  success: "chatStream.workflowStep.success",
-  failed: "chatStream.workflowStep.failed",
-  skipped: "chatStream.workflowStep.skipped",
-  unselected: "chatStream.workflowStep.unselected",
-  cancelled: "chatStream.workflowStep.cancelled",
-};
-
-/** 这一格此刻算哪一档。**`awaiting` 压过一切** —— 在等人的那一格不点一下整张图就停着。 */
-function phaseOf(node: LiveNode): keyof typeof PHASE_LABEL {
-  if (node.awaiting) return "awaiting";
-  if (node.phase === "settled") return node.status ?? "success";
-  return node.phase;
+/**
+ * 现场那一格 → 卡片要的形状。
+ *
+ * 标题取 `LiveNode.title`(事件带过来的 —— 图上改了名它跟着变),没有则退回节点类型 id。
+ */
+function viewOfLive(node: LiveNode): NodeView {
+  return {
+    nodeId: node.nodeId,
+    runId: node.runId,
+    live: true,
+    title: node.title || node.nodeType,
+    nodeType: node.nodeType,
+    phase: phaseOf(node),
+    nodeSessionId: node.nodeSessionId,
+    nodeTranscript: node.nodeTranscript,
+    summary: node.summary,
+    error: node.error,
+    startedAt: node.startedAt,
+    endedAt: node.endedAt,
+    percent: node.percent,
+    awaiting: node.awaiting,
+    options: node.options,
+    attempt: node.attempt,
+    ask: node.ask,
+    chosen: node.chosen,
+    comment: node.comment,
+  };
 }
 
 /**
- * 库里那一行 → 详情面板吃得下的形状。
+ * 库里那一行 → 卡片要的形状。**它没在执行**,所以阶段是 `idle`、没有产出、没有耗时。
+ * 这几项**如实留空**,不编造:编一个"成功"出来,用户会以为那次运行成功了。
  *
- * 现场那一份(`LiveNode`)是**跑的时候**攒的:阶段、产出、耗时、在等谁。库里那一份只有
- * 会话自己记得的几样 —— **它没在跑**,所以阶段是 `settled`、没有产出、没有耗时。
- * 这几样**如实留空**,不编:编一个"成功"出来,用户会以为自己那次跑成了。
- *
- * 标题取图上那一步的名字(`node_id` 去图里查,查不到退回会话行自己那个标题 —— 图改过
+ * 标题取图上那一步的名字(`nodeId` 去图里查,查不到退回会话行自己的标题 —— 图改过名
  * 或者那一步后来被删了,就只剩它了)。`node_type` 会话行上**没有**这一列:节点类型是
- * 图上的属性,不是会话的属性,所以这里也不编一个。
+ * 图上的属性,不是会话的属性,所以这里也不编造。
  */
-function storedNode(s: Session, doc: WorkflowDoc | null): LiveNode {
+function viewOfStored(
+  s: { id: string; nodeId: string | null; title: string; updatedAt: number },
+  doc: WorkflowDoc | null,
+): NodeView {
   const node = s.nodeId ? doc?.nodes.find((n) => n.id === s.nodeId) : undefined;
   return {
     nodeId: s.nodeId ?? s.id,
-    runId: "",
+    live: false,
+    title: node?.title || s.title,
     nodeType: node?.type ?? "",
-    title: node?.title ?? s.title,
-    phase: "settled",
+    phase: "idle",
     nodeSessionId: s.id,
+    storedAt: s.updatedAt,
   };
 }
 
@@ -124,18 +139,69 @@ export function WorkflowBoardPanel() {
   const live = useWorkflowLive();
   /** 图长什么样。读不到就只画下半部分(提示词型工作流没有节点)。 */
   const [doc, setDoc] = useState<WorkflowDoc | null>(null);
-  /** 点开了哪一格 —— 列表行和流程图上的方块都写它。 */
-  const [picked, setPicked] = useState<string | null>(null);
-  /** 库里**还留着会话**的那几步(见 `StoredSteps`)。
+  /** 展开了哪一张卡 —— **一次只开一张**(手风琴):展开的卡会把列表推下去,同时展开几张
+   *  的话"我刚点的是哪张"又要靠找。 */
+  const [openId, setOpenId] = useState<string | null>(null);
+  /** 库里**还留着会话**的那几步(见 `viewOfStored`)。
    *
-   *  看板上半部分的现场跟着进程活,重启即空 —— 而节点会话是落库的。这一份就是那个
+   *  看板上半部分的现场跟着进程存活,重启即空 —— 而节点会话是落库的。这一份就是那个
    *  落差:没有它,"跟这一步接着说"只在没关过软件的期间成立。 */
-  const [stored, setStored] = useState<Session[]>([]);
+  const [stored, setStored] = useState<
+    Array<{ id: string; nodeId: string | null; title: string; updatedAt: number }>
+  >([]);
+  /** 图上那一块拖成多高了。**存在设置里**,下次打开还是上次拖到的高度。 */
+  const [flowH, setFlowH] = useState(FLOW_MAX_H);
+  /** 右键点了哪一格(以及点在屏幕的哪一点)。`null` = 菜单关着。 */
+  const [ctxNode, setCtxNode] = useState<FlowContextTarget | null>(null);
+
+  // 读回上次拖到的高度。读不到就用默认值 —— 第一次打开、或者这条设置还没写过。
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await api.setting.get({ key: FLOW_HEIGHT_SETTING_KEY });
+        const n = res.value === null ? NaN : Number(res.value);
+        if (!cancelled && Number.isFinite(n)) {
+          setFlowH(Math.min(FLOW_H_MAX, Math.max(FLOW_H_MIN, Math.round(n))));
+        }
+      } catch {
+        // 手机端 web shim 没有这个命名空间 —— 用默认高度即可,不必打扰用户。
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /** 拖分隔条:夹在上下限之间,**立刻**写进设置。
+   *
+   *  为什么每次都写而不是松手再写:`Divider` 报的是增量,拖动结束没有回调。每次写一条
+   *  设置的开销很低(主进程里就是一个 upsert),而漏写最后一次的话用户拉到的位置下次就
+   *  丢了 —— 那比多写几十次严重得多。 */
+  const resizeFlow = (delta: number): void => {
+    setFlowH((prev) => {
+      const next = Math.min(FLOW_H_MAX, Math.max(FLOW_H_MIN, prev + delta));
+      if (next !== prev) {
+        void api.setting
+          .set({ key: FLOW_HEIGHT_SETTING_KEY, value: String(next) })
+          .catch(() => {});
+      }
+      return next;
+    });
+  };
+
+  /** 双击分隔条 → 还原默认高度(同时把设置里的值也改回去)。 */
+  const resetFlowH = (): void => {
+    setFlowH(FLOW_MAX_H);
+    void api.setting
+      .set({ key: FLOW_HEIGHT_SETTING_KEY, value: String(FLOW_MAX_H) })
+      .catch(() => {});
+  };
 
   useEffect(() => {
     let cancelled = false;
     setDoc(null);
-    setPicked(null);
+    setOpenId(null);
     if (!workflowId) return;
     void (async () => {
       try {
@@ -152,7 +218,7 @@ export function WorkflowBoardPanel() {
   }, [workflowId]);
 
   /** 这个对话的现场。取**最近一次开始**的那一次 —— 一个对话同时只跑一张图
-   *  (`graphRunIntent` 保证了),留"最近"是为了跑完之后还看得见刚才那张图的收场状态。 */
+   *  (`graphRunIntent` 保证了),留"最近"是为了执行完之后还看得见刚才那张图的收场状态。 */
   const run: LiveRun | null = useMemo(() => {
     if (!sessionId) return null;
     let best: LiveRun | null = null;
@@ -169,12 +235,10 @@ export function WorkflowBoardPanel() {
    * 库里还留着会话的那几步。**按对话读,不跟图走** —— 换过图之后老那几步的会话也还在,
    * 而它们恰恰是"我以前跟这一步聊过"的那一栏;按当前图过滤会把它们凭空抹掉。
    *
-   * ⚠️ **`session.listNodes` 是共用组件里的新 RPC,手机端的 web shim 上必须有对应项**
-   * (见 `lib/webApi.ts` 的文件头)。那里补了;但这里仍然包 try/catch —— 少一块列表,
-   * 不该让整棵 React 树卸载。
+   * ⚠️ 这里包 try/catch —— 少一块列表,不该让整棵 React 树卸载(手机端尤其)。
    *
-   * 依赖里带上 `run`:一次运行收场之后新建的节点会话要立刻出现在这一栏,否则用户得
-   * 关掉右栏再打开才看得到他刚跑过的那一步。
+   * 依赖里带上 `run`:一次运行收场之后新建的节点会话要立刻出现,否则用户得关掉右栏
+   * 再打开才看得到刚执行过的那一步。
    */
   useEffect(() => {
     let cancelled = false;
@@ -195,16 +259,38 @@ export function WorkflowBoardPanel() {
     };
   }, [sessionId, run]);
 
-
-  /** 排好序的那些行:**没跑完的排最上**,收场的按派发顺序在下面。稳定排序 —— 同一档
-   *  里保持派发顺序,不然每来一条事件列表就跳一下。 */
-  const rows = useMemo(() => {
+  /**
+   * 现场的那些格子,**没结束的排最上面**。稳定排序 —— 同一档里保持派发顺序,否则每来
+   * 一条事件列表就会跳动。
+   */
+  const liveRows = useMemo(() => {
     if (!run) return [];
     return run.order
       .map((id) => run.nodes[id])
       .filter((n): n is LiveNode => n !== undefined)
       .sort((a, b) => (a.phase === "settled" ? 1 : 0) - (b.phase === "settled" ? 1 : 0));
   }, [run]);
+
+  /**
+   * **合成一张卡:** 先按现场那一趟的顺序排列,库里那些**现场没有的**接在后面。
+   *
+   * 库里那些为什么要按 `nodeId` 去重而不是按会话 id:现场格子可能还没有 `nodeSessionId`
+   * (排队中 / 正在执行但还没落会话),那时按会话 id 去不掉重,同一格会出现两张。节点 id 才
+   * 是"这一步"的身份 —— 会话 id 是"它这次执行在哪个会话里"。
+   */
+  const cards = useMemo<NodeView[]>(() => {
+    const out = liveRows.map(viewOfLive);
+    const seen = new Set(out.map((n) => n.nodeId));
+    for (const s of stored) {
+      const view = viewOfStored(s, doc);
+      if (seen.has(view.nodeId)) continue;
+      seen.add(view.nodeId);
+      out.push(view);
+    }
+    return out;
+  }, [liveRows, stored, doc]);
+
+  const doneCards = cards.filter((c) => c.live && c.phase !== "running" && c.phase !== "queued" && c.phase !== "awaiting");
 
   if (!sessionId) {
     return (
@@ -213,37 +299,6 @@ export function WorkflowBoardPanel() {
       </p>
     );
   }
-
-  // 详情:点了某一格就进它。**图还在上面** —— 从详情里也看得到自己在整张图的哪儿。
-  const pickedNode = picked ? run?.nodes[picked] : undefined;
-  if (picked && pickedNode) {
-    return (
-      <div className="flex h-full flex-col">
-        <RenderMini doc={doc} run={run} picked={picked} onPick={setPicked} />
-        <NodeDetail sessionId={sessionId} node={pickedNode} onBack={() => setPicked(null)} />
-      </div>
-    );
-  }
-  // 库里那一行(现场没有它的格子 —— 重启过,或者这次运行早被清掉了)。详情面板吃的是
-  // 同一个组件:它有 `nodeSessionId`,过程、输入框、"关掉它"那几样照样成立。
-  const storedPicked = picked ? stored.find((s) => s.id === picked) : undefined;
-  if (storedPicked) {
-    return (
-      <div className="flex h-full flex-col">
-        {/* 图上的高亮**按节点 id 走**,不是按会话 id —— 传 `null` 的话点进来的那一步
-            在图上是灰的,看起来像"没选中",而用户明明刚点了它。 */}
-        <RenderMini doc={doc} run={run} picked={storedPicked.nodeId} onPick={setPicked} />
-        <NodeDetail
-          sessionId={sessionId}
-          node={storedNode(storedPicked, doc)}
-          onBack={() => setPicked(null)}
-        />
-      </div>
-    );
-  }
-
-  const runningRows = rows.filter((n) => n.phase !== "settled");
-  const doneRows = rows.filter((n) => n.phase === "settled");
 
   return (
     <div className="flex h-full flex-col">
@@ -255,22 +310,31 @@ export function WorkflowBoardPanel() {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <RenderMini doc={doc} run={run} picked={null} onPick={setPicked} />
+        <RenderMini
+          doc={doc}
+          run={run}
+          picked={openId}
+          onPick={setOpenId}
+          height={flowH}
+          onResize={resizeFlow}
+          onResetHeight={resetFlowH}
+          onContextNode={setCtxNode}
+        />
 
-        {/* 顶上那条「要你接管」。**比列表更醒目** —— 图停着的时候,列表里那一行只是
-            "失败"两个字,而这条说得清是哪一步、点哪儿。 */}
+        {/* 顶上那条「需要用户接管」。**比列表更醒目** —— 图停住的时候,列表里那一行
+            只有"失败"两个字,而这条说得清是哪一步、点哪里。 */}
         {halted && (
           <HaltedBanner
             reason={halted.reason}
             title={run?.nodes[halted.nodeId]?.title || halted.nodeId}
-            onOpen={() => setPicked(halted.nodeId)}
+            onOpen={() => setOpenId(halted.nodeId)}
           />
         )}
 
-        {/* ⚠️ `stored.length === 0` 那一半不能少。**现场空 ≠ 没跑过** —— 重启之后
-            现场本来就是空的,而下面那一栏正列着"你跑过的那几步还留着会话"。这时
-            还摆"这张图还没跑起来",是当着用户的面说一句他知道不对的话。 */}
-        {rows.length === 0 && stored.length === 0 ? (
+        {/* ⚠️ 空态判据是 `cards.length === 0`,**不是 `liveRows.length === 0`**。
+            重启之后现场本来就是空的,而库里还列着"你执行过的那几步" —— 那时还显示"这张图
+            还没跑起来",是当着用户的面说一句他知道不对的话。 */}
+        {cards.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-2 px-6 py-10 text-center">
             <IconRobotFace size={22} className="text-content-subtle" />
             <p className="text-xs font-medium text-content-muted">
@@ -282,254 +346,193 @@ export function WorkflowBoardPanel() {
           </div>
         ) : (
           <div className="p-1.5">
-            {runningRows.length > 0 && (
-              <Section
-                title={t("chatStream.workflowBoard.runningSection")}
-                count={runningRows.length}
+            <ul className="space-y-1">
+              {cards.map((c) => (
+                <WorkflowNodeCard
+                  key={c.nodeId}
+                  node={c}
+                  sessionId={sessionId}
+                  expanded={openId === c.nodeId}
+                  onToggle={() => setOpenId(openId === c.nodeId ? null : c.nodeId)}
+                  onStopGraph={() => void api.claude.interrupt({ sessionId })}
+                />
+              ))}
+            </ul>
+            {/* 「已完成的可以收起来,也可以直接清理掉」 —— 清掉的只是**看板上的现场**
+                (`dismissSettled`):那些步骤的卡片、过程、用量一个字节都不动,往下滚
+                对话仍然看得到每一步做过什么。 */}
+            {doneCards.length > 0 && run && (
+              <button
+                type="button"
+                onClick={() => dismissSettled(run.runId)}
+                className="mt-1 flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
               >
-                {runningRows.map((n) => (
-                  <NodeRow key={n.nodeId} node={n} onOpen={() => setPicked(n.nodeId)} />
-                ))}
-              </Section>
-            )}
-            {doneRows.length > 0 && (
-              <DoneSection nodes={doneRows} onOpen={(id) => setPicked(id)} />
+                <IconTrash size={11} />
+                {t("chatStream.workflowBoard.clearDone")}
+              </button>
             )}
           </div>
         )}
-
-        {/* **库里还留着的那些步骤。** 上面那一列是"这次运行的现场"(跟着进程活,重启
-            即空);这一列是"库里真有的会话"(落盘,重启也在)。两列都对,只是回答的
-            不是同一个问题 —— 上面那列说的是"此刻跑到哪儿了",这一列说的是"我还能
-            回去跟谁说上一句"。
-
-            现场里已经有的格子不重复列(`rows` 里那些点进去是同一段对话),所以正常
-            跑着的时候这一块几乎是空的,只有重启之后才显出它来。 */}
-        <StoredSteps
-          sessions={stored}
-          doc={doc}
-          skip={new Set(rows.map((n) => n.nodeSessionId).filter((x): x is string => !!x))}
-          onOpen={setPicked}
-        />
       </div>
+
+      <FlowNodeMenu
+        target={ctxNode}
+        run={run}
+        sessionId={sessionId}
+        onClose={() => setCtxNode(null)}
+        onOpenCard={(nodeId) => setOpenId(nodeId)}
+      />
     </div>
   );
 }
 
-/** 「跟某一步说」那一栏 —— 库里的会话,不是这次运行的现场。
+/**
+ * 图上右键某一格的菜单。
  *
- *  它存在只为一件事:**重启之后还回得去**。看板的上半部分是事件折出来的,进程一关就
- *  没了;而节点会话是落库的、认得回 (对话, 节点) 那个键(见 `Session.nodeId`)。
- *  没有这一栏的话,"常驻"这个词只在没关过软件的期间成立 —— 而那正是用户要的
- *  "三方不断迭代"最需要它的时候(今天聊了一半,明天接着聊)。
+ * ## 只有一项:「从这一步开始跑」
+ *
+ * 走的是**已有的那条后端路径** `workflow.retry`。契约里写明了它有两种入口 —— 失败卡片
+ * 上的「再试一次」、以及「图上挑一步说『从这儿往下走』」 —— 判据与执行路径完全一样,
+ * 区别只是带不带那句 note(见 `WorkflowRetrySchema` 的注释)。所以这里不需要新契约、
+ * 也不需要碰主进程。
+ *
+ * ## 什么时候置灰
+ *
+ * 只有**这次运行还在现场**的节点才带 `runId`,而 `workflow.retry` 需要它。重启之后从库
+ * 里读回来的那些卡片没有 `runId`(`runs.history` 只给轻量摘要,不含每一步的产出)——
+ * 那时菜单项置灰并说明原因,而不是点下去什么都不发生。
  */
-function StoredSteps({
-  sessions,
-  doc,
-  skip,
-  onOpen,
+function FlowNodeMenu({
+  target,
+  run,
+  sessionId,
+  onClose,
+  onOpenCard,
 }: {
-  sessions: Session[];
-  doc: WorkflowDoc | null;
-  /** 现场那一列已经有的(按会话 id)—— 同一段对话不摆两遍。 */
-  skip: Set<string>;
-  onOpen: (id: string) => void;
+  target: FlowContextTarget | null;
+  run: LiveRun | null;
+  sessionId: string | null;
+  onClose: () => void;
+  onOpenCard: (nodeId: string) => void;
 }) {
   const { t } = useI18n();
-  const list = sessions.filter((s) => !skip.has(s.id));
-  if (list.length === 0) return null;
+  const anchor = useCursorAnchor(target);
+  const node = target && run ? run.nodes[target.nodeId] : undefined;
+  const runId = node?.runId;
+  const canRun = !!target && !!sessionId && !!runId;
+
+  const startFrom = (): void => {
+    if (!target || !sessionId || !runId) return;
+    // 先展开那一张卡:整张图跑起来之后,用户要看的正是这一步 —— 不展开的话他得自己
+    // 在列表里再找一遍。
+    onOpenCard(target.nodeId);
+    onClose();
+    void (async () => {
+      try {
+        // `note` 不给:契约里写明了主进程只在"这一步上次真的失败过"时才用它,而
+        // 从图上挑起点时用户并没有写过(见 `WorkflowRetrySchema`)。
+        const res = await api.workflow.retry({ sessionId, runId, nodeId: target.nodeId });
+        if (!res.ok) {
+          // `ok: false` **不是异常**(那次运行已经收尾 / 正有运行在跑)—— 但不说话的话
+          // 用户点了没有反应,只能以为它坏了。给一句能读懂的提示。
+          useToastStore.getState().push({
+            kind: "warning",
+            title: t("chatStream.workflowBoard.runFromHereFailed"),
+            sessionId,
+          });
+        }
+      } catch (err) {
+        useToastStore.getState().push({
+          kind: "error",
+          title: t("chatStream.workflowBoard.runFromHereFailed"),
+          body: err instanceof Error ? err.message : String(err),
+          sessionId,
+        });
+      }
+    })();
+  };
+
   return (
-    <div className="border-t border-edge p-1.5">
-      <div className="flex items-center gap-1 px-2 pb-1 pt-1">
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-content-subtle">
-          {t("chatStream.workflowBoard.stepsTitle")}
+    <SidebarMenu open={target !== null} anchor={anchor} onClose={onClose} minWidth={180}>
+      <Menu.Item
+        disabled={!canRun}
+        onClick={startFrom}
+        className={cn(MENU_ITEM_CLASS, !canRun && "cursor-not-allowed opacity-40")}
+      >
+        <IconPlayerPlay size={12} className="shrink-0" />
+        <span className="min-w-0 flex-1 truncate" title={canRun ? undefined : t("chatStream.workflowBoard.runFromHereStale")}>
+          {t("chatStream.workflowBoard.runFromHere")}
         </span>
-        <span className="tabular-nums text-[10px] text-content-subtle">{list.length}</span>
-      </div>
-      <p className="px-2 pb-1 text-[10px] leading-relaxed text-content-subtle">
-        {t("chatStream.workflowBoard.stepsHint")}
-      </p>
-      <ul className="space-y-0.5">
-        {list.map((s) => {
-          const node = s.nodeId ? doc?.nodes.find((n) => n.id === s.nodeId) : undefined;
-          return (
-            <li key={s.id}>
-              <button
-                type="button"
-                onClick={() => onOpen(s.id)}
-                title={t("chatStream.workflowBoard.stepsOpen")}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-hover"
-              >
-                <IconMessage size={12} className="shrink-0 text-content-subtle" />
-                <span className="min-w-0 flex-1 truncate text-xs text-content">
-                  {node?.title ?? s.title}
-                </span>
-                {/* 图上的格子没了(改了图 / 换了图)时留一个记号 —— 否则用户会以为
-                    这个名字是他自己起的。 */}
-                {s.nodeId && !node && (
-                  <span className="shrink-0 text-[10px] text-content-subtle">{s.nodeId}</span>
-                )}
-              </button>
-            </li>
-          );
-        })}
-      </ul>
-    </div>
+      </Menu.Item>
+    </SidebarMenu>
   );
 }
 
-/** 上半那张图 + 图例。没有节点(提示词型工作流 / 读不到)就整块不画。 */
+/**
+ * 上半那张图 + 它与卡片列表之间那条**可上下拖的横分隔条**。没有节点(提示词型工作流 /
+ * 读不到)就整块不画。
+ *
+ * ## 图能拖多高,记在设置里
+ *
+ * 用户要的是"图小一点",但小到什么程度因人而异 —— 图复杂的时候想拉大看全,只看一眼
+ * 状态的时候想拉小。所以给一条分隔条,拖完存进 setting(和右栏的宽度同一个做法),
+ * 下次打开还是上次拖到的高度。双击还原默认。
+ *
+ * ## 为什么高度是**给到图那个框**上,而不是给这块容器
+ *
+ * 图自己那一份 `overflow-y-auto` 才是"装不下就滚动"的地方 —— 把高度给到它,滚的是图,
+ * 而不是连图带空白一起滚。容器只管"这一块占多高"。
+ */
 function RenderMini({
   doc,
   run,
   picked,
   onPick,
+  height,
+  onResize,
+  onResetHeight,
+  onContextNode,
 }: {
   doc: WorkflowDoc | null;
   run: LiveRun | null;
   picked: string | null;
   onPick: (id: string) => void;
+  height: number;
+  onResize: (delta: number) => void;
+  onResetHeight: () => void;
+  onContextNode: (target: FlowContextTarget) => void;
 }) {
+  const { t } = useI18n();
   if (doc === null || doc.nodes.length === 0) return null;
   return (
-    <div className="shrink-0 border-b border-edge px-2.5 py-2">
-      <WorkflowFlowMini doc={doc} run={run} selectedNodeId={picked} onSelectNode={onPick} />
-      <WorkflowFlowLegend className="mt-1.5" />
-    </div>
-  );
-}
-
-/** 「跑完的」那一组 —— **整组折起来**,而且**整组清掉**。
- *
- *  清掉的只是看板上的现场(见 `dismissSettled`):那些步骤的卡片、过程、用量一个字节
- *  都不动,往下滚对话仍然看得到每一步做过什么。用户说的是"跑完的可以收起来,也可以直接
- *  清理掉" —— 收是折一下,清理是这一颗。 */
-function DoneSection({ nodes, onOpen }: { nodes: LiveNode[]; onOpen: (id: string) => void }) {
-  const { t } = useI18n();
-  const [open, setOpen] = useState(true);
-  const runId = nodes[0]?.runId;
-  return (
-    <div className="mt-2">
-      <div className="flex items-center gap-1 rounded-md pr-1 hover:bg-surface-hover">
-        <button
-          type="button"
-          onClick={() => setOpen(!open)}
-          className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-2 py-1 text-left"
-        >
-          {open ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
-          <span className="text-[10px] font-semibold uppercase tracking-wide text-content-subtle">
-            {t("chatStream.workflowBoard.doneSection")}
-          </span>
-          <span className="tabular-nums text-[10px] text-content-subtle">{nodes.length}</span>
-        </button>
-        {runId !== undefined && (
-          <button
-            type="button"
-            title={t("chatStream.workflowBoard.clearDone")}
-            onClick={() => dismissSettled(runId)}
-            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-content-subtle transition-colors hover:text-content"
-          >
-            <IconTrash size={12} />
-          </button>
-        )}
+    <div className="shrink-0">
+      <div className="px-2.5 py-2">
+        <WorkflowFlowMini
+          doc={doc}
+          run={run}
+          selectedNodeId={picked}
+          onSelectNode={onPick}
+          onContextNode={onContextNode}
+          maxHeight={height}
+        />
       </div>
-      {open && (
-        <ul className="space-y-0.5">
-          {nodes.map((n) => (
-            <NodeRow key={n.nodeId} node={n} onOpen={() => onOpen(n.nodeId)} />
-          ))}
-        </ul>
-      )}
+      {/* 那条分隔条。**双击还原** —— 拖偏了不用去猜默认值是多少。`hideLine={false}`
+          给一条看得见的细线:它同时表达"图到这儿为止"和"这里可拖"两层意思。 */}
+      <Divider
+        orientation="horizontal"
+        onResize={onResize}
+        onDoubleClick={onResetHeight}
+        className={FLOW_DIVIDER_CLASS}
+      />
+      <p className="select-none px-2.5 pb-1 text-[10px] leading-4 text-content-subtle">
+        {t("chatStream.workflowBoard.dragHint")}
+      </p>
     </div>
   );
 }
 
-function Section({
-  title,
-  count,
-  children,
-}: {
-  title: string;
-  count: number;
-  children: React.ReactNode;
-}) {
-  return (
-    <div>
-      <div className="flex items-center gap-1 px-2 pb-1 pt-1">
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-content-subtle">
-          {title}
-        </span>
-        <span className="tabular-nums text-[10px] text-content-subtle">{count}</span>
-      </div>
-      <ul className="space-y-0.5">{children}</ul>
-    </div>
-  );
-}
-
-function NodeRow({ node, onOpen }: { node: LiveNode; onOpen: () => void }) {
-  const { t } = useI18n();
-  // 「排队中」那一枚 chip。**必须给 `node.runId`** —— `workflowQueued` 的键是
-  // `runId\0nodeId`,留空的话永远对不上,这枚 chip 一辈子不亮。`LiveNode` 上带着
-  // runId 正是为了这个(见 `workflowLive` 的头注)。
-  const queued = useQueuedNode(node.runId, node.nodeId);
-  const key = phaseOf(node);
-  const meta = PHASE_META[key] ?? PHASE_META.success;
-  const elapsed = useElapsed(node);
-  const sub = [t(PHASE_LABEL[key] ?? PHASE_LABEL.success), queued ? t("chatStream.workflowStep.queued") : null, elapsed]
-    .filter(Boolean)
-    .join(" · ");
-  return (
-    <li>
-      <button
-        type="button"
-        onClick={onOpen}
-        title={node.title || node.nodeType}
-        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-hover"
-      >
-        <span className={cn("flex h-3.5 w-3.5 shrink-0 items-center justify-center", meta.cls)}>
-          {meta.spin ? (
-            <SpinnerIcon size={12} className="animate-spin" />
-          ) : meta.icon === "check" ? (
-            <IconCircleCheck size={12} />
-          ) : meta.icon === "warn" ? (
-            <IconAlertTriangle size={12} />
-          ) : (
-            <IconCircleOff size={12} />
-          )}
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-xs text-content">{node.title || node.nodeType}</span>
-          <span className="mt-0.5 block truncate text-[10px] text-content-subtle">{sub}</span>
-        </span>
-        {node.percent !== undefined && (
-          <span className="shrink-0 tabular-nums text-[10px] text-accent">
-            {Math.round(node.percent)}%
-          </span>
-        )}
-      </button>
-    </li>
-  );
-}
-
-/** 「跑了多久」。**只有还在跑的那一行才挂定时器** —— 收场了的用 `endedAt - startedAt`
- *  一次算完,一屏几十行每行一个 interval 是白烧。 */
-function useElapsed(node: LiveNode): string | null {
-  const live = node.phase !== "settled";
-  const [, tick] = useState(0);
-  useEffect(() => {
-    if (!live) return;
-    const id = window.setInterval(() => tick((n) => n + 1), 1000);
-    return () => window.clearInterval(id);
-  }, [live]);
-  if (node.startedAt === undefined) return null;
-  const end = node.endedAt ?? Date.now();
-  const sec = Math.max(0, Math.round((end - node.startedAt) / 1000));
-  if (sec < 60) return `${sec}s`;
-  return `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, "0")}s`;
-}
-
-/** 顶上那条「这一步要你看看」。三种原因三种话 —— **不能合成一句**:失败要重试、停在
- *  岔路口要选一条、被取消要重跑整张,用户要做的事完全不一样。 */
+/** 顶上那条「这一步需要用户处理」。三种原因三种文案 —— **不能合并成一句**:失败要重试、
+ *  停在岔路口要选一条、被取消要重跑整张图,用户要做的事完全不同。 */
 function HaltedBanner({
   reason,
   title,
@@ -564,308 +567,5 @@ function HaltedBanner({
       <IconAlertTriangle size={12} className="mt-0.5 shrink-0" />
       <span className="min-w-0 flex-1">{label}</span>
     </button>
-  );
-}
-
-/**
- * 一步的详情:它跑了什么、成没成,以及**跟它接着说的三个动作**。
- *
- * ## 过程是**活着**的
- *
- * 正在跑的那一步,过程跟着事件一段段长出来(`workflow.node.transcript` 推的是全量,
- * 见 `RuntimeManager.publishNodeTranscript`)—— 所以这里不用轮询,订阅到了就是最新的。
- * 这正是"子代理在干嘛"那个诉求的落点:不用等它跑完。
- *
- * ## 为什么是"接着聊"而不是"报错处理"
- *
- * ⚠️ **看清"这一刻"是什么时候。** 这个面板有两种来路,而它们看到的东西**不一样**:
- *
- *  - **这次运行的现场**(`run.nodes[id]`,跑的时候事件折出来的):过程、产出、耗时都在。
- *    这时跟它说一句,它**真在** —— 产出照常交给调度器,接着往下走。
- *  - **库里那一行**(`storedNode`,重启之后从 `session.listNodes` 读回来的):
- *    过程**没有**。节点会话的转录不进库(只有消息流里那张卡在收场时拷过一份),
- *    进程一关就没了。所以这里显示的是"它跑完了",而不是"它跑过什么"。
- *
- * 两句都写上,是因为**第二句才是"常驻"的本体**:用户要的是"三方不断迭代" ——
- * 今天跟这一步聊了一半,明天回来接着说。第一句是这个过程看着顺眼而已。
- * 要是把这里当成"失败那一步的补救口",第一句就够;那正是原来 `key === "failed" ||
- * key === "cancelled"` 那个判据的思路,见下面 `canTalk`。
- *
- * ## 三个动作:结束 / 跟这一步说 / 跟主对话说
- *
- * 来自用户的原话("用户可以选择结束,或者和子节点对话,或者是和主节点对话")。
- * 三样都**不新开机制**:
- *
- *  - **结束** = `claude.interrupt`,而主进程那一头对工作流会话本来就走
- *    `cancelWorkflowRun`(停整张图,见 `ipc/claude.ts`)。所以"结束这一步"实际是"停下整张图"
- *    —— 用户看到的是这一步不再往下跑,而那正是他要的;
- *  - **跟这一步说** = 往这个节点会话发一条普通消息。它跑在**自己的隐藏会话**里
- *    (`kind: "node"`),`claude.sendTurn` 对它是一条普通回合 —— `graphRunIntent`
- *    头一句就把非 `chat` 的会话挡掉了,所以它**不会递归地再起一张图**。
- *    ⚠️ 而"它会把这句话当成新产出交给调度器"**只在这一步正在跑的那次运行里成立**:
- *    落库那一份没有活着的调度器接着,没人收 —— 那是"异步通知"那一档的事,这一版不做。
- *    (单独说清楚是因为:没人接着的时候,这句话的**唯一**作用就是写进它会话的历史里,
- *    下次它再跑时**看得见**。这仍然有用,但不是"它当场就改"。)
- *  - **跟主对话说** = 把框里那段话塞进主对话的输入框草稿(`composerDraftBySession`),
- *    用户自己按发送。**不替他发** —— 主对话此刻可能正被这张图占着,直接发会被
- *    `graphRunIntent` 拒掉;而且"我先看看再发"本来就是更稳的那一步。
- *
- * ## 重试的判据和卡片**同一条**
- *
- * 消息流里那张卡给的是 `status === "failed" && nodeSessionId`,因为底层是同一个入口
- * (`workflow.retry`)。两处判据不一致的话,会出现"卡片上能点、看板上点不了"这种说不清
- * 的事。
- */
-function NodeDetail({
-  sessionId,
-  node,
-  onBack,
-}: {
-  sessionId: string;
-  node: LiveNode;
-  onBack: () => void;
-}) {
-  const { t } = useI18n();
-  // 活的那份优先,查不到退回这一步收场时拷下来的快照(`LiveNode.nodeTranscript`)——
-  // 与消息流里那张卡**同一条规矩**(见 `WorkflowStepCard`)。两边判断不一致的话,同一
-  // 步在看板里有过程、在卡片上没有(或者反过来),用户没法解释。
-  const rawBlocks = useSessionStore((s) =>
-    node.nodeSessionId ? s.workflowNodeTranscripts[node.nodeSessionId] : undefined,
-  );
-  const source = rawBlocks ?? node.nodeTranscript;
-  const blocks = useMemo(() => (source ?? []).map(mapTranscriptBlock), [source]);
-  const [retryOpen, setRetryOpen] = useState(false);
-  const [reply, setReply] = useState("");
-  const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const live = node.phase !== "settled";
-  const key = phaseOf(node);
-  const meta = PHASE_META[key] ?? PHASE_META.success;
-  const canRetry = key === "failed" && node.nodeSessionId !== undefined;
-  /**
-   * 能跟这一步说话的判据是**"它真有过会话"**,不是"它出事了"。
-   *
-   * 原来写的是 `key === "failed" || key === "cancelled"`,理由是"跑成功的那一步没什么
-   * 要接管的"。那是**当成救火口**在想;而用户要的是三方不断迭代 —— 看到某一步做得
-   * 不对,当场叫它改,本来就是常态。同一个道理往下走一步:判据落在"有没有会话"上,
-   * `skipped` / `unselected` 那两种压根没建过会话(发过去没人接),自然也该挡掉,
-   * 而那正是下面那句注释原本要表达的意思。
-   */
-  const canTalk = node.nodeSessionId !== undefined;
-
-  // 跟着尾巴走 —— 和子代理那份转录同一个意图(看它在干嘛,不是回头看开头)。
-  useEffect(() => {
-    if (live) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [blocks, live]);
-
-  /** 跟**这一步**说一句。走的是它自己那个隐藏会话,所以它的产出照常交给调度器。 */
-  const talkToNode = async (): Promise<void> => {
-    const text = reply.trim();
-    const nodeSessionId = node.nodeSessionId;
-    if (text.length === 0 || nodeSessionId === undefined || sending) return;
-    setSending(true);
-    try {
-      await api.claude.sendTurn({ sessionId: nodeSessionId, prompt: text });
-      setReply("");
-      setSent(true);
-    } catch {
-      // 发不出去(会话已经放掉了 / 主进程拒了)—— 什么都不做,框里那句话留着,
-      // 用户能再按一次。这里**不弹错误**:看板的用途是"看着它在干嘛",不是报错台。
-    } finally {
-      setSending(false);
-    }
-  };
-
-  /** 跟**主对话**说一句 —— 塞进输入框,不替他发(见函数头那段)。 */
-  const talkToParent = (): void => {
-    const text = reply.trim();
-    if (text.length === 0) return;
-    const prev = useSessionStore.getState().composerDraftBySession[sessionId];
-    useSessionStore.getState().saveComposerDraft(sessionId, {
-      text,
-      html: "",
-      tags: prev?.tags ?? [],
-    });
-    setReply("");
-    setSent(true);
-  };
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-edge bg-surface px-2">
-        <button
-          type="button"
-          onClick={onBack}
-          title={t("sideChat.backToList")}
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
-        >
-          <IconArrowLeft size={15} />
-        </button>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-xs font-medium text-content">
-            {node.title || node.nodeType}
-          </div>
-          <div className={cn("flex items-center gap-1 text-[10px]", meta.cls)}>
-            <span className="truncate">{t(PHASE_LABEL[key] ?? PHASE_LABEL.success)}</span>
-            {node.nodeType && (
-              <span className="truncate text-content-subtle">· {node.nodeType}</span>
-            )}
-          </div>
-        </div>
-        {canRetry && (
-          <button
-            type="button"
-            onClick={() => setRetryOpen(true)}
-            title={t("chatStream.workflowStep.retry")}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
-          >
-            <IconRefresh size={14} />
-          </button>
-        )}
-        {/* **结束这一步。** 主进程那一头对工作流会话是"停整张图"(见 `claude.interrupt`),
-            所以这不是"只掐这一格" —— 用户要的本来也是"别往下跑了"。 */}
-        {live && (
-          <button
-            type="button"
-            onClick={() => void api.claude.interrupt({ sessionId })}
-            title={t("chatStream.workflowBoard.takeoverStop")}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-content-muted transition-colors hover:bg-surface-hover hover:text-danger"
-          >
-            <IconPlayerStop size={14} />
-          </button>
-        )}
-      </div>
-
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-2.5 py-2">
-        {/* 在等人的那一格:把选项摊出来(真正的按钮在消息流那张卡上 —— 这里是"我该
-            去哪儿点"的说明,不是第二个能点的地方:两处都能点会让"点哪个"变成一个问题)。 */}
-        {node.awaiting && node.options && node.options.length > 0 && (
-          <div className="mb-2 rounded-md border border-warning/40 bg-warning/5 px-2 py-1.5">
-            <p className="text-[11px] leading-relaxed text-warning">
-              {node.ask
-                ? t("chatStream.workflowBoard.awaitingAsk")
-                : t("chatStream.workflowBoard.awaitingHint")}
-            </p>
-            <ul className="mt-1 space-y-0.5">
-              {node.options.map((o) => (
-                <li key={o.id} className="text-[11px] text-content-muted">
-                  · {o.label}
-                  {o.next ? ` → ${o.next}` : ""}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {/* 选完之后的回看:这一格里记着用户选了哪条、补了什么话、是第几轮问的。
-            `chosen` 是**选项的 label**(`choice` 事件带的是 label,不是 id —— 见
-            `workflowLive` 的折叠)。`attempt > 1` 说明这一格绕回头又问过(第二圈),
-            顺带把轮数说出来,不然"选过了怎么又问"看起来像 bug。 */}
-        {!node.awaiting && node.chosen !== undefined && (
-          <div className="mb-2 rounded-md border border-edge bg-surface/60 px-2 py-1.5">
-            <p className="text-[11px] leading-relaxed text-content-muted">
-              {t("chatStream.workflowBoard.chosen", { label: node.chosen })}
-              {node.attempt !== undefined && node.attempt > 1 && (
-                <span className="text-content-subtle">
-                  {" · "}
-                  {t("chatStream.workflowBoard.chosenAttempt", { n: node.attempt })}
-                </span>
-              )}
-            </p>
-            {node.comment && (
-              <p className="mt-0.5 text-[11px] leading-relaxed text-content-subtle">
-                {t("chatStream.workflowBoard.chosenComment", { text: node.comment })}
-              </p>
-            )}
-          </div>
-        )}
-        {blocks.length === 0 ? (
-          <p className="px-1 py-3 text-[11px] leading-relaxed text-content-subtle">
-            {/* 三句话,不是两句:"正在跑但还没开口" / "跑过、过程丢了" / "压根没跑"
-                (没建过会话的节点)。最后那一句和中间那句读起来像两回事 —— 说成"丢了"
-                会让人去找一个从来不存在的东西。 */}
-            {live
-              ? t("chatStream.workflowBoard.nodeWaiting")
-              : t(
-                  node.nodeSessionId
-                    ? "chatStream.workflowStep.processGone"
-                    : "chatStream.workflowStep.noTranscript",
-                )}
-          </p>
-        ) : (
-          <MessageBlocks blocks={blocks} />
-        )}
-        {/* 收场时那一句结论。失败的原因往往**不在过程里**(它可能一个字都还没输出就炸了),
-            所以单独摆一条。
-            ⚠️ 是两个字段,不是二选一:`summary` 是这一步交出的东西,`error` 是它为什么
-            没交出来。失败时两个都可能非空(跑了半截才炸),两段都要摆 —— 只留一段的话
-            "它做了什么"和"它为什么停"会有一半看不见。 */}
-        {!live && node.error && (
-          <div className="mt-2 rounded-md border border-danger/40 bg-danger/5 px-2 py-1.5 text-[11px] leading-relaxed text-danger">
-            <Markdown>{node.error}</Markdown>
-          </div>
-        )}
-        {!live && node.summary && (
-          <div className="mt-2 rounded-md border border-edge bg-surface/60 px-2 py-1.5 text-[11px] leading-relaxed text-content-muted">
-            <Markdown>{node.summary}</Markdown>
-          </div>
-        )}
-      </div>
-
-      {/* **跟这一步说。** 判据是**它真有过会话**(`nodeSessionId` 在),不是"它出事了":
-          跑成功的那一步照样能叫它改 —— 那正是"不断迭代"该有的样子。
-          反过来 `skipped` / `unselected` 那两种压根没建过会话,摆出来是发给一个没人接的
-          地方,所以它们没有这一栏。 */}
-      {canTalk && (
-        <div className="shrink-0 border-t border-edge bg-surface px-2.5 py-2">
-          <div className="flex items-center gap-1.5">
-            <IconMessage size={12} className="shrink-0 text-content-subtle" />
-            <span className="text-[10px] font-semibold uppercase tracking-wide text-content-subtle">
-              {t("chatStream.workflowBoard.takeover")}
-            </span>
-            {sent && (
-              <span className="text-[10px] text-content-subtle">
-                {t("chatStream.workflowBoard.takeoverSent")}
-              </span>
-            )}
-          </div>
-          <textarea
-            value={reply}
-            onChange={(ev) => setReply(ev.target.value)}
-            rows={2}
-            placeholder={t("chatStream.workflowBoard.takeoverPlaceholder")}
-            className="mt-1 w-full resize-y rounded border border-edge bg-surface/60 px-2 py-1 text-[11px] text-content placeholder:text-content-subtle focus:border-accent focus:outline-none"
-          />
-          <div className="mt-1 flex items-center gap-1.5">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={reply.trim().length === 0 || sending}
-              onClick={() => void talkToNode()}
-            >
-              {t("chatStream.workflowBoard.talkToNode")}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={reply.trim().length === 0}
-              onClick={talkToParent}
-            >
-              {t("chatStream.workflowBoard.talkToParent")}
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {canRetry && (
-        <RetryNodeDialog
-          open={retryOpen}
-          onClose={() => setRetryOpen(false)}
-          sessionId={sessionId}
-          runId={node.runId}
-          nodeId={node.nodeId}
-        />
-      )}
-    </div>
   );
 }

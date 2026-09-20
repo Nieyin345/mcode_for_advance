@@ -33,7 +33,7 @@
  * (`p_` + 时间戳 + 随机),名字随便改。
  */
 import { z } from "zod";
-import { defaultParamsOf, type NodeTypeManifest } from "./nodeType.js";
+import { NODE_PROMPT_PARAM_KEY, defaultParamsOf, type NodeTypeManifest } from "./nodeType.js";
 
 /** 档案文件格式版本。 */
 export const AGENT_PROFILE_VERSION = 1;
@@ -146,6 +146,82 @@ export function paramsForProfile(
   profile: AgentProfile,
 ): Record<string, unknown> {
   return { ...defaultParamsOf(manifest), ...profile.params };
+}
+
+/* ── 档案用在**会话**上(不是节点上) ───────────────────────────────────────── */
+
+/**
+ * 会话能直接用的档案,必须是给这个类型的。
+ *
+ * ## 为什么单拎出来
+ *
+ * 档案的 `type` 原本只回答"这份参数是为哪种节点存的",而节点类型是**注册表**里的东西
+ * (`main/orchestration/nodeTypes.ts` 的 `BUILTIN_NODE_TYPES`,插件还能自己加)。契约层
+ * **看不到那张表** —— 也不该看到:契约不 import 实现,是这个仓库的结构。
+ *
+ * 但契约这边又要判一件事:「这份档案能不能当"一个有提示词的对话"建出来」。这件事的判据
+ * 只有一个 —— **它是一个会走模型、且以提示词为主体的类型**。节点类型里符合这个描述的
+ * 恰好就是内置的子 agent,而子 agent 的 id 在这里是一个**常量比较**,不是查表。
+ *
+ * 于是分两层:*这一层*只认得出"内置的子 agent",认不出插件的提示词类型(它们在
+ * `applyAgentProfileToSession` 里过 `runner.kind === "prompt"` 那一关)。两层都过了才
+ * 建得出来 —— 漏掉哪一层都只是**少列出几份**,不会拿一份不对的档案去建会话:参数在落
+ * 地那一刻还要过一次 `validateNodeParams`。
+ */
+export const AGENT_PROFILE_PARAM_TYPE = "mcode.agent";
+
+/** 这份档案能不能当会话的「角色」用(见 {@link AGENT_PROFILE_PARAM_TYPE})。 */
+export function isSessionAgentProfile(profile: Pick<AgentProfile, "type">): boolean {
+  return profile.type === AGENT_PROFILE_PARAM_TYPE;
+}
+
+/**
+ * 档案里那条指令 —— **提示词节点的主参数**(键是 `NODE_PROMPT_PARAM_KEY`,值在
+ * `params` 里,是字符串记录)。
+ *
+ * 拿不到时返回空串,而不是抛:档案是**用户手改的文件**,缺一个键、或者存了个数字,
+ * 都是可能发生的。抛出去的结果是"这个会话发不出去消息",而空串的结果只是"这个对话没
+ * 有角色提示词"—— 后者是能用的,前者不是。
+ *
+ * 拿不到就**什么都不带**:不编一句"你是一个助手"顶上。那句话会把一个本来只是"没填指令"
+ * 的状态,伪装成"填过一句没用的指令",而用户看不出差别。
+ */
+export function agentProfileInstruction(profile: AgentProfile): string {
+  const value = profile.params[NODE_PROMPT_PARAM_KEY];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/** 会话行上 `agentProfile` 这一列的载荷(落盘形态)。 */
+export interface SessionAgentProfileRef {
+  /** 档案 id(`p_xxxx`);档案被删之后这个 id 认不出任何东西(见下)。 */
+  id: string;
+  /** **建会话那一刻**的档案名 —— 会话标题用它,之后档案改名不影响。 */
+  name: string;
+  /** **建会话那一刻**的指令原文。见 {@link agentProfileInstruction} 的"快照"说明。 */
+  instruction: string;
+}
+
+/**
+ * 从一份档案取出要写进**会话行**的那一份快照。
+ *
+ * ## 为什么是快照,不是"每轮回档案里现取"
+ *
+ * 档案是**内容**,用户可以随时改、随时删(`<数据根>/workflows/agents/<id>.json`)。
+ * 每轮回读的话,同一个对话今天用第 2 版、明天用第 3 版 —— 而**上下文还是连续的**,
+ * 于是"它昨天说过的话"和"它今天是谁"对不上,用户完全看不出发生过什么。
+ *
+ * 所以:**建会话那一刻取一份,之后这个对话就活在这一份上**。改了档案不影响已经开出去的
+ * 对话(想用新的就再建一个子对话),删了档案也不影响(指令原文在这里)。
+ *
+ * 这也正是和**节点**那一侧刻意的不同:节点每轮现取档案(`paramsForProfile`),因为它
+ * 本来就是"跑一次算一次"的东西。
+ *
+ * ⚠️ 代价写在这里:**改了档案,已经开着的子对话不会跟着变**。这不是疏忽,是上面那一段
+ * 的选择 —— 而它有一个能看见的后果:建会话时若档案还没有指令,`instruction` 就是空串,
+ * 于是这个对话**永远**没有角色提示词(即便用户后来补上了)。
+ */
+export function agentProfileRef(profile: AgentProfile): SessionAgentProfileRef {
+  return { id: profile.id, name: profile.name, instruction: agentProfileInstruction(profile) };
 }
 
 /**

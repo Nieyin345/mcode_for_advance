@@ -18,11 +18,16 @@
  *
  * ⚠️ 类型认不出来**不算错误**:一份别人分享来的工作流引用了没装的类型,照样能存能看,
  * 只是跑不了。所以这一页也不把"某个工作流引用了缺失的类型"当问题列出来。
+ *
+ * ## 代理档案搬走了(2026-09-20)
+ *
+ * 从前这一页的下半部分还挂着档案列表。搬走的原因是**这一页在回答"节点类型是什么",
+ * 而档案在回答"我配的那几份东西在哪"** —— 后者随档案变多会变得很长,把前者挤下去;
+ * 而前者是**说明书**,读一次就够了。现在档案有自己的页签(见 `AgentProfilesView`)。
  */
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { Button } from "@renderer/components/ui/index.js";
-import type { AgentProfile, AgentProfileCatalog } from "@contracts/agentProfile";
 import {
   isNodeRunnable,
   showsNodeCapability,
@@ -31,7 +36,6 @@ import {
   type NodeTypeSource,
 } from "@contracts/nodeType";
 import { IconAlertTriangle, IconLoader2, IconRefresh } from "@renderer/lib/icons.js";
-import { AgentProfilesView } from "./AgentProfilesView.js";
 import { groupNodeTypes } from "./workflowView.js";
 import { WorkflowBadge, type WorkflowBadgeTone } from "./WorkflowBadge.js";
 
@@ -61,24 +65,12 @@ export function NodeTypesView({
   loading,
   error,
   onRefresh,
-  profiles,
-  profileProblems,
-  profileError,
-  onSaveProfile,
-  onRemoveProfile,
 }: {
   /** 清单由 `WorkflowsPanel` 读一次往下传 —— 画布与检查器要的是同一份。 */
   catalog: NodeTypeCatalog | null;
   loading: boolean;
   error: string | null;
   onRefresh: () => void;
-  /** 代理档案。**同样由上面传下来** —— 画布那边的"添加节点"菜单和这里是同一份数据
-   *  (两个页签同时挂载,各自拉一次就会分家)。 */
-  profiles: AgentProfile[];
-  profileProblems: AgentProfileCatalog["problems"];
-  profileError: string | null;
-  onSaveProfile: (profile: AgentProfile) => Promise<void>;
-  onRemoveProfile: (id: string) => Promise<void>;
 }) {
   const { t } = useI18n();
   const groups = catalog ? groupNodeTypes(catalog.entries) : [];
@@ -169,17 +161,6 @@ export function NodeTypesView({
             {t(item.hint)}
           </p>
         ))}
-
-      {/* 代理档案挂在**同一页的下半部分**:它没有自己的类型,是"某个类型的一组参数",
-          所以放在类型的旁边而不是另开一页(见 `AgentProfilesView` 文件头)。 */}
-      <AgentProfilesView
-        catalog={catalog}
-        profiles={profiles}
-        problems={profileProblems}
-        error={profileError}
-        onSave={onSaveProfile}
-        onRemove={onRemoveProfile}
-      />
     </div>
   );
 }

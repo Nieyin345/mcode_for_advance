@@ -98,6 +98,7 @@ import {
   type NodeTypeSource,
 } from "@contracts/nodeType";
 import { dataRoot } from "@main/lib/dataRoot.js";
+import { MEMORY_PARAM_KEY } from "@contracts/memory";
 import { loadLibraryTypes } from "@main/library/kindRegistry.js";
 import {
   NODE_OUTPUT_CONTRACT_KEY,
@@ -289,6 +290,45 @@ function ioParams(): NodeParamSpec[] {
 }
 
 /**
+ * 「注入记忆」—— 把记忆库的一份快照拼在提示词末尾(见 `nodeInputBuilders` 的
+ * `memorySectionOf`,MEM-02)。
+ *
+ * ## 为什么现在才摆出来
+ *
+ * 读取那一端 2026-09 就写好了(`MEMORY_PARAM_KEY`),但**参数表里从来没有这一格** ——
+ * 界面上没有控件,`params` 里也就永远不会有这个键,`memoryEnabled` 恒为 false。
+ * 一整条记忆注入**等于不存在**,而且不报错:它只是安静地什么都不做。
+ *
+ * ## 给谁
+ *
+ * 给**会走模型那一轮**的三种:子 agent、主代理、对话节点 —— 它们共用
+ * `memorySectionOf` 拼出来的那一段(挂在 `buildNodeInput` 的公共返回上)。
+ *
+ * **不给 `code` / `command`**:那两种节点不走模型,整段 `prompt` 拼好了也没人读,
+ * 摆上去就是一个填了不生效的控件 —— 那正是这一格当初被漏掉时犯的同一个错,只是
+ * 方向反过来。
+ *
+ * **不给分支**:它的模型那一轮只做一件事(照判据从几条出路里挑一条),把整本记忆
+ * 塞进一个选路问题里既没用、又白白多花一份上下文。
+ *
+ * ## 一旦打开,每一轮都重发
+ *
+ * 快照是**按现状取的**(不是建会话时定死),所以你在记忆面板里改一条,下一次跑就
+ * 是新的。代价与 MCP 那一格同源:整份快照每一轮都随上下文重发一遍(上限见
+ * `memorySnapshotFor` 的 `SNAPSHOT_CAP`)。
+ */
+function memoryParam(): NodeParamSpec[] {
+  return [
+    {
+      key: MEMORY_PARAM_KEY,
+      kind: "boolean",
+      label: "注入记忆",
+      help: "打开后,本步骤的提示词末尾附上记忆库的一份快照(规则、项目、偏好、经验、教训、决定)。记忆库在左侧栏「记忆」里,可直接编辑。",
+    },
+  ];
+}
+
+/**
  * 「跑完并回主对话多少」—— **只有隔离跑法的节点有这一个**(子 agent)。
  *
  * 跑在主对话里的那两种不需要它:它们本来就在主对话里说那一句,内容和过程天然就在
@@ -359,6 +399,7 @@ function agentParams(instructionHelp: string, extra: NodeParamSpec[] = []): Node
     ...extra,
     ...capabilityParams(),
     ...ioParams(),
+    ...memoryParam(),
     ...returnToChatParam(),
   ];
 }
@@ -396,6 +437,7 @@ function mainParams(): NodeParamSpec[] {
     },
     criteriaParam(),
     ...ioParams(),
+    ...memoryParam(),
   ];
 }
 
@@ -489,6 +531,22 @@ export function builtinCommandManifest(): NodeTypeManifest {
   const found = BUILTIN_NODE_TYPES.find((m) => m.id === NODE_COMMAND_TYPE_ID);
   if (found === undefined) throw new Error("内置节点清单里没有命令 —— 上面那张表被改坏了");
   return found;
+}
+
+/**
+ * 按 id 取一份内置节点类型 —— 冒烟要对着**真货**断言参数表时用它。
+ *
+ * ## 为什么不能只导出那两份 `builtin*Manifest()`
+ *
+ * 那两份是"某一个具体类型"的专用出口,各自配着自己的理由。而**参数表这类东西是
+ * 会随内置类型增删而移动的**:每加一种要断言的类型就再写一个 `builtinXxxManifest()`,
+ * 出口数量跟着节点类型数量长 —— 而它们做的事**一模一样**。
+ *
+ * 这里给的是那一个动作本身。返回 `undefined` 而不是抛:调用方(冒烟)要断言的恰恰是
+ * "这一格在不在",它拿到 `undefined` 时自己说得出更好的话。
+ */
+export function builtinManifestById(id: string): NodeTypeManifest | undefined {
+  return BUILTIN_NODE_TYPES.find((m) => m.id === id);
 }
 
 const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
@@ -609,6 +667,10 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
       //
       // **但「回到主对话」那一个不给它**:它本来就在主对话里,内容和过程天然在那儿。
       ...ioParams(),
+      // 记忆这一格**给它**:它虽然跑在主对话里,但那一段提示词是**当场拼的**
+      // (`buildNodeInput` 对 `conversation` 跑法照样走公共那条返回),所以开关是
+      // 真生效的 —— 跟「回到主对话」那种"本来就在那儿、配了不算数"不是一回事。
+      ...memoryParam(),
       ];
     },
     outputs: [{ key: "summary", label: "结果文本", description: "主对话这一轮说的话,会传给下游节点" }],

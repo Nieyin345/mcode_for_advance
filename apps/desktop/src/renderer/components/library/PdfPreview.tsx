@@ -1,5 +1,6 @@
 /**
- * 右栏:文献 PDF 阅读器。
+ * 应用内 PDF 阅读器。**右栏详情页与中间栏 `FileViewer` 共用这一个** ——
+ * 同一个 PDF 不该有两套画法。
  *
  * ## 为什么用 pdf.js 的 viewer 组件而不是自己画 canvas
  *
@@ -46,7 +47,25 @@ import {
 // 不设置这个的话 pdf.js 会退回主线程解析,大文件会把 UI 卡住。
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
-export function PdfPreview({ item, bytes }: { item: LibraryItem; bytes?: Uint8Array }) {
+/**
+ * 它真正用到的只有 `item.id`,**不是**整篇文献:标题由外面的顶栏显示,PDF 状态/转录
+ * 那一套是右栏详情页的事。所以入参收窄成这两样 —— 中间栏那个 `FileViewer` 什么都
+ * 不知道(它连 `LibraryItem` 都没有),从前要为此编一个假条目传进来。
+ *
+ * `id` 在**给了 `bytes`** 之后只剩一个用处:「用系统程序打开」那个按钮要按条目去
+ * 找路径。模版库的文件没有条目 id(它那条通道是 `templates.openFile`),所以那时
+ * 给空串 —— 按钮届时交给 `onOpenExternal`。
+ */
+export function PdfPreview({
+  item,
+  bytes,
+  onOpenExternal,
+}: {
+  item: Pick<LibraryItem, "id">;
+  bytes?: Uint8Array;
+  /** 外部程序打开。不给就退回按 `item.id` 走 `library.openFile`。 */
+  onOpenExternal?: () => void;
+}) {
   const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<HTMLDivElement>(null);
@@ -187,7 +206,9 @@ export function PdfPreview({ item, bytes }: { item: LibraryItem; bytes?: Uint8Ar
           </button>
           {/* 读不了就退到外部程序 —— 不能只留一句错误 */}
           <button
-            onClick={() => void api.library.openFile({ id: item.id, which: "pdf" })}
+            onClick={() =>
+              onOpenExternal ? onOpenExternal() : void api.library.openFile({ id: item.id, which: "pdf" })
+            }
             className="inline-flex items-center gap-1 rounded border border-edge px-2 py-1 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content"
           >
             <IconExternalLink size={11} />
@@ -236,7 +257,9 @@ export function PdfPreview({ item, bytes }: { item: LibraryItem; bytes?: Uint8Ar
 
         <button
           className={cn(btn, "ml-auto")}
-          onClick={() => void api.library.openFile({ id: item.id, which: "pdf" })}
+          onClick={() =>
+            onOpenExternal ? onOpenExternal() : void api.library.openFile({ id: item.id, which: "pdf" })
+          }
           title={t("library.pdfViewer.openExternal")}
         >
           <IconExternalLink size={12} />

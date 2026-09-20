@@ -1,5 +1,5 @@
 import type { NodeRunInput, WorkflowChoiceOption, WorkflowDataContext } from "@contracts/runtime";
-import { MEMORY_PARAM_KEY } from "@contracts/memory";
+import { MEMORY_PARAM_KEY, memorySectionFrom } from "@contracts/memory";
 import { memorySnapshotFor } from "../memory/retrieval.js";
 import { expandTriggerVars } from "./triggerVars.js";
 import {
@@ -212,18 +212,16 @@ function memoryEnabled(params: Record<string, unknown>): boolean {
  * 记忆快照 → 拼进提示词的那一节。没开、库是空的都返回**空串** —— 空库不该凭空多一个
  * 只有标题的段落;读不出来(磁盘坏了/权限没了)也当没有 —— 记忆是**辅助**,它坏不能
  * 把这一步拖垮,正文照常跑。
+ *
+ * ⚠️ **拼装那一段搬去了 `@contracts/memory` 的 `memorySectionFrom`**(2026-09-20):
+ * 「档案+记忆」建出来的子对话也要拼同一节(在 `lib/sessionStart.ts`),两处各写一遍的话
+ * 会有两种叫法、两种措辞。这里保留"开关怎么判 + 读不出来怎么办"这一半 —— 那一半是
+ * **节点参数**的语义,不是共享的拼装规则。纯拼装那一半在契约层。
  */
 function memorySectionOf(params: Record<string, unknown>): string {
   if (!memoryEnabled(params)) return "";
   try {
-    const snapshot = memorySnapshotFor();
-    if (snapshot.trim().length === 0) return "";
-    return [
-      "## 长期记忆",
-      "以下是记忆库中的既有记录,与本步相关时可参考;与指令冲突时,以指令为准:",
-      "",
-      snapshot,
-    ].join("\n");
+    return memorySectionFrom(memorySnapshotFor());
   } catch {
     return "";
   }

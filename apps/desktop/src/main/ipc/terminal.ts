@@ -71,6 +71,10 @@ export function registerTerminalHandlers(ipcMain: IpcMain): void {
         rows: input.rows,
         shell: input.shell,
         shellSetting,
+        // 谁开的。前端不传的时刻(老调用方、渲染端手点)**也必须留下一条来路** ——
+        // 落到默认档是"用户手点的",见 `TerminalManager.create`。终端列表靠这个字段
+        // 说人话,所以它不允许是空的。
+        origin: input.origin,
       });
     } catch (err) {
       const msg = errText(err);
@@ -117,7 +121,7 @@ export function registerTerminalHandlers(ipcMain: IpcMain): void {
     try {
       const input = TerminalListSchema.parse(raw ?? {});
       const projectPath = input.projectPath ? resolve(input.projectPath) : undefined;
-      return { terminals: TerminalManager.list(projectPath) };
+      return { terminals: TerminalManager.list(projectPath, input.bufferFor) };
     } catch (err) {
       log.warn(`terminal.list failed: ${errText(err)}`);
       return { terminals: [] };

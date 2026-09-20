@@ -28,12 +28,10 @@ import {
   IconBook,
   IconShieldCheck,
   McpIcon,
-  IconBrain,
   IconNotebook,
   type TablerIconProps,
 } from "@renderer/lib/icons.js";
 import { CustomModelsPanel } from "./CustomModelsPanel.js";
-import { ContextPanel } from "./ContextPanel.js";
 import { InstitutionAuthPanel } from "./InstitutionAuthPanel.js";
 import { DataRootPanel } from "./DataRootPanel.js";
 import { LibraryTypesPanel } from "./LibraryTypesPanel.js";
@@ -42,7 +40,6 @@ import { SkillsPanel } from "./SkillsPanel.js";
 import { WorkflowsPanel } from "./workflows/WorkflowsPanel.js";
 import { HooksPanel } from "./HooksPanel.js";
 import { McpPanel } from "./McpPanel.js";
-import { SubagentsPanel } from "./SubagentsPanel.js";
 import { PluginsPanel } from "./PluginsPanel.js";
 import { AppearancePanel } from "./AppearancePanel.js";
 import { ShortcutsPanel } from "./ShortcutsPanel.js";
@@ -75,15 +72,18 @@ import { MemoryExplorerPanel } from "../memory/MemoryExplorerPanel.js";
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "data-root" | "library-types" | "runtimes" | "custom-models" | "institution" | "library" | "templates" | "skills" | "claude-subagents" | "workflows" | "automation" | "hooks" | "mcp" | "context" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
+type SectionId = "general" | "data-root" | "library-types" | "runtimes" | "custom-models" | "institution" | "library" | "templates" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
 
 interface NavItem {
   id: SectionId;
   labelKey: MessageId;
   icon: ComponentType<TablerIconProps>;
   /** Capability gate: the item renders only when some provider declares it
-   *  (undefined = always shown). Keeps provider-specific pages (子代理) from
-   *  reading as broken entries when the engine can't serve them. */
+   *  (undefined = always shown). Keeps an engine-specific page from reading as
+   *  a broken entry when no engine can serve it.
+   *
+   *  ⚠️ **眼下没有一个条目用它** —— 唯一那个(子代理页)2026-09-20 删了。留着是因为
+   *  它是这个导航的通用机制(下面的滤逻辑还在),而不是哪一页的私货。 */
   requiresCapability?: (caps: ProviderCapabilities) => boolean;
 }
 
@@ -114,14 +114,15 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "runtimes", labelKey: "settings.nav.runtimes", icon: IconPackage },
       { id: "plugins", labelKey: "settings.nav.plugins", icon: IconPuzzle },
       { id: "skills", labelKey: "settings.nav.skills", icon: IconSparkles },
-      // 自定义子代理：Claude provider 专属能力（Options.agents），按能力位显隐 ——
-      // 没有引擎支持时整个入口消失，而不是给一页"用不了"的编辑器。
-      {
-        id: "claude-subagents",
-        labelKey: "settings.nav.subagents",
-        icon: IconRobot,
-        requiresCapability: (caps) => caps.supportsCustomSubagents === true,
-      },
+      // 自定义子代理那一页**删掉了**(2026-09-20,用户定的):它和「工作流 →
+      // 代理档案」是同一件事的两个入口 —— 那边现在能按节点类型分类地新建/编辑档案,
+      // 覆盖面比这一页宽。同一个东西两个地方改,迟早出现"这边改了那边没变"。
+      //
+      // ⚠️ **能力还在,只是没了界面入口。** Claude provider 的 `Options.agents`
+      // 照样被主进程读(那一条在 provider 里,与这一页无关);用户自己写在
+      // `~/.claude/agents/` 下的子代理也不受影响 —— 那些从来就不经过这一页。
+      // 被删掉的只有"在这个框里手写一份、存进数据根"那条路。
+      //
       // 工作流紧挨着技能:两者都在回答"AI 按什么做事"(技能是动词,工作流是流程),
       // 而节点类型由插件带来 —— 再往下一格就是插件。
       { id: "workflows", labelKey: "settings.nav.workflows", icon: IconArrowsSplit },
@@ -134,11 +135,11 @@ const NAV_GROUPS: NavGroup[] = [
       // 节点都生效(见 `@contracts/hook`)。
       { id: "hooks", labelKey: "settings.nav.hooks", icon: IconActivity },
       { id: "mcp", labelKey: "settings.nav.mcp", icon: McpIcon },
-      // 上下文紧跟 MCP:两者都是"喂给引擎的全局上下文"(MCP 是工具,
-      // 上下文是常驻指令与记忆) —— 共用一条事实源,挨在一起才看得出来。
-      { id: "context", labelKey: "settings.nav.context", icon: IconBrain },
-      // 记忆库跟在上下文后面:两者都是"喂给引擎的长期信息"(上下文是常驻指令与
-      // 记忆的注入面,记忆库是记忆文件本身的管理面),挨在一起才看得出来。
+      // 上下文那一页**删掉了**(2026-09-20,用户定的),里面的两节搬进了「记忆库」——
+      // 它们本来就是一类东西(喂给引擎的长期信息),而记忆库已经是那个页面。
+      // 第三那节「工具占用」是静态估算,没搬(它没有实际用处)。
+      //
+      // 记忆库跟在 MCP 后面:两者都是"喂给引擎的长期信息"(MCP 是工具,记忆是内容)。
       { id: "memory", labelKey: "settings.nav.memory", icon: IconNotebook },
     ],
   },
@@ -303,15 +304,15 @@ export function SettingsPage() {
           {active === "gestures" && <GesturesPanel />}
           {active === "voice" && <VoicePanel />}
           {active === "skills" && <SkillsPanel />}
-          {/* 面板本身不随导航隐藏:深链(setSettingsOpen(true, "claude-subagents"))即便
-              在入口被能力位滤掉的瞬间也应落在真实内容上,而不是一页空白。 */}
-          {active === "claude-subagents" && <SubagentsPanel />}
           {active === "workflows" && <WorkflowsPanel purpose="workflow" />}
           {active === "automation" && <WorkflowsPanel purpose="automation" />}
           {active === "hooks" && <HooksPanel />}
           {active === "runtimes" && <RuntimesPanel />}
           {active === "mcp" && <McpPanel />}
-          {active === "context" && <ContextPanel />}
+          {/* 记忆库 —— 2026-09-20 起它**多担了两节**:全局指令(常驻指令的编辑器)
+              与项目记忆(CLI 自动记忆文件的编辑器)。两者原先在「上下文」那一页上,
+              而那一页整页删了(用户定的):三节里只有「工具占用」是只读估算,没有
+              实际用处,没有被搬过来。 */}
           {active === "memory" && <MemoryExplorerPanel />}
           {active === "plugins" && <PluginsPanel />}
           {active === "notifications" && <NotificationsPanel />}

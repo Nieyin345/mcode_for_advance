@@ -28,7 +28,7 @@
  */
 import type { Api } from "../../preload/index.js";
 import { IPC } from "@contracts/ipc";
-import type { Locale, PickedImage } from "@contracts/ipc";
+import type { Locale, PickedImage, TerminalInfo } from "@contracts/ipc";
 import type { RuntimeEvent } from "@contracts/runtime";
 import type { ThemeState } from "./theme.js";
 import type {
@@ -570,6 +570,26 @@ const shell: Api["shell"] = {
   openFile: () => Promise.resolve(),
 };
 
+/** 集成终端。手机端**不再整块缺失**,但只开了一条:
+ *
+ *  - `list` 走真的 HTTP 路(`terminal:list` 在主进程白名单里,见 mobileRpc.ts)——
+ *    终端列表面板是**共用组件**,手机上也挂得起来,列出来的是同一台电脑上的同一份
+ *    事实。它是只读的观察窗:看到"我的代理/会话开着哪些终端",但打不进去字。
+ *  - 其余(create / write / resize / kill)照旧返回 `{ok:false}` 而不是抛 —— 见
+ *    文件头那条:`TerminalView` 那类共用组件在挂载时会调 create,同步抛会让
+ *    React 19 把整棵树卸掉。返回一个带 error 的结果,调用方本来就把它写进终端
+ *    首行(`result.ok === false` → `term.writeln(...)`),用户看到的是一句说得清的
+ *    话,而不是一片空白或白屏。 */
+const TERMINAL_WEB_UNSUPPORTED = "终端只能在电脑端操作";
+
+const terminal: Api["terminal"] = {
+  create: () => Promise.resolve({ ok: false as const, error: TERMINAL_WEB_UNSUPPORTED }),
+  write: () => Promise.resolve({ ok: false, error: TERMINAL_WEB_UNSUPPORTED }),
+  resize: () => Promise.resolve({ ok: false, error: TERMINAL_WEB_UNSUPPORTED }),
+  kill: () => Promise.resolve({ ok: false, error: TERMINAL_WEB_UNSUPPORTED }),
+  list: (input) => rpc<{ terminals: TerminalInfo[] }>("terminal:list", input),
+};
+
 const clipboardFile: Api["clipboardFile"] = {
   save: async () => ({
     ok: false as const,
@@ -646,6 +666,7 @@ export function createWebApi(): Api {
     voice,
     theme,
     shell,
+    terminal,
     clipboardFile,
     claudeHealthCheck: (): Promise<{
       installed: boolean;

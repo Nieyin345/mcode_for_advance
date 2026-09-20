@@ -6,27 +6,52 @@
  * 原先只有文献行有右键菜单,分类行只有"悬停才出现的两个小图标"(重命名 / 删除)。
  * 而用户要的「在笔记库里右键新建笔记」没有地方放 —— 这也是笔记的创建入口只有一个
  * (导入条里那个输入框)的原因。右键菜单把这类"对这个分类做的事"集中到一处:
- * 添加到当前对话 / 新建笔记 / 新建子集合 / 重命名 / 删除。
+ * 添加到当前对话 / 新建笔记 / 改父级 / 重命名 / 删除。
  *
  * ## 「新建笔记」只在笔记库里出现
  *
  * 文献库和教材库里的条目是 PDF(导入进来的),没有"就地新建一篇"这回事;笔记是
  * 用户自己写的,才有新建。菜单项按 kind 决定是否出现,而不是给一个点了没用的项。
  *
- * ## 「新建子集合」
+ * ## 分类是**最后一级** —— 这里没有"再建下一级"
  *
- * 统一资料库支持嵌套(parentId),但树行上原来只有建根集合的「+」(在段头上)。
- * 建在某个分类**下面**的入口就落在这里 —— 右键哪个分类,新集合就建到它下面。
+ * 用户定的层次只有三级:大类 → 小类 → 分类。所以这一层的菜单**没有**「新建…」那一项,
+ * 它是三个菜单里唯一不"往下建"的。用户的纠正原话:「三级的 collection 还能新建子集合,
+ * 那就是四级了,我们只有三级呀」。
+ *
+ * 于是三个菜单的规矩变成:**能往下建的就把那一项排最前,到头的那个直接开始管自己**。
+ *
+ * ## 「移动到…」 —— 两步点进的列表,和文献行那个一模一样
+ *
+ * 改父级(换所属小类 / 挪到另一支下面)是目录树里最常见的整理动作,而原来只能删了
+ * 重建(项目自己的 `MCode-Status-and-Plan.md` 就是这么记着的:「「移」:改父级 /
+ * 换所属类型的入口还没做,只能删了重加」)。
+ *
+ * 交互刻意**照抄 `LibraryItemContextMenu` 的两步法**(点「移动到」把面板换成集合
+ * 列表 + 「← 返回」),不发明第二套:两个菜单在同一个位置、同一个动作,手感必须
+ * 一样。那边为什么不用悬停子菜单,见那个文件的注释(base-ui 的受控根菜单会在指针
+ * 移向子菜单时把自己卸载掉)。
  *
  * 版式与 `LibraryItemContextMenu` 保持一致(同一个 base-ui Menu + 光标锚点)。
  */
+import { useEffect, useState } from "react";
 import { Menu } from "@base-ui/react/menu";
 import type { LibraryCollection } from "@contracts/library";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { attachToCurrentChat } from "@renderer/lib/attachToChat.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
-import { IconFileText, IconMessage, IconPencil, IconPlus, IconTrash } from "@renderer/lib/icons.js";
+import {
+  IconArrowLeft,
+  IconArrowsExchange,
+  IconBook,
+  IconChevronRight,
+  IconFileText,
+  IconMessage,
+  IconPencil,
+  IconPlus,
+  IconTrash,
+} from "@renderer/lib/icons.js";
 
 export interface CollectionCtxTarget {
   collection: LibraryCollection;
@@ -36,24 +61,33 @@ export interface CollectionCtxTarget {
 
 export function CollectionContextMenu({
   target,
+  collections,
   onClose,
   onRename,
   onDelete,
   onNewNote,
-  onNewSubcollection,
+  onMove,
 }: {
   target: CollectionCtxTarget | null;
+  /** 同一个 kind 下的全部集合 —— 「移动到」那一屏列的就是它们(去掉自己与自己的子树)。 */
+  collections: readonly LibraryCollection[];
   onClose: () => void;
   onRename: (c: LibraryCollection) => void;
   onDelete: (c: LibraryCollection) => void;
   /** 新建一篇笔记并归入这个分类。只在笔记库里用得上。 */
   onNewNote: (c: LibraryCollection) => void;
-  /** 在这个分类下面新建一个子集合。 */
-  onNewSubcollection: (c: LibraryCollection) => void;
+  /** 把它挪到另一个父下面(`parentId: null` = 挪到最外层)。 */
+  onMove: (c: LibraryCollection, parentId: string | null) => void;
 }) {
   const { t } = useI18n();
   // 虚拟锚点钉在右键坐标上(与文献行菜单同一套)
   const anchor = useCursorAnchor(target);
+  const [picking, setPicking] = useState(false);
+
+  // 每次重新右键都从根步骤开始 —— 否则上一次点到「移动到」再右键会直接落在列表上
+  useEffect(() => {
+    if (target) setPicking(false);
+  }, [target]);
 
   const itemClass = cn(
     "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs outline-none select-none",
@@ -61,6 +95,30 @@ export function CollectionContextMenu({
   );
 
   const c = target?.collection;
+
+  /**
+   * 候选落点 —— 去掉自己,以及**自己在自己下面**的那些(移进去就成环了)。
+   *
+   * 主进程的 `CollectionRepo.move` 会拒(那是硬底线),但**菜单里根本不该出现**
+   * 一个点了必然报错的项 —— 那和"点了没反应"是同一种体验。所以这里先把它们挑掉,
+   * 判据与主进程同一条:沿祖先链往上走,走到头都碰不到自己才算数。
+   */
+  const candidates = (() => {
+    if (!c) return [];
+    const byId = new Map(collections.map((x) => [x.id, x]));
+    const isSelfOrDescendant = (x: LibraryCollection): boolean => {
+      let cur: LibraryCollection | undefined = x;
+      let guard = 0;
+      while (cur && guard++ < 10_000) {
+        if (cur.id === c.id) return true;
+        cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+      }
+      return false;
+    };
+    return collections.filter((x) => !isSelfOrDescendant(x));
+  })();
+
+  const c2 = c;
 
   return (
     <Menu.Root
@@ -78,70 +136,118 @@ export function CollectionContextMenu({
               "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
             )}
           >
-            {/* 挂到当前对话 —— 整段流程与「+ → 添加文献库到上下文」共用主进程那一份
-                实现(见 lib/attachToChat.ts),所以挂出来的是同一个 chip、同一份清单。 */}
-            <Menu.Item
-              onClick={() => {
-                if (c) void attachToCurrentChat(`c:${c.id}`);
-                onClose();
-              }}
-              className={itemClass}
-            >
-              <IconMessage size={12} className="shrink-0" />
-              {t("library.ctx.attachToChat")}
-            </Menu.Item>
-            <div className="my-1 border-t border-edge/60" />
-
-            {c?.kind === "note" && (
+            {picking ? (
+              /* ── 第二步:选它挪到谁下面(与文献行菜单的两步法逐字同款) ── */
               <>
                 <Menu.Item
+                  closeOnClick={false}
+                  onClick={() => setPicking(false)}
+                  className={cn(itemClass, "font-medium text-content")}
+                >
+                  <IconArrowLeft size={12} className="shrink-0" />
+                  {t("library.collection.moveTo")}
+                </Menu.Item>
+                <div className="my-1 border-t border-edge/60" />
+                {/* 挪到最外层 —— 它也是一条**真实存在**的去处,不给这一项的话
+                    一个已经在第二层的子集合就再也回不到根上了。 */}
+                <Menu.Item
                   onClick={() => {
-                    onNewNote(c);
+                    if (c2) onMove(c2, null);
                     onClose();
                   }}
                   className={itemClass}
                 >
-                  <IconFileText size={12} className="shrink-0" />
-                  {t("library.ctx.newNote")}
+                  <IconBook size={12} className="shrink-0" />
+                  {t("library.collection.moveToTop")}
+                </Menu.Item>
+                {candidates.map((x) => (
+                  <Menu.Item
+                    key={x.id}
+                    onClick={() => {
+                      if (c2) onMove(c2, x.id);
+                      onClose();
+                    }}
+                    className={itemClass}
+                  >
+                    <IconBook size={12} className="shrink-0" />
+                    <span className="truncate">{x.name}</span>
+                  </Menu.Item>
+                ))}
+              </>
+            ) : (
+              <>
+                {/* 挂到当前对话 —— 整段流程与「+ → 添加文献库到上下文」共用主进程那一份
+                    实现(见 lib/attachToChat.ts),所以挂出来的是同一个 chip、同一份清单。 */}
+                <Menu.Item
+                  onClick={() => {
+                    if (c) void attachToCurrentChat(`c:${c.id}`);
+                    onClose();
+                  }}
+                  className={itemClass}
+                >
+                  <IconMessage size={12} className="shrink-0" />
+                  {t("library.ctx.attachToChat")}
                 </Menu.Item>
                 <div className="my-1 border-t border-edge/60" />
+
+                {c?.kind === "note" && (
+                  <>
+                    <Menu.Item
+                      onClick={() => {
+                        onNewNote(c);
+                        onClose();
+                      }}
+                      className={itemClass}
+                    >
+                      <IconFileText size={12} className="shrink-0" />
+                      {t("library.ctx.newNote")}
+                    </Menu.Item>
+                    <div className="my-1 border-t border-edge/60" />
+                  </>
+                )}
+
+                {/* ⚠️ 这里**没有**「新建子集合」—— 左栏只有三级(大类 → 小类 → 分类),
+                    分类是**最后一级**。早先这里挂过一项「新建子集合」(于是有了第四级),
+                    用户的纠正原话是:「三级的 collection 还能新建子集合,那就是四级了,
+                    我们只有三级呀」。所以这一项撤掉,分类下面不再挂分类。
+                    树那一层还能画嵌套(历史数据里可能真有 parent 指向 parent 的老行),
+                    但那不是**入口**提供的能力。 */}
+
+                {/* 挪走 —— 进第二步(点开才列落点,不然一个长列表会把这菜单撑爆) */}
+                {c && (
+                  <Menu.Item
+                    closeOnClick={false}
+                    onClick={() => setPicking(true)}
+                    className={itemClass}
+                  >
+                    <IconArrowsExchange size={12} className="shrink-0" />
+                    {t("library.collection.moveTo")}
+                    <IconChevronRight size={12} className="ml-auto shrink-0 opacity-60" />
+                  </Menu.Item>
+                )}
+
+                <Menu.Item
+                  onClick={() => {
+                    if (c) onRename(c);
+                    onClose();
+                  }}
+                  className={itemClass}
+                >
+                  <IconPencil size={12} className="shrink-0" />
+                  {t("library.collection.rename")}
+                </Menu.Item>
+                <Menu.Item
+                  onClick={() => {
+                    if (c) onDelete(c);
+                    onClose();
+                  }}
+                  className={cn(itemClass, "hover:text-red-500")}
+                >
+                  <IconTrash size={12} className="shrink-0" />
+                  {t("library.collection.delete")}
+                </Menu.Item>
               </>
             )}
-
-            {/* 建在它下面 —— 右键谁就建到谁下面,输入行会挂在那行的正下方 */}
-            {c && (
-              <Menu.Item
-                onClick={() => {
-                  onNewSubcollection(c);
-                  onClose();
-                }}
-                className={itemClass}
-              >
-                <IconPlus size={12} className="shrink-0" />
-                {t("library.collection.newSub")}
-              </Menu.Item>
-            )}
-
-            <Menu.Item
-              onClick={() => {
-                if (c) onRename(c);
-                onClose();
-              }}
-              className={itemClass}
-            >
-              <IconPencil size={12} className="shrink-0" />
-              {t("library.collection.rename")}
-            </Menu.Item>
-            <Menu.Item
-              onClick={() => {
-                if (c) onDelete(c);
-                onClose();
-              }}
-              className={cn(itemClass, "hover:text-red-500")}
-            >
-              <IconTrash size={12} className="shrink-0" />
-              {t("library.collection.delete")}
-            </Menu.Item>
           </Menu.Popup>
         </Menu.Positioner>
       </Menu.Portal>

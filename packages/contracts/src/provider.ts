@@ -130,6 +130,17 @@ export interface StartTurnRequest {
    *  结果是只有 claude-sdk 实现了那套查表,Pi / Codex 完全忽略。改成传字符串之后,
    *  三个提供方的差别从"要不要实现一套查表逻辑"缩小成"append 一个字符串"。 */
   workflowPrompt?: string;
+  /** 「这个对话是谁」—— 角色提示词(代理档案里那段指令),**每一轮都带**。
+   *
+   *  与 `workflowPrompt` 同一条路、同一个层:**host 解析好字符串,提供方只 append**。
+   *  单列一个字段而不是拼进 `workflowPrompt`,是因为两者的**可变性**不一样:工作流是
+   *  用户在这个对话上随时可切的(每轮跟着会话行读),角色是**建会话那一刻定下的一份快照**
+   *  (改了档案,已经开出去的对话不跟着变)。混在一个字段里之后,"为什么改了档案它没变、
+   *  换了工作流它却变了"就再也说不清了。
+   *
+   *  Pi / Codex 现在也拿不到这个字段(它们连 `workflowPrompt` 都没读)。挂在这里是让
+   *  它们将来接上时只差一行 append —— 与工作流当初的写法一致。 */
+  agentPrompt?: string;
   /** Provider's own conversation id, used to resume a prior conversation.
    * null = first turn of a new conversation. */
   resumeProviderSessionId?: string | null;

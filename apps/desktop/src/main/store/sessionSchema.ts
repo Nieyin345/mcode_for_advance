@@ -191,6 +191,18 @@ export const SESSION_COLUMNS: readonly SessionColumn[] = [
   // 是另一步,该有新会话。
   { name: "node_id", def: "TEXT", inCreate: false, key: "nodeId",
     bind: (s) => v(s.nodeId ?? null), read: (r) => (r.node_id as string | null) ?? null },
+  // 这个对话**是谁** —— 建对话时挑的那份代理档案的一份快照(JSON:`{id, name,
+  // instruction}`,见 `@contracts/session` 的 `agentProfile` 那段)。
+  //
+  // 为什么是**快照**而不是一个档案 id:档案是用户随时可改可删的文件,每轮现读的话
+  // 同一个对话会中途换人格,而上下文是连续的 —— "它昨天说的话"和"它今天是谁"对不上。
+  // 代价(改了档案已开的对话不跟着变)见契约里那一段。
+  //
+  // NULL 在**两条**路上都是正常值:老会话(这一列之前没有)、以及「空白」那一路
+  // (用户要的就是一个什么角色都不是的纯对话)。
+  { name: "agent_profile", def: "TEXT", inCreate: false, key: "agentProfile",
+    bind: (s) => v(s.agentProfile ? JSON.stringify(s.agentProfile) : null),
+    read: (r) => (r.agent_profile ? safeJson(r.agent_profile) : null) as Session["agentProfile"] },
 ];
 
 /** CREATE TABLE 语句由 inCreate 列生成。db.ts 的 migrate() 大 SQL 模板里插值,

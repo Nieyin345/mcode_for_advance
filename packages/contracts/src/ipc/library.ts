@@ -82,6 +82,25 @@ export const LibraryLinksOfSchema = z.object({ itemId: z.string().min(1) });
 export type LibraryLinksOfInput = z.infer<typeof LibraryLinksOfSchema>;
 
 /**
+ * 一批条目**各自**的关联条数 —— 左栏行尾那个徽标要的数字。
+ *
+ * 为什么要一条批量的:左栏一屏几十上百条,`linksOf` 是**一次一条**的。
+ * 逐条调就是几十次 IPC,而且每次都要把整张关联表扫一遍("指向它的"那一半要求
+ * 反向查)。一条批量 RPC 把这两个开销都变成 1。
+ *
+ * 计数口径与 `linksOf` 一致(进/出两个方向都算):徽标说 2,点进去就该是 2 条 ——
+ * 数字对不上是最容易被当成 bug 的一类。
+ *
+ * 上限 2000 条:左栏一次不可能要更多,而一个没有上限的 `IN (...)` 会被拼成
+ * 一条巨长的 SQL。超出的**丢掉**(不报错)—— 徽标少显示几个不影响用,
+ * 而报错会让整栏画不出来。
+ */
+export const LibraryLinkCountsSchema = z.object({
+  itemIds: z.array(z.string().min(1)).max(2000),
+});
+export type LibraryLinkCountsInput = z.infer<typeof LibraryLinkCountsSchema>;
+
+/**
  * 加一条关联。
  *
  * 目标两种形态**二选一**(表上有 CHECK):`targetItemId`(库里的另一条条目)、
@@ -363,6 +382,59 @@ export const LibraryDeleteItemsSchema = z.object({
 export type LibraryDeleteItemsInput = z.infer<typeof LibraryDeleteItemsSchema>;
 
 /**
+ * 从回收站里**还原**这几条 —— 放回最后删除的那个分类(判据见
+ * `main/library/trash.ts` 的 `restoredTargetOf`)。
+ *
+ * 单独一条 RPC 而不是复用 `assignCollection`:还原是**两个动作的合体**(放进目标分类
+ * + 从回收站摘掉),少了后半步那些条目会被 `sweepToTrash` 立刻收回去,用户看到的是
+ * "点了还原什么都没发生"。把那两步留给渲染端拼,迟早有人只拼一半。
+ */
+export const LibraryRestoreItemsSchema = z.object({
+  ids: z.array(z.string().min(1)).min(1),
+});
+export type LibraryRestoreItemsInput = z.infer<typeof LibraryRestoreItemsSchema>;
+
+/** 删除前**看一眼会带走什么** —— 与 `deleteItems` 同一批 id。 */
+export const LibraryDeletePreviewSchema = z.object({
+  ids: z.array(z.string().min(1)).min(1),
+});
+export type LibraryDeletePreviewInput = z.infer<typeof LibraryDeletePreviewSchema>;
+
+/**
+ * 会**跟着一起没**的一项。
+ *
+ * 三档形态,因为它们"是什么"和"删掉的后果"都不同:
+ *
+ *   `item`       库里另一条条目(关联表里的目标)。删了它,那条记录就没了。
+ *   `path`       库外的绝对路径。删掉的只是那条关联记录(库不碰用户自己的文件)。
+ *   `transcript` 这条文献**自己的 Markdown 转录产物**。它和它那一包图床是**一个整体**
+ *                —— md 里的 `![](images/…)` 全部指向它,只删正文会把图永远留在盘上。
+ *                所以界面上它是**一个勾**,选它就是两样一起收。
+ */
+export interface LibraryDeletePreviewLink {
+  form: "item" | "path" | "transcript";
+  /** 库内条目的 id(`form: "item"`)。 */
+  targetItemId?: string;
+  /** 库外绝对路径(`form: "path"`)。 */
+  targetPath?: string;
+  /** 显示名。库内是标题、库外是文件名、转录是那份 md 的文件名。 */
+  title: string;
+  /** 转录那一档:这一包里**几张图**(数出来给用户看"图床"的规模)。 */
+  imageCount?: number;
+}
+
+export interface LibraryDeletePreviewEntry {
+  id: string;
+  title: string;
+  /** 除了它自己之外,会跟着没的东西(没有就是空数组,不是 undefined)。 */
+  links: LibraryDeletePreviewLink[];
+}
+
+export interface LibraryDeletePreviewResult {
+  entries: LibraryDeletePreviewEntry[];
+}
+
+/**
  * 一条**没能删掉**的库内文件。`library.deleteItems` 的返回里带上它。
  *
  * ## 为什么非有不可
@@ -452,6 +524,44 @@ export type CollectionRenameInput = z.infer<typeof CollectionRenameSchema>;
 
 export const CollectionDeleteSchema = z.object({ id: z.string().min(1) });
 export type CollectionDeleteInput = z.infer<typeof CollectionDeleteSchema>;
+
+/**
+ * 把一个集合**移到另一个父下面**(改父级)。
+ *
+ * ## 为什么和 `CollectionRenameSchema` 分开
+ *
+ * 改名改的是**属性**,移动改的是**在树里的位置** —— 两者的校验完全不是一回事:
+ * 改名只要判重名,移动要判**环**。合成一条的话,只想改名的人被迫走一遍环校验,
+ * 而环校验要读整张父链表,代价不该花在那条路上。
+ *
+ * ## `parentId` 为什么必须有三种含义,不能只用一个 string|null
+ *
+ * 这是本 schema 唯一别扭的地方,但少了它界面就没法表达"移到最外层":
+ *
+ *   - **不传**(undefined)—— 父级不动(目前界面用不到,留给将来的同级拖动);
+ *   - **传 null** —— 移到**最外层**(成为根集合);
+ *   - **传 id** —— 移到那个集合下面。
+ *
+ * 用 `optional().nullable()` 而不是给个 `null` 就够,是因为 `z.string().nullable()`
+ * 会逼着"父级不动"也传一个值 —— 而那时调用方手上根本没有它想表达的那个值。
+ *
+ * ## 为什么**没有** `index`(同级落点)
+ *
+ * 第一版有一个 `index`,写完发现它的语义是个陷阱:下标算的是"**除自己之外**的兄弟
+ * 列表里的位置"。跨父移动时它通顺,而在**同一层内**挪次序时,把某一条算进去/算出来
+ * 的下标会差一位 —— 参数照字面实现对不上界面意图,而这种错**不报错**,只是东西落错
+ * 地方。既然界面现在并不需要它(树上的"移"是跨父的),就砍掉,而不是留一个半对的旋钮。
+ * 将来做同级拖动时再加,那时**它要带上"包不包括自己"的明确说法**。
+ *
+ * 环的判定在**主进程**(要读库里那张父链表,见 `CollectionRepo.move`);契约这一层
+ * 只保证形状 —— 这里查不了环,它没有 DB。
+ */
+export const CollectionMoveSchema = z.object({
+  id: z.string().min(1),
+  /** 新的父集合。不传 = 父级不动;null = 移到最外层。 */
+  parentId: z.string().min(1).nullable().optional(),
+});
+export type CollectionMoveInput = z.infer<typeof CollectionMoveSchema>;
 
 /** 把文献加入/移出集合。一次可操作多条。 */
 export const CollectionAssignSchema = z.object({

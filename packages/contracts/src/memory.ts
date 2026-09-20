@@ -63,6 +63,37 @@ export interface MemoryFileMeta {
  */
 export const MEMORY_PARAM_KEY = "memory";
 
+/* ── 快照 → 提示词里的一节 ── */
+
+/**
+ * 拼出来那一节的标题。**只在这里写一次** —— 节点注入(走模型的那几种节点)与
+ * 「档案+记忆」建出来的子对话用的是同一个标题,两边各写一遍的话,同一个功能在界面上
+ * 会有两种叫法。
+ */
+export const MEMORY_SECTION_TITLE = "## 长期记忆";
+
+/**
+ * 把一份记忆快照拼成**要追加进提示词的一节**。**纯函数**:不碰文件系统、不 import 主
+ * 进程的任何东西(理由同 {@link parseAgentProfile} 那条 —— 共享的拼装规则是一份对外
+ * 承诺,而且纯函数才喂得进无头脚本)。
+ *
+ * 快照是空串时也返回空串:库是空的就不该凭空多一个只有标题的空段落。
+ *
+ * 第二行那句话不是客套:记忆是**背景**,指令是**要求**。不写明白谁大,模型在两者冲突时
+ * 会挑记忆里那条(它读起来更像"用户以前说过的话"),而用户看到的是"我明明说了按我的
+ * 来,它还是照记忆办"。
+ */
+export function memorySectionFrom(snapshot: string): string {
+  const body = snapshot.trim();
+  if (body.length === 0) return "";
+  return [
+    MEMORY_SECTION_TITLE,
+    "以下是记忆库中的既有记录,与本步相关时可参考;与指令冲突时,以指令为准:",
+    "",
+    body,
+  ].join("\n");
+}
+
 /* ── IPC 入参 schema ── */
 
 /** `memory:read` / `memory:delete` 的入参:memory 根下的相对路径。 */

@@ -8,21 +8,31 @@
  * 能读、能改、能画的东西 —— 这正是整个功能存在的理由(见方案:模型拿到技能之后仍然
  * 在"一步步试",根因是流程没有固化)。
  *
- * ## 两个页签,一个 section
+ * ## 三个页签,一个 section
  *
  * - **工作流库**:六个内置 + 用户自建的。选中一个,中间是**画布**(加节点、拖动、
  *   连依赖),右边是检查器(选中节点就配那个节点,没选就配工作流本体)。
  * - **节点类型**:节点引用什么类型、每种类型要什么参数、哪些清单读不进来。
+ * - **代理档案**:存下来的那几份配置**,按节点类型分成组** —— 每个类型一组、每组下面
+ *   是那个类型的档案,点开就能改(见 `AgentProfilesView` 的新文件头)。
  *
- * 它们合成一个页签而不是两个设置项:节点类型是**工作流的底座**(没有类型就没有
- * 节点),而一个只读的底座列表不值得在设置导航里占一格。装插件那条路走的是
+ * 它们合成一个页签而不是三个设置项:节点类型是**工作流的底座**(没有类型就没有
+ * 节点),档案是"某个类型的一组参数"(没有类型就没有档案)—— 三者是同一条线上的
+ * 三段,拆成三个设置项之后每换一页都要重新找自己在哪。装插件那条路走的是
  * 「设置 → 插件」,这里只负责把"当前有什么"说清楚。
  *
- * ## 节点类型清单由**这一层**持有
+ * ## 节点类型清单与档案列表由**这一层**持有
  *
- * 两个页签都要它:画布的「添加节点」菜单要按类型列,检查器要按类型生成参数表单,
- * 节点类型那页要列来源。各读各的会让"点刷新"只刷新其中一处。所以在这里读一次、
- * 往下传 —— 顺带 `NodeTypesView` 变成一个纯展示组件(喂数据就能画,见冒烟脚本)。
+ * 三个页签都要它们:画布的「添加节点」菜单要按类型列、按档案建节点,检查器要按类型
+ * 生成参数表单、按档案套用,节点类型那页要列来源,档案那页要按类型分组。各读各的会让
+ * "点刷新"只刷新其中一处。所以在这里读一次、往下传 —— 顺带 `NodeTypesView` 与
+ * `AgentProfilesView` 都变成纯展示组件(喂数据就能画,见冒烟脚本)。
+ *
+ * ## 档案在**打开这一页时**就取一次,不必先点进那个页签
+ *
+ * 三个页签同时挂载(靠 `hidden` 切换),所以这句话不是为了省一次渲染 —— 是为了让
+ * "这一页里存了一份档案"这件事在页签之间**立刻**一致。把取数挪进页签里就等于说
+ * "你先点它一下才有数据",而用户点它的那一刻看到的会是空列表再闪一下。
  *
  * ⚠️ 这里**不嵌 `ThreePaneLayout`** —— 它已经是设置页的窗口级外壳,面板内部要自己
  * 写 flex/grid(与 SkillsPanel / 模型配置同一形状:`h-full` + 内部各自滚动)。
@@ -33,8 +43,9 @@
  * 同一份数据、同一个编辑器**,差别只在"谁把它跑起来"(见 `@contracts/workflow`)——
  * 所以不是一个新面板,而是这个面板的另一种用法。
  *
- * 自动化那边**没有「节点类型」页签**:节点类型是节点的底座,两者用的是同一批类型,
- * 说明书放一份就够了(在工作流那一边)。
+ * 自动化那边**没有「节点类型」和「代理档案」页签**:节点类型是节点的底座,两者用的是
+ * 同一批类型,说明书放一份就够了(在工作流那一边);而自动化那一页根本画不出档案能套
+ * 的节点(它的起点是触发器)。
  */
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@renderer/lib/api.js";
@@ -47,20 +58,22 @@ import type { NodeTypeCatalog } from "@contracts/nodeType";
 import { PanelHeader } from "../PanelHeader.js";
 import { WorkflowLibraryView } from "./WorkflowLibraryView.js";
 import { NodeTypesView } from "./NodeTypesView.js";
+import { AgentProfilesView } from "./AgentProfilesView.js";
 import type { WorkflowPurpose } from "./workflowView.js";
 
-type WorkflowsView = "library" | "nodeTypes";
+type WorkflowsView = "library" | "nodeTypes" | "profiles";
 
 const VIEWS: ReadonlyArray<{ id: WorkflowsView; labelKey: MessageId }> = [
   { id: "library", labelKey: "settings.workflows.tabLibrary" },
   { id: "nodeTypes", labelKey: "settings.workflows.tabNodeTypes" },
+  { id: "profiles", labelKey: "settings.workflows.tabProfiles" },
 ];
 
 export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
   const { t } = useI18n();
   const [view, setView] = useState<WorkflowsView>("library");
   const isAutomation = purpose === "automation";
-  // 自动化只有"库"这一个页签,而节点类型那一页的文案(「工作流库」)也不适用 ——
+  // 自动化只有"库"这一个页签,而另外两页的文案(「工作流库」)也不适用 ——
   // 所以页签集合是按用途筛出来的,不是写死两份。
   const views = isAutomation ? VIEWS.filter((v) => v.id === "library") : VIEWS;
   const prefix = isAutomation ? "automation" : "workflows";
@@ -93,8 +106,12 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [profileProblems, setProfileProblems] = useState<AgentProfileCatalog["problems"]>([]);
   const [profileError, setProfileError] = useState<string | null>(null);
+  /** 第一次拉档案回来了没有。**与"拉回来是空的"是两件事** —— 前者该转圈,后者该
+   *  说"还没有档案";混成一个的话每次打开这一页都会先闪一下空状态。 */
+  const [profilesLoading, setProfilesLoading] = useState(true);
 
   const loadProfiles = useCallback(async () => {
+    setProfilesLoading(true);
     try {
       const res = await api.workflow.agentProfiles();
       setProfiles(res.profiles);
@@ -103,6 +120,8 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
       // 档案是**附加**能力:拉不到不该让画布和类型清单一起打不开。
       setProfiles([]);
       setProfileProblems([]);
+    } finally {
+      setProfilesLoading(false);
     }
   }, []);
 
@@ -201,30 +220,46 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
           onRemoveProfile={removeProfile}
         />
       </div>
-      {/* 节点类型那一页只有工作流那边有(`views` 里已经筛掉了),所以这整块对自动化
-          不渲染 —— 挂一棵永远 `hidden` 的子树没有意义。 */}
+      {/* 节点类型与代理档案这两页只有工作流那边有(`views` 里已经筛掉了),所以这整块
+          对自动化不渲染 —— 挂一棵永远 `hidden` 的子树没有意义。 */}
       {!isAutomation && (
-        <div
-          id={panelId(prefix, "nodeTypes")}
-          role="tabpanel"
-          aria-labelledby={tabId(prefix, "nodeTypes")}
-          className={cn(
-            "min-h-0 flex-1 overflow-y-auto pr-1",
-            view === "nodeTypes" ? "block" : "hidden",
-          )}
-        >
-          <NodeTypesView
-            catalog={catalog}
-            loading={catalogLoading}
-            error={catalogError}
-            onRefresh={() => void loadCatalog()}
-            profiles={profiles}
-            profileProblems={profileProblems}
-            profileError={profileError}
-            onSaveProfile={saveProfile}
-            onRemoveProfile={removeProfile}
-          />
-        </div>
+        <>
+          <div
+            id={panelId(prefix, "nodeTypes")}
+            role="tabpanel"
+            aria-labelledby={tabId(prefix, "nodeTypes")}
+            className={cn(
+              "min-h-0 flex-1 overflow-y-auto pr-1",
+              view === "nodeTypes" ? "block" : "hidden",
+            )}
+          >
+            <NodeTypesView
+              catalog={catalog}
+              loading={catalogLoading}
+              error={catalogError}
+              onRefresh={() => void loadCatalog()}
+            />
+          </div>
+          {/* 代理档案是**自己的一页**(2026-09-20):它长得和节点类型那一页不一样 ——
+              左边是分类、右边是这一类里的档案,而且右栏就地编辑。挤在节点类型下半部分
+              时,档案一多就把说明书整个顶下去了。 */}
+          <div
+            id={panelId(prefix, "profiles")}
+            role="tabpanel"
+            aria-labelledby={tabId(prefix, "profiles")}
+            className={cn("min-h-0 flex-1", view === "profiles" ? "flex" : "hidden")}
+          >
+            <AgentProfilesView
+              catalog={catalog}
+              profiles={profiles}
+              loading={profilesLoading}
+              problems={profileProblems}
+              error={profileError}
+              onSave={saveProfile}
+              onRemove={removeProfile}
+            />
+          </div>
+        </>
       )}
     </div>
   );

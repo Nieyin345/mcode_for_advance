@@ -54,6 +54,7 @@ export function ComposerToolbar({
   onPickLibraries,
   onPickTemplates,
   onSlashCommand,
+  onNewSubChat,
 }: {
   sessionId: string;
   /** Presentation: inline mini pill ("pill") vs vertical settings list
@@ -72,6 +73,15 @@ export function ComposerToolbar({
   /** 模版选择器 —— 与文献库并列的第二个「库」(见 TemplatePicker)。 */
   onPickTemplates?: () => void;
   onSlashCommand?: () => void;
+  /**
+   * 「新建子对话」建好之后的通知 —— **可选,缺省什么都不做**。
+   *
+   * 只是透传给 {@link AttachMenuButton}:菜单项本身与那个选择器全在那边(`+` 按钮的
+   * rect 就是它自己的锚点,不需要宿主给任何东西),所以这里**不做成必填** ——
+   * 见 `AttachMenuButton` 上那段:多一个必填的会让 `hasAttach` 判据把整块「+」吃掉。
+   * 宿主(如 ChatPane)接上它之后可以做点界面上的事:切到右侧面板、弹个提示。
+   */
+  onNewSubChat?: (session: { id: string; title: string }) => void;
 }) {
   const { t } = useI18n();
   // Context-window snapshot for THIS pane's session. Drives the ring segment
@@ -139,6 +149,7 @@ export function ComposerToolbar({
             onPickLibraries={onPickLibraries}
             onPickTemplates={onPickTemplates}
             onSlashCommand={onSlashCommand}
+            onNewSubChat={onNewSubChat}
           />
           <span className="composer-minipill-mid" aria-hidden />
         </>

@@ -126,6 +126,32 @@ export interface Session {
    *  moving or re-wiring a node keeps it**; deleting a node and drawing a new
    *  one mints a new id, which is correct — that is a different step. */
   nodeId: string | null;
+  /**
+   * 这个对话**是谁** —— 建对话时挑的那份代理档案。
+   *
+   * `name` 是它的标题,`instruction` 是**每一轮都带**的角色提示词。null = 没有角色
+   * (「空白」那一路:纯对话,不额外说什么它是什么)。
+   *
+   * ## 为什么存快照,不存一个 id
+   *
+   * 档案是用户随时可改可删的文件(`<数据根>/workflows/agents/<id>.json`)。
+   * 只存 id、每轮现读的话:同一个对话今天用第 2 版、明天用第 3 版,而上下文是连续的 ——
+   * 「它昨天说过的话」和「它今天是谁」对不上,用户看不出发生过什么。所以**建会话那一刻
+   * 抄一份进来**,之后这个对话就活在这一份上;`id` 只是记着它当初从哪份档案来的。
+   *
+   * ⚠️ 代价:**改了档案,已经开出去的对话不跟着变**。这是刻意的 —— 想要新的就再建一个
+   * 子对话。与**节点**那一侧正相反:节点每轮现取(`paramsForProfile`),因为它本来就是
+   * "跑一次算一次"的东西。
+   *
+   * 形状是 `agentProfile.ts` 的 `SessionAgentProfileRef`;这里写成内联对象而不是 import
+   * 那个接口,是为了不让 session.ts 反向依赖 agentProfile.ts(那个文件已经 import 了
+   * nodeType,再牵进 session 会绕成一圈)。
+   */
+  agentProfile?: {
+    id: string;
+    name: string;
+    instruction: string;
+  } | null;
   title: string;
   status: SessionStatus;
   /** Model alias or full name ("default" = let claude pick). → --model. */

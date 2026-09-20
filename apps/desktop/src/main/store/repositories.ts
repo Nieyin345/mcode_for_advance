@@ -576,17 +576,57 @@ export const SessionRepo = {
 
   /** Newest still-fresh side chat of a parent — the ask tab's "new chat"
    *  button reuses this row instead of stacking empty ones (same rule as
-   *  findFreshByProject: the "Quick ask" placeholder is rewritten by the
-   *  first sent question, so a placeholder title means never used). */
-  findFreshSideByParent(parentSessionId: string): Session | undefined {
+   *  findFreshByProject: a row the first question never landed in is an empty
+   *  shell, so refocusing it beats creating another one).
+   *
+   *  ## 「还没发过言」的判据是**有没有消息**,不是标题
+   *
+   *  这个判据以前写作 `title = 'Quick ask'`(占位标题 = 第一条消息还没来)。带角色那两档
+   *  之后它**不再成立**:「档案」那一档的标题**就是档案名**(`sessionStart.ts` 里那段 ——
+   *  用户挑的是"它叫这个、它是这个角色",不该被第一句话覆盖掉),所以那个壳的标题永远不是
+   *  `Quick ask`,按标题判就永远认不出它曾经被复用 —— 结果是每点一次都多一个空壳。
+   *
+   *  换成 `NOT EXISTS(messages …)` 是**同一件事的直接写法**:"还没发过言"本来就是"没有
+   *  消息"。行为差异只有一处:一条**空白正文**的消息(标题因此没被改写)以前会被当成
+   *  "空壳"复用,现在不会 —— 那种壳确实已经用过了,不复用是对的。
+   *
+   *  ## `profileId` 收窄
+   *
+   *  「空白」「档案甲」「档案甲+记忆」都是同一个 kind、同一套空壳判据,不按角色收窄的话,
+   *  点「档案甲」会拿到上一次点「空白」留下的那个壳,而**壳上看不出角色对不对**(建完就
+   *  打开了,用户只会发现"它不是那个角色")。`null` = 「空白」那一路(只跟同样没有角色的
+   *  壳复用),`undefined` = 不收窄。
+   *
+   *  ⚠️ 判据是**在 JSON 文本里找 `"id":"<id>"`**,不是解析 JSON —— sql.js 装的这版
+   *  SQLite 不保证有 JSON1 扩展(`json_extract` 可能直接报错),而档案 id 的字符集被
+   *  `AGENT_PROFILE_ID_RE` 限死在 `[a-z0-9_]`,塞不进 LIKE 的通配符。这条路窄但确定
+   *  (模式里带着收尾的双引号,所以 `p_a` 不会命中 `p_ab`)。 */
+  findFreshSideByParent(
+    parentSessionId: string,
+    profileId?: string | null,
+  ): Session | undefined {
     const db = getDb();
+    const where = [
+      "kind = 'side'",
+      "parent_session_id = ?",
+      "status = 'idle'",
+      // 「还没发过言」—— 见上面那一段:这是标题判据的直接写法。
+      "NOT EXISTS (SELECT 1 FROM messages WHERE messages.session_id = sessions.id)",
+    ];
+    const params: BindValue[] = [v(parentSessionId)];
+    if (profileId !== undefined) {
+      if (profileId === null) {
+        where.push("agent_profile IS NULL");
+      } else {
+        where.push("agent_profile LIKE ?");
+        params.push(v(`%"id":"${profileId}"%`));
+      }
+    }
     const stmt = db.prepare(
-      `SELECT * FROM sessions
-       WHERE kind = 'side' AND parent_session_id = ?
-         AND status = 'idle' AND title = 'Quick ask'
+      `SELECT * FROM sessions WHERE ${where.join(" AND ")}
        ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
     );
-    stmt.bind([v(parentSessionId)]);
+    stmt.bind(params);
     const found = stmt.step();
     const row = found ? (stmt.getAsObject() as unknown as SessionRow) : undefined;
     stmt.free();
@@ -597,7 +637,13 @@ export const SessionRepo = {
    *  newest first. Powers the right-panel ask tab's list view. Unlike the
    *  left-bar list this orders by `created_at` — side chats are immutable
    *  Q&A threads, so creation order is the natural reading order (updated_at
-   *  would shuffle the list whenever an old thread's status flips). */
+   *  would shuffle the list whenever an old thread's status flips).
+   *
+   *  ⚠️ **「新建子对话」建出来的那些也在这里。** 它们同样是 kind='side'、同样挂在
+   *  parent 上(见 A 决定:不为它们新加一种 kind)—— 于是右侧问答页签的列表里会同时
+   *  出现"随手问一句"和"带角色的子对话",靠标题区分。这是**知道的代价**,不是漏掉:
+   *  新加一种 kind 要动的地方(读归一、十几处 `kind='chat'` 钉法、枚举)远比多出来的
+   *  几行多,而它们本来就是一个东西 —— 挂在父对话上的、用户自己开的、不进左栏的会话。 */
   listSideByParent(parentSessionId: string): Session[] {
     const db = getDb();
     const stmt = db.prepare(
@@ -2341,6 +2387,120 @@ export const CollectionRepo = {
     persist();
   },
 
+  /**
+   * 把一个集合移到别处 —— 改父级,和/或调同级的次序。左栏拖拽 / 右键「移动到…」的落点。
+   *
+   * 失败时把原因**原文**返回,调用方直接摆给用户看 —— 不另造一套说法。
+   * 四种移不动:找不到它自己 / 找不到新父级 / 会成环 / 目标位置重名。
+   *
+   * ## 为什么环必须显式判
+   *
+   * `parent_id` 上的外键**不防环**(见 `listByCollectionTree` 那段说明 —— 那边用
+   * `UNION` 而不是 `UNION ALL` 才没被挂死)。于是"把 A 移到自己下面"在 SQL 层是
+   * 完全合法的写,而后患是那一棵子树从库里所有遍历里消失:界面上它整块不见了,
+   * 用户以为东西没了。
+   *
+   * 判法两种:查目标的**祖先链**里有没有自己(向上),或查自己的**后代集**里有没有
+   * 目标(向下)。**向上走更省** —— 祖先链通常只有几层,后代集要遍历整棵子树。
+   * 所以这里从目标出发往上走,走到 `null` 到头。`guard` 是坏数据兜底:真有环时
+   * 不许这个循环把主进程挂死(宁可拒绝这次移动)。
+   *
+   * ## 重名判据:这里**只判同一层**,比 create/rename 宽松(刻意)
+   *
+   * `create` / `rename` 走 `isNameTaken`,那是**同库内全局唯一**。这里用同层唯一。
+   * 差别只在"移动"这条路上宽松,理由是用户视角的:把「方法」从根目录拖进「第一章」
+   * 下面时,若根目录另有一个「方法」,按全局判重会被拒;但两个「方法」现在处在**不同
+   * 的父级下**,左栏上是两棵互不相干的分支,用户完全分得清。硬拒的话他唯一的出路是
+   * 改名,而那个名字本来就是他想要的。
+   *
+   * ⚠️ 这确实是**两套口径**。真要统一得连 `create` 一起放宽,而那会改掉"同库内不许
+   * 重名"这条既有约束(库名会出现在上下文 chip、右栏标题、选择器里,那些地方只看得到
+   * 名字)—— 不在这次改动的范围内,所以这里如实写出这个不一致,而不是假装没有。
+   *
+   * ## 次序怎么排
+   *
+   * 挪过去之后**追加到新那一层的末尾**:先把目标层的兄弟按 `sort_order` 排好,再把
+   * 自己插到最末,然后**整层重写** `sort_order` 为 0..n-1。
+   *
+   * 整层重写而不是"搬动别人腾位置":结果与顺序一一对应,也不会在中间态留下两个同号的
+   * 兄弟。代价是这一层有 k 个兄弟就写 k 行 —— 分类是几十条的量级,不值得为它优化。
+   *
+   * ## 为什么签名里**没有**"落到第几位"
+   *
+   * 契约 `CollectionMoveSchema` 上原本有个 `index`(同级落点),已经砍掉,这里也跟着
+   * 砍了 —— 留着形参而没人传,下一个人会以为"拖动排序"已经有了。
+   *
+   * 砍它的原因是它**算不对**:`index` 数的是"除自己之外"的兄弟,而同层内挪动时
+   * 用户心里的位置是含自己的 —— 往右拖一位要传 `index+1`。这种差一位的坑,少一个
+   * 入口就少一处;而现在界面没有任何一条路需要它(候选落点里自己与自己的子树都被
+   * 挑掉了,没有"原地调序"这个动作)。挪过去一律**追加到新那一层的末尾**。
+   */
+  move(
+    id: string,
+    parentId: string | null | undefined,
+  ): { ok: true } | { ok: false; error: string } {
+    const all = CollectionRepo.list();
+    const current = all.find((c) => c.id === id);
+    if (!current) return { ok: false, error: "这个分类已经不在了" };
+
+    // 只调次序时父级不变;传了值就用新值(显式的 null = 移到最外层)
+    const nextParent = parentId === undefined ? current.parentId : parentId;
+
+    if (nextParent !== null) {
+      const target = all.find((c) => c.id === nextParent);
+      if (!target) return { ok: false, error: "目标分类已经不在了" };
+      // 跨库:两个库各有各的分类树,parent 指过去会让那一棵在两个库里都出现。
+      // 界面上目前也不提供这个动作(拖拽只在自己的段内),所以挡在这里。
+      if (target.kind !== current.kind) {
+        return { ok: false, error: "不能把分类移到另一个库里" };
+      }
+      if (target.id === id) {
+        return { ok: false, error: "不能把一个分类移到它自己下面" };
+      }
+      let cursor: string | null = target.parentId;
+      let guard = 0;
+      while (cursor !== null && guard < 10_000) {
+        if (cursor === id) {
+          return { ok: false, error: "不能把一个分类移到它自己的子分类下面" };
+        }
+        cursor = all.find((c) => c.id === cursor)?.parentId ?? null;
+        guard += 1;
+      }
+    }
+
+    // 同层重名(见上面的说明:这里刻意只判同一层)
+    const norm = current.name.trim().toLowerCase();
+    const clash = all.some(
+      (c) =>
+        c.id !== id &&
+        c.kind === current.kind &&
+        (c.parentId ?? null) === nextParent &&
+        c.name.trim().toLowerCase() === norm,
+    );
+    if (clash) return { ok: false, error: "目标位置已经有同名的分类了" };
+
+    const siblings = CollectionRepo.list(current.kind)
+      .filter((c) => (c.parentId ?? null) === nextParent && c.id !== id)
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt - b.createdAt);
+    // 追加到末尾(见上面"为什么签名里没有落到第几位")
+    siblings.push({ ...current, parentId: nextParent } as LibraryCollection);
+
+    const db = getDb();
+    db.run("BEGIN");
+    try {
+      db.run("UPDATE library_collections SET parent_id = ? WHERE id = ?", [v(nextParent), v(id)]);
+      const stmt = db.prepare("UPDATE library_collections SET sort_order = ? WHERE id = ?");
+      for (let i = 0; i < siblings.length; i++) stmt.run([v(i), v(siblings[i]!.id)]);
+      stmt.free();
+      db.run("COMMIT");
+    } catch (err) {
+      db.run("ROLLBACK");
+      throw err;
+    }
+    persist();
+    return { ok: true };
+  },
+
   /** 把一批文献加入/移出某集合。已存在时重复加入是幂等的。 */
   assign(collectionId: string, itemIds: string[], add: boolean): void {
     if (itemIds.length === 0) return;
@@ -2910,6 +3070,48 @@ export const LibraryLinkRepo = {
   },
 
   /**
+   * 一批条目**各自**有几条关联 —— 左栏行尾那个徽标要的数字。
+   *
+   * ## 为什么必须是一条批量 RPC,而不是渲染端逐条调 `linksOf`
+   *
+   * 左栏一屏能挂几十上百条,逐条发的话就是几十次 IPC,而且每次都要把整张
+   * `library_item_links` 扫一遍(`linksOf` 的 WHERE 是 `item_id = ? OR
+   * target_item_id = ?`,两列都带索引但仍是两次查)。这一条**一次查完**整批。
+   *
+   * 计数口径与 `linksOf` **逐字一致**:进/出两个方向都算(用户给 A 挂了 B,
+   * 那么在 A 和 B 的左边栏都该看到一个 1)—— 否则徽标说 0、点进去有 1 条,
+   * 那种"数字对不上"是最容易被当成 bug 的一类。
+   *
+   * 没关联的条目**不出现在返回里**(不是 0),调用方用 `?? 0` 兜 —— 返回一整份
+   * 全是 0 的对象在库大起来时纯属浪费。
+   */
+  countsOf(itemIds: readonly string[]): Record<string, number> {
+    const ids = [...new Set(itemIds.filter((id) => id.length > 0))];
+    const counts: Record<string, number> = {};
+    if (ids.length === 0) return counts;
+    const db = getDb();
+    const marks = ids.map(() => "?").join(",");
+    // 一条 SQL 两个方向各数一次:UNION ALL 之后按 id 分组。
+    // 不写成两条查询再在 JS 里合并 —— 同一条关联的两头都要 +1,合并逻辑放在
+    // SQL 里更不容易写错(而且走的是同一次扫描)。
+    const stmt = db.prepare(
+      `SELECT owner, COUNT(*) AS n FROM (
+         SELECT item_id AS owner FROM library_item_links WHERE item_id IN (${marks})
+         UNION ALL
+         SELECT target_item_id AS owner FROM library_item_links WHERE target_item_id IN (${marks})
+       ) GROUP BY owner`,
+    );
+    stmt.bind([...ids.map((x) => v(x)), ...ids.map((x) => v(x))]);
+    while (stmt.step()) {
+      const r = stmt.getAsObject() as { owner: unknown; n: unknown };
+      const owner = r.owner === null || r.owner === undefined ? "" : String(r.owner);
+      if (owner) counts[owner] = Number(r.n);
+    }
+    stmt.free();
+    return counts;
+  },
+
+  /**
    * 界面上「关联」区的那些行 —— 关联本身 + **另一头**的摘要,一次查好。
    *
    * 为什么不在渲染端逐条拉:`linksOf` 的行有方向,另一头可能是条目、可能是路径,
@@ -2961,6 +3163,93 @@ export const LibraryLinkRepo = {
         ...(otherItemId ? { attachKey: `i:${otherItemId}` } : {}),
         createdAt: link.createdAt,
       });
+    }
+    return out;
+  },
+  /**
+   * 一批条目各自的关联视图 —— `viewsOf` 的批量版,**一次查完**。
+   *
+   * 给「删除前预览」用:那个弹窗要画的是"每个文档一组勾选",而它可能一次带几十条
+   * (用户原话「可以批量删除」)。逐条 `viewsOf` 的话每次都要把整张
+   * `library_item_links` 扫两遍(`linksOf` 的 WHERE 是 `item_id = ? OR
+   * target_item_id = ?`),几十条就是上百次查询。
+   *
+   * 口径与 `viewsOf` **逐字一致**(方向、另一头的标题、`attachKey`)—— 两处不一致
+   * 会表现成"预览里说有 3 条,删的时候按 2 条处理"这种对不上的数。所以这一支的
+   * 行整形直接复用同一段代码,不是照着重写一遍。
+   *
+   * 返回**以 id 为键的字典**(不是数组):调用方按条目查,而不在的条目自然落到
+   * 空数组(调用方 `?? []`),省得两边都做一次对齐。
+   */
+  viewsOfMany(itemIds: readonly string[]): Record<string, LibraryLinkView[]> {
+    const out: Record<string, LibraryLinkView[]> = {};
+    for (const id of itemIds) out[id] = [];
+    const db = getDb();
+    const ids = [
+      ...new Set(itemIds.filter((id) => id.length > 0)),
+    ];
+    if (ids.length === 0) return out;
+    const marks = ids.map(() => "?").join(",");
+    // 一条 SQL 把两个方向的行都捞出来:出边(`item_id IN`)与入边(`target_item_id IN`)。
+    // 两个方向都要,理由与 `linksOf` 一样 —— 用户给 A 挂了 B,打开 B 也该看见。
+    const stmt = db.prepare(
+      `SELECT * FROM library_item_links WHERE item_id IN (${marks}) OR target_item_id IN (${marks})`,
+    );
+    stmt.bind([...ids.map((x) => v(x)), ...ids.map((x) => v(x))]);
+    const rows: LinkRow[] = [];
+    while (stmt.step()) rows.push(stmt.getAsObject() as unknown as LinkRow);
+    stmt.free();
+
+    // 另一头的标题批量查(一次 IN)—— 与 `viewsOf` 同一条理由:几十条关联发几十条
+    // SQL 是这一条 RPC 存在的意义所在。要查的 id 是**行里出现过的全部**,不只是被问
+    // 的那一批:入边的"另一头"就是 `item_id`,它可能不在被问的名单里。
+    const wanted = [
+      ...new Set(
+        rows
+          .flatMap((r) => [r.item_id, r.target_item_id])
+          .filter((x): x is string => typeof x === "string" && x.length > 0),
+      ),
+    ];
+    const titles = new Map<string, string>();
+    if (wanted.length > 0) {
+      const t = db.prepare(
+        `SELECT id, title FROM library_items WHERE id IN (${wanted.map(() => "?").join(",")})`,
+      );
+      t.bind(wanted.map((x) => v(x)));
+      while (t.step()) {
+        const r = t.getAsObject() as { id: string; title: string };
+        titles.set(String(r.id), String(r.title));
+      }
+      t.free();
+    }
+
+    const idSet = new Set(ids);
+    for (const link of rows) {
+      // 这一行属于**哪个**被问的条目:出边归 `item_id`,入边归 `target_item_id`。
+      // 两侧都在问的那一批里时(用户一次删 A 和 B,而 A→B 有一条关联)**两边的
+      // 列表里都该有它** —— 各自看过去都确实有这一条。
+      const owners: Array<{ owner: string; isOut: boolean }> = [];
+      if (idSet.has(link.item_id)) owners.push({ owner: link.item_id, isOut: true });
+      if (link.target_item_id && idSet.has(link.target_item_id)) {
+        owners.push({ owner: link.target_item_id, isOut: false });
+      }
+      for (const { owner, isOut } of owners) {
+        const otherItemId = isOut ? link.target_item_id : link.item_id;
+        const otherPath = isOut ? link.target_path : undefined;
+        // ⚠️ 入边时"另一头"是 `item_id`,而那一行可能同时有 `target_path` 吗?
+        // 不会:表上的 CHECK 保证两列恰好一列非空,而这一行既然入边成立,它就是
+        // "那个人 → 我",我必然是**条目**那一侧。所以 `otherPath` 只在出边出现。
+        const title = otherItemId ? (titles.get(otherItemId) ?? "") : otherPath ? basename(otherPath) : "";
+        out[owner]!.push({
+          id: link.id,
+          direction: isOut ? "out" : "in",
+          ...(otherItemId ? { otherItemId } : {}),
+          ...(otherPath ? { otherPath } : {}),
+          title,
+          ...(otherItemId ? { attachKey: `i:${otherItemId}` } : {}),
+          createdAt: link.created_at,
+        });
+      }
     }
     return out;
   },

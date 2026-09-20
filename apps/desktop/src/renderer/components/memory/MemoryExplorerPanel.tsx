@@ -1,23 +1,43 @@
 /**
- * 记忆库面板:六类记忆目录(rules / project / preferences / experiences / failures /
+ * **记忆**页:三节,前两节是"喂给引擎的长期信息",第三节是引擎自己那份记忆。
+ *
+ * ## 一、二节:记忆库(六类目录的文件管理器)
+ *
+ * 六类记忆目录(rules / project / preferences / experiences / failures /
  * decisions)的**文件管理器** —— 左栏分类与文件,右栏一个 Markdown 编辑器。
+ *
+ * ## 三节:全局指令(2026-09-20 从「上下文」页搬来的)
+ *
+ * 三引擎共用的常驻指令。编辑的是数据根下的事实源
+ * (`<dataRoot>/context/instructions.md`),保存即物化(Claude → `~/.mcode/CLAUDE.md`;
+ * Codex/Pi 走各自的会话启动组装链)。主进程的物化逻辑见 `main/lib/appContext.ts`。
+ *
+ * ## 四节:项目记忆(同一处搬来)
+ *
+ * **引擎自己那份** `MEMORY.md`(按项目一份)的编辑器。它与上面那六类
+ * **不是同一批文件**:那六类是 Mcode 记忆库里的,这一份是引擎 CLI 的原生记忆。
+ * 两节挨着摆是因为用户要的是"合成一页",但各自的标题里都说清了是哪个。
+ *
+ * 「上下文」那一页的第三节「工具占用」**没有被搬**:它是按引擎静态枚举的估算,
+ * 第三方 MCP 连上之前拿不到工具清单所以只列一行 —— 用户判定它不需要,随那一页
+ * 一起删了。`api.tools.usage` 那条通道还在(契约层没动),只是没了界面入口。
  *
  * ## 数据从哪来
  *
- * `memory.categories` 给类目、`memory.list` 给文件(`MemoryFileMeta`,见
- * `@contracts/memory`)、`memory.read/save/delete` 是三个文件动作。新建的文件在
- * **保存之前只是草稿** —— 列表里没有它,右栏标着「(未保存)」;保存路径限定
- * `${类目}/${名字}.md`,不提供越出类目目录的写法(这里是记忆的编辑器,不是通用
- * 文件管理器)。
+ * `memory.categories` 给类目、`memory.list` 给文件(`MemoryFileMeta`)、
+ * `memory.read/save/delete` 是三个文件动作。新建的文件在**保存之前只是草稿** ——
+ * 列表里没有它,右栏标着「(未保存)」;保存路径限定 `${类目}/${名字}.md`,
+ * 不提供越出类目目录的写法(这里是记忆的编辑器,不是通用文件管理器)。
  *
  * ## save/delete 的失败不是异常
  *
- * 契约里这两个动作返回 `{ ok, error? }`:`ok: false` 时 `error` 是**给人看的句子**
+ * 契约里这几个动作返回 `{ ok, error? }`:`ok: false` 时 `error` 是**给人看的句子**
  * —— 原样摆进顶栏,不二次加工。真异常(通道断了)才走 catch 那条路。
  *
  * ## 读不到怎么办
  *
  * 通道没就绪/读失败:一句错误小字,不弹错(同 `RunHistorySection` 的纪律)。
+ * 第一二节读不到时**类目照样摆出来**(它们是契约里的常量),只由那句小字交代。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { MEMORY_CATEGORIES, type MemoryFileMeta } from "@contracts/memory";
@@ -28,9 +48,11 @@ import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useMonacoTheme } from "@renderer/components/ide/FileEditor.js";
 import { Button, ConfirmDialog, Input } from "@renderer/components/ui/index.js";
-import { IconDeviceFloppy, IconNotebook, IconPlus, IconTrash } from "@renderer/lib/icons.js";
+import { IconDeviceFloppy, IconNotebook, IconPlus, IconTrash, IconLoader2 } from "@renderer/lib/icons.js";
 import { PANEL_MAX_W } from "../settings/panelWidth.js";
 import { PanelHeader } from "../settings/PanelHeader.js";
+import { SettingsSection } from "../settings/SettingsSection.js";
+import type { ContextMemoryDir } from "@contracts/ipc";
 
 /** 顶栏状态行的一句话。tone 决定颜色:ok 绿、error 红。 */
 interface Notice {
@@ -50,6 +72,18 @@ function validDraftName(name: string): boolean {
   return trimmed.length > 0 && !/[/\\]/.test(trimmed);
 }
 
+/** 多行文本框的样式。**从 `ContextPanel` 原样搬来的** —— 那两节搬过来之后
+ *  它是唯一的用处,所以跟着走,而不是留在那个已经删掉的文件里。 */
+const textareaCls =
+  "min-h-[180px] w-full resize-y rounded border border-edge bg-surface px-2.5 py-2 font-mono text-[0.8571em] leading-relaxed text-content placeholder:text-content-subtle focus:border-accent focus:outline-none";
+
+/** `updatedAt` 的短日期(列表行宽有限,精确到天足够)。同 `ContextPanel` 那份。 */
+function fmtDate(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number): string => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 export function MemoryExplorerPanel() {
   const { t } = useI18n();
   const theme = useMonacoTheme();
@@ -65,6 +99,109 @@ export function MemoryExplorerPanel() {
   const [draft, setDraft] = useState<{ category: string; name: string } | null>(null);
   /** 等待确认删除的文件(全路径)。ConfirmDialog 的目标。 */
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+
+  /* ── 全局指令(2026-09-20 从「上下文」页搬来的) ──
+   *
+   * 它和下面那六类记忆是**两批不同的文件**:这一节编辑的是数据根下
+   * `context/instructions.md`,保存后物化到三个引擎各自的常驻指令文件
+   * (见 `main/lib/appContext.ts`);下面那六类是 `memory/<类目>/*.md`。
+   * 摆在同一页是因为它们是同一件事的两半(喂给引擎的长期信息),而用户
+   * 要的是"记忆和上下文合成一页"。 */
+  const [instructions, setInstructions] = useState("");
+  const [instrLoading, setInstrLoading] = useState(true);
+  const [instrSaving, setInstrSaving] = useState(false);
+  const [instrError, setInstrError] = useState<string | null>(null);
+  const [instrSaved, setInstrSaved] = useState(false);
+  const [instrWarnings, setInstrWarnings] = useState<string[]>([]);
+
+  /* ── 项目记忆(同一处搬来) ──
+   *
+   * 这是**引擎自己那份** `MEMORY.md`(按项目一份),与下面六类目录里的文件不同 ——
+   * 那些是 Mcode 自己的记忆库。两者名字像,文件不是一批。 */
+  const [ctxDirs, setCtxDirs] = useState<ContextMemoryDir[]>([]);
+  const [ctxSelected, setCtxSelected] = useState<ContextMemoryDir | null>(null);
+  const [ctxMemory, setCtxMemory] = useState("");
+  const [ctxLoading, setCtxLoading] = useState(false);
+  const [ctxSaving, setCtxSaving] = useState(false);
+  const [ctxError, setCtxError] = useState<string | null>(null);
+  const [ctxSaved, setCtxSaved] = useState(false);
+
+  const loadContext = useCallback(async (): Promise<void> => {
+    setInstrLoading(true);
+    try {
+      const [res, mem] = await Promise.all([api.context.get({}), api.context.memoriesList({})]);
+      setInstructions(res.content);
+      setCtxDirs(mem.dirs);
+      setInstrError(null);
+    } catch (err) {
+      setInstrError((err as Error).message);
+    } finally {
+      setInstrLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadContext();
+  }, [loadContext]);
+
+  // 列表刷新后,选中的那条可能已经没了(引擎清掉了那个项目)—— 清选中的。
+  useEffect(() => {
+    if (ctxSelected && !ctxDirs.some((d) => d.slug === ctxSelected.slug)) setCtxSelected(null);
+  }, [ctxDirs, ctxSelected]);
+
+  const pickCtxDir = async (dir: ContextMemoryDir): Promise<void> => {
+    setCtxSelected(dir);
+    setCtxError(null);
+    setCtxSaved(false);
+    setCtxLoading(true);
+    try {
+      const { content } = await api.context.memoryGet({ slug: dir.slug });
+      setCtxMemory(content);
+    } catch (err) {
+      setCtxError((err as Error).message);
+    } finally {
+      setCtxLoading(false);
+    }
+  };
+
+  const saveInstructions = async (): Promise<void> => {
+    setInstrError(null);
+    setInstrSaving(true);
+    try {
+      const res = await api.context.save({ content: instructions });
+      if (!res.ok) {
+        setInstrError(res.error ?? t("settings.saveFailed"));
+        return;
+      }
+      setInstrWarnings(res.warnings ?? []);
+      setInstrSaved(true);
+    } catch (err) {
+      setInstrError((err as Error).message);
+    } finally {
+      setInstrSaving(false);
+    }
+  };
+
+  const saveCtxMemory = async (): Promise<void> => {
+    if (!ctxSelected) return;
+    setCtxError(null);
+    setCtxSaving(true);
+    try {
+      const res = await api.context.memorySave({ slug: ctxSelected.slug, content: ctxMemory });
+      if (!res.ok) {
+        setCtxError(res.error ?? t("settings.saveFailed"));
+        return;
+      }
+      setCtxSaved(true);
+      // 顺手刷新左列的「更新于」时间戳
+      const { dirs: fresh } = await api.context.memoriesList({});
+      setCtxDirs(fresh);
+    } catch (err) {
+      setCtxError((err as Error).message);
+    } finally {
+      setCtxSaving(false);
+    }
+  };
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -371,6 +508,147 @@ export function MemoryExplorerPanel() {
           if (path !== null) void remove(path);
         }}
       />
+
+      {/* ───────── 全局指令 ─────────
+          2026-09-20 从「上下文」页整节搬来(那一页删了)。位置在**记忆库之下** ——
+          它是"给所有会话的常驻要求",比单条记忆更靠外一层,摆在后面读起来是
+          从具体到一般。 */}
+      <SettingsSection
+        title={t("settings.context.instructionsSection")}
+        desc={t("settings.context.instructionsDesc")}
+      >
+        <div className="px-4 py-2.5">
+          {instrError !== null && (
+            <div className="mb-2 rounded border border-danger/40 bg-danger/5 px-3 py-2 text-[0.7857em] text-danger">
+              {instrError}
+            </div>
+          )}
+          {instrLoading ? (
+            <div className="flex items-center justify-center gap-2 py-6 text-[0.7857em] text-content-subtle">
+              <IconLoader2 size={14} className="animate-spin" />
+              {t("common.loading")}
+            </div>
+          ) : (
+            <>
+              <textarea
+                value={instructions}
+                onChange={(e) => {
+                  setInstructions(e.target.value);
+                  setInstrSaved(false);
+                }}
+                placeholder={t("settings.context.instructionsPlaceholder")}
+                className={textareaCls}
+                spellCheck={false}
+              />
+              {instrWarnings.length > 0 && (
+                <div className="mt-2 rounded border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-[0.7857em] leading-relaxed text-amber-500">
+                  {instrWarnings.join("\n")}
+                </div>
+              )}
+              <div className="mt-2 flex items-center gap-2">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => void saveInstructions()}
+                  disabled={instrSaving}
+                >
+                  {t("settings.context.save")}
+                </Button>
+                {instrSaved && (
+                  <span className="text-[0.7857em] text-emerald-500">
+                    {t("settings.context.saved")}
+                  </span>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </SettingsSection>
+
+      {/* ───────── 项目记忆 ─────────
+          ⚠️ 与上面那六类**不是同一批文件**:这一节编辑的是引擎自己那份
+          `MEMORY.md`(按项目一份),上面管的是 Mcode 记忆库里六个类目的文件。
+          两节挨着摆是因为用户要的是"合成一页",但标题里各说各的,别混。 */}
+      <SettingsSection
+        title={t("settings.context.memoriesSection")}
+        desc={t("settings.context.memoriesDesc")}
+      >
+        <div className="flex gap-3 px-4 py-2.5">
+          {/* 左列:项目清单 */}
+          <div className="w-56 shrink-0 space-y-0.5">
+            {ctxDirs.length === 0 ? (
+              <p className="px-1 py-3 text-[0.7143em] leading-relaxed text-content-subtle">
+                {t("settings.context.memoriesEmpty")}
+              </p>
+            ) : (
+              ctxDirs.map((d) => (
+                <button
+                  key={d.slug}
+                  onClick={() => void pickCtxDir(d)}
+                  className={cn(
+                    "w-full rounded px-2 py-1.5 text-left transition-colors",
+                    ctxSelected?.slug === d.slug
+                      ? "bg-accent/10 text-content"
+                      : "text-content-muted hover:bg-surface-hover",
+                  )}
+                >
+                  <span className="block truncate text-[0.8571em]" title={d.slug}>
+                    {d.label}
+                  </span>
+                  {d.updatedAt !== null && (
+                    <span className="block text-[10px] text-content-subtle">
+                      {t("settings.context.updatedAt")} {fmtDate(d.updatedAt)}
+                    </span>
+                  )}
+                </button>
+              ))
+            )}
+          </div>
+          {/* 右列:MEMORY.md 编辑器 */}
+          <div className="min-w-0 flex-1">
+            {!ctxSelected ? (
+              <p className="py-3 text-[0.7857em] text-content-subtle">
+                {t("settings.context.noMemorySelected")}
+              </p>
+            ) : ctxLoading ? (
+              <div className="flex items-center justify-center gap-2 py-6 text-[0.7857em] text-content-subtle">
+                <IconLoader2 size={14} className="animate-spin" />
+                {t("common.loading")}
+              </div>
+            ) : (
+              <>
+                <textarea
+                  value={ctxMemory}
+                  onChange={(e) => {
+                    setCtxMemory(e.target.value);
+                    setCtxSaved(false);
+                  }}
+                  className={cn(textareaCls, "min-h-[220px]")}
+                  spellCheck={false}
+                />
+                {ctxError !== null && (
+                  <p className="mt-1 text-[0.7857em] text-danger">{ctxError}</p>
+                )}
+                <div className="mt-2 flex items-center gap-2">
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => void saveCtxMemory()}
+                    disabled={ctxSaving}
+                  >
+                    {t("settings.context.saveMemory")}
+                  </Button>
+                  {ctxSaved && (
+                    <span className="text-[0.7857em] text-emerald-500">
+                      {t("settings.context.saved")}
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </SettingsSection>
     </section>
   );
 }

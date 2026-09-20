@@ -41,7 +41,7 @@ import type { RuntimeAgentState, RuntimesInstallInput, RuntimesInstallLocalInput
 import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, WorkflowExportInput, WorkflowImportInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchCommandTemplate } from "./workflow.js";
 import type { AutomationTriggerFacts, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
 import { MEMORY_CATEGORIES_CHANNEL, MEMORY_DELETE_CHANNEL, MEMORY_LIST_CHANNEL, MEMORY_READ_CHANNEL, MEMORY_SAVE_CHANNEL, type MemoryDeleteInput, type MemoryFileMeta, type MemoryListInput, type MemoryReadInput, type MemorySaveInput } from "../memory.js";
-import type { LibraryTypesGetInput, LibraryTypesSaveInput, LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDeleteItemsResult, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibraryManifestInput, LibraryItemManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
+import type { LibraryTypesGetInput, LibraryTypesSaveInput, LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDeleteItemsResult, LibraryRestoreItemsInput, LibraryDeletePreviewInput, LibraryDeletePreviewResult, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibraryManifestInput, LibraryItemManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkCountsInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionMoveInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
 import type { TemplateListInput, TemplateAddInput, TemplateRenameInput, TemplateEntryRefInput, TemplateFileRefInput, TemplatesAttachToChatInput } from "./templates.js";
 import type { SubagentDefinition } from "../claudeSubagent.js";
 import type { ClaudeSubagentsSaveInput } from "../claudeSubagent.js";
@@ -823,6 +823,11 @@ export interface RpcMap {
   "library.linksOf": (input: LibraryLinksOfInput) => Promise<{
     links: LibraryLinkView[];
   }>;
+  /** 一批条目**各自**的关联条数 —— 左栏行尾那个徽标。见契约里 `LibraryLinkCountsSchema`。 */
+  "library.linkCounts": (input: LibraryLinkCountsInput) => Promise<{
+    /** 条目 id → 条数。**没关联的不在里面**(调用方 `?? 0`)。 */
+    counts: Record<string, number>;
+  }>;
   /** 加一条关联。**幂等** —— 已有同一条就返回它,不产生第二行。 */
   "library.linkAdd": (input: LibraryLinkAddInput) => Promise<{ link: LibraryItemLink }>;
   /** 解除一条关联(按关联行自己的 id)。 */
@@ -845,6 +850,21 @@ export interface RpcMap {
   /** 从库中移除。`deleteFiles` 决定是否连磁盘文件一起删。
    *  **删不掉的会如实报在 `failed` 里,而且那几条记录留着**(见 `LibraryDeleteItemsResult`)。 */
   "library.deleteItems": (input: LibraryDeleteItemsInput) => Promise<LibraryDeleteItemsResult>;
+  /**
+   * 从回收站里**还原**这几条 —— 放回最后删除的那个分类。
+   *
+   * 与 `deleteItems` 是一对:那条(recycle bin 里)是真的删,这条是把它们捞回来。
+   * 单独一条 RPC 而不是让渲染端拼两次 `assignCollection`,理由见契约里的注释。
+   */
+  "library.restoreItems": (input: LibraryRestoreItemsInput) => Promise<{ items: LibraryItem[] }>;
+  /**
+   * 删除**之前**看一眼会带走什么 —— 关联到的其他文献、以及这条自己的 Markdown 转录
+   * 产物(连同它的图床)。弹窗照着它画勾选框。
+   *
+   * 刻意是**只读查询**:渲染端不必为了画一个确认框去拉半张库。用户取消时也不会有
+   * 任何东西被动过。
+   */
+  "library.deletePreview": (input: LibraryDeletePreviewInput) => Promise<LibraryDeletePreviewResult>;
   /** 排入下载队列。返回受影响的任务列表。 */
   "library.download": (input: LibraryDownloadInput) => Promise<{ jobs: DownloadJob[] }>;
   /** 当前全部下载任务。 */
@@ -1057,6 +1077,19 @@ export interface RpcMap {
   /** 改名。`ok: false` 表示重名被拒(此时 collections 不变) —— 由调用方提示用户。 */
   "library.renameCollection": (input: CollectionRenameInput) => Promise<{ collections: LibraryCollection[]; ok: boolean }>;
   "library.deleteCollection": (input: CollectionDeleteInput) => Promise<{ collections: LibraryCollection[] }>;
+  /**
+   * 把集合移到别处(改父级 / 调同级次序)。
+   *
+   * `ok: false` = **被拒**(重名,或者会形成环)—— 与 `renameCollection` 同一个口径:
+   * 如实把结果回给调用方提示,而不是静默不动。`collections` 无论如何都是**最新的
+   * 完整列表**,所以被拒时调用方也不需要再拉一次。
+   */
+  "library.moveCollection": (input: CollectionMoveInput) => Promise<{
+    collections: LibraryCollection[];
+    ok: boolean;
+    /** `ok: false` 的原因(重名 / 成环)。由主进程给,界面直接摆出来。 */
+    error?: string;
+  }>;
   /** 把文献加入/移出某集合(多对多,一篇可属多个集合)。 */
   "library.assignCollection": (input: CollectionAssignInput) => Promise<{ collections: LibraryCollection[] }>;
 
@@ -1131,6 +1164,10 @@ export const IPC = {
   LIBRARY_GET: "library:get",
   LIBRARY_ADD_ITEMS: "library:addItems",
   LIBRARY_DELETE_ITEMS: "library:deleteItems",
+  /** 从回收站还原(放回最后删除的那个分类)。 */
+  LIBRARY_RESTORE_ITEMS: "library:restoreItems",
+  /** 删除前的"会带走什么"预览(只读)。 */
+  LIBRARY_DELETE_PREVIEW: "library:deletePreview",
   LIBRARY_DOWNLOAD: "library:download",
   LIBRARY_JOBS: "library:jobs",
   LIBRARY_SEARCH_EXTERNAL: "library:searchExternal",
@@ -1185,6 +1222,7 @@ export const IPC = {
   LIBRARY_SUPPRESS_SAVE: "library:suppressSave",
   /** 条目关联:查(双向)/ 加(幂等)/ 解除。 */
   LIBRARY_LINKS_OF: "library:linksOf",
+  LIBRARY_LINK_COUNTS: "library:linkCounts",
   LIBRARY_LINK_ADD: "library:linkAdd",
   LIBRARY_LINK_REMOVE: "library:linkRemove",
   /** 通用文件条目:导入(linked/attached)与内容读取(文本/图片/二进制分型)。 */
@@ -1213,6 +1251,7 @@ export const IPC = {
   LIBRARY_CREATE_COLLECTION: "library:createCollection",
   LIBRARY_RENAME_COLLECTION: "library:renameCollection",
   LIBRARY_DELETE_COLLECTION: "library:deleteCollection",
+  LIBRARY_MOVE_COLLECTION: "library:moveCollection",
   LIBRARY_ASSIGN_COLLECTION: "library:assignCollection",
   // 机构认证
   INSTITUTION_LIST: "institution:list",
@@ -1457,7 +1496,8 @@ export const IPC = {
   WORKFLOW_REMOVE_AGENT_PROFILE: "workflow:removeAgentProfile",
   /** 在岔路口选一条路 —— **回答一个还活着的运行**,不是开一次新的。 */
   WORKFLOW_CHOOSE: "workflow:choose",
-  /** 从失败那一步接着往下跑(重跑那一步 + 它的全部下游)。 */
+  /** 从某一步接着往下跑(重跑那一步 + 它的全部下游)。**失败卡的「再试一次」和图上
+   *  挑一步"从这儿往下走"走的是同一条**——区别只在要不要带 `note`。 */
   WORKFLOW_RETRY: "workflow:retry",
   // 自动化(设置 → 工作流 → 自动化那一栏):触发器节点在后**台**起一条运行。
   // 这三个只在桌面暴露(手机端那个 RPC 是手写白名单)。

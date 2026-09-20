@@ -189,7 +189,10 @@ export function ItemList({
             key={item.id}
             onClick={() => onActivate(item.id)}
             className={cn(
-              "flex cursor-pointer items-start gap-2 border-b border-edge/50 px-4 py-2 transition-colors",
+              // `relative` 不能省 —— 下面那条选中竖条是 `absolute`,锚的是**最近的
+              // 定位祖先**。少了它,竖条会锚到整个列表容器上:每选中一行,同一根竖条
+              // 就出现在列表左边线上那一行的位置(而不是行首),看起来像列表串了个门。
+              "relative flex cursor-pointer items-start gap-2 border-b border-edge/50 px-4 py-2 transition-colors",
               isActive ? "bg-surface-hover" : "hover:bg-surface-hover/60",
             )}
           >
