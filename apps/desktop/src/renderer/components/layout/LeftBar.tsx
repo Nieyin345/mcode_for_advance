@@ -19,7 +19,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@renderer/lib/cn.js";
-import { LibrarySections } from "@renderer/components/library/LibrarySection.js";
+import { LibrarySections, LibraryTrashRow } from "@renderer/components/library/LibrarySection.js";
 import {
   IconFolder,
   IconGitFork,
@@ -669,7 +669,7 @@ function LeftBarBase({
 
       {/* Header */}
       <div className="group mb-1 flex items-center justify-between px-1">
-        <h3 className="font-semibold uppercase tracking-wide text-content-subtle [font-size:var(--rp-fs-md)]">
+        <h3 className="font-semibold uppercase tracking-wide text-content-subtle [font-size:var(--left-section-title-fs)]">
           {t("layout.projects")}
         </h3>
         <div className="flex items-center gap-1">
@@ -891,6 +891,14 @@ function LeftBarBase({
           <LibrarySections />
         </div>
       </div>
+
+      {/* ── 回收站：**钉在左栏最底部**，不跟上面的列表一起滚（2026-09-21）──
+          用户的原话：「回收站是固定到页面最下面的…不是随着我的文件的折叠而上下移动」，
+          「相当于你开一个和侧边栏同宽度的在顶层固定的小滚动窗口」。
+
+          所以它**在滚动容器之外**：上面那段（项目 + 资料库）怎么滚、怎么折叠，
+          这一条都不动。它自己是一个独立的滚动区（上限 40vh），条目多时自己滚。 */}
+      <LibraryTrashRow />
 
       {/* Archived bin — archived projects first, then archived sessions
           grouped by their parent project. */}

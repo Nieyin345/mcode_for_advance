@@ -75,7 +75,7 @@ export function SectionHeader({
             />
           </button>
         )}
-        <h3 className="truncate font-semibold uppercase tracking-wide text-content-subtle [font-size:var(--rp-fs-md)]">
+        <h3 className="truncate font-semibold uppercase tracking-wide text-content-subtle [font-size:var(--left-section-title-fs)]">
           {title}
         </h3>
       </div>
@@ -142,12 +142,21 @@ export function SectionTabs<K extends string>({
   active,
   onChange,
   onTabContextMenu,
+  trailing,
 }: {
   tabs: ReadonlyArray<SectionTab<K>>;
   active: K;
   onChange: (key: K) => void;
   /** 单个 tab 的右键(小类的管理菜单:新建分类 / 重命名 / 删除)。不给就没有右键行为。 */
   onTabContextMenu?: (key: K, e: React.MouseEvent) => void;
+  /**
+   * 排在**最后一个 tab 之后**的东西 —— 目前是"新建小类"那个输入框。
+   *
+   * 它曾经和另外两个新建输入框一起堆在列表外面。用户的原话：「新建一个级别，就在
+   * 这个级别**要出现的位置**来设置输入框」。小类的位置就是这一排 —— 新的那个 tab
+   * 会出现在末尾，输入框就该在那儿。
+   */
+  trailing?: ReactNode;
 }) {
   return (
     <div className="mb-1 flex flex-wrap items-center gap-0.5 px-1">
@@ -177,6 +186,7 @@ export function SectionTabs<K extends string>({
           </button>
         );
       })}
+      {trailing}
     </div>
   );
 }

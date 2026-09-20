@@ -471,6 +471,16 @@ html .font-bold {
   --rp-fs-sm: calc(var(--right-panel-font-size) * 0.8571);
   --rp-fs-xs: calc(var(--right-panel-font-size) * 0.7857);
   --rp-fs-xxs: calc(var(--right-panel-font-size) * 0.7143);
+
+  /* 左栏**一级标题**（「项目」「文档」那些段头）的字号。
+   *
+   * ⚠️ **刻意不跟着 `--rp-fs-*` 或 `--chat-fs-*` 缩放。** 这两级标题原来借的是
+   * `--rp-fs-md`（右栏字号 ×0.93 ≈ 13px）—— 右栏字号是用户可调的，于是左栏标题
+   * 会跟着右栏一起变；而且 13px 在左栏语境下偏小。用户的原话：
+   * 「项目和下面的文档的一级标题要**一样大**…字号稍微**大一点**就行了」。
+   *
+   * 定成一个固定值：它是一个**层级标记**，不该随别的面板的缩放设置漂移。 */
+  --left-section-title-fs: 13.5px;
 }
 
 /* Thin scrollbars that follow the theme. */

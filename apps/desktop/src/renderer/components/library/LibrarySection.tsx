@@ -144,6 +144,7 @@ export function LibrarySection({
   groups,
   onRefresh,
   isLastSection = false,
+  trashOnly = false,
 }: {
   /** 本段对应的大类(段名 + 段内哪些类型)。由 `LibrarySections` 按组表传入。 */
   group: LibraryGroupMeta;
@@ -155,6 +156,17 @@ export function LibrarySection({
   onRefresh: () => void;
   /** 是不是最后一段 —— **回收站只在最后一段画**(整片区域的最底部)。见那处注释。 */
   isLastSection?: boolean;
+  /**
+   * **只画回收站那一块**，别的一个都不画（2026-09-21）。
+   *
+   * 回收站要**钉死在左栏最底部**，不跟着上面的列表滚 —— 而滚动容器是 `LeftBar`
+   * 那一层的，这个组件管不着。所以把回收站单独挂一次到滚动容器**外面**，
+   * 由这个开关切到"只有回收站"那一档。
+   *
+   * 复用整个组件而不是另写一个，是因为那一行依赖一堆内部状态（展开态、条目缓存、
+   * 三个右键菜单、行内改名）—— 另写一份必然漂移。
+   */
+  trashOnly?: boolean;
 }) {
   const { locale, t } = useI18n();
   const collections = useLibraryStore((s) => s.collections);
@@ -312,8 +324,8 @@ export function LibrarySection({
    * `isLastSection` 由 `LibrarySections` 按组表顺序传下来。
    */
   const trashCollections = useMemo(
-    () => (isLastSection ? collections.filter((c) => c.isTrash) : []),
-    [collections, isLastSection],
+    () => (isLastSection || trashOnly ? collections.filter((c) => c.isTrash) : []),
+    [collections, isLastSection, trashOnly],
   );
 
   /**
@@ -1172,6 +1184,16 @@ export function LibrarySection({
     );
   };
 
+  // **只有回收站**那一档：挂在左栏滚动容器外面，钉死在底部（见 `trashOnly`）。
+  // 它不画表头、不画 tab 排、不画树 —— 就是回收站那一行 + 展开后的条目。
+  if (trashOnly) {
+    return (
+      <ul className="space-y-0.5">
+        {trashCollections.map((c) => renderCollectionRow(c))}
+      </ul>
+    );
+  }
+
   return (
     <>
       {/* 表头在最上、组内的类型标签在其下 —— 先有"这是什么"(组名),再有"看哪一类"
@@ -1210,6 +1232,68 @@ export function LibrarySection({
           <SectionTabs
             tabs={tabs}
             active={kind}
+            /* 新建小类的输入框**就在这一排的末尾** —— 它即将成为的那个 tab 就在那儿。
+               用户原话:「新建一个级别，就在这个级别要出现的位置来设置输入框」。 */
+            trailing={
+              creatingKind ? (
+                <MiniInput
+                  value={newKindDraft}
+                  onChange={(next) => {
+                    setNewKindDraft(next);
+                    if (kindError) setKindError(null);
+                  }}
+                  onSubmit={() => void submitNewKind()}
+                  onCancel={() => {
+                    setCreatingKind(false);
+                    setNewKindDraft("");
+                    setNewKindPurpose("material");
+                    setKindError(null);
+                  }}
+                  onBlur={() => void submitNewKind()}
+                  placeholder={t("library.kind.namePlaceholder")}
+                  error={kindError}
+                >
+                  {/* 用途二选一 —— 查资料用(material)= 给 AI 读的资料;
+                      照着写用(format)= 让 AI 照着写的格式。 */}
+                  <div className="mt-1 flex gap-1 px-0.5">
+                    {(["material", "format"] as const).map((p) => (
+                      <button
+                        key={p}
+                        type="button"
+                        onClick={() => setNewKindPurpose(p)}
+                        className={cn(
+                          "rounded px-1.5 py-0.5 transition-colors [font-size:var(--rp-fs-sm)]",
+                          newKindPurpose === p
+                            ? "bg-accent/15 text-accent"
+                            : "text-content-subtle hover:bg-surface-hover/60",
+                        )}
+                      >
+                        {t(p === "material" ? "library.kind.purpose.material" : "library.kind.purpose.format")}
+                      </button>
+                    ))}
+                  </div>
+                </MiniInput>
+              ) : renamingKind ? (
+                /* 重命名的输入框**和新建同一处** —— 它改的就是这一排里那个 tab，
+                   摆在这里用户才知道自己在改哪一个。 */
+                <MiniInput
+                  value={kindDraft}
+                  onChange={(next) => {
+                    setKindDraft(next);
+                    if (kindError) setKindError(null);
+                  }}
+                  onSubmit={() => void submitRenameKind()}
+                  onCancel={() => {
+                    setRenamingKind(null);
+                    setKindDraft("");
+                    setKindError(null);
+                  }}
+                  onBlur={() => void submitRenameKind()}
+                  placeholder={t("library.kind.namePlaceholder")}
+                  error={kindError}
+                />
+              ) : null
+            }
             onChange={(k) => {
               setLocalKind(k);
               setActiveKind(k);
@@ -1252,67 +1336,6 @@ export function LibrarySection({
           onBlur={() => void (creatingGroup ? submitNewGroup() : submitRenameGroup())}
           placeholder={t("library.group.namePlaceholder")}
           error={groupError}
-        />
-      )}
-
-      {/* 小类的新建输入:名字 + 用途二选一 ——
-          查资料用(material)= 给 AI 读的资料;照着写用(format)= 让 AI 照着写的格式。 */}
-      {creatingKind && (
-        <MiniInput
-          value={newKindDraft}
-          onChange={(next) => {
-            setNewKindDraft(next);
-            if (kindError) setKindError(null);
-          }}
-          onSubmit={() => void submitNewKind()}
-          onCancel={() => {
-            setCreatingKind(false);
-            setNewKindDraft("");
-            setKindError(null);
-          }}
-          onBlur={() => void submitNewKind()}
-          placeholder={t("library.kind.namePlaceholder")}
-          error={kindError}
-        >
-          <div className="flex gap-1 pt-1 pl-4">
-            {(["material", "format"] as const).map((p) => (
-              <button
-                key={p}
-                type="button"
-                onClick={() => setNewKindPurpose(p)}
-                className={cn(
-                  "rounded border px-1.5 py-0.5 text-[0.7857em] transition-colors",
-                  newKindPurpose === p
-                    ? "border-accent bg-surface-hover text-accent"
-                    : "border-edge text-content-subtle hover:text-content",
-                )}
-              >
-                {p === "material"
-                  ? t("library.kind.purpose.material")
-                  : t("library.kind.purpose.format")}
-              </button>
-            ))}
-          </div>
-        </MiniInput>
-      )}
-
-      {/* 小类的重命名输入 */}
-      {renamingKind && (
-        <MiniInput
-          value={kindDraft}
-          onChange={(next) => {
-            setKindDraft(next);
-            if (kindError) setKindError(null);
-          }}
-          onSubmit={() => void submitRenameKind()}
-          onCancel={() => {
-            setRenamingKind(null);
-            setKindDraft("");
-            setKindError(null);
-          }}
-          onBlur={() => void submitRenameKind()}
-          placeholder={t("library.kind.namePlaceholder")}
-          error={kindError}
         />
       )}
 
@@ -1607,8 +1630,9 @@ export function LibrarySections() {
           typeMetas={typeMetas}
           groups={groups}
           onRefresh={reload}
-          // 回收站钉在**最后一段**的末尾 —— 那就是整片区域的最底部。
-          isLastSection={i === groups.length - 1}
+          // 回收站**不在这里画了** —— 它现在钉在左栏滚动容器外面（见
+          // `LibraryTrashRow`），所以这一段就不必再兼管它。
+          isLastSection={false}
         />
       ))}
 
@@ -1647,6 +1671,49 @@ export function LibrarySections() {
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * **钉在左栏最底部的那一个回收站**（2026-09-21）。
+ *
+ * 用户的原话：「回收站是**固定到页面最下面的**，是固定的，**不是随着我的文件的折叠
+ * 而上下移动**」，「相当于你开一个和侧边栏同宽度的在顶层固定的小滚动窗口」。
+ *
+ * 它和上面那片列表是**两个独立的滚动区**：上面怎么滚、怎么折叠，底下这一行都不动。
+ *
+ * 实现是复用 `LibrarySection` 的 `trashOnly` 模式（那一行依赖一堆内部状态，另写一份
+ * 必然漂移），外面套一个固定上限的滚动壳 —— 回收站里条目多的时候自己滚，不去挤
+ * 上面的列表。
+ */
+export function LibraryTrashRow() {
+  const [groups, setGroups] = useState<readonly LibraryGroupMeta[] | null>(null);
+  const [typeMetas, setTypeMetas] = useState<readonly LibraryTypeMeta[]>(BUILTIN_LIBRARY_TYPES);
+
+  useEffect(() => {
+    void api.library.typesGet({}).then((res) => setTypeMetas(res.types)).catch(() => {});
+    void api.library
+      .groupsGet({})
+      .then((res) => setGroups(res.groups))
+      .catch(() => setGroups(DEFAULT_LIBRARY_GROUPS));
+  }, []);
+
+  // 组表还没拉到时**不画**：这一条要的是"位置固定"，而在渲染出真正的行之前
+  // 占一个空壳反而会让它先跳一下。拉不到时它就是没出现 —— 和"库里没有回收站"
+  // 长得一样，但那个场景下本来也不该有这一条。
+  if (!groups || groups.length === 0) return null;
+  return (
+    <div className="shrink-0 overflow-y-auto border-t border-edge pt-1" style={{ maxHeight: "40vh" }}>
+      {/* `group` / `typeMetas` / `onRefresh` 在这一档用不到（不画表头也不画 tab 排），
+          传进去只是为了满足 props 的形状。 */}
+      <LibrarySection
+        group={groups[0]!}
+        typeMetas={typeMetas}
+        groups={groups}
+        onRefresh={() => {}}
+        trashOnly
+      />
     </div>
   );
 }
