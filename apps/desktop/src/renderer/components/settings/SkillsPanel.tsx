@@ -41,6 +41,8 @@ import { Button, ConfirmDialog, Dialog } from "@renderer/components/ui/index.js"
 import { PanelHeader } from "./PanelHeader.js";
 import { ProjectSkillsView } from "./ProjectSkillsView.js";
 import { SkillNodesView } from "./SkillNodesView.js";
+import { SkillPresetsView } from "./SkillPresetsView.js";
+import { SkillProjectOverview } from "./SkillProjectOverview.js";
 import {
   IconPlus,
   IconTrash,
@@ -191,6 +193,8 @@ export function SkillsPanel() {
   /** 总库那一栏勾选的技能名 —— 「复制到项目」的源。跨 tab 保留（用户在总库勾完
    *  切到项目 tab 按按钮是**预期用法**，切一下就把勾清掉会让那条路走不通）。 */
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
+  /** 复制完之后让跨项目总览重扫一次（那一行的数字要跟着变）。 */
+  const [overviewKey, setOverviewKey] = useState(0);
   const toggleChecked = useCallback((name: string): void => {
     setChecked((prev) => {
       const next = new Set(prev);
@@ -704,22 +708,41 @@ export function SkillsPanel() {
 
       {/* ── 项目:整页(复制按钮 + 项目自己的技能列表),也走单栏 ── */}
       {view === "project" && (
-        <ProjectSkillsView
-          skills={projectSkills}
-          loading={listLoading}
-          selected={[...checked]}
-          onToggleSelect={(name) =>
-            setChecked((prev) => {
-              const next = new Set(prev);
-              if (next.has(name)) next.delete(name);
-              else next.add(name);
-              return next;
-            })
-          }
-          onClearSelection={() => setChecked(new Set())}
-          onCopied={() => void loadPanelSkills()}
-          onGoToLibrary={() => setView("library")}
-        />
+        // 三段:**预设**(跨项目的"要哪几个") → **当前项目**(它自己装了什么 +
+        // 从总库复制) → **跨项目总览**(每个项目各装了什么)。
+        //
+        // 顺序是有意的:从"通用的那套"往下走到"这一个项目",再到"所有项目" ——
+        // 用户的动作大多发生在上面两段,总览是拿来看的。
+        <div className="min-h-0 flex-1 space-y-4 overflow-auto pr-1">
+          <SkillPresetsView
+            librarySkills={panelSkills}
+            onCopyPreset={(skills) => {
+              // 用预设复制 = 把那一套勾上,再走同一条复制路径。
+              // **不另开一条实现** —— 复制的语义(不覆盖、逐条回报)只有一份。
+              setChecked(new Set(skills));
+            }}
+          />
+          <ProjectSkillsView
+            skills={projectSkills}
+            loading={listLoading}
+            selected={[...checked]}
+            onToggleSelect={(name) =>
+              setChecked((prev) => {
+                const next = new Set(prev);
+                if (next.has(name)) next.delete(name);
+                else next.add(name);
+                return next;
+              })
+            }
+            onClearSelection={() => setChecked(new Set())}
+            onCopied={() => {
+              void loadPanelSkills();
+              setOverviewKey((n) => n + 1);
+            }}
+            onGoToLibrary={() => setView("library")}
+          />
+          <SkillProjectOverview refreshKey={overviewKey} />
+        </div>
       )}
 
       {/* ── 总库:原有的左右两栏(勾选在这里做,复制按钮在项目那一栏) ── */}

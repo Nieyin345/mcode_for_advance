@@ -251,6 +251,78 @@ export type SkillsCopyToProjectInput = z.infer<typeof SkillsCopyToProjectSchema>
 
 /** 复制的结果。刻意**逐条**回报，不是一句 ok —— 批量复制里"哪几个成了、
  *  哪几个重名跳过了"是用户真正要看的东西。 */
+/* ────────────────────── 技能预设（"一套技能"） ────────────────────── */
+
+/**
+ * **一套技能预设。** 给"我这类项目默认装这几个技能"用 —— 用户的原话是
+ * 「之后会有很多的项目」。
+ *
+ * ## 为什么不是"项目列表"，而是一套一套的预设
+ *
+ * 项目一多，真正会重复发生的动作是**"给新项目配上那几个"**，而不是"盯着二十个
+ * 项目比对差异"。后者只能让你看见重复，前者能直接消掉重复。
+ *
+ * ## 它只是一张清单，不是一份拷贝
+ *
+ * 预设里存的是**技能名**，不存文件内容。复制那一刻才去通用库取 —— 所以改了通用
+ * 库里的技能，下次用这套预设复制过去的就是新的。这一条是刻意的：预设是"要哪几个"，
+ * 不是"那几个长什么样"。
+ */
+export interface SkillPreset {
+  /** 稳定 id，`sp_` 前缀 + 随机。 */
+  id: string;
+  /** 显示名，用户自己起（"论文项目"、"代码项目"）。 */
+  name: string;
+  /** 这套要装哪几个技能（通用库里的目录名）。 */
+  skills: string[];
+  /** 一句话说明，可空。 */
+  description?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export const SkillsPresetSaveSchema = z.object({
+  preset: z.object({
+    id: z.string().min(1),
+    name: z.string().min(1).max(60),
+    skills: z.array(z.string().regex(SKILL_NAME_RE, "invalid skill name")),
+    description: z.string().max(200).optional(),
+  }),
+});
+export type SkillsPresetSaveInput = z.infer<typeof SkillsPresetSaveSchema>;
+
+export const SkillsPresetDeleteSchema = z.object({
+  id: z.string().min(1),
+});
+export type SkillsPresetDeleteInput = z.infer<typeof SkillsPresetDeleteSchema>;
+
+/* ────────────────────── 跨项目总览 ────────────────────── */
+
+/** 一个项目、它装了哪些技能。 */
+export interface ProjectSkillRow {
+  projectId: string;
+  projectName: string;
+  /** 项目根路径（绝对）。 */
+  path: string;
+  /** 这个项目 `<项目>/.claude/skills/` 下的技能名。 */
+  skills: string[];
+  /** 目录不存在（这个项目还没放过技能）—— 与"有目录但是空的"分开报，
+   *  因为前者是绝大多数项目的常态，界面不该把它画成异常。 */
+  missing: boolean;
+}
+
+/** 跨项目总览的入参。`projectIds` 省略 = 全部项目。 */
+export const SkillsProjectOverviewSchema = z.object({
+  projectIds: z.array(z.string()).optional(),
+});
+export type SkillsProjectOverviewInput = z.infer<typeof SkillsProjectOverviewSchema>;
+
+export interface SkillsProjectOverviewResult {
+  rows: ProjectSkillRow[];
+  /** 扫不动的那几个（目录没权限、路径没了），单独回报而不是静默跳过。 */
+  problems: Array<{ projectId: string; projectName: string; error: string }>;
+}
+
 export interface SkillsCopyToProjectResult {
   /** 真的复制过去的技能名。 */
   copied: string[];

@@ -32,7 +32,10 @@ import type { FileReadInput, FileReadBinaryInput, PickImagesInput, PickedImage, 
 import type { GitDiscoverReposInput, GitRepo, GitRepoPathInput, GitStatusResult, GitStageInput, GitOpResult, GitUnstageInput, GitCommitInput, GitDiffInput, GitFileBlobInput, GitDiscardInput, GitGenerateCommitInput, GitCancelGenerateCommitInput, GitLogInput, GitCommitInfo, GitShowCommitInput, GitCommitDetail, GitShowFileInput, GitBranchListResult, GitCheckoutInput, GitDeleteBranchInput, GitMergeInput, GitMergePreviewResult, GitMergeResult, GitWorktreeListInput, GitWorktreeInfo, GitWorktreeStatusInput, GitWorktreeMergeBackInput, GitWorktreeMergeBackResult, GitWorktreeRemoveInput, GitWorktreeRemoveResult } from "./git.js";
 import type { TerminalCreateInput, TerminalCreateResult, TerminalWriteInput, TerminalOpResult, TerminalResizeInput, TerminalKillInput, TerminalListInput, TerminalInfo } from "./terminal.js";
 import type { BrowserCreateInput, BrowserCreateResult, BrowserLoadUrlInput, BrowserOpResult, BrowserGoBackInput, BrowserGoForwardInput, BrowserReloadInput, BrowserSetBoundsInput, BrowserSetPickModeInput, BrowserShowInput, BrowserHideInput, BrowserCloseInput, BrowserCaptureFrameInput, BrowserCaptureFrameResult, BrowserBookmarkAddInput, BrowserBookmarkRemoveInput, BrowserSetDeviceInput, BrowserHistoryRemoveInput, BrowserHistoryClearInput, BrowserAuthRespondInput, BrowserDownloadActionInput } from "./browser.js";
-import type { SkillsListInput, SkillInfo, SkillsReadInput, SkillsSaveInput, SkillsDeleteInput, SkillsEnginesSetInput, SkillEngineState, SkillBundle, SkillsBundlesInput, SkillsEnginesSetBulkInput, SkillsScanSourcesInput, ExternalSkillInfo, SkillsImportInput, SkillsImportGithubInput, SkillsImportGithubResult, SkillsCopyToProjectInput, SkillsCopyToProjectResult, ProviderInfo, OutputStyleListInput, OutputStyleEntry } from "./skills.js";
+import type { SkillsListInput, SkillInfo, SkillsReadInput, SkillsSaveInput, SkillsDeleteInput, SkillsEnginesSetInput, SkillEngineState, SkillBundle, SkillsBundlesInput, SkillsEnginesSetBulkInput, SkillsScanSourcesInput, ExternalSkillInfo, SkillsImportInput, SkillsImportGithubInput, SkillsImportGithubResult, SkillsCopyToProjectInput, SkillsCopyToProjectResult,
+  SkillPreset, SkillsPresetSaveInput, SkillsPresetDeleteInput,
+  SkillsProjectOverviewInput, SkillsProjectOverviewResult,
+  ProviderInfo, OutputStyleListInput, OutputStyleEntry } from "./skills.js";
 import type { McpListInput, McpServerEntry, McpToggleInput, McpAuthorizeInput, McpUnauthorizeInput, McpSaveInput, McpRemoveInput, McpScanImportInput, McpImportSource, McpImportInput, McpEnginesSetInput, McpEngineState } from "./mcp.js";
 import type { ContextGetInput, ContextSaveInput, ContextMemoriesListInput, ContextMemoryDir, ContextMemoryGetInput, ContextMemorySaveInput, ToolsUsageGetInput, ToolsUsageResult } from "./context.js";
 import type { UsageStatsInput, UsageStatsResult } from "./usage.js";
@@ -411,6 +414,21 @@ export interface RpcMap {
   "skills.copyToProject": (
     input: SkillsCopyToProjectInput,
   ) => Promise<SkillsCopyToProjectResult>;
+  /** **一套技能预设** —— "这类项目默认装这几个"。改整个数组（整份给过来，
+   *  局部更新在这里没有意义，同 `workflow.agentProfiles` 的取舍）。 */
+  "skills.presetsList": () => Promise<{ presets: SkillPreset[] }>;
+  /** 存一套预设（新建或覆盖同 id 的）。 */
+  "skills.presetsSave": (
+    input: SkillsPresetSaveInput,
+  ) => Promise<{ ok: boolean; error?: string }>;
+  /** 删一套预设。 */
+  "skills.presetsDelete": (
+    input: SkillsPresetDeleteInput,
+  ) => Promise<{ ok: boolean; error?: string }>;
+  /** **跨项目总览** —— 每个项目各装了哪些技能。`projectIds` 省略 = 全部项目。 */
+  "skills.projectOverview": (
+    input: SkillsProjectOverviewInput,
+  ) => Promise<SkillsProjectOverviewResult>;
   /** Set one universal skill's per-engine availability (claude/codex/pi).
    *  Returns the resolved state as persisted (or ok:false + error). */
   "skills.engines.set": (
@@ -1429,6 +1447,11 @@ export const IPC = {
   SKILLS_DELETE: "skills:delete",
   // Copy skills from the universal library into the current project's dir
   SKILLS_COPY_TO_PROJECT: "skills:copyToProject",
+  // 技能预设（"一套技能"）与跨项目总览
+  SKILLS_PRESETS_LIST: "skills:presetsList",
+  SKILLS_PRESETS_SAVE: "skills:presetsSave",
+  SKILLS_PRESETS_DELETE: "skills:presetsDelete",
+  SKILLS_PROJECT_OVERVIEW: "skills:projectOverview",
   // Per-engine availability matrix for the universal skill library
   SKILLS_ENGINES_SET: "skills:enginesSet",
   // Bundle manifest (import groups) for the universal skill library

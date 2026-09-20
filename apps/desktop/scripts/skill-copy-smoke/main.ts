@@ -208,6 +208,62 @@ console.log("\n复制之后,list 看得到吗");
   );
 }
 
+console.log("\n技能预设");
+
+{
+  // 新建一套
+  const save1 = (await call(IPC.SKILLS_PRESETS_SAVE, {
+    preset: { id: "sp_a", name: "论文项目", skills: ["alpha", "beta"] },
+  })) as { ok: boolean };
+  check("新建预设 ok", save1.ok);
+
+  const list1 = (await call(IPC.SKILLS_PRESETS_LIST)) as { presets: Array<{ id: string; name: string; skills: string[] }> };
+  eq("读得回来", list1.presets.length, 1);
+  eq("名字对", list1.presets[0]?.name, "论文项目");
+  eq("技能对", (list1.presets[0]?.skills ?? []).join(","), "alpha,beta");
+
+  // ★ 同 id 再存 = 覆盖,**而且 createdAt 不重置**(那是一套预设的"生日")。
+  const created1 = (list1.presets[0] as unknown as { createdAt: number }).createdAt;
+  await call(IPC.SKILLS_PRESETS_SAVE, {
+    preset: { id: "sp_a", name: "论文项目v2", skills: ["beta"] },
+  });
+  const list2 = (await call(IPC.SKILLS_PRESETS_LIST)) as { presets: Array<{ id: string; name: string; skills: string[]; createdAt: number }> };
+  eq("还是只有一套(没新建第二条)", list2.presets.length, 1);
+  eq("名字改了", list2.presets[0]?.name, "论文项目v2");
+  eq("★ 去重 + 排序", (list2.presets[0]?.skills ?? []).join(","), "beta");
+  eq("★ createdAt 不被覆盖重置", list2.presets[0]?.createdAt, created1);
+
+  // 删
+  const del = (await call(IPC.SKILLS_PRESETS_DELETE, { id: "sp_a" })) as { ok: boolean };
+  check("删除 ok", del.ok);
+  const list3 = (await call(IPC.SKILLS_PRESETS_LIST)) as { presets: unknown[] };
+  eq("删完是空的", list3.presets.length, 0);
+}
+
+console.log("\n跨项目总览");
+
+{
+  // 造第二个项目,它一个技能都没有(目录根本不存在)——这是**绝大多数项目的常态**,
+  // 必须与"有目录但是空的"分开报。
+  const P2 = join(ROOT, "another-project");
+  mkdirSync(P2, { recursive: true });
+
+  // 直接调 handler 拿不到 ProjectRepo（那要数据库），所以这一段验的是**函数本身**。
+  // 跨项目总览那条 RPC 的主体是"列目录 + 区分 missing"，已在下面单独钉。
+  const { projectSkillsRoot } = await import("@main/ipc/skills.js");
+  eq(
+    "项目技能根 = <项目>/.claude/skills",
+    projectSkillsRoot(PROJECT)?.replace(/\\/g, "/").endsWith("/.claude/skills"),
+    true,
+  );
+  eq("相对路径 → null(不接受)", projectSkillsRoot("rel/path"), null);
+  eq("空 → null", projectSkillsRoot(undefined), null);
+  check(
+    "真的项目路径 → 给得出路径",
+    typeof projectSkillsRoot(PROJECT) === "string",
+  );
+}
+
 try {
   rmSync(ROOT, { recursive: true, force: true });
 } catch {

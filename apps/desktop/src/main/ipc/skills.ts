@@ -49,8 +49,11 @@ import {
   SkillsImportSchema,
   SkillsImportGithubSchema,
   SkillsCopyToProjectSchema,
+  SkillsPresetSaveSchema,
+  SkillsPresetDeleteSchema,
+  SkillsProjectOverviewSchema,
 } from "@contracts/ipc";
-import type { SkillInfo, SkillSource, ExternalSkillInfo, SkillTool, ReadOnlySkillSource, SkillEngineState, SkillBundle, SkillsImportGithubResult, SkillsCopyToProjectResult } from "@contracts/ipc";
+import type { SkillInfo, SkillSource, ExternalSkillInfo, SkillTool, ReadOnlySkillSource, SkillEngineState, SkillBundle, SkillsImportGithubResult, SkillsCopyToProjectResult, SkillPreset, ProjectSkillRow, SkillsProjectOverviewResult } from "@contracts/ipc";
 import { log } from "@main/lib/logger.js";
 import { getPluginSkillSources } from "@main/plugins/pluginManager.js";
 import {
@@ -1019,6 +1022,173 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
         `${result.skipped.length} skipped, ${result.failed.length} failed`,
     );
     return result;
+  });
+
+  /** 预设清单文件 —— dot-prefix,所以技能扫描会跳过它(同 `.bundles.json`)。 */
+const PRESETS_FILE = ".skill-presets.json";
+
+/** 读预设。**坏文件降级成空表,不抛** —— 同 `readBundlesManifest` 的取舍:
+ *  预设是附加能力,它坏了不该让技能页打不开。 */
+async function readPresets(root: string): Promise<SkillPreset[]> {
+  try {
+    const raw = await fs.readFile(path.join(root, PRESETS_FILE), "utf8");
+    const parsed = JSON.parse(raw) as { presets?: unknown };
+    if (!Array.isArray(parsed.presets)) return [];
+    return parsed.presets.filter(
+      (p): p is SkillPreset =>
+        !!p &&
+        typeof (p as SkillPreset).id === "string" &&
+        typeof (p as SkillPreset).name === "string" &&
+        Array.isArray((p as SkillPreset).skills),
+    );
+  } catch {
+    return [];
+  }
+}
+
+async function writePresets(root: string, presets: SkillPreset[]): Promise<void> {
+  await fs.mkdir(root, { recursive: true });
+  await fs.writeFile(
+    path.join(root, PRESETS_FILE),
+    JSON.stringify({ presets }, null, 2),
+    "utf8",
+  );
+}
+
+/**
+ * 列出某个技能根下的**直接子目录名**（就是技能名）。
+ *
+ * **目录不存在返回 `null`**，与"目录存在但是空的"（返回 `[]`）分开 —— 前者是
+ * 绝大多数项目的常态（还没放过技能），界面不该把它画成异常。这个区分是跨项目总览
+ * 那个 `missing` 字段的全部意义。
+ *
+ * 只列**直接**子目录、不递归：技能就是 `<root>/<名字>/SKILL.md` 这个形状，递归下去
+ * 会先把技能内部的 `scripts/` `references/` 当成技能名报出来。
+ */
+async function listSkillDirNames(root: string): Promise<string[] | null> {
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true });
+  } catch {
+    return null; // 不存在 / 读不动 —— 调用方按 missing 处理
+  }
+  return entries
+    .filter((e) => e.isDirectory() || e.isSymbolicLink())
+    .map((e) => e.name)
+    .filter((n) => !n.startsWith("."))
+    .sort();
+}
+
+/* ── 技能预设（"一套技能"） ──
+   *
+   * 存在**通用库根**下的 `.skill-presets.json`（dot-prefix，所以技能扫描会跳过它，
+   * 同 `.bundles.json` / `.mcode-engines.json`）。
+   *
+   * 为什么和通用库放一起：预设是**跨项目**的"要哪几个"，它属于用户的那份配置，
+   * 不属于任何一个项目 —— 放项目里就变成"每个项目一套预设"，那正是要消除的重复。
+   */
+  ipcMain.handle(IPC.SKILLS_PRESETS_LIST, async () => {
+    return { presets: await readPresets(resolveSkillRoot()) };
+  });
+
+  ipcMain.handle(IPC.SKILLS_PRESETS_SAVE, async (_evt, raw) => {
+    const input = SkillsPresetSaveSchema.parse(raw);
+    try {
+      const root = resolveSkillRoot();
+      const presets = await readPresets(root);
+      const now = Date.now();
+      const existing = presets.find((p) => p.id === input.preset.id);
+      const next: SkillPreset = {
+        id: input.preset.id,
+        name: input.preset.name,
+        skills: [...new Set(input.preset.skills)].sort(),
+        ...(input.preset.description ? { description: input.preset.description } : {}),
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      };
+      const merged = existing
+        ? presets.map((p) => (p.id === next.id ? next : p))
+        : [...presets, next];
+      await writePresets(root, merged);
+      return { ok: true };
+    } catch (err) {
+      log.warn(`skills.presets.save failed: ${(err as Error).message}`);
+      return { ok: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle(IPC.SKILLS_PRESETS_DELETE, async (_evt, raw) => {
+    const input = SkillsPresetDeleteSchema.parse(raw);
+    try {
+      const root = resolveSkillRoot();
+      const presets = await readPresets(root);
+      await writePresets(
+        root,
+        presets.filter((p) => p.id !== input.id),
+      );
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  });
+
+  /* ── 跨项目总览 ──
+   *
+   * 「之后会有很多的项目」—— 一屏看到每个项目各装了什么。
+   *
+   * ⚠️ **这条会去读你没打开过的项目目录。** 只读、只列直接子目录、不递归、不写 ——
+   * 但这仍然是这个页面里唯一"越过当前项目"的动作，所以：
+   *
+   *  - 单个项目读不动（没权限 / 路径没了）**只把那一个记进 `problems`**，不整批失败；
+   *  - 目录不存在**不算问题**（绝大多数项目都没放过技能），标 `missing` 而已。
+   */
+  ipcMain.handle(IPC.SKILLS_PROJECT_OVERVIEW, async (_evt, raw) => {
+    const input = SkillsProjectOverviewSchema.parse(raw);
+    const rows: ProjectSkillRow[] = [];
+    const problems: SkillsProjectOverviewResult["problems"] = [];
+
+    let projects: Array<{ id: string; name: string; path: string }>;
+    try {
+      // 动态 import：`store/repositories` 拖着 sql.js，而这一整套 IPC 文件在
+      // 冒烟里是单独 bundle 的（换桩越少越好）。放这里 import 让没调到这条
+      // RPC 的场景完全不碰数据库。
+      const { ProjectRepo } = await import("@main/store/repositories.js");
+      projects = ProjectRepo.list()
+        .filter((p) => (input.projectIds ? input.projectIds.includes(p.id) : true))
+        .map((p) => ({ id: p.id, name: p.name, path: p.path }));
+    } catch (err) {
+      return {
+        rows: [],
+        problems: [{ projectId: "", projectName: "", error: (err as Error).message }],
+      };
+    }
+
+    // **串行。** 本地目录列举，一次几十个的并发只会让磁盘抖，而这是个手动打开的
+    // 总览页——慢一点无所谓，读到一半失败才麻烦。
+    for (const p of projects) {
+      const root = projectSkillsRoot(p.path);
+      if (!root) {
+        problems.push({ projectId: p.id, projectName: p.name, error: "项目路径无效" });
+        continue;
+      }
+      try {
+        const names = await listSkillDirNames(root);
+        rows.push({
+          projectId: p.id,
+          projectName: p.name,
+          path: p.path,
+          // 目录不存在（`null`）→ 空清单 + missing 标记。两者分开是因为"这个项目
+          // 还没放过技能"（常态）和"有目录但是空的"在界面上要说不同的话。
+          skills: names ?? [],
+          missing: names === null,
+        });
+      } catch (err) {
+        problems.push({ projectId: p.id, projectName: p.name, error: (err as Error).message });
+      }
+    }
+
+    log.info(`skills.projectOverview: ${rows.length} project(s), ${problems.length} problem(s)`);
+    return { rows, problems };
   });
 
   // ── Scan external tools for skills available to import ──
