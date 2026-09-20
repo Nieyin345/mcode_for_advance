@@ -603,6 +603,8 @@ const api = {
       ipcRenderer.invoke(IPC.SKILLS_SAVE, input)) as RpcMap["skills.save"],
     delete: ((input) =>
       ipcRenderer.invoke(IPC.SKILLS_DELETE, input)) as RpcMap["skills.delete"],
+    copyToProject: ((input) =>
+      ipcRenderer.invoke(IPC.SKILLS_COPY_TO_PROJECT, input)) as RpcMap["skills.copyToProject"],
     enginesSet: ((input) =>
       ipcRenderer.invoke(IPC.SKILLS_ENGINES_SET, input)) as RpcMap["skills.engines.set"],
     bundles: ((input) =>

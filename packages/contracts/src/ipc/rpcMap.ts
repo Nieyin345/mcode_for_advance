@@ -32,7 +32,7 @@ import type { FileReadInput, FileReadBinaryInput, PickImagesInput, PickedImage, 
 import type { GitDiscoverReposInput, GitRepo, GitRepoPathInput, GitStatusResult, GitStageInput, GitOpResult, GitUnstageInput, GitCommitInput, GitDiffInput, GitFileBlobInput, GitDiscardInput, GitGenerateCommitInput, GitCancelGenerateCommitInput, GitLogInput, GitCommitInfo, GitShowCommitInput, GitCommitDetail, GitShowFileInput, GitBranchListResult, GitCheckoutInput, GitDeleteBranchInput, GitMergeInput, GitMergePreviewResult, GitMergeResult, GitWorktreeListInput, GitWorktreeInfo, GitWorktreeStatusInput, GitWorktreeMergeBackInput, GitWorktreeMergeBackResult, GitWorktreeRemoveInput, GitWorktreeRemoveResult } from "./git.js";
 import type { TerminalCreateInput, TerminalCreateResult, TerminalWriteInput, TerminalOpResult, TerminalResizeInput, TerminalKillInput, TerminalListInput, TerminalInfo } from "./terminal.js";
 import type { BrowserCreateInput, BrowserCreateResult, BrowserLoadUrlInput, BrowserOpResult, BrowserGoBackInput, BrowserGoForwardInput, BrowserReloadInput, BrowserSetBoundsInput, BrowserSetPickModeInput, BrowserShowInput, BrowserHideInput, BrowserCloseInput, BrowserCaptureFrameInput, BrowserCaptureFrameResult, BrowserBookmarkAddInput, BrowserBookmarkRemoveInput, BrowserSetDeviceInput, BrowserHistoryRemoveInput, BrowserHistoryClearInput, BrowserAuthRespondInput, BrowserDownloadActionInput } from "./browser.js";
-import type { SkillsListInput, SkillInfo, SkillsReadInput, SkillsSaveInput, SkillsDeleteInput, SkillsEnginesSetInput, SkillEngineState, SkillBundle, SkillsBundlesInput, SkillsEnginesSetBulkInput, SkillsScanSourcesInput, ExternalSkillInfo, SkillsImportInput, SkillsImportGithubInput, SkillsImportGithubResult, ProviderInfo, OutputStyleListInput, OutputStyleEntry } from "./skills.js";
+import type { SkillsListInput, SkillInfo, SkillsReadInput, SkillsSaveInput, SkillsDeleteInput, SkillsEnginesSetInput, SkillEngineState, SkillBundle, SkillsBundlesInput, SkillsEnginesSetBulkInput, SkillsScanSourcesInput, ExternalSkillInfo, SkillsImportInput, SkillsImportGithubInput, SkillsImportGithubResult, SkillsCopyToProjectInput, SkillsCopyToProjectResult, ProviderInfo, OutputStyleListInput, OutputStyleEntry } from "./skills.js";
 import type { McpListInput, McpServerEntry, McpToggleInput, McpAuthorizeInput, McpUnauthorizeInput, McpSaveInput, McpRemoveInput, McpScanImportInput, McpImportSource, McpImportInput, McpEnginesSetInput, McpEngineState } from "./mcp.js";
 import type { ContextGetInput, ContextSaveInput, ContextMemoriesListInput, ContextMemoryDir, ContextMemoryGetInput, ContextMemorySaveInput, ToolsUsageGetInput, ToolsUsageResult } from "./context.js";
 import type { UsageStatsInput, UsageStatsResult } from "./usage.js";
@@ -406,6 +406,11 @@ export interface RpcMap {
   /** Delete a skill directory (symlink → unlink link only; real dir → recursive
    *  remove). Returns ok:false + error on any IO failure. */
   "skills.delete": (input: SkillsDeleteInput) => Promise<{ ok: boolean; error?: string }>;
+  /** **把技能从通用库复制到项目**（`<项目>/.claude/skills/`）。批量，逐条回报
+   *  结果 —— 单个失败（重名 / 读不到源）不影响其余的。 */
+  "skills.copyToProject": (
+    input: SkillsCopyToProjectInput,
+  ) => Promise<SkillsCopyToProjectResult>;
   /** Set one universal skill's per-engine availability (claude/codex/pi).
    *  Returns the resolved state as persisted (or ok:false + error). */
   "skills.engines.set": (
@@ -1422,6 +1427,8 @@ export const IPC = {
   SKILLS_READ: "skills:read",
   SKILLS_SAVE: "skills:save",
   SKILLS_DELETE: "skills:delete",
+  // Copy skills from the universal library into the current project's dir
+  SKILLS_COPY_TO_PROJECT: "skills:copyToProject",
   // Per-engine availability matrix for the universal skill library
   SKILLS_ENGINES_SET: "skills:enginesSet",
   // Bundle manifest (import groups) for the universal skill library

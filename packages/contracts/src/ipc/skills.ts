@@ -23,23 +23,46 @@ import type { ProviderCapabilities } from "../provider.js";
  *  ENABLED plugin (read-only inventory: the composer menu lists it and the
  *  engine loads it per-turn, but it has no user-editable file root — the
  *  skills read/save/delete handlers reject this source). "builtin" = shipped
- *  inside the app itself (the document skills; see
- *  main/plugins/builtinPlugins.ts) — same read-only posture as "plugin", but
- *  it survives with no plugins installed at all, so the UI labels it 「内置」
- *  rather than by plugin name. */
-export const SKILL_READ_SOURCES = ["global", "plugin", "builtin"] as const;
+ *  inside the app itself — **RETIRED 2026-09-20**: the four document skills were
+ *  removed (the user imports skill packs from GitHub instead). The constant is
+ *  kept so previously-written matrix keys and stale rows still parse; nothing
+ *  produces it any more. "project" = the **current project's** own skills dir
+ *  (`<项目>/.claude/skills/`) — writable, see {@link SKILL_WRITE_SOURCES}. */
+export const SKILL_READ_SOURCES = ["global", "project", "plugin", "builtin"] as const;
 export type SkillSource = (typeof SKILL_READ_SOURCES)[number];
 
-/** The one source a skill can be WRITTEN to — the universal library the user
- *  owns. Contributed skills are replaced by a plugin update or an app upgrade,
- *  never by this editor, so save/delete reject them at the schema level (not
- *  just in the handler), and the UI hides the buttons. */
-export const SKILL_WRITE_SOURCES = ["global"] as const;
+/**
+ * The sources a skill can be WRITTEN to.
+ *
+ *  - **`global`** — 通用库（`~/.mcode/skills`），三个引擎共用的那一份。
+ *  - **`project`** — **当前项目目录**下的 `<项目>/.claude/skills/`。
+ *
+ * ## 为什么项目级又回来了（2026-09-20）
+ *
+ * 这里从前**只有 `global`**，而 `skills.list` 收到的 `projectPath` 是被**刻意忽略**
+ * 的 —— 当时的取舍是"Mcode 不往用户项目目录读写任何 skill 文件"。用户 2026-09-20
+ * 推翻了它：他要的正是"skill 能跟着项目走、能分享给同事"，那只有落在项目目录里才成立。
+ *
+ * 路径选 `<项目>/.claude/skills/` 而不是 `.mcode/skills/`：这是 Claude Code 的既定
+ * 约定，三个引擎的加载路径本来就认它；放在自己起的目录名下等于让同事的别的工具读不到。
+ *
+ * ⚠️ **这意味着 Mcode 会往用户的项目目录写文件。** 所以写操作必须带 `projectPath`
+ * （没有它就没有"项目"可言），主进程侧一律做逃逸校验（见 `main/ipc/skills.ts` 的
+ * `projectSkillsRoot`）。
+ *
+ * Contributed skills are replaced by a plugin update or an app upgrade, never by
+ * this editor, so save/delete reject them at the schema level (not just in the
+ * handler), and the UI hides the buttons.
+ */
+export const SKILL_WRITE_SOURCES = ["global", "project"] as const;
 
 /** The sources that have no user-editable file root. Kept as one exported
  *  alias so the renderer's editor type and the main-side read/save/delete
- *  guard can never drift apart on which sources are read-only. */
-export type ReadOnlySkillSource = Extract<SkillSource, "plugin" | "builtin">;
+ *  guard can never drift apart on which sources are read-only.
+ *
+ *  ⚠️ 判据是"在不在 `SKILL_WRITE_SOURCES` 里",不是这里这个联合写死了哪几个 ——
+ *  所以加 `project` 之后它自动变成只读集的反面,不用改。 */
+export type ReadOnlySkillSource = Exclude<SkillSource, (typeof SKILL_WRITE_SOURCES)[number]>;
 
 /** The three engines the universal skill library can be gated per. Mirrors
  *  main's skillEngines matrix (contracts can't import app code — keep the
@@ -197,6 +220,45 @@ export const SkillsDeleteSchema = z.object({
   name: z.string().regex(SKILL_NAME_RE, "invalid skill name"),
 });
 export type SkillsDeleteInput = z.infer<typeof SkillsDeleteSchema>;
+
+/**
+ * **把技能复制到项目**（通用库 → `<项目>/.claude/skills/`）。
+ *
+ * ## 为什么是"复制"而不是"移动"或"引用"
+ *
+ *  - **不移动**：通用库是三个引擎共用的那一份，搬走就等于把它从所有别的项目里
+ *    抽走了。
+ *  - **不引用**：引用的表现是"总库里改了、项目里跟着变"，而用户要项目技能的
+ *    理由恰恰是**项目要有自己的一份**（跟着 git 走、能改成本项目专用的版本、
+ *    能分享给同事）。引用做不到这三件事里的任何一件。
+ *
+ * 代价是**复制之后两边脱钩** —— 这是刻意的，不是缺陷。界面上要把这件事说出来
+ * （"已复制"），别让用户以为它还在跟着总库走。
+ *
+ * ## 批量
+ *
+ * `names` 是列表，因为面板支持勾选多个一起复制。**单个失败不影响其余的** ——
+ * 重名、非法名各自进 `failed`，成功的照常复制（与 `skills.import` 同一个口径：
+ * 一条坏的不该让整批停摆）。
+ */
+export const SkillsCopyToProjectSchema = z.object({
+  /** 项目根目录（绝对路径）。没有它就没有"项目"可言。 */
+  projectPath: z.string().min(1),
+  /** 要复制的技能名（通用库里的目录名）。 */
+  names: z.array(z.string().regex(SKILL_NAME_RE, "invalid skill name")).min(1),
+});
+export type SkillsCopyToProjectInput = z.infer<typeof SkillsCopyToProjectSchema>;
+
+/** 复制的结果。刻意**逐条**回报，不是一句 ok —— 批量复制里"哪几个成了、
+ *  哪几个重名跳过了"是用户真正要看的东西。 */
+export interface SkillsCopyToProjectResult {
+  /** 真的复制过去的技能名。 */
+  copied: string[];
+  /** 目标已有同名目录、按"不覆盖"处理而跳过的。 */
+  skipped: Array<{ name: string; reason: string }>;
+  /** 失败的（读不到源、写不进去）。 */
+  failed: Array<{ name: string; reason: string }>;
+}
 
 /* ── Skill import (settings panel) ──
  *  The settings panel's "Import" feature scans external skill directories

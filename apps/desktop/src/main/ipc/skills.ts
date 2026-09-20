@@ -48,8 +48,9 @@ import {
   SkillsScanSourcesSchema,
   SkillsImportSchema,
   SkillsImportGithubSchema,
+  SkillsCopyToProjectSchema,
 } from "@contracts/ipc";
-import type { SkillInfo, SkillSource, ExternalSkillInfo, SkillTool, ReadOnlySkillSource, SkillEngineState, SkillBundle, SkillsImportGithubResult } from "@contracts/ipc";
+import type { SkillInfo, SkillSource, ExternalSkillInfo, SkillTool, ReadOnlySkillSource, SkillEngineState, SkillBundle, SkillsImportGithubResult, SkillsCopyToProjectResult } from "@contracts/ipc";
 import { log } from "@main/lib/logger.js";
 import { getPluginSkillSources } from "@main/plugins/pluginManager.js";
 import {
@@ -73,9 +74,13 @@ function pathWithin(root: string, abs: string): boolean {
 }
 
 /** The universal skills root: ~/.mcode/skills (Mcode's own CLAUDE_CONFIG_DIR
- *  skills dir). This is the ONE user-owned store all three engines consume —
- *  the former project branch (<project>/.claude/skills) is gone with external
- *  workspace inheritance (context-hosting rework).
+ *  skills dir). This is the ONE shared store all three engines consume.
+ *
+ *  ⚠️ 这里从前还写着"the former project branch (<project>/.claude/skills) is gone
+ *  with external workspace inheritance" —— **2026-09-20 那句话不成立了**: 项目级
+ *  技能被用户要了回来,落在 `<项目>/.claude/skills/`(见下面的 `projectSkillsRoot`)。
+ *  这里仍然只解析**通用库**那一个根,项目那个由 `projectSkillsRoot` 单独算 ——
+ *  两者的作用域不同,不该混在一个函数里。
  *
  *  The global root moved from ~/.claude/skills to ~/.mcode/skills because
  *  CLAUDE_CONFIG_DIR is now always set to ~/.mcode - the SDK's bundled binary
@@ -84,6 +89,40 @@ function pathWithin(root: string, abs: string): boolean {
  *  endpoints, where ~/.claude/skills is no longer read). */
 function resolveSkillRoot(): string {
   return defaultSkillsRoot();
+}
+
+/** 项目技能目录在项目下的相对位置（Claude Code 的既定约定）。 */
+const PROJECT_SKILLS_REL = path.join(".claude", "skills");
+
+/** 列表排序用的来源档次。项目最前（局部覆盖全局），内置垫底。 */
+const SORT_SOURCE_RANK: Record<SkillSource, number> = {
+  project: 0,
+  global: 1,
+  plugin: 2,
+  builtin: 3,
+};
+
+/**
+ * 某个项目的技能根：`<项目>/.claude/skills/`。**没有项目就返回 null。**
+ *
+ * ## 为什么是 `.claude/skills` 而不是 `.mcode/skills`
+ *
+ * 这是 Claude Code 的既定约定，三家引擎的加载路径本来就认它。放在自己起的目录名
+ * 下，同事拿别的工具打开这个项目就读不到 —— 而"跟着项目走、能分享"正是用户要
+ * 项目级技能的**全部理由**。
+ *
+ * ## 为什么只做词法校验，不做"这条路存在吗"
+ *
+ * 目录**不存在是正常的**（项目里还没放过技能）。返回路径、让 `scanSkillsRoot` 自己
+ * 吃掉 ENOENT，比在这里先 stat 一次少一次读盘，而且调用方不用区分"没有目录"和
+ * "目录是空"。
+ *
+ * ⚠️ **这里不接受相对路径。** 项目路径来自会话/项目记录，正常都是绝对的；给一个
+ * 相对路径意味着"相对进程的工作目录"，那是随启动方式变的 —— 与其猜，不如拒绝。
+ */
+export function projectSkillsRoot(projectPath: string | undefined): string | null {
+  if (!projectPath || !path.isAbsolute(projectPath)) return null;
+  return path.join(projectPath, PROJECT_SKILLS_REL);
 }
 
 /** Resolves to an absolute path, following symlinks. Returns null on any
@@ -377,12 +416,29 @@ async function scanZcodePluginSkillDirs(): Promise<string[]> {
   return result;
 }
 
-/** Shared skills-list core — used by both the desktop IPC handler and the
- *  mobile RPC whitelist. `projectPath` is accepted for RPC signature
- *  stability but IGNORED: the universal library is the only scope (external
- *  workspace inheritance was cut with the context-hosting rework), so the
- *  listing is identical no matter which project is active. */
-export async function listSkillsForProject(_projectPath: string | undefined): Promise<SkillInfo[]> {
+/**
+ * Shared skills-list core — used by both the desktop IPC handler and the
+ * mobile RPC whitelist.
+ *
+ * ## `projectPath` 现在**真的会用**（2026-09-20 改）
+ *
+ * 从前这个参数是**被忽略**的（签名注释写着"accepted for RPC signature
+ * stability but IGNORED"）：当时的取舍是"Mcode 不往用户项目目录读写任何 skill
+ * 文件"，所以清单和当前开的是哪个项目无关。
+ *
+ * 用户 2026-09-20 推翻了那个取舍 —— 项目级技能回来了，落在
+ * `<项目>/.claude/skills/`（见 `@contracts/ipc` 的 `SKILL_WRITE_SOURCES`）。
+ * 所以现在：
+ *
+ *  - **传了 `projectPath`** → 除了通用库与插件，还扫那个项目的技能目录，
+ *    结果标成 `source: "project"`；
+ *  - **没传**（手机端、或者还没有项目）→ 行为与从前**完全一样**，只有通用库
+ *    与插件。这一点是刻意的：没有项目就没有"项目技能"可言，不该凭空报错。
+ *
+ * 项目技能**排在通用库之上**（见下面 `SOURCE_RANK`）—— 局部覆盖全局是用户
+ * 期望的方向：项目里放一份同名技能，就是为了在这一项目里用它的版本。
+ */
+export async function listSkillsForProject(projectPath: string | undefined): Promise<SkillInfo[]> {
   // Per-engine availability for the universal library — resolved here once so
   // both the composer menu and the settings panel see the same state.
   const skillsRoot = resolveSkillRoot();
@@ -394,6 +450,17 @@ export async function listSkillsForProject(_projectPath: string | undefined): Pr
   });
 
   const byName = new Map<string, SkillInfo>();
+  // **项目技能最先扫。** `scanSkillsRoot` 对同名是"先到的留着"（`byName` 的
+  // 语义），而后面的通用库/插件只在该名字还没被占时才补位 —— 所以先扫谁，
+  // 谁的版本就赢。
+  const projectRoot = projectSkillsRoot(projectPath);
+  if (projectRoot) {
+    try {
+      await scanSkillsRoot(projectRoot, "project", byName);
+    } catch (err) {
+      log.warn(`project skills scan failed: ${(err as Error).message}`);
+    }
+  }
   try {
     await scanSkillsRoot(skillsRoot, "global", byName);
   } catch (err) {
@@ -423,22 +490,20 @@ export async function listSkillsForProject(_projectPath: string | undefined): Pr
   }
   // Attach the resolved matrix to universal-library AND plugin skills — both
   // are matrix-managed so an engine only sees what was assigned to it (plugin
-  // rows stay read-only apart from the switches). Builtin rows omit it: those
-  // ship with the app and are always offered.
+  // rows stay read-only apart from the switches). 项目技能与内置行不挂：
+  // 项目技能**属于那个项目**（跟着项目目录走，不参与全局矩阵），内置行随应用
+  // 发布、永远对所有引擎开放。
   for (const [name, info] of byName) {
     if (info.source === "global" || info.source === "plugin") info.perEngine = resolvedEngines(name);
   }
   // Stable ordering: by source rank, then alphabetical within each — so the
-  // menu doesn't reshuffle between renders and user-owned skills always sort
-  // above contributed ones (内置固定垫底)。
-  const SOURCE_RANK: Record<SkillSource, number> = {
-    global: 0,
-    plugin: 1,
-    builtin: 2,
-  };
+  // menu doesn't reshuffle between renders.
+  //
+  // **项目排在最前**：局部覆盖全局是用户期望的方向（项目里放一份同名的，就是为了
+  // 在这个项目里用它的版本），所以它在列表最上面，也最该被看见。内置垫底。
   return [...byName.values()].sort((a, b) => {
-    const ra = SOURCE_RANK[a.source];
-    const rb = SOURCE_RANK[b.source];
+    const ra = SORT_SOURCE_RANK[a.source];
+    const rb = SORT_SOURCE_RANK[b.source];
     if (ra !== rb) return ra - rb;
     return a.name.localeCompare(b.name);
   });
@@ -499,7 +564,7 @@ export async function readSkillForProject(
     const dir = await contributedSkillDir(source, name);
     return dir ? readSkillMd(dir) : "";
   }
-  const root = resolveSkillRootForRequest(source);
+  const root = resolveSkillRootForRequest(source, projectPath);
   if (!root) return "";
   const skillDir = path.join(root, name);
   // Containment guard: the resolved skill dir must stay inside the root.
@@ -507,14 +572,20 @@ export async function readSkillForProject(
   return readSkillMd(skillDir);
 }
 
-/** Resolve the skills root for a read/save/delete request, or null when the
- *  request is invalid. The only invalid case left is a contributed source
- *  (plugin / builtin): those are read-only inventory with no user-editable
- *  file root — plugin files live under the plugin's install dir and vanish on
- *  uninstall; built-in files live in the app's own resources and are replaced
- *  on upgrade. Universal-library ops always resolve to ~/.mcode/skills. */
-function resolveSkillRootForRequest(source: SkillSource): string | null {
+/**
+ * Resolve the skills root for a read/save/delete request, or null when the
+ * request is invalid.
+ *
+ *  - **`global`** → 通用库（`~/.mcode/skills`），不需要 `projectPath`。
+ *  - **`project`** → `<项目>/.claude/skills/`，**必须带 `projectPath`** ——
+ *    没有它就没有"项目"可言。给不出就返回 null（调用方按"这个来源用不了"处理，
+ *    而不是去猜一个项目）。
+ *  - **`plugin` / `builtin`** → 恒 null：只读清单，没有可写的文件根（插件文件住在
+ *    插件安装目录、卸载即消失；内置文件在应用自己的 resources 里、升级即替换）。
+ */
+function resolveSkillRootForRequest(source: SkillSource, projectPath?: string): string | null {
   if (source === "plugin" || source === "builtin") return null;
+  if (source === "project") return projectSkillsRoot(projectPath);
   return resolveSkillRoot();
 }
 
@@ -823,7 +894,7 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
   // ── Create or overwrite a skill's SKILL.md ──
   ipcMain.handle(IPC.SKILLS_SAVE, async (_evt, raw) => {
     const input = SkillsSaveSchema.parse(raw);
-    const root = resolveSkillRootForRequest(input.source);
+    const root = resolveSkillRootForRequest(input.source, input.projectPath);
     if (!root) return { ok: false, error: "该来源为只读" };
     const skillDir = path.join(root, input.name);
     if (!pathWithin(root, skillDir)) {
@@ -855,7 +926,7 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
   // ── Delete a skill directory ──
   ipcMain.handle(IPC.SKILLS_DELETE, async (_evt, raw) => {
     const input = SkillsDeleteSchema.parse(raw);
-    const root = resolveSkillRootForRequest(input.source);
+    const root = resolveSkillRootForRequest(input.source, input.projectPath);
     if (!root) return { ok: false, error: "该来源为只读" };
     const skillDir = path.join(root, input.name);
     if (!pathWithin(root, skillDir)) {
@@ -880,6 +951,67 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
+  });
+
+  // ── Copy skills from the universal library into the current project ──
+  //
+  // 「把技能放进这个项目」的入口。**复制而不是移动/引用**，理由见契约
+  // (`SkillsCopyToProjectSchema`)：移动会把技能从所有别的项目里抽走；引用做不到
+  // "项目有自己的那一份"（跟 git 走、能改成本项目专用、能分享）。代价是复制之后
+  // 两边脱钩 —— 那是刻意的。
+  ipcMain.handle(IPC.SKILLS_COPY_TO_PROJECT, async (_evt, raw) => {
+    const input = SkillsCopyToProjectSchema.parse(raw);
+    const result: SkillsCopyToProjectResult = { copied: [], skipped: [], failed: [] };
+
+    const destRoot = projectSkillsRoot(input.projectPath);
+    if (!destRoot) {
+      // 项目路径不合法（空、或相对路径）—— 整批都做不了，逐条回同一个原因。
+      for (const name of input.names) {
+        result.failed.push({ name, reason: "项目路径无效（必须是绝对路径）" });
+      }
+      return result;
+    }
+    const srcRoot = resolveSkillRoot();
+
+    for (const name of input.names) {
+      // 源端也要过一遍包含校验：`name` 虽然在 schema 层已经被正则挡了，但这是
+      // 写盘操作，多一道 resolve 比对不算贵。
+      const srcDir = path.join(srcRoot, name);
+      if (!pathWithin(srcRoot, srcDir)) {
+        result.failed.push({ name, reason: "无效的 skill 名" });
+        continue;
+      }
+      const destDir = path.join(destRoot, name);
+      if (!pathWithin(destRoot, destDir)) {
+        result.failed.push({ name, reason: "无效的 skill 名" });
+        continue;
+      }
+      try {
+        const st = await fs.stat(srcDir).catch(() => null);
+        if (!st?.isDirectory()) {
+          result.failed.push({ name, reason: "通用库里没有这个技能" });
+          continue;
+        }
+        // **不覆盖已有的。** 项目里那个可能是用户改过的版本，复制一次把它冲掉
+        // 是不可逆的（而且用户多半只是想"再放一个进去"，没打算覆盖）。
+        const exists = await fs.stat(destDir).then(() => true, () => false);
+        if (exists) {
+          result.skipped.push({ name, reason: "项目里已经有同名的了（没有覆盖）" });
+          continue;
+        }
+        await fs.mkdir(destRoot, { recursive: true });
+        await fs.cp(srcDir, destDir, { recursive: true });
+        result.copied.push(name);
+      } catch (err) {
+        result.failed.push({ name, reason: (err as Error).message });
+      }
+    }
+
+    log.info(
+      `skills.copyToProject ${input.projectPath}: ${result.copied.length} copied, ` +
+        `${result.skipped.length} skipped, ${result.failed.length} failed`,
+    );
+    return result;
   });
 
   // ── Scan external tools for skills available to import ──

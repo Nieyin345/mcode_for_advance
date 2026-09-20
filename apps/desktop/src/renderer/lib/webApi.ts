@@ -483,6 +483,9 @@ const skills: Api["skills"] = {
   read: (input) => rpc("skills:read", input),
   save: () => webUnsupported("skills.save"),
   delete: () => webUnsupported("skills.delete"),
+  // 复制到项目也是桌面设置页的功能：它要选"复制到哪个项目目录"，而手机端没有
+  // 那个上下文（与 save/delete 同一立场）。
+  copyToProject: () => webUnsupported("skills.copyToProject"),
   // 矩阵编辑是桌面设置页的功能；手机端只读展示（与 save/delete 同一立场）。
   // bundles 只读、随 list 一起展示；批量矩阵编辑同样是桌面端的事。
   bundles: () => webUnsupported("skills.bundles"),

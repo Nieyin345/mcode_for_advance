@@ -1,26 +1,28 @@
 /**
- * Two-column panel for managing skills (SKILL.md). Lives in the Settings
- * page under "Skills".
+ * 技能管理面板。设置页「技能」那一项，三个 tab：**总库 / 项目 / 节点**。
  *
- * The list shows the universal library (~/.mcode/skills — the ONE user-owned
- * store all three engines consume, populated by the "Import" feature or the
- * new-skill form) plus the built-in document skills (read-only). Global skills
- * can be viewed, edited, and deleted here, and each one's per-engine
- * availability (claude / codex / pi) is editable via the matrix in the editor
- * header — 「移动到引擎内部 / 移回通用」 is a matrix edit; skill files never move.
+ * ## 三个作用域
  *
- * ## Layout
+ *  - **总库**（`~/.mcode/skills`）—— 三个引擎共用的那一份，唯一的事实源。
+ *  - **项目**（`<项目>/.claude/skills/`）—— 从总库**复制**过来的一份。2026-09-20
+ *    加回来的：用户要"技能跟着项目走、能改成本项目专用、能分享给同事"，那只有
+ *    落在项目目录里才成立。复制之后**两边脱钩**（刻意）。
+ *  - **节点** —— 那是**引用**，不是文件：每个节点/代理档案各自指名要哪几个技能。
+ *    它**不在这一页配**（长在工作流图上和代理档案里），这一页只给**总览**：
+ *    谁在用什么、点一行跳到那儿去改。
  *
- *   ┌─ left (skill list) ────┬─ right (editor / empty) ─────────────────┤
- *   │ • pdf       [全局]      │  - editing existing -                    │
- *   │ • docx      [内置]      │  engine matrix (claude/codex/pi toggles) │
+ * ## Layout(总库那一栏)
+ *
+ *   ┌─ left (skill list) ────┬─ right (editor / empty) ─────────────────┐
+ *   │ ☑ pdf       [全局]      │  - editing existing -                    │
+ *   │ ☑ refs      [全局]      │  engine matrix (claude/codex/pi toggles) │
  *   │ + 新建 Skill            │  full SKILL.md source textarea           │
  *   │ + 导入 Skill            │  - or creating new -                     │
  *   └─────────────────────────┤  name / description / body · 保存/删除    │
  *                              └──────────────────────────────────────────┘
  *
- * 项目级根（<project>/.claude/skills）已随上下文统一托管移除：外部工作区目录
- * 一律不再继承，Mcode 不往用户项目目录读写任何 skill 文件。
+ * 勾选框是**「复制到项目」的源**（只对通用库的技能出现）—— 勾完切到「项目」那一栏
+ * 按按钮。两个动作分属两栏，因为复制的两端正好就是这两栏。
  *
  * The skill list is fetched locally (panelSkills state), NOT read from the
  * session store's `skills` cache - that cache feeds the composer `/` menu and
@@ -37,6 +39,8 @@ import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, ConfirmDialog, Dialog } from "@renderer/components/ui/index.js";
 import { PanelHeader } from "./PanelHeader.js";
+import { ProjectSkillsView } from "./ProjectSkillsView.js";
+import { SkillNodesView } from "./SkillNodesView.js";
 import {
   IconPlus,
   IconTrash,
@@ -173,11 +177,41 @@ function GroupEngineSwitches({
 export function SkillsPanel() {
   const { t } = useI18n();
   const activeProjectId = useSessionStore((s) => s.activeProjectId);
+  const projects = useSessionStore((s) => s.projects);
   const reloadSkills = useSessionStore((s) => s.reloadSkills);
 
-  // Panel-local skill list (the universal library + built-ins). NOT the store
-  // cache (that one feeds the composer `/` menu).
+  /** 当前项目路径。项目技能的根是 `<项目>/.claude/skills/`，所以这次列表要它。 */
+  const projectPath = useMemo(
+    () => projects.find((p) => p.id === activeProjectId)?.path,
+    [projects, activeProjectId],
+  );
+
+  // ── 三个 tab ── 总库 / 项目 / 节点。形状照 `WorkflowsPanel` 那个段控。
+  const [view, setView] = useState<"library" | "project" | "nodes">("library");
+  /** 总库那一栏勾选的技能名 —— 「复制到项目」的源。跨 tab 保留（用户在总库勾完
+   *  切到项目 tab 按按钮是**预期用法**，切一下就把勾清掉会让那条路走不通）。 */
+  const [checked, setChecked] = useState<Set<string>>(() => new Set());
+  const toggleChecked = useCallback((name: string): void => {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }, []);
+
+  // Panel-local skill list (the universal library + project + plugins). NOT the
+  // store cache (that one feeds the composer `/` menu).
   const [panelSkills, setPanelSkills] = useState<SkillInfo[]>(EMPTY_PANEL_SKILLS);
+  /** 项目自己的技能（`source: "project"`）—— 「项目」那一栏列的就是它们。 */
+  const projectSkills = useMemo(
+    () => panelSkills.filter((s) => s.source === "project"),
+    [panelSkills],
+  );
+  /** 全选 / 清空 —— 总库那一栏标题上的两个小按钮，给"整包复制过去"用。 */
+  const selectAllCopyable = useCallback((): void => {
+    setChecked(new Set(panelSkills.filter((s) => s.source === "global").map((s) => s.name)));
+  }, [panelSkills]);
   const [listLoading, setListLoading] = useState(false);
   // Bundle manifest (import groups) + which grouping the left list uses.
   // Bundle grouping is the DEFAULT: with hundreds of imported skills, the
@@ -257,14 +291,17 @@ export function SkillsPanel() {
   const loadPanelSkills = useCallback(async () => {
     setListLoading(true);
     try {
-      // The universal library is the only scope — projectPath is gone. The
-      // response carries perEngine on global AND plugin skills (resolved from
-      // the .mcode-engines.json matrix). Plugin rows stay read-only apart from
-      // the engine matrix — they must show up here so the user can assign
-      // them per engine, with the 「插件」 badge telling them apart.
+      // 三个作用域一起拿：**通用库**（`source: "global"`，三个引擎共用）、
+      // **项目**（`source: "project"`，`<项目>/.claude/skills/` —— 2026-09-20 回来
+      // 的）、以及**插件**（`source: "plugin"`，只读清单）。响应里 global 与 plugin
+      // 都带 perEngine（从 `.mcode-engines.json` 矩阵解出来的）；项目与内置不带 ——
+      // 项目技能属于那个项目、不参与全局矩阵。
+      //
+      // `projectPath` **要传**：不传就只剩通用库与插件（主进程里那个分支是刻意的，
+      // 见 `listSkillsForProject` 的头注）。当前项目路径从 store 里取。
       // Bundles load alongside; their failure must not blank the list.
       const [listRes, bundleRes] = await Promise.all([
-        api.skills.list({}),
+        api.skills.list(projectPath ? { projectPath } : {}),
         api.skills.bundles({}).catch(() => ({ bundles: [] as SkillBundle[] })),
       ]);
       setPanelSkills(listRes.skills.length ? listRes.skills : EMPTY_PANEL_SKILLS);
@@ -275,7 +312,7 @@ export function SkillsPanel() {
     } finally {
       setListLoading(false);
     }
-  }, []);
+  }, [projectPath]);
 
   // Load once on mount.
   useEffect(() => {
@@ -616,7 +653,82 @@ export function SkillsPanel() {
         title="Skills"
       />
 
-      <div className="grid min-h-0 flex-1 gap-4" style={{ gridTemplateColumns: `${leftW}px 1fr` }}>
+      {/* 三个 tab,形状照 `WorkflowsPanel`:段控 + `role="tabpanel"`。
+          ⚠️ 面板用 `hidden` **类**藏,不用 `hidden` **属性** —— 那个 div 同时带
+          `flex`,而 preflight 的 `[hidden]{display:none}` 与 `.flex` 同特异性又排在
+          utilities 之前,属性会输、两块一起显示(仓库既有做法见 `PluginsPanel`)。 */}
+      <div className="mb-3 flex gap-1" role="tablist">
+        {(["library", "project", "nodes"] as const).map((id) => {
+          const active = view === id;
+          const label =
+            id === "library"
+              ? t("settings.skills.tabLibrary")
+              : id === "project"
+                ? t("settings.skills.tabProject")
+                : t("settings.skills.tabNodes");
+          return (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => setView(id)}
+              className={cn(
+                "rounded border px-2.5 py-1 text-[0.8571em] transition-colors",
+                active
+                  ? "border-accent bg-accent/10 font-medium text-accent"
+                  : "border-edge bg-surface text-content-muted hover:bg-surface-hover/60 hover:text-content",
+              )}
+            >
+              {label}
+              {id === "project" && projectSkills.length > 0 && (
+                <span className="ml-1.5 tabular-nums text-content-subtle">{projectSkills.length}</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ── 节点总览:整页,不掺左右栏(它本来就没有"选一个去编辑"这回事) ── */}
+      {view === "nodes" && (
+        <SkillNodesView
+          skills={panelSkills}
+          onJumpToWorkflow={() => {
+            // 跳到「工作流」那一页 —— 那边自己能选中这一份。这里不传 id:
+            // `setSettingsOpen` 只认 section,选中态是那个页面自己的事。
+            useSessionStore.getState().setSettingsOpen(true, "workflows");
+          }}
+          onJumpToProfile={() => useSessionStore.getState().setSettingsOpen(true, "workflows")}
+        />
+      )}
+
+      {/* ── 项目:整页(复制按钮 + 项目自己的技能列表),也走单栏 ── */}
+      {view === "project" && (
+        <ProjectSkillsView
+          skills={projectSkills}
+          loading={listLoading}
+          selected={[...checked]}
+          onToggleSelect={(name) =>
+            setChecked((prev) => {
+              const next = new Set(prev);
+              if (next.has(name)) next.delete(name);
+              else next.add(name);
+              return next;
+            })
+          }
+          onClearSelection={() => setChecked(new Set())}
+          onCopied={() => void loadPanelSkills()}
+        />
+      )}
+
+      {/* ── 总库:原有的左右两栏(勾选在这里做,复制按钮在项目那一栏) ── */}
+      <div
+        className={cn(
+          "grid min-h-0 flex-1 gap-4",
+          view === "library" ? "" : "hidden",
+        )}
+        style={{ gridTemplateColumns: `${leftW}px 1fr` }}
+      >
         {/* ───────── Left: skill list (width is user-draggable, persisted) ───────── */}
         <aside className="relative flex min-h-0 flex-col rounded-md border border-edge bg-surface/40">
           {/* Drag handle: sits in the grid gap along the aside's right edge;
@@ -627,8 +739,29 @@ export function SkillsPanel() {
             onMouseDown={onDragHandleMouseDown}
             className="absolute -right-2 top-0 z-10 h-full w-2 cursor-col-resize transition-colors hover:bg-accent/20"
           />
-          <div className="flex items-center justify-between px-2.5 py-2 text-[0.7143em] font-medium uppercase tracking-wide text-content-subtle">
-            <span>Skills</span>
+          <div className="flex items-center justify-between gap-2 px-2.5 py-2 text-[0.7857em] font-medium text-content-subtle">
+            <span className="flex items-center gap-2">
+              <span>Skills</span>
+              {/* 全选 / 清空 —— 勾选是「复制到项目」的源，所以这两个按钮只在有东西
+                  可勾时出现。放在这里而不是底部：勾选发生在列表里，操作也该在附近。 */}
+              {checked.size > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setChecked(new Set())}
+                  className="rounded px-1.5 py-0.5 text-[0.9em] font-normal text-content-subtle transition-colors hover:bg-surface-hover/60 hover:text-content"
+                >
+                  {t("settings.skills.clearSelection")}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={selectAllCopyable}
+                  className="rounded px-1.5 py-0.5 text-[0.9em] font-normal text-content-subtle transition-colors hover:bg-surface-hover/60 hover:text-content"
+                >
+                  {t("settings.skills.selectAll")}
+                </button>
+              )}
+            </span>
             <span className="flex items-center gap-1.5">
               {/* Grouping mode: bundle (by source) is the default — it answers
                   "这是什么、从哪来的" and carries the group switches. */}
@@ -717,31 +850,55 @@ export function SkillsPanel() {
                     selected?.kind === "skill" &&
                     selected.source === s.source &&
                     selected.name === s.name;
+                  // **只有通用库的技能可以勾选复制** —— 项目里的已经在项目里了，
+                  // 插件那份是别人管的、复制出去就成了孤儿拷贝。
+                  const canCopy = s.source === "global";
+                  const isChecked = canCopy && checked.has(s.name);
                   return (
-                    <button
+                    <div
                       key={skillKey(s)}
-                      onClick={() => void startEdit(s)}
                       className={cn(
-                        "relative block w-full rounded px-2.5 py-1.5 text-left transition-colors",
+                        "group relative flex w-full items-start gap-1.5 rounded px-2 py-1.5 transition-colors",
                         isActive ? "bg-surface-hover" : "hover:bg-surface-hover/60",
                       )}
                     >
                       {isActive && (
                         <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
                       )}
-                      <div className="flex items-center gap-1">
-                        <IconSparkles size={11} className="shrink-0 text-content-subtle" />
-                        <span className="truncate text-[0.7857em] font-medium text-content">
-                          {s.name}
-                        </span>
-                        <SourceBadge source={s.source} />
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="truncate text-[0.7143em] text-content-subtle">
-                          {s.description || t("settings.skills.noDesc")}
-                        </span>
-                      </div>
-                    </button>
+                      {/* 勾选框：复制的源。占位一直留着（不可复制的那些画一个空位），
+                          否则列表里名字的左边缘会参差不齐。 */}
+                      {canCopy ? (
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => toggleChecked(s.name)}
+                          // 点勾不能顺带打开编辑器 —— 两者是两件事。
+                          onClick={(e) => e.stopPropagation()}
+                          className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-accent"
+                          aria-label={s.name}
+                        />
+                      ) : (
+                        <span className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => void startEdit(s)}
+                        className="min-w-0 flex-1 text-left"
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <IconSparkles size={13} className="shrink-0 text-content-subtle" />
+                          <span className="truncate text-[0.9286em] font-medium text-content">
+                            {s.name}
+                          </span>
+                          <SourceBadge source={s.source} />
+                        </div>
+                        <div className="mt-0.5 flex items-center gap-1.5">
+                          <span className="truncate text-[0.8571em] text-content-muted">
+                            {s.description || t("settings.skills.noDesc")}
+                          </span>
+                        </div>
+                      </button>
+                    </div>
                   );
                   })}
               </div>
