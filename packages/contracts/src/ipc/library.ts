@@ -379,27 +379,31 @@ export const LibraryDeleteItemsSchema = z.object({
   /** 是否连同磁盘上的 PDF/MD 一起删除。默认 false(只从库里移除记录)。 */
   deleteFiles: z.boolean().optional(),
   /**
-   * 用户**不想**跟着一起删的那些关联 —— 传 `library.deletePreview` 给出的
-   * `targetItemId` / `targetPath`。
+   * 用户**勾了"这个也一起删"**的那些关联目标 —— 传 `library.deletePreview` 给出的
+   * `targetItemId`。
    *
-   * ## 为什么是"不要删的"而不是"要删的"
+   * ## 语义是「**连它一起删**」,不是「保留关联行」
    *
-   * 默认**全删**是这件操作的本来语义(用户在回收站里点"彻底删除",意思是这一条
-   * 连它那一包都别留)。清单只是给他一个**反悔的机会** —— 所以传的是**例外**。
-   * 反过来传"勾了哪些"的话,界面漏渲染一条就等于**静默地不删**,而用户以为删了。
+   * 两件事要分清,因为**只有前者做得到**:
    *
-   * ⚠️ **转录产物(`form: "transcript"`)不在这里**:它和正文是一个整体
-   * (md 里的 `![](images/…)` 指着它),没有"留图不留正文"这种半截状态 ——
-   * 见 `LibraryDeletePreviewLink` 那一段。所以清单里它可以不显示勾,或者显示成禁用。
+   *  - 「把这一条关联留着」 —— **做不到**。`library_item_links` 的两列都带
+   *    `ON DELETE CASCADE`(见 `store/db.ts` 的建表),删掉一头那条关联行就被数据库
+   *    自动带走了。而且一张只剩一头的关联本来也没有意义。
+   *  - 「把**被链接的那条**也一起删掉」 —— 这才是用户要的。他的原话:「会把**你选择的
+   *    文件所链接的文件**一并展示出来,由用户选择**是否连带链接文件也一起删掉**」。
+   *
+   * 所以这个字段是**"顺带把对面那条也删了"的名单**,而不是"保留"的名单。
+   *
+   * ## 为什么只收 `targetItemId`(库内),不收路径
+   *
+   * 库外路径的关联删掉**只是断一条记录**,用户磁盘上的文件一个字节都不动(见
+   * `LibraryDeletePreviewLink` 的 `path` 那一档)。既然没有"那个文件要不要删"这个
+   * 问题,它就不该出现在这份名单里 —— 界面上那一档**不给勾**。
+   *
+   * ⚠️ **转录产物(`form: "transcript"`)也不在这里**,同理:它和正文是一个整体
+   * (md 里的 `![](images/…)` 指着它),随条目一起走,没有单独的开关。
    */
-  keepLinks: z
-    .array(
-      z.object({
-        targetItemId: z.string().min(1).optional(),
-        targetPath: z.string().min(1).optional(),
-      }),
-    )
-    .optional(),
+  cascadeLinks: z.array(z.string().min(1)).optional(),
 });
 export type LibraryDeleteItemsInput = z.infer<typeof LibraryDeleteItemsSchema>;
 
