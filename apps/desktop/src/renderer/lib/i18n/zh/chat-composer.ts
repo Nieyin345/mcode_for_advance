@@ -298,6 +298,10 @@ export const zh = {
 
   // ── context ring + context stats popover ──
   "chat.context.stats": "上下文统计",
+  /** 还没有任何用量数据时 ring 的悬停说明。**必须区别于"占用 0%"** ——
+   *  0% 是"跑过一轮、窗口是空的",而这是"这一轮还没跑过、还不知道"。 */
+  "chat.context.noData": "还没有用量数据",
+  "chat.context.noDataHint": "跑完第一轮之后这里会显示上下文占用",
   "chat.context.rowLabel": "上下文",
   "chat.context.modelLine": "模型 · {model}",
   "chat.context.viewDetails": "查看详情",

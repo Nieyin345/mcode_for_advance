@@ -289,6 +289,11 @@ export const en = {
 
   // ── context ring + context stats popover ──
   "chat.context.stats": "Context stats",
+  /** Shown before any usage data exists. Deliberately distinct from "0%
+   *  used": 0% means "a turn ran and the window is empty", this means
+   *  "no turn has run yet, so we don't know". */
+  "chat.context.noData": "No usage data yet",
+  "chat.context.noDataHint": "Context occupancy shows up after the first turn finishes",
   "chat.context.rowLabel": "Context",
   "chat.context.modelLine": "Model · {model}",
   "chat.context.viewDetails": "View details",

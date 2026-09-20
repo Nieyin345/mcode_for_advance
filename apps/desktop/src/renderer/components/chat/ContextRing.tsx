@@ -35,14 +35,95 @@ import { ContextStatsPopover } from "./ContextStatsPopover.js";
  *    {@link ContextStatsPopover} (live breakdown + per-turn history). The
  *    tooltip is force-hidden while the popover is open so the two surfaces
  *    never overlap.
+ *
+ * ## `snapshot` 缺席 = "还不知道",不是"占用 0%"
+ *
+ * 新对话在 AI 跑完第一轮之前**没有任何用量数据**(见 `ComposerToolbar` 里
+ * `contextSnapshotBySession[sessionId]` 的说明)。**这个环仍然要画** —— 从前它是
+ * `{contextSnapshot && <ContextRing/>}`,于是环会在第一轮结束时**从无到有地冒出来**,
+ * 用户读到的现象是"这个小图标时有时无"。
+ *
+ * 但**不能拿一个 `pct: 0` 的假快照顶上**:那个环点开是真实的详情弹窗,里面会写着
+ * "占用 0 tokens / 窗口 200k" —— 那是**谎话**(窗口不是空的,是还不知道)。
+ * 所以这里把 `undefined` 当成**第三种状态**:空环 + 一句"还没有用量数据",
+ * 弹出层也换成同一句话说清楚,而不是拿 0 去冒充。
  */
 export function ContextRing({
   snapshot,
   history,
 }: {
-  snapshot: ContextSnapshot;
+  /** 缺席 = 这个会话还没有任何用量数据。见上面那段说明。 */
+  snapshot: ContextSnapshot | undefined;
   /** Finalized-turn usage records for the active session (ephemeral, from
    *  the store's `usageHistoryBySession`). Empty until the first turn ends. */
+  history: TurnUsageRecord[];
+}) {
+  if (!snapshot) return <ContextRingNoData />;
+  return <ContextRingWithData snapshot={snapshot} history={history} />;
+}
+
+/**
+ * "还没有用量数据"那一档 —— 空的轨道环 + 悬停说明。
+ *
+ * 环本身画满一圈淡色轨道(与有数据时那条底轨同一形状),**不画进度弧** ——
+ * 画一段弧就等于声称占用是多少,而这里恰恰是不知道。
+ *
+ * `--` 而不是 `0%` 占同一格宽度:免得第一轮跑完数字出现时整条药丸跳一下,
+ * 同时也不假装那个数是 0。
+ */
+function ContextRingNoData() {
+  const { t } = useI18n();
+  const size = 14;
+  const stroke = 2.5;
+  const r = (size - stroke) / 2;
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger
+        delay={200}
+        render={
+          <button
+            type="button"
+            aria-label={t("chat.context.noData")}
+            title={t("chat.context.noData")}
+          />
+        }
+        className="inline-flex cursor-default items-center gap-1 rounded-sm px-0.5 tabular-nums text-content-subtle outline-none transition-colors hover:bg-surface-muted focus-visible:bg-surface-muted"
+      >
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0">
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={r}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={stroke}
+            className="opacity-20"
+          />
+        </svg>
+        <span className="composer-lblwrap">
+          <span className="text-[10px] font-medium leading-none opacity-60">--</span>
+        </span>
+      </Tooltip.Trigger>
+      <Tooltip.Portal>
+        <Tooltip.Positioner side="top" sideOffset={6}>
+          <Tooltip.Popup className="min-w-[180px] max-w-[240px] p-2.5">
+            <div className="text-[11px] font-semibold text-content">{t("chat.context.noData")}</div>
+            <div className="mt-1 text-[10px] leading-relaxed text-content-muted">
+              {t("chat.context.noDataHint")}
+            </div>
+          </Tooltip.Popup>
+        </Tooltip.Positioner>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+  );
+}
+
+/** 有用量数据时那一档 —— 原来的实现,原样搬进来。 */
+function ContextRingWithData({
+  snapshot,
+  history,
+}: {
+  snapshot: ContextSnapshot;
   history: TurnUsageRecord[];
 }) {
   const { t } = useI18n();

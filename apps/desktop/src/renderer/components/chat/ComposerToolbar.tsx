@@ -117,15 +117,16 @@ export function ComposerToolbar({
         {isElectron && <WatchSegment sessionId={sessionId} layout="row" />}
         {/* 长期任务循环:把下一条消息当目标,自动续轮直到模型宣布完成。桌面专属。 */}
         {isElectron && <LongTaskSegment sessionId={sessionId} layout="row" />}
-        {contextSnapshot && (
-          <div className="mt-1 flex items-center justify-between gap-2 border-t border-edge/60 px-2.5 pt-2">
-            <span className="flex items-center gap-2 text-[13px] font-medium text-content-muted">
-              <IconChartBar size={14} className="shrink-0 opacity-80" />
-              {t("chat.context.rowLabel")}
-            </span>
-            <ContextRing snapshot={contextSnapshot} history={usageHistory} />
-          </div>
-        )}
+        {/* 上下文占用。**不判空** —— 没有用量数据时 `ContextRing` 自己画空环 + 一句
+            说明。判空的话这个环会在第一轮跑完时从无到有地冒出来,用户读到的是
+            "这个小图标时有时无"(见 `ContextRing` 头注)。 */}
+        <div className="mt-1 flex items-center justify-between gap-2 border-t border-edge/60 px-2.5 pt-2">
+          <span className="flex items-center gap-2 text-[13px] font-medium text-content-muted">
+            <IconChartBar size={14} className="shrink-0 opacity-80" />
+            {t("chat.context.rowLabel")}
+          </span>
+          <ContextRing snapshot={contextSnapshot} history={usageHistory} />
+        </div>
       </div>
     );
   }
@@ -177,14 +178,11 @@ export function ComposerToolbar({
           <PermissionChip layout="pill" />
         </>
       )}
-      {contextSnapshot && (
-        <>
-          <span className="composer-minipill-mid" aria-hidden />
-          <span className="composer-minipill-ringseg">
-            <ContextRing snapshot={contextSnapshot} history={usageHistory} />
-          </span>
-        </>
-      )}
+      {/* 上下文占用。**不判空** —— 理由同上面 row 那一处。 */}
+      <span className="composer-minipill-mid" aria-hidden />
+      <span className="composer-minipill-ringseg">
+        <ContextRing snapshot={contextSnapshot} history={usageHistory} />
+      </span>
     </div>
   );
 }
