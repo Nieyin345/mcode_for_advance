@@ -76,3 +76,22 @@ export const SettingRepo = {
     settings.set(key, value);
   },
 };
+
+/**
+ * `session_read_log` 工具要用的两个 —— 2026-09-21 补。
+ *
+ * 那两条只**读**（按 id 取一条会话、列它的消息），而这个 suite 验的是工作流的
+ * 归一化与校验，根本不会调到它们。这里给个"查不到"的最小实现就够：真被调到时
+ * 返回空，而不是让打包炸掉。
+ */
+export const SessionRepo = {
+  get(id: string): { id: string; title: string } | undefined {
+    return id === "" ? undefined : undefined;
+  },
+};
+
+export const MessageRepo = {
+  listBySession(_sessionId: string): { messages: unknown[] } {
+    return { messages: [] };
+  },
+};

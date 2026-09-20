@@ -1,9 +1,0 @@
-{
-  "name": "mcode-document-skills",
-  "version": "1.0.0",
-  "description": "Word / PowerPoint / Excel / PDF 的读写技能，随 Mcode 一起发布，开箱即用。",
-  "author": {
-    "name": "Anthropic, PBC"
-  },
-  "skills": "./skills"
-}

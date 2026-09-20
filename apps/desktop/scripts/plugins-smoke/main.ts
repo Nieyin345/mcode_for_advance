@@ -377,27 +377,30 @@ ok(
 /* ── 3. enable + delivery queries ── */
 console.log("\n[3] enable + provider delivery queries");
 eq(setPluginEnabled("demo-plugin", true).ok, true, "setEnabled ok");
-// **数的时候要把内置插件摘出去。** 随应用发布的那一份(`mcode-document-skills`)恒为
-// 启用、不进 `listPlugins`、也卸不掉,所以"装了一个"永远等于列表长度减它。这几条断言
-// 早于内置插件存在,当时是直接数长度的 —— 那种写法在加了内置插件之后会把每一次运行都
-// 报成失败,而失败的原因和被测的东西毫无关系。
-const userEnabled = async (): Promise<string[]> =>
-  (await getEnabledPlugins()).filter((p) => !p.builtin).map((p) => p.name);
+// 内置插件(`mcode-document-skills`,随应用发布的那四个文档技能)**2026-09-20 删掉了**
+// —— 用户不要内置技能了,以后一律从 GitHub 自己导。所以投递链里现在**只有用户装的**,
+// 数长度不用再摘谁。
+//
+// ⚠️ 这几条断言曾经需要 `.filter((p) => !p.builtin)` 才数得对。删内置之后那个过滤是
+// 恒等的(没有 `builtin: true` 的行了)—— 但**留着它是有意的**:将来若再加内置插件
+// (期刊分区、文献检索那种),这里立刻又会需要它,而"忘了加"的表现是每次运行都报
+// 一个跟被测无关的失败。下面"内置插件不再出现在投递链里"那一条是这条的反面守卫。
 const enabled = await getEnabledPlugins();
-eq((await userEnabled()).length, 1, "one enabled plugin");
+eq(enabled.length, 1, "one enabled plugin");
 eq(enabled[0].name, "demo-plugin", "enabled name");
 ok(enabled[0].hasHooks, "hasHooks true (hooks declared)");
-// 顺带守住另一半:内置的那份**确实在投递链里**(摘掉它只是为了让计数有意义,不是
-// 假装它不存在)。
-ok(enabled.some((p) => p.builtin === true), "内置插件也在投递链里");
-// 内置的那一份也带技能根(`resources/builtin-skills`),所以**不能数总数** —— 按路径
-// 挑出这个插件自己的那些。
+// ★ 内置插件删掉之后,**投递链里不该再有任何 `builtin: true` 的行**。
+// 这一条钉的是"删干净了" —— 资源目录、`builtinPlugins.ts`、注入点三处少一处,
+// 内置项就会重新冒出来。
+ok(!enabled.some((p) => p.builtin === true), "投递链里没有内置项了");
+// 技能根也只剩用户插件带来的那些(内置那份的根路径已随资源目录删掉)。
 const skillRoots = await getEnabledPluginSkillRoots();
 eq(skillRoots.filter((r) => r.includes("demo-plugin")).length, 1, "one plugin skill root");
 ok(
   skillRoots.some((r) => r.endsWith(path.join("demo-plugin", "1.2.3", "skills"))),
   "skill root path",
 );
+ok(!skillRoots.some((r) => r.includes("builtin-skills")), "没有内置技能根了");
 
 const mcp = await getPluginMcpServers();
 eq(mcp.length, 1, "one namespaced MCP entry");
@@ -426,7 +429,7 @@ console.log("\n[5] install from zip");
 const zipInstall = await installFromLocal(zipPath);
 ok(zipInstall.ok, "zip install succeeds", zipInstall.error ?? "");
 eq(listPlugins().length, 1, "same-version reinstall replaced (still 1)");
-ok((await userEnabled()).length === 1, "still enabled after reinstall");
+ok((await getEnabledPlugins()).length === 1, "still enabled after reinstall");
 
 /* ── 6. git install ── */
 console.log("\n[6] install from git (file://)");
@@ -641,7 +644,7 @@ removeMarketplace("remote-mp");
 console.log("\n[9] remove cleanup");
 setPluginMcpDisabled("demo-plugin__fetcher", true);
 eq(removePlugin("demo-plugin").ok, true, "remove ok");
-eq((await userEnabled()).length, 0, "no longer delivered");
+eq((await getEnabledPlugins()).length, 0, "no longer delivered");
 eq(
   listPlugins().map((p) => p.name),
   ["escape-plugin", "git-plugin", "mono-plugin", "nested-plugin"],

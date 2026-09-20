@@ -104,12 +104,22 @@ export const WORKFLOW_MCP_PREFIX = `mcp__${WORKFLOW_MCP_SERVER}__`;
  *
  * 它们改不了任何东西:看的是一份工作流的定义、有哪些节点类型、用户存了哪些代理档案。
  * 与只读的浏览器/库工具同一档。写工具一律要用户点头 —— 它们动的是用户自己画的东西。
+ *
+ * ⚠️ **`session_read_log` 归在这一档,但它和上面几个不是一回事。** 上面几个读的是
+ * "用户自己配的东西"(工作流、类型、档案),而它读的是**用户的对话记录**。放行它 =
+ * 模型可以不经批准翻看某条对话。
+ *
+ * 之所以仍然放行:它**只能按 id 读**,而 id 只能从用户手里拿到(界面上「复制对话 id」
+ * 那一项),模型自己猜不出、也列不出"有哪些对话"(`session.listNodes` 那条 IPC 不在
+ * 工具面上)。也就是说**用户给 id 这个动作本身就是授权** —— 再弹一次批准没有新信息。
+ * 将来若给它加了"列全部对话"的能力,这条归类就得重新想。
  */
 export const WORKFLOW_READONLY_TOOLS = new Set([
   "workflow_list",
   "workflow_get",
   "node_types_list",
   "agent_profiles_list",
+  "session_read_log",
 ]);
 
 /* ── 输入 schema ──

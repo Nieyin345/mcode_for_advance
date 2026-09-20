@@ -290,7 +290,7 @@ check("agent 工具进表了(读/写/改/列/glob/grep/bash/技能)", [
   "agent_skill_list",
   "agent_skill_read",
 ].every((n) => names.includes(n)), names);
-check("工具数量 = 替身 3 + 真工作流 9 + agent 9", names.length === 21, names.length);
+check("工具数量 = 替身 3 + 真工作流 10 + agent 9", names.length === 22, names.length);
 check(
   "同名工具只报一次",
   new Set(names).size === names.length,

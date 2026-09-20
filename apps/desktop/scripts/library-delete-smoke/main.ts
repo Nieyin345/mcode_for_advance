@@ -397,6 +397,63 @@ eq("说的是哪一条", poisonFailed[0]?.id, poisoned.id);
 // 证据得留着,不然用户连"哪条记录坏了"都查不出来。
 check("记录留着(它是坏数据,证据不能一起删掉)", LibraryRepo.get(poisoned.id) !== null);
 
+/* ──────────────── 8. 勾了「一起删」的,对面那条也被删 ──────────────── */
+
+console.log("\n删条目 · cascadeLinks(勾 = 这条也一起删)");
+
+// 用户的原话：「会把你选择的文件所链接的文件一并展示出来,由用户选择是否连带链接
+// 文件也一起删掉」。所以勾 = **把被链接的那条也删掉**。
+//
+// ⚠️ 一开始这里断的是"保留关联"(keepLinks),**测试自己红了才发现方向反了**:
+// `library_item_links` 两列都带 ON DELETE CASCADE,删掉一头那条关联行由数据库自动
+// 带走 —— "保留关联"根本做不到。见契约里那段。
+{
+  const { LibraryLinkRepo } = await import("@main/store/repositories.js");
+  const mkDoc = (name: string) => {
+    const f = join(SRC, name);
+    writeFileSync(f, name, "utf8");
+    return importGenericFiles({ paths: [f], mode: "attached", kind: "document" }).items[0]!;
+  };
+
+  // ── ① 不勾:只删自己,被链接的那条**留着** ──
+  const hub = mkDoc("hub.txt");
+  const out1 = mkDoc("out1.txt");
+  const out2 = mkDoc("out2.txt");
+  const referrer = mkDoc("referrer.txt");
+
+  LibraryLinkRepo.add(hub.id, { targetItemId: out1.id });
+  LibraryLinkRepo.add(hub.id, { targetItemId: out2.id });
+  LibraryLinkRepo.add(referrer.id, { targetItemId: hub.id });
+
+  await del([hub.id]);
+  eq("hub 自己没了", LibraryRepo.get(hub.id), null);
+  check("★ 没勾 → 被它链接的那条**留着**", LibraryRepo.get(out1.id) !== null);
+  check("★ 另一条也留着", LibraryRepo.get(out2.id) !== null);
+  check("★ 指着它的那条也还在(反面:删 B 不该把 A 也删了)", LibraryRepo.get(referrer.id) !== null);
+
+  // ── ② 勾了:cascadeLinks 里那条也一起删 ──
+  const hub2 = mkDoc("hub2.txt");
+  const alsoGo = mkDoc("alsogo.txt");
+  const stay = mkDoc("stay.txt");
+  LibraryLinkRepo.add(hub2.id, { targetItemId: alsoGo.id });
+  LibraryLinkRepo.add(hub2.id, { targetItemId: stay.id });
+
+  // 副本的落点是确定的:`<库根>/files/<id>-<原名>`(与第 1 段同一个拼法)。
+  const alsoGoCopy = join(ROOT, "files", `${alsoGo.id}-alsogo.txt`);
+  check("勾之前:那条的副本在盘上", existsSync(alsoGoCopy), alsoGoCopy);
+
+  await deleteItems({
+    ids: [hub2.id],
+    deleteFiles: true,
+    // 用户勾了"这条也一起删"。
+    cascadeLinks: [alsoGo.id],
+  });
+  eq("★ 勾了的那条**被一起删了**", LibraryRepo.get(alsoGo.id), null);
+  check("★ 没勾的那条**还在**", LibraryRepo.get(stay.id) !== null);
+  // 文件也要跟着走 —— 它走的是**同一套**清理(dropAbs / 引用计数)。
+  check("★ 勾了的那条,磁盘文件也一起没了", !existsSync(alsoGoCopy), alsoGoCopy);
+}
+
 /* ──────────────── 收尾 ──────────────── */
 
 rmSync(DATA, { recursive: true, force: true });

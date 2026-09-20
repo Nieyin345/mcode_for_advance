@@ -65,7 +65,6 @@ import {
   summarizeComponents,
   describePluginMcp,
 } from "./pluginManifest.js";
-import { getBuiltinPlugins } from "./builtinPlugins.js";
 
 export const PLUGINS_ROOT = path.join(MCODE_CONFIG_DIR, "plugins");
 const MARKETPLACES_DIR = path.join(PLUGINS_ROOT, "marketplaces");
@@ -960,14 +959,19 @@ export interface EnabledPlugin {
 /**
  * Resolve the currently enabled plugins (missing dirs silently skipped).
  *
- * 内置插件**永远在列表里**，与用户启用了几个无关 —— 注意下面那个 early
- * return 是在追加内置项**之前**才成立的，所以它只能在 `enabledNames` 为空
- * 时跳过"扫用户插件"这一步，不能顺手把整个函数返回掉。
+ * ## 内置插件在 2026-09-20 删掉了
+ *
+ * 从前这里会无条件追加一条内置项（`mcode-document-skills`，随应用发布的那四个文档
+ * 技能）。用户决定不要内置技能了 —— 以后一律从 GitHub 自己导 —— 于是那个包连同
+ * 只服务于它的 `builtinPlugins.ts` 一起删了。
+ *
+ * **这条投递链本身没动**：它照旧只认 `readEnabledPlugins()` 里那些名字。将来若要
+ * 再加内置插件（比如期刊分区、文献检索），在这一层重新追加即可 —— 调用点用的还是
+ * `...getEnabledPlugins()` 展开，不用改。
  */
 export async function getEnabledPlugins(): Promise<EnabledPlugin[]> {
-  const builtins: EnabledPlugin[] = getBuiltinPlugins();
   const enabledNames = new Set(readEnabledPlugins());
-  if (enabledNames.size === 0) return builtins;
+  if (enabledNames.size === 0) return [];
   const out: EnabledPlugin[] = [];
   for (const name of enabledNames) {
     const rootDir = installedRootOf(name);
@@ -981,7 +985,7 @@ export async function getEnabledPlugins(): Promise<EnabledPlugin[]> {
       /* invalid manifest on disk — skip this plugin for this turn */
     }
   }
-  return [...out, ...builtins];
+  return out;
 }
 
 /** 一个已启用插件的技能根，附带"是不是内置"的来源标记。

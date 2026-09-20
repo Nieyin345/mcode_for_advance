@@ -257,7 +257,7 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
   /** 编排在下面 `deleteItemsCore`(那段有三块长说明,放这儿会把注册段撑散)。 */
   ipcMain.handle(IPC.LIBRARY_DELETE_ITEMS, async (_evt, raw) => {
     const input = LibraryDeleteItemsSchema.parse(raw);
-    return deleteItemsCore(input.ids, !!input.deleteFiles, input.keepLinks);
+    return deleteItemsCore(input.ids, !!input.deleteFiles, input.cascadeLinks);
   });
 
   /**
@@ -332,10 +332,34 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
 function deleteItemsCore(
   ids: string[],
   deleteFiles: boolean,
-  /** 用户**不想**跟着断掉的关联（`library.deletePreview` 给出的目标 id / 路径）。
-   *  默认全断 —— 那才是"彻底删除"的本来语义，这份是例外。见下面那一段注释。 */
-  keepLinks?: Array<{ targetItemId?: string; targetPath?: string }>,
+  /** 用户勾了「**这个也一起删**」的那些（`library.deletePreview` 给出的
+   *  `targetItemId`）。它们并进这一批，走同一套文件清理与失败回报。
+   *  见下面那一段 —— 语义是"连对面那条也删"，不是"保留关联行"。 */
+  cascadeLinks?: string[],
 ): LibraryDeleteItemsResult {
+    /**
+     * **用户勾了「这个也一起删」的那些**，并进这一批。
+     *
+     * ## 语义（别和"保留关联"搞混）
+     *
+     * 用户的原话：「如果删 A 的话会有一个列表显示当前 A 链接的文件，**可以选择性的
+     * 删或者不删**」。勾 = **把被链接的那条也删掉**。
+     *
+     * ⚠️ 「**保留**某条关联」这件事**做不到**，所以别往那个方向改：
+     * `library_item_links` 的两列都带 `ON DELETE CASCADE`（见 `store/db.ts` 建表），
+     * 删掉一头那条关联行就被数据库自动带走了，只剩一头的关联也没有意义。
+     * 一开始我按"保留"写，测试红了才发现方向反了。
+     *
+     * ## 为什么在这里就并进来
+     *
+     * 下面**三处**都按同一个名单跑：文件清理（`pathRefCounts` 的引用计数 + 逐个
+     * `dropAbs`）、记录删除、失败回报。只在最后一步并的话，勾了的那条**记录没了、
+     * 磁盘文件还在** —— 一条断言就是这么红的。
+     */
+    const cascade = (cascadeLinks ?? []).filter((x): x is string => typeof x === "string" && x.length > 0);
+    /** 这一批真正要动的（用户点名的 + 他勾了要一起删的）。 */
+    const allIds = [...new Set([...ids, ...cascade])];
+
     /**
      * 没能删掉的那些:条目 id → 失败详情。既用来回给调用方,也用来决定**哪几条记录
      * 不许删**(下面 `LibraryRepo.delete` 拿的是过滤后的名单)。
@@ -357,7 +381,7 @@ function deleteItemsCore(
       const bumpOwn = (p: string | undefined) => {
         if (p) own.set(p, (own.get(p) ?? 0) + 1);
       };
-      for (const id of ids) {
+      for (const id of allIds) {
         const it = LibraryRepo.get(id);
         if (!it) continue;
         bumpOwn(it.pdfPath);
@@ -448,7 +472,7 @@ function deleteItemsCore(
         }
       };
 
-      for (const id of ids) {
+      for (const id of allIds) {
         const item = LibraryRepo.get(id);
         if (!item) continue;
 
@@ -491,45 +515,7 @@ function deleteItemsCore(
     }
 
     // 文件没删掉的那几条**记录也不删** —— 删了用户就再也够不着那个文件了。
-    const toDelete = ids.filter((id) => !keepIds.has(id));
-
-    /**
-     * **先断关联，再删记录。**
-     *
-     * ## 为什么要有这一步
-     *
-     * 用户的原话：「如果删 A 的话会有一个列表显示当前 A 链接的文件，**可以选择性的删或者
-     * 不删**」。也就是说"删一条文献"这件事，除了它自己那一包文件，还会带走**它挂出去的
-     * 关联记录** —— 而 `LibraryRepo.delete` 只管自己的行，不碰关联表，所以得在这里补。
-     *
-     * ## 传进来的是"**不要删的**"（`keepLinks`）
-     *
-     * 默认全断（那才是"彻底删除"的本来语义），`keepLinks` 是用户勾掉的那些例外。
-     * 反过来传"要删的"的话，界面漏渲染一条就等于**静默地不删**、而用户以为删了。
-     *
-     * ## 只断**正方向**（`item_id` 在本批里的那些）
-     *
-     * 用户要的是"把我删的这条挂出去的东西一起收掉"。**反方向不断** —— A 关联了 B，
-     * 在 B 那里删 B 不该把 A 也删了（那是"别人指着它"，不是"它指着别人"）。
-     *
-     * ⚠️ 顺序：必须在 `LibraryRepo.delete` **之前**跑。删完记录之后那些行还在，
-     * 但已经没人认得它们指向哪儿了（外键 CASCADE 也指望不上，见文件头那条）。
-     */
-    const kept = new Set(
-      (keepLinks ?? []).map((l) => l.targetItemId ?? l.targetPath ?? "").filter((s) => s.length > 0),
-    );
-    if (kept.size > 0 || toDelete.length > 0) {
-      for (const id of toDelete) {
-        for (const view of LibraryLinkRepo.viewsOf(id)) {
-          // 只断**正方向**（`direction: "out"` = 这条挂出去的那一头）。
-          // 反方向（别人指着它）不断 —— 见上面那段。
-          if (view.direction !== "out") continue;
-          const key = view.otherItemId ?? view.otherPath ?? "";
-          if (kept.has(key)) continue;
-          LibraryLinkRepo.remove(view.id);
-        }
-      }
-    }
+    const toDelete = allIds.filter((id) => !keepIds.has(id));
 
     LibraryRepo.delete(toDelete);
     // 删掉的可能正是右栏正在看的那一篇 —— 广播出去,右栏自己会清掉悬空的选中态。

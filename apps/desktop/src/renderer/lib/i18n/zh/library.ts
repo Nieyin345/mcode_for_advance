@@ -163,6 +163,7 @@ export const zh = {
   "library.del.title": "删除《{title}》",
   "library.del.ownLine": "这一条本身（记录 + 磁盘文件）一定会删。",
   "library.del.linksHead": "这些也会跟着没 —— 不想删的就把勾去掉：",
+  "library.del.linksHeadNoTick": "这些也会跟着没：",
   "library.del.form.item": "库内条目",
   "library.del.form.path": "库外文件（只删关联记录，不动你的文件）",
   "library.del.form.transcript": "转录产物 + 图床（{n} 张图）",

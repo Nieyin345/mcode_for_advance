@@ -954,12 +954,13 @@ async function main(): Promise<void> {
     "agent_profiles_list",
     "node_type_write",
     "node_types_list",
+    "session_read_log",
     "workflow_get",
     "workflow_list",
     "workflow_remove",
     "workflow_save",
   ];
-  eq("工具就是这九个", names.join(","), EXPECTED.join(","));
+  eq("工具就是这十个", names.join(","), EXPECTED.join(","));
   check(
     "每个工具都有说明(模型只能靠它知道什么时候用)",
     surface.listed.every((t) => (t.description ?? "").length > 20),
@@ -979,7 +980,7 @@ async function main(): Promise<void> {
     check(`只读集里有 ${read}`, WORKFLOW_READONLY_TOOLS.has(read));
   }
   for (const w of WRITE) check(`写工具 ${w} 不在只读集里`, !WORKFLOW_READONLY_TOOLS.has(w));
-  eq("只读集就是那四个,不多不少", WORKFLOW_READONLY_TOOLS.size, 4);
+  eq("只读集就是那五个,不多不少", WORKFLOW_READONLY_TOOLS.size, 5);
   // 这条是上一句真正想要的东西:**每一个真实存在的工具都被分过档**。新加一个工具忘了
   // 归类,它会落进"要审批"那一侧(安全的默认),而这条断言会当场说出来。
   const unclassified = names.filter((n) => !WORKFLOW_READONLY_TOOLS.has(n) && !WRITE.includes(n));

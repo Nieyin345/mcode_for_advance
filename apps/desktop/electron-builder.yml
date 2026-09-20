@@ -55,23 +55,15 @@ files:
   # dash in the pattern keeps the JS package (claude-agent-sdk) itself.
   - "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**"
 
-# 内置技能（随应用发布的四个文档技能）—— `resources/builtin-skills/` 是一个
-# 标准插件目录（`.claude-plugin/plugin.json` + `skills/{docx,pptx,xlsx,pdf}`），
-# 由 `main/plugins/builtinPlugins.ts` 在每一轮对话开始时交给 agent SDK，所以
-# 用户不用导入、不用启用、装好就有。
+# 内置技能（`resources/builtin-skills/`，随应用发布的 docx/pptx/xlsx/pdf 四个）**已删**
+# —— 2026-09-20，用户决定不要内置技能，以后一律从 GitHub 自己导。
+# 顺带解决了一个许可问题:那四个技能来自 Anthropic 官方、source-available、**不可再
+# 分发**,而 release.yml 会把安装包传到 GitHub Releases。删掉之后这个隐患没有了。
 #
-# 走 `extraResources` 而不是 `files`（也就是放在 asar **外面**）：技能目录里有
-# OOXML 的 .xml/.xsd schema 和 python 脚本，agent 是拿**绝对路径**直接去读它们
-# 的，而 asar 里的条目不是普通文件路径，Read/Bash 工具会读不到。
-# 打包后落在 `<install>/resources/builtin-skills`，正是
-# `builtinPluginRoot()` 的第一个候选路径。
-#
-# 这四个技能来自 Anthropic 官方、**非开源、不可再分发**。自己用没问题；要把
-# 安装包公开分发（.github/workflows/release.yml 会传 GitHub Releases）先读
-# `resources/builtin-skills/NOTICE.md`。
-extraResources:
-  - from: resources/builtin-skills
-    to: builtin-skills
+# 将来要再放内置技能,在这里加回一段 `extraResources`（走 extraResources 而不是
+# `files`:技能目录里有 OOXML 的 schema 和 python 脚本,agent 拿**绝对路径**直接读,
+# 而 asar 里的条目不是普通文件路径,Read/Bash 会读不到),并在
+# `main/plugins/pluginManager.ts` 的 `getEnabledPlugins()` 里把那条投递链加回去。
 
 # node-pty ships a native .node addon; sql.js loads a wasm/asm.js blob at
 # runtime. Unpack them from the asar so they can be require()'d from disk.

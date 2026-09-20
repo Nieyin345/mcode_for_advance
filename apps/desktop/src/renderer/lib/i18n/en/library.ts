@@ -153,6 +153,7 @@ export const en = {
   "library.del.title": "Delete “{title}”",
   "library.del.ownLine": "This item itself (record + files on disk) is always deleted.",
   "library.del.linksHead": "These go too — untick any you want to keep:",
+  "library.del.linksHeadNoTick": "These go too:",
   "library.del.form.item": "Library item",
   "library.del.form.path": "File outside the library (removes the link only; your file stays)",
   "library.del.form.transcript": "Transcript + its images ({n} images)",
