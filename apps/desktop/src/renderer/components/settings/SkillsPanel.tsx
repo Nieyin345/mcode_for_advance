@@ -122,8 +122,11 @@ function engineLabel(e: MatrixEngine): string {
   return e === "claude" ? "Claude" : e === "codex" ? "Codex" : "Pi";
 }
 
-/** Sort key for a list group — universal first, then each engine's internal
- *  group, then partial combinations, built-ins last. */
+/** 按引擎分组时的组序:通用 → 各引擎内部 → 部分引擎共享。
+ *
+ *  ⚠️ **没有"内置垫底"了**(2026-09-20):那四个文档技能已移除,`builtin` 这个来源
+ *  没有任何东西会产生它。`groupRank` 的兜底仍留着 —— 将来若再加来源,它落在最后
+ *  比落进某个已有档位更安全。 */
 function groupRank(id: string): number {
   if (id === "universal") return 0;
   if (id === "internal:claude") return 1;
@@ -350,20 +353,27 @@ export function SkillsPanel() {
     };
     if (groupMode === "bundle") {
       for (const s of panelSkills) {
-        if (s.source === "builtin") {
-          push("builtin", t("settings.skills.groupBuiltin"), s);
+        // **项目技能单独一组，不按导入包分。** 它们不属于任何一次导入，混进
+        // "未分组"会让那个名字骗人 —— 用户明明是从项目目录来的，却被说成
+        // "没归类"。而且项目那一栏才是它们的归属地，这里要一眼看得出来。
+        if (s.source === "project") {
+          push("project", t("settings.skills.tabProject"), s);
           continue;
         }
         if (s.source === "plugin") {
           push("plugin", t("settings.skills.groupPlugin"), s);
           continue;
         }
+        // `builtin` 那条分支删了（2026-09-20）：随应用发布的那四个文档技能已移除，
+        // 没有东西再产生这个来源。留着的话是个永远不成立的 if。
         const b = bundleOf.get(s.name);
         if (b) push(`bundle:${b.id}`, b.label, s);
         else push("ungrouped", t("settings.skills.groupUngrouped"), s);
       }
-      // 顺序:插件组 → manifest 里的包(按 manifest 顺序) → 未分组 → 内置垫底。
+      // 顺序:项目在最前（局部覆盖全局,最该被看见）→ 插件组 → manifest 里的包
+      // （按 manifest 顺序）→ 未分组。
       const orderOf = (id: string): number => {
+        if (id === "project") return -2;
         if (id === "plugin") return -1;
         if (id.startsWith("bundle:")) {
           const i = bundles.findIndex((b) => `bundle:${b.id}` === id);
@@ -375,10 +385,8 @@ export function SkillsPanel() {
       return groups.sort((a, b) => orderOf(a.id) - orderOf(b.id));
     }
     for (const s of panelSkills) {
-      if (s.source === "builtin") {
-        push("builtin", t("settings.skills.groupBuiltin"), s);
-        continue;
-      }
+      // 按引擎分组这一档里，项目技能按自己的 `perEngine` 走（主进程不给它挂矩阵，
+      // 所以 `pe` 缺席 → 视为三引擎全开），与通用库同一个规则。
       const pe = s.perEngine;
       const on = pe ? MATRIX_ENGINES.filter((e) => pe[e]) : [...MATRIX_ENGINES];
       if (on.length === MATRIX_ENGINES.length) {
@@ -412,8 +420,7 @@ export function SkillsPanel() {
   }, [loadPanelSkills, reloadSkills]);
 
   const startEdit = async (skill: SkillInfo) => {
-    // Plugin rows are filtered out of panelSkills, so the wide SkillSource
-    // can only be global|builtin here.
+    // 到这里 source 只可能是可编辑的那几个（插件行不进 panelSkills 的这一路）。
     setSelected({ kind: "skill", source: skill.source as PanelSkillSource, name: skill.name });
     setNewForm(null);
     setError(null);
@@ -551,7 +558,11 @@ export function SkillsPanel() {
     engine: keyof SkillEngineState,
     want: boolean,
   ) => {
-    const editable = skills.filter((s) => s.source !== "builtin");
+    // **项目技能不进这一档。** 矩阵（`.mcode-engines.json`）管的是**通用库**给哪个
+    // 引擎用;项目技能属于那个项目、跟着项目目录走,不参与全局矩阵 —— 主进程也不会给
+    // 它挂 `perEngine`（见 `listSkillsForProject` 里那句）。放进来会让用户以为
+    // "我在这里关掉 Pi,那个项目里也关了",而实际什么都没发生。
+    const editable = skills.filter((s) => s.source === "global" || s.source === "plugin");
     if (!editable.length) return;
     setBulkBusy(true);
     try {
