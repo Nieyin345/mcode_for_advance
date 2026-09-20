@@ -44,7 +44,7 @@ import type { ContentTag } from "@renderer/lib/contentTag.js";
 import { isValidSnapshot } from "@renderer/lib/contextWindow.js";
 import { getLastCursor, type NavEntry } from "@renderer/lib/editorNav.js";
 import { disposeModel, getDisplayedPath } from "@renderer/lib/editorModelCache.js";
-import type { CustomModelPublic } from "@contracts/customModel";
+import { isWebModelSend, type CustomModelPublic } from "@contracts/customModel";
 import { api } from "@renderer/lib/api.js";
 import { isElectron } from "@renderer/lib/platform.js";
 import { normWorktreeKey } from "@renderer/lib/worktree.js";
@@ -7961,7 +7961,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // 长期任务武装：这一轮已经发出去了，把循环器挂上（一次性开关）。
       // 主进程 taskRunner 不自己发第一轮 —— 它从这轮的 turn.done 接管续轮。
       // start 失败就默默解除（开关已经清了，用户再点一次即可），不留模糊态。
-      if (get().longTaskArmedBySession[sessionId]) {
+      //
+      // **网页版模型自动武装**（2026-09-20）：原生几家引擎的回合是"干到模型自己
+      // 收手"，而网页版的对话页面天生一问一答 —— 让它干要好几步的活，它会答一段
+      // 就停下等下一句。所以凡是走网页模型的发送，**不用用户手动开**，直接挂上
+      // 循环（没输出 [[TASK_DONE]] 就自动续轮）。手动开关仍然有效（原生引擎上
+      // 用户想用还能用）。
+      const autoArm = isWebModelSend(resolvedModel.customModelId, get().customModels);
+      if (autoArm || get().longTaskArmedBySession[sessionId]) {
         get().clearLongTaskArmed(sessionId);
         void api.longtask.start({ sessionId, goal: prompt }).catch(() => {});
       }

@@ -316,6 +316,42 @@ export function webSiteDriven(id: string | undefined): boolean {
   return webSiteById(id)?.driver === true;
 }
 
+/**
+ * 这次发送是不是**走网页版模型**（浏览器扩展驱动真实网页 LLM 页面）。
+ *
+ * ## 为什么要有这个判据
+ *
+ * 网页版模型有个别的引擎没有的毛病：**它每轮答完就停**。原生几家（Claude / Pi /
+ * Codex）的回合是"干到模型自己收手"，而网页版的对话页面天生是"一问一答"，
+ * 于是让它干一件要好几步的活，它会答一段就停下等下一句 —— 用户读到的现象是
+ * "**它不肯干长期的活，还很啰嗦，解释这个解释那个**"。
+ *
+ * 补那一刀的是长期任务循环（`main/longtask/`）：没输出 `[[TASK_DONE]]` 就自动续轮。
+ * 但那个循环现在要用户**手动武装**一次、而且只对下一条消息生效。
+ *
+ * 这个函数给"**是不是该自动武装**"提供判据：是网页模型就自动挂上循环。
+ * 原生引擎不需要 —— 它们本来就会一直跑到干完，给它们常开只会改变语义、没有收益。
+ *
+ * ## 判据是 `customModelId` 指向的配置带不带 `webSiteId`
+ *
+ * 不按模型名（`chatgpt-web` 那种）判 —— 名字是配置里可改的字符串，而
+ * `webSiteId` 是"这条配置由哪个站点驱动"的**结构性字段**（见 {@link CustomModelPublic}
+ * 的说明）。找不到那条配置（已被删掉）时返回 false：**宁可不开，也别对着一个
+ * 已经不存在的配置开**。
+ */
+export function isWebModelSend(
+  customModelId: string | null | undefined,
+  customModels: readonly Pick<CustomModelPublic, "id" | "webSiteId">[],
+): boolean {
+  if (!customModelId) return false;
+  const cfg = customModels.find((m) => m.id === customModelId);
+  // ⚠️ 看的是 `webSiteId !== undefined`，不是 `webSiteDriven(...)` —— 后者问的是
+  // "扩展把驱动写好了没有"。一条配置由某个站点驱动、但驱动还没写完，那仍然是
+  // **网页模型**（它照样会每轮就停），该有的循环也该给它挂上；能不能跑起来由
+  // 别处（`webUpstream`）去明确报错，不在这里替它决定。
+  return cfg?.webSiteId !== undefined;
+}
+
 /** 默认站点 id（新配置未选择时用它）。表恒非空，但取值为 undefined 时仍走兜底。 */
 export function defaultWebSiteId(): string {
   return WEB_SITES[0]?.id ?? "deepseek";

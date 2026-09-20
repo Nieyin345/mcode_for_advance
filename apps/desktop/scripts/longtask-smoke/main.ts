@@ -39,6 +39,7 @@ import {
 } from "@contracts/longTask";
 import type { Session } from "@contracts/session";
 import type { LongTaskUpdateEvent } from "@contracts/longTask";
+import { isWebModelSend } from "@contracts/customModel";
 import { initDb } from "@main/store/db.js";
 import { ProjectRepo, SessionRepo, LongTaskRepo } from "@main/store/repositories.js";
 import { longTaskRunner } from "@main/longtask/taskRunner.js";
@@ -110,8 +111,39 @@ console.log("\nparseTaskOutcome · 终局判定(纯函数)");
 
 /* ────────────────────────── 2. 协议提示词 ────────────────────────── */
 
-console.log("\n协议提示词(纯函数)");
+/* ────────────────────────── 网页模型自动武装 ────────────────────────── */
 
+console.log("\n网页模型自动武装(isWebModelSend)");
+
+// 网页版模型有个别的引擎没有的毛病:**它每轮答完就停**。原生几家的回合是"干到模型
+// 自己收手",而网页版的页面天生一问一答 —— 于是干一件要好几步的活,它答一段就停下等
+// 下一句。补那一刀的是这个循环器,而**自动挂上它**的判据就是这一段要钉的:
+// 走网页模型的发送不用用户手动开。
+{
+  const webCfg = { id: "cm_web", webSiteId: "chatgpt" };
+  const httpCfg = { id: "cm_http", webSiteId: undefined };
+  const table = [webCfg, httpCfg];
+
+  check("★ 网页模型的配置 → 自动武装", isWebModelSend("cm_web", table) === true);
+  check("★ 普通 HTTP 配置 → 不武装(原生引擎本来就会跑到底)", isWebModelSend("cm_http", table) === false);
+  check("★ 没有自定义配置(内置模型)→ 不武装", isWebModelSend(null, table) === false);
+  check("undefined 的 customModelId → 不武装", isWebModelSend(undefined, table) === false);
+  // 配置被删掉之后:宁可不开,也别对着一个不存在的配置开。
+  check("★ 指向一条不存在的配置 → 不武装", isWebModelSend("cm_没了", table) === false);
+  // 空表(还没加载出来)→ 同样不开。
+  check("自定义模型表还没加载 → 不武装", isWebModelSend("cm_web", []) === false);
+
+  // ⚠️ **判据是"这条配置由站点驱动",不是"驱动写好了没有"**:驱动没写完它仍然是
+  // 网页模型(照样每轮就停),该有的循环照样该挂;能不能跑起来由 `webUpstream`
+  // 去明确报错,不在这里替它决定。
+  const undrivenCfg = { id: "cm_undriven", webSiteId: "某个还没写驱动的站" };
+  check(
+    "★ 站点未接入驱动也照样武装(它仍然是网页模型)",
+    isWebModelSend("cm_undriven", [undrivenCfg]) === true,
+  );
+}
+
+console.log("\n协议提示词(纯函数)");
 {
   const goal = "把 data/ 目录里所有 PDF 摘要整理成一张表";
   const pre = taskProtocolPreamble(goal);
