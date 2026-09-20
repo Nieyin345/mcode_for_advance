@@ -9,16 +9,17 @@
  *    其实还在库里占着磁盘;
  *  - 但**从回收站本身移除时绝不能收**(否则用户永远删不掉东西,`sweepToTrash` 把它
  *    又捞回来);
- *  - 收的时候要**按条目自己的库**分组 —— 教材进教材的回收站,不是三个库共用一个。
+ *  - 收的时候**全库共用一个**(2026-09-20 改的;早先是每个库各一个)。
  *
- * ## 这一套钉住的那条缝(2026-09-20 已修)
+ * ## 2026-09-20:从「每库一个」改成「全库一个」
  *
- * 分类是**树**(`library_collections.parent_id REFERENCES library_collections(id)
- * ON DELETE CASCADE`),而删分类那条 IPC 原来只查 `LibraryRepo.listByCollection(父)`,
- * 那个查询**不递归**。于是同一个用户动作(「删掉这个分类」)的结果取决于一个他看不见
- * 的结构细节:条目挂在被删的那一层就有人收,挂在**它的子分类**下就没人收 —— 成员关系
- * 被 CASCADE 静默摘掉,条目从此既不在回收站里、也没被删,变成界面上找不回来的僵尸记录。
- * 那正是 `trash.ts` 自己文件头警告过的东西。
+ * 用户的原话:「我之前说的共用一个,放在最下面固定住」。所以这一套的第二、三节整个
+ * 换了判据 —— 原来断的是"笔记进了笔记库的回收站、没跑去论文库",现在要断的恰好相反:
+ * **两个库的东西落进同一个回收站**。
+ *
+ * 改这一条最危险的不是新逻辑,而是**老数据**:升级上来的库里可能同时躺着两三个回收站
+ * (每个库一个)。界面只画一个,另外几个里的条目就再也够不着了 —— 所以
+ * `ensureTrashCollection` 必须顺手把它们合掉。§3 钉的就是这一步。
  *
  * ## §4 走的是**真的那条 handler**,不是复述
  *
@@ -93,8 +94,11 @@ const {
   trashCollectionId,
   allTrashCollectionIds,
   ensureTrashCollection,
+  trashedItemIds,
   sweepToTrash,
   shouldSweepAfterRemoval,
+  restoredTargetOf,
+  restoreItemsFromTrash,
   markTrashCollections,
 } = await import("@main/library/trash.js");
 const { libraryTrashSettingKey, LIBRARY_TRASH_COLLECTION_SETTING_KEY } = await import(
@@ -113,40 +117,43 @@ function handlerFor(channel: string): (raw: unknown) => Promise<unknown> {
 const deleteCollection = handlerFor(IPC.LIBRARY_DELETE_COLLECTION);
 check("拿到了 deleteCollection 的 handler", handlers.has(IPC.LIBRARY_DELETE_COLLECTION));
 
+/** 「从回收站还原」—— 也是真那条。§5 只走它。 */
+const restoreItems = handlerFor(IPC.LIBRARY_RESTORE_ITEMS);
+check("拿到了 restoreItems 的 handler", handlers.has(IPC.LIBRARY_RESTORE_ITEMS));
+
 /* ──────────────── 1. 找回回收站:三条来源,依次退 ──────────────── */
 
 console.log("\n回收站是哪一个");
 
 // 一条都没建过时不该凭空认一个出来 —— 「找不到」和「找到了」的区别就是
 // `ensureTrashCollection` 会不会新建一个集合。
-eq("没建过 → null", trashCollectionId("paper"), null);
-same("三个库都没建过 → 一个都没有", allTrashCollectionIds(), []);
+eq("没建过 → null", trashCollectionId(), null);
+same("一个都没建过 → 一个都没有", allTrashCollectionIds(), []);
 
-// ① 这个库自己的设置键。
-const paperTrash = ensureTrashCollection("paper");
-check("ensure 建出来了", typeof paperTrash === "string" && paperTrash.length > 0);
-eq("设置键写上了", SettingRepo.get(libraryTrashSettingKey("paper")), paperTrash);
-eq("再 ensure 一次是同一个(幂等)", ensureTrashCollection("paper"), paperTrash);
-eq(
-  "库里只有一个叫回收站的分类",
-  CollectionRepo.list("paper").filter((c) => c.name === "回收站").length,
-  1,
-);
-
-// ② **论文库**回退读旧的全局键 —— 老数据里那个回收站建在论文库下,升级上来的用户
-// 不能因为键改名了就凭空多出第二个「回收站」。
-SettingRepo.set(libraryTrashSettingKey("textbook"), "");
-SettingRepo.set(LIBRARY_TRASH_COLLECTION_SETTING_KEY, paperTrash);
-eq("论文库读旧全局键", trashCollectionId("paper"), paperTrash);
-
-// ①②都不成立时 ③ 按名字认。
+// ③ 按名字认:老数据里那个回收站没有键,只有名字(`libraryTrashSettingKey` 是后加的)。
 const byName = CollectionRepo.create("回收站", null, "note").id;
-eq("笔记库没有设置键 → 按名字认出那个", trashCollectionId("note"), byName);
+eq("没有设置键 → 按名字认出那个", trashCollectionId(), byName);
+
+// ① 设置键优先于名字。
+SettingRepo.set(LIBRARY_TRASH_COLLECTION_SETTING_KEY, "");
+const created = ensureTrashCollection();
+eq("设置键写上了", SettingRepo.get(LIBRARY_TRASH_COLLECTION_SETTING_KEY), created);
+eq("按名字认出来的那个被复用,没新建", created, byName);
+eq("再 ensure 一次是同一个(幂等)", ensureTrashCollection(), created);
 
 // **设置键指向一个已经不存在的集合**(用户手工删过)时不能认它 —— 否则 sweep 会往
 // 一个空 id 上 assign,条目静默消失。
-SettingRepo.set(libraryTrashSettingKey("note"), "lc_早就没了");
-eq("设置键指向不存在的集合 → 退回按名字认", trashCollectionId("note"), byName);
+SettingRepo.set(LIBRARY_TRASH_COLLECTION_SETTING_KEY, "lc_早就没了");
+CollectionRepo.delete(byName);
+const rebuilt = ensureTrashCollection();
+check("指向不存在的集合 → 重新建一个", rebuilt !== "lc_早就没了" && rebuilt.length > 0);
+eq("库里只有一个叫回收站的分类", CollectionRepo.list().filter((c) => c.name === "回收站").length, 1);
+
+// ② 老的**每库键**是升级线索:老库里那个回收站建在论文库下,不能因为键改名了就
+// 凭空多出第二个「回收站」。
+SettingRepo.set(LIBRARY_TRASH_COLLECTION_SETTING_KEY, "");
+SettingRepo.set(libraryTrashSettingKey("paper"), rebuilt);
+eq("没有全局键时退回读老的每库键", trashCollectionId(), rebuilt);
 
 /* ──────────────── 2. 别自己把自己收回来 ──────────────── */
 
@@ -154,27 +161,40 @@ console.log("\n从回收站移除时不收");
 
 // 「从回收站移除」也会让条目变成孤儿。不加判断的话它会被立刻重新收进去,**用户根本
 // 删不掉**。这条是整个模块存在的主要理由,必须钉住。
-eq("从论文库回收站移除 → 不收", shouldSweepAfterRemoval(paperTrash), false);
-eq("从笔记库回收站移除 → 不收", shouldSweepAfterRemoval(byName), false);
+const trash = rebuilt;
+eq("从回收站移除 → 不收", shouldSweepAfterRemoval(trash), false);
 check("从普通分类移除 → 要收", shouldSweepAfterRemoval("lc_普通") === true);
 
-/* ──────────────── 3. 收:按条目自己的库分组 ──────────────── */
+/* ──────────────── 3. 收:**全库共用一个** ──────────────── */
 
-console.log("\n收进回收站");
+console.log("\n收进回收站 · 全库共用一个");
 
 const paperItem = LibraryRepo.upsert({ kind: "paper", title: "一篇论文", source: "manual" }).id;
 const noteItem = LibraryRepo.upsert({ kind: "note", title: "一条笔记", source: "manual" }).id;
+const bookItem = LibraryRepo.upsert({ kind: "textbook", title: "一本教材", source: "manual" }).id;
 
-// 两个都还没归属任何分类 = 孤儿,该被收。
-eq("收两个孤儿 → 真动了", sweepToTrash([paperItem, noteItem]), true);
+// 三个都还没归属任何分类 = 孤儿,该被收。
+eq("收三个孤儿 → 真动了", sweepToTrash([paperItem, noteItem, bookItem]), true);
 
-// **各回各的库**:笔记不该跑到论文库的回收站里去。
-const inPaper = LibraryRepo.listByCollection(paperTrash).map((i) => i.id);
-const noteTrash = ensureTrashCollection("note");
-const inNote = LibraryRepo.listByCollection(noteTrash).map((i) => i.id);
-check("论文进了论文库的回收站", inPaper.includes(paperItem), inPaper);
-check("笔记进了笔记库的回收站,没跑去论文库", inNote.includes(noteItem), inNote);
-eq("论文库的回收站里没有那条笔记", inPaper.includes(noteItem), false);
+// ★ **同一个地方**。早先这里断的是"笔记进了笔记库的、没跑去论文库",现在反过来:
+// 三个库的东西落进同一个回收站,而且**只有这一个**。
+const inTrash = LibraryRepo.listByCollection(trash).map((i) => i.id);
+check("论文进了回收站", inTrash.includes(paperItem), inTrash);
+check("★ 笔记也进了同一个(不再按库分桶)", inTrash.includes(noteItem), inTrash);
+check("★ 教材也进了同一个", inTrash.includes(bookItem), inTrash);
+same("★ 全库只有一个回收站", allTrashCollectionIds(), [trash]);
+eq(
+  "没有第二个叫回收站的分类冒出来",
+  CollectionRepo.list().filter((c) => c.name === "回收站").length,
+  1,
+);
+
+// `trashedItemIds` 是「回收站里的不算」那道筛子的**唯一判据**(清单与挂单篇都用它)。
+same(
+  "trashedItemIds 正好是这三条",
+  [...trashedItemIds()].sort(),
+  [paperItem, noteItem, bookItem].sort(),
+);
 
 // 一个**已经有归属**的条目不是孤儿,不该被顺手收走。
 const kept = LibraryRepo.upsert({ kind: "paper", title: "有分类的", source: "manual" }).id;
@@ -182,11 +202,50 @@ const home = CollectionRepo.create("方法", null, "paper").id;
 CollectionRepo.assign(home, [kept], true);
 eq("已经有归属的条目 → sweep 不动它", sweepToTrash([kept]), false);
 eq("它还在原来的分类里", LibraryRepo.listByCollection(home).length, 1);
-eq("它没进回收站", LibraryRepo.listByCollection(paperTrash).some((i) => i.id === kept), false);
+eq("它没进回收站", LibraryRepo.listByCollection(trash).some((i) => i.id === kept), false);
+eq("它不在 trashedItemIds 里", trashedItemIds().has(kept), false);
 
 // 空批次与全都不是孤儿,都返回 false(调用方据此决定要不要回传新列表)。
 eq("空数组 → false", sweepToTrash([]), false);
 eq("全都不是孤儿 → false", sweepToTrash([kept]), false);
+
+/* ──────────────── 3b. 升级:老数据里那几个回收站要合掉 ──────────────── */
+
+console.log("\n升级 · 老的多个回收站并成一个");
+
+// 这一段模拟**升级上来的库**:全局键还没有,而两个库里各有一个回收站(老写法)。
+// 不合并的话界面上只画一个,另一个里的条目就再也够不着了 —— 它既不在用户看到的
+// 那个回收站里,又确实不属于任何普通分类。那是这个模块文件头警告过的僵尸记录。
+{
+  SettingRepo.set(LIBRARY_TRASH_COLLECTION_SETTING_KEY, "");
+  // 造在**笔记库和教材库**上,不是论文库 —— 正主(`rebuilt`)已经占了论文库那个名字。
+  // 名字唯一性是**按库**算的(`CollectionRepo.isNameTaken` 走 `list(kind)`),所以
+  // "同一个库里两个回收站"会被守卫正确拦下;而老数据本来就是"每个库各一个",
+  // 换哪两个库都等价。
+  const legacyNote = CollectionRepo.create("回收站", null, "note").id;
+  const legacyBook = CollectionRepo.create("回收站", null, "textbook").id;
+  const stranded = LibraryRepo.upsert({ kind: "note", title: "躺在老二里的笔记" }).id;
+  CollectionRepo.assign(legacyNote, [stranded], true);
+  const oldTrash = CollectionRepo.list().filter((c) => c.name === "回收站" && c.id !== rebuilt);
+  eq("老数据里有两个别的回收站", oldTrash.length, 2);
+
+  const keeper = ensureTrashCollection();
+  check("合并之后只剩一个", allTrashCollectionIds().length === 1, allTrashCollectionIds());
+
+  // ★ 老二里的那条**必须在正主里看得到** —— 这是这一步存在的全部意义。
+  check(
+    "★ 老二里的条目被搬进正主了",
+    LibraryRepo.listByCollection(keeper).some((i) => i.id === stranded),
+    LibraryRepo.listByCollection(keeper).map((i) => i.title),
+  );
+  eq(
+    "老壳都删掉了(只剩正主这一个叫回收站的)",
+    CollectionRepo.list().filter((c) => c.name === "回收站").length,
+    1,
+  );
+  check("正主不是空壳", LibraryRepo.get(stranded) !== undefined);
+  same("trashedItemIds 里能看到它", [...trashedItemIds()].includes(stranded), true);
+}
 
 /* ──────────────── 4. 删一个**父**分类 —— 走真的那条 IPC ──────────────── */
 
@@ -208,13 +267,13 @@ console.log("\n删父分类 · 整棵子树的成员都要有归属");
 
   await deleteCollection({ id: parent });
 
-  const inTrash = (id: string): boolean =>
-    LibraryRepo.listByCollection(paperTrash).some((i) => i.id === id);
+  const inTrashOf = (id: string): boolean =>
+    LibraryRepo.listByCollection(trash).some((i) => i.id === id);
 
-  eq("挂在父上的被收进回收站", inTrash(direct), true);
+  eq("挂在父上的被收进回收站", inTrashOf(direct), true);
   // ★ 下面两条是这一段存在的理由:它们在**树上更深的两层**,而用户看不出来差别。
-  eq("★ 只挂在子分类里的也被收进回收站了", inTrash(under), true);
-  eq("★ 只挂在孙分类里的也一样(整棵子树,不是只看一层)", inTrash(deep), true);
+  eq("★ 只挂在子分类里的也被收进回收站了", inTrashOf(under), true);
+  eq("★ 只挂在孙分类里的也一样(整棵子树,不是只看一层)", inTrashOf(deep), true);
 
   // 三个分类自己也确实跟着没了 —— 那是外键 CASCADE 在干,不是这次改的。
   // ⚠️ `CollectionRepo.list()` 给的是数组,所以这里断的是"结果里没有它们",不是
@@ -231,24 +290,60 @@ console.log("\n删父分类 · 整棵子树的成员都要有归属");
   );
 }
 
-// **从回收站本身删分类时不收** —— 否则条目被摘出来又立刻被捞回去,用户永远删不掉。
-// 判据仍是 `shouldSweepAfterRemoval`,这次改动一个字都没动它,但这条链路值得跑一遍真的。
+/* ──────────────── 5. 还原:放回「最后删除的那个分类」 ──────────────── */
+
+console.log("\n还原");
+
+// 用户的要求是「回收站的还原也是还原到最后删除的那个 collection」。数据库里没有
+// "上一站"这一列,判据是"最近建的那个非回收站分类"(见 `restoredTargetOf`)。
 {
-  const orphan = LibraryRepo.upsert({ kind: "paper", title: "待会儿变孤儿的一条" }).id;
-  const sub = CollectionRepo.create("回收站里的子分类", paperTrash, "paper").id;
-  CollectionRepo.assign(sub, [orphan], true);
+  // 造一个**明确最新**的分类当目标 —— 用户心里那个"我刚才整理的那一支"。
+  const latest = CollectionRepo.create("最近用的分类", null, "paper").id;
+  eq("还原目标 = 最近建的那个", restoredTargetOf(), latest);
 
-  await deleteCollection({ id: paperTrash });
+  const lone = LibraryRepo.upsert({ kind: "paper", title: "在回收站里的一条" }).id;
+  CollectionRepo.assign(trash, [lone], true);
+  eq("它在回收站里", LibraryRepo.listByCollection(trash).some((i) => i.id === lone), true);
 
+  const moved = restoreItemsFromTrash([lone]);
+  same("还原动了它一条", moved, [lone]);
+  // ★ 两件事**必须一起做**:进了目标分类,而且**从回收站里摘掉了**。少了后半步它会被
+  // `sweepToTrash` 立刻收回去,用户看到的是"点了还原什么都没发生"。
+  check("★ 它回到了目标分类", LibraryRepo.listByCollection(latest).some((i) => i.id === lone));
+  eq("★ 它不在回收站里了", LibraryRepo.listByCollection(trash).some((i) => i.id === lone), false);
+  eq("它不在 trashedItemIds 里了", trashedItemIds().has(lone), false);
+
+  // 本来就不在回收站里的那几条 → 空操作(不是"塞进某个分类")。
+  const outsider = LibraryRepo.upsert({ kind: "paper", title: "从来没进过回收站" }).id;
+  CollectionRepo.assign(home, [outsider], true);
+  same("不在回收站里的不动它", restoreItemsFromTrash([outsider]), []);
   eq(
-    "回收站本身删得掉(没有被重新建出来)",
-    CollectionRepo.list("paper").some((c) => c.id === paperTrash),
-    false,
+    "而且它没被搬走(还在原来那个分类里)",
+    LibraryRepo.listByCollection(home).some((i) => i.id === outsider),
+    true,
   );
-  check("从它里面删掉的条目没有被收回来(记录还在库里)", LibraryRepo.get(orphan) !== undefined);
+
+  // 走**真的那条 IPC**:它除了搬东西,还要回传新的完整列表(变更类 handler 的既定约定)。
+  const viaIpc = LibraryRepo.upsert({ kind: "paper", title: "走 IPC 还原的一条" }).id;
+  CollectionRepo.assign(trash, [viaIpc], true);
+  const res = (await restoreItems({ ids: [viaIpc] })) as { items: unknown[] };
+  check("IPC 回传了完整列表", Array.isArray(res.items) && res.items.length > 0);
+  check("IPC 之后它回到目标分类", LibraryRepo.listByCollection(latest).some((i) => i.id === viaIpc));
+  eq("IPC 之后它不在回收站里", LibraryRepo.listByCollection(trash).some((i) => i.id === viaIpc), false);
+
+  // **一个普通分类都没有**时退回最外层 —— 而不是随便塞进某个地方。
+  // (把非回收站的分类全删掉,只剩回收站。)
+  for (const c of CollectionRepo.list()) {
+    if (!allTrashCollectionIds().includes(c.id)) CollectionRepo.delete(c.id);
+  }
+  eq("没有普通分类了 → 目标为 null", restoredTargetOf(), null);
+  const floating = LibraryRepo.upsert({ kind: "paper", title: "没地方可放的一条" }).id;
+  CollectionRepo.assign(trash, [floating], true);
+  same("放回最外层也算还原成功", restoreItemsFromTrash([floating]), [floating]);
+  eq("它出了回收站", LibraryRepo.listByCollection(trash).some((i) => i.id === floating), false);
 }
 
-/* ──────────────── 5. 给界面标「谁是回收站」 ──────────────── */
+/* ──────────────── 6. 给界面标「谁是回收站」 ──────────────── */
 
 console.log("\n标给界面");
 
@@ -260,7 +355,6 @@ console.log("\n标给界面");
   const flagged = marked.filter((c) => c.isTrash).map((c) => c.id).sort();
   const expected = allTrashCollectionIds().slice().sort();
   same("标出来的正好是那几个回收站", flagged, expected);
-  check("普通分类没被误标", marked.some((c) => c.id === home && c.isTrash !== true));
   eq("原数组没被就地改", cols.some((c) => c.isTrash === true), false);
 }
 
