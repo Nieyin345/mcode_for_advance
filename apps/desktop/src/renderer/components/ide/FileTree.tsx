@@ -5,6 +5,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { basename, dirname, joinPath, relativePath } from "@renderer/lib/path.js";
 import type { FileTreeEntry } from "@contracts/ipc";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useFileViewStore, basenameOf } from "@renderer/stores/fileViewStore.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import { FILE_DRAG_MIME } from "@renderer/lib/contentTag.js";
 import {
@@ -808,6 +809,8 @@ function TreeNode({
   const toggleDirExpanded = useSessionStore((s) => s.toggleDirExpanded);
   const setDirExpanded = useSessionStore((s) => s.setDirExpanded);
   const openFileInIde = useSessionStore((s) => s.openFileInIde);
+  /** 单击走这里 —— 中间那个统一的预览页（见 `fileViewStore` 的 `project` 那一支）。 */
+  const openFileView = useFileViewStore((s) => s.open);
   const activeFile = useSessionStore((s) =>
     pid ? s.ideActiveFileByProject[pid] ?? null : null,
   );
@@ -833,7 +836,14 @@ function TreeNode({
       path={entry.path}
       depth={depth}
       active={isActiveFile}
-      onClick={() => openFileInIde(entry.path)}
+      onClick={() =>
+        // 单击只看 —— 走中间那个统一的预览页（不落 IDE 标签，不改任何东西）。
+        openFileView({
+          source: { kind: "project", ref: entry.path },
+          name: basenameOf(entry.path),
+        })
+      }
+      onDoubleClick={() => openFileInIde(entry.path)}
       projectPath={projectPath}
     />
   );
@@ -1168,13 +1178,18 @@ function FileNodeRow({
   depth,
   active,
   onClick,
+  onDoubleClick,
   projectPath,
 }: {
   name: string;
   path: string;
   depth: number;
   active: boolean;
+  /** **单击 = 在中间看一眼**（用户 2026-09-20：「用户左键文件是预览」）。 */
   onClick: () => void;
+  /** **双击 = 在中间打开来改**（同一条原话：「双击则是在中间的主对话框里面打开」，
+   *  主对话里那份是可编辑的）。 */
+  onDoubleClick: () => void;
   projectPath: string;
 }) {
   const { t } = useI18n();
@@ -1274,6 +1289,7 @@ function FileNodeRow({
                 e.dataTransfer.effectAllowed = "copy";
               }}
               onClick={onClick}
+              onDoubleClick={onDoubleClick}
               className={cn(
                 "flex w-full items-center gap-1 py-0.5 pr-2 text-left transition-colors",
                 active ? "bg-accent/15 text-content" : "text-content-muted hover:bg-surface-hover/50",
@@ -1307,7 +1323,13 @@ function FileNodeRow({
         <ContextMenu.Portal>
           <ContextMenu.Positioner>
             <ContextMenu.Popup className={MENU_POPUP_CLASS}>
-              <MenuItem icon={<FileTypeIcon path={path} size={12} />} label={t("common.open")} onClick={onClick} />
+              <MenuItem
+        icon={<FileTypeIcon path={path} size={12} />}
+        label={t("common.open")}
+        // 菜单里的「打开」= 双击那条路（进编辑器改）。单击那条已经是一点即预览，
+        // 再给一个"预览"项没有意义，而叫「打开」却不给改会让人以为坏了。
+        onClick={onDoubleClick}
+      />
               {/* "新建" creates a sibling in this file's parent dir; only shown
                   when a container context is available (i.e. inside a tree). */}
               {startNewInParent && (

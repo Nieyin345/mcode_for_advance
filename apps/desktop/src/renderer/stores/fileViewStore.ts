@@ -32,7 +32,18 @@ export type FileSource =
   /** 文献库条目。`ref` 是条目 id,可选 `relPath`(目录条目里往下翻)。 */
   | { kind: "library"; ref: string; relPath?: string }
   /** 模版库里的一个文件。 */
-  | { kind: "template"; ref: { kind: string; dirName: string; relPath: string } };
+  | { kind: "template"; ref: { kind: string; dirName: string; relPath: string } }
+  /**
+   * **项目里的一棵树上的文件**(右栏文件管理 / 中间编辑器那一侧的)。
+   *
+   * 用户 2026-09-20 要的是「点右键菜单的**预览**看它一眼、**双击**才进编辑器改」——
+   * 而项目文件从前**只有一条路**：点一下就进 IDE 编辑器(`openFileInIde`)。所以
+   * "只想看一眼"没有落点,只能改。
+   *
+   * `ref` 是绝对路径;取字节走 `file.readFile` / `file.readBinary`,两条都带
+   * **项目根防逃逸**(见 `@contracts/ipc` 的 `FileReadSchema` 说明)。
+   */
+  | { kind: "project"; ref: string };
 
 /** 现在中间在预览什么。 */
 export interface FileViewTarget {

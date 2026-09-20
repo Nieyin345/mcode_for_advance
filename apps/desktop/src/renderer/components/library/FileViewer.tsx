@@ -366,6 +366,11 @@ async function loadViewData(
     };
   }
 
+  // 项目文件那一支（见 `loadProjectFileData` 的说明）。
+  if (target.source.kind === "project") {
+    return { data: await loadProjectFileData(target.source.ref) };
+  }
+
   const res = await api.templates.readFile({
     kind: target.source.ref.kind as never,
     dirName: target.source.ref.dirName,
@@ -399,4 +404,38 @@ async function loadViewData(
         ? "application/vnd.openxmlformats-officedocument.presentationml.presentation"
         : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
   return { data: { type: "binary", mime, base64: "", bytes: res.data } };
+}
+
+/**
+ * **项目文件**那一支(用户 2026-09-20:「点预览看它一眼、双击才进编辑器改」)。
+ *
+ * ## 为什么先试文本、再试二进制
+ *
+ * 主进程那两条 RPC 是**分开**的(`file:readFile` 给文本、`file:readBinary` 给
+ * `data:` URL),而这里手上只有一个路径 —— 得自己判该走哪条。
+ *
+ * 判据**不按扩展名**:项目里 `.md` / `.json` / 没有后缀的配置、`.env` 那种都该当
+ * 文本看,而列一张"哪些是文本"的表必然漏。所以**先按文本读**:读得动就是文本,
+ * 抛了(二进制解不出来)再走二进制那条。主进程两条都带**项目根防逃逸**,所以
+ * 路径不合法时这里也会抛,那句话如实透出去。
+ *
+ * ⚠️ 二进制那条**返回的是 `data:` URL 而不是裸 base64**,而且失败时给空串
+ * (见 `FileReadBinarySchema` 的说明)—— 所以空串要**当成失败**报出来,不能当成
+ * "一个 0 字节的文件"(那两件事在界面上长得一样)。
+ */
+async function loadProjectFileData(filePath: string): Promise<ViewData> {
+  try {
+    const res = await api.file.readFile({ filePath });
+    return { type: "text", text: res.content };
+  } catch {
+    // 不是文本(或读不动)—— 落到二进制那一支。
+  }
+  const bin = await api.file.readBinary({ filePath });
+  if (!bin.dataUrl) {
+    return { type: "unsupported", error: "这个文件读不出来(可能不是文本,也不像能预览的图片/PDF)。" };
+  }
+  const comma = bin.dataUrl.indexOf(",");
+  const base64 = comma >= 0 ? bin.dataUrl.slice(comma + 1) : "";
+  const mime = /^data:([^;,]+)/.exec(bin.dataUrl)?.[1] ?? "application/octet-stream";
+  return { type: "binary", mime, base64, bytes: base64ToBytes(base64) };
 }
