@@ -117,6 +117,16 @@ function LeftBarBase({
   const expandedWorktrees = useSessionStore((s) => s.expandedWorktrees);
   const worktreeNames = useSessionStore((s) => s.worktreeNames);
   const archivedViewOpen = useSessionStore((s) => s.archivedViewOpen);
+  /**
+   * 「项目」这一段折起来了没有（2026-09-21）。
+   *
+   * 用户报的问题：「现在的左边栏**项目和下面的文档大类一个不能折叠，一个能折叠**，
+   * 这个要统一起來」。项目段原来是个光秃秃的 `<h3>`，而文档大类有折叠箭头 ——
+   * 同一层的东西长了两样。这里给项目段补上，与大类**同一个交互**。
+   *
+   * 局部 state 不进 store：它和「看哪个大类」一样是"这一段自己现在什么样"。
+   */
+  const [projectsCollapsed, setProjectsCollapsed] = useState(false);
   const pinnedSessions = useSessionStore((s) => s.pinnedSessions);
 
   const addProject = useSessionStore((s) => s.addProjectFromFolder);
@@ -669,9 +679,23 @@ function LeftBarBase({
 
       {/* Header */}
       <div className="group mb-1 flex items-center justify-between px-1">
-        <h3 className="font-semibold uppercase tracking-wide text-content-subtle [font-size:var(--left-section-title-fs)]">
-          {t("layout.projects")}
-        </h3>
+        <div className="flex min-w-0 items-center">
+          {/* 折叠箭头 —— 与文档大类那一个**逐字同一套**（w-3 槽 + 10px chevron +
+              rotate-90）。两段是同级的，箭头错开半格就很明显。 */}
+          <button
+            onClick={() => setProjectsCollapsed((v) => !v)}
+            title={projectsCollapsed ? t("layout.expand") : t("layout.collapse")}
+            className="flex w-3 shrink-0 items-center justify-center text-content-subtle hover:text-content"
+          >
+            <IconChevronRight
+              size={10}
+              className={cn("transition-transform", !projectsCollapsed && "rotate-90")}
+            />
+          </button>
+          <h3 className="truncate font-semibold uppercase tracking-wide text-content-subtle [font-size:var(--left-section-title-fs)]">
+            {t("layout.projects")}
+          </h3>
+        </div>
         <div className="flex items-center gap-1">
           {/* View-mode toggle: flat list vs grouped under headers. Hover-
               revealed (mirrors the add-project button below) to keep the

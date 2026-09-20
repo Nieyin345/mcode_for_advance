@@ -46,7 +46,7 @@
  * 选中它,并把**右侧面板**切到文献库标签(见 LibraryPanel 的说明:不做全屏页,
  * 不挤掉主区的对话)。这与点项目后主区开会话标签是同一套交互模式。
  */
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { kindLibraryLabel } from "@renderer/lib/libraryLabels.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useLibraryStore } from "@renderer/stores/libraryStore.js";
@@ -66,12 +66,14 @@ import type { LibraryCollection, LibraryItem } from "@contracts/library";
 import {
   IconArchive,
   IconBook,
+  IconChevronRight,
   IconFileText,
   IconFiles,
   IconMessage,
   IconPencil,
   IconPlus,
   IconTrash,
+  IconX,
 } from "@renderer/lib/icons.js";
 import { attachToCurrentChat } from "@renderer/lib/attachToChat.js";
 import { Dialog } from "@renderer/components/ui/dialog.js";
@@ -109,6 +111,7 @@ function MiniInput({
   placeholder,
   error,
   children,
+  inline = false,
 }: {
   value: string;
   onChange: (next: string) => void;
@@ -119,9 +122,17 @@ function MiniInput({
   placeholder?: string;
   error?: string | null;
   children?: ReactNode;
+  /**
+   * **行内模式** —— 去掉那圈 `px-1 pb-1` 的外边距（2026-09-21）。
+   *
+   * 这个组件平时是"列表外独立一行"（左边留白、下面留白），而放进 `SectionTabs` 的
+   * `trailing` 时，它会成为那一排里的一个**格子** —— 再带一圈外边距就跟旁边的 tab
+   * 对不齐了。
+   */
+  inline?: boolean;
 }) {
   return (
-    <div className="px-1 pb-1">
+    <div className={inline ? undefined : "px-1 pb-1"}>
       <input
         autoFocus
         value={value}
@@ -133,7 +144,14 @@ function MiniInput({
         {...(onBlur ? { onBlur } : {})}
         placeholder={placeholder}
         className={cn(
-          "w-full rounded border bg-surface px-2 py-1 text-xs text-content focus:outline-none",
+          // ⚠️ **不能是 `w-full`**（2026-09-21）。用户报两件事：「新建的输入框太长」、
+          // 「新建小类的位置还是不对」。根因是同一个 —— `w-full` 在 flex 容器里等于
+          // **撑满整行**，所以塞进 tab 排（`SectionTabs` 的 `trailing`）时它会独占
+          // 一行、把后面的行推下去，看起来"不在那一排里"、而且长得离谱。
+          //
+          // 改成一个**跟着内容走的行内宽度**：放进 tab 排时它就在最后那个 tab 旁边，
+          // 单用（新建大类那种）时也只是一个不长的框。
+          "w-[9rem] rounded border bg-surface px-2 py-1 text-xs text-content focus:outline-none",
           error ? "border-red-500" : "border-accent",
         )}
       />
@@ -381,7 +399,13 @@ export function LibrarySection({
         return {
           key: id,
           label: meta?.name ?? id,
-          count: collections.reduce((n, c) => (c.kind === id ? n + 1 : n), 0),
+          // ⚠️ **排除回收站**（2026-09-21）。它也是一个 collection（它就是「一个叫回收站的
+          // collection」，见 `library/trash.ts` 的文件头），不排的话会被算进它那个
+          // kind 的数字里 —— 数字虚高 1，而用户数出来的分类数对不上。
+          count: collections.reduce(
+            (n, c) => (c.kind === id && !c.isTrash ? n + 1 : n),
+            0,
+          ),
         };
       }),
     [group.kinds, typeMetas, collections],
@@ -1307,6 +1331,7 @@ export function LibrarySection({
             trailing={
               creatingKind ? (
                 <MiniInput
+                  inline
                   value={newKindDraft}
                   onChange={(next) => {
                     setNewKindDraft(next);
@@ -1800,32 +1825,83 @@ export function LibrarySections() {
  * 上面的列表。
  */
 export function LibraryTrashRow() {
-  const [groups, setGroups] = useState<readonly LibraryGroupMeta[] | null>(null);
-  const [typeMetas, setTypeMetas] = useState<readonly LibraryTypeMeta[]>(BUILTIN_LIBRARY_TYPES);
+  const { t } = useI18n();
+  const collections = useLibraryStore((s) => s.collections);
+  const loadCollections = useLibraryStore((s) => s.loadCollections);
+  const [open, setOpen] = useState(false);
+  const rowRef = useRef<HTMLButtonElement>(null);
+  /** 浮层的定位（打开那一刻量一次，之后不跟着滚 —— 它是一个 fixed 层）。 */
+  const [anchor, setAnchor] = useState<{ left: number; width: number; bottom: number } | null>(null);
 
   useEffect(() => {
-    void api.library.typesGet({}).then((res) => setTypeMetas(res.types)).catch(() => {});
-    void api.library
-      .groupsGet({})
-      .then((res) => setGroups(res.groups))
-      .catch(() => setGroups(DEFAULT_LIBRARY_GROUPS));
-  }, []);
+    void loadCollections();
+  }, [loadCollections]);
 
-  // 组表还没拉到时**不画**：这一条要的是"位置固定"，而在渲染出真正的行之前
-  // 占一个空壳反而会让它先跳一下。拉不到时它就是没出现 —— 和"库里没有回收站"
-  // 长得一样，但那个场景下本来也不该有这一条。
-  if (!groups || groups.length === 0) return null;
+  const trash = collections.find((c) => c.isTrash);
+  if (!trash) return null;
+
+  const toggle = (): void => {
+    if (!open) {
+      const r = rowRef.current?.getBoundingClientRect();
+      if (r) setAnchor({ left: r.left, width: r.width, bottom: window.innerHeight - r.top });
+    }
+    setOpen((v) => !v);
+  };
+
   return (
-    <div className="shrink-0 overflow-y-auto border-t border-edge pt-1" style={{ maxHeight: "40vh" }}>
-      {/* `group` / `typeMetas` / `onRefresh` 在这一档用不到（不画表头也不画 tab 排），
-          传进去只是为了满足 props 的形状。 */}
-      <LibrarySection
-        group={groups[0]!}
-        typeMetas={typeMetas}
-        groups={groups}
-        onRefresh={() => {}}
-        trashOnly
-      />
-    </div>
+    <>
+      {/* ── 钉在左栏最底部的那一行 ──
+          点击**向上弹出一个浮层**，而不是在布局里撑开 —— 见下面那个层。 */}
+      <div className="shrink-0 border-t border-edge">
+        <button
+          ref={rowRef}
+          onClick={toggle}
+          className={cn(
+            "flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left transition-colors [font-size:var(--right-panel-font-size)]",
+            open ? "bg-surface-hover text-content" : "text-content-muted hover:bg-surface-hover/60",
+          )}
+        >
+          <IconArchive size={14} className="shrink-0 opacity-70" />
+          <span className="min-w-0 flex-1 truncate">{trash.name}</span>
+          <IconChevronRight
+            size={12}
+            className={cn("shrink-0 transition-transform", open ? "-rotate-90" : "rotate-0")}
+          />
+        </button>
+      </div>
+
+      {/* ── 向上弹出来的那个浮层 ──
+          用户的原话：「相当于你开一个和侧边栏**同宽度的在顶层固定的小滚动窗口**」。
+
+          所以它是 `fixed`（脱离布局流，不推上面的列表）、宽度**跟那一行一样**、
+          底边贴着那一行**向上**铺开。⚠️ 它**不是**在布局里撑一块高度 —— 那样会把
+          上面的项目列表挤上去，而那正是用户要摆脱的"跟着上下移动"。 */}
+      {open && anchor && (
+        <div
+          className="fixed z-[70] flex max-h-[50vh] flex-col overflow-hidden rounded-lg border border-edge bg-surface shadow-xl"
+          style={{ left: anchor.left, width: anchor.width, bottom: anchor.bottom }}
+        >
+          <div className="flex shrink-0 items-center justify-between border-b border-edge px-2 py-1">
+            <span className="text-[0.7857em] font-medium text-content-muted">{trash.name}</span>
+            <button
+              onClick={() => setOpen(false)}
+              title={t("common.close")}
+              className="rounded p-0.5 text-content-subtle hover:text-content"
+            >
+              <IconX size={12} />
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-1">
+            <LibrarySection
+              group={{ id: "__trash__", name: trash.name, kinds: [] }}
+              typeMetas={BUILTIN_LIBRARY_TYPES}
+              groups={[]}
+              onRefresh={() => void loadCollections()}
+              trashOnly
+            />
+          </div>
+        </div>
+      )}
+    </>
   );
 }

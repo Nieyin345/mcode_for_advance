@@ -480,7 +480,7 @@ html .font-bold {
    * 「项目和下面的文档的一级标题要**一样大**…字号稍微**大一点**就行了」。
    *
    * 定成一个固定值：它是一个**层级标记**，不该随别的面板的缩放设置漂移。 */
-  --left-section-title-fs: 13.5px;
+  --left-section-title-fs: 15px;
 }
 
 /* Thin scrollbars that follow the theme. */
