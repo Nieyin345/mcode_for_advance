@@ -310,6 +310,9 @@ export const en = {
   "ide.task.following": "Following this terminal's output",
   "ide.task.gone": "This terminal has exited",
   "ide.task.transcriptWaiting": "This subagent has no output yet",
+  /** Terminal variant — distinct from the subagent one ("This subagent has not
+   *  produced output yet" reads as a wrong sentence on a terminal). */
+  "ide.task.terminalNoOutput": "This terminal has no output yet",
   "ide.task.transcriptNotStarted": "This step hasn't started yet",
   "ide.task.transcriptRunning": "This step is running; its transcript hasn't reached this view yet",
   "ide.task.transcriptTrimmed": "Its transcript is no longer in memory (only recent ones are kept)",

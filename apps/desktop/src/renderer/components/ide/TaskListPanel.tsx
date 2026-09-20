@@ -473,7 +473,10 @@ function TerminalOutputPanel({ info }: { info: TerminalInfo }) {
         ref={preRef}
         className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-all bg-surface-muted/30 p-2 font-mono text-[11px] leading-tight text-content"
       >
-        {text}
+        {/* 没有输出时说一句（用户 2026-09-21 点名要的：「如果没有内容输出就显示
+            还没有输出」）。**不能留空白** —— 一片空的 `<pre>` 和"终端卡住了/没接上"
+            在用户眼里长得一模一样，而他没有任何线索能分辨这两件事。 */}
+        {text.length > 0 ? text : <span className="text-content-subtle">{t("ide.task.terminalNoOutput")}</span>}
       </pre>
     </div>
   );

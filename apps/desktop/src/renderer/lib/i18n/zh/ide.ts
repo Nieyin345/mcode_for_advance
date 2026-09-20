@@ -314,6 +314,9 @@ export const zh = {
   "ide.task.following": "正在跟随输出",
   "ide.task.gone": "这条终端已经退出了",
   "ide.task.transcriptWaiting": "这个子代理还没有输出",
+  /** 终端那档的空态。**要和子代理那句分开** —— "这个子代理还没有输出" 挂在
+   *  一个终端上读起来是句错话（终端不是子代理）。 */
+  "ide.task.terminalNoOutput": "这个终端还没有输出",
   "ide.task.transcriptNotStarted": "这一步还没开始跑",
   "ide.task.transcriptRunning": "这一步正在跑,过程还没传到这一屏",
   "ide.task.transcriptTrimmed": "过程已经不在内存里了(只保留最近这些)",
