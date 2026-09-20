@@ -36,6 +36,8 @@ export const en = {
 
   // ── A workflow step card (see `components/chat/WorkflowStepCard.tsx`) ──
   "chatStream.workflowStep.success": "Done",
+  /** Used by the flow graph's node subtitle. */
+  "chatStream.workflowStep.running": "Running",
   "chatStream.workflowStep.failed": "Failed",
   // "Not run" rather than "Skipped": what the user sees is the cause — an
   // upstream step failed, so this one never ran.

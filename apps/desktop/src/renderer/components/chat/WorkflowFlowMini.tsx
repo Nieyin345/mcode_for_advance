@@ -71,7 +71,16 @@ const MIN_BOX_W = 92;
 /** 一块最多多宽。名字长到超过这个宽度就截断 —— 再宽下去一层只摆得下一块,而图是
  *  横向铺开的结构。 */
 const MAX_BOX_W = 170;
-const BOX_H = 28;
+/**
+ * 一块的高度。**2026-09-21 从 28 加到 34** —— 名字下面多了一行状态小字（用户：
+ * 「流程图信息丰富一点，**不要只是一个名字**」）。
+ *
+ * 加高的代价是整张图变高（`FLOW_MAX_H` 那一栏能看到的层数少一点），所以没有加更多：
+ * 状态小字这一行是**一条就能读完**的（"执行中" / "已完成 2m14s"）。
+ */
+const BOX_H = 34;
+/** 状态小字那一行的字号。比名字小一号，读起来是"名字的补充"而不是第二条标题。 */
+const SUB_PX = 8.5;
 const GAP_X = 8;
 /** 同一层里两行之间的间隔(一层里的节点换行时)。 */
 const GAP_Y = 10;
@@ -87,6 +96,59 @@ const LABEL_PX = 10;
 const PAD_X = 8;
 /** 右边留给状态记号的位置。 */
 const GLYPH_W = 16;
+
+/** 状态小字的颜色。**跟状态走,不跟色板走** —— 绿=成、红=败、主题色=在跑。 */
+function rgbOf(key: string): string {
+  if (key === "success") return "rgb(var(--success))";
+  if (key === "failed") return "rgb(var(--danger))";
+  if (key === "running") return "rgb(var(--accent))";
+  return "rgb(var(--content-subtle))";
+}
+
+/**
+ * 名字下面那行小字：**这一步现在怎么了**（外加上跑了多久）。
+ *
+ * ## 措辞从哪来
+ *
+ * 状态词复用 `WorkflowNodeCard` 那一套 `chatStream.workflowStep.*` —— 同一件事
+ * （"这一步跑完了"）在图上和卡片上**必须是同一个词**，否则用户得先学会两套说法。
+ *
+ * ## 耗时只在"看得见起止"时给
+ *
+ * `startedAt` 与 `endedAt` 两个字段都可能缺（重启后从库里补出来的那几步只有
+ * `startedAt`、还没轮到的那些两个都没有）。缺就不给 —— **编一个"0s"比不给更坏**，
+ * 它看起来像一个真实的测量值。
+ */
+function subLabelOf(
+  key: string,
+  live: { startedAt?: number; endedAt?: number } | undefined,
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  const word =
+    key === "running"
+      ? t("chatStream.workflowStep.running")
+      : key === "success"
+        ? t("chatStream.workflowStep.success")
+        : key === "failed"
+          ? t("chatStream.workflowStep.failed")
+          : key === "queued"
+            ? t("chatStream.workflowStep.queued")
+            : key === "cancelled"
+              ? t("chatStream.workflowStep.cancelled")
+              : key === "skipped"
+                ? t("chatStream.workflowStep.skipped")
+                : key === "unselected"
+                  ? t("chatStream.workflowStep.unselected")
+                  : "";
+  const ms =
+    live?.startedAt !== undefined && live.endedAt !== undefined
+      ? Math.max(0, live.endedAt - live.startedAt)
+      : undefined;
+  if (ms === undefined) return word;
+  const sec = Math.round(ms / 1000);
+  const dur = sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, "0")}s`;
+  return word ? `${word} · ${dur}` : dur;
+}
 
 /** 一格的样子。**按状态分色,不按类型** —— 站在"看它跑到哪了"这个角度,"这一步成没成"
  *  比"它是什么类型的节点"重要得多(类型由卡片上的小字说)。 */
@@ -304,6 +366,7 @@ export function WorkflowFlowMini({
   /** 图框最高多高,由调用方的分隔条决定。装不下就在框里滚动。 */
   maxHeight?: number;
 }) {
+  const { t } = useI18n();
   const [wrapRef, innerW] = useWidth<HTMLDivElement>();
   /** 宽度还没量到时先按一个窄栏的宽度摆一次(量到之后立刻重算,不会闪)。 */
   const layout = useMemo(() => layoutOf(doc, innerW > 0 ? innerW : 300), [doc, innerW]);
@@ -403,6 +466,8 @@ export function WorkflowFlowMini({
           const cy = box.y + box.h / 2;
           // 左边留内边距,右边留状态记号的位置;剩下的才是字的地方。
           const label = fitTitle(title, box.w - PAD_X * 2 - GLYPH_W);
+          /** 名字下面那一行：**状态 + 耗时**（见下面那个 `<text>` 的注释）。 */
+          const subLabel = subLabelOf(key, live, t);
           const glyphX = box.x + box.w - PAD_X - 5;
           return (
             <g
@@ -461,12 +526,26 @@ export function WorkflowFlowMini({
               {/* **节点名。** 这一行是"图上什么都没有"那条抱怨的正解。 */}
               <text
                 x={box.x + PAD_X}
-                y={cy + LABEL_PX * 0.36}
+                y={box.y + 14}
                 fontSize={LABEL_PX}
                 fill={LOUD.has(key) ? "rgb(var(--content))" : "rgb(var(--content-subtle))"}
                 data-node-label={node.id}
               >
                 {label}
+              </text>
+              {/* **状态那一行小字**（2026-09-21）。用户：「流程图信息丰富一点，不要只是
+                  一个名字」。名字回答"这一步是什么"，这一行回答"**它现在怎么了**" ——
+                  而后者才是用户盯着这张图时要的东西。
+                  ⚠️ 措辞复用 `WorkflowNodeCard` 那一套（`chatStream.workflowStep.*`），
+                  不另造一份 —— 同一件事在两个地方两种说法，是这个仓库反复出过的问题。 */}
+              <text
+                x={box.x + PAD_X}
+                y={box.y + BOX_H - 7}
+                fontSize={SUB_PX}
+                fill={rgbOf(key)}
+                data-node-sub={node.id}
+              >
+                {subLabel}
               </text>
               {/* 状态记号。**小尺寸下形状比颜色可靠** —— 绿和灰在色弱眼里可能是同一
                   种颜色,但有没有那一笔是看得见的。 */}

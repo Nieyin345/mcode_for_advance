@@ -5,7 +5,6 @@ import {
   IconGitBranch,
   IconWorld,
   IconListDetails,
-  IconMessages,
   IconArrowsMaximize,
   IconArrowsMinimize,
   IconBook,
@@ -22,7 +21,6 @@ import { TurnFlowPanel } from "@renderer/components/ide/TurnFlowPanel.js";
 import { TaskListPanel } from "@renderer/components/ide/TaskListPanel.js";
 import { WorkflowBoardPanel } from "@renderer/components/chat/WorkflowBoardPanel.js";
 import { BrowserPanel } from "@renderer/components/browser/BrowserPanel.js";
-import { SideChatPanel } from "@renderer/components/chat/SideChatPanel.js";
 import { LibraryPanel } from "@renderer/components/library/LibraryPanel.js";
 import { TemplatePanel } from "@renderer/components/templates/TemplatePanel.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -149,14 +147,6 @@ export function RightPanel() {
         >
           <IconTerminal2 size={16} className="shrink-0" />
         </RailButton>
-        {/* Side chat — quick Q&A beside the running main session. */}
-        <RailButton
-          active={tab === "sidechat"}
-          onClick={() => setTab("sidechat")}
-          title={t("layout.tabSideChat") + hintFor("sidechat.open")}
-        >
-          <IconMessages size={16} className="shrink-0" />
-        </RailButton>
         {/* 文献库 —— 与左栏的「文献库」分组联动:在左栏点某个库,这里切到本标签
             并显示该库的文献。仿照上面的 RailButton 写法,不改动其余标签的行为。 */}
         <RailButton
@@ -210,7 +200,6 @@ export function RightPanel() {
         {tab === "turns" && <TurnFlowPanel />}
         {tab === "flow" && <WorkflowBoardPanel />}
         {tab === "tasks" && <TaskListPanel />}
-        {tab === "sidechat" && <SideChatPanel />}
         {tab === "library" && <LibraryPanel />}
         {tab === "templates" && <TemplatePanel />}
         {tab === "browser" && <BrowserPanel mode="sidebar" />}

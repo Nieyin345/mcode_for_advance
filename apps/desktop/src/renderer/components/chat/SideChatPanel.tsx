@@ -29,6 +29,7 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useSessionStore, type Block } from "@renderer/stores/sessionStore.js";
 import { ConfirmDialog } from "@renderer/components/ui/index.js";
 import { ChatPane } from "@renderer/components/chat/ChatPane.js";
+import { useFileViewStore } from "@renderer/stores/fileViewStore.js";
 import { MessageBlocks } from "./MessageBlocks.js";
 import { mapTranscriptBlock } from "./transcriptBlocks.js";
 import { SUBAGENT_STATUS_META, fmtUsage } from "./activityShared.js";
@@ -46,6 +47,8 @@ export function SideChatPanel() {
   const createSideChat = useSessionStore((s) => s.createSideChat);
   const selectSideChat = useSessionStore((s) => s.selectSideChat);
   const closeSideChatView = useSessionStore((s) => s.closeSideChatView);
+  /** 关掉中间那个文件预览 —— 主对话由「回到主对话」那一下回到中央。 */
+  const closeFileView = useFileViewStore((s) => s.close);
   const openTab = useSessionStore((s) => s.openTab);
   // The subagent whose read-only transcript is open (by taskId). Local state:
   // leaving the tab or switching the parent session falls back to the list —
@@ -121,6 +124,11 @@ export function SideChatPanel() {
       onOpenSubagent={setViewSubagentTaskId}
       onCreate={() => void createSideChat()}
       onOpen={(id) => void selectSideChat(id)}
+      // 「回到主对话」= 关掉中间那条文件预览 + 退出子对话视图 —— 主对话由此回到中央。
+      onBackToMain={() => {
+        closeFileView();
+        closeSideChatView();
+      }}
     />
   );
 }
@@ -135,6 +143,7 @@ function SideChatListView({
   onOpenSubagent,
   onCreate,
   onOpen,
+  onBackToMain,
 }: {
   hasMainSession: boolean;
   parentTitle?: string;
@@ -143,6 +152,8 @@ function SideChatListView({
   onOpenSubagent: (taskId: string) => void;
   onCreate: () => void;
   onOpen: (id: string) => void;
+  /** 「回到主对话」—— 见 `MainSessionRow`。 */
+  onBackToMain: () => void;
 }) {
   const { t } = useI18n();
   const deleteSession = useSessionStore((s) => s.deleteSession);
@@ -188,6 +199,15 @@ function SideChatListView({
 
       {/* List body. */}
       <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
+        {/* **主对话那一行**（2026-09-21）。用户的要求：「主对话不是一直都在这个列表里面…
+            只有主页面被占据了他才会过去」，以及「在列表最上面，稍微和其他的子代理有点
+            不一样就行，边框加粗之类的」。
+            ——
+            所以它**只在中间被文件占住时**才出现：那时主对话被挤出了中央，得有个地方能
+            点回它、也能对它说话。平常中央就是它，列表里再摆一行是多余的。
+            边框加粗 + 主题色描边是"这一条和下面那几条不是一类"，不是"它更重"。 */}
+        <MainSessionRow onBack={onBackToMain} />
+
         {/* Live subagents (model-initiated Task children) — read-only
             transcripts behind each row. */}
         {orderedSubagents && orderedSubagents.length > 0 && (
@@ -295,6 +315,56 @@ function SubagentRow({
  *  never reach the UI. */
 function displayTitle(session: Session, placeholder: string): string {
   return session.title === "Quick ask" ? placeholder : session.title;
+}
+
+/**
+ * **主对话那一行** —— 列表最上面那条，只在"主对话被挤出中央"时出现。
+ *
+ * ## 什么时候出现
+ *
+ * 用户的要求：「主对话不是一直都在这个列表里面……**只有主页面被占据了他才会过去**」。
+ * 所谓"被占据"就是**中间在看一个文件**（`fileViewStore.target !== null`）—— 那时主
+ * 对话没地方站了，得有个入口能点回去、也能对它说话。平常中央就是它，列表里再摆一行
+ * 是多余的。
+ *
+ * ## 它"不一样"在哪
+ *
+ * 用户原话：「在列表最上面，稍微和其他的子代理**有点不一样**就行，**边框加粗**之类的」。
+ * 所以这里是主题色描边 + 加粗 —— 表达的是"**这一条和下面那几条不是一类**"（那是主子，
+ * 它们是分身），不是"它更重"。
+ *
+ * 点击 = 关掉中间那个文件（`onBack`），主对话就回到中央。
+ */
+function MainSessionRow({ onBack }: { onBack: () => void }) {
+  const { t } = useI18n();
+  // 只在**中间被文件占住**时才出现 —— 见上面那段。
+  const previewing = useFileViewStore((s) => s.target !== null);
+  const title = useSessionStore((s) =>
+    s.activeSessionId
+      ? (s.streamSessions.find((x) => x.id === s.activeSessionId)?.title ?? null)
+      : null,
+  );
+  if (!previewing) return null;
+  return (
+    <ul className="mb-2 space-y-0.5 border-b border-edge pb-2">
+      <li>
+        <button
+          type="button"
+          onClick={onBack}
+          title={t("sideChat.backToMain")}
+          className="flex w-full items-center gap-2 rounded-md border-2 border-accent/60 bg-accent/5 px-2 py-1.5 text-left transition-colors hover:bg-accent/10"
+        >
+          <IconMessages size={13} className="shrink-0 text-accent" />
+          <span className="min-w-0 flex-1 truncate text-xs font-semibold text-content">
+            {title || t("sideChat.mainChat")}
+          </span>
+          <span className="shrink-0 rounded bg-accent/15 px-1 text-[9px] font-medium text-accent">
+            {t("sideChat.mainBadge")}
+          </span>
+        </button>
+      </li>
+    </ul>
+  );
 }
 
 function SideChatRow({

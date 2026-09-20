@@ -6408,6 +6408,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         tabRaw === "tasks"
       )
         set({ rightPanelTab: tabRaw });
+      // **存量的 `sidechat` 折成 `flow`**（2026-09-21）：子对话列表并进了「工作流运行」
+      // 那张面板的下半部分，独立的 tab 已删。老用户设置表里存的就是 `sidechat` ——
+      // 直接不管它会让右栏落到**默认的 files**（上面那个白名单不收它），用户重开
+      // 发现"我上次停在的那个面板没了"。折过去，落点才对。
+      else if (tabRaw === "sidechat") set({ rightPanelTab: "flow" });
       if (modeRaw === "tabs" || modeRaw === "replace") set({ ideEditorMode: modeRaw });
       if (diffModeRaw === "center" || diffModeRaw === "dialog") set({ gitDiffOpenMode: diffModeRaw });
       set({ commitGenModel: commitModelRaw || null });
@@ -10834,7 +10839,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   openSideChatPanel: () => {
     set({ rightOpen: true });
-    get().setRightPanelTab("sidechat");
+    // **切到 `flow`**（2026-09-21 改）：子对话列表现在长在「工作流运行」那张面板的
+    // 下半部分，独立的「子对话」tab 已经删掉（用户要求：「之前的那个子对话 tab 就
+    // 删掉了，没有了」）。这个函数的语义还是"把子对话摆到用户眼前"，只是落点换了。
+    get().setRightPanelTab("flow");
     // Refresh the current main session's list if we have one (cheap; keeps
     // titles/status fresh after restarts or background changes).
     const parent = get().activeSessionId;
@@ -11016,7 +11024,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   openSubagentTranscript: (sessionId, taskId) => {
     set({ pendingSubagentView: { sessionId, taskId }, rightOpen: true });
-    get().setRightPanelTab("sidechat");
+    // `flow`（2026-09-21）：子代理转录的展开视图住在 `SideChatPanel` 里，而那个面板
+    // 现在长在「工作流运行」那张面板的下半部分 —— 独立的「子对话」tab 已删。
+    get().setRightPanelTab("flow");
   },
 
   clearPendingSubagentView: () => {

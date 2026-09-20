@@ -134,6 +134,10 @@ export const en = {
   "sideChat.newChat": "New sub-session",
   "sideChat.parentPrefix": "Main session",
   "sideChat.noMainSession": "Open a main session first",
+  /** Topmost row = the MAIN chat; only shows while the center pane is showing a file. */
+  "sideChat.mainChat": "Main chat",
+  "sideChat.mainBadge": "MAIN",
+  "sideChat.backToMain": "Back to the main chat (closes the file in the center)",
   "sideChat.emptyTitle": "No sub-sessions yet",
   "sideChat.emptyHint": "Spot something in the main session's output you don't follow? Ask here — the main session keeps running, fully independent.",
   "sideChat.backToList": "Back to the sub-session list",

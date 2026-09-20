@@ -54,6 +54,7 @@ import { useToastStore } from "@renderer/stores/toastStore.js";
 import { MENU_ITEM_CLASS, SidebarMenu } from "@renderer/components/sidebar/Sidebar.js";
 import { useWorkflowLive, dismissSettled, type LiveNode, type LiveRun } from "@renderer/lib/workflowLive.js";
 import { Divider } from "@renderer/components/layout/Divider.js";
+import { SideChatPanel } from "@renderer/components/chat/SideChatPanel.js";
 import {
   FLOW_DIVIDER_CLASS,
   FLOW_H_MAX,
@@ -142,6 +143,32 @@ export function WorkflowBoardPanel() {
   /** 展开了哪一张卡 —— **一次只开一张**(手风琴):展开的卡会把列表推下去,同时展开几张
    *  的话"我刚点的是哪张"又要靠找。 */
   const [openId, setOpenId] = useState<string | null>(null);
+  /** 选中一条会话（子对话 / 节点会话都走它）—— 见下面 `onPick` 那段。 */
+  const selectSideChat = useSessionStore((s) => s.selectSideChat);
+
+  /**
+   * **点流程图上一格 = 同时打开下面那条对话**（2026-09-21，用户要求）。
+   *
+   * ## 为什么不是"只选中"
+   *
+   * 从前点一格只是把它选中、展开它那张**步骤卡**。而步骤卡已经删了（下面换成了对话
+   * 列表，见那一段注释）—— 所以"选中"不再有受体，点下去什么都不会发生。
+   *
+   * 图上每一格背后本来就是**一条会话**（`live.nodes[id].nodeSessionId`），而下面那个
+   * 列表正是列它们的。所以点一格最自然的语义就是"**打开这一格的会话**"——
+   * 用户的原话：「可以点击上面的工作流节点就能**同时打开下面的对话窗口**」。
+   *
+   * ⚠️ **选中态和打开会话是两件事，都要做**：`setOpenId` 让图上那一格高亮（看得出
+   * "我现在在看谁"），`selectSideChat` 让下半部分切到那条会话。只做后者的话图上是
+   * 灰的，用户分不清自己点的是哪一格。
+   *
+   * 没跑过的格子**没有会话**（`nodeSessionId` 缺席）—— 那时只选中，不切面板。
+   */
+  const pickNode = (nodeId: string): void => {
+    setOpenId((prev) => (prev === nodeId ? null : nodeId));
+    const nodeSessionId = run?.nodes[nodeId]?.nodeSessionId;
+    if (nodeSessionId) void selectSideChat(nodeSessionId);
+  };
   /** 库里**还留着会话**的那几步(见 `viewOfStored`)。
    *
    *  看板上半部分的现场跟着进程存活,重启即空 —— 而节点会话是落库的。这一份就是那个
@@ -314,7 +341,7 @@ export function WorkflowBoardPanel() {
           doc={doc}
           run={run}
           picked={openId}
-          onPick={setOpenId}
+          onPick={pickNode}
           height={flowH}
           onResize={resizeFlow}
           onResetHeight={resetFlowH}
@@ -331,48 +358,20 @@ export function WorkflowBoardPanel() {
           />
         )}
 
-        {/* ⚠️ 空态判据是 `cards.length === 0`,**不是 `liveRows.length === 0`**。
-            重启之后现场本来就是空的,而库里还列着"你执行过的那几步" —— 那时还显示"这张图
-            还没跑起来",是当着用户的面说一句他知道不对的话。 */}
-        {cards.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-2 px-6 py-10 text-center">
-            <IconRobotFace size={22} className="text-content-subtle" />
-            <p className="text-xs font-medium text-content-muted">
-              {t("chatStream.workflowBoard.emptyTitle")}
-            </p>
-            <p className="text-[11px] leading-relaxed text-content-subtle">
-              {t("chatStream.workflowBoard.emptyHint")}
-            </p>
-          </div>
-        ) : (
-          <div className="p-1.5">
-            <ul className="space-y-1">
-              {cards.map((c) => (
-                <WorkflowNodeCard
-                  key={c.nodeId}
-                  node={c}
-                  sessionId={sessionId}
-                  expanded={openId === c.nodeId}
-                  onToggle={() => setOpenId(openId === c.nodeId ? null : c.nodeId)}
-                  onStopGraph={() => void api.claude.interrupt({ sessionId })}
-                />
-              ))}
-            </ul>
-            {/* 「已完成的可以收起来,也可以直接清理掉」 —— 清掉的只是**看板上的现场**
-                (`dismissSettled`):那些步骤的卡片、过程、用量一个字节都不动,往下滚
-                对话仍然看得到每一步做过什么。 */}
-            {doneCards.length > 0 && run && (
-              <button
-                type="button"
-                onClick={() => dismissSettled(run.runId)}
-                className="mt-1 flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
-              >
-                <IconTrash size={11} />
-                {t("chatStream.workflowBoard.clearDone")}
-              </button>
-            )}
-          </div>
-        )}
+        {/* **下半部分 = 对话列表**（2026-09-21 改）。
+            ——
+            从前进这里的是**工作流步骤卡**（每一格一张）。用户要求把它换成**对话列表**：
+            「上面是工作流图片，下面是代理列表」—— 同一批东西（图上每一格就是一个子代理
+            的会话），只是**换个说法看**：图回答"跑到第几步"，列表回答"跟他说话"。
+
+            直接把 `SideChatPanel` 整个嵌进来，而不是照它再写一份：那个面板已经是
+            "列表 ⇄ 用 `ChatPane` 展开一条"的完整两态实现（它自己的头注写得清楚），
+            而用户要的正是「对话展开的样式复用之前子对话页面的展开的样子」。
+
+            ⚠️ 两份拷贝迟早分家 —— 那正是这个仓库反复踩过的坑（见硬规矩第 2 条）。 */}
+        <div className="min-h-0 flex-1 border-t border-edge">
+          <SideChatPanel />
+        </div>
       </div>
 
       <FlowNodeMenu

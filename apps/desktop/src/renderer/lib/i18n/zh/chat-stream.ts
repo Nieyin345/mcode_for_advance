@@ -39,6 +39,8 @@ export const zh = {
 
   // ── 工作流的一张步骤卡(见 `components/chat/WorkflowStepCard.tsx`)──
   "chatStream.workflowStep.success": "已完成",
+  /** 「执行中」—— 流程图上那行小字用（见 `WorkflowFlowMini` 的节点副标题）。 */
+  "chatStream.workflowStep.running": "执行中",
   "chatStream.workflowStep.failed": "失败",
   // 「未运行」而不是「跳过」:用户看到的因果是"上游没成,所以这一步没跑"。
   "chatStream.workflowStep.skipped": "未运行",

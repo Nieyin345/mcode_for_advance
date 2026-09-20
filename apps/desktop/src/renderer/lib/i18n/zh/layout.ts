@@ -139,6 +139,10 @@ export const zh = {
   "sideChat.newChat": "新建子会话",
   "sideChat.parentPrefix": "主会话",
   "sideChat.noMainSession": "先打开一个会话再提问",
+  /** 列表最上面那一行 —— **主对话**，只在中间被文件占住时出现（见 `MainSessionRow`）。 */
+  "sideChat.mainChat": "主对话",
+  "sideChat.mainBadge": "主",
+  "sideChat.backToMain": "回到主对话（关掉中间正在看的文件）",
   "sideChat.emptyTitle": "还没有子会话",
   "sideChat.emptyHint": "看不懂主会话输出的某个知识点？在这里提问，主会话照常运行，互不影响。",
   "sideChat.backToList": "返回子会话列表",
