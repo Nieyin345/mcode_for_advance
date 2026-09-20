@@ -189,6 +189,25 @@ console.log("\n三种下场能同时出现");
   eq("失败的正是 nope", res.failed[0]?.name, "nope");
 }
 
+console.log("\n复制之后,list 看得到吗");
+
+{
+  // ★ 这是用户报的那个 bug 的直接探针:**复制过去之后,列表里该看得到它**。
+  //   用户的原话是「复制之后呢,为什么不显示呢」。
+  const res = (await call(IPC.SKILLS_LIST, { projectPath: PROJECT })) as {
+    skills: Array<{ name: string; source: string }>;
+  };
+  const inList = res.skills.filter((s) => s.source === "project").map((s) => s.name).sort();
+  check("★ 项目技能出现在 list 里", inList.length > 0, { inList });
+  check("★ 名字对得上", inList.includes("beta"), { inList });
+  // 而且来源标成 project —— 界面靠它筛出"这一栏显示什么"。
+  eq(
+    "★ 来源标成 project",
+    res.skills.find((s) => s.name === "beta")?.source,
+    "project",
+  );
+}
+
 try {
   rmSync(ROOT, { recursive: true, force: true });
 } catch {

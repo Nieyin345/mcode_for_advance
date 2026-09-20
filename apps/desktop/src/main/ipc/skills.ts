@@ -193,8 +193,15 @@ async function scanSkillsRoot(rootDir: string, source: SkillSource, into: Map<st
     const md = await readTextHead(path.join(real, "SKILL.md"));
     const fm = md ? parseSkillFrontmatter(md) : {};
     const name = fm.name?.trim() || entry.name;
-    // Dedupe by name — first occurrence wins (the caller scans roots in
-    // precedence order into the same map).
+    // ⚠️ **先到的留着,不让后到的覆盖。** 调用方按**优先级从高到低**扫同一个 map
+    // （项目 → 通用库 → 插件），先扫进来的就是该赢的那个。
+    //
+    // 这里从前是无条件的 `into.set(...)`,而注释写的却是"先到的留着" —— 两者不一致
+    // 的后果实测过(2026-09-20):项目技能先扫进来、紧接着被通用库那一遍**同名覆盖**成
+    // `source: "global"`,于是界面上「项目」那一栏**筛不出来**,用户看到的现象是
+    // 「复制之后为什么不显示」。注释写的是意图,`set` 做的是另一回事 —— 这类不一致
+    // 只能靠断言钉住(见 `skill-copy-smoke` 的「复制之后 list 看得到吗」那一段)。
+    if (into.has(name)) continue;
     into.set(name, {
       name,
       description: fm.description?.trim() ?? "",
