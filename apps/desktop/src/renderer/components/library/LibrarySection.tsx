@@ -1844,6 +1844,11 @@ export function LibraryTrashRow() {
     if (!open) {
       const r = rowRef.current?.getBoundingClientRect();
       if (r) setAnchor({ left: r.left, width: r.width, bottom: window.innerHeight - r.top });
+      // **打开即展开**：回收站本身不折叠（用户明说了），所以进来就该看见里面的东西，
+      // 而不是再给一行"点一下才展开"。
+      if (!useLibraryStore.getState().expandedIds[trash.id]) {
+        useLibraryStore.getState().toggleExpanded(trash.id);
+      }
     }
     setOpen((v) => !v);
   };
@@ -1863,10 +1868,11 @@ export function LibraryTrashRow() {
         >
           <IconArchive size={14} className="shrink-0 opacity-70" />
           <span className="min-w-0 flex-1 truncate">{trash.name}</span>
-          <IconChevronRight
-            size={12}
-            className={cn("shrink-0 transition-transform", open ? "-rotate-90" : "rotate-0")}
-          />
+          {/* ⚠️ **不画折叠箭头**（2026-09-21）。用户的原话：「回收站不需要折叠呀，
+              你折叠他干啥」。这一行不是"一坨可折的东西"，它是一个**入口** ——
+              点开是往上弹一层列表（见下面），展开态由那个浮层自己表达（它是浮着的
+              一个窗口，一眼就看得出打开了）。
+              上一版抄了大类的 chevron，那是把"分类树"的语义错搬到了这里。 */}
         </button>
       </div>
 
@@ -1878,8 +1884,10 @@ export function LibraryTrashRow() {
           上面的项目列表挤上去，而那正是用户要摆脱的"跟着上下移动"。 */}
       {open && anchor && (
         <div
-          className="fixed z-[70] flex max-h-[50vh] flex-col overflow-hidden rounded-lg border border-edge bg-surface shadow-xl"
-          style={{ left: anchor.left, width: anchor.width, bottom: anchor.bottom }}
+          // 高度：`70vh`（原来 50vh，用户说"要高一点"）。`overflow-hidden` 在外层
+          // 保圆角，真正的滚动在内层那个 `overflow-y-auto` 上。
+          className="fixed z-[70] flex flex-col overflow-hidden rounded-lg border border-edge bg-surface shadow-xl"
+          style={{ left: anchor.left, width: anchor.width, bottom: anchor.bottom, maxHeight: "70vh", height: "70vh" }}
         >
           <div className="flex shrink-0 items-center justify-between border-b border-edge px-2 py-1">
             <span className="text-[0.7857em] font-medium text-content-muted">{trash.name}</span>

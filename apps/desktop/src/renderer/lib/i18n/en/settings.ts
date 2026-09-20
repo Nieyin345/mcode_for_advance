@@ -757,6 +757,7 @@ export const en = {
   "settings.skills.copyDone": "Copied {n}",
   "settings.skills.copySkipped": "Skipped {n} (already in the project)",
   "settings.skills.copyFailed": "{n} failed to copy",
+  "settings.skills.copyHintWhere": "Go to the {tab} tab, tick the skills you want, then come back and press this button.",
   "settings.skills.copyHint": "After copying, it is decoupled from the library: the project copy can be edited on its own, and library edits will not reach it.",
   "settings.skills.clearSelection": "Clear",
   "settings.skills.nodesEmpty": "No node uses a skill yet.",

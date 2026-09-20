@@ -759,6 +759,15 @@ function LeftBarBase({
           (handled live in onDragOver). Group headers are droppable targets
           (not draggable) so dropping a project on a header moves it there. */}
       <div className="min-h-0 flex-1 overflow-y-auto">
+        {/* ── 折起来之后**项目树整块收掉**（2026-09-21）──
+            ⚠️ 上一版的箭头**只转向、不折内容**：`projectsCollapsed` 只用在那个
+            `IconChevronRight` 上，从来没拿去藏过东西。用户报「项目的折叠不能用」
+            就是这个 —— 点了箭头，列表纹丝不动。
+
+            这一段（置顶项目 + 项目树）就是"项目"那一段的内容，与大类那边
+            `collapsed ? null : (...)` 是同一个做法。 */}
+        {projectsCollapsed ? null : (
+        <>
         {/* Pinned projects — the project-level counterpart of the pinned
             sessions section below: pinned projects leave the flat list /
             their group and live here until unpinned. Rows are full
@@ -902,6 +911,8 @@ function LeftBarBase({
               )}
             </SortableContext>
           </DndContext>
+        )}
+        </>
         )}
 
         {/* 资料库 —— 与「项目」并列的顶层分组,按要求排在项目段**下面**。

@@ -758,6 +758,7 @@ export const zh = {
   "settings.skills.copyDone": "复制了 {n} 个",
   "settings.skills.copySkipped": "跳过了 {n} 个(项目里已有同名的)",
   "settings.skills.copyFailed": "{n} 个没复制过去",
+  "settings.skills.copyHintWhere": "去「{tab}」那一栏,勾上要复制的技能,再回来按这个按钮。",
   "settings.skills.copyHint": "复制过去之后就跟总库脱钩了:项目里那一份可以单独改,改总库不会影响它。",
   "settings.skills.clearSelection": "清空",
   "settings.skills.nodesEmpty": "还没有任何节点用到技能。",

@@ -718,6 +718,7 @@ export function SkillsPanel() {
           }
           onClearSelection={() => setChecked(new Set())}
           onCopied={() => void loadPanelSkills()}
+          onGoToLibrary={() => setView("library")}
         />
       )}
 

@@ -48,6 +48,7 @@ export function ProjectSkillsView({
   onToggleSelect,
   onClearSelection,
   onCopied,
+  onGoToLibrary,
 }: {
   /** **总库那一栏当前勾选的技能名**（源）。 */
   selected: readonly string[];
@@ -57,6 +58,8 @@ export function ProjectSkillsView({
   skills: SkillInfo[];
   loading: boolean;
   onCopied: () => void;
+  /** 切到「总库」那一栏去勾选 —— 底部那句引导可点,省得用户自己找 tab。 */
+  onGoToLibrary: () => void;
 }) {
   const { t } = useI18n();
   const activeProjectId = useSessionStore((s) => s.activeProjectId);
@@ -69,7 +72,17 @@ export function ProjectSkillsView({
   const [busy, setBusy] = useState(false);
 
   const copy = useCallback(async (): Promise<void> => {
-    if (!project || selected.length === 0) return;
+    if (!project) return;
+    // **没勾选时要说一句话,不能静默返回。** 按钮一直可点（见下面那个 ⚠️）,所以
+    // 这条路径是用户真会走到的 —— 默默什么都不做等于"点了没反应"。
+    if (selected.length === 0) {
+      useToastStore.getState().push({
+        kind: "info",
+        title: t("settings.skills.copyNoneSelected"),
+        body: t("settings.skills.copyHintWhere", { tab: t("settings.skills.tabLibrary") }),
+      });
+      return;
+    }
     setBusy(true);
     try {
       const res = await api.skills.copyToProject({
@@ -133,9 +146,12 @@ export function ProjectSkillsView({
         </div>
         <Button
           variant="primary"
-          disabled={busy || selected.length === 0}
+          // ⚠️ **不要 `disabled`。** 原先这里是 `disabled={busy || selected.length === 0}`,
+          // 而"没勾选"恰好是打开这一页时的**默认状态** —— 于是用户看到的是一个
+          // 半透明、点不动的按钮,报告的原话是「根本就没有复制按钮」。
+          // 变灰的按钮什么也没告诉他;点一下给一句话才有用。
+          disabled={busy}
           onClick={() => void copy()}
-          title={selected.length === 0 ? t("settings.skills.copyNoneSelected") : undefined}
         >
           <IconCopy size={13} />
           {selected.length > 0
@@ -180,16 +196,14 @@ export function ProjectSkillsView({
           ))}
       </div>
 
-      {/* 提示：勾选是在「总库」那一栏做的。两栏分属不同的 tab，用户看不到对方，
-          所以要明说去哪儿勾 —— 否则他会盯着这一页找复选框。 */}
-      {selected.length === 0 && !loading && skills.length > 0 && (
-        <p className="px-1 text-[0.7857em] text-content-subtle">
-          {t("settings.skills.copyNoneSelected")} —— {t("settings.skills.tabLibrary")} ({t("settings.skills.selectAll")})
-        </p>
-      )}
-      {selected.length > 0 && (
+      {/* 引导：勾选在「总库」那一栏做,两栏分属不同 tab,用户看不到对方 ——
+          所以要说清去哪儿勾。
+          ⚠️ **不看 `skills.length`。** 原先条件是 `skills.length > 0`,于是"项目里
+          一个技能都还没有"时——也就是最需要这句话的时候——它恰好不显示。
+          要么有勾选（报数量）、要么没勾选（告诉去哪儿勾）,两种状态都给出交代。 */}
+      {selected.length > 0 ? (
         <div className="flex items-center justify-between px-1">
-          <span className="text-[0.7857em] text-content-muted">
+          <span className="text-[0.7857em] font-medium text-content-muted">
             {t("settings.skills.copySelected", { n: selected.length })}
           </span>
           <button
@@ -203,6 +217,20 @@ export function ProjectSkillsView({
             {t("settings.skills.clearSelection")}
           </button>
         </div>
+      ) : (
+        // 可点 —— 点了直接切到总库那一栏去勾。不然用户得自己找到那个 tab。
+        <button
+          type="button"
+          onClick={onGoToLibrary}
+          className={cn(
+            "rounded px-1 py-1 text-left text-[0.8571em] leading-relaxed text-content-muted transition-colors",
+            "hover:bg-surface-hover/60 hover:text-content",
+          )}
+        >
+          <span className="font-medium text-accent">{t("settings.skills.tabLibrary")}</span>
+          {" — "}
+          {t("settings.skills.copyHintWhere", { tab: t("settings.skills.tabLibrary") })}
+        </button>
       )}
     </div>
   );
