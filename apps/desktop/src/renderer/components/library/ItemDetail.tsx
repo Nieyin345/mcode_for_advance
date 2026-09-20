@@ -14,6 +14,7 @@ import type { MessageId } from "@renderer/lib/i18n/core.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
 import { copyText } from "@renderer/lib/clipboard.js";
+import { Dialog } from "@renderer/components/ui/dialog.js";
 import { cn } from "@renderer/lib/cn.js";
 import {
   IconAlertTriangle,
@@ -186,7 +187,7 @@ function CitationBlock({ item }: { item: LibraryItem }) {
  * 用户会以为是关联丢了、回头再挂一次。所以这里把屏蔽原因摆出来 —— 「它存在,只是被
  * 挡了」比"什么都没有"好排查得多。
  */
-function ItemLinks({ item, onChanged }: { item: LibraryItem; onChanged?: () => void }) {
+export function ItemLinks({ item, onChanged }: { item: LibraryItem; onChanged?: () => void }) {
   const { t } = useI18n();
   const [links, setLinks] = useState<LibraryLinkView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -633,5 +634,47 @@ export function ItemDetail({ item, job, pdfState, onDownload, onChanged }: Props
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * **关联管理对话框** —— 把 {@link ItemLinks} 那一块装进一个浮层（2026-09-21）。
+ *
+ * ## 为什么要有它
+ *
+ * 用户要把右栏那个 `library` tab 删掉，并要求关联的入口「**搬到左栏右键**」。
+ * 关联天然是"某一条跟谁关联"，所以入口挂在条目行上是对的；但那一块里有选择器、
+ * 列表、增删——塞进右键菜单不合适，用浮层。
+ *
+ * ⚠️ **内容用的是同一个 `ItemLinks`**，不是另写一份。两处（详情页 / 左栏右键）必须
+ * 长得一样、行为一样，否则改了一边另一边不跟着动。
+ */
+export function ItemLinksDialog({
+  item,
+  onOpenChange,
+  onChanged,
+}: {
+  /** 要管哪一条的关联。`null` = 关着。 */
+  item: LibraryItem | null;
+  onOpenChange: (open: boolean) => void;
+  onChanged?: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <Dialog.Root open={item !== null} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Backdrop />
+        <Dialog.Popup className="w-[520px] max-w-[92vw] p-4">
+          <Dialog.Title>
+            {t("library.links.title")}
+            {item ? ` · ${item.title}` : ""}
+          </Dialog.Title>
+          <div className="mt-2 max-h-[60vh] overflow-y-auto">
+            {item && <ItemLinks item={item} onChanged={onChanged} />}
+          </div>
+          <Dialog.Close />
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }

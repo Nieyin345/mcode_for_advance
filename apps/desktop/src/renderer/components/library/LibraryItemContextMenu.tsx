@@ -46,6 +46,7 @@ import {
   IconBook,
   IconChevronRight,
   IconRefresh,
+  IconLink,
   IconCopy,
   IconDownload,
   IconExternalLink,
@@ -102,6 +103,13 @@ interface Props {
   onConvert: (item: LibraryItem) => void;
   onAdoptMarkdown: (item: LibraryItem) => void;
   onCopyCitation: (item: LibraryItem) => void;
+  /**
+   * 管这一条的**关联**（2026-09-21）。
+   *
+   * 用户要把右栏 `library` tab 删掉，并要求关联的入口「**搬到左栏右键**」。
+   * 关联天然是"某一条跟谁关联" —— 挂在条目行上比放在全局设置里合语义。
+   */
+  onManageLinks: (item: LibraryItem) => void;
 }
 
 /** 面板当前显示哪一步。 */
@@ -118,6 +126,7 @@ export function LibraryItemContextMenu({
   onConvert,
   onAdoptMarkdown,
   onCopyCitation,
+  onManageLinks,
 }: Props) {
   const { t } = useI18n();
   // 虚拟锚点钉在右键的坐标上;菜单退场动画期间冻结在最后的位置(见 useCursorAnchor)
@@ -306,6 +315,18 @@ export function LibraryItemContextMenu({
                   >
                     <IconCopy size={12} className="shrink-0" />
                     {t("library.cite.copy")}
+                  </Menu.Item>
+                )}
+                {item && (
+                  <Menu.Item
+                    onClick={() => {
+                      onManageLinks(item);
+                      onClose();
+                    }}
+                    className={itemClass}
+                  >
+                    <IconLink size={12} className="shrink-0" />
+                    {t("library.links.title")}
                   </Menu.Item>
                 )}
                 <div className="my-1 border-t border-edge/60" />
