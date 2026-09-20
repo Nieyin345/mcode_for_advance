@@ -34,6 +34,7 @@ import {
   ProjectSessionsSchema,
   SessionSearchSchema,
   SessionListNodesSchema,
+  SessionHasNodesSchema,
   BookmarkSearchSchema,
   SessionMessagesSchema,
   SaveMessagesSchema,
@@ -133,6 +134,13 @@ const HANDLERS: Record<string, RpcHandler> = {
   "session:listNodes": (raw) => {
     const input = SessionListNodesSchema.parse(raw);
     return { sessions: SessionRepo.listNodesByParent(input.sessionId) };
+  },
+
+  // 同桌面端那条:一个对话里有没有步骤留下过会话。手机端也看得到那个入口,
+  // 所以这条也得在(共用组件里访问一个 web shim 没有的 RPC 是**同步抛**的)。
+  "session:hasNodes": (raw) => {
+    const input = SessionHasNodesSchema.parse(raw);
+    return { has: SessionRepo.hasNodeSessions(input.sessionId) };
   },
 
   "session:search": (raw) => {    const input = SessionSearchSchema.parse(raw);

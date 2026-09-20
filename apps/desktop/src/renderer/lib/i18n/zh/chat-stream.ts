@@ -143,10 +143,19 @@ export const zh = {
   "chatStream.workflowBoard.legendRunning": "在跑",
   "chatStream.workflowBoard.legendAwaiting": "在等你",
   "chatStream.workflowBoard.legendFailed": "出事了",
-  // ── 接管失败/被取消的那一步 ──
+  // ── 跟某一步说话 ──
   // 三件事:**结束**它(停下整张图)、**跟这一步说**(它接着干)、**跟主对话说**
   // (塞进输入框,用户自己发)。
-  "chatStream.workflowBoard.takeover": "接管这一步",
+  //
+  // **跑成功的那一步也给**。原来只给失败/被取消的,理由是"跑成功的没什么要接管的";
+  // 用户要的却是"三方不断迭代" —— 看到某一步做得不对,当场叫它改,本来就是常态,
+  // 而不是只有出事时才用得上的补救。
+  "chatStream.workflowBoard.takeover": "跟这一步说",
+  // 重启之后看板是空的(现场跟着进程活),而库里那些会话还在。这一格把"哪一步留过
+  // 会话"重新列出来,点进去照样能接着说 —— 没有它,"常驻"只在没关过软件的期间成立。
+  "chatStream.workflowBoard.stepsTitle": "这些步骤留着会话",
+  "chatStream.workflowBoard.stepsHint": "跟哪一步都能接着说 —— 它跑在自己的会话里,重启之后也还在。",
+  "chatStream.workflowBoard.stepsOpen": "点开接着聊",
   "chatStream.workflowBoard.takeoverPlaceholder": "想跟谁说点什么…",
   "chatStream.workflowBoard.takeoverSent": "已送去",
   "chatStream.workflowBoard.takeoverStop": "停下这张图",

@@ -152,10 +152,19 @@ export const en = {
   "chatStream.workflowBoard.legendRunning": "Running",
   "chatStream.workflowBoard.legendAwaiting": "Waiting on you",
   "chatStream.workflowBoard.legendFailed": "Failed",
-  // ── Taking over a failed / cancelled step ──
+  // ── Talking to a step ──
   // Three things: **stop** it (which stops the whole graph), **talk to this step**
   // (it keeps going), **talk to the main chat** (drops into the composer for you to send).
-  "chatStream.workflowBoard.takeover": "Take over this step",
+  //
+  // Offered for a **successful** step too, not just a failed one: iterating on a step
+  // the user just watched is the normal case, not a recovery path.
+  "chatStream.workflowBoard.takeover": "Talk to this step",
+  // The board's live state dies with the process; the node sessions in the DB don't.
+  // This block re-lists the steps that still have one, so "keep talking to that step"
+  // survives a restart.
+  "chatStream.workflowBoard.stepsTitle": "Steps with a session",
+  "chatStream.workflowBoard.stepsHint": "Talk to any of them — each runs in its own session, which outlives a restart.",
+  "chatStream.workflowBoard.stepsOpen": "Open and keep talking",
   "chatStream.workflowBoard.takeoverPlaceholder": "Say something to whoever…",
   "chatStream.workflowBoard.takeoverSent": "Sent",
   "chatStream.workflowBoard.takeoverStop": "Stop this graph",

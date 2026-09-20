@@ -633,6 +633,24 @@ export const SessionRepo = {
     return out;
   },
 
+  /** 这个对话里有没有一格**留下过会话**。
+   *
+   *  看板的一句话答案:有 → "接着说"那条路走得通(哪怕进程重启过、看板是空的);
+   *  没有 → 别摆那个入口(摆一个点开是空的按钮比不摆更让人困惑)。
+   *
+   *  做成 `EXISTS` 而不是"列出全部再判空":调用方问的只是有没有,不需要那几十行。
+   *  口径与 {@link listNodesByParent} **一字不差**(同一个 `kind` 收窄),否则会出现
+   *  "说有"而列出来是空的。 */
+  hasNodeSessions(parentSessionId: string): boolean {
+    const stmt = getDb().prepare(
+      "SELECT 1 FROM sessions WHERE kind = 'node' AND parent_session_id = ? LIMIT 1",
+    );
+    stmt.bind([v(parentSessionId)]);
+    const found = stmt.step();
+    stmt.free();
+    return found;
+  },
+
   /** 这条自动化(`kind='automation'`)的隐藏会话。没有返回 undefined。
    *
    *  每条自动化**只留一个**后台会话:触发器每次 `fire()` 都先来这里取,取不到才建。

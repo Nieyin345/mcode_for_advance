@@ -89,6 +89,8 @@ const api = {
       ipcRenderer.invoke(IPC.SESSION_LIST_ALL, input)) as RpcMap["session.listAll"],
     listNodes: ((input) =>
       ipcRenderer.invoke(IPC.SESSION_LIST_NODES, input)) as RpcMap["session.listNodes"],
+    hasNodes: ((input) =>
+      ipcRenderer.invoke(IPC.SESSION_HAS_NODES, input)) as RpcMap["session.hasNodes"],
   },
   setting: {
     get: ((input) =>

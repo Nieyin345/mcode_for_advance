@@ -14,6 +14,7 @@ import {
   ProjectSessionsSchema,
   SessionListAllSchema,
   SessionListNodesSchema,
+  SessionHasNodesSchema,
   RenameSessionSchema,
   SessionSearchSchema,
   BookmarkSearchSchema,
@@ -290,5 +291,12 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.SESSION_LIST_NODES, (_evt, raw) => {
     const input = SessionListNodesSchema.parse(raw);
     return { sessions: SessionRepo.listNodesByParent(input.sessionId) };
+  });
+
+  // 这个对话里**有没有一格留下过会话** —— 看板那句"重启之后还回得去"的是非题。
+  // 口径与上面那条一字不差(`SessionRepo.hasNodeSessions` 里是同一个 `kind` 收窄)。
+  ipcMain.handle(IPC.SESSION_HAS_NODES, (_evt, raw) => {
+    const input = SessionHasNodesSchema.parse(raw);
+    return { has: SessionRepo.hasNodeSessions(input.sessionId) };
   });
 }

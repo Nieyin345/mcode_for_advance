@@ -414,6 +414,7 @@ const session: Api["session"] = {
   listPinned: () => rpc("session:listPinned"),
   listAll: (input) => rpc("session:listAll", input),
   listNodes: (input) => rpc("session:listNodes", input),
+  hasNodes: (input) => rpc("session:hasNodes", input),
 };
 
 const provider: Api["provider"] = {

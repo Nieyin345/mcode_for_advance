@@ -434,6 +434,16 @@ export const SessionListNodesSchema = z.object({
 });
 export type SessionListNodesInput = z.infer<typeof SessionListNodesSchema>;
 
+/** 这个对话里**有没有一格留下过会话** —— 看板靠它决定摆不摆"接着说"那个入口。
+ *
+ *  为什么要单独一条,而不是让调用方把节点会话列出来自己判空:看板每次打开都要问一遍
+ *  (进程重启后看板是空的,而库里有行),列几十行只为回答一个是非题,且那条路要跨
+ *  IPC 把整行搬过来。 */
+export const SessionHasNodesSchema = z.object({
+  sessionId: z.string(),
+});
+export type SessionHasNodesInput = z.infer<typeof SessionHasNodesSchema>;
+
 /** Cross-project session search by title substring. The unified Ctrl+K search
  *  palette uses this to list threads across the whole workspace (not just the
  *  active project's loaded page). Matches non-archived sessions only. */
