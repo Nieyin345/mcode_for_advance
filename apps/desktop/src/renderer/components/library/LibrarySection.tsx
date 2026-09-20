@@ -75,6 +75,9 @@ import {
 } from "@renderer/lib/icons.js";
 import { attachToCurrentChat } from "@renderer/lib/attachToChat.js";
 import { Dialog } from "@renderer/components/ui/dialog.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
+import { formatCitation } from "@contracts/citation";
+import { copyText } from "@renderer/lib/clipboard.js";
 import {
   HintRow,
   InlineInputRow,
@@ -782,6 +785,64 @@ export function LibrarySection({
    *
    * 与 `removeCollection` 一样,删完要清掉可能悬空的选中态,再重拉列表。
    */
+  /* ── 单条动作（2026-09-21 从右栏 `ItemDetail` 搬来）──
+   *
+   * 用户要把右栏那个 `library` tab 整个删掉，并要求「**全部堆到左栏右键**」。
+   * 这三件是那批里"对单条做事"的部分；它们的实现在主进程没变，只是入口搬了家。
+   *
+   * 反馈一律走 toast：左栏列表里没有"这一条的状态区"，而转换要花几秒到几十秒 ——
+   * 没有反馈的话用户只会以为点了没反应。 */
+
+  /** 转 Markdown（软件自己那套本地抽取）。 */
+  const convertItem = async (item: LibraryItem) => {
+    try {
+      const res = await api.library.convert({ ids: [item.id], force: true });
+      useToastStore.getState().push({
+        // 没有 `success` 这一档（只有 info / warning / error）—— 成功走 info，
+        // 与"转换失败"的 error 在观感上分得开就够了。
+        kind: res.converted > 0 ? "info" : "error",
+        title: res.converted > 0 ? t("library.convert.done") : (res.failed[0]?.error ?? t("library.convert.failed")),
+        body: item.title,
+      });
+      if (res.converted > 0) await refreshItems();
+    } catch (err) {
+      useToastStore.getState().push({ kind: "error", title: t("library.convert.failed"), body: (err as Error).message });
+    }
+  };
+
+  /** 挂上用户已经转录好的 md（不重新转，见 `ItemDetail` 里那段说明）。 */
+  const adoptMarkdownFor = async (item: LibraryItem) => {
+    const picked = await api.pickFiles({ filters: [{ name: "Markdown", extensions: ["md", "markdown"] }] });
+    const path = picked.paths[0];
+    if (!path) return;
+    try {
+      const res = await api.library.adoptMarkdown({ id: item.id, path });
+      useToastStore.getState().push({
+        kind: res.ok ? "info" : "error",
+        title: res.ok ? t("library.convert.adoptDone", { n: res.imageCount }) : (res.error ?? t("library.convert.failed")),
+      });
+      if (res.ok) await refreshItems();
+    } catch (err) {
+      useToastStore.getState().push({ kind: "error", title: t("library.convert.failed"), body: (err as Error).message });
+    }
+  };
+
+  /**
+   * 把这一条的引用复制到剪贴板。
+   *
+   * 用**默认格式**（`formatCitation` 的第二参数不给就走它自己的默认）——右键是一个
+   * 一步到位的动作，不该在这儿再弹一个"选哪种格式"。要换格式的去设置（引用格式
+   * 是全局偏好，本来也不该按条选）。
+   */
+  const copyCitationOf = async (item: LibraryItem) => {
+    const ok = await copyText(formatCitation(item, "apa"));
+    useToastStore.getState().push({
+      kind: ok ? "info" : "error",
+      title: ok ? t("library.cite.copy") : t("library.convert.failed"),
+      body: item.title,
+    });
+  };
+
   const deleteForever = async (item: LibraryItem) => {
     // 先摆清单再删（见 `DeleteItemsDialog`）—— 原先这里是 `window.confirm` 一句
     // "确定吗"，而这条操作**不可逆**、还会连带它挂出去的关联与那一包转录产物。
@@ -1428,6 +1489,9 @@ export function LibrarySection({
         onRename={startItemRename}
         onDeleteForever={(item) => void deleteForever(item)}
         onDownload={(item) => void downloadOne(item)}
+        onConvert={(item) => void convertItem(item)}
+        onAdoptMarkdown={(item) => void adoptMarkdownFor(item)}
+        onCopyCitation={(item) => void copyCitationOf(item)}
       />
 
       {/* 分类行的右键菜单:新建子集合 / 新建笔记(仅笔记库)/ 移动到 / 重命名 / 删除 */}

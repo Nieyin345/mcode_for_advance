@@ -45,6 +45,8 @@ import {
   IconArrowsExchange,
   IconBook,
   IconChevronRight,
+  IconRefresh,
+  IconCopy,
   IconDownload,
   IconExternalLink,
   IconFileText,
@@ -91,6 +93,15 @@ interface Props {
    * 实现(见 `library/downloader.ts`),所以这里只是把它接到菜单上。
    */
   onDownload: (item: LibraryItem) => void;
+  /**
+   * 转 Markdown / 采纳本地 md / 复制引用 —— 2026-09-21 从右栏 `ItemDetail` 搬过来的。
+   *
+   * 用户要把右栏那个 `library` tab 整个删掉，并要求「**全部堆到左栏右键**」。所以
+   * 详情页里那几件"对单条做事"的动作得先在右键里有去处，右栏才删得掉。
+   */
+  onConvert: (item: LibraryItem) => void;
+  onAdoptMarkdown: (item: LibraryItem) => void;
+  onCopyCitation: (item: LibraryItem) => void;
 }
 
 /** 面板当前显示哪一步。 */
@@ -104,6 +115,9 @@ export function LibraryItemContextMenu({
   onRename,
   onDeleteForever,
   onDownload,
+  onConvert,
+  onAdoptMarkdown,
+  onCopyCitation,
 }: Props) {
   const { t } = useI18n();
   // 虚拟锚点钉在右键的坐标上;菜单退场动画期间冻结在最后的位置(见 useCursorAnchor)
@@ -252,6 +266,46 @@ export function LibraryItemContextMenu({
                   >
                     <IconDownload size={12} className="shrink-0" />
                     {t("library.action.download")}
+                  </Menu.Item>
+                )}
+
+                {/* ── 下面三项 2026-09-21 从右栏 `ItemDetail` 搬来 ──
+                    用户要把右栏那个 tab 删掉并要求「全部堆到左栏右键」，这是那批动作
+                    的新去处。**只在有本体文件时给**：没有 PDF 的笔记既转不了也引不出。 */}
+                {item && item.kind !== "note" && item.pdfPath && (
+                  <Menu.Item
+                    onClick={() => {
+                      onConvert(item);
+                      onClose();
+                    }}
+                    className={itemClass}
+                  >
+                    <IconRefresh size={12} className="shrink-0" />
+                    {item.mdPath ? t("library.convert.redo") : t("library.convert.run")}
+                  </Menu.Item>
+                )}
+                {item && item.kind !== "note" && item.pdfPath && (
+                  <Menu.Item
+                    onClick={() => {
+                      onAdoptMarkdown(item);
+                      onClose();
+                    }}
+                    className={itemClass}
+                  >
+                    <IconFileText size={12} className="shrink-0" />
+                    {t("library.convert.adopt")}
+                  </Menu.Item>
+                )}
+                {item && (
+                  <Menu.Item
+                    onClick={() => {
+                      onCopyCitation(item);
+                      onClose();
+                    }}
+                    className={itemClass}
+                  >
+                    <IconCopy size={12} className="shrink-0" />
+                    {t("library.cite.copy")}
                   </Menu.Item>
                 )}
                 <div className="my-1 border-t border-edge/60" />
