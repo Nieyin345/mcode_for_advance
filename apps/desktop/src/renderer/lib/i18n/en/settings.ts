@@ -744,6 +744,8 @@ export const en = {
   "settings.gestures.footer": "Note: gestures are unavailable over the title-bar drag area and the embedded browser; the terminal's right-click (copy/paste) is unaffected. Each gesture binds exactly one command; conflicts are detected while recording. A press only becomes a gesture after dragging past a threshold, so small jitter can't misfire.",
 
   // ── SkillsPanel ──
+  "settings.skills.removeFromProject": "Remove from project",
+  "settings.skills.removeFromProjectDesc": "Delete \"{name}\" from this project? This removes the copy under <project>/.claude/skills/ — the one in the library stays. If it was committed to git, recover it from there.",
   "settings.skills.presets": "Presets",
   "settings.skills.presetsHint": "For \"projects of this kind default to these skills\". A preset is just a list; files are taken from the library when you use it.",
   "settings.skills.presetNew": "New preset",

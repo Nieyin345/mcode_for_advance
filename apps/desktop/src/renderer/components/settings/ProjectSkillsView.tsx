@@ -31,8 +31,8 @@ import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
-import { Button } from "@renderer/components/ui/button.js";
-import { IconCopy, IconSparkles, IconFolderOpen } from "@renderer/lib/icons.js";
+import { Button, ConfirmDialog } from "@renderer/components/ui/index.js";
+import { IconCopy, IconSparkles, IconFolderOpen, IconTrash } from "@renderer/lib/icons.js";
 
 /** 一次复制的结果，用来在界面上如实回报三种下场（成了 / 跳过 / 失败）。 */
 interface CopyOutcome {
@@ -70,6 +70,8 @@ export function ProjectSkillsView({
   );
 
   const [busy, setBusy] = useState(false);
+  /** 待确认删除的项目技能名（null = 没有）。 */
+  const [pendingRemove, setPendingRemove] = useState<string | null>(null);
 
   const copy = useCallback(async (): Promise<void> => {
     if (!project) return;
@@ -183,7 +185,7 @@ export function ProjectSkillsView({
           skills.map((s) => (
             <div
               key={s.name}
-              className="flex items-start gap-2 border-b border-edge/60 px-3 py-2 last:border-b-0"
+              className="group flex items-start gap-2 border-b border-edge/60 px-3 py-2 last:border-b-0"
             >
               <IconSparkles size={14} className="mt-0.5 shrink-0 text-accent" />
               <div className="min-w-0 flex-1">
@@ -192,6 +194,16 @@ export function ProjectSkillsView({
                   {s.description || t("settings.skills.noDesc")}
                 </div>
               </div>
+              {/* 删除 —— 删的是**项目目录里的文件**（`<项目>/.claude/skills/<名字>/`），
+                  不是总库里那份。确认框里要把这件事说清楚，否则用户会以为连总库一起删了。 */}
+              <button
+                type="button"
+                title={t("settings.skills.removeFromProject")}
+                onClick={() => setPendingRemove(s.name)}
+                className="mt-0.5 shrink-0 rounded p-1 text-content-subtle/50 opacity-0 transition-all hover:bg-danger/10 hover:text-danger focus:opacity-100 group-hover:opacity-100"
+              >
+                <IconTrash size={12} />
+              </button>
             </div>
           ))}
       </div>
@@ -232,6 +244,36 @@ export function ProjectSkillsView({
           {t("settings.skills.copyHintWhere", { tab: t("settings.skills.tabLibrary") })}
         </button>
       )}
+
+      <ConfirmDialog
+        open={pendingRemove != null}
+        title={t("settings.skills.removeFromProject")}
+        danger
+        description={t("settings.skills.removeFromProjectDesc", { name: pendingRemove ?? "" })}
+        confirmText={t("common.delete")}
+        onOpenChange={(o) => {
+          if (!o) setPendingRemove(null);
+        }}
+        onConfirm={() => {
+          const name = pendingRemove;
+          setPendingRemove(null);
+          if (!name || !project) return;
+          void (async () => {
+            try {
+              const res = await api.skills.delete({ source: "project", projectPath: project.path, name });
+              if (!res.ok) {
+                useToastStore.getState().push({ kind: "error", title: res.error ?? "" });
+              }
+              onCopied();
+            } catch (err) {
+              useToastStore.getState().push({
+                kind: "error",
+                title: err instanceof Error ? err.message : String(err),
+              });
+            }
+          })();
+        }}
+      />
     </div>
   );
 }

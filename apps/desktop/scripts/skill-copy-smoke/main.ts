@@ -264,6 +264,33 @@ console.log("\n跨项目总览");
   );
 }
 
+console.log("\n从项目移除技能");
+
+{
+  // ★ 删项目技能删的是**项目目录里那份**,总库里那份必须原封不动 ——
+  //   搞反了的后果是"我从项目里移除一个,结果总库里也没了",而那是不可逆的。
+  const before = existsSync(join(SKILLS_ROOT, "beta", "SKILL.md"));
+  check("前提:总库里有 beta", before);
+
+  const del = (await call(IPC.SKILLS_DELETE, {
+    source: "project",
+    projectPath: PROJECT,
+    name: "beta",
+  })) as { ok: boolean; error?: string };
+  check("删项目里的 beta ok", del.ok, del.error);
+
+  check("★ 项目里那份没了", !existsSync(join(PROJECT_SKILLS, "beta")));
+  check("★ 总库里那份**还在**", existsSync(join(SKILLS_ROOT, "beta", "SKILL.md")));
+
+  // 删一个项目里没有的 —— 不该崩，如实回 ok:false。
+  const missing = (await call(IPC.SKILLS_DELETE, {
+    source: "project",
+    projectPath: PROJECT,
+    name: "never-was-there",
+  })) as { ok: boolean };
+  check("删不存在的 → ok:false(不是崩)", missing.ok === false);
+}
+
 try {
   rmSync(ROOT, { recursive: true, force: true });
 } catch {

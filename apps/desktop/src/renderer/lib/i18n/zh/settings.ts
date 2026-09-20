@@ -745,6 +745,8 @@ export const zh = {
   "settings.shortcuts.reset": "恢复默认",
 
   // ── SkillsPanel ──
+  "settings.skills.removeFromProject": "从项目移除",
+  "settings.skills.removeFromProjectDesc": "删除项目里的「{name}」?删的是项目目录 <项目>/.claude/skills/ 下的那一份文件 —— 总库里的还在。如果它已经被 git 提交过,要用 git 恢复。",
   "settings.skills.presets": "技能预设",
   "settings.skills.presetsHint": "给「这类项目默认装这几个技能」用。预设只是清单,用的时候才去总库取。",
   "settings.skills.presetNew": "新建预设",
