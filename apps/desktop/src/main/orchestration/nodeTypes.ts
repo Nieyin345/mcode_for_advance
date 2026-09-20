@@ -967,7 +967,7 @@ function loadDir(dir: string, source: NodeTypeSource, from: string): NodeTypeCat
       });
       continue;
     }
-    out.entries.push({ id: result.manifest.id, source, from, manifest: result.manifest });
+    out.entries.push({ id: result.manifest.id, source, from, manifest: result.manifest, manifestDir: dir });
   }
   return out;
 }

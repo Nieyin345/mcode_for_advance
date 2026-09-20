@@ -699,6 +699,9 @@ async function runCmdChain(
     async manifestOf(type) {
       return CMD_TYPES.get(type);
     },
+    async manifestDirOf() {
+      return undefined;
+    },
     async execute(n, _m, input) {
       if (n.id === "B") {
         bPrompt = input.prompt;
@@ -839,6 +842,9 @@ await runWorkflow({
   ports: {
     async manifestOf(type) {
       return CMD_TYPES.get(type);
+    },
+    async manifestDirOf() {
+      return undefined;
     },
     async execute(_n, _m, input) {
       return runCommandNode(

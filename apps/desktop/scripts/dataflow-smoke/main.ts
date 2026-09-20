@@ -28,6 +28,7 @@ const doc: WorkflowDoc = {
 const seen: Record<string, unknown> = {};
 const ports: RunPorts = {
   async manifestOf(typeId) { return typeId === CODE.id ? CODE : undefined; },
+  async manifestDirOf() { return undefined; },
   contextLines() { return []; },
   async choose() { return { edgeId: "" }; },
   async execute(target, _manifest, input) {

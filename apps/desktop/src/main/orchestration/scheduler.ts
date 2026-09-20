@@ -187,6 +187,15 @@ export interface RunPorts {
   /** 拿一个节点类型的清单。没有 = 这个类型没装(别人分享来的图会走到这里)。 */
   manifestOf(typeId: string): Promise<NodeTypeManifest | undefined>;
   /**
+   * 这个类型的**清单文件所在目录**。只有第三方自带脚本的节点要用它 ——
+   * `runner.entry` 是相对清单目录写的(见 `entryRunner.ts`)。内置类型没有文件,
+   * 因此返回 `undefined` 是正常的。
+   *
+   * 单独一个端口而不是塞进 `manifestOf` 的返回:后者被一大堆地方按"只要清单"用着,
+   * 换它的形状要动所有人。
+   */
+  manifestDirOf(typeId: string): Promise<string | undefined>;
+  /**
    * 这一步要继承的上下文 —— 从发起这次运行的那条消息里,挑出这几类的资料
    * (见 `@contracts/nodeType` 的 `NODE_CONTEXT_PARAM_KEY`)。
    *

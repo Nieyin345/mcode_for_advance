@@ -1231,15 +1231,14 @@ export function isRunnerImplemented(kind: NodeRunnerKind): boolean {
 /**
  * 这个清单**真的跑得起来吗** —— 比 {@link isRunnerImplemented} 更细的一层。
  *
- * `command` 有两种形状:命令来自**节点参数**的(内置)已实现;命令来自**清单自带
- * 脚本**的(`entry` 填了,第三方插件那种)只定了形状、还没实现。只看 kind 的话,
- * 第三方的 command 节点会在画布上标成"能跑"、真跑起来却失败 —— 两种说法必须
- * 收口成一个函数,调度器的拒绝与渲染端的"跑不了"徽标读同一份答案。
+ * 现在两种 `command` 形状**都能跑**:命令来自节点参数的那种,以及命令来自**清单自带
+ * 脚本**的那种(`entry` 填了,第三方插件;见 `entryRunner.ts`)。所以这个函数眼下就
+ * 是 {@link isRunnerImplemented} 的别名 —— 留着它是因为"kind 实现了"和"这个具体清单
+ * 跑得起来"是**两个层次的问题**,将来还会分家(比如某天某个 kind 依赖一个可选组件)。
+ * 调度器的拒绝与渲染端的"跑不了"徽标读的是**这一份答案**,不是各自去问 kind。
  */
 export function isNodeRunnable(manifest: NodeTypeManifest): boolean {
-  if (!isRunnerImplemented(manifest.runner.kind)) return false;
-  if (manifest.runner.kind === "command" && manifest.runner.entry !== undefined) return false;
-  return true;
+  return isRunnerImplemented(manifest.runner.kind);
 }
 
 /**
@@ -1315,6 +1314,14 @@ export interface NodeTypeEntry {
   /** 来源的可读标识:内置类型是 `"mcode"`,插件是插件名,本地是相对数据根的路径。 */
   from: string;
   manifest: NodeTypeManifest;
+  /**
+   * **清单文件所在目录的绝对路径。** 只有 `runner.entry` 要用它 —— 那一支跑的是
+   * 清单目录里自带的脚本,而 `entry` 是**相对清单目录**写的(见 {@link NodeRunnerSchema}
+   * 的 `entry` 说明)。没有它,执行器只知道"要跑 ./count.py",不知道 `./` 是哪儿。
+   *
+   * 内置类型缺席(它们没有文件,`runner.entry` 对内置也从来用不上)。
+   */
+  manifestDir?: string;
 }
 
 export const NODE_TYPE_SOURCES = ["builtin", "plugin", "local"] as const;

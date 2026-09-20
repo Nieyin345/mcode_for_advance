@@ -219,7 +219,8 @@ const AGENT_ENTRY: NodeTypeEntry = {
   manifest: AGENT_MANIFEST,
 };
 
-/** A third-party type that is drawn but cannot run — the `command` runner. */
+/** 第三方带来的**命令**节点。它 2026-09-20 起**能跑了**(`runner.entry` 那一支实现了),
+ *  所以它不再是"画得出来跑不了"的那一张 —— 那个角色交给下面的 {@link DEAD_MANIFEST}。 */
 const COMMAND_MANIFEST: NodeTypeManifest = {
   id: "demo.parse",
   manifestVersion: 1,
@@ -244,6 +245,28 @@ const COMMAND_ENTRY: NodeTypeEntry = {
   source: "plugin",
   from: "demo-plugin",
   manifest: COMMAND_MANIFEST,
+};
+
+/**
+ * **真正跑不了**的那一种 —— 执行方式压根没实现。
+ *
+ * `runner.entry` 实现之后,第三方 command 从"跑不了"里出去了(那是好事),但卡片上
+ * "这一格是颗地雷"那个视觉档位**还得有人来验**。所以这里留一个未实现的 kind 当样本:
+ * `isRunnerImplemented` 认不出它 → `isNodeRunnable` 为 false → 卡片该标 danger。
+ */
+const DEAD_MANIFEST: NodeTypeManifest = {
+  id: "demo.dead",
+  manifestVersion: 1,
+  name: "没实现的那种",
+  runner: { kind: "notimplemented" as never },
+  capability: "read",
+  params: [],
+};
+const DEAD_ENTRY: NodeTypeEntry = {
+  id: DEAD_MANIFEST.id,
+  source: "plugin",
+  from: "demo-plugin",
+  manifest: DEAD_MANIFEST,
 };
 
 /** 岔路口。**没有参数** —— 它的选项就是它的出边(见 `WorkflowEdge` 的 label/note)。 */
@@ -1810,7 +1833,9 @@ console.log("\ninsertSnippet(光标这件事全是边界情况)");
   eq("选区反了 → 当成一个点", insertSnippet("abc", 3, 1, "X").value, "abcX");
 }
 check("boolean 参数渲染成开关", thirdPanel.includes(`aria-label="详细"`));
-check("跑不了的执行方式直接说出来", thirdPanel.includes("还没实现"));
+// `runner.entry`(清单自带脚本)现在**跑得起来**了(2026-09-20 实现),所以这张卡
+// 不再标"跑不了" —— 与 `isNodeRunnable` 同一条判据(两处必须一致)。
+check("entry 型 command 现在可跑(卡片不标跑不了)", !thirdPanel.includes("还没实现"));
 // 来源说的是**哪一个插件**,不是"插件"这个类别 —— 排查"这个类型哪来的"时,名字才是答案。
 check("来源说清是哪个插件带来的", thirdPanel.includes("demo-plugin"));
 
@@ -1933,11 +1958,19 @@ check("卡片:参数没填齐会标出来", badCard.includes("参数没填完"))
 const ghostCard = renderCard(node("n3", 0, 0, "ghost.type"), undefined, "zh");
 check("卡片:类型没装会标出来", ghostCard.includes("类型未安装"));
 const deadCard = renderCard(
-  { ...node("n4", 0, 0, COMMAND_MANIFEST.id), params: { target: "a" } },
-  COMMAND_ENTRY,
+  { ...node("n4", 0, 0, DEAD_MANIFEST.id), params: {} },
+  DEAD_ENTRY,
   "zh",
 );
 check("卡片:执行方式没实现会标出来", deadCard.includes("这个执行方式跑不了"));
+// 反面:第三方 command **不再**标跑不了(2026-09-20 实现了 `runner.entry`)——
+// 两处判据(`isNodeRunnable`)必须给出同一个答案。
+const thirdPartyCommandCard = renderCard(
+  { ...node("n4b", 0, 0, COMMAND_MANIFEST.id), params: { target: "a" } },
+  COMMAND_ENTRY,
+  "zh",
+);
+check("卡片:第三方 command 不再标跑不了", !thirdPartyCommandCard.includes("这个执行方式跑不了"));
 
 // 四种执行方式在画布上**长得不一样**(见 `WorkflowNodeCard` 的 `KIND_LOOK`)—— 左边那道
 // 竖条的颜色就是"一眼认得出这是哪一种"的那处。这条断言是那个需求的守门人:哪天有人把
@@ -2177,16 +2210,17 @@ check("command 也是(命令来自节点参数的那种)", isRunnerImplemented("
 // (决策节点收编成分支的 `decider:"model"`),拿它钉"没登记的一律不实现"正合适。
 check("没登记过的执行方式一律 false", !(isRunnerImplemented as (k: string) => boolean)("decide"));
 
-// `isNodeRunnable` 是更细的那层:参数型 command 跑得起来,清单自带脚本(entry)的
-// command 只定了形状、还没实现 —— 两种说法必须收口成一个函数(调度器的拒绝与渲染端
-// 的"跑不了"徽标读同一份答案)。
+// `isNodeRunnable` 原先有一条补刀:清单自带脚本(`entry`)的 command 判不可跑。
+// **2026-09-20 那一支实现了**(见 `entryRunner.ts`),补刀撤销 —— 两种 command 形状
+// 现在都能跑。这个函数仍然留着,因为"kind 实现了"和"这个具体清单跑得起来"是两个
+// 层次的问题,将来还会分家。
 check(
   "参数型 command 跑得起来",
   isNodeRunnable({ runner: { kind: "command" } } as NodeTypeManifest),
 );
 check(
-  "entry 型 command 还跑不起来",
-  !isNodeRunnable({ runner: { kind: "command", entry: "run.sh" } } as NodeTypeManifest),
+  "★ entry 型 command 也跑得起来了",
+  isNodeRunnable({ runner: { kind: "command", entry: "run.sh" } } as NodeTypeManifest),
 );
 check("真清单里的引擎参数是 ref: providers", AGENT_MANIFEST.params.some((p) => p.from === "providers"));
 // 清单校验:ref 必须有 from,非 ref 不许有 from —— 新来源不能绕过这一条。

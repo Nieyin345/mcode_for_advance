@@ -713,6 +713,18 @@ export async function startWorkflowRun(args: {
 
   /** 这次运行用到的节点类型清单。懒加载一次(见 `manifestOf`)。 */
   let manifests: Map<string, NodeTypeManifest> | null = null;
+  /** 节点类型 id → 清单文件所在目录。只有第三方自带脚本的节点要用(见 `manifestOf`)。 */
+  let manifestDirs: Map<string, string> | null = null;
+  /** 把两张表一次建起来。`manifestOf` 与 `manifestDirOf` 共用 —— 各读一遍就是同一批
+   *  文件读两遍(见 `manifestOf` 那段"按节点调 = 读 N 遍"的注释)。 */
+  const ensureCatalogs = async (): Promise<void> => {
+    if (manifests !== null) return;
+    const catalogs = await loadNodeTypes();
+    manifests = new Map(catalogs.entries.map((e) => [e.id, e.manifest]));
+    manifestDirs = new Map(
+      catalogs.entries.flatMap((e) => (e.manifestDir !== undefined ? [[e.id, e.manifestDir] as const] : [])),
+    );
+  };
 
   // 每个节点这一轮的产出。**主进程里没有别的地方留着它** —— 消息是渲染端持久化的
   // (main 只存会话行上的几个 blob),所以"下游要的上游结果"只能在这里边听边攒。
@@ -1242,8 +1254,14 @@ export async function startWorkflowRun(args: {
     // 目录、读并解析每一个清单文件,而它底下还会把每个启用的插件的技能/命令/agent
     // 文件再读一遍)。按节点调 = 同一批文件读 N 遍,而这里 N 就是图的大小。
     manifestOf: async (typeId) => {
-      manifests ??= new Map((await loadNodeTypes()).entries.map((e) => [e.id, e.manifest]));
-      return manifests.get(typeId);
+      await ensureCatalogs();
+      return manifests!.get(typeId);
+    },
+
+    /** 清单目录 —— 第三方自带脚本的节点拿它当 `entry` 的解析基准。 */
+    manifestDirOf: async (typeId) => {
+      await ensureCatalogs();
+      return manifestDirs!.get(typeId);
     },
 
     // 这一步要继承的上下文:**从这次运行的提示词里筛**,不查库、不生成新清单 ——
@@ -1268,6 +1286,10 @@ export async function startWorkflowRun(args: {
       // 输入 builder 没把 scope 里的 trigger 带进 data,合同也不破。`input` 是
       // buildNodeInput 现建的对象,改它不影响别人。
       if (entry?.payload !== undefined) input.data.trigger = entry.payload;
+      // `manifestDirOf` 要等 `manifestOf` 先跑过(它建那两张表)—— 而上面 `input`
+      // 正是 `buildNodeInput` 的产物,它内部已经调过 `manifestOf` 了。这里再调一次
+      // 是幂等的(表已经在了),不用额外加顺序假设。
+      const dir = await ports.manifestDirOf(node.type);
       return runEngine.execute({
         node,
         manifest,
@@ -1275,6 +1297,7 @@ export async function startWorkflowRun(args: {
         cwd,
         metadata: { runId, sessionId: session.id, nodeId: node.id },
         emitProgress: (progress) => emitNodeProgress(node, manifest, progress),
+        ...(dir !== undefined ? { manifestDir: dir } : {}),
       });
     },
 

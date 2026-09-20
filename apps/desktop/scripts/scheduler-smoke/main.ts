@@ -327,6 +327,9 @@ function makePorts(opts: {
       if (opts.manifestThrows?.(typeId)) throw new Error(`清单读不出来:${typeId}`);
       return manifests[typeId];
     },
+    async manifestDirOf() {
+      return undefined;
+    },
     // **记下问过什么**:调度器有没有真的按节点的参数去要上下文,只看提示词的最终
     // 样子是看不出来的(节点没选任何类目时提示词里同样不该有那一段)。
     contextLines(kinds) {
@@ -644,7 +647,14 @@ console.log("\n前置检查(三种都明确失败,而且往下传播)");
 }
 
 {
-  // 执行方式没实现(`command`)—— 形状在规范里,但调度器不认。
+  // `runner.entry`(清单自带脚本)**现在跑得起来了** —— 2026-09-20 实现。
+  //
+  // 这一条原先断的是"未实现的执行方式 → failed"(那时 `isNodeRunnable` 见到 `entry`
+  // 直接判不可跑)。实现之后那个限制没了,所以断言改成钉**新行为**:认可它可跑、
+  // 真的把这一步派发下去(而不是像从前那样连执行都不执行)。
+  //
+  // ⚠️ 脚本本身跑不跑得成是 `entry-runner-smoke` 的事(那边拿假 spawn 钉路径解析
+  // 与防逃逸)。这里只钉**调度器认不认它**。
   const h = makePorts();
   await runWorkflow({
     doc: docOf([node("A", SHELL.id)], []),
@@ -652,13 +662,7 @@ console.log("\n前置检查(三种都明确失败,而且往下传播)");
     ports: h.ports,
     signal: controller().signal,
   });
-  eq("未实现的执行方式 → failed", outcomeOf(h, "A")?.status, "failed");
-  check(
-    "原因点名是哪种执行方式",
-    (outcomeOf(h, "A")?.error ?? "").includes("command"),
-    outcomeOf(h, "A")?.error,
-  );
-  check("没有真的去执行", h.calls.length === 0);
+  check("entry 型 command 现在可跑了(不再判不可跑)", h.executed().includes("A"), h.executed());
 }
 
 {

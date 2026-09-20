@@ -191,6 +191,10 @@ function makePorts(opts: {
     async manifestOf(typeId) {
       return manifests[typeId];
     },
+    // 这些用例里没有第三方自带脚本的节点,清单目录一律缺席。
+    async manifestDirOf() {
+      return undefined;
+    },
     contextLines() {
       return [];
     },
