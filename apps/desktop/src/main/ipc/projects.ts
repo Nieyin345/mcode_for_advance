@@ -13,6 +13,7 @@ import {
   PinSessionSchema,
   ProjectSessionsSchema,
   SessionListAllSchema,
+  SessionListNodesSchema,
   RenameSessionSchema,
   SessionSearchSchema,
   BookmarkSearchSchema,
@@ -279,5 +280,15 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
     const total = SessionRepo.countAll(scope);
     const hasMore = offset + sessions.length < total;
     return { sessions, hasMore, total };
+  });
+
+  // 一个对话里**跑过的工作流步骤**各自的会话("哪一步有会话、它叫什么")。
+  //
+  // 只读、只按 `parent_session_id` 收口 —— 这是节点会话**唯一**会被列出来的地方
+  // (别的查询一律钉 `kind = 'chat'`,所以节点会话不会漏进左边栏)。分页没必要:
+  // 一张图是几十格,不是几千。
+  ipcMain.handle(IPC.SESSION_LIST_NODES, (_evt, raw) => {
+    const input = SessionListNodesSchema.parse(raw);
+    return { sessions: SessionRepo.listNodesByParent(input.sessionId) };
   });
 }

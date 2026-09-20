@@ -787,6 +787,7 @@ console.log("\n会话 · 自动化会话的 kind 归一");
     claudeSessionId: null,
     kind,
     parentSessionId: null,
+    nodeId: null,
     title: "冒烟会话",
     status: "idle",
     model: "",

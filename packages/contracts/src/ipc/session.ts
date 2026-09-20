@@ -420,6 +420,20 @@ export const SessionListAllSchema = z.object({
 });
 export type SessionListAllInput = z.infer<typeof SessionListAllSchema>;
 
+/** The node sessions of one conversation — one row per graph step that has ever
+ *  run, newest-touched first.
+ *
+ *  Deliberately scoped to a single conversation rather than cross-project: a
+ *  node session is *how you get back to a step of one graph*, so the caller
+ *  always has the conversation in hand. There is no paging — a graph has tens
+ *  of steps, not thousands. */
+export const SessionListNodesSchema = z.object({
+  /** The conversation whose graph spawned them (they hang off it as
+   *  `parentSessionId`). */
+  sessionId: z.string(),
+});
+export type SessionListNodesInput = z.infer<typeof SessionListNodesSchema>;
+
 /** Cross-project session search by title substring. The unified Ctrl+K search
  *  palette uses this to list threads across the whole workspace (not just the
  *  active project's loaded page). Matches non-archived sessions only. */

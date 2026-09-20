@@ -59,6 +59,7 @@ function mkSession(id: string, over: Partial<Session> = {}): Session {
     claudeSessionId: null,
     kind: "chat",
     parentSessionId: null,
+    nodeId: null,
     title: id,
     status: "idle",
     model: "default",

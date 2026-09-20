@@ -150,6 +150,7 @@ function sessionOf(id: string, kind: Session["kind"]): Session {
     claudeSessionId: null,
     kind,
     parentSessionId: null,
+    nodeId: null,
     title: "冒烟会话",
     status: "idle",
     model: "",

@@ -65,6 +65,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     claudeSessionId: "cli-source",
     kind: "chat",
     parentSessionId: null,
+    nodeId: null,
     title: "引言怎么写",
     status: "idle",
     model: "sonnet",

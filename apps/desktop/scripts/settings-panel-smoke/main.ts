@@ -211,6 +211,7 @@ function sessionOf(id: string, over: Partial<Session> = {}): Session {
     claudeSessionId: null,
     kind: "chat",
     parentSessionId: null,
+    nodeId: null,
     title: "冒烟会话",
     status: "idle",
     model: "default",

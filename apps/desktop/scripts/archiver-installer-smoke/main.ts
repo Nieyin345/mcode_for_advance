@@ -120,6 +120,7 @@ function mkSession(
     claudeSessionId: null,
     kind: over.kind ?? "chat",
     parentSessionId: null,
+    nodeId: null,
     title: `smoke ${id}`,
     status: over.status ?? "idle",
     model: "",

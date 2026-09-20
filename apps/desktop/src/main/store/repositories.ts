@@ -610,6 +610,29 @@ export const SessionRepo = {
     return out;
   },
 
+  /** 一个对话里**跑过的每一步**各自的会话(`kind='node'`),最近碰过的在前。
+   *
+   *  这是节点会话**唯一**会被列出来的地方 —— 别的查询一律钉 `kind = 'chat'`(左边栏
+   *  不该出现图上的节点),所以"列得出来"和"不漏进列表"两件事不冲突,靠的就是这里
+   *  显式收口。
+   *
+   *  按 `updated_at` 排:用户最可能想回去说话的那一步,是他最近碰过的。
+   *  不排 `created_at` —— 图上的先后顺序在**图**里,不在这张表里,拿建行时间冒充
+   *  执行顺序会误导(改了图、重跑过之后尤其明显)。
+   *
+   *  没有分页:一张图是几十格,不是几千。 */
+  listNodesByParent(parentSessionId: string): Session[] {
+    const db = getDb();
+    const stmt = db.prepare(
+      "SELECT * FROM sessions WHERE kind = 'node' AND parent_session_id = ? ORDER BY updated_at DESC, created_at DESC",
+    );
+    stmt.bind([v(parentSessionId)]);
+    const out: Session[] = [];
+    while (stmt.step()) out.push(rowToSession(stmt.getAsObject() as unknown as SessionRow));
+    stmt.free();
+    return out;
+  },
+
   /** 这条自动化(`kind='automation'`)的隐藏会话。没有返回 undefined。
    *
    *  每条自动化**只留一个**后台会话:触发器每次 `fire()` 都先来这里取,取不到才建。
@@ -630,6 +653,34 @@ export const SessionRepo = {
        ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
     );
     stmt.bind([v(workflowId)]);
+    const found = stmt.step();
+    const row = found ? (stmt.getAsObject() as unknown as SessionRow) : undefined;
+    stmt.free();
+    return row ? rowToSession(row) : undefined;
+  },
+
+  /** 这个对话里**跑在 `nodeId` 那一格**的会话(`kind='node'`)。没有返回 undefined。
+   *
+   *  身份是 `(parent_session_id, node_id)`:对话说"属于谁",node_id 说"哪一格"。
+   *  节点 id 建图时生成、存在工作流里,所以改标题 / 挪位置 / 连边都不影响它。
+   *
+   *  跑图时先来这里取,取不到才建(见 `orchestration/runner.ts` 的 `nodeSessionOf`)——
+   *  于是一个对话里每一步只留一个会话,而不是每跑一次堆一个。
+   *
+   *  加 `node_id` 之前建的行是 `node_id IS NULL`,这里永远选不中 —— 它们是认不回来
+   *  的孤儿,留着不删(里面有历史消息)。
+   *
+   *  不可能有多条:(同一对话, 同一节点)只会被 `create()` 建一次(拿之前先查)。
+   *  真出现多条时取最新的那条。
+   */
+  findNodeByNodeId(parentSessionId: string, nodeId: string): Session | undefined {
+    const db = getDb();
+    const stmt = db.prepare(
+      `SELECT * FROM sessions
+       WHERE kind = 'node' AND parent_session_id = ? AND node_id = ?
+       ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+    );
+    stmt.bind([v(parentSessionId), v(nodeId)]);
     const found = stmt.step();
     const row = found ? (stmt.getAsObject() as unknown as SessionRow) : undefined;
     stmt.free();

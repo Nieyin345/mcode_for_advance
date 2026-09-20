@@ -74,6 +74,7 @@ export function parentSession(id: string = PARENT): Session {
     claudeSessionId: null,
     kind: "chat",
     parentSessionId: null,
+    nodeId: null,
     title: "跑图",
     status: "idle",
     model: "sonnet",

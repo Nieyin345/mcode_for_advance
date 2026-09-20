@@ -540,6 +540,7 @@ SessionRepo.create({
   claudeSessionId: null,
   kind: "chat",
   parentSessionId: null,
+  nodeId: null,
   title: "钩子 RPC 冒烟会话",
   status: "idle",
   model: "",

@@ -179,6 +179,18 @@ export const SESSION_COLUMNS: readonly SessionColumn[] = [
   { name: "composer_mode", def: "TEXT NOT NULL DEFAULT 'default'", inCreate: false, key: "workflowId",
     bind: (s) => v(s.workflowId ?? "default"),
     read: (r) => (r.composer_mode as Session["workflowId"]) ?? "default" },
+  // 工作流图上**哪一格**跑在这个会话里(`kind='node'` 专用;别的会话一律 null)。
+  //
+  // 为什么非要单独一列:`parent_session_id` 只说得出"属于哪个对话",而同一个对话里
+  // 每一格都要有自己的常驻会话 —— 少了这一列,"这一步"和"那一步"的会话在库层面
+  // 完全无法区分,于是"重启之后还能对着某一步说话"就无从谈起(以前每次跑都
+  // `uid("sess_")` 新建一个,新建出来的行没有任何东西指向它来自哪一格)。
+  //
+  // 键是 (parent_session_id, node_id):节点 id 建图时生成、存在工作流里,所以
+  // **改标题、挪位置、连边都不影响它**。删掉再建一个新节点会拿到新 id —— 那本来就
+  // 是另一步,该有新会话。
+  { name: "node_id", def: "TEXT", inCreate: false, key: "nodeId",
+    bind: (s) => v(s.nodeId ?? null), read: (r) => (r.node_id as string | null) ?? null },
 ];
 
 /** CREATE TABLE 语句由 inCreate 列生成。db.ts 的 migrate() 大 SQL 模板里插值,

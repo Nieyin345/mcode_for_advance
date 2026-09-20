@@ -95,6 +95,7 @@ export function createOrReuseSession(
       claudeSessionId: null, // captured from system/init once the first turn runs
       kind: "side",
       parentSessionId: input.parentSessionId ?? null,
+      nodeId: null,
       // Placeholder until the first question rewrites it (sendTurn truncates
       // the first prompt to ~40 chars — same rule as main-session auto-title,
       // but no generateSessionTitle LLM call).
@@ -178,6 +179,7 @@ export function createOrReuseSession(
     claudeSessionId: null, // captured from system/init once the first turn runs
     kind: "chat",
     parentSessionId: null,
+    nodeId: null,
     title: input.title ?? "New session",
     status: "idle",
     model: input.model ?? "default",

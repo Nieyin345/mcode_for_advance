@@ -96,6 +96,7 @@ function makeSession(id: string, kind: Session["kind"], title: string): string {
     claudeSessionId: null,
     kind,
     parentSessionId: null,
+    nodeId: null,
     title,
     status: "idle",
     model: "smoke-model",

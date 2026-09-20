@@ -1071,7 +1071,7 @@ export async function startWorkflowRun(args: {
     if (engine !== undefined && !providerRegistry.get(engine)) {
       return { status: "failed", summary: "", error: `这一步指定的引擎「${engine}」没有安装` };
     }
-    const nodeSession = createNodeSession(session, node, manifest, engine);
+    const nodeSession = nodeSessionOf(session, node, manifest, engine);
     active.nodeSessionIds.add(nodeSession.id);
     observed.add(nodeSession.id);
     active.nodeSessionOf.set(node.id, nodeSession.id);
@@ -1764,13 +1764,40 @@ function structuredReplyText(text: string, vars: readonly OutputVar[]): string {
     .join("\n\n");
 }
 
-function createNodeSession(
+/**
+ * 这一步的会话,**按 (对话, 节点) 复用,不是每次新建**。
+ *
+ * ## 为什么要复用
+ *
+ * 以前这里无条件 `SessionRepo.create(...)`,于是每跑一次图就在库里堆一个新会话行 ——
+ * 那些行**没有任何东西指向它们来自哪一格**(`parent_session_id` 只说得出"属于哪个
+ * 对话",而一个对话里有很多格)。后果是重启之后没有入口能找回"那一步的会话":
+ * 看板数据跟着进程活,进程一关就空,而库里那几十行孤儿谁也认不出来。
+ *
+ * 复用之后形状就对了:一个对话里**每一步留下一个会话**,里面是它的历史轮次。
+ * 和 `automationRunner.sessionOf` 是同一个思路(那边一条自动化一个会话)。
+ *
+ * ## 复用时**不覆盖**任何东西
+ *
+ * 认回来就直接交还,一个字段都不动 —— 会话是可对话的对象,它记着用户跟这一步说过什么、
+ * 用的是哪家引擎。后来改图把这一步换成别的引擎,**不该**把这个会话的引擎改掉:那等于把
+ * 这段对话搬到另一个模型上重读。引擎在新回合上生效(`sendTurn` 的入参),不落在会话行上。
+ *
+ * 标题同理**不跟着图上的格子名走**:图上改名是"这一步的说明变了",而标题是**这条会话
+ * 自己的**(用户可能自己改过,见 `session.rename`)。每次跑图按图重写一遍,等于把他改的
+ * 名字抹掉。(建新行时当然取格子名 —— 那是排查时唯一能认出"这是哪一步"的线索。)
+ *
+ * 老行(加 `node_id` 之前建的)是 `node_id IS NULL` 的孤儿,认不回来,留着不删。
+ */
+function nodeSessionOf(
   conversation: Session,
   node: WorkflowNode,
   manifest: NodeTypeManifest,
-  /** 已经解算好的引擎(`input.providerId`)。`undefined` = 跟着对话走。 */
   engine: string | undefined,
 ): Session {
+  const existing = SessionRepo.findNodeByNodeId(conversation.id, node.id);
+  if (existing !== undefined) return existing;
+
   const now = Date.now();
   const override = node.params.model;
   const model =
@@ -1784,6 +1811,8 @@ function createNodeSession(
     claudeSessionId: null,
     kind: "node",
     parentSessionId: conversation.id,
+    // 图上哪一格 —— (对话, 节点) 是这一行的身份,见 `Session.nodeId`。
+    nodeId: node.id,
     // 标题是**给排查用的**(节点会话不进任何列表):图上的标题比 "节点" 有用得多。
     title: displayTitle(node, manifest),
     status: "idle",

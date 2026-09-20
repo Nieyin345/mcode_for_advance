@@ -1140,6 +1140,7 @@ class AutomationRunner {
       // **null 不是偷懒**:后台自动化属于**工作流**,不属于任何一个对话(见 `Session.kind`)。
       // 守望起跑是唯一的例外 —— 它由某条对话发起,发起人记在这儿(D3)。
       parentSessionId: originSessionId ?? null,
+      nodeId: null,
       // 它不进任何列表,标题纯粹是给排查用的(日志、运行历史那一栏)。
       title: `自动化:${trigger.workflowName}`,
       status: "idle",

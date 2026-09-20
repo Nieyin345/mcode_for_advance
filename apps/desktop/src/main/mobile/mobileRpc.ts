@@ -33,6 +33,7 @@ import {
   WorkflowRetrySchema,
   ProjectSessionsSchema,
   SessionSearchSchema,
+  SessionListNodesSchema,
   BookmarkSearchSchema,
   SessionMessagesSchema,
   SaveMessagesSchema,
@@ -127,8 +128,14 @@ const HANDLERS: Record<string, RpcHandler> = {
     return { sessions, hasMore, total };
   },
 
-  "session:search": (raw) => {
-    const input = SessionSearchSchema.parse(raw);
+  // 一个对话里跑过的工作流步骤各自的会话。和桌面端 handler 同一份收口
+  // (`SessionRepo.listNodesByParent`)—— 手机端能看到哪些步骤有会话,靠的就是这条。
+  "session:listNodes": (raw) => {
+    const input = SessionListNodesSchema.parse(raw);
+    return { sessions: SessionRepo.listNodesByParent(input.sessionId) };
+  },
+
+  "session:search": (raw) => {    const input = SessionSearchSchema.parse(raw);
     const sessions = SessionRepo.searchByTitle(input.query, { limit: input.limit });
     return { sessions };
   },

@@ -23,7 +23,7 @@ import type { LibraryItem, LibraryItemLink, LibraryLinkView, LibraryCollection, 
 import type { LibraryTypeMeta, LibraryGroupMeta, LibrarySuppressRule } from "../libraryTypes.js";
 import type { TemplateEntry, TemplateFileContent } from "../templates.js";
 import type { GetSettingInput, SetSettingInput, GetManySettingsInput, GetManySettingsResult, GetVoiceModelDirInput, GetVoiceModelDirResult, SetVoiceModelDirInput, SetVoiceModelDirResult, NotificationPrefs } from "./settings.js";
-import type { StartSessionInput, ListSideChatsInput, SendTurnInput, InterruptInput, InjectInput, ApproveInput, RespondQuestionInput, RespondPlanApprovalInput, RewindTurnInput, UpdateSessionSettingsInput, CreateProjectInput, ProjectSessionsInput, SessionListAllInput, SetProjectGroupInput, ReorderProjectsInput, PinProjectInput, RenameProjectInput, SessionSearchInput, BookmarkSearchInput, BookmarkSearchResult, SessionMessagesInput, SaveMessagesInput, UpsertMessagesInput, TruncateAndInsertMessagesInput, RenameSessionInput, ForkSessionInput, PinSessionInput, UpdateBookmarksInput, OpenPathInput, ShowItemInFolderInput, OpenFileInput } from "./session.js";
+import type { StartSessionInput, ListSideChatsInput, SendTurnInput, InterruptInput, InjectInput, ApproveInput, RespondQuestionInput, RespondPlanApprovalInput, RewindTurnInput, UpdateSessionSettingsInput, CreateProjectInput, ProjectSessionsInput, SessionListAllInput, SetProjectGroupInput, ReorderProjectsInput, PinProjectInput, RenameProjectInput, SessionSearchInput, BookmarkSearchInput, BookmarkSearchResult, SessionMessagesInput, SaveMessagesInput, UpsertMessagesInput, TruncateAndInsertMessagesInput, RenameSessionInput, ForkSessionInput, PinSessionInput, UpdateBookmarksInput, OpenPathInput, ShowItemInFolderInput, OpenFileInput, SessionListNodesInput } from "./session.js";
 import type { VoiceStartInput, VoiceFeedInput, VoiceStopInput, VoiceStopResult, VoiceCancelInput, VoiceModelListResult, VoiceDownloadModelInput } from "./voice.js";
 import type { FocusSessionInput, SetNotificationPrefsInput } from "./notifications.js";
 import type { SaveCustomModelInput, TestCustomModelInput, GetCustomModelTokenInput, SavePiProviderInput, DeletePiProviderInput, GetPiApiKeyInput, SaveCodexProviderInput, DeleteCodexProviderInput, GetCodexApiKeyInput } from "./providers.js";
@@ -97,6 +97,14 @@ export interface RpcMap {
   "project.sessions": (input: ProjectSessionsInput) => Promise<{ sessions: Session[]; hasMore: boolean; total: number }>;
   /** Cross-project non-archived sessions, newest-first (stream sidebar). */
   "session.listAll": (input: SessionListAllInput) => Promise<{ sessions: Session[]; hasMore: boolean; total: number }>;
+  /** The workflow-node sessions of ONE conversation — "which step has a session,
+   *  and what is it called". Read-only, and the only way a node session is ever
+   *  listed: every other query pins `kind = 'chat'`.
+   *
+   *  Why it exists: a node session is where a step's history lives, and after a
+   *  restart the live board is empty — this is what lets the UI offer "keep
+   *  talking to that step" for a run that already ended. */
+  "session.listNodes": (input: SessionListNodesInput) => Promise<{ sessions: Session[] }>;
   /** Hard-delete a project; its sessions + messages cascade-delete (DB FK). */
   "project.delete": (input: { id: string }) => Promise<void>;
   /** Set a project's archived flag (soft-delete; restorable). */
@@ -1103,6 +1111,7 @@ export const IPC = {
   SESSION_UPDATE_BOOKMARKS: "session:updateBookmarks",
   SESSION_LIST_PINNED: "session:listPinned",
   SESSION_LIST_ALL: "session:listAll",
+  SESSION_LIST_NODES: "session:listNodes",
   SESSION_SEARCH: "session:search",
   SESSION_SEARCH_BOOKMARKS: "session:searchBookmarks",
   SESSION_MESSAGES: "session:messages",

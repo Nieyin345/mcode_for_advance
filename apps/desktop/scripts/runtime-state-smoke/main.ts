@@ -117,6 +117,7 @@ function seed(): void {
     claudeSessionId: null,
     kind: "chat",
     parentSessionId: null,
+    nodeId: null,
     title: "冒烟会话",
     status: "idle",
     model: "",

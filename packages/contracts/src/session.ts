@@ -110,6 +110,22 @@ export interface Session {
    *  `automation` — **null**: a backend automation belongs to a *workflow*, not
    *  to a conversation (its workflowId is what identifies it). */
   parentSessionId: string | null;
+  /** For `kind === "node"` only: **图上的哪一格**跑在这个会话里. Null for every
+   *  other kind.
+   *
+   *  Why it has to be its own field: `parentSessionId` says which conversation
+   *  a node session hangs off, but a conversation's graph has *many* nodes and
+   *  each one needs its own persistent session. Without this, two node
+   *  sessions of the same conversation are indistinguishable in the DB — so
+   *  "come back tomorrow and keep talking to that step" has nothing to look
+   *  the step up by, and every run would have to create a fresh throwaway
+   *  session.
+   *
+   *  The pair `(parentSessionId, nodeId)` is the key. A node's id is generated
+   *  when the graph is built and lives in the saved workflow, so **renaming,
+   *  moving or re-wiring a node keeps it**; deleting a node and drawing a new
+   *  one mints a new id, which is correct — that is a different step. */
+  nodeId: string | null;
   title: string;
   status: SessionStatus;
   /** Model alias or full name ("default" = let claude pick). → --model. */
