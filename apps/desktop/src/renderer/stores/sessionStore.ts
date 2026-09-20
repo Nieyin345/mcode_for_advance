@@ -44,7 +44,7 @@ import type { ContentTag } from "@renderer/lib/contentTag.js";
 import { isValidSnapshot } from "@renderer/lib/contextWindow.js";
 import { getLastCursor, type NavEntry } from "@renderer/lib/editorNav.js";
 import { disposeModel, getDisplayedPath } from "@renderer/lib/editorModelCache.js";
-import { isWebModelSend, type CustomModelPublic } from "@contracts/customModel";
+import type { CustomModelPublic } from "@contracts/customModel";
 import { api } from "@renderer/lib/api.js";
 import { isElectron } from "@renderer/lib/platform.js";
 import { normWorktreeKey } from "@renderer/lib/worktree.js";
@@ -7962,13 +7962,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // 主进程 taskRunner 不自己发第一轮 —— 它从这轮的 turn.done 接管续轮。
       // start 失败就默默解除（开关已经清了，用户再点一次即可），不留模糊态。
       //
-      // **网页版模型自动武装**（2026-09-20）：原生几家引擎的回合是"干到模型自己
-      // 收手"，而网页版的对话页面天生一问一答 —— 让它干要好几步的活，它会答一段
-      // 就停下等下一句。所以凡是走网页模型的发送，**不用用户手动开**，直接挂上
-      // 循环（没输出 [[TASK_DONE]] 就自动续轮）。手动开关仍然有效（原生引擎上
-      // 用户想用还能用）。
-      const autoArm = isWebModelSend(resolvedModel.customModelId, get().customModels);
-      if (autoArm || get().longTaskArmedBySession[sessionId]) {
+      // ⚠️ **曾经这里还有一条"网页模型自动武装"，2026-09-21 撤掉了。**
+      // 那条的判据只有"这次是不是走网页模型"，于是**随口说一句「你好」也被当成
+      // 任务书**跑了整整 20 轮（用户截图报的）。教训：**"这条消息是不是在派活"
+      // 是用户才知道的事，代码猜不准** —— 判据换成"用户自己说了算"（那个开关），
+      // 不按来源猜。见 `MCode-优化方向-第二批.md` 的 A 节。
+      if (get().longTaskArmedBySession[sessionId]) {
         get().clearLongTaskArmed(sessionId);
         void api.longtask.start({ sessionId, goal: prompt }).catch(() => {});
       }

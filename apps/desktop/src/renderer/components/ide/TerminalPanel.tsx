@@ -176,20 +176,24 @@ export function TerminalPanel({ active }: { active: boolean }) {
       const st = termsRef.current.get(path);
       if (st) {
         const next = st.sessions.filter((s) => s.key !== key);
-        if (next.length === 0 && path === projectPath) {
-          // Closing the last tab of the current project spawns a fresh terminal
-          // so the current project is never left empty. appendSession keeps the
-          // bucket's ordinal counter, so the replacement gets the next number.
-          st.sessions = [];
-          appendSession(path);
-        } else if (next.length === 0) {
-          // Last tab of a non-current project - drop the bucket entirely.
+        // **最后一个也该关得掉**（用户 2026-09-20 报的「终端关不掉，关掉又会新开一个」）。
+        //
+        // 这里原先有一句 `if (next.length === 0 && path === projectPath) appendSession(path)`
+        // ——作者的理由是「当前项目不该空着」。但那让用户**永远关不掉最后一个终端**：
+        // 点 × 之后立刻又冒一个出来，看起来像"关不掉"。
+        //
+        // ⚠️ **空 bucket 要留着，不能删。** 下面那个自动建终端的 effect 判的是
+        // `termsRef.current.has(projectPath)` —— 删了 bucket 它会立刻补一个，就成了
+        // 换个花样的"关不掉"。留一个 `sessions: []` 的壳，那句 `has` 仍然为真，
+        // 于是它不会自动补；用户再点「+」才建新的。
+        st.sessions = next;
+        if (st.activeKey === key) {
+          st.activeKey = next[next.length - 1]?.key ?? null;
+        }
+        // 非当前项目的 bucket 仍然收掉：没有"关光就不补"的问题（那个 effect
+        // 只管当前项目），留着只是白占内存。
+        if (next.length === 0 && path !== projectPath) {
           termsRef.current.delete(path);
-        } else {
-          st.sessions = next;
-          if (st.activeKey === key) {
-            st.activeKey = next[next.length - 1]?.key ?? null;
-          }
         }
       }
       forceRender();
