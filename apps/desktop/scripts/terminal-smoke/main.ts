@@ -233,12 +233,21 @@ const base = def.file.toLowerCase();
 let argsBranchTaken = "";
 if (base.endsWith("cmd.exe") || base.endsWith("cmd")) {
   argsBranchTaken = "cmd";
-  same("选了 cmd → 不带任何参数(它不认 -NoLogo / --login)", def.args, []);
+  // cmd 现在挂着 `chcp 65001` —— 见 `shellResolve.ts` 那段（GBK 乱码）。
+  same("选了 cmd → /K chcp 65001(切到 UTF-8 代码页)", def.args, ["/K", "chcp 65001"]);
 } else if (base.includes("powershell")) {
   argsBranchTaken = "powershell";
-  same("选了 powershell → 恰好一个 -NoLogo", def.args, ["-NoLogo"]);
+  // PowerShell 的解法是把 `[Console]::OutputEncoding` 设成 UTF-8。`-NoExit` 非有不可
+  // —— 少了它设完就退出了（终端一闪而过）。
+  same("选了 powershell → -NoLogo + 设 UTF-8 输出编码", def.args, [
+    "-NoLogo",
+    "-NoExit",
+    "-Command",
+    "$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8",
+  ]);
 } else if (base.endsWith("bash.exe") || base.endsWith("bash")) {
   argsBranchTaken = "bash";
+  // bash 本来就吐 UTF-8，**不动它**。
   same("选了 bash → 恰好 --login -i(不然它不当登录交互 shell)", def.args, ["--login", "-i"]);
 } else {
   argsBranchTaken = "other";
@@ -283,7 +292,9 @@ console.log(
 
 // 显式 override:这一档是**用户自己填的**,做对做错都看得见。
 const overrideCmd = resolveDefaultShell("cmd.exe");
-same("override 传 cmd.exe → 不带参数", overrideCmd.args, []);
+// cmd 现在挂着 `chcp 65001`（2026-09-21）—— 中文 Windows 的控制台代码页是 GBK，
+// 而 node-pty 按 UTF-8 解，不切代码页的话中文全是乱码。见 `shellResolve.ts` 那段。
+same("override 传 cmd.exe → 带 chcp 65001 切到 UTF-8", overrideCmd.args, ["/K", "chcp 65001"]);
 check(
   "override 传 cmd.exe → file 指向真的 cmd.exe",
   overrideCmd.file.toLowerCase().endsWith("cmd.exe"),
