@@ -74,6 +74,7 @@ import {
   IconTrash,
 } from "@renderer/lib/icons.js";
 import { attachToCurrentChat } from "@renderer/lib/attachToChat.js";
+import { Dialog } from "@renderer/components/ui/dialog.js";
 import {
   HintRow,
   InlineInputRow,
@@ -86,6 +87,7 @@ import {
 } from "@renderer/components/sidebar/Sidebar.js";
 import { LibraryItemContextMenu, type LibraryCtxTarget } from "./LibraryItemContextMenu.js";
 import { DeleteItemsDialog } from "./DeleteItemsDialog.js";
+import { ImportBar } from "./ImportPanel.js";
 import { CollectionContextMenu, type CollectionCtxTarget } from "./CollectionContextMenu.js";
 import { GroupContextMenu, type GroupCtxTarget } from "./GroupContextMenu.js";
 import { KindContextMenu, type KindCtxTarget } from "./KindContextMenu.js";
@@ -225,6 +227,10 @@ export function LibrarySection({
   const [ctxMenu, setCtxMenu] = useState<LibraryCtxTarget | null>(null);
   /** 分类行的右键菜单目标(新建笔记 / 重命名 / 删除)。 */
   const [ctxCollection, setCtxCollection] = useState<CollectionCtxTarget | null>(null);
+  /** 「导入到这里」——分类行右键触发，null = 浮层关着（2026-09-21）。 */
+  const [importInto, setImportInto] = useState<LibraryCollection | null>(null);
+  /** 导入后是否立刻转录。与右栏那条用同一个开关语义（有现成 md 的人要能关掉）。 */
+  const [importAutoConvert, setImportAutoConvert] = useState(true);
   /** 正在等用户确认的**彻底删除**（`DeleteItemsDialog` 开着的时候非 null）。
    *  带着 `activeItemId` 是因为删完要清掉可能悬空的选中态 —— 而这个组件在这一刻
    *  已经被重渲染了，不能指望从 `activeItemId` 现读。 */
@@ -1376,6 +1382,36 @@ export function LibrarySection({
 
       {/* 文献行的右键菜单:移动 / 复制到别的库、从当前库移除(在回收站里则是彻底删除)、
           打开文件夹、打开 md */}
+      {/* 「导入到这里」——在分类行上右键触发。复用右栏那条 `ImportBar`（它本来就收
+          `collectionId`，所以"导进哪个分类"不用另写一套）。 */}
+      <Dialog.Root open={importInto !== null} onOpenChange={(open) => { if (!open) setImportInto(null); }}>
+        <Dialog.Portal>
+          <Dialog.Backdrop />
+          <Dialog.Popup className="w-[460px] max-w-[92vw] p-4">
+            <Dialog.Title>
+              {t("library.ctx.importHere")}
+              {importInto ? ` · ${importInto.name}` : ""}
+            </Dialog.Title>
+            {importInto && (
+              <div className="mt-3">
+                <ImportBar
+                  onClose={() => setImportInto(null)}
+                  collectionId={importInto.id}
+                  kind={importInto.kind}
+                  autoConvert={importAutoConvert}
+                  onAutoConvertChange={setImportAutoConvert}
+                  onImported={() => {
+                    void loadCollections();
+                    void refreshItems();
+                  }}
+                />
+              </div>
+            )}
+            <Dialog.Close />
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
+
       {/* 彻底删除的确认框 —— 摆出会跟着一起没的关联与转录产物，让用户勾（见那个文件头）。 */}
       <DeleteItemsDialog
         open={deleting !== null}
@@ -1402,6 +1438,7 @@ export function LibrarySection({
         onRename={(c) => startRename(c.id, c.name)}
         onDelete={(c) => void removeCollection(c.id, c.name)}
         onNewNote={startNewNote}
+        onImportHere={(c) => setImportInto(c)}
         onMove={(c, parentId) => void moveCollection(c, parentId)}
       />
 

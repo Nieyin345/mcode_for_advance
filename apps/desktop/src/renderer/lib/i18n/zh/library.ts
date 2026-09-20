@@ -175,6 +175,9 @@ export const zh = {
   "library.ctx.openMdMissing": "预览原文（还没转换）",
   "library.ctx.openMdExternal": "用外部编辑器打开 Markdown",
   "library.ctx.newNote": "新建笔记",
+  /** 在**分类行**上右键导入 —— 导进来的东西直接归这个分类（不用先导入再拖）。
+   *  原来只有右栏那个「导入」条，而它跟着"当前选中的分类"走，用户得先点对地方。 */
+  "library.ctx.importHere": "导入到这里",
   "library.ctx.noOtherCollection": "还没有别的文献库",
   "library.ctx.attachToChat": "添加到当前对话",
   "library.ctx.attachNoSession": "还没有打开的对话 —— 先在会话列表里选一个",

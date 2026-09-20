@@ -165,6 +165,8 @@ export const en = {
   "library.ctx.openMdMissing": "Preview full text (not converted yet)",
   "library.ctx.openMdExternal": "Open Markdown in external editor",
   "library.ctx.newNote": "New note",
+  /** Import from a collection row — what you import lands in THAT collection. */
+  "library.ctx.importHere": "Import into this collection",
   "library.ctx.noOtherCollection": "No other libraries yet",
   "library.ctx.attachToChat": "Add to current chat",
   "library.ctx.attachNoSession": "No chat is open — pick one from the session list first",

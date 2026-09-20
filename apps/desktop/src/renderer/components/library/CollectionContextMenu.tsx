@@ -46,6 +46,7 @@ import {
   IconArrowsExchange,
   IconBook,
   IconChevronRight,
+  IconDownload,
   IconFileText,
   IconMessage,
   IconPencil,
@@ -66,6 +67,7 @@ export function CollectionContextMenu({
   onRename,
   onDelete,
   onNewNote,
+  onImportHere,
   onMove,
 }: {
   target: CollectionCtxTarget | null;
@@ -76,6 +78,14 @@ export function CollectionContextMenu({
   onDelete: (c: LibraryCollection) => void;
   /** 新建一篇笔记并归入这个分类。只在笔记库里用得上。 */
   onNewNote: (c: LibraryCollection) => void;
+  /**
+   * **导入到这里** —— 导进来的东西直接归这个分类（2026-09-21）。
+   *
+   * 用户的原话：「关于 f，**导入的功能放到左侧这个栏里面，collection 右键导入**」。
+   * 原来只有右栏那个「导入」条，而且它跟着"当前选中的分类"走 —— 用户得先在左栏
+   * 点对分类、再去右栏点导入。在分类行上直接右键，是"我要往这里放东西"最直白的说法。
+   */
+  onImportHere: (c: LibraryCollection) => void;
   /** 把它挪到另一个父下面(`parentId: null` = 挪到最外层)。 */
   onMove: (c: LibraryCollection, parentId: string | null) => void;
 }) {
@@ -189,6 +199,18 @@ export function CollectionContextMenu({
                   {t("library.ctx.attachToChat")}
                 </Menu.Item>
                 <div className="my-1 border-t border-edge/60" />
+
+                {/* 导入到这里 —— 三个库都该有（不限笔记库）。 */}
+                <Menu.Item
+                  onClick={() => {
+                    if (c) onImportHere(c);
+                    onClose();
+                  }}
+                  className={itemClass}
+                >
+                  <IconDownload size={12} className="shrink-0" />
+                  {t("library.ctx.importHere")}
+                </Menu.Item>
 
                 {c?.kind === "note" && (
                   <>
