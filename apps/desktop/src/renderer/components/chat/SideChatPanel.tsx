@@ -30,6 +30,7 @@ import { api } from "@renderer/lib/api.js";
 import { useSessionStore, type Block } from "@renderer/stores/sessionStore.js";
 import { ConfirmDialog } from "@renderer/components/ui/index.js";
 import { ChatPane } from "@renderer/components/chat/ChatPane.js";
+import { NewSubChatPicker } from "./NewSubChatPicker.js";
 import { useFileViewStore } from "@renderer/stores/fileViewStore.js";
 import { MessageBlocks } from "./MessageBlocks.js";
 import { mapTranscriptBlock } from "./transcriptBlocks.js";
@@ -49,6 +50,9 @@ export function SideChatPanel() {
   const selectSideChat = useSessionStore((s) => s.selectSideChat);
   const closeSideChatView = useSessionStore((s) => s.closeSideChatView);
   const openTab = useSessionStore((s) => s.openTab);
+  const createSubChat = useSessionStore((s) => s.createSubChat);
+  /** 「选档案」选择器开着没有 —— 非 null 时的那个矩形是它的锚（那个「+」的位置）。 */
+  const [pickerAnchor, setPickerAnchor] = useState<DOMRect | null>(null);
   // The subagent whose read-only transcript is open (by taskId). Local state:
   // leaving the tab or switching the parent session falls back to the list —
   // derived, so a roster rebuild that drops the id also resets the view.
@@ -165,15 +169,37 @@ export function SideChatPanel() {
     return <SideChatView session={activeSide} parentRow={parentRow} />;
   }
   return (
-    <SideChatListView
-      hasMainSession={!!activeSessionId}
-      parentTitle={parentRow?.title}
-      sideChats={sideChats}
-      subagents={subagents}
-      onOpenSubagent={setViewSubagentTaskId}
-      onCreate={() => void createSideChat()}
-      onOpen={(id) => void selectSideChat(id)}
-    />
+    <>
+      <SideChatListView
+        hasMainSession={!!activeSessionId}
+        parentTitle={parentRow?.title}
+        sideChats={sideChats}
+        subagents={subagents}
+        onOpenSubagent={setViewSubagentTaskId}
+        onCreate={() => void createSideChat()}
+        onOpen={(id) => void selectSideChat(id)}
+        onChooseProfile={setPickerAnchor}
+      />
+      {/* ⚠️ **挂在 `<>` 里而不是 `SideChatListView` 内部** —— 那个面板自己有若干
+          early return（子代理视图 / chat 视图），挂在它里面的话，**展开一条对话时
+          选择器会跟着消失**，而用户可能正是在那一刻想再建一条。 */}
+      <NewSubChatPicker
+        open={pickerAnchor !== null}
+        anchorRect={pickerAnchor}
+        onClose={() => setPickerAnchor(null)}
+        onPick={(choice) => {
+          void (async () => {
+            const session = await createSubChat({
+              profile: choice.profile ?? null,
+              memory: choice.memory,
+            });
+            setPickerAnchor(null);
+            // 建完就展开它 —— 点了「新建」，下一步一定是要跟它说话。
+            if (session) void selectSideChat(session.id);
+          })();
+        }}
+      />
+    </>
   );
 }
 
@@ -187,14 +213,27 @@ function SideChatListView({
   onOpenSubagent,
   onCreate,
   onOpen,
+  onChooseProfile,
 }: {
   hasMainSession: boolean;
   parentTitle?: string;
   sideChats: ReadonlyArray<Session> | undefined;
   subagents: ReadonlyArray<SubagentSnapshot> | undefined;
   onOpenSubagent: (taskId: string) => void;
+  /** 建一条**空白**子对话（不弹选择器的那条路，见 `onChooseProfile`）。 */
   onCreate: () => void;
   onOpen: (id: string) => void;
+  /**
+   * 弹「选档案」那个选择器（2026-09-21）。
+   *
+   * ★ 用户的要求：「新建子对话就是子节点，**要能够选择当前的子代理模版**，添加的
+   * 单独的子代理对话是**没有流程图的上下文**的，现在这个创建子对话可以选择**默认、
+   * 或者是档案、或者是带有记忆的档案**」。
+   *
+   * 那个选择器**本来就有**（`NewSubChatPicker`），只是一直挂在输入框的「+」菜单上；
+   * 右栏这个「+」走的是光秃秃的 `createSideChat()`。接上之后两处入口一致。
+   */
+  onChooseProfile: (anchor: DOMRect) => void;
 }) {
   const { t } = useI18n();
   const deleteSession = useSessionStore((s) => s.deleteSession);
@@ -225,7 +264,8 @@ function SideChatListView({
         <button
           type="button"
           disabled={!hasMainSession}
-          onClick={onCreate}
+          // 弹「选档案」选择器（默认 / 档案 / 档案+记忆）—— 见 `onChooseProfile`。
+          onClick={(e) => onChooseProfile(e.currentTarget.getBoundingClientRect())}
           title={t("sideChat.newChat")}
           className={cn(
             "flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors",
