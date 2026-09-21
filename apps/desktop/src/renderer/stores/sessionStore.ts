@@ -37,6 +37,7 @@ import type {
   ContextSnapshot,
   TurnUsageRecord,
   SessionListEntry,
+  EngineCommandInfo,
 } from "@contracts/runtime";
 import type { LongTask } from "@contracts/longTask";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
@@ -330,6 +331,12 @@ export type Block =
     noticeKind: "budget_limit" | "fallback" | "structured_invalid";
     /** Human-readable, already-localized message from the host. */
     message: string }
+  | { kind: "local-command"; /** Command name as typed, without the leading `/`
+    *  (e.g. "usage"). Shown as the card's title. */
+    name: string;
+    /** Raw text the engine printed, verbatim. Rendered as-is (monospace) —
+    *  it is the command's own output, not prose to be markdown-parsed. */
+    content: string }
   | { kind: "attachment"; preview: string; content: string; attachmentKind?: "paste" | "file" | "quote"; filePath?: string }
   | {
       kind: "plan";
@@ -993,6 +1000,22 @@ export interface SessionState {
    *  `isRunningForActiveSession` selector below (or compute on the fly)
    *  so consumers always see "am I running?" relative to the active thread. */
   runningBySession: Record<string, boolean>;
+  /**
+   * 引擎自己报上来的斜杠命令清单，按会话存（2026-09-21）。
+   *
+   * 来源是 Claude Code 每轮 `system/init` 里的 `slash_commands` —— 实测 57 条，
+   * 含 `/usage` `/context` `/model` `/mcp` 这些。从前 Mcode 只列得出自己硬编码的
+   * 四条，用户「用不了 claude code 内置的命令」。
+   *
+   * **为空的含义有两种，消费端要分清**：`undefined` = 这个会话还没收到过 init
+   * （界面别急着说"没有命令"），空数组 = 引擎明确说了没有。所以类型上用
+   * `undefined` 而不是空数组当"未知"。
+   *
+   * 不落盘：引擎每次 init 都会重报，持久化一份只会在装了插件之后过期。
+   */
+  commandsBySession: Record<string, { commands: EngineCommandInfo[]; terminalCommands: string[] }>;
+  /** `e.type === "commands.available"` 的落点。整体替换，不做合并 —— 引擎是权威。 */
+  setSessionCommands: (sessionId: string, cmds: { commands: EngineCommandInfo[]; terminalCommands: string[] }) => void;
   /** Per-session wall-clock ms stamped at send time - the time anchor for the
    *  "开始 · 用时" stat row BEFORE the first assistant content block arrives.
    *  Without this, the stat row only appears when the first delta/tool/plan
@@ -4764,6 +4787,32 @@ interface IngestCtx {
 }
 
 /** `e.type === "session.runningSnapshot"` */
+/**
+ * 本地命令输出的**命令名**怎么来的（2026-09-21）。
+ *
+ * 引擎回传 `local_command.output` 时只给内容、不给命令名（见 `@contracts/runtime`
+ * 那个事件的说明）。但命令名**就在同一个列表里** —— 用户刚发的那条
+ * `user.message` 正是 `/usage` 这几个字。所以往回找最后一条用户消息、取它的第一个
+ * 词即可，不必让主进程再带一份过来（多一个字段就多一处能对不上的地方）。
+ *
+ * 找不到就返回空串 —— 卡片标题位置会退化成「命令输出」这种通用说法，而不是把
+ * `/` 或半截路径当名字显示出来。
+ */
+function commandNameForLocalOutput(list: ChatMessage[]): string {
+  for (let i = list.length - 1; i >= 0; i--) {
+    const m = list[i];
+    if (m.role !== "user") continue;
+    const text = m.blocks
+      .map((b) => (b.kind === "text" ? b.text : ""))
+      .join(" ")
+      .trim();
+    if (!text.startsWith("/")) return "";
+    const name = text.slice(1).split(/\s+/)[0] ?? "";
+    return /^[A-Za-z0-9_:-]+$/.test(name) ? name : "";
+  }
+  return "";
+}
+
 function reduceSessionRunningSnapshot(ctx: IngestCtx, e: SessionRunningSnapshotEvent): void {
 const running = new Set(e.running);
       ctx.set((s) => {
@@ -5659,6 +5708,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     loadingOlderBySession: {},
     historyLoadedBySession: {},
   runningBySession: {},
+  commandsBySession: {},
+  setSessionCommands: (sessionId, cmds) =>
+    set((s) => ({ commandsBySession: { ...s.commandsBySession, [sessionId]: cmds } })),
   runningTurnStartedAt: {},
   waitingBranchesBySession: {},
   runningTurnModelBySession: {},
@@ -8627,6 +8679,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       reduceTurnRewound(ctx, e);
       return;
     }
+    if (e.type === "commands.available") {
+      // 引擎报来的斜杠命令清单（见 `commandsBySession`）。整体替换 —— 装了插件
+      // 之后清单会变，合并只会留下已经消失的命令。
+      ctx.set((s) => ({
+        commandsBySession: {
+          ...s.commandsBySession,
+          [sid]: { commands: e.commands, terminalCommands: e.terminalCommands },
+        },
+      }));
+      return;
+    }
 
     set((s) => {
       const list = s.messagesBySession[sid] ?? [];
@@ -8838,6 +8901,26 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           if (e.kind === "fallback") {
             set((s) => ({ runningBySession: { ...s.runningBySession, [sid]: true } }));
           }
+          break;
+        }
+        case "local_command.output": {
+          // 本地斜杠命令（`/usage`、`/context` 这类不经过模型的）的结果文本。
+          // 引擎把它当「assistant-style text in the transcript」发回来，所以我们
+          // 也当一条 assistant 消息落进流里 —— 用户发了命令，就该看得见结果。
+          //
+          // 命令名从**用户刚发的那条消息**上取：引擎只回内容、不带命令名，而那条
+          // 消息就在同一个列表里（渲染端有，不必再走一遍 IPC 把名字带过来）。
+          next = [
+            ...next,
+            {
+              id: `lc_${Date.now()}`,
+              sessionId: sid,
+              role: "assistant",
+              blocks: [{ kind: "local-command", name: commandNameForLocalOutput(next), content: e.content }],
+              createdAt: Date.now(),
+            },
+          ];
+          bumpUnread();
           break;
         }
         case "error": {

@@ -46,7 +46,7 @@ import {
   shouldPromoteToTag,
   FILE_DRAG_MIME,
 } from "@renderer/lib/contentTag.js";
-import type { SkillInfo, BuiltInCommand } from "@renderer/lib/slashCommands.js";
+import type { SkillInfo, BuiltInCommand, EngineCommand } from "@renderer/lib/slashCommands.js";
 import { MessageBlocks, TurnPanel, BatchToolGroup, isFoldableBlock, TURN_FOLD_MS, type ProceduralBlock, type BeforeContentMap, type ToolUseBlock } from "./MessageBlocks.js";
 import { CurrentOpTicker } from "./CurrentOpTicker.js";
 import { ModelBadge } from "./ModelAvatar.js";
@@ -2331,6 +2331,32 @@ function ChatPaneForSession({
     () => filterSkillsForEngine(allSkills, pickerProviderId),
     [allSkills, pickerProviderId],
   );
+  /**
+   * 引擎自己报的命令清单（2026-09-21）。
+   *
+   * **按引擎取，不是全局一份** —— 用户说得对：「选择不同的引擎，命令也会不一样」。
+   * 三家的情况差得很远（见 `commandsBySession` 与事件里的说明）：
+   *  - claude-sdk 报 57 条，且**能在我们这条路上跑**（CLI 认出前导 `/` 就地执行）。
+   *  - pi 的 `get_commands` 只列扩展/模板/技能，它那些 TUI 内置命令（`/settings`、
+   *    `/quit`）在非交互会话里根本没注册 —— 显示出来点了没用，所以那边就不报。
+   *  - codex 的 app-server 协议里压根没有列命令的方法。
+   *
+   * 所以这里不做"按引擎过滤一个总表"，而是**谁报了就用谁的**：没报的引擎这一栏就是
+   * 空的，配一句说明，而不是拿别人的命令去冒充。
+   */
+  const engineCommandsRaw = useSessionStore((s) =>
+    sessionId ? s.commandsBySession[sessionId] : undefined,
+  );
+  const engineCommands = useMemo<EngineCommand[] | undefined>(
+    () =>
+      engineCommandsRaw?.commands.map((c) => ({
+        engine: true as const,
+        name: c.name,
+        description: c.description,
+        argumentHint: c.argumentHint,
+      })),
+    [engineCommandsRaw],
+  );
   const drainChatFileQueue = useSessionStore((s) => s.drainChatFileQueue);
   useEffect(() => {
     if (chatFileQueue.length === 0) return;
@@ -2461,6 +2487,38 @@ function ChatPaneForSession({
       setValue(editorRef.current.getTextWithSkills());
     },
     [sessionBusy, clearTriggerToken, sendPrompt, t, sessionId, openSideChatPanel],
+  );
+
+  /**
+   * 选中一条**引擎自己的**命令（Claude Code 的 `/usage`、`/context` 那一批）。
+   *
+   * 行为上向 `/init` 看齐：把 `/name` 作为一个原子药丸插进编辑器，光标留在后面 ——
+   * 用户可以继续补参数再回车（`/model opus`、`/mcp add ...`）。**不立刻发送**：
+   * 这批命令里有不少吃参数，直接发出去会让用户没法补，而 Mcode 又解释不了它们
+   * （见 `slashCommands.ts` 里 `EngineCommand` 的说明：Mcode 不解读这批，原样发过去
+   * 由 CLI 执行）。
+   *
+   * 顺序与 `handleBuiltInPick` 里 `init` 那条逐字相同：先读触发区间和光标、插完再关
+   * 选择器 —— 先关会让编辑器失焦，`getCaretOffset()` 返回 -1。
+   */
+  const handleEngineCommandPick = useCallback(
+    (cmd: EngineCommand) => {
+      const start = triggerStartRef.current;
+      if (start === null || !editorRef.current) {
+        setPickerKind(null);
+        return;
+      }
+      const caret = editorRef.current.getCaretOffset();
+      if (caret < 0) {
+        setPickerKind(null);
+        return;
+      }
+      editorRef.current.insertCommandPill(cmd.name, start, caret);
+      setPickerKind(null);
+      triggerStartRef.current = null;
+      setValue(editorRef.current.getTextWithSkills());
+    },
+    [],
   );
 
   /** Open the attach picker from the bottom-left + button. */
@@ -4419,10 +4477,13 @@ function ChatPaneForSession({
             open={pickerKind === "slash"}
             query={pickerQuery}
             skills={skills}
+            engineCommands={engineCommands}
+            engineCommandsReady={engineCommandsRaw !== undefined}
             anchorRect={pickerAnchor}
             busy={sessionBusy}
             onPickSkill={handleSlashPick}
             onPickCommand={handleBuiltInPick}
+            onPickEngineCommand={handleEngineCommandPick}
             onClose={() => setPickerKind(null)}
           />
           {/* "Add context" picker opened from the bottom-left + button.

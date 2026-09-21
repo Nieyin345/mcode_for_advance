@@ -337,6 +337,11 @@ export const zh = {
   "chatStream.turnNotice.fallbackTitle": "模型自动回退",
   "chatStream.turnNotice.structuredTitle": "结构化输出未通过校验",
 
+  // ── MessageBlocks: 本地斜杠命令输出卡（/usage、/context 这类不经过模型的）──
+  // 只在**取不到命令名**时用（正常标题就是 `/usage` 这样的原命令名）。取不到说明
+  // 那条用户消息已经不在这个列表里了（翻了很久的历史）。
+  "chatStream.localCommand.title": "命令输出",
+
   // ── MessageBlocks: ExitPlanMode 审批通道故障警告 ──
   "chatStream.planApprovalBroken.title": "计划审批弹框未能弹出",
   "chatStream.planApprovalBroken.desc":

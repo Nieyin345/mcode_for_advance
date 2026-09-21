@@ -250,6 +250,12 @@ export const zh = {
   "chat.slash.project": "项目",
   "chat.slash.global": "全局",
   "chat.slash.plugin": "插件",
+  /* 引擎（Claude Code CLI）自己报上来的命令 —— 与上面那四条「Mcode 内置」要分得清：
+     那四条是 Mcode 写的、有定制行为；这一栏是 CLI 提供的，原样发过去由它执行。 */
+  "chat.slash.tabEngine": "Claude Code",
+  "chat.slash.engine": "CLI",
+  "chat.slash.noEngineMatch": "Claude Code 没有这个命令",
+  "chat.slash.engineNotReady": "还没收到 Claude Code 的命令清单 —— 说一句话就会拉取",
   "chat.kbd.navigate": "导航",
   "chat.slash.switchTab": "切 tab",
   "chat.slash.insert": "插入",

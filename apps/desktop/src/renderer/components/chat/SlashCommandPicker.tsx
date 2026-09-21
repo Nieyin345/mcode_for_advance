@@ -1,33 +1,41 @@
 /**
  * Composer slash-command picker. Anchored above the textarea when the user
- * types `/` at line start or after whitespace. Lists two kinds of entries in
- * separate tabs:
+ * types `/` at line start or after whitespace. Three tabs:
  *  - **Skill**: skills discovered from the filesystem (the universal library
  *    ~/.mcode/skills + plugin contributions). Selecting inserts an atomic
  *    `/name` pill the user keeps typing after.
- *  - **命令** (built-in commands): fixed entries with bespoke behavior
- *    (`/compact`, `/init`). Selecting either executes immediately (`compact`)
- *    or fills the editor with an editable prompt (`init`).
+ *  - **命令** (Mcode built-ins): the four fixed entries with bespoke behavior
+ *    (`/compact`, `/init`, `/browser`, `/sidechat`). Selecting executes
+ *    immediately or fills the editor with an editable prompt.
+ *  - **Claude Code** (engine commands, 2026-09-21): the ~57 commands the CLI
+ *    itself advertises (`/usage`, `/context`, `/model`, `/mcp`, …). Unlike the
+ *    other two this list is not Mcode's — it arrives on `system/init` and is
+ *    replaced wholesale whenever the engine re-announces it. Picking one just
+ *    sends `/<name>` as the turn; the CLI recognizes the leading slash and runs
+ *    it locally, returning the text via `local_command.output`.
  *
  * The default tab is "skill" (skills are the common case); if a tab has no
- * matches while the other does, the picker auto-switches so typing `/co`
- * jumps to the command tab to reveal `/compact`.
+ * matches while another does, the picker auto-switches so typing `/co` jumps
+ * to the command tab to reveal `/compact`.
  *
  * Visual language matches FileMentionPicker.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { IconCommand, IconSparkles } from "@renderer/lib/icons.js";
+import { IconCommand, IconSparkles, IconTerminal } from "@renderer/lib/icons.js";
 import {
   filterBuiltInCommands,
+  filterEngineCommands,
   filterSkillCommands,
   isBuiltInCommand,
+  isEngineCommand,
   type BuiltInCommand,
+  type EngineCommand,
 } from "@renderer/lib/slashCommands.js";
 import type { SkillInfo } from "@contracts/ipc";
 
-type TabKind = "skill" | "command";
+type TabKind = "skill" | "command" | "engine";
 
 export interface SlashCommandPickerProps {
   open: boolean;
@@ -35,11 +43,18 @@ export interface SlashCommandPickerProps {
   query: string;
   /** Cached skill list (from the store; loaded per active project). */
   skills: SkillInfo[];
+  /** 引擎（Claude Code CLI）自己报的命令清单。`undefined` = 还没收到过 init
+   *  —— 那时该说「还没拉到」而不是「这个引擎没有命令」。 */
+  engineCommands?: EngineCommand[];
+  /** 收到过引擎的命令清单没有（决定空列表时显示哪句话）。 */
+  engineCommandsReady: boolean;
   anchorRect: DOMRect | null;
   /** True while a turn is running - disables the `compact` command. */
   busy: boolean;
   onPickSkill: (skill: SkillInfo) => void;
   onPickCommand: (cmd: BuiltInCommand) => void;
+  /** 选中一条引擎命令 —— 原样发 `/name` 出去，由 CLI 自己执行。 */
+  onPickEngineCommand: (cmd: EngineCommand) => void;
   onClose: () => void;
 }
 
@@ -47,16 +62,23 @@ export function SlashCommandPicker({
   open,
   query,
   skills,
+  engineCommands,
+  engineCommandsReady,
   anchorRect,
   busy,
   onPickSkill,
   onPickCommand,
+  onPickEngineCommand,
   onClose,
 }: SlashCommandPickerProps) {
   const { t } = useI18n();
-  // Compute both tabs' filtered lists up front so we can auto-switch.
+  // Compute every tab's filtered list up front so we can auto-switch.
   const skillCmds = useMemo(() => filterSkillCommands(query, skills), [query, skills]);
   const builtinCmds = useMemo(() => filterBuiltInCommands(query), [query]);
+  const engineCmds = useMemo(
+    () => filterEngineCommands(query, engineCommands ?? []),
+    [query, engineCommands],
+  );
   // `compact` is disabled while a turn is running; filter it out of the
   // *interactive* list so it can't be arrow-selected or clicked, but keep it
   // counted in the tab badge so the user sees it exists.
@@ -70,19 +92,24 @@ export function SlashCommandPicker({
   const listRef = useRef<HTMLDivElement>(null);
 
   // The list currently rendered by the active tab.
-  const commands = activeTab === "skill" ? skillCmds : activeBuiltinCmds;
+  const commands =
+    activeTab === "skill" ? skillCmds : activeTab === "command" ? activeBuiltinCmds : engineCmds;
 
-  // Auto-switch: if the active tab is empty but the other has results, jump.
+  // Auto-switch: if the active tab is empty but another has results, jump.
   // Runs on query / open / busy changes (busy affects the command tab count).
+  // 顺序是有讲究的：命令（Mcode 那四条）优先于引擎那一栏 —— 用户打 `/co` 想找的是
+  // `/compact`（Mcode 的，会立刻执行），而 CLI 那边恰好也有个别的命令能匹配上。
   useEffect(() => {
     if (!open) return;
     if (commands.length > 0) return;
-    if (activeTab === "skill" && activeBuiltinCmds.length > 0) {
-      setActiveTab("command");
-    } else if (activeTab === "command" && skillCmds.length > 0) {
+    if (activeTab !== "skill" && skillCmds.length > 0) {
       setActiveTab("skill");
+    } else if (activeTab === "skill" && activeBuiltinCmds.length > 0) {
+      setActiveTab("command");
+    } else if (activeBuiltinCmds.length === 0 && engineCmds.length > 0) {
+      setActiveTab("engine");
     }
-  }, [open, query, activeTab, commands.length, activeBuiltinCmds.length, skillCmds.length]);
+  }, [open, query, activeTab, commands.length, activeBuiltinCmds.length, skillCmds.length, engineCmds.length]);
 
   // Reset selection to the first row whenever the query, tab, or open state
   // changes. This guarantees the first row is the active selection on open and
@@ -136,21 +163,24 @@ export function SlashCommandPicker({
         setActiveIdx((i) => Math.max(0, i - 1));
         return;
       }
-      // Left/Right switch between the Skill and 命令 tabs. Only switch when
+      // Left/Right cycle through Skill → 命令 → Claude Code. Only switch when
       // the target tab has results, so the user doesn't land on an empty tab
       // (mirrors the auto-switch logic's intent). preventDefault stops the
       // editor caret from moving while the picker is open.
       if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
         e.preventDefault();
         e.stopPropagation();
-        const cur = activeTabRef.current;
-        const next = e.key === "ArrowLeft"
-          ? (cur === "command" ? "skill" : null)
-          : (cur === "skill" ? "command" : null);
-        if (next) {
-          const hasResults = next === "skill" ? skillCmds.length > 0 : activeBuiltinCmds.length > 0;
-          if (hasResults) setActiveTab(next);
-        }
+        const order: TabKind[] = ["skill", "command", "engine"];
+        const cur = order.indexOf(activeTabRef.current);
+        const step = e.key === "ArrowLeft" ? -1 : 1;
+        const next = order[(cur + step + order.length) % order.length];
+        const hasResults =
+          next === "skill"
+            ? skillCmds.length > 0
+            : next === "command"
+              ? activeBuiltinCmds.length > 0
+              : engineCmds.length > 0;
+        if (hasResults) setActiveTab(next);
         return;
       }
       if (e.key === "Enter" || e.key === "Tab") {
@@ -159,13 +189,14 @@ export function SlashCommandPicker({
         e.stopPropagation();
         const entry = commands[activeIdxRef.current];
         if (!entry) return;
-        if (isBuiltInCommand(entry)) onPickCommand(entry);
+        if (isEngineCommand(entry)) onPickEngineCommand(entry);
+        else if (isBuiltInCommand(entry)) onPickCommand(entry);
         else onPickSkill(entry);
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [open, commands, onPickSkill, onPickCommand, onClose, skillCmds.length, activeBuiltinCmds.length]);
+  }, [open, commands, onPickSkill, onPickCommand, onPickEngineCommand, onClose, skillCmds.length, activeBuiltinCmds.length, engineCmds.length]);
 
   if (!open || !anchorRect) return null;
 
@@ -184,7 +215,7 @@ export function SlashCommandPicker({
       }}
       onMouseDown={(e) => e.preventDefault()}
     >
-      {/* Tab bar: Skill | 命令. Each tab shows its live result count. */}
+      {/* Tab bar: Skill | 命令 | Claude Code. Each tab shows its live result count. */}
       <div className="flex items-stretch border-b border-edge">
         <TabButton
           active={activeTab === "skill"}
@@ -200,6 +231,15 @@ export function SlashCommandPicker({
           label={t("chat.slash.tabCommands")}
           count={builtinCmds.length}
         />
+        {/* 引擎那一栏常驻显示（哪怕还没拉到清单），否则用户永远不知道有这么一栏
+            —— 「用不了 claude code 内置的命令」最初就是看不见造成的。 */}
+        <TabButton
+          active={activeTab === "engine"}
+          onClick={() => setActiveTab("engine")}
+          icon={<IconTerminal size={12} className="shrink-0 opacity-70" />}
+          label={t("chat.slash.tabEngine")}
+          count={engineCmds.length}
+        />
       </div>
 
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto p-1">
@@ -209,24 +249,34 @@ export function SlashCommandPicker({
               ? skills.length === 0
                 ? t("chat.slash.noSkills")
                 : t("chat.slash.noSkillMatch")
-              : t("chat.slash.noCommandMatch")}
+              : activeTab === "command"
+                ? t("chat.slash.noCommandMatch")
+                : !engineCommandsReady
+                  ? t("chat.slash.engineNotReady")
+                  : t("chat.slash.noEngineMatch")}
           </div>
         ) : (
           commands.map((entry, idx) => {
             const isActive = idx === activeIdx;
-            const isBuiltin = isBuiltInCommand(entry);
+            const isEngine = isEngineCommand(entry);
+            const isBuiltin = !isEngine && isBuiltInCommand(entry);
             const name = entry.name;
-            const description = entry.description;
-            const argumentHint = entry.argumentHint;
+            const description = isEngine
+              ? (entry as EngineCommand).description
+              : (entry as BuiltInCommand | SkillInfo).description;
+            const argumentHint = isEngine
+              ? (entry as EngineCommand).argumentHint
+              : (entry as BuiltInCommand | SkillInfo).argumentHint;
             return (
               <button
-                key={isBuiltin ? `builtin:${name}` : `${(entry as SkillInfo).source}:${name}`}
+                key={isEngine ? `engine:${name}` : isBuiltin ? `builtin:${name}` : `${(entry as SkillInfo).source}:${name}`}
                 type="button"
                 data-idx={idx}
                 onMouseEnter={() => setActiveIdx(idx)}
                 onClick={() => {
-                  if (isBuiltin) onPickCommand(entry);
-                  else onPickSkill(entry);
+                  if (isEngine) onPickEngineCommand(entry as EngineCommand);
+                  else if (isBuiltin) onPickCommand(entry as BuiltInCommand);
+                  else onPickSkill(entry as SkillInfo);
                 }}
                 className={cn(
                   "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] transition-colors",
@@ -235,7 +285,9 @@ export function SlashCommandPicker({
                     : "text-content hover:bg-surface-hover",
                 )}
               >
-                {isBuiltin ? (
+                {isEngine ? (
+                  <IconTerminal size={14} className="shrink-0 text-content-muted" />
+                ) : isBuiltin ? (
                   <IconCommand size={14} className="shrink-0 text-content-muted" />
                 ) : (
                   <IconSparkles size={14} className="shrink-0 text-content-muted" />
@@ -257,11 +309,13 @@ export function SlashCommandPicker({
                       adding a fourth arm to an already-deep ternary. Project-scoped
                       skills no longer exist (the universal library is the only
                       user-owned scope). */}
-                  {isBuiltin || (entry as SkillInfo).source === "builtin"
-                    ? t("chat.slash.builtin")
-                    : (entry as SkillInfo).source === "plugin"
-                      ? t("chat.slash.plugin")
-                      : t("chat.slash.global")}
+                  {isEngine
+                    ? t("chat.slash.engine")
+                    : isBuiltin || (entry as SkillInfo).source === "builtin"
+                      ? t("chat.slash.builtin")
+                      : (entry as SkillInfo).source === "plugin"
+                        ? t("chat.slash.plugin")
+                        : t("chat.slash.global")}
                 </span>
               </button>
             );

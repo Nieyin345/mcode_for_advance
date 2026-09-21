@@ -1129,6 +1129,25 @@ const BlockView = memo(function BlockView({
         );
       }
 
+    case "local-command":
+      // 本地斜杠命令（`/usage`、`/context` 这类不经过模型的）印出来的结果。
+      // 引擎把它当「assistant-style text in the transcript」发回来，所以这里也按
+      // 一段**正文**排，而不是通知条 —— 它就是这个命令的答案本身。
+      //
+      // 等宽 + 保留换行：这类输出常常是对齐的表格（用量、上下文占用百分比），
+      // 走 Markdown 会把空格折掉、把 `|` 当表格语法吃掉。
+      return (
+        <div className="overflow-hidden rounded-md border border-edge bg-surface-muted">
+          <div className="flex items-center gap-1.5 border-b border-edge px-3 py-1.5 text-[11px] text-content-subtle">
+            <IconTerminal size={12} className="shrink-0" />
+            <span className="font-mono">{block.name ? `/${block.name}` : t("chatStream.localCommand.title")}</span>
+          </div>
+          <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-[12px] leading-relaxed text-content">
+            {block.content}
+          </pre>
+        </div>
+      );
+
     case "plan":
       // Inline read-only plan card that lives in the message stream as a
       // per-turn trailing block (drafting -> 待审阅 -> 已就绪). Clicking it

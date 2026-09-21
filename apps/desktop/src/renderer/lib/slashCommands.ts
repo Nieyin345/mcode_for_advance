@@ -108,11 +108,50 @@ export function filterBuiltInCommands(query: string): BuiltInCommand[] {
 
 /** A unified entry the picker renders - either a discovered skill or a
  *  built-in command. The `kind` field discriminates them. */
-export type SlashEntry = SkillInfo | BuiltInCommand;
+export type SlashEntry = SkillInfo | BuiltInCommand | EngineCommand;
 
 /** Type guard: is this entry a built-in command (has a `kind`)? */
 export function isBuiltInCommand(entry: SlashEntry): entry is BuiltInCommand {
   return (entry as BuiltInCommand).kind !== undefined;
+}
+
+/**
+ * 一条**引擎自己报的**命令（Claude Code CLI 的 `/usage`、`/context` 那一批）。
+ *
+ * ## 与 `BuiltInCommand` 的区别（这个区分是必须的）
+ *
+ * `BuiltInCommand` 是 **Mcode 自己写的四条**，每一条都有定制行为 —— `/compact`
+ * 立刻发、`/init` 变成药丸、`/browser` 铺一段模板。它们**不由引擎执行**，是 Mcode
+ * 拼出提示词再发。
+ *
+ * 这一种正相反：**Mcode 不解释它**，原样当一句 prompt 发过去，CLI 认出前导 `/`
+ * 就地执行（SDK 的 `SDKLocalCommandOutputMessage` 文档原话就是这么说的），结果以
+ * `local_command.output` 回来。所以这里只需要名字（+引擎给的说明），**没有定制分支**。
+ *
+ * 混进 `BuiltInCommand` 会在两个地方咬人：`handleBuiltInPick` 的 if 链会走到最后
+ * 那条 `init` 分支把它当药丸插进去；而 `isBuiltInCommand` 的类型收窄也就名不副实了。
+ */
+export interface EngineCommand {
+  /** 判别字段 —— `SkillInfo` 有 `source`、`BuiltInCommand` 有 `kind`，都没有它。 */
+  engine: true;
+  name: string;
+  description: string;
+  argumentHint: string;
+}
+
+/** `EngineCommand` 与 `SkillInfo` / `BuiltInCommand` 的判别。 */
+export function isEngineCommand(entry: SlashEntry): entry is EngineCommand {
+  return (entry as EngineCommand).engine === true;
+}
+
+/** Case-insensitive match on engine command name + description. Empty query = all. */
+export function filterEngineCommands(query: string, cmds: EngineCommand[]): EngineCommand[] {
+  const q = query.trim().toLowerCase().replace(/^\//, "");
+  if (!q) return cmds;
+  return cmds.filter((c) => {
+    if (c.name.toLowerCase().includes(q)) return true;
+    return c.description.toLowerCase().includes(q);
+  });
 }
 
 /** Case-insensitive match on skill name + description. Empty query = all.

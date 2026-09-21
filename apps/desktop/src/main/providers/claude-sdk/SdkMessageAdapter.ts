@@ -28,6 +28,8 @@ import type {
   TranscriptBlock,
   SubagentTranscriptEvent,
   UpstreamIssueEvent,
+  CommandsAvailableEvent,
+  LocalCommandOutputEvent,
 } from "@contracts/runtime";
 import type { ProviderContext } from "@contracts/provider";
 import { FileSnapshot, FILE_MUTATING_TOOLS, getToolFilePath, normalizeToolFilePath } from "@main/lib/fileSnapshot.js";
@@ -421,6 +423,16 @@ interface AdapterState {
    *  "result + agents idle" condition killed every ask in the resumed
    *  phase with "AbortError: Stream closed"). */
   lastAgentActivityAt: number;
+
+  /**
+   * 上一次报给渲染端的「UX 绑在本地终端上」的命令名（2026-09-21）。
+   *
+   * 引擎有两条路报命令清单：`system/init`（带 `terminal_slash_commands`）和
+   * `commands_changed`（带说明、**不带** terminal 标记）。后者覆盖前者时，如果我们
+   * 直接报空数组，消费端会把上一份标记清掉 —— 于是 `/doctor`、`/color` 这几个在
+   * 中途装了插件之后就不再被标成终端命令了。存一份，合并着报。
+   */
+  terminalCommandNames: string[];
 }
 
 /* ─── public export ────────────────────────────────────────────────── */
@@ -511,6 +523,7 @@ export class SdkMessageAdapter {
       settled: false,
       lastResultAt: 0,
       lastAgentActivityAt: 0,
+      terminalCommandNames: [],
     };
   }
 
@@ -604,6 +617,50 @@ export class SdkMessageAdapter {
         });
       } else if (subtype === "api_retry") {
         this.handleApiRetry(sys as unknown as ApiRetryEnvelope);
+      } else if (subtype === "commands_changed") {
+        // 引擎中途重报了命令清单（装了插件、或它自己 new 出了新技能）。SDK 的原话：
+        // 「Clients should REPLACE their cached command list with this payload」。
+        //
+        // 与 init 那条的差别很实际：**这条带说明**。init 只给一串名字，所以菜单里
+        // 每个命令下面那行字在收到本事件之前是空的。
+        const list = (sys as { commands?: unknown }).commands;
+        if (Array.isArray(list)) {
+          this.ctx.emit({
+            type: "commands.available",
+            sessionId: this.sessionId,
+            commands: list
+              .filter((c): c is { name?: unknown } => !!c && typeof c === "object")
+              .map((c) => ({
+                name: typeof c.name === "string" ? c.name : "",
+                description: typeof (c as { description?: unknown }).description === "string"
+                  ? (c as { description: string }).description
+                  : "",
+                argumentHint: typeof (c as { argumentHint?: unknown }).argumentHint === "string"
+                  ? (c as { argumentHint: string }).argumentHint
+                  : "",
+                aliases: Array.isArray((c as { aliases?: unknown }).aliases)
+                  ? ((c as { aliases: unknown[] }).aliases).filter((a): a is string => typeof a === "string")
+                  : [],
+              }))
+              .filter((c) => c.name.length > 0),
+            // `commands_changed` 不带 terminal 标记 —— 报上一次记住的那份，
+            // 别把 `/doctor`、`/color` 的标记清掉（见 state.terminalCommandNames）。
+            terminalCommands: this.state.terminalCommandNames,
+          } satisfies CommandsAvailableEvent);
+        }
+      } else if (subtype === "local_command_output") {
+        // 本地命令（`/usage`、`/context` 这类不经过模型的）的结果文本（2026-09-21）。
+        // 从前它落在下面的「未知 subtype 静默丢弃」里 —— 用户发了命令，界面上什么都
+        // 看不见。SDK 的原话是「Displayed as assistant-style text in the transcript」，
+        // 所以这里原样交给渲染端当消息正文。
+        const content = (sys as { content?: unknown }).content;
+        if (typeof content === "string" && content.length > 0) {
+          this.ctx.emit({
+            type: "local_command.output",
+            sessionId: this.sessionId,
+            content,
+          } satisfies LocalCommandOutputEvent);
+        }
       }
     } else if (type === "stream_event") {
       this.handleStreamEvent(m as SDKPartialAssistantMessage);
@@ -795,6 +852,31 @@ export class SdkMessageAdapter {
       this.ctx.log.info(
         `claude SDK init: session=${m.session_id}, model=${m.model}, permissionMode=${m.permissionMode}`,
       );
+      // 引擎自己报的斜杠命令清单（2026-09-21）。**每次 init 都发**，不是只在第一轮
+      // —— resume / 重连 / 装了个插件之后清单会变，而 CLI 是权威。渲染端整体替换即可。
+      //
+      // 从前这个字段就在这里，只是没人读；于是界面上打 `/` 只列得出 Mcode 硬编码的
+      // 四条，用户「用不了 claude code 内置的命令」。
+      //
+      // ⚠️ 这一条**只有名字**（SDK 的 `slash_commands: string[]`），没有说明。带说明
+      // 的那份在 `commands_changed`（见 dispatch），引擎中途发现新技能时才推。
+      const commands = (m as { slash_commands?: unknown }).slash_commands;
+      const terminalCommands = (m as { terminal_slash_commands?: unknown }).terminal_slash_commands;
+      if (Array.isArray(commands)) {
+        // 记住哪几条是终端命令 —— `commands_changed` 不带这个标记，覆盖时要合回来。
+        this.state.terminalCommandNames = Array.isArray(terminalCommands)
+          ? terminalCommands.filter((c): c is string => typeof c === "string")
+          : [];
+        this.ctx.emit({
+          type: "commands.available",
+          sessionId: this.sessionId,
+          commands: commands
+            .filter((c): c is string => typeof c === "string")
+            .map((name) => ({ name, description: "", argumentHint: "", aliases: [] })),
+          // 老版本 CLI 没这个字段 —— 空数组，不是 undefined（消费端不用再判空）。
+          terminalCommands: this.state.terminalCommandNames,
+        } satisfies CommandsAvailableEvent);
+      }
     }
   }
 

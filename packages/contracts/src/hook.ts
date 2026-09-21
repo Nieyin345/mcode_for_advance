@@ -284,6 +284,10 @@ export const HOOK_EVENT_OF: Record<RuntimeEvent["type"], HookEvent | null> = {
   // 长期任务的状态广播(见 `longTask.ts`)—— 钩子/触发器暂不暴露,和 `git.changed`
   // 同一档"故意不给":它描述的是循环器内部进度,用户能表达的意图已经由 turn 级事件覆盖。
   "longtask.update": null,
+  // 引擎报上来的斜杠命令清单(见 `@contracts/runtime` 的 `CommandsAvailableEvent`)。
+  // 这是**界面元数据** —— "菜单里该列哪些命令",不是对话里发生了什么事。给它一个钩子
+  // 的话,用户能用它表达什么意图?想不出来。同一档的还有下面那批"不该给"。
+  "commands.available": null,
 
   /* ── 故意不暴露的(是"不该给",不是"还没来得及给")── */
 
@@ -291,6 +295,11 @@ export const HOOK_EVENT_OF: Record<RuntimeEvent["type"], HookEvent | null> = {
   "text.delta": null,
   thinking: null,
   "subagent.transcript": null,
+  // 本地命令的输出(`/usage`、`/context` 这类不经过模型的命令印出来的那段文本)。
+  // 内容是**给用户看的**,不是给钩子看的 —— 想对"用户查了用量"做点什么,那是自动化
+  // 场景里很靠后的事,而它有个更合适的挂点(将来真要做,该挂的是"用户发了某条消息",
+  // 那是 `user.message`)。
+  "local_command.output": null,
   // 给已经画出来的那张步骤卡**补一个花费数字**。它是 `workflow.node.result` 的**后补**
   // (用量要等那个回合结算才有,而卡片是节点收场那一刻就画出来的,见
   // `@contracts/runtime` 的 `WorkflowNodeUsageEvent`)。所以挂钩子这件事它完全搭不上:

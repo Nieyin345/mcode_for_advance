@@ -1242,6 +1242,75 @@ export interface LibraryItemDownloadedEvent {
   pdfPath: string;
 }
 
+/**
+ * 引擎**自己**报上来的斜杠命令清单（2026-09-21）。
+ *
+ * ## 为什么要有这个事件
+ *
+ * 在这之前，输入框里打 `/` 只列得出 `slashCommands.ts` 里**硬编码的四条**
+ * （compact / init / browser / sidechat）。而 Claude Code CLI 在每轮的
+ * `system/init` 消息里一直带着 `slash_commands` —— 实测 57 条，含 `/usage`
+ * `/context` `/model` `/mcp` `/memory` 等等。Mcode 从来没读过这个字段，于是
+ * 用户「用不了 claude code 内置的命令」。
+ *
+ * ## 为什么用事件而不是加一条 RPC
+ *
+ * 这份清单**不属于**任何一次调用 —— 它是会话启动时引擎自己推过来的（`system/init`
+ * 是 CLI 主动发的，不是我们问的）。走 RPC 就得反过来维护一个「清单缓存 + 刷新时机」，
+ * 而这个时机会在每次 resume / 重连时错位。顺着事件流走，清单和它所属的会话天然同步。
+ *
+ * ## 两个数组的分工
+ *
+ * - `commands` —— 全部命令，进 `/` 菜单。
+ * - `terminalCommands` —— 其中「UX 绑在本地终端上」的那几条（CLI 的原话：
+ *   `exit`、`statusline` 之类）。SDK 的注释说桌面端**可以**留着，手机端该藏起来。
+ *   这里原样带上来，由渲染端决定怎么用 —— 契约层不做取舍。
+ */
+export interface CommandsAvailableEvent {
+  type: "commands.available";
+  sessionId: string;
+  /** 命令名，不含前导 `/`。顺序照引擎给的顺序（那是它的展示顺序）。 */
+  commands: EngineCommandInfo[];
+  /** `commands` 的子集，见上。CLI 没标就是空数组。 */
+  terminalCommands: string[];
+}
+
+/** 引擎报上来的一条斜杠命令。 */
+export interface EngineCommandInfo {
+  /** 命令名，不含前导 `/`（如 `usage`、`plugin-dev:create-plugin`）。 */
+  name: string;
+  /**
+   * 引擎给的说明。`system/init` 那条路**只有名字没有说明**（实测：它只发
+   * `slash_commands: string[]`），要说明得等引擎推 `commands_changed`。
+   * 空串 = 还不知道，不是"这个命令没有说明"。
+   */
+  description: string;
+  /** 参数提示，如 `<file>`。没有就是空串。 */
+  argumentHint: string;
+  /** 别名（`/cost`、`/stats` 都指向 `/usage`）。没有就是空数组。 */
+  aliases: string[];
+}
+
+/**
+ * 引擎执行了一条**本地命令**之后回传的输出（2026-09-21）。
+ *
+ * 有些斜杠命令不经过模型 —— `/usage`（看用量）、`/context`（看上下文占用）这类
+ * 由 CLI 自己就地算完，把结果文本以 `system/local_command_output` 发回来，SDK 的
+ * 注释写得很明白：「Displayed as assistant-style text in the transcript」。
+ *
+ * Mcode 的 dispatch 在此之前把它当**未知 subtype 静默丢弃** —— 于是用户发了
+ * `/usage`，那一轮跑完了，界面上却什么都看不见。这条事件就是给它一个落点。
+ *
+ * 消费端要当**消息正文**渲染（就像模型说了这段话），而不是当通知条 —— 它的内容
+ * 是命令的结果本身。
+ */
+export interface LocalCommandOutputEvent {
+  type: "local_command.output";
+  sessionId: string;
+  /** CLI 给的原文，已含换行。渲染端按纯文本/等宽排版，不要当 Markdown 解析。 */
+  content: string;
+}
+
 /** The union of all runtime events. */
 export type RuntimeEvent =
   | TextDeltaEvent
@@ -1281,4 +1350,6 @@ export type RuntimeEvent =
   | GitChangedEvent
   | LibraryItemImportedEvent
   | LibraryItemDownloadedEvent
-  | LongTaskUpdateEvent;
+  | LongTaskUpdateEvent
+  | CommandsAvailableEvent
+  | LocalCommandOutputEvent;

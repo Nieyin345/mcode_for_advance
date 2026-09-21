@@ -352,6 +352,11 @@ export const en = {
   "chatStream.turnNotice.fallbackTitle": "Automatic model fallback",
   "chatStream.turnNotice.structuredTitle": "Structured output failed validation",
 
+  // ── MessageBlocks: local slash-command output card (/usage, /context, …) ──
+  // Only shown when the command name can't be recovered (normally the title is
+  // the command itself, e.g. `/usage`).
+  "chatStream.localCommand.title": "Command output",
+
   // ── MessageBlocks: ExitPlanMode approval-channel failure ──
   "chatStream.planApprovalBroken.title": "Plan approval prompt failed to show",
   "chatStream.planApprovalBroken.desc":
