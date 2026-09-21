@@ -2015,19 +2015,35 @@ function ChatPaneForSession({
       setQuoteState(null);
       setSelectionToolbar(null);
       if (!quoted) return;
+      // **落成一个标签，不是一段纯文本**（2026-09-21）。
+      //
+      // ★ 用户：「我要的是像引用文件一样在对话框里面加一个绿色的小标签」。
+      // 从前两处都是把那段文字**拼进草稿正文**（`insertText` / `prev.text + quoted`），
+      // 于是引用的东西长得跟用户自己打的字一模一样 —— 看不出"这是我从文件里挑来的"，
+      // 也没法单独摘掉。
+      //
+      // `makeContentTag` 造的正是那种 chip：`kind: "paste"`，走主题色
+      // （`bg-accent/10 text-accent`，那个绿的），点开能看全文、点 × 能单独删。
+      // 和拖进来的文件、粘进来的大段内容是**同一种东西** —— 所以它跟"引用文件"
+      // 长得一样，正是用户要的。
+      //
+      // ⚠️ `FileViewer` 那条路（从文件预览里选中段落）早就这么改了；**这一条漏了**
+      // ——`ddae1cf` 的提交说明里写了"改成落一个绿色标签"，但它只动了
+      // `SelectionQuoteMenu.tsx` 和 `FileViewer.tsx`，没动这里，所以聊天里选段引用
+      // 仍然是拼纯文本。这次补齐。
       if (target.id === sessionId) {
-        // 插到光标处而不清空 —— 引用的常见用法是"再补一句问他",删掉用户已经
-        // 打好的半句话是最坏的默认。
-        editorRef.current?.insertText(quoted);
+        // 落进**这一场的**草稿 tag —— 与 `handlePromotePaste` 同一个落点。
+        // 不再 `insertText`：那样引用会混进用户打的字里，分不出来。
+        setTags((prev) => [...prev, makeContentTag(quoted)]);
         editorRef.current?.focus();
         return;
       }
-      // 别的会话:落草稿。类型上只可能是当前会话或它的节点会话,所以再挡一道。
+      // 别的会话:落它的草稿。
       const prev = useSessionStore.getState().composerDraftBySession[target.id];
       useSessionStore.getState().saveComposerDraft(target.id, {
-        text: prev?.text ? `${prev.text}\n\n${quoted}` : quoted,
-        html: "",
-        tags: prev?.tags ?? [],
+        text: prev?.text ?? "",
+        html: prev?.html ?? "",
+        tags: [...(prev?.tags ?? []), makeContentTag(quoted)],
       });
       useToastStore.getState().push({
         kind: "info",
