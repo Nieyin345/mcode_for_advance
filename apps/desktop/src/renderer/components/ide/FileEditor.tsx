@@ -11,6 +11,7 @@ import { ideDirtyTracker } from "./OpenTabsBar.js";
 import { IconEye, IconEdit, IconLoader2, IconAlertTriangle, IconSquare, IconColumns3, IconPhotoOff, IconArrowLeft, IconArrowRight } from "@renderer/lib/icons.js";
 import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
 import { Markdown } from "../chat/Markdown.js";
+import { PdfPreview } from "../library/PdfPreview.js";
 // LSP provider bridge: registers definition/references/hover providers, syncs
 // documents, and applies diagnostics markers to the model.
 import {
@@ -75,10 +76,12 @@ export function FileEditor({
 }) {
   // View mode is scoped to the active project's bucket.
   //
-  // ## 默认档：markdown 落在**预览**，其余落在编辑
+  // ## 默认档：给人看的文件落**预览**，给人改的落编辑
   //
   // `.md` 是"给人读的"——打开一篇论文笔记，先想看的是排版好的样子，不是一屏
-  // `#` 和 `|`。其余文件（代码、json、日志）相反，打开就是要改，源码才对。
+  // `#` 和 `|`。**PDF 更是如此**：它是二进制，Monaco 画出来就是一屏乱码（用户报的
+  // 「项目文件打开就是这个效果」那张截图）。其余文件（代码、json、日志）相反，
+  // 打开就是要改，源码才对。
   //
   // ⚠️ 这里从前是 `?? "edit"`（对所有文件一律落到编辑），而下面 `hasPreviewToggle`
   // 那段注释一直写着 "Files that default to a read-only preview pane (markdown
@@ -86,7 +89,7 @@ export function FileEditor({
   //
   // 用户自己的选择仍然优先：`ideFileViewModeByProject` 里记着他在这个项目里为这个
   // 文件选过哪一档，改完照旧留着（`??` 只在**没有记录**时生效）。
-  const defaultMode = isMarkdown(filePath) ? "preview" : "edit";
+  const defaultMode = isMarkdown(filePath) || isPdfFile(filePath) ? "preview" : "edit";
   const pid = useSessionStore((s) => s.activeProjectId);
   const viewMode = useSessionStore((s) =>
     pid ? s.ideFileViewModeByProject[pid]?.[filePath] ?? defaultMode : defaultMode,
@@ -128,6 +131,9 @@ export function FileEditor({
   const markdown = isMarkdown(filePath);
   const image = isImage(filePath);
   const unsupported = isUnsupported(filePath);
+  /** PDF 走**同一个** `PdfPreview`（pdf.js 官方 viewer 组件）—— 见文件头那段
+   *  "同一个 PDF 不该有两套画法"（那是 `FileViewer` 的取舍,这里沿用）。 */
+  const pdf = isPdfFile(filePath);
 
   return (
     <div className="flex h-full flex-col">
@@ -150,7 +156,9 @@ export function FileEditor({
         {effectiveMode === "diff" && diffBefore != null ? (
           <DiffPane filePath={filePath} before={diffBefore} after={diffAfter} />
         ) : effectiveMode === "preview" ? (
-          image ? (
+          pdf ? (
+            <PdfPreviewPane filePath={filePath} />
+          ) : image ? (
             <ImagePreviewPane filePath={filePath} />
           ) : unsupported ? (
             <UnsupportedPane filePath={filePath} />
@@ -262,6 +270,11 @@ function EditorToolbar({
   // Files that default to a read-only preview pane (markdown rendered, image
   // displayed, or an unsupported-type notice). These get a Preview/Edit toggle
   // so the user can still drop into the raw Monaco editor if they want.
+  //
+  // ⚠️ **PDF 故意不在这个列表里。** 它同样默认走预览（见上面 `defaultMode`），
+  // 但**不该给"切到 Monaco 看看"那个按钮** —— pdf 是二进制，Monaco 画出来就是
+  // 一屏乱码，那正是用户截图里那个坏状态。给它一个按下去只会看到乱码的按钮，
+  // 比不给更坏（同 `FileViewer` 里"画一个按下去不动的按钮比不画更坏"那条取舍）。
   const hasPreviewToggle = isMarkdown || isImage || isUnsupported;
   // Show the path relative to the project root when possible (cleaner in the
   // narrow toolbar); fall back to the full path. Case-insensitive on Windows/
@@ -1233,6 +1246,67 @@ function MarkdownPreviewPane({ filePath, projectPath }: { filePath: string; proj
  *  Uses a data URL (not a custom protocol or `file://`) so it works under the
  *  production CSP (`img-src 'self' data:`) with no extra privilege grants.
  *  No dirty tracking - images are read-only. */
+/**
+ * 中间栏里的 PDF —— 双击文件树里一个 `.pdf` 落到这里（单击走的是 `FileViewer`
+ * 那条预览路）。
+ *
+ * ## 为什么自己也读一遍字节,而不是把 id 丢给 `PdfPreview`
+ *
+ * `PdfPreview` 有两条取数路：**调用方给了 `bytes` 就用它**；不给才回退
+ * `library.readPdf({ id })` —— 而**那条只认文献库的条目 id**。项目文件没有条目 id,
+ * 回退必然失败。用户报的「左边栏点击 pdf 文件不打开」正是这个形状（`FileViewer`
+ * 那边 2026-09-21 修过同一处）。
+ *
+ * 所以这里**必须**自己读字节再传进去。读的是 `api.file.readBinary` —— 与
+ * `ImagePreviewPane` 和 `FileViewer` 的项目文件那一支**同一个 IPC**,不新开通道。
+ */
+function PdfPreviewPane({ filePath }: { filePath: string }) {
+  const { t } = useI18n();
+  // null = 还在读, undefined = 读失败(交给 PdfPreview 自己报), Uint8Array = 拿到了
+  const [bytes, setBytes] = useState<Uint8Array | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setBytes(null);
+    api.file
+      .readBinary({ filePath })
+      .then(({ dataUrl }) => {
+        if (cancelled) return;
+        // data URL → 字节。大 PDF 十几 MB,这一步是一次 base64 解码,值得。
+        const comma = dataUrl.indexOf(",");
+        const b64 = comma >= 0 ? dataUrl.slice(comma + 1) : "";
+        // data URL → 字节。这几行与 `FileViewer` / `FilePreview` 里那两份私有实现
+        // 是同一个算法（它们各自写了一份，见仓库硬规矩第 2 条的反面教材）—— 这里
+        // 不再抄第三份，只用一次所以干脆内联。
+        const bin = atob(b64);
+        const out = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+        setBytes(out);
+      })
+      .catch(() => {
+        // 读不动就交一个空数组进去 —— `PdfPreview` 那边会报"加载失败",比这里
+        // 自己画一块空白强(它有重试按钮)。
+        if (!cancelled) setBytes(new Uint8Array());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [filePath]);
+
+  if (bytes === null) {
+    return (
+      <div className="flex h-full items-center justify-center gap-1.5 text-[11px] text-content-subtle">
+        <IconLoader2 size={12} className="animate-spin" />
+        {t("common.loading")}
+      </div>
+    );
+  }
+
+  // `item` 只要 `{ id }`。项目文件没有条目 id,给空串 —— `bytes` 在,那个字段
+  // 根本不会被用到（见上面"为什么自己也读一遍字节"）。
+  return <PdfPreview item={{ id: "" }} bytes={bytes} />;
+}
+
 function ImagePreviewPane({ filePath }: { filePath: string }) {
   const { t } = useI18n();
   const [natural, setNatural] = useState(false);
@@ -1700,6 +1774,15 @@ export function useMonacoTheme(): string {
   return dark ? darkScheme : lightScheme;
 }
 
+/** True for `.pdf` —— 默认走预览、渲染分支走 `PdfPreviewPane`。
+ *
+ *  单独一个函数而不是在两处各写一遍 `extname(...) === ".pdf"`：默认档和渲染分支
+ *  必须认**同一个**判据,不然会出现"默认进了预览、预览分支却不认它、掉进 markdown
+ *  那一支"。 */
+function isPdfFile(filePath: string): boolean {
+  return extname(filePath) === ".pdf";
+}
+
 /** True for `.md` / `.markdown` files - gates the preview/edit toolbar toggle
  *  and the preview render branch. */
 function isMarkdown(filePath: string): boolean {
@@ -1784,9 +1867,13 @@ function isUnsupported(filePath: string): boolean {
     case ".ttf":
     case ".otf":
     case ".eot":
-    // PDF (no built-in viewer; could add one later)
-    case ".pdf":
       return true;
+    // ⚠️ **`.pdf` 从这条里拿掉了（2026-09-21）。** 这里从前写着
+    // "PDF (no built-in viewer; could add one later)" 并 `return true` —— 而那句
+    // 注释早就不成立了：`PdfPreview`（pdf.js 官方 viewer 组件）一直在，
+    // `FileViewer` 也真的在用。于是**双击一个 pdf**（走 `openFileInIde` → 这个
+    // 编辑器）会被当成"不支持的类型"退回纯文本,屏幕上是一屏 PDF 原始字节的乱码 ——
+    // 用户的原话是「项目文件打开就是这个效果」。现在它归 `PdfPreviewPane` 管。
     default:
       return false;
   }
