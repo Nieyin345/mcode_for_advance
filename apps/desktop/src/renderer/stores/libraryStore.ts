@@ -137,7 +137,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     try {
       const res = await api.library.createCollection({ name: trimmed, parentId, kind: get().activeKind });
       set({ collections: res.collections });
-      // 新建的库按 sortOrder 排在末尾,取最后一个同名同层的即可拿到 id
+      // 取**最新**的那条（按 createdAt 倒序）—— 与 sortOrder 无关，
+      // 所以新建的排最前还是最后都不影响这里找 id。
       const created = res.collections
         .filter((c) => c.name === trimmed && c.parentId === parentId)
         .sort((a, b) => b.createdAt - a.createdAt)[0];

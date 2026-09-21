@@ -88,8 +88,15 @@ export const LIBRARY_GROUPS_SETTING_KEY = "library.groups";
  * 可配置的意义。
  */
 export const DEFAULT_LIBRARY_GROUPS: readonly LibraryGroupMeta[] = [
-  { id: "docs", name: "文档", kinds: ["paper", "textbook", "note"] },
+  // ⚠️ **「模版」排在「文档」上面**（2026-09-21）。用户的原话：「模版要在文档上面」。
+  //
+  // 早先是文档在前。顺序本身没有对错，但用户平时先看的是模版那一段（他要照着写），
+  // 所以按他的用法把它提到最前。
+  //
+  // ⚠️ 改这里**只影响还没存过组表的库** —— 一旦用户在设置里动过（或新建过大类），
+  // 存下来的那份就是准的，这份出厂表就不再生效。见 `kindRegistry.loadLibraryGroups`。
   { id: "templates", name: "模版", kinds: ["document", "slides", "latex", "code", "image"] },
+  { id: "docs", name: "文档", kinds: ["paper", "textbook", "note"] },
 ];
 
 /**

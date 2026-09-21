@@ -768,7 +768,10 @@ export function LibrarySection({
     // 归入本段的大类(失败时 saveGroups 自己会把后端的话摆出来)。
     // 即使归组失败也要重拉:类型已经落进注册表,只是"未分组"(左栏不显示、数据在)。
     const grouped = await saveGroups(
-      groups.map((g) => (g.id === group.id ? { ...g, kinds: [...g.kinds, id] } : g)),
+      // ⚠️ **插到最前面**（2026-09-21）。用户的原话：「新建的应该**在最上面**」。
+      // 原来追加在末尾（`[...g.kinds, id]`），于是新建的小类永远排在最后一个 ——
+      // 而它恰恰是用户此刻最想看的那个，得往右扫到头才找得到。
+      groups.map((g) => (g.id === group.id ? { ...g, kinds: [id, ...g.kinds] } : g)),
     );
     if (!grouped) onRefresh();
     // 切到新建的小类,让用户立刻看到它

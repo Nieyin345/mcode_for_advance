@@ -2332,16 +2332,25 @@ export const CollectionRepo = {
     }
     const db = getDb();
     const id = makeId("lc");
-    // 追加到末尾:取同级当前最大 sort_order + 1(**同库内**同级)
-    const maxStmt = db.prepare(
+    /**
+     * **插到最前面**，不是追加到末尾（2026-09-21）。
+     *
+     * 用户的原话：「新建的应该在**最上面**」。原来取 `MAX(sort_order) + 1`，于是新建的
+     * 分类永远排在最后一个 —— 而它恰恰是用户此刻最想找的那个，得往下一路扫到底。
+     *
+     * 取 `MIN(sort_order) - 1` 而不是"把现有的全部 +1"：后者要写整张表（几十行 update），
+     * 前者一条 insert 就够了，排序语义一样（`list` 按 `sort_order ASC`）。
+     * 负号会随时间越走越小 —— 无所谓，它只是排序用的相对值（整数，够用几万年）。
+     */
+    const orderStmt = db.prepare(
       parentId
-        ? "SELECT IFNULL(MAX(sort_order), -1) AS m FROM library_collections WHERE parent_id = ? AND kind = ?"
-        : "SELECT IFNULL(MAX(sort_order), -1) AS m FROM library_collections WHERE parent_id IS NULL AND kind = ?",
+        ? "SELECT IFNULL(MIN(sort_order), 0) AS m FROM library_collections WHERE parent_id = ? AND kind = ?"
+        : "SELECT IFNULL(MIN(sort_order), 0) AS m FROM library_collections WHERE parent_id IS NULL AND kind = ?",
     );
-    maxStmt.bind(parentId ? [v(parentId), v(kind)] : [v(kind)]);
-    maxStmt.step();
-    const nextOrder = Number((maxStmt.getAsObject() as { m: number }).m ?? -1) + 1;
-    maxStmt.free();
+    orderStmt.bind(parentId ? [v(parentId), v(kind)] : [v(kind)]);
+    orderStmt.step();
+    const nextOrder = Number((orderStmt.getAsObject() as { m: number }).m ?? 0) - 1;
+    orderStmt.free();
 
     db.run(
       "INSERT INTO library_collections (id, name, kind, prompt, parent_id, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
