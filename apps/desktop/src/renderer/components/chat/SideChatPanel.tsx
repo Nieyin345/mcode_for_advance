@@ -271,17 +271,8 @@ function SideChatListView({
         * （`hasMainSession` 那个判断也去掉了：没有主会话时按下去不会有反应这件事，
         *   由 `NewSubChatPicker` 那一侧自己说清楚 —— 而空列表本来就会告诉用户
         *   "先开一个会话"。多一层灰态只是让那个加号看起来像坏了。） */}
-      <div className="flex shrink-0 justify-end px-1.5 pb-0.5 pt-1">
-        <button
-          type="button"
-          // 弹「选档案」选择器（默认 / 档案 / 档案+记忆）—— 见 `onChooseProfile`。
-          onClick={(e) => onChooseProfile(e.currentTarget.getBoundingClientRect())}
-          title={t("sideChat.newChat")}
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-content-subtle transition-colors hover:bg-surface-hover hover:text-accent"
-        >
-          <IconPlus size={14} />
-        </button>
-      </div>
+      {/* 加号挪进 `MainSessionRow` —— 它现在和主对话那一行**并排**（用户：「把加号
+          还有这个主对话框放在一排」）。见那个函数。 */}
 
       {/* List body. */}
       <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
@@ -292,7 +283,7 @@ function SideChatListView({
             所以它**只在中间被文件占住时**才出现：那时主对话被挤出了中央，得有个地方能
             点回它、也能对它说话。平常中央就是它，列表里再摆一行是多余的。
             边框加粗 + 主题色描边是"这一条和下面那几条不是一类"，不是"它更重"。 */}
-        <MainSessionRow />
+        <MainSessionRow hasMainSession={hasMainSession} onChooseProfile={onChooseProfile} />
 
         {/* Live subagents (model-initiated Task children) — read-only
             transcripts behind each row. */}
@@ -421,7 +412,13 @@ function displayTitle(session: Session, placeholder: string): string {
  *
  * 点击 = 关掉中间那个文件（`onBack`），主对话就回到中央。
  */
-function MainSessionRow() {
+function MainSessionRow({
+  hasMainSession,
+  onChooseProfile,
+}: {
+  hasMainSession: boolean;
+  onChooseProfile: (anchor: DOMRect) => void;
+}) {
   const { t } = useI18n();
   // 只在**中间被文件占住**时才出现 —— 见上面那段。
   const previewing = useFileViewStore((s) => s.target !== null);
@@ -436,33 +433,58 @@ function MainSessionRow() {
   const open = useSessionStore((s) => s.activeSideChatId === activeSessionId);
   const select = useSessionStore((s) => s.selectSideChat);
   const close = useSessionStore((s) => s.closeSideChatView);
-  if (!previewing || !activeSessionId) return null;
+  // ⚠️ **不再整行返回 null**（2026-09-21）：加号住在这行里，而它**必须一直在**
+  // （从前它单独一行、无条件渲染）。只有**主对话那一块**是"中间有文件才出现"。
+  const showMain = previewing && !!activeSessionId;
+  // 加号**一直在**（它从前就是无条件渲染的），所以这一行不返回 null ——
+  // 没有主会话时这一行就只剩那个加号。
   return (
-    <ul className="mb-2 space-y-0.5 border-b border-edge pb-2">
-      <li>
-        <button
-          type="button"
-          // **点一下展开、再点一下收起**（用户：「应该还能收起来」）。展开的是这条
-          // 会话本身（`SideChatView` 用 `ChatPane`，主对话和子对话在那里是同一个东西）。
-          onClick={() => (open ? close() : void select(activeSessionId))}
-          title={open ? t("sideChat.collapseMain") : t("sideChat.expandMain")}
-          className={cn(
-            "flex w-full items-center gap-2 rounded-md border-2 px-2 py-1.5 text-left transition-colors",
-            open
-              ? "border-accent bg-accent/10"
-              : "border-accent/60 bg-accent/5 hover:bg-accent/10",
-          )}
-        >
-          <IconMessages size={13} className="shrink-0 text-accent" />
-          <span className="min-w-0 flex-1 truncate text-xs font-semibold text-content">
-            {title || t("sideChat.mainChat")}
-          </span>
-          <span className="shrink-0 rounded bg-accent/15 px-1 text-[9px] font-medium text-accent">
-            {t("sideChat.mainBadge")}
-          </span>
-        </button>
-      </li>
-    </ul>
+    /**
+     * **加号与主对话并排一行**（2026-09-21）。
+     *
+     * ★ 用户（截图）：「把**加号还有这个主对话框放在一排**，然后把**主对话的框缩小一点**」。
+     *
+     * 从前加号自己占一行（靠右）、主对话又占一行（满宽），两块上下叠着 —— 而那个满宽的
+     * 框看着像"一条对话"，正是用户先前说"我老是以为有两个对话"的那个东西。
+     *
+     * 现在并在同一行：主对话那一块**不再 `w-full`**（它按内容缩，右边留出加号的位置），
+     * 所以它在视觉上更像"一个入口"而不是"一条记录"。
+     */
+    <div className="mb-2 flex items-center gap-1 border-b border-edge pb-2">
+      {showMain && (
+      <button
+        type="button"
+        // **点一下展开、再点一下收起**（用户：「应该还能收起来」）。展开的是这条
+        // 会话本身（`SideChatView` 用 `ChatPane`，主对话和子对话在那里是同一个东西）。
+        onClick={() => (open ? close() : void select(activeSessionId as string))}
+        title={open ? t("sideChat.collapseMain") : t("sideChat.expandMain")}
+        className={cn(
+          // **不再 `w-full`** —— 框按内容缩，右边留给加号（见上面那段）。
+          "flex min-w-0 max-w-[85%] items-center gap-1.5 rounded-md border px-2 py-1 text-left transition-colors",
+          open
+            ? "border-accent bg-accent/10"
+            : "border-accent/50 bg-accent/5 hover:bg-accent/10",
+        )}
+      >
+        <IconMessages size={12} className="shrink-0 text-accent" />
+        <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-content">
+          {title || t("sideChat.mainChat")}
+        </span>
+        <span className="shrink-0 rounded bg-accent/15 px-1 text-[9px] font-medium text-accent">
+          {t("sideChat.mainBadge")}
+        </span>
+      </button>
+      )}
+      {/* 加号 —— 与主对话同一行，靠最右。没有主会话时它自己占那一行。 */}
+      <button
+        type="button"
+        onClick={(e) => onChooseProfile(e.currentTarget.getBoundingClientRect())}
+        title={t("sideChat.newChat")}
+        className="ml-auto flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-content-subtle transition-colors hover:bg-surface-hover hover:text-accent"
+      >
+        <IconPlus size={13} />
+      </button>
+    </div>
   );
 }
 
@@ -652,6 +674,11 @@ function SideChatView({ session, parentRow }: { session: Session; parentRow?: Se
               <span className="text-content-subtle">{t("sideChat.parentPrefix")} · </span>
               {parentGone ? t("sideChat.parentDeleted") : (parentRow?.title ?? "")}
             </button>
+          ) : isMain ? (
+            // **主对话没有"父会话"这回事** —— 它自己就是顶层。
+            // ⚠️ 从前这里一律走下面那支、显示「主会话已删除」：那是给**子对话**写的
+            // 文案（它的父级被删了），挂到主对话头上是一句**假话**（用户截图报的）。
+            null
           ) : (
             <span className="block truncate text-[10px] text-content-subtle">
               {t("sideChat.parentDeleted")}

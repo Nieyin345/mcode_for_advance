@@ -3860,12 +3860,21 @@ function ChatPaneForSession({
 
       {/* Input box — fixed at the bottom (outside the scroll container) so
           the user always has access to the composer. No border-t divider:
-          the box sits flush against the message area. When the session is
-          empty the wrapper takes flex-1 and centers the box vertically. */}
+          the box sits flush against the message area.
+
+          ⚠️ **空会话时不再垂直居中，贴到底部**（2026-09-21）。
+          用户（截图）：「把这个对话框**置底**」。从前 `empty` 那一档是
+          `flex flex-1 items-center justify-center` —— 把"在 xxx 中开始新的会话"那一块
+          连同输入框一起**顶到了整栏中间**，在窄的右栏里看着像整页被推下去了。
+          现在 `empty` 那一档只留 `flex flex-1`（撑满剩余高度、内容靠下）。
+
+          `justify-center` 去掉之后，里面那个 `w-full` 的列照旧铺满 —— 所以
+          `EmptyThreadWelcome` 与输入框仍然左右居中（那是它自己 `max-w` 加 `mx-auto`
+          的效果），只是**垂直方向**改成了贴底。 */}
       <div className={cn(
         "relative px-[var(--chat-gutter)]",
         empty
-          ? "flex flex-1 items-center justify-center overflow-hidden"
+          ? "flex flex-1 flex-col justify-end overflow-hidden pb-3"
           : "shrink-0 pb-3",
       )}>
         <div className={cn("relative w-full", empty ? "max-w-4xl" : "mx-auto max-w-5xl pt-5")}>
