@@ -51,6 +51,10 @@ export const en = {
   "library.list.emptyHint": "Import PDF files from your disk (authors and venue are detected automatically, then converted to Markdown), or search by keyword, or paste DOIs / arXiv IDs / BibTeX.",
   "library.list.noMatch": "No matching papers",
   "library.list.emptyInCollection": "A collection is just a view — your items are still in the library, they are simply not in this collection.",
+  /** Shown when the trash itself is empty. Deliberately NOT
+   *  `library.list.emptyInCollection` — that one is for an empty collection
+   *  and reads backwards here ("items are still in the library"). */
+  "library.trash.empty": "The trash is empty.",
   "library.list.showAll": "Show all",
   "library.list.filteredOut": "{n} items are hidden by the current filter",
   "library.list.clearFilters": "Clear filters",

@@ -57,6 +57,12 @@ export const zh = {
   "library.list.emptyHint": "导入本地的 PDF 文件（自动识别作者与期刊，并转成 Markdown），或用关键词检索、粘贴 DOI / arXiv ID / BibTeX。",
   "library.list.noMatch": "没有匹配的文献",
   "library.list.emptyInCollection": "分类只是视图 —— 东西还在库里，只是不属于这个分类。",
+  /** 回收站**空**的时候说的话。
+   *
+   * ⚠️ 别拿 `library.list.emptyInCollection` 顶（"东西还在库里，只是不属于这个分类"）
+   * —— 那句是给**分类**空时用的，在回收站场景下意思正好反了：回收站里的东西
+   * 不是"还在库里"，它们就是被丢进来的。 */
+  "library.trash.empty": "回收站是空的。",
   "library.list.showAll": "看全部",
   "library.list.filteredOut": "{n} 条被筛选条件挡住了（不在这个视图里显示）",
   "library.list.clearFilters": "清除筛选",

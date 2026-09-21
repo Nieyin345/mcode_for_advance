@@ -1308,7 +1308,7 @@ export function LibrarySection({
     const ids = collections.filter((c) => c.isTrash).map((c) => c.id);
     const items = ids.flatMap((id) => itemsByCollection[id] ?? []);
     if (items.length === 0) {
-      return <HintRow>{t("library.list.emptyInCollection")}</HintRow>;
+      return <HintRow>{t("library.trash.empty")}</HintRow>;
     }
     return <SidebarList>{items.map((it) => renderItemRow(it, ids[0] ?? null))}</SidebarList>;
   }
@@ -1828,24 +1828,34 @@ export function LibrarySections() {
 /**
  * **钉在左栏最底部的那一个回收站**（2026-09-21）。
  *
- * 用户的原话：「回收站是**固定到页面最下面的**，是固定的，**不是随着我的文件的折叠
- * 而上下移动**」，「相当于你开一个和侧边栏同宽度的在顶层固定的小滚动窗口」。
+ * ## 它是什么样，用户的说法换过三次，最终定在这个形状
  *
- * 它和上面那片列表是**两个独立的滚动区**：上面怎么滚、怎么折叠，底下这一行都不动。
+ * 最初我说"钉住"，做成了在布局里撑一个 40vh 的滚动区。用户说不对。
+ * 然后我做成 `fixed` 的**浮动卡片**（圆角 + 阴影 + 浅色底）—— 用户发来一张截图，
+ * 一句话点破：
  *
- * 实现是复用 `LibrarySection` 的 `trashOnly` 模式（那一行依赖一堆内部状态，另写一份
- * 必然漂移），外面套一个固定上限的滚动壳 —— 回收站里条目多的时候自己滚，不去挤
- * 上面的列表。
+ *   > 「**不在一个图层，颜色也不一样**，我这么说吧就是**嵌入到现在的左边框里面**，
+ *   >  颜色一样，**高度固定**，只不过**不随着左边框滚动**」
+ *
+ * 所以它**不是浮层**，是左栏里长着的一块：
+ *
+ *   - **同色**：跟着左栏的底色，不另给 `bg-surface`；
+ *   - **同宽**：撑满左栏（不用 `fixed` + 量宽度那一套 —— 那样才需要算坐标）；
+ *   - **固定高度**：`33vh`（用户："大概平面 1/3 的位置"）；
+ *   - **只是不跟着滚**：它挂在 `LeftBar` 的滚动容器**外面**，所以上面那片列表
+ *     怎么滚、怎么折叠，这一块都不动。它自己内部滚。
+ *
+ * ## 为什么不再量坐标
+ *
+ * 上一版用 `fixed` + `getBoundingClientRect()` 算 left/width/bottom，还因为 `ref`
+ * 挂错元素（挂到了内层的名字按钮上）而量出了"名字的宽度"。**嵌进左栏就不需要量**
+ * —— 父容器多宽它就多宽，这是布局的自然结果，不是算出来的。
  */
 export function LibraryTrashRow() {
   const { t } = useI18n();
   const collections = useLibraryStore((s) => s.collections);
   const loadCollections = useLibraryStore((s) => s.loadCollections);
   const [open, setOpen] = useState(false);
-  /** 量的是**整行**的宽度（= 左栏宽度）—— 浮层要跟它一样宽。见下面那个 div 上那段。 */
-  const rowRef = useRef<HTMLDivElement>(null);
-  /** 浮层的定位（打开那一刻量一次，之后不跟着滚 —— 它是一个 fixed 层）。 */
-  const [anchor, setAnchor] = useState<{ left: number; width: number; bottom: number } | null>(null);
 
   useEffect(() => {
     void loadCollections();
@@ -1855,91 +1865,46 @@ export function LibraryTrashRow() {
   if (!trash) return null;
 
   const toggle = (): void => {
-    if (!open) {
-      const r = rowRef.current?.getBoundingClientRect();
-      if (r) setAnchor({ left: r.left, width: r.width, bottom: window.innerHeight - r.top });
+    if (!open && !useLibraryStore.getState().expandedIds[trash.id]) {
       // **打开即展开**：回收站本身不折叠（用户明说了），所以进来就该看见里面的东西，
       // 而不是再给一行"点一下才展开"。
-      if (!useLibraryStore.getState().expandedIds[trash.id]) {
-        useLibraryStore.getState().toggleExpanded(trash.id);
-      }
+      useLibraryStore.getState().toggleExpanded(trash.id);
     }
     setOpen((v) => !v);
   };
 
   return (
-    <>
-      {/* ── 钉在左栏最底部的那一行 ──
-          点击**向上弹出一个浮层**，而不是在布局里撑开 —— 见下面那个层。 */}
-      <div className="shrink-0 border-t border-edge">
-        {/* ⚠️ **只有名字那一块可点**（2026-09-21）。用户的原话：「折叠展开是**点那个
-            名字**就可以，而不是点最前面那个小标」—— 原来整行是个 `<button>`，
-            连图标一起点，用户按的是名字、结果图标那块也吃掉了点击。
-
-            所以外层是 `div`，只有装了名字的那个 `<button>` 管开关；图标是纯装饰。 */}
-        <div
-          // ⚠️ **`rowRef` 挂在这一行（整行），不是那个名字按钮**（2026-09-21）。
-          // 挂到按钮上时量出来的是**名字文本的宽度**（一个词几十像素），浮层于是
-          // 窄得不像话 —— 用户连说两次"效果一样"，根因就在这。
-          // 用户要的是「这个弹出的框和**左边框的宽度一样**」，那就量这一行。
-          ref={rowRef}
-          className={cn(
-            "flex w-full items-center gap-1.5 rounded px-2 py-1.5 transition-colors [font-size:var(--right-panel-font-size)]",
-            open ? "bg-surface-hover text-content" : "text-content-muted",
-          )}
-        >
-          <IconArchive size={14} className="shrink-0 opacity-70" aria-hidden />
-          <button
-            onClick={toggle}
-            className="min-w-0 flex-1 truncate text-left hover:text-content"
-          >
-            {trash.name}
-          </button>
-          {/* ⚠️ **不画折叠箭头**（2026-09-21）。用户的原话：「回收站不需要折叠呀，
-              你折叠他干啥」。这一行不是"一坨可折的东西"，它是一个**入口** ——
-              点开是往上弹一层列表（见下面），展开态由那个浮层自己表达（它是浮着的
-              一个窗口，一眼就看得出打开了）。
-              上一版抄了大类的 chevron，那是把"分类树"的语义错搬到了这里。 */}
-        </div>
-      </div>
-
-      {/* ── 向上弹出来的那个浮层 ──
-          用户的原话：「相当于你开一个和侧边栏**同宽度的在顶层固定的小滚动窗口**」。
-
-          所以它是 `fixed`（脱离布局流，不推上面的列表）、宽度**跟那一行一样**、
-          底边贴着那一行**向上**铺开。⚠️ 它**不是**在布局里撑一块高度 —— 那样会把
-          上面的项目列表挤上去，而那正是用户要摆脱的"跟着上下移动"。 */}
-      {open && anchor && (
-        <div
-          // 用户的原话：「和左边框的宽度一样，**稍微高一点，大概平面 1/3 的位置**，
-          // 框里面可以滚动」。所以是**两块都定死**：宽度 = 左栏宽度（上面量的），
-          // 高度 = 视口 1/3。之前那版跟着内容走，条目一多就长到上限、一少就塌成一条 ——
-          // 用户读到的就是"太难看了"。
-          className="fixed z-[70] flex flex-col overflow-hidden rounded-lg border border-edge bg-surface shadow-xl"
-          style={{ left: anchor.left, width: anchor.width, bottom: anchor.bottom, height: "33vh" }}
-        >
-          <div className="flex shrink-0 items-center justify-between border-b border-edge px-2 py-1">
-            <span className="text-[0.7857em] font-medium text-content-muted">{trash.name}</span>
-            <button
-              onClick={() => setOpen(false)}
-              title={t("common.close")}
-              className="rounded p-0.5 text-content-subtle hover:text-content"
-            >
-              <IconX size={12} />
-            </button>
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-1">
-            {/* **直接列文件**，不再画"回收站"那一行（用户："直接把文件排列上去就行了"）。 */}
-            <LibrarySection
-              group={{ id: "__trash__", name: trash.name, kinds: [] }}
-              typeMetas={BUILTIN_LIBRARY_TYPES}
-              groups={[]}
-              onRefresh={() => void loadCollections()}
-              trashItemsOnly
-            />
-          </div>
+    <div className="shrink-0 border-t border-edge">
+      {/* ── 展开出来的那一块 ──
+          ⚠️ **在那一行的上面**（`order` 靠前），因为它是向上长出来的。
+          固定高度 + 自己滚：`h-[33vh] overflow-y-auto`。 */}
+      {open && (
+        <div className="h-[33vh] overflow-y-auto overscroll-contain px-2 py-1">
+          {/* **直接列文件**，不再画"回收站"那一行（用户："直接把文件排列上去就行了"）。 */}
+          <LibrarySection
+            group={{ id: "__trash__", name: trash.name, kinds: [] }}
+            typeMetas={BUILTIN_LIBRARY_TYPES}
+            groups={[]}
+            onRefresh={() => void loadCollections()}
+            trashItemsOnly
+          />
         </div>
       )}
-    </>
+
+      {/* ── 那一行 ──
+          只有**名字**可点（用户：「折叠展开是**点那个名字**就可以，而不是点最前面
+          那个小标」）—— 所以图标是装饰，装名字的那个 button 管开关。 */}
+      <div
+        className={cn(
+          "flex w-full items-center gap-1.5 px-2 py-1.5 transition-colors [font-size:var(--right-panel-font-size)]",
+          open ? "text-content" : "text-content-muted",
+        )}
+      >
+        <IconArchive size={14} className="shrink-0 opacity-70" aria-hidden />
+        <button onClick={toggle} className="min-w-0 flex-1 truncate text-left hover:text-content">
+          {trash.name}
+        </button>
+      </div>
+    </div>
   );
 }
