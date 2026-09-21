@@ -788,8 +788,11 @@ export function LibrarySection({
 
   const removeKind = async (id: string) => {
     const meta = typeMetas.find((m) => m.id === id);
-    // 内置类型不可删 —— 菜单项已置灰,这里再挡一道(防绕过 UI 的调用)
-    if (!meta || meta.builtin) return;
+    if (!meta) return;
+    // ⚠️ **不再挡内置类型**（2026-09-21）。原来这里有一道 `meta.builtin` 的闸，
+    // 菜单项置灰 + 这里兜底。用户否掉了：「**都能删，去掉这个限制**」——
+    // 他库里那几个内置 tab（论文/教材/笔记）在他看来和自建的一样，
+    // 而"内置类型不能删除"这个说法本身就在暗示一套他用不到的出厂概念。
     if (!window.confirm(t("library.kind.deleteConfirm", { name: meta.name }))) return;
     const ok = await saveTypes(typeMetas.filter((m) => m.id !== id).map((m) => ({ ...m })));
     if (!ok) return;
@@ -1583,7 +1586,8 @@ export function LibrarySection({
           (内置类型删除项置灰) */}
       <KindContextMenu
         target={ctxKind}
-        builtin={!!typeMetas.find((m) => m.id === ctxKind?.kind)?.builtin}
+        // 删小类**不再有"内置"这个限制** —— 见 `removeKind` 里那段。
+        builtin={false}
         // 开关的初值取**右键的那个 tab** 的状态,不是"当前显示的 tab" —— 用户看到
         // 的菜单是关于他右击的那一个小类的
         showAll={!!ctxKind && showAllKinds.has(ctxKind.kind)}

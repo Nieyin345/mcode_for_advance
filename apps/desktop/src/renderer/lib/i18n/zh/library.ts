@@ -37,7 +37,12 @@ export const zh = {
   "library.kind.new": "新建小类",
   "library.kind.rename": "重命名小类",
   "library.kind.delete": "删除小类",
-  "library.kind.deleteConfirm": "删除小类「{name}」？它名下的集合与条目不再显示，数据不会删。",
+  /** 「小类」= tab 那一层。
+   *
+   *  ⚠️ **必须点出"条目会从左栏消失"**（2026-09-21）。2026-09-21 起内置的那几个
+   *  （论文/教材/笔记…）也能删了，而删掉之后**名下的条目没有入口能看见** ——
+   *  数据还在库里，但左栏不再有它们的 tab。不说这句，用户删完会以为东西丢了。 */
+  "library.kind.deleteConfirm": "删除小类「{name}」？它名下的条目**会从左栏消失**（数据还在库里，只是没有入口显示它们了）。",
   "library.kind.builtinLocked": "内置类型不能删除",
   "library.kind.namePlaceholder": "小类名称",
   "library.kind.showAll": "全部显示",

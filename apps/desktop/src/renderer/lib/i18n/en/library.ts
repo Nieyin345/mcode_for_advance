@@ -33,7 +33,9 @@ export const en = {
   "library.kind.new": "New sub-type",
   "library.kind.rename": "Rename sub-type",
   "library.kind.delete": "Delete sub-type",
-  "library.kind.deleteConfirm": "Delete sub-type “{name}”? Its collections and items will no longer show; no data is deleted.",
+  // ⚠️ Must spell out that the items disappear from the sidebar — since 2026-09-21 the
+  // built-in tabs are deletable too, and then nothing surfaces their items any more.
+  "library.kind.deleteConfirm": "Delete “{name}”? Its items will **disappear from the sidebar** (the data stays in the library — there is just no tab showing it any more).",
   "library.kind.builtinLocked": "Built-in types cannot be deleted",
   "library.kind.namePlaceholder": "Sub-type name",
   "library.kind.showAll": "Show all",
