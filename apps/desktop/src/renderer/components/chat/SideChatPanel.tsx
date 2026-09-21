@@ -26,6 +26,7 @@ import {
   IconTrash,
 } from "@renderer/lib/icons.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { api } from "@renderer/lib/api.js";
 import { useSessionStore, type Block } from "@renderer/stores/sessionStore.js";
 import { ConfirmDialog } from "@renderer/components/ui/index.js";
 import { ChatPane } from "@renderer/components/chat/ChatPane.js";
@@ -47,8 +48,6 @@ export function SideChatPanel() {
   const createSideChat = useSessionStore((s) => s.createSideChat);
   const selectSideChat = useSessionStore((s) => s.selectSideChat);
   const closeSideChatView = useSessionStore((s) => s.closeSideChatView);
-  /** 关掉中间那个文件预览 —— 主对话由「回到主对话」那一下回到中央。 */
-  const closeFileView = useFileViewStore((s) => s.close);
   const openTab = useSessionStore((s) => s.openTab);
   // The subagent whose read-only transcript is open (by taskId). Local state:
   // leaving the tab or switching the parent session falls back to the list —
@@ -94,6 +93,44 @@ export function SideChatPanel() {
     if (activeSessionId) void hydrateSideChats(activeSessionId);
   }, [activeSessionId, hydrateSideChats]);
 
+  const fromSideList = activeSideChatId
+    ? sideChats?.find((x) => x.id === activeSideChatId)
+    : undefined;
+  /**
+   * **`activeSideChatId` 可能指的不是子对话，而是图上某一格的节点会话**
+   * （2026-09-21）——
+   *
+   * 用户在图上点一格，`WorkflowBoardPanel.pickNode` 会 `selectSideChat(nodeSessionId)`，
+   * 意思是"打开这一格的对话"。而**节点会话是 `kind: "node"`，`sideChatsByParent`
+   * 里只有 `kind: "side"`**（见 `SessionRepo.listSideByParent` 的 WHERE）—— 所以光查
+   * 那个列表是找不到的，`activeSide` 会是 undefined、面板**压根不切**，用户点下去
+   * 什么都没发生。
+   *
+   * 这里补一次节点会话的查询（`session.listNodes` —— 契约上它是**唯一**会返回节点
+   * 会话的查询，见 `SelectionQuoteMenu` 的头注）。只在 side 列表查不到时才发，
+   * 所以常态（点子对话）没有额外开销。
+   */
+  const [nodeSession, setNodeSession] = useState<Session | null>(null);
+  useEffect(() => {
+    if (!activeSideChatId || fromSideList) {
+      setNodeSession(null);
+      return;
+    }
+    let cancelled = false;
+    void api.session
+      .listNodes({ sessionId: activeSessionId ?? "" })
+      .then((res) => {
+        if (cancelled) return;
+        setNodeSession(res.sessions.find((x) => x.id === activeSideChatId) ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setNodeSession(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSideChatId, fromSideList, activeSessionId]);
+
   if (viewedSubagent && activeSessionId) {
     return (
       <SubagentView
@@ -107,9 +144,21 @@ export function SideChatPanel() {
   // The chat view only applies when the active side chat belongs to the
   // CURRENT parent — after a main-session switch the stale id falls back to
   // the list view (derived, so no reset effect is needed).
-  const activeSide = activeSideChatId
-    ? sideChats?.find((x) => x.id === activeSideChatId)
-    : undefined;
+  /**
+   * **`activeSideChatId` 也可能是主对话自己**（2026-09-21）—— 列表最上面那一行
+   * （`MainSessionRow`）点开时就把主对话的 id 放进这个字段，好让展开/收起复用同一套。
+   *
+   * ⚠️ 它**两个列表都查不到**：主对话既不是 `kind: "side"`（`sideChatsByParent`），
+   * 也不是 `kind: "node"`（`session.listNodes`）。所以这里必须显式认一次，
+   * 否则点那一行会**什么都不发生**（`activeSide` 落空 → 回列表视图）。
+   */
+  const mainRow = useMemo(
+    () =>
+      activeSideChatId && activeSideChatId === activeSessionId ? parentRow : undefined,
+    [activeSideChatId, activeSessionId, parentRow],
+  );
+
+  const activeSide = fromSideList ?? nodeSession ?? mainRow ?? undefined;
   const view: "list" | "chat" = activeSide ? "chat" : "list";
 
   if (view === "chat" && activeSide) {
@@ -124,11 +173,6 @@ export function SideChatPanel() {
       onOpenSubagent={setViewSubagentTaskId}
       onCreate={() => void createSideChat()}
       onOpen={(id) => void selectSideChat(id)}
-      // 「回到主对话」= 关掉中间那条文件预览 + 退出子对话视图 —— 主对话由此回到中央。
-      onBackToMain={() => {
-        closeFileView();
-        closeSideChatView();
-      }}
     />
   );
 }
@@ -143,7 +187,6 @@ function SideChatListView({
   onOpenSubagent,
   onCreate,
   onOpen,
-  onBackToMain,
 }: {
   hasMainSession: boolean;
   parentTitle?: string;
@@ -152,8 +195,6 @@ function SideChatListView({
   onOpenSubagent: (taskId: string) => void;
   onCreate: () => void;
   onOpen: (id: string) => void;
-  /** 「回到主对话」—— 见 `MainSessionRow`。 */
-  onBackToMain: () => void;
 }) {
   const { t } = useI18n();
   const deleteSession = useSessionStore((s) => s.deleteSession);
@@ -206,7 +247,7 @@ function SideChatListView({
             所以它**只在中间被文件占住时**才出现：那时主对话被挤出了中央，得有个地方能
             点回它、也能对它说话。平常中央就是它，列表里再摆一行是多余的。
             边框加粗 + 主题色描边是"这一条和下面那几条不是一类"，不是"它更重"。 */}
-        <MainSessionRow onBack={onBackToMain} />
+        <MainSessionRow />
 
         {/* Live subagents (model-initiated Task children) — read-only
             transcripts behind each row. */}
@@ -335,24 +376,37 @@ function displayTitle(session: Session, placeholder: string): string {
  *
  * 点击 = 关掉中间那个文件（`onBack`），主对话就回到中央。
  */
-function MainSessionRow({ onBack }: { onBack: () => void }) {
+function MainSessionRow() {
   const { t } = useI18n();
   // 只在**中间被文件占住**时才出现 —— 见上面那段。
   const previewing = useFileViewStore((s) => s.target !== null);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const title = useSessionStore((s) =>
     s.activeSessionId
       ? (s.streamSessions.find((x) => x.id === s.activeSessionId)?.title ?? null)
       : null,
   );
-  if (!previewing) return null;
+  // **主对话也用 `activeSideChatId` 表示"现在展开的是它"** —— 于是展开/收起那一套
+  // 逻辑（`SideChatView` + 那个返回箭头）一行都不用新写，而且和子对话完全一致。
+  const open = useSessionStore((s) => s.activeSideChatId === activeSessionId);
+  const select = useSessionStore((s) => s.selectSideChat);
+  const close = useSessionStore((s) => s.closeSideChatView);
+  if (!previewing || !activeSessionId) return null;
   return (
     <ul className="mb-2 space-y-0.5 border-b border-edge pb-2">
       <li>
         <button
           type="button"
-          onClick={onBack}
-          title={t("sideChat.backToMain")}
-          className="flex w-full items-center gap-2 rounded-md border-2 border-accent/60 bg-accent/5 px-2 py-1.5 text-left transition-colors hover:bg-accent/10"
+          // **点一下展开、再点一下收起**（用户：「应该还能收起来」）。展开的是这条
+          // 会话本身（`SideChatView` 用 `ChatPane`，主对话和子对话在那里是同一个东西）。
+          onClick={() => (open ? close() : void select(activeSessionId))}
+          title={open ? t("sideChat.collapseMain") : t("sideChat.expandMain")}
+          className={cn(
+            "flex w-full items-center gap-2 rounded-md border-2 px-2 py-1.5 text-left transition-colors",
+            open
+              ? "border-accent bg-accent/10"
+              : "border-accent/60 bg-accent/5 hover:bg-accent/10",
+          )}
         >
           <IconMessages size={13} className="shrink-0 text-accent" />
           <span className="min-w-0 flex-1 truncate text-xs font-semibold text-content">
@@ -506,6 +560,14 @@ function SubagentView({
 
 function SideChatView({ session, parentRow }: { session: Session; parentRow?: Session }) {
   const { t } = useI18n();
+  /**
+   * **这条是不是主对话自己**（2026-09-21）。
+   *
+   * ⚠️ 这个判断非有不可：`MainSessionRow` 让主对话也走这个视图（为了复用展开/收起），
+   * 而它**自带一个垃圾桶按钮** —— 那是 `deleteSession`，**硬删**。主对话从这儿被删掉
+   * 是灾难（它名下的子对话、节点会话会跟着没）。所以主对话那一档要把删除藏掉。
+   */
+  const isMain = useSessionStore((s) => s.activeSessionId === session.id);
   const closeSideChatView = useSessionStore((s) => s.closeSideChatView);
   const deleteSession = useSessionStore((s) => s.deleteSession);
   const openTab = useSessionStore((s) => s.openTab);
@@ -551,6 +613,8 @@ function SideChatView({ session, parentRow }: { session: Session; parentRow?: Se
             </span>
           )}
         </div>
+        {/* **主对话不给删除入口** —— 见 `isMain` 那段。 */}
+        {!isMain && (
         <button
           type="button"
           disabled={running}
@@ -564,6 +628,7 @@ function SideChatView({ session, parentRow }: { session: Session; parentRow?: Se
         >
           <IconTrash size={14} />
         </button>
+        )}
       </div>
 
       {/* Delete confirmation — same hard-delete path as the list rows; the

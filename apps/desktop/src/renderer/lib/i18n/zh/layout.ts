@@ -143,6 +143,9 @@ export const zh = {
   "sideChat.mainChat": "主对话",
   "sideChat.mainBadge": "主",
   "sideChat.backToMain": "回到主对话（关掉中间正在看的文件）",
+  /** 主对话那一行点开 / 收起（用户：「应该还能收起来」）。 */
+  "sideChat.expandMain": "展开主对话",
+  "sideChat.collapseMain": "收起主对话",
   "sideChat.emptyTitle": "还没有子会话",
   "sideChat.emptyHint": "看不懂主会话输出的某个知识点？在这里提问，主会话照常运行，互不影响。",
   "sideChat.backToList": "返回子会话列表",

@@ -218,6 +218,7 @@ export function SidebarRow({
   collapseTitle,
   badge,
   onClick,
+  onDoubleClick,
   onContextMenu,
   actions,
 }: {
@@ -245,6 +246,9 @@ export function SidebarRow({
    */
   badge?: string;
   onClick?: () => void;
+  /** **双击**。只有需要"点一下看、点两下改"这种分工的行才给
+   *  （左栏的文献行：单击右栏预览、双击中间打开来改）。 */
+  onDoubleClick?: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
   /** 悬停才出现的行内按钮。 */
   actions?: ReactNode;
@@ -273,6 +277,7 @@ export function SidebarRow({
     return (
       <button
         onClick={onClick}
+        onDoubleClick={onDoubleClick}
         onContextMenu={onContextMenu}
         title={title ?? label}
         className={cn(rowBase, tone, "w-full min-w-0 text-left transition-colors")}
@@ -302,6 +307,7 @@ export function SidebarRow({
       )}
       <button
         onClick={onClick}
+        onDoubleClick={onDoubleClick}
         title={title ?? label}
         className="flex min-w-0 flex-1 items-center gap-1 text-left"
       >

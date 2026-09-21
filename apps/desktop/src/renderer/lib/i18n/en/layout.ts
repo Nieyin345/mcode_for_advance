@@ -138,6 +138,9 @@ export const en = {
   "sideChat.mainChat": "Main chat",
   "sideChat.mainBadge": "MAIN",
   "sideChat.backToMain": "Back to the main chat (closes the file in the center)",
+  /** Expand / collapse the main-chat row. */
+  "sideChat.expandMain": "Expand the main chat",
+  "sideChat.collapseMain": "Collapse the main chat",
   "sideChat.emptyTitle": "No sub-sessions yet",
   "sideChat.emptyHint": "Spot something in the main session's output you don't follow? Ask here — the main session keeps running, fully independent.",
   "sideChat.backToList": "Back to the sub-session list",

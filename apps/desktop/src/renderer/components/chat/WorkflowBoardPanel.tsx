@@ -336,7 +336,9 @@ export function WorkflowBoardPanel() {
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      {/* **上半：工作流图**。它自己滚（图可能比这一块高），**不跟下面那块一起滚** ——
+          用户要的是"上面是图、下面是列表"两块，不是一整条长页面。 */}
+      <div className="shrink-0 overflow-y-auto">
         <RenderMini
           doc={doc}
           run={run}
@@ -347,31 +349,41 @@ export function WorkflowBoardPanel() {
           onResetHeight={resetFlowH}
           onContextNode={setCtxNode}
         />
+      </div>
 
-        {/* 顶上那条「需要用户接管」。**比列表更醒目** —— 图停住的时候,列表里那一行
-            只有"失败"两个字,而这条说得清是哪一步、点哪里。 */}
-        {halted && (
+      {/* 兜底：这一步没跑起来 / 停在等人 —— 那一行仍然要看得见。 */}
+      {halted && (
+        <div className="shrink-0">
           <HaltedBanner
             reason={halted.reason}
             title={run?.nodes[halted.nodeId]?.title || halted.nodeId}
             onOpen={() => setOpenId(halted.nodeId)}
           />
-        )}
-
-        {/* **下半部分 = 对话列表**（2026-09-21 改）。
-            ——
-            从前进这里的是**工作流步骤卡**（每一格一张）。用户要求把它换成**对话列表**：
-            「上面是工作流图片，下面是代理列表」—— 同一批东西（图上每一格就是一个子代理
-            的会话），只是**换个说法看**：图回答"跑到第几步"，列表回答"跟他说话"。
-
-            直接把 `SideChatPanel` 整个嵌进来，而不是照它再写一份：那个面板已经是
-            "列表 ⇄ 用 `ChatPane` 展开一条"的完整两态实现（它自己的头注写得清楚），
-            而用户要的正是「对话展开的样式复用之前子对话页面的展开的样子」。
-
-            ⚠️ 两份拷贝迟早分家 —— 那正是这个仓库反复踩过的坑（见硬规矩第 2 条）。 */}
-        <div className="min-h-0 flex-1 border-t border-edge">
-          <SideChatPanel />
         </div>
+      )}
+
+      {/* **下半：对话列表 / 那条对话的完整侧边**（2026-09-21 改）。
+          ——
+          从前进这里的是**工作流步骤卡**（每一格一张）。用户要求换成**对话列表**：
+          「上面是工作流图片，下面是代理列表」—— 同一批东西（图上每一格就是一个子代理
+          的会话），只是换个说法看：图回答"跑到第几步"，列表回答"跟他说话"。
+
+          直接把 `SideChatPanel` 整个嵌进来，而不是照它再写一份 —— 那个面板已经是
+          "列表 ⇄ 用 `ChatPane` 展开一条"的完整两态实现，正是用户要复用的那一套
+          （「对话展开的样式就是之前的子对话页面的展开的样子，你直接复用」）。
+
+          ## ⚠️ 两个坑（第一版都踩了）
+
+          1. **它必须和上图平级，不能塞进图那个滚动容器里。** 塞进去的话它自己的
+             `flex-1` / `overflow-y-auto` 全部失效 —— 它跟着图的滚动条一起滚，
+             而没有自己的高度。
+          2. **它展开一条对话时是"整个面板 return 掉"**（见 `SideChatPanel` 的
+             `view === "chat"` 那一支）。所以下面这一块要有自己的高度预算
+             （`flex-1`），上面那块（`shrink-0`）才不会被顶掉 —— 用户的原话是
+             「显示一个完整的侧边，**但是上面的工作流还是保留的**」。
+      */}
+      <div className="min-h-0 flex-1 border-t border-edge">
+        <SideChatPanel />
       </div>
 
       <FlowNodeMenu

@@ -545,6 +545,15 @@ export function LibrarySection({
    * 中间打开之后右栏**不再被强行拉出来**(`setRightOpen(true)` 去掉了),但也不再
    * 强行切到 library 标签 —— 用户要的正是"文件在中间的时候,右栏还能跟子代理说话",
    * 所以右栏保持它原来的样子。 */
+  /**
+   * **单击一行 = 在右栏预览**（2026-09-21 改）。
+   *
+   * ★ 用户的原话：「**左边栏的文件是点击预览在右边栏，双击才会在中间显示**」。
+   * （这一版之前单击就直接把文件甩到中间去了 —— 方向反了。）
+   *
+   * 右栏那份预览本来就是为"扫一眼"准备的：窄、轻、不打断中间正在干的事。而中间那块
+   * 留给"真要读/要改"的时候 —— 那一步归双击（见下面 `openItemInCenter`）。
+   */
   const openItem = (item: LibraryItem, collectionId: string | null) => {
     if (collectionId) setActive(collectionId);
     setActiveItem(item.id);
@@ -552,21 +561,26 @@ export function LibrarySection({
     setActiveKind(item.kind);
     // 笔记点开就是要写/改它,直接落在编辑页;其余落在第一页(元数据 / 概览)
     useLibraryStore.getState().setDetailTab(item.kind === "note" ? "edit" : "meta");
-
-    // 有文件本体 → 中间打开(看图/看 PDF/看 Word,都在那儿)
-    const ref = item.filePath ?? item.pdfPath ?? null;
-    if (ref !== null) {
-      openFileView({
-        source: { kind: "library", ref: item.id },
-        name: basenameOf(item.filePath ?? item.pdfPath ?? item.title),
-      });
-      setCenterTabFocus("editor");
-      return;
-    }
-
-    // 没有文件本体(笔记 / 纯元数据)→ 仍旧走右栏详情页
+    // 把右栏拉出来并切到文献库 —— 单击的落点在右栏,它得看得见。
     setRightPanelTab("library");
     setRightOpen(true);
+  };
+
+  /**
+   * **双击一行 = 在中间打开**（要读它 / 改它）。
+   *
+   * 有文件本体的走中间那个统一预览页（看图 / 看 PDF / 看 Word 都在那儿）；没有本体的
+   * 那些（笔记 / 纯元数据）中间没东西可放，仍旧留在右栏 —— 双击它们与单击等效。
+   */
+  const openItemInCenter = (item: LibraryItem, collectionId: string | null) => {
+    openItem(item, collectionId);
+    const ref = item.filePath ?? item.pdfPath ?? null;
+    if (ref === null) return;
+    openFileView({
+      source: { kind: "library", ref: item.id },
+      name: basenameOf(item.filePath ?? item.pdfPath ?? item.title),
+    });
+    setCenterTabFocus("editor");
   };
 
   /**
@@ -990,6 +1004,8 @@ export function LibrarySection({
           label={item.title}
           active={item.id === activeItemId ? "fill" : false}
           onClick={() => openItem(item, collectionId)}
+          // 双击在**中间**打开（用户：「双击才会在中间显示」）。
+          onDoubleClick={() => openItemInCenter(item, collectionId)}
           // 行尾那个「N 条关联」的徽标 —— 用户的抱怨是「文件之间的关联没有体现」:
           // 右栏那份清单要点开某一篇才看得到,左栏扫一遍完全不知道谁有关联。
           // 0 条**不画**(不画"0 条")—— 大多数条目没有关联,每行挂一个 0 会把
