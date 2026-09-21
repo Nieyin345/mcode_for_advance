@@ -114,8 +114,23 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
     };
   }, [target, relPath]);
 
-  /** 用系统默认程序打开。**只有模版那条有通道**(见文件头那段)。 */
+  /** 用系统默认程序打开。模版与**项目文件**各有一条通道（见文件头那段）。 */
   const openExternal = useCallback(async () => {
+    // **项目文件那条**（2026-09-21）。从前这里只认 `template`，于是项目里的
+    // PDF 在中间预览出来后，「用系统程序打开」那个按钮**点了没反应** —— 用户报的
+    // 「主页面打不开 pdf」有一部分就是它（另一部分是 `readPdf` 只认条目 id）。
+    // 走 `shell.openPath`，它自带「只允许项目根」的围栏（见那个 RPC 的注释）。
+    if (target.source.kind === "project") {
+      setBusy(true);
+      try {
+        await api.shell.openPath({ path: target.source.ref });
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     if (target.source.kind !== "template") return;
     setBusy(true);
     try {
@@ -164,16 +179,23 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
       <span className="min-w-0 flex-1 truncate text-xs text-content" title={name}>
         {name}
       </span>
-      {target.source.kind === "template" && (
+      {/* **项目文件也给「用系统程序打开」**（2026-09-21）—— 从前这里只放
+          `template`，于是项目里的 PDF 在中间预览出来之后**没有任何出口**，用户读到的是
+          「主页面打不开 pdf」。它现在走 `shell.openPath`（那条自带项目根围栏）。
+          「在文件夹中显示」仍然只给模版：项目文件那一侧还没有对应的 RPC，
+          画一个按下去不动的按钮比不画更坏。 */}
+      {(target.source.kind === "template" || target.source.kind === "project") && (
         <>
-          <button
-            onClick={() => void reveal()}
-            disabled={busy}
-            title={t("settings.templates.reveal")}
-            className={headerBtn}
-          >
-            <IconFolderOpen size={12} />
-          </button>
+          {target.source.kind === "template" && (
+            <button
+              onClick={() => void reveal()}
+              disabled={busy}
+              title={t("settings.templates.reveal")}
+              className={headerBtn}
+            >
+              <IconFolderOpen size={12} />
+            </button>
+          )}
           <button
             onClick={() => void openExternal()}
             disabled={busy}

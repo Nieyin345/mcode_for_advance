@@ -70,7 +70,39 @@ interface FileViewState {
 
 export const useFileViewStore = create<FileViewState>((set) => ({
   target: null,
-  open: (target) => set({ target }),
+  /**
+   * **打开一个文件 = 中间显示它 + 右栏切到流程图页 + 把主对话展开。**
+   *
+   * 用户 2026-09-21：「双击在中间显示的话，侧边是**自动切换到流程图页面**，并且把
+   * **主对话展开**」，「项目文件打开的话，也是同样的逻辑，**主对话自动在侧边展开**」。
+   *
+   * ## 为什么收在这一处
+   *
+   * `open()` 是"中间开始看一个文件"的**唯一入口**（左栏单击/双击、文件树、模版库都
+   * 走它）。把这三件事放这里，那些调用点一行都不用改，也不会各自漂移 —— 这个仓库
+   * 反复踩过"同一个动作几份实现"的坑（硬规矩第 2 条）。
+   *
+   * ## 为什么是"展开主对话"而不是"切到某个 tab"
+   *
+   * 中间被文件占住之后，主对话就没地方站了 —— 而用户这时候多半还想跟它说话（"帮我看看
+   * 这段"）。所以把它放到右栏那个列表的最上面并**展开**，是让"文件占着中间"这件事不至于
+   * 把对话挤没。
+   *
+   * ⚠️ **延迟 import 是有意的**：`sessionStore` 那边也不小，而这两个 store 之间
+   * 目前没有依赖（`sessionStore` 不 import 本文件）。用动态 `import()` 保持这一点，
+   * 免得将来某次改动把它变成循环依赖 —— 那种问题在启动时才炸，很难查。
+   */
+  open: (target) => {
+    set({ target });
+    void import("./sessionStore.js").then(({ useSessionStore }) => {
+      const st = useSessionStore.getState();
+      st.setRightOpen(true);
+      st.setRightPanelTab("flow");
+      // 展开主对话（它和子对话共用 `activeSideChatId`，见 `MainSessionRow`）。
+      const main = st.activeSessionId;
+      if (main) void st.selectSideChat(main);
+    });
+  },
   close: () => set({ target: null }),
 }));
 
