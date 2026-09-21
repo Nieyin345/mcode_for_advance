@@ -30,7 +30,6 @@ import { IconFolder, IconLoader2 } from "@renderer/lib/icons.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingRow } from "./SettingRow.js";
 import { SettingsSection } from "./SettingsSection.js";
-import { TemplatesPanel } from "./TemplatesPanel.js";
 
 interface RootInfo {
   root: string;
@@ -161,9 +160,14 @@ export function DataRootPanel() {
         </div>
       </SettingsSection>
 
-      {/* 模版库的管理界面留在这里 —— 它与「数据根」是同一件事的两面:根决定放哪儿,
-          这里决定放什么。 */}
-      <TemplatesPanel />
+      {/* ⚠️ **模版库那块管理界面删掉了**（2026-09-21，用户：「设置页面这里删掉吧，
+          不要了」）。
+          ——
+          它当初挂在这里的理由是「数据根决定**放哪儿**，这里决定**放什么**」。但那个
+          "放什么"的活**左栏那一段（`TemplateSection`）已经全干了**（建/删/预览/右键
+          菜单，与设置页这套是同一套语义，见 `TemplateSection` 里那条注释），而设置页
+          这一块是**第二套界面做同一件事** —— 正是用户一直说的"重复入口"。
+          删掉之后功能一个不少，只是只剩左栏那一个入口。 */}
     </section>
   );
 }
