@@ -50,8 +50,13 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-/** 论文的元数据字段表。只有论文用 —— 教材与笔记不显示(理由见下方调用处)。 */
-function ItemMetadata({ item }: { item: LibraryItem }) {
+/**
+ * 论文的元数据字段表。只有论文用 —— 教材与笔记不显示(理由见下方调用处)。
+ *
+ * **导出**是因为左栏右键那个「文献信息」浮窗要复用同一份（2026-09-21）——
+ * 两处必须长得一样，另写一份必然漂移。
+ */
+export function ItemMetadata({ item }: { item: LibraryItem }) {
   const { t } = useI18n();
   const openUrlInBrowser = useSessionStore((s) => s.openUrlInBrowser);
   return (
@@ -125,7 +130,8 @@ const MISSING_LABEL: Record<MissingMetadataField, MessageId> = {
  * 用等宽字体原样显示 —— 用户要把它粘进稿子里,所见即所得比排版好看重要。BibTeX 的
  * 换行是有意义的,所以 `pre` + `break-words`(不能 `wrap` 成流式段落)。
  */
-function CitationBlock({ item }: { item: LibraryItem }) {
+/** 引用格式块 —— **导出**同上（「文献信息」浮窗要复用）。 */
+export function CitationBlock({ item }: { item: LibraryItem }) {
   const { t } = useI18n();
   const [style, setStyle] = useState<CitationStyle>("gb7714");
   const [copied, setCopied] = useState(false);
@@ -701,6 +707,80 @@ export function ItemLinksDialog({
           </Dialog.Title>
           <div className="mt-2 max-h-[60vh] overflow-y-auto">
             {item && <ItemLinks item={item} onChanged={onChanged} />}
+          </div>
+          <Dialog.Close />
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+/**
+ * **文献信息浮窗** —— 元数据 + 引用 + 摘要（2026-09-21）。
+ *
+ * ## 它从哪来
+ *
+ * 用户的原话：「元数据表是**只有论文有**，**右键的时候会打开一个浮窗**显示，
+ * 然后**引用啥的也都放在一起**」。
+ *
+ * 这几块原来都长在右栏详情页里。而右栏那个 `library` tab 是要删掉的（用户要把文献
+ * 预览统一到中间栏），所以这些"就这一条本身"的信息得有新去处 —— 和「关联」一样，
+ * 挂到左栏右键。
+ *
+ * ## 只有论文显示元数据与引用
+ *
+ * 这是详情页原来就有的规矩（那里写着"教材不写进参考文献、笔记根本不是文献"），
+ * 这里原样带过来：教材/笔记打开只看到摘要。
+ *
+ * ⚠️ 内容用的是**同一个** `ItemMetadata` / `CitationBlock`，不是另写一份。
+ */
+export function ItemInfoDialog({
+  item,
+  onOpenChange,
+}: {
+  /** 要看哪一条。`null` = 关着。 */
+  item: LibraryItem | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { t } = useI18n();
+  const isPaper = item?.kind === "paper";
+  return (
+    <Dialog.Root open={item !== null} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Backdrop />
+        {/* ⚠️ `transform-none` + 四边归零居中 —— 理由见 `ItemLinksDialog` 那段
+            （`Dialog.Popup` 原型靠 transform 居中，而它会成为后代 `fixed` 的包含块）。 */}
+        <Dialog.Popup className="bottom-0 left-0 right-0 top-0 m-auto h-fit w-[520px] max-w-[92vw] transform-none p-4">
+          <Dialog.Title className="flex items-baseline gap-2">
+            <span className="shrink-0">{t("library.info.title")}</span>
+            {item && (
+              <span className="min-w-0 flex-1 truncate text-[0.8571em] font-normal text-content-muted">
+                {item.title}
+              </span>
+            )}
+          </Dialog.Title>
+          <div className="mt-2 max-h-[65vh] overflow-y-auto">
+            {item && (
+              <div>
+                {isPaper && <ItemMetadata item={item} />}
+                {isPaper && (
+                  <>
+                    <div className="mb-1 mt-4 text-[0.7143em] font-medium uppercase tracking-wider text-content-subtle">
+                      {t("library.cite.title")}
+                    </div>
+                    <CitationBlock item={item} />
+                  </>
+                )}
+                {item.abstract && (
+                  <>
+                    <div className="mb-1 mt-4 text-[0.7143em] font-medium uppercase tracking-wider text-content-subtle">
+                      {t("library.detail.abstract")}
+                    </div>
+                    <div className="text-xs leading-relaxed text-content-muted">{item.abstract}</div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
           <Dialog.Close />
         </Dialog.Popup>

@@ -185,6 +185,9 @@ export const zh = {
   "library.del.cancel": "取消",
   "library.ctx.openFolder": "在文件夹中打开",
   "library.ctx.openMd": "预览原文（应用内）",
+  /** 右键 → 文献信息浮窗（元数据 + 引用 + 摘要）。
+   *  与「关联」并列：两个都是"就这一条，看看它是什么/它跟谁一组"。 */
+  "library.info.title": "文献信息",
   "library.ctx.openMdMissing": "预览原文（还没转换）",
   "library.ctx.openMdExternal": "用外部编辑器打开 Markdown",
   "library.ctx.newNote": "新建笔记",

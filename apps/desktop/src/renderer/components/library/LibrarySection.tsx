@@ -94,7 +94,7 @@ import {
 import { LibraryItemContextMenu, type LibraryCtxTarget } from "./LibraryItemContextMenu.js";
 import { DeleteItemsDialog } from "./DeleteItemsDialog.js";
 import { ImportBar } from "./ImportPanel.js";
-import { ItemLinksDialog } from "./ItemDetail.js";
+import { ItemLinksDialog, ItemInfoDialog } from "./ItemDetail.js";
 import { CollectionContextMenu, type CollectionCtxTarget } from "./CollectionContextMenu.js";
 import { GroupContextMenu, type GroupCtxTarget } from "./GroupContextMenu.js";
 import { KindContextMenu, type KindCtxTarget } from "./KindContextMenu.js";
@@ -259,6 +259,8 @@ export function LibrarySection({
   const [ctxMenu, setCtxMenu] = useState<LibraryCtxTarget | null>(null);
   /** 分类行的右键菜单目标(新建笔记 / 重命名 / 删除)。 */
   const [ctxCollection, setCtxCollection] = useState<CollectionCtxTarget | null>(null);
+  /** 「文献信息」浮层管的是哪一条（2026-09-21）。null = 关着。 */
+  const [infoFor, setInfoFor] = useState<LibraryItem | null>(null);
   /** 「关联」浮层管的是哪一条（2026-09-21）。null = 关着。 */
   const [linksFor, setLinksFor] = useState<LibraryItem | null>(null);
   /** 「导入到这里」——分类行右键触发，null = 浮层关着（2026-09-21）。 */
@@ -1492,6 +1494,9 @@ export function LibrarySection({
 
       {/* 文献行的右键菜单:移动 / 复制到别的库、从当前库移除(在回收站里则是彻底删除)、
           打开文件夹、打开 md */}
+      {/* 「文献信息」——条目行右键触发（元数据 + 引用 + 摘要）。 */}
+      <ItemInfoDialog item={infoFor} onOpenChange={(open) => { if (!open) setInfoFor(null); }} />
+
       {/* 「关联」——条目行右键触发。内容用的是详情页那同一个 `ItemLinks`。 */}
       <ItemLinksDialog
         item={linksFor}
@@ -1549,6 +1554,7 @@ export function LibrarySection({
         onAdoptMarkdown={(item) => void adoptMarkdownFor(item)}
         onCopyCitation={(item) => void copyCitationOf(item)}
         onManageLinks={(item) => setLinksFor(item)}
+        onShowInfo={(item) => setInfoFor(item)}
       />
 
       {/* 分类行的右键菜单:新建子集合 / 新建笔记(仅笔记库)/ 移动到 / 重命名 / 删除 */}

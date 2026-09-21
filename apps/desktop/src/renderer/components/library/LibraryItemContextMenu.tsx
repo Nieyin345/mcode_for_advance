@@ -46,6 +46,7 @@ import {
   IconBook,
   IconChevronRight,
   IconRefresh,
+  IconInfoCircle,
   IconLink,
   IconCopy,
   IconDownload,
@@ -110,6 +111,13 @@ interface Props {
    * 关联天然是"某一条跟谁关联" —— 挂在条目行上比放在全局设置里合语义。
    */
   onManageLinks: (item: LibraryItem) => void;
+  /**
+   * 看这一条的**文献信息**（元数据 + 引用 + 摘要，2026-09-21）。
+   *
+   * 用户：「元数据表是**只有论文有**，**右键的时候会打开一个浮窗**显示，然后
+   * **引用啥的也都放在一起**」。
+   */
+  onShowInfo: (item: LibraryItem) => void;
 }
 
 /** 面板当前显示哪一步。 */
@@ -127,6 +135,7 @@ export function LibraryItemContextMenu({
   onAdoptMarkdown,
   onCopyCitation,
   onManageLinks,
+  onShowInfo,
 }: Props) {
   const { t } = useI18n();
   // 虚拟锚点钉在右键的坐标上;菜单退场动画期间冻结在最后的位置(见 useCursorAnchor)
@@ -327,6 +336,18 @@ export function LibraryItemContextMenu({
                   >
                     <IconLink size={12} className="shrink-0" />
                     {t("library.links.title")}
+                  </Menu.Item>
+                )}
+                {item && (
+                  <Menu.Item
+                    onClick={() => {
+                      onShowInfo(item);
+                      onClose();
+                    }}
+                    className={itemClass}
+                  >
+                    <IconInfoCircle size={12} className="shrink-0" />
+                    {t("library.info.title")}
                   </Menu.Item>
                 )}
                 <div className="my-1 border-t border-edge/60" />

@@ -171,6 +171,8 @@ export const en = {
   "library.del.cancel": "Cancel",
   "library.ctx.openFolder": "Open containing folder",
   "library.ctx.openMd": "Preview full text (in app)",
+  /** Right-click → item info popover (metadata + citation + abstract). */
+  "library.info.title": "Item info",
   "library.ctx.openMdMissing": "Preview full text (not converted yet)",
   "library.ctx.openMdExternal": "Open Markdown in external editor",
   "library.ctx.newNote": "New note",

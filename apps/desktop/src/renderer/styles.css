@@ -2323,3 +2323,24 @@ html.sketch.dark body::after {
   font-family: Calibri, "Segoe UI", sans-serif;
 }
 
+
+/* ── 应用内 PDF 阅读器：页面贴边 ──────────────────────────────────────────
+ *
+ * pdf.js 的 `pdf_viewer.css` 给每一页留了 1px 的左右边距 + 9px 的透明边框
+ * （`--page-margin: 1px auto -8px` 与 `--page-border: 9px solid transparent`，
+ * 都在那份样式表的 `:root` 里）。在 Mozilla 的网页面板里那是页与页之间的呼吸感，
+ * 但在这里 —— 中间栏本来就不宽 —— 它表现为"PDF 和边框之间有距离，没贴满"。
+ * 用户的要求是**没有距离**。
+ *
+ * 覆盖的是那两个变量而不是 `.page` 的 margin 本身:变量是那份样式表的**公开旋钮**
+ * （它自己也在媒体查询里改这两个值），改旋钮比改派生属性稳 —— 哪天 pdf.js 换了
+ * `.page` 的写法,这里不用跟着改。
+ *
+ * ⚠️ 这份文件是全局的,而 `pdf_viewer.css` 是在 `PdfPreview.tsx` 里按组件 import 的,
+ * **两者的加载顺序不确定** —— 所以这里把选择器写成 `:root:root`(特异性 0,2,0 > 0,1,0),
+ * 不靠后来居上。
+ */
+:root:root {
+  --page-margin: 0 auto;
+  --page-border: 0 solid transparent;
+}
