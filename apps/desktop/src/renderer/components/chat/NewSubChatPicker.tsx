@@ -43,6 +43,13 @@ export interface SubChatChoice {
   memory: boolean;
 }
 
+/** 一档选项：一份档案 + 要不要它的记忆。「空白」用 `profile: null` 表示。 */
+interface Option {
+  key: string;
+  profile: AgentProfile | null;
+  memory: boolean;
+}
+
 interface Props {
   open: boolean;
   /** 「+」按钮的位置 —— 贴着它向上展开(与 LibraryPicker / TemplatePicker 同款)。 */
@@ -60,7 +67,6 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
-  const [withMemory, setWithMemory] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -71,7 +77,6 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
     setQuery("");
     setActiveIdx(0);
     setError(null);
-    setWithMemory(false);
     const id = setTimeout(() => inputRef.current?.focus(), 0);
     let cancelled = false;
     setLoading(true);
@@ -103,40 +108,52 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  const filtered = useMemo(() => {
+  /**
+   * **选项 = 档案 × 有没有记忆**（2026-09-21 改）。
+   *
+   * ★ 用户：「这个记忆**不是勾选，而且选择**，同一个档案会有**不同的记忆的代理**」。
+   *
+   * 从前是"选档案 + 底下勾一个『带上长期记忆』"两个维度 —— 于是同一份档案只有**一条**
+   * 选项，它在"带记忆 / 不带记忆"之间靠那个勾切换。用户要的是**两条平铺的选项**：
+   * 「档案甲」和「档案甲（带记忆）」各占一行，**直接选，不勾**。
+   *
+   * 这也顺掉了底下那个开关（连同它的 Alt+M）—— 一维的东西不该有两个控件去表达。
+   */
+  const options = useMemo<Option[]>(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return profiles;
-    return profiles.filter(
-      (p) => p.name.toLowerCase().includes(q) || (p.description ?? "").toLowerCase().includes(q),
-    );
+    const matched = q
+      ? profiles.filter(
+          (p) => p.name.toLowerCase().includes(q) || (p.description ?? "").toLowerCase().includes(q),
+        )
+      : profiles;
+    const out: Option[] = [];
+    // 「空白」—— 与档案并列的第一档，**只在没搜索词时给**（用户打字说明他在找某一份
+    // 档案，不是想找空白）。它**没有"带记忆"那一档**：记忆是注给某个角色的背景说明，
+    // 没有角色的对话不带它（`createSubChat` 也拦这一条）。
+    if (!q) out.push({ key: "__blank__", profile: null, memory: false });
+    for (const p of matched) {
+      out.push({ key: `${p.id}:0`, profile: p, memory: false });
+      out.push({ key: `${p.id}:1`, profile: p, memory: true });
+    }
+    return out;
   }, [profiles, query]);
 
-  /** 键盘导航的可选项 = 「空白」+ 过滤后的档案。顺序就是屏幕上看到的顺序。
-   *
-   *  `withBlank = false` 时「空白」那一行**不渲染**(搜索词把用户带到了某一份档案上)——
-   *  于是它也不该占一个 `activeIdx` 位,否则 ↓ 会先跳到一个看不见的行上。 */
-  const withBlank = query.trim().length === 0;
-  const optionCount = (withBlank ? 1 : 0) + filtered.length;
+  /** 可选项就是 `options` —— **顺序就是屏幕上看到的顺序**（那正是 `activeIdx` 的判据）。 */
+  const optionCount = options.length;
 
   useEffect(() => {
     setActiveIdx((i) => Math.min(i, Math.max(0, optionCount - 1)));
   }, [optionCount]);
 
-  /** 「空白」= 什么角色都不是。**勾了记忆时这一档关掉** —— 记忆是"注给某个角色"的
-   *  背景说明,没有角色的对话不带它(stores 的 `createSubChat` 也是这么拼请求的:
-   *  `choice.profile && choice.memory` 才发 memory)。
+  /**
+   * 选一档。**只有这一个入口**（2026-09-21 改）。
    *
-   *  ⚠️ 与其让它"能按、按了悄悄把那个勾丢掉",不如**按不动并说明原因** —— 后者才是
-   *  用户嘴里的「点了没反应」。键盘那条路(回车)也要挡住,所以拦在这个函数里而不是
-   *  只写在按钮的 `disabled` 上。 */
-  const pickBlank = () => {
-    if (withMemory) return;
-    onPick({ profile: null, memory: false });
-    onClose();
-  };
-
-  const pickProfile = (profile: AgentProfile) => {
-    onPick({ profile, memory: withMemory });
+   * 从前有两个（`pickBlank` / `pickProfile`），因为「空白」的可用性要看那个记忆开关 ——
+   * 现在记忆是**选项自己的一部分**（「空白」那档天然不带记忆），那个条件没有了，
+   * 两条路收成一条。
+   */
+  const pickOption = (opt: Option) => {
+    onPick({ profile: opt.profile, memory: opt.memory });
     onClose();
   };
 
@@ -150,15 +167,8 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
         onClose();
         return;
       }
-      // 记忆开关的快捷键。**与那一行上显示的提示一致** —— 提示里写什么键,这里就得响应
-      // 什么键(不然那行字是在骗人)。Alt+M 而不是 Tab:Tab 在这个界面里是"跳到下一个
-      // 可聚焦元素",抢掉它在无障碍上是负数,而这个面板本来就在捕获阶段收按键。
-      if (e.altKey && e.key.toLowerCase() === "m") {
-        e.preventDefault();
-        e.stopPropagation();
-        setWithMemory((v) => !v);
-        return;
-      }
+      // （原来这里有个 Alt+M「切记忆开关」的快捷键。2026-09-21 连同那个开关一起去掉了
+      //   —— 记忆现在是**平铺的一档选项**，直接选它就行，不需要一个修饰键去切。）
       if (e.key === "ArrowDown") {
         e.preventDefault();
         e.stopPropagation();
@@ -174,19 +184,14 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
       if (e.key === "Enter") {
         e.preventDefault();
         e.stopPropagation();
-        const offset = withBlank ? 1 : 0;
-        if (activeIdx < offset) {
-          pickBlank();
-          return;
-        }
-        const target = filtered[activeIdx - offset];
-        if (target) pickProfile(target);
+        const target = options[activeIdx];
+        if (target) pickOption(target);
       }
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, activeIdx, withBlank, filtered, optionCount, withMemory, onClose]);
+  }, [open, activeIdx, options, optionCount, onClose]);
 
   // 点外部关闭(与 LibraryPicker / TemplatePicker 同款:document mousedown + ref.contains)
   useEffect(() => {
@@ -201,19 +206,53 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
 
   if (!open || !anchorRect) return null;
 
-  const left = anchorRect.left;
+  /**
+   * ⚠️ **左右都要夹一下**（2026-09-21）。
+   *
+   * 从前是 `left = anchorRect.left` —— 直接跟着锚点往右铺开。在**输入框上方**那个
+   * 「+」那里没事（它在屏幕中间），但**右栏那个「+」贴着屏幕右缘**：一个 300~420 宽的
+   * 面板从那儿往右展开，**一大半跑到屏幕外**，用户的原话是「弹出的框也页面外面看不到」。
+   *
+   * 夹取规则与同仓库别处一致（见 `ContextStatsPopover` / `SelectionQuoteMenu` 的
+   * `left` 那两行）：两边各留 8px，窗口比面板窄时**以左边为准**（宁可右边溢出一点，
+   * 也别让面板左边缘跑出屏幕 —— 用户从左边开始读）。
+   */
   const width = Math.min(Math.max(anchorRect.width, 300), 420);
+  const left = Math.min(
+    Math.max(anchorRect.left, 8),
+    Math.max(window.innerWidth - width - 8, 8),
+  );
+
+  /**
+   * **向上生长，但撞到窗口顶上就改成向下**（2026-09-21）。
+   *
+   * ★ 用户报：「默认模式的时候，**还是会超出**，因为没有流程图，所以**太靠上面了**」。
+   *
+   * 从前是死死地"向上生长"（`translateY(-100%)`）—— 锚点在屏幕下半部时没问题，
+   * 而**右栏那个「+」在默认模式下位置很靠上**（没有流程图那块把它顶下去），
+   * 面板从那儿往上长就直接**越过了窗口顶**，内容看不见。
+   *
+   * 现在按可用空间择向：上面放得下就向上（贴着锚点），放不下就向下。
+   * 高度上限也跟着可用空间走 —— 不然向下那一档可能又超出底部。
+   */
+  const PANEL_MAX_H = 320;
+  const spaceAbove = anchorRect.top - 8;
+  const spaceBelow = window.innerHeight - anchorRect.bottom - 8;
+  const openUp = spaceAbove >= Math.min(PANEL_MAX_H, spaceBelow);
+  const maxH = Math.max(120, Math.min(PANEL_MAX_H, openUp ? spaceAbove : spaceBelow));
 
   return (
     <div
       ref={rootRef}
-      className="fixed z-[70] flex max-h-80 flex-col overflow-hidden rounded-lg border border-edge bg-surface shadow-xl"
+      className="fixed z-[70] flex flex-col overflow-hidden rounded-lg border border-edge bg-surface shadow-xl"
       style={{
         left,
         width,
-        top: Math.max(8, anchorRect.top - 8),
-        // 从锚点向上生长 —— 与 LibraryPicker / TemplatePicker 一致(输入框在屏幕底部)
-        transform: "translateY(-100%)",
+        maxHeight: maxH,
+        // 向上：面板底边贴着锚点顶（`translateY(-100%)`）；向下：顶边贴着锚点底。
+        ...(openUp
+          ? { top: anchorRect.top - 8, transform: "translateY(-100%)" }
+          : { top: anchorRect.bottom + 8 }),
       }}
     >
       <div className="flex items-center gap-1.5 border-b border-edge px-2 py-1">
@@ -228,36 +267,8 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto py-1">
-        {/* 「空白」—— 与「档案」并列的第一档。**不参与搜索**:它是"什么都不要"的意思,
-            用户打字说明他在找某一份档案,不是想找空白。
-            勾了记忆时**关掉**(见 `pickBlank` 上那段)—— 文案换成那句解释,而不是让
-            用户对着一个能按但不会有记忆的按钮猜。 */}
-        {withBlank && (
-          <button
-            type="button"
-            onMouseEnter={() => setActiveIdx(0)}
-            onClick={pickBlank}
-            disabled={withMemory}
-            className={cn(
-              "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] transition-colors",
-              withMemory
-                ? "cursor-not-allowed text-content-subtle opacity-50"
-                : activeIdx === 0
-                  ? "bg-surface-muted text-content"
-                  : "text-content-muted",
-            )}
-            title={
-              withMemory ? t("chat.newSubChat.blankNoMemory") : t("chat.newSubChat.blankHint")
-            }
-          >
-            <span className="w-3.5 shrink-0" />
-            <span className="min-w-0 flex-1 truncate font-medium">{t("chat.newSubChat.blank")}</span>
-            <span className="shrink-0 text-[11px] text-content-subtle">
-              {withMemory ? t("chat.newSubChat.blankNoMemory") : t("chat.newSubChat.blankHint")}
-            </span>
-          </button>
-        )}
-
+        {/* 一列平铺的选项：**每份档案占两行**（不带记忆 / 带记忆），外加最上面那档
+            「空白」。见 `options` 那段注释 —— 记忆从"一个勾"变成了"选项自己的一部分"。 */}
         {loading ? (
           <div className="flex items-center justify-center gap-1.5 px-3 py-4 text-[12px] text-content-subtle">
             <IconLoader2 size={12} className="animate-spin" />
@@ -265,7 +276,7 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
           </div>
         ) : error ? (
           <div className="px-3 py-4 text-center text-[12px] text-red-500">{error}</div>
-        ) : filtered.length === 0 ? (
+        ) : options.length === 0 ? (
           <div className="px-3 py-4 text-center text-[12px] text-content-subtle">
             {profiles.length === 0 ? (
               <>
@@ -278,64 +289,45 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
             )}
           </div>
         ) : (
-          <>
-            <div className="px-2.5 pb-0.5 pt-2 text-[10px] font-medium uppercase tracking-wider text-content-subtle">
-              {t("settings.workflows.tabProfiles")}
-            </div>
-            {filtered.map((p, i) => {
-              const idx = i + (withBlank ? 1 : 0);
-              return (
-                <button
-                  key={p.id}
-                  type="button"
-                  onMouseEnter={() => setActiveIdx(idx)}
-                  onClick={() => pickProfile(p)}
-                  className={cn(
-                    "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] transition-colors",
-                    idx === activeIdx ? "bg-surface-muted text-content" : "text-content-muted",
-                  )}
-                  title={p.description || p.name}
-                >
-                  <span className="w-3.5 shrink-0">
-                    {withMemory && <IconCheck size={12} className="text-accent" />}
-                  </span>
+          options.map((opt, idx) => {
+            const isBlank = opt.profile === null;
+            const active = idx === activeIdx;
+            return (
+              <button
+                key={opt.key}
+                type="button"
+                onMouseEnter={() => setActiveIdx(idx)}
+                onClick={() => pickOption(opt)}
+                className={cn(
+                  "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] transition-colors",
+                  active ? "bg-surface-muted text-content" : "text-content-muted",
+                )}
+                title={
+                  isBlank
+                    ? t("chat.newSubChat.blankHint")
+                    : (opt.profile?.description || opt.profile?.name)
+                }
+              >
+                {/* 图标记：空白用「什么都没有」，档案用那颗星。 */}
+                {isBlank ? (
+                  <span className="w-3.5 shrink-0" />
+                ) : (
                   <IconUserStar size={13} className="shrink-0 opacity-80" />
-                  <span className="min-w-0 flex-1 truncate">{p.name}</span>
-                  {withMemory && (
-                    <span className="shrink-0 text-[10px] text-accent">
-                      {t("chat.newSubChat.withMemory")}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </>
+                )}
+                <span className={cn("min-w-0 flex-1 truncate", isBlank && "font-medium")}>
+                  {isBlank ? t("chat.newSubChat.blank") : opt.profile?.name}
+                </span>
+                {/* **记忆是这一行自己的事**（不是上面一个勾）—— 带记忆的那一档把
+                    标签亮出来，不带的那一档什么都不写（它是默认态）。 */}
+                {opt.memory && (
+                  <span className="shrink-0 text-[10px] text-accent">
+                    {t("chat.newSubChat.withMemory")}
+                  </span>
+                )}
+              </button>
+            );
+          })
         )}
-      </div>
-
-      {/* 记忆开关。**不随搜索隐藏**:它是对"接下来选的那一份档案"的修饰,不是列表的一部分。
-          放在列表**下面**而不是上面:它修饰的是下一次点击,贴着那一列档案比盖在它们头上更顺。 */}
-      <div className="border-t border-edge px-2.5 py-1.5">
-        <button
-          type="button"
-          onClick={() => setWithMemory((v) => !v)}
-          title={t("chat.newSubChat.memoryHint")}
-          className="flex w-full items-center gap-2 text-left text-[11px] text-content-muted hover:text-content"
-        >
-          <span
-            className={cn(
-              "inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] border",
-              withMemory ? "border-accent bg-accent text-surface" : "border-edge",
-            )}
-          >
-            {withMemory && <IconCheck size={10} />}
-          </span>
-          <span className="min-w-0 flex-1 truncate">{t("chat.newSubChat.memoryOn")}</span>
-          {/* 快捷键提示 —— 与上面 keydown 里响应的那个键**必须**是同一个。 */}
-          <kbd className="shrink-0 rounded border border-edge px-1 text-[10px] tabular-nums opacity-60">
-            {t("chat.newSubChat.memoryKey")}
-          </kbd>
-        </button>
       </div>
     </div>
   );

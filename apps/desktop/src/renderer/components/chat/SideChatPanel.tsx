@@ -255,24 +255,29 @@ function SideChatListView({
   );
   return (
     <div className="flex h-full flex-col">
-      {/* Header: owning main session + the create button. */}
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-edge bg-surface px-2.5">
-        <IconMessages size={14} className="shrink-0 text-accent" />
-        <div className="min-w-0 flex-1 truncate text-xs text-content-muted">
-          {hasMainSession ? (parentTitle ?? "") : t("sideChat.noMainSession")}
-        </div>
+      {/**
+        * **只有一个加号，没有那一行框**（2026-09-21）。
+        *
+        * ★ 用户（截图）：「这里的新建新的子代理弹出的框也页面外面看不到，还有这个新建
+        * **只要一个加号就行了，这一个框就不要了**，而且还**和主对话的置顶冲突，我老是
+        * 以为有两个对话**」。
+        *
+        * 根因就是原来那一行：它左边写着**主对话的标题**，而新会话还没命名、默认就叫
+        * "New session" —— 于是那一行**看起来像一条叫这个名字的对话**，紧挨着下面那条
+        * 「主对话」，两条框叠在一起。
+        *
+        * 现在只留一个**没有边框、没有底色**的加号，靠右放。它不再像一条对话。
+        *
+        * （`hasMainSession` 那个判断也去掉了：没有主会话时按下去不会有反应这件事，
+        *   由 `NewSubChatPicker` 那一侧自己说清楚 —— 而空列表本来就会告诉用户
+        *   "先开一个会话"。多一层灰态只是让那个加号看起来像坏了。） */}
+      <div className="flex shrink-0 justify-end px-1.5 pb-0.5 pt-1">
         <button
           type="button"
-          disabled={!hasMainSession}
           // 弹「选档案」选择器（默认 / 档案 / 档案+记忆）—— 见 `onChooseProfile`。
           onClick={(e) => onChooseProfile(e.currentTarget.getBoundingClientRect())}
           title={t("sideChat.newChat")}
-          className={cn(
-            "flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors",
-            hasMainSession
-              ? "bg-accent/15 text-accent hover:bg-accent/25"
-              : "cursor-not-allowed bg-accent/5 text-content-subtle opacity-50",
-          )}
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-content-subtle transition-colors hover:bg-surface-hover hover:text-accent"
         >
           <IconPlus size={14} />
         </button>
