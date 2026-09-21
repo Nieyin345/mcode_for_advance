@@ -161,7 +161,6 @@ export const en = {
   // already going).
   "chatStream.workflowBoard.runFromHereFailed": "Couldn't start from here — that run has ended.",
   // The divider between the chart and the card list.
-  "chatStream.workflowBoard.dragHint": "Drag to resize the chart (double-click to reset)",
   // A step that hasn't run in THIS run at all (a stored row read back after a restart,
   // with nothing live behind it). Not "done" and not "failed": this describes "not
   // moving right now", not the verdict of the last run.

@@ -149,7 +149,6 @@ export const zh = {
   // 点了「从这一步开始跑」但主进程拒绝了(这次运行已经结束 / 正有运行在执行)。
   "chatStream.workflowBoard.runFromHereFailed": "没能从这一步开始 —— 这次运行已经结束了。",
   // 拖分隔条时鼠标悬停的提示。
-  "chatStream.workflowBoard.dragHint": "上下拖,调流程图的高度(双击还原)",
   // 一步**还没有在这次运行里执行过**(重启之后从库里读回来的那一行,看板上只有它)。
   // 不说"已完成"也不说"失败" —— 这一档描述的是"这一步现在没在执行",而不是上次的结论。
   "chatStream.workflowBoard.notRun": "没在跑",

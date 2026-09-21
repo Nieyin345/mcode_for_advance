@@ -528,16 +528,17 @@ function RenderMini({
         />
       </div>
       {/* 那条分隔条。**双击还原** —— 拖偏了不用去猜默认值是多少。`hideLine={false}`
-          给一条看得见的细线:它同时表达"图到这儿为止"和"这里可拖"两层意思。 */}
+          给一条看得见的细线:它同时表达"图到这儿为止"和"这里可拖"两层意思。
+
+          ⚠️ **上一条「上下拖，调流程图的高度（双击还原）」的提示行删掉了**（2026-09-21，
+          用户：「直接删掉，就一条线分割开就行」）—— 那条线自己已经说明了"这里分开"，
+          再挂一行小字只是在图下面多一条要读的东西。 */}
       <Divider
         orientation="horizontal"
         onResize={onResize}
         onDoubleClick={onResetHeight}
         className={FLOW_DIVIDER_CLASS}
       />
-      <p className="select-none px-2.5 pb-1 text-[10px] leading-4 text-content-subtle">
-        {t("chatStream.workflowBoard.dragHint")}
-      </p>
     </div>
   );
 }
