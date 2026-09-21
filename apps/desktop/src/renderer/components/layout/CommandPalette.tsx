@@ -36,6 +36,9 @@ import { Dialog as BaseDialog } from "@base-ui/react/dialog";
 import { Combobox } from "@base-ui/react/combobox";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
+import { useFileViewStore } from "@renderer/stores/fileViewStore.js";
+import { IconFileText } from "@renderer/lib/icons.js";
+import type { LibraryItem, FullTextMatch } from "@contracts/library";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import {
   collectCommands,
@@ -76,7 +79,11 @@ const GREP_MAX_PER_FILE = 3;
 /** Which kind(s) of results the palette should search + render. `all` mixes
  *  every kind (the original behaviour); the others scope to a single type so
  *  the user can target threads / files / content without noise. */
-type SearchScope = "all" | "command" | "session" | "bookmark" | "file" | "grep";
+/** 文档（资料库）检索一次最多各列几条 —— 与另外几组同一个量级。 */
+const DOC_META_LIMIT = 20;
+const DOC_TEXT_LIMIT = 40;
+
+type SearchScope = "all" | "command" | "session" | "bookmark" | "file" | "grep" | "doc";
 
 /** Tab descriptor: id + dictionary key + whether it needs an active project
  *  to be useful (file/content searches are project-scoped). Ordered for
@@ -89,11 +96,23 @@ const SCOPE_TABS: { id: SearchScope; labelKey: MessageId; needsProject: boolean 
   { id: "bookmark", labelKey: "layout.palette.bookmark", needsProject: false },
   { id: "file", labelKey: "layout.palette.file", needsProject: true },
   { id: "grep", labelKey: "layout.palette.grep", needsProject: true },
+  // 「文档」排在最后：前几个都是**项目文件/对话**，它是**资料库**（用户收进来的
+  // 文献与笔记），换了一片地方，放最后读起来才不混。它不需要项目 —— 库是全局的。
+  { id: "doc", labelKey: "layout.palette.doc", needsProject: false },
 ];
 
-/** Does `scope` include the given group? (`all` includes everything.) */
-function scopeIncludes(scope: SearchScope, group: PaletteGroup): boolean {
-  return scope === "all" || scope === group;
+/**
+ * Does `scope` include the given group? (`all` includes everything.)
+ *
+ * ⚠️ `group` 收 `string` 而不是 `PaletteGroup`：两者**不是一一对应** ——
+ * `"doc"` 这一个 scope 对应 `docItem` + `docText` **两个** group，所以这里要能接受
+ * `"doc"`。判据就是"scope 名 === group 名，或者 scope 是 doc（它管那两个）"。
+ */
+function scopeIncludes(scope: SearchScope, group: string): boolean {
+  if (scope === "all") return true;
+  // 两个 "doc*" group 都归 "doc" 这个 scope（scope 与 group 不是一一对应）。
+  if (group === "docItem" || group === "docText") return scope === "doc";
+  return scope === group;
 }
 
 /* ───────────────────────── unified palette item ───────────────────────── */
@@ -106,11 +125,17 @@ type PaletteItem =
   | { kind: "session"; session: Session }
   | { kind: "bookmark"; result: BookmarkSearchResult }
   | { kind: "file"; file: FileSearchEntry }
-  | { kind: "grep"; match: FileGrepEntry };
+  | { kind: "grep"; match: FileGrepEntry }
+  // 「文档」两组：元数据命中（条）与正文命中（行）。
+  // ⚠️ 它们是**两个 group**，不是一个 —— 与 file / grep 分成两组同一个道理：
+  // 一条"标题里含这个词"和一处"正文第 42 行提到这个词"是两回事，混在一列里
+  // 用户分不清哪条能点进去看到什么。
+  | { kind: "docItem"; item: LibraryItem }
+  | { kind: "docText"; match: FullTextMatch };
 
 /** Fixed group order for rendering. Commands always come first; the search
  *  groups follow so the user reads top-down "action → thing → file". */
-const GROUP_ORDER = ["command", "session", "bookmark", "file", "grep"] as const;
+const GROUP_ORDER = ["command", "session", "bookmark", "file", "grep", "docItem", "docText"] as const;
 type PaletteGroup = (typeof GROUP_ORDER)[number];
 
 const GROUP_LABELS: Record<PaletteGroup, MessageId> = {
@@ -119,6 +144,8 @@ const GROUP_LABELS: Record<PaletteGroup, MessageId> = {
   bookmark: "layout.palette.bookmark",
   file: "layout.palette.file",
   grep: "layout.palette.grep",
+  docItem: "layout.palette.doc",
+  docText: "layout.palette.docText",
 };
 
 /** Tri-state async result: undefined = idle, {loading:true} = pending,
@@ -159,6 +186,9 @@ export function CommandPalette() {
   const [bookmarkHits, setBookmarkHits] = useState<AsyncResult<BookmarkSearchResult[]>>(undefined);
   const [files, setFiles] = useState<AsyncResult<FileSearchEntry[]>>(undefined);
   const [greps, setGreps] = useState<AsyncResult<FileGrepEntry[]>>(undefined);
+  /** 文档（资料库）两组结果 —— 元数据命中与正文命中。 */
+  const [docItems, setDocItems] = useState<AsyncResult<LibraryItem[]>>(undefined);
+  const [docTexts, setDocTexts] = useState<AsyncResult<FullTextMatch[]>>(undefined);
 
   const trimmed = query.trim();
   const isSearching = trimmed.length > 0;
@@ -188,11 +218,15 @@ export function CommandPalette() {
     const wantBookmark = scopeIncludes(scope, "bookmark");
     const wantFile = scopeIncludes(scope, "file") && !!projectPath;
     const wantGrep = scopeIncludes(scope, "grep") && !!projectPath;
+    // 文档检索**不需要项目** —— 资料库是全局的（不像 file/grep 只搜当前项目）。
+    const wantDoc = scope === "doc" || scope === "all";
     if (!open || !isSearching) {
       setSessions(undefined);
       setBookmarkHits(undefined);
       setFiles(undefined);
       setGreps(undefined);
+      setDocItems(undefined);
+      setDocTexts(undefined);
       return;
     }
     if (wantSession) setSessions({ loading: true });
@@ -203,6 +237,13 @@ export function CommandPalette() {
     else setFiles(undefined);
     if (wantGrep) setGreps({ loading: true });
     else setGreps(undefined);
+    if (wantDoc) {
+      setDocItems({ loading: true });
+      setDocTexts({ loading: true });
+    } else {
+      setDocItems(undefined);
+      setDocTexts(undefined);
+    }
     const myId = ++reqIdRef.current;
 
     const runCheapSearches = (): void => {
@@ -230,6 +271,19 @@ export function CommandPalette() {
             setBookmarkHits({ loading: false, value: [] });
           });
       }
+      if (wantDoc) {
+        // 元数据检索走 SQL，秒回 —— 与 session/file 同批。
+        void api.library
+          .list({ query: trimmed, limit: DOC_META_LIMIT })
+          .then((res) => {
+            if (reqIdRef.current !== myId) return;
+            setDocItems({ loading: false, value: res.items ?? [] });
+          })
+          .catch(() => {
+            if (reqIdRef.current !== myId) return;
+            setDocItems({ loading: false, value: [] });
+          });
+      }
       if (wantFile) {
         void api.file
           .search({ projectPath: projectPath!, query: trimmed, limit: FILE_SEARCH_LIMIT })
@@ -242,6 +296,19 @@ export function CommandPalette() {
             setFiles({ loading: false, value: [] });
           });
       }
+    };
+    /** 正文检索（ripgrep），与 grep 同批 —— 都慢，都在 GREP_DEBOUNCE_MS 之后跑。 */
+    const runDocText = (): void => {
+      void api.library
+        .fullTextSearch({ query: trimmed, limit: DOC_TEXT_LIMIT })
+        .then((res) => {
+          if (reqIdRef.current !== myId) return;
+          setDocTexts({ loading: false, value: res.matches ?? [] });
+        })
+        .catch(() => {
+          if (reqIdRef.current !== myId) return;
+          setDocTexts({ loading: false, value: [] });
+        });
     };
     const runGrep = (): void => {
       void api.file
@@ -263,9 +330,11 @@ export function CommandPalette() {
 
     const t1 = window.setTimeout(runCheapSearches, SEARCH_DEBOUNCE_MS);
     const t2 = wantGrep ? window.setTimeout(runGrep, GREP_DEBOUNCE_MS) : null;
+    const t3 = wantDoc ? window.setTimeout(runDocText, GREP_DEBOUNCE_MS) : null;
     return () => {
       window.clearTimeout(t1);
       if (t2 !== null) window.clearTimeout(t2);
+      if (t3 !== null) window.clearTimeout(t3);
     };
   }, [open, isSearching, trimmed, scope, projectPath]);
 
@@ -279,6 +348,8 @@ export function CommandPalette() {
     setBookmarkHits(undefined);
     setFiles(undefined);
     setGreps(undefined);
+    setDocItems(undefined);
+    setDocTexts(undefined);
     reqIdRef.current++;
   }, [open]);
 
@@ -332,6 +403,20 @@ export function CommandPalette() {
           column: (item.match.matches[0]?.start ?? 0) + 1,
         });
         break;
+      // 文档两条都是"打开这一篇"：写进 `fileViewStore`，中间栏就会显示它
+      // （与左栏单击是**同一条路**，见 `fileViewStore` 的头注）。
+      case "docItem":
+        useFileViewStore.getState().open({
+          source: { kind: "library", ref: item.item.id },
+          name: item.item.title,
+        });
+        break;
+      case "docText":
+        useFileViewStore.getState().open({
+          source: { kind: "library", ref: item.match.itemId },
+          name: item.match.title,
+        });
+        break;
     }
     close();
   };
@@ -360,9 +445,15 @@ export function CommandPalette() {
       if (scopeIncludes(scope, "grep") && greps && !greps.loading) {
         for (const m of greps.value) out.push({ kind: "grep", match: m });
       }
+      if (scopeIncludes(scope, "docItem") && docItems && !docItems.loading) {
+        for (const it of docItems.value) out.push({ kind: "docItem", item: it });
+      }
+      if (scopeIncludes(scope, "docText") && docTexts && !docTexts.loading) {
+        for (const m of docTexts.value) out.push({ kind: "docText", match: m });
+      }
     }
     return out;
-  }, [commandItems, trimmed, isSearching, scope, sessions, bookmarkHits, files, greps]);
+  }, [commandItems, trimmed, isSearching, scope, sessions, bookmarkHits, files, greps, docItems, docTexts]);
 
   // Bucket items by group (preserving GROUP_ORDER) for sectioned rendering.
   const grouped = useMemo(() => {
@@ -372,6 +463,8 @@ export function CommandPalette() {
       bookmark: [],
       file: [],
       grep: [],
+      docItem: [],
+      docText: [],
     };
     for (const it of items) buckets[it.kind].push(it);
     const loadingFor: Record<PaletteGroup, boolean> = {
@@ -380,13 +473,15 @@ export function CommandPalette() {
       bookmark: scopeIncludes(scope, "bookmark") && (bookmarkHits?.loading ?? false),
       file: scopeIncludes(scope, "file") && (files?.loading ?? false),
       grep: scopeIncludes(scope, "grep") && (greps?.loading ?? false),
+      docItem: scopeIncludes(scope, "docItem") && (docItems?.loading ?? false),
+      docText: scopeIncludes(scope, "docText") && (docTexts?.loading ?? false),
     };
     return GROUP_ORDER.map((g) => ({
       group: g,
       items: buckets[g],
       loading: loadingFor[g],
     })).filter((x) => x.items.length > 0 || x.loading);
-  }, [items, scope, sessions, bookmarkHits, files, greps]);
+  }, [items, scope, sessions, bookmarkHits, files, greps, docItems, docTexts]);
 
   const totalCount = items.length;
 
@@ -625,6 +720,8 @@ function placeholderFor(t: Translator, scope: SearchScope): string {
       return t("layout.palette.placeholder.file");
     case "grep":
       return t("layout.palette.placeholder.grep");
+    case "doc":
+      return t("layout.palette.placeholder.doc");
   }
 }
 
@@ -635,6 +732,7 @@ function emptyMessageFor(t: Translator, scope: SearchScope, isSearching: boolean
     if (scope === "all" || scope === "command") return t("layout.palette.empty.command");
     if (scope === "session") return t("layout.palette.empty.session");
     if (scope === "file") return t("layout.palette.empty.file");
+    if (scope === "doc") return t("layout.palette.empty.doc");
     return t("layout.palette.empty.grep");
   }
   return t("layout.palette.empty.searching");
@@ -656,6 +754,10 @@ function rowKey(item: PaletteItem, idx: number): string {
       return `file:${item.file.path}`;
     case "grep":
       return `grep:${item.match.path}:${item.match.lineNumber}:${idx}`;
+    case "docItem":
+      return `doc:${item.item.id}`;
+    case "docText":
+      return `doctext:${item.match.itemId}:${item.match.lineNumber}:${idx}`;
   }
 }
 
@@ -683,10 +785,40 @@ function PaletteRow({ item, onClick }: { item: PaletteItem; onClick: () => void 
         <BookmarkRowContent result={item.result} />
       ) : item.kind === "file" ? (
         <FileRowContent file={item.file} />
-      ) : (
+      ) : item.kind === "grep" ? (
         <GrepRowContent match={item.match} />
+      ) : item.kind === "docItem" ? (
+        <DocItemRowContent item={item.item} />
+      ) : (
+        <DocTextRowContent match={item.match} />
       )}
     </Combobox.Item>
+  );
+}
+
+/** 「文档」——元数据命中那一条。就是标题 + 作者/年份，跟左栏里看到的一样。 */
+function DocItemRowContent({ item }: { item: LibraryItem }) {
+  const meta = [item.authors?.[0], item.year ? String(item.year) : ""].filter(Boolean).join(" · ");
+  return (
+    <>
+      <IconFileText size={15} className="shrink-0 text-content-muted group-data-[highlighted]:text-accent" />
+      <span className="min-w-0 flex-1 truncate">{item.title}</span>
+      {meta && <span className="shrink-0 truncate text-[11px] text-content-subtle">{meta}</span>}
+    </>
+  );
+}
+
+/** 「文档正文」——命中那一行。行号 + 那一行的原文（这一组要的就是"哪篇的哪一行"）。 */
+function DocTextRowContent({ match }: { match: FullTextMatch }) {
+  return (
+    <>
+      <IconFileText size={15} className="shrink-0 text-content-muted group-data-[highlighted]:text-accent" />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[12px] text-content-muted">{match.title}</span>
+        <span className="block truncate text-[12px] text-content">{match.lineText.trim()}</span>
+      </span>
+      <span className="shrink-0 tabular-nums text-[11px] text-content-subtle">{match.lineNumber}</span>
+    </>
   );
 }
 
