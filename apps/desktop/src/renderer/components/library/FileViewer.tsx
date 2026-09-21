@@ -38,6 +38,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
+import { makeContentTag } from "@renderer/lib/contentTag.js";
 import { SelectionToolbar, type SelectionToolbarState } from "@renderer/components/chat/SelectionToolbar.js";
 import { SelectionQuoteMenu, type QuoteTarget } from "@renderer/components/chat/SelectionQuoteMenu.js";
 import { api } from "@renderer/lib/api.js";
@@ -152,12 +153,20 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
       if (!quoted) return;
       const store = useSessionStore.getState();
       const prev = store.composerDraftBySession[t2.id];
+      // **落成一个标签，不是一段纯文本**（2026-09-21）。
+      //
+      // ★ 用户：「我要的是**像引用文件一样在对话框里面加一个绿色的小标签**」。
+      // 从前这里是把那段文字拼进草稿正文（`prev.text + quoted`），于是引用的东西长得
+      // 跟用户自己打的字一模一样 —— 看不出"这是我从文件里挑来的"，也没法单独摘掉。
+      //
+      // `makeContentTag` 造的正是那种"一段内容折成 chip"的标签：`kind: "paste"`，
+      // chip 走主题色（`bg-accent/10 text-accent`，就是那个绿的），点开能看全文、
+      // 点 × 能单独删。和拖进来的文件、粘进来的大段内容是**同一种东西** ——
+      // 所以它跟"引用文件"长得一样，正是用户要的。
       store.saveComposerDraft(t2.id, {
-        text: prev?.text ? `${prev.text}
-
-${quoted}` : quoted,
-        html: "",
-        tags: prev?.tags ?? [],
+        text: prev?.text ?? "",
+        html: prev?.html ?? "",
+        tags: [...(prev?.tags ?? []), makeContentTag(quoted)],
       });
       useToastStore.getState().push({
         kind: "info",

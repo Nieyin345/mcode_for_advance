@@ -140,13 +140,27 @@ export function SelectionQuoteMenu({
    * 它排**最前面**：那是用户此刻正在看的那条，"引用给谁"的第一顺位就是它。
    */
   const openChatId = useSessionStore((s) => s.activeSideChatId);
+  /**
+   * 右栏那条的标题。**三种都得认** —— 它可能指
+   *
+   *   1. **主对话**（`MainSessionRow` 展开时）→ 在 `streamSessions` 里；
+   *   2. **子对话** → 在 `sideChatsByParent` 里；
+   *   3. **图上某一格的节点会话**（点流程图节点时）→ 在 `kind: "node"` 那张表里，
+   *      **上面两个列表都没有它**。
+   *
+   * ⚠️ 从前这里只查了 (1)(2)。漏掉 (3) 之后的症状不是报错，是**那句 toast 里的名字
+   * 是空的**（"已放进「」的输入框"）—— 用户截图报的就是这个。
+   */
   const openChatTitle = useSessionStore((s) => {
     const id = s.activeSideChatId;
     if (!id) return null;
-    if (id === s.activeSessionId) {
-      return s.streamSessions.find((x) => x.id === id)?.title ?? null;
-    }
-    return s.sideChatsByParent[s.activeSessionId ?? ""]?.find((x) => x.id === id)?.title ?? null;
+    const fromStream = s.streamSessions.find((x) => x.id === id)?.title;
+    if (fromStream) return fromStream;
+    const fromSide = s.sideChatsByParent[s.activeSessionId ?? ""]?.find((x) => x.id === id)?.title;
+    if (fromSide) return fromSide;
+    // 节点会话那一档在上面那个 effect 里查过了（`nodes`），这里不重复查 —— 见
+    // 下面 `targets` 里对它的兜底。
+    return null;
   });
 
   /** 当前会话永远排第一 —— 它不靠 RPC 来,所以取不到节点也照样能用。 */
@@ -154,7 +168,19 @@ export function SelectionQuoteMenu({
     () => [
       // **右栏正展开的那条排最前**（跳过与"当前对话"重复的那一种）。
       ...(openChatId && openChatId !== sessionId
-        ? [{ id: openChatId, title: openChatTitle ?? "", kind: "chat" as const }]
+        ? [
+            {
+              id: openChatId,
+              // 标题三级退：上面查到的 → 节点会话那份（`nodes`，节点会话没进 store，
+              // 只有这个 effect 拿得到）→ 空串（界面会显示成一条没有名字的行，
+              // 但至少**能选**）。
+              title:
+                openChatTitle ??
+                nodes?.find((x) => x.id === openChatId)?.title ??
+                "",
+              kind: "chat" as const,
+            },
+          ]
         : []),
       // 空串 = 从文件预览进来的，没有"当前会话"这一条（见上面 effect 那段）。
       ...(sessionId ? [{ id: sessionId, title: currentTitle, kind: "chat" as const }] : []),
