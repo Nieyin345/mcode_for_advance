@@ -43,7 +43,30 @@ interface Props {
   onClose: () => void;
 }
 
-export function LibraryPicker({ open, anchorRect, excludeCollectionIds = [], onPick, onClose }: Props) {
+export function LibraryPicker({
+  open,
+  anchorRect,
+  excludeCollectionIds = [],
+  onPick,
+  onClose,
+  autoExpandItems = false,
+}: Props & {
+  /**
+   * **默认就把分类展开、直接列出条目**（2026-09-21）。
+   *
+   * ## 为什么关联那一处要它
+   *
+   * 用户发来关联的截图：「关联的问题很大」—— 选择器打开是**空的**，只有几行分类，
+   * 条目藏在分类的 `>` 后面。他以为"没东西可挑"，其实要点一下才出现。
+   *
+   * 而关联这个场景**只能选条目**（分类不是可以挂关联的对象，见 `ItemDetail` 里
+   * `handlePick` 那段）—— 那就没有理由再让用户逐级点开。
+   *
+   * ⚠️ 默认 `false`：composer 那个「@ 引用」要的是"分类也能选"，展开会改变它的
+   * 手感和性能（一次拉全部条目）。**只给需要的那一处开**。
+   */
+  autoExpandItems?: boolean;
+}) {
   const { t } = useI18n();
   const collections = useLibraryStore((s) => s.collections);
   const loadCollections = useLibraryStore((s) => s.loadCollections);
@@ -65,7 +88,10 @@ export function LibraryPicker({ open, anchorRect, excludeCollectionIds = [], onP
       setQuery("");
       setActiveIdx(0);
       setSelected(new Set());
-      setExpanded(new Set());
+      // `autoExpandItems` 时**预展开**（见那个 prop 的说明）。
+      // ⚠️ 展开要在 `collections` 到位之后才有意义，所以不只在这里设一次 ——
+      // 下面还有一个跟着 `collections` 走的 effect 兜底。
+      setExpanded(autoExpandItems ? new Set(collections.map((c) => c.id)) : new Set());
       void loadCollections();
       // 打开即聚焦搜索框,用户可以直接打字过滤
       const id = setTimeout(() => inputRef.current?.focus(), 0);
@@ -128,6 +154,13 @@ export function LibraryPicker({ open, anchorRect, excludeCollectionIds = [], onP
   useEffect(() => {
     setActiveIdx((i) => Math.min(i, Math.max(0, options.length - 1)));
   }, [options.length]);
+
+  // `autoExpandItems` 的兜底：首次打开时 `collections` 可能还没拉回来（上面那个
+  // effect 里展开到的是空集合）。等它到位、且用户还没手动改过展开态时，补展开一次。
+  useEffect(() => {
+    if (!open || !autoExpandItems || collections.length === 0) return;
+    setExpanded((prev) => (prev.size === 0 ? new Set(collections.map((c) => c.id)) : prev));
+  }, [open, autoExpandItems, collections]);
 
   const toggle = (key: string) => {
     if (excluded.has(key)) return;

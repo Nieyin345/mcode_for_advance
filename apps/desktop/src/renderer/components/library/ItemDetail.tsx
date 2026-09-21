@@ -396,6 +396,9 @@ export function ItemLinks({ item, onChanged }: { item: LibraryItem; onChanged?: 
       <LibraryPicker
         open={pickerOpen}
         anchorRect={anchor}
+        // 关联**只能选条目**（分类不是可挂关联的对象），所以直接把分类展开、
+        // 列出条目 —— 用户截图里那个"空的"选择器就是这个（见那个 prop 的说明）。
+        autoExpandItems
         excludeCollectionIds={existingOut}
         onPick={(picked) => void handlePick(picked)}
         onClose={() => setPickerOpen(false)}
@@ -664,10 +667,32 @@ export function ItemLinksDialog({
     <Dialog.Root open={item !== null} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Backdrop />
-        <Dialog.Popup className="w-[520px] max-w-[92vw] p-4">
-          <Dialog.Title>
-            {t("library.links.title")}
-            {item ? ` · ${item.title}` : ""}
+        {/*
+          ⚠️ **`!translate-x-0 !translate-y-0` 不是手滑**（2026-09-21）。
+
+          `Dialog.Popup` 的原型是 `left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2`
+          —— 它靠 **transform 居中**。而 CSS 规定：**一个带 `transform` 的元素会成为
+          它后代里 `position: fixed` 的包含块**。
+
+          这个 Dialog 里装着 `LibraryPicker`，那个是 `fixed` + 用**视口坐标**
+          （`anchorRect`）定位的。于是它的 `fixed` 参照的不是窗口，而是这个居中盒子 ——
+          表现就是用户截图里那个"选择器跑到右下角去了"。
+
+          去掉 transform 之后，盒子本身改用 `inset-0 + m-auto` 居中（不产生 transform），
+          后面的 `fixed` 才能重新对着视口。
+        */}
+        <Dialog.Popup className="inset-0 m-auto h-fit w-[520px] max-w-[92vw] translate-x-0 translate-y-0 p-4">
+          {/* ⚠️ **标题里不要拼整条标题**（2026-09-21）。用户发来的截图里它成了
+              「关联 · Wavelength Selection for Satellite Quantum Key Distribution」——
+              一条论文标题能长到把标题栏撑满，而真正要说的只有"这是哪一条的关联"。
+              改成一个定宽可截断的副标题。 */}
+          <Dialog.Title className="flex items-baseline gap-2">
+            <span className="shrink-0">{t("library.links.title")}</span>
+            {item && (
+              <span className="min-w-0 flex-1 truncate text-[0.8571em] font-normal text-content-muted">
+                {item.title}
+              </span>
+            )}
           </Dialog.Title>
           <div className="mt-2 max-h-[60vh] overflow-y-auto">
             {item && <ItemLinks item={item} onChanged={onChanged} />}
