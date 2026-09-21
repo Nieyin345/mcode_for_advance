@@ -178,6 +178,44 @@ export function PdfPreview({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item.id, bytes, nonce]);
 
+  /**
+   * **跟随容器宽度重算"适应宽度"**（2026-09-21）。
+   *
+   * ## 为什么必须自己盯 —— pdf.js 不管这件事
+   *
+   * `currentScaleValue = "page-width"` **不是**一个持续生效的模式,它只是**一次
+   * 赋值**:pdf.js 按当时的容器宽度算出一个具体比例,存下来就完了。
+   *
+   * 我核对过它的实现（`web/pdf_viewer.mjs` 的 `#resizeObserverCallback`):那个
+   * ResizeObserver **只做一件事** —— `#updateContainerHeightCss(...)`,即**只更新
+   * 高度**。容器变窄时它不会重算宽度比例。
+   *
+   * 于是拖窄中间栏 / 改窗口大小之后,页面还按**旧的**比例画 —— 用户看到的正是
+   * 「PDF 不能跟随主页面宽度收缩」。
+   *
+   * ## 只在宽度真的变了才重设
+   *
+   * 高度变化也走这个 observer,而每一次重设 `currentScaleValue` 都会让 pdf.js 重排
+   * 全部页面(大文档上很贵)。所以记住上一次的宽度,窄到没变就早退 —— 拖高度条时
+   * 不会连带动一次重排。
+   */
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    let lastWidth = el.clientWidth;
+    const ro = new ResizeObserver(() => {
+      const w = el.clientWidth;
+      if (w === lastWidth) return; // 高度变了而已 —— 不值得重排
+      lastWidth = w;
+      const v = viewerHandle.current;
+      // 只在"当前是适应宽度"时跟随。用户手动缩放到 150% 之后拖窗口,**不该**
+      // 把他那个 150% 顶掉 —— 那是他自己选的。
+      if (v && v.currentScaleValue === "page-width") v.currentScaleValue = "page-width";
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const step = useCallback((delta: number) => {
     const v = viewerHandle.current;
     if (!v) return;
