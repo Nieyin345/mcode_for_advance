@@ -668,7 +668,7 @@ export function ItemLinksDialog({
       <Dialog.Portal>
         <Dialog.Backdrop />
         {/*
-          ⚠️ **`!translate-x-0 !translate-y-0` 不是手滑**（2026-09-21）。
+          ⚠️ **必须 `transform-none`，光写 `translate-x-0` 没用**（2026-09-21）。
 
           `Dialog.Popup` 的原型是 `left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2`
           —— 它靠 **transform 居中**。而 CSS 规定：**一个带 `transform` 的元素会成为
@@ -678,10 +678,15 @@ export function ItemLinksDialog({
           （`anchorRect`）定位的。于是它的 `fixed` 参照的不是窗口，而是这个居中盒子 ——
           表现就是用户截图里那个"选择器跑到右下角去了"。
 
-          去掉 transform 之后，盒子本身改用 `inset-0 + m-auto` 居中（不产生 transform），
-          后面的 `fixed` 才能重新对着视口。
+          ⚠️ **我第一版修错了，写的是 `translate-x-0 translate-y-0`** —— 那**不解决
+          问题**：`transform: translate(0,0)` 的计算值仍然**不是 `none`**，包含块照旧。
+          必须显式 `transform-none`。
+
+          居中改成**四边归零 + `m-auto`**。⚠️ 不能用 `inset-0`：tailwind-merge 里
+          `inset` 与 `left`/`top` **不是同一组**，它顶不掉 `left-1/2`/`top-1/2`，
+          两个值会同时留在 class 里、谁赢看样式表顺序。
         */}
-        <Dialog.Popup className="inset-0 m-auto h-fit w-[520px] max-w-[92vw] translate-x-0 translate-y-0 p-4">
+        <Dialog.Popup className="bottom-0 left-0 right-0 top-0 m-auto h-fit w-[520px] max-w-[92vw] transform-none p-4">
           {/* ⚠️ **标题里不要拼整条标题**（2026-09-21）。用户发来的截图里它成了
               「关联 · Wavelength Selection for Satellite Quantum Key Distribution」——
               一条论文标题能长到把标题栏撑满，而真正要说的只有"这是哪一条的关联"。
