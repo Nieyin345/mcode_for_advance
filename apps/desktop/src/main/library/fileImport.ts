@@ -21,7 +21,7 @@ import { basename, extname, join } from "node:path";
 import type { LibraryItem, LibraryKind } from "@contracts/library";
 import { LibraryRepo } from "@main/store/repositories.js";
 import { emitItemImported } from "./broadcast.js";
-import { libraryRoot, ensureLibraryDirs } from "./paths.js";
+import { libraryRoot, ensureLibraryDirs, fromLibraryRelative } from "./paths.js";
 import { log } from "@main/lib/logger.js";
 
 /** attached 文件的落点:`<库根>/files/`。**扁平 + 条目 id 前缀** —— 不按扩展名分子
@@ -208,17 +208,74 @@ const BINARY_MIME: Record<string, string> = {
 const MAX_BINARY_BYTES = 20 * 1024 * 1024;
 
 /**
+ * 一条记录该读哪个文件。
+ *
+ * ## ⚠️ 从前这里**只认 `file_path`** —— 于是论文全都读不出东西（2026-09-21 修）
+ *
+ * 老判据是 `entryFileAbsPath(item)`,而它只看 `file_path`。而论文那条流
+ * (`pdfImport` / 下载器)落的记录是 **`entry_mode: "attached"` + `file_path: NULL`**,
+ * 文件在 `pdf_path` / `md_path` 两列上 —— 于是点开任何一篇论文,预览都报
+ * 「**这条资料没有关联文件**」。
+ *
+ * ★ 用户截图里那个「这条资料没有关联文件，一直显示这个」,和「我点击的是 pdf、
+ * 一直展示的是关联的 md 转录」是**同一个根因的两头**:
+ *
+ *   - 右栏(走这里)只认 `file_path` → 论文翻不出来 → 那句错话;
+ *   - 中间栏(走 `FileViewer`)从前也只认 `file_path`,后来给它接上了 `md_path`,
+ *     于是**能翻出来**,但翻出来的是**转录** —— 用户点的明明是 PDF。
+ *
+ * 修法是把三条来源都认下来,并**把 PDF 排在前面**:论文天然有 PDF,用户要的
+ * 「点击和双击都显示这个 PDF 本身」就是这一条默认。转录(若要看)由调用方指名
+ * `which: "md"` —— 见左栏右键那个「查看转录文本」。
+ *
+ * ## 未指名时的顺序,以及为什么最后还退到转录
+ *
+ * `file_path` → `pdf_path` → `md_path`。
+ *
+ * 前两条是"这是这一条的本体"。**最后那条是回退,不是默认** —— 一篇还没下 PDF 的论文
+ * 只剩转录可看,那时摆出转录总比甩一句错误好。真正要防的是**反过来**:指名要 PDF 时
+ * 悄悄拿转录顶上(那正是中间栏那条 bug 的形态),所以 `which` 一给了就**只认那一样**,
+ * 缺了如实报缺 —— 见下面两个分支。
+ *
+ * ## 为什么优先 `file_path`
+ *
+ * 通用条目(模版 / 用户拖进来的任意文件)只有 `file_path`,它**就是**本体;论文只有
+ * `pdf_path`。两者不会同时有,顺序只决定"万一都写了谁说话"——真出现那种记录时,
+ * `file_path` 是更近的那一层(条目创建时就带着的那份)。
+ */
+function entryRootAbsPath(item: LibraryItem, which?: "pdf" | "md"): string | null {
+  // 指名的那一份:**只认它**,没有就是没有(不拿另一样顶上)
+  if (which === "md") return item.mdPath ? fromLibraryRelative(item.mdPath) : null;
+  if (which === "pdf") {
+    return entryFileAbsPath(item) ?? (item.pdfPath ? fromLibraryRelative(item.pdfPath) : null);
+  }
+  // 未指名:本体 → PDF → 转录
+  return (
+    entryFileAbsPath(item) ??
+    (item.pdfPath ? fromLibraryRelative(item.pdfPath) : null) ??
+    (item.mdPath ? fromLibraryRelative(item.mdPath) : null)
+  );
+}
+
+/**
  * 读一个条目(或目录条目内的某个文件)。**linked 与 attached 同一条路**:
- * `entryFileAbsPath` 已经把两种模式折成绝对路径,这里只管分型。
+ * `entryRootAbsPath` 已经把几种来源折成绝对路径,这里只管分型。
+ *
+ * `which` 是**看不看转录**那件事的唯一开关(默认不含甲基:见 `entryRootAbsPath`)。
  */
 export function readEntryFile(
   itemId: string,
   relPath?: string,
+  which?: "pdf" | "md",
 ): import("@contracts/ipc/library.js").LibraryFileContent {
   const item = LibraryRepo.get(itemId);
   if (!item) return { type: "unsupported", error: "找不到这条资料" };
-  const root = entryFileAbsPath(item);
-  if (!root) return { type: "unsupported", error: "这条资料没有关联文件" };
+  const root = entryRootAbsPath(item, which);
+  if (!root) {
+    if (which === "md") return { type: "unsupported", error: "这条资料还没有转成文本" };
+    if (which === "pdf") return { type: "unsupported", error: "这条资料还没有 PDF" };
+    return { type: "unsupported", error: "这条资料没有关联文件" };
+  }
 
   let target = root;
   if (relPath) {

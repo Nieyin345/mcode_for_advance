@@ -6,13 +6,12 @@
  * 放在最上方,元数据在下面。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { LibraryItem, DownloadJob, PdfState, LibraryLinkView } from "@contracts/library";
+import type { LibraryItem, DownloadJob, PdfState, LibraryLinkView, LibraryCollection } from "@contracts/library";
 import { formatAuthorList, missingMetadataFields, type MissingMetadataField } from "@contracts/library";
 import { CITATION_STYLES, formatCitation, type CitationStyle } from "@contracts/citation";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import type { MessageId } from "@renderer/lib/i18n/core.js";
-import { useSessionStore } from "@renderer/stores/sessionStore.js";
-import { api } from "@renderer/lib/api.js";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";import { api } from "@renderer/lib/api.js";
 import { copyText } from "@renderer/lib/clipboard.js";
 import { Dialog } from "@renderer/components/ui/dialog.js";
 import { cn } from "@renderer/lib/cn.js";
@@ -27,6 +26,7 @@ import {
   IconPlus,
   IconRefresh,
   IconX,
+  IconDownload,
 } from "@renderer/lib/icons.js";
 import { PdfBadge } from "./ItemList.js";
 import { ItemNotes } from "./ItemNotes.js";
@@ -707,6 +707,138 @@ export function ItemLinksDialog({
           </Dialog.Title>
           <div className="mt-2 max-h-[60vh] overflow-y-auto">
             {item && <ItemLinks item={item} onChanged={onChanged} />}
+          </div>
+          <Dialog.Close />
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+/**
+ * **「分类信息」卡片** —— 分类行右键打开（2026-09-21）。
+ *
+ * ## 它替掉了什么
+ *
+ * 从前分类行右键里平铺着**三项导出引用**（BibTeX / GB-T 7714 / APA）。★ 用户：
+ * 「现在右键 collection 会有论文信息的导出，元信息已经放到文件的右键里面去了，可以查看，
+ * 然后**这里的导出放进弹出的卡片里面**」。
+ *
+ * 那三项把菜单撑得很长，而"导出整批引用"是偶尔做一次的事。收进卡片之后：
+ *
+ *   - 菜单里只剩一个「分类信息」入口；
+ *   - 卡片里先告诉用户**这个分类有多少条**（导之前就知道会导出多少），再给三个格式按钮；
+ *   - 导出完还可以直接打开落盘的那个文件夹（`reveal` 由主进程拼路径）。
+ *
+ * ## 为什么条目数在这里现拉一次
+ *
+ * `collection.items` 那类缓存可能是**上一屏的**（左栏按页拉，默认 200 条上限）。这里
+ * 要的是"这个分类里到底有多少"，所以用同一个 `library.list` 问一次总数 —— 它回的
+ * `total` 是全量计数，不受 `limit` 影响。
+ */
+export function CollectionInfoDialog({
+  collection,
+  onOpenChange,
+  onExport,
+}: {
+  /** 要看哪个分类。`null` = 关着。 */
+  collection: LibraryCollection | null;
+  onOpenChange: (open: boolean) => void;
+  /** 导出这一批。落盘与 toast 由左栏那一侧负责（与原来菜单项走的是同一个函数）。 */
+  onExport: (c: LibraryCollection, style: CitationStyle) => void;
+}) {
+  const { t } = useI18n();
+  const [total, setTotal] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const id = collection?.id ?? null;
+  useEffect(() => {
+    setTotal(null);
+    if (!id) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        // `limit: 1` —— 只要那个 `total`（它不受 limit 影响）。
+        const res = await api.library.list({ collectionId: id, limit: 1 });
+        if (!cancelled) setTotal(res.total);
+      } catch {
+        // 拉不到就不显示条数 —— 比显示一个错的数字好
+        if (!cancelled) setTotal(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  /**
+   * 导出。
+   *
+   * **`reveal: true` 是刻意的**：导出落盘在库根的 `exports/` 里，路径由主进程自己
+   * 拼（渲染端始终没有"打开任意路径"的能力 —— 见 `LibraryExportSchema.reveal`）。
+   * 从前那条工具条就是这么做的，这里保持同一个行为；不这样的话用户拿到一句
+   * 「已导出 → D:\...」然后得自己去文件管理器里找。
+   */
+  const runExport = async (style: CitationStyle) => {
+    if (!collection) return;
+    setBusy(true);
+    try {
+      await api.library.exportCitations({ style, collectionId: collection.id, reveal: true });
+      onExport(collection, style);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog.Root open={collection !== null} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Backdrop />
+        {/* ⚠️ `transform-none` + 四边归零居中 —— 理由见 `ItemLinksDialog` 那段
+            （`Dialog.Popup` 原型靠 transform 居中，而它会成为后代 `fixed` 的包含块）。 */}
+        <Dialog.Popup className="bottom-0 left-0 right-0 top-0 m-auto h-fit w-[440px] max-w-[92vw] transform-none p-4">
+          <Dialog.Title className="flex items-baseline gap-2">
+            <span className="shrink-0">{t("library.collection.info")}</span>
+            {collection && (
+              <span className="min-w-0 flex-1 truncate text-[0.8571em] font-normal text-content-muted">
+                {collection.name}
+              </span>
+            )}
+          </Dialog.Title>
+
+          <div className="mt-3">
+            {/* 导之前先知道会导出多少 —— 比导完看 toast 好 */}
+            {total !== null && (
+              <div className="text-[0.7857em] text-content-subtle">
+                {t("library.collection.itemCount", { n: total })}
+              </div>
+            )}
+
+            {/* 空分类导出来是个空文件，先把那句话说了 —— 不给一排点了白点的按钮。 */}
+            {total === 0 ? (
+              <div className="mt-2 text-xs text-content-muted">
+                {t("library.collection.empty")}
+              </div>
+            ) : (
+              <div className="mt-3">
+                <div className="mb-1.5 text-[0.7143em] font-medium uppercase tracking-wider text-content-subtle">
+                  {t("library.export.label")}
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {(["bibtex", "gb7714", "apa"] as const).map((style) => (
+                    <button
+                      key={style}
+                      onClick={() => void runExport(style)}
+                      disabled={busy}
+                      className="inline-flex items-center gap-1 rounded border border-edge px-2 py-1 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content disabled:opacity-50"
+                    >
+                      <IconDownload size={11} />
+                      {t(`library.export.${style}` as MessageId)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
           <Dialog.Close />
         </Dialog.Popup>

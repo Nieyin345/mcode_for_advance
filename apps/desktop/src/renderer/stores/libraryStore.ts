@@ -50,6 +50,17 @@ interface LibraryState {
    */
   // "file" 是通用文件条目(linked/attached)的预览页,见 LibraryPanel 的 tabs。
   detailTab: "meta" | "preview" | "pdf" | "file" | "edit";
+  /**
+   * **右栏预览**此刻看的是哪一份(2026-09-21)。`null` = 本体。
+   *
+   * 论文这类记录有两个可看的东西:PDF 原件与 md 转录。用户要的是「点击和双击都显示
+   * 这个 PDF 本身」,转录另外从右键看 —— 所以这里用一个显式的字段表达"我现在要看转录",
+   * 而不是靠猜条目有什么。
+   *
+   * 它**与条目同生共死**:换条目(`setActiveItem`)必须清掉它,否则点完 A 的转录再去点
+   * B,右栏会显示 B 的 PDF、而菜单那一项还勾着"转录"。
+   */
+  previewWhich: "pdf" | "md" | null;
   /** 当前对话绑定的库 —— 决定 AI 能读哪些文献。null = 不绑库。 */
   chatCollectionId: string | null;
   /** 首次加载是否已完成(用于区分「空库」与「还没加载」)。 */
@@ -82,7 +93,7 @@ interface LibraryState {
   setDetailTab: (tab: "meta" | "preview" | "pdf" | "file" | "edit") => void;
   /** 打开某一篇的原文预览 —— 左栏右键菜单用。一次写两个字段,避免出现
    *  「选中了新条目、标签还停在旧状态」的中间帧。 */
-  openPreview: (id: string) => void;
+  openPreview: (id: string, which?: "pdf" | "md") => void;
   setChatCollection: (id: string | null) => void;
   /** 展开/收起某个库;展开时顺带拉一次它的文献列表。 */
   toggleExpanded: (id: string) => void;
@@ -101,6 +112,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   activeCollectionId: null,
   activeItemId: null,
   detailTab: "meta",
+  previewWhich: null,
   chatCollectionId: null,
   loaded: false,
   expandedIds: {},
@@ -164,11 +176,14 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
         activeKind: kind,
         activeCollectionId: stillValid ? s.activeCollectionId : null,
         activeItemId: stillValid ? s.activeItemId : null,
+        // 条目被清掉时"看哪一份"也得跟着清,否则切回来看见的是上一条的转录
+        previewWhich: stillValid ? s.previewWhich : null,
       };
     }),
-  setActiveItem: (id) => set({ activeItemId: id }),
+  setActiveItem: (id) => set({ activeItemId: id, previewWhich: null }),
   setDetailTab: (tab) => set({ detailTab: tab }),
-  openPreview: (id) => set({ activeItemId: id, detailTab: "preview" }),
+  openPreview: (id, which) =>
+    set({ activeItemId: id, previewWhich: which ?? null, detailTab: "preview" }),
   setChatCollection: (id) => set({ chatCollectionId: id }),
 
   toggleExpanded: (id) => {

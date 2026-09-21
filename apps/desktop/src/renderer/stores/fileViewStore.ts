@@ -29,8 +29,15 @@ import { create } from "zustand";
 
 /** 预览的来源。决定 `FileViewer` 走哪条 RPC 去取字节。 */
 export type FileSource =
-  /** 文献库条目。`ref` 是条目 id,可选 `relPath`(目录条目里往下翻)。 */
-  | { kind: "library"; ref: string; relPath?: string }
+  /**
+   * 文献库条目。`ref` 是条目 id,可选 `relPath`(目录条目里往下翻)。
+   *
+   * `which` 同 `library.readFile` 的那一格（2026-09-21）:省略 = 看本体（通用条目给
+   * 文件本身、论文给 **PDF**），`"md"` 才是"我要看转录"。它**必须能传下来** ——
+   * 中间栏从前没有这一格，而主进程那边会回退到转录，于是用户点的明明是 PDF、看见的
+   * 却是 md。
+   */
+  | { kind: "library"; ref: string; relPath?: string; which?: "pdf" | "md" }
   /** 模版库里的一个文件。 */
   | { kind: "template"; ref: { kind: string; dirName: string; relPath: string } }
   /**

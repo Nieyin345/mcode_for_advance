@@ -94,7 +94,7 @@ import {
 import { LibraryItemContextMenu, type LibraryCtxTarget } from "./LibraryItemContextMenu.js";
 import { DeleteItemsDialog } from "./DeleteItemsDialog.js";
 import { ImportBar } from "./ImportPanel.js";
-import { ItemLinksDialog, ItemInfoDialog } from "./ItemDetail.js";
+import { ItemLinksDialog, ItemInfoDialog, CollectionInfoDialog } from "./ItemDetail.js";
 import { CollectionContextMenu, type CollectionCtxTarget } from "./CollectionContextMenu.js";
 import { GroupContextMenu, type GroupCtxTarget } from "./GroupContextMenu.js";
 import { KindContextMenu, type KindCtxTarget } from "./KindContextMenu.js";
@@ -263,6 +263,8 @@ export function LibrarySection({
   const [infoFor, setInfoFor] = useState<LibraryItem | null>(null);
   /** 「关联」浮层管的是哪一条（2026-09-21）。null = 关着。 */
   const [linksFor, setLinksFor] = useState<LibraryItem | null>(null);
+  /** 「分类信息」浮层管的是哪个分类（2026-09-21）—— 导出引用从这里进。null = 关着。 */
+  const [collectionInfoFor, setCollectionInfoFor] = useState<LibraryCollection | null>(null);
   /** 「导入到这里」——分类行右键触发，null = 浮层关着（2026-09-21）。 */
   const [importInto, setImportInto] = useState<LibraryCollection | null>(null);
   /** 导入后是否立刻转录。与右栏那条用同一个开关语义（有现成 md 的人要能关掉）。 */
@@ -560,6 +562,9 @@ export function LibrarySection({
    */
   const openItem = (item: LibraryItem, collectionId: string | null) => {
     if (collectionId) setActive(collectionId);
+    // ★ **点一行 = 看本体**（2026-09-21）。`setActiveItem` 会把 `previewWhich` 清成 null，
+    // 于是"上一条在看转录、这一条自己弹回到 PDF"是白拿的 —— 用户要的正是"点击和双击
+    // 都显示这个 PDF 本身"，转录只能从右键那一项进。
     setActiveItem(item.id);
     // 同 openCollection:全局 kind 跟着这篇走(右栏按它取显示名与默认行为)
     setActiveKind(item.kind);
@@ -575,16 +580,26 @@ export function LibrarySection({
   /**
    * **双击一行 = 在中间打开**（要读它 / 改它）。
    *
-   * 有文件本体的走中间那个统一预览页（看图 / 看 PDF / 看 Word 都在那儿）；没有本体的
-   * 那些（笔记 / 纯元数据）中间没东西可放，仍旧留在右栏 —— 双击它们与单击等效。
+   * 有文件本体可看的走中间；**什么都没有**的（只有元数据、也没有转录的论文）中间没
+   * 东西可放，仍旧留在右栏 —— 双击它们与单击等效。
+   *
+   * ⚠️ 「有本体」的判据**必须带上 `mdPath`**（2026-09-21）。老判据是
+   * `filePath ?? pdfPath`，而一篇还没下 PDF 的论文恰好两者都空 —— 那时双击就**什么都
+   * 不发生**，看起来像坏了。现在它至少能在中间把转录摆出来。
    */
   const openItemInCenter = (item: LibraryItem, collectionId: string | null) => {
     openItem(item, collectionId);
-    const ref = item.filePath ?? item.pdfPath ?? null;
+    const ref = item.filePath ?? item.pdfPath ?? item.mdPath ?? null;
     if (ref === null) return;
     openFileView({
-      source: { kind: "library", ref: item.id },
-      name: basenameOf(item.filePath ?? item.pdfPath ?? item.title),
+      // 看**本体**（通用条目给文件本身、论文给 PDF）；只有转录可看的那些才退到 md ——
+      // 与主进程 `entryRootAbsPath` 未指名时的顺序**逐条一致**（本体 → PDF → 转录）。
+      source: {
+        kind: "library",
+        ref: item.id,
+        which: item.filePath ?? item.pdfPath ? undefined : "md",
+      },
+      name: basenameOf(item.filePath ?? item.pdfPath ?? item.mdPath ?? item.title),
     });
     setCenterTabFocus("editor");
   };
@@ -1525,6 +1540,13 @@ export function LibrarySection({
         onChanged={() => void refreshItems()}
       />
 
+      {/* 「分类信息」——分类行右键触发（导出引用从这里进）。 */}
+      <CollectionInfoDialog
+        collection={collectionInfoFor}
+        onOpenChange={(open) => { if (!open) setCollectionInfoFor(null); }}
+        onExport={(c, style) => void exportCollection(c, style)}
+      />
+
       {/* 「导入到这里」——在分类行上右键触发。复用右栏那条 `ImportBar`（它本来就收
           `collectionId`，所以"导进哪个分类"不用另写一套）。 */}
       <Dialog.Root open={importInto !== null} onOpenChange={(open) => { if (!open) setImportInto(null); }}>
@@ -1588,6 +1610,7 @@ export function LibrarySection({
         onNewNote={startNewNote}
         onImportHere={(c) => setImportInto(c)}
         onExport={(c, style) => void exportCollection(c, style)}
+        onShowInfo={(c) => setCollectionInfoFor(c)}
         onMove={(c, parentId) => void moveCollection(c, parentId)}
       />
 

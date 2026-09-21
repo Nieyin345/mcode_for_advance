@@ -265,6 +265,94 @@ check(
 /** 读目录里某个文件用的相对路径 —— 上面第五段用完之后不再需要,留着说明这个 sep 的用处。 */
 void dirname;
 
+/* ──────────────── 6. 论文那类记录:看本体还是看转录 ──────────────── */
+
+/**
+ * ★ 用户报的两个症状是**同一个根因的两头**:
+ *
+ *   「这条资料没有关联文件,一直显示这个」—— 右栏预览走 `readEntryFile`,而它从前
+ *   **只认 `file_path`**;论文那条流(`pdfImport` / 下载器)落的记录是
+ *   `entry_mode: "attached"` + **`file_path: NULL`**,文件在 `pdf_path` / `md_path` 上。
+ *
+ *   「我点击的是 pdf,一直展示的是关联的 md 转录」—— 中间栏那条路后来给它接上了
+ *   `md_path`,于是**能**翻出东西来了,但翻出来的是转录。
+ *
+ * 修法:三条来源都认,并且默认**先 PDF**;要看转录必须显式给 `which: "md"`。
+ *
+ * ⚠️ 这一段必须用 `LibraryRepo.upsert` + `setPdf` / `setMarkdown` **原样造**出论文的
+ * 那种形状(`filePath` 留空)。拿一个带 `filePath` 的条目来验是**验不到东西的** ——
+ * 那种条目本来就认得出来,而用户库里那 8 篇论文一条都不是那个形状。
+ */
+console.log("\n论文那类记录(entry_mode=attached + file_path=NULL)");
+
+// 论文流落的 md 是**相对库根**的,所以要在库根底下真放一份。
+const paperMdRel = "markdown/paper-smoke/full.md";
+const paperMdAbs = join(ROOT, paperMdRel);
+mkdirSync(dirname(paperMdAbs), { recursive: true });
+writeFileSync(paperMdAbs, "# 转录正文\n\n这一段只该在「查看转录文本」里出现。", "utf8");
+
+// PDF 那一份:库根下面的 papers/ 里。内容不重要(读出来是 binary),但**得真的在**。
+const paperPdfRel = "papers/paper-smoke/body.pdf";
+const paperPdfAbs = join(ROOT, paperPdfRel);
+mkdirSync(dirname(paperPdfAbs), { recursive: true });
+writeFileSync(paperPdfAbs, "%PDF-1.7\n(假装是 PDF)", "utf8");
+
+const paper = LibraryRepo.upsert({ kind: "paper", title: "一篇论文" });
+eq("造出来的形状就是论文那样:entry_mode = attached", paper.entryMode, "attached");
+eq("而且 file_path 是空的(这条断言是下面所有断言的立足点)", paper.filePath ?? null, null);
+LibraryRepo.setPdf(paper.id, paperPdfRel, "smoke-sha");
+LibraryRepo.setMarkdown(paper.id, paperMdRel);
+
+// 默认 = 看本体,有 PDF 就给 PDF。
+const paperDefault = readEntryFile(paper.id);
+check(
+  "默认读到的是 PDF 本体（不是「没有关联文件」、也不是转录）",
+  paperDefault.type === "binary" && paperDefault.mime === "application/pdf",
+  paperDefault,
+);
+
+// 指名看转录 —— 右键那一项走的就是这个。
+const paperMd = readEntryFile(paper.id, undefined, "md");
+check(
+  "which=md 才给转录正文",
+  paperMd.type === "text" && paperMd.text.includes("转录正文"),
+  paperMd,
+);
+
+// 指名看 PDF 也要拿得到。
+const paperPdf = readEntryFile(paper.id, undefined, "pdf");
+check("which=pdf 拿得到 PDF", paperPdf.type === "binary" && paperPdf.mime === "application/pdf", paperPdf);
+
+// ★ **回退只退到本体,不悄悄换成转录**。从前中间栏那条 bug 就是这里退错了:
+// 用户点的是 PDF,拿到的是 md,而界面上没有任何东西说明"这不是你要的那一份"。
+const paperNoPdf = LibraryRepo.upsert({ kind: "paper", title: "还没下 PDF 的论文" });
+LibraryRepo.setMarkdown(paperNoPdf.id, paperMdRel);
+const noPdfDefault = readEntryFile(paperNoPdf.id);
+const noPdfIsMd =
+  noPdfDefault.type === "text" && noPdfDefault.text.includes("转录正文");
+check(
+  "没有 PDF 时默认退到转录（有东西看总比空着好）,但这是回退不是默认",
+  noPdfIsMd,
+  noPdfDefault,
+);
+
+// 要的东西**没有**时必须报那一样没有,不能拿另一样顶上。
+const noPdfAsPdf = readEntryFile(paperNoPdf.id, undefined, "pdf");
+check(
+  "指名要 PDF 而它没有 → 明说「还没有 PDF」,不拿转录顶",
+  noPdfAsPdf.type === "unsupported" && noPdfAsPdf.error.includes("还没有 PDF"),
+  noPdfAsPdf,
+);
+
+const bare = LibraryRepo.upsert({ kind: "paper", title: "什么都没有" });
+const bareAsMd = readEntryFile(bare.id, undefined, "md");
+check(
+  "指名要转录而它没有 → 明说「还没有转成文本」",
+  bareAsMd.type === "unsupported" && bareAsMd.error.includes("还没有转成文本"),
+  bareAsMd,
+);
+eq("两样都没有时,默认那句还是原来那句", readEntryFile(bare.id).type, "unsupported");
+
 /* ──────────────── 收尾 ──────────────── */
 
 rmSync(DATA, { recursive: true, force: true });

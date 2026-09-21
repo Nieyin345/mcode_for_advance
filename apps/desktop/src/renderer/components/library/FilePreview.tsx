@@ -45,7 +45,21 @@ function base64ToBytes(base64: string): Uint8Array {
   return bytes;
 }
 
-export function FilePreview({ item }: { item: LibraryItem }) {
+export function FilePreview({
+  item,
+  which,
+}: {
+  item: LibraryItem;
+  /**
+   * 看**哪一份**（2026-09-21）。
+   *
+   * 省略 = 本体:通用条目给文件本身,论文给它的 **PDF**。`"md"` 才是"我要看转录" ——
+   * 论文的 PDF 与转录是两样东西,用户要的是「点击和双击都显示 PDF 本身,转录另外看」。
+   * 从前这里没有这一格,而主进程那条读文件的路只认 `file_path`(论文的记录在那上面
+   * 是空的),于是点任何一篇论文都报「这条资料没有关联文件」。
+   */
+  which?: "pdf" | "md";
+}) {
   const { t } = useI18n();
   /** 目录条目:正在看的子文件(相对该目录,`/` 分隔)。null = 条目本体。 */
   const [relPath, setRelPath] = useState<string | null>(null);
@@ -56,7 +70,7 @@ export function FilePreview({ item }: { item: LibraryItem }) {
   // 换条目回到根 —— 上一个目录里翻到一半的子文件对这一条没有意义
   useEffect(() => {
     setRelPath(null);
-  }, [item.id]);
+  }, [item.id, which]);
 
   useEffect(() => {
     let cancelled = false;
@@ -64,7 +78,11 @@ export function FilePreview({ item }: { item: LibraryItem }) {
     setError(null);
     void (async () => {
       try {
-        const res = await api.library.readFile({ id: item.id, relPath: relPath ?? undefined });
+        const res = await api.library.readFile({
+          id: item.id,
+          relPath: relPath ?? undefined,
+          which,
+        });
         if (!cancelled) setContent(res.content);
       } catch (err) {
         if (!cancelled) setError((err as Error).message);
@@ -75,10 +93,16 @@ export function FilePreview({ item }: { item: LibraryItem }) {
     return () => {
       cancelled = true;
     };
-  }, [item.id, relPath]);
+  }, [item.id, relPath, which]);
 
-  /** 目录条目在预览什么:条目本体(根目录列表)或某个子文件。 */
-  const viewing = relPath ?? item.filePath ?? item.id;
+  /**
+   * 目录条目在预览什么:条目本体(根目录列表)或某个子文件。
+   *
+   * ⚠️ 论文那类条目 `filePath` 是空的,所以这条链**必须**跟着 `which` 走 ——
+   * 否则 `ext` 退化成空串,一份 **Markdown 转录会被当成普通文本塞进 `<pre>`**
+   * (用户看到的是一堆 `#` 和 `*` 的源码)。见下面 `ext === "md"` 那个分支。
+   */
+  const viewing = relPath ?? item.filePath ?? (which === "md" ? item.mdPath : item.pdfPath) ?? item.id;
   const ext = extOf(viewing);
 
   const open = (name: string, isDir: boolean) => {

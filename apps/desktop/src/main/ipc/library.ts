@@ -1115,7 +1115,7 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
 
   ipcMain.handle(IPC.LIBRARY_READ_FILE, async (_evt, raw) => {
     const input = LibraryReadFileSchema.parse(raw);
-    return { content: readEntryFile(input.id, input.relPath) };
+    return { content: readEntryFile(input.id, input.relPath, input.which) };
   });
 
   /**

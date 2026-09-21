@@ -197,6 +197,17 @@ export const LibraryReadFileSchema = z.object({
   id: z.string().min(1),
   /** 目录条目内要读的文件(相对该目录)。省略 = 读条目本体 / 列目录。 */
   relPath: z.string().optional(),
+  /**
+   * 读**哪一份**（2026-09-21）。
+   *
+   * 论文那一类记录手上不止一个文件:`pdf_path` 是原件、`md_path` 是转录。从前这里
+   * 没有这一格,而主进程又只认 `file_path`,于是论文预览恒报「这条资料没有关联文件」;
+   * 中间栏那条路后来接上了 `md_path`,导致点的明明是 PDF 却弹出转录。
+   *
+   * 省略 = **看本体**(通用条目给文件本身、论文给 PDF)。`"md"` 才是"我要看转录",
+   * 由左栏右键那一项指名 —— 用户要的正是"点击和双击都显示 PDF 本身,转录另外看"。
+   */
+  which: z.enum(["pdf", "md"]).optional(),
 });
 export type LibraryReadFileInput = z.infer<typeof LibraryReadFileSchema>;
 

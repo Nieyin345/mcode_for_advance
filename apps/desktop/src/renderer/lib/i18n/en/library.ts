@@ -171,6 +171,9 @@ export const en = {
   "library.del.cancel": "Cancel",
   "library.ctx.openFolder": "Open containing folder",
   "library.ctx.openMd": "Preview full text (in app)",
+  "library.ctx.viewTranscript": "View transcript",
+  "library.ctx.viewTranscriptMissing": "View transcript (not converted yet)",
+  "library.ctx.offerMd": "Back to the PDF",
   /** Right-click → item info popover (metadata + citation + abstract). */
   "library.info.title": "Item info",
   "library.ctx.openMdMissing": "Preview full text (not converted yet)",
@@ -248,6 +251,8 @@ export const en = {
   "library.export.failed": "Export failed",
   "library.export.revealFailed": "Exported, but could not open the folder: {msg}",
   "library.export.openFolder": "Open folder",
+  "library.collection.info": "Collection info",
+  "library.collection.itemCount": "{n} entries",
 
   "library.preview.failed": "Could not read the Markdown",
   "library.preview.retry": "Retry",

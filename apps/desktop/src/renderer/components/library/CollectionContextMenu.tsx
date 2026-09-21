@@ -37,7 +37,7 @@
 import { useEffect, useState } from "react";
 import { Menu } from "@base-ui/react/menu";
 import type { LibraryCollection } from "@contracts/library";
-import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
+import { useI18n } from "@renderer/lib/i18n/index.js";
 import type { CitationStyle } from "@contracts/citation";
 import { attachToCurrentChat } from "@renderer/lib/attachToChat.js";
 import { cn } from "@renderer/lib/cn.js";
@@ -49,6 +49,7 @@ import {
   IconChevronRight,
   IconDownload,
   IconFileText,
+  IconInfoCircle,
   IconMessage,
   IconPencil,
   IconPlus,
@@ -70,6 +71,7 @@ export function CollectionContextMenu({
   onNewNote,
   onImportHere,
   onExport,
+  onShowInfo,
   onMove,
 }: {
   target: CollectionCtxTarget | null;
@@ -89,11 +91,19 @@ export function CollectionContextMenu({
    */
   onImportHere: (c: LibraryCollection) => void;
   /**
+   * 打开**「分类信息」卡片**（2026-09-21）。
+   *
+   * ★ 用户：「现在右键 collection 会有论文信息的导出……**这里的导出放进弹出的卡片里面**」。
+   *
+   * 导出（这件"对整批做事"的动作）从菜单里搬进卡片，菜单里只留一个入口。卡片里同时
+   * 摆出这个分类有多少条 —— 导之前先知道会导出多少，比导完看 toast 好。
+   */
+  onShowInfo: (c: LibraryCollection) => void;
+  /**
    * 把这个分类下的条目**导出成引用文件**（2026-09-21）。
    *
-   * 从右栏那条工具条搬过来的 —— 用户要把右栏的文献 tab 删掉，而那个 tab 里
-   * 除了预览还有这一项（检索去 Ctrl+K 了、导入来左栏右键了）。
-   * 它天然属于**分类**（导出的是一批），所以挂在分类行右键上比条目行合适。
+   * 从右栏那条工具条搬来，2026-09-21 又从**菜单**搬进「分类信息」卡片 ——
+   * 它天然属于**分类**（导出的是一批），但不该占着菜单里最高频的位置。
    */
   onExport: (c: LibraryCollection, style: CitationStyle) => void;
   /** 把它挪到另一个父下面(`parentId: null` = 挪到最外层)。 */
@@ -222,25 +232,22 @@ export function CollectionContextMenu({
                   {t("library.ctx.importHere")}
                 </Menu.Item>
 
-                {/* 导出引用 —— 三种格式各一项。**展开成平铺的三项**而不是二级菜单：
-                    右栏那条工具条本来就是这么摆的（一个按钮 + 三个下拉项），
-                    平铺过来用户不用多学一层。 */}
+                {/* **导出引用** —— 2026-09-21 之后不再在这里平铺三种格式。
+                    ★ 用户：「现在右键 collection 会有论文信息的导出……**这里的导出放进
+                    弹出的卡片里面**」。三项平铺把菜单撑得很长，而导出是"偶尔做一次"的事，
+                    不该占着最高频的位置。改成开一张「分类信息」卡片，三种格式在卡片里选。
+                    （`onExport` 因此不再由这个菜单直接调用，见 `onShowInfo`。） */}
                 {c && (
-                  <>
-                    {(["bibtex", "gb7714", "apa"] as const).map((style) => (
-                      <Menu.Item
-                        key={style}
-                        onClick={() => {
-                          onExport(c, style);
-                          onClose();
-                        }}
-                        className={itemClass}
-                      >
-                        <IconFileText size={12} className="shrink-0" />
-                        {t("library.export.label")} · {t(`library.export.${style}` as MessageId)}
-                      </Menu.Item>
-                    ))}
-                  </>
+                  <Menu.Item
+                    onClick={() => {
+                      onShowInfo(c);
+                      onClose();
+                    }}
+                    className={itemClass}
+                  >
+                    <IconInfoCircle size={12} className="shrink-0" />
+                    {t("library.collection.info")}
+                  </Menu.Item>
                 )}
 
                 {c?.kind === "note" && (

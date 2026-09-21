@@ -420,18 +420,27 @@ export function LibraryItemContextMenu({
                 <Menu.Item
                   onClick={() => {
                     if (!item) return;
-                    // **应用内预览**,不再跳外部编辑器(用户的原话:跳到 vscode 那条路
-                    // 太断)。同时把右栏切到**预览** —— 否则面板正停在文件树上,
-                    // 点了没反应。（2026-09-21：那个 tab 从 `library` 改名成 `preview`。）
-                    useLibraryStore.getState().openPreview(item.id);
+                    // ★ **看转录文本**（2026-09-21）。
+                    //
+                    // 用户的原话：「我点击的是 pdf，一直要展示的是关联的 md 转录……
+                    // 现在我要的效果是点击和双击都显示这个 pdf 本身，**右键加一个功能是
+                    // 能够看这个文件链接的转录**」。
+                    //
+                    // 所以"转录"从**默认**降成**显式入口**：单击/双击一律看本体（PDF），
+                    // 要看转录只能到这里来。`which: "md"` 就是那一格开关，主进程按它
+                    // 去取 `md_path` 而不是 PDF。
+                    //
+                    // 同时把右栏切到**预览** —— 否则面板正停在文件树上，点了没反应。
+                    useLibraryStore.getState().openPreview(item.id, "md");
                     useSessionStore.getState().setRightPanelTab("preview");
+                    useSessionStore.getState().setRightOpen(true);
                     onClose();
                   }}
                   disabled={!item?.mdPath}
                   className={cn(itemClass, "disabled:cursor-not-allowed disabled:opacity-40")}
                 >
                   <IconFileText size={12} className="shrink-0" />
-                  {item?.mdPath ? t("library.ctx.openMd") : t("library.ctx.openMdMissing")}
+                  {item?.mdPath ? t("library.ctx.viewTranscript") : t("library.ctx.viewTranscriptMissing")}
                 </Menu.Item>
                 <Menu.Item
                   onClick={() => {

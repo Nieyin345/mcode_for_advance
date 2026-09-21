@@ -30,6 +30,7 @@ import { IconFileSearch } from "@renderer/lib/icons.js";
 export function PreviewPanel() {
   const { t } = useI18n();
   const activeItemId = useLibraryStore((s) => s.activeItemId);
+  const which = useLibraryStore((s) => s.previewWhich);
   const item = useLibraryStore((s) => {
     if (!activeItemId) return null;
     // 两处缓存都找一遍（展开过的分类 / "全部"那一层），谁先有算谁。
@@ -59,11 +60,24 @@ export function PreviewPanel() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 truncate border-b border-edge px-2.5 py-1.5 text-[12px] font-medium text-content">
-        {item.title}
+      <div className="flex shrink-0 items-center gap-2 border-b border-edge px-2.5 py-1.5">
+        <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-content">
+          {item.title}
+        </span>
+        {/* 正在看转录时标一下 —— 否则"这篇论文怎么不是 PDF"要靠用户自己猜。
+            点它切回 PDF 本体（用户要的默认就是本体）。 */}
+        {which === "md" && (
+          <button
+            onClick={() => useLibraryStore.getState().openPreview(item.id)}
+            title={t("library.ctx.offerMd")}
+            className="shrink-0 rounded px-1.5 py-0.5 text-[0.7857em] text-accent hover:bg-surface-hover"
+          >
+            {t("library.ctx.viewTranscript")}
+          </button>
+        )}
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
-        <FilePreview item={item} />
+        <FilePreview item={item} which={which ?? undefined} />
       </div>
     </div>
   );

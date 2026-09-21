@@ -493,6 +493,9 @@ async function loadViewData(
     const res = await api.library.readFile({
       id: target.source.ref,
       relPath: relPath ?? undefined,
+      // 看**哪一份**。用户要的是「点击和双击都显示 PDF 本身」—— 所以中间栏也走本体，
+      // 与右栏预览同一条判据（从前这里靠主进程回退到 `md_path`，于是点 PDF 弹转录）。
+      which: target.source.which,
     });
     const c = res.content;
     if (c.type === "dir") return { data: { type: "dir", files: c.files } };

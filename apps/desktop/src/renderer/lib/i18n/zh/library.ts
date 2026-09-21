@@ -185,6 +185,19 @@ export const zh = {
   "library.del.cancel": "取消",
   "library.ctx.openFolder": "在文件夹中打开",
   "library.ctx.openMd": "预览原文（应用内）",
+  /**
+   * 条目行右键 → **看这一条的转录文本**（2026-09-21）。
+   *
+   * ★ 用户：「我点击的是 PDF，一直要展示的是关联的 md 转录……现在我要的效果是点击和
+   * 双击都显示这个 PDF 本身，**右键加一个功能是能够看这个文件链接的转录**」。
+   *
+   * 于是"看转录"从**默认行为**降成**一个显式入口** —— 它只在这里出现，不与 PDF 抢。
+   */
+  "library.ctx.viewTranscript": "查看转录文本",
+  /** 「查看转录文本」在还没转过的时候长这样 —— 不给一个点了没反应的菜单项。 */
+  "library.ctx.viewTranscriptMissing": "查看转录文本（还没转换）",
+  /** 预览顶栏上那个"切回 PDF 本体"的按钮（正在看转录时才画）。 */
+  "library.ctx.offerMd": "回到 PDF 原件",
   /** 右键 → 文献信息浮窗（元数据 + 引用 + 摘要）。
    *  与「关联」并列：两个都是"就这一条，看看它是什么/它跟谁一组"。 */
   "library.info.title": "文献信息",
@@ -267,6 +280,17 @@ export const zh = {
   "library.export.failed": "导出失败",
   "library.export.revealFailed": "已导出，但没能打开文件夹：{msg}",
   "library.export.openFolder": "打开所在文件夹",
+  /**
+   * **分类信息浮窗**（2026-09-21）。
+   *
+   * ★ 用户：「现在右键 collection 会有论文信息的导出，元信息已经放到文件的右键里面去了，
+   * 可以查看，然后**这里的导出放进弹出的卡片里面**」。
+   *
+   * 于是分类行右键不再直接列三项导出（那一段把菜单撑得很长），改成打开这个卡片 ——
+   * 导出在里面，顺便把"这个分类里有多少条"也摆出来。
+   */
+  "library.collection.info": "分类信息",
+  "library.collection.itemCount": "共 {n} 条",
 
   /* ── 原文预览 ── */
   "library.preview.failed": "读不出 Markdown 正文",
