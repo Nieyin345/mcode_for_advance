@@ -431,13 +431,13 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
   })();
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-surface">
+    <div ref={bodyRef} className="flex h-full min-h-0 flex-col bg-surface">
       {header}
-      {/* `ref` 包住正文 —— 选中的文字必须落在**这一块里面**才算数（不然在别处拖选
-          也会弹出这个工具条，见那个 mouseup 监听的 `root.contains` 那一句）。 */}
-      <div ref={bodyRef} className="flex min-h-0 flex-1 flex-col">
-        {body}
-      </div>
+      {/* `ref` 挂在**根那一层**上（2026-09-21）—— 见下面 `root.contains` 那句：
+          选中的文字必须落在这一整块里才算数。**不多包任何一层 div**：多包一层会让
+          `PdfPreview` / `DocxPreview` 那几支"自己管滚动"的布局多经一道（它们靠父容器
+          直接给高度），而这层 ref 只需要"是个容器"就够了 —— 根 div 本来就是。 */}
+      {body}
 
       {/* 选中一段文字 → 只有「复制 / 引用给…」两个按钮（见 state 那段）。 */}
       {sel && !quote && (

@@ -74,9 +74,22 @@ export function FileEditor({
   projectPath: string;
 }) {
   // View mode is scoped to the active project's bucket.
+  //
+  // ## 默认档：markdown 落在**预览**，其余落在编辑
+  //
+  // `.md` 是"给人读的"——打开一篇论文笔记，先想看的是排版好的样子，不是一屏
+  // `#` 和 `|`。其余文件（代码、json、日志）相反，打开就是要改，源码才对。
+  //
+  // ⚠️ 这里从前是 `?? "edit"`（对所有文件一律落到编辑），而下面 `hasPreviewToggle`
+  // 那段注释一直写着 "Files that default to a read-only preview pane (markdown
+  // rendered...)" —— **注释在描述一件没实现的事**。现在把它兑现。
+  //
+  // 用户自己的选择仍然优先：`ideFileViewModeByProject` 里记着他在这个项目里为这个
+  // 文件选过哪一档，改完照旧留着（`??` 只在**没有记录**时生效）。
+  const defaultMode = isMarkdown(filePath) ? "preview" : "edit";
   const pid = useSessionStore((s) => s.activeProjectId);
   const viewMode = useSessionStore((s) =>
-    pid ? s.ideFileViewModeByProject[pid]?.[filePath] ?? "edit" : "edit",
+    pid ? s.ideFileViewModeByProject[pid]?.[filePath] ?? defaultMode : defaultMode,
   );
   const setViewMode = useSessionStore((s) => s.setIdeFileViewMode);
   const editorMode = useSessionStore((s) => s.ideEditorMode);
