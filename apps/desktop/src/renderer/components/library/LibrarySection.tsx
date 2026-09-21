@@ -77,6 +77,7 @@ import {
 } from "@renderer/lib/icons.js";
 import { attachToCurrentChat } from "@renderer/lib/attachToChat.js";
 import { Dialog } from "@renderer/components/ui/dialog.js";
+import { Divider } from "@renderer/components/layout/Divider.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import { formatCitation } from "@contracts/citation";
 import { copyText } from "@renderer/lib/clipboard.js";
@@ -1841,7 +1842,9 @@ export function LibrarySections() {
  *
  *   - **同色**：跟着左栏的底色，不另给 `bg-surface`；
  *   - **同宽**：撑满左栏（不用 `fixed` + 量宽度那一套 —— 那样才需要算坐标）；
- *   - **固定高度**：`33vh`（用户："大概平面 1/3 的位置"）；
+ *   - **高度可拖**：不再定死。上面有一条**分界线**（复用 `Divider`），上下拖就能改
+ *     它多高 —— 用户后来提的：「别固定高度了，做一个分界线，可以上下拖动」。
+ *     默认给个整数（`240`），双击分界线回到默认值（与终端那条同一个做法）。
  *   - **只是不跟着滚**：它挂在 `LeftBar` 的滚动容器**外面**，所以上面那片列表
  *     怎么滚、怎么折叠，这一块都不动。它自己内部滚。
  *
@@ -1856,6 +1859,17 @@ export function LibraryTrashRow() {
   const collections = useLibraryStore((s) => s.collections);
   const loadCollections = useLibraryStore((s) => s.loadCollections);
   const [open, setOpen] = useState(false);
+  /**
+   * 展开块多高（px）。**可拖**（下面那条分界线），双击回默认。
+   *
+   * 局部 state 不进 store：它是这一块自己的大小，与"看哪个大类"同一类东西。
+   * 范围与终端那条同款思路 —— 太矮了看不见内容、太高了把上面挤没。
+   */
+  const [height, setHeight] = useState(240);
+  /** 拖分界线：它给的是**增量**（正 = 向下），而这是往上长的块，所以要减。 */
+  const resize = (deltaPx: number): void => {
+    setHeight((h) => Math.min(560, Math.max(80, Math.round(h - deltaPx))));
+  };
 
   useEffect(() => {
     void loadCollections();
@@ -1876,10 +1890,15 @@ export function LibraryTrashRow() {
   return (
     <div className="shrink-0 border-t border-edge">
       {/* ── 展开出来的那一块 ──
-          ⚠️ **在那一行的上面**（`order` 靠前），因为它是向上长出来的。
-          固定高度 + 自己滚：`h-[33vh] overflow-y-auto`。 */}
+          ⚠️ **在那一行的上面**，因为它是向上长出来的。
+
+          高度**可拖**：分界线摆在最上面（向上长的块，线在上沿），`onResize` 拿到的是
+          增量，这里换算成高度。双击回默认 240 —— 与终端那条分界线同一个做法。 */}
       {open && (
-        <div className="h-[33vh] overflow-y-auto overscroll-contain px-2 py-1">
+        <Divider orientation="horizontal" onResize={resize} onDoubleClick={() => setHeight(240)} />
+      )}
+      {open && (
+        <div className="overflow-y-auto overscroll-contain px-2 py-1" style={{ height }}>
           {/* **直接列文件**，不再画"回收站"那一行（用户："直接把文件排列上去就行了"）。 */}
           <LibrarySection
             group={{ id: "__trash__", name: trash.name, kinds: [] }}
