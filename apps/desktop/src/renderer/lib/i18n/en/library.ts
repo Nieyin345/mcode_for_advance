@@ -9,16 +9,19 @@ export const en = {
   "library.view.recent": "Recently added",
   "library.view.missingPdf": "Missing PDF",
   "library.view.needsLogin": "Needs sign-in",
-  "library.collections": "Collections",
-  "library.collection.new": "New collection",
-  "library.collection.namePlaceholder": "Collection name",
+  "library.collections": "Categories",
+  "library.collection.new": "New category",
+  "library.collection.namePlaceholder": "Category name",
   "library.collection.create": "Create",
   "library.collection.cancel": "Cancel",
-  "library.collection.duplicateName": "A library with this name already exists",
+  "library.collection.duplicateName": "A category with this name already exists",
   "library.collection.rename": "Rename",
-  "library.collection.delete": "Delete library",
-  "library.collection.deleteConfirm": "Delete the library “{name}”? Its papers are not deleted — they are only removed from this group.",
-  "library.collection.empty": "No papers in this collection yet",
+  "library.collection.delete": "Delete category",
+  // ⚠️ This is a *category*, not the whole library. "library" in this product means
+  // the whole thing (papers / textbooks / notes). Calling it "library" here made
+  // users think the entire library was about to be deleted.
+  "library.collection.deleteConfirm": "Delete the category “{name}”? Its papers are not deleted — they simply no longer belong to this category.",
+  "library.collection.empty": "No papers in this category yet",
 
   // Sidebar management: groups (sections) and sub-types (tabs) are managed by right-click in the sidebar
   "library.group.rename": "Rename group",
@@ -37,7 +40,7 @@ export const en = {
   "library.kind.showCollections": "Collections only",
   "library.kind.purpose.material": "For reading",
   "library.kind.purpose.format": "For writing",
-  "library.collection.newSub": "New sub-collection",
+  "library.collection.newSub": "New sub-category",
   "library.collection.createFailed": "Could not create it",
   "library.collection.moveTo": "Move to",
   "library.collection.moveToTop": "Move to top level",
@@ -148,7 +151,7 @@ export const en = {
   // Left-bar item context menu
   "library.ctx.moveTo": "Move to",
   "library.ctx.copyTo": "Copy to",
-  "library.ctx.removeFrom": "Remove from this library",
+  "library.ctx.removeFrom": "Remove from this category",
   "library.ctx.deleteForever": "Delete permanently",
   "library.ctx.deleteForeverConfirm":
     "Permanently delete “{title}”? The database record and the PDF / Markdown on disk are both deleted, and this cannot be undone.",
@@ -171,7 +174,7 @@ export const en = {
   "library.ctx.newNote": "New note",
   /** Import from a collection row — what you import lands in THAT collection. */
   "library.ctx.importHere": "Import into this collection",
-  "library.ctx.noOtherCollection": "No other libraries yet",
+  "library.ctx.noOtherCollection": "No other categories yet",
   "library.ctx.attachToChat": "Add to current chat",
   "library.ctx.attachNoSession": "No chat is open — pick one from the session list first",
   "library.ctx.attachFailed": "Could not add to the current chat",
@@ -205,7 +208,7 @@ export const en = {
   "library.itemNote.deleteConfirm": "Delete this note?",
   "library.itemNote.loadFailed": "Could not load notes",
   "library.detail.notesSoon": "Notes are coming in a later version",
-  "library.detail.collections": "Collections",
+  "library.detail.collections": "Categories",
   "library.detail.doi": "DOI",
   "library.detail.arxiv": "arXiv",
   "library.detail.venue": "Journal / Conference",
@@ -348,6 +351,8 @@ export const en = {
   "library.file.back": "Up one level",
   "library.file.emptyDir": "Empty folder",
   "library.file.unknownMime": "No built-in preview ({mime})",
+  /** Header of the "quote to" list when quoting from a file preview. */
+  "library.file.thisFile": "This file",
   "library.file.loadFailed": "Failed to read",
   /* ── In-library full-text search (searches converted Markdown) ── */
   "library.fullText.title": "Search inside library",

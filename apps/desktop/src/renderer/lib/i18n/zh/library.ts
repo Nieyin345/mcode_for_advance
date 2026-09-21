@@ -14,16 +14,18 @@ export const zh = {
   "library.view.recent": "最近添加",
   "library.view.missingPdf": "未下载 PDF",
   "library.view.needsLogin": "需要登录",
-  "library.collections": "集合",
-  "library.collection.new": "新建集合",
-  "library.collection.namePlaceholder": "集合名称",
+  "library.collections": "分类",
+  "library.collection.new": "新建分类",
+  "library.collection.namePlaceholder": "分类名称",
   "library.collection.create": "创建",
   "library.collection.cancel": "取消",
-  "library.collection.duplicateName": "已有同名文献库",
+  "library.collection.duplicateName": "已有同名分类",
   "library.collection.rename": "重命名",
-  "library.collection.delete": "删除文献库",
-  "library.collection.deleteConfirm": "删除文献库「{name}」？库里的文献不会被删除，只是从这个分组里移出。",
-  "library.collection.empty": "这个集合还没有文献",
+  "library.collection.delete": "删除分类",
+  /** ⚠️ 说的是**分类**不是库 —— 「文献库」在这个产品里指整个库（论文/教材/笔记），
+   *  而这一条删的是树上的一个节点。原来写成「删除文献库」会让用户以为整个库要没了。 */
+  "library.collection.deleteConfirm": "删除分类「{name}」？里面的文献不会被删除，只是不再属于这个分类。",
+  "library.collection.empty": "这个分类还没有文献",
 
   // 左栏管理:大类(段落)与小类(tab)的新建/删除/重命名都在左栏右键完成
   "library.group.rename": "重命名大类",
@@ -42,7 +44,7 @@ export const zh = {
   "library.kind.showCollections": "只看分类",
   "library.kind.purpose.material": "查资料用",
   "library.kind.purpose.format": "照着写用",
-  "library.collection.newSub": "新建子集合",
+  "library.collection.newSub": "新建子分类",
   "library.collection.createFailed": "创建失败",
   "library.collection.moveTo": "移动到",
   "library.collection.moveToTop": "移到最外层",
@@ -158,7 +160,7 @@ export const zh = {
   // 左栏文献行的右键菜单
   "library.ctx.moveTo": "移动到",
   "library.ctx.copyTo": "复制到",
-  "library.ctx.removeFrom": "从当前文献库移除",
+  "library.ctx.removeFrom": "从当前分类移除",
   // 回收站里的那个红色项 —— 与上面那句是**两件不同的事**:上面只是移出分组(能捞回来),
   // 这句是记录加磁盘文件一起没。所以文案里必须点出"磁盘上的文件也会被删"。
   "library.ctx.deleteForever": "彻底删除",
@@ -184,7 +186,7 @@ export const zh = {
   /** 在**分类行**上右键导入 —— 导进来的东西直接归这个分类（不用先导入再拖）。
    *  原来只有右栏那个「导入」条，而它跟着"当前选中的分类"走，用户得先点对地方。 */
   "library.ctx.importHere": "导入到这里",
-  "library.ctx.noOtherCollection": "还没有别的文献库",
+  "library.ctx.noOtherCollection": "还没有别的分类",
   "library.ctx.attachToChat": "添加到当前对话",
   "library.ctx.attachNoSession": "还没有打开的对话 —— 先在会话列表里选一个",
   "library.ctx.attachFailed": "添加到当前对话失败",
@@ -218,7 +220,7 @@ export const zh = {
   "library.itemNote.deleteConfirm": "删除这条笔记？",
   "library.itemNote.loadFailed": "读不出笔记",
   "library.detail.notesSoon": "笔记功能将在后续版本提供",
-  "library.detail.collections": "所属集合",
+  "library.detail.collections": "所属分类",
   "library.detail.doi": "DOI",
   "library.detail.arxiv": "arXiv",
   "library.detail.venue": "期刊 / 会议",
@@ -366,6 +368,8 @@ export const zh = {
   "library.file.back": "返回上级",
   "library.file.emptyDir": "空目录",
   "library.file.unknownMime": "暂无内置预览({mime})",
+  /** 文件预览里选中文字后，「引用给谁」那个列表的表头（那个列表里没有"当前会话"）。 */
+  "library.file.thisFile": "这个文件",
   "library.file.loadFailed": "读取失败",
   /* ── 库内全文检索(搜已转 Markdown 的正文)── */
   "library.fullText.title": "库内全文检索",
