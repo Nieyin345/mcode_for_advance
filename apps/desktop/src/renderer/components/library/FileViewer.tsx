@@ -35,7 +35,11 @@
  * 顶栏上那两条出口也因此**只对模版画** —— 一个按下去什么都不发生的按钮比没有更坏
  * (PDF 那个组件内部的出口同理,见它签名那段)。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
+import { SelectionToolbar, type SelectionToolbarState } from "@renderer/components/chat/SelectionToolbar.js";
+import { SelectionQuoteMenu, type QuoteTarget } from "@renderer/components/chat/SelectionQuoteMenu.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Markdown } from "@renderer/components/chat/Markdown.js";
@@ -85,6 +89,84 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+
+  /**
+   * **在文件里选一段文字 → 引用给某条对话**（2026-09-21）。
+   *
+   * ★ 用户的要求：「主页面展示的文件**可以鼠标选择，然后引用到当前展开对话的上下文**
+   * 里面」。
+   *
+   * ## 从前这件事根本做不到
+   *
+   * `SelectionToolbar` 只挂在 `ChatPane` 上 —— 也就是说**只有在对话里选文字**才弹
+   * 那个工具条。文件预览里选一段，什么都不会发生。这里把它也挂到文件这一侧。
+   *
+   * ## 只给两个按钮（复制 / 引用）
+   *
+   * 书签和「问侧边对话」都不给：书签靠 `state.messageId` 定位（那是消息流里才有的
+   * 东西，文件没有），而"问侧边"与"引用给某条"在这里是同一件事，没必要两个入口。
+   * `SelectionToolbar` 那两个回调现在是可选的，不给就不画 —— 见它的 props 说明。
+   */
+  const [sel, setSel] = useState<SelectionToolbarState | null>(null);
+  const [quote, setQuote] = useState<SelectionToolbarState | null>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onUp = () => {
+      // 让浏览器先落定选区再读（`mouseup` 那一刻 `getSelection()` 还是旧的）。
+      window.setTimeout(() => {
+        const s = window.getSelection();
+        const text = s?.toString().trim() ?? "";
+        const root = bodyRef.current;
+        if (!s || s.rangeCount === 0 || text.length === 0 || !root) {
+          setSel(null);
+          return;
+        }
+        const node = s.anchorNode;
+        if (!node || !root.contains(node)) return;
+        const r = s.getRangeAt(0).getBoundingClientRect();
+        if (r.width === 0 && r.height === 0) return;
+        setSel({
+          rect: { top: r.top, bottom: r.bottom, left: r.left, right: r.right },
+          text,
+          // 文件里没有消息 id —— 给空串。上面那套书签因此不画（见 state 那段）。
+          messageId: "",
+          role: "assistant",
+        });
+      }, 0);
+    };
+    document.addEventListener("mouseup", onUp);
+    return () => document.removeEventListener("mouseup", onUp);
+  }, []);
+
+  /**
+   * 引用落到哪 —— **只落草稿、不替用户发**（与对话里那条逐字同一个做法：
+   * 「我先看看再发」才是更稳的那一步）。
+   */
+  const quoteTo = useCallback(
+    (t2: QuoteTarget, text: string) => {
+      const quoted = text.trim();
+      setQuote(null);
+      setSel(null);
+      window.getSelection()?.removeAllRanges();
+      if (!quoted) return;
+      const store = useSessionStore.getState();
+      const prev = store.composerDraftBySession[t2.id];
+      store.saveComposerDraft(t2.id, {
+        text: prev?.text ? `${prev.text}
+
+${quoted}` : quoted,
+        html: "",
+        tags: prev?.tags ?? [],
+      });
+      useToastStore.getState().push({
+        kind: "info",
+        title: t("chatStream.quote.doneToast", { name: t2.title }),
+        sessionId: t2.id,
+      });
+    },
+    [t],
+  );
 
   // 换目标回到根 —— 上一个目录里翻到一半的子文件对这一条没有意义。
   useEffect(() => {
@@ -342,7 +424,36 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
   return (
     <div className="flex h-full min-h-0 flex-col bg-surface">
       {header}
-      {body}
+      {/* `ref` 包住正文 —— 选中的文字必须落在**这一块里面**才算数（不然在别处拖选
+          也会弹出这个工具条，见那个 mouseup 监听的 `root.contains` 那一句）。 */}
+      <div ref={bodyRef} className="flex min-h-0 flex-1 flex-col">
+        {body}
+      </div>
+
+      {/* 选中一段文字 → 只有「复制 / 引用给…」两个按钮（见 state 那段）。 */}
+      {sel && !quote && (
+        <SelectionToolbar
+          state={sel}
+          onQuote={setQuote}
+          onClose={() => setSel(null)}
+        />
+      )}
+      {/* 引用给谁 —— 复用对话那一套（`SelectionQuoteMenu`）。它的目标列表第一行是
+          **右栏此刻展开的那条**，所以"引用到当前展开对话"是这个列表的默认那一项。 */}
+      {quote && (
+        <SelectionQuoteMenu
+          state={quote}
+          // 文件里没有"当前会话"这个概念：把空串传进去，列表就只剩
+          // 「右栏展开的那条 + 它的节点会话」——正是这里该有的候选。
+          sessionId=""
+          currentTitle={t("library.file.thisFile")}
+          onPick={quoteTo}
+          onClose={() => {
+            setQuote(null);
+            setSel(null);
+          }}
+        />
+      )}
     </div>
   );
 }

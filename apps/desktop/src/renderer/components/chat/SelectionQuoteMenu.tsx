@@ -38,6 +38,7 @@ import type { Session } from "@contracts/session";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import {
   IconGitFork,
   IconLoader2,
@@ -87,6 +88,13 @@ export function SelectionQuoteMenu({
   // 取节点会话。async IIFE + try/catch:手机端的 web shim 对没映射的命名空间是
   // **同步抛错**的,直接挂 .then 会把异常甩出 effect,React 19 会因此整棵卸载。
   useEffect(() => {
+    // ⚠️ **`sessionId` 可以是空串**（2026-09-21）—— 文件预览那一侧没有"当前会话"
+    // 这个概念（见 `FileViewer` 的调用）。空串去发那条 RPC 只会白跑一趟，
+    // 而且拿不到任何东西。直接给空列表。
+    if (!sessionId) {
+      setNodes([]);
+      return;
+    }
     let cancelled = false;
     void (async () => {
       try {
@@ -122,15 +130,39 @@ export function SelectionQuoteMenu({
     };
   }, [onClose]);
 
+  /**
+   * 右栏**此刻展开的那条**（2026-09-21）。
+   *
+   * ★ 用户的要求：「主页面展示的文件可以鼠标选择，然后**引用到当前展开对话的上下文**
+   * 里面」。而在这之前，这个列表只列"当前对话 + 它的节点会话" —— **右栏正展开的那一条
+   * 不在里面**（它可能是子对话、也可能就是主对话），用户选了段文字想递给它，找不到。
+   *
+   * 它排**最前面**：那是用户此刻正在看的那条，"引用给谁"的第一顺位就是它。
+   */
+  const openChatId = useSessionStore((s) => s.activeSideChatId);
+  const openChatTitle = useSessionStore((s) => {
+    const id = s.activeSideChatId;
+    if (!id) return null;
+    if (id === s.activeSessionId) {
+      return s.streamSessions.find((x) => x.id === id)?.title ?? null;
+    }
+    return s.sideChatsByParent[s.activeSessionId ?? ""]?.find((x) => x.id === id)?.title ?? null;
+  });
+
   /** 当前会话永远排第一 —— 它不靠 RPC 来,所以取不到节点也照样能用。 */
   const targets = useMemo<QuoteTarget[]>(
     () => [
-      { id: sessionId, title: currentTitle, kind: "chat" },
+      // **右栏正展开的那条排最前**（跳过与"当前对话"重复的那一种）。
+      ...(openChatId && openChatId !== sessionId
+        ? [{ id: openChatId, title: openChatTitle ?? "", kind: "chat" as const }]
+        : []),
+      // 空串 = 从文件预览进来的，没有"当前会话"这一条（见上面 effect 那段）。
+      ...(sessionId ? [{ id: sessionId, title: currentTitle, kind: "chat" as const }] : []),
       ...(nodes ?? []).map(
         (s): QuoteTarget => ({ id: s.id, title: s.title, kind: "node" }),
       ),
     ],
-    [sessionId, currentTitle, nodes],
+    [sessionId, currentTitle, nodes, openChatId, openChatTitle],
   );
 
   const q = query.trim().toLowerCase();

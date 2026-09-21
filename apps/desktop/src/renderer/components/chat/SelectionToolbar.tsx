@@ -38,13 +38,17 @@ export function SelectionToolbar({
   onClose,
 }: {
   state: SelectionToolbarState;
-  /** Called with the captured state; the owner persists the bookmark, clears
-   *  the selection and closes the toolbar (which the selectionchange close
-   *  would do anyway once the selection is gone). */
-  onAddBookmark: (s: SelectionToolbarState) => void;
+  /**
+   * 加书签。**不给就不画这个按钮**（2026-09-21）。
+   *
+   * 书签靠 `state.messageId` 定位——只有**消息流**里的文字才有那个 id。文件预览
+   * （`FileViewer`）里的选中没有消息可挂，所以那一支不传这个回调，按钮直接不出现。
+   * （一个按下去什么都不发生的按钮比没有更坏——这条在这个仓库里写过好几次。）
+   */
+  onAddBookmark?: (s: SelectionToolbarState) => void;
   /** Send the selection to the side chat (opens the ask tab and seeds its
-   *  composer with the text). */
-  onAskSideChat: (s: SelectionToolbarState) => void;
+   *  composer with the text). 不给就不画。 */
+  onAskSideChat?: (s: SelectionToolbarState) => void;
   /** Open the target picker (current session + its node sessions) — owning
    *  pane lifts it into `SelectionQuoteMenu`. The selection is deliberately
    *  NOT cleared here: the picked target needs `state.text`. */
@@ -130,15 +134,21 @@ export function SelectionToolbar({
       >
         {copied ? <IconCheck size={12} /> : <IconCopy size={12} />}
       </button>
-      <span className="h-3 w-px bg-edge/60" />
-      <button
-        type="button"
-        onClick={() => onAddBookmark(state)}
-        title={t("chatStream.bookmark.add")}
-        className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-warning"
-      >
-        <IconBookmark size={12} />
-      </button>
+      {onAddBookmark && (
+        <>
+          <span className="h-3 w-px bg-edge/60" />
+          <button
+            type="button"
+            onClick={() => onAddBookmark(state)}
+            title={t("chatStream.bookmark.add")}
+            className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-warning"
+          >
+            <IconBookmark size={12} />
+          </button>
+        </>
+      )}
+      {onAskSideChat && (
+      <>
       <span className="h-3 w-px bg-edge/60" />
       <button
         type="button"
@@ -148,6 +158,8 @@ export function SelectionToolbar({
       >
         <IconMessages size={12} />
       </button>
+      </>
+      )}
       <span className="h-3 w-px bg-edge/60" />
       <button
         type="button"
