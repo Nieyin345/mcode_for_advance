@@ -201,10 +201,11 @@ export interface ProviderCommandEntry {
 /**
  * 清单结果。
  *
- * ⚠️ **`supported: false` 与 `commands: []` 是两件事**：前者是"这个引擎根本没有
- * 命令清单这回事"（Pi 的 TUI 命令不可用、Codex 协议里没有），后者是"有，但这次
- * 一条都没取到"。界面上前者该说"这个引擎不提供"，后者该说"还没取到" —— 混成一种
- * 会让用户以为引擎坏了。
+ * ⚠️ **`supported: false` 与 `commands: []` 是两件事**：前者是"这个引擎的命令，
+ * 在我们这条路上执行不了"（Pi / Codex 都有斜杠命令，但那些命令由它们各自的 TUI
+ * 在本地解析，不经过 Mcode 走的 SDK / app-server 协议 —— 实测见各 provider 的
+ * `listCommands` 注释），后者是"有，但这次一条都没取到"。界面上前者该说"这里用不了"，
+ * 后者该说"还没取到" —— 混成一种会让用户以为引擎坏了。
  */
 export interface ProviderCommandsResult {
   supported: boolean;

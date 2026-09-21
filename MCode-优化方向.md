@@ -103,11 +103,22 @@
 | 引擎 | 界面该说什么 | 依据 |
 |---|---|---|
 | Claude | 列 57 条 | `supportedCommands()` |
-| Pi | **这个引擎不提供斜杠命令** | 真起一个 Pi 会话列出来只有 2 条，**都是技能**（菜单里本来就有 Skill 一栏）；它那 23 条内置只有 `interactive-mode.js` 会注册，非交互会话里无用 |
-| Codex | 同上 | 把 `codex.exe` 的方法名全捞出来，**没有任何"列出命令"的方法** |
+| Pi | **这个引擎的命令由它的终端界面提供，这里用不了** | 它有 22 条内置（`/settings` `/export` `/fork` `/tree` `/compact` `/quit` …），但**全包里只有 `interactive-mode.js`（TUI）会解析这些名字**；SDK 那条路（`prompt()`）只做技能/模板展开，别的一律当普通文本发 |
+| Codex | 同上 | 它有十几条（`/status` `/model` `/review` `/permissions` `/fork` `/side` …）；但把 `/status` 发进 app-server 的 `turn/start`，回来的是 `userMessage{content:[{text:"/status"}]}` —— **原样当用户消息送去模型** |
 
-于是 `ProviderCommandsResult` 的 `supported` 字段是**刻意的**：`false` = "这家没有"
-（Pi / Codex），空数组 = "有，但这次没取到"。混成一种会让用户对着一个永远不会来的清单等下去。
+于是 `ProviderCommandsResult` 的 `supported` 字段是**刻意的**：`false` = "这家提供的
+命令我们这条路执行不了"，空数组 = "有，但这次没取到"。
+
+**这里我写过一版错话，得记下来。** 第一次的说法是"Pi / Codex 根本没有斜杠命令"——
+**不对**。两家都有，而且不少。我只是查了"协议里有没有列命令的方法"，就把结论写成了
+"它们没有" —— **把"我拿不到"说成了"它没有"**。是用户一句「codex 的 cli 可以吗，你是说
+pi 没有命令，那他提供什么呢」把我问回去的。改对之后判据也变了：不是"能不能列出来"，
+而是**"谁会去解析这个名字"** —— 顺着这个判据查，才看到 Pi 那边唯一解析内置命令名的
+文件就是 TUI，Codex 那边 `turn/start` 收下 `/status` 后走的是普通消息那条路。
+
+**这个错误也是"用户看得见"的那一类**：界面上原本写着「这个引擎不提供斜杠命令」——
+懂这两个工具的用户一看就知道是错的（"它明明有 `/compact`"）。已改成
+「这个引擎的命令由它的终端界面提供，这里用不了」。
 
 **验证**：`engine-commands-smoke` 扩到 17 项（加了"另两家老实答 false"两条）；全量
 **87 pass / 0 fail**；`ipc-wiring-smoke` 当场抓到"webApi 加了通道、mobileRpc 白名单没加"

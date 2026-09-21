@@ -421,6 +421,11 @@ export interface AgentProvider {
    * `supported`：Pi 与 Codex 老实说 `false`，而不是抛错、也不是给个空数组让调用方
    * 猜"是没有还是取不到"（见 `@contracts/ipc` 的 `ProviderCommandsResult`）。
    *
+   * ⚠️ `supported: false` 的含义是**"这家提供的命令，我们这条路执行不了"**，
+   * **不是"这家没有命令"** —— Pi 有 22 条、Codex 有十几条，但那些命令由它们各自的
+   * TUI 在本地解析执行，不经过 Mcode 走的 SDK / app-server 协议。列出来只会让用户
+   * 点了之后看着 `/compact` 被当成一句话发给模型。别把这句话写成"它没有"。
+   *
    * ⚠️ **不要挂到 `system/init` 事件上等它自己来。** 那条路只在**开跑一轮**时才发，
    * 而用户想打开 `/` 菜单，恰恰是在还没发消息的时候 —— 第一版就是这么写的，界面永远
    * 显示 0 条。这个方法存在的全部理由就是**把清单提前到会话建立时**。

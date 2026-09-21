@@ -495,19 +495,31 @@ export class PiAgentSdkProvider implements AgentProvider {
   }
 
   /**
-   * **Pi 这边没有"额外的"引擎命令**（2026-09-21）。
+   * **Pi 那批斜杠命令，在我们的路上跑不起来**（2026-09-21 实测）。
    *
-   * 实测：真起一个 Pi 会话、把它认得的命令全列出来，只有两条，**都是技能**
-   * （`skill:mcode-smoke` / `skill:microsoft-foundry`）—— 而技能在 `/` 菜单里本来
-   * 就有自己的一栏（Skill），由 `skills.list` 供给。列在这里就是同一批东西出现两次。
+   * ## Pi 提供什么（回答"那它到底有什么"）
    *
-   * Pi 自己那 23 条内置（`/settings` `/model` `/export` `/quit` …）**只有 TUI 会注册**
-   * —— `BUILTIN_SLASH_COMMANDS` 在整个包里只有一个引用者
-   * （`modes/interactive/interactive-mode.js`）。非交互会话里调它们没有落点，摆进菜单
-   * 就是"点了没反应"。Mcode 的 Pi 扩展也没注册过任何命令（核对过 `mcodeExtension.ts`）。
+   * 分三层，只有前两层在 Mcode 这条路上真的能用：
    *
-   * 所以答 `supported: false`：不是取不到，是这家在我们的用法下**确实没有**。
-   * 界面据此说"这个引擎不提供"，而不是显示一个永远空的栏。
+   *  1. **扩展 / 提示词模板 / 技能** —— 走 `get_commands` 能列出来、也能被 `prompt()`
+   *     展开执行（`_expandSkillCommand` / `expandPromptTemplate`）。但**技能在 `/` 菜单里
+   *     本来就有自己的一栏**（由 `skills.list` 供给），列进来就是同一批东西出现两次。
+   *     实测本机只有 2 条，且两条都是技能。
+   *  2. **工具**（read / write / bash / 子代理……）—— 与斜杠命令无关。
+   *  3. **22 条 TUI 内置命令**（`/settings` `/model` `/export` `/fork` `/tree`
+   *     `/session` `/compact` `/quit` `/reload` …）—— **这些才是"Pi 的命令"，而我们用不了**。
+   *
+   * ## 为什么用不了（不是"没有"）
+   *
+   * 判据是**"谁会去解析这个名字"**：把整个包里出现 `/compact`、`/export`、`/quit`
+   * 这些字面量的文件全捞出来，**只有 `modes/interactive/interactive-mode.js` 一个**
+   * —— 也就是 Pi 的 TUI。SDK 那条路（`createAgentSession` + `prompt()`，Mcode 走的
+   * 就是它）里没有这一段：`prompt()` 只做技能展开和模板展开，别的一律当普通文本
+   * 发给模型。所以列出来点了之后，用户会看着 `/compact` 这七个字符被当成一句话
+   * 发给模型 —— 比不列更糟。
+   *
+   * `supported: false` 的含义因而是**"这家提供的命令，我们这条路执行不了"**。
+   * 界面据此说"这个引擎不提供"，而不是显示一个点了没反应的菜单。
    */
   async listCommands(): Promise<{ supported: boolean; commands: EngineCommandEntry[] }> {
     return { supported: false, commands: [] };

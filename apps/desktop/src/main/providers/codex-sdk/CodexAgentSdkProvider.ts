@@ -617,16 +617,27 @@ export class CodexAgentSdkProvider implements AgentProvider {
   }
 
   /**
-   * **Codex 没有斜杠命令清单这回事**（2026-09-21）。
+   * **Codex 那一批斜杠命令，在我们的路上跑不起来**（2026-09-21 实测）。
    *
-   * 把 `codex.exe` 里的方法名整个捞出来核对过：app-server 协议里有
-   * `thread/start`、`turn/start`、`skills/extraRoots/set`、`model/list`……
-   * 唯独**没有任何"列出命令"的方法**。Codex 的斜杠命令是它自己 TUI 里的东西，
-   * 不经过这条协议。
+   * ## 先纠正一个说法
    *
-   * 所以老实答 `supported: false` —— 不是"这次没取到"，是"这家根本没有"。
-   * 返回空数组会让界面说不清是哪种情况（见 `@contracts/ipc` 的
-   * `ProviderCommandsResult`）。
+   * 上一版这里写的是"Codex 根本没有斜杠命令"—— **不对**。它有，而且不少：
+   * `/compact` `/new` `/model` `/permissions` `/review` `/status` `/fork`
+   * `/side` `/init` `/mcp` `/skills` `/rename` `/personality` `/config`
+   * `/statusline`，还都带说明（从 `codex.exe` 里那段 TUI 帮助文本挖出来的）。
+   *
+   * ## 但它们是**客户端**的功能，不是 agent 的
+   *
+   * 实测：对 app-server 起一个 thread，把 `/status` 当文本发进 `turn/start` ——
+   * 回来的 `item/started` 是 `{"type":"userMessage","content":[{"text":"/status"}]}`，
+   * 也就是**原样当成用户消息**，然后直接送去模型。没有任何"识别为命令"的迹象。
+   *
+   * 换句话说：Codex 的斜杠命令在 **TUI 那一层**（本地解析、本地执行、不发给模型），
+   * 而 app-server 协议里没有对应的方法，也没有"把这条文本当命令跑"的开关。
+   * 列出来只会让用户点了之后看着那句话被发给模型 —— 比不列更糟。
+   *
+   * 所以 `supported: false` 的含义是**"这家提供的命令，我们这条路执行不了"**，
+   * 不是"这家没有命令"。见 `@contracts/ipc` 的 `ProviderCommandsResult`。
    */
   async listCommands(): Promise<{ supported: boolean; commands: EngineCommandEntry[] }> {
     return { supported: false, commands: [] };

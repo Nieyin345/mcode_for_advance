@@ -256,10 +256,11 @@ export const zh = {
   "chat.slash.engine": "CLI",
   "chat.slash.noEngineMatch": "Claude Code 没有这个命令",
   "chat.slash.engineNotReady": "还没收到 Claude Code 的命令清单 —— 说一句话就会拉取",
-  /* 「这个引擎没有命令清单」—— Pi / Codex 那一档。与上面那句是**两件事**：上面说
-     "等一会儿就有了"，这句说"这家根本没有"。混着用会让用户对着一个永远不会来的
-     清单等下去。 */
-  "chat.slash.engineUnsupported": "这个引擎不提供斜杠命令",
+  /* 「这个引擎的命令在我们这儿跑不起来」—— Pi / Codex 那一档。
+     ⚠️ **别写成"这个引擎没有命令"**：它们都有（Pi 22 条、Codex 十几条），只是那些
+     命令由各自的 TUI 在本地解析执行，不经过 Mcode 走的 SDK / app-server 协议。
+     说成"没有"是**说错话**，用户懂这两个工具的话会立刻发现不对。 */
+  "chat.slash.engineUnsupported": "这个引擎的命令由它的终端界面提供，这里用不了",
   "chat.kbd.navigate": "导航",
   "chat.slash.switchTab": "切 tab",
   "chat.slash.insert": "插入",
