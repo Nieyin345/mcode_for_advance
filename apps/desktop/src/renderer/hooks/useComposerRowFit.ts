@@ -73,15 +73,30 @@ export function useComposerRowFit(forceCollapsed = false) {
       // pill truncates its own labels and can't overflow, so it's exempt.
       if (next === 0) {
         const pill = row.querySelector<HTMLElement>(".composer-minipill");
-        if (pill && pill.offsetWidth > 0) {
+        const chips = pill?.parentElement;
+        if (pill && chips && pill.offsetWidth > 0) {
           const prevMinWidth = pill.style.minWidth;
           const prevWrap = row.style.flexWrap;
+          const prevChipsMin = chips.style.minWidth;
           pill.style.minWidth = "max-content";
           row.style.flexWrap = "nowrap";
-          const overflows = row.scrollWidth > row.clientWidth + 1;
+          // ⚠️ **量的是"整行放不放得下",而药丸住在 `.composer-chips` 里。**
+          // 那个容器是 `flex-1 min-w-0` —— `min-width: 0` 会让它**被压到比内容还窄
+          // 却不溢出整行**,长度全被药丸内部那些 `shrink-1` 的标签吃掉(表现是标签
+          // 被截成 `Defaul` 这种)。只量整行的 `scrollWidth` **看不到这种情况**,
+          // 于是该收缩时不收缩、标签一直被截 —— 用户报的"挤在一起"就是这个。
+          //
+          // 所以把容器的 `min-width` 也临时放开,让药丸的真实宽度**顶到整行上**:
+          // 那样 `row.scrollWidth` 才如实反映"这行到底放不放得下"。
+          chips.style.minWidth = "max-content";
+          const rowOverflows = row.scrollWidth > row.clientWidth + 1;
+          // 补一道**直接的**判据:药丸有没有被它的容器挤窄(容器比药丸窄)。
+          // 这一条挡的是上面那种"整行没溢出、但药丸已经被截"的情况。
+          const pillSqueezed = chips.clientWidth + 1 < pill.scrollWidth;
           pill.style.minWidth = prevMinWidth;
           row.style.flexWrap = prevWrap;
-          if (overflows) {
+          chips.style.minWidth = prevChipsMin;
+          if (rowOverflows || pillSqueezed) {
             overflowCollapsedRef.current = true;
             collapseAtRef.current = card.clientWidth;
             next = 1;
