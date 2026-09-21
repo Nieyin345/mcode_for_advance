@@ -129,7 +129,9 @@ export const zh = {
    *  点开能看到各自的输出(见 `components/ide/TaskListPanel.tsx`)。 */
   "layout.tabTasks": "任务列表",
   /** 右栏的模版预览标签 —— 与左栏「模版」段联动(点一个文件就在这儿打开)。 */
-  "layout.tabTemplates": "模版",
+  /** 右栏「预览」—— 单击左栏一个文件后，在这里看一眼。 */
+  "layout.tabPreview": "预览",
+  "layout.preview.empty": "在左边点一个文件，这里会显示它。",
   "layout.openBrowser": "打开浏览器",
   "layout.closeSidebarBrowser": "关闭侧边栏浏览器",
 

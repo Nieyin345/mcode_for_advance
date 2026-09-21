@@ -421,9 +421,10 @@ export function LibraryItemContextMenu({
                   onClick={() => {
                     if (!item) return;
                     // **应用内预览**,不再跳外部编辑器(用户的原话:跳到 vscode 那条路
-                    // 太断)。同时把右栏切到文献库 —— 否则面板正停在文件树上,点了没反应。
+                    // 太断)。同时把右栏切到**预览** —— 否则面板正停在文件树上,
+                    // 点了没反应。（2026-09-21：那个 tab 从 `library` 改名成 `preview`。）
                     useLibraryStore.getState().openPreview(item.id);
-                    useSessionStore.getState().setRightPanelTab("library");
+                    useSessionStore.getState().setRightPanelTab("preview");
                     onClose();
                   }}
                   disabled={!item?.mdPath}

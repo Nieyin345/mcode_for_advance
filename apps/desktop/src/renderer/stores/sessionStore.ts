@@ -6404,6 +6404,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         tabRaw === "files" ||
         tabRaw === "git" ||
         tabRaw === "turns" ||
+        // `preview` 是 2026-09-21 新加的（替掉 library / templates，见契约里那段）。
+        tabRaw === "preview" ||
         tabRaw === "flow" ||
         tabRaw === "tasks"
       )

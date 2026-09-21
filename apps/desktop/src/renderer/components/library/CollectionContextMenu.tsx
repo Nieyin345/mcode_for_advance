@@ -37,7 +37,8 @@
 import { useEffect, useState } from "react";
 import { Menu } from "@base-ui/react/menu";
 import type { LibraryCollection } from "@contracts/library";
-import { useI18n } from "@renderer/lib/i18n/index.js";
+import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
+import type { CitationStyle } from "@contracts/citation";
 import { attachToCurrentChat } from "@renderer/lib/attachToChat.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
@@ -68,6 +69,7 @@ export function CollectionContextMenu({
   onDelete,
   onNewNote,
   onImportHere,
+  onExport,
   onMove,
 }: {
   target: CollectionCtxTarget | null;
@@ -86,6 +88,14 @@ export function CollectionContextMenu({
    * 点对分类、再去右栏点导入。在分类行上直接右键，是"我要往这里放东西"最直白的说法。
    */
   onImportHere: (c: LibraryCollection) => void;
+  /**
+   * 把这个分类下的条目**导出成引用文件**（2026-09-21）。
+   *
+   * 从右栏那条工具条搬过来的 —— 用户要把右栏的文献 tab 删掉，而那个 tab 里
+   * 除了预览还有这一项（检索去 Ctrl+K 了、导入来左栏右键了）。
+   * 它天然属于**分类**（导出的是一批），所以挂在分类行右键上比条目行合适。
+   */
+  onExport: (c: LibraryCollection, style: CitationStyle) => void;
   /** 把它挪到另一个父下面(`parentId: null` = 挪到最外层)。 */
   onMove: (c: LibraryCollection, parentId: string | null) => void;
 }) {
@@ -211,6 +221,27 @@ export function CollectionContextMenu({
                   <IconDownload size={12} className="shrink-0" />
                   {t("library.ctx.importHere")}
                 </Menu.Item>
+
+                {/* 导出引用 —— 三种格式各一项。**展开成平铺的三项**而不是二级菜单：
+                    右栏那条工具条本来就是这么摆的（一个按钮 + 三个下拉项），
+                    平铺过来用户不用多学一层。 */}
+                {c && (
+                  <>
+                    {(["bibtex", "gb7714", "apa"] as const).map((style) => (
+                      <Menu.Item
+                        key={style}
+                        onClick={() => {
+                          onExport(c, style);
+                          onClose();
+                        }}
+                        className={itemClass}
+                      >
+                        <IconFileText size={12} className="shrink-0" />
+                        {t("library.export.label")} · {t(`library.export.${style}` as MessageId)}
+                      </Menu.Item>
+                    ))}
+                  </>
+                )}
 
                 {c?.kind === "note" && (
                   <>

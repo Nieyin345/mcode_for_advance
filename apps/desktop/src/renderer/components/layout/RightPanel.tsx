@@ -7,8 +7,7 @@ import {
   IconListDetails,
   IconArrowsMaximize,
   IconArrowsMinimize,
-  IconBook,
-  IconTemplate,
+  IconFileSearch,
   IconListTree,
   IconTerminal2,
 } from "@renderer/lib/icons.js";
@@ -21,8 +20,7 @@ import { TurnFlowPanel } from "@renderer/components/ide/TurnFlowPanel.js";
 import { TaskListPanel } from "@renderer/components/ide/TaskListPanel.js";
 import { WorkflowBoardPanel } from "@renderer/components/chat/WorkflowBoardPanel.js";
 import { BrowserPanel } from "@renderer/components/browser/BrowserPanel.js";
-import { LibraryPanel } from "@renderer/components/library/LibraryPanel.js";
-import { TemplatePanel } from "@renderer/components/templates/TemplatePanel.js";
+import { PreviewPanel } from "@renderer/components/library/PreviewPanel.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 
 /** Right panel: a horizontal icon rail docked at the top + a main panel
@@ -147,23 +145,17 @@ export function RightPanel() {
         >
           <IconTerminal2 size={16} className="shrink-0" />
         </RailButton>
-        {/* 文献库 —— 与左栏的「文献库」分组联动:在左栏点某个库,这里切到本标签
-            并显示该库的文献。仿照上面的 RailButton 写法,不改动其余标签的行为。 */}
+        {/* 预览 —— 左栏**单击**一个文件，这里显示它（2026-09-21）。
+            原来这儿是两个标签（文献库 / 模版库），两个面板把列表 + 检索 + 导入 +
+            详情全塞在 400px 宽的栏里。现在检索去 Ctrl+K、导入/转换/引用/关联/文献信息
+            去左栏右键，这一栏只剩"看一眼刚点的那个文件"。
+            **双击**才是进主页面编辑。 */}
         <RailButton
-          active={tab === "library"}
-          onClick={() => setTab("library")}
-          title={t("library.title")}
+          active={tab === "preview"}
+          onClick={() => setTab("preview")}
+          title={t("layout.tabPreview")}
         >
-          <IconBook size={16} className="shrink-0" />
-        </RailButton>
-        {/* 模版 —— 与左栏的「模版」分组联动:在左栏点开一条模版、点里面的一个文件,
-            这里显示它的内容(应用内预览)。与文献库那个标签同一套做法。 */}
-        <RailButton
-          active={tab === "templates"}
-          onClick={() => setTab("templates")}
-          title={t("layout.tabTemplates")}
-        >
-          <IconTemplate size={16} className="shrink-0" />
+          <IconFileSearch size={16} className="shrink-0" />
         </RailButton>
         {/* Wide-panel (3:7) mode - hide the left sidebar + center editor and
             split the workspace into this right panel (7/10) + the chat column
@@ -200,8 +192,7 @@ export function RightPanel() {
         {tab === "turns" && <TurnFlowPanel />}
         {tab === "flow" && <WorkflowBoardPanel />}
         {tab === "tasks" && <TaskListPanel />}
-        {tab === "library" && <LibraryPanel />}
-        {tab === "templates" && <TemplatePanel />}
+        {tab === "preview" && <PreviewPanel />}
         {tab === "browser" && <BrowserPanel mode="sidebar" />}
       </div>
     </div>

@@ -79,7 +79,7 @@ import { attachToCurrentChat } from "@renderer/lib/attachToChat.js";
 import { Dialog } from "@renderer/components/ui/dialog.js";
 import { Divider } from "@renderer/components/layout/Divider.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
-import { formatCitation } from "@contracts/citation";
+import { formatCitation, type CitationStyle } from "@contracts/citation";
 import { copyText } from "@renderer/lib/clipboard.js";
 import {
   HintRow,
@@ -524,8 +524,9 @@ export function LibrarySection({
     // 新建笔记的默认类型、搜索范围等 —— 看着哪段的库,全局就该停在哪个类型。
     setActiveKind(kind);
     setActive(id);
-    setRightPanelTab("library");
-    setRightOpen(true);
+    // ⚠️ **点分类不再切右栏**（2026-09-21）。原来切的是「文献库」那个 tab，而它删了。
+    // 也不能切到「预览」—— 那是给**某一个文件**的，而这里用户点的是一个分类
+    // （可能展开出一列文件）。切过去只会显示上一次预览的那一篇，误导。
     toggleExpanded(id);
   };
 
@@ -564,8 +565,10 @@ export function LibrarySection({
     setActiveKind(item.kind);
     // 笔记点开就是要写/改它,直接落在编辑页;其余落在第一页(元数据 / 概览)
     useLibraryStore.getState().setDetailTab(item.kind === "note" ? "edit" : "meta");
-    // 把右栏拉出来并切到文献库 —— 单击的落点在右栏,它得看得见。
-    setRightPanelTab("library");
+    // **单击 = 预览**（2026-09-21）：把右栏切到「预览」并拉出来。
+    // 原来切的是「文献库」那个 tab，而它已经删了（检索去 Ctrl+K、导入/关联/文献信息
+    // 去左栏右键）。双击才是进主页面编辑 —— 见 `openItemInCenter`。
+    setRightPanelTab("preview");
     setRightOpen(true);
   };
 
@@ -900,6 +903,24 @@ export function LibrarySection({
       title: ok ? t("library.cite.copy") : t("library.convert.failed"),
       body: item.title,
     });
+  };
+
+  /**
+   * 把一个分类下的条目导出成引用文件（2026-09-21）。
+   *
+   * 从右栏那条工具条搬来的。落盘位置由主进程定（库根的 `exports/`）——
+   * 渲染端不拼路径，与原来那条一样。
+   */
+  const exportCollection = async (c: LibraryCollection, style: CitationStyle) => {
+    try {
+      const res = await api.library.exportCitations({ style, collectionId: c.id });
+      useToastStore.getState().push({
+        kind: res.ok ? "info" : "error",
+        title: res.ok ? t("library.export.done", { n: res.count, path: res.path }) : (res.error ?? t("library.export.failed")),
+      });
+    } catch (err) {
+      useToastStore.getState().push({ kind: "error", title: t("library.export.failed"), body: (err as Error).message });
+    }
   };
 
   const deleteForever = async (item: LibraryItem) => {
@@ -1566,6 +1587,7 @@ export function LibrarySection({
         onDelete={(c) => void removeCollection(c.id, c.name)}
         onNewNote={startNewNote}
         onImportHere={(c) => setImportInto(c)}
+        onExport={(c, style) => void exportCollection(c, style)}
         onMove={(c, parentId) => void moveCollection(c, parentId)}
       />
 

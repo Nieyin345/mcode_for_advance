@@ -576,7 +576,20 @@ export const UI_RIGHT_PANEL_TAB_SETTING_KEY = "ui.rightPanelTab";
  *  ⚠️ **"flow" 加在这里,hydrate 那里也要加一行**(`sessionStore` 里那个
  *  `if (tabRaw === ...)` 白名单)。只在 schema 上加的话,用户选了它、重启之后右栏
  *  悄悄回到 files —— 而没有任何地方说为什么。 */
-export const RightPanelTabSchema = z.enum(["files", "git", "browser", "turns", "library", "templates", "flow", "tasks"]);
+/**
+ * 右栏有哪几个标签。
+ *
+ * ⚠️ **2026-09-21：`library` / `templates` 删了，改成 `preview`。**
+ * 原来那两个是「文献库面板」和「模版库面板」—— 它们把列表、检索、导入、详情全塞在
+ * 一个 400px 宽的栏里。现在：
+ *
+ *   - 检索 → Ctrl+K 的「文档」tab；导入 / 转换 / 引用 / 关联 / 文献信息 → 左栏右键；
+ *   - **预览这一个 tab** 留下来，单击左栏的文件把内容送进来（简单看一眼），
+ *     双击才是"进主页面编辑"。
+ *
+ * 留 `library` / `templates` 这两个旧值会让人以为那两个面板还在，所以直接替掉。
+ */
+export const RightPanelTabSchema = z.enum(["files", "git", "browser", "turns", "preview", "flow", "tasks"]);
 export type RightPanelTab = z.infer<typeof RightPanelTabSchema>;
 
 /**

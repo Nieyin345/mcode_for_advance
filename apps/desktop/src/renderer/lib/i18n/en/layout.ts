@@ -116,7 +116,9 @@ export const en = {
   "layout.hideEditor": "Hide editor",
   "layout.noOpenFiles": "No open files",
   "layout.tabFiles": "Files",
-  "layout.tabTemplates": "Templates",
+  /** Right-rail "Preview" — click a file on the left to glance at it here. */
+  "layout.tabPreview": "Preview",
+  "layout.preview.empty": "Click a file on the left to see it here.",
   "layout.tabTurns": "Turn Flow",
   /** The right panel's run board — which cell of the graph is running right now
    *  (see `components/chat/WorkflowBoardPanel.tsx`). Not the same thing as the
