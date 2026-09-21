@@ -42,6 +42,7 @@ import { makeContentTag } from "@renderer/lib/contentTag.js";
 import { SelectionToolbar, type SelectionToolbarState } from "@renderer/components/chat/SelectionToolbar.js";
 import { SelectionQuoteMenu, type QuoteTarget } from "@renderer/components/chat/SelectionQuoteMenu.js";
 import { api } from "@renderer/lib/api.js";
+import { extname } from "@renderer/lib/path.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Markdown } from "@renderer/components/chat/Markdown.js";
 import { PdfPreview } from "./PdfPreview.js";
@@ -565,12 +566,35 @@ async function loadViewData(
  * (见 `FileReadBinarySchema` 的说明)—— 所以空串要**当成失败**报出来,不能当成
  * "一个 0 字节的文件"(那两件事在界面上长得一样)。
  */
+/**
+ * 读一个项目文件，归一到 `ViewData`。
+ *
+ * ## ⚠️ "先按文本试读"这个策略对 PDF 是**错的**（2026-09-21 修）
+ *
+ * 这里从前只有一条判断："先 `file.readFile` 当文本读，读不动（抛了）再走二进制"。
+ * 那条判断背后的假设是「二进制文件解不出文本、会抛」—— **而 PDF 不满足它**：
+ * PDF 的头是 `%PDF-1.7`、对象头是 `2 0 obj`、字典是 `<</Length 3 0 R/Filter/
+ * FlateDecode>>` —— 全是**合法的 ASCII**，`readFile` 读得动。于是它被当成文本
+ * 返回，屏幕上就出现"一半正常一半乱码方块"那一屏（用户截图里正是这个）。
+ *
+ * 而且**注释早就写下了这个风险**（"列一张'哪些是文本'的表必然漏"）—— 结论反了：
+ * 正因为列不全，才**必须**按扩展名先把已知的二进制格式拦掉，不能靠"试读抛不抛"。
+ *
+ * ## 判据
+ *
+ * `BINARY_EXTS` 是**已知的、确定不该当文本读**的那一类（pdf / office / 压缩包 /
+ * 可执行 / 字体 / 常见图片）。它**不需要列全**——列进去的走二进制，没列进去的
+ * 照旧"先试文本、抛了再二进制"，所以漏一个的后果只是"多试一次文本"，不会错。
+ * 这是刻意的：一张必须完整的表迟早会漏，一张"只做加速/纠偏"的表漏了也不会坏。
+ */
 async function loadProjectFileData(filePath: string): Promise<ViewData> {
-  try {
-    const res = await api.file.readFile({ filePath });
-    return { type: "text", text: res.content };
-  } catch {
-    // 不是文本(或读不动)—— 落到二进制那一支。
+  if (!BINARY_EXTS.has(extname(filePath).toLowerCase())) {
+    try {
+      const res = await api.file.readFile({ filePath });
+      return { type: "text", text: res.content };
+    } catch {
+      // 不是文本(或读不动)—— 落到二进制那一支。
+    }
   }
   const bin = await api.file.readBinary({ filePath });
   if (!bin.dataUrl) {
@@ -581,3 +605,48 @@ async function loadProjectFileData(filePath: string): Promise<ViewData> {
   const mime = /^data:([^;,]+)/.exec(bin.dataUrl)?.[1] ?? "application/octet-stream";
   return { type: "binary", mime, base64, bytes: base64ToBytes(base64) };
 }
+
+/** **确定不该当文本读**的扩展名。见 `loadProjectFileData` 的头注 —— 这张表只需要
+ * 覆盖"头几个字节是合法 ASCII、试读不会抛"的那类格式，PDF 是最典型的一个。 */
+const BINARY_EXTS = new Set([
+  // 文档
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".ppt",
+  ".pptx",
+  ".odt",
+  ".ods",
+  ".odp",
+  ".rtf",
+  // 压缩包
+  ".zip",
+  ".gz",
+  ".tar",
+  ".tgz",
+  ".rar",
+  ".7z",
+  ".bz2",
+  ".xz",
+  // 图片（这几种也常有 ASCII 头，如 PNG 的 \x89PNG / JPEG 的 JFIF）
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".bmp",
+  ".ico",
+  ".avif",
+  // 字体 / 可执行
+  ".ttf",
+  ".otf",
+  ".woff",
+  ".woff2",
+  ".eot",
+  ".exe",
+  ".dll",
+  ".so",
+  ".dylib",
+]);

@@ -1304,7 +1304,21 @@ function PdfPreviewPane({ filePath }: { filePath: string }) {
 
   // `item` 只要 `{ id }`。项目文件没有条目 id,给空串 —— `bytes` 在,那个字段
   // 根本不会被用到（见上面"为什么自己也读一遍字节"）。
-  return <PdfPreview item={{ id: "" }} bytes={bytes} />;
+  //
+  // ⚠️ **外面这层 `h-full` 是必须的。** `PdfPreview` 最外层是
+  // `relative flex h-full flex-col`,它按**容器的 clientWidth** 算"适应宽度"
+  // （`currentScaleValue = "page-width"`）,并且 pdf.js 构造时直接断言那个滚动容器
+  // 必须是 absolute。父级高度塌了 → 宽度算成 0 → 比例极小,表现就是"默认不适合宽度、
+  // 点那个按钮也没反应"（2026-09-21 用户报的正是这个）。
+  //
+  // `FileViewer` 那边为此专门写了"**不多包任何一层 div**"（见它 render 那段注释）——
+  // 而 `FileEditor` 的渲染分支外面本来就有一层 `min-h-0 flex-1`,所以这里**必须**
+  // 自己补上 `h-full` 才能把高度传下去。
+  return (
+    <div className="h-full min-h-0">
+      <PdfPreview item={{ id: "" }} bytes={bytes} />
+    </div>
+  );
 }
 
 function ImagePreviewPane({ filePath }: { filePath: string }) {
