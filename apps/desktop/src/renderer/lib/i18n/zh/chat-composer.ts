@@ -256,6 +256,10 @@ export const zh = {
   "chat.slash.engine": "CLI",
   "chat.slash.noEngineMatch": "Claude Code 没有这个命令",
   "chat.slash.engineNotReady": "还没收到 Claude Code 的命令清单 —— 说一句话就会拉取",
+  /* 「这个引擎没有命令清单」—— Pi / Codex 那一档。与上面那句是**两件事**：上面说
+     "等一会儿就有了"，这句说"这家根本没有"。混着用会让用户对着一个永远不会来的
+     清单等下去。 */
+  "chat.slash.engineUnsupported": "这个引擎不提供斜杠命令",
   "chat.kbd.navigate": "导航",
   "chat.slash.switchTab": "切 tab",
   "chat.slash.insert": "插入",

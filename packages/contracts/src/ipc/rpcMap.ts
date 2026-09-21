@@ -26,7 +26,7 @@ import type { GetSettingInput, SetSettingInput, GetManySettingsInput, GetManySet
 import type { StartSessionInput, ListSideChatsInput, SendTurnInput, InterruptInput, InjectInput, ApproveInput, RespondQuestionInput, RespondPlanApprovalInput, RewindTurnInput, UpdateSessionSettingsInput, CreateProjectInput, ProjectSessionsInput, SessionListAllInput, SetProjectGroupInput, ReorderProjectsInput, PinProjectInput, RenameProjectInput, SessionSearchInput, BookmarkSearchInput, BookmarkSearchResult, SessionMessagesInput, SaveMessagesInput, UpsertMessagesInput, TruncateAndInsertMessagesInput, RenameSessionInput, ForkSessionInput, PinSessionInput, UpdateBookmarksInput, OpenPathInput, ShowItemInFolderInput, OpenFileInput, SessionListNodesInput, SessionHasNodesInput } from "./session.js";
 import type { VoiceStartInput, VoiceFeedInput, VoiceStopInput, VoiceStopResult, VoiceCancelInput, VoiceModelListResult, VoiceDownloadModelInput } from "./voice.js";
 import type { FocusSessionInput, SetNotificationPrefsInput } from "./notifications.js";
-import type { SaveCustomModelInput, TestCustomModelInput, GetCustomModelTokenInput, SavePiProviderInput, DeletePiProviderInput, GetPiApiKeyInput, SaveCodexProviderInput, DeleteCodexProviderInput, GetCodexApiKeyInput } from "./providers.js";
+import type { SaveCustomModelInput, TestCustomModelInput, GetCustomModelTokenInput, SavePiProviderInput, DeletePiProviderInput, GetPiApiKeyInput, SaveCodexProviderInput, DeleteCodexProviderInput, GetCodexApiKeyInput, ProviderCommandsInput, ProviderCommandsResult } from "./providers.js";
 import type { GetThemeResult, SetThemeInput, AppInfoResult, CheckForUpdatesResult } from "./app.js";
 import type { FileReadInput, FileReadBinaryInput, PickImagesInput, PickedImage, ClipboardSaveFileInput, ClipboardSaveFileResult, ClipboardWriteImageInput, ClipboardWriteImageResult, FileListDirInput, FileTreeEntry, FileSearchInput, FileSearchResult, FileWriteInput, FileMkdirInput, FileDeleteInput, FileRenameInput, FileCopyInput, FileGrepInput, FileGrepResult, RgStatusResult, RgInstallInput, RgInstallResult, DialogPickFilesInput } from "./files.js";
 import type { GitDiscoverReposInput, GitRepo, GitRepoPathInput, GitStatusResult, GitStageInput, GitOpResult, GitUnstageInput, GitCommitInput, GitDiffInput, GitFileBlobInput, GitDiscardInput, GitGenerateCommitInput, GitCancelGenerateCommitInput, GitLogInput, GitCommitInfo, GitShowCommitInput, GitCommitDetail, GitShowFileInput, GitBranchListResult, GitCheckoutInput, GitDeleteBranchInput, GitMergeInput, GitMergePreviewResult, GitMergeResult, GitWorktreeListInput, GitWorktreeInfo, GitWorktreeStatusInput, GitWorktreeMergeBackInput, GitWorktreeMergeBackResult, GitWorktreeRemoveInput, GitWorktreeRemoveResult } from "./git.js";
@@ -44,7 +44,7 @@ import type { RuntimeAgentState, RuntimesInstallInput, RuntimesInstallLocalInput
 import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, WorkflowExportInput, WorkflowImportInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchCommandTemplate } from "./workflow.js";
 import type { AutomationTriggerFacts, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
 import { MEMORY_CATEGORIES_CHANNEL, MEMORY_DELETE_CHANNEL, MEMORY_LIST_CHANNEL, MEMORY_READ_CHANNEL, MEMORY_SAVE_CHANNEL, type MemoryDeleteInput, type MemoryFileMeta, type MemoryListInput, type MemoryReadInput, type MemorySaveInput } from "../memory.js";
-import type { LibraryTypesGetInput, LibraryTypesSaveInput, LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDeleteItemsResult, LibraryRestoreItemsInput, LibraryDeletePreviewInput, LibraryDeletePreviewResult, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibraryManifestInput, LibraryItemManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkCountsInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionMoveInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
+import type { LibraryTypesGetInput, LibraryTypesSaveInput, LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDeleteItemsResult, LibraryRestoreItemsInput, LibraryDeletePreviewInput, LibraryDeletePreviewResult, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryEntryPathInput, LibraryEntryPathResult, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibraryManifestInput, LibraryItemManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkCountsInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionMoveInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
 import type { TemplateListInput, TemplateAddInput, TemplateRenameInput, TemplateEntryRefInput, TemplateFileRefInput, TemplatesAttachToChatInput } from "./templates.js";
 import type { SubagentDefinition } from "../claudeSubagent.js";
 import type { ClaudeSubagentsSaveInput } from "../claudeSubagent.js";
@@ -152,6 +152,21 @@ export interface RpcMap {
   "session.updateBookmarks": (input: UpdateBookmarksInput) => Promise<{ session: Session }>;
   // Providers
   "provider.list": () => Promise<{ providers: ProviderInfo[] }>;
+  /**
+   * 问引擎要**它自己的斜杠命令清单**（2026-09-21）。
+   *
+   * ## 为什么不能只靠事件
+   *
+   * 清单的**权威来源**是引擎在每轮 `system/init` 里推的 `slash_commands`
+   * （见 `@contracts/runtime` 的 `CommandsAvailableEvent`）。但那条路有个致命的时机问题：
+   * init 只在**开跑一轮**时才来。而用户想打开 `/` 菜单看有哪些命令，恰恰是在
+   * **还没发过消息**的时候 —— 也就是清单还空着的时候。
+   *
+   * 所以这一条把清单的获取**提前到会话建立时**（Claude 的 `supportedCommands()`
+   * 不需要跑任何一轮就会答，且**带说明**）。事件那条路留着，因为它是唯一能反映
+   * "引擎中途换了清单"（装了插件、动态发现技能）的来源。
+   */
+  "provider.commands": (input: ProviderCommandsInput) => Promise<ProviderCommandsResult>;
   // Settings
   "setting.get": (input: GetSettingInput) => Promise<{ value: string | null }>;
   "setting.set": (input: SetSettingInput) => Promise<void>;
@@ -930,6 +945,10 @@ export interface RpcMap {
   /** 用系统默认程序打开库里的文件 —— 主要用途是看 md 的渲染效果(「打开 md 预览」)。
    *  同样只收条目 id,路径在 main 里拼。 */
   "library.openFile": (input: LibraryOpenFileInput) => Promise<{ ok: boolean; error?: string }>;
+  /** **条目 → 磁盘绝对路径** —— 给中间栏那个 `FileEditor` 用的（它按路径读写）。
+   *  见 `LibraryEntryPathSchema` 头注：这不构成"渲染端能读任意文件"，路径是主进程
+   *  按库里的记录算的，而且还要过 `pathGuard` 那道围栏。 */
+  "library.entryPath": (input: LibraryEntryPathInput) => Promise<LibraryEntryPathResult>;
   /**
    * 读一篇文献的 Markdown 正文,**在应用内预览**(不再跳外部编辑器)。
    *
@@ -1178,6 +1197,7 @@ export const IPC = {
   SESSION_TRUNCATE_AND_INSERT_MESSAGES: "session:truncateAndInsertMessages",
   SESSION_UPDATE_SETTINGS: "session:updateSettings",
   PROVIDER_LIST: "provider:list",
+  PROVIDER_COMMANDS: "provider:commands",
   // Settings
   SETTING_GET: "setting:get",
   SETTING_SET: "setting:set",
@@ -1203,6 +1223,7 @@ export const IPC = {
   LIBRARY_CONVERT: "library:convert",
   LIBRARY_REVEAL_FILE: "library:revealFile",
   LIBRARY_OPEN_FILE: "library:openFile",
+  LIBRARY_ENTRY_PATH: "library:entryPath",
   LIBRARY_CONVERSION_STATS: "library:conversionStats",
   LIBRARY_CONVERSION_REPORT: "library:conversionReport",
   // 统一数据根

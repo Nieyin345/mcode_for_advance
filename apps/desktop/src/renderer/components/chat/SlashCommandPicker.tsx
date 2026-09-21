@@ -43,11 +43,11 @@ export interface SlashCommandPickerProps {
   query: string;
   /** Cached skill list (from the store; loaded per active project). */
   skills: SkillInfo[];
-  /** 引擎（Claude Code CLI）自己报的命令清单。`undefined` = 还没收到过 init
-   *  —— 那时该说「还没拉到」而不是「这个引擎没有命令」。 */
+  /** 引擎（Claude Code CLI）自己报的命令清单。`undefined` = 还没取到。 */
   engineCommands?: EngineCommand[];
-  /** 收到过引擎的命令清单没有（决定空列表时显示哪句话）。 */
-  engineCommandsReady: boolean;
+  /** 引擎**明确说了**它不提供命令清单（Pi / Codex）。与"还没取到"是两件事，
+   *  界面上要说不同的话 —— 前者是"这家没有"，后者是"等一会儿"。 */
+  engineUnsupported: boolean;
   anchorRect: DOMRect | null;
   /** True while a turn is running - disables the `compact` command. */
   busy: boolean;
@@ -63,7 +63,7 @@ export function SlashCommandPicker({
   query,
   skills,
   engineCommands,
-  engineCommandsReady,
+  engineUnsupported,
   anchorRect,
   busy,
   onPickSkill,
@@ -251,9 +251,11 @@ export function SlashCommandPicker({
                 : t("chat.slash.noSkillMatch")
               : activeTab === "command"
                 ? t("chat.slash.noCommandMatch")
-                : !engineCommandsReady
-                  ? t("chat.slash.engineNotReady")
-                  : t("chat.slash.noEngineMatch")}
+                : engineUnsupported
+                  ? t("chat.slash.engineUnsupported")
+                  : engineCmds.length === 0 && !engineCommands
+                    ? t("chat.slash.engineNotReady")
+                    : t("chat.slash.noEngineMatch")}
           </div>
         ) : (
           commands.map((entry, idx) => {

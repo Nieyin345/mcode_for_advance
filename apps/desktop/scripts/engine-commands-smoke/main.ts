@@ -233,6 +233,30 @@ async function main(): Promise<void> {
     check("未知 subtype 不发事件、不抛错", events.length === 0, events.map((e) => e.type));
   }
 
+  /* ── 8. 另两家引擎老实说"没有"（源级；拉它们要牵进一堆无关的构建资产） ── */
+
+  {
+    // Pi / Codex 的 `listCommands` 是**一行 `return { supported: false }`** —— 真拉它们
+    // 进来验证会把插件管理与搜索脚本的 `.py?raw` / `.md?raw` 资产一起牵进 esbuild（那要
+    // 另配一堆 loader，与本题无关）。所以读源码钉住那句承诺。
+    //
+    // 这不算弱化：真正要防的是**"这两家哪天改口说自己支持"** —— 那正是这里能红的点。
+    const { readFileSync } = await import("node:fs");
+    const cases: Array<[string, string]> = [
+      ["codex", "src/main/providers/codex-sdk/CodexAgentSdkProvider.ts"],
+      ["pi", "src/main/providers/pi-sdk/PiAgentSdkProvider.ts"],
+    ];
+    for (const [label, rel] of cases) {
+      const src = readFileSync(rel, "utf-8");
+      const m = /async listCommands\(\)[\s\S]{0,120}?\{\s*return\s*\{\s*supported:\s*false,\s*commands:\s*\[\]\s*\};/.exec(src);
+      check(
+        `${label} 的 listCommands 老实答 { supported: false, commands: [] }`,
+        m !== null,
+        m === null ? "没找到那句 return —— 改了实现就同步改这里" : undefined,
+      );
+    }
+  }
+
   console.log(`\nengine-commands-smoke: ${checks} 项断言, ${failures} 项失败`);
   process.exit(failures === 0 ? 0 : 1);
 }

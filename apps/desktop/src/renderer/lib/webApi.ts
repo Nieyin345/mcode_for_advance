@@ -419,6 +419,10 @@ const session: Api["session"] = {
 
 const provider: Api["provider"] = {
   list: () => rpc("provider:list"),
+  // 引擎命令清单。手机端走同一条 RPC —— 命令清单属于"这个引擎能干什么"，
+  // 与在不在电脑前无关（Claude 的那一份是本机 CLI 报的，所以手机上看到的是**电脑上**
+  // 的清单；这台电脑没登录/没装，它就会抛，调用方按 memory 里那条规矩包 try/catch）。
+  commands: (input) => rpc("provider:commands", input),
 };
 
 const customModel: Api["customModel"] = {

@@ -48,6 +48,7 @@ import type {
   TurnHandle,
   ProviderCapabilities,
   ApprovalRequest,
+  EngineCommandEntry,
 } from "@contracts/provider";
 import type { ServerRequestFrame } from "./CodexAppServerClient.js";
 import { CodexAppServerClient } from "./CodexAppServerClient.js";
@@ -613,6 +614,22 @@ export class CodexAgentSdkProvider implements AgentProvider {
       },
       isRunning: () => !finished && !ac.signal.aborted,
     };
+  }
+
+  /**
+   * **Codex 没有斜杠命令清单这回事**（2026-09-21）。
+   *
+   * 把 `codex.exe` 里的方法名整个捞出来核对过：app-server 协议里有
+   * `thread/start`、`turn/start`、`skills/extraRoots/set`、`model/list`……
+   * 唯独**没有任何"列出命令"的方法**。Codex 的斜杠命令是它自己 TUI 里的东西，
+   * 不经过这条协议。
+   *
+   * 所以老实答 `supported: false` —— 不是"这次没取到"，是"这家根本没有"。
+   * 返回空数组会让界面说不清是哪种情况（见 `@contracts/ipc` 的
+   * `ProviderCommandsResult`）。
+   */
+  async listCommands(): Promise<{ supported: boolean; commands: EngineCommandEntry[] }> {
+    return { supported: false, commands: [] };
   }
 
   /** Version probe for the settings UI. */

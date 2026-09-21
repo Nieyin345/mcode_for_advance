@@ -1001,21 +1001,28 @@ export interface SessionState {
    *  so consumers always see "am I running?" relative to the active thread. */
   runningBySession: Record<string, boolean>;
   /**
-   * 引擎自己报上来的斜杠命令清单，按会话存（2026-09-21）。
+   * 引擎自己报上来的斜杠命令清单，**按引擎存**（2026-09-21）。
    *
-   * 来源是 Claude Code 每轮 `system/init` 里的 `slash_commands` —— 实测 57 条，
-   * 含 `/usage` `/context` `/model` `/mcp` 这些。从前 Mcode 只列得出自己硬编码的
-   * 四条，用户「用不了 claude code 内置的命令」。
+   * ## 为什么键是引擎而不是会话
    *
-   * **为空的含义有两种，消费端要分清**：`undefined` = 这个会话还没收到过 init
-   * （界面别急着说"没有命令"），空数组 = 引擎明确说了没有。所以类型上用
-   * `undefined` 而不是空数组当"未知"。
+   * 清单是**引擎的属性**，不是某一次对话的属性 —— Claude 那 57 条不随你会话的标题、
+   * 项目、消息多少而变（项目技能会影响它，所以取的时候带 `cwd`，但那是"同一个引擎在
+   * 不同目录下的答案"，仍然属于引擎这一层）。按会话存会让同一批命令在每个会话里各
+   * 复制一份，而菜单读的永远是"当前引擎的那一份"。
    *
-   * 不落盘：引擎每次 init 都会重报，持久化一份只会在装了插件之后过期。
+   * ## 两个来源，一个字段
+   *
+   *  - **主动取**（`reloadEngineCommands`，会话就绪时）—— 这条路解决了"还没发消息时
+   *    菜单是空的"。
+   *  - **事件推**（`system/init` 的 `slash_commands` / `commands_changed`）—— 这条路
+   *    是唯一能反映"引擎中途换了清单"（装了插件、动态发现技能）的。
+   *
+   * `supported: false` = 这个引擎**根本没有**命令清单（Pi / Codex），与"还没取到"
+   * （字段不存在）要分开 —— 界面上前者说"这个引擎不提供"，后者说"还没拉到"。
    */
-  commandsBySession: Record<string, { commands: EngineCommandInfo[]; terminalCommands: string[] }>;
-  /** `e.type === "commands.available"` 的落点。整体替换，不做合并 —— 引擎是权威。 */
-  setSessionCommands: (sessionId: string, cmds: { commands: EngineCommandInfo[]; terminalCommands: string[] }) => void;
+  engineCommandsByProvider: Record<string, { supported: boolean; commands: EngineCommandInfo[] }>;
+  /** 主动去问引擎要清单（见上面字段的说明）。失败安静 —— 不弹错。 */
+  reloadEngineCommands: (providerId?: string | null) => Promise<void>;
   /** Per-session wall-clock ms stamped at send time - the time anchor for the
    *  "开始 · 用时" stat row BEFORE the first assistant content block arrives.
    *  Without this, the stat row only appears when the first delta/tool/plan
@@ -5708,9 +5715,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     loadingOlderBySession: {},
     historyLoadedBySession: {},
   runningBySession: {},
-  commandsBySession: {},
-  setSessionCommands: (sessionId, cmds) =>
-    set((s) => ({ commandsBySession: { ...s.commandsBySession, [sessionId]: cmds } })),
+  engineCommandsByProvider: {},
   runningTurnStartedAt: {},
   waitingBranchesBySession: {},
   runningTurnModelBySession: {},
@@ -8680,14 +8685,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return;
     }
     if (e.type === "commands.available") {
-      // 引擎报来的斜杠命令清单（见 `commandsBySession`）。整体替换 —— 装了插件
-      // 之后清单会变，合并只会留下已经消失的命令。
-      ctx.set((s) => ({
-        commandsBySession: {
-          ...s.commandsBySession,
-          [sid]: { commands: e.commands, terminalCommands: e.terminalCommands },
-        },
-      }));
+      // 引擎报来的斜杠命令清单（见 `engineCommandsByProvider`）。整体替换 —— 装了
+      // 插件之后清单会变，合并只会留下已经消失的命令。
+      //
+      // ⚠️ **要落到"这个会话的引擎"那一格**，不是当前选中的引擎：事件是某个会话发出来
+      // 的，而用户可能已经切到别的引擎的会话上了。取不到就跳过（会话刚建、还没进
+      // streamSessions）—— 那种情况下主动取那条路（`reloadEngineCommands`）会补上。
+      const evProviderId = get().streamSessions.find((s) => s.id === sid)?.providerId;
+      if (evProviderId) {
+        set((s) => ({
+          engineCommandsByProvider: {
+            ...s.engineCommandsByProvider,
+            [evProviderId]: {
+              supported: true,
+              commands: e.commands,
+            },
+          },
+        }));
+      }
       return;
     }
 
@@ -10363,6 +10378,50 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       set({ skills: skills.length ? skills : EMPTY_SKILLS });
     } catch (err) {
       console.error("reloadSkills failed:", err);
+    }
+  },
+
+  /**
+   * 主动去问引擎要它的命令清单（2026-09-21）。
+   *
+   * ## 为什么要"主动问"，而不是等事件
+   *
+   * 清单的权威来源是引擎在每轮 `system/init` 里推的 `slash_commands`
+   * （见 `commands.available` 的归约）。但那条路有个致命的**时机**问题：init 只在
+   * **开跑一轮**时才来。而用户打开 `/` 菜单看有哪些命令，恰恰是在**还没发消息**的
+   * 时候 —— 也就是清单还空着的时候。第一版就是只挂事件，界面上那一栏永远 0 条。
+   *
+   * 所以这里在**会话就绪时**就把清单取回来（Claude 的 `supportedCommands()` 不需要
+   * 跑任何一轮就会答，而且**带说明**）。事件那条路留着，因为它是唯一能反映"引擎中途
+   * 换了清单"（装了插件、动态发现技能）的来源。
+   *
+   * ## 失败是**安静**的
+   *
+   * 取不到（引擎没装、CLI 没起来）只是不显示命令，不该在界面上弹错 —— 用户没问任何
+   * 关于命令的事，也没有任何操作失败。留 `console.debug` 给排查用。
+   */
+  reloadEngineCommands: async (providerId?: string | null) => {
+    if (!providerId) return;
+    const pid = get().activeProjectId;
+    const project = pid ? get().projects.find((p) => p.id === pid) : undefined;
+    try {
+      const res = await api.provider.commands({
+        providerId,
+        ...(project?.path ? { cwd: project.path } : {}),
+      });
+      // `supported: false` 也要落进 store —— 界面据此说"这个引擎不提供命令"
+      // （Pi / Codex 就是这一档），而不是显示"还没取到"。见 `ProviderCommandsResult`。
+      const commands = res.commands.map((c) => ({
+        name: c.name,
+        description: c.description,
+        argumentHint: c.argumentHint,
+        aliases: c.aliases,
+      }));
+      set((s) => ({
+        engineCommandsByProvider: { ...s.engineCommandsByProvider, [providerId]: { supported: res.supported, commands } },
+      }));
+    } catch (err) {
+      console.debug("reloadEngineCommands failed:", err);
     }
   },
 

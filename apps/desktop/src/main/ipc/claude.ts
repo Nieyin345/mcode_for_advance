@@ -22,6 +22,7 @@ import {
   THEME_STYLE_SETTING_KEY,
   workflowIdFromInput,
   ClaudeSubagentsSaveSchema,
+  ProviderCommandsSchema,
 } from "@contracts/ipc";
 import { saveSubagents } from "@main/claude/subagentStore.js";
 import type {
@@ -457,6 +458,21 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       capabilities: p.capabilities,
     }));
     return { providers };
+  });
+
+  // 引擎自己的斜杠命令清单（见 rpcMap 里 `provider.commands` 的说明）。存在的理由是
+  // **时机**：事件那条路（system/init）只在开跑一轮时才发，而用户打开 `/` 菜单看命令
+  // 恰恰是在还没发消息的时候。
+  //
+  // 取不到就**抛**（引擎没装、CLI 起不来、超时）—— 让渲染端能区分"引擎坏了"和
+  // "引擎没有命令"（后者返回 supported:false + 空数组，见 `ProviderCommandsResult`）。
+  ipcMain.handle(IPC.PROVIDER_COMMANDS, async (_evt, raw) => {
+    const input = ProviderCommandsSchema.parse(raw);
+    const provider = providerRegistry.get(input.providerId);
+    if (!provider) {
+      throw new Error(`未注册的引擎：${input.providerId}`);
+    }
+    return provider.listCommands({ cwd: input.cwd });
   });
 
   // ── P2: message persistence ──

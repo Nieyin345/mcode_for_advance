@@ -2335,27 +2335,32 @@ function ChatPaneForSession({
    * 引擎自己报的命令清单（2026-09-21）。
    *
    * **按引擎取，不是全局一份** —— 用户说得对：「选择不同的引擎，命令也会不一样」。
-   * 三家的情况差得很远（见 `commandsBySession` 与事件里的说明）：
+   * 三家的情况差得很远：
    *  - claude-sdk 报 57 条，且**能在我们这条路上跑**（CLI 认出前导 `/` 就地执行）。
-   *  - pi 的 `get_commands` 只列扩展/模板/技能，它那些 TUI 内置命令（`/settings`、
-   *    `/quit`）在非交互会话里根本没注册 —— 显示出来点了没用，所以那边就不报。
-   *  - codex 的 app-server 协议里压根没有列命令的方法。
-   *
-   * 所以这里不做"按引擎过滤一个总表"，而是**谁报了就用谁的**：没报的引擎这一栏就是
-   * 空的，配一句说明，而不是拿别人的命令去冒充。
+   *  - pi / codex 报 `supported: false`（Pi 的 TUI 内置命令在非交互会话里没注册；
+   *    Codex 的协议里压根没有列命令的方法）。界面对这两家说"这个引擎不提供"，
+   *    而不是拿别人的命令冒充。
    */
-  const engineCommandsRaw = useSessionStore((s) =>
-    sessionId ? s.commandsBySession[sessionId] : undefined,
+  const engineCommandsEntry = useSessionStore((s) =>
+    pickerProviderId ? s.engineCommandsByProvider[pickerProviderId] : undefined,
   );
+  const reloadEngineCommands = useSessionStore((s) => s.reloadEngineCommands);
+  // **主动去取一次**。清单不在 `system/init` 那条路上等 —— 那条路只在开跑一轮时才发，
+  // 而用户打开 `/` 菜单看命令恰恰是在还没发消息的时候（第一版就栽在这里，界面永远 0 条）。
+  useEffect(() => {
+    if (!pickerProviderId) return;
+    void reloadEngineCommands(pickerProviderId);
+  }, [pickerProviderId, reloadEngineCommands]);
+
   const engineCommands = useMemo<EngineCommand[] | undefined>(
     () =>
-      engineCommandsRaw?.commands.map((c) => ({
+      engineCommandsEntry?.commands.map((c) => ({
         engine: true as const,
         name: c.name,
         description: c.description,
         argumentHint: c.argumentHint,
       })),
-    [engineCommandsRaw],
+    [engineCommandsEntry],
   );
   const drainChatFileQueue = useSessionStore((s) => s.drainChatFileQueue);
   useEffect(() => {
@@ -4478,7 +4483,9 @@ function ChatPaneForSession({
             query={pickerQuery}
             skills={skills}
             engineCommands={engineCommands}
-            engineCommandsReady={engineCommandsRaw !== undefined}
+            /* 「这个引擎不提供命令」还是「还没取到」—— 两种要说不同的话。
+               `supported: false`（Pi / Codex）是前者；字段整个不存在才是后者。 */
+            engineUnsupported={engineCommandsEntry?.supported === false}
             anchorRect={pickerAnchor}
             busy={sessionBusy}
             onPickSkill={handleSlashPick}

@@ -173,3 +173,41 @@ export type DeleteCodexProviderInput = z.infer<typeof DeleteCodexProviderSchema>
 export const GetCodexApiKeySchema = z.object({ id: z.string().min(1) });
 export type GetCodexApiKeyInput = z.infer<typeof GetCodexApiKeySchema>;
 
+/* ── 引擎自己的斜杠命令清单（见 rpcMap 里 `provider.commands` 的说明）── */
+
+/**
+ * 问哪个引擎要清单。`providerId` 是注册表里的 id（`"claude-sdk"` / `"codex-sdk"` /
+ * `"pi-sdk"`）。
+ *
+ * `cwd` 是**会话跑在哪个目录** —— 清单里的技能是按目录发现的（项目技能排全局之前），
+ * 所以同一个引擎在不同项目下答案不同。不给就走引擎自己的默认根。
+ */
+export const ProviderCommandsSchema = z.object({
+  providerId: z.string().min(1),
+  cwd: z.string().optional(),
+});
+export type ProviderCommandsInput = z.infer<typeof ProviderCommandsSchema>;
+
+/** 一条引擎命令。形状与 `@contracts/runtime` 的 `EngineCommandInfo` 一致 ——
+ *  **刻意共用同一种形状**：事件那条路（engine 中途换清单）与这条请求/应答的路
+ *  喂的是同一个 store 字段，两种形状会让消费端分叉。 */
+export interface ProviderCommandEntry {
+  name: string;
+  description: string;
+  argumentHint: string;
+  aliases: string[];
+}
+
+/**
+ * 清单结果。
+ *
+ * ⚠️ **`supported: false` 与 `commands: []` 是两件事**：前者是"这个引擎根本没有
+ * 命令清单这回事"（Pi 的 TUI 命令不可用、Codex 协议里没有），后者是"有，但这次
+ * 一条都没取到"。界面上前者该说"这个引擎不提供"，后者该说"还没取到" —— 混成一种
+ * 会让用户以为引擎坏了。
+ */
+export interface ProviderCommandsResult {
+  supported: boolean;
+  commands: ProviderCommandEntry[];
+}
+

@@ -32,7 +32,7 @@
  * stay out of the main-process startup path — same pattern as
  * ClaudeAgentSdkProvider and TerminalManager.
  */
-import type { AgentProvider, StartTurnRequest, ProviderContext, TurnHandle, ProviderCapabilities } from "@contracts/provider";
+import type { AgentProvider, StartTurnRequest, ProviderContext, TurnHandle, ProviderCapabilities, EngineCommandEntry } from "@contracts/provider";
 import type { TurnDoneReason } from "@contracts/runtime";
 import type { PiProviderPublic } from "@contracts/piModel";
 import {
@@ -492,6 +492,25 @@ export class PiAgentSdkProvider implements AgentProvider {
       },
       isRunning: () => !finished && !ac.signal.aborted,
     };
+  }
+
+  /**
+   * **Pi 这边没有"额外的"引擎命令**（2026-09-21）。
+   *
+   * 实测：真起一个 Pi 会话、把它认得的命令全列出来，只有两条，**都是技能**
+   * （`skill:mcode-smoke` / `skill:microsoft-foundry`）—— 而技能在 `/` 菜单里本来
+   * 就有自己的一栏（Skill），由 `skills.list` 供给。列在这里就是同一批东西出现两次。
+   *
+   * Pi 自己那 23 条内置（`/settings` `/model` `/export` `/quit` …）**只有 TUI 会注册**
+   * —— `BUILTIN_SLASH_COMMANDS` 在整个包里只有一个引用者
+   * （`modes/interactive/interactive-mode.js`）。非交互会话里调它们没有落点，摆进菜单
+   * 就是"点了没反应"。Mcode 的 Pi 扩展也没注册过任何命令（核对过 `mcodeExtension.ts`）。
+   *
+   * 所以答 `supported: false`：不是取不到，是这家在我们的用法下**确实没有**。
+   * 界面据此说"这个引擎不提供"，而不是显示一个永远空的栏。
+   */
+  async listCommands(): Promise<{ supported: boolean; commands: EngineCommandEntry[] }> {
+    return { supported: false, commands: [] };
   }
 
   async healthCheck(): Promise<{ ok: boolean; version?: string; error?: string }> {

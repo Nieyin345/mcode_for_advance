@@ -245,6 +245,7 @@ export const en = {
   "chat.slash.engine": "CLI",
   "chat.slash.noEngineMatch": "Claude Code has no such command",
   "chat.slash.engineNotReady": "Claude Code's command list hasn't arrived yet — send a message to fetch it",
+  "chat.slash.engineUnsupported": "This engine doesn't offer slash commands",
   "chat.kbd.navigate": "navigate",
   "chat.slash.switchTab": "switch tabs",
   "chat.slash.insert": "insert",

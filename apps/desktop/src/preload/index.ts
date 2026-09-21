@@ -149,6 +149,9 @@ const api = {
   /** Provider list — returns all registered backends with capabilities. */
   provider: {
     list: (() => ipcRenderer.invoke(IPC.PROVIDER_LIST)) as RpcMap["provider.list"],
+    /** 引擎自己的斜杠命令清单（见 rpcMap 里 `provider.commands` 的说明）。 */
+    commands: ((input) =>
+      ipcRenderer.invoke(IPC.PROVIDER_COMMANDS, input)) as RpcMap["provider.commands"],
   },
 
   /** Custom-model configs (user-defined Anthropic-compatible endpoints).
@@ -264,6 +267,8 @@ const api = {
       ipcRenderer.invoke(IPC.LIBRARY_REVEAL_FILE, input)) as RpcMap["library.revealFile"],
     openFile: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_OPEN_FILE, input)) as RpcMap["library.openFile"],
+    entryPath: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_ENTRY_PATH, input)) as RpcMap["library.entryPath"],
     readMarkdown: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_READ_MARKDOWN, input)) as RpcMap["library.readMarkdown"],
     readPdf: ((input) =>

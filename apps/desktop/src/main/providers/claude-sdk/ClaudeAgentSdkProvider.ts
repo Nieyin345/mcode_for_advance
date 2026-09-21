@@ -16,6 +16,7 @@ import type {
   TurnHandle,
   ProviderCapabilities,
   UserInputAnswers,
+  EngineCommandEntry,
 } from "@contracts/provider";
 import type { AskUserQuestionItem, AskUserQuestionOption, PermissionMode } from "@contracts/runtime";
 import { SdkMessageAdapter, parseQuestions } from "./SdkMessageAdapter.js";
@@ -1783,6 +1784,52 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       // 时返回 false,让调用方**兜回普通的发送**,而不是让这句话石沉大海。
       inject: (text) => (!finished && !ac.signal.aborted ? channel.push(text) : false),
     };
+  }
+
+  /**
+   * 引擎自己的斜杠命令清单（见 `@contracts/provider` 里那个方法的说明）。
+   *
+   * 走 SDK 的 `supportedCommands()`。**它不需要跑任何一轮就会答** —— 这是这个方法
+   * 存在的全部理由：`system/init` 那条事件路只在开跑一轮时才发，而用户想打开 `/`
+   * 菜单看命令，恰恰是在还没发消息的时候（第一版挂事件上，界面永远 0 条）。
+   *
+   * `cwd` 要传：技能是**按目录**发现的（项目技能排全局之前），所以同一个引擎在不同
+   * 项目下清单不同。不传就落 CLI 自己的默认根。
+   *
+   * launch 参数按最小集给 —— 这个方法**只为了问清单**，不该顺带把整个会话的
+   * options（MCP、插件、预算、批准通道）都拉起来。给的这几项是 CLI 起得来所必需的。
+   */
+  async listCommands(opts: { cwd?: string }): Promise<{ supported: boolean; commands: EngineCommandEntry[] }> {
+    const binaryPath = resolveSdkBinaryPath();
+    const q = (await loadQuery())({
+      // 空 prompt + maxTurns 0：不跑任何一轮，只把控制通道建起来。
+      prompt: "",
+      options: {
+        maxTurns: 0,
+        includePartialMessages: false,
+        ...(opts.cwd ? { cwd: opts.cwd } : {}),
+        ...(binaryPath ? { pathToClaudeCodeExecutable: binaryPath } : {}),
+      },
+    });
+    try {
+      const cmds = await q.supportedCommands();
+      return {
+        supported: true,
+        commands: cmds.map((c) => ({
+          name: c.name,
+          description: c.description ?? "",
+          argumentHint: c.argumentHint ?? "",
+          aliases: Array.isArray(c.aliases) ? c.aliases : [],
+        })),
+      };
+    } finally {
+      // 这个 query 只为了问一句，别让它挂着 —— 不关的话每问一次就多一个 CLI 进程。
+      try {
+        await q.return(undefined);
+      } catch {
+        /* 关闭失败无所谓：进程退出时会带走 */
+      }
+    }
   }
 
   async healthCheck(): Promise<{ ok: boolean; version?: string; error?: string }> {

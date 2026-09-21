@@ -64,6 +64,7 @@ import {
   GetSettingSchema,
   SetSettingSchema,
   GetManySettingsSchema,
+  ProviderCommandsSchema,
 } from "@contracts/ipc";
 import type {
   SaveMessagesInput,
@@ -174,6 +175,18 @@ const HANDLERS: Record<string, RpcHandler> = {
       capabilities: p.capabilities,
     })),
   }),
+
+  // 引擎自己的斜杠命令清单（见 `@contracts/ipc` 的 `ProviderCommandsResult`）。
+  //
+  // 手机端能读，而且**读到的是电脑上那份清单** —— Claude 的命令是电脑上那个 CLI 报的。
+  // 手机上没有 CLI，所以这条 RPC 问的始终是主机。取不到（电脑上没登录 / 没装）会抛，
+  // 手机端按那条老规矩把调用包在 try/catch 里（抛出去会让 React 19 把整棵树卸掉）。
+  "provider:commands": (raw) => {
+    const input = ProviderCommandsSchema.parse(raw);
+    const provider = providerRegistry.get(input.providerId);
+    if (!provider) throw new Error(`未注册的引擎：${input.providerId}`);
+    return provider.listCommands({ cwd: input.cwd });
+  },
 
   // ── Composer config data (read-only, mirrors the desktop IPC handlers) ──
   "customModel:list": () => ({ models: CustomModelStore.listPublic() }),

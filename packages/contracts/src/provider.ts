@@ -412,4 +412,34 @@ export interface AgentProvider {
 
   /** Optional: quick health / version probe for settings UI. */
   healthCheck?(): Promise<{ ok: boolean; version?: string; error?: string }>;
+
+  /**
+   * 引擎自己提供的**斜杠命令清单**（2026-09-21）。
+   *
+   * 与 `ProviderCapabilities` 里那些"报了就实现"的可选能力不同，这一个**必须实现** ——
+   * 不是每家都拿得出清单，但**每家都得回答"拿不拿得出"**。所以返回值的第一个字段是
+   * `supported`：Pi 与 Codex 老实说 `false`，而不是抛错、也不是给个空数组让调用方
+   * 猜"是没有还是取不到"（见 `@contracts/ipc` 的 `ProviderCommandsResult`）。
+   *
+   * ⚠️ **不要挂到 `system/init` 事件上等它自己来。** 那条路只在**开跑一轮**时才发，
+   * 而用户想打开 `/` 菜单，恰恰是在还没发消息的时候 —— 第一版就是这么写的，界面永远
+   * 显示 0 条。这个方法存在的全部理由就是**把清单提前到会话建立时**。
+   *
+   * Claude 的实现走 SDK 的 `supportedCommands()`，它不需要跑任何一轮就会答，而且
+   * **带说明**（事件那条路 `system/init` 只有名字）。
+   *
+   * 失败要**抛**还是返回 `supported: true, commands: []`？——取不到（CLI 没起来、
+   * 超时）就**抛**，让调用方决定是重试还是显式报错；"问了但这次是空的"才是空数组。
+   * 安静地返回空数组会让"引擎没装好"看起来像"引擎没有命令"。
+   */
+  listCommands(opts: { cwd?: string }): Promise<{ supported: boolean; commands: EngineCommandEntry[] }>;
+}
+
+/** 一条引擎命令 —— 与 `@contracts/ipc` 的 `ProviderCommandEntry` 同形
+ *  （见那里的说明：两条路喂同一个 store 字段，形状必须一致）。 */
+export interface EngineCommandEntry {
+  name: string;
+  description: string;
+  argumentHint: string;
+  aliases: string[];
 }
