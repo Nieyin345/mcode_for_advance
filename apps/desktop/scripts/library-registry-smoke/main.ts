@@ -88,11 +88,20 @@ console.log("\n纯校验 parseLibraryTypesJson");
     { id: "kind-a", name: "x", purpose: "material" },
     { id: "kind-a", name: "y", purpose: "material" },
   ]);
-  bad("缺内置类型(删 paper)", BUILTIN_LIBRARY_TYPES.filter((t) => t.id !== "paper"));
-  bad(
-    "缺全部内置类型",
-    [{ id: "custom-only", name: "自建", purpose: "material" }],
+  // ⚠️ **这两条 2026-09-21 反过来了。** 原来断的是"缺内置类型 → 拒"，
+  // 而那道闸被去掉了（用户：「这里显示内置类型不能删除，没有内置类型呀，
+  // 全部都是自定义的」，要求"都能删"、"全删光也行"）。
+  // 现在它们该**通过** —— 断言跟着行为一起改，不是删掉。
+  const noPaper = parseLibraryTypesJson(
+    JSON.parse(JSON.stringify(BUILTIN_LIBRARY_TYPES.filter((t) => t.id !== "paper"))),
   );
+  check("★ 删掉内置的 paper 现在能过", noPaper.ok, noPaper);
+  const noneBuiltin = parseLibraryTypesJson(
+    JSON.parse(JSON.stringify([{ id: "custom-only", name: "自建", purpose: "material" }])),
+  );
+  check("★ 一个内置都不留也能过", noneBuiltin.ok, noneBuiltin);
+  const empty = parseLibraryTypesJson([]);
+  check("★ 空表也能过（全删光）", empty.ok, empty);
 }
 
 console.log("\n运行时 kindRegistry(全新空库)");
@@ -137,13 +146,14 @@ await initDb();
 }
 
 {
-  // 校验失败:拒绝落库,缓存保持上一次成功的那份 —— 半保存状态不存在。
-  const broken = BUILTIN_LIBRARY_TYPES.filter((t) => t.id !== "note");
-  const res = saveLibraryTypes(JSON.parse(JSON.stringify(broken)));
-  check("删内置被拒", !res.ok, res);
-  check("错误话说的是 note", !res.ok && res.error.includes("note"), res);
-  check("缓存还是上次那份(9 类)", loadLibraryTypes().length === 9);
-  check("note 还在", isRegisteredKind("note") === true);
+  // ⚠️ **这一段 2026-09-21 反过来了。** 原来断的是"删 note → 被拒、缓存不动"。
+  // 那道闸去掉之后，删 note 是**正常操作**，所以改成钉"删成功之后的状态"。
+  const withoutNote = BUILTIN_LIBRARY_TYPES.filter((t) => t.id !== "note")
+    .map((t) => ({ ...t }));
+  const res = saveLibraryTypes(JSON.parse(JSON.stringify(withoutNote)));
+  check("★ 删内置的 note 现在能落库", res.ok, res);
+  check("★ note 真的没了", isRegisteredKind("note") === false);
+  check("★ 其余 7 类还在", loadLibraryTypes().length === 7, loadLibraryTypes().length);
 }
 
 {

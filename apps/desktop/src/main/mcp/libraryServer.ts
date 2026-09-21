@@ -140,9 +140,20 @@ function collectionLines(kind: LibraryKind): string[] {
  * 跟着注册表走,新增的类型立刻能被 AI 选中,不用改这里一行。
  */
 function kindEnum() {
-  // 内置类型不可删(parseLibraryTypesJson 拦着),注册表不可能为空,直接断言成元组。
-  const ids = loadLibraryTypes().map((t) => t.id) as [string, ...string[]];
-  return z.enum(ids);
+  // ⚠️ **注册表现在可能为空**（2026-09-21）。原来这里断言"至少有一个"，理由是
+  // `parseLibraryTypesJson` 拦着不让删内置类型。那道闸去掉了（用户要求"都能删"、
+  // "全删光也行"），所以这个假设不成立了。
+  //
+  // `z.enum([])` 会**直接抛**（zod 要求至少一个候选值），而且它是在**拼工具表那一刻**
+  // 就算的 —— 抛在这里等于整个 MCP server 起不来。所以空表时退回一个**永不匹配**的
+  // 枚举：工具还在、参数校验照常，只是没有合法的 kind 可传（那正是"一个类型都没有"
+  // 的正确语义）。
+  const ids = loadLibraryTypes().map((t) => t.id);
+  if (ids.length === 0) {
+    // 一个不可能出现的哨兵值 —— 用户建不出以它开头的 id（id 规则是字母开头）。
+    return z.enum(["__no_library_type__"]);
+  }
+  return z.enum(ids as [string, ...string[]]);
 }
 
 /** 类型清单的一句话:「论文(paper) / 教材(textbook) / …」—— 工具描述与 server instructions 共用。 */

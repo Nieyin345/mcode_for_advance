@@ -2333,24 +2333,26 @@ export const CollectionRepo = {
     const db = getDb();
     const id = makeId("lc");
     /**
-     * **插到最前面**，不是追加到末尾（2026-09-21）。
+     * 追加到末尾：取同级当前最大 `sort_order` + 1（**同库内**同级）。
      *
-     * 用户的原话：「新建的应该在**最上面**」。原来取 `MAX(sort_order) + 1`，于是新建的
-     * 分类永远排在最后一个 —— 而它恰恰是用户此刻最想找的那个，得往下一路扫到底。
+     * ⚠️ **2026-09-21 曾改成 `MIN - 1`（插到最前），当天就回退了。**
+     * 当时我把用户的「新建的应该在 collection 最上面」理解成"插到最前"，但那个
+     * `MIN - 1` 会让**已有分类的相对顺序也倒过来**（后建的排前面）——
+     * `library-move-smoke` 的「落在新那一层的末尾」当场抓到：原来"一、二"，
+     * 变成了"二、一"。用户澄清他没说过要改这个。
      *
-     * 取 `MIN(sort_order) - 1` 而不是"把现有的全部 +1"：后者要写整张表（几十行 update），
-     * 前者一条 insert 就够了，排序语义一样（`list` 按 `sort_order ASC`）。
-     * 负号会随时间越走越小 —— 无所谓，它只是排序用的相对值（整数，够用几万年）。
+     * 教训：让"新建的排最前"若要做，得是"新的插到 0，旧的依次后移"，
+     * 而不是"取当前最小值减一"——后者颠覆了既有顺序。
      */
-    const orderStmt = db.prepare(
+    const maxStmt = db.prepare(
       parentId
-        ? "SELECT IFNULL(MIN(sort_order), 0) AS m FROM library_collections WHERE parent_id = ? AND kind = ?"
-        : "SELECT IFNULL(MIN(sort_order), 0) AS m FROM library_collections WHERE parent_id IS NULL AND kind = ?",
+        ? "SELECT IFNULL(MAX(sort_order), -1) AS m FROM library_collections WHERE parent_id = ? AND kind = ?"
+        : "SELECT IFNULL(MAX(sort_order), -1) AS m FROM library_collections WHERE parent_id IS NULL AND kind = ?",
     );
-    orderStmt.bind(parentId ? [v(parentId), v(kind)] : [v(kind)]);
-    orderStmt.step();
-    const nextOrder = Number((orderStmt.getAsObject() as { m: number }).m ?? 0) - 1;
-    orderStmt.free();
+    maxStmt.bind(parentId ? [v(parentId), v(kind)] : [v(kind)]);
+    maxStmt.step();
+    const nextOrder = Number((maxStmt.getAsObject() as { m: number }).m ?? -1) + 1;
+    maxStmt.free();
 
     db.run(
       "INSERT INTO library_collections (id, name, kind, prompt, parent_id, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",

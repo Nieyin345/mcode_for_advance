@@ -231,12 +231,18 @@ export function parseLibraryTypesJson(
       builtin: builtin === true,
     });
   }
-  // **内置类必须还在**:用户可以改它们的名字和说明,但删掉的话,老数据里指着
-  // `paper` 的那些行就变成了"注册表不认识的 kind" —— 界面、清单、过滤全线失语。
-  const missing = BUILTIN_LIBRARY_TYPES.filter((b) => !seen.has(b.id)).map((b) => b.id);
-  if (missing.length > 0) {
-    return { ok: false, error: `内置类型不能删除:${missing.join("、")}` };
-  }
+  // ⚠️ **这里原来有一道"内置类型必须还在"的闸，2026-09-21 去掉了。**
+  //
+  // 当时的理由是老数据里指着 `paper` 的行会变成"注册表不认识的 kind"。用户否掉了：
+  // 「这里显示**内置类型不能删除**，没有内置类型呀，**全部都是自定义的**」，
+  // 他要求「**都能删**」。
+  //
+  // **代价是真实的、也是他接受的**：删掉某个类型之后，原来属于它的条目会变成
+  // "注册表里没有的 kind" —— 左栏不再有 tab 显示它们（数据还在库里，只是没有入口）。
+  // 界面上那个删除确认框已经把这句话写出来了（见 `library.kind.deleteConfirm`）。
+  //
+  // ⚠️ 删空是允许的，所以**下游不能假设注册表非空** —— 见
+  // `libraryServer.ts` 的 `kindEnum()`（它原来靠这道闸才敢断言至少有一个）。
   return { ok: true, types: out };
 }
 
