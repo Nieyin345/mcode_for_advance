@@ -24,6 +24,7 @@ import { buildCustomEnv, MCODE_CONFIG_DIR, resolveActiveModel } from "./customEn
 import type { ClaudeContextWindowTag } from "./claudeTokenUsage.js";
 import { ASK_SYSTEM_PROMPT } from "@main/lib/askQuestion.js";
 import { CLAUDE_IDENTITY_PROMPT, CLAUDE_PLAN_MODE_NUDGE, fileArchitecturePrompt, joinPromptSections } from "@main/lib/systemPrompt.js";
+import { turnContextSections } from "@main/providers/contextPrompt.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { scriptsDir } from "@main/workflows/seed.js";
 import { log } from "@main/lib/logger.js";
@@ -34,6 +35,8 @@ import {
   getToolFilePath,
   normalizeToolFilePath,
 } from "@main/lib/fileSnapshot.js";
+// 「库只读」那条硬规则要用它判"落点在不在库里"(见 canUseTool)。
+import { isInsideLibrary } from "@main/library/paths.js";
 import { resolveSdkBinaryPath } from "./sdkBinaryPath.js";
 import { resolveGitBash } from "@main/lib/binaryResolve.js";
 import {
@@ -83,6 +86,10 @@ import {
   buildWorkflowMcpServer,
   WORKFLOW_MCP_SERVER,
 } from "@main/mcp/mcodeServer.js";
+import {
+  buildMemoryMcpServer,
+  MEMORY_MCP_SERVER,
+} from "@main/mcp/memoryServer.js";
 // 审批闸门(哪些工具不用问用户)只有一份 —— 它得与网页端那条通路共用,见该文件头。
 import { BROWSER_MCP_SERVER, shouldAutoApprove } from "@main/providers/toolGate.js";
 import { loadCreateMcpServer } from "@main/mcp/sdk.js";
@@ -628,17 +635,17 @@ function narrowByName<T extends { name: string }>(items: T[], names: string[] | 
  *   加载。插件技能与通用技能共用同一张矩阵 —— 被用户从 claude 收走的插件技能
  *   不进名单，引擎就看不到。
  */
-async function claudeSkillsOption(): Promise<Options["skills"]> {
+async function claudeSkillsOption(pluginNames?: readonly string[]): Promise<Options["skills"]> {
   const enabled = enabledSkillNames(defaultSkillsRoot(), "claude");
   if (enabled === null) return "all";
   const enginesMap = readEnginesMap(defaultSkillsRoot());
-  const pluginNames = new Set<string>();
-  for (const root of await getEnabledPluginSkillRoots()) {
+  const pluginSkillNames = new Set<string>();
+  for (const root of await getEnabledPluginSkillRoots(pluginNames)) {
     for (const name of skillNamesInRoot(root).keys()) {
-      if (engineEnabled(enginesMap, name, "claude")) pluginNames.add(name);
+      if (engineEnabled(enginesMap, name, "claude")) pluginSkillNames.add(name);
     }
   }
-  return [...enabled, ...[...pluginNames].map((n) => `:${n}`)];
+  return [...enabled, ...[...pluginSkillNames].map((n) => `:${n}`)];
 }
 
 /** Max provider-level retries for a TRANSPORT failure (stdio break, binary
@@ -833,7 +840,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       // can still self-discover/autoload skills), restricted → an allowlist of
       // the enabled skills + plugin contributions. Do NOT also add 'Skill' to
       // allowedTools. See sdk.d.ts Options.skills.
-      skills: req.skills && req.skills.length > 0 ? req.skills : await claudeSkillsOption(),
+      skills: req.skills && req.skills.length > 0 ? req.skills : await claudeSkillsOption(req.pluginNames),
       // SDK #359: On Windows there is a timing/buffering race in the stdio
       // control-stream transport that causes "Tool permission request failed:
       // AbortError: Tool permission stream closed before response received"
@@ -1122,6 +1129,25 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
             effectiveInput = { ...input, [pathKey]: norm.absPath };
             const mode = ctx.getPermissionMode?.();
             const bypass = mode === "bypassPermissions" || mode === "dontAsk";
+            // **文档库只读** —— 独立于项目边界的一条硬规则,`bypass` 也拦。
+            //
+            // 为什么不能只靠下面那条"越出项目就拒":那只是**恰好**成立 —— 库根默认在
+            // `<数据根>/library`,与用户的项目目录不重叠,于是"写只能在项目内"顺带
+            // 等于"库只读"。可一旦库被搬进项目目录(或项目设在数据根下),那条规则就
+            // **静默失效**,而没有任何东西会提醒。用户明确要求"库的内容不能动",所以
+            // 它得是显式的一条,不是巧合的副产品。
+            //
+            // 判据复用 `library/paths.ts` 的 `isInsideLibrary`(那里本来就负责
+            // "别让人写坏库路径",不另写一份)。
+            if (isInsideLibrary(norm.absPath)) {
+              ctx.log.info(`denied library-write ${toolName}: ${norm.absPath}`);
+              return {
+                behavior: "deny",
+                message:
+                  `拒绝:目标路径在**文档库**内(${norm.absPath})。文档库是只读的 —— ` +
+                  `请先把它读到项目目录里(或复制过去),在项目里改。`,
+              };
+            }
             if (!norm.insideProject && !bypass) {
               ctx.log.info(
                 `denied out-of-project ${toolName}: ${norm.absPath} (cwd=${req.cwd})`,
@@ -1378,20 +1404,10 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     if (isUiPlanMode) {
       appends.push(CLAUDE_PLAN_MODE_NUDGE);
     }
-    // 这次对话选的工作流。**host 已经把它解析成一段字符串了** —— 见
-    // main/orchestration/prompt.ts。提供方不再自己查表,只负责 append;这样 Pi / Codex
-    // 接上工作流只是加一个字段的事,而不是各实现一套查表逻辑。
-    if (req.workflowPrompt) appends.push(req.workflowPrompt);
-    // 「这个对话是谁」—— 代理档案里那段指令,**每一轮都带**(host 已经从会话行上的快照
-    // 解析好了,见 main/orchestration/prompt.ts 的 `resolveAgentPrompt`)。
-    //
-    // 放在工作流**后面**:这是身份,不是任务。工作流那一段是"这一轮怎么做事",角色是
-    // "你是谁" —— 身份先立住、任务再叠上去,冲突时后写的读起来更像这一轮的要求。
-    //
-    // ⚠️ Pi / Codex 目前都没读这个字段(它们连 `workflowPrompt` 都没读),所以「档案」
-    // 建出来的子对话在那两个引擎上**只有标题、没有角色**。这是已知边界,不是这里漏了:
-    // 接上去各自只差一行 append。
-    if (req.agentPrompt) appends.push(req.agentPrompt);
+    // Host 统一解析「记忆背景 → 角色身份 → 当前工作流」，三个 provider 消费同一组
+    // sections；Claude 这里只负责放进原生 systemPrompt append。顺序也集中在一处，
+    // 后续再加上下文层不会出现某个引擎漏接。
+    appends.push(...turnContextSections(req));
     if (!this.capabilities.supportsAskUserQuestion) {
       appends.push(ASK_SYSTEM_PROMPT);
     }
@@ -1441,7 +1457,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     const enabledPluginsPromise = getEnabledPlugins().then((plugins) =>
       narrowByName(plugins, req.pluginNames),
     );
-    const [mcpState, browserServer, libraryServer, workflowServer, outputStyle, enabledPlugins, pluginMcp] =
+    const [mcpState, browserServer, libraryServer, workflowServer, memoryServer, outputStyle, enabledPlugins, pluginMcp] =
       await Promise.all([
         getMcpManagement(),
         // Pure constructor after the (cached) SDK import — building it
@@ -1459,6 +1475,10 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
         // 与库工具同一个形状:读工具自动放行,写工具一律要用户点头(见
         // mcp/mcodeServer.ts 文件头,那里也写了为什么钩子/插件/MCP 安装**不在这里**)。
         buildWorkflowMcpServer({ sessionId: req.sessionId }),
+        // 记忆那一摊(mcode-memory)—— 让 AI 自己**记**东西(`memory_write` 等)。
+        // 存储与注入早就有了,缺的一直是这个写入口:没有它,记忆库永远是空的,
+        // 注入的那段快照永远是空串(见 mcp/memoryServer.ts 文件头)。
+        buildMemoryMcpServer(),
         getOutputStyleSetting(),
         enabledPluginsPromise,
         enabledPluginsPromise.then((plugins) => getPluginMcpServers(plugins)),
@@ -1477,11 +1497,12 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     if (!mcpState.browserDisabled && claudeMaySee(BROWSER_MCP_SERVER)) {
       options.mcpServers = { [BROWSER_MCP_SERVER]: browserServer };
     }
-    // 库工具与浏览器开关**无关** —— 它是学术流程的骨干,不是可选装饰。
+    // 库工具与浏览器开关**无关** —— 它是学术流程的骨干,不是可选装饰。记忆工具同理。
     options.mcpServers = {
       ...(options.mcpServers ?? {}),
       [LIBRARY_MCP_SERVER]: libraryServer,
       [WORKFLOW_MCP_SERVER]: workflowServer,
+      [MEMORY_MCP_SERVER]: memoryServer,
     };
 
     // Output style (settings panel): same Settings-not-Options trap as the

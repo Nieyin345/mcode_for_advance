@@ -891,11 +891,17 @@ function NodeSection({
         </>
       )}
 
-      {/* 主代理删不掉(它是这张图的入口,见 `isProtectedNode`)。**不摆一个按了没反应
-          的按钮** —— 那看起来像坏了;把原因写在这儿,和画布卡片上那颗星对得上。 */}
+      {/* **入口节点删不掉**（见 `isProtectedNode`）—— 工作流护主代理、自动化护触发器。
+          **不摆一个按了没反应的按钮** —— 那看起来像坏了；把原因写在这儿,
+          和画布卡片上那颗星对得上。
+
+          判据用**不传 purpose 的 `isProtectedNode`** —— 它这时两种入口都护着
+          （`mcode.main` / `mcode.trigger`），正是这里要的：`NodeSection` 拿不到
+          "这是工作流还是自动化"（那是画布那一层的知识）。而**真正的拦截**
+          （`handleRemoveNode`）那边是知道 purpose 的，所以多护一个也不会漏删。 */}
       {isProtectedNode(node) ? (
         <p className="mt-1 text-[0.7857em] leading-snug text-content-subtle">
-          {t("settings.workflows.mainNodeHint")}
+          {t(isTrigger ? "settings.automation.triggerNodeHint" : "settings.workflows.mainNodeHint")}
         </p>
       ) : (
         <Button

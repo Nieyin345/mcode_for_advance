@@ -2339,8 +2339,55 @@ html.sketch.dark body::after {
  * ⚠️ 这份文件是全局的,而 `pdf_viewer.css` 是在 `PdfPreview.tsx` 里按组件 import 的,
  * **两者的加载顺序不确定** —— 所以这里把选择器写成 `:root:root`(特异性 0,2,0 > 0,1,0),
  * 不靠后来居上。
+ *
+ * ⚠️⚠️ **只给只读预览用（2026-09-21 收窄）。** 高亮模式**必须**保留页面的左右边距:
+ * `react-pdf-highlighter-plus` 判定"这一段能不能划"时有一条
+ * `clientRect.left > pageRect.left`（见它 bundle 里的 `getClientRects`）。
+ * 页面贴到容器左边之后,正文距页面边缘只剩 ~3px,那条判据**恒假** →
+ * **靠左的文字一条都划不了**,而且它不报错、只是什么都不发生 —— 正是这个仓库
+ * 最怕的那种"静默错"。
+ *
+ * 所以这条从 `:root:root` 收到 `.mcode-readonly-pdf` 上（`PdfPreview` 的根元素
+ * 带这个类）。自定义属性会向下继承,`.page` 拿到的是**离它最近的那个祖先**设的值,
+ * 所以这样写仍然盖得住 `pdf_viewer.css` 的 `:root` 默认值。
+ * 高亮模式那份（`PdfHighlighterPane`）不加这个类,走 pdf.js 的默认边距。
  */
-:root:root {
+.mcode-readonly-pdf {
   --page-margin: 0 auto;
   --page-border: 0 solid transparent;
+}
+
+/* ── 手绘画布跑到页面外面（库的定位 bug，2026-09-22）────────────────────────
+ *
+ * ## 症状
+ *
+ * 用户截图：手绘的笔画画在**工具栏和左边空白**上，而文字高亮的位置是对的。
+ *
+ * ## 根因
+ *
+ * 库的 `DrawingCanvas` 给它那个 canvas 加了**内联** `style={{ position: "fixed" }}`
+ * —— 而内联样式**盖过** `DrawingCanvas.css` 里写的 `position: absolute; top: 0; left: 0`。
+ *
+ * `position: fixed` 又**没给 `left` / `top`**，于是它按"自己那层在文档流里的位置"
+ * 定位 —— 也就是**它自己容器的左上角**（工具栏正下方），**不是 PDF 页面的位置**。
+ *
+ * 而它的父级 `.PdfHighlighter` 是 `position: absolute; overflow: auto`（自己滚，
+ * 不是定位祖先），所以 fixed 的 containing block 一路退到**视口** → 画布钉在视口
+ * 左上角。
+ *
+ * ## 修法
+ *
+ * 用 `!important` 把 `position` 掰回 `absolute`。这样它是相对**最近的非 static 祖先**
+ * 定位 —— 也就是 `PdfHighlighterPane` 那个 `relative` 根，正好是 PDF 可视区的边界。
+ * `top/left` 保持 CSS 里的 `0`，于是画布和"页面区域"重合。
+ *
+ * ⚠️ 这是**替别人的 bug 兜底**。哪天库把内联 style 改对了（补上 left/top，或者干脆
+ * 删掉那行），这条可以删 —— 但它删了也不会坏（`absolute` 本来就更对）。
+ */
+.DrawingCanvas {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
 }

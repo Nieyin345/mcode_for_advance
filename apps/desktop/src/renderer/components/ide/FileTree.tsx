@@ -5,7 +5,6 @@ import { cn } from "@renderer/lib/cn.js";
 import { basename, dirname, joinPath, relativePath } from "@renderer/lib/path.js";
 import type { FileTreeEntry } from "@contracts/ipc";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
-import { useFileViewStore, basenameOf } from "@renderer/stores/fileViewStore.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import { FILE_DRAG_MIME } from "@renderer/lib/contentTag.js";
 import {
@@ -809,8 +808,9 @@ function TreeNode({
   const toggleDirExpanded = useSessionStore((s) => s.toggleDirExpanded);
   const setDirExpanded = useSessionStore((s) => s.setDirExpanded);
   const openFileInIde = useSessionStore((s) => s.openFileInIde);
-  /** 单击走这里 —— 中间那个统一的预览页（见 `fileViewStore` 的 `project` 那一支）。 */
-  const openFileView = useFileViewStore((s) => s.open);
+  // ⚠️ 这里从前还有一个 `openFileView`（走"只读预览"那条）。2026-09-21 用户把规矩
+  // 改成「不管从哪打开，只要在主页面显示就能编辑」之后，项目文件**单击直接进编辑器**
+  // （见下面 FileNodeRow 的 onClick），它就没有调用点了 —— 一并删掉，不留死变量。
   const activeFile = useSessionStore((s) =>
     pid ? s.ideActiveFileByProject[pid] ?? null : null,
   );
@@ -836,13 +836,21 @@ function TreeNode({
       path={entry.path}
       depth={depth}
       active={isActiveFile}
-      onClick={() =>
-        // 单击只看 —— 走中间那个统一的预览页（不落 IDE 标签，不改任何东西）。
-        openFileView({
-          source: { kind: "project", ref: entry.path },
-          name: basenameOf(entry.path),
-        })
-      }
+      onClick={() => {
+        // **单击就进主栏，而且能编辑**（2026-09-21 用户改的规矩）。
+        //
+        // 从前这里是 `openFileView(...)` —— 走"只读预览"那条路，于是用户单击一个 `.md`
+        // 得到的是一个**没有 Edit 按钮的只读页面**，他的原话是「md 也编辑不了呀」。
+        //
+        // 用户把规矩改成了：**「我不管是从哪里打开的，只要是在主页面显示的就能编辑」**
+        // —— 项目文件只有单击这一个入口（没有双击那一说），所以它必须直接进编辑器。
+        //
+        // 为什么可以直接进而不会把 pdf/图片弄成乱码：`FileEditor` 内部**按类型分流**
+        // （见它 render 那段）—— md 和 pdf 默认落"预览"档（渲染好的样子，md 那边
+        // 点 Edit 切源码）、图片走图片面板、office 走"不支持"提示。所以"进编辑器"
+        // 对它们来说等于"进主栏"，不等于"丢进 Monaco 看二进制"。
+        openFileInIde(entry.path);
+      }}
       onDoubleClick={() => openFileInIde(entry.path)}
       projectPath={projectPath}
     />

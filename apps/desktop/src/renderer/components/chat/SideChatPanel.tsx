@@ -31,7 +31,8 @@ import { useSessionStore, type Block } from "@renderer/stores/sessionStore.js";
 import { ConfirmDialog } from "@renderer/components/ui/index.js";
 import { ChatPane } from "@renderer/components/chat/ChatPane.js";
 import { NewSubChatPicker } from "./NewSubChatPicker.js";
-import { useFileViewStore } from "@renderer/stores/fileViewStore.js";
+// （`useFileViewStore` 的 import 已删 —— 2026-09-22 主对话改成常驻之后，
+//   这个文件里不再需要"中间是不是在看文件"那个判据了。）
 import { MessageBlocks } from "./MessageBlocks.js";
 import { mapTranscriptBlock } from "./transcriptBlocks.js";
 import { SUBAGENT_STATUS_META, fmtUsage } from "./activityShared.js";
@@ -420,8 +421,6 @@ function MainSessionRow({
   onChooseProfile: (anchor: DOMRect) => void;
 }) {
   const { t } = useI18n();
-  // 只在**中间被文件占住**时才出现 —— 见上面那段。
-  const previewing = useFileViewStore((s) => s.target !== null);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const title = useSessionStore((s) =>
     s.activeSessionId
@@ -433,22 +432,37 @@ function MainSessionRow({
   const open = useSessionStore((s) => s.activeSideChatId === activeSessionId);
   const select = useSessionStore((s) => s.selectSideChat);
   const close = useSessionStore((s) => s.closeSideChatView);
-  // ⚠️ **不再整行返回 null**（2026-09-21）：加号住在这行里，而它**必须一直在**
-  // （从前它单独一行、无条件渲染）。只有**主对话那一块**是"中间有文件才出现"。
-  const showMain = previewing && !!activeSessionId;
+  /**
+   * **主对话那一行永远在列表最上面**（2026-09-22 用户改的）。
+   *
+   * ## 从前是"中间有文件才出现"，用户说不对
+   *
+   * 原来的判据是 `previewing && !!activeSessionId` —— 中间被文件占住时才显示，
+   * 理由是"那时主对话被挡了，需要一个入口回去"。
+   *
+   * 用户的原话：「**主对话都不在列表里面了**」「之前还是好的」。他要的是**常驻**：
+   * 主对话是这张列表的第一个（子对话挂着它），随时看得见它在哪、随时点得回去。
+   * 只在特定情况下冒出来的东西，用户找不到的时候根本不知道它存在。
+   *
+   * 所以判据收成"有没有活跃会话" —— 没有会话时这一行只剩那个加号（加号必须一直在，
+   * 它是新建子对话的唯一入口）。
+   */
+  const showMain = !!activeSessionId;
   // 加号**一直在**（它从前就是无条件渲染的），所以这一行不返回 null ——
   // 没有主会话时这一行就只剩那个加号。
   return (
     /**
-     * **加号与主对话并排一行**（2026-09-21）。
+     * **加号与主对话并排一行，主对话占满剩余宽度**（2026-09-22 用户改的）。
      *
-     * ★ 用户（截图）：「把**加号还有这个主对话框放在一排**，然后把**主对话的框缩小一点**」。
+     * 从前是"主对话按内容缩、加号 `ml-auto` 顶到最右" —— 于是中间空一大块，
+     * 主对话那块只有"主对话 主"那几个字那么宽，看着像个挤扁的标签而不是一行。
      *
-     * 从前加号自己占一行（靠右）、主对话又占一行（满宽），两块上下叠着 —— 而那个满宽的
-     * 框看着像"一条对话"，正是用户先前说"我老是以为有两个对话"的那个东西。
+     * 用户的原话：「这个主对话的框太短了，**延伸到加号的左侧**，能够随着边框的宽度
+     * 而变化」。所以要 `flex-1`（占满剩余空间）+ 去掉那个 `max-w` 上限 ——
+     * 它本来是为了防"看着像一条对话记录"，现在用户明确要它铺开。
      *
-     * 现在并在同一行：主对话那一块**不再 `w-full`**（它按内容缩，右边留出加号的位置），
-     * 所以它在视觉上更像"一个入口"而不是"一条记录"。
+     * ⚠️ `min-w-0` 不能少：flex 项的默认 `min-width:auto` 会让里面的 `truncate`
+     * 失效（标题长了会把整行撑破，而不是省略号）。这是这个仓库里踩过好几次的一条。
      */
     <div className="mb-2 flex items-center gap-1 border-b border-edge pb-2">
       {showMain && (
@@ -459,8 +473,7 @@ function MainSessionRow({
         onClick={() => (open ? close() : void select(activeSessionId as string))}
         title={open ? t("sideChat.collapseMain") : t("sideChat.expandMain")}
         className={cn(
-          // **不再 `w-full`** —— 框按内容缩，右边留给加号（见上面那段）。
-          "flex min-w-0 max-w-[85%] items-center gap-1.5 rounded-md border px-2 py-1 text-left transition-colors",
+          "flex min-w-0 flex-1 items-center gap-1.5 rounded-md border px-2 py-1 text-left transition-colors",
           open
             ? "border-accent bg-accent/10"
             : "border-accent/50 bg-accent/5 hover:bg-accent/10",
@@ -480,7 +493,7 @@ function MainSessionRow({
         type="button"
         onClick={(e) => onChooseProfile(e.currentTarget.getBoundingClientRect())}
         title={t("sideChat.newChat")}
-        className="ml-auto flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-content-subtle transition-colors hover:bg-surface-hover hover:text-accent"
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-content-subtle transition-colors hover:bg-surface-hover hover:text-accent"
       >
         <IconPlus size={13} />
       </button>

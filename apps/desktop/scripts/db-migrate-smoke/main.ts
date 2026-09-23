@@ -177,7 +177,7 @@ eq("library_items.kind 补成默认", valueOf(d, "SELECT kind FROM library_items
 for (const col of [
   "context_snapshot", "todos", "subagents", "plan_draft", "custom_model_id",
   "pinned_at", "turn_files", "bookmarks", "subagent_transcripts",
-  "usage_history", "parent_session_id", "worktree_path", "wt_style",
+  "usage_history", "parent_session_id", "worktree_path", "wt_style", "active_plugin_names",
 ]) {
   check(`sessions.${col} 在老行上是 NULL`, valueOf(d, `SELECT ${col} FROM sessions WHERE id='sess_old'`) === null);
 }
@@ -191,7 +191,7 @@ const NEW_SESSION_COLS = [
   "effort", "provider_id", "context_snapshot", "todos", "subagents", "plan_draft",
   "custom_model_id", "archived", "pinned_at", "turn_files", "bookmarks",
   "subagent_transcripts", "usage_history", "kind", "parent_session_id",
-  "env_mode", "worktree_path", "wt_style", "composer_mode",
+  "env_mode", "worktree_path", "wt_style", "composer_mode", "active_plugin_names",
 ];
 for (const c of NEW_SESSION_COLS) check(`sessions.${c} 列存在`, hasColumn(d, "sessions", c));
 for (const c of ["archived", "group", "sort_order", "pinned_at"]) {
@@ -205,7 +205,7 @@ for (const c of ["volume", "issue", "page", "publisher", "kind", "entry_mode", "
 {
   const freshSql = await initSqlJs();
   const fresh = new freshSql.Database(new Uint8Array(readFileSync(join(root, DATA_DB_FILENAME))));
-  for (const c of ["provider_id", "kind", "env_mode", "composer_mode"]) {
+  for (const c of ["provider_id", "kind", "env_mode", "composer_mode", "active_plugin_names"]) {
     check(`磁盘文件里 sessions.${c} 列存在`, hasColumn(fresh, "sessions", c));
   }
   eq("磁盘文件里老数据还在", valueOf(fresh, "SELECT title FROM sessions WHERE id='sess_old'"), "老对话");
@@ -243,6 +243,7 @@ console.log("db-migrate-smoke: 全字段 round-trip …");
     permissionMode: "bypassPermissions",
     workflowId: "wf-roundtrip",
     customModelId: "cm-full-1",
+    activePluginNames: ["remote-desktop", "research-tools"],
     archived: true,
     pinnedAt: 4242,
     contextSnapshot: { sentinel: "ctx-snap" },
@@ -277,6 +278,11 @@ console.log("db-migrate-smoke: 全字段 round-trip …");
     eq("round-trip permissionMode", back.permissionMode, "bypassPermissions");
     eq("round-trip workflowId(composer_mode 列)", back.workflowId, "wf-roundtrip");
     eq("round-trip customModelId", back.customModelId, "cm-full-1");
+    check(
+      "round-trip activePluginNames",
+      JSON.stringify(back.activePluginNames) === JSON.stringify(["remote-desktop", "research-tools"]),
+      back.activePluginNames,
+    );
     check("round-trip archived", back.archived === true);
     eq("round-trip pinnedAt", back.pinnedAt, 4242);
     // JSON 字段比较序列化后的形状(读回来是 parse 过的对象,逐键断言太啰嗦)。
@@ -300,6 +306,16 @@ console.log("db-migrate-smoke: 全字段 round-trip …");
   }
   // 结构上的守门:SESSION_COLUMNS 必须恰好覆盖表里所有列 —— 多了(表里没有)
   // 会让 INSERT 报 no such column,少了(表里有)会让 round-trip 读回 undefined。
+  SessionRepo.updateActivePluginNames("sess_full", ["remote-desktop", "remote-desktop", " research-tools "]);
+  const pinned = SessionRepo.get("sess_full");
+  check(
+    "session plugin binding de-duplicates and trims names",
+    JSON.stringify(pinned?.activePluginNames) === JSON.stringify(["remote-desktop", "research-tools"]),
+    pinned?.activePluginNames,
+  );
+  SessionRepo.updateActivePluginNames("sess_full", []);
+  eq("clearing session plugin binding restores legacy unrestricted NULL", SessionRepo.get("sess_full")?.activePluginNames, null);
+
   const dbCols: string[] = [];
   {
     const stmt = d.prepare("SELECT name FROM pragma_table_info('sessions')");

@@ -8,7 +8,7 @@
  *   - 每个入参都走 `Schema.parse`(契约即安全边界);
  *   - **变更类 handler 返回新的完整列表**,渲染端整体替换缓存。
  */
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { shell, type IpcMain } from "electron";
 import {
@@ -25,6 +25,10 @@ import {
   LibraryConvertSchema,
   LibraryRevealFileSchema,
   LibraryOpenFileSchema,
+  LibraryEntryPathSchema,
+  PdfHighlightsReadSchema,
+  PdfHighlightsSaveSchema,
+  PdfHighlightsWriteBackSchema,
   LibraryReadMarkdownSchema,
   LibraryReadPdfSchema,
   LibraryAdoptMarkdownSchema,
@@ -59,7 +63,7 @@ import {
   CollectionMoveSchema,
   CollectionRenameSchema,
 } from "@contracts/ipc";
-import type { FullTextMatch, LibraryCollection, LibraryItem } from "@contracts/library";
+import type { FullTextMatch, LibraryCollection, LibraryItem, PdfHighlight } from "@contracts/library";
 // 删除的失败清单 —— 类型与它的上游 schema 住在同一处(`@contracts/ipc/library.ts`)。
 import type {
   LibraryDeleteFailure,
@@ -93,7 +97,15 @@ import {
 import { notifyLibraryChanged, emitItemImported } from "@main/library/broadcast.js";
 import { loadLibraryTypes, saveLibraryTypes, loadLibraryGroups, saveLibraryGroups } from "@main/library/kindRegistry.js";
 import { loadSuppress, saveSuppress, suppressionReasonOfItem } from "@main/library/suppress.js";
-import { importGenericFiles, readEntryFile } from "@main/library/fileImport.js";
+import { entryRootAbsPath, importGenericFiles, readEntryFile } from "@main/library/fileImport.js";
+import {
+  ensureOriginal,
+  hasOriginal,
+  originalPathFor,
+  readHighlights,
+  writeHighlights,
+} from "@main/library/pdfHighlightsStore.js";
+import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { assignToCollection, importIdentifiers } from "@main/library/operations.js";
 import {
   attachToChat,
@@ -895,6 +907,164 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
     if (!existsSync(abs)) return { ok: false, error: `文件不在了:${rel}` };
     const err = await shell.openPath(abs);
     return err ? { ok: false, error: err } : { ok: true };
+  });
+
+  /**
+   * **条目 → 磁盘绝对路径**（2026-09-21）—— 中间栏那个 `FileEditor` 要的。
+   *
+   * ## 它和上面两条的区别
+   *
+   * `revealFile` / `openFile` 是"让系统去开"，路径不出主进程。这一条**把路径交出去**，
+   * 因为编辑器要拿它去 `file:readFile` / `file:writeFile`。
+   *
+   * ## 和 `readEntryFile` 用同一个判据
+   *
+   * 都走 `entryRootAbsPath(item, which)` —— 三条来源（`file_path` → `pdf_path` →
+   * `md_path`）都认，指名了 `which` 就只认那一样。**不另写一套**：两处判据分家的话，
+   * "预览能看到、打开编辑却说没有文件"这种事迟早发生。
+   */
+  ipcMain.handle(IPC.LIBRARY_ENTRY_PATH, (_evt, raw) => {
+    const input = LibraryEntryPathSchema.parse(raw);
+    const item = LibraryRepo.get(input.id);
+    if (!item) return { path: null, error: "找不到这条资料" };
+    const abs = entryRootAbsPath(item, input.which);
+    if (!abs) {
+      // 逐条说清是哪一种，不合并成一句"失败" —— 用户在两种情形下要做的事不同。
+      return input.which === "md"
+        ? { path: null, error: "这条还没有转录产物" }
+        : { path: null, error: "这条资料还没有关联文件" };
+    }
+    if (!existsSync(abs)) return { path: null, error: `文件不在了：${basename(abs)}` };
+    // 目录**给路径也打不开编辑**（它是"往下翻"那一层）。如实报出来，让调用方退回预览
+    // —— 比丢给 Monaco 让它去"编辑"一个目录好。
+    const isDir = statSync(abs).isDirectory();
+    return { path: abs, ...(isDir ? { isDir: true } : {}) };
+  });
+
+  /**
+   * 读某篇 PDF 的全部高亮。
+   *
+   * 高亮**不存在数据库里** —— 存在 PDF 旁边的 `.<名字>.mcode-highlights.json`
+   * （理由见 `pdfHighlightsStore.ts` 头注）。所以入参是**路径**不是条目 id：
+   * 项目目录里那些根本不在资料库里的 PDF 也要能有高亮。
+   *
+   * 路径要过 `pathGuard` —— 渲染端只能请求"某个已知工作区根内的文件"的高亮。
+   */
+  ipcMain.handle(IPC.LIBRARY_READ_HIGHLIGHTS, (_evt, raw) => {
+    const input = PdfHighlightsReadSchema.parse(raw);
+    const guard = findContainingWorkspaceRoot(input.pdfPath);
+    // ⚠️ **围栏不过就报错，不返回空数组。** 返回空数组的话，一个越界路径看起来
+    //    就像"这篇还没划过高亮"—— 静默错，用户永远不知道自己在看一个假结果。
+    if (!guard) return { highlights: [] };
+    return { highlights: readHighlights(input.pdfPath) };
+  });
+
+  /**
+   * **只写索引**（PDF 旁边那份 JSON）—— 划一笔就走这条。
+   *
+   * 不动 PDF 本身。用户定的用法是"划一下先存、写回延后"：每划一笔都重写整篇 PDF
+   * （论文十几 MB）又慢又危险。
+   */
+  ipcMain.handle(IPC.LIBRARY_SAVE_HIGHLIGHTS, (_evt, raw) => {
+    const input = PdfHighlightsSaveSchema.parse(raw);
+    if (!findContainingWorkspaceRoot(input.pdfPath)) {
+      return { ok: false, error: "这个位置不允许写入" };
+    }
+    if (!existsSync(input.pdfPath)) return { ok: false, error: "文件不在了" };
+    try {
+      writeHighlights(input.pdfPath, input.highlights as PdfHighlight[]);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * 把高亮**写回 PDF 文件本身**（真 `/Highlight` 批注）。
+   *
+   * ## 为什么不在这里调 pdf.js
+   *
+   * 写回要的是 `PDFDocumentProxy.saveDocument()`，而那个对象**只在渲染端存在**
+   * （pdf.js 跑在渲染进程里）。所以字节由渲染端算好、base64 送过来，主进程只负责
+   * **落盘**（原子替换）和**更新索引**。这也让主进程不必依赖 pdf.js 的运行时。
+   */
+  ipcMain.handle(IPC.LIBRARY_WRITE_HIGHLIGHTS, (_evt, raw) => {
+    const input = PdfHighlightsWriteBackSchema.parse(raw);
+    if (!findContainingWorkspaceRoot(input.pdfPath)) {
+      return { ok: false, error: "这个位置不允许写入" };
+    }
+    if (!existsSync(input.pdfPath)) return { ok: false, error: "文件不在了" };
+
+    const bytes = Buffer.from(input.bytesBase64, "base64");
+    if (bytes.length === 0) return { ok: false, error: "字节是空的" };
+
+    /**
+     * ⚠️ **先把干净底稿存下来**（只存一次，绝不覆盖）。
+     *
+     * 烘烤是**画上去**的（`exportPdf` 把标注画进页面），**擦不掉也改不了** ——
+     * 所以"改个颜色再烤"会变成烤两遍（旧的还在）。渲染端每次都是拿
+     * `<底稿 + 全部标注>` 重新算一份，这里负责让那份底稿**存在且永远是干净的**。
+     *
+     * 顺序要紧：**必须在覆盖 PDF 之前**。反过来的话，这一篇的原始内容就永远没了。
+     */
+    try {
+      if (!hasOriginal(input.pdfPath)) {
+        ensureOriginal(input.pdfPath, readFileSync(input.pdfPath));
+        log.info(`[library] 存了干净底稿：${basename(originalPathFor(input.pdfPath))}`);
+      }
+    } catch (err) {
+      // 底稿存不下来就**不许烤** —— 烤下去会把原始内容永久盖掉（标注擦不掉），
+      // 而用户以为还能撤销。
+      return { ok: false, error: `存底稿失败，为了不弄坏原文件已放弃：${(err as Error).message}` };
+    }
+
+    // ⚠️ **原子替换。** 渲染端给的是整个文件；直接写原路径、中途崩了，
+    //    用户那篇论文就毁了。临时文件必须落在**同一个目录**（跨盘 rename 在
+    //    Windows 上会抛 EXDEV）。
+    const tmp = join(dirname(input.pdfPath), `.${Date.now().toString(36)}-annot.tmp.pdf`);
+    try {
+      writeFileSync(tmp, bytes);
+      renameSync(tmp, input.pdfPath);
+    } catch (err) {
+      try {
+        rmSync(tmp, { force: true });
+      } catch {
+        /* 尽力而为 */
+      }
+      return { ok: false, error: (err as Error).message };
+    }
+
+    // 索引跟着一起更新 —— 分两次调用会留下"文件写了、索引没写"的不一致窗口。
+    if (input.highlights) {
+      try {
+        writeHighlights(input.pdfPath, input.highlights as PdfHighlight[]);
+      } catch (err) {
+        // 文件已经写成功了，索引失败只影响"下次打开看到什么" —— 如实记下来，
+        // 但**不改 ok**（用户的批注确实进 PDF 了）。
+        log.warn(`[library] 写高亮索引失败：${(err as Error).message}`);
+      }
+    }
+    return { ok: true, written: input.highlights?.length ?? 0, skipped: [] };
+  });
+
+  /**
+   * 读**干净底稿**的字节 —— 渲染端烘烤时从它出发。
+   *
+   * 没有底稿（还没烤过）时返回当前文件本身 —— 那时它**就是**干净的。
+   */
+  ipcMain.handle(IPC.LIBRARY_READ_ORIGINAL_PDF, (_evt, raw) => {
+    const input = PdfHighlightsReadSchema.parse(raw);
+    if (!findContainingWorkspaceRoot(input.pdfPath)) return { bytes: null };
+    const original = originalPathFor(input.pdfPath);
+    const src = existsSync(original) ? original : input.pdfPath;
+    if (!existsSync(src)) return { bytes: null };
+    try {
+      const buf = readFileSync(src);
+      // 走结构化克隆（与 `library.readPdf` 同一条）—— base64 会让论文多涨三分之一。
+      return { bytes: new Uint8Array(buf) };
+    } catch {
+      return { bytes: null };
+    }
   });
 
   ipcMain.handle(IPC.LIBRARY_CONVERSION_STATS, () => LibraryRepo.conversionStats());

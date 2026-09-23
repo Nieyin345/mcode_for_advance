@@ -415,6 +415,9 @@ const HANDLERS: Record<string, RpcHandler> = {
       customModelId: input.customModelId,
       providerId: input.providerId,
     });
+    if (input.activePluginNames !== undefined) {
+      SessionRepo.updateActivePluginNames(input.sessionId, input.activePluginNames);
+    }
     if (input.permissionMode) {
       runtimeManager.setPermissionMode(input.sessionId, input.permissionMode);
     }

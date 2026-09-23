@@ -435,5 +435,34 @@ console.log("\n循环器 · sendTurn 忙时重试");
   longTaskRunner.dispose();
 }
 
+console.log("\n循环器 · 续轮抛异常时任务必须收尾(不能永远卡在 running)");
+
+{
+  resetRuntimeStub();
+  longTaskRunner.start();
+  // 剧本:续轮那一步直接抛。原先这里只写日志,任务会**永远停在 running** ——
+  // 用户看到状态条说"在跑",实际它再也不会推进(2026-09-24 源码审查第 4 条)。
+  // 复用上面建好的 `s_side`(side 也允许挂任务,见 attach 的 kind 检查)——
+  // `sessionOf` 是上面那个块的局部函数,这里够不着;而且这样不会和别处的 `s_chat` 抢。
+  runtimeStub().sendScript = ["throw"];
+  const attached = longTaskRunner.attach({ sessionId: "s_side", goal: "会炸的目标" });
+  check("任务挂上了(挂不上就验不到收尾)", attached.ok, attached.error);
+  await runTurn("s_side", "第一轮", "end_turn");
+  const settled = await waitUntil(
+    "续轮炸后任务收尾",
+    () => LongTaskRepo.latestOf("s_side")?.status !== "running",
+    3000,
+  );
+  check("续轮抛异常后任务不再停在 running", settled, LongTaskRepo.latestOf("s_side")?.status);
+  eq("…状态是 blocked(可手动「继续」接上)", LongTaskRepo.latestOf("s_side")?.status, "blocked");
+  check(
+    "…提示里说了怎么接上",
+    (LongTaskRepo.latestOf("s_side")?.note ?? "").includes("继续"),
+    LongTaskRepo.latestOf("s_side")?.note,
+  );
+  check("…active 也清空了", !longTaskRunner.isActive("s_side"));
+  longTaskRunner.dispose();
+}
+
 console.log(`\n${failures === 0 ? "PASS" : "FAIL"} — ${checks} checks, ${failures} failures`);
 process.exit(failures === 0 ? 0 : 1);

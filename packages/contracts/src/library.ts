@@ -166,6 +166,91 @@ export interface LibraryItemLink {
   createdAt: number;
 }
 
+/* ─────────────────────────── PDF 批注 ─────────────────────────── */
+
+/**
+ * 一条归一化矩形，坐标是 **0~1、左上原点** —— 就是高亮库（pdf.js 那一套）划一下
+ * 得到的东西，**原样存**，不在这里换算。
+ *
+ * ## 为什么不做成"PDF 点值"
+ *
+ * 换算是**写回那一刻**才该做的事（见 `apps/desktop/src/main/library/pdfAnnotations.ts`）：
+ * 页面尺寸可能变（不同版本的文件、裁剪框不同），存归一化的值永远对得上。
+ *
+ * `pageNumber` 从 **1** 数起（和用户看到的页码一致，不是 pdf.js 内部的 0 基）。
+ */
+export interface PdfHighlightRect {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  width: number;
+  height: number;
+  pageNumber: number;
+}
+
+/**
+ * 一条用户在 PDF 上做的标注。
+ *
+ * ## 2026-09-22：从"只有高亮"扩成"库支持的全部标注类型"
+ *
+ * 用户的原话：「**你引入的库有什么功能我要什么**」「编辑之后不保存呀，也没有撤销」。
+ * 库里 `PdfHighlighter` 支持六种，这里全接上 —— `type` 就是判别字段：
+ *
+ *  - `text` —— 划文字（默认）。跨行是**一个**记录、多个 rect。
+ *  - `area` —— 框一块区域（图、公式、表格 —— 那些选不中文字的）。
+ *  - `freetext` —— 在页面上直接打字写批注，不是弹窗里写。
+ *  - `drawing` —— 手绘。
+ *  - `shape` —— 矩形 / 圆 / 箭头。
+ *  - `image` —— 贴一张图上去。
+ *
+ * ## 坐标
+ *
+ * 这些字段是 `react-pdf-highlighter-plus` 的 `ScaledPosition` 能用上的那部分 ——
+ * 那个库还有个 `usePdfCoordinates` 开关，为真时坐标**不是归一化的**（是 PDF 点值），
+ * 换算时必须区别对待，所以带上。
+ */
+export interface PdfHighlight {
+  id: string;
+  /**
+   * 哪一种标注。
+   *
+   * ⚠️ **`type` 是可选的，缺席按 `text` 读** —— 这个字段是 2026-09-22 才加的，
+   * 而用户手上已有的索引文件里没有它。那些全是文字高亮，所以缺席即 `text`
+   * 是安全的重解释，**不需要迁移**。
+   */
+  type?: "text" | "area" | "freetext" | "drawing" | "shape" | "image";
+  position: {
+    boundingRect: PdfHighlightRect;
+    rects: PdfHighlightRect[];
+    /** 见上：为真时坐标是 PDF 点值、左下原点，**不能再翻 y / 不能乘页面尺寸**。 */
+    usePdfCoordinates?: boolean;
+  };
+  /** 划中的文字（`text` 那一种才有）。也用来在列表里显示。 */
+  text?: string;
+  /**
+   * 用户写的批注正文。
+   *
+   * ⚠️ **2026-09-22 起它只在 Mcode 内部用** —— 用户明确说了不要写回文件
+   * （「我也不要在其他的软件上打开能修改编辑了」），所以它**不再进 PDF 的
+   * `/Contents`**。`freetext` 那一种的正文也存这儿。
+   */
+  comment?: string;
+  /** `#rrggbb`。不给就用默认那支黄。 */
+  color?: string;
+  /** `image` / `drawing` 那两种的位图（data URL PNG）。 */
+  image?: string;
+  /** `shape` 那一种的形状信息。 */
+  shape?: {
+    shapeType: "rectangle" | "circle" | "arrow";
+    strokeColor: string;
+    strokeWidth: number;
+  };
+  /** `freetext` 的字号（点）。 */
+  fontSize?: string;
+  createdAt: number;
+}
+
 /**
  * 界面上「关联」区的一行 —— 关联本身**加上它指向的那一头的摘要**。
  *

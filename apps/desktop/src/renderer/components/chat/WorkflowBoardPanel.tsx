@@ -64,10 +64,10 @@ import {
   type FlowContextTarget,
 } from "@renderer/components/chat/WorkflowFlowMini.js";
 import {
-  WorkflowNodeCard,
+  BoardNodeCard,
   phaseOf,
   type NodeView,
-} from "@renderer/components/chat/WorkflowNodeCard.js";
+} from "@renderer/components/chat/BoardNodeCard.js";
 import {
   IconAlertTriangle,
   IconPlayerPlay,

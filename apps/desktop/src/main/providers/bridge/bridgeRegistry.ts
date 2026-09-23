@@ -73,6 +73,29 @@ class BridgeRegistryImpl {
     return handle;
   }
 
+  /** Refresh a bridge already held by the caller WITHOUT acquiring another
+   *  reference. Same config returns the existing handle; config drift rebuilds
+   *  the server while preserving the current holder count. If the registry
+   *  entry disappeared (for example after an external dispose/recovery path),
+   *  recreate it with the caller's one logical reference. */
+  async refreshHeld(customModelId: string, upstream: ApiConfig): Promise<BridgeHandle> {
+    const fp = fingerprint(upstream);
+    const existing = this.entries.get(customModelId);
+    if (!existing) {
+      const handle = await startBridge(upstream);
+      this.entries.set(customModelId, { handle, fingerprint: fp, refCount: 1 });
+      return handle;
+    }
+    if (existing.fingerprint === fp) return existing.handle;
+
+    log.info(`bridge: config ${customModelId} changed, rebuilding held server`);
+    const refCount = Math.max(1, existing.refCount);
+    existing.handle.close();
+    const handle = await startBridge(upstream);
+    this.entries.set(customModelId, { handle, fingerprint: fp, refCount });
+    return handle;
+  }
+
   /** Release a previously-acquired bridge. Decrements the ref count; closes the
    *  server only when the last holder releases. Safe to call without a prior
    *  acquire (no-op). */

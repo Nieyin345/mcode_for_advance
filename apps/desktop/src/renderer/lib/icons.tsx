@@ -170,6 +170,11 @@ export {
   IconCalendarStats,
   // Editing / actions
   IconPencil,
+  // PDF 标注面板（2026-09-22）：撤销/重做 + 五种标注工具的图标
+  IconArrowForwardUp,
+  IconHighlight,
+  IconMarquee,
+  IconTypography,
   IconReplace,
   IconRocket,
   // Communication

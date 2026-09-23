@@ -17,9 +17,9 @@
  * (`./sdk.js`),`buildWorkflowMcpServer()` 不被调用就不会去碰它。所以这里 import
  * 整个模块是安全的。
  *
- * **没覆盖的**:工具怎么暴露给模型(名字、description、JSON Schema)、`shouldAutoApprove`
- * 认不认那个前缀、写操作弹不弹审批。那几样要真的起一次对话才谈得上诚实 —— 手点一次
- * 「让 AI 建个工作流」验。
+ * **没覆盖的**:审批卡**弹出来的样子**与用户点下去之后的事(那要真的起一次对话)。
+ * `shouldAutoApprove` 认不认前缀、写操作要不要问,**在「记忆工具面」那一节里断言了**
+ * (2026-09-22 加的;那里也解释了记忆写入侧为什么是记忆系统缺的那一半)。
  *
  * Run: scripts/mcode-admin-smoke/run.sh
  */
@@ -50,6 +50,13 @@ import {
   buildWorkflowMcpServer,
   normalizeWorkflow,
 } from "@main/mcp/mcodeServer.js";
+import {
+  buildMemoryMcpServer,
+  MEMORY_MCP_SERVER,
+  MEMORY_READONLY_TOOLS,
+} from "@main/mcp/memoryServer.js";
+import { isReadOnlyToolName, shouldAutoApprove } from "@main/mcp/toolRules.js";
+import { MCP_ALWAYS_ON_SERVERS, MCP_MEMORY_SERVER } from "@contracts/ipc";
 import { __resetWorkflowRepo, WorkflowRepo } from "./stubs/repositories.js";
 import { __takeBroadcasts } from "./stubs/broadcast.js";
 import { COMPOSER_MODE_PROMPTS } from "@main/lib/systemPrompt.js";
@@ -141,8 +148,10 @@ interface Surface {
  * 形状变了要**大声失败**:一个静默跳过的检查比没有检查更糟(它会一直绿着,直到某天
  * 真的坏了)。
  */
-async function toolSurface(): Promise<Surface> {
-  const server = await buildWorkflowMcpServer({ sessionId: "smoke-session" });
+async function toolSurface(
+  build: () => Promise<unknown> = () => buildWorkflowMcpServer({ sessionId: "smoke-session" }),
+): Promise<Surface> {
+  const server = await build();
   const instance = (server as unknown as { instance?: { _registeredTools?: unknown; server?: unknown } })
     .instance;
   const bucket = instance?._registeredTools;
@@ -1159,6 +1168,84 @@ async function main(): Promise<void> {
   check("档案 id 解得出来", profileId.startsWith("p_"), profileOut);
   check("agent_profile_remove 删得掉", (await call(tools, "agent_profile_remove", { id: profileId })).includes("已删掉"));
   check("删不存在的 → 也算成功,但如实说", (await call(tools, "agent_profile_remove", { id: "p_nope" })).includes("本来就不在"));
+
+  /* ── 记忆 server(mcode-memory)—— 记忆系统的**写入侧** ──
+   *
+   * 记忆从前只有存储 + 注入两半,**写入口一直是空的**:`saveMemoryFile` 只有渲染端
+   * 面板在调,于是"记什么"全靠用户手打,而没人会这么干 —— 记忆库永远是空的,注入的
+   * 那段快照永远是空串,整套机制等于不存在。这一段钉住模型那一侧**真有工具**,
+   * 以及分档对不对(写工具不能被自动放行 —— 那是安全边界)。
+   */
+  console.log("\n记忆工具面 · 模型能不能记东西");
+  const memSurface = await toolSurface(() => buildMemoryMcpServer());
+  const memNames = memSurface.listed.map((t) => t.name).sort();
+  // 建得出来 + `tools/list` 出得来,本身就是断言:任何 schema 转不成 JSON Schema,
+  // 这一步就抛 —— 而它在生产里**每一轮对话**都要走(见 ClaudeAgentSdkProvider 里
+  // 那份 Promise.all),抛一次整个会话起不来。
+  eq("记忆工具就是那五个", memNames.join(","), "memory_forget,memory_list,memory_read,memory_search,memory_write");
+  check(
+    "每个记忆工具都有说明",
+    memSurface.listed.every((t) => (t.description ?? "").length > 20),
+    memSurface.listed.map((t) => [t.name, (t.description ?? "").length]),
+  );
+  // ⚠️ 安全断言:`memory_write` / `memory_forget` 混进只读集就会被**自动放行**。
+  //    反过来(读工具忘了加)只多弹一次审批,不危险 —— 所以这一个方向最要紧。
+  check("只读集里有 memory_list", MEMORY_READONLY_TOOLS.has("memory_list"));
+  check("只读集里有 memory_search", MEMORY_READONLY_TOOLS.has("memory_search"));
+  check("只读集里有 memory_read", MEMORY_READONLY_TOOLS.has("memory_read"));
+  check("★ memory_write 不在只读集里", !MEMORY_READONLY_TOOLS.has("memory_write"));
+  check("★ memory_forget 不在只读集里", !MEMORY_READONLY_TOOLS.has("memory_forget"));
+  // 每一个真实存在的工具都被分过档(新加工具忘了归类,会落进"要审批"那一侧 ——
+  // 安全的默认,而这条会当场说出来)
+  const MEM_WRITE = ["memory_write", "memory_forget"];
+  eq(
+    "没有漏归类的记忆工具",
+    memNames.filter((n) => !MEMORY_READONLY_TOOLS.has(n) && !MEM_WRITE.includes(n)).join(","),
+    "",
+  );
+  eq("记忆 server 名", MEMORY_MCP_SERVER, "mcode-memory");
+  // 两条通路的名字形状都要认(见 toolRules 文件头:claude 带前缀、网页是裸名)
+  check("闸门按裸名认得出记忆的读工具", isReadOnlyToolName("memory_search"));
+  check("闸门不把 memory_write 当只读(裸名)", !isReadOnlyToolName("memory_write"));
+  check("闸门按前缀认得出记忆的读工具", shouldAutoApprove("default", `mcp__${MEMORY_MCP_SERVER}__memory_list`));
+  check("★ 带前缀的 memory_write 在 default 档要问", !shouldAutoApprove("default", `mcp__${MEMORY_MCP_SERVER}__memory_write`));
+  check(
+    "★ 带前缀的 memory_write 在 acceptEdits 档仍要问(它不是文件编辑工具)",
+    !shouldAutoApprove("acceptEdits", `mcp__${MEMORY_MCP_SERVER}__memory_write`),
+  );
+  // 骨干 server 名要进"始终挂着、不进候选表"那一组 —— 否则工作流节点的「MCP 服务器」
+  // 参数会把记忆工具列成"用户装的东西",选了却不生效。
+  check("记忆 server 归在骨干那一组", (MCP_ALWAYS_ON_SERVERS as readonly string[]).includes(MCP_MEMORY_SERVER));
+
+  // 写一条再读回来 —— 证明这个工具面**真能落盘**(不是只有个壳)
+  const written = await call(memSurface.tools, "memory_write", {
+    category: "rules",
+    title: "烟测规则",
+    content: "这条是冒烟测试写下的。",
+  });
+  check("memory_write 说已记下", written.includes("已记下"), written);
+  const readBack = await call(memSurface.tools, "memory_read", { path: "rules/烟测规则.md" });
+  check("memory_read 读得回刚写的那条", readBack.includes("冒烟测试写下的"), readBack);
+  const searched = await call(memSurface.tools, "memory_search", { query: "冒烟" });
+  check("memory_search 搜得到", searched.includes("烟测规则"), searched);
+
+  // 命中落在长正文深处时，MCP 最终文本也必须把命中附近带回来；只测 retrieval 层不够，
+  // 因为模型真正看到的是这里 handler 格式化后的字符串。
+  await call(memSurface.tools, "memory_write", {
+    category: "experiences",
+    title: "长文尾部命中",
+    content: "x".repeat(900) + " deep_mcp_tail_keyword",
+  });
+  const deepSearched = await call(memSurface.tools, "memory_search", { query: "deep_mcp_tail_keyword" });
+  check(
+    "memory_search 的 MCP 输出包含深处命中关键词",
+    deepSearched.includes("长文尾部命中") && deepSearched.includes("deep_mcp_tail_keyword"),
+    deepSearched,
+  );
+  check("MCP 深处命中预览明确标出前文被截断", deepSearched.includes("前文已截断"), deepSearched);
+
+  const forgotten = await call(memSurface.tools, "memory_forget", { path: "rules/烟测规则.md" });
+  check("memory_forget 删得掉", forgotten.includes("已删掉"), forgotten);
 
   console.log(`\n${checks - failures}/${checks} 通过`);
   if (failures > 0) {

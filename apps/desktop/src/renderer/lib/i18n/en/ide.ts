@@ -50,6 +50,11 @@ export const en = {
   "ide.editor.switchToEditView": "Switch to edit view",
   "ide.editor.switchToSource": "Switch to source editing",
   "ide.editor.switchToPreview": "Switch to preview",
+  "ide.editor.switchToSourceView": "Switch to source view",
+  "ide.editor.thisFile": "This file",
+  "ide.editor.togglePreview": "Preview",
+  "ide.editor.toggleEdit": "Edit",
+  "ide.editor.toggleSource": "Source",
 
   /* ── file viewer (mobile read-only viewer) ── */
   "ide.viewer.mdPreview": "Preview",

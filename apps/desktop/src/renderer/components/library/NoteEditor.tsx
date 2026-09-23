@@ -16,7 +16,7 @@
  * ## 只对笔记开放
  *
  * 论文/教材的 md 是转录产物,让编辑器直接覆盖它,"转录结果"和"用户改动"就再也分不清。
- * 主进程会校验 kind,这里再隐藏入口(`LibraryPanel` 里只有 note 才有这一页)。
+ * 主进程会校验 kind,这里再隐藏入口(条目本身也读不出一个可编辑的 md 时不画这一页)。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";

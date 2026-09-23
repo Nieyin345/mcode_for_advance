@@ -22,7 +22,8 @@
  * Run: scripts/mcp-endpoint-smoke/run.sh
  */
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -38,11 +39,17 @@ import {
   type McpToolCallResult,
   type McpToolInfo,
 } from "@main/providers/bridge/mcpEndpoint.js";
+import {
+  configurePublicMcpStore,
+  publicMcpPort,
+  startPublicMcp,
+  stopPublicMcp,
+} from "@main/providers/bridge/publicMcpServer.js";
 import { createWebToolHost, type WebToolGate } from "@main/mcp/webToolHost.js";
 import { WORKFLOW_READONLY_TOOLS, workflowMcpTools } from "@main/mcp/mcodeServer.js";
 import type { PermissionMode } from "@contracts/runtime";
 import type { ApprovalRequest } from "@contracts/provider";
-import { __handlerCalls } from "./stubs/libraryServer.js";
+import { __handlerCalls, libraryMcpTools } from "./stubs/libraryServer.js";
 
 let checks = 0;
 let passed = 0;
@@ -64,6 +71,23 @@ function eq(name: string, actual: unknown, expected: unknown): void {
   });
 }
 
+async function runFixturePython(code: string, args: string[] = []): Promise<void> {
+  const candidates = process.platform === "win32" ? ["python", "py", "python3"] : ["python3", "python"];
+  let last = "";
+  for (const exe of candidates) {
+    const result = await new Promise<{ code: number | null; stderr: string }>((resolve) => {
+      const child = spawn(exe, ["-c", code, ...args], { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
+      let stderr = "";
+      child.stderr.on("data", (d: Buffer) => { stderr += d.toString("utf8"); });
+      child.once("error", (err) => resolve({ code: -1, stderr: err.message }));
+      child.once("close", (exitCode) => resolve({ code: exitCode, stderr }));
+    });
+    if (result.code === 0) return;
+    last = `${exe}: ${result.stderr.trim() || `exit ${result.code}`}`;
+  }
+  throw new Error(`fixture Python 失败:${last}`);
+}
+
 /* ══════════════════════ 上半:协议(真 HTTP + 假宿主)══════════════════════ */
 
 /** 假宿主 —— 只干两件事:把收到的 ctx 原样回出去;某个名字就抛异常。 */
@@ -76,6 +100,7 @@ const fakeCalls: FakeCall[] = [];
 
 const FAKE_TOOLS: McpToolInfo[] = [
   { name: "t_echo", description: "回显", inputSchema: { type: "object" } },
+  { name: "t_image", description: "图片块", inputSchema: { type: "object" } },
   { name: "t_boom", description: "抛异常", inputSchema: { type: "object" } },
 ];
 
@@ -84,12 +109,23 @@ configureMcpToolHost({
   async callTool(name, args, ctx): Promise<McpToolCallResult> {
     fakeCalls.push({ name, args, sessionId: ctx.sessionId });
     if (name === "t_boom") throw new Error("工具内部炸了");
+    if (name === "t_image") {
+      return {
+        text: "tiny image",
+        content: [
+          { type: "text", text: "tiny image" },
+          { type: "image", data: "cG5n", mimeType: "image/png" },
+        ],
+      };
+    }
     return { text: `echo:${JSON.stringify(args)}` };
   },
 });
 
 /* 令牌先换成一个固定的 —— 这一半要的不是"令牌从哪来",而是"令牌对不对"。 */
 const TOKEN = randomUUID().replace(/-/g, "");
+/** 公网端点那把路径密钥（同样只关心"对不对"，不关心从哪来）。 */
+const PUBLIC_SECRET = randomUUID().replace(/-/g, "");
 configureExtensionBridgeTokenStore({ get: () => TOKEN, set: () => {} });
 await ensureStarted();
 const base = bridgeStatus().url;
@@ -179,6 +215,8 @@ eq("不认的版本回我们自己最新的", resultOf(initUnknown).protocolVers
 const instructions = String((resultOf(init) as { instructions?: string }).instructions ?? "");
 check("instructions 说明写操作要等用户确认", instructions.includes("用户"), instructions);
 check("instructions 说了被拒不算出错", instructions.includes("拒绝"), instructions);
+check("instructions 指引远程训练走 detached job", instructions.includes("agent_remote_job_start"), instructions);
+check("instructions 强调远程训练重试复用 job_id", instructions.includes("job_id"), instructions);
 
 /* ── notification / ping ── */
 const notified = await rpc({ jsonrpc: "2.0", method: "notifications/initialized" });
@@ -188,7 +226,7 @@ eq("ping → 空结果", resultOf(await rpc({ jsonrpc: "2.0", id: 3, method: "pi
 
 /* ─ tools/list ── */
 const list = await rpc({ jsonrpc: "2.0", id: 4, method: "tools/list" });
-eq("tools/list 报出宿主的表", (resultOf(list).tools as McpToolInfo[]).map((t) => t.name), ["t_echo", "t_boom"]);
+eq("tools/list 报出宿主的表", (resultOf(list).tools as McpToolInfo[]).map((t) => t.name), ["t_echo", "t_image", "t_boom"]);
 
 /* ─ tools/call ─ */
 const callNoHeader = await rpc({
@@ -210,6 +248,17 @@ const callWithHeader = await rpc(
 );
 check("x-mcode-session 被认出来了", fakeCalls.at(-1)?.sessionId === "sess-123", fakeCalls.at(-1));
 eq("带头的那次照样有结果", resultOf(callWithHeader).content, [{ type: "text", text: "echo:{}" }]);
+
+const imageReply = await rpc({
+  jsonrpc: "2.0",
+  id: 61,
+  method: "tools/call",
+  params: { name: "t_image", arguments: {} },
+});
+eq("MCP endpoint 原样保留标准 image content block", resultOf(imageReply).content, [
+  { type: "text", text: "tiny image" },
+  { type: "image", data: "cG5n", mimeType: "image/png" },
+]);
 
 const unknown = await rpc({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "nope" } });
 eq("表里没有的工具 → -32602(协议错,不是执行失败)", errorOf(unknown).code, -32602);
@@ -244,6 +293,156 @@ eq(
 
 stopExtensionBridge();
 
+/* ══════════════════════ 中段:公网 MCP 端点 ═════════════════════ */
+
+/**
+ * `publicMcpServer` —— 给 ChatGPT 的 Connector 用的那条路。它和上面的扩展桥是
+ * **两个独立监听器、两种鉴权**：那边用 Bearer + 只放行扩展来源；这边用**路径里的
+ * 密钥** + 放行任意来源（ChatGPT 的 Connector 不收 Bearer，只能靠路径）。
+ *
+ * 这一段要验的正是这条路的信任边界：
+ *  - 密钥不对/路径形状不对 → **404**（不是 401 —— 不透露"这里确实有个端点"）；
+ *  - 密钥对了 → 协议照常工作（复用同一个 `handleMcpRequest`）；
+ *  - **合成会话被注入** → 这是这条路唯一让闸门能放行的机制，撤掉它就全拒。
+ */
+const PUBLIC_SESSION = "sess_smoke_synthetic";
+let publicStoreEnabled = true;
+// 上一段末尾把宿主卸了（验"宿主缺席"那两条）；这里重新装回同一份 —— 公网端点读的
+// 是**共享的**那份工具表，正是要验"两条通路的工具表是同一份"。
+configureMcpToolHost({
+  listTools: () => FAKE_TOOLS,
+  async callTool(name, args, ctx): Promise<McpToolCallResult> {
+    fakeCalls.push({ name, args, sessionId: ctx.sessionId });
+    return { text: `echo:${JSON.stringify(args)}` };
+  },
+});
+configurePublicMcpStore({
+  getEnabled: () => publicStoreEnabled,
+  setEnabled: (on) => {
+    publicStoreEnabled = on;
+  },
+  getSecret: () => PUBLIC_SECRET,
+  setSecret: () => {},
+  getSessionId: () => PUBLIC_SESSION,
+  setSessionId: () => {},
+});
+await startPublicMcp();
+const publicPort = publicMcpPort();
+check("公网 MCP 服务起来了", publicPort > 0, publicPort);
+
+/** 打到公网端点。`path` 省略时用正确密钥。 */
+async function publicRpc(
+  body: unknown,
+  opts: { path?: string; method?: string; sessionHeader?: string | null } = {},
+): Promise<RpcReply> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  // 外部**不带**会话头 —— 会话必须由服务端注入。带一个假的来验"覆写"。
+  if (opts.sessionHeader) headers[MCODE_SESSION_HEADER] = opts.sessionHeader;
+  const method = opts.method ?? "POST";
+  const path = opts.path ?? `${MCP_ENDPOINT_PATH}/${PUBLIC_SECRET}`;
+  const res = await fetch(`http://127.0.0.1:${publicPort}${path}`, {
+    method,
+    headers,
+    body: method === "GET" ? undefined : JSON.stringify(body),
+  });
+  const text = await res.text();
+  let parsed: Record<string, unknown> = {};
+  try {
+    parsed = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+  } catch {
+    parsed = { __raw: text };
+  }
+  return { status: res.status, body: parsed, headers: res.headers };
+}
+
+/* ── 密钥不对：一律 404，不区分原因 ── */
+eq("密钥错 → 404", (await publicRpc({ jsonrpc: "2.0", id: 1, method: "ping" }, { path: `${MCP_ENDPOINT_PATH}/wrong` })).status, 404);
+eq("路径缺密钥段 → 404", (await publicRpc({ jsonrpc: "2.0", id: 1, method: "ping" }, { path: MCP_ENDPOINT_PATH })).status, 404);
+eq("密钥段多一层 → 404", (await publicRpc({ jsonrpc: "2.0", id: 1, method: "ping" }, { path: `${MCP_ENDPOINT_PATH}/${PUBLIC_SECRET}/extra` })).status, 404);
+eq("根路径 → 404", (await publicRpc({ jsonrpc: "2.0", id: 1, method: "ping" }, { path: "/" })).status, 404);
+
+/* ── 密钥**等长但不同**：这是唯一能真正走到常量时间比较那条路的输入。
+   上面那些 "wrong" 是短串，会被长度检查先挡掉 —— 变异验证发现只测它们的话，
+   "把比较写成永远返回 true" 这种改动一条都不会红（见 mut-public-mcp.py M1）。 ── */
+{
+  const sameLength = PUBLIC_SECRET.slice(0, -1) + (PUBLIC_SECRET.endsWith("a") ? "b" : "a");
+  eq("等长但不同的密钥 → 404（真的走常量时间比较）",
+    (await publicRpc({ jsonrpc: "2.0", id: 1, method: "ping" }, { path: `${MCP_ENDPOINT_PATH}/${sameLength}` })).status,
+    404);
+  // 大小写翻转同样等长 —— 覆盖"比较的是内容而不是长度"。
+  const flipped = PUBLIC_SECRET.toUpperCase() === PUBLIC_SECRET
+    ? PUBLIC_SECRET.toLowerCase()
+    : PUBLIC_SECRET.toUpperCase();
+  eq("等长、大小写不同的密钥 → 404",
+    (await publicRpc({ jsonrpc: "2.0", id: 1, method: "ping" }, { path: `${MCP_ENDPOINT_PATH}/${flipped}` })).status,
+    404);
+}
+
+/* ── 路径形状：多一段**且那一段恰好等于真密钥**时必须仍拒。
+   上面那条 `/mcp/<secret>/extra` 的密钥段是 `<secret>` 之后还有 `extra`，
+   而 `secretFromPath` 切出来的 `rest` 是 `<secret>/extra`，长度就与真密钥不同 ——
+   于是它同样没走到"形状"那一步。这条把真密钥放在**前面**，让 `rest` 长度对不上
+   的问题暴露不出来，必须靠"不许出现 `/`"这条规则来拒（见 mut-public-mcp.py M4）。 ── */
+eq("密钥后面还挂一段 → 404（形状必须精确）",
+  (await publicRpc({ jsonrpc: "2.0", id: 1, method: "ping" }, { path: `${MCP_ENDPOINT_PATH}/${PUBLIC_SECRET}/x` })).status,
+  404);
+
+/* ── 密钥对了：协议原样可用 ── */
+const pubInit = await publicRpc({
+  jsonrpc: "2.0",
+  id: 1,
+  method: "initialize",
+  params: { protocolVersion: "2025-06-18", capabilities: {} },
+});
+eq("密钥对 → initialize 200", pubInit.status, 200);
+eq("…serverInfo 是 mcode", (resultOf(pubInit).serverInfo as { name?: string }).name, "mcode");
+const pubList = await publicRpc({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+eq("密钥对 → tools/list 200", pubList.status, 200);
+eq("…工具表就是共享的那份", ((resultOf(pubList).tools ?? []) as unknown[]).length, FAKE_TOOLS.length);
+
+/* ── 合成会话注入：外部不带会话头，宿主却应该收到那条合成会话 ── */
+fakeCalls.length = 0;
+const pubCall = await publicRpc({
+  jsonrpc: "2.0",
+  id: 3,
+  method: "tools/call",
+  params: { name: "t_echo", arguments: { hi: 1 } },
+});
+eq("密钥对 → tools/call 200", pubCall.status, 200);
+eq("…返回了回显", textOf(pubCall), `echo:{"hi":1}`);
+eq("…宿主收到的会话是合成会话（外部没带）", fakeCalls[0]?.sessionId, PUBLIC_SESSION);
+
+/* ── 外部塞的会话头被**覆写**，不能借它冒充别的会话 ── */
+fakeCalls.length = 0;
+await publicRpc(
+  { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "t_echo", arguments: {} } },
+  { sessionHeader: "sess_someone_else" },
+);
+eq("外部塞的会话头被覆写成合成会话", fakeCalls[0]?.sessionId, PUBLIC_SESSION);
+
+/* ── CORS 预检：不碰密钥也该答（浏览器发正式请求前就要这个答复）── */
+const preflight = await publicRpc(null, { method: "OPTIONS", path: MCP_ENDPOINT_PATH });
+eq("OPTIONS 预检 → 204", preflight.status, 204);
+eq("…放行任意来源（ChatGPT 的 Connector 不是扩展来源）", preflight.headers.get("access-control-allow-origin"), "*");
+
+/* ── 会话没备好时明确失败，而不是放一次没有闸门的调用 ── */
+configurePublicMcpStore({
+  getEnabled: () => publicStoreEnabled,
+  setEnabled: () => {},
+  getSecret: () => PUBLIC_SECRET,
+  setSecret: () => {},
+  getSessionId: () => null,
+  setSessionId: () => {},
+});
+eq(
+  "没有合成会话 → 503（不放行没有闸门的调用）",
+  (await publicRpc({ jsonrpc: "2.0", id: 5, method: "tools/list" })).status,
+  503,
+);
+
+stopPublicMcp();
+check("停掉之后不再监听", publicMcpPort() === 0, publicMcpPort());
+
 /* ══════════════════════ 下半:真宿主 + 闸门 ═════════════════════ */
 
 const approvalCalls: ApprovalRequest[] = [];
@@ -266,31 +465,90 @@ function makeGate(): WebToolGate {
 /** agent 工具的工作目录 —— 临时目录,可切到 null 验"没有 cwd"的分支。 */
 const CWD = mkdtempSync(path.join(tmpdir(), "mcode-agent-smoke-"));
 let cwdValue: string | null = CWD;
+/** 沙箱根。默认 null = 不限制(大多数断言要的是这个:它们读写 CWD 外面的临时文件)。
+ *  专门那一段会临时设成 CWD,验越界被拒。 */
+let sandboxValue: string | null = null;
 
 const host = createWebToolHost({
   gateFor: () => (gateKnown ? makeGate() : null),
   // agent_* 工具的 cwd:指到一个临时目录,读/写/搜索的真跑都在里面发生,
   // 不碰用户机器上的任何真项目。
   cwdFor: () => cwdValue,
+  sandboxRootFor: () => sandboxValue,
+  // 替身工具表(见 stubs/libraryServer.ts):**网页端已经不挂真的库工具了**
+  // (那 22 个从这张表撤掉了),但这一套要验的是**派发与闸门**,需要几件形状各异的
+  // 替身把分支踩出来 —— 所以经这个注入点挂,而不是让生产硬挂一张它不要的表。
+  extraTools: libraryMcpTools(),
 });
 
 /* ── 报出去的表 ── */
 const tools = host.listTools();
 const names = tools.map((t) => t.name);
 check("表里有替身库的工具", names.includes("library_probe"), names);
+
+/* ── tool annotations:ChatGPT 靠它决定要不要弹确认框 ──────────────────
+   不标的只读工具会被当成写工具、每次都弹(社区里踩过的坑)。这里钉住两件事:
+   ① 只读工具带 readOnlyHint: true;② 写工具带 false(destructiveHint: true)。 */
+const annOf = (n: string) => (tools.find((t) => t.name === n)?.annotations ?? {}) as Record<string, unknown>;
+eq("每个工具都报了 annotations", tools.every((t) => typeof t.annotations === "object"), true);
+eq("只读工具 readOnlyHint=true", annOf("agent_read_file").readOnlyHint, true);
+eq("…且 idempotentHint=true", annOf("agent_read_file").idempotentHint, true);
+eq("写工具 readOnlyHint=false", annOf("agent_write_file").readOnlyHint, false);
+eq("写工具 destructiveHint=true", annOf("agent_write_file").destructiveHint, true);
+eq("…且不给 idempotentHint(没分析过重跑会怎样)", "idempotentHint" in annOf("agent_write_file"), false);
+eq("bash 也是写工具", annOf("agent_bash").readOnlyHint, false);
+eq("触网工具 openWorldHint=true(agent_read_url)", annOf("agent_read_url").openWorldHint, true);
+eq("触网工具 openWorldHint=true(SSH)", annOf("agent_ssh_status").openWorldHint, true);
+eq("纯本地读文件 openWorldHint=false", annOf("agent_read_file").openWorldHint, false);
+// 文献库/工作流那些 server 的工具同样带上了(共用一份判定)。
+eq("库里的读工具也带了 annotations", annOf("workflow_list").readOnlyHint, true);
 check("表里也有真工作流的工具(同一份表)", names.includes("workflow_list"), names);
-check("agent 工具进表了(读/写/改/列/glob/grep/bash/技能)", [
+check("agent 工具进表：文件/搜索/系统进程/持久进程/技能", [
   "agent_read_file",
+  "agent_read_files",
+  "agent_read_document",
+  "agent_read_image",
+  "agent_read_docx_xml",
+  "agent_read_url",
   "agent_write_file",
+  "agent_create_directory",
+  "agent_write_pdf",
+  "agent_edit_excel_range",
+  "agent_edit_docx_xml",
   "agent_edit_file",
+  "agent_file_info",
+  "agent_move_file",
   "agent_list_dir",
   "agent_glob",
   "agent_grep",
+  "agent_search_start",
+  "agent_search_read",
+  "agent_search_stop",
+  "agent_search_list",
+  "agent_list_processes",
+  "agent_kill_process",
   "agent_bash",
+  "agent_process_start",
+  "agent_process_read",
+  "agent_process_sessions",
+  "agent_process_write",
+  "agent_process_stop",
+  "agent_ssh_connect",
+  "agent_ssh_status",
+  "agent_ssh_disconnect",
+  "agent_ssh_exec",
+  "agent_remote_job_start",
+  "agent_remote_job_status",
+  "agent_remote_job_logs",
+  "agent_remote_job_list",
+  "agent_remote_job_cancel",
   "agent_skill_list",
   "agent_skill_read",
 ].every((n) => names.includes(n)), names);
-check("工具数量 = 替身 3 + 真工作流 10 + agent 9", names.length === 22, names.length);
+// 网页端的表 = 替身 3 + 真工作流 10 + agent 41（含新加的 `agent_context`）。
+// **库那 22 个不在里面** —— 它们已从网页端撤掉(见 webToolHost 里那段),桌面引擎那条
+// 路照旧挂着。这条数字就是防"谁又把它挂回来"或"谁不小心删了工具"。
+check("工具数量 = 替身 3 + 真工作流 10 + agent 41", names.length === 54, names.length);
 check(
   "同名工具只报一次",
   new Set(names).size === names.length,
@@ -430,6 +688,149 @@ allowDecision = true;
 mode = "acceptEdits"; // 写/改在这一档免卡,正好把"写免卡、bash 弹卡"的分界也验了
 approvalCalls.length = 0; // 上一段 workflow_remove 的卡还挂在计数里,清零
 
+
+const tinyPngBase64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+writeFileSync(path.join(CWD, "pixel.png"), Buffer.from(tinyPngBase64, "base64"));
+const imageRead = await host.callTool("agent_read_image", { path: "pixel.png" }, { sessionId: "s1" });
+const imageBlock = imageRead.content?.find((block) => block.type === "image");
+check(
+  "agent_read_image 返回标准 MCP image content block 而不是把 base64 塞进文本",
+  imageBlock?.type === "image" && imageBlock.mimeType === "image/png" && imageBlock.data === tinyPngBase64,
+  imageRead.content,
+);
+check("图片工具的文本投影不包含 base64", !imageRead.text.includes(tinyPngBase64.slice(0, 20)), imageRead.text);
+
+const richUnsupported = await host.callTool(
+  "agent_read_document",
+  { path: "plain.unsupported" },
+  { sessionId: "s1" },
+);
+check(
+  "agent_read_document 对不支持格式给明确能力边界",
+  richUnsupported.text.includes("PDF/DOCX/XLSX/PPTX") || richUnsupported.text.includes("暂不支持"),
+  richUnsupported.text,
+);
+
+/* Remote Desktop Commander 富文件写能力对齐：全部真落盘，再从 MCP 读回验证。 */
+approvalCalls.length = 0;
+const madeDir = await host.callTool(
+  "agent_create_directory",
+  { path: "remote-parity/nested/dir" },
+  { sessionId: "s1" },
+);
+check("agent_create_directory 可递归建目录", madeDir.text.includes("remote-parity"), madeDir.text);
+const madeDirInfo = await host.callTool(
+  "agent_file_info",
+  { path: "remote-parity/nested/dir", count_lines: false },
+  { sessionId: "s1" },
+);
+check("新目录可立刻被 file_info 看见", madeDirInfo.text.includes("type: directory"), madeDirInfo.text);
+eq("create_directory 在 acceptEdits 档免重复审批", approvalCalls.length, 0);
+
+const createdPdf = await host.callTool(
+  "agent_write_pdf",
+  { output_path: "remote-parity-created.pdf", markdown: "# Remote Parity PDF\n\nPDF-MARKER-7419" },
+  { sessionId: "s1" },
+);
+check("agent_write_pdf 从 Markdown 真生成 PDF", createdPdf.text.includes("PDF 已生成") && createdPdf.text.includes("1 页"), createdPdf.text);
+const readCreatedPdf = await host.callTool(
+  "agent_read_document",
+  { path: "remote-parity-created.pdf", max_pages: 5 },
+  { sessionId: "s1" },
+);
+check(
+  "生成的 PDF 能被现有 pdfjs 再读回文本",
+  readCreatedPdf.text.includes("PDF-MARKER-7419") && readCreatedPdf.text.includes("[PDF 1 页]"),
+  readCreatedPdf.text.slice(0, 1000),
+);
+
+const insertedPdf = await host.callTool(
+  "agent_write_pdf",
+  {
+    source_path: "remote-parity-created.pdf",
+    output_path: "remote-parity-inserted.pdf",
+    operations: [{ type: "insert", page_index: 1, source_pdf_path: "remote-parity-created.pdf" }],
+  },
+  { sessionId: "s1" },
+);
+check("PDF 可插入另一份 PDF 的页面", insertedPdf.text.includes("2 页"), insertedPdf.text);
+const deletedPdf = await host.callTool(
+  "agent_write_pdf",
+  {
+    source_path: "remote-parity-inserted.pdf",
+    output_path: "remote-parity-deleted.pdf",
+    operations: [{ type: "delete", page_indexes: [0] }],
+  },
+  { sessionId: "s1" },
+);
+check("PDF 可按 0-based page index 删除页面", deletedPdf.text.includes("1 页"), deletedPdf.text);
+eq("PDF 创建/页操作在 acceptEdits 档按文件编辑放行", approvalCalls.length, 0);
+
+const xlsxPath = path.join(CWD, "remote-parity.xlsx");
+await runFixturePython(
+  [
+    "import sys",
+    "from openpyxl import Workbook",
+    "wb=Workbook(); ws=wb.active; ws.title='Data'",
+    "ws['A1']='seed'; wb.save(sys.argv[1])",
+  ].join("\n"),
+  [xlsxPath],
+);
+const excelEdited = await host.callTool(
+  "agent_edit_excel_range",
+  { path: "remote-parity.xlsx", range: "Data!B2:C3", content: [["alpha", 11], ["beta", 22]] },
+  { sessionId: "s1" },
+);
+check("agent_edit_excel_range 真写入 2x2 Range", excelEdited.text.includes("4 cells"), excelEdited.text);
+const excelReadBack = await host.callTool(
+  "agent_read_document",
+  { path: "remote-parity.xlsx", sheet: "Data", range: "B2:C3", max_rows: 10, max_cols: 10 },
+  { sessionId: "s1" },
+);
+check(
+  "Excel Range 修改后能结构化读回",
+  excelReadBack.text.includes("alpha") && excelReadBack.text.includes("beta") && excelReadBack.text.includes("22"),
+  excelReadBack.text,
+);
+
+const docxPath = path.join(CWD, "remote-parity.docx");
+await runFixturePython(
+  [
+    "import sys,zipfile",
+    "p=sys.argv[1]",
+    "ct='''<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>'''",
+    "rels='''<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>'''",
+    "doc='''<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body><w:p><w:r><w:t>Before Marker</w:t></w:r></w:p><w:sectPr/></w:body></w:document>'''",
+    "with zipfile.ZipFile(p,'w',zipfile.ZIP_DEFLATED) as z: z.writestr('[Content_Types].xml',ct); z.writestr('_rels/.rels',rels); z.writestr('word/document.xml',doc)",
+  ].join("\n"),
+  [docxPath],
+);
+const docxXml = await host.callTool(
+  "agent_read_docx_xml",
+  { path: "remote-parity.docx", limit: 200 },
+  { sessionId: "s1" },
+);
+check("agent_read_docx_xml 展开正文 OOXML 并带出文本节点", docxXml.text.includes("<w:t>Before Marker</w:t>"), docxXml.text);
+const docxEdited = await host.callTool(
+  "agent_edit_docx_xml",
+  {
+    path: "remote-parity.docx",
+    old_string: "<w:t>Before Marker</w:t>",
+    new_string: "<w:t>After Marker</w:t>",
+    expected_replacements: 1,
+  },
+  { sessionId: "s1" },
+);
+check("agent_edit_docx_xml 精确替换并重新打包 DOCX", docxEdited.text.includes("替换 1 处"), docxEdited.text);
+const docxAfter = await host.callTool(
+  "agent_read_docx_xml",
+  { path: "remote-parity.docx", limit: 200 },
+  { sessionId: "s1" },
+);
+check("DOCX XML 修改后可再次读取且内容已变化", docxAfter.text.includes("<w:t>After Marker</w:t>"), docxAfter.text);
+eq("Excel/DOCX 结构化编辑在 acceptEdits 档不重复弹卡", approvalCalls.length, 0);
+
 const wrote = await host.callTool(
   "agent_write_file",
   { path: "note.md", content: "第一行:桥冒烟\n第二行:替换前\n" },
@@ -438,12 +839,213 @@ const wrote = await host.callTool(
 eq("acceptEdits 档 agent_write_file 不弹卡", approvalCalls.length, 0);
 check("…并且真的写进了 cwd(临时目录)", wrote.text.includes(path.join(CWD, "note.md")), wrote.text);
 
+/* ── 沙箱:文件工具被限制在项目目录里 ────────────────────────────────
+   公网那条通路没有审批闸门,所以给一个沙箱根。这一段把它设成 CWD,验三件事:
+   内正常、外被拒、`..` 逃逸也被拒。 */
+sandboxValue = CWD;
+const insideRead = await host.callTool("agent_read_file", { path: "note.md" }, { sessionId: "s1" });
+check("沙箱内路径正常", insideRead.text.includes("桥冒烟"), insideRead.text);
+
+/* ── ⚠️ **cwd 与沙箱不同时必须以沙箱为准** ─────────────────────────────
+   用户报的真 bug:会话的 `lastCwd`(跟着 `cd` 走)和用户选的沙箱项目**可以是两个不同的
+   目录**。那时如果相对路径按 cwd 解析、却按沙箱校验,结果是**所有相对路径都被拒** ——
+   用户看到的就是"列目录失败 / 读不了文件"。
+
+   这里造出那个形状:cwd 指向 A,沙箱指向 B,读 B 里的相对路径**必须成功**。 */
+const A = mkdtempSync(path.join(tmpdir(), "mcode-cwd-a-"));
+const B = mkdtempSync(path.join(tmpdir(), "mcode-cwd-b-"));
+writeFileSync(path.join(B, "in-b.txt"), "我在沙箱里", "utf8");
+const savedCwd = cwdValue;
+cwdValue = A; // 会话的 lastCwd 指向**别的**目录
+sandboxValue = B; // 用户在设置里选的是 B
+const crossRead = await host.callTool("agent_read_file", { path: "in-b.txt" }, { sessionId: "s1" });
+check(
+  "cwd 与沙箱不同时,相对路径按**沙箱**解析(不是拿过期的 cwd 去撞沙箱)",
+  crossRead.text.includes("我在沙箱里"),
+  crossRead.text,
+);
+const crossWrite = await host.callTool(
+  "agent_write_file",
+  { path: "b-new.md", content: "写在沙箱里" },
+  { sessionId: "s1" },
+);
+check("…写也落在沙箱里,不是 cwd 里", !crossWrite.text.includes("越界"), crossWrite.text);
+check("…而且真的写进了沙箱 B", existsSync(path.join(B, "b-new.md")));
+check("…没写进 cwd A", !existsSync(path.join(A, "b-new.md")));
+cwdValue = savedCwd;
+rmSync(A, { recursive: true, force: true });
+rmSync(B, { recursive: true, force: true });
+sandboxValue = CWD;
+
+/* ── `agent_context`:报的必须是**沙箱**那个项目,不是过期的 cwd ─────────────
+   用户报的 bug:设置里只选了一个项目,agent 却报出另一个(`lastCwd` 缓存里那个)。
+   这里 cwd 与沙箱**故意设成不同**,断言它报的是沙箱那个。 */
+{
+  const ctxA = mkdtempSync(path.join(tmpdir(), "mcode-ctx-a-"));
+  const ctxB = mkdtempSync(path.join(tmpdir(), "mcode-ctx-b-"));
+  const savedCwd2 = cwdValue;
+  cwdValue = ctxA;
+  sandboxValue = ctxB;
+  // `readEnvSnapshot` 要查库,而库根走 `libraryRoot()` → `dataRoot()` → 那个**必须**
+  // 有 `MCODE_SMOKE_DATA_ROOT`(桩见 dataRoot 的 alias,没设就抛)。这一段只是要验
+  // "环境块报的是哪个项目",所以给它一个临时数据根即可。
+  const savedRoot = process.env.MCODE_SMOKE_DATA_ROOT;
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "mcode-ctx-root-"));
+  process.env.MCODE_SMOKE_DATA_ROOT = tmpRoot;
+  const context = await host.callTool("agent_context", {}, { sessionId: "s1" });
+  check(
+    "agent_context 报的可写项目是**沙箱**那个(不是过期的 cwd)",
+    (context.structuredContent?.writable_project as string | undefined) === ctxB,
+    context.structuredContent,
+  );
+  check("…并且明说这个能写", context.text.includes("可写"), context.text);
+  check("…文档库标成只读", context.text.includes("只读"), context.text);
+  if (savedRoot === undefined) delete process.env.MCODE_SMOKE_DATA_ROOT;
+  else process.env.MCODE_SMOKE_DATA_ROOT = savedRoot;
+  rmSync(tmpRoot, { recursive: true, force: true });
+  cwdValue = savedCwd2;
+  rmSync(ctxA, { recursive: true, force: true });
+  rmSync(ctxB, { recursive: true, force: true });
+  sandboxValue = CWD;
+}
+
+// 造一个**确凿在沙箱外**的文件(临时目录的同级),用它验越界。
+const OUTSIDE = mkdtempSync(path.join(tmpdir(), "mcode-outside-smoke-"));
+const outsideFile = path.join(OUTSIDE, "secret.txt");
+writeFileSync(outsideFile, "沙箱外的内容", "utf8");
+const outsideRead = await host.callTool("agent_read_file", { path: outsideFile }, { sessionId: "s1" });
+check("沙箱外的绝对路径被拒", outsideRead.text.includes("越界"), outsideRead.text);
+check("…且没把内容读出来", !outsideRead.text.includes("沙箱外的内容"), outsideRead.text);
+check("…错误里说清了根在哪", outsideRead.text.includes(CWD), outsideRead.text);
+
+const escapeRead = await host.callTool("agent_read_file", { path: "../escape.txt" }, { sessionId: "s1" });
+check("`..` 逃逸被拒", escapeRead.text.includes("越界"), escapeRead.text);
+
+/* 兄弟目录 —— **名字以沙箱根的名字开头**的那种。这条专门钉住 `pathWithin` 里
+   `path.relative` 那步:少了它,`..\CWDname-sibling` 会被纯字符串前缀比较判成
+   在内部(经典漏洞)。 */
+const sibling = `${CWD}-sibling`;
+mkdirSync(sibling, { recursive: true });
+const siblingFile = path.join(sibling, "leak.txt");
+writeFileSync(siblingFile, "兄弟目录的内容", "utf8");
+const siblingRead = await host.callTool("agent_read_file", { path: siblingFile }, { sessionId: "s1" });
+check("同前缀的兄弟目录也被拒(不是纯字符串前缀比较)", siblingRead.text.includes("越界"), siblingRead.text);
+check("…兄弟目录的内容没被读出来", !siblingRead.text.includes("兄弟目录的内容"), siblingRead.text);
+rmSync(sibling, { recursive: true, force: true });
+
+const outsideWrite = await host.callTool(
+  "agent_write_file",
+  { path: path.join(OUTSIDE, "nope.txt"), content: "x" },
+  { sessionId: "s1" },
+);
+check("沙箱外写也被拒", outsideWrite.text.includes("越界"), outsideWrite.text);
+check("…那个文件确实没被创建", !existsSync(path.join(OUTSIDE, "nope.txt")));
+
+// 沙箱内的写照常。
+const insideWrite = await host.callTool(
+  "agent_write_file",
+  { path: "inside-ok.md", content: "沙箱内写" },
+  { sessionId: "s1" },
+);
+check("沙箱内写正常", !insideWrite.text.includes("越界"), insideWrite.text);
+
+/* ── ⚠️ `agent_bash` 的**重定向目标**也要落在沙箱里 ─────────────────────
+   原先 bash 完全不查沙箱:命令里 `> 外面/x` 想写哪儿写哪儿,而文件工具是拦的 ——
+   同一条通路两套判据(2026-09-24 源码审查第 4 条)。
+
+   解析器复用 Pi 那条路的 `extractBashWriteTargets`,所以覆盖面与它一致:
+   `>` / `>>` / `tee` / `dd of=` / `sed -i`。**它是防误操作,不是沙箱** ——
+   `cp`/`mv` 的目标参数、`python -c "open(...).write(...)"` 这类不认。 */
+const bashOutsideWrite = await host.callTool(
+  "agent_bash",
+  // 重定向到一个**确凿在沙箱外**的路径。
+  { command: `echo hi > "${path.join(OUTSIDE, "via-bash.txt")}"` },
+  { sessionId: "s1" },
+);
+check(
+  "agent_bash 重定向到沙箱外被拒",
+  bashOutsideWrite.text.includes("在允许的目录") || bashOutsideWrite.text.includes("之外"),
+  bashOutsideWrite.text,
+);
+check("…那个文件确实没被创建", !existsSync(path.join(OUTSIDE, "via-bash.txt")));
+
+const bashInsideWrite = await host.callTool(
+  "agent_bash",
+  { command: `echo hi > bash-inside.txt` },
+  { sessionId: "s1" },
+);
+check("agent_bash 重定向到沙箱内正常", !bashInsideWrite.text.includes("之外"), bashInsideWrite.text);
+check("…而且真的写出来了", existsSync(path.join(CWD, "bash-inside.txt")));
+
+// 关掉沙箱(null)= 不限制 —— 这条防的是"顺手给所有会话都套上沙箱",那会改掉
+// 本机 claude 引擎那条路一直在用的行为。
+sandboxValue = null;
+const unrestricted = await host.callTool("agent_read_file", { path: outsideFile }, { sessionId: "s1" });
+check("沙箱为 null 时不限制(本机那条路行为不变)", unrestricted.text.includes("沙箱外的内容"), unrestricted.text);
+rmSync(OUTSIDE, { recursive: true, force: true });
+
 const readBack = await host.callTool("agent_read_file", { path: "note.md" }, { sessionId: "s1" });
 check(
   "…agent_read_file 按行号读回来",
   readBack.text.includes("1\t第一行:桥冒烟") && readBack.text.includes("2\t第二行:替换前"),
   readBack.text,
 );
+
+const wroteSecond = await host.callTool(
+  "agent_write_file",
+  { path: "second.txt", content: "第二个文件\n批量读取命中\n" },
+  { sessionId: "s1" },
+);
+check("批量读的第二个文件先写成功", wroteSecond.text.includes("second.txt"), wroteSecond.text);
+const batchRead = await host.callTool(
+  "agent_read_files",
+  { paths: ["note.md", "second.txt", "missing.txt"], limit_per_file: 20 },
+  { sessionId: "s1" },
+);
+check(
+  "agent_read_files 一次带回多个文件且单个缺失不拖垮整批",
+  batchRead.text.includes("第一行:桥冒烟") &&
+    batchRead.text.includes("批量读取命中") &&
+    batchRead.text.includes("missing.txt") &&
+    batchRead.text.includes("失败:"),
+  batchRead.text,
+);
+
+// >2MB 不再整文件拒绝；offset/limit 走流式读取，适合日志。
+writeFileSync(path.join(CWD, "huge.log"), "stream-line\n".repeat(190_000), "utf8");
+const hugeRead = await host.callTool(
+  "agent_read_file",
+  { path: "huge.log", offset: 189_995, limit: 3 },
+  { sessionId: "s1" },
+);
+check(
+  "agent_read_file 对大文件按范围流式读而不是报太大",
+  hugeRead.text.includes("189995\tstream-line") && hugeRead.text.includes("大文件流式读取"),
+  hugeRead.text.slice(0, 600),
+);
+
+
+const info = await host.callTool("agent_file_info", { path: "note.md" }, { sessionId: "s1" });
+check(
+  "agent_file_info 返回文件元数据和文本行数",
+  info.text.includes("type: file") && info.text.includes("line_count:") && info.text.includes("modified_at:"),
+  info.text,
+);
+
+approvalCalls.length = 0;
+const moved = await host.callTool(
+  "agent_move_file",
+  { source: "second.txt", destination: "moved/second-renamed.txt" },
+  { sessionId: "s1" },
+);
+eq("acceptEdits 下 agent_move_file 不弹审批", approvalCalls.length, 0);
+check("agent_move_file 真正移动了文件", moved.text.includes("second-renamed.txt"), moved.text);
+const movedRead = await host.callTool(
+  "agent_read_file",
+  { path: "moved/second-renamed.txt", limit: 20 },
+  { sessionId: "s1" },
+);
+check("移动后的路径可直接读取", movedRead.text.includes("批量读取命中"), movedRead.text);
 
 const edited = await host.callTool(
   "agent_edit_file",
@@ -457,6 +1059,69 @@ check("…文件内容真的变了", readAfter.text.includes("2\t第二行:替�
 
 const listed = await host.callTool("agent_list_dir", {}, { sessionId: "s1" });
 check("agent_list_dir 列出了刚写的文件", listed.text.includes("note.md"), listed.text);
+
+await host.callTool(
+  "agent_write_file",
+  { path: "nested/level/two.md", content: "tree" },
+  { sessionId: "s1" },
+);
+const tree = await host.callTool(
+  "agent_list_dir",
+  { depth: 3, max_entries: 50 },
+  { sessionId: "s1" },
+);
+check(
+  "agent_list_dir depth>1 一次看到多层项目结构",
+  tree.text.includes("nested/") && tree.text.includes("nested/level/") && tree.text.includes("nested/level/two.md"),
+  tree.text,
+);
+
+
+await host.callTool(
+  "agent_write_file",
+  { path: "nested/level/search-target.txt", content: "before-context\nneedle-alpha\nafter-context\n" },
+  { sessionId: "s1" },
+);
+const contentSearch = await host.callTool(
+  "agent_search_start",
+  {
+    search_type: "content",
+    pattern: "needle-alpha",
+    literal: true,
+    context_lines: 1,
+    wait_ms: 1000,
+    max_results: 20,
+  },
+  { sessionId: "s1" },
+);
+const searchId = /search_id:\s*(search_[a-z0-9]+)/i.exec(contentSearch.text)?.[1] ?? "";
+check("agent_search_start 返回 opaque search_id", searchId.startsWith("search_"), contentSearch.text);
+check(
+  "后台内容搜索首批结果包含命中和上下文",
+  contentSearch.text.includes("needle-alpha") && contentSearch.text.includes("before-context") && contentSearch.text.includes("after-context"),
+  contentSearch.text,
+);
+const searchList = await host.callTool("agent_search_list", {}, { sessionId: "s1" });
+check("agent_search_list 列出当前对话搜索", searchList.text.includes(searchId), searchList.text);
+const searchRead = await host.callTool(
+  "agent_search_read",
+  { search_id: searchId, offset: 0, length: 20 },
+  { sessionId: "s1" },
+);
+check("agent_search_read 可分页重读已有结果", searchRead.text.includes("needle-alpha"), searchRead.text);
+const foreignSearchStop = await host.callTool(
+  "agent_search_stop",
+  { search_id: searchId },
+  { sessionId: "another-session" },
+);
+check("搜索会话绑定发起对话，别的会话不能停", foreignSearchStop.text.includes("不属于当前对话"), foreignSearchStop.text);
+
+const fileSearch = await host.callTool(
+  "agent_search_start",
+  { search_type: "files", pattern: "two.md", literal: true, wait_ms: 1000, max_results: 20 },
+  { sessionId: "s1" },
+);
+check("后台文件名搜索也能找到多层文件", fileSearch.text.includes("nested/level/two.md"), fileSearch.text);
 
 const globbed = await host.callTool("agent_glob", { pattern: "**/*.md" }, { sessionId: "s1" });
 check("agent_glob 按模式找到了它", globbed.text.includes("note.md"), globbed.text);
@@ -475,6 +1140,262 @@ eq("agent_bash 弹了卡(acceptEdits 不覆盖 bash)", approvalCalls.length, 1);
 eq("…卡上是裸名", approvalCalls[0].toolName, "agent_bash");
 check("…命令真的跑了,输出带回来了", bashed.text.includes("bridge-smoke-9876"), bashed.text);
 check("…退出码也报了", bashed.text.includes("exit: 0"), bashed.text);
+
+/* 持久进程:启动一次，后续 stdin/stdout 连续使用；读/停不重复审批。 */
+approvalCalls.length = 0;
+
+approvalCalls.length = 0;
+const systemProcesses = await host.callTool(
+  "agent_list_processes",
+  { filter: String(process.pid), limit: 20 },
+  { sessionId: "s1" },
+);
+check("agent_list_processes 能看到当前 smoke 的真实 OS PID", systemProcesses.text.includes(String(process.pid)), systemProcesses.text);
+eq("列系统进程是只读，不弹审批", approvalCalls.length, 0);
+
+const killProbe = spawn(process.execPath, ["-e", "setTimeout(()=>process.exit(0),30000)"], {
+  windowsHide: true,
+  stdio: "ignore",
+});
+if (!killProbe.pid) throw new Error("kill probe 没拿到 pid");
+approvalCalls.length = 0;
+const killed = await host.callTool(
+  "agent_kill_process",
+  { pid: killProbe.pid, force: true },
+  { sessionId: "s1" },
+);
+eq("agent_kill_process 即使在 acceptEdits 也必须审批", approvalCalls.length, 1);
+check("审批后能终止指定真实 OS PID", !killed.isError, killed.text);
+approvalCalls.length = 0;
+
+const processStarted = await host.callTool(
+  "agent_process_start",
+  {
+    command:
+      `node -e "process.stdin.setEncoding('utf8');process.stdin.on('data',d=>console.log('persistent-smoke:'+d.trim()));console.log('process-ready')"`,
+    wait_ms: 500,
+    timeout_ms: 15_000,
+  },
+  { sessionId: "s1" },
+);
+eq("agent_process_start 作为可执行动作要审批", approvalCalls.length, 1);
+const processId = /process_id:\s*(proc_[a-z0-9]+)/i.exec(processStarted.text)?.[1] ?? "";
+check("持久进程启动返回 opaque process_id", processId.startsWith("proc_"), processStarted.text);
+
+approvalCalls.length = 0;
+const processWritten = await host.callTool(
+  "agent_process_write",
+  { process_id: processId, input: "2468", wait_ms: 1200 },
+  { sessionId: "s1" },
+);
+eq("agent_process_write 仍按可执行动作审批", approvalCalls.length, 1);
+check("写 stdin 后同一次调用就拿到新输出", processWritten.text.includes("persistent-smoke:2468"), processWritten.text);
+
+approvalCalls.length = 0;
+const processList = await host.callTool("agent_process_read", {}, { sessionId: "s1" });
+check("agent_process_read 省略 id 可列当前对话进程", processList.text.includes(processId), processList.text);
+eq("列/读持久进程不重复审批", approvalCalls.length, 0);
+const processRead = await host.callTool(
+  "agent_process_read",
+  { process_id: processId, cursor: 0, max_chars: 20_000 },
+  { sessionId: "s1" },
+);
+check("持久进程可按 cursor 重读已有输出", processRead.text.includes("persistent-smoke:2468"), processRead.text);
+
+/* ── 结构化输出 + 阻塞读 ──────────────────────────────────────────────
+   两条都对着用户报的问题:
+   ① 返回值带 structuredContent,模型不必从文本里正则抠 next_cursor;
+   ② read 默认**阻塞等到有输出**,而不是 5 秒一到回空、逼模型空轮询。 */
+eq(
+  "进程工具在 tools/list 里带 outputSchema",
+  typeof host.listTools().find((t) => t.name === "agent_process_read")?.outputSchema,
+  "object",
+);
+
+/* ── **每个**工具都要有 outputSchema，且每个 schema 都得有 text ──────────────
+   用户反复报"很多工具还是不满足这个需求"(ChatGPT 对**每个**工具都提示
+   「建议添加 outputSchema」)。所以这条断言是**全表**的,不是挑几个:
+
+   ① 表里**一个都不能少** —— 少一个,那个工具在 ChatGPT 里就还挂着那条提示;
+   ② 每个 schema 的 `required` 里必须有 `text` —— `callTool` 总是把文本投影塞进
+      `structuredContent.text`,schema 不认这个字段的话,严格客户端会判失败
+      (见 `mcp-outputschema-must-pair-structuredcontent` 那条记忆)。 */
+const allTools = host.listTools();
+const missingSchema = allTools.filter((t) => typeof t.outputSchema !== "object").map((t) => t.name);
+eq("**每个**工具都有 outputSchema(一个都不能少)", missingSchema, []);
+const schemasWithoutText = allTools
+  .filter((t) => {
+    const req = (t.outputSchema as { required?: unknown[] } | undefined)?.required;
+    return !Array.isArray(req) || !req.includes("text");
+  })
+  .map((t) => t.name);
+eq("每个 outputSchema 的 required 里都有 text", schemasWithoutText, []);
+
+const processOutputSchema = host.listTools().find((t) => t.name === "agent_process_read")?.outputSchema;
+check(
+  "…outputSchema 描述了 next_cursor / has_more",
+  JSON.stringify(processOutputSchema ?? "").includes("next_cursor") &&
+    JSON.stringify(processOutputSchema ?? "").includes("has_more"),
+  processOutputSchema,
+);
+const structuredRead = await host.callTool(
+  "agent_process_read",
+  { process_id: processId, cursor: 0 },
+  { sessionId: "s1" },
+);
+check(
+  "tools/call 的结果带 structuredContent",
+  typeof structuredRead.structuredContent === "object" && structuredRead.structuredContent !== null,
+  structuredRead.structuredContent,
+);
+eq("…里面的 process_id 对得上", structuredRead.structuredContent?.process_id, processId);
+check("…output 就在字段里,不用解析文本", typeof structuredRead.structuredContent?.output === "string", structuredRead.structuredContent);
+
+/* ── 阻塞读:进程先沉默 2 秒,再一次调用就该等到那批输出。
+   改前 MAX_PROCESS_WAIT_MS=5000 + 默认 wait_ms=0 会让这次立刻回空 —— 这正是
+   "断断续续汇报"的机制本身。这条断言就是钉住那个行为的。 */
+const sleepy = await host.callTool(
+  "agent_process_start",
+  {
+    command: `node -e "setTimeout(()=>{console.log('late-output');},2000)"`,
+    wait_ms: 0,
+    timeout_ms: 15_000,
+  },
+  { sessionId: "s1" },
+);
+const sleepyId = /process_id:\s*(proc_[a-z0-9]+)/i.exec(sleepy.text)?.[1] ?? "";
+check("沉默进程已启动", sleepyId.startsWith("proc_"), sleepy.text);
+const startedAt = Date.now();
+const blockedRead = await host.callTool(
+  "agent_process_read",
+  // 不传 wait_ms —— 验的就是**默认值**会阻塞(旧默认 0 会立刻回空)。
+  { process_id: sleepyId, cursor: 0 },
+  { sessionId: "s1" },
+);
+const waited = Date.now() - startedAt;
+check(
+  "读默认阻塞,一次调用等到 2 秒后才出现的输出",
+  blockedRead.text.includes("late-output"),
+  blockedRead.text,
+);
+check("…确实等了(不是立刻返回)", waited >= 1500, waited);
+check(
+  "…而且进程结束时 status 不再是 running",
+  blockedRead.structuredContent?.status === "exited",
+  blockedRead.structuredContent,
+);
+
+/* ── ⚠️ **有输出就快点回,别等满 55 秒** ─────────────────────────────
+   用户报的:"长任务吐了一小段重要日志,却要等好久才交给模型"。
+
+   原先的判据是"攒满 maxChars(2 万字符)才回"—— 于是"跑一个长任务、它每隔一会吐一行
+   进度"这种最常见的形状,每次都要等满 55 秒,而模型明明已经能读了。
+
+   这里起一个**吐 2 行、然后一直活着**的进程(短进程会因为"进程结束"而立刻返回,验不出
+   这条),读一次:应当在**很短**时间内就拿到那两行,而不是等满默认的 55 秒。 */
+const chatty = await host.callTool(
+  "agent_process_start",
+  {
+    command: `node -e "console.log('progress-1');setTimeout(()=>console.log('progress-2'),400);setInterval(()=>{},1000)"`,
+    wait_ms: 0,
+    timeout_ms: 20_000,
+  },
+  { sessionId: "s1" },
+);
+const chattyId = /process_id:\s*(proc_[a-z0-9]+)/i.exec(chatty.text)?.[1] ?? "";
+check("长任务进程起来了", chattyId.startsWith("proc_"), chatty.text);
+const chattyStartedAt = Date.now();
+const chattyRead = await host.callTool(
+  "agent_process_read",
+  // 不传 wait_ms —— 验的就是默认行为:有输出时**不该**占满 55 秒。
+  { process_id: chattyId, cursor: 0 },
+  { sessionId: "s1" },
+);
+const chattyWaited = Date.now() - chattyStartedAt;
+check(
+  "**有输出可读时不占满 waitMs**(不再等满 55 秒才交给模型)",
+  chattyWaited < 10_000,
+  { waited: chattyWaited },
+);
+check("…而且确实拿到了那两行", chattyRead.text.includes("progress-1"), chattyRead.text);
+await host.callTool("agent_process_stop", { process_id: chattyId }, { sessionId: "s1" });
+
+/* ── 上限本身被抬高了:沉默 **6 秒**(长于旧的 5 秒上限),显式传 wait_ms=55000
+   应该照样等到。若上限还是 5000,这次会被截断、回"(暂无新输出)"。
+   为什么必须有这条:上一条用的是"沉默 2 秒",5 秒上限也够等到它 —— 所以那条**钉不住
+   上限的值**,只钉住了"默认会阻塞"(变异验证 M1 因此不红,这是变异不等价,不是断言弱)。
+   这一条才真正对着"从 5 秒抬到 55 秒"那处改动。 */
+const slow = await host.callTool(
+  "agent_process_start",
+  { command: `node -e "setTimeout(()=>{console.log('slow-output');},6000)"`, wait_ms: 0, timeout_ms: 20_000 },
+  { sessionId: "s1" },
+);
+const slowId = /process_id:\s*(proc_[a-z0-9]+)/i.exec(slow.text)?.[1] ?? "";
+const slowRead = await host.callTool(
+  "agent_process_read",
+  { process_id: slowId, cursor: 0, wait_ms: 55_000 },
+  { sessionId: "s1" },
+);
+check(
+  "等待上限被抬高:显式 wait_ms=55000 能等到 6 秒后的输出",
+  slowRead.text.includes("slow-output"),
+  slowRead.text,
+);
+await host.callTool("agent_process_stop", { process_id: slowId }, { sessionId: "s1" });
+// 收掉它:虽然它自己跑完了,但 Windows 下残留的句柄会锁住 CWD,让后面的 rmSync 报 EBUSY。
+await host.callTool("agent_process_stop", { process_id: sleepyId }, { sessionId: "s1" });
+// 上面这次 start 是"可执行动作"、**吃了一枚审批**;后面的断言在数 approvalCalls,
+// 不重置的话会把我的临时进程算到它们头上。
+approvalCalls.length = 0;
+
+
+const managedSessions = await host.callTool("agent_process_sessions", {}, { sessionId: "s1" });
+check("agent_process_sessions 显式列出持久进程会话", managedSessions.text.includes(processId), managedSessions.text);
+
+const foreignStop = await host.callTool(
+  "agent_process_stop",
+  { process_id: processId },
+  { sessionId: "another-session" },
+);
+check(
+  "持久进程 id 绑定发起对话,别的会话不能读/停",
+  foreignStop.text.includes("不属于当前对话"),
+  foreignStop.text,
+);
+const stillRunning = await host.callTool(
+  "agent_process_read",
+  { process_id: processId, cursor: 0 },
+  { sessionId: "s1" },
+);
+check("跨会话 stop 被拒后原进程仍在", stillRunning.text.includes("status: running"), stillRunning.text);
+
+const processStopped = await host.callTool(
+  "agent_process_stop",
+  { process_id: processId, cursor: 0 },
+  { sessionId: "s1" },
+);
+eq("停止自己创建的进程属于安全清理,不审批", approvalCalls.length, 0);
+check(
+  "agent_process_stop 最终不再是 running",
+  !processStopped.text.includes("status: running"),
+  processStopped.text,
+);
+
+approvalCalls.length = 0;
+const sshStatus = await host.callTool("agent_ssh_status", {}, { sessionId: "s1" });
+eq("agent_ssh_status 是只读工具，不弹审批", approvalCalls.length, 0);
+check("没有连接时 status 给出可理解结果", sshStatus.text.includes("没有 SSH 连接"), sshStatus.text);
+
+approvalCalls.length = 0;
+allowDecision = false;
+const remoteStartDenied = await host.callTool(
+  "agent_remote_job_start",
+  { connection_id: "ssh_missing", command: "echo 不该跑", job_id: "smoke-job" },
+  { sessionId: "s1" },
+);
+eq("远程 job 启动属于有副作用动作，要审批", approvalCalls.length, 1);
+eq("拒绝远程 job 启动后不执行 handler", remoteStartDenied.isError, true);
+check("远程 job 拒绝沿用统一审批理由", remoteStartDenied.text.includes("我现在不想动库里东西"), remoteStartDenied.text);
 
 allowDecision = false;
 const bashDenied = await host.callTool(

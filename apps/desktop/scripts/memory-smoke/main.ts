@@ -15,10 +15,11 @@
  *      候选名单 / data.trigger 进出)。
  *   5. 记忆注入开/关两态("on" / "true" / true 开;"off" / 不传 / 空库不开)。
  *   6. 维护纯函数(findStale 过期线、suggestDedup 标题相等与近似正文)。
+ *   7. 按相关度检索(MEM-04)—— 相关的**旧**条目要压过不相关的**新**条目。
  *
  * Run: scripts/memory-smoke/run.sh
  */
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { MEMORY_CATEGORIES, MEMORY_PARAM_KEY } from "@contracts/memory";
@@ -33,10 +34,18 @@ import {
   deleteMemoryFile,
   listMemoryFiles,
   memoryCategories,
+  memoryRoot,
   readMemoryFile,
   saveMemoryFile,
 } from "@main/memory/store.js";
-import { BODY_CAP, DEFAULT_LIMIT, SNAPSHOT_CAP, memorySnapshotFor } from "@main/memory/retrieval.js";
+import {
+  BODY_CAP,
+  DEFAULT_LIMIT,
+  SNAPSHOT_CAP,
+  memorySnapshotFor,
+  queryTerms,
+  searchMemory,
+} from "@main/memory/retrieval.js";
 // 5b 段要断言的是**真货**的参数表(内置清单那六种),手抄一份测的是抄本。
 import { builtinManifestById } from "@main/orchestration/nodeTypes.js";
 import { findStale, suggestDedup, type DedupCandidate } from "@main/memory/maintenance.js";
@@ -216,9 +225,17 @@ check("超长单条正文被截断并说出口", memorySnapshotFor().includes("�
 for (let i = 1; i <= 12; i += 1) {
   handWrite(DATA2, `failures/积条目${String(i).padStart(2, "0")}.md`, `积条目${i}`, T0 + 10_000 + i, "条目正文一二三四五六七。".repeat(120));
 }
+const cappedSnapshot = memorySnapshotFor(undefined, DEFAULT_LIMIT + 6);
 check(
   `整段超过 SNAPSHOT_CAP(${SNAPSHOT_CAP})后收手并注明`,
-  memorySnapshotFor(undefined, DEFAULT_LIMIT + 6).includes("(记忆快照过长"),
+  cappedSnapshot.includes("(记忆快照过长"),
+);
+check("整段输出严格不超过 SNAPSHOT_CAP", cappedSnapshot.length <= SNAPSHOT_CAP, cappedSnapshot.length);
+const beforeCapNotice = cappedSnapshot.split("\n\n(记忆快照过长")[0] ?? "";
+check(
+  "整段截断只发生在完整记忆条目之间(不把正文从中间劈开)",
+  beforeCapNotice.trimEnd().endsWith("…(已截断)"),
+  beforeCapNotice.slice(-100),
 );
 
 process.env.MCODE_SMOKE_DATA_ROOT = DATA3;
@@ -356,6 +373,129 @@ eq("a 在传入序列前", titlePair !== undefined && titlePair.a === "rules/a.m
 const contentPair = pairs.find((p) => p.a === "rules/c.md" && p.b === "rules/d.md");
 check("近似正文过 0.85 线", contentPair !== undefined && contentPair.score >= 0.85, pairs);
 check("无关的两条不判重", !pairs.some((p) => p.a === "rules/e.md" || p.b === "rules/e.md"));
+
+/* ────────────────────────── 7. 按相关度检索(MEM-04) ────────────────────────── */
+
+// 这一段测的是**模型那一侧**要用的检索:从前唯一的取法是 `updatedAt` 倒序,
+// 记忆库一大,「用户三年前说过引用用 APA」那条永远不会出现在前 12 条里 ——
+// 而它恰恰是最该看的那条(记忆的价值就在"不用重复说第二遍")。
+//
+// ⚠️ 时间戳要**拉开**:这一段的判据是"相关的旧条目要压过不相关的新条目",
+// 两条挨着的话按时间排也能过,那条断言就是空的(变异验证会抓不到)。
+
+console.log("场景 7:按相关度检索");
+
+// 先把前面场景留下的文件清干净,免得被干扰
+process.env.MCODE_SMOKE_DATA_ROOT = DATA4;
+for (const m of listMemoryFiles()) deleteMemoryFile(m.path);
+
+const OLD = 1_500_000_000_000; // 很旧
+const NEW = 1_700_000_000_000; // 很新
+saveMemoryFile({
+  path: "rules/引用规范.md",
+  title: "引用规范",
+  content: "引用一律用 APA 格式,期刊名写全称。",
+});
+// 这条**更新**,但内容和"引用"毫无关系 —— 用来证明排序不是按时间
+saveMemoryFile({
+  path: "project/某项目.md",
+  title: "某项目",
+  content: "这个仓库用 pnpm 管依赖,测试跑 run-all-smokes.sh。",
+});
+// 把时间戳压出差距(store 每次写都会盖 now,所以手改 frontmatter 的 updatedAt)
+const ruleFile = join(memoryRoot(), "rules", "引用规范.md");
+writeFileSync(ruleFile, readFileSync(ruleFile, "utf8").replace(/updatedAt: \d+/, `updatedAt: ${OLD}`));
+const projFile = join(memoryRoot(), "project", "某项目.md");
+writeFileSync(projFile, readFileSync(projFile, "utf8").replace(/updatedAt: \d+/, `updatedAt: ${NEW}`));
+
+// 查询为空 → 退回按时间(这是"列一下记忆"那条合理请求,不是 bug)。
+// ⚠️ 这条要**紧跟在钉过时间戳之后**:`saveMemoryFile` 每次都盖 `now`,下面再写几条
+// 新的,「最新的」就换人了 —— 第一版把它放在最后,拿到的是刚写的 乙.md。
+eq("空查询退回按时间:最新的在前", searchMemory("")[0]?.meta.path, "project/某项目.md");
+
+const hits = searchMemory("引用格式");
+eq("命中条数 = 1", hits.length, 1);
+eq("命中的是那条规则(不是更新的项目条)", hits[0]?.meta.path, "rules/引用规范.md");
+check(
+  "★ 相关的**旧**条目压过不相关的**新**条目(判据立在时间戳真的拉开了上)",
+  hits[0]?.meta.updatedAt === OLD,
+  { hitAt: hits[0]?.meta.updatedAt, OLD, NEW },
+);
+
+/**
+ * ⚠️ **上面那三条是空的,如果只有一条命中。**
+ *
+ * 变异验证抓到了这一点:把排序改成纯按时间,这三条**照样绿** —— 因为候选只有一个,
+ * 怎么排都是它。「相关度排序」这件事只有当**两条都命中、而相关度与新旧相反**时才被
+ * 真的测到。所以下面补一组。
+ *
+ * ⚠️ **`rules/引用规范.md` 也会命中** —— 它的正文里就有「引用」和「格式」两个字
+ * (`引用一律用 APA 格式`)。所以不是"两条",是三条;判据只能立在**谁排第一**上,
+ * 不能立在总数上。
+ */
+saveMemoryFile({
+  path: "rules/引用与格式.md",
+  title: "引用与格式",
+  content: "引用格式这件事说三遍:引用格式要统一,引用格式别两套。",
+});
+saveMemoryFile({
+  path: "project/顺带提到.md",
+  title: "顺带提到",
+  content: "正文里顺带提了一次引用格式,就一次。",
+});
+const twoHits = searchMemory("引用格式");
+check("三条都命中(否则下面的排序断言是空的)", twoHits.length === 3, twoHits.map((h) => h.meta.path));
+eq("★ 同样命中时,更相关的那条排第一(不是更新的那条)", twoHits[0]?.meta.path, "rules/引用与格式.md");
+check(
+  "★ 而且它确实是靠打分赢的:分数严格高于第二名",
+  (twoHits[0]?.score ?? 0) > (twoHits[1]?.score ?? 0),
+  twoHits.map((h) => [h.meta.path, h.score]),
+);
+
+// 标题命中要比正文命中的值钱 —— 标题是这条记忆的自我描述
+saveMemoryFile({ path: "rules/甲.md", title: "无关标题", content: "正文里提到 变量 一次。" });
+saveMemoryFile({ path: "rules/乙.md", title: "变量 命名", content: "和那个词没有别的关系。" });
+const byTitle = searchMemory("变量");
+eq("标题命中排在正文命中前面", byTitle[0]?.meta.path, "rules/乙.md");
+
+// 打分看完整正文，但返回结果仍受 BODY_CAP 保护；命中在深处时预览要移到命中附近。
+saveMemoryFile({
+  path: "experiences/long-tail.md",
+  title: "unrelated long body",
+  content: "x".repeat(BODY_CAP + 80) + " deep_tail_keyword",
+});
+const tailHits = searchMemory("deep_tail_keyword");
+eq("长正文 BODY_CAP 之后的关键词仍能搜到", tailHits[0]?.meta.path, "experiences/long-tail.md");
+check(
+  "深处命中时返回预览包含关键词,而不是只给无关开头",
+  (tailHits[0]?.body ?? "").includes("deep_tail_keyword") && (tailHits[0]?.body ?? "").startsWith("…(前文已截断)"),
+  tailHits[0]?.body,
+);
+check("搜索正文预览严格不超过 BODY_CAP", (tailHits[0]?.body.length ?? Infinity) <= BODY_CAP, tailHits[0]?.body.length);
+
+// 正文词频只计前 5 次：既防重复词霸榜，也验证优化后的 indexOf 计数没有改语义。
+saveMemoryFile({
+  path: "experiences/repeat-cap.md",
+  title: "unrelated repetition",
+  content: "repeat_cap_token ".repeat(20),
+});
+const repeated = searchMemory("repeat_cap_token");
+eq("正文同一词重复很多次时分数封顶为 5", repeated[0]?.score, 5);
+
+// 空查询按时间列最近记忆时，空正文不能先占掉 limit 再被过滤。
+handWrite(DATA4, "failures/empty-newest.md", "空但最新", 9_000_000_000_000, "");
+const recentOne = searchMemory("", { limit: 1 });
+eq("空查询 limit=1 仍能返回一条有效记忆", recentOne.length, 1);
+check("空正文不会吃掉空查询的 limit 名额", recentOne[0]?.meta.path !== "failures/empty-newest.md", recentOne[0]?.meta.path);
+
+// 有查询但一条都不命中 → **空数组**(不许拿无关的凑数)
+eq("不命中就返回空", searchMemory("量子纠缠拓扑绝缘体").length, 0);
+// 类目过滤
+eq("限定类目时只搜那一类", searchMemory("变量", { category: "project" }).length, 0);
+// 查词切分:中文按双字切,所以「引用格式」这种短语能命中「引用一律用 APA 格式」;
+// 整句当一个词的话第一条早就命不中了。
+check("中文双字切词:「引用格式」切出「引用」", queryTerms("引用格式").includes("引用"));
+check("西文按非字母数字切", queryTerms("APA cite").includes("apa"));
 
 /* ────────────────────────── 入口节点:那一段不进聊天框 ────────────────────────── */
 

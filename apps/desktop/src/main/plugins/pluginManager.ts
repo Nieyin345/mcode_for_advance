@@ -996,9 +996,11 @@ export interface PluginSkillSource {
 }
 
 /** {@link PluginSkillSource} 版本 —— 需要来源标记的调用点用它。 */
-export async function getPluginSkillSources(): Promise<PluginSkillSource[]> {
+export async function getPluginSkillSources(pluginNames?: readonly string[]): Promise<PluginSkillSource[]> {
   const out: PluginSkillSource[] = [];
+  const allow = pluginNames && pluginNames.length > 0 ? new Set(pluginNames) : null;
   for (const p of await getEnabledPlugins()) {
+    if (allow && !allow.has(p.name)) continue;
     for (const rootDir of pluginSkillsDirs(p.rootDir, p.manifest)) {
       out.push({ rootDir, builtin: p.builtin === true });
     }
@@ -1010,8 +1012,8 @@ export async function getPluginSkillSources(): Promise<PluginSkillSource[]> {
  *  appended to Codex's `skills/extraRoots/set` and Pi's
  *  `additionalSkillPaths`. A manifest may declare multiple skills roots
  *  (Claude's string[] form). */
-export async function getEnabledPluginSkillRoots(): Promise<string[]> {
-  return (await getPluginSkillSources()).map((s) => s.rootDir);
+export async function getEnabledPluginSkillRoots(pluginNames?: readonly string[]): Promise<string[]> {
+  return (await getPluginSkillSources(pluginNames)).map((s) => s.rootDir);
 }
 
 /** 一个已启用插件提供的工作流节点类型目录。

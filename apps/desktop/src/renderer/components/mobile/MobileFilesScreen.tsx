@@ -15,7 +15,7 @@ import { api } from "@renderer/lib/api.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { cn } from "@renderer/lib/cn.js";
 import type { FileTreeEntry } from "@contracts/ipc";
-import { FileViewerOverlay } from "./FileViewer.js";
+import { FileViewerOverlay } from "./MobileFileViewer.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { IconFolder, IconFolderOpen, IconFile, IconChevronRight, IconArrowUp, IconLoader2 } from "@renderer/lib/icons.js";
 

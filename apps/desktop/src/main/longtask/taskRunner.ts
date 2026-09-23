@@ -322,8 +322,33 @@ class LongTaskRunner {
         });
       }
     })().catch((err: unknown) => {
-      // 不变量 ①:这条路从事件流里进来,异常只进日志。
-      log.warn(`[longtask] 续轮失败:${(err as Error).message}`);
+      // 不变量 ①:这条路从事件流里进来,异常只进日志 —— **但不能只写日志**。
+      //
+      // ⚠️ 这里原来只有 `log.warn` 就完了。后果:续轮那一步抛了异常(比如 `sendTurn`
+      // 崩了),任务**永远停在 running**,而没人知道 —— 用户看到状态条说"在跑",
+      // 实际它再也不会推进。这正是"状态仍为 running、实际不再推进"那个坑
+      // (2026-09-24 源码审查第 4 条)。
+      //
+      // 现在:异常也**必须**给任务收个尾。选 `blocked` 而不是别的 —— 语义是"卡住了、
+      // 需要人来推一把",用户手动发一句「继续」就能接上(与上面"会话忙"那条分支同一个
+      // 语义、同一句提示)。
+      log.error(`[longtask] 续轮失败:${(err as Error).message}`);
+      try {
+        const entry = this.active.get(sessionId);
+        if (entry) {
+          this.active.delete(sessionId);
+          if (entry.timer !== undefined) clearTimeout(entry.timer);
+          const done = LongTaskRepo.finish(
+            entry.id,
+            "blocked",
+            `续轮出错(${(err as Error).message})—— 可在对话里发「继续」接上`,
+          );
+          if (done) this.emit(done);
+        }
+      } catch (cleanupErr) {
+        // 收尾本身再炸就真没办法了 —— 但仍要记下来,别静默。
+        log.error(`[longtask] 续轮失败后的收尾也失败:${(cleanupErr as Error).message}`);
+      }
     });
   }
 

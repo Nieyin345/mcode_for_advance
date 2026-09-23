@@ -243,7 +243,7 @@ const MAX_BINARY_BYTES = 20 * 1024 * 1024;
  * `pdf_path`。两者不会同时有,顺序只决定"万一都写了谁说话"——真出现那种记录时,
  * `file_path` 是更近的那一层(条目创建时就带着的那份)。
  */
-function entryRootAbsPath(item: LibraryItem, which?: "pdf" | "md"): string | null {
+export function entryRootAbsPath(item: LibraryItem, which?: "pdf" | "md"): string | null {
   // 指名的那一份:**只认它**,没有就是没有(不拿另一样顶上)
   if (which === "md") return item.mdPath ? fromLibraryRelative(item.mdPath) : null;
   if (which === "pdf") {

@@ -45,9 +45,9 @@ import { AppearancePanel } from "./AppearancePanel.js";
 import { ShortcutsPanel } from "./ShortcutsPanel.js";
 import { GesturesPanel } from "./GesturesPanel.js";
 import { GeneralPanel } from "./GeneralPanel.js";
-import { GitPanel } from "./GitPanel.js";
-import { TerminalPanel } from "./TerminalPanel.js";
-import { BrowserPanel } from "./BrowserPanel.js";
+import { SettingsGitPanel } from "./SettingsGitPanel.js";
+import { SettingsTerminalPanel } from "./SettingsTerminalPanel.js";
+import { SettingsBrowserPanel } from "./SettingsBrowserPanel.js";
 import { LspLanguagesPanel } from "./LspLanguagesPanel.js";
 import { NotificationsPanel } from "./NotificationsPanel.js";
 import { VoicePanel } from "./VoicePanel.js";
@@ -316,9 +316,9 @@ export function SettingsPage() {
           {active === "memory" && <MemoryExplorerPanel />}
           {active === "plugins" && <PluginsPanel />}
           {active === "notifications" && <NotificationsPanel />}
-          {active === "git" && <GitPanel />}
-          {active === "terminal" && <TerminalPanel />}
-          {active === "browser" && <BrowserPanel />}
+          {active === "git" && <SettingsGitPanel />}
+          {active === "terminal" && <SettingsTerminalPanel />}
+          {active === "browser" && <SettingsBrowserPanel />}
           {active === "lsp-languages" && <LspLanguagesPanel />}
           {active === "monitoring" && <MonitoringPanel />}
           {active === "usage" && <UsagePanel />}

@@ -138,9 +138,25 @@ export interface StartTurnRequest {
    *  (改了档案,已经开出去的对话不跟着变)。混在一个字段里之后,"为什么改了档案它没变、
    *  换了工作流它却变了"就再也说不清了。
    *
-   *  Pi / Codex 现在也拿不到这个字段(它们连 `workflowPrompt` 都没读)。挂在这里是让
-   *  它们将来接上时只差一行 append —— 与工作流当初的写法一致。 */
+   *  三个 provider 都经 `turnContextSections` 消费这一层；差异只剩各自用哪条原生
+   *  system/developer-instructions 通道，不再各自维护一份提示词拼装。 */
   agentPrompt?: string;
+  /** 长期记忆背景。与角色/工作流一样由 host 解析好，provider 只负责放进
+   *  自己原生的 system/developer-instructions 通道。普通主对话每轮刷新；side/node/
+   *  automation 不自动带，避免绕过它们各自明确的记忆开关/快照语义。 */
+  memoryPrompt?: string;
+  /** **环境背景** —— 用户有哪些项目、各自在哪，以及文档库的根与库里有什么。
+   *
+   *  与上面三个同一层、同一条路:**host 现查好、拼成字符串,提供方只 append**。
+   *  单列一个字段的理由同 `agentPrompt` —— 它的可变性又是一路:工作流跟着会话行、
+   *  角色是建会话时的快照,而**环境是每次现查的现状**(用户删了个文档,下次就该看不到)。
+   *
+   *  在 `turnContextSections` 里排在**最前**:它是"我在什么样的机器上、有哪些东西"这种
+   *  最底层的背景事实,该在记忆/角色/工作流之前摆出来。
+   *
+   *  ⚠️ **同一会话内它不会刷新**:主对话的上下文在提供方自己的会话记录里(靠 resume 续),
+   *  注入过的那份就永久留在历史里了。所以"删了文档 agent 就不知道"只在**新会话**成立。 */
+  envPrompt?: string;
   /** Provider's own conversation id, used to resume a prior conversation.
    * null = first turn of a new conversation. */
   resumeProviderSessionId?: string | null;

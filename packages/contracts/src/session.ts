@@ -167,6 +167,14 @@ export interface Session {
    *  built-in credential discovery). Set when the user picks a custom model
    *  in the composer; persisted so a resumed session keeps its endpoint. */
   customModelId: string | null;
+  /**
+   * Conversation-scoped plugin binding. `null` / absent keeps the legacy
+   * behavior (all globally enabled plugins remain eligible); a non-empty list
+   * pins this conversation to those plugin names and is re-resolved every
+   * turn against the current global enable/install state. We intentionally
+   * persist stable plugin names, never tool schemas or live process handles.
+   */
+  activePluginNames?: string[] | null;
   /** Soft-delete flag: archived sessions are hidden from the main tree and
    *  live in the "archived" section; they can be restored or hard-deleted. */
   archived: boolean;

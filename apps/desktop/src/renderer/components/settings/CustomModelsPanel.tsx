@@ -36,6 +36,7 @@ import type {
 import { isValidHeaderName, isValidHeaderValue } from "@contracts/customModel";
 import { copyText } from "@renderer/lib/clipboard.js";
 import { PanelHeader } from "./PanelHeader.js";
+import { RemoteControlPanel } from "./RemoteControlPanel.js";
 import {
   PI_KNOWN_APIS,
   PI_THINKING_KEYS,
@@ -1115,7 +1116,12 @@ export function CustomModelsPanel() {
               onDelete={selection.id !== "new" ? () => setPendingDelete({ kind: "pi", id: selection.id }) : undefined}
             />
           ) : (
-            <EmptyDetail />
+            // **没选中供应商时,右边放「远程控制」面板** —— 不是一块空白占位。
+            //
+            // 这块地方跟"选中哪个模型端点"完全无关,所以放它正合适:用户点开模型配置
+            // 页就能看见"网页端能不能操作我这台机器",不必先随便选一个供应商才能找到。
+            // 见 `RemoteControlPanel` 的文件头(为什么它不该待在引擎表单里)。
+            <RemoteControlPanel onError={setError} />
           )}
         </div>
       </div>
@@ -1278,20 +1284,6 @@ function CodexProviderForm({
           {saving ? t("settings.saving") : isEdit ? t("settings.customModels.update") : t("common.save")}
         </Button>
       </div>
-    </div>
-  );
-}
-
-function EmptyDetail() {
-  const { t } = useI18n();
-  return (
-    <div className="flex h-full flex-col items-center justify-center text-center">
-      <span className="mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-surface-muted text-content-subtle">
-        <IconKey size={18} />
-      </span>
-      <p className="max-w-[240px] text-[0.7857em] leading-relaxed text-content-subtle">
-        {t("settings.customModels.emptyDetail")}
-      </p>
     </div>
   );
 }

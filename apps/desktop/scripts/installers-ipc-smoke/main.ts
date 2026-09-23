@@ -28,7 +28,7 @@
  *
  * 「契约签名无参 → 渲染端空括号调 → handler 里 `parse(raw)`」这个形状,按构造扫了
  * 一遍 `main/ipc/` 全部 38 个文件 × `rpcMap` 的 48 条无参签名 × 渲染端/preload 的
- * 空括号调用(`.scholar_tmp/audit_handlers.py`,一次性):**0 条命中**。
+ * 空括号调用(一次性审计脚本,已随 `.scholar_tmp/` 移出源码树):**0 条命中**。
  * 这一族的其余成员(`context.get` / `context.memoriesList` / `mcp.list` /
  * `skills.bundles` / `file.pickImages` / `browser.historyClear` / `library.typesGet`
  * 及 `*GroupsGet` / `*SuppressGet`)要么契约签名本来就是有入参、调用端也确实传了

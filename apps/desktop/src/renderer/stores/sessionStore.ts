@@ -11294,11 +11294,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       ideActiveFileByProject: { ...s.ideActiveFileByProject, [pid]: canonicalPath },
       ideFileViewModeByProject: { ...s.ideFileViewModeByProject, [pid]: viewMode },
       ideDiffBeforeByProject: { ...s.ideDiffBeforeByProject, [pid]: diffBefore },
-      // Bump the focus nonce so App opens the right panel if collapsed — but
-      // only for real file opens. A diff review renders in the CENTER editor;
-      // forcing the right panel (files tab + tree reveal) open for it is pure
-      // noise and cost, so diff opens leave the panel untouched.
-      ...(opts?.diff ? {} : { ideFocusNonce: s.ideFocusNonce + 1 }),
+      // ⚠️ **这里不再 bump `ideFocusNonce`**（2026-09-22）。
+      //
+      // 那个 nonce 是给 **`revealInFileTree`**（"去文件树里定位某个文件"）用的，
+      // 它的消费端会把右栏切到 **files** 页。而"打开一个文件看内容"是另一件事 ——
+      // 借同一条道走，结果就是**每次双击文件，右栏都被拉到文件树那一页**，而用户
+      // 要的是"中间看文件 + 侧边展开主对话"（`fileViewStore.open()` 里那套）。
+      //
+      // 所以打开文件时右栏怎么变，交给 `fileViewStore.open()` 那一处决定 ——
+      // 它是"中间开始看一个文件"的唯一入口（硬规矩 2）。
       // Unified center bar (tabs displayMode): opening a file focuses the
       // editor so it gets the full center width. Gated on tabs mode — the
       // split layout in single mode ignores the flag, and keeping single
@@ -11318,6 +11322,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         : {}),
     }));
     persistIdeBuckets(get);
+
+    /**
+     * **打开文件 = 中间显示它 + 侧边展开主对话**（2026-09-22 修正）。
+     *
+     * 用户的原话是「双击打开文件的同时侧边栏弹出来主对话」。这三件事
+     * （展开右栏、切到 `flow` 页、展开主对话）本来就写在 `fileViewStore.open()`
+     * 里 —— 但那一条是"中间预览"的入口，而**双击走的是这里**（进编辑器）。
+     * 于是双击时那套从没生效过，用户看到的只是右栏被别的路径顶开、落在 files 页。
+     *
+     * 为什么放这儿而不是让 `App.tsx` 看 nonce 去猜：右栏该显示什么，取决于
+     * **用户做的是哪件事** —— `revealInFileTree`（去文件树里定位）要的是 files 页，
+     * 而"看一个文件"要的是主对话。两件事共用一条 nonce 就会互相盖掉（正是之前的毛病）。
+     *
+     * ⚠️ **diff 不走这儿**：审查一次改动渲染在**中间**（DiffPane），右栏该保持原样
+     * —— 强行拉出来纯是噪音。
+     */
+    if (!opts?.diff) {
+      const main = get().activeSessionId;
+      // 展开 + 切页放**同一个 set**：分两次会让右栏先以旧 tab 闪一帧。
+      set({ rightOpen: true, rightPanelTab: "flow" });
+      if (main) void get().selectSideChat(main);
+    }
   },
 
   clearIdePendingReveal: () => {

@@ -8,6 +8,31 @@ import { IPC } from "@contracts/ipc";
 
 let mainWindow: BrowserWindow | null = null;
 
+/** 关窗前的落盘：见 `mainWindow.on("close", ...)` 那段。 */
+let quitFlushDone = false;
+let quitFlushPending = false;
+let quitFlushTimer: NodeJS.Timeout | null = null;
+
+/**
+ * **渲染端说"我存完了"** —— 真的关。
+ *
+ * 由 `ipc` 层在收到 `APP_FLUSH_BEFORE_QUIT_DONE` 时调。
+ *
+ * ⚠️ **幂等**：超时兜底和渲染端回执可能都到（谁先谁后不定），所以第一件事就是
+ * 看 `quitFlushPending`；已经走过了就直接返回，别关两次。
+ */
+export function finishQuitFlush(): void {
+  if (!quitFlushPending) return;
+  quitFlushPending = false;
+  quitFlushDone = true;
+  if (quitFlushTimer) {
+    clearTimeout(quitFlushTimer);
+    quitFlushTimer = null;
+  }
+  const win = mainWindow;
+  if (win && !win.isDestroyed()) win.close();
+}
+
 /** Background color matching the effective theme, so the first frame (before
  *  React mounts) doesn't flash the wrong color. Mirrors --surface in CSS
  *  (styles.css): light = #ffffff (sketch paper #fcfaf3), dark = #1a1d24

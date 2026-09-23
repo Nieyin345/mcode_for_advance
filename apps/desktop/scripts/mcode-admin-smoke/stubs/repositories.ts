@@ -95,3 +95,20 @@ export const MessageRepo = {
     return { messages: [] };
   },
 };
+
+/**
+ * `agent_context` 要"我在什么环境里" —— 它经 `providers/envPrompt.js` 读这两个 repo。
+ * 无头给不了真库(sql.js + electron),这里返回**空**,于是那个工具"没项目、空库"
+ * 那条支路被走到 —— 正是我们要的兜底(smoke 正好能验它在空环境下不炸)。
+ */
+export const ProjectRepo = {
+  list(): { id: string; name: string; path: string; archived: boolean }[] {
+    return [];
+  },
+};
+
+export const LibraryRepo = {
+  list(_filter?: unknown): { items: unknown[]; total: number } {
+    return { items: [], total: 0 };
+  },
+};

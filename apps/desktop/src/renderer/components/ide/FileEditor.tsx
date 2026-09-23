@@ -1,17 +1,22 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import Editor, { DiffEditor, useMonaco } from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { dirname, extname } from "@renderer/lib/path.js";
 import { useSessionStore, selectActiveEnvPath } from "@renderer/stores/sessionStore.js";
+import type { FileViewMode } from "@contracts/ipc";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import { ideDirtyTracker } from "./OpenTabsBar.js";
 import { IconEye, IconEdit, IconLoader2, IconAlertTriangle, IconSquare, IconColumns3, IconPhotoOff, IconArrowLeft, IconArrowRight } from "@renderer/lib/icons.js";
 import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
-import { Markdown } from "../chat/Markdown.js";
+import { ChunkedMarkdown } from "../chat/ChunkedMarkdown.js";
 import { PdfPreview } from "../library/PdfPreview.js";
+import { MarkdownEditorPane } from "./MarkdownEditorPane.js";
+import { SelectionToolbar, type SelectionToolbarState } from "@renderer/components/chat/SelectionToolbar.js";
+import { SelectionQuoteMenu, type QuoteTarget } from "@renderer/components/chat/SelectionQuoteMenu.js";
+import { makeContentTag } from "@renderer/lib/contentTag.js";
 // LSP provider bridge: registers definition/references/hover providers, syncs
 // documents, and applies diagnostics markers to the model.
 import {
@@ -76,20 +81,22 @@ export function FileEditor({
 }) {
   // View mode is scoped to the active project's bucket.
   //
-  // ## 默认档：给人看的文件落**预览**，给人改的落编辑
+  // ## 默认档（2026-09-21 改）：md 进**所见即所得**
   //
-  // `.md` 是"给人读的"——打开一篇论文笔记，先想看的是排版好的样子，不是一屏
-  // `#` 和 `|`。**PDF 更是如此**：它是二进制，Monaco 画出来就是一屏乱码（用户报的
-  // 「项目文件打开就是这个效果」那张截图）。其余文件（代码、json、日志）相反，
-  // 打开就是要改，源码才对。
+  // 用户的原话是「点开就该能改」—— 所以 md 不再先落一屏只读渲染，而是直接进
+  // 富文本编辑（`MarkdownEditorPane`，MDXEditor）。源码视图和只读预览都还在，
+  // 工具栏上那个按钮三档轮转。
   //
-  // ⚠️ 这里从前是 `?? "edit"`（对所有文件一律落到编辑），而下面 `hasPreviewToggle`
-  // 那段注释一直写着 "Files that default to a read-only preview pane (markdown
-  // rendered...)" —— **注释在描述一件没实现的事**。现在把它兑现。
+  // PDF 仍然默认**预览**：它是二进制，Monaco 画出来就是一屏乱码（用户截图里
+  // 那个坏状态）。其余文件（代码、json、日志）默认 `edit` —— 打开就是要改。
   //
   // 用户自己的选择仍然优先：`ideFileViewModeByProject` 里记着他在这个项目里为这个
   // 文件选过哪一档，改完照旧留着（`??` 只在**没有记录**时生效）。
-  const defaultMode = isMarkdown(filePath) || isPdfFile(filePath) ? "preview" : "edit";
+  const defaultMode: FileViewMode = isMarkdown(filePath)
+    ? "wysiwyg"
+    : isPdfFile(filePath)
+      ? "preview"
+      : "edit";
   const pid = useSessionStore((s) => s.activeProjectId);
   const viewMode = useSessionStore((s) =>
     pid ? s.ideFileViewModeByProject[pid]?.[filePath] ?? defaultMode : defaultMode,
@@ -120,13 +127,16 @@ export function FileEditor({
   // Effective mode:
   //  - diff: history pairs (forced) OR explicitly requested with a snapshot.
   //  - preview: explicitly requested (Markdown rendered read-only).
+  //  - wysiwyg: Markdown 的所见即所得（MDXEditor）。
   //  - edit: the normal editable Monaco instance (default for non-md files).
-  const effectiveMode: "edit" | "diff" | "preview" =
+  const effectiveMode: FileViewMode =
     historyOnly || (viewMode === "diff" && diffBefore != null)
       ? "diff"
       : viewMode === "preview"
         ? "preview"
-        : "edit";
+        : viewMode === "wysiwyg"
+          ? "wysiwyg"
+          : "edit";
 
   const markdown = isMarkdown(filePath);
   const image = isImage(filePath);
@@ -147,7 +157,22 @@ export function FileEditor({
         isImage={image}
         isUnsupported={unsupported}
         onTogglePreview={() =>
-          setViewMode(filePath, effectiveMode === "preview" ? "edit" : "preview")
+          // md 三档轮转：所见即所得 → 预览 → 源码 → 回到所见即所得。
+          // 为什么不是"两档对切"：md 的默认档是 wysiwyg，对切的话源码那一档
+          // 就永远够不着了（用户要能看原始 markdown 改 frontmatter、调表格对齐）。
+          //
+          // ⚠️ 判据用 `markdown`（上面从 `isMarkdown(filePath)` 算出来的**布尔**），
+          // 不能用 prop 同名那个 `isMarkdown` —— 那是**函数**，恒真。
+          markdown
+            ? setViewMode(
+                filePath,
+                effectiveMode === "wysiwyg"
+                  ? "preview"
+                  : effectiveMode === "preview"
+                    ? "edit"
+                    : "wysiwyg",
+              )
+            : setViewMode(filePath, effectiveMode === "preview" ? "edit" : "preview")
         }
         editorMode={editorMode}
         onToggleEditorMode={() => setEditorMode(editorMode === "tabs" ? "replace" : "tabs")}
@@ -155,6 +180,8 @@ export function FileEditor({
       <div className="min-h-0 flex-1">
         {effectiveMode === "diff" && diffBefore != null ? (
           <DiffPane filePath={filePath} before={diffBefore} after={diffAfter} />
+        ) : effectiveMode === "wysiwyg" ? (
+          <MarkdownEditorPane filePath={filePath} projectPath={projectPath} />
         ) : effectiveMode === "preview" ? (
           pdf ? (
             <PdfPreviewPane filePath={filePath} />
@@ -178,6 +205,27 @@ export function FileEditor({
 /** Stable empty nav stack for zustand selectors (never return a fresh []). */
 const EMPTY_NAV: NavEntry[] = [];
 
+/**
+ * 「源码 / 预览」那个按钮的四档文案。
+ *
+ * 为什么是四态而不是两态：md 现在有**三档**（源码 / 所见即所得 / 预览），
+ * 非 md 还是两档（源码 / 预览）。按钮说的是"**点一下会切到哪儿**"，
+ * 不是"现在在哪儿" —— 这和它原来的行为一致（`mode === "preview" ? Edit : Preview`）。
+ */
+const TOGGLE_LABEL_KEY = {
+  edit: "ide.editor.togglePreview",
+  diff: "ide.editor.togglePreview",
+  preview: "ide.editor.toggleEdit",
+  wysiwyg: "ide.editor.toggleSource",
+} as const satisfies Record<FileViewMode, string>;
+
+const TOGGLE_TITLE_KEY = {
+  edit: "ide.editor.switchToPreview",
+  diff: "ide.editor.switchToPreview",
+  preview: "ide.editor.switchToSource",
+  wysiwyg: "ide.editor.switchToSourceView",
+} as const satisfies Record<FileViewMode, string>;
+
 function EditorToolbar({
   filePath,
   projectPath,
@@ -193,7 +241,7 @@ function EditorToolbar({
 }: {
   filePath: string;
   projectPath: string;
-  mode: "edit" | "diff" | "preview";
+  mode: FileViewMode;
   canDiff: boolean;
   onToggleMode: () => void;
   isMarkdown: boolean;
@@ -385,7 +433,10 @@ function EditorToolbar({
             notice). In preview mode the button switches to the source editor;
             in edit/diff mode it switches to the rendered preview. For binary
             files (image/unsupported) "Edit" shows raw content as Monaco sees
-            it (garbled for non-utf-8) - kept as an escape hatch, not the norm. */}
+            it (garbled for non-utf-8) - kept as an escape hatch, not the norm.
+
+            ⚠️ md 多一档：它默认就是**所见即所得**（`wysiwyg`），所以这里的
+            三态是 源码(edit) ↔ 富文本(wysiwyg) ↔ 预览(preview)。 */}
         {hasPreviewToggle && (
           <button
             type="button"
@@ -394,10 +445,10 @@ function EditorToolbar({
               "flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors",
               "text-content-muted hover:bg-surface-hover hover:text-content",
             )}
-            title={mode === "preview" ? t("ide.editor.switchToSource") : t("ide.editor.switchToPreview")}
+            title={TOGGLE_TITLE_KEY[mode]}
           >
-            {mode === "preview" ? <IconEdit size={12} /> : <IconEye size={12} />}
-            {mode === "preview" ? "Edit" : "Preview"}
+            {mode === "edit" ? <IconEye size={12} /> : <IconEdit size={12} />}
+            {t(TOGGLE_LABEL_KEY[mode])}
           </button>
         )}
         {/* Editor open-mode toggle: tabs (multi-file) ↔ replace (single-file).
@@ -495,6 +546,99 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
   const { t } = useI18n();
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
+
+  /**
+   * **在编辑器里选一段文字 → 引用给某条对话**（2026-09-21）。
+   *
+   * ★ 用户的要求：「消息，文献编辑，文献预览**都要有**，选中就能引用」。
+   * 前两处早就有了（`ChatPane` / `FileViewer` 各挂了一份 `SelectionToolbar`），
+   * 只有**这一处**没有 —— 而它恰恰是最需要的那处（用户在这里改文档）。
+   *
+   * ## 为什么不能照抄另外两处
+   *
+   * 它们读的是 `window.getSelection()`。**Monaco 是自绘的**：它的文字画在 canvas
+   * 上，DOM 里那层只是辅助，`window.getSelection()` 在里面拿不到选区（或拿到的是
+   * 错位的）。要从 Monaco 拿选区只能走它自己的 API：
+   * `editor.getSelection()` + `model.getValueInRange(...)`。
+   *
+   * ## 触发时机也不能照抄
+   *
+   * 网页里选完一松手、选区就没了（所以那两处挂 `mouseup`）。而 **Monaco 的选区是
+   * 常驻的** —— 点一下别处才取消。照抄 `mouseup` 的话，用户拖选到一半（还没松手）
+   * 就会弹条；松手后再点一下，条还挂着但选区已经没了。
+   *
+   * 所以这里用 `onDidChangeCursorSelection`（Monaco 自己会在拖选结束时发），
+   * 且**只在"非空选区 + 鼠标不在按着"**时才亮 —— 后者靠监听编辑器容器的鼠标状态，
+   * 免得拖选过程中一直闪。
+   */
+  const [mdSel, setMdSel] = useState<SelectionToolbarState | null>(null);
+  const [mdQuote, setMdQuote] = useState<SelectionToolbarState | null>(null);
+  /** 鼠标是不是正按在编辑器里（拖选中）。见上面那段"触发时机"。 */
+  const draggingRef = useRef(false);
+
+  /**
+   * 把 Monaco 的选区换算成 `SelectionToolbarState`（浮层要的那几个数）。
+   *
+   * ⚠️ 坐标要的是**视口坐标**（`position: fixed`），而 Monaco 给的
+   * `getScrolledVisiblePosition` 是**相对编辑器容器**的 —— 必须加上容器的
+   * `getBoundingClientRect()`，否则浮层会跑到编辑器外面去（编辑器不在页面左上角时）。
+   */
+  const readMonacoSelection = useCallback((): SelectionToolbarState | null => {
+    const ed = editorRef.current;
+    const model = ed?.getModel();
+    const sel = ed?.getSelection();
+    if (!ed || !model || !sel || sel.isEmpty()) return null;
+
+    const text = model.getValueInRange(sel).trim();
+    if (!text) return null;
+
+    const node = ed.getDomNode();
+    if (!node) return null;
+    const box = node.getBoundingClientRect();
+    const start = ed.getScrolledVisiblePosition({ lineNumber: sel.startLineNumber, column: sel.startColumn });
+    const end = ed.getScrolledVisiblePosition({ lineNumber: sel.endLineNumber, column: sel.endColumn });
+    if (!start || !end) return null;
+
+    const left = box.left + Math.min(start.left, end.left);
+    const right = box.left + Math.max(start.left, end.left) + 1;
+    const top = box.top + Math.min(start.top, end.top);
+    const bottom = box.top + Math.max(start.top, end.top) + (start.height || 18);
+
+    return {
+      rect: { top, bottom, left, right },
+      text,
+      // 编辑器里没有"消息"这个概念 —— 空串。书签那个按钮因此不画
+      // （它靠 messageId 定位，见 `SelectionToolbar` 的 props 说明）。
+      messageId: "",
+      role: "assistant",
+    };
+  }, []);
+
+  /** 引用落到哪 —— **只落草稿，不替用户发**（与另外两处逐字同一个做法）。 */
+  const quoteFromEditor = useCallback(
+    (target: QuoteTarget, text: string) => {
+      const quoted = text.trim();
+      setMdQuote(null);
+      setMdSel(null);
+      if (!quoted) return;
+      const store = useSessionStore.getState();
+      const prev = store.composerDraftBySession[target.id];
+      // 落成**绿色小标签**，不是一段纯文本 —— 用户 2026-09-21 明确要求
+      // 「像引用文件一样在对话框里面加一个绿色的小标签」。`makeContentTag` 造的
+      // 就是那种 chip（`kind: "paste"`），和另外两处同一个落点。
+      store.saveComposerDraft(target.id, {
+        text: prev?.text ?? "",
+        html: prev?.html ?? "",
+        tags: [...(prev?.tags ?? []), makeContentTag(quoted)],
+      });
+      useToastStore.getState().push({
+        kind: "info",
+        title: t("chatStream.quote.doneToast", { name: target.title }),
+        sessionId: target.id,
+      });
+    },
+    [t],
+  );
   // Monaco namespace from the loader (local instance — see monacoSetup.ts).
   // Null until the loader resolves; the first model creation waits for it.
   const monacoInstance = useMonaco();
@@ -528,10 +672,26 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
   // Set false once the component unmounts; async callbacks check it before
   // touching state / the displayed-model marker.
   const disposedRef = useRef(false);
+  /**
+   * 挂载时注册的清理函数（编辑器事件监听 / Monaco 的 disposable）。
+   *
+   * ⚠️ **必须收在这里**：Monaco 的 `onDidChangeCursorSelection` 返回的 disposable
+   * 不 dispose 的话会一直持有我们这个闭包（连带整个组件树），换文件几次就漏一批。
+   * 而 `onMount` 每次挂载只跑一次，所以清理只能靠"存起来、卸载时统一跑"。
+   */
+  const unmountCleanupsRef = useRef<Array<() => void>>([]);
   useEffect(() => {
     disposedRef.current = false;
+    const cleanups = unmountCleanupsRef.current;
     return () => {
       disposedRef.current = true;
+      for (const fn of cleanups.splice(0)) {
+        try {
+          fn();
+        } catch {
+          /* 已经拆过了 */
+        }
+      }
     };
   }, []);
   // readSeq invalidates in-flight first reads when the target file changes
@@ -906,6 +1066,48 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
     const mountPath = readyCtxRef.current?.path;
     if (mountPath) ensureLspProviders(monaco, languageForExt(extname(mountPath)));
 
+    /**
+     * **选中文字 → 弹引用条**（见 `readMonacoSelection` 那段的长注释）。
+     *
+     * 为什么是「鼠标状态 + 选区变化」两件事合起来判：
+     *  - `onDidChangeCursorSelection` 在**拖选的过程中**也会连发（每移一格一次），
+     *    只看它会让浮层闪个不停；
+     *  - 而 Monaco 的选区**松手后还留着**，只在别处点一下才没。
+     *
+     * 所以：拖选期间（`draggingRef`）不亮；松手后（`mouseup`）再读一次；
+     * 之后每次选区变化（键盘选、双击选词、Ctrl+A）也读一次。
+     */
+    const domNode = editor_.getDomNode();
+    const onDragStart = () => {
+      draggingRef.current = true;
+    };
+    const onDragEnd = () => {
+      draggingRef.current = false;
+      setMdSel(readMonacoSelection());
+    };
+    domNode?.addEventListener("mousedown", onDragStart);
+    // 松手可能落在编辑器外面（拖到别处松开）—— 挂到 window 上才收得到。
+    window.addEventListener("mouseup", onDragEnd);
+
+    const selSub = editor_.onDidChangeCursorSelection(() => {
+      if (draggingRef.current) return; // 拖选中：等松手（见上）
+      setMdSel(readMonacoSelection());
+    });
+
+    // 编辑器被点失焦 / 内容被替换时，旧选区就不该再挂着浮层了。
+    const blurSub = editor_.onDidBlurEditorWidget(() => {
+      setMdSel(null);
+      setMdQuote(null);
+    });
+
+    // 组件卸载时拆干净（Monaco 的 listener 不拆会一直持有闭包）。
+    unmountCleanupsRef.current.push(() => {
+      domNode?.removeEventListener("mousedown", onDragStart);
+      window.removeEventListener("mouseup", onDragEnd);
+      selSub.dispose();
+      blurSub.dispose();
+    });
+
     // Restore the scroll position / cursor from a previous visit of this
     // file (stashed eagerly by the listeners below). A pending goto-def
     // reveal still wins — applyReveal() below runs after this and
@@ -1093,6 +1295,35 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
       )}
       {/* LSP goto activity pill — bottom-center, non-blocking. */}
       <GotoActivityPill />
+
+      {/* ── 选中文字 → 引用条（2026-09-21）─────────────────────────────
+          与 `ChatPane` / `FileViewer` 里那两处**同一套组件**（`SelectionToolbar`
+          + `SelectionQuoteMenu`），只是选区来源换成 Monaco 的 API。
+
+          两个按钮都不给：书签靠 `messageId` 定位（编辑器里没有消息），
+          "问侧边"与"引用给某条"在这里是同一件事（同 `FileViewer` 的取舍）。 */}
+      {mdSel && !mdQuote && (
+        <SelectionToolbar
+          state={mdSel}
+          onQuote={(s) => setMdQuote(s)}
+          onClose={() => setMdSel(null)}
+        />
+      )}
+      {mdQuote && (
+        <SelectionQuoteMenu
+          state={mdQuote}
+          // 编辑器这里没有"当前会话"这个概念（用户可能还没开任何对话），
+          // 所以给空串 —— `SelectionQuoteMenu` 明确支持这种用法，列出来的
+          // 就是"打开着的对话 + 它的节点会话"（同 `FileViewer` 那一处）。
+          sessionId=""
+          currentTitle={t("ide.editor.thisFile")}
+          onPick={quoteFromEditor}
+          onClose={() => {
+            setMdQuote(null);
+            setMdSel(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1187,7 +1418,17 @@ function GotoActivityPill() {
  *  Markdown renderer (Shiki code highlighting, GFM, math). The outer container
  *  overrides `--chat-font-size` so the rendered text uses an editor-appropriate
  *  size instead of the chat bubble size. Read-only - no save / dirty tracking.
- *  Re-reads on filePath change. */
+ *  Re-reads on filePath change.
+ *
+ *  ## 长文是**分段滚动加载**的（2026-09-22）
+ *
+ *  用户的原话：「现在的 md 是直接全部加载的，改成滚动加载，看到哪里就提前加载那
+ *  附近的几页」。从前这里把正文整篇塞进一个 `<Markdown>`，一篇长 README 或转录
+ *  打开的一瞬间全部解析 + 全部进 DOM。
+ *
+ *  现在交给 `ChunkedMarkdown`：按空行切段、滚到附近才渲染下一段。容器仍然**是
+ *  这个 `scrollRef`**（滚动记忆挂它上面），所以给的是 `scroll="parent"` —— 让它
+ *  在这儿挂哨兵，而不是自己再套一层（那层不滚，哨兵就永远不触发）。 */
 function MarkdownPreviewPane({ filePath, projectPath }: { filePath: string; projectPath: string }) {
   const { t } = useI18n();
   const [content, setContent] = useState<string | null>(null); // null = loading
@@ -1225,12 +1466,12 @@ function MarkdownPreviewPane({ filePath, projectPath }: { filePath: string; proj
       ref={scrollRef}
       className="h-full overflow-auto bg-surface px-6 py-4 [--chat-font-size:13px]"
     >
-      <Markdown
+      <ChunkedMarkdown
+        scroll="parent"
+        text={content}
         projectPath={projectPath}
         baseDir={dirname(filePath) || projectPath}
-      >
-        {content}
-      </Markdown>
+      />
     </div>
   );
 }
@@ -1262,7 +1503,7 @@ function MarkdownPreviewPane({ filePath, projectPath }: { filePath: string; proj
  */
 function PdfPreviewPane({ filePath }: { filePath: string }) {
   const { t } = useI18n();
-  // null = 还在读, undefined = 读失败(交给 PdfPreview 自己报), Uint8Array = 拿到了
+  // null = 还在读, 内存 = 拿到了(读失败给空数组,交给 PdfPreview 自己报)
   const [bytes, setBytes] = useState<Uint8Array | null>(null);
 
   useEffect(() => {
@@ -1315,8 +1556,10 @@ function PdfPreviewPane({ filePath }: { filePath: string }) {
   // 而 `FileEditor` 的渲染分支外面本来就有一层 `min-h-0 flex-1`,所以这里**必须**
   // 自己补上 `h-full` 才能把高度传下去。
   return (
-    <div className="h-full min-h-0">
-      <PdfPreview item={{ id: "" }} bytes={bytes} />
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="min-h-0 flex-1">
+        <PdfPreview item={{ id: "" }} bytes={bytes} filePath={filePath} />
+      </div>
     </div>
   );
 }

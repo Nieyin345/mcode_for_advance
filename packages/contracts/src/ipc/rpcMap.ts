@@ -9,7 +9,7 @@
 import { z } from "zod";
 import type { Project, Session, MessageRecord } from "../session.js";
 import type { BuiltinModelOption } from "../provider.js";
-import type { CustomModelPublic, ExtensionBridgeStatus, TestCustomModelResult } from "../customModel.js";
+import type { CustomModelPublic, ExtensionBridgeStatus, PublicMcpStatus, TestCustomModelResult } from "../customModel.js";
 import type { PiProviderPublic } from "../piModel.js";
 import type { CodexProviderPublic } from "../codexModel.js";
 import type { NodeTypeCatalog } from "../nodeType.js";
@@ -19,7 +19,7 @@ import type { WorkflowDoc, WorkflowListEntry } from "../workflow.js";
 import type { PluginState, PluginMarketplaceState, PluginsInstallLocalInput, PluginsInstallGitInput, PluginsInstallMarketplaceInput, PluginsSetEnabledInput, PluginsRemoveInput, PluginsMarketplaceAddInput, PluginsMarketplaceRemoveInput, PluginsMarketplaceRefreshInput } from "../plugin.js";
 import type { PairingStartResult, PairedDevice } from "../mobile.js";
 import type { RelayStatus, RelayVpsConfig, RelayVpsConfigInput } from "../relay.js";
-import type { LibraryItem, LibraryItemLink, LibraryLinkView, LibraryCollection, InstitutionProfile, DownloadJob, ExternalSearchResult, FullTextMatch, AuthSiteStatus, LibraryConversionRow, LibraryNote } from "../library.js";
+import type { LibraryItem, LibraryItemLink, LibraryLinkView, LibraryCollection, InstitutionProfile, DownloadJob, ExternalSearchResult, FullTextMatch, AuthSiteStatus, LibraryConversionRow, LibraryNote, PdfHighlight } from "../library.js";
 import type { LibraryTypeMeta, LibraryGroupMeta, LibrarySuppressRule } from "../libraryTypes.js";
 import type { TemplateEntry, TemplateFileContent } from "../templates.js";
 import type { GetSettingInput, SetSettingInput, GetManySettingsInput, GetManySettingsResult, GetVoiceModelDirInput, GetVoiceModelDirResult, SetVoiceModelDirInput, SetVoiceModelDirResult, NotificationPrefs } from "./settings.js";
@@ -44,7 +44,7 @@ import type { RuntimeAgentState, RuntimesInstallInput, RuntimesInstallLocalInput
 import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, WorkflowExportInput, WorkflowImportInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchCommandTemplate } from "./workflow.js";
 import type { AutomationTriggerFacts, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
 import { MEMORY_CATEGORIES_CHANNEL, MEMORY_DELETE_CHANNEL, MEMORY_LIST_CHANNEL, MEMORY_READ_CHANNEL, MEMORY_SAVE_CHANNEL, type MemoryDeleteInput, type MemoryFileMeta, type MemoryListInput, type MemoryReadInput, type MemorySaveInput } from "../memory.js";
-import type { LibraryTypesGetInput, LibraryTypesSaveInput, LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDeleteItemsResult, LibraryRestoreItemsInput, LibraryDeletePreviewInput, LibraryDeletePreviewResult, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryEntryPathInput, LibraryEntryPathResult, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibraryManifestInput, LibraryItemManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkCountsInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionMoveInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
+import type { LibraryTypesGetInput, LibraryTypesSaveInput, LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDeleteItemsResult, LibraryRestoreItemsInput, LibraryDeletePreviewInput, LibraryDeletePreviewResult, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryEntryPathInput, LibraryEntryPathResult, PdfHighlightsReadInput, PdfHighlightsSaveInput, PdfHighlightsWriteBackInput, PdfHighlightsWriteResult, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibraryManifestInput, LibraryItemManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkCountsInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionMoveInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
 import type { TemplateListInput, TemplateAddInput, TemplateRenameInput, TemplateEntryRefInput, TemplateFileRefInput, TemplatesAttachToChatInput } from "./templates.js";
 import type { SubagentDefinition } from "../claudeSubagent.js";
 import type { ClaudeSubagentsSaveInput } from "../claudeSubagent.js";
@@ -213,6 +213,20 @@ export interface RpcMap {
   "webBridge.status": () => Promise<ExtensionBridgeStatus>;
   /** 换一个配对令牌（旧令牌立刻失效，已连上的扩展会被断开重连）。 */
   "webBridge.regenerateToken": () => Promise<ExtensionBridgeStatus>;
+  /** 公网 MCP 端点：把 mcode 的工具表暴露给互联网上的 MCP 客户端（ChatGPT 的
+   *  Connector）。只读快照，含路径密钥（明文，要显示给用户复制）。 */
+  "publicMcp.status": () => Promise<PublicMcpStatus>;
+  /** 开关这条公网通路。打开时现建「ChatGPT 直连」合成会话并起监听；关闭时停服务。
+   *  ⚠️ 打开 = 拿到链接的人拥有本机完全操作权（无审批闸门，见 publicMcpServer.ts）。 */
+  "publicMcp.setEnabled": (input: { enabled: boolean }) => Promise<PublicMcpStatus>;
+  /** 换一把路径密钥（旧链接立刻失效）。这是用户唯一的"拉闸"手段。 */
+  "publicMcp.regenerateSecret": () => Promise<PublicMcpStatus>;
+  /** 起公网隧道（Mcode 自己 spawn cloudflared），成功后 `tunnelUrl` 带上域名。 */
+  "publicMcp.startTunnel": () => Promise<PublicMcpStatus>;
+  /** 停公网隧道（开关仍开着，只是不再对外暴露）。 */
+  "publicMcp.stopTunnel": () => Promise<PublicMcpStatus>;
+  /** 改沙箱目录 —— 公网进来的文件工具能碰哪个项目。传 null 取消选择。 */
+  "publicMcp.setProject": (input: { projectId: string | null }) => Promise<PublicMcpStatus>;
   // Pi models (visual editor for ~/.pi/agent/models.json)
   "piModels.list": () => Promise<{ providers: Record<string, PiProviderPublic> }>;
   "piModels.save": (input: SavePiProviderInput) => Promise<{ providers: Record<string, PiProviderPublic> }>;
@@ -950,6 +964,34 @@ export interface RpcMap {
    *  按库里的记录算的，而且还要过 `pathGuard` 那道围栏。 */
   "library.entryPath": (input: LibraryEntryPathInput) => Promise<LibraryEntryPathResult>;
   /**
+   * 读某篇 PDF 的全部高亮。
+   *
+   * 高亮存在 PDF **旁边**的 `.<名字>.mcode-highlights.json`（见
+   * `main/library/pdfHighlightsStore.ts`），所以这里按**路径**问 —— 项目目录里那些
+   * 根本不在资料库里的 PDF 也要能有高亮。
+   */
+  "library.readHighlights": (input: PdfHighlightsReadInput) => Promise<{ highlights: PdfHighlight[] }>;
+  /** **只写索引**（PDF 旁边那份 JSON）—— 划一笔就走这条，几毫秒，不动 PDF。 */
+  "library.saveHighlights": (input: PdfHighlightsSaveInput) => Promise<{ ok: boolean; error?: string }>;
+  /**
+   * 把高亮**写回 PDF 文件本身**（真 `/Highlight` 批注）。
+   *
+   * 字节走 base64（`file:writeFile` 只收 utf-8，而 PDF 是二进制）。主进程收到后
+   * **原子替换**，中途崩了原文件一个字节不动；顺带更新旁边的高亮索引。
+   */
+  "library.writeHighlights": (
+    input: PdfHighlightsWriteBackInput,
+  ) => Promise<PdfHighlightsWriteResult>;
+  /**
+   * 读**干净底稿**的字节 —— 烘烤时从它出发（底稿 + 全部标注 → 覆盖那个 PDF）。
+   *
+   * 没有底稿时返回当前文件本身（那时它就是干净的）。走结构化克隆，不做 base64
+   * （同 `library.readPdf`）—— 论文十几 MB，base64 要多涨三分之一。
+   */
+  "library.readOriginalPdf": (
+    input: PdfHighlightsReadInput,
+  ) => Promise<{ bytes: Uint8Array | null }>;
+  /**
    * 读一篇文献的 Markdown 正文,**在应用内预览**(不再跳外部编辑器)。
    *
    * 主进程同时把正文里引用到的图片解析成 data URL 一起返回 —— 渲染进程读不了本地
@@ -1224,6 +1266,10 @@ export const IPC = {
   LIBRARY_REVEAL_FILE: "library:revealFile",
   LIBRARY_OPEN_FILE: "library:openFile",
   LIBRARY_ENTRY_PATH: "library:entryPath",
+  LIBRARY_READ_HIGHLIGHTS: "library:readHighlights",
+  LIBRARY_SAVE_HIGHLIGHTS: "library:saveHighlights",
+  LIBRARY_WRITE_HIGHLIGHTS: "library:writeHighlights",
+  LIBRARY_READ_ORIGINAL_PDF: "library:readOriginalPdf",
   LIBRARY_CONVERSION_STATS: "library:conversionStats",
   LIBRARY_CONVERSION_REPORT: "library:conversionReport",
   // 统一数据根
@@ -1349,6 +1395,13 @@ export const IPC = {
   // 扩展桥（网页端协议的传输层）：配对状态查询 + 换令牌
   WEB_BRIDGE_STATUS: "webBridge:status",
   WEB_BRIDGE_REGENERATE_TOKEN: "webBridge:regenerateToken",
+  // 公网 MCP 端点（给 ChatGPT 的 Connector 用）
+  PUBLIC_MCP_STATUS: "publicMcp:status",
+  PUBLIC_MCP_SET_ENABLED: "publicMcp:setEnabled",
+  PUBLIC_MCP_REGENERATE_SECRET: "publicMcp:regenerateSecret",
+  PUBLIC_MCP_START_TUNNEL: "publicMcp:startTunnel",
+  PUBLIC_MCP_STOP_TUNNEL: "publicMcp:stopTunnel",
+  PUBLIC_MCP_SET_PROJECT: "publicMcp:setProject",
   // Pi models (visual editor for ~/.pi/agent/models.json)
   PI_MODELS_LIST: "piModels:list",
   PI_MODELS_SAVE: "piModels:save",

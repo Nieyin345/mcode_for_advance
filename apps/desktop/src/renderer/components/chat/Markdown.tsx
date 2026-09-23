@@ -433,11 +433,12 @@ function MarkdownLocalImage({
  *
  * ## 为什么还要额外放行 `data:image/*`
  *
- * 文献库的**原文预览**把 Markdown 里引用的图片读成 data URL,在渲染前替换进正文
- * (见 `library/MarkdownPreview.tsx`)。而 `defaultUrlTransform` 的白名单是
- * `http(s)/irc/mailto/xmpp`,`data:` 不在其中 —— 它会把每一个内联图片的 src 抹成
- * 空串,于是正文里所有图都变成裂图。这个坑很隐蔽:替换本身是对的,正文看着也在,
- * 只有图不见了。
+ * 文献库的**原文预览**把 Markdown 里引用的图片读成 data URL,再喂给 `<img src>`
+ * (渲染时按 `baseDir` 读盘那条在下面 `img` 分支的 `MarkdownLocalImage`;主进程
+ * 预先内联那条在 `library/markdownPreview.ts` —— 两条都还在)。而
+ * `defaultUrlTransform` 的白名单是 `http(s)/irc/mailto/xmpp`,`data:` 不在其中 ——
+ * 它会把每一个内联图片的 src 抹成空串,于是正文里所有图都变成裂图。这个坑很隐蔽:
+ * 替换本身是对的,正文看着也在,只有图不见了。
  *
  * **只放 `src`,不放 `href`。** 同一个函数也作用在链接的 href 上,而 `data:` 链接
  * 被点开会在应用内**直接导航**到那个数据 URL(`data:text/html` 之类可携带脚本),

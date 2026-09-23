@@ -14,6 +14,7 @@
  */
 import {
   MAIN_NODE_TYPE_ID,
+  TRIGGER_NODE_TYPE_ID,
   type NodeTypeCatalog,
   type NodeTypeEntry,
   type NodeTypeSource,
@@ -252,6 +253,22 @@ export function isNodeDeleteKey(
  * 检查器里那个「删除节点」按钮和键盘的 Delete 走的都是它,所以一道就够。这条注释是
  * 给以后加"右键删除"「卡片上那个 ×」的人看的:**新加的入口也要过那里**。
  */
-export function isProtectedNode(node: { type: string }): boolean {
-  return node.type === MAIN_NODE_TYPE_ID;
+export function isProtectedNode(
+  node: { type: string },
+  purpose?: WorkflowPurpose,
+): boolean {
+  // ⚠️ **两种图保护的东西不一样**（2026-09-22 用户明确要求）。
+  //
+  //  - **工作流**护 `mcode.main` —— 它的入口就是主代理，而且存盘会查
+  //    `graph.no-main-node`。真让它删掉，用户点保存会被拒，而他刚删的那个节点
+  //    已经不在了，等于走进死胡同。
+  //  - **自动化**护 `mcode.trigger`（存盘查 `graph.no-trigger-node`），
+  //    而**主代理能删** —— 在自动化里它只是"下游随便接的一个节点"之一，
+  //    用户完全可能想接别的东西。原话：「自动化是不能删的，主代理是可以删的」。
+  //
+  // 判不了是哪一种时两种入口都护着：拦错的代价是"一个合法节点删不掉"，
+  // 比"删了之后存盘被拒"更难解释。
+  if (purpose === "automation") return node.type === TRIGGER_NODE_TYPE_ID;
+  if (purpose === "workflow") return node.type === MAIN_NODE_TYPE_ID;
+  return node.type === MAIN_NODE_TYPE_ID || node.type === TRIGGER_NODE_TYPE_ID;
 }

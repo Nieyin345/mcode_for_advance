@@ -82,6 +82,9 @@ export interface BuildPiSkillLoaderOptions {
    *  provider from pluginManager.getEnabledPluginSkillRoots(). Absent/empty
    *  keeps the historical pair. */
   extraSkillPaths?: string[];
+  /** Host-resolved per-turn context fragments. Pi's loader appends these to
+   *  its native system prompt before the agent starts. */
+  systemPromptAppends?: string[];
   /** Inline extensions to inject via the loader's `extensionFactories` option.
    *  The loader runs each factory during `getExtensions()` (before
    *  `_refreshToolRegistry`), so `pi.registerTool` / `pi.on` are wired before
@@ -119,7 +122,7 @@ function isInsideDir(child: string, dir: string): boolean {
 export async function buildPiSkillLoader(
   opts: BuildPiSkillLoaderOptions,
 ): Promise<PiResourceLoader> {
-  const { sdk, cwd, allowNames, extraSkillPaths, extensionFactories } = opts;
+  const { sdk, cwd, allowNames, extraSkillPaths, systemPromptAppends, extensionFactories } = opts;
   // The effective name filter: composer picks win (an explicit selection is
   // the user asking for exactly those); otherwise the universal library's
   // per-engine matrix decides. null = unrestricted (no override needed).
@@ -187,9 +190,10 @@ export async function buildPiSkillLoader(
     // WSL). The `createMntNormalizingReadTool` override is the silent-recovery
     // backstop; this hint attacks the root cause and also covers
     // Bash-redirected reads.
-    ...(process.platform === "win32"
-      ? { appendSystemPrompt: [bashPathHintFor(detectBashEnv("pi"))] }
-      : {}),
+    appendSystemPrompt: [
+      ...(systemPromptAppends ?? []),
+      ...(process.platform === "win32" ? [bashPathHintFor(detectBashEnv("pi"))] : []),
+    ].map((text) => text.trim()).filter((text) => text.length > 0),
     // ALWAYS supply the override (not just when a selection exists): it now
     // does two jobs.
     //   1. Same-name dedupe across stores — a skill discovered outside the

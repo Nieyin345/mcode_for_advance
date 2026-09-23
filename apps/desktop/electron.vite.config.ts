@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, writeFileSync, cpSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { constants as zlibConstants, brotliCompressSync, gzipSync } from "node:zlib";
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
@@ -118,6 +118,76 @@ const pdfjsPkgDir = resolve(__dirname, "node_modules/pdfjs-dist");
  * dev 每次启动都会调 buildStart;169 个文件每次都重写没必要。用一个写着包版本的
  * 标记文件判断,升级 pdfjs 之后自动重新复制。
  */
+/**
+ * 把 `@embedpdf/pdfium` 的 `pdfium.wasm` 拷进 `public/embedpdf/`。
+ *
+ * ## 为什么用"拷进 public + 运行时路径"而不是 `import ... ?url`
+ *
+ * `?url` 那条路**只在 dev 下成立**：生产构建时 rollup 解析不到这个说明符——
+ * 它是个**包内路径**（`@embedpdf/pdfium/pdfium.wasm`，走那个包的 `exports` 映射），
+ * 而 Vite 的 `assetsInclude` 白名单对"包内 + 带 query 的路径"不生效，
+ * 直接 `Rollup failed to resolve import`。dev 里看不出来，构建才炸。
+ *
+ * 拷进 `public/` 之后它在运行时就是 `<origin>/embedpdf/pdfium.wasm`，与
+ * `copyPdfjsAssets` 给 `cmaps` / `standard_fonts` 用的是同一条路 —— 那条路一直是好的。
+ *
+ * ⚠️ **必须自托管。** EmbedPDF 默认从 CDN 取这份 wasm，而这个应用是离线的、
+ * CSP 还是 `default-src 'self'` —— 走 CDN 必然失败（表现是"只有工具栏、没有页面"）。
+ */
+function copyPdfiumWasm(): Plugin {
+  const publicDir = resolve(__dirname, "src/renderer/public/embedpdf");
+  const versionFile = join(publicDir, ".pdfium-version");
+  return {
+    name: "mcode:copy-pdfium-wasm",
+    buildStart() {
+      /**
+       * ⚠️ **别硬编码，也别指望 `require.resolve` —— 它在 pnpm 下找不到。**
+       *
+       * `@embedpdf/pdfium` 是 `@embedpdf/react-pdf-viewer` 的**传递依赖**。pnpm 的
+       * 严格布局下它只存在于 `.pnpm/@embedpdf+pdfium@x.y.z/node_modules/`，而
+       * `apps/desktop/node_modules` 顶层**没有**它 —— 从 `apps/desktop/package.json`
+       * 出发的 `require.resolve("@embedpdf/pdfium/package.json")` 会直接抛
+       * `Cannot find module`（实测）。
+       *
+       * 第一版就是写死路径 + `catch { return }`，于是**插件一次都不跑、wasm 从不被拷，
+       * 而构建还是绿的** —— 只有运行时才以"只有工具栏、没有页面"显形。这种静默失败
+       * 正是最该避免的：所以下面找不到时**直接抛**，让构建当场停。
+       */
+      const pnpmRoot = resolve(__dirname, "../../node_modules/.pnpm");
+      let pkgDir: string | null = null;
+      try {
+        for (const entry of readdirSync(pnpmRoot)) {
+          if (!entry.startsWith("@embedpdf+pdfium@")) continue;
+          const candidate = join(pnpmRoot, entry, "node_modules/@embedpdf/pdfium");
+          if (existsSync(join(candidate, "dist/pdfium.wasm"))) {
+            pkgDir = candidate;
+            break;
+          }
+        }
+      } catch {
+        /* 下面统一报 */
+      }
+      if (pkgDir === null) {
+        throw new Error(
+          "[mcode:pdfium] 在 node_modules/.pnpm 里找不到 @embedpdf/pdfium 的 pdfium.wasm。" +
+            "它是 @embedpdf/react-pdf-viewer 的传递依赖 —— 装了回去再构建。",
+        );
+      }
+      const version = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8")).version as string;
+      try {
+        if (readFileSync(versionFile, "utf8").trim() === version) return;
+      } catch {
+        /* 标记不存在 = 还没复制过 */
+      }
+      mkdirSync(publicDir, { recursive: true });
+      cpSync(join(pkgDir, "dist/pdfium.wasm"), join(publicDir, "pdfium.wasm"));
+      writeFileSync(versionFile, version, "utf8");
+      // eslint-disable-next-line no-console
+      console.log(`[mcode:pdfium] copied pdfium.wasm for @embedpdf/pdfium ${version}`);
+    },
+  };
+}
+
 function copyPdfjsAssets(): Plugin {
   const publicDir = resolve(__dirname, "src/renderer/public/pdfjs");
   const versionFile = join(publicDir, ".pdfjs-version");
@@ -236,6 +306,7 @@ export default defineConfig({
       }),
       precompressAssets(),
       copyPdfjsAssets(),
+      copyPdfiumWasm(),
     ],
     worker: {
       // Monaco's workers are plain ESM modules; build them as ESM too so the

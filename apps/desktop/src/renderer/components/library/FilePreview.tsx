@@ -5,7 +5,7 @@
  * linked / attached 方式进库(见 `LibraryItem.entryMode` 的 `filePath`)。这类条目
  * 没有「PDF 状态 / 转录 / 笔记」那一套,有的只是文件本体 —— 这个组件就是它的预览页:
  *
- *   文本   ── md/markdown 走聊天那套 Markdown 渲染,其余进 <pre>;
+ *   文本   ── md/markdown 走聊天那套 Markdown 渲染(长文由 ChunkedMarkdown 分段加载),其余进 <pre>;
  *   图片   ── data URL 直接摆;
  *   pdf    ── 复用 PdfPreview(给它喂字节);
  *   office ── 复用模版库的 DocxPreview / PptxPreview / XlsxPreview(它们吃字节);
@@ -23,7 +23,7 @@ import type { LibraryItem } from "@contracts/library";
 import type { LibraryFileContent } from "@contracts/ipc";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
-import { Markdown } from "@renderer/components/chat/Markdown.js";
+import { ChunkedMarkdown } from "@renderer/components/chat/ChunkedMarkdown.js";
 import { IconArrowLeft, IconFile, IconFolder, IconLoader2 } from "@renderer/lib/icons.js";
 import { DocxPreview } from "@renderer/components/templates/DocxPreview.js";
 import { PptxPreview } from "@renderer/components/templates/PptxPreview.js";
@@ -66,6 +66,12 @@ export function FilePreview({
   const [content, setContent] = useState<LibraryFileContent | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  /**
+   * PDF 在磁盘上的绝对路径 —— 只有它才能保存批注（见 `PdfPreview` 的 `filePath`）。
+   * 条目只给 id，所以要拿 `library.entryPath` 换一次（与 `FileViewer` 那边同一个调用）。
+   * 换不出来就不给，阅读器退化成只读。
+   */
+  const [pdfPath, setPdfPath] = useState<string | undefined>(undefined);
 
   // 换条目回到根 —— 上一个目录里翻到一半的子文件对这一条没有意义
   useEffect(() => {
@@ -84,6 +90,18 @@ export function FilePreview({
           which,
         });
         if (!cancelled) setContent(res.content);
+        // 换一次绝对路径（只有 PDF 用得上）。**换不出来不影响预览** ——
+        // 那条路上阅读器只是不画保存按钮。
+        try {
+          const p = await api.library.entryPath({
+            id: item.id,
+            ...(which ? { which } : {}),
+          });
+          if (!cancelled) setPdfPath(p.path || undefined);
+        } catch {
+          // 手机端 `api.library` 是抛错的代理
+          if (!cancelled) setPdfPath(undefined);
+        }
       } catch (err) {
         if (!cancelled) setError((err as Error).message);
       } finally {
@@ -184,8 +202,11 @@ export function FilePreview({
   if (content.type === "text") {
     if (ext === "md" || ext === "markdown") {
       return (
+        // 这一层的 `overflow-y-auto` **就是**滚动容器，所以给 `scroll="parent"`
+        // —— 让它把内容放在这里滚，不再自己套一层（见 `ChunkedMarkdown` 文件头那段：
+        // 两层滚动叠在一起，能滚的那根和内层那根不是同一个，界面表现为"滑不动"）。
         <div className="h-full overflow-y-auto px-4 py-3">
-          <Markdown>{content.text}</Markdown>
+          <ChunkedMarkdown text={content.text} scroll="parent" />
         </div>
       );
     }
@@ -207,8 +228,9 @@ export function FilePreview({
     );
   }
   if (content.mime === "application/pdf" || ext === "pdf") {
-    // 字节直接喂给阅读器,不再走一次 readPdf(那条路只认条目的 pdfPath)
-    return <PdfPreview item={item} bytes={bytes} />;
+    // 字节直接喂给阅读器,不再走一次 readPdf(那条路只认条目的 pdfPath)。
+    // `pdfPath` 有的话一并给它 —— 那是"保存批注"唯一的落点。
+    return <PdfPreview item={item} bytes={bytes} {...(pdfPath ? { filePath: pdfPath } : {})} />;
   }
   if (content.mime.includes("wordprocessingml") || ext === "docx" || ext === "dotx") {
     // 失败路径上的「系统程序打开」对库条目没有现成 IPC,先留空 —— 渲染成功才是常态

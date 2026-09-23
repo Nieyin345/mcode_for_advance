@@ -4,6 +4,7 @@ import { IconChartBar } from "@renderer/lib/icons.js";
 import { ModelDropdown } from "./ModelDropdown.js";
 import { EffortChip, PermissionChip } from "./EffortPermissionControl.js";
 import { WorkflowDropdown } from "./WorkflowDropdown.js";
+import { PluginResidencyControl } from "./PluginResidencyControl.js";
 import { WatchSegment } from "./WatchSegment.js";
 import { LongTaskSegment } from "./LongTaskSegment.js";
 import { isElectron } from "@renderer/lib/platform.js";
@@ -112,6 +113,7 @@ export function ComposerToolbar({
         <EffortChip layout="row" />
         <PermissionChip layout="row" />
         <WorkflowDropdown layout="row" />
+        <PluginResidencyControl sessionId={sessionId} layout="row" />
         {/* 长任务守望:把一条命令绑到这个会话上起跑。桌面专属(手机 RPC 白名单
             没有 automation.watch) —— 手机壳里这一行整个不出现。 */}
         {isElectron && <WatchSegment sessionId={sessionId} layout="row" />}
@@ -161,6 +163,8 @@ export function ComposerToolbar({
           绑哪个文献库仍由「+」菜单里的「文献库」负责 —— 药丸上不重复这个入口。 */}
       <span className="composer-minipill-mid" aria-hidden />
       <WorkflowDropdown layout="pill" />
+      <span className="composer-minipill-mid" aria-hidden />
+      <PluginResidencyControl sessionId={sessionId} layout="pill" />
       {/* 长任务守望(桌面专属):起跑面板里选模板 / 现写命令,把一条长命令绑到当前
           会话上 —— 与上面那个「跟会话走的工作模式」是两回事,它跑在自动化会话里。 */}
       {isElectron && <WatchSegment sessionId={sessionId} layout="pill" />}

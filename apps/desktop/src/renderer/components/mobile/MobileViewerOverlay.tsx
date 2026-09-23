@@ -15,7 +15,7 @@ import { basename } from "@renderer/lib/path.js";
 import { Markdown } from "@renderer/components/chat/Markdown.js";
 import { DiffView } from "@renderer/components/chat/DiffView.js";
 import { lineDiff } from "@renderer/lib/lineDiff.js";
-import { FileViewerContent } from "./FileViewer.js";
+import { FileViewerContent } from "./MobileFileViewer.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { IconArrowUp, IconLoader2 } from "@renderer/lib/icons.js";
 

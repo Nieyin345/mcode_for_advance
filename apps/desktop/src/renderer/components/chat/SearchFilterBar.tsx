@@ -131,14 +131,24 @@ export function SearchFilterBar({ workflowId }: { workflowId: string }) {
   if (!conditions || conditions.length === 0) return null;
 
   return (
-    // **一行,不折行。** 条件多的时候横向滚,而不是把这排控件挤成好几行 —— 它是输入框
-    // 顶边上的一条,长高了就是把输入框往下推(`flex-nowrap` 是这里的关键)。
-    //
-    // 窄到装不下时(手机宽实测 430px)会露出半个条件,那就是"右边还有"的提示,所以
-    // 用 `no-scrollbar` 藏掉那条 8px 的横条 —— 它会把这条的高度从 34 顶到 44,而这条
-    // 高度是直接从输入框身上扣的。`overscroll-x-contain` 挡住横滑穿透到浏览器的
-    // 前进/后退手势。
-    <div className="no-scrollbar flex flex-nowrap items-center gap-x-3 overflow-x-auto overscroll-x-contain border-t border-edge px-2.5 pt-1.5 pb-0.5">
+    /**
+     * **一行，而且各条件均分整行**（2026-09-22 用户改的）。
+     *
+     * ## 从"按内容缩 + 挤不下横滑"改成均分
+     *
+     * 从前每个条件是 `shrink-0`（按自己的文字宽度），条件之间的宽度差能到三四倍
+     * （「一年」vs「只要 T1(Q1 或中科院 1 区,或 Top)」），看着参差不齐；挤不下时靠
+     * 横向滚。
+     *
+     * 用户的原话：「**不只是四个，用户定义几个就是几个均分，等宽，不管里面的选项的
+     * 长度**」。所以：
+     *
+     *  - 每个条件 `flex-1 basis-0` —— **等宽**，条数由用户配几个决定；
+     *  - **不管选项多长** —— 原生 `select` 会把长选项截断显示（悬停有 `title` 兜底）；
+     *  - 既然等宽，就**不再横滑**了（`overflow-x-auto` 拿掉）—— 挤的时候是一起变窄，
+     *    而不是把右边的条件推到看不见的地方。
+     */
+    <div className="flex flex-nowrap items-center gap-x-3 border-t border-edge px-2.5 pt-1.5 pb-0.5">
       <span className="flex shrink-0 items-center gap-1 text-[0.7857em] text-content-subtle">
         <IconAdjustmentsHorizontal size={12} />
         {t("chat.nodeCriteria.title")}
@@ -167,43 +177,31 @@ export function SearchFilterBar({ workflowId }: { workflowId: string }) {
       {conditions.map((cond) => {
         const current = values?.[cond.name] ?? "";
         return (
-          <label key={cond.name} className="flex shrink-0 items-center gap-1.5">
+          <label key={cond.name} className="flex min-w-0 flex-1 basis-0 items-center gap-1.5">
             {/* 条件名上挂着解释(配置时写给模型的那句):悬停可见 —— 用户看得见
                 "选它是什么口径",不必切回设置页翻。
 
-                **条件名自己也要能截断。** 它不给宽度上限的话,一个长名字(「文献类型与
-                出版状态」)会把那一格撑到一百多像素,而这一条是**横向滚**的 —— 屏幕宽
-                但条件多的时候,右边的条件就往看不见的地方跑。名字截断掉,腾出来的宽度
-                留给下拉(下拉里的字才是用户要读的那个)。
+                **名字可伸缩、能截断**（2026-09-22 改）：均分之后每格宽度固定，
+                名字比那一格还长时必须让位给下拉 —— 下拉里的字才是用户要读的。
 
-                ⚠️ **是 `shrink-0` + `max-w` + `truncate`,不是 `shrink` + `truncate`。**
-                可收缩的 flex 项在地方不够时**会一路缩到 0**(`truncate` 的 `overflow:hidden`
-                让 `min-width:auto` 失效,于是没有下限)—— 实测窄屏下量到 `nameW: 0`:
-                一整排下拉全没有名字。挤不下应该横滑(这条本来就能横滑),不是把名字抹掉。 */}
+                ⚠️ `min-w-0` 是给 `truncate` 用的（flex 项默认 `min-width:auto`，
+                不加的话截不断，长名字会把整格撑破）。 */}
             <span
-              className="max-w-[160px] shrink-0 truncate text-[0.7857em] text-content-subtle"
+              className="min-w-0 shrink truncate text-[0.7857em] text-content-subtle"
               title={cond.note !== "" ? `${cond.name} — ${cond.note}` : cond.name}
             >
               {cond.name}
             </span>
-            {/* **下拉的宽度跟着选中的那条走**(不给固定宽度)。候选值里长的是真长
-                (内置检索图的「期刊层次」有一条是「只要 T1(Q1 或中科院 1 区,或 Top)」),
-                定死 220px 的话选完根本读不出选了什么 —— 用户报的「显示得不合理」。
-                `max-w-[420px]` 只是兜底,免得一条特别长的把整条挤得没地方放别的。
-                **这一格上不写 `truncate`**:原生 select 的宽度本来就跟着选项文字走,
-                写上去反而可能被压窄;真顶到 420 上限时靠 `title` 兜底(悬停能看全)。 */}
+            {/* **下拉均分那一格的剩余宽度**（`flex-1 min-w-0`）。
+                长选项由原生 `select` 截断显示，`title` 兜底让悬停能看全 ——
+                用户明确说了"不管里面的选项的长度"。 */}
             <select
               value={current}
               onChange={(e) => pick(cond.name, e.target.value)}
               title={current === "" ? undefined : current}
               // 原生的 select:它在这个位置比自绘弹层稳(输入框区域已经有一层
               // base-ui 的 portal),而这里要的就是"点开、选一个"这么简单的事。
-              //
-              // ⚠️ **`shrink-0` 不能少。** 父级 `label` 是 flex 项,默认 `min-width:auto`
-              // —— 这一格被压窄之后 `max-w-[420px]` 兜不住,长候选值会被浏览器在中间
-              // 截掉(实测:字被切在半个汉字上)。它是 `shrink-0`,所以"挤不下就横滑"
-              // 那条规矩在这里成立,而不是"挤不下就切字"。
-              className="max-w-[420px] shrink-0 rounded border border-edge bg-surface/40 px-1.5 py-0.5 text-[0.7857em] text-content-muted outline-none hover:text-content focus:border-accent"
+              className="min-w-0 flex-1 rounded border border-edge bg-surface/40 px-1.5 py-0.5 text-[0.7857em] text-content-muted outline-none hover:text-content focus:border-accent"
             >
               {/* 未设的显示「—」:诚实的空态 —— 它在提示词里也不存在,两头一致。 */}
               {current === "" && <option value="">—</option>}

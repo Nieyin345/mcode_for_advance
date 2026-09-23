@@ -28,6 +28,14 @@ import {
   ensureStarted,
   regenerateToken,
 } from "@main/providers/bridge/extensionBridge.js";
+import {
+  regeneratePublicMcpSecret,
+  setPublicMcpEnabled,
+  setPublicMcpProject,
+  startPublicMcpTunnel,
+  stopPublicMcpTunnel,
+} from "@main/providers/bridge/publicMcpSession.js";
+import { publicMcpStatus } from "@main/providers/bridge/publicMcpServer.js";
 import { resolveSdkBinaryPath } from "@main/providers/claude-sdk/sdkBinaryPath.js";
 import { log } from "@main/lib/logger.js";
 
@@ -118,6 +126,41 @@ export function registerCustomModelHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.WEB_BRIDGE_REGENERATE_TOKEN, async () => {
     await ensureStarted();
     return regenerateToken();
+  });
+
+  // 公网 MCP 端点（给 ChatGPT 的 Connector 用）。与扩展桥是两条独立的通路：那条
+  // 只给浏览器扩展（回环 + 扩展来源），这条给互联网上的远程客户端（路径密钥）。
+  // ⚠️ setEnabled(true) 之后，拿到链接的人拥有本机完全操作权（无审批闸门）——
+  // 设置页那张卡片必须把这句话写在用户看得见的地方。
+  ipcMain.handle(IPC.PUBLIC_MCP_STATUS, async () => publicMcpStatus());
+
+  ipcMain.handle(IPC.PUBLIC_MCP_SET_ENABLED, async (_evt, raw) => {
+    let enabled: boolean;
+    try {
+      enabled = z.object({ enabled: z.boolean() }).parse(raw).enabled;
+    } catch (err) {
+      throw new Error(errText(err));
+    }
+    return setPublicMcpEnabled(enabled);
+  });
+
+  ipcMain.handle(IPC.PUBLIC_MCP_REGENERATE_SECRET, async () =>
+    regeneratePublicMcpSecret());
+
+  // 公网隧道:Mcode 自己 spawn cloudflared,把公网域名捞回来给 UI。
+  ipcMain.handle(IPC.PUBLIC_MCP_START_TUNNEL, async () => startPublicMcpTunnel());
+  ipcMain.handle(IPC.PUBLIC_MCP_STOP_TUNNEL, async () => stopPublicMcpTunnel());
+
+  // 改沙箱目录(公网来的文件工具能碰哪个项目)。每次工具调用现读这个设置,
+  // 所以改完下一次调用就生效,不用重启任何东西。
+  ipcMain.handle(IPC.PUBLIC_MCP_SET_PROJECT, async (_evt, raw) => {
+    let projectId: string | null;
+    try {
+      projectId = z.object({ projectId: z.string().nullable() }).parse(raw).projectId;
+    } catch (err) {
+      throw new Error(errText(err));
+    }
+    return setPublicMcpProject(projectId);
   });
 
   ipcMain.handle(IPC.CUSTOM_MODEL_TEST, async (_evt, raw) => {

@@ -583,6 +583,9 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       envMode: input.envMode,
       wtStyle: input.wtStyle,
     });
+    if (input.activePluginNames !== undefined) {
+      SessionRepo.updateActivePluginNames(input.sessionId, input.activePluginNames);
+    }
     if (input.permissionMode) {
       runtimeManager.setPermissionMode(input.sessionId, input.permissionMode);
     }

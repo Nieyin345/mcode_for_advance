@@ -401,6 +401,9 @@ ok(
   "skill root path",
 );
 ok(!skillRoots.some((r) => r.includes("builtin-skills")), "没有内置技能根了");
+const scopedSkillRoots = await getEnabledPluginSkillRoots(["demo-plugin"]);
+eq(JSON.stringify(scopedSkillRoots), JSON.stringify(skillRoots), "会话插件名单命中时只投递该插件技能根");
+eq(JSON.stringify(await getEnabledPluginSkillRoots(["missing-plugin"])), "[]", "会话插件名单未命中时不泄漏其它全局插件技能");
 
 const mcp = await getPluginMcpServers();
 eq(mcp.length, 1, "one namespaced MCP entry");

@@ -31,12 +31,16 @@ if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
 "$ESBUILD" scripts/mcode-admin-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
+  --external:ssh2 \
   --external:@anthropic-ai/claude-agent-sdk \
   --alias:@main/lib/dataRoot.js=./scripts/mcode-admin-smoke/stubs/dataRoot.ts \
   --alias:@main/lib/logger.js=./scripts/mcode-admin-smoke/stubs/logger.ts \
   --alias:@main/store/repositories.js=./scripts/mcode-admin-smoke/stubs/repositories.ts \
   --alias:@main/plugins/pluginManager.js=./scripts/mcode-admin-smoke/stubs/pluginManager.ts \
   --alias:@main/orchestration/broadcast.js=./scripts/mcode-admin-smoke/stubs/broadcast.ts \
+  --alias:@main/library/broadcast.js=./scripts/mcode-admin-smoke/stubs/libraryBroadcast.ts \
+  --alias:@main/mcp/libraryServer.js=./scripts/mcp-endpoint-smoke/stubs/libraryServer.ts \
+  --alias:@main/window.js=./scripts/library-mcp-smoke/stubs/window.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 MCODE_SMOKE_DATA_ROOT="$DATA" node "$OUT/smoke.mjs"

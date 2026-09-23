@@ -179,6 +179,25 @@ const api = {
       )) as RpcMap["webBridge.regenerateToken"],
   },
 
+  /** 公网 MCP 端点（给 ChatGPT 的 Connector 用）。与 webBridge 是两条独立通路：
+   *  那条给浏览器扩展（回环 + 扩展来源），这条给互联网上的远程客户端（路径密钥）。
+   *  ⚠️ 打开后拿到链接的人拥有本机完全操作权（无审批闸门）。 */
+  publicMcp: {
+    status: (() => ipcRenderer.invoke(IPC.PUBLIC_MCP_STATUS)) as RpcMap["publicMcp.status"],
+    setEnabled: ((input) =>
+      ipcRenderer.invoke(IPC.PUBLIC_MCP_SET_ENABLED, input)) as RpcMap["publicMcp.setEnabled"],
+    regenerateSecret: (() =>
+      ipcRenderer.invoke(
+        IPC.PUBLIC_MCP_REGENERATE_SECRET,
+      )) as RpcMap["publicMcp.regenerateSecret"],
+    startTunnel: (() =>
+      ipcRenderer.invoke(IPC.PUBLIC_MCP_START_TUNNEL)) as RpcMap["publicMcp.startTunnel"],
+    stopTunnel: (() =>
+      ipcRenderer.invoke(IPC.PUBLIC_MCP_STOP_TUNNEL)) as RpcMap["publicMcp.stopTunnel"],
+    setProject: ((input) =>
+      ipcRenderer.invoke(IPC.PUBLIC_MCP_SET_PROJECT, input)) as RpcMap["publicMcp.setProject"],
+  },
+
   /** Pi models visual editor — reads/writes ~/.pi/agent/models.json.
    *  apiKey fields are $ENV_VAR references (never plaintext), so returning
    *  them to the renderer is safe. */
@@ -269,6 +288,14 @@ const api = {
       ipcRenderer.invoke(IPC.LIBRARY_OPEN_FILE, input)) as RpcMap["library.openFile"],
     entryPath: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_ENTRY_PATH, input)) as RpcMap["library.entryPath"],
+    readHighlights: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_READ_HIGHLIGHTS, input)) as RpcMap["library.readHighlights"],
+    saveHighlights: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_SAVE_HIGHLIGHTS, input)) as RpcMap["library.saveHighlights"],
+    writeHighlights: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_WRITE_HIGHLIGHTS, input)) as RpcMap["library.writeHighlights"],
+    readOriginalPdf: ((input) =>
+      ipcRenderer.invoke(IPC.LIBRARY_READ_ORIGINAL_PDF, input)) as RpcMap["library.readOriginalPdf"],
     readMarkdown: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_READ_MARKDOWN, input)) as RpcMap["library.readMarkdown"],
     readPdf: ((input) =>

@@ -1025,6 +1025,22 @@ export const SessionRepo = {
     persist();
   },
 
+  /**
+   * Persist the conversation's plugin binding. `null` / an empty list clears
+   * the binding back to the legacy unrestricted state. Names are de-duplicated
+   * in first-seen order; install/enable validity is checked when each turn is
+   * assembled, so this state can never resurrect an uninstalled/disabled plugin.
+   */
+  updateActivePluginNames(id: string, names: string[] | null): void {
+    const normalized = names ? [...new Set(names.filter((name) => typeof name === "string" && name.trim()).map((name) => name.trim()))] : [];
+    getDb().run("UPDATE sessions SET active_plugin_names = ?, updated_at = ? WHERE id = ?", [
+      v(normalized.length > 0 ? JSON.stringify(normalized) : null),
+      v(Date.now()),
+      v(id),
+    ]);
+    persist();
+  },
+
   /** Hard-delete a session. Child messages cascade-delete via
    *  messages.session_id ON DELETE CASCADE. Deleting a MAIN session keeps its
    *  side chats alive (their Q&A history has standalone value) — their

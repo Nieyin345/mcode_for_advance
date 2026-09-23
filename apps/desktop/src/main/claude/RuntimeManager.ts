@@ -23,6 +23,9 @@ import { invalidateUsageStats } from "@main/lib/usageStats.js";
 import { log } from "@main/lib/logger.js";
 import { backflowPrompt, clearBackflow, peekBackflow } from "@main/lib/pendingBackflow.js";
 import { resolveAgentPrompt, resolveWorkflowPrompt } from "@main/orchestration/prompt.js";
+import { memorySectionFrom } from "@contracts/memory";
+import { buildEnvPrompt, envPromptFingerprint } from "@main/providers/envPrompt.js";
+import { memorySnapshotFor } from "@main/memory/retrieval.js";
 // 只借类型 —— `import type` 整条会被编译掉,那条链(工具表 → repositories → db →
 // electron)不会因此被拉进任何无头 smoke。
 import type { WebToolGate } from "@main/mcp/webToolHost.js";
@@ -217,6 +220,9 @@ class RuntimeManager {
   /** sessionId → 扣住文字推送的计数(见 {@link holdTurnText})。和上面那张分开,是因为
    *  两者的判据完全不同:一个扣的是"这一轮结束了",一个扣的是"这一轮正在说什么"。 */
   private heldTurnTexts = new Map<string, number>();
+  /** sessionId → 上次注入过的环境块指纹。内容没变就不重复注入(见 sendTurn 里那段)。
+   *  是"这一轮该不该注入"的状态,不属于任何单次回合,所以挂在 manager 上而不是 rt 上。 */
+  private lastEnvFingerprint = new Map<string, string>();
 
   /**
    * 把这一轮面向界面的 `turn.done` **扣住不发**,返回解除用的函数(幂等)。
@@ -1040,29 +1046,43 @@ class RuntimeManager {
             rt.bridgeConfigId = undefined;
             rt.bridgeHandle = undefined;
           }
-          if (!rt.bridgeConfigId) {
-            const handle = await BridgeRegistry.acquire(session.customModelId, cfg);
-            rt.bridgeConfigId = session.customModelId;
-            rt.bridgeHandle = { localUrl: handle.localUrl };
-            // Surface transient upstream-transport retries (connect timeout /
-            // reset / refused) to this session's UI. Without it, a 10s+ retry
-            // loop mid-turn looks like an unexplained hang — the final failure
-            // does reach the user (502 → API-error card), but the WAITING
-            // doesn't. kind:"ok" after a successful retry clears the hint.
-            rt.bridgeStatusUnsubscribe = handle.onStatus((s) => {
-              rt.ctx.emit({
-                type: "upstream.issue",
-                sessionId: session.id,
-                kind: s.kind,
-                cause: s.cause,
-                attempt: s.attempt,
-                attempts: s.attempts,
-              } satisfies UpstreamIssueEvent);
-            });
+          try {
+            if (!rt.bridgeConfigId) {
+              const handle = await BridgeRegistry.acquire(session.customModelId, cfg);
+              rt.bridgeConfigId = session.customModelId;
+              rt.bridgeHandle = { localUrl: handle.localUrl };
+              rt.bridgeStatusUnsubscribe = handle.onStatus((status) => {
+                rt.ctx.emit({
+                  type: "upstream.issue",
+                  sessionId: session.id,
+                  kind: status.kind,
+                  cause: status.cause,
+                  attempt: status.attempt,
+                  attempts: status.attempts,
+                } satisfies UpstreamIssueEvent);
+              });
+            } else {
+              const handle = await BridgeRegistry.refreshHeld(session.customModelId, cfg);
+              if (!rt.bridgeHandle || rt.bridgeHandle.localUrl !== handle.localUrl) {
+                rt.bridgeStatusUnsubscribe?.();
+                rt.bridgeHandle = { localUrl: handle.localUrl };
+                rt.bridgeStatusUnsubscribe = handle.onStatus((status) => {
+                  rt.ctx.emit({
+                    type: "upstream.issue",
+                    sessionId: session.id,
+                    kind: status.kind,
+                    cause: status.cause,
+                    attempt: status.attempt,
+                    attempts: status.attempts,
+                  } satisfies UpstreamIssueEvent);
+                });
+              }
+            }
+          } catch (err) {
+            throw new Error(`自定义模型翻译桥启动失败: ${(err as Error).message}`);
           }
-          // rt.bridgeHandle is now guaranteed set (we just ensured it above);
-          // bind to a local so TS keeps it narrowed through the rewrite below.
           const localUrl = rt.bridgeHandle?.localUrl;
+          if (!localUrl) throw new Error("自定义模型翻译桥启动失败: no local bridge URL");
           // Rewrite the apiConfig to point at the local bridge so the rest of
           // the pipeline (buildCustomEnv, the binary) is completely unaware —
           // it just sees an Anthropic-compatible endpoint on localhost.
@@ -1074,7 +1094,7 @@ class RuntimeManager {
           // token，走到这里原样保留。
           apiConfig = {
             ...cfg,
-            baseUrl: localUrl ?? cfg.baseUrl,
+            baseUrl: localUrl,
             authToken: cfg.authToken || "mcode-local-bridge",
           };
         } else {
@@ -1115,6 +1135,38 @@ class RuntimeManager {
       log.info(`agent profile active: ${session.agentProfile?.name ?? session.agentProfile?.id ?? "?"}`);
     }
 
+    // 普通主对话每轮都刷新长期记忆；side/node/automation 各有自己明确的记忆语义，
+    // 这里绝不越权替它们自动打开（尤其 side 的「档案」/「档案+记忆」是两个用户选择）。
+    let memoryPrompt: string | undefined;
+    if (session.kind === "chat") {
+      try {
+        memoryPrompt = memorySectionFrom(memorySnapshotFor()) || undefined;
+      } catch (err) {
+        log.warn(`[memory] 主对话取长期记忆失败，本轮不注入: ${(err as Error).message}`);
+      }
+    }
+
+    // **环境背景** —— 用户有哪些项目、文档库在哪、库里有什么。让 agent 不必靠 `ls` 猜。
+    //
+    // 每轮都构建(现查 repo，所以删掉的条目下次就不在清单里了)，但**只在内容变了时
+    // 才真的重注** —— 主对话的上下文在提供方自己的会话记录里，重复灌同样的几百行只是
+    // 白占上下文。指纹没变就跳过。
+    //
+    // ⚠️ 注意"下次"的粒度：**同一会话内**注入过的那份已经留在历史里了，刷新不掉。
+    // "删了文档它就不知道"只在**新会话**成立(见 `@contracts/provider` 的 envPrompt 注释)。
+    let envPrompt: string | undefined;
+    if (session.kind === "chat") {
+      try {
+        const built = buildEnvPrompt(this.cwdFor(session.id));
+        if (built && envPromptFingerprint(built) !== this.lastEnvFingerprint.get(session.id)) {
+          envPrompt = built;
+          this.lastEnvFingerprint.set(session.id, envPromptFingerprint(built));
+        }
+      } catch (err) {
+        log.warn(`[env] 构建环境块失败，本轮不注入: ${(err as Error).message}`);
+      }
+    }
+
     // **「并回主对话」的内容在这里带进去**(见 `@contracts/nodeType` 的
     // `NODE_RETURN_PARAM_KEY` 与 `lib/pendingBackflow.ts`)。
     //
@@ -1142,13 +1194,18 @@ class RuntimeManager {
       // 系统提示词上的,不是拼在用户这句话前面 —— 拼在 prompt 里的话模型会把它当成
       // "用户这一轮说的话",而它其实是"你是谁"。
       agentPrompt,
+      memoryPrompt,
+      envPrompt,
       resumeProviderSessionId: rt.providerSessionId,
       apiConfig,
       skills: input.skills,
-      // 工作流节点收窄这一轮能看见的东西(见 `NodeRunInput`)。普通对话这两项是
-      // undefined = 不限制。
+      // 工作流节点仍可逐轮显式收窄；普通对话若没有逐轮 override，则复用
+      // session.activePluginNames。NULL/空名单保持历史行为（不限制），非空名单
+      // 才进入“本对话已激活插件”的常驻模式。这里只传稳定名字，provider 每轮
+      // 都重新与当前 globally-enabled plugins 求交集，所以禁用/卸载立即生效。
       mcpServerNames: input.mcpServerNames,
-      pluginNames: input.pluginNames,
+      pluginNames: input.pluginNames ??
+        (session.activePluginNames && session.activePluginNames.length > 0 ? session.activePluginNames : undefined),
       // User-attached images (base64 content blocks) — forwarded verbatim to
       // the provider; each adapter maps them onto its SDK's image shape.
       images: input.images,

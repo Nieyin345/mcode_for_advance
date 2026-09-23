@@ -162,10 +162,17 @@ export function App() {
    *  global shortcut listener (useGlobalShortcuts) via store actions, so we
    *  no longer wire those keys here. */
 
-  // Auto-open the right panel when something requests its attention (plain
-  // openFileInIde calls; diff opens render in the center editor and
-  // deliberately don't bump). The store can't reach into this local state,
-  // so it bumps a nonce we watch here.
+  /**
+   * `ideFocusNonce` —— **只在"去文件树里定位一个文件"时 bump**（`revealInFileTree`）。
+   *
+   * 它要做的事是"把目的地露出来"：右栏可能关着，而用户刚在别处点了"在文件树里显示"，
+   * 那就得把面板展开，否则切了 tab 也看不见。
+   *
+   * ⚠️ **打开文件不走这条**（2026-09-22 改）。`openFileInIde` 从前也 bump 它，
+   * 于是双击一个文件时右栏被拉到 **files** 页 —— 而用户要的是「双击打开文件的同时
+   * 侧边栏弹出来主对话」。现在那条意图写在 `openFileInIde` 自己身上
+   * （展开右栏 + 切 `flow` + 展开主对话），两者不再互相盖掉。
+   */
   const ideFocusNonce = useSessionStore((s) => s.ideFocusNonce);
   useEffect(() => {
     if (ideFocusNonce > 0) setRightOpen(true);

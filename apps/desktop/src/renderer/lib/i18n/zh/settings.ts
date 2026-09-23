@@ -314,6 +314,34 @@ export const zh = {
   "settings.customModels.bridgeRegenerate": "重新生成令牌",
   "settings.customModels.bridgeHint":
     "把这两项填进浏览器扩展,扩展连上后这里会变成「已连接」。重新生成会让已装好的扩展失效,需要重新填一次。",
+  "settings.customModels.publicMcpTitle": "公网 MCP 端点",
+  "settings.remoteControl.title": "远程控制",
+  "settings.remoteControl.desc":
+    "让互联网上的 AI(比如 ChatGPT 的 Connector)操作这台电脑:读写文件、跑命令、查资料库。",
+  "settings.remoteControl.warning":
+    "⚠️ 打开后,拿到链接的人可以在这台电脑上做任何事(读写文件、执行命令、杀进程、SSH),不弹审批。只填进你自己账号的 ChatGPT,别把链接发给任何人。",
+  "settings.remoteControl.sandboxLabel": "允许操作的项目",
+  "settings.remoteControl.sandboxNone": "（未选择）",
+  "settings.remoteControl.sandboxAt": "文件读写被限制在这个项目目录里:{path}",
+  "settings.remoteControl.sandboxHint":
+    "选一个项目 —— 公网来的文件读写只会在这个目录里发生。改完立刻生效,不用重启。",
+  "settings.remoteControl.toggleLabel": "开放远程控制",
+  "settings.customModels.publicMcpOn": "已开放",
+  "settings.customModels.publicMcpOff": "已关闭",
+  "settings.customModels.publicMcpToggleLabel": "开放公网 MCP 端点",
+  "settings.customModels.publicMcpWarning":
+    "⚠️ 打开后,拿到链接的人可以在这台电脑上做任何事(读写文件、执行命令、杀进程、SSH),不弹审批。只填进你自己账号的 ChatGPT,别把链接发给任何人。",
+  "settings.customModels.publicMcpTunnelLabel": "隧道命令",
+  "settings.customModels.publicMcpRegenerate": "换一把密钥",
+  "settings.customModels.publicMcpStartTunnel": "开启公网隧道",
+  "settings.customModels.publicMcpStopTunnel": "关闭隧道",
+  "settings.customModels.publicMcpTunnelStarting": "正在起隧道…",
+  "settings.customModels.publicMcpTunnelReconnecting": "隧道断了，正在重连…",
+  "settings.customModels.publicMcpTunnelReady": "隧道已就绪",
+  "settings.customModels.publicMcpUrlLabel": "完整地址",
+  "settings.customModels.publicMcpSandboxLabel": "沙箱目录",
+  "settings.customModels.publicMcpHint":
+    "点「开启公网隧道」后,把上面那条「完整地址」填进 ChatGPT 的 设置 → Connectors → 高级设置 → 开发者模式 → 创建(认证选「无」)。隧道域名每次重启都会变,所以每次都要重填。文件读写被限制在「沙箱目录」里,越界会被拒绝;但 agent_bash 命令不受这个限制 —— 所以别把地址给不信任的人。换密钥会让旧链接立刻失效,这是唯一的收回手段。",
   "settings.customModels.openaiNote": "OpenAI 格式端点(OpenAI 官方 / Azure / vLLM / Ollama / one-api 等)会启用内置协议翻译层:Claude 仍按 Anthropic 协议运行,应用在本地把请求/响应实时翻译成 OpenAI 格式转发。",
   "settings.customModels.nameLabel": "名称",
   "settings.customModels.namePlaceholder": "DeepSeek 中转",
@@ -1274,6 +1302,8 @@ export const zh = {
   "settings.workflows.nodeRunnerMissing": "这个执行方式跑不了",
   // 主代理:图的入口,新建的工作流自带一个、删不掉(见 workflowView 的 isProtectedNode)。
   "settings.workflows.mainNodeHint": "主代理 · 这张图的入口，不能删",
+  /** 自动化里的入口是**触发器**（不是主代理）—— 2026-09-22 分家之后的文案。 */
+  "settings.automation.triggerNodeHint": "触发器 · 这条自动化的起点，不能删",
   "settings.workflows.mainTypeMissing":
     "节点类型清单没读进来，暂时建不了工作流 —— 新建出来的图会缺了入口那个主代理。清单的错误在上面的提示里。",
   // 参数的控件种类在清单里是封闭集合（text / longtext / number / boolean / select /

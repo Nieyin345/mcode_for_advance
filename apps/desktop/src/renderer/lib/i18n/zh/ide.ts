@@ -52,6 +52,13 @@ export const zh = {
   "ide.editor.switchToEditView": "切换到编辑视图",
   "ide.editor.switchToSource": "切换到源码编辑",
   "ide.editor.switchToPreview": "切换到预览",
+  "ide.editor.switchToSourceView": "切换到源码视图",
+  /** 编辑器里选中文字后，引用目标列表里"这一份文件"那一项的标题（同 FileViewer 的用法）。 */
+  "ide.editor.thisFile": "这个文件",
+  /** 「源码 / 预览」那个按钮的文案 —— 说的是"点一下会切到哪儿"。md 有三档轮转。 */
+  "ide.editor.togglePreview": "预览",
+  "ide.editor.toggleEdit": "编辑",
+  "ide.editor.toggleSource": "源码",
 
   /* ── file viewer (mobile read-only viewer) ── */
   "ide.viewer.mdPreview": "预览",

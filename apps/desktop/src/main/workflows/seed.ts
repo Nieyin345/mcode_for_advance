@@ -27,7 +27,6 @@ import { dirname, join } from "node:path";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { log } from "@main/lib/logger.js";
 import { LIBRARY_PY, CHECK_CITATIONS_PY } from "./assets.js";
-import { SEARCH_SCRIPT_FILES } from "./searchScriptsAssets.js";
 
 /** 流程目录。与 `library/`、`templates/` 平级,同在数据根下。 */
 export function workflowsRoot(): string {
@@ -101,19 +100,25 @@ export function ensureWorkflows(): void {
     ["README.md", README],
     ["scripts/library.py", LIBRARY_PY],
     ["scripts/check_citations.py", CHECK_CITATIONS_PY],
-    // 检索脚本 —— 从两个 skill 仓库原样搬过来的(见 searchScriptsAssets.ts):
-    // research-clients(多源检索客户端 + 中文文献解析)与 lookup-tools(PubMed /
-    // 引用核验 / BibTeX / 分页遍历)。都是纯标准库,不需要装依赖。
-    ...SEARCH_SCRIPT_FILES.map(
-      ([rel, body]): [string, string] => [`scripts/search-scripts/${rel}`, body],
-    ),
+    // ⚠️ **外部检索脚本已移除**（2026-09-22 用户要求）。
+    //
+    // 原先这里还会铺一整套 `scripts/search-scripts/`（多源检索客户端、PubMed、
+    // 分页遍历、引用核验），是从两个第三方技能仓库原样搬进来的。用户明确不要
+    // 内置它们，连带工作区那个克隆一起删了 —— 所以这里不再写。
+    //
+    // 连带改过的地方（**别再往回加**）：
+    //   - `lib/systemPrompt.ts` 里教模型用这些脚本的那几行也删了；
+    //   - `searchScriptsAssets.ts` 与 `search-scripts/` 两个路径都已不存在。
+    // 要恢复的话，别手抄：去 `github.com/Imbad0202/academic-research-skills` 重新
+    // 克隆，再按当初那套生成脚本(一次性的，已随 `.scholar_tmp/` 移出源码树)重新生成。
   ];
 
   for (const [rel, body] of files) {
     const abs = join(workflowsRoot(), rel);
     if (existsSync(abs)) continue; // 用户可能改过 —— 不覆盖
     try {
-      // search-scripts 是嵌套目录,父目录可能还不存在
+      // 剩下的两个脚本都在 `scripts/` 一层里；`recursive` 留着无妨
+      // （从前 search-scripts 是嵌套的，现在没有了）。
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, body, "utf8");
       // 可执行位:非 Windows 上直接 ./library.py 就能跑。Windows 忽略它,不影响。

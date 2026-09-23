@@ -42,9 +42,9 @@ import { makeContentTag } from "@renderer/lib/contentTag.js";
 import { SelectionToolbar, type SelectionToolbarState } from "@renderer/components/chat/SelectionToolbar.js";
 import { SelectionQuoteMenu, type QuoteTarget } from "@renderer/components/chat/SelectionQuoteMenu.js";
 import { api } from "@renderer/lib/api.js";
-import { extname } from "@renderer/lib/path.js";
+import { dirname, extname } from "@renderer/lib/path.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { Markdown } from "@renderer/components/chat/Markdown.js";
+import { ChunkedMarkdown } from "@renderer/components/chat/ChunkedMarkdown.js";
 import { PdfPreview } from "./PdfPreview.js";
 import { DocxPreview } from "@renderer/components/templates/DocxPreview.js";
 import { PptxPreview } from "@renderer/components/templates/PptxPreview.js";
@@ -68,8 +68,22 @@ import { extOf, type FileViewTarget } from "@renderer/stores/fileViewStore.js";
  */
 type ViewData =
   | { type: "dir"; files: Array<{ name: string; isDir: boolean }> }
-  | { type: "text"; text: string }
-  | { type: "binary"; mime: string; bytes: Uint8Array; base64: string }
+  /** `baseDir`：这份文本所在的**绝对目录** —— 只给 md 用（见下面 `img` 那段）。
+   *  没有它的话，md 里 `![](images/1.jpg)` 这种相对引用解析不出来，图片是裂的。 */
+  | { type: "text"; text: string; baseDir?: string }
+  | {
+      type: "binary";
+      mime: string;
+      bytes: Uint8Array;
+      base64: string;
+      /**
+       * 这个二进制文件在磁盘上的**绝对路径** —— 目前只有 PDF 阅读器用它
+       * （保存批注要落回原文件）。条目那一支要走 `library.entryPath` 换一次
+       * （见 `loadViewData` 里 md 那段同一个调用）;换不出来就不给，阅读器
+       * 退化成只读（不画保存按钮）。
+       */
+      filePath?: string;
+    }
   | { type: "unsupported"; error: string };
 
 /** base64 → 字节。预览体积上限在主进程挡着,这个循环最多几十毫秒。 */
@@ -382,8 +396,16 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
       //    重排之后那份源码就没法读了(同 TemplatePanel 当年那条注释)。
       if (ext === "md" || ext === "markdown") {
         return (
-          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
-            <Markdown>{data.text}</Markdown>
+          // ⚠️ **滚动容器交给 `ChunkedMarkdown` 自己**（`scroll="self"` 是默认值）。
+          //    这一层只给尺寸（`min-h-0 flex-1`），**不能**再写 `overflow-y-auto` ——
+          //    两条滚动叠在一起，外层滚内层不滚，触底哨兵永远不触发。
+          //    内边距也跟着挪进滚动容器（原来在外层，现在由 `className` 带进去），
+          //    否则滚动条紧贴文字、和从前长得不一样。
+          <div className="min-h-0 flex-1">
+            {/* ★ `baseDir` 是**必须**的 —— 没有它，md 里的 `![](images/1.jpg)`
+                不会去读那个图，而是渲染成一个文件名 chip（用户看到的"图全裂了"）。
+                见 `Markdown` 组件 `img` 分支里那句 `if (baseDir)`。 */}
+            <ChunkedMarkdown text={data.text} baseDir={data.baseDir} className="h-full px-6 py-4" />
           </div>
         );
       }
@@ -408,7 +430,14 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
       );
     }
     if (mime === "application/pdf" || ext === "pdf") {
-      return <PdfPreview item={itemOf(target)} bytes={bytes} onOpenExternal={openExternal} />;
+      return (
+        <PdfPreview
+          item={itemOf(target)}
+          bytes={bytes}
+          {...(data.filePath ? { filePath: data.filePath } : {})}
+          onOpenExternal={openExternal}
+        />
+      );
     }
     // office 三种:预览组件吃字节,自己管滚动和缩放,所以不吃外面的容器样式。
     // 渲染不出来时的那条出口一律指向 `openExternal` —— 模版那一支有 `templates.openFile`
@@ -499,8 +528,43 @@ async function loadViewData(
     });
     const c = res.content;
     if (c.type === "dir") return { data: { type: "dir", files: c.files } };
-    if (c.type === "text") return { data: { type: "text", text: c.text } };
+    if (c.type === "text") {
+      /**
+       * ★ **必须带上目录，否则 md 里的图片是裂的。**
+       *
+       * `Markdown` 的 `img` 分支只在**有 `baseDir`** 时才把相对路径解析成本地
+       * 文件去读（`MarkdownLocalImage` → `file.readBinary`）；没有 baseDir 时它
+       * 退化成"渲染成一个可点击的文件名 chip" —— 也就是用户看到的"图全裂了"。
+       *
+       * 条目只给 id、不给路径（`LibraryFileContent` 的 text 分支没有路径字段），
+       * 所以走 `library.entryPath` 换一次。**换不出来就算了**（目录条目、
+       * 或文件已经不在盘上），那种情况下退化成 chip 也比报错强。
+       */
+      let baseDir: string | undefined;
+      try {
+        const p = await api.library.entryPath({
+          id: target.source.ref,
+          ...(target.source.which ? { which: target.source.which } : {}),
+        });
+        if (p.path) baseDir = dirname(p.path);
+      } catch {
+        /* 手机端 `api.library` 是抛错的代理 —— 拿不到就没有 baseDir */
+      }
+      return { data: { type: "text", text: c.text, ...(baseDir ? { baseDir } : {}) } };
+    }
     if (c.type === "unsupported") return { data: { type: "unsupported", error: c.error } };
+    // 路径：与上面 md 那支同一个调用。PDF 保存批注要落到原文件上，
+    // 而条目只给 id —— 换不出来就退化成只读（阅读器那边不画保存按钮）。
+    let binPath: string | undefined;
+    try {
+      const p = await api.library.entryPath({
+        id: target.source.ref,
+        ...(target.source.which ? { which: target.source.which } : {}),
+      });
+      if (p.path) binPath = p.path;
+    } catch {
+      /* 手机端 `api.library` 是抛错的代理 */
+    }
     return {
       data: {
         type: "binary",
@@ -508,6 +572,7 @@ async function loadViewData(
         base64: c.base64,
         // ⚠️ 这里解一次就够 —— 下游每个分支再解一次是白烧 CPU(大 PDF 十几 MB)。
         bytes: base64ToBytes(c.base64),
+        ...(binPath ? { filePath: binPath } : {}),
       },
     };
   }
@@ -594,7 +659,8 @@ async function loadProjectFileData(filePath: string): Promise<ViewData> {
   if (!BINARY_EXTS.has(extname(filePath).toLowerCase())) {
     try {
       const res = await api.file.readFile({ filePath });
-      return { type: "text", text: res.content };
+      // 项目文件本来就有绝对路径 —— md 里的相对图片能直接解析（同 library 那支）。
+      return { type: "text", text: res.content, baseDir: dirname(filePath) };
     } catch {
       // 不是文本(或读不动)—— 落到二进制那一支。
     }
@@ -606,7 +672,8 @@ async function loadProjectFileData(filePath: string): Promise<ViewData> {
   const comma = bin.dataUrl.indexOf(",");
   const base64 = comma >= 0 ? bin.dataUrl.slice(comma + 1) : "";
   const mime = /^data:([^;,]+)/.exec(bin.dataUrl)?.[1] ?? "application/octet-stream";
-  return { type: "binary", mime, base64, bytes: base64ToBytes(base64) };
+  // `filePath` 参数**本来就是绝对路径** —— PDF 保存批注要用它落回原文件。
+  return { type: "binary", mime, base64, bytes: base64ToBytes(base64), filePath };
 }
 
 /** **确定不该当文本读**的扩展名。见 `loadProjectFileData` 的头注 —— 这张表只需要

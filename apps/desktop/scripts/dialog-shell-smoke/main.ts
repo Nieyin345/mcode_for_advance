@@ -47,6 +47,8 @@ import { initDb } from "@main/store/db.js";
 import { ProjectRepo } from "@main/store/repositories.js";
 import { registerDialogHandlers } from "@main/ipc/dialog.js";
 import { registerShellHandlers } from "@main/ipc/shell.js";
+import { dataRoot } from "@main/lib/dataRoot.js";
+import { findContainingWorkspaceRoot, isKnownWorkspaceRoot } from "@main/lib/pathGuard.js";
 
 import {
   dialogCalls,
@@ -753,6 +755,60 @@ console.log("\n6. 多个项目根之间不串");
   eqArr("恢复之后外层根又能打开了", e7, [`openPath:${ROOT_A}`]);
   const e5 = await shellEffect(() => call(IPC.SHELL_SHOW_ITEM_IN_FOLDER, { path: join(ROOT_A, "top.txt") }));
   eqArr("但外层根没被连坐", e5, [`showItemInFolder:${join(ROOT_A, "top.txt")}`]);
+}
+
+/* ──────────────── 文献库根也是合法工作区根（2026-09-21） ──────────────── */
+
+console.log("\n文献库根 · 编辑那里面的文件要通得过这道闸");
+
+{
+  // ★ 用户的规矩是「我不管从哪打开，只要在主页面显示它，我就该能编辑它」——
+  //   而文献库的 PDF/markdown 住在 `<数据根>/library/` 下，**不归任何项目根管**。
+  //   不加这一类根，那些文件送进 FileEditor（读写全走 file:readFile / file:writeFile）
+  //   会**读被拒、写更被拒**，表现是"打开了但是空的、存不下去"。
+  //
+  //   这一段的判据就一条：**库里的文件在、库外的文件不在**。前一版没有这条时
+  //   库里那份会被判成"越界"。
+  const lib = join(dataRoot(), "library");
+  mkdirSync(join(lib, "papers", "ab"), { recursive: true });
+  const insidePdf = join(lib, "papers", "ab", "x.pdf");
+  writeFileSync(insidePdf, "x");
+
+  check("★ 库根下的文件 → 有归属", findContainingWorkspaceRoot(insidePdf) !== null, {
+    got: findContainingWorkspaceRoot(insidePdf),
+  });
+  check("★ 库根本身 → 也算", findContainingWorkspaceRoot(lib) !== null);
+  check("★ isKnownWorkspaceRoot 认它", isKnownWorkspaceRoot(insidePdf));
+
+  // 反面：**数据根下的别处不该跟着一起开口子**。`mcode.db` / `workflows/` /
+  // `memory/` 各有各的 IPC，不该从"随便读写一个文件"这条通用路进去 —— 这条钉的是
+  // "加的是 library/ 而不是整个数据根"这个刻意的收窄。
+  check(
+    "★ 数据根下的 mcode.db **不在**（只放开了 library/）",
+    findContainingWorkspaceRoot(join(dataRoot(), "mcode.db")) === null,
+  );
+  check(
+    "★ 数据根下的 workflows/ **不在**",
+    findContainingWorkspaceRoot(join(dataRoot(), "workflows", "a.json")) === null,
+  );
+  check(
+    "★ 数据根本身 **不在**",
+    findContainingWorkspaceRoot(dataRoot()) === null,
+  );
+  // 反面二：系统目录更不该在。
+  // 模版库也要 —— 它在 `<数据根>/templates/`,与文献库**并列**。只放开 library
+  // 是第一版的漏:那边同样是"用户自己的文档、同样要在主页面里编辑"。
+  const tpl = join(dataRoot(), "templates");
+  mkdirSync(join(tpl, "code", "x"), { recursive: true });
+  check(
+    "★ 模版库下的文件也认（不是只放开 library）",
+    findContainingWorkspaceRoot(join(tpl, "code", "x", "a.py")) !== null,
+  );
+
+  check(
+    "★ 库外随便一个路径 **不在**",
+    findContainingWorkspaceRoot(join(TMP, "..", "definitely-not-ours.txt")) === null,
+  );
 }
 
 /* ──────────────── 收尾 ──────────────── */

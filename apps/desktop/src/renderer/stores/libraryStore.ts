@@ -44,11 +44,14 @@ interface LibraryState {
   /**
    * 详情屏当前看哪一页:**元数据** / **原文(Markdown)** / **PDF 原文**。
    *
-   * 放在 store 而不是 LibraryPanel 的局部 state,是因为「打开 md 预览」这个动作
+   * 放在 store 而不是面板的局部 state,是因为「打开预览」这个动作
    * 从**左栏的右键菜单**发出 —— 那里碰不到面板的局部状态。两边读写同一份,才不会
    * 出现"菜单说要预览、面板还停在元数据"。
+   *
+   * ⚠️ 它现在只有 `edit` 还有活着的消费者(笔记条目点开直接落在编辑页)。其余几个值
+   * 是**上一版右栏那个 `library` 面板**留下的 —— 那个面板 2026-09-21 已删,右栏改成
+   * 了单一「预览」(见 `PreviewPanel`,它不读这一格)。
    */
-  // "file" 是通用文件条目(linked/attached)的预览页,见 LibraryPanel 的 tabs。
   detailTab: "meta" | "preview" | "pdf" | "file" | "edit";
   /**
    * **右栏预览**此刻看的是哪一份(2026-09-21)。`null` = 本体。

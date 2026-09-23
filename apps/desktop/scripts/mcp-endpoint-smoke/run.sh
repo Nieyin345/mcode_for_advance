@@ -10,7 +10,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-OUT=$(mktemp -d /tmp/mcode-mcp-endpoint-smoke.XXXXXX)
+# Keep the bundle inside apps/desktop so runtime dynamic imports / require.resolve
+# (notably pdfjs-dist + its cmaps) can walk up to this package's node_modules.
+# A /tmp bundle makes production-valid package resolution fail only in the smoke.
+mkdir -p ./.tmp
+OUT=$(mktemp -d ./.tmp/mcode-mcp-endpoint-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
@@ -27,12 +31,19 @@ if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
 "$ESBUILD" scripts/mcp-endpoint-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
+  --external:ssh2 \
   --alias:@main/lib/logger.js=./scripts/mcp-endpoint-smoke/stub-logger.ts \
   --alias:@main/mcp/libraryServer.js=./scripts/mcp-endpoint-smoke/stubs/libraryServer.ts \
   --alias:@main/lib/dataRoot.js=./scripts/mcode-admin-smoke/stubs/dataRoot.ts \
   --alias:@main/store/repositories.js=./scripts/mcode-admin-smoke/stubs/repositories.ts \
   --alias:@main/plugins/pluginManager.js=./scripts/mcode-admin-smoke/stubs/pluginManager.ts \
   --alias:@main/orchestration/broadcast.js=./scripts/mcode-admin-smoke/stubs/broadcast.ts \
+  --alias:@main/memory/broadcast.js=./scripts/mcp-endpoint-smoke/stubs/memoryBroadcast.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
+
+# esbuild folds pdfjs into smoke.mjs but its fake-worker loader still resolves
+# ./pdf.worker.mjs relative to the bundle. Mirror the production asset beside
+# the smoke bundle so this suite exercises real PDF extraction.
+cp node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs "$OUT/pdf.worker.mjs"
 
 node "$OUT/smoke.mjs"

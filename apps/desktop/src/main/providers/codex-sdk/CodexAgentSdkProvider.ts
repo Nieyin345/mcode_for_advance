@@ -75,6 +75,7 @@ import { readInstructionsSource, instructionsSourcePath } from "@main/lib/appCon
 import { defaultSkillsRoot, enabledSkillDirs, engineEnabled, readEnginesMap, skillNamesInRoot } from "@main/lib/skillEngines.js";
 import { scriptsDir } from "@main/workflows/seed.js";
 import { ASK_NATIVE_TOOL_PROMPT } from "@main/lib/askQuestion.js";
+import { turnContextSections } from "@main/providers/contextPrompt.js";
 import {
   parseQuestions,
   formatAnswersForModel,
@@ -399,12 +400,16 @@ export class CodexAgentSdkProvider implements AgentProvider {
         await client.start();
 
         // Thread identity: resume the persisted thread, or start a new one.
+        // Codex app-server exposes developerInstructions on thread/start AND
+        // thread/resume (not turn/start), so dynamic Mcode context rides there.
+        const developerInstructions = joinPromptSections(...turnContextSections(req));
         const threadParams: Record<string, unknown> = {
           cwd: req.cwd,
           sandbox,
           approvalPolicy,
           model: modelId,
           modelProvider: providerId,
+          ...(developerInstructions ? { developerInstructions } : {}),
           // Experimental (requires initialize capabilities.experimentalApi):
           // register Mcode's host-side tools (ask/plan/browser).
           dynamicTools: buildDynamicTools(browserToolsEnabled),
@@ -426,6 +431,7 @@ export class CodexAgentSdkProvider implements AgentProvider {
               approvalPolicy,
               model: modelId,
               modelProvider: providerId,
+              ...(developerInstructions ? { developerInstructions } : {}),
             })) as { thread?: { id?: string } } | undefined;
             threadId = resumed?.thread?.id ?? null;
           } catch (err) {
@@ -451,7 +457,7 @@ export class CodexAgentSdkProvider implements AgentProvider {
         try {
           const { getEnabledPluginSkillRoots } = await import("@main/plugins/pluginManager.js");
           await client.request("skills/extraRoots/set", {
-            extraRoots: [...skillRootsFor(), ...(await pluginSkillRootsFor())],
+            extraRoots: [...skillRootsFor(), ...(await pluginSkillRootsFor(req.pluginNames))],
           });
         } catch (err) {
           ctx.log.warn(`codex: skills/extraRoots/set failed: ${(err as Error).message}`);
@@ -728,11 +734,11 @@ function skillRootsFor(): string[] {
  * delivered wholesale); a root whose every skill is disabled for codex
  * contributes nothing. Builtin skills stay out of the matrix and always pass.
  */
-async function pluginSkillRootsFor(): Promise<string[]> {
+async function pluginSkillRootsFor(pluginNames?: readonly string[]): Promise<string[]> {
   const { getEnabledPluginSkillRoots } = await import("@main/plugins/pluginManager.js");
   const enginesMap = readEnginesMap(defaultSkillsRoot());
   const out: string[] = [];
-  for (const root of await getEnabledPluginSkillRoots()) {
+  for (const root of await getEnabledPluginSkillRoots(pluginNames)) {
     const byName = skillNamesInRoot(root);
     const enabled = [...byName.keys()].filter((n) => engineEnabled(enginesMap, n, "codex"));
     if (enabled.length === byName.size) out.push(root);

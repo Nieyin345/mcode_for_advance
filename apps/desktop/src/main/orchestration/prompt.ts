@@ -7,9 +7,9 @@
  * `COMPOSER_MODE_PROMPTS`。结果是只有 claude-sdk 实现了那套查表 —— Pi 与 Codex
  * 完全忽略这个字段,工作流在那边根本不生效(见 `docs/工作模式.md` 的「已知边界」)。
  *
- * 现在 host 解析好一段字符串传下去(`StartTurnRequest.workflowPrompt`),提供方只负责
- * `appends.push(...)`。三个提供方的差别因此从"要不要实现一套查表逻辑"缩小成"append
- * 一个字符串"。
+ * 现在 host 解析好字符串传下去(`StartTurnRequest.workflowPrompt`),三个提供方再经
+ * `turnContextSections` 统一排序。差别只剩原生承载通道:Claude systemPrompt append、
+ * Pi DefaultResourceLoader.appendSystemPrompt、Codex developerInstructions。
  *
  * ## 固定条件(输入框上方那排下拉框)**不**在这里拼
  *

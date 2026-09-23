@@ -16,8 +16,9 @@ import type { RuntimeEvent } from "@contracts/runtime";
 
 type Subscriber = (e: RuntimeEvent) => void;
 
-/** sendTurn 的剧本项:busy = 这次返回 null(会话忙),ok = 正常受理。 */
-type SendScript = "busy" | "ok";
+/** sendTurn 的剧本项:busy = 这次返回 null(会话忙),ok = 正常受理,
+ *  throw = 抛异常(验"续轮崩了要把任务收尾,而不是永远卡在 running")。 */
+type SendScript = "busy" | "ok" | "throw";
 
 const state = {
   subscribers: [] as Subscriber[],
@@ -78,6 +79,7 @@ export const runtimeManager = {
   ): Promise<Record<string, unknown> | null> {
     const next = state.sendScript.shift() ?? "ok";
     if (next === "busy") return null;
+    if (next === "throw") throw new Error("stub: sendTurn 炸了");
     state.sent.push({ sessionId: session.id, prompt: input.prompt, cwd: input.cwd });
     return {};
   },

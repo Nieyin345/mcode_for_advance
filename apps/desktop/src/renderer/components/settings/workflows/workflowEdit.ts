@@ -172,7 +172,17 @@ export function seedTrigger(
   fallbackProjectId?: string,
 ): WorkflowDoc {
   if (doc.nodes.some((n) => n.type === TRIGGER_NODE_TYPE_ID)) return doc;
-  const seeded = addNode(doc, manifest, { position: { x: 0, y: -120 } });
+  /**
+   * ⚠️ **位置必须是 (0, 0)，不能是负坐标。**
+   *
+   * 这里从前是 `{ x: 0, y: -120 }` —— 想在画布上把触发器摆在主代理**上方**。
+   * 但画布是**从上往下**排的（见 `relayout`），(0,0) 就已经是第一行了，
+   * **负 y 直接跑到画布可视区外面**。
+   *
+   * 用户 2026-09-22 的截图：新建自动化之后画布上**只有一个主代理**，触发器
+   * 看不见 —— 他却以为"没给我插触发器"。原话：「你把触发器放到图外面了，看不到」。
+   */
+  const seeded = addNode(doc, manifest, { position: { x: 0, y: 0 } });
   const node = seeded.nodes[seeded.nodes.length - 1];
   return updateNode(seeded, node.id, {
     params: {

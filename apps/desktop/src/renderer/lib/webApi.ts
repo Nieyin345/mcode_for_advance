@@ -440,6 +440,17 @@ const webBridge: Api["webBridge"] = {
   regenerateToken: () => webUnsupported("webBridge.regenerateToken"),
 };
 
+/** 公网 MCP 端点:开关与密钥是 PC 上那个进程的事,手机端够不着也不该够着 ——
+ *  同 webBridge,只显式列出、不实现(见上面那段规矩)。 */
+const publicMcp: Api["publicMcp"] = {
+  status: () => webUnsupported("publicMcp.status"),
+  setEnabled: () => webUnsupported("publicMcp.setEnabled"),
+  regenerateSecret: () => webUnsupported("publicMcp.regenerateSecret"),
+  startTunnel: () => webUnsupported("publicMcp.startTunnel"),
+  stopTunnel: () => webUnsupported("publicMcp.stopTunnel"),
+  setProject: () => webUnsupported("publicMcp.setProject"),
+};
+
 const piModels: Api["piModels"] = {
   list: () => webUnsupported("piModels.list"),
   save: () => webUnsupported("piModels.save"),
@@ -668,6 +679,7 @@ export function createWebApi(): Api {
     provider,
     customModel,
     webBridge,
+    publicMcp,
     piModels,
     workflow,
     skills,

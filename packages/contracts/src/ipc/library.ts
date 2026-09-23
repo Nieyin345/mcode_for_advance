@@ -168,6 +168,108 @@ export const LibraryOpenFileSchema = LibraryRevealFileSchema;
 export type LibraryOpenFileInput = z.infer<typeof LibraryOpenFileSchema>;
 
 /**
+ * **条目 → 磁盘绝对路径**（2026-09-21）。
+ *
+ * ## 它为什么存在
+ *
+ * 用户在中间栏**编辑**一个文件时走的是 `FileEditor`，而它全程按**绝对路径**读写
+ * （`file:readFile` / `file:writeFile`）。资料库的条目只能给 **id** —— 渲染端
+ * 既不知道文件在哪、也不该知道（路径由主进程按 `entry_mode` 拼，见
+ * `entryRootAbsPath`）。
+ *
+ * 所以中间加这一跳：**拿 id 换路径**，再把那个路径交给 `FileEditor`。
+ *
+ * ## 和 `revealFile` / `openFile` 的区别
+ *
+ * 那两条是"**让系统去开**"（文件管理器 / 默认程序），返回 `{ ok }` 就完了 ——
+ * 路径从头到尾不出主进程。这一条**把路径交给渲染端**，因为它要拿去喂编辑器。
+ *
+ * ⚠️ **这不构成"渲染端能读任意文件"**：路径是主进程按库里的记录算出来的，
+ * 渲染端只能请求**某个条目**的路径，请求不了别的。而那个路径能不能真被读写，
+ * 还要再过一道 `pathGuard` 的围栏（文献库根是合法工作区根之一，
+ * 见 `main/lib/pathGuard.ts`）。
+ *
+ * `which` 同 `revealFile`：省略 = 本体（通用条目给文件本身、论文给 PDF）。
+ */
+export const LibraryEntryPathSchema = LibraryRevealFileSchema;
+export type LibraryEntryPathInput = z.infer<typeof LibraryEntryPathSchema>;
+
+/** 算不出来时**逐条说清是哪一种**（没文件 / 被移走了），不合并成一句"失败"。 */
+export interface LibraryEntryPathResult {
+  /** 绝对路径；没有就是 null，此时 `error` 一定有话说。 */
+  path: string | null;
+  error?: string;
+  /** 这一条**是不是目录** —— 目录在编辑器里打不开（它是"往下翻"那一层），
+   *  调用方据此退回预览而不是把目录丢给 Monaco。 */
+  isDir?: boolean;
+}
+
+/* ── PDF 高亮 ── */
+
+/**
+ * 读某篇 PDF 的全部高亮。
+ *
+ * 高亮**不存在数据库里**，存在 PDF **旁边**的 `.<名字>.mcode-highlights.json`
+ * （见 `main/library/pdfHighlightsStore.ts`）：那样文件被移动/复制/同步到别的机器
+ * 时批注跟着走，而项目目录里那些**根本不在资料库里**的 PDF 也能有高亮。
+ * 所以这里必须按**路径**问，不能按条目 id。
+ */
+export const PdfHighlightsReadSchema = z.object({
+  /** PDF 的绝对路径。必须落在已知工作区根内（pathGuard）。 */
+  pdfPath: z.string().min(1),
+});
+export type PdfHighlightsReadInput = z.infer<typeof PdfHighlightsReadSchema>;
+
+/**
+ * **只写高亮索引**（PDF 旁边那份 JSON），不动 PDF 本身。
+ *
+ * ## 为什么和"写回文件"分成两条
+ *
+ * 用户定的用法是**划一下先存、写回延后**：
+ *
+ *  - 划一笔 → 走**这一条**。只写一个小 JSON，几毫秒，不会坏任何东西。
+ *  - 攒够了 / 用户点"写回文件" → 走 `PdfHighlightsWriteBackSchema`，
+ *    那一步要整个重写 PDF。
+ *
+ * 合成一条的话，每划一笔都要重写整篇 PDF（论文十几 MB），又慢又危险。
+ */
+export const PdfHighlightsSaveSchema = z.object({
+  pdfPath: z.string().min(1),
+  highlights: z.array(z.unknown()),
+});
+export type PdfHighlightsSaveInput = z.infer<typeof PdfHighlightsSaveSchema>;
+
+/**
+ * 把高亮**写回 PDF 文件本身**（真 `/Highlight` 批注，Acrobat 批注面板里看得到）。
+ *
+ * ## 为什么字节走 base64
+ *
+ * `file:writeFile` 只收 utf-8 字符串，而 PDF 是二进制。base64 是这个仓库里已有的
+ * 二进制传输姿势（见 `ClipboardSaveFileSchema` 的说明）。论文常有十几 MB，
+ * base64 会涨 1/3 —— 可接受：写回是**用户主动点的**低频动作，不是热路径。
+ *
+ * 主进程收到字节后**原子替换**（临时文件 + rename），中途崩了原文件不动。
+ * 顺带把索引也更新了 —— 分两次调用会留下"文件写了、索引没写"的不一致窗口。
+ */
+export const PdfHighlightsWriteBackSchema = z.object({
+  pdfPath: z.string().min(1),
+  /** 改好的 PDF，base64（不带 `data:` 前缀）。 */
+  bytesBase64: z.string().min(1),
+  highlights: z.array(z.unknown()).optional(),
+});
+export type PdfHighlightsWriteBackInput = z.infer<typeof PdfHighlightsWriteBackSchema>;
+
+/** 写回结果。**跳过的条目要报出来**，不能静默丢（这个仓库的硬规矩）。 */
+export interface PdfHighlightsWriteResult {
+  ok: boolean;
+  error?: string;
+  /** 写进去几条。 */
+  written?: number;
+  /** 被跳过的（附原因）。 */
+  skipped?: Array<{ id: string; reason: string }>;
+}
+
+/**
  * 读一篇文献的 Markdown 正文(应用内预览用)。
  *
  * 为什么必须走 IPC:渲染进程**读不了本地文件**(沙箱里没有 fs)。而且 md 里的图片是

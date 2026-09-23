@@ -189,21 +189,26 @@ const MCP_NAME_RE = /^[A-Za-z0-9_-]+$/;
 export const MCP_RESERVED_NAME = "mcode-browser";
 
 /**
- * 应用自带的两个**骨干** MCP 服务器(库操作 / 工作流操作)的注册名。
+ * 应用自带的**骨干** MCP 服务器(库操作 / 工作流操作 / 记忆操作)的注册名。
  *
- * 它们的定义放在契约层而不是各自的主进程文件里,是因为**渲染端也要认这两个名字**:
+ * 它们的定义放在契约层而不是各自的主进程文件里,是因为**渲染端也要认这几个名字**:
  * 工作流节点的「MCP 服务器」参数要把它们从候选表里滤掉(见 `NODE_MCP_PARAM_KEY`)——
  * 它们不是用户装的东西,始终挂着,列出来只会让人以为自己关得掉。名字有两份定义就会
  * 漂移,而漂移的表现是"那个服务器又能被选了,选了却不生效"。
  *
- * `mcp/libraryServer.ts` 与 `mcp/mcodeServer.ts` 各自 export 一个同名常量指向这里,
- * 主进程那一侧的既有引用不必改。
+ * `mcp/libraryServer.ts` / `mcp/mcodeServer.ts` / `mcp/memoryServer.ts` 各自 export 一个
+ * 同名常量指向这里,主进程那一侧的既有引用不必改。
  */
 export const MCP_LIBRARY_SERVER = "mcode-library";
 export const MCP_WORKFLOW_SERVER = "mcode-workflow";
+export const MCP_MEMORY_SERVER = "mcode-memory";
 
 /** 骨干服务器名的清单 —— 「始终挂着、不进候选表」的那一组。 */
-export const MCP_ALWAYS_ON_SERVERS = [MCP_LIBRARY_SERVER, MCP_WORKFLOW_SERVER] as const;
+export const MCP_ALWAYS_ON_SERVERS = [
+  MCP_LIBRARY_SERVER,
+  MCP_WORKFLOW_SERVER,
+  MCP_MEMORY_SERVER,
+] as const;
 
 /** Add a user-scope server, or overwrite an existing one when `replace` is
  *  set (the edit path). Without `replace` a name that already exists — enabled

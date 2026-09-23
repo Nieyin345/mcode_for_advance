@@ -16,8 +16,17 @@ import type { z } from "zod";
 import type { createSdkMcpServer as CreateSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 
 /** 一个工具的返回值。MCP 只认这种形状的文本结果。 */
+export type ToolContent =
+  | { type: "text"; text: string; data?: never; mimeType?: never }
+  | { type: "image"; data: string; mimeType: string; text?: never };
+
 export interface ToolResult {
-  content: Array<{ type: "text"; text: string }>;
+  /** Tool execution failed; preserve this flag across every transport. */
+  isError?: boolean;
+  content: ToolContent[];
+  /** 结构化结果(可选)。只有网页端那条路会把它转给模型 —— SDK 那条路的
+   *  `SdkMcpToolDefinition` 没有这个位置(见 `McpToolSpec.outputSchema` 那段)。 */
+  structuredContent?: Record<string, unknown>;
 }
 
 /** MCP 工具处理函数拿到的那点上下文。目前只有一样:**这是哪一次对话**。
@@ -43,6 +52,17 @@ export interface McpToolSpec {
   name: string;
   description: string;
   inputSchema: Record<string, z.ZodTypeAny>;
+  /**
+   * 返回值的结构(zod 裸 shape,同 `inputSchema` 的写法)。**可选** —— 只有返回值
+   * 值得结构化读取的工具才填,目前只有 `agent_process_*` 那一组(它们的 `next_cursor`
+   * 让模型不得不从文本里正则解析)。
+   *
+   * ⚠️ **只有网页端那条路用得上它。** Claude Agent SDK 的 `SdkMcpToolDefinition`
+   * 没有 `outputSchema` 字段(见 sdk.d.ts:`name / description / inputSchema /
+   * annotations / _meta / handler`),所以进程内 server 报不出这个 —— 两条路共用
+   * 这张表,靠这个可选字段区分,不给就没有。
+   */
+  outputSchema?: Record<string, z.ZodTypeAny>;
   /**
    * ⚠️ `args` 是宽的,这不是偷懒:表里每个 handler 都写着自己的**具体形状**
    * (`{ id: string }`、`{ journals: string[] }`…),而调用方是**按名字动态派发**的 ——
@@ -78,9 +98,27 @@ export function text(t: string): ToolResult {
   return { content: [{ type: "text", text: t }] };
 }
 
-/** 失败也走正常结果 —— 模型读得懂,能自己改;抛异常会变成 isError,更难恢复。 */
+/**
+ * 成功,且**带结构化结果**:`text` 给人/给 SDK 那条路读,`structured` 给网页端的模型
+ * 直接读字段。两者内容该一致(同一件事实的两种投影),别只更新一边。
+ */
+export function structured(t: string, structured: Record<string, unknown>): ToolResult {
+  return { content: [{ type: "text", text: t }], structuredContent: structured };
+}
+
+/** MCP 标准图片结果；data 是不带 data: 前缀的 base64。 */
+export function image(data: string, mimeType: string, caption?: string): ToolResult {
+  return {
+    content: [
+      ...(caption ? [{ type: "text" as const, text: caption }] : []),
+      { type: "image" as const, data, mimeType },
+    ],
+  };
+}
+
+/** Return a recoverable tool error, distinct from a JSON-RPC transport error. */
 export function fail(msg: string): ToolResult {
-  return { content: [{ type: "text", text: `失败:${msg}` }] };
+  return { content: [{ type: "text", text: `失败:${msg}` }], isError: true };
 }
 
 /**

@@ -30,4 +30,5 @@ export function registerUpdaterHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.APP_QUIT_AND_INSTALL, async (): Promise<void> => {
     await quitAndInstall();
   });
+
 }

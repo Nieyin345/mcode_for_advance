@@ -708,6 +708,43 @@ export const TitleGenEnabledSchema = z.enum(["on", "off"]);
 export type TitleGenEnabled = z.infer<typeof TitleGenEnabledSchema>;
 
 /**
+ * Public MCP endpoint — exposes mcode's tool table to the open internet so a
+ * remote MCP client (ChatGPT's Connector) can call it.
+ *
+ * ⚠️ **Read this before touching the keys.** The tool table includes
+ * `agent_*` (read/write files, run bash, kill processes, SSH). The endpoint
+ * carries **no approval gate** — whoever holds the URL path secret has full
+ * control of this machine. The security model is entirely the secret.
+ *
+ * - {@link PUBLIC_MCP_ENABLED_SETTING_KEY}: `"on"` / `"off"` (default off).
+ * - {@link PUBLIC_MCP_SECRET_SETTING_KEY}: the secret embedded in the path
+ *   (`/mcp/<secret>`). 32 random bytes, hex. Regenerating it invalidates the
+ *   old URL immediately — that is the user's only "pull the plug" control.
+ * - {@link PUBLIC_MCP_SESSION_ID_SETTING_KEY}: the id of the synthetic
+ *   "ChatGPT direct" session every inbound call is attributed to. Stable
+ *   across restarts so the tool gate has a session to hang off.
+ */
+export const PUBLIC_MCP_ENABLED_SETTING_KEY = "publicMcp.enabled";
+export const PUBLIC_MCP_SECRET_SETTING_KEY = "publicMcp.secret";
+export const PUBLIC_MCP_SESSION_ID_SETTING_KEY = "publicMcp.sessionId";
+
+/**
+ * **沙箱目录** —— 公网进来的文件工具只允许在这个项目目录里动（见 `agentTools.ts`
+ * 的 `resolveAgainstCwd`）。值是**项目 id**，不是路径 —— 项目改了路径它跟着走。
+ *
+ * 为什么要有这个键:早先它是**建会话那一刻自动挑的**(`defaultProjectId` 取第一个
+ * 非归档项目),之后再也不会变 —— 用户换项目、改目录，它都还指着老那个。用户明确
+ * 要求"项目路径一直是固定的，你得修复一下",所以改成**用户自己选、随时可改**。
+ *
+ * 没设时回退到那个老行为(第一个非归档项目),免得用户没选过就完全没有沙箱。
+ */
+export const PUBLIC_MCP_PROJECT_ID_SETTING_KEY = "publicMcp.projectId";
+
+/** zod schema + TS union for the public-MCP toggle. */
+export const PublicMcpEnabledSchema = z.enum(["on", "off"]);
+export type PublicMcpEnabled = z.infer<typeof PublicMcpEnabledSchema>;
+
+/**
  * Setting key under which the custom-model id used for auto thread-title
  * generation is persisted. Same shape as UI_COMMIT_GEN_MODEL_SETTING_KEY
  * (`"configId:roleKey"`); null/empty = use the built-in model. Shared
@@ -822,9 +859,12 @@ export type GitDiffOpenMode = z.infer<typeof GitDiffOpenModeSchema>;
  *  - "edit": editable Monaco instance
  *  - "diff": read-only Monaco DiffEditor (vs a before-snapshot)
  *  - "preview": rendered Markdown preview (read-only)
- *  Markdown files default to "preview" on first open; the user can toggle back
- *  to "edit". Pure renderer state - not validated over IPC. */
-export type FileViewMode = "edit" | "diff" | "preview";
+ *  - "wysiwyg": 所见即所得编辑（只有 Markdown 用；MDXEditor，工具栏 + 表格/公式/链接）
+ *
+ *  Markdown 默认走 **"wysiwyg"**（2026-09-21 用户改的：点开就该能改，
+ *  不是先看点不动的一屏），源码视图 / 预览仍然在工具栏上一键可切。
+ *  纯渲染端状态，不过 IPC 校验。 */
+export type FileViewMode = "edit" | "diff" | "preview" | "wysiwyg";
 
 /* ── Settings ── */
 export const GetSettingSchema = z.object({ key: z.string() });

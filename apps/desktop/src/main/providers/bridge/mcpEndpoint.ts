@@ -57,11 +57,43 @@ export interface McpToolInfo {
   name: string;
   description: string;
   inputSchema: unknown;
+  /**
+   * MCP 的行为提示(readOnlyHint / destructiveHint / openWorldHint / …)。
+   *
+   * **不是可选的装饰**:ChatGPT 的开发者模式靠 `readOnlyHint` 决定要不要弹确认框 ——
+   * 不标就把只读工具也当成写工具,每次都弹。判定从 `toolRules.annotationsForTool`
+   * 派生(与 mcode 自己的"哪些工具不用问"共用同一份只读清单)。
+   */
+  annotations?: Record<string, unknown>;
+  /**
+   * 这个工具**返回**什么的 JSON Schema。可选 —— 只有那些返回值值得模型结构化读取的
+   * 工具才填(目前是 `agent_process_*` 那一组:它们的 `next_cursor` / `status` 让模型
+   * 不得不从文本里正则解析,给了 schema 就能直接读)。
+   *
+   * 为什么是可选而不是人人都有:绝大多数工具返回的是一段人话摘要,给它们编一份
+   * outputSchema 只是为了"显得规范",反而多一份要维护的谎言。
+   */
+  outputSchema?: unknown;
 }
 
 /** 工具调用的一次结果。`isError` 走 MCP 的约定:失败也是**结果**,模型看得见、能自己改。 */
+export type McpToolContent =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string };
+
 export interface McpToolCallResult {
+  /** Text projection kept for internal callers/tests and approval UI summaries. */
   text: string;
+  /** Full MCP content blocks. When omitted, the endpoint wraps `text` as one text block. */
+  content?: McpToolContent[];
+  /**
+   * 结构化结果(MCP 协议的标准字段,与 `content` 并列)。
+   *
+   * 有了它,模型不用再从 `text` 里正则抠 `next_cursor: 4821` 这种;`text` 仍然给
+   * 人和走 SDK 那条路(SDK 的 `SdkMcpToolDefinition` **不支持** outputSchema,所以
+   * 那条路的模型只能读文本 —— 这也是为什么两者要并存,而不是替换)。
+   */
+  structuredContent?: Record<string, unknown>;
   isError?: boolean;
 }
 
@@ -171,13 +203,20 @@ export async function handleMcpRequest(req: IncomingMessage, res: ServerResponse
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: "mcode", version: "1.0.0" },
         instructions:
-          "Mcode 桌面端的工具。资料库(通用文件与资料管理:检索、导入、下载、分类、笔记、模版;" +
-          "分类由用户自定义)与工作流" +
-          "(读/写工作流、节点类型、代理档案)都在这里。agent_* 那组是通用基础操作" +
-          "(读/写/编辑文件、列目录、glob、grep、命令行、技能),相对路径以会话的工作目录为基准。" +
-          "写操作会**弹在用户的 mcode 窗口里**" +
-          "等他确认 —— 所以一次写调用可能要过一会儿才回,而且用户可能拒绝。" +
-          "被拒绝不是出错,是用户不同意,别换个说法重试同一个动作。",
+          "Mcode 桌面端的工具。资料库、工作流和 agent_* 电脑操作能力都从这个 MCP 端点提供。" +
+          "agent_* 支持文本/图片/Office/PDF 读取，文件与目录修改，后台搜索，系统进程和持久进程。" +
+          "相对路径以当前 mcode 会话工作目录为基准；同时读多个文本文件优先 agent_read_files。" +
+          "PDF 创建/页操作用 agent_write_pdf；Excel Range 用 agent_edit_excel_range；" +
+          "DOCX 结构修改先 agent_read_docx_xml 再 agent_edit_docx_xml。" +
+          "图片由 agent_read_image 返回标准 MCP image block，只有支持视觉输入的客户端/模型才能直接理解。" +
+          "REPL/dev server/长构建优先 agent_process_start，然后用 agent_process_read 取增量输出——" +
+          "它**默认会阻塞等到有输出**（最多约 55 秒），不要传 wait_ms=0 去做短轮询，" +
+          "那只会制造大量空往返；一次调用就是等下一批日志。返回里 has_more 为 true 就立刻再读一次，" +
+          "status 不是 running 说明进程已结束。agent_process_* 的返回带 structuredContent，直接读字段，不用解析文本。" +
+          "远程 SSH 训练/长任务必须优先 agent_remote_job_start：任务状态和日志落在服务器 ~/.mcode/jobs，SSH/MCP 断线后可恢复；" +
+          "短远程检查才用 agent_ssh_exec；重要训练显式提供稳定 job_id，网络失败重试必须复用同一个 id，避免重复启动。" +
+          "写入、启动命令、杀系统进程等有副作用操作遵循 mcode 当前权限模式，必要时会弹审批卡；" +
+          "用户拒绝后不要换说法重复同一个动作。",
       });
       return;
 
@@ -234,7 +273,8 @@ async function handleCall(req: IncomingMessage, res: ServerResponse, body: JsonR
   try {
     const out = await host.callTool(name, params.arguments ?? {}, { sessionId });
     result(res, body.id, {
-      content: [{ type: "text", text: out.text }],
+      content: out.content?.length ? out.content : [{ type: "text", text: out.text }],
+      ...(out.structuredContent ? { structuredContent: out.structuredContent } : {}),
       ...(out.isError ? { isError: true } : {}),
     });
   } catch (err) {

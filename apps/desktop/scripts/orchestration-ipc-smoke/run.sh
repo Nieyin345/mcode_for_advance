@@ -11,7 +11,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-OUT=$(mktemp -d /tmp/mcode-orch-ipc-smoke.XXXXXX)
+# 建在 apps/desktop 下,不建在 /tmp —— 见 mobile-pairing-smoke 里同一处的说明
+# (`--external:ssh2` 要在运行时被解析到,`/tmp` 下的 bundle 走不到本包 node_modules)。
+mkdir -p ./.tmp
+OUT=$(mktemp -d ./.tmp/mcode-orch-ipc-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-orch-ipc-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
@@ -52,6 +55,7 @@ if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
 "$ESBUILD" scripts/orchestration-ipc-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
+  --external:ssh2 \
   --loader:.md=text --loader:.py=text --loader:.txt=text --loader:=text \
   --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
   --alias:electron=./scripts/orchestration-ipc-smoke/stubs/electron.ts \

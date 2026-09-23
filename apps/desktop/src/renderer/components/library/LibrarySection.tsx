@@ -43,8 +43,8 @@
  *
  * ## 点一个库 / 一篇文献做什么
  *
- * 选中它,并把**右侧面板**切到文献库标签(见 LibraryPanel 的说明:不做全屏页,
- * 不挤掉主区的对话)。这与点项目后主区开会话标签是同一套交互模式。
+ * 选中它,并把**右侧面板**切到「预览」标签(不做全屏页,不挤掉主区的对话)。
+ * 这与点项目后主区开会话标签是同一套交互模式。
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { kindLibraryLabel } from "@renderer/lib/libraryLabels.js";
@@ -223,6 +223,8 @@ export function LibrarySection({
   const setRightPanelTab = useSessionStore((s) => s.setRightPanelTab);
   const setRightOpen = useSessionStore((s) => s.setRightOpen);
   const setCenterTabFocus = useSessionStore((s) => s.setCenterTabFocus);
+  /** 双击进主栏编辑 —— 和文件树那条**同一个 action**（见 `openItemInCenter`）。 */
+  const openFileInIde = useSessionStore((s) => s.openFileInIde);
   const openFileView = useFileViewStore((s) => s.open);
 
   /**
@@ -500,8 +502,8 @@ export function LibrarySection({
    * 在 ui 的操作一样」。
    *
    * 分类树和条目列表都要重拉:AI 可能新建了一个分类(树变了),也可能只是往现有
-   * 分类里塞了东西(树没变、内容变了)。**右栏那棵也是** —— 它订阅同一条广播
-   * (见 LibraryPanel),所以左栏改名、AI 改元数据都会立刻反映到正在看的那一篇上。
+   * 分类里塞了东西(树没变、内容变了)。**右栏那份预览也是** —— 它读的是同一份
+   * `activeItemId`(见 PreviewPanel),所以左栏改名、AI 改元数据都会立刻反映过来。
    */
   useEffect(() => {
     const off = window.api?.on?.libraryChanged?.(() => {
@@ -522,8 +524,8 @@ export function LibrarySection({
    * toggleExpanded 里带着"没缓存才拉"的逻辑,所以展开时不需要额外请求。
    */
   const openCollection = (id: string) => {
-    // 全局 activeKind 跟着落到本段的 kind 上:右栏(LibraryPanel)按它决定
-    // 新建笔记的默认类型、搜索范围等 —— 看着哪段的库,全局就该停在哪个类型。
+    // 全局 activeKind 跟着落到本段的 kind 上:右栏那份预览按它取显示名与默认行为 ——
+    // 看着哪段的库,全局就该停在哪个类型。
     setActiveKind(kind);
     setActive(id);
     // ⚠️ **点分类不再切右栏**（2026-09-21）。原来切的是「文献库」那个 tab，而它删了。
@@ -578,30 +580,58 @@ export function LibrarySection({
   };
 
   /**
-   * **双击一行 = 在中间打开**（要读它 / 改它）。
+   * **双击一行 = 在中间打开，而且能编辑**（2026-09-21 统一）。
    *
-   * 有文件本体可看的走中间；**什么都没有**的（只有元数据、也没有转录的论文）中间没
-   * 东西可放，仍旧留在右栏 —— 双击它们与单击等效。
+   * ## 它和项目文件走同一条路
    *
-   * ⚠️ 「有本体」的判据**必须带上 `mdPath`**（2026-09-21）。老判据是
-   * `filePath ?? pdfPath`，而一篇还没下 PDF 的论文恰好两者都空 —— 那时双击就**什么都
-   * 不发生**，看起来像坏了。现在它至少能在中间把转录摆出来。
+   * 用户的规矩是「**我不管从哪打开，只要你在主页面显示它，我就该能编辑它**」——
+   * 所以这里和文件树单击**落到同一个组件**（`FileEditor`），而不是各自一套。
+   *
+   * ## 从前是只读预览
+   *
+   * 老版本走 `openFileView({source:{kind:"library"...}})` → 中间栏那个 `FileViewer`
+   * 是**只读**的（它当初就是为"看一眼"设计的）。于是用户双击一篇 md 得到的是
+   * 一个没有 Edit 按钮的页面，原话是「md 也编辑不了呀」。
+   *
+   * ## 中间那一跳：id → 绝对路径
+   *
+   * `FileEditor` 全程按**绝对路径**读写，而资料库只能给 **id**（路径由主进程按
+   * `entry_mode` 拼）。所以先 `library.entryPath` 换一次，再交给编辑器。
+   *
+   * ⚠️ **换不出路径就退回只读预览**，不静默什么都不做：
+   *   - 目录条目（`isDir`）—— 编辑器打不开目录，那是"往下翻"那一层；
+   *   - 只有元数据、连转录都没有的条目 —— 中间确实没东西可放。
+   * 这两种仍旧走 `openFileView`，与从前一样。
    */
   const openItemInCenter = (item: LibraryItem, collectionId: string | null) => {
     openItem(item, collectionId);
-    const ref = item.filePath ?? item.pdfPath ?? item.mdPath ?? null;
-    if (ref === null) return;
-    openFileView({
-      // 看**本体**（通用条目给文件本身、论文给 PDF）；只有转录可看的那些才退到 md ——
-      // 与主进程 `entryRootAbsPath` 未指名时的顺序**逐条一致**（本体 → PDF → 转录）。
-      source: {
-        kind: "library",
-        ref: item.id,
-        which: item.filePath ?? item.pdfPath ? undefined : "md",
-      },
-      name: basenameOf(item.filePath ?? item.pdfPath ?? item.mdPath ?? item.title),
-    });
-    setCenterTabFocus("editor");
+    const which = item.filePath ?? item.pdfPath ? undefined : "md";
+    void (async () => {
+      type EntryPathRes = { path: string | null; isDir?: boolean; error?: string };
+      let res: EntryPathRes = { path: null };
+      try {
+        res = (await api.library.entryPath({ id: item.id, which })) as EntryPathRes;
+      } catch {
+        // 手机端没有 `library` 命名空间（走 Proxy 兜底，见 webApi.ts）—— 当作换不出来。
+        res = { path: null };
+      }
+      if (res.path && !res.isDir) {
+        // **可编辑的那一支**：和文件树双击落到同一个组件。
+        openFileInIde(res.path);
+        setCenterTabFocus("editor");
+        return;
+      }
+      // 换不出路径（目录 / 没文件）→ 退回只读预览，与从前一致。
+      openFileView({
+        source: {
+          kind: "library",
+          ref: item.id,
+          ...(which !== undefined ? { which } : {}),
+        },
+        name: basenameOf(item.filePath ?? item.pdfPath ?? item.mdPath ?? item.title),
+      });
+      setCenterTabFocus("editor");
+    })();
   };
 
   /**
@@ -956,8 +986,7 @@ export function LibrarySection({
    *
    * ## 为什么失败要说一句话,而不是默默把菜单关掉
    *
-   * 面板那一侧(`LibraryPanel.handleDownload`)是**乐观**的:它只更新 `jobs` 列表,
-   * 而下载任务的进度是靠 `libraryJobChanged` 广播推回来的。左栏**没有**那份状态
+   * 下载任务的进度是靠 `libraryJobChanged` 广播推回来的。左栏**没有**那份状态
    * —— 它是独立的一棵树。所以这里点了之后,用户在左栏能看到的唯一变化,是下载
    * 真下了/真失败时那条广播带来的。中间那几分钟里 "什么都没发生" 是正常的,但
    * **"排都没排上"也长得一模一样** —— 那就分不出来了。

@@ -56,10 +56,12 @@ import type {
 // 还有个具体理由:无头 smoke 是靠 esbuild 的 `--alias:@main/mcp/libraryServer.js=…`
 // 换掉整张库表的,而 alias 只按**写下来的那个 specifier**匹配 —— 写成 `./libraryServer.js`
 // 就换不掉,真那份会被打进 bundle 并且在模块载入时去找真的 sql.js 库。
-import { libraryMcpTools } from "@main/mcp/libraryServer.js";
 import { workflowMcpTools } from "@main/mcp/mcodeServer.js";
 import { agentMcpTools } from "@main/mcp/agentTools.js";
 import type { McpToolSpec } from "@main/mcp/sdk.js";
+// annotations 的判定从 `toolRules` 直接取(不经 `providers/toolGate.js`)—— 那条链会拉进
+// 整个 provider 图,而无头 smoke 只想验工具表。toolRules 本身在 `mcp/` 下,引它安全。
+import { annotationsForTool } from "@main/mcp/toolRules.js";
 
 /**
  * 一次调用的闸门句柄 —— 由 `RuntimeManager` 按会话给出(见那边的 `webToolGate`)。
@@ -80,6 +82,22 @@ export interface WebToolHostDeps {
   /** 会话 id → 工作目录(agent_* 文件工具的相对路径基准)。
    *  取不到(会话没跑过、项目没有路径)时给 null,agent 工具对相对路径报错。 */
   cwdFor(sessionId: string): string | null;
+  /**
+   * 会话 id → **沙箱根**(可选)。给了就只允许该目录底下的文件路径,越界拒绝。
+   * 只有公网那条通路(免审批)需要它;桌面本机会话不给 = 不限制。
+   * 见 `agentTools.ts` 的 `resolveAgainstCwd` —— 它约束文件工具,不约束 bash。
+   */
+  sandboxRootFor?(sessionId: string): string | null;
+  /**
+   * **测试用**:额外挂进这张表的工具声明。生产**不要传**。
+   *
+   * 存在的理由:这张表原来硬挂 `libraryMcpTools()`,而那 22 个库工具已经从网页端
+   * 撤掉(见下面 `createWebToolHost` 里那段)。但 `mcp-endpoint-smoke` 要验的是
+   * **这张表的派发与闸门**(会话缺失拒、参数校验、只读放行 / 写弹卡 / 拒了不执行),
+   * 它需要几件**形状各异**的替身工具来把这些分支踩出来 —— 与"库里有哪些工具"无关。
+   * 所以给它一个注入点,而不是让生产硬挂一张它已经不要的表。
+   */
+  extraTools?: McpToolSpec[];
 }
 
 /** 没带会话标识时的回话。写清楚"怎么修"——模型唯一能做的就是告诉用户。 */
@@ -101,7 +119,12 @@ function describeIssues(err: z.ZodError): string {
  * 树 —— 遇到 `$ref` 只能靠猜。就地展开就没有这个问题。
  */
 function toJsonSchema(spec: McpToolSpec): Record<string, unknown> {
-  const schema = zodToJsonSchema(z.object(spec.inputSchema), {
+  return shapeToJsonSchema(spec.inputSchema);
+}
+
+/** 一份 zod 裸 shape → MCP 要的 JSON Schema。inputSchema / outputSchema 同一套转法。 */
+function shapeToJsonSchema(shape: Record<string, z.ZodTypeAny>): Record<string, unknown> {
+  const schema = zodToJsonSchema(z.object(shape), {
     target: "jsonSchema7",
     $refStrategy: "none",
   }) as Record<string, unknown>;
@@ -117,13 +140,71 @@ function toJsonSchema(spec: McpToolSpec): Record<string, unknown> {
  * 工具表在**第一次** `listTools()` 时才转 JSON Schema:二十几个 zod 树转换不该挂在
  * 应用启动的那条路上,而扩展连上来之前根本没人问这张表。
  */
+/** 工具的 `outputSchema` 若没自己声明，用这一个。
+ *
+ * ## 为什么需要它（以及为什么它是诚实的）
+ *
+ * ChatGPT 的开发者模式**对每个工具**都提示「建议添加 outputSchema」。而 MCP 规范要求：
+ * **声明了 outputSchema 就必须返回符合它的 `structuredContent`**，否则严格客户端让这次
+ * 调用**直接失败**（`mcp-outputschema-must-pair-structuredcontent` 那条记忆记的坑）。
+ *
+ * 所以两条路:① 给 39 个工具各手写一份 schema;② 给"只返回一段文本"的那些一个统一的
+ * 形状 —— 它们**确实只有一段文本**,`{ text }` 就是它的真身,不是编出来的字段。
+ *
+ * 选 ②。手写 39 份的结果大半是敷衍的空壳(编几个对不上的字段),那比不写更坏:
+ * 模型会以为那些字段有内容。真正有结构化价值的那些（进程/任务/搜索/环境）**各自
+ * 另写了 schema**,不走这个默认。
+ *
+ * ⚠️ **每个 schema 都必须有 `text`，且只有它必填。** `callTool` 那边**总是**把文本
+ * 投影塞进 `structuredContent.text`（见那里），所以"这一支只回文本"（错误、列表、
+ * 空结果）永远合规 —— 不用每个分支都编一份完整对象。
+ */
+const DEFAULT_TEXT_OUTPUT_SHAPE: Record<string, unknown> = {
+  type: "object",
+  properties: { text: { type: "string", description: "工具返回的文本内容" } },
+  required: ["text"],
+};
+
 export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
+  // ⚠️ **网页端不再挂 `libraryMcpTools()`。**
+  //
+  // 那 22 个库工具是"库是文献库"那个时代留下的:检索、加论文、查期刊分区、模版库……
+  // 用户要的是**通用文档管理**,资料库的内容用通用文件工具就能读(库是磁盘上的真目录,
+  // 见 `library/paths.ts`),库里有什么改用 `agent_context` 一次问清(见那边)。
+  //
+  // **桌面引擎那条路照旧挂着它**(`ClaudeAgentSdkProvider` 的 `buildLibraryMcpServer`)
+  // —— 那边没有 `agent_*` 那套文件工具,库工具是它读资料库的唯一通道,摘掉就瞎了。
+  // 所以这一行只影响浏览器里的扩展/网页端(它走的是这张表)。
   const specs: McpToolSpec[] = [
-    ...libraryMcpTools(),
     ...workflowMcpTools(),
-    ...agentMcpTools({ cwdFor: deps.cwdFor }),
+    ...agentMcpTools({ cwdFor: deps.cwdFor, sandboxRootFor: deps.sandboxRootFor }),
+    // 测试注入的替身工具(生产为空)—— 见 `WebToolHostDeps.extraTools`。
+    ...(deps.extraTools ?? []),
   ];
   const byName = new Map(specs.map((spec) => [spec.name, spec]));
+  /**
+   * 每个工具**实际报给客户端**的那份 outputSchema。规则：
+   *  - 工具自己声明了 → 用它，但**保证 `text` 在里面**（见下），否则"只回文本"的
+   *    分支会违反自己的 schema；
+   *  - 没声明 → 用默认的那个（只有 `text`）。
+   */
+  const outputSchemaOf = (spec: McpToolSpec): Record<string, unknown> => {
+    if (!spec.outputSchema) return DEFAULT_TEXT_OUTPUT_SHAPE;
+    const shape = shapeToJsonSchema(spec.outputSchema);
+    const props = (shape.properties ?? {}) as Record<string, unknown>;
+    const required = Array.isArray(shape.required) ? (shape.required as string[]) : [];
+    return {
+      ...shape,
+      properties: {
+        ...props,
+        // `callTool` 总是把文本投影塞进 `text` —— schema 里不能认它的话，客户端会因
+        // "多出一个未声明的字段"而拒绝（取决于校验严格程度）。所以补上，并**列进
+        // required**（它确实总会给）。
+        text: { type: "string", description: "工具返回的文本内容（总会给）" },
+      },
+      required: required.includes("text") ? required : [...required, "text"],
+    };
+  };
   let listed: McpToolInfo[] | null = null;
 
   return {
@@ -133,6 +214,12 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
           name: spec.name,
           description: spec.description,
           inputSchema: toJsonSchema(spec),
+          // 行为提示 —— ChatGPT 靠 readOnlyHint 决定要不要弹确认框(见 toolRules)。
+          annotations: annotationsForTool(spec.name),
+          // **每个工具都报 outputSchema**（没声明的用默认那个）—— ChatGPT 的开发者
+          // 模式对每个工具都提示"建议添加 outputSchema"，而声明了就必须回匹配的结构化
+          // 结果（见 DEFAULT_TEXT_OUTPUT_SHAPE 那段）。两者在 `callTool` 里一起兜住。
+          outputSchema: outputSchemaOf(spec),
         }));
       }
       return listed;
@@ -178,7 +265,23 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
       }
 
       const out = await spec.handler(parsed.data, { sessionId });
-      return { text: out.content.map((c) => c.text).join("\n") };
+      const textProjection = out.content
+        .filter((c): c is Extract<(typeof out.content)[number], { type: "text" }> => c.type === "text")
+        .map((c) => c.text)
+        .join("\n");
+      return {
+        text: textProjection,
+        content: out.content,
+        ...(out.isError ? { isError: true } : {}),
+        // **总是带上 `structuredContent`，且 `text` 一定在里面。**
+        //
+        // 因为每个工具都报了 outputSchema（见 `listTools`），而规范要求声明了就必须
+        // 回匹配的结构化结果 —— 缺了会让严格客户端把这次调用判成失败。
+        // 工具有自己的字段就带上真字段（进程的 cursor、搜索的 count……）；
+        // 没有（错误分支、列表、只回文本的那些）就至少给 `{ text }`，那正是它返回的
+        // 全部内容 —— 不是编的。
+        structuredContent: { ...(out.structuredContent ?? {}), text: textProjection },
+      };
     },
   };
 }

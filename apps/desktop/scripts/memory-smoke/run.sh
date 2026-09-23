@@ -25,6 +25,7 @@ if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --alias:@main/store/repositories.js=./scripts/memory-smoke/stubs/repositories.ts \
   --alias:@main/plugins/pluginManager.js=./scripts/memory-smoke/stubs/pluginManager.ts \
+  --alias:@main/workflows/seed.js=./scripts/library-delete-smoke/stubs/workflowsSeed.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 export MCODE_SMOKE_DATA_ROOT="$DATA"

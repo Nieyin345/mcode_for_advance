@@ -19,10 +19,11 @@
  * ## 路径是唯一寻址方式,也是唯一攻击面
  *
  * 外面传进来的 `path` 一律当**不可信输入**:`<类目>/<文件名>.md` 两段、类目必须在这
- * 六个白名单里、文件名不许带路径分隔符与点开头,最后再用 resolve 前缀比对做终审
- * (与 `library/fileImport.ts` 的防逃逸同一条路)—— 过不了就明确拒绝,不"尽量解释"。
+ * 六个白名单里、文件名不许带路径分隔符与点开头,先用 resolve 前缀比对做词法终审，
+ * 再拒绝 memory 根 / 类目目录 / 目标文件上的 symlink 或 junction —— 防止路径字面上在库内、
+ * 实际 I/O 却被重解析到库外。过不了就明确拒绝,不"尽量解释"。
  */
-import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import {
   MEMORY_CATEGORIES,
@@ -48,13 +49,14 @@ const MAX_FILE_NAME = 120;
 /**
  * memory 根下的相对路径 → 绝对路径。**不合法返回 null,调用方负责拒绝。**
  *
- * 四道闸,按顺序:
+ * 四道词法闸,按顺序:
  *  1. 不是绝对路径、不含反斜杠与 NUL(反斜杠是 Windows 分隔符,放进来就是另一种写法
  *     的目录穿越);
  *  2. 恰好两段 `类目/文件名`,类目在白名单里(目录即类目,多了子目录就是另一套布局);
  *  3. 文件名以 `.md` 结尾、不超长、不以点开头(`.hidden` 与 `..` 一起挡掉);
- *  4. resolve 后必须仍落在该类目目录内 —— 前三道是词法检查,这一道是终审(同
+ *  4. resolve 后必须仍落在该类目目录内 —— 前三道是词法检查,这一道是词法终审(同
  *     `fileImport.ts` 的 `startsWith(root + sep)` 写法)。
+ * 真正 I/O 前还会再走 `resolveSafeMemoryRelPath`，拒绝 symlink / junction 重解析。
  */
 function resolveMemoryRelPath(relPath: string): string | null {
   if (isAbsolute(relPath) || relPath.includes("\\") || relPath.includes("\0")) return null;
@@ -68,6 +70,21 @@ function resolveMemoryRelPath(relPath: string): string | null {
   const dir = resolve(memoryRoot(), category);
   const target = resolve(dir, file);
   if (!target.startsWith(dir + sep)) return null;
+  return target;
+}
+
+/** Reject symlink/junction hops so lexical containment cannot escape dataRoot. */
+function resolveSafeMemoryRelPath(relPath: string): string | null {
+  const target = resolveMemoryRelPath(relPath);
+  if (target === null) return null;
+  const category = relPath.split("/")[0] ?? "";
+  for (const abs of [memoryRoot(), resolve(memoryRoot(), category), target]) {
+    try {
+      if (lstatSync(abs).isSymbolicLink()) return null;
+    } catch {
+      // Missing category/target is valid for first save.
+    }
+  }
   return target;
 }
 
@@ -129,6 +146,7 @@ export function listMemoryFiles(filter?: MemoryListInput): MemoryFileMeta[] {
     const dir = join(root, category);
     let names: string[];
     try {
+      if (lstatSync(dir).isSymbolicLink()) continue;
       names = readdirSync(dir);
     } catch {
       continue; // 这个类目还没有目录
@@ -139,6 +157,8 @@ export function listMemoryFiles(filter?: MemoryListInput): MemoryFileMeta[] {
       let raw = "";
       let mtimeMs = 0;
       try {
+        const lst = lstatSync(abs);
+        if (lst.isSymbolicLink() || !lst.isFile()) continue;
         raw = readFileSync(abs, "utf8");
         mtimeMs = statSync(abs).mtimeMs;
       } catch {
@@ -162,7 +182,7 @@ export function listMemoryFiles(filter?: MemoryListInput): MemoryFileMeta[] {
 
 /** 读一条记忆的**正文**(不含 frontmatter)。路径不合法或读不到 → 抛(话直接给用户)。 */
 export function readMemoryFile(relPath: string): { content: string } {
-  const target = resolveMemoryRelPath(relPath);
+  const target = resolveSafeMemoryRelPath(relPath);
   if (target === null) throw new Error(`不是合法的记忆路径:「${relPath}」(应为 <类目>/<文件名>.md,类目限定六类)`);
   try {
     return { content: parseFrontmatter(readFileSync(target, "utf8")).body };
@@ -177,7 +197,7 @@ export function readMemoryFile(relPath: string): { content: string } {
  * 返回写完的时间戳(渲染端刷新行用)。
  */
 export function saveMemoryFile(input: MemorySaveInput): { updatedAt: number } {
-  const target = resolveMemoryRelPath(input.path);
+  const target = resolveSafeMemoryRelPath(input.path);
   if (target === null) throw new Error(`不是合法的记忆路径:「${input.path}」(应为 <类目>/<文件名>.md,类目限定六类)`);
   const name = input.path.split("/")[1] ?? "";
   const fallbackTitle = name.slice(0, -3);
@@ -199,7 +219,7 @@ export function saveMemoryFile(input: MemorySaveInput): { updatedAt: number } {
 
 /** 删一条记忆。路径不合法 → 抛;文件本来就不在 → 照样成功(删除是幂等的)。 */
 export function deleteMemoryFile(relPath: string): { ok: true } {
-  const target = resolveMemoryRelPath(relPath);
+  const target = resolveSafeMemoryRelPath(relPath);
   if (target === null) throw new Error(`不是合法的记忆路径:「${relPath}」(应为 <类目>/<文件名>.md,类目限定六类)`);
   try {
     rmSync(target, { force: true });

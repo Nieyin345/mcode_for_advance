@@ -30,7 +30,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-OUT=$(mktemp -d /tmp/mcode-mobile-pairing-smoke.XXXXXX)
+# 建在 apps/desktop 下,不建在 /tmp —— 与 mcp-endpoint-smoke / mcode-admin-smoke 同款。
+# 理由见 mcp-endpoint-smoke 那段:外部化的包(这里新增的 `--external:ssh2`)要在运行时
+# 被 node 解析到,而 `/tmp` 下的 bundle 向上走不到本包的 node_modules →
+# `ERR_MODULE_NOT_FOUND: Cannot find package 'ssh2'`。这个坑是补 external 时才暴露的。
+mkdir -p ./.tmp
+OUT=$(mktemp -d ./.tmp/mcode-mobile-pairing-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-mobile-pairing-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
@@ -54,6 +59,7 @@ const __dirname = __dn(__f2p(import.meta.url));"
 "$ESBUILD" scripts/mobile-pairing-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
+  --external:ssh2 \
   --banner:js="$BANNER" \
   --alias:electron=./scripts/mobile-pairing-smoke/stubs/electron.ts \
   --alias:@main/lib/dataRoot.js=./scripts/db-migrate-smoke/stubs/dataRoot.ts \

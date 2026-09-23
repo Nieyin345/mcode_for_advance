@@ -275,6 +275,41 @@ check(
   markdownArtifact(IMPORTED_MD).path !== join(ROOT, "markdown", "imported"),
 );
 
+/* ──────────────── 7. 「库只读」是**显式**规则,不是项目边界的副产品 ──────────────── */
+
+/**
+ * `canUseTool` 里那条库只读拦截不好直接调(在 provider 内部、要整套 SDK 上下文),
+ * 所以这里用**源码断言**钉住它的存在与形状 —— 本套件既有的做法之一(§5 末尾那条也是)。
+ *
+ * ## 为什么这条必须钉
+ *
+ * 「写只能在项目内」**恰好**等于「库只读」:库根默认在 `<数据根>/library`,与用户的
+ * 项目目录不重叠。那是**巧合** —— 一旦库被搬进项目里,那条规则就静默失效,而没有任何
+ * 东西会提醒。所以库里那一条是**独立**的显式规则,而且 `bypassPermissions` 也拦
+ * (库只读是硬边界,不是权限模式能覆盖的)。这四条就是防它哪天被"顺手删掉"。
+ */
+console.log("\n库只读是显式规则（不是项目边界的副产品）");
+const providerSrc = readFileSync(
+  join(process.cwd(), "src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts"),
+  "utf-8",
+);
+// ⚠️ 判据要盯**生效的形状**,不是"文本里出现过这个词" —— 第一版写成
+// `includes("isInsideLibrary(norm.absPath)")`,结果是变异"把 if 改成 if (false && …)"
+// 照样过:字符串还在,规则却已经死了。所以这里剥掉注释后找那条**真的 if 语句**。
+const providerCode = providerSrc.replace(/\/\/[^\n]*/g, "");
+check(
+  "canUseTool 里有一条**生效的**库内拒绝（不是被注释/短路掉的）",
+  /if\s*\(\s*isInsideLibrary\(norm\.absPath\)\s*\)/.test(providerCode),
+);
+check(
+  "库内写入那条拒在 project 边界判定**之前**（bypass 也拦不住它）",
+  providerCode.indexOf("isInsideLibrary(norm.absPath)") !== -1 &&
+    providerCode.indexOf("isInsideLibrary(norm.absPath)") <
+      providerCode.indexOf("if (!norm.insideProject && !bypass)"),
+);
+check("拒绝文案说清「文档库是只读的」", providerSrc.includes("文档库是只读的"));
+check("…并给出正确出路（先复制进项目再改）", providerSrc.includes("在项目里改"));
+
 /* ──────────────── 收尾 ──────────────── */
 
 rmSync(DATA, { recursive: true, force: true });

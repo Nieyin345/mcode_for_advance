@@ -352,6 +352,43 @@ export interface ExtensionBridgeStatus {
 }
 
 /**
+ * 公网 MCP 端点的状态快照（设置页那一屏）。
+ *
+ * 与 {@link ExtensionBridgeStatus} 是**两个不同的出口**：那个给浏览器里的扩展用
+ * （只绑回环、只放行扩展来源）；这个给互联网上的远程 MCP 客户端（ChatGPT 的
+ * Connector）用，鉴权方式是**路径里的密钥**而不是 Bearer（ChatGPT 的 Connector
+ * 只支持 OAuth，不收 Bearer —— 见 `main/providers/bridge/publicMcpServer.ts`）。
+ *
+ * ⚠️ `secret` 是明文的：它要显示给用户复制进 ChatGPT 的 Connector。安全性由
+ * 「服务只绑 127.0.0.1 + 用户自己架公网隧道」保证 —— 与 `token` 同一个取舍。
+ */
+export interface PublicMcpStatus {
+  /** 总开关是否打开。关着时服务根本没起（`port` 为 0）。 */
+  enabled: boolean;
+  /** 本机监听的端口；服务未起时为 0。真正的公网入口是用户自己那条隧道。 */
+  port: number;
+  /** 路径里那把密钥（`/mcp/<secret>`）。未生成时为空串。 */
+  secret: string;
+  /** 「ChatGPT 直连」合成会话的 id；还没建时为 null。 */
+  sessionId: string | null;
+  /** 公网隧道的域名（形如 `https://xxx.trycloudflare.com`）；未就绪为 null。
+   *  拼 `/mcp/<secret>` 得完整地址 —— 那是 UI 的事，main 只给域名。 */
+  tunnelUrl: string | null;
+  /** 隧道的生命周期。`starting` 时 UI 要转圈等（cloudflared 有一段预检）；
+   *  `reconnecting` 是**隧道掉了、正在自动重连**（见 `tunnelManager` 的退避逻辑）。 */
+  tunnelPhase: "stopped" | "starting" | "ready" | "reconnecting" | "failed";
+  /** 隧道失败的原因（没装 cloudflared / 超时 / 断开）；非 failed 为 null。 */
+  tunnelError: string | null;
+  /** **文件工具的沙箱根**（= 用户选的那个项目目录）。null = 没选/没项目。
+   *  只约束 `agent_*` 文件工具；`agent_bash` 不受它限制。 */
+  sandboxRoot: string | null;
+  /** 沙箱用的是**哪个项目**的 id。null = 还没选（回退到第一个非归档项目）。 */
+  sandboxProjectId: string | null;
+  /** 可选的沙箱项目清单 —— 设置页那个下拉框用它。名字 + id + 路径。 */
+  availableProjects: { id: string; name: string; path: string }[];
+}
+
+/**
  * 「这次工具调用属于哪次对话」的请求头名。
  *
  * ## 为什么住在契约层

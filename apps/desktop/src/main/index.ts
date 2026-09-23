@@ -14,8 +14,10 @@ import {
   stopExtensionBridge,
 } from "@main/providers/bridge/extensionBridge.js";
 import { configureMcpToolHost } from "@main/providers/bridge/mcpEndpoint.js";
+import { initPublicMcp, disposePublicMcp, configurePublicMcpRuntime, publicMcpSandboxRoot } from "@main/providers/bridge/publicMcpSession.js";
 import { createWebToolHost } from "@main/mcp/webToolHost.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
+import { broadcastSessionChanged } from "@main/lib/sessionSync.js";
 import { lspManager } from "@main/lsp/LspManager.js";
 import { BrowserManager } from "@main/browser/BrowserManager.js";
 import { startMobileServer, stopMobileServer } from "@main/mobile/MobileHttpServer.js";
@@ -163,16 +165,32 @@ app.whenReady().then(async () => {
     // 第一次 tools/list 时才转 JSON Schema),所以不必等设置页打开。
     // `cwdFor` 同源:agent_* 文件工具的相对路径与环境块里的工作目录都按会话从
     // RuntimeManager 取(lastCwd → 项目路径)。
+    // `sandboxRootFor`:**只对公网那条合成会话**给根(它没有审批闸门,需要一道边界);
+    // 其他会话返回 null = 不限制,本机那条路行为不变(见 publicMcpSandboxRoot)。
     configureMcpToolHost(
       createWebToolHost({
         gateFor: (sessionId) => runtimeManager.webToolGate(sessionId),
         cwdFor: (sessionId) => runtimeManager.cwdFor(sessionId),
+        sandboxRootFor: (sessionId) => publicMcpSandboxRoot(sessionId),
       }),
     );
     // 顺手把桥起起来，别等用户点开设置页才 listen：浏览器里的扩展是**主动来连**
     // 的一方，端口不开它就只能显示"未连接"，而用户并不知道要先去点一下设置页。
     // 失败也不拦启动（绑定失败已经写在 ensureStarted 里，只记日志）。
     void ensureStarted().catch(() => {});
+
+    // 公网 MCP 端点（给 ChatGPT 的 Connector 用）：装配 SettingRepo 存取口，开关
+    // 开着就把服务与「ChatGPT 直连」合成会话一并备好。默认关 —— 这条通路等于把本机
+    // 操作权交给拿到链接的人（无审批闸门，见 publicMcpServer.ts 文件头）。
+    // 运行时能力走注入：直接 import RuntimeManager 会把 provider 图（→ agentTools
+    // → agentRemoteSsh → ssh2 原生模块）拉进与它无关的无头 smoke 的打包链。
+    configurePublicMcpRuntime({
+      setSessionPermissionMode: (sessionId, mode) =>
+        runtimeManager.setPermissionMode(sessionId, mode),
+      bindSession: (session) => runtimeManager.bindSession(session),
+      broadcastSessionChanged: (session) => broadcastSessionChanged(session),
+    });
+    initPublicMcp();
   });
 
   // CSP only in production - in dev, Vite injects inline HMR scripts that a
@@ -183,7 +201,22 @@ app.whenReady().then(async () => {
         responseHeaders: {
           ...details.responseHeaders,
             "Content-Security-Policy": [
-            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:",
+            // ⚠️ `worker-src 'self' blob:` 是 EmbedPDF 要的，不是可选的。
+            //
+            // 它把 PDFium 引擎跑在 **worker** 里，而那个 worker 是
+            // `URL.createObjectURL(new Blob([...]))` **现铸**出来的（见它的
+            // `worker-engine-*.js`），所以 URL 是 `blob:` 开头。CSP 里没写
+            // `worker-src` 时回落到 `default-src 'self'` —— `blob:` 不在其中，
+            // 于是 worker 起不来、引擎初始化不完，界面**永远停在
+            // "Initializing plugins…"**，而控制台只有一句被拒的报错，看着完全
+            // 不像"worker 的事"。
+            //
+            // `'wasm-unsafe-eval'` 同理：PDFium 是 WebAssembly。
+            //
+            // 只把 `blob:` 加进 `worker-src`，不碰 `script-src` —— 那个口子
+            // （内联脚本）比这里需要的宽得多。手机端走 HTTP、没有这层 Electron
+            // CSP，所以这条只影响桌面。
+            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:",
           ],
         },
       });
@@ -347,6 +380,7 @@ app.on("before-quit", (event) => {
   }
   BridgeRegistry.disposeAll();
   stopExtensionBridge();
+  disposePublicMcp();
   TerminalManager.disposeAll();
   lspManager.disposeAll();
   BrowserManager.disposeAll();

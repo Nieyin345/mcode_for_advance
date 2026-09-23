@@ -226,10 +226,25 @@ export function WorkflowLibraryView({
     return off;
   }, [loadList]);
 
+  /**
+   * 打开一份图。
+   *
+   * `selectNodeId`（2026-09-22）—— **打开之后选中哪个节点**。
+   *
+   * 为什么需要它：自动化是"触发器 + 主代理"两个节点种出来的，而**触发器的参数
+   * （触发方式 / 定时表达式 / 监听什么 / 立刻跑一次）全在右侧检查器里** ——
+   * 检查器只画"当前选中的那个节点"。
+   *
+   * 从前这里恒为 `null`，于是新建一条自动化之后**谁都没选中**：用户看到的是一张
+   * 有卡片的画布 + 一个空检查器，**根本找不到"触发方式在哪配、手动按钮在哪"**。
+   * 用户的原话：「只有类型，具体怎么触发呢，还有手动，手动的按钮在哪里，这些都没有」。
+   *
+   * 点列表打开时仍然不传（那次是"回去接着改上次那张图"，不该替他选）。
+   */
   const openWorkflow = useCallback(
-    async (id: string) => {
+    async (id: string, selectNodeId: string | null = null) => {
       setSelectedId(id);
-      setSelectedNodeId(null);
+      setSelectedNodeId(selectNodeId);
       setBaseline(null);
       setWorking(null);
       setDocError(null);
@@ -429,18 +444,18 @@ export function WorkflowLibraryView({
       // 挑对应的构造器:`newAutomationDoc` 与 `newWorkflowDoc` 的差别只有那个
       // `trigger` 字段,而它正是"这条东西属于哪一栏"的判据。
       const construct = purpose === "automation" ? newAutomationDoc : newWorkflowDoc;
-      // 新建出来的图**自带一个主代理**(见 `seedMainAgent` 的文件头)。清单没读进来时
-      // 宁可**不建**、并把原因说出来 —— 建一份没有入口的图正好是这次要消灭的东西,而
-      // "先建出一张白纸再把错误摆在别处"会让用户以为这就是它该有的样子。
-      // (设置页本来就在显眼处报着清单读失败的原因,这里只是不装作没事。)
-      const main = catalog?.entries.find((e) => e.id === MAIN_NODE_TYPE_ID)?.manifest;
-      if (!main) {
-        setSaveError(t("settings.workflows.mainTypeMissing"));
-        return;
-      }
-      // 自动化比工作流**多一个触发器** —— 它是自动化的起点,而且保存闸门会拒绝一份没有
-      // 触发器的自动化(`graph.no-trigger-node`)。所以这里是"两个都种":先触发器、后主代理。
-      // 触发器清单同样缺了就不建:理由和主代理那条一样(见上面的注释)。
+      /**
+       * **自动化只种一个触发器，不种主代理**（用户 2026-09-22 的明确要求）。
+       *
+       * 理由：自动化是"到点/文件变了/事件来了就起一次运行" —— 它的起点**就是触发器**，
+       * 而"谁去干活"是用户接下来自己摆的事（可以放主代理、可以放别的节点、也可以
+       * 让触发器下游直接接一个「命令」）。硬塞一个主代理等于替用户决定了架构，
+       * 而且他一进去看到的就是一个自己没要过的节点，还得先删掉。
+       *
+       * 原话：「自动化只要自动插入触发器就行了，**不要主代理**」。
+       *
+       * 工作流那一栏不变 —— 它没有触发器，仍然自带一个主代理（那是它的入口）。
+       */
       const trigger =
         purpose === "automation"
           ? catalog?.entries.find((e) => e.id === TRIGGER_NODE_TYPE_ID)?.manifest
@@ -449,14 +464,37 @@ export function WorkflowLibraryView({
         setSaveError(t("settings.workflows.mainTypeMissing"));
         return;
       }
-      let doc = seedMainAgent(construct(id, uniqueWorkflowName(t(labels.defaultName), taken)), main);
-      if (trigger) {
+      let doc: WorkflowDoc;
+      if (purpose === "automation") {
         // 「在哪个项目里跑」是触发器的必填项,而它是**用户环境里的事实**(工作目录),
         // 编不出来 —— 挑用户列表里的第一个当起点,用户在检查器里改。一个项目都没有时
         // 留空:存盘会拦下并说清原因,那比默认塞一个不存在的 id 好。
         const res = await api.project.list().catch(() => null);
-        doc = seedTrigger(doc, trigger, res?.projects?.[0]?.id);
+        doc = seedTrigger(
+          construct(id, uniqueWorkflowName(t(labels.defaultName), taken)),
+          trigger!,
+          res?.projects?.[0]?.id,
+        );
+      } else {
+        // 新建出来的图**自带一个主代理**(见 `seedMainAgent` 的文件头)。清单没读进来时
+        // 宁可**不建**、并把原因说出来 —— 建一份没有入口的图正好是要消灭的东西。
+        const main = catalog?.entries.find((e) => e.id === MAIN_NODE_TYPE_ID)?.manifest;
+        if (!main) {
+          setSaveError(t("settings.workflows.mainTypeMissing"));
+          return;
+        }
+        doc = seedMainAgent(construct(id, uniqueWorkflowName(t(labels.defaultName), taken)), main);
       }
+      /**
+       * 待会儿要选中的那个节点 = **触发器**（见 `openWorkflow` 的 `selectNodeId`）。
+       *
+       * 从**种完的 doc** 里现找，而不是让 `seedTrigger` 返回 id —— 那个函数是纯的、
+       * 只吐 doc（文件头说过"每一处都返回新 doc"），为这一处改它的签名不值得。
+       */
+      const triggerNodeId =
+        purpose === "automation"
+          ? doc.nodes.find((n) => n.type === TRIGGER_NODE_TYPE_ID)?.id ?? null
+          : null;
       // **这一下直接落盘,不算破坏"点了保存才写"的规矩**:它落的是**刚建出来的那份**,
       // 此刻它在内存里连草稿都还不是 —— 不写下去的话,这个工作流在库里根本不存在,
       // 用户关掉设置页再回来会以为自己刚才没建成。
@@ -467,7 +505,9 @@ export function WorkflowLibraryView({
       }
       await loadList();
       // 直接打开它 —— 新建之后就落在画布上,不用再去左边找一遍。
-      await openWorkflow(id);
+      // 自动化**顺手选中触发器**:它的参数(触发方式 / 定时表达式 / 立刻跑一次)
+      // 全在检查器里,不选中的话用户根本看不到那一套(见 `openWorkflow` 那段)。
+      await openWorkflow(id, triggerNodeId);
     } catch (err) {
       setSaveError(t("settings.workflows.actionFailed", { error: (err as Error).message }));
     } finally {
@@ -574,12 +614,12 @@ export function WorkflowLibraryView({
 
   const handleRemoveNode = (id: string) => {
     if (!working) return;
-    // 主代理删不掉 —— 它是这张图的入口(见 `isProtectedNode` 的文件头)。**在这里拦**
-    // 而不是在 `removeNode` 里:那个是纯粹的编辑操作("给我一份删掉这个节点的文档"),
-    // 规矩属于界面这一层。检查器那个按钮和键盘的 Delete 都走这个处理函数,所以一道
-    // 就够(检查器那边还会**不摆**那个按钮,理由见 NodeInspector)。
+    // **入口节点删不掉** —— 工作流是主代理、自动化是触发器（见 `isProtectedNode`）。
+    // **在这里拦**而不是在 `removeNode` 里:那个是纯粹的编辑操作("给我一份删掉这个
+    // 节点的文档"),规矩属于界面这一层。检查器那个按钮和键盘的 Delete 都走这个处理
+    // 函数,所以一道就够(检查器那边还会**不摆**那个按钮,理由见 NodeInspector)。
     const target = working.nodes.find((n) => n.id === id);
-    if (!target || isProtectedNode(target)) return;
+    if (!target || isProtectedNode(target, purpose)) return;
     edit(removeNodeFrom(working, id));
     if (selectedNodeId === id) setSelectedNodeId(null);
   };

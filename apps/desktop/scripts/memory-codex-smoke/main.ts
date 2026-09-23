@@ -411,10 +411,9 @@ console.log("\n拒绝要说出口,而不是抛出去");
  * 链接时,前三道闸(两段、白名单、`.md`、前缀比对)全过。于是 `read` 会把库外的
  * 文件读出来、`save` 会把库外的文件**覆盖掉**。
  *
- * ⚠️ 这一条**已知未修**,修法在 `main/memory/store.ts`(那道前缀比对要再加一步
- * `realpathSync` 复核),而 store 不在本套的落地范围里(另一个文件)。所以这里断的
- * 是**现状会不会伤人**:`read` 允许(越权读),但 `save` **绝不许**写坏库外的文件。
- * 一旦有人把 store 修了,这里会从"跳过/失败"变成全绿 —— 那时候把读的那条翻过来。
+ * 这组现在是**硬回归**：read / list / save / delete 四条路都必须把符号链接挡在
+ * 存储层外面。只钉 save 不够 —— 越权读取同样会把库外内容送进模型上下文；只钉
+ * read/save 也不够 —— list 如果把链接当成普通记忆列出来，后续工具仍可能反复撞它。
  */
 {
   const outside = join(DATA_ABS, "outside-secret.md");
@@ -440,11 +439,17 @@ console.log("\n拒绝要说出口,而不是抛出去");
     } catch (err) {
       readThrew = (err as Error).message;
     }
-    if (readThrew.includes("不是合法的记忆路径") || !readOut.includes("库外的东西")) {
-      console.log("  ..   (符号链接已经被拒了 —— store 那一步 realpath 复核应该已经修上了)");
-    } else {
-      console.log("  !!   符号链接能读到库外:main/memory/store.ts 的前缀比对没做 realpath 复核(已知未修)");
-    }
+    check(
+      "指向库外的符号链接**读不到**库外文件",
+      readThrew.includes("不是合法的记忆路径") && !readOut.includes("库外的东西"),
+      { readThrew, readOut },
+    );
+    const linkedList = (await call(MEMORY_LIST_CHANNEL, { category: "rules" })) as { files: MemoryFileMeta[] };
+    check(
+      "指向库外的符号链接不会混进记忆列表",
+      !linkedList.files.some((f) => f.path === "rules/linked.md"),
+      linkedList.files,
+    );
 
     let writeThrew = "";
     let writeOut: unknown = null;
@@ -459,10 +464,60 @@ console.log("\n拒绝要说出口,而不是抛出去");
       !outsideAfter.includes("写到库外去了"),
       { writeThrew, writeOut, outsideAfter },
     );
+    const deleteOut = (await call(MEMORY_DELETE_CHANNEL, { path: "rules/linked.md" })) as {
+      ok?: unknown;
+      error?: unknown;
+    };
+    check(
+      "delete 也拒绝符号链接路径",
+      deleteOut.ok === false && existsSync(link),
+      deleteOut,
+    );
     rmSync(link, { force: true });
   }
   rmSync(outside, { force: true });
   rmSync(linkDir, { recursive: true, force: true });
+}
+
+// Windows 上普通文件 symlink 往往需要开发者模式，但目录 junction 不需要。
+// 这一组保证 CI/本机至少能真的跑到一次“重解析到 memory 根外”的 I/O 路径。
+{
+  const outsideDir = join(DATA_ABS, "outside-memory-dir");
+  const outsideFile = join(outsideDir, "escaped.md");
+  const linkDir = join(MEMORY_ROOT, "rules");
+  mkdirSync(outsideDir, { recursive: true });
+  writeFileSync(outsideFile, "junction 外的内容", "utf8");
+  rmSync(linkDir, { recursive: true, force: true });
+  mkdirSync(MEMORY_ROOT, { recursive: true });
+  let junction = true;
+  try {
+    symlinkSync(outsideDir, linkDir, "junction");
+  } catch {
+    junction = false;
+  }
+
+  if (!junction) {
+    console.log("  ..   (这台机器也建不了 junction，跳过目录重解析用例)");
+  } else {
+    let readThrew = "";
+    try {
+      await call(MEMORY_READ_CHANNEL, { path: "rules/escaped.md" });
+    } catch (err) {
+      readThrew = (err as Error).message;
+    }
+    check("junction 类目目录不能越权读取", readThrew.includes("不是合法的记忆路径"), readThrew);
+
+    const listed = (await call(MEMORY_LIST_CHANNEL, { category: "rules" })) as { files: MemoryFileMeta[] };
+    check("junction 类目目录不会被 list 展开", listed.files.length === 0, listed.files);
+
+    const saved = (await call(MEMORY_SAVE_CHANNEL, { path: "rules/escaped.md", content: "不该写出去" })) as { ok?: unknown };
+    check("junction 类目目录不能越权写入", saved.ok === false && readFileSync(outsideFile, "utf8") === "junction 外的内容", saved);
+
+    const deleted = (await call(MEMORY_DELETE_CHANNEL, { path: "rules/escaped.md" })) as { ok?: unknown };
+    check("junction 类目目录不能越权删除", deleted.ok === false && existsSync(outsideFile), deleted);
+  }
+  rmSync(linkDir, { recursive: true, force: true });
+  rmSync(outsideDir, { recursive: true, force: true });
 }
 
 /* ──────────────── 3. Codex 供应商 ──────────────── */

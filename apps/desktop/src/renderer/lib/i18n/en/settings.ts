@@ -309,6 +309,34 @@ export const en = {
   "settings.customModels.bridgeRegenerate": "Regenerate token",
   "settings.customModels.bridgeHint":
     "Paste both values into the browser extension; once it connects this badge turns into \"Connected\". Regenerating invalidates an already-installed extension — you'll have to re-enter the token.",
+  "settings.customModels.publicMcpTitle": "Public MCP endpoint",
+  "settings.remoteControl.title": "Remote control",
+  "settings.remoteControl.desc":
+    "Let an AI on the internet (e.g. a ChatGPT connector) work on this computer: read/write files, run commands, search your library.",
+  "settings.remoteControl.warning":
+    "⚠️ Once open, anyone holding the link can do anything on this machine (read/write files, run commands, kill processes, SSH) with no approval prompt. Only paste it into your own ChatGPT account — never share the link.",
+  "settings.remoteControl.sandboxLabel": "Project it may touch",
+  "settings.remoteControl.sandboxNone": "(none selected)",
+  "settings.remoteControl.sandboxAt": "File read/write is confined to this project directory: {path}",
+  "settings.remoteControl.sandboxHint":
+    "Pick a project — file operations coming from the internet only happen inside that directory. Changes apply immediately, no restart.",
+  "settings.remoteControl.toggleLabel": "Enable remote control",
+  "settings.customModels.publicMcpOn": "Open",
+  "settings.customModels.publicMcpOff": "Closed",
+  "settings.customModels.publicMcpToggleLabel": "Expose the public MCP endpoint",
+  "settings.customModels.publicMcpWarning":
+    "⚠️ Once open, anyone holding the link can do anything on this machine (read/write files, run commands, kill processes, SSH) with no approval prompt. Only paste it into your own ChatGPT account — never share the link.",
+  "settings.customModels.publicMcpTunnelLabel": "Tunnel cmd",
+  "settings.customModels.publicMcpRegenerate": "New secret",
+  "settings.customModels.publicMcpStartTunnel": "Start public tunnel",
+  "settings.customModels.publicMcpStopTunnel": "Stop tunnel",
+  "settings.customModels.publicMcpTunnelStarting": "Starting tunnel…",
+  "settings.customModels.publicMcpTunnelReconnecting": "Tunnel dropped, reconnecting…",
+  "settings.customModels.publicMcpTunnelReady": "Tunnel ready",
+  "settings.customModels.publicMcpUrlLabel": "Full URL",
+  "settings.customModels.publicMcpSandboxLabel": "Sandbox dir",
+  "settings.customModels.publicMcpHint":
+    "Click \"Start public tunnel\", then paste the \"Full URL\" above into ChatGPT under Settings → Connectors → Advanced → Developer mode → Create (authentication: none). The tunnel domain changes on every restart, so you'll re-paste it each time. File read/write is confined to the \"Sandbox dir\" — anything outside is rejected; agent_bash is NOT subject to that limit, so don't give the URL to anyone you don't trust. Regenerating the secret kills the old link immediately — that is the only way to revoke access.",
   "settings.customModels.openaiNote": "OpenAI-format endpoints (OpenAI official / Azure / vLLM / Ollama / one-api, …) enable the built-in protocol translation layer: Claude keeps speaking the Anthropic protocol while the app translates requests/responses to OpenAI format on the fly.",
   "settings.customModels.nameLabel": "Name",
   "settings.customModels.namePlaceholder": "DeepSeek relay",
@@ -1283,6 +1311,7 @@ export const en = {
   // The main agent: the graph's entry point. New workflows ship with one and it
   // cannot be deleted (see isProtectedNode in workflowView).
   "settings.workflows.mainNodeHint": "Main agent · this graph's entry point, cannot be deleted",
+  "settings.automation.triggerNodeHint": "Trigger · the starting point of this automation, cannot be deleted",
   "settings.workflows.mainTypeMissing":
     "The node-type catalog did not load, so a workflow cannot be created right now — a new graph would be missing its main agent. The catalog error is shown above.",
   "settings.workflows.paramPick": "Pick one",

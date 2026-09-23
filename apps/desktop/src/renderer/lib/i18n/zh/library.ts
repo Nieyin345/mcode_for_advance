@@ -264,6 +264,32 @@ export const zh = {
   "library.pdfViewer.openExternal": "用外部程序打开",
   "library.pdfViewer.failed": "打不开这个 PDF",
 
+  /* ── PDF 阅读 / 保存批注（EmbedPDF，2026-09-22）── */
+  "library.pdfViewer.saveAnnotations": "保存批注",
+  "library.pdfViewer.savedToast": "已保存",
+  "library.pdfViewer.saveFailed": "保存失败",
+  /** 关窗提醒里逐条列出的那句话。`name` 是文件名。 */
+  "library.pdfViewer.unsavedLabel": "「{name}」上有没保存的批注",
+
+  /* ── PDF 标注（2026-09-22 重做：六种工具 + 撤销 + 烤进文件）── */
+  "library.pdfAnnot.toolText": "高亮",
+  "library.pdfAnnot.toolArea": "框选区域",
+  "library.pdfAnnot.toolFreeText": "页面上打字",
+  "library.pdfAnnot.toolShape": "形状",
+  "library.pdfAnnot.toolDrawing": "手绘",
+  "library.pdfAnnot.toolImage": "贴图",
+  "library.pdfAnnot.hint.text": "选中文字即可划高亮（跨行也行）",
+  "library.pdfAnnot.hint.area": "拖一个框，圈住图、公式或表格",
+  "library.pdfAnnot.hint.freetext": "点页面上任意位置，就地写批注",
+  "library.pdfAnnot.hint.shape": "拖出一个矩形",
+  "library.pdfAnnot.hint.drawing": "按住鼠标在页面上画",
+  "library.pdfAnnot.hint.image": "点一下，然后选一张图片贴上去",
+  "library.pdfAnnot.undo": "撤销",
+  "library.pdfAnnot.redo": "重做",
+  "library.pdfAnnot.bake": "烤进 PDF",
+  "library.pdfAnnot.bakeHint": "把标注画进 PDF 文件本身（阅读器里看得见；不是 Acrobat 批注，改不了也擦不掉）",
+
+
   /* ── 引用格式 ── */
   "library.cite.title": "引用格式",
   "library.cite.gb7714": "GB/T 7714",

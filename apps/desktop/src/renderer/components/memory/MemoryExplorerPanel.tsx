@@ -39,7 +39,7 @@
  * 通道没就绪/读失败:一句错误小字,不弹错(同 `RunHistorySection` 的纪律)。
  * 第一二节读不到时**类目照样摆出来**(它们是契约里的常量),只由那句小字交代。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MEMORY_CATEGORIES, type MemoryFileMeta } from "@contracts/memory";
 import "@renderer/lib/monacoSetup.js";
 import Editor from "@monaco-editor/react";
@@ -221,6 +221,30 @@ export function MemoryExplorerPanel() {
     void load();
   }, [load]);
 
+  /**
+   * 记忆库在**别处**被改了 → 重拉列表。
+   *
+   * 这个面板不是唯一的写者:AI 通过 `memory_write` / `memory_forget` 那两个 MCP 工具
+   * 直接写数据根下的 `.md`(`main/mcp/memoryServer.ts`)。少了这条订阅,模型刚记下
+   * 一条、用户切过来却看不见 —— 他会以为"它根本没记住",而这功能的价值恰恰在于
+   * "我不用再说第二遍"。
+   *
+   * 复用 `library:changed` 那条通道(主进程那边 `main/memory/broadcast.ts` 解释了
+   * 为什么不新开一条):它报的就是"数据根下的内容变了"。
+   *
+   * ⚠️ **重拉前先确认用户没在编辑。** 这个面板的右栏是一个带草稿的编辑器
+   * (`dirty` 那条判断),而 `load()` 会重设 `files`/`categories` —— 用户在左栏选中的
+   * 那一条如果正好被 AI 删掉了,`selected` 就指向一个不存在的路径。所以:
+   * 脏草稿时**跳过这次刷新**,等他自己保存/切走之后自然会重拉。
+   */
+  useEffect(() => {
+    const off = window.api?.on?.libraryChanged?.(() => {
+      if (dirtyRef.current) return;
+      void load();
+    });
+    return off;
+  }, [load]);
+
   /** 读一个文件进编辑器。读失败:右栏给空内容 + 一句红字,不让面板崩。 */
   const open = useCallback(
     async (path: string): Promise<void> => {
@@ -318,6 +342,14 @@ export function MemoryExplorerPanel() {
   }, [files]);
 
   const dirty = selected !== null && content !== savedContent;
+  /**
+   * 上面那个 `dirty` 的**引用版** —— 只给"库在别处被改了"那条订阅用。
+   *
+   * 订阅的回调是**挂一次、跑很久**的闭包,直接读 `dirty` 会读到一个陈旧的布尔值。
+   * 而这个 ref 每次渲染都跟着更新,回调里读到的永远是当下那个。
+   */
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
 
   return (
     <section className={`mx-auto flex h-full w-full ${PANEL_MAX_W.canvas} flex-col`}>
