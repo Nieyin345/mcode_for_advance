@@ -46,10 +46,14 @@ import {
   stopPublicMcp,
 } from "@main/providers/bridge/publicMcpServer.js";
 import { createWebToolHost, type WebToolGate } from "@main/mcp/webToolHost.js";
-import { WORKFLOW_READONLY_TOOLS, workflowMcpTools } from "@main/mcp/mcodeServer.js";
+import { SESSION_LOG_TOOLS, WORKFLOW_READONLY_TOOLS, workflowMcpTools } from "@main/mcp/mcodeServer.js";
 import type { PermissionMode } from "@contracts/runtime";
 import type { ApprovalRequest } from "@contracts/provider";
 import { __handlerCalls, libraryMcpTools } from "./stubs/libraryServer.js";
+// 会话夹具的灌入口 —— 与 `run.sh` 里 `@main/store/repositories.js` 的 alias 指向
+// **同一个文件**（`mcode-admin-smoke/stubs/repositories.ts`）。不能写成
+// `./stubs/repositories.js`：那个文件不存在，而 esbuild 会按真实路径去找。
+import { __seedSessionLogs } from "../mcode-admin-smoke/stubs/repositories.js";
 
 let checks = 0;
 let passed = 0;
@@ -545,10 +549,13 @@ check("agent 工具进表：文件/搜索/系统进程/持久进程/技能", [
   "agent_skill_list",
   "agent_skill_read",
 ].every((n) => names.includes(n)), names);
-// 网页端的表 = 替身 3 + 真工作流 10 + agent 41（含新加的 `agent_context`）。
+// 网页端的表 = 替身 3 + 真工作流 9 + agent 41（含新加的 `agent_context`）。
 // **库那 22 个不在里面** —— 它们已从网页端撤掉(见 webToolHost 里那段),桌面引擎那条
-// 路照旧挂着。这条数字就是防"谁又把它挂回来"或"谁不小心删了工具"。
-check("工具数量 = 替身 3 + 真工作流 10 + agent 41", names.length === 54, names.length);
+// 路照旧挂着。
+// **工作流那 9 个 = 表里的 11 个减掉 2 个会话工具** —— `session_read_log` 与
+// `session_list`(2026-09-24 加)从公网摘掉了,见 `SESSION_LOG_TOOLS` 与上面那几条断言。
+// 这条数字就是防"谁又把它挂回来"或"谁不小心删了工具"。
+check("工具数量 = 替身 3 + 真工作流 9 + agent 41", names.length === 53, names.length);
 check(
   "同名工具只报一次",
   new Set(names).size === names.length,
@@ -630,6 +637,182 @@ check(
   "闸门认识的只读清单里没有写工具",
   !WORKFLOW_READONLY_TOOLS.has("workflow_remove") && WORKFLOW_READONLY_TOOLS.has("workflow_list"),
 );
+// ⚠️ `session_list` 是 2026-09-24 加的，它**不能**进只读集 —— 它能枚举用户的全部
+// 对话，等于把"用户给 id 才算授权"那道闸门拆掉（见 mcodeServer 那段注释）。
+check(
+  "`session_list` 不在自动放行集里(它要用户点头)",
+  !WORKFLOW_READONLY_TOOLS.has("session_list"),
+);
+
+/* ── ⚠️ 公网那条路**看不到**用户的对话记录（2026-09-24）────────────────────
+   用户明确要求「公网不给」。`session_read_log` + `session_list` 合起来 = 枚举这台
+   机器上每一个项目的对话并读全文，而这条路是**免审批**的 —— 拿到链接的人就能读光
+   用户所有对话。所以整组从公网的工具体里摘掉（`workflowMcpTools({includeSessionLogs:false})`）。 */
+const webToolNames = host.listTools().map((t) => t.name);
+for (const name of SESSION_LOG_TOOLS) {
+  check(
+    `公网工具体里没有 ${name}`,
+    !webToolNames.includes(name),
+    webToolNames.filter((n) => n.includes("session")),
+  );
+}
+// 反向确认：桌面本机那条路**照旧带着**它们（不传参数 = 带上）。
+const localToolNames = workflowMcpTools().map((t) => t.name);
+check(
+  "桌面本机那条路仍然带着 session_read_log 与 session_list",
+  [...SESSION_LOG_TOOLS].every((n) => localToolNames.includes(n)),
+  localToolNames.filter((n) => n.includes("session")),
+);
+
+/* ── `session_read_log` 的三种模式（2026-09-24 加）─────────────────────── */
+/**
+ * 直接调真 handler。
+ *
+ * ⚠️ **不能用 `host.callTool`**：公网那张表**故意没有**这两个工具（上面刚断言过）。
+ * 这里验的是工具本身的行为，所以从桌面那条路的表里取 handler 直调 —— 与
+ * `mcode-admin-smoke` 验工作流工具的姿势一致。
+ */
+async function workflowHandler(name: string, args: Record<string, unknown>): Promise<string> {
+  const spec = workflowMcpTools().find((s) => s.name === name);
+  if (!spec) throw new Error(`工具表里没有 ${name}`);
+  const res = await spec.handler(args, { sessionId: "s_probe" } as never);
+  const textBlock = (res as { content?: Array<{ type: string; text?: string }> }).content?.find(
+    (b) => b.type === "text",
+  );
+  return textBlock?.text ?? "";
+}
+
+__seedSessionLogs({
+  sessions: [
+    { id: "s_other", title: "被引用的那条", projectId: "p1", archived: false, updatedAt: 1 },
+  ],
+  messages: {
+    s_other: [
+      // 思考块 —— 用户要求「规避思考过程」，**绝不能**出现在输出里。
+      // ⚠️ 用**真库的形状**（渲染端 Block 用 `kind`，`toRecords` 原样落库）——
+      // 从前夹具灌的是引擎侧的 `type` 形状，而真库只有 `kind`，于是断言绿着、
+      // 工具对着真会话全是"(这条没有文本内容)"。
+      { role: "assistant", content: [{ kind: "thinking", text: "内部推理SECRET_MARKER" }] },
+      { role: "user", content: [{ kind: "text", text: "用户问的问题" }] },
+      { role: "assistant", content: [{ kind: "text", text: "助手的最终结论" }] },
+    ],
+  },
+});
+const logSummary = await workflowHandler("session_read_log", { sessionId: "s_other" });
+const logUser = await workflowHandler("session_read_log", { sessionId: "s_other", mode: "user" });
+const logResult = await workflowHandler("session_read_log", { sessionId: "s_other", mode: "result" });
+check(
+  "`session_read_log` 默认(summary)给用户 + 助手正文",
+  logSummary.includes("用户问的问题") && logSummary.includes("助手的最终结论"),
+  logSummary,
+);
+check(
+  "⚠️ 思考过程不进输出(规避 thinking)",
+  !logSummary.includes("SECRET_MARKER") && !logUser.includes("SECRET_MARKER") && !logResult.includes("SECRET_MARKER"),
+  logSummary,
+);
+check(
+  "`mode: user` 只给用户说的",
+  logUser.includes("用户问的问题") && !logUser.includes("助手的最终结论"),
+  logUser,
+);
+check(
+  "`mode: result` 只给助手的回复",
+  logResult.includes("助手的最终结论") && !logResult.includes("用户问的问题"),
+  logResult,
+);
+
+/* ── `session_list`：列出对话，且**标清属于哪个项目**（用户明确要求）────── */
+__seedSessionLogs({
+  sessions: [
+    { id: "s_a", title: "甲项目里的对话", projectId: "p1", archived: false, updatedAt: 200 },
+    { id: "s_b", title: "乙项目里的对话", projectId: "p2", archived: false, updatedAt: 100 },
+  ],
+  projects: [
+    { id: "p1", name: "甲项目", path: "/proj/alpha", archived: false },
+    { id: "p2", name: "乙项目", path: "/proj/beta", archived: false },
+  ],
+});
+const listOut = await workflowHandler("session_list", {});
+check(
+  "`session_list` 列出两条对话及它们的 id",
+  listOut.includes("s_a") && listOut.includes("s_b"),
+  listOut,
+);
+check(
+  "…并且标清了**每个对话属于哪个项目**",
+  listOut.includes("甲项目") && listOut.includes("乙项目") &&
+    listOut.includes("/proj/alpha") && listOut.includes("/proj/beta"),
+  listOut,
+);
+const listFiltered = await workflowHandler("session_list", { query: "乙项目" });
+check(
+  "…`query` 能按项目名过滤",
+  listFiltered.includes("s_b") && !listFiltered.includes("s_a"),
+  listFiltered,
+);
+
+/* ── `session_list` 的三个假阴性都要堵上（2026-09-24 审查抓出来的）──────── */
+__seedSessionLogs({
+  sessions: [
+    // s_pinned 置顶 —— 真实现的 listByProject 活跃档会把它滤掉（`pinned_at IS NULL`），
+    // 工具必须用 listPinned 补回来，否则用户置顶的对话模型永远找不到。
+    { id: "s_pinned", title: "置顶的那条调研", projectId: "p1", archived: false, pinnedAt: 5, updatedAt: 300 },
+    // s_archivedproj 在**已归档项目**下 —— 项目层不能被归档过滤掉。
+    { id: "s_archivedproj", title: "归档项目里的对话", projectId: "p3", archived: false, updatedAt: 400 },
+    { id: "s_archived", title: "已归档的对话", projectId: "p1", archived: true, updatedAt: 50 },
+  ],
+  projects: [
+    { id: "p1", name: "甲项目", path: "/proj/alpha", archived: false },
+    { id: "p3", name: "旧项目", path: "/proj/old", archived: true },
+  ],
+});
+const listPinned = await workflowHandler("session_list", {});
+check(
+  "★ 置顶的对话也要列出来（活跃档要补回 listPinned）",
+  listPinned.includes("s_pinned"),
+  listPinned,
+);
+check(
+  "★ 已归档项目下的对话也列得出（项目层不按归档过滤）",
+  listPinned.includes("s_archivedproj"),
+  listPinned,
+);
+check(
+  "…默认档**不**列已归档的对话（archived 参数还在管会话层）",
+  !listPinned.includes("id s_archived —"),
+  listPinned,
+);
+const listArchived = await workflowHandler("session_list", { archived: true });
+check(
+  "…archived:true 连归档会话一起列",
+  listArchived.includes("id s_archived —"),
+  listArchived,
+);
+// 本地时间：UTC 的话 GMT+8 的"今天早上"会画成"昨天"。桩里 updatedAt 是毫秒数，
+// 这里只验输出**不带** UTC 尾巴的特征（toISOString 的 T 前日期 + Z）。更直接的
+// 判据：本地时间与 UTC 时间在非零时区必然不同天 —— 取一个夹在两天边界的值。
+{
+  __seedSessionLogs({
+    sessions: [
+      // 2026-09-24T20:30:00Z = GMT+8 的 2026-09-25 04:30。UTC 渲染会说 09-24，本地说 09-25。
+      { id: "s_tz", title: "时区探针", projectId: "p1", archived: false, updatedAt: Date.UTC(2026, 8, 24, 20, 30) },
+    ],
+    projects: [{ id: "p1", name: "甲项目", path: "/proj/alpha", archived: false }],
+  });
+  const listTz = await workflowHandler("session_list", {});
+  const utcDay = new Date(Date.UTC(2026, 8, 24, 20, 30)).toISOString().slice(0, 10);
+  const localDay = new Date(Date.UTC(2026, 8, 24, 20, 30)).toLocaleDateString("sv-SE");
+  if (utcDay === localDay) {
+    console.log("  skip 时区断言（这台机器就是 UTC，测不出差别）");
+  } else {
+    check(
+      "★ 最后活动时间是**本地**时间（不是 UTC 的昨天）",
+      listTz.includes(localDay) && !listTz.includes(utcDay),
+      { utcDay, localDay, listTz },
+    );
+  }
+}
 
 /* ── 写工具:弹卡,按用户的回答办事 ── */
 __handlerCalls.length = 0;

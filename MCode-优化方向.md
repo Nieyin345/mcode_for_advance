@@ -1317,6 +1317,180 @@ append 的是：身份、文件架构、Windows 路径提示、计划模式提�
 
 ---
 
+### 3.13 引用统一 + 引用类型落进提示词（2026-09-24）
+
+**用户的原话**（拆成四件事）：
+1. 「引用也统一」—— 现在多条引用路行为不一致；
+2. 「在底层写好不同类型的引用是引用的什么，如果是文件里面的内容，提示词也顺便说清楚文件在哪里」；
+3. 「历史对话是当前对话的历史记录，直接鼠标框选引用；**其他对话的引用就是用这个工具**
+   （`session_read_log`），**不要直接把其他对话的全部内容直接插入进去，让模型自己查**」；
+4. 「这个工具要做的完善，可以查询结果，**规避思考过程**，查询用户的输入……**模式也是让模型自己选的**」；
+5. 「打开的文件的引用，中间页面的打开、**还是右边栏的预览**，都能够框选」；
+6. 「这个列会话列表显示出来要把**每个会话出自哪个项目**也要列清楚」。
+
+#### ⚠️ 先纠正一个前提：上游「原版」没有引用功能
+
+用户先说「看一下原版的引用怎么做，尽量统一」。**核过了：`origin/master` 里没有引用。**
+
+| | 上游 | 本 fork |
+|---|---|---|
+| `SelectionToolbar` 按钮 | 复制 / 加书签 / 发送到子会话（3 个） | + **引用到上下文**（4 个） |
+| `SelectionQuoteMenu` | **不存在** | 有 |
+| `contentTag` 的 kind | `paste` / `file` / `element` | + `library` / `template` / **`quote`** |
+| i18n 里 `quote` 相关 | **0 条** | 有 |
+
+引用这套是这个 fork 自己做的（`4c31047` / `8c9773e` / `ddae1cf`，2026-09-21），
+所以**没有对照物可抄** —— 只能按 fork 内部统一。用户已确认走这条。
+
+#### 根因：两条通路为什么表现不一样
+
+| 通路 | 机制 | 目标输入框当场可见？ |
+|---|---|---|
+| 「发送到子会话」 | 一次性 seed 通道 `sideChatSeedBySession`，ChatPane **订阅**它 | ✅ |
+| 三条「引用到上下文」 | 直接 `saveComposerDraft`；而草稿还原 effect **只依赖 `sessionId`** | ❌ |
+
+目标会话**开着**时（右栏展开的那条、你正看的主对话）`sessionId` 没变 → effect 不重跑
+→ 输入框**什么都不显示**，切走再切回来才看得见。这正是 `ChatPane.tsx` 那段注释自己
+承认的「有一种情况这里办不到」。
+
+#### 做的
+
+1. **`contentTag.ts`**：加 `ContentTagKind: "quote"` + `QuoteOrigin`（三种来源：
+   当前对话历史 / 文件 / 别的对话）+ `makeQuoteTag`。引用块自带抬头
+   `--- 用户的引用（类型）--- / 来源: …` —— 用户原话「告诉模型这是引用的内容，
+   **是用户的引用，不是用户的输入**」。文件那条**带绝对路径**；别的对话那条
+   **只给标题 + id、不给正文**。
+2. **统一通路**：`sessionStore` 加 `composerTagSeedBySession` + `seedComposerTag` /
+   `drainComposerTagSeed`（照抄 `sideChatSeed` 的形状）；ChatPane 加订阅 effect；
+   **三处引用落点改成「先 seed、再写 draft 兜底」**（开着就当场见、没开也丢不了）。
+   `handleQuotePick` 里那个"当前会话特例"**去掉了** —— 四条路现在一模一样。
+3. **引用类型落进已发送的消息**：`composeSendAttachments` 产出
+   `attachmentKind: "quote"` —— `SendAttachment` 里**早就预留了这个值**
+   （`ChatPane.tsx:1090`），只是从没产出过。`AttachmentCard` 的 quote 分支也早就写好了。
+   两处还原路径（`handleEditSubmit` / `handleEditQueuedPrompt`）一并补上，
+   否则重新编辑会把 quote 退化成 paste。
+   存量数据里没有 `"quote"`，老消息**零迁移**。
+4. **`session_read_log` 完善**：`messageTextOf` **不再取 `thinking`**（用户要求
+   「规避思考过程」）；加 `mode` 参数三档（`summary` / `user` / `result`），模型自选。
+   角色筛选**先于**截断 —— 反过来的话"只看用户"很可能一条都剩不下。
+5. **新增 `session_list`**：列 id + 标题 + **所属项目名与路径** + 最后活动时间，
+   按项目分组渲染；支持 `query` 过滤。用户要求「每个会话出自哪个项目也要列清楚」。
+6. **右栏预览可框选引用**：`FilePreview`（右栏那条，与中间栏的 `FileViewer` 是**两个**
+   组件）此前**没挂 `SelectionToolbar`** —— 框选毫无反应。照 `FileViewer` 补上。
+7. **左栏加「引用到当前对话」**：与既有「复制会话 id」并列，**不读正文**，
+   只落一个 `otherSession` 引用标签，让模型自己用 `session_read_log` 查。
+
+#### ⚠️ 顺带堵上一个真实的隐私口子
+
+`session_read_log` 住在 `workflowMcpTools()`，而**公网那条路挂的正是这张表**，
+且公网会话是 `bypassPermissions`（免审批）。原来只靠"模型拿不到 id"挡着 ——
+**`session_list` 一加就把这道天然闸门拆了**：拿到公网链接的人能枚举并读光所有对话。
+
+所以：**两条工具都从公网那张表摘掉**（`workflowMcpTools({ includeSessionLogs: false })`，
+见 `SESSION_LOG_TOOLS`）。用户明确选了「公网不给」。桌面本机那条路照旧带着它们。
+`mcodeServer` 里那条注释当初就预警过这件事，现在补上了它说的"重新想"。
+
+#### 验证
+
+- 双包 typecheck ✅
+- **新增 `content-tag-smoke`**（引用形状此前**零覆盖**）：20 条断言 —— 抬头、来源、
+  文件路径、**别的对话不带正文**、拼进提示词**不再包一层 pasted content**、
+  paste / file 的旧行为没被带偏。
+- `mcp-endpoint-smoke` 加了 13 条：三档模式各一条、**`thinking` 不进输出**、
+  `session_list` 标清项目、`query` 过滤、**公网工具体里没有那两条**、桌面那条仍有。
+- **`mcode-admin-smoke` 的工具清单也动了**（工具从 10 个变 11 个）—— 它的两条
+  「工具就是这十个」「没有漏归类的工具」当场就红了，**这正是那两条断言存在的意义**。
+  顺手给 `session_list` 补了「读但要审批」这一档（它既不是只读放行、也不是写工具）。
+- **变异验证三处**（撤掉修复看它真红，再逐字节还原）：`thinking` 过滤、
+  公网摘除、别的对话不带正文 —— 全部抓住。
+- **真浏览器核对**（headless Edge，`.tmp/quote-chip-preview/`）：引用 chip 的
+  引号图标、展示名是来源而非正文、悬停 title 给出实际提示词内容。
+  **这一趟抓出一个真 bug**：`ContentTagChip` 对 quote 走的是"显示 查看内容/隐藏内容"
+  那种泛泛的 title，而不是像 file / library 那样把**实际会发出去的内容**亮出来 ——
+  已修。
+- 全量 smoke **93 套全过**（82 套旧 + 新增的 `content-tag-smoke`，数字以实际为准）。
+
+#### 没验的（诚实标出）
+
+- **端到端那条**（引用 → 目标对话当场出现 chip）要起 dev 才看得见，本轮**没起**。
+  单测覆盖了 tag 形状与公网边界，但"seed 订阅真的让 chip 当场出现"只由代码逻辑保证。
+- 右栏 `FilePreview` 的框选**没在真浏览器里点过**（`FileViewer` / `FileEditor` 那两处
+  是同构代码，但同构不等于验过）。
+- `MessageBlocks` 里已发送消息的 quote 卡片**没在真浏览器里看过**。
+
+### 3.14 引用轮的代码审查 + 十处修复（2026-09-24，同日第二轮）
+
+对 3.13 的全部改动（1852 行 diff）跑了高强度代码审查（5 个独立视角 + 逐行核对），
+报了 10 条，用户拍板修 1–9（第 10 条 `workflowMcpTools` 的默认值方向**保持现状**，
+留作以后的设计决策）。
+
+#### 修的真 bug
+
+1. **`session_read_log` 读错字段（最重）**：`messageTextOf` 只认引擎侧的 `type`，
+   而真库落的是渲染端 `Block` 的 `kind`（`toRecords` 原样落库）—— 工具对真会话
+   会全部返回"(这条没有文本内容)"。**smoke 夹具灌的是假形状，所以一直绿着** ——
+   正是"测试绿着问题还在"那类。修成两种形状都收，夹具改用真 `kind` 形状。
+2. **`session_list` 两个假阴性**：真实现的 `listByProject` 活跃档会滤掉置顶
+   （`pinned_at IS NULL`），工具没有"置顶区"要补回 `listPinned`；归档项目被
+   项目层硬过滤，其下的对话连 `archived:true` 也列不出 —— 项目层不再按归档过滤。
+3. **`session_list` 时间戳是 UTC**：GMT+8 的"5 分钟前"会画成"昨天"，误导新旧判断。
+   改 `toLocaleString("sv-SE")` 本地时间。
+4. **跨会话引用来源张冠李戴**：`handleQuotePick` 拿 `target.title`（收件方）当
+   来源 —— 在对话 A 选一段引到节点 N，提示词说"来源: 对话「N」"。改用选字侧的
+   `sessionDisplayTitle`。
+5. **子文件引用的来源路径指向条目根**（FilePreview + FileViewer 两处）：
+   `entryPath` 不带 relPath。拼 `joinPath(root, relPath)`。FilePreview 还会把
+   **相对库根**的 `item.filePath`（contracts 里写明）当绝对路径兜底 —— 改成
+   拿不到就退条目标题，不给伪路径。
+6. **图节点「跟主对话说」仍是老 bug**：只写草稿不 seed，主对话开着时看不见 ——
+   3.13 要杀的那个 bug 换个入口还活着（`BoardNodeCard.talkToParent`）。
+7. **引用自己静默无反应**：左栏右键正在打开的对话选「引用到当前对话」，裸 return。
+   加 `layout.quoteSessionSelf` toast（zh/en）。
+8. **otherSession 引用点名不存在的工具**：网页模型引擎（扩展桥）的工具表里没有
+   `session_read_log`，点名会诱导幻觉调用。改成条件式表述（"有按 id 读对话的
+   工具就用，没有请用户贴"），smoke 断言**不含**工具名。
+9. **模型面向抬头统一**：同文件 `makeElementTag` 当初特意把中文「来源:」改成
+   英文 `source:`（注释写明"一个块里两套语法"的理由），3.13 又混了回去。
+   统一为 `--- user's quote (…) ---` + `source:`。
+
+#### 根因修复（取代 3.13 的 seed 通道）
+
+**删除了 `composerTagSeedBySession` 整条通道**，换成两层：
+
+- `deliverComposerDraft`（外部投递）= 写草稿 + **递增 touch 计数**
+  （`composerDraftTouchBySession`）；`saveComposerDraft` 保留给 ChatPane 的
+  write-through（自己写的不触发重还原）。
+- 挂载中的 ChatPane **订阅 touch**，变了当场重跑草稿还原（还原 effect 依赖从
+  `[sessionId]` 变 `[sessionId, composerDraftTouch]`）—— "目标会话开着时写草稿
+  看不见"这个**根因**终于修掉，而不是靠每个调用点记得双写。
+- 新增 `quoteIntoComposer(sessionId, tag)` 作为**所有**引用入口的唯一落点
+  （硬规矩 2）—— 3.13 那 5 份逐字复制的投递序列收敛成一份。
+- `sessionStore-smoke` 补 [19] 节验 touch 通路（save 不递增 / deliver 递增 /
+  quote 走 deliver / 空会话可落）。
+
+#### 验证
+
+- 双包 typecheck ✅
+- `content-tag-smoke` 22/22（抬头改英文后断言同步更新，新增"不点名工具名"断言）
+- `mcp-endpoint-smoke` 499/499（新增置顶补回、归档项目、本地时间、`kind` 形状 4 组断言；
+  顺手抓出断言自身的子串撞车 `s_archived` ⊂ `s_archivedproj`，改为 `id s_archived —`）
+- `session-store-smoke` 128/128
+- **变异验证 3 组全红**：touch 递增撤掉 → 红；quote 退成普通 save → 红；
+  `kind` 支持撤掉 → 3 条红（失败输出正是真 bug 症状）。全部逐字节还原。
+- **最终全量 93 套 0 失败**（冻结代码后跑）。
+- 审查侧还抓出 smoke 桩的一个坑：桩的 `listByProject` 原本**不滤置顶**，导致
+  "补回置顶"的逻辑把置顶会话列两遍 —— 断言当场红了，桩已对齐真实现口径。
+  这是"断言测行为"救场的又一例。
+
+#### 明确没做（用户知情）
+
+- `workflowMcpTools()` 默认**带上**会话工具（不安全侧），公网安全靠 `webToolHost`
+  显式传参。更深的做法是给 `McpToolSpec` 标 sensitivity 字段让默认安全 —— 用户
+  拍板暂不动（现有的无参调用点 `ipc/context.ts` 只做 token 估算，无害）。
+- 端到端 UI 交互（chip 当场出现 / 右栏框选 / 图节点跟主对话说）仍需起 dev 实测。
+
+---
+
 ## 六、我这次没验的
 
 诚实标出来，别当成结论：

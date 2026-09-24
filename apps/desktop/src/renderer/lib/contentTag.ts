@@ -70,8 +70,9 @@ export const TAG_THRESHOLD_LINES = 3;
  *  (selector + outerHTML inlined so the model can see it), "library" for a
  *  文献库 (path reference to its generated manifest - same mechanism as
  *  "file", see makeLibraryTag), "template" for a 模版库条目 (same mechanism
- *  again - see makeTemplateTag). */
-export type ContentTagKind = "paste" | "file" | "element" | "library" | "template";
+ *  again - see makeTemplateTag), "quote" for a passage the user selected and
+ *  quoted in (carries its own origin header - see makeQuoteTag). */
+export type ContentTagKind = "paste" | "file" | "element" | "library" | "template" | "quote";
 
 /** One content tag. `id` is the React key + removal handle. `content` is the
  *  full pasted text (for paste) or the `@path` reference string (for file /
@@ -137,6 +138,90 @@ export function makeContentTag(text: string): ContentTag {
     kind: "paste",
     preview,
     content: trimmed,
+  };
+}
+
+/**
+ * 一段引用**是从哪来的** —— 决定提示词里那句"这是从哪儿摘的"。
+ *
+ * 三种来源对应界面上的三个出发地（见 `SelectionQuoteMenu` 的目标列表）：
+ * 对话里选中的一段、文件里选中的一段、以及"整条别的对话"（那一条不摘正文，
+ * 只给标题 + id，让模型自己去 `session_read_log` 读）。
+ */
+export type QuoteOrigin =
+  /** 当前对话的历史消息里选的一段。 */
+  | { kind: "chat"; sessionTitle: string }
+  /** 某个文件里选的一段。`filePath` 是绝对路径 —— 用户明确要求"说清楚文件在哪"。 */
+  | { kind: "file"; filePath: string; name: string }
+  /** **别的对话**（整条引用）。不给正文，只给标题 + id —— 用户明确要求
+   *  "不要把其他对话的全部内容直接插入进去，让模型自己查"。 */
+  | { kind: "otherSession"; sessionTitle: string; sessionId: string };
+
+/** 每种来源在引用块抬头上的说法。刻意短 —— 用户要求"很简短的解释"。
+ *
+ * **模型面向的文本不翻译**（同 `makeElementTag` 那条注释的规矩：整个提示词里的
+ * 分隔符语法必须是一套 —— 那边特意把中文「来源:」改成了英文 `source:`，这里
+ * 照做，别再混出第二种语法）。 */
+const QUOTE_ORIGIN_LABEL: Record<QuoteOrigin["kind"], string> = {
+  chat: "current conversation history",
+  file: "a passage from a file",
+  otherSession: "another conversation",
+};
+
+/**
+ * 把用户引用的一段内容做成 tag。
+ *
+ * ⚠️ **这个块的抬头是必须的**，不是装饰。用户的原话：「提示词的话就是告诉模型这是
+ * 引用的内容，是**用户的引用，不是用户的输入**……还有就是说这个引用是什么类型的……
+ * 让模型知道这个引用是哪里过来的，哪个文件过来的，不用写很长」。
+ *
+ * 没有抬头时，引用的正文和用户自己打的字在模型眼里**长得一模一样** —— 它分不清
+ * "这是用户说的话"还是"用户从某处摘来的材料"，而这两件事该怎么对待完全不同。
+ *
+ * 形态与 {@link makeElementTag} 的 `--- page element (...) ---` 一致：正文原文
+ * **不压缩**（用户摘了一段就是要那段原文），只在外面套一层来源。
+ *
+ * `otherSession`（整条别的对话）**只给标题 + id、不给正文** —— 见 {@link QuoteOrigin}。
+ * 那条的说明也**不点名工具名**：目的地引擎的工具表不归这里管（网页模型那条路的表里
+ * 就没有 session_read_log —— 见 `webToolHost`），点名一个不存在的工具只会让模型
+ * 幻觉调用。只说"若你有按 id 读对话记录的工具就用它"，没有就请用户贴。
+ */
+export function makeQuoteTag(params: { text: string; origin: QuoteOrigin }): ContentTag {
+  const { origin } = params;
+  const body = params.text.trim();
+  const head = `--- user's quote (${QUOTE_ORIGIN_LABEL[origin.kind]}) ---`;
+  let sourceLine: string;
+  if (origin.kind === "file") {
+    // 文件：带上绝对路径 —— 用户明确要求"说清楚文件在哪里"。
+    sourceLine = `source: ${origin.filePath}`;
+  } else if (origin.kind === "otherSession") {
+    // 别的对话：给 id，模型手边有读对话记录的工具时才能用上。
+    sourceLine = `source: conversation "${origin.sessionTitle}" (id ${origin.sessionId})`;
+    return {
+      id: cryptoRandomId(),
+      kind: "quote",
+      preview: `${origin.sessionTitle} (${QUOTE_ORIGIN_LABEL.otherSession})`,
+      content: [
+        head,
+        sourceLine,
+        "(Only the title and id are given here — if you have a tool that reads",
+        "conversation logs by id, use it (it may support summary/user/result modes);",
+        "otherwise ask the user to paste the relevant part.)",
+        "--- end ---",
+      ].join("\n"),
+    };
+  } else {
+    sourceLine = `source: conversation "${origin.sessionTitle}"`;
+  }
+  // 展示名：文件用文件名，对话用标题；太长就按 chip 的规矩截。
+  const name = origin.kind === "file" ? origin.name : origin.sessionTitle;
+  const preview =
+    name.length > TAG_PREVIEW_CHARS ? name.slice(0, TAG_PREVIEW_CHARS) + "…" : name;
+  return {
+    id: cryptoRandomId(),
+    kind: "quote",
+    preview,
+    content: `${head}\n${sourceLine}\n${body}\n--- end ---`,
   };
 }
 
@@ -340,6 +425,8 @@ function cryptoRandomId(): string {
  *  - Element tags become delimited blocks too, but labeled as page elements
  *    (the content is already pre-formatted by makeElementTag - we emit it
  *    verbatim so the selector + URL + outerHTML stay together).
+ *  - Quote tags likewise emit their pre-formatted block verbatim: it already
+ *    carries the "user's quote (…) + source" header from makeQuoteTag.
  *  - File tags become bare `@path` reference lines (one per line) - the
  *    agent reads the file itself via its tools, so no content is inlined. */
 export function composePromptWithTags(
@@ -361,6 +448,11 @@ export function composePromptWithTags(
       parts.push(tag.content);
     } else if (tag.kind === "element") {
       // Element content is already a fully-formatted delimited block.
+      parts.push(tag.content);
+    } else if (tag.kind === "quote") {
+      // 引用同理 —— `content` 已经自带「user's quote（…）+ source」那段抬头，
+      // 原样发出即可（见 makeQuoteTag）。**不要再包一层 pasted content**：
+      // 那会让模型以为这是用户粘贴的正文，而它其实是用户从别处摘来的一段。
       parts.push(tag.content);
     } else {
       pasteIdx += 1;

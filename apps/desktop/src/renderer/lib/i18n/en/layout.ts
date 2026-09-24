@@ -48,6 +48,9 @@ export const en = {
    *  model can then read this session's log by id. */
   "layout.copySessionId": "Copy session id",
   "layout.copiedSessionId": "Session id copied",
+  "layout.quoteSession": "Quote into current chat",
+  "layout.quoteSessionNoTarget": "Open a chat first, then quote",
+  "layout.quoteSessionSelf": "That is the chat you have open",
   "layout.forkSession": "Duplicate conversation",
   "layout.forkSessionTitle": "{title} (copy)",
   "layout.openInFileManager": "Open in file manager",

@@ -39,6 +39,7 @@ import {
   appendTemplateTagByKey,
   composePromptWithTags,
   makeContentTag,
+  makeQuoteTag,
   makeFileTag,
   makeElementTag,
   shouldPromoteToTag,
@@ -1104,7 +1105,15 @@ function composeSendAttachments(tags: ReadonlyArray<ContentTag>): SendAttachment
     preview: t.preview,
     content: t.content,
     attachmentKind:
-      t.kind === "file" || t.kind === "library" || t.kind === "template" ? "file" : "paste",
+      t.kind === "file" || t.kind === "library" || t.kind === "template"
+        ? "file"
+        : // 引用单成一类（2026-09-24）。`SendAttachment` 里早就预留了 "quote"，
+          // 但从来没产出过 —— 于是引用在已发送的消息里长得和"粘贴内容"一样，
+          // 用户看不出哪块是自己摘来的、哪块是自己打的。`AttachmentCard` 那边的
+          // 分支也写好了，这里接上即可。
+          t.kind === "quote"
+          ? "quote"
+          : "paste",
     filePath: t.filePath,
   }));
 }
@@ -1492,6 +1501,8 @@ function ChatPaneForSession({
   const clearPendingBookmarkJump = useSessionStore((s) => s.clearPendingBookmarkJump);
   const sideChatSeed = useSessionStore((s) => s.sideChatSeedBySession[sessionId]);
   const drainSideChatSeed = useSessionStore((s) => s.drainSideChatSeed);
+  // 外部投递草稿的 touch 计数 —— 变了就当场重跑草稿还原（见下方还原 effect）。
+  const composerDraftTouch = useSessionStore((s) => s.composerDraftTouchBySession[sessionId]);
   // Floating [copy | add bookmark] toolbar anchored to the current text
   // selection inside the message stream. Local UI state is fine here: the
   // document holds exactly ONE selection and only the frontmost pane can
@@ -1995,14 +2006,9 @@ function ChatPaneForSession({
    * 「跟主对话说」逐字同一个做法(见 `WorkflowBoardPanel.talkToParent`,那里的注释
    * 讲清了为什么:"我先看看再发"才是更稳的那一步)。
    *
-   * ⚠️ 有一种情况这里**办不到**,所以宁可如实说一句、也不假装成功:目标会话的
-   * `ChatPane` 已经挂着的时候,它的草稿还原 effect 只在 `sessionId` 变化时跑 —
-   * 草稿写进去了,那个输入框不会当场变。
-   *
-   * 当前会话是例外,而且是可以办到的那一半:这块面板自己就带着那个编辑器的句柄
-   * (`editorRef`),直接插到光标处,所见即所得。所以两条路分开写 —— 能当场做到的
-   * 就当场做,做不到的至少把话说清楚(与 bookmark 那条「加书签」不同,那条无论
-   * 目标是谁都只存一份数据,不存在"看不见"的问题)。
+   * 落点走 store 的 {@link quoteIntoComposer}（共享实现只有一份，硬规矩 2）——
+   * 它内部带 touch 计数，目标会话开着时那个输入框会当场重跑草稿还原、
+   * 没开的下次挂载见。见 `deliverComposerDraft` 的说明。
    */
   const handleQuotePick = useCallback(
     (target: QuoteTarget, text: string) => {
@@ -2017,29 +2023,25 @@ function ChatPaneForSession({
       // 于是引用的东西长得跟用户自己打的字一模一样 —— 看不出"这是我从文件里挑来的"，
       // 也没法单独摘掉。
       //
-      // `makeContentTag` 造的正是那种 chip：`kind: "paste"`，走主题色
-      // （`bg-accent/10 text-accent`，那个绿的），点开能看全文、点 × 能单独删。
-      // 和拖进来的文件、粘进来的大段内容是**同一种东西** —— 所以它跟"引用文件"
-      // 长得一样，正是用户要的。
+      // ⚠️ **用 `makeQuoteTag`（2026-09-24）**：正文外面套一层
+      // 「user's quote（…）+ source」。用户的原话是「告诉模型这是引用的内容，是用户的
+      // 引用，**不是用户的输入**」—— 没有这层抬头，引用的正文和用户自己打的字在
+      // 模型眼里一模一样，它分不清该不该当成"用户说的话"。
       //
-      // ⚠️ `FileViewer` 那条路（从文件预览里选中段落）早就这么改了；**这一条漏了**
-      // ——`ddae1cf` 的提交说明里写了"改成落一个绿色标签"，但它只动了
-      // `SelectionQuoteMenu.tsx` 和 `FileViewer.tsx`，没动这里，所以聊天里选段引用
-      // 仍然是拼纯文本。这次补齐。
+      // ⚠️ **来源写选字所在的这条会话（`sessionDisplayTitle`），不是收件方**。
+      // 从前这里拿 `target.title` —— 用户在对话 A 选一段引到节点 N，提示词里
+      // 「来源」说的却是 N。抬头本来就是要告诉模型"这段从哪儿来的"。
+      const tag = makeQuoteTag({
+        text: quoted,
+        origin: { kind: "chat", sessionTitle: sessionDisplayTitle },
+      });
+      useSessionStore.getState().quoteIntoComposer(target.id, tag);
+      // 当前会话：touch 会让还原 effect 当场落进 chips ——
+      // 但仍要 focus 一下编辑器，用户接着就能打字。
       if (target.id === sessionId) {
-        // 落进**这一场的**草稿 tag —— 与 `handlePromotePaste` 同一个落点。
-        // 不再 `insertText`：那样引用会混进用户打的字里，分不出来。
-        setTags((prev) => [...prev, makeContentTag(quoted)]);
         editorRef.current?.focus();
         return;
       }
-      // 别的会话:落它的草稿。
-      const prev = useSessionStore.getState().composerDraftBySession[target.id];
-      useSessionStore.getState().saveComposerDraft(target.id, {
-        text: prev?.text ?? "",
-        html: prev?.html ?? "",
-        tags: [...(prev?.tags ?? []), makeContentTag(quoted)],
-      });
       useToastStore.getState().push({
         kind: "info",
         title: t("chatStream.quote.doneToast", { name: target.title }),
@@ -2047,7 +2049,7 @@ function ChatPaneForSession({
         sessionId: target.id,
       });
     },
-    [sessionId, t],
+    [sessionId, sessionDisplayTitle, t],
   );
 
   // Side-chat seed: text sent from a main-session selection. ChatPane mounts
@@ -2252,6 +2254,11 @@ function ChatPaneForSession({
   // Restore runs BEFORE the write-through below (declaration order matters):
   // the write-through's first run sees the stale empty `value` and would
   // otherwise clear a pre-existing draft before restore reads it.
+  //
+  // `composerDraftTouch`（2026-09-24 修根因）：外部投递（引用、「跟主对话说」…）
+  // 会递增它 —— 本面板**开着**时收到投递，依赖变化让这条 effect 立刻重跑，
+  // 草稿当场还原进编辑器。从前只依赖 `sessionId`，外部在会话开着时写草稿
+  // 是看不见的（要切走再切回来）。
   useEffect(() => {
     const draft = useSessionStore.getState().composerDraftBySession[sessionId];
     // Guard: skip empty drafts so a never-typed thread isn't clobbered.
@@ -2259,7 +2266,7 @@ function ChatPaneForSession({
     if (draft.html) editorRef.current?.setHTML(draft.html);
     setValue(draft.text);
     if (draft.tags.length > 0) setTags(draft.tags);
-  }, [sessionId]);
+  }, [sessionId, composerDraftTouch]);
 
   // Write the composer through to the per-session draft on every change, so
   // an unmount at any later point has the freshest state. An emptied composer
@@ -3034,7 +3041,14 @@ function ChatPaneForSession({
     if (item.attachments && item.attachments.length > 0) {
       const restored: ContentTag[] = item.attachments.map((a, i) => ({
         id: `reedit-${item.id}-${i}`,
-        kind: a.attachmentKind === "file" ? "file" : "paste",
+        // 三种都还原（同 `handleEditSubmit` 那段：quote 归成 paste 会多包一层
+        // `--- pasted content ---`，把来源抬头埋进正文）。
+        kind:
+          a.attachmentKind === "file"
+            ? "file"
+            : a.attachmentKind === "quote"
+              ? "quote"
+              : "paste",
         preview: a.preview,
         content: a.content,
         filePath: a.filePath,
@@ -3136,10 +3150,15 @@ function ChatPaneForSession({
       const ab = b as Extract<Block, { kind: "attachment" }>;
       return {
         id: `edit-tag-${i}`,
-        // "quote" (side-chat reference) re-inlines as a paste block — only
-        // the composer's ContentTag has no quote kind; the persisted record
-        // keeps it for display.
-        kind: ab.attachmentKind === "file" ? "file" : "paste",
+        // 三种 kind 都要还原（2026-09-24）：`quote` 的 `content` 自带「user's quote
+        // （…）+ 来源」抬头，重新拼进提示词时走 quote 那一支原样输出；若归成 paste
+        // 会被再包一层 `--- pasted content ---`，来源那几行就埋进正文里了。
+        kind:
+          ab.attachmentKind === "file"
+            ? "file"
+            : ab.attachmentKind === "quote"
+              ? "quote"
+              : "paste",
         preview: ab.preview,
         content: ab.content,
         filePath: ab.filePath,
@@ -3149,7 +3168,12 @@ function ChatPaneForSession({
     const attachments = tags.map((t) => ({
       preview: t.preview,
       content: t.content,
-      attachmentKind: t.kind === "file" ? ("file" as const) : ("paste" as const),
+      attachmentKind:
+        t.kind === "file"
+          ? ("file" as const)
+          : t.kind === "quote"
+            ? ("quote" as const)
+            : ("paste" as const),
       filePath: t.filePath,
     }));
     // Preserve the original message's skill pills (if any) so the edited

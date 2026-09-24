@@ -86,7 +86,8 @@ import {
   saveAgentProfile,
 } from "@main/orchestration/agentProfiles.js";
 import { getWorkflow, listWorkflows, removeWorkflow, saveWorkflow } from "@main/orchestration/library.js";
-import { MessageRepo, SessionRepo } from "@main/store/repositories.js";
+import { MessageRepo, ProjectRepo, SessionRepo } from "@main/store/repositories.js";
+import type { Session } from "@contracts/session";
 import { NODE_AGENT_TYPE_ID, loadNodeTypes, localNodeTypesDir } from "@main/orchestration/nodeTypes.js";
 import { notifyWorkflowsChanged } from "@main/orchestration/broadcast.js";
 import { requestWorkflowReload } from "@main/orchestration/reloadRequest.js";
@@ -109,10 +110,16 @@ export const WORKFLOW_MCP_PREFIX = `mcp__${WORKFLOW_MCP_SERVER}__`;
  * "用户自己配的东西"(工作流、类型、档案),而它读的是**用户的对话记录**。放行它 =
  * 模型可以不经批准翻看某条对话。
  *
- * 之所以仍然放行:它**只能按 id 读**,而 id 只能从用户手里拿到(界面上「复制对话 id」
- * 那一项),模型自己猜不出、也列不出"有哪些对话"(`session.listNodes` 那条 IPC 不在
- * 工具面上)。也就是说**用户给 id 这个动作本身就是授权** —— 再弹一次批准没有新信息。
- * 将来若给它加了"列全部对话"的能力,这条归类就得重新想。
+ * 之所以仍然放行:它**只能按 id 读**,而 id 原本只能从用户手里拿到(界面上「复制对话
+ * id」那一项),模型自己猜不出、也列不出有哪些对话。也就是说**用户给 id 这个动作本身
+ * 就是授权** —— 再弹一次批准没有新信息。
+ *
+ * ⚠️ **2026-09-24:这个前提被 `session_list` 打破了**（那条注释当初就预警过
+ * 「将来若给它加了"列全部对话"的能力,这条归类就得重新想」）。现在模型能自己列出
+ * 全部对话、再逐个读 —— 所以：
+ *   1. `session_list` **不放进这个集合**（它要用户点头）；
+ *   2. **两条都不进公网那张工具表**（见 `workflowMcpTools` 的 `includeSessionLogs`
+ *      参数与 `webToolHost` 的调用）—— 否则拿到公网链接的人可以枚举并读光所有对话。
  */
 export const WORKFLOW_READONLY_TOOLS = new Set([
   "workflow_list",
@@ -121,6 +128,15 @@ export const WORKFLOW_READONLY_TOOLS = new Set([
   "agent_profiles_list",
   "session_read_log",
 ]);
+
+/**
+ * 读用户对话记录那一组工具的名字。**公网那条路要把它们整组摘掉**（见
+ * `workflowMcpTools` 的 `includeSessionLogs`）。
+ *
+ * 单列一份是因为它要被两处用：工具表的过滤（这里）和 `webToolHost` 的调用。
+ * 硬规矩 2 —— 同一份清单不写两遍。
+ */
+export const SESSION_LOG_TOOLS = new Set(["session_read_log", "session_list"]);
 
 /* ── 输入 schema ──
  *
@@ -258,6 +274,13 @@ function str(v: unknown): string {
  * base64 图片 —— 全塞给模型既费 token 又没意义（他要的是"那条对话聊了什么"，
  * 不是重放一次工具调用）。所以只取**文本**，其余跳过。
  *
+ * ## `thinking` 为什么也跳过（2026-09-24）
+ *
+ * 从前这里连 `type: "thinking"` 一起取 —— 于是读一条对话会把模型的**内部思考过程**
+ * 整段倒出来。用户的明确要求：「**规避思考过程**」。思考不是"那条对话说了什么"，
+ * 它是过程不是内容；而且它往往比正文还长、还夹着没被采纳的中间推断，读多了只会
+ * 误导。所以现在**只认 `text`**。
+ *
  * ## 形状是开放的，一律防御着读
  *
  * 不同引擎的存法不完全一样（有的是数组、有的是 `{ content: [...] }` 包一层、
@@ -278,14 +301,21 @@ function messageTextOf(content: unknown): string {
       return;
     }
     if (!isObj(v)) return;
+    // ⚠️ **真库里的块用 `kind`，不用 `type`** —— 渲染端的 `Block` 联合类型
+    // 就是 `{ kind: "text", text }`（`toRecords` 原样落库）。这里曾经只认
+    // `type`，于是真会话读出来全是"(这条没有文本内容)"，而 smoke 夹具灌的是
+    // `type` 形状，绿着 —— 恰是"测试绿着问题还在"那类。两种形状都收：引擎
+    // 侧的归一化消息（SDK 的 content 数组）确实用 `type`。
+    const kind = typeof v["kind"] === "string" ? (v["kind"] as string) : "";
     const type = typeof v["type"] === "string" ? (v["type"] as string) : "";
-    // 只认文本那几类。tool_use / tool_result / image 一律跳过 —— 见上面那段。
-    if (type === "text" || type === "thinking") {
+    // **只认 `text`**。tool_use / tool_result / image 跳过（见上面那段）；
+    // `thinking` 也跳过 —— 用户要求规避思考过程（2026-09-24）。
+    if (kind === "text" || type === "text") {
       take(v["text"]);
       return;
     }
-    // 没有 type 但有 `content`（引擎包了一层）→ 往里看一眼。
-    if (type === "" && v["content"] !== undefined) take(v["content"]);
+    // 没有 kind/type 但有 `content`（引擎包了一层）→ 往里看一眼。
+    if (kind === "" && type === "" && v["content"] !== undefined) take(v["content"]);
   };
 
   take(content);
@@ -469,9 +499,15 @@ function shapeLine(doc: WorkflowDoc): string {
  * 抽出来的原因见 `./sdk.ts` 的 `McpToolSpec`:同一份表还要给网页端那条通路用
  * (浏览器里的扩展直接向主进程要工具,不经过 SDK)。所以这里返回声明,
  * {@link buildWorkflowMcpServer} 与 `main/mcp/webToolHost.ts` 各自 map 一次。
+ *
+ * @param includeSessionLogs 要不要带上 `session_read_log` / `session_list`
+ *   （见 {@link SESSION_LOG_TOOLS}）。**默认带上**（桌面本机那条路）；公网那条路
+ *   （`webToolHost`）传 `false` 把它们摘掉 —— 理由见 `webToolHost` 的调用点：
+ *   拿到公网链接的人能枚举并读光用户的全部对话，那是不可接受的。
  */
-export function workflowMcpTools(): McpToolSpec[] {
-  return [
+export function workflowMcpTools(opts?: { includeSessionLogs?: boolean }): McpToolSpec[] {
+  const includeSessionLogs = opts?.includeSessionLogs !== false;
+  const specs: McpToolSpec[] = [
     /* ─────────────── 读(自动放行)─────────────── */
     {
       name: "workflow_list",
@@ -497,26 +533,52 @@ export function workflowMcpTools(): McpToolSpec[] {
     {
       name: "session_read_log",
       description:
-        "按 **id 读另一条对话的记录**（用户会在别处把那条对话的 id 复制给你）。" +
+        "按 **id 读另一条对话的记录**（用户会在别处把那 id 给你，或者你先用 session_list 查）。" +
         "只在**用户明确让你去读某条对话**时用它 —— 平时不要自己去找 id、也不要拿它当" +
-        "\"翻一翻别人聊了什么\"的工具。返回按时间正序的消息，每条只有角色和正文，" +
-        "工具调用那类内部细节不进正文。",
+        "\"翻一翻别人聊了什么\"的工具。返回按时间正序的消息，每条只有角色和正文。" +
+        "**思考过程不进正文**（那是过程不是内容），工具调用那类内部细节也不进。" +
+        "用 `mode` 挑你要看哪一部分：默认 `summary`（用户 + 助手正文，最常用）；" +
+        "`user` 只看用户说了什么（想知道对方的需求/意图时用）；" +
+        "`result` 只看助手的回复（想知道结论/产出时用）。",
       inputSchema: {
-        sessionId: z.string().describe("要读的那条对话的 id（形如 sess_…）"),
+        sessionId: z.string().describe("要读的那条对话的 id（形如 sess_…，来自 session_list 或用户给的）"),
+        mode: z
+          .enum(["summary", "user", "result"])
+          .optional()
+          .describe(
+            "看哪一部分：summary = 用户 + 助手正文（默认，最常用）；" +
+              "user = 只列用户说的话（看需求/意图）；" +
+              "result = 只列助手的回复（看结论/产出）。",
+          ),
         limit: z.number().int().min(1).max(200).optional().describe("最多返回多少条，默认 50（取**最后**这些条）"),
       },
-      handler: async (args: { sessionId: string; limit?: number }) => {
+      handler: async (args: { sessionId: string; mode?: "summary" | "user" | "result"; limit?: number }) => {
         const session = SessionRepo.get(args.sessionId);
         if (!session) {
           return fail(`没有 id 为 \`${args.sessionId}\` 的对话 —— 确认一下 id 抄对了没有。`);
         }
+        const mode = args.mode ?? "summary";
         const all = MessageRepo.listBySession(args.sessionId).messages;
+        // 先按模式筛**角色**，再取末 N 条 —— 顺序要紧：先截断再筛的话，
+        // "只看用户"很可能一条都剩不下（最后 50 条可能全是助手在干活）。
+        const byRole =
+          mode === "user"
+            ? all.filter((m) => m.role === "user")
+            : mode === "result"
+              ? all.filter((m) => m.role === "assistant")
+              : all;
         const limit = args.limit ?? 50;
         // 取**最后** N 条：用户说"看看那条对话"时，他要的多半是最近的进展，
         // 而不是开场白。
-        const picked = all.length > limit ? all.slice(-limit) : all;
+        const picked = byRole.length > limit ? byRole.slice(-limit) : byRole;
+        const modeNote =
+          mode === "user" ? "（只看用户说的话）" : mode === "result" ? "（只看助手的回复）" : "";
         if (picked.length === 0) {
-          return text(`对话「${session.title}」还没有消息。`);
+          return text(
+            byRole.length === 0 && mode !== "summary"
+              ? `对话「${session.title}」里没有符合 \`mode: ${mode}\` 的消息。换成 summary 看一眼全部。`
+              : `对话「${session.title}」还没有消息。`,
+          );
         }
         const lines = picked.map((m) => {
           const body = messageTextOf(m.content);
@@ -524,9 +586,101 @@ export function workflowMcpTools(): McpToolSpec[] {
           return `### ${who}\n\n${body || "(这条没有文本内容)"}`;
         });
         const head =
-          `对话「${session.title}」（id ${session.id}）` +
-          (all.length > picked.length ? `，共 ${all.length} 条，下面是最后 ${picked.length} 条` : `，共 ${picked.length} 条`);
+          `对话「${session.title}」（id ${session.id}）${modeNote}` +
+          (byRole.length > picked.length
+            ? `，共 ${all.length} 条（其中 ${byRole.length} 条符合），下面是最后 ${picked.length} 条`
+            : `，共 ${all.length} 条，下面是全部 ${picked.length} 条`);
         return text(`${head}\n\n${lines.join("\n\n")}`);
+      },
+    },
+    {
+      name: "session_list",
+      description:
+        "列出这台机器上的**对话**（id + 标题 + 所属项目 + 最后活动时间，最近的在前面）。" +
+        "用来找到「要读哪条对话」的那个 id —— 拿到 id 之后用 session_read_log 读内容。" +
+        "⚠️ **只在用户让你去翻某条对话、而你没被告知 id 时用**。不要拿它当「看看用户都聊了什么」的工具。",
+      inputSchema: {
+        limit: z.number().int().min(1).max(200).optional().describe("最多返回多少条，默认 50，最近的在前面"),
+        query: z.string().optional().describe("按标题或项目名过滤（不区分大小写，子串匹配）"),
+        archived: z.boolean().optional().describe("要不要连已归档的一起列，默认 false（只列活跃的）。已归档**项目**下的对话也归这档管"),
+      },
+      handler: async (args: { limit?: number; query?: string; archived?: boolean }) => {
+        // 跨项目列 —— 用户要"每个会话出自哪个项目"一目了然，所以按项目分组渲染。
+        //
+        // 逐个项目调 `listByProject`（不另写 SQL）：它本来就按 `updated_at DESC`
+        // 排好、也支持 `archived` 过滤。项目数是个位数，几趟查询对一次工具调用
+        // 无所谓 —— 换来的是**不新增一份查询口径**。
+        //
+        // ⚠️ 两处口径要跟"左侧列表"分开（都是审查抓出来的真 bug）：
+        //   1. **置顶**：`listByProject` 的活跃档（archived===false）会追加
+        //      `pinned_at IS NULL`（置顶的在左栏全局置顶区单独渲染）。工具没有
+        //      "置顶区"，漏掉它们就是假阴性 —— 所以活跃档要**补回置顶**的
+        //      （`listPinned` 是跨项目的同一批）。
+        //   2. **已归档项目**：左侧列表不显示归档项目，但归档项目的对话还在库里、
+        //      `session_read_log` 用 id 也读得到 —— 枚举工具读不到就是假阴性。
+        //      所以项目层不再按归档过滤，归档项目的会话跟着 `archived` 参数走。
+        const limit = args.limit ?? 50;
+        const projects = ProjectRepo.list();
+        const q = args.query?.trim().toLowerCase();
+        const all: Session[] = [];
+        for (const p of projects) {
+          if (args.archived === true) {
+            // 全量档：这个项目下的所有对话（含已归档）都要。
+            all.push(...SessionRepo.listByProject(p.id, {}));
+          } else {
+            // 活跃档 + 补回置顶（listByProject 的活跃档会把置顶滤掉）。
+            all.push(...SessionRepo.listByProject(p.id, { archived: false }));
+            all.push(...SessionRepo.listPinned().filter((s) => s.projectId === p.id));
+          }
+        }
+        // 跨项目按最后活动时间统一排序，再截断 —— 不然排在前面的项目会把 limit 吃满。
+        all.sort((a, b) => b.updatedAt - a.updatedAt);
+        const projById = new Map(projects.map((p) => [p.id, p]));
+        const matched = q
+          ? all.filter((s) => {
+              const proj = projById.get(s.projectId);
+              return (
+                s.title.toLowerCase().includes(q) ||
+                (proj?.name ?? "").toLowerCase().includes(q) ||
+                (proj?.path ?? "").toLowerCase().includes(q)
+              );
+            })
+          : all;
+        const shown = matched.slice(0, limit);
+        if (shown.length === 0) {
+          return text(
+            q ? `没有标题或项目匹配「${args.query}」的对话。` : "这台机器上还没有对话。",
+          );
+        }
+        // 按项目分组：同一条对话属于哪个项目要一眼看得出来（用户明确要求）。
+        const byProject = new Map<string, Session[]>();
+        for (const s of shown) {
+          const bucket = byProject.get(s.projectId);
+          if (bucket) bucket.push(s);
+          else byProject.set(s.projectId, [s]);
+        }
+        const blocks: string[] = [];
+        for (const [projectId, list] of byProject) {
+          const proj = projById.get(projectId);
+          const projName = proj?.name ?? projectId;
+          const projPath = proj?.path ? `（${proj.path}）` : "";
+          const rows = list.map((s) => {
+            // 本地时间，不是 UTC —— `toISOString` 会把 GMT+8 的"5 分钟前"画成
+            // "昨天"，模型和用户都会判断错哪条是最近的。
+            const when = new Date(s.updatedAt)
+              .toLocaleString("sv-SE", { hour12: false })
+              .slice(0, 16);
+            const archivedMark = s.archived ? " · 已归档" : "";
+            return `- ${s.title} — id ${s.id} — 最后活动 ${when}${archivedMark}`;
+          });
+          blocks.push(`## 项目：${projName}${projPath}\n\n${rows.join("\n")}`);
+        }
+        const head =
+          `共 ${shown.length} 条对话` +
+          (matched.length > shown.length ? `（匹配 ${matched.length} 条，只列最近的）` : "") +
+          (q ? `（过滤「${args.query}」）` : "") +
+          `，按所属项目分组：`;
+        return text(`${head}\n\n${blocks.join("\n\n")}`);
       },
     },
     {
@@ -778,6 +932,8 @@ export function workflowMcpTools(): McpToolSpec[] {
       },
     },
   ];
+  // 公网那条路把「读用户对话记录」整组摘掉 —— 见上面的参数说明。
+  return includeSessionLogs ? specs : specs.filter((s) => !SESSION_LOG_TOOLS.has(s.name));
 }
 
 /**

@@ -3,7 +3,7 @@ import Editor, { DiffEditor, useMonaco } from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
-import { dirname, extname } from "@renderer/lib/path.js";
+import { basename, dirname, extname } from "@renderer/lib/path.js";
 import { useSessionStore, selectActiveEnvPath } from "@renderer/stores/sessionStore.js";
 import type { FileViewMode } from "@contracts/ipc";
 import { useToastStore } from "@renderer/stores/toastStore.js";
@@ -16,7 +16,7 @@ import { PdfPreview } from "../library/PdfPreview.js";
 import { MarkdownEditorPane } from "./MarkdownEditorPane.js";
 import { SelectionToolbar, type SelectionToolbarState } from "@renderer/components/chat/SelectionToolbar.js";
 import { SelectionQuoteMenu, type QuoteTarget } from "@renderer/components/chat/SelectionQuoteMenu.js";
-import { makeContentTag } from "@renderer/lib/contentTag.js";
+import { makeQuoteTag } from "@renderer/lib/contentTag.js";
 // LSP provider bridge: registers definition/references/hover providers, syncs
 // documents, and applies diagnostics markers to the model.
 import {
@@ -614,30 +614,34 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
     };
   }, []);
 
-  /** 引用落到哪 —— **只落草稿，不替用户发**（与另外两处逐字同一个做法）。 */
+  /** 引用落到哪 —— **只落草稿，不替用户发**（与另外两处逐字同一个做法）。
+   *
+   *  落点走 store 的 `quoteIntoComposer`（共享实现只有一份，硬规矩 2）——
+   *  它内部带 touch 计数，目标会话开着时那个输入框会当场重跑草稿还原、
+   *  没开的下次挂载见。见 `deliverComposerDraft` 的说明。 */
   const quoteFromEditor = useCallback(
     (target: QuoteTarget, text: string) => {
       const quoted = text.trim();
       setMdQuote(null);
       setMdSel(null);
       if (!quoted) return;
-      const store = useSessionStore.getState();
-      const prev = store.composerDraftBySession[target.id];
       // 落成**绿色小标签**，不是一段纯文本 —— 用户 2026-09-21 明确要求
-      // 「像引用文件一样在对话框里面加一个绿色的小标签」。`makeContentTag` 造的
-      // 就是那种 chip（`kind: "paste"`），和另外两处同一个落点。
-      store.saveComposerDraft(target.id, {
-        text: prev?.text ?? "",
-        html: prev?.html ?? "",
-        tags: [...(prev?.tags ?? []), makeContentTag(quoted)],
+      // 「像引用文件一样在对话框里面加一个绿色的小标签」。
+      //
+      // `makeQuoteTag` 在正文外面套一层「user's quote（…）+ source」。编辑器这条
+      // 手边就有绝对路径（`filePath`），直接给。
+      const tag = makeQuoteTag({
+        text: quoted,
+        origin: { kind: "file", filePath, name: basename(filePath) },
       });
+      useSessionStore.getState().quoteIntoComposer(target.id, tag);
       useToastStore.getState().push({
         kind: "info",
         title: t("chatStream.quote.doneToast", { name: target.title }),
         sessionId: target.id,
       });
     },
-    [t],
+    [t, filePath],
   );
   // Monaco namespace from the loader (local instance — see monacoSetup.ts).
   // Null until the loader resolves; the first model creation waits for it.

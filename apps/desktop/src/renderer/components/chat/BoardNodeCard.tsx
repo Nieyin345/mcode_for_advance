@@ -242,12 +242,17 @@ export function BoardNodeCard({
   };
 
   /** 跟**主对话**说一句 —— 放进输入框,不替用户发送。主对话此刻可能正被这张图占用,
-   *  直接发会被 `graphRunIntent` 拒掉;而且"我先看看再发"本来就是更稳妥的一步。 */
+   *  直接发会被 `graphRunIntent` 拒掉;而且"我先看看再发"本来就是更稳妥的一步。
+   *
+   *  ⚠️ 走 `deliverComposerDraft`（不是 `saveComposerDraft`）：**投递要递增 touch**
+   *  —— 主对话的 ChatPane 开着时（最常见：图就开在它右边）光写草稿是看不见的,
+   *  草稿还原只在换会话时跑;touch 才能让它当场重跑还原。从前这里就是那个 bug,
+   *  引用统一时漏掉了这一处。 */
   const talkToParent = (): void => {
     const text = reply.trim();
     if (text.length === 0) return;
     const prev = useSessionStore.getState().composerDraftBySession[sessionId];
-    useSessionStore.getState().saveComposerDraft(sessionId, {
+    useSessionStore.getState().deliverComposerDraft(sessionId, {
       text,
       html: "",
       tags: prev?.tags ?? [],

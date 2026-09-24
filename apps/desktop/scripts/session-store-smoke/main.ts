@@ -1022,6 +1022,53 @@ await (async () => {
   check("并且留了一句说明(不是空着)", typeof tool?.result === "string" && tool.result.length > 0, tool?.result);
 })();
 
+console.log("\n[19] 外部投递草稿：deliverComposerDraft 递增 touch，quoteIntoComposer 追加 tag");
+
+// 2026-09-24 的根因修复：外部在目标会话**开着**时写草稿，旧代码看不见
+// （草稿还原 effect 只依赖 sessionId）。现在 deliverComposerDraft 递增
+// composerDraftTouchBySession，挂载中的 ChatPane 订阅它、当场重跑还原。
+// 这里验 store 层的三件事：touch 递增、save 不递增、quoteIntoComposer 追加。
+void (async () => {
+  const st = useSessionStore;
+  const SID = "投递草稿-会话";
+  try {
+    // save（write-through）：写草稿但**不**碰 touch。
+    st.getState().saveComposerDraft(SID, { text: "打了一半", html: "", tags: [] });
+    eq("saveComposerDraft 落了草稿", st.getState().composerDraftBySession[SID]?.text, "打了一半");
+    eq("…但 touch 没动（write-through 不触发重还原）", st.getState().composerDraftTouchBySession[SID], undefined);
+
+    // deliver（外部投递）：写草稿 + touch 递增。
+    st.getState().deliverComposerDraft(SID, { text: "打了一半", html: "", tags: [{ id: "t1", kind: "paste", preview: "p", content: "c" }] });
+    eq("deliverComposerDraft 更新了草稿", st.getState().composerDraftBySession[SID]?.tags.length, 1);
+    eq("★ touch 递增了（开着的输入框靠它当场重跑还原）", st.getState().composerDraftTouchBySession[SID], 1);
+    st.getState().deliverComposerDraft(SID, { text: "打了一半", html: "", tags: [] });
+    eq("再投递一次 touch 再 +1（不是置 1）", st.getState().composerDraftTouchBySession[SID], 2);
+
+    // quoteIntoComposer：在现有草稿上**追加**，不覆盖。
+    st.getState().quoteIntoComposer(SID, { id: "q1", kind: "quote", preview: "引", content: "--- user's quote (…) ---\nsource: x\n--- end ---" });
+    const draft = st.getState().composerDraftBySession[SID];
+    eq("quoteIntoComposer 追加了一条 quote tag", draft?.tags.length, 1);
+    eq("…正文保留不动", draft?.text, "打了一半");
+    eq("…quote 的 kind 对", draft?.tags[0]?.kind, "quote");
+
+    // 空会话：没有草稿也能落。
+    st.getState().quoteIntoComposer("空会话", { id: "q2", kind: "quote", preview: "引2", content: "c" });
+    eq("空会话也能 quote 进来（text 为空串）", st.getState().composerDraftBySession["空会话"]?.text, "");
+    // ★ quote 必须走 deliver（带 touch），不是普通 save —— 漏了 touch，开着的
+    //   输入框就看不见（恰是这轮要修的 bug）。
+    eq("★ quoteIntoComposer 也递增 touch", st.getState().composerDraftTouchBySession["空会话"], 1);
+  } finally {
+    useSessionStore.setState((s) => {
+      const drafts = { ...s.composerDraftBySession };
+      delete drafts[SID];
+      delete drafts["空会话"];
+      const touches = { ...s.composerDraftTouchBySession };
+      delete touches[SID];
+      return { composerDraftBySession: drafts, composerDraftTouchBySession: touches };
+    });
+  }
+})();
+
 console.log(`\n${checks - failures}/${checks} checks passed`);
 if (failures > 0) {
   console.error(`${failures} check(s) failed`);

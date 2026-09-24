@@ -18,12 +18,18 @@
  * files 列表。base64 在这里就地转回字节喂给那几个预览组件,它们的 props 形状
  *(`data: Uint8Array`)不动。
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LibraryItem } from "@contracts/library";
 import type { LibraryFileContent } from "@contracts/ipc";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { joinPath } from "@renderer/lib/path.js";
 import { api } from "@renderer/lib/api.js";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
+import { makeQuoteTag } from "@renderer/lib/contentTag.js";
 import { ChunkedMarkdown } from "@renderer/components/chat/ChunkedMarkdown.js";
+import { SelectionToolbar, type SelectionToolbarState } from "@renderer/components/chat/SelectionToolbar.js";
+import { SelectionQuoteMenu, type QuoteTarget } from "@renderer/components/chat/SelectionQuoteMenu.js";
 import { IconArrowLeft, IconFile, IconFolder, IconLoader2 } from "@renderer/lib/icons.js";
 import { DocxPreview } from "@renderer/components/templates/DocxPreview.js";
 import { PptxPreview } from "@renderer/components/templates/PptxPreview.js";
@@ -72,6 +78,82 @@ export function FilePreview({
    * 换不出来就不给，阅读器退化成只读。
    */
   const [pdfPath, setPdfPath] = useState<string | undefined>(undefined);
+
+  /**
+   * **右栏预览里也能框选引用**（2026-09-24）。
+   *
+   * ★ 用户的要求：「打开的文件的引用，就是中间页面的打开，**还是右边栏的预览**，
+   * 都能够框选，然后引用到当前的开启的对话里面」。
+   *
+   * 中间那一栏（`FileViewer`）和编辑器（`FileEditor`）早就有了，**右栏这一处漏了**
+   * —— 这个组件用的是 `FilePreview`（不是 `FileViewer`），而它里面从来没挂过
+   * `SelectionToolbar`，所以在右栏预览里框选**什么都不会发生**。
+   *
+   * 交互与另外两处逐字一致，连"只给复制 / 引用两个按钮"都一样（这里没有消息流，
+   * 书签和「问侧边」都没有落点）。
+   */
+  const [sel, setSel] = useState<SelectionToolbarState | null>(null);
+  const [quote, setQuote] = useState<SelectionToolbarState | null>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onUp = () => {
+      // 让浏览器先落定选区再读（`mouseup` 那一刻 `getSelection()` 还是旧的）。
+      window.setTimeout(() => {
+        const s = window.getSelection();
+        const text = s?.toString().trim() ?? "";
+        const root = bodyRef.current;
+        if (!s || s.rangeCount === 0 || text.length === 0 || !root) {
+          setSel(null);
+          return;
+        }
+        const node = s.anchorNode;
+        if (!node || !root.contains(node)) return;
+        const r = s.getRangeAt(0).getBoundingClientRect();
+        if (r.width === 0 && r.height === 0) return;
+        setSel({
+          rect: { top: r.top, bottom: r.bottom, left: r.left, right: r.right },
+          text,
+          messageId: "",
+          role: "assistant",
+        });
+      }, 0);
+    };
+    document.addEventListener("mouseup", onUp);
+    return () => document.removeEventListener("mouseup", onUp);
+  }, []);
+
+  /**
+   * 引用落到哪。落点走 store 的 `quoteIntoComposer`（共享实现只有一份，硬规矩 2）
+   * —— 它内部带 touch 计数，目标会话开着时那个输入框会当场重跑草稿还原、
+   * 没开的下次挂载见。见 `deliverComposerDraft` 的说明。
+   *
+   * 来源路径：`pdfPath`（entryPath 换出来的**条目根**绝对路径）+ `relPath` 拼出
+   * **正在看的那份子文件**；都拿不到时退成条目标题。⚠️ 不拿 `item.filePath` 兜底
+   * —— attached 条目它是**相对库根**的（contracts/library.ts），当成"来源"给模型
+   * 是一个解析不了的伪路径。标题至少是人能认的。
+   */
+  const quoteTo = useCallback(
+    (t2: QuoteTarget, text: string) => {
+      const quoted = text.trim();
+      setQuote(null);
+      setSel(null);
+      window.getSelection()?.removeAllRanges();
+      if (!quoted) return;
+      const sourcePath = pdfPath ? (relPath ? joinPath(pdfPath, relPath) : pdfPath) : item.title;
+      const tag = makeQuoteTag({
+        text: quoted,
+        origin: { kind: "file", filePath: sourcePath, name: item.title },
+      });
+      useSessionStore.getState().quoteIntoComposer(t2.id, tag);
+      useToastStore.getState().push({
+        kind: "info",
+        title: t("chatStream.quote.doneToast", { name: t2.title }),
+        sessionId: t2.id,
+      });
+    },
+    [t, pdfPath, relPath, item.title],
+  );
 
   // 换条目回到根 —— 上一个目录里翻到一半的子文件对这一条没有意义
   useEffect(() => {
@@ -129,124 +211,159 @@ export function FilePreview({
   };
 
   // ── 加载 / 失败 ──
-  if (loading) {
-    return (
-      <div className="flex h-full items-center justify-center text-content-subtle">
-        <IconLoader2 size={14} className="animate-spin" />
-      </div>
-    );
-  }
-  if (error) {
-    return (
-      <div className="flex h-full items-start justify-center p-6">
-        <span className="break-all text-center text-xs text-red-500">{error}</span>
-      </div>
-    );
-  }
-  if (!content) return null;
-
-  // ── 目录:文件名列表(点子文件/子目录用 relPath 再读) ──
-  if (content.type === "dir") {
-    return (
-      <div className="flex h-full flex-col">
-        {relPath && (
-          <div className="flex shrink-0 items-center border-b border-edge px-2 py-1">
-            <button
-              onClick={() => setRelPath(null)}
-              className="flex items-center gap-1 rounded px-1 py-0.5 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content"
-            >
-              <IconArrowLeft size={12} />
-              {t("library.file.back")}
-            </button>
-            <span className="ml-1 min-w-0 truncate font-mono text-[0.7857em] text-content-subtle">
-              {relPath}
-            </span>
-          </div>
-        )}
-        <div className="min-h-0 flex-1 overflow-y-auto p-1">
-          {content.files.length === 0 ? (
-            <div className="px-2 py-1 text-[0.7857em] text-content-subtle">
-              {t("library.file.emptyDir")}
-            </div>
-          ) : (
-            content.files.map((f) => (
-              <button
-                key={f.name}
-                onClick={() => open(f.name, f.isDir)}
-                className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs text-content-muted hover:bg-surface-hover hover:text-content"
-              >
-                {f.isDir ? (
-                  <IconFolder size={13} className="shrink-0 text-content-subtle" />
-                ) : (
-                  <IconFile size={13} className="shrink-0 text-content-subtle" />
-                )}
-                <span className="min-w-0 truncate">{f.name}</span>
-              </button>
-            ))
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  // ── 不支持的格式:主进程会说明原因,原话摆出来 ──
-  if (content.type === "unsupported") {
-    return (
-      <div className="flex h-full items-start justify-center p-6">
-        <span className="break-all text-center text-xs text-red-500">{content.error}</span>
-      </div>
-    );
-  }
-
-  // ── 文本 ──
-  if (content.type === "text") {
-    if (ext === "md" || ext === "markdown") {
+  // 形状与 `FileViewer` 一致：先算 `body`、最后统一挂工具条（见文件头那段
+  // 「右栏预览也要能框选引用」）。从前这里是一串 early return，工具条根本没地方挂。
+  //
+  // ⚠️ **useMemo 不能省**：`sel` 在预览区**每次 mouseup** 都会 set，而 body 的
+  // 二进制分支里 `base64ToBytes` 每跑一次就是十几 MB 的解码 + 一个新 bytes 身份
+  // （PdfPreview 那边的 memo 全失效）。依赖只放数据，不放 sel/quote。
+  const body = useMemo(() => {
+    if (loading) {
       return (
-        // 这一层的 `overflow-y-auto` **就是**滚动容器，所以给 `scroll="parent"`
-        // —— 让它把内容放在这里滚，不再自己套一层（见 `ChunkedMarkdown` 文件头那段：
-        // 两层滚动叠在一起，能滚的那根和内层那根不是同一个，界面表现为"滑不动"）。
-        <div className="h-full overflow-y-auto px-4 py-3">
-          <ChunkedMarkdown text={content.text} scroll="parent" />
+        <div className="flex h-full items-center justify-center text-content-subtle">
+          <IconLoader2 size={14} className="animate-spin" />
         </div>
       );
     }
-    return (
-      <pre className="h-full overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-xs text-content">
-        {content.text}
-      </pre>
-    );
-  }
+    if (error) {
+      return (
+        <div className="flex h-full items-start justify-center p-6">
+          <span className="break-all text-center text-xs text-red-500">{error}</span>
+        </div>
+      );
+    }
+    if (!content) return null;
 
-  // ── 二进制 ──
-  const bytes = base64ToBytes(content.base64);
-  const officeKey = `${item.id}:${relPath ?? ""}`; // 预览组件只拿它当重渲染的依赖键
-  if (content.mime.startsWith("image/")) {
+    // ── 目录:文件名列表(点子文件/子目录用 relPath 再读) ──
+    if (content.type === "dir") {
+      return (
+        <div className="flex h-full flex-col">
+          {relPath && (
+            <div className="flex shrink-0 items-center border-b border-edge px-2 py-1">
+              <button
+                onClick={() => setRelPath(null)}
+                className="flex items-center gap-1 rounded px-1 py-0.5 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content"
+              >
+                <IconArrowLeft size={12} />
+                {t("library.file.back")}
+              </button>
+              <span className="ml-1 min-w-0 truncate font-mono text-[0.7857em] text-content-subtle">
+                {relPath}
+              </span>
+            </div>
+          )}
+          <div className="min-h-0 flex-1 overflow-y-auto p-1">
+            {content.files.length === 0 ? (
+              <div className="px-2 py-1 text-[0.7857em] text-content-subtle">
+                {t("library.file.emptyDir")}
+              </div>
+            ) : (
+              content.files.map((f) => (
+                <button
+                  key={f.name}
+                  onClick={() => open(f.name, f.isDir)}
+                  className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs text-content-muted hover:bg-surface-hover hover:text-content"
+                >
+                  {f.isDir ? (
+                    <IconFolder size={13} className="shrink-0 text-content-subtle" />
+                  ) : (
+                    <IconFile size={13} className="shrink-0 text-content-subtle" />
+                  )}
+                  <span className="min-w-0 truncate">{f.name}</span>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ── 不支持的格式:主进程会说明原因,原话摆出来 ──
+    if (content.type === "unsupported") {
+      return (
+        <div className="flex h-full items-start justify-center p-6">
+          <span className="break-all text-center text-xs text-red-500">{content.error}</span>
+        </div>
+      );
+    }
+
+    // ── 文本 ──
+    if (content.type === "text") {
+      if (ext === "md" || ext === "markdown") {
+        return (
+          // 这一层的 `overflow-y-auto` **就是**滚动容器，所以给 `scroll="parent"`
+          // —— 让它把内容放在这里滚，不再自己套一层（见 `ChunkedMarkdown` 文件头那段：
+          // 两层滚动叠在一起，能滚的那根和内层那根不是同一个，界面表现为"滑不动"）。
+          <div className="h-full overflow-y-auto px-4 py-3">
+            <ChunkedMarkdown text={content.text} scroll="parent" />
+          </div>
+        );
+      }
+      return (
+        <pre className="h-full overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-xs text-content">
+          {content.text}
+        </pre>
+      );
+    }
+
+    // ── 二进制 ──
+    const bytes = base64ToBytes(content.base64);
+    const officeKey = `${item.id}:${relPath ?? ""}`; // 预览组件只拿它当重渲染的依赖键
+    if (content.mime.startsWith("image/")) {
+      return (
+        <div className="h-full overflow-auto p-2">
+          <img src={`data:${content.mime};base64,${content.base64}`} alt={viewing} className="max-h-full max-w-full mx-auto" />
+        </div>
+      );
+    }
+    if (content.mime === "application/pdf" || ext === "pdf") {
+      // 字节直接喂给阅读器,不再走一次 readPdf(那条路只认条目的 pdfPath)。
+      // `pdfPath` 有的话一并给它 —— 那是"保存批注"唯一的落点。
+      return <PdfPreview item={item} bytes={bytes} {...(pdfPath ? { filePath: pdfPath } : {})} />;
+    }
+    if (content.mime.includes("wordprocessingml") || ext === "docx" || ext === "dotx") {
+      // 失败路径上的「系统程序打开」对库条目没有现成 IPC,先留空 —— 渲染成功才是常态
+      return <DocxPreview data={bytes} relPath={officeKey} onOpenExternal={() => {}} />;
+    }
+    if (content.mime.includes("presentationml") || ext === "pptx" || ext === "ppsx" || ext === "potx") {
+      return <PptxPreview data={bytes} relPath={officeKey} onOpenExternal={() => {}} />;
+    }
+    if (content.mime.includes("spreadsheetml") || ext === "xlsx" || ext === "xlsm" || ext === "xltx") {
+      return <XlsxPreview data={bytes} relPath={officeKey} onOpenExternal={() => {}} />;
+    }
     return (
-      <div className="h-full overflow-auto p-2">
-        <img src={`data:${content.mime};base64,${content.base64}`} alt={viewing} className="max-h-full max-w-full mx-auto" />
+      <div className="flex h-full items-start justify-center p-6">
+        <span className="text-center text-xs text-content-muted">
+          {t("library.file.unknownMime", { mime: content.mime })}
+        </span>
       </div>
     );
-  }
-  if (content.mime === "application/pdf" || ext === "pdf") {
-    // 字节直接喂给阅读器,不再走一次 readPdf(那条路只认条目的 pdfPath)。
-    // `pdfPath` 有的话一并给它 —— 那是"保存批注"唯一的落点。
-    return <PdfPreview item={item} bytes={bytes} {...(pdfPath ? { filePath: pdfPath } : {})} />;
-  }
-  if (content.mime.includes("wordprocessingml") || ext === "docx" || ext === "dotx") {
-    // 失败路径上的「系统程序打开」对库条目没有现成 IPC,先留空 —— 渲染成功才是常态
-    return <DocxPreview data={bytes} relPath={officeKey} onOpenExternal={() => {}} />;
-  }
-  if (content.mime.includes("presentationml") || ext === "pptx" || ext === "ppsx" || ext === "potx") {
-    return <PptxPreview data={bytes} relPath={officeKey} onOpenExternal={() => {}} />;
-  }
-  if (content.mime.includes("spreadsheetml") || ext === "xlsx" || ext === "xlsm" || ext === "xltx") {
-    return <XlsxPreview data={bytes} relPath={officeKey} onOpenExternal={() => {}} />;
-  }
+  }, [loading, error, content, relPath, ext, viewing, item, pdfPath, t]);
+
   return (
-    <div className="flex h-full items-start justify-center p-6">
-      <span className="text-center text-xs text-content-muted">
-        {t("library.file.unknownMime", { mime: content.mime })}
-      </span>
+    // `ref` 挂在根那一层 —— 选中的文字必须落在这一整块里才算数（同 `FileViewer`）。
+    // **不多包 div**：多包一层会让 PdfPreview / OfficePreview 那几支"自己管滚动"的
+    // 布局多经一道（它们靠父容器直接给高度）。
+    <div ref={bodyRef} className="h-full min-h-0">
+      {body}
+      {/* 选中一段文字 → 「复制 / 引用给…」（见文件头那段：右栏预览从前没有这一层）。 */}
+      {sel && !quote && (
+        <SelectionToolbar state={sel} onQuote={setQuote} onClose={() => setSel(null)} />
+      )}
+      {/* 引用给谁 —— 复用对话那一套。目标列表第一行是**右栏此刻展开的那条**，
+          所以"引用到当前展开对话"默认就是它（与 `FileViewer` 那一处同一套）。 */}
+      {quote && (
+        <SelectionQuoteMenu
+          state={quote}
+          sessionId=""
+          currentTitle={t("library.file.thisFile")}
+          onPick={quoteTo}
+          onClose={() => {
+            setQuote(null);
+            setSel(null);
+          }}
+        />
+      )}
     </div>
   );
 }

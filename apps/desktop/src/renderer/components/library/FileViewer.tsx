@@ -21,11 +21,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
-import { makeContentTag } from "@renderer/lib/contentTag.js";
+import { makeQuoteTag } from "@renderer/lib/contentTag.js";
 import { SelectionToolbar, type SelectionToolbarState } from "@renderer/components/chat/SelectionToolbar.js";
 import { SelectionQuoteMenu, type QuoteTarget } from "@renderer/components/chat/SelectionQuoteMenu.js";
 import { api } from "@renderer/lib/api.js";
-import { dirname, extname } from "@renderer/lib/path.js";
+import { dirname, extname, joinPath } from "@renderer/lib/path.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { ChunkedMarkdown } from "@renderer/components/chat/ChunkedMarkdown.js";
 import { PdfPreview } from "./PdfPreview.js";
@@ -84,6 +84,9 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
   );
   const [data, setData] = useState<ViewData | null>(null);
   const [name, setName] = useState(target.name);
+  /** 这个文件的**绝对路径**（拿得到时）—— 引用要用它说清"文件在哪"（见 `quoteTo`）。
+   *  条目那一支要从 id 换一次；换不出来（手机端 shim）就是 null，降级成只给文件名。 */
+  const [absPath, setAbsPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -140,6 +143,10 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
   /**
    * 引用落到哪 —— **只落草稿、不替用户发**（与对话里那条逐字同一个做法：
    * 「我先看看再发」才是更稳的那一步）。
+   *
+   * 落点走 store 的 `quoteIntoComposer`（共享实现只有一份，硬规矩 2）——
+   * 它内部带 touch 计数，目标会话开着时那个输入框会当场重跑草稿还原、
+   * 没开的下次挂载见。见 `deliverComposerDraft` 的说明。
    */
   const quoteTo = useCallback(
     (t2: QuoteTarget, text: string) => {
@@ -148,36 +155,36 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
       setSel(null);
       window.getSelection()?.removeAllRanges();
       if (!quoted) return;
-      const store = useSessionStore.getState();
-      const prev = store.composerDraftBySession[t2.id];
       // **落成一个标签，不是一段纯文本**（2026-09-21）。
       //
       // ★ 用户：「我要的是**像引用文件一样在对话框里面加一个绿色的小标签**」。
-      // 从前这里是把那段文字拼进草稿正文（`prev.text + quoted`），于是引用的东西长得
-      // 跟用户自己打的字一模一样 —— 看不出"这是我从文件里挑来的"，也没法单独摘掉。
       //
-      // `makeContentTag` 造的正是那种"一段内容折成 chip"的标签：`kind: "paste"`，
-      // chip 走主题色（`bg-accent/10 text-accent`，就是那个绿的），点开能看全文、
-      // 点 × 能单独删。和拖进来的文件、粘进来的大段内容是**同一种东西** ——
-      // 所以它跟"引用文件"长得一样，正是用户要的。
-      store.saveComposerDraft(t2.id, {
-        text: prev?.text ?? "",
-        html: prev?.html ?? "",
-        tags: [...(prev?.tags ?? []), makeContentTag(quoted)],
+      // `makeQuoteTag` 在正文外面套来源抬头 —— 用户要求"如果是文件里面的内容，
+      // 提示词也顺便说清楚文件在哪里"。`absPath` 拿不到时降级成只给文件名。
+      const tag = makeQuoteTag({
+        text: quoted,
+        origin: {
+          kind: "file",
+          filePath: absPath ?? name,
+          name,
+        },
       });
+      useSessionStore.getState().quoteIntoComposer(t2.id, tag);
       useToastStore.getState().push({
         kind: "info",
         title: t("chatStream.quote.doneToast", { name: t2.title }),
         sessionId: t2.id,
       });
     },
-    [t],
+    [t, absPath, name],
   );
 
   // 换目标回到根 —— 上一个目录里翻到一半的子文件对这一条没有意义。
   useEffect(() => {
     setRelPath(target.source.kind === "library" ? (target.source.relPath ?? null) : null);
     setName(target.name);
+    // 换文件了旧路径就作废 —— 不然引用时会拿上一个文件的路径。
+    setAbsPath(null);
   }, [target]);
 
   useEffect(() => {
@@ -190,6 +197,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
         if (!cancelled) {
           setData(next.data);
           if (next.name !== undefined) setName(next.name);
+          setAbsPath(next.absPath ?? null);
         }
       } catch (err) {
         if (!cancelled) setError((err as Error).message);
@@ -450,7 +458,7 @@ function itemOf(target: FileViewTarget): { id: string } {
 async function loadViewData(
   target: FileViewTarget,
   relPath: string | null,
-): Promise<{ data: ViewData; name?: string }> {
+): Promise<{ data: ViewData; name?: string; absPath?: string }> {
   if (target.source.kind === "library") {
     const res = await api.library.readFile({
       id: target.source.ref,
@@ -474,27 +482,39 @@ async function loadViewData(
        * 或文件已经不在盘上），那种情况下退化成 chip 也比报错强。
        */
       let baseDir: string | undefined;
+      let mdPath: string | undefined;
       try {
         const p = await api.library.entryPath({
           id: target.source.ref,
           ...(target.source.which ? { which: target.source.which } : {}),
         });
-        if (p.path) baseDir = dirname(p.path);
+        if (p.path) {
+          baseDir = dirname(p.path);
+          // 条目根 + relPath = 用户**正在看的那份子文件**的绝对路径。
+          // 从前只给条目根 —— 目录条目里翻进子文件后引用，「来源」指向的是根，
+          // 模型按它去读会读错文件。
+          mdPath = relPath ? joinPath(p.path, relPath) : p.path;
+        }
       } catch {
         /* 手机端 `api.library` 是抛错的代理 —— 拿不到就没有 baseDir */
       }
-      return { data: { type: "text", text: c.text, ...(baseDir ? { baseDir } : {}) } };
+      // `absPath` 给引用用（提示词里要说清"这个文件在哪"）—— 拿不到就不给。
+      return {
+        data: { type: "text", text: c.text, ...(baseDir ? { baseDir } : {}) },
+        ...(mdPath ? { absPath: mdPath } : {}),
+      };
     }
     if (c.type === "unsupported") return { data: { type: "unsupported", error: c.error } };
     // 路径：与上面 md 那支同一个调用。PDF 保存批注要落到原文件上，
     // 而条目只给 id —— 换不出来就退化成只读（阅读器那边不画保存按钮）。
+    // 引用来源同理要带上 relPath（子文件场景，见上面 md 那支的说明）。
     let binPath: string | undefined;
     try {
       const p = await api.library.entryPath({
         id: target.source.ref,
         ...(target.source.which ? { which: target.source.which } : {}),
       });
-      if (p.path) binPath = p.path;
+      if (p.path) binPath = relPath ? joinPath(p.path, relPath) : p.path;
     } catch {
       /* 手机端 `api.library` 是抛错的代理 */
     }
@@ -507,12 +527,15 @@ async function loadViewData(
         bytes: base64ToBytes(c.base64),
         ...(binPath ? { filePath: binPath } : {}),
       },
+      ...(binPath ? { absPath: binPath } : {}),
     };
   }
 
   // 项目文件那一支（见 `loadProjectFileData` 的说明）。
   if (target.source.kind === "project") {
-    return { data: await loadProjectFileData(target.source.ref) };
+    const data = await loadProjectFileData(target.source.ref);
+    // 项目文件的绝对路径就是 `ref` 本身 —— 引用时直接给它。
+    return { data, absPath: target.source.ref };
   }
   // 两种来源都处理完了 —— 走到这儿说明 `FileSource` 加了新成员却没在这里接。
   throw new Error("不认识的预览来源");

@@ -1432,6 +1432,13 @@ export interface SessionState {
    *  drained by the side chat's own ChatPane instance. One-shot channel,
    *  not persisted — same hand-off pattern as chatFileQueueBySession. */
   sideChatSeedBySession: Record<string, string>;
+  /**
+   * 外部投递草稿的 **touch 计数**（key 是会话 id）。`deliverComposerDraft` 每次投递
+   * 递增一格；挂载中的 ChatPane 订阅它、变了就当场重跑草稿还原 —— 这是「目标会话
+   * 开着时写草稿看不见」的根因修复（见 `deliverComposerDraft` 的说明）。不持久化，
+   * 会话删除时一并清掉。
+   */
+  composerDraftTouchBySession: Record<string, number>;
   /** One-shot "open this subagent's transcript" request from outside the
    *  side panel (the ActivityPopover's subagent row click). Carries the
    *  PARENT session id (ownership check) + the subagent's taskId; consumed
@@ -2157,10 +2164,36 @@ export interface SessionState {
    *  in their original order, so a malformed caller can't drop items. */
   reorderPromptQueue: (sessionId: string, newOrder: string[]) => void;
 
-  /** Persist a session's composer draft (typed-but-unsent content) so it
-   *  survives the ChatPane unmounting (thread switch / tab close). The owning
-   *  ChatPane calls this on every content change (write-through). */
+  /**
+   * 落一条会话的输入框草稿（typed-but-unsent content），让它在 ChatPane 卸载后还在
+   * （线程切换 / 关页签）。**只给挂载中的 ChatPane 自己的 write-through 用** ——
+   * 它自己写的东西自己知道，不碰 touch。外部投递走 {@link deliverComposerDraft}。
+   */
   saveComposerDraft: (sessionId: string, draft: ComposerDraft) => void;
+  /**
+   * **外部投递**一条草稿（引用、图节点「跟主对话说」……）。
+   *
+   * ## 为什么不能只是 save —— touch 计数（2026-09-24 修根因）
+   *
+   * 草稿还原 effect 的依赖只有 `sessionId`，**目标会话开着时写草稿是看不见的**
+   * （还原只在换会话时跑）。从前靠每个调用点「seed + draft 双写」绕过 —— 五个
+   * 调用点各抄一份，上轮 ddae1cf 漏改 ChatPane 正是这么出的 bug。
+   *
+   * 现在：投递 = 写草稿 + **递增该会话的 touch 计数**（`composerDraftTouchBySession`）。
+   * 挂载中的 ChatPane 订阅这个计数，变了就**当场重跑还原**；没挂载的会话草稿躺在
+   * store 里，下次挂载照常还原。**一个调用，两条情形都到。**
+   */
+  deliverComposerDraft: (sessionId: string, draft: ComposerDraft) => void;
+  /**
+   * 把一条**引用**（content tag）落进目标会话的输入框 —— 所有引用入口
+   * （选段 / 文件预览 / 编辑器 / 左栏）唯一的落点，共享实现只有一份（硬规矩 2）。
+   *
+   * 做三件事：取目标现有草稿 → tags 追加这条 → {@link deliverComposerDraft}
+   * （touch 让开着的输入框当场见、没开的下次挂载见）。
+   *
+   * 成功提示（toast）不在这里推 —— 各入口的文案与时机不同，调用方自己推。
+   */
+  quoteIntoComposer: (sessionId: string, tag: ContentTag) => void;
   /** Drop a session's stored composer draft (empty composer / after send). */
   clearComposerDraft: (sessionId: string) => void;
 
@@ -3038,6 +3071,8 @@ function dropSessionBuckets(s: SessionState, id: string) {
   delete composerDraftBySession[id];
   const sideChatSeedBySession = { ...s.sideChatSeedBySession };
   delete sideChatSeedBySession[id];
+  const composerDraftTouchBySession = { ...s.composerDraftTouchBySession };
+  delete composerDraftTouchBySession[id];
   const pendingApprovals = s.pendingApprovals.filter((p) => p.sessionId !== id);
   return {
     messagesBySession,
@@ -3072,6 +3107,7 @@ function dropSessionBuckets(s: SessionState, id: string) {
     planApprovalDraftBySession,
     composerDraftBySession,
     sideChatSeedBySession,
+    composerDraftTouchBySession,
     pendingApprovals,
   };
 }
@@ -5808,6 +5844,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sideChatsByParent: {},
   activeSideChatId: null,
   sideChatSeedBySession: {},
+  composerDraftTouchBySession: {},
   pendingSubagentView: null,
   pendingBookmarkJump: null,
   // IDE right-panel. Editor state is per-project (keyed by projectId);
@@ -10875,10 +10912,30 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
+  // ChatPane 的 write-through 专用：自己写的东西自己知道，不碰 touch。
   saveComposerDraft: (sessionId, draft) => {
     set((s) => ({
       composerDraftBySession: { ...s.composerDraftBySession, [sessionId]: draft },
     }));
+  },
+
+  deliverComposerDraft: (sessionId, draft) => {
+    set((s) => ({
+      composerDraftBySession: { ...s.composerDraftBySession, [sessionId]: draft },
+      composerDraftTouchBySession: {
+        ...s.composerDraftTouchBySession,
+        [sessionId]: (s.composerDraftTouchBySession[sessionId] ?? 0) + 1,
+      },
+    }));
+  },
+
+  quoteIntoComposer: (sessionId, tag) => {
+    const draft = get().composerDraftBySession[sessionId];
+    get().deliverComposerDraft(sessionId, {
+      text: draft?.text ?? "",
+      html: draft?.html ?? "",
+      tags: [...(draft?.tags ?? []), tag],
+    });
   },
 
   clearComposerDraft: (sessionId) => {

@@ -1,7 +1,7 @@
 import { forwardRef } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { IconBook, IconClipboard, IconFile, IconCode, IconPhoto, IconTemplate, IconX } from "@renderer/lib/icons.js";
+import { IconBook, IconClipboard, IconFile, IconCode, IconPhoto, IconQuote, IconTemplate, IconX } from "@renderer/lib/icons.js";
 import { isImageFile, type ContentTag } from "@renderer/lib/contentTag.js";
 
 /**
@@ -33,6 +33,8 @@ export const ContentTagChip = forwardRef<
   const isElement = tag.kind === "element";
   const isLibrary = tag.kind === "library";
   const isTemplate = tag.kind === "template";
+  /** 引用（用户从某处摘的一段）—— 内容自带来源抬头，点开能看全文。 */
+  const isQuote = tag.kind === "quote";
   // 文献库 / 模版都是"指向一份清单的 @路径",悬停给用户看那串实际会进提示词的引用
   const isManifestRef = isLibrary || isTemplate;
   return (
@@ -53,8 +55,10 @@ export const ContentTagChip = forwardRef<
         title={
           isFile
             ? (tag.filePath ?? tag.preview)
-            : isManifestRef
-              // 和文件一样:悬停显示实际会进提示词的那串引用(@清单路径)
+            : isManifestRef || isQuote
+              // 文件 / 清单 / **引用**：悬停显示实际会进提示词的那段内容 ——
+              // 引用的 `content` 自带「user's quote（…）+ source」，用户悬停就能看见
+              // "这段会被当成什么送出去"（含文件路径）。
               ? tag.content
               : isElement
                 ? (open ? t("chat.tag.hidePreview") : t("chat.tag.viewElement"))
@@ -74,6 +78,8 @@ export const ContentTagChip = forwardRef<
           <IconTemplate size={12} className="opacity-80" />
         ) : isElement ? (
           <IconCode size={12} className="opacity-80" />
+        ) : isQuote ? (
+          <IconQuote size={12} className="opacity-80" />
         ) : (
           <IconClipboard size={12} className="opacity-80" />
         )}

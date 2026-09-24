@@ -16,6 +16,7 @@ import { Menu } from "@base-ui/react/menu";
 import {
   IconCopy,
   IconKey,
+  IconQuote,
   IconFolder,
   IconGitBranch,
   IconGitFork,
@@ -68,6 +69,14 @@ export interface SessionContextMenuProps {
   onCopyTitle: (session: Session) => void;
   /** 拷走会话 id —— 用户把它粘进**别的**对话,那一边的模型就能按 id 读这条的记录。 */
   onCopyId: (session: Session) => void;
+  /**
+   * 把这条对话**引用**到当前打开的那条对话里（2026-09-24）。
+   *
+   * 与 {@link onCopyId} 是一对：那个把 id 交给用户自己去粘，这个**直接落成一个引用
+   * 标签**——提示词里带上标题和 id，模型自己用 `session_read_log` 去读。
+   * **只给标题 + id，不把这条对话的正文插进去**（用户明确要求：让模型自己查）。
+   */
+  onQuoteSession?: (session: Session) => void;
   onOpenFolder: (session: Session) => void;
   onTogglePin: (session: Session) => void;
   /** 把这段对话复制成新的一段(带着一模一样的历史与上下文)。**只有当这段对话用的引擎
@@ -87,7 +96,7 @@ export interface SessionContextMenuProps {
 }
 
 export function SessionContextMenu({
-  ctxMenu, onClose, onRename, onCopyTitle, onCopyId, onOpenFolder, onTogglePin, onFork,
+  ctxMenu, onClose, onRename, onCopyTitle, onCopyId, onQuoteSession, onOpenFolder, onTogglePin, onFork,
   onNewWorktreeSession, onMergeWorktree, onRenameWorktree, onRemoveWorktree,
 }: SessionContextMenuProps) {
   const { t } = useI18n();
@@ -181,6 +190,20 @@ export function SessionContextMenu({
               <IconKey size={14} className="shrink-0" />
               {t("layout.copySessionId")}
             </Menu.Item>
+            {/* 引用到当前对话（2026-09-24）—— 与上面「复制 id」是一对：那个要用户
+                自己去粘，这个直接落成引用标签。**不读正文**：只把标题 + id 给模型，
+                它自己用 session_read_log 按模式读（用户明确要求"不要直接把其他对话
+                的全部内容插入进去"）。
+                不给回调就不画（有些宿主没有"当前对话"这个概念）。 */}
+            {onQuoteSession && (
+              <Menu.Item
+                onClick={() => session && onQuoteSession(session)}
+                className={itemClass}
+              >
+                <IconQuote size={14} className="shrink-0" />
+                {t("layout.quoteSession")}
+              </Menu.Item>
+            )}
             {session?.worktreePath && onNewWorktreeSession && (
               <Menu.Item
                 onClick={() => onNewWorktreeSession(session)}

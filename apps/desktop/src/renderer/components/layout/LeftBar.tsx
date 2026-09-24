@@ -60,6 +60,7 @@ import { WorktreeMergeBackDialog, WorktreeRemoveDialog } from "@renderer/compone
 import { hexToTriplet, tripletToHex } from "@renderer/lib/colorUtils.js";
 import { formatRelativeTime, formatFullTime } from "@renderer/lib/time.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { makeQuoteTag } from "@renderer/lib/contentTag.js";
 import { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
 import type { Project, Session } from "@contracts/session";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
@@ -1068,6 +1069,29 @@ function LeftBarBase({
           void navigator.clipboard.writeText(s.id);
           setCtxMenu(null);
           useToastStore.getState().push({ kind: "info", title: t("layout.copiedSessionId") });
+        }}
+        // 引用到当前对话（2026-09-24）：**不读这条对话的正文**，只落一个引用标签，
+        // 提示词里给标题 + id，目标那边的模型自己用 `session_read_log` 按模式读。
+        // 用户明确要求「不要直接把其他对话的全部内容直接插入进去，让模型自己查」。
+        onQuoteSession={(s) => {
+          setCtxMenu(null);
+          const store = useSessionStore.getState();
+          const targetId = store.activeSessionId;
+          if (!targetId) {
+            useToastStore.getState().push({ kind: "warning", title: t("layout.quoteSessionNoTarget") });
+            return;
+          }
+          // 引用自己没意义（它就是当前对话）。**要说话**：裸 return 的话用户看到的
+          // 就是"点了没反应" —— 一个按下去什么都不发生的按钮比没有更坏。
+          if (targetId === s.id) {
+            useToastStore.getState().push({ kind: "info", title: t("layout.quoteSessionSelf") });
+            return;
+          }
+          const tag = makeQuoteTag({
+            text: "",
+            origin: { kind: "otherSession", sessionTitle: s.title, sessionId: s.id },
+          });
+          store.quoteIntoComposer(targetId, tag);
         }}
         onOpenFolder={(s) => {
           setCtxMenu(null);

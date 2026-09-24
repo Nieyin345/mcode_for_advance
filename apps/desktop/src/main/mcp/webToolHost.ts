@@ -176,7 +176,16 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
   // —— 那边没有 `agent_*` 那套文件工具,库工具是它读资料库的唯一通道,摘掉就瞎了。
   // 所以这一行只影响浏览器里的扩展/网页端(它走的是这张表)。
   const specs: McpToolSpec[] = [
-    ...workflowMcpTools(),
+    // ⚠️ **`includeSessionLogs: false`（2026-09-24）—— 读用户对话记录那组工具
+    // 不给公网。** 用户明确要求「公网不给」。
+    //
+    // 理由：这条路是**免审批**的（合成会话 `bypassPermissions`），而
+    // `session_read_log` + `session_list` 合起来 = 枚举这台机器上**每一个项目**的
+    // 对话并读它们的全文。拿到那条公网链接的人就能读光用户所有的对话记录。
+    // 从前只靠"模型拿不到 id"挡着，而 `session_list` 一加就把这道天然闸门拆了 ——
+    // 所以在**这条**通路上把整组摘掉（见 `SESSION_LOG_TOOLS`）。
+    // 桌面本机那条路照旧带着它们（`buildWorkflowMcpServer` 不传这个参数）。
+    ...workflowMcpTools({ includeSessionLogs: false }),
     ...agentMcpTools({ cwdFor: deps.cwdFor, sandboxRootFor: deps.sandboxRootFor }),
     // 测试注入的替身工具(生产为空)—— 见 `WebToolHostDeps.extraTools`。
     ...(deps.extraTools ?? []),

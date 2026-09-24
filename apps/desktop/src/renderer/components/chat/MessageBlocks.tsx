@@ -13,6 +13,7 @@ import {
   IconCheck,
   IconFile,
   IconPhoto,
+  IconQuote,
   // Tool-kind icons (left glyph of each action card).
   IconBulb,
   IconTerminal,
@@ -1261,6 +1262,10 @@ export { BlockView };
  *    edits — the editor picks the view from the extension). The full path lives
  *    in the hover title. Legacy file cards without a path fall back to the
  *    paste-style popover.
+ *  - Quote attachments (attachmentKind="quote"): a passage the user selected and
+ *    quoted in (2026-09-24). Quote icon + preview; clicking opens the same
+ *    popover. Kept distinct from paste so the user can tell "I摘来的" from
+ *    "我自己打的" when re-reading a sent message.
  *
  *  The popover uses `position: fixed` (viewport coordinates), so scrolling the
  *  message stream does NOT move it — the popover stays put while the chip
@@ -1287,6 +1292,9 @@ function AttachmentCard({
   const { t } = useI18n();
   const isFile = attachmentKind === "file";
   const isImage = isFile && !!filePath && isImageFilePath(filePath);
+  /** 用户摘来的引用（2026-09-24）—— 与 paste 同一种交互（点开看全文），
+   *  只是图标不同，好让用户一眼分得清"这是我摘的"还是"这是我打的"。 */
+  const isQuote = attachmentKind === "quote";
 
   // Non-image file cards open the file in the IDE editor (per-type view
   // handled by the editor: markdown rendered, text edited). Paste cards AND
@@ -1316,7 +1324,7 @@ function AttachmentCard({
   // TagPopover expects a ContentTag; build a minimal one from the attachment.
   const tag: ContentTag = {
     id: "attachment",
-    kind: attachmentKind === "file" ? "file" : "paste",
+    kind: attachmentKind === "file" ? "file" : attachmentKind === "quote" ? "quote" : "paste",
     preview,
     content,
     filePath,
@@ -1351,6 +1359,8 @@ function AttachmentCard({
           ) : (
             <IconFile size={12} className="opacity-80" />
           )
+        ) : isQuote ? (
+          <IconQuote size={12} className="opacity-80" />
         ) : (
           <IconClipboard size={12} className="opacity-80" />
         )}

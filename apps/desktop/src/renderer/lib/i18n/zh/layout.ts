@@ -51,6 +51,14 @@ export const zh = {
    *  (读取工具见 `session_read_log`)。 */
   "layout.copySessionId": "复制会话 id",
   "layout.copiedSessionId": "已复制对话 id",
+  /** 把这条对话**引用**到当前打开的那条对话里（2026-09-24）。
+   *  与「复制会话 id」的区别：那个是把 id 交给用户自己去粘，这个是直接落成一个引用标签，
+   *  提示词里带上标题和 id，让模型自己用 `session_read_log` 去读。 */
+  "layout.quoteSession": "引用到当前对话",
+  "layout.quoteSessionNoTarget": "先打开一条对话，再引用",
+  /** 右键的就是正在打开的那条对话 —— 引用自己没有意义。要有这句：裸 return
+   *  在用户眼里就是"点了没反应"（与 quoteSessionNoTarget 同一个道理）。 */
+  "layout.quoteSessionSelf": "这条就是当前打开的对话",
   "layout.forkSession": "复制一份对话",
   // 新对话的标题。`{title}` 是源对话的标题 —— 副本一眼看得出是从哪儿来的。
   "layout.forkSessionTitle": "{title} 副本",

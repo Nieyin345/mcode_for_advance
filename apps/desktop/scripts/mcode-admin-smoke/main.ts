@@ -963,13 +963,15 @@ async function main(): Promise<void> {
     "agent_profiles_list",
     "node_type_write",
     "node_types_list",
+    // 2026-09-24 加：列用户的对话（id + 标题 + 所属项目），与 session_read_log 配套。
+    "session_list",
     "session_read_log",
     "workflow_get",
     "workflow_list",
     "workflow_remove",
     "workflow_save",
   ];
-  eq("工具就是这十个", names.join(","), EXPECTED.join(","));
+  eq("工具就是这十一个", names.join(","), EXPECTED.join(","));
   check(
     "每个工具都有说明(模型只能靠它知道什么时候用)",
     surface.listed.every((t) => (t.description ?? "").length > 20),
@@ -985,14 +987,31 @@ async function main(): Promise<void> {
   // 加进去)只是多弹一次审批,不危险。所以两个方向都要对齐**真实注册的工具名** —— 名字
   // 打错一个字母,只读集里就多出一个永远不生效的条目,而写工具照旧弹审批。
   const WRITE = ["workflow_save", "workflow_remove", "agent_profile_save", "agent_profile_remove", "node_type_write"];
+  /**
+   * **读、但要审批**那一档（2026-09-24 新增）。
+   *
+   * `session_list` 读的是**用户的对话记录**（不是"用户自己配的东西"），所以它虽然
+   * 只读，**不能**进自动放行集 —— 放行它等于让模型不经批准就能枚举用户所有的对话。
+   * 与 `session_read_log` 不同：那条要用户先给出 id，"给 id"本身就是授权；列全表没有
+   * 这个前提。详见 `mcodeServer.ts` 里 `WORKFLOW_READONLY_TOOLS` 那段。
+   */
+  const APPROVAL_GATED_READ = ["session_list"];
   for (const read of ["workflow_list", "workflow_get", "node_types_list", "agent_profiles_list"]) {
     check(`只读集里有 ${read}`, WORKFLOW_READONLY_TOOLS.has(read));
   }
   for (const w of WRITE) check(`写工具 ${w} 不在只读集里`, !WORKFLOW_READONLY_TOOLS.has(w));
+  for (const r of APPROVAL_GATED_READ) {
+    check(`「读但要审批」的 ${r} 不在自动放行集里`, !WORKFLOW_READONLY_TOOLS.has(r));
+  }
   eq("只读集就是那五个,不多不少", WORKFLOW_READONLY_TOOLS.size, 5);
   // 这条是上一句真正想要的东西:**每一个真实存在的工具都被分过档**。新加一个工具忘了
   // 归类,它会落进"要审批"那一侧(安全的默认),而这条断言会当场说出来。
-  const unclassified = names.filter((n) => !WORKFLOW_READONLY_TOOLS.has(n) && !WRITE.includes(n));
+  const unclassified = names.filter(
+    (n) =>
+      !WORKFLOW_READONLY_TOOLS.has(n) &&
+      !WRITE.includes(n) &&
+      !APPROVAL_GATED_READ.includes(n),
+  );
   eq("没有漏归类的工具", unclassified.join(","), "");
   eq("server 名", WORKFLOW_MCP_SERVER, "mcode-workflow");
   eq("前缀是 SDK 认的那个形状", WORKFLOW_MCP_PREFIX, "mcp__mcode-workflow__");
