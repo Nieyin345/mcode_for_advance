@@ -376,7 +376,7 @@ export function restoreTemplate(kind: TemplateKind, dirName: string): TemplateOp
 /**
  * 从回收站里**彻底删掉** —— 目录连同里面的文件一起从磁盘上消失,**不可还原**。
  *
- * 这是模版库唯一不可逆的操作,所以只在回收站里提供(见 TemplateContextMenu)。
+ * 这是模版库唯一不可逆的操作,所以只在回收站里提供。
  */
 export function purgeTemplate(kind: TemplateKind, dirName: string): TemplateOpResult {
   if (invalidEntryName(dirName)) return { ok: false, error: "目录名不合法" };
