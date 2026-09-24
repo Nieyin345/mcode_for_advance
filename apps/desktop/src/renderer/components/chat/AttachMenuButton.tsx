@@ -9,7 +9,6 @@ import {
   IconFileText,
   IconPhoto,
   IconPlus,
-  IconTemplate,
   IconUserStar,
 } from "@renderer/lib/icons.js";
 import { useSuppressBrowserView } from "@renderer/hooks/useSuppressBrowserView.js";
@@ -48,7 +47,6 @@ export function AttachMenuButton({
   onPickFiles,
   onPickImages,
   onPickLibraries,
-  onPickTemplates,
   onSlashCommand,
   onNewSubChat,
 }: {
@@ -65,8 +63,6 @@ export function AttachMenuButton({
   /** 打开文献库选择器。与 onPickFiles 同款:选择器本体挂在 ChatPane 上,
    *  这里只负责发出请求 —— 因为选中结果要落成 composer 的 tag,那状态归 ChatPane。 */
   onPickLibraries: () => void;
-  /** 打开模版选择器 —— 与文献库逐字同款(见 TemplatePicker)。 */
-  onPickTemplates: () => void;
   /** Insert a `/` trigger into the editor, opening the command picker. */
   onSlashCommand: () => void;
   /**
@@ -77,7 +73,7 @@ export function AttachMenuButton({
    * 一个"事后知道了"的机会(比如切到右侧面板、弹个 toast)。缺省传 undefined 时,点了
    * 一样能建出对话来 —— 不会出现"菜单里有这一项但点了没反应"。
    *
-   * ⚠️ **别把它做成必填**:`ComposerToolbar` 的 `hasAttach` 判的是另外五个回调全在,
+   * ⚠️ **别把它做成必填**:`ComposerToolbar` 的 `hasAttach` 判的是另外四个回调全在,
    * 多一个必填的就会让没有它的那些宿主(行式设置列表、手机壳)整块「+」消失。
    */
   onNewSubChat?: (session: { id: string; title: string }) => void;
@@ -198,24 +194,9 @@ export function AttachMenuButton({
                 <IconChevronRight size={13} className="shrink-0 opacity-60" />
               </Menu.Item>
 
-              {/* 模版库 —— 与文献库同款的选择器。这里刻意**不显示条数**:模版列表是
-                  扫盘得来的(文件系统即事实源),为了一个角标在每次打开菜单时扫一遍
-                  目录不值得;选择器打开时现扫,反而更新鲜。 */}
-              <Menu.Item
-                onClick={onPickTemplates}
-                className={cn(
-                  "flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
-                  "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content",
-                )}
-              >
-                <IconTemplate size={14} className="shrink-0 opacity-80" />
-                <span className="font-medium">{t("templates.chat.addToContext")}</span>
-                <IconChevronRight size={13} className="ml-auto shrink-0 opacity-60" />
-              </Menu.Item>
-
               {/* 新建子对话 —— 开在当前会话下面,不进左栏(与右侧问答页签同一批东西,
-                  只是从这儿开也能开、而且能带一份角色档案)。**与上面两项不同**:上面
-                  两项是把内容**加进这条消息**,这一项是**另开一个对话** —— 所以它自己
+                  只是从这儿开也能开、而且能带一份角色档案)。**与上面那些不同**:上面
+                  那些是把内容**加进这条消息**,这一项是**另开一个对话** —— 所以它自己
                   隔一条分隔线,免得和"往输入框里加东西"混在一起。 */}
               <div className="my-1 border-t border-edge" />
               <Menu.Item

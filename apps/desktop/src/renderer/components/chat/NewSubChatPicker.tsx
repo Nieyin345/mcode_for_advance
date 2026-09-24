@@ -15,9 +15,9 @@
  *
  * 档案会很多(用户的每一份子 agent 配置都是一份)。平铺进「+」菜单会把菜单撑爆,而
  * 「新建子对话」本身又不是一个高频动作 —— 两级正好:先选**哪一档**,只有在选了后两档时
- * 才展开档案列表。这与「文献库」「模版」两个入口同款(都是"菜单一行 → 打开一个选择器")。
+ * 才展开档案列表。这与「文献库」那个入口同款(都是"菜单一行 → 打开一个选择器")。
  *
- * ## 形态照抄 TemplatePicker
+ * ## 形态照抄 LibraryPicker
  *
  * 同一个锚点定位(贴「+」按钮向上展开)、同一条键盘处理(捕获阶段,免得被编辑器的按键
  * 处理吃掉)、同一套"点外部关闭"。差别只有两处:这里是**单选**(挑一份就开始建),以及
@@ -52,7 +52,7 @@ interface Option {
 
 interface Props {
   open: boolean;
-  /** 「+」按钮的位置 —— 贴着它向上展开(与 LibraryPicker / TemplatePicker 同款)。 */
+  /** 「+」按钮的位置 —— 贴着它向上展开(与 LibraryPicker 同款)。 */
   anchorRect: DOMRect | null;
   /** 挑完了。调用方负责真的建那个会话(见 sessionStore 的 `createSubChat`)。 */
   onPick: (choice: SubChatChoice) => void;
@@ -193,7 +193,7 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, activeIdx, options, optionCount, onClose]);
 
-  // 点外部关闭(与 LibraryPicker / TemplatePicker 同款:document mousedown + ref.contains)
+  // 点外部关闭(与 LibraryPicker 同款:document mousedown + ref.contains)
   useEffect(() => {
     if (!open) return undefined;
     const onDown = (e: MouseEvent) => {

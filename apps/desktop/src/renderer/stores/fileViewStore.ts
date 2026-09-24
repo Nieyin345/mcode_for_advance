@@ -13,10 +13,9 @@
  *
  * ## 为什么要 store,而不是回调 prop
  *
- * 左右两边隔着好几层(左栏 `LibrarySection` / `TemplateSection`,中间
- * `UnifiedTabbedPane`),而且左栏在两套外壳里各挂一次(树 / 会话流),切一次整个
- * 重挂载。回调 prop 传不下去,只能靠 store —— 与 `templateStore.previewFile`
- * 当年那条理由逐字相同。
+ * 左右两边隔着好几层(左栏 `LibrarySection`,中间 `UnifiedTabbedPane`),
+ * 而且左栏在两套外壳里各挂一次(树 / 会话流),切一次整个重挂载。
+ * 回调 prop 传不下去,只能靠 store。
  *
  * ## 一次只看一个
  *
@@ -38,8 +37,6 @@ export type FileSource =
    * 却是 md。
    */
   | { kind: "library"; ref: string; relPath?: string; which?: "pdf" | "md" }
-  /** 模版库里的一个文件。 */
-  | { kind: "template"; ref: { kind: string; dirName: string; relPath: string } }
   /**
    * **项目里的一棵树上的文件**(右栏文件管理 / 中间编辑器那一侧的)。
    *

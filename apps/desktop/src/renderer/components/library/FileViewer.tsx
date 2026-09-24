@@ -1,39 +1,22 @@
 /**
  * **统一文件预览** —— 所有文件在中间栏走的就是这一个组件。
  *
- * ## 它合并了哪两份
+ * ## 按来源取数 → 归一 → 一套渲染分支
  *
- * 从前应用里有**两套**文件预览,都在右栏,各写各的:
+ * 两条来源:文献库条目(`library.readFile`,目录会给一份文件名列表)与项目文件
+ * (`file.readFile` / `file.readBinary`)。**渲染分支才是重复的大头**
+ * (文本/图片/pdf/office/目录/不支持,六路),所以取数分两支、渲染只有一套。
  *
- *   `library/FilePreview.tsx`  ── 文献库条目。字节走 `library.readFile`(base64),
- *                                  office 三种格式**在渲染端**解 base64 再喂预览组件。
- *   `templates/TemplatePanel.tsx` ── 模版库文件。字节走 `templates.readFile`,
- *                                  **主进程已经分好类**(office 直接给 `Uint8Array`),
- *                                  渲染端只管画。
+ * ⚠️ 从前还有第三条来源「模版库文件」(`templates.readFile`,office 由主进程直接给
+ * `Uint8Array`)—— 它随模版库并进统一资料库一起撤掉了(左栏只剩一个「资料库」入口)。
+ * `templates.readFile` / `openFile` 那几条 RPC **仍然存在**,因为库里的 `linked`
+ * 模版条目要靠它们读盘(见 `fileImport.ts` 的 `readEntryFile`),只是不再有独立的
+ * 模版预览这一支。
  *
- * 同一张 pptx,从文献库点开和从模版库点开,走的是两份代码、两条形状不同的数据。
- * 这个文件把两者收成一条:**按来源取数 → 归一到 `ViewData` → 一套渲染分支**。
+ * ## 顶栏那一条出口只给项目文件
  *
- * ## 为什么要归一,而不是"两边各留一份、外面套个壳"
- *
- * 因为**渲染分支才是重复的大头**(文本/图片/pdf/office/目录/不支持,六路)。留着两份
- * 取数、一份渲染,等于把两条路合并到"用哪条路读"这一格上 —— 那一格本来就只有一行。
- * 反过来(一份取数、两份渲染)才会留下两套会各自跑偏的画法。
- *
- * ## 目录只有文献库有
- *
- * `library.readFile` 对目录回一份文件名列表;模版库里没有"目录条目"这个概念
- * (`templates.list` 已经摊平到文件一层)。所以 `relPath` 只对 `library` 那一支有意义,
- * 模版那一支恒为根。
- *
- * ## 两个 `onOpenExternal` 为什么不一样
- *
- * 文献库的条目落在数据根下,模版文件落在模版库里 —— 各有各的"用系统程序打开"通道,
- * 而且**只有模版那条有现成的 IPC**(`templates.openFile`)。文献库那一条主进程还没有,
- * 所以那一支给的是 no-op(与 `FilePreview` 当年的处理一字不差,只是把原因写在了这里)。
- *
- * 顶栏上那两条出口也因此**只对模版画** —— 一个按下去什么都不发生的按钮比没有更坏
- * (PDF 那个组件内部的出口同理,见它签名那段)。
+ * 「用系统程序打开」走 `shell.openPath`(它自带项目根围栏)。文献库那一侧还没有对应的
+ * RPC,所以不画 —— 一个按下去什么都不发生的按钮比没有更坏。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
@@ -54,7 +37,6 @@ import {
   IconExternalLink,
   IconFile,
   IconFolder,
-  IconFolderOpen,
   IconLoader2,
 } from "@renderer/lib/icons.js";
 import { extOf, type FileViewTarget } from "@renderer/stores/fileViewStore.js";
@@ -220,97 +202,48 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
     };
   }, [target, relPath]);
 
-  /** 用系统默认程序打开。模版与**项目文件**各有一条通道（见文件头那段）。 */
+  /** 用系统默认程序打开。 */
   const openExternal = useCallback(async () => {
-    // **项目文件那条**（2026-09-21）。从前这里只认 `template`，于是项目里的
+    // 项目文件那一条（2026-09-21）。从前这里只认 `template`，于是项目里的
     // PDF 在中间预览出来后，「用系统程序打开」那个按钮**点了没反应** —— 用户报的
     // 「主页面打不开 pdf」有一部分就是它（另一部分是 `readPdf` 只认条目 id）。
     // 走 `shell.openPath`，它自带「只允许项目根」的围栏（见那个 RPC 的注释）。
-    if (target.source.kind === "project") {
-      setBusy(true);
-      try {
-        await api.shell.openPath({ path: target.source.ref });
-      } catch (err) {
-        setError((err as Error).message);
-      } finally {
-        setBusy(false);
-      }
-      return;
-    }
-    if (target.source.kind !== "template") return;
+    if (target.source.kind !== "project") return;
     setBusy(true);
     try {
-      const res = await api.templates.openFile({
-        kind: target.source.ref.kind as never,
-        dirName: target.source.ref.dirName,
-        relPath: target.source.ref.relPath,
-      });
-      if (!res.ok) setError(res.error ?? t("templates.preview.actionFailed"));
+      await api.shell.openPath({ path: target.source.ref });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError((err as Error).message);
     } finally {
       setBusy(false);
     }
-  }, [target, t]);
-
-  /** 在系统文件管理器里定位。同样只有模版那条有。 */
-  const reveal = useCallback(async () => {
-    if (target.source.kind !== "template") return;
-    setBusy(true);
-    try {
-      const res = await api.templates.reveal({
-        kind: target.source.ref.kind as never,
-        dirName: target.source.ref.dirName,
-      });
-      if (!res.ok) setError(res.error ?? t("templates.preview.actionFailed"));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }, [target, t]);
+  }, [target]);
 
   const ext = extOf(name);
 
-  // ── 顶栏:文件名 + 两条出口。**一直在** —— 加载中/失败时用户也要知道在看哪个文件,
-  //    以及能从这里出去。这也是它比原来那两份强的地方:那两份的顶栏只在成功时画。
+  // ── 顶栏:文件名 + 出口。**一直在** —— 加载中/失败时用户也要知道在看哪个文件,
+  //    以及能从这里出去。
   //
-  //    ⚠️ 两条出口**只对模版那一支画**:文献库还没有对应的 IPC(见文件头那段)。
-  //    从前这里画了但点不动 —— 一个能按下去、按了什么都不发生的按钮,比没有更坏。
-  //    什么时候主进程给文献库补上 `openFile` / `revealFile` 那个"从条目拿绝对路径"的
-  //    通道,什么时候再把它放回来。
+  //    ⚠️ 出口**只对项目文件画**。文献库还没有"从条目拿绝对路径"那个 RPC
+  //    (见文件头那段)—— 画一个按下去什么都不发生的按钮比没有更坏。
   const header = (
     <div className="flex shrink-0 items-center gap-1.5 border-b border-edge px-3 py-1.5">
       <IconFile size={13} className="shrink-0 text-content-subtle" />
       <span className="min-w-0 flex-1 truncate text-xs text-content" title={name}>
         {name}
       </span>
-      {/* **项目文件也给「用系统程序打开」**（2026-09-21）—— 从前这里只放
-          `template`，于是项目里的 PDF 在中间预览出来之后**没有任何出口**，用户读到的是
-          「主页面打不开 pdf」。它现在走 `shell.openPath`（那条自带项目根围栏）。
-          「在文件夹中显示」仍然只给模版：项目文件那一侧还没有对应的 RPC，
+      {/* 「用系统程序打开」**只给项目文件那一支**（2026-09-21）—— 它走
+          `shell.openPath`（自带项目根围栏）。文献库那一侧还没有对应的 RPC，
           画一个按下去不动的按钮比不画更坏。 */}
-      {(target.source.kind === "template" || target.source.kind === "project") && (
-        <>
-          {target.source.kind === "template" && (
-            <button
-              onClick={() => void reveal()}
-              disabled={busy}
-              title={t("settings.templates.reveal")}
-              className={headerBtn}
-            >
-              <IconFolderOpen size={12} />
-            </button>
-          )}
-          <button
-            onClick={() => void openExternal()}
-            disabled={busy}
-            title={t("templates.ctx.openExternal")}
-            className={headerBtn}
-          >
-            <IconExternalLink size={12} />
-          </button>
-        </>
+      {target.source.kind === "project" && (
+        <button
+          onClick={() => void openExternal()}
+          disabled={busy}
+          title={t("templates.ctx.openExternal")}
+          className={headerBtn}
+        >
+          <IconExternalLink size={12} />
+        </button>
       )}
     </div>
   );
@@ -385,7 +318,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
     }
 
     if (data.type === "text") {
-      // 空文件要说出来 —— 一张白板子和"坏了"在界面上长得一模一样(同 TemplatePanel)。
+      // 空文件要说出来 —— 一张白板子和"坏了"在界面上长得一模一样。
       if (data.text.trim().length === 0) {
         return (
           <div className="p-4 text-[0.8571em] text-content-muted">{t("templates.preview.emptyFile")}</div>
@@ -393,7 +326,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
       }
       // md 走聊天那套渲染(标题/表格/代码块都在);其余原样等宽摆出来。
       // ⚠️ 不把 .tex / .cls 之类也塞进 Markdown 渲染:`#` 在 LaTeX 里是宏参数,
-      //    重排之后那份源码就没法读了(同 TemplatePanel 当年那条注释)。
+      //    重排之后那份源码就没法读了。
       if (ext === "md" || ext === "markdown") {
         return (
           // ⚠️ **滚动容器交给 `ChunkedMarkdown` 自己**（`scroll="self"` 是默认值）。
@@ -581,40 +514,8 @@ async function loadViewData(
   if (target.source.kind === "project") {
     return { data: await loadProjectFileData(target.source.ref) };
   }
-
-  const res = await api.templates.readFile({
-    kind: target.source.ref.kind as never,
-    dirName: target.source.ref.dirName,
-    relPath: target.source.ref.relPath,
-  });
-  // 模版那条**主进程已经分好类**:office 直接给 Uint8Array,连 mime 都是现成的。
-  // 但它没有 mime 字段,所以 office 那三支靠扩展名认(下面的渲染分支两种都认)。
-  if (res.kind === "text") return { data: { type: "text", text: res.text } };
-  if (res.kind === "image") {
-    // data URL → base64 那一段。`image` 那一支和 `binary` 共用渲染分支。
-    const comma = res.dataUrl.indexOf(",");
-    const base64 = comma >= 0 ? res.dataUrl.slice(comma + 1) : "";
-    const mime = /^data:([^;,]+)/.exec(res.dataUrl)?.[1] ?? "image/png";
-    return { data: { type: "binary", mime, base64, bytes: base64ToBytes(base64) } };
-  }
-  if (res.kind === "unsupported") {
-    return {
-      data: {
-        type: "unsupported",
-        error:
-          res.reason === "tooLarge"
-            ? `文件太大,看不了(${Math.round(res.size / 1024 / 1024)} MB)`
-            : "这个格式没法在应用里预览。",
-      },
-    };
-  }
-  const mime =
-    res.kind === "docx"
-      ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-      : res.kind === "pptx"
-        ? "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-        : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-  return { data: { type: "binary", mime, base64: "", bytes: res.data } };
+  // 两种来源都处理完了 —— 走到这儿说明 `FileSource` 加了新成员却没在这里接。
+  throw new Error("不认识的预览来源");
 }
 
 /**

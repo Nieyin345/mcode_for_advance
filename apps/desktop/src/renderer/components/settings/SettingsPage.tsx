@@ -72,7 +72,7 @@ import { MemoryExplorerPanel } from "../memory/MemoryExplorerPanel.js";
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "data-root" | "library-types" | "runtimes" | "custom-models" | "institution" | "library" | "templates" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
+type SectionId = "general" | "data-root" | "library-types" | "runtimes" | "custom-models" | "institution" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -293,11 +293,7 @@ export function SettingsPage() {
           {active === "general" && <GeneralPanel />}
           {active === "appearance" && <AppearancePanel />}
           {active === "custom-models" && <CustomModelsPanel />}
-          {/* 文献库 / 模版库 / 数据位置 是同一件事(数据根下的三样东西),合并成一页。
-              保留三个 id 是为了老的深链不落空。 */}
-          {(active === "data-root" || active === "library" || active === "templates") && (
-            <DataRootPanel />
-          )}
+          {active === "data-root" && <DataRootPanel />}
           {active === "library-types" && <LibraryTypesPanel />}
           {active === "institution" && <InstitutionAuthPanel />}
           {active === "shortcuts" && <ShortcutsPanel />}

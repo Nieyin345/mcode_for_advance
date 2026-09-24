@@ -53,7 +53,6 @@ export function ComposerToolbar({
   onPickFiles,
   onPickImages,
   onPickLibraries,
-  onPickTemplates,
   onSlashCommand,
   onNewSubChat,
 }: {
@@ -71,8 +70,6 @@ export function ComposerToolbar({
   onPickFiles?: () => void;
   onPickImages?: () => void;
   onPickLibraries?: () => void;
-  /** 模版选择器 —— 与文献库并列的第二个「库」(见 TemplatePicker)。 */
-  onPickTemplates?: () => void;
   onSlashCommand?: () => void;
   /**
    * 「新建子对话」建好之后的通知 —— **可选,缺省什么都不做**。
@@ -139,7 +136,7 @@ export function ComposerToolbar({
   // every width); labels collapse under `compact` via CSS grid shells keyed
   // off data-compact.
   const hasAttach =
-    !!onPickFiles && !!onPickImages && !!onPickLibraries && !!onPickTemplates && !!onSlashCommand;
+    !!onPickFiles && !!onPickImages && !!onPickLibraries && !!onSlashCommand;
   return (
     <div className="composer-minipill" data-compact={compact ? "1" : "0"}>
       {hasAttach && (
@@ -150,7 +147,6 @@ export function ComposerToolbar({
             onPickFiles={onPickFiles}
             onPickImages={onPickImages}
             onPickLibraries={onPickLibraries}
-            onPickTemplates={onPickTemplates}
             onSlashCommand={onSlashCommand}
             onNewSubChat={onNewSubChat}
           />

@@ -1252,6 +1252,48 @@ append 的是：身份、文件架构、Windows 路径提示、计划模式提�
 
 ---
 
+### 3.12 撤掉「模版库」这个独立入口（2026-09-24）
+
+**用户的原话**：「我一直以为我的文档系统已经完成了，然后你说还有 template 的入口」、
+「正常情况是没有这些标签的呀，只有一个入口，里面就算是标签也是各种分级标签」。
+
+**核对结论：用户是对的，而且三级结构本来就是对的。** 左栏「资料库」早就是
+**大类 → 小类 → collection**，第四级（子集合）早先已按用户纠正撤掉
+（`CollectionContextMenu.tsx:269` 的注释里留着原话）。用户的**数据层也早统一了**：
+`library.templatesMigrated = 1`，4 条模版已作为 `linked` 条目进统一库，指向
+`~/Mcode/templates/*`；他的大类表里「模版」那一组自己已删。
+
+**真正的问题只剩一处：聊天框「+」菜单里还杵着第二个「模版库」入口**，而它走的是
+**老目录扫描**（`TemplatePicker` → `api.templates.list`），与统一库读的**不是同一条路**。
+那才是用户看到的那根刺。
+
+做的（**只删入口与老读径，不迁移文件、不动数据**）：
+
+| 删除 | 说明 |
+|---|---|
+| `chat/TemplatePicker.tsx` | 那个第二入口的选择器 |
+| `templates/TemplateSection.tsx` / `TemplateContextMenu.tsx` / `TemplateFileContextMenu.tsx` | 左栏旧模版段，早已不挂载 |
+| `stores/templateStore.ts` | 只服务上面几个 |
+| `attachToChat.ts` 的 `attachTemplateToCurrentChat` | 唯一调用者是已删的 `TemplateContextMenu` |
+| `fileViewStore` 的 `{kind:"template"}` 来源分支 + `FileViewer` 的模版那一支 | 设置者已删，不可达 |
+| `SettingsPage` 的 `"library"` / `"templates"` 两个 `SectionId` | 导航项早就没了 |
+| **40 个孤儿 i18n key**（`templates.chat.*` / `templates.section.*` / `templates.ctx.*` / `templates.preview.*` / `settings.templates.*` 的大部分） | 零引用 |
+
+**必须保留**（删了会坏，已逐个核过）：`templates/store.ts` + `ipc/templates.ts`
+（统一库读 `linked` 模版条目走 `templates.readFile`/`openFile`/`reveal`）、
+`ChatPane` 里 `appendTemplateTagByKey` 那条（`templates_attach_to_chat` MCP 工具还在用）、
+`Docx/Pptx/XlsxPreview`（统一库的预览走它们）、**`<数据根>/templates` 目录本身**
+（装着库里 4 条 `linked` 条目的真文件）。
+
+**验证**：双包 typecheck ✅；全量 smoke **92/92** ✅；
+新建的浏览器预览台（`.tmp/menu-preview/`，headless Edge 真渲染）断言「+」菜单
+——「模版库」没了、库入口唯一、其余四项都在、没留连着两条分隔线；
+**变异验证过**（把那一项加回去，断言①确实变红，再还原逐字节一致）。
+
+净值 **−1790 行**。
+
+---
+
 ## 五、要守的规矩（这些救过场）
 
 来自 `CLAUDE.md` 和 `MCode-Status-and-Plan.md`，改 UI 时同样适用：

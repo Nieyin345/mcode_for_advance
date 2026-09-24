@@ -1757,8 +1757,8 @@ function NewGroupFallback({ onCreate }: { onCreate: (name: string) => void }) {
  * 左栏的整个「资料库」区域:**一段一个大类**,按组表循环渲染 LibrarySection。
  *
  * 组表来自主进程(`groupsGet`;出厂两组「文档 / 模版」,左栏右键可增删改)。
- * 旧的独立模版段(TemplateSection)已并进组里 —— 它那五类数据由主进程启动时自动
- * 迁移进统一库(标记 `library.templatesMigrated`),组件文件保留但不再挂载。
+ * 旧的独立模版段已并进组里 —— 它那五类数据由主进程启动时自动
+ * 迁移进统一库(标记 `library.templatesMigrated`),那个组件已删除(2026-09-24)。
  *
  * 类型注册表在这里拉**一次**、往下传:各段共用一份,不必每段自己发请求。
  * 左栏的管理操作(大类/小类的新建删除改名)落库后回调 `reload` 重拉两份表,

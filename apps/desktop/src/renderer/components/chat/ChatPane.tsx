@@ -30,14 +30,12 @@ import { useComposerRowFit } from "@renderer/hooks/useComposerRowFit.js";
 import type { SubagentSnapshot } from "@contracts/runtime";
 import type { SessionBookmark } from "@contracts/session";
 import type { FileSearchEntry } from "@contracts/ipc";
-import type { TemplateKind } from "@contracts/templates";
 import { prepareImageForSend } from "@renderer/lib/imageResize.js";
 import type { PromptImage } from "@renderer/stores/sessionStore.js";
 import {
   type ContentTag,
   appendUniqueFileTags,
   appendUniqueLibraryTags,
-  appendUniqueTemplateTags,
   appendTemplateTagByKey,
   composePromptWithTags,
   makeContentTag,
@@ -72,7 +70,6 @@ import { LibraryPicker } from "./LibraryPicker.js";
 import { SearchFilterBar } from "./SearchFilterBar.js";
 import { templateAttachChipLabel } from "@renderer/lib/templateLabels.js";
 import { libraryAttachChipLabel } from "@renderer/lib/libraryLabels.js";
-import { TemplatePicker } from "./TemplatePicker.js";
 import { EmptyThreadWelcome } from "./EmptyThreadWelcome.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { ActivityCluster } from "./ActivityCluster.js";
@@ -1720,8 +1717,6 @@ function ChatPaneForSession({
   /** 文献库选择器的开关。与 attachPickerOpen 平级 —— 两者都由「+」菜单唤起,
    *  但选择器本体挂在 ChatPane 上(选中结果要落成 composer 的 tag)。 */
   const [libraryPickerOpen, setLibraryPickerOpen] = useState(false);
-  /** 模版选择器 —— 同上,第二个「+」菜单入口。 */
-  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   const [attachPickerQuery, setAttachPickerQuery] = useState("");
   const [attachAnchor, setAttachAnchor] = useState<DOMRect | null>(null);
   // Content tags: long/multi-line pastes promoted to chips above the
@@ -2602,14 +2597,14 @@ function ChatPaneForSession({
   /**
    * 有人往这次对话挂了一个附件 —— 落成输入框里的一个标签。
    *
-   * 两个来源:AI(文献库的 `library_attach_to_chat` 工具)和**用户自己**(左栏的
-   * 右键「添加到当前对话」,文献库与模版都有)。两条都走 `composer:attach`,所以
+   * 两个来源:AI(文献库的 `library_attach_to_chat` / `templates_attach_to_chat` 工具)
+   * 和**用户自己**(左栏的右键「添加到当前对话」)。两条都走 `composer:attach`,所以
    * 这里只按 `msg.kind` 分到对应的去重函数上 —— 文献库和模版的 chip 长得不一样、
    * 去重键也不同,别的行为(能删、随下一条消息作为 `@清单路径` 发出去)完全一样。
    *
-   * 走的都是和用户自己点「+」(`handlePickLibraries` / `handlePickTemplates`)**同一个**
-   * 追加函数:同样的去重键、同样的 chip、同样能删。用户的原话是「ai 挂的话……就是
-   * 和用户操作一下的效果」—— 所以不另开一套呈现方式。
+   * 走的都是和用户自己点「+」(`handlePickLibraries`)**同一个**追加函数:同样的去重键、
+   * 同样的 chip、同样能删。用户的原话是「ai 挂的话……就是和用户操作一下的效果」
+   * —— 所以不另开一套呈现方式。
    *
    * 只认发给自己会话的那条:别的会话不该凭空多一个附件。挂的时候如果这个会话已经
    * 挂过同一个库,去重函数自己会跳过。
@@ -2645,40 +2640,6 @@ function ChatPaneForSession({
     });
     return off;
   }, [sessionId]);
-
-  /** 从「+」菜单打开模版选择器。锚点同样复用 attachAnchor(同一个 + 按钮)。 */
-  const openTemplatePicker = useCallback(() => {
-    if (inputBlocked) return;
-    const rect = editorRef.current?.getRect();
-    if (rect) setAttachAnchor(rect);
-    setTemplatePickerOpen(true);
-  }, [inputBlocked]);
-
-  /**
-   * 模版选择器确认 —— 逐字照搬上面的 `handlePickLibraries`。
-   *
-   * 每个模版先在主进程生成一份清单(列全文件 + 内联小文件的正文),然后落成一个
-   * content tag,tag 的 content 只有一行 `@清单路径`。所以一次加五份模版也不会把
-   * 上下文撑爆 —— AI 需要哪份再 Read 哪份,而且清单里已经有正文,往往连 Read 都省了。
-   */
-  const handlePickTemplates = useCallback(
-    async (picked: Array<{ kind: TemplateKind; dirName: string }>) => {
-      if (picked.length === 0) return;
-      const resolved: Array<{ kind: TemplateKind; dirName: string; manifestPath: string }> = [];
-      for (const p of picked) {
-        try {
-          const res = await api.templates.manifest({ kind: p.kind, dirName: p.dirName });
-          resolved.push({ kind: p.kind, dirName: p.dirName, manifestPath: res.path });
-        } catch (err) {
-          // 单个模版失败不该拖垮整批 —— 其余的照常加进去
-          console.error(`templates.manifest failed for ${p.kind}/${p.dirName}:`, err);
-        }
-      }
-      if (resolved.length === 0) return;
-      setTags((prev) => appendUniqueTemplateTags(prev, resolved));
-    },
-    [],
-  );
 
   /** 在光标处插入触发字符(`/` 或 `@`),交给 recomputePicker 打开对应的
    *  内联选择器 — 与手动输入走完全相同的链路,选中插入 / 关闭等行为全部
@@ -4371,7 +4332,6 @@ function ChatPaneForSession({
                     onPickFiles={openAttachPicker}
                     onPickImages={() => void handlePickImages()}
                     onPickLibraries={openLibraryPicker}
-                    onPickTemplates={openTemplatePicker}
                     onSlashCommand={() => insertTriggerChar("/")}
                     onNewSubChat={onNewSubChatCreated}
                   />
@@ -4517,18 +4477,6 @@ function ChatPaneForSession({
               .map((t) => t.collectionId as string)}
             onPick={(ids) => void handlePickLibraries(ids)}
             onClose={() => setLibraryPickerOpen(false)}
-          />
-          {/* 模版选择器 —— 与文献库选择器同款,同样由「+」菜单唤起。区别只有两点:
-              多了类目(五个类目平铺在一条列表里,带类目标签、可被搜索),以及
-              每次打开重新扫盘(模版库是「文件系统即事实源」)。 */}
-          <TemplatePicker
-            open={templatePickerOpen}
-            anchorRect={attachAnchor}
-            excludeKeys={tags
-              .filter((t) => t.kind === "template" && t.templateKey)
-              .map((t) => t.templateKey as string)}
-            onPick={(entries) => void handlePickTemplates(entries)}
-            onClose={() => setTemplatePickerOpen(false)}
           />
         </div>
       </div>
