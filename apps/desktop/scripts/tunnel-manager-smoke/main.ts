@@ -245,6 +245,45 @@ await new Promise((r) => setTimeout(r, 1400));
 eq("…重连真的又起了一条(第二次 spawn)", procs.length, 2);
 procs[1]?.emitLog("https://second-after-reconnect.trycloudflare.com");
 eq("…新隧道就绪,域名换了", tunnelStatus().url, "https://second-after-reconnect.trycloudflare.com");
+stopTunnel();
+
+/* ── ⚠️ **重连有上限,到点要真的放弃** ──────────────────────────────
+   这条钉的是 2026-09-24 自查出来的一个真 bug:`startTunnel` 无条件把 `reconnectAttempt`
+   归零,而重连回调最后也是调它 —— 于是每轮重连都把自己刚加的那次抹掉,上限**永远
+   到不了** = 无限重试(而注释写着"不无限重试")。
+
+   触发它只要**连着让隧道起来→掉**两次以上**:上限是 6,但那个 bug 下计数永远是 1。 */
+procs = [];
+configureTunnelDeps({
+  findCloudflared: () => "cloudflared",
+  spawnTunnel: () => {
+    const p = new FakeProc();
+    procs.push(p);
+    return p as unknown as import("node:child_process").ChildProcess;
+  },
+  readyTimeoutMs: 60_000,
+});
+startTunnel(21);
+// 反复"起来(拿到域名) → 掉" —— 每次重连前把计数往上涨。
+procs[0]?.emitLog("https://cycle-1.trycloudflare.com");
+eq("第 1 条起来", tunnelStatus().phase, "ready");
+procs[0]?.close(1);
+eq("…掉了 → reconnecting", tunnelStatus().phase, "reconnecting");
+check(
+  "…状态里报的是第 1 次",
+  (tunnelStatus().error ?? "").includes("第 1/"),
+  tunnelStatus().error,
+);
+await new Promise((r) => setTimeout(r, 1200));
+// 重连起来的第 2 条:这次**不给域名**(模拟一直起不来),让它超时再排 —— 但为了快,
+// 直接 close 掉,让它走"断了再排"那条。
+procs[1]?.close(1);
+check(
+  "…第 2 次重连时报的是第 2 次(计数没有被上一轮抹掉)",
+  (tunnelStatus().error ?? "").includes("第 2/"),
+  tunnelStatus().error,
+);
+stopTunnel();
 
 /* ── ⚠️ 用户主动停,绝不重连 ───────────────────────────────────── */
 const beforeStop = procs.length;

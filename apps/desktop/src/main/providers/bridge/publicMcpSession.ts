@@ -233,8 +233,24 @@ export function initPublicMcp(): void {
 
   // 开关开着就顺手起好(与扩展桥"别等用户点开设置页"同一个理由:用户重启应用后
   // 期望它还在听)。失败不拦启动 —— 记日志即可。
+  //
+  // ⚠️ **必须先备好合成会话,再起服务**(与 `setPublicMcpEnabled` 同一步骤、同一顺序)。
+  //
+  // 这里原先只 `startPublicMcp()` —— 于是**重启之后**开关虽然是 on、服务也在听,但那条
+  // 合成会话没人建(或者指向一个被用户删掉的旧会话)。`publicMcpServer` 拿不到会话 id
+  // 就回 503,**每一次工具调用都失败**,而用户看到的只是"连上了但调不动"
+  // (2026-09-24 自查发现:两条启动路径行为不一致)。
   if (store.getEnabled()) {
-    void startPublicMcp().catch((err) => {
+    void (async () => {
+      try {
+        ensureSyntheticSession();
+      } catch (err) {
+        // 建不了会话(比如一个项目都没有)—— 记下来。服务还是起,但调用会被 503 挡住,
+        // 那条路径自己的日志会说清原因。
+        log.error(`public mcp: 自动启动时建合成会话失败: ${(err as Error).message}`);
+      }
+      await startPublicMcp();
+    })().catch((err) => {
       log.error(`public mcp: auto-start failed: ${(err as Error).message}`);
     });
   }

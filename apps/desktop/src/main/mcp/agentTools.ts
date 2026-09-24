@@ -37,6 +37,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { createInterface as createReadlineInterface } from "node:readline";
+import { StringDecoder } from "node:string_decoder";
 import { z } from "zod";
 import {
   defaultSkillsRoot,
@@ -514,8 +515,13 @@ async function runCaptured(exe: string, args: string[], timeoutMs = 10_000): Pro
       try { child.kill("SIGKILL"); } catch { /* already gone */ }
       reject(new Error(`${exe} 超过 ${timeoutMs}ms 没结束`));
     }, timeoutMs);
-    child.stdout.on("data", (d: Buffer) => { if (stdout.length < cap) stdout += d.toString("utf8"); });
-    child.stderr.on("data", (d: Buffer) => { if (stderr.length < cap) stderr += d.toString("utf8"); });
+    // 每条流一个解码器 —— 抗「多字节字符被 chunk 边界切断」(见 `appendDecoded`)。
+    const outAcc = { text: stdout };
+    const errAcc = { text: stderr };
+    const outDec = newDecoder();
+    const errDec = newDecoder();
+    child.stdout.on("data", (d: Buffer) => { appendDecoded(outAcc, outDec, d, cap); stdout = outAcc.text; });
+    child.stderr.on("data", (d: Buffer) => { appendDecoded(errAcc, errDec, d, cap); stderr = errAcc.text; });
     child.once("error", (err) => {
       if (settled) return;
       settled = true;
@@ -790,6 +796,36 @@ interface WalkHit {
   abs: string;
   rel: string;
   isDir: boolean;
+}
+
+/**
+ * 把子进程的一批字节**安全地**接到累积字符串上。
+ *
+ * `data` 事件的边界可以落在一个多字节字符的中间 —— 直接 `d.toString()` 会把那个字符
+ * 切成两半、各自变成 `U+FFFD`,而这段文本是要交给模型的(还可能落进 `stdout` 字段),
+ * **损坏了就是永久的**。`StringDecoder` 会把不完整的尾巴留到下一批,正是干这个的。
+ *
+ * `decoder` 由调用方持有 —— **每条流各一份**,不能共用(`agent_bash` 与
+ * `runCaptured` 都各带自己的那两个)。
+ *
+ * `cap` 是累计上限:到了就不再接(与原来那句 `if (len < cap)` 同一个判据)。
+ */
+function appendDecoded(
+  acc: { text: string },
+  decoder: StringDecoder,
+  chunk: Buffer | string,
+  cap: number,
+  prefix = "",
+): void {
+  if (acc.text.length >= cap) return;
+  const text = decoder.write(typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk);
+  if (!text) return;
+  acc.text += prefix + text;
+}
+
+/** 每条流一个解码器(`appendDecoded` 用)。 */
+function newDecoder(): StringDecoder {
+  return new StringDecoder("utf8");
 }
 
 /**
@@ -1144,8 +1180,14 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         }>;
       }, ctx) =>
         attempt(async () => {
-          const cwd = cwdOf(ctx);
+          // ⚠️ **相对路径的基准必须是沙箱根,不是 `cwdOf`** —— 与 `pOf` 同款。
+          //
+          // 这里原来写的是 `resolveAgainstCwd(cwdOf(ctx), rel, sandbox)`:用**过期的
+          // lastCwd** 解析、却按**沙箱**校验 → 公网会话里每一个相对路径都被判越界,
+          // 也就是"agent_write_pdf 永远用不了"(2026-09-24 审查发现,它是 pOf 之外
+          // 唯一漏改的一处)。
           const sandbox = sandboxOf(ctx);
+          const cwd = sandbox ?? cwdOf(ctx);
           const p = (rel: string): string => resolveAgainstCwd(cwd, rel, sandbox);
           const operations: AgentPdfOperation[] | undefined = args.operations?.map((op) => {
             if (op.type === "delete") {
@@ -1629,7 +1671,12 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
               // 可以指向别处(`> /other/x`)。所以这里额外做一道**写目标检查**:
               // 见下面那个 guard。
               const sandbox = sandboxOf(ctx);
-              const cwd = resolveAgainstCwd(sandbox ?? cwdOf(ctx), args.cwd ?? ".");
+              // ⚠️ **第三参必须给 `sandbox`** —— `resolveAgainstCwd` 的 `root` 默认是
+              // null(不检查),只传两个参数的话**命令自己的 cwd 就不受沙箱约束**:
+              // `{cwd: "D:\\other", command: "echo x > out.txt"}` 会真的写到 D:\other,
+              // 而下面那个重定向检查算的是"相对沙箱"的路径、正好放行 —— 写边界被一个
+              // `cwd` 参数绕过去(2026-09-24 审查发现)。
+              const cwd = resolveAgainstCwd(sandbox ?? cwdOf(ctx), args.cwd ?? ".", sandbox);
               // **重定向目标也要落在沙箱里** —— 只有公网那条路(有沙箱)才查。
               //
               // 复用的是 Pi 那条路早就有的 `extractBashWriteTargets`(不写第二份解析器,
@@ -1653,9 +1700,14 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
                 windowsHide: true,
                 env: { ...process.env },
               });
-              let stdout = "";
-              let stderr = "";
               let settled = false;
+              // 每条流一个解码器 + 一个累积盒 —— 抗"多字节字符被 chunk 边界切断"
+              // (见 `appendDecoded`)。挂在这次调用上,不与别的调用共用。
+              // **只用 acc,不留一份镜像的 `stdout` 变量** —— 两份会漂。
+              const bashOutAcc = { text: "" };
+              const bashErrAcc = { text: "" };
+              const bashOutDec = newDecoder();
+              const bashErrDec = newDecoder();
               const timer = setTimeout(() => {
                 if (settled) return;
                 settled = true;
@@ -1663,10 +1715,10 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
                 reject(new Error(`命令超过 ${timeout}ms 没跑完,已终止;可拆成多步或加大 timeout_ms 重试`));
               }, timeout);
               child.stdout.on("data", (d: Buffer) => {
-                if (stdout.length < MAX_OUTPUT_CHARS * 2) stdout += d.toString("utf-8");
+                appendDecoded(bashOutAcc, bashOutDec, d, MAX_OUTPUT_CHARS * 2);
               });
               child.stderr.on("data", (d: Buffer) => {
-                if (stderr.length < MAX_OUTPUT_CHARS * 2) stderr += d.toString("utf-8");
+                appendDecoded(bashErrAcc, bashErrDec, d, MAX_OUTPUT_CHARS * 2);
               });
               child.on("error", (err) => {
                 if (settled) return;
@@ -1678,6 +1730,8 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
                 if (settled) return;
                 settled = true;
                 clearTimeout(timer);
+                const stdout = bashOutAcc.text;
+                const stderr = bashErrAcc.text;
                 const parts = [`exit: ${code ?? "null"}`];
                 if (stdout.trim()) parts.push(`--- stdout ---\n${truncateOutput(stdout.trim(), "stdout")}`);
                 if (stderr.trim()) parts.push(`--- stderr ---\n${truncateOutput(stderr.trim(), "stderr")}`);
@@ -1717,8 +1771,9 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       },
       handler: (args: { command: string; cwd?: string; timeout_ms?: number; wait_ms?: number }, ctx) =>
         attemptStructured(async () => {
-          // 同 agent_bash:持久进程的 cwd 不套沙箱(见 resolveAgainstCwd 那段)。
-          const cwd = resolveAgainstCwd(sandboxOf(ctx) ?? cwdOf(ctx), args.cwd ?? ".");
+          // 同 agent_bash:cwd 也要落在沙箱里(第三参给上,否则 `cwd` 参数能绕出去)。
+          const sandbox = sandboxOf(ctx);
+          const cwd = resolveAgainstCwd(sandbox ?? cwdOf(ctx), args.cwd ?? ".", sandbox);
           const out = await processes.start({
             ownerSessionId: ctx.sessionId,
             command: args.command,

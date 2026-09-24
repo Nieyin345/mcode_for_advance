@@ -7,6 +7,29 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
+
+/**
+ * `data` 事件给的是**字节块**,边界可以落在**一个多字节字符的中间**。
+ *
+ * 直接 `chunk.toString()` 会把那个字符切成两半、各自变成 `U+FFFD`,而这份缓冲是交给
+ * 模型的日志 —— 损坏了就**永久**损坏(`next_cursor` 续读也拿不回来)。`StringDecoder`
+ * 会把不完整的尾巴留到下一块,正是干这个的。
+ *
+ * ⚠️ **每个进程会话、每条流各一份**(挂在 {@link ProcessSession} 上,不是模块级):
+ * 模块级的话,进程 A stdout 留下的半个字符会被进程 B 的第一批字节补完 —— 串味,
+ * 而且比不修还难查。
+ *
+ * (2026-09-24 审查发现;`agent_bash` 那处同款问题见那边。)
+ */
+function newDecoder(): StringDecoder {
+  return new StringDecoder("utf8");
+}
+
+/** `data` 回调按 Node 的类型可以是 string(设了 encoding 时)——统一成 Buffer 喂解码器。 */
+function toBuf(chunk: Buffer | string): Buffer {
+  return typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
+}
 
 export const DEFAULT_PROCESS_TIMEOUT_MS = 10 * 60_000;
 export const MAX_PROCESS_TIMEOUT_MS = 60 * 60_000;
@@ -51,6 +74,10 @@ type ProcessStatus = "running" | "exited" | "stopped" | "timed_out" | "failed";
 
 interface ProcessSession {
   id: string;
+  /** stdout / stderr 各自的**流式**解码器 —— 扛跨界多字节字符,见 `newDecoder`。
+   *  挂在会话上(不是模块级),否则两个进程的半个字符会互相补完、串味。 */
+  stdoutDecoder: StringDecoder;
+  stderrDecoder: StringDecoder;
   ownerSessionId: string;
   command: string;
   cwd: string;
@@ -363,12 +390,18 @@ export function createAgentProcessSessions(): AgentProcessSessions {
         endCursor: 0,
         timeout: setTimeout(() => undefined, 0),
         waiters: new Set(),
+        stdoutDecoder: newDecoder(),
+        stderrDecoder: newDecoder(),
       };
       clearTimeout(session.timeout);
       sessions.set(id, session);
 
-      child.stdout?.on("data", (chunk: Buffer | string) => append(session, chunk.toString()));
-      child.stderr?.on("data", (chunk: Buffer | string) => append(session, `[stderr] ${chunk.toString()}`));
+      child.stdout?.on("data", (chunk: Buffer | string) =>
+        append(session, session.stdoutDecoder.write(toBuf(chunk))),
+      );
+      child.stderr?.on("data", (chunk: Buffer | string) =>
+        append(session, `[stderr] ${session.stderrDecoder.write(toBuf(chunk))}`),
+      );
       child.on("error", (err) => {
         append(session, `\n[process error] ${err.message}\n`);
         finalize(session, "failed", null, null);

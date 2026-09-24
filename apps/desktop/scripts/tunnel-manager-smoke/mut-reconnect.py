@@ -11,6 +11,9 @@ MUT = [
     ('R1 隧道掉了不重连(退回"只标 failed"的老行为)',
      "    if (livePort !== null) {\n      scheduleReconnect(livePort, code);\n      return;\n    }",
      "    // MUTANT: 不重连"),
+    ('R2 重连时也把计数清零(退回"上限永远到不了"的无限重试)',
+     "  if (!isReconnect) reconnectAttempt = 0;",
+     "  reconnectAttempt = 0;"),
     # ⚠️ **这里本来还想加一条**「停止时不清 livePort」的变异 —— 撤掉它、看断言是否变红。
     # 但**验不到**:假进程的 `kill()` 只设 exitCode、不 emit `close`(见 FakeProc),
     # 所以 `stopTunnel → killChild` 在测试里压根走不到 close 处理器那条保护路径。

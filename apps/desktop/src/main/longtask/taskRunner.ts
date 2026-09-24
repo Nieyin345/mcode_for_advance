@@ -199,7 +199,15 @@ class LongTaskRunner {
       // 节点会话被 hold 的 turn.done 不是真正的回合边界;能挂任务的只有 chat/side,
       // 正常不会被 hold。防御一行,同 automationRunner 的判据。
       if (runtimeManager.isTurnEndHeld(e.sessionId)) return;
-      void this.onTurnDone(e.sessionId, entry, e.reason);
+      // ⚠️ **`void` 后面必须接 `.catch`。**
+      //
+      // 上面那层 try/catch(见 `start()` 里 `this.onEvent(e)`)只覆盖到**同步**这一段
+      // —— `onTurnDone` 是个 async 方法,它体内抛错会变成一个**未处理的 rejection**,
+      // 而任务就永远停在 running(2026-09-24 审查发现,和 `sendContinuation` 那条
+      // 同一个形状的坑,那条当时给 `.catch` 了,这条漏了)。
+      void this.onTurnDone(e.sessionId, entry, e.reason).catch((err: unknown) => {
+        log.error(`[longtask] 回合收场处理失败:${(err as Error).message}`);
+      });
       return;
     }
   }
@@ -332,19 +340,24 @@ class LongTaskRunner {
       // 现在:异常也**必须**给任务收个尾。选 `blocked` 而不是别的 —— 语义是"卡住了、
       // 需要人来推一把",用户手动发一句「继续」就能接上(与上面"会话忙"那条分支同一个
       // 语义、同一句提示)。
+      // ⚠️ **用闭包里捕获的 `entry`,不要 `this.active.get(sessionId)` 重取。**
+      //
+      // 重取会拿到**现在**挂在那个会话上的任务 —— 而如果是"续轮出错的同时用户停了
+      // 又重挂了一个新任务",重取到的就是**新任务**,于是它被平白标成 blocked 并踢出
+      // active(2026-09-24 审查发现)。该收尾的是**出错的那一个**。
       log.error(`[longtask] 续轮失败:${(err as Error).message}`);
       try {
-        const entry = this.active.get(sessionId);
-        if (entry) {
+        // 只在这个 entry 还真的挂在 active 上时才动它 —— 已经被别处收过了就别重复。
+        if (this.active.get(sessionId) === entry) {
           this.active.delete(sessionId);
-          if (entry.timer !== undefined) clearTimeout(entry.timer);
-          const done = LongTaskRepo.finish(
-            entry.id,
-            "blocked",
-            `续轮出错(${(err as Error).message})—— 可在对话里发「继续」接上`,
-          );
-          if (done) this.emit(done);
         }
+        if (entry.timer !== undefined) clearTimeout(entry.timer);
+        const done = LongTaskRepo.finish(
+          entry.id,
+          "blocked",
+          `续轮出错(${(err as Error).message})—— 可在对话里发「继续」接上`,
+        );
+        if (done) this.emit(done);
       } catch (cleanupErr) {
         // 收尾本身再炸就真没办法了 —— 但仍要记下来,别静默。
         log.error(`[longtask] 续轮失败后的收尾也失败:${(cleanupErr as Error).message}`);

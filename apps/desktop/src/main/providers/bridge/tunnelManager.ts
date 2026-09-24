@@ -166,15 +166,24 @@ function clearTimer(): void {
   }
 }
 
-/** 起隧道。已就绪/正在起时是幂等的(不会起第二条)。 */
-export function startTunnel(localPort: number): TunnelStatus {
+/** 起隧道。已就绪/正在起时是幂等的(不会起第二条)。
+ *
+ *  `isReconnect` 是**重连回调内部用的** —— 见下面 `reconnectAttempt` 那段:
+ *  用户主动开才把重试计数归零,重连进来必须保留,否则上限永远到不了。 */
+export function startTunnel(localPort: number, isReconnect = false): TunnelStatus {
   // 幂等:已经在起/已经好/正在重连,都不再起第二条。
   if (status.phase === "starting" || status.phase === "ready" || status.phase === "reconnecting") {
     return tunnelStatus();
   }
-  // 记下"这条隧道该活着" + 这次是用户主动开的(重试计数归零)。
+  // 记下"这条隧道该活着"。
   livePort = localPort;
-  reconnectAttempt = 0;
+  // ⚠️ **只有"用户主动开"才把重试计数归零。**
+  //
+  // 这里原先无条件 `reconnectAttempt = 0` —— 而重连回调最后也是调 `startTunnel`,
+  // 于是每一轮重连**都把自己刚加的那一次计数抹掉**,`> MAX_RECONNECT_ATTEMPTS`
+  // 永远不成立 = **无限重试**(而注释还写着"不无限重试",是句谎话)。
+  // (2026-09-24 自查发现;tunnel-manager-smoke 原来只测了一次重连,测不到上限。)
+  if (!isReconnect) reconnectAttempt = 0;
   clearReconnectTimer();
 
   const exe = findCloudflared();
@@ -339,7 +348,8 @@ function scheduleReconnect(port: number, exitCode: number | null, reasonPrefix?:
     // `status` 此刻是 reconnecting,`startTunnel` 的幂等闸门认这个状态,所以先松开它,
     // 否则下面那一下会被"已经在重连"的判定直接弹回来、永远连不上。
     status = { phase: "stopped", url: null, error: null };
-    startTunnel(port);
+    // `isReconnect = true` —— 保住这次重试的计数,否则上限永远到不了(见 startTunnel)。
+    startTunnel(port, true);
   }, delay);
   reconnectTimer.unref();
 }
