@@ -250,7 +250,8 @@ export function CollectionContextMenu({
                   </Menu.Item>
                 )}
 
-                {c?.kind === "note" && (
+                {/* （kind 退役：任何分类都能新建 md 笔记） */}
+                {c && (
                   <>
                     <Menu.Item
                       onClick={() => {

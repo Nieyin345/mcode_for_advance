@@ -20,7 +20,7 @@
  * `sessionStore.workflowId` 管,不再是这里的一个全局开关。
  */
 import { create } from "zustand";
-import type { LibraryCollection, LibraryItem, LibraryKind } from "@contracts/library";
+import type { LibraryCollection, LibraryItem } from "@contracts/library";
 import { api } from "@renderer/lib/api.js";
 
 /** 左栏一次最多列多少篇。展开是浏览,不是检索 —— 再多就该去右栏搜了。 */
@@ -30,13 +30,9 @@ interface LibraryState {
   /** 全部文献库(Zotero 意义上的 collection)。左栏与选择器共用这一份缓存。 */
   collections: LibraryCollection[];
   /**
-   * 当前在看哪个库:**论文 / 教材 / 笔记**。三个库是平级的,左栏顶部用一排标签切换,
-   * 切换之后下面的分类树与列表都只属于这个库。
-   *
-   * 为什么不做成"同时画出三棵树":那会把左栏撑成三倍高,而用户绝大多数时候只在
-   * 一个库里干活。标签页让三个库仍然**同级**(同一排、同样的入口),又不必同时展开。
+   * 当前在哪个大类下（kind 退役后：左栏按大类分段，段内就是分类树）。
    */
-  activeKind: LibraryKind;
+  activeGroupId: string | null;
   /** 主区正在展示的库;null 表示没在看任何库(主区回到会话视图)。 */
   activeCollectionId: string | null;
   /** 右栏文献库面板里当前打开的那一篇。左栏点文献也是写这里。 */
@@ -85,13 +81,13 @@ interface LibraryState {
    * 为什么必须有它:左树原来只画"分类里的条目",于是**不属于任何分类的条目在左栏里
    * 完全不存在** —— 用户看得到它(右栏),却没法右键它、也就移动不了(用户报的正是这个)。
    */
-  allItemsByKind: Partial<Record<LibraryKind, LibraryItem[]>>;
+  /** 「全部显示」时拿的条目缓存（全库口径）。 */
+  allItems: LibraryItem[] | null;
 
   loadCollections: () => Promise<void>;
   /** 新建并返回新库的 id(方便调用方立刻选中它)。建在 activeKind 那个库里。 */
   createCollection: (name: string, parentId?: string | null) => Promise<string | null>;
   setActiveCollection: (id: string | null) => void;
-  setActiveKind: (kind: LibraryKind) => void;
   setActiveItem: (id: string | null) => void;
   setDetailTab: (tab: "meta" | "preview" | "pdf" | "file" | "edit") => void;
   /** 打开某一篇的原文预览 —— 左栏右键菜单用。一次写两个字段,避免出现
@@ -101,8 +97,8 @@ interface LibraryState {
   /** 展开/收起某个库;展开时顺带拉一次它的文献列表。 */
   toggleExpanded: (id: string) => void;
   loadCollectionItems: (id: string) => Promise<void>;
-  /** 拉某个库的**全部**条目(不限分类),给左树里「全部<库>」那一层的子列表用。 */
-  loadAllItems: (kind: LibraryKind) => Promise<void>;
+  /** 拉全库条目（「全部显示」用）。 */
+  loadAllItems: () => Promise<void>;
   /** 会话流模式要一次看到所有库的文献 —— 逐个拉。 */
   loadEveryCollectionItems: () => Promise<void>;
   /** 文献增删后让左栏跟上(展开态保留,只刷新内容)。 */
@@ -111,7 +107,7 @@ interface LibraryState {
 
 export const useLibraryStore = create<LibraryState>((set, get) => ({
   collections: [],
-  activeKind: "paper",
+  activeGroupId: null,
   activeCollectionId: null,
   activeItemId: null,
   detailTab: "meta",
@@ -120,7 +116,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   loaded: false,
   expandedIds: {},
   itemsByCollection: {},
-  allItemsByKind: {},
+  allItems: null,
 
   loadCollections: async () => {
     try {
@@ -150,7 +146,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     // 否则用户输入带首尾空格时匹配不上,调用方会误判成「创建失败/重名」。
     const trimmed = name.trim();
     try {
-      const res = await api.library.createCollection({ name: trimmed, parentId, kind: get().activeKind });
+      const res = await api.library.createCollection({ name: trimmed, parentId, groupId: get().activeGroupId ?? undefined });
       set({ collections: res.collections });
       // 取**最新**的那条（按 createdAt 倒序）—— 与 sortOrder 无关，
       // 所以新建的排最前还是最后都不影响这里找 id。
@@ -164,25 +160,10 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   },
 
   setActiveCollection: (id) => {
-    // 选中的分类属于哪个库,就把标签切到那个库 —— 否则会出现"右栏在看笔记,
-    // 左栏高亮着论文库的分类"这种自相矛盾的状态
-    const kind = id ? get().collections.find((c) => c.id === id)?.kind : undefined;
-    set(kind ? { activeCollectionId: id, activeKind: kind } : { activeCollectionId: id });
+    // 选中分类时顺带记住它挂着的大类 —— 大类是现在唯一的分段维度。
+    const groupId = id ? get().collections.find((c) => c.id === id)?.groupId : undefined;
+    set({ activeCollectionId: id, ...(groupId ? { activeGroupId: groupId } : {}) });
   },
-  setActiveKind: (kind) =>
-    set((s) => {
-      // 切库时清掉选中态:旧库的分类在新库里不存在,留着会让右栏停在幽灵条目上
-      const stillValid = s.collections.some(
-        (c) => c.id === s.activeCollectionId && c.kind === kind,
-      );
-      return {
-        activeKind: kind,
-        activeCollectionId: stillValid ? s.activeCollectionId : null,
-        activeItemId: stillValid ? s.activeItemId : null,
-        // 条目被清掉时"看哪一份"也得跟着清,否则切回来看见的是上一条的转录
-        previewWhich: stillValid ? s.previewWhich : null,
-      };
-    }),
   setActiveItem: (id) => set({ activeItemId: id, previewWhich: null }),
   setDetailTab: (tab) => set({ detailTab: tab }),
   openPreview: (id, which) =>
@@ -205,31 +186,26 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     }
   },
 
-  loadAllItems: async (kind) => {
+  loadAllItems: async () => {
     try {
-      const res = await api.library.list({ kind, limit: TREE_PAGE });
-      set((s) => ({ allItemsByKind: { ...s.allItemsByKind, [kind]: res.items } }));
+      const res = await api.library.list({ limit: TREE_PAGE });
+      set({ allItems: res.items });
     } catch {
       // 主进程未就绪 —— 保持空,不抛
     }
   },
 
   loadEveryCollectionItems: async () => {
-    // 只拉**当前这个库**的分类 —— 另外两个库的列表用户现在看不见,拉了也是白拉
-    const { collections, activeKind, loadCollectionItems } = get();
-    await Promise.all(
-      collections.filter((c) => c.kind === activeKind).map((c) => loadCollectionItems(c.id)),
-    );
+    const { collections, loadCollectionItems } = get();
+    await Promise.all(collections.map((c) => loadCollectionItems(c.id)));
   },
 
   refreshItems: async () => {
-    // 只刷新**已经拉过**的库(展开过的,或会话流模式下全量拉过的)。没拉过的
-    // 等展开时再拉 —— 否则每来一条下载完成事件都要把整库读一遍。
-    const { itemsByCollection, allItemsByKind, loadCollectionItems, loadAllItems } = get();
+    // 只刷新**已经拉过**的（展开过的，或「全部显示」开过的）。没拉过的等展开时再拉。
+    const { itemsByCollection, allItems, loadCollectionItems, loadAllItems } = get();
     await Promise.all([
       ...Object.keys(itemsByCollection).map((id) => loadCollectionItems(id)),
-      // 「全部<库>」那一层也只在展开过之后才刷
-      ...Object.keys(allItemsByKind).map((k) => loadAllItems(k as LibraryKind)),
+      ...(allItems ? [loadAllItems()] : []),
     ]);
   },
 }));

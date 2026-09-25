@@ -489,6 +489,11 @@ export function ItemDetail({ item, job, pdfState, onDownload, onChanged }: Props
   }
 
   const missing = missingMetadataFields(item);
+  // kind 退役后的两条行为判据（按字段/扩展名，不再按条目类型）：
+  //   · 文献记录 = 带 DOI 或 arXiv ID —— 才有补元数据/引用格式那些动作
+  //   · 纯 md 条目 = 没有原文 PDF、本体就是 Markdown —— 不需要挂转录/记笔记
+  const isBibliographic = Boolean(item.doi || item.arxivId);
+  const isMdOnly = !item.pdfPath && Boolean(item.mdPath?.endsWith(".md"));
 
   return (
     <div className="h-full overflow-y-auto px-4 py-3">
@@ -497,9 +502,9 @@ export function ItemDetail({ item, job, pdfState, onDownload, onChanged }: Props
 
       {/* 元数据不全 —— 放在最上面。这条影响引用格式能不能用,而且要用户动手补,
           藏到列表底下等于没有。
-          **只对论文显示**:教材不写进参考文献、笔记更不是文献,对它们来说这条提示
-          既没有依据、也没有可做的动作。 */}
-      {item.kind === "paper" && missing.length > 0 && (
+          **只对文献记录显示**（有 DOI / arXiv ID 的条目）:笔记与通用文件不写进
+          参考文献 Gel,对它们来说这条提示既没有依据、也没有可做的动作。 */}
+      {isBibliographic && missing.length > 0 && (
         <div className="mb-3 flex items-start gap-1.5 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[0.7857em] leading-relaxed text-amber-700 dark:text-amber-400">
           <IconAlertTriangle size={12} className="mt-0.5 shrink-0" />
           <span>
@@ -584,8 +589,8 @@ export function ItemDetail({ item, job, pdfState, onDownload, onChanged }: Props
               )}
               {item.mdPath ? t("library.convert.redo") : t("library.convert.run")}
             </button>
-            {/* 已经有转录好的 md?直接挂上,不用再花一次额度(笔记库没有这一步) */}
-            {item.kind !== "note" && (
+            {/* 已经有转录好的 md?直接挂上,不用再花一次额度（纯 md 条目没有这一步） */}
+            {!isMdOnly && (
               <button
                 onClick={() => void adoptMarkdown()}
                 disabled={converting}
@@ -604,15 +609,14 @@ export function ItemDetail({ item, job, pdfState, onDownload, onChanged }: Props
         )}
       </div>
 
-      {/* 元数据 —— **只有论文需要**。教材不写进参考文献、笔记不是文献,对它们来说
-          这一串字段既没用处、又占掉半屏;那些屏幕上真正要看的是转换状态与笔记。
+      {/* 元数据 —— **只有文献记录需要**（有 DOI / arXiv ID）。
           块本身抽在 ItemMetadata 里(原地包一层 if 会让里面几十行凭空多一级缩进)。 */}
-      {item.kind === "paper" && <ItemMetadata item={item} />}
+      {isBibliographic && <ItemMetadata item={item} />}
 
       {/* 引用格式 —— 放在元数据之后。它是"把这篇文献带出去"(粘进自己的稿子)
           最常用的东西,所以给足位置:三种格式可切、一键复制。
-          **只有论文需要**:教材不写进参考文献,笔记根本不是文献。 */}
-      {item.kind === "paper" && (
+          **只有文献记录需要**。 */}
+      {isBibliographic && (
         <>
           <div className="mb-1 mt-4 text-[0.7143em] font-medium uppercase tracking-wider text-content-subtle">
             {t("library.cite.title")}
@@ -635,9 +639,9 @@ export function ItemDetail({ item, job, pdfState, onDownload, onChanged }: Props
           任何 kind 都有(笔记库的条目也能互相关联)。 */}
       <ItemLinks item={item} onChanged={onChanged} />
 
-      {/* 读文献时随手记的笔记(挂在**这一条**上)。笔记库的条目自己就是一篇
-          Markdown,不需要再挂"笔记",所以那里不显示这一块。 */}
-      {item.kind !== "note" && (
+      {/* 读文献时随手记的笔记(挂在**这一条**上)。纯 Markdown 条目自己就是一篇
+          笔记,不需要再挂"笔记",所以那里不显示这一块。 */}
+      {!isMdOnly && (
         <div className="mt-4">
           <ItemNotes item={item} />
         </div>
@@ -875,7 +879,7 @@ export function ItemInfoDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const { t } = useI18n();
-  const isPaper = item?.kind === "paper";
+  const isPaper = Boolean(item && (item.doi || item.arxivId));
   return (
     <Dialog.Root open={item !== null} onOpenChange={onOpenChange}>
       <Dialog.Portal>

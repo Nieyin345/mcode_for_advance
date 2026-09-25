@@ -40,7 +40,9 @@
  * (那会把它又建出来)。
  */
 import { SettingRepo, CollectionRepo, LibraryRepo } from "@main/store/repositories.js";
-import { LIBRARY_KINDS, type LibraryCollection } from "@contracts/library";
+import type { LibraryCollection } from "@contracts/library";
+// （老代码遍历 LIBRARY_KINDS 读每库回收站键；kind 退役后这三处循环改为读旧的固定三个键名。）
+const LEGACY_TRASH_KINDS = ["paper", "textbook", "note"] as const;
 import { LIBRARY_TRASH_COLLECTION_SETTING_KEY, libraryTrashSettingKey } from "@contracts/ipc";
 
 /** 默认名字。用户改了这个集合的名字也不影响识别 —— 见 setting key 的说明。 */
@@ -65,7 +67,7 @@ export function allTrashCollectionIds(): string[] {
   const ids = new Set<string>();
   const global = alive(SettingRepo.get(LIBRARY_TRASH_COLLECTION_SETTING_KEY));
   if (global) ids.add(global);
-  for (const k of LIBRARY_KINDS) {
+  for (const k of LEGACY_TRASH_KINDS) {
     const legacy = alive(SettingRepo.get(libraryTrashSettingKey(k)));
     if (legacy) ids.add(legacy);
   }
@@ -91,7 +93,7 @@ export function trashCollectionId(): string | null {
 
   // 老数据:回收站是**每个库一个**。挑一个当正主(顺序固定,所以同一份数据每次
   // 得到同一个答案),其余的由 ensureTrashCollection 合掉。
-  for (const k of LIBRARY_KINDS) {
+  for (const k of LEGACY_TRASH_KINDS) {
     const legacy = alive(SettingRepo.get(libraryTrashSettingKey(k)));
     if (legacy) return legacy;
   }
@@ -169,7 +171,7 @@ function mergeTrashCollections(keeper: string): void {
   }
   // 指向老回收站的每库键清掉:留着的话 `allTrashCollectionIds` 每次都要去核对一遍
   // 那些早就不存在的 id,而"已删"与"还在"长得一样是排查时最容易误导人的一处。
-  for (const k of LIBRARY_KINDS) {
+  for (const k of LEGACY_TRASH_KINDS) {
     const legacy = SettingRepo.get(libraryTrashSettingKey(k));
     if (legacy && !CollectionRepo.list().some((c) => c.id === legacy)) {
       SettingRepo.set(libraryTrashSettingKey(k), "");

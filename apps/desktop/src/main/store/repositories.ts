@@ -22,7 +22,6 @@ import type {
   LibraryItem,
   LibraryAuthor,
   LibraryItemType,
-  LibraryKind,
   LibraryCollection,
   LibraryNote,
   LibraryItemLink,
@@ -1732,9 +1731,7 @@ interface LibraryItemRow {
 function rowToLibraryItem(r: LibraryItemRow): LibraryItem {
   return {
     id: r.id,
-    // 建表时给了 DEFAULT 'paper',但老的库 ALTER 出来的列对已存在的行也是这个值;
-    // 万一读到 NULL(手工改过库),按论文处理 —— 论文是绝对多数
-    kind: (r.kind as LibraryKind | null) ?? "paper",
+    // kind 列已退役（2026-09-24）：保留在库里但不再读写 —— 行为按扩展名分派。
     doi: r.doi ?? undefined,
     arxivId: r.arxiv_id ?? undefined,
     title: r.title,
@@ -1767,8 +1764,6 @@ function rowToLibraryItem(r: LibraryItemRow): LibraryItem {
  *  「不属于任何集合」这种未来可能的智能视图,当前与 undefined 同义。 */
 export interface LibraryListFilter {
   collectionId?: string | null;
-  /** 只看某个库(论文 / 教材 / 笔记)。不传 = 不限库。 */
-  kind?: LibraryKind;
   query?: string;
   /** 按 PDF 可用性筛。`none` 用于快速找「还没下到 PDF」的条目。
    *
@@ -1838,10 +1833,6 @@ export const LibraryRepo = {
       );
       params.push(v(filter.collectionId));
     }
-    if (filter.kind) {
-      where.push("i.kind = ?");
-      params.push(v(filter.kind));
-    }
     if (filter.query?.trim()) {
       // LIKE 的转义:用户输入里的 % 和 _ 是通配符,必须转义才能当字面量搜
       const needle = `%${filter.query.trim().toLowerCase().replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
@@ -1875,16 +1866,17 @@ export const LibraryRepo = {
   },
 
   /**
-   * 某个库的全部条目 —— **不分页**。
+   * 全部条目 —— **不分页**。
    *
    * 与 `list()` 只差一点:`list` 有 200 条的默认上限(左栏那棵树就是按页拉的),
    * 而**给 AI 的那份清单必须是全量**。少几条比慢一点糟得多:模型会以为库里就这些,
    * 用户也看不出少了什么,而两边都不会报错。
+   * （原 `listByKind`：kind 退役后没有"按库"的口径，全量返回，调用方自行按分类过滤。）
    */
-  listByKind(kind: LibraryKind): LibraryItem[] {
+  listAllItems(): LibraryItem[] {
     const db = getDb();
-    const stmt = db.prepare("SELECT * FROM library_items WHERE kind = ? ORDER BY added_at DESC");
-    stmt.bind([v(kind)]);
+    const stmt = db.prepare("SELECT * FROM library_items ORDER BY added_at DESC");
+    stmt.bind([]);
     const out: LibraryItem[] = [];
     while (stmt.step()) out.push(rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow));
     stmt.free();
@@ -2002,8 +1994,6 @@ export const LibraryRepo = {
    */
   upsert(input: {
     id?: string;
-    /** 归到哪个库。省略 = `paper`。**已存在的条目不会被改库**(见下方注释)。 */
-    kind?: LibraryKind;
     doi?: string | null;
     arxivId?: string | null;
     title?: string;
@@ -2070,11 +2060,11 @@ export const LibraryRepo = {
     const id = input.id ?? makeId("li");
     db.run(
       `INSERT INTO library_items
-         (id, kind, doi, arxiv_id, title, authors, year, venue, volume, issue, page, publisher,
+         (id, doi, arxiv_id, title, authors, year, venue, volume, issue, page, publisher,
           abstract, type, language, url, source, license, entry_mode, file_path, added_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        v(id), v(input.kind ?? "paper"), v(doi), v(arxivId), v(input.title ?? "(无标题)"),
+        v(id), v(doi), v(arxivId), v(input.title ?? "(无标题)"),
         v(input.authors?.length ? JSON.stringify(input.authors) : null),
         v(input.year), v(input.venue),
         v(input.volume), v(input.issue), v(input.page), v(input.publisher),
@@ -2282,7 +2272,8 @@ export const LibraryRepo = {
 interface CollectionRow {
   id: string;
   name: string;
-  kind: string | null;
+  kind: string | null; // 退役列：仍在库里，不再读写
+  group_id: string | null;
   prompt: string | null;
   parent_id: string | null;
   sort_order: number;
@@ -2294,7 +2285,7 @@ function rowToCollection(r: CollectionRow): LibraryCollection {
     id: r.id,
     name: r.name,
     prompt: r.prompt ?? undefined,
-    kind: (r.kind as LibraryKind | null) ?? "paper",
+    groupId: r.group_id ?? undefined,
     parentId: r.parent_id ?? null,
     sortOrder: r.sort_order ?? 0,
     createdAt: r.created_at,
@@ -2306,13 +2297,11 @@ function rowToCollection(r: CollectionRow): LibraryCollection {
 }
 
 export const CollectionRepo = {
-  /** 列分类。`kind` 省略 = 所有库的分类(左栏要一次画出三个库,就用这个形态)。 */
-  list(kind?: LibraryKind): LibraryCollection[] {
+  /** 列全部分类（kind 退役后没有"按库列"的口径；归属经 `groupId`，渲染端自行过滤）。 */
+  list(): LibraryCollection[] {
     const db = getDb();
-    const stmt = kind
-      ? db.prepare("SELECT * FROM library_collections WHERE kind = ? ORDER BY sort_order ASC, created_at ASC")
-      : db.prepare("SELECT * FROM library_collections ORDER BY sort_order ASC, created_at ASC");
-    stmt.bind(kind ? [v(kind)] : []);
+    const stmt = db.prepare("SELECT * FROM library_collections ORDER BY sort_order ASC, created_at ASC");
+    stmt.bind([]);
     const out: LibraryCollection[] = [];
     while (stmt.step()) out.push(rowToCollection(stmt.getAsObject() as unknown as CollectionRow));
     stmt.free();
@@ -2328,10 +2317,10 @@ export const CollectionRepo = {
    *
    * 比较用「去首尾空白 + 忽略大小写」:用户眼里 "ANN" 和 "ann" 是同一个名字。
    */
-  isNameTaken(name: string, kind: LibraryKind, exceptId?: string): boolean {
+  isNameTaken(name: string, exceptId?: string): boolean {
     const norm = name.trim().toLowerCase();
     if (!norm) return false;
-    return CollectionRepo.list(kind).some(
+    return CollectionRepo.list().some(
       (c) => c.id !== exceptId && c.name.trim().toLowerCase() === norm,
     );
   },
@@ -2339,12 +2328,12 @@ export const CollectionRepo = {
   create(
     name: string,
     parentId: string | null = null,
-    kind: LibraryKind = "paper",
+    groupId?: string,
     prompt?: string,
   ): LibraryCollection {
     // 兜底守卫。渲染端已做即时校验,这里防的是绕过 UI 的调用(如将来的 AI 工具)。
-    if (CollectionRepo.isNameTaken(name, kind)) {
-      throw new Error(`这个库里已经有叫「${name.trim()}」的分类了`);
+    if (CollectionRepo.isNameTaken(name)) {
+      throw new Error(`已经有叫「${name.trim()}」的分类了`);
     }
     const db = getDb();
     const id = makeId("lc");
@@ -2362,24 +2351,24 @@ export const CollectionRepo = {
      */
     const maxStmt = db.prepare(
       parentId
-        ? "SELECT IFNULL(MAX(sort_order), -1) AS m FROM library_collections WHERE parent_id = ? AND kind = ?"
-        : "SELECT IFNULL(MAX(sort_order), -1) AS m FROM library_collections WHERE parent_id IS NULL AND kind = ?",
+        ? "SELECT IFNULL(MAX(sort_order), -1) AS m FROM library_collections WHERE parent_id = ?"
+        : "SELECT IFNULL(MAX(sort_order), -1) AS m FROM library_collections WHERE parent_id IS NULL",
     );
-    maxStmt.bind(parentId ? [v(parentId), v(kind)] : [v(kind)]);
+    maxStmt.bind(parentId ? [v(parentId)] : []);
     maxStmt.step();
     const nextOrder = Number((maxStmt.getAsObject() as { m: number }).m ?? -1) + 1;
     maxStmt.free();
 
     db.run(
-      "INSERT INTO library_collections (id, name, kind, prompt, parent_id, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [v(id), v(name.trim()), v(kind), v(prompt ?? null), v(parentId), v(nextOrder), v(Date.now())],
+      "INSERT INTO library_collections (id, name, kind, group_id, prompt, parent_id, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [v(id), v(name.trim()), v("retired"), v(groupId ?? null), v(prompt ?? null), v(parentId), v(nextOrder), v(Date.now())],
     );
     persist();
     return {
       id,
       name: name.trim(),
       ...(prompt ? { prompt } : {}),
-      kind,
+      ...(groupId ? { groupId } : {}),
       parentId,
       sortOrder: nextOrder,
       createdAt: Date.now(),
@@ -2390,10 +2379,9 @@ export const CollectionRepo = {
 
   /** 改名。返回是否成功 —— 重名时返回 false,调用方负责提示用户。 */
   rename(id: string, name: string): boolean {
-    // 重名只在**同一个库内**才算重名,所以要先取出这条分类属于哪个库
     const current = CollectionRepo.list().find((c) => c.id === id);
     if (!current) return false;
-    if (CollectionRepo.isNameTaken(name, current.kind, id)) return false;
+    if (CollectionRepo.isNameTaken(name, id)) return false;
     getDb().run("UPDATE library_collections SET name = ? WHERE id = ?", [v(name.trim()), v(id)]);
     persist();
     return true;
@@ -2476,11 +2464,6 @@ export const CollectionRepo = {
     if (nextParent !== null) {
       const target = all.find((c) => c.id === nextParent);
       if (!target) return { ok: false, error: "目标分类已经不在了" };
-      // 跨库:两个库各有各的分类树,parent 指过去会让那一棵在两个库里都出现。
-      // 界面上目前也不提供这个动作(拖拽只在自己的段内),所以挡在这里。
-      if (target.kind !== current.kind) {
-        return { ok: false, error: "不能把分类移到另一个库里" };
-      }
       if (target.id === id) {
         return { ok: false, error: "不能把一个分类移到它自己下面" };
       }
@@ -2500,13 +2483,12 @@ export const CollectionRepo = {
     const clash = all.some(
       (c) =>
         c.id !== id &&
-        c.kind === current.kind &&
         (c.parentId ?? null) === nextParent &&
         c.name.trim().toLowerCase() === norm,
     );
     if (clash) return { ok: false, error: "目标位置已经有同名的分类了" };
 
-    const siblings = CollectionRepo.list(current.kind)
+    const siblings = CollectionRepo.list()
       .filter((c) => (c.parentId ?? null) === nextParent && c.id !== id)
       .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt - b.createdAt);
     // 追加到末尾(见上面"为什么签名里没有落到第几位")

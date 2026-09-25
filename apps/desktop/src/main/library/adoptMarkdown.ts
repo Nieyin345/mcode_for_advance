@@ -78,7 +78,7 @@ import {
 } from "node:fs";
 import { LibraryRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
-import { ensureLibraryDirs, libraryRoot, toLibraryRelative, countImageFiles } from "./paths.js";
+import { ensureLibraryDirs, libraryRoot, toLibraryRelative, countImageFiles, isNoteRelPath } from "./paths.js";
 
 export interface AdoptResult {
   ok: boolean;
@@ -203,7 +203,7 @@ export function adoptMarkdownFile(itemId: string, sourcePath: string): AdoptResu
 
   const item = LibraryRepo.get(itemId);
   if (!item) return fail("找不到这篇文献");
-  if (item.kind === "note") return fail("笔记本身就是 Markdown,不需要再挂转录产物");
+  if (isNoteRelPath(item.mdPath)) return fail("笔记本身就是 Markdown,不需要再挂转录产物");
 
   const ext = extname(sourcePath).toLowerCase();
   if (![".md", ".markdown"].includes(ext)) return fail(`不是 Markdown 文件(${ext || "无扩展名"})`);

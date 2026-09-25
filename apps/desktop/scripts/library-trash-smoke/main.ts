@@ -169,9 +169,9 @@ check("从普通分类移除 → 要收", shouldSweepAfterRemoval("lc_普通") =
 
 console.log("\n收进回收站 · 全库共用一个");
 
-const paperItem = LibraryRepo.upsert({ kind: "paper", title: "一篇论文", source: "manual" }).id;
-const noteItem = LibraryRepo.upsert({ kind: "note", title: "一条笔记", source: "manual" }).id;
-const bookItem = LibraryRepo.upsert({ kind: "textbook", title: "一本教材", source: "manual" }).id;
+const paperItem = LibraryRepo.upsert({ title: "一篇论文", source: "manual" }).id;
+const noteItem = LibraryRepo.upsert({ title: "一条笔记", source: "manual" }).id;
+const bookItem = LibraryRepo.upsert({ title: "一本教材", source: "manual" }).id;
 
 // 三个都还没归属任何分类 = 孤儿,该被收。
 eq("收三个孤儿 → 真动了", sweepToTrash([paperItem, noteItem, bookItem]), true);
@@ -197,7 +197,7 @@ same(
 );
 
 // 一个**已经有归属**的条目不是孤儿,不该被顺手收走。
-const kept = LibraryRepo.upsert({ kind: "paper", title: "有分类的", source: "manual" }).id;
+const kept = LibraryRepo.upsert({ title: "有分类的", source: "manual" }).id;
 const home = CollectionRepo.create("方法", null, "paper").id;
 CollectionRepo.assign(home, [kept], true);
 eq("已经有归属的条目 → sweep 不动它", sweepToTrash([kept]), false);
@@ -218,15 +218,28 @@ console.log("\n升级 · 老的多个回收站并成一个");
 // 那个回收站里,又确实不属于任何普通分类。那是这个模块文件头警告过的僵尸记录。
 {
   SettingRepo.set(LIBRARY_TRASH_COLLECTION_SETTING_KEY, "");
-  // 造在**笔记库和教材库**上,不是论文库 —— 正主(`rebuilt`)已经占了论文库那个名字。
-  // 名字唯一性是**按库**算的(`CollectionRepo.isNameTaken` 走 `list(kind)`),所以
-  // "同一个库里两个回收站"会被守卫正确拦下;而老数据本来就是"每个库各一个",
-  // 换哪两个库都等价。
-  const legacyNote = CollectionRepo.create("回收站", null, "note").id;
-  const legacyBook = CollectionRepo.create("回收站", null, "textbook").id;
-  const stranded = LibraryRepo.upsert({ kind: "note", title: "躺在老二里的笔记" }).id;
+  /**
+   * ⚠️ **两个老回收站是直接写库造出来的,而且必须是这样。**
+   *
+   * 回收站的识别规则是「名字**正好**是『回收站』」（见 `allTrashCollectionIds` 的
+   * 第三条来源），所以老数据的真实形状是**好几个同名的**「回收站」—— 老写法里
+   * `isNameTaken` 只在自己那个库内查重，每个库各建一个同名的不算冲突。
+   *
+   * kind 退役后 `isNameTaken` 改成**全库唯一**，公开的 `create` 再也造不出这个形状
+   * 了。于是照 `library-move-smoke` §4 的办法：直接写两行，模拟升级上来的那份数据 ——
+   * 升级路径存在的理由本来就是「老库里已经有这种数据了」。
+   */
+  const legacyNote = CollectionRepo.create("老二", null).id;
+  const legacyBook = CollectionRepo.create("老三", null).id;
+  const { getDb } = await import("@main/store/db.js");
+  getDb().run("UPDATE library_collections SET name = ? WHERE id IN (?, ?)", [
+    "回收站",
+    legacyNote,
+    legacyBook,
+  ]);
+  const stranded = LibraryRepo.upsert({ title: "躺在老二里的笔记" }).id;
   CollectionRepo.assign(legacyNote, [stranded], true);
-  const oldTrash = CollectionRepo.list().filter((c) => c.name === "回收站" && c.id !== rebuilt);
+  const oldTrash = CollectionRepo.list().filter((c) => c.id !== rebuilt && allTrashCollectionIds().includes(c.id));
   eq("老数据里有两个别的回收站", oldTrash.length, 2);
 
   const keeper = ensureTrashCollection();
@@ -258,9 +271,9 @@ console.log("\n删父分类 · 整棵子树的成员都要有归属");
   const parent = CollectionRepo.create("父分类", null, "paper").id;
   const child = CollectionRepo.create("子分类", parent, "paper").id;
   const grand = CollectionRepo.create("孙分类", child, "paper").id;
-  const direct = LibraryRepo.upsert({ kind: "paper", title: "挂在父上", source: "manual" }).id;
-  const under = LibraryRepo.upsert({ kind: "paper", title: "只挂在子上", source: "manual" }).id;
-  const deep = LibraryRepo.upsert({ kind: "paper", title: "只挂在孙子上", source: "manual" }).id;
+  const direct = LibraryRepo.upsert({ title: "挂在父上", source: "manual" }).id;
+  const under = LibraryRepo.upsert({ title: "只挂在子上", source: "manual" }).id;
+  const deep = LibraryRepo.upsert({ title: "只挂在孙子上", source: "manual" }).id;
   CollectionRepo.assign(parent, [direct], true);
   CollectionRepo.assign(child, [under], true);
   CollectionRepo.assign(grand, [deep], true);
@@ -280,7 +293,7 @@ console.log("\n删父分类 · 整棵子树的成员都要有归属");
   // `undefined`(那不是这个 API 的返回形状)。
   eq(
     "父/子/孙三个分类都不在了(CASCADE)",
-    CollectionRepo.list("paper").some((c) => [parent, child, grand].includes(c.id)),
+    CollectionRepo.list().some((c) => [parent, child, grand].includes(c.id)),
     false,
   );
   // 条目本身还在库里 —— 删分类只动分组,不动文献。不收进回收站的话它们就是孤儿。
@@ -301,7 +314,7 @@ console.log("\n还原");
   const latest = CollectionRepo.create("最近用的分类", null, "paper").id;
   eq("还原目标 = 最近建的那个", restoredTargetOf(), latest);
 
-  const lone = LibraryRepo.upsert({ kind: "paper", title: "在回收站里的一条" }).id;
+  const lone = LibraryRepo.upsert({ title: "在回收站里的一条" }).id;
   CollectionRepo.assign(trash, [lone], true);
   eq("它在回收站里", LibraryRepo.listByCollection(trash).some((i) => i.id === lone), true);
 
@@ -314,7 +327,7 @@ console.log("\n还原");
   eq("它不在 trashedItemIds 里了", trashedItemIds().has(lone), false);
 
   // 本来就不在回收站里的那几条 → 空操作(不是"塞进某个分类")。
-  const outsider = LibraryRepo.upsert({ kind: "paper", title: "从来没进过回收站" }).id;
+  const outsider = LibraryRepo.upsert({ title: "从来没进过回收站" }).id;
   CollectionRepo.assign(home, [outsider], true);
   same("不在回收站里的不动它", restoreItemsFromTrash([outsider]), []);
   eq(
@@ -324,7 +337,7 @@ console.log("\n还原");
   );
 
   // 走**真的那条 IPC**:它除了搬东西,还要回传新的完整列表(变更类 handler 的既定约定)。
-  const viaIpc = LibraryRepo.upsert({ kind: "paper", title: "走 IPC 还原的一条" }).id;
+  const viaIpc = LibraryRepo.upsert({ title: "走 IPC 还原的一条" }).id;
   CollectionRepo.assign(trash, [viaIpc], true);
   const res = (await restoreItems({ ids: [viaIpc] })) as { items: unknown[] };
   check("IPC 回传了完整列表", Array.isArray(res.items) && res.items.length > 0);
@@ -337,7 +350,7 @@ console.log("\n还原");
     if (!allTrashCollectionIds().includes(c.id)) CollectionRepo.delete(c.id);
   }
   eq("没有普通分类了 → 目标为 null", restoredTargetOf(), null);
-  const floating = LibraryRepo.upsert({ kind: "paper", title: "没地方可放的一条" }).id;
+  const floating = LibraryRepo.upsert({ title: "没地方可放的一条" }).id;
   CollectionRepo.assign(trash, [floating], true);
   same("放回最外层也算还原成功", restoreItemsFromTrash([floating]), [floating]);
   eq("它出了回收站", LibraryRepo.listByCollection(trash).some((i) => i.id === floating), false);

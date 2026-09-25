@@ -101,7 +101,7 @@ const parentOf = (id: string): string | null | undefined =>
 
 /** 某个父下面,按 sort_order 排好的子分类名字。 */
 const kidsNamed = (parent: string | null): string[] =>
-  CollectionRepo.list("paper")
+  CollectionRepo.list()
     .filter((c) => (c.parentId ?? null) === parent)
     .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt - b.createdAt)
     .map((c) => c.name);
@@ -228,17 +228,16 @@ console.log("\n拒的时候要说人话");
 
 /* ──────────────── 5. 跨库要拒 ──────────────── */
 
-console.log("\n不能把分类挪到另一个库");
+console.log("\n跨大类移动(kind 退役后允许)");
 
 {
-  const paperCol = CollectionRepo.create("论文里的", null, "paper").id;
-  const noteCol = CollectionRepo.create("笔记里的", null, "note").id;
+  // kind 退役后分类直接挂大类,move 不再挡"另一个库" —— 原来的限制随之撤销。
+  const paperCol = CollectionRepo.create("论文里的", null).id;
+  const noteCol = CollectionRepo.create("笔记里的", null).id;
 
   const res = await move({ id: paperCol, parentId: noteCol });
-  eq("跨库 → 拒", res.ok, false);
-  check("给了原因", typeof res.error === "string" && res.error.length > 0, res.error);
-  // 三个库各有各的分类树 —— 指过去会让那一棵在两个库里同时出现。
-  eq("★ 它还在论文库的根上", parentOf(paperCol), null);
+  eq("跨大类 → 允许", res.ok, true);
+  eq("★ 父级真的换过去了", parentOf(paperCol), noteCol);
 }
 
 /* ──────────────── 6. 挪过去落在新那一层的末尾 ──────────────── */
@@ -246,8 +245,8 @@ console.log("\n不能把分类挪到另一个库");
 console.log("\n落点是新那一层的末尾 · 同级次序不重号");
 
 {
-  const host = CollectionRepo.create("新家", null, "paper").id;
-  const first = CollectionRepo.create("原有的一", host, "paper").id;
+  const host = CollectionRepo.create("新家", null).id;
+  const first = CollectionRepo.create("原有的一", host).id;
   const second = CollectionRepo.create("原有的二", host, "paper").id;
   const mover = CollectionRepo.create("待挪的", null, "paper").id;
 
@@ -259,7 +258,7 @@ console.log("\n落点是新那一层的末尾 · 同级次序不重号");
   check("原来那两条都还在", [first, second].every((id) => parentOf(id) === host));
 
   // 整层重写:同一层里不该有两个同号的 sort_order(那会让次序随查询飘)
-  const orders = CollectionRepo.list("paper")
+  const orders = CollectionRepo.list()
     .filter((c) => (c.parentId ?? null) === host)
     .map((c) => c.sortOrder);
   eq("★ 同级 sort_order 没有重号", new Set(orders).size, orders.length);

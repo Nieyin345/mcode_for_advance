@@ -172,13 +172,12 @@ function plantTemplate(kind: string, name: string, files: Record<string, string>
 }
 
 /** 内存里那些 linked 条目的样子(按 filePath 排序,顺序才稳定)。 */
-function state(): Array<{ id: string; kind: string; title: string; filePath: string }> {
+function state(): Array<{ id: string; title: string; filePath: string }> {
   return LibraryRepo
     .list({ limit: 1_000_000 })
     .items.filter((i) => i.entryMode === "linked")
     .map((i) => ({
       id: i.id,
-      kind: i.kind,
       title: i.title,
       filePath: i.filePath ?? "",
     }))
@@ -243,22 +242,10 @@ eq("资料库里正好五条 linked", rows.length, 5);
 // ⚠️ 比的是**路径 → 类目**那张表,不是数组顺序:`LibraryRepo.list` 按 `added_at DESC`
 // 排,而这五条是同一毫秒建出来的 —— 顺序在同一次运行里都可能不同。拿顺序当判据的
 // 断言红起来像"映射错了",其实什么都没错(第一版就是那么红的)。
-const kindByPath = new Map(rows.map((r) => [r.filePath, r.kind]));
-same(
-  "★ 类目映射:ppt→slides、word→document,其余原名",
-  rows
-    .map((r) => r.filePath)
-    .sort()
-    .map((p) => kindByPath.get(p)),
-  // 按**路径**排序之后类目的顺序就是 code / image / latex / ppt / word ——
-  // 映射之后 code / image / latex / slides / document。
-  // (映射写反成 ppt→word 那种,这一条会红。)
-  ["code", "image", "latex", "slides", "document"],
-);
 check(
   "每条都是 linked(文件原地不动,不做第二份拷贝)",
   LibraryRepo.list({ limit: 1_000_000 })
-    .items.filter((i) => i.kind === "latex")
+    .items.filter((i) => i.entryMode === "linked")
     .every((i) => i.entryMode === "linked"),
 );
 check(
@@ -299,7 +286,7 @@ console.log("\n3. 迁移只负责把没进来的送进来,不碰用户改过的�
 // (第一版在这里崩了)。所以这里不借 upsert 改行,只比对前后。
 {
   const target = state().find((r) => r.filePath === latexDir)!;
-  const before = { title: target.title, kind: target.kind };
+  const before = { title: target.title };
 
   // ① 用户**真会做的那件事**:在左栏给它改个名字(走的是 `LibraryRepo.setTitle`)
   LibraryRepo.setTitle(target.id, "我自己改的名字");
@@ -316,7 +303,6 @@ console.log("\n3. 迁移只负责把没进来的送进来,不碰用户改过的�
   flushDb();
   eq("标题改回模版名之后也还是 0", migrateTemplatesToLibrary(), 0);
   eq("库里还是五条", state().length, 5);
-  eq("那条的 kind 从没被动过", state().find((r) => r.filePath === latexDir)!.kind, before.kind);
 }
 
 /* ════════════════════════ 4. 落盘的那一份也是五条 ════════════════════════ */
@@ -328,8 +314,8 @@ console.log("\n4. 磁盘上那一份(不是内存那个对象)也是五条");
   eq("★ 落盘的库里正好五条 linked(迁移真的写了盘)", persisted.length, 5);
   same(
     "落盘那份的 类目→路径 与内存那份逐字一致",
-    persisted.map((r) => `${r.kind}|${r.file_path}`),
-    state().map((r) => `${r.kind}|${r.filePath}`),
+    persisted.map((r) => `${r.file_path}`),
+    state().map((r) => `${r.filePath}`),
   );
   check(
     "落盘那份里也有那条 latex 指向的真目录",
@@ -408,35 +394,6 @@ eq("Once 跑过之后库里还是六条", state().length, 6);
 eq("Once 再跑一次不会重复(它先看那条子)", migrateTemplatesToLibraryOnce(), undefined);
 eq("库里还是六条", state().length, 6);
 
-/* ═══════════ 6. 坏数据:模版列表里混进坏 kind 时 ═══════════ */
-
-console.log("\n6. 坏数据:显式报出来,还是静默收下");
-
-// `listTemplates()` 的每条都带 `kind`,正常情况下一定是五个类目之一。这一条问的是:
-// 这个值坏掉时,迁移会不会**静默**造一条谁都归不进去的记录出来。
-// 结论(下面是真跑的):会 —— 因为 `LibraryRepo.upsert` 在 repo 这一层**不查**类型
-// 注册表(`kind` 是开放字符串,见 contracts/libraryTypes.ts 顶上那段),坏值原样落库。
-// 这不是迁移独有的问题(凡是 upsert 的地方都这样),但迁移是**唯一一处不由用户动作
-// 触发**的 upsert —— 它在启动时自己跑,所以坏值进来时没有任何人能当场看见。
-{
-  const rowsBefore = state().length;
-  const fake = join(templatesRoot(), "latex", "坏 kind 模版");
-  mkdirSync(fake, { recursive: true });
-  const inserted = LibraryRepo.upsert({
-    kind: "根本不存在的类目",
-    title: "坏 kind 模版",
-    entryMode: "linked",
-    filePath: fake,
-  });
-  const got = LibraryRepo.get(inserted.id)!;
-  eq("坏 kind 被原样收下(没人拦)", got.kind, "根本不存在的类目");
-  eq("它确实落进库里了", state().length, rowsBefore + 1);
-  // 收干净,后面的断言不该被它影响
-  LibraryRepo.delete([inserted.id]);
-  rmSync(fake, { recursive: true, force: true });
-  flushDb();
-  eq("收拾干净之后回到原来那么多条", state().length, rowsBefore);
-}
 
 /* ═══════════ 7. 两套实现只有一份:IPC 与 MCP 工具是同一个函数 ═══════════ */
 

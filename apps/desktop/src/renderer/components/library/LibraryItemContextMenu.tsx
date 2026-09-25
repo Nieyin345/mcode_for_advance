@@ -274,7 +274,7 @@ export function LibraryItemContextMenu({
 
                     笔记没有 PDF 可下,`kind === "note"` 一并排除 —— 三个库共用
                     这一个菜单,不按 kind 分会给笔记也长出一个下不了 PDF 的项。 */}
-                {item && item.kind !== "note" && !item.pdfPath && (
+                {item && !item.pdfPath && (
                   <Menu.Item
                     onClick={() => {
                       onDownload(item);
@@ -290,7 +290,7 @@ export function LibraryItemContextMenu({
                 {/* ── 下面三项 2026-09-21 从右栏 `ItemDetail` 搬来 ──
                     用户要把右栏那个 tab 删掉并要求「全部堆到左栏右键」，这是那批动作
                     的新去处。**只在有本体文件时给**：没有 PDF 的笔记既转不了也引不出。 */}
-                {item && item.kind !== "note" && item.pdfPath && (
+                {item && item.pdfPath && (
                   <Menu.Item
                     onClick={() => {
                       onConvert(item);
@@ -302,7 +302,7 @@ export function LibraryItemContextMenu({
                     {item.mdPath ? t("library.convert.redo") : t("library.convert.run")}
                   </Menu.Item>
                 )}
-                {item && item.kind !== "note" && item.pdfPath && (
+                {item && item.pdfPath && (
                   <Menu.Item
                     onClick={() => {
                       onAdoptMarkdown(item);
@@ -407,7 +407,7 @@ export function LibraryItemContextMenu({
                     if (item) {
                       void api.library.revealFile({
                         id: item.id,
-                        which: item.kind === "note" ? "md" : "pdf",
+                        which: !item.pdfPath && item.mdPath ? "md" : "pdf",
                       });
                     }
                     onClose();

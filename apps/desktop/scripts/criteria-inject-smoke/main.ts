@@ -204,6 +204,52 @@ async function main(): Promise<void> {
     eq("空 prompt + 没条件 → 还是空", inject("", { firstTurn: false }), "");
   }
 
+  /**
+   * 候选**现读**的条件(见 `@contracts/nodeType` 的 `source`)。
+   *
+   * ⚠️ **这一段钉的是"注入前必须把 id 翻成名字"**。界面上存进设置表的是**不透明的
+   * 分类 id**(`lc_xxx`),原样注进提示词的话模型读到的是 `- 导入到:lc_mufvfytr` ——
+   * 它没法知道那是哪个分类,而这条条件的全部意义就是"告诉它东西放哪儿"。
+   *
+   * 这条错**不会让任何东西报错**:提示词照样拼得出来、模型照样跑,只是它拿到的是一串
+   * 它读不懂的字符,于是自己猜一个落点。所以它必须靠断言守着。
+   */
+  console.log("\n候选现读的条件 · 注入前要把 id 翻成名字");
+  {
+    const { CollectionRepo } = await import("@main/store/repositories.js");
+    const withSource = docWithMainNode({
+      criteria: [
+        { name: "导入到", choices: [], source: "collections" },
+        // 对照:手写候选那一条，值原样注入，不做任何翻译。
+        { name: "时间范围", choices: ["不限", "近三年"] },
+      ],
+    });
+    const target = CollectionRepo.create("量子密钥", null).id;
+
+    const run = (values: Record<string, string>): string =>
+      injectEntryCriteria({
+        doc: withSource,
+        workflowId: WORKFLOW,
+        prompt: "找论文",
+        resumed: false,
+        firstTurn: true,
+      });
+
+    setPrefs({ 导入到: target, 时间范围: "近三年" });
+    const out = run({});
+    check("★ 分类 id 被翻成了名字", out.includes("- 导入到:量子密钥"), out);
+    check("★ 提示词里**没有**那个不透明的 id", !out.includes(target), out);
+    // 手写候选那一条不受影响(别把翻译做成了全局替换)。
+    check("手写候选原样注入", out.includes("- 时间范围:近三年"), out);
+
+    // **查不到时要说人话，不能编一个名字。** 分类被删了/存档指向别处的库时，那句 id
+    // 就是死引用 —— 同这个模块头上那条"查不了就说查不了"。
+    setPrefs({ 导入到: "lc_早就没了" });
+    const gone = run({});
+    check("查不到的 id 明说查不到", gone.includes("已删除的分类"), gone);
+    check("而且没有编造一个名字", !gone.includes("导入到:lc_早就没了\n"), gone);
+  }
+
   console.log(`\n${total - failures}/${total} 通过`);
   if (failures > 0) process.exit(1);
 }

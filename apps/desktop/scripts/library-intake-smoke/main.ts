@@ -135,11 +135,13 @@ same(
   ["(system)"],
 );
 
-// 载荷里那三样是自动化脚本唯一能读到的东西。少了 title,用户配的那条自动化
+// 载荷里那两样是自动化脚本唯一能读到的东西。少了 title,用户配的那条自动化
 // 就只能报"有条目入库了",说不出是哪一条。
-const first = externals[0] as { kind?: string; title?: string } | undefined;
+const first = externals[0] as { kind?: unknown; title?: string } | undefined;
 eq("★ 载荷带 title(自动化靠它说清'是哪一条')", first?.title, "第一篇文章");
-eq("★ 载荷带 kind(自动机靠它分流论文/教材/笔记)", first?.kind, "paper");
+// kind 退役后事件上不再有它 —— 自动化要分流论文/教材/笔记得看**文件扩展名**
+// (条目自己的 pdfPath / mdPath / filePath),不再有一个总类标签。
+eq("★ 载荷不带 kind(kind 退役,分流改看扩展名)", first?.kind, undefined);
 
 // 入库还得**通知界面**,否则左栏那棵树一直停在旧样子 —— 反向漏掉同样看不见,
 // 而且是用户当场就会看到的那种。

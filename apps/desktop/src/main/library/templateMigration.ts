@@ -21,7 +21,6 @@
  * 只负责把没进来的送进来。
  */
 import { log } from "@main/lib/logger.js";
-import type { LibraryKind } from "@contracts/library";
 import type { TemplateKind } from "@contracts/templates";
 import { LibraryRepo, SettingRepo } from "@main/store/repositories.js";
 import { listTemplates } from "@main/templates/store.js";
@@ -29,14 +28,6 @@ import { listTemplates } from "@main/templates/store.js";
 /** 迁移完成标记(settings KV)。存在且为 "1" = 已经跑过,启动时不再扫。 */
 export const TEMPLATES_MIGRATED_SETTING_KEY = "library.templatesMigrated";
 
-/** 旧模版类目 → 注册表类型的映射(见 `@contracts/libraryTypes` 顶部的那句话)。 */
-const TEMPLATE_KIND_TO_LIBRARY: Record<TemplateKind, LibraryKind> = {
-  ppt: "slides",
-  word: "document",
-  latex: "latex",
-  code: "code",
-  image: "image",
-};
 
 /**
  * 把旧模版库的每条模版登记成资料库的 linked 条目。**幂等**,可重复调用。
@@ -54,7 +45,6 @@ export function migrateTemplatesToLibrary(): number {
     const exists = all.some((i) => i.entryMode === "linked" && i.filePath === e.path);
     if (exists) continue;
     LibraryRepo.upsert({
-      kind: TEMPLATE_KIND_TO_LIBRARY[e.kind],
       title: e.dirName,
       entryMode: "linked",
       filePath: e.path,

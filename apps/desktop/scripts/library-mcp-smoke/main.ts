@@ -97,7 +97,7 @@ if (!existsSync(PDF_FIXTURE)) {
  * 本套复述一遍就绕过了被测路径的一半。
  */
 function seedPaper(title: string, sha: string): string {
-  const id = LibraryRepo.upsert({ kind: "paper", title }).id;
+  const id = LibraryRepo.upsert({ title }).id;
   const target = pdfPathForHash(sha);
   mkdirSync(join(target, ".."), { recursive: true });
   copyFileSync(PDF_FIXTURE, target);
@@ -170,7 +170,7 @@ const missingText = await call("library_convert", { ids: ["li_根本没有这条
 check("不存在的 id 说了「库里没有这个 id」", missingText.includes("库里没有这个 id"), missingText);
 
 // 没有 PDF 的条目:本地那条路也走不了,原因要说清。
-const noPdf = LibraryRepo.upsert({ kind: "paper", title: "还没有 PDF 的一篇" });
+const noPdf = LibraryRepo.upsert({ title: "还没有 PDF 的一篇" });
 const noPdfText = await call("library_convert", { ids: [noPdf.id] });
 check("没有 PDF 时说的是「先下载或导入一份」", noPdfText.includes("先下载或导入一份"), noPdfText);
 
@@ -238,10 +238,27 @@ const ghostItem = await call("library_adopt_markdown", {
 check("条目不在要拒", ghostItem.includes("失败"), ghostItem);
 
 // 笔记不用挂（它自己就是 md）。
+//
+// ⚠️ 这一条**必须用真笔记**(落点在 `notes/`)，不能拿一条裸条目充数。
+// kind 退役后判据从 `item.kind === "note"` 换成了**落点**(见 `paths.isNoteRelPath`):
+// 裸条目既没有 mdPath 也没有 pdfPath，它跟"一条论文"长得一模一样 —— 拿它来验，
+// 验的是"随便什么都拒"，而不是"笔记才拒"。下面是同一个道理的**反向**一条:
+// 一条挂着转录产物的论文**必须放行**(它才是采纳那条路真正的用户)。
 {
-  const note = LibraryRepo.upsert({ kind: "note", title: "一条笔记" }).id;
+  const note = LibraryRepo.upsert({ title: "一条笔记" }).id;
+  LibraryRepo.setMarkdown(note, `notes/${note}.md`);
   const onNote = await call("library_adopt_markdown", { itemId: note, path: join(TOOL_OUT, "full.md") });
   check("笔记要拒（它自己就是 Markdown）", onNote.includes("失败"), onNote);
+  check("而且说清了它就是笔记", onNote.includes("笔记"), onNote);
+}
+
+// 反例:挂着**转录产物**的论文照样能再挂一份 —— 这正是采纳那条路最常用的场景
+// (重转一次、换掉用户手上更好的一份)。判据写成"有 mdPath 就拒"的话，这条会红。
+{
+  const paper = LibraryRepo.upsert({ title: "有转录产物的论文" }).id;
+  LibraryRepo.setMarkdown(paper, `markdown/imported/${paper}/full.md`);
+  const onPaper = await call("library_adopt_markdown", { itemId: paper, path: join(TOOL_OUT, "full.md") });
+  check("★ 有转录产物的论文可以再挂一份（不是有 md 就拒）", !onPaper.includes("失败"), onPaper);
 }
 
 // **覆盖语义**：再挂一次要整目录替换，旧的图不许留下。
@@ -385,8 +402,8 @@ rmSync(TOOL_OUT, { recursive: true, force: true });
 
 console.log("\nlibrary_links / add / remove");
 
-const a = LibraryRepo.upsert({ kind: "paper", title: "甲" });
-const b = LibraryRepo.upsert({ kind: "paper", title: "乙" });
+const a = LibraryRepo.upsert({ title: "甲" });
+const b = LibraryRepo.upsert({ title: "乙" });
 const outFile = join(SRC, "库外的一份资料.md");
 writeFileSync(outFile, "# 参考资料", "utf8");
 
@@ -447,7 +464,7 @@ check("解一条不存在的关联 → 拒", removeGhost.includes("失败"), rem
 // 是本工具)。所以工具照抄仓储的话,模型看到的是一份**少了屏蔽信息**的关联表,
 // 它会去挂一条根本挂不上的关联(挂载那道门是硬过滤),然后拿到一句没头没脑的失败。
 {
-  const c = LibraryRepo.upsert({ kind: "paper", title: "被屏蔽的那一篇" });
+  const c = LibraryRepo.upsert({ title: "被屏蔽的那一篇" });
   // 屏蔽按**分类**挡(`nodes` 里只有 group / type / collection 三层,没有"单条")。
   const col = CollectionRepo.create("冒烟屏蔽分类", null, "paper");
   CollectionRepo.assign(col.id, [c.id], true);
@@ -481,7 +498,7 @@ console.log("\n屏蔽:翻库的路");
 {
   // 上面那段留下的屏蔽还在(分类 `col` 里的 `c`)。再补一条**没有分类**的,专门盯
   // `library_items` 那条路 —— 它按分类列,所以得让被屏蔽的那篇真的在某个分类里。
-  const solo = LibraryRepo.upsert({ kind: "paper", title: "翻库要被挡的那篇" });
+  const solo = LibraryRepo.upsert({ title: "翻库要被挡的那篇" });
   const col2 = CollectionRepo.create("翻库屏蔽分类", null, "paper");
   CollectionRepo.assign(col2.id, [solo.id], true);
   saveSuppress({ nodes: [`collection:${col2.id}`], extensions: [] });
@@ -569,7 +586,7 @@ console.log("\n屏蔽:会写东西的那四条");
   // 这一条**特意不带 PDF**:`enqueueDownloads` 对已有 PDF 的条目本来就跳过,
   // 用带 PDF 的那一篇验"没排队"是空转,看不出门有没有生效。没有 PDF 且没有
   // DOI / arXiv / url 时,队列之外也没有任何网络动作(`pdfCandidates` 会是空数组)。
-  const supDl = LibraryRepo.upsert({ kind: "paper", title: "不许碰、也没有 PDF 的那一篇" });
+  const supDl = LibraryRepo.upsert({ title: "不许碰、也没有 PDF 的那一篇" });
   CollectionRepo.assign(col3.id, [supDl.id], true);
   const dlText = await call("library_download", { ids: [supDl.id] });
   check("library_download:被屏蔽的要说出来", dlText.includes(GATE), dlText);
@@ -628,7 +645,7 @@ console.log("\n写工具的那道门只在有屏蔽时才拦");
 // "一律拒绝"。所以这里放两条对照组 —— `library_download` 与 `library_write_note`
 // 在本套别处没有别的断言(convert / adopt 在上面已有)。
 {
-  const plain = LibraryRepo.upsert({ kind: "paper", title: "没被屏蔽、能正常写的那一篇" });
+  const plain = LibraryRepo.upsert({ title: "没被屏蔽、能正常写的那一篇" });
 
   const noteOk = await call("library_write_note", {
     itemId: plain.id,

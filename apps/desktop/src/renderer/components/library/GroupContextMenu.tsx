@@ -40,15 +40,12 @@ export function GroupContextMenu({
   target,
   onClose,
   onRename,
-  onNewKind,
   onAttachToChat,
   onDelete,
 }: {
   target: GroupCtxTarget | null;
   onClose: () => void;
   onRename: () => void;
-  /** 在**本段**新建一个小类 —— 右键大类 = 建它的下一级。这是第二级唯一的入口。 */
-  onNewKind: () => void;
   /** 把本段挂进当前对话(附件键 `g:<组 id>`)。 */
   onAttachToChat: () => void;
   onDelete: () => void;
@@ -59,17 +56,6 @@ export function GroupContextMenu({
 
   return (
     <SidebarMenu open={!!target} anchor={anchor} onClose={onClose}>
-      {/* 「建下一级」排最前 —— 见文件头那段"菜单项顺序就是层级顺序" */}
-      <Menu.Item
-        onClick={() => {
-          onNewKind();
-          onClose();
-        }}
-        className={MENU_ITEM_CLASS}
-      >
-        <IconPlus size={12} className="shrink-0" />
-        {t("library.kind.new")}
-      </Menu.Item>
       {/* 挂进当前对话 —— 用户要求「每一级右键都可以选择加入到当前对话」。
           大类是范围的**最外一层**:挂它等于把这个大类下所有小类的资料都给了 AI
           (主进程那边按 `g:<组 id>` 展开清单)。 */}

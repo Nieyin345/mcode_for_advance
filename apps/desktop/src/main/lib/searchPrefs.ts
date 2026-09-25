@@ -32,15 +32,17 @@
  * 而它看起来同样可信。所以数据不可用时这一段会明确写上去,并要求模型转告用户。
  */
 import { journalDbPath } from "@main/library/journalRank.js";
-import { SettingRepo } from "@main/store/repositories.js";
+import { CollectionRepo, ProjectRepo, SettingRepo } from "@main/store/repositories.js";
 import { WORKFLOW_NODE_PREFS_SETTING_PREFIX } from "@contracts/ipc";
 
 /** 固定条件表在节点参数里的形状(见 `@contracts/nodeType` 的 `NODE_CRITERIA_PARAM_KEY`)。
- *  `note` 是这个条件的解释(它是什么意思、按哪个口径执行),可选 —— 老存档没有。 */
+ *  `note` 是这个条件的解释(它是什么意思、按哪个口径执行),可选 —— 老存档没有。
+ *  `source` 是候选**现读**的来源(见下面 `sourceLabelsOf`),可选 —— 有它时 `choices` 是空的。 */
 export interface CriteriaCondition {
   name: string;
   choices: string[];
   note?: string;
+  source?: string;
 }
 
 /**
@@ -64,6 +66,49 @@ export function readCriteriaValues(workflowId: string): Record<string, string> {
 }
 
 /**
+ * **现读来源**的选中值 → 可读名。
+ *
+ * ## 为什么非翻不可
+ *
+ * 候选现读的那些条件(见 `NODE_CRITERIA_PARAM_KEY` 的 `source`),界面上存进设置表的
+ * 是**不透明的 id**(`lc_xxx` / `proj_xxx`)。原样注进提示词的话,模型读到的是
+ * `- 导入到:lc_mufvfytr_d8q0s4` —— 它没法知道那是哪个分类,而这条条件的全部意义就是
+ * 告诉它"东西放哪儿"。所以注入前必须换成用户看得懂的那个名字。
+ *
+ * ## 查不到时**说查不到**
+ *
+ * 分类被删了、项目被移走了:那句 id 就是死引用。这时注**它是什么**("已删除的分类
+ * (lc_xxx)")而不是编一个名字 —— 同这个文件头上那条"查不了就说查不了"的规矩。
+ */
+function sourceLabelsOf(): {
+  collections: Map<string, string>;
+  projects: Map<string, string>;
+} {
+  const collections = new Map<string, string>();
+  try {
+    for (const c of CollectionRepo.list()) collections.set(c.id, c.name);
+  } catch {
+    // 库还没起来 / 数据不可用 —— 留空表,下面会按"查不到"报出去。
+  }
+  const projects = new Map<string, string>();
+  try {
+    for (const p of ProjectRepo.list()) projects.set(p.id, p.name);
+  } catch {
+    /* 同上 */
+  }
+  return { collections, projects };
+}
+
+/** 一个来源里的 id → 可读名。认不出来按"已删除"报,不猜。 */
+function labelForSource(source: string | undefined, id: string): string {
+  if (source === undefined) return id;
+  const { collections, projects } = sourceLabelsOf();
+  const table = source === "collections" ? collections : source === "projects" ? projects : null;
+  if (table === null) return id;
+  return table.get(id) ?? `已删除的${source === "collections" ? "分类" : "项目"}(${id})`;
+}
+
+/**
  * 主对话节点那套**动态条件**的提示词片段。
  *
  * 遍历**节点上声明的条件**(不是设置表里的键 —— 用户改过名/删过条件之后,设置表里的
@@ -75,12 +120,18 @@ export function nodeCriteriaPrompt(workflowId: string, conditions: CriteriaCondi
   const lines: string[] = [];
   for (const cond of conditions) {
     if (!cond.name) continue;
-    const value = (values[cond.name] ?? "").trim();
-    if (value === "" || value === "不限") continue;
+    const raw = (values[cond.name] ?? "").trim();
+    if (raw === "" || raw === "不限") continue;
+    // 现读来源的存的是 id —— 换成名字再进提示词(见 `labelForSource`)。
+    const value = labelForSource(cond.source, raw);
     // 有解释的条件把解释挂在**行尾**,不能挤在值后面 —— 值那一格是 `withYearNote`
     // 的地盘(它要整串恰好是「近N年」才换得出绝对年份),挤进去换算就静默失效了。
     const note = (cond.note ?? "").trim();
-    const line = `- ${cond.name}:${withYearNote(value)}`;
+    // 「近 N 年」那套换算**只对手写候选**做:现读来源的值是分类名/项目名,把它喂给
+    // `withYearNote` 只是白走一趟(它认不出就原样返回),但语义上不该沾 —— 那是一条
+    // 给"时间范围"这类人类写法的规则。
+    const shown = cond.source === undefined ? withYearNote(value) : value;
+    const line = `- ${cond.name}:${shown}`;
     lines.push(note === "" ? line : `${line} —— ${note}`);
   }
   if (lines.length === 0) return "";

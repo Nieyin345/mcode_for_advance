@@ -238,10 +238,6 @@ const api = {
   /** 文献库 —— 条目、集合、检索导入、全文检索、库位置。
    *  变更类方法一律返回新的完整列表,渲染端整体替换缓存。 */
   library: {
-    typesGet: (() =>
-      ipcRenderer.invoke(IPC.LIBRARY_TYPES_GET, {})) as RpcMap["library.typesGet"],
-    typesSave: ((input) =>
-      ipcRenderer.invoke(IPC.LIBRARY_TYPES_SAVE, input)) as RpcMap["library.typesSave"],
     groupsGet: (() =>
       ipcRenderer.invoke(IPC.LIBRARY_GROUPS_GET, {})) as RpcMap["library.groupsGet"],
     groupsSave: ((input) =>

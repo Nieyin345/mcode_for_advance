@@ -52,6 +52,9 @@ import {
 } from "@contracts/workflow";
 import { BUILTIN_WORKFLOW_IDS, type BuiltinWorkflowId } from "@contracts/runtime";
 import {
+  NODE_CODE_LANGUAGE_KEY,
+  NODE_CODE_PARAM_KEY,
+  NODE_CODE_TIMEOUT_KEY,
   NODE_CRITERIA_PARAM_KEY,
   NODE_FLOW_RECORD_PARAM_KEY,
   NODE_INJECT_MODE_KEY,
@@ -63,6 +66,7 @@ import {
   NODE_TRIGGER_TASK_PARAM_KEY,
 } from "@contracts/nodeType";
 import { COMPOSER_MODE_PROMPTS } from "@main/lib/systemPrompt.js";
+import { MINERU_PY } from "@main/workflows/assets.js";
 
 /** 内置工作流的 id。**直接引用 contracts 那一份,不在这里复制一份。**
  *
@@ -529,8 +533,8 @@ const AUTO_DOWNLOAD_NODES: readonly NodeSpec[] = [
     capability: "write",
     params: {
       instruction: [
-        "资料库里刚有新条目导入了。**是哪几条见下面那段载荷里的「条目:」那几行**(id、标题、",
-        "类型都在那儿;批量导入时那儿会有好几条,写着「一共有 N 条,这次都要办」)。",
+        "资料库里刚有新条目导入了。**是哪几条见下面那段载荷里的「条目:」那几行**(id 和标题",
+        "都在那儿;批量导入时那儿会有好几条,写着「一共有 N 条,这次都要办」)。",
         "你的任务:**把里面列出来的每一条都排队下载**,一条都不许落下。",
         "",
         "做法:",
@@ -575,11 +579,38 @@ const AUTO_DOWNLOAD_EDGES: readonly WorkflowEdge[] = [
  */
 export const AUTO_CONVERT_WORKFLOW_ID = "wf_auto_convert";
 export const AUTO_CONVERT_TRIGGER_NODE_ID = "auto-convert-trigger";
+export const AUTO_CONVERT_CODE_NODE_ID = "auto-convert-code";
 export const AUTO_CONVERT_AGENT_NODE_ID = "auto-convert-agent";
 
 export const AUTO_CONVERT_DEFAULT_TASK =
   "资料库里有一批的 PDF 刚下载完(**是哪些见下面载荷里的「条目:」那几行**;可能不止一条)。把它们各自转成 Markdown 挂回对应条目。";
 
+/**
+ * 转录那一步跑的 Python —— 调 MinerU 的**在线 API**。
+ *
+ * ## 为什么是 code 节点而不是让模型自己挑工具(2026-09-24 改)
+ *
+ * 原来这一段是**一条指令**,让模型"按手上的条件选一条路"(装了什么就调什么)。那写法
+ * 有个说不出口的毛病:**转录这件事是确定性的**,而"模型会选对工具"不是 —— 它可能挑
+ * 本地 `library_convert`(扫描件抽不出正文)、可能挑一个不存在的工具、可能干脆跳过。
+ * 用户要的是"下完就转",那就不该经过一次判断。
+ *
+ * 现在改成**固定的三步**:触发 → code 节点调 MinerU → 子代理挂回。中间那步的判据全在
+ * 脚本里(见 `workflows/assets.ts` 的 `MINERU_PY` 文件头:token 从 `MINERU_TOKEN` 取、
+ * 失败带原因退 1)。
+ *
+ * ## 脚本正文**直接当 `code`**,不落文件再调
+ *
+ * `mcode.code` 节点的 `code` 参数**就是代码正文**(它自己会写临时文件再跑),所以这里
+ * 内嵌的是同一份 `MINERU_PY` —— 不需要拼路径、不需要管数据根在哪、也不怕用户删了
+ * `<数据根>/workflows/scripts/` 里那份(那一份是给**模型**用 shell 调的,见
+ * `systemPrompt.ts`;这条路完全不经过它)。
+ *
+ * ## 为什么挂回要单独一步(不能并进 code 节点)
+ *
+ * `library_adopt_markdown` 是**主进程的 MCP 工具**,而 code 节点起的是**子进程** ——
+ * 它碰不到。所以"转"和"挂回"必须分两步:code 节点产出 md,子代理拿它去挂。
+ */
 const AUTO_CONVERT_NODES: readonly NodeSpec[] = [
   {
     id: AUTO_CONVERT_TRIGGER_NODE_ID,
@@ -597,51 +628,49 @@ const AUTO_CONVERT_NODES: readonly NodeSpec[] = [
     },
   },
   {
+    id: AUTO_CONVERT_CODE_NODE_ID,
+    type: "mcode.code",
+    title: "调 MinerU 转 Markdown",
+    params: {
+      [NODE_CODE_LANGUAGE_KEY]: "python",
+      // 正文见 `workflows/assets.ts` 的 `MINERU_PY`(同一份,不另抄)。
+      [NODE_CODE_PARAM_KEY]: MINERU_PY,
+      // 长论文 + 排队要时间。这一步真的会等:脚本自己轮询到 done 或超时。
+      [NODE_CODE_TIMEOUT_KEY]: 30 * 60 * 1000,
+    },
+  },
+  {
     id: AUTO_CONVERT_AGENT_NODE_ID,
     type: "mcode.agent",
-    title: "转录并挂回库",
+    title: "挂回库",
     // **写能力**:转录产物要挂回条目(`library_adopt_markdown` 是写工具)。默认的
     // `read` 会把这一步按在计划模式里 —— 无人值守时计划模式等于拒绝执行。
     capability: "write",
     params: {
       instruction: [
-        "资料库里有 PDF 刚下载完(这次运行就是它触发的,**是哪些见下面那段载荷里的",
-        "「条目:」那几行** —— 那里有 id、标题、类型和 PDF 的库内相对路径)。",
-        "你的任务:**把载荷里列出来的每一条都转成 Markdown、各自挂回自己的条目**。",
+        "上一步已经用 MinerU 把 PDF 转成了 Markdown,产物路径在它的产出里",
+        "(`outputs` 里每条一个 `mdPath`;那是一份 `full.md`,同级的 `images/` 里是配图)。",
         "",
-        "⚠️ **可能是好几条。** 载荷里写着「一共有 N 条,这次都要办」时就是 N 条 —— 每一条都",
-        "要办到,一条都不许落下。少办一条的表现是那篇**再也没人转**,而且不报错。",
+        "你的任务:**把每一份转出来的 Markdown 挂回它对应的条目**。",
         "",
-        "**就用载荷里给的那些 id 和路径,不要自己去查「最新的一条」** —— 下载是并发跑的,",
-        "同一时间可能有好几条下来;而库里「最新的一条」是按入库时间排的,重下一遍旧条目、",
-        "或者同时挂着好几条时,它指的就不是刚下来的这一条。猜错了是**去转另一篇**,不报错。",
+        "做法:调 `library_adopt_markdown`,`itemId` 是那条条目、`path` 是那份 `full.md` 的",
+        "**绝对路径**。**配图按 md 里的引用搬,不用你挑目录** —— 所以你只需把 `full.md`",
+        "指对(不是它旁边那个 `images/`)。",
         "",
-        "外部的转录工具要的是**绝对路径**,而载荷里给的是库内相对路径 —— 拿绝对路径的办法:",
-        "调 `library_items`(或 `library_search`)按那个 id 查一次,工具输出里那行 `PDF:`",
-        "就是绝对路径。",
+        "⚠️ **可能不止一份**(下载是并发跑的,合并窗口里可能攒了好几条)。上一步的产出里",
+        "每一条各自有一份 md,一条都不许落下 —— 少挂一条的表现是那篇**转都转了、却没人",
+        "挂上去**,而且不报错。",
         "",
-        "然后按你手上的条件选一条路:",
-        "",
-        "1. **本机装了转录工具**(比如 `mineru`,或你自己装的别的)—— 跑它。跑外部命令用",
-        "   Code 节点或命令行节点,或者你自己的 shell 工具;",
-        "2. **没有工具** —— 调 `library_convert`,它做本地 pdf.js 抽文本(便宜、快)。",
-        "   扫描件抽不出正文,那一步会如实说\"没有文本层\",**这正是该报给用户的话**;",
-        "3. **两条都不成** —— 如实说明卡在哪(缺工具 / 是扫描件),不要假装成功。",
-        "",
-        "转出 `.md` 之后调和它同级的配图一起搬:调 `library_adopt_markdown`,`itemId` 是",
-        "那一条条目、`path` 是那份 `.md` 的路径。**配图按 md 里的引用搬,不用你挑目录** ——",
-        "但你得把 `full.md` 指对(不是它旁边那个 `images/`)。",
-        "",
-        "**做完的样子**:载荷里每一条都交代过了 —— 已经有 Markdown 的(条目详情页读得到)、" +
-          "转不了的(说明为什么);并向用户汇报:每条走的是哪条路、多少字、几张图。" +
-          "**已经转过的不必重转。**",
+        "**做完的样子**:每一条都交代过了 —— 挂上的(条目详情页读得到)、挂不上的",
+        "(说明为什么);并向用户汇报每条多少字、几张图。",
       ].join("\n"),
     },
   },
 ];
 
 const AUTO_CONVERT_EDGES: readonly WorkflowEdge[] = [
-  wire(AUTO_CONVERT_TRIGGER_NODE_ID, AUTO_CONVERT_AGENT_NODE_ID),
+  wire(AUTO_CONVERT_TRIGGER_NODE_ID, AUTO_CONVERT_CODE_NODE_ID),
+  wire(AUTO_CONVERT_CODE_NODE_ID, AUTO_CONVERT_AGENT_NODE_ID),
 ];
 
 /* ── 内置工作流(六个对话模式 + 两条自动化)── */

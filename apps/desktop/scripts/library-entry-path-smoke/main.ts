@@ -96,7 +96,7 @@ console.log("\n1. 论文那种形状：attached + pdf_path / md_path");
   mkdirSync(join(LIB, "papers", "aa", "aa"), { recursive: true });
   writeFileSync(abs, "%PDF-1.7 fake");
 
-  const item = LibraryRepo.upsert({ kind: "paper", title: "一篇论文", source: "manual" });
+  const item = LibraryRepo.upsert({ title: "一篇论文", source: "manual" });
   LibraryRepo.setPdf(item.id, rel, sha);
 
   const res = await entryPath({ id: item.id });
@@ -120,7 +120,7 @@ console.log("\n2. which：指名哪一份就给哪一份，不拿另一样顶");
   writeFileSync(join(LIB, pdfRel), "%PDF fake");
   writeFileSync(join(LIB, mdRel), "# 转录");
 
-  const item = LibraryRepo.upsert({ kind: "paper", title: "有转录的", source: "manual" });
+  const item = LibraryRepo.upsert({ title: "有转录的", source: "manual" });
   LibraryRepo.setPdf(item.id, pdfRel, sha);
   await setMdPath(item.id, mdRel);
 
@@ -141,7 +141,7 @@ console.log("\n3. 只有转录、没有 PDF 的条目");
   mkdirSync(join(LIB, "notes"), { recursive: true });
   writeFileSync(join(LIB, mdRel), "# 只有转录");
 
-  const item = LibraryRepo.upsert({ kind: "note", title: "一条笔记", source: "manual" });
+  const item = LibraryRepo.upsert({ title: "一条笔记", source: "manual" });
   await setMdPath(item.id, mdRel);
 
   const bare = await entryPath({ id: item.id });
@@ -163,7 +163,7 @@ console.log("\n3. 只有转录、没有 PDF 的条目");
   mkdirSync(join(LIB, "papers", "dd", "dd"), { recursive: true });
   writeFileSync(join(LIB, pdfRel), "%PDF fake");
 
-  const item = LibraryRepo.upsert({ kind: "paper", title: "只有 PDF", source: "manual" });
+  const item = LibraryRepo.upsert({ title: "只有 PDF", source: "manual" });
   LibraryRepo.setPdf(item.id, pdfRel, sha);
 
   const wantMd = await entryPath({ id: item.id, which: "md" });
@@ -181,7 +181,7 @@ console.log("\n4. 目录条目：报 isDir，别让调用方把它丢给编辑�
 {
   const dirRel = join("misc", "a-folder");
   mkdirSync(join(LIB, dirRel), { recursive: true });
-  const item = LibraryRepo.upsert({ kind: "document", title: "一个目录", source: "manual" });
+  const item = LibraryRepo.upsert({ title: "一个目录", source: "manual" });
   LibraryRepo.setFilePath(item.id, dirRel);
 
   const res = await entryPath({ id: item.id });
@@ -201,7 +201,7 @@ console.log("\n5. 坏情况：逐条说清是哪一种");
 
 {
   // 记录在、文件被移走了 —— 这条不能静默（否则编辑器打开是空白，用户以为坏了）。
-  const item = LibraryRepo.upsert({ kind: "paper", title: "文件没了", source: "manual" });
+  const item = LibraryRepo.upsert({ title: "文件没了", source: "manual" });
   LibraryRepo.setPdf(item.id, join("papers", "cc", "cc", `${"c".repeat(64)}.pdf`), "c".repeat(64));
   const res = await entryPath({ id: item.id });
   eq("★ 文件被移走 → path null", res.path, null);
@@ -210,7 +210,7 @@ console.log("\n5. 坏情况：逐条说清是哪一种");
 
 {
   // 只有元数据、什么都没有 —— 用户截过那句"这条资料没有关联文件"。
-  const item = LibraryRepo.upsert({ kind: "paper", title: "还没下 PDF", source: "search" });
+  const item = LibraryRepo.upsert({ title: "还没下 PDF", source: "search" });
   const res = await entryPath({ id: item.id });
   eq("★ 没有文件 → path null", res.path, null);
   check("★ 那句话是给用户看的", (res.error ?? "").includes("没有关联文件"), res);

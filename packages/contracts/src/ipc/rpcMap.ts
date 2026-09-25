@@ -20,7 +20,7 @@ import type { PluginState, PluginMarketplaceState, PluginsInstallLocalInput, Plu
 import type { PairingStartResult, PairedDevice } from "../mobile.js";
 import type { RelayStatus, RelayVpsConfig, RelayVpsConfigInput } from "../relay.js";
 import type { LibraryItem, LibraryItemLink, LibraryLinkView, LibraryCollection, InstitutionProfile, DownloadJob, ExternalSearchResult, FullTextMatch, AuthSiteStatus, LibraryConversionRow, LibraryNote, PdfHighlight } from "../library.js";
-import type { LibraryTypeMeta, LibraryGroupMeta, LibrarySuppressRule } from "../libraryTypes.js";
+import type { LibraryGroupMeta, LibrarySuppressRule } from "../libraryTypes.js";
 import type { TemplateEntry, TemplateFileContent } from "../templates.js";
 import type { GetSettingInput, SetSettingInput, GetManySettingsInput, GetManySettingsResult, GetVoiceModelDirInput, GetVoiceModelDirResult, SetVoiceModelDirInput, SetVoiceModelDirResult, NotificationPrefs } from "./settings.js";
 import type { StartSessionInput, ListSideChatsInput, SendTurnInput, InterruptInput, InjectInput, ApproveInput, RespondQuestionInput, RespondPlanApprovalInput, RewindTurnInput, UpdateSessionSettingsInput, CreateProjectInput, ProjectSessionsInput, SessionListAllInput, SetProjectGroupInput, ReorderProjectsInput, PinProjectInput, RenameProjectInput, SessionSearchInput, BookmarkSearchInput, BookmarkSearchResult, SessionMessagesInput, SaveMessagesInput, UpsertMessagesInput, TruncateAndInsertMessagesInput, RenameSessionInput, ForkSessionInput, PinSessionInput, UpdateBookmarksInput, OpenPathInput, ShowItemInFolderInput, OpenFileInput, SessionListNodesInput, SessionHasNodesInput } from "./session.js";
@@ -44,7 +44,7 @@ import type { RuntimeAgentState, RuntimesInstallInput, RuntimesInstallLocalInput
 import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, WorkflowExportInput, WorkflowImportInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchCommandTemplate } from "./workflow.js";
 import type { AutomationTriggerFacts, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
 import { MEMORY_CATEGORIES_CHANNEL, MEMORY_DELETE_CHANNEL, MEMORY_LIST_CHANNEL, MEMORY_READ_CHANNEL, MEMORY_SAVE_CHANNEL, type MemoryDeleteInput, type MemoryFileMeta, type MemoryListInput, type MemoryReadInput, type MemorySaveInput } from "../memory.js";
-import type { LibraryTypesGetInput, LibraryTypesSaveInput, LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDeleteItemsResult, LibraryRestoreItemsInput, LibraryDeletePreviewInput, LibraryDeletePreviewResult, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryEntryPathInput, LibraryEntryPathResult, PdfHighlightsReadInput, PdfHighlightsSaveInput, PdfHighlightsWriteBackInput, PdfHighlightsWriteResult, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibraryManifestInput, LibraryItemManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkCountsInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionMoveInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
+import type { LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDeleteItemsResult, LibraryRestoreItemsInput, LibraryDeletePreviewInput, LibraryDeletePreviewResult, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryEntryPathInput, LibraryEntryPathResult, PdfHighlightsReadInput, PdfHighlightsSaveInput, PdfHighlightsWriteBackInput, PdfHighlightsWriteResult, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibraryManifestInput, LibraryItemManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkCountsInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionMoveInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
 import type { TemplateListInput, TemplateAddInput, TemplateRenameInput, TemplateEntryRefInput, TemplateFileRefInput, TemplatesAttachToChatInput } from "./templates.js";
 import type { SubagentDefinition } from "../claudeSubagent.js";
 import type { ClaudeSubagentsSaveInput } from "../claudeSubagent.js";
@@ -852,10 +852,6 @@ export interface RpcMap {
   "relay.status": () => Promise<RelayStatus>;
 
   // 文献库 —— 条目
-  /** 类型注册表:当前生效的全表(内置 8 类 + 用户自建,按保存顺序)。 */
-  "library.typesGet": (input: LibraryTypesGetInput) => Promise<{ types: LibraryTypeMeta[] }>;
-  /** 整表替换注册表。校验(内置不可删、id 规则)在主进程过 `parseLibraryTypesJson`。 */
-  "library.typesSave": (input: LibraryTypesSaveInput) => Promise<{ ok: true } | { ok: false; error: string }>;
   /** 左栏大类:当前生效的分组(已过滤掉引用了已删类型的行)。 */
   "library.groupsGet": (input: LibraryGroupsGetInput) => Promise<{ groups: LibraryGroupMeta[] }>;
   /** 整表替换大类。校验(一个类型只属一个组等)在主进程。 */
@@ -1302,8 +1298,6 @@ export const IPC = {
   LIBRARY_ITEM_MANIFEST: "library:itemManifest",
   /** 整个库的清单(「全部<库>」那一行)。 */
   /** 类型注册表:读(返回当前生效的全表,含内置)/ 写(整表替换,校验在主进程)。 */
-  LIBRARY_TYPES_GET: "library:typesGet",
-  LIBRARY_TYPES_SAVE: "library:typesSave",
   /** 左栏大类:读(合并校验后)/ 写(整表替换)。 */
   LIBRARY_GROUPS_GET: "library:groupsGet",
   LIBRARY_GROUPS_SAVE: "library:groupsSave",

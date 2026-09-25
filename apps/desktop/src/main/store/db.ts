@@ -383,6 +383,53 @@ function migrate(database: Database): void {
   // 分类的「给 AI 的说明」:拼进该分类的清单(统一资料库,类型说明之外的第二层)。
   addColumnIfMissing(database, "library_collections", "prompt", "TEXT");
 
+  // ── kind 退役（2026-09-24）──
+  // 上面两列 `kind` **保留在库里但代码全面停止读写**（sql.js 没有 DROP COLUMN 的
+  // 可移植写法；trash.ts 早有同款先例）。分类的归属改由 `group_id` 直接挂大类 ——
+  // 从前分类挂在 kind 下、kind 再被大类表收编，现在是两步并一步。
+  addColumnIfMissing(database, "library_collections", "group_id", "TEXT");
+  // 一次性回填：老分类只有 kind，按旧大类表（settings 里的 `library.groups`，
+  // LibraryGroupMeta.kinds）反查它该归哪个大类；查不到的归第一个大类。
+  // 幂等：只填 `group_id IS NULL` 的行 —— 用户此后挪分类不会被打回。
+  // ⚠️ 这里直接读 settings 表（不经 SettingRepo，避免模块加载顺序问题），
+  // JSON 解析失败就全部归第一个大类，不抛 —— 迁移不能把启动卡死。
+  {
+    const needsBackfill = database
+      .prepare("SELECT COUNT(*) AS n FROM library_collections WHERE group_id IS NULL")
+      .getAsObject() as unknown as { n: number };
+    if (needsBackfill.n > 0) {
+      const row = database
+        .prepare(`SELECT value FROM settings WHERE key = 'library.groups'`)
+        .getAsObject() as unknown as { value: string | null };
+      let groups: Array<{ id: string; kinds?: string[] }> = [];
+      try {
+        groups = JSON.parse(row.value ?? "[]");
+      } catch {
+        /* 坏 JSON：走下面的空表兜底 */
+      }
+      const groupOfKind = new Map<string, string>();
+      for (const g of groups) {
+        for (const k of g.kinds ?? []) groupOfKind.set(k, g.id);
+      }
+      const fallback = groups[0]?.id ?? "";
+      const stmt = database.prepare("SELECT id, kind FROM library_collections WHERE group_id IS NULL");
+      stmt.bind([]);
+      const updates: Array<{ id: string; gid: string }> = [];
+      while (stmt.step()) {
+        const r = stmt.getAsObject() as unknown as { id: string; kind: string | null };
+        updates.push({ id: r.id, gid: groupOfKind.get(r.kind ?? "") ?? fallback });
+      }
+      stmt.free();
+      for (const u of updates) {
+        database.run("UPDATE library_collections SET group_id = ? WHERE id = ?", [
+          u.gid,
+          u.id,
+        ]);
+      }
+    }
+  }
+
+
   // 统一资料库的通用文件条目(见 contracts/src/library.ts 的 LibraryItem.entryMode):
   // attached = 复制入库(相对库根),linked = 引用原路径(文件不动,可为目录)。
   // 老库没有这两列;ALTER 出来的既有行按 DEFAULT 'attached' 读,语义不变。

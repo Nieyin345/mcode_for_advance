@@ -1357,6 +1357,11 @@ export const zh = {
   "settings.workflows.critNote": "解释（可选；告诉模型这个条件按什么口径执行）",
   "settings.workflows.critEmpty": "尚未配置。添加一条，它会成为聊天输入框上方的一个下拉框。",
   "settings.workflows.critAdd": "加一条",
+  // 候选**现读**(见 `nodeType.ts` 的 source):候选不在盘上,由这条工作流被使用时现场拉。
+  "settings.workflows.critSource": "候选来源",
+  "settings.workflows.critSourceNone": "手写（下面那串）",
+  "settings.workflows.critSourceHint":
+    "选了来源就**不写候选**:用户开着这条工作流时,候选当场从当前「文档系统」或项目里拉出来。选中值存的是它的 id,注入提示词前会换成名字。",
   // 「插入变量」：候选是**上游那几步自己定过的变量名**，所以这里一个具体名字都不列
   // —— 列出来就等于把这个能力绑死在某一套词汇上。
   "settings.workflows.insertVar": "插入变量",

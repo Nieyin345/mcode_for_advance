@@ -2635,11 +2635,7 @@ function ChatPaneForSession({
                 collectionId: msg.key,
                 // 同模版那一路:挂整个库(`k:<库>`)时主进程给的是清单标题(中文),
                 // 界面上的字要按当前语言自己算 —— 见 lib/libraryLabels.ts
-                name: libraryAttachChipLabel(
-                  msg.key,
-                  msg.name,
-                  useSessionStore.getState().locale,
-                ),
+                name: libraryAttachChipLabel(msg.key, msg.name),
                 manifestPath: msg.manifestPath,
               },
             ]),

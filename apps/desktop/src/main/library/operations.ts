@@ -18,7 +18,7 @@
  * 写操作走 MCP 工具而不是脚本:`<数据根>/workflows/scripts/` 下那些 Python 脚本
  * 直接读 `mcode.db` 文件是安全的,**写**则会被应用的下一次整库重写覆盖掉。
  */
-import type { LibraryItem, LibraryKind, LibraryAuthor, LibraryItemType } from "@contracts/library";
+import type { LibraryItem, LibraryAuthor, LibraryItemType } from "@contracts/library";
 import { LibraryRepo, CollectionRepo } from "@main/store/repositories.js";
 import { parseImportText } from "./importer.js";
 import { fetchByDoi, fetchByArxivId, findOpenAccessPdfUrl } from "./metadata.js";
@@ -189,9 +189,9 @@ export function renameItem(id: string, title: string): boolean {
 }
 
 /** 按关键词找条目。给 AI 用:它需要"库里有没有这一篇"的确定答案。 */
-export function searchItems(query: string, kind?: LibraryKind): LibraryItem[] {
+export function searchItems(query: string): LibraryItem[] {
   const q = query.trim().toLowerCase();
-  const all = LibraryRepo.list({ kind }).items;
+  const all = LibraryRepo.list({}).items;
   if (!q) return all;
   return all.filter((i) => {
     const hay = [

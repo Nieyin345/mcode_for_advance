@@ -1365,6 +1365,12 @@ export const en = {
   "settings.workflows.critNote": "Note (optional; tells the model how to apply this criterion)",
   "settings.workflows.critEmpty": "None yet. Add one and it becomes a dropdown above the chat input box.",
   "settings.workflows.critAdd": "Add criterion",
+  // Choices read live (see `source` in `nodeType.ts`): nothing is stored on disk;
+  // the list is pulled when the user opens this workflow.
+  "settings.workflows.critSource": "Choices from",
+  "settings.workflows.critSourceNone": "Hand-written (the list below)",
+  "settings.workflows.critSourceHint":
+    "With a source you do **not** write choices: when the user opens this workflow the list is read live from the current document system or projects. The picked value is stored as its id and resolved to a name before it reaches the prompt.",
   // "Insert variable": the candidates are the names *upstream steps* defined, so no
   // concrete name appears here — hardcoding one would tie the feature to a vocabulary.
   "settings.workflows.insertVar": "Insert variable",

@@ -18,7 +18,7 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import * as path from "node:path";
 import { basename, extname, join } from "node:path";
-import type { LibraryItem, LibraryKind } from "@contracts/library";
+import type { LibraryItem } from "@contracts/library";
 import { LibraryRepo } from "@main/store/repositories.js";
 import { emitItemImported } from "./broadcast.js";
 import { libraryRoot, ensureLibraryDirs, fromLibraryRelative } from "./paths.js";
@@ -45,8 +45,6 @@ export function importGenericFiles(input: {
   paths: string[];
   /** 落法。默认 attached(复制进库)。 */
   mode?: "linked" | "attached";
-  /** 归到哪个类型(注册表里的 kind)。省略 = 从扩展名猜,猜不出进 document。 */
-  kind?: LibraryKind;
   collectionIds?: string[];
 }): { items: LibraryItem[]; added: number; skipped: number; errors: Array<{ path: string; error: string }> } {
   ensureLibraryDirs();
@@ -98,7 +96,6 @@ export function importGenericFiles(input: {
         // attached:复制进 `<库根>/files/<id 前缀>-<原名>`。先建条目拿 id,再复制,
         // 再把路径写上 —— 反过来(先复制)的话,失败会留下没主的无文件条目。
         const item = LibraryRepo.upsert({
-          kind: input.kind ?? "document",
           title: titleFor(abs),
           entryMode: "attached",
         });
@@ -114,7 +111,6 @@ export function importGenericFiles(input: {
       }
 
       const item = LibraryRepo.upsert({
-        kind: input.kind ?? "document",
         title: titleFor(abs),
         entryMode: "linked",
         filePath: abs,

@@ -18,10 +18,9 @@ import { IPC } from "@contracts/ipc";
 import {
   formatAuthorList,
   type LibraryItem,
-  type LibraryKind,
 } from "@contracts/library";
 import { trashedItemIds } from "./trash.js";
-import { kindDisplayName, kindGroupPromptOf, kindMeta, loadLibraryGroups } from "./kindRegistry.js";
+import { groupPromptOf, loadLibraryGroups } from "./groupRegistry.js";
 import { CollectionRepo, LibraryLinkRepo, LibraryRepo, NoteRepo } from "@main/store/repositories.js";
 import { importGenericFiles } from "./fileImport.js";
 import { suppressionReasonOfItem } from "./suppress.js";
@@ -180,14 +179,10 @@ export function writeCollectionManifest(collectionId: string): ManifestResult {
   const { items, suppressed } = dropSuppressed(all);
   const name = collection?.name ?? collectionId;
   const lines = [`# 文献库:${name}`, "", `共 ${items.length} 篇。`, ""];
-  // 提示词**三层叠加,从大到小**:大类(组)→ 类型 → 集合。有大类/类型说明时,集合
-  // 的行写在最前 —— 集合的说明最具体,最后读到的东西权重最高。哪层没写就跳过。
-  const groupPrompt = items[0] ? kindGroupPromptOf(items[0].kind) : undefined;
-  const typePrompt = items[0] ? kindMeta(items[0].kind)?.prompt : undefined;
-  for (const p of [groupPrompt, typePrompt]) {
-    const text = p?.trim();
-    if (text) lines.push(`> ${text}`, "");
-  }
+  // 提示词**两层叠加,从大到小**:大类(组)→ 集合。大类说明经 `collection.groupId`
+  // 查（kind 退役,不再是"从条目反查类型"）。哪层没写就跳过。
+  const groupPrompt = collection?.groupId ? groupPromptOf(collection.groupId) : undefined;
+  if (groupPrompt?.trim()) lines.push(`> ${groupPrompt.trim()}`, "");
   // **这一组的说明**(用户按集合写的)紧跟其后 —— 模型一打开清单就先读到"这组东西
   // 该怎么处理"。没有就不注这一段。
   const prompt = collection?.prompt?.trim();
@@ -221,10 +216,6 @@ function dropSuppressed(items: LibraryItem[]): { items: LibraryItem[]; suppresse
   return { items: kept, suppressed };
 }
 
-/** 三个库各自的中文名 —— 清单是给模型读的中文内容,不是界面文案,所以不走 i18n。
- *  ⚠️ 统一资料库后 kind 开放注册,这里不再穷举:显示名一律走注册表
- *  (`kindDisplayName`,内置 8 类的出厂名与这张表一致)。保留为空占位会被误用,删。 */
-
 /**
  * 整个**大类**的清单 —— 左栏右键大类标题「添加到当前对话」时用的。
  *
@@ -233,11 +224,11 @@ function dropSuppressed(items: LibraryItem[]): { items: LibraryItem[]; suppresse
  *
  * 与整库清单同一套规矩(那是这条路的最近亲,只差一个范围):
  *
- *  1. 逐个小类取全量(`listByKind`,不分页);
- *  2. **回收站里的不算** —— 每个小类各有各的回收站,逐个剔;
+ *  1. 逐个分类取全量(`listByCollection`,不分页);
+ *  2. **回收站里的不算** —— 回收站全库共用,按条目 id 剔;
  *  3. **屏蔽规则挡掉的不算**,剔掉的数如实写在开头;
- *  4. 大类自己的 `prompt` 排在最前(它是这一层最外层的说明),各小类的说明跟在
- *     对应小节的标题下 —— 模型读到哪一类就看到哪一类的处理方式。
+ *  4. 大类自己的 `prompt` 排在最前(它是这一层最外层的说明),各分类的说明跟在
+ *     对应小节的标题下 —— 模型读到哪一组就看到哪一组的处理方式。
  *
  * ## 为什么按小类**分节**,而不是把所有条目混成一长串
  *
@@ -253,15 +244,14 @@ export function writeGroupManifest(groupId: string): ManifestResult {
   const groupPrompt = group.prompt?.trim();
   if (groupPrompt) lines.push(`> ${groupPrompt}`, "");
 
-  // 回收站**全库共用一个**,而条目的 kind 与它躺在哪个回收站里早已没有关系 ——
-  // 所以这道筛子按**条目 id** 过(`trashedItemIds`),不再"逐个小类去问它的回收站
-  // 是哪个"。后者在共用之后会漏:回收站建在论文库下,而里面躺着一条教材。
+  // 回收站**全库共用一个** —— 这道筛子按**条目 id** 过(`trashedItemIds`)。
   const trashed = trashedItemIds();
   let total = 0;
   let trashedTotal = 0;
   let suppressedTotal = 0;
-  for (const kind of group.kinds) {
-    const all = LibraryRepo.listByKind(kind);
+  // 挂在这个大类下的**全部分类**（group_id 直挂，kind 退役）。
+  for (const c of CollectionRepo.list().filter((c) => c.groupId === groupId)) {
+    const all = LibraryRepo.listByCollection(c.id);
     if (all.length === 0) continue;
     const inGroup = all.filter((i) => trashed.has(i.id));
     const { items, suppressed } = dropSuppressed(all.filter((i) => !trashed.has(i.id)));
@@ -269,9 +259,8 @@ export function writeGroupManifest(groupId: string): ManifestResult {
     suppressedTotal += suppressed;
     if (items.length === 0) continue;
 
-    const label = kindDisplayName(kind);
-    lines.push(`## ${label}`, "");
-    const prompt = kindMeta(kind)?.prompt?.trim();
+    lines.push(`## ${c.name}`, "");
+    const prompt = c.prompt?.trim();
     if (prompt) lines.push(`> ${prompt}`, "");
     lines.push(...renderItemsManifest(items));
     total += items.length;
@@ -291,50 +280,6 @@ export function writeGroupManifest(groupId: string): ManifestResult {
   return writeManifest(`group-${groupId}.md`, lines, total, group.name);
 }
 
-/**
- * 整库清单 —— 「全部文献 / 全部教材 / 全部笔记」那一行挂进对话时用的。
- *
- * 与分类清单同一份排版,三处不同:
- *
- *  1. 范围是整个库(`LibraryRepo.listByKind`,**不分页**) —— 那 200 条的默认上限是
- *     给左栏那棵树用的,清单必须全量,否则模型以为库里就这些;
- *  2. **回收站里的不算**。挂"全部文献"是要 AI 读用户留着的那些,把被丢进回收站的
- *     也塞给它,它就可能去引用一篇用户已经不要了的东西。剔掉多少如实写在开头;
- *  3. **屏蔽规则挡掉的不算** —— 同一条道理,而且用户明确要求屏蔽是硬过滤(见
- *     `main/library/suppress.ts`)。这一条与上一条**都是"不该进来的东西不进来"**,
- *     所以剔掉的数合在一处说;
- *  4. **类型说明跟着清单走** —— 标题用注册表的显示名(统一资料库后 kind 是开放的,
- *     用户自建的类型同样有中文名),`prompt` 有内容就注在开头:模型一打开就知道
- *     "这一类东西是什么、该怎么处理"。
- */
-export function writeKindManifest(kind: LibraryKind): ManifestResult {
-  const all = LibraryRepo.listByKind(kind);
-  // 同 `writeGroupManifest`:回收站是全库共用的一个,所以按**条目 id** 过筛,
-  // 不按"这个库的回收站是哪个"。
-  const trashed = trashedItemIds();
-  const trashedCount = all.filter((i) => trashed.has(i.id)).length;
-  const { items, suppressed } = dropSuppressed(all.filter((i) => !trashed.has(i.id)));
-
-  const label = kindDisplayName(kind);
-  const lines = [`# 全部${label}`, "", `共 ${items.length} 篇。`, ""];
-  // 大类(组)说明在最外层,类型说明其次 —— 哪层写了就注,没写就跳过。
-  const groupPrompt = kindGroupPromptOf(kind);
-  if (groupPrompt) {
-    lines.push(`> ${groupPrompt.trim()}`, "");
-  }
-  const prompt = kindMeta(kind)?.prompt;
-  if (prompt) {
-    lines.push(`> 关于「${label}」这类资料:${prompt}`, "");
-  }
-  if (trashedCount > 0) {
-    lines.push(`(回收站里另有 ${trashedCount} 篇,不在这次范围内。)`, "");
-  }
-  if (suppressed > 0) {
-    lines.push(`(屏蔽规则挡掉了 ${suppressed} 篇,不在这次范围内。)`, "");
-  }
-  lines.push(...renderItemsManifest(items));
-  return writeManifest(`kind-${kind}.md`, lines, items.length, `全部${label}`);
-}
 
 /**
  * 把一条附件挂到某个会话的**输入框**上。
@@ -358,10 +303,10 @@ export function writeKindManifest(kind: LibraryKind): ManifestResult {
  * 四个前缀,与渲染端 `contentTag.ts` 里那份**必须一致**(算出来不一样的话,同一份
  * 东西会被当成两样,去重就失效了):
  *
- *   `c:<分类 id>`   一个分类(清单是"这个库里有什么")
+ *   `c:<分类 id>`   一个分类(清单是"这个分类里有什么")
  *   `i:<条目 id>`   单独一篇(清单是"这一篇该怎么读")
- *   `k:<库>`        整个库(「全部文献 / 全部教材 / 全部笔记」那一行)
- *   `g:<大类 id>`   整个大类(左栏那一**段**,含段下所有小类的资料)
+ *   `g:<大类 id>`   整个大类(左栏那一**段**,含段下所有分类的资料)
+ *   （`k:<库>` 是 kind 时代的键,已随 kind 退役删除。）
  *
  * 四级前缀与左栏那四级一一对应 —— 用户的要求是「每一级右键都可以选择加入到当前对话」,
  * 所以每一级都得有一个键。`g:` 是最后补上的那一级(它范围最大:一个大类下所有小类)。
@@ -407,7 +352,6 @@ export function attachToChat(
   let res: ManifestResult;
   if (prefix === "i:" && id) res = writeItemManifest(id);
   else if (prefix === "c:" && id) res = writeCollectionManifest(id);
-  else if (prefix === "k:" && kindMeta(id) !== undefined) res = writeKindManifest(id);
   else if (prefix === "g:" && id) res = writeGroupManifest(id);
   else return { ok: false, error: `无法识别的附件键:${key}` };
 
@@ -417,9 +361,7 @@ export function attachToChat(
         ? `条目 ${id}`
         : prefix === "c:"
           ? `分类 ${id}`
-          : prefix === "k:"
-            ? `库 ${id}`
-            : `大类 ${id}`;
+          : `大类 ${id}`;
     return { ok: false, error: `找不到${what}` };
   }
 

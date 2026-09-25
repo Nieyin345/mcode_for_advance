@@ -29,7 +29,6 @@ import type { WorkflowChoiceOption } from "@contracts/runtime";
 // **怎么摆** —— 不碰库,也不需要知道"哪个 id 属于哪一类"是怎么查出来的。
 import {
   LEVEL_LABEL,
-  contextPurposeOf,
   kindLabel,
   type ContextLine,
 } from "./contextInherit.js";
@@ -206,7 +205,7 @@ function renderContextLines(lines: readonly ContextLine[]): string {
   ];
   const out: string[] = [];
   for (const group of groups) {
-    const mine = lines.filter((l) => contextPurposeOf(l.kind) === group.purpose);
+    const mine = lines.filter((l) => l.purpose === group.purpose);
     if (mine.length === 0) continue;
     out.push(group.head);
     for (const line of mine) {

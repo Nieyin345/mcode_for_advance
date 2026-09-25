@@ -68,7 +68,6 @@
 
 import { z } from "zod";
 import { CapabilityRequirementSchema } from "./capability.js";
-import { LIBRARY_KINDS } from "./library.js";
 import { TEMPLATE_KINDS } from "./templates.js";
 import { parseCron, type CronSpec } from "./cron.js";
 import { HOOK_EVENTS, eventItemFactKeysOf, hookSubjectOf, splitGlobList, type HookEvent } from "./hook.js";
@@ -246,8 +245,8 @@ export const TRIGGER_PAYLOAD_FACTS_OF: Record<TriggerKind, readonly string[]> = 
  *
  * ## 事件那一种还要再看**听的是哪几个事件**(2026-09-19)
  *
- * 「这件事是关于哪一条」那几项(`itemId` / `itemKind` / `itemTitle` / `pdfPath`)只有
- * 资料库那两个事件带得出,而**哪些事件**写在参数里 —— 所以这一层不能靠
+ * 「这件事是关于哪一条」那几项(`itemId` / `itemTitle` / `pdfPath`)只有资料库那两个事件
+ * 带得出,而**哪些事件**写在参数里 —— 所以这一层不能靠
  * {@link TRIGGER_PAYLOAD_FACTS_OF} 那张按种类写死的表。
  *
  * 听了好几个事件时取**交集**:哪一条响是运行时的事(C2 那条多事件触发器),指令要写就
@@ -518,6 +517,16 @@ export const NODE_PARAM_REF_SOURCES = [
   // 它是唯一一个**不带 `multiple` 选项**的用例(值就是项目 id 那一个字符串):"在哪几个
   // 目录里跑"这件事对一次运行没有意义 —— 一次运行只有一个工作目录。
   "projects",
+  // **当前文档系统的分类表**(`library_collections`)。
+  //
+  // 用户的原话:「你给在加一个就是可以获取当前的文档系统,然后选择」。它的第一个消费者
+  // 是**固定条件**(见 {@link NODE_CRITERIA_PARAM_KEY} 的 `source`):检索工作流要一个
+  // "这次下到哪个分类"的下拉,而候选只能是**用户自己建的那些分类** —— 写清单的人
+  // 不可能知道,所以清单声明"来源=collections",候选在开着这条工作流时现拉。
+  //
+  // 它与 `projects` 那一档的形状差别只在"拉的是哪张表",所以共用同一套 `ref` 机制
+  // (`useRefOptions` 里加一个 case,不是加一个 `kind`)。
+  "collections",
 ] as const;
 export type NodeParamRefSource = (typeof NODE_PARAM_REF_SOURCES)[number];
 export const NodeParamRefSourceSchema = z.enum(NODE_PARAM_REF_SOURCES);
@@ -736,14 +745,29 @@ export const NODE_PROMPT_PARAM_KEY = "instruction";
  * 主对话入口节点的**固定条件**参数键 —— 聊天输入框上方那一排下拉框的条目表,也是
  * 那一排东西的**唯一定义**(曾经并排的「输入选项」机制已删,2026-09-19)。
  *
- * 值是一张 `{ name: 条件名, choices: 候选值[], note?: 解释 }` 的表:每一行变成输入框
- * 上方**一个**下拉框,选中的值随**那次对话第一轮**的提示词注入**一次**
+ * 值是一张 `{ name: 条件名, choices: 候选值[], note?: 解释, source?: 来源 }` 的表:
+ * 每一行变成输入框上方**一个**下拉框,选中的值随**那次对话第一轮**的提示词注入**一次**
  * (`main/lib/searchPrefs.ts` 的 `nodeCriteriaPrompt`,注入点在 `runner.ts` 的
  * `startWorkflowRun`),之后它已经在上下文里,不再重复注入。`note` 是给模型的一句
  * 解释(这个条件是什么意思、按哪个口径执行),有就一并注入。
  * 它接过了文献检索那条**写死的筛选条**:那四个条件(时间范围 /
  * 期刊层次 / 影响因子 / 每源条数)现在是内置检索图主节点上的预填数据,用户可以改候选、
  * 加条件、删条件 —— 定义在节点上,界面只是渲染。
+ *
+ * ## `source`:候选**现读**,不写在盘上
+ *
+ * 用户的原话:「选择的候选值是在用户用这个工作流的时候**现场当时获取**的,提示词还是要
+ * 自己写的,和其他的条件一样」。所以一行可以**不写 `choices`**,改写 `source` ——
+ * 取值是 {@link NODE_PARAM_REF_SOURCES} 里的一个(`"collections"` = 当前文档系统的分类表、
+ * `"projects"` = 左栏项目表),界面开着这条工作流时**现拉**候选。
+ *
+ * ⚠️ 有 `source` 时 `choices` **必须是空数组**(不是缺字段):老存档里的每一行都有
+ * `choices`,而"候选写在盘上"与"候选现拉"是互斥的两种读法 —— 留着旧候选的话,某个
+ * 界面上会拿它渲染出一个永远不该出现的下拉。校验只查这两者的**一致性**,不查那个
+ * 来源现在存不存在(那是主进程与时序的事)。
+ *
+ * 注入侧(`searchPrefs.ts`)**必须把选中的 id 翻成可读名**再进提示词 —— 用户选的是
+ * 分类/项目的 id,而模型要读的是名字。
  *
  * 和 {@link NODE_PROMPT_PARAM_KEY} 同一条约定:不是 schema 上的字段,是一个**键名**。
  * 只有入口节点(`mcode.main`)带这个参数。
@@ -964,34 +988,52 @@ export function providerIdOf(params: Record<string, unknown>): string | undefine
 export const NODE_CONTEXT_PARAM_KEY = "context";
 
 /**
- * 节点能要求的上下文类目 —— **出厂时的全集**:两个库的一级分类。
+ * 节点能要求的上下文类目 —— **出厂时的全集**,即"模版库那五个类目"。
  *
- * 直接从 `LIBRARY_KINDS` / `TEMPLATE_KINDS` 拼出来,而不是在这里再抄一份:抄一份的
- * 那天,库里加了一个新分类,这个下拉里就不会有它,而没有任何地方会报错。
+ * 直接从 `TEMPLATE_KINDS` 拼出来,而不是在这里再抄一份:抄一份的那天,库加了一个新类目,
+ * 这个下拉里就不会有它,而没有任何地方会报错。
  *
- * ⚠️ **它是"出厂清单",不再是类型全集。** 统一资料库后 kind 开放注册(见
- * `@contracts/libraryTypes`),用户自建的类型也要能被节点要求 —— 所以
- * `NodeContextKind` 已放宽为 string;这个数组降级为**静态兜底**(没接注册表的调用方
- * 拿它当内置全集用),`isNodeContextKind` 同理只认内置那八个。"动态全集"在
- * `main/library/kindRegistry`(M2)接进上下文链。
+ * ## ⚠️ 这里**只有模版** —— 文献侧走大类,不在这张表里
+ *
+ * kind 退役(2026-09-24)之前,资料库那一侧也有八个固定的类目(`paper` / `textbook` /
+ * `note` …),和模版那五个拼在一起构成这张全集。kind 没了之后,**文献侧的类目就是用户
+ * 自己的大类**(`LibraryGroupMeta`,id 由用户建、内容由用户改)—— 出厂表里写不出它们,
+ * 只能运行时现读。
+ *
+ * 所以现在的分工是:
+ *
+ *  - **模版类目**(`latex` / `ppt` / `word` / …):封闭的、编译期就有的,在 `NODE_CONTEXT_KINDS`;
+ *  - **资料库大类**(`docs` / `templates` / 用户自建的):开放的、运行时的,由
+ *    `main/library/groupRegistry.loadLibraryGroups` 现读(见 `nodeTypes.ts` 的
+ *    `contextOptions`)。两边的取值**不会撞**:大类 id 里出现 `latex` 这种模版类目名
+ *    的概率极小,而真撞上了也只是那一项在下拉里重复一次(见 `contextOptions` 的去重)。
+ *
+ * `NodeContextKind` 是 `string`,不设上限 —— 参数是用户和 AI 都能写的自由数据,而"这个
+ * 类目认不认识"是**运行时**的事(要看当前库里有哪几个大类),不该在契约这一层硬编码死。
+ * `isNodeContextKind` 因此只回答"是不是内置模版类目",资料库大类那一侧由主进程判。
  */
-export const NODE_CONTEXT_KINDS = [...LIBRARY_KINDS, ...TEMPLATE_KINDS] as const;
+export const NODE_CONTEXT_KINDS = [...TEMPLATE_KINDS] as const;
 export type NodeContextKind = string;
 
 export function isNodeContextKind(value: unknown): value is NodeContextKind {
   return typeof value === "string" && (NODE_CONTEXT_KINDS as readonly string[]).includes(value);
 }
 
-/** 从节点参数里取上下文类目。**只留下认识的那些** —— 参数是用户和 AI 都能写的自由
- *  数据,而一个不认识的类目名会让"要继承什么"这件事变得没法推理。形状容忍度同
- *  {@link skillNamesOf}。 */
+/** 从节点参数里取上下文类目。**原样收下** —— 认不认识是运行时的事(见 {@link NODE_CONTEXT_KINDS})。
+ *
+ *  这里从前会按 `isNodeContextKind` 把不认识的丢掉,而 kind 退役后那样做会**静默丢掉
+ *  用户所有的大类选择**(它们本来就不在内置表里):界面上下拉里勾着「文档」,存进去再
+ *  读出来就成了空数组,而表现是"这一步没有资料" —— 一句解释都没有。去重与去空还是做,
+ *  那两条与取值合不合法无关。 */
 export function contextKindsOf(params: Record<string, unknown>): NodeContextKind[] {
   const raw = params[NODE_CONTEXT_PARAM_KEY];
   const list = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
   const out: NodeContextKind[] = [];
   for (const item of list) {
-    if (!isNodeContextKind(item) || out.includes(item)) continue;
-    out.push(item);
+    if (typeof item !== "string") continue;
+    const v = item.trim();
+    if (v.length === 0 || out.includes(v)) continue;
+    out.push(v);
   }
   return out;
 }
@@ -1549,23 +1591,36 @@ export function validateNodeParams(
         return { ok: false, error: `参数「${spec.label}」里有一项不是「名字 + 示例」` };
       }
     }
-    // 固定条件表:一项一项的 `{ name, choices[], note? }`。**只查形状,容忍空行** —— 编辑
-    // 态里"刚点了加号还没填"的那一行必须存得下来;候选值空一行(用户打了个回车)也不算
-    // 错,渲染端会把空串滤掉。`note`(给模型的一句解释)可选:老存档没有它,没填也合法。
+    // 固定条件表:一项一项的 `{ name, choices[], note?, source? }`。**只查形状,容忍空行**
+    // —— 编辑态里"刚点了加号还没填"的那一行必须存得下来;候选值空一行(用户打了个回车)
+    // 也不算错,渲染端会把空串滤掉。`note`(给模型的一句解释)可选:老存档没有它,没填也合法。
+    //
+    // `source`(候选**现读**,见 `NODE_CRITERIA_PARAM_KEY` 那段)与 `choices` 是**互斥**的
+    // 两种读法,所以这里查的是那个一致性:`source` 必须是认得的来源、而且此时 `choices`
+    // 必须空。不查这一条的话,两种读法会各拿一半 —— 界面上摆着盘上那些过时的候选,
+    // 而作者以为自己写的是"现读"。
     if (spec.kind === "selects") {
       if (!Array.isArray(value)) {
         return { ok: false, error: `参数「${spec.label}」应该是一张表` };
       }
-      const bad = value.some(
-        (v) =>
+      const bad = value.some((v) => {
+        if (
           typeof v !== "object" ||
           v === null ||
           typeof (v as { name?: unknown }).name !== "string" ||
           !Array.isArray((v as { choices?: unknown }).choices) ||
           (v as { choices: unknown[] }).choices.some((c) => typeof c !== "string") ||
           !((v as { note?: unknown }).note === undefined ||
-            typeof (v as { note?: unknown }).note === "string"),
-      );
+            typeof (v as { note?: unknown }).note === "string")
+        ) {
+          return true;
+        }
+        const source = (v as { source?: unknown }).source;
+        if (source === undefined) return false;
+        if (!NodeParamRefSourceSchema.safeParse(source).success) return true;
+        // 现读的来源不能同时留着盘上的候选 —— 见上面那段。
+        return (v as { choices: unknown[] }).choices.length > 0;
+      });
       if (bad) {
         return { ok: false, error: `参数「${spec.label}」里有一项不是「条件名 + 一串候选值」` };
       }

@@ -30,7 +30,7 @@
  */
 import { z } from "zod";
 import { SEARCH_LIMIT_SETTING_KEY } from "@contracts/ipc";
-import type { LibraryItem, LibraryKind } from "@contracts/library";
+import type { LibraryItem } from "@contracts/library";
 import { LibraryRepo, CollectionRepo, NoteRepo, SettingRepo, DownloadJobRepo, LibraryLinkRepo } from "@main/store/repositories.js";
 import {
   assignToCollection,
@@ -43,7 +43,6 @@ import { enqueueDownloads } from "@main/library/downloader.js";
 import { convertItemToMarkdown } from "@main/library/convert.js";
 import { adoptMarkdownFile } from "@main/library/adoptMarkdown.js";
 import { fromLibraryRelative } from "@main/library/paths.js";
-import { loadLibraryTypes } from "@main/library/kindRegistry.js";
 import { attachToChat } from "@main/library/manifest.js";
 import {
   addTemplate,
@@ -114,8 +113,8 @@ function itemLine(i: LibraryItem): string {
 }
 
 /** 分类树的一行。缩进表示层级,永远带 id —— 后续 assign 要用。 */
-function collectionLines(kind: LibraryKind): string[] {
-  const all = CollectionRepo.list(kind);
+function collectionLines(): string[] {
+  const all = CollectionRepo.list();
   const byParent = new Map<string | null, typeof all>();
   for (const c of all) {
     const key = c.parentId ?? null;
@@ -134,56 +133,6 @@ function collectionLines(kind: LibraryKind): string[] {
   return out;
 }
 
-/**
- * 类型枚举 —— **拼工具表时现算**,不存模块级常量:统一资料库后 kind 不再是写死的
- * 三个值,合法取值 = 类型注册表的全部 id(用户可加可改名,见 `kindRegistry`)。枚举
- * 跟着注册表走,新增的类型立刻能被 AI 选中,不用改这里一行。
- */
-function kindEnum() {
-  // ⚠️ **注册表现在可能为空**（2026-09-21）。原来这里断言"至少有一个"，理由是
-  // `parseLibraryTypesJson` 拦着不让删内置类型。那道闸去掉了（用户要求"都能删"、
-  // "全删光也行"），所以这个假设不成立了。
-  //
-  // `z.enum([])` 会**直接抛**（zod 要求至少一个候选值），而且它是在**拼工具表那一刻**
-  // 就算的 —— 抛在这里等于整个 MCP server 起不来。所以空表时退回一个**永不匹配**的
-  // 枚举：工具还在、参数校验照常，只是没有合法的 kind 可传（那正是"一个类型都没有"
-  // 的正确语义）。
-  const ids = loadLibraryTypes().map((t) => t.id);
-  if (ids.length === 0) {
-    // 一个不可能出现的哨兵值 —— 用户建不出以它开头的 id（id 规则是字母开头）。
-    return z.enum(["__no_library_type__"]);
-  }
-  return z.enum(ids as [string, ...string[]]);
-}
-
-/** 类型清单的一句话:「论文(paper) / 教材(textbook) / …」—— 工具描述与 server instructions 共用。 */
-function kindListText(): string {
-  return loadLibraryTypes()
-    .map((t) => `${t.name}(${t.id})`)
-    .join(" / ");
-}
-
-/**
- * AI 能读的库 —— **现在就是全部**（2026-09-21）。
- *
- * ## 原来按 `purpose` 过滤，现在不滤了
- *
- * 早先只把 `purpose === "material"`（"查资料用"）的库算作资料，「照着写用」那一类
- * 被排除在检索之外。用户否掉了这个区分：
- *
- *   > 「我的文件系统不就是给 ai 读的吗，不给 ai 看难道给我看吗，那我建这个系统
- *   >  有什么意义」
- *
- * 说得对 —— 两个类别**都是给 AI 读的**，区别只在"读来干嘛"（读内容 vs 读格式），
- * 而那不该变成"这个库不给 AI 看"。所以这里返回全部。
- *
- * ⚠️ `purpose` 这个字段**还在**（`libraryTypes` 的注册表里），只是不再拿它做这道
- * 过滤。工作流那边（`schedulerPrompt` 的分组、`contextInherit`）还在用它排版，
- * 那两处是**展示分组**，不是"给不给读"。
- */
-function materialKindIds(): string[] {
-  return loadLibraryTypes().map((t) => t.id);
-}
 
 /**
  * 被屏蔽的条目在写工具里说的**同一句话**。
@@ -213,24 +162,12 @@ export function libraryMcpTools(): McpToolSpec[] {
       {
         name: "library_collections",
         description:
-          "列出资料库的分类树(每个资料类库各自的)。返回每个分类的名称与 id。" +
+          "列出资料库的分类树。返回每个分类的名称与 id。" +
           "要往某个分类里放东西、或想知道用户有哪些分类时先调它。",
-        inputSchema: {
-          kind: kindEnum()
-            .optional()
-            .describe("只看某一个库;省略则资料类的库都列"),
-        },
-        handler: async (args: { kind?: LibraryKind }) => {
-          // 省略时列**资料类**的库(旧写死的 paper/textbook/note):format 类是"照着写"
-          // 的模版,不是用户收藏的资料,不在默认列表里。
-          const kinds: LibraryKind[] = args.kind ? [args.kind] : materialKindIds();
-          const out: string[] = [];
-          for (const k of kinds) {
-            const lines = collectionLines(k);
-            out.push(`${k}:`);
-            out.push(lines.length > 0 ? lines.join("\n") : "  (这个库还没有分类)");
-          }
-          return text(out.join("\n"));
+        inputSchema: {},
+        handler: async () => {
+          const lines = collectionLines();
+          return text(lines.length > 0 ? lines.join("\n") : "  (还没有分类)");
         },
       },
       {
@@ -240,10 +177,9 @@ export function libraryMcpTools(): McpToolSpec[] {
           "判断「库里有没有某一篇」时用它 —— 不要凭记忆回答用户。返回的每条都带 id。",
         inputSchema: {
           query: z.string().describe("关键词;留空则列出全部"),
-          kind: kindEnum().optional(),
         },
-        handler: async (args: { query: string; kind?: LibraryKind }) => {
-          const items = searchItems(args.query ?? "", args.kind);
+        handler: async (args: { query: string }) => {
+          const items = searchItems(args.query ?? "");
           // **屏蔽是硬过滤,这里也必须过。** `searchItems` 是纯仓储查询(纯 SQL,
           // 见 `library/operations.ts`),它不看屏蔽规则 —— 而这一条是模型"翻库"的
           // 主要出口,工具说明里还写着"判断库里有没有某一篇时用它"。不过这道门,
@@ -386,20 +322,18 @@ export function libraryMcpTools(): McpToolSpec[] {
           "返回新分类的 id —— 后面的 library_import 要用它。",
         inputSchema: {
           name: z.string().describe("分类名(就是用户在左栏看到的名字)"),
-          kind: kindEnum().optional().describe("放进哪个库;默认 paper(论文库)"),
           parentId: z.string().optional().describe("建成子分类时给父分类 id;省略则建在顶层"),
         },
-        handler: async (args: { name: string; kind?: LibraryKind; parentId?: string }) => {
+        handler: async (args: { name: string; parentId?: string }) => {
           const name = (args.name ?? "").trim();
           if (!name) return fail("分类名不能为空");
-          const kind = args.kind ?? "paper";
-          if (CollectionRepo.isNameTaken(name, kind, undefined)) {
+          if (CollectionRepo.isNameTaken(name, undefined)) {
             // 重名会让用户分不清两个同名分类 —— 让模型换个名字再试,而不是静默建出来
-            return fail(`「${name}」在${kind}库里已经有一个同名分类了。换一个名字,或直接用现成的那个。`);
+            return fail(`已经有一个叫「${name}」的分类了。换一个名字,或直接用现成的那个。`);
           }
-          const c = CollectionRepo.create(name, args.parentId ?? null, kind);
+          const c = CollectionRepo.create(name, args.parentId ?? null);
           notifyLibraryChanged(`create_collection:${c.name}`);
-          return text(`已新建分类「${c.name}」  id=${c.id}  (在${kind}库里)`);
+          return text(`已新建分类「${c.name}」  id=${c.id}`);
         },
       },
       {
@@ -932,16 +866,12 @@ export function libraryMcpTools(): McpToolSpec[] {
 export async function buildLibraryMcpServer(opts: { sessionId: string }) {
   const createSdkMcpServer = await loadCreateMcpServer();
 
-  // 类型清单**建 server 时现读**:同一份注册表既是工具枚举(见 kindEnum)也是这里
-  // 的说明文字 —— 写死一份迟早跟用户的改名/自建类型对不上。
-  const materialIds = materialKindIds().join(" / ");
   return createSdkMcpServer({
     name: LIBRARY_MCP_SERVER,
     version: "1.0.0",
     instructions:
       "Mcode 资料库的操作工具,分**同级的两段**:资料库与模版库。\n" +
-      `资料库:类型由用户的注册表决定(当前:${kindListText()});其中资料类(${materialIds})` +
-      "每个库有各自的分类树与回收站;" +
+      "资料库:分类树(大类 → 分类)与回收站;" +
       "条目用 id 标识,要操作某一条先用 library_search / library_items 拿到它的 id。\n" +
       "模版库:五个类目 ppt / latex / word / code / image,一条模版是一个文件夹(目录名即名字)," +
       "用 templates_list 列出、templates_attach_to_chat 挂进对话。",

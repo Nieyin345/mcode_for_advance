@@ -43,8 +43,6 @@ import {
   LibraryListSchema,
   LibrarySearchSchema,
   LibraryAttachToChatSchema,
-  LibraryTypesGetSchema,
-  LibraryTypesSaveSchema,
   LibraryGroupsGetSchema,
   LibraryGroupsSaveSchema,
   LibrarySuppressGetSchema,
@@ -78,7 +76,6 @@ import { awaitDb } from "@main/store/db.js";
 import { rgGrep } from "@main/lib/rgSearch.js";
 import { log } from "@main/lib/logger.js";
 import { searchExternal } from "@main/library/metadata.js";
-import { importPdfFiles } from "@main/library/pdfImport.js";
 import { createNote, importNoteFiles, writeNote } from "@main/library/notesImport.js";
 import { convertItemToMarkdown, conversionReport } from "@main/library/convert.js";
 import { readMarkdownForPreview } from "@main/library/markdownPreview.js";
@@ -95,9 +92,10 @@ import {
   restoreItemsFromTrash,
 } from "@main/library/trash.js";
 import { notifyLibraryChanged, emitItemImported } from "@main/library/broadcast.js";
-import { loadLibraryTypes, saveLibraryTypes, loadLibraryGroups, saveLibraryGroups } from "@main/library/kindRegistry.js";
+import { loadLibraryGroups, saveLibraryGroups } from "@main/library/groupRegistry.js";
 import { loadSuppress, saveSuppress, suppressionReasonOfItem } from "@main/library/suppress.js";
 import { entryRootAbsPath, importGenericFiles, readEntryFile } from "@main/library/fileImport.js";
+import { importAnyFiles } from "@main/library/importDispatch.js";
 import {
   ensureOriginal,
   hasOriginal,
@@ -187,8 +185,6 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
     const input = LibraryListSchema.parse(raw ?? {});
     return LibraryRepo.list({
       collectionId: input.collectionId ?? undefined,
-      // 不传 kind = 不限库。左栏的「全部」视图和按库筛选共用这一条
-      kind: input.kind,
       query: input.query,
       pdfState: input.pdfState,
       limit: input.limit,
@@ -229,7 +225,6 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
       const before = LibraryRepo.findExisting({ doi: entry.doi, arxivId: entry.arxivId });
       const hadPdf = Boolean(before?.pdfPath);
       const item = LibraryRepo.upsert({
-        kind: entry.kind,
         doi: entry.doi,
         arxivId: entry.arxivId,
         title: entry.title,
@@ -612,7 +607,7 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
 
   ipcMain.handle(IPC.LIBRARY_CREATE_COLLECTION, async (_evt, raw) => {
     const input = CollectionCreateSchema.parse(raw);
-    CollectionRepo.create(input.name, input.parentId ?? null, input.kind ?? "paper", input.prompt);
+    CollectionRepo.create(input.name, input.parentId ?? null, input.groupId, input.prompt);
     notifyLibraryChanged(`create_collection:${input.name}`);
     return { collections: collectionsForRenderer() };
   });
@@ -688,37 +683,15 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
    */
   ipcMain.handle(IPC.LIBRARY_IMPORT_FILES, async (_evt, raw) => {
     const input = LibraryImportFilesSchema.parse(raw);
-    const results = await importPdfFiles({
-      paths: input.paths,
+    // **通用导入**（kind 退役）：按扩展名分派 —— pdf 走文献管线、md/txt 走笔记
+    // 管线、其余收通用条目；mode 控制目录是"一个条目"还是"拆开逐个导"。
+    const res = await importAnyFiles(input.paths, {
+      mode: input.mode,
       collectionIds: input.collectionIds,
-      kind: input.kind,
+      convert: input.convert,
     });
-
-    const fresh = results.filter((r) => r.item && !r.alreadyPresent);
-    const skipped = results.filter((r) => r.alreadyPresent).length;
-    const errors = results
-      .filter((r) => r.error)
-      .map((r) => ({ path: r.path, error: r.error as string }));
-
-    // 只把**这次真正新增**的条目归入集合 —— 已存在的重复条目不该被重新分组
-    const ids = fresh.map((r) => r.item!.id);
-    for (const cid of input.collectionIds ?? []) {
-      if (ids.length > 0) CollectionRepo.assign(cid, ids, true);
-    }
-
-    let converted = { ok: 0, failed: 0 };
-    if (input.convert !== false) {
-      for (const r of fresh) {
-        const res = await convertItemToMarkdown(r.item!);
-        if (res.ok) converted.ok += 1;
-        else converted.failed += 1;
-      }
-    }
-
-    // 转换会写 md_path,所以重新取一遍再回给渲染端
-    const items = fresh.map((r) => LibraryRepo.get(r.item!.id) ?? r.item!);
-    notifyLibraryChanged(`import_files:${fresh.length}`);
-    return { items, added: fresh.length, skipped, errors, converted };
+    notifyLibraryChanged(`import_files:${res.added}`);
+    return res;
   });
 
   /**
@@ -1199,16 +1172,6 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
     return writeCollectionManifest(input.collectionId);
   });
 
-  // 类型注册表:读是纯缓存读;写是整表替换(校验在 saveLibraryTypes 里,失败时把
-  // 那句说人话的原样交回去 —— 渲染端显示它,不做二次加工)。
-  ipcMain.handle(IPC.LIBRARY_TYPES_GET, async (_evt, raw) => {
-    LibraryTypesGetSchema.parse(raw ?? {});
-    return { types: loadLibraryTypes() };
-  });
-  ipcMain.handle(IPC.LIBRARY_TYPES_SAVE, async (_evt, raw) => {
-    const input = LibraryTypesSaveSchema.parse(raw);
-    return saveLibraryTypes(input.types);
-  });
   ipcMain.handle(IPC.LIBRARY_GROUPS_GET, async (_evt, raw) => {
     LibraryGroupsGetSchema.parse(raw ?? {});
     return { groups: loadLibraryGroups() };
@@ -1272,7 +1235,6 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
     const res = importGenericFiles({
       paths: input.paths,
       mode: input.mode,
-      kind: input.kind,
     });
     if (input.collectionIds?.length) {
       for (const collectionId of input.collectionIds) {

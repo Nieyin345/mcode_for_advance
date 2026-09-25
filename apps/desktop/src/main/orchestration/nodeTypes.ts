@@ -99,7 +99,8 @@ import {
 } from "@contracts/nodeType";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { MEMORY_PARAM_KEY } from "@contracts/memory";
-import { loadLibraryTypes } from "@main/library/kindRegistry.js";
+import { TEMPLATE_KINDS } from "@contracts/templates";
+import { loadLibraryGroups } from "@main/library/groupRegistry.js";
 import {
   NODE_OUTPUT_CONTRACT_KEY,
   NODE_OUTPUT_VARS_KEY,
@@ -132,18 +133,32 @@ export const NODE_CONVERSATION_TYPE_ID = "mcode.conversation";
 export const NODE_COMMAND_TYPE_ID = "mcode.command";
 
 /**
- * 「资料」下拉的候选 —— **类型注册表的现读**。
+ * 「资料」下拉的候选 —— **两个库的现读**。
  *
- * 统一资料库之前这里是 `NODE_CONTEXT_KINDS`(内置八类)+ 一张写死的中文名表;现在
- * kind 开放注册(见 `@contracts/libraryTypes` 与 `main/library/kindRegistry`),下拉
- * 直接按注册表出 —— 用户自建的类型,勾资料时就能勾到。`loadLibraryTypes` 带缓存,
- * 清单每次重新生成也不会反复读盘。
+ * 两半来源不同,拼在一起:
  *
- * 名字显示的是**注册表里的 name**(内置类型即出厂中文名) —— 它是清单的一部分,由
- * 注册表作者(内置=我们,自定义=用户)写,不走 i18n,和清单里其他 label 同一规则。
+ *  - **模版类目**(`latex` / `ppt` / …):封闭的、编译期就有的,直接在 `TEMPLATE_KINDS`;
+ *  - **资料库大类**(`docs` / `templates` / 用户自建的):开放的、运行时的,读
+ *    `loadLibraryGroups`(kind 退役前这里是 `loadLibraryTypes`,`kindRegistry` 那一半
+ *    随 kind 一起退役,见 `groupRegistry.ts`)。
+ *
+ * 名字显示的是**库里的 name**(模版类目即出厂中文名,大类即用户起的名) —— 它是清单的
+ * 一部分,由库的作者(内置=我们,自定义=用户)写,不走 i18n,和清单里其他 label 同一规则。
+ *
+ * 两边的取值理论上可能撞(用户把大类 id 起成 `latex`)—— 那时按 value 去重,留下**先出现
+ * 的那个**,不会出一个选两次、行为却不一样的选项。
  */
 function contextOptions(): Array<{ value: string; label: string }> {
-  return loadLibraryTypes().map((t) => ({ value: t.id, label: t.name }));
+  const out: Array<{ value: string; label: string }> = [];
+  const seen = new Set<string>();
+  const push = (value: string, label: string): void => {
+    if (value.length === 0 || seen.has(value)) return;
+    seen.add(value);
+    out.push({ value, label });
+  };
+  for (const g of loadLibraryGroups()) push(g.id, g.name);
+  for (const t of TEMPLATE_KINDS as readonly string[]) push(t, t);
+  return out;
 }
 
 /**

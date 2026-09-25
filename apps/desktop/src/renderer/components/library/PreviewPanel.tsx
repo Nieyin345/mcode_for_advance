@@ -38,13 +38,8 @@ export function PreviewPanel() {
       .flat()
       .find((i) => i.id === activeItemId);
     if (inCollections) return inCollections;
-    // ⚠️ `allItemsByKind` 是 `Partial<Record<…>>` —— 它的值可能是 `undefined`
-    // （那个 kind 还没拉过），所以要滤一道再找。
-    return (
-      Object.values(s.allItemsByKind)
-        .flatMap((list) => list ?? [])
-        .find((i) => i.id === activeItemId) ?? null
-    );
+    // 「全部显示」拉过的全量缓存里也找一遍。
+    return s.allItems?.find((i) => i.id === activeItemId) ?? null;
   });
 
   if (!item) {

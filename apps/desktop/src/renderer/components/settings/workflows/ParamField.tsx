@@ -23,7 +23,7 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import type { MessageId } from "@renderer/lib/i18n/core.js";
 import { Button, Input, Select, Switch, Tooltip } from "@renderer/components/ui/index.js";
 import { api } from "@renderer/lib/api.js";
-import type { NodeParamSpec } from "@contracts/nodeType";
+import { NODE_PARAM_REF_SOURCES, type NodeParamSpec } from "@contracts/nodeType";
 import {
   IconBraces,
   IconCheck,
@@ -575,7 +575,8 @@ function SelectsTable({
   const { t } = useI18n();
   const rows = critRows(value);
   const write = (next: CritRow[]): void => onChange(toCriteria(next));
-  const patch = (at: number, key: keyof CritRow, text: string): void =>
+  // `key` 泛到 `CritRow` 的键 —— `source` 不是字符串(是枚举),所以值类型跟着那一格走。
+  const patch = <K extends keyof CritRow>(at: number, key: K, text: CritRow[K]): void =>
     write(rows.map((row, i) => (i === at ? { ...row, [key]: text } : row)));
 
   return (
@@ -601,11 +602,39 @@ function SelectsTable({
               <IconX size={12} />
             </button>
           </div>
-          <GrowingTextarea
-            value={row.choices}
-            placeholder={t("settings.workflows.critChoices")}
-            onChange={(text) => patch(i, "choices", text)}
-          />
+          <div className="flex items-center gap-2">
+            <label className="shrink-0 text-[0.7143em] text-content-subtle">
+              {t("settings.workflows.critSource")}
+            </label>
+            {/* 原生 `<select>`:`select.tsx` 那套 base-ui 复合件要 `Select.Root/Trigger/Value`
+                三件套,而这里只有"一个枚举、选一个"这么简单的事 —— 同 `SearchFilterBar`
+                里那个下拉的取舍。 */}
+            <select
+              value={row.source}
+              onChange={(e) => patch(i, "source", e.target.value)}
+              className="min-w-0 flex-1 rounded border border-edge bg-surface/40 px-1.5 py-1 text-[0.7857em] text-content-muted outline-none hover:text-content focus:border-accent"
+            >
+              <option value="">{t("settings.workflows.critSourceNone")}</option>
+              {NODE_PARAM_REF_SOURCES.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </div>
+          {/* **选了来源就不写候选** —— 两种读法是互斥的(见契约里那段)。这里把候选框
+              收起来而不是留着禁用:留着的话用户会以为"我还能改候选",改了却不生效。 */}
+          {row.source === "" ? (
+            <GrowingTextarea
+              value={row.choices}
+              placeholder={t("settings.workflows.critChoices")}
+              onChange={(text) => patch(i, "choices", text)}
+            />
+          ) : (
+            <p className="text-[0.7143em] leading-relaxed text-content-subtle">
+              {t("settings.workflows.critSourceHint")}
+            </p>
+          )}
           <GrowingTextarea
             value={row.note}
             placeholder={t("settings.workflows.critNote")}
@@ -621,7 +650,7 @@ function SelectsTable({
       <Button
         variant="secondary"
         size="sm"
-        onClick={() => write([...rows, { name: "", choices: "", note: "" }])}
+        onClick={() => write([...rows, { name: "", choices: "", note: "", source: "" }])}
         className="gap-1"
       >
         <IconPlus size={12} />
@@ -637,6 +666,8 @@ interface CritRow {
   name: string;
   choices: string;
   note: string;
+  /** 候选**现读**的来源(空串 = 手写候选)。见 `@contracts/nodeType` 的 `source`。 */
+  source: string;
 }
 
 /** 读出条件表的每一行。**一行不丢地端上来** —— 刚点「加一条」出来的空行必须留得住;
@@ -655,6 +686,7 @@ function critRows(value: unknown): CritRow[] {
       name?: unknown;
       choices?: unknown;
       note?: unknown;
+      source?: unknown;
     };
     return {
       name: typeof row.name === "string" ? row.name : "",
@@ -664,6 +696,11 @@ function critRows(value: unknown): CritRow[] {
           ? row.choices
           : "",
       note: typeof row.note === "string" ? row.note : "",
+      // 认不出来的来源当**手写**读回来(空串)—— 契约会拒掉不认识的来源,能走到这里的
+      // 要么合法、要么是别处写坏的存档;显示成手写至少能让用户看见并改回去。
+      source: typeof row.source === "string" && (NODE_PARAM_REF_SOURCES as readonly string[]).includes(row.source)
+        ? row.source
+        : "",
     };
   });
 }
@@ -682,11 +719,15 @@ function critRows(value: unknown): CritRow[] {
  *  所以空的候选值**留在盘上**(它是编辑中的空位),显示与注入两处各自忽略它。 */
 function toCriteria(
   rows: readonly CritRow[],
-): Array<{ name: string; choices: string[]; note?: string }> {
+): Array<{ name: string; choices: string[]; note?: string; source?: string }> {
   return rows.map((row) => ({
     name: row.name,
-    choices: row.choices.split("\n"),
+    // **有来源时候选必须是空的** —— 契约里那一对是互斥的(见 `NODE_CRITERIA_PARAM_KEY`
+    // 那段),留着旧候选整份参数就会被校验拒掉。用户在界面上切到"来源"那一刻,盘上
+    // 那份手写候选就此作废,这是有意的。
+    choices: row.source === "" ? row.choices.split("\n") : [],
     ...(row.note.trim() !== "" ? { note: row.note } : {}),
+    ...(row.source !== "" ? { source: row.source } : {}),
   }));
 }
 

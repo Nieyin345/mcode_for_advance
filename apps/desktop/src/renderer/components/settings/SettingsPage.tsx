@@ -34,7 +34,6 @@ import {
 import { CustomModelsPanel } from "./CustomModelsPanel.js";
 import { InstitutionAuthPanel } from "./InstitutionAuthPanel.js";
 import { DataRootPanel } from "./DataRootPanel.js";
-import { LibraryTypesPanel } from "./LibraryTypesPanel.js";
 import { RuntimesPanel } from "./RuntimesPanel.js";
 import { SkillsPanel } from "./SkillsPanel.js";
 import { WorkflowsPanel } from "./workflows/WorkflowsPanel.js";
@@ -72,7 +71,7 @@ import { MemoryExplorerPanel } from "../memory/MemoryExplorerPanel.js";
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "data-root" | "library-types" | "runtimes" | "custom-models" | "institution" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
+type SectionId = "general" | "data-root" | "runtimes" | "custom-models" | "institution" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -160,7 +159,6 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "data-root", labelKey: "settings.nav.dataRoot", icon: IconDatabase },
       // 资料库类型紧跟数据位置:注册表决定「库里有哪几类」,而库本身就住在数据根下 ——
       // 两个入口放在一起,「数据在哪」和「数据怎么分」一眼就看全。
-      { id: "library-types", labelKey: "settings.nav.libraryTypes", icon: IconBook },
       // 机构认证归在「工作台」组:它是使用场景(下载文献要先登录),
       // 不是 AI 配置,放 ai 组会让人以为是模型相关设置。
       { id: "institution", labelKey: "settings.nav.institution", icon: IconShieldCheck },
@@ -294,7 +292,6 @@ export function SettingsPage() {
           {active === "appearance" && <AppearancePanel />}
           {active === "custom-models" && <CustomModelsPanel />}
           {active === "data-root" && <DataRootPanel />}
-          {active === "library-types" && <LibraryTypesPanel />}
           {active === "institution" && <InstitutionAuthPanel />}
           {active === "shortcuts" && <ShortcutsPanel />}
           {active === "gestures" && <GesturesPanel />}

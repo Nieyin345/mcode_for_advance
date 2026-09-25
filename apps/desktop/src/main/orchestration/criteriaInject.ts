@@ -41,13 +41,22 @@ export function entryCriteriaOf(doc: WorkflowDoc): CriteriaCondition[] {
   const out: CriteriaCondition[] = [];
   for (const item of raw) {
     if (typeof item !== "object" || item === null) continue;
-    const { name, choices, note } = item as { name?: unknown; choices?: unknown; note?: unknown };
+    const { name, choices, note, source } = item as {
+      name?: unknown;
+      choices?: unknown;
+      note?: unknown;
+      source?: unknown;
+    };
     if (typeof name !== "string" || !Array.isArray(choices)) continue;
     out.push({
       name,
       choices: choices.filter((c): c is string => typeof c === "string"),
       // 空解释不带上 —— 契约里它可选,而且一个空串在提示词里会变成一对空括号。
       ...(typeof note === "string" && note.trim() !== "" ? { note } : {}),
+      // `source` 要**原样带上**:它是候选现读那一支的判据,而且注入侧要靠它把选中的
+      // id 翻成可读名(见 `searchPrefs.ts` 的 `sourceLabelsOf`)。丢了它,提示词里就会
+      // 出现一个不透明的 `lc_xxx`。
+      ...(typeof source === "string" && source.trim() !== "" ? { source: source.trim() } : {}),
     });
   }
   return out;

@@ -497,9 +497,9 @@ console.log("\ndescribeTriggerPayload · 载荷的人话版本");
     describeTriggerPayload({
       kind: "event",
       event: "library.item.downloaded",
-      items: [{ itemId: "lib_1", itemKind: "paper", itemTitle: "注意力就是全部", pdfPath: "pdf/ab/cd.pdf" }],
+      items: [{ itemId: "lib_1", itemTitle: "注意力就是全部", pdfPath: "pdf/ab/cd.pdf" }],
     }),
-    "发生了「library.item.downloaded」。\n条目:注意力就是全部(类型 paper,id=lib_1)\nPDF(库内相对路径):pdf/ab/cd.pdf",
+    "发生了「library.item.downloaded」。\n条目:注意力就是全部(id=lib_1)\nPDF(库内相对路径):pdf/ab/cd.pdf",
   );
   // **合并窗口里进来的几条全都要办。** 下载是并发的,两篇同时下完就落在同一个窗口 ——
   // 只列一条的话,另一篇永远没人转,而且不报错。
@@ -509,16 +509,16 @@ console.log("\ndescribeTriggerPayload · 载荷的人话版本");
       kind: "event",
       event: "library.item.downloaded",
       items: [
-        { itemId: "lib_1", itemKind: "paper", itemTitle: "第一篇", pdfPath: "pdf/a.pdf" },
-        { itemId: "lib_2", itemKind: "paper", itemTitle: "第二篇", pdfPath: "pdf/b.pdf" },
+        { itemId: "lib_1", itemTitle: "第一篇", pdfPath: "pdf/a.pdf" },
+        { itemId: "lib_2", itemTitle: "第二篇", pdfPath: "pdf/b.pdf" },
       ],
     }),
     [
       "发生了「library.item.downloaded」。",
       "一共有 2 条,这次都要办:",
-      "条目1:第一篇(类型 paper,id=lib_1)",
+      "条目1:第一篇(id=lib_1)",
       "PDF(库内相对路径):pdf/a.pdf",
-      "条目2:第二篇(类型 paper,id=lib_2)",
+      "条目2:第二篇(id=lib_2)",
       "PDF(库内相对路径):pdf/b.pdf",
     ].join("\n"),
   );
@@ -528,9 +528,9 @@ console.log("\ndescribeTriggerPayload · 载荷的人话版本");
     describeTriggerPayload({
       kind: "event",
       event: "library.item.imported",
-      items: [{ itemId: "lib_2", itemKind: "note", itemTitle: "随手记" }],
+      items: [{ itemId: "lib_2", itemTitle: "随手记" }],
     }),
-    "发生了「library.item.imported」。\n条目:随手记(类型 note,id=lib_2)",
+    "发生了「library.item.imported」。\n条目:随手记(id=lib_2)",
   );
   // 缺项不塌成 `undefined` 串进去。
   eq(
@@ -853,12 +853,12 @@ console.log("\npayloadFactsOf · 载荷的平面事实形状(给变量系统 VAR
   const itemFacts = payloadFactsOf({
     kind: "event",
     event: "library.item.downloaded",
-    items: [{ itemId: "lib_1", itemKind: "paper", itemTitle: "标题", pdfPath: "pdf/a.pdf" }],
+    items: [{ itemId: "lib_1", itemTitle: "标题", pdfPath: "pdf/a.pdf" }],
   });
   eq("事件:条目那几项拍平在顶层(不是嵌一层 item)", itemFacts.itemId, "lib_1");
   check(
     "事件:四项都在顶层",
-    itemFacts.itemKind === "paper" && itemFacts.itemTitle === "标题" && itemFacts.pdfPath === "pdf/a.pdf",
+    itemFacts.itemTitle === "标题" && itemFacts.pdfPath === "pdf/a.pdf",
     itemFacts,
   );
   check("事件:没有嵌一层 item 对象", !Object.prototype.hasOwnProperty.call(itemFacts, "item"), Object.keys(itemFacts));
@@ -910,7 +910,7 @@ console.log("\ntriggerFactKeysOf · 菜单列的每一项都得真的取得到")
     event: "library.item.downloaded",
     toolName: "Write",
     subjects: ["Write"],
-    items: [{ itemId: "lib_1", itemKind: "paper", itemTitle: "标题", pdfPath: "pdf/a.pdf" }],
+    items: [{ itemId: "lib_1", itemTitle: "标题", pdfPath: "pdf/a.pdf" }],
   });
   const richestPayload: Record<TriggerKind, Record<string, unknown>> = {
     manual: payloadFactsOf({ kind: "manual" }) as unknown as Record<string, unknown>,
@@ -969,22 +969,22 @@ console.log("\ntriggerFactKeysOf · 事件那一种按「听哪个事件」算")
     triggerFactKeysOf({ [NODE_TRIGGER_KIND_PARAM_KEY]: "event", [NODE_TRIGGER_EVENTS_PARAM_KEY]: events });
 
   const dl = evt("library.item.downloaded");
-  check("下载完成:列 itemId/itemTitle/itemKind/pdfPath", ["itemId", "itemTitle", "itemKind", "pdfPath"].every((k) => dl.includes(k)), dl);
+  check("下载完成:列 itemId/itemTitle/pdfPath", ["itemId", "itemTitle", "pdfPath"].every((k) => dl.includes(k)), dl);
   check("下载完成:也留着事件自己那几项", dl.includes("event"), dl);
 
   const imp = evt("library.item.imported");
-  check("导入:列 itemId/itemTitle/itemKind", ["itemId", "itemTitle", "itemKind"].every((k) => imp.includes(k)), imp);
+  check("导入:列 itemId/itemTitle", ["itemId", "itemTitle"].every((k) => imp.includes(k)), imp);
   // ⚠️ **导入那条不该列 `pdfPath`** —— 导入那一下文件还没下来,`eventItemFactsOf` 从
   // `LibraryItemImportedEvent` 里取不到它(那个接口压根没有这个字段)。
   check("导入:不列 pdfPath(那一刻文件还没下来)", !imp.includes("pdfPath"), imp);
 
   // 听 `turn.done` 这种不带条目的 —— 一项都不该列,否则插进指令必炸。
   const done = evt("turn.done");
-  check("一轮结束:不列任何条目事实", !done.some((k) => ["itemId", "itemKind", "itemTitle", "pdfPath"].includes(k)), done);
+  check("一轮结束:不列任何条目事实", !done.some((k) => ["itemId", "itemTitle", "pdfPath"].includes(k)), done);
 
   // 听多个事件时取**交集**:哪条响是运行时的事,指令只能写"哪条响都取得到"的。
   const both = evt("library.item.imported,library.item.downloaded");
-  check("导入+下载:交集 = 只共有的那几项", ["itemId", "itemTitle", "itemKind"].every((k) => both.includes(k)) && !both.includes("pdfPath"), both);
+  check("导入+下载:交集 = 只共有的那几项", ["itemId", "itemTitle"].every((k) => both.includes(k)) && !both.includes("pdfPath"), both);
 
   // 认不出来的事件名不掺和(那一关由 parseTriggerSpec 把整条触发器拒掉)。
   const bogus = evt("library.item.downloaded,nope");
@@ -1004,17 +1004,15 @@ console.log("\ntriggerFactKeysOf · 事件那一种按「听哪个事件」算")
 // `@contracts/runtime` 那两个接口的**实际字段**出发,而不是我手写的键名。
 console.log("\neventItemFactsOf · 拿真事件当夹具(不是手写的键名)");
 {
-  // 换掉 `itemKind`/`itemTitle` 这两个字段名,下面必红。
+  // 事件上条目就叫 `title`(不是 `itemTitle`)—— 换掉这个字段名,下面必红。
   const imported: RuntimeEvent = {
     type: "library.item.imported",
     sessionId: "(system)",
     itemId: "lib_1",
-    kind: "paper",
     title: "导入的那一篇",
   } as unknown as RuntimeEvent;
   const importedFacts = eventItemFactsOf(imported);
   eq("导入:id 从 itemId 取得", importedFacts?.itemId, "lib_1");
-  eq("导入:类型从 kind 取得(不是 itemKind)", importedFacts?.itemKind, "paper");
   eq("导入:标题从 title 取得(不是 itemTitle)", importedFacts?.itemTitle, "导入的那一篇");
   check("导入:没有 pdfPath 这一项", importedFacts?.pdfPath === undefined, importedFacts);
 
@@ -1022,14 +1020,12 @@ console.log("\neventItemFactsOf · 拿真事件当夹具(不是手写的键名)"
     type: "library.item.downloaded",
     sessionId: "(system)",
     itemId: "lib_2",
-    kind: "paper",
     title: "下完的那一篇",
     pdfPath: "papers/ab/abcdef.pdf",
   } as unknown as RuntimeEvent;
   const dlFacts = eventItemFactsOf(downloaded);
-  eq("下载:四项全取到", JSON.stringify(dlFacts), JSON.stringify({
+  eq("下载:三项全取到", JSON.stringify(dlFacts), JSON.stringify({
     itemId: "lib_2",
-    itemKind: "paper",
     itemTitle: "下完的那一篇",
     pdfPath: "papers/ab/abcdef.pdf",
   }));
@@ -1052,7 +1048,6 @@ console.log("\neventItemFactsOf · 拿真事件当夹具(不是手写的键名)"
     type: "library.item.downloaded",
     sessionId: "(system)",
     itemId: "lib_3",
-    kind: "paper",
     title: "没有路径的那一篇",
     pdfPath: "",
   } as unknown as RuntimeEvent);
@@ -1115,8 +1110,8 @@ console.log("\n事件载荷 · 合并窗口里的多条");
 // 事两条路各自实现"才会有的那种漏。所以这回把攒载荷这段拆成纯函数,在这儿钉死。
 console.log("\nmergeEventPayload · 合并窗口里的两条都留着");
 {
-  const item1 = { itemId: "lib_1", itemTitle: "第一篇", itemKind: "paper" };
-  const item2 = { itemId: "lib_2", itemTitle: "第二篇", itemKind: "paper" };
+  const item1 = { itemId: "lib_1", itemTitle: "第一篇" };
+  const item2 = { itemId: "lib_2", itemTitle: "第二篇" };
 
   // 第一条:累加(空 → 一条)。
   const first = mergeEventPayload(undefined, "library.item.downloaded", {}, item1);
@@ -1665,6 +1660,145 @@ console.log("\n内置自动化 · 参数解得开、项目留空也挂得上");
   facts.recordSetup(seed, true);
   eq("没绑项目的事件触发器登记成「响着」", facts.ofWorkflow(AUTO_CONVERT_WORKFLOW_ID)[0]?.armed, true);
   eq("而且没有 detail(不是坏掉了)", facts.ofWorkflow(AUTO_CONVERT_WORKFLOW_ID)[0]?.detail, undefined);
+}
+
+/* ────────── 12a. 转录那条自动化的**三段结构**(2026-09-24)────────── */
+
+// 「下载完自动转 Markdown」从「一条指令让模型自己挑工具」改成了**固定的三步**:
+//
+//     触发 → code 节点(调 MinerU 的在线 API) → 子代理(挂回库)
+//
+// 为什么不能只留一条指令:转录是**确定性**的事,而"模型会选对工具"不是 —— 它可能挑
+// 本地 `library_convert`(扫描件抽不出正文)、可能挑一个不存在的工具、可能干脆跳过。
+// 用户要的是"下完就转",那不该经过一次判断。
+//
+// 为什么"挂回"必须单独一步:`library_adopt_markdown` 是**主进程的 MCP 工具**,而 code
+// 节点起的是**子进程** —— 它碰不到。所以"转"和"挂回"结构上就分得开。
+console.log("\n「下载完自动转 Markdown」· 触发 → code(MinerU) → 子代理(挂回)");
+
+{
+  const doc = getBuiltinWorkflow(AUTO_CONVERT_WORKFLOW_ID);
+  const codeNode = doc?.nodes.find((n) => n.type === "mcode.code");
+  const agentNode = doc?.nodes.find((n) => n.type === "mcode.agent");
+
+  check("★ 中间那一步是 code 节点(不是又一条指令)", codeNode !== undefined, doc?.nodes.map((n) => n.type));
+  check("★ 最后那一步是子代理", agentNode !== undefined, doc?.nodes.map((n) => n.type));
+
+  if (doc) {
+    // **三步连成一条线**:触发→code→子代理。少一条边就有一段落不到实处。
+    const edges = new Set((doc.edges ?? []).map((e) => `${e.from}->${e.to}`));
+    const trigger = doc.nodes.find((n) => n.type === "mcode.trigger");
+    check(
+      "★ 触发 → code 有线",
+      trigger !== undefined && codeNode !== undefined && edges.has(`${trigger.id}->${codeNode.id}`),
+      [...edges],
+    );
+    check(
+      "★ code → 子代理有线",
+      codeNode !== undefined && agentNode !== undefined && edges.has(`${codeNode.id}->${agentNode.id}`),
+      [...edges],
+    );
+  }
+
+  if (codeNode) {
+    eq("★ code 节点是 python", codeNode.params["language"], "python");
+    const code = String(codeNode.params["code"] ?? "");
+    // 正文必须是**真的代码**,而不是一句"请调用 MinerU"。这几个是它的判据所在:
+    check("★ 正文里调 MinerU 的批量上传接口", code.includes("/api/v4/file-urls/batch"), code.slice(0, 200));
+    check("★ 正文里读 MINERU_TOKEN(不硬编码 token)", code.includes("MINERU_TOKEN"), "");
+    // ⚠️ **不许把 token 写死在图里** —— 那份图会被存进库、被分享、被导出。
+    check("★ 没有把 token 硬编码进代码", !/Bearer\s+[A-Za-z0-9_-]{20,}/.test(code), "");
+    check("★ 正文打的是 code 节点的协议行", code.includes("@@mcode:result"), "");
+    // 多条一起下来时**一条都不许漏**(下载是并发跑的,触发器有合并窗口)。
+    check("★ 正文按 items 逐条办(不是只取第一条)", code.includes('get("items")'), "");
+    const timeout = Number(codeNode.params["timeoutMs"] ?? 0);
+    check("★ 给了足够长的超时(转录要等)", timeout >= 10 * 60 * 1000, timeout);
+  }
+
+  if (agentNode) {
+    // 挂回是**写操作**;能力不是 write 的话,无人值守时会被计划模式按住。
+    eq("★ 挂回那一步有写能力", agentNode.capability, "write");
+    const instr = String(agentNode.params["instruction"] ?? "");
+    check("★ 指令点名了 library_adopt_markdown", instr.includes("library_adopt_markdown"), instr);
+    // **整份正文不能是死代码**:内置图必须真的被引用到,否则 esbuild 会 tree-shake 掉。
+    check("★ 指令说了产物是上一步给的", instr.includes("上一步"), instr);
+  }
+}
+
+/* ────────── 12b. 指令说的东西,载荷里得真有(2026-09-24)────────── */
+
+// 这一段钉的是**指令与载荷对不上**这一类错:两条内置自动化的指令是**给模型看的合同**
+// —— 它说"载荷里有 X",模型就去找 X。合同写了一个不存在的字段,模型的反应是去别处找
+// (查"最新导入的"、自己猜一个),而那正是这两条指令当初特意要消灭的行为。
+//
+// kind 退役那一轮正是这个形状:事件上的 `kind` 字段删了,而两条指令还写着"载荷里有类型"。
+// 当时**没有任何一条断言会红** —— 指令是字符串,载荷是另一处拼的,中间没人对过账。
+//
+// 这里不验"源码里有没有某个字符串",而是**拿真事件喂进真的载荷函数**,再拿指令去对照
+// 载荷的实际形状。
+console.log("\n内置自动化的指令 ↔ 载荷(拿真事件对账)");
+
+{
+  /** 真事件,字段照 `@contracts/runtime` 的两个接口写。 */
+  const imported: RuntimeEvent = {
+    type: "library.item.imported",
+    sessionId: "(system)",
+    itemId: "li_a1",
+    title: "导入的那一篇",
+  } as unknown as RuntimeEvent;
+  const downloaded: RuntimeEvent = {
+    type: "library.item.downloaded",
+    sessionId: "(system)",
+    itemId: "li_b2",
+    title: "下完的那一篇",
+    pdfPath: "papers/ab/cd/abc.pdf",
+  } as unknown as RuntimeEvent;
+
+  const dlText = describeTriggerPayload({
+    kind: "event",
+    event: "library.item.downloaded",
+    items: [eventItemFactsOf(downloaded)!],
+  });
+  const impText = describeTriggerPayload({
+    kind: "event",
+    event: "library.item.imported",
+    items: [eventItemFactsOf(imported)!],
+  });
+
+  // ★ 载荷里**没有**"类型"这回事了 —— 而两条指令从前都说有。谁把那个词加回指令里,
+  // 这两条会红。
+  check("★ 下载载荷不提「类型」", !dlText.includes("类型"), dlText);
+  check("★ 导入载荷不提「类型」", !impText.includes("类型"), impText);
+
+  const instrOf = (id: string): string => {
+    const agent = getBuiltinWorkflow(id)?.nodes.find((n) => n.type === "mcode.agent");
+    return String(agent?.params["instruction"] ?? "");
+  };
+  const dlInstr = instrOf(AUTO_DOWNLOAD_WORKFLOW_ID);
+  const cvInstr = instrOf(AUTO_CONVERT_WORKFLOW_ID);
+  check("两条内置图的指令都取到了", dlInstr.length > 0 && cvInstr.length > 0, [
+    dlInstr.length,
+    cvInstr.length,
+  ]);
+  check("★ 下载指令不再提「类型」(载荷里没那个字段了)", !dlInstr.includes("类型"), dlInstr);
+  check("★ 转录指令不再提「类型」", !cvInstr.includes("类型"), cvInstr);
+
+  // 指令让模型去读「条目:」那几行 —— 那个抬头在载荷里得真存在,否则模型照着一句
+  // 空指认去翻,翻不到就只能自己猜。
+  check("指令指认的「条目:」抬头上载荷里真有", dlText.includes("条目:"), dlText);
+
+  // 指令点名的 MCP 工具**真的注册着**吗(名字打错 = 那一步永远调不动,而失败发生在
+  // 无人值守的后台运行里)—— 那一条在 `library-mcp-smoke` 里验:本套打包
+  // `libraryServer` 会把 ssh2 的原生模块(`cpu-features.node`)拖进来,为一条断言给整套
+  // 加一圈桩不划算。这里只断"指令里写着那几个名字",两半各在自己拿得到证据的地方。
+  const talkedAbout = dlInstr + "\n" + cvInstr;
+  // ⚠️ 这里只列**下载那条**点名的工具。转录那条从前是"让模型按手上的条件选一条路",
+  // 会点名 `library_convert`/`library_adopt_markdown`;2026-09-24 改成固定三步之后,
+  // 模型那一步只剩"挂回"(`library_adopt_markdown`),而调 MinerU 移进了 code 节点的
+  // 代码里(它的断言在 12a 那一段)。
+  for (const tool of ["library_download", "library_adopt_markdown"]) {
+    check(`指令点名了 ${tool}`, talkedAbout.includes(tool), tool);
+  }
 }
 
 /* ────────── 13. 后台执行器本体的两条回归网(2026-09-20)────────── */

@@ -160,7 +160,7 @@ console.log("\nattached · 复制进 <库根>/files/");
 const attachSrc = join(SRC, "参考资料.md");
 writeFileSync(attachSrc, "# 标题", "utf8");
 
-const attached = importGenericFiles({ paths: [attachSrc], mode: "attached", kind: "document" });
+const attached = importGenericFiles({ paths: [attachSrc], mode: "attached" });
 eq("导入成功", attached.added, 1);
 const attachedItem = attached.items[0]!;
 eq("落法是 attached", attachedItem?.entryMode, "attached");
@@ -248,7 +248,7 @@ eq("会话用 (system) 哨兵", (externals[0] as { sessionId?: string })?.sessio
 
 console.log("\n读不动的条目");
 
-const noFile = LibraryRepo.upsert({ kind: "document", title: "没有文件的条目" });
+const noFile = LibraryRepo.upsert({ title: "没有文件的条目" });
 const noFileRead = readEntryFile(noFile.id);
 eq("没有关联文件 → unsupported", noFileRead.type, "unsupported");
 eq("凭空一条 id → unsupported", readEntryFile("li_根本没有这条").type, "unsupported");
@@ -297,7 +297,7 @@ const paperPdfAbs = join(ROOT, paperPdfRel);
 mkdirSync(dirname(paperPdfAbs), { recursive: true });
 writeFileSync(paperPdfAbs, "%PDF-1.7\n(假装是 PDF)", "utf8");
 
-const paper = LibraryRepo.upsert({ kind: "paper", title: "一篇论文" });
+const paper = LibraryRepo.upsert({ title: "一篇论文" });
 eq("造出来的形状就是论文那样:entry_mode = attached", paper.entryMode, "attached");
 eq("而且 file_path 是空的(这条断言是下面所有断言的立足点)", paper.filePath ?? null, null);
 LibraryRepo.setPdf(paper.id, paperPdfRel, "smoke-sha");
@@ -325,7 +325,7 @@ check("which=pdf 拿得到 PDF", paperPdf.type === "binary" && paperPdf.mime ===
 
 // ★ **回退只退到本体,不悄悄换成转录**。从前中间栏那条 bug 就是这里退错了:
 // 用户点的是 PDF,拿到的是 md,而界面上没有任何东西说明"这不是你要的那一份"。
-const paperNoPdf = LibraryRepo.upsert({ kind: "paper", title: "还没下 PDF 的论文" });
+const paperNoPdf = LibraryRepo.upsert({ title: "还没下 PDF 的论文" });
 LibraryRepo.setMarkdown(paperNoPdf.id, paperMdRel);
 const noPdfDefault = readEntryFile(paperNoPdf.id);
 const noPdfIsMd =
@@ -344,7 +344,7 @@ check(
   noPdfAsPdf,
 );
 
-const bare = LibraryRepo.upsert({ kind: "paper", title: "什么都没有" });
+const bare = LibraryRepo.upsert({ title: "什么都没有" });
 const bareAsMd = readEntryFile(bare.id, undefined, "md");
 check(
   "指名要转录而它没有 → 明说「还没有转成文本」",
@@ -352,6 +352,69 @@ check(
   bareAsMd,
 );
 eq("两样都没有时,默认那句还是原来那句", readEntryFile(bare.id).type, "unsupported");
+
+/* ──────────────── 4. 导入 PDF 时**选定的分类要真的生效** ──────────────── */
+
+// ⚠️ 这一段钉的是一个**一直在**、但**没有任何套件覆盖**的 bug:`importPdfFiles` 的
+// `collectionIds` 参数从声明那天起就没被用过(`pdfImport.ts` 的 `importOne` 里没有任何
+// 归属动作)。后果不是报错,是**用户选了分类,东西却掉进回收站** —— 因为导入的条目
+// 不属于任何集合 = 孤儿,`sweepToTrash` 会把它收走。
+//
+// 这条路的调用方是界面上那两颗「导入文件 / 导入文件夹」按钮(经
+// `LIBRARY_IMPORT_FILES` → `importAnyFiles` → 这里)。而 `library_intake` /
+// `library-trash` 那几套走的都是**别的入口**(检索入库、移出分类),所以它一直是空的:
+// 用 grep 在 scripts 目录下搜 importPdfFiles,一个都搜不到。
+//
+// 对照:`library/operations.ts` 的 `importIdentifiers` 做对了(`assignToCollection`
+// 那一行),所以**同样一件事有两条路、只有一条是对的** —— 这正是「共享实现只有一份」
+// 那条规矩要防的形状。
+console.log("\nPDF 导入 · 选定的分类要真的生效(而不是掉进回收站)");
+
+{
+  const { CollectionRepo } = await import("@main/store/repositories.js");
+  const { importPdfFiles } = await import("@main/library/pdfImport.js");
+  const { allTrashCollectionIds } = await import("@main/library/trash.js");
+
+  const PDF_FIXTURE = join(process.cwd(), "scripts", "fixtures", "sample-paper.pdf");
+  if (!existsSync(PDF_FIXTURE)) {
+    throw new Error(`样例 PDF 不在:${PDF_FIXTURE}(见 scripts/fixtures/make_sample_pdf.py)`);
+  }
+
+  // 挑一个**真的 PDF**,而且每段用一个不同的源目录 —— 内容寻址按 sha 去重,同一个
+  // 文件导两次拿到的是同一条条目,那会让"哪一条被归属了"变得说不清。
+  const dest = CollectionRepo.create("我要导到这里", null).id;
+  const res = await importPdfFiles({ paths: [PDF_FIXTURE], collectionIds: [dest] });
+  const item = res[0]?.item;
+  check("PDF 导进来了", item !== undefined, res);
+
+  if (item) {
+    const homes = CollectionRepo.collectionsOfItem(item.id);
+    check("★ 它归属于选定的那个分类", homes.includes(dest), homes);
+    // 归属生效的直接后果:它**不会**被扫进回收站。这一条是用户真正会看到的那一面
+    // (左栏里东西出现在「回收站」下面而不是他选的分类里)。
+    check(
+      "★ 它不在回收站里",
+      !homes.some((c) => allTrashCollectionIds().includes(c)),
+      homes,
+    );
+
+    // 反向:归属是**按传进来的那个分类**做的,不是"随便归到某一个"。
+    // 造第二条条目需要一份**不同内容**的 PDF(内容寻址按 sha 去重,同一份文件导两次
+    // 拿到的是同一条)。所以在 `%%EOF` **之后追加**一行注释 —— 字节不同了,而 pdf.js
+    // 的解析不受影响(PDF 规范允许 EOF 标记之后有内容)。
+    const other = join(SRC, "sample-paper-变体.pdf");
+    writeFileSync(other, Buffer.concat([readFileSync(PDF_FIXTURE), Buffer.from("\n% 变体\n")]));
+    const dest2 = CollectionRepo.create("另一个去处", null).id;
+    const res2 = await importPdfFiles({ paths: [other], collectionIds: [dest2] });
+    const item2 = res2[0]?.item;
+    check("第二份(内容不同)作为独立条目导入", item2 !== undefined && item2.id !== item.id, res2);
+    if (item2) {
+      // 它落在 **dest2**,不该串到 dest1 去 —— 分类是逐个条目按调用传的,不是全局状态。
+      check("★ 第二份落在它自己那个分类里", CollectionRepo.collectionsOfItem(item2.id).includes(dest2), CollectionRepo.collectionsOfItem(item2.id));
+      check("而且没有串进第一份的分类", !CollectionRepo.collectionsOfItem(item2.id).includes(dest), CollectionRepo.collectionsOfItem(item2.id));
+    }
+  }
+}
 
 /* ──────────────── 收尾 ──────────────── */
 

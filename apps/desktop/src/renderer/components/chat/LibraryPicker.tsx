@@ -14,17 +14,11 @@
  * 清单由主进程的 `library.manifest` 生成(见 makeLibraryTag 的说明)。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { LIBRARY_KIND_LABEL } from "@renderer/lib/libraryLabels.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useLibraryStore } from "@renderer/stores/libraryStore.js";
 import { api } from "@renderer/lib/api.js";
-import {
-  LIBRARY_KINDS,
-  type LibraryCollection,
-  type LibraryItem,
-  type LibraryKind,
-} from "@contracts/library";
+import type { LibraryCollection, LibraryItem } from "@contracts/library";
 import { IconBook, IconCheck, IconChevronRight, IconFileText, IconSearch } from "@renderer/lib/icons.js";
 
 /** 三个库的文案 id。库名在不同库里可以重名,所以列表上必须标出它属于哪个库。 */
@@ -114,16 +108,12 @@ export function LibraryPicker({
       collection?: LibraryCollection;
       item?: LibraryItem;
     }> = [];
-    for (const k of LIBRARY_KINDS) {
-      const inKind = collections.filter((c) => c.kind === k);
-      const matched = q
-        ? inKind.filter(
-            (c) => c.name.toLowerCase().includes(q) || t(LIBRARY_KIND_LABEL[k]).toLowerCase().includes(q),
-          )
-        : inKind;
-      // 搜索时空组直接不画 —— 否则屏幕上全是空标题
-      if (matched.length === 0) continue;
-      out.push({ key: `h-${k}`, header: t(LIBRARY_KIND_LABEL[k]) });
+    const matched = q
+      ? collections.filter((c) => c.name.toLowerCase().includes(q))
+      : collections;
+    {
+      // 搜索时空列表直接不画
+      if (matched.length === 0) return out;
       for (const c of matched) {
         out.push({ key: `c:${c.id}`, collection: c });
         // 展开了才列出条目;搜索时也列出来(用户搜的就是某一篇的标题)
@@ -140,7 +130,7 @@ export function LibraryPicker({
       }
     }
     return out;
-  }, [collections, query, t, expanded, itemsOf]);
+  }, [collections, query, expanded, itemsOf]);
 
   /**
    * 只含**可选中**的项 —— 分类与条目都可以选,分组标题和"加载中"行不参与键盘导航。

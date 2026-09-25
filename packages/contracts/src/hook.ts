@@ -143,7 +143,7 @@ export function hookEventHasTool(event: HookEvent): boolean {
  * 也是用户写在指令里的 `{{trigger.itemId}}`。三处各写一遍字符串的话,改一处漏一处
  * 的表现是"指令里那个名字解不出来",而那种失败只在跑的时候才出现。
  */
-export const EVENT_ITEM_FACT_KEYS = ["itemId", "itemKind", "itemTitle", "pdfPath"] as const;
+export const EVENT_ITEM_FACT_KEYS = ["itemId", "itemTitle", "pdfPath"] as const;
 export type EventItemFactKey = (typeof EVENT_ITEM_FACT_KEYS)[number];
 
 /**
@@ -180,9 +180,10 @@ export type EventItemFactKey = (typeof EVENT_ITEM_FACT_KEYS)[number];
 export const HOOK_EVENT_ITEM_FACT_FIELDS: Partial<
   Record<HookEvent, Partial<Record<EventItemFactKey, string>>>
 > = {
-  "library.item.imported": { itemId: "itemId", itemKind: "kind", itemTitle: "title" },
+  // （itemKind 已随 kind 退役删除 —— 事件上不再有这个字段。）
+  "library.item.imported": { itemId: "itemId", itemTitle: "title" },
   // 下载完的那一条**多一个 `pdfPath`** —— 导入那一下文件还没下来,那时给路径是骗人。
-  "library.item.downloaded": { itemId: "itemId", itemKind: "kind", itemTitle: "title", pdfPath: "pdfPath" },
+  "library.item.downloaded": { itemId: "itemId", itemTitle: "title", pdfPath: "pdfPath" },
 };
 
 /**

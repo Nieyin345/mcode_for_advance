@@ -32,20 +32,34 @@
  * 和数据库,它才喂得进无头脚本(见 `scripts/scheduler-smoke`)。
  */
 import { basename, resolve, sep } from "node:path";
-import { isLibraryKind, type LibraryKind } from "@contracts/library";
 import { isTemplateKind } from "@contracts/templates";
 import type { NodeContextKind } from "@contracts/nodeType";
 
-/** 外面要给的三样东西:两个根,和两次按 id 查类目。 */
+/** 外面要给的东西:两个根,加上两次"这条清单挂着哪个大类"。 */
 export interface ContextLookup {
   /** 文献库根(`<数据根>/library`)。 */
   libraryRoot: string;
   /** 模版库根。 */
   templatesRoot: string;
-  /** 一个分类属于哪个库。查不到返回 `undefined`。 */
-  collectionKind(id: string): LibraryKind | undefined;
-  /** 一条文献/教材/笔记属于哪个库。查不到返回 `undefined`。 */
-  itemKind(id: string): LibraryKind | undefined;
+  /**
+   * 一个**分类**挂着的大类 id。**返回 `undefined` = 库里没有这个分类**(那是"这不是
+   * 一条分类清单"的信号,本模块据此继续往下试条目);返回 `[]` = 有,但它还没挂大类。
+   *
+   * ⚠️ **必须是查库,不能从文件名猜。** 分类 id 是不透明的,而且 kind 退役后"它属于
+   * 哪一类"这件事本身就是用户自己摆的(`library_collections.group_id`)—— 没有任何
+   * 可以从 id 推出来的规律。这是本模块唯一一处外来的知识(见文件头"不 import 主进程")。
+   */
+  groupsOfCollection(collectionId: string): string[] | undefined;
+  /**
+   * 一条**条目**挂着的大类 id —— 取它所属那些分类的大类,**去重**。语义同
+   * {@link groupsOfCollection}。返回 `undefined` = 库里没有这个条目。
+   *
+   * 一个条目可以同时在好几个分类里,而那些分类可以不挂在同一个大类下(用户把一篇论文
+   * 同时收进「文献」和「要精读」两个大类是允许的)。返回 `[]` = 它不属于任何大类
+   * (还没归类、或只在回收站里)—— 那时**选任何大类都拿不到它**,因为"它在哪个大类里"
+   * 这个问题对它没有答案。宁可拿不到,也不要把它算进一个它并不属于的大类。
+   */
+  groupsOfItem(itemId: string): string[] | undefined;
 }
 
 /** 把路径统一成 `/` 分隔,好在两套前缀之间比较(`relative` 在 Windows 上给的是 `\`)。 */
@@ -86,6 +100,15 @@ export function attachmentPathsIn(prompt: string): string[] {
 export interface ContextRef {
   kind: NodeContextKind;
   level: ContextLevel;
+  /**
+   * 拿来**查内容**还是**仿格式** —— 由 {@link purposeOfPath} 在认出这条路径的那一刻
+   * 一起算好(那时 `lookup` 就在手上),不是后面按类目名反推。
+   *
+   * 早先这个判断是 `contextPurposeOf(kind)` 一个纯函数,靠"类目名属不属于文献库那八类"
+   * 分。kind 退役后资料库那侧的类目换成了用户自己起的大类名,那个判据就再也不成立了 ——
+   * 详见 {@link purposeOfPath}。
+   */
+  purpose: ContextPurpose;
 }
 
 /**
@@ -123,16 +146,22 @@ export interface ContextLine extends ContextRef {
  *   是**从里面找东西**。
  * - `format`(**仿格式**):PPT / LaTeX / Word / 代码 / 配图模版。要的是**样子** ——
  *   排版、章节结构、措辞口吻。照着它写,写这一步自己的内容。
- *
- * 判据是现成的、而且是**结构上**成立的:`NodeContextKind` 本来就是
- * `LibraryKind | TemplateKind` 两个不相交的集合拼出来的(见 `NODE_CONTEXT_KINDS`),
- * 两个库连根目录都不是同一个。所以这不是一条要维护的规则,是两个库本来就有的区别。
  */
-export function contextPurposeOf(kind: NodeContextKind): "material" | "format" {
-  // 注册表接上后,自定义类型按它自己声明的 purpose 走;没接(冒烟)或没注册的
-  // kind,退回老的内置判据 —— 行为与统一前逐字一致。
-  if (activeRegistry) return activeRegistry.purpose(kind);
-  return isLibraryKind(kind) ? "material" : "format";
+export type ContextPurpose = "material" | "format";
+
+/**
+ * 这条清单**是资料还是格式** —— 判据是**它在哪个库里**,不是它的类目叫什么。
+ *
+ * kind 退役(2026-09-24)之前,这件事靠 `isLibraryKind(kind)` 一眼判出来;kind 没了之后
+ * 资料库那侧的类目换成**用户自己的大类**,而大类 id 是用户起的 —— 靠名字猜必然猜错
+ * (他完全可以把一个大类叫 `latex`)。两个库**连根目录都不是同一个**,那才是结构上
+ * 成立的区别。
+ *
+ * 认不出来的(库和模版之外的自定义路径)按资料处理 —— 宁可多摆一组,不要因为一个路径
+ * 形状没料到就把用户挂的东西整个藏掉。
+ */
+function purposeOfPath(abs: string, lookup: ContextLookup): ContextPurpose {
+  return abs.startsWith(`${slash(lookup.templatesRoot)}/`) ? "format" : "material";
 }
 
 /**
@@ -140,36 +169,52 @@ export function contextPurposeOf(kind: NodeContextKind): "material" | "format" {
  *
  * 三条路,对应清单的三种落点:
  *
- * | 路径 | 是什么 |
- * |---|---|
- * | `<库根>/collections/kind-<库>.md` | 整库(「全部文献」那一行) |
- * | `<库根>/collections/<id>.md` | 一个分类,或单独一篇 |
- * | `<模版根>/.manifests/<类目>[/<名字>].md` | 模版的整个类目,或一条模版 |
+ * | 路径 | 是什么 | `kinds` |
+ * |---|---|---|
+ * | `<库根>/collections/group-<大类 id>.md` | 整个大类 | 那个大类自己 |
+ * | `<库根>/collections/<分类 id>.md` | 一个分类 | 它挂着的大类 |
+ * | `<库根>/collections/<条目 id>.md` | 单独一篇 | 它所属分类挂着的大类(去重) |
+ * | `<模版根>/.manifests/<类目>[/<名字>].md` | 模版的类目/单条 | 那个类目 |
  *
- * 前两条里 `kind-<库>` 直接读得出来;**其余的靠查库**,不靠文件名猜 —— 分类和条目的
- * id 都是不透明的(条目的文件名甚至是 sha256),"从名字看出它是文献还是笔记"必然猜错。
- * 第三条不用查:模版清单的**目录名就是类目本身**。
+ * ## `kinds` 是**数组**,不是单个
  *
- * "一个分类"和"单独一篇"是**两次不同的查询**(`collectionKind` / `itemKind`)——
- * 它们查到的东西不在同一张表里,所以这里分得出来,而模型也正需要知道这个区别:
- * 前者是一组,后者是一个。
+ * 用户可以把一篇同时收进两个分类,而那两个分类挂在**不同的大类**下 —— 那时这一篇
+ * 确实同时属于两个类目,而节点只要勾了其中一个就该拿到它。做成单个字段的话得在两个
+ * 里挑一个扔一个,而"扔"的那个方向没有任何依据。
+ *
+ * ## 前三条的 id 一律**靠查库**,不靠文件名猜
+ *
+ * 分类与条目的 id 都是不透明的(条目文件名甚至是 sha256),"从名字看出它是文献还是
+ * 笔记"必然猜错 —— 而且 kind 退役之后"它属于哪一类"本身就是用户自己摆的
+ * (`library_collections.group_id`),推不出来。第四条不用查:模版清单的**目录名就是
+ * 类目本身**。
+ *
+ * ⚠️ **`kind-<库>.md` 这个老形状没有了**(kind 退役,2026-09-24):整库清单改名成
+ * `group-<大类 id>.md`。老库里存着的 `kind-paper.md` 这种挂载记录**落到最后那条
+ * `return null`** —— 它认不出来,于是这一步少一份资料,而不是拿到一份错类目的。
  */
-export function contextRefOfPath(path: string, lookup: ContextLookup): ContextRef | null {
+function resolveRef(path: string, lookup: ContextLookup): Omit<ContextRef, "kind"> & { kinds: string[] } | null {
   const abs = slash(path);
 
   const libPrefix = `${slash(lookup.libraryRoot)}/collections/`;
   if (abs.startsWith(libPrefix)) {
     const stem = basename(abs).replace(/\.md$/i, "");
-    // 整库:`kind-paper.md`。**先试这条**,因为一个 id 恰好叫 `kind-paper` 的概率远小于
-    // 把整库清单误当成某个分类。
-    if (stem.startsWith("kind-")) {
-      const kind = stem.slice("kind-".length);
-      if (isLibraryKind(kind)) return { kind, level: "all" };
+    // 大类清单:`group-<大类 id>.md`,整个大类一次挂上。**这一条先试** —— 一个分类的
+    // id 恰好叫 `group-docs` 的概率远小于把整大类清单误当成某个分类。
+    if (stem.startsWith("group-")) {
+      return { kinds: [stem.slice("group-".length)], level: "all", purpose: purposeOfPath(abs, lookup) };
     }
-    const asCollection = lookup.collectionKind(stem);
-    if (asCollection !== undefined) return { kind: asCollection, level: "collection" };
-    const asItem = lookup.itemKind(stem);
-    if (asItem !== undefined) return { kind: asItem, level: "item" };
+    // 分类清单:`<分类 id>.md`。查得到就是分类(哪怕它还没挂大类 —— 那时 `kinds` 空,
+    // 于是任何类目都匹配不上,与它"不属于任何一个大类"的事实一致)。
+    const byCollection = lookup.groupsOfCollection(stem);
+    if (byCollection !== undefined) {
+      return { kinds: byCollection, level: "collection", purpose: purposeOfPath(abs, lookup) };
+    }
+    // 条目清单:`<条目 id>.md`,取它所属分类挂着的大类。
+    const byItem = lookup.groupsOfItem(stem);
+    if (byItem !== undefined) {
+      return { kinds: byItem, level: "item", purpose: purposeOfPath(abs, lookup) };
+    }
     return null;
   }
 
@@ -181,10 +226,34 @@ export function contextRefOfPath(path: string, lookup: ContextLookup): ContextRe
     const head = (rest[0] ?? "").replace(/\.md$/i, "");
     if (!isTemplateKind(head)) return null;
     // 目录里还有一层 = 单条模版;只有一层 = 整个类目的清单。
-    return { kind: head, level: rest.length > 1 ? "template" : "category" };
+    return { kinds: [head], level: rest.length > 1 ? "template" : "category", purpose: purposeOfPath(abs, lookup) };
   }
 
   return null;
+}
+
+/**
+ * 一个附件路径是什么 —— 类目(`kinds` 里**与 `wanted` 相交的**那个)+ 层级 + 用途。
+ *
+ * 认不出来返回 `null`。`wanted` 不给时取 `kinds` 的第一个(冒烟那组"路径→类目"的断言
+ * 就是这么用的:它问的是"这条路径认得出什么",不问"某个节点要不要它")。
+ *
+ * 传了 `wanted` 时**取交集里那个** —— 显示出来的类目就是用户勾选时看到的那个词,而不是
+ * "它恰好也属于"的另一个。一篇同时挂在两个大类下时,`【文献】` 还是 `【模版】` 取决于
+ * 这一步要的是哪个,这才是模型该看到的。
+ */
+export function contextRefOfPath(
+  path: string,
+  lookup: ContextLookup,
+  wanted?: readonly NodeContextKind[],
+): ContextRef | null {
+  const base = resolveRef(path, lookup);
+  if (base === null) return null;
+  const { kinds, ...rest } = base;
+  const pick =
+    wanted === undefined ? kinds[0] : wanted.find((w) => kinds.includes(w)) ?? kinds[0];
+  if (pick === undefined) return null;
+  return { ...rest, kind: pick };
 }
 
 /**
@@ -214,33 +283,45 @@ export function inheritContextLines(
   const out: ContextLine[] = [];
   const seen = new Set<string>();
   for (const path of attachmentPathsIn(prompt)) {
-    const ref = contextRefOfPath(path, lookup);
-    if (ref === null || !wanted.has(ref.kind)) continue;
+    const base = resolveRef(path, lookup);
+    if (base === null) continue;
+    // **任一命中就收** —— 这一条可能同时属于几个类目(见 `resolveRef`),节点勾了其中
+    // 一个就该拿到它。不收的话要挑一个"它主要属于"的,而那个方向没有依据。
+    const hit = base.kinds.find((k) => wanted.has(k));
+    if (hit === undefined) continue;
     const key = slash(path);
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ ...ref, path });
+    const { kinds: _all, ...rest } = base;
+    out.push({ ...rest, kind: hit, path });
   }
   return out;
 }
 
 /**
- * 库类目 → 中文名。
+ * 类目 id → 提示词里那个词。
  *
- * ⚠️ **这不是界面文案**(界面那份走 i18n,见 `nodeTypes.ts` 的 `CONTEXT_LABEL_ZH`):
- * 提示词从头到尾是中文的,而它拼进去的是**给人看的那几个词** —— 拿 i18n 的 key 拼,
- * 模型只会读到 `paper`。两处因此各有一份,那是它们服务的东西不同,不是重复。
+ * ⚠️ **这不是界面文案**(界面那份走 i18n):提示词从头到尾是中文的,而它拼进去的是
+ * **给人看的那几个词** —— 拿 i18n 的 key 拼,模型只会读到 `latex`。两处各有一份,那是
+ * 它们服务的东西不同,不是重复。
  *
- * **模版那几个带「模版」二字**:一来和 `CONTEXT_LABEL_ZH`(用户在下拉里勾选时看到的那份)
- * 逐字一致 —— 模型读到的词和用户选的时候看到的是同一个,排查时对得上;二来光写
- * `【Word·类目】` 有歧义(是 Word 这个软件,还是 Word 那一类模版)。多 6 个字节换掉
- * 这个歧义,值。(分组标题已经说了"当格式仿",那是**用法**;这个抬头说的是**它是什么**,
- * 两件事,不重复。)
+ * **模版那几个带「模版」二字**:一来和用户在下拉里看到的那些逐字一致 —— 模型读到的词
+ * 和用户选的时候看到的是同一个,排查时对得上;二来光写 `【Word·类目】` 有歧义(是 Word
+ * 这个软件,还是 Word 那一类模版)。多 6 个字节换掉这个歧义,值。(分组标题已经说了
+ * "当格式仿",那是**用法**;这个抬头说的是**它是什么**,两件事,不重复。)
+ *
+ * ## kind 退役:资料库那半边现在**认不出名字**
+ *
+ * 从前这里还有 `paper` / `textbook` / `note` 三个词,因为那时类目是固定的八个。现在
+ * 资料侧的类目是**用户自己的大类**(`group-<id>.md` 那个 id),名字只有库知道 —— 而本
+ * 模块是纯件、不 import 主进程(见文件头)。所以走到下面那条回落:抬头显示类目 id 原文。
+ *
+ * 那是**刻意接受的**:大类 id 通常是用户看得懂的词(`docs`、`latex`),而且**分组标题已经
+ * 说清了它拿来干什么**("当资料查" / "当格式仿")—— 模型缺的从来不是"它叫什么",是"拿它
+ * 干嘛"。要让它精确显示大类名,得由宿主注入一份 id→name 的映射(见 `ContextLookup`),
+ * 那一步等真的有人抱怨了再做。
  */
-export const KIND_LABEL: Record<NodeContextKind, string> = {
-  paper: "文献",
-  textbook: "教材",
-  note: "笔记",
+export const KIND_LABEL: Record<string, string> = {
   ppt: "PPT 模版",
   latex: "LaTeX 模版",
   word: "Word 模版",
@@ -248,34 +329,9 @@ export const KIND_LABEL: Record<NodeContextKind, string> = {
   image: "配图模版",
 };
 
-/**
- * **类型注册表的可选扩展点**(统一资料库,见 `@contracts/libraryTypes`)。
- *
- * 本模块是**纯的**(无头冒烟直接打包运行),不能 import 主进程的 DB;而统一库之后
- * kind 开放注册 —— 用户自建的类型,它的"用途"(material/format)和"显示名"只有
- * 注册表知道。所以这里留一个注册口:宿主(`runner.ts`)启动时把注册表的读法交进来,
- * 之后 `contextPurposeOf` / `kindLabel` 对自定义类型就能给出正确答案。**没注册时
- * 全部走内置判据**,行为与统一前逐字一致 —— 冒烟正是靠这一点不接注册表也照跑。
- */
-export interface ContextKindRegistry {
-  /** 一类的显示名(注册表的 `name`)。 */
-  label(kind: string): string;
-  /** 一类的用途:给 AI 读的资料,还是让 AI 照着写的格式。 */
-  purpose(kind: string): "material" | "format";
-}
-
-let activeRegistry: ContextKindRegistry | null = null;
-
-/** 宿主启动时调用(幂等,传 null 退回内置判据)。**只接受这一条注入路径** ——
- *  别在本模块里直接 import 主进程的 store,那会把纯模块拖下水。 */
-export function setContextKindRegistry(registry: ContextKindRegistry | null): void {
-  activeRegistry = registry;
-}
-
-/** 一类在提示词里的显示名:注册表优先,内置表兜底,**最后退回 kind 原文** ——
+/** 一类在提示词里的显示名:内置表兜底,**最后退回类目 id 原文** ——
  *  显示一个没见过的 id 也比显示 undefined 强。 */
 export function kindLabel(kind: NodeContextKind): string {
-  if (activeRegistry) return activeRegistry.label(kind);
   return KIND_LABEL[kind] ?? kind;
 }
 

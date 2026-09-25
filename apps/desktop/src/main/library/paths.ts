@@ -70,6 +70,24 @@ export function noteRelPathForId(id: string): string {
   return `notes/${id}.md`;
 }
 
+/**
+ * 这条库内相对路径是**一篇笔记**(用户继续改的那份),不是转录产物。
+ *
+ * ⚠️ **判据是落点,不是"有没有 mdPath"。** 早先这里按 `kind === "note"` 认,
+ * kind 退役后一度改成"有 mdPath 且没有 pdfPath"—— 那是错的:转录产物挂上之后
+ * `mdPath` 也为真,于是**再挂/换一份转录产物**这条路整条被堵死(报"笔记本身就是
+ * Markdown,不需要再挂转录产物"),而这恰好是采纳那条路最主要的用法(重转一次、
+ * 换成用户手上更好的一份)。
+ *
+ * 落点是这两类东西在磁盘上**唯一**的区别:笔记恒在 `notes/<id>.md`,转录产物在
+ * `markdown/imported/<id>/`(或内容寻址的 `markdown/<sha>/`)。
+ */
+export function isNoteRelPath(relPath: string | undefined | null): boolean {
+  if (!relPath) return false;
+  const normalized = relPath.replace(/\\/g, "/").replace(/^\.\//, "");
+  return /^notes\/[^/]+\.md$/i.test(normalized);
+}
+
 /** 导出产物的落点(引用格式导出的 `.bib` / `.txt` 放这儿)。
  *  和 PDF、Markdown 同处库根下 —— 用户备份或搬库时它跟着一起走。 */
 export function exportsDir(): string {

@@ -162,7 +162,7 @@ if (!existsSync(PDF_FIXTURE)) {
 }
 
 function seedPaper(title: string, sha: string): string {
-  const id = LibraryRepo.upsert({ kind: "paper", title }).id;
+  const id = LibraryRepo.upsert({ title }).id;
   const target = pdfPathForHash(sha);
   mkdirSync(join(target, ".."), { recursive: true });
   copyFileSync(PDF_FIXTURE, target);
@@ -174,7 +174,7 @@ function seedPaper(title: string, sha: string): string {
 
 console.log("\n采纳 · 第一版挂上");
 
-const item = LibraryRepo.upsert({ kind: "paper", title: "有一份好转录的那一篇" }).id;
+const item = LibraryRepo.upsert({ title: "有一份好转录的那一篇" }).id;
 
 const v1 = mkdtempSync(join(tmpdir(), "mcode-adopt-v1-"));
 mkdirSync(join(v1, "images"), { recursive: true });

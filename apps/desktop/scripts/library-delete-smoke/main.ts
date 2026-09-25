@@ -137,7 +137,7 @@ console.log("\nattached 副本 · 只有 filePath 的通用条目");
 // 改之前 handler 走到 `if (!mdRel || …) continue` 就跳过了 —— 行没了,文件留着。
 const pptSrc = join(SRC, "毕设答辩.pptx");
 writeFileSync(pptSrc, "假装是 ppt 的字节", "utf8");
-const attached = importGenericFiles({ paths: [pptSrc], mode: "attached", kind: "document" });
+const attached = importGenericFiles({ paths: [pptSrc], mode: "attached" });
 const ppt = attached.items[0]!;
 const pptCopy = entryFileAbsPath(ppt)!;
 check("副本落在 <库根>/files/ 下面", pptCopy.startsWith(join(ROOT, "files") + sep), pptCopy);
@@ -162,7 +162,7 @@ console.log("\nlinked · 用户自己的文件(库外)");
 
 const outerFile = join(SRC, "老板给的表格.xlsx");
 writeFileSync(outerFile, "别人还在用这份原件", "utf8");
-const linkedFile = importGenericFiles({ paths: [outerFile], mode: "linked", kind: "document" }).items[0]!;
+const linkedFile = importGenericFiles({ paths: [outerFile], mode: "linked" }).items[0]!;
 eq("存的是库外的绝对路径", linkedFile.filePath, outerFile);
 check("库里没有多出一份副本", !existsSync(join(ROOT, "files", `${linkedFile.id}-老板给的表格.xlsx`)));
 
@@ -194,7 +194,7 @@ const outerDir = join(SRC, "我自己的一套模版");
 mkdirSync(join(outerDir, "子目录"), { recursive: true });
 writeFileSync(join(outerDir, "说明.txt"), "正文", "utf8");
 writeFileSync(join(outerDir, "子目录", "深处.txt"), "再深一层", "utf8");
-const linkedDir = importGenericFiles({ paths: [outerDir], mode: "linked", kind: "document" }).items[0]!;
+const linkedDir = importGenericFiles({ paths: [outerDir], mode: "linked" }).items[0]!;
 eq("目录条目的路径就是那个目录", entryFileAbsPath(linkedDir), outerDir);
 
 const delLinkedDir = await del([linkedDir.id]);
@@ -216,13 +216,13 @@ console.log("\n共用一份副本 · 引用计数要管住 file_path");
 // 时,删掉其中一条不能把另一条的文件端走。
 const sharedSrc = join(SRC, "共用的资料.pdf");
 writeFileSync(sharedSrc, "同一份字节", "utf8");
-const holderA = importGenericFiles({ paths: [sharedSrc], mode: "attached", kind: "document" }).items[0]!;
+const holderA = importGenericFiles({ paths: [sharedSrc], mode: "attached" }).items[0]!;
 const sharedRel = holderA.filePath!;
 const sharedAbs = entryFileAbsPath(holderA)!;
 
 // 第二条记录指向**同一个 `file_path`**。正常导入算不出这个形状(attached 的路径带自己
 // 的 id),但库里只要有两条行指着同一个字符串就足够 —— 判据本来就是按路径数行。
-const holderB = LibraryRepo.upsert({ kind: "document", title: "指着同一份副本的第二条", entryMode: "attached" });
+const holderB = LibraryRepo.upsert({ title: "指着同一份副本的第二条", entryMode: "attached" });
 LibraryRepo.setFilePath(holderB.id, sharedRel);
 eq("两条记录确实指着同一个路径", LibraryRepo.get(holderB.id)!.filePath, sharedRel);
 
@@ -244,7 +244,7 @@ console.log("\n只删记录(deleteFiles 省略)");
 
 const keepSrc = join(SRC, "只是想从库里移走.docx");
 writeFileSync(keepSrc, "内容", "utf8");
-const kept = importGenericFiles({ paths: [keepSrc], mode: "attached", kind: "document" }).items[0]!;
+const kept = importGenericFiles({ paths: [keepSrc], mode: "attached" }).items[0]!;
 const keptAbs = entryFileAbsPath(kept)!;
 const keptRes = await del([kept.id], false);
 check("记录删掉了", LibraryRepo.get(kept.id) === null);
@@ -260,7 +260,7 @@ console.log("\n删失败 · 不能静默吞掉");
 // —— 实测如此,所以这不是假想的失败。
 const acrossSrc = join(SRC, "跨平台会出问题的资料.bin");
 writeFileSync(acrossSrc, "字节", "utf8");
-const dirCase = importGenericFiles({ paths: [acrossSrc], mode: "attached", kind: "document" }).items[0]!;
+const dirCase = importGenericFiles({ paths: [acrossSrc], mode: "attached" }).items[0]!;
 const dirCaseAbs = entryFileAbsPath(dirCase)!;
 rmSync(dirCaseAbs, { force: true });
 mkdirSync(dirCaseAbs, { recursive: true });
@@ -284,7 +284,7 @@ check("返回的列表里它还在", broken.items.some((i) => i.id === dirCase.i
 // ③ 同一个调用里**成功的那几条照样成功**,不能一条失败就整批回滚。
 const okSrc = join(SRC, "同一批里正常的那份.txt");
 writeFileSync(okSrc, "正常", "utf8");
-const okItem = importGenericFiles({ paths: [okSrc], mode: "attached", kind: "document" }).items[0]!;
+const okItem = importGenericFiles({ paths: [okSrc], mode: "attached" }).items[0]!;
 const okAbs = entryFileAbsPath(okItem)!;
 const mixed = await del([dirCase.id, okItem.id]);
 check("同批里正常的那条记录删掉了", LibraryRepo.get(okItem.id) === null);
@@ -319,9 +319,9 @@ const parentCol = CollectionRepo.create("要被删的父分类", null, "paper").
 const childCol = CollectionRepo.create("子分类", parentCol, "paper").id;
 const grandCol = CollectionRepo.create("孙分类", childCol, "paper").id;
 
-const underParent = LibraryRepo.upsert({ kind: "paper", title: "挂在父上" }).id;
-const underChild = LibraryRepo.upsert({ kind: "paper", title: "只挂在子上" }).id;
-const underGrand = LibraryRepo.upsert({ kind: "paper", title: "只挂在孙子上" }).id;
+const underParent = LibraryRepo.upsert({ title: "挂在父上" }).id;
+const underChild = LibraryRepo.upsert({ title: "只挂在子上" }).id;
+const underGrand = LibraryRepo.upsert({ title: "只挂在孙子上" }).id;
 CollectionRepo.assign(parentCol, [underParent], true);
 CollectionRepo.assign(childCol, [underChild], true);
 CollectionRepo.assign(grandCol, [underGrand], true);
@@ -353,18 +353,18 @@ check("三条记录都还在库里(删分类不删文献)", [underParent, underC
 // 子分类自己确实是跟着没的 —— 那是外键的 CASCADE 在干,不是这次改的。
 check(
   "父/子/孙三个分类都不在了(CASCADE)",
-  !CollectionRepo.list("paper").some((c) => [parentCol, childCol, grandCol].includes(c.id)),
+  !CollectionRepo.list().some((c) => [parentCol, childCol, grandCol].includes(c.id)),
 );
 
 // **从回收站删分类时不收**(否则条目会被立刻捞回回收站,用户删不掉)。
 // 判据仍然是 `shouldSweepAfterRemoval` —— 这次改动一个字都没动它。
 {
-  const stillOrphan = LibraryRepo.upsert({ kind: "paper", title: "待会儿变孤儿的一条" }).id;
+  const stillOrphan = LibraryRepo.upsert({ title: "待会儿变孤儿的一条" }).id;
   const subOfTrash = CollectionRepo.create("回收站里的子分类", paperTrash, "paper").id;
   CollectionRepo.assign(subOfTrash, [stillOrphan], true);
   // 从**回收站本身**删:不收。
   await deleteCollection({ id: paperTrash });
-  check("回收站本身删得掉(没有被重新建出来)", !CollectionRepo.list("paper").some((c) => c.id === paperTrash));
+  check("回收站本身删得掉(没有被重新建出来)", !CollectionRepo.list().some((c) => c.id === paperTrash));
   check("而从它里面删掉的条目没有被收回来(记录还在库里)", LibraryRepo.get(stillOrphan) !== null);
 }
 
@@ -378,7 +378,7 @@ console.log("\n脏数据 · 记录里的路径指向库外");
 const poisonSrc = join(SRC, "不该被删的原件.md");
 writeFileSync(poisonSrc, "用户的原件", "utf8");
 const poisoned = LibraryRepo.upsert({
-  kind: "document",
+  
   title: "路径被写坏的记录",
   entryMode: "attached",
   filePath: poisonSrc, // ← 库外绝对路径,不该被当成"库内副本"
@@ -412,7 +412,7 @@ console.log("\n删条目 · cascadeLinks(勾 = 这条也一起删)");
   const mkDoc = (name: string) => {
     const f = join(SRC, name);
     writeFileSync(f, name, "utf8");
-    return importGenericFiles({ paths: [f], mode: "attached", kind: "document" }).items[0]!;
+    return importGenericFiles({ paths: [f], mode: "attached" }).items[0]!;
   };
 
   // ── ① 不勾:只删自己,被链接的那条**留着** ──

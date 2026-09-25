@@ -6,7 +6,7 @@
  */
 
 import { z } from "zod";
-import { PDF_STATES, type LibraryKind, type DownloadStatus } from "../library.js";
+import { PDF_STATES, type DownloadStatus } from "../library.js";
 
 /** 下载并发上限。缺失 → 默认 2。走内嵌浏览器下载,并发过高会与用户的手动浏览
  *  抢同一个 WebContentsView,反而更慢。 */
@@ -25,8 +25,9 @@ export const LIBRARY_TRASH_COLLECTION_SETTING_KEY = "library.trashCollectionId";
  * 不带库的旧键仍然保留:`library.trashCollectionId` 是老数据里那个全局回收站的
  * 位置(它建在论文库下),论文库会回退去读它,不然改完键就不认那个集合了。
  */
-export function libraryTrashSettingKey(kind: LibraryKind): string {
-  return `${LIBRARY_TRASH_COLLECTION_SETTING_KEY}.${kind}`;
+/** 废弃遗留：回收站设置键曾是按 kind 分的。现在共用一个（老键格式保留以兼容回退读取）。 */
+export function libraryTrashSettingKey(_kind: string): string {
+  return LIBRARY_TRASH_COLLECTION_SETTING_KEY;
 }
 
 /* ── 文献库:PDF 文件导入 + 转 Markdown ── */
@@ -37,22 +38,6 @@ export function libraryTrashSettingKey(kind: LibraryKind): string {
  * 所以这里只查"是个非空串",**注册表校验在 handler 层**做(见 main/library/kindRegistry)。
  * 传一个没注册的 kind,handler 返回一条说人话的错误,而不是 schema 的泛泛拒绝。
  */
-export const LibraryKindSchema = z.string().min(1);
-export type LibraryKindInput = z.infer<typeof LibraryKindSchema>;
-
-/* ── 类型注册表(统一资料库) ── */
-
-/** 读注册表。没有入参,但 IPC 调用约定仍带一个空对象(同 `context.get` 那一族)。 */
-export const LibraryTypesGetSchema = z.object({});
-export type LibraryTypesGetInput = z.infer<typeof LibraryTypesGetSchema>;
-
-/**
- * 整表替换注册表。`types` 收**原始 JSON**(渲染端编辑器里就是一份结构化列表),
- * 校验(内置不可删、id 规则、purpose 合法)由主进程过 `parseLibraryTypesJson` ——
- * 校验规则是纯函数,渲染端将来要预检也用同一份,不会出现两边判据漂移。
- */
-export const LibraryTypesSaveSchema = z.object({ types: z.unknown() });
-export type LibraryTypesSaveInput = z.infer<typeof LibraryTypesSaveSchema>;
 
 /* ── 大类(左栏分组) ── */
 
@@ -129,8 +114,12 @@ export const LibraryImportFilesSchema = z.object({
   collectionIds: z.array(z.string()).optional(),
   /** 入库后是否接着转 Markdown(默认转 —— 用户要的就是「导入即可被 AI 读」)。 */
   convert: z.boolean().optional(),
-  /** 导入到哪个库。省略 = 论文库。 */
-  kind: LibraryKindSchema.optional(),
+  /**
+   * 导入模式：`"files"` = 逐个文件导入（默认）；`"folder"` = 把目录作为**一个**
+   * linked 条目收进来（不拆开，可展开浏览）；`"explode"` = 批量 —— 把目录里的
+   * 文件拆开逐个导成独立条目。
+   */
+  mode: z.enum(["files", "folder", "explode"]).optional(),
 });
 export type LibraryImportFilesInput = z.infer<typeof LibraryImportFilesSchema>;
 
@@ -325,7 +314,6 @@ export type LibraryFileContent =
 export const LibraryImportGenericSchema = z.object({
   paths: z.array(z.string().min(1)).min(1).max(200),
   mode: z.enum(["linked", "attached"]).optional(),
-  kind: LibraryKindSchema.optional(),
   collectionIds: z.array(z.string()).optional(),
 });
 export type LibraryImportGenericInput = z.infer<typeof LibraryImportGenericSchema>;
@@ -451,8 +439,6 @@ export const LibraryItemInputSchema = z
     url: z.string().optional(),
     source: z.string().optional(),
     license: z.string().optional(),
-    /** 归到哪个库。省略 = 论文库。 */
-    kind: LibraryKindSchema.optional(),
     /** 一并归入的集合;省略则不归任何集合。 */
     collectionIds: z.array(z.string()).optional(),
     /** 入库后是否立刻排入下载队列。默认 true。 */
@@ -471,8 +457,6 @@ export type LibraryAddItemsInput = z.infer<typeof LibraryAddItemsSchema>;
 /** 列表筛选。`collectionId` 为 null 表示全部;`collectionId` 为字符串时只列该集合。 */
 export const LibraryListSchema = z.object({
   collectionId: z.string().nullable().optional(),
-  /** 只看某个库。省略 = 不限库(全部)。 */
-  kind: LibraryKindSchema.optional(),
   /** 搜索关键词(标题/作者/摘要/venue),大小写不敏感。 */
   query: z.string().optional(),
   /** 只列某种 PDF 状态(如 "none" 用于找缺 PDF 的)。
@@ -636,8 +620,8 @@ export interface LibraryDeleteItemsResult {
 export const CollectionCreateSchema = z.object({
   name: z.string().min(1),
   parentId: z.string().nullable().optional(),
-  /** 建在哪个库里。省略 = 论文库。 */
-  kind: LibraryKindSchema.optional(),
+  /** 建在哪个大类下。省略 = 第一个大类。 */
+  groupId: z.string().optional(),
   /** 这个分类的「给 AI 的说明」。省略 = 不写。 */
   prompt: z.string().optional(),
 });

@@ -129,6 +129,11 @@ export const zh = {
   "library.import.result": "导入 {added} 篇，跳过 {skipped} 篇重复",
   "library.import.nothingParsed": "没有识别出任何 DOI / arXiv ID / BibTeX 条目",
   "library.import.pickPdf": "选择 PDF 文件",
+  /** 通用导入（kind 退役后的入口文案）。 */
+  "library.import.pickFile": "导入文件…",
+  "library.import.pickFolder": "导入文件夹",
+  "library.import.explodeFolder": "批量导入文件夹",
+  "library.import.hint": "文件夹作为一个条目收进；批量则把里面文件拆开逐个导入",
   "library.import.autoConvert": "导入后自动转 Markdown",
   "library.import.autoConvertHint": "（已经有转录好的 md？取消勾选，省一次额度 —— 导入后在详情页用「用本地 Markdown…」挂上你那份）",
   "library.import.pdfResult": "导入 {added} 篇,跳过 {skipped} 篇重复",

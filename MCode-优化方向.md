@@ -1491,6 +1491,224 @@ append 的是：身份、文件架构、Windows 路径提示、计划模式提�
 
 ---
 
+### 3.15 彻底删掉 kind + 通用导入 + 文件夹条目（2026-09-24，同日第三轮）
+
+用户连问三遍才让我明白问题在哪儿：「为什么还有 kind 这种定义啊」「我就是要大类、小类、
+collection 这个三层管理系统，我不管你后面用的是什么标识」「彻底删掉 kind 会影响我现在
+的三级文件管理系统吗？如果不影响，这是两个系统，那就删掉」。
+
+**结论：不影响，kind 是平行的第四套分类。** 他看到的"小类 tab"那层是 `group.kinds`
+（大类里登记的类型）渲染的，他自己建的大类没挂内置类型所以 tab 是空的 —— 他误以为那
+就是小类。删掉之后三级树变成：**大类（group）→ 小类 = 分类（collection 树）→ 条目**。
+
+同时落了他明确要的三件导入侧的事：
+
+- **通用导入**：不再按 kind 硬过滤 PDF —— `.pdf` 走文献管线、`.md/.txt` 走笔记管线、
+  其余走通用文件管线（`library/importDispatch.ts` 按扩展名分派）
+- **任何分类都能新建 md**（从前只有 `kind === "note"` 的分类能）
+- **文件夹 = 一个条目**，可点开浏览里面的文件（"有的文件夹是一个整体，比如 latex 模版"）
+- **批量导入 = 另一个动作**：选文件夹 → 里面的文件**拆开**逐个导（`mode: "folder"` vs
+  `mode: "explode"`，用户明确说"这两个不一样"）
+
+#### 删的是什么（三层）
+
+1. `library_items.kind` / `library_collections.kind` 两列 DB 字段
+2. 类型注册表（settings 键 `library.types`）+ 大类表里的 `kinds: string[]`
+3. 行为分派：非 note 分类只能导 PDF、只有 note 条目能应用内编辑、paper 才有元数据面板
+
+**DB 里那两列不 DROP**（sql.js 无先例，留着无害），代码全面停读停写 —— 与 trash.ts
+已有的先例一致。分类归属改由新列 `library_collections.group_id` 承担（`addColumnIfMissing`
++ 按旧 `library.groups` 的 kinds 反查做一次性幂等回填）。
+
+#### 这一轮修出来的**真 bug**（不只是改断言）
+
+- **`notesImport.writeNote` 的两道守卫次序反了**：越界检查被扩展名检查抢先挡下，一条
+  指向库外的坏记录报的是"不是 Markdown 文件"，而它真正危险的地方（要写到库外去）被这句
+  话盖住了。`library-paths-smoke` 的「而且说了原因」当场抓出。
+- **`adoptMarkdown` 的门判错了**：kind 退役后一度改成"有 mdPath 且没有 pdfPath 就算笔记"，
+  而转录产物挂上之后 `mdPath` 也为真 —— **再挂/换一份转录产物整条路被堵死**，而那正是
+  采纳那条路最主要的用法。改正：判据是**落点**（笔记恒在 `notes/<id>.md`，转录产物在
+  `markdown/imported/<id>/`），新增 `paths.isNoteRelPath`。`library-adopt-smoke` 8 条红。
+- **节点「资料」下拉把文献侧整个弄丢了**：kind 退役后 `contextOptions` 只剩模版类目，
+  用户再也选不到「文档」大类。而 `contextInherit` 那条判据（`contextPurposeOf(kind)` 按
+  类目名分 material/format）也随之失效 —— 类目名现在是用户自己起的，他完全可以把一个大类
+  叫 `latex`，按名字判会把它摆进"当格式仿"。
+  **改法**：节点的 `context` 改成选**大类**（`loadLibraryGroups` 现读 + 模版类目，两边
+  按 value 去重）；`ContextRef` 带上 `purpose` 这个事实（由 `contextRefOfPath` 按**库根
+  前缀**算，判库不判名）；`kinds` 做成**数组** —— 一条清单可以同时挂在两个大类下（用户把
+  同一批东西收进两个大类是允许的），勾其中任一个都该拿得到，显示出来的类目是**这一步要的
+  那个**。`ContextLookup` 相应加 `groupsOfCollection` / `groupsOfItem`（返回 `undefined`
+  = 库里没这条，`[]` = 有但没挂大类，两者语义不同，`scheduler-smoke` 各钉一条）。
+- **`type:` 这层屏蔽规则**是 kind 的残留：留着的话用户在设置里"屏蔽 paper 类型"看着像成
+  了，判定那侧永远命中不了。随 kind 一起退役；旧数据里存着的 `type:*` 条目由 `parseSuppressJson`
+  **丢掉那一条**而不是废掉整份规则。
+- **`library.py`（交给模型的只读查询脚本）整个活在 kind 世界里**：`--kind paper` 直查
+  `library_items.kind`（那个列已经停写）、`load_kind_groups` 读类型注册表 + 大类表的
+  `kinds`、屏蔽继承链走"条目 kind → 大类"。kind 一退役，**`--kind` 永远返回空** ——
+  而模型会把那个空当成"库里没有论文"如实汇报。改法：`--kind` → `--group`（经
+  `library_collection_items ⨝ library_collections.group_id` 的子查询）、大类表只读
+  `id`/`name`/`prompt`（老库里那份 JSON 仍带 `kinds`，**忽略而不是判非法**，否则升级
+  上来的库在脚本这边读不到自己的大类名）、屏蔽继承链改成"集合 → group_id"。
+  ⚠️ **它不在 tsc 的视野里**（是一段 TS 模板字符串里的 Python 字面量），所以这一摊
+  此前**零覆盖** —— 顺带发现两处既有崩溃：模板字符串里的裸反引号会截断它、而
+  `warn("...按\"什么都没屏蔽\"处理")` 落进 .py 是裸引号（Python 语法错）。两处都是
+  "改之前没人真正跑过这个脚本"的证据。
+
+#### 新增的套件：`library-py-smoke`（23 条）
+
+`library.py` 此前一套 smoke 都没有 —— 它直读 sqlite，列名写错、SQL 坏、参数退役后还在
+查旧列，全都要到"用户真去用了"才暴露，而且暴露出来的样子是"模型说库里什么都没有"，
+不指向本仓库任何一行代码。新套件把字面量落成真的 `.py`、用真 python 解释器跑、喂一个
+真 sqlite 临时库，断言**输出里有没有那一条**（不是断言源码里包含某个字符串 —— 后者在
+一个语法坏掉的脚本上照样绿）。钉住的几条：`--kind` 不再存在、`--group` 真的会过滤、
+没挂大类的条目/分类单独列出来、被屏蔽大类的条目真的被挡且如实报条数。
+
+#### 验证
+
+- 双包 typecheck ✅
+- 改动的套件：`library-trash` 53/53、`attach-links` 67/67、`library-adopt` 57/57、
+  `library-paths` 60/60、`automation` 298/298、`library-mcp` 117/117、
+  `library-intake` 23/23、`scheduler` 503/503、`template-migration` 109/109、
+  `pdf-state` 35/35、`library-citation` 196/196、`library-entry-path` 21/21
+- 新增 `library-py-smoke` 23/23（见上）
+- **变异验证 4 组全红**：撤掉 `isNoteRelPath` 的落点判据 → adopt 8 条 + mcp 4 条红；
+  把 `kinds` 退成单值 → "挂在两个大类下的条目勾任一个都拿得到"红；`purposeOfPath`
+  改回按类目名判 → "名字叫 latex 的大类仍然是资料"红；`--group` 改回 `kind = ?` →
+  `library-py-smoke` 3 条红。全部逐字节还原。
+- ⚠️ **变异验证当场抓出一处自己写的死代码**：`purposeOfPath` 一开始**从没被调用** ——
+  `resolveRef` 里四处都硬编码了 `purpose: "material"` / `"format"`，于是那个函数是装饰。
+  变异跑绿才暴露出来（改了它什么都不变）。已改成四处都真调它，重跑变异才红。这正是
+  仓规「共享实现只有一份」要防的形状。
+- **最终全量 93 套 0 失败**（冻结代码后跑）。93 = 92 + 新增的 `library-py-smoke`
+  （`run-all-smokes.sh` 按目录自动发现，不维护清单）。
+
+新写/改写的断言里，这几条是**这轮才可能发现**的：
+
+  - `scheduler-smoke`：老形状 `kind-paper.md` **认不出来**（不是被悄悄当成大类）；
+    没挂大类的分类/条目 → 认不出（`kinds` 空 ≠ 认不出这条路径）；名字叫 `latex` 的
+    **大类**仍然是资料（判库不判名）；同时挂两个大类的条目勾任一个都拿得到
+  - `attach-links-smoke`：带过时 `type:` 的规则**仍然保存成功**，只是那一条被丢掉
+  - `library-mcp-smoke`：真笔记要拒，而**有转录产物的论文必须放行**（反向一条 —— 只钉
+    "笔记拒"的话，判据退化成"有 md 就拒"照样绿）
+  - `library-trash-smoke`：老回收站的合并形状改成**直接写库造两个同名的**（`isNameTaken`
+    现在是全库唯一，公开 API 造不出这个形状了；升级路径存在的理由本来就是"老库里已经有
+    这种数据"）
+
+#### 明确没做
+
+- kind 那两列**不 DROP**（见上）
+- 三级树结构本身不动 —— 删的是平行的第四套分类
+- 工作流调度的调度逻辑不动 —— 只换了 context 选择参数的口径
+- **仍需起 dev 实测**：左栏三级树显示、导入文件夹、批量导入、任何分类新建 md
+
+---
+
+### 3.16 检索/转录工具化 + 下拉框候选现读（2026-09-25）
+
+用户这一轮的话是关键：「文献下载工具你用 mcp 或者是 skill，从网络上面找，然后加载到
+软件里面，**不是内置的**，然后再在自动化里面调用，可用子代理节点，让 ai 执行，然后
+mineru 的转录，你可以用 code」「**选择的候选值是在用户用这个工作流的时候现场当时获取的**，
+提示词还是要自己写的，和其他的条件一样」。
+
+#### 先查清了自带下载管道有多强（这决定了方案形状）
+
+`library/oaResolvers.ts` + `downloader.ts` 已经覆盖：arXiv 直链、9 家出版社模板、
+Crossref→IEEE/Elsevier、OpenAlex、Unpaywall、Europe PMC、Semantic Scholar、OpenAIRE，
+**还有内嵌浏览器带机构登录态**去抓 PDF。它缺的只有三样：**按标题/作者检索**（只吃已知
+DOI/ID）、**Sci-Hub**（`downloader.ts:23` 明确拒绝）、大批量。
+
+→ 所以外部 MCP 的价值在**发现**，不在取文件。自带管道是"已知 DOI 的最后一公里"。
+
+#### A. 修 PDF 导入不吃 collection 的 bug（真 bug，一直在）
+
+`importPdfFiles` 的 `collectionIds` 参数**声明了但从不使用**（`importOne` 里没有任何归属
+动作）。后果不是报错，是**用户选了分类、东西却掉进回收站** —— 导入的条目不属于任何集合
+= 孤儿，`sweepToTrash` 会把它收走。
+
+它活了这么久是因为**没有任何套件覆盖这条路**（在 scripts 下搜 `importPdfFiles` 一个都
+搜不到）；而同样一件事的另一条路（`operations.ts` 的 `importIdentifiers`）做对了，
+所以"导入"这个动作看着一直是好的。修法照那条正确路：`CollectionRepo.assign`，两条返回
+路径（新导入 + `alreadyPresent`）都要走。回归网加在 `library-import-smoke`（新增 7 条，
+变异验证：撤掉 assign 当场红）。
+
+#### B. 固定条件的候选**现读**（用户的核心诉求）
+
+`ref` 来源表 `NODE_PARAM_REF_SOURCES` 加了 `"collections"`（文档系统的分类表）；
+`NODE_CRITERIA_PARAM_KEY` 的每一行加了可选 `source` —— 有它时 `choices` **必须为空**
+（契约里查这个一致性），候选在开着这条工作流时现拉。
+
+四处改动：`useRefOptions` 加 `useCollectionOptions`（照 `useProjectOptions` 的形状，
+带上级路径作 hint）；`SearchFilterBar` 抽成 `CriteriaDropdown` 子组件（hook 不能写在
+map 回调里）；`ParamField` 的 `SelectsTable` 加"候选来源"选择器；**`searchPrefs` 注入时
+把选中的 id 翻成可读名** —— 不翻的话提示词里会出现 `- 导入到:lc_mufvfytr`，模型读不懂
+却照样跑，自己去猜落点。`criteria-inject-smoke` 加 5 条（变异验证：撤掉翻译当场红）。
+
+#### C. 转录改走 MinerU 在线 API（code 节点）
+
+`wf_auto_convert` 从「一条指令让模型自己挑工具」改成**固定三步**：
+
+    触发 → code 节点(调 MinerU) → 子代理(挂回库)
+
+**为什么不能只留指令**：转录是确定性的事，而"模型会选对工具"不是 —— 它可能挑本地
+`library_convert`（扫描件抽不出正文）、可能挑一个不存在的工具、可能干脆跳过。
+**为什么挂回必须单独一步**：`library_adopt_markdown` 是主进程 MCP 工具，而 code 节点起的
+是子进程 —— 碰不到，结构上就分得开。
+
+脚本（`workflows/assets.ts` 的 `MINERU_PY`，同一份也铺到 `<数据根>/workflows/scripts/`）
+走 MinerU 的**精准解析 API**（`/api/v4/file-urls/batch` 申请 → PUT 上传 → 轮询 → 取
+`full_zip_url` → 解出 `full.md` + `images/`）。⚠️ **不降级去免 token 的「Agent 轻量」
+那条**：它只给 Markdown、配图全变占位符，而挂上去预览全裂却看着"成功了"，比报错难查。
+token 走 `MINERU_TOKEN`，没有就明确失败。
+
+#### 顺带修的一个**结构缺口**（比上面三条都隐蔽）
+
+`payloadFactsOf` 对事件**只拍平第一条**（`automationPayload.ts`），而触发器有**合并窗口**
+（默认 2 秒）、下载又是**并发**跑的 —— 两篇同时下完就攒在同一个窗口里。code 节点的 stdin
+收到的是这份事实对象本身，它按字段取值 → **只转第一篇，另一篇静默漏掉**。
+
+补了 `TriggerPayloadFacts.items`（**全部**条目，数组套对象而不是平行数组 —— 平行数组
+短一截会取到别人那一条，那种错位不报错只是转错论文）。脚本改成逐条办，**一条失败不停下**
+（"两篇一起下来、其中一篇路径没了"时，另一篇不该跟着遭殃），最后把失败的一并报出来。
+
+#### 验证
+
+- 双包 typecheck 干净
+- **全量 smoke 94 套 0 失败**（跑前冻结代码；94 = 原 93 + 新增的 `mineru-py-smoke`）
+- 新增断言 29 条（`library-import-smoke` 7、`criteria-inject-smoke` 5、
+  `automation-smoke` 17），**三条变异验证都真红过**
+- **新增套件 `mineru-py-smoke`（38 条）** —— 这份 Python 落成的 `.py` 真跑一遍，对着一个
+  **本地假 MinerU 服务端**（不联网、秒级，而且能**故意造失败**：token 错、解析失败、
+  越界 zip —— 真 API 那几种造不出来）。覆盖正常路（含**真轮询几次**）、token 缺/错、
+  解析失败并带出服务端给的原因、载荷缺字段、PDF 不在、**多条一条不漏**、
+  **一条坏不拖垮其余**、越界包。它取代了先前留在 `.tmp/mineru/` 的那个测试台。
+
+#### ⚠️ 这套 smoke 一建起来就抓到两个真问题
+
+**① 那份脚本根本跑不起来。** `emit()` 里写的是 `... + "\n"`，而整段 Python 是 **TS
+模板字面量** —— TS 先把 `\` `n` 解成**真换行**，于是落盘的 `.py` 里那个字符串字面量
+**跨了行**，`SyntaxError: unterminated string literal`。脚本一启动就死，`@@mcode:result`
+一行都打不出来。文件里其它地方都刻意用了 `chr(10)` 绕开，唯独这一行漏了。
+
+> 这正是「全量 smoke 93 套 0 失败」**没能**覆盖的那一类：tsc 看不见反引号里的 Python，
+> 而那 93 套没一套碰过它。若照旧只跑全量，这个"转录那次永远 0 文件、卡片上只有一句
+> 莫名其妙的失败"会一路带到用户手里。
+
+**② 越界检查的真实价值不是"防止写到外面"。** 撤掉检查做变异验证时发现：**这套里没有一条
+断言会红**。因为 Python 的 `zipfile.extractall` **自己就会把 `..` 洗净**、改写进落点内 ——
+`safe_out/../escaped.txt` 实际落在 `safe_out/escaped.txt`，压根出不了工作目录。检查能做
+而 stdlib 做不了的是**大声拒绝**而不是**静默挪位**（后者正是"产物莫名其妙出现在别处"）。
+断言因此改成断**落点内也没被写进去** —— 那才是"拒绝"与"改写"的分界，也是撤掉检查时真会红的一条。
+
+#### 明确没做 / 没验
+
+- **外部下载 MCP 具体装哪个没定**（用户自己装）。自带管道 + `library_add_paper` 那条路
+  已经齐备，`collectionIds` 修好之后导入落位也对了。
+- **Sci-Hub 没接**（自带管道刻意拒绝）。用户选的多平台 MCP 若自带，那是那个 MCP 的事。
+- **仍需起 dev 实测**：配 `MINERU_TOKEN` 后真跑一次转录（真 API 没验，只验了协议交互）；
+  在检索图上配一个"候选来源 = 文档系统"的条件，确认下拉现拉出当前分类。
+
+---
+
 ## 六、我这次没验的
 
 诚实标出来，别当成结论：

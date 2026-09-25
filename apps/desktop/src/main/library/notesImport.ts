@@ -78,7 +78,7 @@ export function importNoteFiles(paths: string[], collectionIds?: string[]): Note
       const title = deriveNoteTitle(text, path);
 
       // 同一个库里标题相同 = 认为已经收过了
-      const dup = LibraryRepo.list({ kind: "note", query: title, limit: 50 }).items.some(
+      const dup = LibraryRepo.list({ query: title, limit: 50 }).items.some(
         (i) => i.title.trim().toLowerCase() === title.trim().toLowerCase(),
       );
       if (dup) {
@@ -86,7 +86,7 @@ export function importNoteFiles(paths: string[], collectionIds?: string[]): Note
         continue;
       }
 
-      const item = LibraryRepo.upsert({ kind: "note", title, source: "note" });
+      const item = LibraryRepo.upsert({ title, source: "note" });
       const dest = notePathForId(item.id);
       mkdirSync(dirname(dest), { recursive: true });
       copyFileSync(path, dest);
@@ -118,7 +118,7 @@ export function importNoteFiles(paths: string[], collectionIds?: string[]): Note
 export function createNote(title: string, collectionIds?: string[]): LibraryItem | null {
   ensureLibraryDirs();
   const clean = title.trim() || "未命名笔记";
-  const item = LibraryRepo.upsert({ kind: "note", title: clean, source: "note" });
+  const item = LibraryRepo.upsert({ title: clean, source: "note" });
   const dest = notePathForId(item.id);
   mkdirSync(dirname(dest), { recursive: true });
   writeFileSync(dest, `# ${clean}
@@ -142,10 +142,21 @@ export function createNote(title: string, collectionIds?: string[]): LibraryItem
 export function writeNote(id: string, text: string): { ok: boolean; error?: string } {
   const item = LibraryRepo.get(id);
   if (!item) return { ok: false, error: "找不到这篇笔记" };
-  if (item.kind !== "note") return { ok: false, error: "只有笔记能在应用内编辑" };
-  if (!item.mdPath) return { ok: false, error: "这篇笔记还没有对应的文件" };
+  if (!item.mdPath) return { ok: false, error: "这篇还没有 Markdown 文件" };
+  /**
+   * ⚠️ **越界这一道必须排在编辑权那一道前面。**
+   *
+   * 两道守卫管的是两件事:越界是**安全**(记录被写坏/脏数据时不许顺着路径写到库外),
+   * 编辑权是**语义**(论文/教材的转录产物不该被应用内的编辑器覆盖掉)。次序反过来的话,
+   * 一条指向库外的记录会先被编辑权那道挡下 —— 报的是"不是 Markdown 文件",而它真正
+   * 危险的地方(它要写到库外去)被这句话盖住了。报错说错了原因,排查的人就找不到真问题。
+   */
   const abs = fromLibraryRelative(item.mdPath);
   if (!isInsideLibrary(abs)) return { ok: false, error: "路径越界,拒绝写入" };
+  // 编辑权按**扩展名**判（kind 退役）：条目的 md 文件才能在应用内编辑。
+  if (!item.mdPath.endsWith(".md")) {
+    return { ok: false, error: "只有 Markdown 文件能在应用内编辑" };
+  }
   try {
     writeFileSync(abs, text, "utf8");
     // 正文里的第一个标题变了 → 列表行也跟着变,不然两处显示对不上

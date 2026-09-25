@@ -28,9 +28,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initDb } from "@main/store/db.js";
 import { CollectionRepo, LibraryRepo, LibraryLinkRepo } from "@main/store/repositories.js";
-import { attachToChat, writeCollectionManifest, writeKindManifest } from "@main/library/manifest.js";
-import { loadLibraryGroups } from "@main/library/kindRegistry.js";
-import { resetSuppressCacheForTest, saveSuppress } from "@main/library/suppress.js";
+import { attachToChat, writeCollectionManifest, writeGroupManifest } from "@main/library/manifest.js";
+import { loadLibraryGroups } from "@main/library/groupRegistry.js";
+import { loadSuppress, resetSuppressCacheForTest, saveSuppress } from "@main/library/suppress.js";
 import { sent, resetSent, setFailNext } from "./stubs/window.js";
 
 let failures = 0;
@@ -65,9 +65,9 @@ const keysOf = (): string[] => sent.map((m) => m.key);
 console.log("\n一跳展开:入口 + 直接关联");
 
 {
-  const a = LibraryRepo.upsert({ title: "A 主文件", kind: "note" });
-  const b = LibraryRepo.upsert({ title: "B 关联文件", kind: "note" });
-  const c = LibraryRepo.upsert({ title: "C 二级关联", kind: "note" });
+  const a = LibraryRepo.upsert({ title: "A 主文件" });
+  const b = LibraryRepo.upsert({ title: "B 关联文件" });
+  const c = LibraryRepo.upsert({ title: "C 二级关联" });
   LibraryLinkRepo.add(a.id, { targetItemId: b.id });
   // B 也关联了 C —— 但引用 A 时**不该**把 C 带出来(只展开一跳)
   LibraryLinkRepo.add(b.id, { targetItemId: c.id });
@@ -89,8 +89,8 @@ console.log("\n一跳展开:入口 + 直接关联");
 console.log("\n反向不展开:A 关联 B,挂 B 不该带上 A");
 
 {
-  const a = LibraryRepo.upsert({ title: "反向 A", kind: "note" });
-  const b = LibraryRepo.upsert({ title: "反向 B", kind: "note" });
+  const a = LibraryRepo.upsert({ title: "反向 A" });
+  const b = LibraryRepo.upsert({ title: "反向 B" });
   LibraryLinkRepo.add(a.id, { targetItemId: b.id });
 
   resetSent();
@@ -103,10 +103,10 @@ console.log("\n反向不展开:A 关联 B,挂 B 不该带上 A");
 console.log("\n一个关联多个:三条出边全挂上");
 
 {
-  const hub = LibraryRepo.upsert({ title: "枢纽", kind: "note" });
-  const x = LibraryRepo.upsert({ title: "X", kind: "note" });
-  const y = LibraryRepo.upsert({ title: "Y", kind: "note" });
-  const z = LibraryRepo.upsert({ title: "Z", kind: "note" });
+  const hub = LibraryRepo.upsert({ title: "枢纽" });
+  const x = LibraryRepo.upsert({ title: "X" });
+  const y = LibraryRepo.upsert({ title: "Y" });
+  const z = LibraryRepo.upsert({ title: "Z" });
   LibraryLinkRepo.add(hub.id, { targetItemId: x.id });
   LibraryLinkRepo.add(hub.id, { targetItemId: y.id });
   LibraryLinkRepo.add(hub.id, { targetItemId: z.id });
@@ -123,15 +123,15 @@ console.log("\n分类 / 整库不展开");
 
 {
   // 分类那条路:条目挂在分类里,条目之间也有关联 —— 但挂**分类**时不该逐条展开
-  const a = LibraryRepo.upsert({ title: "分类里 A", kind: "note" });
-  const b = LibraryRepo.upsert({ title: "分类里 B", kind: "note" });
+  const a = LibraryRepo.upsert({ title: "分类里 A" });
+  const b = LibraryRepo.upsert({ title: "分类里 B" });
   LibraryLinkRepo.add(a.id, { targetItemId: b.id });
 
   resetSent();
-  const res = attachToChat(SID, "k:note");
+  const res = attachToChat(SID, "c:note");
   check("整库挂载成功", res.ok, res);
   eq("整库只推一条", sent.length, 1);
-  eq("键是整库那个", keysOf()[0], "k:note");
+  eq("键是整库那个", keysOf()[0], "c:note");
 }
 
 console.log("\n库外路径:先导入成 linked 条目再挂");
@@ -142,7 +142,7 @@ console.log("\n库外路径:先导入成 linked 条目再挂");
   const outside = join(dir, "外部参考资料.md");
   writeFileSync(outside, "# 外部\n\n这是库外的一份参考。\n", "utf8");
 
-  const host = LibraryRepo.upsert({ title: "宿主条目", kind: "note" });
+  const host = LibraryRepo.upsert({ title: "宿主条目" });
   LibraryLinkRepo.add(host.id, { targetPath: outside });
 
   resetSent();
@@ -181,8 +181,8 @@ console.log("\n关联目标没了:跳过,不静默");
   const vanishing = join(dir, "待会儿就没了.md");
   writeFileSync(vanishing, "# 还在\n", "utf8");
 
-  const host = LibraryRepo.upsert({ title: "宿主", kind: "note" });
-  const good = LibraryRepo.upsert({ title: "还在的关联", kind: "note" });
+  const host = LibraryRepo.upsert({ title: "宿主" });
+  const good = LibraryRepo.upsert({ title: "还在的关联" });
   LibraryLinkRepo.add(host.id, { targetItemId: good.id });
   LibraryLinkRepo.add(host.id, { targetPath: vanishing });
   // 库外路径**不做级联**(那是文件系统的事),所以这条关联会留着 —— 移走文件,
@@ -201,7 +201,7 @@ console.log("\n关联目标没了:跳过,不静默");
 console.log("\n窗口没了:入口都推不出去就整体失败");
 
 {
-  const a = LibraryRepo.upsert({ title: "无窗口 A", kind: "note" });
+  const a = LibraryRepo.upsert({ title: "无窗口 A" });
   resetSent();
   setFailNext(true);
   const res = attachToChat(SID, `i:${a.id}`);
@@ -228,16 +228,14 @@ console.log("\n认不出的键 / 找不到的条目");
 console.log("\n屏蔽:硬过滤,入口与关联一视同仁");
 
 {
-  // 建一套有层级的东西:大类 docs → 类型 note → 集合「精读队列」。
-  // 三层的 id 都从现成的表里取 —— 组件里手写 id 的话,注册表一改这里就假绿。
+  // 建一套有层级的东西:大类 docs → 集合「精读队列」（kind 退役,两级直挂）。
   const groups = loadLibraryGroups();
   const docsGroup = groups.find((g) => g.id === "docs");
   check("出厂有 docs 大类", docsGroup !== undefined, groups.map((g) => g.id));
-  check("docs 收着 note 类型", docsGroup?.kinds.includes("note") === true);
 
-  const coll = CollectionRepo.create("精读队列", null, "note");
-  const host = LibraryRepo.upsert({ title: "被屏蔽的宿主", kind: "note" });
-  const linked = LibraryRepo.upsert({ title: "被屏蔽的关联", kind: "note" });
+  const coll = CollectionRepo.create("精读队列", null, docsGroup?.id);
+  const host = LibraryRepo.upsert({ title: "被屏蔽的宿主" });
+  const linked = LibraryRepo.upsert({ title: "被屏蔽的关联" });
   CollectionRepo.assign(coll.id, [host.id, linked.id], true);
 
   // ① 按**集合**屏蔽:挂在那个集合里的条目整个挂不上,而且原因说得清
@@ -265,25 +263,44 @@ console.log("\n屏蔽:硬过滤,入口与关联一视同仁");
   eq("推的是入口", keysOf()[0], `i:${host.id}`);
   check("如实说有条被屏蔽挡下", (partial.error ?? "").includes("屏蔽"), partial);
 
-  // ③ **向下继承**:屏蔽「文档」大类 → 它下面的 note 条目同样挂不上
+  // ③ **向下继承**:屏蔽整个「文档」大类 → 挂在它下面集合里的条目同样挂不上。
+  //
+  // ⚠️ 这一段**必须自己造一个条目**。②把 host 移出了集合(那是②要的前提:入口放行),
+  // 而 kind 退役后"条目属于哪个大类"是**经集合**算出来的 —— 不在任何集合里的条目没有
+  // group 键,拿它来验继承等于什么都没验。老写法靠 `item.kind` 取大类,那时移出集合
+  // 不影响;判据换成 group_id 之后这一条就不再成立了。
+  const underDocs = LibraryRepo.upsert({ title: "文档大类下的条目" });
+  CollectionRepo.assign(coll.id, [underDocs.id], true);
   resetSuppressCacheForTest();
   saveSuppress({ nodes: ["group:docs"], extensions: [] });
   resetSent();
-  const byGroup = attachToChat(SID, `i:${host.id}`);
+  const byGroup = attachToChat(SID, `i:${underDocs.id}`);
   check("屏蔽大类后小类下的条目也挂不上(向下继承)", !byGroup.ok, byGroup);
   check("原因指出是哪个大类", (byGroup.error ?? "").includes("文档"), byGroup);
   eq("一条都没推出去(继承)", sent.length, 0);
 
-  // ④ 按**类型**屏蔽
+  // ④ 老数据里的 `type:` 条目:kind 退役后那一档不存在了,校验时**丢掉那一条**,
+  //    而不是废掉整份规则 —— 用户别的屏蔽照常生效,也不会因为一个过时的键就让
+  //    整个设置页保存失败。
+  resetSuppressCacheForTest();
+  const legacyType = saveSuppress({ nodes: ["type:note", `collection:${coll.id}`], extensions: [] });
+  check("带过时 type: 的规则仍然保存成功", legacyType.ok, legacyType);
+  check(
+    "★ 过时那一条被丢掉,合法那条留下",
+    JSON.stringify(loadSuppress().nodes) === JSON.stringify([`collection:${coll.id}`]),
+    loadSuppress().nodes,
+  );
+  // 丢掉之后不该有任何"看着像挡住了、其实什么都拦不住"的残留
   resetSuppressCacheForTest();
   saveSuppress({ nodes: ["type:note"], extensions: [] });
   resetSent();
-  check("屏蔽类型后同样挂不上", !attachToChat(SID, `i:${host.id}`).ok);
+  const staleOnly = attachToChat(SID, `i:${underDocs.id}`);
+  check("★ 只剩过时 type: 的规则不挡任何东西", staleOnly.ok, staleOnly);
 
   // ⑤ 按**扩展名**屏蔽 —— 条目在类型/集合上都放行,但它的文件后缀被挡
   resetSuppressCacheForTest();
   saveSuppress({ nodes: [], extensions: [".pdf"] });
-  const pdfItem = LibraryRepo.upsert({ title: "一份 PDF", kind: "note" });
+  const pdfItem = LibraryRepo.upsert({ title: "一份 PDF" });
   LibraryRepo.setPdf(pdfItem.id, `papers/aa/bb/${pdfItem.id}.pdf`, "sha-fake");
   resetSent();
   const byExt = attachToChat(SID, `i:${pdfItem.id}`);
@@ -303,9 +320,10 @@ console.log("\n屏蔽:硬过滤,入口与关联一视同仁");
 console.log("\n屏蔽:整库与分类清单也过筛子");
 
 {
-  const c = CollectionRepo.create("含 PDF 的集合", null, "note");
-  const md = LibraryRepo.upsert({ title: "Markdown 那份", kind: "note" });
-  const pdf = LibraryRepo.upsert({ title: "PDF 那份", kind: "note" });
+  const docsGroup = loadLibraryGroups().find((g) => g.id === "docs");
+  const c = CollectionRepo.create("含 PDF 的集合", null, docsGroup?.id);
+  const md = LibraryRepo.upsert({ title: "Markdown 那份" });
+  const pdf = LibraryRepo.upsert({ title: "PDF 那份" });
   LibraryRepo.setPdf(pdf.id, `papers/cc/dd/${pdf.id}.pdf`, "sha-fake-2");
   CollectionRepo.assign(c.id, [md.id, pdf.id], true);
 
@@ -324,11 +342,11 @@ console.log("\n屏蔽:整库与分类清单也过筛子");
   check("清单正文里只有留下那份", text.includes("Markdown 那份") && !text.includes("PDF 那份"), text.slice(0, 400));
   check("说明里交代了剔掉几篇", text.includes("屏蔽规则挡掉了 1 篇"), text.slice(0, 400));
 
-  // 整库清单同理
-  const kindManifest = writeKindManifest("note");
-  const kindText = readFileSync(kindManifest.path, "utf8");
+  // 大类清单同理（kind 退役后"整库"由大类清单承担）
+  const gManifest = writeGroupManifest(docsGroup?.id ?? "docs");
+  const gText = readFileSync(gManifest.path, "utf8");
   const pdfTitle = "PDF 那份";
-  check("整库清单里也没有被挡的那份", !kindText.includes(pdfTitle), kindText.slice(0, 300));
+  check("大类清单里也没有被挡的那份", !gText.includes(pdfTitle), gText.slice(0, 300));
 
   // 收尾:清掉屏蔽,免得影响别的段
   resetSuppressCacheForTest();

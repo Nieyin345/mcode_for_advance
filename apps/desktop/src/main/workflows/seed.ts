@@ -26,7 +26,7 @@ import { mkdirSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { log } from "@main/lib/logger.js";
-import { LIBRARY_PY, CHECK_CITATIONS_PY } from "./assets.js";
+import { LIBRARY_PY, CHECK_CITATIONS_PY, MINERU_PY } from "./assets.js";
 
 /** 流程目录。与 `library/`、`templates/` 平级,同在数据根下。 */
 export function workflowsRoot(): string {
@@ -100,6 +100,8 @@ export function ensureWorkflows(): void {
     ["README.md", README],
     ["scripts/library.py", LIBRARY_PY],
     ["scripts/check_citations.py", CHECK_CITATIONS_PY],
+    // 内置自动化「下载完自动转 Markdown」那一步跑的转录脚本(见 `builtins.ts`)。
+    ["scripts/mineru_transcribe.py", MINERU_PY],
     // ⚠️ **外部检索脚本已移除**（2026-09-22 用户要求）。
     //
     // 原先这里还会铺一整套 `scripts/search-scripts/`（多源检索客户端、PubMed、

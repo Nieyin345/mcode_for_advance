@@ -63,7 +63,6 @@ export function emitItemImported(item: LibraryItem): void {
       type: "library.item.imported",
       sessionId: "(system)",
       itemId: item.id,
-      kind: item.kind,
       title: item.title,
     });
   } catch (err) {
@@ -108,7 +107,6 @@ export function emitItemDownloaded(item: LibraryItem): void {
       type: "library.item.downloaded",
       sessionId: "(system)",
       itemId: item.id,
-      kind: item.kind,
       title: item.title,
       // 库里存的就是**相对路径**(见 `LibraryItem.pdfPath`)—— 原样给出去,别在这里
       // 拼绝对路径:那会把一台机器的磁盘布局散进会被分享的钩子脚本里。

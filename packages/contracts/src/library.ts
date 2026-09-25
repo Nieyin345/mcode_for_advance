@@ -32,41 +32,10 @@ export interface LibraryAuthor {
  *     要转 Markdown 才能被 AI 读);
  *   - 教材的元数据来源更依赖文件名(ISBN 那条路没接)。
  *
- * 做成三张表的话,查重、集合归属、对话引用、md 预览、全文检索全都要写三遍 —— 而它们
- * 的差别用两个 `if` 就能表达。所以一个 `kind` 字段,配三个界面入口。
+ * 做成三张表的话,查重、集合归属、对话引用、md 预览、全文检索全都要写三遍。
+ * 旧架构曾用一个 `kind` 字段区分三个库;2026-09-24 kind 退役 —— 条目不再带类型,
+ * 归属由分类树/大类管,行为由文件扩展名管。
  */
-export const LIBRARY_KINDS = ["paper", "textbook", "note"] as const;
-/**
- * 库条目的 kind。**历史上是上面那三个值的联合**;统一资料库之后它是开放字符串,
- * 合法取值由类型注册表(见 `libraryTypes.ts` 的 `LibraryTypeMeta`)决定 —— 内置
- * 8 类 + 用户自建。`LIBRARY_KINDS` 保留为**内置 material 子集**,供老判据与
- * "这是不是出厂类"的判断使用;注册表校验在主进程(它才拿得到 DB),契约层不查。
- */
-export type LibraryKind = string;
-/** 出厂那三类的**收窄视图**。只在判"是不是内置 material 类"的地方用 —— 收窄到它
- *  之后能安全地赋给任何要 kind 的位置;别拿它当 kind 的全集(它早就不是了)。 */
-export type BuiltinLibraryKind = (typeof LIBRARY_KINDS)[number];
-
-/**
- * 这个字符串是不是一个**内置 material 类**(paper/textbook/note)。
- *
- * ⚠️ 统一资料库后 kind 的全集由类型注册表决定(用户自建的也在内),这个函数只回答
- * "是不是出厂那三个" —— `contextPurposeOf` 用它当 material 判据(M2 会改为查注册表),
- * 其余把它当 kind 全集用的地方都要跟着改。收窄目标是 `BuiltinLibraryKind`,不是
- * `LibraryKind`(后者已经是开放字符串,收窄到它等于没收)。
- *
- * 收 `unknown` 而不是 `string`:它多半是拿**外面的**值来问的(附件键、清单文件名的
- * 一段、参数里的自由数据),那些地方的值什么类型都可能是。先收窄再判,调用方就不用
- * 各写一遍 `typeof x === "string" &&`。
- *
- * 放在 contracts 是因为它曾经在**两个地方各写了一遍**(主进程的清单生成、渲染端的
- * 标签映射)—— 再加一处就是第三份,而三份判据迟早对不上。
- */
-export function isLibraryKind(value: unknown): value is BuiltinLibraryKind {
-  return typeof value === "string" && (LIBRARY_KINDS as readonly string[]).includes(value);
-}
-
-/** 文献类型。取值贴近 BibTeX/CSL,便于导出时不丢信息。 */
 export type LibraryItemType =
   | "article"
   | "inproceedings"
@@ -84,8 +53,6 @@ export type LibraryItemType =
  */
 export interface LibraryItem {
   id: string;
-  /** 属于哪个库。老数据默认 `paper`(见 `LibraryKind`)。 */
-  kind: LibraryKind;
   /** 小写化的 DOI(不含 `https://doi.org/` 前缀)。去重主键之一。 */
   doi?: string;
   /** arXiv ID(不含 `arXiv:` 前缀)。去重主键之一。 */
@@ -303,8 +270,8 @@ export interface LibraryCollection {
    * 话,只有它自己知道。空 = 不注入。
    */
   prompt?: string;
-  /** 这个分类属于哪个库 —— 三个库各有各的分类树,互不串味。 */
-  kind: LibraryKind;
+  /** 这个分类挂在哪个大类下（kind 退役后的归属 —— 三级树：大类 → 分类 → 条目）。 */
+  groupId?: string;
   /** 顶层集合为 null。 */
   parentId: string | null;
   sortOrder: number;
@@ -498,9 +465,10 @@ export function formatAuthorList(authors: LibraryAuthor[], max = 3): string {
 export type MissingMetadataField = "authors" | "year" | "venue";
 
 export function missingMetadataFields(
-  item: Pick<LibraryItem, "authors" | "year" | "venue" | "type" | "kind">,
+  item: Pick<LibraryItem, "authors" | "year" | "venue" | "type" | "doi" | "arxivId">,
 ): MissingMetadataField[] {
-  if (item.kind !== "paper") return [];
+  // kind 退役后没有"论文库"这个前提 —— 有 DOI 的才算文献记录，才谈得上元数据补全。
+  if (!item.doi && !item.arxivId) return [];
   const missing: MissingMetadataField[] = [];
   if (item.authors.length === 0) missing.push("authors");
   if (!item.year) missing.push("year");
@@ -512,7 +480,7 @@ export function missingMetadataFields(
 
 /** 是否缺关键字段。列表标记用它,详情面板用 `missingMetadataFields` 说缺什么。 */
 export function needsMetadata(
-  item: Pick<LibraryItem, "authors" | "year" | "venue" | "type" | "kind">,
+  item: Pick<LibraryItem, "authors" | "year" | "venue" | "type" | "doi" | "arxivId">,
 ): boolean {
   return missingMetadataFields(item).length > 0;
 }

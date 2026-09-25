@@ -41,21 +41,21 @@ Mcode 把整个数据库放在内存里,任何一次变更都会把整份文件�
 
 用法:
     python library.py list                     列出全部条目
-    python library.py list --kind paper        只看论文(paper / textbook / note)
+    python library.py list --group docs        只看「文档」大类下的(见 collections 查 id)
     python library.py find 关键词               在标题/作者/期刊/摘要里搜
     python library.py show 0f3a2c              看一条的完整字段(id 前缀或标题片段)
-    python library.py files --kind paper       只列文件路径(给"我该读哪个文件"用)
+    python library.py files --group docs       只列文件路径(给"我该读哪个文件"用)
     python library.py notes                    列出所有笔记,连同它挂在哪一条上
-    python library.py collections              列出分类树
+    python library.py collections              列出大类与分类树
 
 默认从 Mcode 的记录里找数据根(APPDATA 下的 data-root.json);也可以显式给:
     python library.py --root "D:/destop/work_space/mcode" list
 
 屏蔽规则
 ========
-用户在「设置 → 资料库类型」里可以把某些分类 / 类型 / 大类设为屏蔽,也可以按文件
-后缀屏蔽。被屏蔽的条目**不进这个脚本的任何结果**,判定与界面、与 AI 工具那边是同
-一套(主进程的 main/library/suppress.ts)。
+用户在「设置 → 资料库屏蔽」里可以把某些分类 / 大类设为屏蔽,也可以按文件后缀屏蔽。
+被屏蔽的条目**不进这个脚本的任何结果**,判定与界面、与 AI 工具那边是同一套
+(主进程的 main/library/suppress.ts)。
 
 ⚠️ 挡掉的条数会**显式写在结果开头**。看不到那几行就把"剩下的这些"当成整个库去向
 用户汇报,是错的 —— 用户设的屏蔽确实起了作用,而你以为库里就这些。
@@ -108,9 +108,9 @@ def connect(root):
         sys.exit("找不到数据库:" + str(db))
     # 只读方式打开。应用正在跑的时候也一样安全 —— 读不会打断它,写才会被覆盖。
     conn = sqlite3.connect(db.absolute().as_uri() + "?mode=ro", uri=True)
-    # 行按列名取。判定那一层要拿 id / kind / md_path / pdf_path / file_path 五个
-    # 字段,而每条命令的 SELECT 顺序都不一样 —— 按下标取的话,加一列就是一次静默
-    # 错位。名字取就与顺序无关了。
+    # 行按列名取。判定那一层要拿 id / md_path / pdf_path / file_path 四个字段,而每条
+    # 命令的 SELECT 顺序都不一样 —— 按下标取的话,加一列就是一次静默错位。名字取就与
+    # 顺序无关了。
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -141,9 +141,19 @@ def file_of(root, md_path, pdf_path):
     return "(没有文件)"
 
 
-def kind_filter(kind):
-    if kind:
-        return " AND kind = ?", [kind]
+def group_filter(group):
+    """按**大类**过滤 —— 条目经它所属的分类挂到大类(「library_collections.group_id」)。
+
+    从前这里是 「AND kind = ?」(按条目的内置类型过滤)。kind 退役(2026-09-24)之后条目
+    不再有那个字段,而且大类**不直接落在条目上** —— 要经 「library_collection_items」
+    连到 「library_collections」。所以是一条子查询,不是一次改个列名。
+    """
+    if group:
+        return (
+            " AND id IN (SELECT ci.item_id FROM library_collection_items ci"
+            " JOIN library_collections c ON c.id = ci.collection_id WHERE c.group_id = ?)",
+            [group],
+        )
     return "", []
 
 
@@ -154,7 +164,7 @@ def kind_filter(kind):
 #
 # 判定与主进程**同一套语义**(main/library/suppress.ts 的 suppressionReasonOfItem):
 #
-#     条目 → 它所属的全部集合 → 它的 kind → kind 所属的大类(可能不止一个)
+#     条目 → 它所属的全部集合 → 集合挂着的大类(可能不止一个)
 #
 # 链上任一段命中就挡住;extensions 再按文件后缀挡一层。集合那一层取的是**条目所
 # 属的全部集合** —— 一个条目可以同时在多个集合里,任一个被屏蔽都算。
@@ -167,20 +177,19 @@ def kind_filter(kind):
 
 SUPPRESS_SETTING_KEY = "library.suppress"
 GROUPS_SETTING_KEY = "library.groups"
-TYPES_SETTING_KEY = "library.types"
 
 # 出厂的两个大类。与契约的 DEFAULT_LIBRARY_GROUPS 逐字一致 —— 用户没动过大类表
 # 时它就是生效的那一份。
+#
+# ⚠️ **没有 「kinds」 了**(kind 退役,2026-09-24):大类从前是"包含哪几个内置类型",
+# 现在分类经 「library_collections.group_id」 直接挂大类。这个脚本读那份 JSON 时也只认
+# 「id」 / 「name」 / 「prompt」(见 「parse_groups」)。
 DEFAULT_GROUPS = [
-    {"id": "docs", "name": "文档", "kinds": ["paper", "textbook", "note"]},
-    {"id": "templates", "name": "模版",
-     "kinds": ["document", "slides", "latex", "code", "image"]},
+    {"id": "templates", "name": "模版"},
+    {"id": "docs", "name": "文档"},
 ]
 
-# 出厂类型的内置 id(契约 BUILTIN_LIBRARY_TYPES 的 id 集合)。
-BUILTIN_TYPE_IDS = ["paper", "textbook", "note", "document", "slides", "latex", "code", "image"]
-
-# 类型 / 大类的 id 规则(契约里的 ID_RE)。
+# 大类的 id 规则(契约里的 ID_RE)。
 ID_RE = re.compile("^[a-z][a-z0-9-]*$")
 
 # 「这个设置键没存过」的哨兵。与 None(存了但值是 JSON 的 null)分开 —— 两者的处置
@@ -221,48 +230,18 @@ def load_json_setting(cur, key, what):
         return None
 
 
-def parse_registry_ids(value):
-    """类型注册表里的全部 kind id;不合法 → None(调用方退回出厂表)。
-
-    校验口径照契约的 parseLibraryTypesJson:**整份形状**任何一处不对就整份不认。
-    连 icon / prompt 那种"跟判定无关"的字段也看,是因为主进程那份校验器会因此整份
-    退回出厂表 —— 于是某个自定义 kind 就不再"注册表认得",引用它的组跟着被过滤掉。
-    这里跟着一起拒,两边的 known 集合才对得上。
-    """
-    if not isinstance(value, list):
-        return None
-    seen = []
-    for entry in value:
-        if not isinstance(entry, dict):
-            return None
-        tid = entry.get("id")
-        if not isinstance(tid, str) or not ID_RE.match(tid) or tid in seen:
-            return None
-        name = entry.get("name")
-        if not isinstance(name, str) or not name.strip():
-            return None
-        if entry.get("purpose") not in ("material", "format"):
-            return None
-        for k in ("prompt", "icon"):
-            v = entry.get(k)
-            if v is not None and not isinstance(v, str):
-                return None
-        seen.append(tid)
-    # 内置类必须还在 —— 少了就是"注册表不完整",主进程同样整份拒绝。
-    for b in BUILTIN_TYPE_IDS:
-        if b not in seen:
-            return None
-    return seen
-
-
 def parse_groups(value):
-    """大类表;不合法 → None(调用方退回出厂两组)。口径照 parseLibraryGroupsJson:
-    id 合法且唯一、名字非空、kinds 是一组类型 id、**一个类型只能出现在一个组里**。"""
+    """大类表 → [{"id","name"}]。不合法 → None(调用方退回出厂两组)。
+
+    口径照契约的 parseLibraryGroupsJson:id 合法且唯一、名字非空。
+    ⚠️ **不看 「kinds」** —— 那个字段随 kind 一起退役了。老库里存着的那份 JSON **仍然
+    带着** 「kinds」(代码停写但没删列),这里**忽略**它,而不是因此判整份非法:那样会让
+    一个升级上来的库在脚本这边读不到自己的大类名,而界面上一切正常。
+    """
     if not isinstance(value, list):
         return None
     out = []
     seen_ids = set()
-    seen_kinds = set()
     for entry in value:
         if not isinstance(entry, dict):
             return None
@@ -273,48 +252,22 @@ def parse_groups(value):
         name = entry.get("name")
         if not isinstance(name, str) or not name.strip():
             return None
-        kinds = entry.get("kinds")
-        if not isinstance(kinds, list):
-            return None
-        for k in kinds:
-            if not isinstance(k, str) or not k:
-                return None
-            if k in seen_kinds:
-                return None
-            seen_kinds.add(k)
         prompt = entry.get("prompt")
         if prompt is not None and not isinstance(prompt, str):
             return None
-        out.append({"id": gid, "name": name.strip(), "kinds": list(kinds)})
+        out.append({"id": gid, "name": name.strip()})
     return out
 
 
-def load_kind_groups(cur):
-    """kind → 它所属的大类([{"id":..., "name":...}]),以及按 id 的反查表。
+def load_groups(cur):
+    """大类表 → {id: name}。
 
-    合并规则与主进程 kindRegistry.loadLibraryGroups() 一致:表取不到 / 坏 → 出厂
-    两组;组里那些**注册表不认识的 kind 过滤掉**(删一个类型不该被"还有组在引用它"
-    挡住);过滤空了整组丢掉。
+    合并规则与主进程 groupRegistry.loadLibraryGroups() 一致:表取不到 / 坏 → 出厂两组。
     """
-    known = parse_registry_ids(load_json_setting(cur, TYPES_SETTING_KEY, "类型注册表"))
-    if known is None:
-        known = list(BUILTIN_TYPE_IDS)
-    known_set = set(known)
-
     groups = parse_groups(load_json_setting(cur, GROUPS_SETTING_KEY, "大类表"))
     if groups is None:
         groups = DEFAULT_GROUPS
-
-    by_kind = {}
-    by_id = {}
-    for g in groups:
-        kinds = [k for k in g["kinds"] if k in known_set]
-        if not kinds:
-            continue
-        by_id[g["id"]] = g["name"]
-        for k in kinds:
-            by_kind.setdefault(k, []).append(g)
-    return by_kind, by_id
+    return {g["id"]: g["name"] for g in groups}
 
 
 def load_suppress_rule(cur):
@@ -328,14 +281,14 @@ def load_suppress_rule(cur):
     value = load_json_setting(cur, SUPPRESS_SETTING_KEY, "屏蔽规则")
     if not isinstance(value, dict):
         if value is not _MISSING and value is not None:
-            warn("屏蔽规则应该是一个对象,按\"什么都没屏蔽\"处理")
+            warn("屏蔽规则应该是一个对象,按「什么都没屏蔽」处理")
         return {"nodes": [], "extensions": []}
 
     raw_nodes = value.get("nodes")
     if raw_nodes is None:
         raw_nodes = []
     if not isinstance(raw_nodes, list):
-        warn("屏蔽规则的 nodes 应该是一组键,按\"什么都没屏蔽\"处理")
+        warn("屏蔽规则的 nodes 应该是一组键,按「什么都没屏蔽」处理")
         return {"nodes": [], "extensions": []}
     nodes = []
     for n in raw_nodes:
@@ -345,7 +298,16 @@ def load_suppress_rule(cur):
         at = key.find(":")
         if at < 0:
             continue
-        if key[:at] not in ("group", "type", "collection"):
+        # ⚠️ **「type:」 那一档随 kind 退役删除**(2026-09-24)—— 与契约的
+        # 「parseSuppressNodeKey」 逐字对齐:老数据里存着的 「type:paper」 在这里就**丢掉**,
+        # 而不是留着。留着的话它会一路进 「sup["nodes"]」,然后 「suppress_reason」 拿它去
+        # 比 「type:xxx」 键 —— 而那一档已经不再生成了,于是这条屏蔽**永远命中不了**:
+        # 用户看到设置里勾着"屏蔽 paper 类型",模型这边照读得到,那句注释里警告的
+        # "两边结论不一样"就真发生了。
+        #
+        # 丢掉整条而不是废掉整份,同契约口径:屏蔽是一串独立的勾选,某一条失效不该把
+        # 用户其余的屏蔽一起放开。
+        if key[:at] not in ("group", "collection"):
             continue
         if at + 1 >= len(key):
             continue
@@ -356,7 +318,7 @@ def load_suppress_rule(cur):
     if raw_exts is None:
         raw_exts = []
     if not isinstance(raw_exts, list):
-        warn("屏蔽规则的 extensions 应该是一组字符串,按\"什么都没屏蔽\"处理")
+        warn("屏蔽规则的 extensions 应该是一组字符串,按「什么都没屏蔽」处理")
         return {"nodes": [], "extensions": []}
     extensions = []
     for x in raw_exts:
@@ -381,8 +343,8 @@ def describe_node_key(cur, group_names, key):
     if level == "collection":
         row = cur.execute("SELECT name FROM library_collections WHERE id = ?", [node_id]).fetchone()
         return "「" + str(row[0]) + "」" if row else "已删除的分类(" + node_id + ")"
-    if level == "type":
-        return "类型「" + node_id + "」"
+    # ⚠️ 「type:」 那一档随 kind 退役删除 —— 老数据里存着的 「type:paper」 在这里会落到
+    # 下面那行"已删除的大类",而不是被说成"类型「paper」"(那会让用户以为它还在生效)。
     name = group_names.get(node_id)
     return "「" + name + "」" if name else "已删除的大类(" + node_id + ")"
 
@@ -390,25 +352,23 @@ def describe_node_key(cur, group_names, key):
 def suppress_reason(cur, sup, rec):
     """这条条目被挡的原因(人话);没被挡返回 None。
 
-    rec 是 as_rec 出来的那几列 —— 判定要 id / kind 和"实际会被读的那份文件"。
+    rec 是 as_rec 出来的那几列 —— 判定要 id 和"实际会被读的那份文件"。
     """
     if not sup["nodes"] and not sup["extensions"]:
         return None
 
-    # kind 那一列的 NULL 按 paper 读(主进程 rowToLibraryItem 的「?? "paper"」)。
-    # 空串**不**走这条退路 —— 两边对 NULL 与空串的处置必须一致。
-    kind = rec["kind"] if rec["kind"] is not None else "paper"
     keys = []
-    # 条目 → 它所属的**全部**集合
+    # 条目 → 它所属的**全部**集合 → 集合挂着的大类(kind 退役后大类经 group_id 直挂)。
     for row in cur.execute(
-        "SELECT collection_id FROM library_collection_items WHERE item_id = ?", [rec["id"]]
+        "SELECT ci.collection_id AS cid, c.group_id AS gid"
+        " FROM library_collection_items ci"
+        " LEFT JOIN library_collections c ON c.id = ci.collection_id"
+        " WHERE ci.item_id = ?",
+        [rec["id"]],
     ):
-        keys.append("collection:" + str(row[0]))
-    # 集合 → 类型:条目自己的 kind(不在任何集合里的条目靠它)
-    keys.append("type:" + kind)
-    # 类型 → 大类:反查哪些大类的 kinds 里有它。没进任何大类的类型到这儿为止。
-    for g in sup["kind_groups"].get(kind, []):
-        keys.append("group:" + g["id"])
+        keys.append("collection:" + str(row["cid"]))
+        if row["gid"]:
+            keys.append("group:" + str(row["gid"]))
     for key in keys:
         if key in sup["nodes"]:
             return describe_node_key(cur, sup["group_names"], key)
@@ -438,7 +398,6 @@ def as_rec(row):
     """
     return {
         "id": row["id"],
-        "kind": row["kind"],
         "md": row["md_path"],
         "pdf": row["pdf_path"],
         "fp": row["file_path"],
@@ -479,15 +438,15 @@ def report_suppressed(reasons):
             counts[r] = 0
             order.append(r)
         counts[r] += 1
-    print("⚠️ 屏蔽规则挡掉了 " + str(len(reasons)) + " 条(设置 → 资料库类型),它们不在下面:")
+    print("⚠️ 屏蔽规则挡掉了 " + str(len(reasons)) + " 条(设置 → 资料库屏蔽),它们不在下面:")
     for r in order:
         print("    - " + r + ":" + str(counts[r]) + " 条")
 
 
 def cmd_list(cur, root, args, sup):
-    where, params = kind_filter(args.kind)
+    where, params = group_filter(args.group)
     rows = cur.execute(
-        "SELECT id, title, authors, year, venue, md_path, pdf_path, file_path, kind"
+        "SELECT id, title, authors, year, venue, md_path, pdf_path, file_path"
         " FROM library_items WHERE 1=1" + where + " ORDER BY year DESC, title",
         params,
     ).fetchall()
@@ -509,9 +468,9 @@ def cmd_list(cur, root, args, sup):
 
 def cmd_find(cur, root, args, sup):
     q = "%" + args.query + "%"
-    where, params = kind_filter(args.kind)
+    where, params = group_filter(args.group)
     rows = cur.execute(
-        "SELECT id, title, authors, year, venue, md_path, pdf_path, file_path, kind"
+        "SELECT id, title, authors, year, venue, md_path, pdf_path, file_path"
         " FROM library_items"
         " WHERE (LOWER(title) LIKE LOWER(?) OR LOWER(IFNULL(authors,'')) LIKE LOWER(?)"
         "        OR LOWER(IFNULL(abstract,'')) LIKE LOWER(?) OR LOWER(IFNULL(venue,'')) LIKE LOWER(?))"
@@ -545,7 +504,7 @@ def cmd_find(cur, root, args, sup):
 def resolve_one(cur, query):
     """id 前缀优先,其次标题片段。返回匹配到的行(可能多条)。"""
     cols = ("id, title, authors, year, venue, doi, arxiv_id, volume, issue, page, publisher,"
-            " abstract, type, url, md_path, pdf_path, file_path, kind")
+            " abstract, type, url, md_path, pdf_path, file_path")
     rows = cur.execute(
         "SELECT " + cols + " FROM library_items WHERE id LIKE ?",
         [query + "%"],
@@ -623,11 +582,11 @@ def cmd_show(cur, root, args, sup):
 
 
 def cmd_files(cur, root, args, sup):
-    where, params = kind_filter(args.kind)
+    where, params = group_filter(args.group)
     if args.missing_md:
         where += " AND (md_path IS NULL OR md_path = '')"
     rows = cur.execute(
-        "SELECT id, title, md_path, pdf_path, file_path, kind FROM library_items WHERE 1=1" + where
+        "SELECT id, title, md_path, pdf_path, file_path FROM library_items WHERE 1=1" + where
         + " ORDER BY title",
         params,
     ).fetchall()
@@ -642,7 +601,7 @@ def cmd_files(cur, root, args, sup):
 
 def cmd_notes(cur, root, args, sup):
     rows = cur.execute(
-        "SELECT n.content, n.origin, i.title, i.id, i.kind, i.md_path, i.pdf_path, i.file_path"
+        "SELECT n.content, n.origin, i.title, i.id, i.md_path, i.pdf_path, i.file_path"
         " FROM library_notes n"
         " LEFT JOIN library_items i ON i.id = n.item_id ORDER BY n.created_at",
     ).fetchall()
@@ -676,24 +635,44 @@ def cmd_collections(cur, root, args, sup):
     他在设置页里根本找不到刚才屏蔽的那个。
     """
     rows = cur.execute(
-        "SELECT id, name, kind, parent_id FROM library_collections ORDER BY kind, sort_order, name",
+        "SELECT id, name, parent_id, group_id FROM library_collections"
+        " ORDER BY group_id, sort_order, name",
     ).fetchall()
     if not rows:
         print("(还没有分类)")
         return
+    # 分类树**按大类分段落**。从前是按 「kind」 分三档(paper / textbook / note),
+    # kind 退役后改按 「group_id」 —— 大类才是那段落的归属,而分类自己仍然是棵树。
     by_parent = {}
-    for iid, name, kind, parent in rows:
-        by_parent.setdefault((kind, parent), []).append((iid, name))
+    for row in rows:
+        by_parent.setdefault((row["group_id"] or "", row["parent_id"]), []).append(
+            (row["id"], row["name"])
+        )
 
-    def walk(kind, parent, depth):
-        for iid, name in by_parent.get((kind, parent), []):
+    def walk(gid, parent, depth):
+        for iid, name in by_parent.get((gid, parent), []):
             print("  " * depth + "- " + name + "  (id=" + iid + ")")
-            walk(kind, iid, depth + 1)
+            walk(gid, iid, depth + 1)
 
-    for kind in ["paper", "textbook", "note"]:
-        if by_parent.get((kind, None)) or any(k[0] == kind for k in by_parent):
-            print(kind + ":")
-            walk(kind, None, 1)
+    # 出厂那两组在前(顺序固定),其余按 id 排 —— 用户自建的大类也都要列出来,
+    # 漏掉的话模型就看不到它们下面的资料。
+    names = sup["group_names"]
+    ordered = [g["id"] for g in DEFAULT_GROUPS]
+    for row in rows:
+        gid = row["group_id"] or ""
+        if gid and gid not in ordered:
+            ordered.append(gid)
+    for gid in ordered:
+        kids = by_parent.get((gid, None))
+        if not kids and not any(k[0] == gid for k in by_parent):
+            continue
+        print((names.get(gid) or gid) + ":")
+        walk(gid, None, 1)
+    # **没挂大类的分类**也要列 —— 它们下面的条目勾任何大类都拿不到,而列出来才看得见。
+    orphan = by_parent.get(("", None))
+    if orphan or any(k[0] == "" for k in by_parent):
+        print("(不属于任何大类):")
+        walk("", None, 1)
 
 
 def main():
@@ -702,12 +681,12 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("list", help="列出条目")
-    p.add_argument("--kind", choices=["paper", "textbook", "note"])
+    p.add_argument("--group", help="只看某个大类下的(大类 id 用 collections 查)")
     p.set_defaults(fn=cmd_list)
 
     p = sub.add_parser("find", help="按关键词搜索")
     p.add_argument("query")
-    p.add_argument("--kind", choices=["paper", "textbook", "note"])
+    p.add_argument("--group", help="只看某个大类下的(大类 id 用 collections 查)")
     p.set_defaults(fn=cmd_find)
 
     p = sub.add_parser("show", help="看一条的完整字段")
@@ -715,7 +694,7 @@ def main():
     p.set_defaults(fn=cmd_show)
 
     p = sub.add_parser("files", help="列出文件路径")
-    p.add_argument("--kind", choices=["paper", "textbook", "note"])
+    p.add_argument("--group", help="只看某个大类下的(大类 id 用 collections 查)")
     p.add_argument("--missing-md", action="store_true", help="只看还没有 Markdown 的")
     p.set_defaults(fn=cmd_files)
 
@@ -730,15 +709,14 @@ def main():
     conn = connect(root)
     try:
         cur = conn.cursor()
-        # 规则与大类映射每个进程只读一次 —— 一批命令共用同一份判定。
+        # 规则与大类表每个进程只读一次 —— 一批命令共用同一份判定。
         # ⚠️ 只调**一次** load_suppress_rule:调两次的话,坏 JSON 那条告警会被打两遍
         # (第一遍读 nodes、第二遍读 extensions),看起来像"两个地方都坏了"。
-        kind_groups, group_names = load_kind_groups(cur)
+        group_names = load_groups(cur)
         rule = load_suppress_rule(cur)
         sup = {
             "nodes": set(rule["nodes"]),
             "extensions": rule["extensions"],
-            "kind_groups": kind_groups,
             "group_names": group_names,
         }
         args.fn(cur, root, args, sup)
@@ -953,6 +931,388 @@ def main():
 
     if missing:
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+`;
+
+/**
+ * **把一条条目的 PDF 交给 MinerU 的在线解析 API,拿回 Markdown + 配图。**
+ *
+ * 内置自动化 `wf_auto_convert`「下载完自动转 Markdown」的转录那一步跑它 —— 用户
+ * 手上的转录工具五花八门,而这一条是**装都不用装**的那条:走 HTTP。
+ *
+ * ⚠️ 它要求环境变量 `MINERU_TOKEN`(见脚本头)。**没有就明确失败**,不静默降级去走
+ * 「Agent 轻量解析」那条免 token 的路 —— 那条只给一份 Markdown,配图全变占位符,
+ * 挂回库里预览全裂,而它看起来是"成功了"。
+ *
+ * ⚠️ 改这里的 Python 时注意:下面用的是 TS 模板字符串,所以正文里**不能出现反引号和
+ * ${**,要强调用「」。
+ */
+export const MINERU_PY = `#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""把一条条目的 PDF 交给 MinerU 的**在线解析 API**，拿回 Markdown + 配图。
+
+## 为什么是在线 API 而不是本地跑 MinerU
+
+本地跑要下模型（basic 档 ~0.8GB）、要 8GB 以上的内存，而这台机器是老 Xeon 无 GPU。
+在线 API 走 HTTP，什么都不用装。
+
+## 走的是「精准解析」那一路（要 token）
+
+MinerU 有两条 API（见 https://mineru.net/apiManage/docs）：
+
+| | 精准解析（这一条） | Agent 轻量 |
+|---|---|---|
+| token | 要 | 不要 |
+| 输出 | **zip：full.md + images/** | 只有 Markdown，图/表/公式**是占位符** |
+| 限制 | 200MB / 200 页 | 10MB / 20 页 |
+
+⚠️ **选精准那一路是因为配图。** 轻量那条只给一份 Markdown，图全变成占位符 —— 而
+「library_adopt_markdown」 的整包替换语义正是要 「full.md」 配上它引用的那些图。拿轻量那条
+转出来的东西挂上去，预览里全是断图，用户会以为导入坏了。
+
+## token 从哪来
+
+「MINERU_TOKEN」 环境变量。**没有就明确报错退出**，不静默降级去打轻量那条 —— 降级的话
+用户拿到的是没有配图的转录，而它看起来"成功了"，比直接报错难查得多。
+
+## 输入 / 输出（工作流 code 节点的约定）
+
+stdin 收一行 JSON：
+
+    {"itemId": "li_xxx", "pdfPath": "papers/ab/cd/<sha>.pdf"}
+
+⚠️ 「pdfPath」 是**库内相对路径**（见 「@contracts/hook」 的 「pdfPath」 那一项）—— 这里自己
+把数据根找出来拼成绝对路径（「find_data_root」，与 「workflows/scripts/library.py」 同一条
+逻辑：环境变量 > Mcode 的指针文件 > ~/Mcode）。
+
+产物落在 **cwd** 下（「normalizeNodeArtifacts」 按 cwd 解析相对路径）：
+
+    <cwd>/mineru/<itemId>/full.md
+    <cwd>/mineru/<itemId>/images/*
+
+stdout 打一行 「@@mcode:result {...}」（见 「orchestration/codeRunner.ts」 的协议解析）。
+
+## 失败就是失败
+
+code 节点的语义是「非零退出码 = 这一步失败」。所以任何一处走不通都**带着原因退出 1**，
+把话写在 「@@mcode:result」 的 summary 里（那才是用户看得到的那个字段）。
+"""
+
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+import zipfile
+from pathlib import Path
+
+# 输出一律 UTF-8。Windows 上 Python 默认按控制台代码页（简体中文是 GBK）写 stdout，
+# 而读它的那一端（Mcode 的 codeRunner）按 UTF-8 解 —— 中文会变成一堆问号。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+# 协议前缀 + 分段标记，与 「@contracts/nodeType」 的 NODE_STDOUT_PROTOCOL_PREFIX 一致。
+PROTOCOL = "@@mcode:result "
+
+BASE_URL = os.environ.get("MINERU_BASE_URL", "https://mineru.net").rstrip("/")
+TOKEN = (os.environ.get("MINERU_TOKEN") or "").strip()
+# vlm 是文档推荐的档（复杂版式明显更好）；pipeline 更快更便宜。给个开关，默认 vlm。
+MODEL_VERSION = (os.environ.get("MINERU_MODEL_VERSION") or "vlm").strip()
+
+# 轮询：每 3 秒看一眼，最多等 30 分钟（长论文 + 排队要时间）。
+POLL_INTERVAL_S = 3
+POLL_TIMEOUT_S = 30 * 60
+
+
+def emit(summary, outputs=None, artifacts=None):
+    """打一行协议。**这是这一步交给下游的唯一通道** —— 别的 stdout 都只是日志。"""
+    payload = {"summary": summary}
+    if outputs:
+        payload["outputs"] = outputs
+    if artifacts:
+        payload["artifacts"] = artifacts
+    # ⚠️ 换行用 chr(10) 拼，不写字面的反斜杠 n —— 整段 Python 是 **TS 模板字面量**，
+    # 里面写的反斜杠 n 会被 TS 先解成**真换行**，落成一个跨行的 Python 字符串字面量
+    # （语法错，脚本整个起不来）。同文件下面那个 chr(10).join(...) 是同一个理由。
+    sys.stdout.write(PROTOCOL + json.dumps(payload, ensure_ascii=False) + chr(10))
+    sys.stdout.flush()
+
+
+def die(summary, outputs=None):
+    """失败：先把话说给用户（summary 是他在卡片上看到的那一行），再非零退出。"""
+    emit(summary, outputs)
+    sys.exit(1)
+
+
+def find_data_root(explicit=None):
+    """数据根：显式参数 > 环境变量 > Mcode 的指针文件 > ~/Mcode。
+
+    与 「workflows/scripts/library.py」 同一条顺序 —— 两处不一致的话，会出现
+    「查库的脚本找得到、转录的脚本找不到」这种一半好一半坏的状态。
+    """
+    if explicit:
+        return Path(explicit)
+    env = os.environ.get("MCODE_DATA_ROOT")
+    if env:
+        return Path(env)
+    home = Path.home()
+    candidates = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        candidates.append(Path(appdata) / "@mcode" / "desktop" / "data-root.json")
+    candidates.append(home / "Library" / "Application Support" / "@mcode" / "desktop" / "data-root.json")
+    candidates.append(home / ".config" / "@mcode" / "desktop" / "data-root.json")
+    for c in candidates:
+        try:
+            return Path(json.loads(c.read_text(encoding="utf-8"))["root"])
+        except Exception:
+            continue
+    return home / "Mcode"
+
+
+def http_json(url, method="GET", body=None, headers=None):
+    """发一个 JSON 请求，返回解析后的对象。任何 HTTP/网络错都抛 「RuntimeError」（带人话）。"""
+    data = None
+    hdrs = {"Accept": "application/json"}
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        hdrs["Content-Type"] = "application/json"
+    if headers:
+        hdrs.update(headers)
+    req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as err:
+        detail = ""
+        try:
+            detail = err.read().decode("utf-8", "replace")[:400]
+        except Exception:
+            pass
+        raise RuntimeError(f"HTTP {err.code}（{url}）{detail}") from err
+    except Exception as err:
+        raise RuntimeError(f"请求失败（{url}）：{err}") from err
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except Exception as err:
+        raise RuntimeError(f"响应不是 JSON（{url}）：{raw[:200]!r}") from err
+
+
+def upload(url, path):
+    """把文件字节 PUT 到签名链接上。**不设 Content-Type** —— API 文档明说不用设。"""
+    body = path.read_bytes()
+    req = urllib.request.Request(url, data=body, method="PUT")
+    try:
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            if resp.status not in (200, 201):
+                raise RuntimeError(f"上传返回 HTTP {resp.status}")
+    except urllib.error.HTTPError as err:
+        raise RuntimeError(f"上传失败（HTTP {err.code}）") from err
+    except Exception as err:
+        raise RuntimeError(f"上传失败：{err}") from err
+
+
+def download(url, dest):
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            dest.write_bytes(resp.read())
+    except Exception as err:
+        raise RuntimeError(f"下载结果包失败：{err}") from err
+
+
+def safe_extract(zip_path, dest_dir):
+    """解压到 「dest_dir」。**拒绝目录穿越条目**（「../」 / 绝对路径）。
+
+    结果包来自远端，解压前必须过这一道：一个 「../../x」 的条目会把文件写到工作目录之外，
+    而那种写坏是**静默**的（用户只看到产物莫名其妙出现在别处）。
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    base = dest_dir.resolve()
+    with zipfile.ZipFile(zip_path) as zf:
+        for name in zf.namelist():
+            target = (base / name).resolve()
+            if not str(target).startswith(str(base)):
+                raise RuntimeError(f"结果包里有越界条目，拒绝解压：{name}")
+        zf.extractall(base)
+
+
+def transcribe_one(item, index):
+    """转一条。成功返回产物描述，失败抛 RuntimeError（带人话）。"""
+    item_id = (item or {}).get("itemId") or ""
+    pdf_rel = (item or {}).get("pdfPath") or ""
+    label = f"第 {index} 条" if index else "那一条"
+    if not item_id or not pdf_rel:
+        raise RuntimeError(f"{label}缺 itemId / pdfPath，转不了。")
+
+    pdf_abs = Path(pdf_rel)
+    if not pdf_abs.is_absolute():
+        pdf_abs = find_data_root() / "library" / pdf_rel
+    if not pdf_abs.is_file():
+        raise RuntimeError(f"{label}的 PDF 不在了：{pdf_abs}")
+
+    out_dir = Path.cwd() / "mineru" / item_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── 申请上传链接（批量接口，这里一次只放一条：一条失败不该拖垮别的）──
+    res = http_json(
+        f"{BASE_URL}/api/v4/file-urls/batch",
+        method="POST",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+        body={
+            "files": [{"name": pdf_abs.name, "data_id": item_id}],
+            "model_version": MODEL_VERSION,
+        },
+    )
+    if res.get("code") != 0:
+        raise RuntimeError(f"MinerU 拒绝了这次提交：{res.get('msg') or res}")
+    data = res.get("data") or {}
+    batch_id = data.get("batch_id") or ""
+    urls = data.get("file_urls") or []
+    if not batch_id or not urls:
+        raise RuntimeError(f"MinerU 没给回 batch_id / 上传链接：{res}")
+
+    # ── 上传字节（传完服务端会自动开始解析，不用再调一次提交）──
+    upload(urls[0], pdf_abs)
+
+    # ── 轮询到 done / failed ──
+    started = time.time()
+    zip_url = ""
+    while True:
+        if time.time() - started > POLL_TIMEOUT_S:
+            raise RuntimeError(
+                f"{label}解析超过 {POLL_TIMEOUT_S // 60} 分钟还没完（batch {batch_id}）。"
+                "任务可能还在跑，稍后可以重试这一步。"
+            )
+        time.sleep(POLL_INTERVAL_S)
+        poll = http_json(
+            f"{BASE_URL}/api/v4/extract-results/batch/{batch_id}",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        if poll.get("code") != 0:
+            raise RuntimeError(f"MinerU 查询被拒：{poll.get('msg') or poll}")
+        results = (poll.get("data") or {}).get("extract_result") or []
+        if not results:
+            continue
+        first = results[0]
+        state = first.get("state") or ""
+        if state == "done":
+            zip_url = first.get("full_zip_url") or ""
+            if not zip_url:
+                raise RuntimeError(f"{label}解析完成了，却没给结果包地址。")
+            break
+        if state == "failed":
+            raise RuntimeError(f"{label}解析失败：{first.get('err_msg') or '没给原因'}")
+
+    # ── 下载结果包并解压 ──
+    zip_path = out_dir / "result.zip"
+    try:
+        download(zip_url, zip_path)
+        safe_extract(zip_path, out_dir)
+    finally:
+        try:
+            zip_path.unlink()
+        except Exception:
+            pass
+
+    md = out_dir / "full.md"
+    if not md.is_file():
+        raise RuntimeError(f"{label}的结果包里没有 full.md。落点里是：{[p.name for p in out_dir.iterdir()][:20]}")
+
+    images_dir = out_dir / "images"
+    image_count = len([p for p in images_dir.iterdir() if p.is_file()]) if images_dir.is_dir() else 0
+    chars = len(md.read_text(encoding="utf-8", errors="replace"))
+    return {
+        "itemId": item_id,
+        "itemTitle": (item or {}).get("itemTitle") or "",
+        "mdPath": str(md),
+        "relMdPath": md.relative_to(Path.cwd()).as_posix(),
+        "imageCount": image_count,
+        "chars": chars,
+    }
+
+
+def main():
+    raw = sys.stdin.readline()
+    try:
+        payload = json.loads(raw) if raw.strip() else {}
+    except Exception:
+        die("交给这一步的载荷不是合法 JSON，没法知道要转哪一条。")
+        return
+
+    # 载荷可能是单条（触发器的 items 只有一条时就是扁平的那个对象），也可能外面裹着
+    # 「trigger」 / 「data」（code 节点不填 Input JSON 时收到的是整个 data 上下文）。
+    scope = payload
+    if isinstance(payload, dict):
+        for key in ("trigger", "data", "item"):
+            inner = payload.get(key)
+            if isinstance(inner, dict) and (inner.get("itemId") or inner.get("items")):
+                scope = inner
+                break
+
+    # ⚠️ **要办的是全部条目，不是第一条。** 触发器有合并窗口（默认 2 秒），下载又是
+    # 并发跑的 —— 两篇同时下完就攒在同一个窗口里。只取第一条的话，另一篇**再也没人转**，
+    # 而且不报错。这正是 「automationPayload.ts」 的 「TriggerPayloadFacts.items」 存在的理由。
+    items = []
+    if isinstance(scope, dict):
+        raw_items = scope.get("items")
+        if isinstance(raw_items, list) and raw_items:
+            items = [it for it in raw_items if isinstance(it, dict)]
+        elif scope.get("itemId"):
+            items = [scope]
+
+    if not items:
+        die("载荷里没有 itemId / items，没法知道要转哪一份 PDF。")
+        return
+
+    if not TOKEN:
+        # **不复用轻量那条免 token 的路**：它不给配图，而挂着断图的转录看起来是成功的。
+        die(
+            "没有 MinerU 的 API token。去 https://mineru.net 的「API 管理」建一个，"
+            "然后把它设成环境变量 MINERU_TOKEN（设完重启应用）。"
+        )
+        return
+
+    # 逐条转：**一条失败不停下**。剩下几条照转，最后把失败原因一并报出来 ——
+    # 「两篇一起下来，其中一篇是扫描件抽不出正文」时，另一篇不该跟着遭殃。
+    ok = []
+    failed = []
+    for i, item in enumerate(items, start=1):
+        try:
+            ok.append(transcribe_one(item, i if len(items) > 1 else 0))
+        except RuntimeError as err:
+            failed.append(f"（{i}）{err}")
+
+    if not ok:
+        # 全失败 = 这一步失败（code 节点：非零退出）。
+        die("一条都没转成。" + ("；".join(failed) if failed else ""))
+        return
+
+    lines = [
+        f"已用 MinerU 转出 {len(ok)} 份 Markdown"
+        + (f"，另有 {len(failed)} 条没转成。" if failed else "。"),
+        "（下一步用 library_adopt_markdown 把它们挂回各自的条目）",
+    ]
+    if failed:
+        lines.append("没转成的：")
+        lines.extend(failed)
+
+    emit(
+        chr(10).join(lines),
+        # 「items」 一栏给下游（子代理）逐条办的依据：每条一个 itemId + md 路径。
+        outputs={"items": ok, "failed": failed},
+        artifacts=[
+            {"kind": "file", "uri": r["relMdPath"], "name": "full.md", "mimeType": "text/markdown"}
+            for r in ok
+        ],
+    )
 
 
 if __name__ == "__main__":

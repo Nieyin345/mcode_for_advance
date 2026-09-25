@@ -22,6 +22,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSessionStore, type SessionState } from "@renderer/stores/sessionStore.js";
+import { useLibraryStore } from "@renderer/stores/libraryStore.js";
 import { api } from "@renderer/lib/api.js";
 import { filterSkillsForEngine } from "@renderer/lib/engineFilter.js";
 import { MCP_ALWAYS_ON_SERVERS, type McpScope } from "@contracts/ipc";
@@ -180,6 +181,46 @@ function useProjectOptions(): RefOption[] {
 }
 
 /**
+ * **当前文档系统的分类表** —— `library_collections`(见 `@contracts/nodeType` 的
+ * `collections` 那一段)。
+ *
+ * 第一个消费者是**固定条件**(`NODE_CRITERIA_PARAM_KEY` 的 `source`):检索工作流要一个
+ * "这次下到哪个分类"的下拉,而候选只能是用户自己建的那些分类 —— 写清单的人不可能知道。
+ *
+ * 读 store 里那一份(和左栏同源),理由同项目那一档:两处各拉一次,用户刚建完一个分类时
+ * 两边就会不一样。⚠️ 所以**store 还没加载过时这里就是空的** —— 调用方要能接受"暂时没得选"
+ * (那是真实状态,不是错误)。分类树是平的渲染(不带缩进):下拉里只摆 id→名字,
+ * 层级靠 `hint` 里的上级路径说明。
+ */
+function useCollectionOptions(): RefOption[] {
+  const collections = useLibraryStore((s) => s.collections);
+  const loadCollections = useLibraryStore((s) => s.loadCollections);
+  // 拉过就够 —— `loaded` 是那个 store 自己的标记,避免每次开检查器都发一轮 IPC。
+  const loaded = useLibraryStore((s) => s.loaded);
+  useEffect(() => {
+    if (!loaded) void loadCollections();
+  }, [loaded, loadCollections]);
+  return useMemo(() => {
+    return collections.map((c) => {
+      // 上级路径:从它往上走到根,`/` 连起来。上层不在表里(数据不一致)就到此为止。
+      const trail: string[] = [];
+      let cur = c.parentId ?? null;
+      for (let depth = 0; cur !== null && depth < 20; depth += 1) {
+        const parent = collections.find((x) => x.id === cur);
+        if (!parent) break;
+        trail.unshift(parent.name.trim() || parent.id);
+        cur = parent.parentId ?? null;
+      }
+      return {
+        id: c.id,
+        label: c.name.trim() || c.id,
+        ...(trail.length > 0 ? { hint: trail.join(" / ") } : {}),
+      };
+    });
+  }, [collections]);
+}
+
+/**
  * MCP 服务器 / 插件这两份候选 —— **store 里没有,要现拉**。
  *
  * ## 为什么不像上面那几个一样读 store
@@ -314,6 +355,7 @@ export function useRefOptions(from: NodeParamRefSource, providerId?: string): Re
   const skills = useSkillOptions();
   const providers = useProviderOptions();
   const projects = useProjectOptions();
+  const collections = useCollectionOptions();
   const mcp = useMcpOptions(from === "mcp");
   const plugins = usePluginOptions(from === "plugins");
   switch (from) {
@@ -323,6 +365,8 @@ export function useRefOptions(from: NodeParamRefSource, providerId?: string): Re
       return providers;
     case "projects":
       return projects;
+    case "collections":
+      return collections;
     case "models":
       return models;
     case "mcp":

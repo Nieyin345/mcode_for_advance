@@ -35,7 +35,6 @@ import type {
   LibraryConversionRow,
   LibraryNote,
 } from "./library.js";
-import { LIBRARY_KINDS, type LibraryKind } from "./library.js";
 import type {
   PluginState,
   PluginMarketplaceState,

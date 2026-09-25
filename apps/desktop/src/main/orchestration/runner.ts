@@ -53,7 +53,6 @@ function displayTitle(node: WorkflowNode, manifest: NodeTypeManifest | undefined
  * 节点会话是回不来的(它们随进程一起没了),所以**跑到一半的那一步会重跑**。已经定过案
  * 的一律不重跑,也不重判 —— 见 `RunResume`。
  */
-import type { LibraryKind } from "@contracts/library";
 import type { Session } from "@contracts/session";
 import { WORKFLOW_MAX_PARALLEL_SETTING_KEY } from "@contracts/ipc";
 import {
@@ -89,23 +88,12 @@ import { log } from "@main/lib/logger.js";
 import { providerRegistry } from "@main/providers/registry.js";
 import { CollectionRepo, LibraryRepo, MessageRepo, SessionRepo, SettingRepo, WorkflowRunRepo } from "@main/store/repositories.js";
 import { templatesRoot } from "@main/templates/store.js";
-import {
-  kindDisplayName,
-  kindPurposeOf,
-} from "@main/library/kindRegistry.js";
 import { uid } from "@main/utils.js";
 import {
   inheritContextLines,
   kindLabel,
-  setContextKindRegistry,
   type ContextLookup,
 } from "./contextInherit.js";
-
-// 统一资料库:把类型注册表的读法交给上下文继承链(见 `contextInherit.ts` 的
-// `setContextKindRegistry`)。模块加载时注册一次 —— 真正读 DB 发生在第一次查(那时
-// initDb 必已完成,注册 handler 前都会 awaitDb)。**无头冒烟不 import 本模块**,所以
-// 冒烟里 contextPurposeOf/kindLabel 走内置判据,行为与统一前一致。
-setContextKindRegistry({ label: kindDisplayName, purpose: kindPurposeOf });
 
 /**
  * 一张图默认**同时最多几个节点在跑**。
@@ -865,31 +853,33 @@ export async function startWorkflowRun(args: {
   };
 
   /**
-   * 上下文继承要的三样东西(见 `contextInherit.ts`)。
+   * 上下文继承要的几样东西(见 `contextInherit.ts`)。
    *
    * 分类表**一次建好重复用**:`CollectionRepo.list()` 是全表扫描,而主提示词里可能
    * 挂着好几份附件、每个节点又各问一次,乘起来很可观。条目那个不用缓存 ——
    * `LibraryRepo.get` 是按主键查一行。
    */
-  let collectionKinds: Map<string, LibraryKind> | null = null;
+  const collections = new Map(CollectionRepo.list().map((c) => [c.id, c]));
   const lookup: ContextLookup = {
     libraryRoot: libraryRoot(),
     templatesRoot: templatesRoot(),
-    collectionKind: (id) => {
-      try {
-        collectionKinds ??= new Map(CollectionRepo.list().map((c) => [c.id, c.kind]));
-        return collectionKinds.get(id);
-      } catch {
-        // 数据库还没起来 / 读坏了。**认不出来就是认不出来**,不猜。
-        return undefined;
-      }
+    // 分类 → 它挂着的大类。**查不到返回 `undefined`(不是 `[]`)** —— 那是本模块
+    // 用来区分"这是一条分类清单"与"这是一条条目清单"的信号(见 `ContextLookup`)。
+    groupsOfCollection: (id) => {
+      const c = collections.get(id);
+      return c ? (c.groupId ? [c.groupId] : []) : undefined;
     },
-    itemKind: (id) => {
-      try {
-        return LibraryRepo.get(id)?.kind;
-      } catch {
-        return undefined;
+    // 条目 → 它所属分类挂着的大类,去重。一条可以同时在多个分类里,而那些分类未必
+    // 挂在同一个大类下 —— 那时它确实同时属于两个类目。
+    groupsOfItem: (id) => {
+      const item = LibraryRepo.get(id);
+      if (!item) return undefined;
+      const out = new Set<string>();
+      for (const cid of CollectionRepo.collectionsOfItem(id)) {
+        const gid = collections.get(cid)?.groupId;
+        if (gid) out.add(gid);
       }
+      return [...out];
     },
   };
 

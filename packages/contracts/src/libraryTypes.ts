@@ -30,27 +30,6 @@
  * 说明,但**删不掉**(老数据的 kind 还指着它们)。
  */
 
-/** 这一类东西在上下文继承里的角色:给 AI 读的资料,还是让 AI 照着写的格式。 */
-export type LibraryTypePurpose = "material" | "format";
-
-/** 类型注册表的一条。 */
-export interface LibraryTypeMeta {
-  /** 小写连字符,如 `paper` / `slides`。同时是 `library_items.kind` 的合法取值。 */
-  id: string;
-  /** 界面显示名(用户可改),如「论文」「幻灯」。 */
-  name: string;
-  /** 图标名,渲染端按名字挑图标;认不出就退回默认图标。 */
-  icon?: string;
-  /** 给 AI 的一段说明:这类东西是什么、引用/处理时注意什么。空 = 不注入。 */
-  prompt?: string;
-  purpose: LibraryTypePurpose;
-  /** 出厂自带的那几类。可改名/改说明,不可删除。 */
-  builtin: boolean;
-}
-
-/** 注册表存设置表的键(值 = JSON 数组的 `LibraryTypeMeta`)。 */
-export const LIBRARY_TYPES_SETTING_KEY = "library.types";
-
 /**
  * 左栏的**大类** —— 「文档」「模版」那种段落,用户可自定义。
  *
@@ -67,11 +46,11 @@ export interface LibraryGroupMeta {
   id: string;
   /** 左栏段落标题(如「文档」「模版」)。 */
   name: string;
-  /** 这个大类包含哪些类型(引用 `LibraryTypeMeta.id`,按显示顺序)。 */
-  kinds: string[];
   /**
-   * 这个大类的**给 AI 的说明**。三层提示词的最外层(大类 → 类型 → 集合),拼进
-   * 该组内所有清单的开头 —— 「这一段东西整体上是什么、处理时的大原则」。不写就没有。
+   * 这个大类的**给 AI 的说明**。拼进该组内所有清单的开头 —— 「这一段东西整体上
+   * 是什么、处理时的大原则」。不写就没有。
+   *
+   * 大类下的分类经 `library_collections.group_id` 挂接（kind 退役，2026-09-24）。
    */
   prompt?: string;
 }
@@ -95,8 +74,8 @@ export const DEFAULT_LIBRARY_GROUPS: readonly LibraryGroupMeta[] = [
   //
   // ⚠️ 改这里**只影响还没存过组表的库** —— 一旦用户在设置里动过（或新建过大类），
   // 存下来的那份就是准的，这份出厂表就不再生效。见 `kindRegistry.loadLibraryGroups`。
-  { id: "templates", name: "模版", kinds: ["document", "slides", "latex", "code", "image"] },
-  { id: "docs", name: "文档", kinds: ["paper", "textbook", "note"] },
+  { id: "templates", name: "模版" },
+  { id: "docs", name: "文档" },
 ];
 
 /**
@@ -110,7 +89,6 @@ export function parseLibraryGroupsJson(
 ): { ok: true; groups: LibraryGroupMeta[] } | { ok: false; error: string } {
   if (!Array.isArray(raw)) return { ok: false, error: "大类表应该是一组条目" };
   const seenIds = new Set<string>();
-  const seenKinds = new Map<string, string>();
   const out: LibraryGroupMeta[] = [];
   for (const entry of raw) {
     if (entry === null || typeof entry !== "object") {
@@ -127,17 +105,6 @@ export function parseLibraryGroupsJson(
     if (typeof name !== "string" || name.trim().length === 0) {
       return { ok: false, error: `大类 ${id} 缺名字` };
     }
-    const kinds = e.kinds;
-    if (!Array.isArray(kinds) || kinds.some((k) => typeof k !== "string" || k.length === 0)) {
-      return { ok: false, error: `大类 ${id} 的类型应该是一组类型 id` };
-    }
-    for (const k of kinds) {
-      const owner = seenKinds.get(k);
-      if (owner !== undefined) {
-        return { ok: false, error: `类型「${k}」同时出现在「${owner}」和「${name.trim()}」—— 一个类型只能在一个大类里` };
-      }
-      seenKinds.set(k, name.trim());
-    }
     const prompt = e.prompt;
     if (prompt !== undefined && typeof prompt !== "string") {
       return { ok: false, error: `大类 ${id} 的说明应该是文字` };
@@ -145,106 +112,17 @@ export function parseLibraryGroupsJson(
     out.push({
       id,
       name: name.trim(),
-      kinds: [...new Set(kinds as string[])],
       ...(prompt !== undefined && prompt.trim().length > 0 ? { prompt: prompt.trim() } : {}),
     });
   }
   return { ok: true, groups: out };
 }
 
-/**
- * 出厂自带的 8 类。
- *
- * ⚠️ **前三个的 id 与旧 `LIBRARY_KINDS` 逐字一致** —— 老库里的行、老分类的 kind、
- * 用户存档里挂资料的类目全都指着它们,id 一变就是一次全库迁移。后五个是旧模版
- * 五类目的新家(ppt→slides、word→document,其余原名),M4 迁移按这个映射搬。
- */
-export const BUILTIN_LIBRARY_TYPES: readonly LibraryTypeMeta[] = [
-  { id: "paper", name: "论文", purpose: "material", builtin: true },
-  { id: "textbook", name: "教材", purpose: "material", builtin: true },
-  { id: "note", name: "笔记", purpose: "material", builtin: true },
-  { id: "document", name: "文档", icon: "doc", purpose: "format", builtin: true },
-  { id: "slides", name: "幻灯", icon: "slides", purpose: "format", builtin: true },
-  { id: "latex", name: "LaTeX 模版", icon: "latex", purpose: "format", builtin: true },
-  { id: "code", name: "代码模版", icon: "code", purpose: "format", builtin: true },
-  { id: "image", name: "配图模版", icon: "image", purpose: "format", builtin: true },
-];
-
-/** 内置类型的 id 集合(旧代码里 `isLibraryKind` 的接替者之一:判"是不是出厂类")。 */
-export const BUILTIN_LIBRARY_TYPE_IDS: ReadonlySet<string> = new Set(
-  BUILTIN_LIBRARY_TYPES.map((t) => t.id),
-);
 
 /** 自定义类型的 id 规则:小写字母开头,后面小写字母/数字/连字符。和节点类型 id 的
  *  约束同 spirit —— 它会出现在清单文件名、附件键、路径里,不能带空格和大小写二义。 */
 const ID_RE = /^[a-z][a-z0-9-]*$/;
 
-/**
- * 校验一份注册表 JSON。**纯函数**,主进程存取前后、渲染端保存前都过它。
- *
- * 通过的数组会带上补全(缺省 icon/prompt 规整为 undefined),但不保证顺序 ——
- * 顺序由调用方决定(界面按数组序展示)。
- */
-export function parseLibraryTypesJson(
-  raw: unknown,
-): { ok: true; types: LibraryTypeMeta[] } | { ok: false; error: string } {
-  if (!Array.isArray(raw)) return { ok: false, error: "类型注册表应该是一组条目" };
-  const seen = new Set<string>();
-  const out: LibraryTypeMeta[] = [];
-  for (const entry of raw) {
-    if (entry === null || typeof entry !== "object") {
-      return { ok: false, error: "类型条目应该是对象" };
-    }
-    const e = entry as Record<string, unknown>;
-    const id = e.id;
-    if (typeof id !== "string" || !ID_RE.test(id)) {
-      return { ok: false, error: `类型 id 不合法:${String(id)} —— 要小写字母开头的连字符串` };
-    }
-    if (seen.has(id)) return { ok: false, error: `类型 id 重复:${id}` };
-    seen.add(id);
-    const name = e.name;
-    if (typeof name !== "string" || name.trim().length === 0) {
-      return { ok: false, error: `类型 ${id} 缺显示名` };
-    }
-    const purpose = e.purpose;
-    if (purpose !== "material" && purpose !== "format") {
-      return { ok: false, error: `类型 ${id} 的用途应该是 material 或 format` };
-    }
-    const prompt = e.prompt;
-    if (prompt !== undefined && typeof prompt !== "string") {
-      return { ok: false, error: `类型 ${id} 的说明应该是文字` };
-    }
-    const icon = e.icon;
-    if (icon !== undefined && typeof icon !== "string") {
-      return { ok: false, error: `类型 ${id} 的图标名应该是文字` };
-    }
-    const builtin = e.builtin;
-    if (builtin !== undefined && typeof builtin !== "boolean") {
-      return { ok: false, error: `类型 ${id} 的 builtin 标记应该是开关` };
-    }
-    out.push({
-      id,
-      name: name.trim(),
-      ...(icon !== undefined && icon.length > 0 ? { icon } : {}),
-      ...(prompt !== undefined && prompt.trim().length > 0 ? { prompt: prompt.trim() } : {}),
-      purpose,
-      builtin: builtin === true,
-    });
-  }
-  // ⚠️ **这里原来有一道"内置类型必须还在"的闸，2026-09-21 去掉了。**
-  //
-  // 当时的理由是老数据里指着 `paper` 的行会变成"注册表不认识的 kind"。用户否掉了：
-  // 「这里显示**内置类型不能删除**，没有内置类型呀，**全部都是自定义的**」，
-  // 他要求「**都能删**」。
-  //
-  // **代价是真实的、也是他接受的**：删掉某个类型之后，原来属于它的条目会变成
-  // "注册表里没有的 kind" —— 左栏不再有 tab 显示它们（数据还在库里，只是没有入口）。
-  // 界面上那个删除确认框已经把这句话写出来了（见 `library.kind.deleteConfirm`）。
-  //
-  // ⚠️ 删空是允许的，所以**下游不能假设注册表非空** —— 见
-  // `libraryServer.ts` 的 `kindEnum()`（它原来靠这道闸才敢断言至少有一个）。
-  return { ok: true, types: out };
-}
 
 /* ─────────────────────────────── 屏蔽规则 ─────────────────────────────── */
 
@@ -260,15 +138,15 @@ export const LIBRARY_SUPPRESS_SETTING_KEY = "library.suppress";
  *
  * ## 为什么是一个扁平的 `nodes` 数组而不是三个字段
  *
- * 要屏蔽的节点在**任意层级**上:大类 / 类型 / 集合,而且**任意个数**。做成三个字段
- * (`groups` / `types` / `collections`)的话,"再加一个层级"就变成改契约 + 改界面 +
- * 改存储。扁平数组 + 前缀是同一件事的更小表达,而前缀的合法性校验在 `parseSuppressJson`
+ * 要屏蔽的节点在**任意层级**上:大类 / 集合,而且**任意个数**。做成两个字段
+ * (`groups` / `collections`)的话,"再加一个层级"就变成改契约 + 改界面 + 改存储。
+ * 扁平数组 + 前缀是同一件事的更小表达,而前缀的合法性校验在 `parseSuppressJson`
  * 里一处收敛。
  *
  * ## 向下继承
  *
- * 屏蔽一个节点 = 它自己**以及它下面的一切**都进不了上下文。屏蔽「文档」大类,它下面
- * 的 `paper` 条目同样挂不上。判定的算法在 `main/library/suppress.ts`(要查祖先链,
+ * 屏蔽一个节点 = 它自己**以及它下面的一切**都进不了上下文。屏蔽「文档」大类,挂在
+ * 它下面集合里的条目同样挂不上。判定的算法在 `main/library/suppress.ts`(要查祖先链,
  * 那是它才做得了的事);契约这一层只负责形状与合法性。
  */
 export interface LibrarySuppressRule {
@@ -276,7 +154,6 @@ export interface LibrarySuppressRule {
    * 被屏蔽的节点,格式 `<层>:<id>`:
    *
    *   `group:docs`          大类
-   *   `type:paper`          类型
    *   `collection:abc123`   集合
    *
    * 集合 id 是不透明的(不是 `ID_RE` 那种连字符串),所以**校验时只查前缀**,
@@ -295,8 +172,17 @@ export interface LibrarySuppressRule {
 /** 空规则 —— 什么都没屏蔽。用户没存过时读出来的就是它。 */
 export const EMPTY_LIBRARY_SUPPRESS: LibrarySuppressRule = { nodes: [], extensions: [] };
 
-/** 层前缀 —— 与 `LibrarySuppressRule.nodes` 里的三种取值一一对应。 */
-export const SUPPRESS_NODE_LEVELS = ["group", "type", "collection"] as const;
+/**
+ * 层前缀 —— 与 `LibrarySuppressRule.nodes` 里的两种取值一一对应。
+ *
+ * **`type` 随 kind 一起退役。** 原来这里还有第三档(`type:paper`),挡的是"某个内置
+ * 类型下的所有条目"—— kind 退役后没有"条目属于哪个类型"这回事了,那一档指向的东西
+ * 不存在,留着的话用户在设置里点一下"屏蔽 paper 类型",界面上看着像成了,实际什么都
+ * 没挡住(判定那一侧永远命中不了)。旧数据里存着的 `type:*` 条目由
+ * `parseSuppressNodeKey` 判为不合法,`parseSuppressJson` 会**丢掉那一条**而不是
+ * 废掉整份规则 —— 用户别的屏蔽照常生效。
+ */
+export const SUPPRESS_NODE_LEVELS = ["group", "collection"] as const;
 export type SuppressNodeLevel = (typeof SUPPRESS_NODE_LEVELS)[number];
 
 /** 拼一个节点键。三处(界面、主进程、测试)都该用它,免得手写前缀写岔。 */

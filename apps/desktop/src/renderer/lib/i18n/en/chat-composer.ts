@@ -462,6 +462,10 @@ export const en = {
   "chat.nodeCriteria.title": "Fixed criteria",
   "chat.nodeCriteria.hint":
     "Your standing filters, applied whenever you chat with this graph. The selections are told to the model once, on the first turn of the conversation, and stay in context after that — no need to re-pick each turn. \"—\" means not set, and is not applied. To add or change them, edit the “Fixed criteria” param in settings.",
+  // A criterion whose choices are read live (see `source` in `nodeType.ts`) — the
+  // placeholder while they are still loading. "Nothing to pick yet", not "none":
+  // the latter would read as "your library is empty".
+  "chat.nodeCriteria.noOptions": "Nothing to pick yet",
 
   // ── new sub-conversation (the "+" menu item; see chat/NewSubChatPicker) ──
   "chat.newSubChat": "New sub-conversation",

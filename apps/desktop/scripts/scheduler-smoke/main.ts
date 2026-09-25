@@ -22,7 +22,6 @@
 import {
   attachmentPathsIn,
   contextKindOfPath,
-  contextPurposeOf,
   contextRefOfPath,
   inheritContextLines,
   type ContextLine,
@@ -104,15 +103,17 @@ const AGENT: NodeTypeManifest = {
     { key: "mcp", kind: "ref", from: "mcp", multiple: true, label: "MCP 服务器" },
     { key: "plugins", kind: "ref", from: "plugins", multiple: true, label: "插件" },
     // 上下文:**约定键**,候选写死在清单里(所以是 select 而不是 ref)—— 见
-    // `NODE_CONTEXT_PARAM_KEY`。
+    // `NODE_CONTEXT_PARAM_KEY`。kind 退役后候选是**大类 + 模版类目**(见 `contextOptions`),
+    // 这里照那个形状摆:两个大类 + 一个模版类目。
     {
       key: "context",
       kind: "select",
       multiple: true,
-      label: "上下文",
+      label: "资料",
       options: [
-        { value: "paper", label: "文献" },
-        { value: "note", label: "笔记" },
+        { value: "docs", label: "文档" },
+        { value: "templates", label: "模版库" },
+        { value: "latex", label: "latex" },
       ],
     },
     { key: "provider", kind: "ref", from: "models", label: "引擎" },
@@ -960,22 +961,28 @@ console.log("\n上下文继承(节点选了几类,就去要那几类)");
 {
   // 假端口返回的是**真的那种形状**(事实 + 由调度器排版,见 `contextInherit.ts` 的
   // `inheritContextLines`)—— 返回拼好的字符串的话,下面那几条断言测的就不是用户
-  // 真正看到的那一段了(而"资料是什么类型、拿来干什么"正是用户提的那两条)。
-  const lineOf = (k: NodeContextKind): ContextLine =>
-    k === "paper"
-      ? { kind: "paper", level: "all", path: "/lib/kind-paper.md" }
-      : { kind: "note", level: "item", path: "/lib/kind-note.md" };
-  const h = makePorts({ contextLines: (kinds) => kinds.map(lineOf) });
-  const doc = docOf([node("A", AGENT.id, "写论文", { context: ["paper", "note"] })], []);
+  // 真正看到的那一段了(而"资料属于哪个大类、拿来干什么"正是用户提的那两条)。
+  //
+  // kind 退役后节点勾的是**大类**(`docs`),抬头显示的就是那个 id —— 见 `KIND_LABEL`
+  // 那条回落:资料侧的类目名是用户自己起的、库里才有,纯件这一层认不出来。
+  //
+  // 两条**同一个大类**的行(整大类 + 其中一篇):这正是真实情形 —— 用户可能整个
+  // 「文档」大类都挂上,又单独挂了里面的一篇。
+  const lineOf = (): ContextLine[] => [
+    { kind: "docs", level: "all", path: "/lib/group-docs.md", purpose: "material" },
+    { kind: "docs", level: "item", path: "/lib/li_某条目.md", purpose: "material" },
+  ];
+  const h = makePorts({ contextLines: (kinds) => (kinds.length === 0 ? [] : lineOf()) });
+  const doc = docOf([node("A", AGENT.id, "写论文", { context: ["docs", "docs"] })], []);
   await runWorkflow({ doc, prompt: "开始", ports: h.ports, signal: controller().signal });
 
   eq("按节点的参数问了一次", h.contextAsked.length, 1);
-  eq("问的正是它选的那两类", h.contextAsked[0]?.join(","), "paper,note");
+  eq("同一个大类写两遍只问一次", h.contextAsked[0]?.join(","), "docs");
   const prompt = h.calls[0]?.prompt ?? "";
-  check("继承来的资料进了提示词", prompt.includes("- 【文献·整库】@/lib/kind-paper.md"), prompt);
-  check("两类都在", prompt.includes("- 【笔记·单篇】@/lib/kind-note.md"), prompt);
-  // **两条都是"查资料"那一组**:笔记和文献是同一类用法(都是拿来读内容的),所以不
-  // 该冒出"当格式仿"。分组是按用途,不是按库。
+  check("★ 整大类那条进了提示词", prompt.includes("- 【docs·整库】@/lib/group-docs.md"), prompt);
+  check("★ 单篇那条也在", prompt.includes("- 【docs·单篇】@/lib/li_某条目.md"), prompt);
+  // **两条都是"查资料"那一组**:资料库里的东西一律拿来读内容 —— 用途是**库**决定的
+  // (资料库 vs 模版库),不是类目名决定的(见 `purposeOfPath`)。
   check("两条同属查资料那一组", prompt.includes("**当资料查**"), prompt);
   check("没有模版就不摆「当格式仿」", !prompt.includes("当格式仿"), prompt);
   // 单独一段而不是散在指令里 —— "这一步能读什么"是个可以一眼看完的集合。
@@ -987,13 +994,33 @@ console.log("\n上下文继承(节点选了几类,就去要那几类)");
 }
 
 {
+  // 模版那条也走一遍 —— 它和资料库那条**必须落在不同的组**里,而分组判据现在是
+  // "路径属于哪个库"(kind 退役前是"类目名属不属于文献库那八类")。
+  const h = makePorts({
+    contextLines: () => [
+      { kind: "docs", level: "all", path: "/lib/group-docs.md", purpose: "material" },
+      { kind: "latex", level: "category", path: "/lib/latex.md", purpose: "format" },
+    ],
+  });
+  const doc = docOf([node("A", AGENT.id, "写论文", { context: ["docs", "latex"] })], []);
+  await runWorkflow({ doc, prompt: "开始", ports: h.ports, signal: controller().signal });
+  const prompt = h.calls[0]?.prompt ?? "";
+  check("★ 资料那条进了「当资料查」", prompt.includes("**当资料查**"), prompt);
+  check("★ 模版那条进了「当格式仿」", prompt.includes("**当格式仿**"), prompt);
+  check("模版那条的抬头带着「模版」二字", prompt.includes("- 【LaTeX 模版·类目】@/lib/latex.md"), prompt);
+  check("查资料那组在前", prompt.indexOf("当资料查") < prompt.indexOf("当格式仿"), prompt);
+}
+
+{
   // **没选类目时也要问一次**(问的是空数组)而且**不产生那一段** —— 一个空标题比没有
   // 更糟:模型会以为"这一步没有资料",而实际情况是"这一步没要求资料"。
   // 假端口按**契约**返回(没要类目就没有行);它不按契约来的话,下面这条断言的就不是
   // 调度器的行为了。
   const h = makePorts({
     contextLines: (kinds) =>
-      kinds.length === 0 ? [] : [{ kind: "paper", level: "all", path: "/lib/kind-paper.md" }],
+      kinds.length === 0
+        ? []
+        : [{ kind: "docs", level: "all", path: "/lib/group-docs.md", purpose: "material" }],
   });
   const doc = docOf([node("A")], []);
   await runWorkflow({ doc, prompt: "开始", ports: h.ports, signal: controller().signal });
@@ -1003,16 +1030,16 @@ console.log("\n上下文继承(节点选了几类,就去要那几类)");
 
 {
   // 选了、但主对话没挂那一类 → 段不出现。这一条是"继承"与"查找"的分界:节点说了
-  // 要文献,而这次对话没有,那这一步就是没有 —— 不会替用户去库里翻。
+  // 要资料,而这次对话没有,那这一步就是没有 —— 不会替用户去库里翻。
   const h = makePorts();
-  const doc = docOf([node("A", AGENT.id, "写论文", { context: ["paper"] })], []);
+  const doc = docOf([node("A", AGENT.id, "写论文", { context: ["docs"] })], []);
   await runWorkflow({ doc, prompt: "开始", ports: h.ports, signal: controller().signal });
-  eq("问过了", h.contextAsked[0]?.join(","), "paper");
+  eq("问过了", h.contextAsked[0]?.join(","), "docs");
   check("主对话没挂 → 提示词里没有那一段", !(h.calls[0]?.prompt ?? "").includes("可以读的资料"));
 }
 
 {
-  // 参数里存了**不认识的类目名**(手改过的图 / AI 写歪了):清单声明了候选,所以
+  // 参数里存了**清单上没有的取值**(手改过的图 / AI 写歪了):清单声明了候选,所以
   // 这一类在这一层就被拦下 —— **节点明确失败并说清楚**,而不是把那个值静静丢掉。
   //
   // 这是刻意的:丢掉的话现象是"这一步没有它要的资料",而原因(名字写错了)在任何地方
@@ -1020,12 +1047,14 @@ console.log("\n上下文继承(节点选了几类,就去要那几类)");
   // `instructionOf`)。
   const h = makePorts({
     contextLines: (kinds) =>
-      kinds.map((k) => ({ kind: k, level: "all" as const, path: `/lib/kind-${k}.md` })),
+      kinds.map((k) => ({
+        kind: k,
+        level: "all" as const,
+        path: `/lib/${k}.md`,
+        purpose: "material" as const,
+      })),
   });
-  const doc = docOf(
-    [node("A", AGENT.id, "写论文", { context: ["paper", "不存在的类目"] })],
-    [],
-  );
+  const doc = docOf([node("A", AGENT.id, "写论文", { context: ["latex", "根本不存在的大类"] })], []);
   await runWorkflow({ doc, prompt: "开始", ports: h.ports, signal: controller().signal });
   eq("没被派发", h.contextAsked.length, 0);
   const outcome = outcomeOf(h, "A");
@@ -1058,15 +1087,17 @@ console.log("\ncomposeNodePrompt(上下文那一段)");
     instruction: "写论文",
     nodeId: "A",
     plan: PLAN,
-    // 两条不同**用途**的:`paper` 是拿来查的,`latex` 是拿来仿的 —— 那一段按这个分组。
+    // 两条不同**用途**的:`docs` 是资料(拿来查的),`latex` 是模版(拿来仿的)——
+    // 那一段按这个分组,而判据是 `purpose` 这个**事实**(由 `contextRefOfPath` 在认出
+    // 路径的那一刻按库算好)。
     context: [
-      { kind: "paper", level: "item", path: "/lib/paper.md" },
-      { kind: "latex", level: "category", path: "/lib/latex.md" },
+      { kind: "docs", level: "item", path: "/lib/li_某篇.md", purpose: "material" },
+      { kind: "latex", level: "category", path: "/lib/latex.md", purpose: "format" },
     ],
   });
   check(
     "两条都在,而且带着「是什么」",
-    withContext.includes("- 【文献·单篇】@/lib/paper.md") &&
+    withContext.includes("- 【docs·单篇】@/lib/li_某篇.md") &&
       // **模版那几个抬头带「模版」二字** —— 光写 `【LaTeX·类目】` 有歧义(是那个软件,
       // 还是那一类模版),而且这跟用户在下拉里勾选时看到的词逐字一致(见 `KIND_LABEL`)。
       withContext.includes("- 【LaTeX 模版·类目】@/lib/latex.md"),
@@ -1108,57 +1139,108 @@ console.log("\n附件路径 → 类目(认不出来就什么都不给)");
 // 盘符会被拼进来,而两边都走同一个 `resolve`,比较才成立(被测代码也是这么做的)。
 const LIB_ROOT = resolve("/fake/library");
 const TPL_ROOT = resolve("/fake/templates");
+/**
+ * 一张**假库**:两个大类(`docs` / `templates`)、几个分类、几条条目。
+ *
+ * `undefined` 与 `[]` 是**两个不同的答案**,这张表要把它们都造出来:
+ *  - `undefined` = 库里没这个东西 → "这不是一条分类/条目清单",继续往下试;
+ *  - `[]` = 有,但它还没挂大类 → 它**是**清单,只是选任何大类都拿不到。
+ * 混成一个的话,`resolveRef` 那条"不是分类就继续试条目"的分支就验不到了。
+ */
+const GROUPS_OF_COLLECTION: Record<string, string[] | undefined> = {
+  "lc_文献": ["docs"],
+  "lc_笔记": ["docs"],
+  "lc_模版集": ["templates"],
+  "lc_没挂大类": [],
+  // ⚠️ 一条**同时挂在两个大类下**的分类 —— 用户把同一批东西收进两个大类是允许的。
+  "lc_两边都要": ["docs", "templates"],
+};
+const GROUPS_OF_ITEM: Record<string, string[] | undefined> = {
+  "li_论文": ["docs"],
+  "li_模版图": ["templates"],
+  "li_两边都要": ["docs", "templates"],
+  "li_没归类": [],
+};
 const LOOKUP: ContextLookup = {
   libraryRoot: LIB_ROOT,
   templatesRoot: TPL_ROOT,
-  // 分类和条目的 id 都是**不透明**的(条目的文件名甚至是 sha256)—— 所以只能查,不能猜。
-  collectionKind: (id) => (id === "c_我的分类" ? "paper" : undefined),
-  itemKind: (id) => (id === "9f8e7d6c" ? "note" : undefined),
+  // 查不到返回 `undefined`(不是 `[]`),这是"库里没有它"的信号。
+  groupsOfCollection: (id) => GROUPS_OF_COLLECTION[id],
+  groupsOfItem: (id) => GROUPS_OF_ITEM[id],
 };
 const libManifest = (name: string): string => join(LIB_ROOT, "collections", name);
 const tplManifest = (...parts: string[]): string => join(TPL_ROOT, ".manifests", ...parts);
 
 const kindOf = (path: string): string | null => contextKindOfPath(path, LOOKUP);
 
-eq("整库清单 kind-paper.md → 文献", kindOf(libManifest("kind-paper.md")), "paper");
-eq("kind-note.md → 笔记", kindOf(libManifest("kind-note.md")), "note");
-// `kind-` 后面不是合法库名 —— 那就是个普通的 md 文件,不是整库清单。
-eq("kind-某某.md 认不出来", kindOf(libManifest("kind-某某.md")), null);
-// 分类 / 条目靠**查库**。
-eq("分类 id → 查出来是文献", kindOf(libManifest("c_我的分类.md")), "paper");
-eq("条目 id → 查出来是笔记", kindOf(libManifest("9f8e7d6c.md")), "note");
+// 大类清单:`group-<大类 id>.md` —— **由文件名直接读出来**,不用查库。
+eq("整大类清单 group-docs.md → docs", kindOf(libManifest("group-docs.md")), "docs");
+// ⚠️ `kind-paper.md` 是**老形状**,kind 退役后没有了 —— 它既不是 `group-` 开头、查库也
+// 查不到,于是认不出来。老库里存着的那些挂载记录就这样落到这里(这一步少一份资料,
+// 而不是拿到一份错类目的)。这一条钉住"老形状没有被悄悄当成大类"。
+eq("★ 老形状 kind-paper.md 认不出来(不是大类)", kindOf(libManifest("kind-paper.md")), null);
+// 分类 / 条目 **靠查库**。
+eq("分类 id → 查出来是大类 docs", kindOf(libManifest("lc_文献.md")), "docs");
+eq("条目 id → 查出来是它所属分类的大类", kindOf(libManifest("li_论文.md")), "docs");
+// ⚠️ **同时挂在两个大类下的**:不指定时取第一个,指定了就取交集里那个 —— 显示给模型的
+// 类目正是**这一步要的那个**,不是"它恰好也属于"的另一个。
+eq("两边都挂的分类 → 不指定时取第一个", kindOf(libManifest("lc_两边都要.md")), "docs");
+eq(
+  "★ 两边都挂的分类 → 指定哪个就是哪个",
+  contextRefOfPath(libManifest("lc_两边都要.md"), LOOKUP, ["templates"])?.kind,
+  "templates",
+);
+// 挂着、但**没归任何大类** → 认得出层级,但 `kinds` 是空的 → 谁都拿不到。
+eq("★ 没挂大类的分类 → 认不出来(它不属于任何一个大类)", kindOf(libManifest("lc_没挂大类.md")), null);
+eq("★ 没归类的条目 → 同样认不出来", kindOf(libManifest("li_没归类.md")), null);
 eq("库里没有的 id → 认不出来", kindOf(libManifest("不认识.md")), null);
 // 模版清单的**目录名就是类目**,不用查。
 eq("整个类目 latex.md → LaTeX", kindOf(tplManifest("latex.md")), "latex");
 eq("单条模版 latex/某模板.md → LaTeX", kindOf(tplManifest("latex", "某模板.md")), "latex");
 
-console.log("\ncontextRefOfPath(类目 + 它占哪一层)");
+console.log("\ncontextRefOfPath(类目 + 层级 + 用途)");
 // **层级也是算出来的**:一个 id 是"分类"还是"单篇",取决于它在哪张表里查到
-// (`collectionKind` / `itemKind` 是两次不同的查询),所以这里分得出来。提示词里那个
-// `【文献·单篇】` 就是它 —— 少了它,模型拿到一串不透明的 id(条目文件名甚至是
-// sha256),只能先读一遍才知道那是一整库还是单独一篇,而它多半会先按上下文猜一个。
+// (`groupsOfCollection` / `groupsOfItem` 是两次不同的查询)。提示词里那个 `·单篇·`
+// 就是它 —— 少了它,模型拿到一串不透明的 id(条目文件名甚至是 sha256),只能先读一遍
+// 才知道那是一整个大类还是单独一篇。
 const refOf = (path: string): string => {
   const r = contextRefOfPath(path, LOOKUP);
-  return r === null ? "null" : `${r.kind}/${r.level}`;
+  return r === null ? "null" : `${r.kind}/${r.level}/${r.purpose}`;
 };
-eq("整库清单", refOf(libManifest("kind-paper.md")), "paper/all");
-eq("分类 id", refOf(libManifest("c_我的分类.md")), "paper/collection");
-eq("条目 id", refOf(libManifest("9f8e7d6c.md")), "note/item");
-eq("整个模版类目", refOf(tplManifest("latex.md")), "latex/category");
-eq("单条模版", refOf(tplManifest("latex", "某模板.md")), "latex/template");
+eq("整个大类", refOf(libManifest("group-docs.md")), "docs/all/material");
+eq("分类 id", refOf(libManifest("lc_文献.md")), "docs/collection/material");
+eq("条目 id", refOf(libManifest("li_论文.md")), "docs/item/material");
+eq("整个模版类目", refOf(tplManifest("latex.md")), "latex/category/format");
+eq("单条模版", refOf(tplManifest("latex", "某模板.md")), "latex/template/format");
 eq("认不出来的照样是 null", refOf(join(LIB_ROOT, "papers", "x.pdf")), "null");
 
-console.log("\ncontextPurposeOf(拿来查,还是拿来仿)");
+console.log("\n用途(material / format)由**它在哪个库**决定");
 // 这一个判断决定了资料那一段**怎么分组**(见 `composeNodePrompt` 的
-// `renderContextLines`)。判据是**结构上**的:`NodeContextKind` 本来就是
-// `LibraryKind | TemplateKind` 两个不相交的集合拼出来的 —— 不是一条要另外维护的规则,
-// 而是两个库本来就有的区别(连根目录都不是同一个)。
-eq("文献是拿来查的", contextPurposeOf("paper"), "material");
-eq("教材是拿来查的", contextPurposeOf("textbook"), "material");
-eq("笔记是拿来查的", contextPurposeOf("note"), "material");
-eq("LaTeX 模版是拿来仿的", contextPurposeOf("latex"), "format");
-eq("Word 模版是拿来仿的", contextPurposeOf("word"), "format");
-eq("配图模版也是拿来仿的", contextPurposeOf("image"), "format");
+// `renderContextLines`)。判据是**结构上**的:两个库连根目录都不是同一个 —— 不是一条
+// 要另外维护的规则。⚠️ **不能按类目名判**:kind 退役后类目名是用户自己起的,他完全
+// 可以把一个大类叫 `latex`,按名字判会把它摆进"当格式仿"那一栏。
+eq(
+  "库根下的大类清单 → 查资料",
+  contextRefOfPath(libManifest("group-docs.md"), LOOKUP)?.purpose,
+  "material",
+);
+eq(
+  "库根下的一条条目 → 查资料",
+  contextRefOfPath(libManifest("li_论文.md"), LOOKUP)?.purpose,
+  "material",
+);
+eq("模版类目 → 仿格式", contextRefOfPath(tplManifest("latex.md"), LOOKUP)?.purpose, "format");
+eq(
+  "单条模版 → 仿格式",
+  contextRefOfPath(tplManifest("latex", "某模板.md"), LOOKUP)?.purpose,
+  "format",
+);
+// ★ 名字叫 `latex` 的**大类**仍然是资料 —— 判的是它在哪个库,不是它叫什么。
+eq(
+  "★ 名字叫 latex 的大类仍然是资料(判库不判名)",
+  contextRefOfPath(libManifest("group-latex.md"), LOOKUP)?.purpose,
+  "material",
+);
 eq("不认识的模版类目 → 认不出来", kindOf(tplManifest("nope.md")), null);
 // 不是清单的附件(一篇 PDF 的正文、一张图)不该被当成上下文类目。
 eq("库根下的普通文件 → 认不出来", kindOf(join(LIB_ROOT, "papers", "ab", "cd", "abc.pdf")), null);
@@ -1169,14 +1251,14 @@ console.log("\nattachmentPathsIn(提示词里那几行 @)");
 // `inheritContextLines`),所以这里比的是裸路径。
 eq(
   "只取 @ 开头的行",
-  attachmentPathsIn("帮我看一下\n@" + libManifest("kind-paper.md") + "\n后面这句不算").join("|"),
-  libManifest("kind-paper.md"),
+  attachmentPathsIn("帮我看一下\n@" + libManifest("group-docs.md") + "\n后面这句不算").join("|"),
+  libManifest("group-docs.md"),
 );
 // **路径里有空格**(Windows 上 `C:\Users\张 三\...` 很常见)—— 按行取才不会在第一个
 // 空格处断掉,而按正则扫全文一定会断。
 eq(
   "路径里的空格不会把路径截断",
-  attachmentPathsIn("@C:/Users/张 三/library/collections/kind-paper.md").length,
+  attachmentPathsIn("@C:/Users/张 三/library/collections/group-docs.md").length,
   1,
 );
 eq("没有附件就是空", attachmentPathsIn("就是一段普通的话").length, 0);
@@ -1186,33 +1268,42 @@ console.log("\ninheritContextLines(挑出节点要的那几类)");
 const PROMPT = [
   "帮我写一篇",
   "",
-  `@${libManifest("kind-paper.md")}`,
-  `@${libManifest("kind-note.md")}`,
+  `@${libManifest("group-docs.md")}`,
+  `@${libManifest("li_论文.md")}`,
   `@${tplManifest("latex.md")}`,
-  `@${libManifest("kind-paper.md")}`, // 挂了两次 —— 只该给一行
+  `@${libManifest("group-docs.md")}`, // 挂了两次 —— 只该给一行
 ].join("\n");
 
-// 交回来的是**事实**(类目 / 层级 / 路径),排版是提示词那一层的事 —— 所以这里比的是
-// 事实本身,而不是某一种排版结果(那种断言会在改一个字的时候红,却看不出对错)。
+// 交回来的是**事实**(类目 / 层级 / 用途 / 路径),排版是提示词那一层的事 —— 所以这里
+// 比的是事实本身,而不是某一种排版结果(那种断言会在改一个字的时候红,却看不出对错)。
 const lineKey = (l: ContextLine): string => `${l.kind}/${l.level}@${l.path}`;
 eq(
-  "只要文献 → 只有文献那一条",
-  inheritContextLines(PROMPT, ["paper"], LOOKUP).map(lineKey).join("|"),
-  `paper/all@${libManifest("kind-paper.md")}`,
+  "只要 docs → docs 那两条",
+  inheritContextLines(PROMPT, ["docs"], LOOKUP).map(lineKey).join("|"),
+  `docs/all@${libManifest("group-docs.md")}|docs/item@${libManifest("li_论文.md")}`,
 );
 eq(
-  "要文献和模版 → 两条,顺序跟着主提示词",
-  inheritContextLines(PROMPT, ["paper", "latex"], LOOKUP).map(lineKey).join("|"),
-  `paper/all@${libManifest("kind-paper.md")}|latex/category@${tplManifest("latex.md")}`,
+  "要 docs 和模版 → 三条,顺序跟着主提示词",
+  inheritContextLines(PROMPT, ["docs", "latex"], LOOKUP).map(lineKey).join("|"),
+  `docs/all@${libManifest("group-docs.md")}|docs/item@${libManifest("li_论文.md")}|latex/category@${tplManifest("latex.md")}`,
 );
 eq("一个类目都没要 → 一行都不给", inheritContextLines(PROMPT, [], LOOKUP).length, 0);
 // 主对话没挂那一类 —— **这一步就是没有**,不会替用户去库里翻。
-eq("要了但主对话没挂 → 空", inheritContextLines(PROMPT, ["textbook"], LOOKUP).length, 0);
+eq("要了但主对话没挂 → 空", inheritContextLines(PROMPT, ["templates"], LOOKUP).length, 0);
 // 认不出来的路径不该混进来。
 eq(
   "认不出来的 @ 行被丢掉",
-  inheritContextLines(`@${join(LIB_ROOT, "papers", "x.pdf")}\n@随便什么`, ["paper"], LOOKUP).length,
+  inheritContextLines(`@${join(LIB_ROOT, "papers", "x.pdf")}\n@随便什么`, ["docs"], LOOKUP).length,
   0,
+);
+// ★ **同时挂在两个大类下的条目:勾了哪一个都给得到它。** 这一条是 `kinds` 做成数组的
+// 全部理由 —— 做成单个字段的话它只能属于一个,而挑哪个都没有依据。
+eq(
+  "★ 挂在两个大类下的条目 → 勾其中任一个都拿得到",
+  inheritContextLines(`@${libManifest("li_两边都要.md")}`, ["templates"], LOOKUP)
+    .map(lineKey)
+    .join("|"),
+  `templates/item@${libManifest("li_两边都要.md")}`,
 );
 
 /* ────────────────────── 变量({{...}}) ────────────────────── */

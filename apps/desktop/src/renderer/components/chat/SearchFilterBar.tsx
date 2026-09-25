@@ -34,7 +34,9 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
 import { Tooltip } from "@renderer/components/ui/index.js";
 import { WORKFLOW_NODE_PREFS_SETTING_PREFIX } from "@contracts/ipc";
-import { MAIN_NODE_TYPE_ID, NODE_CRITERIA_PARAM_KEY } from "@contracts/nodeType";
+import { MAIN_NODE_TYPE_ID, NODE_CRITERIA_PARAM_KEY, NodeParamRefSourceSchema } from "@contracts/nodeType";
+import type { NodeParamRefSource } from "@contracts/nodeType";
+import { useRefOptions } from "@renderer/components/settings/workflows/useRefOptions.js";
 import type { WorkflowDoc } from "@contracts/workflow";
 import { IconAdjustmentsHorizontal, IconInfoCircle } from "@renderer/lib/icons.js";
 
@@ -43,6 +45,12 @@ interface CriteriaRow {
   name: string;
   choices: string[];
   note: string;
+  /**
+   * 候选**现读**的来源(见 `NODE_CRITERIA_PARAM_KEY` 那段)。有它时 `choices` 是空的,
+   * 候选在渲染这一排时现拉 —— 用户的原话:「候选值是在用户用这个工作流的时候**现场当时
+   * 获取**的」。
+   */
+  source?: NodeParamRefSource;
 }
 
 /** 从文档的主节点参数袋里读出条件表。与 `ParamField` 的 `critRows` 同一条读法。 */
@@ -53,14 +61,31 @@ function criteriaRowsOf(doc: WorkflowDoc | null): CriteriaRow[] {
   const out: CriteriaRow[] = [];
   for (const item of raw) {
     if (typeof item !== "object" || item === null) continue;
-    const { name, choices, note } = item as { name?: unknown; choices?: unknown; note?: unknown };
+    const { name, choices, note, source } = item as {
+      name?: unknown;
+      choices?: unknown;
+      note?: unknown;
+      source?: unknown;
+    };
     if (typeof name !== "string" || name.trim() === "" || !Array.isArray(choices)) continue;
+    // 来源认不出来就**当手写候选**处理(而不是丢掉这一行):契约那一层会拒掉不认识的
+    // 来源,能走到这里的 source 要么合法、要么是别处写坏的存档 —— 丢掉的话用户会看到
+    // 一个凭空少掉的条件,那比"回落成手写候选"难查得多。
+    const src = NodeParamRefSourceSchema.safeParse(source);
+    const from = src.success ? src.data : undefined;
     // **空白候选值在这里滤掉。** 盘上会留着它们 —— 编辑态那个多行框得能按下回车,
     // 空行才留得住(见 ParamField 的 `toCriteria`),所以过滤的责任落在显示这一头:
     // 不然编辑时按下的每个回车都会在下拉里变成一个看不见的空选项。
     const list = choices.filter((c): c is string => typeof c === "string" && c.trim() !== "");
-    if (list.length === 0) continue;
-    out.push({ name, choices: list, note: typeof note === "string" ? note : "" });
+    // 现读来源的行**允许空候选**(候选根本不写在盘上);手写的那些照旧要求至少一条,
+    // 否则它是个摆不出来的空下拉。
+    if (list.length === 0 && from === undefined) continue;
+    out.push({
+      name,
+      choices: list,
+      note: typeof note === "string" ? note : "",
+      ...(from !== undefined ? { source: from } : {}),
+    });
   }
   return out;
 }
@@ -174,46 +199,98 @@ export function SearchFilterBar({ workflowId }: { workflowId: string }) {
           </Tooltip.Portal>
         </Tooltip.Root>
       </span>
-      {conditions.map((cond) => {
-        const current = values?.[cond.name] ?? "";
-        return (
-          <label key={cond.name} className="flex min-w-0 flex-1 basis-0 items-center gap-1.5">
-            {/* 条件名上挂着解释(配置时写给模型的那句):悬停可见 —— 用户看得见
-                "选它是什么口径",不必切回设置页翻。
-
-                **名字可伸缩、能截断**（2026-09-22 改）：均分之后每格宽度固定，
-                名字比那一格还长时必须让位给下拉 —— 下拉里的字才是用户要读的。
-
-                ⚠️ `min-w-0` 是给 `truncate` 用的（flex 项默认 `min-width:auto`，
-                不加的话截不断，长名字会把整格撑破）。 */}
-            <span
-              className="min-w-0 shrink truncate text-[0.7857em] text-content-subtle"
-              title={cond.note !== "" ? `${cond.name} — ${cond.note}` : cond.name}
-            >
-              {cond.name}
-            </span>
-            {/* **下拉均分那一格的剩余宽度**（`flex-1 min-w-0`）。
-                长选项由原生 `select` 截断显示，`title` 兜底让悬停能看全 ——
-                用户明确说了"不管里面的选项的长度"。 */}
-            <select
-              value={current}
-              onChange={(e) => pick(cond.name, e.target.value)}
-              title={current === "" ? undefined : current}
-              // 原生的 select:它在这个位置比自绘弹层稳(输入框区域已经有一层
-              // base-ui 的 portal),而这里要的就是"点开、选一个"这么简单的事。
-              className="min-w-0 flex-1 rounded border border-edge bg-surface/40 px-1.5 py-0.5 text-[0.7857em] text-content-muted outline-none hover:text-content focus:border-accent"
-            >
-              {/* 未设的显示「—」:诚实的空态 —— 它在提示词里也不存在,两头一致。 */}
-              {current === "" && <option value="">—</option>}
-              {cond.choices.map((choice) => (
-                <option key={choice} value={choice}>
-                  {choice}
-                </option>
-              ))}
-            </select>
-          </label>
-        );
-      })}
+      {conditions.map((cond) => (
+        <CriteriaDropdown key={cond.name} cond={cond} current={values?.[cond.name] ?? ""} onPick={pick} />
+      ))}
     </div>
+  );
+}
+
+/**
+ * 一个条件的下拉 —— **必须单独成组件**,因为候选现读要走 `useRefOptions` 那个 hook,
+ * 而 hook 不能写在 `map` 的回调里(条件个数是运行期才知道的)。
+ *
+ * ## 候选从哪来,两种读法
+ *
+ * - **手写**(没有 `source`):`cond.choices` 就是盘上那份,原样摆出来;
+ * - **现读**(有 `source`):候选在**这一刻**从 `useRefOptions(source)` 拉 —— 分类、
+ *   项目这些是用户自己的数据,写清单的人不可能知道。
+ *
+ * ⚠️ **现读那一支要处理"还没拉到"**:`useRefOptions` 的第一帧必是空数组(异步的),
+ * 而空下拉比输入框更糟(它看着像有选项)。所以空的时候摆一个**禁用的** `—`,并在
+ * 拿不到候选时如实说"暂时没有可选的"。这正是固定条件一贯的取舍:宁可显示"没有",
+ * 不要显示一个骗人的空列表。
+ */
+function CriteriaDropdown({
+  cond,
+  current,
+  onPick,
+}: {
+  cond: CriteriaRow;
+  current: string;
+  onPick: (name: string, value: string) => void;
+}) {
+  const { t } = useI18n();
+  // **无条件调用**(hooks 的规矩),`from` 缺席时 hook 内部会挑一个不会发请求的分支 ——
+  // 它按 `from` 决定拉什么,而 `undefined` 不是合法的来源,所以这里只在有 source 时才
+  // 需要它的结果。用一个哨兵来源(`"skills"` 是最便宜的:它读 store,不发 IPC)顶替,
+  // 免得 hooks 数随条件变。
+  const options = useRefOptions(cond.source ?? "skills");
+  const live = cond.source !== undefined;
+  const choices = live
+    ? options.map((o) => o.id)
+    : cond.choices;
+  // 现读那一支:候选 id 是**不透明的**(`lc_xxx`),下拉里要显示可读名。
+  const labelOf = (value: string): string => {
+    if (!live) return value;
+    return options.find((o) => o.id === value)?.label ?? value;
+  };
+  // 选过、但这一次拉回来的候选里没有它(分类被删了 / 换了工作流)—— 也要能显示出来,
+  // 否则下拉会突然跳回「—」,看起来像"我的选择被清了"。
+  const orphaned = live && current !== "" && !choices.includes(current);
+
+  return (
+    <label className="flex min-w-0 flex-1 basis-0 items-center gap-1.5">
+      {/* 条件名上挂着解释(配置时写给模型的那句):悬停可见 —— 用户看得见
+          "选它是什么口径",不必切回设置页翻。
+
+          **名字可伸缩、能截断**（2026-09-22 改）：均分之后每格宽度固定，
+          名字比那一格还长时必须让位给下拉 —— 下拉里的字才是用户要读的。
+
+          ⚠️ `min-w-0` 是给 `truncate` 用的（flex 项默认 `min-width:auto`，
+          不加的话截不断，长名字会把整格撑破）。 */}
+      <span
+        className="min-w-0 shrink truncate text-[0.7857em] text-content-subtle"
+        title={cond.note !== "" ? `${cond.name} — ${cond.note}` : cond.name}
+      >
+        {cond.name}
+      </span>
+      {/* **下拉均分那一格的剩余宽度**（`flex-1 min-w-0`）。
+          长选项由原生 `select` 截断显示，`title` 兜底让悬停能看全 ——
+          用户明确说了"不管里面的选项的长度"。 */}
+      <select
+        value={current}
+        onChange={(e) => onPick(cond.name, e.target.value)}
+        title={current === "" ? undefined : labelOf(current)}
+        // 现读的候选还没到 → 禁用。点开一个空下拉会让人以为软件坏了。
+        disabled={live && choices.length === 0}
+        // 原生的 select:它在这个位置比自绘弹层稳(输入框区域已经有一层
+        // base-ui 的 portal),而这里要的就是"点开、选一个"这么简单的事。
+        className="min-w-0 flex-1 rounded border border-edge bg-surface/40 px-1.5 py-0.5 text-[0.7857em] text-content-muted outline-none hover:text-content focus:border-accent disabled:opacity-50"
+      >
+        {/* 未设的显示「—」:诚实的空态 —— 它在提示词里也不存在,两头一致。 */}
+        {current === "" && <option value="">—</option>}
+        {/* 选过但这次拉不到的:留着它,别让下拉跳回「—」。 */}
+        {orphaned && <option value={current}>{labelOf(current)}</option>}
+        {live && choices.length === 0 && (
+          <option value="">{t("chat.nodeCriteria.noOptions")}</option>
+        )}
+        {choices.map((choice) => (
+          <option key={choice} value={choice}>
+            {labelOf(choice)}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }

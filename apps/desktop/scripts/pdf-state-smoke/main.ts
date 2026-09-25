@@ -77,7 +77,7 @@ function mk(
   job: DownloadJob["status"] | null,
   error?: string,
 ): LibraryItem {
-  const item = LibraryRepo.upsert({ id, kind: "paper", title: `t-${id}`, doi: `10.1/${id}` });
+  const item = LibraryRepo.upsert({ id, title: `t-${id}`, doi: `10.1/${id}` });
   if (pdfRelPath) LibraryRepo.setPdf(item.id, pdfRelPath, "sha-" + id);
   if (job) {
     DownloadJobRepo.enqueue(item.id);

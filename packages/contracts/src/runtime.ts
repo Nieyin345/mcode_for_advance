@@ -1198,8 +1198,6 @@ export interface LibraryItemImportedEvent {
   sessionId: string;
   /** 入库的那条条目。 */
   itemId: string;
-  /** 条目的类型(注册表里的 kind)。 */
-  kind: string;
   title: string;
 }
 
@@ -1235,8 +1233,6 @@ export interface LibraryItemDownloadedEvent {
   sessionId: string;
   /** 下到 PDF 的那条条目。 */
   itemId: string;
-  /** 条目的类型(注册表里的 kind)。 */
-  kind: string;
   title: string;
   /** PDF 在**库内的相对路径**(`LibraryItem.pdfPath` 的原样)。 */
   pdfPath: string;

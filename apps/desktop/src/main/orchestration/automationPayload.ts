@@ -81,7 +81,7 @@ export interface TriggerPayloadFacts {
   /**
    * 「这件事是关于哪一条」—— 只有资料库那两个事件有(见 `TriggerPayload.items`)。
    *
-   * 它在这里是**拍平**的(`itemId` / `itemKind` / `itemTitle` / `pdfPath`),不是嵌一层
+   * 它在这里是**拍平**的(`itemId` / `itemTitle` / `pdfPath`),不是嵌一层
    * 对象:变量系统认的是**平面**的 `{{trigger.<key>}}`(同 `kind` / `at` / `files`),
    * 嵌一层的话用户得写 `{{trigger.item.itemId}}`,而 `expandTriggerVars` 只按字面查一个
    * 键,解不出来。名字带 `item` 前缀正是为了不和 `kind` 撞(见 `HOOK_EVENT_ITEM_FACT_FIELDS`)。
@@ -93,12 +93,32 @@ export interface TriggerPayloadFacts {
    * 计数看 {@link TriggerPayloadFacts.itemCount}。
    */
   itemId?: string;
-  itemKind?: string;
   itemTitle?: string;
   /** 库内**相对**路径 —— 绝对路径要消费方自己拼库根(同事件载荷里那个字段)。 */
   pdfPath?: string;
   /** 这次合并窗口里一共攒了几条(资料库那两个事件才有)。只有一条时不出现。 */
   itemCount?: number;
+  /**
+   * **这次窗口里的全部条目**(可能不止一条)。与上面那三个单数字段的差别是
+   * **一个都不少**。
+   *
+   * ## 为什么非有它不可(2026-09-24 补)
+   *
+   * 上面那三个字段是**拍平的第一条** —— 那是给 `{{trigger.itemId}}` 这种**文本插值**
+   * 用的(多条的情形写在 `describeTriggerPayload` 那段人话里,给读人话的模型看)。
+   * 但**代码节点不读人话**:它的 stdin 收到的是这份事实对象本身(`data.trigger`),
+   * 按字段取值。只给第一条的话,合并窗口里"两篇同时下完"时 **code 节点只会转第一篇,
+   * 另一篇静默漏掉** —— 而那正是「下载完自动转 Markdown」这条自动化最常遇到的形状
+   * (下载是并发跑的)。
+   *
+   * 所以这里再给一份**结构化的**完整列表。多出来的那点载荷是划算的:漏一条的代价是
+   * 那篇**永远没人转**,而且不报错。
+   *
+   * 形状是**数组套对象**而不是几个平行数组:消费方(那段 Python)要按条取
+   * `items[i]["itemId"]` / `items[i]["pdfPath"]`,而平行数组一旦哪个短了一截,
+   * 就会取到别人那一条 —— 那种错位同样不报错,只是转错了论文。
+   */
+  items?: ReadonlyArray<{ itemId?: string; itemTitle?: string; pdfPath?: string }>;
 }
 
 /** 从载荷里取平面事实。**纯函数**:拷贝数组,调用方改不动原载荷。 */
@@ -121,6 +141,15 @@ export function payloadFactsOf(payload: TriggerPayload): TriggerPayloadFacts {
         ...(payload.toolName !== undefined ? { toolName: payload.toolName } : {}),
         ...(payload.subjects !== undefined ? { subjects: [...payload.subjects] } : {}),
         ...(first ?? {}),
+        // **全部条目**都要给(见 `TriggerPayloadFacts.items`)—— 代码节点按它逐条办。
+        // 只有一条时也给,让消费方不必写两套读法(单条在数组里就是一个元素)。
+        //
+        // ⚠️ **空数组不给键**,与 `itemCount` 同一口径:载荷里多一个恒空的 `items`
+        // 会让「这次带得出哪几项」这个问题多一个永远为假的答案,而消费方还得为它写
+        // 一个分支。
+        ...(payload.items !== undefined && payload.items.length > 0
+          ? { items: payload.items.map((it) => ({ ...it })) }
+          : {}),
         ...(payload.items !== undefined && payload.items.length > 1 ? { itemCount: payload.items.length } : {}),
       };
     }
@@ -170,7 +199,8 @@ export function mergeEventPayload(
   };
 }
 
-/** 把载荷渲染成一段平实的话(整段就是提示词里 `task` 之后那一半)。 */export function describeTriggerPayload(payload: TriggerPayload): string {
+/** 把载荷渲染成一段平实的话(整段就是提示词里 `task` 之后那一半)。 */
+export function describeTriggerPayload(payload: TriggerPayload): string {
   switch (payload.kind) {
     case "manual":
       return "手动运行了一次。";
@@ -232,8 +262,8 @@ function itemBlock(
 
 /** 一条的几行(见 {@link itemBlock})。 */
 function oneItem(item: Partial<Record<EventItemFactKey, string>>, ordinal?: number): string {
+  // （itemKind 随 kind 退役删除。）
   const bits = [
-    item.itemKind !== undefined ? `类型 ${item.itemKind}` : "",
     item.itemId !== undefined ? `id=${item.itemId}` : "",
   ].filter(Boolean);
   const head = item.itemTitle !== undefined ? item.itemTitle : "(没给标题)";

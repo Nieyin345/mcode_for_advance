@@ -6,7 +6,7 @@
  * 没下到 PDF」。
  */
 import type { LibraryItem, PdfState } from "@contracts/library";
-import { formatAuthorList, needsMetadata, type LibraryKind } from "@contracts/library";
+import { formatAuthorList, needsMetadata } from "@contracts/library";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { cn } from "@renderer/lib/cn.js";
 import {
@@ -21,8 +21,6 @@ import {
 } from "@renderer/lib/icons.js";
 
 interface Props {
-  /** 当前在哪个库 —— 只影响空态文案:笔记库收的是 md,另外两个库收 PDF 再转录。 */
-  kind: LibraryKind;
   items: LibraryItem[];
   pdfStateOf: (item: LibraryItem) => PdfState;
   activeId: string | null;
@@ -103,7 +101,6 @@ export function PdfBadge({ state, compact = false }: { state: PdfState; compact?
 }
 
 export function ItemList({
-  kind,
   items,
   pdfStateOf,
   activeId,
@@ -141,10 +138,10 @@ export function ItemList({
       <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
         <IconCircleCheck size={28} className="text-content-subtle" />
         <div className="text-sm text-content-muted">
-          {kind === "note" ? t("library.list.emptyNote") : t("library.list.empty")}
+          t("library.list.empty")
         </div>
         <div className="max-w-xs text-xs text-content-subtle">
-          {kind === "note" ? t("library.list.emptyHintNote") : t("library.list.emptyHint")}
+          t("library.list.emptyHint")
         </div>
         <div className="flex items-center gap-2 pt-1">
           <button
@@ -152,7 +149,7 @@ export function ItemList({
             className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-xs text-white hover:opacity-90"
           >
             <IconUpload size={13} />
-            {kind === "note" ? t("library.import.pickNote") : t("library.import.pickPdf")}
+            t("library.import.pickFile")
           </button>
           <button
             onClick={onSearch}
@@ -226,8 +223,8 @@ export function ItemList({
                 {t("library.list.needsMetaShort")}
               </span>
             )}
-            {/* 笔记本来就没有 PDF,给每一行挂一个「没有 PDF」是纯噪音 */}
-            {kind !== "note" && <PdfBadge state={state} compact />}
+            {/* 纯 md 条目本来就没有 PDF,给它挂「没有 PDF」是纯噪音 */}
+            {!item.mdPath && <PdfBadge state={state} compact />}
             {isActive && (
               <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
             )}
