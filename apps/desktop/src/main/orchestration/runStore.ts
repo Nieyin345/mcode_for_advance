@@ -10,7 +10,8 @@
  *
  * 有了这一份,点击就能**接回去**:知道停在哪一格、知道前面几步已经做过什么、知道
  * 上次在别的岔路口选过什么(见 `RunState`)。节点会话是回不来的(它们随进程一起没了),
- * 所以**跑到一半的那一步会重跑** —— 这是这一版明说的代价,不是缺陷。
+ * 所以中断时仍在执行的步骤可能带未确认副作用,**不可自动重放**:先核对结果,
+ * 再由用户重新发起运行。
  *
  * ## 什么时候写
  *
@@ -47,8 +48,8 @@
  * interrupted ──────────┘
  * ```
  *
- * 节点层面的生命周期(ready → running → settled)归调度器;这里只落**定案之后**的
- * `NodeOutcome`(见 `RunState.outcomes`)。
+ * 节点层面的生命周期(ready → running → settled)归调度器;这里同时记录
+ * 派发前同步落盘的在飞标记与定案后的 `NodeOutcome`。
  *
  * **单一真相**:
  *
@@ -60,6 +61,7 @@
  */
 import { log } from "@main/lib/logger.js";
 import { WorkflowRunRepo, type WorkflowRunStatus } from "@main/store/repositories.js";
+import { persistNowOrThrow } from "@main/store/db.js";
 import type { RunState } from "./scheduler.js";
 import { WORKFLOW_RUN_SNAPSHOT_VERSION, type WorkflowRunIdentity } from "@contracts/runtime";
 import { NODE_OUTCOME_STATUSES, type NodeOutcome } from "@contracts/nodeType";
@@ -104,6 +106,12 @@ export interface RunSnapshot {
   version?: typeof WORKFLOW_RUN_SNAPSHOT_VERSION;
   /** Wall-clock time at which this snapshot was captured. */
   capturedAt?: number;
+  /** Hash of the graph used at run start. Optional only for old history:
+   * runner refuses to resume a snapshot without it. */
+  workflowRevision?: string;
+  /** Nodes dispatched but not yet settled at capture. A crash may leave
+   * external writes/commands completed without an outcome; replay is unsafe. */
+  inFlightNodeIds?: string[];
   prompt: string;
   cwd: string;
   state: RunState;
@@ -146,10 +154,9 @@ function encode(snapshot: RunSnapshot): string {
  * - **没有 `version` 的一律当旧版读**(向后兼容旧存档);带了不认识的版本才拒绝 ——
  *   那是"未来进程"写的,硬读只会炸在更深处。
  * - **容器坏了**(缺 `state` / 缺 `cwd` / 整段不是 JSON)→ 整份 `null`,当过期卡。
- * - **个别元素坏了**(坏元组、坏结局)→ **只丢那一个元素**,其余照读。丢一个结局的
- *   代价是那个节点重跑一次(与"跑到一半的那步会重跑"同一代价),丢一个选择的代价
- *   与"老存档没有 picks"完全相同 —— 都比把整份能用的存档扔掉温和。丢
- *   `picks` / `outcomes` 元素时会记一行日志:它们影响续跑语义,不该悄悄丢。
+ * - **已绑定图版本的存档如果关键状态坏了,整份拒读**。丢一个成功结局
+ *   就可能重跑文件写入/命令;丢一个选择也可能唤醒错误支路。旧存档可宽松
+ *   读取供历史展示,但没有图版本本来就不能续跑。
  */
 export function decodeSnapshot(raw: string): RunSnapshot | null {
   try {
@@ -157,6 +164,8 @@ export function decodeSnapshot(raw: string): RunSnapshot | null {
     const parsed = JSON.parse(raw) as {
       version?: unknown;
       capturedAt?: unknown;
+      workflowRevision?: unknown;
+      inFlightNodeIds?: unknown;
       prompt?: unknown;
       cwd?: unknown;
       attempts?: unknown;
@@ -170,6 +179,12 @@ export function decodeSnapshot(raw: string): RunSnapshot | null {
       };
     };
     if (parsed.version !== undefined && parsed.version !== WORKFLOW_RUN_SNAPSHOT_VERSION) return null;
+    // A malformed pin is not an unknown/legacy pin. Never silently drop it.
+    if (parsed.workflowRevision !== undefined &&
+      (typeof parsed.workflowRevision !== "string" || !/^[0-9a-f]{64}$/.test(parsed.workflowRevision))) return null;
+    if (parsed.inFlightNodeIds !== undefined &&
+      (!Array.isArray(parsed.inFlightNodeIds) || parsed.inFlightNodeIds.length > 1000 ||
+        !parsed.inFlightNodeIds.every((id): id is string => typeof id === "string" && id.length > 0))) return null;
     const state = parsed.state;
     if (typeof state !== "object" || state === null) return null;
     if (!Array.isArray(state.record) || !Array.isArray(state.outcomes)) return null;
@@ -183,15 +198,33 @@ export function decodeSnapshot(raw: string): RunSnapshot | null {
     const awaiting = (Array.isArray(state.awaiting) ? state.awaiting : []).filter(
       (x): x is string => typeof x === "string",
     );
+    // A pinned snapshot may be resumed. Dropping a corrupt outcome/pick would
+    // silently replay an already executed command or change the chosen path.
+    // Older unpinned snapshots remain readable for history only.
+    if (parsed.workflowRevision !== undefined && (
+      record.length !== state.record.length ||
+      outcomes.length !== state.outcomes.length ||
+      !Array.isArray(state.rounds) || rounds.length !== state.rounds.length ||
+      !Array.isArray(state.picks) || picks.length !== state.picks.length ||
+      !Array.isArray(state.awaiting) || awaiting.length !== state.awaiting.length ||
+      !Array.isArray(parsed.attempts) || parsed.attempts.filter(isCountTuple).length !== parsed.attempts.length ||
+      typeof parsed.prompt !== "string" ||
+      (state.entry !== undefined && !isRunEntry(state.entry))
+    )) {
+      log.warn("workflow run snapshot: 已绑定图版本的状态损坏,拒绝续跑以避免重复副作用");
+      return null;
+    }
     if (record.length !== state.record.length || outcomes.length !== state.outcomes.length) {
-      log.warn("workflow run snapshot: 丢了读不回来的 record/outcomes 元素,相关节点续跑时会重跑");
+      log.warn("workflow run snapshot: 旧快照存在损坏的 record/outcomes 元素,仅供历史查看,不可安全续跑");
     }
     if (Array.isArray(state.picks) && picks.length !== state.picks.length) {
-      log.warn("workflow run snapshot: 丢了读不回来的岔路口选择,对应的没走支路会被当作还活着");
+      log.warn("workflow run snapshot: 旧快照存在损坏的岔路口选择,仅供历史查看,不可安全续跑");
     }
     return {
       version: WORKFLOW_RUN_SNAPSHOT_VERSION,
       capturedAt: typeof parsed.capturedAt === "number" && Number.isFinite(parsed.capturedAt) ? parsed.capturedAt : 0,
+      ...(parsed.workflowRevision !== undefined ? { workflowRevision: parsed.workflowRevision as string } : {}),
+      ...(parsed.inFlightNodeIds !== undefined ? { inFlightNodeIds: parsed.inFlightNodeIds as string[] } : {}),
       prompt: typeof parsed.prompt === "string" ? parsed.prompt : "",
       cwd: parsed.cwd,
       state: {
@@ -268,8 +301,11 @@ function isRunEntry(
 /**
  * 写下这次运行此刻的样子(第一次写就是建行)。
  *
- * **失败只记一行日志,不往上抛。** 存档是"用户下次能接着跑"的保险,而它坏掉不该让
- * **这一次**运行跟着死 —— 那等于为了防丢而先丢。
+ * **失败只记日志,不往上抛;但把是否成功返回给调用方。** 普通进度快照
+ * 可以继续尽力写,而节点派发前的在飞标记一旦无法持久化,调用方必须停止
+ * 执行,否则重启后会在不知副作用是否发生的情况下重放该节点。
+ * `opts.durable` 为真时额外同步替换磁盘数据库;仅完成内存表写入或预约微任务
+ * 不能算成功。返回 false 时调用方不得执行新的节点。
  */
 export function saveRun(args: {
   runId: string;
@@ -277,8 +313,9 @@ export function saveRun(args: {
   workflowId: string;
   status: WorkflowRunStatus;
   snapshot: RunSnapshot;
-}): void {
+}, opts: { durable?: boolean } = {}): boolean {
   let payload: string;
+  let encoded = true;
   try {
     payload = encode({ ...args.snapshot, version: WORKFLOW_RUN_SNAPSHOT_VERSION, capturedAt: Date.now() });
   } catch (err) {
@@ -286,6 +323,7 @@ export function saveRun(args: {
     // `decodeSnapshot` 会认出来它读不回来,而"这次运行存在过"仍然查得到。
     log.warn(`workflow run ${args.runId}: 存档编码失败 ${(err as Error).message}`);
     payload = "";
+    encoded = false;
   }
   try {
     WorkflowRunRepo.save({
@@ -296,8 +334,11 @@ export function saveRun(args: {
       payload,
       awaiting: args.snapshot.state.awaiting,
     });
+    if (opts.durable) persistNowOrThrow();
+    return encoded;
   } catch (err) {
     log.warn(`workflow run ${args.runId}: 存档写不进去 ${(err as Error).message}`);
+    return false;
   }
 }
 

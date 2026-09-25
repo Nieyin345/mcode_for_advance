@@ -15,6 +15,14 @@ import { HookSpecSchema } from "../hook.js";
 export const WorkflowGetSchema = z.object({ id: z.string().min(1) });
 export type WorkflowGetInput = z.infer<typeof WorkflowGetSchema>;
 
+/** Approve only the persisted revision shown to the user by workflow.get.
+ * Supplying a full document would let the caller approve a different graph. */
+export const WorkflowApproveSchema = z.object({
+  id: z.string().min(1),
+  revision: z.string().regex(/^[0-9a-f]{64}$/),
+});
+export type WorkflowApproveInput = z.infer<typeof WorkflowApproveSchema>;
+
 /** 存一份工作流。`workflow.id` 就是主键 —— 对内置 id 来说,存进去就是**覆盖它的
  *  默认版**(所以内置工作流可以直接改);「恢复默认」= 删掉那条覆盖。 */
 export const WorkflowSaveSchema = z.object({ workflow: WorkflowDocSchema });

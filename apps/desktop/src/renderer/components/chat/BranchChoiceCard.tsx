@@ -43,7 +43,7 @@ export function BranchChoiceCard({ block }: { block: BranchChoiceBlock }) {
   const [picked, setPicked] = useState("");
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState(false);
-  const [stale, setStale] = useState(false);
+  const [stale, setStale] = useState<string | null>(null);
 
   const chosen = block.chosen;
   const chosenLabel =
@@ -64,7 +64,7 @@ export function BranchChoiceCard({ block }: { block: BranchChoiceBlock }) {
   const send = async (edgeId: string): Promise<void> => {
     if (sessionId === null || busy) return;
     setBusy(true);
-    setStale(false);
+    setStale(null);
     try {
       const text = comment.trim();
       const res = await api.workflow.choose({
@@ -74,11 +74,11 @@ export function BranchChoiceCard({ block }: { block: BranchChoiceBlock }) {
         edgeId,
         ...(text.length > 0 ? { comment: text } : {}),
       });
-      if (!res.ok) setStale(true);
+      if (!res.ok) setStale(res.error ?? t("chatStream.workflowChoice.stale"));
       // 成功的话这里**什么都不用做**:主进程会把第二次 `workflow.node.choice` 发回来,
       // store 把这张卡换成"你选了 X"(见 `sessionStore` 里那条分支)。
     } catch {
-      setStale(true);
+      setStale(t("chatStream.workflowChoice.stale"));
     } finally {
       setBusy(false);
     }
@@ -182,7 +182,7 @@ export function BranchChoiceCard({ block }: { block: BranchChoiceBlock }) {
               {t("chatStream.workflowChoice.stop")}
             </button>
             {stale && (
-              <span className="text-content-subtle">{t("chatStream.workflowChoice.stale")}</span>
+              <span className="text-content-subtle">{stale}</span>
             )}
           </div>
         </>

@@ -10,6 +10,8 @@ export const en = {
   "store.toast.errorOccurred": "Error occurred",
   "store.toast.turnComplete": "Turn complete",
   "store.toast.turnCompleteBody": "The agent has finished this turn",
+  "store.toast.outputTruncated": "Output may be truncated",
+  "store.toast.outputTruncatedBody": "This turn reached the output limit. The response may be incomplete; review it and continue if needed.",
   "store.toast.turnIncomplete": "Task ended early",
   "store.toast.forkFailed": "Couldn't duplicate the conversation",
 } as const;

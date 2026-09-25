@@ -153,6 +153,15 @@ class NotificationManager {
       // 的结束 —— 图可能还有五步没跑,而这一条会弹一句「回合完成」。调度器把整张图
       // 的收口扣住了(见 `RuntimeManager.holdTurnEnd`),这里照着那条判据挡一下。
       if (runtimeManager.isTurnEndHeld(e.sessionId)) return null;
+      // A length-limited turn has ended, but its answer may be partial. Keep
+      // the notification (under the turnComplete preference), without claiming
+      // that the agent finished the task. No error event accompanies this case.
+      if (e.reason === "max_tokens") {
+        return {
+          title: "输出可能被截断",
+          body: `${this.sessionTitle(e.sessionId)}: 本轮输出已达到长度上限，回复可能不完整；请检查结果并继续。`,
+        };
+      }
       return {
         title: "回合完成",
         body: `${this.sessionTitle(e.sessionId)}: Agent 已完成本轮任务`,

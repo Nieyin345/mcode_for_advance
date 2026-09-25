@@ -187,6 +187,8 @@ export function ParamField({
           onChange={(e) => onChange(e.target.value)}
           className="min-h-[90px] w-full resize-y rounded border border-edge bg-surface px-2 py-1 text-[0.7857em] leading-relaxed text-content placeholder:text-content-subtle focus:border-accent focus:outline-none"
         />
+      ) : spec.kind === "conditions" ? (
+        <ConditionTable value={value} onChange={onChange} insertables={insertables} />
       ) : spec.kind === "variables" ? (
         <VariableTable value={value} onChange={onChange} />
       ) : spec.kind === "selects" ? (
@@ -266,10 +268,98 @@ export function ParamField({
       )}
       {/* 「插入变量」跟着 longtext 的框走(上面那个 areaRef)。selects 的候选值是给
           下拉框用的**字面量**(选中哪个原样注入),没有插变量的份。 */}
-      {insertables && spec.kind !== "selects" && (
+      {insertables && spec.kind !== "selects" && spec.kind !== "conditions" && (
         <InsertVarMenu groups={insertables} onPick={insertAt} />
       )}
     </Field>
+  );
+}
+
+/** 条件参数是结构化 JSON,右侧比较文本绝不经过模板展开。引用菜单只改 ref。 */
+function ConditionTable({
+  value, onChange, insertables,
+}: {
+  value: unknown;
+  onChange: (value: unknown) => void;
+  insertables?: InsertableGroup[];
+}) {
+  const { t } = useI18n();
+  type Rule = { ref: string; op: "exists" | "equal" | "contains"; value?: string };
+  const raw = typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
+  const logic = raw.logic === "or" ? "or" : "and";
+  const rules: Rule[] = (Array.isArray(raw.rules) ? raw.rules : []).map((item) => {
+    const r = typeof item === "object" && item !== null ? item as Record<string, unknown> : {};
+    const op = r.op === "equal" || r.op === "contains" ? r.op : "exists";
+    return { ref: typeof r.ref === "string" ? r.ref : "", op,
+      ...(op !== "exists" ? { value: typeof r.value === "string" ? r.value : "" } : {}) };
+  });
+  const update = (next: Rule[]): void => onChange({ logic, rules: next });
+  const change = (index: number, patch: Partial<Rule>): void =>
+    update(rules.map((r, i) => i === index ? { ...r, ...patch } : r));
+  const ops = ["exists", "equal", "contains"] as const;
+  const opLabel = (op: Rule["op"]): string => t(`settings.workflows.condition.${op}`);
+
+  return (
+    <div className="space-y-2 rounded border border-edge bg-surface p-2 text-[0.7857em]">
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 text-content-muted">{t("settings.workflows.condition.logic")}</span>
+        <Select.Root value={logic} onValueChange={(v) => onChange({ logic: v, rules })}>
+          <Select.Trigger className="min-w-[110px] flex-1">
+            <Select.Value>{logic === "and" ? t("settings.workflows.condition.and") : t("settings.workflows.condition.or")}</Select.Value>
+          </Select.Trigger>
+          <Select.Portal><Select.Positioner className="z-50"><Select.Popup><Select.List>
+            <Select.Item value="and"><Select.ItemText>{t("settings.workflows.condition.and")}</Select.ItemText></Select.Item>
+            <Select.Item value="or"><Select.ItemText>{t("settings.workflows.condition.or")}</Select.ItemText></Select.Item>
+          </Select.List></Select.Popup></Select.Positioner></Select.Portal>
+        </Select.Root>
+      </div>
+      {rules.map((rule, index) => (
+        <div key={index} className="space-y-1 rounded border border-edge bg-surface-muted p-1.5">
+          <div className="flex items-center gap-1">
+            <Input
+              value={rule.ref}
+              spellCheck={false}
+              aria-label={t("settings.workflows.condition.ref")}
+              placeholder={t("settings.workflows.condition.ref")}
+              onChange={(e) => change(index, { ref: e.target.value })}
+            />
+            {insertables && <InsertVarMenu groups={insertables} onPick={(ref) => change(index, { ref })} />}
+            <Button
+              variant="secondary" size="sm"
+              title={t("settings.workflows.condition.remove")}
+              onClick={() => update(rules.filter((_, i) => i !== index))}
+            ><IconX size={12} /></Button>
+          </div>
+          <Select.Root value={rule.op} onValueChange={(v) => {
+            const op = v as Rule["op"];
+            update(rules.map((r, i) => i === index ?
+              (op === "exists" ? { ref: r.ref, op } : { ref: r.ref, op, value: r.value ?? "" }) : r));
+          }}>
+            <Select.Trigger className="w-full">
+              <Select.Value>{opLabel(rule.op)}</Select.Value>
+            </Select.Trigger>
+            <Select.Portal><Select.Positioner className="z-50"><Select.Popup><Select.List>
+              {ops.map((op) => (
+                <Select.Item key={op} value={op}><Select.ItemText>{opLabel(op)}</Select.ItemText></Select.Item>
+              ))}
+            </Select.List></Select.Popup></Select.Positioner></Select.Portal>
+          </Select.Root>
+          {rule.op !== "exists" && (
+            <Input
+              value={rule.value ?? ""}
+              spellCheck={false}
+              aria-label={t("settings.workflows.condition.value")}
+              placeholder={t("settings.workflows.condition.value")}
+              onChange={(e) => change(index, { value: e.target.value })}
+            />
+          )}
+        </div>
+      ))}
+      <Button variant="secondary" size="sm" disabled={rules.length >= 32}
+        onClick={() => update([...rules, { ref: "", op: "exists" }])}>
+        <IconPlus size={12} />{t("settings.workflows.condition.add")}
+      </Button>
+    </div>
   );
 }
 

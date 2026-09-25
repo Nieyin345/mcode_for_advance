@@ -29,6 +29,7 @@ import { initAutoArchiver } from "@main/session/AutoArchiver.js";
 import { notificationManager } from "@main/notifications/NotificationManager.js";
 import { hookRunner } from "@main/hooks/HookRunner.js";
 import { automationRunner } from "@main/orchestration/automationRunner.js";
+import { hasActiveRun } from "@main/orchestration/runner.js";
 import { longTaskRunner } from "@main/longtask/taskRunner.js";
 import { is } from "@main/utils.js";
 import { preloadClaudeSdk } from "@main/providers/claude-sdk/ClaudeAgentSdkProvider.js";
@@ -178,6 +179,16 @@ app.whenReady().then(async () => {
     // 的一方，端口不开它就只能显示"未连接"，而用户并不知道要先去点一下设置页。
     // 失败也不拦启动（绑定失败已经写在 ensureStarted 里，只记日志）。
     void ensureStarted().catch(() => {});
+
+    // **告诉运行时"某个对话此刻有没有一张图在跑"** —— 代理互发消息时靠它决定该叫醒
+    // 还是该排队（见 `agentMail.canWake`：图跑着的时候从外面替节点起一轮，会把那一步的
+    // 产出弄废，而且不报错）。
+    //
+    // ⚠️ **注册在这里，不在 `orchestration/runner.ts` 的模块顶层。** 放那边的话，
+    // 任何 bundle 了调度器的无头 smoke 都会在 import 那一刻撞上一个换过桩的
+    // `runtimeManager`（那些桩没有这个方法），而报出来的是一句与它毫无关系的
+    // "registerRunGuard is not a function"。这里是应用真正的装配点，跑得着。
+    runtimeManager.registerRunGuard((sessionId) => hasActiveRun(sessionId));
 
     // 公网 MCP 端点（给 ChatGPT 的 Connector 用）：装配 SettingRepo 存取口，开关
     // 开着就把服务与「ChatGPT 直连」合成会话一并备好。默认关 —— 这条通路等于把本机

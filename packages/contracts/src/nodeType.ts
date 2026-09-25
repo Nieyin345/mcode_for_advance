@@ -70,6 +70,8 @@ import { z } from "zod";
 import { CapabilityRequirementSchema } from "./capability.js";
 import { TEMPLATE_KINDS } from "./templates.js";
 import { parseCron, type CronSpec } from "./cron.js";
+import { parseConditionExpression } from "./condition.js";
+export { NODE_CONDITION_EXPRESSION_KEY } from "./condition.js";
 import { HOOK_EVENTS, eventItemFactKeysOf, hookSubjectOf, splitGlobList, type HookEvent } from "./hook.js";
 import {
   WorkflowCapabilitySchema,
@@ -125,6 +127,9 @@ export const MAIN_NODE_TYPE_ID = "mcode.main";
  * 那一个"来做特判(比如插入菜单里不重复列)。
  */
 export const BRANCH_NODE_TYPE_ID = "mcode.branch";
+
+/** 内置的自动条件节点。识别执行语义始终看 runner.kind,此 id 只标识官方清单。 */
+export const CONDITION_NODE_TYPE_ID = "mcode.condition";
 
 /**
  * 内置的**触发器**节点类型 id —— 一条自动化的起点。
@@ -470,6 +475,7 @@ export const NODE_PARAM_KINDS = [
   "dir", // 目录路径
   "ref", // 从**这台机器上有什么**里挑 —— 哪些模型、哪些技能……(见 NODE_PARAM_REF_SOURCES)
   "variables", // 一张「名字 + 示例」的表(节点产出的变量,见 @contracts/outputConstraint)
+  "conditions", // AND/OR + exists/equal/contains 的受限条件表,不执行表达式
   // 一组**下拉条件** —— 主对话入口节点的**固定条件**:每一行(条件名 + 一串候选值 +
   // 一句可选的解释)变成聊天输入框上方的一个下拉框,选中的值随**那次对话第一轮**的
   // 工作流提示词注入("一贯的习惯,不要再问"那套)。与 `select` 的区别:`select` 是
@@ -614,6 +620,8 @@ export type NodeParamSpec = z.infer<typeof NodeParamSpecSchema>;
  */
 export const NodeRunnerSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("prompt") }),
+  /** 纯条件选择真假出边:不调用模型、不启动进程,不可作为环的人工闸门。 */
+  z.object({ kind: z.literal("condition") }),
   z.object({ kind: z.literal("code"), language: z.enum(["python", "node", "shell", "powershell"]).default("python") }),
   /**
    * **对话节点**:跑一轮模型,指令**当作主对话里的一条用户消息发出去** —— 主对话
@@ -1265,7 +1273,7 @@ export function isAskChoice(value: unknown): value is AskChoice {
  * 放在 contracts 而不是主进程,是因为渲染端也要用它:画布上那种节点要标出"这个节点
  * 当前跑不了",否则用户画好一张图、发消息,才发现有一格是死的。
  */
-export const IMPLEMENTED_RUNNER_KINDS = ["prompt", "conversation", "branch", "trigger", "command", "code"] as const;
+export const IMPLEMENTED_RUNNER_KINDS = ["prompt", "conversation", "branch", "condition", "trigger", "command", "code"] as const;
 export function isRunnerImplemented(kind: NodeRunnerKind): boolean {
   return (IMPLEMENTED_RUNNER_KINDS as readonly string[]).includes(kind);
 }
@@ -1591,6 +1599,10 @@ export function validateNodeParams(
         return { ok: false, error: `参数「${spec.label}」里有一项不是「名字 + 示例」` };
       }
     }
+    if (spec.kind === "conditions") {
+      const parsed = parseConditionExpression(value);
+      if (!parsed.ok) return { ok: false, error: `参数「${spec.label}」:${parsed.error}` };
+    }
     // 固定条件表:一项一项的 `{ name, choices[], note?, source? }`。**只查形状,容忍空行**
     // —— 编辑态里"刚点了加号还没填"的那一行必须存得下来;候选值空一行(用户打了个回车)
     // 也不算错,渲染端会把空串滤掉。`note`(给模型的一句解释)可选:老存档没有它,没填也合法。
@@ -1687,6 +1699,9 @@ function describeParam(p: NodeParamSpec): string {
     p.kind === "variables"
       ? `
       值的形状:[{ name: 变量名, example: 示例 }]`
+      : p.kind === "conditions"
+        ? `
+      值的形状:{ logic: "and" | "or", rules: [{ ref: "{{上游.字段}}", op: "exists" | "equal" | "contains", value: "字面文本"(后两种必填) }] }。真假出边的 label 必须分别是 true 和 false`
       : p.kind === "selects"
         ? `
       值的形状:[{ name: 条件名, choices: ["候选值", ...], note: 给模型的一句解释(可选) }] —— 一行一个下拉框,候选值就是下拉里能选的那些`

@@ -28,6 +28,7 @@ import { parseTriggerSpec, WORKFLOW_TRIGGER_OF_TRIGGER_KIND } from "@contracts/n
 import { WorkflowRepo } from "@main/store/repositories.js";
 import { BUILTIN_WORKFLOWS, getBuiltinWorkflow } from "./builtins.js";
 import { loadNodeTypes } from "./nodeTypes.js";
+import { clearWorkflowReview, requireWorkflowReview, workflowReviewError, type WorkflowOrigin } from "./workflowTrust.js";
 import { importWorkflowDoc as parseWorkflowText, validateWorkflowDoc, exportWorkflowDoc } from "./workflowValidation.js";
 
 function summarize(doc: WorkflowDoc, builtin: boolean, edited: boolean): WorkflowListEntry {
@@ -82,7 +83,11 @@ export function getWorkflow(id: string): WorkflowDoc | null {
  *  注入。**这是把提示词解析从 provider 搬到 host 的那一步**(见方案),provider
  *  从此只负责 append 一段字符串。 */
 export function getWorkflowPrompt(id: string): string | undefined {
-  const text = getWorkflow(id)?.prompt;
+  const doc = getWorkflow(id);
+  // A direct provider turn can bypass the graph runner (e.g. a prompt-only
+  // workflow). Never inject unreviewed instructions into such a turn.
+  if (doc === null || workflowReviewError(doc) !== null) return undefined;
+  const text = doc.prompt;
   return text && text.length > 0 ? text : undefined;
 }
 
@@ -98,7 +103,10 @@ export type SaveResult = { ok: true } | { ok: false; error: string };
  *  ⚠️ **类型认不出来不算错。** 一份别人分享来的工作流,在这台机器上可能引用了没装的
  *  节点类型(见 `@contracts/workflow` 文件头)。那种节点只记 warning、跳过参数校验,
  *  图照样能存能看 —— 只是跑不了。把"类型缺失"做成硬错误会让工作流没法分享。 */
-export async function saveWorkflow(doc: WorkflowDoc): Promise<SaveResult> {
+export async function saveWorkflow(
+  doc: WorkflowDoc,
+  opts: { untrustedOrigin?: WorkflowOrigin } = {},
+): Promise<SaveResult> {
   const types = new Map((await loadNodeTypes()).entries.map((e) => [e.id, e.manifest]));
 
   // **质量闸门(WF-09)**:整份文档先过一遍结构化校验(见 `workflowValidation.ts` 的
@@ -138,7 +146,12 @@ export async function saveWorkflow(doc: WorkflowDoc): Promise<SaveResult> {
     .filter((w) => w.id !== doc.id)
     .map((w) => w.name);
 
-  WorkflowRepo.save({ ...derived.doc, name: uniqueWorkflowName(derived.doc.name, others), updatedAt: Date.now() });
+  const saved = { ...derived.doc, name: uniqueWorkflowName(derived.doc.name, others), updatedAt: Date.now() };
+  // The marker is written first: even a crash after this point cannot leave
+  // an imported/AI-edited executable doc trusted by default. Validation has
+  // already finished, so rejected imports do not disarm the previous version.
+  if (opts.untrustedOrigin) requireWorkflowReview(saved.id, opts.untrustedOrigin);
+  WorkflowRepo.save(saved);
   return { ok: true };
 }
 
@@ -213,6 +226,7 @@ export function removeWorkflow(id: string): { ok: boolean; wasBuiltin: boolean }
   // (删除它的覆盖行 = 恢复默认),但它不在 `BUILTIN_WORKFLOW_IDS` 里。
   const wasBuiltin = getBuiltinWorkflow(id) !== undefined;
   WorkflowRepo.remove(id);
+  clearWorkflowReview(id);
   return { ok: true, wasBuiltin };
 }
 
@@ -242,8 +256,10 @@ export type WorkflowImportOutcome =
  *
  * ## id 与名字在这两层定下来
  *
- * - **不给 `id`** → 新建:现生成一个 `wf_` id,名字重了自动加后缀。
- * - **给 `id`** → 覆盖:那个 id **必须已经在库里**。给一个不存在的 id 会报错而不是
+ * 导入 JSON 自身必须带 `doc.id`(契约必填,从已有导出文件可以直接取得);
+ * 调用参数 `opts.id` 决定是否覆盖,不是拿 JSON 的 id 覆盖本机数据:
+ * - **不给 `opts.id`** → 新建:现生成一个 `wf_` id,名字重了自动加后缀。
+ * - **给 `opts.id`** → 覆盖:那个 id **必须已经在库里**。给一个不存在的 id 会报错而不是
  *   悄悄新建一份 —— 界面上那条路叫「覆盖当前工作流」,id 拼错时静默造出一份新的,
  *   用户会以为他覆盖的是原来那一份。
  *
@@ -255,7 +271,12 @@ export async function importWorkflowInto(
   text: string,
   opts: { id?: string } = {},
 ): Promise<WorkflowImportOutcome> {
-  const parsed = parseWorkflowText(text);
+  // 导入的第一道闸也要用本机真实类型表:「自动化有没有触发器」和
+  // `{{trigger.pdfPath}}` 是否可用都依赖清单。不给 types 时校验器无法认出
+  // mcode.trigger,会把一张正确的事件自动化误判成「没有触发器」。
+  // 缺失的第三方类型仍按分享语义给 warning,与 saveWorkflow 同一档。
+  const types = new Map((await loadNodeTypes()).entries.map((entry) => [entry.id, entry.manifest]));
+  const parsed = parseWorkflowText(text, { types, unknownTypeSeverity: "warning" });
   if (!parsed.ok) {
     return { ok: false, errors: parsed.report.errors.map((e) => e.message), warnings: [] };
   }
@@ -279,7 +300,7 @@ export async function importWorkflowInto(
     .map((w) => w.name);
   const name = uniqueWorkflowName(doc.name, others);
 
-  const res = await saveWorkflow({ ...doc, id, name, builtin: false });
+  const res = await saveWorkflow({ ...doc, id, name, builtin: false }, { untrustedOrigin: "import" });
   if (!res.ok) return { ok: false, errors: [res.error], warnings: [] };
   return { ok: true, id, name };
 }

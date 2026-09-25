@@ -15,7 +15,7 @@ import type { CodexProviderPublic } from "../codexModel.js";
 import type { NodeTypeCatalog } from "../nodeType.js";
 import type { AgentProfileCatalog } from "../agentProfile.js";
 import type { HookSpec, HookRun } from "../hook.js";
-import type { WorkflowDoc, WorkflowListEntry } from "../workflow.js";
+import type { WorkflowDoc, WorkflowListEntry, WorkflowReviewInfo } from "../workflow.js";
 import type { PluginState, PluginMarketplaceState, PluginsInstallLocalInput, PluginsInstallGitInput, PluginsInstallMarketplaceInput, PluginsSetEnabledInput, PluginsRemoveInput, PluginsMarketplaceAddInput, PluginsMarketplaceRemoveInput, PluginsMarketplaceRefreshInput } from "../plugin.js";
 import type { PairingStartResult, PairedDevice } from "../mobile.js";
 import type { RelayStatus, RelayVpsConfig, RelayVpsConfigInput } from "../relay.js";
@@ -41,9 +41,10 @@ import type { ContextGetInput, ContextSaveInput, ContextMemoriesListInput, Conte
 import type { UsageStatsInput, UsageStatsResult } from "./usage.js";
 import type { LspLanguageState, LspInstallInput, LspOpResult, LspInstallFromFileInput, LspUninstallInput, LspToggleInput, LspSetPathInput, LspHealthCheckInput, LspPrewarmInput, LspRestartInput, LspOpenDocInput, LspCloseDocInput, LspDidChangeInput, LspDidSaveInput, LspRequestInput, LspRequestResult } from "./lsp.js";
 import type { RuntimeAgentState, RuntimesInstallInput, RuntimesInstallLocalInput, RuntimesRemoveInput, ToolchainToolState, ToolchainInstallInput, ToolchainRemoveInput } from "./runtimes.js";
+import type { WorkflowApproveInput } from "./workflow.js";
 import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, WorkflowExportInput, WorkflowImportInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchCommandTemplate } from "./workflow.js";
 import type { AutomationTriggerFacts, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
-import { MEMORY_CATEGORIES_CHANNEL, MEMORY_DELETE_CHANNEL, MEMORY_LIST_CHANNEL, MEMORY_READ_CHANNEL, MEMORY_SAVE_CHANNEL, type MemoryDeleteInput, type MemoryFileMeta, type MemoryListInput, type MemoryReadInput, type MemorySaveInput } from "../memory.js";
+import { MEMORY_CATEGORIES_CHANNEL, MEMORY_DELETE_CHANNEL, MEMORY_LIST_CHANNEL, MEMORY_READ_CHANNEL, MEMORY_REVIEW_CHANNEL, MEMORY_REVIEW_DELETE_CHANNEL, MEMORY_SAVE_CHANNEL, type MemoryDeleteInput, type MemoryFileMeta, type MemoryListInput, type MemoryReadInput, type MemoryReviewDeleteInput, type MemoryReviewResult, type MemorySaveInput } from "../memory.js";
 import type { LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDeleteItemsResult, LibraryRestoreItemsInput, LibraryDeletePreviewInput, LibraryDeletePreviewResult, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryEntryPathInput, LibraryEntryPathResult, PdfHighlightsReadInput, PdfHighlightsSaveInput, PdfHighlightsWriteBackInput, PdfHighlightsWriteResult, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibraryManifestInput, LibraryItemManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkCountsInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionMoveInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
 import type { TemplateListInput, TemplateAddInput, TemplateRenameInput, TemplateEntryRefInput, TemplateFileRefInput, TemplatesAttachToChatInput } from "./templates.js";
 import type { SubagentDefinition } from "../claudeSubagent.js";
@@ -621,7 +622,17 @@ export interface RpcMap {
    *  时才走 `workflow.get` 取完整文档。 */
   "workflow.list": () => Promise<{ workflows: WorkflowListEntry[] }>;
   /** 取一份完整工作流。找不到返回 null(比如列表之后被别处删了)。 */
-  "workflow.get": (input: WorkflowGetInput) => Promise<{ workflow: WorkflowDoc | null }>;
+  "workflow.get": (input: WorkflowGetInput) => Promise<{
+    workflow: WorkflowDoc | null;
+    review: WorkflowReviewInfo | null;
+  }>;
+  /** Separate approval for the saved revision; saving/importing is not consent
+   * to execute an automation or to inject an imported workflow prompt. */
+  "workflow.approve": (input: WorkflowApproveInput) => Promise<{
+    ok: boolean;
+    review?: WorkflowReviewInfo;
+    error?: string;
+  }>;
   /** 当前可用的**节点类型**(内置 + 已启用插件 + 用户自写),以及读不进来的清单文件
    *  和它们的错误。画布的"添加节点"菜单用前者;后者必须一起返回,否则用户写错一个
    *  清单,界面上只会看到自己的类型凭空消失。
@@ -692,9 +703,9 @@ export interface RpcMap {
    *  它唤醒的是一个**还活着的运行**,不是开一次新的 —— 图从那个节点接着往下跑,
    *  不重跑整张图。见 `@contracts/runtime` 的 `WorkflowNodeChoiceEvent`。
    *
-   *  `ok: false` = 没有这样的等待(那张卡片过期了:这次运行已经结束或者被取消)。
-   *  **不报错**:点一张旧卡片是正常会发生的事,不该弹错误框。 */
-  "workflow.choose": (input: WorkflowChooseInput) => Promise<{ ok: boolean }>;
+   *  `ok: false` = 没有这样的等待;若图已更改或旧存档无版本,
+   *  `error` 说明为何不能续跑。普通旧卡片不弹错误框。 */
+  "workflow.choose": (input: WorkflowChooseInput) => Promise<{ ok: boolean; error?: string }>;
   /**
    * **从失败那一步接着往下跑。** 用户在失败卡片上点了「再试一次」,顺手写了句
    * 「上次哪里不对」。重跑的是那一步**连同它的全部下游**(见 `WorkflowRetrySchema`)。
@@ -703,7 +714,7 @@ export interface RpcMap {
    * 找不到那次运行 / 它已经不是 `failed` / 存档读不回来 / 这个对话正有运行在跑。
    * 最后那种要如实回 false —— `startWorkflowRun` 在运行中会静静地不做事。
    */
-  "workflow.retry": (input: WorkflowRetryInput) => Promise<{ ok: boolean }>;
+  "workflow.retry": (input: WorkflowRetryInput) => Promise<{ ok: boolean; error?: string }>;
   // ── 自动化(设置 → 工作流 → 自动化那一栏)──
   //
   // 这三个是**桌面专属**:手机端(`main/mobile/mobileRpc.ts`)是手写白名单,不列即不暴露。
@@ -743,11 +754,11 @@ export interface RpcMap {
    *  见 `PersistedWorkflowRunLite`(整份快照不为一行列表过 IPC)。 */
   "runs.history": (input: RunsHistoryInput) => Promise<PersistedWorkflowRunLite[]>;
   // ── 记忆(对话记忆的直读直写)──
-  // 契约与渠道字符串都在 `../memory.ts`(固定六类,目录即类目)。这里的四条都是
+  // 契约与渠道字符串都在 `../memory.ts`(固定六类,目录即类目)。以下文件动作都是
   // **按 memory 根下的相对路径寻址**,主进程侧会校验路径不逃出 memory 根。
   /** 列记忆文件(可选按类目过滤),行形状见 `../memory.ts` 的 `MemoryFileMeta`。 */
   "memory.list": (input: MemoryListInput) => Promise<{ files: MemoryFileMeta[] }>;
-  /** 读一条记忆的正文(含 frontmatter 原文)。 */
+  /** 读一条记忆的正文(不含 frontmatter)。 */
   "memory.read": (input: MemoryReadInput) => Promise<{ content: string }>;
   /** 存正文(frontmatter 由主进程维护)。 */
   "memory.save": (input: MemorySaveInput) => Promise<{ ok: boolean; error?: string }>;
@@ -755,6 +766,10 @@ export interface RpcMap {
   "memory.delete": (input: MemoryDeleteInput) => Promise<{ ok: boolean; error?: string }>;
   /** 类目清单(固定六类)。**无参 handler**。 */
   "memory.categories": () => Promise<string[]>;
+  /** 只扫描建议，不改任何文件；截断/读失败必须在结果里显式说明。 */
+  "memory.review": () => Promise<MemoryReviewResult>;
+  /** 整理中人工勾选并确认后的逐条删除；主进程核对完整内容指纹。 */
+  "memory.reviewDelete": (input: MemoryReviewDeleteInput) => Promise<{ ok: boolean; error?: string }>;
   // ── 监控(总览)──
   /** 监控总览的一次快照:正在跑几个、触发器挂得怎么样。**无参 handler**。 */
   "monitoring.overview": () => Promise<MonitoringOverview>;
@@ -1582,6 +1597,7 @@ export const IPC = {
   // 工作流(设置 → 工作流):图形式的对话流程,取代原来写死的五个模式
   WORKFLOW_LIST: "workflow:list",
   WORKFLOW_GET: "workflow:get",
+  WORKFLOW_APPROVE: "workflow:approve",
   WORKFLOW_NODE_TYPES: "workflow:nodeTypes",
   WORKFLOW_SAVE: "workflow:save",
   WORKFLOW_REMOVE: "workflow:remove",
@@ -1625,6 +1641,8 @@ export const IPC = {
   MEMORY_SAVE: MEMORY_SAVE_CHANNEL,
   MEMORY_DELETE: MEMORY_DELETE_CHANNEL,
   MEMORY_CATEGORIES: MEMORY_CATEGORIES_CHANNEL,
+  MEMORY_REVIEW: MEMORY_REVIEW_CHANNEL,
+  MEMORY_REVIEW_DELETE: MEMORY_REVIEW_DELETE_CHANNEL,
   // 监控(main/monitoring/):总览快照 + 最近的运行摘要。
   MONITORING_OVERVIEW: "monitoring:overview",
   MONITORING_RUNS: "monitoring:runs",

@@ -22,7 +22,7 @@ import {
 } from "@contracts/ipc";
 import type { Project } from "@contracts/session";
 import { uid } from "@main/utils.js";
-import { ProjectRepo, SessionRepo } from "@main/store/repositories.js";
+import { ProjectRepo, SessionRepo, SYSTEM_AUTOMATION_PROJECT_ID } from "@main/store/repositories.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { broadcastSessionChanged, broadcastSessionDeleted } from "@main/lib/sessionSync.js";
 import { cancelWorkflowRun } from "@main/orchestration/runner.js";
@@ -93,6 +93,11 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
   // Hard-delete a project (cascades to its sessions + messages via DB FKs).
   ipcMain.handle(IPC.PROJECT_DELETE, (_evt, raw) => {
     const input = DeleteProjectSchema.parse(raw);
+    // This internal FK owner is not in the project list. Reject even a forged
+    // id BEFORE cancelling runs / dropping backflow / disposing runtime state.
+    if (input.id === SYSTEM_AUTOMATION_PROJECT_ID) {
+      throw new Error("后台自动化使用的系统项目不能删除");
+    }
     // ⚠️ 级联会把这个项目下的会话**全部**带走,所以每个会话都欠一遍收尾 ——
     // 和 `SESSION_DELETE` 上那两句注释说的完全是同一件事,不能因为"不是逐条点的"
     // 就省掉:

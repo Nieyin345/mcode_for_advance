@@ -44,7 +44,7 @@ import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { Button, ConfirmDialog } from "@renderer/components/ui/index.js";
 import { makeAgentProfileId, profileFromParams, type AgentProfile } from "@contracts/agentProfile";
 import { MAIN_NODE_TYPE_ID, TRIGGER_NODE_TYPE_ID, type NodeTypeCatalog } from "@contracts/nodeType";
-import type { WorkflowDoc, WorkflowListEntry, WorkflowNode, WorkflowPosition } from "@contracts/workflow";
+import type { WorkflowDoc, WorkflowListEntry, WorkflowNode, WorkflowPosition, WorkflowReviewInfo } from "@contracts/workflow";
 import { workflowDisplayName, workflowIcon } from "@renderer/lib/workflowLabels.js";
 import { isEditableTarget } from "@renderer/lib/shortcuts.js";
 import { IconLoader2, IconAlertTriangle, IconArrowsSplit, IconPlus, IconRefresh } from "@renderer/lib/icons.js";
@@ -183,6 +183,11 @@ export function WorkflowLibraryView({
   /** 编辑中的那一份。界面读的一律是它。 */
   const [working, setWorking] = useState<WorkflowDoc | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [review, setReview] = useState<WorkflowReviewInfo | null>(null);
+  /** Exact saved version to display before approval, not an unsaved canvas draft. */
+  const [reviewDoc, setReviewDoc] = useState<WorkflowDoc | null>(null);
+  const [pendingApproval, setPendingApproval] = useState(false);
+  const [approving, setApproving] = useState(false);
 
   const [docLoading, setDocLoading] = useState(false);
   const [docError, setDocError] = useState<string | null>(null);
@@ -247,6 +252,9 @@ export function WorkflowLibraryView({
       setSelectedNodeId(selectNodeId);
       setBaseline(null);
       setWorking(null);
+      setReview(null);
+      setReviewDoc(null);
+      setPendingApproval(false);
       setDocError(null);
       setSaveError(null);
       setDocLoading(true);
@@ -256,6 +264,8 @@ export function WorkflowLibraryView({
         if (docRequestRef.current !== id) return;
         if (res.workflow) {
           setBaseline(res.workflow);
+          setReview(res.review);
+          setReviewDoc(res.workflow);
           // **有草稿就用草稿。** 基线仍然是磁盘上那一份,所以"脏"照样判得出来,状态行
           // 也照样会说"有未保存的改动" —— 用户切回来看到的就是他离开时那个样子。
           setWorking(DRAFTS.get(id) ?? res.workflow);
@@ -325,7 +335,20 @@ export function WorkflowLibraryView({
       // ⚠️ 前提是**还是这份文档**。切走之后 `latest.current` 已经是另一份,拿这次的
       // 结果去当它的基线,会让新的那份永远判成脏,而 `forSave` 还会拿错的基线去判
       // "内置的名字该不该还原" —— 把别人的名字写进这份文档(见 `workflowView`)。
-      if (latest.current?.working.id === id) setBaseline({ ...payload, updatedAt: Date.now() });
+      if (latest.current?.working.id === id) {
+        setBaseline({ ...payload, updatedAt: Date.now() });
+        // Keep the baseline's node/edge references (dirty checking relies on
+        // them), but get review status and its exact saved document from main.
+        try {
+          const saved = await api.workflow.get({ id });
+          if (latest.current?.working.id === id) {
+            setReview(saved.review);
+            setReviewDoc(saved.workflow);
+          }
+        } catch (err) {
+          setSaveError(t("settings.workflows.actionFailed", { error: (err as Error).message }));
+        }
+      }
       void loadList();
       return "ok";
     } catch (err) {
@@ -418,6 +441,35 @@ export function WorkflowLibraryView({
   const edit = (next: WorkflowDoc) => {
     setWorking(next);
     setSaveError(null);
+  };
+
+  const approve = async () => {
+    setPendingApproval(false);
+    if (!review?.pending || !reviewDoc || dirty || saving) return;
+    const id = reviewDoc.id;
+    setApproving(true);
+    setSaveError(null);
+    try {
+      const result = await api.workflow.approve({ id, revision: review.revision });
+      if (!result.ok) {
+        const reason = result.error ?? t("settings.workflows.unknownError");
+        // The graph may have changed while the confirmation was open. Reload
+        // its contents so the user does not approve the wrong revision. The
+        // reload clears saveError, so display the rejection AFTER it completes.
+        if (docRequestRef.current === id) {
+          await openWorkflow(id);
+          if (docRequestRef.current === id) setSaveError(reason);
+        }
+        return;
+      }
+      if (docRequestRef.current === id) setReview(result.review ?? null);
+    } catch (err) {
+      if (docRequestRef.current === id) {
+        setSaveError(t("settings.workflows.actionFailed", { error: (err as Error).message }));
+      }
+    } finally {
+      setApproving(false);
+    }
   };
 
   const select = (next: WorkflowListEntry) => {
@@ -542,6 +594,8 @@ export function WorkflowLibraryView({
         setBaseline(null);
         setWorking(null);
         setSelectedNodeId(null);
+        setReview(null);
+        setReviewDoc(null);
       }
     } catch (err) {
       setSaveError(t("settings.workflows.actionFailed", { error: (err as Error).message }));
@@ -801,6 +855,37 @@ export function WorkflowLibraryView({
             </div>
           )}
 
+          {review?.pending && baseline && (
+            <section className="mb-2 rounded-md border border-warning/50 bg-warning/10 p-2 text-[0.7857em] leading-relaxed text-content" role="alert">
+              <div className="flex items-start gap-2">
+                <IconAlertTriangle size={15} className="mt-0.5 shrink-0 text-warning" />
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium">{t("settings.workflows.reviewPending")}</p>
+                  <p className="text-content-muted">{t(review.origin === "import" ? "settings.workflows.reviewImported" : "settings.workflows.reviewAi")}</p>
+                  <details className="mt-2" open>
+                    <summary className="cursor-pointer font-medium">{t("settings.workflows.reviewDetails")}</summary>
+                    <pre className="mt-1 max-h-48 max-w-full overflow-auto rounded border border-edge bg-surface p-2 text-[0.9em] whitespace-pre-wrap break-all">{reviewDoc ? JSON.stringify({
+                      prompt: reviewDoc.prompt,
+                      trigger: reviewDoc.trigger,
+                      nodes: reviewDoc.nodes.map(({ id, title, type, capability, params }) => ({ id, title, type, capability, params })),
+                      edges: reviewDoc.edges,
+                    }, null, 2) : t("settings.workflows.reviewUnavailable")}</pre>
+                  </details>
+                  {dirty && <p className="mt-1 text-content-muted">{t("settings.workflows.reviewSaveFirst")}</p>}
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="mt-2"
+                    disabled={dirty || saving || approving || reviewDoc === null}
+                    onClick={() => setPendingApproval(true)}
+                  >
+                    {t("settings.workflows.reviewEnable")}
+                  </Button>
+                </div>
+              </div>
+            </section>
+          )}
+
           {/* 画布与检查器**横排**(检查器在右边,300px)。
               2026-09-15 一度改成竖排(画布在上、检查器在下),那是为了把整页压到和
               别的设置页一样宽 —— 结果工作流这一页太小了,用户当场看了出来,于是宽度
@@ -880,6 +965,15 @@ export function WorkflowLibraryView({
       {/* 破坏性操作先问一句。**两个名字背后是同一个动作**(见 `removeActionOf`),
           所以标题、正文、按钮三处共用一个判别 —— 各写一遍的话,改错一处就会出现
           「恢复默认」的标题配「删除」的按钮。 */}
+      <ConfirmDialog
+        open={pendingApproval && review?.pending === true}
+        danger
+        title={t("settings.workflows.reviewConfirmTitle")}
+        description={t("settings.workflows.reviewConfirmDesc")}
+        confirmText={t("settings.workflows.reviewEnable")}
+        onOpenChange={(open) => { if (!open) setPendingApproval(false); }}
+        onConfirm={() => void approve()}
+      />
       <ConfirmDialog
         open={pendingRemove && entry !== null}
         danger

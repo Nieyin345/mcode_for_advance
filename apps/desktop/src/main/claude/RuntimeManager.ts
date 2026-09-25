@@ -22,6 +22,7 @@ import { mobileEventBus } from "@main/mobile/MobileEventBus.js";
 import { invalidateUsageStats } from "@main/lib/usageStats.js";
 import { log } from "@main/lib/logger.js";
 import { backflowPrompt, clearBackflow, peekBackflow } from "@main/lib/pendingBackflow.js";
+import { clearAgentMail, peekAgentMail, setDeliveryPort } from "@main/lib/agentMail.js";
 import { resolveAgentPrompt, resolveWorkflowPrompt } from "@main/orchestration/prompt.js";
 import { memorySectionFrom } from "@contracts/memory";
 import { buildEnvPrompt, envPromptFingerprint } from "@main/providers/envPrompt.js";
@@ -223,6 +224,14 @@ class RuntimeManager {
   /** sessionId → 上次注入过的环境块指纹。内容没变就不重复注入(见 sendTurn 里那段)。
    *  是"这一轮该不该注入"的状态,不属于任何单次回合,所以挂在 manager 上而不是 rt 上。 */
   private lastEnvFingerprint = new Map<string, string>();
+  /**
+   * "这个对话此刻有没有一张图在跑" —— 由调度器注册(见 {@link registerRunGuard})。
+   *
+   * 存在的理由只有一个:**代理互发消息时该叫醒还是该排队**(见 {@link canWakeSession})。
+   * 不 import 调度器是因为调度器已经 import 了这个文件,反过来会成环。
+   * 没人注册时按 `false`(保守)—— 那只会让消息晚一轮到,而赌错了会废掉一步产出。
+   */
+  private runGuard: ((sessionId: string) => boolean) | null = null;
 
   /**
    * 把这一轮面向界面的 `turn.done` **扣住不发**,返回解除用的函数(幂等)。
@@ -1179,9 +1188,18 @@ class RuntimeManager {
     // take 的话,回合没起成那一段就永久丢了,而用户只会发现助手"没记住刚才那些产出"。
     const backflow = backflowPrompt(peekBackflow(session.id));
 
+    // **别的代理捎来的话也在这里带进去**(见 `lib/agentMail.ts`)。同一个时机、同一个
+    // 理由:主进程插不进提供方那边的会话记录,唯一能保证被看见的就是下一轮的提示词。
+    //
+    // 排在 backflow **后面**:"图跑完的产出"是背景,而"某个代理问你一句话"是**要办的事**
+    // —— 越靠近这一轮的正题越好。
+    const mail = peekAgentMail(session.id);
+
+    const backflowAll = [backflow, mail].filter((s) => s.length > 0).join("\n\n");
+
     const req: StartTurnRequest = {
       sessionId: session.id,
-      prompt: backflow.length > 0 ? `${backflow}\n\n${input.prompt}` : input.prompt,
+      prompt: backflowAll.length > 0 ? `${backflowAll}\n\n${input.prompt}` : input.prompt,
       cwd: input.cwd,
       model: modelForReq,
       effort: session.effort !== "default" ? session.effort : undefined,
@@ -1224,8 +1242,13 @@ class RuntimeManager {
     };
 
     const handle = await provider.startTurn(req, rt.ctx);
-    // 回合起来了,那一段背景才算真的送到了 —— 见上面 `peekBackflow` 那段注释。
-    if (handle !== null && backflow.length > 0) clearBackflow(session.id);
+    // 回合起来了,那两段才算真的送到了 —— 见上面 `peekBackflow` 那段注释。
+    if (handle !== null && backflowAll.length > 0) {
+      clearBackflow(session.id);
+      // 收件箱**只清真的带进去的那些**:`peekAgentMail` 取的是当时队列里的全部,所以
+      // 清了不影响这一轮看不到的(清空 = 那一整批都进过这一轮了)。
+      if (mail.length > 0) clearAgentMail(session.id);
+    }
     // 回退重发的输入快照：req 里的最终形态（prompt 已拼好 backflow / 工作流
     // 片段）。回合失败要原样重发，就从这里取。
     if (handle !== null) {
@@ -1303,6 +1326,86 @@ class RuntimeManager {
     const handle = rt?.handle;
     if (!handle?.inject || !handle.isRunning()) return false;
     return handle.inject(text);
+  }
+
+  /** 这个会话此刻有没有一轮在跑(名册上那个"正在跑"标记用它)。 */
+  isRunning(sessionId: string): boolean {
+    return this.sessions.get(sessionId)?.handle?.isRunning() ?? false;
+  }
+
+  /**
+   * **能不能替这个空闲会话起一轮** —— 代理互发消息时,投递那一侧靠它决定"叫醒"还是"排队"。
+   *
+   * 判据不是"它是不是节点",而是**此刻有没有一张图正在管它**:图跑着的时候,节点会话的
+   * `turn.done` 是调度器的完成信号,从外面插一轮会把一步的产出弄废,而且不报错。
+   *
+   * ⚠️ **判据用一个注册进来的谓词**(`registerRunGuard`),不 import 调度器 —— 调度器
+   * 已经 import 了这个文件,反过来 import 会成环。
+   *
+   * 谓词**没注册时返回 false**(保守):宁可晚一轮送到,也不要赌一把把图弄乱。
+   */
+  canWakeSession(sessionId: string): boolean {
+    const session = SessionRepo.get(sessionId);
+    if (!session) return false;
+    // 用户驱动的会话没有谁在等它的 turn.done —— 恒为能。
+    if (session.kind === "chat" || session.kind === "side") return true;
+    if (session.parentSessionId === null) return false;
+    return !(this.runGuard?.(session.parentSessionId) ?? false);
+  }
+
+  /**
+   * 替一个空闲会话起一轮(把 `text` 当这一轮的提示词)。起成了 → true。
+   *
+   * 注意这里**不 await 整轮**(长任务会好几分钟):调用方是投递那一侧,它要的是一个
+   * "收下了没有"的即时答复。收尾由那一轮自己的 `turn.done` 走。
+   *
+   * ⚠️ 起手就**再确认一次空闲**:调用方判断与这里执行之间隔着几步,而这一小会儿它可能
+   * 已经被别的路叫醒了。
+   */
+  wakeSession(sessionId: string, text: string): boolean {
+    const session = SessionRepo.get(sessionId);
+    if (!session) return false;
+    if (this.isRunning(sessionId)) return false;
+    const cwd = this.cwdForWake(session);
+    if (cwd === null) return false;
+    void this.sendTurn(session, { prompt: text, cwd }).catch((err: unknown) =>
+      log.warn(`agentMail: 叫醒 ${sessionId} 失败: ${(err as Error).message}`),
+    );
+    return true;
+  }
+
+  /**
+   * 叫醒一个会话时该用哪个工作目录。
+   *
+   * 不直接用 `resolveSessionCwd`(那是 IPC 层的东西,还带着工作树物化的副作用)—— 这里
+   * 要的是"上次它实际在哪儿跑"的近似:
+   *
+   *   1. 它自己的运行时还活着 → `lastCwd`(跟着它 cd 走过)。
+   *   2. **节点会话跑完运行时就被 dispose 了**,问它的**父对话** —— 节点不做写隔离,
+   *      跑的就是父对话那个目录(`orchestration/runner.ts` 里写明的 v1 取舍)。
+   *   3. 都没活着 → 会话行上的工作树路径,再不行项目根。
+   *
+   * 解析不出来返回 null(调用方当真:不起轮,退回收件箱)。
+   */
+  private cwdForWake(session: Session): string | null {
+    const own = this.sessions.get(session.id)?.lastCwd;
+    if (own) return own;
+    if (session.parentSessionId !== null) {
+      const parent = this.sessions.get(session.parentSessionId)?.lastCwd;
+      if (parent) return parent;
+      const parentRow = SessionRepo.get(session.parentSessionId);
+      if (parentRow?.worktreePath) return parentRow.worktreePath;
+    }
+    if (session.worktreePath) return session.worktreePath;
+    return ProjectRepo.get(session.projectId)?.path ?? null;
+  }
+
+  /**
+   * 注册"这张图此刻在不在跑"的谓词。**由调度器模块在装配时调**(见 `orchestration/runner.ts`)
+   * —— 这一层不 import 它(会成环,同 `canWakeSession` 上的说明)。
+   */
+  registerRunGuard(guard: ((sessionId: string) => boolean) | null): void {
+    this.runGuard = guard;
   }
 
   dispose(sessionId: string): void {
@@ -1550,3 +1653,21 @@ class RuntimeManager {
 }
 
 export const runtimeManager = new RuntimeManager();
+
+/**
+ * 把投递能力注册给 `lib/agentMail.ts` —— MCP 工具那一侧(代理互发消息)靠它找到会话。
+ *
+ * **为什么是注册而不是 import**:`mcp/mcodeServer.ts`(工具那一侧)**不能** import 这个
+ * 文件 —— 那条链会把 `electron` 拖进每一个无头 smoke(`toolRules.ts` 顶上记着这条)。
+ * 所以能力反过来注册进去,`agentMail` 那一层谁都不 import。
+ *
+ * 三个动词的语义见 {@link DeliveryPort}。两个判断都刻意做得**保守**:
+ *   - `canWake` 说"不能"只是排队(晚一轮而已),说错了却会废掉一步产出;
+ *   - `wake` 失败一律返回 false,由 `agentMail` 退回收件箱,不假装送到了。
+ */
+setDeliveryPort({
+  isRunning: (sessionId) => runtimeManager.isRunning(sessionId),
+  inject: (sessionId, text) => runtimeManager.injectMessage(sessionId, text),
+  canWake: (sessionId) => runtimeManager.canWakeSession(sessionId),
+  wake: (sessionId, text) => runtimeManager.wakeSession(sessionId, text),
+});

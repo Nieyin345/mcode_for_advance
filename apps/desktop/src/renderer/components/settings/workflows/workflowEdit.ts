@@ -17,6 +17,7 @@
  */
 import { paramsForProfile, type AgentProfile } from "@contracts/agentProfile";
 import {
+  CONDITION_NODE_TYPE_ID,
   MAIN_NODE_TYPE_ID,
   NODE_TRIGGER_KIND_PARAM_KEY,
   NODE_TRIGGER_PROJECT_PARAM_KEY,
@@ -272,9 +273,19 @@ export function setDependency(
   const id = edgeId(depId, nodeId);
   const exists = doc.edges.some((e) => e.id === id);
   if (on === exists) return doc;
-  return on
-    ? { ...doc, edges: [...doc.edges, { id, from: depId, to: nodeId }] }
-    : { ...doc, edges: doc.edges.filter((e) => e.id !== id) };
+  if (on) {
+    // 内置条件一拉线就写上真假标签,不会让「看起来连好了」的图存不下去。
+    // 删一条再补时用缺的那档;已有两条时拒绝第 3 条(导入/手改仍由保存闸门检查)。
+    const isCondition = doc.nodes.some((n) => n.id === depId && n.type === CONDITION_NODE_TYPE_ID);
+    const routes = isCondition ? doc.edges.filter((e) => e.from === depId) : [];
+    if (isCondition && routes.length >= 2) return doc;
+    const label = routes.some((e) => e.label?.trim() === "true") ? "false" : "true";
+    return {
+      ...doc,
+      edges: [...doc.edges, { id, from: depId, to: nodeId, ...(isCondition ? { label } : {}) }],
+    };
+  }
+  return { ...doc, edges: doc.edges.filter((e) => e.id !== id) };
 }
 
 /**

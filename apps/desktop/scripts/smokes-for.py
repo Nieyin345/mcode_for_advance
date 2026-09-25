@@ -6,8 +6,11 @@
 **省事不省时**:那种习惯的代价不是那几分钟,是人开始攒着改 —— 而攒着改是 bug 的
 温床。这个脚本把"该跑哪几套"变成一个不用猜的问题。
 
-判据不用人列:每套 smoke 的 `main.ts` 自己 import 了哪些 `@main/...`,顺着相对
-import 再走下去,就是这套 smoke 真正覆盖到的源码。**一套都没覆盖到的套件**(比如
+判据不用人列:每套 smoke 的 TypeScript 入口 import 了哪些 `@main/...`,顺着相对
+import 再走下去,就是这套 smoke 真正覆盖到的源码。`.mjs` 入口可能通过
+`readFileSync` + 转译加载实际模块,用 `// @smoke-covers src/main/...ts` 显式声明
+**确实执行过**的目标文件(只记录该文件,不假装覆盖了它的整个依赖图)。
+**一套都没覆盖到的套件**(比如
 只测契约层的)单独列出来 —— 那是"这块没有回归网"这个事实本身。
 
 ⚠️ **粒度是"连通块",不是"文件"。** `library/operations.ts` 会带出七套 ——
@@ -38,6 +41,8 @@ MAIN = DESKTOP / "src" / "main"
 # `from "x"` / `import("x")` / `import "x"` 都收。`import type` 也一样 —— 类型
 # 依赖也算依赖:契约改了这边也会跟着变。
 IMPORT_RE = re.compile(r"""(?:from|import)\s*\(?\s*["']([^"']+)["']""")
+# .mjs 的测试可能动态转译源文件;逐个明确声明真实执行过的模块。
+SMOKE_COVERS_RE = re.compile(r"^\s*//\s*@smoke-covers\s+(src/main/[\w./-]+\.ts)\s*$", re.MULTILINE)
 
 
 def resolve(spec: str, from_file: Path) -> Path | None:
@@ -85,6 +90,13 @@ def coverage() -> dict[str, set[Path]]:
             # 真实模块的调用方仍然在图上。所以只跳过桩本身的入口,不跳过它的
             # import。简化处理:桩也走一遍 closure,多收几个不影响判断。
             closure(ts, covered)
+        for mjs in d.rglob("*.mjs"):
+            text = mjs.read_text(encoding="utf-8", errors="replace")
+            for rel_path in SMOKE_COVERS_RE.findall(text):
+                target = (DESKTOP / rel_path).resolve()
+                if not target.is_relative_to(MAIN) or not target.is_file():
+                    raise ValueError(f"invalid @smoke-covers {rel_path} in {mjs.relative_to(ROOT)}")
+                covered.add(target)
         suites[d.name] = covered
     return suites
 

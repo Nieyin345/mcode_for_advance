@@ -84,6 +84,7 @@ import { CommandExecutor } from "./commandExecutor.js";
 import { libraryRoot } from "@main/library/paths.js";
 import { broadcastRuntimeEvent } from "@main/lib/sessionSync.js";
 import { queueBackflow } from "@main/lib/pendingBackflow.js";
+import { peekAgentMail, wakeQueued } from "@main/lib/agentMail.js";
 import { log } from "@main/lib/logger.js";
 import { providerRegistry } from "@main/providers/registry.js";
 import { CollectionRepo, LibraryRepo, MessageRepo, SessionRepo, SettingRepo, WorkflowRunRepo } from "@main/store/repositories.js";
@@ -149,6 +150,7 @@ export const NODE_PROGRESS_HEARTBEAT_MS = 5_000;
  */
 const USAGE_BACKFILL_DELAY_MS = 6_000;
 import { getWorkflow } from "./library.js";
+import { workflowReplayError, workflowResumeError, workflowReviewError, workflowRevision } from "./workflowTrust.js";
 import { loadNodeTypes } from "./nodeTypes.js";
 import {
   decodeSnapshot,
@@ -218,6 +220,11 @@ export function graphRunIntent(session: Session): "none" | "start" | "busy" {
 
 interface ActiveRun {
   runId: string;
+  workflowId: string;
+  /** The graph pinned when this run started, including a live branch wait. */
+  workflowRevision: string;
+  /** Persist before dispatch: an interrupted external effect must not replay. */
+  inFlightNodeIds: Set<string>;
   /** 哪个对话。它本来可以从 `runs` 的键推出来,但 `parkedRunTeardown` 那一头要按
    *  它筛等待池里的条目,而那张池子的键是 `runId:nodeId`。 */
   sessionId: string;
@@ -283,22 +290,36 @@ function choiceKey(runId: string, nodeId: string): string {
  * 两条路都归到这里,是因为**界面上的那个点击是同一个动作**:用户在回答"这一步怎么走",
  * 而"那次运行还活着吗"是他看不见的、也不该知道的事。
  */
+export interface WorkflowContinuationResult { ok: boolean; error?: string }
+
 export function resolveWorkflowChoice(args: {
   sessionId: string;
   runId: string;
   nodeId: string;
   edgeId: string;
   comment?: string;
-}): boolean {
+}): WorkflowContinuationResult {
   const key = choiceKey(args.runId, args.nodeId);
   const pending = pendingChoices.get(key);
   // **会话要对得上。** `runId` 已经是全局唯一的,这一道是防"另一个对话拿着一个
   // 拼错的 runId 把这次等待点掉" —— 那种事不该发生,但真发生了会表现为"图莫名其妙
   // 往下跑了",而没有任何地方看得出是谁点的。
   if (pending && pending.sessionId === args.sessionId) {
+    const active = runs.get(args.sessionId);
+    const session = SessionRepo.get(args.sessionId);
+    const doc = session === undefined ? null : getWorkflow(session.workflowId);
+    if (!active || active.runId !== args.runId || !doc || active.workflowId !== session?.workflowId) {
+      return { ok: false };
+    }
+    const error = workflowResumeError(doc, active.workflowRevision);
+    if (error !== null) {
+      // Do not leave an obsolete live wait occupying this session indefinitely.
+      active.abort.abort();
+      return { ok: false, error };
+    }
     const comment = (args.comment ?? "").trim();
     pending.done({ edgeId: args.edgeId, ...(comment.length > 0 ? { comment } : {}) });
-    return true;
+    return { ok: true };
   }
   return resumeRun(args);
 }
@@ -319,16 +340,17 @@ export function resolveWorkflowChoice(args: {
  */
 function resumeRun(args: {
   sessionId: string;
+  runId: string;
   nodeId: string;
   edgeId: string;
   comment?: string;
-}): boolean {
+}): WorkflowContinuationResult {
   const found = resumableRun(args.sessionId, args.nodeId);
-  if (found === null) return false;
+  if (found === null || found.runId !== args.runId) return { ok: false };
   // 会话可能已经被删了(存档那一行的外键是 `ON DELETE CASCADE`,但渲染端手上那张
   // 卡片是更早读进来的)。
   const session = SessionRepo.get(args.sessionId);
-  if (session === undefined) return false;
+  if (session === undefined || runs.has(session.id)) return { ok: false };
   // **这个对话换过工作流了。** 存档里那份状态是按**当时那张图**记的(nodeId、边的 id、
   // 流程记录都对着它),拿着去跑现在这张图,结果是随机的 —— 而且不报错。当作那张卡
   // 过期,用户重新发一条消息就是了。
@@ -337,8 +359,17 @@ function resumeRun(args: {
       `workflow run ${found.runId}: 会话现在用的是 ${session.workflowId},不是当时的 ` +
         `${found.workflowId} —— 这张卡片按过期处理`,
     );
-    return false;
+    return { ok: false };
   }
+  const doc = getWorkflow(session.workflowId);
+  if (!doc || doc.nodes.length === 0) return { ok: false, error: "原工作流已不可用，请重新选择工作流" };
+  const error = workflowResumeError(doc, found.snapshot.workflowRevision);
+  if (error !== null) {
+    log.warn(`workflow run ${found.runId}: resume blocked: ${error}`);
+    return { ok: false, error };
+  }
+  const replayError = workflowReplayError(doc, found.snapshot.inFlightNodeIds);
+  if (replayError !== null) return { ok: false, error: replayError };
   const comment = (args.comment ?? "").trim();
   log.info(
     `workflow run ${found.runId} resumed: node ${args.nodeId} chose ${args.edgeId} (${args.sessionId})`,
@@ -356,7 +387,7 @@ function resumeRun(args: {
       answer: { edgeId: args.edgeId, ...(comment.length > 0 ? { comment } : {}) },
     },
   });
-  return true;
+  return { ok: true };
 }
 
 export function hasActiveRun(sessionId: string): boolean {
@@ -402,16 +433,16 @@ export function resolveWorkflowRetry(args: {
   nodeId: string;
   /** 用户写的那句话。空串 = 没写(那就只重跑,不往提示词里加东西)。 */
   note?: string;
-}): boolean {
+}): WorkflowContinuationResult {
   const session = SessionRepo.get(args.sessionId);
-  if (session === undefined) return false;
+  if (session === undefined) return { ok: false };
   // **正有运行在跑** —— 见上面那段注释:`startWorkflowRun` 撞上这个会静静地不做事,
   // 而调用方照样拿到 true。所以先查一次,查到了就照实回 false。
-  if (runs.has(args.sessionId)) return false;
+  if (runs.has(args.sessionId)) return { ok: false };
   // 三道门(找不到 / 存档坏了 / 那一步不在结局表里)全在 `retryableRun` 里,与岔路口
   // 续跑的 `resumableRun` 并列 —— 那些判据值得单独测,不该埋在 IPC 后面。
   const found = retryableRun(args.sessionId, args.runId, args.nodeId);
-  if (found === null) return false;
+  if (found === null) return { ok: false };
   // 这个对话换过工作流了 —— 存档里那份状态是按**当时那张图**记的,拿去跑现在这张图
   // 结果是随机的(同 `resumeRun` 里那一段)。
   if (session.workflowId !== found.workflowId) {
@@ -419,8 +450,17 @@ export function resolveWorkflowRetry(args: {
       `workflow run ${found.runId}: 会话现在用的是 ${session.workflowId},不是当时的 ` +
         `${found.workflowId} —— 这张卡片按过期处理`,
     );
-    return false;
+    return { ok: false };
   }
+  const doc = getWorkflow(session.workflowId);
+  if (!doc || doc.nodes.length === 0) return { ok: false, error: "原工作流已不可用，请重新选择工作流" };
+  const error = workflowResumeError(doc, found.snapshot.workflowRevision);
+  if (error !== null) {
+    log.warn(`workflow run ${found.runId}: retry blocked: ${error}`);
+    return { ok: false, error };
+  }
+  const replayError = workflowReplayError(doc, found.snapshot.inFlightNodeIds);
+  if (replayError !== null) return { ok: false, error: replayError };
 
   /**
    * **用户写的那句话,只在"上一次真的失败过"时才带。**
@@ -445,7 +485,7 @@ export function resolveWorkflowRetry(args: {
       ...(note.length > 0 ? { note: { nodeId: args.nodeId, text: note } } : {}),
     },
   });
-  return true;
+  return { ok: true };
 }
 
 /**
@@ -573,6 +613,27 @@ export async function startWorkflowRun(args: {
   const resumed = args.resume;
   const doc = getWorkflow(session.workflowId);
   if (!doc || doc.nodes.length === 0) return null;
+  const reviewError = workflowReviewError(doc);
+  if (reviewError !== null) {
+    // Direct callers must not bypass the UI or automation preflight.
+    log.warn(`workflow: run blocked: ${reviewError}`);
+    return null;
+  }
+  const revision = workflowRevision(doc);
+  if (resumed !== undefined) {
+    // Guard direct callers and the gap between loading the run row and
+    // actually beginning the resumed run. Never overwrite an old snapshot.
+    const error = workflowResumeError(doc, resumed.snapshot.workflowRevision);
+    if (error !== null) {
+      log.warn(`workflow: resume blocked: ${error}`);
+      return null;
+    }
+    const replayError = workflowReplayError(doc, resumed.snapshot.inFlightNodeIds);
+    if (replayError !== null) {
+      log.warn(`workflow: resume blocked: ${replayError}`);
+      return null;
+    }
+  }
   if (runs.has(session.id)) {
     // 兜底:调用方(`ipc/claude.ts` / `mobileRpc.ts`)已经先查过 `hasActiveRun` 并
     // 抛出可见的错误了 —— 那条路才会让用户看见"这个工作流还在跑"。走到这里说明有
@@ -621,6 +682,9 @@ export async function startWorkflowRun(args: {
   let finishRun!: () => void;
   const active: ActiveRun = {
     runId,
+    workflowId: doc.id,
+    workflowRevision: revision,
+    inFlightNodeIds: new Set(resumed?.snapshot.inFlightNodeIds ?? []),
     sessionId: session.id,
     abort: new AbortController(),
     nodeSessionIds: new Set(),
@@ -656,6 +720,8 @@ export async function startWorkflowRun(args: {
    * 下一份存档不会比上一份更少。
    */
   let latest: RunSnapshot = resumed?.snapshot ?? {
+    workflowRevision: revision,
+    inFlightNodeIds: [],
     prompt,
     cwd,
     attempts: [],
@@ -665,10 +731,10 @@ export async function startWorkflowRun(args: {
     state: { record: [], rounds: [], picks: [], outcomes: [], awaiting: [], ...(entry !== undefined ? { entry } : {}) },
   };
 
-  /** 落一次盘。**写失败不抛** —— 见 `runStore.saveRun`。 */
-  const writeRun = (status: "running" | "success" | "failed" | "cancelled", state: RunState): void => {
-    latest = { prompt, cwd, state, attempts: [...choiceAttempts] };
-    saveRun({ runId, sessionId: session.id, workflowId: session.workflowId, status, snapshot: latest });
+  /** 普通快照尽力写;派发前由调用方检查返回值,不能无存档跑副作用。 */
+  const writeRun = (status: "running" | "success" | "failed" | "cancelled", state: RunState, durable = false): boolean => {
+    latest = { workflowRevision: revision, inFlightNodeIds: [...active.inFlightNodeIds], prompt, cwd, state, attempts: [...choiceAttempts] };
+    return saveRun({ runId, sessionId: session.id, workflowId: session.workflowId, status, snapshot: latest }, { durable });
   };
 
   // 旧的那些运行行清一清(见 `pruneRuns`)。**放在开跑这一刻**,而不是收尾 ——
@@ -677,7 +743,11 @@ export async function startWorkflowRun(args: {
   // **先落行,再跑第一个节点。** 反过来的话,应用在第一步跑完之前被杀掉,这次运行
   // 就一点痕迹都没有 —— 而"它跑过"恰恰是下次要用的信息。续跑时这一下也顺带把上一份
   // `interrupted` 收回成 `running`。
-  writeRun("running", latest.state);
+  if (!writeRun("running", latest.state, true)) {
+    runs.delete(session.id);
+    active.finish();
+    throw new Error("工作流运行存档无法写入,未执行节点;请检查存储后重试");
+  }
 
   // 先把用户那句回声出去(和普通回合一样,发在第一个节点事件之前),再起跑。
   // **续跑不回声** —— 那条消息已经在对话里了,再发一遍就是两条一样的。
@@ -685,7 +755,7 @@ export async function startWorkflowRun(args: {
   // ⚠️ 这三行**必须在 `runs` 条目已经挂上之后、并且在 `try` 之外**,所以它们自己带
   // 一个兜底:**抛了就把条目摘掉再抛**。不摘的话 `runs.has` 从此为真,这个对话里发
   // 什么都只会得到"这个工作流还在跑" —— 一个用户自己走不出来的状态。
-  // (`pruneRuns` 和 `writeRun` 各自吞掉自己的错,所以真正可能抛的只有广播那一下。)
+  // (初始存档的失败已在上面拦下;广播失败仍须摘掉运行条目。)
   try {
     if (userMessage && resumed === undefined) runtimeManager.echoUserMessage(session.id, userMessage);
     log.info(
@@ -1404,6 +1474,13 @@ export async function startWorkflowRun(args: {
       // 的卡会把对话刷屏,而用户关心的是结果;但"哪几个节点同时被派发了"恰恰是排查
       // 并发问题时唯一想知道的,所以留给日志。
       if (e.kind === "node.started") {
+        active.inFlightNodeIds.add(e.node.id);
+        // Persist BEFORE executeOne can invoke a command, model or plugin.
+        // A crash after the effect but before settle must not retry it silently.
+        if (!writeRun("running", latest.state, true)) {
+          active.abort.abort();
+          throw new Error(`节点 ${e.node.id} 的在飞标记无法持久化,已停止派发`);
+        }
         // **入队即报一嗓子(G3)**:`workflow.node.queued` —— 监控/看板要的是"派发
         // 那一刻"的事实,而 progress 要到 execute 才有、result 更要等收场。起跑依然
         // 不出卡片(下面那行日志的理由不变),这条只进事件流,渲染端要不要画是它的事。
@@ -1417,6 +1494,7 @@ export async function startWorkflowRun(args: {
         log.info(`workflow run ${runId}: node ${e.node.id} (${e.node.type}) dispatched`);
         return;
       }
+      active.inFlightNodeIds.delete(e.node.id);
       log.info(`workflow run ${runId}: node ${e.node.id} settled: ${e.outcome.status}`);
       // 没跑过的节点(skipped / 还没轮到就取消)没有会话,也就没有过程可看 —— 那种
       // 情况下这个字段干脆不带,卡片便不会摆一个点开是空的入口。
@@ -1621,9 +1699,47 @@ export async function startWorkflowRun(args: {
     for (const [key, pending] of pendingChoices) {
       if (pending.sessionId === session.id) pendingChoices.delete(key);
     }
+    // **收件箱里还有东西的节点,在这一刻叫醒它 —— 而且**不要** dispose 它。**
+    //
+    // ## 为什么必须在这里叫
+    //
+    // 图跑着的时候**不能**叫:那时节点会话的 `turn.done` 是调度器的完成信号,插一脚会把
+    // 一步的产出弄废(见 `agentMail.canWake`)。所以投递那一刻只能排队,而收尾这一下是
+    // 唯一的窗口 —— 再晚,这个会话就再也没有下一轮了。
+    //
+    // ## 为什么被叫醒的那个不能 dispose
+    //
+    // `wake` 最终走 `sendTurn`,而 `sendTurn` 起手就 `this.sessions.get(sessionId)` ——
+    // **运行时已经被删的话它直接返回 null**,叫醒静默失败。第一版是"先全部 dispose、
+    // 再延后叫醒(`setTimeout(0)` 那一把)",于是那些消息**一条都送不出去**,而且看不出来。
+    // 所以顺序是:先**当场**叫,而**叫成了的那个从 dispose 名单里拿掉**(它马上要再跑一轮)。
+    //
+    // 那一轮跑完不会回到这里 —— 这次运行的 `unsubscribe()` 已经断了调度器与它的联系,
+    // 所以它的 `turn.done` 不会再被当成"某一步完成了"。
+    //
+    // ## 两个如实记下的代价(别当成 bug,是取舍)
+    //
+    // 1. **被叫醒那一轮的产出不回图里。** 它照样跑、照样写进自己那张卡的过程里、用户
+    //    看得见 —— 但调度器已经不认它了,所以它不会变成这一步的产出、也不传给下游。
+    //    要让"图跑完之后还能接着往下走"是另一件事(那是 `workflow.retry` 的活)。
+    // 2. **被叫醒那个会话的运行时不再 dispose。** 上面那条"运行时没必要留着"对它不成立
+    //    ——它正要再跑一轮。代价是一份内存状态(provider 会话 id / 快照 / 审批池)留到
+    //    进程结束。**不是活进程**:`sendTurn` 的子进程随那一轮结束就退,留下的是内存里的
+    //    账。发过消息的节点会话有几个,就留几份。
+    const toWake: Array<{ session: Session; text: string }> = [];
+    for (const id of active.nodeSessionIds) {
+      const waiting = peekAgentMail(id);
+      if (waiting.length === 0) continue;
+      const target = SessionRepo.get(id);
+      if (target) toWake.push({ session: target, text: waiting });
+    }
+    const wokenNow = new Set(wakeQueued(toWake));
     // 节点会话的行留着(v1 的取舍:可查、以后加保留策略),但运行时没必要留着 ——
     // 它握着 provider 会话 id、文件快照和审批池。
-    for (const id of active.nodeSessionIds) runtimeManager.dispose(id);
+    for (const id of active.nodeSessionIds) {
+      if (wokenNow.has(id)) continue;
+      runtimeManager.dispose(id);
+    }
     // **「并回主对话」的内容在这里挂上去。** 时机是要紧的:它得在下面那句 `turn.done`
     // **之前** —— 那一句一落地,渲染端就把这一轮收了,用户接着说的话会立刻去取这段内容,
     // 晚一步就赶不上那一轮(而"晚一轮"的表现是助手答"我不知道",查都没处查)。

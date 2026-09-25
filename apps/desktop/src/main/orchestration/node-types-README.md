@@ -62,7 +62,7 @@
 | 字段 | 说明 |
 |---|---|
 | `key` | 在 `params` 里的键。字母开头,字母数字下划线 |
-| `kind` | `text` / `longtext` / `number` / `boolean` / `select` / `file` / `dir` / `model` |
+| `kind` | `text` / `longtext` / `number` / `boolean` / `select` / `file` / `dir` / `ref` / `variables` / `selects` / `conditions` |
 | `label` | 画布上的字段名 |
 | `help` | 可选。字段下面的一行说明 |
 | `required` | 必填。必填项没填,图**存不下去**(会当场报错,不会等到执行) |
@@ -92,13 +92,15 @@
 
 ## 执行方式
 
-`runner.kind` 只有四个值 —— 这是 **Mcode 保留的执行原语**,你不能自己发明新的:
+`runner.kind` 只能用下表里的内置种类 —— 这是 **Mcode 保留的执行原语**,你不能自己发明新的:
 
 | kind | 形状 | 现在能用吗 |
 |---|---|---|
 | `prompt` | `{ "kind": "prompt" }` | ✅ 一个带独立指令的子 agent,跑一轮对话(**另开一段会话**) |
 | `conversation` | `{ "kind": "conversation" }` | ✅ 同样跑一轮模型,但**跑在主对话里**(内置的主代理与对话节点都是这一种,见下面「对话节点」) |
 | `branch` | `{ "kind": "branch" }` | ✅ 岔路口:不跑东西,把决定权交给用户(见下面「出路」) |
+| `condition` | `{ "kind": "condition" }` | ✅ 纯规则自动挑 true / false,不启动模型、命令或 eval |
+| `trigger` | `{ "kind": "trigger" }` | ✅ 自动化的起点(手动/定时/文件/事件) |
 | `command`(命令进**参数**) | `{ "kind": "command" }` | ✅ **能跑** —— 内置的 `mcode.command` 就是这个形状:命令写在节点参数里,本机起进程跑 |
 | `command`(命令进**自带脚本**) | `{ "kind": "command", "entry": "./x.py", "interpreter": "python", "args": [] }` | ❌ **形状定好了,执行还没实现** |
 | `code` | `{ "kind": "code", "language": "python" }` | ✅ 能用 —— 内置的 `mcode.code`,写一段脚本跑,产出 `exitCode`/`stdout`/`stderr` |
@@ -113,6 +115,31 @@
 >
 > 判定这件事的**唯一函数**是 `isNodeRunnable`(见 `contracts/src/nodeType.ts`)—— 
 > 调度器的拒绝与渲染端的徽标读的都是它,不要只看 `runner.kind` 自己判。
+
+### 自动条件:仅对上游数据做真假判定
+
+内置 `mcode.condition` 的参数 `expression` 是 `kind: "conditions"` 的对象,不是
+JavaScript 字符串。例如:
+
+```json
+{
+  "logic": "and",
+  "rules": [
+    { "ref": "{{检索.status}}", "op": "equal", "value": "success" },
+    { "ref": "{{检索.summary}}", "op": "contains", "value": "已找到" }
+  ]
+}
+```
+
+`logic` 只能是 `and`(全部满足)或 `or`(任一满足);每条规则只能是 `exists`、
+`equal`、`contains`。`exists` 不写 `value`;后两种的 `value` 是**纯文本**,
+即使包含 `{{...}}` 也不展开、不执行。`contains` 对字符串检查子串,对数组检查
+成员;`equal` 只比较字符串/数值/布尔与文本。`false`、`0`、空串都算存在,
+缺失/null 不存在。引用图上不存在的节点或不是上游的节点会**失败**,不会偷换成 false。
+
+从条件节点**恰好拉两条出边**,`label` 必须分别写 `true` / `false`;
+内置节点在画布上拉线会自动标好。只走对应的那条路,另一条标 `unselected`;
+两路汇合时没走的那条不阻断下游。条件自动判定**不能**充当环的人工闸门。
 
 ### 对话节点:不隔离的那一种
 

@@ -158,17 +158,17 @@ async function callAsync(channel: string, raw?: unknown): Promise<unknown> {
 /** 把 `unknown` 收成能点属性的形状 —— 断言里读返回值的字段用。 */
 const obj = (v: unknown): Record<string, unknown> => v as Record<string, unknown>;
 
-/* ──────────────── 1. 22 条 handler 一条不少、一条不多 ──────────────── */
+/* ──────────────── 1. 23 条 handler 一条不少、一条不多 ──────────────── */
 
 console.log("\n注册面");
 
-// 22 这个数字是**数出来的**(下面按名字逐条对),不是抄的。少一条 = 渲染端某个按钮
+// 23 这个数字是**数出来的**(下面按名字逐条对),不是抄的。少一条 = 渲染端某个按钮
 // 点了没反应;多一条 = 白名单那边没跟上(renderer 根本调不到,但说明有人改了这里
 // 却没改契约那一份)。
 const registered = [...handlers.keys()].sort();
 check(
-  `注册了 22 条 handler(实际 ${registered.length})`,
-  registered.length === 22,
+  `注册了 23 条 handler(实际 ${registered.length})`,
+  registered.length === 23,
   registered,
 );
 
@@ -176,6 +176,7 @@ check(
 const expectedChannels: Array<[string, string]> = [
   ["工作流列表", IPC.WORKFLOW_LIST],
   ["取一份工作流", IPC.WORKFLOW_GET],
+  ["审查并启用外来工作流", IPC.WORKFLOW_APPROVE],
   ["节点类型清单", IPC.WORKFLOW_NODE_TYPES],
   ["存一份工作流", IPC.WORKFLOW_SAVE],
   ["删/恢复默认", IPC.WORKFLOW_REMOVE],
@@ -198,7 +199,7 @@ const expectedChannels: Array<[string, string]> = [
   ["命令模板(存)", IPC.AUTOMATION_WATCH_TEMPLATES_SAVE],
 ];
 const missing = expectedChannels.filter(([, ch]) => !handlers.has(ch)).map(([name]) => name);
-same("剩下那条名叫「命令模板(读)」在内的 22 条一条不缺", missing, []);
+same("剩下那条名叫「命令模板(读)」在内的 23 条一条不缺", missing, []);
 
 /* ──────────────── 2. 种子铺出来的目录 ──────────────── */
 
@@ -278,25 +279,18 @@ if (existsSync(promptReadme)) {
   ].sort();
   const contractKinds = [...(IMPLEMENTED_RUNNER_KINDS as readonly string[])].sort();
 
-  // ⚠️ **已知问题(没修,断言只记录现状)**:表里**没有 `trigger`**,而正文那句还写着
-  // "`runner.kind` 只有四个值"(实际契约里是 6 个)。这份 `.md` 不在我分到的两个文件里
-  // (它由 `nodeTypesSeed.ts` 的 `?raw` 进来),所以这里不改它,只把现状钉住 —— 哪天
-  // 有人补上 `trigger`、把"四个值"改成"六个值",这两条会红,红的时候读这段注释。
-  same("★ README 执行方式表里点过名的 kind(现状:少了 trigger)", tableKinds, [
-    "branch",
-    "code",
-    "command",
-    "conversation",
-    "prompt",
-  ]);
+  // 表与契约严格相等:不仅新加的 condition 得入表,trigger 也不能再遗漏。
+  // 不再把种类数写死 —— 新增执行原语时契约与给模型看的表要一起更新。
+  same("★ README 执行方式表与契约严格一致", tableKinds, contractKinds);
   check(
-    "★ 而契约那份清单里是 6 个(两份对不上 —— 表里缺 trigger)",
-    contractKinds.length === 6 && contractKinds.includes("trigger"),
+    "★ condition 与 trigger 都在表和契约里",
+    tableKinds.includes("condition") && tableKinds.includes("trigger") &&
+      contractKinds.includes("condition") && contractKinds.includes("trigger"),
     { 契约: contractKinds, README表: tableKinds },
   );
   check(
-    "★ 而且正文还写着「只有四个值」(与表里的五个、契约的六个都对不上)",
-    text.includes("`runner.kind` 只有四个值"),
+    "★ README 不再声称执行方式只有过期的四种",
+    !text.includes("`runner.kind` 只有四个值"),
   );
   // 反向:表里出现的每个 kind 契约必须认得(表不能自己发明执行原语)。
   const invented = tableKinds.filter((k) => !contractKinds.includes(k));
@@ -477,7 +471,7 @@ writeManifest("smoke-good.json", JSON.stringify(manifestFixture()));
   const unrunnable = c.entries
     .filter((e) => !isNodeRunnable(e.manifest))
     .map((e) => `${e.id}(${e.manifest.runner.kind})`);
-  // 今天的答案应该是"一个都没有":内置六个 + 目录里那份 command(param 形状)。
+  // 今天的答案应该是"一个都没有":内置类型 + 目录里那份 command(param 形状)。
   same("清单里没有『配得出来但跑不通』的类型", unrunnable, []);
 }
 
@@ -491,21 +485,22 @@ writeManifest("smoke-good.json", JSON.stringify(manifestFixture()));
   const unknown = kinds.filter((k) => !(IMPLEMENTED_RUNNER_KINDS as readonly string[]).includes(k));
   same("每个在用的 kind 都在契约的『已实现』清单里", unknown, []);
   check(
-    "契约里那 6 种执行方式,清单里全都有实例(否则那个声明是空头支票)",
+    "契约里的执行方式,清单里全都有实例(否则那个声明是空头支票)",
     (IMPLEMENTED_RUNNER_KINDS as readonly string[]).every((k) => kinds.includes(k)),
     { 契约: IMPLEMENTED_RUNNER_KINDS, 清单: kinds },
   );
 }
 
-// ④ 内置那七个一个都不能少 —— 少一个,`workflow.list` 里那几份内置图就有一节跑不了。
+// ④ 内置类型一个都不能少 —— 少一个,`workflow.list` 里那几份内置图就有一节跑不了。
 {
   const c = await catalog();
   const builtinIds = c.entries.filter((e) => e.source === "builtin").map((e) => e.id).sort();
-  same("内置节点类型正好是这七个", builtinIds, [
+  same("内置节点类型包含新条件及原有类型", builtinIds, [
     "mcode.agent",
     "mcode.branch",
     "mcode.code",
     "mcode.command",
+    "mcode.condition",
     "mcode.conversation",
     "mcode.main",
     "mcode.trigger",
@@ -1188,6 +1183,35 @@ console.log("\n导入");
   resetDialog();
 }
 
+/* ──────────────── 14b. 审查启用:主进程只批准当前保存版本 ──────────────── */
+
+{
+  const imported = obj(await callAsync(IPC.WORKFLOW_IMPORT, {
+    text: JSON.stringify(goodDoc({ id: "wf_review_source", name: "审批冒烟" })),
+  }));
+  eq("审核夹具先导入成功", imported.ok, true);
+  const id = String(imported.id);
+  const before = obj(await callAsync(IPC.WORKFLOW_GET, { id }));
+  check("从 IPC 读回的是待审查版本和准确摘要", before.review !== null && obj(before.review).pending === true && /^[a-f0-9]{64}$/.test(String(obj(before.review).revision)));
+  const revision = String(obj(before.review ?? {}).revision);
+
+  resetSent();
+  eq("审批找不到的版本不启用", obj(await callAsync(IPC.WORKFLOW_APPROVE, { id: "wf_missing_review", revision })).ok, false);
+  const stale = obj(await callAsync(IPC.WORKFLOW_APPROVE, { id, revision: "0".repeat(64) }));
+  eq("旧摘要的审批不启用", stale.ok, false);
+  eq("拒绝审批不广播变更", sent.filter((s) => s.channel === IPC.WORKFLOW_CHANGED).length, 0);
+  const approved = obj(await callAsync(IPC.WORKFLOW_APPROVE, { id, revision }));
+  eq("审批当前保存版本可启用", approved.ok, true);
+  eq("审批触发一次工作流重载广播", sent.filter((s) => s.channel === IPC.WORKFLOW_CHANGED).length, 1);
+  eq("刷新再看已不待审", obj(obj(await callAsync(IPC.WORKFLOW_GET, { id })).review).pending, false);
+
+  const changed = { ...(before.workflow as WorkflowDoc), description: "这份图现在做另一件事" };
+  eq("用户本地改图后能保存", obj(await callAsync(IPC.WORKFLOW_SAVE, { workflow: changed })).ok, true);
+  const updated = obj(await callAsync(IPC.WORKFLOW_GET, { id }));
+  eq("同 id 改图撤销旧审批", obj(updated.review).pending, true);
+  eq("拿旧摘要重新审批仍被拒", obj(await callAsync(IPC.WORKFLOW_APPROVE, { id, revision })).ok, false);
+}
+
 /* ──────────────── 15. 导出 ──────────────── */
 
 console.log("\n导出");
@@ -1399,7 +1423,9 @@ console.log("\n新建节点:两条路会不会分家");
 {
   const catalog = obj(await callAsync(IPC.WORKFLOW_NODE_TYPES));
   const entries = catalog.entries as Array<{ id: string; manifest: { runner: { kind: string } } }>;
-  check("清单里带着内置那 7 种", entries.filter((e) => e.id.startsWith("mcode.")).length >= 7, {
+  check("IPC 清单带着含 condition 在内的 8 种内置类型",
+    entries.filter((e) => e.id.startsWith("mcode.")).length >= 8 &&
+      entries.some((e) => e.id === "mcode.condition" && e.manifest.runner.kind === "condition"), {
     got: entries.map((e) => e.id),
   });
   same("这一份读得干干净净 → problems 是空的", catalog.problems, []);

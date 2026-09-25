@@ -1,0 +1,66 @@
+{
+  "schemaVersion": "1",
+  "id": "wf_example_event_review",
+  "name": "示例：下载事件按条件交给子代理",
+  "builtin": false,
+  "updatedAt": 0,
+  "trigger": "event",
+  "nodes": [
+    {
+      "id": "download-event",
+      "type": "mcode.trigger",
+      "title": "资料下载完成",
+      "params": {
+        "triggerKind": "event",
+        "project": "",
+        "events": "library.item.downloaded",
+        "eventFilter": "",
+        "task": "处理这次下载完成的资料；载荷里可能列出多条，请逐条说明。",
+        "enabled": false,
+        "debounceMs": 2000
+      },
+      "position": { "x": 20, "y": 120 }
+    },
+    {
+      "id": "judge",
+      "type": "mcode.condition",
+      "title": "是否可审阅 PDF",
+      "params": {
+        "expression": {
+          "logic": "and",
+          "rules": [
+            { "ref": "{{trigger.event}}", "op": "equal", "value": "library.item.downloaded" },
+            { "ref": "{{trigger.pdfPath}}", "op": "exists" },
+            { "ref": "{{trigger.pdfPath}}", "op": "contains", "value": ".pdf" }
+          ]
+        }
+      },
+      "position": { "x": 310, "y": 120 }
+    },
+    {
+      "id": "review-agent",
+      "type": "mcode.agent",
+      "title": "审阅已下载资料",
+      "capability": "read",
+      "params": {
+        "instruction": "请按本次触发提示词中列出的所有条目逐条审阅，不要只处理 {{trigger.itemId}} 这一条。核对路径 {{trigger.pdfPath}} 所指的库内资料，简述可用性；只读，不下载、不修改文件，也不要猜测不存在的条目。"
+      },
+      "position": { "x": 640, "y": 20 }
+    },
+    {
+      "id": "fallback-agent",
+      "type": "mcode.agent",
+      "title": "缺少可审阅 PDF",
+      "capability": "read",
+      "params": {
+        "instruction": "这次事件没有可审阅的 PDF。请根据本次载荷说明为什么跳过；不要下载、写盘或虚构路径。"
+      },
+      "position": { "x": 640, "y": 225 }
+    }
+  ],
+  "edges": [
+    { "id": "e_start", "from": "download-event", "to": "judge" },
+    { "id": "e_true", "from": "judge", "to": "review-agent", "label": "true" },
+    { "id": "e_false", "from": "judge", "to": "fallback-agent", "label": "false" }
+  ]
+}

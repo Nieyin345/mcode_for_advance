@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "1",
+  "id": "wf_example_chat_review",
+  "name": "示例：主代理对话后按结论分工",
+  "builtin": false,
+  "updatedAt": 0,
+  "nodes": [
+    {
+      "id": "main-chat",
+      "type": "mcode.main",
+      "title": "先在当前对话中明确任务",
+      "params": {
+        "instruction": "结合当前对话和用户请求，把目标与疑点简要说清，再把下一步交给下游。如果条件已明确，在回复中写“通过”；需要补资料就说明缺口。"
+      },
+      "position": { "x": 20, "y": 115 }
+    },
+    {
+      "id": "chat-judge",
+      "type": "mcode.condition",
+      "title": "主代理是否确认目标",
+      "params": {
+        "expression": {
+          "logic": "or",
+          "rules": [
+            { "ref": "{{main-chat.summary}}", "op": "contains", "value": "通过" },
+            { "ref": "{{main-chat.summary}}", "op": "equal", "value": "已确认" }
+          ]
+        }
+      },
+      "position": { "x": 310, "y": 115 }
+    },
+    {
+      "id": "chat-approved",
+      "type": "mcode.agent",
+      "title": "整理已确认的成果",
+      "capability": "read",
+      "params": { "instruction": "基于主代理的结论 {{main-chat.summary}}，整理已有材料的要点，不修改文件。" },
+      "position": { "x": 640, "y": 15 }
+    },
+    {
+      "id": "chat-revisit",
+      "type": "mcode.agent",
+      "title": "列出待澄清的问题",
+      "capability": "read",
+      "params": { "instruction": "主代理目前的结论是 {{main-chat.summary}}；列出需用户确认的两三个问题，勿自行假定答案。" },
+      "position": { "x": 640, "y": 225 }
+    }
+  ],
+  "edges": [
+    { "id": "chat_to_judge", "from": "main-chat", "to": "chat-judge" },
+    { "id": "chat_true", "from": "chat-judge", "to": "chat-approved", "label": "true" },
+    { "id": "chat_false", "from": "chat-judge", "to": "chat-revisit", "label": "false" }
+  ]
+}

@@ -31,6 +31,7 @@ import {
   WorkflowChooseSchema,
   WorkflowRetrySchema,
   WorkflowExportSchema,
+  WorkflowApproveSchema,
   WorkflowGetSchema,
   WorkflowImportSchema,
   WorkflowRemoveSchema,
@@ -49,6 +50,7 @@ import {
 import { notifyWorkflowsChanged } from "@main/orchestration/broadcast.js";
 import { decodeSnapshot, runHistory } from "@main/orchestration/runStore.js";
 import { requestWorkflowReload } from "@main/orchestration/reloadRequest.js";
+import { approveWorkflowRevision, workflowReviewOf } from "@main/orchestration/workflowTrust.js";
 import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
 import { ensureLocalNodeTypesDir } from "@main/orchestration/nodeTypesSeed.js";
 import { resolveWorkflowChoice, resolveWorkflowRetry } from "@main/orchestration/runner.js";
@@ -91,7 +93,20 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC.WORKFLOW_GET, async (_evt, raw) => {
     const input = WorkflowGetSchema.parse(raw);
-    return { workflow: getWorkflow(input.id) };
+    const workflow = getWorkflow(input.id);
+    return { workflow, review: workflow === null ? null : workflowReviewOf(workflow) };
+  });
+
+  ipcMain.handle(IPC.WORKFLOW_APPROVE, async (_evt, raw) => {
+    const input = WorkflowApproveSchema.parse(raw);
+    const doc = getWorkflow(input.id);
+    if (doc === null) return { ok: false, error: "工作流已经不在了，请刷新列表" };
+    const result = approveWorkflowRevision(doc, input.revision);
+    if (result.ok) {
+      requestWorkflowReload(doc.id);
+      notifyWorkflowsChanged(`ipc:workflow_approve:${doc.id}`);
+    }
+    return result;
   });
 
   // 画布"添加节点"菜单要的是**当前可用**的节点类型(内置 + 已启用插件 + 用户自写),
@@ -224,7 +239,7 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
   // 一个错误框只会让他以为自己做错了什么。
   ipcMain.handle(IPC.WORKFLOW_CHOOSE, async (_evt, raw) => {
     const input = WorkflowChooseSchema.parse(raw);
-    return { ok: resolveWorkflowChoice(input) };
+    return resolveWorkflowChoice(input);
   });
 
   // ── 失败重试 ──
@@ -237,7 +252,7 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
   // 错误 —— 界面上是一句"这张卡不适用了",不是红框。
   ipcMain.handle(IPC.WORKFLOW_RETRY, async (_evt, raw) => {
     const input = WorkflowRetrySchema.parse(raw);
-    return { ok: resolveWorkflowRetry(input) };
+    return resolveWorkflowRetry(input);
   });
 
   // ─ 自动化 ──

@@ -53,6 +53,7 @@ import { PANEL_MAX_W } from "../settings/panelWidth.js";
 import { PanelHeader } from "../settings/PanelHeader.js";
 import { SettingsSection } from "../settings/SettingsSection.js";
 import type { ContextMemoryDir } from "@contracts/ipc";
+import { MemoryMaintenanceReview } from "./MemoryMaintenanceReview.js";
 
 /** 顶栏状态行的一句话。tone 决定颜色:ok 绿、error 红。 */
 interface Notice {
@@ -99,6 +100,8 @@ export function MemoryExplorerPanel() {
   const [draft, setDraft] = useState<{ category: string; name: string } | null>(null);
   /** 等待确认删除的文件(全路径)。ConfirmDialog 的目标。 */
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  /** 只在用户主动打开时扫描；不会定时或后台自动清理。 */
+  const [reviewOpen, setReviewOpen] = useState(false);
 
   /* ── 全局指令(2026-09-20 从「上下文」页搬来的) ──
    *
@@ -353,7 +356,24 @@ export function MemoryExplorerPanel() {
 
   return (
     <section className={`mx-auto flex h-full w-full ${PANEL_MAX_W.canvas} flex-col`}>
-      <PanelHeader title={t("settings.nav.memory")} icon={IconNotebook} />
+      <PanelHeader title={t("settings.nav.memory")} icon={IconNotebook} action={
+        <Button size="sm" variant="secondary" onClick={() => setReviewOpen((open) => !open)}>
+          {t(reviewOpen ? "memory.reviewClose" : "memory.reviewOpen")}
+        </Button>
+      } />
+
+      {reviewOpen && <MemoryMaintenanceReview
+        dirty={dirty || draft !== null}
+        onOpen={(path) => { void open(path); }}
+        onDeleted={(paths) => {
+          if (selected !== null && paths.includes(selected)) {
+            setSelected(null);
+            setContent("");
+            setSavedContent("");
+          }
+          void load();
+        }}
+      />}
 
       {loadError !== null && (
         <div className="mb-3 rounded border border-danger/40 bg-danger/5 px-3 py-2 text-[0.7857em] text-danger">

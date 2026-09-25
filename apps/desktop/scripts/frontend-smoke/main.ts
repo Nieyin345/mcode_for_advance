@@ -185,9 +185,12 @@ console.log("\n失败的那一轮");
   check("reason=end_turn 照常弹", onEnd !== null, onEnd);
   check("而且说的就是完成", onEnd?.body.includes("已完成") === true, onEnd);
 
-  // `max_tokens` 是"被长度截断了" —— 它是这一轮**正常收的场**(不是失败),照弹。
+  // `max_tokens` 是"被长度截断了" —— 回合确实收场(不是失败),但任务不能报成已完成。
+  // 照常通知,只是要告诉用户检查结果,而不是给出成功结论。
   const onMax = notifyVia(turnDone(s.id, "max_tokens"));
-  check("reason=max_tokens 也照弹(那是正常收场)", onMax !== null, onMax);
+  check("reason=max_tokens 也照弹", onMax !== null, onMax);
+  check("长度截断通知说清楚截断风险", onMax?.title.includes("截断") === true, onMax);
+  check("长度截断不误报任务已完成", onMax?.body.includes("已完成") === false, onMax);
 }
 
 /* ──────────────── 2. 失败的那条信息,不能因为上面那道闸门一起消失 ──────────────── */

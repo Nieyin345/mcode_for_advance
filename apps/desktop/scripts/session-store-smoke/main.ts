@@ -15,6 +15,7 @@
  */
 import "./prelude.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { ChatMessage } from "@renderer/stores/sessionStore.js";
 import { outputRowsOf } from "@renderer/components/chat/outputRows.js";
 import { normWorktreeKey } from "@renderer/lib/worktree.js";
@@ -1022,7 +1023,48 @@ await (async () => {
   check("并且留了一句说明(不是空着)", typeof tool?.result === "string" && tool.result.length > 0, tool?.result);
 })();
 
-console.log("\n[19] 外部投递草稿：deliverComposerDraft 递增 touch，quoteIntoComposer 追加 tag");
+console.log("\n[19] 失败回合：错误事件与 turn.done 不应重复报完成");
+{
+  const SID = "failed-turn-toast";
+  seed([mkSession(SID)], { total: 1 });
+  useSessionStore.setState({ isWindowFocused: true });
+  useToastStore.getState().clear();
+  const store = useSessionStore.getState();
+  store.ingestEvent({ type: "error", sessionId: SID, message: "Pi 上游连接失败" });
+  const afterError = useToastStore.getState().toasts;
+  eq("错误先弹一条 toast", afterError.length, 1);
+  eq("提示为错误，不是完成", afterError[0]?.kind, "error");
+  check("用户能看到错误原因", afterError[0]?.body?.includes("连接失败") === true, afterError);
+  eq("错误产生一次未读", useSessionStore.getState().unreadBySession[SID], 1);
+
+  store.ingestEvent({ type: "turn.done", sessionId: SID, reason: "error", endedAt: Date.now() });
+  eq("失败回合不再弹完成 toast", useToastStore.getState().toasts.length, 1);
+  eq("失败回合不重复累计未读", useSessionStore.getState().unreadBySession[SID], 1);
+  eq("失败标记仍然保留", useSessionStore.getState().turnErrorBySession[SID], true);
+
+  // A genuine successful turn should still notify once; do not silence all turn.done events.
+  const OK = "successful-turn-toast";
+  seed([mkSession(OK)], { total: 1 });
+  useToastStore.getState().clear();
+  store.ingestEvent({ type: "turn.done", sessionId: OK, reason: "end_turn", endedAt: Date.now() });
+  eq("成功回合仍弹一条 toast", useToastStore.getState().toasts.length, 1);
+  eq("成功提示保持 info", useToastStore.getState().toasts[0]?.kind, "info");
+
+  const LIMITED = "length-limited-turn-toast";
+  seed([mkSession(LIMITED)], { total: 1 });
+  useToastStore.getState().clear();
+  store.ingestEvent({ type: "turn.done", sessionId: LIMITED, reason: "max_tokens", endedAt: Date.now() });
+  const limitedToasts = useToastStore.getState().toasts;
+  eq("长度截断仍然提醒用户", limitedToasts.length, 1);
+  eq("长度截断用 warning 而非普通完成提示", limitedToasts[0]?.kind, "warning");
+  check("截断提示不能说任务已完成", !/(回合完成|Turn complete|已完成|finished)/i.test(
+    `${limitedToasts[0]?.title} ${limitedToasts[0]?.body}`,
+  ), limitedToasts);
+  eq("截断回合仍计一次未读", useSessionStore.getState().unreadBySession[LIMITED], 1);
+  useToastStore.getState().clear();
+}
+
+console.log("\n[20] 外部投递草稿：deliverComposerDraft 递增 touch，quoteIntoComposer 追加 tag");
 
 // 2026-09-24 的根因修复：外部在目标会话**开着**时写草稿，旧代码看不见
 // （草稿还原 effect 只依赖 sessionId）。现在 deliverComposerDraft 递增

@@ -147,7 +147,7 @@ function hasTrigger(doc: WorkflowDoc, catalog: NodeTypeCatalog): boolean {
 /** 表状参数(产出变量表、输入选项表、条件表)的值是一整个结构,拼进指令里没人读得懂
  *  —— 那不是"参数"该有的样子,不进菜单。其余种类(文本、数字、开关、路径、引用…)
  *  填过值就可以被 `{{A.params.xxx}}` 引走。 */
-const NON_SCALAR_PARAM_KINDS: ReadonlySet<string> = new Set(["variables", "options", "selects"]);
+const NON_SCALAR_PARAM_KINDS: ReadonlySet<string> = new Set(["variables", "options", "selects", "conditions"]);
 
 /**
  * 这一步现在能插入哪些变量。

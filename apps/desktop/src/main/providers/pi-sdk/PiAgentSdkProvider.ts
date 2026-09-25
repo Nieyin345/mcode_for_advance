@@ -419,13 +419,14 @@ export class PiAgentSdkProvider implements AgentProvider {
         // 一轮，再失败 → turn.notice(structured_invalid) + turn.done error。
         // defer 模式下 adapter 没在 agent_end 发 turn.done，由这里收尾。
         if (structuredSpec) {
-          let finalReason: TurnDoneReason = "end_turn";
+          let finalReason: TurnDoneReason = adapter.getFinalDoneReason();
           let parsed = parseStructuredOutput(adapter.getFinalTurnText(), structuredSpec);
           if (!parsed.ok) {
             ctx.log.warn(
               `pi: structured output invalid, one corrective prompt: ${parsed.error.slice(0, 200)}`,
             );
             await session.prompt(buildCorrectivePrompt(structuredSpec, parsed.error));
+            finalReason = adapter.getFinalDoneReason();
             parsed = parseStructuredOutput(adapter.getFinalTurnText(), structuredSpec);
             if (!parsed.ok) {
               ctx.emit({

@@ -55,6 +55,37 @@ export interface MemoryFileMeta {
   updatedAt: number;
 }
 
+/* ── 人工整理（MEM-03）── */
+
+/** 整理只提出候选。digest 覆盖路径、标题、时间和**完整原文**（含 frontmatter）；删除时必须重新核对。 */
+export interface MemoryReviewEntry extends MemoryFileMeta {
+  preview: string;
+  digest: string;
+}
+
+/** 疑似重复是一对建议，不是自动合并指令；同标题也可能有不同正文。 */
+export interface MemoryReviewPair {
+  a: MemoryReviewEntry;
+  b: MemoryReviewEntry;
+  score: number;
+}
+
+export interface MemoryReviewResult {
+  stale: MemoryReviewEntry[];
+  staleTotal: number;
+  staleTruncated: boolean;
+  duplicates: MemoryReviewPair[];
+  duplicatePairTotal: number;
+  pairTruncated: boolean;
+  scannedForDuplicates: number;
+  duplicateTruncated: boolean;
+  /** 正文超长，未纳入相似度比较（可仍因过期而显示）。 */
+  tooLong: string[];
+  /** 列表中存在、扫描时却无法安全读取；不会给出可删指纹。 */
+  unreadable: string[];
+  totalFiles: number;
+}
+
 /* ── 节点参数 ── */
 
 /**
@@ -101,6 +132,13 @@ export const MemoryPathSchema = z.object({ path: z.string().min(1) });
 export type MemoryReadInput = z.infer<typeof MemoryPathSchema>;
 export type MemoryDeleteInput = z.infer<typeof MemoryPathSchema>;
 
+/** 仅删除用户**从整理候选中勾选**并确认的一条；过期指纹不允许删除已改动的文件。 */
+export const MemoryReviewDeleteSchema = z.object({
+  path: z.string().min(1),
+  digest: z.string().regex(/^[0-9a-f]{64}$/),
+});
+export type MemoryReviewDeleteInput = z.infer<typeof MemoryReviewDeleteSchema>;
+
 /**
  * `memory:save` 的入参。`content` 是**正文**(不含 frontmatter —— 那由主进程生成并
  * 维护,人手改文件时 frontmatter 仍然可读可改);`title` 缺省沿用旧标题,没有旧标题
@@ -129,3 +167,5 @@ export const MEMORY_READ_CHANNEL = "memory:read";
 export const MEMORY_SAVE_CHANNEL = "memory:save";
 export const MEMORY_DELETE_CHANNEL = "memory:delete";
 export const MEMORY_CATEGORIES_CHANNEL = "memory:categories";
+export const MEMORY_REVIEW_CHANNEL = "memory:review";
+export const MEMORY_REVIEW_DELETE_CHANNEL = "memory:reviewDelete";

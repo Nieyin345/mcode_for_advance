@@ -65,7 +65,7 @@ function eq(name: string, actual: unknown, expected: unknown): void {
 /* ── 被测的真模块 + 夹具(动态 import:数据根要先生效) ── */
 
 const { initDb } = await import("@main/store/db.js");
-const { ProjectRepo, SessionRepo, WorkflowRepo } = await import("@main/store/repositories.js");
+const { ProjectRepo, SessionRepo, WorkflowRepo, WorkflowRunRepo } = await import("@main/store/repositories.js");
 /**
  * ⚠️ **命名空间导入,不是具名导入。** 具名的写法在实现被撤掉时会变成 esbuild 的
  * "No matching export" —— 那是**打包失败**,不是断言失败,拿不到"红"那一份可读的
@@ -73,6 +73,9 @@ const { ProjectRepo, SessionRepo, WorkflowRepo } = await import("@main/store/rep
  */
 const runner = await import("@main/orchestration/runner.js");
 const { startWorkflowRun, cancelWorkflowRun } = runner;
+const { decodeSnapshot, saveRun } = await import("@main/orchestration/runStore.js");
+const { workflowRevision } = await import("@main/orchestration/workflowTrust.js");
+const { getWorkflow } = await import("@main/orchestration/library.js");
 const rt = await import("./stubs/runtimeManager.js");
 const win = await import("./stubs/window.js");
 const { nodeSessionDoc, parentSession, project, WORKFLOW_ID, PARENT, PARENT_B } = await import(
@@ -324,7 +327,130 @@ await runGraph(PARENT);
   );
 }
 
+/* ──────────────── 8. 图修订钉住续跑:旧档 / 改图均不可继续 ──────────────── */
+
+{
+  const original = getWorkflow(WORKFLOW_ID)!;
+  const revision = workflowRevision(original);
+  const recent = WorkflowRunRepo.listForSession(PARENT, 10);
+  check(
+    "真实启动并落盘的运行带着图修订,不是只在编码器里模拟",
+    recent.some((row) => decodeSnapshot(row.payload)?.workflowRevision === revision),
+    recent.map((row) => decodeSnapshot(row.payload)?.workflowRevision),
+  );
+
+  const runId = "run_revision_guard";
+  const snapshot: import("@main/orchestration/runStore.js").RunSnapshot = {
+    prompt: "继续旧图",
+    cwd: process.cwd(),
+    attempts: [],
+    state: {
+      record: [],
+      rounds: [],
+      picks: [],
+      outcomes: [["agentA", { status: "failed", summary: "可重试的旧步骤" }]],
+      awaiting: ["agentA"],
+    },
+  };
+  const persist = (saved: typeof snapshot): void => void saveRun({
+    runId,
+    sessionId: PARENT,
+    workflowId: WORKFLOW_ID,
+    status: "interrupted",
+    snapshot: saved,
+  });
+  const choice = (id = runId) => runner.resolveWorkflowChoice({ sessionId: PARENT, runId: id, nodeId: "agentA", edgeId: "e1" });
+  const retry = () => runner.resolveWorkflowRetry({ sessionId: PARENT, runId, nodeId: "agentA" });
+
+  persist(snapshot);
+  check("旧快照没有图修订:岔路口不能续", choice().error?.includes("旧版") === true);
+  check("旧快照没有图修订:失败步骤不能重试", retry().error?.includes("旧版") === true);
+  eq("续跑时旧卡的 runId 不匹配不得续其他运行", choice("run_another").ok, false);
+  eq("直接调用 runner 也不能借旧快照绕过版本校验", await startWorkflowRun({
+    session: SessionRepo.get(PARENT)!,
+    resume: { runId, snapshot, nodeId: "agentA", rewind: ["agentA"] },
+  }), null);
+  eq("拒绝续跑后旧存档仍保留而没有被覆盖", WorkflowRunRepo.get(runId)?.status, "interrupted");
+
+  const pinned = { ...snapshot, workflowRevision: revision, inFlightNodeIds: [] as string[] };
+  persist({ ...pinned, inFlightNodeIds: ["agentA"] });
+  check("中断时正在执行代理:岔路口不能自动重放外部副作用", choice().error?.includes("重放") === true);
+  check("中断时正在执行代理:重试也不自动重放", retry().error?.includes("重放") === true);
+  eq("直调 runner 也不能绕过副作用保护", await startWorkflowRun({
+    session: SessionRepo.get(PARENT)!,
+    resume: { runId, snapshot: { ...pinned, inFlightNodeIds: ["agentA"] }, nodeId: "agentA", rewind: ["agentA"] },
+  }), null);
+
+  // Positive control: an unchanged graph with no in-flight external effect
+  // really starts again under the old runId (not merely passes a pure helper).
+  const matchingId = "run_revision_compatible";
+  saveRun({
+    runId: matchingId,
+    sessionId: PARENT,
+    workflowId: WORKFLOW_ID,
+    status: "failed",
+    snapshot: { ...pinned, state: { ...pinned.state, awaiting: [] } },
+  });
+  const resumed = runner.resolveWorkflowRetry({ sessionId: PARENT, runId: matchingId, nodeId: "agentA" });
+  eq("未改图且没有在飞副作用的失败步骤可重试", resumed.ok, true);
+  eq("重试沿用旧 runId 并把原行标回 running", WorkflowRunRepo.get(matchingId)?.status, "running");
+  cancelWorkflowRun(PARENT);
+  await waitFor("已放行的兼容运行收尾", () => !runner.hasActiveRun(PARENT));
+  check("重试后仍是原来的运行行", WorkflowRunRepo.get(matchingId)?.id === matchingId);
+
+  persist(pinned);
+  WorkflowRepo.save({ ...original, description: "保存时换了图语义" });
+  check("同 id 改图后岔路口不能沿用旧边和结局", choice().error?.includes("已修改") === true);
+  check("同 id 改图后重试不能沿用旧结局", retry().error?.includes("已修改") === true);
+  eq("改图后直接续跑也不动旧存档", await startWorkflowRun({
+    session: SessionRepo.get(PARENT)!,
+    resume: { runId, snapshot: pinned, nodeId: "agentA", rewind: ["agentA"] },
+  }), null);
+  eq("图不兼容时存档仍完整", WorkflowRunRepo.get(runId)?.status, "interrupted");
+}
+
 /* ──────────────── 收尾 ──────────────── */
+
+/* ──────────────── 9. 存档坏掉时不可无标记执行副作用 ──────────────── */
+
+WorkflowRepo.save(nodeSessionDoc()); // 上一节改了图,恢复可信夹具
+const repo = WorkflowRunRepo as unknown as { save: typeof WorkflowRunRepo.save };
+const originalRunSave = repo.save;
+{
+  let attempts = 0;
+  const bound = rt.bindLog.length;
+  repo.save = () => { attempts += 1; throw new Error("injected run-store failure"); };
+  const safety = setTimeout(() => cancelWorkflowRun(PARENT), 250);
+  let rejected = false;
+  try {
+    await startWorkflowRun({ session: SessionRepo.get(PARENT)!, prompt: "不能无存档运行", cwd: process.cwd() });
+  } catch { rejected = true; }
+  finally { clearTimeout(safety); repo.save = originalRunSave; }
+  check("初始存档失败明确拒绝运行", rejected && attempts > 0, { rejected, attempts });
+  eq("存档失败前一个引擎节点都不能派发", rt.bindLog.length, bound);
+  eq("存档失败后没有僵死的 active run", runner.hasActiveRun(PARENT), false);
+}
+{
+  let markerFailures = 0;
+  const bound = rt.bindLog.length;
+  rt.resetPublished();
+  repo.save = (row) => {
+    const snapshot = decodeSnapshot(row.payload);
+    if (snapshot?.inFlightNodeIds?.includes("entry") && markerFailures === 0) {
+      markerFailures += 1;
+      throw new Error("injected in-flight marker failure");
+    }
+    return originalRunSave(row);
+  };
+  const safety = setTimeout(() => cancelWorkflowRun(PARENT), 250);
+  try {
+    await startWorkflowRun({ session: SessionRepo.get(PARENT)!, prompt: "在飞标记写不进不得执行", cwd: process.cwd() });
+  } finally { clearTimeout(safety); repo.save = originalRunSave; }
+  eq("真实节点派发时触发了在飞标记失败", markerFailures, 1);
+  eq("标记失败时没有调用模型/命令引擎", rt.bindLog.length, bound);
+  check("标记失败以错误而非成功收口", rt.published.some((e) => e.type === "turn.done" && e.reason === "error"));
+  eq("标记失败后没有僵死的 active run", runner.hasActiveRun(PARENT), false);
+}
 
 rmSync(DATA, { recursive: true, force: true });
 

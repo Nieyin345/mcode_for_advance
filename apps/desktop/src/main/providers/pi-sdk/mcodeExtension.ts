@@ -54,7 +54,7 @@ import type { PermissionMode } from "@contracts/runtime";
 import { normalizeToolFilePath } from "@main/lib/fileSnapshot.js";
 import { getFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
 import { normalizeBashCommand } from "@main/lib/msysPath.js";
-import { guardBashCommand, expandTilde } from "./bashWriteGuard.js";
+import { guardBashCommand, resolveBashWriteTargets, expandTilde } from "./bashWriteGuard.js";
 import {
   parseQuestions,
   formatAnswersForModel,
@@ -306,6 +306,15 @@ function registerToolCallGuard(
         const denial = guardBashCommand(cwd, normalized, strict);
         if (denial) {
           return { block: true, reason: denial };
+        }
+        // Bash can write without calling write/edit. Capture the recognized
+        // literal targets BEFORE execution so the turn-files card and rewind
+        // see the actual pre-write contents. Only in-project files are safe to
+        // restore; expansions and unparsed shell forms remain out of scope.
+        for (const target of resolveBashWriteTargets(cwd, normalized)) {
+          if (target.insideProject) {
+            await getFileSnapshot(sessionId).recordPre(cwd, target.absPath);
+          }
         }
       }
     }

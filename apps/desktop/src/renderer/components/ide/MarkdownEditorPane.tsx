@@ -58,13 +58,15 @@ import {
 } from "@mdxeditor/editor";
 import "@mdxeditor/editor/style.css";
 import { api } from "@renderer/lib/api.js";
+import { markdownFileWrites } from "@renderer/lib/markdownFileWrites.js";
+import { isEditingKey, shouldAutosave } from "@renderer/lib/serializedFileWrites.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { cn } from "@renderer/lib/cn.js";
 import { IconLoader2, IconCheck } from "@renderer/lib/icons.js";
 
 export function MarkdownEditorPane({
   filePath,
-  projectPath,
 }: {
   filePath: string;
   projectPath: string | null;
@@ -102,6 +104,15 @@ export function MarkdownEditorPane({
   const baselineRef = useRef<string | null>(null);
   const dirtyRef = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestContentRef = useRef<string | null>(null);
+  const queuedContentRef = useRef<string | null>(null);
+  const failedContentRef = useRef<string | null>(null);
+  const saveVersionRef = useRef(0);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   /** 用户在本面板里按下过键吗（见 `dirtyRef` 那段注释）。 */
   const userTouchedRef = useRef(false);
 
@@ -112,8 +123,11 @@ export function MarkdownEditorPane({
     setErr(null);
     dirtyRef.current = false;
     baselineRef.current = null;
-    api.file
-      .readFile({ filePath })
+    userTouchedRef.current = false;
+    latestContentRef.current = null;
+    setInitial(null);
+    markdownFileWrites.waitForPending(filePath)
+      .then(() => api.file.readFile({ filePath }))
       .then((r) => {
         if (cancelled) return;
         setInitial(r.content);
@@ -139,6 +153,7 @@ export function MarkdownEditorPane({
   useEffect(() => {
     if (initial === null) return;
     const timer = setTimeout(() => {
+      if (userTouchedRef.current) return; // an edit must not become the baseline
       try {
         baselineRef.current = ref.current?.getMarkdown() ?? initial;
       } catch {
@@ -149,18 +164,45 @@ export function MarkdownEditorPane({
   }, [initial]);
 
   const save = useCallback(
-    async (content: string) => {
-      setStatus("saving");
-      try {
-        const r = await api.file.writeFile({ filePath, content });
-        setStatus(r.ok === false ? "error" : "saved");
-        if (r.ok === false) setErr(t("library.note.saveFailed"));
-      } catch (e) {
-        setErr((e as Error).message);
-        setStatus("error");
+    (content: string, flush = false) => {
+      const version = ++saveVersionRef.current;
+      queuedContentRef.current = content;
+      failedContentRef.current = null;
+      if (!flush && mountedRef.current) {
+        setErr(null);
+        setStatus("saving");
       }
+      // One queue per file outlives this pane: a slow, older write must never
+      // finish AFTER a newer one (including a close/switch flush).
+      void markdownFileWrites.enqueue(filePath, content).then(
+        () => {
+          if (version !== saveVersionRef.current) return;
+          failedContentRef.current = null;
+          if (latestContentRef.current === content) {
+            baselineRef.current = content;
+            dirtyRef.current = false;
+          }
+          if (mountedRef.current && latestContentRef.current === content) setStatus("saved");
+        },
+        (e: unknown) => {
+          if (version !== saveVersionRef.current) return;
+          failedContentRef.current = content;
+          const detail = e instanceof Error ? e.message : String(e);
+          if (mountedRef.current) {
+            setErr(`${t("library.note.saveFailed")}: ${detail}`);
+            setStatus("error");
+          } else {
+            // The component is gone: its inline status cannot report this.
+            useToastStore.getState().push({
+              kind: "error",
+              title: t("library.note.saveFailed"),
+              body: `${filePath}: ${detail}`,
+            });
+          }
+        },
+      );
     },
-    [filePath, projectPath, t],
+    [filePath, t],
   );
 
   const onChange = useCallback(
@@ -177,17 +219,26 @@ export function MarkdownEditorPane({
       if (!userTouchedRef.current) {
         // 顺手把基准追到最新 —— 这样用户真动手时，"改了没"是拿最后那个稳定值比的
         baselineRef.current = next;
+        latestContentRef.current = next;
         return;
       }
+      latestContentRef.current = next;
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      saveTimer.current = null;
       // 内容回到基准（用户改完又改回来了）→ 不算脏
-      if (baselineRef.current !== null && next === baselineRef.current) {
+      if (!shouldAutosave(true, next, baselineRef.current) && baselineRef.current !== null) {
         dirtyRef.current = false;
+        // An older write may already be in flight. Put the baseline AFTER it,
+        // otherwise undoing during a slow write leaves the old edit on disk.
+        if (queuedContentRef.current !== null && queuedContentRef.current !== next) save(next);
         return;
       }
       dirtyRef.current = true;
       // 防抖：用户可能在连着敲
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(() => void save(next), 800);
+      saveTimer.current = setTimeout(() => {
+        saveTimer.current = null;
+        save(next);
+      }, 800);
     },
     [save],
   );
@@ -210,7 +261,14 @@ export function MarkdownEditorPane({
     const mark = (e: Event) => {
       const el = rootRef.current;
       const t = e.target;
-      if (el && t instanceof Node && el.contains(t)) userTouchedRef.current = true;
+      if (!el || !(t instanceof Node) || !el.contains(t)) return;
+      if (e.type === "keydown") {
+        if (!isEditingKey(e as KeyboardEvent)) return;
+        // Toolbar focus/navigation isn't text input either. Real edits in
+        // Lexical and source mode also emit beforeinput/paste/cut/drop.
+        if (!(t instanceof Element) || !t.closest('[contenteditable="true"],input,textarea')) return;
+      }
+      userTouchedRef.current = true;
     };
     const types = ["keydown", "beforeinput", "paste", "cut", "drop"] as const;
     for (const type of types) document.addEventListener(type, mark, true);
@@ -224,15 +282,17 @@ export function MarkdownEditorPane({
     () => () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
       if (dirtyRef.current) {
+        let md = latestContentRef.current;
         try {
-          const md = ref.current?.getMarkdown();
-          if (md != null && md !== baselineRef.current) void api.file.writeFile({ filePath, content: md });
+          md = ref.current?.getMarkdown() ?? md;
         } catch {
-          /* 编辑器已经拆了，拿不到就算了 */
+          /* 编辑器已经拆了，用最后一次 onChange 里的内容 */
         }
+        if (md != null && md !== baselineRef.current &&
+            (md !== queuedContentRef.current || failedContentRef.current === md)) save(md, true);
       }
     },
-    [filePath],
+    [filePath, save],
   );
 
   if (err && initial === null) {

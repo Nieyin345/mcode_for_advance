@@ -91,7 +91,18 @@ import type { Session } from "@contracts/session";
 import { NODE_AGENT_TYPE_ID, loadNodeTypes, localNodeTypesDir } from "@main/orchestration/nodeTypes.js";
 import { notifyWorkflowsChanged } from "@main/orchestration/broadcast.js";
 import { requestWorkflowReload } from "@main/orchestration/reloadRequest.js";
-import { fail, loadCreateMcpServer, text, toSdkTools, type McpToolSpec } from "./sdk.js";
+import {
+  deliver,
+  peersOf,
+  peekAsk,
+  recordAsk,
+  resolvePeer,
+  selfPeerOf,
+  takeAsk,
+  undeliveredCount,
+  unknownPeerMessage,
+} from "@main/lib/agentMail.js";
+import { fail, loadCreateMcpServer, text, toSdkTools, type McpToolContext, type McpToolSpec } from "./sdk.js";
 
 /** MCP server 名。SDK 把工具暴露成 `mcp__<这个名字>__<工具名>`。
  *
@@ -127,7 +138,21 @@ export const WORKFLOW_READONLY_TOOLS = new Set([
   "node_types_list",
   "agent_profiles_list",
   "session_read_log",
+  // 只读:它只是列一眼名册,改不了任何东西、也叫不醒谁,所以**不问用户**。
+  // (两个有副作用的 —— agent_notify / agent_ask —— 不在这里,它们照常弹审批卡,
+  //  那正是用户"看得见、能拦下"的落点。)
+  "agent_peers",
 ]);
+
+/**
+ * 代理间通信那一组工具的名字。**公网那条路要把它们整组摘掉**,理由与
+ * {@link SESSION_LOG_TOOLS} 同源(甚至更硬):拿到公网链接的人不该有能力**叫醒本机的
+ * 会话**(`agent_notify` / `agent_ask`),也不该读到本机有哪些会话(`agent_peers`)。
+ *
+ * 单列一份是因为它要被两处用:工具表的过滤(这里)和那两条工具自己的归属判断。
+ * 硬规矩 2 —— 同一份清单不写两遍。
+ */
+export const AGENT_MAIL_TOOLS = new Set(["agent_peers", "agent_notify", "agent_ask"]);
 
 /**
  * 读用户对话记录那一组工具的名字。**公网那条路要把它们整组摘掉**（见
@@ -769,7 +794,9 @@ export function workflowMcpTools(opts?: { includeSessionLogs?: boolean }): McpTo
         const normalized = await normalizeWorkflow(args.workflow ?? {});
         if (!normalized.ok) return fail(normalized.error);
 
-        const result = await saveWorkflow(normalized.doc);
+        // Approval to SAVE this tool call is not consent to EXECUTE its graph
+        // in the background. The pending marker is installed before the write.
+        const result = await saveWorkflow(normalized.doc, { untrustedOrigin: "ai" });
         if (!result.ok) return fail(result.error);
 
         notifyWorkflowsChanged(`mcp:workflow_save:${normalized.doc.id}`);
@@ -784,7 +811,7 @@ export function workflowMcpTools(opts?: { includeSessionLogs?: boolean }): McpTo
               "(同一层里的几步之间没有先后;分层是按依赖算的)"
             : `已保存「${doc.name}」 id=\`${doc.id}\` —— 一份提示词型工作流。`;
         const notes = normalized.notes.length > 0 ? `\n\n${normalized.notes.join("\n")}` : "";
-        return text(`${head}${notes}\n\n用户在 设置 → 工作流 里就能看到它。`);
+        return text(`${head}${notes}\n\n已保存但尚未启用：请用户在 设置 → 工作流/自动化 检查当前版本并明确批准后再运行。`);
       },
     },
     {
@@ -931,9 +958,156 @@ export function workflowMcpTools(opts?: { includeSessionLogs?: boolean }): McpTo
         );
       },
     },
+
+    /* ── 代理之间通信 ──
+     *
+     * 这三个是**同一件事的三面**:名册、通知、询问。它们做的事是**在会话之间递话**,
+     * 而不是沿图的边传产出(那是 `upstreamText` 那套,方向是单向的)。
+     *
+     * ⚠️ **这三条不进公网那张工具表**(见 `AGENT_MAIL_TOOLS` 与下面的 filter):
+     * 拿到公网链接的人不该有能力叫醒本机的会话,也不该读到本机有哪些会话。
+     */
+    {
+      name: "agent_peers",
+      description:
+        "列出**当前这个主对话底下**的其他代理(主对话自己 + 这个对话跑过的每一步 + 你在这儿开的子对话)。" +
+        "用来知道「现在有谁」以及发给谁 —— 每条给名字和 id,`agent_notify` / `agent_ask` 的 `to` 两者都收。" +
+        "**名册是现查的**:你随时新开的子代理会出现,不用重跑流程。" +
+        "⚠️ 只列这个对话底下的 —— 别的对话、别的项目里的代理不在里面。",
+      inputSchema: {},
+      handler: async (_args: Record<string, unknown>, ctx: McpToolContext) => {
+        const peers = peersOf(ctx.sessionId);
+        if (peers.length === 0) {
+          return text("当前没有别的代理 —— 这个对话底下只有你自己。");
+        }
+        const lines = peers.map((p) => {
+          const where = p.kind === "node" ? "流程里的一步" : p.kind === "side" ? "子对话" : "主对话";
+          const busy = p.running ? ",此刻正在跑" : "";
+          return `- **${p.name}**(${where}${busy}) id=${p.id}`;
+        });
+        // 未答的提问**必须显式报出来** —— 否则"我问过一个问题、对方还没答"这件事在
+        // 界面上没有任何痕迹,而模型会以为对方不理它。见 `undeliveredCount`。
+        const waiting = undeliveredCount(ctx.sessionId);
+        const tail =
+          waiting > 0
+            ? `\n\n⚠️ 你有 **${waiting} 条问了还没被回复**的消息。对方的答复到了会再来找你;` +
+              `如果它一直不回,再问一次或者换个代理。`
+            : "";
+        return text(`当前这个对话底下的代理:\n\n${lines.join("\n")}${tail}`);
+      },
+    },
+    {
+      name: "agent_notify",
+      description:
+        "给另一个代理**捎一句话**,发完立刻返回,不等回复(要回复用 `agent_ask`)。" +
+        "对方在跑就插进它当前这一轮;它空闲就存下,等它下次开口时带到。" +
+        "**用它回别人的问题时带上 `re`**(那条问题给出的编号)—— 不带你那条答复就不知道回给谁。" +
+        "用 `agent_peers` 拿名字或 id。",
+      inputSchema: {
+        to: z.string().describe("发给谁:代理的名字或 id(见 agent_peers)"),
+        text: z.string().describe("要说的话"),
+        re: z
+          .string()
+          .optional()
+          .describe("**回别人的问题时带上它** —— 那是一条 agent_ask 给出的编号(ask_xxx)"),
+      },
+      handler: async (args: { to: string; text: string; re?: string }, ctx: McpToolContext) => {
+        const self = selfPeerOf(ctx.sessionId);
+
+        // 回信:按 `re` **精确**路由到原提问方。先验发信人、确定投递成功再销账。
+        // 否则旁观代理可用编号冒充收信方，或限流拒投时把原问题永久吞掉。
+        if (args.re !== undefined) {
+          const ask = peekAsk(args.re.trim());
+          if (ask === undefined) {
+            return fail(
+              `没找到编号为 ${args.re} 的提问 —— 它可能已经被回过了,或者编号抄错了。` +
+                `再确认一下,别把答复发错人。`,
+            );
+          }
+          if (ask.toSessionId !== ctx.sessionId) {
+            return fail(`编号 ${ask.askId} 不是发给你的提问,不能替收信方回信。`);
+          }
+          const back = resolvePeer(ctx.sessionId, ask.fromSessionId);
+          if (back === undefined) {
+            return fail(`这条提问的提问方(${ask.fromSessionId})已经不在这个对话里了,送不回去。`);
+          }
+          const r = deliver(back, {
+            fromName: self.name,
+            fromId: self.id,
+            kind: "notify",
+            text: args.text,
+            re: ask.askId,
+          });
+          if (r.outcome === "failed") return fail(r.detail);
+          // 同步投递已被接受（插播/叫醒/排队），此时才销掉挂账。
+          takeAsk(ask.askId);
+          return text(`答复已送回给「${back.name}」。${r.detail}`);
+        }
+
+        // 普通通知:先解析目标 —— **名册之外的一律拒掉**,不做"尽力投递"。
+        const peer = resolvePeer(ctx.sessionId, args.to);
+        if (peer === undefined) {
+          return fail(unknownPeerMessage(ctx.sessionId, args.to));
+        }
+        const r = deliver(peer, {
+          fromName: self.name,
+          fromId: self.id,
+          kind: "notify",
+          text: args.text,
+        });
+        return r.outcome === "failed" ? fail(r.detail) : text(`发给「${peer.name}」:${r.detail}`);
+      },
+    },
+    {
+      name: "agent_ask",
+      description:
+        "**问另一个代理一个问题**,要它回答。与 `agent_notify` 的差别只有一个:这条会记下" +
+        "「我还在等它答」,并给它一个编号。" +
+        "⚠️ **它不阻塞你** —— 发完你这一轮照常结束。对方的答复到了,宿主会**回头叫醒你**," +
+        "把答复交给你。所以你可以一边等一边干别的,也不用担心两个代理互相等死。",
+      inputSchema: {
+        to: z.string().describe("问谁:代理的名字或 id(见 agent_peers)"),
+        text: z.string().describe("你要问的问题"),
+      },
+      handler: async (args: { to: string; text: string }, ctx: McpToolContext) => {
+        const self = selfPeerOf(ctx.sessionId);
+        const peer = resolvePeer(ctx.sessionId, args.to);
+        if (peer === undefined) {
+          return fail(unknownPeerMessage(ctx.sessionId, args.to));
+        }
+        // **先记挂账再投递。** 反过来的话,对方回得太快(插播那条路是同步的)就有可能
+        // 在挂账写下去之前先收到回信 —— 那条答复会因为查不到编号而被拒,而双方都不知道
+        // 发生过什么。
+        const ask = recordAsk({
+          fromSessionId: ctx.sessionId,
+          fromName: self.name,
+          toSessionId: peer.id,
+          question: args.text,
+        });
+        const r = deliver(peer, {
+          fromName: self.name,
+          fromId: self.id,
+          kind: "ask",
+          text: args.text,
+          re: ask.askId,
+        });
+        if (r.outcome === "failed") {
+          // 送不出去 → 把挂账撤掉,别留一条永远等不到答复的。
+          takeAsk(ask.askId);
+          return fail(r.detail);
+        }
+        return text(
+          `问题已发给「${peer.name}」。${r.detail}\n` +
+            `**编号 ${ask.askId}** —— 它答了之后宿主要拿这个编号把答复带给你。` +
+            `你现在可以接着干别的,不用等。`,
+        );
+      },
+    },
   ];
-  // 公网那条路把「读用户对话记录」整组摘掉 —— 见上面的参数说明。
-  return includeSessionLogs ? specs : specs.filter((s) => !SESSION_LOG_TOOLS.has(s.name));
+  // 公网那条路把「读用户对话记录」与「代理间通信」**两组**整组摘掉 —— 见上面参数说明。
+  return includeSessionLogs
+    ? specs
+    : specs.filter((s) => !SESSION_LOG_TOOLS.has(s.name) && !AGENT_MAIL_TOOLS.has(s.name));
 }
 
 /**

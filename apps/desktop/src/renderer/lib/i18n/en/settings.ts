@@ -1064,6 +1064,15 @@ export const en = {
     "Pick a workflow on the left. Select a node to configure it; click empty space to get back to the workflow itself.",
   "settings.workflows.badgeBuiltin": "Built-in",
   "settings.workflows.badgeEdited": "Edited",
+  "settings.workflows.reviewPending": "This external workflow is not enabled. Background triggers and manual execution are paused.",
+  "settings.workflows.reviewImported": "Source: imported file. Inspect the triggers, commands, code, permissions and node parameters below.",
+  "settings.workflows.reviewAi": "Source: AI save. Approving a save is not consent to background execution. Review this entire version.",
+  "settings.workflows.reviewDetails": "Inspect the saved triggers, nodes and edges",
+  "settings.workflows.reviewUnavailable": "The saved version could not be read. Reopen this workflow before approving it.",
+  "settings.workflows.reviewSaveFirst": "Save or discard canvas changes before approving this exact version.",
+  "settings.workflows.reviewEnable": "I reviewed this version; enable it",
+  "settings.workflows.reviewConfirmTitle": "Allow this workflow to run?",
+  "settings.workflows.reviewConfirmDesc": "After approval, enabled triggers in this version will start listening. Command and code nodes may run on this computer. Changes to execution content require a new review.",
 
   // ── Canvas ──
   "settings.workflows.addNode": "Add node",
@@ -1285,6 +1294,22 @@ export const en = {
   "settings.workflows.branchOptionLabel": "Option name (falls back to that step's title)",
   "settings.workflows.branchOptionNote":
     "One line for the next step when this option is taken (goes into its prompt). Can be left empty.",
+  "settings.workflows.condition.routes": "True / false routes",
+  "settings.workflows.condition.missingRoutes": "Draw exactly two outgoing lines; label one true and the other false.",
+  "settings.workflows.condition.routesHint": "The condition checks data without a model. It follows only the matching route; the other route is not run. This node cannot close a loop.",
+  "settings.workflows.condition.true": "true · matched",
+  "settings.workflows.condition.false": "false · not matched",
+  "settings.workflows.condition.routePick": "Choose true or false",
+  "settings.workflows.condition.logic": "Combine rules",
+  "settings.workflows.condition.and": "AND · all match",
+  "settings.workflows.condition.or": "OR · any match",
+  "settings.workflows.condition.ref": "{{upstream.field}}",
+  "settings.workflows.condition.exists": "exists · value is present",
+  "settings.workflows.condition.equal": "equal · exact text",
+  "settings.workflows.condition.contains": "contains · substring or array member",
+  "settings.workflows.condition.value": "Literal comparison value (not code)",
+  "settings.workflows.condition.add": "Add rule",
+  "settings.workflows.condition.remove": "Remove rule",
   // A decision node and a branch are two versions of the same thing — both pick one
   // outgoing edge. The difference is who picks: a branch waits for you, a decision
   // judges for itself and hands back the option name in its 出路 output variable.

@@ -6,6 +6,14 @@ export const zh = {
   /* ── left bar / brand ── */
   "layout.about": "关于 Mcode",
   "layout.tagline": "智能编码工作台",
+  /* ── bottom status bar ── */
+  "layout.status.claudeMissing": "未找到 Claude",
+  "layout.status.claudeReady": "Claude 已就绪",
+  "layout.status.checkingClaude": "正在检查 Claude…",
+  "layout.status.auto": "自动",
+  "layout.status.selectModel": "未选择模型",
+  "layout.status.working": "运行中",
+  "layout.status.ready": "就绪",
   "layout.projects": "项目",
   "layout.projectViewMode": "项目视图模式",
   "layout.viewFlat": "常规视图（平铺列表）",

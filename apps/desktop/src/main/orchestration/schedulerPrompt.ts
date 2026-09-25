@@ -254,7 +254,7 @@ export interface Arrival {
    * 说法:说成"用户在岔路口选了 X"会让下一步以为**有人**拍过板,而它据此去揣摩"那个人
    * 想要什么",实际上根本没有那个人。
    */
-  by?: "user" | "agent";
+  by?: "user" | "agent" | "rule";
 }
 
 /**
@@ -271,9 +271,11 @@ export interface Arrival {
 function arrivalSection(arrival: Arrival): string {
   const lines = [
     "## 本次执行的前置选择",
-    arrival.by === "agent"
-      ? `上一处决策「${arrival.from}」判的是「${arrival.label}」。`
-      : `上一处分支「${arrival.from}」中,用户选择的是「${arrival.label}」。`,
+    arrival.by === "rule"
+      ? `上一处条件「${arrival.from}」按规则走的是「${arrival.label}」。`
+      : arrival.by === "agent"
+        ? `上一处决策「${arrival.from}」判的是「${arrival.label}」。`
+        : `上一处分支「${arrival.from}」中,用户选择的是「${arrival.label}」。`,
   ];
   if (arrival.note.length > 0) lines.push(arrival.note);
   if (arrival.comment.length > 0) lines.push(`用户补充说明:${arrival.comment}`);

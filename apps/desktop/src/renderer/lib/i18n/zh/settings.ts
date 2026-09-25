@@ -1061,6 +1061,15 @@ export const zh = {
   "settings.workflows.selectHint": "左边选一个工作流。选中一个节点可以配它，点空白处回到工作流本身。",
   "settings.workflows.badgeBuiltin": "内置",
   "settings.workflows.badgeEdited": "已修改",
+  "settings.workflows.reviewPending": "这份外来工作流尚未启用，后台触发和手动执行均已暂停。",
+  "settings.workflows.reviewImported": "来源：导入文件。请检查下面的触发条件、命令、代码、权限和所有节点参数。",
+  "settings.workflows.reviewAi": "来源：AI 保存。批准保存不等于批准后台执行，请检查以下完整版本。",
+  "settings.workflows.reviewDetails": "查看当前存盘版本的触发器、节点与出边",
+  "settings.workflows.reviewUnavailable": "无法读取待审查的版本，请重新打开这份工作流。",
+  "settings.workflows.reviewSaveFirst": "先保存或放弃画布上的改动，才能批准确切版本。",
+  "settings.workflows.reviewEnable": "我已检查，启用此版本",
+  "settings.workflows.reviewConfirmTitle": "允许执行这份工作流？",
+  "settings.workflows.reviewConfirmDesc": "批准后，本版本已启用的触发器将开始工作，命令和代码节点可能在本机运行。以后修改执行内容需重新审查。",
 
   // ── 画布 ──
   "settings.workflows.addNode": "添加节点",
@@ -1278,6 +1287,22 @@ export const zh = {
   "settings.workflows.branchOptionLabel": "选项名（留空就用那一步的标题）",
   "settings.workflows.branchOptionNote":
     "选了这条之后，给下一步的一句说明（会拼进它的提示词）。可以先不写。",
+  "settings.workflows.condition.routes": "真假两条出路",
+  "settings.workflows.condition.missingRoutes": "从这里恰好拉两条出边，分别标为 true 和 false。",
+  "settings.workflows.condition.routesHint": "只按规则检查数据，不调用模型；只走命中的那条路，另一条不执行。它不能充当环的人工闸门。",
+  "settings.workflows.condition.true": "true · 条件成立",
+  "settings.workflows.condition.false": "false · 条件不成立",
+  "settings.workflows.condition.routePick": "选择 true 或 false",
+  "settings.workflows.condition.logic": "规则关系",
+  "settings.workflows.condition.and": "AND · 全部满足",
+  "settings.workflows.condition.or": "OR · 任一满足",
+  "settings.workflows.condition.ref": "{{上游节点.字段}}",
+  "settings.workflows.condition.exists": "exists · 值存在",
+  "settings.workflows.condition.equal": "equal · 与文本相等",
+  "settings.workflows.condition.contains": "contains · 包含文字或数组成员",
+  "settings.workflows.condition.value": "比较值（纯文本，不执行）",
+  "settings.workflows.condition.add": "添加规则",
+  "settings.workflows.condition.remove": "删除规则",
   // 决策节点：它和分支是**同一件事的两个版本**（都从出边里挑一条），差别是**谁来挑**
   // —— 分支停下来等你点，决策自己判完把选项名交在「出路」这个产出变量里。
   "settings.workflows.decideOptions": "出路（它自己挑）",

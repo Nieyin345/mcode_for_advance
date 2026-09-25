@@ -13,6 +13,8 @@ export const zh = {
   "store.toast.errorOccurred": "发生错误",
   "store.toast.turnComplete": "回合完成",
   "store.toast.turnCompleteBody": "Agent 已完成本轮任务",
+  "store.toast.outputTruncated": "输出可能被截断",
+  "store.toast.outputTruncatedBody": "本轮输出已达到长度上限，回复可能不完整；请检查结果并继续。",
   "store.toast.turnIncomplete": "任务提前中断",
   // 复制对话失败。正文给的是主进程抛上来的那句具体原因(引擎不支持 / 会话文件不在了),
   // 因为那是用户唯一能据此做点什么的信息。

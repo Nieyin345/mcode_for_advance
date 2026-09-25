@@ -86,7 +86,7 @@ export function AskChoiceDialog() {
   const [picked, setPicked] = useState("");
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState(false);
-  const [stale, setStale] = useState(false);
+  const [stale, setStale] = useState<string | null>(null);
 
   const key =
     pending === null ? null : `${pending.runId}:${pending.nodeId}:${pending.attempt}`;
@@ -96,7 +96,7 @@ export function AskChoiceDialog() {
   useEffect(() => {
     setPicked("");
     setComment("");
-    setStale(false);
+    setStale(null);
   }, [key]);
 
   const open = pending !== null && dismissed !== key;
@@ -105,7 +105,7 @@ export function AskChoiceDialog() {
   const send = async (): Promise<void> => {
     if (pending === null || sessionId === null || busy || picked.length === 0) return;
     setBusy(true);
-    setStale(false);
+    setStale(null);
     try {
       const text = comment.trim();
       const res = await api.workflow.choose({
@@ -117,9 +117,9 @@ export function AskChoiceDialog() {
       });
       // 成功的话**什么都不用做**:主进程会把第二次 `workflow.node.choice` 发回来,
       // store 把那张卡换成"你选了 X",下面那个 `pending` 于是变成 null,弹窗自己关掉。
-      if (!res.ok) setStale(true);
+      if (!res.ok) setStale(res.error ?? t("chatStream.workflowChoice.stale"));
     } catch {
-      setStale(true);
+      setStale(t("chatStream.workflowChoice.stale"));
     } finally {
       setBusy(false);
     }
@@ -232,7 +232,7 @@ export function AskChoiceDialog() {
             </button>
             {stale && (
               <span className="text-xs text-content-subtle">
-                {t("chatStream.workflowChoice.stale")}
+                {stale}
               </span>
             )}
           </div>

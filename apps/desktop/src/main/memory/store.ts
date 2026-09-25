@@ -136,8 +136,9 @@ function quoteTitle(title: string): string {
 /**
  * 列出全部记忆文件。类目按固定次序,类目内按 `updatedAt` 新的在前。
  * 空目录/不存在的目录返回空数组 —— "还没有记忆"是常态,不是错误。
+ * 整理入口可传 onUnreadable：列目录阶段被跳过的异常 *.md / 非法链接也要明确告知人。
  */
-export function listMemoryFiles(filter?: MemoryListInput): MemoryFileMeta[] {
+export function listMemoryFiles(filter?: MemoryListInput & { onUnreadable?: (path: string) => void }): MemoryFileMeta[] {
   const root = memoryRoot();
   const want = filter?.category;
   const out: MemoryFileMeta[] = [];
@@ -146,10 +147,14 @@ export function listMemoryFiles(filter?: MemoryListInput): MemoryFileMeta[] {
     const dir = join(root, category);
     let names: string[];
     try {
-      if (lstatSync(dir).isSymbolicLink()) continue;
+      if (lstatSync(dir).isSymbolicLink()) {
+        filter?.onUnreadable?.(`${category}/`);
+        continue;
+      }
       names = readdirSync(dir);
-    } catch {
-      continue; // 这个类目还没有目录
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") filter?.onUnreadable?.(`${category}/`);
+      continue; // 目录不存在是正常空库，权限错误等才给整理入口报告
     }
     for (const name of names) {
       if (!name.endsWith(".md")) continue;
@@ -158,11 +163,15 @@ export function listMemoryFiles(filter?: MemoryListInput): MemoryFileMeta[] {
       let mtimeMs = 0;
       try {
         const lst = lstatSync(abs);
-        if (lst.isSymbolicLink() || !lst.isFile()) continue;
+        if (lst.isSymbolicLink() || !lst.isFile()) {
+          filter?.onUnreadable?.(`${category}/${name}`);
+          continue;
+        }
         raw = readFileSync(abs, "utf8");
         mtimeMs = statSync(abs).mtimeMs;
       } catch {
-        continue; // 读不了的那一个跳过,不拖垮整个列表
+        filter?.onUnreadable?.(`${category}/${name}`);
+        continue; // 普通列表仍跳过坏文件，整理入口显示失败路径
       }
       const parsed = parseFrontmatter(raw);
       out.push({
@@ -182,10 +191,16 @@ export function listMemoryFiles(filter?: MemoryListInput): MemoryFileMeta[] {
 
 /** 读一条记忆的**正文**(不含 frontmatter)。路径不合法或读不到 → 抛(话直接给用户)。 */
 export function readMemoryFile(relPath: string): { content: string } {
+  return { content: readMemoryFileWithRaw(relPath).content };
+}
+
+/** 与 read 共用安全路径闸；整理校验要比对原始 markdown，连手写 frontmatter 也不能漏。 */
+export function readMemoryFileWithRaw(relPath: string): { content: string; raw: string } {
   const target = resolveSafeMemoryRelPath(relPath);
   if (target === null) throw new Error(`不是合法的记忆路径:「${relPath}」(应为 <类目>/<文件名>.md,类目限定六类)`);
   try {
-    return { content: parseFrontmatter(readFileSync(target, "utf8")).body };
+    const raw = readFileSync(target, "utf8");
+    return { content: parseFrontmatter(raw).body, raw };
   } catch (err) {
     throw new Error(`读不到记忆「${relPath}」:${(err as Error).message}`);
   }

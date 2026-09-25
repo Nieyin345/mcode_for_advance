@@ -94,7 +94,8 @@ import { TerminalManager } from "@main/terminal/TerminalManager.js";
 import { generateSessionTitle } from "@main/ipc/titleGen.js";
 // 工作流库的清单。`main/orchestration/` 与 `main/workflows/`(数据根下那套 Python
 // 研究脚本)是两件事,别被名字带偏 —— 见 `main/ipc/orchestration.ts` 文件头。
-import { listWorkflows } from "@main/orchestration/library.js";
+import { getWorkflow, listWorkflows } from "@main/orchestration/library.js";
+import { workflowReviewError } from "@main/orchestration/workflowTrust.js";
 
 /** Identity of the calling device, made available to every handler. */
 export interface DeviceContext {
@@ -203,7 +204,7 @@ const HANDLERS: Record<string, RpcHandler> = {
   // `ok: false` 不是错:卡片可能已经过期(运行结束了、或者被取消了)。
   "workflow:choose": (raw) => {
     const input = WorkflowChooseSchema.parse(raw);
-    return { ok: resolveWorkflowChoice(input) };
+    return resolveWorkflowChoice(input);
   },
 
   // 从失败那一步接着跑。与上面那条同一个理由:图**卡在一个失败节点上**,而解开它
@@ -214,7 +215,7 @@ const HANDLERS: Record<string, RpcHandler> = {
   // `ok: false` 不是错 —— 卡片过期了,或者这个对话正有运行在跑。
   "workflow:retry": (raw) => {
     const input = WorkflowRetrySchema.parse(raw);
-    return { ok: resolveWorkflowRetry(input) };
+    return resolveWorkflowRetry(input);
   },
 
   "piModels:listAvailable": async () => {
@@ -327,6 +328,12 @@ const HANDLERS: Record<string, RpcHandler> = {
     if (input.permissionMode !== undefined) updated = { ...updated, permissionMode: input.permissionMode };
     if (input.customModelId !== undefined) updated = { ...updated, customModelId: input.customModelId };
     if (input.providerId !== undefined) updated = { ...updated, providerId: input.providerId };
+
+    if (updated.kind === "chat") {
+      const selected = getWorkflow(updated.workflowId);
+      const reviewError = selected === null ? null : workflowReviewError(selected);
+      if (reviewError !== null) throw new RpcError(reviewError, 409);
+    }
 
     SessionRepo.updateStatus(session.id, "running");
     runtimeManager.bindSession(updated);

@@ -33,9 +33,13 @@
  */
 import type { Session } from "@contracts/session";
 import type { NodeOutcome } from "@contracts/nodeType";
+import initSqlJs from "sql.js/dist/sql-asm.js";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { initDb, getDb } from "@main/store/db.js";
 import { ProjectRepo, SessionRepo, WorkflowRunRepo } from "@main/store/repositories.js";
 import { decodeSnapshot, resumableRun, retryableRun, saveRun, type RunSnapshot } from "@main/orchestration/runStore.js";
+import { dataRoot, DATA_DB_FILENAME } from "./stubs/dataRoot.js";
 
 let failures = 0;
 let total = 0;
@@ -177,6 +181,24 @@ if (MODE === "write") {
 
   const back = decodeSnapshot(row?.payload ?? "");
   check("存档解得回来", back !== null);
+  eq("旧存档仍可读作历史,但没有图版本", back?.workflowRevision, undefined);
+  const pinned = { ...snapshotOf([]), workflowRevision: "a".repeat(64), inFlightNodeIds: ["command"] };
+  eq("新存档的图版本往返后没有丢", decodeSnapshot(JSON.stringify(pinned))?.workflowRevision, pinned.workflowRevision);
+  eq("新存档的执行中节点往返不丢", decodeSnapshot(JSON.stringify(pinned))?.inFlightNodeIds?.[0], "command");
+  check("存档中伪造的坏图版本拒绝读取", decodeSnapshot(JSON.stringify({ ...pinned, workflowRevision: "bad" })) === null);
+  check("存档中坏执行列表拒绝读取", decodeSnapshot(JSON.stringify({ ...pinned, inFlightNodeIds: [1] })) === null);
+  check("已绑定图的坏结局不能被丢弃后重跑已执行节点", decodeSnapshot(JSON.stringify({
+    ...pinned, state: { ...pinned.state, outcomes: [["A", { status: "unknown", summary: "was done" }]] },
+  })) === null);
+  check("已绑定图的坏选择不能唤醒错误支路", decodeSnapshot(JSON.stringify({
+    ...pinned, state: { ...pinned.state, picks: [["F", { edgeId: "" }]] },
+  })) === null);
+  check("已绑定图的坏等待列表不可续跑", decodeSnapshot(JSON.stringify({
+    ...pinned, state: { ...pinned.state, awaiting: [1] },
+  })) === null);
+  eq("无图版本的旧快照仍可宽松读取历史", decodeSnapshot(JSON.stringify({
+    ...snapshotOf([]), state: { ...snapshotOf([]).state, outcomes: [["A", { status: "unknown", summary: "" }]] },
+  }))?.state.outcomes.length, 0);
   eq("用户最初那句话原样回来", back?.prompt, "写一篇引言");
   eq("当时在哪个目录里跑的也在", back?.cwd, "D:\\proj");
   eq("流程记录原样回来", back?.state.record.length, 2);
@@ -225,6 +247,39 @@ if (MODE === "write") {
   WorkflowRunRepo.pruneSession(SESSION_PRUNED, 2);
   eq("留两次", countRuns(SESSION_PRUNED), 2);
   check("留下的不是最早那次", WorkflowRunRepo.get("run_old_0") === null);
+
+  console.log("\n关键在飞快照:返回前已在磁盘,失败不能假装成功");
+  const SQL = await initSqlJs();
+  const dbFile = join(dataRoot(), DATA_DB_FILENAME);
+  const diskPayload = (id: string): string | null => {
+    const copy = new SQL.Database(readFileSync(dbFile));
+    const stmt = copy.prepare("SELECT payload FROM workflow_runs WHERE id = ?");
+    stmt.bind([id]);
+    const payload = stmt.step() ? String(stmt.getAsObject().payload) : null;
+    stmt.free();
+    copy.close();
+    return payload;
+  };
+  const critical = { ...snapshotOf([]), workflowRevision: "a".repeat(64), inFlightNodeIds: ["command"] };
+  eq("关键快照的调用成功", saveRun({
+    runId: "run_durable", sessionId: SESSION_PRUNED, workflowId: "wf_test", status: "running",
+    snapshot: critical,
+  }, { durable: true }), true);
+  // No await between saveRun and reading from a SEPARATE SQLite handle:
+  // a queued microtask flush alone cannot make this assertion pass.
+  eq("节点执行前磁盘已经有在飞标记", decodeSnapshot(diskPayload("run_durable") ?? "")?.inFlightNodeIds?.[0], "command");
+
+  const staging = `${dbFile}.workflow-${process.pid}.tmp`;
+  mkdirSync(staging); // occupy the staging path, so the atomic write fails
+  try {
+    eq("物理写失败时关键快照必须返回失败", saveRun({
+      runId: "run_durable_fail", sessionId: SESSION_PRUNED, workflowId: "wf_test", status: "running",
+      snapshot: critical,
+    }, { durable: true }), false);
+    eq("物理写失败未篡改上次完好的磁盘库", diskPayload("run_durable_fail"), null);
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
 
   // ⚠️ 这一趟**故意把 RUN_LEFT 留成 `running`** —— 第二趟那个新进程启动时跑迁移,
   //    它就该变成 `interrupted`。那正是"应用被关掉"这件事在磁盘上留下的样子。

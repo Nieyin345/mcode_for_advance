@@ -118,6 +118,7 @@ const KIND_LOOK: Record<NodeRunnerKind, NodeLook> = {
   prompt: { bar: "bg-edge", tint: "", icon: "text-content-subtle", Icon: IconRobotFace },
   conversation: { bar: "bg-info", tint: "bg-info/10", icon: "text-info", Icon: IconMessages },
   branch: { bar: "bg-warning", tint: "bg-warning/10", icon: "text-warning", Icon: IconArrowsSplit },
+  condition: { bar: "bg-info", tint: "bg-info/10", icon: "text-info", Icon: IconArrowsSplit },
   trigger: { bar: "bg-accent", tint: "bg-accent/10", icon: "text-accent", Icon: IconBolt },
   command: { bar: "bg-success", tint: "bg-success/10", icon: "text-success", Icon: IconTerminal2 },
   code: { bar: "bg-success", tint: "bg-success/10", icon: "text-success", Icon: IconTerminal2 },

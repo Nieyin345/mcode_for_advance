@@ -184,6 +184,13 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
     // 对话并读它们的全文。拿到那条公网链接的人就能读光用户所有的对话记录。
     // 从前只靠"模型拿不到 id"挡着，而 `session_list` 一加就把这道天然闸门拆了 ——
     // 所以在**这条**通路上把整组摘掉（见 `SESSION_LOG_TOOLS`）。
+    //
+    // ⚠️ **代理间通信那三个工具走在同一条 filter 上**（`AGENT_MAIL_TOOLS`），而且理由
+    // 更硬：这条路是免审批的，而 `agent_notify` / `agent_ask` 能**叫醒本机的会话**
+    // （替它起一轮，让它真的去动文件），`agent_peers` 能读到本机有哪些会话。
+    // `includeSessionLogs` 这个名字是历史遗留 —— 它管的是"用户自己的会话这一摊"，
+    // 不止日志。
+    //
     // 桌面本机那条路照旧带着它们（`buildWorkflowMcpServer` 不传这个参数）。
     ...workflowMcpTools({ includeSessionLogs: false }),
     ...agentMcpTools({ cwdFor: deps.cwdFor, sandboxRootFor: deps.sandboxRootFor }),

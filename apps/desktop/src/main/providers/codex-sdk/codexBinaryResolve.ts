@@ -156,7 +156,7 @@ export function resolveBundledCodexBinaryPath(): string | null {
         const suffix = platformSuffix();
         for (const entry of readdirSync(dir)) {
           if (!entry.startsWith("@openai+codex@") || !entry.endsWith(`-${suffix}`)) continue;
-          const candidate = join(dir, entry, "node_modules", "@openai", "codex-darwin-arm64");
+          const candidate = join(dir, entry, "node_modules", "@openai", `codex-${suffix}`);
           const found = findBinaryInPackage(candidate);
           if (found) return toUnpackedPath(found);
         }

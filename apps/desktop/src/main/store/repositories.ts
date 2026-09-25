@@ -44,6 +44,10 @@ import { v, safeJson, SESSION_COLUMNS, type BindValue, type SessionRow } from ".
 
 /* ─────────────────────────────── Projects ─────────────────────────────── */
 
+/** Only a foreign-key owner for projectless event-automation sessions.
+ * Never expose its cwd as a user's project / trusted project root. */
+export const SYSTEM_AUTOMATION_PROJECT_ID = "proj_internal_automation";
+
 interface ProjectRow {
   id: string;
   name: string;
@@ -118,7 +122,10 @@ export const ProjectRepo = {
       "SELECT * FROM projects ORDER BY (pinned_at IS NULL) ASC, pinned_at DESC, sort_order ASC, created_at ASC",
     );
     const out: Project[] = [];
-    while (stmt.step()) out.push(rowToProject(stmt.getAsObject() as unknown as ProjectRow));
+    while (stmt.step()) {
+      const row = stmt.getAsObject() as unknown as ProjectRow;
+      if (row.id !== SYSTEM_AUTOMATION_PROJECT_ID) out.push(rowToProject(row));
+    }
     stmt.free();
     return out;
   },
@@ -147,6 +154,9 @@ export const ProjectRepo = {
    *  sessions.project_id / messages.session_id ON DELETE CASCADE constraints
    *  (PRAGMA foreign_keys = ON is set in initDb). */
   delete(id: string): void {
+    // An accidental / forged project-delete must not cascade-delete background
+    // automation sessions and all their workflow run history.
+    if (id === SYSTEM_AUTOMATION_PROJECT_ID) return;
     getDb().run("DELETE FROM projects WHERE id = ?", [v(id)]);
     persist();
     rootPathsCache = null;

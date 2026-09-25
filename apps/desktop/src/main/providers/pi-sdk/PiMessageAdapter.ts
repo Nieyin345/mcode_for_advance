@@ -98,6 +98,9 @@ export class PiMessageAdapter {
   private deferTurnDone = false;
   /** 终态 agent_end 时最后一帧 assistant 消息的文本（结构化输出校验用）。 */
   private finalTurnText = "";
+  /** The most recent terminal assistant stop reason, including a corrective
+   *  structured-output prompt when one was needed. */
+  private finalTurnReason: TurnDoneReason = "end_turn";
 
   constructor(
     private readonly ctx: ProviderContext,
@@ -126,6 +129,12 @@ export class PiMessageAdapter {
   /** 终态 agent_end 时最后一帧 assistant 消息的文本（未经渲染分流的原文）。 */
   getFinalTurnText(): string {
     return this.finalTurnText;
+  }
+
+  /** Let the structured-output provider preserve the model's actual stop
+   *  reason instead of reporting every successfully parsed reply as end_turn. */
+  getFinalDoneReason(): TurnDoneReason {
+    return this.finalTurnReason;
   }
 
   /** 延迟收尾：token 快照 + turn.done。仅 defer 模式有意义 —— 普通轮的
@@ -294,13 +303,14 @@ export class PiMessageAdapter {
     // 由提供方在轮末校验（可能还有一轮纠错 prompt）后经 flushDeferredTurnDone
     // 发出，保证 turn.done 恰好一次且落在校验之后。
     this.finalTurnText = this.extractFinalAssistantText(event.messages);
+    this.finalTurnReason = this.pickDoneReason(event.messages);
     if (this.deferTurnDone) return;
 
     this.emitTurnEndSnapshot();
     this.emit({
       type: "turn.done",
       sessionId: this.sessionId,
-      reason: this.pickDoneReason(),
+      reason: this.finalTurnReason,
     });
   }
 
@@ -504,9 +514,22 @@ export class PiMessageAdapter {
     return id;
   }
 
-  /** Pi doesn't report max_tokens / tool_use stop reasons distinctly in the
-   *  events we surface; a completed agent run is treated as end_turn. */
-  private pickDoneReason(): TurnDoneReason {
+  /** Pi's assistant message carries its stopReason even though agent_end
+   *  itself does not. Use the LAST assistant message: agent_end.messages also
+   *  contains prior tool rounds and, on resumed sessions, older turns. */
+  private pickDoneReason(messages: readonly unknown[] | undefined): TurnDoneReason {
+    if (!messages) return "end_turn";
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i] as { role?: string; stopReason?: string } | null;
+      if (message?.role !== "assistant") continue;
+      switch (message.stopReason) {
+        case "length": return "max_tokens";
+        case "toolUse": return "tool_use";
+        case "error": return "error";
+        case "aborted": return "interrupted";
+        default: return "end_turn";
+      }
+    }
     return "end_turn";
   }
 

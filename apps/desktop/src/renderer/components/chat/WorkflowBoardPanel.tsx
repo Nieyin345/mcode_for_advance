@@ -449,6 +449,7 @@ function FlowNodeMenu({
           useToastStore.getState().push({
             kind: "warning",
             title: t("chatStream.workflowBoard.runFromHereFailed"),
+            ...(res.error ? { body: res.error } : {}),
             sessionId,
           });
         }

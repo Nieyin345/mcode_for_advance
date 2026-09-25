@@ -243,6 +243,23 @@ export function expandTilde(p: string): string {
   return p; // `~user` or no tilde — leave as-is
 }
 
+/** Share a single set of resolved, literal write targets between the path
+ *  guard and Pi's pre-write snapshot. Dynamic shell expansions and devices
+ *  cannot be snapshotted safely; this is deliberately not a shell parser. */
+export function resolveBashWriteTargets(
+  cwd: string,
+  command: string,
+): Array<{ absPath: string; insideProject: boolean }> {
+  if (typeof command !== "string" || command.length === 0) return [];
+  const resolved: Array<{ absPath: string; insideProject: boolean }> = [];
+  for (const raw of extractBashWriteTargets(command)) {
+    if (hasDynamicExpansion(raw)) continue;
+    const norm = normalizeToolFilePath(cwd, expandTilde(raw));
+    if (norm && !SAFE_DEVICE_FILES.has(norm.absPath)) resolved.push(norm);
+  }
+  return resolved;
+}
+
 /**
  * Inspect a bash command for write targets that escape the project working
  * directory. Returns a Chinese denial message (mirroring `guardToolPath`) when
@@ -263,12 +280,7 @@ export function guardBashCommand(
   if (!strict) return null;
   if (typeof command !== "string" || command.length === 0) return null;
 
-  const targets = extractBashWriteTargets(command);
-  for (const raw of targets) {
-    if (hasDynamicExpansion(raw)) continue; // can't expand — allow
-    const norm = normalizeToolFilePath(cwd, expandTilde(raw));
-    if (!norm) continue; // unresolvable — allow (matches guardToolPath behavior)
-    if (SAFE_DEVICE_FILES.has(norm.absPath)) continue; // device file — safe, no real write
+  for (const norm of resolveBashWriteTargets(cwd, command)) {
     if (!norm.insideProject) {
       return `拒绝:bash 重定向目标在项目工作目录之外(${norm.absPath})。只允许在项目目录内写入文件,请改用相对路径。`;
     }

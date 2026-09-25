@@ -26,6 +26,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getWorkflow, importWorkflowInto, saveWorkflow } from "@main/orchestration/library.js";
+import { approveWorkflowRevision, workflowReviewError, workflowReviewOf, workflowRevision } from "@main/orchestration/workflowTrust.js";
 import { exportWorkflowDoc } from "@main/orchestration/workflowValidation.js";
 import { backEdgesOf, forwardEdgesOf, type WorkflowDoc } from "@contracts/workflow";
 import { BUILTIN_WORKFLOWS } from "@main/orchestration/builtins.js";
@@ -502,6 +503,22 @@ async function main(): Promise<void> {
   );
   check("新建之后库里多了一行", WorkflowRepo.list().length === 2, WorkflowRepo.list().map((r) => r.id));
 
+  const imported = freshImport.ok ? getWorkflow(freshImport.id) : null;
+  check("导入能保存,却不能自动取得执行权限", imported !== null && workflowReviewOf(imported)?.pending === true);
+  if (imported !== null) {
+    const revision = workflowRevision(imported);
+    check("待审查图禁止执行", workflowReviewError(imported)?.includes("尚未审查") === true);
+    check("审批过期版本不能放行", !approveWorkflowRevision(imported, "0".repeat(64)).ok);
+    eq("过期审批后仍待审查", workflowReviewOf(imported)?.pending, true);
+    check("用户审查确切版本后才允许执行", approveWorkflowRevision(imported, revision).ok);
+    eq("批准后的图不再被执行闸门拦住", workflowReviewError(imported), null);
+    // Cosmetic edits do not change execution, while any instruction change
+    // invalidates that approval even when the workflow id stays the same.
+    eq("挪动画布不会作废审批", workflowRevision({ ...imported, nodes: imported.nodes.map((n) => ({ ...n, position: { x: 99, y: 12 } })) }), revision);
+    const edited = { ...imported, description: "这份现在做的事变了" };
+    check("同 id 修改执行相关内容必须重审", workflowReviewError(edited)?.includes("尚未审查") === true);
+  }
+
   // 覆盖:原样导回来的那份**回到原来那一行**,不是新建。
   const overwrite = await importWorkflowInto(exported, { id: source.doc.id });
   check("带 id 导入 → 覆盖那一行", overwrite.ok && overwrite.id === source.doc.id, overwrite);
@@ -958,6 +975,11 @@ async function main(): Promise<void> {
   const { tools } = surface;
   const names = surface.listed.map((t) => t.name).sort();
   const EXPECTED = [
+    // 2026-09-25 加：代理之间通信（名册 / 通知 / 询问）—— 与上面那些同一张表
+    // （`workflowMcpTools()`）。
+    "agent_ask",
+    "agent_notify",
+    "agent_peers",
     "agent_profile_remove",
     "agent_profile_save",
     "agent_profiles_list",
@@ -971,7 +993,7 @@ async function main(): Promise<void> {
     "workflow_remove",
     "workflow_save",
   ];
-  eq("工具就是这十一个", names.join(","), EXPECTED.join(","));
+  eq("工具就是这十四个", names.join(","), EXPECTED.join(","));
   check(
     "每个工具都有说明(模型只能靠它知道什么时候用)",
     surface.listed.every((t) => (t.description ?? "").length > 20),
@@ -986,7 +1008,17 @@ async function main(): Promise<void> {
   // `shouldAutoApprove` 里被自动放行(`ClaudeAgentSdkProvider.ts`);反过来(只读工具忘了
   // 加进去)只是多弹一次审批,不危险。所以两个方向都要对齐**真实注册的工具名** —— 名字
   // 打错一个字母,只读集里就多出一个永远不生效的条目,而写工具照旧弹审批。
-  const WRITE = ["workflow_save", "workflow_remove", "agent_profile_save", "agent_profile_remove", "node_type_write"];
+  const WRITE = [
+    "workflow_save",
+    "workflow_remove",
+    "agent_profile_save",
+    "agent_profile_remove",
+    "node_type_write",
+    // 代理间通信里**有副作用**的那两个：它们会叫醒另一个会话、让它真的去动文件。
+    // 所以它们必须弹审批 —— 那正是用户「看得见、能拦下」的落点。
+    "agent_notify",
+    "agent_ask",
+  ];
   /**
    * **读、但要审批**那一档（2026-09-24 新增）。
    *
@@ -1003,7 +1035,7 @@ async function main(): Promise<void> {
   for (const r of APPROVAL_GATED_READ) {
     check(`「读但要审批」的 ${r} 不在自动放行集里`, !WORKFLOW_READONLY_TOOLS.has(r));
   }
-  eq("只读集就是那五个,不多不少", WORKFLOW_READONLY_TOOLS.size, 5);
+  eq("只读集就是那六个,不多不少", WORKFLOW_READONLY_TOOLS.size, 6);
   // 这条是上一句真正想要的东西:**每一个真实存在的工具都被分过档**。新加一个工具忘了
   // 归类,它会落进"要审批"那一侧(安全的默认),而这条断言会当场说出来。
   const unclassified = names.filter(
@@ -1092,6 +1124,8 @@ async function main(): Promise<void> {
   check("存成功时说的是人话(不是 JSON)", saveOut.includes("已保存"), saveOut);
   check("顺带把图的形状回给模型", saveOut.includes("第 1 层"), saveOut);
   check("而且告诉它用户在哪儿能看到", saveOut.includes("设置"), saveOut);
+  check("AI 保存不等于启用", saveOut.includes("尚未启用") && workflowReviewOf(getWorkflow(savedId)!)?.pending === true);
+  eq("AI 保存记录来源", workflowReviewOf(getWorkflow(savedId)!)?.origin, "ai");
   const reasons = __takeBroadcasts();
   eq("存成功就广播一次", reasons.length, 1);
   check(

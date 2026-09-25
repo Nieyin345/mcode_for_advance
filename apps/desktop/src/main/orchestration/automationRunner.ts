@@ -60,7 +60,7 @@ import type { Session } from "@contracts/session";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { createEventSubjects, fileSubjects } from "@main/hooks/eventSubjects.js";
 import { log } from "@main/lib/logger.js";
-import { ProjectRepo, SessionRepo, SettingRepo } from "@main/store/repositories.js";
+import { ProjectRepo, SessionRepo, SettingRepo, SYSTEM_AUTOMATION_PROJECT_ID } from "@main/store/repositories.js";
 import { uid } from "@main/utils.js";
 import { describeTriggerPayload, mergeEventPayload, payloadFactsOf, type TriggerPayload } from "./automationPayload.js";
 import {
@@ -81,6 +81,7 @@ import {
   WATCH_WORKFLOW_ID,
 } from "./builtins.js";
 import { getWorkflow, listWorkflows, saveWorkflow } from "./library.js";
+import { workflowReviewError } from "./workflowTrust.js";
 import { loadNodeTypes } from "./nodeTypes.js";
 import { setWorkflowReloader } from "./reloadRequest.js";
 import { hasActiveRun, startWorkflowRun } from "./runner.js";
@@ -429,6 +430,7 @@ class AutomationRunner {
       return [];
     }
     const out: LoadedTrigger[] = [];
+    const pendingReview = workflowReviewError(doc);
     /** 这次 reload 里**还在**的触发器(挂上的 + 挂不上的),reload 完拿它清事实表。 */
     const seen = new Set<string>();
     for (const node of doc.nodes) {
@@ -448,6 +450,11 @@ class AutomationRunner {
         enabled: triggerEnabledOf(node.params),
       };
       seen.add(triggerKey(seed));
+      if (pendingReview !== null) {
+        // Do not install a watcher or timer, but keep the reason in the facts.
+        this.facts.recordSetup(seed, false, pendingReview);
+        continue;
+      }
       const check = parseTriggerSpec(manifest, node.params);
       if (!check.ok) {
         log.warn(`[automation] ${where}跳过:${check.error}`);
@@ -794,6 +801,11 @@ class AutomationRunner {
    * 与自动触发共用 `fire()`,所以"项目不在了 / 上一次还在跑"这两种情形两边说法一致。
    */
   async runNow(workflowId: string, triggerNodeId: string): Promise<AutomationRunResult> {
+    const saved = getWorkflow(workflowId);
+    if (saved !== null) {
+      const reviewError = workflowReviewError(saved);
+      if (reviewError !== null) return { ok: false, error: reviewError };
+    }
     const find = (): LoadedTrigger | undefined =>
       this.all().find((t) => t.workflowId === workflowId && t.nodeId === triggerNodeId);
     let trigger = find();
@@ -1025,6 +1037,11 @@ class AutomationRunner {
     opts?: { originSessionId?: string; manual?: boolean },
   ): AutomationRunResult {
     try {
+      // An old debounced event may fire while a new workflow revision reloads.
+      const current = getWorkflow(trigger.workflowId);
+      if (current === null) return this.skip(trigger, "这份自动化已被删除");
+      const reviewError = workflowReviewError(current);
+      if (reviewError !== null) return this.skip(trigger, reviewError);
       // **关掉的只挡自动那三条路,不挡手动。** 用户正盯着「立刻运行一次」那个按钮,
       // 点了就是"我现在要它跑" —— 被一个他在别的页面上设过的开关挡回去,只会让人
       // 以为坏了(见 `NODE_TRIGGER_ENABLED_PARAM_KEY`)。
@@ -1036,9 +1053,9 @@ class AutomationRunner {
       }
       // 项目**每次现读**:建会话时用的是它,而用户完全可能把项目移走。
       //
-      // **可以没有项目**(空串 = 触发器没绑)—— 见 `buildTriggers` 里那段:只有
-      // 「事件发生时」允许留空,那种运行不需要工作目录。下面统一用 `cwd`(缺省时是
-      // 宿主目录),会话也照建 —— 只是它的 `projectId` 是空串。
+      // **可以没有用户项目**(空串 = 触发器没绑):事件运行用宿主目录。
+      // sessions.project_id 有外键,不能把空串直接存进去;sessionOf 会仅给
+      // 这种后台会话挂一个隐藏的系统项目,绝不偷借用户的真实项目。
       const project = trigger.projectId.length > 0 ? ProjectRepo.get(trigger.projectId) : undefined;
       if (trigger.projectId.length > 0 && project === undefined) {
         return this.skip(trigger, `项目不在了(${trigger.projectId})—— 这条自动化没有工作目录`);
@@ -1131,6 +1148,27 @@ class AutomationRunner {
       return existing;
     }
     const now = Date.now();
+    if (projectId.length === 0) {
+      // 项目为空的事件触发器是合法的(内置「导入后下载/下载后转录」就是这样),
+      // 但 sessions.project_id 是 NOT NULL + 外键。以前建会话填 "" 会在这里
+      // FOREIGN KEY constraint failed,图明明响着却永远跑不起来。
+      // 专用行只满足 FK;ProjectRepo.list / listPaths 会隐藏它,不把宿主 cwd
+      // 变成用户可浏览的项目根,也不拿别人的项目给无人值守的自动化用。
+      if (ProjectRepo.get(SYSTEM_AUTOMATION_PROJECT_ID) === undefined) {
+        ProjectRepo.create({
+          id: SYSTEM_AUTOMATION_PROJECT_ID,
+          name: "后台自动化(系统)",
+          path: process.cwd(),
+          archived: true,
+          group: null,
+          sortOrder: 0,
+          pinnedAt: null,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+      projectId = SYSTEM_AUTOMATION_PROJECT_ID;
+    }
     const session: Session = {
       id: uid("sess_"),
       projectId,

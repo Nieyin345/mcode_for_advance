@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import Editor, { DiffEditor, useMonaco } from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
 import { api } from "@renderer/lib/api.js";
+import { textFileWrites } from "@renderer/lib/markdownFileWrites.js";
 import { cn } from "@renderer/lib/cn.js";
 import { basename, dirname, extname } from "@renderer/lib/path.js";
 import { useSessionStore, selectActiveEnvPath } from "@renderer/stores/sessionStore.js";
@@ -181,7 +182,7 @@ export function FileEditor({
         {effectiveMode === "diff" && diffBefore != null ? (
           <DiffPane filePath={filePath} before={diffBefore} after={diffAfter} />
         ) : effectiveMode === "wysiwyg" ? (
-          <MarkdownEditorPane filePath={filePath} projectPath={projectPath} />
+          <MarkdownEditorPane key={filePath} filePath={filePath} projectPath={projectPath} />
         ) : effectiveMode === "preview" ? (
           pdf ? (
             <PdfPreviewPane filePath={filePath} />
@@ -656,7 +657,10 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
   // a cached model already exists for the incoming file, display it on the
   // first render (no spinner frame).
   const [readyPath, setReadyPath] = useState<string | null>(() =>
-    filePath && getModelEntry(filePath) ? filePath : null,
+    // A cached Markdown model can predate a rich-editor save; reconcile it
+    // with disk before showing it, not after the user can already type.
+    filePath && !isMarkdown(filePath) && !textFileWrites.hasPending(filePath) && getModelEntry(filePath)
+      ? filePath : null,
   );
   // loadingPath — a file whose first-time content read is in flight (no
   // cached model). While it differs from readyPath, the editor keeps showing
@@ -713,6 +717,7 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
   // armMountReassert) — dropped by a reveal or by the teardown.
   const cancelMountReassertRef = useRef<(() => void) | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveSeqRef = useRef(0);
   // LSP document-sync version counter (incremented on each didChange).
   const lspVersionRef = useRef(1);
   // Debounce timer for didChange notifications.
@@ -856,6 +861,10 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
     const prev = readyCtxRef.current;
     if (prev?.path === path) return;
     flipSeqRef.current += 1;
+    saveSeqRef.current += 1;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = null;
+    setSaveState("idle");
     if (prev) {
       const open = prev.pid
         ? useSessionStore.getState().ideOpenFilesByProject[prev.pid]
@@ -911,21 +920,46 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
       return;
     }
     const seq = ++readSeqRef.current;
-    if (getModelEntry(filePath)) {
+    if (getModelEntry(filePath) && !isMarkdown(filePath) && !textFileWrites.hasPending(filePath)) {
       setLoadingPath(null);
       flipTo(filePath, projectPath);
       return;
     }
     setLoadingPath(filePath);
-    api.file
-      .readFile({ filePath })
+    textFileWrites.waitForPending(filePath)
+      .then(() => api.file.readFile({ filePath }))
       .then(({ content }) => {
-        if (seq !== readSeqRef.current) return;
+        if (seq !== readSeqRef.current || disposedRef.current) return;
+        const cached = getModelEntry(filePath);
+        if (cached && !cached.model.isDisposed()) {
+          // Rich Markdown edits may have landed after this source model was
+          // cached. Never expose stale clean text (or overwrite dirty text).
+          if (content !== cached.baseline) {
+            if (ideDirtyTracker.has(filePath)) {
+              flipTo(filePath, projectPath);
+              setExternalChange(true);
+              setLoadingPath(null);
+              return;
+            }
+            cached.model.setValue(content);
+            updateBaseline(filePath, content);
+            ideDirtyTracker.set(filePath, false);
+          }
+          flipTo(filePath, projectPath);
+          setLoadingPath(null);
+          return;
+        }
         createAndShow(filePath, content, projectPath);
       })
       .catch(() => {
-        if (seq !== readSeqRef.current) return;
-        createAndShow(filePath, "", projectPath); // degrade to empty
+        if (seq !== readSeqRef.current || disposedRef.current) return;
+        const cached = getModelEntry(filePath);
+        if (cached && !cached.model.isDisposed()) {
+          flipTo(filePath, projectPath); // keep cached edits if disk is unreadable
+          setLoadingPath(null);
+        } else {
+          createAndShow(filePath, "", projectPath); // degrade to empty
+        }
       });
   }, [filePath, projectPath]);
 
@@ -1009,22 +1043,33 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
     const ctx = readyCtxRef.current;
     if (!ed || !ctx) return;
     const value = ed.getValue();
+    const seq = ++saveSeqRef.current;
     setSaveState("saving");
     const ok = await useSessionStore.getState().saveFileContent(ctx.path, value);
     if (ok) {
       updateBaseline(ctx.path, value);
-      ideDirtyTracker.set(ctx.path, false);
-      setSaveState("saved");
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = setTimeout(() => setSaveState("idle"), 1500);
+      // A user can keep typing while the IPC write is pending. The saved
+      // snapshot becomes the baseline, but newer text must stay marked dirty.
+      const model = getModelEntry(ctx.path)?.model;
+      const stillDirty = model && !model.isDisposed() && model.getValue() !== value;
+      if (model && !model.isDisposed()) ideDirtyTracker.set(ctx.path, Boolean(stillDirty));
+      if (seq === saveSeqRef.current && !disposedRef.current && filePath === ctx.path && readyCtxRef.current?.path === ctx.path) {
+        setSaveState(stillDirty ? "idle" : "saved");
+        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+        if (!stillDirty) saveTimerRef.current = setTimeout(() => setSaveState("idle"), 1500);
+      }
       // Tell the LSP server the file was saved (best-effort).
       if (ctx.projectPath) {
         void notifyLspSave(ctx.projectPath, ctx.path, languageForExt(extname(ctx.path)), value);
       }
     } else {
-      setSaveState("error");
+      if (seq === saveSeqRef.current && !disposedRef.current && filePath === ctx.path && readyCtxRef.current?.path === ctx.path) {
+        setSaveState("error");
+      } else if (disposedRef.current || filePath !== ctx.path || readyCtxRef.current?.path !== ctx.path) {
+        useToastStore.getState().push({ kind: "error", title: t("ide.editor.saveFailed"), body: ctx.path });
+      }
     }
-  }, []);
+  }, [filePath, t]);
   const handleSaveRef = useRef(handleSave);
   useEffect(() => {
     handleSaveRef.current = handleSave;
@@ -1444,8 +1489,8 @@ function MarkdownPreviewPane({ filePath, projectPath }: { filePath: string; proj
   useEffect(() => {
     let cancelled = false;
     setContent(null);
-    api.file
-      .readFile({ filePath })
+    textFileWrites.waitForPending(filePath)
+      .then(() => api.file.readFile({ filePath }))
       .then(({ content }) => {
         if (!cancelled) setContent(content);
       })
@@ -1824,8 +1869,8 @@ export function DiffPane({
     }
     let cancelled = false;
     setModified(null);
-    api.file
-      .readFile({ filePath })
+    textFileWrites.waitForPending(filePath)
+      .then(() => api.file.readFile({ filePath }))
       .then(({ content }) => {
         if (!cancelled) setModified(content);
       })

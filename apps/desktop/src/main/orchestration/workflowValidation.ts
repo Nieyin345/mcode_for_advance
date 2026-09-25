@@ -46,7 +46,9 @@ import {
 } from "@contracts/workflow";
 import {
   BRANCH_NODE_TYPE_ID,
+  CONDITION_NODE_TYPE_ID,
   MAIN_NODE_TYPE_ID,
+  NODE_CONDITION_EXPRESSION_KEY,
   isModelDecider,
   triggerFactKeysOf,
   validateNodeParams,
@@ -180,6 +182,7 @@ function isMetaField(field: string): boolean {
  * | `graph.trigger-has-in-edge` | warning | 有边连进触发器。触发器是起点、不接上游,运行时那条边**等于不存在**(被触发的那个由 `entry` 直接预置成成功)。只提醒不拦,理由同 `graph.orphan-node` |
  * | `branch.no-options` | error | 分支节点一条出边都没有 —— 选项就是出边,没得出可选 |
  * | `branch.duplicate-option` | error | 分支有两条出边算出同一个选项名。模型选完要拿**名字**回来对上边(见 `applyDecision`),重名就没人对得上 —— 判据是与调度器同一份的 `edgeOptionNameOf`,没填 `label` 的边也算 |
+ * | `condition.edges` | error | 自动条件必须恰好有两条出边,显式标为 `true` / `false` |
  * | `node.unknown-kind` | 见 opts | 节点类型不在注入的清单里(存盘=warning,导入=error) |
  * | `param.missing` / `param.invalid` | error | 参数对类型清单不合规(必填缺失/形状不对) |
  * | `ref.empty` | error | 空引用 `{{}}` |
@@ -431,6 +434,22 @@ export function validateWorkflowDoc(
     }
   }
 
+  // 条件不靠模型/人挑名字:真假各一条,不允许空标签按目标标题兜底。
+  // 未知第三方类型不猜;内置 id 在清单未加载时仍给出明确诊断。
+  for (const node of nodes) {
+    const manifest = manifestOf(node);
+    const isCondition = manifest ? manifest.runner.kind === "condition" : node.type === CONDITION_NODE_TYPE_ID;
+    if (!isCondition) continue;
+    const labels = edges.filter((e) => e.from === node.id).map((e) => e.label?.trim());
+    if (labels.length !== 2 || labels.filter((v) => v === "true").length !== 1 ||
+        labels.filter((v) => v === "false").length !== 1) {
+      fail({
+        code: "condition.edges", nodeId: node.id,
+        message: `条件「${labelOf(node)}」的出边必须恰好两条,分别标为 true 和 false (不能缺少或重复)`,
+      });
+    }
+  }
+
   for (const node of nodes) {
     const manifest = manifestOf(node);
     if (!manifest) continue;
@@ -476,7 +495,20 @@ export function validateWorkflowDoc(
 
   for (const node of nodes) {
     const upstream = upstreamClosure(forward.deps, node.id);
-    for (const text of stringValuesOf(node.params)) {
+    // 结构化条件只扫描每条规则的 ref;比较的 value 始终是字面量。
+    // 通用字符串扫描只深入一层,本来拿不到 rules[].ref。
+    const references = [...stringValuesOf(node.params)];
+    if (manifestOf(node)?.runner.kind === "condition") {
+      const raw = node.params[NODE_CONDITION_EXPRESSION_KEY];
+      if (typeof raw === "object" && raw !== null && "rules" in raw && Array.isArray(raw.rules)) {
+        for (const rule of raw.rules) {
+          if (typeof rule === "object" && rule !== null && "ref" in rule && typeof rule.ref === "string") {
+            references.push(rule.ref);
+          }
+        }
+      }
+    }
+    for (const text of references) {
       for (const spec of templateRefs(text).map((s) => s.trim())) {
         if (spec.length === 0) {
           fail({ code: "ref.empty", nodeId: node.id, message: `节点「${labelOf(node)}」里有一处空的引用 \`{{}}\` —— 写成 \`{{节点.变量}}\`,或者删掉它` });

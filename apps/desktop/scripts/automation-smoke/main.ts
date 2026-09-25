@@ -68,7 +68,8 @@ import {
   triggerSpecKeyOf,
   watcherDirsOf,
 } from "@main/orchestration/automationStatus.js";
-import { deriveTrigger, saveWorkflow } from "@main/orchestration/library.js";
+import { deriveTrigger, getWorkflow, saveWorkflow } from "@main/orchestration/library.js";
+import { approveWorkflowRevision, requireWorkflowReview, workflowRevision } from "@main/orchestration/workflowTrust.js";
 import type { AutomationFactsSeed } from "@main/orchestration/automationStatus.js";
 import { builtinTriggerManifest } from "@main/orchestration/nodeTypes.js";
 import {
@@ -1838,6 +1839,7 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
   interface RunnerInternals {
     lastMinute: Map<string, number>;
     pendingFires: Map<string, { files: string[] }>;
+    runNow(workflowId: string, triggerNodeId: string): Promise<{ ok: boolean; error?: string }>;
     onTick(): void;
     onFsChange(dir: string, filename: string | null): void;
     start(): Promise<void>;
@@ -2227,6 +2229,46 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
       fired[0]?.entry?.payload,
     );
 
+    runner.dispose();
+  }
+
+  /* ── ③ 导入的图未审查:注册、派发、手动触发和改图后撤权 ── */
+  {
+    resetRuns();
+    const wf = nextId();
+    const nodeId = "t_untrusted";
+    makeAutomation({
+      workflowId: wf,
+      nodeId,
+      params: {
+        [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
+        [NODE_TRIGGER_CRON_PARAM_KEY]: "* * * * *",
+        task: "只有批准才能执行",
+      },
+    });
+    requireWorkflowReview(wf, "import");
+    const runner = await startRunner();
+    withClock(3_000_000 * 60_000, () => runner.onTick());
+    eq("未审查的定时图不注册也不派发", runsOfNode(nodeId).length, 0);
+    const denied = await runner.runNow(wf, nodeId);
+    check("手动触发也不能绕过审查", !denied.ok && denied.error?.includes("尚未审查") === true, denied);
+
+    const doc = getWorkflow(wf)!;
+    check("审核当前存盘版本才放行", approveWorkflowRevision(doc, workflowRevision(doc)).ok);
+    await runner.reloadAll();
+    withClock(3_000_001 * 60_000, () => runner.onTick());
+    eq("批准后同一图的定时触发器可运行", runsOfNode(nodeId).length, 1);
+
+    // Deliberately do NOT reload: a timer captured before the edit must be
+    // checked again at dispatch, not just when the trigger was registered.
+    WorkflowRepo.save({
+      ...doc,
+      nodes: doc.nodes.map((n) => ({ ...n, params: { ...n.params, task: "现在做另一件事" } })),
+    });
+    withClock(3_000_002 * 60_000, () => runner.onTick());
+    eq("已注册定时器也不能派发未经重审的新图", runsOfNode(nodeId).length, 1);
+    const revoked = await runner.runNow(wf, nodeId);
+    check("同 id 改图后手动触发也撤权", !revoked.ok && revoked.error?.includes("尚未审查") === true, revoked);
     runner.dispose();
   }
 

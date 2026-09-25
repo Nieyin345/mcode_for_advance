@@ -47,6 +47,7 @@ import { getLastCursor, type NavEntry } from "@renderer/lib/editorNav.js";
 import { disposeModel, getDisplayedPath } from "@renderer/lib/editorModelCache.js";
 import type { CustomModelPublic } from "@contracts/customModel";
 import { api } from "@renderer/lib/api.js";
+import { textFileWrites } from "@renderer/lib/markdownFileWrites.js";
 import { isElectron } from "@renderer/lib/platform.js";
 import { normWorktreeKey } from "@renderer/lib/worktree.js";
 import { translate } from "@renderer/lib/i18n/core.js";
@@ -9024,11 +9025,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           // result is ready and the user may have switched away. Skipped for
           // interrupted turns (the user initiated the stop, no surprise),
           // for tool_use turns (the adapter will resume streaming shortly;
-          // the intermediate result is not a "done" signal), and for
-          // incomplete turns (see above).
-          if (e.reason !== "interrupted" && e.reason !== "tool_use" && !turnIncomplete) {
+          // the intermediate result is not a "done" signal), for incomplete
+          // turns (see above), and for failed turns: the preceding error event
+          // already bumped unread and showed the actual failure, so a second
+          // "turn complete" toast here would contradict it.
+          if (e.reason !== "interrupted" && e.reason !== "tool_use" && e.reason !== "error" && !turnIncomplete) {
             bumpUnread();
-            pushToast("info", translate(get().locale, "store.toast.turnComplete"), translate(get().locale, "store.toast.turnCompleteBody"));
+            if (e.reason === "max_tokens") {
+              pushToast("warning", translate(get().locale, "store.toast.outputTruncated"), translate(get().locale, "store.toast.outputTruncatedBody"));
+            } else {
+              pushToast("info", translate(get().locale, "store.toast.turnComplete"), translate(get().locale, "store.toast.turnCompleteBody"));
+            }
           }
           // Close out any tool_use still "running": the turn ended without a
           // matching tool.result (plan mode, or interrupted).
@@ -11880,8 +11887,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   saveFileContent: async (filePath, content) => {
     try {
-      const { ok } = await api.file.writeFile({ filePath, content });
-      return ok;
+      // Monaco source saves and rich Markdown autosaves must be ordered for
+      // the same path, even if a mode switch happens during an in-flight write.
+      await textFileWrites.enqueue(filePath, content);
+      return true;
     } catch (err) {
       console.error("file.writeFile failed:", err);
       return false;

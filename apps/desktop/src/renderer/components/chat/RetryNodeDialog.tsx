@@ -65,32 +65,32 @@ export function RetryNodeDialog({ open, onClose, sessionId, runId, nodeId, onDon
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   /** 主进程回了 `ok: false` —— 卡片过期了,或者这个对话正有运行在跑。 */
-  const [stale, setStale] = useState(false);
+  const [stale, setStale] = useState<string | null>(null);
 
   // 每次打开都从空白起 —— 上一张卡写的话留在框里,用户按确认就会把它发给**另一步**。
   useEffect(() => {
     if (open) {
       setNote("");
-      setStale(false);
+      setStale(null);
     }
   }, [open, runId, nodeId]);
 
   const send = async (): Promise<void> => {
     if (busy) return;
     setBusy(true);
-    setStale(false);
+    setStale(null);
     try {
       const res = await api.workflow.retry(
         retryPayload({ sessionId, runId, nodeId, note }),
       );
       if (!res.ok) {
-        setStale(true);
+        setStale(res.error ?? t("chatStream.workflowRetry.stale"));
         return;
       }
       onDone?.();
       onClose();
     } catch {
-      setStale(true);
+      setStale(t("chatStream.workflowRetry.stale"));
     } finally {
       setBusy(false);
     }
@@ -138,7 +138,7 @@ export function RetryNodeDialog({ open, onClose, sessionId, runId, nodeId, onDon
 
           {stale && (
             <p className="mt-2 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400">
-              {t("chatStream.workflowRetry.stale")}
+              {stale}
             </p>
           )}
 

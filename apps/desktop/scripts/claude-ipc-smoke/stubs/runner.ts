@@ -130,8 +130,8 @@ export function resolveWorkflowChoice(_args: {
   nodeId: string;
   edgeId: string;
   comment?: string;
-}): boolean {
-  return choiceResult;
+}): { ok: boolean } {
+  return { ok: choiceResult };
 }
 
 /** 用户在一张**失败**的卡片上点「再试一次」。 */
@@ -140,6 +140,6 @@ export function resolveWorkflowRetry(_args: {
   runId: string;
   nodeId: string;
   note?: string;
-}): boolean {
-  return retryResult;
+}): { ok: boolean } {
+  return { ok: retryResult };
 }

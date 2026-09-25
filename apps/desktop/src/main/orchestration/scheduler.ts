@@ -89,6 +89,7 @@ import {
   ASK_RUN_CHOICE,
   ASK_SKIP_CHOICE,
   BRANCH_STOP_CHOICE,
+  NODE_CONDITION_EXPRESSION_KEY,
   askBeforeRunOf,
   flowRecordOf,
   isAskChoice,
@@ -113,6 +114,7 @@ import {
   type WorkflowNode,
 } from "@contracts/workflow";
 import { referencedNodeNamesIn, renderTemplate, type NodeTemplateScope } from "@contracts/nodeTemplate";
+import { evaluateConditionExpression, parseConditionExpression } from "@contracts/condition";
 import type { NodeRunInput as ContractNodeRunInput, WorkflowChoiceOption } from "@contracts/runtime";
 export type NodeRunInput = ContractNodeRunInput & { signal: AbortSignal };
 import {
@@ -753,6 +755,11 @@ class Run {
     return node !== undefined && this.manifestOfCached(node.type)?.runner.kind === "branch";
   };
 
+  isCondition = (id: string): boolean => {
+    const node = this.nodeById.get(id);
+    return node !== undefined && this.manifestOfCached(node.type)?.runner.kind === "condition";
+  };
+
   /**
    * 这个节点**拦不拦得住一次回头** —— 环的闸门。`isBranch` 只是候补那一半。
    *
@@ -852,7 +859,7 @@ class Run {
     });
   };
 
-  choosesEdge = (id: string): boolean => this.isBranch(id);
+  choosesEdge = (id: string): boolean => this.isBranch(id) || this.isCondition(id);
 
   edgeLive = (edge: WorkflowEdge): boolean => {
     if (!this.choosesEdge(edge.from)) return true;
@@ -894,7 +901,7 @@ class Run {
         comment: (pick.comment ?? "").trim(),
         // **这条出路是谁定的。** 模型选的分支没有"他临时补的那句话"(`comment` 恒为
         // 空),而且下一步看到的措辞必须换个说法 —— 见 `Arrival.by`。
-        by: this.isModelDeciderNode(edge.from) ? "agent" : "user",
+        by: this.isCondition(edge.from) ? "rule" : this.isModelDeciderNode(edge.from) ? "agent" : "user",
       };
     }
     return undefined;
@@ -911,7 +918,7 @@ class Run {
   };
 
   labelUpstreamText = (upId: string, summary: string): string =>
-    this.isBranch(upId) ? summary : `### ${this.titleOf(upId)}\n${summary}`;
+    this.choosesEdge(upId) ? summary : `### ${this.titleOf(upId)}\n${summary}`;
 
   carriedTextOf = (nodeId: string): string => {
     const parts: string[] = [];
@@ -1126,6 +1133,31 @@ class Run {
     };
   };
 
+  /** 不派发到执行端:真假选择复用分支的 picks / edgeLive / 续跑链路。 */
+  conditionOutcome = (node: WorkflowNode): NodeOutcome => {
+    const parsed = parseConditionExpression(node.params[NODE_CONDITION_EXPRESSION_KEY]);
+    if (!parsed.ok) return { status: "failed", summary: "", error: parsed.error };
+    const evaluated = evaluateConditionExpression(parsed.expression, this.templateScopeOf(node));
+    if (!evaluated.ok) return { status: "failed", summary: "", error: evaluated.error };
+
+    const edges = outgoingEdgesOf(this.doc, node.id);
+    const yes = edges.filter((edge) => edge.label?.trim() === "true");
+    const no = edges.filter((edge) => edge.label?.trim() === "false");
+    if (edges.length !== 2 || yes.length !== 1 || no.length !== 1) {
+      return { status: "failed", summary: "", error: "条件节点必须恰好有 true / false 两条出边" };
+    }
+    const label = evaluated.matched ? "true" : "false";
+    const chosen = (evaluated.matched ? yes[0] : no[0]) as WorkflowEdge;
+    const pick: BranchChoice = { edgeId: chosen.id };
+    this.chosen.set(node.id, pick);
+    this.lastPick.set(node.id, pick);
+    this.record.push({ kind: "decision", from: this.titleOf(node.id), label, note: (chosen.note ?? "").trim() });
+    return {
+      status: "success", summary: this.carriedTextOf(node.id),
+      outputs: { result: evaluated.matched, branch: label },
+    };
+  };
+
   askOne = async (
     node: WorkflowNode,
   ): Promise<{ outcome: NodeOutcome } | { answer: AskAnswer }> => {
@@ -1240,6 +1272,20 @@ class Run {
     ];
   };
 
+  /** 给模型参数展开与纯条件判定用同一份上游引用词表。 */
+  templateScopeOf = (node: WorkflowNode): NodeTemplateScope => ({
+    user: this.prompt,
+    upstream: upstreamNames(this.deps, this.titleOf, node.id),
+    nodes: this.doc.nodes.map((n) => {
+      const outcome = this.outcomes.get(n.id);
+      return {
+        id: n.id, title: n.title, params: n.params,
+        ...(outcome ? { outcome, artifacts: outcome.artifacts } : {}),
+      };
+    }),
+    ...(this.entry?.payload !== undefined ? { trigger: this.entry.payload } : {}),
+  });
+
   executeOne = async (node: WorkflowNode): Promise<NodeOutcome> => {
     // ⚠️ **整个函数体在 try 里**,不只是 `ports.execute` 那一段。取清单、校验参数
     // 都可能抛(清单文件读坏了、宿主实现有 bug),而**一个抛出去的节点不会定案** ——
@@ -1297,6 +1343,8 @@ class Run {
       const rulesCheck = validateOutputRules(manifest, node.params);
       if (!rulesCheck.ok) return { status: "failed", summary: "", error: rulesCheck.error };
       if (this.signal.aborted) return cancelled();
+      // 纯条件在调度器内读已定案的上游值;不进入参数文本展开、模型或命令端口。
+      if (manifest.runner.kind === "condition") return this.conditionOutcome(node);
 
       // **开了「运行前先问我」的对话节点:先问一句,再决定要不要跑、怎么跑。**
       //
@@ -1335,20 +1383,7 @@ class Run {
       // `automationRunner` 的 `payloadFactsOf`),没被触发器起就是 `undefined`。
       // 它与上游那两张表**不是一回事** —— `{{trigger.*}}` 解在 `renderTemplate` 里
       // (见那边 `resolveOne` 的第一段),所以这里把它挂在 scope 上而不是塞进 nodes。
-      const scope: NodeTemplateScope = {
-        user: this.prompt,
-        upstream: upstreamNames(this.deps, this.titleOf, node.id),
-        nodes: this.doc.nodes.map((n) => {
-          const outcome = this.outcomes.get(n.id);
-          return {
-            id: n.id,
-            title: n.title,
-            params: n.params,
-            ...(outcome ? { outcome, artifacts: outcome.artifacts } : {}),
-          };
-        }),
-        ...(this.entry?.payload !== undefined ? { trigger: this.entry.payload } : {}),
-      };
+      const scope = this.templateScopeOf(node);
 
       // 先解变量,后面每一步都看解算后的参数 —— 技能名、上下文类目、产出约束都可能
       // 写在变量里(虽然少见),而"哪几个参数是解算过的"如果有两种答案,迟早分家。
@@ -2117,6 +2152,10 @@ class Run {
       if (this.inflight.size >= cap) break;
       if (this.outcomes.has(node.id) || this.inflight.has(node.id)) continue;
       const effective = this.effectiveUpstreamOf(node.id);
+      // 同步条件判定可能已经写入 picks,但尚未把自身的结局落进 outcomes。
+      // 此时被砍掉的那条路 effective=[];every([]) 为真,绝不能把它当根节点派发。
+      // 让下一轮第 1 步将它标为 unselected。
+      if ((this.deps.get(node.id)?.length ?? 0) > 0 && effective.length === 0) continue;
       if (effective.every((up) => this.outcomes.get(up)?.status === "success")) this.start(node);
     }
 

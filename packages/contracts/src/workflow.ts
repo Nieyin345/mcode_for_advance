@@ -315,6 +315,17 @@ export const WorkflowDocSchema = z.object({
 });
 export type WorkflowDoc = z.infer<typeof WorkflowDocSchema>;
 
+/** Host-stored review status. This is deliberately not part of WorkflowDoc or
+ * the import/export format: a shared JSON file cannot approve its own code. */
+export interface WorkflowReviewInfo {
+  origin: "import" | "ai";
+  /** SHA-256 of the saved, execution-relevant document. */
+  revision: string;
+  /** True until the user approves exactly this revision. */
+  pending: boolean;
+  reviewedAt?: number;
+}
+
 /* ── 列表项 ── */
 
 /** 工作流库列表里的一项 —— **不含 `nodes` / `edges`** 的轻量摘要。

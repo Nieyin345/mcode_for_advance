@@ -388,6 +388,73 @@ function readVar(
 }
 
 /**
+ * 条件节点读的是**值**,而普通提示词读的是格式化后的文本。两者共享同一套
+ * 上游/id/标题判定;只有确实存在的节点上的**缺失字段**可作为 exists=false,
+ * 「节点不存在」「不是上游」「标题歧义」始终是错误,绝不吞成 false。
+ */
+export type ConditionRefRead =
+  | { ok: true; found: true; value: unknown }
+  | { ok: true; found: false }
+  | { ok: false; error: string };
+
+function conditionValue(value: unknown): ConditionRefRead {
+  return value === undefined || value === null
+    ? { ok: true, found: false }
+    : { ok: true, found: true, value };
+}
+
+export function readConditionRef(ref: string, scope: NodeTemplateScope): ConditionRefRead {
+  const match = /^\{\{([^{}]+)\}\}$/.exec(ref);
+  if (!match) return { ok: false, error: `条件引用「${ref}」不是完整的 {{上游.字段}}` };
+  const spec = (match[1] ?? "").trim();
+  if (spec === "user") return conditionValue(scope.user);
+  const dot = spec.indexOf(".");
+  const name = (dot < 0 ? spec : spec.slice(0, dot)).trim();
+  const field = dot < 0 ? "output" : spec.slice(dot + 1).trim();
+  if (!name || !field || field === "params." || field === "outputs.") {
+    return { ok: false, error: `条件引用「${ref}」缺少节点名或字段名` };
+  }
+
+  if (name === TRIGGER_REF_NAMESPACE) {
+    if (scope.trigger === undefined) {
+      return { ok: false, error: `条件引用「${ref}」取不到:这次运行没有触发器载荷` };
+    }
+    return conditionValue(Object.prototype.hasOwnProperty.call(scope.trigger, field) ? scope.trigger[field] : undefined);
+  }
+
+  if (!scope.upstream.has(name)) {
+    const node = findNode(scope, name);
+    return { ok: false, error: `条件引用「${ref}」取不到:${node === undefined ? "图上没有这个节点" : "它不是这一步的上游"}` };
+  }
+  const node = findNode(scope, name);
+  if (node === "ambiguous") return { ok: false, error: `条件引用「${ref}」的标题重名,请使用节点 id` };
+  if (node === undefined) return { ok: false, error: `条件引用「${ref}」的节点不存在` };
+
+  if (field === "title") return conditionValue(node.title);
+  if (field === "status") return conditionValue(node.outcome?.status);
+  if (field === "error") return conditionValue(node.outcome?.error);
+  if (field.startsWith("params.")) {
+    const path = field.slice("params.".length);
+    const found = valueAt(node.params, path);
+    return conditionValue(found.found ? found.value : undefined);
+  }
+  if (field === "artifacts" || field.startsWith("artifacts.") || field.startsWith("artifacts[")) {
+    const artifacts = node.artifacts ?? node.outcome?.artifacts ?? [];
+    if (field === "artifacts") return conditionValue(artifacts);
+    const found = valueAt(artifacts, field.slice("artifacts".length).replace(/^\./, ""));
+    return conditionValue(found.found ? found.value : undefined);
+  }
+  if (node.outcome?.status === "unselected") return { ok: true, found: false };
+  if (node.outcome === undefined) return { ok: false, error: `条件引用「${ref}」的上游还没有结果` };
+  if (field === "output") return conditionValue(node.outcome.summary);
+  const key = field.startsWith("outputs.") ? field.slice("outputs.".length) : field;
+  if (!key) return { ok: false, error: `条件引用「${ref}」没有填写产出字段` };
+  const found = valueAt(node.outcome.outputs ?? {}, key);
+  if (found.found) return conditionValue(found.value);
+  return key === SUMMARY_OUTPUT_KEY ? conditionValue(node.outcome.summary) : { ok: true, found: false };
+}
+
+/**
  * 解算一段文本里的全部引用。
  *
  * **纯函数**:不碰会话、不碰调度器状态 —— 所以它能被无头脚本喂各种畸形写法(见

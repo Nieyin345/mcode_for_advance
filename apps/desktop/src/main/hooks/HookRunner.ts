@@ -14,8 +14,8 @@
  * ## 三条不变量
  *
  * 1. **绝不把异常抛回事件流。** 这里是 `subscribe` 的回调,而它在 RuntimeManager 发
- *    每一个事件时同步执行 —— 从这里抛出去,炸的是整个回合。所以整个 `onEvent` 包在
- *    try/catch 里,并且**不 await**:钩子跑多久都不该让对话卡住。
+ *    每一个事件时同步执行 —— 从这里抛出去,炸的是整个回合。同步异常由 try/catch
+ *    截住,异步拒绝由 Promise.catch 截住,并且**不 await**:钩子跑多久都不该让对话卡住。
  * 2. **同一条钩子同时只跑一个进程。** 一个挂在 `tool.use` 上的钩子,一轮里会被触发
  *    几十次;每次都起一个进程的话,一个慢脚本能瞬间攒出几十个进程。正在跑的那条再来
  *    事件就记一条 `skipped`,不另起进程。
@@ -64,7 +64,11 @@ class HookRunner {
     runtimeManager.subscribe((e) => {
       // **同步回调里只做分发**:真正的活全在 async 里,而且不 await(不变量 1)。
       try {
-        void this.onEvent(e);
+        void this.onEvent(e).catch((err: unknown) => {
+          // A synchronous try/catch cannot catch an async rejection (including
+          // failures in hooksNow/subjects before runOne's own catch).
+          log.warn(`[hooks] 异步分发失败:${err instanceof Error ? err.message : String(err)}`);
+        });
       } catch (err) {
         log.warn(`[hooks] 分发失败:${(err as Error).message}`);
       }

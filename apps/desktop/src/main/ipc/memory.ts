@@ -32,11 +32,16 @@ import {
   MEMORY_DELETE_CHANNEL,
   MEMORY_LIST_CHANNEL,
   MEMORY_READ_CHANNEL,
+  MEMORY_REVIEW_CHANNEL,
+  MEMORY_REVIEW_DELETE_CHANNEL,
   MEMORY_SAVE_CHANNEL,
   MemoryListSchema,
   MemoryPathSchema,
+  MemoryReviewDeleteSchema,
   MemorySaveSchema,
 } from "@contracts/memory";
+import { notifyMemoryChanged } from "@main/memory/broadcast.js";
+import { deleteReviewedMemory, reviewMemoryFiles } from "@main/memory/review.js";
 import {
   deleteMemoryFile,
   listMemoryFiles,
@@ -71,6 +76,7 @@ export function registerMemoryHandlers(ipcMain: IpcMain): void {
     // 面板也是按这个读的(`res.error ?? t("common.error")` 那一行)。
     try {
       saveMemoryFile(input);
+      notifyMemoryChanged(`save:${input.path}`);
       return { ok: true };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
@@ -83,6 +89,7 @@ export function registerMemoryHandlers(ipcMain: IpcMain): void {
     // 同 save:契约是 `{ ok, error? }` 而不是"抛",拒绝也要走 `ok: false` 这条路。
     try {
       deleteMemoryFile(input.path);
+      notifyMemoryChanged(`delete:${input.path}`);
       return { ok: true };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
@@ -90,4 +97,15 @@ export function registerMemoryHandlers(ipcMain: IpcMain): void {
   });
 
   ipcMain.handle(MEMORY_CATEGORIES_CHANNEL, () => memoryCategories());
+
+  // 建议生成只读。比普通 list 更慢（要比较正文），仅在用户主动点「整理」时调用。
+  ipcMain.handle(MEMORY_REVIEW_CHANNEL, () => reviewMemoryFiles());
+
+  // 永不按建议自动删：UI 必须勾选 + 二次确认，并交回扫描时的完整内容指纹。
+  ipcMain.handle(MEMORY_REVIEW_DELETE_CHANNEL, (_evt, raw) => {
+    const input = MemoryReviewDeleteSchema.parse(raw);
+    const result = deleteReviewedMemory(input);
+    if (result.ok) notifyMemoryChanged(`reviewDelete:${input.path}`);
+    return result;
+  });
 }

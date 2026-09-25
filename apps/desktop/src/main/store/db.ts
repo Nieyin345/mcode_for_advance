@@ -14,7 +14,7 @@
 import { app } from "electron";
 import initSqlJs, { type Database, type SqlJsStatic } from "sql.js/dist/sql-asm.js";
 import { join } from "node:path";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { log } from "@main/lib/logger.js";
 import { dataRoot, migrateLegacyIntoDataRoot, DATA_DB_FILENAME } from "@main/lib/dataRoot.js";
 import { SESSION_COLUMNS, sessionsCreateSql } from "./sessionSchema.js";
@@ -531,6 +531,27 @@ export function flushDb(): void {
     if (db && dbPath) writeFileSync(dbPath, exportBytes());
   } catch (err) {
     log.error(`sqlite flush failed: ${(err as Error).message}`);
+  }
+}
+
+/** Critical workflow barrier: the in-flight marker must reach the DB FILE
+ * before a command/model/plugin is invoked. persist() only schedules a
+ * microtask and flushDb() swallows errors, so neither is safe for this gate.
+ * Stage a complete export then replace the file; a failed write/rename leaves
+ * the last good DB in place and throws so the caller can stop the run. */
+export function persistNowOrThrow(): void {
+  if (!db || !dbPath) throw new Error("sqlite database is not initialized");
+  const target = dbPath;
+  const staging = `${target}.workflow-${process.pid}.tmp`;
+  try {
+    const bytes = exportBytes();
+    const dir = join(target, "..");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(staging, bytes);
+    renameSync(staging, target);
+  } catch (err) {
+    try { rmSync(staging, { force: true }); } catch { /* preserve the original error */ }
+    throw err;
   }
 }
 

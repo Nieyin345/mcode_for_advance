@@ -45,6 +45,8 @@ import {
   parkedRunTeardown,
   startWorkflowRun,
 } from "@main/orchestration/runner.js";
+import { getWorkflow } from "@main/orchestration/library.js";
+import { workflowReviewError } from "@main/orchestration/workflowTrust.js";
 import { generateSessionTitle } from "@main/ipc/titleGen.js";
 import { createBranchedWorktree, createDetachedWorktree, nextWorktreeDir } from "@main/lib/worktreeOps.js";
 import { stat } from "node:fs/promises";
@@ -225,6 +227,14 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       // "lock after first message" rule still holds. We only patch the
       // in-memory snapshot RuntimeManager uses to resolve the backend.
       updated = { ...updated, providerId: input.providerId };
+    }
+
+    // Prompt-only workflows bypass graphRunIntent. Refuse both kinds before
+    // binding a provider or echoing a message; saving is not authorization.
+    if (updated.kind === "chat") {
+      const selected = getWorkflow(updated.workflowId);
+      const reviewError = selected === null ? null : workflowReviewError(selected);
+      if (reviewError !== null) throw new Error(reviewError);
     }
 
     SessionRepo.updateStatus(session.id, "running");

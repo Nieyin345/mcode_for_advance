@@ -37,7 +37,7 @@ import type { IpcMain } from "electron";
 import { IPC } from "@contracts/ipc";
 import type { Session } from "@contracts/session";
 import { initDb } from "@main/store/db.js";
-import { ProjectRepo, SessionRepo, MessageRepo } from "@main/store/repositories.js";
+import { ProjectRepo, SessionRepo, MessageRepo, SYSTEM_AUTOMATION_PROJECT_ID } from "@main/store/repositories.js";
 import { registerProjectHandlers } from "@main/ipc/projects.js";
 
 import { eventsOfType, resetSent, sentChannels } from "./stubs/window.js";
@@ -293,6 +293,20 @@ console.log("\n1. 项目的增改");
 /* ──────────────── 2. 删项目:级联之后的那些收尾 ──────────────── */
 
 console.log("\n2. 删项目 —— 级联删掉的每一条会话,收尾做全了没有");
+
+{
+  fresh();
+  const pid = mkProject("internal_automation");
+  const sessionId = mkSession("s_internal_automation", pid, { kind: "automation" });
+  markRunActive(sessionId);
+  queueBackflow(sessionId, "后台运行留下的内容");
+  eq("系统项目夹具的 id 与真实保留值相同", pid, SYSTEM_AUTOMATION_PROJECT_ID);
+  const error = await catching(IPC.PROJECT_DELETE, { id: pid });
+  check("即使伪造 id 删除系统项目也明确拒绝", error.includes("系统项目"), error);
+  check("拒绝发生在任何取消/清理之前,后台会话还在",
+    SessionRepo.get(sessionId)?.id === sessionId && cancelAsked.length === 0 && dropped.length === 0 &&
+    disposedProjectIds.length === 0);
+}
 
 {
   fresh();

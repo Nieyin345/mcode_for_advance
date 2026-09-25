@@ -537,6 +537,7 @@ function NodeSection({
   // **分支节点**(见 `@contracts/nodeType` 的 `runner.kind`)。判据是**清单**而不是类型
   // id —— 第三方可以带自己的分支类型进来,而它的选项一样住在出边上。
   const isBranch = entry?.manifest.runner.kind === "branch";
+  const isCondition = entry?.manifest.runner.kind === "condition";
   /** **触发器节点**:整条自动化的起点 —— 那次运行就是从它开始的。它**不能有上游**
    *  (存盘那一关会拒,见 `library.deriveTrigger`),所以这句话要在画的时候就说出来,
    *  而不是等用户画完一条线再被拒。 */
@@ -666,7 +667,8 @@ function NodeSection({
           }
           // **只有「指令」给「插入变量」的候选。** 别的文本参数(「期望产出」那段说明)
           // 解算器其实也认 `{{...}}`,但把菜单摊到每一处,只会让人以为哪儿都得插变量。
-          {...(spec.key === NODE_PROMPT_PARAM_KEY ? { insertables: vars } : {})}
+          {...(spec.key === NODE_PROMPT_PARAM_KEY || spec.kind === "conditions"
+            ? { insertables: vars } : {})}
           // 清单写了 `fromParam` 的参数,候选要跟着**它指的那个参数此刻的值**收窄 ——
           // 今天只有「模型」用它(跟着「引擎」走,见 `NodeParamSpecSchema.fromParam`)。
           // 读的是 `node.params` 里那个值本身:顺序在 `params[]` 里已经保证了引擎排在
@@ -829,16 +831,22 @@ function NodeSection({
           选中的那条的名字交在「出路」这个产出变量里(见 `@contracts/outputConstraint`
           的 `DECIDE_VAR_NAME`)。所以下面那句提示只在模型选的分支上出现 —— 对"等你
           点"的分支说"名字就是你要交的值"是错的。 */}
-      {isBranch && (
+      {(isBranch || isCondition) && (
         <>
           <div className="mb-1 mt-1 text-[0.7857em] font-medium text-content-muted">
-            {isDecide ? t("settings.workflows.decideOptions") : t("settings.workflows.branchOptions")}
+            {isCondition ? t("settings.workflows.condition.routes") :
+              isDecide ? t("settings.workflows.decideOptions") : t("settings.workflows.branchOptions")}
           </div>
+          {isCondition && outEdges.length !== 2 && (
+            <p className="mb-2 text-[0.7143em] leading-relaxed text-warning">
+              {t("settings.workflows.condition.missingRoutes")}
+            </p>
+          )}
           {outEdges.length === 0 ? (
             // 没有出路的岔路口是**坏图**:等用户的分支会永远停在那儿(而用户看到的只是
             // 一张没有按钮的卡片),模型选的根本没法挑(调度器会以"没有出路"明确失败)。
             // 两边的说法不同,所以是两条词条。
-            <p className="mb-3 text-[0.7143em] leading-relaxed text-warning">
+            isCondition ? null : <p className="mb-3 text-[0.7143em] leading-relaxed text-warning">
               {isDecide
                 ? t("settings.workflows.decideNoOptions")
                 : t("settings.workflows.branchNoOptions")}
@@ -863,11 +871,26 @@ function NodeSection({
                         **留空就用目标节点的标题**(调度器那边兜底),所以框里空着不是错,
                         只是没起名字 —— 模型选那边匹配时也会拿标题兜一次(见
                         `matchDecisionOption`)。 */}
-                    <Input
-                      value={edge.label ?? ""}
-                      placeholder={t("settings.workflows.branchOptionLabel")}
-                      onChange={(ev) => onUpdateEdge(edge.id, { label: ev.target.value })}
-                    />
+                    {isCondition ? (
+                      <Select.Root value={edge.label === "true" || edge.label === "false" ? edge.label : ""}
+                        onValueChange={(v) => onUpdateEdge(edge.id, { label: v as string })}>
+                        <Select.Trigger className="w-full"><Select.Value>
+                          {edge.label === "true" ? t("settings.workflows.condition.true") :
+                            edge.label === "false" ? t("settings.workflows.condition.false") :
+                              t("settings.workflows.condition.routePick")}
+                        </Select.Value></Select.Trigger>
+                        <Select.Portal><Select.Positioner className="z-50"><Select.Popup><Select.List>
+                          <Select.Item value="true"><Select.ItemText>{t("settings.workflows.condition.true")}</Select.ItemText></Select.Item>
+                          <Select.Item value="false"><Select.ItemText>{t("settings.workflows.condition.false")}</Select.ItemText></Select.Item>
+                        </Select.List></Select.Popup></Select.Positioner></Select.Portal>
+                      </Select.Root>
+                    ) : (
+                      <Input
+                        value={edge.label ?? ""}
+                        placeholder={t("settings.workflows.branchOptionLabel")}
+                        onChange={(ev) => onUpdateEdge(edge.id, { label: ev.target.value })}
+                      />
+                    )}
                     <div className="mt-1">
                       {/* 选了这条之后给**下一步**的一句说明(拼进它的提示词)。和用户
                           在选择时临时写的那句话并存 —— 这句对这条路上的每一步都成立,
@@ -886,6 +909,11 @@ function NodeSection({
           {isDecide && (
             <p className="mb-3 text-[0.7143em] leading-relaxed text-content-subtle">
               {t("settings.workflows.decideOptionsHint")}
+            </p>
+          )}
+          {isCondition && (
+            <p className="mb-3 text-[0.7143em] leading-relaxed text-content-subtle">
+              {t("settings.workflows.condition.routesHint")}
             </p>
           )}
         </>

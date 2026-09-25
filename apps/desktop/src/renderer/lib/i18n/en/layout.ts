@@ -3,6 +3,14 @@ export const en = {
   /* ── left bar / brand ── */
   "layout.about": "About Mcode",
   "layout.tagline": "Smart coding workbench",
+  /* ── bottom status bar ── */
+  "layout.status.claudeMissing": "Claude not found",
+  "layout.status.claudeReady": "Claude ready",
+  "layout.status.checkingClaude": "Checking Claude…",
+  "layout.status.auto": "Auto",
+  "layout.status.selectModel": "Select a model",
+  "layout.status.working": "Working",
+  "layout.status.ready": "Ready",
   "layout.projects": "Projects",
   "layout.projectViewMode": "Project view mode",
   "layout.viewFlat": "Flat view (plain list)",

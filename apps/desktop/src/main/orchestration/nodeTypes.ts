@@ -48,6 +48,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import * as path from "node:path";
 import {
   BRANCH_NODE_TYPE_ID,
+  CONDITION_NODE_TYPE_ID,
   DECIDER_MODES,
   DEFAULT_DECIDER_INSTRUCTION,
   DEFAULT_TRIGGER_DEBOUNCE_MS,
@@ -61,6 +62,7 @@ import {
   NODE_CODE_TIMEOUT_KEY,
   NODE_COMMAND_PARAM_KEY,
   NODE_COMMAND_TIMEOUT_KEY,
+  NODE_CONDITION_EXPRESSION_KEY,
   NODE_CONTEXT_KINDS,
   NODE_CONTEXT_PARAM_KEY,
   NODE_CRITERIA_PARAM_KEY,
@@ -738,6 +740,33 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
       "  **「决定权」留默认(我来选)**:运行停在那儿弹一个框,你点哪条走哪条,**还能临时写一句话**拼进下一步。它是环上**唯一合法的回头点**(「再来一轮」的那根回边必须接在它后面)—— 因为环要有人看着才转得动。\n" +
       "  **「决定权」给模型**:它跑一轮 —— 上游产出都在它眼前,判据写在「选路判据」里(留空就只要求它挑最合适的一条)—— 然后从出边里挑一条,**一字不改**地交出「出路」这个变量(下游能 `{{那一步.出路}}` 取到)。交的名字对不上任何一条出边,这一步**失败**,不会随便挑一条。⚠️ 它**不能当环的闸门**:让模型回头,它会一环一环自己转下去,没有人拦得住,只是账单在涨 —— 存盘时就会被拒绝。\n" +
       "  ⚠️ 两条支路**最后可以汇到同一步**(选哪条都会走到「导出」)—— 调度器把没走的那条当**不存在**,所以汇合的那一步照常跑。",
+  },
+  {
+    id: CONDITION_NODE_TYPE_ID,
+    manifestVersion: 1,
+    name: "条件",
+    description: "用上游变量的 exists / equal / contains 规则自动选 true 或 false 出路。支持 AND / OR；只读数据,不调用模型,不执行代码。",
+    icon: "split",
+    category: "通用",
+    runner: { kind: "condition" },
+    capability: "read",
+    params: [{
+      key: NODE_CONDITION_EXPRESSION_KEY,
+      kind: "conditions",
+      label: "真假条件",
+      required: true,
+      default: { logic: "and", rules: [{ ref: "", op: "exists" }] },
+      help: "选择 AND/OR,逐条挑上游变量与 exists / equal / contains；比较值只是文本,不会作为代码执行。",
+    }],
+    outputs: [
+      { key: "summary", label: "上游结果", description: "原样传给选中的下一步" },
+      { key: "result", label: "真假判定" },
+      { key: "branch", label: "出路", description: "true 或 false" },
+    ],
+    usage:
+      "**声明式条件节点。** 填 expression: { logic: 'and' | 'or', rules: [{ ref: '{{上游.字段}}', op: 'exists' | 'equal' | 'contains', value: '字面文本' }] }；exists 不填 value，另外两种必须填字符串。" +
+      "出边恰好两条,标签分别写 true 和 false；命中走 true,不命中走 false。没走的支路标 unselected,汇合点照常跑。" +
+      "不需要也不会调用模型、eval 或启动命令；没有值时 exists 为 false,但引用不存在/不在上游会失败。自动条件不能充当环上的人工闸门。",
   },
   {
     id: NODE_COMMAND_TYPE_ID,

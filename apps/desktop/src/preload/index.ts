@@ -820,6 +820,8 @@ const api = {
   workflow: {
     list: (() => ipcRenderer.invoke(IPC.WORKFLOW_LIST)) as RpcMap["workflow.list"],
     get: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_GET, input)) as RpcMap["workflow.get"],
+    approve: ((input) =>
+      ipcRenderer.invoke(IPC.WORKFLOW_APPROVE, input)) as RpcMap["workflow.approve"],
     nodeTypes: (() =>
       ipcRenderer.invoke(IPC.WORKFLOW_NODE_TYPES)) as RpcMap["workflow.nodeTypes"],
     save: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_SAVE, input)) as RpcMap["workflow.save"],
@@ -906,6 +908,9 @@ const api = {
     delete: ((input) => ipcRenderer.invoke(IPC.MEMORY_DELETE, input)) as RpcMap["memory.delete"],
     categories: (() =>
       ipcRenderer.invoke(IPC.MEMORY_CATEGORIES)) as RpcMap["memory.categories"],
+    review: (() => ipcRenderer.invoke(IPC.MEMORY_REVIEW)) as RpcMap["memory.review"],
+    reviewDelete: ((input) =>
+      ipcRenderer.invoke(IPC.MEMORY_REVIEW_DELETE, input)) as RpcMap["memory.reviewDelete"],
   },
 
   /** 监控(总览):正在跑几个、触发器挂得怎么样、最近的运行。 */

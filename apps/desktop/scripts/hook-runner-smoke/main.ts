@@ -491,6 +491,36 @@ eq("资料库事件(不属于任何会话)照样能触发", sysHook.hits(), 1);
 // 收尾前先把这条钩子撤掉 —— 它听着一个哨兵事件,留着会影响下面的断言阅读。
 writeHooks([]);
 
+/* ──────────────── 9. 订阅边界不能泄漏异步拒绝 ──────────────── */
+
+console.log("\n异步分发故障注入");
+// Intentionally fail BEFORE runOne's per-hook catch: a synchronous try/catch
+// around an async onEvent call cannot see this rejection. A real event still
+// must return normally, log the error, and not emit unhandledRejection.
+const dispatch = hookRunner as unknown as { onEvent(e: RuntimeEvent): Promise<void> };
+const originalDispatch = dispatch.onEvent;
+const { log } = await import("@main/lib/logger.js");
+const originalWarn = log.warn;
+const warnings: string[] = [];
+let unhandled = 0;
+const countUnhandled = () => { unhandled += 1; };
+process.on("unhandledRejection", countUnhandled);
+try {
+  dispatch.onEvent = async () => { throw new Error("injected hook dispatch rejection"); };
+  log.warn = (message: string) => {
+    warnings.push(message);
+    originalWarn(message);
+  };
+  rt.emit({ type: "tool.use", sessionId: SESSION, toolName: "Write", toolCallId: "call_reject", input: {}, requiresApproval: false } satisfies RuntimeEvent);
+  await new Promise((r) => setTimeout(r, 30));
+  eq("分发拒绝不成为未处理 rejection", unhandled, 0);
+  check("分发拒绝留下日志", warnings.some((m) => m.includes("injected hook dispatch rejection")), warnings);
+} finally {
+  dispatch.onEvent = originalDispatch;
+  log.warn = originalWarn;
+  process.off("unhandledRejection", countUnhandled);
+}
+
 check("hooks.json 确实落在(临时)数据根下", hooksFilePath().startsWith(DATA));
 
 rmSync(DATA, { recursive: true, force: true });

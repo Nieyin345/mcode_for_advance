@@ -469,6 +469,7 @@ const piModels: Api["piModels"] = {
 const workflow: Api["workflow"] = {
   list: () => rpc("workflow:list"),
   get: () => webUnsupported("workflow.get"),
+  approve: () => webUnsupported("workflow.approve"),
   nodeTypes: () => webUnsupported("workflow.nodeTypes"),
   save: () => webUnsupported("workflow.save"),
   remove: () => webUnsupported("workflow.remove"),
