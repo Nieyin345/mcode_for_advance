@@ -1,3 +1,4 @@
+import { memoryToolDescriptors, invokeMemoryTool } from "@main/memory/engineTools.js";
 /**
  * Inline Pi extension — bridges Mcode's host-side approval, AskUserQuestion,
  * and system-prompt capabilities into the Pi agent via the SDK's extension API.
@@ -219,6 +220,16 @@ export function createMcodeExtension(opts: CreateMcodeExtensionOptions): InlineE
     factory: (pi: ExtensionAPI) => {
       registerToolCallGuard(pi, { ctx, cwd, strict, sessionId, planMode });
       registerAskUserQuestionTool(pi, ctx);
+      for (const tool of memoryToolDescriptors()) {
+        pi.registerTool({ name: tool.name, label: tool.name, description: tool.description,
+          parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
+          async execute(_id, args) {
+            const result = await invokeMemoryTool(tool.name, args, sessionId, ctx);
+            if (result.isError) throw new Error(result.content.map(c => c.type === "text" ? c.text : "").join("\n"));
+            return { content: result.content, details: {} };
+          },
+        });
+      }
       // Browser tools + their usage prompt ride the same switch: when the
       // built-in server is disabled in the MCP panel, the model must neither
       // see the tools nor the prompt section advertising them.
@@ -322,6 +333,7 @@ function registerToolCallGuard(
     // ③ Plan tools + AskUserQuestion — their own execute() handles the IPC
     //    bridging; never route through the approval prompt or the plan-mode
     //    read-only gate.
+    if (toolName.startsWith("memory_")) return; // execute uses the shared fail-closed approval policy.
     if (toolName === "EnterPlanMode" || toolName === "ExitPlanMode" || toolName === "AskUserQuestion") {
       return;
     }

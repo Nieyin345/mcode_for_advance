@@ -186,6 +186,14 @@ st = readInstructionsState(source, [claudeMd]);
 eqDeep("空内容之后读取:不收养、内容空", [st.adopted, st.content], [false, ""]);
 eq("空内容之后 ensureMaterialized:无事可做", ensureMaterialized(source, [claudeMd]).length, 0);
 
+// A managed output can drift back after the canonical source was cleared.
+writeFileSync(claudeMd, `${MANAGED_MARKER}\n\nstale instructions`, "utf8");
+eq("空源也清理后来出现的旧托管输出", ensureMaterialized(source, [claudeMd])[0]?.action, "deleted");
+eq("旧托管指令确实移除", existsSync(claudeMd), false);
+writeFileSync(codexMd, "handwritten preserved", "utf8");
+ensureMaterialized(source, [codexMd]);
+eq("空源绝不删除无托管标记的手写文件", readFileSync(codexMd, "utf8"), "handwritten preserved");
+
 // CRLF 归一(Windows 用户在 textarea 里粘贴 CRLF 文本是常态)。
 w = writeInstructionsAt(source, [claudeMd], "# a\r\nb\r\n", { force: true });
 eq("CRLF:ok", w.ok, true);

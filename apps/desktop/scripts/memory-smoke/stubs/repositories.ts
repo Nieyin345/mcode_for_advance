@@ -33,3 +33,6 @@ export const SettingRepo = {
     throw new Error("memory-smoke 的 SettingRepo 是只读桩 —— 有东西想往 settings 里写");
   },
 };
+
+export const SessionRepo = { get(id: string) { return id === "isolated-memory-test" ? { id, projectId: "p_memory", kind: "chat", parentSessionId: null, nodeId: null } : undefined; } };
+export const ProjectRepo = { list() { return [{ id: "p_memory", name: "Memory test", path: "/isolated" }]; } };

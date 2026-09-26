@@ -62,7 +62,7 @@ export function resetPublished(): void {
 }
 
 /** 每一次 `sendTurn` 收到的提示词 —— 用来分辨"今天这一趟"和"上一趟留下的会话"。 */
-export const sentPrompts: { sessionId: string; prompt: string; automationOrigin?: AutomationEventOrigin }[] = [];
+export const sentPrompts: { sessionId: string; prompt: string; automationOrigin?: AutomationEventOrigin; memoryManagedByWorkflow?: boolean }[] = [];
 
 /** 节点会话当前那一轮的 emit —— 冒烟靠它往指定会话里灌事件。 */
 const turnEmitters = new Map<string, (e: RuntimeEvent) => void>();
@@ -164,13 +164,15 @@ export const runtimeManager = {
     turnEmitters.set(s.id, emit);
   },
 
+  setPermissionMode(_sessionId: string, _mode: Session["permissionMode"]): void { /* No approval gate or model in this session-lifecycle fixture. */ },
+
   setInteractiveProxy(nodeSessionId: string, parentSessionId: string): void {
     proxies.set(nodeSessionId, parentSessionId);
   },
 
-  sendTurn(s: Session, input: StartTurnRequest & { prompt: string; cwd: string; automationOrigin?: AutomationEventOrigin }): Promise<TurnHandle | null> {
+  sendTurn(s: Session, input: StartTurnRequest & { prompt: string; cwd: string; automationOrigin?: AutomationEventOrigin; memoryManagedByWorkflow?: boolean }): Promise<TurnHandle | null> {
     if (running.has(s.id)) { busyRejections++; return Promise.resolve(null); }
-    sentPrompts.push({ sessionId: s.id, prompt: input.prompt, automationOrigin: input.automationOrigin });
+    sentPrompts.push({ sessionId: s.id, prompt: input.prompt, automationOrigin: input.automationOrigin, memoryManagedByWorkflow: input.memoryManagedByWorkflow });
     running.add(s.id);
     let resolveDone!: () => void;
     const done = new Promise<void>((resolve) => {

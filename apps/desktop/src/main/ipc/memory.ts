@@ -1,3 +1,5 @@
+import { manageMemory } from "@main/memory/manage.js";
+import { MEMORY_MANAGE_CHANNEL, MemoryManageSchema } from "@contracts/memory";
 /**
  * 记忆库 IPC(MEM-01 的界面通道)。业务全在 `main/memory/store.ts`,这里只做
  * zod 校验与编排 —— 与 `templates.ts` 同一条约定。
@@ -35,6 +37,7 @@ import {
   MEMORY_REVIEW_CHANNEL,
   MEMORY_REVIEW_DELETE_CHANNEL,
   MEMORY_SAVE_CHANNEL,
+  MemoryDeleteSchema,
   MemoryListSchema,
   MemoryPathSchema,
   MemoryReviewDeleteSchema,
@@ -43,6 +46,7 @@ import {
 import { notifyMemoryChanged } from "@main/memory/broadcast.js";
 import { deleteReviewedMemory, reviewMemoryFiles } from "@main/memory/review.js";
 import {
+  MemoryConflictError,
   deleteMemoryFile,
   listMemoryFiles,
   memoryCategories,
@@ -51,6 +55,7 @@ import {
 } from "@main/memory/store.js";
 
 export function registerMemoryHandlers(ipcMain: IpcMain): void {
+  ipcMain.handle(MEMORY_MANAGE_CHANNEL, (_evt, raw) => manageMemory(MemoryManageSchema.parse(raw)));
   ipcMain.handle(MEMORY_LIST_CHANNEL, (_evt, raw) => {
     const input = MemoryListSchema.parse(raw ?? {});
     // 契约是 `{ files: [...] }`(见 `RpcMap["memory.list"]`),不是裸数组 —— 见文件头。
@@ -66,7 +71,8 @@ export function registerMemoryHandlers(ipcMain: IpcMain): void {
     // ⚠️ 这里换来的是"**读出来的就是能原样存回去的**"这条不动点。代价是正文开头
     // 故意留的空行(手写的 markdown 里少见,但存在)会被吃掉 —— 而写回去那一步
     // 本来就会吃掉它,所以这个代价在改动之前就已经在付了,只是没人说得清。
-    return { content: readMemoryFile(input.path).content.replace(/^\n+|\n+$/g, "") };
+    const { content, revision } = readMemoryFile(input.path);
+    return { content: content.replace(/^\n+|\n+$/g, ""), revision };
   });
 
   ipcMain.handle(MEMORY_SAVE_CHANNEL, (_evt, raw) => {
@@ -75,24 +81,24 @@ export function registerMemoryHandlers(ipcMain: IpcMain): void {
     // **别把异常抛出去**:契约写了"`ok: false` 时 `error` 是给人看的句子,不是异常",
     // 面板也是按这个读的(`res.error ?? t("common.error")` 那一行)。
     try {
-      saveMemoryFile(input);
+      const { revision } = saveMemoryFile(input);
       notifyMemoryChanged(`save:${input.path}`);
-      return { ok: true };
+      return { ok: true, revision };
     } catch (err) {
-      return { ok: false, error: (err as Error).message };
+      return { ok: false, error: (err as Error).message, ...(err instanceof MemoryConflictError ? { code: "conflict" as const } : {}) };
     }
   });
 
   ipcMain.handle(MEMORY_DELETE_CHANNEL, (_evt, raw) => {
-    // delete 与 read 同形(<类目>/<文件名>.md 的相对路径),共用一份 schema
-    const input = MemoryPathSchema.parse(raw);
+    // 删除还要携带用户确认时的版本；不在执行时偷偷重读并替换它。
+    const input = MemoryDeleteSchema.parse(raw);
     // 同 save:契约是 `{ ok, error? }` 而不是"抛",拒绝也要走 `ok: false` 这条路。
     try {
-      deleteMemoryFile(input.path);
+      deleteMemoryFile(input.path, input.expectedRevision);
       notifyMemoryChanged(`delete:${input.path}`);
       return { ok: true };
     } catch (err) {
-      return { ok: false, error: (err as Error).message };
+      return { ok: false, error: (err as Error).message, ...(err instanceof MemoryConflictError ? { code: "conflict" as const } : {}) };
     }
   });
 

@@ -1,3 +1,4 @@
+import { MemoryTransferPanel } from "./MemoryTransferPanel.js";
 /**
  * **记忆**页:三节,前两节是"喂给引擎的长期信息",第三节是引擎自己那份记忆。
  *
@@ -44,10 +45,11 @@ import { MEMORY_CATEGORIES, type MemoryFileMeta } from "@contracts/memory";
 import "@renderer/lib/monacoSetup.js";
 import Editor from "@monaco-editor/react";
 import { api } from "@renderer/lib/api.js";
+import { useRpc } from "@renderer/hooks/useRpc.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useMonacoTheme } from "@renderer/components/ide/FileEditor.js";
-import { Button, ConfirmDialog, Input } from "@renderer/components/ui/index.js";
+import { Button, ConfirmDialog, ErrorNote, Input } from "@renderer/components/ui/index.js";
 import { IconDeviceFloppy, IconNotebook, IconPlus, IconTrash, IconLoader2 } from "@renderer/lib/icons.js";
 import { PANEL_MAX_W } from "../settings/panelWidth.js";
 import { PanelHeader } from "../settings/PanelHeader.js";
@@ -88,6 +90,8 @@ function fmtDate(ms: number): string {
 export function MemoryExplorerPanel() {
   const { t } = useI18n();
   const theme = useMonacoTheme();
+  const [scope, setScope] = useState("");
+  const projects = useRpc(() => api.memory.manage({ action: "list" }), []);
   const [categories, setCategories] = useState<string[]>([]);
   const [files, setFiles] = useState<MemoryFileMeta[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -99,7 +103,12 @@ export function MemoryExplorerPanel() {
   /** 新建草稿。非 null 时右栏整个换成起名表单 —— 保存之前不落盘。 */
   const [draft, setDraft] = useState<{ category: string; name: string } | null>(null);
   /** 等待确认删除的文件(全路径)。ConfirmDialog 的目标。 */
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ path: string; revision: string } | null>(null);
+  const [revision, setRevision] = useState<string | null>(null);
+  const editEpoch = useRef(0);
+  const [readRequest, setReadRequest] = useState<{ path: string; epoch: number } | null>(null);
+  const [mutating, setMutating] = useState(false);
+  const mutationPending = useRef(false);
   /** 只在用户主动打开时扫描；不会定时或后台自动清理。 */
   const [reviewOpen, setReviewOpen] = useState(false);
 
@@ -206,23 +215,31 @@ export function MemoryExplorerPanel() {
     }
   };
 
-  const load = useCallback(async (): Promise<void> => {
-    try {
-      const [cats, listRes] = await Promise.all([api.memory.categories(), api.memory.list({})]);
-      setCategories(cats);
-      setFiles(listRes.files);
-      setLoadError(null);
-    } catch (err) {
-      // 类目是**契约里的常量**(固定六类),通道断了也照摆 —— 目录架子不塌,
-      // 每一类下面"读不出来"由 loadError 那句小字交代。
-      setCategories([...MEMORY_CATEGORIES]);
-      setLoadError((err as Error).message);
-    }
-  }, []);
-
+  const listQuery = useRpc(async () => {
+    const [cats, res] = await Promise.all([api.memory.categories(), api.memory.list({})]);
+    return { cats, files: res.files };
+  }, [], { toastOnError: false });
+  const load = listQuery.refetch;
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (listQuery.data) { setCategories(listQuery.data.cats); setFiles(listQuery.data.files); setLoadError(null); }
+    if (listQuery.error) { setCategories([...MEMORY_CATEGORIES]); setLoadError(listQuery.error.message); }
+  }, [listQuery.data, listQuery.error]);
+
+  const appliedRead = useRef<unknown>(undefined);
+  const readQuery = useRpc(async () => {
+    const request = readRequest!;
+    return { ...await api.memory.read({ path: request.path }), ...request };
+  }, [readRequest], { enabled: readRequest !== null, toastOnError: false });
+  useEffect(() => {
+    const result = readQuery.data;
+    if (result && appliedRead.current !== result && result.epoch === editEpoch.current && !readQuery.loading && !readQuery.error) {
+      appliedRead.current = result;
+      setContent(result.content); setSavedContent(result.content); setRevision(result.revision);
+    }
+    if (readRequest?.epoch === editEpoch.current && readQuery.error && !readQuery.loading) {
+      setNotice({ tone: "error", text: t("memory.readFailed", { error: readQuery.error.message }) });
+    }
+  }, [readQuery.data, readQuery.loading, readQuery.error, readRequest, t]);
 
   /**
    * 记忆库在**别处**被改了 → 重拉列表。
@@ -248,101 +265,78 @@ export function MemoryExplorerPanel() {
     return off;
   }, [load]);
 
-  /** 读一个文件进编辑器。读失败:右栏给空内容 + 一句红字,不让面板崩。 */
-  const open = useCallback(
-    async (path: string): Promise<void> => {
-      setDraft(null);
-      setSelected(path);
-      setNotice(null);
-      try {
-        const res = await api.memory.read({ path });
-        setContent(res.content);
-        setSavedContent(res.content);
-      } catch (err) {
-        setContent("");
-        setSavedContent("");
-        setNotice({
-          tone: "error",
-          text: t("memory.readFailed", { error: (err as Error).message }),
-        });
-      }
-    },
-    [t],
-  );
+  /** A selection epoch prevents late reads/mutations from replacing another file's draft. */
+  const open = useCallback((path: string): void => {
+    const epoch = ++editEpoch.current;
+    setDraft(null); setSelected(path); setNotice(null);
+    setContent(""); setSavedContent(""); setRevision(null);
+    setReadRequest({ path, epoch });
+  }, []);
 
-  /** 保存一个文件。成功与否都**在顶栏一句话**,不弹框 —— 保存是高频动作。 */
-  const save = useCallback(
-    async (path: string, body: string): Promise<boolean> => {
-      try {
-        const res = await api.memory.save({ path, content: body });
-        if (res.ok) {
-          setSavedContent(body);
+  const save = useCallback(async (path: string, body: string, expectedRevision: string | null, pinned?: boolean): Promise<string | null> => {
+    if (mutationPending.current) return null;
+    mutationPending.current = true; setMutating(true);
+    const epoch = editEpoch.current;
+    try {
+      const res = await api.memory.save({ path, content: body, expectedRevision, ...(pinned === undefined ? {} : { pinned }) });
+      if (res.ok && res.revision) {
+        if (editEpoch.current === epoch) {
+          setSavedContent(body); setRevision(res.revision);
           setNotice({ tone: "ok", text: t("memory.saved") });
-          return true;
         }
-        // ok: false 不是异常 —— error 是主进程写给人看的句子,原样摆。
-        setNotice({ tone: "error", text: res.error ?? t("common.error") });
-        return false;
-      } catch (err) {
-        setNotice({
-          tone: "error",
-          text: t("memory.saveFailed", { error: (err as Error).message }),
-        });
-        return false;
+        void load();
+        return res.revision;
       }
-    },
-    [t],
-  );
+      if (editEpoch.current === epoch) setNotice({ tone: "error", text: res.code === "conflict" ? t("memory.conflict") : res.error ?? t("common.error") });
+      return null;
+    } catch (err) {
+      if (editEpoch.current === epoch) setNotice({ tone: "error", text: t("memory.saveFailed", { error: (err as Error).message }) });
+      return null;
+    } finally { mutationPending.current = false; setMutating(false); }
+  }, [load, t]);
 
-  /** 新建:保存成功才进列表(路径限定 `${类目}/${名字}.md`)。 */
   const createDraft = useCallback(async (): Promise<void> => {
     if (draft === null || !validDraftName(draft.name)) return;
-    const path = `${draft.category}/${draft.name.trim()}.md`;
-    // 存不下去(重名等)就留在草稿态 —— 顶栏有失败的原因,改个名字再试。
-    const ok = await save(path, "");
-    if (!ok) return;
-    setDraft(null);
-    setContent("");
-    setSavedContent("");
-    setSelected(path);
-    void load();
-  }, [draft, save, load]);
+    if (!scope) return;
+    const path = `${scope}/${draft.category}/${draft.name.trim()}.md`;
+    const epoch = editEpoch.current;
+    const created = await save(path, "", null); // Explicit create-only, even for a same-name collision.
+    if (created === null || editEpoch.current !== epoch) return;
+    setDraft(null); setContent(""); setSavedContent(""); setSelected(path); setRevision(created);
+  }, [scope, draft, save]);
 
-  const remove = useCallback(
-    async (path: string): Promise<void> => {
-      try {
-        const res = await api.memory.delete({ path });
-        if (!res.ok) {
-          setNotice({ tone: "error", text: res.error ?? t("common.error") });
-          return;
-        }
-        if (selected === path) {
-          setSelected(null);
-          setContent("");
-          setSavedContent("");
-        }
-        setNotice(null);
-        void load();
-      } catch (err) {
-        setNotice({
-          tone: "error",
-          text: t("memory.deleteFailed", { error: (err as Error).message }),
-        });
+  const remove = useCallback(async (target: { path: string; revision: string }): Promise<void> => {
+    if (mutationPending.current) return;
+    mutationPending.current = true; setMutating(true);
+    const epoch = editEpoch.current;
+    try {
+      // The revision was captured BEFORE confirmation, never re-read at delete time.
+      const res = await api.memory.delete({ path: target.path, expectedRevision: target.revision });
+      if (!res.ok) {
+        if (editEpoch.current === epoch) setNotice({ tone: "error", text: res.code === "conflict" ? t("memory.conflict") : res.error ?? t("common.error") });
+        return;
       }
-    },
-    [selected, load, t],
-  );
+      if (editEpoch.current === epoch && selected === target.path) {
+        editEpoch.current++;
+        setReadRequest(null); setSelected(null); setRevision(null); setContent(""); setSavedContent(""); setNotice(null);
+      }
+      void load();
+    } catch (err) {
+      if (editEpoch.current === epoch) setNotice({ tone: "error", text: t("memory.deleteFailed", { error: (err as Error).message }) });
+    } finally { mutationPending.current = false; setMutating(false); }
+  }, [selected, load, t]);
 
   /** 按类目归组的文件(`category` 是主进程给的,目录即类目)。 */
   const byCategory = useMemo(() => {
     const map = new Map<string, MemoryFileMeta[]>();
     for (const f of files) {
+      if (scope && !f.path.startsWith(scope + "/")) continue;
       const bucket = map.get(f.category);
       if (bucket) bucket.push(f);
       else map.set(f.category, [f]);
     }
     return map;
-  }, [files]);
+  }, [files, scope]);
 
   const dirty = selected !== null && content !== savedContent;
   /**
@@ -362,6 +356,23 @@ export function MemoryExplorerPanel() {
         </Button>
       } />
 
+      <div className="my-3 rounded border border-edge p-3 text-sm">
+        <h3 className="font-medium">{t("memory.layersTitle")}</h3>
+        <ul className="my-2 list-disc space-y-1 pl-5 text-content-muted">
+          <li>{t("memory.layerGlobal")}</li><li>{t("memory.layerProject")}</li>
+          <li>{t("memory.layerWorkflow")}</li><li>{t("memory.layerAgent")}</li>
+        </ul>
+        <p>{t("memory.layerPromotion")}</p>
+        <p className="mt-2 text-content-muted">{t("memory.flowEntry")}</p>
+      </div>
+      <MemoryTransferPanel />
+      <label className="my-3 flex gap-2">{t("memory.scope")}
+        <select value={scope} onChange={e => setScope(e.target.value)} className="bg-surface p-1">
+          <option value="">{t("memory.allScopes")}</option>
+          <option value="global">{t("memory.globalScope")}</option>
+          {projects.data?.projects?.map(p => <option key={p.id} value={`projects/${p.id}`}>{p.name}</option>)}
+        </select>
+      </label>
       {reviewOpen && <MemoryMaintenanceReview
         dirty={dirty || draft !== null}
         onOpen={(path) => { void open(path); }}
@@ -399,6 +410,7 @@ export function MemoryExplorerPanel() {
                       type="button"
                       title={t("memory.newFile")}
                       onClick={() => {
+                        editEpoch.current++; setReadRequest(null); setRevision(null);
                         setDraft({ category: cat, name: "" });
                         setSelected(null);
                         setNotice(null);
@@ -446,7 +458,7 @@ export function MemoryExplorerPanel() {
               <div className="text-[0.7857em] font-medium text-content-muted">
                 {t("memory.newFile")}
                 <code className="ml-2 text-[0.85em] font-normal text-content-subtle">
-                  {draft.category}/
+                  {scope || t("memory.destination")}/{draft.category}/
                 </code>
               </div>
               <Input
@@ -463,16 +475,17 @@ export function MemoryExplorerPanel() {
                   {t("memory.fileNameInvalid")}
                 </p>
               )}
+              {notice?.tone === "error" && <ErrorNote>{notice.text}</ErrorNote>}
               <div className="mt-1 flex gap-1">
                 <Button
                   size="sm"
                   variant="primary"
-                  disabled={!validDraftName(draft.name)}
+                  disabled={mutating || !scope || !validDraftName(draft.name)}
                   onClick={() => void createDraft()}
                 >
                   {t("common.save")}
                 </Button>
-                <Button size="sm" variant="secondary" onClick={() => setDraft(null)}>
+                <Button size="sm" variant="secondary" onClick={() => { editEpoch.current++; setDraft(null); }}>
                   {t("common.cancel")}
                 </Button>
               </div>
@@ -487,11 +500,17 @@ export function MemoryExplorerPanel() {
                 <code className="min-w-0 flex-1 truncate text-[0.7143em] text-content-subtle">
                   {selected}
                 </code>
+                <Button size="sm" disabled={mutating || dirty || !revision} onClick={() => {
+                  if (!revision) return;
+                  const epoch = editEpoch.current;
+                  void save(selected, content, revision, !files.find(f => f.path === selected)?.pinned).then(next => { if (next && editEpoch.current === epoch) setRevision(next); });
+                }}>{files.find(f => f.path === selected)?.pinned ? t("memory.unpin") : t("memory.pin")}</Button>
                 {dirty && (
                   <span className="shrink-0 text-[0.7143em] text-warning">{t("memory.dirty")}</span>
                 )}
                 {notice !== null && (
                   <span
+                    title={notice.text}
                     className={cn(
                       "min-w-0 shrink truncate text-[0.7143em]",
                       notice.tone === "ok" ? "text-success" : "text-danger",
@@ -503,7 +522,8 @@ export function MemoryExplorerPanel() {
                 <Button
                   size="sm"
                   variant="secondary"
-                  onClick={() => void save(selected, content)}
+                  disabled={mutating || revision === null}
+                  onClick={() => void save(selected, content, revision)}
                   className="shrink-0 gap-1"
                 >
                   <IconDeviceFloppy size={12} />
@@ -512,7 +532,8 @@ export function MemoryExplorerPanel() {
                 <Button
                   size="sm"
                   variant="secondary"
-                  onClick={() => setDeleteTarget(selected)}
+                  disabled={mutating || revision === null}
+                  onClick={() => { if (revision) setDeleteTarget({ path: selected, revision }); }}
                   className="shrink-0 gap-1"
                 >
                   <IconTrash size={12} />
@@ -521,6 +542,7 @@ export function MemoryExplorerPanel() {
               </div>
               <div className="min-h-0 flex-1">
                 <Editor
+                  key={selected}
                   language="markdown"
                   theme={theme}
                   value={content}
@@ -531,6 +553,7 @@ export function MemoryExplorerPanel() {
                     </div>
                   }
                   options={{
+                    readOnly: revision === null,
                     minimap: { enabled: false },
                     fontSize: 13,
                     wordWrap: "on",
@@ -548,7 +571,7 @@ export function MemoryExplorerPanel() {
       <ConfirmDialog
         open={deleteTarget !== null}
         danger
-        title={t("memory.deleteTitle", { name: deleteTarget !== null ? basename(deleteTarget) : "" })}
+        title={t("memory.deleteTitle", { name: deleteTarget !== null ? basename(deleteTarget.path) : "" })}
         description={t("memory.deleteDesc")}
         confirmText={t("common.delete")}
         onOpenChange={(o) => {
@@ -671,6 +694,7 @@ export function MemoryExplorerPanel() {
               <>
                 <textarea
                   value={ctxMemory}
+                  readOnly
                   onChange={(e) => {
                     setCtxMemory(e.target.value);
                     setCtxSaved(false);
@@ -686,9 +710,9 @@ export function MemoryExplorerPanel() {
                     variant="primary"
                     size="sm"
                     onClick={() => void saveCtxMemory()}
-                    disabled={ctxSaving}
+                    disabled={true}
                   >
-                    {t("settings.context.saveMemory")}
+                    {t("memory.legacyReadOnly")}
                   </Button>
                   {ctxSaved && (
                     <span className="text-[0.7857em] text-emerald-500">

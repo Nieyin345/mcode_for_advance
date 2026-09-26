@@ -145,6 +145,8 @@ export interface StartTurnRequest {
    *  自己原生的 system/developer-instructions 通道。普通主对话每轮刷新；side/node/
    *  automation 不自动带，避免绕过它们各自明确的记忆开关/快照语义。 */
   memoryPrompt?: string;
+  /** Host-resolved project instruction compatibility, refreshed each turn. */
+  projectInstructionPrompt?: string;
   /** **环境背景** —— 用户有哪些项目、各自在哪，以及文档库的根与库里有什么。
    *
    *  与上面三个同一层、同一条路:**host 现查好、拼成字符串,提供方只 append**。

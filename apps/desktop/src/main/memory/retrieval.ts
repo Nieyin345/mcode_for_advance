@@ -1,3 +1,4 @@
+import { visibleMemory } from "./paths.js";
 /**
  * 记忆的检索注入(MEM-02)—— 把记忆库聚合成**一段可以直接拼进提示词的文本**。
  *
@@ -162,11 +163,12 @@ const TITLE_WEIGHT = 3;
  */
 export function searchMemory(
   query: string,
-  opts: { limit?: number; category?: string } = {},
+  opts: { limit?: number; category?: string; projectId?: string } = {},
 ): MemorySearchHit[] {
   const limit = opts.limit ?? DEFAULT_LIMIT;
   if (limit <= 0) return [];
-  const metas = listMemoryFiles(opts.category === undefined ? undefined : { category: opts.category });
+  const metas = listMemoryFiles(opts.category === undefined ? undefined : { category: opts.category })
+    .filter(meta => opts.projectId === undefined || visibleMemory(meta.path, opts.projectId));
   const terms = queryTerms(query);
 
   // 查询为空:按时间取最近若干条。先读、再占 limit —— 空正文或列表/磁盘竞态读不到的
@@ -259,4 +261,24 @@ function countOccurrencesUpTo(hay: string, needle: string, cap: number): number 
     from = at + needle.length;
   }
   return count;
+}
+
+/** Host-scoped retrieval: legacy/unclassified records never enter an engine implicitly. */
+export function scopedMemorySnapshot(projectId: string, query = ""): string {
+  const all = listMemoryFiles().filter(meta => visibleMemory(meta.path, projectId));
+  const relevant = searchMemory(query, { projectId, limit: 8 });
+  const ordered = [...all.filter(m => m.pinned).slice(0, 4), ...relevant.map(h => h.meta),
+    ...all.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 2)];
+  const seen = new Set<string>(), blocks: string[] = [];
+  let chars = 0;
+  for (const meta of ordered) {
+    if (seen.has(meta.path) || seen.size >= DEFAULT_LIMIT) continue;
+    seen.add(meta.path);
+    let record: ReturnType<typeof readMemoryFile>;
+    try { record = readMemoryFile(meta.path); } catch { continue; }
+    const text = `- 【${meta.title}】 (${meta.path}; revision=${record.revision})\n${bodyPreview(record.content.trim())}`;
+    if (chars + text.length > SNAPSHOT_CAP - 300) continue;
+    chars += text.length; blocks.push(text);
+  }
+  return blocks.length ? `范围：本项目 + 显式全局；选中 ${blocks.length}/${all.length} 条；正文受长度预算限制。\n` + blocks.join("\n\n") : "";
 }

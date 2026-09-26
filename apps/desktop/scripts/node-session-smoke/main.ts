@@ -147,6 +147,7 @@ SessionRepo.create(parentSession(PARENT_B));
 /* ──────────────── 1. 第一趟:两格各建一个会话 ──────────────── */
 
 await runGraph(PARENT);
+check("真实 runner 对主节点与隔离子节点均声明记忆所有权", rt.sentPrompts.length >= 3 && rt.sentPrompts.every(p => p.memoryManagedByWorkflow === true));
 
 const a1 = nodeSessionOf(PARENT, "agentA");
 const b1 = nodeSessionOf(PARENT, "agentB");
@@ -393,6 +394,7 @@ await runGraph(PARENT);
   });
   const resumed = runner.resolveWorkflowRetry({ sessionId: PARENT, runId: matchingId, nodeId: "agentA" });
   eq("未改图且没有在飞副作用的失败步骤可重试", resumed.ok, true);
+  await waitFor("重试通过异步引擎预检并真正启动", () => WorkflowRunRepo.get(matchingId)?.status === "running" && runner.hasActiveRun(PARENT));
   eq("重试沿用旧 runId 并把原行标回 running", WorkflowRunRepo.get(matchingId)?.status, "running");
   cancelWorkflowRun(PARENT);
   await waitFor("已放行的兼容运行收尾", () => !runner.hasActiveRun(PARENT));
@@ -518,6 +520,8 @@ const originalRunSave = repo.save;
     SettingRepo.set(`automation.eventChain.${autoId}`, JSON.stringify({ version: 1, workflowIds: [workflowId] }));
     rt.finishTurn(chatId);
     await waitFor("自动注入交给普通聊天提供方", () => rt.sentPrompts.length > offset);
+    eq("实际 runner 交接了记忆注入所有权", rt.sentPrompts.at(-1)?.memoryManagedByWorkflow, true);
+    eq("普通用户轮次不被标成工作流记忆", rt.sentPrompts[offset - 1]?.memoryManagedByWorkflow, undefined);
     eq("runner 注入目标仍是原普通聊天", rt.sentPrompts.at(-1)?.sessionId, chatId);
     eq("排队前的祖先快照传入提供方而非重读最新记录", rt.sentPrompts.at(-1)?.automationOrigin?.workflowIds.join(","), `upstream-source,${workflowId}`);
     eq("普通用户的先前请求没有自动化标记", rt.sentPrompts[offset - 1]?.automationOrigin, undefined);
@@ -529,6 +533,99 @@ const originalRunSave = repo.save;
   const manual = await startWorkflowRun({ session: SessionRepo.get(autoId)!, prompt: "manual", cwd: process.cwd() });
   eq("没有本次发起人时 origin 节点明确失败", manual?.status, "failed");
   eq("旧 parentSessionId 不能造成真实提供方投递", rt.sentPrompts.length, beforeManual);
+}
+
+/* Memory assistant: real graph runner + isolated SQLite, fake provider (no model calls). */
+{
+  const store = await import("@main/memory/assistantStore.js");
+  const { memoryAssistant } = await import("@main/memory/assistant.js");
+  const { interactiveRoute } = await import("@main/lib/interactiveRoute.js");
+  const reject = async (label: string, run: () => unknown) => { let failed = false; try { await run(); } catch { failed = true; } check(label, failed); };
+  for (const id of ["memory-capture", "memory-checkpoint", "memory-health"]) {
+    const doc = getWorkflow(id);
+    check(`${id} 真正进入工作流注册表`, doc?.trigger === "manual" && doc.nodes.some(n => n.id === "memory-entry"));
+  }
+  const source = SessionRepo.get(PARENT)!;
+  const targetId = "memory_handoff_target";
+  SessionRepo.create({ ...parentSession(targetId), workflowId: "default" });
+  const ready = () => {
+    const job = store.createAssistantJob(source.id, source.projectId, "test-worker", "checkpoint");
+    store.saveAssistantJob({ ...job, status: "ready", result: "目标、已验证进度、下一步" });
+    return job;
+  };
+  const a = ready();
+  await reject("不能交接给原对话", () => store.queueAssistantHandoff(a.id, source.id, source.id));
+  await reject("不能伪造来源", () => store.queueAssistantHandoff(a.id, PARENT_B, targetId));
+  const foreignProject = { ...project(), id: "memory_other_project" };
+  ProjectRepo.create(foreignProject);
+  SessionRepo.create({ ...parentSession("memory_foreign"), projectId: foreignProject.id });
+  await reject("不能跨项目交接", () => store.queueAssistantHandoff(a.id, source.id, "memory_foreign"));
+  store.queueAssistantHandoff(a.id, source.id, targetId);
+  eq("待交接正文可在重新读取时恢复", store.pendingAssistantHandoff(targetId)?.result, "目标、已验证进度、下一步");
+  eq("重复投递同包幂等", store.queueAssistantHandoff(a.id, source.id, targetId).id, a.id);
+  SettingRepo.set(`memory.assistant.target.${targetId}`, "");
+  store.queueAssistantHandoff(a.id, source.id, targetId);
+  eq("修复中断的指针发布", store.pendingAssistantHandoff(targetId)?.id, a.id);
+  const b = ready();
+  await reject("不能覆盖另一份未接收材料", () => store.queueAssistantHandoff(b.id, source.id, targetId));
+  store.consumeAssistantHandoff(targetId, b.id);
+  eq("过时确认不能消费另一包", store.pendingAssistantHandoff(targetId)?.id, a.id);
+  for (const reason of ["error", "interrupted", "max_tokens", "tool_use"]) {
+    store.acknowledgeAssistantTurn(targetId, a.id, reason);
+    eq(`${reason} 不消费待交接材料`, store.pendingAssistantHandoff(targetId)?.id, a.id);
+  }
+  store.acknowledgeAssistantTurn(targetId, a.id, "end_turn");
+  eq("成功消费后不再注入", store.pendingAssistantHandoff(targetId), null);
+  eq("已消费包正文被清除", store.readAssistantJob(a.id)?.result, "");
+  await reject("已消费包不能重新发送", () => store.queueAssistantHandoff(a.id, source.id, targetId));
+  store.queueAssistantHandoff(b.id, source.id, targetId);
+  store.saveAssistantJob({ ...store.readAssistantJob(b.id)!, expiresAt: Date.now() - 1 });
+  eq("过期交接不能投递", store.pendingAssistantHandoff(targetId), null);
+  eq("过期包正文清理", store.readAssistantJob(b.id)?.result, "");
+  const c = ready();
+  store.queueAssistantHandoff(c.id, source.id, targetId);
+  await memoryAssistant({ op: "discard", sessionId: source.id, jobId: c.id });
+  eq("人工撤销之后不再投递", store.pendingAssistantHandoff(targetId), null);
+  const capture = store.createAssistantJob(source.id, source.projectId, "test-worker", "capture");
+  store.saveAssistantJob({ ...capture, status: "ready", result: "长期建议不是交接材料" });
+  await reject("长期整理结果不能伪装临时包", () => store.queueAssistantHandoff(capture.id, source.id, targetId));
+  eq("交互代理多级回到可见对话", interactiveRoute("node", id => ({ node: "worker", worker: "chat" } as Record<string,string>)[id]), "chat");
+  eq("交互代理循环不逃逸", interactiveRoute("node", id => ({ node: "worker", worker: "node" } as Record<string,string>)[id]), "node");
+  eq("普通交互路由不变", interactiveRoute("chat", () => undefined), "chat");
+  const aborted = new AbortController(); aborted.abort();
+  const sends = rt.sentPrompts.length;
+  eq("取消的启动不触发模型", await startWorkflowRun({ session: source, startSignal: aborted.signal }), null);
+  eq("取消启动无发送", rt.sentPrompts.length, sends);
+
+  const { MessageRepo } = await import("@main/store/repositories.js");
+  MessageRepo.upsertMany(Array.from({ length: 50 }, (_, i) => ({ id: `memory-message-${String(i).padStart(3, "0")}`, sessionId: source.id, role: "user" as const,
+    content: [{ type: "image", data: "NEVER_SEND_IMAGE_DATA" }, { type: "text", text: i === 0 ? "OUTSIDE_RECENT_WINDOW" : i === 49 ? `LATEST_CONTEXT sk-${"A".repeat(30)}` : "saved message" }], createdAt: Date.now() - 50 + i })));
+  WorkflowRunRepo.save({ id: "zz_memory_evidence_run", sessionId: source.id, workflowId: source.workflowId, status: "success", awaiting: [], payload: JSON.stringify({ prompt: "evidence", cwd: process.cwd(), attempts: [], state: { record: [], rounds: [], picks: [], outcomes: [["evidence", { status: "success", summary: "LINKED_RUN_EVIDENCE" }]], awaiting: [] } }) });
+  const launched = await memoryAssistant({ op: "start", sessionId: source.id, kind: "checkpoint" });
+  const job = launched.jobs[0]!;
+  check("点击入口创建独立后台自动化", SessionRepo.get(job.workerSessionId)?.kind === "automation" && job.workerSessionId !== source.id);
+  eq("原对话工作流没有被切换", SessionRepo.get(source.id)?.workflowId, source.workflowId);
+  await reject("重复点击不并发生成", () => memoryAssistant({ op: "start", sessionId: source.id, kind: "checkpoint" }));
+  await waitFor("交接整理节点真的启动", () => !!SessionRepo.findNodeByNodeId(job.workerSessionId, "main") && rt.isTurnRunning(SessionRepo.findNodeByNodeId(job.workerSessionId, "main")!.id));
+  const node = SessionRepo.findNodeByNodeId(job.workerSessionId, "main")!;
+  const prompt = rt.sentPrompts.find(p => p.sessionId === node.id)?.prompt ?? "";
+  check("使用当前对话最近保存的内容", prompt.includes("LATEST_CONTEXT") && !prompt.includes("OUTSIDE_RECENT_WINDOW"));
+  check("读取实际关联运行证据", prompt.includes("LINKED_RUN_EVIDENCE"));
+  check("不序列化图片或明显密钥", !prompt.includes("NEVER_SEND_IMAGE_DATA") && !prompt.includes(`sk-${"A".repeat(30)}`));
+  rt.nodeEmit(node.id)?.({ type: "text.delta", sessionId: node.id, messageId: "handoff-answer", text: "已完成 A；证据是测试记录；下一步 B。" });
+  rt.finishTurn(node.id);
+  await waitFor("交接结果被真实宿主保存", () => store.readAssistantJob(job.id)?.status === "ready");
+  check("临时包保留实际模型输出", store.readAssistantJob(job.id)?.result.includes("下一步 B") === true);
+  const delivered = await memoryAssistant({ op: "deliver", sessionId: source.id, jobId: job.id });
+  check("交接创建同项目新对话", delivered.target?.projectId === source.projectId && delivered.target?.id !== source.id && delivered.target?.kind === "chat");
+  eq("目标待投递记录已保存", store.pendingAssistantHandoff(delivered.target!.id)?.id, job.id);
+  const again = await memoryAssistant({ op: "deliver", sessionId: source.id, jobId: job.id });
+  eq("重复点击不重复建对话", again.target?.id, delivered.target?.id);
+  store.consumeAssistantHandoff(delivered.target!.id, job.id);
+  eq("交接消费状态可从源对话查看", (await memoryAssistant({ op: "list", sessionId: source.id })).jobs.find(j => j.id === job.id)?.status, "consumed");
+  const abandoned = store.createAssistantJob(source.id, source.projectId, "lost-worker-after-restart", "checkpoint");
+  eq("失去内存执行者的任务标失败，不自动重放", (await memoryAssistant({ op: "list", sessionId: source.id })).jobs.find(j => j.id === abandoned.id)?.status, "failed");
+
 }
 
 rmSync(DATA, { recursive: true, force: true });

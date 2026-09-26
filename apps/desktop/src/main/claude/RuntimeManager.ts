@@ -1,3 +1,7 @@
+import { interactiveRoute } from "@main/lib/interactiveRoute.js";
+import { pendingAssistantHandoff, assistantHandoffPrompt, acknowledgeAssistantTurn } from "@main/memory/assistantStore.js";
+import { automaticMemoryForTurn, MEMORY_LAYER_INSTRUCTIONS } from "@main/memory/policy.js";
+import { projectInstructions } from "@main/memory/instructions.js";
 import { automationOriginOf, inheritAutomationOrigin, snapshotAutomationOrigin, withAutomationOrigin, type AutomationEventOrigin } from "@main/orchestration/automationEventOrigin.js";
 /**
  * RuntimeManager — per-session turn lifecycle, now provider-agnostic.
@@ -22,12 +26,12 @@ import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
 import { mobileEventBus } from "@main/mobile/MobileEventBus.js";
 import { invalidateUsageStats } from "@main/lib/usageStats.js";
 import { log } from "@main/lib/logger.js";
-import { backflowPrompt, clearBackflow, peekBackflow } from "@main/lib/pendingBackflow.js";
+import { pendingBackflowPrompt, clearBackflow, peekBackflow } from "@main/lib/pendingBackflow.js";
 import { clearAgentMail, peekAgentMailBatch, setDeliveryPort } from "@main/lib/agentMail.js";
 import { resolveAgentPrompt, resolveWorkflowPrompt } from "@main/orchestration/prompt.js";
 import { memorySectionFrom } from "@contracts/memory";
 import { buildEnvPrompt, envPromptFingerprint } from "@main/providers/envPrompt.js";
-import { memorySnapshotFor } from "@main/memory/retrieval.js";
+import { scopedMemorySnapshot } from "@main/memory/retrieval.js";
 // 只借类型 —— `import type` 整条会被编译掉,那条链(工具表 → repositories → db →
 // electron)不会因此被拉进任何无头 smoke。
 import type { WebToolGate } from "@main/mcp/webToolHost.js";
@@ -128,6 +132,8 @@ interface SessionRuntime {
    *  —— 重试不得再回显用户气泡；prompt 用的是 req 里拼好的最终形态
    *  （backflow 已在首轮消费，重发时 peek 为空、原样通过）。 */
   lastTurnInput?: {
+    handoffDeliveryId?: string;
+    memoryManagedByWorkflow?: boolean;
     prompt: string;
     cwd: string;
     automationOrigin?: AutomationEventOrigin;
@@ -569,7 +575,7 @@ class RuntimeManager {
   }
 
   private routeOf(sessionId: string): string {
-    return this.interactiveProxy.get(sessionId) ?? sessionId;
+    return interactiveRoute(sessionId, id => this.interactiveProxy.get(id));
   }
 
   /** 一条事件改道到的那个会话**是什么种类**(见 `emit` 里那段"判据是去处")。
@@ -922,6 +928,9 @@ class RuntimeManager {
     session: Session,
     input: {
       prompt: string;
+      /** Trusted scheduler owns injection, including OFF; prevents double injection in chat nodes. */
+      handoffDeliveryId?: string;
+      memoryManagedByWorkflow?: boolean;
       /** Internal host provenance; deliberately absent from IPC/provider request contracts. */
       automationOrigin?: AutomationEventOrigin;
       cwd: string;
@@ -1011,7 +1020,15 @@ class RuntimeManager {
     }
 
     const provider = providerRegistry.resolve(session.providerId);
-    const emit = withAutomationOrigin(rt.ctx.emit, input.automationOrigin);
+    const baseEmit = withAutomationOrigin(rt.ctx.emit, input.automationOrigin);
+    let handoffDeliveryId: string | undefined;
+    const emit = (event: RuntimeEvent): void => {
+      if (event.type === "turn.done" && handoffDeliveryId) {
+        try { acknowledgeAssistantTurn(session.id, handoffDeliveryId, event.reason); }
+        catch (error) { log.error(`handoff acknowledgement failed: ${String(error)}`); }
+      }
+      baseEmit(event);
+    };
 
     // A previous turn that ended without any turn-end snapshot (all-zero
     // usage / abort before result) left its usage-history record pending —
@@ -1222,9 +1239,9 @@ class RuntimeManager {
     // 普通主对话每轮都刷新长期记忆；side/node/automation 各有自己明确的记忆语义，
     // 这里绝不越权替它们自动打开（尤其 side 的「档案」/「档案+记忆」是两个用户选择）。
     let memoryPrompt: string | undefined;
-    if (session.kind === "chat") {
+    if (automaticMemoryForTurn(session.kind, input.memoryManagedByWorkflow)) {
       try {
-        memoryPrompt = memorySectionFrom(memorySnapshotFor()) || undefined;
+        memoryPrompt = memorySectionFrom(scopedMemorySnapshot(session.projectId, input.prompt)) || undefined;
       } catch (err) {
         log.warn(`[memory] 主对话取长期记忆失败，本轮不注入: ${(err as Error).message}`);
       }
@@ -1261,7 +1278,7 @@ class RuntimeManager {
     //
     // **只看不取**(`peek`):回合真的起来了才清(见下面 `clearBackflow`)—— 先在发之前
     // take 的话,回合没起成那一段就永久丢了,而用户只会发现助手"没记住刚才那些产出"。
-    const backflow = backflowPrompt(peekBackflow(session.id));
+    const backflow = pendingBackflowPrompt(session.id);
 
     // **别的代理捎来的话也在这里带进去**(见 `lib/agentMail.ts`)。同一个时机、同一个
     // 理由:主进程插不进提供方那边的会话记录,唯一能保证被看见的就是下一轮的提示词。
@@ -1271,7 +1288,10 @@ class RuntimeManager {
     const mailBatch = peekAgentMailBatch(session.id);
     const mail = mailBatch.text;
 
-    const backflowAll = [backflow, mail].filter((s) => s.length > 0).join("\n\n");
+    const handoff = pendingAssistantHandoff(session.id);
+    handoffDeliveryId = handoff?.id;
+    const handoffText = handoff && input.handoffDeliveryId !== handoff.id ? assistantHandoffPrompt(handoff) : "";
+    const backflowAll = [backflow, mail, handoffText].filter((s) => s.length > 0).join("\n\n");
 
     const req: StartTurnRequest = {
       sessionId: session.id,
@@ -1289,6 +1309,10 @@ class RuntimeManager {
       // "用户这一轮说的话",而它其实是"你是谁"。
       agentPrompt,
       memoryPrompt,
+      projectInstructionPrompt: (() => {
+        const project = ProjectRepo.get(session.projectId);
+        return [MEMORY_LAYER_INSTRUCTIONS, "MCode 长期记忆以宿主 Markdown 库为准。查、读、写、忘记请使用 memory_* 工具；不要另写引擎原生 MEMORY.md 或把记忆写进 AGENTS.md/CLAUDE.md。默认只保存当前项目，用户明确要求跨项目共享时才选 global。来源不明的旧记忆须由用户在记忆设置预览导入。", project ? projectInstructions(project.path, input.cwd) : ""].filter(Boolean).join("\n\n");
+      })(),
       envPrompt,
       resumeProviderSessionId: rt.providerSessionId,
       apiConfig,
@@ -1332,6 +1356,8 @@ class RuntimeManager {
     // 片段）。回合失败要原样重发，就从这里取。
     if (handle !== null) {
       rt.lastTurnInput = {
+        handoffDeliveryId: handoff?.id,
+        memoryManagedByWorkflow: input.memoryManagedByWorkflow,
         prompt: req.prompt,
         cwd: req.cwd,
         skills: req.skills,

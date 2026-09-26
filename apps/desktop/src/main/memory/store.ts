@@ -1,3 +1,5 @@
+import type { MemoryWriteOrigin } from "@contracts/memory";
+import { memoryAddress } from "./paths.js";
 /**
  * 记忆库的存储层(MEM-01)—— `<数据根>/memory/<类目>/*.md`。
  *
@@ -23,8 +25,9 @@
  * 再拒绝 memory 根 / 类目目录 / 目标文件上的 symlink 或 junction —— 防止路径字面上在库内、
  * 实际 I/O 却被重解析到库外。过不了就明确拒绝,不"尽量解释"。
  */
-import { lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { linkSync, renameSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import {
   MEMORY_CATEGORIES,
   type MemoryFileMeta,
@@ -59,31 +62,20 @@ const MAX_FILE_NAME = 120;
  * 真正 I/O 前还会再走 `resolveSafeMemoryRelPath`，拒绝 symlink / junction 重解析。
  */
 function resolveMemoryRelPath(relPath: string): string | null {
-  if (isAbsolute(relPath) || relPath.includes("\\") || relPath.includes("\0")) return null;
-  const parts = relPath.split("/");
-  if (parts.length !== 2) return null;
-  const [category, file] = parts as [string, string];
-  if (!(MEMORY_CATEGORIES as readonly string[]).includes(category)) return null;
-  if (!file.endsWith(".md") || file.length > MAX_FILE_NAME) return null;
-  const name = file.slice(0, -3);
-  if (name.length === 0 || name.startsWith(".")) return null;
-  const dir = resolve(memoryRoot(), category);
-  const target = resolve(dir, file);
-  if (!target.startsWith(dir + sep)) return null;
-  return target;
+  if (isAbsolute(relPath) || !memoryAddress(relPath)) return null;
+  const root = resolve(memoryRoot());
+  const target = resolve(root, relPath);
+  return target.startsWith(root + sep) ? target : null;
 }
-
-/** Reject symlink/junction hops so lexical containment cannot escape dataRoot. */
 function resolveSafeMemoryRelPath(relPath: string): string | null {
   const target = resolveMemoryRelPath(relPath);
-  if (target === null) return null;
-  const category = relPath.split("/")[0] ?? "";
-  for (const abs of [memoryRoot(), resolve(memoryRoot(), category), target]) {
-    try {
-      if (lstatSync(abs).isSymbolicLink()) return null;
-    } catch {
-      // Missing category/target is valid for first save.
-    }
+  if (!target) return null;
+  const parts = relPath.split("/");
+  let current = memoryRoot();
+  for (let i = 0; i <= parts.length; i++) {
+    try { if (lstatSync(current).isSymbolicLink()) return null; }
+    catch (err) { if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err; }
+    if (i < parts.length) current = join(current, parts[i]!);
   }
   return target;
 }
@@ -139,68 +131,49 @@ function quoteTitle(title: string): string {
  * 整理入口可传 onUnreadable：列目录阶段被跳过的异常 *.md / 非法链接也要明确告知人。
  */
 export function listMemoryFiles(filter?: MemoryListInput & { onUnreadable?: (path: string) => void }): MemoryFileMeta[] {
-  const root = memoryRoot();
-  const want = filter?.category;
   const out: MemoryFileMeta[] = [];
-  for (const category of MEMORY_CATEGORIES) {
-    if (want !== undefined && want !== category) continue;
-    const dir = join(root, category);
-    let names: string[];
+  const walk = (rel: string, depth: number): void => {
+    const dir = join(memoryRoot(), rel);
     try {
-      if (lstatSync(dir).isSymbolicLink()) {
-        filter?.onUnreadable?.(`${category}/`);
-        continue;
+      if (lstatSync(dir).isSymbolicLink()) { filter?.onUnreadable?.(rel || "memory/"); return; }
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name.startsWith(".")) continue;
+        const path = rel ? `${rel}/${entry.name}` : entry.name;
+        if (entry.isSymbolicLink()) { filter?.onUnreadable?.(path); continue; }
+        if (memoryAddress(path) && !entry.isFile()) { filter?.onUnreadable?.(path); continue; }
+        if (entry.isDirectory() && depth < 3) { walk(path, depth + 1); continue; }
+        const address = memoryAddress(path);
+        if (!entry.isFile() || !address || filter?.category && address.category !== filter.category) continue;
+        try {
+          const target = resolveSafeMemoryRelPath(path);
+          if (!target) throw new Error("unsafe path");
+          const raw = readFileSync(target, "utf8"), parsed = parseFrontmatter(raw);
+          out.push({ path, category: address.category, title: parsed.title || address.file.slice(0, -3),
+            updatedAt: parsed.updatedAt || Math.round(statSync(target).mtimeMs),
+            scope: address.scope, ...(address.projectId ? { projectId: address.projectId } : {}),
+            pinned: /^pinned: true$/m.test(/^---\r?\n([\s\S]*?)\r?\n---/.exec(raw)?.[1] ?? "") });
+        } catch { filter?.onUnreadable?.(path); }
       }
-      names = readdirSync(dir);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") filter?.onUnreadable?.(`${category}/`);
-      continue; // 目录不存在是正常空库，权限错误等才给整理入口报告
-    }
-    for (const name of names) {
-      if (!name.endsWith(".md")) continue;
-      const abs = join(dir, name);
-      let raw = "";
-      let mtimeMs = 0;
-      try {
-        const lst = lstatSync(abs);
-        if (lst.isSymbolicLink() || !lst.isFile()) {
-          filter?.onUnreadable?.(`${category}/${name}`);
-          continue;
-        }
-        raw = readFileSync(abs, "utf8");
-        mtimeMs = statSync(abs).mtimeMs;
-      } catch {
-        filter?.onUnreadable?.(`${category}/${name}`);
-        continue; // 普通列表仍跳过坏文件，整理入口显示失败路径
-      }
-      const parsed = parseFrontmatter(raw);
-      out.push({
-        path: `${category}/${name}`,
-        category,
-        title: parsed.title || name.slice(0, -3),
-        updatedAt: parsed.updatedAt || Math.round(mtimeMs),
-      });
-    }
-  }
-  return out.sort(
-    (a, b) =>
-      (MEMORY_CATEGORIES as readonly string[]).indexOf(a.category) -
-        (MEMORY_CATEGORIES as readonly string[]).indexOf(b.category) || b.updatedAt - a.updatedAt,
-  );
+    } catch (err) { if ((err as NodeJS.ErrnoException).code !== "ENOENT") filter?.onUnreadable?.(rel || "memory/"); }
+  };
+  walk("", 0);
+  return out.sort((a, b) => MEMORY_CATEGORIES.indexOf(a.category as typeof MEMORY_CATEGORIES[number]) -
+    MEMORY_CATEGORIES.indexOf(b.category as typeof MEMORY_CATEGORIES[number]) || b.updatedAt - a.updatedAt);
 }
 
 /** 读一条记忆的**正文**(不含 frontmatter)。路径不合法或读不到 → 抛(话直接给用户)。 */
-export function readMemoryFile(relPath: string): { content: string } {
-  return { content: readMemoryFileWithRaw(relPath).content };
+export function readMemoryFile(relPath: string): { content: string; revision: string } {
+  const { content, revision } = readMemoryFileWithRaw(relPath);
+  return { content, revision };
 }
 
 /** 与 read 共用安全路径闸；整理校验要比对原始 markdown，连手写 frontmatter 也不能漏。 */
-export function readMemoryFileWithRaw(relPath: string): { content: string; raw: string } {
+export function readMemoryFileWithRaw(relPath: string): { content: string; raw: string; revision: string } {
   const target = resolveSafeMemoryRelPath(relPath);
   if (target === null) throw new Error(`不是合法的记忆路径:「${relPath}」(应为 <类目>/<文件名>.md,类目限定六类)`);
   try {
     const raw = readFileSync(target, "utf8");
-    return { content: parseFrontmatter(raw).body, raw };
+    return { content: parseFrontmatter(raw).body, raw, revision: revisionOf(raw) };
   } catch (err) {
     throw new Error(`读不到记忆「${relPath}」:${(err as Error).message}`);
   }
@@ -211,36 +184,87 @@ export function readMemoryFileWithRaw(relPath: string): { content: string; raw: 
  * title 缺省沿用旧标题,没有旧标题就用文件名;`updatedAt` 每次盖章为现在。
  * 返回写完的时间戳(渲染端刷新行用)。
  */
-export function saveMemoryFile(input: MemorySaveInput): { updatedAt: number } {
-  const target = resolveSafeMemoryRelPath(input.path);
-  if (target === null) throw new Error(`不是合法的记忆路径:「${input.path}」(应为 <类目>/<文件名>.md,类目限定六类)`);
-  const name = input.path.split("/")[1] ?? "";
-  const fallbackTitle = name.slice(0, -3);
-  const previous = parseFrontmatter(safeRead(target));
-  const title = (input.title ?? "").trim() || previous.title || fallbackTitle;
-  const updatedAt = Date.now();
-  try {
-    mkdirSync(resolve(memoryRoot(), input.path.split("/")[0] ?? ""), { recursive: true });
-    writeFileSync(
-      target,
-      [`---`, `title: ${quoteTitle(title)}`, `updatedAt: ${updatedAt}`, `---`, "", input.content.replace(/\s+$/, ""), ""].join("\n"),
-      "utf8",
-    );
-  } catch (err) {
-    throw new Error(`写记忆「${input.path}」失败:${(err as Error).message}`);
+export class MemoryConflictError extends Error {
+  readonly code = "conflict";
+  constructor() {
+    super("记忆已改变、已删除或同名文件已存在；未覆盖或删除。请重新读取最新内容并合并后重试。");
+    this.name = "MemoryConflictError";
   }
-  return { updatedAt };
 }
 
-/** 删一条记忆。路径不合法 → 抛;文件本来就不在 → 照样成功(删除是幂等的)。 */
-export function deleteMemoryFile(relPath: string): { ok: true } {
+function revisionOf(raw: string): string {
+  return createHash("sha256").update(raw, "utf8").digest("hex");
+}
+
+/** Absence is different from unreadable: never turn EACCES/EISDIR into permission to overwrite. */
+function currentRaw(target: string): string | null {
+  try { return readFileSync(target, "utf8"); }
+  catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+function assertRevision(raw: string | null, expected: string | null | undefined): void {
+  if (expected == null ? raw !== null : raw === null || revisionOf(raw) !== expected) {
+    throw new MemoryConflictError();
+  }
+}
+
+/** Synchronous compare + publish serializes callers in this host process.
+ * External editors not participating in this protocol can still race the final
+ * check/rename; this is NOT a distributed/filesystem compare-and-swap guarantee.
+ * Never fall back to truncating the live file if rename fails. */
+export function saveMemoryFile(input: MemorySaveInput, origin?: MemoryWriteOrigin): { updatedAt: number; revision: string } {
+  const target = resolveSafeMemoryRelPath(input.path);
+  if (target === null) throw new Error(`不是合法的记忆路径:「${input.path}」(应为 <类目>/<文件名>.md,类目限定六类)`);
+  if (/(?:-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----|\bsk-(?:proj-)?[A-Za-z0-9_-]{24,}|\bAKIA[A-Z0-9]{16}\b)/.test(input.content)) {
+    throw new Error("记忆包含疑似私钥或访问密钥，未保存；请仅记录凭据的管理位置，不记录值。");
+  }
+  const before = currentRaw(target);
+  assertRevision(before, input.expectedRevision);
+  const previous = parseFrontmatter(before ?? "");
+  const name = input.path.split("/").at(-1) ?? "";
+  const title = (input.title ?? "").trim() || previous.title || name.slice(0, -3);
+  const updatedAt = Date.now();
+  const extra = (/^---\r?\n([\s\S]*?)\r?\n---/.exec(before ?? "")?.[1] ?? "").split(/\r?\n/)
+    .filter(line => line.trim() && !/^(?:title|updatedAt|pinned):/.test(line) && !(origin && /^mcodeLastWriter:/.test(line)));
+  if (origin) extra.push(`mcodeLastWriter: ${JSON.stringify(origin)}`);
+  const pinned = input.pinned ?? /^pinned: true$/m.test(/^---\r?\n([\s\S]*?)\r?\n---/.exec(before ?? "")?.[1] ?? "");
+  const raw = [`---`, `title: ${quoteTitle(title)}`, `updatedAt: ${updatedAt}`, ...extra, ...(pinned ? ["pinned: true"] : []), `---`, "", input.content.replace(/\s+$/, ""), ""].join("\n");
+  const tmp = `${target}.${randomUUID()}.mcode-tmp`;
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(tmp, raw, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    if (resolveSafeMemoryRelPath(input.path) !== target) throw new Error("记忆路径已改变，未保存");
+    assertRevision(currentRaw(target), input.expectedRevision);
+    if (before === null) {
+      // Atomic no-clobber publication. An overlapping creator wins, never gets replaced.
+      try { linkSync(tmp, target); }
+      catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "EEXIST") throw new MemoryConflictError();
+        throw err;
+      }
+    } else {
+      saveRevision(input.path, before, "before-update");
+      renameSync(tmp, target);
+    }
+  } finally {
+    try { rmSync(tmp, { force: true }); } catch { /* Best-effort orphan cleanup; never mask the write result. */ }
+  }
+  return { updatedAt, revision: revisionOf(raw) };
+}
+
+/** Missing file is idempotent; an existing file always requires the reader's revision. */
+export function deleteMemoryFile(relPath: string, expectedRevision?: string): { ok: true } {
   const target = resolveSafeMemoryRelPath(relPath);
   if (target === null) throw new Error(`不是合法的记忆路径:「${relPath}」(应为 <类目>/<文件名>.md,类目限定六类)`);
-  try {
-    rmSync(target, { force: true });
-  } catch (err) {
-    throw new Error(`删记忆「${relPath}」失败:${(err as Error).message}`);
-  }
+  const raw = currentRaw(target);
+  if (raw === null) return { ok: true };
+  if (expectedRevision === undefined) throw new MemoryConflictError();
+  assertRevision(raw, expectedRevision);
+  saveRevision(relPath, raw, "before-delete");
+  rmSync(target, { force: true });
   return { ok: true };
 }
 
@@ -249,11 +273,51 @@ export function memoryCategories(): string[] {
   return [...MEMORY_CATEGORIES];
 }
 
-/** 读文件但不许抛 —— save 用它取旧标题,读不到(首次保存)就当没有。 */
-function safeRead(target: string): string {
-  try {
-    return readFileSync(target, "utf8");
-  } catch {
-    return "";
+/** Revision snapshots are private, never included in retrieval. Archive first, mutate second. */
+function archiveRoot(): string {
+  const dir = join(memoryRoot(), ".history");
+  for (const p of [memoryRoot(), dir]) {
+    try { if (lstatSync(p).isSymbolicLink()) throw new Error("记忆历史目录不允许链接"); }
+    catch (err) { if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err; }
   }
+  return dir;
+}
+function saveRevision(path: string, raw: string, reason: string): void {
+  const dir = archiveRoot(); mkdirSync(dir, { recursive: true });
+  const at = Date.now(), id = `${at}-${randomUUID()}`;
+  writeFileSync(join(dir, id + ".json"), JSON.stringify({ version: 1, id, path, at, reason, raw }), { flag: "wx", mode: 0o600 });
+}
+export function memoryHistory(): Array<{ id: string; path: string; at: number; reason: string }> {
+  const dir = archiveRoot();
+  let names: string[];
+  try { names = readdirSync(dir); } catch (err) { if ((err as NodeJS.ErrnoException).code === "ENOENT") return []; throw err; }
+  return names.filter(name => /^[0-9]+-[a-f0-9-]+\.json$/.test(name)).sort().reverse().slice(0, 200)
+    .flatMap(name => { try { const v = readHistory(name.slice(0, -5)); return [{ id: v.id, path: v.path, at: v.at, reason: v.reason }]; } catch { return []; } });
+}
+export function readHistory(id: string): { id: string; path: string; at: number; reason: string; raw: string } {
+  if (!/^[0-9]+-[a-f0-9-]+$/.test(id)) throw new Error("无效历史编号");
+  const path = join(archiveRoot(), id + ".json");
+  if (lstatSync(path).isSymbolicLink()) throw new Error("历史文件不允许链接");
+  const v: unknown = JSON.parse(readFileSync(path, "utf8"));
+  if (!v || typeof v !== "object") throw new Error("历史记录损坏");
+  const r = v as Record<string, unknown>;
+  if (r.version !== 1 || r.id !== id || typeof r.path !== "string" || !memoryAddress(r.path) ||
+      typeof r.raw !== "string" || typeof r.at !== "number" || typeof r.reason !== "string") throw new Error("历史记录损坏");
+  return { id, path: r.path, at: r.at, reason: r.reason, raw: r.raw };
+}
+export function restoreMemory(id: string): { path: string; revision: string } {
+  const saved = readHistory(id), target = resolveSafeMemoryRelPath(saved.path);
+  if (!target) throw new Error("恢复路径不安全");
+  assertRevision(currentRaw(target), null);
+  mkdirSync(dirname(target), { recursive: true });
+  const tmp = `${target}.${randomUUID()}.mcode-tmp`;
+  try {
+    writeFileSync(tmp, saved.raw, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    if (resolveSafeMemoryRelPath(saved.path) !== target) throw new Error("恢复路径已改变");
+    try { linkSync(tmp, target); } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EEXIST") throw new MemoryConflictError();
+      throw err;
+    }
+  } finally { try { rmSync(tmp, { force: true }); } catch { /* orphan only */ } }
+  return { path: saved.path, revision: revisionOf(saved.raw) };
 }

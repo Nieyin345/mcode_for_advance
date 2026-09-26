@@ -51,6 +51,9 @@ export const MEMORY_CATEGORY_LABELS: Record<MemoryCategory, string> = {
 export interface MemoryFileMeta {
   path: string;
   category: string;
+  scope?: "legacy" | "global" | "project";
+  projectId?: string;
+  pinned?: boolean;
   title: string;
   updatedAt: number;
 }
@@ -130,7 +133,10 @@ export function memorySectionFrom(snapshot: string): string {
 /** `memory:read` / `memory:delete` 的入参:memory 根下的相对路径。 */
 export const MemoryPathSchema = z.object({ path: z.string().min(1) });
 export type MemoryReadInput = z.infer<typeof MemoryPathSchema>;
-export type MemoryDeleteInput = z.infer<typeof MemoryPathSchema>;
+/** A missing revision is create-only for save; it never authorizes overwriting/deleting an existing file. */
+export const MemoryRevisionSchema = z.string().regex(/^[a-f0-9]{64}$/);
+export const MemoryDeleteSchema = MemoryPathSchema.extend({ expectedRevision: MemoryRevisionSchema.optional() });
+export type MemoryDeleteInput = z.infer<typeof MemoryDeleteSchema>;
 
 /** 仅删除用户**从整理候选中勾选**并确认的一条；过期指纹不允许删除已改动的文件。 */
 export const MemoryReviewDeleteSchema = z.object({
@@ -148,6 +154,8 @@ export const MemorySaveSchema = z.object({
   path: z.string().min(1),
   content: z.string(),
   title: z.string().optional(),
+  expectedRevision: MemoryRevisionSchema.nullable().optional(),
+  pinned: z.boolean().optional(),
 });
 export type MemorySaveInput = z.infer<typeof MemorySaveSchema>;
 
@@ -169,3 +177,29 @@ export const MEMORY_DELETE_CHANNEL = "memory:delete";
 export const MEMORY_CATEGORIES_CHANNEL = "memory:categories";
 export const MEMORY_REVIEW_CHANNEL = "memory:review";
 export const MEMORY_REVIEW_DELETE_CHANNEL = "memory:reviewDelete";
+
+/** Desktop-only maintenance. Models do not receive this capability. */
+export const MEMORY_MANAGE_CHANNEL = "memory:manage";
+export const MemoryManageSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("list") }),
+  z.object({ action: z.literal("preview"), source: z.string().min(1).max(500) }),
+  z.object({ action: z.literal("import"), source: z.string().min(1).max(500), digest: MemoryRevisionSchema,
+    projectId: z.string().regex(/^[A-Za-z0-9_-]{1,120}$/).optional(), global: z.boolean(), confirmed: z.literal(true) }),
+  z.object({ action: z.literal("history"), id: z.string().min(1).max(100) }),
+  z.object({ action: z.literal("restore"), id: z.string().min(1).max(100), digest: MemoryRevisionSchema, confirmed: z.literal(true) }),
+]);
+export type MemoryManageInput = z.infer<typeof MemoryManageSchema>;
+export interface MemoryManageResult {
+  ok: boolean; error?: string; content?: string; digest?: string; path?: string;
+  sources?: Array<{ id: string; label: string }>;
+  projects?: Array<{ id: string; name: string }>;
+  history?: Array<{ id: string; path: string; at: number; reason: string }>;
+}
+
+/** Attribution only, never an authorization source; raw Markdown is user-editable. */
+export interface MemoryWriteOrigin {
+  sessionId: string;
+  kind: "chat" | "side" | "node" | "automation";
+  parentSessionId?: string;
+  nodeId?: string;
+}

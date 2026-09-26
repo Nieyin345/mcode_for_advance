@@ -50,8 +50,8 @@ import { initDb } from "@main/store/db.js";
 import { MessageRepo, ProjectRepo, SessionRepo } from "@main/store/repositories.js";
 import { createOrReuseSession } from "@main/lib/sessionStart.js";
 import { agentProfilesDir } from "@main/orchestration/agentProfiles.js";
-import { saveMemoryFile } from "@main/memory/store.js";
-import { backflowPrompt, peekBackflow } from "@main/lib/pendingBackflow.js";
+import { saveMemoryFile, readMemoryFile, deleteMemoryFile } from "@main/memory/store.js";
+import { backflowPrompt, peekBackflow, queueBackflow, pendingBackflowPrompt } from "@main/lib/pendingBackflow.js";
 import { resolveAgentPrompt } from "@main/orchestration/prompt.js";
 import { bound } from "./stubs/runtimeManager.js";
 import { broadcastIds } from "./stubs/sessionSync.js";
@@ -227,7 +227,7 @@ ProjectRepo.create({
 
 writeProfile({ id: PROFILE_A, name: "读论文的", instruction: INSTR_A });
 writeProfile({ id: PROFILE_B, name: "写测试的", instruction: INSTR_B });
-saveMemoryFile({ path: "rules/引用规范.md", content: "引用一律用 APA。", title: "引用规范" });
+saveMemoryFile({ path: "global/rules/引用规范.md", content: "引用一律用 APA。", title: "引用规范" });
 
 /* ── 1. 「空白」那一档 ─────────────────────────────────────────────────── */
 
@@ -282,7 +282,7 @@ console.log("\n第三档「档案+记忆」:有指令,而且第一轮带一份�
   check("拼接那一层加了说明头", composed.includes("## 背景:用户刚才跑的工作流"), composed.slice(0, 80));
   // 「只加一层」的判据:记忆正文在最终提示词里**只出现一次**,而且它前面只有一个标题。
   eq("记忆正文只出现一次", composed.split("引用一律用 APA").length - 1, 1);
-  eq("整段里只有一个标题行", composed.split("\n## ").length - 1, 1);
+  eq("整段里只有一个标题行", (composed.match(/^## /gm) ?? []).length, 1);
   check("带上了「这不是用户刚说的话」那句说明", composed.includes("不是用户刚说的话"));
   eq("角色提示词每轮都能取到", resolveAgentPrompt(s.agentProfile), INSTR_B);
 }
@@ -357,14 +357,42 @@ console.log("\n复用时用户改过记忆:以**现在**这份为准");
 {
   const parent = newParent();
   const shell = call(parent, { agentProfileId: PROFILE_B, memory: true }).session;
-  saveMemoryFile({ path: "rules/引用规范.md", content: "引用一律用 APA 第七版。", title: "引用规范" });
+  saveMemoryFile({ path: "global/rules/引用规范.md", expectedRevision: readMemoryFile("global/rules/引用规范.md").revision, content: "引用一律用 APA 第七版。", title: "引用规范" });
   const again = call(parent, { agentProfileId: PROFILE_B, memory: true }).session;
   eq("还是同一个壳", again.id, shell.id);
   const queued = peekBackflow(again.id);
   check("换成了新的那份", queued.includes("第七版"), queued);
   eq("旧的那份没留着(不是叠上去)", queued.split("引用一律用 APA").length - 1, 1);
   // 复原,免得影响别的场景。
-  saveMemoryFile({ path: "rules/引用规范.md", content: "引用一律用 APA。", title: "引用规范" });
+  saveMemoryFile({ path: "global/rules/引用规范.md", expectedRevision: readMemoryFile("global/rules/引用规范.md").revision, content: "引用一律用 APA。", title: "引用规范" });
+}
+
+console.log("\n分层记忆：复用只替换自己的快照，不污染工作流产物");
+{
+  const parent = newParent();
+  const shell = call(parent, { agentProfileId: PROFILE_B, memory: true }).session;
+  queueBackflow(shell.id, "independent-workflow-evidence");
+  const again = call(parent, { agentProfileId: PROFILE_B, memory: false }).session;
+  eq("关闭记忆仍复用空会话", again.id, shell.id);
+  check("撤销快照后只格式化工作流层", !pendingBackflowPrompt(shell.id).includes("创建时的记忆快照"));
+  eq("关闭记忆撤销待注入快照但保留工作流产物", peekBackflow(shell.id), "independent-workflow-evidence");
+}
+{
+  const parent = newParent();
+  const shell = call(parent, { agentProfileId: PROFILE_B, memory: true }).session;
+  check("创建快照的提示不冒充工作流产物", pendingBackflowPrompt(shell.id).includes("子代理创建时的记忆快照") && !pendingBackflowPrompt(shell.id).includes("用户刚才跑的工作流"));
+  queueBackflow(shell.id, "keep-other-layer");
+  call(parent, { agentProfileId: PROFILE_B, memory: true });
+  check("刷新记忆不清掉其他层待办", peekBackflow(shell.id).includes("keep-other-layer"));
+  eq("刷新后同一快照仍只有一份", peekBackflow(shell.id).split("引用一律用 APA").length - 1, 1);
+}
+{
+  const parent = newParent();
+  const shell = call(parent, { agentProfileId: PROFILE_B, memory: true }).session;
+  deleteMemoryFile("global/rules/引用规范.md", readMemoryFile("global/rules/引用规范.md").revision);
+  call(parent, { agentProfileId: PROFILE_B, memory: true });
+  eq("当前记忆库已空时撤销旧快照", peekBackflow(shell.id), "");
+  saveMemoryFile({ path: "global/rules/引用规范.md", content: "引用一律用 APA。", title: "引用规范" });
 }
 
 /* ── 6. 读不到档案时:明确失败,而且一行都不留 ────────────────────────── */

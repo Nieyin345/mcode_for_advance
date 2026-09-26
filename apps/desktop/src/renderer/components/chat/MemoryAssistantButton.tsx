@@ -1,0 +1,100 @@
+import { useEffect, useRef, useState } from "react";
+import type { MemoryAssistantInput, MemoryAssistantJob, MemoryAssistantKind, MemoryAssistantResult } from "@contracts/memoryAssistant";
+import { api } from "@renderer/lib/api.js";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useI18n } from "@renderer/lib/i18n/index.js";
+import { useSuppressBrowserView } from "@renderer/hooks/useSuppressBrowserView.js";
+import { Button, Dialog, ErrorNote } from "@renderer/components/ui/index.js";
+import { IconClipboardText } from "@renderer/lib/icons.js";
+export function MemoryAssistantButton({ sessionId }: { sessionId: string }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState<MemoryAssistantResult>({ jobs: [] });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [targetId, setTargetId] = useState("");
+  const lock = useRef(false);
+  const generation = useRef(0);
+  const all = useSessionStore(s => s.sessionsByProject);
+  const sessions = Object.values(all).flat();
+  const source = sessions.find(s => s.id === sessionId);
+  const targets = sessions.filter(s => s.projectId === source?.projectId && s.id !== sessionId && s.kind === "chat" && !s.archived);
+  const running = data.jobs.some(j => j.status === "running");
+  useSuppressBrowserView(open);
+  useEffect(() => { generation.current++; lock.current = false; setBusy(false); setData({ jobs: [] }); setTargetId(""); setError(""); setOpen(false); }, [sessionId]);
+  useEffect(() => {
+    let alive = true, fetching = false;
+    const read = async () => {
+      if (fetching || lock.current) return;
+      fetching = true; const own = generation.current;
+      try { const next = await api.memory.assistant({ op: "list", sessionId }); if (alive && !lock.current && own === generation.current) setData(next); }
+      catch (e) { if (alive) setError(String(e)); }
+      finally { fetching = false; }
+    };
+    void read();
+    const timer = open || running || data.incoming ? setInterval(() => void read(), 2000) : undefined;
+    return () => { alive = false; if (timer) clearInterval(timer); };
+  }, [sessionId, open, running, data.incoming?.id]);
+  const perform = async (input: MemoryAssistantInput) => {
+    if (lock.current) return;
+    lock.current = true; setBusy(true); setError(""); const own = ++generation.current;
+    try {
+      const next = await api.memory.assistant(input);
+      if (own !== generation.current) return;
+      setData(next);
+      if (input.op === "start") setOpen(false); // Do not cover approval cards in the source conversation.
+      if (next.target) {
+        useSessionStore.setState(s => ({ sessionsByProject: { ...s.sessionsByProject,
+          [next.target!.projectId]: [next.target!, ...(s.sessionsByProject[next.target!.projectId] ?? []).filter(v => v.id !== next.target!.id)] } }));
+        await useSessionStore.getState().openTab(next.target.id);
+        setOpen(false);
+      }
+    } catch (e) { if (own === generation.current) setError(String(e)); }
+    finally { if (own === generation.current) { lock.current = false; setBusy(false); } }
+  };
+  const label = (kind: MemoryAssistantKind) => t(kind === "capture" ? "memory.assistant.capture" : kind === "checkpoint" ? "memory.assistant.checkpoint" : "memory.assistant.health");
+  const status = (job: MemoryAssistantJob) => t(`memory.assistant.status.${job.status}`);
+  return <>
+    <Button size="sm" variant="ghost" className="gap-1 shrink-0" onClick={() => setOpen(true)} title={t("memory.assistant.scope")}>
+      <IconClipboardText size={14}/>{t(running ? "memory.assistant.running" : data.incoming ? "memory.assistant.incoming" : "memory.assistant.title")}
+    </Button>
+    <Dialog.Root open={open} onOpenChange={setOpen}>
+      <Dialog.Portal><Dialog.Backdrop/><Dialog.Popup className="w-[min(680px,94vw)] max-h-[80vh] overflow-y-auto p-5">
+        <Dialog.Title>{t("memory.assistant.title")}</Dialog.Title><Dialog.Close/>
+        <Dialog.Description className="mt-2 text-sm text-content-muted">{t("memory.assistant.scope")}</Dialog.Description>
+        <p className="mt-2 text-sm text-content-subtle">{t("memory.assistant.lifecycle")}</p>
+        {error && <ErrorNote className="mt-3">{error}</ErrorNote>}
+        {data.incoming && <section className="mt-3 rounded border border-edge p-3">
+          <h3 className="font-medium">{t("memory.assistant.incoming")}</h3>
+          <p className="text-sm text-content-muted">{t("memory.assistant.receiveHint")}</p>
+          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-xs">{data.incoming.result}</pre>
+        </section>}
+        <div className="mt-4 space-y-2">
+          {(["capture", "checkpoint", "health"] as const).map(kind => <div key={kind} className="rounded border border-edge p-3">
+            <Button variant="secondary" disabled={busy || running} onClick={() => void perform({ op: "start", sessionId, kind })}>{label(kind)}</Button>
+            <p className="mt-1 text-sm text-content-muted">{t(`memory.assistant.hint.${kind}`)}</p>
+          </div>)}
+        </div>
+        <h3 className="mt-5 font-medium">{t("memory.assistant.records")}</h3>
+        {!data.jobs.length && <p className="mt-2 text-sm text-content-subtle">{t("memory.assistant.empty")}</p>}
+        {data.jobs.map(job => <section key={job.id} className="mt-3 rounded border border-edge p-3">
+          <div className="flex justify-between gap-2"><span>{label(job.kind)}</span><span className="text-sm text-content-muted">{status(job)}</span></div>
+          {job.error && <ErrorNote className="mt-2">{job.error}</ErrorNote>}
+          {job.result && <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap text-sm">{job.result}</pre>}
+          {job.status === "running" && <><p className="mt-2 text-sm text-content-subtle">{t("memory.assistant.approvalHint")}</p><Button size="sm" variant="secondary" disabled={busy} onClick={() => void perform({ op: "cancel", sessionId, jobId: job.id })}>{t("memory.assistant.stop")}</Button></>}
+          {job.kind === "checkpoint" && job.status === "ready" && <div className="mt-3 space-y-2">
+            <label className="block text-sm">{t("memory.assistant.target")}
+              <select className="mt-1 w-full rounded border border-edge bg-surface p-2" value={targetId} onChange={e => setTargetId(e.target.value)}>
+                <option value="">{t("memory.assistant.newChat")}</option>
+                {targets.map(s => <option key={s.id} value={s.id}>{s.title}</option>)}
+              </select>
+            </label>
+            <Button size="sm" disabled={busy} onClick={() => void perform({ op: "deliver", sessionId, jobId: job.id, ...(targetId ? { targetSessionId: targetId } : {}) })}>{t("memory.assistant.deliver")}</Button>
+          </div>}
+          {job.status === "queued" && <p className="mt-2 text-sm text-content-muted">{t("memory.assistant.queuedHint")}</p>}
+          {(job.status === "ready" || job.status === "queued") && <Button size="sm" className="mt-2" variant="ghost" disabled={busy} onClick={() => void perform({ op: "discard", sessionId, jobId: job.id })}>{t("memory.assistant.discard")}</Button>}
+        </section>)}
+      </Dialog.Popup></Dialog.Portal>
+    </Dialog.Root>
+  </>;
+}

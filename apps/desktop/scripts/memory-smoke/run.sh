@@ -22,6 +22,7 @@ if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
   --tsconfig=tsconfig.json \
   --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
   --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
+  --alias:@main/memory/broadcast.js=./scripts/mcp-endpoint-smoke/stubs/memoryBroadcast.ts \
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --alias:@main/store/repositories.js=./scripts/memory-smoke/stubs/repositories.ts \
   --alias:@main/plugins/pluginManager.js=./scripts/memory-smoke/stubs/pluginManager.ts \
@@ -29,4 +30,7 @@ if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 export MCODE_SMOKE_DATA_ROOT="$DATA"
+mkdir -p "$DATA/home"
+export HOME="$DATA/home"
+export USERPROFILE="$DATA/home"
 node "$OUT/smoke.mjs"

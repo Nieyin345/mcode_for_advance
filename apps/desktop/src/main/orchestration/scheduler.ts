@@ -186,6 +186,7 @@ const RESTART_FROM_STEP_LABEL = "从这一步往下走";
 
 /** 调度器要问外面的六件事。真实实现在 `runner.ts`,冒烟脚本塞的是假的。 */
 export interface RunPorts {
+  memorySnapshot?: () => string;
   /** 拿一个节点类型的清单。没有 = 这个类型没装(别人分享来的图会走到这里)。 */
   manifestOf(typeId: string): Promise<NodeTypeManifest | undefined>;
   /**
@@ -1487,6 +1488,7 @@ class Run {
               }
             : {}),
         ...(this.isModelDeciderNode(node.id) ? { decide: { options: decideOptions } } : {}),
+        memorySnapshot: this.ports.memorySnapshot,
         contextLines: this.ports.contextLines,
       };
       // **触发器载荷进变量(G3/VAR-06)**:自动化起跑时随 `entry` 带来的事实

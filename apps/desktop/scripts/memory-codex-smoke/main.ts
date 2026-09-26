@@ -208,15 +208,15 @@ console.log("\n记忆库:出参形状必须跟契约一致(这三个原来全错
   eq("memory:save 回形状跟契约一致(ok: true)", saved.ok, true);
   check("...(而不是把 store 的 updatedAt 直接转出去)", saved.updatedAt === undefined, saved);
 
-  const read1 = (await call(MEMORY_READ_CHANNEL, { path: "rules/cite.md" })) as { content: string };
+  const read1 = (await call(MEMORY_READ_CHANNEL, { path: "rules/cite.md" })) as { content: string; revision: string };
   eq("读回来的是存进去的那段正文(不含 frontmatter)", read1.content, BODY);
 
   // 契约原文:"读一条记忆的正文(含 frontmatter 原文)"—— store 吐的是分隔行之后
   // 那一整段,前面带着一个换行;写回去时 store 会 `trimEnd`。一读一存就长一个空行,
   // 用户在编辑器里点三次保存,正文前面就多出三个空行。
-  const r2 = (await call(MEMORY_READ_CHANNEL, { path: "rules/cite.md" })) as { content: string };
-  await call(MEMORY_SAVE_CHANNEL, { path: "rules/cite.md", content: r2.content });
-  const r3 = (await call(MEMORY_READ_CHANNEL, { path: "rules/cite.md" })) as { content: string };
+  const r2 = (await call(MEMORY_READ_CHANNEL, { path: "rules/cite.md" })) as { content: string; revision: string };
+  await call(MEMORY_SAVE_CHANNEL, { path: "rules/cite.md", content: r2.content, expectedRevision: r2.revision });
+  const r3 = (await call(MEMORY_READ_CHANNEL, { path: "rules/cite.md" })) as { content: string; revision: string };
   eq("读出来再原样存回去,正文不长胖(不多空行)", r3.content, r2.content);
 
   const savedFile = readFileSync(join(MEMORY_ROOT, "rules", "cite.md"), "utf8");
@@ -226,7 +226,7 @@ console.log("\n记忆库:出参形状必须跟契约一致(这三个原来全错
   check("正文里没有多出来的空行", savedFile.endsWith(`---\n\n${BODY}\n`), JSON.stringify(savedFile));
 
   // 第二次保存不传标题 → 沿用旧标题(文件即事实源,人手改的标题不能被一次正文保存抹掉)。
-  await call(MEMORY_SAVE_CHANNEL, { path: "rules/cite.md", content: "改过的正文" });
+  await call(MEMORY_SAVE_CHANNEL, { path: "rules/cite.md", content: "改过的正文", expectedRevision: r3.revision });
   check("再存一次且不传标题时,旧标题被沿用", readFileSync(join(MEMORY_ROOT, "rules", "cite.md"), "utf8").includes(`title: "引用规范"`));
 
   const list = (await call(MEMORY_LIST_CHANNEL, { category: "rules" })) as {
@@ -243,7 +243,8 @@ console.log("\n记忆库:出参形状必须跟契约一致(这三个原来全错
   const noArg = (await call(MEMORY_LIST_CHANNEL)) as { files: unknown[] };
   eq("不给参数时列的是全部类目(parse(raw ?? {}))", noArg.files.length, 1);
 
-  const del = (await call(MEMORY_DELETE_CHANNEL, { path: "rules/cite.md" })) as { ok?: unknown };
+  const beforeDelete = await call(MEMORY_READ_CHANNEL, { path: "rules/cite.md" }) as { revision: string };
+  const del = (await call(MEMORY_DELETE_CHANNEL, { path: "rules/cite.md", expectedRevision: beforeDelete.revision })) as { ok?: unknown };
   eq("memory:delete 回形状跟契约一致(ok: true)", del.ok, true);
   check("删了之后文件真没了", !existsSync(join(MEMORY_ROOT, "rules", "cite.md")));
   const afterDelete = (await call(MEMORY_LIST_CHANNEL, {})) as { files: unknown[] };
@@ -252,6 +253,25 @@ console.log("\n记忆库:出参形状必须跟契约一致(这三个原来全错
   // 删除是幂等的:本来就不在也算成功(用户在两个窗口里各按一次不该报错)。
   const idempotent = (await call(MEMORY_DELETE_CHANNEL, { path: "rules/cite.md" })) as { ok?: unknown };
   eq("删一个本来就不存在的文件也算成功(幂等)", idempotent.ok, true);
+}
+
+/* Real IPC boundary: revisions must survive schema parsing and response projection. */
+{
+  const path = "decisions/ipc-cas.md";
+  const create = await call(MEMORY_SAVE_CHANNEL, { path, content: "first", expectedRevision: null }) as { ok: boolean; revision?: string };
+  check("IPC保存返回新版本", create.ok && !!create.revision);
+  const read = await call(MEMORY_READ_CHANNEL, { path }) as { content: string; revision: string };
+  eq("IPC读取版本与保存一致", read.revision, create.revision);
+  const update = await call(MEMORY_SAVE_CHANNEL, { path, content: "second", expectedRevision: read.revision }) as { ok: boolean; revision?: string };
+  check("IPC接收版本并允许正常更新", update.ok && update.revision !== read.revision);
+  const stale = await call(MEMORY_SAVE_CHANNEL, { path, content: "stale", expectedRevision: read.revision }) as { ok: boolean; code?: string };
+  check("IPC旧版本返回可识别冲突", !stale.ok && stale.code === "conflict");
+  const blind = await call(MEMORY_SAVE_CHANNEL, { path, content: "blind" }) as { ok: boolean; code?: string };
+  check("旧客户端无版本不能静默覆盖", !blind.ok && blind.code === "conflict");
+  const conflict = await call(MEMORY_DELETE_CHANNEL, { path, expectedRevision: read.revision }) as { ok: boolean; code?: string };
+  check("IPC删除使用确认时的旧版本并被拒绝", !conflict.ok && conflict.code === "conflict");
+  eq("冲突后正文保持最新", (await call(MEMORY_READ_CHANNEL, { path }) as { content: string }).content, "second");
+  eq("IPC最新版本允许删除", (await call(MEMORY_DELETE_CHANNEL, { path, expectedRevision: update.revision }) as { ok: boolean }).ok, true);
 }
 
 console.log("\n记忆库:两个无参 handler");
@@ -735,6 +755,7 @@ console.log("\n总注册表:registerIpcHandlers");
   same("注册表里有、表里没有的正好是那两条裸 channel", extra, ["claude:healthCheck", "dialog:pickFolder"]);
 
   // 每个域都注册到了:拿 memory / codex 两条已知的当锚,防止"数量对但内容整体错位"。
+  check("记忆助手主页面入口真实注册", registeredChannels.has(IPC.MEMORY_ASSISTANT));
   check("memory 那条域真的在注册表里", registeredChannels.has(MEMORY_LIST_CHANNEL));
   check("codexModels 那条域真的在注册表里", registeredChannels.has(IPC.CODEX_MODELS_LIST));
 

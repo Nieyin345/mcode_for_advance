@@ -1,3 +1,4 @@
+import { MEMORY_WORKFLOWS } from "./memoryWorkflows.js";
 /**
  * 内置工作流 —— 六个对话模式 + 两条自动化(长任务守望、文献自动下载),
  * id 沿用原来那五个模式的名字。
@@ -678,6 +679,7 @@ const AUTO_CONVERT_EDGES: readonly WorkflowEdge[] = [
 /** 内置工作流的**默认版**。用户的修改不入这里 —— 它们存在 `workflows` 表里,
  *  同名 id 的一行覆盖这里的一份;「恢复默认」= 删掉那一行(见 `main/orchestration/`)。 */
 export const BUILTIN_WORKFLOWS: readonly WorkflowDoc[] = [
+  ...MEMORY_WORKFLOWS,
   {
     id: "default",
     // ⚠️ `name` / `description` 只是**兜底与日志用**。内置工作流在界面上显示的名字

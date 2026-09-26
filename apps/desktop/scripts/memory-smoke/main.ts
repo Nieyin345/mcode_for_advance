@@ -1,3 +1,14 @@
+import { MEMORY_WORKFLOWS } from "@main/orchestration/memoryWorkflows.js";
+import { validateWorkflowDoc } from "@main/orchestration/workflowValidation.js";
+import { scopedMemorySnapshot } from "@main/memory/retrieval.js";
+import { memoryHistory, readHistory, restoreMemory, readMemoryFileWithRaw } from "@main/memory/store.js";
+import { manageMemory } from "@main/memory/manage.js";
+import { projectInstructions } from "@main/memory/instructions.js";
+import { invokeMemoryTool, memoryToolDescriptors } from "@main/memory/engineTools.js";
+import type { ProviderContext } from "@contracts/provider";
+import { homedir } from "node:os";
+import { memoryMcpTools } from "@main/mcp/memoryServer.js";
+import { z } from "zod";
 /**
  * Headless smoke for 记忆系统三件套(MEM-01 存储 / MEM-02 检索注入 / MEM-03 维护),
  * 以及 `buildNodeInput` 的两个新能力:触发器变量(`{{trigger.*}}`)与记忆注入。
@@ -112,6 +123,7 @@ const AGENT: NodeTypeManifest = {
 
 function scopeOf(extra: Partial<ModelInputScope> = {}): ModelInputScope {
   return {
+    memorySnapshot: () => memorySnapshotFor(), // Explicit test port; production binds session scope.
     userPrompt: "用户的话",
     upstream: "",
     upstreamArtifacts: [],
@@ -154,17 +166,17 @@ eq("title 用传入的", meta?.title, "引用规范");
 eq("updatedAt 是 save 盖的章", meta?.updatedAt, t1);
 eq("读回正文", readMemoryFile("rules/引用规范.md").content.trim(), "引用一律用 APA。");
 
-const t2 = saveMemoryFile({ path: "rules/引用规范.md", content: "更新后的正文。" }).updatedAt;
+const t2 = saveMemoryFile({ path: "rules/引用规范.md", expectedRevision: readMemoryFile("rules/引用规范.md").revision, content: "更新后的正文。" }).updatedAt;
 check("二次 save 的时间不减", t2 >= t1, { t1, t2 });
 eq("二次 save 沿用旧标题", listMemoryFiles().find((m) => m.path === "rules/引用规范.md")?.title, "引用规范");
 eq("正文已更新", readMemoryFile("rules/引用规范.md").content.trim(), "更新后的正文。");
 
-saveMemoryFile({ path: "rules/引用规范.md", content: "再改。", title: "引用的新规范" });
+saveMemoryFile({ path: "rules/引用规范.md", expectedRevision: readMemoryFile("rules/引用规范.md").revision, content: "再改。", title: "引用的新规范" });
 eq("显式 title 覆盖旧标题", listMemoryFiles().find((m) => m.path === "rules/引用规范.md")?.title, "引用的新规范");
 
 deep("categories 固定六类", memoryCategories(), [...MEMORY_CATEGORIES]);
 
-deleteMemoryFile("rules/引用规范.md");
+deleteMemoryFile("rules/引用规范.md", readMemoryFile("rules/引用规范.md").revision);
 throws("删后读要抛", () => readMemoryFile("rules/引用规范.md"), "读不到");
 check("删后列表里没有", listMemoryFiles().every((m) => m.path !== "rules/引用规范.md"));
 
@@ -387,7 +399,7 @@ console.log("场景 7:按相关度检索");
 
 // 先把前面场景留下的文件清干净,免得被干扰
 process.env.MCODE_SMOKE_DATA_ROOT = DATA4;
-for (const m of listMemoryFiles()) deleteMemoryFile(m.path);
+for (const m of listMemoryFiles()) deleteMemoryFile(m.path, readMemoryFile(m.path).revision);
 
 const OLD = 1_500_000_000_000; // 很旧
 const NEW = 1_700_000_000_000; // 很新
@@ -574,6 +586,200 @@ console.log("\n流程记录:这一层只负责照搬,不自己判谁该读");
   const blank = build({ instruction: "做点事" }, { ...MID, record: "   " });
   check("空白记录等于没给", !blank.prompt.includes("## 流程记录"), blank.prompt);
   check("那时上游产出照给", blank.prompt.includes("## 上游步骤的产出"), blank.prompt);
+}
+
+/* Concurrent dialogs must not silently replace a newer memory. */
+{
+  const path = "rules/concurrent-dialogs.md";
+  type VersionedInput = Parameters<typeof saveMemoryFile>[0] & { expectedRevision?: string | null };
+  const readVersion = (): string => {
+    try { return (readMemoryFile(path) as { revision?: string }).revision ?? "0".repeat(64); }
+    catch { return "0".repeat(64); } // A broken stale delete must fail assertions, not abort the suite.
+  };
+  saveMemoryFile({ path, content: "base", expectedRevision: null } as VersionedInput);
+  const revision = readVersion();
+  check("读取返回完整原文的SHA256版本", revision !== "0".repeat(64) && /^[a-f0-9]{64}$/.test(revision));
+  // Four callers all read the same old version before any of them writes.
+  let successes = 0, conflicts = 0;
+  for (const text of ["A", "B", "C", "D"]) {
+    try { saveMemoryFile({ path, content: text, expectedRevision: revision } as VersionedInput); successes++; }
+    catch { conflicts++; }
+  }
+  eq("四个旧版本写者只有一个成功", successes, 1);
+  eq("另外三个写者明确得到冲突", conflicts, 3);
+  eq("第一个写者内容不被后续静默覆盖", readMemoryFile(path).content.trim(), "A");
+  throws("旧客户端不带版本也不得覆盖已有记忆", () => saveMemoryFile({ path, content: "blind" }));
+  throws("新建同名记忆不得覆盖旧内容", () => saveMemoryFile({ path, content: "duplicate", expectedRevision: null } as VersionedInput));
+  const current = readVersion();
+  // Same updatedAt/mtime cannot hide a manual body/frontmatter edit.
+  const file = join(memoryRoot(), path);
+  writeFileSync(file, readFileSync(file, "utf8") + "manual edit\n", "utf8");
+  throws("人工改文件后旧版本保存必须拒绝", () => saveMemoryFile({ path, content: "stale", expectedRevision: current } as VersionedInput));
+  const remove = deleteMemoryFile as (path: string, expectedRevision?: string) => { ok: true };
+  throws("旧版本删除不得删掉人工更新", () => remove(path, current));
+  throws("无版本删除不得删掉现有文件", () => remove(path));
+  const latest = readVersion();
+  remove(path, latest);
+  throws("删后旧编辑器不得复活文件", () => saveMemoryFile({ path, content: "resurrect", expectedRevision: latest } as VersionedInput));
+  saveMemoryFile({ path, content: "recreated", expectedRevision: null } as VersionedInput);
+  throws("旧删除确认不得删掉同名新文件", () => remove(path, latest));
+  remove(path, readVersion());
+}
+
+/* Failed atomic replacement leaves the old file intact and no temporary tail. */
+{
+  const fs = (await import("node:fs")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const path = "rules/atomic-failure.md";
+  saveMemoryFile({ path, content: "must survive" });
+  const original = readFileSync(join(memoryRoot(), path), "utf8");
+  const revision = readMemoryFile(path).revision;
+  const rename = fs.renameSync;
+  fs.renameSync = () => { throw new Error("injected rename failure"); };
+  syncBuiltinESMExports();
+  try { throws("替换失败明确报错而非回退截断原文件", () => saveMemoryFile({ path, content: "lost", expectedRevision: revision }), "injected rename failure"); }
+  finally { fs.renameSync = rename; syncBuiltinESMExports(); }
+  eq("替换失败后完整原文不变", readFileSync(join(memoryRoot(), path), "utf8"), original);
+  eq("失败后清理自己的临时文件", fs.readdirSync(join(memoryRoot(), "rules")).filter(n => n.endsWith(".mcode-tmp")).length, 0);
+  deleteMemoryFile(path, revision);
+}
+
+/* Exercise the actual shared MCP specs/handlers, with no SDK or real model. */
+{
+  const specs = memoryMcpTools();
+  const invoke = async (name: string, input: Record<string, unknown>) => {
+    const spec = specs.find(s => s.name === name)!;
+    return spec.handler(z.object(spec.inputSchema).parse(input), { sessionId: "isolated-memory-test" });
+  };
+  const path = "projects/p_memory/rules/tool-cas.md";
+  const base = { category: "rules", path, title: "Tool CAS", content: "v1" };
+  eq("真实工具可新建记忆", (await invoke("memory_write", base)).isError, undefined);
+  const firstRead = await invoke("memory_read", { path });
+  const text = firstRead.content.map(c => c.type === "text" ? c.text : "").join("\n");
+  const revision = /revision: ([a-f0-9]{64})/.exec(text)?.[1];
+  check("真实读取工具提供版本", !!revision);
+  eq("真实工具带读版本可更新", (await invoke("memory_write", { ...base, content: "v2", expectedRevision: revision })).isError, undefined);
+  eq("真实工具旧版本写入如实返回错误", (await invoke("memory_write", { ...base, content: "stale", expectedRevision: revision })).isError, true);
+  eq("真实工具省略版本不能覆盖", (await invoke("memory_write", { ...base, content: "blind" })).isError, true);
+  eq("真实工具过期删除确认不能误删", (await invoke("memory_forget", { path, expectedRevision: revision })).isError, true);
+  eq("被拒绝的操作不改变最新正文", readMemoryFile(path).content.trim(), "v2");
+  const latest = readMemoryFile(path).revision;
+  eq("真实工具最新版本删除成功", (await invoke("memory_forget", { path, expectedRevision: latest })).isError, undefined);
+}
+
+/* Scope, recovery, preview-confirm import and the real neutral engine dispatcher. */
+{
+  const own = "projects/p_memory/rules/own.md", other = "projects/p_other/rules/other.md";
+  const global = "global/rules/shared.md", legacy = "rules/unclassified.md";
+  for (const [path, content] of [[own, "own-needle"], [other, "other-private-needle"], [global, "shared-needle"], [legacy, "legacy-private-needle"]]) {
+    saveMemoryFile({ path: path!, content: content!, pinned: path === own });
+  }
+  const snapshot = scopedMemorySnapshot("p_memory", "needle");
+  check("项目快照包含本项目", snapshot.includes("own-needle"));
+  check("项目快照包含显式全局", snapshot.includes("shared-needle"));
+  check("项目快照绝不包含别项目", !snapshot.includes("other-private-needle"));
+  check("项目快照绝不包含未归属旧记录", !snapshot.includes("legacy-private-needle"));
+  check("快照有来源和版本", snapshot.includes(own) && snapshot.includes("revision="));
+  check("快照遵守总体预算", snapshot.length <= SNAPSHOT_CAP);
+  check("置顶元信息可回读", listMemoryFiles().find(m => m.path === own)?.pinned === true);
+  check("检索作用域不泄漏", searchMemory("other-private-needle", { projectId: "p_memory" }).every(hit => hit.meta.path !== other && hit.meta.path !== legacy));
+  const ctx: ProviderContext = { emit() {}, log: { info() {}, warn() {}, error() {} } };
+  const invoke = (name: string, args: unknown, context = ctx, session = "isolated-memory-test") => invokeMemoryTool(name, args, session, context);
+  eq("未知会话失败关闭", (await invoke("memory_list", {}, ctx, "unknown")).isError, true);
+  eq("伪造 projectId 不能越权读", (await invoke("memory_read", { path: other, projectId: "p_other" })).isError, true);
+  eq("旧记录不能被模型直接读取", (await invoke("memory_read", { path: legacy })).isError, true);
+  eq("本项目只读不需要审批桥", (await invoke("memory_read", { path: own })).isError, undefined);
+  const args = { category: "rules", title: "Approved only", content: "approved-memory" };
+  eq("无审批桥禁止写入", (await invoke("memory_write", args)).isError, true);
+  const deny = { ...ctx, requestApproval: async () => ({ allow: false }) } as ProviderContext;
+  eq("拒绝审批不写入", (await invoke("memory_write", args, deny)).isError, true);
+  let approvals = 0;
+  const allow = { ...ctx, requestApproval: async () => { approvals++; return { allow: true }; } } as ProviderContext;
+  eq("审批后可写入", (await invoke("memory_write", args, allow)).isError, undefined);
+  eq("写入只审批一次", approvals, 1);
+  check("默认新记录落本项目", listMemoryFiles().some(m => m.title === args.title && m.projectId === "p_memory"));
+  eq("共享描述表与真实处理器同名", memoryToolDescriptors().map(t => t.name).join(), memoryMcpTools().map(t => t.name).join());
+  eq("非法参数由共享 zod 拒绝", (await invoke("memory_write", { ...args, category: "invalid" }, allow)).isError, true);
+  eq("非法参数不请求审批", approvals, 1);
+  const listed = await invoke("memory_list", {});
+  check("模型列表不泄漏别项目路径", !JSON.stringify(listed).includes(other));
+  eq("显式别项目写入在审批后仍拒绝", (await invoke("memory_write", { ...args, path: other }, allow)).isError, true);
+  eq("别项目删除即使版本正确也拒绝", (await invoke("memory_forget", { path: other, expectedRevision: readMemoryFile(other).revision }, allow)).isError, true);
+  eq("跨项目操作不改变记录", readMemoryFile(other).content.trim(), "other-private-needle");
+
+  eq("全局需显式scope", (await invoke("memory_write", { ...args, title: "Shared approved", scope: "global" }, allow)).isError, undefined);
+  check("显式共享路径", listMemoryFiles().some(m => m.title === "Shared approved" && m.scope === "global"));
+  const before = readMemoryFileWithRaw(own);
+  saveMemoryFile({ path: own, content: "updated", expectedRevision: before.revision });
+  const history = memoryHistory().find(h => h.path === own && h.reason === "before-update")!;
+  eq("更新前归档保留原始字节", readHistory(history.id).raw, before.raw);
+  let blocked = false; try { restoreMemory(history.id); } catch { blocked = true; }
+  check("恢复不能覆盖现有记录", blocked);
+  deleteMemoryFile(own, readMemoryFile(own).revision);
+  restoreMemory(history.id);
+  eq("恢复原字节与版本", readMemoryFileWithRaw(own).raw, before.raw);
+  check("删除前有恢复点", memoryHistory().some(h => h.path === own && h.reason === "before-delete"));
+  blocked = false; try { readHistory("../escape"); } catch { blocked = true; }
+  check("归档编号不能穿越路径", blocked);
+  blocked = false; try { saveMemoryFile({ path: "global/rules/secret.md", content: "sk-" + "a".repeat(40) }); } catch { blocked = true; }
+  check("真实密钥样式拒绝落库", blocked);
+  const preview = manageMemory({ action: "preview", source: `legacy:${legacy}` });
+  check("旧记录可预览并带摘要", preview.ok && !!preview.digest && !!preview.content?.includes("legacy-private-needle"));
+  const imported = manageMemory({ action: "import", source: `legacy:${legacy}`, digest: preview.digest!, projectId: "p_memory", global: false, confirmed: true });
+  check("明确归属后导入成功", imported.ok && !!imported.path?.startsWith("projects/p_memory/"));
+  eq("导入不删除原记录", readMemoryFile(legacy).content.trim(), "legacy-private-needle");
+  eq("重复导入不覆盖", manageMemory({ action: "import", source: `legacy:${legacy}`, digest: preview.digest!, projectId: "p_memory", global: false, confirmed: true }).ok, false);
+  saveMemoryFile({ path: legacy, content: "changed-source", expectedRevision: readMemoryFile(legacy).revision });
+  eq("预览过期必须重新确认", manageMemory({ action: "import", source: `legacy:${legacy}`, digest: preview.digest!, global: true, confirmed: true }).ok, false);
+  eq("任意文件不能作为导入源", manageMemory({ action: "preview", source: "../../secrets" }).ok, false);
+  const nativeDir = join(homedir(), ".claude", "projects", "unknown-owner", "memory");
+  mkdirSync(nativeDir, { recursive: true }); writeFileSync(join(nativeDir, "MEMORY.md"), "native-preserved");
+  const sources = manageMemory({ action: "list" });
+  check("发现原生来源但不推断归属", !!sources.sources?.some(s => s.id === ".claude/unknown-owner/MEMORY.md"));
+  const np = manageMemory({ action: "preview", source: ".claude/unknown-owner/MEMORY.md" });
+  check("原生来源可预览", np.content === "native-preserved");
+  eq("未选项目不能导入", manageMemory({ action: "import", source: ".claude/unknown-owner/MEMORY.md", digest: np.digest!, global: false, confirmed: true }).ok, false);
+  eq("确认原生导入成功", manageMemory({ action: "import", source: ".claude/unknown-owner/MEMORY.md", digest: np.digest!, global: true, confirmed: true }).ok, true);
+  eq("原生文件原封不动", readFileSync(join(nativeDir, "MEMORY.md"), "utf8"), "native-preserved");
+  const root = join(memoryRoot(), ".instruction-fixture"), child = join(root, "sub");
+  mkdirSync(child, { recursive: true });
+  writeFileSync(join(root, "AGENTS.md"), "root-agents"); writeFileSync(join(root, "CLAUDE.md"), "root-claude-ignored");
+  writeFileSync(join(child, "CLAUDE.md"), "child-fallback");
+  const instructions = projectInstructions(root, child);
+  check("AGENTS.md 优先且不拼重复CLAUDE", instructions.includes("root-agents") && !instructions.includes("root-claude-ignored"));
+  check("子目录CLAUDE回退", instructions.includes("child-fallback"));
+  check("越界 cwd 不读取外部", !projectInstructions(root, dirname(root)).includes("child-fallback"));
+  eq("缺失项目无指令", projectInstructions(join(root, "missing"), child), "");
+}
+
+console.log("\n分层工作流复用与记忆注入所有权");
+{
+  const types = new Map(["mcode.main", "mcode.agent", "mcode.trigger"].map(id => [id, builtinManifestById(id)!]));
+  eq("复用引擎的三个手动模板", MEMORY_WORKFLOWS.length, 3);
+  for (const doc of MEMORY_WORKFLOWS) {
+    const report = validateWorkflowDoc({ ...doc, nodes: doc.nodes.map(n => n.type === "mcode.trigger" ? { ...n, params: { ...n.params, project: "p_memory" } } : n) }, { types });
+    check(`${doc.id} 通过真实工作流质量闸门`, report.ok, report.errors);
+    check(`${doc.id} 仅点击触发，无后台监听`, doc.trigger === "manual" && doc.nodes.filter(n => n.type === "mcode.trigger").every(n => n.params.triggerKind === "manual"));
+    check(`${doc.id} 只使用现有触发器/代理节点`, doc.nodes.every(n => types.has(n.type)));
+  }
+  let reads = 0;
+  const snapshot = () => { reads++; return "unique-layer-memory"; };
+  const off = build({ instruction: "work", memory: "off" }, { memorySnapshot: snapshot });
+  check("关闭开关不读共享记忆", reads === 0 && !off.prompt.includes("unique-layer-memory"));
+  const on = build({ instruction: "work", memory: "on" }, { memorySnapshot: snapshot });
+  eq("打开开关仅获取一次快照", reads, 1);
+  eq("打开开关仅注入一次", on.prompt.split("unique-layer-memory").length - 1, 1);
+  check("未提供可信回调不隐式读库", !build({ instruction: "work", memory: "on" }, { memorySnapshot: undefined }).prompt.includes("## 长期记忆"));
+  const path = "projects/p_memory/rules/source-attribution.md";
+  const spec = memoryMcpTools().find(s => s.name === "memory_write")!;
+  const result = await spec.handler({ category: "rules", path, title: "source", content: "verified", origin: { sessionId: "forged" } }, { sessionId: "isolated-memory-test" });
+  check("来源记录写入成功", !result.isError);
+  const raw = readMemoryFileWithRaw(path).raw;
+  check("来源为宿主会话不是模型伪造的值", raw.includes('"sessionId":"isolated-memory-test"') && !raw.includes("forged"));
+  check("来源附带执行上下文种类", raw.includes('"kind":"chat"'));
+  const before = readMemoryFile(path);
+  saveMemoryFile({ path, content: "manual edit", expectedRevision: before.revision });
+  check("人工编辑保留来源记录", readMemoryFileWithRaw(path).raw.includes("mcodeLastWriter:"));
 }
 
 /* ────────────────────────── 汇总 ────────────────────────── */

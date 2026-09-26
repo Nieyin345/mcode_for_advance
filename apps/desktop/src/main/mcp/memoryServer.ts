@@ -1,3 +1,6 @@
+import type { ProviderContext } from "@contracts/provider";
+import { memoryProjectForSession, memoryWriteOrigin, requireMemoryAccess } from "@main/memory/access.js";
+import { visibleMemory } from "@main/memory/paths.js";
 /**
  * **mcode-memory** —— 让模型自己**记**东西的进程内 MCP server。
  *
@@ -36,6 +39,7 @@
  */
 import { z } from "zod";
 import {
+  MemoryRevisionSchema,
   MEMORY_CATEGORIES,
   MEMORY_CATEGORY_LABELS,
   type MemoryCategory,
@@ -93,10 +97,10 @@ function slugify(title: string): string {
 }
 
 /**
- * 标题 → 一条**不撞车**的路径(`<类目>/<文件名>.md`)。
+ * 标题 → 一条稳定候选路径(碰撞由存储层的版本检查拒绝)(`<类目>/<文件名>.md`)。
  *
  * 同名的处理是**沿用**而不是新建一个 `-2`:模型的意图多半是"把这条记忆更新一下",
- * 而不是"再记一条一模一样的"。所以撞上已有文件名时直接用那个路径 —— 写入是覆盖语义,
+ * 而不是"再记一条一模一样的"。所以撞上已有文件名时直接用那个路径 —— 必须先读取并携带版本才能更新,
  * 而 `saveMemoryFile` 会保留旧标题(除非这次明确给了新的)。
  *
  * 真正的去重判断留给调用方:**先 `memory_search` 看看有没有**,再决定 write 还是忘掉。
@@ -106,13 +110,13 @@ function pathFor(category: MemoryCategory, title: string): string {
   const base = slugify(title);
   const candidate = `${category}/${base}.md`;
   if (!existing.has(candidate.toLowerCase())) return candidate;
-  return candidate; // 撞上就用同一个 —— 覆盖是想要的行为(见上)
+  return candidate; // 同名不暗中换路径，也不授权无版本覆盖。
 }
 
 /**
  * 工具表。读 / 写分两段,与 `mcodeServer` 同一个形状。
  */
-function memoryMcpTools(): McpToolSpec[] {
+function rawMemoryMcpTools(): McpToolSpec[] {
   return [
     /* ─────────────── 读(自动放行)─────────────── */
     {
@@ -126,8 +130,9 @@ function memoryMcpTools(): McpToolSpec[] {
           .optional()
           .describe(`只列这一类。省略 = 六类全列(${categoryMenu()})`),
       },
-      handler: (args: { category?: MemoryCategory }) => {
-        const metas = listMemoryFiles(args.category === undefined ? undefined : { category: args.category });
+      handler: (args: { category?: MemoryCategory }, ctx) => {
+        const projectId = memoryProjectForSession(ctx.sessionId);
+        const metas = listMemoryFiles(args.category === undefined ? undefined : { category: args.category }).filter(meta => visibleMemory(meta.path, projectId));
         if (metas.length === 0) {
           return text(
             args.category
@@ -162,8 +167,9 @@ function memoryMcpTools(): McpToolSpec[] {
           .describe(`限定类目(${categoryMenu()})。省略 = 六类都搜`),
         limit: z.number().int().min(1).max(50).optional().describe("最多几条,默认 12"),
       },
-      handler: (args: { query: string; category?: MemoryCategory; limit?: number }) => {
+      handler: (args: { query: string; category?: MemoryCategory; limit?: number }, ctx) => {
         const hits = searchMemory(args.query, {
+          projectId: memoryProjectForSession(ctx.sessionId),
           ...(args.limit === undefined ? {} : { limit: args.limit }),
           ...(args.category === undefined ? {} : { category: args.category }),
         });
@@ -171,7 +177,7 @@ function memoryMcpTools(): McpToolSpec[] {
           return text(
             args.query.trim().length === 0
               ? "记忆库是空的(或这一类是空的)。"
-              : `没有一条记忆和「${args.query}」对得上 —— 也就是说这件事**以前没记过**。`,
+              : `没有一条记忆和「${args.query}」对得上 —— 本次检索未命中，不代表从未记录。`,
           );
         }
         const lines = hits.map(
@@ -189,10 +195,11 @@ function memoryMcpTools(): McpToolSpec[] {
       name: "memory_read",
       description: "读一条记忆的完整正文(不含 frontmatter)。路径从 memory_list / memory_search 拿。",
       inputSchema: { path: z.string().describe("形如 `rules/引用规范.md`(memory 根下的相对路径)") },
-      handler: (args: { path: string }) => {
+      handler: (args: { path: string }, ctx) => {
+        requireMemoryAccess(args.path, memoryProjectForSession(ctx.sessionId));
         try {
-          const { content } = readMemoryFile(args.path);
-          return text(content.trim().length === 0 ? "(这条记忆是空的)" : content);
+          const { content, revision } = readMemoryFile(args.path);
+          return text(`revision: ${revision}\n\n${content.trim().length === 0 ? "(这条记忆是空的)" : content}`);
         } catch (err) {
           return fail((err as Error).message);
         }
@@ -203,7 +210,7 @@ function memoryMcpTools(): McpToolSpec[] {
     {
       name: "memory_write",
       description:
-        "**记下一条长期记忆**(同路径已存在就覆盖)。\n" +
+        "**记下一条长期记忆**(更新已有文件必须提供读取时的 expectedRevision)。\n" +
         "## 什么时候该记 —— 判据是「下次还会用到、而且从代码里读不出来」\n" +
         "该记:用户是谁、他的偏好、项目背景、外部系统在哪、他纠正过你的做法、" +
         "做过的决定和理由。\n" +
@@ -221,28 +228,32 @@ function memoryMcpTools(): McpToolSpec[] {
         category: z.enum(MEMORY_CATEGORIES).describe(`归到哪一类:${categoryMenu()}`),
         title: z.string().describe("一句话标题,也是界面上的那一行。同一个标题会落到同一个文件上"),
         content: z.string().describe("正文(markdown)。写清「是什么 + 为什么」,别写流水账"),
+        scope: z.enum(["project", "global"]).optional().describe("默认当前项目；仅用户明确要求跨项目共享时选 global"),
+        expectedRevision: MemoryRevisionSchema.nullable().optional().describe("更新时必须填 memory_read 返回的 revision；省略或 null 仅允许新建。冲突后重新读取、合并，不得盲目覆盖。"),
         path: z
           .string()
           .optional()
           .describe(
-            "**覆盖已有记录时填它**(从 memory_list / memory_search 拿到的那个路径)。" +
+            "**更新已有记录时填它并携带 expectedRevision**(从 memory_list / memory_search 拿到的那个路径)。" +
               "省略则按类目 + 标题现推一个文件名。",
           ),
       },
-      handler: (args: { category: MemoryCategory; title: string; content: string; path?: string }) => {
+      handler: (args: { category: MemoryCategory; title: string; content: string; path?: string; expectedRevision?: string | null; scope?: "project" | "global" }, ctx) => {
+        const projectId = memoryProjectForSession(ctx.sessionId);
         const title = args.title.trim();
         if (title.length === 0) return fail("标题不能为空 —— 那是用户在面板里看到的那一行。");
         if (args.content.trim().length === 0) {
           return fail("正文是空的。一条什么都没有的记忆只会在快照里占位置。");
         }
-        const path = args.path?.trim() || pathFor(args.category, title);
+        const path = args.path?.trim() || `${args.scope === "global" ? "global" : `projects/${projectId}`}/${pathFor(args.category, title)}`;
+        requireMemoryAccess(path, projectId);
         try {
-          const { updatedAt } = saveMemoryFile({ path, content: args.content, title });
+          const { updatedAt, revision } = saveMemoryFile({ path, content: args.content, title, expectedRevision: args.expectedRevision }, memoryWriteOrigin(ctx.sessionId));
           // 界面上要能看见它在记 —— 面板与快照都靠这个广播刷新
           notifyMemoryChanged(`write:${path}`);
           return text(
             `已记下「${title}」 → \`${path}\`(${MEMORY_CATEGORY_LABELS[args.category]},${new Date(updatedAt).toISOString()})\n` +
-              "用户打开记忆面板就能看到、也能改。",
+              `用户打开记忆面板就能看到、也能改。\nrevision: ${revision}`,
           );
         } catch (err) {
           return fail((err as Error).message);
@@ -254,11 +265,12 @@ function memoryMcpTools(): McpToolSpec[] {
       description:
         "**删掉一条记忆**。只在它确实过时、或用户明确说「忘掉这个」时用 —— 删除是幂等的,不存在的路径也算成功。\n" +
         "⚠️ 删之前先 `memory_read` 确认删的是哪一条:路径是一个 slug,看着像不代表内容就是你以为的那条。",
-      inputSchema: { path: z.string().describe("要删的路径,来自 memory_list / memory_search") },
-      handler: (args: { path: string }) => {
+      inputSchema: { path: z.string().describe("要删的路径,来自 memory_list / memory_search"), expectedRevision: MemoryRevisionSchema.describe("必须是确认要删除时 memory_read 返回的 revision；过期则拒绝删除") },
+      handler: (args: { path: string; expectedRevision: string }, ctx) => {
+        requireMemoryAccess(args.path, memoryProjectForSession(ctx.sessionId));
         try {
           const { content } = readMemoryFile(args.path); // 先确认它真的存在(删除本身幂等,但对话里要说清楚)
-          deleteMemoryFile(args.path);
+          deleteMemoryFile(args.path, args.expectedRevision);
           notifyMemoryChanged(`forget:${args.path}`);
           const preview = content.trim().slice(0, 60);
           return text(`已删掉 \`${args.path}\`${preview ? `(原内容是「${preview}${content.length > 60 ? "…" : ""}」)` : ""}。`);
@@ -274,7 +286,15 @@ function memoryMcpTools(): McpToolSpec[] {
  * 构建这个 MCP server。与库 / 工作流那两个同构:惰性 import SDK(那个模块很大,
  * 不能挂在启动路径上),一次性构造,按需挂到 `options.mcpServers`。
  */
-export async function buildMemoryMcpServer() {
+/** A shared, schema-validated and scope-checked table for all local engines. */
+export function memoryMcpTools(): McpToolSpec[] {
+  return rawMemoryMcpTools().map(spec => ({ ...spec, handler: async (args, ctx) => {
+    try { return await spec.handler(z.object(spec.inputSchema).parse(args), ctx); }
+    catch (err) { return fail(err instanceof Error ? err.message : String(err)); }
+  } }));
+}
+
+export async function buildMemoryMcpServer(opts: { sessionId: string; context?: ProviderContext }) {
   const createSdkMcpServer = await loadCreateMcpServer();
 
   return createSdkMcpServer({
@@ -290,6 +310,9 @@ export async function buildMemoryMcpServer() {
       "这次任务的临时状态。**绝不记密码、API Key、token、secret、私钥或会话凭据**;" +
       "若要记访问机制,只记它放在哪、由谁管理、怎么读,不记值本身。\n" +
       "`memory_write` 与 `memory_forget` 都要用户点头才生效。",
-    tools: toSdkTools(memoryMcpTools(), { sessionId: "" }),
+    tools: toSdkTools(memoryMcpTools().map(spec => ({ ...spec, handler: async (args) => {
+      const { invokeMemoryTool } = await import("@main/memory/engineTools.js");
+      return invokeMemoryTool(spec.name, args, opts.sessionId, opts.context ?? {} as ProviderContext);
+    } })), { sessionId: opts.sessionId }),
   });
 }

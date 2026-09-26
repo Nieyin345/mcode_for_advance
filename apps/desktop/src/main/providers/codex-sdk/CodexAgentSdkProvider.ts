@@ -1,3 +1,4 @@
+import { memoryToolDescriptors, invokeMemoryTool } from "@main/memory/engineTools.js";
 /**
  * Codex agent provider — drives the OpenAI Codex harness via the
  * `codex app-server` JSON-RPC protocol (stdio JSONL) and implements the
@@ -246,7 +247,7 @@ export class CodexAgentSdkProvider implements AgentProvider {
       return failTurn(ctx, req.sessionId, "CODEX_NO_MODEL", "Codex 未配置任何模型:请先在「设置 → 模型配置 → Codex」中添加模型端点后再发送。");
     }
     await CodexModelsStore.ensureConfigMaterialized();
-    await ensureCodexHomeIdentity();
+    const hostIdentity = await ensureCodexHomeIdentity();
     const mcpManagement = await getMcpManagement();
     const browserToolsEnabled = !mcpManagement.browserDisabled;
 
@@ -344,6 +345,7 @@ export class CodexAgentSdkProvider implements AgentProvider {
         "-c",
         `model_provider=${providerId}`,
         ...(contextWindow ? ["-c", `model_context_window=${contextWindow}`] : []),
+        "-c", "project_doc_max_bytes=0", // Host compiles bounded project instructions.
       ],
       log: ctx.log,
       onExit: (code, signal) => {
@@ -402,14 +404,14 @@ export class CodexAgentSdkProvider implements AgentProvider {
         // Thread identity: resume the persisted thread, or start a new one.
         // Codex app-server exposes developerInstructions on thread/start AND
         // thread/resume (not turn/start), so dynamic Mcode context rides there.
-        const developerInstructions = joinPromptSections(...turnContextSections(req));
+        const developerInstructions = joinPromptSections(hostIdentity, ...turnContextSections(req));
         const threadParams: Record<string, unknown> = {
           cwd: req.cwd,
           sandbox,
           approvalPolicy,
           model: modelId,
           modelProvider: providerId,
-          ...(developerInstructions ? { developerInstructions } : {}),
+          developerInstructions,
           // Experimental (requires initialize capabilities.experimentalApi):
           // register Mcode's host-side tools (ask/plan/browser).
           dynamicTools: buildDynamicTools(browserToolsEnabled),
@@ -426,12 +428,13 @@ export class CodexAgentSdkProvider implements AgentProvider {
             const resumed = (await client.request("thread/resume", {
               threadId: req.resumeProviderSessionId,
               excludeTurns: true,
+              dynamicTools: buildDynamicTools(browserToolsEnabled),
               cwd: req.cwd,
               sandbox,
               approvalPolicy,
               model: modelId,
               modelProvider: providerId,
-              ...(developerInstructions ? { developerInstructions } : {}),
+              developerInstructions,
             })) as { thread?: { id?: string } } | undefined;
             threadId = resumed?.thread?.id ?? null;
           } catch (err) {
@@ -753,7 +756,7 @@ async function pluginSkillRootsFor(pluginNames?: readonly string[]): Promise<str
  *  组装链里并入「全局指令」(设置面板的事实源 <dataRoot>/context/instructions.md,
  *  见 lib/appContext.ts):claude 的同名内容物化到 ~/.mcode/CLAUDE.md,pi 会话启动
  *  时直读同一份 —— 三引擎共用一条指令配置。空内容时不加段(组装链语义)。 */
-async function ensureCodexHomeIdentity(): Promise<void> {
+async function ensureCodexHomeIdentity(): Promise<string> {
   const dir = codexHomePath();
   await fs.mkdir(dir, { recursive: true });
   const instructions = readInstructionsSource(instructionsSourcePath(dataRoot())).trim();
@@ -772,11 +775,12 @@ async function ensureCodexHomeIdentity(): Promise<void> {
   const file = path.join(dir, "AGENTS.md");
   try {
     const prev = await fs.readFile(file, "utf-8");
-    if (prev === content) return;
+    if (prev === content) return content;
   } catch {
     /* first write */
   }
   await fs.writeFile(file, content, "utf-8");
+  return content;
 }
 
 const WIN32_PATH_HINT = [
@@ -953,6 +957,7 @@ async function answerNativeUserInput(p: Record<string, unknown>, deps: RequestDe
  *  snake_case (codex tool conventions). */
 function buildDynamicTools(browserToolsEnabled: boolean): Array<Record<string, unknown>> {
   const tools: Array<Record<string, unknown>> = [
+    ...memoryToolDescriptors(),
     {
       type: "function",
       name: "ask_user_question",
@@ -1216,6 +1221,11 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
   const { ctx, req, planMode } = deps;
   const text = (t: string): unknown => ({ success: true, contentItems: [{ type: "inputText", text: t }] });
   const fail = (t: string): unknown => ({ success: false, contentItems: [{ type: "inputText", text: t }] });
+
+  if (name.startsWith("memory_")) {
+    const result = await invokeMemoryTool(name, args, req.sessionId, ctx);
+    return { success: !result.isError, contentItems: result.content.map(c => ({ type: "inputText", text: c.type === "text" ? c.text : "" })) };
+  }
 
   // MCP panel's built-in browser switch. Registration-time filtering can't
   // cover resumed threads (dynamicTools persist in the rollout), so rejected

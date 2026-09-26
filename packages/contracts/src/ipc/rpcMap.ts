@@ -1,3 +1,5 @@
+import { MEMORY_ASSISTANT_CHANNEL, type MemoryAssistantInput, type MemoryAssistantResult } from "../memoryAssistant.js";
+import { MEMORY_MANAGE_CHANNEL, type MemoryManageInput, type MemoryManageResult } from "../memory.js";
 /**
  * `RpcMap` — 全部 renderer→main RPC 的类型化总表。preload 按它暴露
  * `window.api`,渲染端按它获得类型安全。
@@ -756,13 +758,15 @@ export interface RpcMap {
   // 契约与渠道字符串都在 `../memory.ts`(固定六类,目录即类目)。以下文件动作都是
   // **按 memory 根下的相对路径寻址**,主进程侧会校验路径不逃出 memory 根。
   /** 列记忆文件(可选按类目过滤),行形状见 `../memory.ts` 的 `MemoryFileMeta`。 */
+  "memory.assistant": (input: MemoryAssistantInput) => Promise<MemoryAssistantResult>;
+  "memory.manage": (input: MemoryManageInput) => Promise<MemoryManageResult>;
   "memory.list": (input: MemoryListInput) => Promise<{ files: MemoryFileMeta[] }>;
   /** 读一条记忆的正文(不含 frontmatter)。 */
-  "memory.read": (input: MemoryReadInput) => Promise<{ content: string }>;
+  "memory.read": (input: MemoryReadInput) => Promise<{ content: string; revision: string }>;
   /** 存正文(frontmatter 由主进程维护)。 */
-  "memory.save": (input: MemorySaveInput) => Promise<{ ok: boolean; error?: string }>;
+  "memory.save": (input: MemorySaveInput) => Promise<{ ok: boolean; revision?: string; error?: string; code?: "conflict" }>;
   /** 删一条记忆。`ok: false` 时 `error` 是给人看的句子,不是异常。 */
-  "memory.delete": (input: MemoryDeleteInput) => Promise<{ ok: boolean; error?: string }>;
+  "memory.delete": (input: MemoryDeleteInput) => Promise<{ ok: boolean; error?: string; code?: "conflict" }>;
   /** 类目清单(固定六类)。**无参 handler**。 */
   "memory.categories": () => Promise<string[]>;
   /** 只扫描建议，不改任何文件；截断/读失败必须在结果里显式说明。 */
@@ -1622,6 +1626,8 @@ export const IPC = {
   RUNS_HISTORY: "runs:history",
   // 记忆(main/memory/):渠道字符串本体钉在 `../memory.ts` 的那几个
   // MEMORY_*_CHANNEL 常量上 —— 这里只取值,不写第二份字符串。
+  MEMORY_ASSISTANT: MEMORY_ASSISTANT_CHANNEL,
+  MEMORY_MANAGE: MEMORY_MANAGE_CHANNEL,
   MEMORY_LIST: MEMORY_LIST_CHANNEL,
   MEMORY_READ: MEMORY_READ_CHANNEL,
   MEMORY_SAVE: MEMORY_SAVE_CHANNEL,

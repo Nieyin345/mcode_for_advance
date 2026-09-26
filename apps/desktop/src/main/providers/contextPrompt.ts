@@ -9,7 +9,7 @@ import type { StartTurnRequest } from "@contracts/provider";
 
 type TurnContextRequest = Pick<
   StartTurnRequest,
-  "envPrompt" | "memoryPrompt" | "agentPrompt" | "workflowPrompt"
+  "envPrompt" | "projectInstructionPrompt" | "memoryPrompt" | "agentPrompt" | "workflowPrompt"
 >;
 
 /**
@@ -19,7 +19,7 @@ type TurnContextRequest = Pick<
  * 背景事实。排在记忆/角色/工作流之前,模型读到后面那些时已经知道自己处在什么环境里。
  */
 export function turnContextSections(req: TurnContextRequest): string[] {
-  return [req.envPrompt, req.memoryPrompt, req.agentPrompt, req.workflowPrompt]
+  return [req.envPrompt, req.memoryPrompt, req.projectInstructionPrompt, req.agentPrompt, req.workflowPrompt]
     .map((value) => value?.trim() ?? "")
     .filter((value) => value.length > 0);
 }

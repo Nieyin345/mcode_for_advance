@@ -45,6 +45,10 @@ export const teardowns: string[] = [];
  * `resetRunnerStub` 清。
  */
 const activeRuns = new Set<string>();
+/** Shared IPC consumers query the same programmable active-run state. */
+export function hasActiveRun(sessionId: string): boolean {
+  return activeRuns.has(sessionId);
+}
 
 /** 下一次 `graphRunIntent` 返回什么。默认 null(= 不是图型会话)。 */
 let intent: "start" | "busy" | null = null;

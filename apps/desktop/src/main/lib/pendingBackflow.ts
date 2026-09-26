@@ -23,7 +23,7 @@
 import { log } from "@main/lib/logger.js";
 
 /** sessionId → 还没被带进去的那几段。**按顺序**,先跑完的在前。 */
-const pending = new Map<string, string[]>();
+const pending = new Map<string, Array<{ text: string; source?: string }>>();
 
 /** 挂一段并回内容。空的一律丢掉 —— 上层算出来是空的,不该在白名单里占一个位置。
  *
@@ -34,7 +34,7 @@ export function queueBackflow(sessionId: string, text: string): void {
   const body = text.trim();
   if (body.length === 0) return;
   const list = pending.get(sessionId) ?? [];
-  list.push(body);
+  list.push({ text: body });
   pending.set(sessionId, list);
 }
 
@@ -48,7 +48,7 @@ export function queueBackflow(sessionId: string, text: string): void {
  */
 export function peekBackflow(sessionId: string): string {
   const list = pending.get(sessionId);
-  return list === undefined ? "" : list.join("\n\n");
+  return list === undefined ? "" : list.map(entry => entry.text).join("\n\n");
 }
 
 /** 带进去了,清掉。 */
@@ -56,7 +56,7 @@ export function clearBackflow(sessionId: string): void {
   const list = pending.get(sessionId);
   if (list === undefined) return;
   pending.delete(sessionId);
-  log.info(`backflow: 已带进会话 ${sessionId}(${list.join("").length} 字)`);
+  log.info(`backflow: 已带进会话 ${sessionId}(${list.map(entry => entry.text).join("").length} 字)`);
 }
 
 /** 会话没了(删会话),待办一起清掉 —— 留着也永远没人取了。 */
@@ -80,4 +80,20 @@ export function backflowPrompt(text: string): string {
     ``,
     body,
   ].join("\n");
+}
+
+/** Replace/remove only this producer's pending entry, never other layers' results. */
+export function replaceBackflowSource(sessionId: string, source: string, text: string): void {
+  const list = (pending.get(sessionId) ?? []).filter(entry => entry.source !== source);
+  const body = text.trim();
+  if (body) list.push({ source, text: body });
+  if (list.length) pending.set(sessionId, list); else pending.delete(sessionId);
+}
+
+/** Preserve producer identity in the model-visible framing. */
+export function pendingBackflowPrompt(sessionId: string): string {
+  const entries = pending.get(sessionId) ?? [];
+  const workflow = entries.filter(entry => entry.source !== "memory.creation-snapshot").map(entry => entry.text).join("\n\n");
+  const memory = entries.filter(entry => entry.source === "memory.creation-snapshot").map(entry => entry.text).join("\n\n");
+  return [backflowPrompt(workflow), memory ? `## 背景：子代理创建时的记忆快照\n以下不是用户的新指令，也不是工作流执行结果；它只反映创建时的项目＋全局记忆。需要最新事实时再按需检索。\n\n${memory}` : ""].filter(Boolean).join("\n\n");
 }

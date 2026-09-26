@@ -1,6 +1,5 @@
 import type { NodeRunInput, WorkflowChoiceOption, WorkflowDataContext } from "@contracts/runtime";
 import { MEMORY_PARAM_KEY, memorySectionFrom } from "@contracts/memory";
-import { memorySnapshotFor } from "../memory/retrieval.js";
 import { expandTriggerVars } from "./triggerVars.js";
 import {
   DEFAULT_DECIDER_INSTRUCTION,
@@ -133,6 +132,7 @@ export const nodeInputBuilderRegistry = new NodeInputBuilderRegistry()
  * 只负责"参数 + 上下文 → `NodeRunInput`"这最后一次翻译。
  */
 export interface ModelInputScope {
+  memorySnapshot?: () => string;
   userPrompt: string;
   upstream: string;
   upstreamArtifacts: NodeArtifact[];
@@ -220,10 +220,10 @@ function memoryEnabled(params: Record<string, unknown>): boolean {
  * 会有两种叫法、两种措辞。这里保留"开关怎么判 + 读不出来怎么办"这一半 —— 那一半是
  * **节点参数**的语义,不是共享的拼装规则。纯拼装那一半在契约层。
  */
-function memorySectionOf(params: Record<string, unknown>): string {
+function memorySectionOf(params: Record<string, unknown>, snapshot: (() => string) | undefined): string {
   if (!memoryEnabled(params)) return "";
   try {
-    return memorySectionFrom(memorySnapshotFor());
+    return memorySectionFrom(snapshot?.() ?? "");
   } catch {
     return "";
   }
@@ -335,7 +335,7 @@ export function buildNodeInput(
   // **记忆注入(MEM-02)**:开关开了才取快照,库空/读不动都安静地不出现这一节。
   // 拼装方式与 context 一致 —— 一节 `##` 标题 + 正文,追加在整个提示词末尾
   // (背景材料在读顺序的最后,不挤占"指令/产出要求"之间的既有顺序)。
-  const memorySection = memorySectionOf(expanded);
+  const memorySection = memorySectionOf(expanded, scope.memorySnapshot);
   const prompt = composeNodePrompt({
     userPrompt: scope.userPrompt,
     upstream: scope.upstream,

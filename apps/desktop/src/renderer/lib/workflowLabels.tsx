@@ -110,6 +110,10 @@ const NON_MODE_WORKFLOWS: Record<
   string,
   { label: MessageId; hint: MessageId; icon: ComponentType<TablerIconProps> }
 > = {
+  "memory-capture": { label: "memory.flow.capture", hint: "memory.flow.captureHint", icon: IconClipboardText },
+  "memory-checkpoint": { label: "memory.flow.checkpoint", hint: "memory.flow.checkpointHint", icon: IconClipboardText },
+  "memory-health": { label: "memory.flow.health", hint: "memory.flow.healthHint", icon: IconClipboardText },
+
   watch: {
     label: "composer.mode.watch",
     hint: "composer.mode.watchHint",

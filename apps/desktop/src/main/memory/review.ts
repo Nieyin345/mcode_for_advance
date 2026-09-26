@@ -102,11 +102,11 @@ export function deleteReviewedMemory(input: MemoryReviewDeleteInput): { ok: bool
   try {
     const meta = listMemoryFiles().find((item) => item.path === input.path);
     if (!meta) return { ok: false, error: "记忆不存在或不可读，请重新整理后再选择。" };
-    const { content, raw } = readMemoryFileWithRaw(input.path);
+    const { content, raw, revision } = readMemoryFileWithRaw(input.path);
     if (digest(meta, content, raw) !== input.digest) {
       return { ok: false, error: "记忆已发生改动，请重新整理、查看并再次选择，未删除。" };
     }
-    deleteMemoryFile(input.path);
+    deleteMemoryFile(input.path, revision);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: (err as Error).message };

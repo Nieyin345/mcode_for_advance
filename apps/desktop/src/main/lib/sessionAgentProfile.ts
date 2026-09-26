@@ -35,7 +35,7 @@ import {
   type AgentProfile,
   type SessionAgentProfileRef,
 } from "@contracts/agentProfile";
-import { memorySnapshotFor } from "@main/memory/retrieval.js";
+import { scopedMemorySnapshot } from "@main/memory/retrieval.js";
 import { log } from "@main/lib/logger.js";
 
 /** 一份档案能当会话角色用,结果就是这两样:落进会话行的快照 + 会话标题。 */
@@ -100,9 +100,9 @@ export function profileSeedOf(profile: AgentProfile): SessionProfileSeed {
  *
  * 读出来的是**快照**,不是订阅:见文件头那段。节点那边每轮重取,这里只此一次。
  */
-export function sessionMemorySnapshot(): string {
+export function sessionMemorySnapshot(projectId: string): string {
   try {
-    return memorySnapshotFor();
+    return scopedMemorySnapshot(projectId);
   } catch (err) {
     log.warn(`[sessionMemory] 取记忆快照失败,这个对话不注记忆:${(err as Error).message}`);
     return "";

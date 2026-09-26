@@ -1,3 +1,4 @@
+import { registerMemoryAssistantHandlers } from "./memoryAssistant.js";
 import { ipcMain, type IpcMain } from "electron";
 import { IPC } from "@contracts/ipc";
 import { awaitDb } from "@main/store/db.js";
@@ -97,6 +98,7 @@ export function registerIpcHandlers(): void {
   registerInstitutionAuthHandlers(ipc);
   registerTemplateHandlers(ipc);
   registerMemoryHandlers(ipc);
+  registerMemoryAssistantHandlers(ipc);
   registerMonitoringHandlers(ipc);
 }
 

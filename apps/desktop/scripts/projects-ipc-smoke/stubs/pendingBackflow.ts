@@ -7,7 +7,7 @@
  *   - `queueBackflow` 空/全空白一律不入队;
  *   - `dropBackflow` 是 `delete`,**不是** `clear`(`clearBackflow` 才是取用后清)。
  */
-const pending = new Map<string, string[]>();
+const pending = new Map<string, Array<{ text: string; source?: string }>>();
 
 /** 记下每一次 `dropBackflow` 的实参。 */
 export const dropped: string[] = [];
@@ -25,13 +25,13 @@ export function queueBackflow(sessionId: string, text: string): void {
   if (body.length === 0) return;
   queued.push({ sessionId, text: body });
   const list = pending.get(sessionId) ?? [];
-  list.push(body);
+  list.push({ text: body });
   pending.set(sessionId, list);
 }
 
 export function peekBackflow(sessionId: string): string {
   const list = pending.get(sessionId);
-  return list === undefined ? "" : list.join("\n\n");
+  return list === undefined ? "" : list.map(entry => entry.text).join("\n\n");
 }
 
 export function clearBackflow(sessionId: string): void {
@@ -47,3 +47,10 @@ export function backflowPrompt(text: string): string {
   const body = text.trim();
   return body.length === 0 ? "" : `(以下是你上一轮跑完的产出,不用回复)\n\n${body}`;
 }
+
+export function replaceBackflowSource(sessionId: string, source: string, text: string): void {
+  const list = (pending.get(sessionId) ?? []).filter(entry => entry.source !== source);
+  if (text.trim()) list.push({ source, text: text.trim() });
+  if (list.length) pending.set(sessionId, list); else pending.delete(sessionId);
+}
+export function pendingBackflowPrompt(sessionId: string): string { return backflowPrompt(peekBackflow(sessionId)); }

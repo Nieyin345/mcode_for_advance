@@ -1,3 +1,4 @@
+import { automaticMemoryForTurn } from "@main/memory/policy.js";
 /** Provider-neutral prompt/context wiring smoke.
  *
  * 这套专门钉三件很容易“只修 Claude”的事：工作流/角色/主对话记忆三层上下文，
@@ -111,14 +112,21 @@ const codex = source("src/main/providers/codex-sdk/CodexAgentSdkProvider.ts");
 const memoryServer = source("src/main/mcp/memoryServer.ts");
 
 console.log("\n主对话记忆边界");
-check("只给 chat 自动注记忆", runtime.includes('session.kind === "chat"'));
+check("普通 chat 自动注记忆", automaticMemoryForTurn("chat"));
+check("工作流拥有 chat 轮次时不自动叠加", !automaticMemoryForTurn("chat", true));
+for (const kind of ["side", "node", "automation"] as const) check(`${kind} 不继承主聊天自动注入`, !automaticMemoryForTurn(kind));
+check("模型回退保留工作流记忆所有权", runtime.includes("memoryManagedByWorkflow: input.memoryManagedByWorkflow"));
 check("RuntimeManager 把记忆作为独立 memoryPrompt 下传", runtime.includes("memoryPrompt,"));
 check("RuntimeManager 把环境作为独立 envPrompt 下传", runtime.includes("envPrompt,") && runtime.includes("buildEnvPrompt("));
 check(
   "…且按内容指纹去重（内容没变不重复灌）",
   runtime.includes("envPromptFingerprint") && runtime.includes("lastEnvFingerprint"),
 );
-check("普通聊天记忆走 memorySectionFrom + memorySnapshotFor", runtime.includes("memorySectionFrom") && runtime.includes("memorySnapshotFor"));
+check("普通聊天记忆走 memorySectionFrom + scopedMemorySnapshot", runtime.includes("memorySectionFrom") && runtime.includes("scopedMemorySnapshot"));
+
+check("工作流控制的轮次不叠加聊天自动记忆", runtime.includes("input.memoryManagedByWorkflow") && runtime.includes("automaticMemoryForTurn"));
+const runner = source("src/main/orchestration/runner.ts");
+check("图型主对话节点明确交接记忆所有权", runner.includes("memoryManagedByWorkflow: true"));
 
 console.log("\n插件边界：仅保留全局启用和工作流逐轮覆盖");
 check("RuntimeManager 不再读取会话插件名单", !runtime.includes("session.activePluginNames"));

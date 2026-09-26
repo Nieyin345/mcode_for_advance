@@ -144,6 +144,7 @@ export * from "./ipc/library.js";
 export * from "./ipc/templates.js";
 // 记忆契约(存储/检索/维护共用的那一份,渠道字符串钉在里面)。
 export * from "./memory.js";
+export * from "./memoryAssistant.js";
 // 编排域:运行史、触发器事实、监控。
 export * from "./ipc/orchestration.js";
 export * from "./ipc/rpcMap.js";

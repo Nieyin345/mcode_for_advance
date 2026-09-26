@@ -1,3 +1,4 @@
+import { scopedMemorySnapshot } from "@main/memory/retrieval.js";
 import { readAutomationEventChain, snapshotAutomationOrigin, withAutomationOrigin } from "./automationEventOrigin.js";
 /**
  * 一个节点在界面上叫什么:**用户起的标题 > 清单里的名字 > 类型 id**。
@@ -556,6 +557,8 @@ export function cancelWorkflowRun(sessionId: string): boolean {
  */
 export async function startWorkflowRun(args: {
   session: Session;
+  /** Host launch cancellation during asynchronous provider preflight. Active runs use cancelWorkflowRun. */
+  startSignal?: AbortSignal;
   /** Only an explicit caller may establish an origin; never inherit a reused session. */
   originSessionId?: string | null;
   /** 节点回合的工作目录。v1 与父会话相同(见文件头"不做写隔离")。
@@ -614,6 +617,7 @@ export async function startWorkflowRun(args: {
   };
 }): Promise<RunResult | null> {
   const { session, userMessage } = args;
+  if (args.startSignal?.aborted) return null;
   const resumed = args.resume;
   const originSessionId = resumed !== undefined
     ? resumed.snapshot.originSessionId ?? null
@@ -1046,7 +1050,7 @@ export async function startWorkflowRun(args: {
                 { kind: "text", text: "*—— 由自动化注入*" },
               ],
             }, automationOrigin);
-            const handle = await runtimeManager.sendTurn(target, { prompt: input.prompt, cwd, automationOrigin });
+            const handle = await runtimeManager.sendTurn(target, { prompt: input.prompt, cwd, automationOrigin, memoryManagedByWorkflow: true });
             if (!handle) {
               return { status: "failed", summary: "", error: "目标对话没能接上(它正忙)—— 稍后再试一次" };
             }
@@ -1112,7 +1116,7 @@ export async function startWorkflowRun(args: {
             // 在那边聊过天)。这里补一次是为了**续跑**:用户点一张旧卡片时没有"发消息"那一下,
             // 而重启之后运行时表是空的。`bindSession` 是幂等的,已经绑过就是一句空操作。
             runtimeManager.bindSession(target);
-            const handle = await runtimeManager.sendTurn(target, { prompt: input.prompt, cwd, automationOrigin });
+            const handle = await runtimeManager.sendTurn(target, { prompt: input.prompt, cwd, automationOrigin, memoryManagedByWorkflow: true });
             if (!handle) {
               // 目标正忙(上一轮还没收干净)时 `sendTurn` 返回 null。**如实说**,不要让这一步
               // 假装成功 —— 下游拿不到产出时,原因得看得出来。
@@ -1284,6 +1288,7 @@ export async function startWorkflowRun(args: {
     try {
       const handle = await runtimeManager.sendTurn(nodeSession, {
         prompt: input.prompt,
+        memoryManagedByWorkflow: true,
         cwd,
         automationOrigin,
         // 这一步要用的技能 → 这一轮的技能允许清单(`@contracts/nodeType` 的
@@ -1345,6 +1350,7 @@ export async function startWorkflowRun(args: {
     });
 
   const ports: RunPorts = {
+    memorySnapshot: () => scopedMemorySnapshot(session.projectId, prompt),
     // 清单**一次读完**再按 id 查:`loadNodeTypes()` 是刻意不缓存的(每次都要扫插件
     // 目录、读并解析每一个清单文件,而它底下还会把每个启用的插件的技能/命令/agent
     // 文件再读一遍)。按节点调 = 同一批文件读 N 遍,而这里 N 就是图的大小。

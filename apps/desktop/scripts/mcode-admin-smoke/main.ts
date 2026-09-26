@@ -1,3 +1,4 @@
+import { __seedSessionLogs } from "./stubs/repositories.js";
 /**
  * Headless smoke for `mcode-workflow`(AI 自己改工作流那一套工具)。
  *
@@ -1230,7 +1231,10 @@ async function main(): Promise<void> {
    * 以及分档对不对(写工具不能被自动放行 —— 那是安全边界)。
    */
   console.log("\n记忆工具面 · 模型能不能记东西");
-  const memSurface = await toolSurface(() => buildMemoryMcpServer());
+  __seedSessionLogs({ sessions: [{ id: "admin-smoke", projectId: "p_memory", title: "Memory", archived: false, updatedAt: 1 }] });
+  const memSurface = await toolSurface(() => buildMemoryMcpServer({ sessionId: "admin-smoke", context: {
+    emit() {}, log: { info() {}, warn() {}, error() {} }, requestApproval: async () => ({ allow: true }),
+  } }));
   const memNames = memSurface.listed.map((t) => t.name).sort();
   // 建得出来 + `tools/list` 出得来,本身就是断言:任何 schema 转不成 JSON Schema,
   // 这一步就抛 —— 而它在生产里**每一轮对话**都要走(见 ClaudeAgentSdkProvider 里
@@ -1277,7 +1281,7 @@ async function main(): Promise<void> {
     content: "这条是冒烟测试写下的。",
   });
   check("memory_write 说已记下", written.includes("已记下"), written);
-  const readBack = await call(memSurface.tools, "memory_read", { path: "rules/烟测规则.md" });
+  const readBack = await call(memSurface.tools, "memory_read", { path: "projects/p_memory/rules/烟测规则.md" });
   check("memory_read 读得回刚写的那条", readBack.includes("冒烟测试写下的"), readBack);
   const searched = await call(memSurface.tools, "memory_search", { query: "冒烟" });
   check("memory_search 搜得到", searched.includes("烟测规则"), searched);
@@ -1297,8 +1301,12 @@ async function main(): Promise<void> {
   );
   check("MCP 深处命中预览明确标出前文被截断", deepSearched.includes("前文已截断"), deepSearched);
 
-  const forgotten = await call(memSurface.tools, "memory_forget", { path: "rules/烟测规则.md" });
+  const forgotten = await call(memSurface.tools, "memory_forget", { path: "projects/p_memory/rules/烟测规则.md", expectedRevision: /revision: ([a-f0-9]{64})/.exec(readBack)?.[1] });
   check("memory_forget 删得掉", forgotten.includes("已删掉"), forgotten);
+  const deniedSurface = await toolSurface(() => buildMemoryMcpServer({ sessionId: "admin-smoke" }));
+  check("真实 SDK 记忆写入缺审批桥也拒绝", (await call(deniedSurface.tools, "memory_write", { category: "rules", title: "denied", content: "never write" })).includes("审批不可用"));
+  const unknownSurface = await toolSurface(() => buildMemoryMcpServer({ sessionId: "unknown-session" }));
+  check("真实 SDK 工具无法借匿名会话读库", (await call(unknownSurface.tools, "memory_list", {})).includes("拒绝访问"));
 
   console.log(`\n${checks - failures}/${checks} 通过`);
   if (failures > 0) {

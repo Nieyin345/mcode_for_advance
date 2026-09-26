@@ -894,6 +894,8 @@ const api = {
   /** 记忆(对话记忆的直读直写):数据根下 `memory/<类目>/*.md` 当普通文件管,
    *  全部按 memory 根下的**相对路径**寻址(契约见 `@contracts` 的 memory.ts)。 */
   memory: {
+    assistant: ((input) => ipcRenderer.invoke(IPC.MEMORY_ASSISTANT, input)) as RpcMap["memory.assistant"],
+    manage: ((input) => ipcRenderer.invoke(IPC.MEMORY_MANAGE, input)) as RpcMap["memory.manage"],
     list: ((input) => ipcRenderer.invoke(IPC.MEMORY_LIST, input)) as RpcMap["memory.list"],
     read: ((input) => ipcRenderer.invoke(IPC.MEMORY_READ, input)) as RpcMap["memory.read"],
     save: ((input) => ipcRenderer.invoke(IPC.MEMORY_SAVE, input)) as RpcMap["memory.save"],

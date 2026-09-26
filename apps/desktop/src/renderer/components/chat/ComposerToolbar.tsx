@@ -1,3 +1,4 @@
+import { MemoryAssistantButton } from "./MemoryAssistantButton.js";
 import { useSessionStore, EMPTY_USAGE } from "@renderer/stores/sessionStore.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { IconChartBar } from "@renderer/lib/icons.js";
@@ -111,6 +112,7 @@ export function ComposerToolbar({
         {/* 长任务守望:把一条命令绑到这个会话上起跑。桌面专属(手机 RPC 白名单
             没有 automation.watch) —— 手机壳里这一行整个不出现。 */}
         {isElectron && <WatchSegment sessionId={sessionId} layout="row" />}
+        {isElectron && <MemoryAssistantButton sessionId={sessionId} />}
         {/* 上下文占用。**不判空** —— 没有用量数据时 `ContextRing` 自己画空环 + 一句
             说明。判空的话这个环会在第一轮跑完时从无到有地冒出来,用户读到的是
             "这个小图标时有时无"(见 `ContextRing` 头注)。 */}
@@ -157,6 +159,7 @@ export function ComposerToolbar({
       {/* 长任务守望(桌面专属):起跑面板里选模板 / 现写命令,把一条长命令绑到当前
           会话上 —— 与上面那个「跟会话走的工作模式」是两回事,它跑在自动化会话里。 */}
       {isElectron && <WatchSegment sessionId={sessionId} layout="pill" />}
+      {isElectron && <MemoryAssistantButton sessionId={sessionId} />}
       {hasEffort && (
         <>
           <span className="composer-minipill-mid" aria-hidden />

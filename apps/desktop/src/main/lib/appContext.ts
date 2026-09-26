@@ -212,8 +212,9 @@ export function ensureMaterialized(
   targets: string[],
 ): MaterializeResult[] {
   const source = readInstructionsSource(sourcePath);
-  if (source.trim() === "") return [];
-  return targets.map((t) => materializeManagedFile(t, source, { force: false }));
+  // Empty canonical source must also clear stale managed output, never handwritten files.
+  return targets.map((t) => materializeManagedFile(t, source, { force: false }))
+    .filter(result => source.trim() !== "" || result.action !== "unchanged");
 }
 
 /* ─────────────────────────── 记忆 ─────────────────────────── */
