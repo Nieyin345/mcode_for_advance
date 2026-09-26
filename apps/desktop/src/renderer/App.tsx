@@ -32,6 +32,7 @@ import { useI18n } from "./lib/i18n/index.js";
 import { OpenTabsBar } from "./components/ide/OpenTabsBar.js";
 import { FileViewer } from "./components/library/FileViewer.js";
 import { useFileViewStore } from "./stores/fileViewStore.js";
+import { startWorkflowLive } from "./lib/workflowLive.js";
 
 // Lazy-load the Monaco-backed editor, diff dialog and plan viewer so the large
 // monaco-editor library (and its web workers) stay out of the initial renderer
@@ -54,6 +55,11 @@ const PlanViewer = lazy(() =>
 export function App() {
   // Subscribe to the claude event stream for the app's whole lifetime.
   useClaudeEvents();
+  // 右栏「运行看板」的现场也常驻订阅 —— 看板没开着、停在别的页时照样记。否则图起跑时
+  // 右栏关着,那段进度就永远丢了(打开看板一片灰)。见 `lib/workflowLive.ts` 文件头。
+  useEffect(() => {
+    startWorkflowLive();
+  }, []);
   // When an agent browser tool opens/reuses a view, surface the browser panel
   // so the user sees the agent browsing and BrowserPanel can sync bounds.
   // Subscribed globally (not in BrowserPanel, which only mounts when the

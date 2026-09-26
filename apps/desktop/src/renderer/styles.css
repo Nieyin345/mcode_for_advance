@@ -2391,3 +2391,22 @@ html.sketch.dark body::after {
   width: 100% !important;
   height: 100% !important;
 }
+
+/* ───────────── 右栏小流程图：执行中那一格沿边框走的亮边 ─────────────
+ * 见 `WorkflowFlowMini.tsx` 文件头「状态怎么表示」。那个 `<rect>` 设了
+ * `pathLength="100"` 和 `stroke-dasharray: 18 82`，所以 dashoffset 走完 -100
+ * 恰好是一整圈，与方框宽度无关。**不要改回旋转**：转一个扁长方框会扫出一个
+ * 三倍高的范围，压到上下的格子。 */
+@keyframes wf-mini-march {
+  to {
+    stroke-dashoffset: -100;
+  }
+}
+.wf-mini-march {
+  animation: wf-mini-march 1.6s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wf-mini-march {
+    animation: none;
+  }
+}

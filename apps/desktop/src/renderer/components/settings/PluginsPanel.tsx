@@ -47,7 +47,17 @@ import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
-import { Button, Input, Dialog, ConfirmDialog, Switch } from "@renderer/components/ui/index.js";
+import {
+  Button,
+  Card,
+  ConfirmDialog,
+  Dialog,
+  EmptyState,
+  ErrorNote,
+  Input,
+  LoadingNote,
+  Switch,
+} from "@renderer/components/ui/index.js";
 import { PanelHeader } from "./PanelHeader.js";
 import type { PluginState, PluginMarketplaceState } from "@contracts/ipc";
 import {
@@ -279,17 +289,21 @@ export function PluginsPanel() {
       />
 
       {error && (
-        <div className="mt-2 flex flex-none items-start justify-between gap-2 rounded border border-danger/40 bg-danger/5 px-3 py-2 text-[0.7857em] text-danger">
-          <span className="break-all">{error}</span>
-          <button
-            type="button"
-            className="shrink-0 text-content-subtle hover:text-content"
-            title={t("common.close")}
-            onClick={() => setError(null)}
-          >
-            <IconX size={13} />
-          </button>
-        </div>
+        <ErrorNote
+          className="mt-2 flex-none"
+          action={
+            <button
+              type="button"
+              className="text-content-subtle hover:text-content"
+              title={t("common.close")}
+              onClick={() => setError(null)}
+            >
+              <IconX size={13} />
+            </button>
+          }
+        >
+          {error}
+        </ErrorNote>
       )}
 
       {/* Both panes stay mounted: switching tabs must not drop the search
@@ -558,20 +572,22 @@ function InstalledPane({
 
       <div className="pb-4">
         {!loaded ? (
-          <div className="flex items-center justify-center gap-2 px-4 py-8 text-[0.85em] text-content-subtle">
-            <IconLoader2 size={14} className="animate-spin" />
-            {t("settings.plugins.loading")}
-          </div>
+          <LoadingNote label={t("settings.plugins.loading")} />
         ) : plugins.length === 0 ? (
-          <div className="rounded-xl border border-edge bg-surface px-4 py-6 text-center text-[0.7857em] leading-relaxed text-content-subtle">
-            {t("settings.plugins.empty")}
-          </div>
+          <Card className="rounded-xl">
+            <EmptyState className="py-6" icon={IconPuzzle} title={t("settings.plugins.empty")} />
+          </Card>
         ) : filtered.length === 0 ? (
-          <div className="rounded-xl border border-edge bg-surface px-4 py-6 text-center text-[0.7857em] leading-relaxed text-content-subtle">
-            {q
-              ? t("settings.plugins.searchEmpty", { query: query.trim() })
-              : t("settings.plugins.filterEmpty")}
-          </div>
+          <Card className="rounded-xl">
+            <EmptyState
+              className="py-6"
+              title={
+                q
+                  ? t("settings.plugins.searchEmpty", { query: query.trim() })
+                  : t("settings.plugins.filterEmpty")
+              }
+            />
+          </Card>
         ) : (
           <div className="divide-y divide-edge overflow-hidden rounded-xl border border-edge bg-surface">
             {filtered.map((p) => (
@@ -883,11 +899,12 @@ function ComponentDetails({ plugin }: { plugin: PluginState }) {
       )}
 
       {c.hooks.length > 0 && (
-        <div className="mt-2.5 rounded border border-warning/40 bg-warning/5 p-2">
-          <div className="mb-1 flex items-center gap-1 text-[0.75em] font-semibold text-warning">
-            <IconAlertTriangle size={12} />
-            {t("settings.plugins.hooksNotExecuted", { n: c.hooks.length })}
-          </div>
+        <ErrorNote
+          tone="warning"
+          icon={IconAlertTriangle}
+          className="mt-2.5"
+          title={t("settings.plugins.hooksNotExecuted", { n: c.hooks.length })}
+        >
           <ul className="space-y-1">
             {c.hooks.map((h, i) => (
               <li key={i} className="break-all text-[0.7143em] leading-relaxed text-content-muted">
@@ -897,7 +914,7 @@ function ComponentDetails({ plugin }: { plugin: PluginState }) {
               </li>
             ))}
           </ul>
-        </div>
+        </ErrorNote>
       )}
     </div>
   );
@@ -1336,18 +1353,15 @@ function MarketplacePane({
 
       <div className="pb-4">
         {!loaded ? (
-          <div className="flex items-center justify-center gap-2 px-4 py-8 text-[0.85em] text-content-subtle">
-            <IconLoader2 size={14} className="animate-spin" />
-            {t("settings.plugins.loading")}
-          </div>
+          <LoadingNote label={t("settings.plugins.loading")} />
         ) : marketplaces.length === 0 ? (
-          <div className="rounded-xl border border-edge bg-surface px-4 py-6 text-center text-[0.7857em] leading-relaxed text-content-subtle">
-            {t("settings.plugins.mpEmpty")}
-          </div>
+          <Card className="rounded-xl">
+            <EmptyState className="py-6" title={t("settings.plugins.mpEmpty")} />
+          </Card>
         ) : q && entries.length === 0 ? (
-          <div className="rounded-xl border border-edge bg-surface px-4 py-6 text-center text-[0.7857em] leading-relaxed text-content-subtle">
-            {t("settings.plugins.mpSearchEmpty", { query: query.trim() })}
-          </div>
+          <Card className="rounded-xl">
+            <EmptyState className="py-6" title={t("settings.plugins.mpSearchEmpty", { query: query.trim() })} />
+          </Card>
         ) : active ? (
           <MarketplaceCatalog
             marketplace={active}

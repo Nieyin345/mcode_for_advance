@@ -37,7 +37,8 @@ import { PANEL_MAX_W } from "./panelWidth.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { Button, ConfirmDialog, Dialog } from "@renderer/components/ui/index.js";
+import { Button, ConfirmDialog, Dialog, EmptyState, ErrorNote, Field, LoadingNote } from "@renderer/components/ui/index.js";
+import { ListPane } from "./ListPane.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { ProjectSkillsView } from "./ProjectSkillsView.js";
 import { SkillNodesView } from "./SkillNodesView.js";
@@ -765,17 +766,18 @@ export function SkillsPanel() {
         style={{ gridTemplateColumns: `${leftW}px 1fr` }}
       >
         {/* ───────── Left: skill list (width is user-draggable, persisted) ───────── */}
-        <aside className="relative flex min-h-0 flex-col rounded-md border border-edge bg-surface/40">
-          {/* Drag handle: sits in the grid gap along the aside's right edge;
-              mousedown → window-level move/up listeners drag the width. */}
+        {/* 左栏是共享的 `ListPane`（和钩子页同一个件）：标题行、条数、加载骨架、空状态、底栏都在那里。 */}
+        <ListPane
+          handle={
           <div
             role="separator"
             aria-orientation="vertical"
             onMouseDown={onDragHandleMouseDown}
             className="absolute -right-2 top-0 z-10 h-full w-2 cursor-col-resize transition-colors hover:bg-accent/20"
           />
-          <div className="flex items-center justify-between gap-2 px-2.5 py-2 text-[0.7857em] font-medium text-content-subtle">
-            <span className="flex items-center gap-2">
+          }
+          title={
+            <>
               <span>Skills</span>
               {/* 全选 / 清空 —— 勾选是「复制到项目」的源，所以这两个按钮只在有东西
                   可勾时出现。放在这里而不是底部：勾选发生在列表里，操作也该在附近。 */}
@@ -796,8 +798,10 @@ export function SkillsPanel() {
                   {t("settings.skills.selectAll")}
                 </button>
               )}
-            </span>
-            <span className="flex items-center gap-1.5">
+            </>
+          }
+          actions={
+            <>
               {/* Grouping mode: bundle (by source) is the default — it answers
                   "这是什么、从哪来的" and carries the group switches. */}
               <button
@@ -820,10 +824,42 @@ export function SkillsPanel() {
               >
                 {t("settings.skills.modeEngine")}
               </button>
-              <span className="tabular-nums">{listLoading ? "…" : panelSkills.length}</span>
-            </span>
-          </div>
-          <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
+            </>
+          }
+          count={panelSkills.length}
+          loading={listLoading}
+          isEmpty={panelSkills.length === 0 && selected?.kind !== "new"}
+          empty={
+            <>
+                {t("settings.skills.listEmpty1")}
+                <br />
+                {t("settings.skills.listEmpty2")}
+            </>
+          }
+          footer={
+            <>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={startAdd}
+              disabled={selected?.kind === "new"}
+              className="w-full justify-center gap-1"
+            >
+              <IconPlus size={12} />
+              {t("settings.skills.newSkill")}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setImportOpen(true)}
+              className="w-full justify-center gap-1"
+            >
+              <IconDownload size={12} />
+              {t("settings.skills.importSkill")}
+            </Button>
+            </>
+          }
+        >
             {selected?.kind === "new" && (
               <div className="relative block w-full rounded border border-dashed border-accent/60 bg-accent/5 px-2.5 py-1.5 text-left text-[0.7857em] italic text-accent">
                 <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
@@ -939,36 +975,7 @@ export function SkillsPanel() {
               </div>
               );
             })}
-            {panelSkills.length === 0 && !listLoading && selected?.kind !== "new" && (
-              <div className="px-2 py-4 text-center text-[0.7143em] leading-relaxed text-content-subtle">
-                {t("settings.skills.listEmpty1")}
-                <br />
-                {t("settings.skills.listEmpty2")}
-              </div>
-            )}
-          </nav>
-          <div className="space-y-1.5 border-t border-edge p-1.5">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={startAdd}
-              disabled={selected?.kind === "new"}
-              className="w-full justify-center gap-1"
-            >
-              <IconPlus size={12} />
-              {t("settings.skills.newSkill")}
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setImportOpen(true)}
-              className="w-full justify-center gap-1"
-            >
-              <IconDownload size={12} />
-              {t("settings.skills.importSkill")}
-            </Button>
-          </div>
-        </aside>
+        </ListPane>
 
         {/* ───────── Right: editor / empty state ───────── */}
         <div className="min-h-0 overflow-y-auto pr-1">
@@ -1096,14 +1103,7 @@ function SourceBadge({ source }: { source: SkillSource }) {
 /** Right-pane empty state — nothing selected. */
 function EmptyDetail() {
   const { t } = useI18n();
-  return (
-    <div className="flex h-full flex-col items-center justify-center text-center">
-      <IconSparkles size={28} className="mb-2 text-content-subtle" />
-      <p className="max-w-[240px] text-[0.7857em] leading-relaxed text-content-subtle">
-        {t("settings.skills.emptyDetail")}
-      </p>
-    </div>
-  );
+  return <EmptyState className="h-full" icon={IconSparkles} title={t("settings.skills.emptyDetail")} />;
 }
 
 /** Editor for an existing skill — engine matrix (universal skills) + raw
@@ -1197,10 +1197,7 @@ function SkillSourceEditor({
         </div>
       )}
       {loading ? (
-        <div className="flex items-center gap-2 py-8 text-[0.7857em] text-content-subtle">
-          <IconLoader2 size={14} className="animate-spin" />
-          {t("common.loading")}
-        </div>
+        <LoadingNote label={t("common.loading")} />
       ) : (
         <textarea
           value={content ?? ""}
@@ -1214,7 +1211,7 @@ function SkillSourceEditor({
           placeholder={t("settings.skills.sourcePlaceholder")}
         />
       )}
-      {error && <div className="mt-2 text-[0.7857em] text-danger">{error}</div>}
+      {error && <ErrorNote className="mt-2">{error}</ErrorNote>}
       <div className="mt-2 flex items-center gap-2">
         {!readOnly && (
           <Button variant="danger" size="sm" onClick={onDelete} title={t("settings.skills.deleteSkillTitle")}>
@@ -1273,7 +1270,7 @@ function NewSkillForm({
         {t("settings.skills.newSkillIntro3")}
       </p>
 
-      <Field label={t("settings.skills.fieldName")}>
+      <Field className="mb-2" label={t("settings.skills.fieldName")}>
         <input
           type="text"
           value={form.name}
@@ -1290,7 +1287,7 @@ function NewSkillForm({
         </p>
       </Field>
 
-      <Field label={t("settings.skills.fieldDesc")}>
+      <Field className="mb-2" label={t("settings.skills.fieldDesc")}>
         <input
           type="text"
           value={form.description}
@@ -1301,7 +1298,7 @@ function NewSkillForm({
         />
       </Field>
 
-      <Field label={t("settings.skills.fieldBody")}>
+      <Field className="mb-2" label={t("settings.skills.fieldBody")}>
         <textarea
           value={form.body}
           onChange={(e) => update("body", e.target.value)}
@@ -1317,7 +1314,7 @@ function NewSkillForm({
         />
       </Field>
 
-      {error && <div className="mt-2 text-[0.7857em] text-danger">{error}</div>}
+      {error && <ErrorNote className="mt-2">{error}</ErrorNote>}
       <div className="mt-2 flex items-center gap-2">
         <div className="flex-1" />
         <Button variant="ghost" size="sm" onClick={onCancel}>
@@ -1334,14 +1331,6 @@ function NewSkillForm({
 const inputCls =
   "min-w-0 w-full rounded border border-edge bg-surface px-2 py-1 font-mono text-[0.7857em] text-content placeholder:text-content-subtle focus:border-accent focus:outline-none";
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="mb-2 block w-full">
-      <span className="mb-0.5 block text-[0.7857em] font-medium text-content-muted">{label}</span>
-      {children}
-    </label>
-  );
-}
 
 /* ───────── Import Skills Dialog ───────── */
 
@@ -1757,19 +1746,20 @@ function ImportSkillsDialog({
               )}
             </div>
             {loading ? (
-              <div className="flex items-center justify-center gap-2 py-8 text-[0.7857em] text-content-subtle">
-                <IconLoader2 size={14} className="animate-spin" />
-                {t("settings.scanning")}
-              </div>
+              <LoadingNote label={t("settings.scanning")} />
             ) : sources.length === 0 ? (
               <div className="space-y-3">
                 {localPicker}
-                <div className="py-8 text-center text-[0.7857em] leading-relaxed text-content-subtle">
-                  {t("settings.skills.importEmpty1")}
-                  <br />
-                  {t("settings.skills.importEmpty2a")}
-                  {t("settings.skills.importEmpty2b")}
-                </div>
+                <EmptyState
+                  className="py-8"
+                  title={t("settings.skills.importEmpty1")}
+                  desc={
+                    <>
+                      {t("settings.skills.importEmpty2a")}
+                      {t("settings.skills.importEmpty2b")}
+                    </>
+                  }
+                />
               </div>
             ) : (
               <div className="space-y-2">
@@ -1887,9 +1877,7 @@ function ImportSkillsDialog({
                   </div>
                 ) : (
                   // Only reachable on the 本地 tab before a folder is picked.
-                  <div className="py-6 text-center text-[0.7857em] leading-relaxed text-content-subtle">
-                    {t("settings.skills.localTabEmpty")}
-                  </div>
+                  <EmptyState className="py-6" title={t("settings.skills.localTabEmpty")} />
                 )}
               </div>
             )}
@@ -1918,9 +1906,7 @@ function ImportSkillsDialog({
               </div>
             )}
 
-            {error && (
-              <div className="mt-2 text-[0.7857em] text-danger">{error}</div>
-            )}
+            {error && <ErrorNote className="mt-2">{error}</ErrorNote>}
           </div>
 
           {/* Footer: selected count + actions */}

@@ -74,5 +74,5 @@ export type { ErrorNoteProps } from "./error-note.js";
 export { Field } from "./field.js";
 export type { FieldProps } from "./field.js";
 
-export { Spinner, Skeleton } from "./spinner.js";
+export { Spinner, Skeleton, LoadingNote } from "./spinner.js";
 export type { SpinnerProps, SkeletonProps } from "./spinner.js";

@@ -102,6 +102,11 @@ import { WorkflowCanvas } from "@renderer/components/settings/workflows/Workflow
 import { BranchChoiceCard } from "@renderer/components/chat/BranchChoiceCard.js";
 import { BRANCH_STOP_CHOICE } from "@contracts/nodeType";import type { RuntimeEvent } from "@contracts/runtime";import {  __applyWorkflowLiveEvent,  __resetWorkflowLive,  __workflowLiveSnapshot,  dismissSettled,} from "@renderer/lib/workflowLive.js";import type {  LiveNode,  WorkflowLiveSnapshot,} from "@renderer/lib/workflowLive.js";
 import { WorkflowsPanel } from "@renderer/components/settings/workflows/WorkflowsPanel.js";
+import {
+  __releaseWorkflowLiveIfIdle,
+  __startWorkflowLiveWith,
+  boardWorkflowIdOf,
+} from "@renderer/lib/workflowLive.js";
 import { NodeTypesView } from "@renderer/components/settings/workflows/NodeTypesView.js";
 import {
   isBuiltinWorkflowId,
@@ -2926,6 +2931,107 @@ console.log("\nworkflowLive(运行看板的折叠器)");
     eq("第一轮还是第一轮", cell(s, "runA")?.title, "第一轮");
     eq("第二轮是第二轮", cell(s, "runB")?.title, "第二轮");
   }
+}
+
+/* ─────────── 9. 看板现场常驻订阅 + 画哪张图(2026-09-26) ─────────── */
+
+// 用户:「前端的工作流的显示图像,能够动态的看到现在工作流在什么节点运行效果也很差」。
+// 根因之一:现场的订阅从前跟着看板组件走 —— 右栏关着 / 不在「流程」页时一条事件都不收,
+// 之后打开看板一片灰。这里用假的事件源验:钉住之后没有任何组件订阅也照记;最后一个组件
+// 退订也不摘。
+console.log("\nworkflowLive 常驻订阅 / 晚到的 workflowId / boardWorkflowIdOf");
+{
+  type Msg = { channel: string; sessionId: string; event: RuntimeEvent };
+  let handler: ((m: Msg) => void) | null = null;
+  let detached = 0;
+  const attached = (): boolean => handler !== null;
+  const fakeOn = ((cb: (m: Msg) => void) => {
+    handler = cb;
+    return () => {
+      handler = null;
+      detached++;
+    };
+  }) as unknown as Parameters<typeof __startWorkflowLiveWith>[0];
+  const send = (event: Record<string, unknown>): void => {
+    const h = handler as ((m: Msg) => void) | null;
+    h?.({
+      channel: "claude:event",
+      sessionId: "s_pin",
+      event: { sessionId: "s_pin", runId: "run_pin", ...event } as unknown as RuntimeEvent,
+    });
+  };
+
+  __resetWorkflowLive();
+  const teardown = __startWorkflowLiveWith(fakeOn);
+  check("钉住那一刻就挂上了事件源(不等任何看板组件)", attached());
+
+  // 右栏关着:没有任何 useWorkflowLive 订阅者。事件照样折进现场。
+  send({ type: "workflow.node.queued", workflowId: "wf_pin", nodeId: "a" });
+  send({ type: "workflow.node.progress", nodeId: "a", nodeType: "mcode.agent", title: "检索" });
+  const s1 = __workflowLiveSnapshot();
+  eq("★ 看板没开时起跑的那一格也记下了", s1.runs["run_pin"]?.nodes["a"]?.phase, "running");
+  eq("这次运行按的图也记下了", s1.runs["run_pin"]?.workflowId, "wf_pin");
+
+  check("★ 最后一个组件退订之后,钉住的事件源不摘", __releaseWorkflowLiveIfIdle());
+  eq("拆除函数一次都没被调过", detached, 0);
+
+  send({
+    type: "workflow.node.result",
+    nodeId: "a",
+    nodeType: "mcode.agent",
+    title: "检索",
+    status: "success",
+    summary: "ok",
+  });
+  eq("没摘 → 收场那条也进来了", __workflowLiveSnapshot().runs["run_pin"]?.nodes["a"]?.status, "success");
+
+  send({ type: "subagent.update", nodeId: "b" });
+  eq("别的事件类型不进现场", __workflowLiveSnapshot().runs["run_pin"]?.order.length, 1);
+
+  teardown();
+  eq("拆除之后事件源摘掉了", detached, 1);
+  check("拆除之后不再钉住(再走退订那条路 = 没挂着)", !__releaseWorkflowLiveIfIdle());
+}
+{
+  // **晚到的 workflowId 要补上。** 只有 queued 带它;现场要是先被 progress 建出来的,
+  // workflowId 当时只能是空串 —— 同一次运行里之后任何一格的 queued 到了都要补进去,
+  // 否则看板永远不知道该画哪张图。
+  __resetWorkflowLive();
+  const base = { sessionId: "s_late", runId: "run_late" };
+  __applyWorkflowLiveEvent({
+    ...base,
+    type: "workflow.node.progress",
+    nodeId: "a",
+    nodeType: "mcode.agent",
+    title: "甲",
+  } as unknown as RuntimeEvent);
+  eq("先到的是 progress:workflowId 暂时是空的", __workflowLiveSnapshot().runs["run_late"]?.workflowId, "");
+  const s = __applyWorkflowLiveEvent({
+    ...base,
+    type: "workflow.node.queued",
+    workflowId: "wf_late",
+    nodeId: "b",
+  } as unknown as RuntimeEvent);
+  eq("★ 下一格排队时带来的 workflowId 补上了", s.runs["run_late"]?.workflowId, "wf_late");
+  eq("补的时候不动已有那一格", s.runs["run_late"]?.nodes["a"]?.phase, "running");
+  const s2 = __applyWorkflowLiveEvent({
+    ...base,
+    type: "workflow.node.queued",
+    workflowId: "wf_other",
+    nodeId: "c",
+  } as unknown as RuntimeEvent);
+  eq("只补空的,不覆盖已经记下的", s2.runs["run_late"]?.workflowId, "wf_late");
+}
+{
+  // **看板画哪张图:这次运行按的那张优先。** 输入框的药丸是"下一句话用哪个模式",
+  // 图跑着时用户换了它(或者跑的是自动化),看板仍该画正在跑的那张。
+  eq(
+    "★ 有运行且记得图:画运行那张(不管药丸选了什么)",
+    boardWorkflowIdOf({ workflowId: "wf_run" }, "wf_pill"),
+    "wf_run",
+  );
+  eq("还没跑过:画药丸选的那张", boardWorkflowIdOf(null, "wf_pill"), "wf_pill");
+  eq("运行没记到图(空串):退回药丸那张", boardWorkflowIdOf({ workflowId: "" }, "wf_pill"), "wf_pill");
 }
 
 console.log(`\n${checks - failures}/${checks} passed`);

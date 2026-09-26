@@ -618,6 +618,24 @@ eq("the held turn completes instead of failing", await withDeadline("held turn",
 reconnected.close();
 await waitFor(() => !bridgeStatus().paired);
 
+/* ─────────── a newer connection takes over: the old one is told why ──────────── */
+
+// 同一个扩展装在两个浏览器里(Edge + Chrome)时，两边会轮流顶掉对方。被顶掉的那条
+// 必须先收到 `replaced` 再断开，扩展才知道"别再连回来"，否则每 30 秒互抢一次。
+const firstBrowser = openStream(url, { token });
+await firstBrowser.ready;
+await waitFor(() => bridgeStatus().paired);
+eq("the first browser opens with hello", (await firstBrowser.next())?.event, "hello");
+const secondBrowser = openStream(url, { token });
+await secondBrowser.ready;
+eq("the replaced connection is told it was replaced", (await firstBrowser.next())?.event, "replaced");
+eq("the newer connection opens with hello", (await secondBrowser.next())?.event, "hello");
+check("the newer connection stays paired", bridgeStatus().paired);
+eq("the newer connection is not told it was replaced", (await secondBrowser.next(300))?.event ?? null, null);
+secondBrowser.close();
+firstBrowser.close();
+await waitFor(() => !bridgeStatus().paired);
+
 const ext2 = openStream(url, { token });
 await ext2.ready;
 await waitFor(() => bridgeStatus().paired);

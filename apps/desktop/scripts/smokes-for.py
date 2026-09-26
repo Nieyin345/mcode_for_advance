@@ -37,6 +37,7 @@ HERE = Path(__file__).resolve().parent      # apps/desktop/scripts
 DESKTOP = HERE.parent                       # apps/desktop
 ROOT = DESKTOP.parent.parent                # 仓库根
 MAIN = DESKTOP / "src" / "main"
+RENDERER = DESKTOP / "src" / "renderer"
 
 # `from "x"` / `import("x")` / `import "x"` 都收。`import type` 也一样 —— 类型
 # 依赖也算依赖:契约改了这边也会跟着变。
@@ -46,20 +47,30 @@ SMOKE_COVERS_RE = re.compile(r"^\s*//\s*@smoke-covers\s+(src/main/[\w./-]+\.ts)\
 
 
 def resolve(spec: str, from_file: Path) -> Path | None:
-    """把一条 import 说明符解析成磁盘上的 .ts 文件。解析不出返回 None。"""
+    """把一条 import 说明符解析成磁盘上的 .ts / .tsx 文件。解析不出返回 None。
+
+    ⚠️ `@renderer/` **要解析**(2026-09-26 修)。从前它和 `@contracts/` 一起被当成
+    "别的包"丢掉,于是**任何渲染端文件**问下来都是「没有套件覆盖它」—— 哪怕
+    `workflow-view-smoke` 明明 import 了它、断言也在跑。前端改动按 CLAUDE.md 先问
+    这个脚本,得到的永远是一句假警告。`@contracts/` 仍然不收:它是另一个包。
+    """
     if spec.startswith("@main/"):
         base = MAIN / spec[len("@main/"):]
-    elif spec.startswith("@contracts/") or spec.startswith("@renderer/"):
+    elif spec.startswith("@renderer/"):
+        base = RENDERER / spec[len("@renderer/"):]
+    elif spec.startswith("@contracts/"):
         return None  # 别的包,不算"主进程文件"
     elif spec.startswith("."):
         base = (from_file.parent / spec).resolve()
     else:
         return None
-    for cand in (base.with_suffix(".ts"), base / "index.ts"):
+    for cand in (base.with_suffix(".ts"), base.with_suffix(".tsx"), base / "index.ts", base / "index.tsx"):
         if cand.exists():
             return cand
-    if base.suffix == ".js" and base.with_suffix(".ts").exists():
-        return base.with_suffix(".ts")
+    if base.suffix == ".js":
+        for ext in (".ts", ".tsx"):
+            if base.with_suffix(ext).exists():
+                return base.with_suffix(ext)
     return None
 
 

@@ -351,4 +351,12 @@ export const zh = {
   "chatStream.welcome.title": "开始新的会话",
   "chatStream.welcome.withProject": "在「{name}」中开始新的会话",
   "chatStream.welcome.todayUsage": "今天对话 {turns} 轮 · 消耗 {tokens} token",
+  "chatStream.welcome.recentTitle": "接着聊",
+  "chatStream.welcome.workflowsTitle": "用工作流开始",
+  "chatStream.welcome.workflowPicked": "已选用",
+  "chatStream.welcome.libraryTitle": "最近加入的资料",
+  "chatStream.welcome.automationsTitle": "正在守着的自动化",
+  "chatStream.welcome.automationLastFire": "上次触发 {when}",
+  "chatStream.welcome.automationNeverFired": "还没触发过",
+  "chatStream.welcome.automationFailed": "上次失败",
 } as const;

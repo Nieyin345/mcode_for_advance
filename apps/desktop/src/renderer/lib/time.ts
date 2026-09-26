@@ -39,3 +39,13 @@ export function formatFullTime(input: number | string): string {
     return String(input);
   }
 }
+
+/**
+ * 一步「跑了多久」：`42s` / `3m07s`。工作流看板的卡片（`BoardNodeCard`）和右栏小流程图
+ * （`WorkflowFlowMini`）共用这一份 —— 同一个数在两处两种写法，用户会以为是两个量。
+ */
+export function formatStepDuration(ms: number): string {
+  const sec = Math.max(0, Math.round(ms / 1000));
+  if (sec < 60) return `${sec}s`;
+  return `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, "0")}s`;
+}

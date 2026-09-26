@@ -366,4 +366,12 @@ export const en = {
   "chatStream.welcome.title": "Start a new chat",
   "chatStream.welcome.withProject": "Start a new chat in {name}",
   "chatStream.welcome.todayUsage": "{turns} turns today · {tokens} tokens used",
+  "chatStream.welcome.recentTitle": "Pick up where you left off",
+  "chatStream.welcome.workflowsTitle": "Start with a workflow",
+  "chatStream.welcome.workflowPicked": "Selected",
+  "chatStream.welcome.libraryTitle": "Recently added to library",
+  "chatStream.welcome.automationsTitle": "Automations on watch",
+  "chatStream.welcome.automationLastFire": "Last fired {when}",
+  "chatStream.welcome.automationNeverFired": "Not fired yet",
+  "chatStream.welcome.automationFailed": "Last run failed",
 } as const;

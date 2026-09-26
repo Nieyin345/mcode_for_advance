@@ -41,8 +41,17 @@
  *
  * ## 状态怎么表示
  *
- * 颜色 + 记号 + **正在执行的那一格外面套一道转动的弧**。三者都在同一个位置(方框上),
- * 不需要图例解释 —— 一屏里只有一格在转,一眼即可分辨。
+ * 颜色 + 记号 + **正在执行的那一格,沿方框边走着一段亮边**,小字里的耗时每秒在涨。
+ * 三者都在同一个位置(方框上),不需要图例解释。
+ *
+ * ⚠️ 亮边是**沿边框走**(`stroke-dashoffset` 动画),不是把一个框整个**转起来**。
+ * 2026-09-26 之前是后者:一个 92×34 的圆角框绕中心转,转到竖直时外包围盒 70×103,
+ * 压到上下两层的格子上,截图里就是一道斜杠划过「执行中」那三个字(`.tmp/flow-preview`
+ * 量出来的,重叠 934px²)—— 用户说的「效果差」主要就是这个。
+ *
+ * 「执行中」和「已完成」在默认主题里都是绿系(主题色 = 翡翠绿、成功 = 绿),所以两者靠
+ * **底色深浅 + 有没有在动 + 有没有勾**分开,而不是靠色相:执行中是很浅的底加走动的亮边,
+ * 已完成是更实的绿底加一个勾。
  *
  * ## 颜色是 `rgb(var(--x) / a)` 而不是 `var(--x)`
  *
@@ -54,6 +63,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { topoLayers, type WorkflowDoc, type WorkflowNode } from "@contracts/workflow";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { useNow } from "@renderer/hooks/useNow.js";
+import { formatStepDuration } from "@renderer/lib/time.js";
 import type { LiveNode, LiveRun } from "@renderer/lib/workflowLive.js";
 
 /** 图默认多高。**只是个默认值** —— 用户拖那条横分隔条就能改(见调用方
@@ -113,16 +124,21 @@ function rgbOf(key: string): string {
  * 状态词复用 `WorkflowNodeCard` 那一套 `chatStream.workflowStep.*` —— 同一件事
  * （"这一步跑完了"）在图上和卡片上**必须是同一个词**，否则用户得先学会两套说法。
  *
- * ## 耗时只在"看得见起止"时给
+ * ## 耗时只给量得出来的
  *
  * `startedAt` 与 `endedAt` 两个字段都可能缺（重启后从库里补出来的那几步只有
  * `startedAt`、还没轮到的那些两个都没有）。缺就不给 —— **编一个"0s"比不给更坏**，
  * 它看起来像一个真实的测量值。
+ *
+ * **还在执行的那一步给「到现在跑了多久」**（`now - startedAt`，`now` 由调用方每秒
+ * 刷新）：起点是真的、终点是此刻，这也是一个真实的测量值。从前执行中只写「执行中」，
+ * 已完成的反而写着「已完成 · 34s」—— 用户最想知道「它卡住没有」的那一格恰恰没有数。
  */
 function subLabelOf(
   key: string,
   live: { startedAt?: number; endedAt?: number } | undefined,
   t: ReturnType<typeof useI18n>["t"],
+  now?: number,
 ): string {
   const word =
     key === "running"
@@ -143,11 +159,38 @@ function subLabelOf(
   const ms =
     live?.startedAt !== undefined && live.endedAt !== undefined
       ? Math.max(0, live.endedAt - live.startedAt)
-      : undefined;
+      : key === "running" && live?.startedAt !== undefined && now !== undefined
+        ? Math.max(0, now - live.startedAt)
+        : undefined;
   if (ms === undefined) return word;
-  const sec = Math.round(ms / 1000);
-  const dur = sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, "0")}s`;
+  const dur = formatStepDuration(ms);
   return word ? `${word} · ${dur}` : dur;
+}
+
+/** 名字下面那行小字的 `<text>`。 */
+function SubText({ x, y, fill, nodeId, text }: { x: number; y: number; fill: string; nodeId: string; text: string }) {
+  return (
+    <text x={x} y={y} fontSize={SUB_PX} fill={fill} data-node-sub={nodeId}>
+      {text}
+    </text>
+  );
+}
+
+/** 执行中那一格的小字 —— **只有它**订阅全局秒表（`useNow`），其余格子不跟着每秒重画。 */
+function RunningSubText({
+  live,
+  t,
+  ...rest
+}: {
+  x: number;
+  y: number;
+  fill: string;
+  nodeId: string;
+  live: LiveNode | undefined;
+  t: ReturnType<typeof useI18n>["t"];
+}) {
+  const now = useNow();
+  return <SubText {...rest} text={subLabelOf("running", live, t, now)} />;
 }
 
 /** 一格的样子。**按状态分色,不按类型** —— 站在"看它跑到哪了"这个角度,"这一步成没成"
@@ -155,7 +198,8 @@ function subLabelOf(
 const PHASE_STYLE: Record<string, { fill: string; stroke: string; dash?: string }> = {
   idle: { fill: "rgb(var(--surface-muted))", stroke: "rgb(var(--edge))" },
   queued: { fill: "rgb(var(--surface-muted))", stroke: "rgb(var(--edge))", dash: "3 2" },
-  running: { fill: "rgb(var(--accent) / 0.22)", stroke: "rgb(var(--accent))" },
+  // 执行中的底色刻意比「已完成」浅得多：两者在默认主题里都是绿系，靠深浅 + 走动的亮边分开。
+  running: { fill: "rgb(var(--accent) / 0.07)", stroke: "rgb(var(--accent))" },
   success: { fill: "rgb(var(--success) / 0.18)", stroke: "rgb(var(--success))" },
   failed: { fill: "rgb(var(--danger) / 0.2)", stroke: "rgb(var(--danger))" },
   skipped: { fill: "rgb(var(--surface-muted))", stroke: "rgb(var(--edge))", dash: "2 3" },
@@ -497,31 +541,28 @@ export function WorkflowFlowMini({
                 strokeWidth={selected ? 2 : 1.2}
                 strokeDasharray={style.dash}
               />
-              {/* **正在执行的那一格:方框外面套一道转动的弧。** 这就是用户要的"转圈
-                  效果" —— 它压在方框上,一眼看到的不是"这一格有色",而是"这一格在动"。
-                  弧绕方框中心旋转(transformOrigin 给中心点),停下就不画。 */}
+              {/* **正在执行的那一格:一段亮边沿着方框走。** 这是用户要的"转圈效果" ——
+                  一眼看到的不是"这一格有色",而是"这一格在动"。
+                  ⚠️ **沿边走,不要转框**(见文件头「状态怎么表示」):`pathLength=100` 把周长
+                  归一成 100,亮边占 18,`wf-mini-march`(styles.css)把 dashoffset 从 0
+                  推到 -100 —— 不管方框多宽,都是一圈 1.6 秒,而且始终贴着方框、不出界。
+                  减少动态效果的系统设置下动画停住,亮边静止在左上角,边框仍是实线。 */}
               {key === "running" && (
-                <g
+                <rect
                   data-spinner="1"
-                  className="motion-safe:animate-spin"
-                  style={{
-                    transformOrigin: `${cx}px ${cy}px`,
-                    animationDuration: "1.4s",
-                  }}
-                >
-                  <rect
-                    x={box.x - 2}
-                    y={box.y - 2}
-                    width={box.w + 4}
-                    height={box.h + 4}
-                    rx={7}
-                    fill="none"
-                    stroke="rgb(var(--accent))"
-                    strokeWidth={2}
-                    strokeLinecap="round"
-                    strokeDasharray={`${(box.w + box.h) * 0.5} ${(box.w + box.h) * 1.6}`}
-                  />
-                </g>
+                  className="wf-mini-march"
+                  x={box.x - 2}
+                  y={box.y - 2}
+                  width={box.w + 4}
+                  height={box.h + 4}
+                  rx={7}
+                  fill="none"
+                  stroke="rgb(var(--accent))"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  pathLength={100}
+                  strokeDasharray="18 82"
+                />
               )}
               {/* **节点名。** 这一行是"图上什么都没有"那条抱怨的正解。 */}
               <text
@@ -538,15 +579,18 @@ export function WorkflowFlowMini({
                   而后者才是用户盯着这张图时要的东西。
                   ⚠️ 措辞复用 `WorkflowNodeCard` 那一套（`chatStream.workflowStep.*`），
                   不另造一份 —— 同一件事在两个地方两种说法，是这个仓库反复出过的问题。 */}
-              <text
-                x={box.x + PAD_X}
-                y={box.y + BOX_H - 7}
-                fontSize={SUB_PX}
-                fill={rgbOf(key)}
-                data-node-sub={node.id}
-              >
-                {subLabel}
-              </text>
+              {key === "running" ? (
+                <RunningSubText
+                  x={box.x + PAD_X}
+                  y={box.y + BOX_H - 7}
+                  fill={rgbOf(key)}
+                  nodeId={node.id}
+                  live={live}
+                  t={t}
+                />
+              ) : (
+                <SubText x={box.x + PAD_X} y={box.y + BOX_H - 7} fill={rgbOf(key)} nodeId={node.id} text={subLabel} />
+              )}
               {/* 状态记号。**小尺寸下形状比颜色可靠** —— 绿和灰在色弱眼里可能是同一
                   种颜色,但有没有那一笔是看得见的。 */}
               {key === "success" && (

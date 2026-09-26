@@ -28,7 +28,7 @@ import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
-import { Button, ConfirmDialog, Input, Select, Switch } from "@renderer/components/ui/index.js";
+import { Button, ConfirmDialog, EmptyState, ErrorNote, Field, Input, Select, Switch } from "@renderer/components/ui/index.js";
 import {
   DEFAULT_HOOK_TIMEOUT_MS,
   HOOK_EVENTS,
@@ -47,6 +47,7 @@ import {
   IconTrash,
 } from "@renderer/lib/icons.js";
 import { PanelHeader } from "./PanelHeader.js";
+import { ListPane } from "./ListPane.js";
 import {
   formatRunTime,
   hookDraftProblem,
@@ -304,52 +305,43 @@ export function HooksPanel() {
       {/* 文件里读得见、但用不了的条目。**必须说出来** —— 用户写的钩子不生效时,这一页
           是唯一能解释为什么的地方(同 `workflow.nodeTypes` 的 problems)。 */}
       {(problems.length > 0 || listError !== null) && (
-        <div className="mb-3 flex items-start gap-2 rounded border border-warning/40 bg-warning/10 px-2.5 py-2 text-[0.7143em] leading-relaxed text-warning">
-          <IconAlertTriangle size={13} className="mt-0.5 shrink-0" />
-          <div className="min-w-0">
-            {listError !== null ? (
-              <div>{t("settings.hooks.loadFailed", { error: listError })}</div>
-            ) : null}
-            {problems.map((p) => (
-              <div key={`${p.where}:${p.error}`}>
-                <span className="font-medium">{p.where}</span>:{p.error}
-              </div>
-            ))}
-          </div>
-        </div>
+        <ErrorNote tone="warning" icon={IconAlertTriangle} className="mb-3">
+          {listError !== null ? (
+            <div>{t("settings.hooks.loadFailed", { error: listError })}</div>
+          ) : null}
+          {problems.map((p) => (
+            <div key={`${p.where}:${p.error}`}>
+              <span className="font-medium">{p.where}</span>:{p.error}
+            </div>
+          ))}
+        </ErrorNote>
       )}
 
       <div className="grid min-h-0 flex-1 grid-cols-[240px_1fr] gap-4">
         {/* ───────── 左:钩子列表 ───────── */}
-        <aside className="flex min-h-0 flex-col rounded-md border border-edge bg-surface/40">
-          <div className="flex items-center justify-between px-2.5 py-2 text-[0.7143em] font-medium uppercase tracking-wide text-content-subtle">
-            <span>{t("settings.hooks.listTitle")}</span>
-            <span className="tabular-nums">{hooks ? hooks.length : "…"}</span>
-          </div>
-          <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
-            {hooks?.map((hook) => (
-              <HookRow
-                key={hook.id}
-                hook={hook}
-                active={hook.id === selectedId}
-                onSelect={() => select(hook)}
-                onToggle={() => void toggleEnabled(hook)}
-              />
-            ))}
-            {hooks?.length === 0 && (
-              <div className="px-2 py-4 text-center text-[0.7143em] leading-relaxed text-content-subtle">
-                {t("settings.hooks.listEmpty")}
-              </div>
-            )}
-          </nav>
-        </aside>
+        {/* `hooks === null` = 还没回来。从前这一段是空白、计数写「…」，看起来像"没有钩子"。 */}
+        <ListPane
+          title={t("settings.hooks.listTitle")}
+          count={hooks?.length}
+          loading={hooks === null}
+          isEmpty={!hooks || hooks.length === 0}
+          empty={t("settings.hooks.listEmpty")}
+        >
+          {hooks?.map((hook) => (
+            <HookRow
+              key={hook.id}
+              hook={hook}
+              active={hook.id === selectedId}
+              onSelect={() => select(hook)}
+              onToggle={() => void toggleEnabled(hook)}
+            />
+          ))}
+        </ListPane>
 
         {/* ───────── 右:编辑 ───────── */}
         <div className="flex min-h-0 flex-col overflow-y-auto">
           {draft === null ? (
-            <div className="flex flex-1 items-center justify-center px-6 text-center text-[0.7857em] leading-relaxed text-content-subtle">
-              {t("settings.hooks.selectHint")}
-            </div>
+            <EmptyState className="flex-1" icon={IconActivity} title={t("settings.hooks.selectHint")} />
           ) : (
             <HookEditor
               draft={draft}
@@ -373,28 +365,22 @@ export function HooksPanel() {
       </div>
 
       {/* ───────── 下:最近的执行 ───────── */}
-      <div className="mt-3 flex h-[190px] shrink-0 flex-col rounded-md border border-edge bg-surface/40">
-        <div className="flex items-center justify-between px-2.5 py-2 text-[0.7143em] font-medium uppercase tracking-wide text-content-subtle">
-          <span>{t("settings.hooks.runsTitle")}</span>
-          <span className="tabular-nums">{runs.length}</span>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-1.5">
-          {runs.length === 0 ? (
-            <div className="px-2 py-4 text-center text-[0.7143em] leading-relaxed text-content-subtle">
-              {t("settings.hooks.runsEmpty")}
-            </div>
-          ) : (
-            runs.map((run) => (
-              <RunRow
-                key={run.runId}
-                run={run}
-                expanded={expandedRun === run.runId}
-                onToggle={() => setExpandedRun(expandedRun === run.runId ? null : run.runId)}
-              />
-            ))
-          )}
-        </div>
-      </div>
+      <ListPane
+        className="mt-3 h-[190px] shrink-0"
+        title={t("settings.hooks.runsTitle")}
+        count={runs.length}
+        isEmpty={runs.length === 0}
+        empty={t("settings.hooks.runsEmpty")}
+      >
+        {runs.map((run) => (
+          <RunRow
+            key={run.runId}
+            run={run}
+            expanded={expandedRun === run.runId}
+            onToggle={() => setExpandedRun(expandedRun === run.runId ? null : run.runId)}
+          />
+        ))}
+      </ListPane>
 
       <ConfirmDialog
         open={confirmRemove}
@@ -501,7 +487,7 @@ function HookEditor({
 
   return (
     <div className="flex flex-col">
-      <Field label={t("settings.hooks.fieldName")}>
+      <Field className="mb-2" label={t("settings.hooks.fieldName")}>
         <Input
           type="text"
           value={draft.name}
@@ -512,7 +498,7 @@ function HookEditor({
         />
       </Field>
 
-      <Field label={t("settings.hooks.fieldEvent")}>
+      <Field className="mb-2" label={t("settings.hooks.fieldEvent")}>
         <Select.Root
           value={draft.event}
           onValueChange={(value) => onChange({ event: value as HookEvent })}
@@ -558,19 +544,16 @@ function HookEditor({
           用 warning 色而不是 subtle:它是一条"你现在这么配不会起作用"的警告,和上面那句
           "什么时候跑"不是一回事 —— 同款配色见这一页顶上的 problems 区。 */}
       {unsupportedBy.length > 0 && (
-        <div className="-mt-1 mb-3 flex items-start gap-2 rounded border border-warning/40 bg-warning/10 px-2.5 py-2 text-[0.7143em] leading-relaxed text-warning">
-          <IconAlertTriangle size={13} className="mt-0.5 shrink-0" />
-          <span>
-            {t("settings.hooks.eventUnsupported", { engines: enginesText(unsupportedBy) })}
-          </span>
-        </div>
+        <ErrorNote tone="warning" icon={IconAlertTriangle} className="-mt-1 mb-3">
+          {t("settings.hooks.eventUnsupported", { engines: enginesText(unsupportedBy) })}
+        </ErrorNote>
       )}
 
       {/* 匹配规则只对**有主语的事件**有意义。不适用时**藏起来而不是禁用**:
           一个灰着的输入框会让人以为"这里能填,只是现在不让",而它其实永远填不了。 */}
       {subject !== null && (
         <>
-          <Field label={t(MATCHER_TEXT[subject].label)}>
+          <Field className="mb-2" label={t(MATCHER_TEXT[subject].label)}>
             <Input
               type="text"
               value={draft.matcher ?? ""}
@@ -588,7 +571,7 @@ function HookEditor({
         </>
       )}
 
-      <Field label={t("settings.hooks.fieldCommand")}>
+      <Field className="mb-2" label={t("settings.hooks.fieldCommand")}>
         <textarea
           value={draft.command}
           spellCheck={false}
@@ -601,7 +584,7 @@ function HookEditor({
         {t("settings.hooks.commandHint")}
       </p>
 
-      <Field label={t("settings.hooks.fieldTimeout")}>
+      <Field className="mb-2" label={t("settings.hooks.fieldTimeout")}>
         <Input
           type="number"
           value={String(draft.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS)}
@@ -756,13 +739,3 @@ function RunRow({
   );
 }
 
-/* ────────────────────────── 小零件 ────────────────────────── */
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="mb-2 block">
-      <span className="mb-1 block text-[0.7857em] font-medium text-content-muted">{label}</span>
-      {children}
-    </label>
-  );
-}

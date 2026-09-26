@@ -37,6 +37,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { TranscriptBlock } from "@contracts/runtime";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
+import { formatStepDuration } from "@renderer/lib/time.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { formatFullTime, formatRelativeTime } from "@renderer/lib/time.js";
 import { useSessionStore, type ChatMessage } from "@renderer/stores/sessionStore.js";
@@ -137,9 +138,7 @@ function useElapsed(node: NodeView): string | null {
   }, [ticking]);
   if (node.startedAt === undefined) return null;
   const end = node.endedAt ?? Date.now();
-  const sec = Math.max(0, Math.round((end - node.startedAt) / 1000));
-  if (sec < 60) return `${sec}s`;
-  return `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, "0")}s`;
+  return formatStepDuration(end - node.startedAt);
 }
 
 /**

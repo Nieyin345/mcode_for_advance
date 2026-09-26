@@ -36,6 +36,10 @@
  * 这里下次打开才看得到新形状。这是**刻意**的:那次运行按的是**当时**那份图,
  * 中途换掉形状反而会让看板和实际执行的步骤对不上。
  *
+ * **读哪张图**看的是**这次运行**的 `workflowId`,没有运行才退回输入框选中的模式
+ * (2026-09-26 改,见 `workflowLive.ts` 的 `boardWorkflowIdOf`)。从前只看后者 ——
+ * 图跑着时换了药丸、或者跑的是自动化,看板就拿另一张图的格子去对这次运行,整张图灰着。
+ *
  * ## 手机端要包住
  *
  * `api.workflow.get` 在手机端的 web shim 里不存在 —— 访问它会**同步抛**
@@ -52,7 +56,13 @@ import { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import { MENU_ITEM_CLASS, SidebarMenu } from "@renderer/components/sidebar/Sidebar.js";
-import { useWorkflowLive, dismissSettled, type LiveNode, type LiveRun } from "@renderer/lib/workflowLive.js";
+import {
+  useWorkflowLive,
+  dismissSettled,
+  boardWorkflowIdOf,
+  type LiveNode,
+  type LiveRun,
+} from "@renderer/lib/workflowLive.js";
 import { Divider } from "@renderer/components/layout/Divider.js";
 import { SideChatPanel } from "@renderer/components/chat/SideChatPanel.js";
 import {
@@ -225,25 +235,6 @@ export function WorkflowBoardPanel() {
       .catch(() => {});
   };
 
-  useEffect(() => {
-    let cancelled = false;
-    setDoc(null);
-    setOpenId(null);
-    if (!workflowId) return;
-    void (async () => {
-      try {
-        const res = await api.workflow.get({ id: workflowId });
-        if (!cancelled) setDoc(res.workflow);
-      } catch {
-        // 手机端 web shim 没有这个命名空间(见文件头)—— 当没有图。
-        if (!cancelled) setDoc(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [workflowId]);
-
   /** 这个对话的现场。取**最近一次开始**的那一次 —— 一个对话同时只跑一张图
    *  (`graphRunIntent` 保证了),留"最近"是为了执行完之后还看得见刚才那张图的收场状态。 */
   const run: LiveRun | null = useMemo(() => {
@@ -255,6 +246,28 @@ export function WorkflowBoardPanel() {
     }
     return best;
   }, [live.runs, sessionId]);
+
+  /** 画哪张图:这次运行按的那张优先(见文件头「图长什么样是另读一次」)。 */
+  const boardWorkflowId = boardWorkflowIdOf(run, workflowId);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDoc(null);
+    setOpenId(null);
+    if (!boardWorkflowId) return;
+    void (async () => {
+      try {
+        const res = await api.workflow.get({ id: boardWorkflowId });
+        if (!cancelled) setDoc(res.workflow);
+      } catch {
+        // 手机端 web shim 没有这个命名空间(见文件头)—— 当没有图。
+        if (!cancelled) setDoc(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [boardWorkflowId]);
 
   const halted = sessionId ? live.halted[sessionId] : undefined;
 

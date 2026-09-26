@@ -18,10 +18,18 @@
  * / `workflow-node-result`)。这里不代替它们,只是**多记一份**给看板用 —— 所以删掉这个
  * 文件对话里的东西一样在,删不掉。
  *
- * ## 订阅是惰性的
+ * ## 订阅是常驻的(2026-09-26 改;从前是惰性的)
  *
- * 同 `workflowQueued.ts`:第一个订阅者出现才挂 `api.on.claudeEvent`,最后一个退订就摘。
- * 右栏没开、也没人读的时候,这些事件一条都不收(它们本来也不落盘、刷新即丢)。
+ * 从前同 `workflowQueued.ts`:第一个订阅者出现才挂 `api.on.claudeEvent`,最后一个退订
+ * 就摘。**这是用户说「画布实时进度效果很差」的根因之一**:看板只在右栏开着**且**停在
+ * 「流程」页时才挂载(`RightPanel.tsx` 的 `tab === "flow"`),于是图起跑时右栏关着、
+ * 或者停在文件 / 终端页,那段时间的事件一条都不收 —— 之后再打开看板,已经在跑、已经
+ * 跑完的格子全是灰的,看起来像"图根本没动"。而这些事件不落盘,错过就补不回来。
+ *
+ * 现在 `App` 启动时调一次 {@link startWorkflowLive},从此常驻、不再摘。代价可以忽略:
+ * 过滤只比 `type` 的四个字面量,别的事件进来就走;状态有 `MAX_RUNS` 封顶。
+ * 组件照旧经 `useWorkflowLive` 订阅 —— 没调过 `startWorkflowLive` 的环境(手机端、
+ * 无头脚本)退回原来的惰性行为,不会更差。
  *
  * ## 这份状态是**临时的**,不是存档
  *
@@ -137,6 +145,11 @@ let snapshot: WorkflowLiveSnapshot = { runs: {}, halted: {} };
 const listeners = new Set<() => void>();
 
 let unsubscribe: (() => void) | null = null;
+/** 钉住了就不摘(见文件头「订阅是常驻的」)。只有 {@link startWorkflowLive} 会置真。 */
+let pinned = false;
+
+/** 事件源的形状 —— 就是 `api.on.claudeEvent`。单列一个名字是为了测试能换一个假的进来。 */
+type ClaudeEventSource = typeof api.on.claudeEvent;
 
 function emit(next: WorkflowLiveSnapshot): void {
   snapshot = next;
@@ -161,7 +174,7 @@ function patchNode(
 ): Record<string, LiveRun> {
   const now = Date.now();
   const prevRun = runs[runId];
-  const run: LiveRun = prevRun ?? {
+  const created: LiveRun = prevRun ?? {
     runId,
     sessionId,
     workflowId,
@@ -170,6 +183,11 @@ function patchNode(
     nodes: {},
     order: [],
   };
+  // 只有 `queued` 带 `workflowId`(见 `@contracts/runtime`)。这次运行要是先被
+  // progress / result 建出来的,当时只能记成空串 —— 之后任何一条带着它的事件都要**补上**,
+  // 否则看板永远不知道这次运行按的是哪张图(见 `boardWorkflowIdOf`)。只补空的,不覆盖。
+  const run: LiveRun =
+    created.workflowId === "" && workflowId !== "" ? { ...created, workflowId } : created;
   const prevNode = run.nodes[nodeId];
   if (prevNode) {
     const merged: LiveNode = { ...prevNode, ...patch, phase: patch.phase ?? prevNode.phase };
@@ -375,9 +393,9 @@ function apply(e: RuntimeEvent): void {
   }
 }
 
-function ensureSubscribed(): void {
+function ensureSubscribed(on: ClaudeEventSource = api.on.claudeEvent): void {
   if (unsubscribe !== null) return;
-  unsubscribe = api.on.claudeEvent((msg) => {
+  unsubscribe = on((msg) => {
     const event = msg?.event;
     if (event === undefined) return;
     const type = event.type;
@@ -395,7 +413,7 @@ function ensureSubscribed(): void {
 }
 
 function releaseIfIdle(): void {
-  if (listeners.size > 0 || unsubscribe === null) return;
+  if (pinned || listeners.size > 0 || unsubscribe === null) return;
   unsubscribe();
   unsubscribe = null;
 }
@@ -416,6 +434,31 @@ export function useWorkflowLive(): WorkflowLiveSnapshot {
     () => snapshot,
     () => snapshot,
   );
+}
+
+/**
+ * 常驻订阅:应用启动时调一次(`App.tsx`),之后看板开不开、停在哪一页,事件都照记。
+ * 见文件头「订阅是常驻的」。重复调用无害(`ensureSubscribed` 自己判重)。
+ */
+export function startWorkflowLive(): void {
+  pinned = true;
+  ensureSubscribed();
+}
+
+/**
+ * 看板该画哪张图:**这次运行实际按的那张优先**,没有(还没跑过 / 现场里没记到)才退回
+ * 输入框当前选中的模式。
+ *
+ * 从前只看后者(`sessionStore.workflowId`)—— 那是"**下一句话**按哪个模式跑"的槽位,
+ * 不是"**这次运行**按哪张图"。两者一分叉(图跑着时用户换了药丸,或者是自动化起的运行),
+ * 看板就拿 A 图的格子去对 B 图的现场:一格都对不上,整张图灰着,正在跑的那一格根本
+ * 不在图上 —— 和"没接通"看起来一模一样。
+ */
+export function boardWorkflowIdOf(
+  run: Pick<LiveRun, "workflowId"> | null,
+  selected: string,
+): string {
+  return run !== null && run.workflowId !== "" ? run.workflowId : selected;
 }
 
 
@@ -477,4 +520,24 @@ export function __applyWorkflowLiveEvent(e: RuntimeEvent): WorkflowLiveSnapshot 
 /** 测试用:读当前那份现场(不喂事件)。`dismissSettled` 那类不经过事件的写入要靠它验。 */
 export function __workflowLiveSnapshot(): WorkflowLiveSnapshot {
   return snapshot;
+}
+
+/**
+ * 测试用:同 {@link startWorkflowLive},但事件源由调用方给 —— 无头脚本里 `api` 是桩,
+ * 挂不上真的事件流。返回一个拆除函数:摘掉事件源、清回"没订阅、没钉住",用例之间隔离。
+ */
+export function __startWorkflowLiveWith(on: ClaudeEventSource): () => void {
+  pinned = true;
+  ensureSubscribed(on);
+  return () => {
+    pinned = false;
+    unsubscribe?.();
+    unsubscribe = null;
+  };
+}
+
+/** 测试用:走一遍"最后一个组件退订了"那条路,返回此刻事件源是否还挂着。 */
+export function __releaseWorkflowLiveIfIdle(): boolean {
+  releaseIfIdle();
+  return unsubscribe !== null;
 }

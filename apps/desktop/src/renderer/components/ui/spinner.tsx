@@ -66,3 +66,26 @@ export function Skeleton({ className, ...props }: SkeletonProps) {
     />
   );
 }
+
+/**
+ * 一整块区域在等数据时的那一行：转圈 + 一句话，居中。
+ *
+ * 设置页里原来手写了七八份（`IconLoader2 size={14} className="animate-spin"` 加一个
+ * `t("…loading")`），字号有 0.85em 的、有 0.7857em 的，上下留白各不相同。
+ * 列表的骨架还没有形状可画时用它；有形状（列表行、卡片）时用 `Skeleton`。
+ * 文案由调用方传进来（已翻译），这里不持有任何措辞。
+ */
+export function LoadingNote({ label, className }: { label: React.ReactNode; className?: string }) {
+  return (
+    <div
+      role="status"
+      className={cn(
+        "flex items-center justify-center gap-2 px-4 py-8 text-[0.7857em] text-content-subtle",
+        className,
+      )}
+    >
+      <Spinner size="xs" aria-hidden />
+      {label}
+    </div>
+  );
+}

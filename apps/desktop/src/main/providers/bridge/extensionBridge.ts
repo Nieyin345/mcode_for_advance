@@ -541,7 +541,18 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 function openStream(req: IncomingMessage, res: ServerResponse): void {
   // 后连的顶掉先连的：配对是"一台浏览器"的事，留着旧连接只会遮蔽活的那个
   // （典型场景：用户在设置里改了地址，旧标签页的连接还没断）。
-  if (client) dropClient("replaced by a newer connection");
+  // 断开前先告诉旧连接"你被顶掉了"：同一个扩展装在两个浏览器里(Edge + Chrome)时，
+  // 被顶掉的一方若只看到断流，会当成网络抖动重连回来，再把对方顶掉 —— 两边每 30 秒
+  // 互抢一次。收到 `replaced` 的扩展会停在原地，直到用户点"重新连接"。
+  // 旧版扩展不认识这个事件，会按协议错误停下 —— 同样不再互抢，只是提示不准。
+  if (client) {
+    try {
+      writeEvent(client.res, { type: "replaced" });
+    } catch {
+      // 旧连接已经断了，照常收拾
+    }
+    dropClient("replaced by a newer connection");
+  }
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
