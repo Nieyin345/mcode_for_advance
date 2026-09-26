@@ -1270,6 +1270,7 @@ class AutomationRunner {
       // **不 await**(同 `runner.startWorkflowRun` 的约定):一次运行可能好几分钟。
       void startWorkflowRun({
         session,
+        originSessionId: opts?.originSessionId ?? null,
         cwd,
         prompt,
         // 这一格就是这次运行的起点:调度器把它**预置进结局**,于是触发器节点自己
@@ -1331,9 +1332,10 @@ class AutomationRunner {
     projectId = projectId || SYSTEM_AUTOMATION_PROJECT_ID;
     const existing = SessionRepo.findAutomationByWorkflow(trigger.workflowId, projectId);
     if (existing !== undefined) {
-      if (originSessionId !== undefined && existing.parentSessionId !== originSessionId) {
-        SessionRepo.setParentSessionId(existing.id, originSessionId);
-        return { ...existing, parentSessionId: originSessionId };
+      const parentSessionId = originSessionId ?? null;
+      if (existing.parentSessionId !== parentSessionId) {
+        SessionRepo.setParentSessionId(existing.id, parentSessionId);
+        return { ...existing, parentSessionId };
       }
       return existing;
     }

@@ -454,5 +454,15 @@ if (MODE === "write") {
   check("★ 存档读不回来 → 不能重试", retryableRun(SESSION_FAILED, "run_broken", "B") === null);
 }
 
+// The origin belongs to the run, including restart/retry, not a reused session.
+{
+  const raw = { ...snapshotOf([]), originSessionId: "origin-for-this-run" };
+  const decoded = decodeSnapshot(JSON.stringify(raw));
+  eq("run origin survives snapshot decode", decoded && "originSessionId" in decoded ? decoded.originSessionId : undefined, raw.originSessionId);
+  const manual = decodeSnapshot(JSON.stringify({ ...raw, originSessionId: null }));
+  eq("explicitly absent origin survives decode", manual && "originSessionId" in manual ? manual.originSessionId : undefined, null);
+  eq("invalid origin rejects snapshot", decodeSnapshot(JSON.stringify({ ...raw, originSessionId: 42 })), null);
+}
+
 console.log(`\n${total - failures}/${total} passed`);
 if (failures > 0) process.exit(1);

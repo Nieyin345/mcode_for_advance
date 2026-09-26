@@ -556,6 +556,8 @@ export function cancelWorkflowRun(sessionId: string): boolean {
  */
 export async function startWorkflowRun(args: {
   session: Session;
+  /** Only an explicit caller may establish an origin; never inherit a reused session. */
+  originSessionId?: string | null;
   /** 节点回合的工作目录。v1 与父会话相同(见文件头"不做写隔离")。
    *  **续跑可以不传** —— 那时以存档里的为准(见下)。 */
   cwd?: string;
@@ -613,6 +615,9 @@ export async function startWorkflowRun(args: {
 }): Promise<RunResult | null> {
   const { session, userMessage } = args;
   const resumed = args.resume;
+  const originSessionId = resumed !== undefined
+    ? resumed.snapshot.originSessionId ?? null
+    : args.originSessionId ?? null;
   const doc = getWorkflow(session.workflowId);
   if (!doc || doc.nodes.length === 0) return null;
   const reviewError = workflowReviewError(doc);
@@ -729,6 +734,7 @@ export async function startWorkflowRun(args: {
    * 下一份存档不会比上一份更少。
    */
   let latest: RunSnapshot = resumed?.snapshot ?? {
+    originSessionId,
     workflowRevision: revision,
     inFlightNodeIds: [],
     prompt,
@@ -742,7 +748,7 @@ export async function startWorkflowRun(args: {
 
   /** 普通快照尽力写;派发前由调用方检查返回值,不能无存档跑副作用。 */
   const writeRun = (status: "running" | "success" | "failed" | "cancelled", state: RunState, durable = false): boolean => {
-    latest = { workflowRevision: revision, inFlightNodeIds: [...active.inFlightNodeIds], prompt, cwd, state, attempts: [...choiceAttempts] };
+    latest = { workflowRevision: revision, originSessionId, inFlightNodeIds: [...active.inFlightNodeIds], prompt, cwd, state, attempts: [...choiceAttempts] };
     return saveRun({ runId, sessionId: session.id, workflowId: session.workflowId, status, snapshot: latest }, { durable });
   };
 
@@ -989,11 +995,11 @@ export async function startWorkflowRun(args: {
     input: NodeRunInput,
   ): Promise<NodeOutcome> => {
     const auto = injectModeOf(node.params) === "auto";
-    // **解析投递目标。** 只在要真发的那一刻解析 —— parentSessionId 是起跑时记下的,
+    // **解析投递目标。** 只在要真发的那一刻解析 —— originSessionId 属于本次运行并随快照恢复,
     // 这里改不了它;但会话行是每次现查的(重启之后对象表是空的,按 id 重取)。
     let target = session;
     if (injectTargetOf(node.params) === "origin") {
-      const originId = session.parentSessionId;
+      const originId = originSessionId;
       if (originId === undefined || originId === null || originId.length === 0) {
         return {
           status: "failed",

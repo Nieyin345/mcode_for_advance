@@ -77,6 +77,7 @@ import {
   AUTO_CONVERT_WORKFLOW_ID,
   AUTO_DOWNLOAD_WORKFLOW_ID,
   WATCH_WORKFLOW_ID,
+  WATCH_TRIGGER_NODE_ID,
   getBuiltinWorkflow,
 } from "@main/orchestration/builtins.js";
 import { runWorkflow, type RunPorts, type RunReport, type RunState } from "@main/orchestration/scheduler.js";
@@ -2514,6 +2515,10 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
       eq("B 守望项目归属", SessionRepo.get(watchB)?.projectId, projectB);
       eq("B 守望发起会话", SessionRepo.get(watchB)?.parentSessionId, originB);
       eq("B 守望工作目录", runs.at(-1)?.cwd, dirB);
+      await runner.reloadAll();
+      eq("普通手动入口可在守望完成后起跑", (await runner.runNow(WATCH_WORKFLOW_ID, WATCH_TRIGGER_NODE_ID)).ok, true);
+      eq("普通手动入口不沿用上一次守望发起人", SessionRepo.get(runs.at(-1)!.sessionId)?.parentSessionId, null);
+
     } finally { setRunBusy(a, false); setRunBusy(b, false); runner.dispose(); }
   }
 

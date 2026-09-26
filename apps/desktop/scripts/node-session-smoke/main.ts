@@ -512,7 +512,7 @@ const originalRunSave = repo.save;
   const offset = rt.sentPrompts.length;
   const safety = setTimeout(() => cancelWorkflowRun(autoId), 8000);
   try {
-    const done = startWorkflowRun({ session: SessionRepo.get(autoId)!, prompt: "inject", cwd: process.cwd() });
+    const done = startWorkflowRun({ session: SessionRepo.get(autoId)!, originSessionId: chatId, prompt: "inject", cwd: process.cwd() });
     await new Promise(r => setTimeout(r, 40));
     eq("自动注入在普通聊天忙时等待", rt.sentPrompts.length, offset);
     SettingRepo.set(`automation.eventChain.${autoId}`, JSON.stringify({ version: 1, workflowIds: [workflowId] }));
@@ -523,6 +523,12 @@ const originalRunSave = repo.save;
     eq("普通用户的先前请求没有自动化标记", rt.sentPrompts[offset - 1]?.automationOrigin, undefined);
     eq("自动注入不等待模型回复即可完成图", (await done)?.status, "success");
   } finally { clearTimeout(safety); rt.holdConversationTurns(false); rt.finishTurn(chatId); cancelWorkflowRun(autoId); }
+  // A reused session still has chatId persisted. Without an explicit per-run
+  // origin it must not send to that chat (or reconstruct the target on retry).
+  const beforeManual = rt.sentPrompts.length;
+  const manual = await startWorkflowRun({ session: SessionRepo.get(autoId)!, prompt: "manual", cwd: process.cwd() });
+  eq("没有本次发起人时 origin 节点明确失败", manual?.status, "failed");
+  eq("旧 parentSessionId 不能造成真实提供方投递", rt.sentPrompts.length, beforeManual);
 }
 
 rmSync(DATA, { recursive: true, force: true });

@@ -102,6 +102,8 @@ const KEEP_RUNS_PER_SESSION = 10;
  *   少了它回头之后的轮次编号会重头数。
  */
 export interface RunSnapshot {
+  /** Per-run injection target. Missing in legacy snapshots means no origin. */
+  originSessionId?: string | null;
   /** Current persistence envelope version. Legacy rows may omit this field. */
   version?: typeof WORKFLOW_RUN_SNAPSHOT_VERSION;
   /** Wall-clock time at which this snapshot was captured. */
@@ -165,6 +167,7 @@ export function decodeSnapshot(raw: string): RunSnapshot | null {
       version?: unknown;
       capturedAt?: unknown;
       workflowRevision?: unknown;
+      originSessionId?: unknown;
       inFlightNodeIds?: unknown;
       prompt?: unknown;
       cwd?: unknown;
@@ -185,6 +188,8 @@ export function decodeSnapshot(raw: string): RunSnapshot | null {
     if (parsed.inFlightNodeIds !== undefined &&
       (!Array.isArray(parsed.inFlightNodeIds) || parsed.inFlightNodeIds.length > 1000 ||
         !parsed.inFlightNodeIds.every((id): id is string => typeof id === "string" && id.length > 0))) return null;
+    if (parsed.originSessionId !== undefined && parsed.originSessionId !== null &&
+      (typeof parsed.originSessionId !== "string" || parsed.originSessionId.length === 0)) return null;
     const state = parsed.state;
     if (typeof state !== "object" || state === null) return null;
     if (!Array.isArray(state.record) || !Array.isArray(state.outcomes)) return null;
@@ -225,6 +230,7 @@ export function decodeSnapshot(raw: string): RunSnapshot | null {
       capturedAt: typeof parsed.capturedAt === "number" && Number.isFinite(parsed.capturedAt) ? parsed.capturedAt : 0,
       ...(parsed.workflowRevision !== undefined ? { workflowRevision: parsed.workflowRevision as string } : {}),
       ...(parsed.inFlightNodeIds !== undefined ? { inFlightNodeIds: parsed.inFlightNodeIds as string[] } : {}),
+      ...(parsed.originSessionId !== undefined ? { originSessionId: parsed.originSessionId as string | null } : {}),
       prompt: typeof parsed.prompt === "string" ? parsed.prompt : "",
       cwd: parsed.cwd,
       state: {
