@@ -262,6 +262,10 @@ export interface PluginState {
   installedAt: string;
   source: PluginSourceInfo;
   components: PluginComponents;
+  /** Built-in provider ids that can consume at least one executable component
+   * of this plugin. Missing means an older host that did not expose this
+   * metadata; clients must keep the row visible for compatibility. */
+  compatibleProviderIds?: string[];
 }
 
 /** A marketplace added by the user (or materialized from BUILTIN_MARKETPLACES).

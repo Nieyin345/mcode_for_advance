@@ -1,3 +1,5 @@
+import { join as memoryInstructionPath } from "node:path";
+import { ensureMaterialized, instructionsSourcePath } from "@main/lib/appContext.js";
 /**
  * Claude Agent SDK provider — wraps `query()` from @anthropic-ai/claude-agent-sdk
  * and implements the AgentProvider interface from @contracts/provider.
@@ -635,7 +637,17 @@ function narrowByName<T extends { name: string }>(items: T[], names: string[] | 
  *   加载。插件技能与通用技能共用同一张矩阵 —— 被用户从 claude 收走的插件技能
  *   不进名单，引擎就看不到。
  */
-async function claudeSkillsOption(pluginNames?: readonly string[]): Promise<Options["skills"]> {
+async function claudeSkillsOption(
+  pluginNames?: readonly string[],
+  allowNames?: readonly string[],
+): Promise<Options["skills"]> {
+  // A node allowlist narrows the globally enabled set; it must never revive a
+  // skill the user disabled for Claude in global management. Unknown names are
+  // retained for shareable workflows and builtin/plugin discovery.
+  if (allowNames?.length) {
+    const enginesMap = readEnginesMap(defaultSkillsRoot());
+    return allowNames.filter((name) => engineEnabled(enginesMap, name, "claude"));
+  }
   const enabled = enabledSkillNames(defaultSkillsRoot(), "claude");
   if (enabled === null) return "all";
   const enginesMap = readEnginesMap(defaultSkillsRoot());
@@ -840,7 +852,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       // can still self-discover/autoload skills), restricted → an allowlist of
       // the enabled skills + plugin contributions. Do NOT also add 'Skill' to
       // allowedTools. See sdk.d.ts Options.skills.
-      skills: req.skills && req.skills.length > 0 ? req.skills : await claudeSkillsOption(req.pluginNames),
+      skills: await claudeSkillsOption(req.pluginNames, req.skills),
       // SDK #359: On Windows there is a timing/buffering race in the stdio
       // control-stream transport that causes "Tool permission request failed:
       // AbortError: Tool permission stream closed before response received"
@@ -978,6 +990,8 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     // 钉在 ["user"] 后：user 级仍解析到 CLAUDE_CONFIG_DIR=~/.mcode（skills、
     // settings.json、CLAUDE.md 都还是 Mcode 托管的那份），项目级一律不读。
     options.settingSources = ["user"];
+    options.env = { ...options.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" };
+    ensureMaterialized(instructionsSourcePath(dataRoot()), [memoryInstructionPath(MCODE_CONFIG_DIR, "CLAUDE.md")]);
 
     // Diagnostic: dump the effective env actually handed to the SDK
     // subprocess, so model-routing failures against third-party gateways can
@@ -1030,6 +1044,8 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     const requestPlanApproval = ctx.requestPlanApproval;
 
     const canUseTool: CanUseTool = async (toolName, input, opts) => {
+      // Shared memory handlers perform fail-closed approval even when SDK modes bypass hooks.
+      if (toolName.startsWith(`mcp__${MEMORY_MCP_SERVER}__memory_`)) return { behavior: "allow" };
       if (toolName === "AskUserQuestion") {
         // AskUserQuestion only fires here when the native tool is available
         // (capabilities.supportsAskUserQuestion). Sentinel fallback path
@@ -1478,7 +1494,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
         // 记忆那一摊(mcode-memory)—— 让 AI 自己**记**东西(`memory_write` 等)。
         // 存储与注入早就有了,缺的一直是这个写入口:没有它,记忆库永远是空的,
         // 注入的那段快照永远是空串(见 mcp/memoryServer.ts 文件头)。
-        buildMemoryMcpServer(),
+        buildMemoryMcpServer({ sessionId: req.sessionId, context: ctx }),
         getOutputStyleSetting(),
         enabledPluginsPromise,
         enabledPluginsPromise.then((plugins) => getPluginMcpServers(plugins)),
@@ -1577,6 +1593,9 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
        *  写死在下面,免得"哪一份生效"取决于对象键的遍历顺序。 */
       const take = (name: string, config: unknown): void => {
         if (kept[name] !== undefined) return;
+        // Per-node narrowing may only subtract from global management; a stale
+        // workflow value must not revive a server disabled for Claude.
+        if (!claudeMaySee(name)) return;
         const parsed = parseMcpConfig(config);
         if (parsed) kept[name] = parsed as unknown as NonNullable<Options["mcpServers"]>[string];
       };

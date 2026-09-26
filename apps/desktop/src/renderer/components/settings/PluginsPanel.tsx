@@ -558,7 +558,12 @@ function InstalledPane({
           busy={ops.busyKey === "install:git"}
           onBusy={() => ops.setBusyKey("install:git")}
           onDone={(res) => void ops.afterInstall(res)}
-          onError={(msg) => ops.setError(msg)}
+          onError={(msg) => {
+            // A thrown IPC error never reaches afterInstall (the normal path
+            // that clears busyKey), so release the form here as well.
+            ops.setBusyKey(null);
+            ops.setError(msg);
+          }}
         />
         <button
           type="button"
@@ -806,10 +811,14 @@ function PluginDetail({ plugin }: { plugin: PluginState }) {
           )}
         </div>
         <div className="mb-2.5 flex flex-wrap gap-x-3.5 gap-y-1 border-b border-edge pb-2 text-[0.75em] text-content-subtle">
-          <span>{t("settings.plugins.matrixSkills")}</span>
-          <span>{t("settings.plugins.matrixMcp")}</span>
-          <span>{t("settings.plugins.matrixCommands")}</span>
-          <span className="text-warning">{t("settings.plugins.matrixHooks")}</span>
+          {plugin.components.skills.length > 0 && <span>{t("settings.plugins.matrixSkills")}</span>}
+          {plugin.components.mcpServers.length > 0 && <span>{t("settings.plugins.matrixMcp")}</span>}
+          {(plugin.components.commands.length > 0 || plugin.components.agents.length > 0) && (
+            <span>{t("settings.plugins.matrixCommands")}</span>
+          )}
+          {plugin.components.hooks.length > 0 && (
+            <span className="text-warning">{t("settings.plugins.matrixHooks")}</span>
+          )}
         </div>
         <ComponentDetails plugin={plugin} />
         <div className="mt-2.5 break-all text-[0.7143em] text-content-subtle">
@@ -843,6 +852,7 @@ function sourceLabelKey(kind: PluginState["source"]["kind"]): MessageId {
 function ComponentDetails({ plugin }: { plugin: PluginState }) {
   const { t } = useI18n();
   const c = plugin.components;
+  const compatible = new Set(plugin.compatibleProviderIds ?? ["claude-sdk", "codex-sdk", "pi-sdk"]);
 
   const namedList = (
     title: string,
@@ -872,6 +882,34 @@ function ComponentDetails({ plugin }: { plugin: PluginState }) {
 
   return (
     <div>
+      <div className="mb-2.5 first:mt-0">
+        <div className="mb-1 text-[0.7143em] font-semibold text-content-muted">
+          {t("settings.plugins.compatibleProviders")}
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {([
+            ["claude-sdk", "Claude"],
+            ["codex-sdk", "Codex"],
+            ["pi-sdk", "Pi"],
+          ] as const).map(([id, label]) => {
+            const on = compatible.has(id);
+            return (
+              <span
+                key={id}
+                title={t(on ? "settings.plugins.providerCompatible" : "settings.plugins.providerIncompatible", { provider: label })}
+                className={cn(
+                  "rounded px-1.5 py-0.5 text-[10px] font-medium leading-tight",
+                  on
+                    ? "bg-accent/15 text-accent"
+                    : "bg-surface-hover text-content-subtle line-through decoration-content-subtle/60",
+                )}
+              >
+                {label}
+              </span>
+            );
+          })}
+        </div>
+      </div>
       {namedList(t("settings.plugins.cmpSkills"), c.skills)}
       {namedList(t("settings.plugins.cmpCommands"), c.commands, "/")}
       {namedList(t("settings.plugins.cmpAgents"), c.agents)}

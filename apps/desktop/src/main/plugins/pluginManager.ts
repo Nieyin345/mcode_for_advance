@@ -45,6 +45,7 @@ import {
   PluginMarketplaceManifestSchema,
   McpServerConfigSchema,
   type McpServerConfig,
+  type PluginComponents,
   type PluginManifest,
   type PluginMarketEntrySource,
   type PluginMarketplaceRecord,
@@ -344,6 +345,34 @@ function installedRootOf(name: string): string | null {
   return newest ? path.join(base, newest) : null;
 }
 
+/** Providers that can consume at least one executable component. An explicit
+ * `kind: plugin` declaration wins; legacy ecosystem manifests are inferred
+ * from the delivery paths documented in @contracts/plugin. */
+export function compatibleProviderIdsForPlugin(
+  manifest: PluginManifest,
+  components: PluginComponents,
+): string[] {
+  const declared = manifest.capabilities?.find(
+    (capability) => capability.kind === "plugin" && capability.id === manifest.name,
+  )?.providers;
+  if (declared && declared.length > 0) return [...new Set(declared)];
+
+  const hasSkills = components.skills.length > 0;
+  const hasMcp = components.mcpServers.length > 0;
+  const hasClaudeOnly =
+    components.commands.length > 0 || components.agents.length > 0 || components.hooks.length > 0;
+  // A component-free plugin can still contribute host-side node types or future
+  // fields. Do not hide it merely because this summary cannot see those.
+  if (!hasSkills && !hasMcp && !hasClaudeOnly) {
+    return ["claude-sdk", "codex-sdk", "pi-sdk"];
+  }
+
+  const out = ["claude-sdk"];
+  if (hasSkills || hasMcp) out.push("codex-sdk");
+  if (hasSkills) out.push("pi-sdk");
+  return out;
+}
+
 /** Build one PluginState row; null when the directory holds no valid
  *  manifest (orphans from interrupted installs are invisible by design). */
 function toPluginState(rootDir: string, enabled: Set<string>): PluginState | null {
@@ -355,6 +384,7 @@ function toPluginState(rootDir: string, enabled: Set<string>): PluginState | nul
   }
   if (!resolved) return null;
   const record = readInstallRecord(rootDir);
+  const components = summarizeComponents(rootDir, resolved.manifest);
   return {
     name: resolved.manifest.name,
     version: pluginVersionOf(resolved.manifest),
@@ -363,7 +393,8 @@ function toPluginState(rootDir: string, enabled: Set<string>): PluginState | nul
     enabled: enabled.has(resolved.manifest.name),
     installedAt: record?.installedAt ?? "",
     source: record?.source ?? { kind: "unknown", ref: "" },
-    components: summarizeComponents(rootDir, resolved.manifest),
+    components,
+    compatibleProviderIds: compatibleProviderIdsForPlugin(resolved.manifest, components),
   };
 }
 
@@ -947,6 +978,7 @@ export interface EnabledPlugin {
   name: string;
   rootDir: string;
   manifest: PluginManifest;
+  compatibleProviderIds: string[];
   /** True when the plugin declares hooks (parsed for display; v1 never
    *  executes them — the Claude provider's disableAllHooks is the backstop). */
   hasHooks: boolean;
@@ -979,8 +1011,15 @@ export async function getEnabledPlugins(): Promise<EnabledPlugin[]> {
     try {
       const resolved = findPluginManifest(rootDir);
       if (!resolved) continue;
-      const hasHooks = summarizeComponents(rootDir, resolved.manifest).hooks.length > 0;
-      out.push({ name: resolved.manifest.name, rootDir, manifest: resolved.manifest, hasHooks });
+      const components = summarizeComponents(rootDir, resolved.manifest);
+      const hasHooks = components.hooks.length > 0;
+      out.push({
+        name: resolved.manifest.name,
+        rootDir,
+        manifest: resolved.manifest,
+        hasHooks,
+        compatibleProviderIds: compatibleProviderIdsForPlugin(resolved.manifest, components),
+      });
     } catch {
       /* invalid manifest on disk — skip this plugin for this turn */
     }

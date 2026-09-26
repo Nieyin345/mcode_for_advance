@@ -572,6 +572,7 @@ export const en = {
   "settings.mcp.addServer": "Add MCP server",
   "settings.mcp.builtinSection": "Built-in",
   "settings.mcp.builtinSectionDesc": "MCP servers bundled with the app, running in-process.",
+  "settings.mcp.builtinProviderHint": "The built-in browser MCP is available to Claude only. Pi has equivalent native browser tools; Codex cannot mount this in-process server.",
   "settings.mcp.deleteTitle": "Delete MCP server",
   "settings.mcp.deleteDescPre": "Delete user-level server \"",
   "settings.mcp.deleteDescMid": "\"? The entry will be removed from ",
@@ -668,6 +669,9 @@ export const en = {
   "settings.plugins.hooksNotExecuted":
     "{n} hooks declared — not executed in this version; their automation stays inactive",
   "settings.plugins.reviewTitle": "Plugin installed",
+  "settings.plugins.compatibleProviders": "Available providers",
+  "settings.plugins.providerCompatible": "Available to {provider}",
+  "settings.plugins.providerIncompatible": "Not available to {provider}",
   "settings.plugins.reviewDesc":
     "The plugin is installed DISABLED. Review its components below, then choose whether to enable it.",
   "settings.plugins.reviewMcpNote":

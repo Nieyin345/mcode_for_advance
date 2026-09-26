@@ -123,6 +123,21 @@ function engineLabel(e: MatrixEngine): string {
   return e === "claude" ? "Claude" : e === "codex" ? "Codex" : "Pi";
 }
 
+function moveTabFocus(event: React.KeyboardEvent<HTMLButtonElement>): void {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  const tabs = Array.from(
+    event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [],
+  );
+  if (tabs.length === 0) return;
+  event.preventDefault();
+  const current = Math.max(0, tabs.indexOf(event.currentTarget));
+  const next = event.key === "Home" ? 0
+    : event.key === "End" ? tabs.length - 1
+    : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  tabs[next]?.focus();
+  tabs[next]?.click();
+}
+
 /** 按引擎分组时的组序:通用 → 各引擎内部 → 部分引擎共享。
  *
  *  ⚠️ **没有"内置垫底"了**(2026-09-20):那四个文档技能已移除,`builtin` 这个来源
@@ -229,6 +244,9 @@ export function SkillsPanel() {
   const [bundles, setBundles] = useState<SkillBundle[]>([]);
   const [groupMode, setGroupMode] = useState<"bundle" | "engine">("bundle");
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [engineBusyName, setEngineBusyName] = useState<string | null>(null);
+  // Matrix writes replace the complete engine tuple, so serialize them.
+  const matrixBusyRef = useRef(false);
   // ── Collapsible groups ── Groups start COLLAPSED: with 266 skills in five
   // bundles, an all-expanded list is exactly the wall the user complained
   // about. "expanded" is an allowlist (empty = all collapsed), persisted in
@@ -537,15 +555,26 @@ export function SkillsPanel() {
     current: SkillEngineState,
     engine: keyof SkillEngineState,
   ) => {
+    if (matrixBusyRef.current) return;
+    matrixBusyRef.current = true;
+    setEngineBusyName(name);
+    setError(null);
     const wanted = { ...current, [engine]: !current[engine] };
     try {
       const res = await api.skills.enginesSet({ name, ...wanted });
-      const resolved = res.ok && res.perEngine ? res.perEngine : wanted;
+      if (!res.ok || !res.perEngine) {
+        setError(res.error ?? t("settings.operationFailed"));
+        return;
+      }
+      const resolved = res.perEngine;
       setPanelSkills((prev) =>
         prev.map((s) => (s.name === name && s.source !== "builtin" ? { ...s, perEngine: resolved } : s)),
       );
     } catch (err) {
       setError((err as Error).message);
+    } finally {
+      matrixBusyRef.current = false;
+      setEngineBusyName(null);
     }
   };
 
@@ -559,6 +588,7 @@ export function SkillsPanel() {
     engine: keyof SkillEngineState,
     want: boolean,
   ) => {
+    if (matrixBusyRef.current) return;
     // **项目技能不进这一档。** 矩阵（`.mcode-engines.json`）管的是**通用库**给哪个
     // 引擎用;项目技能属于那个项目、跟着项目目录走,不参与全局矩阵 —— 主进程也不会给
     // 它挂 `perEngine`（见 `listSkillsForProject` 里那句）。放进来会让用户以为
@@ -688,6 +718,8 @@ export function SkillsPanel() {
               type="button"
               role="tab"
               aria-selected={active}
+              tabIndex={active ? 0 : -1}
+              onKeyDown={moveTabFocus}
               onClick={() => setView(id)}
               className={cn(
                 "rounded border px-2.5 py-1 text-[0.8571em] transition-colors",
@@ -1006,6 +1038,7 @@ export function SkillsPanel() {
                   void setSkillEngines(info.name, info.perEngine, engine);
                 }
               }}
+              engineBusy={bulkBusy || engineBusyName === selected.name}
               content={editContent}
               loading={loading}
               saving={saving}
@@ -1112,6 +1145,7 @@ function SkillSourceEditor({
   skill,
   perEngine,
   onToggleEngine,
+  engineBusy,
   content,
   loading,
   saving,
@@ -1127,6 +1161,7 @@ function SkillSourceEditor({
   perEngine?: SkillEngineState;
   /** Toggle one engine's checkbox; the panel owns the RPC + state update. */
   onToggleEngine: (engine: keyof SkillEngineState) => void;
+  engineBusy: boolean;
   content: string | null;
   loading: boolean;
   saving: boolean;
@@ -1173,6 +1208,7 @@ function SkillSourceEditor({
                   type="button"
                   role="switch"
                   aria-checked={on}
+                  disabled={engineBusy}
                   onClick={() => onToggleEngine(engine)}
                   title={
                     on
@@ -1781,6 +1817,8 @@ function ImportSkillsDialog({
                         type="button"
                         role="tab"
                         aria-selected={isActive}
+                        tabIndex={isActive ? 0 : -1}
+                        onKeyDown={moveTabFocus}
                         onClick={() => setActiveToolRaw(tool)}
                         className={cn(
                           "flex items-center gap-1.5 rounded-t-md border-b-2 px-2.5 py-1.5 transition-colors",

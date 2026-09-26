@@ -123,12 +123,13 @@ export async function buildPiSkillLoader(
   opts: BuildPiSkillLoaderOptions,
 ): Promise<PiResourceLoader> {
   const { sdk, cwd, allowNames, extraSkillPaths, systemPromptAppends, extensionFactories } = opts;
-  // The effective name filter: composer picks win (an explicit selection is
-  // the user asking for exactly those); otherwise the universal library's
+  // The effective name filter: explicit picks narrow the global matrix; they
+  // never revive a skill disabled for Pi. Otherwise the universal library's
   // per-engine matrix decides. null = unrestricted (no override needed).
+  const enginesMap = readEnginesMap(defaultSkillsRoot());
   const allowSet: Set<string> | null =
     allowNames && allowNames.length > 0
-      ? new Set(allowNames)
+      ? new Set(allowNames.filter((name) => engineEnabled(enginesMap, name, "pi")))
       : (() => {
           const enabled = enabledSkillNames(defaultSkillsRoot(), "pi");
           return enabled === null ? null : new Set(enabled);
@@ -143,7 +144,6 @@ export async function buildPiSkillLoader(
   // the app — intentionally stay out of the matrix; they load under every
   // engine regardless.)
   const universalRoot = defaultSkillsRoot();
-  const enginesMap = readEnginesMap(universalRoot);
   const matrixRestrictsPi = engineRestricted(enginesMap, "pi");
   // Names the universal library actually carries, for the same-name dedupe:
   // Pi also scans its own defaults (~/.pi/agent/skills), and a skill present
@@ -166,6 +166,7 @@ export async function buildPiSkillLoader(
   }
 
   const loader = new sdk.DefaultResourceLoader({
+    noContextFiles: true, // Host resolves bounded AGENTS.md/CLAUDE.md consistently.
     cwd,
     // `getAgentDir()` honors `PI_CODING_AGENT_DIR` and the package's
     // `piConfig.configDir`; hand-building `~/.pi/agent` would miss both.

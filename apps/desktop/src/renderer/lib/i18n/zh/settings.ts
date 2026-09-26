@@ -577,6 +577,7 @@ export const zh = {
   "settings.mcp.addServer": "新增 MCP Server",
   "settings.mcp.builtinSection": "内置",
   "settings.mcp.builtinSectionDesc": "随应用内置、运行在本进程内的 MCP server。",
+  "settings.mcp.builtinProviderHint": "内置浏览器 MCP 仅供 Claude 使用。Pi 有等价的原生浏览器工具；Codex 无法挂载这个进程内 server。",
   "settings.mcp.deleteTitle": "删除 MCP server",
   "settings.mcp.deleteDescPre": "确认删除用户级 server「",
   "settings.mcp.deleteDescMid": "」?该配置将从 ",
@@ -671,6 +672,9 @@ export const zh = {
   "settings.plugins.matrixHooks": "Hooks:当前不执行",
   "settings.plugins.hooksNotExecuted": "已声明 {n} 条 hooks —— 当前版本不执行,相关自动化不会生效",
   "settings.plugins.reviewTitle": "插件已安装",
+  "settings.plugins.compatibleProviders": "可用引擎",
+  "settings.plugins.providerCompatible": "可用于 {provider}",
+  "settings.plugins.providerIncompatible": "不可用于 {provider}",
   "settings.plugins.reviewDesc":
     "插件安装后默认未启用。请审查以下组件,确认后再启用。",
   "settings.plugins.reviewMcpNote": "MCP server 将在启用的会话中按上述命令/地址启动。",

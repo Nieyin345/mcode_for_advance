@@ -287,7 +287,11 @@ export function McpPanel() {
     setBusyKey(rowKey(s));
     try {
       const res = await api.mcp.enginesSet({ name: s.name, ...wanted });
-      const resolved = res.ok && res.perEngine ? res.perEngine : wanted;
+      if (!res.ok || !res.perEngine) {
+        setError(res.error ?? t("settings.operationFailed"));
+        return;
+      }
+      const resolved = res.perEngine;
       setServers((prev) =>
         prev.map((x) => (x.scope === s.scope && x.name === s.name ? { ...x, perEngine: resolved } : x)),
       );
@@ -513,6 +517,19 @@ export function McpPanel() {
             }
             desc={builtin.detail}
           >
+            <div
+              className="flex shrink-0 items-center gap-1"
+              role="group"
+              aria-label={t("settings.mcp.engines")}
+              title={t("settings.mcp.builtinProviderHint")}
+            >
+              <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-accent">
+                Claude
+              </span>
+              <span className="rounded bg-surface-hover px-1.5 py-0.5 text-[10px] font-medium leading-tight text-content-subtle line-through decoration-content-subtle/60">
+                Codex
+              </span>
+            </div>
             <Switch
               checked={builtin.enabled}
               onCheckedChange={() => void toggle(builtin)}

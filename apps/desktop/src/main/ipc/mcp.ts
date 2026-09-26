@@ -493,6 +493,9 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       kind: "builtin",
       detail: BUILTIN_DETAIL,
       enabled: !state.browserDisabled,
+      // This in-process MCP transport is mounted by Claude only. Codex cannot
+      // connect to it; Pi exposes equivalent browser tools outside MCP.
+      perEngine: { claude: true, codex: false },
     });
 
     // Remote servers' OAuth state. The CLI's needs-auth flag is a live signal
