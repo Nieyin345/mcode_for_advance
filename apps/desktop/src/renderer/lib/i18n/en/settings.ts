@@ -1506,7 +1506,7 @@ export const en = {
   "settings.nav.libraryTypes": "Documents",
   "settings.libraryTypes.title": "Documents",
   "settings.libraryTypes.desc":
-    "Two things about the library: which papers the AI still cannot read (conversion status), and the tiered prompts it gets. Create / delete / rename all live in the sidebar; this page only writes the prompts — leave one empty and there is none.",
+    "Three things about the library: which papers the AI still cannot read (conversion status), the tiered prompts it gets, and suppression. Create / delete / rename all live in the sidebar; this page only writes prompts and ticks suppression — leave one empty and there is none.",
   "settings.libraryTypes.section.group": "Group prompts",
   "settings.libraryTypes.section.type": "Type prompts",
   "settings.libraryTypes.section.collection": "Collection prompts",
@@ -1531,7 +1531,7 @@ export const en = {
   "settings.libraryTypes.saved": "Saved",
   "settings.libraryTypes.section.suppress": "Suppression",
   "settings.libraryTypes.suppressHint":
-    "Suppressed items **never** enter the AI's context — even when you attach them by hand. Ticking a group/type/collection blocks everything under it.",
+    "Suppressed items **never** enter the AI's context — even when you attach them by hand. Ticking a group/category blocks everything under it, including nested sub-categories.",
   "settings.libraryTypes.suppressNodes": "By category",
   "settings.libraryTypes.suppressExts": "By file type",
   "settings.libraryTypes.suppressExtPh": "e.g. pdf, then Enter",

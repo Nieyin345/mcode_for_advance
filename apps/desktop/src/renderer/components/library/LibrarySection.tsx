@@ -276,12 +276,9 @@ export function LibrarySection({
   const [renamingGroup, setRenamingGroup] = useState(false);
   const [groupDraft, setGroupDraft] = useState("");
   const [groupError, setGroupError] = useState<string | null>(null);
-  /** 小类的新建 / 重命名输入。新建要多一步:选用途(查资料用 / 照着写用)。 */
-  const [creatingKind, setCreatingKind] = useState(false);
-  const [newKindDraft, setNewKindDraft] = useState("");
-  const [renamingKind, setRenamingKind] = useState<string | null>(null);
-  const [kindDraft, setKindDraft] = useState("");
-  const [kindError, setKindError] = useState<string | null>(null);
+  // （kind 退役:「小类」层没了。这里原有五个「小类新建/重命名」的 state 已删 ——
+  //   它们只剩声明、没有任何读写方;第二级(分类)的新建如今走大类右键的第一项
+  //   (见 GroupContextMenu),对应的输入行是下面的 creatingRootInput。
   /** 菜单动作(删除等)失败时的提示 —— 那时没有输入行可挂,统一显示在段头下方。 */
   const [manageError, setManageError] = useState<string | null>(null);
 
@@ -968,8 +965,10 @@ export function LibrarySection({
   };
 
   /**
-   * 新建 **一级** 分类(段头「+」)的输入框 —— 它不属于任何一个分类,所以不画在树里,
-   * 而是和「新建大类」「新建小类」排在一起(见 render 里那一段注释)。
+   * 新建**分类**的输入框。入口是**大类右键的第一项「新建分类」**(2026-09-26 接回:
+   * kind 退役那轮删了旧入口(小类 tab 的菜单),此后没有任何地方把 creating 置真 ——
+   * 输入框一直在,永远出不来,「左栏不能新建分类」报的就是它)。
+   * 它画在树的末尾、回收站之前(见 render 里那处)。
    */
   const creatingRootInput = creating && (
     <MiniInput
@@ -1275,7 +1274,7 @@ export function LibrarySection({
       {/* 表头在最上、组内的类型标签在其下 —— 先有"这是什么"(组名),再有"看哪一类"
           (文献 / 教材 / 笔记…)。反过来会让人先看到一排并列的词、才反应过来它们在
           给什么分类。表头与「项目」表头同款;标题就是**组名**(左栏右键可改)。
-          右键表头 = 大类的管理菜单 —— 而且**「新建小类」排在菜单第一项**,这就是
+          右键表头 = 大类的管理菜单 —— 而且**「新建分类」排在菜单第一项**,这就是
           第二级的唯一入口(见 GroupContextMenu 的文件头)。
           表头右侧**没有「+」**:三级的三个加号全撤了,只留整个区域最下面那一个。
           左侧那个箭头 = **这一级自己折叠**(用户要的「每一级都能折叠」)——
@@ -1303,17 +1302,15 @@ export function LibrarySection({
         <>
 
       {/**
-       * ── 三级的"新建"输入框,**全在这一带** ──
+       * ── 「新建」输入框,全在这一带 ──
        *
-       * 三个级各有一个「新建」的**菜单入口**,菜单项顺序一律是「先建下一级、再管自己」
-       * (见三个 ContextMenu 的文件头)。输入框则各贴各的父级:
+       * 层级只有三级:大类 → 分类 → 条目(kind 退役,2026-09-24)。「新建下一级」的
+       * 菜单入口在上一级右键的第一项(见 GroupContextMenu 的文件头),输入框各贴各的父级:
        *
-       *   三级(分类,段根下) → creatingRootInput —— **在树里**(它即将成为的那一行,
-       *                        见下面 `<ul>` 里那处;2026-09-21 从列表外挪进去)
-       *   二级(小类)         → 下面的 creatingKind
-       *   四级(子分类)       → 树里那一行正下方的 InlineInputRow(必须挨着父行)
-       *   一级(大类)         → 不在这里 —— 它是**整片区域的**一级,入口在
-       *                        `LibrarySections` 最下面那一行「+」(见那边的注释)
+       *   分类(段根下) → creatingRootInput —— **在树里**(它即将成为的那一行,
+       *                    见下面 `<ul>` 里那处;2026-09-21 从列表外挪进去)
+       *   大类          → 不在这里 —— 它是**整片区域的**一级,入口在
+       *                    `LibrarySections` 最下面那一行「+」(见那边的注释)
        */}
 
       {/* 大类的新建 / 重命名输入 —— 菜单触发后就地摆一行(与集合行内输入同一套手感) */}
@@ -1461,6 +1458,13 @@ export function LibrarySection({
       <GroupContextMenu
         target={ctxGroup}
         onClose={() => setCtxGroup(null)}
+        onNewCollection={() => {
+          // 展开本段、亮出输入行(输入行在树的末尾,见 creatingRootInput)。
+          setCollapsed(false);
+          setCreating(true);
+          setName("");
+          setError(null);
+        }}
         onRename={() => {
           setCreatingGroup(false);
           setRenamingGroup(true);

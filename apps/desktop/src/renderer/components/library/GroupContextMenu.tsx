@@ -1,15 +1,15 @@
 /**
- * 左栏**大类标题行**的右键菜单 —— 新建小类 / 重命名 / 删除大类。
+ * 左栏**大类标题行**的右键菜单 —— 新建分类 / 重命名 / 删除大类。
  *
  * ## 菜单项的顺序就是"层级顺序",不是随手排的
  *
  * 用户定的规矩是「**右键第 N 级 → 新建第 N+1 级**」:
  *
- *   右键大类标题 → 新建**小类**(本菜单第一项,它建的正是下一级)
- *   右键小类 tab → 新建**分类**(KindContextMenu)
- *   右键分类行   → 新建**子分类**(CollectionContextMenu)
+ *   右键大类标题 → 新建**分类**(本菜单第一项,它建的正是下一级)
+ *   右键分类行   → 到头,不往下建(层级只有三级:大类 → 分类 → 条目;
+ *                  见 CollectionContextMenu 里撤掉「新建子集合」的那段注释)
  *
- * 所以"往下一级建"永远排在**最前**、"管我自己"(重命名/删除)排后面 —— 三个菜单
+ * 所以"往下一级建"永远排在**最前**、"管我自己"(重命名/删除)排后面 —— 两个菜单
  * 都是这个顺序。用户在任一级右键,第一项永远是他最可能想要的那个。
  *
  * ## 这里**没有**「新建大类」—— 那是**同级**动作,入口在整片区域最下面
@@ -39,12 +39,15 @@ export interface GroupCtxTarget {
 export function GroupContextMenu({
   target,
   onClose,
+  onNewCollection,
   onRename,
   onAttachToChat,
   onDelete,
 }: {
   target: GroupCtxTarget | null;
   onClose: () => void;
+  /** 新建**分类**(下一级)。「右键第 N 级 → 建第 N+1 级」的那一项,永远排第一。 */
+  onNewCollection: () => void;
   onRename: () => void;
   /** 把本段挂进当前对话(附件键 `g:<组 id>`)。 */
   onAttachToChat: () => void;
@@ -56,6 +59,21 @@ export function GroupContextMenu({
 
   return (
     <SidebarMenu open={!!target} anchor={anchor} onClose={onClose}>
+      {/* 新建分类 —— 「右键第 N 级 → 新建第 N+1 级」,永远第一项。kind 退役后
+          第二级就是分类,这里是它唯一的新建入口(2026-09-26 接回:退役那轮删掉了
+          旧入口「新建小类」却没补上这一项,左栏从此建不了第二级 —— creating
+          那个输入框一直在,只是没人能把它打开)。 */}
+      <Menu.Item
+        onClick={() => {
+          onNewCollection();
+          onClose();
+        }}
+        className={MENU_ITEM_CLASS}
+      >
+        <IconPlus size={12} className="shrink-0" />
+        {t("library.collection.new")}
+      </Menu.Item>
+      <MenuDivider />
       {/* 挂进当前对话 —— 用户要求「每一级右键都可以选择加入到当前对话」。
           大类是范围的**最外一层**:挂它等于把这个大类下所有小类的资料都给了 AI
           (主进程那边按 `g:<组 id>` 展开清单)。 */}

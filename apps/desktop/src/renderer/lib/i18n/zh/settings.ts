@@ -1491,13 +1491,13 @@ export const zh = {
   "settings.nav.libraryTypes": "文档管理",
   "settings.libraryTypes.title": "文档管理",
   "settings.libraryTypes.desc":
-    "资料库这一套的两件事:哪些文献 AI 还读不到(转换情况),以及给 AI 的分级提示词。类型与大类的管理(新建/删除/重命名)都在左栏,这里只写提示词,不写就没有。",
+    "资料库这一套的三件事:哪些文献 AI 还读不到(转换情况)、给 AI 的分级提示词、以及屏蔽。大类与分类的管理(新建/删除/重命名)都在左栏,这里只写提示词、勾屏蔽,不写就没有。",
   "settings.libraryTypes.section.group": "大类提示词",
   "settings.libraryTypes.section.type": "小类提示词",
   "settings.libraryTypes.section.collection": "集合提示词",
   "settings.libraryTypes.section.suppress": "屏蔽",
   "settings.libraryTypes.suppressHint":
-    "被屏蔽的东西**不会**进入 AI 的上下文 —— 哪怕你手动挂它。勾一个大类/小类/集合，它下面的全部内容都跟着被挡。",
+    "被屏蔽的东西**不会**进入 AI 的上下文 —— 哪怕你手动挂它。勾一个大类/分类，它下面的全部内容(含子分类里的条目)都跟着被挡。",
   "settings.libraryTypes.suppressNodes": "按分类屏蔽",
   "settings.libraryTypes.suppressExts": "按文件类型屏蔽",
   "settings.libraryTypes.suppressExtPh": "如 pdf，回车添加",

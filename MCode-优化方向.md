@@ -2016,6 +2016,46 @@ dropSuppressed、MCP libraryServer、workflows 的 library.py）里前三个走�
 摆的最小 schema，不是真库文件；屏蔽设置页的勾选树没起 dev 实看（它是否把嵌套分类
 展示成树、勾父级时界面怎么提示，只看了 i18n 文案）。
 
+### 3.21 左栏「新建分类」断链 + 设置页「文档管理」整页失踪（2026-09-26，远程第四轮）
+
+用户报障:「左边栏不能新建小类,右键没有选项了,前端的 ui 问题很大,不止这一处」。
+排查结论:**三处伤都来自同一笔提交** —— bcd3a2e(撤掉 kind)删掉了引用 kind 的
+UI,却没有把等价功能接回三级结构。tsc 抓不到这类断链:代码都合法,只是入口没了。
+
+**修的三处**:
+
+1. **左栏建不了第二级(分类)**。铁证:`LibrarySection` 里 `creating`(新建分类输入行
+   的开关)全文件**只有 `setCreating(false)`**,置真的地方一个都没有 —— 输入行永远
+   出不来;`GroupContextMenu` 文件头承诺「第一项 = 新建下一级」,渲染出来却只有
+   挂对话/重命名/删除,`IconPlus` import 着没人用;`creatingKind` 等五个小类时代的
+   state 只剩声明。修法:大类右键**第一项接回「新建分类」**(i18n 键
+   `library.collection.new` 本来就在),onNewCollection 展开本段并打开树末尾的
+   输入行;五个死 state 删掉;三处撒谎的注释(层级表、「新建小类排第一项」、
+   输入框归属)改成三级现状。
+2. **设置页「文档管理」整页失踪**。`LibraryTypesPanel.tsx` 在 bcd3a2e 里被整个
+   删掉 —— 但屏蔽规则编辑器、大类/分类提示词、转换情况**只活在这一页上**:删后
+   后端照常判定,用户却没有任何入口能配;`settings.libraryTypes.*` 整组 i18n、
+   preload 的 suppressGet/suppressSave 全成孤儿,连报错文案还在说「去设置改」。
+   重建为无 kind 版(533 行旧版为蓝本):转换情况 + 大类提示词 + 分类提示词
+   (按大类→树序排,回收站不给写)+ 屏蔽(大类→分类**含嵌套缩进**的勾选树,
+   继承勾标 ↖,语义与主进程 suppressKeysOfItem 的父链判定一致 + 按扩展名)。
+   SettingsPage 挂回 nav「文档管理」(data-root 之后);zh/en 的 desc 与
+   suppressHint 文案改为两级 + 子分类措辞。
+3. **ConversionSection 孤儿收养**。它的注释声称「挂在数据位置页」,实际无人
+   import —— 用户一直看不到「还差几篇没转 Markdown」。现挂在新面板顶部(操作段
+   排最前,沿旧版的理由)。
+
+**顺带的全量排查**:全 renderer 孤儿组件扫描(每个 .tsx 找 importer),唯一剩
+`layout/StatusBar.tsx` —— 7dad3ae 起就没再挂载,但 engine-regressions-smoke
+**断言"可见组件必须用 describeStatusBar"**,两边自相矛盾。没动:挂回还是连
+smoke 一起退役,要产品决定,先记在这儿。
+
+**验证**:desktop tsc ✅(全部改动之后)。**没验的(诚实版)**:没起 dev 实看新
+面板与右键菜单(判断依据是代码路径与旧版蓝本);屏蔽树对「规则里存着、树上已
+不存在」的僵尸节点不显示也不可取消(旧版同样如此,`parseSuppressJson` 会在下次
+保存时丢掉认不出的);engine-regressions-smoke 没在远端跑(它断言的矛盾正是
+待决事项本身)。
+
 ---
 
 ## 六、我这次没验的
