@@ -18,11 +18,67 @@ export const en = {
   "settings.nav.terminal": "Terminal",
   "settings.nav.browser": "Browser",
   "settings.nav.lsp": "LSP",
+  "settings.nav.office": "Document editing",
   // Monitoring sits right before Usage: both answer "how is this machine
   // running" — usage shows what it cost, monitoring shows what happened.
   "settings.nav.monitoring": "Monitoring",
   "settings.nav.usage": "Usage",
   "settings.nav.about": "About",
+
+  // ── Document editing (OnlyOffice Document Server) ──
+  "settings.office.sectionTitle": "OnlyOffice Document Server",
+  "settings.office.sectionDesc":
+    "Visual editing of Word / Excel / PowerPoint files in the main pane is provided by OnlyOffice Docs. It is a standalone service you install locally (or on your LAN); without it Office files are preview-only.",
+  "settings.office.serverUrl": "Server URL",
+  "settings.office.serverUrlDesc": "Root URL of the Document Server, e.g. http://127.0.0.1:8080.",
+  "settings.office.jwtSecret": "JWT secret",
+  "settings.office.jwtSecretDesc": "Must match the Document Server's JWT_SECRET (signature checks are on by default since 7.2).",
+  "settings.office.callbackHost": "Callback host",
+  "settings.office.callbackHostDesc":
+    "Host name the Document Server uses to reach this machine for fetching the file and saving it back. Leave empty to auto-detect; a DS running in Docker Desktop usually needs host.docker.internal.",
+  "settings.office.callbackHostPlaceholder": "Auto (127.0.0.1 locally / host.docker.internal for Docker)",
+  "settings.office.test": "Test connection",
+  "settings.office.saved": "Saved",
+  "settings.office.notConfigured": "No server URL yet",
+  "settings.office.reachable": "Connected: {url}",
+  "settings.office.unreachable": "Cannot reach the Document Server",
+  "settings.office.setupTitle": "Manual install / troubleshooting",
+  "settings.office.setupDesc": "“Install” above is usually all you need. Manual path and common issues below; full guide in docs/onlyoffice.md.",
+  "settings.office.setup1": "Manual: download the Windows Community Edition installer (onlyoffice-documentserver.exe) from onlyoffice.com and run it; it pulls in PostgreSQL / RabbitMQ etc. itself.",
+  "settings.office.setup2": "Then come back, click “Re-detect” → “Use this install”; Mcode reads the URL and secret automatically. If it says the config needs repair, click “Repair config” (enables private-IP access so DS can call back to this machine).",
+  "settings.office.setup3": "Service not running: start ds-docservice and ds-converter in services.msc; first start takes 1–2 minutes.",
+  "settings.office.setup4": "For a DS on another machine / in Docker, fill in the URL and JWT secret above and click “Test connection”.",
+
+  // Local install section
+  "settings.office.local.title": "Local install",
+  "settings.office.local.desc": "No Docker needed: downloads the official Windows installer (~1 GB), installs silently and fills in the URL and secret automatically. Windows will ask for administrator approval (UAC) once.",
+  "settings.office.local.status": "Local status",
+  "settings.office.local.statusDesc": "Checks %ProgramFiles%\\ONLYOFFICE\\DocumentServer and its services.",
+  "settings.office.local.detecting": "Detecting…",
+  "settings.office.local.notInstalled": "Not installed",
+  "settings.office.local.installedNotRunning": "Installed, service not running",
+  "settings.office.local.running": "Running · port {port}",
+  "settings.office.local.redetect": "Re-detect",
+  "settings.office.local.port": "Install port",
+  "settings.office.local.portDesc": "Local port the Document Server listens on. Default 8080 (80 is often taken).",
+  "settings.office.local.install": "Download & install",
+  "settings.office.local.useThis": "Use this install",
+  "settings.office.local.repair": "Repair config",
+  "settings.office.local.repairHint": "Private-IP access is off, so the editor cannot fetch files; repairing needs admin approval.",
+  "settings.office.local.uacHint": "Click “Yes” in the Windows authorization prompt. The installer runs silently and may take several minutes.",
+  "settings.office.local.unsupported": "One-click install is Windows-only; on other systems use Docker or a remote server and fill in the URL below.",
+  "settings.office.local.phase.idle": "",
+  "settings.office.local.phase.downloading": "Downloading installer…",
+  "settings.office.local.phase.installing": "Installing (silent)…",
+  "settings.office.local.phase.configuring": "Writing config and restarting services…",
+  "settings.office.local.phase.waiting": "Waiting for the Document Server to start (1–2 minutes on first run)…",
+  "settings.office.local.phase.done": "Installed; URL and secret filled in automatically",
+  "settings.office.local.phase.error": "Install failed",
+  "settings.office.local.phase.cancelled": "Cancelled",
+  "settings.office.local.err.uac": "Administrator approval was declined; nothing was installed.",
+  "settings.office.local.err.notResponding": "The install script finished but the Document Server never responded. Check ds-docservice in services.msc, or click “Re-detect” later.",
+  "settings.office.local.err.notInstalled": "No local install detected.",
+  "settings.office.local.err.notRunning": "Installed locally but the service is not responding; start it first.",
 
   // ── left nav group eyebrows (SettingsPage) ──
   "settings.navGroup.general": "General",
@@ -656,6 +712,9 @@ export const en = {
   "settings.plugins.source.unknown": "Unknown source",
   "settings.plugins.installedAt": "Installed {time}",
   "settings.plugins.pathLabel": "Path",
+  "settings.plugins.compatibleProviders": "Available providers",
+  "settings.plugins.providerCompatible": "Available to {provider}",
+  "settings.plugins.providerIncompatible": "Not available to {provider}",
   "settings.plugins.cmpSkills": "Skills",
   "settings.plugins.cmpCommands": "Commands",
   "settings.plugins.cmpAgents": "Agents",
@@ -669,9 +728,6 @@ export const en = {
   "settings.plugins.hooksNotExecuted":
     "{n} hooks declared — not executed in this version; their automation stays inactive",
   "settings.plugins.reviewTitle": "Plugin installed",
-  "settings.plugins.compatibleProviders": "Available providers",
-  "settings.plugins.providerCompatible": "Available to {provider}",
-  "settings.plugins.providerIncompatible": "Not available to {provider}",
   "settings.plugins.reviewDesc":
     "The plugin is installed DISABLED. Review its components below, then choose whether to enable it.",
   "settings.plugins.reviewMcpNote":
@@ -1035,15 +1091,17 @@ export const en = {
   "settings.dataRoot.title": "Data location",
   "settings.dataRoot.locationTitle": "Data root",
   "settings.dataRoot.desc":
-    "Chat history, the papers, textbooks and notes libraries, and templates all live under this one folder — copying it is a complete backup.",
+    "Chat history, the unified document library, and templates all live under this one folder — copying it is a complete backup.",
   "settings.dataRoot.currentPath": "Current location",
   "settings.dataRoot.treeTitle": "Folder layout",
   "settings.dataRoot.tree.db": "chat history · all settings",
-  "settings.dataRoot.tree.library": "home of the three libraries",
+  "settings.dataRoot.tree.library": "unified document library",
   "settings.dataRoot.tree.papers":
-    "PDFs of the papers and textbooks libraries (content-addressed — importing the same file twice stores it once)",
+    "PDFs stored by content hash (all are managed in the same document library)",
+  "settings.dataRoot.tree.files":
+    "Attached Word, image, and other files; linked files remain at their original paths",
   "settings.dataRoot.tree.markdown": "converted Markdown — this is what the AI reads",
-  "settings.dataRoot.tree.notes": "notes library (one .md each, editable in the app)",
+  "settings.dataRoot.tree.notes": "document-library notes (one .md each, editable in the app)",
   "settings.dataRoot.tree.collections": "manifests handed to the AI",
   "settings.dataRoot.tree.exports": "exported citation files (.bib / .txt)",
   "settings.dataRoot.tree.templates": "templates (slides / LaTeX / Word / code / images)",
@@ -1085,7 +1143,7 @@ export const en = {
     "This graph is empty. Drop a node in with “Add node” above, then drag it where you want it — drag from the dot on a card's right edge onto another node to draw the arrow, and the arrow points at what runs next.",
   "settings.workflows.graphSummary": "{nodes} nodes · {edges} dependencies",
   "settings.workflows.portConnectHint": "Drag onto another node to make it wait for this one",
-  "settings.workflows.edgeRemoveHint": "Click to remove this dependency",
+  "settings.workflows.edgeRemoveHint": "Select a connection, then use Delete/Backspace or the delete button. This can be undone.",
 
   // ── Automations ──
   // Same library, same canvas, same inspector as workflows — the only difference is
@@ -1114,7 +1172,7 @@ export const en = {
     "Runs when an HTTP request comes in. This one is not wired up yet — it is kept only so older definitions still load.",
   // This field is read-only: its value is derived from the trigger node (see deriveTrigger).
   "settings.automation.triggerDerived":
-    "This follows the trigger node: to change the trigger, edit that node's parameters.",
+    "Below is the saved configuration of each trigger. Select its canvas node to change it.",
 
   // ── Automations: run once / what has run ──
   "settings.automation.dashboard": "Automation status",
@@ -1122,7 +1180,7 @@ export const en = {
   "settings.automation.lastError": "Last error",
   "settings.automation.runNow": "Run once now",
   "settings.automation.runNowHint":
-    "Starts one run from the trigger {name} — the same path it takes when it fires on its own. The result shows up in the history below.",
+    "Run the saved version once from “{name}” (even if automatic triggering is disabled).",
   "settings.automation.runNoTrigger":
     "This automation has no trigger, so it cannot run — add a trigger node and draw lines from it.",
   "settings.automation.runFailed": "That run did not start.",
@@ -1340,7 +1398,7 @@ export const en = {
   // The main agent: the graph's entry point. New workflows ship with one and it
   // cannot be deleted (see isProtectedNode in workflowView).
   "settings.workflows.mainNodeHint": "Main agent · this graph's entry point, cannot be deleted",
-  "settings.automation.triggerNodeHint": "Trigger · the starting point of this automation, cannot be deleted",
+  "settings.automation.triggerNodeHint": "The last trigger cannot be deleted; you can disable it.",
   "settings.workflows.mainTypeMissing":
     "The node-type catalog did not load, so a workflow cannot be created right now — a new graph would be missing its main agent. The catalog error is shown above.",
   "settings.workflows.paramPick": "Pick one",
@@ -1354,6 +1412,8 @@ export const en = {
   "settings.workflows.paramRefUnset": "Not set",
   "settings.workflows.paramRefEmpty":
     "Nothing to pick from on this machine yet — typing a name works too.",
+  "settings.workflows.paramRefLoading": "Loading available items…",
+  "settings.workflows.paramRefLoadFailed": "Could not load available items. Saved values were kept.",
   // Multi-select ref params (skills / MCP servers / plugins) rest as a single
   // collapsed row: the answer is "leave it empty" nine times out of ten, and
   // three open lists would eat most of the inspector. The collapsed row still
@@ -1367,6 +1427,7 @@ export const en = {
   "settings.workflows.paramRefNoMatch": "Nothing matches.",
   "settings.workflows.paramRefAddPlaceholder": "Type a name, press Enter",
   "settings.workflows.paramRefMissingHint": "Not on this machine — click to remove",
+  "settings.workflows.paramRefMissingCount": "{n} unavailable",
   // A single-select ref param holds a value that is not among the current
   // candidates: usually a shared workflow referencing a skill/model this machine
   // lacks, or the "model" field after its engine changed. The value is kept and
@@ -1377,6 +1438,9 @@ export const en = {
   "settings.workflows.paramRefScopeUser": "User config",
   "settings.workflows.paramRefScopeBuiltin": "Built-in",
   "settings.workflows.paramRefScopePlugin": "From plugin",
+  "settings.workflows.mcpUnsupportedProvider":
+    "{provider} does not support MCP. Saved values are shown below for portability, but cannot be edited or used with this engine.",
+  "settings.workflows.clearUnsupportedValues": "Clear saved values",
   // The output-variable table (`kind: "variables"`) — rows of name + example.
   // ⚠️ The word "JSON" is deliberately absent from the UI: it is JSON underneath,
   // but that is the app's business. See contracts/outputConstraint.
@@ -1423,7 +1487,7 @@ export const en = {
     "A built-in workflow's name and description follow the interface language and cannot be changed here — its process text and its node graph can.",
   "settings.workflows.promptPlaceholder": "Write down this workflow's process…",
   "settings.workflows.promptAutoSaveHint":
-    "A graph workflow's process lives in its nodes; this text is extra context appended on top of it, and is usually left empty. Changes are saved automatically.",
+    "A graph workflow is defined by its nodes. Edits remain in-memory drafts until you click Save or press Ctrl/Cmd+S.",
   "settings.workflows.newWorkflow": "New workflow",
   "settings.workflows.newWorkflowName": "New workflow",
   "settings.workflows.actionFailed": "That did not work: {error}",
@@ -1482,6 +1546,7 @@ export const en = {
   "settings.workflows.profileNamePlaceholder": "Name this profile",
   "settings.workflows.removeProfile": "Delete this profile",
   "settings.workflows.profileSaveFailed": "Could not save",
+  "settings.workflows.profileRemoveFailed": "Could not remove the agent profile",
   "settings.workflows.profilesTitle": "Agent profiles",
   "settings.workflows.profilesIntro":
     "A saved sub-agent configuration. Set a node up on the canvas, hit “Save as profile”, then pick it when adding a node.",
@@ -1551,5 +1616,36 @@ export const en = {
   "settings.libraryTypes.newGroupName": "New group",
   "settings.libraryTypes.groupName": "Group name",
   "settings.libraryTypes.ungrouped": "Ungrouped (hidden in sidebar)",
+
+  // Workflow/automation correctness and editor affordances.
+  "settings.workflows.inspectorToggle": "Inspector",
+  "settings.workflows.undo": "Undo",
+  "settings.workflows.redo": "Redo",
+  "settings.workflows.zoomIn": "Zoom in",
+  "settings.workflows.zoomOut": "Zoom out",
+  "settings.workflows.fitCanvas": "Fit to view",
+  "settings.workflows.deleteEdge": "Delete selected edge",
+  "settings.workflows.nodeSelect": "Select node: {name}",
+  "settings.workflows.edgeSelect": "Select connection: {name}",
+  "settings.automation.loadFailed": "Could not load automation status/history: {error}",
+  "settings.automation.staleData": "Showing the last successful snapshot; it may be out of date.",
+  "settings.automation.savedTriggers": "Saved triggers",
+  "settings.automation.runTrigger": "Trigger to run",
+  "settings.automation.saveBeforeRun": "Save your changes before running. Status below describes the saved version.",
+  "settings.automation.manualPayloadHint": "This sends a manual payload (trigger.kind = manual), not simulated files or event data. Verify those payloads with the corresponding trigger.",
+  "settings.automation.lastUpdated": "Last synced: {time}",
+  "settings.automation.unknownTrigger": "Unconfigured / unsupported trigger",
+  "settings.automation.settledCount": "{n} settled steps",
+  "settings.workflows.code.name": "Code",
+  "settings.workflows.code.description": "Execute Python, Node.js, Shell or PowerShell code.",
+  "settings.workflows.code.language": "Language",
+  "settings.workflows.code.languageHelp": "Select the interpreter. Shell uses cmd on Windows and sh on other systems.",
+  "settings.workflows.code.source": "Code",
+  "settings.workflows.code.sourceHelp": "Program source. JSON arrives on stdin; a non-zero exit code fails the code node.",
+  "settings.workflows.code.input": "Input JSON",
+  "settings.workflows.code.inputHelp": "Upstream variable templates are supported; empty uses the default input data.",
+  "settings.workflows.code.timeout": "Timeout (ms)",
+  "settings.workflows.code.timeoutHelp": "0 or empty means no time limit; the run can still be cancelled.",
+  "settings.workflows.code.usage": "Read JSON from stdin. Emit @@mcode:result {summary,outputs,artifacts} and @@mcode:progress {percent,message} on stdout. Artifacts are URI references. A non-zero exit code is a failure.",
   "settings.runtimePolicy.invalidLimit": "Limits must be positive; turns and tokens must be whole numbers. Only an empty field means unlimited. Invalid input will not replace saved limits.",
 } as const;

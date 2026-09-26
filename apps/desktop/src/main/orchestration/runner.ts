@@ -63,6 +63,7 @@ import {
   injectTargetOf,
   isAskChoice,
   isModelDecider,
+  providerIdOf,
   returnModeOf,
   type NodeOutcome,
   type NodeReturnMode,
@@ -89,9 +90,8 @@ import { broadcastRuntimeEvent } from "@main/lib/sessionSync.js";
 import { queueBackflow } from "@main/lib/pendingBackflow.js";
 import { peekAgentMail, wakeQueued } from "@main/lib/agentMail.js";
 import { log } from "@main/lib/logger.js";
-import { providerRegistry } from "@main/providers/registry.js";
+import { probeProviderHealth, providerRegistry } from "@main/providers/registry.js";
 import { CollectionRepo, LibraryRepo, MessageRepo, SessionRepo, SettingRepo, WorkflowRunRepo } from "@main/store/repositories.js";
-import { templatesRoot } from "@main/templates/store.js";
 import { uid } from "@main/utils.js";
 import {
   inheritContextLines,
@@ -174,7 +174,7 @@ import {
 } from "./scheduler.js";
 // 能力预检的清单装配(G4/CAP):纯函数翻译层在 `capabilityResolver.ts`,已启用插件的
 // 清单来自 pluginManager(异步读盘,所以端口做成 Promise,并按次运行缓存)。
-import { collectCapabilityInventory } from "./capabilityResolver.js";
+import { collectCapabilityInventory, providerIdsForWorkflowPreflight } from "./capabilityResolver.js";
 import { getEnabledPlugins } from "@main/plugins/pluginManager.js";
 
 /**
@@ -250,6 +250,8 @@ interface ActiveRun {
 
 /** 一个对话同一时刻只跑一次图。`sessionId → run`。 */
 const runs = new Map<string, ActiveRun>();
+/** Session reservation includes asynchronous catalog/health preflight. */
+const pendingStarts = new Map<string, () => void>();
 
 /* ────────────────────────── 岔路口 ────────────────────────── */
 
@@ -394,7 +396,7 @@ function resumeRun(args: {
 }
 
 export function hasActiveRun(sessionId: string): boolean {
-  return runs.has(sessionId);
+  return runs.has(sessionId) || pendingStarts.has(sessionId);
 }
 
 /**
@@ -544,6 +546,8 @@ export function parkedRunTeardown(sessionId: string): Promise<void> | null {
  * 而不会启动(见 `scheduler.ts`)。
  */
 export function cancelWorkflowRun(sessionId: string): boolean {
+  const cancelPending = pendingStarts.get(sessionId);
+  if (cancelPending) { cancelPending(); return true; }
   const active = runs.get(sessionId);
   if (!active) return false;
   active.abort.abort();
@@ -645,7 +649,7 @@ export async function startWorkflowRun(args: {
       return null;
     }
   }
-  if (runs.has(session.id)) {
+  if (hasActiveRun(session.id)) {
     // 兜底:调用方(`ipc/claude.ts` / `mobileRpc.ts`)已经先查过 `hasActiveRun` 并
     // 抛出可见的错误了 —— 那条路才会让用户看见"这个工作流还在跑"。走到这里说明有
     // 新的调用方漏了那一步,记一行日志,别让消息悄悄消失。
@@ -653,12 +657,55 @@ export async function startWorkflowRun(args: {
     return null;
   }
 
-  // Capture before any asynchronous wait/queue: later dispatches may overwrite
-  // this automation session's persisted ancestry while an injected reply is still running.
+  // Capture ancestry before the first await; reused automation sessions may change later.
   const automationOrigin = session.kind === "automation"
     ? snapshotAutomationOrigin({ workflowIds: readAutomationEventChain(session) })
     : undefined;
   const emitWorkflowEvent = withAutomationOrigin((event) => runtimeManager.emitExternal(event), automationOrigin);
+  let cancelled = false;
+  const cancelPending = (): void => {
+    if (pendingStarts.get(session.id) !== cancelPending) return;
+    cancelled = true;
+    pendingStarts.delete(session.id);
+    emitWorkflowEvent({ type: "turn.done", sessionId: session.id, reason: "interrupted", endedAt: Date.now() });
+  };
+  pendingStarts.set(session.id, cancelPending);
+  args.startSignal?.addEventListener("abort", cancelPending, { once: true });
+  const prepared = await (async () => {
+    try {
+      const catalogs = await loadNodeTypes();
+      if (cancelled) return null;
+      const manifests = new Map(catalogs.entries.map((e) => [e.id, e.manifest]));
+      const manifestDirs = new Map(
+        catalogs.entries.flatMap((e) => e.manifestDir !== undefined ? [[e.id, e.manifestDir] as const] : []),
+      );
+      const originProviderId = originSessionId ? SessionRepo.get(originSessionId)?.providerId : undefined;
+      const providerIds = providerIdsForWorkflowPreflight(doc.nodes, manifests, session.providerId, originProviderId);
+      const health = await Promise.all(providerIds.map((id) => probeProviderHealth(id)));
+      if (cancelled) return null;
+      const unavailable = health.filter((result) => !result.ok && result.code !== "unsupported");
+      if (unavailable.length > 0) {
+        const detail = unavailable.map((result) => {
+          const name = providerRegistry.get(result.providerId)?.displayName ?? result.providerId;
+          return `${name}: ${result.error ?? result.code}`;
+        }).join("；");
+        throw new Error(`工作流启动前引擎检查失败：${detail}`);
+      }
+      return { catalogs, manifests, manifestDirs };
+    } catch (error) {
+      if (cancelled) return null;
+      throw error;
+    }
+  })().catch((error: unknown) => {
+    args.startSignal?.removeEventListener("abort", cancelPending);
+    if (pendingStarts.get(session.id) === cancelPending) pendingStarts.delete(session.id);
+    throw error;
+  });
+  // Keep reservation across the outer await too. Cleanup must not release a newer launch.
+  args.startSignal?.removeEventListener("abort", cancelPending);
+  if (pendingStarts.get(session.id) === cancelPending) pendingStarts.delete(session.id);
+  if (cancelled || !prepared) return null;
+  const { catalogs, manifests, manifestDirs } = prepared;
 
   // **续跑时这两样以存档为准。** 点卡片的那一下手上只有一张卡片 —— 用户最初说了什么、
   // 那次是在哪个目录里跑的,都在存档里。以调用方给的为准的话,这里就多了一种"两边
@@ -787,21 +834,6 @@ export async function startWorkflowRun(args: {
     active.finish();
     throw err;
   }
-
-  /** 这次运行用到的节点类型清单。懒加载一次(见 `manifestOf`)。 */
-  let manifests: Map<string, NodeTypeManifest> | null = null;
-  /** 节点类型 id → 清单文件所在目录。只有第三方自带脚本的节点要用(见 `manifestOf`)。 */
-  let manifestDirs: Map<string, string> | null = null;
-  /** 把两张表一次建起来。`manifestOf` 与 `manifestDirOf` 共用 —— 各读一遍就是同一批
-   *  文件读两遍(见 `manifestOf` 那段"按节点调 = 读 N 遍"的注释)。 */
-  const ensureCatalogs = async (): Promise<void> => {
-    if (manifests !== null) return;
-    const catalogs = await loadNodeTypes();
-    manifests = new Map(catalogs.entries.map((e) => [e.id, e.manifest]));
-    manifestDirs = new Map(
-      catalogs.entries.flatMap((e) => (e.manifestDir !== undefined ? [[e.id, e.manifestDir] as const] : [])),
-    );
-  };
 
   // 每个节点这一轮的产出。**主进程里没有别的地方留着它** —— 消息是渲染端持久化的
   // (main 只存会话行上的几个 blob),所以"下游要的上游结果"只能在这里边听边攒。
@@ -951,7 +983,6 @@ export async function startWorkflowRun(args: {
   const collections = new Map(CollectionRepo.list().map((c) => [c.id, c]));
   const lookup: ContextLookup = {
     libraryRoot: libraryRoot(),
-    templatesRoot: templatesRoot(),
     // 分类 → 它挂着的大类。**查不到返回 `undefined`(不是 `[]`)** —— 那是本模块
     // 用来区分"这是一条分类清单"与"这是一条条目清单"的信号(见 `ContextLookup`)。
     groupsOfCollection: (id) => {
@@ -1201,7 +1232,14 @@ export async function startWorkflowRun(args: {
     if (engine !== undefined && !providerRegistry.get(engine)) {
       return { status: "failed", summary: "", error: `这一步指定的引擎「${engine}」没有安装` };
     }
+    const previousProviderId = SessionRepo.findNodeByNodeId(session.id, node.id)?.providerId;
     const nodeSession = nodeSessionOf(session, node, manifest, engine);
+    // Runtime state also caches the provider's resume handle. Rebinding only the
+    // database row is insufficient: a Claude handle must never be offered to
+    // Codex/Pi (or vice versa), so provider switches get a clean runtime.
+    if (previousProviderId !== undefined && previousProviderId !== nodeSession.providerId) {
+      runtimeManager.dispose(nodeSession.id);
+    }
     active.nodeSessionIds.add(nodeSession.id);
     observed.add(nodeSession.id);
     active.nodeSessionOf.set(node.id, nodeSession.id);
@@ -1209,6 +1247,10 @@ export async function startWorkflowRun(args: {
     // 一条指向不存在运行时的记录,而 `dispose()` 对没有运行时的会话是直接返回的
     // (那条记录就再也清不掉了)。
     runtimeManager.bindSession(nodeSession);
+    // A reused node session may have been reconfigured since its previous run.
+    // bindSession is intentionally idempotent, so refresh the live approval gate
+    // explicitly; provider/model are read from nodeSession by sendTurn below.
+    runtimeManager.setPermissionMode(nodeSession.id, nodeSession.permissionMode);
     runtimeManager.setInteractiveProxy(nodeSession.id, session.id);
 
     // **先报一条粗进度:它现在在起跑。**
@@ -1355,14 +1397,12 @@ export async function startWorkflowRun(args: {
     // 目录、读并解析每一个清单文件,而它底下还会把每个启用的插件的技能/命令/agent
     // 文件再读一遍)。按节点调 = 同一批文件读 N 遍,而这里 N 就是图的大小。
     manifestOf: async (typeId) => {
-      await ensureCatalogs();
-      return manifests!.get(typeId);
+      return manifests.get(typeId);
     },
 
     /** 清单目录 —— 第三方自带脚本的节点拿它当 `entry` 的解析基准。 */
     manifestDirOf: async (typeId) => {
-      await ensureCatalogs();
-      return manifestDirs!.get(typeId);
+      return manifestDirs.get(typeId);
     },
 
     // 这一步要继承的上下文:**从这次运行的提示词里筛**,不查库、不生成新清单 ——
@@ -1584,6 +1624,7 @@ export async function startWorkflowRun(args: {
       // 在 `turn.done` 时收口),而 `message.complete` 折出来的中间态也在 —— 所以拿到的
       // 不是半截。
       const transcript = nodeSessionId ? runtimeManager.transcriptOf(nodeSessionId) : undefined;
+      const executionSession = nodeSessionId ? SessionRepo.get(nodeSessionId) : undefined;
       // ⚠️ **走 `emitExternal`,不能走 `broadcastRuntimeEvent`。** 两者对界面是一回事
       // (都 `fanOutToClients`),但只有 `emitExternal` 会 `notifySubscribers` ——
       // 而钩子(`HookRunner`)与自动化的「事件发生时」触发器**正是挂在订阅上**的。
@@ -1607,6 +1648,10 @@ export async function startWorkflowRun(args: {
         nodeId: e.node.id,
         nodeType: e.node.type,
         title: displayTitle(e.node, manifests?.get(e.node.type)),
+        ...(executionSession ? {
+          providerId: executionSession.providerId,
+          model: executionSession.model || "default",
+        } : {}),
         status: e.outcome.status,
         summary: e.outcome.summary,
         ...(outputKeys.length > 0 ? { outputKeys } : {}),
@@ -1666,7 +1711,11 @@ export async function startWorkflowRun(args: {
       return (): Promise<CapabilityPreflight | undefined> => {
         cache ??= (async (): Promise<CapabilityPreflight | undefined> => {
           try {
-            const plugins = (await getEnabledPlugins()).map((p) => ({ name: p.name, manifest: p.manifest }));
+            const plugins = (await getEnabledPlugins()).map((p) => ({
+              name: p.name,
+              manifest: p.manifest,
+              compatibleProviderIds: p.compatibleProviderIds,
+            }));
             const executorKinds = ["command", "code", "conversation"] as const;
             return {
               inventory: collectCapabilityInventory({
@@ -1967,11 +2016,12 @@ function structuredReplyText(text: string, vars: readonly OutputVar[]): string {
  * 复用之后形状就对了:一个对话里**每一步留下一个会话**,里面是它的历史轮次。
  * 和 `automationRunner.sessionOf` 是同一个思路(那边一条自动化一个会话)。
  *
- * ## 复用时**不覆盖**任何东西
+ * ## 复用时同步**执行配置**
  *
- * 认回来就直接交还,一个字段都不动 —— 会话是可对话的对象,它记着用户跟这一步说过什么、
- * 用的是哪家引擎。后来改图把这一步换成别的引擎,**不该**把这个会话的引擎改掉:那等于把
- * 这段对话搬到另一个模型上重读。引擎在新回合上生效(`sendTurn` 的入参),不落在会话行上。
+ * 会话行承载的是下一轮真正交给 RuntimeManager 的 provider/model。工作流编辑后如果仍把
+ * 旧值交还,`sendTurn` 会继续解析旧 provider —— 它没有另一份 provider override。因而复用
+ * 时只同步执行配置,保留会话身份与历史；跨 provider 时清掉旧 provider 的 resume id,绝不
+ * 把 Claude/Pi/Codex 任一家的会话句柄交给另一家。
  *
  * 标题同理**不跟着图上的格子名走**:图上改名是"这一步的说明变了",而标题是**这条会话
  * 自己的**(用户可能自己改过,见 `session.rename`)。每次跑图按图重写一遍,等于把他改的
@@ -1985,15 +2035,36 @@ function nodeSessionOf(
   manifest: NodeTypeManifest,
   engine: string | undefined,
 ): Session {
-  const existing = SessionRepo.findNodeByNodeId(conversation.id, node.id);
-  if (existing !== undefined) return existing;
-
-  const now = Date.now();
-  const override = node.params.model;
-  const model =
-    typeof override === "string" && override.trim().length > 0 ? override.trim() : conversation.model;
   const providerId = engine ?? conversation.providerId;
   const sameEngine = providerId === conversation.providerId;
+  const override = typeof node.params.model === "string" ? node.params.model.trim() : "";
+  // An explicit node model belongs to the node's selected provider and must win
+  // even when that provider differs from the parent conversation. Only the
+  // inherited parent model is unsafe across providers.
+  const model = override.length > 0 ? override : sameEngine ? conversation.model : "";
+  const effort = sameEngine ? conversation.effort : "default";
+  const permissionMode = permissionModeForCapability(node.capability ?? manifest.capability);
+  const customModelId = sameEngine ? conversation.customModelId : null;
+  const existing = SessionRepo.findNodeByNodeId(conversation.id, node.id);
+  if (existing !== undefined) {
+    const providerChanged = existing.providerId !== providerId;
+    if (
+      providerChanged || existing.model !== model || existing.effort !== effort ||
+      existing.permissionMode !== permissionMode || existing.workflowId !== conversation.workflowId ||
+      existing.customModelId !== customModelId
+    ) {
+      SessionRepo.updateSettings(existing.id, {
+        providerId, model, effort, permissionMode, workflowId: conversation.workflowId, customModelId,
+      });
+      if (providerChanged) SessionRepo.updateClaudeSessionId(existing.id, null);
+    }
+    return {
+      ...existing, providerId, model, effort, permissionMode, workflowId: conversation.workflowId,
+      customModelId, claudeSessionId: providerChanged ? null : existing.claudeSessionId,
+    };
+  }
+
+  const now = Date.now();
   const session: Session = {
     id: uid("sess_"),
     projectId: conversation.projectId,
@@ -2006,15 +2077,15 @@ function nodeSessionOf(
     // 标题是**给排查用的**(节点会话不进任何列表):图上的标题比 "节点" 有用得多。
     title: displayTitle(node, manifest),
     status: "idle",
-    model: sameEngine ? model : "",
-    effort: conversation.effort,
-    permissionMode: permissionModeForCapability(node.capability ?? manifest.capability),
+    model,
+    effort,
+    permissionMode,
     // ⚠️ **继承父对话选的流程,不是 `"default"`。** 节点会话带着同一张流程的 id,
     // 任何按"这个会话属于哪张流程"读的东西(续跑、运行上下文)才不会认错。注意
     // 「固定条件」**不**走这条路:它在 `startWorkflowRun` 里拼进运行最初那条提示词、
     // 只进主节点一次(见上面注入那段),节点会话的系统提示词不再携带条件。
     workflowId: conversation.workflowId,
-    customModelId: sameEngine ? conversation.customModelId : null,
+    customModelId,
     // **继承父会话的工作环境**,哪怕节点自己不隔离(v1 所有节点跑在父会话的 cwd)。
     // `removeWorktree` 那条"别把目录从正在跑的回合底下抽走"的判断,是拿
     // `listByWorktreePath` 与会话运行状态求交的 —— 节点行的 `worktree_path` 为空时

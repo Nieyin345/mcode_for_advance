@@ -40,4 +40,7 @@ export const zh = {
   "common.unsavedRetained": "有未保存修改（切换页面会保留，退出应用前请保存）",
   "common.resizeColumns": "调整列宽（方向键调整，Enter 重置）",
   "common.resizeRows": "调整行高（方向键调整，Enter 重置）",
+  "common.officeSaveFailureTitle": "Office 文档保存失败",
+  "common.officeSaveFailureMessage": "尚未确认 Office 文档已保存，应用已取消退出。请检查 Document Server 连接、磁盘空间和目录权限，重试保存后再退出。",
+  "common.officeMigrationBlocked": "请先关闭 Office 编辑器并等待保存完成，再迁移数据目录。若保存失败，请重新打开文档重试。",
 } as const;

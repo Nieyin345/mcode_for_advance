@@ -141,6 +141,8 @@ const api = {
   /** Provider list — returns all registered backends with capabilities. */
   provider: {
     list: (() => ipcRenderer.invoke(IPC.PROVIDER_LIST)) as RpcMap["provider.list"],
+    healthCheck: ((input) =>
+      ipcRenderer.invoke(IPC.PROVIDER_HEALTH_CHECK, input)) as RpcMap["provider.healthCheck"],
     /** 引擎自己的斜杠命令清单（见 rpcMap 里 `provider.commands` 的说明）。 */
     commands: ((input) =>
       ipcRenderer.invoke(IPC.PROVIDER_COMMANDS, input)) as RpcMap["provider.commands"],
@@ -260,12 +262,6 @@ const api = {
       ipcRenderer.invoke(IPC.LIBRARY_RESTORE_ITEMS, input)) as RpcMap["library.restoreItems"],
     deletePreview: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_DELETE_PREVIEW, input)) as RpcMap["library.deletePreview"],
-    download: ((input) =>
-      ipcRenderer.invoke(IPC.LIBRARY_DOWNLOAD, input)) as RpcMap["library.download"],
-    jobs: (() => ipcRenderer.invoke(IPC.LIBRARY_JOBS)) as RpcMap["library.jobs"],
-    searchExternal: ((input) =>
-      ipcRenderer.invoke(IPC.LIBRARY_SEARCH_EXTERNAL, input)) as RpcMap["library.searchExternal"],
-    import: ((input) => ipcRenderer.invoke(IPC.LIBRARY_IMPORT, input)) as RpcMap["library.import"],
     importFiles: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_IMPORT_FILES, input)) as RpcMap["library.importFiles"],
     convert: ((input) =>
@@ -307,11 +303,6 @@ const api = {
       )) as RpcMap["library.adoptMarkdown"],
     importNotes: ((input) =>
       ipcRenderer.invoke(IPC.LIBRARY_IMPORT_NOTES, input)) as RpcMap["library.importNotes"],
-    exportCitations: ((input) =>
-      ipcRenderer.invoke(
-        IPC.LIBRARY_EXPORT_CITATIONS,
-        input,
-      )) as RpcMap["library.exportCitations"],
     conversionStats: (() =>
       ipcRenderer.invoke(IPC.LIBRARY_CONVERSION_STATS)) as RpcMap["library.conversionStats"],
     conversionReport: (() =>
@@ -697,38 +688,34 @@ const api = {
    *  selection is persisted via the generic setting channels and applies to
    *  Claude sessions from the next turn. */
   /** 外部服务集成(自带 API Key)。密钥只经 setKey 出去一次,回来的一律是打码串。 */
-  /** 模版库(PPT / LaTeX / Word / 代码 / 图片)。文件系统即事实源,没有 DB 表。 */
-  templates: {
-    list: ((input) => ipcRenderer.invoke(IPC.TEMPLATES_LIST, input)) as RpcMap["templates.list"],
-    add: ((input) => ipcRenderer.invoke(IPC.TEMPLATES_ADD, input)) as RpcMap["templates.add"],
-    /** 改名 = 把那个目录改名(目录名即显示名)。 */
-    rename: ((input) =>
-      ipcRenderer.invoke(IPC.TEMPLATES_RENAME, input)) as RpcMap["templates.rename"],
-    /** 删除 = 移进回收站(可逆)。真正的删除是下一条 `purge`。 */
-    trash: ((input) =>
-      ipcRenderer.invoke(IPC.TEMPLATES_TRASH, input)) as RpcMap["templates.trash"],
-    trashList: (() =>
-      ipcRenderer.invoke(IPC.TEMPLATES_TRASH_LIST)) as RpcMap["templates.trashList"],
-    restore: ((input) =>
-      ipcRenderer.invoke(IPC.TEMPLATES_RESTORE, input)) as RpcMap["templates.restore"],
-    purge: ((input) =>
-      ipcRenderer.invoke(IPC.TEMPLATES_PURGE, input)) as RpcMap["templates.purge"],
-    /** 应用内预览一个模版文件(文本/图片);Word/PPT/PDF 会回 unsupported。 */
-    readFile: ((input) =>
-      ipcRenderer.invoke(IPC.TEMPLATES_READ_FILE, input)) as RpcMap["templates.readFile"],
-    /** 用系统默认程序打开一个模版文件。 */
-    openFile: ((input) =>
-      ipcRenderer.invoke(IPC.TEMPLATES_OPEN_FILE, input)) as RpcMap["templates.openFile"],
-    reveal: ((input) =>
-      ipcRenderer.invoke(IPC.TEMPLATES_REVEAL, input)) as RpcMap["templates.reveal"],
-    manifest: ((input) =>
-      ipcRenderer.invoke(IPC.TEMPLATES_MANIFEST, input)) as RpcMap["templates.manifest"],
-    /** 整个类目的清单(「全部 LaTeX 模版」那一行)。 */
-    attachToChat: ((input) =>
-      ipcRenderer.invoke(
-        IPC.TEMPLATES_ATTACH_TO_CHAT,
-        input,
-      )) as RpcMap["templates.attachToChat"],
+  /** OnlyOffice Document Server：Office 文档（docx / xlsx / pptx…）可视化编辑。
+   *  编辑器本体由 DS 的 api.js 在渲染端起；这里只管开会话 / 存 / 关 / 配置。 */
+  onlyoffice: {
+    open: ((input) =>
+      ipcRenderer.invoke(IPC.ONLYOFFICE_OPEN, input)) as RpcMap["onlyoffice.open"],
+    forceSave: ((input) =>
+      ipcRenderer.invoke(IPC.ONLYOFFICE_FORCE_SAVE, input)) as RpcMap["onlyoffice.forceSave"],
+    sessionState: ((input) =>
+      ipcRenderer.invoke(IPC.ONLYOFFICE_SESSION_STATE, input)) as RpcMap["onlyoffice.sessionState"],
+    close: ((input) =>
+      ipcRenderer.invoke(IPC.ONLYOFFICE_CLOSE, input)) as RpcMap["onlyoffice.close"],
+    status: (() => ipcRenderer.invoke(IPC.ONLYOFFICE_STATUS)) as RpcMap["onlyoffice.status"],
+    getConfig: (() =>
+      ipcRenderer.invoke(IPC.ONLYOFFICE_GET_CONFIG)) as RpcMap["onlyoffice.getConfig"],
+    setConfig: ((input) =>
+      ipcRenderer.invoke(IPC.ONLYOFFICE_SET_CONFIG, input)) as RpcMap["onlyoffice.setConfig"],
+    detectLocal: (() =>
+      ipcRenderer.invoke(IPC.ONLYOFFICE_DETECT_LOCAL)) as RpcMap["onlyoffice.detectLocal"],
+    installLocal: ((input) =>
+      ipcRenderer.invoke(IPC.ONLYOFFICE_INSTALL_LOCAL, input)) as RpcMap["onlyoffice.installLocal"],
+    configureLocal: (() =>
+      ipcRenderer.invoke(IPC.ONLYOFFICE_CONFIGURE_LOCAL)) as RpcMap["onlyoffice.configureLocal"],
+    installProgress: (() =>
+      ipcRenderer.invoke(IPC.ONLYOFFICE_INSTALL_PROGRESS)) as RpcMap["onlyoffice.installProgress"],
+    cancelInstall: (() =>
+      ipcRenderer.invoke(IPC.ONLYOFFICE_CANCEL_INSTALL)) as RpcMap["onlyoffice.cancelInstall"],
+    applyLocal: (() =>
+      ipcRenderer.invoke(IPC.ONLYOFFICE_APPLY_LOCAL)) as RpcMap["onlyoffice.applyLocal"],
   },
 
   outputStyle: {
@@ -743,7 +730,6 @@ const api = {
       ipcRenderer.invoke(IPC.USAGE_STATS, input)) as RpcMap["usage.stats"],
   },
 
-  /** Probe whether the default provider is functional. */
   /**
    * 把一个拖进来的 `File` 换成它在磁盘上的绝对路径。
    *
@@ -751,12 +737,6 @@ const api = {
    * 只能走 `webUtils`。它必须在渲染上下文里调用,所以放在 preload 这层。
    */
   getPathForFile: (file: File): string => webUtils.getPathForFile(file),
-
-  claudeHealthCheck: (): Promise<{
-    installed: boolean;
-    source: string | null;
-    command: string | null;
-  }> => ipcRenderer.invoke("claude:healthCheck"),
 
   /** Mobile companion (LAN pairing + device management) — drives the PC-side
    *  "connect phone" dialog. The mobile HTTP server + pairing handshake itself
@@ -1060,17 +1040,6 @@ const api = {
         ipcRenderer.off(IPC.THEME_CHANGED, listener);
       };
     },
-    /** Fires when a library download job changes state. 界面据此更新进度,
-     *  并在 status 变成 "needs_login" 时提示用户去内嵌浏览器重新登录。 */
-    libraryJobChanged(handler: (msg: Extract<MainToRendererMessage, { channel: "library:jobChanged" }>) => void): () => void {
-      const listener = (_e: unknown, msg: MainToRendererMessage) => {
-        if (msg.channel === IPC.LIBRARY_JOB_CHANGED) handler(msg);
-      };
-      ipcRenderer.on(IPC.LIBRARY_JOB_CHANGED, listener);
-      return () => {
-        ipcRenderer.off(IPC.LIBRARY_JOB_CHANGED, listener);
-      };
-    },
     /** 库的内容变了 —— **包括 AI 改的**。渲染端收到就重载分类树与条目列表:
      *  用户在界面上操作时缓存自己对,AI 操作时缓存不会自己知道(见契约里的注释)。 */
     libraryChanged(handler: (msg: Extract<MainToRendererMessage, { channel: "library:changed" }>) => void): () => void {
@@ -1080,17 +1049,6 @@ const api = {
       ipcRenderer.on(IPC.LIBRARY_CHANGED, listener);
       return () => {
         ipcRenderer.off(IPC.LIBRARY_CHANGED, listener);
-      };
-    },
-    /** 模版库变了(增 / 删)。模版有两个入口(左栏那一段、设置里的模版库面板),
-     *  谁改都得让另一边知道 —— 与 libraryChanged 同一个用途。 */
-    templatesChanged(handler: (msg: Extract<MainToRendererMessage, { channel: "templates:changed" }>) => void): () => void {
-      const listener = (_e: unknown, msg: MainToRendererMessage) => {
-        if (msg.channel === IPC.TEMPLATES_CHANGED) handler(msg);
-      };
-      ipcRenderer.on(IPC.TEMPLATES_CHANGED, listener);
-      return () => {
-        ipcRenderer.off(IPC.TEMPLATES_CHANGED, listener);
       };
     },
     /** 工作流那一摊变了(工作流 / 自动化 / 代理档案 / 节点类型)—— **包括 AI 改的**。

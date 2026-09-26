@@ -21,11 +21,67 @@ export const zh = {
   "settings.nav.terminal": "终端",
   "settings.nav.browser": "浏览器",
   "settings.nav.lsp": "LSP",
+  "settings.nav.office": "文档编辑",
   // 运行监控排在用量统计前面:两者都是"这台机器跑得怎么样"(用量看花了多少,
   // 监控看跑成了什么样),放一组才看得出来是同一件事的两头。
   "settings.nav.monitoring": "运行监控",
   "settings.nav.usage": "用量统计",
   "settings.nav.about": "关于",
+
+  // ── 文档编辑（OnlyOffice Document Server）──
+  "settings.office.sectionTitle": "OnlyOffice Document Server",
+  "settings.office.sectionDesc":
+    "Word / Excel / PowerPoint 文档在主页面里的可视化编辑由 OnlyOffice Docs 提供。它是一个独立服务，需要在本机（或局域网）安装一份；没配置时 Office 文件只能只读预览。",
+  "settings.office.serverUrl": "服务地址",
+  "settings.office.serverUrlDesc": "Document Server 的根地址，例如 http://127.0.0.1:8080。",
+  "settings.office.jwtSecret": "JWT 密钥",
+  "settings.office.jwtSecretDesc": "与 Document Server 的 JWT_SECRET 一致（7.2 及以后版本默认开启签名校验）。",
+  "settings.office.callbackHost": "回连主机名",
+  "settings.office.callbackHostDesc":
+    "Document Server 回连本机取文件 / 回写保存时用的主机名。留空自动判断；Docker Desktop 里跑的 DS 通常要填 host.docker.internal。",
+  "settings.office.callbackHostPlaceholder": "自动（本机 127.0.0.1 / Docker 用 host.docker.internal）",
+  "settings.office.test": "测试连接",
+  "settings.office.saved": "已保存",
+  "settings.office.notConfigured": "还没填服务地址",
+  "settings.office.reachable": "连接成功：{url}",
+  "settings.office.unreachable": "连不上 Document Server",
+  "settings.office.setupTitle": "手动安装 / 排错",
+  "settings.office.setupDesc": "一般用上面的「一键安装」就够了；这里是手动路径与常见问题，完整说明见仓库 docs/onlyoffice.md。",
+  "settings.office.setup1": "手动安装：从 onlyoffice.com 下载 Windows 版 Community Edition 安装包（onlyoffice-documentserver.exe），双击安装，安装器会自动补齐 PostgreSQL / RabbitMQ 等前置件。",
+  "settings.office.setup2": "装完回到这里点「重新检测」→「使用这一份」，Mcode 会自动读出地址和密钥；若提示需要修复配置，点「修复配置」（打开 DS 的私网访问，否则它回连不到本机取文件）。",
+  "settings.office.setup3": "服务没跑：在 services.msc 里启动 ds-docservice 与 ds-converter；首次启动要 1–2 分钟。",
+  "settings.office.setup4": "在其他机器 / Docker 里跑 DS 时，直接在上面手填地址与 JWT 密钥，再点「测试连接」。",
+
+  // 本机安装那一节
+  "settings.office.local.title": "本机安装",
+  "settings.office.local.desc": "不用 Docker：直接下载官方 Windows 安装包（约 1 GB）静默安装到本机，装完自动填好地址和密钥。安装过程中会弹一次系统管理员授权（UAC）。",
+  "settings.office.local.status": "本机状态",
+  "settings.office.local.statusDesc": "检测 %ProgramFiles%\\ONLYOFFICE\\DocumentServer 及其服务。",
+  "settings.office.local.detecting": "检测中…",
+  "settings.office.local.notInstalled": "未安装",
+  "settings.office.local.installedNotRunning": "已安装，服务未运行",
+  "settings.office.local.running": "运行中 · 端口 {port}",
+  "settings.office.local.redetect": "重新检测",
+  "settings.office.local.port": "安装端口",
+  "settings.office.local.portDesc": "Document Server 监听的本机端口。默认 8080（80 常被其他程序占用）。",
+  "settings.office.local.install": "一键下载并安装",
+  "settings.office.local.useThis": "使用这一份",
+  "settings.office.local.repair": "修复配置",
+  "settings.office.local.repairHint": "检测到私网访问未开启，编辑器会打不开文件；修复需要管理员授权。",
+  "settings.office.local.uacHint": "请在弹出的系统授权窗口里点「是」。安装器会静默运行，可能需要几分钟。",
+  "settings.office.local.unsupported": "一键安装只支持 Windows；其他系统请用 Docker 或远程服务器，在下面手填地址。",
+  "settings.office.local.phase.idle": "",
+  "settings.office.local.phase.downloading": "正在下载安装包…",
+  "settings.office.local.phase.installing": "正在安装（静默）…",
+  "settings.office.local.phase.configuring": "正在写入配置并重启服务…",
+  "settings.office.local.phase.waiting": "等待 Document Server 启动（首次约 1–2 分钟）…",
+  "settings.office.local.phase.done": "安装完成，已自动填好地址和密钥",
+  "settings.office.local.phase.error": "安装失败",
+  "settings.office.local.phase.cancelled": "已取消",
+  "settings.office.local.err.uac": "你拒绝了管理员授权，安装未进行。",
+  "settings.office.local.err.notResponding": "安装脚本已跑完，但 Document Server 一直没有响应。请到 services.msc 检查 ds-docservice，或稍后点「重新检测」。",
+  "settings.office.local.err.notInstalled": "没有检测到本机安装。",
+  "settings.office.local.err.notRunning": "本机已安装但服务没有响应，先启动服务再试。",
 
   // ── left nav group eyebrows (SettingsPage) ──
   "settings.navGroup.general": "通用",
@@ -660,6 +716,9 @@ export const zh = {
   "settings.plugins.source.unknown": "未知来源",
   "settings.plugins.installedAt": "安装于 {time}",
   "settings.plugins.pathLabel": "路径",
+  "settings.plugins.compatibleProviders": "可用引擎",
+  "settings.plugins.providerCompatible": "可用于 {provider}",
+  "settings.plugins.providerIncompatible": "不可用于 {provider}",
   "settings.plugins.cmpSkills": "Skills",
   "settings.plugins.cmpCommands": "Commands",
   "settings.plugins.cmpAgents": "Agents",
@@ -672,9 +731,6 @@ export const zh = {
   "settings.plugins.matrixHooks": "Hooks:当前不执行",
   "settings.plugins.hooksNotExecuted": "已声明 {n} 条 hooks —— 当前版本不执行,相关自动化不会生效",
   "settings.plugins.reviewTitle": "插件已安装",
-  "settings.plugins.compatibleProviders": "可用引擎",
-  "settings.plugins.providerCompatible": "可用于 {provider}",
-  "settings.plugins.providerIncompatible": "不可用于 {provider}",
   "settings.plugins.reviewDesc":
     "插件安装后默认未启用。请审查以下组件,确认后再启用。",
   "settings.plugins.reviewMcpNote": "MCP server 将在启用的会话中按上述命令/地址启动。",
@@ -1035,14 +1091,15 @@ export const zh = {
   "settings.dataRoot.title": "数据位置",
   "settings.dataRoot.locationTitle": "数据根目录",
   "settings.dataRoot.desc":
-    "聊天记录、论文库、教材库、笔记库、模版库，全都在这一个目录下面 —— 整个目录拷走就是一次完整备份。",
+    "聊天记录、统一文档库和模版库都在这一个目录下面 —— 整个目录拷走就是一次完整备份。",
   "settings.dataRoot.currentPath": "当前位置",
   "settings.dataRoot.treeTitle": "目录结构",
   "settings.dataRoot.tree.db": "聊天记录 · 全部设置",
-  "settings.dataRoot.tree.library": "三个库的家",
-  "settings.dataRoot.tree.papers": "论文库 · 教材库的 PDF（按内容哈希，同一份文件导两次只存一份）",
+  "settings.dataRoot.tree.library": "统一文档库",
+  "settings.dataRoot.tree.papers": "按内容哈希存储的 PDF（统一由文档库管理）",
+  "settings.dataRoot.tree.files": "复制进库的 Word、图片等文件；链接模式的文件仍留在原路径",
   "settings.dataRoot.tree.markdown": "转录出的 Markdown —— AI 读的就是它",
-  "settings.dataRoot.tree.notes": "笔记库（每篇一个 .md，可在应用内直接编辑）",
+  "settings.dataRoot.tree.notes": "文档库笔记文件（每篇一个 .md，可在应用内直接编辑）",
   "settings.dataRoot.tree.collections": "给 AI 读的库清单",
   "settings.dataRoot.tree.exports": "导出的引用文件（.bib / .txt）",
   "settings.dataRoot.tree.templates": "模版库（PPT / LaTeX / Word / 代码 / 图片）",
@@ -1082,7 +1139,7 @@ export const zh = {
     "这张图还是空的。用上面的「添加节点」放一个，再拖到合适的位置 —— 从卡片右边的圆点按住拖到另一个节点上就连上了箭头，箭头指的是先后。",
   "settings.workflows.graphSummary": "{nodes} 个节点 · {edges} 条依赖",
   "settings.workflows.portConnectHint": "按住往另一个节点拖，连一条依赖",
-  "settings.workflows.edgeRemoveHint": "点击删除这条依赖",
+  "settings.workflows.edgeRemoveHint": "点选连线，再用删除按钮或 Delete/Backspace 删除；可撤销。",
 
   // ── 自动化 ──
   // 与工作流**共用同一个库、同一张画布、同一个检查器**，差别只有"谁把它跑起来"：
@@ -1110,7 +1167,7 @@ export const zh = {
   "settings.automation.triggerHint.webhook":
     "收到一个 HTTP 请求就跑。这一种还没接——留着只是为了老定义能读回来。",
   // 触发方式那一格是**只读**的：值由触发器节点上的参数反推写回（见 deriveTrigger）。
-  "settings.automation.triggerDerived": "这一格跟着触发器节点走：要换一种触发，改那一格的参数。",
+  "settings.automation.triggerDerived": "以下展示每个触发器的已保存配置。要修改触发方式，请选择画布上的对应节点。",
 
   // ── 自动化：跑一次 / 跑过什么 ──
   "settings.automation.dashboard": "自动化状态",
@@ -1118,7 +1175,7 @@ export const zh = {
   "settings.automation.lastError": "最近错误",
   "settings.automation.runNow": "立刻运行一次",
   "settings.automation.runNowHint":
-    "用触发器「{name}」起一次——它自己响起来时走的也是这条路。结果在下面的历史里。",
+    "使用已保存版本，从「{name}」手动运行一次（不受自动启停开关影响）。",
   "settings.automation.runNoTrigger":
     "这条自动化还没有触发器，跑不起来——先放一个触发器节点，从它往下拉线。",
   "settings.automation.runFailed": "这一次没跑起来。",
@@ -1332,7 +1389,7 @@ export const zh = {
   // 主代理:图的入口,新建的工作流自带一个、删不掉(见 workflowView 的 isProtectedNode)。
   "settings.workflows.mainNodeHint": "主代理 · 这张图的入口，不能删",
   /** 自动化里的入口是**触发器**（不是主代理）—— 2026-09-22 分家之后的文案。 */
-  "settings.automation.triggerNodeHint": "触发器 · 这条自动化的起点，不能删",
+  "settings.automation.triggerNodeHint": "这是最后一个触发器，不能删除；可关闭启用开关。",
   "settings.workflows.mainTypeMissing":
     "节点类型清单没读进来，暂时建不了工作流 —— 新建出来的图会缺了入口那个主代理。清单的错误在上面的提示里。",
   // 参数的控件种类在清单里是封闭集合（text / longtext / number / boolean / select /
@@ -1347,6 +1404,8 @@ export const zh = {
   // 所以这里不能写成"用这次对话选的模型"。
   "settings.workflows.paramRefUnset": "不指定",
   "settings.workflows.paramRefEmpty": "这台机器上还没有可选的项，直接填名字也行。",
+  "settings.workflows.paramRefLoading": "正在加载可用项…",
+  "settings.workflows.paramRefLoadFailed": "无法加载可用项，已保留原有值。",
   // 多选的引用型参数（技能 / MCP 服务器 / 插件）默认**收起成一行**——这三格里九成的
   // 答案是留空，铺开三个列表会把整个检查器占掉大半。收起的那一行仍然写着"有多少可挑"，
   // 所以它不是藏起来，只是不占地方。
@@ -1360,6 +1419,7 @@ export const zh = {
   "settings.workflows.paramRefAddPlaceholder": "输入名字，回车添加",
   // 存着、但这台机器上没有的那几个名字（分享来的图引用了没装的技能）。点它摘掉。
   "settings.workflows.paramRefMissingHint": "这台机器上没有这一项，点击移除",
+  "settings.workflows.paramRefMissingCount": "{n} 项不可用",
   // 单选引用型参数上存着一个**不属于当前这一档候选**的值：常见于分享来的工作流引用了
   // 本机没装的技能／模型，也见于「模型」那一格——引擎换了之后，原先选的模型不再属于
   // 新引擎。**值保留、只提示**（换台机器打不开的图不叫工作流），但要说清它为什么不在
@@ -1369,6 +1429,9 @@ export const zh = {
   "settings.workflows.paramRefScopeUser": "用户配置",
   "settings.workflows.paramRefScopeBuiltin": "内置",
   "settings.workflows.paramRefScopePlugin": "插件自带",
+  "settings.workflows.mcpUnsupportedProvider":
+    "{provider} 不支持 MCP。为便于跨机器共享，已保存的值仍显示在下面，但不能在这个引擎下编辑或使用。",
+  "settings.workflows.clearUnsupportedValues": "清除已保存值",
   // 产出变量（`kind: "variables"`）—— 一张「名字 + 示例」的表。
   // ⚠️ 界面上**故意不出现 JSON 这个词**：底下确实是 JSON，但那是软件的事。用户看到的
   // 只是"这一步要交哪几样东西"。见 `@contracts/outputConstraint` 的文件头。
@@ -1414,7 +1477,7 @@ export const zh = {
     "内置工作流的名称与说明跟随界面语言，在这里改不了 —— 能改的是它的流程文字和它的节点图。",
   "settings.workflows.promptPlaceholder": "写下这个工作流的流程……",
   "settings.workflows.promptAutoSaveHint":
-    "图型工作流的流程由节点表达；这段文字是额外追加的说明，通常留空。改动会自动保存。",
+    "图型流程由节点表达。编辑仅保留为内存草稿；点击「保存」或按 Ctrl/Cmd+S 后才生效。",
   "settings.workflows.newWorkflow": "新建工作流",
   "settings.workflows.newWorkflowName": "新工作流",
   "settings.workflows.actionFailed": "操作失败：{error}",
@@ -1470,6 +1533,7 @@ export const zh = {
   "settings.workflows.profileNamePlaceholder": "这份档案叫什么",
   "settings.workflows.removeProfile": "删掉这份档案",
   "settings.workflows.profileSaveFailed": "存不下去",
+  "settings.workflows.profileRemoveFailed": "代理档案删除失败",
   "settings.workflows.profilesTitle": "代理档案",
   "settings.workflows.profilesIntro":
     "一份存下来的子 agent 配置。在画布上配好一个节点、按「存为档案」就能存一份，之后加节点时直接挑它。",
@@ -1536,5 +1600,36 @@ export const zh = {
   "settings.libraryTypes.newGroupName": "新大类",
   "settings.libraryTypes.groupName": "组名",
   "settings.libraryTypes.ungrouped": "未分组(左栏隐藏)",
+
+  // Workflow/automation correctness and editor affordances.
+  "settings.workflows.inspectorToggle": "检查器",
+  "settings.workflows.undo": "撤销",
+  "settings.workflows.redo": "重做",
+  "settings.workflows.zoomIn": "放大画布",
+  "settings.workflows.zoomOut": "缩小画布",
+  "settings.workflows.fitCanvas": "适应画布",
+  "settings.workflows.deleteEdge": "删除选中连线",
+  "settings.workflows.nodeSelect": "选择节点：{name}",
+  "settings.workflows.edgeSelect": "选择连线：{name}",
+  "settings.automation.loadFailed": "读取自动化状态/历史失败：{error}",
+  "settings.automation.staleData": "以下为上次成功读取的数据，可能已过期。",
+  "settings.automation.savedTriggers": "已保存的触发器",
+  "settings.automation.runTrigger": "选择试跑入口",
+  "settings.automation.saveBeforeRun": "有未保存改动，请先保存再运行。下方状态来自已保存版本。",
+  "settings.automation.manualPayloadHint": "此按钮发送手动载荷（trigger.kind = manual），不会模拟文件列表或事件数据；自动触发的载荷需用对应事件验证。",
+  "settings.automation.lastUpdated": "上次同步：{time}",
+  "settings.automation.unknownTrigger": "未配置/不支持的触发方式",
+  "settings.automation.settledCount": "已结束 {n} 步",
+  "settings.workflows.code.name": "代码",
+  "settings.workflows.code.description": "执行 Python、Node.js、Shell 或 PowerShell 代码。",
+  "settings.workflows.code.language": "运行语言",
+  "settings.workflows.code.languageHelp": "选择解释器类型。Windows 的 Shell 使用 cmd，其他系统使用 sh。",
+  "settings.workflows.code.source": "代码",
+  "settings.workflows.code.sourceHelp": "程序源码。输入 JSON 通过标准输入传入；非零退出码会使代码节点失败。",
+  "settings.workflows.code.input": "输入 JSON",
+  "settings.workflows.code.inputHelp": "可使用上游变量模板；留空使用默认输入数据。",
+  "settings.workflows.code.timeout": "超时（毫秒）",
+  "settings.workflows.code.timeoutHelp": "0 或留空表示不限时，可手动取消。",
+  "settings.workflows.code.usage": "程序从标准输入读取 JSON。可在标准输出写出 @@mcode:result {summary,outputs,artifacts} 与 @@mcode:progress {percent,message}。产物用 URI 引用；非零退出码判为失败。",
   "settings.runtimePolicy.invalidLimit": "上限须为正数，轮数和 token 须为正整数；只有明确留空才表示不限制。非法输入不会覆盖已保存上限。",
 } as const;

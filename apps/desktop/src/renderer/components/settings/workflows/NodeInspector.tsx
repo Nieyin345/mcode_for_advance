@@ -43,14 +43,12 @@ import { validateOutputRules, NODE_OUTPUT_VARS_KEY } from "@contracts/outputCons
 import { insertableGroups } from "./insertVariable.js";
 import {
   WORKFLOW_CAPABILITIES,
-  WORKFLOW_TRIGGERS,
   buildForwardAdjacency,
   nodesOnLoopOf,
   nodesWithDownstream,
   type WorkflowCapability,
   type WorkflowDoc,
   type WorkflowNode,
-  type WorkflowTrigger,
 } from "@contracts/workflow";
 import {
   IconAlertTriangle,
@@ -74,7 +72,7 @@ import { Field, GrowingTextarea, ParamField } from "./ParamField.js";
 import { workflowDisplayDescription, workflowDisplayName } from "@renderer/lib/workflowLabels.js";
 import { WorkflowBadge } from "./WorkflowBadge.js";
 import { AutomationRunSection } from "./AutomationRunSection.js";
-import { RunHistorySection } from "./RunHistorySection.js";
+import { displayedParam, visibleNodeParams } from "./workflowPresentation.js";
 import { TransferSection } from "./TransferSection.js";
 
 /** 内置工作流的名称与说明走 i18n,界面上是只读的 —— 这一条样式就是那个只读态。 */
@@ -82,6 +80,8 @@ const readOnlyCls = "cursor-default bg-surface-muted/40 text-content-muted focus
 
 export function NodeInspector({
   doc,
+  savedDoc = doc,
+  dirty = false,
   catalog,
   profiles,
   profileError,
@@ -98,6 +98,8 @@ export function NodeInspector({
   onImported,
 }: {
   doc: WorkflowDoc;
+  savedDoc?: WorkflowDoc;
+  dirty?: boolean;
   catalog: NodeTypeCatalog;
   /** 保存下来的子 agent 配置(见 `@contracts/agentProfile`)。 */
   profiles: AgentProfile[];
@@ -115,7 +117,7 @@ export function NodeInspector({
   onSetDependency: (nodeId: string, depId: string, on: boolean) => void;
   /** 改一条出边上的选项名 / 说明。只有**分支节点**用得上(见 `WorkflowEdge`)。 */
   onUpdateEdge: (edgeId: string, patch: { label?: string; note?: string }) => void;
-  onSaveProfile: (name: string) => Promise<void>;
+  onSaveProfile: (name: string) => Promise<boolean>;
   onRemoveProfile: (id: string) => Promise<void>;
   onRemoveWorkflow: () => void;
   /** 导入成功之后叫一声(参数是落库后的 id)—— 见 `TransferSection`。 */
@@ -129,6 +131,7 @@ export function NodeInspector({
         <NodeSection
           doc={doc}
           node={node}
+          purpose={purpose}
           catalog={catalog}
           profiles={profiles}
           profileError={profileError}
@@ -142,6 +145,8 @@ export function NodeInspector({
       ) : (
         <WorkflowSection
           doc={doc}
+          savedDoc={savedDoc}
+          dirty={dirty}
           catalog={catalog}
           purpose={purpose}
           onUpdateWorkflow={onUpdateWorkflow}
@@ -164,35 +169,14 @@ export function NodeInspector({
  * 那件事的地方是画布上那个触发器节点的参数。`Record<WorkflowTrigger, …>` 的完整性照样
  * 有用:契约里多一个值,这两处就编译不过。
  */
-const TRIGGER_LABELS: Record<WorkflowTrigger, MessageId> = {
-  manual: "settings.automation.trigger.manual",
-  schedule: "settings.automation.trigger.schedule",
-  file: "settings.automation.trigger.file",
-  event: "settings.automation.trigger.event",
-  webhook: "settings.automation.trigger.webhook",
-};
-
-const TRIGGER_HINTS: Record<WorkflowTrigger, MessageId> = {
-  manual: "settings.automation.triggerHint.manual",
-  schedule: "settings.automation.triggerHint.schedule",
-  file: "settings.automation.triggerHint.file",
-  event: "settings.automation.triggerHint.event",
-  webhook: "settings.automation.triggerHint.webhook",
-};
-
-/**
- * 参数值里那一段**文本**,给级联用(见 `NodeParamSpecSchema.fromParam`)。
- *
- * 参数是自由数据,存成数字、存成 null 都可能,而级联要的只是一个"选的是哪个" ——
- * 认不出就当没选(空串),让它退回"跟着主对话走"那一档。**不是数组就是空**这条规矩
- * 和 `ParamField` 里的 `stringListOf` 同源:一个脏值不该让整张表单崩掉。
- */
 function asParamText(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
 function WorkflowSection({
   doc,
+  savedDoc,
+  dirty,
   catalog,
   purpose,
   onUpdateWorkflow,
@@ -200,6 +184,8 @@ function WorkflowSection({
   onImported,
 }: {
   doc: WorkflowDoc;
+  savedDoc: WorkflowDoc;
+  dirty: boolean;
   /** 节点类型表 —— 「立刻运行一次」要靠它认出**哪一格是触发器**(见 `AutomationRunSection`)。 */
   catalog: NodeTypeCatalog;
   purpose: WorkflowPurpose;
@@ -216,7 +202,6 @@ function WorkflowSection({
   const isAutomation = purpose === "automation";
   // 自动化一定有 trigger(那是它之所以是自动化的判据),但类型上它是可选的 ——
   // 兜一个 manual 只是为了下拉有个值可显示。
-  const trigger = doc.trigger ?? "manual";
 
   return (
     <div className="flex flex-col">
@@ -232,51 +217,10 @@ function WorkflowSection({
         </code>
       </div>
 
-      {/* 触发方式排在最前面:对一条自动化来说,"它怎么跑起来"比它叫什么重要得多。
-
-          ⚠️ **它是只读的**,虽然长得像个下拉。这个值由**触发器节点上的参数**反推写回
-          (见 `main/orchestration/library.ts` 的 `deriveTrigger`),能改那件事的地方是画布
-          上那个触发器节点的参数面板 —— 所以这里显示的是**结果**,不是输入。做成可点的话,
-          用户在这里选一个、存盘时被反推覆盖掉,而界面上不会有任何解释。 */}
-      {isAutomation && (
-        <>
-          <Field label={t("settings.automation.fieldTrigger")}>
-            <Select.Root value={trigger} disabled>
-              <Select.Trigger className="w-full">
-                <Select.Value>
-                  {(value: string) => t(TRIGGER_LABELS[value as WorkflowTrigger])}
-                </Select.Value>
-              </Select.Trigger>
-              <Select.Portal>
-                <Select.Positioner className="z-50">
-                  <Select.Popup>
-                    <Select.List>
-                      {WORKFLOW_TRIGGERS.map((kind) => (
-                        <Select.Item key={kind} value={kind}>
-                          <Select.ItemText>{t(TRIGGER_LABELS[kind])}</Select.ItemText>
-                        </Select.Item>
-                      ))}
-                    </Select.List>
-                  </Select.Popup>
-                </Select.Positioner>
-              </Select.Portal>
-            </Select.Root>
-          </Field>
-          <p className="-mt-1 text-[0.7143em] leading-relaxed text-content-subtle">
-            {t(TRIGGER_HINTS[trigger])}
-          </p>
-          {/* 这一句是给"下拉点不动"的人的:值的真相在触发器节点的参数上(见
-              `main/orchestration/library.ts` 的 `deriveTrigger`)。 */}
-          <p className="text-[0.7143em] leading-relaxed text-content-subtle">
-            {t("settings.automation.triggerDerived")}
-          </p>
-          <AutomationRunSection doc={doc} catalog={catalog} />
-          {/* 运行历史(带节点数、可展开看节点级信息)跟在自动化状态旁边:读的是同一个
-              后台会话,一份答"结果"、一份答"过程"。它从 `automation.sessions` 拿会话 id
-              —— 那是自动化专属的通道,普通工作流(跟着对话跑)没有这个会话,不挂。 */}
-          {isAutomation && <RunHistorySection workflowId={doc.id} />}
-        </>
-      )}
+      {isAutomation && <>
+        <p className="text-[0.7143em] text-content-subtle">{t("settings.automation.triggerDerived")}</p>
+        <AutomationRunSection key={savedDoc.id} doc={savedDoc} catalog={catalog} dirty={dirty}/>
+      </>}
 
       <Field label={t("settings.workflows.fieldName")}>
         <Input
@@ -339,6 +283,7 @@ function WorkflowSection({
 
       <Field label={t("settings.workflows.fieldPrompt")}>
         <textarea
+          aria-label={t("settings.workflows.fieldPrompt")}
           value={doc.prompt ?? ""}
           spellCheck={false}
           placeholder={t("settings.workflows.promptPlaceholder")}
@@ -394,7 +339,7 @@ function ProfileRow({
   profiles: AgentProfile[];
   error: string | null;
   onApply: (profile: AgentProfile) => void;
-  onSave: (name: string) => Promise<void>;
+  onSave: (name: string) => Promise<boolean>;
   onRemove: (id: string) => Promise<void>;
 }) {
   const { t } = useI18n();
@@ -407,9 +352,12 @@ function ProfileRow({
     const name = (naming ?? "").trim();
     if (name.length === 0) return;
     setBusy(true);
-    await onSave(name);
-    setBusy(false);
-    setNaming(null);
+    try {
+      const saved = await onSave(name);
+      if (saved) setNaming(null);
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -526,6 +474,7 @@ function ProfileRow({
 function NodeSection({
   doc,
   node,
+  purpose,
   catalog,
   profiles,
   profileError,
@@ -538,6 +487,7 @@ function NodeSection({
 }: {
   doc: WorkflowDoc;
   node: WorkflowNode;
+  purpose: WorkflowPurpose;
   catalog: NodeTypeCatalog;
   profiles: AgentProfile[];
   profileError: string | null;
@@ -546,7 +496,7 @@ function NodeSection({
   onSetDependency: (nodeId: string, depId: string, on: boolean) => void;
   /** 改一条出边上的选项名 / 说明(只有分支节点用得上)。 */
   onUpdateEdge: (edgeId: string, patch: { label?: string; note?: string }) => void;
-  onSaveProfile: (name: string) => Promise<void>;
+  onSaveProfile: (name: string) => Promise<boolean>;
   onRemoveProfile: (id: string) => Promise<void>;
 }) {
   const { t } = useI18n();
@@ -667,7 +617,7 @@ function NodeSection({
         />
       )}
 
-      {entry?.manifest.params.map((spec) => (
+      {(entry ? visibleNodeParams(node, entry) : []).map((spec) => (
         <ParamField
           key={spec.key}
           spec={spec}
@@ -677,7 +627,7 @@ function NodeSection({
             // (一旦他手动拨过,值就落到参数里,从此以那个为准 —— 见 `flowRecordOf`。)
             spec.key === NODE_FLOW_RECORD_PARAM_KEY && node.params[spec.key] === undefined
               ? loopNodes.has(node.id)
-              : node.params[spec.key]
+              : displayedParam(node, spec)
           }
           onChange={(value) =>
             onUpdateNode(node.id, { params: { ...node.params, [spec.key]: value } })
@@ -687,7 +637,7 @@ function NodeSection({
           {...(spec.key === NODE_PROMPT_PARAM_KEY || spec.kind === "conditions"
             ? { insertables: vars } : {})}
           // 清单写了 `fromParam` 的参数,候选要跟着**它指的那个参数此刻的值**收窄 ——
-          // 今天只有「模型」用它(跟着「引擎」走,见 `NodeParamSpecSchema.fromParam`)。
+          // 模型、技能和 MCP 都可用它跟随「引擎」(见 `NodeParamSpecSchema.fromParam`)。
           // 读的是 `node.params` 里那个值本身:顺序在 `params[]` 里已经保证了引擎排在
           // 模型前面,所以这里读到的就是用户在上一格刚选的那个。
           {...(spec.fromParam !== undefined
@@ -936,15 +886,8 @@ function NodeSection({
         </>
       )}
 
-      {/* **入口节点删不掉**（见 `isProtectedNode`）—— 工作流护主代理、自动化护触发器。
-          **不摆一个按了没反应的按钮** —— 那看起来像坏了；把原因写在这儿,
-          和画布卡片上那颗星对得上。
-
-          判据用**不传 purpose 的 `isProtectedNode`** —— 它这时两种入口都护着
-          （`mcode.main` / `mcode.trigger`），正是这里要的：`NodeSection` 拿不到
-          "这是工作流还是自动化"（那是画布那一层的知识）。而**真正的拦截**
-          （`handleRemoveNode`）那边是知道 purpose 的，所以多护一个也不会漏删。 */}
-      {isProtectedNode(node) ? (
+      {/* Preserve the last required entry; extra triggers can be removed. */}
+      {isProtectedNode(node, purpose, doc.nodes, catalog) ? (
         <p className="mt-1 text-[0.7857em] leading-snug text-content-subtle">
           {t(isTrigger ? "settings.automation.triggerNodeHint" : "settings.workflows.mainNodeHint")}
         </p>

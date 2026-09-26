@@ -1,23 +1,36 @@
-# Quality gate - runs on every push to master and on all PRs.
-# Typechecks the workspace; packaging/release is handled by release.yml.
+# PRs run typechecks and the critical regression gate. Master pushes and an
+# explicit manual request also run the full dynamically discovered smoke set.
 name: CI
 
 on:
   push:
     branches: [master]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      full:
+        description: Run all headless smoke suites
+        type: boolean
+        default: false
 
-# Cancel in-progress runs for the same ref when a new push arrives.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   typecheck:
+    # Preserve the existing required-check name for branch protection.
     name: Typecheck
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          # workflow-seed-smoke compares an actual historical asset revision.
+          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -25,8 +38,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          # pnpm 11 requires Node >= 22.13 (it uses the node:sqlite built-in).
-          # Node 20 is deprecated on GitHub Actions runners anyway.
+          # pnpm 11 requires Node >= 22.13.
           node-version: 22
           cache: pnpm
 
@@ -35,3 +47,39 @@ jobs:
 
       - name: Typecheck
         run: pnpm typecheck
+
+      - name: Setup browser for workflow regressions
+        id: chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Setup virtual display for isolated Electron host
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Critical regression gate
+        run: pnpm test
+
+      - name: Workflow integration regressions
+        if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.full)
+        env:
+          MCODE_TEST_BROWSER: ${{ steps.chrome.outputs.chrome-path }}
+        run: pnpm test:smoke workflow-ui-smoke code-electron-smoke automation-smoke node-session-smoke
+
+      - name: Full smoke gate
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.full)
+        env:
+          MCODE_TEST_BROWSER: ${{ steps.chrome.outputs.chrome-path }}
+        run: pnpm test:all
+
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs
+          path: |
+            apps/desktop/.tmp/smoke-runs/**/*.log
+            apps/desktop/.tmp/workflow-ui-*/*.json
+            apps/desktop/.tmp/workflow-ui-*/*.png
+            apps/desktop/.tmp/workflow-electron-*/*-result.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7

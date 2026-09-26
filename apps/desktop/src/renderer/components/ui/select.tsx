@@ -1,3 +1,5 @@
+import { useContext } from "react";
+import { FieldLabelContext } from "./field-label-context.js";
 /**
  * Select — reusable select / dropdown component.
  *
@@ -48,6 +50,7 @@ export interface SelectTriggerProps
   extends React.ComponentPropsWithoutRef<typeof BaseSelect.Trigger> {}
 
 function SelectTrigger({ className, children, ...props }: SelectTriggerProps) {
+  const fieldLabel = useContext(FieldLabelContext);
   return (
     <BaseSelect.Trigger
       className={cn(
@@ -57,6 +60,7 @@ function SelectTrigger({ className, children, ...props }: SelectTriggerProps) {
         className,
       )}
       {...props}
+      aria-labelledby={props["aria-labelledby"] ?? (props["aria-label"] ? undefined : fieldLabel)}
     >
       {children}
       <Select.Icon>

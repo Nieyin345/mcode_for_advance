@@ -1654,7 +1654,7 @@ console.log("\n内置自动化 · 参数解得开、项目留空也挂得上");
   // (见 `WATCH_NODES` 那段注释)—— 起跑时由 `startWatch` 把发起会话的项目写进去,
   // 在那之前它本来就该是"挂不上"的。硬把它塞进来只会逼着模板去编一个项目 id。
   for (const [id, what] of [
-    [AUTO_DOWNLOAD_WORKFLOW_ID, "导入后自动下载"],
+    [AUTO_DOWNLOAD_WORKFLOW_ID, "导入后取原文"],
     [AUTO_CONVERT_WORKFLOW_ID, "下载完自动转 Markdown"],
   ] as const) {
     const doc = getBuiltinWorkflow(id);
@@ -1671,12 +1671,11 @@ console.log("\n内置自动化 · 参数解得开、项目留空也挂得上");
 
   check("内置工作流「守望」还在", getBuiltinWorkflow(WATCH_WORKFLOW_ID) !== undefined);
 
-  // 「下载完自动转 Markdown」听的是**下载完成**那个事件,不是导入 —— 导入那一下文件还没下来,
-  // 挂错了的话这条自动化永远转不出东西,而且不报错。
+  // 本地导入与后续下载都由配置的自动化接手；无本地文件的占位项由脚本跳过。
   const convertDoc = getBuiltinWorkflow(AUTO_CONVERT_WORKFLOW_ID);
   const convertTrigger = convertDoc?.nodes.find((n) => n.type === "mcode.trigger");
   const events = String(convertTrigger?.params[NODE_TRIGGER_EVENTS_PARAM_KEY] ?? "");
-  eq("「下载完自动转 Markdown」听的是 library.item.downloaded", events, "library.item.downloaded");
+  eq("在线转录监听文件导入与下载完成", events, "library.item.imported,library.item.downloaded");
   // 项目**故意留空** —— 它做的事(转录、挂回库)拿的都是绝对路径,不需要工作目录。
   // 「没绑项目」在这个仓里**一直**是空串这一个编码(守望那块也是),`buildTriggers`
   // 就是看它长度是不是 0 决定跳不跳查表。所以判据是"等于空串",不是"字段不存在"。
@@ -1838,7 +1837,9 @@ console.log("\n内置自动化的指令 ↔ 载荷(拿真事件对账)");
   // 会点名 `library_convert`/`library_adopt_markdown`;2026-09-24 改成固定三步之后,
   // 模型那一步只剩"挂回"(`library_adopt_markdown`),而调 MinerU 移进了 code 节点的
   // 代码里(它的断言在 12a 那一段)。
-  for (const tool of ["library_download", "library_adopt_markdown"]) {
+  // 下载那条点名的是 `library_attach_pdf`(2026-09-27 起软件自己不下载,外部工具下完
+  // 靠它交回库);`library_download` 已随学术功能退役。
+  for (const tool of ["library_attach_pdf", "library_adopt_markdown"]) {
     check(`指令点名了 ${tool}`, talkedAbout.includes(tool), tool);
   }
 }
@@ -2877,5 +2878,15 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
 }
 
 /* ────────────────────────── 收尾 ────────────────────────── */
+// Optional generic-document paths survive extraction and batching without
+// becoming falsely guaranteed variables for metadata-only imports.
+{
+  const item = eventItemFactsOf({ type: "library.item.imported", sessionId: "(system)", itemId: "local-file", title: "Local document", filePath: "files/report.docx", pdfPath: "pdf/report.pdf" } as RuntimeEvent);
+  eq("可选的普通文件路径仍会传入事件事实", item?.filePath, "files/report.docx");
+  eq("已有 PDF 的本地导入仍保留 PDF 路径", item?.pdfPath, "pdf/report.pdf");
+  const facts = payloadFactsOf(mergeEventPayload(undefined, "library.item.imported", {}, item));
+  eq("可选路径传到触发器载荷", facts.filePath, "files/report.docx");
+}
+
 console.log(`\nautomation-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exit(1);

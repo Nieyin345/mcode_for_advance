@@ -1176,7 +1176,9 @@ def safe_extract(zip_path, dest_dir):
     with zipfile.ZipFile(zip_path) as zf:
         for name in zf.namelist():
             target = (base / name).resolve()
-            if not str(target).startswith(str(base)):
+            try:
+                target.relative_to(base)
+            except ValueError:
                 raise RuntimeError(f"结果包里有越界条目，拒绝解压：{name}")
         zf.extractall(base)
 
@@ -1184,16 +1186,27 @@ def safe_extract(zip_path, dest_dir):
 def transcribe_one(item, index):
     """转一条。成功返回产物描述，失败抛 RuntimeError（带人话）。"""
     item_id = (item or {}).get("itemId") or ""
-    pdf_rel = (item or {}).get("pdfPath") or ""
+    # 统一文档库：优先读通用文件路径（linked 为绝对路径，attached 为库内相对路径），
+    # 兼容论文/下载条目的旧 pdfPath。
+    source_rel = (item or {}).get("filePath") or (item or {}).get("pdfPath") or ""
     label = f"第 {index} 条" if index else "那一条"
-    if not item_id or not pdf_rel:
-        raise RuntimeError(f"{label}缺 itemId / pdfPath，转不了。")
+    if not item_id or not source_rel:
+        raise RuntimeError(f"{label}缺 itemId / 文件路径，转不了。")
 
-    pdf_abs = Path(pdf_rel)
-    if not pdf_abs.is_absolute():
-        pdf_abs = find_data_root() / "library" / pdf_rel
-    if not pdf_abs.is_file():
-        raise RuntimeError(f"{label}的 PDF 不在了：{pdf_abs}")
+    source_abs = Path(source_rel)
+    if not source_abs.is_absolute():
+        source_abs = find_data_root() / "library" / source_rel
+    if not source_abs.is_file():
+        raise RuntimeError(f"{label}的源文件不在了：{source_abs}")
+
+    # 只接受 MinerU 精准解析 API 支持的格式；绝不改走本地 PDF.js 或其他抽取器。
+    ext = source_abs.suffix.lower()
+    supported = {".pdf", ".png", ".jpg", ".jpeg", ".jp2", ".webp", ".gif",
+                 ".bmp", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".html", ".htm"}
+    if ext not in supported:
+        unsupported_ext = ext or "无扩展名"
+        raise RuntimeError(f"MinerU 在线 API 不支持该文件格式（{unsupported_ext}）；未执行本地抽取。")
+    model_version = "MinerU-HTML" if ext in (".html", ".htm") else MODEL_VERSION
 
     out_dir = Path.cwd() / "mineru" / item_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1204,8 +1217,8 @@ def transcribe_one(item, index):
         method="POST",
         headers={"Authorization": f"Bearer {TOKEN}"},
         body={
-            "files": [{"name": pdf_abs.name, "data_id": item_id}],
-            "model_version": MODEL_VERSION,
+            "files": [{"name": source_abs.name, "data_id": item_id}],
+            "model_version": model_version,
         },
     )
     if res.get("code") != 0:
@@ -1217,7 +1230,7 @@ def transcribe_one(item, index):
         raise RuntimeError(f"MinerU 没给回 batch_id / 上传链接：{res}")
 
     # ── 上传字节（传完服务端会自动开始解析，不用再调一次提交）──
-    upload(urls[0], pdf_abs)
+    upload(urls[0], source_abs)
 
     # ── 轮询到 done / failed ──
     started = time.time()
@@ -1306,7 +1319,15 @@ def main():
             items = [scope]
 
     if not items:
-        die("载荷里没有 itemId / items，没法知道要转哪一份 PDF。")
+        die("载荷里没有 itemId / items，没法知道要转哪份文档。")
+        return
+
+    # imported 事件也会覆盖 DOI/arXiv 占位记录；那类记录此刻没有本地文件，应留给
+    # 下载完成事件稍后再转，而不是把正常导入报成转录失败。
+    ready = [it for it in items if it.get("filePath") or it.get("pdfPath")]
+    if not ready:
+        emit("本次导入尚无本地源文件，等待文件到位后再由下载事件转录。",
+             outputs={"items": [], "skipped": len(items), "failed": []})
         return
 
     if not TOKEN:
@@ -1321,7 +1342,7 @@ def main():
     # 「两篇一起下来，其中一篇是扫描件抽不出正文」时，另一篇不该跟着遭殃。
     ok = []
     failed = []
-    for i, item in enumerate(items, start=1):
+    for i, item in enumerate(ready, start=1):
         try:
             ok.append(transcribe_one(item, i if len(items) > 1 else 0))
         except RuntimeError as err:

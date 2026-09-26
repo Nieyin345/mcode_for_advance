@@ -323,7 +323,7 @@ function rpcMapKeysOfFile(path: string): string[] {
  * 往后一小段里先取通道名、再取最近的那个 `as RpcMap["…"]`。
  *
  * ⚠️ 这个"往后一小段"必须**在下一个 `ipcRenderer.invoke(` 之前截断** —— 否则没有标注的
- * B 类(pickFolder / claudeHealthCheck)会去吃掉**下一条**函数的标注,于是它们看起来
+ * B 类(pickFolder)会去吃掉**下一条**函数的标注,于是它看起来
  * "有标注但通道对不上",而真相只是"它们本来就没有标注"。这个错法很隐蔽:它把两条
  * **正常的历史遗留**报成了坏接线,而真正的问题(以后新加一条也照抄 B 类写法)反倒看不见。
  */
@@ -613,13 +613,12 @@ function sentToRendererChannels(): Set<string> {
  *    不走 `invoke`、`window.api` 上也没有它。`main/browser/BrowserManager.ts` 里
  *    `ipcMain.on("__mcode_pick_result__", …)` 就是它的全部接线,**两边都在,不需要第三层**。
  *    主进程那边是裸字面量(它本来就不该有常量 —— 常量表是给 `window.api` 那一层用的)。
- *  - `dialog:pickFolder` / `claude:healthCheck` —— 两条**直接写字面量、不带 `RpcMap` 标注**
- *    的 invoke(见检查 1 里钉住它们的那条断言)。它们**有** handler,只是通道名不在 `IPC` 表里。
+ *  - `dialog:pickFolder` —— 一条**直接写字面量、不带 `RpcMap` 标注**
+ *    的 invoke(见检查 1 里钉住它的那条断言)。它**有** handler,只是通道名不在 `IPC` 表里。
  */
 const KNOWN_NON_CONTRACT_CHANNELS = new Set([
   "__mcode_pick_result__",
   "dialog:pickFolder",
-  "claude:healthCheck",
 ]);
 
 /* ══════════════════════════ 开始扫描 ══════════════════════════ */
@@ -747,7 +746,7 @@ diff("preload 标出来的每一条,契约里都真的有", annotatedKeys, rpcKe
  * 三个**认识的例外**(都写在源码的注释里,不是漏):
  *   - `skills.engines.set` —— 键里两个点,通道名是 `skills:enginesSet`(驼峰),拼不出规律;
  *   - `MEMORY_*` 五条 —— 常量名以 `_CHANNEL` 结尾,值来自 `@contracts/memory`;
- *   - B 类(pickFolder / claudeHealthCheck)—— 没有标注,下面单独钉住。
+ *   - B 类(pickFolder)—— 没有标注,下面单独钉住。
  */
 const KNOWN_KEY_FORM_MISMATCH = new Set([
   "skills.engines.set",
@@ -773,15 +772,14 @@ check(
 );
 
 /**
- * B 类:preload 上那两条**直接写字面量、不带 RpcMap 标注**的。它们是历史遗留,
- * 不是本套要修的东西 —— 但必须**钉住**(两条、名字、通道),否则"以后新加一条也照抄
+ * B 类:preload 上这条**直接写字面量、不带 RpcMap 标注**的。它是历史遗留,
+ * 不是本套要修的东西 —— 但必须**钉住**(数量、名字、通道),否则"以后新加一条也照抄
  * 这种写法"就绕过了上面所有的断言,而这一套会静默放行。
  */
 const literalInvokes = invokes.filter((r) => r.rpcKey === null);
 check(
-  "不带 RpcMap 标注的 invoke 仍然只有那两个已知的(pickFolder / claudeHealthCheck)",
-  literalInvokes.length === 2 &&
-    literalInvokes.every((r) => r.channel === "dialog:pickFolder" || r.channel === "claude:healthCheck"),
+  "不带 RpcMap 标注的 invoke 仍然只有已知的 pickFolder",
+  literalInvokes.length === 1 && literalInvokes[0]?.channel === "dialog:pickFolder",
   literalInvokes.map((r) => `${r.ns}.? → ${r.channel}`),
 );
 

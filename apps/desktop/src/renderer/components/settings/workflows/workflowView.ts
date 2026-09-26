@@ -91,7 +91,7 @@ export function missingRequiredName(doc: WorkflowDoc): boolean {
  * 比它会让"刚存完"立刻又判成脏,同一个死循环。
  */
 export function isDocDirty(working: WorkflowDoc, baseline: WorkflowDoc): boolean {
-  if (working.prompt !== baseline.prompt) return true;
+  if (working.prompt !== baseline.prompt || working.frameworkNote !== baseline.frameworkNote) return true;
   if (working.nodes !== baseline.nodes || working.edges !== baseline.edges) return true;
   if (isIdentityLocked(baseline)) return false;
   return working.name !== baseline.name || working.description !== baseline.description;
@@ -256,6 +256,8 @@ export function isNodeDeleteKey(
 export function isProtectedNode(
   node: { type: string },
   purpose?: WorkflowPurpose,
+  nodes?: readonly { type: string }[],
+  catalog?: NodeTypeCatalog,
 ): boolean {
   // ⚠️ **两种图保护的东西不一样**（2026-09-22 用户明确要求）。
   //
@@ -268,7 +270,10 @@ export function isProtectedNode(
   //
   // 判不了是哪一种时两种入口都护着：拦错的代价是"一个合法节点删不掉"，
   // 比"删了之后存盘被拒"更难解释。
-  if (purpose === "automation") return node.type === TRIGGER_NODE_TYPE_ID;
-  if (purpose === "workflow") return node.type === MAIN_NODE_TYPE_ID;
+  const trigger = (n: { type: string }) => n.type === TRIGGER_NODE_TYPE_ID ||
+    catalog?.entries.some((e) => e.id === n.type && e.manifest.runner.kind === "trigger") === true;
+  if (purpose === "automation") return trigger(node) && (!nodes || nodes.filter(trigger).length <= 1);
+  if (purpose === "workflow") return node.type === MAIN_NODE_TYPE_ID &&
+    (!nodes || nodes.filter((n) => n.type === MAIN_NODE_TYPE_ID).length <= 1);
   return node.type === MAIN_NODE_TYPE_ID || node.type === TRIGGER_NODE_TYPE_ID;
 }

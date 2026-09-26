@@ -7,8 +7,7 @@
  *  - **命令** (Mcode built-ins): the four fixed entries with bespoke behavior
  *    (`/compact`, `/init`, `/browser`, `/sidechat`). Selecting executes
  *    immediately or fills the editor with an editable prompt.
- *  - **Claude Code** (engine commands, 2026-09-21): the ~57 commands the CLI
- *    itself advertises (`/usage`, `/context`, `/model`, `/mcp`, …). Unlike the
+ *  - **引擎命令**: commands the active provider itself advertises. Unlike the
  *    other two this list is not Mcode's — it arrives on `system/init` and is
  *    replaced wholesale whenever the engine re-announces it. Picking one just
  *    sends `/<name>` as the turn; the CLI recognizes the leading slash and runs
@@ -45,6 +44,8 @@ export interface SlashCommandPickerProps {
   skills: SkillInfo[];
   /** 引擎（Claude Code CLI）自己报的命令清单。`undefined` = 还没取到。 */
   engineCommands?: EngineCommand[];
+  /** Active provider display name used by the engine tab and empty states. */
+  engineName: string;
   /** 引擎**明确说了**它不提供命令清单（Pi / Codex）。与"还没取到"是两件事，
    *  界面上要说不同的话 —— 前者是"这家没有"，后者是"等一会儿"。 */
   engineUnsupported: boolean;
@@ -63,6 +64,7 @@ export function SlashCommandPicker({
   query,
   skills,
   engineCommands,
+  engineName,
   engineUnsupported,
   anchorRect,
   busy,
@@ -215,7 +217,7 @@ export function SlashCommandPicker({
       }}
       onMouseDown={(e) => e.preventDefault()}
     >
-      {/* Tab bar: Skill | 命令 | Claude Code. Each tab shows its live result count. */}
+      {/* Tab bar: Skill | 命令 | 当前引擎. Each tab shows its live result count. */}
       <div className="flex items-stretch border-b border-edge">
         <TabButton
           active={activeTab === "skill"}
@@ -237,7 +239,7 @@ export function SlashCommandPicker({
           active={activeTab === "engine"}
           onClick={() => setActiveTab("engine")}
           icon={<IconTerminal size={12} className="shrink-0 opacity-70" />}
-          label={t("chat.slash.tabEngine")}
+          label={t("chat.slash.tabEngine", { provider: engineName })}
           count={engineCmds.length}
         />
       </div>
@@ -252,10 +254,10 @@ export function SlashCommandPicker({
               : activeTab === "command"
                 ? t("chat.slash.noCommandMatch")
                 : engineUnsupported
-                  ? t("chat.slash.engineUnsupported")
+                  ? t("chat.slash.engineUnsupported", { provider: engineName })
                   : engineCmds.length === 0 && !engineCommands
-                    ? t("chat.slash.engineNotReady")
-                    : t("chat.slash.noEngineMatch")}
+                    ? t("chat.slash.engineNotReady", { provider: engineName })
+                    : t("chat.slash.noEngineMatch", { provider: engineName })}
           </div>
         ) : (
           commands.map((entry, idx) => {

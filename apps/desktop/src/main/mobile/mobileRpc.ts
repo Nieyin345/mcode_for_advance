@@ -64,6 +64,7 @@ import {
   GetSettingSchema,
   SetSettingSchema,
   GetManySettingsSchema,
+  ProviderHealthCheckSchema,
   ProviderCommandsSchema,
 } from "@contracts/ipc";
 import type {
@@ -73,7 +74,7 @@ import type {
 } from "@contracts/ipc";
 import type { PairedDevice, MobileRpcRequest } from "@contracts/mobile";
 import { SessionRepo, ProjectRepo, MessageRepo, SettingRepo } from "@main/store/repositories.js";
-import { providerRegistry } from "@main/providers/registry.js";
+import { probeProviderHealth, providerRegistry } from "@main/providers/registry.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { log } from "@main/lib/logger.js";
 import { broadcastSessionChanged, broadcastSessionDeleted } from "@main/lib/sessionSync.js";
@@ -177,6 +178,11 @@ const HANDLERS: Record<string, RpcHandler> = {
     })),
   }),
 
+  "provider:healthCheck": async (raw) => {
+    const input = ProviderHealthCheckSchema.parse(raw);
+    return probeProviderHealth(input.providerId, { force: input.force });
+  },
+
   // 引擎自己的斜杠命令清单（见 `@contracts/ipc` 的 `ProviderCommandsResult`）。
   //
   // 手机端能读，而且**读到的是电脑上那份清单** —— Claude 的命令是电脑上那个 CLI 报的。
@@ -279,19 +285,6 @@ const HANDLERS: Record<string, RpcHandler> = {
   "setting:getMany": (raw) => {
     const input = GetManySettingsSchema.parse(raw);
     return SettingRepo.getMany(input.keys);
-  },
-
-  "claude:healthCheck": async () => {
-    const provider = providerRegistry.default;
-    if (provider.healthCheck) {
-      const result = await provider.healthCheck();
-      return {
-        installed: result.ok,
-        source: result.ok ? `Agent SDK v${result.version ?? "?"}` : null,
-        command: result.error ?? null,
-      };
-    }
-    return { installed: true, source: "Agent SDK", command: null };
   },
 
   // ── Session lifecycle / turns ───────────────────────────────────────────

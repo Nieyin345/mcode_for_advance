@@ -72,8 +72,6 @@ import { attachToCurrentChat } from "@renderer/lib/attachToChat.js";
 import { Dialog } from "@renderer/components/ui/dialog.js";
 import { Divider } from "@renderer/components/layout/Divider.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
-import { formatCitation, type CitationStyle } from "@contracts/citation";
-import { copyText } from "@renderer/lib/clipboard.js";
 import {
   HintRow,
   InlineInputRow,
@@ -211,6 +209,32 @@ export function LibrarySection({
   /** 双击进主栏编辑 —— 和文件树那条**同一个 action**（见 `openItemInCenter`）。 */
   const openFileInIde = useSessionStore((s) => s.openFileInIde);
   const openFileView = useFileViewStore((s) => s.open);
+  /**
+   * 单击去抖的定时器（2026-09-27）。
+   *
+   * 浏览器在双击时会**先派发两次 `click` 再派发 `dblclick`**。之前单击直接执行
+   * `previewLibraryItem`（右栏切「预览」并拉出来），于是双击的实际过程是：右栏先弹出
+   * 预览 → 主页面打开 → 再被「展开主对话」覆盖，来回闪三次（用户原话：「侧边栏先出现
+   * 预览，然后主页面再出现，然后主对话把侧边栏的覆盖」）。
+   *
+   * 所以单击的动作**延迟一个双击间隔**再做；双击到来时先把它取消。选中态（高亮）
+   * 不延迟 —— 那是即时反馈，不牵动右栏。
+   */
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+    },
+    [],
+  );
+  const cancelPendingClick = () => {
+    if (clickTimerRef.current) {
+      clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
+    }
+  };
+  /** 与系统双击阈值同量级：短于它双击会被拆成两次单击，长于它单击显得迟钝。 */
+  const CLICK_DEBOUNCE_MS = 220;
 
   /**
    * 「全部显示」开着的那几个 **kind**。
@@ -427,14 +451,6 @@ export function LibrarySection({
     };
   }, [loadedItemIdsKey]);
 
-  // 库的内容变了 —— **包括 AI 改的**。
-  useEffect(() => {
-    const off = window.api?.on?.libraryJobChanged?.(() => {
-      void refreshItems();
-    });
-    return off;
-  }, [refreshItems]);
-
   /**
    * 库的内容变了 —— **包括 AI 改的**。
    *
@@ -510,6 +526,21 @@ export function LibrarySection({
   };
 
   /**
+   * 行上的 `onClick`：去抖版的 `openItem`。第二次 click（`e.detail >= 2`）不再排
+   * 预览 —— 那一下属于双击，交给 `onDoubleClick`。
+   */
+  const openItemDebounced = (item: LibraryItem, collectionId: string | null, detail: number) => {
+    cancelPendingClick();
+    if (detail >= 2) return;
+    // 选中态即时给（左栏高亮），右栏那一步等去抖窗口过了再做。
+    setActiveItem(item.id);
+    clickTimerRef.current = setTimeout(() => {
+      clickTimerRef.current = null;
+      openItem(item, collectionId);
+    }, CLICK_DEBOUNCE_MS);
+  };
+
+  /**
    * **双击一行 = 在中间打开，而且能编辑**（2026-09-21 统一）。
    *
    * ## 它和项目文件走同一条路
@@ -534,7 +565,12 @@ export function LibrarySection({
    * 这两种仍旧走 `openFileView`，与从前一样。
    */
   const openItemInCenter = (item: LibraryItem, collectionId: string | null) => {
-    openItem(item, collectionId);
+    // 先把排着的单击预览撤掉 —— 否则右栏会先跳一下「预览」再被下面的 flow 覆盖。
+    cancelPendingClick();
+    // 只做选中，不碰右栏：右栏怎么变由 `openFileInIde` 决定（它会展开主对话，或在
+    // 主页面已是文档页时保持原状），这里再切一次「预览」只会制造闪烁。
+    if (collectionId) setActive(collectionId);
+    setActiveItem(item.id);
     const which = item.filePath ?? item.pdfPath ? undefined : "md";
     void (async () => {
       type EntryPathRes = { path: string | null; isDir?: boolean; error?: string };
@@ -771,23 +807,6 @@ export function LibrarySection({
    * 反馈一律走 toast：左栏列表里没有"这一条的状态区"，而转换要花几秒到几十秒 ——
    * 没有反馈的话用户只会以为点了没反应。 */
 
-  /** 转 Markdown（软件自己那套本地抽取）。 */
-  const convertItem = async (item: LibraryItem) => {
-    try {
-      const res = await api.library.convert({ ids: [item.id], force: true });
-      useToastStore.getState().push({
-        // 没有 `success` 这一档（只有 info / warning / error）—— 成功走 info，
-        // 与"转换失败"的 error 在观感上分得开就够了。
-        kind: res.converted > 0 ? "info" : "error",
-        title: res.converted > 0 ? t("library.convert.done") : (res.failed[0]?.error ?? t("library.convert.failed")),
-        body: item.title,
-      });
-      if (res.converted > 0) await refreshItems();
-    } catch (err) {
-      useToastStore.getState().push({ kind: "error", title: t("library.convert.failed"), body: (err as Error).message });
-    }
-  };
-
   /** 挂上用户已经转录好的 md（不重新转，见 `ItemDetail` 里那段说明）。 */
   const adoptMarkdownFor = async (item: LibraryItem) => {
     const picked = await api.pickFiles({ filters: [{ name: "Markdown", extensions: ["md", "markdown"] }] });
@@ -805,40 +824,6 @@ export function LibrarySection({
     }
   };
 
-  /**
-   * 把这一条的引用复制到剪贴板。
-   *
-   * 用**默认格式**（`formatCitation` 的第二参数不给就走它自己的默认）——右键是一个
-   * 一步到位的动作，不该在这儿再弹一个"选哪种格式"。要换格式的去设置（引用格式
-   * 是全局偏好，本来也不该按条选）。
-   */
-  const copyCitationOf = async (item: LibraryItem) => {
-    const ok = await copyText(formatCitation(item, "apa"));
-    useToastStore.getState().push({
-      kind: ok ? "info" : "error",
-      title: ok ? t("library.cite.copy") : t("library.convert.failed"),
-      body: item.title,
-    });
-  };
-
-  /**
-   * 把一个分类下的条目导出成引用文件（2026-09-21）。
-   *
-   * 从右栏那条工具条搬来的。落盘位置由主进程定（库根的 `exports/`）——
-   * 渲染端不拼路径，与原来那条一样。
-   */
-  const exportCollection = async (c: LibraryCollection, style: CitationStyle) => {
-    try {
-      const res = await api.library.exportCitations({ style, collectionId: c.id });
-      useToastStore.getState().push({
-        kind: res.ok ? "info" : "error",
-        title: res.ok ? t("library.export.done", { n: res.count, path: res.path }) : (res.error ?? t("library.export.failed")),
-      });
-    } catch (err) {
-      useToastStore.getState().push({ kind: "error", title: t("library.export.failed"), body: (err as Error).message });
-    }
-  };
-
   const deleteForever = async (item: LibraryItem) => {
     // 先摆清单再删（见 `DeleteItemsDialog`）—— 原先这里是 `window.confirm` 一句
     // "确定吗"，而这条操作**不可逆**、还会连带它挂出去的关联与那一包转录产物。
@@ -850,39 +835,6 @@ export function LibrarySection({
     if (deletedActiveId !== null && activeItemId === deletedActiveId) setActiveItem(null);
     await loadCollections();
     await refreshItems();
-  };
-
-  /**
-   * 右键菜单里点「下载 PDF」。
-   *
-   * ## 为什么失败要说一句话,而不是默默把菜单关掉
-   *
-   * 下载任务的进度是靠 `libraryJobChanged` 广播推回来的。左栏**没有**那份状态
-   * —— 它是独立的一棵树。所以这里点了之后,用户在左栏能看到的唯一变化,是下载
-   * 真下了/真失败时那条广播带来的。中间那几分钟里 "什么都没发生" 是正常的,但
-   * **"排都没排上"也长得一模一样** —— 那就分不出来了。
-   *
-   * 而这条 RPC 确实会失败:条目在别的窗口被删了、库根不可写、参数没通过校验(比如
-   * 这是一条笔记 —— 菜单里已经挡掉了,但列表可能是旧的)。所以失败时报出来。
-   *
-   * ## 为什么进度不在这里显示
-   *
-   * 左栏是列表,一行放不下一个进度条,而用户真正的疑问是「它到底下没下」。那个
-   * 问题由每条文献自己的状态点回答(`derivePdfState`),它挂在 `libraryJobChanged`
-   * 上自动刷新 —— 不需要这里再维护一份。
-   */
-  const downloadOne = async (item: LibraryItem) => {
-    setError(null);
-    try {
-      await api.library.download({ ids: [item.id] });
-      // 排队之后立刻拉一次:下载任务可能**同步**就落库了(已有 PDF 会被跳过、
-      // 排不上返回的 jobs 里也没有它),而那条 `libraryJobChanged` 广播只在状态
-      // **变化**时发 —— 不拉这一次的话,一层没变的状态在界面上要等到下次刷新才出现。
-      await refreshItems();
-    } catch (err) {
-      // `setError` 是左栏顶部那条红色横条 —— 复用现成的那一个,不新造 UI。
-      setError(err instanceof Error ? err.message : String(err));
-    }
   };
 
   /** 开始改一个条目的名字(右键菜单里点「重命名」)。 */
@@ -948,7 +900,7 @@ export function LibrarySection({
           icon={<IconFileText size={12} className="shrink-0" />}
           label={item.title}
           active={item.id === activeItemId ? "fill" : false}
-          onClick={() => openItem(item, collectionId)}
+          onClick={(e) => openItemDebounced(item, collectionId, e.detail)}
           // 双击在**中间**打开（用户：「双击才会在中间显示」）。
           onDoubleClick={() => openItemInCenter(item, collectionId)}
           // 行尾那个「N 条关联」的徽标 —— 用户的抱怨是「文件之间的关联没有体现」:
@@ -1388,7 +1340,6 @@ export function LibrarySection({
       <CollectionInfoDialog
         collection={collectionInfoFor}
         onOpenChange={(open) => { if (!open) setCollectionInfoFor(null); }}
-        onExport={(c, style) => void exportCollection(c, style)}
       />
 
       {/* 「导入到这里」——在分类行上右键触发。复用右栏那条 `ImportBar`（它本来就收
@@ -1435,10 +1386,7 @@ export function LibrarySection({
         onChanged={() => void refreshItems()}
         onRename={startItemRename}
         onDeleteForever={(item) => void deleteForever(item)}
-        onDownload={(item) => void downloadOne(item)}
-        onConvert={(item) => void convertItem(item)}
         onAdoptMarkdown={(item) => void adoptMarkdownFor(item)}
-        onCopyCitation={(item) => void copyCitationOf(item)}
         onManageLinks={(item) => setLinksFor(item)}
         onShowInfo={(item) => setInfoFor(item)}
       />
@@ -1452,9 +1400,9 @@ export function LibrarySection({
         onDelete={(c) => void removeCollection(c.id, c.name)}
         onNewNote={startNewNote}
         onImportHere={(c) => setImportInto(c)}
-        onExport={(c, style) => void exportCollection(c, style)}
         onShowInfo={(c) => setCollectionInfoFor(c)}
         onMove={(c, parentId) => void moveCollection(c, parentId)}
+
       />
 
       {/* 大类标题行的右键菜单 —— 第二级的**唯一**入口就在它的第一项(见 GroupContextMenu

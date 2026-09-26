@@ -20,7 +20,7 @@ async function main() {
       tsconfig: "tsconfig.json", logLevel: "error",
       alias: Object.fromEntries([
         "electron", "@main/store/db.js", "@main/store/repositories.js", "@main/lib/logger.js",
-        "@main/lib/dataRoot.js", "@main/library/paths.js", "@main/templates/store.js",
+        "@main/lib/dataRoot.js", "@main/library/paths.js", "@main/templates/store.js", "@main/onlyoffice/OnlyOfficeBridge.js",
       ].map((name) => [name, stub])),
       plugins: [{ name: "alert-relative-dependencies", setup(build) {
         build.onResolve({ filter: /^\.\/(db|repositories)\.js$/ }, (args) => {

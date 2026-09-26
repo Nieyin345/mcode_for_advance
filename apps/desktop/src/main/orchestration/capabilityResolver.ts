@@ -12,7 +12,8 @@ import {
   type CapabilityRequirement,
   providerCapabilityIds,
 } from "@contracts/capability";
-import { mcpServerNamesOf, pluginNamesOf, providerIdOf, skillNamesOf, type NodeTypeManifest, type NodeRunnerKind } from "@contracts/nodeType";
+import { injectTargetOf, isModelDecider, mcpServerNamesOf, pluginNamesOf, providerIdOf, skillNamesOf, type NodeTypeManifest, type NodeRunnerKind } from "@contracts/nodeType";
+import type { WorkflowNode } from "@contracts/workflow";
 import type { AgentProvider } from "@contracts/provider";
 import type { PluginCapabilityDeclaration, PluginManifest } from "@contracts/plugin";
 
@@ -86,13 +87,29 @@ export function executorCapabilityDescriptors(
  *  返回值,不 import 它们(保持本文件可被 smoke 无 DB 打包)。 */
 export function collectCapabilityInventory(sources: {
   providers?: readonly AgentProvider[];
-  plugins?: ReadonlyArray<{ name: string; manifest: PluginManifest }>;
+  plugins?: ReadonlyArray<{ name: string; manifest: PluginManifest; compatibleProviderIds?: string[] }>;
   executorKinds?: readonly string[];
   executorCapabilitiesOf?: (kind: string) => ExecutorCapabilityFlags | undefined;
 }): CapabilityDescriptor[] {
   const out: CapabilityDescriptor[] = [];
   for (const provider of sources.providers ?? []) out.push(providerCapabilityDescriptor(provider));
-  for (const { name, manifest } of sources.plugins ?? []) {
+  for (const { name, manifest, compatibleProviderIds } of sources.plugins ?? []) {
+    // Selecting a plugin is itself a capability requirement. Most ecosystem
+    // manifests do not declare a synthetic `kind: plugin` capability, so add
+    // one host descriptor for every enabled plugin instead of falsely marking
+    // an otherwise valid plugin as missing. Provider applicability is the same
+    // metadata used by the editor's candidate filter.
+    const declaresSelf = (manifest.capabilities ?? []).some(
+      (declaration) => declaration.kind === "plugin" && declaration.id === name,
+    );
+    if (!declaresSelf) {
+      out.push({
+        kind: "plugin",
+        id: name,
+        source: `plugin:${name}`,
+        ...(compatibleProviderIds ? { providers: compatibleProviderIds } : {}),
+      });
+    }
     out.push(...pluginCapabilityDescriptors(name, manifest.capabilities ?? []));
   }
   out.push(...executorCapabilityDescriptors(sources.executorKinds ?? [], sources.executorCapabilitiesOf));
@@ -122,9 +139,17 @@ export function requirementsForNode(
     requirements.push({ kind: "executor", id: manifest.runner.kind });
   }
   const selectedProvider = providerId ?? providerIdOf(params);
-  if (selectedProvider) requirements.push({ kind: "provider", id: selectedProvider });
+  const mcpServerNames = mcpServerNamesOf(params);
+  // A present MCP server is not enough: the selected provider must be able to
+  // mount MCP at all. This makes Pi + MCP fail during capability validation
+  // instead of silently reaching a provider that intentionally ignores MCP.
+  if (selectedProvider) requirements.push({
+    kind: "provider",
+    id: selectedProvider,
+    ...(mcpServerNames.length > 0 ? { capabilities: ["mcp"] } : {}),
+  });
   for (const id of skillNamesOf(params)) requirements.push({ kind: "skill", id });
-  for (const id of mcpServerNamesOf(params)) requirements.push({ kind: "mcp", id });
+  for (const id of mcpServerNames) requirements.push({ kind: "mcp", id });
   for (const id of pluginNamesOf(params)) requirements.push({ kind: "plugin", id });
   return requirements;
 }
@@ -144,4 +169,29 @@ export function checkNodeCapabilities(
     runnerKind: context?.runnerKind ?? manifest.runner.kind,
     providerId: context?.providerId ?? requirements.find((r) => r.kind === "provider")?.id,
   });
+}
+
+/** Return only providers that can execute model turns in this graph. */
+export function providerIdsForWorkflowPreflight(
+  nodes: readonly WorkflowNode[],
+  manifests: ReadonlyMap<string, NodeTypeManifest>,
+  sessionProviderId: string,
+  originProviderId?: string,
+): string[] {
+  const ids = new Set<string>();
+  for (const node of nodes) {
+    const manifest = manifests.get(node.type);
+    if (!manifest) continue;
+    if (manifest.runner.kind === "prompt" || isModelDecider(manifest, node.params)) {
+      ids.add(providerIdOf(node.params) ?? sessionProviderId);
+      continue;
+    }
+    if (manifest.runner.kind !== "conversation") continue;
+    if (injectTargetOf(node.params) === "origin") {
+      if (originProviderId) ids.add(originProviderId);
+    } else {
+      ids.add(sessionProviderId);
+    }
+  }
+  return [...ids];
 }

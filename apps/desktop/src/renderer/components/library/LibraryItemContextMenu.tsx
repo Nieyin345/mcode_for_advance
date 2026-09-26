@@ -45,7 +45,6 @@ import {
   IconArrowsExchange,
   IconBook,
   IconChevronRight,
-  IconRefresh,
   IconInfoCircle,
   IconLink,
   IconExternalLink,
@@ -91,7 +90,6 @@ interface Props {
    * 用户要把右栏那个 `library` tab 整个删掉，并要求「**全部堆到左栏右键**」。所以
    * 详情页里那几件"对单条做事"的动作得先在右键里有去处，右栏才删得掉。
    */
-  onConvert: (item: LibraryItem) => void;
   onAdoptMarkdown: (item: LibraryItem) => void;
   /**
    * 管这一条的**关联**（2026-09-21）。
@@ -117,7 +115,6 @@ export function LibraryItemContextMenu({
   onChanged,
   onRename,
   onDeleteForever,
-  onConvert,
   onAdoptMarkdown,
   onManageLinks,
   onShowInfo,
@@ -248,19 +245,6 @@ export function LibraryItemContextMenu({
                   {t("library.ctx.attachToChat")}
                 </Menu.Item>
 
-                {/* 单篇转 Markdown;所有文档条目共用这一入口。 */}
-                {item && (item.filePath || item.pdfPath) && (
-                  <Menu.Item
-                    onClick={() => {
-                      onConvert(item);
-                      onClose();
-                    }}
-                    className={itemClass}
-                  >
-                    <IconRefresh size={12} className="shrink-0" />
-                    {item.mdPath ? t("library.convert.redo") : t("library.convert.run")}
-                  </Menu.Item>
-                )}
                 {item && (item.filePath || item.pdfPath) && (
                   <Menu.Item
                     onClick={() => {

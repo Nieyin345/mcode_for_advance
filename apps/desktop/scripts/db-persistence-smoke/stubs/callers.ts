@@ -5,7 +5,7 @@ export const calls: string[] = [];
 export const messages: MessageBoxOptions[] = [];
 export const observers = new Set<(error: Error) => void>();
 export const state = {
-  locale: "en", flushError: false, closeError: false, copyError: false,
+  locale: "en", officeActive: false, flushError: false, closeError: false, copyError: false,
   dialogThrows: false, dialogRejects: false,
 };
 const responses: Array<(result: MessageBoxReturnValue) => void> = [];
@@ -18,7 +18,7 @@ export function reset(): void {
   if (responses.length) throw new Error("previous mock dialog was not settled");
   calls.length = 0;
   messages.length = 0;
-  Object.assign(state, { locale: "en", flushError: false, closeError: false, copyError: false, dialogThrows: false, dialogRejects: false });
+  Object.assign(state, { locale: "en", officeActive: false, flushError: false, closeError: false, copyError: false, dialogThrows: false, dialogRejects: false });
 }
 export const dialog = {
   showMessageBox(options: MessageBoxOptions): Promise<MessageBoxReturnValue> {
@@ -56,3 +56,5 @@ export const app = {
   relaunch: () => { calls.push("relaunch"); },
   exit: (_code: number) => { calls.push("exit"); },
 };
+
+export const hasOnlyOfficeSessions = () => state.officeActive;

@@ -36,7 +36,8 @@ import { log } from "@main/lib/logger.js";
 import { setManagedRuntimeRoot } from "@main/runtimes/managedRuntimeRoots.js";
 import { setToolRoot } from "@main/env/managedToolRoots.js";
 import { applyAgentEnvironment } from "@main/env/agentEnv.js";
-import { getOnlyOfficeOrigin, shutdownOnlyOfficeBridge } from "@main/onlyoffice/OnlyOfficeBridge.js";
+import { getOnlyOfficeOrigin, shutdownOnlyOfficeBridge, flushOnlyOfficeSessions } from "@main/onlyoffice/OnlyOfficeBridge.js";
+import { showOnlyOfficeSaveError } from "@main/onlyoffice/persistenceAlerts.js";
 import { join } from "node:path";
 
 // App identity for OS-level surfaces (desktop notifications, taskbar grouping,
@@ -369,14 +370,34 @@ async function maybeAutoStartRelay(): Promise<void> {
 // quit), then re-enters quit; the second pass runs the synchronous teardown
 // below (which is also what closes the DB the vault row was written to).
 let sessionCookiesFlushed = false;
+let quitPreparationPending = false;
 app.on("before-quit", (event) => {
   if (!sessionCookiesFlushed) {
     event.preventDefault();
-    const timeout = new Promise<void>((r) => setTimeout(r, 3000).unref());
-    void Promise.race([BrowserManager.saveCookieVault(), timeout]).finally(() => {
-      sessionCookiesFlushed = true;
-      app.quit();
-    });
+    if (quitPreparationPending) return;
+    quitPreparationPending = true;
+    // Freeze editing while we take the final snapshot; otherwise changes typed
+    // during an asynchronous force-save could be lost immediately afterwards.
+    const windows = BrowserWindow.getAllWindows().filter((win) => win.isEnabled());
+    for (const win of windows) win.setEnabled(false);
+    void (async () => {
+      try {
+        const timeout = new Promise<void>((r) => setTimeout(r, 3000).unref());
+        try { await Promise.race([BrowserManager.saveCookieVault(), timeout]); }
+        catch (error) { log.warn(`cookie vault flush failed: ${String(error)}`); }
+        await flushOnlyOfficeSessions();
+        sessionCookiesFlushed = true;
+        app.quit();
+      } catch (error) {
+        // Keep the callback server, DB and other services alive for retry.
+        showOnlyOfficeSaveError(error);
+      } finally {
+        quitPreparationPending = false;
+        if (!sessionCookiesFlushed) {
+          for (const win of windows) if (!win.isDestroyed()) win.setEnabled(true);
+        }
+      }
+    })();
     return;
   }
   // Save BEFORE tearing down services. If storage is unavailable, retain the

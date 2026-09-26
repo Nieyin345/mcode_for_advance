@@ -47,14 +47,16 @@
  * 同一批类型,说明书放一份就够了(在工作流那一边);而自动化那一页根本画不出档案能套
  * 的节点(它的起点是触发器)。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { useRpc } from "@renderer/hooks/useRpc.js";
+import { Button, ErrorNote } from "@renderer/components/ui/index.js";
+import { localizeWorkflowCatalog } from "./workflowPresentation.js";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { PANEL_MAX_W } from "../panelWidth.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { IconArrowsSplit, IconBolt } from "@renderer/lib/icons.js";
-import type { AgentProfile, AgentProfileCatalog } from "@contracts/agentProfile";
-import type { NodeTypeCatalog } from "@contracts/nodeType";
+import type { AgentProfile } from "@contracts/agentProfile";
 import { PanelHeader } from "../PanelHeader.js";
 import { WorkflowLibraryView } from "./WorkflowLibraryView.js";
 import { NodeTypesView } from "./NodeTypesView.js";
@@ -78,72 +80,35 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
   const views = isAutomation ? VIEWS.filter((v) => v.id === "library") : VIEWS;
   const prefix = isAutomation ? "automation" : "workflows";
 
-  const [catalog, setCatalog] = useState<NodeTypeCatalog | null>(null);
-  const [catalogError, setCatalogError] = useState<string | null>(null);
-  const [catalogLoading, setCatalogLoading] = useState(true);
-
-  const loadCatalog = useCallback(async () => {
-    setCatalogLoading(true);
-    setCatalogError(null);
-    try {
-      setCatalog(await api.workflow.nodeTypes());
-    } catch (err) {
-      setCatalogError((err as Error).message);
-    } finally {
-      setCatalogLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadCatalog();
-  }, [loadCatalog]);
-
-  /**
-   * 代理档案。**在这一层读一次往下传**,和 `catalog` 同一个理由:画布(添加节点菜单)
-   * 和节点类型那一页(档案列表)是同一份数据的两个消费者,而两个页签**同时挂载**
-   * (靠 `hidden` 切换)—— 各自拉一次的话,在这一页存一份档案,另一页的列表就是旧的。
-   */
-  const [profiles, setProfiles] = useState<AgentProfile[]>([]);
-  const [profileProblems, setProfileProblems] = useState<AgentProfileCatalog["problems"]>([]);
-  const [profileError, setProfileError] = useState<string | null>(null);
-  /** 第一次拉档案回来了没有。**与"拉回来是空的"是两件事** —— 前者该转圈,后者该
-   *  说"还没有档案";混成一个的话每次打开这一页都会先闪一下空状态。 */
-  const [profilesLoading, setProfilesLoading] = useState(true);
-
-  const loadProfiles = useCallback(async () => {
-    setProfilesLoading(true);
-    try {
-      const res = await api.workflow.agentProfiles();
-      setProfiles(res.profiles);
-      setProfileProblems(res.problems);
-    } catch {
-      // 档案是**附加**能力:拉不到不该让画布和类型清单一起打不开。
-      setProfiles([]);
-      setProfileProblems([]);
-    } finally {
-      setProfilesLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadProfiles();
-  }, [loadProfiles]);
+  const catalogRead = useRpc(() => api.workflow.nodeTypes(), [], { toastOnError: false });
+  const profilesRead = useRpc(() => api.workflow.agentProfiles(), [], { toastOnError: false });
+  const catalog = useMemo(() => catalogRead.data ? localizeWorkflowCatalog(catalogRead.data, t) : null, [catalogRead.data, t]);
+  const catalogError = catalogRead.error?.message ?? null;
+  const catalogLoading = catalogRead.loading;
+  const loadCatalog = catalogRead.refetch;
+  const loadProfiles = profilesRead.refetch;
+  const profiles = profilesRead.data?.profiles ?? [];
+  const profileProblems = profilesRead.data?.problems ?? [];
+  const profilesLoading = profilesRead.loading;
+  const [profileMutationError, setProfileError] = useState<string | null>(null);
+  const profileError = profileMutationError ?? profilesRead.error?.message ?? null;
 
   const saveProfile = useCallback(
-    async (profile: AgentProfile) => {
+    async (profile: AgentProfile): Promise<boolean> => {
       setProfileError(null);
       let res: { ok: boolean; error?: string };
       try {
         res = await api.workflow.saveAgentProfile({ profile });
       } catch (err) {
         setProfileError((err as Error).message);
-        return;
+        return false;
       }
       if (!res.ok) {
         setProfileError(res.error ?? t("settings.workflows.profileSaveFailed"));
-        return;
+        return false;
       }
       await loadProfiles();
+      return true;
     },
     [loadProfiles, t],
   );
@@ -152,14 +117,18 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
     async (id: string) => {
       setProfileError(null);
       try {
-        await api.workflow.removeAgentProfile({ id });
+        const res = await api.workflow.removeAgentProfile({ id });
+        if (!res.ok) {
+          setProfileError(t("settings.workflows.profileRemoveFailed"));
+          return;
+        }
       } catch (err) {
         setProfileError((err as Error).message);
         return;
       }
       await loadProfiles();
     },
-    [loadProfiles],
+    [loadProfiles, t],
   );
 
   return (
@@ -183,6 +152,8 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
                   id={tabId(prefix, item.id)}
                   aria-selected={active}
                   aria-controls={panelId(prefix, item.id)}
+                  tabIndex={active ? 0 : -1}
+                  onKeyDown={moveTabFocus}
                   onClick={() => setView(item.id)}
                   className={cn(
                     "rounded border px-2 py-1 text-[0.7857em] transition-colors",
@@ -191,7 +162,7 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
                       : "border-edge bg-surface text-content-muted hover:bg-surface-hover/60 hover:text-content",
                   )}
                 >
-                  {t(item.labelKey)}
+                  {t(isAutomation && item.id === "library" ? "settings.automation.tabLibrary" : item.labelKey)}
                 </button>
               );
             })}
@@ -247,17 +218,18 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
             id={panelId(prefix, "profiles")}
             role="tabpanel"
             aria-labelledby={tabId(prefix, "profiles")}
-            className={cn("min-h-0 flex-1", view === "profiles" ? "flex" : "hidden")}
+            className={cn("min-h-0 flex-1 flex-col", view === "profiles" ? "flex" : "hidden")}
           >
-            <AgentProfilesView
+            {profilesRead.error && <ErrorNote className="mb-2" action={<Button size="sm" variant="secondary" onClick={() => void loadProfiles()}>{t("common.retry")}</Button>}>{profilesRead.error.message}</ErrorNote>}
+            {(!profilesRead.error || profilesRead.data) && <AgentProfilesView
               catalog={catalog}
               profiles={profiles}
               loading={profilesLoading}
               problems={profileProblems}
-              error={profileError}
+              error={profileMutationError}
               onSave={saveProfile}
               onRemove={removeProfile}
-            />
+            />}
           </div>
         </>
       )}
@@ -270,3 +242,18 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
  *  出现两次(`PanelHeader` 之外还有别的地方按 id 找元素时会被第一个截胡)。 */
 const tabId = (prefix: string, view: WorkflowsView): string => `${prefix}-tab-${view}`;
 const panelId = (prefix: string, view: WorkflowsView): string => `${prefix}-panel-${view}`;
+
+function moveTabFocus(event: React.KeyboardEvent<HTMLButtonElement>): void {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  const tabs = Array.from(
+    event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [],
+  );
+  if (tabs.length === 0) return;
+  event.preventDefault();
+  const current = Math.max(0, tabs.indexOf(event.currentTarget));
+  const next = event.key === "Home" ? 0
+    : event.key === "End" ? tabs.length - 1
+    : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  tabs[next]?.focus();
+  tabs[next]?.click();
+}

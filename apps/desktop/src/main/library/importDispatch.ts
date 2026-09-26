@@ -2,7 +2,7 @@
  * 通用导入分派 —— 按扩展名把一批路径送进对应的管线（kind 退役后的入口）。
  *
  * 三条管线，判据是**文件是什么**而不是"它属于哪个库"：
- *   - `.pdf`                    → 文献管线（校验 + 元数据 + 可选转录）
+ *   - `.pdf`                    → 文献管线（文件校验 + 入库，不抽取学术元数据或转录）
  *   - `.md` / `.markdown` / `.txt` → 笔记管线（入库即完成）
  *   - 其余                       → 通用文件管线（attached 收库）
  *
@@ -21,6 +21,7 @@ const NOTE_EXTS = new Set([".md", ".markdown", ".mdown", ".txt"]);
 export interface ImportMode {
   mode?: "files" | "folder" | "explode";
   collectionIds?: string[];
+  /** @deprecated Ignored. Only configured automations may upload/transcribe imports. */
   convert?: boolean;
 }
 
@@ -98,12 +99,7 @@ export async function importAnyFiles(paths: string[], opts: ImportMode = {}): Pr
       else if (r.item) {
         out.items.push(r.item);
         out.added += 1;
-        if (opts.convert !== false) {
-          const { convertItemToMarkdown } = await import("./convert.js");
-          const c = await convertItemToMarkdown(r.item);
-          if (c.ok) out.converted.ok += 1;
-          else out.converted.failed += 1;
-        }
+
       }
     }
   }
@@ -134,6 +130,7 @@ export async function importAnyFiles(paths: string[], opts: ImportMode = {}): Pr
       out.added += res.added;
       out.skipped += res.skipped;
       out.errors.push(...res.errors);
+
     }
   }
 

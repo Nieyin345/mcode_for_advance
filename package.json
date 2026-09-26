@@ -15,6 +15,9 @@
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
+    "test:all": "pnpm --filter @mcode/desktop test:all",
+    "test:smoke": "pnpm --filter @mcode/desktop test:smoke",
+    "test:runner": "pnpm --filter @mcode/desktop test:runner",
     "lint": "turbo run lint",
     "package": "turbo run package"
   },

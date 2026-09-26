@@ -37,7 +37,7 @@
  *
  *  - **跨函数的通路**:只认**同一个函数体里**出现的 `broadcastRuntimeEvent`。
  *    发出点被抽成小函数、通路由调用方决定的那种,这里看不见。今天没有这种形状
- *    (`emitExternal` 自己就是那个"给别的模块用的统一出口"),但以后若出现,
+ *    已知的 `withAutomationOrigin` 透传包装通过 AST 展开;其它跨函数形状若出现,
  *    要么把发出点收回本函数,要么在这一套里补一条断言。
  *  - **provider 里发的事件**(`SdkMessageAdapter` / `PiMessageAdapter` /
  *    `CodexMessageAdapter`)不走这两条路中的任何一条 —— 它们经 `ctx.emit`,
@@ -50,6 +50,8 @@
  * Run: scripts/emit-path-smoke/run.sh
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
+import type * as TypeScript from "typescript";
 import { existsSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { HOOK_EVENT_OF } from "@contracts/hook";
@@ -63,6 +65,7 @@ import { HOOK_EVENT_OF } from "@contracts/hook";
  */
 const DESKTOP = resolve(process.cwd());
 const MAIN = join(DESKTOP, "src/main");
+const ts = createRequire(join(DESKTOP, "package.json"))("typescript") as typeof TypeScript;
 
 let failures = 0;
 let checks = 0;
@@ -253,8 +256,63 @@ interface Site {
 const sites: Site[] = [];
 const filesWithEmit: string[] = [];
 
+/** Resolve only the known metadata-preserving wrapper, using AST boundaries.
+ * This is scanner input normalization, never executable production code.
+ * Both safe and unsafe sinks are preserved. Unknown transformations, escaping
+ * aliases, mutable bindings or shadowed names remain unresolved and fail the
+ * existing unknown-site assertion rather than being silently skipped. */
+function unwrapMetadataEmitters(text: string): string {
+  if (!text.includes("withAutomationOrigin")) return text;
+  const tree = ts.createSourceFile("emit-scan.ts", text, ts.ScriptTarget.Latest, true);
+  const nodes: TypeScript.Node[] = [];
+  const visit = (node: TypeScript.Node): void => { nodes.push(node); ts.forEachChild(node, visit); };
+  visit(tree);
+  const edits: Array<{ start: number; end: number; sink: string }> = [];
+  const replace = (node: TypeScript.Node, sink: string): void => {
+    edits.push({ start: node.getStart(tree), end: node.getEnd(), sink });
+  };
+  for (const node of nodes) {
+    if (!ts.isCallExpression(node) || !ts.isIdentifier(node.expression)
+      || node.expression.text !== "withAutomationOrigin") continue;
+    const fn = node.arguments[0];
+    if (!fn || !ts.isArrowFunction(fn) || fn.parameters.length !== 1
+      || !ts.isIdentifier(fn.parameters[0].name) || !ts.isCallExpression(fn.body)) continue;
+    const forward = fn.body;
+    const callee = forward.expression;
+    const sink = ts.isIdentifier(callee) ? callee.text
+      : ts.isPropertyAccessExpression(callee) ? callee.name.text : "";
+    if (sink !== "emitExternal" && sink !== "broadcastRuntimeEvent") continue;
+    if (forward.arguments.length !== 1 || !ts.isIdentifier(forward.arguments[0])
+      || forward.arguments[0].text !== fn.parameters[0].name.text) continue;
+    const parent = node.parent;
+    if (ts.isCallExpression(parent) && parent.expression === node) {
+      replace(node, sink); // withAutomationOrigin(...)(literalEvent)
+      continue;
+    }
+    if (!ts.isVariableDeclaration(parent) || !ts.isIdentifier(parent.name)
+      || !ts.isVariableDeclarationList(parent.parent)
+      || !(parent.parent.flags & ts.NodeFlags.Const)) continue;
+    const name = parent.name.text;
+    const identifiers = nodes.filter((candidate): candidate is TypeScript.Identifier =>
+      ts.isIdentifier(candidate) && candidate.text === name);
+    // Every reference must be a direct call of this uniquely named const.
+    // In particular, a same-named parameter cannot inherit this sink by guess.
+    if (!identifiers.every((identifier) => identifier === parent.name
+      || (ts.isCallExpression(identifier.parent) && identifier.parent.expression === identifier))) continue;
+    replace(node, sink);
+    for (const identifier of identifiers) if (identifier !== parent.name) replace(identifier, sink);
+  }
+  for (const edit of edits.sort((a, b) => b.start - a.start)) {
+    // Keep all newlines so reported production line numbers remain truthful.
+    const whitespace = text.slice(edit.start, edit.end).replace(/[^\n]/g, " ");
+    text = text.slice(0, edit.start) + edit.sink + whitespace + text.slice(edit.end);
+  }
+  return text;
+}
+
 /** 扫一份源码,把发出点找出来。抽成函数是为了让下面那段自检能喂人造样本。 */
 function scanSource(text: string, rel: string): Site[] {
+  text = unwrapMetadataEmitters(text);
   const blanked = blankStrings(text);
   const out: Site[] = [];
   for (const m of blanked.matchAll(/(?<![\w$])(broadcastRuntimeEvent|emitExternal)\s*\(/g)) {
@@ -365,6 +423,42 @@ console.log("\n扫描器自检(能不能认出把通路写错的那种)");
     nameInsideString.length === 1 && nameInsideString[0].type === "turn.done",
     nameInsideString,
   );
+
+  // Automation metadata wrappers must not hide the actual sink or its events.
+  const immediate = scanSource(
+    `withAutomationOrigin((event) => manager.emitExternal(event), origin)({ type: "user.message" } satisfies RuntimeEvent);`,
+    "<自检:立即调用的元数据包装>",
+  );
+  check("包装函数立即调用仍能找到真实事件", immediate.length === 1 && immediate[0].type === "user.message" && immediate[0].path === "external", immediate);
+  const localWrapper = scanSource(
+    `const send = withAutomationOrigin((event) => manager.emitExternal(event), origin);
+     send({ type: "workflow.node.result" }); send({ type: "turn.done" });`,
+    "<自检:本地 const 包装>",
+  );
+  check("本地包装的每个调用都分别扫描", localWrapper.length === 2 && localWrapper[0].type === "workflow.node.result" && localWrapper[1].type === "turn.done" && localWrapper.every((site) => site.path === "external"), localWrapper);
+  const wrappedWrong = scanSource(
+    `const send = withAutomationOrigin((event) => broadcastRuntimeEvent(event), origin);
+     send({ type: "workflow.node.result" });`,
+    "<自检:包装内的错误通路>",
+  );
+  check("包装内误用 broadcast 仍会被发现", wrappedWrong.length === 1 && wrappedWrong[0].path === "broadcast" && wrappedWrong[0].type === "workflow.node.result", wrappedWrong);
+  const unknownWrapper = scanSource(
+    `const send = withAutomationOrigin((event) => manager.emitExternal(transform(event)), origin);
+     send({ type: "workflow.node.result" });`,
+    "<自检:不能证明透传的包装>",
+  );
+  check("未知转换不许猜成安全透传", unknownWrapper.some((site) => site.type === null), unknownWrapper);
+  const shadowed = scanSource(
+    `const send = withAutomationOrigin((event) => manager.emitExternal(event), origin);
+     function nested(send) { send({ type: "workflow.node.result" }); }`,
+    "<自检:包装名被参数遮蔽>",
+  );
+  check("同名参数遮蔽时宁可报无法解析", shadowed.some((site) => site.type === null), shadowed);
+  const dynamicWrapped = scanSource(
+    `withAutomationOrigin((event) => manager.emitExternal(event), origin)({ type: chooseType() });`,
+    "<自检:包装内动态事件类型>",
+  );
+  check("包装不掩盖动态类型的未知状态", dynamicWrapped.some((site) => site.type === null), dynamicWrapped);
 }
 
 /* ────────────────── 检查 1:名字对不上 = 契约表整个漏了 ────────────────── */

@@ -21,7 +21,9 @@ function check(label: string, condition: boolean): void {
 }
 
 /** Isolate the real callback while avoiding main/index.ts startup side effects. */
-function quitFixture(failAt: "flush" | "close" | null) {
+function quitFixture(failAt: "flush" | "close" | null, options: {
+  cookiesFlushed?: boolean; officeFailure?: boolean; officeWait?: Promise<void>;
+} = {}) {
   const source = readFileSync(resolve("src/main/index.ts"), "utf8");
   const tree = ts.createSourceFile("index.ts", source, ts.ScriptTarget.Latest, true);
   const handlers: ts.Expression[] = [];
@@ -51,8 +53,18 @@ function quitFixture(failAt: "flush" | "close" | null) {
     BrowserManager: { disposeAll: record("browser"), saveCookieVault: async () => { trace.push("cookies"); } },
     relayManager: { disposeAll: record("relay") }, automationRunner: { dispose: record("automation") },
     stopMobileServer: record("mobile"),
+    shutdownOnlyOfficeBridge: record("onlyoffice"),
+    flushOnlyOfficeSessions: async () => {
+      trace.push("office-save");
+      await options.officeWait;
+      if (options.officeFailure) throw new Error("injected Office save failure");
+    },
+    showOnlyOfficeSaveError: record("office-alert"),
+    log: { warn: record("warn") },
+    BrowserWindow: { getAllWindows: () => [{ isEnabled: () => true, isDestroyed: () => false,
+      setEnabled: (enabled: boolean) => trace.push(enabled ? "enable-window" : "disable-window") }] },
   };
-  const callback = new Function(...Object.keys(deps), `let sessionCookiesFlushed = true; ${code} return callback;`)(...Object.values(deps)) as (event: { preventDefault(): void }) => void;
+  const callback = new Function(...Object.keys(deps), `let sessionCookiesFlushed = ${options.cookiesFlushed ?? true}; let quitPreparationPending = false; ${code} return callback;`)(...Object.values(deps)) as (event: { preventDefault(): void }) => void;
   let prevented = false;
   return { trace, callback, event: { preventDefault() { prevented = true; } }, prevented: () => prevented };
 }
@@ -100,6 +112,9 @@ async function main(): Promise<void> {
   registerAppHandlers({ handle: (name: string, fn: (...args: unknown[]) => unknown) => handlers.set(name, fn) } as unknown as IpcMain);
   const move = handlers.get(IPC.APP_MOVE_DATA_ROOT);
   assert.ok(move, "real move-root handler is registered");
+  reset(); state.officeActive = true;
+  const officeBlocked = move({}, { path: "/isolated-target" }) as { ok: boolean };
+  check("active/pending Office sessions block data-root migration before any writes", !officeBlocked.ok && calls.length === 0);
   for (const mode of ["flushError", "closeError"] as const) {
     reset(); state[mode] = true;
     let threw = false;
@@ -130,6 +145,27 @@ async function main(): Promise<void> {
   const success = quitFixture(null);
   success.callback(success.event);
   check("successful quit saves before teardown and closes last", !success.prevented() && success.trace[0] === "flush" && success.trace.at(-1) === "close");
+  check("successful quit includes the current OnlyOffice cleanup", success.trace.includes("onlyoffice"));
+  const officeFailure = quitFixture(null, { cookiesFlushed: false, officeFailure: true });
+  officeFailure.callback(officeFailure.event);
+  await tick(); await tick();
+  check("Office save failure cancels quit and leaves all services alive", officeFailure.prevented()
+    && officeFailure.trace.includes("office-alert") && !officeFailure.trace.includes("quit")
+    && !officeFailure.trace.includes("onlyoffice") && !officeFailure.trace.includes("close"));
+  check("a failed quit restores window interaction", officeFailure.trace.includes("disable-window") && officeFailure.trace.at(-1) === "enable-window");
+  officeFailure.callback(officeFailure.event);
+  await tick(); await tick();
+  check("a failed Office preflight can be retried", officeFailure.trace.filter((step) => step === "office-save").length === 2);
+  let release!: () => void;
+  const officeWait = new Promise<void>((resolve) => { release = resolve; });
+  const waiting = quitFixture(null, { cookiesFlushed: false, officeWait });
+  waiting.callback(waiting.event); waiting.callback(waiting.event);
+  await tick();
+  check("repeated quit shares one save preflight and cannot pass a pending write", waiting.prevented()
+    && waiting.trace.filter((step) => step === "office-save").length === 1 && !waiting.trace.includes("quit"));
+  release(); await tick(); await tick();
+  check("successful Office preflight resumes quit exactly once", waiting.trace.filter((step) => step === "quit").length === 1
+    && waiting.trace.indexOf("office-save") < waiting.trace.indexOf("quit"));
   console.log(`persistence-callers: ${checks} checks, ${failures} failures`);
   process.exitCode = failures ? 1 : 0;
 }

@@ -100,6 +100,11 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
   const { t } = useI18n();
   // 重试要带 sessionId(见 `workflow.retry`)。取当前会话 —— 卡片本来就是它这一轮里的。
   const sessionId = useSessionStore((s) => s.activeSessionId);
+  const providerName = useSessionStore((s) =>
+    block.providerId
+      ? s.providers.find((provider) => provider.id === block.providerId)?.displayName ?? block.providerId
+      : undefined,
+  );
   const [open, setOpen] = useState(false);
   const [openProcess, setOpenProcess] = useState(false);
   // 「排队中」chip:节点进队没起跑的那段时间(见 `workflowQueued.ts`)。收场卡出现时
@@ -236,6 +241,17 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
       )}
       {empty && (
         <p className="mt-1 text-content-subtle">{t("chatStream.workflowStep.empty")}</p>
+      )}
+
+      {/* Persist the actual execution choice on the result card. This is the
+          only reliable answer after a node/provider setting changes later. */}
+      {providerName && (
+        <p className="mt-1 text-[0.9em] text-content-subtle">
+          {t("chatStream.workflowStep.engine", {
+            provider: providerName,
+            model: block.model || "default",
+          })}
+        </p>
       )}
 
       {/* **这一步跑在哪种执行器上、跑了多久。**(`NodeExecutionRecord`,结果事件本来

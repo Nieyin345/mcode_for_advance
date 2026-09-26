@@ -235,7 +235,7 @@ function CriteriaDropdown({
   // 它按 `from` 决定拉什么,而 `undefined` 不是合法的来源,所以这里只在有 source 时才
   // 需要它的结果。用一个哨兵来源(`"skills"` 是最便宜的:它读 store,不发 IPC)顶替,
   // 免得 hooks 数随条件变。
-  const options = useRefOptions(cond.source ?? "skills");
+  const { options } = useRefOptions(cond.source ?? "skills");
   const live = cond.source !== undefined;
   const choices = live
     ? options.map((o) => o.id)

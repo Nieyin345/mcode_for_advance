@@ -1,3 +1,6 @@
+import { mergeSavedWorkflow, normalizeDraft, WorkflowEditHistory } from "@renderer/components/settings/workflows/workflowDraftState.js";
+import { placeEdgeLabels } from "@renderer/components/settings/workflows/workflowEdgeLabels.js";
+import { triggerKindLabel, visibleNodeParams, displayedParam } from "@renderer/components/settings/workflows/workflowPresentation.js";
 /**
  * Headless smoke for 设置 → 工作流 (batches C + D).
  *
@@ -209,7 +212,7 @@ const AGENT_MANIFEST: NodeTypeManifest = {
     // 候选是照**已经渲染过的**参数算的 —— 顺序反了,这一格就永远读到"还没选"。
     { key: "model", kind: "ref", from: "models", fromParam: "provider", label: "模型" },
     // 多选那种形态 —— 技能就是这个形状(`skills` + `multiple`)。
-    { key: "skills", kind: "ref", from: "skills", multiple: true, label: "技能" },
+    { key: "skills", kind: "ref", from: "skills", fromParam: "provider", multiple: true, label: "技能" },
     // 产出那两项(和真清单一致,见 `@contracts/outputConstraint`)。**夹具要跟真清单一个
     // 形状**:少了它们,下面"表单有没有把产出变量渲染出来"就没得测了。
     { key: "outputContract", kind: "longtext", label: "期望产出" },
@@ -1207,7 +1210,7 @@ function renderInspector(
         onRemoveNode: () => {},
         onSetDependency: () => {},
         onUpdateEdge: () => {},
-        onSaveProfile: async () => {},
+        onSaveProfile: async () => true,
         onRemoveProfile: async () => {},
         onRemoveWorkflow: () => {},
         onImported: () => {},
@@ -1882,16 +1885,16 @@ console.log("\nNodeInspector(自动化:触发方式)");
 const autoPanelHtml = renderInspector(autoDoc, "zh", null, "automation");
 check("自动化:有触发方式一栏", autoPanelHtml.includes("触发方式"));
 check("自动化:当前触发方式显示出来了", autoPanelHtml.includes("手动"));
-check("自动化:解释当前这一种", autoPanelHtml.includes("只有你按「立刻运行一次」的时候才跑"));
+check("自动化:说明手动载荷与事件载荷不同", autoPanelHtml.includes("trigger.kind = manual"));
 // 「执行器还没接」那块警告删掉了(执行器接上了,见 `automationRunner.ts`)。取而代之:
 // 这一格**只读**(值由触发器节点反推,见 `library.ts` 的 `deriveTrigger`),下面跟着
 // 一句反推的说明,再往下就是运行区(「立刻运行一次」+ 运行历史)。
-check("自动化:说清这一格是反推的", autoPanelHtml.includes("这一格跟着触发器节点走"));
+check("自动化:明确显示每个触发器的已保存版本", autoPanelHtml.includes("每个触发器的已保存配置"));
 check("自动化:不再说执行器还没接", !autoPanelHtml.includes("执行器还没接"));
 check("自动化:运行区在(立刻运行一次)", autoPanelHtml.includes("立刻运行一次"));
-check("自动化:运行历史在(空的)", autoPanelHtml.includes("还没跑过。"));
+check("自动化:首次读取显示加载而不是伪造空历史", autoPanelHtml.includes("加载") && !autoPanelHtml.includes("还没跑过。"));
 const scheduleHtml = renderInspector({ ...autoDoc, trigger: "schedule" }, "zh", null, "automation");
-check("换了触发方式就换那句解释", scheduleHtml.includes("到点自己跑"));
+check("旧概括字段不代替触发器节点事实", scheduleHtml.includes("每个触发器的已保存配置"));
 check("换了触发方式就不再提手动", !scheduleHtml.includes("只有你按「运行」的时候才跑"));
 // 工作流那边**一个字都不该出现** —— 触发器是"这是自动化"的判据,一张普通工作流
 // 的检查器里冒出触发方式,等于在说它也能自己跑起来。
@@ -2063,7 +2066,7 @@ check("画布:有卡片时「整理布局」可用", button(diamondCanvas, "整�
 // 1.5px 的线不好点,所以每条边多画了一条 12px 宽的透明带当命中区;点它不仅删边,
 // 悬停时还会变红并长出那个 × 钮(见 `WorkflowCanvas`)。
 check("画布:边有可点的命中区", diamondCanvas.includes('stroke="transparent"'));
-check("画布:点线的意思写在提示里", diamondCanvas.includes("点击删除这条依赖"));
+check("画布:点线的意思写在提示里", diamondCanvas.includes("点选连线，再用删除按钮"));
 check("画布:悬停时用另一个颜色的箭头", diamondCanvas.includes("workflow-edge-arrow-hover"));
 
 // 回头边在真画布上真的换了道。DIAMOND 没有回头的边,所以单独造一张:分支 B 有一条
@@ -2361,7 +2364,7 @@ const renderProfiles = (
         loading,
         problems,
         error: null,
-        onSave: async () => {},
+        onSave: async () => true,
         onRemove: async () => {},
       }),
     ),
@@ -3032,6 +3035,61 @@ console.log("\nworkflowLive 常驻订阅 / 晚到的 workflowId / boardWorkflowI
   );
   eq("还没跑过:画药丸选的那张", boardWorkflowIdOf(null, "wf_pill"), "wf_pill");
   eq("运行没记到图(空串):退回药丸那张", boardWorkflowIdOf({ workflowId: "" }, "wf_pill"), "wf_pill");
+}
+
+// Regression: every editable workflow-level prompt must participate in dirty tracking.
+for (const builtin of [true, false]) {
+  const base = { ...BUILTIN, builtin, frameworkNote: "saved" };
+  eq(`framework-only change is dirty (builtin=${builtin})`, isDocDirty({ ...base, frameworkNote: "changed" }, base), true);
+  eq(`clearing framework is dirty (builtin=${builtin})`, isDocDirty({ ...base, frameworkNote: undefined }, base), true);
+}
+
+console.log("\n保存归并、撤销重做、多入口与标签布局回归");
+{
+  const before = { ...CUSTOM, frameworkNote: "original", trigger: "manual" as const };
+  const sent = { ...before, name: "saved name" };
+  const canonical = { ...sent, trigger: "schedule" as const, nodes: [...sent.nodes], edges: [...sent.edges], updatedAt: 456 };
+  const merged = mergeSavedWorkflow({ ...sent, frameworkNote: "typed during save" }, sent, canonical);
+  eq("保存期间的新输入不被覆盖", merged.frameworkNote, "typed during save");
+  eq("服务端派生触发方式回写", merged.trigger, "schedule");
+  check("没有图编辑时复用已存节点引用", merged.nodes === canonical.nodes);
+  check("保存期间的新输入仍为脏", isDocDirty(merged, canonical));
+  const graphEdit = { ...sent, nodes: [node("late", 0, 0)] };
+  check("保存期间的新图编辑保留", mergeSavedWorkflow(graphEdit, sent, canonical).nodes === graphEdit.nodes);
+  const h = new WorkflowEditHistory();
+  check("第一次编辑可记入历史", h.record(before, sent));
+  eq("撤销回到之前的名称", h.undo(sent)?.name, before.name);
+  eq("重做回到编辑后名称", h.redo(before)?.name, sent.name);
+  check("序列化等值不制造新编辑", !h.record(sent, JSON.parse(JSON.stringify(sent)) as WorkflowDoc));
+  h.undo(sent);h.record(before, { ...before, name: "different" });
+  check("新分支编辑清空重做", !h.canRedo);
+  const equivalent = normalizeDraft(JSON.parse(JSON.stringify(canonical)) as WorkflowDoc, canonical);
+  check("撤销到已存内容不被引用差异误判为脏", !isDocDirty(equivalent, canonical));
+  for (let i = 0; i < 100; i++) h.record({ ...before, name: String(i) }, { ...before, name: String(i + 1) });
+  let undos = 0; while(h.undo(before)) undos++;
+  check("编辑历史有界", undos <= 80);
+}
+{
+  const trigger = { ...node("trigger1", 0, 0), type: "mcode.trigger" };
+  const other = { ...trigger, id: "trigger2" };
+  check("最后一个触发器受保护", isProtectedNode(trigger, "automation", [trigger]));
+  check("多个触发器可删掉多余的", !isProtectedNode(trigger, "automation", [trigger, other]));
+  const triggerEntry: NodeTypeEntry = { ...AGENT_ENTRY, id: "mcode.trigger", manifest: { ...AGENT_MANIFEST, runner: { kind: "trigger" }, params: ["project", "task", "cron", "paths", "events", "eventFilter", "debounceMs"].map(key => ({ key, kind: "text", label: key })) } };
+  const manual = visibleNodeParams({ ...trigger, params: { triggerKind: "manual" } }, triggerEntry);
+  check("手动触发表单不混入定时/文件/事件配置", !manual.some(s => ["cron", "paths", "events", "eventFilter", "debounceMs"].includes(s.key)));
+  check("手动触发所需项目显示必填", manual.find(s => s.key === "project")?.required === true);
+  const schedule = visibleNodeParams({ ...trigger, params: { triggerKind: "schedule" } }, triggerEntry);
+  check("定时触发表单显示 cron", schedule.some(s => s.key === "cron"));
+  eq("注入模式显示运行时默认值", displayedParam(trigger, { key: "injectMode", kind: "select", label: "mode", options: [] }), "ask");
+  const layout = placeEdgeLabels([
+    { id: "true", text: "true", x: 150, y: 90 },
+    { id: "loop", text: "再检查", x: 150, y: 90 },
+  ], [{ x: 100, y: 90, w: 100, h: 40 }]);
+  const a = layout.get("true")!, b = layout.get("loop")!;
+  check("两个同中点标签得到不同位置", a.y + a.height <= b.y || b.y + b.height <= a.y);
+  check("标签不压节点", a.y - 16 >= 130 && b.y - 16 >= 130);
+  const mockTranslate = (id: string) => id;
+  eq("未知触发方式安全显示", triggerKindLabel("toString", mockTranslate), "settings.automation.unknownTrigger");
 }
 
 console.log(`\n${checks - failures}/${checks} passed`);

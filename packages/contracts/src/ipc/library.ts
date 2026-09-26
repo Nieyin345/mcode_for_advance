@@ -107,6 +107,7 @@ export const LibraryImportFilesSchema = z.object({
   /** 导入的文献归入哪些库(null/省略 = 只进总库)。 */
   collectionIds: z.array(z.string()).optional(),
   /** 入库后是否接着转 Markdown(默认转 —— 用户要的就是「导入即可被 AI 读」)。 */
+  /** @deprecated Accepted for compatibility only; imports never directly transcribe. */
   convert: z.boolean().optional(),
   /**
    * 导入模式：`"files"` = 逐个文件导入（默认）；`"folder"` = 把目录作为**一个**

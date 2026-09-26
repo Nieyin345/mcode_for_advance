@@ -48,6 +48,7 @@ if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
   --alias:@main/browser/BrowserManager.js=./scripts/library-mcp-smoke/stubs/browserManager.ts \
   --alias:@main/lib/theme.js=./scripts/library-mcp-smoke/stubs/theme.ts \
   --alias:@main/lib/secretStore.js=./scripts/library-mcp-smoke/stubs/secretStore.ts \
+  --alias:@main/orchestration/codeRunner.js=./scripts/library-mcp-smoke/stubs/codeRunner.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 export MCODE_SMOKE_DATA_ROOT="$DATA"

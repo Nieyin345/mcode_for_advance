@@ -118,6 +118,7 @@ export function isTurnRunning(sessionId: string): boolean {
 }
 
 export const runtimeManager = {
+  setPermissionMode(): void { /* Approval state is not exercised by this progress-only fixture. */ },
   isBusy(sessionId: string): boolean { return running.has(sessionId); },
   subscribe(fn: (e: RuntimeEvent) => void): () => void {
     subscribers.add(fn);

@@ -48,11 +48,13 @@ import type { UserInputAnswers } from "@contracts/provider";
  * themes. No violet/purple is used.
  */
 export function QuestionPrompt({
+  providerName,
   active = true,
   questions,
   onSubmit,
   onDismiss,
 }: {
+  providerName: string;
   active?: boolean;
   questions: AskUserQuestionItem[];
   onSubmit: (answers: UserInputAnswers) => void;
@@ -160,7 +162,7 @@ export function QuestionPrompt({
       onKeyDown={onKeyDown}
       role="dialog"
       aria-modal="false"
-      aria-label={t("chat.question.aria")}
+      aria-label={t("chat.question.aria", { provider: providerName })}
       className={cn(
         "mb-2 flex max-h-[60vh] flex-col overflow-hidden rounded-2xl",
         "border border-edge-input bg-surface text-xs text-content shadow-2xl",
@@ -173,8 +175,8 @@ export function QuestionPrompt({
             <IconQuestionMark size={14} className="shrink-0 text-accent-strong" />
             <span className="truncate font-semibold text-accent-strong">
               {questions.length === 1
-                ? t("chat.question.titleOne")
-                : t("chat.question.titleN", { n: questions.length })}
+                ? t("chat.question.titleOne", { provider: providerName })
+                : t("chat.question.titleN", { provider: providerName, n: questions.length })}
             </span>
             {questions.length > 1 && (
               <span className="shrink-0 rounded bg-surface-muted px-1.5 py-0.5 text-[10px] tabular-nums text-content-muted">

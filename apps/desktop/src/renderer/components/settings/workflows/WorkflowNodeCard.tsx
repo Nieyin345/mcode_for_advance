@@ -144,6 +144,7 @@ export function WorkflowNodeCard({
   connectHint,
   onMouseDown,
   onStartConnect,
+  onSelect,
 }: {
   node: WorkflowNode;
   /** 这个节点引用的类型清单。**可能是 undefined** —— 别人分享来的图引用了没装的类型。 */
@@ -155,6 +156,7 @@ export function WorkflowNodeCard({
   connecting: boolean;
   /** 正在拉连线时这张卡片扮演的角色(不拉的时候是 null)。 */
   connectHint: "source" | "ok" | "blocked" | null;
+  onSelect?: () => void;
   onMouseDown: (event: ReactMouseEvent) => void;
   onStartConnect: (event: ReactMouseEvent) => void;
 }) {
@@ -168,7 +170,7 @@ export function WorkflowNodeCard({
   // 自带脚本"的还不能)—— 判据收口在 `isNodeRunnable`,与调度器的拒绝同一份答案。
   const deadRunner = entry ? !isNodeRunnable(entry.manifest) : false;
   const problem = missingType || badParams || badRules || deadRunner;
-  const isEntry = isProtectedNode(node);
+  const isEntry = isProtectedNode(node) || entry?.manifest.runner.kind === "trigger";
   const look = missingType
     ? UNKNOWN_LOOK
     : deadRunner
@@ -208,6 +210,13 @@ export function WorkflowNodeCard({
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      aria-pressed={selected}
+      aria-label={t("settings.workflows.nodeSelect", { name: nodeTitle(node, entry) })}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect?.(); }
+      }}
       onMouseDown={onMouseDown}
       title={nodeTitle(node, entry)}
       style={{ left, top, width: NODE_W, height: NODE_H }}
@@ -238,7 +247,7 @@ export function WorkflowNodeCard({
           {/* 图标这一格是**固定的** —— 每张卡片都有,认不出类型的那张也有(问号)。
               这样一列卡片扫过去时,图标都在同一条竖线上。 */}
           <span
-            title={isEntry ? t("settings.workflows.mainNodeHint") : undefined}
+            title={isEntry ? t(entry?.manifest.runner.kind === "trigger" ? "settings.workflows.nodeTriggerHint" : "settings.workflows.mainNodeHint") : undefined}
             className={cn("shrink-0", look.icon)}
           >
             <Icon size={12} />

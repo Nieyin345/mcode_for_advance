@@ -1,12 +1,16 @@
 /**
- * 文献库的磁盘布局。
+ * 统一文档库的磁盘布局。
  *
  * ## 目录结构
  *
  * ```
  * <库根>/
  *   papers/<ab>/<cd>/<sha256>.pdf      ← 内容寻址
- *   markdown/<ab>/<cd>/<sha256>.md     ← 转换产物(供 ripgrep 全文检索)
+ *   files/<条目 id>-<原文件名>           ← attached 通用文件
+ *   markdown/imported/<条目 id>/       ← MinerU Markdown 与配图
+ *   markdown/<ab>/<cd>/<sha256>.md     ← 旧版机器转录产物
+ *   notes/<条目 id>.md                  ← 可编辑笔记
+ *   exports/                            ← 引用导出文件
  *   tmp/                                ← 下载中转,成功后才移入 papers/
  * ```
  *
@@ -28,9 +32,7 @@
  */
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { SettingRepo } from "@main/store/repositories.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
-import { LIBRARY_DOWNLOAD_CONCURRENCY_SETTING_KEY } from "@contracts/ipc";
 
 /**
  * 库根目录 —— **统一数据根下的 `library/`**(`<数据根>/library`)。
@@ -146,7 +148,7 @@ export function fromLibraryRelative(relPath: string): string {
  *
  * | 落点 | 是什么样的 |
  * |---|---|
- * | `markdown/<2>/<2>/<sha>.md` | 平的,本地 pdf.js 兜底转出来的 |
+ * | `markdown/<2>/<2>/<sha>.md` | 平的,旧版机器转录产物 |
  * | `markdown/<2>/<2>/<sha>/full.md` | 整包(遗留),同级还有 `images/` |
  * | `markdown/imported/<条目 id>/xxx.md` | 「采纳 Markdown」收进来的,同级还有 `images/` |
  *
@@ -302,16 +304,13 @@ export function markdownPathForHash(sha256: string): string {
 /**
  * 「整包产物」的**目录**落点 —— 正文 `.md` 与它同级的 `images/`。
  *
- * 为什么需要它:本地 pdf.js 抽出来的是纯文本,一个 `.md` 文件就够了;但带图的产物
+ * 为什么需要它:早期机器转录的带图产物
  * 是 `full.md` **加上 `images/`** —— 正文里几十处 `![](images/xxx.jpg)`。只把
  * `full.md` 捞走、把图丢了的话,md 里全是断链。所以这类产物必须按**目录**落地,
  * 让相对路径 `images/…` 自然成立。
  *
- * ⚠️ **软件自己不再产出这种形态了**(从前产出它的是写死的 MinerU,已删)。
- * 现在唯一的来路是外部工具(用户的 `mineru` CLI、别的什么都行)转完之后
- * `library_adopt_markdown` 挂回来,而那条路落在 `markdown/imported/<条目 id>/`
- * —— 按条目 id 而不是 sha,因为外部工具跑的哪份 PDF 未必等于库里存的那份。
- * 这个函数现在只作为**遗留目录形态**存在:老库里已有的 `<sha>/full.md` 还要能被
+ * 当前新转录统一由 MinerU 在线 API 执行并采纳到 `markdown/imported/<条目 id>/`。
+ * 此函数只用于兼容旧库里的 `<sha>/full.md` 目录形态，还要能被
  * 认出来、被删干净(`markdownArtifact` 那一档),冒烟也拿它当夹具。
  *
  * 两种形态并存没问题:`mdPath` 指向各自真正的那份 `.md`(平的或目录里的),
@@ -321,17 +320,6 @@ export function markdownDirForHash(sha256: string): string {
   const a = sha256.slice(0, 2);
   const b = sha256.slice(2, 4);
   return join(libraryRoot(), "markdown", a, b, sha256);
-}
-
-/** 下载中转文件。用任务 id 命名,避免并发下载互相覆盖。 */
-export function tempDownloadPath(jobId: string): string {
-  return join(libraryRoot(), "tmp", `${jobId}.part`);
-}
-
-/** 下载并发上限。默认 2 —— 并发过高会与用户手动浏览抢同一个会话的带宽,反而更慢。 */
-export function downloadConcurrency(): number {
-  const raw = Number(SettingRepo.get(LIBRARY_DOWNLOAD_CONCURRENCY_SETTING_KEY));
-  return Number.isFinite(raw) && raw >= 1 && raw <= 8 ? Math.floor(raw) : 2;
 }
 
 /** 库内文件是否存在。 */

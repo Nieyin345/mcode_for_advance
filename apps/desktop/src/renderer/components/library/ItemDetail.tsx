@@ -17,7 +17,6 @@ import {
   IconFolderOpen,
   IconLoader2,
   IconPlus,
-  IconRefresh,
   IconX,
 } from "@renderer/lib/icons.js";
 import { PdfBadge, fileStateOf } from "./ItemList.js";
@@ -362,34 +361,6 @@ export function ItemDetail({ item, onChanged }: Props) {
   const [convertMsg, setConvertMsg] = useState<string | null>(null);
 
   /**
-   * 手动(重)转 Markdown。
-   *
-   * 为什么需要这个按钮:导入时已经自动转过一次,但那次可能没转成(扫描件没文本层、
-   * 或当时失败了)。重新导入同一份 PDF 会被去重挡下、**不会**重转,所以没有这个入口
-   * 的话,用户就再也没有第二次机会了。
-   *
-   * ⚠️ 这条按钮跑的是**软件自己那套本地抽取**(纯文本)。想要配图与排版的,该让 AI 用
-   * 外部工具转一份再 `library_adopt_markdown` 挂回来 —— 那条路会**覆盖**这里的结果。
-   */
-  const runConvert = async () => {
-    if (!item) return;
-    setConverting(true);
-    setConvertMsg(null);
-    try {
-      const res = await api.library.convert({ ids: [item.id], force: true });
-      setConvertMsg(
-        res.converted > 0
-          ? t("library.convert.done")
-          : (res.failed[0]?.error ?? t("library.convert.failed")),
-      );
-    } catch (err) {
-      setConvertMsg((err as Error).message);
-    } finally {
-      setConverting(false);
-    }
-  };
-
-  /**
    * 挂上用户**已经转录好的** Markdown,不重新转录。
    *
    * 为什么需要:重新转一遍既有成本、结果又未必更好 —— 他可能早就用自己的工具转过、
@@ -472,18 +443,7 @@ export function ItemDetail({ item, onChanged }: Props) {
                 <IconFolderOpen size={12} />
               </button>
             )}
-            <button
-              onClick={() => void runConvert()}
-              disabled={!item.pdfPath || converting}
-              className="inline-flex items-center gap-1 rounded border border-edge px-2 py-0.5 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content disabled:opacity-50"
-            >
-              {converting ? (
-                <IconLoader2 size={12} className="animate-spin" />
-              ) : (
-                <IconRefresh size={12} />
-              )}
-              {item.mdPath ? t("library.convert.redo") : t("library.convert.run")}
-            </button>
+
             {/* 已经有转录好的 md?直接挂上,不用再花一次额度（纯 md 条目没有这一步） */}
             {!isMdOnly && (
               <button

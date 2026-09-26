@@ -39,3 +39,13 @@ export const providerRegistry = {
     /* 无头脚本里不注册引擎 */
   },
 };
+
+/** Deterministic fake provider preflight: no CLI/model/network probe in this suite. */
+let healthGate: Promise<void> | undefined;
+export let healthProbeCount = 0;
+export function holdNextHealth(gate: Promise<void>): void { healthGate = gate; }
+export async function probeProviderHealth(providerId: string) {
+  healthProbeCount += 1;
+  const gate = healthGate; healthGate = undefined; if (gate) await gate;
+  return { providerId, ok: true, code: "ready", installed: true };
+}

@@ -80,6 +80,7 @@ export const zh = {
   "chatStream.workflowStep.noTranscript": "这一步没有过程可以看(它没跑)。",
   // 这一步的执行元数据(`NodeExecutionRecord`):跑在哪种执行器上、跑了多久。
   "chatStream.workflowStep.execution": "执行器 {kind} · {duration}",
+  "chatStream.workflowStep.engine": "引擎 {provider} · 模型 {model}",
   // 这一步交出的外部产物(`NodeArtifact`)。file / directory 给「打开」,data 只摆引用。
   "chatStream.workflowStep.artifacts": "产物",
   "chatStream.workflowStep.open": "打开",

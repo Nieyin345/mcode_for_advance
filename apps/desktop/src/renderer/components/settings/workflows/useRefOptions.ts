@@ -20,7 +20,7 @@
  * 一个模型都没配、一个技能都没装都会得到空数组。调用方据此把"没得选"说出来,而不是
  * 画一个空下拉 —— 空下拉比输入框更糟(它看着像有选项)。
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSessionStore, type SessionState } from "@renderer/stores/sessionStore.js";
 import { useLibraryStore } from "@renderer/stores/libraryStore.js";
 import { api } from "@renderer/lib/api.js";
@@ -36,6 +36,18 @@ export interface RefOption {
   hint?: string;
 }
 
+export interface RefOptionsResult {
+  options: RefOption[];
+  loading: boolean;
+  failed: boolean;
+  retry: () => void;
+}
+
+const NO_RETRY = (): void => {};
+const readyOptions = (options: RefOption[]): RefOptionsResult => ({
+  options, loading: false, failed: false, retry: NO_RETRY,
+});
+
 /**
  * 应用的模型列表 —— **按当前引擎那一份**。
  *
@@ -45,6 +57,7 @@ export interface RefOption {
 function useModelOptions(providerId: string | undefined): RefOption[] {
   const providers = useSessionStore((s) => s.providers);
   const customModels = useSessionStore((s) => s.customModels);
+  const customModelId = useSessionStore((s) => s.customModelId);
   const currentProviderId = useSessionStore((s) => s.providerId);
   const piAvailableModels = useSessionStore((s) => s.piAvailableModels);
   const codexAvailableModels = useSessionStore((s) => s.codexAvailableModels);
@@ -52,10 +65,10 @@ function useModelOptions(providerId: string | undefined): RefOption[] {
   return useMemo(
     () =>
       modelsForProvider(
-        { providerId: currentProviderId, providers, customModels, piAvailableModels, codexAvailableModels },
+        { providerId: currentProviderId, providers, customModels, customModelId, piAvailableModels, codexAvailableModels },
         providerId,
       ),
-    [providerId, currentProviderId, providers, customModels, piAvailableModels, codexAvailableModels],
+    [providerId, currentProviderId, providers, customModels, customModelId, piAvailableModels, codexAvailableModels],
   );
 }
 
@@ -80,7 +93,7 @@ function useModelOptions(providerId: string | undefined): RefOption[] {
  * `""`(空串)是同一个意思:参数是自由数据,清空之后可能落成空串。
  */
 export function modelsForProvider(
-  s: Pick<SessionState, "providerId" | "providers" | "customModels" | "piAvailableModels" | "codexAvailableModels">,
+  s: Pick<SessionState, "providerId" | "providers" | "customModels" | "customModelId" | "piAvailableModels" | "codexAvailableModels">,
   providerId: string | undefined,
 ): RefOption[] {
   const wanted = providerId !== undefined && providerId.trim().length > 0 ? providerId : s.providerId;
@@ -103,11 +116,19 @@ export function modelsForProvider(
     for (const m of s.codexAvailableModels) push(m.id, m.label);
     return out;
   }
-  // 其余引擎:它自己声明的那几个别名 + 用户的端点里给这个引擎列的那几个模型。
-  for (const m of provider?.capabilities.builtinModels ?? []) push(m.id, m.label);
-  for (const cfg of s.customModels) {
-    for (const entry of cfg.models) push(entry.id, entry.id);
+  // A workflow node stores only `model`, not the `(customModelId, model)` pair
+  // used by normal chats. It can therefore safely offer custom-endpoint models
+  // only when it inherits the current conversation's active endpoint. Listing
+  // every endpoint here made a selection look valid while the node retained a
+  // different (or null) customModelId at runtime.
+  if (wanted === s.providerId && s.customModelId) {
+    const active = s.customModels.find((cfg) => cfg.id === s.customModelId);
+    for (const entry of active?.models ?? []) push(entry.id, entry.id);
+    return out;
   }
+  // No inherited custom endpoint: only models native to this provider are
+  // representable by the node's single string field.
+  for (const m of provider?.capabilities.builtinModels ?? []) push(m.id, m.label);
   return out;
 }
 
@@ -118,21 +139,22 @@ export function modelsForProvider(
  *
  * 技能名不带斜杠(清单里存的就是名字),与 `NODE_SKILLS_PARAM_KEY` 那一头的约定一致。
  *
- * **按当前会话引擎过滤**:被用户从某个引擎收走的技能,在那个引擎的运行里本来就
- * 加载不到,候选表里列出来只会让人选一个不生效的项。检查器总是「为主对话当下
- * 用的引擎」配参数,所以过滤跟 store 的 providerId 走。
+ * **按节点选中的引擎过滤**:留空才跟当前会话走。否则在 Claude 对话里编辑一个
+ * Codex/Pi 节点时会列出错误技能,配置能保存、真正运行却加载不到。
  */
-function useSkillOptions(): RefOption[] {
+function useSkillOptions(providerId: string | undefined): RefOption[] {
   const skills = useSessionStore((s) => s.skills);
-  const providerId = useSessionStore((s) => s.providerId);
+  const currentProviderId = useSessionStore((s) => s.providerId);
+  const wanted = providerId !== undefined && providerId.trim().length > 0
+    ? providerId : currentProviderId;
   return useMemo(
     () =>
-      filterSkillsForEngine(skills, providerId).map((s) => ({
+      filterSkillsForEngine(skills, wanted).map((s) => ({
         id: s.name,
         label: s.name,
         ...(s.description ? { hint: s.description } : {}),
       })),
-    [skills, providerId],
+    [skills, wanted],
   );
 }
 
@@ -230,19 +252,17 @@ function useCollectionOptions(): RefOption[] {
  * 字段要它 —— 为它们各加一个 store 字段、再各写一处失效逻辑,换来的只是"点开检查器
  * 时少一次 IPC"。不值。
  *
- * ## 缓存:一次进程内只拉一次
+ * ## 每次控件挂载重新读取
  *
- * `useRefOptions` 会被**每个参数**各调一次(见下面对 hooks 无条件调用的说明),而一个
- * 节点检查器里有十来个参数。不缓存的话,点开一次就要发好几轮同样的请求。拉失败**不进
- * 缓存** —— 那种情况下次该重试(多半是 RPC 还没就绪),而不是一直显示"没得选"。
+ * `enabled` 保证只有真正的 MCP/插件字段会请求，所以一次检查器各最多一轮。这里不能
+ * 做进程级永久缓存：用户在设置页启停插件或 MCP 后再回来，旧候选必须立即消失。
  */
-const refOptionCache = new Map<string, RefOption[]>();
 const EMPTY_REF_OPTIONS: RefOption[] = [];
 
 /** MCP 那份的来源名 —— 面板上也是这么分的(用户配的 / 内置 / 插件带的)。
  *
- *  值在**装载时**就 `t()` 成字,所以这份清单的缓存键必须带上语言(见
- *  `useMcpOptions`)—— 否则用户切了语言,缓存命中、这一行会一直停在旧语言。 */
+ *  值在**装载时**就 `t()` 成字,所以请求 key 必须带上语言(见
+ *  `useMcpOptions`)—— 用户切换语言时据此重新装载。 */
 const MCP_SCOPE_LABEL: Record<McpScope, MessageId> = {
   user: "settings.workflows.paramRefScopeUser",
   builtin: "settings.workflows.paramRefScopeBuiltin",
@@ -259,17 +279,26 @@ const MCP_SCOPE_LABEL: Record<McpScope, MessageId> = {
  *  - **骨干两个不列**(`MCP_ALWAYS_ON_SERVERS`):它们始终挂着,列出来会让人以为
  *    自己关得掉。
  */
-function useMcpOptions(enabled: boolean): RefOption[] {
+function useMcpOptions(enabled: boolean, providerId: string | undefined): RefOptionsResult {
   const { t, locale } = useI18n();
-  // 缓存键带上语言:这一份的 hint 里含翻译过的来源名,而缓存活得比一次语言切换久。
-  const options = useCachedOptions(
-    enabled,
-    `mcp:all:${locale}`,
+  const providers = useSessionStore((s) => s.providers);
+  const currentProviderId = useSessionStore((s) => s.providerId);
+  const wanted = providerId !== undefined && providerId.trim().length > 0
+    ? providerId : currentProviderId;
+  const supportsMcp = providers.find((p) => p.id === wanted)?.capabilities.supportsMcp !== false;
+  const engine = wanted === "claude-sdk" ? "claude" : wanted === "codex-sdk" ? "codex" : undefined;
+  // key 带上语言:这一份的 hint 里含翻译过的来源名,切换语言必须重新装载。
+  const options = useLoadedOptions(
+    enabled && supportsMcp,
+    `mcp:${wanted}:${locale}`,
     async () => {
       const { servers } = await api.mcp.list({});
       return servers
         .filter(
-          (s) => s.enabled && !s.needsAuth && !(MCP_ALWAYS_ON_SERVERS as readonly string[]).includes(s.name),
+          (s) =>
+            s.enabled && !s.needsAuth &&
+            !(MCP_ALWAYS_ON_SERVERS as readonly string[]).includes(s.name) &&
+            (engine === undefined || s.perEngine?.[engine] !== false),
         )
         .map((s) => ({
           id: s.name,
@@ -278,16 +307,22 @@ function useMcpOptions(enabled: boolean): RefOption[] {
         }));
     },
   );
-  return options;
+  return supportsMcp ? options : readyOptions(EMPTY_REF_OPTIONS);
 }
 
 /** 已启用的插件。`id` 是插件名(参数里存的就是它),`hint` 用插件自己的说明 ——
  *  名字多半是英文的,而说明是作者写的、能认出来是干什么的。 */
-function usePluginOptions(enabled: boolean): RefOption[] {
-  return useCachedOptions(enabled, "plugins", async () => {
+function usePluginOptions(enabled: boolean, providerId: string | undefined): RefOptionsResult {
+  const currentProviderId = useSessionStore((s) => s.providerId);
+  const wanted = providerId !== undefined && providerId.trim().length > 0
+    ? providerId : currentProviderId;
+  return useLoadedOptions(enabled, `plugins:${wanted}`, async () => {
     const { plugins } = await api.plugins.list();
     return (plugins ?? [])
-      .filter((p) => p.enabled)
+      .filter((p) =>
+        p.enabled &&
+        (p.compatibleProviderIds === undefined || p.compatibleProviderIds.includes(wanted)),
+      )
       .map((p) => ({
         id: p.name,
         label: p.name,
@@ -297,78 +332,89 @@ function usePluginOptions(enabled: boolean): RefOption[] {
 }
 
 /**
- * 拉一份候选,按 `key` 缓存。
+ * 拉一份候选。`key` 改变（例如节点切换 Provider）时重新拉。
  *
  * `enabled` 为假时**什么都不做** —— 它不是"这个字段没得选",而是"这一格压根没在用时
  * 别去打扰主进程"。调用方(下面的 switch)会把它接到的值丢掉。
  *
- * `load` 每次渲染都是新的闭包,所以它**不在依赖里**:真正决定"要不要重新拉"的是
- * `key`(项目换了才变)。
+ * `load` 每次渲染都是新的闭包,所以它**不在依赖里**；`loadRef` 始终持有最新闭包。
  */
-function useCachedOptions(
+function useLoadedOptions(
   enabled: boolean,
   key: string,
   load: () => Promise<RefOption[]>,
-): RefOption[] {
-  const [options, setOptions] = useState<RefOption[]>(() => refOptionCache.get(key) ?? EMPTY_REF_OPTIONS);
+): RefOptionsResult {
+  const [options, setOptions] = useState<RefOption[]>(EMPTY_REF_OPTIONS);
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const loadRef = useRef(load);
   loadRef.current = load;
+  const retry = useCallback(() => setAttempt((n) => n + 1), []);
   useEffect(() => {
     if (!enabled) return;
-    const cached = refOptionCache.get(key);
-    if (cached) {
-      setOptions(cached);
-      return;
-    }
+    setOptions(EMPTY_REF_OPTIONS);
+    setLoadedKey(key);
+    setLoading(true);
+    setFailed(false);
     let alive = true;
     void (async () => {
       try {
         const next = await loadRef.current();
         if (!alive) return;
-        refOptionCache.set(key, next);
         setOptions(next);
       } catch {
-        // **必须吞掉**:手机端的 web shim 没有 mcp.list / plugins.list,而共用组件里
-        // 抛出去的 promise 会让 React 19 把整棵树卸掉(手机端会白屏)。失败就维持
-        // 空态 —— 那正是这个字段在"什么都还没装"时的样子,调用方已经处理了。
+        // Mobile shims may not implement inventory RPCs. Keep the tree alive,
+        // but expose a retryable error instead of pretending the list is empty.
+        if (alive) setFailed(true);
+      } finally {
+        if (alive) setLoading(false);
       }
     })();
     return () => {
       alive = false;
     };
-  }, [enabled, key]);
-  return options;
+  }, [enabled, key, attempt]);
+  if (!enabled) return readyOptions(EMPTY_REF_OPTIONS);
+  const stale = loadedKey !== key;
+  return {
+    options: stale ? EMPTY_REF_OPTIONS : options,
+    loading: stale || loading,
+    failed: !stale && failed,
+    retry,
+  };
 }
 
 /** 一个 `ref` 参数的候选。**加一种来源 = 在这里加一个 case。**
  *
- *  `providerId` 是**级联用**的:清单在「模型」那一格写了 `fromParam: "provider"`,控件
- *  把用户在那个参数上选的值传进来,于是模型那份只列这个引擎认得的几个。没写
+ *  `providerId` 是**级联用**的:模型、技能和 MCP 都可写 `fromParam: "provider"`,控件
+ *  把用户在那个参数上选的值传进来,于是候选只列这个引擎能用的项目。没写
  *  `fromParam` 的来源不看它。 */
-export function useRefOptions(from: NodeParamRefSource, providerId?: string): RefOption[] {
+export function useRefOptions(from: NodeParamRefSource, providerId?: string): RefOptionsResult {
   // 五个 hook 都无条件调用 —— hooks 的规矩。多订阅几个 store 字段的代价可以忽略,
   // 而"按来源条件调用 hook"是错的(来源会随用户选中的节点变)。
   //
   // MCP 与插件那两份是**现拉的**,而且只在这一格真的用得上时才拉(`enabled`):一个
   // 节点检查器里有十来个参数,不筛的话每开一次就要发两轮用不上的 IPC。
   const models = useModelOptions(providerId);
-  const skills = useSkillOptions();
+  const skills = useSkillOptions(providerId);
   const providers = useProviderOptions();
   const projects = useProjectOptions();
   const collections = useCollectionOptions();
-  const mcp = useMcpOptions(from === "mcp");
-  const plugins = usePluginOptions(from === "plugins");
+  const mcp = useMcpOptions(from === "mcp", providerId);
+  const plugins = usePluginOptions(from === "plugins", providerId);
   switch (from) {
     case "skills":
-      return skills;
+      return readyOptions(skills);
     case "providers":
-      return providers;
+      return readyOptions(providers);
     case "projects":
-      return projects;
+      return readyOptions(projects);
     case "collections":
-      return collections;
+      return readyOptions(collections);
     case "models":
-      return models;
+      return readyOptions(models);
     case "mcp":
       return mcp;
     case "plugins":

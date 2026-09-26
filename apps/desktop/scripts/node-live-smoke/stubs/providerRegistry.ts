@@ -19,10 +19,17 @@
  * 那正是要显形的事)。
  */
 import type { AgentProvider } from "@contracts/provider";
+const smokeProvider = { id: "claude-sdk", displayName: "Smoke Provider" } as AgentProvider;
+
+// runner.ts imports this probe for capability inventory; this suite has no installed providers.
+export async function probeProviderHealth(_id: string): Promise<{ ok: true; code: "ok" }> {
+  // The stubbed engine registry is intentionally empty; treat its absent health probe as neutral.
+  return { ok: true, code: "ok" };
+}
 
 export const providerRegistry = {
   get(_id: string): AgentProvider | undefined {
-    return undefined;
+    return smokeProvider;
   },
   list(): AgentProvider[] {
     return [];

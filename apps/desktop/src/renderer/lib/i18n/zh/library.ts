@@ -95,16 +95,12 @@ export const zh = {
   "library.note.saveFailed": "保存失败",
   "library.list.emptyNote": "笔记库还是空的",
   "library.list.emptyHintNote": "收 Markdown 文件进笔记库；同一个库里同名的笔记会自动跳过。",
-  "library.list.needsMetaShort": "待补全",
-  "library.list.needsMeta": "缺作者 / 年份 / 期刊 —— 引用格式会不完整，点开可以看缺哪一项",
 
   // 工具栏
   "library.action.search": "检索",
   "library.action.fullText": "全文检索",
   "library.action.import": "导入",
   "library.action.addToContext": "添加文献库到上下文",
-  "library.action.download": "下载 PDF",
-  "library.action.downloadSelected": "下载选中的 {n} 篇",
   "library.action.deleteSelected": "移除选中的 {n} 篇",
   "library.action.removeFromLibrary": "彻底删除",
   "library.action.removeConfirm":
@@ -123,11 +119,7 @@ export const zh = {
 
   // 导入
   "library.import.title": "导入文献",
-  "library.import.placeholder": "每行一个 DOI 或 arXiv ID，或粘贴整段 BibTeX",
-  "library.import.submit": "导入",
-  "library.import.importing": "导入中…",
   "library.import.result": "导入 {added} 篇，跳过 {skipped} 篇重复",
-  "library.import.nothingParsed": "没有识别出任何 DOI / arXiv ID / BibTeX 条目",
   "library.import.pickPdf": "选择 PDF 文件",
   /** 通用导入（kind 退役后的入口文案）。 */
   "library.import.pickFile": "导入文件…",
@@ -135,29 +127,22 @@ export const zh = {
   "library.import.explodeFolder": "批量导入文件夹",
   "library.import.hint": "文件夹作为一个条目收进；批量则把里面文件拆开逐个导入",
   "library.import.autoConvert": "导入后自动转 Markdown",
-  "library.import.autoConvertHint": "（已经有转录好的 md？取消勾选，省一次额度 —— 导入后在详情页用「用本地 Markdown…」挂上你那份）",
-  "library.import.pdfResult": "导入 {added} 篇,跳过 {skipped} 篇重复",
+  "library.import.autoConvertHint": "（已经有转录好的 md？取消勾选，节省一次 MinerU API 转录）",
+  "library.import.pdfResult": "导入 {added} 份文档，跳过 {skipped} 份重复",
   "library.import.convertFailed": "{n} 篇转 Markdown 失败",
-  "library.import.pdfErrors": "{n} 份没能导入",
-  "library.import.importedCount": "导入 {n} 篇",
-  "library.import.dropHint": "也可以直接把 PDF 拖进来",
-  "library.import.dropHere": "松手导入 PDF",
+  "library.import.pdfErrors": "{n} 份文件导入或转录失败",
+  "library.import.dropHint": "也可以直接把文档拖进来",
+  "library.import.dropHere": "松手导入文档",
 
   // PDF 状态
   "library.pdf.ready": "已有 PDF",
   "library.pdf.none": "无 PDF",
-  "library.pdf.queued": "排队中",
-  "library.pdf.downloading": "下载中",
-  "library.pdf.needsLogin": "需要登录",
-  "library.pdf.failed": "下载失败",
-  "library.pdf.notFound": "找不到来源",
-  "library.pdf.retry": "重试",
-  "library.pdf.goLogin": "去登录",
   "library.pdf.openFile": "打开 PDF",
   "library.pdf.revealFile": "在文件夹中显示",
   "library.convert.ready": "已转 Markdown",
   "library.convert.none": "尚未转 Markdown",
   "library.convert.run": "转 Markdown",
+  "library.convert.repair": "修复本小类转录并清理失联 Markdown…",
   "library.convert.redo": "重新转换",
   "library.convert.done": "已转换",
   "library.convert.failed": "转换失败",
@@ -220,6 +205,8 @@ export const zh = {
   // 详情
   "library.detail.noSelection": "从左侧选一篇文献查看详情",
   "library.detail.meta": "元数据",
+  "library.detail.url": "来源地址",
+  "library.detail.language": "语言",
 
   // 关联（详情面板里的「关联」区）
   "library.links.title": "关联",
@@ -249,17 +236,8 @@ export const zh = {
   "library.itemNote.loadFailed": "读不出笔记",
   "library.detail.notesSoon": "笔记功能将在后续版本提供",
   "library.detail.collections": "所属分类",
-  "library.detail.doi": "DOI",
-  "library.detail.arxiv": "arXiv",
-  "library.detail.venue": "期刊 / 会议",
-  "library.detail.year": "年份",
-  "library.detail.authors": "作者",
-  "library.detail.license": "许可",
-  "library.detail.volumeIssue": "卷 / 期 / 页码",
-  "library.detail.publisher": "出版商",
   "library.detail.preview": "原文",
   "library.detail.pdf": "PDF",
-  "library.detail.missing": "元数据待补全：缺 {fields}。引用格式会因此不完整。",
 
   /* ── 应用内 PDF 阅读器 ── */
   "library.pdfViewer.prev": "上一页",
@@ -298,21 +276,8 @@ export const zh = {
 
 
   /* ── 引用格式 ── */
-  "library.cite.title": "引用格式",
-  "library.cite.gb7714": "GB/T 7714",
-  "library.cite.apa": "APA",
-  "library.cite.bibtex": "BibTeX",
-  "library.cite.copy": "复制这条引用",
 
   /* ── 导出引用 ── */
-  "library.export.label": "导出引用",
-  "library.export.bibtex": "BibTeX（.bib）",
-  "library.export.gb7714": "GB/T 7714（.txt）",
-  "library.export.apa": "APA（.txt）",
-  "library.export.done": "已导出 {n} 条 → {path}",
-  "library.export.failed": "导出失败",
-  "library.export.revealFailed": "已导出，但没能打开文件夹：{msg}",
-  "library.export.openFolder": "打开所在文件夹",
   /**
    * **分类信息浮窗**（2026-09-21）。
    *
@@ -358,7 +323,7 @@ export const zh = {
   "settings.convert.pending": "未转 {n} 篇",
   "settings.convert.empty": "库里还没有文献",
   "settings.convert.localNote":
-    "本地转换只取纯文本——排版、公式、表格都不保留，扫描件还会直接说拿不到正文。要高质量的，让 AI 用工作流或对话调你自己装的工具（mineru 命令行、pip 装的库都行）转出 Markdown，再用「用本地 Markdown…」挂回来。",
+    "软件只导入、保存和显示文件。上传转录、DOI 下载与学术元数据提取由你配置的自动化完成；没有 PDF.js 本地兜底。已有 Markdown 可用「用本地 Markdown…」采纳。",
   "settings.convert.reasonNoMd": "还没转 Markdown",
   "settings.convert.reasonNoAssets": "有 {n} 张图没落盘",
   "settings.convert.runPending": "转换未转的 {n} 篇",

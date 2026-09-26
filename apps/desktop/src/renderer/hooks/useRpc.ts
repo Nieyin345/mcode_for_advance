@@ -119,6 +119,7 @@ export function useRpc<T>(
       return;
     }
     void run();
+    return () => { seqRef.current++; };
     // The caller's data deps are spread in; `run` itself is stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, run, ...deps]);

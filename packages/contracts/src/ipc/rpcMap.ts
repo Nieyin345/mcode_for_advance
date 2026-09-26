@@ -21,14 +21,13 @@ import type { WorkflowDoc, WorkflowListEntry, WorkflowReviewInfo } from "../work
 import type { PluginState, PluginMarketplaceState, PluginsInstallLocalInput, PluginsInstallGitInput, PluginsInstallMarketplaceInput, PluginsSetEnabledInput, PluginsRemoveInput, PluginsMarketplaceAddInput, PluginsMarketplaceRemoveInput, PluginsMarketplaceRefreshInput } from "../plugin.js";
 import type { PairingStartResult, PairedDevice } from "../mobile.js";
 import type { RelayStatus, RelayVpsConfig, RelayVpsConfigInput } from "../relay.js";
-import type { LibraryItem, LibraryItemLink, LibraryLinkView, LibraryCollection, InstitutionProfile, DownloadJob, ExternalSearchResult, FullTextMatch, AuthSiteStatus, LibraryConversionRow, LibraryNote, PdfHighlight } from "../library.js";
+import type { LibraryItem, LibraryItemLink, LibraryLinkView, LibraryCollection, InstitutionProfile, FullTextMatch, AuthSiteStatus, LibraryConversionRow, LibraryNote, PdfHighlight } from "../library.js";
 import type { LibraryGroupMeta, LibrarySuppressRule } from "../libraryTypes.js";
-import type { TemplateEntry, TemplateFileContent } from "../templates.js";
 import type { GetSettingInput, SetSettingInput, GetManySettingsInput, GetManySettingsResult, GetVoiceModelDirInput, GetVoiceModelDirResult, SetVoiceModelDirInput, SetVoiceModelDirResult, NotificationPrefs } from "./settings.js";
 import type { StartSessionInput, ListSideChatsInput, SendTurnInput, InterruptInput, InjectInput, ApproveInput, RespondQuestionInput, RespondPlanApprovalInput, RewindTurnInput, UpdateSessionSettingsInput, CreateProjectInput, ProjectSessionsInput, SessionListAllInput, SetProjectGroupInput, ReorderProjectsInput, PinProjectInput, RenameProjectInput, SessionSearchInput, BookmarkSearchInput, BookmarkSearchResult, SessionMessagesInput, SaveMessagesInput, UpsertMessagesInput, TruncateAndInsertMessagesInput, RenameSessionInput, ForkSessionInput, PinSessionInput, UpdateBookmarksInput, OpenPathInput, ShowItemInFolderInput, OpenFileInput, SessionListNodesInput, SessionHasNodesInput } from "./session.js";
 import type { VoiceStartInput, VoiceFeedInput, VoiceStopInput, VoiceStopResult, VoiceCancelInput, VoiceModelListResult, VoiceDownloadModelInput } from "./voice.js";
 import type { FocusSessionInput, SetNotificationPrefsInput } from "./notifications.js";
-import type { SaveCustomModelInput, TestCustomModelInput, GetCustomModelTokenInput, SavePiProviderInput, DeletePiProviderInput, GetPiApiKeyInput, SaveCodexProviderInput, DeleteCodexProviderInput, GetCodexApiKeyInput, ProviderCommandsInput, ProviderCommandsResult } from "./providers.js";
+import type { SaveCustomModelInput, TestCustomModelInput, GetCustomModelTokenInput, SavePiProviderInput, DeletePiProviderInput, GetPiApiKeyInput, SaveCodexProviderInput, DeleteCodexProviderInput, GetCodexApiKeyInput, ProviderHealthCheckInput, ProviderHealthCheckResult, ProviderCommandsInput, ProviderCommandsResult } from "./providers.js";
 import type { GetThemeResult, SetThemeInput, AppInfoResult, CheckForUpdatesResult } from "./app.js";
 import type { FileReadInput, FileReadBinaryInput, PickImagesInput, PickedImage, ClipboardSaveFileInput, ClipboardSaveFileResult, ClipboardWriteImageInput, ClipboardWriteImageResult, FileListDirInput, FileTreeEntry, FileSearchInput, FileSearchResult, FileWriteInput, FileMkdirInput, FileDeleteInput, FileRenameInput, FileCopyInput, FileGrepInput, FileGrepResult, RgStatusResult, RgInstallInput, RgInstallResult, DialogPickFilesInput } from "./files.js";
 import type { GitDiscoverReposInput, GitRepo, GitRepoPathInput, GitStatusResult, GitStageInput, GitOpResult, GitUnstageInput, GitCommitInput, GitDiffInput, GitFileBlobInput, GitDiscardInput, GitGenerateCommitInput, GitCancelGenerateCommitInput, GitLogInput, GitCommitInfo, GitShowCommitInput, GitCommitDetail, GitShowFileInput, GitBranchListResult, GitCheckoutInput, GitDeleteBranchInput, GitMergeInput, GitMergePreviewResult, GitMergeResult, GitWorktreeListInput, GitWorktreeInfo, GitWorktreeStatusInput, GitWorktreeMergeBackInput, GitWorktreeMergeBackResult, GitWorktreeRemoveInput, GitWorktreeRemoveResult } from "./git.js";
@@ -47,8 +46,8 @@ import type { WorkflowApproveInput } from "./workflow.js";
 import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, WorkflowExportInput, WorkflowImportInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchCommandTemplate } from "./workflow.js";
 import type { AutomationTriggerFacts, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
 import { MEMORY_CATEGORIES_CHANNEL, MEMORY_DELETE_CHANNEL, MEMORY_LIST_CHANNEL, MEMORY_READ_CHANNEL, MEMORY_REVIEW_CHANNEL, MEMORY_REVIEW_DELETE_CHANNEL, MEMORY_SAVE_CHANNEL, type MemoryDeleteInput, type MemoryFileMeta, type MemoryListInput, type MemoryReadInput, type MemoryReviewDeleteInput, type MemoryReviewResult, type MemorySaveInput } from "../memory.js";
-import type { LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDeleteItemsResult, LibraryRestoreItemsInput, LibraryDeletePreviewInput, LibraryDeletePreviewResult, LibraryDownloadInput, LibrarySearchInput, LibraryImportInput, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryEntryPathInput, LibraryEntryPathResult, PdfHighlightsReadInput, PdfHighlightsSaveInput, PdfHighlightsWriteBackInput, PdfHighlightsWriteResult, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryExportInput, LibraryFullTextSearchInput, LibraryManifestInput, LibraryItemManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkCountsInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionMoveInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
-import type { TemplateListInput, TemplateAddInput, TemplateRenameInput, TemplateEntryRefInput, TemplateFileRefInput, TemplatesAttachToChatInput } from "./templates.js";
+import type { LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDeleteItemsResult, LibraryRestoreItemsInput, LibraryDeletePreviewInput, LibraryDeletePreviewResult, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryEntryPathInput, LibraryEntryPathResult, PdfHighlightsReadInput, PdfHighlightsSaveInput, PdfHighlightsWriteBackInput, PdfHighlightsWriteResult, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryFullTextSearchInput, LibraryManifestInput, LibraryItemManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkCountsInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionMoveInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
+import type { OnlyOfficeOpenInput, OnlyOfficeOpenResult, OnlyOfficeSessionInput, OnlyOfficeSessionState, OnlyOfficeStatusResult, OnlyOfficeConfig, OnlyOfficeSetConfigInput, OnlyOfficeLocalDetectResult, OnlyOfficeInstallInput, OnlyOfficeInstallProgress } from "./onlyoffice.js";
 import type { SubagentDefinition } from "../claudeSubagent.js";
 import type { ClaudeSubagentsSaveInput } from "../claudeSubagent.js";
 
@@ -154,6 +153,8 @@ export interface RpcMap {
   "session.updateBookmarks": (input: UpdateBookmarksInput) => Promise<{ session: Session }>;
   // Providers
   "provider.list": () => Promise<{ providers: ProviderInfo[] }>;
+  /** Probe the selected registered provider through its own health check. */
+  "provider.healthCheck": (input: ProviderHealthCheckInput) => Promise<ProviderHealthCheckResult>;
   /**
    * 问引擎要**它自己的斜杠命令清单**（2026-09-21）。
    *
@@ -648,7 +649,7 @@ export interface RpcMap {
   "workflow.remove": (input: WorkflowRemoveInput) => Promise<{ ok: boolean; wasBuiltin: boolean }>;
   /** 把**磁盘上那一份**导出成 JSON 文本,走系统「另存为」框落盘。用户取消时
    *  `canceled: true`,界面不该报错(取消不是失败)。路径**由主进程拿**,渲染端
-   *  始终没有"写任意路径"的能力(同 `library.exportCitations`)。 */
+   *  始终没有"写任意路径"的能力(同 `library.revealFile`)。 */
   "workflow.export": (input: WorkflowExportInput) => Promise<{
     ok: boolean;
     canceled?: boolean;
@@ -909,9 +910,9 @@ export interface RpcMap {
   "library.readFile": (input: LibraryReadFileInput) => Promise<{ content: LibraryFileContent }>;
   /** 列出文献。`collectionId` 为 null/省略表示全部。 */
   "library.list": (input: LibraryListInput) => Promise<{ items: LibraryItem[]; total: number }>;
-  /** 单条详情,附带最新一条下载任务(用于推导 PDF 状态)。 */
-  "library.get": (input: LibraryItemIdInput) => Promise<{ item: LibraryItem; job: DownloadJob | null }>;
-  /** 入库。返回新增/更新后的条目;已存在的(同 doi/arxivId)按更新处理。 */
+  /** 单条详情。 */
+  "library.get": (input: LibraryItemIdInput) => Promise<{ item: LibraryItem }>;
+  /** 入库(只建记录,不带文件)。返回新增的条目。 */
   "library.addItems": (input: LibraryAddItemsInput) => Promise<{ items: LibraryItem[] }>;
   /** 从库中移除。`deleteFiles` 决定是否连磁盘文件一起删。
    *  **删不掉的会如实报在 `failed` 里,而且那几条记录留着**(见 `LibraryDeleteItemsResult`)。 */
@@ -931,16 +932,8 @@ export interface RpcMap {
    * 任何东西被动过。
    */
   "library.deletePreview": (input: LibraryDeletePreviewInput) => Promise<LibraryDeletePreviewResult>;
-  /** 排入下载队列。返回受影响的任务列表。 */
-  "library.download": (input: LibraryDownloadInput) => Promise<{ jobs: DownloadJob[] }>;
-  /** 当前全部下载任务。 */
-  "library.jobs": () => Promise<{ jobs: DownloadJob[] }>;
-  /** 外部检索(arXiv/Crossref/OpenAlex/Europe PMC),返回候选,不直接入库。 */
-  "library.searchExternal": (input: LibrarySearchInput) => Promise<{ results: ExternalSearchResult[] }>;
-  /** 导入通道:DOI / arXiv ID / BibTeX 文本。 */
-  "library.import": (input: LibraryImportInput) => Promise<{ items: LibraryItem[] }>;
-  /** 从**本地 PDF 文件**导入 —— 用户手上大量是下载好的 PDF,没有 DOI 文本可粘。
-   *  逐份:校验 → 按 sha256 去重 → 复制进库 → 抽元数据 → 入库 → 可选转 Markdown。 */
+  /** 从**本地 PDF 文件**导入。
+   *  逐份:校验 → 按 sha256 去重 → 复制进库 → 入库(标题取文件名)→ 可选转 Markdown。 */
   "library.importFiles": (input: LibraryImportFilesInput) => Promise<{
     items: LibraryItem[];
     added: number;
@@ -961,10 +954,10 @@ export interface RpcMap {
     skipped: number;
     errors: Array<{ path: string; error: string }>;
   }>;
-  /** 把库里的 PDF 转成 Markdown(**软件自己那套本地抽取,纯文本**)。
-   *  带图/带排版的高质量转录由外部工具做,再用 `library.adoptMarkdown` 挂回来。 */
+  /** @deprecated 兼容入口，只返回自动化指引；不上传、转录或清理产物。 */
   "library.convert": (input: LibraryConvertInput) => Promise<{
     converted: number;
+    cleaned: number;
     failed: Array<{ id: string; error: string }>;
   }>;
   /** 在系统文件管理器里定位库里的文件(PDF 或转换出的 Markdown)。
@@ -1062,20 +1055,6 @@ export interface RpcMap {
     /** PDF 原始字节。`ok` 为 false 时是 null。走结构化克隆,不做 base64。 */
     bytes: Uint8Array | null;
   }>;
-  /**
-   * 导出引用格式到库里的 `exports/` 目录,返回落盘路径。
-   *
-   * 为什么不弹「另存为」对话框:省一次交互,而且落在库根下和 PDF、Markdown 是
-   * 同一个位置 —— 用户要备份/搬库时它跟着一起走。
-   */
-  "library.exportCitations": (input: LibraryExportInput) => Promise<{
-    ok: boolean;
-    /** `ok` 为 true 时若还有值,表示**导出成功但没能打开文件夹** —— 文件是好的,
-     *  只是"顺手打开"那一步失败了,界面要分开说,不能让用户以为导出也失败了。 */
-    error?: string;
-    path: string;
-    count: number;
-  }>;
   /** 批量检测转换情况:共多少篇 / 已转 Markdown / 还没转。
    *  设置页的「批量转换」用它 —— 比把全库拉进渲染端再数省得多。 */
   "library.conversionStats": () => Promise<{ total: number; converted: number; pending: number }>;
@@ -1087,58 +1066,36 @@ export interface RpcMap {
     pending: number;
   }>;
 
-  // ── 模版库(文件系统即事实源,见 contracts/src/templates.ts) ──
-  /** 列模版。不传 kind 就是全部类目。 */
-  "templates.list": (input: TemplateListInput) => Promise<{ entries: TemplateEntry[] }>;
-  /** 新建一条模版:建目录 + 把 sourcePaths 里的文件/文件夹复制进去。
-   *  返回该类目**新的完整列表**(与文献库一致的既定模式)。 */
-  "templates.add": (input: TemplateAddInput) => Promise<{ entries: TemplateEntry[] }>;
-  /** 给一条模版改名(目录名即显示名,所以改的是磁盘上那个目录)。
-   *  `ok:false` 是正常结果(重名 / 已经在磁盘上被删),渲染端把 error 显示出来。 */
-  "templates.rename": (input: TemplateRenameInput) => Promise<{
-    ok: boolean;
-    error?: string;
-    entries: TemplateEntry[];
-    /** 净化后的新目录名 —— 渲染端据此把"正在预览的那一条"的键也改掉。 */
-    dirName?: string;
-  }>;
-  /** **移进回收站**(可逆)。界面上那个「删除」走的是它 —— 与文献库一样,先留退路,
-   *  真正的删除只在回收站里做(`templates.purge`)。`entries` 是该类目的新列表,
-   *  `trashed` 是回收站的新列表 —— 一次调用把两边的缓存都换掉。 */
-  "templates.trash": (
-    input: TemplateEntryRefInput,
-  ) => Promise<{ entries: TemplateEntry[]; trashed: TemplateEntry[] }>;
-  /** 回收站里的全部模版。`kind` 是它**原来**属于的类目 —— 还原要用。 */
-  "templates.trashList": () => Promise<{ trashed: TemplateEntry[] }>;
-  /** 从回收站还原回原来的类目。目标位置已被占用时返回 ok:false,不覆盖。 */
-  "templates.restore": (
-    input: TemplateEntryRefInput,
-  ) => Promise<{ ok: boolean; error?: string; entries: TemplateEntry[]; trashed: TemplateEntry[] }>;
-  /** 从回收站**彻底删除**(目录连文件一起消失,不可还原)。 */
-  "templates.purge": (
-    input: TemplateEntryRefInput,
-  ) => Promise<{ ok: boolean; error?: string; entries: TemplateEntry[]; trashed: TemplateEntry[] }>;
-  /** 读一条模版里的**一个文件**,给应用内预览用。
-   *  文本/代码直接给正文,图片给 data URL,其余如实说明为什么看不了。 */
-  "templates.readFile": (input: TemplateFileRefInput) => Promise<TemplateFileContent>;
-  /** 用系统默认程序打开这个文件。Word / PPT / PDF 这类只能这么看。 */
-  "templates.openFile": (input: TemplateFileRefInput) => Promise<{ ok: boolean; error?: string }>;
-  /** 在系统文件管理器里定位这条模版的目录。路径由主进程拼,渲染端只给类目+目录名。 */
-  "templates.reveal": (input: TemplateEntryRefInput) => Promise<{ ok: boolean; error?: string }>;
-  /** 生成/刷新给 AI 读的模版清单,返回它的绝对路径(对话里只放 `@该路径`)。 */
-  "templates.manifest": (input: TemplateEntryRefInput) => Promise<{ path: string; fileCount: number }>;
-  /** 把一条模版挂到指定会话的输入框上(左栏右键「添加到当前对话」)。 */
-  "templates.attachToChat": (
-    input: TemplatesAttachToChatInput,
-  ) => Promise<{ ok: boolean; name?: string; fileCount?: number; error?: string }>;
+  // ── OnlyOffice Document Server(Office 文档可视化编辑,见 contracts/src/ipc/onlyoffice.ts)──
+  /** 为一个文件开一次编辑会话:返回 DS 的 api.js 地址与直接交给 `DocsAPI.DocEditor` 的配置。 */
+  "onlyoffice.open": (input: OnlyOfficeOpenInput) => Promise<OnlyOfficeOpenResult>;
+  /** 让 DS 立刻回调保存(用户点「保存」/ 关标签前)。 */
+  "onlyoffice.forceSave": (input: OnlyOfficeSessionInput) => Promise<{ ok: boolean; error?: string }>;
+  /** 某次会话的保存状态(最近保存时间 / 最近错误 / DS 状态码)。 */
+  "onlyoffice.sessionState": (input: OnlyOfficeSessionInput) => Promise<OnlyOfficeSessionState>;
+  /** 关掉会话(清掉主进程里那份记录)。 */
+  "onlyoffice.close": (input: OnlyOfficeSessionInput) => Promise<{ ok: boolean }>;
+  /** 是否配置了 DS、以及它现在能不能连上(`/healthcheck`)。 */
+  "onlyoffice.status": () => Promise<OnlyOfficeStatusResult>;
+  "onlyoffice.getConfig": () => Promise<OnlyOfficeConfig>;
+  "onlyoffice.setConfig": (input: OnlyOfficeSetConfigInput) => Promise<OnlyOfficeConfig>;
+  /** 本机有没有装 Windows 原生的 Document Server(目录 / 服务 / 端口)。 */
+  "onlyoffice.detectLocal": () => Promise<OnlyOfficeLocalDetectResult>;
+  /** 一键安装:下载官方安装包 → 提权静默安装 → 写配置。返回当前进度快照,之后轮询 `installProgress`。 */
+  "onlyoffice.installLocal": (input: OnlyOfficeInstallInput) => Promise<OnlyOfficeInstallProgress>;
+  /** 已装好但没配置好(端口 / 服务没起)时,只跑配置那一段。 */
+  "onlyoffice.configureLocal": () => Promise<OnlyOfficeInstallProgress>;
+  "onlyoffice.installProgress": () => Promise<OnlyOfficeInstallProgress>;
+  "onlyoffice.cancelInstall": () => Promise<OnlyOfficeInstallProgress>;
+  /** 把检测到的本机安装写进配置(serverUrl 指向本机端口)。 */
+  "onlyoffice.applyLocal": () => Promise<OnlyOfficeConfig>;
 
   // ── 统一数据根 ──
-  /** 当前数据根,以及它下面三样东西的**实际路径**(设置页展示用)。 */
+  /** 当前数据根,以及它下面两样东西的**实际路径**(设置页展示用)。 */
   "app.getDataRoot": () => Promise<{
     root: string;
     dbPath: string;
     libraryPath: string;
-    templatesPath: string;
   }>;
   /** 把整个数据根迁到新位置,**迁完自动重启应用**(数据库没法原地搬家)。
    *  `ok:false` + `error` 时不重启,设置也不改。 */
@@ -1244,6 +1201,7 @@ export const IPC = {
   SESSION_TRUNCATE_AND_INSERT_MESSAGES: "session:truncateAndInsertMessages",
   SESSION_UPDATE_SETTINGS: "session:updateSettings",
   PROVIDER_LIST: "provider:list",
+  PROVIDER_HEALTH_CHECK: "provider:healthCheck",
   PROVIDER_COMMANDS: "provider:commands",
   // Settings
   SETTING_GET: "setting:get",
@@ -1258,10 +1216,6 @@ export const IPC = {
   LIBRARY_RESTORE_ITEMS: "library:restoreItems",
   /** 删除前的"会带走什么"预览(只读)。 */
   LIBRARY_DELETE_PREVIEW: "library:deletePreview",
-  LIBRARY_DOWNLOAD: "library:download",
-  LIBRARY_JOBS: "library:jobs",
-  LIBRARY_SEARCH_EXTERNAL: "library:searchExternal",
-  LIBRARY_IMPORT: "library:import",
   LIBRARY_FULL_TEXT_SEARCH: "library:fullTextSearch",
   // 文献库:PDF 文件导入 / 转 Markdown
   LIBRARY_IMPORT_FILES: "library:importFiles",
@@ -1280,30 +1234,20 @@ export const IPC = {
   // 统一数据根
   APP_GET_DATA_ROOT: "app:getDataRoot",
   APP_MOVE_DATA_ROOT: "app:moveDataRoot",
-  // 模版库
-  TEMPLATES_LIST: "templates:list",
-  TEMPLATES_ADD: "templates:add",
-  /** 给一条模版改名(把目录改名)。 */
-  TEMPLATES_RENAME: "templates:rename",
-  /** 移进回收站(可逆)。界面上那个「删除」走它。 */
-  TEMPLATES_TRASH: "templates:trash",
-  TEMPLATES_TRASH_LIST: "templates:trashList",
-  /** 从回收站还原回原来的类目。 */
-  TEMPLATES_RESTORE: "templates:restore",
-  /** 从回收站彻底删除(不可还原)。 */
-  TEMPLATES_PURGE: "templates:purge",
-  /** 读一条模版里的一个文件(应用内预览)。 */
-  TEMPLATES_READ_FILE: "templates:readFile",
-  /** 用系统默认程序打开模版里的一个文件。 */
-  TEMPLATES_OPEN_FILE: "templates:openFile",
-  TEMPLATES_REVEAL: "templates:reveal",
-  TEMPLATES_MANIFEST: "templates:manifest",
-  /** 整个类目的清单(「全部<类目>」那一行)。 */
-  /** 把一条模版挂到指定会话的输入框上(左栏右键「添加到当前对话」)。 */
-  TEMPLATES_ATTACH_TO_CHAT: "templates:attachToChat",
-  /** 模版库变了(增 / 删)。与文献库那条广播同一个用途:设置页里加了一条模版之后,
-   *  左栏那一段的缓存不会自己知道 —— 少了它,用户会觉得"加了没反应"。 */
-  TEMPLATES_CHANGED: "templates:changed",
+  // OnlyOffice Document Server
+  ONLYOFFICE_OPEN: "onlyoffice:open",
+  ONLYOFFICE_FORCE_SAVE: "onlyoffice:forceSave",
+  ONLYOFFICE_SESSION_STATE: "onlyoffice:sessionState",
+  ONLYOFFICE_CLOSE: "onlyoffice:close",
+  ONLYOFFICE_STATUS: "onlyoffice:status",
+  ONLYOFFICE_GET_CONFIG: "onlyoffice:getConfig",
+  ONLYOFFICE_SET_CONFIG: "onlyoffice:setConfig",
+  ONLYOFFICE_DETECT_LOCAL: "onlyoffice:detectLocal",
+  ONLYOFFICE_INSTALL_LOCAL: "onlyoffice:installLocal",
+  ONLYOFFICE_CONFIGURE_LOCAL: "onlyoffice:configureLocal",
+  ONLYOFFICE_INSTALL_PROGRESS: "onlyoffice:installProgress",
+  ONLYOFFICE_CANCEL_INSTALL: "onlyoffice:cancelInstall",
+  ONLYOFFICE_APPLY_LOCAL: "onlyoffice:applyLocal",
   LIBRARY_ITEM_MANIFEST: "library:itemManifest",
   /** 整个库的清单(「全部<库>」那一行)。 */
   /** 类型注册表:读(返回当前生效的全表,含内置)/ 写(整表替换,校验在主进程)。 */
@@ -1337,8 +1281,6 @@ export const IPC = {
   LIBRARY_DELETE_NOTE: "library:deleteNote",
   LIBRARY_CREATE_NOTE: "library:createNote",
   LIBRARY_WRITE_NOTE: "library:writeNote",
-  /** 导出引用格式(GB/T 7714 / APA / BibTeX)到库根的 `exports/`。 */
-  LIBRARY_EXPORT_CITATIONS: "library:exportCitations",
   // 文献库 —— 集合
   LIBRARY_LIST_COLLECTIONS: "library:listCollections",
   LIBRARY_CREATE_COLLECTION: "library:createCollection",
@@ -1352,8 +1294,6 @@ export const IPC = {
   INSTITUTION_DELETE: "institution:delete",
   INSTITUTION_AUTH_STATUS: "institution:authStatus",
   INSTITUTION_CLEAR_COOKIES: "institution:clearCookies",
-  /** Main → renderer push:下载任务状态变化(进度/失败/需要登录)。 */
-  LIBRARY_JOB_CHANGED: "library:jobChanged",
   /** Main → renderer push:库的内容变了(含 AI 改的)。渲染端据此整体重载。 */
   LIBRARY_CHANGED: "library:changed",
   /** Main → renderer push:AI 往这次对话挂了一个附件,渲染端加进输入框的标签区。 */

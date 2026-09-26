@@ -245,7 +245,8 @@ export function SidebarRow({
    * 鼠标一移上来数字就被挤走。
    */
   badge?: string;
-  onClick?: () => void;
+  /** 带事件：文献行靠 `e.detail` 区分\"双击里的第二下\"和真正的单击（去抖）。 */
+  onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
   /** **双击**。只有需要"点一下看、点两下改"这种分工的行才给
    *  （左栏的文献行：单击右栏预览、双击中间打开来改）。 */
   onDoubleClick?: () => void;

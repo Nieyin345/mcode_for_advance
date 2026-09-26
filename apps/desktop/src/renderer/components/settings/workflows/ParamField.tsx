@@ -16,13 +16,15 @@
  * 从 `useRefOptions(spec.from)` —— 所以这里**不认识"模型"也不认识"技能"**:加一种新的
  * 来源改的是那个 hook,不是这里(见 `NODE_PARAM_REF_SOURCES`)。
  */
-import { useEffect, useRef, useState } from "react";
+import { useContext, useId, useEffect, useRef, useState } from "react";
+import { FieldLabelContext } from "@renderer/components/ui/field-label-context.js";
 import { Menu } from "@base-ui/react/menu";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import type { MessageId } from "@renderer/lib/i18n/core.js";
 import { Button, Input, Select, Switch, Tooltip } from "@renderer/components/ui/index.js";
 import { api } from "@renderer/lib/api.js";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { NODE_PARAM_REF_SOURCES, type NodeParamSpec } from "@contracts/nodeType";
 import {
   IconBraces,
@@ -64,14 +66,15 @@ export function Field({
   help?: string;
   children: React.ReactNode;
 }) {
+  const labelId = useId();
   return (
     <div className="mb-2 block w-full">
       <span className="mb-0.5 flex items-center text-[0.7857em] font-medium text-content-muted">
-        <span>{label}</span>
-        {required && <span className="ml-0.5 text-warning">*</span>}
+        <span id={labelId}>{label}</span>
+        {required && <span aria-hidden className="ml-0.5 text-warning">*</span>}
         {help !== undefined && help !== "" && <HelpHint text={help} />}
       </span>
-      {children}
+      <FieldLabelContext.Provider value={labelId}>{children}</FieldLabelContext.Provider>
     </div>
   );
 }
@@ -95,7 +98,7 @@ function HelpHint({ text }: { text: string }) {
       <Tooltip.Trigger
         delay={1000}
         closeDelay={60}
-        render={<span tabIndex={-1} />}
+        render={<button type="button" />}
         aria-label={t("settings.workflows.paramHelp")}
         className="ml-1 inline-flex cursor-help align-middle text-content-subtle hover:text-content-muted"
       >
@@ -181,6 +184,7 @@ export function ParamField({
         />
       ) : spec.kind === "longtext" ? (
         <textarea
+          aria-label={spec.label}
           ref={areaRef}
           value={text}
           spellCheck={false}
@@ -233,7 +237,12 @@ export function ParamField({
         // 引用型:候选是**这台机器上有什么**(见 `@contracts/nodeType` 的
         // `NODE_PARAM_REF_SOURCES`)。候选一个都没有时退回手填 —— 一份别人分享来的
         // 工作流引用了本机没装的技能/模型,值仍然要看得见、改得动。
-        <RefControl spec={spec} value={value} onChange={onChange} resolvedFrom={resolvedFrom} />
+        <CapabilityAwareRefControl
+          spec={spec}
+          value={value}
+          onChange={onChange}
+          resolvedFrom={resolvedFrom}
+        />
       ) : spec.kind === "number" ? (
         <Input
           type="number"
@@ -272,6 +281,62 @@ export function ParamField({
         <InsertVarMenu groups={insertables} onPick={insertAt} />
       )}
     </Field>
+  );
+}
+
+/** Capability-aware wrapper around the generic ref control. Empty candidates
+ * normally fall back to free text for portable workflows; an explicitly
+ * unsupported capability is different and must not become an escape hatch. */
+function CapabilityAwareRefControl({
+  spec, value, onChange, resolvedFrom,
+}: {
+  spec: NodeParamSpec;
+  value: unknown;
+  onChange: (value: unknown) => void;
+  resolvedFrom?: string;
+}) {
+  const { t } = useI18n();
+  const providers = useSessionStore((s) => s.providers);
+  const currentProviderId = useSessionStore((s) => s.providerId);
+  const wanted = resolvedFrom !== undefined && resolvedFrom.trim().length > 0
+    ? resolvedFrom : currentProviderId;
+  const provider = providers.find((candidate) => candidate.id === wanted);
+  const unsupportedMcp = spec.from === "mcp" && provider?.capabilities.supportsMcp === false;
+  if (!unsupportedMcp) {
+    return <RefControl spec={spec} value={value} onChange={onChange} resolvedFrom={resolvedFrom} />;
+  }
+
+  const saved = stringListOf(value);
+  return (
+    <div
+      role="status"
+      className="space-y-1.5 rounded border border-warning/40 bg-warning/5 px-2 py-1.5 text-[0.7857em]"
+    >
+      <p className="leading-relaxed text-warning">
+        {t("settings.workflows.mcpUnsupportedProvider", {
+          provider: provider?.displayName || wanted,
+        })}
+      </p>
+      {saved.length > 0 && (
+        <>
+          <div className="flex flex-wrap gap-1">
+            {saved.map((id) => (
+              <code key={id} className="rounded bg-surface-muted px-1 py-0.5 text-content-muted">
+                {id}
+              </code>
+            ))}
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => onChange(spec.multiple ? [] : undefined)}
+          >
+            <IconX size={12} />
+            {t("settings.workflows.clearUnsupportedValues")}
+          </Button>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -536,6 +601,7 @@ export function GrowingTextarea({
    *  不给就是原来的行为,已有调用方(AgentProfilesView 等)不受影响。 */
   inputRef?: (el: HTMLTextAreaElement | null) => void;
 }) {
+  const fieldLabel = useContext(FieldLabelContext);
   const ref = useRef<HTMLTextAreaElement | null>(null);
   const fit = (): void => {
     const el = ref.current;
@@ -546,6 +612,7 @@ export function GrowingTextarea({
   useEffect(fit, [value]);
   return (
     <textarea
+      aria-labelledby={fieldLabel}
       ref={(el) => {
         ref.current = el;
         inputRef?.(el);
@@ -906,10 +973,37 @@ function RefControl({
   // `from` 缺了是**不该发生**的(清单校验会拒掉没写 `from` 的引用型参数)。真缺了就
   // 当成"没有候选"往下走 —— 宁可显示"这台机器上还没有可选的项",也不要随手挑一份
   // 别的来源的列表填上去(那会让一个坏清单看起来是好的)。
-  const all = useRefOptions(spec.from ?? "models", spec.fromParam !== undefined ? resolvedFrom : undefined);
-  const candidates = spec.from ? all : [];
+  const result = useRefOptions(spec.from ?? "models", spec.fromParam !== undefined ? resolvedFrom : undefined);
+  const candidates = spec.from ? result.options : [];
   const text = typeof value === "string" ? value : "";
   const selected = stringListOf(value);
+
+  if (spec.from && (result.loading || result.failed)) {
+    const saved = spec.multiple ? selected : (text ? [text] : []);
+    return (
+      <div
+        role={result.failed ? "alert" : "status"}
+        className={cn(
+          "space-y-1.5 rounded border px-2 py-1.5 text-[0.7857em]",
+          result.failed ? "border-danger/40 bg-danger/5" : "border-edge bg-surface-muted/40",
+        )}
+      >
+        <p className={result.failed ? "text-danger" : "text-content-muted"}>
+          {t(result.failed ? "settings.workflows.paramRefLoadFailed" : "settings.workflows.paramRefLoading")}
+        </p>
+        {saved.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {saved.map((id) => <code key={id} className="rounded bg-surface px-1 py-0.5">{id}</code>)}
+          </div>
+        )}
+        {result.failed && (
+          <Button variant="secondary" size="sm" onClick={result.retry}>
+            {t("common.retry")}
+          </Button>
+        )}
+      </div>
+    );
+  }
 
   if (spec.multiple) {
     return <MultiRefValue candidates={candidates} selected={selected} onChange={onChange} />;
@@ -1057,11 +1151,12 @@ function MultiRefValue({
           这两件事仍然要看得见。 */}
       <button
         type="button"
+        aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         title={t(open ? "settings.workflows.paramRefCollapse" : "settings.workflows.paramRefExpand")}
         className={cn(
           "flex w-full items-center gap-1.5 rounded border border-edge bg-surface px-2 py-1 text-left text-[0.7857em] transition-colors",
-          "hover:border-accent/60",
+          missing.length > 0 ? "border-warning/60 hover:border-warning" : "hover:border-accent/60",
         )}
       >
         <span className={cn("min-w-0 flex-1 truncate", selected.length === 0 && "text-content-muted")}>
@@ -1069,8 +1164,10 @@ function MultiRefValue({
             ? t("settings.workflows.paramRefUnlimited")
             : selected.join("、")}
         </span>
-        <span className="shrink-0 text-[0.7143em] text-content-subtle">
-          {selected.length === 0
+        <span className={cn("shrink-0 text-[0.7143em]", missing.length > 0 ? "text-warning" : "text-content-subtle")}>
+          {missing.length > 0
+            ? t("settings.workflows.paramRefMissingCount", { n: missing.length })
+            : selected.length === 0
             ? t("settings.workflows.paramRefOptionCount", { n: candidates.length })
             : t("settings.workflows.paramRefSelectedCount", { n: selected.length })}
         </span>

@@ -36,7 +36,6 @@ import {
   type ContentTag,
   appendUniqueFileTags,
   appendUniqueLibraryTags,
-  appendTemplateTagByKey,
   composePromptWithTags,
   makeContentTag,
   makeQuoteTag,
@@ -67,7 +66,6 @@ import { TagPopover } from "./TagPopover.js";
 import { FileMentionPicker, type FileMentionPickerMode } from "./FileMentionPicker.js";
 import { LibraryPicker } from "./LibraryPicker.js";
 import { SearchFilterBar } from "./SearchFilterBar.js";
-import { templateAttachChipLabel } from "@renderer/lib/templateLabels.js";
 import { libraryAttachChipLabel } from "@renderer/lib/libraryLabels.js";
 import { EmptyThreadWelcome } from "./EmptyThreadWelcome.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
@@ -1103,7 +1101,7 @@ function composeSendAttachments(tags: ReadonlyArray<ContentTag>): SendAttachment
     preview: t.preview,
     content: t.content,
     attachmentKind:
-      t.kind === "file" || t.kind === "library" || t.kind === "template"
+      t.kind === "file" || t.kind === "library"
         ? "file"
         : // 引用单成一类（2026-09-24）。`SendAttachment` 里早就预留了 "quote"，
           // 但从来没产出过 —— 于是引用在已发送的消息里长得和"粘贴内容"一样，
@@ -1171,12 +1169,15 @@ export const ChatPane = memo(
  *  separate "empty" / "with-session" branches. */
 function EmptyCenterPane() {
   const { t } = useI18n();
-  const claudeInstalled = useSessionStore((s) => s.claudeInstalled);
+  const claudeUnavailable = useSessionStore(
+    (s) => s.providerHealthById["claude-sdk"]?.ok === false,
+  );
+  const providerId = useSessionStore((s) => s.providerId);
   const setSettingsOpen = useSessionStore((s) => s.setSettingsOpen);
   return (
     <div className="flex h-full items-center justify-center">
       <div className="max-w-md text-center">
-        {claudeInstalled === false ? (
+        {providerId === "claude-sdk" && claudeUnavailable ? (
           <div className="space-y-3">
             <div className="flex items-center justify-center gap-1.5 text-base font-semibold text-warning">
               <IconAlertTriangle size={18} />
@@ -1364,7 +1365,6 @@ function ChatPaneForSession({
   );
   const interrupt = useSessionStore((s) => s.interrupt);
   const editAndResendMessage = useSessionStore((s) => s.editAndResendMessage);
-  const claudeInstalled = useSessionStore((s) => s.claudeInstalled);
   const setSettingsOpen = useSessionStore((s) => s.setSettingsOpen);
   // Tasks capsule + usage (both keyed by this sessionId).
   const todos = useSessionStore((s) =>
@@ -1588,7 +1588,9 @@ function ChatPaneForSession({
   // 按下去之后成不成还是以 `injectPrompt` 的返回值为准(它会兜回排队)。
   const providers = useSessionStore((s) => s.providers);
   const activeProviderId = useSessionStore((s) => s.providerId);
-  const canInject = !!providers.find((p) => p.id === activeProviderId)?.capabilities.supportsInject;
+  const activeProvider = providers.find((p) => p.id === activeProviderId);
+  const activeProviderName = activeProvider?.displayName ?? activeProviderId;
+  const canInject = !!activeProvider?.capabilities.supportsInject;
   const removeQueuedPrompt = useSessionStore((s) => s.removeQueuedPrompt);
   const clearPromptQueue = useSessionStore((s) => s.clearPromptQueue);
   const sendQueuedPromptNow = useSessionStore((s) => s.sendQueuedPromptNow);
@@ -2604,10 +2606,8 @@ function ChatPaneForSession({
   /**
    * 有人往这次对话挂了一个附件 —— 落成输入框里的一个标签。
    *
-   * 两个来源:AI(文献库的 `library_attach_to_chat` / `templates_attach_to_chat` 工具)
-   * 和**用户自己**(左栏的右键「添加到当前对话」)。两条都走 `composer:attach`,所以
-   * 这里只按 `msg.kind` 分到对应的去重函数上 —— 文献库和模版的 chip 长得不一样、
-   * 去重键也不同,别的行为(能删、随下一条消息作为 `@清单路径` 发出去)完全一样。
+   * 两个来源:AI(资料库的 `library_attach_to_chat` 工具)
+   * 和**用户自己**(左栏的右键「添加到当前对话」)。两条都走 `composer:attach`。
    *
    * 走的都是和用户自己点「+」(`handlePickLibraries`)**同一个**追加函数:同样的去重键、
    * 同样的 chip、同样能删。用户的原话是「ai 挂的话……就是和用户操作一下的效果」
@@ -2620,25 +2620,15 @@ function ChatPaneForSession({
     const off = window.api?.on?.composerAttach?.((msg) => {
       if (msg.sessionId !== sessionId) return;
       setTags((prev) =>
-        msg.kind === "template"
-          ? // 名字要按**界面语言**算:整个类目的键(`t:<类目>`)不含目录名,而主进程随
-            // 消息发来的 `msg.name` 是那份清单的标题(中文,给模型读的)—— 见
-            // templateLabels.ts 的说明
-            appendTemplateTagByKey(
-              prev,
-              msg.key,
-              msg.manifestPath,
-              templateAttachChipLabel(msg.key, msg.name, useSessionStore.getState().locale),
-            )
-          : appendUniqueLibraryTags(prev, [
-              {
-                collectionId: msg.key,
-                // 同模版那一路:挂整个库(`k:<库>`)时主进程给的是清单标题(中文),
-                // 界面上的字要按当前语言自己算 —— 见 lib/libraryLabels.ts
-                name: libraryAttachChipLabel(msg.key, msg.name),
-                manifestPath: msg.manifestPath,
-              },
-            ]),
+        appendUniqueLibraryTags(prev, [
+          {
+            collectionId: msg.key,
+            // 挂整个库(`k:<库>`)时主进程给的是清单标题(中文),
+            // 界面上的字要按当前语言自己算 —— 见 lib/libraryLabels.ts
+            name: libraryAttachChipLabel(msg.key, msg.name),
+            manifestPath: msg.manifestPath,
+          },
+        ]),
       );
     });
     return off;
@@ -3981,6 +3971,7 @@ function ChatPaneForSession({
             <ApprovalPrompt
               active={promptActive}
               key={headApproval.requestId}
+              providerName={activeProviderName}
               toolName={headApproval.toolName}
               input={headApproval.input}
               description={headApproval.description}
@@ -4006,6 +3997,7 @@ function ChatPaneForSession({
           {activeQuestion && !headApproval && !pendingPlanApproval && (
             <QuestionPrompt
               active={promptActive}
+              providerName={activeProviderName}
               questions={activeQuestion}
               onSubmit={(answers) => {
                 void submitQuestion(answers, sessionId);
@@ -4303,7 +4295,7 @@ function ChatPaneForSession({
                 editable={!textareaLocked}
                 placeholder={
                   textareaLocked
-                    ? "Claude is working…"
+                    ? t("chat.placeholderLocked", { provider: activeProviderName })
                     : sessionBusy
                       ? t(
                           // 引擎交不出这么一条通道时**不提这个键** —— 提示里写了而按下去
@@ -4463,6 +4455,7 @@ function ChatPaneForSession({
             query={pickerQuery}
             skills={skills}
             engineCommands={engineCommands}
+            engineName={activeProviderName}
             /* 「这个引擎不提供命令」还是「还没取到」—— 两种要说不同的话。
                `supported: false`（Pi / Codex）是前者；字段整个不存在才是后者。 */
             engineUnsupported={engineCommandsEntry?.supported === false}

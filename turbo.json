@@ -13,7 +13,9 @@
       "dependsOn": ["^build"]
     },
     "test": {
-      "dependsOn": ["^build"]
+      "dependsOn": ["^build"],
+      "cache": false,
+      "passThroughEnv": ["MCODE_TEST_BASH", "MCODE_TEST_BROWSER", "ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA"]
     },
     "lint": {
       "cache": false

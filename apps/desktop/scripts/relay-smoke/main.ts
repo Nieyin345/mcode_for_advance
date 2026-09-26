@@ -765,9 +765,14 @@ await scenario("连上之后 VPS 把连接掐了:退避一路退到 32s、有上
   // 上限到了要说清楚,并且**停下来**。账本到 5 只是"最后一跳排下了",那之后还要:
   // 最后一次 `doConnect()` 真的失败 → `conn.on("error")` 看到 `reconnectAttempts`
   // 已经到顶 → 才 `setState({state:"error", …})`。所以等的是**状态**,给它期限。
-  const ended = await waitFor("等到退避走到上限并放弃", (st) => st.state === "error", 12_000);
+  // Authentication errors also temporarily use state="error" while a retry
+  // is still scheduled. Wait for the explicit terminal give-up state; keep
+  // the independent endpoint/timer assertions below, rather than sampling an
+  // intermediate authentication error and calling it "gave up".
+  const ended = await waitFor("等到退避走到上限并放弃",
+    (st) => st.state === "error" && /重试 \d+ 次后放弃/.test(st.error ?? ""), 12_000);
   eq("账本排满时状态就是 error(不再显示 connecting)", ended.state, "error");
-  check("放弃时给了明确的文案", /重试|放弃|检查/.test(ended.error ?? ""), { error: ended.error });
+  check("放弃时给了明确的文案", /重试 \d+ 次后放弃/.test(ended.error ?? ""), { error: ended.error });
   eq("放弃之后 endpoint 清掉", ended.endpoint, null);
   eq("放弃之后状态不是 connected", ended.state === "connected", false);
   // 放弃之后**必须真的停**:再有定时器在飞就意味着它会一直打下去。

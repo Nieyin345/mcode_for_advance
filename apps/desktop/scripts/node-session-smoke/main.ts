@@ -625,7 +625,46 @@ const originalRunSave = repo.save;
   eq("交接消费状态可从源对话查看", (await memoryAssistant({ op: "list", sessionId: source.id })).jobs.find(j => j.id === job.id)?.status, "consumed");
   const abandoned = store.createAssistantJob(source.id, source.projectId, "lost-worker-after-restart", "checkpoint");
   eq("失去内存执行者的任务标失败，不自动重放", (await memoryAssistant({ op: "list", sessionId: source.id })).jobs.find(j => j.id === abandoned.id)?.status, "failed");
+  const registry = await import("./stubs/providerRegistry.js");
+  let releaseHealth!: () => void;
+  registry.holdNextHealth(new Promise<void>(resolve => { releaseHealth = resolve; }));
+  const beforeCancel = rt.sentPrompts.length;
+  const launching = (await memoryAssistant({ op: "start", sessionId: source.id, kind: "checkpoint" })).jobs[0]!;
+  check("再次整理使用全新的代理上下文", launching.workerSessionId !== job.workerSessionId);
+  await memoryAssistant({ op: "cancel", sessionId: source.id, jobId: launching.id });
+  releaseHealth();
+  await new Promise(resolve => setTimeout(resolve, 30));
+  eq("在引擎预检期间取消不会偷偷启动模型", rt.sentPrompts.length, beforeCancel);
+  eq("被取消的后台任务不反弹成成功", store.readAssistantJob(launching.id)?.status, "cancelled");
+}
 
+// Ordinary launches (not only memory workers) reserve and cancel during preflight.
+{
+  const registry = await import("./stubs/providerRegistry.js");
+  const id = "s_pending_preflight_regression";
+  SessionRepo.create(parentSession(id));
+  const session = SessionRepo.get(id)!;
+  let release!: () => void;
+  registry.holdNextHealth(new Promise<void>((resolve) => { release = resolve; }));
+  const probes = registry.healthProbeCount;
+  const sent = rt.sentPrompts.length;
+  const first = startWorkflowRun({ session, prompt: "pending", cwd: process.cwd() });
+  check("首次 await 前已占用会话", runner.hasActiveRun(id));
+  eq("预检期间重复启动被拒绝", await startWorkflowRun({ session, prompt: "duplicate", cwd: process.cwd() }), null);
+  await waitFor("健康预检确实在等待", () => registry.healthProbeCount > probes);
+  check("普通停止可以取消预检", cancelWorkflowRun(id));
+  check("取消立即释放会话", !runner.hasActiveRun(id));
+  release();
+  eq("旧的预检完成不会重新启动", await first, null);
+  eq("未执行任何模型节点", rt.sentPrompts.length, sent);
+  let reject!: (error: Error) => void;
+  registry.holdNextHealth(new Promise<void>((_resolve, rejectGate) => { reject = rejectGate; }));
+  const probesBeforeFailure = registry.healthProbeCount;
+  const failed = startWorkflowRun({ session, prompt: "failed preflight", cwd: process.cwd() }).then(() => false, () => true);
+  await waitFor("失败预检确实在等待", () => registry.healthProbeCount > probesBeforeFailure);
+  reject(new Error("fixture preflight failure"));
+  check("预检失败仍向调用方报错", await failed);
+  check("预检异常不留下永久 busy", !runner.hasActiveRun(id));
 }
 
 rmSync(DATA, { recursive: true, force: true });

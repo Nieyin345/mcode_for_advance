@@ -39,6 +39,7 @@ import {
  * own button via the same effect.
  */
 export function ApprovalPrompt({
+  providerName,
   active = true,
   toolName,
   input,
@@ -47,6 +48,7 @@ export function ApprovalPrompt({
   queueTotal,
   onDecide,
 }: {
+  providerName: string;
   /** Only the visible chat may acquire focus or handle keyboard decisions. */
   active?: boolean;
   toolName: string;
@@ -102,7 +104,7 @@ export function ApprovalPrompt({
         }
       }}
       role="alertdialog"
-      aria-label={t("chat.approval.aria")}
+      aria-label={t("chat.approval.aria", { provider: providerName })}
       className={cn(
         "mb-2 rounded-2xl border border-edge-input bg-surface px-4 py-3 text-xs text-content shadow-2xl",
         "animate-[qa-sheet-in_140ms_ease-out]",
@@ -112,7 +114,9 @@ export function ApprovalPrompt({
       <div className="mb-2.5 flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
           <IconAlertTriangle size={14} className="shrink-0 text-warning" />
-          <span className="font-semibold text-warning">{t("chat.approval.title")}</span>
+          <span className="font-semibold text-warning">
+            {t("chat.approval.title", { provider: providerName })}
+          </span>
           {queueTotal > 1 && (
             <span
               className="rounded-full border border-warning/60 bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-warning"

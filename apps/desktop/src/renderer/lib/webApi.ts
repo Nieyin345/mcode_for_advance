@@ -419,6 +419,7 @@ const session: Api["session"] = {
 
 const provider: Api["provider"] = {
   list: () => rpc("provider:list"),
+  healthCheck: (input) => rpc("provider:healthCheck", input),
   // 引擎命令清单。手机端走同一条 RPC —— 命令清单属于"这个引擎能干什么"，
   // 与在不在电脑前无关（Claude 的那一份是本机 CLI 报的，所以手机上看到的是**电脑上**
   // 的清单；这台电脑没登录/没装，它就会抛，调用方按 memory 里那条规矩包 try/catch）。
@@ -653,16 +654,11 @@ const on: Api["on"] = {
   // Voice ASR is desktop-only; the web shell never emits results.
   voiceResult: () => () => {},
   voiceDownloadProgress: () => () => {},
-  // 文献库下载进度是桌面端专属(手机端暂不展示文献库)。
-  // 若日后要在手机上看库,除了这里补实现,还要在 `base` 里加 library 命名空间。
-  libraryJobChanged: () => () => {},
-  // 同理:库变更广播与 AI 挂附件都是桌面端专属 —— 手机端没有那个文献库面板,
-  // 也没有输入框的标签区。**必须有这两个空实现**:手机端拿到的是 Proxy,访问
-  // 未列出的名字会**同步抛错**,而共用组件在 effect 里调用它会让 React 19 整棵
-  // 卸载(见本文件顶部)。
+  // 库变更广播与 AI 挂附件都是桌面端专属 —— 手机端没有那个资料库面板,
+  // 也没有输入框的标签区(若日后要在手机上看库,除了这里补实现,还要在 `base` 里加
+  // library 命名空间)。**必须有这两个空实现**:手机端拿到的是 Proxy,访问未列出的
+  // 名字会**同步抛错**,而共用组件在 effect 里调用它会让 React 19 整棵卸载(见本文件顶部)。
   libraryChanged: () => () => {},
-  // 模版库同理:左栏那一段是桌面端专属(手机端只有会话抽屉,没有左栏)。
-  templatesChanged: () => () => {},
   // 工作流那一摊同理:设置 → 工作流是桌面端专属的面板。
   workflowsChanged: () => () => {},
   composerAttach: () => () => {},
@@ -693,11 +689,6 @@ export function createWebApi(): Api {
     shell,
     terminal,
     clipboardFile,
-    claudeHealthCheck: (): Promise<{
-      installed: boolean;
-      source: string | null;
-      command: string | null;
-    }> => rpc("claude:healthCheck"),
     /** 手机端没有本地文件系统,也就没有拖放 —— 返回空串,调用方按"拿不到路径"处理。 */
     getPathForFile: (): string => "",
     on,

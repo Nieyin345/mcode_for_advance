@@ -30,7 +30,6 @@ export function StatusBar() {
   const isRunning = useSessionStore((s) =>
     s.activeSessionId ? !!s.runningBySession[s.activeSessionId] : false,
   );
-  const installed = useSessionStore((s) => s.claudeInstalled);
   const model = useSessionStore((s) => s.model);
   const customModelId = useSessionStore((s) => s.customModelId);
   const customModels = useSessionStore((s) => s.customModels);
@@ -38,13 +37,15 @@ export function StatusBar() {
   const permissionMode = useSessionStore((s) => s.permissionMode);
   const providerId = useSessionStore((s) => s.providerId);
   const providers = useSessionStore((s) => s.providers);
+  const health = useSessionStore((s) => s.providerHealthById[providerId]);
+  const refreshProviderHealth = useSessionStore((s) => s.refreshProviderHealth);
 
   const provider = providers.find((p) => p.id === providerId);
   // Custom endpoints belong to Claude; never carry an old Claude config label
   // over to a Pi/Codex session when the user switches provider.
   const activeCustom = customModelId ? customModels.find((m) => m.id === customModelId) : undefined;
-  const { statusColor, statusText, statusMissing, modelLabel } = describeStatusBar({
-    providerId, providerName: provider?.displayName, claudeInstalled: installed,
+  const { statusColor, statusText, statusMissing, statusTitle, modelLabel } = describeStatusBar({
+    providerId, providerName: provider?.displayName, health,
     model, customModelName: activeCustom?.name, t,
   });
 
@@ -58,7 +59,18 @@ export function StatusBar() {
   return (
     <footer className="flex h-6 shrink-0 items-center gap-3 border-t border-edge bg-surface px-3 text-[11px] text-content-subtle">
       <span className={statusColor}>●</span>
-      <span className={statusMissing ? "text-danger" : ""}>{statusText}</span>
+      {statusMissing ? (
+        <button
+          type="button"
+          className="text-danger underline decoration-dotted underline-offset-2 hover:brightness-110"
+          title={`${statusTitle ?? statusText} · ${t("layout.status.retryHealth")}`}
+          onClick={() => void refreshProviderHealth(providerId, { force: true })}
+        >
+          {statusText}
+        </button>
+      ) : (
+        <span title={statusTitle}>{statusText}</span>
+      )}
 
       <span className="text-content-subtle">·</span>
       <span className="text-content-muted">{modelLabel}</span>

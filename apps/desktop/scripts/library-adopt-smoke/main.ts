@@ -70,7 +70,7 @@ const SRC = mkdtempSync(join(tmpdir(), "mcode-adopt-src-"));
 const { initDb } = await import("@main/store/db.js");
 const { LibraryRepo } = await import("@main/store/repositories.js");
 const { adoptMarkdownFile } = await import("@main/library/adoptMarkdown.js");
-const { convertItemToMarkdown, conversionReport } = await import("@main/library/convert.js");
+const { convertItemToMarkdown, repairCollectionMarkdown, conversionReport } = await import("@main/library/convert.js");
 const { libraryRoot, fromLibraryRelative, toLibraryRelative, pdfPathForHash } = await import(
   "@main/library/paths.js"
 );
@@ -306,86 +306,27 @@ check("先把它挂上", userAdopt.ok, userAdopt);
 const userAbs = fromLibraryRelative(LibraryRepo.get(userItem)!.mdPath!);
 const userBefore = readFileSync(userAbs, "utf8");
 
-const forced = await convertItemToMarkdown(LibraryRepo.get(userItem)!, { force: true });
-check("force 重转没有覆盖它", forced.ok, forced);
-// ⚠️ 判据是 `alreadyDone` 而不是新加的 `skipped`:`alreadyDone` 是**既有的**"没有重转"
-// 语义,而两条调用方(IPC 那边只是计数、MCP 那边按它说"已有 Markdown,没有重转")
-// 认的都是它。`skipped` 另给一层是为了将来能说得更准,不该拿它当"跳过"的唯一判据。
-check("并且如实回报了「跳过」(alreadyDone)", forced.ok && forced.alreadyDone === true, forced);
-check("也带上了「跳过」这一档的标记", forced.ok && forced.skipped === true, forced);
-check("没有谎报又转了一遍", forced.ok && (forced.ok ? forced.chars : 0) === 0, forced);
-eq("正文一字未动", readFileSync(userAbs, "utf8"), userBefore);
-eq("md_path 仍是用户那份", LibraryRepo.get(userItem)!.mdPath, `markdown/imported/${userItem}/full.md`);
-
-/* ──────────────── 4b. 对照组:机器转的那种,force 仍然该真转 ──────────────── */
-
-console.log("\n重转 · 机器转的那份照旧可以被 force 重做");
-
-// 加了"不许覆盖"之后最容易出的事是**拦过头**:连机器自己那份也不重转了,于是设置页
-// 「重转这篇」变成一个永远说"没有重转"的假按钮。所以这里放一条对照组。
-const machineItem = seedPaper("机器转的那一篇", "b".repeat(64));
-
-const auto = await convertItemToMarkdown(LibraryRepo.get(machineItem)!);
-check("先按默认转了一次", auto.ok && !auto.alreadyDone, auto);
-const machineRel = LibraryRepo.get(machineItem)!.mdPath!;
-check("落点是平铺的那种(不是 imported)", !machineRel.includes("/imported/"), machineRel);
-
-const machineAbs = fromLibraryRelative(machineRel);
-writeFileSync(machineAbs, "被人改坏的内容", "utf8");
-
-const redone = await convertItemToMarkdown(LibraryRepo.get(machineItem)!, { force: true });
-check("force 重转成功", redone.ok, redone);
-check("这次是「真转了」,不是跳过", redone.ok && !redone.skipped, redone);
-check(
-  "盘上的内容真的被重新生成过(不是留着被改坏的)",
-  !readFileSync(machineAbs, "utf8").includes("被人改坏的内容"),
-  readFileSync(machineAbs, "utf8").slice(0, 80),
-);
-
-// 不带 force 时两种都照旧跳过。
-const noForce = await convertItemToMarkdown(LibraryRepo.get(machineItem)!);
-check("不带 force 时机器那份照旧跳过", noForce.ok && noForce.alreadyDone === true, noForce);
-
-/* ──────────────── 5. AI 那条路走的是同一份实现 ──────────────── */
-
-console.log("\n共享实现 · AI 调 library_convert 也走同一份");
-
-// 仓规第 2 条:用户点的和 AI 调的是同一个函数。这里从**工具表**那一头再走一遍 ——
-// 只验直接调用的话,哪天有人在工具里自己写一条分支就漏过去了。
-{
-  const tools = libraryMcpTools();
-  const tool = tools.find((t) => t.name === "library_convert");
-  check("工具表里有 library_convert", Boolean(tool));
-  const res = await tool!.handler({ ids: [userItem], force: true }, { sessionId: "s_smoke" });
-  const out = res.content.map((c) => c.text).join("\n");
-  check("AI 那条路也没覆盖它", out.includes("已有 Markdown"), out);
-  // ⚠️ 这里**只钉"如实"**这一条,不钉措辞:那句人话在 `libraryServer.ts` 里,而那个文件
-  // 这一次不许动。现状是它按 `alreadyDone` 说"已有 Markdown,没有重转" —— 不算说谎,
-  // 只是没点明是"用户自己那份"。`ConvertOutcome.skipped` 已经把这个原因备好了,等那条
-  // 文案要用它的时候,把这行断言换成"说了是用户采纳的那份"即可。
-  check("而且没有谎报又转了一遍", !out.includes("已转好"), out);
-  eq("正文仍然一字未动", readFileSync(userAbs, "utf8"), userBefore);
+// Deprecated entry points must fail closed, even for formerly machine-generated output.
+for (const force of [false, true]) {
+  const result = await convertItemToMarkdown(LibraryRepo.get(userItem)!, { force });
+  check("核心转换入口明确转交自动化", !result.ok && result.error.includes("自动化"), result);
+  eq("采纳的正文一字未动", readFileSync(userAbs, "utf8"), userBefore);
 }
-
-/* ──────────────── 6. 用户那份文件丢了:如实报出来,不谎报成功 ──────────────── */
-
-console.log("\n重转 · 用户那份不在了的时候怎么办");
-
-// 不能默默转出一份"机器版"把用户那份顶掉 —— 更不能回报一句"已转好"(那是他没收到的结果)。
-{
-  const lostItem = seedPaper("采纳的那份文件丢了的一篇", "c".repeat(64));
-  const lostSrc = mkdtempSync(join(tmpdir(), "mcode-adopt-lost-"));
-  writeFileSync(join(lostSrc, "full.md"), "# 这份过会儿就没了\n", "utf8");
-  adoptMarkdownFile(lostItem, join(lostSrc, "full.md"));
-  const lostAbs = fromLibraryRelative(LibraryRepo.get(lostItem)!.mdPath!);
-  rmSync(lostAbs, { force: true });
-
-  const r = await convertItemToMarkdown(LibraryRepo.get(lostItem)!, { force: true });
-  check("如实失败", !r.ok, r);
-  check("说的是「文件不在了」而不是一句转换出错", (r.ok ? "" : r.error).includes("不在了"), r);
-  check("并指了出路(重新挂一份)", (r.ok ? "" : r.error).includes("挂"), r);
-  eq("md_path 没被偷偷改成本地抽取那一份", LibraryRepo.get(lostItem)!.mdPath, `markdown/imported/${lostItem}/full.md`);
-}
+writeFileSync(inPackage(userItem, ".mineru-generated"), "legacy marker");
+writeFileSync(userAbs, "# 用户编辑了旧机器产物", "utf8");
+const marked = await convertItemToMarkdown(LibraryRepo.get(userItem)!, { force: true });
+check("机器标记不是覆盖用户编辑的许可", !marked.ok);
+eq("旧机器产物上的用户编辑得到保留", readFileSync(userAbs, "utf8"), "# 用户编辑了旧机器产物");
+const repair = await repairCollectionMarkdown("legacy-collection");
+eq("兼容修复入口不清理文件", repair.cleaned, 0);
+eq("兼容修复入口不转录", repair.converted, 0);
+check("兼容修复入口给出自动化指引", repair.failed.some((r) => r.error.includes("自动化")));
+eq("修复不改变原文件", readFileSync(userAbs, "utf8"), "# 用户编辑了旧机器产物");
+check("MCP 不再暴露核心转录工具", !libraryMcpTools().some((t) => t.name === "library_convert"));
+const emptyItem = seedPaper("仅导入的文件", "b".repeat(64));
+const rejected = await convertItemToMarkdown(LibraryRepo.get(emptyItem)!);
+check("没有 Markdown 也不能绕过自动化", !rejected.ok);
+check("不生成或关联隐式转录产物", !LibraryRepo.get(emptyItem)!.mdPath);
 
 /* ──────────────── 收尾 ──────────────── */
 

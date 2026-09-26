@@ -709,6 +709,22 @@ console.log("\n流程记录:这一层只负责照搬,不自己判谁该读");
 
   eq("全局需显式scope", (await invoke("memory_write", { ...args, title: "Shared approved", scope: "global" }, allow)).isError, undefined);
   check("显式共享路径", listMemoryFiles().some(m => m.title === "Shared approved" && m.scope === "global"));
+  // The approval must describe the same canonical scope used by the writer.
+  for (const [title, extra] of [
+    ["Whitespace global path", { path: " global/rules/whitespace-scope.md " }],
+    ["Blank global path", { path: "   ", scope: "global" }],
+  ] as const) {
+    const requests: Array<{ input: unknown; description?: string }> = [];
+    const capture: ProviderContext = { ...ctx, requestApproval: async (request) => {
+      requests.push(request); return { allow: true };
+    } };
+    const result = await invoke("memory_write", { ...args, title, ...extra }, capture);
+    eq(`${title}: write succeeds after approval`, result.isError, undefined);
+    check(`${title}: approval describes global scope`, requests[0]?.description?.includes("全局（所有项目共享）") === true);
+    const presented = requests[0]?.input as { path?: string } | undefined;
+    check(`${title}: approval receives the normalized path`, !presented?.path || presented.path === presented.path.trim());
+    check(`${title}: actual record has that global scope`, listMemoryFiles().some(m => m.title === title && m.scope === "global"));
+  }
   const before = readMemoryFileWithRaw(own);
   saveMemoryFile({ path: own, content: "updated", expectedRevision: before.revision });
   const history = memoryHistory().find(h => h.path === own && h.reason === "before-update")!;

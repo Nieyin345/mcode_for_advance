@@ -12,6 +12,9 @@ import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 import { PiMessageAdapter } from "../../src/main/providers/pi-sdk/PiMessageAdapter.ts";
+import { codexMcpDisableArgs } from "../../src/main/providers/codex-sdk/codexTurnScope.ts";
+import { createProviderHealthProbe } from "../../src/main/providers/providerHealth.ts";
+import { createProviderHealthRequestGate } from "../../src/renderer/lib/providerHealthRequestGate.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -117,40 +120,183 @@ test("Codex pnpm fallback finds this platform's binary (not the macOS package)",
   }
 });
 
-test("shared status bar never presents Claude health or model names as Pi/Codex status", async () => {
+test("Codex turn scope narrows MCP and plugin servers with process-local overrides", () => {
+  const inventory = [
+    { name: "user-one" },
+    { name: "paper.plugin__search", pluginName: "paper.plugin" },
+    { name: "other__tool", pluginName: "other" },
+  ];
+  assert.deepEqual(codexMcpDisableArgs(inventory), []);
+  assert.deepEqual(codexMcpDisableArgs(inventory, ["user-one", "paper.plugin__search"]), [
+    "-c", "mcp_servers.other__tool.enabled=false",
+  ]);
+  assert.deepEqual(codexMcpDisableArgs(inventory, undefined, ["paper.plugin"]), [
+    "-c", "mcp_servers.other__tool.enabled=false",
+  ]);
+  assert.deepEqual(codexMcpDisableArgs([{ name: "with.dot" }], ["other"]), [
+    "-c", 'mcp_servers."with.dot".enabled=false',
+  ]);
+});
+
+test("Codex MCP config segments preserve quotes, slashes and controls", () => {
+  for (const name of ['server"quoted', "path\\server", "line\nserver", "tab\tserver"]) {
+    const args = codexMcpDisableArgs([{ name }], ["keep"]);
+    assert.deepEqual(args, ["-c", `mcp_servers.${JSON.stringify(name)}.enabled=false`]);
+    assert.equal(JSON.parse(args[1].slice("mcp_servers.".length, -".enabled=false".length)), name);
+  }
+});
+
+test("shared approval/question UI uses the active provider name", () => {
+  const chatPane = readFileSync(resolve(here, "../../src/renderer/components/chat/ChatPane.tsx"), "utf8");
+  const approval = readFileSync(resolve(here, "../../src/renderer/components/chat/ApprovalPrompt.tsx"), "utf8");
+  const question = readFileSync(resolve(here, "../../src/renderer/components/chat/QuestionPrompt.tsx"), "utf8");
+  const slash = readFileSync(resolve(here, "../../src/renderer/components/chat/SlashCommandPicker.tsx"), "utf8");
+  assert.doesNotMatch(chatPane, /Claude is working/);
+  assert.match(chatPane, /providerName=\{activeProviderName\}/);
+  assert.match(approval, /provider: providerName/);
+  assert.match(question, /provider: providerName/);
+  assert.match(chatPane, /engineName=\{activeProviderName\}/);
+  assert.match(slash, /provider: engineName/);
+});
+
+test("shared status bar presents each provider's own checking/ready/error health", async () => {
   const { describeStatusBar } = await import("../../src/renderer/components/layout/statusBarPresentation.ts");
   const labels = {
-    "layout.status.claudeMissing": "Claude not found",
-    "layout.status.claudeReady": "Claude ready",
-    "layout.status.checkingClaude": "Checking Claude…",
+    "layout.status.checkingProvider": "Checking…",
+    "layout.status.providerUnavailable": "Unavailable",
+    "layout.status.healthTimeout": "Check timed out",
+    "layout.status.providerNotRegistered": "Not registered",
+    "layout.status.healthUnsupported": "Check unsupported",
+    "layout.status.ready": "Ready",
     "layout.status.auto": "Auto",
     "layout.status.selectModel": "Select a model",
   };
   const t = (key) => labels[key];
   const pi = describeStatusBar({
-    providerId: "pi-sdk", providerName: "Pi", claudeInstalled: false,
+    providerId: "pi-sdk", providerName: "Pi",
+    health: { loading: false, ok: true, version: "1.2.3" },
     model: "default", customModelName: "Stale Claude gateway", t,
   });
   assert.deepEqual(pi, {
-    statusText: "Pi", statusColor: "text-content-subtle",
-    statusMissing: false, modelLabel: "Select a model",
+    statusText: "Pi · Ready · 1.2.3", statusColor: "text-accent",
+    statusMissing: false, statusTitle: undefined, modelLabel: "Select a model",
   });
   const codex = describeStatusBar({
-    providerId: "codex-sdk", providerName: "Codex", claudeInstalled: false,
+    providerId: "codex-sdk", providerName: "Codex",
+    health: { loading: true, ok: null },
     model: "gpt-5-codex", t,
   });
-  assert.equal(codex.statusText, "Codex");
+  assert.equal(codex.statusText, "Codex · Checking…");
   assert.equal(codex.modelLabel, "gpt-5-codex");
   const claude = describeStatusBar({
-    providerId: "claude-sdk", providerName: "Claude", claudeInstalled: false,
+    providerId: "claude-sdk", providerName: "Claude",
+    health: { loading: false, ok: false, error: "missing binary" },
     model: "sonnet", customModelName: "Custom gateway", t,
   });
-  assert.equal(claude.statusText, "Claude not found");
+  assert.equal(claude.statusText, "Claude · Unavailable");
   assert.equal(claude.statusColor, "text-danger");
   assert.equal(claude.statusMissing, true);
+  assert.equal(claude.statusTitle, "missing binary");
   assert.equal(claude.modelLabel, "Custom gateway · Sonnet");
+  const timeout = describeStatusBar({
+    providerId: "codex-sdk", providerName: "Codex",
+    health: { loading: false, ok: false, code: "timeout", error: "slow" },
+    model: "default", t,
+  });
+  assert.equal(timeout.statusText, "Codex · Check timed out");
   const component = readFileSync(resolve(here, "../../src/renderer/components/layout/StatusBar.tsx"), "utf8");
   assert.match(component, /describeStatusBar\(/, "the visible component must use the tested presenter");
+  assert.match(component, /force: true/, "failed status must offer a forced retry");
+});
+
+test("provider health check is wired across desktop, web/mobile and provider-scoped state", () => {
+  const files = [
+    "../../src/main/ipc/claude.ts",
+    "../../src/preload/index.ts",
+    "../../src/main/mobile/mobileRpc.ts",
+    "../../src/renderer/lib/webApi.ts",
+  ].map((path) => readFileSync(resolve(here, path), "utf8"));
+  for (const source of files) assert.match(source, /provider(?::|\.)healthCheck|PROVIDER_HEALTH_CHECK/);
+  for (const source of files) assert.doesNotMatch(source, /claude:healthCheck|claudeHealthCheck/);
+  const store = readFileSync(resolve(here, "../../src/renderer/stores/sessionStore.ts"), "utf8");
+  assert.match(store, /providerHealthById/);
+  assert.match(store, /refreshProviderHealth\(id\)/);
+  assert.match(store, /refreshProviderHealth\(get\(\)\.providerId\)/);
+  assert.match(store, /providerHealthRequestGate/, "stale same-provider responses must be ignored");
+  assert.match(store, /PROVIDER_HEALTH_STALE_MS/, "focus refresh must skip fresh probes");
+  assert.doesNotMatch(store, /claudeInstalled|refreshClaudeHealth/);
+  const chatPane = readFileSync(resolve(here, "../../src/renderer/components/chat/ChatPane.tsx"), "utf8");
+  assert.match(chatPane, /providerId === "claude-sdk" && claudeUnavailable/);
+});
+
+test("provider health probe normalizes failures, coalesces in-flight work and caches briefly", async () => {
+  let calls = 0;
+  let finish;
+  let now = 100;
+  const provider = {
+    id: "fake",
+    healthCheck: () => {
+      calls += 1;
+      return new Promise((resolve) => { finish = resolve; });
+    },
+  };
+  const probe = createProviderHealthProbe(
+    (id) => id === "fake" ? provider : undefined,
+    { ttlMs: 50, now: () => now },
+  );
+  const first = probe("fake");
+  const second = probe("fake");
+  assert.equal(calls, 1, "concurrent desktop/mobile requests share one provider probe");
+  finish({ ok: true, version: "1.0" });
+  assert.deepEqual(await first, {
+    providerId: "fake", ok: true, code: "ok", checkedAt: 100, version: "1.0",
+  });
+  assert.deepEqual(await second, {
+    providerId: "fake", ok: true, code: "ok", checkedAt: 100, version: "1.0",
+  });
+
+  await probe("fake");
+  assert.equal(calls, 1, "fresh completed result is cached");
+  now = 151;
+  const expired = probe("fake");
+  assert.equal(calls, 2, "expired result starts a new probe");
+  finish({ ok: false, error: "not logged in" });
+  assert.equal((await expired).error, "not logged in");
+
+  const missing = await probe("missing");
+  assert.equal(missing.ok, false);
+  assert.equal(missing.code, "not_registered");
+  assert.match(missing.error, /未注册/);
+  const unsupported = await createProviderHealthProbe(() => ({ id: "none" }))("none");
+  assert.equal(unsupported.ok, false);
+  assert.equal(unsupported.code, "unsupported");
+  assert.match(unsupported.error, /未提供健康检查/);
+  const thrown = await createProviderHealthProbe(() => ({
+    id: "broken",
+    healthCheck: async () => { throw new Error("boom"); },
+  }))("broken");
+  assert.equal(thrown.code, "probe_failed");
+  assert.equal(thrown.error, "boom");
+
+  const timeout = await createProviderHealthProbe(() => ({
+    id: "slow", healthCheck: () => new Promise(() => {}),
+  }), { timeoutMs: 5 })("slow");
+  assert.equal(timeout.code, "timeout");
+
+  const forced = probe("fake", { force: true });
+  assert.equal(calls, 3, "forced retry bypasses a completed cache entry");
+  finish({ ok: true });
+  assert.equal((await forced).code, "ok");
+});
+
+test("provider health request gate rejects stale same-provider completions only", () => {
+  const gate = createProviderHealthRequestGate();
+  const oldPi = gate.begin("pi-sdk");
+  const claude = gate.begin("claude-sdk");
+  const newPi = gate.begin("pi-sdk");
+  assert.equal(gate.isLatest("pi-sdk", oldPi), false);
+  assert.equal(gate.isLatest("pi-sdk", newPi), true);
+  assert.equal(gate.isLatest("claude-sdk", claude), true);
 });
 
 test("Pi records literal bash write targets for the turn-files card and rewind", async () => {
@@ -232,4 +378,69 @@ test("Pi records literal bash write targets for the turn-files card and rewind",
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }
+});
+
+test("workflow provider overrides survive node-session reuse and drive provider-scoped UI", () => {
+  const runner = readFileSync(resolve(here, "../../src/main/orchestration/runner.ts"), "utf8");
+  assert.match(runner, /override\.length > 0 \? override : sameEngine \? conversation\.model : ""/);
+  assert.match(runner, /SessionRepo\.updateSettings\(existing\.id/);
+  assert.match(runner, /SessionRepo\.updateClaudeSessionId\(existing\.id, null\)/);
+  assert.match(runner, /runtimeManager\.dispose\(nodeSession\.id\)/);
+
+  const refs = readFileSync(resolve(here, "../../src/renderer/components/settings/workflows/useRefOptions.ts"), "utf8");
+  assert.match(refs, /useSkillOptions\(providerId\)/);
+  assert.match(refs, /useMcpOptions\(from === "mcp", providerId\)/);
+  assert.match(refs, /capabilities\.supportsMcp !== false/);
+  assert.match(refs, /`mcp:\$\{wanted\}:\$\{locale\}`/);
+  assert.match(refs, /s\.perEngine\?\.\[engine\] !== false/);
+  assert.match(refs, /compatibleProviderIds\.includes\(wanted\)/);
+  assert.match(refs, /RefOptionsResult/);
+  assert.match(refs, /failed: !stale && failed/);
+  assert.match(refs, /s\.customModels\.find\(\(cfg\) => cfg\.id === s\.customModelId\)/);
+  assert.doesNotMatch(refs, /for \(const cfg of s\.customModels\)/);
+  const fields = readFileSync(resolve(here, "../../src/renderer/components/settings/workflows/ParamField.tsx"), "utf8");
+  assert.match(fields, /unsupportedMcp/);
+  assert.match(fields, /mcpUnsupportedProvider/);
+  assert.match(fields, /paramRefLoadFailed/);
+  assert.match(fields, /result\.retry/);
+  assert.match(runner, /probeProviderHealth/);
+  assert.match(runner, /工作流启动前引擎检查失败/);
+  assert.match(runner, /providerId: executionSession\.providerId/);
+  const resultCard = readFileSync(resolve(here, "../../src/renderer/components/chat/WorkflowStepCard.tsx"), "utf8");
+  assert.match(resultCard, /chatStream\.workflowStep\.engine/);
+
+  const automation = readFileSync(resolve(here, "../../src/main/orchestration/automationRunner.ts"), "utf8");
+  assert.match(automation, /origin\?\.providerId \?\? configuredProviderId \?\? DEFAULT_PROVIDER_ID/);
+  assert.match(automation, /origin\?\.model \?\? configuredModel \?\? "default"/);
+  const nodeTypes = readFileSync(resolve(here, "../../src/main/orchestration/nodeTypes.ts"), "utf8");
+  assert.match(nodeTypes, /label: "无人值守引擎"/);
+  assert.match(nodeTypes, /label: "无人值守模型"/);
+
+  const claudeProvider = readFileSync(resolve(here, "../../src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts"), "utf8");
+  assert.match(claudeProvider, /allowNames\.filter\(\(name\) => engineEnabled\(enginesMap, name, "claude"\)\)/);
+  assert.match(claudeProvider, /if \(!claudeMaySee\(name\)\) return/);
+  const piSkills = readFileSync(resolve(here, "../../src/main/providers/pi-sdk/piSkillBridge.ts"), "utf8");
+  assert.match(piSkills, /allowNames\.filter\(\(name\) => engineEnabled\(enginesMap, name, "pi"\)\)/);
+  const pluginPanel = readFileSync(resolve(here, "../../src/renderer/components/settings/PluginsPanel.tsx"), "utf8");
+  assert.match(pluginPanel, /plugin\.compatibleProviderIds/);
+  assert.match(pluginPanel, /settings\.plugins\.providerIncompatible/);
+  const mcpPanel = readFileSync(resolve(here, "../../src/renderer/components/settings/McpPanel.tsx"), "utf8");
+  assert.match(mcpPanel, /if \(!res\.ok \|\| !res\.perEngine\)/);
+  assert.match(mcpPanel, /settings\.mcp\.builtinProviderHint/);
+  const mcpIpc = readFileSync(resolve(here, "../../src/main/ipc/mcp.ts"), "utf8");
+  assert.match(mcpIpc, /perEngine: \{ claude: true, codex: false \}/);
+  const skillsPanel = readFileSync(resolve(here, "../../src/renderer/components/settings/SkillsPanel.tsx"), "utf8");
+  assert.match(skillsPanel, /if \(!res\.ok \|\| !res\.perEngine\)/);
+  assert.match(skillsPanel, /matrixBusyRef/);
+  assert.match(skillsPanel, /disabled=\{engineBusy\}/);
+  assert.match(pluginPanel, /ops\.setBusyKey\(null\);[\s\S]*ops\.setError\(msg\)/);
+  const profilesView = readFileSync(resolve(here, "../../src/renderer/components/settings/workflows/AgentProfilesView.tsx"), "utf8");
+  assert.match(profilesView, /if \(saved\) setDraft\(null\)/);
+  const nodeInspector = readFileSync(resolve(here, "../../src/renderer/components/settings/workflows/NodeInspector.tsx"), "utf8");
+  assert.match(nodeInspector, /if \(saved\) setNaming\(null\)/);
+  const workflowsPanel = readFileSync(resolve(here, "../../src/renderer/components/settings/workflows/WorkflowsPanel.tsx"), "utf8");
+  assert.match(workflowsPanel, /Promise<boolean>/);
+  assert.match(workflowsPanel, /tabIndex=\{active \? 0 : -1\}/);
+  assert.match(fields, /paramRefMissingCount/);
+  assert.match(fields, /aria-expanded=\{open\}/);
 });

@@ -51,7 +51,6 @@ import {
   renameItem,
   searchItems,
 } from "@main/library/operations.js";
-import { convertItemToMarkdown } from "@main/library/convert.js";
 import { adoptMarkdownFile } from "@main/library/adoptMarkdown.js";
 import { importAnyFiles } from "@main/library/importDispatch.js";
 import { attachPdfToItem } from "@main/library/pdfImport.js";
@@ -368,49 +367,6 @@ export function libraryMcpTools(): McpToolSpec[] {
         },
       },
       {
-        name: "library_convert",
-        description:
-          "把条目的 PDF 转成 Markdown —— **本地抽取,只有纯文本**(排版、公式、表格都不保留)。\n" +
-          "要高质量的转录(公式 / 多栏 / 表格)不走这条:用 code 节点调你自己装的外部工具转出 `full.md`,\n" +
-          "再拿 `library_adopt_markdown` 挂回库 —— 那条路才认图床。\n" +
-          "**已经有 Markdown 的会跳过**;确实要重转才把 force 打开。\n" +
-          "⚠️ 它**不下载** PDF:只管「已经在本地的 PDF → Markdown」。条目还没有 PDF 时如实转告用户 —— 下载是外部 MCP 服务 / 自动化的事,别自己去抓。",
-        inputSchema: {
-          ids: z.array(z.string()).min(1).describe("要转的条目 id,来自 library_search / library_items"),
-          force: z.boolean().optional().describe("已经有 Markdown 也重转(默认关)"),
-        },
-        handler: async (args: { ids: string[]; force?: boolean }) => {
-          const lines: string[] = [];
-          let converted = 0;
-          for (const id of args.ids) {
-            const item = LibraryRepo.get(id);
-            if (!item) {
-              lines.push(`- ${id} —— 库里没有这个 id`);
-              continue;
-            }
-            // **不过屏蔽那道门**(2026-09-26):屏蔽只管给 AI 看的,转换是干活 —— 屏蔽了 pdf
-            // 要的正是「只给模型看转录后的 md」,不转就没有那份 md。
-            const res = await convertItemToMarkdown(item, { force: args.force });
-            if (res.ok) {
-              converted += 1;
-              // 已经有 md 时是 `alreadyDone`,别把它说成"这次转了一遍"。
-              lines.push(
-                res.alreadyDone
-                  ? `- 《${item.title}》\n  id=${id}\n  已有 Markdown,没有重转`
-                  : `- 《${item.title}》\n  id=${id}\n  已转好(本地抽取${res.chars ? `,${res.chars} 字节` : ""})`,
-              );
-              continue;
-            }
-            lines.push(`- 《${item.title}》\n  id=${id}\n  没转成:${res.error}`);
-          }
-          if (converted > 0) notifyLibraryChanged(`convert:${converted}`);
-          return text(
-            `已处理 ${args.ids.length} 条:\n\n${lines.join("\n")}\n\n` +
-              "转好的条目这一条的详情页就能读到 Markdown,右栏的全文检索也找得到它。",
-          );
-        },
-      },
-      {
         name: "library_import_files",
         description:
           "把**本地文件 / 目录**收进资料库,建成新条目(PDF、Word、图片、任何文件都行;目录可以整个作为一条 linked 条目收进)。\n" +
@@ -423,13 +379,11 @@ export function libraryMcpTools(): McpToolSpec[] {
             .enum(["files", "folder", "explode"])
             .optional()
             .describe("目录怎么收:files(默认,逐个文件)/ folder(整个目录作为一条)/ explode(目录里的文件拆开逐个导)"),
-          convert: z.boolean().optional().describe("PDF 入库后顺手本地抽一份纯文本 Markdown(默认关;要高质量转录走外部工具 + library_adopt_markdown)"),
         },
-        handler: async (args: { paths: string[]; collectionIds?: string[]; mode?: "files" | "folder" | "explode"; convert?: boolean }) => {
+        handler: async (args: { paths: string[]; collectionIds?: string[]; mode?: "files" | "folder" | "explode" }) => {
           const res = await importAnyFiles(args.paths, {
             collectionIds: args.collectionIds,
             mode: args.mode,
-            convert: args.convert ?? false,
           });
           notifyLibraryChanged(`mcp-import:${res.added}`);
           const lines = res.items.map((i) => `- ${i.title}\n  id=${i.id}`);
@@ -459,7 +413,7 @@ export function libraryMcpTools(): McpToolSpec[] {
           return text(
             `${res.replaced ? "已换掉" : "已挂上"}《${res.item.title}》的 PDF。\n` +
               `落点:${res.item.pdfPath}\n\n` +
-              "已发出 library.item.downloaded 事件;要转成 Markdown 可以接着调 library_convert,或等用户配的自动化处理。",
+              "已发出 library.item.downloaded 事件;在线转录由用户配置的自动化处理，软件不直接转录。",
           );
         },
       },

@@ -1,6 +1,6 @@
 import { MEMORY_WORKFLOWS } from "./memoryWorkflows.js";
 /**
- * 内置工作流 —— 六个对话模式 + 两条自动化(长任务守望、文献自动下载),
+ * 内置工作流 —— 六个对话模式 + 三条自动化(长任务守望、导入后取原文、下载完转 Markdown),
  * id 沿用原来那五个模式的名字。
  *
  * ## id 沿用旧值是**故意的**
@@ -126,7 +126,9 @@ const SEARCH_NODES: readonly NodeSpec[] = [
         "- 有没有**明确排除**的方向;",
         "- 有没有**已知的关键工作**可以作为锚点。",
         "",
-        "⚠️ 提示词末尾「这次的固定条件」一段给出的那几项(时间范围、期刊层次、影响因子、每源条数)是用户设好的习惯,**不要再问他**;而且**要把那几条原样转写进你的产出「检索方向」的末尾**(一行一条,如「- 时间范围:近三年」)—— 下游步骤全靠产出里带的这几条执行筛选,漏了就没了。用户已经说清楚的部分直接采用,不必再走一遍流程问一遍。",
+        "⚠️ 提示词末尾「这次的固定条件」一段给出的那几项是用户设好的习惯,**不要再问他**;而且**要把那几条原样转写进你的产出「检索方向」的末尾**(一行一条,如「- 时间范围:近三年」)—— 下游步骤全靠产出里带的这几条执行筛选,漏了就没了。用户已经说清楚的部分直接采用,不必再走一遍流程问一遍。",
+        "",
+        "**先看一眼手上有什么检索工具。** 这个软件自己**不带**任何联网检索 / 下载文献的能力 —— 那些由用户接入的外部 MCP 服务提供(工具名各家不同,看你的工具表里有哪些)。一个能联网检索文献的工具都没有时,**开场就如实告诉用户**,并建议他在设置 → MCP 里接一个,不要硬走下面的步骤。",
         "",
         "**同时确认这批文献放进哪个分类。** 检查本次对话的附件里有没有文献库分类:",
         "",
@@ -165,7 +167,7 @@ const SEARCH_NODES: readonly NodeSpec[] = [
       instruction: [
         "把上游给出的方向**转换成可用的检索式**,并**先经用户确认再继续**。",
         "",
-        "**检索式用英文词写。** Crossref / arXiv / OpenAlex 都按英文元数据匹配,整句中文提交过去命中为零。所以:",
+        "**检索式用英文词写。** 常见的学术检索源(Crossref / arXiv / OpenAlex / Semantic Scholar…)都按英文元数据匹配,整句中文提交过去命中为零。所以:",
         "",
         "- 把方向拆成 **2–4 个概念块**(例:量子密钥分发 / 卫星 / 波长选择);",
         "- 每个概念块给一组**英文同义词**,块内用 OR 连接;",
@@ -192,15 +194,15 @@ const SEARCH_NODES: readonly NodeSpec[] = [
     title: "检索并按条件筛",
     params: {
       instruction: [
-        "用上游给出的检索式执行 `library_search_online`,每源条数按上游产出里带的固定条件。**把用过的检索式告知用户** —— 他需要知道你在搜什么才能纠正你。",
+        "用上游给出的检索式,调用**你工具表里那个外部检索工具**(由用户接入的 MCP 服务提供;这个软件自己不带检索)执行检索,每源条数按上游产出里带的固定条件。**把用过的检索式和用的是哪个工具告知用户** —— 他需要知道你在搜什么才能纠正你。",
         "",
         "**命中为零或明显跑偏时换用词重试**:先减少概念块,再替换同义词,把几轮尝试走完再下结论。拿跑偏的结果凑数,后面每一步都会跟着偏。",
         "",
         "取得命中之后,按上游产出里带的固定条件过一遍:",
         "",
         "- 年份直接按元数据筛;",
-        "- **期刊层次和影响因子用 `library_journal_rank` 查出来**,把候选的期刊名一次传入 —— 凭印象报的区号和影响因子会直接错;",
-        "- 期刊数据查不到时,如实说明「期刊数据不可用,这次无法按层次筛选」;",
+        "- **期刊层次和影响因子只能用工具查**(用户接入的期刊数据 / 分区查询工具,有就用),凭印象报的区号和影响因子会直接错;",
+        "- 没有这样的工具、或查不到时,如实说明「期刊数据不可用,这次无法按层次筛选」,**不要编数字**;",
         "- 条件过严导致一篇都不剩时,如实说明并询问用户是否放宽,放宽与否由他定。",
         "",
         "交出筛选之后**仍然保留**的那一份清单,一篇一行,带齐后续判断需要的字段(标题、年份、期刊、DOI)。",
@@ -220,24 +222,24 @@ const SEARCH_NODES: readonly NodeSpec[] = [
     id: "pick",
     type: "mcode.agent",
     title: "判断并入库",
-    // **写能力**:这一步要往用户的库里塞东西(`library_add_paper`)。默认的 `read`
-    // 会把这一步按在计划模式里,连一次导入都做不成。
+    // **写能力**:这一步要往用户的库里塞东西(`library_import_files` / 外部工具的入库)。
+    // 默认的 `read` 会把这一步按在计划模式里,连一次导入都做不成。
     capability: "write",
     params: {
       instruction: [
         "逐条审阅这份候选清单,判断哪些确实和方向相关。看标题和摘要即可。",
         "",
-        "**挑中一篇就立刻导入一篇**:用 `library_add_paper` 导入,并在**同一次调用里写下总结**(30–80 字,说清:这篇讲了什么、**为什么值得收录**、和用户的方向是什么关系)。用户左栏里会立刻多出这一条,所以他随时看得见进度、也随时可以叫停 —— 攒到最后一次性导入,他要等到底才知道你收了什么。",
+        "**挑中一篇就立刻处理一篇**:用外部检索 / 下载工具把它的 PDF 拿到本地,再用 `library_import_files` 收进库(拿不到 PDF 就先只记一条:用 `library_write_note` 之前得先有条目 —— 那就把命中信息写进笔记留待以后);并**给它写一句总结**(30–80 字,说清:这篇讲了什么、**为什么值得收录**、和用户的方向是什么关系,用 `library_write_note` 写在那一条上)。用户左栏里会立刻多出这一条,所以他随时看得见进度、也随时可以叫停 —— 攒到最后一次性导入,他要等到底才知道你收了什么。",
         "",
         "**总结写「为什么值得收」**,不复述标题或摘要。不相关的跳过就行,不必逐条解释原因。",
         "",
         "导入前先用 `library_search` 查一下库里有没有,已有的跳过(除非用户明确要求)。",
         "",
-        "全部处理完之后用一段话收尾:入库了几篇、分别属于哪个方向、有什么缺口(某个子方向一篇都没找到)。**下载和转录由应用自动完成**,这一步到此为止。",
+        "全部处理完之后用一段话收尾:入库了几篇、分别属于哪个方向、有什么缺口(某个子方向一篇都没找到)。**转录由用户配的自动化接手**(入库会发事件),这一步到此为止。",
         "",
         "**做完的样子**:清单上每一条都有了结论(入库或跳过);每一条入库的都带着自己那句总结;**收尾那段话留到清单上每一条都处理完之后再写**。",
         "",
-        "**边界**:每一条入库的都必须来自 `library_search_online` 的**真实命中** —— DOI、作者、年份一律从命中结果里抄,凭记忆写出来的 DOI 会往库里塞一篇不存在的文献。宁可少而准:用户的库要能一眼看懂。",
+        "**边界**:每一条入库的都必须来自检索工具的**真实命中** —— DOI、作者、年份一律从命中结果里抄进总结,凭记忆写出来的 DOI 会往库里塞一篇不存在的文献。宁可少而准:用户的库要能一眼看懂。",
       ].join("\n"),
     },
   },
@@ -281,7 +283,7 @@ const WRITE_NODES: readonly NodeSpec[] = [
       instruction: [
         "把这一步要用到的文献**逐条核实** —— 这是整条流程最硬的一步。",
         "",
-        "- 用 `library_search` / `library_items` 在库里确认每一条**确实存在**,并抄录它给出的真实字段(作者、年份、期刊、DOI);",
+        "- 用 `library_search` / `library_items` 在库里确认每一条**确实存在**,并从它的笔记 / 转录正文里抄录真实的引用信息(作者、年份、期刊、DOI)—— 库里的条目本身只记标题,引用字段要从内容里读;",
         "- 手上有 `.bib` 时执行 `python \"<脚本目录>/check_citations.py\" refs.bib` —— 它逐条对库,把「库里没有、也对不上」的挑出来。**那一档一律不引。**",
         "- 核不到的,**如实列出**交给用户决定。作者、年份、DOI 一律从库里的查询结果抄 —— 编出来的引用会往用户的库里塞一篇不存在的文献。",
         "",
@@ -454,7 +456,7 @@ const WATCH_EDGES: readonly WorkflowEdge[] = [
   wire(WATCH_COMMAND_NODE_ID, WATCH_SAY_NODE_ID),
 ];
 
-/* ── 文献自动下载(内置自动化,事件触发)──────────────────────── */
+/* ── 导入后自动取原文(内置自动化,事件触发)──────────────────────── */
 
 /**
  * 与守望同款:它**不在** `BUILTIN_WORKFLOW_IDS` 里(那份是**对话模式下拉**的六个),
@@ -464,16 +466,18 @@ const WATCH_EDGES: readonly WorkflowEdge[] = [
  *
  * 因为它要听的是**两个不同的时机**:
  *
- *  1. `library.item.imported` —— 库里多了一条,但**文件还没下来**。这时能做的是
- *     "给它排队下载"(就是这一条);
+ *  1. `library.item.imported` —— 库里多了一条,但**文件可能还没有**。这时能做的是
+ *     "去把原文拿回来"(就是这一条);
  *  2. `library.item.downloaded` —— PDF **真到本地了**(见 `@contracts/runtime` 的
- *     `LibraryItemDownloadedEvent`)。想对着 PDF 做事(转录)只能等这一刻,导入那一下
- *     动手只会扑空 —— 那是下面那条 `AUTO_CONVERT_*` 听的。
+ *     `LibraryItemDownloadedEvent`;`library_attach_pdf` 挂上 PDF 时发)。想对着 PDF
+ *     做事(转录)只能等这一刻,导入那一下动手只会扑空 —— 那是下面那条 `AUTO_CONVERT_*` 听的。
  *
- * `imported` 这一半是**兜底**:按标识符导入(DOI / arXiv)那条路自己会排队
- * (`operations.importIdentifiers` 末尾那句 `enqueueDownloads`),而按文件导入、
- * 手动加条目、以及"当时下不动"的那批都不会。所以这条自动化是给它们留的第二次机会
- * —— 用户也可以把它关掉。
+ * ## 软件自己**不下载**(2026-09-27 起)
+ *
+ * 内置的下载队列(开放获取解析、机构登录、并发下载)随学术功能整体退役。这条自动化
+ * 只是一个**壳**:它把"有条目没文件"这件事交给模型,由模型调**用户接入的外部 MCP
+ * 下载工具**把 PDF 弄到本地,再用 `library_attach_pdf` 交回库。没有那样的工具时它
+ * 什么都不做、如实说一句 —— 用户也可以把它关掉。
  *
  * ## 它们与「事件发生时」那条放宽是配对的
  *
@@ -503,7 +507,7 @@ export const AUTO_DOWNLOAD_AGENT_NODE_ID = "auto-download-agent";
  * 读到的那一句)。
  */
 export const AUTO_DOWNLOAD_DEFAULT_TASK =
-  "资料库刚有新条目导入。把**这次导入的那几条**(见下面载荷里的「条目:」那几行;可能不止一条)排队下载,并汇报结果。";
+  "资料库刚有新条目导入。只处理尚无本地文件的条目:用你手上的外部下载工具把原文拿到本地,再用 library_attach_pdf 交回库;已有 filePath 或 pdfPath 的一律跳过。";
 
 const AUTO_DOWNLOAD_NODES: readonly NodeSpec[] = [
   {
@@ -515,7 +519,7 @@ const AUTO_DOWNLOAD_NODES: readonly NodeSpec[] = [
       // ⚠️ **空是故意的,而且现在是对的。** 内置模板没法预知这台机器上有哪些项目,
       // 而导入事件**不属于任何项目**。早先这里空着等于这条自动化**永远挂不上**
       // (`parseTriggerSpec` 一律要求项目非空);现在「事件发生时」允许留空,运行退回
-      // 宿主目录 —— 这一步要做的只是"排队下载",不需要工作目录。
+      // 宿主目录 —— 这一步要做的只是"取回原文并挂上",不需要工作目录。
       [NODE_TRIGGER_PROJECT_PARAM_KEY]: "",
       [NODE_TRIGGER_TASK_PARAM_KEY]: AUTO_DOWNLOAD_DEFAULT_TASK,
       // 听哪个事件,取值来自 `@contracts/hook` 的 HOOK_EVENTS。
@@ -528,26 +532,28 @@ const AUTO_DOWNLOAD_NODES: readonly NodeSpec[] = [
   {
     id: AUTO_DOWNLOAD_AGENT_NODE_ID,
     type: "mcode.agent",
-    title: "排队下载",
-    // **写能力**:排队下载是写操作(`library_download` 不在只读集合里)。默认的
-    // `read` 会把这一步按在计划模式里,连一次下载都排不上。
+    title: "取回原文",
+    // **写能力**:把 PDF 挂回库是写操作(`library_attach_pdf` 不在只读集合里)。默认的
+    // `read` 会把这一步按在计划模式里,连一次都挂不上。
     capability: "write",
     params: {
       instruction: [
         "资料库里刚有新条目导入了。**是哪几条见下面那段载荷里的「条目:」那几行**(id 和标题",
         "都在那儿;批量导入时那儿会有好几条,写着「一共有 N 条,这次都要办」)。",
-        "你的任务:**把里面列出来的每一条都排队下载**,一条都不许落下。",
+        "你的任务:检查载荷列出的每一条。只有**没有 filePath 和 pdfPath** 的条目才需要取原文;本地导入的文档文件一律跳过。",
+        "",
+        "⚠️ 这个软件自己**不会下载**任何东西。取原文靠的是用户接入的外部 MCP 工具(检索 / 下载文献的那些,名字各家不同,看你的工具表)。**一个都没有时,什么都不做,如实说一句「没有可用的下载工具」**,不要用浏览器硬凑。",
         "",
         "做法:",
         "",
         "- **就照着载荷里那些 id 一条条办**,不要自己去查「最新导入的」—— 批量导入时好几条会",
         "  连着进来,猜错了下的是别的一篇,而且不报错;",
-        "- 调 `library_download` 给每一条排队 —— 它要求条目有 DOI / arXiv ID 或可用的链接;",
-        "- 两条标识都没有的条目下载不了,**如实说明缺了什么,不要编造 DOI**;",
-        "- 已经有 PDF 的条目跳过,不要重复排队。",
+        "- 用外部工具按标题 / 来源地址 / 笔记里的 DOI 找到并下载 PDF 到本地,再调 `library_attach_pdf` 挂到**那个 id** 上;",
+        "- 找不到可下载版本的条目**如实说明,不要编造 DOI 或链接**;",
+        "- 已经有 filePath 或 pdfPath 的条目跳过;它可能是用户刚导入的 Word、图片或 PDF。",
         "",
-        "**做完的样子**:载荷里列的每一条都交代过了(排上队的、跳过的、下不了的),并向用户" +
-          "汇报 —— 排了几条、各自什么标题;下不了的说明原因。下载由应用自动完成,不需要你等它下完。",
+        "**做完的样子**:载荷里列的每一条都交代过了(挂上的、跳过的、拿不到的),并向用户" +
+          "汇报 —— 挂了几条、各自什么标题;拿不到的说明原因。转录由「下载完转 Markdown」那条自动化接手。",
       ].join("\n"),
     },
   },
@@ -584,7 +590,7 @@ export const AUTO_CONVERT_CODE_NODE_ID = "auto-convert-code";
 export const AUTO_CONVERT_AGENT_NODE_ID = "auto-convert-agent";
 
 export const AUTO_CONVERT_DEFAULT_TASK =
-  "资料库里有一批的 PDF 刚下载完(**是哪些见下面载荷里的「条目:」那几行**;可能不止一条)。把它们各自转成 Markdown 挂回对应条目。";
+  "文档库里有一批文件刚导入或下载完成（见载荷中的条目列表，可能不止一条；尚无本地文件的跳过）。只用 MinerU 在线 API 转录并挂回对应条目；禁止本地抽取。";
 
 /**
  * 转录那一步跑的 Python —— 调 MinerU 的**在线 API**。
@@ -616,15 +622,14 @@ const AUTO_CONVERT_NODES: readonly NodeSpec[] = [
   {
     id: AUTO_CONVERT_TRIGGER_NODE_ID,
     type: "mcode.trigger",
-    title: "下载完成触发",
+    title: "文件导入或下载完成触发",
     params: {
       triggerKind: "event",
       // 同上面那条:事件不属于任何项目,留空跑在宿主目录。
       [NODE_TRIGGER_PROJECT_PARAM_KEY]: "",
       [NODE_TRIGGER_TASK_PARAM_KEY]: AUTO_CONVERT_DEFAULT_TASK,
-      // ⚠️ **必须是 `downloaded`,不能是 `imported`。** 导入那一下 PDF 还没下来,
-      // 拿它当转录时机只会扑空 —— 而"扑空"的表现是安静地什么都没发生。
-      [NODE_TRIGGER_EVENTS_PARAM_KEY]: "library.item.downloaded",
+      // 核心只入库并发事件；启用此自动化后，上传只通过工作流 code 节点执行。
+      [NODE_TRIGGER_EVENTS_PARAM_KEY]: "library.item.imported,library.item.downloaded",
       [NODE_TRIGGER_FILTER_PARAM_KEY]: "",
     },
   },
@@ -649,7 +654,7 @@ const AUTO_CONVERT_NODES: readonly NodeSpec[] = [
     capability: "write",
     params: {
       instruction: [
-        "上一步已经用 MinerU 把 PDF 转成了 Markdown,产物路径在它的产出里",
+        "上一步已经用 MinerU 在线 API 把文档转成了 Markdown,产物路径在它的产出里",
         "(`outputs` 里每条一个 `mdPath`;那是一份 `full.md`,同级的 `images/` 里是配图)。",
         "",
         "你的任务:**把每一份转出来的 Markdown 挂回它对应的条目**。",
@@ -776,9 +781,9 @@ export const BUILTIN_WORKFLOWS: readonly WorkflowDoc[] = [
   {
     // 同守望:**自动化**,不出现在模式下拉里(见 AUTO_DOWNLOAD_WORKFLOW_ID 上的说明)。
     id: AUTO_DOWNLOAD_WORKFLOW_ID,
-    name: "文献自动下载",
+    name: "导入后取原文",
     // 会进流程记录的开头(同 search/write 的规矩),写的是这条流程是干什么的。
-    description: "资料库有新条目导入时,把这次导入的那几条里有 DOI/arXiv 或链接的排队下载 PDF。",
+    description: "资料库有新条目导入时,把这次导入的那几条里还没有文件的,用外部下载工具取回原文并挂上。",
     icon: "download",
     nodes: graph(AUTO_DOWNLOAD_NODES, AUTO_DOWNLOAD_EDGES),
     edges: [...AUTO_DOWNLOAD_EDGES],
@@ -790,8 +795,8 @@ export const BUILTIN_WORKFLOWS: readonly WorkflowDoc[] = [
     // 与上一条**配对**:上一条负责"把 PDF 弄下来",这一条负责"下完之后转 Markdown"。
     // 分开是因为它们听的是两个不同的时机(见 AUTO_DOWNLOAD_WORKFLOW_ID 上的说明)。
     id: AUTO_CONVERT_WORKFLOW_ID,
-    name: "下载完自动转 Markdown",
-    description: "资料库某条目的 PDF 下载完成时,把 PDF 交给 MinerU 转成 Markdown 并挂回该条目(PDF 会上传到 MinerU;屏蔽设置不管这里,它只管给 AI 看的)。",
+    name: "文件到位后在线转 Markdown",
+    description: "启用并配置此自动化后，导入或下载完成的文件会上传到 MinerU 在线转录，再挂回对应条目。核心导入本身不转录；屏蔽设置只控制 AI 可见性，不是上传开关。",
     icon: "file-text",
     nodes: graph(AUTO_CONVERT_NODES, AUTO_CONVERT_EDGES),
     edges: [...AUTO_CONVERT_EDGES],

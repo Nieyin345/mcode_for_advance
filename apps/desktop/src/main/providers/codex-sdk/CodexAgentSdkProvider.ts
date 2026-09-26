@@ -77,6 +77,7 @@ import { defaultSkillsRoot, enabledSkillDirs, engineEnabled, readEnginesMap, ski
 import { scriptsDir } from "@main/workflows/seed.js";
 import { ASK_NATIVE_TOOL_PROMPT } from "@main/lib/askQuestion.js";
 import { turnContextSections } from "@main/providers/contextPrompt.js";
+import { codexMcpDisableArgs } from "./codexTurnScope.js";
 import {
   parseQuestions,
   formatAnswersForModel,
@@ -211,6 +212,8 @@ export class CodexAgentSdkProvider implements AgentProvider {
     supportsStreaming: true, // item/agentMessage/delta
     supportsMcp: true, // config.toml [mcp_servers] materialization
     supportsAskUserQuestion: true, // dynamicTools ask_user_question
+    // app-server's item/tool/requestUserInput is bridged by answerNativeUserInput.
+    supportsElicitation: true,
     // Codex's own reasoning-effort surface, verbatim: values are the binary's
     // effort enum, labels its TUI display names, hints its model-catalog
     // preset descriptions (translated). "default" = omit effort → the model's
@@ -248,6 +251,17 @@ export class CodexAgentSdkProvider implements AgentProvider {
     }
     await CodexModelsStore.ensureConfigMaterialized();
     const hostIdentity = await ensureCodexHomeIdentity();
+    const mcpScopeArgs =
+      req.mcpServerNames?.length || req.pluginNames?.length
+        ? codexMcpDisableArgs(
+            await CodexModelsStore.listMaterializedMcpServers(),
+            req.mcpServerNames,
+            req.pluginNames,
+          )
+        : [];
+    if (mcpScopeArgs.length > 0) {
+      ctx.log.info(`codex: disabled ${mcpScopeArgs.length / 2} MCP server(s) outside this turn's allowlists`);
+    }
     const mcpManagement = await getMcpManagement();
     const browserToolsEnabled = !mcpManagement.browserDisabled;
 
@@ -346,6 +360,7 @@ export class CodexAgentSdkProvider implements AgentProvider {
         `model_provider=${providerId}`,
         ...(contextWindow ? ["-c", `model_context_window=${contextWindow}`] : []),
         "-c", "project_doc_max_bytes=0", // Host compiles bounded project instructions.
+        ...mcpScopeArgs,
       ],
       log: ctx.log,
       onExit: (code, signal) => {
@@ -460,7 +475,10 @@ export class CodexAgentSdkProvider implements AgentProvider {
         try {
           const { getEnabledPluginSkillRoots } = await import("@main/plugins/pluginManager.js");
           await client.request("skills/extraRoots/set", {
-            extraRoots: [...skillRootsFor(), ...(await pluginSkillRootsFor(req.pluginNames))],
+            extraRoots: [
+              ...skillRootsFor(req.skills),
+              ...(await pluginSkillRootsFor(req.pluginNames, req.skills)),
+            ],
           });
         } catch (err) {
           ctx.log.warn(`codex: skills/extraRoots/set failed: ${(err as Error).message}`);
@@ -715,8 +733,16 @@ async function buildCodexEnv(ctx: ProviderContext): Promise<Record<string, strin
  *  contains SKILL.md as one skill is UNVERIFIED (the 0.153.4 binary is
  *  closed-source; the npm package ships no scanner source) — confirm on a
  *  live session during acceptance. */
-function skillRootsFor(): string[] {
+function skillRootsFor(allowNames?: readonly string[]): string[] {
   const universal = defaultSkillsRoot();
+  if (allowNames?.length) {
+    const allow = new Set(allowNames);
+    const enginesMap = readEnginesMap(universal);
+    return [...skillNamesInRoot(universal).entries()]
+      .filter(([name]) => allow.has(name) && engineEnabled(enginesMap, name, "codex"))
+      .map(([, dir]) => dir)
+      .sort();
+  }
   const restricted = enabledSkillDirs(universal, "codex");
   if (restricted === null) {
     try {
@@ -737,14 +763,20 @@ function skillRootsFor(): string[] {
  * delivered wholesale); a root whose every skill is disabled for codex
  * contributes nothing. Builtin skills stay out of the matrix and always pass.
  */
-async function pluginSkillRootsFor(pluginNames?: readonly string[]): Promise<string[]> {
+async function pluginSkillRootsFor(
+  pluginNames?: readonly string[],
+  allowNames?: readonly string[],
+): Promise<string[]> {
   const { getEnabledPluginSkillRoots } = await import("@main/plugins/pluginManager.js");
   const enginesMap = readEnginesMap(defaultSkillsRoot());
+  const allow = allowNames?.length ? new Set(allowNames) : null;
   const out: string[] = [];
   for (const root of await getEnabledPluginSkillRoots(pluginNames, "codex-sdk")) {
     const byName = skillNamesInRoot(root);
-    const enabled = [...byName.keys()].filter((n) => engineEnabled(enginesMap, n, "codex"));
-    if (enabled.length === byName.size) out.push(root);
+    const enabled = [...byName.keys()].filter(
+      (name) => (!allow || allow.has(name)) && engineEnabled(enginesMap, name, "codex"),
+    );
+    if (!allow && enabled.length === byName.size) out.push(root);
     else for (const n of enabled) out.push(byName.get(n)!);
   }
   return out;

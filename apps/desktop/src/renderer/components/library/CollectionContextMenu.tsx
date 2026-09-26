@@ -38,7 +38,6 @@ import { useEffect, useState } from "react";
 import { Menu } from "@base-ui/react/menu";
 import type { LibraryCollection } from "@contracts/library";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import type { CitationStyle } from "@contracts/citation";
 import { attachToCurrentChat } from "@renderer/lib/attachToChat.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
@@ -70,7 +69,6 @@ export function CollectionContextMenu({
   onDelete,
   onNewNote,
   onImportHere,
-  onExport,
   onShowInfo,
   onMove,
 }: {
@@ -99,13 +97,6 @@ export function CollectionContextMenu({
    * 摆出这个分类有多少条 —— 导之前先知道会导出多少，比导完看 toast 好。
    */
   onShowInfo: (c: LibraryCollection) => void;
-  /**
-   * 把这个分类下的条目**导出成引用文件**（2026-09-21）。
-   *
-   * 从右栏那条工具条搬来，2026-09-21 又从**菜单**搬进「分类信息」卡片 ——
-   * 它天然属于**分类**（导出的是一批），但不该占着菜单里最高频的位置。
-   */
-  onExport: (c: LibraryCollection, style: CitationStyle) => void;
   /** 把它挪到另一个父下面(`parentId: null` = 挪到最外层)。 */
   onMove: (c: LibraryCollection, parentId: string | null) => void;
 }) {
@@ -231,12 +222,8 @@ export function CollectionContextMenu({
                   <IconDownload size={12} className="shrink-0" />
                   {t("library.ctx.importHere")}
                 </Menu.Item>
-
-                {/* **导出引用** —— 2026-09-21 之后不再在这里平铺三种格式。
-                    ★ 用户：「现在右键 collection 会有论文信息的导出……**这里的导出放进
-                    弹出的卡片里面**」。三项平铺把菜单撑得很长，而导出是"偶尔做一次"的事，
-                    不该占着最高频的位置。改成开一张「分类信息」卡片，三种格式在卡片里选。
-                    （`onExport` 因此不再由这个菜单直接调用，见 `onShowInfo`。） */}
+                {/* 「分类信息」卡片(条目数)。从前那三种引用格式的导出也在卡片里,
+                    随 2026-09-27 学术功能的清理退役。 */}
                 {c && (
                   <Menu.Item
                     onClick={() => {

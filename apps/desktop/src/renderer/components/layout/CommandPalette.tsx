@@ -798,9 +798,9 @@ function PaletteRow({ item, onClick }: { item: PaletteItem; onClick: () => void 
   );
 }
 
-/** 「文档」——元数据命中那一条。就是标题 + 作者/年份，跟左栏里看到的一样。 */
+/** 「文档」——元数据命中那一条。就是标题(+ 一句摘要),跟左栏里看到的一样。 */
 function DocItemRowContent({ item }: { item: LibraryItem }) {
-  const meta = [item.authors?.[0], item.year ? String(item.year) : ""].filter(Boolean).join(" · ");
+  const meta = item.abstract ?? "";
   return (
     <>
       <IconFileText size={15} className="shrink-0 text-content-muted group-data-[highlighted]:text-accent" />

@@ -74,6 +74,8 @@ import {
   type Box,
 } from "./workflowLayout.js";
 import { wouldCycle } from "./workflowEdit.js";
+import { placeEdgeLabels } from "./workflowEdgeLabels.js";
+import { isEditableTarget } from "@renderer/lib/shortcuts.js";
 import { findNodeType, isLoopGate } from "./workflowView.js";
 import { WorkflowNodeCard } from "./WorkflowNodeCard.js";
 
@@ -127,6 +129,23 @@ export function WorkflowCanvas({
   const connectRef = useRef<ConnectDrag | null>(null);
   /** 鼠标停在哪条线上(那条线会变红并长出一个删除钮)。 */
   const [hoverEdgeId, setHoverEdgeId] = useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [autoFit, setAutoFit] = useState(false);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const selectNode = (id: string | null) => { setSelectedEdgeId(null); onSelectNode(id); };
+  const removeSelectedEdge = () => { if (selectedEdgeId) onRemoveEdge(selectedEdgeId); setSelectedEdgeId(null); };
+  const removeSelectedRef = useRef(removeSelectedEdge);
+  removeSelectedRef.current = removeSelectedEdge;
+  useEffect(() => {
+    if (!selectedEdgeId) return;
+    const listener = (e: KeyboardEvent) => {
+      if (!viewportRef.current?.getClientRects().length || isEditableTarget(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); e.stopPropagation(); removeSelectedRef.current(); }
+    };
+    window.addEventListener("keydown", listener);
+    return () => window.removeEventListener("keydown", listener);
+  }, [selectedEdgeId]);
   /** 指针 → 画布坐标的基准。滚动条在内层 div 上,所以减它的 rect 就够了。 */
   const canvasRef = useRef<HTMLDivElement | null>(null);
   /** 正在进行的这次指针操作(拖卡片 / 拉连线)。拖动把监听挂在 `document` 上、还改了
@@ -145,7 +164,7 @@ export function WorkflowCanvas({
    */
   const lanes = backEdgeLanes(doc.nodes, doc.edges);
 
-  const size = canvasSize(doc.nodes, [...lanes.values()]);
+  const baseSize = canvasSize(doc.nodes, [...lanes.values()]);
   const positionOf = (node: WorkflowNode): WorkflowPosition =>
     dragPos?.id === node.id ? { x: dragPos.x, y: dragPos.y } : node.position;
   /** 画布坐标系 → 容器坐标(加四周留白)。 */
@@ -158,7 +177,7 @@ export function WorkflowCanvas({
   const pointOf = (ev: { clientX: number; clientY: number }): { x: number; y: number } => {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return { x: 0, y: 0 };
-    return { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+    return { x: (ev.clientX - rect.left) / zoom, y: (ev.clientY - rect.top) / zoom };
   };
   /** 落在这张卡片上算不算数:是哪个节点、连过去会不会成环。 */
   const targetAt = (
@@ -189,6 +208,25 @@ export function WorkflowCanvas({
     return [{ edge, d: edgePath(from, to, lane), mid: edgeMidpoint(from, to, lane) }];
   });
 
+  const labels = placeEdgeLabels(edgeGeoms.map(({ edge, mid }) => ({ id: edge.id, text: edge.label ?? "", x: mid.x, y: mid.y - 6 })), [...boxes.values()]);
+  const size = {
+    width: Math.max(baseSize.width, ...[...labels.values()].map(l => l.x + l.width / 2 + 12)),
+    height: Math.max(baseSize.height, ...[...labels.values()].map(l => l.y + l.height + 12)),
+  };
+  const fit = () => {
+    const view = viewportRef.current;
+    if (!view) return;
+    setZoom(Math.max(0.25, Math.min(1, (view.clientWidth - 12) / size.width, (view.clientHeight - 12) / size.height)));
+  };
+  const fitRef = useRef(fit); fitRef.current = fit;
+  useEffect(() => {
+    if (!autoFit || !viewportRef.current) return;
+    fitRef.current();
+    const observer = new ResizeObserver(() => fitRef.current());
+    observer.observe(viewportRef.current);
+    return () => observer.disconnect();
+  }, [autoFit, size.width, size.height]);
+
   const connectFrom = connect ? boxes.get(connect.fromId) : undefined;
   /** 拉线时跟着指针走的那条虚线。目标那端给个 0×0 的盒子 = "连到这一点"。 */
   const previewD =
@@ -199,7 +237,7 @@ export function WorkflowCanvas({
   const startDrag = (node: WorkflowNode) => (event: ReactMouseEvent) => {
     if (event.button !== 0) return; // 右键留给系统菜单
     event.preventDefault();
-    onSelectNode(node.id);
+    selectNode(node.id);
 
     const startX = event.clientX;
     const startY = event.clientY;
@@ -219,8 +257,8 @@ export function WorkflowCanvas({
     const onMove = (ev: MouseEvent) => {
       const next = {
         id: node.id,
-        x: Math.max(0, origin.x + (ev.clientX - startX)),
-        y: Math.max(0, origin.y + (ev.clientY - startY)),
+        x: Math.max(0, origin.x + (ev.clientX - startX) / zoom),
+        y: Math.max(0, origin.y + (ev.clientY - startY) / zoom),
       };
       dragPosRef.current = next;
       setDragPos(next);
@@ -246,7 +284,7 @@ export function WorkflowCanvas({
     // 卡片自己的 mousedown 是"移动这张卡片"。不拦的话两个都会跑,松手时位置和
     // 连线各写一次文档 —— 而用户只想做一件事。
     event.stopPropagation();
-    onSelectNode(node.id);
+    selectNode(node.id);
 
     const prevCursor = document.body.style.cursor;
     const prevSelect = document.body.style.userSelect;
@@ -300,22 +338,31 @@ export function WorkflowCanvas({
         onRelayout={onRelayout}
       />
 
-      <div className="min-h-0 flex-1 overflow-auto rounded-md border border-edge bg-surface/40">
+      <div className="mb-2 flex flex-wrap items-center gap-1">
+        <Button size="sm" variant="ghost" aria-label={t("settings.workflows.zoomOut")} disabled={zoom <= 0.25} onClick={() => { setAutoFit(false); setZoom(z => Math.max(0.25, z - 0.1)); }}>−</Button>
+        <output className="text-[0.7143em] tabular-nums text-content-muted">{Math.round(zoom * 100)}%</output>
+        <Button size="sm" variant="ghost" aria-label={t("settings.workflows.zoomIn")} disabled={zoom >= 2} onClick={() => { setAutoFit(false); setZoom(z => Math.min(2, z + 0.1)); }}>+</Button>
+        <Button size="sm" variant="secondary" onClick={() => { setAutoFit(true); fit(); }}>{t("settings.workflows.fitCanvas")}</Button>
+        {selectedEdgeId && <Button size="sm" variant="danger" onClick={removeSelectedEdge}>{t("settings.workflows.deleteEdge")}</Button>}
+      </div>
+      <div ref={viewportRef} data-workflow-viewport className="min-h-0 flex-1 overflow-auto rounded-md border border-edge bg-surface/40">
+        <div style={{ width: size.width * zoom, height: size.height * zoom }}>
         <div
           ref={canvasRef}
           className="relative"
-          style={{ width: size.width, height: size.height }}
+          style={{ width: size.width, height: size.height, transform: `scale(${zoom})`, transformOrigin: "top left" }}
           // 点空白处取消选中。判 target === currentTarget,是因为卡片是子元素
           // (点卡片时事件从卡片冒上来,那时不该当成"点了背景")。
           onMouseDown={(e) => {
-            if (e.target === e.currentTarget) onSelectNode(null);
+            if (e.target === e.currentTarget) selectNode(null);
           }}
         >
           <svg
             className="pointer-events-none absolute left-0 top-0"
             width={size.width}
             height={size.height}
-            aria-hidden="true"
+            role="group"
+            aria-label={t("settings.workflows.edgeSelect", { name: "" })}
           >
             <defs>
               {/* 箭头:依赖是有方向的,没有箭头就得靠"从上到下"去猜。 */}
@@ -340,12 +387,12 @@ export function WorkflowCanvas({
                 markerHeight="6"
                 orient="auto-start-reverse"
               >
-                <path d="M 0 1 L 7 4 L 0 7 z" style={{ fill: "rgb(var(--danger))" }} />
+                <path d="M 0 1 L 7 4 L 0 7 z" style={{ fill: "rgb(var(--accent))" }} />
               </marker>
             </defs>
 
             {edgeGeoms.map(({ edge, d, mid }) => {
-              const hovered = edge.id === hoverEdgeId;
+              const hovered = edge.id === hoverEdgeId || edge.id === selectedEdgeId;
               return (
                 <g
                   key={edge.id}
@@ -354,10 +401,14 @@ export function WorkflowCanvas({
                   // 只在**还是自己**的时候清:快速划过两条线时,后一条的 enter 可能
                   // 先于前一条的 leave 到达。
                   onMouseLeave={() => setHoverEdgeId((cur) => (cur === edge.id ? null : cur))}
-                  onClick={() => {
-                    onRemoveEdge(edge.id);
-                    setHoverEdgeId(null);
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={edge.id === selectedEdgeId}
+                  aria-label={t("settings.workflows.edgeSelect", { name: edge.label || `${edge.from} → ${edge.to}` })}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelectNode(null); setSelectedEdgeId(edge.id); }
                   }}
+                  onClick={() => { onSelectNode(null); setSelectedEdgeId(edge.id); }}
                 >
                   <title>{t("settings.workflows.edgeRemoveHint")}</title>
                   {/* ⚠️ 颜色只能写主题里**真的有**的那个变量名:未定义的 `var()` 会让
@@ -372,7 +423,7 @@ export function WorkflowCanvas({
                     strokeWidth={hovered ? 2.5 : 1.5}
                     vectorEffect="non-scaling-stroke"
                     markerEnd={`url(#workflow-edge-arrow${hovered ? "-hover" : ""})`}
-                    style={{ stroke: hovered ? "rgb(var(--danger))" : "rgb(var(--edge))" }}
+                    style={{ stroke: hovered ? "rgb(var(--accent))" : "rgb(var(--edge))" }}
                   />
                   {/* 1.5px 的线太难点,给它一条 12px 宽的透明带当命中区。 */}
                   <path
@@ -382,23 +433,7 @@ export function WorkflowCanvas({
                     stroke="transparent"
                     style={{ pointerEvents: "stroke" }}
                   />
-                  {hovered && (
-                    <g>
-                      <circle
-                        cx={mid.x}
-                        cy={mid.y}
-                        r={8}
-                        strokeWidth={1}
-                        style={{ fill: "rgb(var(--surface))", stroke: "rgb(var(--danger))" }}
-                      />
-                      <path
-                        d={`M ${mid.x - 3} ${mid.y - 3} L ${mid.x + 3} ${mid.y + 3} M ${mid.x + 3} ${mid.y - 3} L ${mid.x - 3} ${mid.y + 3}`}
-                        strokeWidth={1.5}
-                        strokeLinecap="round"
-                        style={{ stroke: "rgb(var(--danger))" }}
-                      />
-                    </g>
-                  )}
+
                 </g>
               );
             })}
@@ -411,27 +446,17 @@ export function WorkflowCanvas({
 
                 `paintOrder: "stroke"` + 一圈底色描边 = 一个字后面的小块"挖空"。不加的话
                 字压在线上,读起来是一团糊的。 */}
-            {edgeGeoms.map(({ edge, mid }) =>
-              (edge.label ?? "").trim().length > 0 ? (
-                <text
-                  key={`lbl_${edge.id}`}
-                  x={mid.x}
-                  y={mid.y - 6}
-                  textAnchor="middle"
-                  style={{
-                    fill: "rgb(var(--content-muted))",
-                    stroke: "rgb(var(--surface))",
-                    strokeWidth: 3,
-                    paintOrder: "stroke",
-                    fontSize: 11,
-                    pointerEvents: "none",
-                    userSelect: "none",
-                  }}
-                >
-                  {edge.label}
+            {edgeGeoms.map(({ edge, mid }) => {
+              const label = labels.get(edge.id);
+              if (!label) return null;
+              return <g key={`lbl_${edge.id}`} style={{ pointerEvents: "none" }}>
+                <title>{edge.label}</title>
+                {(label.x !== mid.x || Math.abs(label.y - (mid.y - 6)) > 1) && <line x1={mid.x} y1={mid.y} x2={label.x} y2={label.y + 3} stroke="rgb(var(--edge))" strokeDasharray="2 3"/>}
+                <text x={label.x} y={label.y} textAnchor="middle" style={{ fill: "rgb(var(--content-muted))", stroke: "rgb(var(--surface))", strokeWidth: 3, paintOrder: "stroke", fontSize: 11, pointerEvents: "none", userSelect: "none" }}>
+                  {label.text}
                 </text>
-              ) : null,
-            )}
+              </g>;
+            })}
 
             {/* 跟着指针走的那条虚线。画在最后 = 压在所有边之上。 */}
             {previewD && (
@@ -468,6 +493,7 @@ export function WorkflowCanvas({
                 top={box.y}
                 connecting={connect !== null}
                 connectHint={hint}
+                onSelect={() => selectNode(node.id)}
                 onMouseDown={startDrag(node)}
                 onStartConnect={startConnect(node)}
               />
@@ -482,6 +508,7 @@ export function WorkflowCanvas({
               </p>
             </div>
           )}
+        </div>
         </div>
       </div>
     </div>
@@ -565,12 +592,12 @@ function WorkflowCanvasToolbar({
   );
 
   return (
-    <div className="mb-2 flex items-center gap-2">
+    <div className="mb-2 flex flex-wrap items-center gap-2">
       <Menu.Root open={open} onOpenChange={setOpen}>
         <Menu.Trigger
           disabled={catalog.entries.length === 0}
           className={cn(
-            "flex items-center gap-1 rounded border border-edge bg-surface px-2 py-1 text-[0.7857em] transition-colors",
+            "flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-edge bg-surface px-2 py-1 text-[0.7857em] transition-colors",
             "text-content-muted hover:bg-surface-hover/60 hover:text-content",
             "disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-surface",
           )}

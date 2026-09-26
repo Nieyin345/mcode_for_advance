@@ -49,10 +49,12 @@ import { HOOK_EVENT_OF, eventItemFactsOf, matchesAnyGlob, matchesGlobList, type 
 import { DEFAULT_PROVIDER_ID } from "@contracts/ipc";
 import {
   NODE_COMMAND_PARAM_KEY,
+  NODE_MODEL_PARAM_KEY,
   NODE_PROMPT_PARAM_KEY,
   NODE_TRIGGER_PROJECT_PARAM_KEY,
   NODE_TRIGGER_TASK_PARAM_KEY,
   parseTriggerSpec,
+  providerIdOf,
   triggerEnabledOf,
   triggerKindOf,
   type NodeTypeManifest,
@@ -1330,14 +1332,38 @@ class AutomationRunner {
    */
   private sessionOf(trigger: LoadedTrigger, projectId: string, originSessionId?: string): Session {
     projectId = projectId || SYSTEM_AUTOMATION_PROJECT_ID;
+    const origin = originSessionId ? SessionRepo.get(originSessionId) : undefined;
+    const configuredProviderId = providerIdOf(trigger.params);
+    const rawConfiguredModel = trigger.params[NODE_MODEL_PARAM_KEY];
+    const configuredModel = typeof rawConfiguredModel === "string" && rawConfiguredModel.trim().length > 0
+      ? rawConfiguredModel.trim() : undefined;
+    // Origin conversations win for watch-style runs. Truly unattended runs use
+    // the trigger's explicit host engine/model, then the application default.
+    const desiredProviderId = origin?.providerId ?? configuredProviderId ?? DEFAULT_PROVIDER_ID;
+    const desiredModel = origin?.model ?? configuredModel ?? "default";
     const existing = SessionRepo.findAutomationByWorkflow(trigger.workflowId, projectId);
     if (existing !== undefined) {
       const parentSessionId = originSessionId ?? null;
-      if (existing.parentSessionId !== parentSessionId) {
-        SessionRepo.setParentSessionId(existing.id, parentSessionId);
-        return { ...existing, parentSessionId };
+      const providerId = desiredProviderId;
+      const providerChanged = providerId !== existing.providerId;
+      const model = desiredModel;
+      const effort = origin?.effort ?? (providerChanged ? "default" : existing.effort);
+      const customModelId = origin?.customModelId ?? null;
+      if (existing.parentSessionId !== parentSessionId) SessionRepo.setParentSessionId(existing.id, parentSessionId);
+      if (
+        providerChanged || model !== existing.model || effort !== existing.effort ||
+        customModelId !== existing.customModelId
+      ) {
+        SessionRepo.updateSettings(existing.id, { providerId, model, effort, customModelId });
+        if (providerChanged) {
+          SessionRepo.updateClaudeSessionId(existing.id, null);
+          runtimeManager.dispose(existing.id);
+        }
       }
-      return existing;
+      return {
+        ...existing, parentSessionId, providerId, model, effort, customModelId,
+        claudeSessionId: providerChanged ? null : existing.claudeSessionId,
+      };
     }
     const now = Date.now();
     if (projectId === SYSTEM_AUTOMATION_PROJECT_ID) {
@@ -1363,7 +1389,9 @@ class AutomationRunner {
     const session: Session = {
       id: uid("sess_"),
       projectId,
-      providerId: DEFAULT_PROVIDER_ID,
+      // A watch started from a conversation follows that conversation's engine;
+      // truly unattended triggers have no origin and deliberately use the app default.
+      providerId: desiredProviderId,
       claudeSessionId: null,
       kind: "automation",
       // **null 不是偷懒**:后台自动化属于**工作流**,不属于任何一个对话(见 `Session.kind`)。
@@ -1373,8 +1401,8 @@ class AutomationRunner {
       // 它不进任何列表,标题纯粹是给排查用的(日志、运行历史那一栏)。
       title: `自动化:${trigger.workflowName}`,
       status: "idle",
-      model: "default",
-      effort: "default",
+      model: desiredModel,
+      effort: origin?.effort ?? "default",
       // ️ **最保守的那个值。** 这一条只对「对话节点」有影响(它跑在**这个**会话上):
       // 那种节点会把指令当成用户消息发出去,权限模式没有别的地方能覆盖(节点自己的
       // 能力位只作用于它自己的节点会话)。`plan` = 写一律弹审批,而无人值守时审批
@@ -1383,7 +1411,7 @@ class AutomationRunner {
       // 不受这里影响。
       permissionMode: "plan",
       workflowId: trigger.workflowId,
-      customModelId: null,
+      customModelId: origin?.customModelId ?? null,
       // 本地目录:**工作树是要有人管生管死的**(谁创建、什么时候合并、什么时候删),
       // 而自动化没有人在场。跑在项目根目录就好,那里本来就是它的工作目录。
       envMode: "local",

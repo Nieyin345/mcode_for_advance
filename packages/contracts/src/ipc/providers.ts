@@ -173,6 +173,32 @@ export type DeleteCodexProviderInput = z.infer<typeof DeleteCodexProviderSchema>
 export const GetCodexApiKeySchema = z.object({ id: z.string().min(1) });
 export type GetCodexApiKeyInput = z.infer<typeof GetCodexApiKeySchema>;
 
+/* ── 通用引擎健康检查 ── */
+
+export const ProviderHealthCheckSchema = z.object({
+  providerId: z.string().min(1),
+  /** Bypass a completed cached result; an in-flight probe is still shared. */
+  force: z.boolean().optional(),
+});
+export type ProviderHealthCheckInput = z.infer<typeof ProviderHealthCheckSchema>;
+
+export type ProviderHealthStatusCode =
+  | "ok"
+  | "unavailable"
+  | "not_registered"
+  | "unsupported"
+  | "timeout"
+  | "probe_failed";
+
+export interface ProviderHealthCheckResult {
+  providerId: string;
+  ok: boolean;
+  code: ProviderHealthStatusCode;
+  checkedAt: number;
+  version?: string;
+  error?: string;
+}
+
 /* ── 引擎自己的斜杠命令清单（见 rpcMap 里 `provider.commands` 的说明）── */
 
 /**

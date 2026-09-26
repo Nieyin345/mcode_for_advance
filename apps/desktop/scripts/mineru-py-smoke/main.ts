@@ -572,6 +572,20 @@ try:
     print("NO_THROW")
 except Exception as e:
     print("THREW:" + type(e).__name__ + ":" + str(e))
+import zipfile
+sibling_zip = Path(${JSON.stringify(evil)}).with_name("sibling.zip")
+with zipfile.ZipFile(sibling_zip, "w") as z:
+    z.writestr("../safe_out-evil/escaped.txt", "do not extract")
+try:
+    m.safe_extract(sibling_zip, Path(${JSON.stringify(outDir)}))
+    print("SIBLING_ACCEPTED")
+except RuntimeError:
+    print("SIBLING_REJECTED")
+valid_zip = sibling_zip.with_name("valid.zip")
+with zipfile.ZipFile(valid_zip, "w") as z:
+    z.writestr("nested/full.md", "valid transcript")
+m.safe_extract(valid_zip, Path(${JSON.stringify(outDir)}))
+print("VALID_EXTRACTED" if (Path(${JSON.stringify(outDir)}) / "nested/full.md").read_text() == "valid transcript" else "VALID_FAILED")
 `;
     const probeFile = join(OUT_DIR, "probe.py");
     writeFileSync(probeFile, probe, "utf8");
@@ -581,6 +595,8 @@ except Exception as e:
       child.stdout.on("data", (d: Buffer) => (out += d.toString("utf8")));
       child.on("close", () => resolve(out.trim()));
     });
+    check("同名前缀的兄弟目录越界也被拒绝", res.includes("SIBLING_REJECTED"), res);
+    check("合法嵌套目录仍可解压", res.includes("VALID_EXTRACTED"), res);
     // **要求是 RuntimeError**,不只是"抛了点什么":探针第一版传了字符串,于是它抛
     // 的是 `TypeError: 'str' object has no attribute 'mkdir'` —— 断言照样绿,而那条
     // 路**根本没走到越界检查**。这正是仓规里"因为错的理由绿"那一课。

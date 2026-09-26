@@ -143,7 +143,7 @@ export function hookEventHasTool(event: HookEvent): boolean {
  * 也是用户写在指令里的 `{{trigger.itemId}}`。三处各写一遍字符串的话,改一处漏一处
  * 的表现是"指令里那个名字解不出来",而那种失败只在跑的时候才出现。
  */
-export const EVENT_ITEM_FACT_KEYS = ["itemId", "itemTitle", "pdfPath"] as const;
+export const EVENT_ITEM_FACT_KEYS = ["itemId", "itemTitle", "pdfPath", "filePath"] as const;
 export type EventItemFactKey = (typeof EVENT_ITEM_FACT_KEYS)[number];
 
 /**
@@ -181,9 +181,9 @@ export const HOOK_EVENT_ITEM_FACT_FIELDS: Partial<
   Record<HookEvent, Partial<Record<EventItemFactKey, string>>>
 > = {
   // （itemKind 已随 kind 退役删除 —— 事件上不再有这个字段。）
-  "library.item.imported": { itemId: "itemId", itemTitle: "title" },
+  "library.item.imported": { itemId: "itemId", itemTitle: "title", pdfPath: "pdfPath", filePath: "filePath" },
   // 下载完的那一条**多一个 `pdfPath`** —— 导入那一下文件还没下来,那时给路径是骗人。
-  "library.item.downloaded": { itemId: "itemId", itemTitle: "title", pdfPath: "pdfPath" },
+  "library.item.downloaded": { itemId: "itemId", itemTitle: "title", pdfPath: "pdfPath", filePath: "filePath" },
 };
 
 /**
@@ -192,10 +192,17 @@ export const HOOK_EVENT_ITEM_FACT_FIELDS: Partial<
  * 给「插入变量」那张菜单用:菜单列的每一项,这一种触发都得真取得到 ——
  * `expandTriggerVars` 对取不到的 key 是硬失败,列错一项的代价是那一步跑不起来。
  */
+// Generic document imports may already have a local file; metadata-only imports
+// do not. Preserve those optional facts at runtime, but never promise them in
+// the guaranteed interpolation menu (missing trigger variables fail closed).
+const OPTIONAL_EVENT_ITEM_FACT_KEYS: Partial<Record<HookEvent, readonly EventItemFactKey[]>> = {
+  "library.item.imported": ["pdfPath", "filePath"],
+  "library.item.downloaded": ["filePath"],
+};
 export function eventItemFactKeysOf(event: HookEvent): readonly EventItemFactKey[] {
   const fields = HOOK_EVENT_ITEM_FACT_FIELDS[event];
   if (fields === undefined) return [];
-  return EVENT_ITEM_FACT_KEYS.filter((key) => fields[key] !== undefined);
+  return EVENT_ITEM_FACT_KEYS.filter((key) => fields[key] !== undefined && !OPTIONAL_EVENT_ITEM_FACT_KEYS[event]?.includes(key));
 }
 
 /**

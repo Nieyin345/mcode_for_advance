@@ -2,12 +2,14 @@
 import type { CapabilityDescriptor, CapabilityRequirement } from "../../../../packages/contracts/src/capability.js";
 import { PluginManifestSchema } from "../../../../packages/contracts/src/plugin.js";
 import type { AgentProvider } from "../../../../packages/contracts/src/provider.js";
-import { validateNodeTypeManifest } from "../../../../packages/contracts/src/nodeType.js";
+import { validateNodeTypeManifest, type NodeTypeManifest } from "../../../../packages/contracts/src/nodeType.js";
+import type { WorkflowNode } from "../../../../packages/contracts/src/workflow.js";
 import {
   checkNodeCapabilities,
   collectCapabilityInventory,
   executorCapabilityDescriptors,
   pluginCapabilityDescriptors,
+  providerIdsForWorkflowPreflight,
   requirementsForNode,
 } from "../../src/main/orchestration/capabilityResolver.js";
 
@@ -116,10 +118,19 @@ const claudeProvider = {
   displayName: "Claude",
   capabilities: { capabilityIds: ["streaming", "mcp", "approval", "resume"] },
 } as unknown as AgentProvider;
+const piProvider = {
+  id: "pi-sdk",
+  displayName: "Pi",
+  capabilities: { capabilityIds: ["streaming", "approval", "resume"] },
+} as unknown as AgentProvider;
 
 const fullInventory = collectCapabilityInventory({
-  providers: [claudeProvider],
-  plugins: [{ name: "research-pack", manifest: pluginManifestCheck.data }],
+  providers: [claudeProvider, piProvider],
+  plugins: [{
+    name: "research-pack",
+    manifest: pluginManifestCheck.data,
+    compatibleProviderIds: ["claude-sdk"],
+  }],
   executorKinds: ["code"],
   executorCapabilitiesOf: (kind) => (kind === "code" ? { supportsProgress: true, supportsArtifacts: true } : undefined),
 });
@@ -155,6 +166,41 @@ ok(
 );
 const nodeResolution = checkNodeCapabilities(researchNodeCheck.manifest, nodeRequirements, fullInventory);
 ok(nodeResolution.ok, "mock plugin node passes capability check end-to-end");
+const selectedPlugin = requirementsForNode(
+  researchNodeCheck.manifest,
+  { plugins: ["research-pack"], provider: "claude-sdk" },
+  undefined,
+  ["code"],
+);
+ok(
+  checkNodeCapabilities(researchNodeCheck.manifest, selectedPlugin, fullInventory).ok,
+  "enabled ecosystem plugins get an implicit plugin descriptor",
+);
+const piPlugin = requirementsForNode(
+  researchNodeCheck.manifest,
+  { plugins: ["research-pack"], provider: "pi-sdk" },
+  undefined,
+  ["code"],
+);
+ok(
+  checkNodeCapabilities(researchNodeCheck.manifest, piPlugin, fullInventory).incompatible
+    .some((problem) => problem.requirement.kind === "plugin"),
+  "plugin provider applicability is rejected before dispatch",
+);
+
+const piWithMcp = requirementsForNode(
+  researchNodeCheck.manifest,
+  { provider: "pi-sdk", mcp: ["scholar-api"] },
+  undefined,
+  ["code"],
+);
+const piWithMcpResolution = checkNodeCapabilities(researchNodeCheck.manifest, piWithMcp, fullInventory);
+ok(
+  !piWithMcpResolution.ok &&
+    piWithMcpResolution.incompatible.some((p) =>
+      p.requirement.kind === "provider" && p.missingCapabilities.includes("mcp")),
+  "Pi + MCP is rejected before dispatch because the provider lacks MCP capability",
+);
 
 const uninstalled = requirementsForNode(
   researchNodeCheck.manifest,
@@ -198,5 +244,55 @@ const plainCheck = validateNodeTypeManifest({
   params: [],
 });
 ok(plainCheck.ok, "manifest without requirements stays valid (WF-06 backward compat)");
+
+if (!plainCheck.ok) throw new Error("unreachable");
+
+/* ── 7. 健康预检只探测真正消费模型的节点 ── */
+const commandCheck = validateNodeTypeManifest({
+  id: "myorg.command", manifestVersion: 1, name: "Command",
+  runner: { kind: "command" }, capability: "exec", params: [],
+});
+const conversationCheck = validateNodeTypeManifest({
+  id: "myorg.conversation", manifestVersion: 1, name: "Conversation",
+  runner: { kind: "conversation" }, capability: "write", params: [],
+});
+if (!commandCheck.ok || !conversationCheck.ok) throw new Error("health preflight fixtures must validate");
+const healthManifests = new Map<string, NodeTypeManifest>([
+  [plainCheck.manifest.id, plainCheck.manifest],
+  [commandCheck.manifest.id, commandCheck.manifest],
+  [conversationCheck.manifest.id, conversationCheck.manifest],
+]);
+const healthNode = (id: string, type: string, params: Record<string, unknown>): WorkflowNode => ({
+  id, type, title: "", params, position: { x: 0, y: 0 },
+});
+ok(
+  providerIdsForWorkflowPreflight(
+    [healthNode("command", commandCheck.manifest.id, { provider: "codex-sdk" })],
+    healthManifests, "claude-sdk",
+  ).length === 0,
+  "pure command workflows do not probe the host or an unused provider parameter",
+);
+ok(
+  providerIdsForWorkflowPreflight(
+    [healthNode("prompt", plainCheck.manifest.id, { provider: "codex-sdk" })],
+    healthManifests, "claude-sdk",
+  )[0] === "codex-sdk",
+  "prompt workflows probe their explicit provider override",
+);
+const conversationProviders = providerIdsForWorkflowPreflight([
+  healthNode("self", conversationCheck.manifest.id, {}),
+  healthNode("origin", conversationCheck.manifest.id, { injectTarget: "origin" }),
+], healthManifests, "claude-sdk", "pi-sdk");
+ok(
+  conversationProviders.includes("claude-sdk") && conversationProviders.includes("pi-sdk"),
+  "conversation health targets follow self and origin execution sessions",
+);
+ok(
+  providerIdsForWorkflowPreflight(
+    [healthNode("origin", conversationCheck.manifest.id, { injectTarget: "origin" })],
+    healthManifests, "claude-sdk",
+  ).length === 0,
+  "origin conversation without an origin avoids a misleading host health probe",
+);
 
 console.log(`PASS: ${checks.length} checks`);

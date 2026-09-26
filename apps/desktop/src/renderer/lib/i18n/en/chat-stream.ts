@@ -77,6 +77,7 @@ export const en = {
   "chatStream.workflowStep.noTranscript": "This step has no process to show (it never ran).",
   // Execution metadata for this step (NodeExecutionRecord): which executor ran it, how long.
   "chatStream.workflowStep.execution": "Executor {kind} · {duration}",
+  "chatStream.workflowStep.engine": "Engine {provider} · Model {model}",
   // External artifacts this step produced (NodeArtifact). file / directory get "Open";
   // data references are listed without an action.
   "chatStream.workflowStep.artifacts": "Artifacts",

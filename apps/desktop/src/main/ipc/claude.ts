@@ -22,6 +22,7 @@ import {
   THEME_STYLE_SETTING_KEY,
   workflowIdFromInput,
   ClaudeSubagentsSaveSchema,
+  ProviderHealthCheckSchema,
   ProviderCommandsSchema,
 } from "@contracts/ipc";
 import { saveSubagents } from "@main/claude/subagentStore.js";
@@ -33,7 +34,7 @@ import type {
 import type { UserInputAnswers } from "@contracts/provider";
 import { SessionRepo, ProjectRepo, MessageRepo, SettingRepo } from "@main/store/repositories.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
-import { providerRegistry } from "@main/providers/registry.js";
+import { probeProviderHealth, providerRegistry } from "@main/providers/registry.js";
 import { updateTitleBarOverlay } from "@main/window.js";
 import { log } from "@main/lib/logger.js";
 import { forkSession as forkSessionIntoNew } from "@main/lib/sessionFork.js";
@@ -142,20 +143,6 @@ async function materializeWorktreeSession(session: Session, project: Project): P
 }
 
 export function registerClaudeHandlers(ipcMain: IpcMain): void {
-  // ── health check: is the default provider's binary functional? ──
-  ipcMain.handle("claude:healthCheck", async () => {
-    const provider = providerRegistry.default;
-    if (provider.healthCheck) {
-      const result = await provider.healthCheck();
-      return {
-        installed: result.ok,
-        source: result.ok ? `Agent SDK v${result.version ?? "?"}` : null,
-        command: result.error ?? null,
-      };
-    }
-    return { installed: true, source: "Agent SDK", command: null };
-  });
-
   ipcMain.handle(IPC.CLAUDE_START_SESSION, (_evt, raw) => {
     const input = StartSessionSchema.parse(raw);
     // Reuses the project's still-fresh "New session" row when one exists —
@@ -468,6 +455,11 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       capabilities: p.capabilities,
     }));
     return { providers };
+  });
+
+  ipcMain.handle(IPC.PROVIDER_HEALTH_CHECK, async (_evt, raw) => {
+    const input = ProviderHealthCheckSchema.parse(raw);
+    return probeProviderHealth(input.providerId, { force: input.force });
   });
 
   // 引擎自己的斜杠命令清单（见 rpcMap 里 `provider.commands` 的说明）。存在的理由是

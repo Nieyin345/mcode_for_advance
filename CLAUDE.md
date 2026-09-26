@@ -17,7 +17,8 @@ Mcode：本地优先的通用 Agent 桌面客户端（Electron + React 19 + Type
 pnpm dev          # 启动开发（turbo，HMR）
 pnpm build        # 构建
 pnpm typecheck    # 双包 tsc
-pnpm lint
+pnpm test         # 关键回归（真实执行，无 Turbo 测试缓存）
+pnpm test:all     # 全量 smoke（动态发现）
 ```
 
 快速单包类型检查（不等 turbo）：
@@ -30,7 +31,7 @@ npx tsc --noEmit -p packages/contracts/tsconfig.json
 ### 验证（做完一件事的标准）
 
 ```bash
-bash apps/desktop/scripts/run-all-smokes.sh   # 全量，0 失败是基线（当前 42 套）
+pnpm test:all                               # 全量，0 失败是基线（动态发现套件）
 
 # 改一处小东西时**别跑全量** —— 先问哪几套覆盖它：
 bash apps/desktop/scripts/smokes-for.sh src/main/<改动的文件>.ts
@@ -40,12 +41,15 @@ bash apps/desktop/scripts/smokes-for.sh src/main/<改动的文件>.ts
 
 ```bash
 bash apps/desktop/scripts/<name>-smoke/run.sh
-# 例：bash apps/desktop/scripts/scheduler-smoke/run.sh
+# 例：pnpm test:smoke scheduler-smoke
+# Windows 用上面的 pnpm 命令，自动寻找 Git Bash，避免 PATH 中的 WSL bash.exe
 ```
 
 很多主进程套件走「esbuild 打包 + stubs 换桩」的无头模式——验证主进程逻辑不需要起 Electron。渲染端组件可用 `.tmp/` 下现成的预览台（`ask-preview` / `retry-preview` / `card-preview`）在真浏览器里核对。
 
-**两样都干净才算完：全量 smoke + 双包 typecheck。**
+**两样都干净才算完：全量 smoke + 双包 typecheck。** 入口、日志和 CI 策略见 `docs/testing.md`。
+
+`pnpm lint` 尚无包级 lint 实现，不能当作有效门禁；本轮只接入真实测试。
 
 ⚠️ **别把「跑绿了」当成「验过了」。** 新写的断言要先撤掉修复、看它真的红，再装回去。
 这个仓库里已经有过两次「测试绿着而问题还在」：一次是断言测的是**别人的职责**，
@@ -66,7 +70,7 @@ preload (contextBridge + zod 校验)
 
 1. **契约先行**。IPC 方法（`RpcMap` 313 个）的 schema 定义在 `packages/contracts/src/ipc/`（按域拆 22 个模块）→ preload 白名单 → 主进程 handler。加一条 IPC 要走全三层，缺一层调用端就看不到。
 2. **AgentProvider 抽象**。每家引擎一个 Provider + 一个 MessageAdapter，把各家事件归一成 provider 中立的 `RuntimeEvent`。行为对齐（预算、回退、结构化输出、子代理、elicitation）在各 Provider 里做。第四个 provider 是网页模型（浏览器扩展桥驱动真实网页 LLM 页面）。
-3. **工作流编排**。图模型 + 调度器（就绪即派发、并发上限默认 4）+ 七个内置节点类型（`nodeTypes.ts` 的 `BUILTIN_NODE_TYPES`）。执行分派只有一个入口：`manifest.runner.kind` 查注册表，没有就落兜底（模型轮）。插件可注册自己的节点类型。关键区分：**子 agent 节点跑在隐藏子会话；主代理（`mcode.main`）与对话节点跑在主对话里**，用户看得见。
+3. **工作流编排**。图模型 + 调度器（就绪即派发、并发上限默认 4）+ 八个内置节点类型（`nodeTypes.ts` 的 `BUILTIN_NODE_TYPES`）。执行分派只有一个入口：`manifest.runner.kind` 查注册表，没有就落兜底（模型轮）。插件可注册自己的节点类型。关键区分：**子 agent 节点跑在隐藏子会话；主代理（`mcode.main`）与对话节点跑在主对话里**，用户看得见。
 4. **sql.js 持久化**（纯 WASM SQLite，**没有 FTS5**，全文检索走 ripgrep）。统一数据根。
 5. **i18n**：zh/en 双词典在 `lib/i18n/{zh,en}/`，**zh 是 `MessageId` 类型的源**——缺 key 直接 typecheck 失败。用户可见的字符串不许硬编码。
 

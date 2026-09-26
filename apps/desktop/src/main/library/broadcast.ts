@@ -64,6 +64,8 @@ export function emitItemImported(item: LibraryItem): void {
       sessionId: "(system)",
       itemId: item.id,
       title: item.title,
+      ...(item.filePath ? { filePath: item.filePath } : {}),
+      ...(item.pdfPath ? { pdfPath: item.pdfPath } : {}),
     });
   } catch (err) {
     log.warn(`[library] 发导入事件失败(${item.id}):${(err as Error).message}`);
@@ -111,6 +113,7 @@ export function emitItemDownloaded(item: LibraryItem): void {
       // 库里存的就是**相对路径**(见 `LibraryItem.pdfPath`)—— 原样给出去,别在这里
       // 拼绝对路径:那会把一台机器的磁盘布局散进会被分享的钩子脚本里。
       pdfPath: item.pdfPath ?? "",
+      ...(item.filePath ? { filePath: item.filePath } : {}),
     });
   } catch (err) {
     log.warn(`[library] 发下载完成事件失败(${item.id}):${(err as Error).message}`);

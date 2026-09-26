@@ -144,6 +144,47 @@ function mcpServerToml(name: string, raw: unknown): string | null {
   return lines.join("\n");
 }
 
+export interface CodexMcpInventoryEntry {
+  name: string;
+  pluginName?: string;
+}
+
+interface MaterializedCodexMcpEntry extends CodexMcpInventoryEntry {
+  toml: string;
+}
+
+/** Resolve exactly the MCP entries that can be represented in Codex TOML. */
+async function materializedCodexMcpEntries(): Promise<MaterializedCodexMcpEntry[]> {
+  const { getMcpTruth } = await import("@main/lib/mcpConfig.js");
+  const { readMcpEnginesMap, deriveMcpEngineView, mcpEngineEnabled } =
+    await import("@main/lib/mcpEngines.js");
+  const state = await getMcpTruth();
+  const enginesMap = readMcpEnginesMap();
+  const entries: Array<{ name: string; config: unknown; pluginName?: string }> =
+    Object.entries(deriveMcpEngineView(state, enginesMap, "codex")).map(([name, config]) => ({ name, config }));
+
+  try {
+    const { getEnabledPlugins, getPluginMcpServers } = await import("@main/plugins/pluginManager.js");
+    const plugins = await getEnabledPlugins();
+    const pluginNames = plugins.map((plugin) => plugin.name).sort((a, b) => b.length - a.length);
+    for (const [name, config] of await getPluginMcpServers(plugins, "codex-sdk")) {
+      if (!mcpEngineEnabled(enginesMap, name, "codex")) continue;
+      const pluginName = pluginNames.find((candidate) => name.startsWith(`${candidate}__`));
+      entries.push({ name, config, ...(pluginName ? { pluginName } : {}) });
+    }
+  } catch (err) {
+    log.warn(`codexModels: plugin MCP sync failed (continuing without): ${(err as Error).message}`);
+  }
+
+  const out: MaterializedCodexMcpEntry[] = [];
+  for (const entry of entries) {
+    const toml = mcpServerToml(entry.name, entry.config);
+    if (toml) out.push({ name: entry.name, toml, ...(entry.pluginName ? { pluginName: entry.pluginName } : {}) });
+    else log.warn(`codexModels: skipped unrepresentable MCP server "${entry.name}"`);
+  }
+  return out;
+}
+
 /** Write <CODEX_HOME>/config.toml from current settings state. Skips the
  *  write entirely when the content is unchanged (a running app-server may
  *  read the file at any moment — every turn start materializes) and writes
@@ -193,39 +234,9 @@ async function materializeConfigToml(): Promise<void> {
   // derived view now and is NOT read here anymore. 项目级 .mcp.json 白名单已
   // 随三引擎切断外部继承一并移除 —— 外部项目级 MCP 不继承。
   try {
-    const { getMcpTruth } = await import("@main/lib/mcpConfig.js");
-    const { readMcpEnginesMap, deriveMcpEngineView } = await import("@main/lib/mcpEngines.js");
-    const state = await getMcpTruth();
-    const enginesMap = readMcpEnginesMap();
-    const sources: Array<[string, unknown]> = Object.entries(
-      deriveMcpEngineView(state, enginesMap, "codex"),
-    );
-    // Plugins: MCP servers contributed by ENABLED plugins, injected under the
-    // same "<plugin>__<server>" namespace the Claude provider passes per turn
-    // (options.mcpServers) — one namespace, identical tool names across
-    // providers. Filtered by the same matrix. Best-effort, same as the scopes
-    // above.
-    try {
-      const { getPluginMcpServers } = await import("@main/plugins/pluginManager.js");
-      const { mcpEngineEnabled } = await import("@main/lib/mcpEngines.js");
-      for (const [name, cfg] of await getPluginMcpServers(undefined, "codex-sdk")) {
-        if (!mcpEngineEnabled(enginesMap, name, "codex")) continue;
-        sources.push([name, cfg]);
-      }
-    } catch (err) {
-      log.warn(`codexModels: plugin MCP sync failed (continuing without): ${(err as Error).message}`);
-    }
-    let wrote = 0;
-    for (const [name, cfg] of sources) {
-      const toml = mcpServerToml(name, cfg);
-      if (toml) {
-        lines.push(toml, "");
-        wrote++;
-      } else {
-        log.warn(`codexModels: skipped unrepresentable MCP server "${name}"`);
-      }
-    }
-    if (wrote > 0) log.info(`codexModels: materialized ${wrote} MCP server(s) into config.toml`);
+    const entries = await materializedCodexMcpEntries();
+    for (const entry of entries) lines.push(entry.toml, "");
+    if (entries.length > 0) log.info(`codexModels: materialized ${entries.length} MCP server(s) into config.toml`);
   } catch (err) {
     // MCP sync must never block model-provider materialization.
     log.warn(`codexModels: MCP sync failed (continuing without): ${(err as Error).message}`);
@@ -333,5 +344,15 @@ export const CodexModelsStore = {
    *  or a deleted CODEX_HOME). */
   async ensureConfigMaterialized(): Promise<void> {
     await materializeConfigToml();
+  },
+
+  /** Inventory of the entries actually present in generated config.toml.
+   * Used by the provider to add process-local `enabled=false` overrides for
+   * this turn's MCP/plugin allowlists without mutating the shared file. */
+  async listMaterializedMcpServers(): Promise<CodexMcpInventoryEntry[]> {
+    return (await materializedCodexMcpEntries()).map(({ name, pluginName }) => ({
+      name,
+      ...(pluginName ? { pluginName } : {}),
+    }));
   },
 };

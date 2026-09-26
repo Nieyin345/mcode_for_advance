@@ -37,4 +37,7 @@ export const en = {
   "common.unsavedRetained": "Unsaved changes (kept across pages; save before quitting)",
   "common.resizeColumns": "Resize columns (arrow keys; Enter to reset)",
   "common.resizeRows": "Resize rows (arrow keys; Enter to reset)",
+  "common.officeSaveFailureTitle": "Office document save failed",
+  "common.officeSaveFailureMessage": "The app has stayed open because an Office document could not be confirmed saved. Check Document Server connectivity, disk space and folder permissions, retry saving, then quit again.",
+  "common.officeMigrationBlocked": "Close Office editors and wait for saving to finish before moving the data folder. If saving failed, reopen the document and retry.",
 } as const;

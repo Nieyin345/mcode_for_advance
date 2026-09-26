@@ -119,7 +119,6 @@ const call = async (name: string, args: unknown): Promise<string> => {
 };
 
 for (const name of [
-  "library_convert",
   "library_adopt_markdown",
   "library_links",
   "library_link_add",
@@ -143,36 +142,8 @@ for (const name of LIBRARY_READONLY_TOOLS) {
   check(`只读集合里的 ${name} 在工具表里存在`, byName.has(name));
 }
 
-/* ──────────────── 1. library_convert · 没配 MinerU 时走本地 ──────────────── */
-
-console.log("\nlibrary_convert · 本地抽取那条路");
-
+check("MCP 不暴露绕过自动化的转录工具", !byName.has("library_convert"));
 const item = seedPaper("冒烟用的一篇", "a".repeat(64));
-
-const okText = await call("library_convert", { ids: [item] });
-check("转换成功时说清了用的是哪条路", okText.includes("本地抽取"), okText);
-{
-  const fresh = LibraryRepo.get(item)!;
-  check("md_path 真的写上了", Boolean(fresh.mdPath), fresh.mdPath);
-  check(
-    "md 文件真的在盘上、有内容",
-    Boolean(fresh.mdPath) && readFileSync(fromLibraryRelative(fresh.mdPath!), "utf8").length > 0,
-  );
-}
-
-// **重复调用必须跳过** —— 这是这个工具唯一"烧钱"的地方(MinerU 额度)。
-const againText = await call("library_convert", { ids: [item] });
-check("重复调用说的是「没有重转」", againText.includes("已有 Markdown"), againText);
-check("而不是谎报又转了一遍", !againText.includes("已转好"), againText);
-
-// 不存在的 id 要**如实**列出来,不能安静地少一行。
-const missingText = await call("library_convert", { ids: ["li_根本没有这条"] });
-check("不存在的 id 说了「库里没有这个 id」", missingText.includes("库里没有这个 id"), missingText);
-
-// 没有 PDF 的条目:本地那条路也走不了,原因要说清。
-const noPdf = LibraryRepo.upsert({ title: "还没有 PDF 的一篇" });
-const noPdfText = await call("library_convert", { ids: [noPdf.id] });
-check("没有 PDF 时说的是「先下载或导入一份」", noPdfText.includes("先下载或导入一份"), noPdfText);
 
 /* ──────────────── 2. library_adopt_markdown · 把外部转好的挂回库 ──────────────── */
 
@@ -563,10 +534,6 @@ console.log("\n屏蔽只管给 AI 看的");
   // 先确认判据是活的 —— 否则下面「照做」的几条说明不了什么。
   const asListed = await call("library_search", { query: "不给 AI 看的那一篇" });
   check("前提:这一篇确实进了屏蔽(搜不到)", !asListed.includes(supId), asListed);
-
-  // ① library_convert —— 照转
-  const convText = await call("library_convert", { ids: [supId] });
-  check("★ library_convert:被屏蔽的也照转", !convText.includes(GATE) && Boolean(LibraryRepo.get(supId)!.mdPath), convText);
 
   // ③ library_adopt_markdown —— 照挂(自动化转录的最后一步)
   const ADOPT_SRC = mkdtempSync(join(tmpdir(), "mcode-lib-mcp-sup-"));

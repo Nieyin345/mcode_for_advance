@@ -852,6 +852,10 @@ export interface WorkflowNodeResultEvent {
   nodeId: string;
   nodeType: string;
   title: string;
+  /** Actual engine/model used by an isolated model node. Missing for nodes that
+   * never ran or execute through a non-provider executor. */
+  providerId?: string;
+  model?: string;
   status: NodeOutcomeStatus;
   /** What the node produced. Also what gets fed to its downstream nodes. */
   summary: string;
@@ -1180,8 +1184,8 @@ export interface UpstreamIssueEvent {
 }
 
 /**
- * 统一资料库:**一条条目入库成功**。三个导入入口(标识符导入 `importIdentifiers` /
- * 本地 PDF 导入 `importPdfFiles` / 通用文件导入 `importGenericFiles`)共用这一种事件。
+ * 统一资料库:**一条条目入库成功**。所有导入入口(界面 / MCP 工具的 `addItems`、
+ * 本地 PDF 导入 `importPdfFiles`、通用文件导入 `importGenericFiles`)共用这一种事件。
  *
  * ## sessionId 为什么是合成 id "(system)"
  *
@@ -1198,6 +1202,10 @@ export interface LibraryItemImportedEvent {
   /** 入库的那条条目。 */
   itemId: string;
   title: string;
+  /** 通用文档源路径：attached 为库内相对路径，linked 为来源路径。 */
+  filePath?: string;
+  /** 若导入时已有 PDF，提供库内相对路径。 */
+  pdfPath?: string;
 }
 
 /**
@@ -1235,6 +1243,7 @@ export interface LibraryItemDownloadedEvent {
   title: string;
   /** PDF 在**库内的相对路径**(`LibraryItem.pdfPath` 的原样)。 */
   pdfPath: string;
+  filePath?: string;
 }
 
 /**

@@ -96,6 +96,8 @@ export interface TriggerPayloadFacts {
   itemTitle?: string;
   /** 库内**相对**路径 —— 绝对路径要消费方自己拼库根(同事件载荷里那个字段)。 */
   pdfPath?: string;
+  /** Optional path supplied by generic document imports. */
+  filePath?: string;
   /** 这次合并窗口里一共攒了几条(资料库那两个事件才有)。只有一条时不出现。 */
   itemCount?: number;
   /**
@@ -118,7 +120,7 @@ export interface TriggerPayloadFacts {
    * `items[i]["itemId"]` / `items[i]["pdfPath"]`,而平行数组一旦哪个短了一截,
    * 就会取到别人那一条 —— 那种错位同样不报错,只是转错了论文。
    */
-  items?: ReadonlyArray<{ itemId?: string; itemTitle?: string; pdfPath?: string }>;
+  items?: ReadonlyArray<Partial<Record<EventItemFactKey, string>>>;
 }
 
 /** 从载荷里取平面事实。**纯函数**:拷贝数组,调用方改不动原载荷。 */

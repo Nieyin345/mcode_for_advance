@@ -158,3 +158,6 @@ export const ipcMain = { handle: notHere("electron.ipcMain.handle") };
 export const BrowserWindow = { getAllWindows: notHere("BrowserWindow.getAllWindows") };
 
 export const shell = { openPath: notHere("shell.openPath") };
+
+/** Fail loudly if a headless migration unexpectedly opens native UI. */
+export const dialog = { showMessageBox(): never { throw new Error("Unexpected native dialog in theme IPC smoke"); } };

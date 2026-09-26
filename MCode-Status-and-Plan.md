@@ -81,13 +81,14 @@ Mcode 是一个**本地优先的通用 Agent 桌面客户端**（Electron + Reac
 | 节点进度事件 + 进度卡 | 完成 |
 | 只有「执行方式没实现」才判不可跑（不再误伤 `command` 节点） | 完成 |
 
-**七个内置节点类型**（都在 `nodeTypes.ts` 的 `BUILTIN_NODE_TYPES` 里）：
+**八个内置节点类型**（都在 `nodeTypes.ts` 的 `BUILTIN_NODE_TYPES` 里）：
 
 - `mcode.main` —— 主代理。用户那句话进图的第一站，一份工作流**有且只有一个**、删不掉；
   **跑在主对话里**（执行方式是 conversation，用户看得见它拆解与分派）；
 - `mcode.agent` —— 子 agent。跑在自己的隐藏会话里，是干活的主力；
 - `mcode.conversation` —— 跑在**主对话**里的模型轮（不另开会话）；
 - `mcode.branch` —— 岔路口。出路写在**边**上（label / note），用户可以选，也可以让模型判；
+- `mcode.condition` —— 声明式条件判断，AND/OR，true/false 分流；不调用模型，也不是人工回环闸门；
 - `mcode.command` —— 跑一条命令。**非零退出码不算这一步失败**（失败的是命令，不是流程）；
 - `mcode.code` —— 跑一段代码（Python / Node / Shell / PowerShell）；
 - `mcode.trigger` —— 触发器。自动化的入口，自己不跑东西。
@@ -98,7 +99,7 @@ Mcode 是一个**本地优先的通用 Agent 桌面客户端**（Electron + Reac
 （模型轮）。新增一种执行方式 = 注册一个执行器，分派链一行不改。
 
 **三条硬约束**（校验层拦，不只靠界面）：
-- 一张图必须有且只有一个 `mcode.main`；
+- 普通图型工作流必须有且只有一个 `mcode.main`（自动化以触发器为入口）；
 - 自动化至少有一个触发器（从前 0 个触发器会静默降级成普通工作流）；
 - 每个节点都可以有产出变量（`code` / `command` 也补齐了）。
 
@@ -175,7 +176,7 @@ Mcode 是一个**本地优先的通用 Agent 桌面客户端**（Electron + Reac
 | # | 事项 | 现状 | 为什么值得做 |
 |---|---|---|---|
 | B1 | **触发器与事件源可扩展** | 方向已定：走 hook 事件表扩展，而不是新增触发器枚举 | 用户明确提过"触发不该被项目绑死，要能监控终端、监控某种状态" |
-| B2 | **通用条件节点**（对变量做布尔运算，决定下游走不走） | 未做。多个触发器的逻辑运算要靠它 | 你当时选了方案 B（通用条件节点，而非触发器专用聚合） |
+| ~~B2~~ | **通用条件节点 `mcode.condition`：已实现** | AND/OR、存在/相等/包含判断，true/false 分流，不调用模型；不是人工回环闸门 | 由 condition/scheduler/workflow-view 回归覆盖 |
 | B3 | ~~**工作流导入导出接线**~~ **已完成** | **本文这一行曾是错的**（2026-09-19 核实）：契约 / preload / 界面三层**全都在**（`rpcMap.ts` 的 `workflow_export` / `workflow_import` / `workflow_import_from_file`、`preload/index.ts` 的白名单、`TransferSection.tsx` 的「导出 / 导入为新 / 覆盖当前」），提交是 `914214c feat(workflow): 工作流能导出去、也能导进来了（WF-08 接线）` | 分享与备份。已落地 |
 | B4 | **executor 插件扩展点** | `ExecutionEngine.register()` 已经在了，但没有对第三方开放的正式约定 | 别人写的执行器接进来 |
 | B5 | **学术能力继续从 core 抽离** | **转录那半边已做完**（2026-09-19）：MinerU 客户端与「下载完自动转录」那条写死的钩子全删了，改成「下载完成」事件 + 内置自动化 + `library_adopt_markdown` 挂回库；剩下的文献**检索 / 下载**仍是资料库能力兼 agent 工具 | 让它们彻底变成"工作流可以调用的能力" |
@@ -242,3 +243,14 @@ npx tsc --noEmit -p apps/desktop/tsconfig.json && npx tsc --noEmit -p packages/c
   React 19 会因此整棵卸载。
 - `.tmp/` 下有现成的**组件预览台**（`ask-preview` / `retry-preview` / `card-preview`），
   用来在真浏览器里核对渲染端；`.claude/launch.json` 放在**会话所在文件夹**而不是 cwd。
+
+
+## 2026-09-27 并行改动集成审查补充
+
+- 核心资料库只导入、存储和显示文件；DOI 下载、学术元数据提取、上传转录归现有工作流/自动化。不实现 PDF.js 本地转录兜底，也不在核心直接运行 MinerU。
+- 导入与下载完成事件均可供配置的在线转录自动化订阅；本地 PDF 导入事件包含已经落库的文件路径。旧 `library.convert` 接口仅返回自动化指引，不写文件、不删除产物；MCP 和菜单不再暴露内置转录动作。
+- 外部 Markdown 采纳、资源包关联、预览和完整度检查保留。旧机器生成标记不能作为覆盖用户编辑的许可。
+- 自定义 UI 与自动化协作仍是后续设想，本轮不实现。
+- 工作流在异步引擎预检阶段即占用会话，并接受停止；自动化来源链在首次 await 前固定。
+- MinerU 结果包使用路径包含关系检查，拒绝同名前缀的兄弟目录穿越，保留合法嵌套解压。
+- 验证使用隔离数据库、假模型/服务与独立浏览器配置；不等同于真实模型、真实 MinerU 或真实 OnlyOffice 服务验收。

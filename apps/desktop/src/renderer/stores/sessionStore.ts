@@ -51,6 +51,7 @@ import { isElectron } from "@renderer/lib/platform.js";
 import { normWorktreeKey } from "@renderer/lib/worktree.js";
 import { translate } from "@renderer/lib/i18n/core.js";
 import { DEFAULT_GESTURE_SETTINGS } from "@renderer/lib/gestures.js";
+import { createProviderHealthRequestGate } from "@renderer/lib/providerHealthRequestGate.js";
 import { DEFAULT_EDITOR_THEME_CHOICE, parseEditorThemeChoice, type EditorThemeChoice, type EditorThemeId } from "@renderer/lib/editorThemes.js";
 import {
   DISPLAY_MODE_SETTING_KEY,
@@ -123,6 +124,8 @@ import {
   type CustomCommand,
   type SkillInfo,
   type ProviderInfo,
+  type ProviderHealthCheckResult,
+  type ProviderHealthStatusCode,
   type ShortcutBindings,
   type Accelerator,
   type LspLanguageState,
@@ -161,6 +164,9 @@ export interface BrowserTab {
 }
 import type { BuiltinModelOption, UserInputAnswers } from "@contracts/provider";
 import { useToastStore } from "@renderer/stores/toastStore.js";
+// 只读预览的目标 —— `isCenterShowingDocument` 要看它。**不是循环依赖**：
+// `fileViewStore` 对本文件只有一个动态 `import()`（见它的 `open`），模块求值期互不依赖。
+import { useFileViewStore } from "./fileViewStore.js";
 
 /** True for `.md` / `.markdown` files - used to default the editor into preview
  *  mode on first open. Kept here (not in lib/path) because it's a content-type
@@ -189,8 +195,9 @@ function isImagePath(filePath: string): boolean {
 function isUnsupportedPath(filePath: string): boolean {
   const lower = filePath.toLowerCase();
   return [
-    ".doc", ".docx", ".rtf", ".xls", ".xlsx", ".ppt", ".pptx",
-    ".odt", ".ods", ".odp",
+    // Office 老格式。OOXML / ODF（docx xlsx pptx odt ods odp…）**不在**这里 ——
+    // 它们走 OnlyOffice 可视化编辑，默认档由 FileEditor 的 `defaultMode` 定（wysiwyg）。
+    ".doc", ".rtf", ".xls", ".ppt",
     ".zip", ".gz", ".tar", ".tgz", ".rar", ".7z", ".bz2", ".xz",
     ".exe", ".dll", ".so", ".dylib", ".bin", ".class", ".jar", ".wasm",
     ".mp3", ".mp4", ".webm", ".avi", ".mov", ".ogg", ".flac", ".wav", ".m4a",
@@ -198,6 +205,29 @@ function isUnsupportedPath(filePath: string): boolean {
     ".woff", ".woff2", ".ttf", ".otf", ".eot",
     ".pdf",
   ].some((ext) => lower.endsWith(ext));
+}
+
+/**
+ * **中间栏现在是不是已经在显示一份文档**（可编辑文件 / 只读预览）。
+ *
+ * 「打开文件 = 中间显示它 + 侧边展开主对话」这条规矩的**例外**判据（2026-09-27，
+ * 用户：「如果本身主页面就已经是文档页面了，再打开其他的文档，主页面就不用在侧边栏
+ * 弹出来了，右边栏保持现状」）。两个入口（`openFileInIde` 和 `fileViewStore.open`）
+ * 共用这一个函数 —— 判据只能有一份（硬规矩 2）。
+ *
+ * 与 `App.tsx` 里 `showEditor` / `showFileView` 的算法保持一致：
+ *   - `tabs` 模式：焦点在 editor 且有活动文件或有预览目标；
+ *   - `single` 模式：编辑列只要有活动文件就在屏幕上（它和对话并排）。
+ *
+ * ⚠️ 调用方必须在自己那次 `set` **之前**取值 —— 落地之后中间永远"已是文档页"。
+ */
+export function isCenterShowingDocument(
+  s: Pick<SessionState, "displayMode" | "centerTabFocus" | "activeProjectId" | "ideActiveFileByProject">,
+): boolean {
+  const activeFile = s.activeProjectId ? s.ideActiveFileByProject[s.activeProjectId] ?? null : null;
+  if (s.displayMode === "single") return activeFile != null;
+  if (s.centerTabFocus !== "editor") return false;
+  return activeFile != null || useFileViewStore.getState().target != null;
 }
 
 /* ───────────────────── editor navigation history ───────────────────── */
@@ -431,6 +461,9 @@ export type Block =
       /** 节点类型 id(`mcode.agent`)。等宽显示,不翻译。 */
       nodeType: string;
       title: string;
+      /** 实际执行这一步的引擎与模型；非模型节点或没跑过时缺席。 */
+      providerId?: string;
+      model?: string;
       status: WorkflowNodeResultEvent["status"];
       /** 这一步产出的文本。**也是喂给它下游节点的那一份**。 */
       summary: string;
@@ -1105,7 +1138,15 @@ export interface SessionState {
    *  this to decide between an OS notification (window unfocused) vs an in-app
    *  toast (window focused). NOT persisted. */
   isWindowFocused: boolean;
-  claudeInstalled: boolean | null;
+  /** Health is provider-scoped; never reuse one backend's probe for another. */
+  providerHealthById: Record<string, {
+    loading: boolean;
+    ok: boolean | null;
+    code?: ProviderHealthStatusCode;
+    checkedAt?: number;
+    version?: string;
+    error?: string;
+  }>;
   /** Settings modal visibility (opened from the LeftBar ⚙ footer and the CLI-missing CTA). */
   settingsOpen: boolean;
   /** Initial settings section to land on when the modal opens. Callers that
@@ -1990,6 +2031,7 @@ export interface SessionState {
   setProvider: (id: string) => void;
   /** Re-fetch the registered provider list from main. Called on init. */
   reloadProviders: () => Promise<void>;
+  refreshProviderHealth: (providerId: string, options?: { force?: boolean }) => Promise<void>;
   /** Re-fetch the list of models the pi SDK can authenticate with the
    *  currently-configured keys. Populates `piAvailableModels` (read by
    *  ModelDropdown when the active provider is pi-sdk). Called on init and
@@ -2102,7 +2144,6 @@ export interface SessionState {
    *  ancestor dirs and scrolls to it. Desktop only — the mobile shell has no
    *  file tree. */
   revealInFileTree: (filePath: string) => void;
-  refreshClaudeHealth: () => Promise<void>;
 
   /** Enqueue a file path to be added to the active session's composer as a
    *  file-reference tag. The owning ChatPane drains its queue (see
@@ -2497,6 +2538,9 @@ const EMPTY_LAST_MODEL_BY_PROVIDER: Record<string, { model: string; customModelI
 const EMPTY_PROVIDERS: ProviderInfo[] = [];
 const EMPTY_PI_MODELS: BuiltinModelOption[] = [];
 const EMPTY_CODEX_MODELS: BuiltinModelOption[] = [];
+const PROVIDER_HEALTH_STALE_MS = 30_000;
+/** Stale async health completions must not overwrite a newer same-provider probe. */
+const providerHealthRequestGate = createProviderHealthRequestGate();
 const EMPTY_SKILLS: SkillInfo[] = [];
 const EMPTY_SESSIONS: Session[] = [];
 export const EMPTY_SUBAGENTS: SubagentSnapshot[] = [];
@@ -5521,6 +5565,8 @@ ctx.set((s) => {
           ...(archived && archived.length > 0 ? { nodeTranscript: archived } : {}),
           nodeType: e.nodeType,
           title: e.title,
+          ...(e.providerId ? { providerId: e.providerId } : {}),
+          ...(e.model ? { model: e.model } : {}),
           status: e.status,
           summary: e.summary,
           ...(e.outputKeys && e.outputKeys.length > 0 ? { outputKeys: e.outputKeys } : {}),
@@ -5773,7 +5819,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   upstreamIssueBySession: {},
   unreadBySession: {},
   isWindowFocused: true,
-  claudeInstalled: null,
+  providerHealthById: {},
   settingsOpen: false,
   settingsSection: null,
   modelConfigPromptOpen: false,
@@ -6273,17 +6319,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   initDeferred: async () => {
-    // Health check: spawn the claude binary to verify it works. This is the
-    // single slowest IPC in init (~seconds), so it's fully fire-and-forget -
-    // claudeInstalled stays null (UI shows a loading state) until it resolves.
-    void api.claudeHealthCheck().then(
-      (health) => set({ claudeInstalled: health.installed }),
-      (err) => {
-        console.error("healthCheck failed:", err);
-        set({ claudeInstalled: false });
-      },
-    );
-
     // Custom-model configs for the model dropdown.
     void get().reloadCustomModels();
 
@@ -9219,6 +9254,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // user returns. Non-active sessions keep their badges (the user hasn't
     // looked at those yet).
     if (focused) {
+      const healthState = get();
+      const health = healthState.providerHealthById[healthState.providerId];
+      if (!health?.loading && (!health?.checkedAt || Date.now() - health.checkedAt >= PROVIDER_HEALTH_STALE_MS)) {
+        void get().refreshProviderHealth(healthState.providerId);
+      }
       const activeId = get().activeSessionId;
       if (activeId && get().unreadBySession[activeId]) {
         set((s) => {
@@ -10185,6 +10225,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       restored = { model: get().model, customModelId: get().customModelId };
       set({ providerId: id });
     }
+    void get().refreshProviderHealth(id);
     // Remember the pick as the next-session default (restored at boot).
     persistComposerSelection(get());
 
@@ -10271,6 +10312,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // onto "default" — the boot-time counterpart of setProvider's coercion.
       const s = get();
       set(coerceSlotsForProvider(s, s.providerId));
+      void get().refreshProviderHealth(get().providerId);
     } catch (err) {
       console.error("reloadProviders failed:", err);
     }
@@ -10791,9 +10833,40 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }));
   },
 
-  refreshClaudeHealth: async () => {
-    const health = await api.claudeHealthCheck();
-    set({ claudeInstalled: health.installed });
+  refreshProviderHealth: async (providerId, options) => {
+    const requestGeneration = providerHealthRequestGate.begin(providerId);
+    set((s) => ({
+      providerHealthById: {
+        ...s.providerHealthById,
+        [providerId]: { ...s.providerHealthById[providerId], loading: true, ok: null },
+      },
+    }));
+    let health: ProviderHealthCheckResult;
+    try {
+      health = await api.provider.healthCheck({ providerId, force: options?.force });
+    } catch (error) {
+      health = {
+        providerId,
+        ok: false,
+        code: "probe_failed",
+        checkedAt: Date.now(),
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+    if (!providerHealthRequestGate.isLatest(providerId, requestGeneration)) return;
+    set((s) => ({
+      providerHealthById: {
+        ...s.providerHealthById,
+        [providerId]: {
+          loading: false,
+          ok: health.ok,
+          code: health.code,
+          checkedAt: health.checkedAt,
+          version: health.version,
+          error: health.error,
+        },
+      },
+    }));
   },
 
   enqueueChatFile: (filePath) => {
@@ -11252,6 +11325,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!pid) return; // no active project - nothing to scope to
     const prev = get().ideOpenFilesByProject[pid] ?? [];
     const mode = get().ideEditorMode;
+    // 打开之前，中间是不是已经在显示一份文档（可编辑文件或只读预览）—— 见函数末尾
+    // 那段"例外"。必须在任何 set 之前取。
+    const centerWasDocument = isCenterShowingDocument(get());
     // Normalize for case-insensitive dedup on Windows/macOS: if the file is
     // already open under a different case (e.g. LSP returns `d:\foo` but the
     // file tree stored `D:\foo`), reuse the existing path string so we don't
@@ -11371,9 +11447,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
      */
     if (!opts?.diff) {
       const main = get().activeSessionId;
-      // 展开 + 切页放**同一个 set**：分两次会让右栏先以旧 tab 闪一帧。
-      set({ rightOpen: true, rightPanelTab: "flow" });
-      if (main) void get().selectSideChat(main);
+      // **例外（2026-09-27）：主页面本来就是文档页 → 右栏保持现状。**
+      //
+      // 用户的原话：「如果本身主页面就已经是文档页面了，再打开其他的文档，主页面就不用
+      // 在侧边栏弹出来了，右边栏保持现状就行」。"展开主对话"是为了**第一次**把中间让给
+      // 文件时对话不至于没地方站；已经让出去了，再开一个文件不该再去动用户手里的右栏
+      // （他可能正看着流程图 / 文件树 / 某个子对话）。
+      //
+      // ⚠️ 判据取的是**这次打开之前**的样子（`centerWasDocument` 在上面的 set 之前算），
+      // 不然 set 落地之后中间永远"已经是文档页"，这条分支就再也进不去了。
+      if (!centerWasDocument) {
+        // 展开 + 切页放**同一个 set**：分两次会让右栏先以旧 tab 闪一帧。
+        set({ rightOpen: true, rightPanelTab: "flow" });
+        if (main) void get().selectSideChat(main);
+      }
     }
   },
 

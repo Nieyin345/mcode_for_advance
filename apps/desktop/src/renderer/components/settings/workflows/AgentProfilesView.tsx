@@ -77,7 +77,7 @@ export function AgentProfilesView({
   problems: Array<{ file: string; error: string }>;
   /** 上一次存/删失败的原因。**由上面持有** —— 它不是这一页自己的状态。 */
   error: string | null;
-  onSave: (profile: AgentProfile) => Promise<void>;
+  onSave: (profile: AgentProfile) => Promise<boolean>;
   onRemove: (id: string) => Promise<void>;
 }) {
   const { t } = useI18n();
@@ -120,9 +120,12 @@ export function AgentProfilesView({
   const submit = async (): Promise<void> => {
     if (!draft || draft.name.trim().length === 0) return;
     setBusy(true);
-    await onSave({ ...draft, name: draft.name.trim(), updatedAt: Date.now() });
-    setBusy(false);
-    setDraft(null);
+    try {
+      const saved = await onSave({ ...draft, name: draft.name.trim(), updatedAt: Date.now() });
+      if (saved) setDraft(null);
+    } finally {
+      setBusy(false);
+    }
   };
 
   // 能拿来新建档案的类型:**跑得了的**那些。一个跑不了的类型存出来的档案,套到节点上

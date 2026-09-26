@@ -5,7 +5,7 @@
  *
  *  1. **起一个本机 HTTP 服务**（随机端口，监听 `0.0.0.0` —— Docker 里的 DS 要从
  *     宿主机 IP 打进来，绑 127.0.0.1 它够不着）。每个编辑会话一枚 32 字节随机令牌，
- *     URL 里只出现令牌，不出现路径。令牌随会话关闭而失效。
+ *     URL 里只出现令牌，不出现路径。令牌在最后一个面板关闭且 DS 最终保存/无改动回调完成后失效。
  *  2. **拼 DocEditor 的 config 并签 JWT**（HS256，用 `node:crypto`，不引第三方包）。
  *  3. **接回调**：DS 在用户停止编辑约 10s 后 / 关闭文档时 / 收到 forcesave 时 POST 过来，
  *     `status` 为 2 或 6 时 `url` 指向新版本 —— 下载、写临时文件、`rename` 原子替换原文件。
@@ -29,7 +29,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open, rename, stat, unlink } from "node:fs/promises";
 import { networkInterfaces } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -139,9 +139,14 @@ interface EditSession {
   filePath: string;
   ext: string;
   state: OnlyOfficeSessionState;
-  /** 同一会话的两次回调可能并发（2 之后紧跟 6）—— 写回串行化。 */
+  references: number;
+  serverSeen: boolean;
+  finalized: boolean;
   writing: Promise<void>;
+  forcing: Promise<void>;
+  waiters: Map<string, (result: SaveResult) => void>;
 }
+type SaveResult = { ok: boolean; error?: string };
 
 const sessionsByKey = new Map<string, EditSession>();
 const sessionsByToken = new Map<string, EditSession>();
@@ -150,37 +155,99 @@ const sessionsByToken = new Map<string, EditSession>();
 
 let server: Server | null = null;
 let port = 0;
+let serverStarting: Promise<number> | null = null;
+let serverGeneration = 0;
 
 function ensureServer(): Promise<number> {
   if (server && port) return Promise.resolve(port);
-  return new Promise((resolve, reject) => {
+  if (serverStarting) return serverStarting;
+  const generation = serverGeneration;
+  const pending = new Promise<number>((resolve, reject) => {
     const srv = createServer((req, res) => {
       void handleRequest(req, res).catch((err) => {
         log.error(`[onlyoffice] request failed: ${(err as Error).message}`);
-        if (!res.headersSent) res.writeHead(500);
-        res.end();
+        if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: 1 }));
       });
     });
     srv.on("error", (err) => {
       log.error(`[onlyoffice] bridge server error: ${err.message}`);
-      if (!port) reject(err);
+      reject(err);
     });
     srv.listen(0, "0.0.0.0", () => {
+      if (generation !== serverGeneration) {
+        srv.close(); reject(new Error("OnlyOffice bridge closed during startup")); return;
+      }
       server = srv;
       port = (srv.address() as AddressInfo).port;
       log.info(`[onlyoffice] bridge listening on 0.0.0.0:${port}`);
       resolve(port);
     });
   });
+  serverStarting = pending;
+  const clear = () => { if (serverStarting === pending) serverStarting = null; };
+  void pending.then(clear, clear);
+  return pending;
 }
 
-/** 应用退出时收掉。不 await —— 退出路径上没人等它。 */
+/** 最终退出清理；必须先 await flushOnlyOfficeSessions，失败则不得退出。 */
 export function shutdownOnlyOfficeBridge(): void {
+  // The application must await flushOnlyOfficeSessions before this final teardown.
+  serverGeneration++;
+  server?.closeAllConnections();
   server?.close();
   server = null;
   port = 0;
+  serverStarting = null;
+  for (const session of sessionsByKey.values()) {
+    settleSave(session, undefined, { ok: false, error: "OnlyOffice bridge closed" }, true);
+  }
   sessionsByKey.clear();
   sessionsByToken.clear();
+}
+
+export function hasOnlyOfficeSessions(): boolean {
+  return sessionsByKey.size > 0;
+}
+
+function retireSession(session: EditSession): void {
+  session.state.alive = false;
+  if (sessionsByKey.get(session.key) === session) sessionsByKey.delete(session.key);
+  if (sessionsByToken.get(session.token) === session) sessionsByToken.delete(session.token);
+}
+
+function settleSave(session: EditSession, id: string | undefined, result: SaveResult, final = false): void {
+  if (final) for (const done of [...session.waiters.values()]) done(result);
+  else if (id !== undefined) session.waiters.get(id)?.(result);
+}
+
+function waitForSave(session: EditSession, id: string, timeoutMs: number) {
+  let finish!: (result: SaveResult) => void;
+  const promise = new Promise<SaveResult>((resolve) => {
+    const timer = setTimeout(() => finish({ ok: false, error: "OnlyOffice save callback timed out" }), timeoutMs);
+    finish = (result) => {
+      clearTimeout(timer); session.waiters.delete(id); resolve(result);
+    };
+    session.waiters.set(id, finish);
+  });
+  return { promise, finish };
+}
+
+/** Save before shutdown, not after the HTTP callback bridge has been destroyed. */
+export async function flushOnlyOfficeSessions(timeoutMs = 30_000): Promise<void> {
+  const active = [...sessionsByKey.values()].filter((session) => session.serverSeen);
+  const results = await Promise.all(active.map(async (session): Promise<SaveResult> => {
+    if (session.finalized) return { ok: session.state.lastError === null, error: session.state.lastError ?? undefined };
+    // A destroyed editor produces its final callback after the DS save delay.
+    // Do not replace that final save with an earlier, non-final force-save snapshot.
+    if (session.references === 0) {
+      const pending = waitForSave(session, `final-${randomBytes(16).toString("hex")}`, timeoutMs);
+      return pending.promise;
+    }
+    return forceSave(session.key, timeoutMs);
+  }));
+  const failure = results.find((result) => !result.ok);
+  if (failure) throw new Error(failure.error ?? "OnlyOffice save failed");
 }
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -216,6 +283,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 }
 
 async function serveFile(session: EditSession, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!findContainingWorkspaceRoot(session.filePath)) { res.writeHead(403); res.end(); return; }
+  session.serverSeen = true;
   const st = await stat(session.filePath).catch(() => null);
   if (!st || !st.isFile()) {
     res.writeHead(404);
@@ -266,7 +335,7 @@ interface CallbackBody {
   status?: number;
   url?: string;
   token?: string;
-  /** DS 用 JWT 时把整个 body 放在 payload 里 */
+  userdata?: string;
   payload?: CallbackBody;
 }
 
@@ -278,75 +347,100 @@ interface CallbackBody {
  * 只有 2 和 6 带着可下载的 `url`。
  */
 async function handleCallback(session: EditSession, req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const raw = await readBody(req);
+  const reply = (status: number, error: number, message?: string) => {
+    res.writeHead(status, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error, ...(message ? { message } : {}) }));
+  };
   let body: CallbackBody;
   try {
-    body = JSON.parse(raw) as CallbackBody;
+    const parsed: unknown = JSON.parse(await readBody(req));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid callback");
+    body = parsed as CallbackBody;
   } catch {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: 1, message: "invalid json" }));
-    return;
+    reply(400, 1, "invalid json"); return;
   }
   const secret = getOnlyOfficeConfig().jwtSecret;
   if (secret) {
-    // DS 把 token 放 body.token，或 Authorization: Bearer <jwt>（header 里的 payload 含 body）
     const bearer = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
-    const tok = body.token ?? bearer;
+    const tok = typeof body.token === "string" ? body.token : bearer;
     const payload = tok ? verifyJwt(tok, secret) : null;
-    if (!payload) {
-      session.state.lastError = "callback JWT invalid";
-      log.warn(`[onlyoffice] rejected callback for ${session.filePath}: bad JWT`);
-      res.writeHead(403, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: 1, message: "invalid token" }));
-      return;
-    }
-    // body.token 时 payload 就是 body；Authorization 时 payload.payload 才是
-    const inner = (payload.payload as CallbackBody | undefined) ?? (payload as CallbackBody);
-    if (inner.status != null) body = { ...body, ...inner };
+    if (!payload) { reply(403, 1, "invalid token"); return; }
+    // Never merge an unsigned URL/status from the outer body with a valid token.
+    const signed = payload.payload ?? payload;
+    if (!signed || typeof signed !== "object" || Array.isArray(signed)) { reply(403, 1, "invalid signed body"); return; }
+    body = signed as CallbackBody;
   }
-  const status = body.status ?? -1;
+  if (body.key !== session.key || typeof body.status !== "number"
+    || ![1, 2, 3, 4, 6, 7].includes(body.status)) {
+    reply(400, 1, "invalid document callback"); return;
+  }
+  session.serverSeen = true;
+  const status = body.status;
+  const requestId = typeof body.userdata === "string" ? body.userdata : undefined;
   session.state.lastStatus = status;
-
-  if ((status === 2 || status === 6) && body.url) {
+  if (status === 1) session.finalized = false;
+  if (status === 2 || status === 6) {
+    if (typeof body.url !== "string" || !body.url) { reply(400, 1, "missing save URL"); return; }
     const url = body.url;
-    session.writing = session.writing.then(() => writeBack(session, url)).catch(() => undefined);
-    await session.writing;
-  } else if (status === 3 || status === 7) {
-    session.state.lastError = `Document Server reported save error (status ${status})`;
-    log.error(`[onlyoffice] DS save error status=${status} file=${session.filePath}`);
-  } else if (status === 4) {
-    // 关闭且无改动 —— 会话结束，令牌可以收了（渲染端 close 也会再收一次，幂等）
-    closeSession(session.key);
+    const saved = session.writing.then(async () => {
+      if (session.finalized) return true; // a delayed force-save cannot replace a final version
+      const ok = await writeBack(session, url);
+      if (ok && status === 2) {
+        session.finalized = true;
+        if (session.references === 0) retireSession(session);
+      }
+      return ok;
+    });
+    session.writing = saved.then(() => undefined, () => undefined);
+    const ok = await saved;
+    const result: SaveResult = { ok, ...(ok ? {} : { error: session.state.lastError ?? "write-back failed" }) };
+    settleSave(session, requestId, result, status === 2);
+    reply(ok ? 200 : 500, ok ? 0 : 1, result.error);
+    return;
   }
-  // ⚠️ 一律回 error:0 —— 我们自己的写回失败已记在 state 里给界面看；回非 0 只会让
-  //    DS 一直重试同一个 url 并把编辑器锁成"保存失败"。
-  res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ error: 0 }));
+  if (status === 3 || status === 7) {
+    session.state.lastError = `Document Server reported save error (status ${status})`;
+    settleSave(session, requestId, { ok: false, error: session.state.lastError }, status === 3);
+    reply(500, 1, session.state.lastError); return;
+  }
+  if (status === 4) {
+    await session.writing;
+    if (session.state.lastError) { reply(500, 1, session.state.lastError); return; }
+    session.finalized = true;
+    settleSave(session, undefined, { ok: true }, true);
+    if (session.references === 0) retireSession(session);
+  }
+  reply(200, 0);
 }
 
 /** 下载 DS 给的新版本，临时文件 + rename 原子替换原文件。 */
-async function writeBack(session: EditSession, url: string): Promise<void> {
+async function writeBack(session: EditSession, url: string): Promise<boolean> {
+  let ownedTemp: string | null = null;
   try {
-    const resp = await fetch(url);
+    if (!findContainingWorkspaceRoot(session.filePath)) throw new Error("Document path is no longer in an authorized workspace");
+    const resp = await fetch(url, { signal: AbortSignal.timeout(30_000) });
     if (!resp.ok) throw new Error(`download ${resp.status}`);
     const bytes = Buffer.from(await resp.arrayBuffer());
     if (bytes.length === 0) throw new Error("download empty");
     const dir = dirname(session.filePath);
     await mkdir(dir, { recursive: true });
-    const tmp = join(dir, `.${basename(session.filePath)}.onlyoffice-${randomBytes(4).toString("hex")}.tmp`);
-    await writeFile(tmp, bytes);
-    try {
-      await rename(tmp, session.filePath);
-    } catch (err) {
-      await unlink(tmp).catch(() => undefined);
-      throw err;
-    }
+    const tmp = join(dir, `.${basename(session.filePath)}.onlyoffice-${randomBytes(16).toString("hex")}.tmp`);
+    const file = await open(tmp, "wx", 0o600);
+    ownedTemp = tmp;
+    try { await file.writeFile(bytes); await file.sync(); }
+    finally { await file.close(); }
+    await rename(tmp, session.filePath);
+    ownedTemp = null;
     session.state.lastSavedAt = Date.now();
     session.state.lastError = null;
     log.info(`[onlyoffice] saved ${session.filePath} (${bytes.length} bytes)`);
+    return true;
   } catch (err) {
     session.state.lastError = (err as Error).message;
     log.error(`[onlyoffice] write-back failed for ${session.filePath}: ${(err as Error).message}`);
+    return false;
+  } finally {
+    if (ownedTemp) await unlink(ownedTemp).catch(() => undefined);
   }
 }
 
@@ -390,12 +484,13 @@ export async function openOnlyOfficeSession(
 
   const bridgePort = await ensureServer();
   // key：路径 + mtime + size（见文件头）。DS 限制 [0-9a-zA-Z.=_-]、≤128 字符。
-  const key = createHash("sha1")
+  const existing = [...sessionsByKey.values()].find((s) => s.filePath === filePath && !s.finalized);
+  const key = existing?.key ?? createHash("sha1")
     .update(`${filePath}|${st.mtimeMs}|${st.size}`)
     .digest("hex")
     .slice(0, 40);
   // 同一份文件已经开着一个会话（比如两个标签）→ 复用，别再发一枚令牌
-  let session = sessionsByKey.get(key);
+  let session = existing ?? sessionsByKey.get(key);
   if (!session) {
     session = {
       key,
@@ -403,11 +498,18 @@ export async function openOnlyOfficeSession(
       filePath,
       ext,
       state: { alive: true, lastSavedAt: null, lastError: null, lastStatus: null },
+      references: 0,
+      serverSeen: false,
+      finalized: false,
       writing: Promise.resolve(),
+      forcing: Promise.resolve(),
+      waiters: new Map(),
     };
     sessionsByKey.set(key, session);
     sessionsByToken.set(session.token, session);
   }
+  session.references++;
+  session.finalized = false;
 
   const host = resolveCallbackHost(cfg);
   const base = `http://${host}:${bridgePort}/onlyoffice`;
@@ -471,11 +573,12 @@ export function getOnlyOfficeSessionState(key: string): OnlyOfficeSessionState {
 }
 
 export function closeSession(key: string): boolean {
-  const s = sessionsByKey.get(key);
-  if (!s) return false;
-  s.state.alive = false;
-  sessionsByKey.delete(key);
-  sessionsByToken.delete(s.token);
+  const session = sessionsByKey.get(key);
+  if (!session) return false;
+  session.references = Math.max(0, session.references - 1);
+  // DS sends its final status 2/4 after destroyEditor, not synchronously with it.
+  // Preserve failed saves for retry; never expire the only usable callback token.
+  if (session.references === 0 && (session.finalized || !session.serverSeen)) retireSession(session);
   return true;
 }
 
@@ -483,29 +586,44 @@ export function closeSession(key: string): boolean {
  * Command Service `forcesave`：让 DS 立刻回调一次（status 6）。
  * 返回 DS 的 error 码：0 成功 / 4 文档没改动 / 其余见官方文档。
  */
-export async function forceSave(key: string): Promise<{ ok: boolean; error?: string }> {
-  const cfg = getOnlyOfficeConfig();
-  if (!cfg.serverUrl) return { ok: false, error: "not configured" };
-  if (!sessionsByKey.has(key)) return { ok: false, error: "session not found" };
-  const payload: Record<string, unknown> = { c: "forcesave", key };
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (cfg.jwtSecret) {
-    payload.token = signJwt({ c: "forcesave", key }, cfg.jwtSecret);
-    headers.Authorization = `Bearer ${signJwt({ payload: { c: "forcesave", key } }, cfg.jwtSecret)}`;
-  }
-  try {
-    const resp = await fetch(`${cfg.serverUrl}/coauthoring/CommandService.ashx`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-    });
-    const data = (await resp.json()) as { error?: number };
-    // 4 = "no changes" —— 对用户来说就是"已经是最新的"，不算失败
-    if (data.error === 0 || data.error === 4) return { ok: true };
-    return { ok: false, error: `Command Service error ${data.error}` };
-  } catch (err) {
-    return { ok: false, error: (err as Error).message };
-  }
+export async function forceSave(key: string, timeoutMs = 30_000): Promise<SaveResult> {
+  const session = sessionsByKey.get(key);
+  if (!session) return { ok: false, error: "session not found" };
+  const task = session.forcing.then(async (): Promise<SaveResult> => {
+    if (session.finalized) return { ok: session.state.lastError === null, error: session.state.lastError ?? undefined };
+    const cfg = getOnlyOfficeConfig();
+    if (!cfg.serverUrl) return { ok: false, error: "not configured" };
+    const id = randomBytes(16).toString("hex");
+    const unsigned = { c: "forcesave", key, userdata: id };
+    const payload: Record<string, unknown> = { ...unsigned };
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (cfg.jwtSecret) {
+      payload.token = signJwt(unsigned, cfg.jwtSecret);
+      headers.Authorization = `Bearer ${signJwt({ payload: unsigned }, cfg.jwtSecret)}`;
+    }
+    // userdata is echoed by DS. A different/older save must not acknowledge this request.
+    const saved = waitForSave(session, id, timeoutMs);
+    try {
+      const resp = await fetch(`${cfg.serverUrl}/coauthoring/CommandService.ashx`, {
+        method: "POST", headers, body: JSON.stringify(payload), signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!resp.ok) throw new Error(`Command Service HTTP ${resp.status}`);
+      const data = (await resp.json()) as { error?: number };
+      if (data.error === 4) {
+        await session.writing;
+        saved.finish({ ok: session.state.lastError === null, error: session.state.lastError ?? undefined });
+      } else if (data.error !== 0) {
+        saved.finish({ ok: false, error: `Command Service error ${data.error}` });
+      }
+      // error=0 acknowledges the command only, not a completed local file save.
+      return await saved.promise;
+    } catch (err) {
+      const result = { ok: false, error: (err as Error).message };
+      saved.finish(result); return result;
+    }
+  });
+  session.forcing = task.then(() => undefined, () => undefined);
+  return task;
 }
 
 /** 设置页的连通性探测：DS 的 `/healthcheck` 返回字面量 `true`。 */

@@ -434,28 +434,27 @@ console.log("\n§7b APP_GET_DATA_ROOT:四个路径,以及它们和 mcode.db 是�
 
 {
   /**
-   * 设置页那棵目录树直接把四个路径念给用户听。这里有一个**很容易写错、而写错了
+   * 设置页那棵目录树直接把数据根、数据库和文档库路径念给用户听。这里有一个**很容易写错、而写错了
    * 用户也只是"找不到文件"**的点:`dbPath` 用的是 `dataRoot()` + 文件名,而
    * `db.ts` 里真正打开的路径走的是 `dataRoot.dbPath()`(它多一条「老库还在
    * userData 就用老库」的安全网)。两者在正常情形下必须一致 —— 不一致时用户照着
    * 设置页去找,会发现那儿根本没有 `mcode.db`。
    */
-  const root = call<{ root: string; dbPath: string; libraryPath: string; templatesPath: string }>(
+  const root = call<{ root: string; dbPath: string; libraryPath: string }>(
     IPC.APP_GET_DATA_ROOT,
   );
   same(
-    "返回的就是那四个路径",
+    "返回的就是那三个路径",
     Object.keys(root).sort(),
-    ["dbPath", "libraryPath", "root", "templatesPath"],
+    ["dbPath", "libraryPath", "root"],
   );
   for (const [key, value] of Object.entries(root)) {
     check(`${key} 是个绝对路径(不是空串/undefined)`, typeof value === "string" && resolve(value) === value, { [key]: value });
   }
   eq("dbPath 就是数据根下的 mcode.db", root.dbPath, join(root.root, "mcode.db"));
   eq("libraryPath 就是数据根下的 library", root.libraryPath, join(root.root, "library"));
-  eq("templatesPath 就是数据根下的 templates", root.templatesPath, join(root.root, "templates"));
   // 而且它确实**落在**数据根里面(不是别处拼出来的一个同名路径)。
-  check("四个路径都在同一个数据根下", [root.dbPath, root.libraryPath, root.templatesPath].every((p) => resolve(p).startsWith(resolve(root.root))), root);
+  check("三个路径都在同一个数据根下", [root.dbPath, root.libraryPath].every((p) => resolve(p).startsWith(resolve(root.root))), root);
 }
 
 /* ──────────────── §8 数据根搬家:失败路径上什么都不许动 ──────────────── */

@@ -76,6 +76,7 @@ import {
   updateNode,
 } from "./workflowEdit.js";
 import { WorkflowBadge } from "./WorkflowBadge.js";
+import { mergeSavedWorkflow, normalizeDraft, WorkflowEditHistory } from "./workflowDraftState.js";
 import { WorkflowCanvas } from "./WorkflowCanvas.js";
 import { NodeInspector } from "./NodeInspector.js";
 import { SaveStateLine, type SaveState } from "./SaveStateLine.js";
@@ -166,7 +167,7 @@ export function WorkflowLibraryView({
    *  份,两个页签同时挂载,各拉各的就会分家。 */
   profiles: AgentProfile[];
   profileError: string | null;
-  onSaveProfile: (profile: AgentProfile) => Promise<void>;
+  onSaveProfile: (profile: AgentProfile) => Promise<boolean>;
   onRemoveProfile: (id: string) => Promise<void>;
 }) {
   const { t, locale } = useI18n();
@@ -200,6 +201,20 @@ export function WorkflowLibraryView({
   /** 最后发起的那次 `workflow.get`。用户连点两个工作流时两次请求会并发,回来顺序
    *  不保证 —— 只认最后一次发出的那个,否则详情面板会显示成上一个的内容。 */
   const docRequestRef = useRef<string | null>(null);
+  const docReadVersion = useRef(0);
+  const mounted = useRef(true);
+  const editorRef = useRef<HTMLDivElement>(null);
+  const history = useRef(new WorkflowEditHistory());
+  const [compact, setCompact] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(true);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
+  useEffect(() => {
+    mounted.current = true;
+    const media = window.matchMedia?.("(max-width: 1199px)");
+    const resize = () => { const small = media?.matches ?? false; setCompact(small); setLibraryOpen(!small); };
+    resize(); media?.addEventListener("change", resize);
+    return () => { mounted.current = false; docReadVersion.current++; docRequestRef.current = null; media?.removeEventListener("change", resize); };
+  }, []);
 
   const loadList = useCallback(async () => {
     try {
@@ -248,6 +263,9 @@ export function WorkflowLibraryView({
    */
   const openWorkflow = useCallback(
     async (id: string, selectNodeId: string | null = null) => {
+      const version = ++docReadVersion.current;
+      history.current.clear();
+      latest.current = null;
       setSelectedId(id);
       setSelectedNodeId(selectNodeId);
       setBaseline(null);
@@ -261,14 +279,14 @@ export function WorkflowLibraryView({
       docRequestRef.current = id;
       try {
         const res = await api.workflow.get({ id });
-        if (docRequestRef.current !== id) return;
+        if (!mounted.current || docReadVersion.current !== version) return;
         if (res.workflow) {
           setBaseline(res.workflow);
           setReview(res.review);
           setReviewDoc(res.workflow);
           // **有草稿就用草稿。** 基线仍然是磁盘上那一份,所以"脏"照样判得出来,状态行
           // 也照样会说"有未保存的改动" —— 用户切回来看到的就是他离开时那个样子。
-          setWorking(DRAFTS.get(id) ?? res.workflow);
+          setWorking(normalizeDraft(DRAFTS.get(id) ?? res.workflow, res.workflow));
         } else {
           // 库里有这一行、却取不到文档:列表过期了(或者 payload 被外部改坏)。
           // 报一句 + 重新拉列表,而不是留一个空白面板。
@@ -276,10 +294,10 @@ export function WorkflowLibraryView({
           void loadList();
         }
       } catch (err) {
-        if (docRequestRef.current !== id) return;
+        if (!mounted.current || docReadVersion.current !== version) return;
         setDocError(t("settings.workflows.openFailed", { error: (err as Error).message }));
       } finally {
-        if (docRequestRef.current === id) setDocLoading(false);
+        if (mounted.current && docReadVersion.current === version) setDocLoading(false);
       }
     },
     [loadList, t],
@@ -301,13 +319,14 @@ export function WorkflowLibraryView({
   const removingRef = useRef(false);
 
   const flush = useCallback(async (): Promise<FlushResult> => {
+    const requestedId = latest.current?.working.id;
     // 上一次落地了再决定这一次,而且**是重新判、不是复用上一次的结论** —— 等它的
     // 这段时间里用户可能又改了。
     while (inflight.current) await inflight.current.promise;
 
     const current = latest.current;
     // 删除动作把这份文档放下了,它已经不该再被保存。
-    if (!current || removingRef.current) return "ok";
+    if (!current || current.working.id !== requestedId || removingRef.current) return "blocked";
     if (!isDocDirty(current.working, current.baseline)) return "ok";
     // 名称空着就发不出去,别拿它去换主进程一句 zod 报错。
     if (missingRequiredName(current.working)) return "blocked";
@@ -335,19 +354,21 @@ export function WorkflowLibraryView({
       // ⚠️ 前提是**还是这份文档**。切走之后 `latest.current` 已经是另一份,拿这次的
       // 结果去当它的基线,会让新的那份永远判成脏,而 `forSave` 还会拿错的基线去判
       // "内置的名字该不该还原" —— 把别人的名字写进这份文档(见 `workflowView`)。
-      if (latest.current?.working.id === id) {
-        setBaseline({ ...payload, updatedAt: Date.now() });
-        // Keep the baseline's node/edge references (dirty checking relies on
-        // them), but get review status and its exact saved document from main.
-        try {
-          const saved = await api.workflow.get({ id });
-          if (latest.current?.working.id === id) {
-            setReview(saved.review);
-            setReviewDoc(saved.workflow);
-          }
-        } catch (err) {
-          setSaveError(t("settings.workflows.actionFailed", { error: (err as Error).message }));
-        }
+      // Read the canonical server document (derived trigger + review metadata).
+      // A failed read must remain an error, not a false "saved" acknowledgement.
+      const saved = await api.workflow.get({ id });
+      if (!saved.workflow) throw new Error(t("settings.workflows.openFailed", { error: id }));
+      const active = mounted.current && latest.current?.working.id === id ? latest.current : null;
+      const draft = active?.working ?? DRAFTS.get(id) ?? current.working;
+      const merged = normalizeDraft(mergeSavedWorkflow(draft, current.working, saved.workflow), saved.workflow);
+      if (isDocDirty(merged, saved.workflow)) DRAFTS.set(id, merged);
+      else DRAFTS.delete(id);
+      if (mounted.current && active) {
+        latest.current = { baseline: saved.workflow, working: merged };
+        setBaseline(saved.workflow);
+        setWorking(merged);
+        setReview(saved.review);
+        setReviewDoc(saved.workflow);
       }
       void loadList();
       return "ok";
@@ -359,7 +380,7 @@ export function WorkflowLibraryView({
     } finally {
       if (inflight.current === gate) inflight.current = null;
       gate.release();
-      setSaving(false);
+      if (mounted.current) setSaving(false);
     }
   }, [loadList, t]);
 
@@ -383,7 +404,9 @@ export function WorkflowLibraryView({
 
   /** 列表上那颗"未保存"的点要跟着草稿袋走。袋子的内容不是 state,所以得有人在改动之后
    *  叫一声 —— 三处调用(`stashDraft` / `save` / `discard`)各自紧跟一次,别漏。 */
-  const [draftIds, setDraftIds] = useState<readonly string[]>([]);
+  useEffect(() => () => stashDraft(), [stashDraft]);
+
+  const [draftIds, setDraftIds] = useState<readonly string[]>(() => [...DRAFTS.keys()]);
   const refreshDrafts = useCallback(() => setDraftIds([...DRAFTS.keys()]), []);
 
   /**
@@ -393,11 +416,8 @@ export function WorkflowLibraryView({
    * 改的那一份就真的没地方找了,而状态行还在说"保存受阻"。
    */
   const save = useCallback(async (): Promise<void> => {
-    if ((await flush()) !== "ok") return;
-    const id = latest.current?.working.id;
-    if (!id) return;
-    DRAFTS.delete(id);
-    refreshDrafts();
+    await flush();
+    if (mounted.current) refreshDrafts();
   }, [flush, refreshDrafts]);
 
   /**
@@ -439,9 +459,26 @@ export function WorkflowLibraryView({
   /** 改编辑中的那一份。**唯一一处写 `working` 的地方** —— 于是"哪些动作会让文档变脏"
    *  这个问题只有一个答案。 */
   const edit = (next: WorkflowDoc) => {
-    setWorking(next);
+    const current = latest.current;
+    if (!current || next.id !== current.working.id || !history.current.record(current.working, next)) return;
+    const normalized = normalizeDraft(next, current.baseline);
+    latest.current = { ...current, working: normalized };
+    setWorking(normalized);
     setSaveError(null);
   };
+  const travel = (direction: "undo" | "redo") => {
+    const current = latest.current;
+    if (!current) return;
+    const next = history.current[direction](current.working);
+    if (!next) return;
+    const normalized = normalizeDraft(next, current.baseline);
+    latest.current = { ...current, working: normalized };
+    setWorking(normalized);
+    setSaveError(null);
+    if (!next.nodes.some((n) => n.id === selectedNodeId)) setSelectedNodeId(null);
+  };
+  const travelRef = useRef(travel);
+  travelRef.current = travel;
 
   const approve = async () => {
     setPendingApproval(false);
@@ -473,12 +510,14 @@ export function WorkflowLibraryView({
   };
 
   const select = (next: WorkflowListEntry) => {
+    if (compact) setLibraryOpen(false);
     if (next.id === selectedId) return;
     // **切走不落盘,只收草稿。** 早先这里会先 `flush()`(替你存掉再切,存不下去就不切),
     // 那样"没点保存"就成了空话 —— 切一下等于替用户确认了手上的改动。草稿袋保证它不会
     // 丢:回来的时候 `openWorkflow` 会把这份草稿放回画布,状态行照旧说"有未保存的改动"。
     stashDraft();
     refreshDrafts();
+    if (compact) setLibraryOpen(false);
     void openWorkflow(next.id);
   };
 
@@ -585,6 +624,7 @@ export function WorkflowLibraryView({
       refreshDrafts();
       setPendingRemove(false);
       await loadList();
+      if (docRequestRef.current !== entry.id) return;
       if (res.wasBuiltin) {
         // 恢复默认之后把默认版**重新打开**,让用户直接看见回来了什么 —— 关掉面板
         // 只会让人怀疑"是不是没生效"。
@@ -651,11 +691,11 @@ export function WorkflowLibraryView({
    * **存的是参数,不是节点** —— 标题、位置、连了谁都不进去。同一份档案可以用在好几个
    * 步骤上,而那几处的位置和依赖显然不一样(见 `@contracts/agentProfile` 文件头)。
    */
-  const handleSaveProfile = async (name: string): Promise<void> => {
+  const handleSaveProfile = async (name: string): Promise<boolean> => {
     const node = working?.nodes.find((n) => n.id === selectedNodeId);
-    if (!node) return;
+    if (!node) return false;
     const now = Date.now();
-    await onSaveProfile(
+    return onSaveProfile(
       profileFromParams({
         id: makeAgentProfileId(now),
         name,
@@ -673,7 +713,7 @@ export function WorkflowLibraryView({
     // 节点的文档"),规矩属于界面这一层。检查器那个按钮和键盘的 Delete 都走这个处理
     // 函数,所以一道就够(检查器那边还会**不摆**那个按钮,理由见 NodeInspector)。
     const target = working.nodes.find((n) => n.id === id);
-    if (!target || isProtectedNode(target, purpose)) return;
+    if (!target || isProtectedNode(target, purpose, working.nodes, catalog ?? undefined)) return;
     edit(removeNodeFrom(working, id));
     if (selectedNodeId === id) setSelectedNodeId(null);
   };
@@ -689,9 +729,13 @@ export function WorkflowLibraryView({
   saveRef.current = save;
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "s") return;
-      e.preventDefault();
-      void saveRef.current();
+      if (!editorRef.current?.getClientRects().length || !(e.metaKey || e.ctrlKey)) return;
+      const key = e.key.toLowerCase();
+      if (key === "s") { e.preventDefault(); void saveRef.current(); return; }
+      if (!isEditableTarget(e.target) && (key === "z" || key === "y")) {
+        e.preventDefault();
+        travelRef.current(key === "y" || e.shiftKey ? "redo" : "undo");
+      }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -713,7 +757,7 @@ export function WorkflowLibraryView({
   useEffect(() => {
     if (selectedNodeId === null) return;
     const onKey = (e: KeyboardEvent): void => {
-      if (!isNodeDeleteKey(e, isEditableTarget(e.target))) return;
+      if (!editorRef.current?.getClientRects().length || !isNodeDeleteKey(e, isEditableTarget(e.target))) return;
       e.preventDefault();
       removeRef.current(selectedNodeId);
     };
@@ -728,12 +772,16 @@ export function WorkflowLibraryView({
 
   const handleUpdateNode = (id: string, patch: Partial<Omit<WorkflowNode, "id">>) => {
     if (!working) return;
-    edit(updateNode(working, id, patch));
+    const current = latest.current?.working;
+    if (!current || current.id !== working.id) return;
+    edit(updateNode(current, id, patch));
   };
 
   const handleUpdateWorkflow = (patch: Partial<Omit<WorkflowDoc, "id">>) => {
     if (!working) return;
-    edit({ ...working, ...patch });
+    const current = latest.current?.working;
+    if (!current || current.id !== working.id) return;
+    edit({ ...current, ...patch });
   };
 
   const handleSetDependency = (nodeId: string, depId: string, on: boolean) => {
@@ -762,9 +810,15 @@ export function WorkflowLibraryView({
 
   return (
     <>
-      <div className="grid min-h-0 flex-1 grid-cols-[200px_1fr] gap-4">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <Button size="sm" variant="secondary" aria-expanded={libraryOpen} onClick={() => setLibraryOpen(!libraryOpen)}>{t(labels.library)}</Button>
+        <Button size="sm" variant="secondary" aria-expanded={inspectorOpen} onClick={() => setInspectorOpen(!inspectorOpen)}>{t("settings.workflows.inspectorToggle")}</Button>
+        <Button size="sm" variant="ghost" disabled={!history.current.canUndo} onClick={() => travel("undo")}>{t("settings.workflows.undo")}</Button>
+        <Button size="sm" variant="ghost" disabled={!history.current.canRedo} onClick={() => travel("redo")}>{t("settings.workflows.redo")}</Button>
+      </div>
+      <div ref={editorRef} data-workflow-editor className="grid min-h-0 flex-1 gap-4" style={{ gridTemplateColumns: libraryOpen ? "200px minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
         {/* ───────── 左:库列表 ───────── */}
-        <aside className="flex min-h-0 flex-col rounded-md border border-edge bg-surface/40">
+        <aside className={cn("min-h-0 flex-col rounded-md border border-edge bg-surface/40", libraryOpen ? "flex" : "hidden")}>
           <div className="flex items-center justify-between px-2.5 py-2 text-[0.7143em] font-medium uppercase tracking-wide text-content-subtle">
             <span>{t(labels.library)}</span>
             <span className="tabular-nums">{visible ? visible.length : "…"}</span>
@@ -815,7 +869,7 @@ export function WorkflowLibraryView({
           {/* 工具栏那一行之上再放一个工作流标题行:选中节点时检查器显示的是节点,
               这时"我在编辑哪个工作流"就没有别的地方说了。 */}
           {working && baseline && (
-            <div className="mb-2 flex items-center gap-1.5">
+            <div className="mb-2 flex flex-wrap items-center gap-1.5">
               <span className="shrink-0 text-content-muted">
                 {workflowIcon(working.id, 13)}
               </span>
@@ -906,20 +960,23 @@ export function WorkflowLibraryView({
             ) : working && baseline ? (
               catalog ? (
                 <>
-                  <WorkflowCanvas
+                  <WorkflowCanvas key={working.id}
                     doc={working}
                     catalog={catalog}
                     profiles={profiles}
                     selectedNodeId={selectedNodeId}
-                    onSelectNode={setSelectedNodeId}
+                    onSelectNode={(id) => { setSelectedNodeId(id); if (id !== null) setInspectorOpen(true); }}
                     onMoveNode={handleMoveNode}
                     onAddNode={handleAddNode}
                     onRelayout={() => edit(relayout(working))}
                     onConnect={handleConnect}
                     onRemoveEdge={handleRemoveEdge}
                   />
+                  <div className={cn("min-h-0 shrink-0", inspectorOpen ? "flex" : "hidden")}>
                   <NodeInspector
                     doc={working}
+                    savedDoc={baseline}
+                    dirty={dirty || saving}
                     catalog={catalog}
                     profiles={profiles}
                     profileError={profileError}
@@ -935,6 +992,7 @@ export function WorkflowLibraryView({
                     onRemoveWorkflow={() => setPendingRemove(true)}
                     onImported={handleImported}
                   />
+                  </div>
                 </>
               ) : catalogError !== null ? (
                 // 清单读不进来的时候**必须在这一页说**:用户卡住的正是这一个页签,而

@@ -386,6 +386,8 @@ console.log("\nPDF 导入 · 选定的分类要真的生效(而不是掉进回�
   const res = await importPdfFiles({ paths: [PDF_FIXTURE], collectionIds: [dest] });
   const item = res[0]?.item;
   check("PDF 导进来了", item !== undefined, res);
+  const event = externals.find((e) => e.type === "library.item.imported" && e.itemId === item?.id);
+  check("PDF 导入事件携带已落库文件路径，自动化可立即接手", event?.type === "library.item.imported" && event.pdfPath === item?.pdfPath && Boolean(event.pdfPath), event);
 
   if (item) {
     const homes = CollectionRepo.collectionsOfItem(item.id);
@@ -413,6 +415,21 @@ console.log("\nPDF 导入 · 选定的分类要真的生效(而不是掉进回�
       check("★ 第二份落在它自己那个分类里", CollectionRepo.collectionsOfItem(item2.id).includes(dest2), CollectionRepo.collectionsOfItem(item2.id));
       check("而且没有串进第一份的分类", !CollectionRepo.collectionsOfItem(item2.id).includes(dest), CollectionRepo.collectionsOfItem(item2.id));
     }
+  }
+}
+
+// Both default and legacy convert:true import requests are storage-only.
+{
+  const { importAnyFiles } = await import("@main/library/importDispatch.js");
+  for (const convert of [undefined, true, false]) {
+    const path = join(SRC, `storage-only-${String(convert)}.html`);
+    writeFileSync(path, `<html>distinct ${String(convert)}</html>`, "utf8");
+    const result = await importAnyFiles([path], { convert });
+    eq("只导入文件", result.added, 1);
+    eq("不执行隐式转录", result.converted.ok, 0);
+    eq("不因未配置转录而报告导入失败", result.errors.length, 0);
+    check("不创建 Markdown 关联", !result.items[0]?.mdPath);
+    check("正常发事件供配置的自动化接手", importedIds().includes(result.items[0]?.id));
   }
 }
 

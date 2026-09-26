@@ -232,6 +232,10 @@ function rawMemoryMcpTools(): McpToolSpec[] {
         expectedRevision: MemoryRevisionSchema.nullable().optional().describe("更新时必须填 memory_read 返回的 revision；省略或 null 仅允许新建。冲突后重新读取、合并，不得盲目覆盖。"),
         path: z
           .string()
+          .trim()
+          // Normalize before both the approval description and the write handler.
+          // Empty paths use the same explicit scope/default path in both places.
+          .transform((path) => path || undefined)
           .optional()
           .describe(
             "**更新已有记录时填它并携带 expectedRevision**(从 memory_list / memory_search 拿到的那个路径)。" +
@@ -245,7 +249,7 @@ function rawMemoryMcpTools(): McpToolSpec[] {
         if (args.content.trim().length === 0) {
           return fail("正文是空的。一条什么都没有的记忆只会在快照里占位置。");
         }
-        const path = args.path?.trim() || `${args.scope === "global" ? "global" : `projects/${projectId}`}/${pathFor(args.category, title)}`;
+        const path = args.path || `${args.scope === "global" ? "global" : `projects/${projectId}`}/${pathFor(args.category, title)}`;
         requireMemoryAccess(path, projectId);
         try {
           const { updatedAt, revision } = saveMemoryFile({ path, content: args.content, title, expectedRevision: args.expectedRevision }, memoryWriteOrigin(ctx.sessionId));

@@ -82,3 +82,5 @@ export const providerRegistry = {
     /* 无头脚本里不注册引擎 */
   },
 };
+
+export async function probeProviderHealth() { return { installed: false, error: "isolated smoke: no provider" }; }

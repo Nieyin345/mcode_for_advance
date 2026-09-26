@@ -114,8 +114,9 @@ async function importOne(rawPath: string, collectionIds?: string[]): Promise<Imp
     log.info(`library: imported PDF ${basename(rawPath)} as ${item.id}`);
     // 成功点在这里:条目建好、PDF 也记上了。alreadyPresent 的不算 —— 那条本来就在库里,
     // 之前入库时已经发过事件,再发一次会让挂在事件上的自动化重复跑。
-    emitItemImported(item);
-    return { path: rawPath, item: { ...item, pdfPath: rel, pdfSha256: sha } };
+    const imported = { ...item, pdfPath: rel, pdfSha256: sha };
+    emitItemImported(imported);
+    return { path: rawPath, item: imported };
   } catch (err) {
     return { path: rawPath, error: (err as Error).message };
   }
