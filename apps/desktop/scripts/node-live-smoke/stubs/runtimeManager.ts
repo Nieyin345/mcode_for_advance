@@ -118,6 +118,7 @@ export function isTurnRunning(sessionId: string): boolean {
 }
 
 export const runtimeManager = {
+  isBusy(sessionId: string): boolean { return running.has(sessionId); },
   subscribe(fn: (e: RuntimeEvent) => void): () => void {
     subscribers.add(fn);
     return () => void subscribers.delete(fn);

@@ -1457,6 +1457,11 @@ class Run {
         ),
         nodeId: node.id,
         plan: this.plan,
+        // 工作流级追加框架说明:随文档走,这张图的每个节点同一段(见
+        // `composeNodePrompt`)。空白不发 —— 提示词里不该出现一个空节。
+        ...(typeof this.doc.frameworkNote === "string" && this.doc.frameworkNote.trim().length > 0
+          ? { frameworkNote: this.doc.frameworkNote }
+          : {}),
         // **这一格是不是根**(用户那句话进来的那一格)。提示词那一层用它决定要不要
         // 带「用户的请求」,输入构造那一层用它决定回主对话时**不回声这条指令**
         // (`NodeRunInput.echoUserMessage`)—— 两处读的是同一个判据(见 `isRootOf`)。

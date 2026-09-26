@@ -20,7 +20,8 @@
  * ## 四种投递结果(必须如实回报是哪一档)
  *
  *   - `injected` —— 对方**正在跑**一轮 → 塞进那一轮(不打断、不等、不丢)
- *   - `woke`     —— 对方空闲、且**此刻没有图在管它** → 替它起一轮
+ *   - `woke`     —— 对方空闲、且**此刻没有图在管它** → 已请求起轮;
+ *                   收件箱要等提供方确认启动才清,启动失败仍能重试
  *   - `queued`   —— 对方空闲、但**有一张图正在管它**(或者引擎不支持插话)→ 存着,
  *                   等它下次开口带到
  *   - `failed`   —— 目标不在名册里 / 自己是自己 / 撞了条数上限 → **带原因**
@@ -78,10 +79,12 @@ export interface DeliveryPort {
    *     并拿它当"这一步跑完了"。宿主在调度器不知情时起一轮,那次 `turn.done` 会被
    *     当成节点的完成 —— 一步的产出就废了,而且不报错。这时只能排队等它下次开口。
    *
-   * `side` / `chat` 恒为能(没有谁在等它们的 `turn.done`)。
+   * `side` 独立并发,不受主对话的图管理;`chat` 如果自己的图还在跑,
+   * 同样只能排队(对话节点可能正在主会话里跑)。
    */
   canWake(sessionId: string): boolean;
-  /** 替一个**空闲的**会话起一轮(把这段当提示词)。起成了 → true。 */
+  /** 替一个**空闲的**会话起一轮。text 是提示它读收件箱的短句,
+   *  信本身由运行时拼进请求;直到提供方确认启动才从收件箱移除。 */
   wake(sessionId: string, text: string): boolean;
 }
 
@@ -284,8 +287,9 @@ export function envelopePrompt(env: Envelope): string {
 
 /* ────────────────────────────── 收件箱 ────────────────────────────── */
 
-/** sessionId → 还没被带进去的那几段(与 `pendingBackflow` 同形状、同语义)。 */
-const inbox = new Map<string, string[]>();
+/** sessionId → 还没被带进去的那几段。序号供 sendTurn 确认“只清本轮读到的前缀”。 */
+const inbox = new Map<string, Array<{ serial: number; body: string }>>();
+let nextInboxSerial = 0;
 
 /** 拼进提示词时用的抬头 —— 与 `backflowPrompt` 同一个理由(别让对方去回复这一段)。 */
 function inboxPrompt(text: string): string {
@@ -299,18 +303,32 @@ function inboxPrompt(text: string): string {
   ].join("\n");
 }
 
-/** 有东西等着进去吗(**不动队列**)。取用分两步的理由见 `pendingBackflow.peekBackflow`。 */
-export function peekAgentMail(sessionId: string): string {
+const WAKE_MAIL_PROMPT = "请处理刚收到的代理消息;需要回复对方时用 agent_notify 发回去。";
+
+/** 同时取本轮要带的内容和它的收条,**不动队列**。等待引擎启动期间可能再来新信。 */
+export function peekAgentMailBatch(sessionId: string): { text: string; through: number } {
   const list = inbox.get(sessionId);
-  return list === undefined ? "" : inboxPrompt(list.join("\n\n"));
+  return list === undefined || list.length === 0
+    ? { text: "", through: 0 }
+    : { text: inboxPrompt(list.map((item) => item.body).join("\n\n")), through: list[list.length - 1].serial };
 }
 
-/** 带进去了,清掉。 */
-export function clearAgentMail(sessionId: string): void {
+/** 只关心有没有信的读者无需处理收条(如图收尾处)。 */
+export function peekAgentMail(sessionId: string): string {
+  return peekAgentMailBatch(sessionId).text;
+}
+
+/** 回合真正起来后,只清它读过的那些;启动期间新收到的不能被顺手抹掉。 */
+export function clearAgentMail(sessionId: string, through: number): void {
+  if (through <= 0) return;
   const list = inbox.get(sessionId);
   if (list === undefined) return;
-  inbox.delete(sessionId);
-  log.info(`agentMail: 已带进会话 ${sessionId}(${list.join("").length} 字)`);
+  let count = 0;
+  while (count < list.length && list[count].serial <= through) count++;
+  if (count === 0) return;
+  if (count === list.length) inbox.delete(sessionId);
+  else inbox.set(sessionId, list.slice(count));
+  log.info(`agentMail: 已带进会话 ${sessionId}(${list.slice(0, count).reduce((n, item) => n + item.body.length, 0)} 字)`);
 }
 
 /** 会话没了 → 收件箱一起清掉(留着也永远没人取了)。 */
@@ -347,8 +365,11 @@ export function wakeQueued(
   if (port === null) return [];
   const woken: string[] = [];
   for (const { session, text } of targets) {
+    // text 是收件箱的 peek,只用来确认有信。sendTurn 自己会把整份收件箱
+    // 拼进提示词;再把 text 当 prompt 传进去,同一封信会出现两遍。
+    if (text.length === 0) continue;
     if (!port.canWake(session.id)) continue;
-    if (port.wake(session.id, text)) woken.push(session.id);
+    if (port.wake(session.id, WAKE_MAIL_PROMPT)) woken.push(session.id);
   }
   return woken;
 }
@@ -588,7 +609,7 @@ export function deliver(peer: Peer, env: Envelope): DeliveryResult {
     };
   }
 
-  // ③ 对方**空闲** —— 能不能替它起一轮,看的是"此刻有没有一张图正在管它"(见 `canWake`)。
+  // ③ 对方**空闲** —— 能不能替它起一轮,还要看图的管理状态/启动闸门(见 `canWake`)。
   //    管着的时候只能排队:节点会话的 `turn.done` 是调度器的完成信号,插一脚就废一步产出。
   if (port === null || !port.canWake(peer.id)) {
     pushInbox(peer.id, body);
@@ -596,29 +617,35 @@ export function deliver(peer: Peer, env: Envelope): DeliveryResult {
     return {
       outcome: "queued",
       detail:
-        `「${peer.name}」现在没在跑,而且它的流程正在管着它 —— 不能从外面替它起一轮` +
-        `(那会把它这一步的产出弄废)。已存下,等它下一次开口时带进去。` +
+        `「${peer.name}」现在不能从外面起新一轮:可能正被工作流管理(插队会影响步骤产出)、` +
+        `上一轮还在启动,或运行闸门尚未就绪。已存下,等它下一次开口时带进去。` +
         `如果这张图已经跑完、它不会再动了,用 agent_peers 看它还在不在,或者直接跟用户说一声。`,
     };
   }
 
-  // ④ 对方空闲、且此刻没有图管着它 → 替它起一轮。
-  if (port.wake(peer.id, body)) {
+  // ④ 先存再叫醒:桥/引擎启动可能在 wake 返回 true **之后**才失败。
+  //    本轮请求从收件箱读这段,拿到句柄后才确认它;失败则仍能重试。
+  //    wake 只传提示词,不能再传 body,否则同一封信会在 prompt 里出现两遍。
+  pushInbox(peer.id, body);
+  let woke = false;
+  try { woke = port.wake(peer.id, WAKE_MAIL_PROMPT); }
+  catch (err) { log.warn(`agentMail: 叫醒 ${peer.id} 失败: ${(err as Error).message}`); }
+  if (woke) {
     bumpCount(peer.id, now);
-    return { outcome: "woke", detail: `「${peer.name}」现在空闲,已替它起了新一轮,它会看到这段话。` };
+    return { outcome: "woke", detail: `已请求叫醒「${peer.name}」;消息已暂存,引擎成功启动后它会看到。` };
   }
 
-  // ⑤ 起轮没成(运行时没绑上 / 提供方抛错)→ 退回收件箱,并**如实说**是排队不是直达。
-  pushInbox(peer.id, body);
+  // ⑤ 起轮没成(运行时没绑上 / 配置失效)→ 信已经在收件箱,
+  //    **如实说**是排队而不是直达。
   bumpCount(peer.id, now);
   return {
     outcome: "queued",
-    detail: `没能替「${peer.name}」起轮(它当前没有可用的会话)—— 已存下,等它下次开口时带进去。`,
+    detail: `没能替「${peer.name}」起轮(运行时未绑定、模型配置无效或状态刚好变化)—— 已存下,等它下次开口时带进去。`,
   };
 }
 
 function pushInbox(sessionId: string, body: string): void {
   const list = inbox.get(sessionId) ?? [];
-  list.push(body);
+  list.push({ serial: ++nextInboxSerial, body });
   inbox.set(sessionId, list);
 }

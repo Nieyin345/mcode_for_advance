@@ -17,6 +17,9 @@
 ## 一、状态总表（先看这里）
 
 **核对时间 2026-09-21。每一条都 grep / 读代码核过，不是照提交信息抄的。**
+**2026-09-26 增核**：标「2026-09-26 核」或「✅ 2026-09-2x」的行是本轮（远程 MCP 会话）
+重核/新做的；其余行沿用 09-21/22 的判断。本轮动机：总表与动手顺序停在 09-22，
+而 09-24～09-26 的提交已把其中几条做完了 —— 表是旧的，代码是新的。
 判据：✅ 已达成 · ⚠️ 半（做了一部分，或机制在但界面缺）· ❌ 没做。
 
 ### 1.1 用户要的成品形态（第一节十二条）
@@ -25,7 +28,7 @@
 |---|---|---|---|
 | 1 | 子代理跑完不释放、留上下文 | ✅ | `(对话,节点)` 认回来的常驻会话；`claudeSessionId` 落在会话行上 |
 | 2 | 点流程图小卡片，以那个节点为起点接着跑 | ✅ | `workflow.retry` 复用"接着上次跑" |
-| 3 | **代理之间相互对话（开会）** | ❌ | 42 个 MCP 工具里**没有一条代理对代理的通道** |
+| 3 | **代理之间相互对话（开会）** | ⚠️ | 2026-09-26 核：一对一通道**已有** —— `agent_peers` / `agent_ask` / `agent_notify`（`mcodeServer.ts` 的 `AGENT_MAIL_TOOLS`，实现在 `lib/agentMail.ts`，见 3.17；agent-mail-smoke 124/124）。**多方会议（第二步）没做** |
 | 4 | 子代理把消息递给主代理 | ⚠️ | `talkToParent` 在，但**写进输入框草稿、不替用户发**（刻意） |
 | 5 | 用户跟任一子代理对话 | ✅ | `talkToNode` + 选段引用 |
 | 6 | 代理知道自己在什么阶段 | ✅ | `schedulerPrompt.ts` 每轮发「整条流程」 |
@@ -33,7 +36,7 @@
 | 8 | 文献页 + 模板页合成一个统一显示页 | ✅ | 三个设置 id 渲染同一 `DataRootPanel`；右栏合成一个「预览」 |
 | 9 | 选段引用给任意代理 | ✅ | `SelectionQuoteMenu` |
 | 10 | 回收站合一、固定最底部 | ✅ | 后端 `mergeTrashCollections` + 界面 `trashOnly`/`isLastSection` |
-| 11 | md + 图床作为整体去链接 | ⚠️ | 机制天然成立（关联按条目 id），**缺界面上说一句话** |
+| 11 | md + 图床作为整体去链接 | ✅ | 2026-09-26：界面上那一句补了 —— 关联区顶上一行「转录 Markdown 与它的图床（N 张图）跟本条是一个整体」，数据复用 `deletePreview` 的 `transcript` 档（共享实现只有一份）。见 3.19 |
 | 12 | 左侧文档框要能链接文件 | ✅ | 左栏条目行右键 →「关联」。**拖放建关联不做**（右键够用） |
 
 **这一节只剩 #3 是从零开始的**（#4 那半条包含在 #3 里）。
@@ -58,7 +61,7 @@
 | G-5 | 终端乱码 | ✅ | `06275b9`（Windows 按 shell 各给 UTF-8 参数） |
 | H | 点击/双击分工；主对话移到侧栏 | ✅ | `f2231cd` + `43d943b` |
 | I | 模型起的命令跑完 → 唤醒模型 | ✅ | **现成的**，`tool.result` 触发器 + matcher 即可，零代码 |
-| J | 四个孤儿组件复核 | ⚠️ | 结论"都可删"，**但一个都没删**（见 3.7） |
+| J | 四个孤儿组件复核 | ✅ | 2026-09-26 清掉：`SearchPanel` / `FullTextSearchPanel` / `NoteEditor` 已删（重核仍零引用；NoteEditor 等的"中间栏编辑库文件"已落定）；`MarkdownPreview` 核实**早已不在**（3.9 那轮已处理）。见 3.19 |
 
 **这一节只剩 G-3（要不要改那个自动补建）与 J（删不删）两件待定。**
 
@@ -67,16 +70,16 @@
 | 项 | 状态 | 依据（2026-09-21 核） |
 |---|---|---|
 | 记忆**存储 + 检索 + 注入** | ✅ | `memory/store.ts` + `retrieval.ts` + 两个注入点 |
-| **记忆写入侧（模型能记）** | ⚠️ | 2026-09-22 —— 工具面做了（`mcp/memoryServer.ts` 五个工具 + 按相关度检索）。但按「结构化记忆工作流」三步法对了一遍，**主对话还不注入记忆**（写得进、读不到）、**维护那一半没接线**（函数在、没人调）、缺「别写敏感信息」那句 —— 见 3.11 补记 |
-| 补 6 个 UI 基础件 | ❌ | `components/ui/` 仍是 **10 个组件**（button / card / confirm-dialog / dialog / image-preview / input / kbd / select / switch / tooltip，加一个 `index.ts`） |
-| 写 `useRpc` | ❌ | `hooks/` 下 9 个 hook，没有它 |
-| `sessionStore` 按域切片 | ❌ | 仍是一个大文件 |
+| **记忆写入侧（模型能记）** | ✅ | 2026-09-25 复核闭环（见 3.11 后续复核）：主对话注入**已存在**（`RuntimeManager` 对 `kind==="chat"` 每轮注入 `memoryPrompt`）、敏感信息那句已在 `memory_write` 工具说明里（`memoryServer.ts:212`）、维护接了人工入口（设置 → 记忆库 → 整理记忆，`memory/review.ts`）。没有自动删/自动合并/定时任务 |
+| 补 6 个 UI 基础件 | ✅ | 2026-09-26：补了 5 个 —— `Badge` / `EmptyState` / `ErrorNote` / `Field` / `Spinner`+`Skeleton`（`components/ui/` 现 15 个组件）。第 6 个 `Section` **不补**：`SettingsSection` 已经是"带标题的设置段"，造第二份违反硬规矩 2。见 3.18 |
+| 写 `useRpc` | ✅ | 2026-09-26：`hooks/useRpc.ts` —— 一次调用给 `{ data, loading, error, refetch }`，错误默认走共享 toast（`useToastStore`）；**只管读**，写操作仍显式 `await api.*`。「新代码一律用」已写进 CLAUDE.md 硬规矩 7。见 3.18 |
+| `sessionStore` 按域切片 | ❌ | 仍是一个大文件（2026-09-26 核：12013 行，还在涨 —— 09-21 数的是 11746） |
 | 自动化新建的种子节点改成触发器 | ✅ | `seedTrigger`：新建自动化**只种触发器**（不种主代理）、位置 `(0,0)`、`purpose==="automation"` 时保护它不被删 —— 见 3.10 |
 | 清碎屑 | ✅ | 2026-09-22 核：垃圾目录、`.phase2-typecheck.log`、`*.mutbak` **都已不在**；五组同名组件也已改名/合并（`WorkflowNodeCard`→`BoardNodeCard`、`mobile/FileViewer`→`MobileFileViewer`、`settings/{Browser,Git,Terminal}Panel`→`Settings*Panel`）。**只剩 `.scholar_tmp/` 还在**（那是在用的临时目录，不是碎屑） |
 | 第三方节点带自己的脚本 | ✅ | `ee737fe` —— `runner.entry` 实现 + `entry-runner-smoke`（30 条） |
-| hook 加「交给某个代理」这种动作 | ❌ | `HookSpecSchema` 里仍只有 `command`（shell） |
-| 工作流级 `frameworkNote` | ❌ | 框架提示词（`schedulerPrompt.ts` 615 行）仍硬编码 |
-| 引出图床那一条显示（#11） | ❌ | 关联区没有"这一条带 N 张图" |
+| hook 加「交给某个代理」这种动作 | ❌ | `HookSpecSchema` 里仍只有 `command`（shell）。2026-09-26 核：未变，是顺序表上最大的剩余项 |
+| 工作流级 `frameworkNote` | ✅ | 2026-09-26：`WorkflowDoc.frameworkNote`（可选，≤2000）四处接线到 `composeNodePrompt`，拼在框架段之后；UI 在 NodeInspector；定向断言 5/5。见 3.19 |
+| 引出图床那一条显示（#11） | ✅ | 2026-09-26：见上面 1.1 表 #11 那行与 3.19 |
 | **预览里 md 图片是裂的** | ⚠️ | **已修**（2026-09-21 晚，`FileViewer` 三条来源都补了 `baseDir`），但**没有无头 smoke 覆盖、也没在真浏览器验过** —— 见 3.8⑧ |
 | 三个大面板改用共享外壳 | ❌ | `SkillsPanel` 1760 行只用了 2 次共享外壳 |
 | 工作流画布实时进度 | ❌ | 没动 |
@@ -110,18 +113,18 @@
 |---|---|---|---|
 | ~~1~~ | ~~子代理保留策略~~ ✅ / ~~任选起点~~ ✅ / ~~第三方节点带脚本~~ ✅ | 已达成 | — |
 | **2a** | ~~记忆工具面~~ ✅ 2026-09-22（见 3.11） | — | — |
-| **2b** | **记忆闭环剩下那三块**：主对话注入、敏感信息那句、维护接线 | 主对话不注入 = 写得进读不到，整套白做 | 一天 |
+| ~~2b~~ | ~~记忆闭环剩下那三块~~ ✅ 2026-09-25（复核：前两块本就存在，维护补了人工入口 —— 见 3.11 后续复核） | — | — |
 | 3 | **预览里 md 图片是裂的**（`FileViewer` 的 md 分支改走 `readMarkdown`） | 用户看得见，"图全裂"最容易被当成"文件坏了" | 半天 |
 | 4 | 自动化新建的种子节点改成触发器 | 用户明确点过，根因已定位 | 半天 |
 | 5 | 清碎屑（垃圾目录 / 日志 / 五组同名组件核对） | 顺手 | 半小时 |
-| 6 | 补 6 个 UI 基础件（`Section` / `EmptyState` / `ErrorNote` / `Field` / `Badge` / `Spinner`） | 后面每一步界面活都靠它 | 两天 |
-| 7 | 写 `useRpc`，新代码一律用 | 止住 429 继续涨 | 一天 |
+| ~~6~~ | ~~补 6 个 UI 基础件~~ ✅ 2026-09-26（见 3.18；`Section` 用现成的 `SettingsSection`，不造第二份） | — | — |
+| ~~7~~ | ~~写 `useRpc`，新代码一律用~~ ✅ 2026-09-26（见 3.18） | — | — |
 | 8 | **hook 加「交给某个代理」** | 事件侧已全，只差动作侧 | 两天 |
-| 9 | #11 带图床的显示 + 三个大面板改用共享外壳 | 一组界面活 | 三到四天 |
+| 9 | ~~#11 带图床的显示~~ ✅ 2026-09-26（见 3.19）+ **三个大面板改用共享外壳（还没做）** | 剩下的那半是大活 | 三天 |
 | 10 | 工作流画布实时进度（#7） | 要先自己跑起来看现状 | 两天 |
 | 11 | 首屏"开始一件事" | 依赖 6 | 两天 |
-| 12 | 工作流级 `frameworkNote` | 比开放 615 行模板务实 | 一天 |
-| 13 | **代理一对一问答（#3 第一步）**（带轮数上限） | 会话认得回来之后门槛低了；先验证防打转 | 三天 |
+| ~~12~~ | ~~工作流级 `frameworkNote`~~ ✅ 2026-09-26（见 3.19） | — | — |
+| ~~13~~ | ~~代理一对一问答（#3 第一步）~~ ✅ 2026-09-25（见 3.17；agent-mail-smoke 124/124。**多方会议 = 下面的 14 还没做**） | — | — |
 | 14 | **多方会议（#3 第二步）** | 依赖 13 验明白 | 一周 |
 | 15 | `sessionStore` 按域切片 | 长期，先补测试 | 一周+ |
 | 16 | **docx / PPT 的编辑** | 用户同批提的（「找找 docx 的还有 PPT 的，都找找开源的效果好的，给放进去」）。**当前只能预览不能编辑**。调研未做完 —— tavily 当晚断了 | 待评估 |
@@ -130,7 +133,7 @@
 > 复核并接线：普通聊天的记忆注入与写入工具的敏感信息提示原本已存在；本次补上记忆面板的
 > 人工整理入口、版本校验删除及测试。实现边界与未验项见 3.11 的后续复核记录。
 
-**两个待定项**（要问用户才能动手）：G-3（终端要不要不自动补）、J（四个孤儿组件删不删）。
+**待定项只剩一个**：G-3（终端要不要不自动补）。J 已于 2026-09-26 处理（用户授权"你来定"，见 3.19）。
 
 **2026-09-21 晚已关掉的三条**（从上面表里去掉）：PDF 编辑 ✅（3.8⑥）、
 md 所见即所得 ✅（3.8⑦）、第三方节点带脚本 ✅（`ee737fe`）。
@@ -1877,6 +1880,100 @@ dispose**（一份内存账留到进程结束）。
 本次远端没配 Bash，用同配置的临时 Node 构建台跑了这套，**没有重跑全量 smoke，也没有
 完成上面的 dev/渲染端实测**；上文原来的 95 套记录只代表那一轮。
 
+
+---
+
+### 3.18 UI 基础件 + useRpc（2026-09-26，远程 MCP 会话）
+
+**先重核，再动手。** 本轮开工前把总表过时的几行重核了（#3 代理通道、记忆 2b、
+基础件/useRpc/sessionStore 行数），改在总表原地；这一节只记新做的两件。
+
+**① 补基础件（§3.6 二的第 1 步）。** 新增 5 个，全在 `components/ui/`，
+走 barrel 导出：
+
+| 组件 | 干什么 | 设计要点 |
+|---|---|---|
+| `EmptyState` | 空状态（19 个文件各写一遍的那个） | icon / title / desc / action 四个槽，文案全从 props 进 —— i18n 规矩在调用方 |
+| `ErrorNote` | 行内错误条 | 复用 CustomModelsPanel 那套 `border-danger/30 bg-danger/5` 的现成样子 + `role="alert"`；重试按钮走 `action` 槽，组件不own任何文案 |
+| `Field` | 标签 + 控件 + 说明/错误 | **外壳是 `<div>` 不是 `<label>`**（§3.6 点名的坑：行内元素宽高是零），点击关联走 `htmlFor` |
+| `Badge` | 状态/计数小药丸 | cva 五档语义色（neutral/accent/success/warning/danger），不许写 hex |
+| `Spinner` + `Skeleton` | 加载态 | 纯 CSS 圆环，不依赖图标库；Skeleton 给"布局未知"的场合 |
+
+**`Section` 刻意不补**：`SettingsSection` 已经是"带标题的设置段"（分类标题 +
+说明 + Card 外壳），再造一个通用 `Section` 就是同一职责两份实现（硬规矩 2）。
+要是哪天设置页以外真需要带标题的段落，把 `SettingsSection` 挪进 `ui/` 改名，
+而不是新写。
+
+**② `useRpc`（§3.6 三的第 1 步）。** `hooks/useRpc.ts`：
+`useRpc(() => api.x.y(input), [deps], { enabled?, toastOnError? })` →
+`{ data, loading, error, refetch }`。要点：
+
+- **只管读。** 写操作留在事件处理器里显式 `await api.*` —— 藏在 hook 重跑里的
+  mutation 会双发。
+- **序号防竞态**：deps 变化时在途的旧回复按序号丢弃，写不进状态。
+- refetch 期间 `data` 保持旧值（不闪空）；`enabled:false` 给"对话框还没开"。
+- 错误默认 toast（`useToastStore` + 现成的 `store.toast.errorOccurred` 键）；
+  组件行内展示错误时传 `toastOnError:false` 配 `ErrorNote`。
+- 「新组件不许直接 `await api.*` 读数据」写进了 CLAUDE.md（硬规矩 7）。
+  **老的 429 处一个没迁**（刻意）：迁移随面板改动走，不做大扫除。
+
+**验证（诚实版）**：apps/desktop 单包 `tsc --noEmit` 通过。第一遍红了两处，
+都是真错：`badgeVariants` 忘了导出；toast 想当然用了 `SessionState.pushToast` ——
+那个签名是**事件上下文（ctx）**的，渲染端真正的出口是 `useToastStore.getState().push`。
+修完转绿。**没验的**：没起 dev、没在真浏览器里看过这 5 个组件的渲染效果；
+`useRpc` 没有 smoke（渲染端 hook，现有无头台子不覆盖）；contracts 包没动没重查；
+没跑全量 smoke（本轮没碰主进程）。
+
+---
+
+### 3.19 frameworkNote + 图床说明 + 孤儿清理（2026-09-26，远程 MCP 会话第二轮）
+
+用户授权"你来定，一次性修复优化完"。按风险/收益挑了三件能远程验证的；
+sessionStore 切片、三大面板外壳（要"先补测试再动刀"）、多方会议（一周级）、
+画布进度与首屏（要起 dev 实看）这轮**刻意不碰**。
+
+**① 工作流级 `frameworkNote`（§3.6 四之③，顺序表 12）。**
+`WorkflowDoc` 加可选字段（≤2000 字），四处接线：contracts schema →
+`ModelInputScope` → scheduler 的 `inputScope`（**空白不发** —— 提示词里不该出现
+空节）→ `composeNodePrompt` 拼在 `planSection` 之后，抬头「## 这份工作流的补充说明」
+（它和「整条流程」说的是同一层的事，摆远了就成了另一条指令）。
+UI 在 NodeInspector 名称/说明下面（GrowingTextarea），**不跟 locked 走** ——
+它与「流程文字」同类（用户自己的话，不是词条），内置工作流也能改。
+发给模型的文本不进 i18n（守 `workflowEdit.ts` 那条规矩）；界面标签进
+（zh/en settings 各 3 键）。老文档 undefined = 不追加，零迁移。
+
+**② #11 图床那一条显示（顺序表 9 的前一半）。**
+`ItemLinks` 顶上加一行说明：「转录 Markdown 与它的图床（N 张图）跟本条是一个
+整体 —— 引用一起挂，删除一起删」。数据**复用 `deletePreview` 的 `transcript`
+那一档**（硬规矩 2：不另写一条 IPC、不自己再数一遍图）。没有转录不显示；
+拉不到也不显示（它是补充说明，不该挡住关联列表）。它**不进关联列表**、没有删除
+按钮 —— 转录不是一条可解除的关联，没有"单独删掉"这个操作。
+
+**③ J 清掉（待定项之一，用户授权后拍板）。**
+删了 `SearchPanel.tsx` / `FullTextSearchPanel.tsx` / `NoteEditor.tsx`
+（动手前重核：仍然零引用；NoteEditor 当初"等一件事"—— 中间栏编辑库文件 ——
+已由 3.8① / editor-save 那批落定，md 编辑走 FileEditor）。`MarkdownPreview.tsx`
+本轮核实**早已不在盘上**（3.9 把分块能力搬进 `ChunkedMarkdown` 那轮处理的），
+3.7 表里那行"先别删"从那时起就过时了 —— 原文保留，这里记事实。
+⚠️ `WorkflowLibraryView.tsx:686` 还有一句注释提到 NoteEditor，是文字不是引用，
+下次动那个文件时顺手清。
+
+**验证**：contracts + desktop 双包 tsc ✅；`scheduler-smoke` **503/503**
+（远端没配 Bash，PowerShell 复刻 run.sh 的 esbuild+node 两步 —— 同 3.17 的做法），
+盖住 scheduler / schedulerPrompt / nodeInputBuilders 三处改动；frameworkNote 另写了
+**定向断言 5/5**（`.scholar_tmp/framework-note-check.ts`：给了就出现、抬头对、
+位置在「用户的请求」之前、不给一个字不出现、全空白等于没给）。
+
+**没验的（诚实版）**：定向断言没做变异验证（没撤掉实现看它红 —— 但"不给就不出现"
+那两条反向断言天然排除了"标记恰好在别处"的假绿）；长期覆盖应并进 scheduler-smoke
+的正式夹具，临时脚本用完可删；NodeInspector 新输入框、ItemLinks 新行都没起 dev
+看过渲染效果；`deletePreview` 在详情面板每开一次就全目录数一遍图
+（`countImageFiles`），超大图床的耗时没量过；没跑全量 smoke；NoteEditor 删除后
+"笔记条目在真界面里还能不能编辑"没实测（判断依据是代码路径，不是操作过）。
+
+**还剩的**（按顺序表）：hook「交给某个代理」（8，最大剩余项）、三大面板共享外壳
+（9 的另一半）、画布实时进度（10）、首屏（11）、多方会议（14）、sessionStore
+切片（15）、docx/PPT 编辑调研（16）。待定项只剩 G-3。
 
 ---
 

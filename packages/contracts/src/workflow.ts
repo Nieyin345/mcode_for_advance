@@ -276,6 +276,22 @@ export const WorkflowDocSchema = z.object({
    */
   prompt: z.string().optional(),
   /**
+   * 工作流级的**追加框架说明**(可选)。拼进这张图每个节点提示词的「整条流程」
+   * 框架段之后、其余各节之前(见 `main/orchestration/schedulerPrompt.ts` 的
+   * `composeNodePrompt`)。
+   *
+   * 为什么是这一层:框架话术(schedulerPrompt 那 600 行)是硬编码,而做文献评审和
+   * 做代码审查需要的框架说明不一样。把 600 行全开放成模板是没人能调对的配置地狱;
+   * 开放到「每份工作流追加一段」这个粒度就够了。
+   *
+   * ⚠️ 它是**发给模型的文本**,不是界面文字 —— 不进 i18n(与 `workflowEdit.ts`
+   * 里"提示词文本故意不进 i18n"同一条规矩)。
+   *
+   * 可选是刻意的:老文档没有它,解析出来就是 undefined = 不追加,零迁移
+   * (同 `trigger` 那条的取舍)。
+   */
+  frameworkNote: z.string().max(2000).optional(),
+  /**
    * 触发方式。**有它就是一条自动化,没有它就是一张工作流。**
    *
    * 用**一个字段的有没有**来区分两者,而不是再加一个 `purpose: "workflow" |

@@ -1,3 +1,4 @@
+import { automationOriginOf, readAutomationEventChain, EVENT_CHAIN_PREFIX, EVENT_CHAIN_LIMIT } from "./automationEventOrigin.js";
 /**
  * **自动化的后台执行器** —— 把触发器节点上那句"什么情况下起一次运行"真正挂起来。
  *
@@ -23,17 +24,19 @@
  * 运行侧只增不改 —— 界面那一栏的事实来源是它,不是从运行史再猜一遍:一条挂不上、从来
  * 没跑过的自动化,运行史是空的,但这里说得出为什么。
  *
- * ## 为什么忽略自己的事件是**错的**
+ * ## 自身事件的有限续跑
  *
- * 事件触发器落在 `runtimeManager.subscribe` 上,而自动化自己跑起来的那些节点会话也在
- * 同一条流上 —— 直觉会说"得把自家的排除掉,不然自激"。但那恰恰挡掉了一种合理用法:
- * 「上一轮跑完之后再跑一次」(拿 `turn.done` 当节拍器)。而真正的自激由 **D12 重入保护**
- * 挡着:上一次还在跑(`hasActiveRun`)时这一次触发**跳过**。所以这里**不看来源会话**,
- * 免得后来的人以为那是漏了。
+ * 「上一轮完成后再跑一轮」仍是合法用途，但忙碌检查不等于循环保护：收尾事件
+ * 可能在 active run 解除后到达。因此可识别的自身/所属节点事件共享每工作流10次
+ * 派发额度（跨触发器、跨项目），只有明确手动起跑重置。计数保存到 settings。
+ * 自动化来源链保存在后台会话上，回到链上任一工作流也使用同一额度；普通单向链
+ * 不计入额度。去抖/重试保存事件到达时的链，混合批次剥离循环部分时也剥离它的链。
+ * 外部事件不受此额度限制，也不重置它；混合批次含自身事件时仍计入额度。
+ * 文件监听及无来源的系统事件无法据此归因，不声称覆盖任意事件链循环。
  *
- * ## 后台会话:一条自动化一个(D10)
+ * ## 后台会话:按自动化与项目复用(D10)
  *
- * 运行时落在一条专用的隐藏会话(`kind: "automation"`,按 `workflowId` 找、复用不重建)
+ * 运行时落在一条专用的隐藏会话(`kind: "automation"`,按 `workflowId + projectId` 找、同项目复用不重建)
  * 里。这样**运行存档天然分得开**(`workflow_runs` 本来就按会话索引),不需要新表新列;
  * 而那条会话的流水不进任何界面(`RuntimeManager` 按会话种类拦住了),运行历史是用户
  * 事后唯一读得到的东西。
@@ -131,16 +134,15 @@ const WATCH_SETTLE_MS = 300;
  * 的内部状态,没有第二个读者,放这儿离用它的人最近。
  */
 const LAST_MINUTE_SETTING_KEY = "automation.lastMinute";
+const SELF_TRIGGER_LIMIT = 10;
+const SELF_TRIGGER_COUNT_PREFIX = "automation.selfTriggerCount.";
+const SELF_TRIGGER_STOP_REASON = `自身或回环事件触发已达${SELF_TRIGGER_LIMIT}次，自动续跑已停止；请手动运行一次后继续`;
 
-/**
- * 落盘的那张表最多留多少条。
- *
- * **上限类逻辑的坑在追加那一侧**:一条跑过几百个定时触发器的机器,这张表会一直涨
- * (删掉的触发器换一个 key 就再进一条),而 `persist()` 是重写整库 —— 没人修剪的话它
- * 一辈子只增不减。60 条是"每一条活跃的定时触发器都留得下"的粗估(定时触发器通常个位数),
- * 超出的按**最久没跑过**的丢。
- */
-const LAST_MINUTE_KEEP = 60;
+
+/** 非本轮分钟的历史最多保留60条；本轮分钟记录不受条数限制。
+ *  同分钟已触发的 key 是正确性状态，不能按容量淘汰，否则第61条之后的
+ *  触发器会在下一次tick/重启后重复运行。保护分钟推进后，旧记录重新受限。 */
+const LAST_MINUTE_HISTORY_KEEP = 60;
 
 /**
  * 落盘那份能读的判据。读不回来**不抛**,当空表 —— 见 `readLastMinutes`。
@@ -226,6 +228,13 @@ interface PendingFire {
   files: string[];
   /** 最后一条事件载荷(事件那一路用;文件那一路的载荷在 flush 时现拼)。 */
   event?: TriggerPayload;
+  /** Internal provenance, never inferred from model-supplied payload fields. */
+  selfOrigin?: boolean;
+  /** Preserve external data independently if the self budget runs out while queued. */
+  externalEvent?: TriggerPayload;
+  /** Ancestors captured when events arrive, not re-read after debounce/retry. */
+  eventChain?: readonly string[];
+  externalChain?: readonly string[];
 }
 
 /** 一次手动运行的结论。IPC 那一路要把它变成给用户看的一句话。 */
@@ -392,7 +401,11 @@ class AutomationRunner {
     // 一份**条件签名**(见 `triggerSpecKeyOf`):签名变了就当作"这一条已经不是它了"。
     for (const [key, pending] of this.pendingFires) {
       const current = this.findLoaded(pending.trigger);
-      if (current === undefined || triggerSpecKeyOf(current.spec) !== triggerSpecKeyOf(pending.trigger.spec)) {
+      // Pending payloads belong to the enabled trigger and workspace that
+      // collected them; never replay them after disable or a project switch.
+      if (current === undefined || current.disarmed ||
+          current.projectId !== pending.trigger.projectId || current.cwd !== pending.trigger.cwd ||
+          triggerSpecKeyOf(current.spec) !== triggerSpecKeyOf(pending.trigger.spec)) {
         if (pending.timer !== null) clearTimeout(pending.timer);
         this.pendingFires.delete(key);
       }
@@ -401,10 +414,10 @@ class AutomationRunner {
       if (!key.startsWith(`${workflowId}:`)) continue;
       const still = triggers.some((t) => triggerKey(t) === key);
       if (still) continue;
-      this.lastMinute.delete(key);
+      // Let rememberLastMinute remove the key and persist it together.
       // **删掉的这一笔要落盘**(与 `onTick` 记的那一笔是同一个道理):不落的话重启
       // 之后它又会被 `readLastMinutes` 读回来,而那时这张表里已经没有这条触发器了 ——
-      // 它只是白占一格,直到被 `LAST_MINUTE_KEEP` 修剪掉。落一下更省事,也让它不再
+      // 它只是白占一格,直到被 `LAST_MINUTE_HISTORY_KEEP` 修剪掉。落一下更省事,也让它不再
       // 有可能撞上一个**新**触发器(节点 id 被复用时 key 会一样)。
       this.rememberLastMinute(key, null);
     }
@@ -519,7 +532,7 @@ class AutomationRunner {
    * 一次保存就多一条重复的事件。
    */
   private rebuildWatchers(): void {
-    const wanted = watcherDirsOf(this.all());
+    const wanted = watcherDirsOf(this.all().filter((trigger) => !trigger.disarmed));
     for (const [dir, entry] of this.watchers) {
       if (wanted.includes(dir)) continue;
       try {
@@ -617,14 +630,16 @@ class AutomationRunner {
     const now = new Date();
     const minute = Math.floor(now.getTime() / 60_000);
     for (const trigger of this.all()) {
-      if (trigger.spec.kind !== "schedule") continue;
+      if (trigger.disarmed || trigger.spec.kind !== "schedule") continue;
       if (!cronMatches(trigger.spec.cron, now)) continue;
       const key = triggerKey(trigger);
       // **同一分钟只跑一次**(30 秒一跳会看两次)。不去重的话 `*/1 * * * *` 一分钟两次。
       // 这条记忆**跨重启**(见 `lastMinute` 的说明):重启后那一跳看到的还是"本分钟
       // 已经跑过",所以不会因为开了一次应用而多跑一次。
       if (!shouldFireThisMinute(this.lastMinute.get(key), minute)) continue;
-      this.rememberLastMinute(key, minute);
+      // Protect the tick's captured minute, even if a large batch crosses a
+      // wall-clock minute boundary while dispatching/persisting its entries.
+      this.rememberLastMinute(key, minute, minute);
       this.fire(trigger, { kind: "schedule", at: now.getTime() });
     }
   }
@@ -641,9 +656,13 @@ class AutomationRunner {
    * 文件**。每条定时触发器每个 tick 都写一次的话,一台挂十条定时自动化的机器就是每天
    * 近三万次整库重写,而这表里绝大多数时候一个字都没变(同一分钟里第二跳的 `minute`
    * 与第一跳完全相同)。所以这里只在**真的变了**的时候落盘,而"变了"按分钟算 ——
-   * 一秒最多一次,而且只发生在确实起了一次运行的那一刻(`onTick` 调的这条路)。
+   * 同一触发器同一分钟最多更新一次；大量触发器仍各自先记去重、再尝试派发。
    */
-  private rememberLastMinute(key: string, minute: number | null): void {
+  private rememberLastMinute(
+    key: string,
+    minute: number | null,
+    protectedMinute = Math.floor(Date.now() / 60_000),
+  ): void {
     if (minute === null) {
       if (!this.lastMinute.has(key)) return;
       this.lastMinute.delete(key);
@@ -651,7 +670,7 @@ class AutomationRunner {
       if (this.lastMinute.get(key) === minute) return;
       this.lastMinute.set(key, minute);
     }
-    this.writeLastMinutes();
+    this.writeLastMinutes(protectedMinute);
   }
 
   /**
@@ -666,15 +685,20 @@ class AutomationRunner {
    * 的触发器恰好复用了同一个 `workflowId:nodeId`"时才会误吞一次,而那些 id 都是 `uid()`
    * 现生成的),但攒着就是白占一次整库重写的字节。所以修剪放在写入前,按"最久没跑过"丢。
    */
-  private writeLastMinutes(): void {
+  private writeLastMinutes(protectedMinute: number): void {
     try {
-      // 超过上限时丢**最久没跑过**的那几条 —— 近期跑过的那些才是去重要用的。
+      // Retain every key for the current tick. Only OTHER minutes compete for
+      // the historical budget; the same retained rows go to memory and settings.
       const rows = [...this.lastMinute.entries()].sort((a, b) => b[1] - a[1]);
-      const kept = rows.slice(0, LAST_MINUTE_KEEP);
+      let historyCount = 0;
+      const kept = rows.filter(([, minute]) => {
+        if (minute === protectedMinute) return true;
+        historyCount += 1;
+        return historyCount <= LAST_MINUTE_HISTORY_KEEP;
+      });
       if (kept.length < rows.length) {
-        // **内存那一份也跟着收窄**,不只是写出去的那一份 —— 否则被丢掉的 key 还在
-        // 内存里挡着,下一次同分钟的那一条会被它吞掉(落盘与内存分家是这一处最容易
-        // 出的错)。
+        // Apply the same historical cleanup to memory and persisted settings.
+        // Current-minute keys must remain in both until that minute is over.
         this.lastMinute = new Map(kept);
       }
       SettingRepo.set(LAST_MINUTE_SETTING_KEY, JSON.stringify(Object.fromEntries(kept)));
@@ -717,7 +741,7 @@ class AutomationRunner {
     // `*.md` 也不冤 —— 平台没说改的是哪个文件,而"整个目录里有东西动了"是它给的全部。
     const abs = filename === null ? dir : join(dir, filename);
     for (const trigger of this.all()) {
-      if (trigger.spec.kind !== "file" || trigger.cwd !== dir) continue;
+      if (trigger.disarmed || trigger.spec.kind !== "file" || trigger.cwd !== dir) continue;
       // 绝对路径与**相对这个触发器项目目录**的路径都试一遍(同 `fileSubjects` 的理由:
       // 用户写下的是 `src/*.ts` 还是 `*.ts`,两种都有)。
       const subjects = fileSubjects([abs], trigger.cwd);
@@ -744,6 +768,55 @@ class AutomationRunner {
   }
 
   /** 事件流那一路。 */
+  /** Resolve only automation-owned node/side ancestry. A normal chat using
+   * the same workflow is still external. The visited set also handles corrupt cycles. */
+  private automationSourceOf(sessionId: string): Session | undefined {
+    const visited = new Set<string>();
+    let id: string | null = sessionId;
+    while (id !== null && !visited.has(id)) {
+      visited.add(id);
+      const session = SessionRepo.get(id);
+      if (session === undefined) return undefined;
+      if (session.kind === "automation") return session;
+      if (session.kind !== "node" && session.kind !== "side") return undefined;
+      id = session.parentSessionId ?? null;
+    }
+    return undefined;
+  }
+
+  private mergeEventChains(...chains: Array<readonly string[] | undefined>): string[] {
+    return [...new Set(chains.flatMap((chain) => chain ?? []))];
+  }
+
+  private eventChainForRun(chain: readonly string[] | undefined, workflowId: string): string[] {
+    const result = this.mergeEventChains(chain, [workflowId]);
+    if (result.length > EVENT_CHAIN_LIMIT) {
+      throw new Error(`自动化事件来源链超过${EVENT_CHAIN_LIMIT}个工作流，已停止扩张；请手动运行建立新链`);
+    }
+    return result;
+  }
+
+  /** Session-level ancestry of its latest automation dispatch. Not a universal
+   * per-event causal trace: unattributed system/file events still start new roots. */
+
+  private selfTriggerCount(workflowId: string): number {
+    const raw = SettingRepo.get(SELF_TRIGGER_COUNT_PREFIX + workflowId);
+    if (raw === null) return 0;
+    const count = Number(raw);
+    if (raw.trim().length === 0 || !Number.isInteger(count) || count < 0 || count > SELF_TRIGGER_LIMIT) {
+      throw new Error("自触发计数损坏；请手动运行一次重置后继续");
+    }
+    return count;
+  }
+
+  private selfTriggerBlockReason(workflowId: string): string | null {
+    try {
+      return this.selfTriggerCount(workflowId) >= SELF_TRIGGER_LIMIT ? SELF_TRIGGER_STOP_REASON : null;
+    } catch (err) {
+      return `无法读取自触发额度：${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
   private onEvent(e: RuntimeEvent): void {
     const event = HOOK_EVENT_OF[e.type];
     if (event === null) return;
@@ -751,6 +824,21 @@ class AutomationRunner {
     // 还没结束(见 `RuntimeManager.holdTurnEnd`)。不挡的话,一张十步的图会把一条
     // `turn.done` 触发器叫起来十次。
     if (e.type === "turn.done" && runtimeManager.isTurnEndHeld(e.sessionId)) return;
+
+    // A user's stop discards the pending next batch too. Otherwise its retry
+    // timer would silently restart the automation just after cancellation.
+    let cancelledWorkflow: string | undefined;
+    if (e.type === "turn.done" && e.reason === "interrupted") {
+      const source = SessionRepo.get(e.sessionId);
+      if (source?.kind === "automation") {
+        cancelledWorkflow = source.workflowId;
+        for (const [key, pending] of this.pendingFires) {
+          if (pending.trigger.workflowId !== cancelledWorkflow) continue;
+          if (pending.timer !== null) clearTimeout(pending.timer);
+          this.pendingFires.delete(key);
+        }
+      }
+    }
 
     // ⚠️ **一次事件只取一次事实。** `factsOf()` 是**有状态**的:`tool.result` 那个事件
     // 本身不带工具名,靠前面那条 `tool.use` 记下来的小表回查,而**回查即消费**
@@ -763,9 +851,19 @@ class AutomationRunner {
     // "这件事是关于哪一条"同样是**事件本身**的事实(资料库那两个事件有,其余没有)。
     // 与上面那条同理取一次 —— 它不是主语,不进 matcher(那两个事件压根没有可筛的维度)。
     const item = eventItemFactsOf(e);
+    const source = this.automationSourceOf(e.sessionId);
+    let sourceChain: string[] = [];
+    let sourceError: string | undefined;
+    try {
+      const origin = automationOriginOf(e);
+      if (origin) sourceChain = [...origin.workflowIds];
+      else if (source) sourceChain = readAutomationEventChain(source);
+    }
+    catch (err) { sourceError = `自动化事件来源链读取失败：${err instanceof Error ? err.message : String(err)}`; }
 
     for (const trigger of this.all()) {
-      if (trigger.spec.kind !== "event" || !trigger.spec.events.includes(event)) continue;
+      if (trigger.workflowId === cancelledWorkflow) continue;
+      if (trigger.disarmed || trigger.spec.kind !== "event" || !trigger.spec.events.includes(event)) continue;
       // 主语按**触发器自己的项目目录**算(相对路径那一份才有意义)。工具名那部分是
       // 上面取过一次的事实,与钩子共用同一份逻辑,不各记一份。
       const subjects = this.subjects.subjectsOf(e, trigger.cwd, facts.toolName);
@@ -776,7 +874,26 @@ class AutomationRunner {
       if (trigger.spec.matcher.length > 0 && !matchesAnyGlob(trigger.spec.matcher, subjects ?? [])) {
         continue;
       }
+      if (sourceError !== undefined) { this.skip(trigger, sourceError); continue; }
+      // A return to ANY ancestor is a cycle, including A -> B -> A. Ordinary
+      // A -> B traffic remains independent and does not spend the loop budget.
+      const selfOrigin = sourceChain.includes(trigger.workflowId);
+      if (selfOrigin) {
+        const reason = this.selfTriggerBlockReason(trigger.workflowId);
+        // Filter blocked self events BEFORE merging, so they cannot contaminate
+        // an otherwise valid external batch or keep rearming its timer.
+        if (reason !== null) { this.skip(trigger, reason); continue; }
+      }
+      const chain = this.mergeEventChains(this.pendingFires.get(triggerKey(trigger))?.eventChain, sourceChain);
+      try { this.eventChainForRun(chain, trigger.workflowId); }
+      catch (err) { this.skip(trigger, err instanceof Error ? err.message : String(err)); continue; }
       const pending = this.pendingOf(trigger);
+      pending.eventChain = chain;
+      pending.selfOrigin = pending.selfOrigin === true || selfOrigin;
+      if (!selfOrigin) {
+        pending.externalEvent = mergeEventPayload(pending.externalEvent, event, { toolName, subjects }, item);
+        pending.externalChain = this.mergeEventChains(pending.externalChain, sourceChain);
+      }
       // **这件事是关于哪一条**。与工具名同一条判据:它是**事件本身**的事实,与哪条触发器
       // 无关,所以只取一次。
       //
@@ -866,8 +983,7 @@ class AutomationRunner {
       };
     }
 
-    const active = SessionRepo.findAutomationByWorkflow(WATCH_WORKFLOW_ID);
-    if (active !== undefined && hasActiveRun(active.id)) {
+    if (SessionRepo.listAutomationsByWorkflow(WATCH_WORKFLOW_ID).some((s) => hasActiveRun(s.id))) {
       return { ok: false, error: "上一次守望还在跑 —— 等它结束,或在运行历史里看进度" };
     }
 
@@ -952,14 +1068,12 @@ class AutomationRunner {
   /**
    * 这条会话上有没有**正在跑的守望**(面板据此提示"上一次还在跑",D3)。
    *
-   * 按 `parent_session_id` 反查(只有守望起跑会在自动化会话上写发起会话),活跃与否
-   * 是**内存里**的事(`hasActiveRun`),存储层只负责"哪条是它的"。判断带上了
-   * `workflowId`:万一将来有别的自动化也记发起会话,这条查询不该把它们算进来。
+   * 在守望的全部项目会话中检查发起会话与活跃状态。不能只取最新一条，
+   * 否则新项目的一条空闲会话会遮住旧项目仍在运行的守望。
    */
   activeWatchOf(originSessionId: string): boolean {
-    const session = SessionRepo.findAutomationByOrigin(originSessionId);
-    return (
-      session !== undefined && session.workflowId === WATCH_WORKFLOW_ID && hasActiveRun(session.id)
+    return SessionRepo.listAutomationsByWorkflow(WATCH_WORKFLOW_ID).some(
+      (session) => session.parentSessionId === originSessionId && hasActiveRun(session.id),
     );
   }
 
@@ -975,12 +1089,23 @@ class AutomationRunner {
    * 与 `@contracts/ipc` 的 `AutomationTriggerFacts` 镜像)—— 运行史只回答"跑过什么",
    * 这里回答"它现在挂没挂上"。 */
   statusOf(workflowId: string): AutomationTriggerFacts[] {
-    return this.facts.ofWorkflow(workflowId);
+    return this.withSelfTriggerStatus(this.facts.ofWorkflow(workflowId));
   }
 
   /** 全部触发器事实 —— 「所有自动化」那个列表视角用的。 */
   statusAll(): AutomationTriggerFacts[] {
-    return this.facts.all();
+    return this.withSelfTriggerStatus(this.facts.all());
+  }
+
+  /** A persisted pause must be visible after reload/restart, before another event arrives. */
+  private withSelfTriggerStatus(rows: AutomationTriggerFacts[]): AutomationTriggerFacts[] {
+    const reasons = new Map<string, string | null>();
+    return rows.map((row) => {
+      if (row.kind !== "event") return row;
+      if (!reasons.has(row.workflowId)) reasons.set(row.workflowId, this.selfTriggerBlockReason(row.workflowId));
+      const reason = reasons.get(row.workflowId);
+      return reason ? { ...row, lastError: reason } : row;
+    });
   }
 
   /* ────────────────────────── 起一次运行 ────────────────────────── */
@@ -1006,9 +1131,9 @@ class AutomationRunner {
       // 存过盘(`apply` 会把 `entries` 换成新解的那一批)。`pending.trigger` 是**旧对象**
       // —— 拿它起跑就是按旧配置跑,而那正是用户刚改掉的东西。
       //
-      // 表里找不到它时退回攒着的那一份:多半是 ad-hoc 那条路(守望起跑,压根不在表里),
-      // 它本来就该照带来的那份跑。
-      const trigger = this.findLoaded(pending.trigger) ?? pending.trigger;
+      // 已删除、停用或停止服务的触发器不再派发旧批次。
+      const trigger = this.findLoaded(pending.trigger);
+      if (!this.started || trigger === undefined || trigger.disarmed) return;
       const payload =
         trigger.spec.kind === "file"
           // **载荷按 flush 这一刻现拼,并丢掉此刻已经不在了的那些**(见 `existingFilesOf`)。
@@ -1017,7 +1142,8 @@ class AutomationRunner {
           // 回来了(重命名来回、编辑器"写临时文件再改名"那种)就还在。
           ? ({ kind: "file", files: existingFilesOf(pending.files) } as const)
           : (pending.event ?? { kind: "manual" });
-      this.fire(trigger, payload);
+      this.fire(trigger, payload, { selfOrigin: pending.selfOrigin === true, externalEvent: pending.externalEvent,
+        eventChain: pending.eventChain, externalChain: pending.externalChain });
     }, Math.max(0, delayMs));
     // 攒着的那一下不该拖着进程不退出(退出时这一跑本来就该丢 —— 它还没开始)。
     pending.timer.unref();
@@ -1034,7 +1160,8 @@ class AutomationRunner {
   private fire(
     trigger: LoadedTrigger,
     payload: TriggerPayload,
-    opts?: { originSessionId?: string; manual?: boolean },
+    opts?: { originSessionId?: string; manual?: boolean; selfOrigin?: boolean; externalEvent?: TriggerPayload;
+      eventChain?: readonly string[]; externalChain?: readonly string[] },
   ): AutomationRunResult {
     try {
       // An old debounced event may fire while a new workflow revision reloads.
@@ -1051,6 +1178,24 @@ class AutomationRunner {
       if (trigger.disarmed && opts?.manual !== true) {
         return { ok: true };
       }
+      let selfOrigin = opts?.manual !== true && opts?.selfOrigin === true;
+      let eventChain = opts?.eventChain;
+      if (selfOrigin) {
+        // Recheck at dispatch: another trigger may have spent the last unit
+        // after this batch was accepted into the debounce window.
+        const reason = this.selfTriggerBlockReason(trigger.workflowId);
+        if (reason !== null) {
+          if (opts?.externalEvent?.kind !== "event") return this.skip(trigger, reason);
+          log.info(`[automation] 循环事件部分已跳过：${reason}；保留外部事件`);
+          // Another trigger exhausted the budget while this mixed batch waited.
+          // Discard only its self-origin part, not the legitimate external data.
+          payload = opts.externalEvent;
+          eventChain = opts.externalChain;
+          selfOrigin = false;
+        }
+      }
+      const runChain = this.eventChainForRun(
+        payload.kind === "event" && opts?.manual !== true ? eventChain : undefined, trigger.workflowId);
       // 项目**每次现读**:建会话时用的是它,而用户完全可能把项目移走。
       //
       // **可以没有用户项目**(空串 = 触发器没绑):事件运行用宿主目录。
@@ -1061,17 +1206,59 @@ class AutomationRunner {
         return this.skip(trigger, `项目不在了(${trigger.projectId})—— 这条自动化没有工作目录`);
       }
       const cwd = project?.path ?? process.cwd();
-      const session = this.sessionOf(trigger, project?.id ?? "", opts?.originSessionId);
-      // **重入保护(D12):上一次还在跑就跳过这一次。** 排队会让"文件改了十次"变成
-      // 十次运行,而界面上「上次运行:进行中」已经把这件事说清楚了。
-      if (hasActiveRun(session.id)) {
+      // Check ALL project sessions before creating/rebinding one. A newer idle
+      // session must not hide an older active run or let us rewrite its origin.
+      // Never overlap runs. Data-bearing triggers retain ONE coalesced next
+      // batch; schedule/status events keep the existing skip policy (no cron
+      // catch-up or replay storm). An explicit manual click still reports busy.
+      if (SessionRepo.listAutomationsByWorkflow(trigger.workflowId).some((s) => hasActiveRun(s.id))) {
+        if (opts?.manual !== true && (payload.kind === "file" ||
+            (payload.kind === "event" && (payload.items?.length ?? 0) > 0))) {
+          const pending = this.pendingOf(trigger);
+          pending.selfOrigin = pending.selfOrigin === true || selfOrigin;
+          pending.eventChain = this.mergeEventChains(pending.eventChain, eventChain);
+          pending.externalChain = this.mergeEventChains(pending.externalChain, selfOrigin ? opts?.externalChain : eventChain);
+          const external = selfOrigin ? opts?.externalEvent : payload;
+          if (external?.kind === "event") {
+            for (const item of external.items?.length ? external.items : [undefined]) {
+              pending.externalEvent = mergeEventPayload(pending.externalEvent, external.event,
+                { toolName: external.toolName, subjects: external.subjects }, item);
+            }
+          }
+          if (payload.kind === "file") {
+            pending.files = [...new Set([...pending.files, ...payload.files])];
+          } else {
+            for (const item of payload.items ?? []) {
+              pending.event = mergeEventPayload(pending.event, payload.event,
+                { toolName: payload.toolName, subjects: payload.subjects }, item);
+            }
+          }
+          // Reuse the same lifecycle as debounce: disable, project changes,
+          // deletion, cancellation and dispose all clear the pending batch.
+          this.rearm(pending, 1_000);
+          return { ok: true };
+        }
         return this.skip(trigger, "上一次还在跑,这一次触发已跳过");
       }
 
+      const session = this.sessionOf(trigger, project?.id ?? "", opts?.originSessionId);
       const payloadText = describeTriggerPayload(payload);
       const prompt = `${trigger.task}\n\n${payloadText}`;
       // 运行时可能还没绑(应用刚起来,或者这条自动化是新建的)—— `bindSession` 幂等。
       runtimeManager.bindSession(session);
+      // Reserve synchronously BEFORE dispatch. Busy/rejected/manual-validation
+      // failures do not reset or spend the budget; failed provider starts may
+      // conservatively spend a unit. A synchronous settings error prevents self
+      // dispatch; crash durability still follows SettingRepo's persistence policy.
+      if (opts?.manual === true) {
+        SettingRepo.set(SELF_TRIGGER_COUNT_PREFIX + trigger.workflowId, "0");
+      } else if (selfOrigin) {
+        SettingRepo.set(SELF_TRIGGER_COUNT_PREFIX + trigger.workflowId,
+          String(this.selfTriggerCount(trigger.workflowId) + 1));
+      }
+      // Capture ancestry before the runner can emit events. Explicit manual,
+      // schedule, file and genuinely unattributed external runs start new roots.
+      SettingRepo.set(EVENT_CHAIN_PREFIX + session.id, JSON.stringify({ version: 1, workflowIds: runChain }));
       // **起跑即记**(AUTO-09):这是「最近一次什么时候跑的」的那一笔。守望起跑那条
       // ad-hoc 路径没有经过 buildTriggers 的登记,这一笔顺带就是它的登记。
       this.facts.recordFired(triggerSeedOf(trigger), Date.now());
@@ -1129,17 +1316,18 @@ class AutomationRunner {
   }
 
   /**
-   * 这条自动化的后台会话。**一条一个,复用不重建**(D10)。
+   * 这条自动化在当前项目的后台会话。**同项目复用，跨项目隔离**(D10)。
    *
-   * 归属靠 `workflowId` 认(`SessionRepo.findAutomationByWorkflow`),所以界面上改了多少
-   * 次图都还是同一个会话 —— 运行历史因此是**这条自动化**的历史,而不是"某一次运行"的。
+   * 身份为(workflowId, projectId)。切项目不改写旧会话，也不继承旧项目的提供方/
+   * 节点上下文；切回来仍认回原会话。历史按工作流汇总全部项目，不丢旧记录。
    *
    * `originSessionId`(守望起跑才有):复用时发起会话换了就**落库再返回新值** ——
    * 运行路径读的是手里这一份,不回头查表;新建时直接带上。别的触发路不传,
    * 保持"没有发起人"。
    */
   private sessionOf(trigger: LoadedTrigger, projectId: string, originSessionId?: string): Session {
-    const existing = SessionRepo.findAutomationByWorkflow(trigger.workflowId);
+    projectId = projectId || SYSTEM_AUTOMATION_PROJECT_ID;
+    const existing = SessionRepo.findAutomationByWorkflow(trigger.workflowId, projectId);
     if (existing !== undefined) {
       if (originSessionId !== undefined && existing.parentSessionId !== originSessionId) {
         SessionRepo.setParentSessionId(existing.id, originSessionId);
@@ -1148,7 +1336,7 @@ class AutomationRunner {
       return existing;
     }
     const now = Date.now();
-    if (projectId.length === 0) {
+    if (projectId === SYSTEM_AUTOMATION_PROJECT_ID) {
       // 项目为空的事件触发器是合法的(内置「导入后下载/下载后转录」就是这样),
       // 但 sessions.project_id 是 NOT NULL + 外键。以前建会话填 "" 会在这里
       // FOREIGN KEY constraint failed,图明明响着却永远跑不起来。
@@ -1167,7 +1355,6 @@ class AutomationRunner {
           updatedAt: now,
         });
       }
-      projectId = SYSTEM_AUTOMATION_PROJECT_ID;
     }
     const session: Session = {
       id: uid("sess_"),

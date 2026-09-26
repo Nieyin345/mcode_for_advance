@@ -230,6 +230,8 @@ export const zh = {
   "library.links.empty": "还没有关联。",
   "library.links.out": "关联到",
   "library.links.in": "被关联",
+  "library.links.mdBundle": "转录 Markdown 与它的图床（{count} 张图）跟本条是一个整体 —— 引用一起挂，删除一起删。",
+  "library.links.mdBundleNoImages": "转录 Markdown 跟本条是一个整体 —— 引用一起挂，删除一起删。",
   "library.links.remove": "解除",
   "library.links.removeConfirm": "解除这条关联？",
   "library.links.suppressed": "已被屏蔽：{reason}",

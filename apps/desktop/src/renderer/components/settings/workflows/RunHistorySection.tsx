@@ -10,14 +10,15 @@
  *
  * ## 挂载方式与 AutomationRunSection 同一条纪律
  *
- * 会话 id 来自 `automation.sessions`(没跑过就是 null —— 那时也没有历史可言)。
+ * 全部项目会话 id 来自 `automation.sessions`，每次刷新重新获取并汇总历史。
  * `runs.history` 读不出来就**当没有**:显示一句读不出来的小字,不弹错 —— 右栏是常用
  * 面板,为一条还没就绪的通道常驻红字没有意义(同 `AutomationRunSection` 文件头)。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ComponentType } from "react";
 import type { PersistedWorkflowRunLite } from "@contracts/ipc";
 import { api } from "@renderer/lib/api.js";
+import { loadAutomationHistory } from "@renderer/lib/automationHistory.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import {
@@ -45,46 +46,36 @@ export const RUN_STATUS_META: Record<string, { Icon: ComponentType<{ size: numbe
 
 export function RunHistorySection({ workflowId }: { workflowId: string }) {
   const { t } = useI18n();
-  /** 这条自动化的后台会话。null = 还没跑过(也没有历史可言)。 */
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  // Ignore stale refreshes after a workflow switch or unmount.
+  const refreshVersion = useRef(0);
   const [runs, setRuns] = useState<PersistedWorkflowRunLite[]>([]);
   /** 通道没就绪/读失败的原因。**只占一行小字**,不弹错。 */
   const [error, setError] = useState<string | null>(null);
   /** 展开的是哪一条(runId)。单开:一次只看一条的过程,再点一条就换。 */
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  useEffect(() => {
-    let alive = true;
-    api.automation
-      .sessions({ workflowId })
-      .then((res) => {
-        if (alive) setSessionId(res.sessionId);
-      })
-      .catch(() => {
-        if (alive) setSessionId(null);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [workflowId]);
-
   const refresh = useCallback(async (): Promise<void> => {
-    if (sessionId === null) {
-      setRuns([]);
-      return;
-    }
+    const version = ++refreshVersion.current;
     try {
-      const rows = await api.runs.history({ sessionId, limit: 50 });
+      const rows = await loadAutomationHistory(workflowId, {
+        sessions: (input) => api.automation.sessions(input),
+        history: (input) => api.runs.history(input),
+      });
+      if (version !== refreshVersion.current) return;
       setRuns(rows);
       setError(null);
     } catch (err) {
+      if (version !== refreshVersion.current) return;
       setRuns([]);
       setError((err as Error).message);
     }
-  }, [sessionId]);
+  }, [workflowId]);
 
   useEffect(() => {
+    setRuns([]);
+    setExpanded(null);
     void refresh();
+    return () => { refreshVersion.current += 1; };
   }, [refresh]);
 
   return (

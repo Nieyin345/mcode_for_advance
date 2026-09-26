@@ -1,3 +1,4 @@
+import { automationOriginOf, inheritAutomationOrigin, snapshotAutomationOrigin, withAutomationOrigin, type AutomationEventOrigin } from "@main/orchestration/automationEventOrigin.js";
 /**
  * RuntimeManager — per-session turn lifecycle, now provider-agnostic.
  *
@@ -22,7 +23,7 @@ import { mobileEventBus } from "@main/mobile/MobileEventBus.js";
 import { invalidateUsageStats } from "@main/lib/usageStats.js";
 import { log } from "@main/lib/logger.js";
 import { backflowPrompt, clearBackflow, peekBackflow } from "@main/lib/pendingBackflow.js";
-import { clearAgentMail, peekAgentMail, setDeliveryPort } from "@main/lib/agentMail.js";
+import { clearAgentMail, peekAgentMailBatch, setDeliveryPort } from "@main/lib/agentMail.js";
 import { resolveAgentPrompt, resolveWorkflowPrompt } from "@main/orchestration/prompt.js";
 import { memorySectionFrom } from "@contracts/memory";
 import { buildEnvPrompt, envPromptFingerprint } from "@main/providers/envPrompt.js";
@@ -129,6 +130,7 @@ interface SessionRuntime {
   lastTurnInput?: {
     prompt: string;
     cwd: string;
+    automationOrigin?: AutomationEventOrigin;
     skills?: string[];
     mcpServerNames?: string[];
     pluginNames?: string[];
@@ -186,6 +188,20 @@ function isHiddenSessionKind(kind: Session["kind"]): boolean {
   return kind === "node" || kind === "automation";
 }
 
+/** 给用户解释为什么这份自定义模型配置无法使用;不输出内部 id 或明文密钥。 */
+function customModelUnavailableMessage(id: string): string {
+  let reason = "所选自定义模型配置不可用";
+  try {
+    const saved = CustomModelStore.listPublic().find((item) => item.id === id);
+    if (!saved) reason = "所选自定义模型配置已删除或不存在";
+    else if (!saved.models.some((model) => model.id.trim())) reason = `自定义模型「${saved.name}」没有配置可用模型`;
+    else if (saved.protocol !== "web" && !saved.authTokenMasked) reason = `自定义模型「${saved.name}」密钥缺失或无法解密`;
+  } catch {
+    log.warn(`sendTurn: could not inspect invalid custom-model config ${id}`);
+  }
+  return `${reason}。本次未发送到默认端点；请在“自定义模型”设置中修复配置或改选模型后重试。`;
+}
+
 /** How long the turn.done handler waits before settling a stashed pending
  *  turn-end record with whatever snapshot is known. Must exceed the adapter's
  *  path-B control-channel race (CONTEXT_USAGE_PATH_B_TIMEOUT_MS = 3s) so an
@@ -229,9 +245,13 @@ class RuntimeManager {
    *
    * 存在的理由只有一个:**代理互发消息时该叫醒还是该排队**(见 {@link canWakeSession})。
    * 不 import 调度器是因为调度器已经 import 了这个文件,反过来会成环。
-   * 没人注册时按 `false`(保守)—— 那只会让消息晚一轮到,而赌错了会废掉一步产出。
+   * 没人注册时 `canWakeSession` 按不能叫醒处理(保守)—— 那只会让消息晚一轮到,
+   * 而赌错了会废掉一步产出。独立的 side 会话不受这道闸门管理。
    */
   private runGuard: ((sessionId: string) => boolean) | null = null;
+  /** 翻译桥与 `startTurn` 都可能异步等待;拿到 handle 前 `isRunning()` 仍为 false。
+   *  这段空窗里绝不能启动第二轮或把一封信谎称为已叫醒。 */
+  private startingSessions = new Set<string>();
 
   /**
    * 把这一轮面向界面的 `turn.done` **扣住不发**,返回解除用的函数(幂等)。
@@ -373,6 +393,7 @@ class RuntimeManager {
    */
   emitExternal(event: RuntimeEvent): void {
     const e = stampTurnEnd(event);
+    inheritAutomationOrigin(event, e);
     this.fanOutToClients(e);
     this.notifySubscribers(e);
   }
@@ -388,8 +409,9 @@ class RuntimeManager {
   echoUserMessage(
     sessionId: string,
     userMessage: { id: string; createdAt: number; blocks: unknown[]; editedMessageId?: string },
+    automationOrigin?: AutomationEventOrigin,
   ): void {
-    this.emitExternal({
+    withAutomationOrigin((event) => this.emitExternal(event), automationOrigin)({
       type: "user.message",
       sessionId,
       messageId: userMessage.id,
@@ -573,6 +595,7 @@ class RuntimeManager {
       // 所以这句对普通会话是恒等的(见 `setInteractiveProxy` / `retargetEvent`)。
       const routed = this.routeOf(session.id);
       const e: RuntimeEvent = retargetEvent(stamped, routed);
+      inheritAutomationOrigin(rawEvent, e);
       // 工作流节点是**隐藏会话**:它自己的流水(text / tool / turn.done / usage)没有
       // 任何界面消费 —— 推给渲染端只会变成幻影消息、点不掉的未读和"N 个回合完成"
       // 的提示(见 `orchestration/runner.ts`)。所以**只有被改写过的交互事件**才发往
@@ -692,7 +715,7 @@ class RuntimeManager {
             kind: "fallback",
             message: `模型 ${from} 本回合失败，自动改用 ${nextModel} 重试`,
           });
-          const retryInput = rt.lastTurnInput;
+          const retryInput = { ...rt.lastTurnInput, automationOrigin: automationOriginOf(e) };
           rt.fallbackRetryModel = nextModel;
           // 下一跳事件循环再发：让 turn.done 的落盘链路先走完，也别在 emit
           // 调用栈里递归 sendTurn（那会让嵌套事件和持久化交错）。
@@ -899,6 +922,8 @@ class RuntimeManager {
     session: Session,
     input: {
       prompt: string;
+      /** Internal host provenance; deliberately absent from IPC/provider request contracts. */
+      automationOrigin?: AutomationEventOrigin;
       cwd: string;
       skills?: string[];
       /** MCP 服务器 / 插件的允许清单 —— 空/缺席 = 不限制。和 `skills` 是同一套读法,
@@ -927,12 +952,66 @@ class RuntimeManager {
       log.warn(`sendTurn: no runtime bound for session ${session.id}`);
       return null;
     }
-    if (rt.handle?.isRunning()) {
+    if (rt.handle?.isRunning() || this.startingSessions.has(session.id)) {
       log.warn(`sendTurn: session ${session.id} already running, ignoring`);
       return null;
     }
 
+    // 从这里就占住启动闸:自定义模型的 BridgeRegistry.acquire 也要 await,
+    // 不能等到 provider.startTurn 前才上锁。无论配置/桥/引擎哪一步抛错都释放。
+    this.startingSessions.add(session.id);
+    try {
+      return await this.sendTurnBound(session, { ...input, automationOrigin: snapshotAutomationOrigin(input.automationOrigin) }, rt);
+    } finally {
+      this.startingSessions.delete(session.id);
+    }
+  }
+
+  private resolveCustomConfig(session: Session): ReturnType<typeof CustomModelStore.resolveApiConfig> {
+    if (!session.customModelId) return undefined;
+    try {
+      return CustomModelStore.resolveApiConfig(session.customModelId, session.model);
+    } catch {
+      // 手工修改后的畸形配置也不能把解析异常(可能含敏感字段)原样透出。
+      return undefined;
+    }
+  }
+
+  /** 用户发送和代理叫醒共用这一种失败回执,不用让任一端留在 running。 */
+  private reportInvalidCustomModel(
+    session: Session,
+    rt: SessionRuntime,
+    input?: Parameters<RuntimeManager["sendTurn"]>[1],
+  ): string {
+    const message = customModelUnavailableMessage(session.customModelId!);
+    log.warn(`sendTurn: custom model ${session.customModelId} unavailable; turn rejected`);
+    try {
+      SessionRepo.updateStatus(session.id, "errored");
+    } catch (err) {
+      log.error(`sendTurn: failed to persist rejected turn status: ${(err as Error).message}`);
+    }
+    // 发送方已经把用户气泡写进本地流;其他客户端还没看到它。
+    // 出错也先同步原话再同步错误,不能让手机/桌面只看到一句没来由的失败。
+    if (input?.userMessage) this.echoUserMessage(session.id, input.userMessage, input.automationOrigin);
+    withAutomationOrigin(rt.ctx.emit, input?.automationOrigin)({ type: "error", sessionId: session.id, message, code: "custom_model_unavailable" });
+    return message;
+  }
+
+  private async sendTurnBound(
+    session: Session,
+    input: Parameters<RuntimeManager["sendTurn"]>[1],
+    rt: SessionRuntime,
+  ): Promise<TurnHandle | null> {
+    // 在修改文件快照、轮次计数、预算状态之前验证。配置失效绝不能把原本
+    // 发给自定义端点的内容改投默认端点;错误要送到渲染端和手机 SSE,
+    // 同时抛给发送方的 IPC/RPC(手机即使没连 SSE 也能看到失败原因)。
+    const customConfig = this.resolveCustomConfig(session);
+    if (session.customModelId && !customConfig) {
+      throw new Error(this.reportInvalidCustomModel(session, rt, input));
+    }
+
     const provider = providerRegistry.resolve(session.providerId);
+    const emit = withAutomationOrigin(rt.ctx.emit, input.automationOrigin);
 
     // A previous turn that ended without any turn-end snapshot (all-zero
     // usage / abort before result) left its usage-history record pending —
@@ -991,14 +1070,14 @@ class RuntimeManager {
     // flush — the capsule and the side-panel viewer keep showing earlier
     // turns' subagents, running ones first, until the session is deleted.
     if (rt.lastSubagents.length > 0) {
-      rt.ctx.emit({
+      emit({
         type: "subagent.update",
         sessionId: session.id,
         agents: rt.lastSubagents,
       });
     }
     for (const [parentToolUseId, blocks] of rt.subagentTranscripts) {
-      rt.ctx.emit({
+      emit({
         type: "subagent.transcript",
         sessionId: session.id,
         parentToolUseId,
@@ -1029,36 +1108,48 @@ class RuntimeManager {
         ? session.model
         : undefined;
     rt.fallbackRetryModel = undefined;
-    if (session.customModelId) {
-      const cfg = CustomModelStore.resolveApiConfig(session.customModelId, session.model);
-      if (!cfg) {
-        log.warn(`sendTurn: custom model ${session.customModelId} not found, token undecryptable, or no model configured; falling back to default endpoint`);
-      } else {
-        // OpenAI-protocol endpoints need an in-process bridge that impersonates
-        // Anthropic /v1/messages. We rewrite the apiConfig to point at the
-        // local bridge, so the rest of the pipeline (buildCustomEnv, the binary)
-        // is completely unaware anything special is happening — it just sees an
-        // Anthropic-compatible endpoint on localhost. The bridge is shared
-        // across sessions via the registry (keyed by config id, ref-counted).
-        // `web` 与 `openai` 一样要走本地 bridge —— 区别只在 bridge 的"上游"是什么
-        // （HTTP 端点 vs 内嵌浏览器里的网页，见 bridge/webUpstream.ts）。
-        if (cfg.protocol === "openai" || cfg.protocol === "web") {
-          // Release any bridge we're holding for a DIFFERENT config (the user
-          // may have switched custom models mid-session), then acquire for the
-          // current one. We hold exactly one bridge per session; same-config
-          // repeats across turns reuse the existing handle without bumping the
-          // ref count again.
-          if (rt.bridgeConfigId && rt.bridgeConfigId !== session.customModelId) {
-            rt.bridgeStatusUnsubscribe?.();
-            rt.bridgeStatusUnsubscribe = undefined;
-            BridgeRegistry.release(rt.bridgeConfigId);
-            rt.bridgeConfigId = undefined;
-            rt.bridgeHandle = undefined;
-          }
-          try {
-            if (!rt.bridgeConfigId) {
-              const handle = await BridgeRegistry.acquire(session.customModelId, cfg);
-              rt.bridgeConfigId = session.customModelId;
+    if (session.customModelId && customConfig) {
+      const cfg = customConfig;
+      // OpenAI-protocol endpoints need an in-process bridge that impersonates
+      // Anthropic /v1/messages. We rewrite the apiConfig to point at the
+      // local bridge, so the rest of the pipeline (buildCustomEnv, the binary)
+      // is completely unaware anything special is happening — it just sees an
+      // Anthropic-compatible endpoint on localhost. The bridge is shared
+      // across sessions via the registry (keyed by config id, ref-counted).
+      // `web` 与 `openai` 一样要走本地 bridge —— 区别只在 bridge 的"上游"是什么
+      // （HTTP 端点 vs 内嵌浏览器里的网页，见 bridge/webUpstream.ts）。
+      if (cfg.protocol === "openai" || cfg.protocol === "web") {
+        // Release any bridge we're holding for a DIFFERENT config (the user
+        // may have switched custom models mid-session), then acquire for the
+        // current one. We hold exactly one bridge per session; same-config
+        // repeats across turns reuse the existing handle without bumping the
+        // ref count again.
+        if (rt.bridgeConfigId && rt.bridgeConfigId !== session.customModelId) {
+          rt.bridgeStatusUnsubscribe?.();
+          rt.bridgeStatusUnsubscribe = undefined;
+          BridgeRegistry.release(rt.bridgeConfigId);
+          rt.bridgeConfigId = undefined;
+          rt.bridgeHandle = undefined;
+        }
+        try {
+          if (!rt.bridgeConfigId) {
+            const handle = await BridgeRegistry.acquire(session.customModelId, cfg);
+            rt.bridgeConfigId = session.customModelId;
+            rt.bridgeHandle = { localUrl: handle.localUrl };
+            rt.bridgeStatusUnsubscribe = handle.onStatus((status) => {
+              rt.ctx.emit({
+                type: "upstream.issue",
+                sessionId: session.id,
+                kind: status.kind,
+                cause: status.cause,
+                attempt: status.attempt,
+                attempts: status.attempts,
+              } satisfies UpstreamIssueEvent);
+            });
+          } else {
+            const handle = await BridgeRegistry.refreshHeld(session.customModelId, cfg);
+            if (!rt.bridgeHandle || rt.bridgeHandle.localUrl !== handle.localUrl) {
+              rt.bridgeStatusUnsubscribe?.();
               rt.bridgeHandle = { localUrl: handle.localUrl };
               rt.bridgeStatusUnsubscribe = handle.onStatus((status) => {
                 rt.ctx.emit({
@@ -1070,47 +1161,31 @@ class RuntimeManager {
                   attempts: status.attempts,
                 } satisfies UpstreamIssueEvent);
               });
-            } else {
-              const handle = await BridgeRegistry.refreshHeld(session.customModelId, cfg);
-              if (!rt.bridgeHandle || rt.bridgeHandle.localUrl !== handle.localUrl) {
-                rt.bridgeStatusUnsubscribe?.();
-                rt.bridgeHandle = { localUrl: handle.localUrl };
-                rt.bridgeStatusUnsubscribe = handle.onStatus((status) => {
-                  rt.ctx.emit({
-                    type: "upstream.issue",
-                    sessionId: session.id,
-                    kind: status.kind,
-                    cause: status.cause,
-                    attempt: status.attempt,
-                    attempts: status.attempts,
-                  } satisfies UpstreamIssueEvent);
-                });
-              }
             }
-          } catch (err) {
-            throw new Error(`自定义模型翻译桥启动失败: ${(err as Error).message}`);
           }
-          const localUrl = rt.bridgeHandle?.localUrl;
-          if (!localUrl) throw new Error("自定义模型翻译桥启动失败: no local bridge URL");
-          // Rewrite the apiConfig to point at the local bridge so the rest of
-          // the pipeline (buildCustomEnv, the binary) is completely unaware —
-          // it just sees an Anthropic-compatible endpoint on localhost.
-          // `authToken` 一并补上占位串：本地 bridge 不校验凭据（只绑 127.0.0.1，
-          // 见 bridgeServer），但 Claude Code 手里一份凭据都没有时会直接以
-          // 「Not logged in · Please run /login」拒绝这一轮 —— 而网页端模型恰恰
-          // 没有 token（身份在浏览器那个分区的登录 cookie 里，secretStore 对 web
-          // 免除了 token 要求，见那里 `isWebProtocol` 分支）。openai 协议有真
-          // token，走到这里原样保留。
-          apiConfig = {
-            ...cfg,
-            baseUrl: localUrl,
-            authToken: cfg.authToken || "mcode-local-bridge",
-          };
-        } else {
-          apiConfig = cfg;
+        } catch (err) {
+          throw new Error(`自定义模型翻译桥启动失败: ${(err as Error).message}`);
         }
-        modelForReq = undefined; // env pins ANTHROPIC_MODEL via buildCustomEnv
+        const localUrl = rt.bridgeHandle?.localUrl;
+        if (!localUrl) throw new Error("自定义模型翻译桥启动失败: no local bridge URL");
+        // Rewrite the apiConfig to point at the local bridge so the rest of
+        // the pipeline (buildCustomEnv, the binary) is completely unaware —
+        // it just sees an Anthropic-compatible endpoint on localhost.
+        // `authToken` 一并补上占位串：本地 bridge 不校验凭据（只绑 127.0.0.1，
+        // 见 bridgeServer），但 Claude Code 手里一份凭据都没有时会直接以
+        // 「Not logged in · Please run /login」拒绝这一轮 —— 而网页端模型恰恰
+        // 没有 token（身份在浏览器那个分区的登录 cookie 里，secretStore 对 web
+        // 免除了 token 要求，见那里 `isWebProtocol` 分支）。openai 协议有真
+        // token，走到这里原样保留。
+        apiConfig = {
+          ...cfg,
+          baseUrl: localUrl,
+          authToken: cfg.authToken || "mcode-local-bridge",
+        };
+      } else {
+        apiConfig = cfg;
       }
+      modelForReq = undefined; // env pins ANTHROPIC_MODEL via buildCustomEnv
     }
 
     // Cross-client user-message echo — emitted BEFORE the provider turn
@@ -1118,7 +1193,7 @@ class RuntimeManager {
     // assistant event. Shared with the scheduler's graph path (which has no
     // provider turn to echo from).
     if (input.userMessage) {
-      this.echoUserMessage(session.id, input.userMessage);
+      this.echoUserMessage(session.id, input.userMessage, input.automationOrigin);
     }
 
     // 这一轮要追加的工作流片段。**解析放在 host** —— 提供方只负责 append 一段字符串,
@@ -1193,7 +1268,8 @@ class RuntimeManager {
     //
     // 排在 backflow **后面**:"图跑完的产出"是背景,而"某个代理问你一句话"是**要办的事**
     // —— 越靠近这一轮的正题越好。
-    const mail = peekAgentMail(session.id);
+    const mailBatch = peekAgentMailBatch(session.id);
+    const mail = mailBatch.text;
 
     const backflowAll = [backflow, mail].filter((s) => s.length > 0).join("\n\n");
 
@@ -1241,13 +1317,20 @@ class RuntimeManager {
       fallbackModels: rt.fallbackModels.length > 0 ? rt.fallbackModels : undefined,
     };
 
-    const handle = await provider.startTurn(req, rt.ctx);
+    const handle = await provider.startTurn(req, {
+      ...rt.ctx, emit,
+      // These host callbacks emit too; use this turn's immutable provenance,
+      // not the session-level handlers captured by bindSession.
+      requestApproval: approvalBridge.makeApprovalHandler(session.id, emit),
+      requestUserInput: approvalBridge.makeUserInputHandler(session.id, emit),
+      requestPlanApproval: approvalBridge.makePlanApprovalHandler(session.id, emit),
+    });
     // 回合起来了,那两段才算真的送到了 —— 见上面 `peekBackflow` 那段注释。
     if (handle !== null && backflowAll.length > 0) {
       clearBackflow(session.id);
-      // 收件箱**只清真的带进去的那些**:`peekAgentMail` 取的是当时队列里的全部,所以
-      // 清了不影响这一轮看不到的(清空 = 那一整批都进过这一轮了)。
-      if (mail.length > 0) clearAgentMail(session.id);
+      // 只确认本轮 peek 时读到的前缀。startTurn 尚未返回时新来的信
+      // 不在 req.prompt 里,绝不能用“清空整份收件箱”把它也删掉。
+      if (mail.length > 0) clearAgentMail(session.id, mailBatch.through);
     }
     // 回退重发的输入快照：req 里的最终形态（prompt 已拼好 backflow / 工作流
     // 片段）。回合失败要原样重发，就从这里取。
@@ -1259,6 +1342,7 @@ class RuntimeManager {
         mcpServerNames: req.mcpServerNames,
         pluginNames: req.pluginNames,
         images: req.images,
+        automationOrigin: input.automationOrigin,
       };
     }
     rt.handle = handle;
@@ -1333,6 +1417,11 @@ class RuntimeManager {
     return this.sessions.get(sessionId)?.handle?.isRunning() ?? false;
   }
 
+  /** Includes async provider startup, before a running TurnHandle exists. */
+  isBusy(sessionId: string): boolean {
+    return this.startingSessions.has(sessionId) || this.isRunning(sessionId);
+  }
+
   /**
    * **能不能替这个空闲会话起一轮** —— 代理互发消息时,投递那一侧靠它决定"叫醒"还是"排队"。
    *
@@ -1342,30 +1431,41 @@ class RuntimeManager {
    * ⚠️ **判据用一个注册进来的谓词**(`registerRunGuard`),不 import 调度器 —— 调度器
    * 已经 import 了这个文件,反过来 import 会成环。
    *
-   * 谓词**没注册时返回 false**(保守):宁可晚一轮送到,也不要赌一把把图弄乱。
+   * 主对话本身也可能被图管着(对话节点会跑在主会话里),所以 chat 查自己的 id,
+   * node 查父会话的 id。side 独立并发,不受图管理。谓词没注册时,
+   * 除 side 外一律返回 false(保守):宁可晚一轮送到,也不要把图弄乱。
    */
   canWakeSession(sessionId: string): boolean {
+    if (this.startingSessions.has(sessionId)) return false;
     const session = SessionRepo.get(sessionId);
     if (!session) return false;
-    // 用户驱动的会话没有谁在等它的 turn.done —— 恒为能。
-    if (session.kind === "chat" || session.kind === "side") return true;
-    if (session.parentSessionId === null) return false;
-    return !(this.runGuard?.(session.parentSessionId) ?? false);
+    if (session.kind === "side") return true;
+    const ownerId = session.kind === "chat" ? session.id : session.parentSessionId;
+    return ownerId !== null && this.runGuard !== null && !this.runGuard(ownerId);
   }
 
   /**
-   * 替一个空闲会话起一轮(把 `text` 当这一轮的提示词)。起成了 → true。
+   * 替一个空闲会话发起一轮(把 `text` 当这一轮的提示词)。返回 true 只表示
+   * 发起请求,真正拿到提供方句柄后才由 sendTurn 确认并清除收件箱。
    *
    * 注意这里**不 await 整轮**(长任务会好几分钟):调用方是投递那一侧,它要的是一个
    * "收下了没有"的即时答复。收尾由那一轮自己的 `turn.done` 走。
    *
-   * ⚠️ 起手就**再确认一次空闲**:调用方判断与这里执行之间隔着几步,而这一小会儿它可能
-   * 已经被别的路叫醒了。
+   * ⚠️ 起手就**再确认空闲、图闸门与运行时绑定**:不允许绕开 `canWakeSession`
+   * 直接叫醒被图管着的会话;没有绑定的运行时会让 `sendTurn` 返回 null,
+   * 此时必须返回 false,不能假装已投递(调用方会退回收件箱)。
    */
   wakeSession(sessionId: string, text: string): boolean {
     const session = SessionRepo.get(sessionId);
-    if (!session) return false;
-    if (this.isRunning(sessionId)) return false;
+    const rt = this.sessions.get(sessionId);
+    if (!session || !rt) return false;
+    if (this.isRunning(sessionId) || !this.canWakeSession(sessionId)) return false;
+    // wake 是同步回执。若配置在这里就已失效,不能先向发信代理声称
+    // “叫醒成功”再异步失败:返回 false 让投递方如实排队保留这封信。
+    if (session.customModelId && !this.resolveCustomConfig(session)) {
+      this.reportInvalidCustomModel(session, rt);
+      return false;
+    }
     const cwd = this.cwdForWake(session);
     if (cwd === null) return false;
     void this.sendTurn(session, { prompt: text, cwd }).catch((err: unknown) =>
@@ -1401,7 +1501,7 @@ class RuntimeManager {
   }
 
   /**
-   * 注册"这张图此刻在不在跑"的谓词。**由调度器模块在装配时调**(见 `orchestration/runner.ts`)
+   * 注册"这张图此刻在不在跑"的谓词。**在应用装配时调**(见 `main/index.ts`)
    * —— 这一层不 import 它(会成环,同 `canWakeSession` 上的说明)。
    */
   registerRunGuard(guard: ((sessionId: string) => boolean) | null): void {

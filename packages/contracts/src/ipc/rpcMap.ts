@@ -730,9 +730,9 @@ export interface RpcMap {
   "automation.runs": (
     input: AutomationRunsInput,
   ) => Promise<{ runs: AutomationRunEntry[] }>;
-  /** 这条自动化的后台会话 id(`kind: "automation"`)。**一次都没跑过时是 null** ——
-   *  那时它还不需要一个会话(见 `automationRunner.sessionOf`)。 */
-  "automation.sessions": (input: AutomationSessionsInput) => Promise<{ sessionId: string | null }>;
+  /** 后台会话：sessionId 优先为活跃会话，否则最近使用；没跑过为 null。
+   *  sessionIds 列出全部项目的会话供历史汇总；可选以兼容旧版响应。 */
+  "automation.sessions": (input: AutomationSessionsInput) => Promise<{ sessionId: string | null; sessionIds?: string[] }>;
   // ── 守望(会话输入区那颗「守望」按钮,D3/D4)──
   //
   // 同样**桌面专属**(手机白名单不列即不暴露)。起跑有**可见的副作用**:command /

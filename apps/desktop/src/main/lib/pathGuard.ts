@@ -36,7 +36,9 @@ export function pathWithin(root: string, abs: string): boolean {
   const r = norm(root);
   const a = norm(abs);
   if (a === r) return true;
-  return a.startsWith(r + sep);
+  // Filesystem roots (/, D:\, UNC shares) already end in a separator.
+  // Doubling it would reject every child of a registered root workspace.
+  return a.startsWith(r.endsWith(sep) ? r : r + sep);
 }
 
 /** Verify a path is inside SOME persisted project root. Returns the matching

@@ -314,6 +314,23 @@ function WorkflowSection({
           className={cn(locked && readOnlyCls)}
         />
       </Field>
+      {/* 工作流级追加框架说明 —— **发给模型的文本**(不进 i18n),拼在每个节点提示词
+          的框架段之后(见 contracts 里 `frameworkNote` 的注释)。内置工作流也能改:
+          它与「流程文字」同一类(用户自己的话,不是词条),所以**不跟 locked 走**。 */}
+      <Field
+        label={t("settings.workflows.fieldFrameworkNote")}
+        help={t("settings.workflows.fieldFrameworkNoteHelp")}
+      >
+        <GrowingTextarea
+          value={doc.frameworkNote ?? ""}
+          placeholder={t("settings.workflows.fieldFrameworkNotePlaceholder")}
+          onChange={(text) =>
+            // 清空写成 `undefined` 而不是空串 —— 同上面 `description` 那条的理由:
+            // 空串是"有一段空说明",`undefined` 才是"没有",schema 里它是可选的。
+            onUpdateWorkflow({ frameworkNote: text.length > 0 ? text : undefined })
+          }
+        />
+      </Field>
       {locked && (
         <p className="-mt-1 mb-3 text-[0.7143em] leading-relaxed text-content-subtle">
           {t("settings.workflows.lockedHint")}

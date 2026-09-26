@@ -140,6 +140,8 @@ export interface ModelInputScope {
   /** 这一步是谁 / 整条流程长什么样 —— 「整条流程」那一节的内容。 */
   nodeId: string;
   plan: WorkflowPlan;
+  /** 工作流级的追加框架说明(`WorkflowDoc.frameworkNote`)。见 `composeNodePrompt`。 */
+  frameworkNote?: string;
   /**
    * **这一步是不是这张图的根**(`plan` 的第 0 层,也就是"用户那句话进来的那一格")。
    *
@@ -340,6 +342,7 @@ export function buildNodeInput(
     instruction,
     nodeId: scope.nodeId,
     plan: scope.plan,
+    ...(scope.frameworkNote !== undefined ? { frameworkNote: scope.frameworkNote } : {}),
     skills,
     context,
     ...(scope.arrival ? { arrival: scope.arrival } : {}),

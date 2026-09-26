@@ -203,6 +203,37 @@ export function ItemLinks({ item, onChanged }: { item: LibraryItem; onChanged?: 
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const addBtnRef = useRef<HTMLButtonElement>(null);
 
+  /** #11:「转录 md + 图床」与本条是一个整体 —— 在关联区把它说出来。 */
+  const [mdBundle, setMdBundle] = useState<{ title: string; imageCount?: number } | null>(null);
+
+  // 转录产物不在关联表里(它随条目一起走,没有单独的开关 —— 见 contracts 里
+  // `LibraryDeletePreviewLink` 的 `transcript` 那一档),但用户在关联区看不到它,
+  // 就会以为"图床不知道挂在哪"。这里**复用删除预览的口径**(同一份实现,不再自己
+  // 算一遍),把它作为一行说明摆出来。拉不到就不显示:它只是补充说明,不该挡住
+  // 关联列表本身。
+  useEffect(() => {
+    let cancelled = false;
+    setMdBundle(null);
+    void api.library
+      .deletePreview({ ids: [item.id] })
+      .then((res) => {
+        if (cancelled) return;
+        const transcript = (res.entries[0]?.links ?? []).find((l) => l.form === "transcript");
+        if (transcript) {
+          setMdBundle({
+            title: transcript.title,
+            ...(transcript.imageCount !== undefined ? { imageCount: transcript.imageCount } : {}),
+          });
+        }
+      })
+      .catch(() => {
+        /* 只是补充说明,拉不到就不显示 —— 关联列表自己的错误另有一条通道 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [item.id]);
+
   const reload = useCallback(async () => {
     try {
       const res = await api.library.linksOf({ itemId: item.id });
@@ -343,6 +374,19 @@ export function ItemLinks({ item, onChanged }: { item: LibraryItem; onChanged?: 
       <p className="mb-1.5 text-[0.7857em] leading-relaxed text-content-subtle">
         {t("library.links.hint")}
       </p>
+
+      {/* #11:转录 md + 图床是本条的一部分 —— 不是一条可解除的关联,所以不进下面
+          的列表,单独一行说明(没有删除按钮,它没有"单独删掉"这个操作)。 */}
+      {mdBundle && (
+        <div
+          title={mdBundle.title}
+          className="mb-1.5 rounded border border-edge bg-surface/40 px-2 py-1.5 text-[0.7857em] leading-relaxed text-content-subtle"
+        >
+          {mdBundle.imageCount !== undefined && mdBundle.imageCount > 0
+            ? t("library.links.mdBundle", { count: String(mdBundle.imageCount) })
+            : t("library.links.mdBundleNoImages")}
+        </div>
+      )}
 
       {error && (
         <div className="mb-1.5 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[0.7857em] text-red-600 dark:text-red-400">

@@ -519,6 +519,12 @@ export function composeNodePrompt(args: {
   nodeId: string;
   /** **整条流程**。见 {@link planOf} 与 {@link planSection}。 */
   plan: WorkflowPlan;
+  /**
+   * 工作流级的**追加框架说明**(`WorkflowDoc.frameworkNote`,可选)。拼在框架段
+   * (「整条流程」那一节)之后 —— 它是作者对"这张图该怎么跑"的补充,属于读法说明
+   * 的一部分,摆远了就成了另一条指令。原样使用,不进 i18n。
+   */
+  frameworkNote?: string;
   skills?: string[];
   /** **已经筛好的**资料(见 {@link ContextLine})。渲染成 `## 这一步可以读的资料` 那一段。 */
   context?: readonly ContextLine[];
@@ -562,6 +568,12 @@ export function composeNodePrompt(args: {
   // **放在最前面**:它是这一整段话的读法说明。摆在后面的话,模型已经先读过"用户要
   // 一篇综述"了,那时再告诉它"你只负责第一步"是往回拽,效果差得多。
   sections.push(planSection(args.plan, args.nodeId, hasUpstreamText));
+  // 工作流作者的追加框架说明 —— 紧跟框架段:它和「整条流程」说的是同一层的事
+  // (这张图怎么读、怎么跑)。空白等于没有。
+  const frameworkNote = (args.frameworkNote ?? "").trim();
+  if (frameworkNote.length > 0) {
+    sections.push(`## 这份工作流的补充说明\n${frameworkNote}`);
+  }
   if (isRoot && args.userPrompt.trim().length > 0) {
     sections.push(`## 用户的请求\n${args.userPrompt.trim()}`);
   }

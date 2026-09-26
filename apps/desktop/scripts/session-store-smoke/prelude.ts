@@ -3,20 +3,27 @@
  * evaluates. Imported FIRST by main.ts — ES module evaluation order guarantees
  * these land before `lib/api.ts` runs its `window.api ?? createWebApi()`.
  *
- * The smoke never exercises a turn, so the `api` stub only has to exist and
- * stay await-safe: any property access yields another stub function, and
- * `then` stays undefined so `await api.foo.bar()` never hangs as a thenable.
+ * Most methods are await-safe no-ops; sendTurn can be overridden to test a
+ * failed phone RPC / desktop IPC without opening a provider or real database.
  */
 const asyncNoop = (): Promise<undefined> => Promise.resolve(undefined);
 
-function deepApiStub(): unknown {
+let sendTurnStub: ((input: unknown) => Promise<unknown>) | null = null;
+export function setSendTurnStub(fn: ((input: unknown) => Promise<unknown>) | null): void {
+  sendTurnStub = fn;
+}
+
+function deepApiStub(path: string[] = []): unknown {
   return new Proxy(asyncNoop, {
     get: (_target, prop) => {
       if (prop === "then") return undefined;
       if (prop === "constructor") return Object;
-      return deepApiStub();
+      return deepApiStub([...path, String(prop)]);
     },
-    apply: () => Promise.resolve(undefined),
+    apply: (_target, _this, args: unknown[]) =>
+      path.join(".") === "claude.sendTurn" && sendTurnStub
+        ? sendTurnStub(args[0])
+        : Promise.resolve(undefined),
   });
 }
 

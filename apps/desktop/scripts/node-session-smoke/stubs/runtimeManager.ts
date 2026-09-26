@@ -1,3 +1,4 @@
+import type { AutomationEventOrigin } from "@main/orchestration/automationEventOrigin.js";
 /**
  * `@main/claude/RuntimeManager.js` 的替身 —— 见 main.ts 文件头「为什么引擎那一侧是假的」。
  * 真的那个一旦 `bindSession` 就会 `providerRegistry.resolve`,整条引擎链(三个 SDK 实现
@@ -61,7 +62,7 @@ export function resetPublished(): void {
 }
 
 /** 每一次 `sendTurn` 收到的提示词 —— 用来分辨"今天这一趟"和"上一趟留下的会话"。 */
-export const sentPrompts: { sessionId: string; prompt: string }[] = [];
+export const sentPrompts: { sessionId: string; prompt: string; automationOrigin?: AutomationEventOrigin }[] = [];
 
 /** 节点会话当前那一轮的 emit —— 冒烟靠它往指定会话里灌事件。 */
 const turnEmitters = new Map<string, (e: RuntimeEvent) => void>();
@@ -110,6 +111,9 @@ export function isDisposed(sessionId: string): boolean {
 
 /** 这一套里"回合在跑"是**默认状态**:起跑之后就一直在跑,直到冒烟调 `finishTurn`。 */
 const running = new Set<string>();
+let holdConversations = false;
+export let busyRejections = 0;
+export function holdConversationTurns(hold: boolean): void { holdConversations = hold; }
 /** 每个会话那一轮的 `done` 落地函数。 */
 const doneResolvers = new Map<string, () => void>();
 
@@ -124,6 +128,7 @@ export function isTurnRunning(sessionId: string): boolean {
 }
 
 export const runtimeManager = {
+  isBusy(sessionId: string): boolean { return running.has(sessionId); },
   subscribe(fn: (e: RuntimeEvent) => void): () => void {
     subscribers.add(fn);
     return () => void subscribers.delete(fn);
@@ -163,8 +168,9 @@ export const runtimeManager = {
     proxies.set(nodeSessionId, parentSessionId);
   },
 
-  sendTurn(s: Session, input: StartTurnRequest & { prompt: string; cwd: string }): Promise<TurnHandle | null> {
-    sentPrompts.push({ sessionId: s.id, prompt: input.prompt });
+  sendTurn(s: Session, input: StartTurnRequest & { prompt: string; cwd: string; automationOrigin?: AutomationEventOrigin }): Promise<TurnHandle | null> {
+    if (running.has(s.id)) { busyRejections++; return Promise.resolve(null); }
+    sentPrompts.push({ sessionId: s.id, prompt: input.prompt, automationOrigin: input.automationOrigin });
     running.add(s.id);
     let resolveDone!: () => void;
     const done = new Promise<void>((resolve) => {
@@ -176,7 +182,7 @@ export const runtimeManager = {
     // (隐藏子会话里的模型轮,也就是绝大多数节点)。不这么做的话整张图会永远停在
     // 入口那一步上 —— 那正是 `runner.ts` 里那些"图停在某一步等人"的机制在起作用
     // (它们是对的,只是这一套不给入口配一个会结束的回合)。
-    if (s.kind !== "node") {
+    if (s.kind !== "node" && !holdConversations) {
       queueMicrotask(() => runtimeManager.interrupt(s.id));
     }
     const handle: TurnHandle = {

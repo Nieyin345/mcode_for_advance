@@ -78,6 +78,11 @@ preload (contextBridge + zod 校验)
 4. **重构用 AST 定边界，不手抄代码**——这个仓库注释密度很高，手抄必改坏。
 5. **临时脚本先写文件再执行**（`.scholar_tmp/` 或 `.tmp/`），不写内联一行命令（PowerShell 多层转义 + 中文路径必炸）。
 6. **git 取消暂存用 `git restore --staged`**，永远不要 `git checkout HEAD -- <文件>`（后者连工作区一起覆盖）。
+7. **渲染端新代码读数据一律走 `useRpc`**（`src/renderer/hooks/useRpc.ts`），不许再手写
+   `await api.*` + 自己的 loading/catch —— 429 处散装调用就是这么攒出来的。写操作（mutation）
+   仍在事件处理器里显式 `await api.*`。老代码不强迁：动到哪个面板，顺手迁哪个面板。
+   界面的空状态 / 错误提示 / 加载态 / 表单行 / 状态徽标，先看 `components/ui/` 的
+   `EmptyState` / `ErrorNote` / `Spinner` / `Skeleton` / `Field` / `Badge`，没有再造。
 
 ## 环境事实（踩过的坑）
 

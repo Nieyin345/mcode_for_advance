@@ -61,3 +61,5 @@ printf 'export * from "./stubs/runner.js";\n' > "$OUT/runner.js"
 
 export MCODE_SMOKE_DATA_ROOT="$DATA"
 node "$OUT/smoke.mjs"
+# Reopen the isolated DB in a fresh process to verify the persisted self-trigger budget.
+node "$OUT/smoke.mjs" --verify-self-budget

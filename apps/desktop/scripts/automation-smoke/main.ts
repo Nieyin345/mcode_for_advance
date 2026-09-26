@@ -1,3 +1,4 @@
+import { withAutomationOrigin } from "@main/orchestration/automationEventOrigin.js";
 /**
  * Headless smoke for 自动化的两个新节点:**触发器**(`runner.kind === "trigger"`)与
  * **分支的决定权给模型**(`decider: "model"` —— 旧「决策节点」收编成了这种填法,
@@ -80,12 +81,12 @@ import {
 } from "@main/orchestration/builtins.js";
 import { runWorkflow, type RunPorts, type RunReport, type RunState } from "@main/orchestration/scheduler.js";
 import { initDb, getDb } from "@main/store/db.js";
-import { ProjectRepo, SessionRepo, SettingRepo, WorkflowRepo } from "@main/store/repositories.js";
+import { ProjectRepo, SessionRepo, SettingRepo, WorkflowRepo, SYSTEM_AUTOMATION_PROJECT_ID } from "@main/store/repositories.js";
 // ⚠️ **执行器本体**(`automationRunner.ts`)不是纯件:它真开 `fs.watch`、真起会话、
 // 真读 settings 表。这一套的后半段(见第 13 节)直接 `new` 它来验「重启后同一分钟不
 // 再触发」与「删掉的文件不进载荷」——那两条的实现全在实例状态里,不真跑一遍验不到。
 import { automationRunner } from "@main/orchestration/automationRunner.js";
-import { resetRuns, runs, runsOfNode } from "./stubs/runner.js";
+import { resetRuns, runs, runsOfNode, setRunBusy } from "./stubs/runner.js";
 import { boundSessionIds, runtimeManager } from "./stubs/runtimeManager.js";
 
 let failures = 0;
@@ -103,6 +104,43 @@ function check(name: string, cond: boolean, detail?: unknown): void {
 
 function eq(name: string, actual: unknown, expected: unknown): void {
   check(name, Object.is(actual, expected), { actual, expected });
+}
+
+// A second Node process reopens the same isolated database. No in-memory
+// runner/counter state survives from the main suite into this branch.
+if (process.argv.includes("--verify-self-budget")) {
+  await initDb();
+  const workflowId = SettingRepo.get("smoke.selfTriggerWorkflow");
+  if (workflowId === null) throw new Error("Missing self-budget restart fixture");
+  const key = `automation.selfTriggerCount.${workflowId}`;
+  const nodeId = "t_self_busy_data";
+  const session = SessionRepo.findAutomationByWorkflow(workflowId);
+  if (session === undefined) throw new Error("Missing self-budget session");
+  eq("新进程从磁盘读回已耗尽的额度", SettingRepo.get(key), "10");
+  await automationRunner.start();
+  check("新进程在收到事件之前就显示保存的暂停原因", automationRunner.statusOf(workflowId)[0]?.lastError?.includes("手动") === true);
+  const crossRaw = SettingRepo.get("smoke.crossWorkflowChain");
+  if (crossRaw === null) throw new Error("Missing cross-workflow restart fixture");
+  const cross = JSON.parse(crossRaw) as { workflowId: string; sessionId: string; nodeId: string };
+  runtimeManager.emit({ type: "library.item.downloaded", sessionId: cross.sessionId, itemId: "restart-cross", title: "restart-cross", pdfPath: "restart-cross.pdf" } as unknown as RuntimeEvent);
+  await new Promise((r) => setTimeout(r, 50));
+  eq("新进程恢复跨工作流来源链并阻止已耗尽的回环", runsOfNode(cross.nodeId).length, 0);
+  check("新进程跨图回环停止原因可见", automationRunner.statusOf(cross.workflowId)[0]?.lastError?.includes("手动") === true);
+  resetRuns();
+  const emit = (): void => runtimeManager.emit({ type: "library.item.downloaded", sessionId: session.id, itemId: "restart-self", title: "restart-self", pdfPath: "restart-self.pdf" } as unknown as RuntimeEvent);
+  try {
+    emit(); await new Promise((r) => setTimeout(r, 50));
+    eq("新进程不会因自身事件重新获得十轮额度", runsOfNode(nodeId).length, 0);
+    check("新进程阻止时也显示手动恢复原因", automationRunner.statusOf(workflowId)[0]?.lastError?.includes("手动") === true);
+    eq("新进程中用户仍可手动恢复", (await automationRunner.runNow(workflowId, nodeId)).ok, true);
+    eq("新进程手动恢复后额度归零", SettingRepo.get(key), "0");
+    emit(); await new Promise((r) => setTimeout(r, 50));
+    eq("新进程恢复后允许自触发一轮", runsOfNode(nodeId).length, 2);
+    eq("新进程恢复后重新从一计数", SettingRepo.get(key), "1");
+  } finally { automationRunner.dispose(); }
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  console.log(`self-budget-restart:${total - failures}/${total} 通过`);
+  process.exit(failures > 0 ? 1 : 0);
 }
 
 /* ────────────────────────── fixtures ────────────────────────── */
@@ -1837,6 +1875,9 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
 {
   /** 执行器的内部表面 —— 这两条断言要按"哪一分钟"与"攒着什么"看,而它们都不是公开 API。 */
   interface RunnerInternals {
+    startWatch(args: { originSessionId: string; command?: string }): Promise<{ ok: boolean; error?: string }>;
+    activeWatchOf(originSessionId: string): boolean;
+    statusOf(workflowId: string): Array<{ lastError?: string }>;
     lastMinute: Map<string, number>;
     pendingFires: Map<string, { files: string[] }>;
     runNow(workflowId: string, triggerNodeId: string): Promise<{ ok: boolean; error?: string }>;
@@ -2005,70 +2046,32 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     second.dispose();
   }
 
-  /* ── ①b 上限:超过 60 条时滚掉最老的,而且**内存里也看不到** ── */
-
+  /* ── ①b 非当前分钟的历史仍有上限，清理不妨碍后续分钟调度 ── */
   {
     resetRuns();
-
-    // 先把盘上那张表清空 —— 也把内存清空(`startRunner` 从盘上读回)。前面场景留下的
-    // 那几条 key 分钟序号大得多,不清的话"滚掉的是哪几条"就由它们决定了;这一节要的是
-    // **我塞进去的 65 条**这个确定的形状。
     SettingRepo.set(LAST_MINUTE_KEY, "{}");
-
-    // 真挂一条定时自动化:下面要验的不只是"表里有几条",而是**被滚掉的那条还起不起得来**
-    // —— 那需要一个真在 `all()` 里、cron 命中的触发器。
-    const wf = "wf_trim";
-    const nodeId = "t1";
-    makeAutomation({
-      workflowId: wf,
-      nodeId,
-      params: {
-        [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
-        [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
-        task: "被滚掉之后还该能跑",
-      },
-    });
-
-    // 这一节要直接调私有的写入口(上限是 60 条,建 61 条自动化再各跑一遍太绕)。
-    interface WithWrite {
-      lastMinute: Map<string, number>;
+    const wf = "wf_trim", nodeId = "t1";
+    makeAutomation({ workflowId: wf, nodeId, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
+      [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
+      task: "旧记录回收不影响下一次调度",
+    } });
+    const runner = (await startRunner()) as RunnerInternals & {
       rememberLastMinute(key: string, minute: number | null): void;
-    }
-    const runner = (await startRunner()) as unknown as RunnerInternals & WithWrite;
-    eq("起手读回的是空表(盘上那份刚清过)", runner.lastMinute.size, 0);
-
-    // 65 条,分钟序号递增 —— 越晚跑的越新。抬到 5_000_000 之上:前面场景留下的序号到
-    // 2_000_010 为止,这样"谁被滚掉"只由这一节决定。
-    const base = 5_000_000;
-    for (let i = 1; i <= 65; i += 1) runner.rememberLastMinute(`wf_trim:t${i}`, base + i);
-
-    eq("盘上留的是上限条数", Object.keys(onDisk()).length, 60);
-    eq("内存里也只剩 60 条(不是盘上少了、内存还留着)", runner.lastMinute.size, 60);
-    // **被滚掉的是最久没跑过的那几条**(分钟序号最小的那五条)。
-    check(
-      "滚掉的是最久没跑过的那几条",
-      !runner.lastMinute.has("wf_trim:t1") &&
-        !runner.lastMinute.has("wf_trim:t5") &&
-        runner.lastMinute.has("wf_trim:t6") &&
-        runner.lastMinute.has("wf_trim:t65"),
-      [...runner.lastMinute.keys()].slice(0, 3),
-    );
-    check(
-      "最新那一条还在(去重靠它)",
-      onDisk()["wf_trim:t65"] === base + 65,
-      onDisk()["wf_trim:t65"],
-    );
-
-    // ⚠️ **这一条是那个 bug 的形状,而且必须是"跑起来看得见"的那一种。**
-    //
-    // 被滚掉的 key 若只在盘上消失、内存里还挡着,下一次**同分钟**的那一条就会被它吞掉
-    // (判去重读的是内存那一份 `this.lastMinute.get(key)`,见 `onTick`)—— 症状是明明
-    // 在跑着的定时自动化**再也不响**。所以判据不能写成"表里还在不在那个 key":那样
-    // `rememberLastMinute` 里那句无条件 `set` 会替它挡过去(写什么都过,断言是假的),
-    // 必须**真的 tick 一下,看那一分钟还起不起来**。
-    withClock((base + 1) * 60_000, () => runner.onTick());
-    eq("被滚掉的 key 真的不在内存里了(同一个分钟还能再跑起来)", runsOfNode(nodeId).length, 1);
-    runner.dispose();
+    };
+    try {
+      eq("起手读回空去重表", runner.lastMinute.size, 0);
+      const base = 5_000_000;
+      withClock((base + 1000) * 60_000, () => {
+        for (let i = 1; i <= 65; i++) runner.rememberLastMinute(`wf_trim:t${i}`, base + i);
+      });
+      eq("非当前分钟的历史只保留60条", Object.keys(onDisk()).length, 60);
+      eq("历史清理同步内存与持久化表", runner.lastMinute.size, 60);
+      check("淘汰最旧的历史记录", !runner.lastMinute.has("wf_trim:t1") && !runner.lastMinute.has("wf_trim:t5") && runner.lastMinute.has("wf_trim:t6"), [...runner.lastMinute.keys()]);
+      eq("最新历史记录仍在", onDisk()["wf_trim:t65"], base + 65);
+      withClock((base + 1000) * 60_000, () => runner.onTick());
+      eq("旧记录回收不阻止后续分钟正常调度", runsOfNode(nodeId).length, 1);
+    } finally { runner.dispose(); }
   }
 
   /* ── ①c 盘上的表坏了不抛,按「什么都没记」处理 ── */
@@ -2270,6 +2273,567 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     const revoked = await runner.runNow(wf, nodeId);
     check("同 id 改图后手动触发也撤权", !revoked.ok && revoked.error?.includes("尚未审查") === true, revoked);
     runner.dispose();
+  }
+
+
+  /* ── 生命周期回归:关闭不是暂存,换项目不能复用旧项目的事件 ── */
+  {
+    resetRuns();
+    SettingRepo.set(LAST_MINUTE_KEY, "{}");
+    const wf = nextId();
+    const nodeId = "t_disabled_schedule";
+    const params = {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
+      [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
+      [NODE_TRIGGER_ENABLED_PARAM_KEY]: false,
+      task: "关闭不消费定时名额",
+    };
+    makeAutomation({ workflowId: wf, nodeId, params });
+    const runner = await startRunner();
+    const minute = 8_000_000;
+    try {
+      withClock(minute * 60_000, () => runner.onTick());
+      eq("关闭的定时器不运行", runsOfNode(nodeId).length, 0);
+      eq("关闭的定时器不占用本分钟去重记录", runner.lastMinute.has(`${wf}:${nodeId}`), false);
+      const manual = await runner.runNow(wf, nodeId);
+      eq("关闭状态仍允许明确的手动运行", manual.ok, true);
+      resetRuns();
+      makeAutomation({ workflowId: wf, nodeId, params: { ...params, [NODE_TRIGGER_ENABLED_PARAM_KEY]: true } });
+      await runner.reloadAll();
+      withClock(minute * 60_000, () => runner.onTick());
+      eq("同一分钟启用后能正常触发", runsOfNode(nodeId).length, 1);
+      WorkflowRepo.save({ ...getWorkflow(wf)!, nodes: [], edges: [] });
+      await runner.reloadAll();
+      eq("删除触发器清除内存去重记录", runner.lastMinute.has(`${wf}:${nodeId}`), false);
+      eq("删除触发器也清除持久化去重记录", Object.hasOwn(onDisk(), `${wf}:${nodeId}`), false);
+    } finally { runner.dispose(); }
+  }
+
+  {
+    resetRuns();
+    const wf = nextId();
+    const nodeId = "t_disabled_event";
+    const params = {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "event",
+      [NODE_TRIGGER_EVENTS_PARAM_KEY]: "turn.done",
+      [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 10_000,
+      [NODE_TRIGGER_ENABLED_PARAM_KEY]: false,
+      task: "只接收启用期间的事件",
+    };
+    makeAutomation({ workflowId: wf, nodeId, params });
+    const runner = await startRunner();
+    const emit = (): void => runtimeManager.emit({
+      type: "turn.done", sessionId: "disabled-event-source", endedAt: Date.now(), reason: "end_turn",
+    });
+    try {
+      emit();
+      eq("关闭期间不攒事件", runner.pendingFires.has(`${wf}:${nodeId}`), false);
+      makeAutomation({ workflowId: wf, nodeId, params: { ...params, [NODE_TRIGGER_ENABLED_PARAM_KEY]: true } });
+      await runner.reloadAll();
+      emit();
+      eq("启用期间事件进入合并窗口", runner.pendingFires.has(`${wf}:${nodeId}`), true);
+      makeAutomation({ workflowId: wf, nodeId, params });
+      await runner.reloadAll();
+      eq("关闭时立即丢弃未派发事件", runner.pendingFires.has(`${wf}:${nodeId}`), false);
+      makeAutomation({ workflowId: wf, nodeId, params: { ...params, [NODE_TRIGGER_ENABLED_PARAM_KEY]: true } });
+      await runner.reloadAll();
+      eq("重新启用不会恢复旧事件", runner.pendingFires.has(`${wf}:${nodeId}`), false);
+    } finally { runner.dispose(); }
+  }
+
+  {
+    const wf = nextId();
+    const nodeId = "t_project_switch";
+    const file = "project-switch-only.md";
+    const params = {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "file",
+      [NODE_TRIGGER_PATHS_PARAM_KEY]: file,
+      [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 10_000,
+      task: "事件必须属于这次运行的项目",
+    };
+    makeAutomation({ workflowId: wf, nodeId, params });
+    writeFileSync(join(PROJ_DIR, file), "fixture");
+    const runner = await startRunner();
+    try {
+      runner.onFsChange(PROJ_DIR, file);
+      eq("项目 A 的文件事件已攒下", runner.pendingFires.has(`${wf}:${nodeId}`), true);
+      const projectB = PROJ_ID + "_switch";
+      const dirB = join(process.env.MCODE_SMOKE_DATA_ROOT!, "project-switch-B");
+      mkdirSync(dirB, { recursive: true });
+      ProjectRepo.create({ ...ProjectRepo.get(PROJ_ID)!, id: projectB, path: dirB });
+      makeAutomation({ workflowId: wf, nodeId, params: { ...params, [NODE_TRIGGER_PROJECT_PARAM_KEY]: projectB } });
+      await runner.reloadAll();
+      eq("切换项目后不把 A 的事件交给 B", runner.pendingFires.has(`${wf}:${nodeId}`), false);
+    } finally { runner.dispose(); }
+  }
+
+
+  /* ── 忙时文件/条目事件保留一批，不并发、不吞掉、不无限重跑同一批 ── */
+  {
+    resetRuns();
+    const wf = nextId(), nodeId = "t_busy_items";
+    const params = {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "event",
+      [NODE_TRIGGER_EVENTS_PARAM_KEY]: "library.item.downloaded",
+      [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0,
+      task: "逐篇处理，不漏条目",
+    };
+    makeAutomation({ workflowId: wf, nodeId, params });
+    const runner = await startRunner();
+    await runner.runNow(wf, nodeId);
+    const sessionId = runsOfNode(nodeId)[0]!.sessionId;
+    const emit = (id: string): void => runtimeManager.emit({
+      type: "library.item.downloaded", sessionId: "(system)", itemId: id, title: id, pdfPath: `papers/${id}.pdf`,
+    } as unknown as RuntimeEvent);
+    setRunBusy(sessionId, true);
+    try {
+      emit("queued-a"); await sleep(80);
+      eq("忙时条目事件保留待处理批次", runner.pendingFires.has(`${wf}:${nodeId}`), true);
+      eq("忙时不会开启第二轮", runsOfNode(nodeId).length, 1);
+      emit("queued-b"); emit("queued-a"); await sleep(80);
+      const manual = await runner.runNow(wf, nodeId);
+      eq("显式手动点击忙时仍报忙，不暗中排队", manual.ok, false);
+      setRunBusy(sessionId, false); await sleep(1300);
+      const batch = runsOfNode(nodeId);
+      eq("空闲后只补跑合并的一批", batch.length, 2);
+      const items = batch[1]?.entry?.payload?.items as Array<{ itemId?: string }> | undefined;
+      eq("跨忙碌窗口的两篇都交给下一轮，重复通知去重", items?.map(i => i.itemId).sort().join(","), "queued-a,queued-b");
+      eq("交付后不遗留重试计时器", runner.pendingFires.has(`${wf}:${nodeId}`), false);
+
+      setRunBusy(sessionId, true); emit("cancel-me"); await sleep(80);
+      eq("取消前确实有待处理事件", runner.pendingFires.has(`${wf}:${nodeId}`), true);
+      runtimeManager.emit({ type: "turn.done", sessionId, reason: "interrupted", endedAt: Date.now() });
+      eq("用户取消自动化时清除待处理事件", runner.pendingFires.has(`${wf}:${nodeId}`), false);
+      setRunBusy(sessionId, false); await sleep(1100);
+      eq("取消后不会被旧队列自动重启", runsOfNode(nodeId).length, 2);
+
+      setRunBusy(sessionId, true); emit("disable-me"); await sleep(80);
+      makeAutomation({ workflowId: wf, nodeId, params: { ...params, [NODE_TRIGGER_ENABLED_PARAM_KEY]: false } });
+      await runner.reloadAll();
+      eq("关闭也清掉忙时积压", runner.pendingFires.has(`${wf}:${nodeId}`), false);
+    } finally { setRunBusy(sessionId, false); runner.dispose(); }
+  }
+  {
+    resetRuns();
+    const wf = nextId(), nodeId = "t_busy_files";
+    makeAutomation({ workflowId: wf, nodeId, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "file", [NODE_TRIGGER_PATHS_PARAM_KEY]: "busy-*.md",
+      [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0, task: "处理忙时所有文件",
+    } });
+    const runner = await startRunner();
+    await runner.runNow(wf, nodeId);
+    const sessionId = runsOfNode(nodeId)[0]!.sessionId;
+    setRunBusy(sessionId, true);
+    try {
+      writeFileSync(join(PROJ_DIR, "busy-a.md"), "a"); runner.onFsChange(PROJ_DIR, "busy-a.md");
+      await sleep(600);
+      eq("忙时文件批次不丢失", runner.pendingFires.has(`${wf}:${nodeId}`), true);
+      writeFileSync(join(PROJ_DIR, "busy-b.md"), "b"); runner.onFsChange(PROJ_DIR, "busy-b.md");
+      await sleep(600);
+      setRunBusy(sessionId, false); await sleep(1300);
+      eq("文件批次在空闲后只执行一次", runsOfNode(nodeId).length, 2);
+      const files = runsOfNode(nodeId)[1]?.entry?.payload?.files as string[] | undefined;
+      check("跨窗口积压的两个文件都在", files?.includes(join(PROJ_DIR,"busy-a.md")) === true && files?.includes(join(PROJ_DIR,"busy-b.md")) === true, files);
+    } finally { setRunBusy(sessionId, false); runner.dispose(); }
+  }
+
+
+  /* Project changes must not resume a provider conversation from another project. */
+  {
+    resetRuns();
+    const wf = nextId(), nodeId = "t_project_identity";
+    const projectB = PROJ_ID + "_identity_B";
+    const dirB = join(process.env.MCODE_SMOKE_DATA_ROOT!, "identity-B");
+    mkdirSync(dirB, { recursive: true });
+    ProjectRepo.create({ ...ProjectRepo.get(PROJ_ID)!, id: projectB, path: dirB });
+    const params = { [NODE_TRIGGER_KIND_PARAM_KEY]: "event", [NODE_TRIGGER_EVENTS_PARAM_KEY]: "library.item.downloaded", task: "隔离项目上下文" };
+    makeAutomation({ workflowId: wf, nodeId, params });
+    const runner = await startRunner();
+    let a = "", b = "";
+    const switchTo = async (projectId: string): Promise<void> => {
+      makeAutomation({ workflowId: wf, nodeId, params: { ...params, [NODE_TRIGGER_PROJECT_PARAM_KEY]: projectId } });
+      await runner.reloadAll();
+    };
+    try {
+      eq("A 首次运行成功", (await runner.runNow(wf, nodeId)).ok, true);
+      a = runsOfNode(nodeId).at(-1)!.sessionId;
+      await runner.runNow(wf, nodeId);
+      eq("A 内重复运行复用会话", runsOfNode(nodeId).at(-1)?.sessionId, a);
+      await switchTo(projectB);
+      setRunBusy(a, true);
+      eq("切换 B 不绕过仍在 A 运行的工作流", (await runner.runNow(wf, nodeId)).ok, false);
+      eq("忙时没有多派发运行", runsOfNode(nodeId).length, 2);
+      setRunBusy(a, false);
+      await runner.runNow(wf, nodeId);
+      b = runsOfNode(nodeId).at(-1)!.sessionId;
+      check("B 不继承 A 的提供方会话和节点上下文", b !== a, {a,b});
+      eq("B 会话项目归属正确", SessionRepo.get(b)?.projectId, projectB);
+      eq("B 实际工作目录正确", runsOfNode(nodeId).at(-1)?.cwd, dirB);
+      eq("A 历史会话没有被改写归属", SessionRepo.get(a)?.projectId, PROJ_ID);
+      await switchTo(PROJ_ID);
+      await runner.runNow(wf, nodeId);
+      eq("切回 A 认回原会话", runsOfNode(nodeId).at(-1)?.sessionId, a);
+      await switchTo("");
+      await runner.runNow(wf, nodeId);
+      const system = runsOfNode(nodeId).at(-1)!.sessionId;
+      eq("无项目事件归入系统项目而非借用 A", SessionRepo.get(system)?.projectId, SYSTEM_AUTOMATION_PROJECT_ID);
+      check("系统会话独立于 A/B", system !== a && system !== b, system);
+      eq("无项目事件使用宿主目录", runsOfNode(nodeId).at(-1)?.cwd, process.cwd());
+      await runner.runNow(wf, nodeId);
+      eq("无项目重复运行复用系统会话", runsOfNode(nodeId).at(-1)?.sessionId, system);
+      await switchTo(projectB);
+      await runner.runNow(wf, nodeId);
+      eq("离开系统项目后认回 B 的会话", runsOfNode(nodeId).at(-1)?.sessionId, b);
+
+      // An idle newer row must not hide a still-running older row.
+      SessionRepo.create({ ...SessionRepo.get(a)!, id: "s_project_identity_newer", projectId: PROJ_ID, updatedAt: Date.now() + 99999 });
+      setRunBusy(a, true);
+      eq("最新会话空闲也不能掩盖旧项目运行", (await runner.runNow(wf, nodeId)).ok, false);
+      setRunBusy(a, false);
+
+      WorkflowRepo.save(getBuiltinWorkflow(WATCH_WORKFLOW_ID)!);
+      const originA = "s_watch_origin_A", originB = "s_watch_origin_B";
+      SessionRepo.create({ ...SessionRepo.get(a)!, id: originA, kind: "chat", workflowId: "", parentSessionId: null });
+      SessionRepo.create({ ...SessionRepo.get(b)!, id: originB, projectId: projectB, kind: "chat", workflowId: "", parentSessionId: null });
+      eq("A 守望启动", (await runner.startWatch({ originSessionId: originA, command: "echo A" })).ok, true);
+      const watchA = runs.at(-1)!.sessionId;
+      setRunBusy(watchA, true);
+      try {
+        SessionRepo.create({ ...SessionRepo.get(watchA)!, id: "s_watch_newer_idle", projectId: PROJ_ID, parentSessionId: null, updatedAt: Date.now() + 99999 });
+        const before = JSON.stringify(getWorkflow(WATCH_WORKFLOW_ID));
+        eq("旧项目守望仍运行时拒绝 B", (await runner.startWatch({ originSessionId: originB, command: "echo B" })).ok, false);
+        eq("拒绝 B 前不改写守望模板", JSON.stringify(getWorkflow(WATCH_WORKFLOW_ID)), before);
+        eq("拒绝 B 不改写 A 的发起会话", SessionRepo.get(watchA)?.parentSessionId, originA);
+        eq("A 面板仍能看到守望正在运行", runner.activeWatchOf(originA), true);
+      } finally { setRunBusy(watchA, false); }
+      eq("A 结束后 B 守望可启动", (await runner.startWatch({ originSessionId: originB, command: "echo B" })).ok, true);
+      const watchB = runs.at(-1)!.sessionId;
+      check("跨项目守望使用不同后台会话", watchA !== watchB, {watchA,watchB});
+      eq("B 守望项目归属", SessionRepo.get(watchB)?.projectId, projectB);
+      eq("B 守望发起会话", SessionRepo.get(watchB)?.parentSessionId, originB);
+      eq("B 守望工作目录", runs.at(-1)?.cwd, dirB);
+    } finally { setRunBusy(a, false); setRunBusy(b, false); runner.dispose(); }
+  }
+
+
+  /* Self-origin event runs share a workflow-wide, persisted ten-run budget. */
+  {
+    resetRuns();
+    const wf = nextId(), nodeId = "t_self_budget";
+    const key = `automation.selfTriggerCount.${wf}`;
+    const params = { [NODE_TRIGGER_KIND_PARAM_KEY]: "event", [NODE_TRIGGER_EVENTS_PARAM_KEY]: "turn.done", [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0, task: "有限自动续跑" };
+    makeAutomation({ workflowId: wf, nodeId, params });
+    let runner = await startRunner();
+    let sessionId = "";
+    const emit = (id: string, reason: "end_turn" | "interrupted" = "end_turn"): void => runtimeManager.emit({ type: "turn.done", sessionId: id, reason, endedAt: Date.now() });
+    try {
+      await runner.runNow(wf, nodeId);
+      sessionId = runsOfNode(nodeId)[0]!.sessionId;
+      for (let i = 0; i < 5; i++) emit(sessionId);
+      await sleep(50);
+      eq("同窗口多条自身事件只派发一轮", runsOfNode(nodeId).length, 2);
+      eq("合并事件只消耗一份额度", SettingRepo.get(key), "1");
+      SessionRepo.create({ ...SessionRepo.get(sessionId)!, id: "s_self_child", kind: "node", parentSessionId: sessionId });
+      SessionRepo.create({ ...SessionRepo.get(sessionId)!, id: "s_self_nested", kind: "side", parentSessionId: "s_self_child" });
+      for (let i = 0; i < 9; i++) { emit(i % 2 ? "s_self_child" : "s_self_nested"); await sleep(30); }
+      eq("所属节点/嵌套侧会话共同累计十轮自触发", runsOfNode(nodeId).length, 11);
+      eq("十轮预算已保存", SettingRepo.get(key), "10");
+      emit(sessionId); await sleep(40);
+      eq("第十一轮自身事件不再启动", runsOfNode(nodeId).length, 11);
+      check("停止原因向用户说明上限和手动恢复", runner.statusOf(wf)[0]?.lastError?.includes("10") === true && runner.statusOf(wf)[0]?.lastError?.includes("手动") === true, runner.statusOf(wf));
+      const otherProjectId = wf + "_other_project";
+      ProjectRepo.create({ ...ProjectRepo.get(PROJ_ID)!, id: otherProjectId });
+      SessionRepo.create({ ...SessionRepo.get(sessionId)!, id: "s_self_other_project", projectId: otherProjectId });
+      emit("s_self_other_project"); await sleep(30);
+      eq("同工作流其他项目的后台会话共享上限", runsOfNode(nodeId).length, 11);
+      SessionRepo.create({ ...SessionRepo.get(sessionId)!, id: "s_self_external_chat", kind: "chat", parentSessionId: null });
+      emit("s_self_external_chat"); emit(sessionId); await sleep(40);
+      eq("同一图的普通聊天事件仍属外部且不被阻断自身事件污染", runsOfNode(nodeId).length, 12);
+      eq("外部事件不会偷偷重置自触发额度", SettingRepo.get(key), "10");
+      setRunBusy(sessionId, true);
+      eq("忙时手动点击被拒绝", (await runner.runNow(wf, nodeId)).ok, false);
+      eq("被拒绝的手动点击不重置额度", SettingRepo.get(key), "10");
+      setRunBusy(sessionId, false);
+      await runner.reloadAll(); emit(sessionId); await sleep(40);
+      eq("重载配置不会绕过上限", runsOfNode(nodeId).length, 12);
+      runner.dispose(); runner = await startRunner();
+      emit(sessionId); await sleep(40);
+      eq("重建执行器不会绕过保存的上限", runsOfNode(nodeId).length, 12);
+      eq("明确手动运行可恢复", (await runner.runNow(wf, nodeId)).ok, true);
+      eq("手动运行重置自触发计数", SettingRepo.get(key), "0");
+      runtimeManager.holdTurnEnd(sessionId); emit(sessionId); await sleep(30); runtimeManager.releaseTurnEnd(sessionId);
+      eq("内部被扣住的完成事件不消耗额度", SettingRepo.get(key), "0");
+      emit(sessionId); await sleep(40);
+      eq("手动恢复后可再次自触发", runsOfNode(nodeId).length, 14);
+      eq("恢复后从第一轮重新计数", SettingRepo.get(key), "1");
+      emit(sessionId); emit(sessionId, "interrupted"); await sleep(40);
+      eq("取消清除待派发自身事件", runsOfNode(nodeId).length, 14);
+      eq("取消不自动重置额度", SettingRepo.get(key), "1");
+      emit(sessionId);
+      makeAutomation({ workflowId: wf, nodeId, params: { ...params, [NODE_TRIGGER_ENABLED_PARAM_KEY]: false } });
+      await runner.reloadAll(); await sleep(30);
+      eq("禁用清掉待派发自身事件", runsOfNode(nodeId).length, 14);
+      makeAutomation({ workflowId: wf, nodeId, params }); await runner.reloadAll();
+      eq("重新启用不重置计数", SettingRepo.get(key), "1");
+
+      const saved = getWorkflow(wf)!;
+      WorkflowRepo.save({ ...saved, nodes: [...saved.nodes, { ...saved.nodes[0]!, id: "t_self_budget_other" }] });
+      await runner.reloadAll();
+      SettingRepo.set(key, "9");
+      const before = runs.filter(r => r.sessionId === sessionId).length;
+      emit(sessionId); await sleep(50);
+      eq("两个触发器争最后一份额度也最多派发一次", runs.filter(r => r.sessionId === sessionId).length - before, 1);
+      eq("额度属于工作流而非某个触发器", SettingRepo.get(key), "10");
+      WorkflowRepo.save(saved); await runner.reloadAll();
+
+      SettingRepo.set(key, "invalid");
+      const prior = runsOfNode(nodeId).length;
+      emit(sessionId); await sleep(30);
+      eq("计数损坏时保守阻止自触发", runsOfNode(nodeId).length, prior);
+      eq("手动运行能恢复损坏的计数", (await runner.runNow(wf, nodeId)).ok, true);
+      eq("损坏计数被明确手动重置", SettingRepo.get(key), "0");
+      const originalSet = SettingRepo.set;
+      SettingRepo.set = (k, value) => { if (k === key) throw new Error("injected self-budget write failure"); return originalSet.call(SettingRepo, k, value); };
+      try { emit(sessionId); await sleep(40); }
+      finally { SettingRepo.set = originalSet; }
+      eq("计数写入失败不派发自触发运行", runsOfNode(nodeId).length, prior + 1);
+    } finally { setRunBusy(sessionId, false); runtimeManager.releaseTurnEnd(sessionId); runner.dispose(); }
+  }
+
+  {
+    resetRuns();
+    const wf = nextId(), nodeId = "t_self_busy_data";
+    const key = `automation.selfTriggerCount.${wf}`;
+    makeAutomation({ workflowId: wf, nodeId, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "event", [NODE_TRIGGER_EVENTS_PARAM_KEY]: "library.item.downloaded", [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0, task: "忙时保持自触发来源",
+    } });
+    const runner = await startRunner();
+    let sessionId = "";
+    const emit = (source: string, itemId: string): void => runtimeManager.emit({ type: "library.item.downloaded", sessionId: source, itemId, title: itemId, pdfPath: `${itemId}.pdf` } as unknown as RuntimeEvent);
+    try {
+      await runner.runNow(wf, nodeId); sessionId = runsOfNode(nodeId)[0]!.sessionId;
+      SettingRepo.set(key, "9"); setRunBusy(sessionId, true);
+      emit(sessionId, "self-item"); await sleep(80);
+      eq("忙时重试尚未消耗自触发额度", SettingRepo.get(key), "9");
+      setRunBusy(sessionId, false); await sleep(1200);
+      eq("空闲后合并数据派发一次", runsOfNode(nodeId).length, 2);
+      eq("忙时重试保留自身来源并消耗最后一份额度", SettingRepo.get(key), "10");
+      emit(sessionId, "blocked-item"); await sleep(50);
+      eq("达到上限的自身数据事件不再启动", runsOfNode(nodeId).length, 2);
+      eq("被阻止的自身事件不留下重试定时器", runner.pendingFires.has(`${wf}:${nodeId}`), false);
+      emit("(system)", "external-item"); emit(sessionId, "blocked-item"); await sleep(50);
+      eq("系统资料库事件仍能独立触发", runsOfNode(nodeId).length, 3);
+      eq("阻止的自身条目不混入外部载荷", (runsOfNode(nodeId).at(-1)?.entry?.payload?.items as unknown[] | undefined)?.length, 1);
+      await runner.runNow(wf, nodeId);
+      emit(sessionId, "mixed-self"); emit("(system)", "mixed-external"); await sleep(50);
+      eq("含自身和外部条目的混合批次仍计入额度", SettingRepo.get(key), "1");
+      eq("未达到上限的混合批次不丢失条目", (runsOfNode(nodeId).at(-1)?.entry?.payload?.items as unknown[] | undefined)?.length, 2);
+      SettingRepo.set(key, "9"); setRunBusy(sessionId, true);
+      emit(sessionId, "waiting-self"); await sleep(80);
+      const beforeRetry = runsOfNode(nodeId).length;
+      SettingRepo.set(key, "10"); // Another trigger spends the last unit while this one waits.
+      setRunBusy(sessionId, false); await sleep(1200);
+      eq("等待期间额度耗尽时重试不得启动", runsOfNode(nodeId).length, beforeRetry);
+      eq("额度耗尽后的重试批次被清理", runner.pendingFires.has(`${wf}:${nodeId}`), false);
+      SettingRepo.set(key, "9"); setRunBusy(sessionId, true);
+      emit(sessionId, "race-self"); emit("(system)", "race-external"); await sleep(80);
+      const beforeMixedRetry = runsOfNode(nodeId).length;
+      SettingRepo.set(key, "10"); setRunBusy(sessionId, false); await sleep(1200);
+      eq("混合批次等待期间额度耗尽也不能吞掉外部条目", runsOfNode(nodeId).length, beforeMixedRetry + 1);
+      eq("耗尽额度后只派发混合批次的外部部分", runsOfNode(nodeId).at(-1)?.entry?.payload?.itemId, "race-external");
+      eq("外部部分派发不改变已耗尽计数", SettingRepo.get(key), "10");
+      SettingRepo.set("smoke.selfTriggerWorkflow", wf);
+
+    } finally { setRunBusy(sessionId, false); runner.dispose(); }
+  }
+
+
+  /* Cross-workflow return edges consume the existing budget, not ordinary A -> B traffic. */
+  {
+    resetRuns();
+    const a = nextId(), b = nextId(), nodeA = "t_cycle_A", nodeB = "t_cycle_B";
+    const params = { [NODE_TRIGGER_KIND_PARAM_KEY]: "event", [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0, task: "跟踪工作流事件链" };
+    makeAutomation({ workflowId: a, nodeId: nodeA, params: { ...params, [NODE_TRIGGER_EVENTS_PARAM_KEY]: "library.item.downloaded" } });
+    makeAutomation({ workflowId: b, nodeId: nodeB, params: { ...params, [NODE_TRIGGER_EVENTS_PARAM_KEY]: "library.item.imported" } });
+    const runner = await startRunner();
+    const count = (wf: string): number => Number(SettingRepo.get(`automation.selfTriggerCount.${wf}`) ?? "0");
+    const chainKey = (id: string): string => `automation.eventChain.${id}`;
+    const chain = (id: string): string[] | undefined => {
+      try { return (JSON.parse(SettingRepo.get(chainKey(id)) ?? "null") as { workflowIds?: string[] } | null)?.workflowIds; }
+      catch { return undefined; }
+    };
+    const emit = (id: string, event: "library.item.imported" | "library.item.downloaded", itemId = "cycle-item"): void => runtimeManager.emit({ type: event, sessionId: id, itemId, title: itemId, pdfPath: `${itemId}.pdf` } as unknown as RuntimeEvent);
+    let sa = "", sb = "";
+    try {
+      await runner.runNow(a, nodeA); sa = runsOfNode(nodeA).at(-1)!.sessionId;
+      eq("手动起跑建立新的来源链根", JSON.stringify(chain(sa)), JSON.stringify([a]));
+      for (let i = 0; i < 15; i++) { emit(sa, "library.item.imported"); await sleep(30); }
+      sb = runsOfNode(nodeB).at(-1)!.sessionId;
+      eq("正常A到B单向链超过十次仍可运行", runsOfNode(nodeB).length, 15);
+      eq("正常单向链不消耗B的循环额度", count(b), 0);
+      eq("B记住上游A而不只记直接来源", JSON.stringify(chain(sb)), JSON.stringify([a, b]));
+      emit(sb, "library.item.downloaded"); await sleep(40);
+      eq("B返回A时识别为回环", count(a), 1);
+      for (let i = 0; i < 9; i++) {
+        emit(sa, "library.item.imported"); await sleep(30);
+        emit(sb, "library.item.downloaded"); await sleep(30);
+      }
+      emit(sa, "library.item.imported"); await sleep(30);
+      eq("跨工作流回环累计A的十次额度", count(a), 10);
+      eq("跨工作流回环也累计B的十次额度", count(b), 10);
+      const beforeA = runsOfNode(nodeA).length, beforeB = runsOfNode(nodeB).length;
+      emit(sb, "library.item.downloaded"); emit(sa, "library.item.imported"); await sleep(40);
+      eq("达到上限后B不能再次启动A", runsOfNode(nodeA).length, beforeA);
+      eq("达到上限后A不能再次启动B", runsOfNode(nodeB).length, beforeB);
+      SessionRepo.create({ ...SessionRepo.get(sb)!, id: "s_cycle_B_node", kind: "node", parentSessionId: sb });
+      emit("s_cycle_B_node", "library.item.downloaded"); await sleep(30);
+      eq("B的节点会话不能绕过跨图回环保护", runsOfNode(nodeA).length, beforeA);
+      emit("(system)", "library.item.downloaded", "new-root"); await sleep(40);
+      eq("真正独立的外部事件仍允许启动A", runsOfNode(nodeA).length, beforeA + 1);
+      eq("独立外部事件重建来源链而不继承旧祖先", JSON.stringify(chain(sa)), JSON.stringify([a]));
+      eq("独立外部事件不重置循环额度", count(a), 10);
+      emit(sa, "library.item.imported"); await sleep(40);
+      eq("暂停循环后合法A到B新链仍可运行", runsOfNode(nodeB).length, beforeB + 1);
+
+      // A mixed queued batch must not pass discarded cyclic ancestry to its external part.
+      SettingRepo.set(`automation.selfTriggerCount.${a}`, "9"); setRunBusy(sa, true);
+      emit(sb, "library.item.downloaded", "cycle-part"); emit("(system)", "library.item.downloaded", "external-part"); await sleep(80);
+      SettingRepo.set(`automation.selfTriggerCount.${a}`, "10"); setRunBusy(sa, false); await sleep(1200);
+      eq("循环额度耗尽后混合批次只派发外部条目", runsOfNode(nodeA).at(-1)?.entry?.payload?.itemId, "external-part");
+      eq("混合批次退化为外部时也移除循环来源链", JSON.stringify(chain(sa)), JSON.stringify([a]));
+
+      await runner.runNow(a, nodeA);
+      SettingRepo.set(chainKey(sb), "{broken");
+      const beforeBad = runsOfNode(nodeA).length;
+      emit(sb, "library.item.downloaded"); await sleep(40);
+      eq("已识别自动化的来源链损坏时不当作独立外部事件", runsOfNode(nodeA).length, beforeBad);
+      check("来源链损坏给出可读原因", runner.statusOf(a)[0]?.lastError?.includes("来源链") === true, runner.statusOf(a));
+      await runner.runNow(b, nodeB);
+      eq("明确手动运行修复来源链", JSON.stringify(chain(sb)), JSON.stringify([b]));
+      const tooLong = [...Array.from({length:63}, (_, i) => `ancestor_${i}`), b];
+      SettingRepo.set(chainKey(sb), JSON.stringify({ version: 1, workflowIds: tooLong }));
+      emit(sb, "library.item.downloaded"); await sleep(30);
+      eq("超过64个不同工作流的链不继续扩张", runsOfNode(nodeA).length, beforeBad);
+      check("链长上限原因可见", runner.statusOf(a)[0]?.lastError?.includes("64") === true, runner.statusOf(a));
+      emit("(system)", "library.item.downloaded", "not-contaminated"); emit(sb, "library.item.downloaded", "too-long"); await sleep(40);
+      eq("超长链不污染正常外部载荷", runsOfNode(nodeA).at(-1)?.entry?.payload?.itemId, "not-contaminated");
+
+      await runner.runNow(a, nodeA);
+      emit(sa, "library.item.imported"); await sleep(40);
+      const c = nextId(), nodeC = "t_cycle_C";
+      makeAutomation({ workflowId: c, nodeId: nodeC, params: { ...params, [NODE_TRIGGER_EVENTS_PARAM_KEY]: "turn.done" } });
+      await runner.reloadAll();
+      runtimeManager.emit({ type: "turn.done", sessionId: sb, reason: "end_turn", endedAt: Date.now() });
+      await sleep(40);
+      const sc = runsOfNode(nodeC).at(-1)!.sessionId;
+      eq("三工作流链保留全部祖先", JSON.stringify(chain(sc)), JSON.stringify([a, b, c]));
+      emit(sc, "library.item.downloaded"); await sleep(40);
+      eq("A到B到C再回A同样消耗回环额度", count(a), 1);
+      check("回到A后仍保留C以识别后续回环", chain(sa)?.includes(c) === true, chain(sa));
+      SettingRepo.set(`automation.selfTriggerCount.${a}`, "10");
+      SettingRepo.set("smoke.crossWorkflowChain", JSON.stringify({ workflowId: a, sessionId: sb, nodeId: nodeA }));
+    } finally { setRunBusy(sa, false); runner.dispose(); }
+  }
+
+  /* An automation -> ordinary chat -> automation return is still a cycle. */
+  {
+    resetRuns();
+    const wf = nextId(), nodeId = "t_injected_chat_return";
+    makeAutomation({ workflowId: wf, nodeId, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "event", [NODE_TRIGGER_EVENTS_PARAM_KEY]: "turn.done", [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0, task: "注入普通聊天后的回环",
+    } });
+    const runner = await startRunner();
+    const key = `automation.selfTriggerCount.${wf}`;
+    try {
+      await runner.runNow(wf, nodeId);
+      const rootId = runsOfNode(nodeId)[0]!.sessionId;
+      const chatId = `${rootId}_ordinary_chat`;
+      SessionRepo.create({ ...SessionRepo.get(rootId)!, id: chatId, kind: "chat", parentSessionId: null });
+      const injectedReply = withAutomationOrigin(e => runtimeManager.emit(e), { workflowIds: [wf] });
+      for (let i = 0; i < 12; i++) {
+        injectedReply({ type: "turn.done", sessionId: chatId, reason: "end_turn" });
+        await sleep(30);
+      }
+      eq("普通聊天返回不能绕过十次回环额度", SettingRepo.get(key), "10");
+      eq("十次注入返回后不再自动续跑", runsOfNode(nodeId).length, 11);
+      check("注入返回达上限的原因可见", runner.statusOf(wf)[0]?.lastError?.includes("手动") === true);
+      runtimeManager.emit({ type: "turn.done", sessionId: chatId, reason: "end_turn" });
+      await sleep(30);
+      eq("同一普通聊天的真实用户轮仍可独立触发", runsOfNode(nodeId).length, 12);
+      eq("真实用户事件不偷偷重置回环额度", SettingRepo.get(key), "10");
+      await runner.runNow(wf, nodeId);
+      injectedReply({ type: "turn.done", sessionId: chatId, reason: "end_turn" });
+      await sleep(30);
+      eq("手动重置后注入返回可重新消费额度", SettingRepo.get(key), "1");
+      SettingRepo.set(`automation.eventChain.${rootId}`, "broken-after-dispatch");
+      injectedReply({ type: "turn.done", sessionId: rootId, reason: "end_turn" });
+      await sleep(30);
+      eq("已捕获的轮次来源不依赖后来覆盖的会话记录", SettingRepo.get(key), "2");
+    } finally { runner.dispose(); }
+  }
+
+  /* More than 60 distinct workflows must not evict each other's same-minute keys. */
+  {
+    resetRuns();
+    SettingRepo.set(LAST_MINUTE_KEY, "{}");
+    const count = 72;
+    const ids = Array.from({ length: count }, (_, i) => ({ workflowId: nextId(), nodeId: `t_bulk_schedule_${i}` }));
+    const nodes = new Set(ids.map((v) => v.nodeId));
+    const batchRuns = (): number => runs.filter((r) => nodes.has(r.entry?.nodeId ?? "")).length;
+    for (const id of ids) makeAutomation({ ...id, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
+      [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
+      task: "同分钟至多一次派发",
+    } });
+    type Writable = RunnerInternals & { rememberLastMinute(key: string, minute: number | null): void };
+    let runner = await startRunner() as Writable;
+    const minute = Math.floor(Date.now() / 60_000) + 10;
+    const allRemembered = (): boolean => ids.every(({workflowId,nodeId}) => runner.lastMinute.get(`${workflowId}:${nodeId}`) === minute);
+    const allSaved = (): boolean => { const rows = onDisk(); return ids.every(({workflowId,nodeId}) => rows[`${workflowId}:${nodeId}`] === minute); };
+    try {
+      withClock(minute * 60_000, () => {
+        // new Date() captures the tick's minute; Date.now() then observes a
+        // later minute, simulating a large dispatch batch crossing the boundary.
+        Date.now = () => (minute + 1) * 60_000;
+        runner.onTick();
+      });
+      eq("72条独立定时自动化首次全部派发", batchRuns(), count);
+      check("批次处理跨分钟仍保留tick捕获分钟的全部72条记录", allRemembered(), runner.lastMinute.size);
+      check("72条本分钟记录全部保存", allSaved(), Object.keys(onDisk()).length);
+
+      let writes = 0;
+      const originalSet = SettingRepo.set;
+      SettingRepo.set = (key, value) => { if (key === LAST_MINUTE_KEY) writes++; return originalSet.call(SettingRepo, key, value); };
+      try { withClock(minute * 60_000 + 20_000, () => runner.onTick()); }
+      finally { SettingRepo.set = originalSet; }
+      eq("同分钟再次tick不重复派发任何任务", batchRuns(), count);
+      eq("同分钟重复tick不重写去重表", writes, 0);
+
+      withClock(minute * 60_000 + 25_000, () => {
+        for (let i = 0; i < 80; i++) runner.rememberLastMinute(`retired:${i}`, minute - 1 - i);
+      });
+      check("历史清理不会挤掉本分钟记录", allRemembered() && allSaved(), runner.lastMinute.size);
+      eq("额外历史记录仍限制为60条", [...runner.lastMinute.values()].filter((v) => v !== minute).length, 60);
+      withClock(minute * 60_000 + 26_000, () => runner.rememberLastMinute("retired:0", null));
+      eq("删除历史记录立即落盘", onDisk()["retired:0"], undefined);
+      check("删除记录触发的写入也保留全部本分钟记录", allRemembered() && allSaved(), runner.lastMinute.size);
+
+      runner.dispose();
+      runner = await startRunner() as Writable;
+      check("重建执行器从settings恢复全部72条去重记录", allRemembered(), runner.lastMinute.size);
+      withClock(minute * 60_000 + 40_000, () => runner.onTick());
+      eq("重建执行器后同分钟不再派发", batchRuns(), count);
+      withClock((minute + 1) * 60_000, () => runner.onTick());
+      eq("下一分钟72条全部可以正常派发", batchRuns(), count * 2);
+      withClock((minute + 1) * 60_000 + 20_000, () => runner.onTick());
+      eq("下一分钟再次tick仍无重复", batchRuns(), count * 2);
+      check("每个触发器两个分钟各一次", ids.every(({nodeId}) => runsOfNode(nodeId).length === 2), batchRuns());
+
+      withClock((minute + 2) * 60_000, () => runner.rememberLastMinute("maintenance:current", minute + 2));
+      eq("跨分钟后过期大批记录恢复60条历史上限", [...runner.lastMinute.values()].filter((v) => v !== minute + 2).length, 60);
+      eq("清理后的保存表等于当前1条加历史60条", Object.keys(onDisk()).length, 61);
+      check("最终内存与settings内容一致", JSON.stringify([...runner.lastMinute].sort()) === JSON.stringify(Object.entries(onDisk()).sort()), runner.lastMinute.size);
+    } finally { runner.dispose(); }
   }
 
   /* ── 收尾:这一节的实例都 dispose 了,别让 timer / watcher 挂着 ── */

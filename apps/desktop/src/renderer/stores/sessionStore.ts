@@ -3383,6 +3383,28 @@ function syncConfigFromSession(
   void api.setting.set({ key: UI_LAST_PROJECT_SETTING_KEY, value: sess.projectId });
 }
 
+/** 只在最近一条用户消息之后找错;重试同一份坏配置仍要重新显示失败。 */
+function hasErrorInCurrentTurn(messages: readonly ChatMessage[], text: string): boolean {
+  let found = false;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role === "user") return found;
+    if (message?.blocks.some((block) => block.kind === "error" && block.message === text)) found = true;
+  }
+  return false;
+}
+
+/** 手机 SSE 掉线时 RPC 仍会拒绝;桌面 IPC 也可能比事件先抵达。
+ *  只兜底明确的自定义配置错误,避免意外把其他 IPC 的内部细节显示给用户。 */
+function surfaceRejectedCustomModelSend(get: () => SessionState, sessionId: string, err: unknown): void {
+  const raw = err instanceof Error ? err.message : String(err);
+  if (!raw.includes("本次未发送到默认端点")) return;
+  // Electron 给 IPC 异常加的前缀不是失败原因;手机 RPC 返回的则是原文。
+  const message = raw.replace(/^Error invoking remote method ['"][^'"]+['"]: Error: /, "");
+  if (hasErrorInCurrentTurn(get().messagesBySession[sessionId] ?? [], message)) return;
+  get().ingestEvent({ type: "error", sessionId, message, code: "custom_model_unavailable" });
+}
+
 /**
  * Resolve the model a send should actually use.
  *
@@ -8038,13 +8060,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           userMessage: { id: userMsg.id, createdAt: userMsg.createdAt, blocks: userMsg.blocks },
         }));
       } catch (err) {
-        // The IPC itself rejected (not a streamed `error` event). Without
-        // this the running flag + synthesized stat row would stick forever
-        // - no turn.done/error event will arrive to clear them. Reset both
-        // so the composer unlocks and the pending row disappears. The prompt
-        // IS in the stream, so the send is still treated as accepted (the
-        // caller already cleared the composer).
+        // 主进程已发错误事件,但手机 SSE 可能掉线,不能只把 RPC 失败写到控制台。
+        // 若事件先到,兜底不会再添一条;若事件后到,ingestEvent 会对本轮去重。
         console.error("sendTurn IPC failed:", err);
+        surfaceRejectedCustomModelSend(get, sessionId, err);
+        // 兜底仅覆盖自定义配置失效;其他 IPC 故障仍需释放 running/计时锚。
         set((s) => {
           const runningBySession = { ...s.runningBySession, [sessionId]: false };
           const runningTurnStartedAt = { ...s.runningTurnStartedAt };
@@ -8266,6 +8286,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }));
       } catch (err) {
         console.error("editAndResendMessage: sendTurn IPC failed:", err);
+        surfaceRejectedCustomModelSend(get, sessionId, err);
         set((s) => {
           const runningBySession = { ...s.runningBySession, [sessionId]: false };
           const runningTurnStartedAt = { ...s.runningTurnStartedAt };
@@ -8414,6 +8435,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   ingestEvent: (e) => {
     const sid = e.sessionId;
+
+    // RPC 先拒绝且 SSE 随后才抵达:上一条错误已经由发送方补成气泡,不要
+    // 重复报错 / 全量落库。新一轮用户消息会自然分开两次相同的失败。
+    if (e.type === "error" && e.code === "custom_model_unavailable" &&
+        hasErrorInCurrentTurn(get().messagesBySession[sid] ?? [], e.message)) return;
 
     // Capture the current turn's send-time anchor BEFORE any set() runs —
     // turn.done clears it inside its own set, so by the time we reach the

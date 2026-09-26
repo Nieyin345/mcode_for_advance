@@ -1410,6 +1410,10 @@ export const en = {
   "settings.workflows.fieldName": "Name",
   "settings.workflows.nameRequired": "A name is required — not saved yet",
   "settings.workflows.fieldDescription": "Description",
+  "settings.workflows.fieldFrameworkNote": "Framework note (goes into prompts)",
+  "settings.workflows.fieldFrameworkNoteHelp":
+    "Appended after the workflow-plan framing section of every node prompt. Literature review and code review need different framing — this lets you tune it without touching code. Sent to the model verbatim; empty = nothing appended.",
+  "settings.workflows.fieldFrameworkNotePlaceholder": "Optional framing note for this workflow (sent to the model)…",
   "settings.workflows.fieldPrompt": "Process text (optional)",
   "settings.workflows.lockedHint":
     "A built-in workflow's name and description follow the interface language and cannot be changed here — its process text and its node graph can.",

@@ -22,10 +22,8 @@
  *
  *  - `startWorkflowRun` 把**每一次调用原样记下来**(提示词、工作目录、`entry`),断言就
  *    看这一份;
- *  - `hasActiveRun` **一律返回 false**(=「没有正在跑的」)。这条是 D12 重入保护那个判据
- *    的桩值:本套要验的是触发去重与载荷过滤,**重入跳过不在覆盖范围里** —— 拿它当默认
- *    值只是为了让触发路畅通。事实（`recordBlocked("上一次还在跑")` 那一支)因此在本套里
- *    验不到,报告里如实说了。
+ *  - `hasActiveRun` 默认 false；生命周期回归通过 `setRunBusy` 明确控制忙闲，
+ *    验证忙时合并、取消与关闭，不会启动真实引擎。
  */
 import type { Session } from "@contracts/session";
 
@@ -52,8 +50,13 @@ export function runsOfNode(nodeId: string): CapturedRun[] {
   return runs.filter((r) => r.entry?.nodeId === nodeId);
 }
 
-export function hasActiveRun(_sessionId: string): boolean {
-  return false;
+const busySessions = new Set<string>();
+/** Controlled in-flight state for busy/coalescing regressions. */
+export function setRunBusy(sessionId: string, busy: boolean): void {
+  if (busy) busySessions.add(sessionId); else busySessions.delete(sessionId);
+}
+export function hasActiveRun(sessionId: string): boolean {
+  return busySessions.has(sessionId);
 }
 
 export function startWorkflowRun(args: {

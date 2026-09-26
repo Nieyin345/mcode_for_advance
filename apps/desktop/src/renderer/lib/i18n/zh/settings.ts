@@ -1401,6 +1401,10 @@ export const zh = {
   "settings.workflows.fieldName": "名称",
   "settings.workflows.nameRequired": "名称不能为空，还没保存",
   "settings.workflows.fieldDescription": "说明",
+  "settings.workflows.fieldFrameworkNote": "框架说明（进提示词）",
+  "settings.workflows.fieldFrameworkNoteHelp":
+    "追加在每个节点提示词的「整条流程」框架段之后。做文献评审和做代码审查需要的框架话术不一样 —— 这一段让你不改代码就能调。发给模型的文本，原样使用；留空 = 不追加。",
+  "settings.workflows.fieldFrameworkNotePlaceholder": "补充这张图的框架说明（可选，发给模型）……",
   "settings.workflows.fieldPrompt": "流程文字（可选）",
   "settings.workflows.lockedHint":
     "内置工作流的名称与说明跟随界面语言，在这里改不了 —— 能改的是它的流程文字和它的节点图。",

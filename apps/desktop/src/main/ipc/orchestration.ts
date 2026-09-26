@@ -53,7 +53,7 @@ import { requestWorkflowReload } from "@main/orchestration/reloadRequest.js";
 import { approveWorkflowRevision, workflowReviewOf } from "@main/orchestration/workflowTrust.js";
 import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
 import { ensureLocalNodeTypesDir } from "@main/orchestration/nodeTypesSeed.js";
-import { resolveWorkflowChoice, resolveWorkflowRetry } from "@main/orchestration/runner.js";
+import { hasActiveRun, resolveWorkflowChoice, resolveWorkflowRetry } from "@main/orchestration/runner.js";
 import { exportWorkflowDoc } from "@main/orchestration/workflowValidation.js";
 import { SessionRepo, SettingRepo, WorkflowRunRepo } from "@main/store/repositories.js";
 
@@ -276,7 +276,9 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
   // 现建一条空会话(那会在会话列表里凭空多出一个没人用过的对话)。
   ipcMain.handle(IPC.AUTOMATION_SESSIONS, async (_evt, raw) => {
     const input = AutomationSessionsSchema.parse(raw);
-    return { sessionId: SessionRepo.findAutomationByWorkflow(input.workflowId)?.id ?? null };
+    const sessions = SessionRepo.listAutomationsByWorkflow(input.workflowId);
+    // Prefer the active project for controls; otherwise open the most recently used one.
+    return { sessionId: (sessions.find((s) => hasActiveRun(s.id)) ?? sessions[0])?.id ?? null, sessionIds: sessions.map((s) => s.id) };
   });
 
   // ── 触发器事实状态(AUTO-09)──
@@ -399,8 +401,6 @@ const RUN_SUMMARY_MAX = 200;
  * 只是没有步骤 —— 它跑过这件事本身仍然是真的,而"历史里凭空少了一次"更让人看不懂。
  */
 function automationRunsOf(workflowId: string, limit: number): AutomationRunEntry[] {
-  const session = SessionRepo.findAutomationByWorkflow(workflowId);
-  if (session === undefined) return [];
   const doc = getWorkflow(workflowId);
   const titleOf = (nodeId: string): string => {
     const node = doc?.nodes.find((n) => n.id === nodeId);
@@ -409,7 +409,7 @@ function automationRunsOf(workflowId: string, limit: number): AutomationRunEntry
     // 历史里没人认得出那是哪一步。
     return node.title.trim().length > 0 ? node.title : nodeId;
   };
-  return WorkflowRunRepo.listForSession(session.id, limit).map((row) => {
+  return WorkflowRunRepo.listForAutomationWorkflow(workflowId, limit).map((row) => {
     const snapshot = decodeSnapshot(row.payload);
     return {
       runId: row.id,

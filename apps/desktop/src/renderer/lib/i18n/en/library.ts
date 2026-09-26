@@ -203,6 +203,8 @@ export const en = {
   "library.links.empty": "No links yet.",
   "library.links.out": "Links to",
   "library.links.in": "Linked from",
+  "library.links.mdBundle": "The transcript Markdown and its image bed ({count} images) travel with this item — attached together, deleted together.",
+  "library.links.mdBundleNoImages": "The transcript Markdown travels with this item — attached together, deleted together.",
   "library.links.remove": "Remove",
   "library.links.removeConfirm": "Remove this link?",
   "library.links.suppressed": "Suppressed: {reason}",

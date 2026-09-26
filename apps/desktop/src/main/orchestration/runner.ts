@@ -1,3 +1,4 @@
+import { readAutomationEventChain, snapshotAutomationOrigin, withAutomationOrigin } from "./automationEventOrigin.js";
 /**
  * 一个节点在界面上叫什么:**用户起的标题 > 清单里的名字 > 类型 id**。
  *
@@ -79,6 +80,7 @@ import { injectEntryCriteria } from "./criteriaInject.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { transcriptText } from "@main/claude/nodeTranscript.js";
 import { ExecutionEngine } from "./executionEngine.js";
+import { conversationQueue } from "./conversationQueue.js";
 import { CodeExecutor } from "./codeExecutor.js";
 import { CommandExecutor } from "./commandExecutor.js";
 import { libraryRoot } from "@main/library/paths.js";
@@ -642,6 +644,13 @@ export async function startWorkflowRun(args: {
     return null;
   }
 
+  // Capture before any asynchronous wait/queue: later dispatches may overwrite
+  // this automation session's persisted ancestry while an injected reply is still running.
+  const automationOrigin = session.kind === "automation"
+    ? snapshotAutomationOrigin({ workflowIds: readAutomationEventChain(session) })
+    : undefined;
+  const emitWorkflowEvent = withAutomationOrigin((event) => runtimeManager.emitExternal(event), automationOrigin);
+
   // **续跑时这两样以存档为准。** 点卡片的那一下手上只有一张卡片 —— 用户最初说了什么、
   // 那次是在哪个目录里跑的,都在存档里。以调用方给的为准的话,这里就多了一种"两边
   // 不一样"的坏法,而它不报错。
@@ -757,7 +766,7 @@ export async function startWorkflowRun(args: {
   // 什么都只会得到"这个工作流还在跑" —— 一个用户自己走不出来的状态。
   // (初始存档的失败已在上面拦下;广播失败仍须摘掉运行条目。)
   try {
-    if (userMessage && resumed === undefined) runtimeManager.echoUserMessage(session.id, userMessage);
+    if (userMessage && resumed === undefined) runtimeManager.echoUserMessage(session.id, userMessage, automationOrigin);
     log.info(
       resumed !== undefined
         ? `workflow run ${runId} resumed: ${doc.nodes.length} 个节点 (${session.id})`
@@ -1004,122 +1013,141 @@ export async function startWorkflowRun(args: {
       target = origin;
     }
 
-    if (auto) {
-      // **发完即走。** 不扣 `turn.done`(那一轮对目标对话来说是条**正常消息**,该几点收
-      // 就几点收)、不等回答、拿不到产出。取消也追不回已经发出去的消息 —— 中止信号拦住
-      // 的是"还没发的",不是"正在别人对话里跑的"。
-      observed.add(target.id);
-      log.info(
-        `workflow run ${runId}: 对话节点「${node.title || node.id}」自动注入到 ${target.id}`,
-      );
-      runtimeManager.bindSession(target);
-      runtimeManager.echoUserMessage(target.id, {
-        id: uid("u_"),
-        createdAt: Date.now(),
-        blocks: [
-          { kind: "text", text: input.prompt },
-          { kind: "text", text: "*—— 由自动化注入*" },
-        ],
-      });
-      const handle = await runtimeManager.sendTurn(target, { prompt: input.prompt, cwd });
-      if (!handle) {
-        return { status: "failed", summary: "", error: "目标对话没能接上(它正忙)—— 稍后再试一次" };
-      }
-      return {
-        status: "success",
-        summary: "已注入,不等回答(自动注入模式:那一轮在目标对话里自己跑)",
-      };
-    }
-
-    // 产出是往 `text` 里**累加**的,而同一个会话会被好几个对话节点依次用到 —— 每开一次
-    // 先把上一步留下的那几笔清掉,否则第二个节点拿到的是"两次说的话拼在一起"。
-    observed.add(target.id);
-    text.delete(target.id);
-    endReason.delete(target.id);
-    failure.delete(target.id);
-    // 这一行是给排查用的:**主对话突然多出一段自己没说过的话**时,日志里得看得出是
-    // 哪张图的哪一步干的。
-    log.info(`workflow run ${runId}: 对话节点「${node.title || node.id}」跑在 ${target.id}`);
-
-    // 聊天框里要**看得见这一步说了什么** —— 一条和用户自己发的同一种形状的用户消息。
-    // 这就是"代替用户在主对话里说话"的字面意思(见 `contracts/nodeType` 的
-    // `runner.kind === "conversation"` 那一段)。
-    //
-    // ⚠️ **入口节点不回这一步**(见 `NodeRunInput.echoUserMessage`)。它同样跑在主对话
-    // 里,但手上那段 `prompt` 是**代码拼的脚手架** —— 流程位置、上游产出、产出要求,
-    // 一大段用户没打过的字。原样贴进聊天框,他看到的是一屏莫名其妙的话;而他自己那句
-    // 原话 `startWorkflowRun` 已经回声过了(跨客户端同步、编辑标记、本机乐观追加的
-    // 去重都挂在那一台上),所以这里让开,聊天框里正好一条。
-    //
-    // 顺带:发起方自己发的那条消息**已经被渲染端乐观追加过**了,而 `echoUserMessage`
-    // 走的是 `emitExternal` —— 它只 fanOut / notify,**不经过 `sendTurn` 里那个按 id
-    // 去重的分支**(见 `RuntimeManager.sendTurn` 的 `if (input.userMessage)`)。所以
-    // "谁来回声"必须是一个明确的答案,不能两边都发:这边也发就是聊天里两条一样的提问。
-    if (input.echoUserMessage !== false) {
-      runtimeManager.echoUserMessage(target.id, {
-        id: uid("u_"),
-        createdAt: Date.now(),
-        blocks: [{ kind: "text", text: input.prompt }],
-      });
-    }
-
-    // **这一步跑完的 `turn.done` 先别推给界面。** 那一条在界面上是"用户这一轮结束了"
-    // —— 图可能还有五步没跑(见 `RuntimeManager.holdTurnEnd`)。整张图真正的收口由下面
-    // 收尾那一段补,不走这里。落盘与订阅者不受影响,所以这一步的产出照样收得到。
-    // ⚠️ 只对 `self` 扣:发进发起会话的那轮是**用户自己对话里的正常消息**,它的收尾
-    // 本来就该正常显示(扣了反而让那边"说了话却没下文")。
-    const releaseEnd = target.id === session.id ? runtimeManager.holdTurnEnd(target.id) : null;
-    // **声明过产出变量时,它这一轮的话也先扣住。** 那种情况下它交出来的是一段结构化的
-    // 东西(一个 JSON 对象),逐字滚给用户看的话,聊天框里就是一屏花括号 —— 而那正是
-    // 他明确说过不想看到的。跑完之后在下面解成一张清单,一次性发出去(见 `holdTurnText`)。
-    const vars = outputVarsOf(manifest, node.params);
-    const releaseText =
-      target.id === session.id && vars.length > 0 ? runtimeManager.holdTurnText(target.id) : null;
-    /** 扣住之后要补发的那段。没扣就是 null(照常流式,不补)。 */
-    let held: string | null = null;
-    // 取消要打断**这一个回合**,和隔离节点同一个道理(见上面那段注释)。
-    const onAbort = (): void => runtimeManager.interrupt(target.id);
-    input.signal.addEventListener("abort", onAbort, { once: true });
-    active.executing += 1;
     try {
-      // 目标的运行时**正常路径上早就绑好了**(self 是发消息那一下绑的;origin 是用户
-      // 在那边聊过天)。这里补一次是为了**续跑**:用户点一张旧卡片时没有"发消息"那一下,
-      // 而重启之后运行时表是空的。`bindSession` 是幂等的,已经绑过就是一句空操作。
-      runtimeManager.bindSession(target);
-      const handle = await runtimeManager.sendTurn(target, { prompt: input.prompt, cwd });
-      if (!handle) {
-        // 目标正忙(上一轮还没收干净)时 `sendTurn` 返回 null。**如实说**,不要让这一步
-        // 假装成功 —— 下游拿不到产出时,原因得看得出来。
-        return { status: "failed", summary: "", error: "目标对话没能接上(它正忙)" };
-      }
-      if (input.signal.aborted) onAbort();
-      await handle.done;
-      // 这一轮说了什么,已经攒在 `text` 里了(订阅者照收,只是没推给界面)。
-      if (releaseText !== null) {
-        held = structuredReplyText((text.get(target.id) ?? "").trim(), vars);
-      }
+      return await conversationQueue.run<NodeOutcome>(
+        target.id, input.signal, () => runtimeManager.isBusy(target.id), async (holdUntil) => {
+          // The target may have been deleted or reconfigured while waiting.
+          // Re-read before binding; never resurrect a deleted conversation.
+          const freshTarget = SessionRepo.get(target.id);
+          if (freshTarget === undefined) {
+            return { status: "failed", summary: "", error: `目标对话(${target.id})已经不在了 —— 它可能被删除了` };
+          }
+          target = freshTarget;
+          if (auto) {
+            // **发完即走。** 不扣 `turn.done`(那一轮对目标对话来说是条**正常消息**,该几点收
+            // 就几点收)、不等回答、拿不到产出。取消也追不回已经发出去的消息 —— 中止信号拦住
+            // 的是"还没发的",不是"正在别人对话里跑的"。
+            observed.add(target.id);
+            log.info(
+              `workflow run ${runId}: 对话节点「${node.title || node.id}」自动注入到 ${target.id}`,
+            );
+            runtimeManager.bindSession(target);
+            runtimeManager.echoUserMessage(target.id, {
+              id: uid("u_"),
+              createdAt: Date.now(),
+              blocks: [
+                { kind: "text", text: input.prompt },
+                { kind: "text", text: "*—— 由自动化注入*" },
+              ],
+            }, automationOrigin);
+            const handle = await runtimeManager.sendTurn(target, { prompt: input.prompt, cwd, automationOrigin });
+            if (!handle) {
+              return { status: "failed", summary: "", error: "目标对话没能接上(它正忙)—— 稍后再试一次" };
+            }
+            holdUntil(handle.done);
+            return {
+              status: "success",
+              summary: "已注入,不等回答(自动注入模式:那一轮在目标对话里自己跑)",
+            };
+          }
+
+          // 产出是往 `text` 里**累加**的,而同一个会话会被好几个对话节点依次用到 —— 每开一次
+          // 先把上一步留下的那几笔清掉,否则第二个节点拿到的是"两次说的话拼在一起"。
+          observed.add(target.id);
+          text.delete(target.id);
+          endReason.delete(target.id);
+          failure.delete(target.id);
+          // 这一行是给排查用的:**主对话突然多出一段自己没说过的话**时,日志里得看得出是
+          // 哪张图的哪一步干的。
+          log.info(`workflow run ${runId}: 对话节点「${node.title || node.id}」跑在 ${target.id}`);
+
+          // 聊天框里要**看得见这一步说了什么** —— 一条和用户自己发的同一种形状的用户消息。
+          // 这就是"代替用户在主对话里说话"的字面意思(见 `contracts/nodeType` 的
+          // `runner.kind === "conversation"` 那一段)。
+          //
+          // ⚠️ **入口节点不回这一步**(见 `NodeRunInput.echoUserMessage`)。它同样跑在主对话
+          // 里,但手上那段 `prompt` 是**代码拼的脚手架** —— 流程位置、上游产出、产出要求,
+          // 一大段用户没打过的字。原样贴进聊天框,他看到的是一屏莫名其妙的话;而他自己那句
+          // 原话 `startWorkflowRun` 已经回声过了(跨客户端同步、编辑标记、本机乐观追加的
+          // 去重都挂在那一台上),所以这里让开,聊天框里正好一条。
+          //
+          // 顺带:发起方自己发的那条消息**已经被渲染端乐观追加过**了,而 `echoUserMessage`
+          // 走的是 `emitExternal` —— 它只 fanOut / notify,**不经过 `sendTurn` 里那个按 id
+          // 去重的分支**(见 `RuntimeManager.sendTurn` 的 `if (input.userMessage)`)。所以
+          // "谁来回声"必须是一个明确的答案,不能两边都发:这边也发就是聊天里两条一样的提问。
+          if (input.echoUserMessage !== false) {
+            runtimeManager.echoUserMessage(target.id, {
+              id: uid("u_"),
+              createdAt: Date.now(),
+              blocks: [{ kind: "text", text: input.prompt }],
+            });
+          }
+
+          // **这一步跑完的 `turn.done` 先别推给界面。** 那一条在界面上是"用户这一轮结束了"
+          // —— 图可能还有五步没跑(见 `RuntimeManager.holdTurnEnd`)。整张图真正的收口由下面
+          // 收尾那一段补,不走这里。落盘与订阅者不受影响,所以这一步的产出照样收得到。
+          // ⚠️ 只对 `self` 扣:发进发起会话的那轮是**用户自己对话里的正常消息**,它的收尾
+          // 本来就该正常显示(扣了反而让那边"说了话却没下文")。
+          const releaseEnd = target.id === session.id ? runtimeManager.holdTurnEnd(target.id) : null;
+          // **声明过产出变量时,它这一轮的话也先扣住。** 那种情况下它交出来的是一段结构化的
+          // 东西(一个 JSON 对象),逐字滚给用户看的话,聊天框里就是一屏花括号 —— 而那正是
+          // 他明确说过不想看到的。跑完之后在下面解成一张清单,一次性发出去(见 `holdTurnText`)。
+          const vars = outputVarsOf(manifest, node.params);
+          const releaseText =
+            target.id === session.id && vars.length > 0 ? runtimeManager.holdTurnText(target.id) : null;
+          /** 扣住之后要补发的那段。没扣就是 null(照常流式,不补)。 */
+          let held: string | null = null;
+          // 取消要打断**这一个回合**,和隔离节点同一个道理(见上面那段注释)。
+          const onAbort = (): void => runtimeManager.interrupt(target.id);
+          input.signal.addEventListener("abort", onAbort, { once: true });
+          active.executing += 1;
+          try {
+            // 目标的运行时**正常路径上早就绑好了**(self 是发消息那一下绑的;origin 是用户
+            // 在那边聊过天)。这里补一次是为了**续跑**:用户点一张旧卡片时没有"发消息"那一下,
+            // 而重启之后运行时表是空的。`bindSession` 是幂等的,已经绑过就是一句空操作。
+            runtimeManager.bindSession(target);
+            const handle = await runtimeManager.sendTurn(target, { prompt: input.prompt, cwd, automationOrigin });
+            if (!handle) {
+              // 目标正忙(上一轮还没收干净)时 `sendTurn` 返回 null。**如实说**,不要让这一步
+              // 假装成功 —— 下游拿不到产出时,原因得看得出来。
+              return { status: "failed", summary: "", error: "目标对话没能接上(它正忙)" };
+            }
+            if (input.signal.aborted) onAbort();
+            await handle.done;
+            // 这一轮说了什么,已经攒在 `text` 里了(订阅者照收,只是没推给界面)。
+            if (releaseText !== null) {
+              held = structuredReplyText((text.get(target.id) ?? "").trim(), vars);
+            }
+          } catch (err) {
+            return { status: "failed", summary: "", error: (err as Error).message };
+          } finally {
+            input.signal.removeEventListener("abort", onAbort);
+            // **补发要排在解除之前。** 反过来的话,后面任何一条 `text.delta` 又会推给界面,
+            // 而那一段本该是"解完之后的一句话"。
+            if (held !== null && held.length > 0) {
+              emitWorkflowEvent({
+                type: "text.delta",
+                sessionId: target.id,
+                messageId: uid("m_"),
+                text: held,
+              });
+            }
+            releaseText?.();
+            active.executing -= 1;
+            releaseEnd?.();
+          }
+          // 这一步的产出 = 目标对话这一轮说的话(和其他节点同一个口径,见 `outcomeOf`)。
+          // ⚠️ **拿到的是原文,不是补发出去的那张清单** —— 下游取的是产出变量,而变量是从
+          // 原文里解出来的(`withOutputCheck` 也在查原文)。清单只是给人看的。
+          return outcomeOf(target.id);
+        },
+      );
     } catch (err) {
-      return { status: "failed", summary: "", error: (err as Error).message };
-    } finally {
-      input.signal.removeEventListener("abort", onAbort);
-      // **补发要排在解除之前。** 反过来的话,后面任何一条 `text.delta` 又会推给界面,
-      // 而那一段本该是"解完之后的一句话"。
-      if (held !== null && held.length > 0) {
-        runtimeManager.emitExternal({
-          type: "text.delta",
-          sessionId: target.id,
-          messageId: uid("m_"),
-          text: held,
-        });
-      }
-      releaseText?.();
-      active.executing -= 1;
-      releaseEnd?.();
+      // A waiting node must not echo a message, clear another node's buffers,
+      // or interrupt a target turn it does not own.
+      if (input.signal.aborted) return { status: "cancelled", summary: "" };
+      return { status: "failed", summary: "", error: err instanceof Error ? err.message : String(err) };
     }
-    // 这一步的产出 = 目标对话这一轮说的话(和其他节点同一个口径,见 `outcomeOf`)。
-    // ⚠️ **拿到的是原文,不是补发出去的那张清单** —— 下游取的是产出变量,而变量是从
-    // 原文里解出来的(`withOutputCheck` 也在查原文)。清单只是给人看的。
-    return outcomeOf(target.id);
   };
 
   /**
@@ -1251,6 +1279,7 @@ export async function startWorkflowRun(args: {
       const handle = await runtimeManager.sendTurn(nodeSession, {
         prompt: input.prompt,
         cwd,
+        automationOrigin,
         // 这一步要用的技能 → 这一轮的技能允许清单(`@contracts/nodeType` 的
         // `NODE_SKILLS_PARAM_KEY`)。**空数组是"不限制"而不是"一个都不许"** ——
         // 契约那一头就是空的走 `skills: "all"`(见 `StartTurnRequest.skills`),
@@ -1552,7 +1581,7 @@ export async function startWorkflowRun(args: {
       // 正常事件列出来、还配了提示语,用户挂上去**永远不会响** —— 而"挂上了却不响"正是
       // 仓库规矩第 3 条要禁的那种坏东西。同一处坑还有 `request.resolved`
       // (`RuntimeManager.notifyRequestResolved`),那条另算。
-      runtimeManager.emitExternal({
+      emitWorkflowEvent({
         type: "workflow.node.result",
         sessionId: session.id,
         runId,
@@ -1800,7 +1829,7 @@ export async function startWorkflowRun(args: {
     // 那条路(见 `parkedRunTeardown`)—— 它等到了就会立刻起新的一次运行,而新的会
     // 回声用户消息、开一个新回合。收口落在那之后的话,前一次的 `turn.done` 会把
     // **新的**那个回合提前关掉,现象是"图明明在跑,界面上却像已经结束了"。
-    runtimeManager.emitExternal({
+    emitWorkflowEvent({
       type: "turn.done",
       sessionId: session.id,
       reason: settled === "cancelled" ? "interrupted" : settled === "failed" ? "error" : "end_turn",
@@ -1829,7 +1858,7 @@ export async function startWorkflowRun(args: {
           createdAt: Date.now(),
           blocks: [{ kind: "text", text }],
         });
-        const handle = await runtimeManager.sendTurn(session, { prompt: text, cwd });
+        const handle = await runtimeManager.sendTurn(session, { prompt: text, cwd, automationOrigin });
         // 主对话正忙时 `sendTurn` 返回 null(见 `runInConversation` 里同一条)。这一段
         // 已经发过回声了,所以那句话在聊天里看得见、用户可以自己重发 —— 只需要留一行。
         if (!handle) log.warn(`workflow run ${runId}: 退出后那句话没能发出去,主对话正忙`);

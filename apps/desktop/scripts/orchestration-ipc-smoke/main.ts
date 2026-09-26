@@ -1,3 +1,5 @@
+import { loadAutomationHistory } from "@renderer/lib/automationHistory.js";
+import type { RpcMap } from "@contracts/ipc";
 /**
  * Headless smoke for **`main/ipc/orchestration.ts`** 与 **`main/orchestration/nodeTypesSeed.ts`**
  * —— 工作流那一摊的"入口"与"铺目录"。
@@ -120,7 +122,7 @@ const fakeIpc = {
 
 const { IPC } = await import("@contracts/ipc");
 const { registerWorkflowHandlers, sanitizeFileBase } = await import("@main/ipc/orchestration.js");
-const { initDb } = await import("@main/store/db.js");
+const { initDb, getDb } = await import("@main/store/db.js");
 const { SessionRepo, SettingRepo, ProjectRepo, WorkflowRunRepo } = await import(
   "@main/store/repositories.js"
 );
@@ -1039,6 +1041,44 @@ console.log("\n对话里那张「跑过什么」");
     typeof rows,
   );
   same("不认识的那个会话 → 空数组,不抛", await callAsync(IPC.RUNS_HISTORY, { sessionId: "s_没有这个" }), []);
+}
+
+
+/* A workflow's history spans project-specific automation sessions, not chat runs. */
+{
+  ProjectRepo.create({ ...ProjectRepo.get("prj_smoke")!, id: "prj_hist_B", path: DATA + "/B" });
+  SessionRepo.create({ ...SessionRepo.get("s_smoke_auto")!, id: "s_hist_B", projectId: "prj_hist_B", createdAt: 1, updatedAt: 1 });
+  SessionRepo.create({ ...SessionRepo.get("s_smoke_auto")!, id: "s_hist_chat", kind: "chat" });
+  for (const [id, sessionId, workflowId] of [
+    ["r_project_B", "s_hist_B", "wf_hist"],
+    ["r_other_workflow", "s_hist_B", "wf_other"],
+    ["r_chat_not_automation", "s_hist_chat", "wf_hist"],
+  ]) {
+    WorkflowRunRepo.save({ id: id!, sessionId: sessionId!, workflowId: workflowId!, status: "success", payload: "{}", awaiting: [] });
+  }
+  getDb().run("UPDATE workflow_runs SET updated_at = 9000000000000 WHERE id = 'r_project_B'");
+  const history = async (limit?: number): Promise<Array<{ runId: string }>> =>
+    obj(await callAsync(IPC.AUTOMATION_RUNS, { workflowId: "wf_hist", ...(limit === undefined ? {} : { limit }) })).runs as Array<{ runId: string }>;
+  same("跨项目历史保留 A/B 全部记录且排除普通对话和其他工作流", (await history()).map(r => r.runId).sort(), ["r_broken", "r_future", "r_ok", "r_project_B"]);
+  eq("跨项目历史按运行更新时间排序", (await history())[0]?.runId, "r_project_B");
+  eq("limit 作用于合并后的历史而非每个项目", (await history(2)).length, 2);
+  eq("限制条数仍保留最新项目运行", (await history(1))[0]?.runId, "r_project_B");
+  eq("后台会话入口认最近运行而非最近创建会话", obj(await callAsync(IPC.AUTOMATION_SESSIONS, { workflowId: "wf_hist" })).sessionId, "s_hist_B");
+  same("会话入口包含所有项目且不含聊天会话", (obj(await callAsync(IPC.AUTOMATION_SESSIONS, { workflowId: "wf_hist" })).sessionIds as string[]).sort(), ["s_hist_B", "s_smoke_auto"]);
+  const port = {
+    sessions: ((input) => callAsync(IPC.AUTOMATION_SESSIONS, input)) as RpcMap["automation.sessions"],
+    history: ((input) => callAsync(IPC.RUNS_HISTORY, input)) as RpcMap["runs.history"],
+  };
+  const detailed = await loadAutomationHistory("wf_hist", port);
+  same("真实历史面板加载器保留全部项目且过滤其他工作流", detailed.map(r => r.runId).sort(), ["r_broken", "r_future", "r_ok", "r_project_B"]);
+  eq("历史面板跨项目排序", detailed[0]?.runId, "r_project_B");
+  eq("历史面板全局限制条数", (await loadAutomationHistory("wf_hist", port, 2)).length, 2);
+  eq("旧版单会话响应仍可读取", (await loadAutomationHistory("wf_hist", { ...port, sessions: async () => ({ sessionId: "s_smoke_auto" }) })).length, 3);
+  eq("尚无会话时历史面板为空", (await loadAutomationHistory("wf_hist", { ...port, sessions: async () => ({ sessionId: null }) })).length, 0);
+  let reads = 0;
+  await loadAutomationHistory("wf_hist", { ...port, sessions: async () => ({ sessionId: "s_hist_B", sessionIds: ["s_hist_B", "s_hist_B"] }), history: async (input) => { reads++; return port.history(input); } });
+  eq("重复会话 id 只查询一次", reads, 1);
+
 }
 
 /* ──────────────── 12. 无参 handler 收到 undefined 时不能炸 ──────────────── */

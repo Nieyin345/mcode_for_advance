@@ -1,3 +1,6 @@
+import { RUNTIME_FALLBACK_MODELS_SETTING_KEY } from "@contracts/ipc";
+import { automationOriginOf } from "@main/orchestration/automationEventOrigin.js";
+import type { RuntimeEvent } from "@contracts/runtime";
 /**
  * Headless smoke for **代理之间通信** —— `main/lib/agentMail.ts` 那套(名册 / 投递 /
  * 上限 / 挂账)加上 `mcodeServer.ts` 里那三个工具。
@@ -32,23 +35,34 @@
 import { initDb } from "@main/store/db.js";
 import { ProjectRepo, SessionRepo, SettingRepo } from "@main/store/repositories.js";
 import type { Session } from "@contracts/session";
+import type { AgentProvider, StartTurnRequest, TurnHandle, ProviderContext } from "@contracts/provider";
+import type { ApiConfig } from "@contracts/customModel";
 import {
   MAX_MESSAGES_PER_SESSION,
   deliver,
+  clearAgentMail,
   dropAgentMail,
   peekAgentMail,
+  peekAgentMailBatch,
   peersOf,
   resolvePeer,
   selfPeerOf,
   recordAsk,
   setDeliveryPort,
   setMessageWindowMs,
+  wakeQueued,
   undeliveredCount,
   unknownPeerMessage,
 } from "@main/lib/agentMail.js";
 import { AGENT_MAIL_TOOLS, WORKFLOW_READONLY_TOOLS, workflowMcpTools } from "@main/mcp/mcodeServer.js";
 import { shouldAutoApprove } from "@main/mcp/toolRules.js";
 import { MCP_WORKFLOW_SERVER } from "@contracts/ipc/mcp";
+import { runtimeManager } from "@main/claude/RuntimeManager.js";
+import { providerRegistry } from "@main/providers/registry.js";
+import { CustomModelStore } from "@main/lib/secretStore.js";
+import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
+import type { BridgeHandle } from "@main/providers/bridge/bridgeServer.js";
+import { mobileEventBus } from "@main/mobile/MobileEventBus.js";
 
 let failures = 0;
 let checks = 0;
@@ -120,6 +134,48 @@ function mkSession(over: Partial<Session> & { title: string; kind: Session["kind
 
 /* ──────────────────── 1. 投递端口(桩) ──────────────────── */
 
+console.log("\n① 运行时的真实唤醒闸门:图跑着时主对话和节点都不能被叫醒");
+{
+  const main = mkSession({ kind: "chat", title: "图的主对话" });
+  const node = mkSession({ kind: "node", title: "图的节点", parentSessionId: main.id, nodeId: "guard" });
+  const side = mkSession({ kind: "side", title: "独立子对话", parentSessionId: main.id });
+  const orphan = mkSession({ kind: "node", title: "失联节点" });
+
+  // 闸门未接到调度器时,不能靠“图不存在”的猜测起一轮:会打乱真实图的 turn.done。
+  runtimeManager.registerRunGuard(null);
+  eq("★ 主对话:未注册闸门则保守排队", runtimeManager.canWakeSession(main.id), false);
+  eq("★ 节点:未注册闸门则保守排队", runtimeManager.canWakeSession(node.id), false);
+  eq("没有父对话的节点不能唤醒", runtimeManager.canWakeSession(orphan.id), false);
+  eq("没有对应会话不能唤醒", runtimeManager.canWakeSession("does_not_exist"), false);
+  eq("独立子对话不受图闸门影响", runtimeManager.canWakeSession(side.id), true);
+
+  const activeRoots = new Set([main.id]);
+  runtimeManager.registerRunGuard((id) => activeRoots.has(id));
+  eq("★ 图在跑:主对话也必须排队", runtimeManager.canWakeSession(main.id), false);
+  eq("★ 图在跑:节点按父对话 id 排队", runtimeManager.canWakeSession(node.id), false);
+  eq("图在跑:独立子对话还能唤醒", runtimeManager.canWakeSession(side.id), true);
+  // bind 真正的运行时,只把 sendTurn 换成计数桩:否则旧实现会真的起 SDK 回合。
+  // 这样“直接 wake 被图挡住”不能靠“根本没有运行时”误打误撞通过。
+  const sendTurn = runtimeManager.sendTurn;
+  let attempted = 0;
+  runtimeManager.sendTurn = async () => { attempted += 1; return null; };
+  try {
+    runtimeManager.bindSession(main);
+    eq("★ 直接调用 wake 也不能绕过图闸门", runtimeManager.wakeSession(main.id, "不要插队"), false);
+    eq("★ 图挡住时没偷偷起一轮", attempted, 0);
+    runtimeManager.dispose(main.id);
+    activeRoots.delete(main.id);
+    eq("图收尾:主对话又能唤醒", runtimeManager.canWakeSession(main.id), true);
+    eq("图收尾:节点又能唤醒", runtimeManager.canWakeSession(node.id), true);
+    eq("★ 运行时未绑定不能假装已叫醒", runtimeManager.wakeSession(node.id, "还没绑定"), false);
+    eq("★ 未绑定时没偷偷起一轮", attempted, 0);
+  } finally {
+    runtimeManager.dispose(main.id);
+    runtimeManager.sendTurn = sendTurn;
+    runtimeManager.registerRunGuard(null);
+  }
+}
+
 /** 这些会话"此刻在跑"。 */
 const running = new Set<string>();
 /** 这些会话"有一张图正管着它" —— 见 `blockGraph`。 */
@@ -139,7 +195,10 @@ setDeliveryPort({
   },
   canWake: (id) => !graphBlocked.has(id),
   wake: (id, text) => {
-    woken.push({ sessionId: id, text });
+    // 假引擎立刻成功启动:模拟 RuntimeManager 的收件箱回执。
+    const batch = peekAgentMailBatch(id);
+    woken.push({ sessionId: id, text: [text, batch.text].filter(Boolean).join("\n") });
+    clearAgentMail(id, batch.through);
     return true;
   },
 });
@@ -563,6 +622,408 @@ console.log("\n⑬ 公网门控:三个工具一条都不许上");
   for (const n of AGENT_MAIL_TOOLS) {
     check(`（对照）本机表里有 ${n}`, local.has(n));
   }
+}
+
+console.log("\n⑭ 图收尾唤醒:收件箱不重复注入,启动期间新信不丢也不抢跑");
+{
+  const providerId = "mail-smoke-deferred";
+  const requests: StartTurnRequest[] = [];
+  const startResolvers: Array<(handle: TurnHandle) => void> = [];
+  // 真走 RuntimeManager.sendTurn,只把 SDK 换成可控的假引擎:启动卡在
+  // provider.startTurn 的 await 处,测试在那期间送来第二封信。
+  providerRegistry.register({
+    id: providerId,
+    displayName: "Deferred smoke provider",
+    capabilities: {
+      supportsApproval: false,
+      supportsResume: false,
+      supportsStreaming: false,
+      supportsMcp: false,
+      supportsAskUserQuestion: false,
+    },
+    startTurn: (req) => {
+      requests.push(req);
+      return new Promise<TurnHandle>((resolve) => startResolvers.push(resolve));
+    },
+    listCommands: async () => ({ supported: false, commands: [] }),
+  } satisfies AgentProvider);
+  const main = mkSession({ kind: "chat", title: "延迟启动的主对话" });
+  const node = mkSession({ kind: "node", title: "延迟启动的节点", parentSessionId: main.id, nodeId: "deferred", providerId });
+  const activeRoots = new Set([main.id]);
+  runtimeManager.bindSession(node);
+  runtimeManager.registerRunGuard((id) => activeRoots.has(id));
+  setDeliveryPort({
+    isRunning: (id) => runtimeManager.isRunning(id),
+    inject: (id, text) => runtimeManager.injectMessage(id, text),
+    canWake: (id) => runtimeManager.canWakeSession(id),
+    wake: (id, text) => runtimeManager.wakeSession(id, text),
+  });
+  const peer = peerOrThrow(main.id, node.id);
+  const env = (text: string) => ({ fromName: "主对话", fromId: main.id, kind: "notify" as const, text });
+  try {
+    eq("前置:图管着节点时第一封信排队", deliver(peer, env("旧信唯一标记")).outcome, "queued");
+    const waiting = peekAgentMail(node.id);
+    check("前置:旧信已在收件箱", waiting.includes("旧信唯一标记"));
+    activeRoots.delete(main.id);
+    eq("前置:图收尾后节点被叫醒", wakeQueued([{ session: node, text: waiting }]).join(","), node.id);
+    eq("前置:假引擎开始一轮但还未返回句柄", requests.length, 1);
+    eq("★ 旧信在真正发给引擎的提示词里只出现一次", (requests[0]?.prompt.match(/旧信唯一标记/g) ?? []).length, 1);
+
+    const arriving = deliver(peer, env("新信唯一标记"));
+    eq("★ 启动未完成时第二封信排队,不能再起一轮", arriving.outcome, "queued");
+    check("★ 排队说明也要包含正在启动这一种原因", arriving.detail.includes("启动"), arriving.detail);
+    eq("★ 不会并行启动第二轮", requests.length, 1);
+    check("前置:新信确实进入收件箱", peekAgentMail(node.id).includes("新信唯一标记"));
+
+    const handle: TurnHandle = { done: new Promise<void>(() => {}), interrupt: () => {}, isRunning: () => true };
+    for (const resolve of startResolvers) resolve(handle);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const after = peekAgentMail(node.id);
+    check("★ 旧信已进本轮,从收件箱清掉", !after.includes("旧信唯一标记"), after);
+    check("★ 启动期间才来的新信仍在收件箱", after.includes("新信唯一标记"), after);
+
+    // 自定义模型还有一个更早的 await:BridgeRegistry.acquire。启动闸必须从
+    // sendTurn 入口就占住,不能只在 provider.startTurn 前占。
+    const bridged = mkSession({
+      kind: "node", title: "桥等待中的节点", parentSessionId: main.id,
+      nodeId: "bridge-deferred", providerId, customModelId: "smoke-bridge",
+    });
+    const cfg: ApiConfig = {
+      baseUrl: "https://example.invalid", authToken: "smoke-token", authMode: "auth_token",
+      protocol: "openai", selectedModel: "smoke-model", models: [{ id: "smoke-model" }],
+      disableNonEssentialTraffic: true,
+    };
+    const fakeBridge: BridgeHandle = {
+      localUrl: "http://127.0.0.1:42345", routeToken: "smoke",
+      onStatus: () => () => {}, close: () => {},
+    };
+    const resolveConfig = CustomModelStore.resolveApiConfig;
+    const acquireBridge = BridgeRegistry.acquire;
+    let resumeBridge: ((handle: BridgeHandle) => void) | undefined;
+    runtimeManager.bindSession(bridged);
+    try {
+      CustomModelStore.resolveApiConfig = () => cfg;
+      BridgeRegistry.acquire = () => new Promise<BridgeHandle>((resolve) => { resumeBridge = resolve; });
+      const starting = runtimeManager.sendTurn(bridged, { prompt: "等待桥", cwd: "C:/work/paper" });
+      check("前置:请求确实停在翻译桥", resumeBridge !== undefined);
+      eq("★ 翻译桥等待期间也不能再叫醒这个会话", runtimeManager.canWakeSession(bridged.id), false);
+      if (!resumeBridge) throw new Error("smoke: fake bridge was not acquired");
+      resumeBridge(fakeBridge);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      eq("桥返回后才启动引擎", requests.length, 2);
+      startResolvers.at(-1)?.(handle);
+      await starting;
+    } finally {
+      CustomModelStore.resolveApiConfig = resolveConfig;
+      BridgeRegistry.acquire = acquireBridge;
+      runtimeManager.dispose(bridged.id);
+    }
+  } finally {
+    runtimeManager.dispose(node.id);
+    runtimeManager.registerRunGuard(null);
+    setDeliveryPort(null);
+    dropAgentMail(node.id);
+  }
+}
+
+console.log("\n⑮ 自定义模型配置失效:不能改投默认端点,错误要到客户端");
+{
+  const providerId = "invalid-custom-model-smoke";
+  const started: StartTurnRequest[] = [];
+  providerRegistry.register({
+    id: providerId,
+    displayName: "Invalid-config smoke provider",
+    capabilities: {
+      supportsApproval: false, supportsResume: false, supportsStreaming: false,
+      supportsMcp: false, supportsAskUserQuestion: false,
+    },
+    startTurn: async (req) => {
+      started.push(req);
+      return { done: new Promise<void>(() => {}), interrupt: () => {}, isRunning: () => true };
+    },
+    listCommands: async () => ({ supported: false, commands: [] }),
+  } satisfies AgentProvider);
+  const broken = mkSession({
+    kind: "chat", title: "配置已删除", providerId,
+    customModelId: "deleted-config-smoke", model: "custom-only-model",
+  });
+  SessionRepo.updateStatus(broken.id, "running");
+  runtimeManager.bindSession(broken);
+  runtimeManager.registerRunGuard(() => false);
+  const mobileErrors: string[] = [];
+  const mobileOrder: string[] = [];
+  const off = mobileEventBus.subscribe((e) => {
+    if (e.sessionId !== broken.id) return;
+    if (e.type === "user.message" || e.type === "error") mobileOrder.push(e.type);
+    if (e.type === "error") mobileErrors.push(e.message);
+  });
+  try {
+    let error: unknown;
+    try {
+      await runtimeManager.sendTurn(broken, {
+        prompt: "不要转发到默认端点", cwd: "C:/work/paper",
+        userMessage: {
+          id: `u_${broken.id}`, createdAt: Date.now(),
+          blocks: [{ kind: "text", text: "不要转发到默认端点" }],
+        },
+      });
+    } catch (err) {
+      error = err;
+    }
+    check("★ 请求明确失败(IPC/RPC 可以反馈)", error instanceof Error && error.message.includes("自定义模型"), error);
+    eq("★ 不能启动默认端点上的模型", started.length, 0);
+    check("★ 错误说明配置已不存在", mobileErrors[0]?.includes("已删除") === true, mobileErrors);
+    check("★ 错误告知本次未回退默认端点", mobileErrors[0]?.includes("未发送到默认端点") === true, mobileErrors);
+    eq("★ 错误事件发往移动端/界面", mobileErrors.length, 1);
+    eq("★ 跨设备先看见原话,再看见错误", mobileOrder.join(","), "user.message,error");
+    eq("★ 持久化状态不再留在 running", SessionRepo.get(broken.id)?.status, "errored");
+    eq("★ 失败后释放启动闸,可修好配置再试", runtimeManager.canWakeSession(broken.id), true);
+
+    // 用真实 CustomModelStore + 临时 settings 验另外两种失效,不只 mock
+    // resolveApiConfig。界面设置不允许空模型,但老数据/人工修改可能留下空列表。
+    const withToken = CustomModelStore.save({
+      name: "smoke-密钥遗失", baseUrl: "https://example.invalid", authToken: "smoke-secret",
+      models: [{ id: "smoke-model" }],
+    }).find((cfg) => cfg.name === "smoke-密钥遗失")!;
+    const withoutModels = CustomModelStore.save({
+      name: "smoke-无模型", baseUrl: "https://example.invalid", authToken: "smoke-secret",
+      models: [],
+    }).find((cfg) => cfg.name === "smoke-无模型")!;
+    const keysBefore = SettingRepo.get("customModelKeys");
+    const tokenMissing = mkSession({ kind: "chat", title: "密钥遗失", providerId, customModelId: withToken.id, model: "smoke-model" });
+    const modelMissing = mkSession({ kind: "chat", title: "模型遗失", providerId, customModelId: withoutModels.id, model: "smoke-model" });
+    try {
+      const keys = JSON.parse(keysBefore ?? "{}") as Record<string, string>;
+      delete keys[withToken.id];
+      SettingRepo.set("customModelKeys", JSON.stringify(keys));
+      for (const [session, reason] of [
+        [tokenMissing, "密钥缺失或无法解密"], [modelMissing, "没有配置可用模型"],
+      ] as const) {
+        SessionRepo.updateStatus(session.id, "running");
+        runtimeManager.bindSession(session);
+        const errors: string[] = [];
+        const unlisten = mobileEventBus.subscribe((e) => {
+          if (e.sessionId === session.id && e.type === "error") errors.push(e.message);
+        });
+        try {
+          let rejected = false;
+          try { await runtimeManager.sendTurn(session, { prompt: "不要误发", cwd: "C:/work/paper" }); }
+          catch { rejected = true; }
+          check(`★ ${reason}:请求失败`, rejected);
+          check(`★ ${reason}:准确告知客户端`, errors[0]?.includes(reason) === true, errors);
+          eq(`★ ${reason}:状态收口`, SessionRepo.get(session.id)?.status, "errored");
+          eq(`★ ${reason}:没有启动默认端点`, started.length, 0);
+          check(`★ ${reason}:错误不泄漏凭据`, errors.every((text) => !text.includes("smoke-secret")));
+        } finally {
+          unlisten();
+          if (session !== tokenMissing) runtimeManager.dispose(session.id);
+        }
+      }
+      // 密钥修复后沿同一会话重试,确实走回自定义端点,不是永远卡死。
+      SettingRepo.set("customModelKeys", keysBefore ?? "{}");
+      await runtimeManager.sendTurn(tokenMissing, { prompt: "修好后重试", cwd: "C:/work/paper" });
+      eq("★ 修复密钥后可以重新启动提供方", started.length, 1);
+      eq("★ 重试仍使用选定的自定义端点", started[0]?.apiConfig?.baseUrl, "https://example.invalid");
+
+      // 手工改坏配置文件时解析函数也可能直接抛(而不返回 undefined)。
+      // 依旧要 fail-closed、收口状态、把安全的解释送往界面,不透出内部异常。
+      const malformed = mkSession({ kind: "chat", title: "异常配置", providerId, customModelId: "malformed-config-smoke" });
+      SessionRepo.updateStatus(malformed.id, "running");
+      runtimeManager.bindSession(malformed);
+      const resolveConfig = CustomModelStore.resolveApiConfig;
+      const emitted: string[] = [];
+      const unlisten = mobileEventBus.subscribe((e) => {
+        if (e.sessionId === malformed.id && e.type === "error") emitted.push(e.message);
+      });
+      try {
+        CustomModelStore.resolveApiConfig = () => { throw new Error("private-token-in-parser-error"); };
+        let rejected: unknown;
+        try { await runtimeManager.sendTurn(malformed, { prompt: "坏记录", cwd: "C:/work/paper" }); }
+        catch (err) { rejected = err; }
+        check("★ 解析异常明确失败,不传内部错误", rejected instanceof Error &&
+          rejected.message.includes("配置已删除") && !rejected.message.includes("private-token"), rejected);
+        check("★ 解析异常也发错误事件", emitted.length === 1 && !emitted[0]?.includes("private-token"), emitted);
+        eq("★ 解析异常状态不留在 running", SessionRepo.get(malformed.id)?.status, "errored");
+        eq("★ 解析异常不启动默认端点", started.length, 1);
+      } finally {
+        CustomModelStore.resolveApiConfig = resolveConfig;
+        unlisten();
+        runtimeManager.dispose(malformed.id);
+      }
+    } finally {
+      SettingRepo.set("customModelKeys", keysBefore ?? "{}");
+      CustomModelStore.remove(withToken.id);
+      CustomModelStore.remove(withoutModels.id);
+      runtimeManager.dispose(tokenMissing.id);
+      runtimeManager.dispose(modelMissing.id);
+    }
+  } finally {
+    off();
+    runtimeManager.dispose(broken.id);
+    runtimeManager.registerRunGuard(null);
+  }
+}
+
+console.log("\n⑯ 直接叫醒:配置失效要退回收件箱,启动失败也不能丢信");
+{
+  const providerId = "wake-mail-failure-smoke";
+  let failNextStart = true;
+  const requests: StartTurnRequest[] = [];
+  providerRegistry.register({
+    id: providerId, displayName: "Wake-mail failure smoke",
+    capabilities: {
+      supportsApproval: false, supportsResume: false, supportsStreaming: false,
+      supportsMcp: false, supportsAskUserQuestion: false,
+    },
+    startTurn: async (req) => {
+      requests.push(req);
+      if (failNextStart) { failNextStart = false; throw new Error("provider startup failed"); }
+      return { done: new Promise<void>(() => {}), interrupt: () => {}, isRunning: () => true };
+    },
+    listCommands: async () => ({ supported: false, commands: [] }),
+  } satisfies AgentProvider);
+  const main = mkSession({ kind: "chat", title: "代理投递源", providerId });
+  const bad = mkSession({
+    kind: "node", title: "配置已删除的接收者", parentSessionId: main.id, nodeId: "bad-node", providerId,
+    customModelId: "missing-config-for-wake", model: "smoke-model",
+  });
+  const flaky = mkSession({
+    kind: "node", title: "引擎第一次起不来", parentSessionId: main.id, nodeId: "flaky-node", providerId,
+    model: "smoke-model",
+  });
+  runtimeManager.bindSession(bad);
+  runtimeManager.bindSession(flaky);
+  runtimeManager.registerRunGuard(() => false);
+  setDeliveryPort({
+    isRunning: (id) => runtimeManager.isRunning(id),
+    inject: (id, text) => runtimeManager.injectMessage(id, text),
+    canWake: (id) => runtimeManager.canWakeSession(id),
+    wake: (id, text) => runtimeManager.wakeSession(id, text),
+  });
+  const send = (to: Session, text: string) => deliver(peerOrThrow(main.id, to.id), {
+    fromName: "主对话", fromId: main.id, kind: "notify", text,
+  });
+  const errors: string[] = [];
+  const unlisten = mobileEventBus.subscribe((e) => {
+    if (e.sessionId === main.id && e.type === "workflow.node.transcript" && e.nodeSessionId === bad.id) {
+      errors.push(e.blocks.filter((block) => block.kind === "text").map((block) => block.text).join("\n"));
+    }
+  });
+  try {
+    const invalidDelivery = send(bad, "失效配置下的信");
+    eq("★ 无效模型的直接叫醒如实报 queued", invalidDelivery.outcome, "queued");
+    check("★ 发信代理也知道要检查模型配置", invalidDelivery.detail.includes("模型配置"), invalidDelivery.detail);
+    check("★ 无效模型的信确实存下", peekAgentMail(bad.id).includes("失效配置下的信"));
+    check("★ 隐藏节点的错误经父对话转录同步到桌面/手机", errors[0]?.includes("已删除") === true, errors);
+    eq("★ 叫醒失败的会话标记 errored", SessionRepo.get(bad.id)?.status, "errored");
+    eq("★ 无效模型不能碰提供方", requests.length, 0);
+
+    eq("启动请求先发出", send(flaky, "启动失败也要保留的信").outcome, "woke");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    eq("第一次确实尝试启动", requests.length, 1);
+    eq("★ 第一次的请求只带一次信", (requests[0]?.prompt.match(/启动失败也要保留的信/g) ?? []).length, 1);
+    check("★ 启动失败后信还在收件箱", peekAgentMail(flaky.id).includes("启动失败也要保留的信"));
+    eq("失败后可重试叫醒", runtimeManager.wakeSession(flaky.id, "请处理刚收到的代理消息。"), true);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    eq("重试真的再次启动", requests.length, 2);
+    eq("★ 重试的请求也只带一次信", (requests[1]?.prompt.match(/启动失败也要保留的信/g) ?? []).length, 1);
+    eq("★ 成功启动后才确认收件箱", peekAgentMail(flaky.id), "");
+  } finally {
+    unlisten();
+    setDeliveryPort(null);
+    runtimeManager.registerRunGuard(null);
+    runtimeManager.dispose(bad.id);
+    runtimeManager.dispose(flaky.id);
+    dropAgentMail(bad.id);
+    dropAgentMail(flaky.id);
+  }
+}
+
+/* Real RuntimeManager + controllable provider: turn-local injection ancestry. */
+{
+  const contexts: ProviderContext[] = [];
+  const finishes: Array<() => void> = [];
+  const providerId = "origin-smoke-provider";
+  providerRegistry.register({
+    id: providerId, displayName: "Origin fixture",
+    capabilities: { supportsApproval: false, supportsResume: false, supportsStreaming: true, supportsMcp: false, supportsAskUserQuestion: false },
+    startTurn: async (req, ctx) => {
+      contexts.push(ctx);
+      let running = true, resolve!: () => void;
+      const done = new Promise<void>(r => { resolve = r; });
+      const finish = (): void => { running = false; resolve(); };
+      finishes.push(finish);
+      ctx.emit({ type: "tool.use", sessionId: req.sessionId, toolCallId: "during-start", toolName: "Read", input: {}, requiresApproval: false });
+      return { done, interrupt: finish, isRunning: () => running };
+    },
+    listCommands: async () => ({ supported: false, commands: [] }),
+  } satisfies AgentProvider);
+  const chat = mkSession({ kind: "chat", title: "注入与用户轮次隔离", providerId });
+  runtimeManager.bindSession(chat);
+  const events: RuntimeEvent[] = [];
+  const off = runtimeManager.subscribe(e => { events.push(e); });
+  const origin = { workflowIds: ["origin-A", "origin-B"] };
+  const input = { prompt: "自动化注入", cwd: "C:/work/paper", automationOrigin: origin,
+    userMessage: { id: "injected-message", createdAt: Date.now(), blocks: [] } };
+  try {
+    await runtimeManager.sendTurn(chat, input);
+    eq("真实运行时的注入回显保留来源", automationOriginOf(events.find(e => e.type === "user.message")!)?.workflowIds.join(","), "origin-A,origin-B");
+    eq("提供方启动期间的同步事件也保留来源", automationOriginOf(events.find(e => e.type === "tool.use")!)?.workflowIds.join(","), "origin-A,origin-B");
+    origin.workflowIds.push("mutated-after-start");
+    contexts[0]!.emit({ type: "turn.done", sessionId: chat.id, reason: "end_turn" });
+    eq("补齐完成时间戳后来源不丢失", automationOriginOf(events.at(-1)!)?.workflowIds.join(","), "origin-A,origin-B");
+    check("来源标记不作为字段发给界面", !JSON.stringify(events.at(-1)).includes("origin-A"));
+    finishes[0]!();
+    await runtimeManager.sendTurn(chat, { prompt: "用户正常发言", cwd: "C:/work/paper" });
+    contexts[1]!.emit({ type: "turn.done", sessionId: chat.id, reason: "end_turn" });
+    eq("后续用户轮次不会继承自动化标记", automationOriginOf(events.at(-1)!), undefined);
+    contexts[0]!.emit({ type: "tool.result", sessionId: chat.id, toolCallId: "late-old", isError: false, content: "late" });
+    eq("上一注入轮迟到事件仍属于原来源", automationOriginOf(events.at(-1)!)?.workflowIds.join(","), "origin-A,origin-B");
+    contexts[1]!.emit({ type: "tool.result", sessionId: chat.id, toolCallId: "normal-new", isError: false, content: "normal" });
+    eq("迟到事件不污染新用户轮次", automationOriginOf(events.at(-1)!), undefined);
+    const forged = { type: "turn.done", sessionId: chat.id, reason: "end_turn", automationOrigin: { workflowIds: ["forged"] } } as RuntimeEvent;
+    contexts[1]!.emit(forged);
+    eq("普通事件字段不能伪造可信来源", automationOriginOf(events.at(-1)!), undefined);
+    const beforeBusy = contexts.length;
+    eq("忙时另一注入被拒绝", await runtimeManager.sendTurn(chat, { prompt: "busy", cwd: "C:/work/paper", automationOrigin: { workflowIds: ["rejected"] } }), null);
+    eq("忙时请求没有更换提供方上下文", contexts.length, beforeBusy);
+    const node = mkSession({ kind: "node", title: "改道来源测试", providerId, parentSessionId: chat.id, nodeId: "origin-node" });
+    runtimeManager.bindSession(node);
+    runtimeManager.setInteractiveProxy(node.id, chat.id);
+    try {
+      await runtimeManager.sendTurn(node, { prompt: "node", cwd: "C:/work/paper", automationOrigin: { workflowIds: ["node-origin"] } });
+      const approval = contexts.at(-1)!.requestApproval!({ requestId: "origin-approval", toolName: "Write", input: {} });
+      eq("交互事件确实改道到父会话", events.at(-1)?.sessionId, chat.id);
+      eq("交互事件对象改写后仍保留来源", automationOriginOf(events.at(-1)!)?.workflowIds.join(","), "node-origin");
+      runtimeManager.resolveApproval("origin-approval", false); await approval;
+      const question = contexts.at(-1)!.requestUserInput!({ requestId: "origin-question", questions: [] });
+      eq("提供方调用宿主提问回调也保留来源", automationOriginOf(events.at(-1)!)?.workflowIds.join(","), "node-origin");
+      runtimeManager.resolveUserInput("origin-question", {}); await question;
+      const plan = contexts.at(-1)!.requestPlanApproval!({ requestId: "origin-plan", plan: "fixture" });
+      eq("提供方调用宿主计划审批也保留来源", automationOriginOf(events.at(-1)!)?.workflowIds.join(","), "node-origin");
+      runtimeManager.resolvePlanApproval("origin-plan", { approved: false }); await plan;
+    } finally { finishes.at(-1)!(); runtimeManager.dispose(node.id); }
+
+    const retry = mkSession({ kind: "chat", title: "失败回退来源测试", providerId, workflowId: "" });
+    runtimeManager.bindSession(retry);
+    const savedFallback = SettingRepo.get(RUNTIME_FALLBACK_MODELS_SETTING_KEY);
+    SettingRepo.set(RUNTIME_FALLBACK_MODELS_SETTING_KEY, JSON.stringify(["haiku"]));
+    try {
+      await runtimeManager.sendTurn(retry, { prompt: "injected fallback", cwd: "C:/work/paper", automationOrigin: { workflowIds: ["retry-origin"] } });
+      const failedContext = contexts.at(-1)!;
+      const countBeforeRetry = contexts.length;
+      finishes.at(-1)!();
+      failedContext.emit({ type: "turn.done", sessionId: retry.id, reason: "error" });
+      for (let i = 0; i < 50 && contexts.length === countBeforeRetry; i++) await new Promise(r => setTimeout(r, 20));
+      eq("真实运行时确实执行一次模型回退", contexts.length, countBeforeRetry + 1);
+      contexts.at(-1)!.emit({ type: "turn.done", sessionId: retry.id, reason: "end_turn" });
+      eq("失败回退回复仍属于原自动化链", automationOriginOf(events.at(-1)!)?.workflowIds.join(","), "retry-origin");
+    } finally {
+      finishes.at(-1)!(); runtimeManager.dispose(retry.id);
+      SettingRepo.set(RUNTIME_FALLBACK_MODELS_SETTING_KEY, savedFallback ?? "[]");
+    }
+
+  } finally { finishes.forEach(f => f()); off(); runtimeManager.dispose(chat.id); }
 }
 
 function peerOrThrow(sessionId: string, name: string) {

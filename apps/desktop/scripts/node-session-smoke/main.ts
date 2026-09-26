@@ -65,7 +65,7 @@ function eq(name: string, actual: unknown, expected: unknown): void {
 /* ── 被测的真模块 + 夹具(动态 import:数据根要先生效) ── */
 
 const { initDb } = await import("@main/store/db.js");
-const { ProjectRepo, SessionRepo, WorkflowRepo, WorkflowRunRepo } = await import("@main/store/repositories.js");
+const { ProjectRepo, SessionRepo, WorkflowRepo, WorkflowRunRepo, SettingRepo } = await import("@main/store/repositories.js");
 /**
  * ⚠️ **命名空间导入,不是具名导入。** 具名的写法在实现被撤掉时会变成 esbuild 的
  * "No matching export" —— 那是**打包失败**,不是断言失败,拿不到"红"那一份可读的
@@ -450,6 +450,79 @@ const originalRunSave = repo.save;
   eq("标记失败时没有调用模型/命令引擎", rt.bindLog.length, bound);
   check("标记失败以错误而非成功收口", rt.published.some((e) => e.type === "turn.done" && e.reason === "error"));
   eq("标记失败后没有僵死的 active run", runner.hasActiveRun(PARENT), false);
+}
+
+
+/* Real runner integration: fan-out conversation nodes share one target turn.
+ * The stub rejects overlapping sends just like RuntimeManager; text is emitted
+ * through the real runner subscription, so this also detects buffer clobbering.
+ */
+{
+  const workflowId = "wf_conversation_queue_integration";
+  const parentId = "s_conversation_queue_integration";
+  const original = nodeSessionDoc();
+  WorkflowRepo.save({ ...original, id: workflowId, nodes: original.nodes.map((n) => ({
+    ...n, type: n.id === "entry" ? "mcode.main" : "mcode.conversation",
+  })) });
+  SessionRepo.create({ ...parentSession(parentId), workflowId });
+  rt.holdConversationTurns(true);
+  const offset = rt.sentPrompts.length;
+  const rejectedBefore = rt.busyRejections;
+  const finish = (text: string): void => {
+    rt.nodeEmit(parentId)?.({ type: "text.delta", sessionId: parentId, messageId: text, text });
+    rt.finishTurn(parentId);
+  };
+  const safety = setTimeout(() => cancelWorkflowRun(parentId), 8000);
+  try {
+    const done = startWorkflowRun({ session: SessionRepo.get(parentId)!, prompt: "queue", cwd: process.cwd() });
+    await waitFor("真实 runner 入口启动", () => rt.sentPrompts.length >= offset + 1);
+    finish("entry reply");
+    await waitFor("第一个并行对话节点启动", () => rt.sentPrompts.length >= offset + 2);
+    await new Promise((r) => setTimeout(r, 30));
+    eq("第二个对话节点仍在排队，没有同时调用提供方", rt.sentPrompts.length, offset + 2);
+    finish("A reply");
+    await waitFor("第一轮完成后第二个对话节点启动", () => rt.sentPrompts.length >= offset + 3);
+    finish("B reply");
+    const result = await done;
+    eq("真实 runner 的并行对话图成功完成", result?.status, "success");
+    eq("没有 provider busy 拒绝", rt.busyRejections, rejectedBefore);
+    eq("第一个节点的文本没被等待节点清空", result?.outcomes.get("agentA")?.summary, "A reply");
+    eq("第二个节点没有混入前一轮文本", result?.outcomes.get("agentB")?.summary, "B reply");
+    eq("会话队列执行后释放 active run", runner.hasActiveRun(parentId), false);
+  } finally {
+    clearTimeout(safety); rt.holdConversationTurns(false); cancelWorkflowRun(parentId); rt.finishTurn(parentId);
+  }
+}
+
+/* Real auto-injection handoff, including a queue wait while session ancestry changes. */
+{
+  const { NODE_INJECT_TARGET_KEY, NODE_INJECT_MODE_KEY } = await import("@contracts/nodeType");
+  const workflowId = "wf_origin_handoff", autoId = "s_origin_handoff", chatId = "s_origin_chat";
+  const doc = nodeSessionDoc();
+  const entry = doc.nodes.find(n => n.id === "entry")!;
+  WorkflowRepo.save({ ...doc, id: workflowId, nodes: [{ ...entry, type: "mcode.conversation", params: {
+    ...entry.params, [NODE_INJECT_TARGET_KEY]: "origin", [NODE_INJECT_MODE_KEY]: "auto",
+  } }], edges: [] });
+  SessionRepo.create({ ...parentSession(chatId), workflowId: "default" });
+  SessionRepo.create({ ...parentSession(autoId), workflowId, kind: "automation", parentSessionId: chatId });
+  SettingRepo.set(`automation.eventChain.${autoId}`, JSON.stringify({ version: 1, workflowIds: ["upstream-source", workflowId] }));
+  rt.holdConversationTurns(true);
+  rt.runtimeManager.bindSession(SessionRepo.get(chatId)!);
+  await rt.runtimeManager.sendTurn(SessionRepo.get(chatId)!, { prompt: "user busy", cwd: process.cwd(), sessionId: chatId });
+  const offset = rt.sentPrompts.length;
+  const safety = setTimeout(() => cancelWorkflowRun(autoId), 8000);
+  try {
+    const done = startWorkflowRun({ session: SessionRepo.get(autoId)!, prompt: "inject", cwd: process.cwd() });
+    await new Promise(r => setTimeout(r, 40));
+    eq("自动注入在普通聊天忙时等待", rt.sentPrompts.length, offset);
+    SettingRepo.set(`automation.eventChain.${autoId}`, JSON.stringify({ version: 1, workflowIds: [workflowId] }));
+    rt.finishTurn(chatId);
+    await waitFor("自动注入交给普通聊天提供方", () => rt.sentPrompts.length > offset);
+    eq("runner 注入目标仍是原普通聊天", rt.sentPrompts.at(-1)?.sessionId, chatId);
+    eq("排队前的祖先快照传入提供方而非重读最新记录", rt.sentPrompts.at(-1)?.automationOrigin?.workflowIds.join(","), `upstream-source,${workflowId}`);
+    eq("普通用户的先前请求没有自动化标记", rt.sentPrompts[offset - 1]?.automationOrigin, undefined);
+    eq("自动注入不等待模型回复即可完成图", (await done)?.status, "success");
+  } finally { clearTimeout(safety); rt.holdConversationTurns(false); rt.finishTurn(chatId); cancelWorkflowRun(autoId); }
 }
 
 rmSync(DATA, { recursive: true, force: true });

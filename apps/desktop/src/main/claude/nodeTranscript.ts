@@ -97,6 +97,15 @@ export function foldTranscript(
       return { blocks, broadcast: PUSH_NOW.has(e.type) };
     }
 
+    case "error":
+      // 隐藏节点的普通流水不会发给客户端(会制造幻影消息)。配置失效
+      // 没有 provider turn.done,必须马上通过父对话的过程卡片显示原因。
+      if (e.code !== "custom_model_unavailable") return null;
+      return {
+        blocks: [...prev, { kind: "text", text: `模型配置失败：${e.message}` }],
+        broadcast: true,
+      };
+
     default:
       // 边界事件:块没变,但**攒着的文本该冲出去了**。
       if (FLUSH_AT.has(e.type)) return { blocks: prev as TranscriptBlock[], broadcast: true };

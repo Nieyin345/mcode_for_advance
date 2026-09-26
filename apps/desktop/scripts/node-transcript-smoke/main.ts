@@ -174,6 +174,19 @@ function main(): void {
     run.filter((b) => b.kind === "tool_use"),
   );
 
+  console.log("\n隐藏节点的模型配置失败:要通过父对话的过程卡片看见原因");
+  const configError: RuntimeEvent = {
+    type: "error", sessionId: SID, code: "custom_model_unavailable", message: "所选自定义模型配置已删除",
+  };
+  const failed = foldTranscript([], configError);
+  check("★ 失效配置也能折成过程块", failed !== null);
+  eq("★ 错误立刻推给父对话", failed?.broadcast, true);
+  check("★ 过程块保留可读的失败原因", failed?.blocks.some((b) => b.kind === "text" &&
+    b.text.includes("失败") && b.text.includes("已删除")) === true, failed);
+  eq("不相关的错误不被这条特殊路径误推", foldTranscript([], {
+    type: "error", sessionId: SID, message: "普通上游错误",
+  }), null);
+
   console.log(`\n${checks - failures}/${checks} 通过`);
   if (failures > 0) {
     console.log(`${failures} 条失败`);

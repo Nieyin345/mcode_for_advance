@@ -706,30 +706,30 @@ export const SessionRepo = {
     return found;
   },
 
-  /** 这条自动化(`kind='automation'`)的隐藏会话。没有返回 undefined。
-   *
-   *  每条自动化**只留一个**后台会话:触发器每次 `fire()` 都先来这里取,取不到才建。
-   *  于是"跑第十次"不会在库里堆出十个会话,而是同一个会话里第十轮 —— 上下文也是
-   *  连续的(见 `automationRunner` 里的 D10)。
-   *
-   *  ⚠️ 归属那一列叫 `composer_mode`(列名在撒谎,它存的是 workflowId —— 见
-   *  {@link SESSION_COLUMNS} 里那一条的注释)。所以这里写的是 `composer_mode`,不是
-   *  `workflow_id`。
-   *
-   *  不可能有多条:同一 workflowId 只会被 `create()` 建一次(拿之前先查)。真出现多条
-   *  时取最新的那条 —— 老的那条会变成孤儿(里面有历史消息,不删)。 */
-  findAutomationByWorkflow(workflowId: string): Session | undefined {
-    const db = getDb();
-    const stmt = db.prepare(
-      `SELECT * FROM sessions
-       WHERE kind = 'automation' AND composer_mode = ?
-       ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+  /** 自动化会话按(工作流, 项目)复用；未指定项目时返回最近使用的会话。
+   *  composer_mode 存的是 workflowId。旧项目会话及历史保留，不迁移上下文。 */
+  findAutomationByWorkflow(workflowId: string, projectId?: string): Session | undefined {
+    return this.listAutomationsByWorkflow(workflowId).find(
+      (session) => projectId === undefined || session.projectId === projectId,
+    );
+  },
+
+  /** 全部项目的后台会话：重入检查不能只看最新的一条。
+   *  命令工作流未必写聊天消息，因此把运行存档时间也计入最近使用排序。 */
+  listAutomationsByWorkflow(workflowId: string): Session[] {
+    const stmt = getDb().prepare(
+      `SELECT s.* FROM sessions s
+       WHERE s.kind = 'automation' AND s.composer_mode = ?
+       ORDER BY MAX(s.updated_at, COALESCE(
+         (SELECT MAX(r.updated_at) FROM workflow_runs r
+          WHERE r.session_id = s.id AND r.workflow_id = s.composer_mode), 0)) DESC,
+         s.created_at DESC, s.id DESC`,
     );
     stmt.bind([v(workflowId)]);
-    const found = stmt.step();
-    const row = found ? (stmt.getAsObject() as unknown as SessionRow) : undefined;
+    const out: Session[] = [];
+    while (stmt.step()) out.push(rowToSession(stmt.getAsObject() as unknown as SessionRow));
     stmt.free();
-    return row ? rowToSession(row) : undefined;
+    return out;
   },
 
   /** 这个对话里**跑在 `nodeId` 那一格**的会话(`kind='node'`)。没有返回 undefined。
@@ -1585,6 +1585,22 @@ export const WorkflowRunRepo = {
     const row = found ? (stmt.getAsObject() as unknown as WorkflowRunDbRow) : null;
     stmt.free();
     return row ? rowToWorkflowRun(row) : null;
+  },
+
+  /** 自动化历史跨项目会话汇总，先过滤、排序，再应用全局 limit。
+   *  普通聊天里运行同一张图不属于自动化历史。 */
+  listForAutomationWorkflow(workflowId: string, limit: number): WorkflowRunRow[] {
+    const stmt = getDb().prepare(
+      `SELECT r.* FROM workflow_runs r
+       JOIN sessions s ON s.id = r.session_id
+       WHERE r.workflow_id = ? AND s.kind = 'automation' AND s.composer_mode = ?
+       ORDER BY r.updated_at DESC, r.id DESC LIMIT ?`,
+    );
+    stmt.bind([v(workflowId), v(workflowId), v(limit)]);
+    const out: WorkflowRunRow[] = [];
+    while (stmt.step()) out.push(rowToWorkflowRun(stmt.getAsObject() as unknown as WorkflowRunDbRow));
+    stmt.free();
+    return out;
   },
 
   /**

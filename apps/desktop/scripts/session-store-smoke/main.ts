@@ -13,7 +13,7 @@
  *
  * Run: scripts/session-store-smoke/run.sh
  */
-import "./prelude.js";
+import { setSendTurnStub } from "./prelude.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { ChatMessage } from "@renderer/stores/sessionStore.js";
@@ -1108,6 +1108,84 @@ void (async () => {
       delete touches[SID];
       return { composerDraftBySession: drafts, composerDraftTouchBySession: touches };
     });
+  }
+})();
+
+console.log("\n[21] 自定义模型失效：手机 RPC / 桌面 IPC 拒绝也要显示原因,与事件去重");
+await (async () => {
+  const SID = "custom-model-send-rejected";
+  const message = "所选自定义模型配置已删除或不存在。本次未发送到默认端点；请在“自定义模型”设置中修复配置或改选模型后重试。";
+  const store = useSessionStore;
+  seed([mkSession(SID, { model: "smoke-model", customModelId: "deleted-config" })]);
+  store.setState((s) => ({
+    activeSessionId: SID, model: "smoke-model", customModelId: "deleted-config", providerId: "claude-sdk",
+    messagesBySession: { ...s.messagesBySession, [SID]: [] },
+    runningBySession: { ...s.runningBySession, [SID]: false },
+    turnErrorBySession: { ...s.turnErrorBySession, [SID]: false },
+  }));
+  useToastStore.getState().clear();
+  const errors = (): string[] => (store.getState().messagesBySession[SID] ?? [])
+    .flatMap((m) => m.blocks)
+    .filter((b) => b.kind === "error")
+    .map((b) => b.message);
+  const flushRpc = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+  try {
+    // 手机端 SSE 暂时断开:RPC 返回了明确错误,不能只 console.error。
+    setSendTurnStub(async () => { throw new Error(message); });
+    eq("拒绝前用户消息仍被接受", await store.getState().sendPrompt("第一问"), true);
+    await flushRpc();
+    deepEq("★ 没有 SSE 时聊天记录显示失败原因", errors(), [message]);
+    eq("活跃聊天直接显示错误,不叠加 toast", useToastStore.getState().toasts.length, 0);
+    eq("失败之后输入框解锁", store.getState().runningBySession[SID], false);
+    eq("侧栏明确标记失败", store.getState().turnErrorBySession[SID], true);
+
+    // RPC 先报错,SSE 后追上:同一轮不能出现两条错误气泡 / toast。
+    store.getState().ingestEvent({ type: "error", sessionId: SID, message, code: "custom_model_unavailable" });
+    deepEq("★ 迟到的 SSE 不重复加错误气泡", errors(), [message]);
+    eq("迟到的 SSE 不额外弹 toast", useToastStore.getState().toasts.length, 0);
+
+    // 真正的新一轮同样失败,却必须再次提示。桌面 IPC 的异常可能带前缀。
+    setSendTurnStub(async () => { throw new Error(`Error invoking remote method 'claude:sendTurn': Error: ${message}`); });
+    useToastStore.getState().clear();
+    eq("改天再试仍能发送", await store.getState().sendPrompt("第二问"), true);
+    await flushRpc();
+    deepEq("★ 下一轮仍显示失败,且不显示 IPC 内部前缀", errors(), [message, message]);
+    eq("下一轮活跃聊天仍不额外弹 toast", useToastStore.getState().toasts.length, 0);
+
+    // SSE 先到、RPC 后报错:另一种时序也只能报一次。
+    setSendTurnStub(async () => {
+      store.getState().ingestEvent({ type: "error", sessionId: SID, message, code: "custom_model_unavailable" });
+      throw new Error(message);
+    });
+    useToastStore.getState().clear();
+    eq("再次尝试仍能发送", await store.getState().sendPrompt("第三问"), true);
+    await flushRpc();
+    deepEq("★ 先到 SSE 时 RPC 不重复报错", errors(), [message, message, message]);
+    eq("先到 SSE 时活跃聊天不弹 toast", useToastStore.getState().toasts.length, 0);
+
+    // 编辑重发也走同一条后台 RPC 路径,不能悄悄吞掉失败。
+    setSendTurnStub(async () => { throw new Error(message); });
+    const firstUser = store.getState().messagesBySession[SID]?.find((m) => m.role === "user");
+    if (!firstUser) throw new Error("smoke: missing editable user message");
+    await store.getState().editAndResendMessage(SID, firstUser.id, "修改第一问");
+    await flushRpc();
+    deepEq("★ 编辑重发失败也显示原因", errors(), [message]);
+    eq("编辑重发释放运行标志", store.getState().runningBySession[SID], false);
+
+    // 背景会话不在屏幕上,这里不是靠聊天气泡而是靠 toast + 未读提醒。
+    const BG = "custom-model-send-rejected-background";
+    seed([mkSession(BG, { model: "smoke-model", customModelId: "deleted-config" })]);
+    store.setState({ model: "smoke-model", customModelId: "deleted-config", providerId: "claude-sdk" });
+    useToastStore.getState().clear();
+    eq("背景会话接受消息", await store.getState().sendPrompt("后台发送", undefined, undefined,
+      undefined, undefined, undefined, BG), true);
+    await flushRpc();
+    eq("★ 背景会话也弹出失败原因", useToastStore.getState().toasts[0]?.body, message);
+    store.getState().ingestEvent({ type: "error", sessionId: BG, message, code: "custom_model_unavailable" });
+    eq("背景会话迟到事件也不重复弹窗", useToastStore.getState().toasts.length, 1);
+  } finally {
+    setSendTurnStub(null);
+    useToastStore.getState().clear();
   }
 })();
 
