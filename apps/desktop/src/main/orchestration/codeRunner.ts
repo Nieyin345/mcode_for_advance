@@ -100,6 +100,11 @@ export async function runCodeNode(a: {
       // **不走 shell**:命令与参数是这一层自己拼的数组,不是用户写给 shell 的一整行。
       // 走 shell 反而会把临时目录名里的空格/特殊字符再解析一遍。
       shell: false,
+      // process.execPath is the app binary inside Electron. Run it as Node, not
+      // as another browser/main process (which does not naturally terminate).
+      ...(a.language === "node" && process.versions.electron
+        ? { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } }
+        : {}),
       ...(a.cwd !== undefined ? { cwd: a.cwd } : {}),
       // 输入永远给(哪怕是 `null`)—— 用户代码期望 stdin 上有一行 JSON。
       stdin: JSON.stringify(a.input ?? null) + "\n",

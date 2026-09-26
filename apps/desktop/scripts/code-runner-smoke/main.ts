@@ -67,5 +67,23 @@ console.log("\nArtifact · relative URI normalization");
   eq("artifact name preserved", out.artifacts?.[0]?.name, "result.json");
 }
 
+// Exercise the actual spawn path with an Electron host identity; a real Electron
+// integration probe additionally verifies natural process termination.
+{
+  const previous = Object.getOwnPropertyDescriptor(process.versions, "electron");
+  try {
+    Object.defineProperty(process.versions, "electron", { value: "audit-host", configurable: true });
+    const out = await runCodeNode({
+      code: "console.log(process.env.ELECTRON_RUN_AS_NODE ?? 'missing');",
+      language: "node", timeoutMs: 5000, signal: controller().signal,
+    });
+    eq("Electron-hosted Node code uses Node mode", out.outputs?.stdout, "1");
+    eq("Node code exits naturally", out.status, "success");
+  } finally {
+    if (previous) Object.defineProperty(process.versions, "electron", previous);
+    else Reflect.deleteProperty(process.versions, "electron");
+  }
+}
+
 console.log(`\n${failures === 0 ? "PASS" : "FAIL"}: ${total} checks`);
 if (failures > 0) process.exit(1);
