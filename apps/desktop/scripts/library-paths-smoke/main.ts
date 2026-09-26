@@ -166,7 +166,7 @@ await initDb();
 mkdirSync(join(ROOT, "notes"), { recursive: true });
 
 // 一个正常笔记:先建出来,证明守卫**不是**把什么都拒了。
-const item = LibraryRepo.upsert({ title: "正常笔记", source: "note" });
+const item = LibraryRepo.upsert({ title: "正常笔记" });
 LibraryRepo.setMarkdown(item.id, noteRelPathForId(item.id));
 writeFileSync(notePathForId(item.id), "# 正常笔记\n", "utf8");
 const good = writeNote(item.id, "# 改过的\n");
@@ -181,7 +181,7 @@ eq("内容真的落了盘", libraryFileExists(noteRelPathForId(item.id)), true);
 // 空串不以 `..` 开头)。
 const OUTSIDE_FILE = join(DATA, "不该被覆盖.txt");
 writeFileSync(OUTSIDE_FILE, "原始内容", "utf8");
-const bad = LibraryRepo.upsert({ title: "路径写坏的", source: "note" });
+const bad = LibraryRepo.upsert({ title: "路径写坏的" });
 // `setMarkdown` 收的是**库内相对路径**,这里直接往库里塞一条越界的 —— 模拟记录被写坏 /
 // 老版本留下的脏数据 / 将来某个新的写入方拼错了路径。
 LibraryRepo.setMarkdown(bad.id, "../不该被覆盖.txt");

@@ -68,7 +68,6 @@
 
 import { z } from "zod";
 import { CapabilityRequirementSchema } from "./capability.js";
-import { TEMPLATE_KINDS } from "./templates.js";
 import { parseCron, type CronSpec } from "./cron.js";
 import { parseConditionExpression } from "./condition.js";
 export { NODE_CONDITION_EXPRESSION_KEY } from "./condition.js";
@@ -758,9 +757,9 @@ export const NODE_PROMPT_PARAM_KEY = "instruction";
  * (`main/lib/searchPrefs.ts` 的 `nodeCriteriaPrompt`,注入点在 `runner.ts` 的
  * `startWorkflowRun`),之后它已经在上下文里,不再重复注入。`note` 是给模型的一句
  * 解释(这个条件是什么意思、按哪个口径执行),有就一并注入。
- * 它接过了文献检索那条**写死的筛选条**:那四个条件(时间范围 /
- * 期刊层次 / 影响因子 / 每源条数)现在是内置检索图主节点上的预填数据,用户可以改候选、
- * 加条件、删条件 —— 定义在节点上,界面只是渲染。
+ * 它是一个**通用**机制:任何工作流的主节点都可以声明自己的条件表(它最早接的是文献
+ * 检索那条写死的筛选条;2026-09-27 学术那一套搬出核心之后,只剩机制本身),用户可以
+ * 改候选、加条件、删条件 —— 定义在节点上,界面只是渲染。
  *
  * ## `source`:候选**现读**,不写在盘上
  *
@@ -977,9 +976,9 @@ export function providerIdOf(params: Record<string, unknown>): string | undefine
 /**
  * `runner.kind === "prompt"` 的节点,**这一步要用哪几类上下文**的参数键。
  *
- * 「上下文」指的是对话里挂的那些东西 —— 文献 / 教材 / 笔记(文献库的三个库)、以及
- * ppt / latex / word / code / image(模版库的五个类目)。这**正是用户在界面上看到的
- * 一级分类**,不是另立一套词汇(见 {@link NODE_CONTEXT_KINDS})。
+ * 「上下文」指的是对话里挂的那些东西 —— 资料库里按**大类**分的资料(出厂是「模版」
+ * 和「文档」两个,用户可以自建)。这**正是用户在界面上看到的一级分类**,不是另立一套
+ * 词汇(见 {@link NodeContextKind})。
  *
  * ## 语义:继承,不是查找
  *
@@ -996,38 +995,20 @@ export function providerIdOf(params: Record<string, unknown>): string | undefine
 export const NODE_CONTEXT_PARAM_KEY = "context";
 
 /**
- * 节点能要求的上下文类目 —— **出厂时的全集**,即"模版库那五个类目"。
+ * 节点能要求的上下文类目。
  *
- * 直接从 `TEMPLATE_KINDS` 拼出来,而不是在这里再抄一份:抄一份的那天,库加了一个新类目,
- * 这个下拉里就不会有它,而没有任何地方会报错。
+ * **这里没有出厂表。** kind 退役(2026-09-24)之后资料库那一侧的类目就是用户自己的大类
+ * (`LibraryGroupMeta`,id 由用户建、内容由用户改);独立模版库退役(2026-09-27)之后,
+ * 模版也只是「模版」那个大类下的普通分类 —— 于是所有类目都是**运行时**现读的
+ * (`main/library/groupRegistry.loadLibraryGroups`,见 `nodeTypes.ts` 的 `contextOptions`),
+ * 契约这一层写不出它们。
  *
- * ## ⚠️ 这里**只有模版** —— 文献侧走大类,不在这张表里
- *
- * kind 退役(2026-09-24)之前,资料库那一侧也有八个固定的类目(`paper` / `textbook` /
- * `note` …),和模版那五个拼在一起构成这张全集。kind 没了之后,**文献侧的类目就是用户
- * 自己的大类**(`LibraryGroupMeta`,id 由用户建、内容由用户改)—— 出厂表里写不出它们,
- * 只能运行时现读。
- *
- * 所以现在的分工是:
- *
- *  - **模版类目**(`latex` / `ppt` / `word` / …):封闭的、编译期就有的,在 `NODE_CONTEXT_KINDS`;
- *  - **资料库大类**(`docs` / `templates` / 用户自建的):开放的、运行时的,由
- *    `main/library/groupRegistry.loadLibraryGroups` 现读(见 `nodeTypes.ts` 的
- *    `contextOptions`)。两边的取值**不会撞**:大类 id 里出现 `latex` 这种模版类目名
- *    的概率极小,而真撞上了也只是那一项在下拉里重复一次(见 `contextOptions` 的去重)。
- *
- * `NodeContextKind` 是 `string`,不设上限 —— 参数是用户和 AI 都能写的自由数据,而"这个
- * 类目认不认识"是**运行时**的事(要看当前库里有哪几个大类),不该在契约这一层硬编码死。
- * `isNodeContextKind` 因此只回答"是不是内置模版类目",资料库大类那一侧由主进程判。
+ * `NodeContextKind` 因此是 `string`,不设上限 —— 参数是用户和 AI 都能写的自由数据,而
+ * "这个类目认不认识"是运行时的事,不该在契约这一层硬编码死。
  */
-export const NODE_CONTEXT_KINDS = [...TEMPLATE_KINDS] as const;
 export type NodeContextKind = string;
 
-export function isNodeContextKind(value: unknown): value is NodeContextKind {
-  return typeof value === "string" && (NODE_CONTEXT_KINDS as readonly string[]).includes(value);
-}
-
-/** 从节点参数里取上下文类目。**原样收下** —— 认不认识是运行时的事(见 {@link NODE_CONTEXT_KINDS})。
+/** 从节点参数里取上下文类目。**原样收下** —— 认不认识是运行时的事(见 {@link NodeContextKind})。
  *
  *  这里从前会按 `isNodeContextKind` 把不认识的丢掉,而 kind 退役后那样做会**静默丢掉
  *  用户所有的大类选择**(它们本来就不在内置表里):界面上下拉里勾着「文档」,存进去再
@@ -1058,10 +1039,10 @@ export function contextKindsOf(params: Record<string, unknown>): NodeContextKind
  *   哪些模版 —— 用户自己带进来的;
  * - 这个键是**内部产出**:这条流程从开始到现在,每一步各自交了什么。
  *
- * 两样都要,但不能混在一个控件里。混的代价不只是界面难看:`NODE_CONTEXT_KINDS` 是
- * 「文献库 + 模版库」拼出来的,而"这条资料拿来干嘛"({@link contextPurposeOf})判的是
- * "属不属于文献库" —— 一个既不是文献也不是模版的东西塞进去,会被归进"当格式仿"那一
- * 栏,于是提示词里出现一句教模型照着流程记录仿写的话。
+ * 两样都要,但不能混在一个控件里。混的代价不只是界面难看:上下文类目是资料库的大类,
+ * 而"这条资料拿来干嘛"(`contextInherit.ts` 的 `purposeOfKinds`)判的是"挂不挂在「模版」
+ * 大类下" —— 一个既不是资料也不是模版的东西塞进去,会被归错栏,于是提示词里出现一句
+ * 教模型照着流程记录仿写的话。
  *
  * ## 为什么不默认给每个节点都读
  *

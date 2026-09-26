@@ -168,8 +168,6 @@ const OPEN_WORLD_PREFIXES = [
   "agent_remote_job_",
   "agent_read_url",
   "browser_",
-  "library_download",
-  "library_search_external",
 ];
 
 function touchesOpenWorld(bareName: string): boolean {

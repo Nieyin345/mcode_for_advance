@@ -40,7 +40,6 @@ export function ImportBar({
   onImported,
 }: Props) {
   const { t } = useI18n();
-  const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   /** 新建笔记时的标题输入。 */
@@ -72,8 +71,9 @@ export function ImportBar({
         {
           name: "全部支持的文件",
           extensions: [
-            "pdf", "md", "markdown", "mdown", "txt", "docx", "pptx", "xlsx",
-            "png", "jpg", "jpeg", "webp", "svg",
+            "pdf", "md", "markdown", "mdown", "txt",
+            "doc", "docx", "ppt", "pptx", "xls", "xlsx", "html", "htm",
+            "png", "jpg", "jpeg", "jp2", "webp", "gif", "bmp", "svg",
           ],
         },
       ],
@@ -165,28 +165,6 @@ export function ImportBar({
     }
   };
 
-  const submitText = async () => {
-    const raw = text.trim();
-    if (!raw) return;
-    setBusy(true);
-    setMessage(null);
-    try {
-      const res = await api.library.import({
-        text: raw,
-        collectionIds: collectionId ? [collectionId] : undefined,
-      });
-      if (res.items.length === 0) {
-        setMessage(t("library.import.nothingParsed"));
-      } else {
-        setMessage(t("library.import.importedCount", { n: res.items.length }));
-        setText("");
-      }
-      await onImported();
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <div className="shrink-0 border-b border-edge bg-surface-hover/40 px-3 py-2">
       <div className="flex items-center gap-2">
@@ -241,30 +219,7 @@ export function ImportBar({
         </button>
       </div>
 
-      <div className="mt-1.5 flex items-center gap-2">
-        <textarea
-          rows={1}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submitText();
-          }}
-          placeholder={t("library.import.placeholder")}
-          className="min-w-0 flex-1 resize-none rounded border border-edge bg-surface px-2 py-1 font-mono text-[0.7857em] leading-relaxed text-content placeholder:font-sans placeholder:text-content-subtle focus:border-accent focus:outline-none"
-        />
-        <button
-          onClick={() => void submitText()}
-          disabled={busy || !text.trim()}
-          className="rounded bg-accent px-2.5 py-1 text-[0.7857em] text-white hover:opacity-90 disabled:opacity-50"
-        >
-          {busy ? t("library.import.importing") : t("library.import.submit")}
-        </button>
-      </div>
-
-      {/* 转录开关。**默认勾上**(多数人手上没有现成的 md),但已经有转录产物的人必须
-          能关掉它 —— 否则导入那一刻就白做一遍本地抽取,而那份结果马上就会被
-          「用本地 Markdown…」覆盖掉。拖入导入走的是同一个开关,两处行为不一致
-          会让人以为丢文件了。 */}
+      {/* 自动转录开关。默认开启，用户可关闭并改从文档/小类菜单手动发起。 */}
       <label
         className="mt-1.5 flex cursor-pointer items-start gap-1.5 text-[0.7143em] leading-relaxed text-content-subtle"
         title={t("library.import.autoConvertHint")}

@@ -3,8 +3,6 @@ import { createMainWindow } from "@main/window.js";
 import { registerIpcHandlers } from "@main/ipc/index.js";
 import { initDb, closeDb, awaitDb, flushDb } from "@main/store/db.js";
 import { installDbPersistenceAlerts, showDbPersistenceError } from "@main/store/persistenceAlerts.js";
-import { ensureTemplateDirs } from "@main/templates/store.js";
-import { migrateTemplatesToLibraryOnce } from "@main/library/templateMigration.js";
 import { initTheme } from "@main/lib/theme.js";
 import { TerminalManager } from "@main/terminal/TerminalManager.js";
 import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
@@ -38,6 +36,7 @@ import { log } from "@main/lib/logger.js";
 import { setManagedRuntimeRoot } from "@main/runtimes/managedRuntimeRoots.js";
 import { setToolRoot } from "@main/env/managedToolRoots.js";
 import { applyAgentEnvironment } from "@main/env/agentEnv.js";
+import { getOnlyOfficeOrigin, shutdownOnlyOfficeBridge } from "@main/onlyoffice/OnlyOfficeBridge.js";
 import { join } from "node:path";
 
 // App identity for OS-level surfaces (desktop notifications, taskbar grouping,
@@ -139,14 +138,9 @@ app.whenReady().then(async () => {
   // internally (see ipc/index.ts), so any request that arrives before the DB
   // is ready simply queues instead of failing.
   void initDb().then(() => {
-    // 模版库的骨架目录(库根 + 五个类目)在**启动时**就建好,而不是等用户点开设置页。
-    // 用户会直接从资源管理器往这些目录里丢文件(文件系统即事实源),所以它们应该一开始
-    // 就在 —— 否则用户照着界面上显示的路径去找会发现没有,以为坏了(实际发生过)。
-    ensureTemplateDirs();
-    // 统一资料库(M4):旧模版一次性迁成 linked 条目。放在 ensureTemplateDirs 之后
-    // —— 迁移要扫模版目录,骨架得先在。没迁过才跑(幂等在 templateMigration 里),
-    // 失败只记日志,不拦启动。
-    migrateTemplatesToLibraryOnce();
+    // 独立模版库(`<数据根>/templates` + 五个类目目录)已退役(2026-09-27):`d8db783`
+    // 把它一次性迁成了统一资料库里的 linked 条目,迁移代码随之删除。老数据根里那个
+    // 目录不动 —— linked 条目还指着里面的文件。
     // Legacy cleanup: the browser password vault was removed; wipe any
     // credentials older builds persisted under this key (nothing reads it
     // anymore; SettingRepo has no delete, so overwrite with an empty map).
@@ -209,6 +203,12 @@ app.whenReady().then(async () => {
   // strict CSP would block, leaving the page blank.
   if (is.prod) {
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+      // OnlyOffice Document Server（Office 文档编辑）是**外部源**：它的 api.js 要能加载
+      // （script-src）、编辑器 iframe 要能嵌（frame-src）、它的图片/字体/接口要能访问。
+      // 未配置时这一串为空，CSP 与从前逐字相同。地址来自设置表，用户改了设置下一个
+      // 响应就生效（不用重启）。
+      const oo = getOnlyOfficeOrigin();
+      const ooSrc = oo ? ` ${oo}` : "";
       callback({
         responseHeaders: {
           ...details.responseHeaders,
@@ -228,7 +228,7 @@ app.whenReady().then(async () => {
             // 只把 `blob:` 加进 `worker-src`，不碰 `script-src` —— 那个口子
             // （内联脚本）比这里需要的宽得多。手机端走 HTTP、没有这层 Electron
             // CSP，所以这条只影响桌面。
-            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:",
+            `default-src 'self'${ooSrc}; script-src 'self' 'wasm-unsafe-eval'${ooSrc}; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'${ooSrc}; img-src 'self' data:${ooSrc}; font-src 'self' data:${ooSrc}; frame-src 'self'${ooSrc}; connect-src 'self'${ooSrc}`,
           ],
         },
       });
@@ -391,6 +391,7 @@ app.on("before-quit", (event) => {
   BridgeRegistry.disposeAll();
   stopExtensionBridge();
   disposePublicMcp();
+  shutdownOnlyOfficeBridge();
   TerminalManager.disposeAll();
   lspManager.disposeAll();
   BrowserManager.disposeAll();

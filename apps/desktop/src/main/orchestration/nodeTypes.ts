@@ -63,7 +63,6 @@ import {
   NODE_COMMAND_PARAM_KEY,
   NODE_COMMAND_TIMEOUT_KEY,
   NODE_CONDITION_EXPRESSION_KEY,
-  NODE_CONTEXT_KINDS,
   NODE_CONTEXT_PARAM_KEY,
   NODE_CRITERIA_PARAM_KEY,
   NODE_DECIDER_KEY,
@@ -101,7 +100,6 @@ import {
 } from "@contracts/nodeType";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { MEMORY_PARAM_KEY } from "@contracts/memory";
-import { TEMPLATE_KINDS } from "@contracts/templates";
 import { loadLibraryGroups } from "@main/library/groupRegistry.js";
 import {
   NODE_OUTPUT_CONTRACT_KEY,
@@ -135,20 +133,15 @@ export const NODE_CONVERSATION_TYPE_ID = "mcode.conversation";
 export const NODE_COMMAND_TYPE_ID = "mcode.command";
 
 /**
- * 「资料」下拉的候选 —— **两个库的现读**。
+ * 「资料」下拉的候选 —— **资料库大类的现读**。
  *
- * 两半来源不同,拼在一起:
+ * `docs` / `templates` / 用户自建的大类:开放的、运行时的,读 `loadLibraryGroups`
+ * (kind 退役前这里是 `loadLibraryTypes`;独立模版库退役(2026-09-27)前这里还拼着
+ * 模版库那五个封闭类目 —— 模版并进统一资料库之后它们就是「模版」大类下的分类,
+ * 不再单列)。
  *
- *  - **模版类目**(`latex` / `ppt` / …):封闭的、编译期就有的,直接在 `TEMPLATE_KINDS`;
- *  - **资料库大类**(`docs` / `templates` / 用户自建的):开放的、运行时的,读
- *    `loadLibraryGroups`(kind 退役前这里是 `loadLibraryTypes`,`kindRegistry` 那一半
- *    随 kind 一起退役,见 `groupRegistry.ts`)。
- *
- * 名字显示的是**库里的 name**(模版类目即出厂中文名,大类即用户起的名) —— 它是清单的
- * 一部分,由库的作者(内置=我们,自定义=用户)写,不走 i18n,和清单里其他 label 同一规则。
- *
- * 两边的取值理论上可能撞(用户把大类 id 起成 `latex`)—— 那时按 value 去重,留下**先出现
- * 的那个**,不会出一个选两次、行为却不一样的选项。
+ * 名字显示的是**库里的 name**(大类即用户起的名) —— 它是清单的一部分,由库的作者
+ * (内置=我们,自定义=用户)写,不走 i18n,和清单里其他 label 同一规则。按 value 去重。
  */
 function contextOptions(): Array<{ value: string; label: string }> {
   const out: Array<{ value: string; label: string }> = [];
@@ -159,7 +152,6 @@ function contextOptions(): Array<{ value: string; label: string }> {
     out.push({ value, label });
   };
   for (const g of loadLibraryGroups()) push(g.id, g.name);
-  for (const t of TEMPLATE_KINDS as readonly string[]) push(t, t);
   return out;
 }
 
@@ -222,9 +214,25 @@ const DECIDER_INSTRUCTION_HELP =
 function capabilityParams(): NodeParamSpec[] {
   return [
     {
+      key: NODE_PROVIDER_PARAM_KEY,
+      kind: "ref",
+      from: "providers",
+      label: "引擎",
+      help: "本步骤交由哪个引擎执行。留空则与当前对话一致。下方模型、技能和 MCP 候选按此处的选择收窄。",
+    },
+    {
+      key: NODE_MODEL_PARAM_KEY,
+      kind: "ref",
+      from: "models",
+      fromParam: NODE_PROVIDER_PARAM_KEY,
+      label: "模型",
+      help: "在「引擎」选定的模型范围内指定一个。留空则由该引擎自行决定。",
+    },
+    {
       key: NODE_SKILLS_PARAM_KEY,
       kind: "ref",
       from: "skills",
+      fromParam: NODE_PROVIDER_PARAM_KEY,
       // 多选:一步用几个技能是正常的(先检索再精读)。
       multiple: true,
       label: "技能",
@@ -234,6 +242,7 @@ function capabilityParams(): NodeParamSpec[] {
       key: NODE_MCP_PARAM_KEY,
       kind: "ref",
       from: "mcp",
+      fromParam: NODE_PROVIDER_PARAM_KEY,
       multiple: true,
       label: "MCP 服务器",
       help: "限定本步骤可用的 MCP 服务器。留空即不限制。每增加一个,其全部工具定义都会进入上下文并被反复重发。",
@@ -242,25 +251,10 @@ function capabilityParams(): NodeParamSpec[] {
       key: NODE_PLUGINS_PARAM_KEY,
       kind: "ref",
       from: "plugins",
+      fromParam: NODE_PROVIDER_PARAM_KEY,
       multiple: true,
       label: "插件",
       help: "限定本步骤加载的插件。留空即加载全部已启用的插件。",
-    },
-    {
-      key: NODE_PROVIDER_PARAM_KEY,
-      kind: "ref",
-      from: "providers",
-      label: "引擎",
-      help: "本步骤交由哪个引擎执行。留空则与当前对话一致。下方「模型」的可选项按此处的选择列出。",
-    },
-    {
-      key: NODE_MODEL_PARAM_KEY,
-      kind: "ref",
-      from: "models",
-      // 候选跟着上面那格选定的引擎走 —— 这一条是级联的声明,见 `fromParam` 的注释。
-      fromParam: NODE_PROVIDER_PARAM_KEY,
-      label: "模型",
-      help: "在「引擎」选定的模型范围内指定一个。留空则由该引擎自行决定。",
     },
   ];
 }
@@ -464,9 +458,8 @@ function mainParams(): NodeParamSpec[] {
  * 每行 = 条件名 + 一串候选值(编辑器里一行一个)+ 一句可选的解释,选中的值随**那次
  * 对话第一轮**的提示词注入**一次**、之后它已经在上下文里不再重复(见 `runner.ts` 的
  * `startWorkflowRun`),值为「不限」的条件跳过 —— 这是"一贯的习惯,不要再问"的那套
- * (原话见 `main/lib/searchPrefs.ts` 的文件头)。它接过了文献检索写死的那条筛选条:
- * 那四个条件现在是内置检索图主节点上的**预填数据**(见 `builtins.ts`),在这里可以改
- * 候选、加条件、删条件 —— 定义在节点上,界面只是渲染。
+ * (原话见 `main/lib/searchPrefs.ts` 的文件头)。任何工作流的主节点都可以在这里声明
+ * 自己的条件:改候选、加条件、删条件 —— 定义在节点上,界面只是渲染。
  */
 function criteriaParam(): NodeParamSpec {
   return {
@@ -866,6 +859,21 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
           { value: "event", label: "事件发生时" },
         ],
         help: "「手动运行」只在列表里点「立刻跑一次」;另外三种在应用开着时自动触发。",
+      },
+      {
+        key: NODE_PROVIDER_PARAM_KEY,
+        kind: "ref",
+        from: "providers",
+        label: "无人值守引擎",
+        help: "没有发起对话的定时、文件和事件触发使用这个引擎。留空才回退应用默认引擎；从对话启动的守望仍优先继承那个对话。",
+      },
+      {
+        key: NODE_MODEL_PARAM_KEY,
+        kind: "ref",
+        from: "models",
+        fromParam: NODE_PROVIDER_PARAM_KEY,
+        label: "无人值守模型",
+        help: "无人值守运行的宿主模型。留空由上面的引擎选择默认模型；节点自己显式指定的模型仍优先。",
       },
       {
         key: NODE_TRIGGER_PROJECT_PARAM_KEY,

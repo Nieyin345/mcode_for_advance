@@ -48,8 +48,6 @@ import {
   IconRefresh,
   IconInfoCircle,
   IconLink,
-  IconCopy,
-  IconDownload,
   IconExternalLink,
   IconFileText,
   IconFolderOpen,
@@ -88,22 +86,13 @@ interface Props {
   /** 在回收站里彻底删掉这一条 —— 确认框与调接口都在左栏,这里只报"用户点了"。 */
   onDeleteForever: (item: LibraryItem) => void;
   /**
-   * 现在就去下这一篇的 PDF。
-   *
-   * 这是用户最高频的一个动作,而它原来**没有右键入口** —— 得先点开详情页再点。
-   * 主进程那条 `library.download` 与 `library_download` 那个 MCP 工具共用同一份
-   * 实现(见 `library/downloader.ts`),所以这里只是把它接到菜单上。
-   */
-  onDownload: (item: LibraryItem) => void;
-  /**
-   * 转 Markdown / 采纳本地 md / 复制引用 —— 2026-09-21 从右栏 `ItemDetail` 搬过来的。
+   * 转 Markdown / 采纳本地 md —— 2026-09-21 从右栏 `ItemDetail` 搬过来的。
    *
    * 用户要把右栏那个 `library` tab 整个删掉，并要求「**全部堆到左栏右键**」。所以
    * 详情页里那几件"对单条做事"的动作得先在右键里有去处，右栏才删得掉。
    */
   onConvert: (item: LibraryItem) => void;
   onAdoptMarkdown: (item: LibraryItem) => void;
-  onCopyCitation: (item: LibraryItem) => void;
   /**
    * 管这一条的**关联**（2026-09-21）。
    *
@@ -112,10 +101,8 @@ interface Props {
    */
   onManageLinks: (item: LibraryItem) => void;
   /**
-   * 看这一条的**文献信息**（元数据 + 引用 + 摘要，2026-09-21）。
-   *
-   * 用户：「元数据表是**只有论文有**，**右键的时候会打开一个浮窗**显示，然后
-   * **引用啥的也都放在一起**」。
+   * 看这一条的**条目信息**(来源 / 摘要,2026-09-21;学术元数据与引用格式
+   * 随 2026-09-27 的清理退役)。
    */
   onShowInfo: (item: LibraryItem) => void;
 }
@@ -130,10 +117,8 @@ export function LibraryItemContextMenu({
   onChanged,
   onRename,
   onDeleteForever,
-  onDownload,
   onConvert,
   onAdoptMarkdown,
-  onCopyCitation,
   onManageLinks,
   onShowInfo,
 }: Props) {
@@ -263,34 +248,8 @@ export function LibraryItemContextMenu({
                   {t("library.ctx.attachToChat")}
                 </Menu.Item>
 
-                {/* 下载 PDF —— 用户最高频的一个动作,放在「挂到对话」之后、
-                    归组操作之前。
-                    ⚠️ **只在还没有 PDF 时出现。** 已经有 PDF 的条目再点一次会走
-                    `force:false` 那条路,主进程直接跳过(`enqueueDownloads` 里
-                    `if (item.pdfPath && !force) continue`)—— 也就是点了没反应,
-                    而菜单项看起来是能点的。那种"点了没动静"正是要避免的东西。
-                    已经有 PDF 时,「重新下载」是有意义但**少见得多**的动作,它留在
-                    详情页那一侧(`ItemDetail` 的 force 按钮),不占右键的位置。
-
-                    笔记没有 PDF 可下,`kind === "note"` 一并排除 —— 三个库共用
-                    这一个菜单,不按 kind 分会给笔记也长出一个下不了 PDF 的项。 */}
-                {item && !item.pdfPath && (
-                  <Menu.Item
-                    onClick={() => {
-                      onDownload(item);
-                      onClose();
-                    }}
-                    className={itemClass}
-                  >
-                    <IconDownload size={12} className="shrink-0" />
-                    {t("library.action.download")}
-                  </Menu.Item>
-                )}
-
-                {/* ── 下面三项 2026-09-21 从右栏 `ItemDetail` 搬来 ──
-                    用户要把右栏那个 tab 删掉并要求「全部堆到左栏右键」，这是那批动作
-                    的新去处。**只在有本体文件时给**：没有 PDF 的笔记既转不了也引不出。 */}
-                {item && item.pdfPath && (
+                {/* 单篇转 Markdown;所有文档条目共用这一入口。 */}
+                {item && (item.filePath || item.pdfPath) && (
                   <Menu.Item
                     onClick={() => {
                       onConvert(item);
@@ -302,7 +261,7 @@ export function LibraryItemContextMenu({
                     {item.mdPath ? t("library.convert.redo") : t("library.convert.run")}
                   </Menu.Item>
                 )}
-                {item && item.pdfPath && (
+                {item && (item.filePath || item.pdfPath) && (
                   <Menu.Item
                     onClick={() => {
                       onAdoptMarkdown(item);
@@ -312,18 +271,6 @@ export function LibraryItemContextMenu({
                   >
                     <IconFileText size={12} className="shrink-0" />
                     {t("library.convert.adopt")}
-                  </Menu.Item>
-                )}
-                {item && (
-                  <Menu.Item
-                    onClick={() => {
-                      onCopyCitation(item);
-                      onClose();
-                    }}
-                    className={itemClass}
-                  >
-                    <IconCopy size={12} className="shrink-0" />
-                    {t("library.cite.copy")}
                   </Menu.Item>
                 )}
                 {item && (

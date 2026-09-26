@@ -35,7 +35,6 @@ interface RootInfo {
   root: string;
   dbPath: string;
   libraryPath: string;
-  templatesPath: string;
 }
 
 /** 目录树的一行:`名字` 用等宽、`说明` 用弱色。缩进用 `depth`。 */
@@ -139,11 +138,11 @@ export function DataRootPanel() {
               note={t("settings.dataRoot.tree.library")}
             />
             <TreeRow name="papers/" note={t("settings.dataRoot.tree.papers")} depth={1} />
+            <TreeRow name="files/" note={t("settings.dataRoot.tree.files")} depth={1} />
             <TreeRow name="markdown/" note={t("settings.dataRoot.tree.markdown")} depth={1} />
             <TreeRow name="notes/" note={t("settings.dataRoot.tree.notes")} depth={1} />
             <TreeRow name="collections/" note={t("settings.dataRoot.tree.collections")} depth={1} />
             <TreeRow name="exports/" note={t("settings.dataRoot.tree.exports")} depth={1} />
-            <TreeRow name="templates/" note={t("settings.dataRoot.tree.templates")} />
           </div>
         </SettingRow>
 

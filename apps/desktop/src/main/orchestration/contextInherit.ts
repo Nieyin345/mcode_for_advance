@@ -26,21 +26,19 @@
  *
  * ## 这个文件**不 import 主进程的任何东西**
  *
- * 三个根路径和两次"按 id 查类目"都从外面传进来(见 {@link ContextLookup})。理由和
+ * 库根路径和两次"按 id 查类目"都从外面传进来(见 {@link ContextLookup})。理由和
  * 调度器那个 `RunPorts` 是同一条:**可验证** —— "一条路径属于哪个类目"是这段代码里
  * 最容易写错的地方(前缀比较、`kind-` 前缀、id 是不透明的),而只有不依赖 electron
  * 和数据库,它才喂得进无头脚本(见 `scripts/scheduler-smoke`)。
  */
 import { basename, resolve, sep } from "node:path";
-import { isTemplateKind } from "@contracts/templates";
 import type { NodeContextKind } from "@contracts/nodeType";
+import { TEMPLATES_LIBRARY_GROUP_ID } from "@contracts/libraryTypes";
 
-/** 外面要给的东西:两个根,加上两次"这条清单挂着哪个大类"。 */
+/** 外面要给的东西:库根,加上两次"这条清单挂着哪个大类"。 */
 export interface ContextLookup {
   /** 文献库根(`<数据根>/library`)。 */
   libraryRoot: string;
-  /** 模版库根。 */
-  templatesRoot: string;
   /**
    * 一个**分类**挂着的大类 id。**返回 `undefined` = 库里没有这个分类**(那是"这不是
    * 一条分类清单"的信号,本模块据此继续往下试条目);返回 `[]` = 有,但它还没挂大类。
@@ -119,10 +117,11 @@ export interface ContextRef {
  * | `all` | 整库(「全部文献」那一行) |
  * | `collection` | 用户自己分的一个分类 |
  * | `item` | 单独一篇/一本/一条 |
- * | `category` | 模版的整个类目 |
- * | `template` | 单条模版 |
+ *
+ * 独立模版库退役(2026-09-27)之后,模版就是「模版」大类下的普通分类/条目 ——
+ * 从前的 `category` / `template` 两档并进了 `collection` / `item`。
  */
-export type ContextLevel = "all" | "collection" | "item" | "category" | "template";
+export type ContextLevel = "all" | "collection" | "item";
 
 /**
  * 交给一个节点的一条资料。
@@ -150,18 +149,15 @@ export interface ContextLine extends ContextRef {
 export type ContextPurpose = "material" | "format";
 
 /**
- * 这条清单**是资料还是格式** —— 判据是**它在哪个库里**,不是它的类目叫什么。
+ * 这条清单**是资料还是格式** —— 判据是**它挂在哪个大类下**。
  *
- * kind 退役(2026-09-24)之前,这件事靠 `isLibraryKind(kind)` 一眼判出来;kind 没了之后
- * 资料库那侧的类目换成**用户自己的大类**,而大类 id 是用户起的 —— 靠名字猜必然猜错
- * (他完全可以把一个大类叫 `latex`)。两个库**连根目录都不是同一个**,那才是结构上
- * 成立的区别。
- *
- * 认不出来的(库和模版之外的自定义路径)按资料处理 —— 宁可多摆一组,不要因为一个路径
- * 形状没料到就把用户挂的东西整个藏掉。
+ * 独立模版库退役(2026-09-27)之前,判据是"它在模版库根下还是资料库根下";模版并进
+ * 统一资料库之后,它们住在出厂的「模版」大类(`TEMPLATES_LIBRARY_GROUP_ID`)里 ——
+ * 挂在那个大类下的分类 / 条目就是拿来仿格式的,其余一律按资料处理(宁可多摆一组,
+ * 不要把用户挂的东西藏掉)。
  */
-function purposeOfPath(abs: string, lookup: ContextLookup): ContextPurpose {
-  return abs.startsWith(`${slash(lookup.templatesRoot)}/`) ? "format" : "material";
+function purposeOfKinds(kinds: readonly string[]): ContextPurpose {
+  return kinds.includes(TEMPLATES_LIBRARY_GROUP_ID) ? "format" : "material";
 }
 
 /**
@@ -174,7 +170,6 @@ function purposeOfPath(abs: string, lookup: ContextLookup): ContextPurpose {
  * | `<库根>/collections/group-<大类 id>.md` | 整个大类 | 那个大类自己 |
  * | `<库根>/collections/<分类 id>.md` | 一个分类 | 它挂着的大类 |
  * | `<库根>/collections/<条目 id>.md` | 单独一篇 | 它所属分类挂着的大类(去重) |
- * | `<模版根>/.manifests/<类目>[/<名字>].md` | 模版的类目/单条 | 那个类目 |
  *
  * ## `kinds` 是**数组**,不是单个
  *
@@ -182,12 +177,11 @@ function purposeOfPath(abs: string, lookup: ContextLookup): ContextPurpose {
  * 确实同时属于两个类目,而节点只要勾了其中一个就该拿到它。做成单个字段的话得在两个
  * 里挑一个扔一个,而"扔"的那个方向没有任何依据。
  *
- * ## 前三条的 id 一律**靠查库**,不靠文件名猜
+ * ## id 一律**靠查库**,不靠文件名猜
  *
  * 分类与条目的 id 都是不透明的(条目文件名甚至是 sha256),"从名字看出它是文献还是
  * 笔记"必然猜错 —— 而且 kind 退役之后"它属于哪一类"本身就是用户自己摆的
- * (`library_collections.group_id`),推不出来。第四条不用查:模版清单的**目录名就是
- * 类目本身**。
+ * (`library_collections.group_id`),推不出来。
  *
  * ⚠️ **`kind-<库>.md` 这个老形状没有了**(kind 退役,2026-09-24):整库清单改名成
  * `group-<大类 id>.md`。老库里存着的 `kind-paper.md` 这种挂载记录**落到最后那条
@@ -202,31 +196,21 @@ function resolveRef(path: string, lookup: ContextLookup): Omit<ContextRef, "kind
     // 大类清单:`group-<大类 id>.md`,整个大类一次挂上。**这一条先试** —— 一个分类的
     // id 恰好叫 `group-docs` 的概率远小于把整大类清单误当成某个分类。
     if (stem.startsWith("group-")) {
-      return { kinds: [stem.slice("group-".length)], level: "all", purpose: purposeOfPath(abs, lookup) };
+      const kinds = [stem.slice("group-".length)];
+      return { kinds, level: "all", purpose: purposeOfKinds(kinds) };
     }
     // 分类清单:`<分类 id>.md`。查得到就是分类(哪怕它还没挂大类 —— 那时 `kinds` 空,
     // 于是任何类目都匹配不上,与它"不属于任何一个大类"的事实一致)。
     const byCollection = lookup.groupsOfCollection(stem);
     if (byCollection !== undefined) {
-      return { kinds: byCollection, level: "collection", purpose: purposeOfPath(abs, lookup) };
+      return { kinds: byCollection, level: "collection", purpose: purposeOfKinds(byCollection) };
     }
     // 条目清单:`<条目 id>.md`,取它所属分类挂着的大类。
     const byItem = lookup.groupsOfItem(stem);
     if (byItem !== undefined) {
-      return { kinds: byItem, level: "item", purpose: purposeOfPath(abs, lookup) };
+      return { kinds: byItem, level: "item", purpose: purposeOfKinds(byItem) };
     }
     return null;
-  }
-
-  const tplPrefix = `${slash(lookup.templatesRoot)}/.manifests/`;
-  if (abs.startsWith(tplPrefix)) {
-    // 整个类目那份清单的文件名**带 `.md`**(`latex.md`),单条模版那份是个子目录
-    // (`latex/某模板.md`)—— 两处都要把 `.md` 剥掉才比得到类目名。
-    const rest = abs.slice(tplPrefix.length).split("/");
-    const head = (rest[0] ?? "").replace(/\.md$/i, "");
-    if (!isTemplateKind(head)) return null;
-    // 目录里还有一层 = 单条模版;只有一层 = 整个类目的清单。
-    return { kinds: [head], level: rest.length > 1 ? "template" : "category", purpose: purposeOfPath(abs, lookup) };
   }
 
   return null;
@@ -302,31 +286,19 @@ export function inheritContextLines(
  * 类目 id → 提示词里那个词。
  *
  * ⚠️ **这不是界面文案**(界面那份走 i18n):提示词从头到尾是中文的,而它拼进去的是
- * **给人看的那几个词** —— 拿 i18n 的 key 拼,模型只会读到 `latex`。两处各有一份,那是
- * 它们服务的东西不同,不是重复。
+ * **给人看的那几个词**。
  *
- * **模版那几个带「模版」二字**:一来和用户在下拉里看到的那些逐字一致 —— 模型读到的词
- * 和用户选的时候看到的是同一个,排查时对得上;二来光写 `【Word·类目】` 有歧义(是 Word
- * 这个软件,还是 Word 那一类模版)。多 6 个字节换掉这个歧义,值。(分组标题已经说了
- * "当格式仿",那是**用法**;这个抬头说的是**它是什么**,两件事,不重复。)
+ * 独立模版库退役(2026-09-27)之后,类目全都是**用户自己的大类**(`group-<id>.md` 那个
+ * id),名字只有库知道 —— 而本模块是纯件、不 import 主进程(见文件头)。这张表只给
+ * 出厂的「模版」大类一个中文名(它决定"当格式仿"那一组的抬头),其余回落到 id 原文。
  *
- * ## kind 退役:资料库那半边现在**认不出名字**
- *
- * 从前这里还有 `paper` / `textbook` / `note` 三个词,因为那时类目是固定的八个。现在
- * 资料侧的类目是**用户自己的大类**(`group-<id>.md` 那个 id),名字只有库知道 —— 而本
- * 模块是纯件、不 import 主进程(见文件头)。所以走到下面那条回落:抬头显示类目 id 原文。
- *
- * 那是**刻意接受的**:大类 id 通常是用户看得懂的词(`docs`、`latex`),而且**分组标题已经
- * 说清了它拿来干什么**("当资料查" / "当格式仿")—— 模型缺的从来不是"它叫什么",是"拿它
- * 干嘛"。要让它精确显示大类名,得由宿主注入一份 id→name 的映射(见 `ContextLookup`),
+ * 那是**刻意接受的**:大类 id 通常是用户看得懂的词,而且**分组标题已经说清了它拿来
+ * 干什么**("当资料查" / "当格式仿")—— 模型缺的从来不是"它叫什么",是"拿它干嘛"。
+ * 要让它精确显示大类名,得由宿主注入一份 id→name 的映射(见 `ContextLookup`),
  * 那一步等真的有人抱怨了再做。
  */
 export const KIND_LABEL: Record<string, string> = {
-  ppt: "PPT 模版",
-  latex: "LaTeX 模版",
-  word: "Word 模版",
-  code: "代码模版",
-  image: "配图模版",
+  [TEMPLATES_LIBRARY_GROUP_ID]: "模版",
 };
 
 /** 一类在提示词里的显示名:内置表兜底,**最后退回类目 id 原文** ——
@@ -340,6 +312,4 @@ export const LEVEL_LABEL: Record<ContextLevel, string> = {
   all: "整库",
   collection: "分类",
   item: "单篇",
-  category: "类目",
-  template: "单条",
 };

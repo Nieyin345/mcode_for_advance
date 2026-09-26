@@ -64,7 +64,7 @@ const ROOT = join(DATA, "library");
 const SRC = mkdtempSync(join(tmpdir(), "mcode-lib-mcp-src-"));
 
 const { initDb } = await import("@main/store/db.js");
-const { LibraryRepo, LibraryLinkRepo, CollectionRepo, SettingRepo, NoteRepo, DownloadJobRepo } =
+const { LibraryRepo, LibraryLinkRepo, CollectionRepo, SettingRepo, NoteRepo } =
   await import("@main/store/repositories.js");
 const { libraryMcpTools, LIBRARY_READONLY_TOOLS } = await import("@main/mcp/libraryServer.js");
 const { libraryRoot, fromLibraryRelative, pdfPathForHash } = await import("@main/library/paths.js");
@@ -545,10 +545,11 @@ console.log("\n屏蔽只管给 AI 看的");
 
 // **2026-09-26 用户定的规矩**:「只要是给 AI 看的东西才需要屏蔽,用户看的不需要」,而且
 // 屏蔽是为**引用**设计的。所以:
-//   - `library_convert` / `library_download` / `library_adopt_markdown` 是**干活**,不是给 AI
-//     看东西 —— 被屏蔽的也照做。最要紧的场景:屏蔽了 pdf,要的正是「只给模型看转录后的
-//     md」,不转录就永远没有那份 md;自动化「下载完转 Markdown」的挂回那一步走的也是
-//     `library_adopt_markdown`。从前这三条都拒,整条自动化对被屏蔽的条目白跑。
+//   - `library_convert` / `library_adopt_markdown` 是**干活**,不是给 AI 看东西 —— 被屏蔽的
+//     也照做。最要紧的场景:屏蔽了 pdf,要的正是「只给模型看转录后的 md」,不转录就永远
+//     没有那份 md;自动化「转 Markdown」的挂回那一步走的也是 `library_adopt_markdown`。
+//     从前这几条都拒,整条自动化对被屏蔽的条目白跑。(`library_download` 已随学术功能
+//     退役,2026-09-27。)
 //   - `library_write_note` 仍挡:那是 AI 往一条**它看不见**的条目上写东西。
 {
   // ⚠️ 标题里故意不出现「屏蔽」两个字 —— 下面有 `includes("被屏蔽")` 的判据。
@@ -566,12 +567,6 @@ console.log("\n屏蔽只管给 AI 看的");
   // ① library_convert —— 照转
   const convText = await call("library_convert", { ids: [supId] });
   check("★ library_convert:被屏蔽的也照转", !convText.includes(GATE) && Boolean(LibraryRepo.get(supId)!.mdPath), convText);
-
-  // ② library_download —— 照排队
-  const supDl = LibraryRepo.upsert({ title: "不给 AI 看、也没有 PDF 的那一篇" });
-  CollectionRepo.assign(col3.id, [supDl.id], true);
-  const dlText = await call("library_download", { ids: [supDl.id] });
-  check("★ library_download:被屏蔽的也照排队", !dlText.includes(GATE) && Boolean(DownloadJobRepo.getByItem(supDl.id)), dlText);
 
   // ③ library_adopt_markdown —— 照挂(自动化转录的最后一步)
   const ADOPT_SRC = mkdtempSync(join(tmpdir(), "mcode-lib-mcp-sup-"));
@@ -618,8 +613,8 @@ console.log("\n按文件类型屏蔽:按份去掉");
 console.log("\n写工具的那道门只在有屏蔽时才拦");
 
 // 加了门之后最容易出的事是**拦过头**:规则为空时也拒,或者把存在性检查顺手写成了
-// "一律拒绝"。所以这里放两条对照组 —— `library_download` 与 `library_write_note`
-// 在本套别处没有别的断言(convert / adopt 在上面已有)。
+// "一律拒绝"。所以这里放一条对照组 —— `library_write_note` 在本套别处没有别的断言
+// (convert / adopt 在上面已有)。
 {
   const plain = LibraryRepo.upsert({ title: "没被屏蔽、能正常写的那一篇" });
 
@@ -630,10 +625,6 @@ console.log("\n写工具的那道门只在有屏蔽时才拦");
   });
   check("library_write_note:没被屏蔽时正常写", noteOk.includes("已给"), noteOk);
   eq("library_write_note:笔记真的落库了", NoteRepo.listByItem(plain.id).length, 1);
-
-  const dlOk = await call("library_download", { ids: [plain.id] });
-  check("library_download:没被屏蔽时正常排队", !dlOk.includes("被屏蔽了"), dlOk);
-  check("library_download:任务真的排上了", Boolean(DownloadJobRepo.getByItem(plain.id)), dlOk);
 }
 
 /* ──────────────── 收尾 ──────────────── */

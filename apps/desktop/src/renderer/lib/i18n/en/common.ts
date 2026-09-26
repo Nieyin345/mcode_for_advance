@@ -31,4 +31,10 @@ export const en = {
   "common.persistenceFailureTitle": "Database save failed",
   "common.persistenceFailureMessage": "The last database save failed. The app will retry automatically. Check disk space and folder permissions; do not force quit before saving recovers, or unsaved changes may be lost.",
   "common.keepAppOpen": "Keep app open",
+  "common.discardChanges": "Discard changes",
+  "common.saving": "Saving…",
+  "common.saved": "Saved",
+  "common.unsavedRetained": "Unsaved changes (kept across pages; save before quitting)",
+  "common.resizeColumns": "Resize columns (arrow keys; Enter to reset)",
+  "common.resizeRows": "Resize rows (arrow keys; Enter to reset)",
 } as const;

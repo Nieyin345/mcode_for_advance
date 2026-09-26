@@ -34,4 +34,10 @@ export const zh = {
   "common.persistenceFailureTitle": "数据库保存失败",
   "common.persistenceFailureMessage": "最近一次数据库保存失败，应用会自动重试。请检查磁盘空间和目录权限；恢复保存前请勿强制退出，以免丢失内存中的修改。",
   "common.keepAppOpen": "保持应用打开",
+  "common.discardChanges": "放弃改动",
+  "common.saving": "保存中…",
+  "common.saved": "已保存",
+  "common.unsavedRetained": "有未保存修改（切换页面会保留，退出应用前请保存）",
+  "common.resizeColumns": "调整列宽（方向键调整，Enter 重置）",
+  "common.resizeRows": "调整行高（方向键调整，Enter 重置）",
 } as const;

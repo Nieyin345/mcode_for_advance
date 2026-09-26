@@ -77,9 +77,9 @@ function valueOf(d: Database, sql: string): unknown {
 
 // ── 第一步:手工造一个"老版本"的库 ──────────────────────────────────────
 // 结构就是 `migrate()` 兼容段动手之前的样子:三张核心表,**没有**后来加的列;
-// workflows / workflow_runs / library_* / institution_profiles / download_jobs
-// 这些后加的表整个不存在(老库里就没有),由 migrate() 的 CREATE TABLE IF NOT
-// EXISTS 自己建出来。
+// workflows / workflow_runs / library_* / institution_profiles 这些后加的表整个
+// 不存在(老库里就没有),由 migrate() 的 CREATE TABLE IF NOT EXISTS 自己建出来。
+// 例外是 `download_jobs`:它是被**删掉**的那张(见下面的 fixture),要造出来才验得到 DROP。
 console.log("db-migrate-smoke: 造老结构的库 …");
 const SQL = await initSqlJs();
 const old = new SQL.Database();
@@ -140,6 +140,12 @@ old.run(`
   INSERT INTO messages VALUES ('msg_old', 'sess_old', 'user', '第一句话', 1000);
   INSERT INTO settings VALUES ('migrated_from', 'pre-columns');
   INSERT INTO library_items (id, doi, title, added_at, updated_at) VALUES ('item_old', '10.1234/old', '老论文', 1000, 1000);
+  -- 老库里的下载队列表(2026-09-27 起由 migrate() DROP 掉):造一张出来,让那条 DROP 真的被走到。
+  CREATE TABLE download_jobs (
+    id TEXT PRIMARY KEY, item_id TEXT NOT NULL, status TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0, error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  );
+  INSERT INTO download_jobs VALUES ('job_old', 'item_old', 'failed', 1, '老任务', 1000, 1000);
   -- 旧版会话插件名单和长任务已退役，但升级不得清除历史资料。
   ALTER TABLE sessions ADD COLUMN active_plugin_names TEXT;
   UPDATE sessions SET active_plugin_names = '["legacy-plugin"]' WHERE id = 'sess_old';
@@ -192,7 +198,9 @@ eq("sessions.env_mode 补成默认", valueOf(d, "SELECT env_mode FROM sessions W
 eq("sessions.composer_mode 补成默认", valueOf(d, "SELECT composer_mode FROM sessions WHERE id='sess_old'"), "default");
 eq("projects.archived 补成默认", valueOf(d, "SELECT archived FROM projects WHERE id='proj_old'"), 0);
 eq("projects.sort_order 补成默认", valueOf(d, "SELECT sort_order FROM projects WHERE id='proj_old'"), 0);
-eq("library_items.kind 补成默认", valueOf(d, "SELECT kind FROM library_items WHERE id='item_old'"), "paper");
+// library_items 上的学术列(kind / volume / issue / page / publisher …)已退役(2026-09-27):
+// 迁移**不再**给老库补这些列,老库里已有的也不再读写。老行本身(title 等)必须原样在。
+check("library_items.doi 老列还在(不删列,只是不再读写)", hasColumn(d, "library_items", "doi"));
 
 // ③ 可空列是 NULL,不是空串
 for (const col of [
@@ -203,7 +211,6 @@ for (const col of [
   check(`sessions.${col} 在老行上是 NULL`, valueOf(d, `SELECT ${col} FROM sessions WHERE id='sess_old'`) === null);
 }
 check("projects.group 在老行上是 NULL", valueOf(d, "SELECT [group] FROM projects WHERE id='proj_old'") === null);
-check("library_items.volume 在老行上是 NULL", valueOf(d, "SELECT volume FROM library_items WHERE id='item_old'") === null);
 eq("library_items.entry_mode 补成默认", valueOf(d, "SELECT entry_mode FROM library_items WHERE id='item_old'"), "attached");
 check("library_items.file_path 在老行上是 NULL", valueOf(d, "SELECT file_path FROM library_items WHERE id='item_old'") === null);
 
@@ -218,9 +225,11 @@ for (const c of NEW_SESSION_COLS) check(`sessions.${c} 列存在`, hasColumn(d, 
 for (const c of ["archived", "group", "sort_order", "pinned_at"]) {
   check(`projects.${c} 列存在`, hasColumn(d, "projects", c));
 }
-for (const c of ["volume", "issue", "page", "publisher", "kind", "entry_mode", "file_path"]) {
+for (const c of ["entry_mode", "file_path"]) {
   check(`library_items.${c} 列存在`, hasColumn(d, "library_items", c));
 }
+// download_jobs 是纯派生数据(下载队列),随学术功能退役一起 DROP。
+check("download_jobs 表已被迁移删掉", !valueOf(d, "SELECT name FROM sqlite_master WHERE type='table' AND name='download_jobs'"));
 
 // ⑤ 迁移**立刻落盘**:重新打开磁盘上的文件验证,不信任内存句柄
 {

@@ -66,6 +66,13 @@ export const LIBRARY_GROUPS_SETTING_KEY = "library.groups";
  * 观感一致;当纯资料用的 word 文档也可以在设置里把它挪去「文档」—— 这正是大类
  * 可配置的意义。
  */
+/**
+ * 出厂「模版」大类的 id。独立模版库退役(2026-09-27)后,模版就是挂在这个大类下的
+ * 普通分类 / 条目;工作流的上下文继承靠它判断"这份是拿来仿格式的"(见
+ * `main/orchestration/contextInherit.ts` 的 `purposeOfKinds`)。
+ */
+export const TEMPLATES_LIBRARY_GROUP_ID = "templates";
+
 export const DEFAULT_LIBRARY_GROUPS: readonly LibraryGroupMeta[] = [
   // ⚠️ **「模版」排在「文档」上面**（2026-09-21）。用户的原话：「模版要在文档上面」。
   //
@@ -74,7 +81,7 @@ export const DEFAULT_LIBRARY_GROUPS: readonly LibraryGroupMeta[] = [
   //
   // ⚠️ 改这里**只影响还没存过组表的库** —— 一旦用户在设置里动过（或新建过大类），
   // 存下来的那份就是准的，这份出厂表就不再生效。见 `kindRegistry.loadLibraryGroups`。
-  { id: "templates", name: "模版" },
+  { id: TEMPLATES_LIBRARY_GROUP_ID, name: "模版" },
   { id: "docs", name: "文档" },
 ];
 

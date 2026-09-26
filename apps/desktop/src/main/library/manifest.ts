@@ -15,10 +15,7 @@
 import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { IPC } from "@contracts/ipc";
-import {
-  formatAuthorList,
-  type LibraryItem,
-} from "@contracts/library";
+import type { LibraryItem } from "@contracts/library";
 import { trashedItemIds } from "./trash.js";
 import { groupPromptOf, loadLibraryGroups } from "./groupRegistry.js";
 import { CollectionRepo, LibraryLinkRepo, LibraryRepo, NoteRepo } from "@main/store/repositories.js";
@@ -56,14 +53,8 @@ export function writeItemManifest(itemId: string): ManifestResult {
   const lines: string[] = [];
   lines.push(`# ${item.title}`);
   lines.push("");
-  const meta = [
-    item.authors.length > 0 ? formatAuthorList(item.authors, 6) : undefined,
-    item.year ? String(item.year) : undefined,
-    item.venue,
-    item.doi ? `DOI: ${item.doi}` : undefined,
-  ].filter((x): x is string => Boolean(x));
-  if (meta.length > 0) {
-    lines.push(meta.join(" · "));
+  if (item.url) {
+    lines.push(`来源:${item.url}`);
     lines.push("");
   }
 
@@ -126,16 +117,14 @@ function renderItemsManifest(items: LibraryItem[]): string[] {
 
   const lines: string[] = [];
   if (items.length === 0) {
-    lines.push("(这里还是空的。可以用文献检索、DOI/BibTeX 导入,或在内嵌浏览器里手动下载。)");
+    lines.push("(这里还是空的。可以从本地导入文件,或让 AI 用 library_* 工具往里加。)");
   } else {
-    lines.push("## 文献清单");
+    lines.push("## 条目清单");
     lines.push("");
-    lines.push("| # | 标题 | 作者 | 年份 | 期刊/会议 | 文件 |");
-    lines.push("|---|------|------|------|-----------|-----|");
+    lines.push("| # | 标题 | 文件 |");
+    lines.push("|---|------|-----|");
     items.forEach((item, i) => {
-      const authors = formatAuthorList(item.authors, 3).replace(/\|/g, "\\|");
       const title = item.title.replace(/\|/g, "\\|");
-      const venue = (item.venue ?? "").replace(/\|/g, "\\|");
       // 优先给 **Markdown 转录的绝对路径** —— 那才是让 agent 读的格式(排版、公式、
       // 表格都在里头,而且比 PDF 便宜得多),括号里一起给原件(见 `readableFilesOf`)。
       // 没有转录才退回原件;是 PDF 就**显式标明**,免得 agent 以为手上是 Markdown。
@@ -146,7 +135,7 @@ function renderItemsManifest(items: LibraryItem[]): string[] {
         : f.original
           ? `\`${f.original}\`` + (extOf(f.original) === ".pdf" && !f.hasTranscript ? "(PDF,尚未转 Markdown)" : "")
           : "（未下载）";
-      lines.push(`| ${i + 1} | ${title} | ${authors} | ${item.year ?? ""} | ${venue} | ${file} |`);
+      lines.push(`| ${i + 1} | ${title} | ${file} |`);
     });
 
     if (withAbstract) {
@@ -156,10 +145,6 @@ function renderItemsManifest(items: LibraryItem[]): string[] {
         if (!item.abstract) return;
         lines.push("");
         lines.push(`### ${i + 1}. ${item.title}`);
-        const meta = [formatAuthorList(item.authors, 4), item.year, item.venue]
-          .filter(Boolean)
-          .join(" · ");
-        if (meta) lines.push(meta);
         lines.push("");
         lines.push(item.abstract);
       });
@@ -436,8 +421,7 @@ function pushAttach(
     sendToRenderer(IPC.COMPOSER_ATTACH, {
       channel: IPC.COMPOSER_ATTACH,
       sessionId,
-      // 渲染端据此选 appendUniqueLibraryTags / appendUniqueTemplateTags ——
-      // 模版那条路走的是 `attachTemplateToChat`(见 templates/store.ts)
+      // 渲染端据此选 appendUniqueLibraryTags(独立模版库退役后只剩这一种)
       kind: "library",
       key,
       name: res.name,

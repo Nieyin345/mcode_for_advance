@@ -11,12 +11,6 @@
  * Zustand store because it's ephemeral per-turn UI state, not session data.
  */
 import type { PickedElement } from "@contracts/ipc";
-import {
-  TEMPLATE_KEY_PREFIX,
-  isTemplateKind,
-  templateAttachKey,
-  type TemplateKind,
-} from "@contracts/templates";
 import { browserUuid } from "@renderer/lib/uuid.js";
 
 /** Display char count for a tag's preview text. Single line, whitespace
@@ -68,11 +62,12 @@ export const TAG_THRESHOLD_LINES = 3;
  *  file dragged in from the file tree (path reference only - no content
  *  is read), "element" for a DOM element picked from the embedded browser
  *  (selector + outerHTML inlined so the model can see it), "library" for a
- *  文献库 (path reference to its generated manifest - same mechanism as
- *  "file", see makeLibraryTag), "template" for a 模版库条目 (same mechanism
- *  again - see makeTemplateTag), "quote" for a passage the user selected and
- *  quoted in (carries its own origin header - see makeQuoteTag). */
-export type ContentTagKind = "paste" | "file" | "element" | "library" | "template" | "quote";
+ *  资料库 (path reference to its generated manifest - same mechanism as
+ *  "file", see makeLibraryTag), "quote" for a passage the user selected and
+ *  quoted in (carries its own origin header - see makeQuoteTag).
+ *  ("template" —— 独立模版库的 tag —— 随 2026-09-27 模版库退役一起删除;模版现在
+ *  是资料库里的普通分类,走 "library"。) */
+export type ContentTagKind = "paste" | "file" | "element" | "library" | "quote";
 
 /** One content tag. `id` is the React key + removal handle. `content` is the
  *  full pasted text (for paste) or the `@path` reference string (for file /
@@ -100,10 +95,6 @@ export interface ContentTag {
    * 词汇表,这个类型本身不必动。
    */
   collectionId?: string;
-  /** 模版条目的唯一键。kind === "template" 时设置,用于去重 —— 不同类目下同名是
-   *  两条不同的模版,所以键里必须带类目。两种形态:`t:<类目>`(整个类目)、
-   *  `t:<类目>/<目录名>`(一条模版),与主进程的 `templateAttachKey` 同构。 */
-  templateKey?: string;
 }
 
 /** Decide whether a pasted string should become a tag rather than be
@@ -301,91 +292,6 @@ export function appendUniqueLibraryTags(
   return next;
 }
 
-/**
- * 把「模版库」里的一条模版加成 tag —— **机制与文献库逐字相同**。
- *
- * content 是一行 `@<清单文件路径>`,不内联正文。清单由主进程的
- * `templates.manifest` 生成,里面列了这条模版的全部文件、绝对路径、以及 40KB 以内
- * 文本文件的**正文**(`main/templates/store.ts` 的 `writeTemplateManifest`)。
- *
- * 为什么不直接把模版文件摊成多个 file tag:一条模版是一**包**文件(LaTeX 常常是
- * `.cls` + `.tex` + 图),拆开加进去会丢掉"它们是一套"这件事 —— 而模版的意义恰恰
- * 就是照着这一套抄。清单里已经把这一套连同正文一起给全了。
- */
-export function makeTemplateTag(params: {
-  /** 类目 —— 只用来算去重键和 tooltip,展示名走 dirName。 */
-  kind: TemplateKind;
-  /** 一条模版的目录名。**省略 = 整个类目**(清单是"这个类目下有哪些模版"的索引)。 */
-  dirName?: string;
-  /** chip 上的字。整个类目时由调用方给(那一层没有 i18n,而类目名在界面上有)。 */
-  label?: string;
-  /** 清单文件绝对路径,由主进程生成。 */
-  manifestPath: string;
-}): ContentTag {
-  // 展示名就是磁盘上的目录名(模版库的设计:目录名即显示名);整个类目时用 label
-  const name = params.dirName ? params.dirName : (params.label ?? params.kind);
-  const preview =
-    name.length > TAG_PREVIEW_CHARS ? name.slice(0, TAG_PREVIEW_CHARS) + "…" : name;
-  return {
-    id: cryptoRandomId(),
-    kind: "template",
-    preview,
-    content: `@${params.manifestPath}`,
-    templateKey: templateAttachKey(params.kind, params.dirName),
-  };
-}
-
-/** 追加模版 tag,跳过已存在的(按 `t:<类目>[/<目录名>]` 去重)。 */
-export function appendUniqueTemplateTags(
-  prev: ReadonlyArray<ContentTag>,
-  additions: ReadonlyArray<{
-    kind: TemplateKind;
-    dirName?: string;
-    label?: string;
-    manifestPath: string;
-  }>,
-): ContentTag[] {
-  const seen = new Set(
-    prev.filter((t) => t.kind === "template" && t.templateKey).map((t) => t.templateKey as string),
-  );
-  const next = [...prev];
-  for (const a of additions) {
-    const key = templateAttachKey(a.kind, a.dirName);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    next.push(makeTemplateTag(a));
-  }
-  return next;
-}
-
-/**
- * 按**附件键**追加一条模版 tag —— 主进程 `composer:attach` 的渲染端落点。
- *
- * 键是 `t:<类目>`(整个类目)或 `t:<类目>/<目录名>`(一条模版),见 `templateAttachKey`(contracts)。
- * 前缀不对、或类目为空,就当没收到 —— 宁可什么都不加,也不要落一个怪 chip。
- *
- * `label` 是主进程随消息一起发过来的显示名(整个类目时是"论文 LaTeX"这种),只在
- * 整个类目那条路上用得到:一条模版的显示名就是目录名,主进程给的一样。
- */
-export function appendTemplateTagByKey(
-  prev: ReadonlyArray<ContentTag>,
-  key: string,
-  manifestPath: string,
-  label?: string,
-): ContentTag[] {
-  if (!key.startsWith(TEMPLATE_KEY_PREFIX)) return [...prev];
-  const rest = key.slice(TEMPLATE_KEY_PREFIX.length);
-  const slash = rest.indexOf("/");
-  // 类目必须是五个之一 —— 键是跨进程来的,不能拿它当可信输入(认不出来就什么都不加)
-  const rawKind = slash < 0 ? rest : rest.slice(0, slash);
-  if (!isTemplateKind(rawKind)) return [...prev];
-  const kind: TemplateKind = rawKind;
-  const dirName = slash < 0 ? undefined : rest.slice(slash + 1);
-  return appendUniqueTemplateTags(prev, [
-    { kind, dirName: dirName || undefined, label, manifestPath },
-  ]);
-}
-
 /** Build a ContentTag for a DOM element picked from the embedded browser. The
  *  selector + outerHTML + source URL are inlined into the prompt (delimited
  *  block, like paste) so the model can reason about the element directly.
@@ -443,7 +349,7 @@ export function composePromptWithTags(
   for (const tag of tags) {
     if (tag.kind === "file") {
       parts.push(tag.content); // already "@path"
-    } else if (tag.kind === "library" || tag.kind === "template") {
+    } else if (tag.kind === "library") {
       // 与 file 同款:只放一行 `@清单路径`,内容由 agent 自己读。
       parts.push(tag.content);
     } else if (tag.kind === "element") {

@@ -17,10 +17,24 @@
  *
  * ## 工具的分工
  *
- * 读工具(自动放行,不弹审批):collections / search / items / links / templates_list。
+ * 读工具(自动放行,不弹审批):collections / search / items / links。
  * 写工具(需要用户点头;用户可以在审批时勾"始终允许"):create_collection /
- * import / download / convert / **adopt_markdown** / move / remove / rename /
- * write_note / link_add / link_remove / templates_attach_to_chat / templates_add。
+ * import_files / attach_pdf / convert / **adopt_markdown** / move / remove / rename /
+ * write_note / link_add / link_remove。
+ *
+ * `import_files` / `attach_pdf` 是**外部下载器接进来的口子**:核心不再自己下载任何东西,
+ * 外部 MCP 服务 / 自动化把文件弄到本地之后,靠这两条交给库(前者建新条目,后者把 PDF
+ * 挂到已有条目上并发 `library.item.downloaded`,让「下载完转 Markdown」那条自动化接手)。
+ *
+ * **学术那一段(search_online / journal_rank / add_paper / import / download)已退役**
+ * (2026-09-27):外部检索、按 DOI/arXiv 导入、PDF 自动下载、期刊分区整体搬出核心,
+ * 由外部 MCP 服务 + 自动化/工作流承担。核心的 library_* 只管"库里有什么、怎么归类、
+ * 怎么挂到对话上、怎么把 PDF 变成模型能读的 Markdown"。
+ *
+ * **模版库那一段(templates_list / templates_attach_to_chat / templates_add)已退役**
+ * (2026-09-27):独立的模版库入口在 `d8db783` 收进了统一资料库,旧模版目录被迁成
+ * 库里的 linked 条目 —— 模型要"找模版 / 挂模版"走的就是同一套 library_* 工具,
+ * 再留一套只会把它引去一个界面上已经不存在的地方。
  *
  * `adopt_markdown` 是**外部转录那条路的终点**:软件自己不认识任何转录服务,高质量转录
  * 由用户装的工具做(用 code / 命令节点跑),转出来的 md 靠这条挂回库 —— 配图一起搬。
@@ -29,31 +43,21 @@
  * AI 的"删除"是它自己判断出来的动作,判断错了用户得有得救。
  */
 import { z } from "zod";
-import { SEARCH_LIMIT_SETTING_KEY } from "@contracts/ipc";
 import type { LibraryItem } from "@contracts/library";
-import { LibraryRepo, CollectionRepo, NoteRepo, SettingRepo, DownloadJobRepo, LibraryLinkRepo } from "@main/store/repositories.js";
+import { LibraryRepo, CollectionRepo, NoteRepo, LibraryLinkRepo } from "@main/store/repositories.js";
 import {
   assignToCollection,
-  importIdentifiers,
   removeItemsToTrash,
   renameItem,
   searchItems,
 } from "@main/library/operations.js";
-import { enqueueDownloads } from "@main/library/downloader.js";
 import { convertItemToMarkdown } from "@main/library/convert.js";
 import { adoptMarkdownFile } from "@main/library/adoptMarkdown.js";
+import { importAnyFiles } from "@main/library/importDispatch.js";
+import { attachPdfToItem } from "@main/library/pdfImport.js";
 import { aiVisibleFilesOf } from "@main/library/fileImport.js";
 import { attachToChat } from "@main/library/manifest.js";
-import {
-  addTemplate,
-  attachTemplateToChat,
-  listTemplates,
-  notifyTemplatesChanged,
-} from "@main/templates/store.js";
-import { TEMPLATE_KINDS, type TemplateKind } from "@contracts/templates";
 import { MCP_LIBRARY_SERVER } from "@contracts/ipc";
-import { searchExternal } from "@main/library/metadata.js";
-import { rankJournals } from "@main/library/journalRank.js";
 import { notifyLibraryChanged } from "@main/library/broadcast.js";
 import { suppressionReasonOfItem } from "@main/library/suppress.js";
 import { fail, loadCreateMcpServer, text, toSdkTools, type McpToolContext, type McpToolSpec } from "./sdk.js";
@@ -72,17 +76,13 @@ export const LIBRARY_MCP_PREFIX = `mcp__${LIBRARY_MCP_SERVER}__`;
 export const LIBRARY_READONLY_TOOLS = new Set([
   "library_collections",
   "library_search",
-  "library_search_online",
-  "library_journal_rank",
   "library_items",
   // 看关联是只读的(增删是另外两条写工具)
   "library_links",
-  // 模版库那一段(与文献库同级别的另一段,见文件头)
-  "templates_list",
 ]);
 
 /**
- * 一条文献在工具输出里的一行 —— 一定要带 id(后续 move/note 都要用它)。
+ * 一条条目在工具输出里的一行 —— 一定要带 id(后续 move/note 都要用它)。
  *
  * ## 为什么把 PDF 的**绝对路径**给出来
  *
@@ -97,11 +97,7 @@ export const LIBRARY_READONLY_TOOLS = new Set([
  * 屏蔽的那份不给 —— 屏蔽了 pdf,模型就拿不到 PDF 路径,只拿到转录)。
  */
 function itemLine(i: LibraryItem): string {
-  const authors = i.authors
-    .map((a) => a.literal ?? [a.given, a.family].filter(Boolean).join(" "))
-    .slice(0, 3)
-    .join(", ");
-  const bits = [authors, i.year ? String(i.year) : "", i.venue ?? ""].filter(Boolean);
+  const bits = [i.url ?? ""].filter(Boolean);
   // 按文件类型屏蔽的那份不列(`aiVisibleFilesOf`,见 `library/suppress.ts`):屏蔽 pdf 时
   // 转录过的只给转录路径。整条被挡的条目调用方已经筛掉了,到不了这里。
   const files = aiVisibleFilesOf(i);
@@ -111,7 +107,6 @@ function itemLine(i: LibraryItem): string {
       : files.original
         ? files.hasTranscript ? "有原件" : i.pdfPath && !i.filePath ? "有 PDF,未转 Markdown" : "有文件,未转 Markdown"
         : "无文件",
-    i.doi ? `DOI ${i.doi}` : i.arxivId ? `arXiv ${i.arxivId}` : "",
   ]
     .filter(Boolean)
     .join(";");
@@ -183,7 +178,7 @@ export function libraryMcpTools(): McpToolSpec[] {
       {
         name: "library_search",
         description:
-          "在资料库里按关键词搜索条目(搜标题、作者、期刊、摘要、DOI、arXiv ID、年份)。" +
+          "在资料库里按关键词搜索条目(搜标题、摘要、来源地址、文件路径)。" +
           "判断「库里有没有某一篇」时用它 —— 不要凭记忆回答用户。返回的每条都带 id。",
         inputSchema: {
           query: z.string().describe("关键词;留空则列出全部"),
@@ -217,93 +212,6 @@ export function libraryMcpTools(): McpToolSpec[] {
         },
       },
       {
-        name: "library_search_online",
-        description:
-          "联网检索文献(**Crossref + arXiv + OpenAlex** 三源合并去重)。**这是找文献的正路** —— 不要把用户的整句中文丢进来," +
-          "英文元数据源匹配不到中文。做法:先把研究方向拆成概念块,每个概念块给出英文同义词组," +
-          "再用 AND 把概念块连起来(例如 'quantum key distribution' AND ('satellite' OR 'free-space') AND 'wavelength')。" +
-          "中文里没法翻译的专有词(如具体算法名)保留拉丁拼写。\n" +
-          "返回的是**候选**,还没入库;挑中的用 library_add_paper 逐条导入。",
-        inputSchema: {
-          query: z.string().describe("英文检索式:概念块之间用 AND,块内同义词用 OR,短语加引号"),
-          limit: z.number().optional().describe("每个源取多少条,默认 20"),
-          yearFrom: z.number().optional().describe("起始年份"),
-          yearTo: z.number().optional().describe("截止年份"),
-        },
-        handler: async (args: { query: string; limit?: number; yearFrom?: number; yearTo?: number }) => {
-          const q = (args.query ?? "").trim();
-          if (!q) return fail("检索式不能为空");
-          // 每源条数默认取用户在筛选条上设的那个 —— 不接上的话那个选择框就是个摆设,
-          // 界面上写着"50 条"、实际永远拿 20 条。
-          const configured = Number.parseInt(
-            SettingRepo.get(SEARCH_LIMIT_SETTING_KEY) ?? "",
-            10,
-          );
-          const limit = args.limit ?? (Number.isFinite(configured) && configured > 0 ? configured : 20);
-          const results = await searchExternal({
-            query: q,
-            limit,
-            yearFrom: args.yearFrom,
-            yearTo: args.yearTo,
-          });
-          if (results.length === 0) {
-            return text(
-              `没检索到结果。\n\n用过的检索式:${q}\n` +
-                "可以试试:减少概念块(先用最核心的一两个)、把窄词换成更通用的同义词、去掉年份限制。",
-            );
-          }
-          const lines = results.map((r, i) => {
-            const authors = r.authors
-              .map((a) => a.literal ?? [a.given, a.family].filter(Boolean).join(" "))
-              .slice(0, 3)
-              .join(", ");
-            const bits = [authors, r.year ? String(r.year) : "", r.venue ?? ""].filter(Boolean);
-            const id = r.doi ? `DOI ${r.doi}` : r.arxivId ? `arXiv ${r.arxivId}` : "(无 DOI / arXiv ID)";
-            const head = `[${i + 1}] ${r.title}\n    ${bits.join(" · ")}\n    ${id}   来源:${r.source}${
-              r.hasOpenAccessPdf ? "   [有开放获取 PDF]" : ""
-            }`;
-            return r.abstract ? `${head}\n    摘要:${r.abstract.slice(0, 400)}` : head;
-          });
-          return text(
-            `检索式:${q}\n命中 ${results.length} 条(合并去重后):\n\n${lines.join("\n\n")}\n\n` +
-              "逐条看:合适的立刻用 library_add_paper 导入并写总结,不要等全部挑完。",
-          );
-        },
-      },
-      {
-        name: "library_journal_rank",
-        description:
-          "查期刊档次:**JCR 分区 / 影响因子 / 中科院分区 / Top / CCF / 预警名单**,并给出分档" +
-          "(T1 = Q1 或中科院 1 区或 Top;T2 = Q2 或 2 区;T3 = 其余;EXCLUDE = 预警名单)。\n" +
-          "筛选检索结果时**必须用它**来判断期刊好不好 —— 绝不要凭印象说某个刊影响因子多少。\n" +
-          "一次可以传多个刊名(检索结果里的 venue 直接抄进来)。",
-        inputSchema: {
-          journals: z.array(z.string()).min(1).describe("期刊/会议名,可多个"),
-        },
-        handler: async (args: { journals: string[] }) => {
-          const { dbPath, ranks } = await rankJournals(args.journals);
-          if (!dbPath) {
-            return text(
-              "期刊数据不可用(jcr.db 没找到),所以**这次查不了期刊档次**。\n" +
-                "如实告诉用户这一点,不要凭印象编影响因子或分区。\n" +
-                "数据放在 Mcode 数据根的 workflows/jcr.db 下即可启用。",
-            );
-          }
-          const lines = ranks.map((r) => {
-            const bits = [
-              r.impactFactor != null ? `IF ${r.impactFactor}` : "",
-              r.jcrQuartile ? `JCR ${r.jcrQuartile}` : "",
-              r.casZone ? `中科院 ${r.casZone} 区` : "",
-              r.casTop === "是" ? "Top" : "",
-              r.ccf ? `CCF ${r.ccf}` : "",
-            ].filter(Boolean);
-            const warn = r.warn ? `\n    ⚠️ 预警名单(${r.warn})—— 不要收这一篇` : "";
-            return `- ${r.journal}\n    ${bits.length ? bits.join(" · ") : "(库里没有这个刊)"}    **分档:${r.tier}**${warn}`;
-          });
-          return text(`按 ${dbPath} 查:\n\n${lines.join("\n")}`);
-        },
-      },
-      {
         name: "library_items",
         description: "列出某个分类里的全部条目。返回的每条都带 id。",
         inputSchema: { collectionId: z.string().describe("分类 id,来自 library_collections") },
@@ -328,8 +236,8 @@ export function libraryMcpTools(): McpToolSpec[] {
       {
         name: "library_create_collection",
         description:
-          "新建一个分类。用户没有指定要把检索结果放哪儿时,先问他要叫什么名字,再用这个工具建出来。" +
-          "返回新分类的 id —— 后面的 library_import 要用它。",
+          "新建一个分类。用户没有指定要把东西放哪儿时,先问他要叫什么名字,再用这个工具建出来。" +
+          "返回新分类的 id —— 后面的 library_move 要用它。",
         inputSchema: {
           name: z.string().describe("分类名(就是用户在左栏看到的名字)"),
           parentId: z.string().optional().describe("建成子分类时给父分类 id;省略则建在顶层"),
@@ -349,8 +257,8 @@ export function libraryMcpTools(): McpToolSpec[] {
       {
         name: "library_attach_to_chat",
         description:
-          "**把一个分类挂到这次对话上** —— 效果和你让用户自己点「+ → 添加文献库到上下文」完全一样:" +
-          "对话里会多出一个附件,而且**用户界面上会立刻显示出来**。挂上之后你就能按它读这些文献," +
+          "**把一个分类挂到这次对话上** —— 效果和你让用户自己点「+ → 添加资料库到上下文」完全一样:" +
+          "对话里会多出一个附件,而且**用户界面上会立刻显示出来**。挂上之后你就能按它读这些资料," +
           "下一条消息会把它作为清单路径一起发出去。\n" +
           "挂单独一篇(itemId)时,**这一篇关联的东西会一起挂上** —— 用户给条目建过关联," +
           "引用一条就意味着连它直接带的那几条一起读。\n" +
@@ -378,228 +286,6 @@ export function libraryMcpTools(): McpToolSpec[] {
                 `已把分类「${res.name}」挂到这次对话的附件里(共 ${res.count} 篇,界面上应该已经出现)。\n` +
                   `清单路径会随下一条消息一起发出去;要现在就读,直接 Read 那个清单文件。${caveat}`,
               );
-        },
-      },
-      /* ────────────────────── 模版库(与文献库同级别的另一段)──────────────────────
-       *
-       * 「模版和文档是同级别的,只不过给 AI 的提示词不一样,只有这个区别」——
-       * 所以这一段也给 AI 一套和文献库对得上的工具:能列、能挂进对话、能把工作区里的
-       * 文件存成一条。**实现与用户界面走的是同几个函数**(templates/store.ts),
-       * 所以"AI 挂的"和"用户自己点「添加到当前对话」挂的"必然是同一种东西。 */
-      {
-        name: "templates_list",
-        description:
-          "**列出模版库里的模版**。模版库与文献库是同级的两段,分五个类目:" +
-          "ppt / latex / word / code / image;一条模版就是一个文件夹(目录名即名字)。" +
-          "要挂进对话、或者要看某一条里到底有什么文件,先用它拿到 类目 + 目录名。",
-        inputSchema: {
-          kind: z
-            .enum(TEMPLATE_KINDS)
-            .optional()
-            .describe("只看某个类目(ppt / latex / word / code / image);不给就全部"),
-          query: z.string().optional().describe("按名字过滤(不区分大小写)"),
-        },
-        handler: async (args: { kind?: TemplateKind; query?: string }) => {
-          const all = listTemplates(args.kind);
-          const q = args.query?.trim().toLowerCase();
-          const rows = q ? all.filter((e) => e.dirName.toLowerCase().includes(q)) : all;
-          if (rows.length === 0) {
-            return text(
-              all.length === 0
-                ? "模版库里还没有模版(用户可以在左栏「模版」那一段或设置里添加,也可以直接往模版文件夹里丢文件)。"
-                : `没有匹配「${args.query}」的模版(这一类目下共 ${all.length} 条)。`,
-            );
-          }
-          const lines = [`共 ${rows.length} 条模版:`, ""];
-          for (const e of rows) {
-            lines.push(
-              `- [${e.kind}] ${e.dirName} —— ${e.files.length} 个文件;位置 \`${e.path}\``,
-            );
-          }
-          lines.push("");
-          lines.push("要把它挂到这次对话上就用 templates_attach_to_chat(会生成一份清单给模型读)。");
-          return text(lines.join("\n"));
-        },
-      },
-      {
-        name: "templates_attach_to_chat",
-        description:
-          "**把一条模版(或某一整个类目)挂到这次对话上** —— 效果和用户自己点「添加到当前对话」" +
-          "完全一样:对话框里会多出一个附件,而且**用户界面上会立刻显示出来**。\n" +
-          "挂单条时会生成一份清单(文件列表 + 小文件的正文),挂整个类目时生成的是一份**索引**" +
-          "(这一类目下有哪些模版、各自那份清单在哪)。挂重复了不会重复显示。",
-        inputSchema: {
-          kind: z.enum(TEMPLATE_KINDS).describe("类目"),
-          dirName: z
-            .string()
-            .optional()
-            .describe("要挂的那一条的目录名;省略 = 挂整个类目(给的是索引)"),
-        },
-        handler: async (args: { kind: TemplateKind; dirName?: string }, ctx: McpToolContext) => {
-          // 实现只有一份(见 templates/store.ts 的 attachTemplateToChat)—— 与左栏
-          // 右键「添加到当前对话」、设置页那个气泡调的是同一个函数。
-          const res = attachTemplateToChat(ctx.sessionId, args.kind, args.dirName);
-          if (!res.ok) return fail(res.error ?? "挂不上去");
-          return args.dirName
-            ? text(
-                `已把模版「${res.name}」挂到这次对话的附件里(共 ${res.fileCount} 个文件,界面上应该已经出现)。\n` +
-                  "清单路径会随下一条消息一起发出去;要现在就读,直接 Read 那个清单文件 —— 里面已经把每个文件的绝对路径和小文件的正文都给全了。",
-              )
-            : text(
-                `已把「${res.name}」这一类模版挂到这次对话的附件里(${res.fileCount} 条,界面上应该已经出现)。\n` +
-                  "它给的是一份**索引**:先看有哪些模版,再按里面的路径去 Read 你真正需要的那一份清单。",
-              );
-        },
-      },
-      {
-        name: "templates_add",
-        description:
-          "**把工作区里的文件 / 文件夹存成一条模版**(复制进模版库,原文件留在原处)。" +
-          "适合「我把这套写作格式/模版存下来」这类请求:先在工作区里把文件写好,再整包存进来。" +
-          "一条模版 = 一个文件夹,所以改的名字会成为文件夹名(非法字符会被替换)。",
-        inputSchema: {
-          kind: z.enum(TEMPLATE_KINDS).describe("存进哪个类目"),
-          name: z.string().describe("模版名(会成为文件夹名)"),
-          sourcePaths: z
-            .array(z.string())
-            .min(1)
-            .describe("要收进来的文件 / 文件夹**绝对路径**;文件夹会整包复制"),
-        },
-        handler: async (args: { kind: TemplateKind; name: string; sourcePaths: string[] }) => {
-          const res = addTemplate(args.kind, args.name, args.sourcePaths);
-          if (!res.ok) return fail(res.error ?? "存不进去");
-          // 用户的左栏/设置页各有缓存 —— 与界面自己的新建走同一条广播
-          notifyTemplatesChanged(`agent_add:${args.kind}/${res.dirName}`);
-          const entry = res.entries.find((e) => e.dirName === res.dirName);
-          return text(
-            `已把「${res.dirName}」存进模版库的 ${args.kind} 类目(${entry?.files.length ?? 0} 个文件)。` +
-              "用户在左栏「模版」那一段就能看到它。",
-          );
-        },
-      },
-      {
-        name: "library_add_paper",
-        description:
-          "**导入一篇文献,并顺手把总结写进它的笔记**。检索流程里用这个:找到一个合适的就立刻导入," +
-          "不要等全部找完再一次性导入。\n" +
-          "给它一个 DOI 或 arXiv ID;元数据自动从 Crossref / arXiv 补齐;导入后应用会自动排队下载 PDF," +
-          "不需要你再管下载。summary 会显示在这一条的详情页笔记里。" +
-          "必须给 collectionId:导入的条目要有个归处,否则会掉进回收站。",
-        inputSchema: {
-          identifier: z.string().describe("一个 DOI 或 arXiv ID,不要带解释文字"),
-          collectionId: z.string().describe("放进哪个分类,来自 library_collections 或 library_create_collection"),
-          summary: z
-            .string()
-            .optional()
-            .describe("这篇的总结(为什么值得收进来、讲了什么、和用户的方向什么关系)。写上它,用户之后翻库时能一眼看懂。"),
-        },
-        handler: async (args: { identifier: string; collectionId: string; summary?: string }) => {
-          if (!CollectionRepo.list().some((c) => c.id === args.collectionId)) {
-            return fail(
-              `分类 ${args.collectionId} 不存在。先用 library_create_collection 建一个,或用 library_collections 看看有哪些。`,
-            );
-          }
-          const { items, failed } = await importIdentifiers(args.identifier, {
-            collectionIds: [args.collectionId],
-            queueDownload: true,
-          });
-          if (items.length === 0) {
-            return fail(failed[0]?.reason ?? "这一条没能解析成 DOI / arXiv ID");
-          }
-          const item = items[0]!;
-          const summary = (args.summary ?? "").trim();
-          if (summary) {
-            // 与"导入"同一次调用里写进去 —— 用户要的就是"导入的时候顺便把总结也写进去",
-            // 拆成两步会让模型在找到下一篇时忘掉上一篇的总结。
-            NoteRepo.save({ itemId: item.id, content: summary, origin: "ai" });
-          }
-          // 界面上要立刻多出这一条(左栏、右栏列表都读的是渲染端缓存)
-          notifyLibraryChanged(`add_paper:${item.title}`);
-          return text(
-            `已导入并排队下载:\n\n${itemLine(item)}` +
-              (summary ? `\n\n已写入总结(${summary.length} 字),显示在这一条的笔记里。` : ""),
-          );        },
-      },
-      {
-        name: "library_import",
-        description:
-          "**批量**导入:一次给多个 DOI / arXiv ID(每个元素一条),或一整段 BibTeX。" +
-          "只在用户一次就给了一串标识符时用它 —— 检索流程请用 library_add_paper,一次一篇。" +
-          "同样会自动下载,不需要你管。必须给 collectionId。",
-        inputSchema: {
-          identifiers: z
-            .array(z.string())
-            .min(1)
-            .describe("DOI / arXiv ID 的列表(每个元素一行,不要带解释文字)"),
-          collectionId: z.string().describe("放进哪个分类"),
-        },
-        handler: async (args: { identifiers: string[]; collectionId: string }) => {
-          if (!CollectionRepo.list().some((c) => c.id === args.collectionId)) {
-            return fail(
-              `分类 ${args.collectionId} 不存在。先用 library_create_collection 建一个,或用 library_collections 看看有哪些。`,
-            );
-          }
-          const { items, failed } = await importIdentifiers(args.identifiers.join("\n"), {
-            collectionIds: [args.collectionId],
-            queueDownload: true,
-          });
-          const parts = [`已导入 ${items.length} 条,已排队下载 PDF:`];
-          if (items.length > 0) parts.push(items.map(itemLine).join("\n"));
-          if (failed.length > 0) {
-            parts.push(`\n有 ${failed.length} 条没能导入:`);
-            for (const f of failed) parts.push(`- ${f.raw.slice(0, 120)} —— ${f.reason}`);
-          }
-          parts.push("\n下载由应用自动排队,不需要你再操作。");
-          notifyLibraryChanged(`import:${items.length}`);
-          return text(parts.join("\n"));
-        },
-      },
-      {
-        name: "library_download",
-        description:
-          "给排好队的条目**下载 PDF**(应用的下载管道:内嵌浏览器带登录态)。" +
-          "要求条目有 DOI / arXiv ID 或可用的 PDF 链接,两条都没有的会以「没有可用来源」收场。\n" +
-          "library_add_paper / library_import 已经自动排队,**检索导入的流程不要调它**;" +
-          "它用于「把之前导入但还没下到 PDF 的那几条再试一次」。",
-        inputSchema: {
-          ids: z.array(z.string()).min(1).describe("条目 id 列表,来自 library_search / library_items"),
-        },
-        handler: async (args: { ids: string[] }) => {
-          const lines: string[] = [];
-          // **不过屏蔽那道门**(2026-09-26 用户定的规矩):屏蔽只管给 AI 看的,下载是干活。
-          // 屏蔽了 pdf 的条目照样要下 PDF —— 转录出的 md 才是给模型看的那份。
-          const allowed: string[] = [];
-          for (const id of args.ids) {
-            const item = LibraryRepo.get(id);
-            if (!item) {
-              lines.push(`- ${id} —— 库里没有这个 id`);
-              continue;
-            }
-            allowed.push(id);
-          }
-          // 排队本身是同步的(任务行当场落库),下载在后台慢慢跑 —— 这里只回报
-          // "排上了没有、现在什么状态",不等着它下完。
-          enqueueDownloads(allowed);
-          const jobs = DownloadJobRepo.list();
-          for (const id of allowed) {
-            const item = LibraryRepo.get(id)!;
-            if (item.pdfPath) {
-              // enqueueDownloads 对已有 PDF 的条目直接跳过(force 才重下)—— 如实说,
-              // 别让用户以为又下了一遍。
-              lines.push(`- ${item.title}\n  id=${id}\n  已有 PDF,没有重复排队`);
-              continue;
-            }
-            const job = jobs.find((j) => j.itemId === id);
-            lines.push(
-              `- ${item.title}\n  id=${id}\n  下载任务:${
-                job ? `${job.id}(${job.status})` : "未能排队 —— 缺 DOI / arXiv ID,也没有可用链接"
-              }`,
-            );
-          }
-          return text(
-            `已处理 ${args.ids.length} 条:\n\n${lines.join("\n")}\n\n` +
-              "下载由应用自动排队,不需要你再操作;下不了的(缺来源)如实转告用户。",
-          );
         },
       },
       {
@@ -656,7 +342,7 @@ export function libraryMcpTools(): McpToolSpec[] {
       {
         name: "library_write_note",
         description:
-          "给某一条文献写笔记。笔记显示在这一条的详情页(右栏「笔记」),用户和后续对话都看得到。" +
+          "给某一条条目写笔记。笔记显示在这一条的详情页(右栏「笔记」),用户和后续对话都看得到。" +
           "**写摘要、写读完的要点、记下留待确认的问题,都用它** —— 直接给正文,不要写\"我可以帮你总结\"。",
         inputSchema: {
           itemId: z.string(),
@@ -684,11 +370,11 @@ export function libraryMcpTools(): McpToolSpec[] {
       {
         name: "library_convert",
         description:
-          "把文献的 PDF 转成 Markdown —— **本地抽取,只有纯文本**(排版、公式、表格都不保留)。\n" +
+          "把条目的 PDF 转成 Markdown —— **本地抽取,只有纯文本**(排版、公式、表格都不保留)。\n" +
           "要高质量的转录(公式 / 多栏 / 表格)不走这条:用 code 节点调你自己装的外部工具转出 `full.md`,\n" +
           "再拿 `library_adopt_markdown` 挂回库 —— 那条路才认图床。\n" +
           "**已经有 Markdown 的会跳过**;确实要重转才把 force 打开。\n" +
-          "⚠️ 它**不下载** PDF:`library_add_paper` / `library_import` 导入时已经自动排队下载,这条只管「已经在本地的 PDF → Markdown」。条目还没有 PDF 时如实转告用户,别自己去抓。",
+          "⚠️ 它**不下载** PDF:只管「已经在本地的 PDF → Markdown」。条目还没有 PDF 时如实转告用户 —— 下载是外部 MCP 服务 / 自动化的事,别自己去抓。",
         inputSchema: {
           ids: z.array(z.string()).min(1).describe("要转的条目 id,来自 library_search / library_items"),
           force: z.boolean().optional().describe("已经有 Markdown 也重转(默认关)"),
@@ -725,9 +411,62 @@ export function libraryMcpTools(): McpToolSpec[] {
         },
       },
       {
+        name: "library_import_files",
+        description:
+          "把**本地文件 / 目录**收进资料库,建成新条目(PDF、Word、图片、任何文件都行;目录可以整个作为一条 linked 条目收进)。\n" +
+          "外部检索 / 下载工具把文件弄到本地之后,用这条交给库 —— 每一条入库都会发 `library.item.imported` 事件,用户配的自动化会接手。\n" +
+          "同一份内容(按哈希)已经在库里的会跳过,不会重复建条目。返回每一条的 id。",
+        inputSchema: {
+          paths: z.array(z.string().min(1)).min(1).max(200).describe("要导入的文件 / 目录的**绝对路径**"),
+          collectionIds: z.array(z.string()).optional().describe("一并归入哪些分类(id 来自 library_collections);省略则只进总库"),
+          mode: z
+            .enum(["files", "folder", "explode"])
+            .optional()
+            .describe("目录怎么收:files(默认,逐个文件)/ folder(整个目录作为一条)/ explode(目录里的文件拆开逐个导)"),
+          convert: z.boolean().optional().describe("PDF 入库后顺手本地抽一份纯文本 Markdown(默认关;要高质量转录走外部工具 + library_adopt_markdown)"),
+        },
+        handler: async (args: { paths: string[]; collectionIds?: string[]; mode?: "files" | "folder" | "explode"; convert?: boolean }) => {
+          const res = await importAnyFiles(args.paths, {
+            collectionIds: args.collectionIds,
+            mode: args.mode,
+            convert: args.convert ?? false,
+          });
+          notifyLibraryChanged(`mcp-import:${res.added}`);
+          const lines = res.items.map((i) => `- ${i.title}\n  id=${i.id}`);
+          const errs = res.errors.map((e) => `- ${e.path}:${e.error}`);
+          return text(
+            `导入 ${res.added} 条,跳过 ${res.skipped} 条重复。` +
+              (lines.length ? `\n\n${lines.join("\n")}` : "") +
+              (errs.length ? `\n\n⚠️ 没能导入的:\n${errs.join("\n")}` : ""),
+          );
+        },
+      },
+      {
+        name: "library_attach_pdf",
+        description:
+          "把一份**本地 PDF 挂到已有条目**上(条目先有、文件后到的那条路)。外部下载工具把 PDF 下到本地之后用这条交回来:\n" +
+          "文件按内容哈希收进库,条目状态变成「已有 PDF」,并发 `library.item.downloaded` 事件 —— 用户配的「下载完转 Markdown」自动化会接手。\n" +
+          "已经有 PDF 的条目默认拒绝,要换掉就把 force 打开。",
+        inputSchema: {
+          itemId: z.string().describe("挂到哪一条,来自 library_search / library_items"),
+          path: z.string().min(1).describe("PDF 的**绝对路径**"),
+          force: z.boolean().optional().describe("已经有 PDF 也换掉(默认关)"),
+        },
+        handler: async (args: { itemId: string; path: string; force?: boolean }) => {
+          const res = attachPdfToItem(args.itemId, args.path, { force: args.force });
+          if (!res.ok) return fail(`没能挂上:${res.error}`);
+          notifyLibraryChanged(`attach-pdf:${args.itemId}`);
+          return text(
+            `${res.replaced ? "已换掉" : "已挂上"}《${res.item.title}》的 PDF。\n` +
+              `落点:${res.item.pdfPath}\n\n` +
+              "已发出 library.item.downloaded 事件;要转成 Markdown 可以接着调 library_convert,或等用户配的自动化处理。",
+          );
+        },
+      },
+      {
         name: "library_adopt_markdown",
         description:
-          "把**一份现成的 Markdown 挂到某一条文献上**(跳过转录)。给外部工具转好的产物用:\n" +
+          "把**一份现成的 Markdown 挂到某一条条目上**(跳过转录)。给外部工具转好的产物用:\n" +
           "用 code / 命令节点调你自己装的工具(OCR、mineru CLI、任何东西)转出 `full.md`,\n" +
           "再拿这条把它挂回库里 —— 挂上之后条目详情页读得到、右栏全文检索也搜得到。\n" +
           "**配图会一起搬**:`full.md` 同级/下级目录里的图片(不管目录叫什么)都跟着复制过来,\n" +
@@ -856,11 +595,9 @@ export async function buildLibraryMcpServer(opts: { sessionId: string }) {
     name: LIBRARY_MCP_SERVER,
     version: "1.0.0",
     instructions:
-      "Mcode 资料库的操作工具,分**同级的两段**:资料库与模版库。\n" +
-      "资料库:分类树(大类 → 分类)与回收站;" +
-      "条目用 id 标识,要操作某一条先用 library_search / library_items 拿到它的 id。\n" +
-      "模版库:五个类目 ppt / latex / word / code / image,一条模版是一个文件夹(目录名即名字)," +
-      "用 templates_list 列出、templates_attach_to_chat 挂进对话。",
+      "Mcode 资料库的操作工具:分类树(大类 → 分类)与回收站;" +
+      "条目用 id 标识,要操作某一条先用 library_search / library_items 拿到它的 id。" +
+      "模版也是库里的条目(大类「模版」),同一套工具找、同一个 library_attach_to_chat 挂进对话。",
     alwaysLoad: true,
     tools: toSdkTools(libraryMcpTools(), { sessionId: opts.sessionId }),
   });

@@ -1,21 +1,21 @@
 /**
- * 从本地 PDF 文件导入文献。
+ * 从本地 PDF 文件导入。
  *
  * ## 顺序是有讲究的
  *
  *   1. **校验**(PDF 魔数 + 大小)—— 最快,也最该先挡掉
  *   2. **按 sha256 查重** —— 同内容已经在库里就不重复入库
  *   3. **复制进库** —— 复制不是移动:源文件是用户的,不能动
- *   4. **抽元数据** —— 要读整份文件、还可能联网查 Crossref,放在最后才不会白干
+ *   4. **入库** —— 标题取文件名;学术元数据(DOI / 作者 / 期刊…)不再由核心去猜,
+ *      外部 MCP / 自动化可以在 `library:itemImported` 事件之后补
  *
  * 一份失败不影响其他:整个函数逐份处理,把每份的结果(成功/已在库/失败原因)都
  * 带回去,而不是遇到第一个问题就整体抛错 —— 用户一次拖三十篇进来,"有两篇认不出"
  * 不该让另外二十八篇也不入库。
  *
- * ## 去重为什么不能只靠 DOI
+ * ## 去重靠内容
  *
- * 本地 PDF 常常**没有** DOI/arXiv 号可匹配(所以 `findExisting` 会返回 null),
- * 但同一份文件导两次完全可能。内容寻址让它们落进同一个 `papers/<ab>/<cd>/<sha>.pdf`,
+ * 同一份文件导两次完全可能。内容寻址让它们落进同一个 `papers/<ab>/<cd>/<sha>.pdf`,
  * 再加一道 `findByPdfSha`,就不会多出重复条目。
  *
  * ## `collectionIds` 从前是**声明了但没用**
@@ -25,17 +25,15 @@
  * 东西却掉进回收站**:导入的条目不属于任何集合 = 孤儿,`sweepToTrash` 会把它收走。
  *
  * 这条 bug 能活这么久,是因为**没有任何套件覆盖这条路**(在 scripts 目录下搜
- * `importPdfFiles` 一个都搜不到);而同样一件事的另一条路(operations.ts 的
- * `importIdentifiers`)做对了,所以"导入"这个动作看着一直是好的。
+ * `importPdfFiles` 一个都搜不到)。
  */
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, extname } from "node:path";
 import type { LibraryItem } from "@contracts/library";
-import { hashFile, verifyPdf } from "@main/library/downloader.js";
-import { extractPdfMetadata } from "@main/library/pdfMetadata.js";
+import { hashFile, verifyPdf } from "@main/library/pdfFile.js";
 import { pdfPathForHash, toLibraryRelative } from "@main/library/paths.js";
 import { CollectionRepo, LibraryRepo } from "@main/store/repositories.js";
-import { emitItemImported } from "./broadcast.js";
+import { emitItemDownloaded, emitItemImported } from "./broadcast.js";
 import { log } from "@main/lib/logger.js";
 
 export interface ImportedFile {
@@ -85,14 +83,9 @@ async function importOne(rawPath: string, collectionIds?: string[]): Promise<Imp
   try {
     if (!existsSync(rawPath)) return { path: rawPath, error: "文件不存在" };
 
-    // 1. 校验。verifyPdf 的措辞是给「下载」写的,这里补一句面向本地文件的
+    // 1. 校验
     const bad = verifyPdf(rawPath);
-    if (bad) {
-      return {
-        path: rawPath,
-        error: bad.status === "needs_login" ? "这不是 PDF(内容看起来是网页)" : bad.error,
-      };
-    }
+    if (bad) return { path: rawPath, error: bad };
 
     // 2 + 3. 按内容查重,并把字节收进库
     const sha = hashFile(rawPath);
@@ -111,33 +104,50 @@ async function importOne(rawPath: string, collectionIds?: string[]): Promise<Imp
       return { path: rawPath, item: { ...dup, pdfPath: dup.pdfPath ?? rel }, alreadyPresent: true };
     }
 
-    // 4. 元数据(分层回退,见 pdfMetadata.ts)
-    const meta = await extractPdfMetadata(rawPath);
-    const item = LibraryRepo.upsert({
-      doi: meta.doi ?? null,
-      arxivId: meta.arxivId ?? null,
-      // upsert 要求 doi || arxivId || title 至少有一个;标题兜底到文件名
-      title: meta.title?.trim() || basename(rawPath, extname(rawPath)),
-      authors: meta.authors,
-      year: meta.year,
-      venue: meta.venue,
-      volume: meta.volume,
-      issue: meta.issue,
-      page: meta.page,
-      publisher: meta.publisher,
-      abstract: meta.abstract,
-      source: "pdf",
-    });
+    // 4. 入库。标题取文件名 —— 核心不再从 PDF 里猜学术元数据(那是外部 MCP /
+    //    自动化的事:它们可以在 `library:itemImported` 之后把标题改成正经的)。
+    const item = LibraryRepo.upsert({ title: basename(rawPath, extname(rawPath)) });
     LibraryRepo.setPdf(item.id, rel, sha);
-    // 归属要在**入库之后**(条目 id 才有),而在**事件之前** —— 事件起来的那条自动化
-    // (「导入后排队下载」)会立刻去查这一条,它看到的状态该是已经归好类的。
+    // 归属要在**入库之后**(条目 id 才有),而在**事件之前** —— 事件起来的自动化
+    // 会立刻去查这一条,它看到的状态该是已经归好类的。
     assignToCollections(item.id, collectionIds);
-    log.info(`library: imported PDF ${basename(rawPath)} as ${item.id} (${meta.source})`);
+    log.info(`library: imported PDF ${basename(rawPath)} as ${item.id}`);
     // 成功点在这里:条目建好、PDF 也记上了。alreadyPresent 的不算 —— 那条本来就在库里,
-    // 之前入库时已经发过事件,再发一次会让自动下载重复排队。
+    // 之前入库时已经发过事件,再发一次会让挂在事件上的自动化重复跑。
     emitItemImported(item);
     return { path: rawPath, item: { ...item, pdfPath: rel, pdfSha256: sha } };
   } catch (err) {
     return { path: rawPath, error: (err as Error).message };
   }
+}
+
+/**
+ * 把一份**本地 PDF 挂到已有条目**上 —— 外部下载器(外部 MCP 服务 / 自动化里的脚本)
+ * 把文件弄到本地之后,靠这条把它交给库。
+ *
+ * 学术那套内置下载队列退役(2026-09-27)之后,"条目先有、文件后到"这条路就靠它:
+ * 校验 → 按内容哈希落进 `papers/<ab>/<cd>/<sha>.pdf` → 写回条目 → 发
+ * `library.item.downloaded`(自动化「下载完转 Markdown」听的正是这一条,见
+ * `broadcast.ts`)。已经有 PDF 的条目要显式 `force` 才换。
+ */
+export function attachPdfToItem(
+  itemId: string,
+  rawPath: string,
+  opts: { force?: boolean } = {},
+): { ok: true; item: LibraryItem; replaced: boolean } | { ok: false; error: string } {
+  const item = LibraryRepo.get(itemId);
+  if (!item) return { ok: false, error: `库里没有这个 id:${itemId}` };
+  if (item.pdfPath && !opts.force) return { ok: false, error: "这一条已经有 PDF 了(要换掉就把 force 打开)" };
+  const bad = verifyPdf(rawPath);
+  if (bad) return { ok: false, error: bad };
+  const sha = hashFile(rawPath);
+  const dest = pdfPathForHash(sha);
+  mkdirSync(dirname(dest), { recursive: true });
+  if (!existsSync(dest)) copyFileSync(rawPath, dest);
+  const rel = toLibraryRelative(dest);
+  LibraryRepo.setPdf(itemId, rel, sha);
+  const updated = LibraryRepo.get(itemId)!;
+  log.info(`library: attached PDF ${basename(rawPath)} to ${itemId}`);
+  emitItemDownloaded(updated);
+  return { ok: true, item: updated, replaced: Boolean(item.pdfPath) };
 }

@@ -15,7 +15,6 @@ import { log } from "@main/lib/logger.js";
 import { closeDb, flushDb } from "@main/store/db.js";
 import { copyDataRootTo, dataRoot, dbPath, setDataRoot } from "@main/lib/dataRoot.js";
 import { libraryRoot } from "@main/library/paths.js";
-import { templatesRoot } from "@main/templates/store.js";
 
 /** Node 在 Windows 上把交给 `cpSync` 的路径展开成的**长路径前缀**。
  *  源码里这个字面量就是四个字符:`\` `\` `?` `\`。 */
@@ -57,7 +56,6 @@ export function registerAppHandlers(ipcMain: IpcMain): void {
     root: dataRoot(),
     dbPath: dbPath(),
     libraryPath: libraryRoot(),
-    templatesPath: templatesRoot(),
   }));
 
   /**

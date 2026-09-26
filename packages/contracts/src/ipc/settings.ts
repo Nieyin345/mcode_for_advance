@@ -636,14 +636,6 @@ export const UI_IDE_EDITOR_MODE_SETTING_KEY = "ui.ideEditorMode";
 export const UI_COMPOSER_MODEL_SETTING_KEY = "ui.composerModel";
 
 /**
- * **在线检索的每源默认条数** —— `library_search_online` 工具没收到 `limit` 参数时
- * 用的兜底值(见 `main/mcp/libraryServer.ts`)。检索条件(含每源条数)的正式定义
- * 已经搬进主对话节点的「固定条件」参数(`@contracts/nodeType`),随运行提示词进
- * 模型;这里只剩工具层的最后一级兜底。
- */
-export const SEARCH_LIMIT_SETTING_KEY = "search.perSourceLimit";
-
-/**
  * **工作流固定条件的选中值** —— 键是**前缀 + workflowId**,值是 JSON
  * `{ [条件名]: 选中值 }`(条件表定义在主对话节点的 `NODE_CRITERIA_PARAM_KEY`
  * 参数上,见 `@contracts/nodeType`)。
@@ -655,19 +647,6 @@ export const SEARCH_LIMIT_SETTING_KEY = "search.perSourceLimit";
  * 机制一起删掉(2026-09-19);残留在设置表里的旧键没人再读,无害。
  */
 export const WORKFLOW_NODE_PREFS_SETTING_PREFIX = "workflow.nodePrefs.";
-
-/**
- * 期刊数据(jcr.db)的路径。
- *
- * 这是一个 **22MB 的离线 SQLite**(JCR 影响因子/分区 + 中科院分区 + CCF + 预警名单),
- * 由用户自己的 `模板库/期刊数据/fetch.py` 每年更新。**不随应用发布** —— 它是有版权的
- * 商业数据,也是用户自己维护的东西。
- *
- * 解析顺序(见 `main/library/journalRank.ts`):本设置 → `<数据根>/workflows/jcr.db`。
- * 两处都没有就**降级**:期刊层次/影响因子那两条筛选条件不生效,而且会**如实告诉用户
- * 不生效** —— 宁可说"我查不了",也不能让模型凭印象编一个影响因子出来。
- */
-export const SEARCH_JOURNAL_DB_SETTING_KEY = "search.journalRankDb";
 
 /**
  * Setting key under which the custom-model id used for git-commit-message

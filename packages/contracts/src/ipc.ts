@@ -9,12 +9,6 @@ import { WorkflowDocSchema, type WorkflowDoc, type WorkflowListEntry } from "./w
 import { HookSpecSchema, type HookRun, type HookSpec } from "./hook.js";
 import { AgentProfileSchema, type AgentProfile, type AgentProfileCatalog } from "./agentProfile.js";
 import type { NodeTypeCatalog } from "./nodeType.js";
-import {
-  TEMPLATE_KINDS,
-  type TemplateEntry,
-  type TemplateFileContent,
-  type TemplateKind,
-} from "./templates.js";
 import type { Project, Session, MessageRecord, TurnInput, ApprovalDecision, SessionBookmark } from "./session.js";
 import type { ProviderCapabilities, UserInputAnswers, BuiltinModelOption } from "./provider.js";
 import type { CustomModelPublic, CustomModelInput, TestCustomModelResult } from "./customModel.js";
@@ -27,9 +21,6 @@ import type {
   LibraryItem,
   LibraryCollection,
   InstitutionProfile,
-  DownloadJob,
-  DownloadStatus,
-  ExternalSearchResult,
   FullTextMatch,
   AuthSiteStatus,
   LibraryConversionRow,
@@ -141,10 +132,12 @@ export * from "./ipc/events.js";
 export * from "./ipc/terminal.js";
 export * from "./ipc/browser.js";
 export * from "./ipc/library.js";
-export * from "./ipc/templates.js";
+// OnlyOffice Document Server 集成（Office 文档可视化编辑）。
+export * from "./ipc/onlyoffice.js";
 // 记忆契约(存储/检索/维护共用的那一份,渠道字符串钉在里面)。
 export * from "./memory.js";
-export * from "./memoryAssistant.js";
 // 编排域:运行史、触发器事实、监控。
 export * from "./ipc/orchestration.js";
 export * from "./ipc/rpcMap.js";
+
+export * from "./memoryAssistant.js";

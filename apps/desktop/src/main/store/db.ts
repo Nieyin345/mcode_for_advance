@@ -200,30 +200,14 @@ function migrate(database: Database): void {
 
     CREATE TABLE IF NOT EXISTS library_items (
       id          TEXT PRIMARY KEY,
-      -- 属于哪个类型:开放字符串注册表(内置 8 类,用户可自建,见 contracts 的 BUILTIN_LIBRARY_TYPES)。
-      -- 「paper / textbook / note」只是最早的三个内置值,不是全集。
-      kind        TEXT NOT NULL DEFAULT 'paper',
-      doi         TEXT,
-      arxiv_id    TEXT,
       title       TEXT NOT NULL,
-      authors     TEXT,
-      year        INTEGER,
-      venue       TEXT,
-      -- 卷 / 期 / 页码 / 出版商:引用格式(GB/T 7714、APA、BibTeX)要用。
-      -- 一律 TEXT —— 页码有「1234-1240」「e0123456」「S1-S8」多种形态,切片成数字必丢信息。
-      volume      TEXT,
-      issue       TEXT,
-      page        TEXT,
-      publisher   TEXT,
+      -- 简介 / 摘要:用户或 AI 写的一句话说明,可空。
       abstract    TEXT,
-      type        TEXT NOT NULL DEFAULT 'article',
       language    TEXT,
       url         TEXT,
       pdf_path    TEXT,
       pdf_sha256  TEXT,
       md_path     TEXT,
-      source      TEXT,
-      license     TEXT,
       -- 通用文件条目(统一资料库):entry_mode = attached(复制入库,相对库根)/
       -- linked(引用原路径,文件不动,可为目录);file_path 是通用文件路径。
       -- 旧的文献流(pdf_path/md_path)不受影响;老库 ALTER 出来的行缺省按 attached 读。
@@ -232,13 +216,10 @@ function migrate(database: Database): void {
       added_at    INTEGER NOT NULL,
       updated_at  INTEGER NOT NULL
     );
-    -- 去重靠这两个唯一索引。用部分索引(WHERE ... IS NOT NULL)是因为 SQLite 的
-    -- UNIQUE 允许多个 NULL,不加 WHERE 也能工作,但显式写出来意图更清楚,
-    -- 且能避免"空串算不算重复"的歧义 —— 空串在写入前会被规范化成 NULL。
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_library_items_doi
-      ON library_items(doi) WHERE doi IS NOT NULL;
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_library_items_arxiv
-      ON library_items(arxiv_id) WHERE arxiv_id IS NOT NULL;
+    -- 学术字段退役(2026-09-27):老库里还有 kind / doi / arxiv_id / authors / year /
+    -- venue / volume / issue / page / publisher / type / source / license 这些列
+    -- (以及 doi / arxiv_id 上的两个唯一索引),新库不再建;代码全面停止读写。
+    -- 见 migrate() 里「学术字段退役」那段。
     CREATE INDEX IF NOT EXISTS idx_library_items_added ON library_items(added_at DESC);
     -- 内容寻址:同一个 PDF 被两条记录指向时(理论上不该发生)便于排查
     CREATE INDEX IF NOT EXISTS idx_library_items_sha ON library_items(pdf_sha256);
@@ -321,19 +302,6 @@ function migrate(database: Database): void {
       updated_at   INTEGER NOT NULL
     );
 
-    /* 下载任务。同一文献重试累加 attempts 而不是新建行 —— item_id 唯一。 */
-    CREATE TABLE IF NOT EXISTS download_jobs (
-      id         TEXT PRIMARY KEY,
-      item_id    TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
-      status     TEXT NOT NULL,
-      attempts   INTEGER NOT NULL DEFAULT 0,
-      error      TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_download_jobs_item ON download_jobs(item_id);
-    CREATE INDEX IF NOT EXISTS idx_download_jobs_status ON download_jobs(status);
-
   `);
   // Backward-compatible column adds for dbs created before these columns
   // existed (CREATE TABLE IF NOT EXISTS won't alter an existing table).
@@ -361,23 +329,25 @@ function migrate(database: Database): void {
   // sessions.pinned_at above.
   addColumnIfMissing(database, "projects", "pinned_at", "INTEGER");
 
-  // 文献库的卷 / 期 / 页码 / 出版商。引用格式(GB/T 7714、APA、BibTeX)要用 ——
-  // 缺了就只能整段省略,所以这几个字段是"引用能不能用"的前提。老的库(这个改动
-  // 之前建的)没有这几列,必须走 ALTER。
-  addColumnIfMissing(database, "library_items", "volume", "TEXT");
-  addColumnIfMissing(database, "library_items", "issue", "TEXT");
-  addColumnIfMissing(database, "library_items", "page", "TEXT");
-  addColumnIfMissing(database, "library_items", "publisher", "TEXT");
-
-  // 三个平级的库(论文 / 教材 / 笔记)。老数据一律归到 `paper`,分类也一样 ——
-  // 用户现有的东西本来就都是论文。
-  addColumnIfMissing(database, "library_items", "kind", "TEXT NOT NULL DEFAULT 'paper'");
+  // 分类表上退役的 `kind` 列(见下面「kind 退役」):下面的回填还要 SELECT 它,
+  // 极老的库没有这一列会直接炸,所以仍旧补齐。
   addColumnIfMissing(database, "library_collections", "kind", "TEXT NOT NULL DEFAULT 'paper'");
   // 分类的「给 AI 的说明」:拼进该分类的清单(统一资料库,类型说明之外的第二层)。
   addColumnIfMissing(database, "library_collections", "prompt", "TEXT");
 
+  // ── 学术字段退役(2026-09-27)──
+  // 学术那一套(DOI / arXiv / 作者 / 年份 / 期刊 / 卷期页 / 出版商 / 文献类型 /
+  // 元数据来源 / 许可、外部检索、PDF 自动下载、引用导出、期刊分区)整体搬出核心,
+  // 交给外部 MCP 服务 + 自动化。老库 `library_items` 上的那些列**保留但不再读写**
+  // (与 kind 同一做法),唯一索引留着也无害(代码不再写 doi/arxiv_id,永远是 NULL)。
+  // `download_jobs` 表是纯派生数据(任务队列),直接删。
+  if (tableExists(database, "download_jobs")) {
+    database.run("DROP TABLE download_jobs");
+    schemaChanged = true;
+  }
+
   // ── kind 退役（2026-09-24）──
-  // 上面两列 `kind` **保留在库里但代码全面停止读写**（sql.js 没有 DROP COLUMN 的
+  // 两列 `kind` **保留在库里但代码全面停止读写**（sql.js 没有 DROP COLUMN 的
   // 可移植写法；trash.ts 早有同款先例）。分类的归属改由 `group_id` 直接挂大类 ——
   // 从前分类挂在 kind 下、kind 再被大类表收编，现在是两步并一步。
   addColumnIfMissing(database, "library_collections", "group_id", "TEXT");
@@ -483,6 +453,14 @@ function migrate(database: Database): void {
       : `sqlite: recovered ${recoveredCollections} ungrouped library collections`);
     persist();
   }
+}
+
+function tableExists(database: Database, table: string): boolean {
+  const stmt = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?");
+  stmt.bind([table]);
+  const exists = stmt.step();
+  stmt.free();
+  return exists;
 }
 
 /** Add a column only if it isn't already present. SQLite has no ADD COLUMN IF

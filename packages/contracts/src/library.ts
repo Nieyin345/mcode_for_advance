@@ -1,92 +1,39 @@
 /**
- * 文献库领域类型。
+ * 资料库领域类型。
  *
  * 与 `ipc.ts` 的分工:这里放**不做运行期校验的领域类型**(可以被主进程、渲染进程、
- * 未来可能的 MCP server 共同引用);跨 IPC 的入参校验 schema 放 `ipc.ts` 的
+ * MCP server 共同引用);跨 IPC 的入参校验 schema 放 `ipc.ts` 的
  * `library` 分区,两者保持同名对应。
  *
- * ## 为什么作者用 CSL 风格的对象而不是 `firstName`/`lastName` 两个字段
+ * ## 学术字段退役(2026-09-27)
  *
- * 中文姓名没有可靠的「名/姓」切分,拆成两列会把「张三」「欧阳锋」这类姓名存错。
- * 所以作者统一用 CSL 的三种写法:`family`+`given`(西文)、`literal`(中日韩等
- * 不便切分的名字)。展示时由渲染层按语言决定顺序,存储层不做假设。
+ * 资料库从"文献库"改成**通用**资料库:条目不再带 DOI / arXiv / 作者 / 年份 /
+ * 期刊 / 卷期页 / 出版商 / 文献类型这些学术元数据,外部检索、PDF 自动下载、
+ * 引用导出、期刊分区也一并搬出核心 —— 这些由外部 MCP 服务 + 自动化/工作流承担,
+ * 核心只提供"文件条目 + 分类 + 笔记 + 关联 + 全文检索"这层通用地基。
  */
 
-/** 单条作者。三选一:西文给 `family`/`given`,中日韩等给 `literal`。 */
-export interface LibraryAuthor {
-  family?: string;
-  given?: string;
-  /** 整体姓名,不做姓/名切分(中文、机构作者、集体署名等)。 */
-  literal?: string;
-}
-
 /**
- * 三个**平级**的库:论文库 / 教材库 / 笔记库。
- *
- * ## 为什么是一个字段而不是三张表
- *
- * 用户要的是「同级」—— 指左栏里三个并列的入口、各自有自己的一套分类,而不是三套
- * 完全独立的数据结构。这三者在数据上**几乎完全同构**:都要标题/作者/年份、都要能挂
- * 到分类里、都要能被对话引用。差别只有两点:
- *   - 笔记是 **Markdown 源文件**(用户自己的东西),论文与教材是 **PDF**(要抓元数据、
- *     要转 Markdown 才能被 AI 读);
- *   - 教材的元数据来源更依赖文件名(ISBN 那条路没接)。
- *
- * 做成三张表的话,查重、集合归属、对话引用、md 预览、全文检索全都要写三遍。
- * 旧架构曾用一个 `kind` 字段区分三个库;2026-09-24 kind 退役 —— 条目不再带类型,
- * 归属由分类树/大类管,行为由文件扩展名管。
- */
-export type LibraryItemType =
-  | "article"
-  | "inproceedings"
-  | "book"
-  | "thesis"
-  | "preprint"
-  | "report"
-  | "other";
-
-/**
- * 一条文献记录。
+ * 一条资料库条目。
  *
  * `pdfPath` / `mdPath` 一律是**相对库根目录**的路径 —— 库可以在设置里搬迁,
  * 存绝对路径会在搬迁后全部失效。
  */
 export interface LibraryItem {
   id: string;
-  /** 小写化的 DOI(不含 `https://doi.org/` 前缀)。去重主键之一。 */
-  doi?: string;
-  /** arXiv ID(不含 `arXiv:` 前缀)。去重主键之一。 */
-  arxivId?: string;
   title: string;
-  authors: LibraryAuthor[];
-  year?: number;
-  /** 期刊/会议名。 */
-  venue?: string;
-  /** 卷(期刊)。GB/T 7714 与 APA 都要用,缺了就只能省略。 */
-  volume?: string;
-  /** 期 / 期号(BibTeX 里是 `number`)。 */
-  issue?: string;
-  /** 起止页码。存字符串而不是数字区间 —— 期刊页码有 `1234-1240`、
-   *  `e0123456`、`S1-S8` 等多种形态,切片成数字必然丢信息。 */
-  page?: string;
-  /** 出版商(图书 / 学位论文常用)。 */
-  publisher?: string;
+  /** 简介 / 摘要:用户或 AI 写的一段说明,可空。 */
   abstract?: string;
-  type: LibraryItemType;
-  /** BCP-47 语言标签,如 `zh` / `en`。用于决定作者名的展示顺序。 */
+  /** BCP-47 语言标签,如 `zh` / `en`。 */
   language?: string;
-  /** 出版商/落地页地址。 */
+  /** 来源地址(网页 / 落地页)。 */
   url?: string;
-  /** 相对库根的 PDF 路径。未下载时为 undefined。 */
+  /** 相对库根的 PDF 路径。没有时为 undefined。 */
   pdfPath?: string;
   /** PDF 内容的 sha256。内容寻址,天然去重。 */
   pdfSha256?: string;
   /** 相对库根的 Markdown 路径(PDF 转换产物),供 ripgrep 全文检索。 */
   mdPath?: string;
-  /** 元数据来源渠道,如 `crossref` / `arxiv` / `manual`。 */
-  source?: string;
-  /** PDF 的许可标识(如 `CC-BY-4.0`)。合规追溯用。 */
-  license?: string;
   /**
    * 通用文件条目的落法:`attached` = 文件复制进了库(相对库根),`linked` = 只记
    * 原路径、文件不动(可以是文件**或目录**)。统一资料库给 ppt/word/照片等开的口子
@@ -316,197 +263,6 @@ export interface InstitutionProfile {
   notes?: string;
   createdAt: number;
   updatedAt: number;
-}
-
-/**
- * 下载任务状态。
- *
- * `needs_login` 是一等状态而非错误 —— 认证过期是**预期的正常情况**,
- * 必须让用户看到「去登录」的明确指引,而不是一条含糊的失败。
- */
-export type DownloadStatus =
-  | "pending"
-  | "running"
-  | "done"
-  /** 认证失效:需要用户去内嵌浏览器重新登录。不自动重试。 */
-  | "needs_login"
-  /** 所有来源都找不到可下载的 PDF。 */
-  | "not_found"
-  /** 网络/代理问题。可指数退避重试。 */
-  | "rate_limited"
-  | "failed";
-
-/** 一条下载任务。同一文献重试会累加 `attempts` 而不是新建行。 */
-export interface DownloadJob {
-  id: string;
-  itemId: string;
-  status: DownloadStatus;
-  attempts: number;
-  /** 最近一次失败的原因,给用户看的简短说明。 */
-  error?: string;
-  createdAt: number;
-  updatedAt: number;
-}
-
-/**
- * 界面上展示的 PDF 可用性。
- *
- * 由 `LibraryItem.pdfPath` 与最新一条 `DownloadJob` 共同推导 —— 单独看任何一个
- * 都不够:有任务不代表有文件(可能还在跑或已失败),有文件也不代表任务已完成
- * (可能是手动导入的)。
- */
-export type PdfState =
-  | "none"
-  | "queued"
-  | "downloading"
-  | "ready"
-  | "needs_login"
-  /** 五个源都翻过、确实没有开放版本 —— 不是"下砸了",用户自己改不了什么。 */
-  | "not_found"
-  | "failed";
-
-/**
- * 全部 `PdfState`,**这是唯一的一份名单**。
- *
- * 加一档状态时只改这里。这份名单原先被手抄了**四遍**,而它们全都漏了 `not_found`
- * (`derivePdfState` 把它折进了 `failed`,手抄的人也就没抄它):
- *
- *   1. `LibraryListFilter.pdfState`(主进程的过滤参数) → 已改成引用 `PdfState`
- *   2. `pdfStateClause` 的 switch                      → 已改成显式列举 + default 抛出
- *   3. IPC 的 `LibraryListSchema.pdfState`(zod)       → 由这一份生成
- *   4. 界面上那一排筛选 chip                            → 由这一份驱动
- *
- * 四处漏一处就是一条静默走不通的路:筛选面板上根本没有那一档、或者选中了却返回
- * 整个库。所以现在是 `as const` 的数组 + `satisfies`,顺手还能直接给 zod 用。
- */
-export const PDF_STATES = [
-  "none",
-  "queued",
-  "downloading",
-  "needs_login",
-  "not_found",
-  "failed",
-  "ready",
-] as const satisfies readonly PdfState[];
-
-// 编译期护栏:`satisfies` 只保证表里的都在 `PdfState` 里,不保证一个不漏。
-// 这一句反过来断言"一个不漏"—— 给 `PdfState` 加了新状态而忘了加进这张表,
-// 这里直接 typecheck 失败。
-type _ListedPdfState = (typeof PDF_STATES)[number];
-type _MissingPdfState = Exclude<PdfState, _ListedPdfState>;
-const _noMissingPdfState: _MissingPdfState extends never ? true : ["PDF_STATES 漏了状态", _MissingPdfState] = true;
-void _noMissingPdfState;
-
-/**
- * 由文献记录与最新下载任务推导 PDF 状态。
- *
- * ⚠️ **`not_found` 与 `failed` 必须分开。** 它俩的下载任务状态本来就不同
- * (`DownloadJob.status` 里就是两个值),可这里原来把 `not_found` 一起折进
- * `failed`,于是界面上只说得出「下载失败」三个字 —— 而那句话会把用户引向
- * 一个没有用的动作:重试。五个源都找过而没有开放版本的文献,再点几次重试
- * 结果一样。i18n 里「找不到来源」那句就是为这个状态写的。
- *
- * 分不分得出来只在这一个函数上,所以和 `DownloadJob.status` 是一一对应的。
- */
-export function derivePdfState(
-  item: Pick<LibraryItem, "pdfPath">,
-  job: Pick<DownloadJob, "status"> | null,
-): PdfState {
-  if (item.pdfPath) return "ready";
-  if (!job) return "none";
-  switch (job.status) {
-    case "done":
-      // 任务说完成了但没有文件 —— 文件被外部删掉了,当作没有,让用户重下
-      return "none";
-    case "pending":
-      return "queued";
-    case "running":
-      return "downloading";
-    case "needs_login":
-      return "needs_login";
-    case "not_found":
-      return "not_found";
-    case "rate_limited":
-    case "failed":
-      return "failed";
-    default:
-      return "none";
-  }
-}
-
-/** 文献的展示用作者串(如「张三, 李四, et al.」)。渲染层与主进程共用,避免两处规则漂移。 */
-export function formatAuthorList(authors: LibraryAuthor[], max = 3): string {
-  const names = authors.map((a) => a.literal ?? [a.given, a.family].filter(Boolean).join(" "));
-  if (names.length === 0) return "";
-  if (names.length <= max) return names.join(", ");
-  return `${names.slice(0, max).join(", ")}, et al.`;
-}
-
-/**
- * 这条记录**缺哪些**关键字段(界面上出「待补全」标记,并说明缺的是什么)。
- *
- * ## 为什么**只对论文**有意义
- *
- * 这个标记存在的唯一理由是:**引用格式会因为它而不完整**(作者、年份、期刊是引用
- * 必须的)。而引用只对论文有意义 —— 教材不写进参考文献,笔记根本不是文献。所以另外
- * 两个库一律返回空:它们没有"元数据待补全"这回事,挂着这个标只是消不掉的黄条。
- *
- * 用户的原话:「这些什么引用之类的,教材还有笔记不需要」。
- *
- * ## 论文内部的两条例外
- *
- *   - **预印本不要求 venue**:arXiv 上的预印本本来就没有期刊名,拿"venue 为空"去判
- *     会永远报假警 —— 一个总在响的告警等于没有告警。
- *   - 其余情况下作者与年份必填。
- *
- * 返回**字段名而不是布尔值**:界面要能说清"缺的是年份还是作者" —— 只说"待补全",
- * 用户还得自己去比对哪一项是空的。
- */
-export type MissingMetadataField = "authors" | "year" | "venue";
-
-export function missingMetadataFields(
-  item: Pick<LibraryItem, "authors" | "year" | "venue" | "type" | "doi" | "arxivId">,
-): MissingMetadataField[] {
-  // kind 退役后没有"论文库"这个前提 —— 有 DOI 的才算文献记录，才谈得上元数据补全。
-  if (!item.doi && !item.arxivId) return [];
-  const missing: MissingMetadataField[] = [];
-  if (item.authors.length === 0) missing.push("authors");
-  if (!item.year) missing.push("year");
-  if ((item.type === "article" || item.type === "inproceedings") && !item.venue) {
-    missing.push("venue");
-  }
-  return missing;
-}
-
-/** 是否缺关键字段。列表标记用它,详情面板用 `missingMetadataFields` 说缺什么。 */
-export function needsMetadata(
-  item: Pick<LibraryItem, "authors" | "year" | "venue" | "type" | "doi" | "arxivId">,
-): boolean {
-  return missingMetadataFields(item).length > 0;
-}
-
-/** 外部检索的一条命中。尚未入库 —— 是给 AI/用户挑选的候选。 */
-export interface ExternalSearchResult {
-  /** 命中的来源渠道。`semantic` = Semantic Scholar(会议论文与被引数的补充源)。 */
-  source: "arxiv" | "crossref" | "openalex" | "europepmc" | "semantic" | "unknown";
-  doi?: string;
-  arxivId?: string;
-  title: string;
-  authors: LibraryAuthor[];
-  year?: number;
-  venue?: string;
-  /** 卷 / 期 / 页码 / 出版商 —— 引用格式要用。Crossref 会给,arXiv 没有。 */
-  volume?: string;
-  issue?: string;
-  page?: string;
-  publisher?: string;
-  abstract?: string;
-  /** 被引数。判断一篇重不重要最直接的信号 —— Crossref / OpenAlex / Semantic
-   *  Scholar / Europe PMC 都会给,arXiv 没有(预印本没有引用统计)。 */
-  citationCount?: number;
-  /** 是否已知存在可下载的开放获取 PDF。用于让用户优先挑能下的。 */
-  hasOpenAccessPdf?: boolean;
-  url?: string;
 }
 
 /**

@@ -31,7 +31,7 @@ if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
   --alias:@main/lib/logger.js=./scripts/db-migrate-smoke/stubs/logger.ts \
   --alias:@main/window.js=./scripts/library-import-smoke/stubs/window.ts \
   --alias:@main/claude/RuntimeManager.js=./scripts/library-import-smoke/stubs/runtimeManager.ts \
-  --alias:@main/browser/BrowserManager.js=./scripts/library-intake-smoke/stubs/browserManager.ts \
+  --alias:@main/browser/BrowserManager.js=./scripts/fixtures/library-stubs/browserManager.ts \
   --alias:@main/workflows/seed.js=./scripts/library-delete-smoke/stubs/workflowsSeed.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 

@@ -17,9 +17,7 @@ import {
   LibraryDeleteItemsSchema,
   LibraryDeletePreviewSchema,
   LibraryRestoreItemsSchema,
-  LibraryDownloadSchema,
   LibraryFullTextSearchSchema,
-  LibraryImportSchema,
   LibraryImportFilesSchema,
   LibraryImportNotesSchema,
   LibraryConvertSchema,
@@ -38,10 +36,8 @@ import {
   LibraryNoteSaveSchema,
   LibraryNoteDeleteSchema,
   LibraryRenameItemSchema,
-  LibraryExportSchema,
   LibraryItemIdSchema,
   LibraryListSchema,
-  LibrarySearchSchema,
   LibraryAttachToChatSchema,
   LibraryGroupsGetSchema,
   LibraryGroupsSaveSchema,
@@ -70,18 +66,15 @@ import type {
   LibraryDeletePreviewLink,
   LibraryDeletePreviewResult,
 } from "@contracts/ipc";
-import { formatAuthorList } from "@contracts/library";
-import { LibraryRepo, CollectionRepo, DownloadJobRepo, LibraryLinkRepo, NoteRepo } from "@main/store/repositories.js";
+import { LibraryRepo, CollectionRepo, LibraryLinkRepo, NoteRepo } from "@main/store/repositories.js";
 import { awaitDb } from "@main/store/db.js";
 import { rgGrep } from "@main/lib/rgSearch.js";
 import { log } from "@main/lib/logger.js";
-import { searchExternal } from "@main/library/metadata.js";
 import { createNote, importNoteFiles, writeNote } from "@main/library/notesImport.js";
-import { convertItemToMarkdown, conversionReport } from "@main/library/convert.js";
+import { convertItemToMarkdown, conversionReport, repairCollectionMarkdown } from "@main/library/convert.js";
 import { readMarkdownForPreview } from "@main/library/markdownPreview.js";
 import { readPdfBytes } from "@main/library/pdfRead.js";
 import { adoptMarkdownFile } from "@main/library/adoptMarkdown.js";
-import { exportCitations } from "@main/library/citationExport.js";
 import { openDirectory } from "@main/lib/reveal.js";
 import {
   sweepToTrash,
@@ -104,13 +97,12 @@ import {
   writeHighlights,
 } from "@main/library/pdfHighlightsStore.js";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
-import { assignToCollection, importIdentifiers } from "@main/library/operations.js";
+import { assignToCollection } from "@main/library/operations.js";
 import {
   attachToChat,
   writeCollectionManifest,
   writeItemManifest,
 } from "@main/library/manifest.js";
-import { enqueueDownloads, processDownloadQueue, resumeDownloadsOnStartup } from "@main/library/downloader.js";
 import { ensureLibraryDirs, libraryRoot, fromLibraryRelative, isInsideLibrary, markdownArtifact, markdownArtifactsOfItem, countImageFiles } from "@main/library/paths.js";
 import { ensureWorkflows } from "@main/workflows/seed.js";
 
@@ -141,26 +133,6 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
   // 之前就存在 —— 放在这里和库骨架一起建,是最早的、且一定能跑到的时机。
   ensureWorkflows();
 
-  // 上次退出时中断的下载:「正在跑」是主进程里的内存状态,进程一没就没了,而库里
-  // 那条记录会永远停在 running —— 界面上永远转圈,队列也不会再捡起它。这里把它们
-  // 打回 pending 并把队列重新拉起来,否则用户只能一条条手动点重试。
-  //
-  // ⚠️ **必须等数据库就绪**。`registerLibraryHandlers` 跑在 `initDb()` **之前**
-  // (见 index.ts:DB 初始化是后台进行的,窗口不等它),这时查库会抛
-  // `getDb() called before initDb() resolved`。原来直接调用,于是恢复逻辑**看运气**
-  // —— DB 先好就正常,否则整块被 catch 吞掉、队列根本不启动,表现成"点了下载没反应"。
-  void awaitDb().then(() => resumeDownloadsOnStartup());
-
-  // ⚠️ **这里不再有「下载完自动转录」那一段。** 它原来是一个注册进来的钩子
-  // (`setDownloadCompleteHook`),做的事写死在这个文件里 —— 用户想接自己那套
-  // 高质量转录工具就只能改源码。
-  //
-  // 现在拆成两截:下载线程发一条 `library.item.downloaded` 事件(见
-  // `library/broadcast.ts`),至于下完该干什么,由用户在**钩子**或**自动化的
-  // 「事件发生时」触发器**里自己配。软件不再规定转录这件事 —— 它只提供"下完了"
-  // 这个信号,和「把转录产物挂回库」那两条工具(`library_adopt_markdown` /
-  // `convertItemToMarkdown`)。
-
   // 「回收站」分类也在启动时建好 —— **全库共用一个**(2026-09-20 改;原来是三个库
   // 各一个)。用户的要求是「共用一个,放在最下面固定住」,所以它是整片资料库区域的
   // 一个,而不是每段的尾巴。
@@ -186,7 +158,7 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
     return LibraryRepo.list({
       collectionId: input.collectionId ?? undefined,
       query: input.query,
-      pdfState: input.pdfState,
+      hasFile: input.hasFile,
       limit: input.limit,
       offset: input.offset,
     });
@@ -194,67 +166,31 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC.LIBRARY_GET, async (_evt, raw) => {
     const input = LibraryItemIdSchema.parse(raw);
-    return { item: LibraryRepo.get(input.id), job: DownloadJobRepo.getByItem(input.id) };
+    return { item: LibraryRepo.get(input.id) };
   });
 
   /**
-   * 入库。
+   * 入库(只建记录,不带文件)。给 AI / 界面一个"先记一条、文件以后再挂"的口子。
    *
-   * 元数据补齐策略:**只用调用方给的值**,不主动联网 —— 检索时 AI 或界面已经
-   * 拿到过元数据,再查一次只会让入库变慢且可能被限流。缺元数据的条目由后续的
-   * 「补全元数据」操作补(单条明确动作,用户看得见花了多久)。
+   * 每一条都发 `library.item.imported` 事件 —— 它是无人值守那条链的起点
+   * (自动化的「事件发生时」触发器),和本地文件导入那条路(`pdfImport.ts`)同一个信号。
    */
   ipcMain.handle(IPC.LIBRARY_ADD_ITEMS, async (_evt, raw) => {
     const input = LibraryAddItemsSchema.parse(raw);
     const items: LibraryItem[] = [];
     for (const entry of input.items) {
-      // ⚠️ **入库前先看一眼它是不是新的。** 下面那条 `library.item.imported`
-      // 事件是无人值守那条链的起点(`wf_auto_download` / `wf_auto_convert`),
-      // 而"重复入库"是这条路上最常见的动作:检索面板勾一份已经勾过的结果、
-      // AI 反复把同一篇往库里塞。老老实实每次都发,结果是那几条自动化被同一条
-      // 文献反复触发起跑。同族的 `pdfImport.ts:100-102` 对这件事的判断是一样的
-      // ——"alreadyPresent 的不算,再发一次会让自动下载重复排队"。
-      //
-      // 查重用 `findExisting` —— 它**就是 `upsert` 自己那一句**(DOI 优先,退回
-      // arXiv ID),所以这里的判断与"这条会不会真的新建"必然一致,不会因为两处
-      // 各写一套归一化而分家。
-      //
-      // 判据取"**已经有没有 pdfPath**"而不是"upsert 有没有改行":下载器只在真的
-      // 下到 PDF 之后才写 `pdfPath`,所以它是"这一篇已经办妥了"的现成信号。
-      // 另加一列去记"发过没有"要多一次迁移,而信息是重复的。
-      const before = LibraryRepo.findExisting({ doi: entry.doi, arxivId: entry.arxivId });
-      const hadPdf = Boolean(before?.pdfPath);
       const item = LibraryRepo.upsert({
-        doi: entry.doi,
-        arxivId: entry.arxivId,
         title: entry.title,
-        authors: entry.authors,
-        year: entry.year,
-        venue: entry.venue,
-        volume: entry.volume,
-        issue: entry.issue,
-        page: entry.page,
-        publisher: entry.publisher,
         abstract: entry.abstract,
-        type: entry.type,
         language: entry.language,
         url: entry.url,
-        source: entry.source ?? "manual",
-        license: entry.license,
       });
       if (entry.collectionIds?.length) {
         for (const cid of entry.collectionIds) CollectionRepo.assign(cid, [item.id], true);
       }
       items.push(item);
-      // 见上面 `hadPdf` 那段:新条目、或者已经在库里但**还没有 PDF** 的条目
-      // (再导入同一篇正是补下漏掉那个 PDF 的机会),才发事件。
-      if (!hadPdf) emitItemImported(item);
+      emitItemImported(item);
     }
-    // 入库后按需排队下载 —— 默认排队,调用方可显式关掉
-    const toDownload = input.items
-      .map((e, i) => (e.queueDownload === false ? null : items[i].id))
-      .filter((id): id is string => id !== null);
-    if (toDownload.length) enqueueDownloads(toDownload);
     // 用户自己加完也要广播:右栏那一屏是它自己的 state,不重拉就一直停在旧列表上
     // (与 AI 走 MCP 工具加的那条路共用同一条广播,见 library/broadcast.ts)
     notifyLibraryChanged(`add:${items.length}`);
@@ -594,13 +530,6 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
   return { entries };
 }
 
-  ipcMain.handle(IPC.LIBRARY_DOWNLOAD, async (_evt, raw) => {
-    const input = LibraryDownloadSchema.parse(raw);
-    enqueueDownloads(input.ids, input.force);
-    return { jobs: DownloadJobRepo.list() };
-  });
-  ipcMain.handle(IPC.LIBRARY_JOBS, async () => ({ jobs: DownloadJobRepo.list() }));
-
   /* ─────────────────────────── 集合 ─────────────────────────── */
 
   ipcMain.handle(IPC.LIBRARY_LIST_COLLECTIONS, async () => ({ collections: collectionsForRenderer() }));
@@ -722,9 +651,14 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
    */
   ipcMain.handle(IPC.LIBRARY_CONVERT, async (_evt, raw) => {
     const input = LibraryConvertSchema.parse(raw);
+    if (input.repair) {
+      const result = await repairCollectionMarkdown(input.collectionId!);
+      if (result.converted > 0 || result.cleaned > 0) notifyLibraryChanged(`repair:${result.converted}:${result.cleaned}`);
+      return result;
+    }
     const targets = input.ids?.length
       ? input.ids.map((id) => LibraryRepo.get(id)).filter((x): x is LibraryItem => Boolean(x))
-      : LibraryRepo.list({ collectionId: input.collectionId, limit: 500 }).items;
+      : LibraryRepo.list({ collectionId: input.collectionId, limit: 100_000 }).items;
 
     let converted = 0;
     const failed: Array<{ id: string; error: string }> = [];
@@ -736,7 +670,7 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
     // 转完会写 md_path —— 左栏的「待转」标记和右栏正在看的那一篇都要跟着变。
     // 一条都没转成时什么都不变,不白惊动一遍界面。
     if (converted > 0) notifyLibraryChanged(`convert:${converted}`);
-    return { converted, failed };
+    return { converted, cleaned: 0, failed };
   });
 
   /**
@@ -852,21 +786,6 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
     const res = adoptMarkdownFile(input.id, input.path);
     if (res.ok) notifyLibraryChanged(`adopt_markdown:${input.id}`);
     return { ok: res.ok, error: res.error, imageCount: res.imageCount };
-  });
-
-  /**
-   * 导出引用格式(GB/T 7714 / APA / BibTeX)到库根的 `exports/`。
-   *
-   * `reveal` 时顺手打开所在文件夹 —— 路径**由主进程自己拼**,渲染端始终拿不到
-   * 「打开任意路径」的能力。
-   */
-  ipcMain.handle(IPC.LIBRARY_EXPORT_CITATIONS, async (_evt, raw) => {
-    const input = LibraryExportSchema.parse(raw);
-    const res = exportCitations({ style: input.style, collectionId: input.collectionId });
-    if (!res.ok || !input.reveal) return res;
-    // 导出已经成功,只是"顺手打开"这一步失败 —— 如实带上原因,但不改 ok
-    const err = await openDirectory(dirname(res.path));
-    return err ? { ...res, error: err } : res;
   });
 
   /**
@@ -1056,36 +975,6 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
     return { rows, total: rows.length, complete, pending: rows.length - complete };
   });
 
-  ipcMain.handle(IPC.LIBRARY_SEARCH_EXTERNAL, async (_evt, raw) => {
-    const input = LibrarySearchSchema.parse(raw);
-    return {
-      results: await searchExternal({
-        query: input.query,
-        sources: input.sources,
-        limit: input.limit,
-        yearFrom: input.yearFrom,
-        yearTo: input.yearTo,
-      }),
-    };
-  });
-
-  /**
-   * 导入通道。不用 AI 也能走的确定路径:粘一段 DOI 列表或 BibTeX 即可。
-   *
-   * 与 `addItems` 的区别是**这里会联网补元数据** —— 导入的输入往往只有标识符
-   * (一串 DOI),没有标题作者,不补的话入库就是一堆「(无标题)」。
-   */
-  ipcMain.handle(IPC.LIBRARY_IMPORT, async (_evt, raw) => {
-    const input = LibraryImportSchema.parse(raw);
-    // 实现搬到 operations.ts —— AI 的 library_import 工具走的是同一条路,
-    // 免得"界面上导入"和"AI 导入"慢慢长出两套行为。
-    const { items } = await importIdentifiers(input.text, {
-      collectionIds: input.collectionIds,
-      queueDownload: input.queueDownload,
-    });
-    return { items };
-  });
-
   /* ─────────────────────────── 全文检索 ─────────────────────── */
 
   /**
@@ -1268,9 +1157,4 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
     const input = LibraryAttachToChatSchema.parse(raw);
     return attachToChat(input.sessionId, input.key);
   });
-
-  // 启动时把上次没跑完的队列接着跑(下载是分钟级操作,进程可能在中途退出)。
-  // 必须等数据库就绪 —— 注册发生在 initDb() 之前,直接查会抛 "getDb() called
-  // before initDb() resolved"。
-  void awaitDb().then(() => processDownloadQueue());
 }

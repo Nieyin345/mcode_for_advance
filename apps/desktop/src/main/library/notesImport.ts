@@ -86,7 +86,7 @@ export function importNoteFiles(paths: string[], collectionIds?: string[]): Note
         continue;
       }
 
-      const item = LibraryRepo.upsert({ title, source: "note" });
+      const item = LibraryRepo.upsert({ title });
       const dest = notePathForId(item.id);
       mkdirSync(dirname(dest), { recursive: true });
       copyFileSync(path, dest);
@@ -118,7 +118,7 @@ export function importNoteFiles(paths: string[], collectionIds?: string[]): Note
 export function createNote(title: string, collectionIds?: string[]): LibraryItem | null {
   ensureLibraryDirs();
   const clean = title.trim() || "未命名笔记";
-  const item = LibraryRepo.upsert({ title: clean, source: "note" });
+  const item = LibraryRepo.upsert({ title: clean });
   const dest = notePathForId(item.id);
   mkdirSync(dirname(dest), { recursive: true });
   writeFileSync(dest, `# ${clean}

@@ -1,17 +1,11 @@
 /**
- * 文献库:PDF 导入 / 转 Markdown / 笔记 / 引用导出 + 根目录设置键。
+ * 资料库:文件导入 / 转 Markdown / 笔记 / 关联 + 根目录设置键。
  *
  * 从 `ipc.ts` 按域拆出(见该文件头)。领域类型在 contracts/library.ts —
  * 这里只放跨 IPC 的校验 schema。
  */
 
 import { z } from "zod";
-import { PDF_STATES, type DownloadStatus } from "../library.js";
-
-/** 下载并发上限。缺失 → 默认 2。走内嵌浏览器下载,并发过高会与用户的手动浏览
- *  抢同一个 WebContentsView,反而更慢。 */
-export const LIBRARY_DOWNLOAD_CONCURRENCY_SETTING_KEY = "library.downloadConcurrency";
-
 /** 「回收站」那个集合的 id。
  *
  *  ⚠️ **按 id 记,不按名字找**:回收站是个**普通集合**(用户要求「只是一个叫回收站的
@@ -142,6 +136,10 @@ export const LibraryConvertSchema = z.object({
   collectionId: z.string().optional(),
   /** 已经有 md 也重转。 */
   force: z.boolean().optional(),
+  /** 按小类清理失联/多余产物并修复该小类；必须显式提供 collectionId。 */
+  repair: z.boolean().optional(),
+}).refine((value) => !value.repair || Boolean(value.collectionId), {
+  message: "修复只能指定一个文档小类，不能对全库执行",
 });
 export type LibraryConvertInput = z.infer<typeof LibraryConvertSchema>;
 
@@ -383,70 +381,19 @@ export type LibraryAdoptMarkdownInput = z.infer<typeof LibraryAdoptMarkdownSchem
 export const LibraryReadPdfSchema = z.object({ id: z.string().min(1) });
 export type LibraryReadPdfInput = z.infer<typeof LibraryReadPdfSchema>;
 
-/** 导出的引用格式 —— 与 `citation.ts` 的 `CITATION_STYLES` 一一对应。 */
-export const CitationStyleSchema = z.enum(["gb7714", "apa", "bibtex"]);
-
-export const LibraryExportSchema = z.object({
-  /** 只导出某个集合;省略则导出整个库。 */
-  collectionId: z.string().optional(),
-  style: CitationStyleSchema,
-  /** 导出后顺便打开所在文件夹。**由主进程自己拼路径** —— 渲染端始终拿不到
-   *  「打开任意路径」的能力(与 revealFile 同一条安全约定)。 */
-  reveal: z.boolean().optional(),
-});
-export type LibraryExportInput = z.infer<typeof LibraryExportSchema>;
-
-/* ── 文献库(library) ────────────────────────────────────────────────────
+/* ── 资料库(library) ────────────────────────────────────────────────────
    领域类型见 `library.ts`;这里只放跨 IPC 的校验 schema。
    约定与既有分区一致:每个 schema 同时导出 `...Input` 类型。 */
 
-/** 作者。三选一:西文给 family/given,中日韩等给 literal(不做姓/名切分)。 */
-export const LibraryAuthorSchema = z.object({
-  family: z.string().optional(),
-  given: z.string().optional(),
-  literal: z.string().optional(),
+/** 入库一条条目。`id` 由主进程生成 —— 渲染端/AI 只给标题与说明。 */
+export const LibraryItemInputSchema = z.object({
+  title: z.string().min(1),
+  abstract: z.string().optional(),
+  language: z.string().optional(),
+  url: z.string().optional(),
+  /** 一并归入的集合;省略则不归任何集合。 */
+  collectionIds: z.array(z.string()).optional(),
 });
-
-export const LibraryItemTypeSchema = z.enum([
-  "article",
-  "inproceedings",
-  "book",
-  "thesis",
-  "preprint",
-  "report",
-  "other",
-]);
-
-/** 入库一条文献。`id` 由主进程生成 —— 渲染端/AI 只给标识符与元数据。
- *  `doi`/`arxivId` 至少给一个,否则无法查重也无法定位 PDF。 */
-export const LibraryItemInputSchema = z
-  .object({
-    doi: z.string().optional(),
-    arxivId: z.string().optional(),
-    title: z.string().optional(),
-    authors: z.array(LibraryAuthorSchema).optional(),
-    year: z.number().int().optional(),
-    venue: z.string().optional(),
-    /** 卷 / 期 / 页码 / 出版商 —— 引用格式(GB/T 7714、APA、BibTeX)要用,
-     *  缺了就整段省略。全部按字符串收:页码有 `1234-1240`、`e0123456` 等形态。 */
-    volume: z.string().optional(),
-    issue: z.string().optional(),
-    page: z.string().optional(),
-    publisher: z.string().optional(),
-    abstract: z.string().optional(),
-    type: LibraryItemTypeSchema.optional(),
-    language: z.string().optional(),
-    url: z.string().optional(),
-    source: z.string().optional(),
-    license: z.string().optional(),
-    /** 一并归入的集合;省略则不归任何集合。 */
-    collectionIds: z.array(z.string()).optional(),
-    /** 入库后是否立刻排入下载队列。默认 true。 */
-    queueDownload: z.boolean().optional(),
-  })
-  .refine((v) => Boolean(v.doi?.trim() || v.arxivId?.trim() || v.title?.trim()), {
-    message: "至少需要 doi / arxivId / title 之一",
-  });
 export type LibraryItemInput = z.infer<typeof LibraryItemInputSchema>;
 
 export const LibraryAddItemsSchema = z.object({
@@ -457,12 +404,10 @@ export type LibraryAddItemsInput = z.infer<typeof LibraryAddItemsSchema>;
 /** 列表筛选。`collectionId` 为 null 表示全部;`collectionId` 为字符串时只列该集合。 */
 export const LibraryListSchema = z.object({
   collectionId: z.string().nullable().optional(),
-  /** 搜索关键词(标题/作者/摘要/venue),大小写不敏感。 */
+  /** 搜索关键词(标题/摘要/文件路径),大小写不敏感。 */
   query: z.string().optional(),
-  /** 只列某种 PDF 状态(如 "none" 用于找缺 PDF 的)。
-   *  ⚠️ 名单从 `PDF_STATES` 生成,不要手抄 —— 这里原来手抄的那份漏了 `not_found`,
-   *  于是那一档在 IPC 层就被拒,界面上永远筛不出来。见 `PDF_STATES` 的说明。 */
-  pdfState: z.enum(PDF_STATES).optional(),
+  /** 只看有 / 没有文件的条目。 */
+  hasFile: z.boolean().optional(),
   limit: z.number().int().positive().max(1000).optional(),
   offset: z.number().int().nonnegative().optional(),
 });
@@ -722,35 +667,6 @@ export const InstitutionClearCookiesSchema = z.object({
 });
 export type InstitutionClearCookiesInput = z.infer<typeof InstitutionClearCookiesSchema>;
 
-/** 把文献排入下载队列。 */
-export const LibraryDownloadSchema = z.object({
-  ids: z.array(z.string().min(1)).min(1),
-  /** 已有 PDF 的是否强制重下。默认 false。 */
-  force: z.boolean().optional(),
-});
-export type LibraryDownloadInput = z.infer<typeof LibraryDownloadSchema>;
-
-/** 外部检索:AI 主导的关键词检索,走确定性 API。 */
-export const LibrarySearchSchema = z.object({
-  query: z.string().min(1),
-  sources: z
-    .array(z.enum(["arxiv", "crossref", "openalex", "europepmc"]))
-    .optional(),
-  limit: z.number().int().positive().max(100).optional(),
-  yearFrom: z.number().int().optional(),
-  yearTo: z.number().int().optional(),
-});
-export type LibrarySearchInput = z.infer<typeof LibrarySearchSchema>;
-
-/** 导入通道:DOI / arXiv ID / BibTeX 文本,批量解析入库。不用 AI 也能走的确定路径。 */
-export const LibraryImportSchema = z.object({
-  /** 原始文本,每行一个 DOI / arXiv ID,或一整段 BibTeX。格式由主进程嗅探。 */
-  text: z.string().min(1),
-  collectionIds: z.array(z.string()).optional(),
-  queueDownload: z.boolean().optional(),
-});
-export type LibraryImportInput = z.infer<typeof LibraryImportSchema>;
-
 /**
  * 为一个文献库生成/刷新清单文件,返回其绝对路径。
  *
@@ -787,15 +703,6 @@ export const LibraryFullTextSearchSchema = z.object({
 });
 export type LibraryFullTextSearchInput = z.infer<typeof LibraryFullTextSearchSchema>;
 
-/** 主进程 → 渲染端:某条文献的下载任务状态变了。
- *  界面据此刷新进度条,并在变成 `needs_login` 时提示用户去重新登录。 */
-export interface LibraryJobChangedMessage {
-  channel: "library:jobChanged";
-  itemId: string;
-  status: DownloadStatus;
-  error?: string;
-}
-
 /**
  * 库的内容变了(新建/改名/删除分类、条目进出、改标题、写笔记…)—— 由主进程在任何
  * 一处改动之后广播,渲染端收到就整体重载。
@@ -815,21 +722,6 @@ export interface LibraryJobChangedMessage {
  */
 export interface LibraryChangedMessage {
   channel: "library:changed";
-  /** 变了什么。只用于日志与排查,渲染端一律整体重载。 */
-  reason: string;
-}
-
-/**
- * 模版库变了(增 / 删)。
- *
- * 与 `library:changed` 同一个用途、同一个理由:模版有两个入口 —— 左栏那一段和
- * 设置 → 数据位置 → 模版库。用户在后一个入口里加了一条,前一个的缓存不会自己知道
- * (模版库是文件系统,没有 DB 层替它们对账)。少了这条广播,用户会觉得"加了没反应"。
- *
- * 同样故意做得很粗:只报"变了",渲染端整体重扫一遍。
- */
-export interface TemplatesChangedMessage {
-  channel: "templates:changed";
   /** 变了什么。只用于日志与排查,渲染端一律整体重载。 */
   reason: string;
 }
@@ -869,12 +761,10 @@ export interface ComposerAttachMessage {
   channel: "composer:attach";
   /** 只挂到发起这次工具调用的那个会话上 —— 别的会话不该凭空多一个附件。 */
   sessionId: string;
-  /** 这条附件是哪个库的。渲染端据此选 `appendUniqueLibraryTags` 还是
-   *  `appendUniqueTemplateTags` 落成 chip —— 两种 chip 长得不一样、去重键也不同
-   *  (文献库是 `c:`/`i:`/`k:` 前缀,模版是 `t:` 前缀),所以不能只靠 key 猜。 */
-  kind: "library" | "template";
-  /** 附件键,与用户自己挂的同一套:文献库 `c:<分类 id>` / `i:<条目 id>` /
-   *  `k:<库>`(整个库),模版 `t:<类目>`(整个类目)/ `t:<类目>/<目录名>`。 */
+  /** 这条附件是哪个库的。独立模版库退役(2026-09-27)后只剩 `library` 一种 ——
+   *  字段留着是为了消息形状稳定(渲染端按它分发)。 */
+  kind: "library";
+  /** 附件键,与用户自己挂的同一套:`c:<分类 id>` / `i:<条目 id>` / `k:<库>`(整个库)。 */
   key: string;
   /** chip 上显示的短名。 */
   name: string;

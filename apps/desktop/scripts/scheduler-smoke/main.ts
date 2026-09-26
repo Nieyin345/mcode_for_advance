@@ -982,7 +982,7 @@ console.log("\n上下文继承(节点选了几类,就去要那几类)");
   check("★ 整大类那条进了提示词", prompt.includes("- 【docs·整库】@/lib/group-docs.md"), prompt);
   check("★ 单篇那条也在", prompt.includes("- 【docs·单篇】@/lib/li_某条目.md"), prompt);
   // **两条都是"查资料"那一组**:资料库里的东西一律拿来读内容 —— 用途是**库**决定的
-  // (资料库 vs 模版库),不是类目名决定的(见 `purposeOfPath`)。
+  // (挂不挂在「模版」大类下),不是类目名决定的(见 `purposeOfKinds`)。
   check("两条同属查资料那一组", prompt.includes("**当资料查**"), prompt);
   check("没有模版就不摆「当格式仿」", !prompt.includes("当格式仿"), prompt);
   // 单独一段而不是散在指令里 —— "这一步能读什么"是个可以一眼看完的集合。
@@ -994,20 +994,20 @@ console.log("\n上下文继承(节点选了几类,就去要那几类)");
 }
 
 {
-  // 模版那条也走一遍 —— 它和资料库那条**必须落在不同的组**里,而分组判据现在是
-  // "路径属于哪个库"(kind 退役前是"类目名属不属于文献库那八类")。
+  // 模版那条也走一遍 —— 它和资料那条**必须落在不同的组**里,而分组判据现在是
+  // "挂不挂在「模版」大类下"(独立模版库退役前是"路径属于哪个库")。
   const h = makePorts({
     contextLines: () => [
       { kind: "docs", level: "all", path: "/lib/group-docs.md", purpose: "material" },
-      { kind: "latex", level: "category", path: "/lib/latex.md", purpose: "format" },
+      { kind: "templates", level: "collection", path: "/lib/lc_模版集.md", purpose: "format" },
     ],
   });
-  const doc = docOf([node("A", AGENT.id, "写论文", { context: ["docs", "latex"] })], []);
+  const doc = docOf([node("A", AGENT.id, "写论文", { context: ["docs", "templates"] })], []);
   await runWorkflow({ doc, prompt: "开始", ports: h.ports, signal: controller().signal });
   const prompt = h.calls[0]?.prompt ?? "";
   check("★ 资料那条进了「当资料查」", prompt.includes("**当资料查**"), prompt);
   check("★ 模版那条进了「当格式仿」", prompt.includes("**当格式仿**"), prompt);
-  check("模版那条的抬头带着「模版」二字", prompt.includes("- 【LaTeX 模版·类目】@/lib/latex.md"), prompt);
+  check("模版那条的抬头带着「模版」二字", prompt.includes("- 【模版·分类】@/lib/lc_模版集.md"), prompt);
   check("查资料那组在前", prompt.indexOf("当资料查") < prompt.indexOf("当格式仿"), prompt);
 }
 
@@ -1087,20 +1087,20 @@ console.log("\ncomposeNodePrompt(上下文那一段)");
     instruction: "写论文",
     nodeId: "A",
     plan: PLAN,
-    // 两条不同**用途**的:`docs` 是资料(拿来查的),`latex` 是模版(拿来仿的)——
+    // 两条不同**用途**的:`docs` 是资料(拿来查的),`templates` 是模版(拿来仿的)——
     // 那一段按这个分组,而判据是 `purpose` 这个**事实**(由 `contextRefOfPath` 在认出
-    // 路径的那一刻按库算好)。
+    // 路径的那一刻按大类算好)。
     context: [
       { kind: "docs", level: "item", path: "/lib/li_某篇.md", purpose: "material" },
-      { kind: "latex", level: "category", path: "/lib/latex.md", purpose: "format" },
+      { kind: "templates", level: "collection", path: "/lib/lc_模版集.md", purpose: "format" },
     ],
   });
   check(
     "两条都在,而且带着「是什么」",
     withContext.includes("- 【docs·单篇】@/lib/li_某篇.md") &&
-      // **模版那几个抬头带「模版」二字** —— 光写 `【LaTeX·类目】` 有歧义(是那个软件,
-      // 还是那一类模版),而且这跟用户在下拉里勾选时看到的词逐字一致(见 `KIND_LABEL`)。
-      withContext.includes("- 【LaTeX 模版·类目】@/lib/latex.md"),
+      // **模版那条抬头是「模版」** —— 出厂大类的中文名(见 `KIND_LABEL`),跟用户在
+      // 下拉里勾选时看到的词逐字一致。
+      withContext.includes("- 【模版·分类】@/lib/lc_模版集.md"),
     withContext,
   );
   check("说的是「主对话挂了这些」", withContext.includes("以下是主对话中挂载的资料"), withContext);
@@ -1135,10 +1135,9 @@ console.log("\ncomposeNodePrompt(上下文那一段)");
 
 console.log("\n附件路径 → 类目(认不出来就什么都不给)");
 
-// 假的两个根 + 两次"按 id 查类目"。**用 `resolve` 而不是写死 `/fake/...`**:Windows 上
+// 假的库根 + 两次"按 id 查类目"。**用 `resolve` 而不是写死 `/fake/...`**:Windows 上
 // 盘符会被拼进来,而两边都走同一个 `resolve`,比较才成立(被测代码也是这么做的)。
 const LIB_ROOT = resolve("/fake/library");
-const TPL_ROOT = resolve("/fake/templates");
 /**
  * 一张**假库**:两个大类(`docs` / `templates`)、几个分类、几条条目。
  *
@@ -1163,13 +1162,11 @@ const GROUPS_OF_ITEM: Record<string, string[] | undefined> = {
 };
 const LOOKUP: ContextLookup = {
   libraryRoot: LIB_ROOT,
-  templatesRoot: TPL_ROOT,
   // 查不到返回 `undefined`(不是 `[]`),这是"库里没有它"的信号。
   groupsOfCollection: (id) => GROUPS_OF_COLLECTION[id],
   groupsOfItem: (id) => GROUPS_OF_ITEM[id],
 };
 const libManifest = (name: string): string => join(LIB_ROOT, "collections", name);
-const tplManifest = (...parts: string[]): string => join(TPL_ROOT, ".manifests", ...parts);
 
 const kindOf = (path: string): string | null => contextKindOfPath(path, LOOKUP);
 
@@ -1194,9 +1191,9 @@ eq(
 eq("★ 没挂大类的分类 → 认不出来(它不属于任何一个大类)", kindOf(libManifest("lc_没挂大类.md")), null);
 eq("★ 没归类的条目 → 同样认不出来", kindOf(libManifest("li_没归类.md")), null);
 eq("库里没有的 id → 认不出来", kindOf(libManifest("不认识.md")), null);
-// 模版清单的**目录名就是类目**,不用查。
-eq("整个类目 latex.md → LaTeX", kindOf(tplManifest("latex.md")), "latex");
-eq("单条模版 latex/某模板.md → LaTeX", kindOf(tplManifest("latex", "某模板.md")), "latex");
+// 模版就是「模版」大类下的普通分类 / 条目(独立模版库退役,2026-09-27)。
+eq("模版分类 → 查出来是大类 templates", kindOf(libManifest("lc_模版集.md")), "templates");
+eq("模版条目 → 查出来是大类 templates", kindOf(libManifest("li_模版图.md")), "templates");
 
 console.log("\ncontextRefOfPath(类目 + 层级 + 用途)");
 // **层级也是算出来的**:一个 id 是"分类"还是"单篇",取决于它在哪张表里查到
@@ -1210,15 +1207,15 @@ const refOf = (path: string): string => {
 eq("整个大类", refOf(libManifest("group-docs.md")), "docs/all/material");
 eq("分类 id", refOf(libManifest("lc_文献.md")), "docs/collection/material");
 eq("条目 id", refOf(libManifest("li_论文.md")), "docs/item/material");
-eq("整个模版类目", refOf(tplManifest("latex.md")), "latex/category/format");
-eq("单条模版", refOf(tplManifest("latex", "某模板.md")), "latex/template/format");
+eq("模版分类", refOf(libManifest("lc_模版集.md")), "templates/collection/format");
+eq("模版条目", refOf(libManifest("li_模版图.md")), "templates/item/format");
 eq("认不出来的照样是 null", refOf(join(LIB_ROOT, "papers", "x.pdf")), "null");
 
-console.log("\n用途(material / format)由**它在哪个库**决定");
+console.log("\n用途(material / format)由**它挂在哪个大类下**决定");
 // 这一个判断决定了资料那一段**怎么分组**(见 `composeNodePrompt` 的
-// `renderContextLines`)。判据是**结构上**的:两个库连根目录都不是同一个 —— 不是一条
-// 要另外维护的规则。⚠️ **不能按类目名判**:kind 退役后类目名是用户自己起的,他完全
-// 可以把一个大类叫 `latex`,按名字判会把它摆进"当格式仿"那一栏。
+// `renderContextLines`)。判据是**挂不挂在出厂的「模版」大类下**(`TEMPLATES_LIBRARY_GROUP_ID`)
+// —— 不是一条要另外维护的规则。⚠️ **不能按类目名判**:kind 退役后类目名是用户自己起的,
+// 他完全可以把一个大类叫 `latex`,按名字判会把它摆进"当格式仿"那一栏。
 eq(
   "库根下的大类清单 → 查资料",
   contextRefOfPath(libManifest("group-docs.md"), LOOKUP)?.purpose,
@@ -1229,22 +1226,20 @@ eq(
   contextRefOfPath(libManifest("li_论文.md"), LOOKUP)?.purpose,
   "material",
 );
-eq("模版类目 → 仿格式", contextRefOfPath(tplManifest("latex.md"), LOOKUP)?.purpose, "format");
-eq(
-  "单条模版 → 仿格式",
-  contextRefOfPath(tplManifest("latex", "某模板.md"), LOOKUP)?.purpose,
-  "format",
-);
-// ★ 名字叫 `latex` 的**大类**仍然是资料 —— 判的是它在哪个库,不是它叫什么。
+eq("「模版」大类整库清单 → 仿格式", contextRefOfPath(libManifest("group-templates.md"), LOOKUP)?.purpose, "format");
+eq("模版分类 → 仿格式", contextRefOfPath(libManifest("lc_模版集.md"), LOOKUP)?.purpose, "format");
+eq("模版条目 → 仿格式", contextRefOfPath(libManifest("li_模版图.md"), LOOKUP)?.purpose, "format");
+// ★ 同时挂在 docs 与 templates 下的:它**也**是模版,按仿格式摆(宁可多摆一组)。
+eq("★ 两边都挂的 → 仿格式", contextRefOfPath(libManifest("li_两边都要.md"), LOOKUP)?.purpose, "format");
+// ★ 名字叫 `latex` 的**大类**仍然是资料 —— 判的是挂在哪个大类,不是它叫什么。
 eq(
   "★ 名字叫 latex 的大类仍然是资料(判库不判名)",
   contextRefOfPath(libManifest("group-latex.md"), LOOKUP)?.purpose,
   "material",
 );
-eq("不认识的模版类目 → 认不出来", kindOf(tplManifest("nope.md")), null);
 // 不是清单的附件(一篇 PDF 的正文、一张图)不该被当成上下文类目。
 eq("库根下的普通文件 → 认不出来", kindOf(join(LIB_ROOT, "papers", "ab", "cd", "abc.pdf")), null);
-eq("库和模版之外的文件 → 认不出来", kindOf(join(dirname(LIB_ROOT), "别处", "x.md")), null);
+eq("库之外的文件 → 认不出来", kindOf(join(dirname(LIB_ROOT), "别处", "x.md")), null);
 
 console.log("\nattachmentPathsIn(提示词里那几行 @)");
 // 返回的是**路径本身**(不带 `@`)—— `@` 是拼进提示词时才加回去的(见
@@ -1270,7 +1265,7 @@ const PROMPT = [
   "",
   `@${libManifest("group-docs.md")}`,
   `@${libManifest("li_论文.md")}`,
-  `@${tplManifest("latex.md")}`,
+  `@${libManifest("lc_模版集.md")}`,
   `@${libManifest("group-docs.md")}`, // 挂了两次 —— 只该给一行
 ].join("\n");
 
@@ -1284,12 +1279,12 @@ eq(
 );
 eq(
   "要 docs 和模版 → 三条,顺序跟着主提示词",
-  inheritContextLines(PROMPT, ["docs", "latex"], LOOKUP).map(lineKey).join("|"),
-  `docs/all@${libManifest("group-docs.md")}|docs/item@${libManifest("li_论文.md")}|latex/category@${tplManifest("latex.md")}`,
+  inheritContextLines(PROMPT, ["docs", "templates"], LOOKUP).map(lineKey).join("|"),
+  `docs/all@${libManifest("group-docs.md")}|docs/item@${libManifest("li_论文.md")}|templates/collection@${libManifest("lc_模版集.md")}`,
 );
 eq("一个类目都没要 → 一行都不给", inheritContextLines(PROMPT, [], LOOKUP).length, 0);
 // 主对话没挂那一类 —— **这一步就是没有**,不会替用户去库里翻。
-eq("要了但主对话没挂 → 空", inheritContextLines(PROMPT, ["templates"], LOOKUP).length, 0);
+eq("要了但主对话没挂 → 空", inheritContextLines(PROMPT, ["nope"], LOOKUP).length, 0);
 // 认不出来的路径不该混进来。
 eq(
   "认不出来的 @ 行被丢掉",

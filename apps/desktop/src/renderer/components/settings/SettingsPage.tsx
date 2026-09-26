@@ -29,10 +29,12 @@ import {
   IconShieldCheck,
   McpIcon,
   IconNotebook,
+  IconFileTypeDoc,
   type TablerIconProps,
 } from "@renderer/lib/icons.js";
 import { CustomModelsPanel } from "./CustomModelsPanel.js";
 import { InstitutionAuthPanel } from "./InstitutionAuthPanel.js";
+import { OfficePanel } from "./OfficePanel.js";
 import { DataRootPanel } from "./DataRootPanel.js";
 import { LibraryTypesPanel } from "./LibraryTypesPanel.js";
 import { RuntimesPanel } from "./RuntimesPanel.js";
@@ -72,7 +74,7 @@ import { MemoryExplorerPanel } from "../memory/MemoryExplorerPanel.js";
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "data-root" | "library-types" | "runtimes" | "custom-models" | "institution" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
+type SectionId = "general" | "data-root" | "library-types" | "runtimes" | "custom-models" | "institution" | "office" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -165,6 +167,8 @@ const NAV_GROUPS: NavGroup[] = [
       // 机构认证归在「工作台」组:它是使用场景(下载文献要先登录),
       // 不是 AI 配置,放 ai 组会让人以为是模型相关设置。
       { id: "institution", labelKey: "settings.nav.institution", icon: IconShieldCheck },
+      // 文档编辑（OnlyOffice）紧跟机构认证：同样是"接一个外部服务进来"的使用场景配置。
+      { id: "office", labelKey: "settings.nav.office", icon: IconFileTypeDoc },
       { id: "git", labelKey: "settings.nav.git", icon: IconBrandGit },
       { id: "terminal", labelKey: "settings.nav.terminal", icon: IconTerminal2 },
       { id: "browser", labelKey: "settings.nav.browser", icon: IconWorld },
@@ -297,6 +301,7 @@ export function SettingsPage() {
           {active === "data-root" && <DataRootPanel />}
           {active === "library-types" && <LibraryTypesPanel />}
           {active === "institution" && <InstitutionAuthPanel />}
+          {active === "office" && <OfficePanel />}
           {active === "shortcuts" && <ShortcutsPanel />}
           {active === "gestures" && <GesturesPanel />}
           {active === "voice" && <VoicePanel />}

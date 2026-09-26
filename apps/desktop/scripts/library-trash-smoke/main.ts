@@ -169,9 +169,9 @@ check("从普通分类移除 → 要收", shouldSweepAfterRemoval("lc_普通") =
 
 console.log("\n收进回收站 · 全库共用一个");
 
-const paperItem = LibraryRepo.upsert({ title: "一篇论文", source: "manual" }).id;
-const noteItem = LibraryRepo.upsert({ title: "一条笔记", source: "manual" }).id;
-const bookItem = LibraryRepo.upsert({ title: "一本教材", source: "manual" }).id;
+const paperItem = LibraryRepo.upsert({ title: "一篇论文" }).id;
+const noteItem = LibraryRepo.upsert({ title: "一条笔记" }).id;
+const bookItem = LibraryRepo.upsert({ title: "一本教材" }).id;
 
 // 三个都还没归属任何分类 = 孤儿,该被收。
 eq("收三个孤儿 → 真动了", sweepToTrash([paperItem, noteItem, bookItem]), true);
@@ -197,7 +197,7 @@ same(
 );
 
 // 一个**已经有归属**的条目不是孤儿,不该被顺手收走。
-const kept = LibraryRepo.upsert({ title: "有分类的", source: "manual" }).id;
+const kept = LibraryRepo.upsert({ title: "有分类的" }).id;
 const home = CollectionRepo.create("方法", null, "paper").id;
 CollectionRepo.assign(home, [kept], true);
 eq("已经有归属的条目 → sweep 不动它", sweepToTrash([kept]), false);
@@ -271,9 +271,9 @@ console.log("\n删父分类 · 整棵子树的成员都要有归属");
   const parent = CollectionRepo.create("父分类", null, "paper").id;
   const child = CollectionRepo.create("子分类", parent, "paper").id;
   const grand = CollectionRepo.create("孙分类", child, "paper").id;
-  const direct = LibraryRepo.upsert({ title: "挂在父上", source: "manual" }).id;
-  const under = LibraryRepo.upsert({ title: "只挂在子上", source: "manual" }).id;
-  const deep = LibraryRepo.upsert({ title: "只挂在孙子上", source: "manual" }).id;
+  const direct = LibraryRepo.upsert({ title: "挂在父上" }).id;
+  const under = LibraryRepo.upsert({ title: "只挂在子上" }).id;
+  const deep = LibraryRepo.upsert({ title: "只挂在孙子上" }).id;
   CollectionRepo.assign(parent, [direct], true);
   CollectionRepo.assign(child, [under], true);
   CollectionRepo.assign(grand, [deep], true);

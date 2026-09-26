@@ -97,9 +97,14 @@ export const useFileViewStore = create<FileViewState>((set) => ({
    * 免得将来某次改动把它变成循环依赖 —— 那种问题在启动时才炸，很难查。
    */
   open: (target) => {
+    // 在写入之前先看一眼中间是不是已经在显示文档 —— set 之后这个判据永远为真。
+    const prevTarget = useFileViewStore.getState().target;
     set({ target });
-    void import("./sessionStore.js").then(({ useSessionStore }) => {
+    void import("./sessionStore.js").then(({ useSessionStore, isCenterShowingDocument }) => {
       const st = useSessionStore.getState();
+      // **例外（2026-09-27）**：主页面本来就是文档页（上一份预览还在，或正开着可编辑
+      // 文件）→ 右栏保持现状，不再展开主对话。判据与 `openFileInIde` 共用一份。
+      if (prevTarget != null || isCenterShowingDocument(st)) return;
       st.setRightOpen(true);
       st.setRightPanelTab("flow");
       // 展开主对话（它和子对话共用 `activeSideChatId`，见 `MainSessionRow`）。

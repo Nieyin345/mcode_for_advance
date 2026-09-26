@@ -4,7 +4,6 @@
  * ## 为什么不能各写一份
  *
  * 这几件事都不平凡:
- *   - 导入:先按标识符联网补元数据,再入库,最后**排队下载**;
  *   - 归入分类:顺手要把条目从回收站里摘出来(它只在"不属于任何非回收站分类"时才
  *     该待在回收站);
  *   - 从分类移除:移除后如果它成了孤儿,要收进回收站,而不是让它凭空消失。
@@ -18,121 +17,9 @@
  * 写操作走 MCP 工具而不是脚本:`<数据根>/workflows/scripts/` 下那些 Python 脚本
  * 直接读 `mcode.db` 文件是安全的,**写**则会被应用的下一次整库重写覆盖掉。
  */
-import type { LibraryItem, LibraryAuthor, LibraryItemType } from "@contracts/library";
+import type { LibraryItem } from "@contracts/library";
 import { LibraryRepo, CollectionRepo } from "@main/store/repositories.js";
-import { parseImportText } from "./importer.js";
-import { fetchByDoi, fetchByArxivId, findOpenAccessPdfUrl } from "./metadata.js";
-import { arxivIdFromDoi } from "./oaResolvers.js";
-import { enqueueDownloads, PDF_URL_RE } from "./downloader.js";
 import { allTrashCollectionIds, shouldSweepAfterRemoval, sweepToTrash } from "./trash.js";
-import { emitItemImported } from "./broadcast.js";
-import { log } from "@main/lib/logger.js";
-
-/**
- * 把一段自由文本(DOI 列表 / arXiv 列表 / BibTeX)解析、补齐元数据、入库、排队下载。
- *
- * 返回**逐条的结果**,而不是只返回成功的那些:AI 导入 20 条时,它需要知道哪几条
- * 没成、为什么 —— 否则它只会告诉用户"导入完成",而实际少了三篇。
- */
-export interface ImportOutcome {
-  /** 成功入库的条目(新建的或命中的已有条目)。 */
-  items: LibraryItem[];
-  /** 解析出来但没能入库的,连同原因。 */
-  failed: Array<{ raw: string; reason: string }>;
-}
-
-export async function importIdentifiers(
-  text: string,
-  opts: { collectionIds?: string[]; queueDownload?: boolean } = {},
-): Promise<ImportOutcome> {
-  const parsed = parseImportText(text);
-  const items: LibraryItem[] = [];
-  const failed: ImportOutcome["failed"] = [];
-
-  for (const entry of parsed) {
-    if (!entry.doi && !entry.arxivId && !entry.title) {
-      failed.push({ raw: entry.raw, reason: "看不出是 DOI、arXiv ID 还是 BibTeX 条目" });
-      continue;
-    }
-    // 类型**显式写出来**,不靠字面量推断:下面几处会往里补字段(url 存开放获取直链、
-    // arxivId 从 arXiv 的 DOI 换算),推断出来的类型上没有这些字段,赋值会报错。
-    let meta: {
-      doi?: string;
-      arxivId?: string;
-      title?: string;
-      authors?: LibraryAuthor[];
-      year?: number;
-      venue?: string;
-      type?: LibraryItemType;
-      url?: string;
-    } = {
-      doi: entry.doi,
-      arxivId: entry.arxivId,
-      title: entry.title,
-      authors: entry.authors,
-      year: entry.year,
-      venue: entry.venue,
-      type: entry.type,
-    };
-
-    // 只有标识符、没有标题时联网补齐。补不上**不阻断** —— 元数据缺了照样入库,
-    // 详情面板会标「待补全」,用户之后可以自己填。
-    if (!meta.title) {
-      try {
-        const fetched = meta.doi
-          ? await fetchByDoi(meta.doi)
-          : meta.arxivId
-            ? await fetchByArxivId(meta.arxivId)
-            : null;
-        if (fetched) meta = { ...meta, ...fetched, doi: meta.doi ?? fetched.doi };
-      } catch (err) {
-        log.warn(`import metadata fetch failed (${entry.raw}): ${(err as Error).message}`);
-      }
-    }
-
-    // arXiv 的 DOI(`10.48550/arXiv.2302.01934`)认成 arxivId。
-    // 不认的话:① 同一篇会以两条记录入库(一条按 DOI、一条按 arxivId);
-    // ② 下载器看不出这是 arXiv,只能去 doi.org 的落地页 —— 那是网页,下不了。
-    if (!meta.arxivId) {
-      const fromDoi = arxivIdFromDoi(meta.doi);
-      if (fromDoi) meta = { ...meta, arxivId: fromDoi };
-    }
-
-    // 手上没有 PDF 直链时,问一次 OpenAlex 有没有开放获取版本。
-    //
-    // **这一步是「导入成功但全都下载失败」的解药**:Crossref 给的 url 是
-    // `https://doi.org/...` 落地页,而下载器只认 PDF 直链。OpenAlex 对不少论文给出
-    // 出版社 OA 版 / arXiv 副本 / 机构库的 pdf_url,存进 url 之后下载那步就能成。
-    // 查不到、或网络失败都只是"这一篇没有现成 OA",不影响入库。
-    if (meta.doi && !(meta.url && PDF_URL_RE.test(meta.url))) {
-      try {
-        const oa = await findOpenAccessPdfUrl(meta.doi);
-        if (oa) meta = { ...meta, url: oa };
-      } catch (err) {
-        log.warn(`OA pdf lookup failed (${meta.doi}): ${(err as Error).message}`);
-      }
-    }
-
-    try {
-      const item = LibraryRepo.upsert({ ...meta, source: "import" });
-      if (opts.collectionIds?.length) {
-        for (const cid of opts.collectionIds) assignToCollection(cid, [item.id], true);
-      }
-      items.push(item);
-      // 每条入库都发一条事件 —— automation 的「文献自动下载」靠它起跑。命中的已有
-      // 条目也算"入库成功"(去重的那条再次进了用户的视野),不发的话再导入同一篇
-      // 时自动下载就没有机会补下漏掉的 PDF。
-      emitItemImported(item);
-    } catch (err) {
-      failed.push({ raw: entry.raw, reason: (err as Error).message });
-    }
-  }
-
-  if (opts.queueDownload !== false && items.length > 0) {
-    enqueueDownloads(items.map((i) => i.id));
-  }
-  return { items, failed };
-}
 
 /**
  * 把条目加进/移出某个分类。
@@ -194,15 +81,7 @@ export function searchItems(query: string): LibraryItem[] {
   const all = LibraryRepo.list({}).items;
   if (!q) return all;
   return all.filter((i) => {
-    const hay = [
-      i.title,
-      i.venue ?? "",
-      i.abstract ?? "",
-      i.doi ?? "",
-      i.arxivId ?? "",
-      i.year ? String(i.year) : "",
-      i.authors.map((a) => a.literal ?? [a.given, a.family].filter(Boolean).join(" ")).join(" "),
-    ]
+    const hay = [i.title, i.abstract ?? "", i.filePath ?? "", i.url ?? ""]
       .join(" ")
       .toLowerCase();
     return hay.includes(q);

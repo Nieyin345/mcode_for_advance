@@ -19,16 +19,11 @@ import type { ContextSnapshot, SubagentSnapshot, TurnFileEntry, TurnUsageRecord 
 import type { WorkflowDoc } from "@contracts/workflow";
 import type {
   LibraryItem,
-  LibraryAuthor,
-  LibraryItemType,
   LibraryCollection,
   LibraryNote,
   LibraryItemLink,
   LibraryLinkView,
   InstitutionProfile,
-  DownloadJob,
-  DownloadStatus,
-  PdfState,
 } from "@contracts/library";
 import { basename } from "node:path";
 import { normPathKey } from "@main/lib/pathNorm.js";
@@ -760,7 +755,7 @@ export const SessionRepo = {
   },
 
   /** Persist claude's own session id so future turns can --resume. */
-  updateClaudeSessionId(id: string, claudeSessionId: string): void {
+  updateClaudeSessionId(id: string, claudeSessionId: string | null): void {
     getDb().run("UPDATE sessions SET claude_session_id = ?, updated_at = ? WHERE id = ?", [
       v(claudeSessionId),
       v(Date.now()),
@@ -1686,80 +1681,40 @@ function makeId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** 把用户/AI 给的标识符规范化成存储形态。
- *  DOI:去 `https://doi.org/` 前缀、去空白、小写(DOI 大小写不敏感)。
- *  空串一律转 null —— 否则唯一索引会把「空串」当成一个真实值,导致第二条无 DOI
- *  的记录插入失败。 */
-export function normalizeDoi(raw: string | undefined | null): string | null {
-  if (!raw) return null;
-  const s = raw.trim().replace(/^https?:\/\/(dx\.)?doi\.org\//i, "").trim();
-  return s ? s.toLowerCase() : null;
-}
-
-/** arXiv ID:去 `arXiv:` 前缀与 `arxiv.org/abs/` 前缀,去版本号后缀(v1/v2),
- *  统一小写。去版本号是刻意的 —— 同一篇的 v1 与 v2 应当算同一条记录。 */
-export function normalizeArxivId(raw: string | undefined | null): string | null {
-  if (!raw) return null;
-  let s = raw.trim();
-  s = s.replace(/^https?:\/\/arxiv\.org\/(abs|pdf)\//i, "");
-  s = s.replace(/^arxiv:/i, "");
-  s = s.replace(/\.pdf$/i, "");
-  s = s.replace(/v\d+$/i, "");
-  s = s.trim().toLowerCase();
-  return s || null;
-}
-
 interface LibraryItemRow {
   id: string;
-  kind: string | null;
-  doi: string | null;
-  arxiv_id: string | null;
   title: string;
-  authors: string | null;
-  year: number | null;
-  venue: string | null;
-  volume: string | null;
-  issue: string | null;
-  page: string | null;
-  publisher: string | null;
   abstract: string | null;
-  type: string;
   language: string | null;
   url: string | null;
   pdf_path: string | null;
   pdf_sha256: string | null;
   md_path: string | null;
-  source: string | null;
-  license: string | null;
   entry_mode: string | null;
   file_path: string | null;
   added_at: number;
   updated_at: number;
 }
 
+/**
+ * 行 → 领域对象。
+ *
+ * 表里还留着一批**已退役的列**(kind / doi / arxiv_id / authors / year / venue /
+ * volume / issue / page / publisher / type / source / license):学术那一套
+ * (2026-09-27 起)整体搬出核心,交给外部 MCP 服务与自动化。sql.js 的 DROP COLUMN
+ * 不可靠,沿用 kind 退役时的做法 —— 列留在库里、代码全面停止读写,`migrate()`
+ * 里有一段注释记着这件事。
+ */
 function rowToLibraryItem(r: LibraryItemRow): LibraryItem {
   return {
     id: r.id,
-    // kind 列已退役（2026-09-24）：保留在库里但不再读写 —— 行为按扩展名分派。
-    doi: r.doi ?? undefined,
-    arxivId: r.arxiv_id ?? undefined,
     title: r.title,
-    authors: (safeJson(r.authors) as LibraryAuthor[] | undefined) ?? [],
-    year: r.year ?? undefined,
-    venue: r.venue ?? undefined,
-    volume: r.volume ?? undefined,
-    issue: r.issue ?? undefined,
-    page: r.page ?? undefined,
-    publisher: r.publisher ?? undefined,
     abstract: r.abstract ?? undefined,
-    type: (r.type as LibraryItemType) || "article",
     language: r.language ?? undefined,
     url: r.url ?? undefined,
     pdfPath: r.pdf_path ?? undefined,
     pdfSha256: r.pdf_sha256 ?? undefined,
     mdPath: r.md_path ?? undefined,
-    source: r.source ?? undefined,
-    license: r.license ?? undefined,
     // 老库 ALTER 出来的行全是 DEFAULT 'attached' —— 旧的文献流本来就是"文件在库里",
     // 语义正好对上。认不出(entry_mode 被手工改成别的)也按 attached:保守的那个方向。
     entryMode: r.entry_mode === "linked" ? "linked" : "attached",
@@ -1774,57 +1729,10 @@ function rowToLibraryItem(r: LibraryItemRow): LibraryItem {
 export interface LibraryListFilter {
   collectionId?: string | null;
   query?: string;
-  /** 按 PDF 可用性筛。`none` 用于快速找「还没下到 PDF」的条目。
-   *
-   *  ⚠️ **这里引用 `PdfState`,不要再抄一份联合类型。** 原来它是一份手抄的名单,
-   *  而 `PdfState` 加了 `not_found` 之后这一份没跟上 —— 于是筛选面板里根本没有
-   *  这一档,`pdfStateClause` 的 `not_found` 分支连调都调不到。类型别名是唯一
-   *  不会漂的写法。 */
-  pdfState?: PdfState;
+  /** 只看有/没有文件的条目(pdf_path 或 file_path 任一有值算"有")。 */
+  hasFile?: boolean;
   limit?: number;
   offset?: number;
-}
-
-/** PDF 状态在 SQL 里的等价条件(与 `derivePdfState` 的语义保持一致)。
- *  单独抽出来是为了让 list 的 WHERE 拼接与 count 复用同一份判据。
- *
- *  ⚠️ **每一档都必须显式列出,`default` 不许回落成 `1=1`。**
- *  这里原来有个 `default: return "1=1"` 兜底,而 switch 里漏了 `not_found`
- *  —— 于是按「找不到来源」筛会返回**整个库**。谁也不会发现:列表看起来是满的,
- *  只是那条筛选没有生效。而这个函数签名的入参类型就是 `PdfState`,加一档状态
- *  时 TS 不会提醒这里的 switch 少了一个 case(`default` 把缺口吃掉了)。
- *  现在 default 抛出来,漏一档是当场一条错误,不是某天一个筛不对的列表。
- *
- *  两侧"哪几档"的名单在 `lib/pdfState.ts` 的 `PDF_STATE_ORDER`,
- *  `pdf-state-smoke` 拿同一组夹具走一遍 TS、走一遍真 SQL 逐档比对。 */
-function pdfStateClause(state: NonNullable<LibraryListFilter["pdfState"]>): string {
-  const jobStatus = "(SELECT j.status FROM download_jobs j WHERE j.item_id = i.id)";
-  switch (state) {
-    case "ready":
-      return "i.pdf_path IS NOT NULL";
-    // 没有文件、也没有**有效**的任务行。`done` 要算进来:`derivePdfState` 把
-    // 「任务说完成了但没有文件」(文件被外部删了)判成 none,让用户重下 ——
-    // 只认 `jobStatus IS NULL` 的话这条会掉出所有档,在界面上变成一个既不属于
-    // 「缺 PDF」也不属于任何筛选的幽灵。
-    case "none":
-      return `i.pdf_path IS NULL AND (${jobStatus} IS NULL OR ${jobStatus} = 'done')`;
-    case "queued":
-      return `i.pdf_path IS NULL AND ${jobStatus} = 'pending'`;
-    case "downloading":
-      return `i.pdf_path IS NULL AND ${jobStatus} = 'running'`;
-    case "needs_login":
-      return `i.pdf_path IS NULL AND ${jobStatus} = 'needs_login'`;
-    // ★ 这一档原先**不存在**,上面那个 default 把它静默吃掉了。
-    case "not_found":
-      return `i.pdf_path IS NULL AND ${jobStatus} = 'not_found'`;
-    case "failed":
-      return `i.pdf_path IS NULL AND ${jobStatus} IN ('failed','rate_limited')`;
-    default: {
-      // 到了这里说明 `PdfState` 加了新状态而上面没跟。宁可炸,不可筛错。
-      const never: never = state;
-      throw new Error(`pdfStateClause 漏了一档 PDF 状态:${String(never)}`);
-    }
-  }
 }
 
 export const LibraryRepo = {
@@ -1846,13 +1754,15 @@ export const LibraryRepo = {
       // LIKE 的转义:用户输入里的 % 和 _ 是通配符,必须转义才能当字面量搜
       const needle = `%${filter.query.trim().toLowerCase().replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
       where.push(
-        `(LOWER(i.title) LIKE ? ESCAPE '\\' OR LOWER(IFNULL(i.authors,'')) LIKE ? ESCAPE '\\'
-          OR LOWER(IFNULL(i.abstract,'')) LIKE ? ESCAPE '\\' OR LOWER(IFNULL(i.venue,'')) LIKE ? ESCAPE '\\')`,
+        `(LOWER(i.title) LIKE ? ESCAPE '\\' OR LOWER(IFNULL(i.abstract,'')) LIKE ? ESCAPE '\\'
+          OR LOWER(IFNULL(i.file_path,'')) LIKE ? ESCAPE '\\')`,
       );
-      params.push(v(needle), v(needle), v(needle), v(needle));
+      params.push(v(needle), v(needle), v(needle));
     }
-    if (filter.pdfState) {
-      where.push(pdfStateClause(filter.pdfState));
+    if (filter.hasFile === true) {
+      where.push("(i.pdf_path IS NOT NULL OR i.file_path IS NOT NULL)");
+    } else if (filter.hasFile === false) {
+      where.push("(i.pdf_path IS NULL AND i.file_path IS NULL)");
     }
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
@@ -1945,45 +1855,6 @@ export const LibraryRepo = {
   },
 
   /** 按 DOI / arXiv ID 查已有条目 —— 入库前查重与下载前判重的唯一入口。 */
-  findByDoi(doi: string): LibraryItem | null {
-    const normalized = normalizeDoi(doi);
-    if (!normalized) return null;
-    const db = getDb();
-    const stmt = db.prepare("SELECT * FROM library_items WHERE doi = ?");
-    stmt.bind([v(normalized)]);
-    const found = stmt.step();
-    const row = found ? rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow) : null;
-    stmt.free();
-    return row;
-  },
-
-  findByArxivId(arxivId: string): LibraryItem | null {
-    const normalized = normalizeArxivId(arxivId);
-    if (!normalized) return null;
-    const db = getDb();
-    const stmt = db.prepare("SELECT * FROM library_items WHERE arxiv_id = ?");
-    stmt.bind([v(normalized)]);
-    const found = stmt.step();
-    const row = found ? rowToLibraryItem(stmt.getAsObject() as unknown as LibraryItemRow) : null;
-    stmt.free();
-    return row;
-  },
-
-  /** 按 DOI 优先、arXiv 其次查重。两条都能命中时优先 DOI(它是更权威的标识)。 */
-  findExisting(ids: { doi?: string | null; arxivId?: string | null }): LibraryItem | null {
-    if (ids.doi) {
-      const byDoi = LibraryRepo.findByDoi(ids.doi);
-      if (byDoi) return byDoi;
-    }
-    if (ids.arxivId) return LibraryRepo.findByArxivId(ids.arxivId);
-    return null;
-  },
-
-  /** 按 PDF 内容的 sha256 查。
-   *
-   *  导入本地 PDF 时必须先查这个:那一批文件常常**没有** DOI/arXiv 可匹配(所以
-   *  findExisting 会返回 null),但同一份 PDF 导两次是完全可能的。内容寻址让它们
-   *  落到同一个 papers 路径上,这里再把「同内容」认出来,就不会多出一条重复条目。 */
   findByPdfSha(sha256: string): LibraryItem | null {
     if (!sha256) return null;
     const db = getDb();
@@ -1996,29 +1867,18 @@ export const LibraryRepo = {
   },
 
   /**
-   * 新增或更新一条文献。
+   * 新建一条条目;给了 `id` 且已存在时**只补空字段**,不覆盖已有值(用户/AI 补过
+   * 的内容不该被一次重复导入冲掉)。返回落库后的完整记录。
    *
-   * 查重后**只补空字段**,不覆盖已有值 —— 用户/AI 补的元数据不该被一次重新检索冲掉。
-   * 返回落库后的完整记录。
+   * 这里**没有任何按标识符去重**的逻辑:核心库不再认识 DOI / arXiv 那一套,
+   * 文件的去重靠内容哈希(`findByPdfSha`)与路径(`findLinkedByPath`),由调用方先查。
    */
   upsert(input: {
     id?: string;
-    doi?: string | null;
-    arxivId?: string | null;
     title?: string;
-    authors?: LibraryAuthor[];
-    year?: number;
-    venue?: string;
-    volume?: string;
-    issue?: string;
-    page?: string;
-    publisher?: string;
     abstract?: string;
-    type?: LibraryItemType;
     language?: string;
     url?: string;
-    source?: string;
-    license?: string;
     /** 通用文件条目的落法。省略 = attached(旧的文献流就是这个语义)。 */
     entryMode?: "linked" | "attached";
     /** 通用文件路径:attached 相对库根 / linked 外部绝对路径(可为目录)。 */
@@ -2026,41 +1886,18 @@ export const LibraryRepo = {
   }): LibraryItem {
     const db = getDb();
     const now = Date.now();
-    const doi = normalizeDoi(input.doi);
-    const arxivId = normalizeArxivId(input.arxivId);
-    const existing = LibraryRepo.findExisting({ doi, arxivId });
+    const existing = input.id ? LibraryRepo.get(input.id) : null;
 
     if (existing) {
-      // 只填空,不覆盖:已有值可能是用户手工修正过的。
-      // **kind 不在这里改** —— 同一篇 PDF 被再次导入到别的库时,命中的是已有条目,
-      // 把它搬到那个库会让用户原来那份凭空消失。要搬得走显式的「移动」动作。
       db.run(
         `UPDATE library_items SET
            title = CASE WHEN (title IS NULL OR title = '') THEN ? ELSE title END,
-           authors = CASE WHEN (authors IS NULL OR authors = '' OR authors = '[]') THEN ? ELSE authors END,
-           year = COALESCE(year, ?),
-           venue = COALESCE(venue, ?),
-           volume = COALESCE(volume, ?),
-           issue = COALESCE(issue, ?),
-           page = COALESCE(page, ?),
-           publisher = COALESCE(publisher, ?),
            abstract = CASE WHEN (abstract IS NULL OR abstract = '') THEN ? ELSE abstract END,
-           type = COALESCE(?, type),
            language = COALESCE(language, ?),
            url = COALESCE(url, ?),
-           doi = COALESCE(doi, ?),
-           arxiv_id = COALESCE(arxiv_id, ?),
            updated_at = ?
          WHERE id = ?`,
-        [
-          v(input.title ?? ""),
-          v(input.authors?.length ? JSON.stringify(input.authors) : null),
-          v(input.year), v(input.venue),
-          v(input.volume), v(input.issue), v(input.page), v(input.publisher),
-          v(input.abstract ?? ""),
-          v(input.type), v(input.language), v(input.url),
-          v(doi), v(arxivId), v(now), v(existing.id),
-        ],
+        [v(input.title ?? ""), v(input.abstract ?? ""), v(input.language), v(input.url), v(now), v(existing.id)],
       );
       persist();
       return LibraryRepo.get(existing.id)!;
@@ -2069,17 +1906,10 @@ export const LibraryRepo = {
     const id = input.id ?? makeId("li");
     db.run(
       `INSERT INTO library_items
-         (id, doi, arxiv_id, title, authors, year, venue, volume, issue, page, publisher,
-          abstract, type, language, url, source, license, entry_mode, file_path, added_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, title, abstract, language, url, entry_mode, file_path, added_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        v(id), v(doi), v(arxivId), v(input.title ?? "(无标题)"),
-        v(input.authors?.length ? JSON.stringify(input.authors) : null),
-        v(input.year), v(input.venue),
-        v(input.volume), v(input.issue), v(input.page), v(input.publisher),
-        v(input.abstract),
-        v(input.type ?? "article"), v(input.language), v(input.url),
-        v(input.source), v(input.license),
+        v(id), v(input.title ?? "(无标题)"), v(input.abstract), v(input.language), v(input.url),
         v(input.entryMode ?? "attached"), v(input.filePath ?? null), v(now), v(now),
       ],
     );
@@ -2159,10 +1989,7 @@ export const LibraryRepo = {
     persist();
   },
 
-  /** 换掉这一条的来源地址。
-   *  真正会用到的场景只有一个:导入时拿到的是 doi.org 落地页,下载前查到开放获取的
-   *  PDF 直链之后把它写回去 —— 下次下载、以及详情页上那个"打开原文"的链接,都该是
-   *  能直接用的那个。 */
+  /** 换掉这一条的来源地址(详情页上那个"打开原文"的链接)。 */
   setUrl(id: string, url: string): void {
     getDb().run("UPDATE library_items SET url = ?, updated_at = ? WHERE id = ?", [
       v(url), v(Date.now()), v(id),
@@ -2174,6 +2001,11 @@ export const LibraryRepo = {
     getDb().run("UPDATE library_items SET md_path = ?, updated_at = ? WHERE id = ?", [
       v(mdRelPath), v(Date.now()), v(id),
     ]);
+    persist();
+  },
+
+  clearMarkdown(id: string): void {
+    getDb().run("UPDATE library_items SET md_path = NULL, updated_at = ? WHERE id = ?", [v(Date.now()), v(id)]);
     persist();
   },
 
@@ -2647,121 +2479,6 @@ export const InstitutionRepo = {
 
   delete(id: string): void {
     getDb().run("DELETE FROM institution_profiles WHERE id = ?", [v(id)]);
-    persist();
-  },
-};
-
-/* ────────────────────────────── 下载任务 ───────────────────────────────── */
-
-interface JobRow {
-  id: string;
-  item_id: string;
-  status: string;
-  attempts: number;
-  error: string | null;
-  created_at: number;
-  updated_at: number;
-}
-
-function rowToJob(r: JobRow): DownloadJob {
-  return {
-    id: r.id,
-    itemId: r.item_id,
-    status: (r.status as DownloadStatus) || "pending",
-    attempts: r.attempts ?? 0,
-    error: r.error ?? undefined,
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
-  };
-}
-
-export const DownloadJobRepo = {
-  list(): DownloadJob[] {
-    const db = getDb();
-    const stmt = db.prepare("SELECT * FROM download_jobs ORDER BY updated_at DESC");
-    const out: DownloadJob[] = [];
-    while (stmt.step()) out.push(rowToJob(stmt.getAsObject() as unknown as JobRow));
-    stmt.free();
-    return out;
-  },
-
-  /** 按状态取任务(下载器取 pending 队列用)。 */
-  listByStatus(status: DownloadStatus): DownloadJob[] {
-    const db = getDb();
-    const stmt = db.prepare("SELECT * FROM download_jobs WHERE status = ? ORDER BY created_at ASC");
-    stmt.bind([v(status)]);
-    const out: DownloadJob[] = [];
-    while (stmt.step()) out.push(rowToJob(stmt.getAsObject() as unknown as JobRow));
-    stmt.free();
-    return out;
-  },
-
-  getByItem(itemId: string): DownloadJob | null {
-    const db = getDb();
-    const stmt = db.prepare("SELECT * FROM download_jobs WHERE item_id = ?");
-    stmt.bind([v(itemId)]);
-    const found = stmt.step();
-    const row = found ? rowToJob(stmt.getAsObject() as unknown as JobRow) : null;
-    stmt.free();
-    return row;
-  },
-
-  /** 排入队列。已有任务则重置为 pending(用户手动重下时不该被旧状态挡住),
-   *  但**保留 attempts** —— 它记录的是历史重试次数,用于退避策略。 */
-  enqueue(itemId: string): DownloadJob {
-    const db = getDb();
-    const now = Date.now();
-    const existing = DownloadJobRepo.getByItem(itemId);
-    if (existing) {
-      db.run("UPDATE download_jobs SET status = 'pending', error = NULL, updated_at = ? WHERE item_id = ?", [
-        v(now), v(itemId),
-      ]);
-      persist();
-      return { ...existing, status: "pending", error: undefined, updatedAt: now };
-    }
-    const id = makeId("dj");
-    db.run(
-      "INSERT INTO download_jobs (id, item_id, status, attempts, created_at, updated_at) VALUES (?, ?, 'pending', 0, ?, ?)",
-      [v(id), v(itemId), v(now), v(now)],
-    );
-    persist();
-    return { id, itemId, status: "pending", attempts: 0, createdAt: now, updatedAt: now };
-  },
-
-  /**
-   * 把**上次运行遗留**的 running 任务打回 pending。返回打回了多少条。
-   *
-   * 下载是主进程里的异步操作,进程一退,正在跑的那次就地蒸发 —— 但数据库里那条
-   * 记录会永远停在 "running"。界面上表现为「一直显示下载中,永远不动」,而且队列
-   * 也不会再捡起它(`processDownloadQueue` 只取 pending)。
-   *
-   * 启动时调一次即可。打回 pending 而**不是**标失败:这些任务从没真正下成过,
-   * 重试才是对的;`attempts` 也保持不变,免得退避策略把它当成"已经试过很多次"。
-   */
-  resetStale(): number {
-    const stale = DownloadJobRepo.listByStatus("running").length;
-    if (stale === 0) return 0;
-    getDb().run(
-      "UPDATE download_jobs SET status = 'pending', error = NULL, updated_at = ? WHERE status = 'running'",
-      [v(Date.now())],
-    );
-    persist();
-    return stale;
-  },
-
-  /** 更新任务状态。`bumpAttempts` 仅在真正发起过一次下载时传 true。 */
-  setStatus(itemId: string, status: DownloadStatus, error?: string, bumpAttempts = false): void {
-    const now = Date.now();
-    getDb().run(
-      `UPDATE download_jobs SET status = ?, error = ?, attempts = attempts + ?, updated_at = ? WHERE item_id = ?`,
-      [v(status), v(error), v(bumpAttempts ? 1 : 0), v(now), v(itemId)],
-    );
-    persist();
-  },
-
-  /** 清掉某条文献的任务(文献被删除时用;外键 CASCADE 也会兜底)。 */
-  deleteByItem(itemId: string): void {
-    getDb().run("DELETE FROM download_jobs WHERE item_id = ?", [v(itemId)]);
     persist();
   },
 };

@@ -53,6 +53,17 @@ export const zh = {
   "ide.editor.switchToSource": "切换到源码编辑",
   "ide.editor.switchToPreview": "切换到预览",
   "ide.editor.switchToSourceView": "切换到源码视图",
+  "ide.editor.switchToOfficeEdit": "切换到可视化编辑（OnlyOffice）",
+  /** Milkdown 空文档占位 */
+  "ide.editor.mdPlaceholder": "开始输入，或按 / 插入内容…",
+  // ── Office 文档（OnlyOffice）──
+  "ide.office.opening": "正在连接 OnlyOffice…",
+  "ide.office.loadingEditor": "正在加载编辑器…",
+  "ide.office.notConfigured": "还没有配置 OnlyOffice Document Server",
+  "ide.office.notConfiguredDesc": "Word / Excel / PowerPoint 的可视化编辑需要本机安装 OnlyOffice Docs。先去设置里填服务地址，或者切到只读预览。",
+  "ide.office.openSettings": "打开设置",
+  "ide.office.viewReadonly": "只读预览",
+  "ide.office.openFailed": "OnlyOffice 打开失败",
   /** 编辑器里选中文字后，引用目标列表里"这一份文件"那一项的标题（同 FileViewer 的用法）。 */
   "ide.editor.thisFile": "这个文件",
   /** 「源码 / 预览」那个按钮的文案 —— 说的是"点一下会切到哪儿"。md 有三档轮转。 */

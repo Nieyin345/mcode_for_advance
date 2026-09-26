@@ -34,6 +34,7 @@ export const zh = {
   "chat.placeholderQueued": "排队输入… Enter 排队 · Ctrl+Enter 直接插话",
   "chat.placeholderQueuedPlain": "排队输入…  (Enter 加入队列)",
   "chat.placeholderIdle": "发送消息…  (@ 引用文件 · / 命令 · 粘贴图片)",
+  "chat.placeholderLocked": "{provider} 正在等待你的决定…",
   "chat.attachFiles": "添加上下文文件",
   "chat.addImage": "添加图片",
   "chat.attachMenu": "添加附件",
@@ -74,8 +75,8 @@ export const zh = {
   "chat.queue.removeTitle": "从队列移除",
 
   // ── tool approval card ──
-  "chat.approval.aria": "Claude 正在请求执行工具",
-  "chat.approval.title": "Claude 请求执行工具",
+  "chat.approval.aria": "{provider} 正在请求执行工具",
+  "chat.approval.title": "{provider} 请求执行工具",
   "chat.approval.queueTitle": "队列中还有 {n} 个待审批",
   "chat.approval.collapseTitle": "收起详情",
   "chat.approval.expandTitle": "查看工具输入",
@@ -88,9 +89,9 @@ export const zh = {
   "chat.approval.allow": "允许",
 
   // ── AskUserQuestion card ──
-  "chat.question.aria": "Claude 正在提问",
-  "chat.question.titleOne": "Claude 有一个问题需要回答",
-  "chat.question.titleN": "Claude 有 {n} 个问题需要回答",
+  "chat.question.aria": "{provider} 正在提问",
+  "chat.question.titleOne": "{provider} 有一个问题需要回答",
+  "chat.question.titleN": "{provider} 有 {n} 个问题需要回答",
   "chat.question.step": "第 {cur}/{total} 题",
   "chat.question.dismiss": "忽略这次提问",
   "chat.question.multiSelect": "可多选",
@@ -252,15 +253,15 @@ export const zh = {
   "chat.slash.plugin": "插件",
   /* 引擎（Claude Code CLI）自己报上来的命令 —— 与上面那四条「Mcode 内置」要分得清：
      那四条是 Mcode 写的、有定制行为；这一栏是 CLI 提供的，原样发过去由它执行。 */
-  "chat.slash.tabEngine": "Claude Code",
+  "chat.slash.tabEngine": "{provider}",
   "chat.slash.engine": "CLI",
-  "chat.slash.noEngineMatch": "Claude Code 没有这个命令",
-  "chat.slash.engineNotReady": "还没收到 Claude Code 的命令清单 —— 说一句话就会拉取",
+  "chat.slash.noEngineMatch": "{provider} 没有这个命令",
+  "chat.slash.engineNotReady": "还没收到 {provider} 的命令清单 —— 说一句话就会拉取",
   /* 「这个引擎的命令在我们这儿跑不起来」—— Pi / Codex 那一档。
      ⚠️ **别写成"这个引擎没有命令"**：它们都有（Pi 22 条、Codex 十几条），只是那些
      命令由各自的 TUI 在本地解析执行，不经过 Mcode 走的 SDK / app-server 协议。
      说成"没有"是**说错话**，用户懂这两个工具的话会立刻发现不对。 */
-  "chat.slash.engineUnsupported": "这个引擎的命令由它的终端界面提供，这里用不了",
+  "chat.slash.engineUnsupported": "{provider} 的命令由它的终端界面提供，这里用不了",
   "chat.kbd.navigate": "导航",
   "chat.slash.switchTab": "切 tab",
   "chat.slash.insert": "插入",
@@ -407,7 +408,7 @@ export const zh = {
   "composer.mode.default": "默认",
   "composer.mode.defaultHint": "普通对话，不附加任何指令",
   "composer.mode.search": "文献检索",
-  "composer.mode.searchHint": "由 AI 主导：先问清研究方向，再联网检索、逐篇入库并写总结",
+  "composer.mode.searchHint": "由 AI 主导：先问清研究方向，再用你接入的外部检索工具检索、逐篇入库并写总结",
   "composer.mode.read": "文献精读",
   "composer.mode.readHint": "把一篇讲透：问题、方法、实验、局限，引用具体位置",
   "composer.mode.write": "文献写作",
@@ -422,8 +423,8 @@ export const zh = {
   "composer.mode.watchHint": "绑定会话跑一条命令，跑完把退出码与输出尾部交回会话接着处理",
   // 内置的两条自动化（同守望：不在上面六个模式里）。名字与说明同样走词条 ——
   // 数据里那份 `name` 只是兜底，英文界面下冒出「文献自动下载」是坏的。
-  "composer.mode.autoDownload": "文献自动下载",
-  "composer.mode.autoDownloadHint": "资料库有新条目导入时，把还没有 PDF 的那几条排队下载",
+  "composer.mode.autoDownload": "导入后取原文",
+  "composer.mode.autoDownloadHint": "资料库有新条目导入时，把还没有文件的那几条交给外部下载工具取回原文并挂上",
   "composer.mode.autoConvert": "下载完自动转 Markdown",
   "composer.mode.autoConvertHint": "条目 PDF 下载完成时，把它转成 Markdown 并挂回该条目",
 

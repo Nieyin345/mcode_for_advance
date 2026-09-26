@@ -191,9 +191,7 @@ function StartPoints() {
                 )
               }
               label={it.title}
-              meta={
-                [it.authors[0]?.family, it.year].filter(Boolean).join(" · ") || formatRelativeTime(it.addedAt)
-              }
+              meta={formatRelativeTime(it.addedAt)}
               onClick={() => previewLibraryItem(it)}
             />
           ))}
