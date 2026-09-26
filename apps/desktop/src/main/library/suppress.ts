@@ -6,7 +6,7 @@
  * 「屏蔽一个节点 = 它自己以及它下面的一切都不进上下文」这句话的落实,要把一条条目
  * 的**祖先链**整条查出来:
  *
- *     条目 → 它所属的集合 → 集合挂着的大类
+ *     条目 → 它所属的集合 → 沿 parentId 往上的每一级父分类 → 各级挂着的大类
  *
  * 逐段比对该不该挡住。链上任一段命中就挡住。链的每一段都有现成的查询(`CollectionRepo`
  * 的成员关系、`LibraryCollection.groupId`),契约那一层拿不到这些(它没有 DB),所以
@@ -92,21 +92,34 @@ export function resetSuppressCacheForTest(): void {
  * 调用方只关心"有没有命中"。之所以把整条链一次算完而不是逐层短路,是因为查集合
  * 那一步本来就要把全部集合取出来,再省一点反而把代码绕乱。
  *
- * > 集合那一层取的是**条目所属的全部集合**(一个条目可以同时在多个集合里)。链上任
- * > 一个集合被屏蔽都算 —— 用户屏蔽「精读队列」时不会预期"这篇因为同时在别处,
+ * > 集合那一层取的是**条目所属的全部集合**(一个条目可以同时在多个集合里),并且
+ * > **沿 `parentId` 一路收到顶**:左栏允许把分类拖成父子(`CollectionContextMenu`
+ * > 的「移动到…」),而设置页承诺的是「勾一个……它下面的全部内容都跟着被挡」——
+ * > 只看直属集合的话,屏蔽了父分类,子分类里的条目会从缝里漏过去(2026-09-26 修)。
+ * > 链上任一个集合被屏蔽都算 —— 用户屏蔽「精读队列」时不会预期"这篇因为同时在别处,
  * > 就从精读队列里漏过来了"。
  *
  * 导出是为了让 smoke 能直接验链条本身,而不必每次都摆一套完整的挂载场景。
  */
 export function suppressKeysOfItem(itemId: string): string[] {
   const keys: string[] = [];
-  // 条目 → 它所属的集合;集合 → 它挂着的大类（kind 退役后大类经 group_id 直挂）。
+  // 条目 → 直属集合 → 沿 parentId 往上的每一级父分类;链上每一级挂着的大类
+  // （kind 退役后大类经 group_id 直挂）也都收 —— 子分类挪过窝之后 groupId 可能
+  // 与父分类不一致,哪一级的大类被屏蔽都该挡。
   const groupIds = new Set<string>();
-  const mine = CollectionRepo.collectionsOfItem(itemId);
-  for (const collection of CollectionRepo.list()) {
-    if (!mine.includes(collection.id)) continue;
+  const byId = new Map(CollectionRepo.list().map((c) => [c.id, c] as const));
+  const seen = new Set<string>();
+  const pending = CollectionRepo.collectionsOfItem(itemId);
+  while (pending.length > 0) {
+    const id = pending.pop();
+    // `seen` 顺带挡住父链上的环:数据上理论能把 A 挪进 B、B 又挪进 A,判定不该死循环。
+    if (id === undefined || seen.has(id)) continue;
+    seen.add(id);
+    const collection = byId.get(id);
+    if (!collection) continue;
     keys.push(suppressNodeKey("collection", collection.id));
     if (collection.groupId) groupIds.add(collection.groupId);
+    if (collection.parentId) pending.push(collection.parentId);
   }
   for (const gid of groupIds) keys.push(suppressNodeKey("group", gid));
   return keys;

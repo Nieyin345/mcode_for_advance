@@ -279,6 +279,21 @@ console.log("\n屏蔽:硬过滤,入口与关联一视同仁");
   check("原因指出是哪个大类", (byGroup.error ?? "").includes("文档"), byGroup);
   eq("一条都没推出去(继承)", sent.length, 0);
 
+  // ③b **父分类也向下继承**:分类支持嵌套(左栏「移动到…」能拖成父子),屏蔽**父分类**
+  //    时只挂在**子分类**里的条目同样要挡住 —— 设置页写的是「它下面的全部内容都跟着
+  //    被挡」。修复前 `suppressKeysOfItem` 只取直属集合,这一条会从缝里漏过去
+  //    (2026-09-26 修:父链沿 parentId 收到顶)。
+  const childColl = CollectionRepo.create("子队列", coll.id, docsGroup?.id);
+  const underChild = LibraryRepo.upsert({ title: "子分类里的条目" });
+  CollectionRepo.assign(childColl.id, [underChild.id], true);
+  resetSuppressCacheForTest();
+  saveSuppress({ nodes: [`collection:${coll.id}`], extensions: [] });
+  resetSent();
+  const byParent = attachToChat(SID, `i:${underChild.id}`);
+  check("★ 屏蔽父分类后,子分类里的条目也挂不上", !byParent.ok, byParent);
+  check("原因指出的是父分类", (byParent.error ?? "").includes("精读队列"), byParent);
+  eq("一条都没推出去(父分类继承)", sent.length, 0);
+
   // ④ 老数据里的 `type:` 条目:kind 退役后那一档不存在了,校验时**丢掉那一条**,
   //    而不是废掉整份规则 —— 用户别的屏蔽照常生效,也不会因为一个过时的键就让
   //    整个设置页保存失败。

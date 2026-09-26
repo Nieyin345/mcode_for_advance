@@ -164,10 +164,11 @@ def group_filter(group):
 #
 # 判定与主进程**同一套语义**(main/library/suppress.ts 的 suppressionReasonOfItem):
 #
-#     条目 → 它所属的全部集合 → 集合挂着的大类(可能不止一个)
+#     条目 → 它所属的全部集合 → 沿 parent_id 往上的每一级父分类 → 各级挂着的大类
 #
 # 链上任一段命中就挡住;extensions 再按文件后缀挡一层。集合那一层取的是**条目所
-# 属的全部集合** —— 一个条目可以同时在多个集合里,任一个被屏蔽都算。
+# 属的全部集合**,并且沿 parent_id 收到顶 —— 左栏能把分类拖成父子,屏蔽父分类要连
+# 子分类里的条目一起挡(与主进程 2026-09-26 的父链修法同步)。任一个被屏蔽都算。
 #
 # 规矩同主进程:读不出 / JSON 坏 / 形状不对 → **按"什么都没屏蔽"处理**,绝不抛。
 # 反过来的那条退路(坏数据当"全挡")会让用户的东西凭空消失,是更坏的一种错。
@@ -358,12 +359,18 @@ def suppress_reason(cur, sup, rec):
         return None
 
     keys = []
-    # 条目 → 它所属的**全部**集合 → 集合挂着的大类(kind 退役后大类经 group_id 直挂)。
+    # 条目 → 直属集合 → 沿 parent_id 往上的每一级父分类;链上每一级挂着的大类
+    # (kind 退役后大类经 group_id 直挂)也都收 —— 与主进程 suppressKeysOfItem 的
+    # 父链修法同步(2026-09-26)。UNION(不是 UNION ALL)自带去重,父链上真有环也
+    # 不会转圈(同 repositories.ts 里 subtree 那条 CTE 的讲究)。
     for row in cur.execute(
-        "SELECT ci.collection_id AS cid, c.group_id AS gid"
-        " FROM library_collection_items ci"
-        " LEFT JOIN library_collections c ON c.id = ci.collection_id"
-        " WHERE ci.item_id = ?",
+        "WITH RECURSIVE chain(id) AS ("
+        " SELECT collection_id FROM library_collection_items WHERE item_id = ?"
+        " UNION"
+        " SELECT c.parent_id FROM library_collections c"
+        "  JOIN chain ON c.id = chain.id WHERE c.parent_id IS NOT NULL"
+        ") SELECT chain.id AS cid, c.group_id AS gid"
+        " FROM chain LEFT JOIN library_collections c ON c.id = chain.id",
         [rec["id"]],
     ):
         keys.append("collection:" + str(row["cid"]))
