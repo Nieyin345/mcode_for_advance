@@ -81,7 +81,9 @@ import {
 } from "@main/orchestration/builtins.js";
 import { runWorkflow, type RunPorts, type RunReport, type RunState } from "@main/orchestration/scheduler.js";
 import { initDb, getDb } from "@main/store/db.js";
-import { ProjectRepo, SessionRepo, SettingRepo, WorkflowRepo, SYSTEM_AUTOMATION_PROJECT_ID } from "@main/store/repositories.js";
+import { CollectionRepo, LibraryRepo, ProjectRepo, SessionRepo, SettingRepo, WorkflowRepo, SYSTEM_AUTOMATION_PROJECT_ID } from "@main/store/repositories.js";
+import { resetSuppressCacheForTest, saveSuppress } from "@main/library/suppress.js";
+import { suppressNodeKey } from "@contracts/libraryTypes";
 // ⚠️ **执行器本体**(`automationRunner.ts`)不是纯件:它真开 `fs.watch`、真起会话、
 // 真读 settings 表。这一套的后半段(见第 13 节)直接 `new` 它来验「重启后同一分钟不
 // 再触发」与「删掉的文件不进载荷」——那两条的实现全在实例状态里,不真跑一遍验不到。
@@ -2645,6 +2647,36 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
       SettingRepo.set("smoke.selfTriggerWorkflow", wf);
 
     } finally { setRunBusy(sessionId, false); runner.dispose(); }
+  }
+
+
+  /* 屏蔽只管给 AI 看的,不管自动化(2026-09-26 用户定的规矩)。屏蔽了 pdf,要的正是「只给
+   * 模型看转录后的 md」—— 自动化不下载、不转录,那份 md 就永远不会有。同一天早些时候这里
+   * 加过「被屏蔽的条目不触发」,与这条规矩正相反;这一段钉住它别再回来。 */
+  {
+    resetRuns();
+    const wf = nextId(), nodeId = "t_suppressed_item";
+    makeAutomation({ workflowId: wf, nodeId, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "event", [NODE_TRIGGER_EVENTS_PARAM_KEY]: "library.item.downloaded", [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0, task: "被屏蔽的条目也照常处理",
+    } });
+    const runner = await startRunner();
+    const hidden = LibraryRepo.upsert({ title: "机密报告" });
+    const visible = LibraryRepo.upsert({ title: "公开论文" });
+    const secret = CollectionRepo.create("机密");
+    CollectionRepo.assign(secret.id, [hidden.id], true);
+    resetSuppressCacheForTest();
+    saveSuppress({ nodes: [suppressNodeKey("collection", secret.id)], extensions: [".pdf"] });
+    const emit = (itemId: string, title: string): void => runtimeManager.emit({ type: "library.item.downloaded", sessionId: "(system)", itemId, title, pdfPath: `${itemId}.pdf` } as unknown as RuntimeEvent);
+    try {
+      emit(hidden.id, hidden.title); emit(visible.id, visible.title); await sleep(50);
+      eq("★ 被屏蔽的条目下载完照样触发(与同批的一起跑一次)", runsOfNode(nodeId).length, 1);
+      const items = runsOfNode(nodeId).at(-1)?.entry?.payload?.items as Array<{ itemId?: string }> | undefined;
+      check("★ 载荷里被屏蔽的那条也在", items?.length === 2 && items.some((i) => i.itemId === hidden.id), items);
+      check("没有记成「被屏蔽跳过」", !(runner.statusOf(wf)[0]?.lastError ?? "").includes("屏蔽"), runner.statusOf(wf));
+    } finally {
+      saveSuppress({ nodes: [], extensions: [] });
+      runner.dispose();
+    }
   }
 
 

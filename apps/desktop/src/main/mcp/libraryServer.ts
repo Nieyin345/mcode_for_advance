@@ -42,7 +42,7 @@ import {
 import { enqueueDownloads } from "@main/library/downloader.js";
 import { convertItemToMarkdown } from "@main/library/convert.js";
 import { adoptMarkdownFile } from "@main/library/adoptMarkdown.js";
-import { fromLibraryRelative } from "@main/library/paths.js";
+import { aiVisibleFilesOf } from "@main/library/fileImport.js";
 import { attachToChat } from "@main/library/manifest.js";
 import {
   addTemplate,
@@ -93,7 +93,8 @@ export const LIBRARY_READONLY_TOOLS = new Set([
  * 给绝对路径而不是库内相对路径,是因为**外部工具在库外运行** —— `mineru x.pdf` 要的
  * 是一个当下就能打开的路径,而相对路径是相对谁的,从工具的视角根本无从判断。
  *
- * ⚠️ 拼接走 `fromLibraryRelative`(**库根拼法只有那一处说了算**)。
+ * ⚠️ 路径走 `aiVisibleFilesOf`(库根拼法只有 `fromLibraryRelative` 那一处说了算;按文件类型
+ * 屏蔽的那份不给 —— 屏蔽了 pdf,模型就拿不到 PDF 路径,只拿到转录)。
  */
 function itemLine(i: LibraryItem): string {
   const authors = i.authors
@@ -101,15 +102,23 @@ function itemLine(i: LibraryItem): string {
     .slice(0, 3)
     .join(", ");
   const bits = [authors, i.year ? String(i.year) : "", i.venue ?? ""].filter(Boolean);
+  // 按文件类型屏蔽的那份不列(`aiVisibleFilesOf`,见 `library/suppress.ts`):屏蔽 pdf 时
+  // 转录过的只给转录路径。整条被挡的条目调用方已经筛掉了,到不了这里。
+  const files = aiVisibleFilesOf(i);
   const state = [
-    i.mdPath ? "已转 Markdown" : i.pdfPath ? "有 PDF,未转 Markdown" : "无文件",
+    files.markdown
+      ? "已转 Markdown"
+      : files.original
+        ? files.hasTranscript ? "有原件" : i.pdfPath && !i.filePath ? "有 PDF,未转 Markdown" : "有文件,未转 Markdown"
+        : "无文件",
     i.doi ? `DOI ${i.doi}` : i.arxivId ? `arXiv ${i.arxivId}` : "",
   ]
     .filter(Boolean)
     .join(";");
-  // PDF 路径单独一行 —— 它长、而且还可能带空格,混在状态那行里读不清。
-  const pdfLine = i.pdfPath ? `\n  PDF: ${fromLibraryRelative(i.pdfPath)}` : "";
-  return `- ${i.title}\n  id=${i.id}${bits.length ? `\n  ${bits.join(" · ")}` : ""}\n  ${state}${pdfLine}`;
+  // 路径各占一行 —— 它们长、而且还可能带空格,混在状态那行里读不清。
+  const pathLines =
+    (files.markdown ? `\n  Markdown: ${files.markdown}` : "") + (files.original ? `\n  ${files.original.toLowerCase().endsWith(".pdf") ? "PDF" : "原件"}: ${files.original}` : "");
+  return `- ${i.title}\n  id=${i.id}${bits.length ? `\n  ${bits.join(" · ")}` : ""}\n  ${state}${pathLines}`;
 }
 
 /** 分类树的一行。缩进表示层级,永远带 id —— 后续 assign 要用。 */
@@ -135,10 +144,11 @@ function collectionLines(): string[] {
 
 
 /**
- * 被屏蔽的条目在写工具里说的**同一句话**。
+ * 被屏蔽的条目在按条点名的工具里说的**同一句话**(现在只剩 `library_write_note` —— 下载 /
+ * 转换 / 挂转录是干活、不是给 AI 看东西,2026-09-26 起不过屏蔽那道门)。
  *
  * 读工具(`library_search` / `library_items`)挡掉之后是**数**着说("另有 N 条被屏蔽
- * 规则挡住了"),因为那几条本来就是一整批;这四条是**按条**点名给的 id,所以按条说。
+ * 规则挡住了"),因为那几条本来就是一整批;按 id 点名的,按条说。
  *
  * 措辞与 `library/manifest.ts` 里 `attachToChat` 那句**一字不差** —— 同一个规矩在
  * 模型那里应该是同一句话,不该因为它这次是"挂载"还是"写笔记"就换一种说法。
@@ -556,23 +566,13 @@ export function libraryMcpTools(): McpToolSpec[] {
         },
         handler: async (args: { ids: string[] }) => {
           const lines: string[] = [];
-          // **屏蔽是硬过滤,写工具一样过这道门。** 这一条从前只判"id 在不在库里",
-          // 于是被屏蔽的条目照样能被排进下载队列 —— 那是**真去抓网络**的动作
-          // (`enqueueDownloads` 会立刻起异步队列),不只是多读了一行。
-          //
-          // 判据只有一份(`library/suppress.ts`),这里不重写它。挡掉的那几条要
-          // **按条报出来**,而且不能说成"库里没有这个 id" —— 那是两回事,模型会
-          // 据此向用户汇报"这条不在库里"。
+          // **不过屏蔽那道门**(2026-09-26 用户定的规矩):屏蔽只管给 AI 看的,下载是干活。
+          // 屏蔽了 pdf 的条目照样要下 PDF —— 转录出的 md 才是给模型看的那份。
           const allowed: string[] = [];
           for (const id of args.ids) {
             const item = LibraryRepo.get(id);
             if (!item) {
               lines.push(`- ${id} —— 库里没有这个 id`);
-              continue;
-            }
-            const reason = suppressionReasonOfItem(id);
-            if (reason) {
-              lines.push(`- 《${item.title}》\n  id=${id}\n  ${suppressedNote(reason)} —— 没有排队下载`);
               continue;
             }
             allowed.push(id);
@@ -702,15 +702,8 @@ export function libraryMcpTools(): McpToolSpec[] {
               lines.push(`- ${id} —— 库里没有这个 id`);
               continue;
             }
-            // **屏蔽是硬过滤。** 这一条从前只判"条目在不在",被屏蔽的照样能转 ——
-            // 而转换是**往库里落文件**(`markdown/<ab>/<cd>/<sha>.md`),不只是读。
-            //
-            // 按条挡、按条说,不说成"库里没有这个 id"(判据见 `library/suppress.ts`)。
-            const reason = suppressionReasonOfItem(id);
-            if (reason) {
-              lines.push(`- 《${item.title}》\n  id=${id}\n  ${suppressedNote(reason)} —— 没有转换`);
-              continue;
-            }
+            // **不过屏蔽那道门**(2026-09-26):屏蔽只管给 AI 看的,转换是干活 —— 屏蔽了 pdf
+            // 要的正是「只给模型看转录后的 md」,不转就没有那份 md。
             const res = await convertItemToMarkdown(item, { force: args.force });
             if (res.ok) {
               converted += 1;
@@ -751,15 +744,8 @@ export function libraryMcpTools(): McpToolSpec[] {
         handler: async (args: { itemId: string; path: string }) => {
           const item = LibraryRepo.get(args.itemId);
           if (!item) return fail(`库里没有这个 id:${args.itemId}`);
-          // **屏蔽是硬过滤,而且是这一步最要紧的门。** 挂转录产物是**覆盖式写**:
-          // 它会把整个 `markdown/imported/<id>/` 目录删掉重建(见
-          // `library/adoptMarkdown.ts` 的整目录替换),再把外部文件搬进来 —— 被屏蔽
-          // 的条目照挂的话,不只是多了一条记录,而是往用户明确说过"不要"的那条上
-          // 落了一整包文件。
-          //
-          // 与"库里没有这个 id"分开说(判据只有一份,见 `library/suppress.ts`)。
-          const reason = suppressionReasonOfItem(args.itemId);
-          if (reason) return fail(`没能挂上《${item.title}》:${suppressedNote(reason)}`);
+          // **不过屏蔽那道门**(2026-09-26):屏蔽只管给 AI 看的,挂回转录是干活。自动化
+          // 「下载完转 Markdown」最后一步走的就是这条;从前被屏蔽的条目在这里被拒,整条白跑。
           const res = adoptMarkdownFile(args.itemId, args.path);
           if (!res.ok) {
             // **逐种情况说人话** —— "失败"两个字让模型和用户都无从下手。

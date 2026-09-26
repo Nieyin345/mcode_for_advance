@@ -76,6 +76,12 @@ c.executemany("INSERT INTO library_items(id,title,authors,year,venue,md_path,pdf
   ("li_n1", "一条随手记", "[]", None, None, "notes/li_n1.md", None, None, "note"),
   ("li_t1", "LaTeX 论文模版", "[]", None, None, None, None, None, "latex"),
   ("li_orphan", "无家可归的一条", "[]", None, None, None, None, "raw/x.bin", "document"),
+  # 按文件类型屏蔽按**份**算(见下面 extensions 的 .pdf):转录过的只给转录;只有 PDF 的整条挡
+  ("li_pm", "转录过的 PDF", "[]", None, None, "markdown/b.md", "papers/b.pdf", None, "paper"),
+  ("li_po", "只有 PDF 的论文", "[]", None, None, None, "papers/c.pdf", None, "paper"),
+  # 通用文件只有 file_path —— 从前 file_of 只认 md / pdf,于是说它「没有文件」
+  ("li_doc", "课题报告", "[]", None, None, None, None, "files/li_doc-report.docx", "document"),
+  ("li_dm", "转录过的 Word", "[]", None, None, "markdown/imported/li_dm/full.md", None, "files/li_dm-a.docx", "document"),
 ])
 c.executemany("INSERT INTO library_collections(id,name,parent_id,group_id,sort_order) VALUES(?,?,?,?,?)", [
   ("lc_aw", "精读队列", None, "docs", 0),
@@ -85,6 +91,7 @@ c.executemany("INSERT INTO library_collections(id,name,parent_id,group_id,sort_o
 ])
 c.executemany("INSERT INTO library_collection_items(collection_id,item_id) VALUES(?,?)", [
   ("lc_aw", "li_p1"), ("lc_sub", "li_p1"), ("lc_tpl", "li_t1"), ("lc_orphan", "li_orphan"),
+  ("lc_aw", "li_pm"), ("lc_aw", "li_po"), ("lc_aw", "li_doc"), ("lc_aw", "li_dm"),
 ])
 c.execute("INSERT INTO settings(key,value) VALUES(?,?)", ("library.groups", json.dumps([
   # NOTE: 老库里这份 JSON 仍然带着 kinds —— 代码停写但没删列。脚本必须忽略它,
@@ -94,7 +101,7 @@ c.execute("INSERT INTO settings(key,value) VALUES(?,?)", ("library.groups", json
 ])))
 c.execute("INSERT INTO settings(key,value) VALUES(?,?)", ("library.suppress", json.dumps({
   "nodes": ["group:templates", "type:paper"],  # 老数据里残留的 type: 那条该被丢掉
-  "extensions": [],
+  "extensions": [".pdf"],
 })))
 c.commit(); c.close()
 `,
@@ -197,6 +204,28 @@ console.log("\n其余几条命令都还跑得通");
   // show 的 SELECT 里从前带 kind / type 那两列(一个已停写、一个是自由文本)——
   // 列名错一个就是一次运行期崩溃,这条钉住整条 SELECT 是好的。
   check("show 没有崩(整条 SELECT 是好的)", show.length > 0, show.length);
+}
+
+/* ──────────────── 5. 转录与原件 ──────────────── */
+
+console.log("\n转录与原件:一起给,屏蔽按份去掉");
+
+{
+  // 屏蔽只管给 AI 看的,而且按**份**算(2026-09-26 用户定的):屏蔽 pdf,模型只看转录。
+  const all = at("list");
+  check("★ 屏蔽 .pdf 后,转录过的 PDF 还在", all.includes("转录过的 PDF"), all);
+  const pmLine = all.split("\n").find((l) => l.includes("id=li_pm")) ?? "";
+  check("★ 它只给转录,不给 PDF", pmLine.includes("b.md") && !pmLine.includes("b.pdf"), pmLine);
+  check("★ 只有 PDF 的那篇整条挡掉", !all.includes("只有 PDF 的论文"), all);
+  const pmShow = at("show", "li_pm");
+  check("show 同样只给转录", pmShow.includes("b.md") && !pmShow.includes("b.pdf"), pmShow);
+  const files = at("files", "--group", "docs");
+  check("★ 通用文件给出文件本身,不说「没有文件」", files.includes("li_doc-report.docx"), files);
+  const dmLine = files.split("\n").find((l) => l.includes("li_dm")) ?? "";
+  check("★ 转录过的 Word:转录与原件都给出来", dmLine.includes("full.md") && dmLine.includes("li_dm-a.docx"), dmLine);
+  check("转录排在原件前面", dmLine.indexOf("full.md") < dmLine.indexOf("li_dm-a.docx"), dmLine);
+  const show = at("show", "li_doc");
+  check("★ show 通用文件也给出文件本身", show.includes("li_doc-report.docx"), show);
 }
 
 console.log(`\n${checks - failures}/${checks} passed`);

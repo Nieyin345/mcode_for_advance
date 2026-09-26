@@ -1537,7 +1537,7 @@ export const en = {
   "settings.libraryTypes.suppressExtPh": "e.g. pdf, then Enter",
   "settings.libraryTypes.suppressExtAdd": "Add",
   "settings.libraryTypes.suppressExtHint":
-    "Applies only to items that have a file (Markdown first, then PDF).",
+    "Works file by file: with pdf suppressed, a transcribed paper reaches the AI as its Markdown transcript only, and an untranscribed one is left out entirely. Only affects what the AI sees; your own preview, downloads and auto-transcription are unaffected.",
   "settings.libraryTypes.suppressNone": "Nothing is suppressed yet.",
   "settings.libraryTypes.suppressBadKey": "Unrecognized entry, ignored: {key}",
   "settings.libraryTypes.loadFailed": "Failed to load: {error}",

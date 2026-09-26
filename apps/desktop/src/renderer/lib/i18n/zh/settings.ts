@@ -1503,7 +1503,7 @@ export const zh = {
   "settings.libraryTypes.suppressExtPh": "如 pdf，回车添加",
   "settings.libraryTypes.suppressExtAdd": "添加",
   "settings.libraryTypes.suppressExtHint":
-    "只对**有文件**的条目生效（Markdown 优先，其次是 PDF）。",
+    "按**份**去掉：屏蔽 pdf 时，转录过的论文只把 Markdown 转录给 AI，没转录的那条就整条不给。只管给 AI 看的，你自己预览、下载、自动转录都不受影响。",
   "settings.libraryTypes.suppressNone": "还没有屏蔽任何东西。",
   "settings.libraryTypes.suppressBadKey": "认不出的条目，已忽略：{key}",
   "settings.libraryTypes.ungroupedShort": "未分组",

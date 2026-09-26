@@ -131,14 +131,45 @@ def author_names(raw):
     return ", ".join(out)
 
 
-def file_of(root, md_path, pdf_path):
-    """这一条该读哪个文件。Markdown 优先,没有才退回 PDF —— 并说清那是 PDF。"""
+def file_of(root, md_path, pdf_path, file_path=None, sup=None):
+    """这一条给模型读哪几份文件 —— 与主进程同一口径(fileImport.ts 的 aiVisibleFilesOf)。
+
+    有 Markdown 转录就先给转录,方括号里带上原件(转录和原件是同一条条目的两份文件,
+    一起给;转录拿不准的图表、公式再看原件)。没有转录就给原件,并说清是什么。
+    原件:通用文件(file_path)优先,其次 PDF。linked 条目的 file_path 是绝对路径 ——
+    pathlib 拼一个绝对路径时直接取它,所以两种都能用同一句 lib / file_path。
+
+    sup 给了就**按份去掉**按文件类型屏蔽的那份(屏蔽只管给 AI 看的,2026-09-26 用户定的):
+    屏蔽 pdf → 只给转录;屏蔽 md → 只给原件,而且不说「尚未转」(转录是有的,只是不给)。
+    整条挡不挡由 suppress_reason 先判,到这里的都是没被整条挡的。
+    """
     lib = root / "library"
-    if md_path:
-        return str(lib / md_path)
-    if pdf_path:
-        return str(lib / pdf_path) + "   [PDF,尚未转 Markdown]"
+    original = None
+    if file_path:
+        original = str(lib / file_path)
+    elif pdf_path:
+        original = str(lib / pdf_path)
+    md = str(lib / md_path) if md_path else None
+    if sup is not None:
+        if md and ext_blocked(sup, md):
+            md = None
+        if original and ext_blocked(sup, original):
+            original = None
+    if md:
+        return md + ("   [原件:" + original + "]" if original else "")
+    if original:
+        if md_path:
+            return original
+        if original.lower().endswith(".pdf"):
+            return original + "   [PDF,尚未转 Markdown]"
+        return original + "   [没有 Markdown 转录,按原格式读]"
     return "(没有文件)"
+
+
+def ext_blocked(sup, path):
+    """这一份文件按文件类型被屏蔽了没有(主进程 suppress.ts 的 isFileSuppressed)。"""
+    ext = os.path.splitext(path)[1].lower()
+    return bool(ext) and ext in sup["extensions"]
 
 
 def group_filter(group):
@@ -353,7 +384,8 @@ def describe_node_key(cur, group_names, key):
 def suppress_reason(cur, sup, rec):
     """这条条目被挡的原因(人话);没被挡返回 None。
 
-    rec 是 as_rec 出来的那几列 —— 判定要 id 和"实际会被读的那份文件"。
+    rec 是 as_rec 出来的那几列 —— 判定要 id 和条目名下的几份文件。
+    这是**整条挡**那一层;按份去掉在 file_of 里。
     """
     if not sup["nodes"] and not sup["extensions"]:
         return None
@@ -380,20 +412,18 @@ def suppress_reason(cur, sup, rec):
         if key in sup["nodes"]:
             return describe_node_key(cur, sup["group_names"], key)
 
-    # 扩展名那一层。看的是**条目实际会被读的那个文件** —— 与清单给模型的路径同源:
-    # 有 markdown 就按 markdown(那才是会被读的),否则 PDF,否则通用文件路径。
-    # ⚠️ 判据是"值是不是 None",与主进程的「??」**逐字同义**(空串不往下走)。
-    # 写成「rec["md"] or rec["pdf"]」的话,一条 md_path 为空串的条目会掉到 PDF 上去,
-    # 于是"屏蔽 .md"在它身上不生效 —— 而空串这一列真的存在(见 db.ts 的兼容列)。
-    p = rec["md"]
-    if p is None:
-        p = rec["pdf"]
-    if p is None:
-        p = rec["fp"]
-    if p:
-        ext = os.path.splitext(p)[1].lower()
-        if ext and ext in sup["extensions"]:
-            return ext + " 文件"
+    # 扩展名那一层:条目名下的文件**全部**被屏蔽才整条挡 —— 屏蔽按**份**算(2026-09-26
+    # 用户定的):屏蔽 .pdf 时转录过的照样列出、只给转录(见 file_of);只有 PDF 的一份不剩,
+    # 才整条挡。与主进程 suppress.ts 的 suppressionReasonOfItem 同一条规则。
+    # 没有文件的条目(只有元数据)不受扩展名影响;空串当没有。
+    files = [p for p in (rec["md"], rec["pdf"], rec["fp"]) if p]
+    if files and all(ext_blocked(sup, p) for p in files):
+        exts = []
+        for p in files:
+            e = os.path.splitext(p)[1].lower()
+            if e not in exts:
+                exts.append(e)
+        return "、".join(exts) + " 文件"
     return None
 
 
@@ -461,16 +491,16 @@ def cmd_list(cur, root, args, sup):
     print("共 " + str(len(kept)) + " 条")
     report_suppressed(reasons)
     for row in kept:
-        iid, title, authors, year, venue, md, pdf =(
+        iid, title, authors, year, venue, md, pdf, fp =(
             row["id"], row["title"], row["authors"], row["year"], row["venue"],
-            row["md_path"], row["pdf_path"],
+            row["md_path"], row["pdf_path"], row["file_path"],
         )
         print("- " + title)
         bits = [author_names(authors), str(year) if year else "", venue or ""]
         head = " · ".join([b for b in bits if b])
         if head:
             print("    " + head)
-        print("    id=" + iid + "  文件:" + file_of(root, md, pdf))
+        print("    id=" + iid + "  文件:" + file_of(root, md, pdf, fp, sup))
 
 
 def cmd_find(cur, root, args, sup):
@@ -488,16 +518,16 @@ def cmd_find(cur, root, args, sup):
     print('匹配 "' + args.query + '":' + str(len(kept)) + " 条")
     report_suppressed(reasons)
     for row in kept:
-        iid, title, authors, year, venue, md, pdf =(
+        iid, title, authors, year, venue, md, pdf, fp =(
             row["id"], row["title"], row["authors"], row["year"], row["venue"],
-            row["md_path"], row["pdf_path"],
+            row["md_path"], row["pdf_path"], row["file_path"],
         )
         print("- " + title)
         bits = [author_names(authors), str(year) if year else "", venue or ""]
         head = " · ".join([b for b in bits if b])
         if head:
             print("    " + head)
-        print("    id=" + iid + "  文件:" + file_of(root, md, pdf))
+        print("    id=" + iid + "  文件:" + file_of(root, md, pdf, fp, sup))
     if not kept:
         if reasons:
             # **"被屏蔽了"与"库里没有"是两句话。** 混成一句的话,模型会据此回答用户
@@ -572,7 +602,7 @@ def cmd_show(cur, root, args, sup):
         if value:
             print(label + ":" + value)
     print("id:" + iid)
-    print("文件:" + file_of(root, md, pdf))
+    print("文件:" + file_of(root, md, pdf, row["file_path"], sup))
     if abstract:
         print("")
         print("## 摘要")
@@ -602,7 +632,7 @@ def cmd_files(cur, root, args, sup):
     # 的那些。
     report_suppressed(reasons)
     for row in kept:
-        print(file_of(root, row["md_path"], row["pdf_path"]) + "    <- " + row["title"]
+        print(file_of(root, row["md_path"], row["pdf_path"], row["file_path"], sup) + "    <- " + row["title"]
               + "  (id=" + row["id"] + ")")
 
 

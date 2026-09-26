@@ -1,13 +1,18 @@
 /**
- * 「在右栏预览这一条资料」—— 从文献库以外的地方（首屏的「最近加入的资料」）点开一条时用。
+ * 「在右栏预览这一条资料」—— 左栏文献库**单击一行**(`LibrarySection.openItem`)和首屏的
+ * 「最近加入的资料」共用这一份。
  *
  * 语义和左栏文献库**单击一行**完全一样（`LibrarySection.openItem`，2026-09-21 定的：
  * 单击 = 右栏预览，双击 = 中间打开）：选中它、md 落在编辑页其余落在元数据页、右栏切到
  * 「预览」并拉出来。
  *
- * ⚠️ 目前 `LibrarySection.openItem` 里还有一份同样的四步（那个文件在另一路改动手里，
- * 这次没动它）。**那边提交后应改成调用这里**，否则两处会慢慢分叉 —— 已记在
- * `MCode-优化方向.md` 首屏那一行。
+ *   - **看本体**：`setActiveItem` 把 `previewWhich` 清成 null，于是"上一条在看转录、这一条
+ *     自己弹回到 PDF"是白拿的 —— 用户要的是"点击和双击都显示这个 PDF 本身"，转录只能从
+ *     左栏右键「查看转录文本」进。
+ *   - md 点开就是要写/改它，落在编辑页；其余落在元数据页（kind 退役后按扩展名判）。
+ *   - 右栏切「预览」并拉出来；双击才是进中间编辑（`openItemInCenter`）。
+ *
+ * 2026-09-26 起 `LibrarySection.openItem` 改成调用这里，原先那边自己抄的一份删掉了。
  */
 import type { LibraryItem } from "@contracts/library";
 import { useLibraryStore } from "@renderer/stores/libraryStore.js";

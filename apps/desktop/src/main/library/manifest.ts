@@ -12,7 +12,7 @@
  * 走的是 MCP 工具,不经过 IPC。实现放这里,两边共用一份,免得"用户挂的清单"和
  * "AI 挂的清单"慢慢长出两种格式。
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { IPC } from "@contracts/ipc";
 import {
@@ -22,10 +22,10 @@ import {
 import { trashedItemIds } from "./trash.js";
 import { groupPromptOf, loadLibraryGroups } from "./groupRegistry.js";
 import { CollectionRepo, LibraryLinkRepo, LibraryRepo, NoteRepo } from "@main/store/repositories.js";
-import { importGenericFiles } from "./fileImport.js";
+import { aiVisibleFilesOf, extOf, importGenericFiles } from "./fileImport.js";
 import { suppressionReasonOfItem } from "./suppress.js";
 import { sendToRenderer } from "@main/window.js";
-import { libraryRoot, fromLibraryRelative } from "./paths.js";
+import { libraryRoot } from "./paths.js";
 
 export interface ManifestResult {
   /** 写好的清单文件绝对路径。找不到对象时是空串。 */
@@ -67,14 +67,20 @@ export function writeItemManifest(itemId: string): ManifestResult {
     lines.push("");
   }
 
+  // 转录与原件**一起**给(见 `readableFilesOf`):先读转录,拿不准再对照原件。
+  // 按文件类型屏蔽的那份不给(`aiVisibleFilesOf`):屏蔽 pdf → 只剩转录。
   lines.push("## 文件");
   lines.push("");
-  if (item.mdPath) {
-    lines.push(`Markdown(读这个):\`${fromLibraryRelative(item.mdPath)}\``);
-  } else if (item.pdfPath) {
-    lines.push(`PDF(尚未转 Markdown,按 PDF 处理):\`${fromLibraryRelative(item.pdfPath)}\``);
+  const files = aiVisibleFilesOf(item);
+  if (files.markdown) {
+    lines.push(`Markdown 转录(先读这个):\`${files.markdown}\``);
+    if (files.original) {
+      lines.push(`原件(转录里的图表、公式、版式拿不准时再对照):\`${files.original}\``);
+    }
+  } else if (files.original) {
+    lines.push(`${originalLabel(files.original, files.hasTranscript)}:\`${files.original}\``);
   } else {
-    lines.push("(这一条还没有文件 —— 既没有 PDF 也没有 Markdown。)");
+    lines.push("(这一条还没有文件 —— 既没有原件也没有 Markdown。)");
   }
 
   const notes = NoteRepo.listByItem(item.id);
@@ -89,6 +95,22 @@ export function writeItemManifest(itemId: string): ManifestResult {
   const file = join(manifestDir(), `item-${item.id}.md`);
   writeFileSync(file, lines.join("\n"), "utf8");
   return { path: file, count: 1, name: item.title };
+}
+
+/**
+ * 只给原件时,那一行的说法:PDF / 目录 / 其它文件各有各的读法。
+ *
+ * `hasTranscript`:转录其实是有的、只是按屏蔽设置不给 —— 那就**不说**「尚未转 Markdown」
+ * (那句是假话,还会引着模型去要一份转录)。
+ */
+function originalLabel(abs: string, hasTranscript: boolean): string {
+  if (extOf(abs) === ".pdf") return hasTranscript ? "PDF" : "PDF(尚未转 Markdown,按 PDF 处理)";
+  try {
+    if (statSync(abs).isDirectory()) return "目录(先列出里面的文件再读)";
+  } catch {
+    /* 文件不在了:仍按文件说,路径照给 —— 读的时候自然会报缺 */
+  }
+  return hasTranscript ? "文件(按原格式读)" : "文件(没有 Markdown 转录,按原格式读)";
 }
 
 /**
@@ -114,13 +136,15 @@ function renderItemsManifest(items: LibraryItem[]): string[] {
       const authors = formatAuthorList(item.authors, 3).replace(/\|/g, "\\|");
       const title = item.title.replace(/\|/g, "\\|");
       const venue = (item.venue ?? "").replace(/\|/g, "\\|");
-      // 优先给 **Markdown 的绝对路径** —— 那才是让 agent 读的格式(排版、公式、
-      // 表格都在里头,而且比 PDF 便宜得多)。没有转换产物才退回 PDF,并**显式
-      // 标明这是 PDF**,免得 agent 以为手上是 Markdown 而按纯文本去引用。
-      const file = item.mdPath
-        ? `\`${fromLibraryRelative(item.mdPath)}\``
-        : item.pdfPath
-          ? `\`${fromLibraryRelative(item.pdfPath)}\`(PDF,尚未转 Markdown)`
+      // 优先给 **Markdown 转录的绝对路径** —— 那才是让 agent 读的格式(排版、公式、
+      // 表格都在里头,而且比 PDF 便宜得多),括号里一起给原件(见 `readableFilesOf`)。
+      // 没有转录才退回原件;是 PDF 就**显式标明**,免得 agent 以为手上是 Markdown。
+      // 按文件类型屏蔽的那份不给(`aiVisibleFilesOf`)。
+      const f = aiVisibleFilesOf(item);
+      const file = f.markdown
+        ? `\`${f.markdown}\`` + (f.original ? `(原件 \`${f.original}\`)` : "")
+        : f.original
+          ? `\`${f.original}\`` + (extOf(f.original) === ".pdf" && !f.hasTranscript ? "(PDF,尚未转 Markdown)" : "")
           : "（未下载）";
       lines.push(`| ${i + 1} | ${title} | ${authors} | ${item.year ?? ""} | ${venue} | ${file} |`);
     });

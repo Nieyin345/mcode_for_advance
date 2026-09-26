@@ -1,5 +1,19 @@
 /**
- * 屏蔽规则 —— **哪些资料不进上下文**。
+ * 屏蔽规则 —— **哪些资料不给 AI 看**。
+ *
+ * ## 只管给 AI 看的(2026-09-26 用户定的规矩)
+ *
+ * 「只要是给 AI 看的东西才需要屏蔽,用户看的不需要」—— 屏蔽是为**引用**设计的:挂进
+ * 对话的清单、AI 的翻库工具、`library.py`。用户自己在界面里搜、预览(看 PDF)不过这道门;
+ * 下载、转录、挂回转录这类**干活**的动作(包括自动化)也不过 —— 屏蔽了 pdf 要的正是
+ * 「只给模型看转录后的 md」,不转录就没有那份 md。
+ *
+ * 两层:
+ *   - **整条挡**(`suppressionReasonOfItem`):所在分类/大类被屏蔽,或者它名下的文件
+ *     **全部**被按文件类型屏蔽;
+ *   - **按份去掉**(`isFileSuppressed`):没被整条挡的条目,给 AI 的文件里去掉被屏蔽
+ *     类型的那几份(清单、翻库结果、`library.py` 都按这一层,见 `fileImport.ts` 的
+ *     `aiVisibleFilesOf`)。
  *
  * ## 判定要查祖先链,所以住在主进程
  *
@@ -17,7 +31,7 @@
  * 用户的原话:「就算是我手动挂的一个文件,只要是屏蔽状态,也挂不上去」。所以**入口和
  * 每个关联都过同一道判定**,入口不被特殊对待 —— 那正是"平级"的另一面。
  *
- * 判定这份实现只导出**一个**入口:`suppressionReasonOfItem`(下面)。从前还有一个
+ * 整条挡的判定只导出**一个**入口:`suppressionReasonOfItem`(下面)。从前还有一个
  * 返回布尔值的 `isItemSuppressed`,但**全仓库没有任何调用方** —— 调用方要的从来不是
  * "是不是被挡了"这一个比特,而是"被挡了、因为哪一条"(仓规:坏东西显式报出来)。
  * 于是它被删掉了:留着的话,下一个人会挑它("布尔值更顺手"),然后拿一个说不清原因的
@@ -131,11 +145,13 @@ export function suppressKeysOfItem(itemId: string): string[] {
  * 两把筛子,**任一命中即挡住**:
  *
  *   1. **节点**:祖先链上任一节点在 `nodes` 里(见 `suppressKeysOfItem`);
- *   2. **扩展名**:它的文件后缀在 `extensions` 里。
+ *   2. **扩展名**:它名下的文件(转录 / PDF / 通用文件)**全部**被屏蔽。
  *
- * 扩展名看的是**条目实际会被读的那个文件** —— 与清单里给 agent 的路径同源:
- * 有 markdown 就按 markdown(md 转换产物才是 agent 读的),否则 PDF,否则通用文件
- * 路径。这样"屏蔽 .md"挡住的正是 agent 会去读的那份,而不是一份它根本不会碰的。
+ * 扩展名按**份**算:一条条目的原件和它的 Markdown 转录是一起给 AI 的,屏蔽 `.pdf` 时
+ * 转录过的那条照样挂得上、只是清单里只剩转录(见 `isFileSuppressed`);只有 PDF 的那条
+ * 一份都不剩,才整条挡。同一天早些时候改成过「任一份命中就整条挡」,与用户的设计正相反。
+ * 没有文件的条目(只有元数据)不受扩展名影响。
+ * `library.py` 里的 `suppress_reason` 是同一条规则的 Python 版,改这里要一起改。
  *
  * 挂不上必须说清为什么(仓库纪律:坏清单要显式报出来,不静默跳过)。只说"被屏蔽了"
  * 用户还得自己去设置里翻是哪一条,所以这里尽力把命中的那个节点/扩展名说出来。
@@ -157,12 +173,24 @@ export function suppressionReasonOfItem(itemId: string): string | null {
     if (nodeSet.has(key)) return describeNodeKey(key);
   }
 
-  const p = item.mdPath ?? item.pdfPath ?? item.filePath;
-  if (p) {
-    const ext = extname(p).toLowerCase();
-    if (ext.length > 0 && rule.extensions.includes(ext)) return `${ext} 文件`;
+  const files = [item.mdPath, item.pdfPath, item.filePath].filter((p): p is string => Boolean(p));
+  if (files.length > 0 && files.every((p) => isFileSuppressed(p))) {
+    const exts = [...new Set(files.map((p) => extname(p).toLowerCase()))];
+    return `${exts.join("、")} 文件`;
   }
   return null;
+}
+
+/**
+ * 这一份文件**按文件类型**被屏蔽了没有 —— 「按份去掉」那一层。
+ *
+ * 只看扩展名(小写、带点);没有扩展名的(目录、怪名字)不算。分类那一层不在这里:
+ * 分类屏蔽是整条挡,见 `suppressionReasonOfItem`。
+ */
+export function isFileSuppressed(p: string | null | undefined): boolean {
+  if (!p) return false;
+  const ext = extname(p).toLowerCase();
+  return ext.length > 0 && loadSuppress().extensions.includes(ext);
 }
 
 /**

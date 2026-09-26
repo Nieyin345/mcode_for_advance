@@ -776,7 +776,7 @@ export const BUILTIN_WORKFLOWS: readonly WorkflowDoc[] = [
     id: AUTO_DOWNLOAD_WORKFLOW_ID,
     name: "文献自动下载",
     // 会进流程记录的开头(同 search/write 的规矩),写的是这条流程是干什么的。
-    description: "资料库有新条目导入时,读出最新导入的条目,有 DOI/arXiv 或链接的就排队下载 PDF。",
+    description: "资料库有新条目导入时,把这次导入的那几条里有 DOI/arXiv 或链接的排队下载 PDF。",
     icon: "download",
     nodes: graph(AUTO_DOWNLOAD_NODES, AUTO_DOWNLOAD_EDGES),
     edges: [...AUTO_DOWNLOAD_EDGES],
@@ -789,7 +789,7 @@ export const BUILTIN_WORKFLOWS: readonly WorkflowDoc[] = [
     // 分开是因为它们听的是两个不同的时机(见 AUTO_DOWNLOAD_WORKFLOW_ID 上的说明)。
     id: AUTO_CONVERT_WORKFLOW_ID,
     name: "下载完自动转 Markdown",
-    description: "资料库某条目的 PDF 下载完成时,把它转成 Markdown 并挂回该条目。",
+    description: "资料库某条目的 PDF 下载完成时,把 PDF 交给 MinerU 转成 Markdown 并挂回该条目(PDF 会上传到 MinerU;屏蔽设置不管这里,它只管给 AI 看的)。",
     icon: "file-text",
     nodes: graph(AUTO_CONVERT_NODES, AUTO_CONVERT_EDGES),
     edges: [...AUTO_CONVERT_EDGES],

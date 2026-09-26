@@ -851,6 +851,8 @@ class AutomationRunner {
     // "这件事是关于哪一条"同样是**事件本身**的事实(资料库那两个事件有,其余没有)。
     // 与上面那条同理取一次 —— 它不是主语,不进 matcher(那两个事件压根没有可筛的维度)。
     const item = eventItemFactsOf(e);
+    // 屏蔽**不管**自动化(2026-09-26 用户定的规矩:屏蔽只管给 AI 看的)。屏蔽了 pdf 的条目
+    // 照样下载、照样转录 —— 转录出的 md 才是给模型看的那份。别在这里加屏蔽过滤。
     const source = this.automationSourceOf(e.sessionId);
     let sourceChain: string[] = [];
     let sourceError: string | undefined;

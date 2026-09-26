@@ -51,6 +51,7 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useLibraryStore } from "@renderer/stores/libraryStore.js";
 import { useFileViewStore, basenameOf } from "@renderer/stores/fileViewStore.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { previewLibraryItem } from "@renderer/lib/libraryPreview.js";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { DEFAULT_LIBRARY_GROUPS, type LibraryGroupMeta } from "@contracts/libraryTypes";
@@ -206,8 +207,6 @@ export function LibrarySection({
   const loadEveryCollectionItems = useLibraryStore((s) => s.loadEveryCollectionItems);
   const refreshItems = useLibraryStore((s) => s.refreshItems);
   const leftBarMode = useSessionStore((s) => s.leftBarMode);
-  const setRightPanelTab = useSessionStore((s) => s.setRightPanelTab);
-  const setRightOpen = useSessionStore((s) => s.setRightOpen);
   const setCenterTabFocus = useSessionStore((s) => s.setCenterTabFocus);
   /** 双击进主栏编辑 —— 和文件树那条**同一个 action**（见 `openItemInCenter`）。 */
   const openFileInIde = useSessionStore((s) => s.openFileInIde);
@@ -504,19 +503,10 @@ export function LibrarySection({
    */
   const openItem = (item: LibraryItem, collectionId: string | null) => {
     if (collectionId) setActive(collectionId);
-    // ★ **点一行 = 看本体**（2026-09-21）。`setActiveItem` 会把 `previewWhich` 清成 null，
-    // 于是"上一条在看转录、这一条自己弹回到 PDF"是白拿的 —— 用户要的正是"点击和双击
-    // 都显示这个 PDF 本身"，转录只能从右键那一项进。
-    setActiveItem(item.id);
-    // md 文件点开就是要写/改它,直接落在编辑页;其余落在第一页(元数据 / 概览)
-    // （kind 退役：编辑权按扩展名判。）
-    const isMd = Boolean(item.mdPath?.endsWith(".md") || item.filePath?.endsWith(".md"));
-    useLibraryStore.getState().setDetailTab(isMd ? "edit" : "meta");
-    // **单击 = 预览**（2026-09-21）：把右栏切到「预览」并拉出来。
-    // 原来切的是「文献库」那个 tab，而它已经删了（检索去 Ctrl+K、导入/关联/文献信息
-    // 去左栏右键）。双击才是进主页面编辑 —— 见 `openItemInCenter`。
-    setRightPanelTab("preview");
-    setRightOpen(true);
+    // 其余四步(选中 → 看本体不看转录、md 落编辑页其余落元数据页、右栏切「预览」并拉出来)
+    // 与首屏「最近加入的资料」同一份 —— `previewLibraryItem`,别在这儿再抄一遍。
+    // 为什么是这四步,见那边的注释。
+    previewLibraryItem(item);
   };
 
   /**

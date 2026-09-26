@@ -23,6 +23,7 @@ import { LibraryRepo } from "@main/store/repositories.js";
 import { emitItemImported } from "./broadcast.js";
 import { libraryRoot, ensureLibraryDirs, fromLibraryRelative } from "./paths.js";
 import { log } from "@main/lib/logger.js";
+import { isFileSuppressed } from "./suppress.js";
 
 /** attached 文件的落点:`<库根>/files/`。**扁平 + 条目 id 前缀** —— 不按扩展名分子
  *  目录:文件类型是界面上可改的属性,按它落盘的话改个类型文件就得搬家,没人做得到。 */
@@ -251,6 +252,41 @@ export function entryRootAbsPath(item: LibraryItem, which?: "pdf" | "md"): strin
     (item.pdfPath ? fromLibraryRelative(item.pdfPath) : null) ??
     (item.mdPath ? fromLibraryRelative(item.mdPath) : null)
   );
+}
+
+/**
+ * 一条条目**交给 AI 的**两份文件:Markdown 转录(若有)与原件。
+ *
+ * 挂进对话的清单(`manifest.ts`)和 `library.py` 的 `file_of` 都按这一口径:有转录就先给
+ * 转录(便宜,公式、表格都在里头),**后面一起给原件** —— 转录和原件是同一条条目的两份
+ * 文件(`convert.ts` 把转录写回原条目的 `md_path`),转录里拿不准的图表、版式要回原件核对。
+ *
+ * 原件 = 本体(`file_path`)→ PDF,与 `entryRootAbsPath(item, "pdf")` 同一顺序。
+ * 从前清单只认 md / pdf 两列,只有 `file_path` 的通用条目(Word、PPT、关联进来的库外
+ * 文件)在清单里被说成「还没有文件」。
+ */
+export function readableFilesOf(item: LibraryItem): { markdown: string | null; original: string | null } {
+  return {
+    markdown: item.mdPath ? fromLibraryRelative(item.mdPath) : null,
+    original: entryRootAbsPath(item, "pdf"),
+  };
+}
+
+/**
+ * **给 AI 的**那几份文件 = `readableFilesOf` 去掉按文件类型屏蔽的(见 `suppress.ts`)。
+ *
+ * 屏蔽 pdf → 只剩转录;屏蔽 md → 只剩原件。条目整条挡不挡由调用方先用
+ * `suppressionReasonOfItem` 判;这里只管按份去掉。用户自己预览不走这里。
+ * `hasTranscript` 说的是**有没有转录**(不管给不给)—— 只剩原件时,清单据此决定要不要
+ * 说「尚未转 Markdown」:转录是有的、只是不给,就不该那样说。
+ */
+export function aiVisibleFilesOf(item: LibraryItem): { markdown: string | null; original: string | null; hasTranscript: boolean } {
+  const f = readableFilesOf(item);
+  return {
+    markdown: f.markdown && !isFileSuppressed(f.markdown) ? f.markdown : null,
+    original: f.original && !isFileSuppressed(f.original) ? f.original : null,
+    hasTranscript: Boolean(item.mdPath),
+  };
 }
 
 /**

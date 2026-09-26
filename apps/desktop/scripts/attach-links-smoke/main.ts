@@ -368,5 +368,107 @@ console.log("\n屏蔽:整库与分类清单也过筛子");
   saveSuppress({ nodes: [], extensions: [] });
 }
 
+console.log("\n转录与原件:引用时一起给,按文件类型屏蔽时按份去掉");
+
+{
+  saveSuppress({ nodes: [], extensions: [] });
+  const dir = mkdtempSync(join(tmpdir(), "mcode-attach-orig-"));
+  const manifestOf = (i: number): string => (sent[i] ? readFileSync(sent[i].manifestPath, "utf8") : "");
+
+  // ① 通用文件(Word,没转录):清单要指出文件本身。从前清单只认 md / pdf 两列,
+  //    通用条目只有 file_path,于是挂上去的 chip 里写着「这一条还没有文件」。
+  const docxPath = join(dir, "课题报告.docx");
+  writeFileSync(docxPath, "fake docx", "utf8");
+  const docx = LibraryRepo.upsert({ title: "课题报告", entryMode: "linked", filePath: docxPath });
+  resetSent();
+  const r1 = attachToChat(SID, `i:${docx.id}`);
+  check("通用文件挂得上", r1.ok, r1);
+  check("★ 通用文件的清单写出了文件本身", manifestOf(0).includes(docxPath), manifestOf(0));
+  check("★ 不再说它「还没有文件」", !manifestOf(0).includes("还没有文件"), manifestOf(0));
+
+  // ② 关联进来的库外文件是同一个毛病:它被导入成 linked 条目(只有 file_path),
+  //    关联那个 chip 的清单也得指得到文件 —— 否则「关联的一起引用」只挂上一个空壳。
+  const refPath = join(dir, "参考资料.txt");
+  writeFileSync(refPath, "参考", "utf8");
+  const host = LibraryRepo.upsert({ title: "带库外关联的宿主" });
+  LibraryLinkRepo.add(host.id, { targetPath: refPath });
+  resetSent();
+  attachToChat(SID, `i:${host.id}`);
+  check("★ 关联进来的库外文件,清单里有它的路径", manifestOf(1).includes(refPath), manifestOf(1));
+
+  // ③ 转录过的 PDF:引用时转录(先读)和原件都给出来 —— 转录和原件是同一条条目的两份文件。
+  const paper = LibraryRepo.upsert({ title: "转录过的论文" });
+  LibraryRepo.setPdf(paper.id, `papers/ee/ff/${paper.id}.pdf`, "sha-fake-3");
+  LibraryRepo.setMarkdown(paper.id, `markdown/imported/${paper.id}/full.md`);
+  resetSent();
+  attachToChat(SID, `i:${paper.id}`);
+  const m3 = manifestOf(0);
+  check("★ 单篇清单里有转录", m3.includes("full.md"), m3);
+  check("★ 单篇清单里也有原件 PDF", m3.includes(`${paper.id}.pdf`), m3);
+  check("转录排在原件前面(先读 Markdown)", m3.indexOf("full.md") < m3.indexOf(`${paper.id}.pdf`), m3);
+
+  const coll = CollectionRepo.create("转录对照");
+  CollectionRepo.assign(coll.id, [paper.id, docx.id], true);
+  const table = readFileSync(writeCollectionManifest(coll.id).path, "utf8");
+  check("★ 分类清单:转录条目带出原件", table.includes("full.md") && table.includes(`${paper.id}.pdf`), table);
+  check("★ 分类清单:通用文件给出路径,不再是「未下载」", table.includes(docxPath), table);
+
+  // ④ 按文件类型屏蔽**按份算,不按条算**(2026-09-26 用户定的规矩):屏蔽只管**给 AI 看的**。
+  //    屏蔽 pdf → 模型只拿到转录后的 md;用户自己预览照样看 PDF(那是界面,不过这道门)。
+  //    一条条目的文件**全被**屏蔽时它才整条挂不上。
+  //    (同一天早些时候改成过「任一份命中就整条挡」—— 与这个设计正相反,这几条就是钉它的。)
+  saveSuppress({ nodes: [], extensions: [".pdf"] });
+  resetSent();
+  const r4 = attachToChat(SID, `i:${paper.id}`);
+  check("★ 屏蔽 .pdf 后,转录过的 PDF 照样挂得上", r4.ok, r4);
+  const m4 = manifestOf(0);
+  check("★ 清单里有转录", m4.includes("full.md"), m4);
+  check("★ 清单里没有 PDF 原件", !m4.includes(`${paper.id}.pdf`), m4);
+  const t4 = readFileSync(writeCollectionManifest(coll.id).path, "utf8");
+  check("★ 分类清单:转录过的 PDF 还在,只剩转录",
+    t4.includes("转录过的论文") && t4.includes("full.md") && !t4.includes(`${paper.id}.pdf`), t4);
+
+  // 只有 PDF、没转录的:它的文件全被屏蔽 → 整条挂不上
+  const pdfOnly = LibraryRepo.upsert({ title: "还没转录的论文" });
+  LibraryRepo.setPdf(pdfOnly.id, `papers/ee/00/${pdfOnly.id}.pdf`, "sha-fake-4");
+  const r4b = attachToChat(SID, `i:${pdfOnly.id}`);
+  check("只有 PDF 的:整条挂不上,原因说是 .pdf", !r4b.ok && (r4b.error ?? "").includes(".pdf"), r4b);
+
+  // 屏蔽 .docx:转录过的 Word 只给转录;没转录的 Word 整条挡
+  saveSuppress({ nodes: [], extensions: [".docx"] });
+  const docxMd = LibraryRepo.upsert({ title: "转录过的 Word", entryMode: "linked", filePath: join(dir, "b.docx") });
+  LibraryRepo.setMarkdown(docxMd.id, `markdown/imported/${docxMd.id}/full.md`);
+  resetSent();
+  const r5 = attachToChat(SID, `i:${docxMd.id}`);
+  check("★ 屏蔽 .docx 后,转录过的 Word 挂得上、只给转录",
+    r5.ok && manifestOf(0).includes("full.md") && !manifestOf(0).includes("b.docx"), manifestOf(0));
+  const r5b = attachToChat(SID, `i:${docx.id}`);
+  check("没转录的 Word 整条挂不上", !r5b.ok, r5b);
+
+  // 屏蔽 .md:反过来,只给原件
+  saveSuppress({ nodes: [], extensions: [".md"] });
+  resetSent();
+  const r6 = attachToChat(SID, `i:${paper.id}`);
+  check("★ 屏蔽 .md 后,转录过的 PDF 只给原件",
+    r6.ok && manifestOf(0).includes(`${paper.id}.pdf`) && !manifestOf(0).includes("full.md"), manifestOf(0));
+  check("只给原件时不说「尚未转 Markdown」(转录是有的,只是不给)", !manifestOf(0).includes("尚未转"), manifestOf(0));
+
+  // 关联的一起引用、同一级别,各自按份过滤
+  saveSuppress({ nodes: [], extensions: [".pdf"] });
+  const hub = LibraryRepo.upsert({ title: "引用入口" });
+  LibraryLinkRepo.add(hub.id, { targetItemId: paper.id });
+  LibraryLinkRepo.add(hub.id, { targetItemId: pdfOnly.id });
+  resetSent();
+  const r7 = attachToChat(SID, `i:${hub.id}`);
+  check("入口挂上,并如实说有一条被屏蔽挡下", r7.ok && (r7.error ?? "").includes("屏蔽"), r7);
+  const all7 = sent.map((m) => readFileSync(m.manifestPath, "utf8")).join("\n----\n");
+  check("★ 关联的转录过的论文同级挂上,只给转录",
+    all7.includes("转录过的论文") && all7.includes("full.md") && !all7.includes(`${paper.id}.pdf`), all7);
+  check("★ 关联的只有 PDF 的那篇没挂上", !all7.includes("还没转录的论文"), all7);
+
+  saveSuppress({ nodes: [], extensions: [] });
+  rmSync(dir, { recursive: true, force: true });
+}
+
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures > 0) process.exit(1);
