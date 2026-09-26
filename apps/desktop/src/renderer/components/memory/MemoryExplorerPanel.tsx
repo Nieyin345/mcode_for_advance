@@ -40,7 +40,7 @@ import { MemoryTransferPanel } from "./MemoryTransferPanel.js";
  * 通道没就绪/读失败:一句错误小字,不弹错(同 `RunHistorySection` 的纪律)。
  * 第一二节读不到时**类目照样摆出来**(它们是契约里的常量),只由那句小字交代。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { MEMORY_CATEGORIES, type MemoryFileMeta } from "@contracts/memory";
 import "@renderer/lib/monacoSetup.js";
 import Editor from "@monaco-editor/react";
@@ -87,6 +87,20 @@ function fmtDate(ms: number): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+/** Renderer-lifetime drafts. Keep the original revision for conflict detection;
+ * navigation must never silently turn an unsaved edit into a fresh disk read. */
+type RetainedMemoryDraft = { content: string; savedContent: string; revision: string | null };
+let memoryDrafts = new Map<string, RetainedMemoryDraft>();
+const memoryDraftListeners = new Set<() => void>();
+const pendingMemorySaves = new Set<string>();
+const getMemoryDrafts = () => memoryDrafts;
+const subscribeMemoryDrafts = (listener: () => void) => { memoryDraftListeners.add(listener); return () => { memoryDraftListeners.delete(listener); }; };
+function rememberMemoryDraft(path: string, draft: RetainedMemoryDraft | null) {
+  memoryDrafts = new Map(memoryDrafts);
+  if (draft) memoryDrafts.set(path, draft); else memoryDrafts.delete(path);
+  for (const listener of memoryDraftListeners) listener();
+}
+
 export function MemoryExplorerPanel() {
   const { t } = useI18n();
   const theme = useMonacoTheme();
@@ -105,6 +119,13 @@ export function MemoryExplorerPanel() {
   /** 等待确认删除的文件(全路径)。ConfirmDialog 的目标。 */
   const [deleteTarget, setDeleteTarget] = useState<{ path: string; revision: string } | null>(null);
   const [revision, setRevision] = useState<string | null>(null);
+  const retainedDrafts = useSyncExternalStore(subscribeMemoryDrafts, getMemoryDrafts);
+  // A save begun in a previous mount can finish while this editor is open.
+  // Only update its baseline/revision; newer typed text remains untouched.
+  useEffect(() => {
+    const kept = selected === null ? undefined : retainedDrafts.get(selected);
+    if (kept) { setSavedContent(kept.savedContent); setRevision(kept.revision); }
+  }, [retainedDrafts, selected]);
   const editEpoch = useRef(0);
   const [readRequest, setReadRequest] = useState<{ path: string; epoch: number } | null>(null);
   const [mutating, setMutating] = useState(false);
@@ -269,17 +290,27 @@ export function MemoryExplorerPanel() {
   const open = useCallback((path: string): void => {
     const epoch = ++editEpoch.current;
     setDraft(null); setSelected(path); setNotice(null);
-    setContent(""); setSavedContent(""); setRevision(null);
-    setReadRequest({ path, epoch });
+    const kept = memoryDrafts.get(path);
+    if (kept && kept.content !== kept.savedContent) {
+      setContent(kept.content); setSavedContent(kept.savedContent); setRevision(kept.revision);
+      setReadRequest(null);
+    } else {
+      if (kept) rememberMemoryDraft(path, null);
+      setContent(""); setSavedContent(""); setRevision(null);
+      setReadRequest({ path, epoch });
+    }
   }, []);
 
   const save = useCallback(async (path: string, body: string, expectedRevision: string | null, pinned?: boolean): Promise<string | null> => {
-    if (mutationPending.current) return null;
+    if (mutationPending.current || pendingMemorySaves.has(path)) return null;
+    pendingMemorySaves.add(path);
     mutationPending.current = true; setMutating(true);
     const epoch = editEpoch.current;
     try {
       const res = await api.memory.save({ path, content: body, expectedRevision, ...(pinned === undefined ? {} : { pinned }) });
       if (res.ok && res.revision) {
+        const kept = memoryDrafts.get(path);
+        if (kept) rememberMemoryDraft(path, { ...kept, savedContent: body, revision: res.revision });
         if (editEpoch.current === epoch) {
           setSavedContent(body); setRevision(res.revision);
           setNotice({ tone: "ok", text: t("memory.saved") });
@@ -292,7 +323,12 @@ export function MemoryExplorerPanel() {
     } catch (err) {
       if (editEpoch.current === epoch) setNotice({ tone: "error", text: t("memory.saveFailed", { error: (err as Error).message }) });
       return null;
-    } finally { mutationPending.current = false; setMutating(false); }
+    } finally {
+      pendingMemorySaves.delete(path);
+      mutationPending.current = false; setMutating(false);
+      const kept = memoryDrafts.get(path);
+      if (kept) rememberMemoryDraft(path, kept);
+    }
   }, [load, t]);
 
   const createDraft = useCallback(async (): Promise<void> => {
@@ -316,6 +352,7 @@ export function MemoryExplorerPanel() {
         if (editEpoch.current === epoch) setNotice({ tone: "error", text: res.code === "conflict" ? t("memory.conflict") : res.error ?? t("common.error") });
         return;
       }
+      rememberMemoryDraft(target.path, null);
       if (editEpoch.current === epoch && selected === target.path) {
         editEpoch.current++;
         setReadRequest(null); setSelected(null); setRevision(null); setContent(""); setSavedContent(""); setNotice(null);
@@ -522,17 +559,21 @@ export function MemoryExplorerPanel() {
                 <Button
                   size="sm"
                   variant="secondary"
-                  disabled={mutating || revision === null}
+                  disabled={mutating || revision === null || pendingMemorySaves.has(selected)}
                   onClick={() => void save(selected, content, revision)}
                   className="shrink-0 gap-1"
                 >
                   <IconDeviceFloppy size={12} />
                   {t("common.save")}
                 </Button>
+                <Button size="sm" disabled={!dirty || mutating || pendingMemorySaves.has(selected)} onClick={() => {
+                  rememberMemoryDraft(selected, null);
+                  open(selected);
+                }}>{t("common.discardChanges")}</Button>
                 <Button
                   size="sm"
                   variant="secondary"
-                  disabled={mutating || revision === null}
+                  disabled={mutating || revision === null || pendingMemorySaves.has(selected)}
                   onClick={() => { if (revision) setDeleteTarget({ path: selected, revision }); }}
                   className="shrink-0 gap-1"
                 >
@@ -546,7 +587,12 @@ export function MemoryExplorerPanel() {
                   language="markdown"
                   theme={theme}
                   value={content}
-                  onChange={(value) => setContent(value ?? "")}
+                  onChange={(value) => {
+                    const next = value ?? "";
+                    setContent(next);
+                    const current = memoryDrafts.get(selected);
+                    rememberMemoryDraft(selected, { content: next, savedContent: current?.savedContent ?? savedContent, revision: current?.revision ?? revision });
+                  }}
                   loading={
                     <div className="p-3 text-[0.7143em] text-content-subtle">
                       {t("common.loading")}

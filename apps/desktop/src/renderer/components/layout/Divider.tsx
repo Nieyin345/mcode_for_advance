@@ -1,154 +1,106 @@
-/**
- * Divider - a draggable splitter handle between two layout panes.
- *
- * Used in ThreePaneLayout (left|center, center|right, center|bottom-terminal)
- * and CenterPane (chat|editor). Hand-rolled with mousedown -> document
- * mousemove/mouseup listeners, matching the codebase's no-library style.
- *
- * Visuals: the visible line is a 1px hairline (`bg-edge-panel` — the lighter
- * structural-divider token; these lines run full window height and read as
- * heavy rules at the darker card-border value) that lights up
- * (`bg-accent/50`) on hover or while dragging - it reads like a border, not a
- * thick bar. The *draggable* hit area, however, is wider: an invisible
- * absolutely-positioned layer extends symmetrically (±5px) beyond the 1px
- * layout slot, so the divider is easy to grab without making the line thicker.
- * The 1px line uses `pointer-events-none` so pointer events pass straight
- * through to the hit area beneath. During a drag, a global `select-none` +
- * fixed cursor is applied to <body> so text selection and cursor flicker
- * don't interfere.
- *
- * The caller owns the sizing math: `onResize(deltaPx)` is called on every
- * mousemove with the signed pixel delta *since the last event* (an incremental
- * delta, not cumulative). The sign convention is screen-space (positive =
- * right / down); the caller decides whether that delta grows or shrinks the
- * pane it controls - e.g. the left-bar divider grows the bar with a positive
- * delta, while the right-bar divider shrinks it. The caller adds the delta
- * to the current store value inside its setter, so it never needs to track a
- * drag-start baseline.
- *
- * For the chat|editor split the delta is reported in px too; the caller
- * converts to a percentage using the container's measured width.
- */
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
+import { useI18n } from "@renderer/lib/i18n/index.js";
 import { COL_RESIZE_CURSOR, ROW_RESIZE_CURSOR } from "@renderer/lib/cursors.js";
 
 export interface DividerProps {
-  /** `vertical` = a tall thin bar between side-by-side panes (cursor:
-   *  col-resize). `horizontal` = a wide thin bar between stacked panes
-   *  (cursor: row-resize). The naming follows the divider's own shape, not
-   *  the drag axis. */
   orientation: "vertical" | "horizontal";
-  /** Called on every mousemove during a drag with the signed *incremental*
-   *  pixel delta since the last move (positive = rightward / downward).
-   *  The caller adds it to the current pane size and clamps. */
+  /** Incremental screen-space pixels. Caller owns sign, clamp and persisted size. */
   onResize: (deltaPx: number) => void;
-  /** Optional double-click handler (e.g. reset to default width). */
   onDoubleClick?: () => void;
-  /** Kept for API compatibility but a no-op (the visible 1px line is centered
-   *  in the symmetric hit area, so there is nowhere to align within). */
   lineAlign?: "start" | "center" | "end";
-  /** Omit the visible 1px hairline while keeping the draggable hit area.
-   *  Used where two panes share the same background and a hairline would cut
-   *  through a continuous surface (e.g. the workspace's muted frame: sidebar
-   *  | toolbar) — resizing stays possible, discovered via the resize cursor. */
   hideLine?: boolean;
   className?: string;
 }
 
-export function Divider({
-  orientation,
-  onResize,
-  onDoubleClick,
-  hideLine = false,
-  className,
-}: DividerProps) {
-  const dragging = useRef(false);
+/** One keyboard/pointer interaction owner, cleaned on every exit path.
+ * Pointer capture keeps drags local even over iframes or outside the handle. */
+export function Divider({ orientation, onResize, onDoubleClick, hideLine = false, className }: DividerProps) {
+  const { t } = useI18n();
+  const vertical = orientation === "vertical";
+  const handle = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState(50);
+  useEffect(() => {
+    const element = handle.current;
+    const parent = element?.parentElement;
+    if (!element || !parent) return;
+    const measure = () => {
+      const outer = parent.getBoundingClientRect(), own = element.getBoundingClientRect();
+      const total = vertical ? outer.width : outer.height;
+      if (total > 0) setPosition(Math.round(Math.max(0, Math.min(100, 100 * (vertical ? own.left - outer.left : own.top - outer.top) / total))));
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(parent);
+    if (element.previousElementSibling) observer.observe(element.previousElementSibling);
+    if (element.nextElementSibling) observer.observe(element.nextElementSibling);
+    measure();
+    return () => observer.disconnect();
+  }, [vertical]);
+  const resize = useRef(onResize);
+  resize.current = onResize;
+  const drag = useRef<{ id: number; previous: number; element: HTMLDivElement; cursor: string; select: string } | null>(null);
+  const finish = useCallback(() => {
+    const current = drag.current;
+    if (!current) return;
+    drag.current = null;
+    document.body.style.cursor = current.cursor;
+    document.body.style.userSelect = current.select;
+    if (current.element.hasPointerCapture(current.id)) current.element.releasePointerCapture(current.id);
+  }, []);
+  useEffect(() => {
+    window.addEventListener("blur", finish);
+    return () => { finish(); window.removeEventListener("blur", finish); };
+  }, [finish]);
 
-  const isVertical = orientation === "vertical";
-
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent) => {
-      // Only respond to primary button; let right-click through.
-      if (e.button !== 0) return;
-      e.preventDefault();
-      let prev = isVertical ? e.clientX : e.clientY;
-      dragging.current = true;
-
-      // Lock the whole document while dragging: fixed cursor, no text
-      // selection, no iframe pointer capture issues. Removed on mouseup.
-      const prevCursor = document.body.style.cursor;
-      const prevSelect = document.body.style.userSelect;
-      document.body.style.cursor = isVertical ? COL_RESIZE_CURSOR : ROW_RESIZE_CURSOR;
-      document.body.style.userSelect = "none";
-
-      const onMove = (ev: MouseEvent) => {
-        if (!dragging.current) return;
-        const current = isVertical ? ev.clientX : ev.clientY;
-        const delta = current - prev;
-        prev = current;
-        if (delta !== 0) onResize(delta);
-      };
-      const onUp = () => {
-        dragging.current = false;
-        document.body.style.cursor = prevCursor;
-        document.body.style.userSelect = prevSelect;
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-      };
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-    },
-    [isVertical, onResize],
-  );
-
-  // Two-layer structure:
-  //  - Outer slot: still occupies a 1px layout gutter (w-px / h-px) so it
-  //    doesn't shift pane sizes. It is `relative` so the inner layers can be
-  //    absolutely positioned relative to it.
-  //  - Hit area: an invisible layer expanding symmetrically (±5px) beyond the
-  //    1px slot, providing a wide grab target. It carries the mouse handlers
-  //    and the cursor. `z-0` keeps it beneath the line but still clickable
-  //    (the line is pointer-events-none).
-  //  - Line: the 1px visible hairline, centered over the slot and stretching
-  //    across the full length. pointer-events-none so it never steals the
-  //    grab from the hit area; it only lights up via group-hover/active.
   return (
     <div
+      ref={handle}
       role="separator"
-      aria-orientation={isVertical ? "vertical" : "horizontal"}
-      className={cn(
-        "group/divider relative z-10 shrink-0",
-        isVertical ? "w-px" : "h-px",
-        className,
-      )}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={position}
+      aria-label={t(vertical ? "common.resizeColumns" : "common.resizeRows")}
+      aria-orientation={vertical ? "vertical" : "horizontal"}
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.nativeEvent.isComposing || e.altKey || e.ctrlKey || e.metaKey) return;
+        const negative = vertical ? "ArrowLeft" : "ArrowUp";
+        const positive = vertical ? "ArrowRight" : "ArrowDown";
+        if (e.key === negative || e.key === positive) {
+          e.preventDefault(); e.stopPropagation();
+          onResize((e.key === positive ? 1 : -1) * (e.shiftKey ? 40 : 10));
+        } else if ((e.key === "Enter" || e.key === "Home") && onDoubleClick) {
+          e.preventDefault(); onDoubleClick();
+        } else if (e.key === "Escape") finish();
+      }}
+      className={cn("group/divider relative z-10 shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-accent-strong", vertical ? "w-px" : "h-px", className)}
     >
-      {/* Draggable hit area - wider than the visible line. Cursor uses the
-          explicit SVG resize cursors (lib/cursors.ts), NOT `cursor-col-resize`:
-          Chromium may swap in a white variant of the system cursor when the
-          window is flagged dark, which vanishes on the light theme. */}
       <div
-        onMouseDown={handleMouseDown}
+        onPointerDown={(e) => {
+          if (!e.isPrimary || e.button !== 0) return;
+          e.preventDefault(); finish();
+          e.currentTarget.parentElement?.focus();
+          drag.current = { id: e.pointerId, previous: vertical ? e.clientX : e.clientY, element: e.currentTarget, cursor: document.body.style.cursor, select: document.body.style.userSelect };
+          e.currentTarget.setPointerCapture(e.pointerId);
+          document.body.style.cursor = vertical ? COL_RESIZE_CURSOR : ROW_RESIZE_CURSOR;
+          document.body.style.userSelect = "none";
+        }}
+        onPointerMove={(e) => {
+          const current = drag.current;
+          if (!current || current.id !== e.pointerId) return;
+          const position = vertical ? e.clientX : e.clientY;
+          const delta = position - current.previous;
+          current.previous = position;
+          if (delta) resize.current(delta);
+        }}
+        onPointerUp={finish}
+        onPointerCancel={finish}
+        onLostPointerCapture={finish}
         onDoubleClick={onDoubleClick}
-        style={{ cursor: isVertical ? COL_RESIZE_CURSOR : ROW_RESIZE_CURSOR }}
-        className={cn(
-          "absolute z-0",
-          isVertical
-            ? "inset-y-0 -left-[5px] -right-[5px]"
-            : "inset-x-0 -top-[5px] -bottom-[5px]",
-        )}
+        style={{ cursor: vertical ? COL_RESIZE_CURSOR : ROW_RESIZE_CURSOR, touchAction: "none" }}
+        className={cn("absolute z-0", vertical ? "inset-y-0 -left-[5px] -right-[5px]" : "inset-x-0 -top-[5px] -bottom-[5px]")}
       />
-      {/* Visible 1px hairline - pointer-events-none so the hit area stays the
-          grab target. Lights up on hover/active via group-hover/active.
-          Skipped entirely when `hideLine` is set (invisible splitter). */}
-      {!hideLine && (
-        <div
-          className={cn(
-            "pointer-events-none absolute inset-0 bg-edge-panel transition-colors group-hover/divider:bg-accent/50 group-active/divider:bg-accent/70",
-            isVertical ? "w-px left-0" : "h-px top-0",
-          )}
-        />
-      )}
+      {!hideLine && <div className={cn("pointer-events-none absolute inset-0 bg-edge-panel transition-colors group-hover/divider:bg-accent/50 group-active/divider:bg-accent/70", vertical ? "w-px left-0" : "h-px top-0")} />}
     </div>
   );
 }

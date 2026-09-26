@@ -10,7 +10,9 @@
  * `file:*` RPC the desktop uses, so the project-root security boundary is
  * identical.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useRpc } from "@renderer/hooks/useRpc.js";
+import { Button, ErrorNote } from "@renderer/components/ui/index.js";
 import { api } from "@renderer/lib/api.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { cn } from "@renderer/lib/cn.js";
@@ -31,43 +33,29 @@ export function MobileFilesScreen() {
     [projects, activeProjectId],
   );
 
-  // Breadcrumb stack of {name, path} segments, index 0 = project root.
-  const [stack, setStack] = useState<Array<{ name: string; path: string }>>([]);
-  const [entries, setEntries] = useState<FileTreeEntry[] | null>(null);
-  const [openFile, setOpenFile] = useState<{ name: string; path: string } | null>(null);
-
-  // Re-root the breadcrumb whenever the project changes.
-  useEffect(() => {
-    setStack(project ? [{ name: project.name, path: project.path }] : []);
-    setOpenFile(null);
-  }, [project]);
-
+  // Keep the navigation identity with its stack. In the render that switches
+  // projects, never combine the new root with the previous project's path.
+  const [navigation, setNavigation] = useState<{ projectId: string | null; stack: Array<{ name: string; path: string }> }>({ projectId: null, stack: [] });
+  const rootStack = useMemo(() => project ? [{ name: project.name, path: project.path }] : [], [project?.id, project?.name, project?.path]);
+  const stack = navigation.projectId === project?.id ? navigation.stack : rootStack;
+  const setStack = (update: (prev: typeof stack) => typeof stack) => {
+    setNavigation({ projectId: project?.id ?? null, stack: update(stack) });
+  };
+  const [fileSelection, setFileSelection] = useState<{ projectId: string; file: { name: string; path: string } } | null>(null);
+  const openFile = fileSelection?.projectId === project?.id ? fileSelection?.file : null;
+  const setOpenFile = (file: { name: string; path: string } | null) => {
+    setFileSelection(file && project ? { projectId: project.id, file } : null);
+  };
+  useEffect(() => { setFileSelection(null); }, [project?.id]);
   const current = stack[stack.length - 1];
-
-  const load = useCallback(async (dir: { name: string; path: string }) => {
-    if (!project) return;
-    setEntries(null);
-    try {
-      // listDir's `projectPath` MUST be the persisted project root (main
-      // cross-checks it against ProjectRepo); the folder to list goes in
-      // `dirPath`, relative to that root. Stripping the root prefix from the
-      // breadcrumb's absolute dir path yields that relative segment — same
-      // trick the desktop FileTree uses (loadAndCompact). Passing a subfolder
-      // as `projectPath` is rejected as an unknown root, so every level below
-      // the first rendered empty.
-      const root = project.path;
-      const dirPath = dir.path.slice(root.length).replace(/^[\\/]/, "");
-      const res = await api.file.listDir({ projectPath: root, dirPath });
-      setEntries(res.entries);
-    } catch (err) {
-      console.warn("mobile files listDir failed:", err);
-      setEntries([]);
-    }
-  }, [project]);
-
-  useEffect(() => {
-    if (current) void load(current);
-  }, [current, load]);
+  const requestKey = JSON.stringify([project?.id, project?.path, current?.path]);
+  const query = useRpc(async () => {
+    if (!project || !current) throw new Error("No project directory selected");
+    const dirPath = current.path.slice(project.path.length).replace(/^[\\/]/, "");
+    const res = await api.file.listDir({ projectPath: project.path, dirPath });
+    return { key: requestKey, entries: res.entries };
+  }, [requestKey], { enabled: !!project && !!current, toastOnError: false });
+  const entries = query.data?.key === requestKey && !query.loading ? query.data.entries : null;
 
   const descend = (e: FileTreeEntry) => {
     if (e.isDir) {
@@ -131,7 +119,11 @@ export function MobileFilesScreen() {
 
       {/* Entries */}
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {entries === null ? (
+        {query.error && !query.loading ? (
+          <ErrorNote className="m-3" action={<Button onClick={() => void query.refetch()}>{t("common.retry")}</Button>}>
+            {query.error.message}
+          </ErrorNote>
+        ) : entries === null ? (
           <div className="flex h-full items-center justify-center text-content-subtle">
             <IconLoader2 size={16} className="animate-spin" />
           </div>

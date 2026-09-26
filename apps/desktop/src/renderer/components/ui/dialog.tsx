@@ -22,6 +22,7 @@
 import { Dialog as BaseDialog } from "@base-ui/react/dialog";
 import { cn } from "@renderer/lib/cn.js";
 import { IconX } from "@renderer/lib/icons.js";
+import { useI18n } from "@renderer/lib/i18n/index.js";
 
 /* ───────── Root ───────── */
 
@@ -120,8 +121,10 @@ export interface DialogCloseProps
   extends React.ComponentPropsWithoutRef<typeof BaseDialog.Close> {}
 
 function DialogClose({ className, children, ...props }: DialogCloseProps) {
+  const { t } = useI18n();
   return (
     <BaseDialog.Close
+      aria-label={children == null ? t("common.close") : undefined}
       className={cn(
         "absolute right-3 top-3 rounded p-0.5 text-content-subtle hover:bg-surface-muted hover:text-content-muted transition-colors",
         className,

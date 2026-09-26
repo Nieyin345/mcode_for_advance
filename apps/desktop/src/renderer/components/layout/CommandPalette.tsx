@@ -489,6 +489,7 @@ export function CommandPalette() {
   // without leaving the search field (Tab key itself is reserved by the
   // Combobox for list navigation, hence the arrow shortcut).
   const onInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229 || query.length > 0) return;
     if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
       // Only cycle when there's no active text caret movement to hijack; with
       // an empty query arrows do nothing useful anyway, so always cycle.
@@ -517,6 +518,7 @@ export function CommandPalette() {
           )}
         />
         <BaseDialog.Popup
+          aria-label={t("common.search")}
           className={cn(
             "fixed left-1/2 top-[12vh] z-50 w-[min(92vw,640px)] -translate-x-1/2",
             "overflow-hidden rounded-xl border border-edge bg-surface shadow-2xl",

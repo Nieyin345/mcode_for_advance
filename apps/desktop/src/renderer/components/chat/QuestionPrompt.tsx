@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useRef } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, Input } from "@renderer/components/ui/index.js";
@@ -48,10 +48,12 @@ import type { UserInputAnswers } from "@contracts/provider";
  * themes. No violet/purple is used.
  */
 export function QuestionPrompt({
+  active = true,
   questions,
   onSubmit,
   onDismiss,
 }: {
+  active?: boolean;
   questions: AskUserQuestionItem[];
   onSubmit: (answers: UserInputAnswers) => void;
   onDismiss: () => void;
@@ -102,6 +104,7 @@ export function QuestionPrompt({
   };
 
   const submit = () => {
+    if (!active) return;
     // Compose the SDK-shaped answers map: keyed by question text, value is
     // the joined labels (multi-select), the single label (single-select),
     // or the free text. Unanswered questions are omitted.
@@ -117,35 +120,30 @@ export function QuestionPrompt({
     onSubmit(out);
   };
 
-  // Esc dismisses. Enter in the free-text input advances to the next question
-  // (non-last) or submits on the last one once everything is answered.
-  // Shift+Enter is left alone (never used here — single-line Input).
   const submittingRef = useRef(false);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        onDismiss();
-      } else if (e.key === "Enter" && !e.shiftKey && !submittingRef.current) {
-        const tag = (e.target as HTMLElement)?.tagName;
-        if (tag !== "TEXTAREA" && tag !== "INPUT") return;
-        if (isLast) {
-          if (allAnswered) {
-            e.preventDefault();
-            submittingRef.current = true;
-            submit();
-          }
-        } else {
-          e.preventDefault();
-          setStep((s) => Math.min(s + 1, questions.length - 1));
+  // Use the card's event scope, not document. A portal outside the card and
+  // an IME candidate-confirmation key are not answers to this question.
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!active || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229 ||
+        !e.currentTarget.contains(e.target as Node)) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      onDismiss();
+    } else if (e.key === "Enter" && !e.shiftKey && !submittingRef.current) {
+      if ((e.target as HTMLElement).tagName !== "INPUT") return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (isLast) {
+        if (allAnswered) {
+          submittingRef.current = true;
+          submit();
         }
+      } else {
+        setStep((s) => Math.min(s + 1, questions.length - 1));
       }
-    };
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allAnswered, answers, isLast, onDismiss]);
+    }
+  };
 
   const q = questions[step];
   const a = answers[step];
@@ -159,6 +157,7 @@ export function QuestionPrompt({
     // than pushing the stream entirely out of view (vh is used because the
     // in-flow parent has no explicit height, so % wouldn't resolve).
     <div
+      onKeyDown={onKeyDown}
       role="dialog"
       aria-modal="false"
       aria-label={t("chat.question.aria")}
@@ -171,8 +170,8 @@ export function QuestionPrompt({
         {/* Header — fixed at top */}
         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-edge px-4 py-2.5">
           <div className="flex min-w-0 items-center gap-1.5">
-            <IconQuestionMark size={14} className="shrink-0 text-accent" />
-            <span className="truncate font-semibold text-accent">
+            <IconQuestionMark size={14} className="shrink-0 text-accent-strong" />
+            <span className="truncate font-semibold text-accent-strong">
               {questions.length === 1
                 ? t("chat.question.titleOne")
                 : t("chat.question.titleN", { n: questions.length })}
@@ -199,7 +198,7 @@ export function QuestionPrompt({
           )}
           <button
             type="button"
-            onClick={onDismiss}
+            onClick={() => { if (active) onDismiss(); }}
             title={t("chat.question.dismiss")}
             aria-label={t("chat.question.dismiss")}
             className="shrink-0 rounded p-0.5 text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
@@ -214,7 +213,7 @@ export function QuestionPrompt({
           <div className="px-4 py-3">
             {/* Question header + text */}
             <div className="mb-2 leading-relaxed text-content">
-              <span className="mr-1 font-semibold text-accent">{q.header}:</span>
+              <span className="mr-1 font-semibold text-accent-strong">{q.header}:</span>
               {q.question}
               {q.multiSelect && (
                 <span className="ml-1.5 rounded bg-surface-muted px-1.5 py-0.5 text-[10px] text-content-muted">

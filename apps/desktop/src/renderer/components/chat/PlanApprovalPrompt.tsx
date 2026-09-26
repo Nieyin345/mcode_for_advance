@@ -71,6 +71,7 @@ type HandoffModelOption = {
  */
 export function PlanApprovalPrompt({
   sessionId,
+  active = true,
   plan,
   onViewPlan,
   onApprove,
@@ -78,6 +79,7 @@ export function PlanApprovalPrompt({
   onHandoff,
 }: {
   sessionId: string;
+  active?: boolean;
   plan: string;
   /** Open the plan tab in the editor column (PlanViewer read view). The parent
    *  activates the plan tab; PlanViewer stages edits back into the store. */
@@ -193,6 +195,7 @@ export function PlanApprovalPrompt({
   };
 
   const handlePrimary = () => {
+    if (!active) return;
     if (exec === "current") {
       handleApprove();
       return;
@@ -212,6 +215,7 @@ export function PlanApprovalPrompt({
   };
 
   const handleReject = () => {
+    if (!active) return;
     onReject(hasFeedback ? feedback.trim() : undefined);
   };
 
@@ -371,6 +375,7 @@ export function PlanApprovalPrompt({
         value={feedback}
         onChange={(e) => setFeedback(e.target.value)}
         onKeyDown={(e) => {
+          if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             handlePrimary();

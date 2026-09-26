@@ -1,27 +1,15 @@
-import { useEffect, useState } from "react";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { api } from "@renderer/lib/api.js";
-import { Input, Switch } from "@renderer/components/ui/index.js";
+import { Button, ErrorNote, LoadingNote, Input, Switch } from "@renderer/components/ui/index.js";
 import {
   TURN_BUDGET_SETTING_KEY,
   RUNTIME_FALLBACK_MODELS_SETTING_KEY,
 } from "@contracts/ipc";
 import { SettingRow } from "./SettingRow.js";
 import { SettingsSection } from "./SettingsSection.js";
+import { createPolicyDraft, usePolicyDraft } from "./runtimePolicyDraft.js";
 
-/**
- * Runtime turn-policy panels — the preference UI for the S3 per-turn budget
- * caps and the S4 failure fallback chain (both enforced host-side by
- * RuntimeManager, read fresh at every sendTurn).
- *
- * Both panels self-persist: any edit is debounced (~500 ms) into a
- * `setting.set` write of the same JSON shape the host parsers accept.
- * Malformed input simply drops that field (the host treats absent/invalid
- * fields as "no cap"), so no explicit save button or error state is needed.
- */
-
-/** Debounce window for persisting edits, ms. */
-const PERSIST_DEBOUNCE_MS = 500;
+/** Important execution limits use explicit Apply, not lossy debounce.
+ * Unsaved forms and in-flight writes survive settings navigation. */
 
 /* ─────────────────────────── 回合预算 ─────────────────────────── */
 
@@ -32,69 +20,45 @@ interface BudgetForm {
   maxTotalTokens: string;
 }
 
-/** Parse a form field into a positive finite number, or undefined. */
-function positiveOrNull(raw: string): number | undefined {
-  if (raw.trim() === "") return undefined;
+type BudgetDraft = { enabled: boolean; form: BudgetForm };
+const budgetDraft = createPolicyDraft<BudgetDraft>();
+const fallbackDraft = createPolicyDraft<string>();
+
+function decodeBudget(value: string | null): BudgetDraft {
+  const parsed: unknown = value ? JSON.parse(value) : {};
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid turn budget configuration");
+  const data = parsed as Record<string, unknown>;
+  const num = (key: string) => typeof data[key] === "number" ? String(data[key]) : "";
+  return { enabled: data.enabled === true, form: { maxTurns: num("maxTurns"), maxUsd: num("maxUsd"), maxTotalTokens: num("maxTotalTokens") } };
+}
+function decodeFallback(value: string | null): string {
+  const parsed: unknown = value ? JSON.parse(value) : [];
+  if (!Array.isArray(parsed) || !parsed.every((v) => typeof v === "string")) throw new Error("Invalid fallback model configuration");
+  return parsed.join(", ");
+}
+/** Empty is an explicit opt-out. Invalid and in-progress text is never an opt-out. */
+function validLimit(raw: string, integer: boolean): boolean {
+  if (raw.trim() === "") return true;
   const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
+  return Number.isFinite(n) && n > 0 && (!integer || Number.isSafeInteger(n));
 }
 
 export function TurnBudgetPanel() {
   const { t } = useI18n();
-  const [loaded, setLoaded] = useState(false);
-  const [enabled, setEnabled] = useState(false);
-  const [form, setForm] = useState<BudgetForm>({ maxTurns: "", maxUsd: "", maxTotalTokens: "" });
-  const [dirty, setDirty] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    void (async () => {
-      try {
-        const { value } = await api.setting.get({ key: TURN_BUDGET_SETTING_KEY });
-        if (!alive) return;
-        const parsed = value ? (JSON.parse(value) as Record<string, unknown>) : null;
-        const num = (k: string) =>
-          typeof parsed?.[k] === "number" && Number.isFinite(parsed[k]) ? String(parsed[k]) : "";
-        setEnabled(parsed?.enabled === true);
-        setForm({
-          maxTurns: num("maxTurns"),
-          maxUsd: num("maxUsd"),
-          maxTotalTokens: num("maxTotalTokens"),
-        });
-      } catch {
-        // unreadable store = caps off, not a dead panel
-      } finally {
-        if (alive) setLoaded(true);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  // Debounced persist — the shape mirrors the host's parseTurnBudget: caps
-  // absent or invalid are simply omitted (parsed as "no cap" host-side).
-  useEffect(() => {
-    if (!loaded || !dirty) return;
-    const id = setTimeout(() => {
-      const payload: Record<string, unknown> = { enabled };
-      const maxTurns = positiveOrNull(form.maxTurns);
-      const maxUsd = positiveOrNull(form.maxUsd);
-      const maxTotalTokens = positiveOrNull(form.maxTotalTokens);
-      if (maxTurns !== undefined) payload.maxTurns = maxTurns;
-      if (maxUsd !== undefined) payload.maxUsd = maxUsd;
-      if (maxTotalTokens !== undefined) payload.maxTotalTokens = maxTotalTokens;
-      void api.setting.set({ key: TURN_BUDGET_SETTING_KEY, value: JSON.stringify(payload) });
-      setDirty(false);
-    }, PERSIST_DEBOUNCE_MS);
-    return () => clearTimeout(id);
-  }, [loaded, dirty, enabled, form]);
-
-  if (!loaded) return null;
-
-  const markDirty = (patch: Partial<BudgetForm>) => {
-    setForm((f) => ({ ...f, ...patch }));
-    setDirty(true);
+  const { state, read } = usePolicyDraft(TURN_BUDGET_SETTING_KEY, budgetDraft, decodeBudget);
+  if (state.value === null) return read.error
+    ? <ErrorNote action={<Button onClick={() => void read.refetch()}>{t("common.retry")}</Button>}>{read.error.message}</ErrorNote>
+    : <LoadingNote label={t("common.loading")} />;
+  const { enabled, form } = state.value;
+  const valid = validLimit(form.maxTurns, true) && validLimit(form.maxUsd, false) && validLimit(form.maxTotalTokens, true);
+  const markDirty = (patch: Partial<BudgetForm>) => budgetDraft.edit({ enabled, form: { ...form, ...patch } });
+  const save = async () => {
+    if (!valid || read.error) return;
+    const payload: Record<string, number | boolean> = { enabled };
+    for (const key of ["maxTurns", "maxUsd", "maxTotalTokens"] as const) {
+      if (form[key].trim() !== "") payload[key] = Number(form[key]);
+    }
+    await budgetDraft.save(TURN_BUDGET_SETTING_KEY, JSON.stringify(payload));
   };
 
   return (
@@ -104,8 +68,7 @@ export function TurnBudgetPanel() {
           id="setting-turnbudget-enabled"
           checked={enabled}
           onCheckedChange={(v) => {
-            setEnabled(v);
-            setDirty(true);
+            budgetDraft.edit({ enabled: v, form });
           }}
           label={enabled ? t("settings.on") : t("settings.off")}
         />
@@ -117,11 +80,11 @@ export function TurnBudgetPanel() {
       >
         <Input
           id="setting-turnbudget-turns"
-          type="number"
-          min={1}
-          step={1}
+          type="text"
+          inputMode="decimal"
           disabled={!enabled}
           placeholder={t("settings.turnBudget.unset")}
+          aria-invalid={!validLimit(form.maxTurns, true)}
           value={form.maxTurns}
           onChange={(e) => markDirty({ maxTurns: e.target.value })}
           className="w-full disabled:opacity-50"
@@ -134,11 +97,11 @@ export function TurnBudgetPanel() {
       >
         <Input
           id="setting-turnbudget-usd"
-          type="number"
-          min={0}
-          step="0.01"
+          type="text"
+          inputMode="decimal"
           disabled={!enabled}
           placeholder={t("settings.turnBudget.unset")}
+          aria-invalid={!validLimit(form.maxUsd, false)}
           value={form.maxUsd}
           onChange={(e) => markDirty({ maxUsd: e.target.value })}
           className="w-full disabled:opacity-50"
@@ -151,16 +114,25 @@ export function TurnBudgetPanel() {
       >
         <Input
           id="setting-turnbudget-tokens"
-          type="number"
-          min={1}
-          step={1000}
+          type="text"
+          inputMode="decimal"
           disabled={!enabled}
           placeholder={t("settings.turnBudget.unset")}
+          aria-invalid={!validLimit(form.maxTotalTokens, true)}
           value={form.maxTotalTokens}
           onChange={(e) => markDirty({ maxTotalTokens: e.target.value })}
           className="w-full disabled:opacity-50"
         />
       </SettingRow>
+      <div className="space-y-2 px-4 py-3">
+        {!valid && <ErrorNote>{t("settings.runtimePolicy.invalidLimit")}</ErrorNote>}
+        {(state.error || read.error) && <ErrorNote action={<Button onClick={() => { if (read.error) void read.refetch(); else void save(); }}>{t("common.retry")}</Button>}>{state.error ?? read.error?.message}</ErrorNote>}
+        <div className="flex items-center gap-2">
+          <Button data-testid="budget-save" variant="primary" disabled={!state.dirty || state.saving || !valid || !!read.error} onClick={() => void save()}>{t("common.save")}</Button>
+          <Button disabled={!state.dirty || state.saving} onClick={() => budgetDraft.discard()}>{t("common.discardChanges")}</Button>
+          <span role="status" className="text-xs text-content-muted">{t(state.saving ? "common.saving" : state.dirty ? "common.unsavedRetained" : "common.saved")}</span>
+        </div>
+      </div>
     </SettingsSection>
   );
 }
@@ -169,55 +141,16 @@ export function TurnBudgetPanel() {
 
 export function FallbackModelsPanel() {
   const { t } = useI18n();
-  const [loaded, setLoaded] = useState(false);
-  const [modelsText, setModelsText] = useState("");
-  const [dirty, setDirty] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    void (async () => {
-      try {
-        const { value } = await api.setting.get({ key: RUNTIME_FALLBACK_MODELS_SETTING_KEY });
-        if (!alive) return;
-        const parsed: unknown = value ? JSON.parse(value) : [];
-        setModelsText(
-          Array.isArray(parsed)
-            ? parsed
-                .filter((m): m is string => typeof m === "string" && m.trim().length > 0)
-                .join(", ")
-            : "",
-        );
-      } catch {
-        // unreadable store = empty chain, not a dead panel
-      } finally {
-        if (alive) setLoaded(true);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  // Debounced persist — comma/free-whitespace separated input, stored as the
-  // JSON string array the host's parseFallbackModels accepts. Empty text = no
-  // fallback (stored as "[]").
-  useEffect(() => {
-    if (!loaded || !dirty) return;
-    const id = setTimeout(() => {
-      const chain = modelsText
-        .split(/[,\s]+/)
-        .map((m) => m.trim())
-        .filter((m) => m.length > 0);
-      void api.setting.set({
-        key: RUNTIME_FALLBACK_MODELS_SETTING_KEY,
-        value: JSON.stringify(chain),
-      });
-      setDirty(false);
-    }, PERSIST_DEBOUNCE_MS);
-    return () => clearTimeout(id);
-  }, [loaded, dirty, modelsText]);
-
-  if (!loaded) return null;
+  const { state, read } = usePolicyDraft(RUNTIME_FALLBACK_MODELS_SETTING_KEY, fallbackDraft, decodeFallback);
+  if (state.value === null) return read.error
+    ? <ErrorNote action={<Button onClick={() => void read.refetch()}>{t("common.retry")}</Button>}>{read.error.message}</ErrorNote>
+    : <LoadingNote label={t("common.loading")} />;
+  const modelsText = state.value;
+  const save = async () => {
+    if (read.error) return;
+    const chain = modelsText.split(/[,\s]+/).map((m) => m.trim()).filter(Boolean);
+    await fallbackDraft.save(RUNTIME_FALLBACK_MODELS_SETTING_KEY, JSON.stringify(chain));
+  };
 
   return (
     <SettingsSection title={t("settings.fallback.sectionTitle")} desc={t("settings.fallback.sectionDesc")}>
@@ -232,12 +165,19 @@ export function FallbackModelsPanel() {
           placeholder={t("settings.fallback.chainPh")}
           value={modelsText}
           onChange={(e) => {
-            setModelsText(e.target.value);
-            setDirty(true);
+            fallbackDraft.edit(e.target.value);
           }}
           className="w-full"
         />
       </SettingRow>
+      <div className="space-y-2 px-4 py-3">
+        {(state.error || read.error) && <ErrorNote action={<Button onClick={() => { if (read.error) void read.refetch(); else void save(); }}>{t("common.retry")}</Button>}>{state.error ?? read.error?.message}</ErrorNote>}
+        <div className="flex items-center gap-2">
+          <Button data-testid="fallback-save" variant="primary" disabled={!state.dirty || state.saving || !!read.error} onClick={() => void save()}>{t("common.save")}</Button>
+          <Button disabled={!state.dirty || state.saving} onClick={() => fallbackDraft.discard()}>{t("common.discardChanges")}</Button>
+          <span role="status" className="text-xs text-content-muted">{t(state.saving ? "common.saving" : state.dirty ? "common.unsavedRetained" : "common.saved")}</span>
+        </div>
+      </div>
     </SettingsSection>
   );
 }

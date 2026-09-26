@@ -1536,4 +1536,5 @@ export const zh = {
   "settings.libraryTypes.newGroupName": "新大类",
   "settings.libraryTypes.groupName": "组名",
   "settings.libraryTypes.ungrouped": "未分组(左栏隐藏)",
+  "settings.runtimePolicy.invalidLimit": "上限须为正数，轮数和 token 须为正整数；只有明确留空才表示不限制。非法输入不会覆盖已保存上限。",
 } as const;

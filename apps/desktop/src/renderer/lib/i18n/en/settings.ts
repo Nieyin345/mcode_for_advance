@@ -1551,4 +1551,5 @@ export const en = {
   "settings.libraryTypes.newGroupName": "New group",
   "settings.libraryTypes.groupName": "Group name",
   "settings.libraryTypes.ungrouped": "Ungrouped (hidden in sidebar)",
+  "settings.runtimePolicy.invalidLimit": "Limits must be positive; turns and tokens must be whole numbers. Only an empty field means unlimited. Invalid input will not replace saved limits.",
 } as const;

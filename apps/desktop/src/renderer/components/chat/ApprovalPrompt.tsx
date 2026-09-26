@@ -39,6 +39,7 @@ import {
  * own button via the same effect.
  */
 export function ApprovalPrompt({
+  active = true,
   toolName,
   input,
   description,
@@ -46,6 +47,8 @@ export function ApprovalPrompt({
   queueTotal,
   onDecide,
 }: {
+  /** Only the visible chat may acquire focus or handle keyboard decisions. */
+  active?: boolean;
   toolName: string;
   input: unknown;
   description?: string;
@@ -70,25 +73,16 @@ export function ApprovalPrompt({
   // so Enter confirms without an extra click. Also bring the whole card
   // into view in case the queue scrolled it out.
   useEffect(() => {
+    if (!active || !cardRef.current?.getClientRects().length ||
+        document.querySelector('[aria-modal="true"]')) return;
     allowRef.current?.focus();
     cardRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [toolName, queuePosition]);
+  }, [active, toolName, queuePosition]);
 
-  // Local keyboard: Esc denies, Enter allows (the focused button already
-  // handles Enter natively, so this is just the Esc shortcut).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        onDecide(false);
-      }
-    };
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
-  }, [onDecide]);
-
+  // Keyboard decisions are local to this card, never document-wide:
+  // hidden keep-alive sessions must not consume another session's Escape.
   const decide = (granted: boolean) => {
+    if (!active) return;
     onDecide(granted, granted ? always : undefined);
   };
 
@@ -98,6 +92,15 @@ export function ApprovalPrompt({
   return (
     <div
       ref={cardRef}
+      onKeyDown={(e) => {
+        if (!active || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229 ||
+            !e.currentTarget.contains(e.target as Node)) return;
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          onDecide(false);
+        }
+      }}
       role="alertdialog"
       aria-label={t("chat.approval.aria")}
       className={cn(

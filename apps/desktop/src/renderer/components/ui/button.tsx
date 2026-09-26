@@ -15,12 +15,12 @@ import { cn } from "@renderer/lib/cn.js";
 
 const buttonVariants = cva(
   // Base styles
-  "inline-flex items-center justify-center gap-1 rounded font-medium transition-colors select-none outline-none",
+  "inline-flex items-center justify-center gap-1 rounded font-medium transition-colors select-none outline-none focus-visible:ring-2 focus-visible:ring-accent-strong focus-visible:ring-offset-2 focus-visible:ring-offset-surface",
   {
     variants: {
       variant: {
         primary:
-          "bg-accent text-surface hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed",
+          "bg-accent-strong text-surface hover:brightness-95 disabled:opacity-50 disabled:cursor-not-allowed",
         secondary:
           "bg-surface-muted text-content-muted hover:bg-surface-hover hover:text-content disabled:opacity-50 disabled:cursor-not-allowed",
         ghost:

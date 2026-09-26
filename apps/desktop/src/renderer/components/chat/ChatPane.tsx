@@ -1433,6 +1433,8 @@ function ChatPaneForSession({
   });
   // Pending AskUserQuestion (per-session bucket — another tab's question
   // does not clobber this one).
+  const settingsOpen = useSessionStore((s) => s.settingsOpen);
+  const promptActive = isActive && !settingsOpen;
   const pendingQuestion = useSessionStore((s) => s.pendingQuestionBySession[sessionId] ?? null);
   const dismissQuestion = useSessionStore((s) => s.dismissQuestion);
   const submitQuestion = useSessionStore((s) => s.submitQuestion);
@@ -3946,6 +3948,7 @@ function ChatPaneForSession({
               everything). */}
           {pendingPlanApproval && !headApproval && (
             <PlanApprovalPrompt
+              active={promptActive}
               sessionId={sessionId}
               plan={pendingPlanApproval.plan}
               onViewPlan={() => {
@@ -3976,6 +3979,7 @@ function ChatPaneForSession({
               the queue. */}
           {headApproval && (
             <ApprovalPrompt
+              active={promptActive}
               key={headApproval.requestId}
               toolName={headApproval.toolName}
               input={headApproval.input}
@@ -4001,6 +4005,7 @@ function ChatPaneForSession({
               approval is pending (those take precedence). */}
           {activeQuestion && !headApproval && !pendingPlanApproval && (
             <QuestionPrompt
+              active={promptActive}
               questions={activeQuestion}
               onSubmit={(answers) => {
                 void submitQuestion(answers, sessionId);
