@@ -67,7 +67,7 @@ export function registerAppHandlers(ipcMain: IpcMain): void {
    *   1. `flushDb()` —— 先把内存里的数据库**同步**落到旧路径,再复制它。反过来复制到
    *      的是上一个微任务之前的旧文件。
    *   2. 复制整棵树。失败就原样返回,**什么都不动**(连接还活着,应用不受影响)。
-   *   3. 写指针文件 → `closeDb()` → `relaunch()`。
+   *   3. `closeDb()` 成功 → 写指针文件 → `relaunch()`；关闭保存失败时不切根。
    *
    * **不删旧根**:留一份副本,万一新位置有问题还能找回来。多占一份空间换一次安心的
    * 搬家,值。
@@ -77,8 +77,10 @@ export function registerAppHandlers(ipcMain: IpcMain): void {
     flushDb();
     const err = copyDataRootTo(input.path);
     if (err) return { ok: false, error: readableCopyError(err) };
-    setDataRoot(input.path);
+    // closeDb now preserves the live handle and throws on failure. Do not
+    // publish the new root until that barrier has succeeded.
     closeDb();
+    setDataRoot(input.path);
     log.info(`dataRoot: switching to ${input.path}; relaunching`);
     // 推迟重启,让这个 IPC 的返回值先回到渲染端 —— 否则界面看到的是"点了没反应"
     setTimeout(() => {

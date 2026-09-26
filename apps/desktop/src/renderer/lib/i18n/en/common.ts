@@ -28,4 +28,7 @@ export const en = {
   "common.hours": "hours",
   "common.minutes": "min",
   "common.never": "Never",
+  "common.persistenceFailureTitle": "Database save failed",
+  "common.persistenceFailureMessage": "The last database save failed. The app will retry automatically. Check disk space and folder permissions; do not force quit before saving recovers, or unsaved changes may be lost.",
+  "common.keepAppOpen": "Keep app open",
 } as const;

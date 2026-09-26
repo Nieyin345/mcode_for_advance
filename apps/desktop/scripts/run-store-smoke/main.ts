@@ -34,7 +34,8 @@
 import type { Session } from "@contracts/session";
 import type { NodeOutcome } from "@contracts/nodeType";
 import initSqlJs from "sql.js/dist/sql-asm.js";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { armFault, clearFault, faultHits } from "../db-persistence-smoke/stubs/fs.js";
 import { join } from "node:path";
 import { initDb, getDb } from "@main/store/db.js";
 import { ProjectRepo, SessionRepo, WorkflowRunRepo } from "@main/store/repositories.js";
@@ -277,16 +278,17 @@ if (MODE === "write") {
   // a queued microtask flush alone cannot make this assertion pass.
   eq("节点执行前磁盘已经有在飞标记", decodeSnapshot(diskPayload("run_durable") ?? "")?.inFlightNodeIds?.[0], "command");
 
-  const staging = `${dbFile}.workflow-${process.pid}.tmp`;
-  mkdirSync(staging); // occupy the staging path, so the atomic write fails
+  // Inject a real partial write, independent of the private staging filename.
+  armFault(dbFile, "write");
   try {
     eq("物理写失败时关键快照必须返回失败", saveRun({
       runId: "run_durable_fail", sessionId: SESSION_PRUNED, workflowId: "wf_test", status: "running",
       snapshot: critical,
     }, { durable: true }), false);
+    check("故障确实击中了数据库写入", faultHits > 0);
     eq("物理写失败未篡改上次完好的磁盘库", diskPayload("run_durable_fail"), null);
   } finally {
-    rmSync(staging, { recursive: true, force: true });
+    clearFault();
   }
 
   // ⚠️ 这一趟**故意把 RUN_LEFT 留成 `running`** —— 第二趟那个新进程启动时跑迁移,

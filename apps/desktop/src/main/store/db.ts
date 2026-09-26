@@ -8,13 +8,14 @@
  * native compilation — clone and `pnpm dev` works for everyone.
  *
  * Trade-off: the database lives in memory and we flush it to a file on writes
- * (see `persist()`). For our workload (session/message rows, low write rate)
- * this is instant and the file is always consistent.
+ * (see `persist()`). Every save fsyncs a staging file before replacing the
+ * last good snapshot; failed saves retain the in-memory data and retry.
  */
 import { app } from "electron";
 import initSqlJs, { type Database, type SqlJsStatic } from "sql.js/dist/sql-asm.js";
-import { join } from "node:path";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync, openSync, fsyncSync, closeSync } from "node:fs";
 import { log } from "@main/lib/logger.js";
 import { dataRoot, migrateLegacyIntoDataRoot, DATA_DB_FILENAME } from "@main/lib/dataRoot.js";
 import { SESSION_COLUMNS, sessionsCreateSql } from "./sessionSchema.js";
@@ -33,6 +34,13 @@ let persistPending = false;
 let persistFallback: ReturnType<typeof setTimeout> | null = null;
 /** One-shot flag so the happy path logs its first flush but not every one. */
 let loggedFirstFlush = false;
+/** Dirty is separate from scheduled: a failed callback is NOT a saved DB. */
+let persistDirty = false;
+let persistEpoch = 0;
+let persistRetry: ReturnType<typeof setTimeout> | null = null;
+let retryDelayMs = 1000;
+let persistenceFailure: Error | null = null;
+const persistenceErrorListeners = new Set<(error: Error) => void>();
 
 /**
  * Resolves once `initDb()` has finished loading sql.js + opening the file +
@@ -508,123 +516,144 @@ function addColumnIfMissing(database: Database, table: string, column: string, d
  * 每个调用点各写一遍,迟早有人加第四个调用点忘了配。所以导出这件事只有这一个出口。
  */
 function exportBytes(): Uint8Array {
-  const data = db!.export();
-  db!.run("PRAGMA foreign_keys = ON");
-  return data;
+  try { return db!.export(); }
+  finally { db!.run("PRAGMA foreign_keys = ON"); }
 }
 
-/**
- * 立刻把内存里的数据库写到磁盘,**但不关闭连接**。
- *
- * 与 `persist()` 的区别:那个是防抖的(等微任务),这个同步落盘。给「迁移整个数据根」
- * 用 —— 得先保证磁盘上的那份是最新的,再去复制它;而复制失败时又不能把连接关掉
- * (关了应用就残了,得重启才能恢复)。
- */
-export function flushDb(): void {
+/** Observe the first failure of each outage. No UI/Electron dependency here;
+ * main installs the user-visible handler. A successful save resets the latch. */
+export function onDbPersistenceError(listener: (error: Error) => void): () => void {
+  persistenceErrorListeners.add(listener);
+  return () => { persistenceErrorListeners.delete(listener); };
+}
+
+/** The ONLY database-file writer. Never truncate the last good snapshot.
+ * Same-directory rename keeps replacement on one filesystem. File fsync covers
+ * buffered file writes; this is not a claim of power-loss-proof directory sync
+ * on every platform/filesystem. Exclusive create also prevents following an
+ * existing staging path. Only a staging file owned by this call is cleaned up. */
+function writeSnapshot(): number {
+  const target = dbPath!;
+  const data = exportBytes();
+  mkdirSync(dirname(target), { recursive: true });
+  const staging = `${target}.persist-${process.pid}-${randomUUID()}.tmp`;
+  let fd: number | undefined;
+  let ownsStaging = false;
   try {
-    if (db && dbPath) writeFileSync(dbPath, exportBytes());
-  } catch (err) {
-    log.error(`sqlite flush failed: ${(err as Error).message}`);
+    fd = openSync(staging, "wx", 0o600);
+    ownsStaging = true;
+    writeFileSync(fd, data);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(staging, target);
+    ownsStaging = false;
+    return data.length;
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* preserve the original write error */ }
+    }
+    if (ownsStaging) {
+      try { rmSync(staging, { force: true }); } catch { /* do not mask the save failure */ }
+    }
   }
 }
 
-/** Critical workflow barrier: the in-flight marker must reach the DB FILE
- * before a command/model/plugin is invoked. persist() only schedules a
- * microtask and flushDb() swallows errors, so neither is safe for this gate.
- * Stage a complete export then replace the file; a failed write/rename leaves
- * the last good DB in place and throws so the caller can stop the run. */
+function cancelScheduledPersist(): void {
+  persistEpoch++;
+  persistPending = false;
+  if (persistFallback) clearTimeout(persistFallback);
+  if (persistRetry) clearTimeout(persistRetry);
+  persistFallback = null;
+  persistRetry = null;
+}
+
+function schedulePersistRetry(): void {
+  if (persistRetry || !db || !dbPath) return;
+  const delay = retryDelayMs;
+  retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
+  persistRetry = setTimeout(() => {
+    persistRetry = null;
+    if (!persistDirty || !db || !dbPath) return;
+    try { persistNowOrThrow(); } catch { /* already reported; next retry is scheduled */ }
+  }, delay);
+  persistRetry.unref();
+}
+
+function recordPersistenceFailure(cause: unknown): void {
+  const error = cause instanceof Error ? cause : new Error(String(cause));
+  const firstFailure = persistenceFailure === null;
+  persistDirty = true;
+  persistenceFailure = error;
+  schedulePersistRetry();
+  log.error(`sqlite save failed; keeping unsaved data and retrying: ${error.message}`);
+  if (firstFailure) {
+    for (const listener of persistenceErrorListeners) {
+      try { listener(error); }
+      catch (observerError) { log.error(`sqlite persistence observer failed: ${String(observerError)}`); }
+    }
+  }
+}
+
+/** Synchronous save for migration/quit. Failure must reach the caller: copying
+ * an older file or reporting a successful exit would otherwise lose changes. */
+export function flushDb(): void {
+  if (db && dbPath) persistNowOrThrow();
+}
+
+/** Durable workflow barrier: write the in-flight marker before invoking a
+ * command/model/plugin. Also the single commit path for ordinary/quit saves. */
 export function persistNowOrThrow(): void {
   if (!db || !dbPath) throw new Error("sqlite database is not initialized");
-  const target = dbPath;
-  const staging = `${target}.workflow-${process.pid}.tmp`;
+  cancelScheduledPersist();
+  persistDirty = true;
   try {
-    const bytes = exportBytes();
-    const dir = join(target, "..");
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(staging, bytes);
-    renameSync(staging, target);
-  } catch (err) {
-    try { rmSync(staging, { force: true }); } catch { /* preserve the original error */ }
-    throw err;
+    const size = writeSnapshot();
+    const recovered = persistenceFailure !== null;
+    persistDirty = false;
+    persistenceFailure = null;
+    retryDelayMs = 1000;
+    if (recovered) log.info(`sqlite persistence recovered (${size}B)`);
+    else if (!loggedFirstFlush) {
+      loggedFirstFlush = true;
+      log.info(`sqlite persisted ${size}B via atomic replacement`);
+    }
+  } catch (error) {
+    recordPersistenceFailure(error);
+    throw error;
   }
 }
 
-/**
- * Flush the in-memory database to disk. Coalesced via the microtask queue so a
- * burst of writes (e.g. a replaceAll inside a transaction) hits the file once.
- * Call this after any write; readers don't need it.
- *
- * The coalescing flag used to be the only guard, which meant a single missed
- * microtask froze persistence for the rest of the process: `persistPending`
- * stayed true, every later call returned at the top, and the file only ever
- * changed when `closeDb()` force-flushed at quit. Observed in the wild as
- * "the DB is frozen at its startup contents, but nothing errors". Hence the
- * timer backstop below - a dropped flush now costs 250ms, not the session.
- */
+/** Coalesce synchronous mutations, retaining the existing 250ms backstop.
+ * A transient error leaves dirty=true and gets bounded exponential retries;
+ * new edits during an outage do not defeat backoff. Explicit saves still run
+ * immediately. Epochs stop an old queued callback from flushing a newer batch. */
 export function persist(): void {
   if (!db || !dbPath) {
     log.warn(`persist skipped: no database handle (db=${!!db}, dbPath=${dbPath})`);
     return;
   }
-  if (persistPending) return;
+  persistDirty = true;
+  if (persistPending || persistRetry) return;
   persistPending = true;
-
-  const flush = (via: string): void => {
-    if (!persistPending) return;
-    persistPending = false;
-    if (persistFallback) {
-      clearTimeout(persistFallback);
-      persistFallback = null;
-    }
-    try {
-      const data = exportBytes();
-      // Ensure the userData dir exists (it should, but be defensive).
-      const dir = join(dbPath!, "..");
-      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-      writeFileSync(dbPath!, data);
-      if (via !== "microtask") {
-        log.info(`sqlite persisted ${data.length}B via ${via} (coalesced flush was dropped)`);
-      } else if (!loggedFirstFlush) {
-        loggedFirstFlush = true;
-        log.info(`sqlite persisted ${data.length}B via microtask`);
-      }
-    } catch (err) {
-      log.error(`sqlite persist failed (via ${via}): ${(err as Error).message}`);
-    }
+  const epoch = ++persistEpoch;
+  const flush = (): void => {
+    if (!persistPending || epoch !== persistEpoch) return;
+    try { persistNowOrThrow(); } catch { /* observers and retry own the failure */ }
   };
-
-  // Happy path: share one export+write across every synchronous write in a tick.
-  try {
-    queueMicrotask(() => flush("microtask"));
-  } catch (err) {
-    // If the microtask queue is unusable we cannot defer at all - write now
-    // rather than lose the batch.
-    log.error(`persist: cannot schedule microtask (${(err as Error).message}); flushing inline`);
-    flush("inline");
-    return;
-  }
-
-  persistFallback = setTimeout(() => {
-    persistFallback = null;
-    if (persistPending) flush("timer");
-  }, 250);
+  try { queueMicrotask(flush); }
+  catch { flush(); return; }
+  persistFallback = setTimeout(flush, 250);
   persistFallback.unref();
 }
 
-/** Close the connection on shutdown. Persist first so nothing is lost. */
+/** Save before closing. A failed save throws WITHOUT discarding the live
+ * connection, so the caller can cancel quit/migration and the retry can recover. */
 export function closeDb(): void {
-  try {
-    // Unconditional: the file lags memory by up to the coalescing window, so
-    // "a flush is pending" is not the only case where the file is behind.
-    if (persistFallback) {
-      clearTimeout(persistFallback);
-      persistFallback = null;
-    }
-    persistPending = false;
-    if (db && dbPath) writeFileSync(dbPath, exportBytes());
-    db?.close();
-  } catch {
-    /* ignore — shutting down anyway */
-  }
+  if (!db) return;
+  persistNowOrThrow();
+  db.close();
   db = null;
+  dbPath = null;
+  dbReadyPromise = null;
 }

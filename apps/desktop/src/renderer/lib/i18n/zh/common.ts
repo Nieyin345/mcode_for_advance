@@ -31,4 +31,7 @@ export const zh = {
   "common.hours": "小时",
   "common.minutes": "分钟",
   "common.never": "永不",
+  "common.persistenceFailureTitle": "数据库保存失败",
+  "common.persistenceFailureMessage": "最近一次数据库保存失败，应用会自动重试。请检查磁盘空间和目录权限；恢复保存前请勿强制退出，以免丢失内存中的修改。",
+  "common.keepAppOpen": "保持应用打开",
 } as const;

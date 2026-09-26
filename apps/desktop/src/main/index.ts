@@ -1,7 +1,8 @@
 import { app, BrowserWindow, session } from "electron";
 import { createMainWindow } from "@main/window.js";
 import { registerIpcHandlers } from "@main/ipc/index.js";
-import { initDb, closeDb, awaitDb } from "@main/store/db.js";
+import { initDb, closeDb, awaitDb, flushDb } from "@main/store/db.js";
+import { installDbPersistenceAlerts, showDbPersistenceError } from "@main/store/persistenceAlerts.js";
 import { ensureTemplateDirs } from "@main/templates/store.js";
 import { migrateTemplatesToLibraryOnce } from "@main/library/templateMigration.js";
 import { initTheme } from "@main/lib/theme.js";
@@ -130,6 +131,7 @@ app.on("second-instance", () => {
 
 app.whenReady().then(async () => {
   logStartup("whenReady entered");
+  installDbPersistenceAlerts();
 
   // Kick off DB init in the background (sql.js loads ~6MB asm.js + reads the
   // file + migrates). We DON'T await it - the window is created next so the
@@ -377,6 +379,15 @@ app.on("before-quit", (event) => {
     });
     return;
   }
+  // Save BEFORE tearing down services. If storage is unavailable, retain the
+  // live DB and the working app instead of silently losing in-memory changes.
+  try { flushDb(); }
+  catch (error) {
+    event.preventDefault();
+    sessionCookiesFlushed = false;
+    showDbPersistenceError(error);
+    return;
+  }
   BridgeRegistry.disposeAll();
   stopExtensionBridge();
   disposePublicMcp();
@@ -388,5 +399,11 @@ app.on("before-quit", (event) => {
   // 退出过程中还可能起一次运行(而那时数据库已经在关了,见下面 `closeDb`)。
   automationRunner.dispose();
   stopMobileServer();
-  closeDb();
+  try { closeDb(); }
+  catch (error) {
+    // Also protect the final save if a cleanup wrote more data after preflight.
+    event.preventDefault();
+    sessionCookiesFlushed = false;
+    showDbPersistenceError(error);
+  }
 });
