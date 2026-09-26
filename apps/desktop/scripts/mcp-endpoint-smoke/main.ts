@@ -447,6 +447,13 @@ eq(
 stopPublicMcp();
 check("停掉之后不再监听", publicMcpPort() === 0, publicMcpPort());
 
+// listen 是异步的：如果关闭只清全局 server，而没有作废 start 闭包里的 srv，
+// bind 完成后会把公网端点重新挂回来。立即 stop 必须赢过在途 start。
+const racingStart = startPublicMcp();
+stopPublicMcp();
+await racingStart;
+check("★ 启动途中关闭不会在 bind 完成后复活公网端点", publicMcpPort() === 0, publicMcpPort());
+
 /* ══════════════════════ 下半:真宿主 + 闸门 ═════════════════════ */
 
 const approvalCalls: ApprovalRequest[] = [];

@@ -208,7 +208,7 @@ async function materializeConfigToml(): Promise<void> {
     try {
       const { getPluginMcpServers } = await import("@main/plugins/pluginManager.js");
       const { mcpEngineEnabled } = await import("@main/lib/mcpEngines.js");
-      for (const [name, cfg] of await getPluginMcpServers()) {
+      for (const [name, cfg] of await getPluginMcpServers(undefined, "codex-sdk")) {
         if (!mcpEngineEnabled(enginesMap, name, "codex")) continue;
         sources.push([name, cfg]);
       }

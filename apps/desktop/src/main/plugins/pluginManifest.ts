@@ -23,7 +23,7 @@
  * Pure node (no electron imports) so the manager can be smoke-tested
  * headlessly, mirroring main/runtimes/managedRuntimeRoots.ts.
  */
-import { existsSync, readdirSync, readFileSync, type Dirent } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, type Dirent } from "node:fs";
 import path from "node:path";
 import {
   PLUGIN_MANIFEST_DIRS,
@@ -203,7 +203,20 @@ function resolveInRoot(root: string, rel: string): string | null {
   const abs = path.resolve(root, rel);
   const relBack = path.relative(root, abs);
   if (!relBack || relBack.startsWith("..") || path.isAbsolute(relBack)) return null;
-  return existsSync(abs) ? abs : null;
+  if (!existsSync(abs)) return null;
+  // The lexical check above is not enough for installed archives/repos: a
+  // component may be a symlink whose target is outside the plugin. Resolve
+  // both sides before handing a path to a provider so manifest paths cannot
+  // escape through a symlink while still looking in-root textually.
+  try {
+    const realRoot = realpathSync(root);
+    const realAbs = realpathSync(abs);
+    const realRel = path.relative(realRoot, realAbs);
+    if (!realRel || realRel.startsWith("..") || path.isAbsolute(realRel)) return null;
+    return realAbs;
+  } catch {
+    return null;
+  }
 }
 
 /** Normalize a manifest component field to a path list: undefined → the

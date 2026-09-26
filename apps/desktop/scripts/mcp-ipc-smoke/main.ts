@@ -57,12 +57,9 @@
  *    预先写好 needs-auth 缓存文件,看列表徽章对不对。
  *  - **darwin 的 Keychain 分支**(`readCredentialsBlob` 的 `security` 调用)。
  *    跑在 Windows 上,走的是 `.credentials.json` 那条路。
- *  - **codex 视图只在 `MCP_ENGINES_SET` 与插件那支 `MCP_TOGGLE` 上验。** 实测:
- *    `MCP_SAVE` / `MCP_REMOVE` / 用户级 `MCP_TOGGLE` / `MCP_IMPORT` 都只调
- *    `materializeClaudeMcpView()`,codex 的 `config.toml` 要等下一次 app-server 启动
- *    (`CodexAgentSdkProvider` 里的 `ensureConfigMaterialized`)才跟上。本套把这个
- *    **现状**钉住了(§8 有一条断言明说"导入不会顺手动 codex"),但**没有**断言它
- *    "应该"是哪种 —— 那是产品判断,不是这一套能决定的。
+ *  - **OAuth 临时注册期间与其它写操作的真实并发。** handler 共用串行队列,下面会
+ *    并发发两个普通保存来钉住"不会丢更新"；但真 OAuth 要等浏览器回调,无头环境
+ *    无法让那条长事务与另一个操作重叠。
  *  - **`MCP_LIST` 对 `kind: "sse"` 行的探测正向断言**。401 那条走的是 http 行
  *    (两条走同一段代码),sse 只验了"关掉的不探"。
  *  - **探测预算(`AUTH_PROBE_BUDGET_MS` 2.5s)那条时序**。夹具里的 fetch 替身是同步
@@ -493,7 +490,11 @@ eq(
   "https://plug.example/mcp",
 );
 eq("内置行不带 config(它没有可编辑的配置)", rowOf(all, MCP_RESERVED_NAME)?.config, undefined);
-eq("内置行不带 perEngine(它只跟浏览器总开关走)", rowOf(all, MCP_RESERVED_NAME)?.perEngine, undefined);
+same(
+  "内置浏览器 MCP 明确只属于 Claude",
+  rowOf(all, MCP_RESERVED_NAME)?.perEngine,
+  { claude: true, codex: false },
+);
 
 // schema 认不出的配置:面板不列它 —— 但**它必须还在真相层里**(见 §8 的派生视图)。
 eq("schema 认不出的配置不出现在面板上", rowOf(all, "not-modeled"), undefined);
@@ -738,6 +739,7 @@ same("新增一个 → ok", await save({ name: "brand-new", config: { command: "
   ok: true,
 });
 eq("新增的进了引擎视图", "brand-new" in claudeViewOnDisk(), true);
+eq("新增的同步进 Codex 派生视图", codexTomlOnDisk().includes("[mcp_servers.brand-new]"), true);
 eq(
   "新增的也进了面板",
   rowOf(await rows(), "brand-new")?.detail,
@@ -748,6 +750,19 @@ same("带 replace 覆盖已启用的 → ok", await save({ name: "stdio-one", co
   ok: true,
 });
 eq("覆盖真的换掉了命令", (await mcpConfig.getMcpTruth()).userServers?.["stdio-one"]?.command, "node2");
+
+// 两个 handler 都会先 await 真相层读取；没有主进程串行队列时它们能读到同一份
+// 旧快照,后保存的那份会覆盖先保存的名字。并发发起,确认两个更新都留下。
+const concurrentSaves = await Promise.all([
+  save({ name: "parallel-a", config: { command: "a" } }),
+  save({ name: "parallel-b", config: { command: "b" } }),
+]);
+same("并发保存都成功", concurrentSaves, [{ ok: true }, { ok: true }]);
+{
+  const state = await mcpConfig.getMcpTruth();
+  check("★ 并发保存不会互相覆盖", Boolean(state.userServers?.["parallel-a"] && state.userServers?.["parallel-b"]));
+}
+await Promise.all([remove({ name: "parallel-a" }), remove({ name: "parallel-b" })]);
 
 // 编辑一个**关掉的**服务器 = 重新启用:配置在真相层里,得把 stash 那份清掉,
 // 否则派生视图会继续把它滤掉 —— 用户按了保存却什么都没发生。
@@ -911,16 +926,10 @@ same("跳过的名字原样回传(界面要告诉用户跳了哪些)", importRes
 eq("★ 跳过的没有覆盖掉原来的配置", (await mcpConfig.getMcpTruth()).userServers?.["stdio-one"]?.command, "node2");
 
 eq("导入进来的进了引擎视图", "from-cli-global" in claudeViewOnDisk(), true);
-// ⚠️ codex 视图**不是**每次改动都会重算 —— `MCP_SAVE` / `MCP_REMOVE` / 用户级
-// `MCP_TOGGLE` / `MCP_IMPORT` 走的都是 `materializeClaudeMcpView()`(只重写 claude
-// 那一份),只有 `MCP_ENGINES_SET` 与插件那段 `MCP_TOGGLE` 走 `materializeAllMcpViews()`
-// —— 也就是 codex 的 config.toml 要到**下一次启动 app-server 时**才跟上
-// (`CodexAgentSdkProvider` 里的 `ensureConfigMaterialized`)。所以这里断的是:
-// 导入之后 claude 那边立刻有,**codex 那边故意不看** —— 详情见文件头的「不验清单」。
 eq(
-  "★ 导入不会顺手去动 codex 的 config.toml(claude 视图才是这一条通道的落点)",
+  "★ 导入会立即同步 codex 的 config.toml",
   codexTomlOnDisk().includes("[mcp_servers.from-cli-global]"),
-  false,
+  true,
 );
 eq("errors 为空(没出错就别编一个)", importRes.errors.length, 0);
 

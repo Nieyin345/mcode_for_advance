@@ -652,7 +652,7 @@ async function claudeSkillsOption(
   if (enabled === null) return "all";
   const enginesMap = readEnginesMap(defaultSkillsRoot());
   const pluginSkillNames = new Set<string>();
-  for (const root of await getEnabledPluginSkillRoots(pluginNames)) {
+  for (const root of await getEnabledPluginSkillRoots(pluginNames, "claude-sdk")) {
     for (const name of skillNamesInRoot(root).keys()) {
       if (engineEnabled(enginesMap, name, "claude")) pluginSkillNames.add(name);
     }
@@ -1471,7 +1471,10 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     // promise),两处各筛一次迟早分家 —— 而分家的表现是"这个插件没加载,它的工具却还在",
     // 正是这个参数想解决的那件事没解决。
     const enabledPluginsPromise = getEnabledPlugins().then((plugins) =>
-      narrowByName(plugins, req.pluginNames),
+      narrowByName(
+        plugins.filter((plugin) => plugin.compatibleProviderIds.includes("claude-sdk")),
+        req.pluginNames,
+      ),
     );
     const [mcpState, browserServer, libraryServer, workflowServer, memoryServer, outputStyle, enabledPlugins, pluginMcp] =
       await Promise.all([

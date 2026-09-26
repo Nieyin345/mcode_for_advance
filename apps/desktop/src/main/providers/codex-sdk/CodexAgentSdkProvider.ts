@@ -738,7 +738,7 @@ async function pluginSkillRootsFor(pluginNames?: readonly string[]): Promise<str
   const { getEnabledPluginSkillRoots } = await import("@main/plugins/pluginManager.js");
   const enginesMap = readEnginesMap(defaultSkillsRoot());
   const out: string[] = [];
-  for (const root of await getEnabledPluginSkillRoots(pluginNames)) {
+  for (const root of await getEnabledPluginSkillRoots(pluginNames, "codex-sdk")) {
     const byName = skillNamesInRoot(root);
     const enabled = [...byName.keys()].filter((n) => engineEnabled(enginesMap, n, "codex"));
     if (enabled.length === byName.size) out.push(root);

@@ -102,6 +102,10 @@ export function newSecret(): string {
 let server: Server | null = null;
 let localPort = 0;
 let starting: Promise<void> | null = null;
+// Incremented by stop so an in-flight listen cannot publish itself after the
+// user has disabled the endpoint. Closing `server` alone is insufficient while
+// the socket still only exists in startPublicMcp's local variable.
+let lifecycleGeneration = 0;
 
 /** 当前监听的端口;没起时 0。*/
 export function publicMcpPort(): number {
@@ -119,7 +123,8 @@ export async function startPublicMcp(): Promise<void> {
   if (starting) return starting;
   if (!store) throw new Error("public mcp: store is not configured");
 
-  starting = (async () => {
+  const generation = lifecycleGeneration;
+  const pending = (async () => {
     // 密钥在这里确保存在:服务一起来就得能鉴权,不能等到第一次请求才现生成
     // —— 那样设置页在服务起来之后、第一次请求之前会显示空密钥。
     store!.getSecret();
@@ -136,20 +141,30 @@ export async function startPublicMcp(): Promise<void> {
 
     try {
       const port = await listenOnDialablePort(srv);
+      if (generation !== lifecycleGeneration) {
+        // stopPublicMcp ran while listen was pending. Do not resurrect a
+        // disabled public endpoint when the bind eventually completes.
+        await new Promise<void>((resolve) => srv.close(() => resolve()));
+        return;
+      }
       server = srv;
       localPort = port;
       log.info(`public mcp: listening on 127.0.0.1:${port} (path ${PUBLIC_MCP_PATH_PREFIX}<secret>)`);
     } catch (err) {
-      starting = null;
       throw err;
     }
   })();
-
-  return starting;
+  starting = pending;
+  try {
+    await pending;
+  } finally {
+    if (starting === pending) starting = null;
+  }
 }
 
 /** 停机。幂等。不跑着的服务调用它无事发生。 */
 export function stopPublicMcp(): void {
+  lifecycleGeneration++;
   const srv = server;
   server = null;
   localPort = 0;

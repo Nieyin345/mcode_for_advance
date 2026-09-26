@@ -405,11 +405,23 @@ ok(!skillRoots.some((r) => r.includes("builtin-skills")), "没有内置技能根
 const scopedSkillRoots = await getEnabledPluginSkillRoots(["demo-plugin"]);
 eq(JSON.stringify(scopedSkillRoots), JSON.stringify(skillRoots), "逐轮插件过滤命中时只投递指定插件技能根");
 eq(JSON.stringify(await getEnabledPluginSkillRoots(["missing-plugin"])), "[]", "逐轮插件过滤未命中时不泄漏其它全局插件技能");
+eq(
+  JSON.stringify(await getEnabledPluginSkillRoots(["demo-plugin"], "claude-sdk")),
+  JSON.stringify(skillRoots),
+  "兼容 provider 可以拿到插件技能根",
+);
+eq(
+  JSON.stringify(await getEnabledPluginSkillRoots(["demo-plugin"], "unsupported-provider")),
+  "[]",
+  "不兼容 provider 在最终投递层也拿不到插件技能根",
+);
 
 const mcp = await getPluginMcpServers();
 eq(mcp.length, 1, "one namespaced MCP entry");
 eq(mcp[0][0], "demo-plugin__fetcher", "MCP name namespaced plugin__server");
 eq(mcp[0][1].command, "node", "MCP config carried through");
+eq((await getPluginMcpServers(undefined, "claude-sdk")).length, 1, "兼容 provider 可以拿到插件 MCP");
+eq((await getPluginMcpServers(undefined, "unsupported-provider")).length, 0, "不兼容 provider 拿不到插件 MCP");
 
 const panel = await listPluginMcpPanelEntries();
 eq(panel.length, 1, "one panel entry");

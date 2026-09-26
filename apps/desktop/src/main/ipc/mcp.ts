@@ -51,7 +51,6 @@ import {
   getMcpTruth,
   ensureMcpTruthMigrated,
   saveMcpManagement,
-  materializeClaudeMcpView,
   materializeAllMcpViews,
   describeMcpConfig,
 } from "@main/lib/mcpConfig.js";
@@ -74,6 +73,19 @@ const BUILTIN_DETAIL = "browser_navigate / browser_snapshot / browser_click 等�
  * the panel as a badge + an authorize action. */
 
 const NEEDS_AUTH_CACHE_FILE = path.join(MCODE_CONFIG_DIR, "mcp-needs-auth-cache.json");
+
+// Every MCP mutation is a read-modify-write over shared management/config
+// files. Electron may run different IPC handlers concurrently while one is
+// awaiting migration or materialization; serialize them so two row actions do
+// not lose each other's updates. OAuth flows join the same queue because they
+// temporarily register a server in .claude.json and restore it afterwards.
+let mcpMutationTail: Promise<void> = Promise.resolve();
+
+function serializeMcpMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const run = mcpMutationTail.then(operation, operation);
+  mcpMutationTail = run.then(() => undefined, () => undefined);
+  return run;
+}
 
 function readNeedsAuthNames(): Set<string> {
   try {
@@ -545,7 +557,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
   });
 
   // ── Toggle a server (scope-specific semantics) ──
-  ipcMain.handle(IPC.MCP_TOGGLE, async (_evt, raw) => {
+  ipcMain.handle(IPC.MCP_TOGGLE, (_evt, raw) => serializeMcpMutation(async () => {
     const input = McpToggleSchema.parse(raw);
     try {
       if (input.scope === "builtin") {
@@ -572,19 +584,19 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       const applied = applyUserMcpToggle(state, input.name, input.enabled);
       if (!applied.ok) return { ok: false, error: applied.error };
       saveMcpManagement(applied.state);
-      await materializeClaudeMcpView();
+      await materializeAllMcpViews();
       return { ok: true };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
-  });
+  }));
 
   // ── Set a server's per-engine visibility (claude / codex) ──
   // pi has no MCP support, so there is no third switch. Both engine views
   // re-derive after the write; each engine picks the change up on its next
   // turn (the claude binary reads the file at turn start, codex reads
   // config.toml when its app-server spawns).
-  ipcMain.handle(IPC.MCP_ENGINES_SET, async (_evt, raw) => {
+  ipcMain.handle(IPC.MCP_ENGINES_SET, (_evt, raw) => serializeMcpMutation(async () => {
     const input = McpEnginesSetSchema.parse(raw);
     try {
       const map = readMcpEnginesMap();
@@ -602,10 +614,10 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
-  });
+  }));
 
   // ── OAuth authorize a remote server (browser login via the Claude CLI) ──
-  ipcMain.handle(IPC.MCP_AUTHORIZE, async (_evt, raw) => {
+  ipcMain.handle(IPC.MCP_AUTHORIZE, (_evt, raw) => serializeMcpMutation(async () => {
     const input = McpAuthorizeSchema.parse(raw);
     // Spawn-safe guards: the name lands in argv and as a config key, the URL
     // in argv (a cmd /c fallback re-quotes them) — keep both to a
@@ -664,10 +676,10 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
         /* best-effort config restore */
       }
     }
-  });
+  }));
 
   // ── OAuth sign-out: clear a remote server's stored token ──
-  ipcMain.handle(IPC.MCP_UNAUTHORIZE, async (_evt, raw) => {
+  ipcMain.handle(IPC.MCP_UNAUTHORIZE, (_evt, raw) => serializeMcpMutation(async () => {
     const input = McpUnauthorizeSchema.parse(raw);
     // Same spawn-safe guards as authorize.
     if (!/^[A-Za-z0-9_-]+$/.test(input.name)) return { ok: false, error: "非法 server 名" };
@@ -725,10 +737,10 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
         /* best-effort config restore */
       }
     }
-  });
+  }));
 
   // ── Add a user-scope server (or overwrite when input.replace is set) ──
-  ipcMain.handle(IPC.MCP_SAVE, async (_evt, raw) => {
+  ipcMain.handle(IPC.MCP_SAVE, (_evt, raw) => serializeMcpMutation(async () => {
     const input = McpSaveSchema.parse(raw);
     if (input.name === MCP_RESERVED_NAME) {
       return { ok: false, error: `「${MCP_RESERVED_NAME}」是内置 server 的保留名` };
@@ -749,15 +761,15 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       }
       state.userServers = userServers;
       saveMcpManagement(state);
-      await materializeClaudeMcpView();
+      await materializeAllMcpViews();
       return { ok: true };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
-  });
+  }));
 
   // ── Remove a user-scope server (truth layer + stash) ──
-  ipcMain.handle(IPC.MCP_REMOVE, async (_evt, raw) => {
+  ipcMain.handle(IPC.MCP_REMOVE, (_evt, raw) => serializeMcpMutation(async () => {
     const input = McpRemoveSchema.parse(raw);
     try {
       const state = await getMcpTruth();
@@ -771,12 +783,12 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       state.userServers = userServers;
       state.userDisabled = stash;
       saveMcpManagement(state);
-      await materializeClaudeMcpView();
+      await materializeAllMcpViews();
       return { ok: true };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
-  });
+  }));
 
   // ── Scan the local Claude CLI config for importable servers ──
   ipcMain.handle(IPC.MCP_SCAN_IMPORT, async (_evt, raw) => {
@@ -791,7 +803,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
   });
 
   // ── Import selected servers into the user scope ──
-  ipcMain.handle(IPC.MCP_IMPORT, async (_evt, raw) => {
+  ipcMain.handle(IPC.MCP_IMPORT, (_evt, raw) => serializeMcpMutation(async () => {
     const input = McpImportSchema.parse(raw);
     const imported: string[] = [];
     const skipped: string[] = [];
@@ -813,7 +825,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       if (changed) {
         state.userServers = userServers;
         saveMcpManagement(state);
-        await materializeClaudeMcpView();
+        await materializeAllMcpViews();
       }
       return { imported, skipped, errors };
     } catch (err) {
@@ -823,11 +835,13 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
         errors: [...errors, { name: "(批量写入)", error: (err as Error).message }],
       };
     }
-  });
+  }));
 
   // Warm the truth-layer migration so the first panel open / codex turn never
   // pays for it (idempotent; also pins the derived views at boot).
-  void ensureMcpTruthMigrated()
-    .then(() => materializeClaudeMcpView())
+  void serializeMcpMutation(async () => {
+    await ensureMcpTruthMigrated();
+    await materializeAllMcpViews();
+  })
     .catch((err) => log.warn(`mcp: boot migration failed: ${(err as Error).message}`));
 }

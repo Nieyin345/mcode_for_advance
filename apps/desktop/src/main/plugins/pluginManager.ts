@@ -418,6 +418,10 @@ export function listPlugins(): PluginState[] {
 /* ── Install pipeline ── */
 
 const installing = new Set<string>();
+// Different sources (marketplace URL vs local directory, for example) may
+// resolve to the same plugin name. Source-level de-duplication cannot prevent
+// those installs from swapping the same live directory concurrently.
+const finalizingPluginNames = new Set<string>();
 
 /** What stagePluginSource/finalizePluginInstall need to know about where the
  *  payload comes from. `git`/`local-*` come from the RPCs; `marketplace-path`
@@ -549,8 +553,22 @@ async function finalizePluginInstall(stage: StageOutcome, source: PluginSourceIn
     JSON.stringify(record, null, 2),
     "utf-8",
   );
-  rmSync(finalDir, { recursive: true, force: true });
-  await fs.rename(swapDir, finalDir);
+  const backupDir = `${finalDir}.backup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  let backedUp = false;
+  try {
+    if (existsSync(finalDir)) {
+      await fs.rename(finalDir, backupDir);
+      backedUp = true;
+    }
+    await fs.rename(swapDir, finalDir);
+    if (backedUp) await fs.rm(backupDir, { recursive: true, force: true }).catch(() => {});
+  } catch (err) {
+    await fs.rm(swapDir, { recursive: true, force: true }).catch(() => {});
+    if (backedUp && !existsSync(finalDir)) {
+      await fs.rename(backupDir, finalDir).catch(() => {});
+    }
+    throw err;
+  }
   for (const other of readdirSync(path.join(PLUGINS_ROOT, stage.manifest.name))) {
     if (other === stage.version) continue;
     rmSync(path.join(PLUGINS_ROOT, stage.manifest.name, other), { recursive: true, force: true });
@@ -572,9 +590,18 @@ async function installFromSource(source: StageSource, sourceInfo?: PluginSourceI
   try {
     const stage = await stagePluginSource(source);
     try {
-      const finalDir = await finalizePluginInstall(stage, sourceInfo ?? { kind: "local-dir", ref: source.ref });
-      const state = toPluginState(finalDir, new Set(readEnabledPlugins()));
-      return state ? { ok: true, plugin: state } : { ok: false, error: "安装后清单解析失败" };
+      const pluginName = stage.manifest.name;
+      if (finalizingPluginNames.has(pluginName)) {
+        return { ok: false, error: `插件 ${pluginName} 正在安装中` };
+      }
+      finalizingPluginNames.add(pluginName);
+      try {
+        const finalDir = await finalizePluginInstall(stage, sourceInfo ?? { kind: "local-dir", ref: source.ref });
+        const state = toPluginState(finalDir, new Set(readEnabledPlugins()));
+        return state ? { ok: true, plugin: state } : { ok: false, error: "安装后清单解析失败" };
+      } finally {
+        finalizingPluginNames.delete(pluginName);
+      }
     } finally {
       await fs.rm(stage.stagingDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -1035,11 +1062,18 @@ export interface PluginSkillSource {
 }
 
 /** {@link PluginSkillSource} 版本 —— 需要来源标记的调用点用它。 */
-export async function getPluginSkillSources(pluginNames?: readonly string[]): Promise<PluginSkillSource[]> {
+export async function getPluginSkillSources(
+  pluginNames?: readonly string[],
+  providerId?: string,
+): Promise<PluginSkillSource[]> {
   const out: PluginSkillSource[] = [];
   const allow = pluginNames && pluginNames.length > 0 ? new Set(pluginNames) : null;
   for (const p of await getEnabledPlugins()) {
     if (allow && !allow.has(p.name)) continue;
+    // Candidate filtering and preflight are user-facing guardrails; enforce
+    // the same applicability again at delivery so a stale/shared workflow
+    // cannot mount a plugin into a provider the manifest excludes.
+    if (providerId && !p.compatibleProviderIds.includes(providerId)) continue;
     for (const rootDir of pluginSkillsDirs(p.rootDir, p.manifest)) {
       out.push({ rootDir, builtin: p.builtin === true });
     }
@@ -1051,8 +1085,11 @@ export async function getPluginSkillSources(pluginNames?: readonly string[]): Pr
  *  appended to Codex's `skills/extraRoots/set` and Pi's
  *  `additionalSkillPaths`. A manifest may declare multiple skills roots
  *  (Claude's string[] form). */
-export async function getEnabledPluginSkillRoots(pluginNames?: readonly string[]): Promise<string[]> {
-  return (await getPluginSkillSources(pluginNames)).map((s) => s.rootDir);
+export async function getEnabledPluginSkillRoots(
+  pluginNames?: readonly string[],
+  providerId?: string,
+): Promise<string[]> {
+  return (await getPluginSkillSources(pluginNames, providerId)).map((s) => s.rootDir);
 }
 
 /** 一个已启用插件提供的工作流节点类型目录。
@@ -1130,10 +1167,12 @@ export async function getPluginMcpServerConfig(fullName: string): Promise<unknow
  *  scan this function would otherwise perform. */
 export async function getPluginMcpServers(
   precomputed?: EnabledPlugin[],
+  providerId?: string,
 ): Promise<Array<[string, McpServerConfig]>> {
   const disabled = readMcpDisabled();
   const out: Array<[string, McpServerConfig]> = [];
   for (const p of precomputed ?? (await getEnabledPlugins())) {
+    if (providerId && !p.compatibleProviderIds.includes(providerId)) continue;
     for (const [serverName, raw] of readPluginMcpEntries(p)) {
       const parsed = McpServerConfigSchema.safeParse(raw);
       if (!parsed.success) continue;
