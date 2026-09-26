@@ -198,51 +198,55 @@ function sendRpcResult(res: ServerResponse, promise: Promise<unknown>): void {
 
 /** SSE event-stream handler. Subscribes to the bus, writes each RuntimeEvent
  *  framed as `event: message\ndata: <json>\n\n`, and emits heartbeats. */
-function handleEvents(req: IncomingMessage, res: ServerResponse): void {
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-    "X-Accel-Buffering": "no", // disable proxy buffering (nginx et al.)
-  });
-  // Initial flush so the client sees headers immediately.
-  res.write(": connected\n\n");
-
-  // Running-state snapshot as the first data frame of every (re)connect.
-  // The bus is unbuffered, so a phone that was backgrounded while a turn ran
-  // misses the terminal `turn.done` — without this frame its client-side
-  // running state stays stuck on forever (spinner, slash picker disabled).
-  res.write(
-    `data: ${JSON.stringify({
+function handleEvents(req: IncomingMessage, res: ServerResponse, device: PairedDevice): void {
+  if (req.destroyed || res.destroyed) return;
+  let closed = false;
+  let unsubscribe: (() => void) | undefined;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let releaseDevice: (() => void) | null = null;
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    unsubscribe?.();
+    releaseDevice?.();
+    if (heartbeat) clearInterval(heartbeat);
+    req.off("close", close);
+    res.off("close", close);
+    res.off("error", close);
+    // Revocation must not wait for a slow client's queued output to drain.
+    if (!res.destroyed) res.destroy();
+  };
+  releaseDevice = pairingManager.registerDeviceConnection(device.deviceId, close);
+  if (!releaseDevice) {
+    sendJson(res, 401, { error: "unauthorized" });
+    return;
+  }
+  req.once("close", close);
+  res.once("close", close);
+  res.once("error", close);
+  try {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    res.write(": connected\n\n");
+    // The bus is unbuffered: reconnecting clients first restore running state.
+    res.write(`data: ${JSON.stringify({
       sessionId: "",
-      event: {
-        type: "session.runningSnapshot",
-        sessionId: "",
-        running: runtimeManager.runningSessionIds(),
-      },
-    })}\n\n`,
-  );
-
-  const unsubscribe = mobileEventBus.subscribe((e) => {
-    // Filter is per-client in the future (sessionId subscription); for now we
-    // fan out everything and let the client drop irrelevant sessionIds — cheap
-    // on LAN, and keeps the server stateless.
-    res.write(`data: ${JSON.stringify({ sessionId: e.sessionId, event: e })}\n\n`);
-  });
-
-  const heartbeat = setInterval(() => {
-    res.write(": ping\n\n");
-  }, SSE_HEARTBEAT_INTERVAL_MS);
-
-  req.on("close", () => {
-    unsubscribe();
-    clearInterval(heartbeat);
-    try {
-      res.end();
-    } catch {
-      // already ended
-    }
-  });
+      event: { type: "session.runningSnapshot", sessionId: "", running: runtimeManager.runningSessionIds() },
+    })}\n\n`);
+    unsubscribe = mobileEventBus.subscribe((event) => {
+      if (!closed) res.write(`data: ${JSON.stringify({ sessionId: event.sessionId, event })}\n\n`);
+    });
+    heartbeat = setInterval(() => {
+      if (!closed) res.write(": ping\n\n");
+    }, SSE_HEARTBEAT_INTERVAL_MS);
+  } catch (error) {
+    close();
+    throw error;
+  }
 }
 
 /** POST /api/pair/verify — complete pairing. No auth required (nonce + code). */
@@ -364,7 +368,11 @@ export function createMobileRequestHandler(
             sendJson(res, 401, { error: "unauthorized" });
             return;
           }
-          handleEvents(req, res);
+          handleEvents(req, res, device);
+        }).catch((error) => {
+          log.warn(`mobile: SSE authorization/setup failed: ${String(error)}`);
+          if (!res.destroyed && !res.headersSent) sendJson(res, 500, { error: "internal error" });
+          else if (!res.destroyed) res.destroy();
         });
         return;
       }
@@ -444,6 +452,9 @@ export async function startMobileServer(): Promise<MobileServerHandle> {
     endpoint,
     stop: () => {
       server.close(() => log.info(`mobile: server stopped (${port})`));
+      // close() alone waits forever for SSE. Stop active HTTP connections too;
+      // each stream's close handler releases its bus subscription/device lease.
+      server.closeAllConnections();
       currentHandle = null;
     },
   };

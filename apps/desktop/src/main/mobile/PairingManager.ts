@@ -142,6 +142,8 @@ export function detectHostLabel(): string {
 
 export class PairingManager {
   private pending: PendingPairing | null = null;
+  /** Revocable leases for already-authorized long-lived connections. */
+  private deviceConnections = new Map<string, Set<() => void>>();
 
   /** Await DB readiness before any read/write of the device list. */
   private async ready(): Promise<void> {
@@ -286,11 +288,37 @@ export class PairingManager {
     return this.readDevicesRaw().map(({ deviceToken: _token, ...rest }) => rest);
   }
 
-  /** Forget a device — its token stops being accepted immediately. */
+  /** Called after token authentication, without another await before subscribe.
+   * Recheck membership synchronously: revoke may have run between the async
+   * authorize result and establishing this connection. null means access ended. */
+  registerDeviceConnection(deviceId: string, close: () => void): (() => void) | null {
+    if (!this.readDevicesRaw().some((device) => device.deviceId === deviceId)) return null;
+    let connections = this.deviceConnections.get(deviceId);
+    if (!connections) {
+      connections = new Set();
+      this.deviceConnections.set(deviceId, connections);
+    }
+    const owned = connections;
+    owned.add(close);
+    return () => {
+      owned.delete(close);
+      if (owned.size === 0 && this.deviceConnections.get(deviceId) === owned) {
+        this.deviceConnections.delete(deviceId);
+      }
+    };
+  }
+
+  /** Forget a device — reject new requests AND close its existing streams. */
   async revokeDevice(deviceId: string): Promise<void> {
     await this.ready();
     const devices = this.readDevicesRaw().filter((d) => d.deviceId !== deviceId);
     SettingRepo.set(MOBILE_PAIRED_DEVICES_SETTING_KEY, JSON.stringify(devices));
+    const connections = this.deviceConnections.get(deviceId);
+    this.deviceConnections.delete(deviceId);
+    for (const close of [...(connections ?? [])]) {
+      try { close(); }
+      catch (error) { log.warn(`mobile: revoked connection cleanup failed: ${String(error)}`); }
+    }
     log.info(`mobile: device revoked (${deviceId})`);
   }
 

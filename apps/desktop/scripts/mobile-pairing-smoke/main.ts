@@ -42,7 +42,7 @@
  * Run: scripts/mobile-pairing-smoke/run.sh
  */
 import { createServer, type Server } from "node:http";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -95,7 +95,14 @@ process.env.MCODE_WEB_DIST = WEB_DIST;
  * 数据根由 stubs/dataRoot.ts 钉到 mktemp(那个桩**没设就抛**,指错地方等于拿空库盖掉
  * 用户的聊天记录)。
  */
-const { initDb, getDb } = await import("@main/store/db.js");
+const { initDb, getDb, closeDb } = await import("@main/store/db.js");
+process.once("exit", () => {
+  try { closeDb(); }
+  finally {
+    rmSync(DATA, { recursive: true, force: true });
+    rmSync(WEB_DIST, { recursive: true, force: true });
+  }
+});
 await initDb();
 check("库真的建起来了(不是空壳桩)", !!getDb());
 check(
@@ -601,6 +608,99 @@ console.log("\nSSE");
 
   ctrl.abort();
   await new Promise((r) => setTimeout(r, 50));
+}
+
+// A revocation must close ALREADY-OPEN streams, not merely reject the next
+// HTTP request. Exercise two connections for A and an unaffected device B.
+{
+  async function pairForStream(name: string): Promise<{ deviceId: string; deviceToken: string }> {
+    const pairing = pairingManager.startPairing(ENDPOINT, { force: true });
+    const response = await req("/api/pair/verify", {
+      method: "POST", body: { nonce: pairing.nonce, code: pairing.code, deviceName: name },
+    });
+    const device = JSON.parse(response.text) as { deviceId: string; deviceToken: string };
+    issuedSecrets.push(device.deviceToken);
+    return device;
+  }
+  const waitFor = async (predicate: () => boolean, timeoutMs = 1000): Promise<boolean> => {
+    const deadline = Date.now() + timeoutMs;
+    while (!predicate() && Date.now() < deadline) await new Promise((done) => setTimeout(done, 10));
+    return predicate();
+  };
+  async function openStream(token: string, bearer = false) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const response = await fetch(`${BASE}/api/events${bearer ? "" : `?token=${encodeURIComponent(token)}`}`, {
+      headers: bearer ? { Authorization: `Bearer ${token}` } : undefined,
+      signal: controller.signal,
+    });
+    eq("live revocation: stream starts authenticated", response.status, 200);
+    const observation = { text: "", endedByServer: false };
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    const done = (async () => {
+      try {
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) { observation.endedByServer = !controller.signal.aborted; break; }
+          observation.text += decoder.decode(chunk.value, { stream: true });
+        }
+      } catch {
+        // A server-side destroy is a valid revoke; our own abort/timeout is NOT.
+        observation.endedByServer = !controller.signal.aborted;
+      } finally { clearTimeout(timeout); }
+    })();
+    check("live revocation: initial snapshot arrived", await waitFor(() => observation.text.includes("runningSnapshot")));
+    return { observation, done, abort: () => controller.abort() };
+  }
+  const baseline = mobileEventBus.size;
+  const a = await pairForStream("revoke-stream-A");
+  const b = await pairForStream("keep-stream-B");
+  const streams = [] as Awaited<ReturnType<typeof openStream>>[];
+  try {
+    const a1 = await openStream(a.deviceToken);
+    streams.push(a1);
+    const a2 = await openStream(a.deviceToken, true);
+    streams.push(a2);
+    const b1 = await openStream(b.deviceToken);
+    streams.push(b1);
+    eq("live revocation: all three subscribers registered", mobileEventBus.size, baseline + 3);
+    await pairingManager.revokeDevice(a.deviceId);
+    check("revocation closes every existing connection of A", await waitFor(() => a1.observation.endedByServer && a2.observation.endedByServer));
+    check("revoking A does not close B", !b1.observation.endedByServer);
+    mobileEventBus.broadcast({ type: "text.delta", sessionId: "revocation-smoke", messageId: "message-smoke", text: "AFTER_REVOKE_SENTINEL" });
+    check("B still receives events after A is revoked", await waitFor(() => b1.observation.text.includes("AFTER_REVOKE_SENTINEL")));
+    check("revoked streams receive no subsequent events", !a1.observation.text.includes("AFTER_REVOKE_SENTINEL") && !a2.observation.text.includes("AFTER_REVOKE_SENTINEL"));
+    eq("revocation removes A's subscriptions immediately", mobileEventBus.size, baseline + 1);
+    await pairingManager.revokeDevice(a.deviceId);
+    eq("repeated revocation leaves B subscribed", mobileEventBus.size, baseline + 1);
+    eq("revoked device cannot reconnect", (await req(`/api/events?token=${encodeURIComponent(a.deviceToken)}`)).status, 401);
+  } finally {
+    for (const stream of streams) stream.abort();
+    await Promise.all(streams.map((stream) => stream.done));
+    check("disconnect releases all stream subscriptions", await waitFor(() => mobileEventBus.size === baseline));
+  }
+
+  // Deliberately pause at the authorize -> subscribe boundary: a token that
+  // WAS valid must not create a fresh stream after its device was revoked.
+  const racing = await pairForStream("revoked-during-authorize");
+  const validate = pairingManager.validateToken;
+  const controller = new AbortController();
+  try {
+    pairingManager.validateToken = async (token: string) => {
+      const device = await validate.call(pairingManager, token);
+      if (token === racing.deviceToken && device) await pairingManager.revokeDevice(device.deviceId);
+      return device;
+    };
+    const response = await fetch(`${BASE}/api/events?token=${encodeURIComponent(racing.deviceToken)}`, {
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(2000)]),
+    });
+    eq("revocation between authorize and subscribe cannot reopen SSE", response.status, 401);
+  } finally {
+    pairingManager.validateToken = validate;
+    controller.abort();
+    check("authorization race leaves no subscriber behind", await waitFor(() => mobileEventBus.size === baseline));
+  }
 }
 
 // SSE 的令牌走 query param(EventSource 不能设 header)—— 这条豁免**只给 SSE**。
