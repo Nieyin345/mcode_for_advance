@@ -423,8 +423,7 @@ function preloadPushChannels(text: string): Array<{ arg: string; channel: string
  *   3. `ipcMain.handle(MONITORING_OVERVIEW, …)`            —— 文件内 `const X = "…"` 局部常量
  *   4. `ipcMain.handle("claude:healthCheck", …)`           —— 裸字面量(不带常量)
  *
- * 还有两处**间接**的,扫描器要认得出并说出来,否则它们会伪装成"这两条没接过":
- *   - `ipc.handle(IPC.LONGTASK_START, …)` —— `longtask.ts` 的形参名叫 `ipc`
+ * 间接注册的 handler,扫描器要认得出并说出来,否则它们会伪装成"没接过":
  *   - `target.handle(channel, …)`        —— `ipc/index.ts` 里的 DB 就绪包装器,通道名是形参
  * 这两处靠**形参类型是 `IpcMain`** 认出来(见 `IpcMain` 参数扫描)。
  *
@@ -1001,6 +1000,19 @@ console.log(
 );
 
 /* ────────────────────── 收尾 ────────────────────── */
+
+// 两个已退役的 composer 功能不能只藏按钮：各自的调用链也必须断开。
+const toolbar = read(join(DESKTOP, "src/renderer/components/chat/ComposerToolbar.tsx"));
+const sessionStore = read(join(DESKTOP, "src/renderer/stores/sessionStore.ts"));
+const rpcMap = read(rpcMapFile);
+check("会话插件选择器已离开 composer", !toolbar.includes("PluginResidencyControl"));
+check("长任务按钮已离开 composer，守望仍保留", !toolbar.includes("LongTaskSegment") && toolbar.includes("<WatchSegment"));
+check("长任务状态和自动续轮不再由会话 store 驱动", !sessionStore.includes("longTaskBySession") && !sessionStore.includes("api.longtask.start"));
+check("长任务 RPC 契约和 IPC 常量已移除", !rpcMap.includes('"longtask.start"') && !rpcMap.includes("LONGTASK_START"));
+check("preload 不再暴露长任务入口", !preloadSrc.includes("IPC.LONGTASK_START"));
+check("主进程不再启动循环器", !read(join(MAIN, "index.ts")).includes("longTaskRunner"));
+check("运行时事件不再广播长任务", !read(join(CONTRACTS, "runtime.ts")).includes("LongTaskUpdateEvent"));
+check("主进程不再读写历史长任务", !read(join(MAIN, "store/repositories.ts")).includes("LongTaskRepo"));
 
 if (failures > 0) {
   console.error(`\n${failures} failed, ${checks - failures} passed`);

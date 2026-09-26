@@ -85,8 +85,8 @@ interface LibraryState {
   allItems: LibraryItem[] | null;
 
   loadCollections: () => Promise<void>;
-  /** 新建并返回新库的 id(方便调用方立刻选中它)。建在 activeKind 那个库里。 */
-  createCollection: (name: string, parentId?: string | null) => Promise<string | null>;
+  /** 新建并返回 id。归属必须来自触发新建的那个大类，不能沿用上次选中分类的大类。 */
+  createCollection: (name: string, groupId: string, parentId?: string | null) => Promise<string | null>;
   setActiveCollection: (id: string | null) => void;
   setActiveItem: (id: string | null) => void;
   setDetailTab: (tab: "meta" | "preview" | "pdf" | "file" | "edit") => void;
@@ -141,22 +141,17 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     }
   },
 
-  createCollection: async (name, parentId = null) => {
+  createCollection: async (name, groupId, parentId = null) => {
     // 主进程会把名字 trim 后落库,这里也必须按 trim 后的值去匹配新建的那条 ——
     // 否则用户输入带首尾空格时匹配不上,调用方会误判成「创建失败/重名」。
     const trimmed = name.trim();
-    try {
-      const res = await api.library.createCollection({ name: trimmed, parentId, groupId: get().activeGroupId ?? undefined });
-      set({ collections: res.collections });
-      // 取**最新**的那条（按 createdAt 倒序）—— 与 sortOrder 无关，
-      // 所以新建的排最前还是最后都不影响这里找 id。
-      const created = res.collections
-        .filter((c) => c.name === trimmed && c.parentId === parentId)
-        .sort((a, b) => b.createdAt - a.createdAt)[0];
-      return created?.id ?? null;
-    } catch {
-      return null;
-    }
+    const res = await api.library.createCollection({ name: trimmed, parentId, groupId });
+    set({ collections: res.collections });
+    // 取本次**目标大类**下最新的那条；别把其他大类的同名项误认成新建成功。
+    const created = res.collections
+      .filter((c) => c.name === trimmed && c.parentId === parentId && c.groupId === groupId)
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    return created?.id ?? null;
   },
 
   setActiveCollection: (id) => {

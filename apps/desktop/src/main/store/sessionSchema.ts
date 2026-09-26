@@ -203,18 +203,6 @@ export const SESSION_COLUMNS: readonly SessionColumn[] = [
   { name: "agent_profile", def: "TEXT", inCreate: false, key: "agentProfile",
     bind: (s) => v(s.agentProfile ? JSON.stringify(s.agentProfile) : null),
     read: (r) => (r.agent_profile ? safeJson(r.agent_profile) : null) as Session["agentProfile"] },
-  // Conversation-scoped plugin residency. NULL is deliberately the legacy
-  // state: this conversation has never opted into a narrowed plugin set, so
-  // providers keep seeing every globally enabled plugin. Once the composer
-  // explicitly activates plugins, only their stable names are stored here;
-  // tool schemas/process handles are always re-resolved on each turn.
-  { name: "active_plugin_names", def: "TEXT", inCreate: false, key: "activePluginNames",
-    bind: (s) => v(s.activePluginNames && s.activePluginNames.length > 0 ? JSON.stringify(s.activePluginNames) : null),
-    read: (r) => {
-      if (!r.active_plugin_names) return null;
-      const parsed = safeJson(r.active_plugin_names);
-      return Array.isArray(parsed) ? parsed.filter((name): name is string => typeof name === "string") : null;
-    } },
 ];
 
 /** CREATE TABLE 语句由 inCreate 列生成。db.ts 的 migrate() 大 SQL 模板里插值,

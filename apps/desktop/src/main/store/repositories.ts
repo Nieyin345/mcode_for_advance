@@ -16,7 +16,6 @@ import type {
   SessionBookmark,
 } from "@contracts/session";
 import type { ContextSnapshot, SubagentSnapshot, TurnFileEntry, TurnUsageRecord } from "@contracts/runtime";
-import type { LongTask } from "@contracts/longTask";
 import type { WorkflowDoc } from "@contracts/workflow";
 import type {
   LibraryItem,
@@ -1028,22 +1027,6 @@ export const SessionRepo = {
   updateCustomModelId(id: string, customModelId: string | null): void {
     getDb().run("UPDATE sessions SET custom_model_id = ?, updated_at = ? WHERE id = ?", [
       v(customModelId),
-      v(Date.now()),
-      v(id),
-    ]);
-    persist();
-  },
-
-  /**
-   * Persist the conversation's plugin binding. `null` / an empty list clears
-   * the binding back to the legacy unrestricted state. Names are de-duplicated
-   * in first-seen order; install/enable validity is checked when each turn is
-   * assembled, so this state can never resurrect an uninstalled/disabled plugin.
-   */
-  updateActivePluginNames(id: string, names: string[] | null): void {
-    const normalized = names ? [...new Set(names.filter((name) => typeof name === "string" && name.trim()).map((name) => name.trim()))] : [];
-    getDb().run("UPDATE sessions SET active_plugin_names = ?, updated_at = ? WHERE id = ?", [
-      v(normalized.length > 0 ? JSON.stringify(normalized) : null),
       v(Date.now()),
       v(id),
     ]);
@@ -2860,141 +2843,6 @@ export const NoteRepo = {
     db.run("DELETE FROM library_notes WHERE id = ?", [v(id)]);
     persist();
     return itemId;
-  },
-};
-
-/* ──────────────────────────────── 长期任务 ─────────────────────────────── */
-/* 见 contracts/src/longTask.ts 与 main/longtask/taskRunner.ts。落库的意义:
-   状态条要能扛住重启(重启 sweep 会把 running 标成 stopped),运行历史要能翻。 */
-
-interface LongTaskRow {
-  id: string;
-  session_id: string;
-  project_id: string;
-  goal: string;
-  status: string;
-  iterations: number;
-  max_iterations: number;
-  note: string | null;
-  started_at: number;
-  updated_at: number;
-  finished_at: number | null;
-}
-
-function rowToLongTask(r: LongTaskRow): LongTask {
-  return {
-    id: r.id,
-    sessionId: r.session_id,
-    projectId: r.project_id,
-    goal: r.goal,
-    status: (r.status as LongTask["status"]) || "running",
-    iterations: r.iterations ?? 0,
-    maxIterations: r.max_iterations,
-    note: r.note,
-    startedAt: r.started_at,
-    updatedAt: r.updated_at,
-    finishedAt: r.finished_at,
-  };
-}
-
-export const LongTaskRepo = {
-  /** 按开始时间倒序,翻某个会话的历史(当前那条通常在最前)。
-   *
-   *  `started_at` 只到毫秒,而 id 是 `ltask_<时间>_<随机>` —— 同一毫秒建的两条,
-   *  按 id 排等于按随机串排。所以用 `rowid` 兜底:SQLite 的隐式插入序,**后插的更大**,
-   *  这才是"谁更新"的正确答案(见下面 {@link latestOf} 那条一样的注释)。 */
-  listBySession(sessionId: string): LongTask[] {
-    const stmt = getDb().prepare(
-      "SELECT rowid AS _seq, * FROM long_tasks WHERE session_id = ? ORDER BY started_at DESC, _seq DESC",
-    );
-    stmt.bind([v(sessionId)]);
-    const out: LongTask[] = [];
-    while (stmt.step()) out.push(rowToLongTask(stmt.getAsObject() as unknown as LongTaskRow));
-    stmt.free();
-    return out;
-  },
-
-  /** 会话的当前任务:最新一条(不管状态)。没有则 null。
-   *
-   *  ⚠️ **兜底的必须是 `rowid`,不能是 `id`。** id 里带的是时间 + **随机**串,所以
-   *  "同一毫秒建的两条谁在后"按 id 排是随机的 —— 长跑脚本里连着建两个任务时,有一半
-   *  机会"最新一条"返回的是**旧那条**。这不是理论上的:长期任务的 stop 靠它找残留的
-   *  `running` 行,拿错了就报"这个会话没有进行中的长期任务"(见 `taskRunner.stop`)。
-   *  `rowid` 是 SQLite 的隐式插入序,后插的一定更大,与"谁更新"同义。 */
-  latestOf(sessionId: string): LongTask | null {
-    const stmt = getDb().prepare(
-      "SELECT rowid AS _seq, * FROM long_tasks WHERE session_id = ? ORDER BY started_at DESC, _seq DESC LIMIT 1",
-    );
-    stmt.bind([v(sessionId)]);
-    const found = stmt.step();
-    const row = found ? rowToLongTask(stmt.getAsObject() as unknown as LongTaskRow) : null;
-    stmt.free();
-    return row;
-  },
-
-  get(id: string): LongTask | null {
-    const stmt = getDb().prepare("SELECT * FROM long_tasks WHERE id = ?");
-    stmt.bind([v(id)]);
-    const found = stmt.step();
-    const row = found ? rowToLongTask(stmt.getAsObject() as unknown as LongTaskRow) : null;
-    stmt.free();
-    return row;
-  },
-
-  create(input: { sessionId: string; projectId: string; goal: string; maxIterations: number }): LongTask {
-    const db = getDb();
-    const now = Date.now();
-    const task: LongTask = {
-      id: makeId("ltask_"),
-      sessionId: input.sessionId,
-      projectId: input.projectId,
-      goal: input.goal,
-      status: "running",
-      iterations: 0,
-      maxIterations: input.maxIterations,
-      note: null,
-      startedAt: now,
-      updatedAt: now,
-      finishedAt: null,
-    };
-    db.run(
-      "INSERT INTO long_tasks (id, session_id, project_id, goal, status, iterations, max_iterations, note, started_at, updated_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [v(task.id), v(task.sessionId), v(task.projectId), v(task.goal), v(task.status),
-       v(task.iterations), v(task.maxIterations), v(task.note), v(task.startedAt), v(task.updatedAt), v(task.finishedAt)],
-    );
-    persist();
-    return task;
-  },
-
-  /** 收尾:状态 + 说明 + finished_at 一把写。running → 终态、以及 iterations 推进都走它。 */
-  finish(id: string, status: LongTask["status"], note: string | null): LongTask | null {
-    const db = getDb();
-    const now = Date.now();
-    db.run(
-      "UPDATE long_tasks SET status = ?, note = ?, finished_at = ?, updated_at = ? WHERE id = ?",
-      [v(status), v(note), v(status === "running" ? null : now), v(now), v(id)],
-    );
-    persist();
-    return LongTaskRepo.get(id);
-  },
-
-  /** 推进轮数计数(每轮 turn.done 后 +1)。 */
-  bumpIterations(id: string): LongTask | null {
-    const db = getDb();
-    db.run("UPDATE long_tasks SET iterations = iterations + 1, updated_at = ? WHERE id = ?", [
-      v(Date.now()), v(id),
-    ]);
-    persist();
-    return LongTaskRepo.get(id);
-  },
-
-  /** 只改 note(不碰状态/时间戳之外的字段)—— 续轮被 sendTurn 拒掉这类中间态用。 */
-  setNote(id: string, note: string | null): LongTask | null {
-    getDb().run("UPDATE long_tasks SET note = ?, updated_at = ? WHERE id = ?", [
-      v(note), v(Date.now()), v(id),
-    ]);
-    persist();
-    return LongTaskRepo.get(id);
   },
 };
 

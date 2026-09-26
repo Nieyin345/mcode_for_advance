@@ -386,12 +386,6 @@ export const zh = {
   "chat.worktree.keepWt": "保留工作树",
   "chat.worktree.removeQ": "删除工作树?",
   "chat.worktree.removeDesc": "将删除目录 {path};其会话会回到本地模式,历史保留。",
-  "chat.plugins.title": "会话插件",
-  "chat.plugins.rowLabel": "插件",
-  "chat.plugins.allEnabled": "全部已启用",
-  "chat.plugins.allEnabledHint": "沿用旧行为：当前全局启用的插件都可供本会话使用。",
-  "chat.plugins.noneEnabled": "当前没有全局启用的插件。",
-  "chat.plugins.activeCount": "{count} 个插件",
   "chat.worktree.removeFailed": "删除工作树失败",
   "chat.worktree.exportPatch": "删除前导出全部未合并改动为补丁(含已提交)",
   "chat.worktree.forceRemove": "强制删除(丢弃未提交的更改)",
@@ -451,25 +445,6 @@ export const zh = {
   "composer.watch.activeHint": "这个会话已有一个守望在跑",
   "composer.watch.failed": "守望启动失败：{error}",
   "composer.watch.failedGeneric": "守望启动失败",
-
-  // ── 长期任务循环（桌面专属）── 武装开关 + 会话状态条。
-  "composer.longtask.title": "长期任务",
-  "composer.longtask.rowLabel": "长任务",
-  "composer.longtask.pillLabel": "长任务",
-  /** ⚠️ 语义是「**之后每条**都算任务」，不是「下一条」—— 打开之后一直有效，
-   *  由用户自己关（用户原话：「一直是开启的状态」）。 */
-  "composer.longtask.armHint": "开启后，你发的每条消息都会被当成任务目标，自动连续执行直到模型宣布完成；再点一次可关掉",
-  "composer.longtask.armed": "已武装",
-  "composer.longtask.running": "执行中",
-  "composer.longtask.banner.goal": "目标",
-  "composer.longtask.banner.round": "第 {n}/{m} 轮",
-  "composer.longtask.banner.stop": "停止",
-  "composer.longtask.banner.stopping": "停止中…",
-  "composer.longtask.banner.dismiss": "关闭",
-  "composer.longtask.status.done": "已完成",
-  "composer.longtask.status.blocked": "受阻",
-  "composer.longtask.status.stopped": "已停止",
-  "composer.longtask.status.maxed": "轮次用尽",
 
   // ── 固定条件条(主对话节点「固定条件」参数的渲染端,见 chat/SearchFilterBar) ──
   // 这一句是**这一条的说明**,挂在左边那个小图标上(它是这一整排的统称,每个条件自己

@@ -39,7 +39,6 @@ import type {
   SessionListEntry,
   EngineCommandInfo,
 } from "@contracts/runtime";
-import type { LongTask } from "@contracts/longTask";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import type { ContentTag } from "@renderer/lib/contentTag.js";
 import { isValidSnapshot } from "@renderer/lib/contextWindow.js";
@@ -1077,15 +1076,6 @@ export interface SessionState {
    *  effectively milliseconds — the adapter always emits turn.incomplete
    *  immediately before turn.done. NOT persisted. */
   turnIncompleteBySession: Record<string, boolean>;
-  /** Per-session 长期任务状态（longtask.update 事件的唯一消费点）。主进程
-   *  LongTaskRunner 是事实来源，这里只是投映 —— running 时 composer 上方挂
-   *  状态条（目标/轮次/停止按钮），终局后保留一陈子供人看结果。仅内存态：
-   *  重启后主进程 sweep 已把残留 running 标 stopped，这里空着正合适。 */
-  longTaskBySession: Record<string, LongTask>;
-  /** Per-session「下一轮挂上长期任务循环」的一次性武装开关。Composer 的
-   *  长任务段切换它；sendMessage 里 sendTurn 成功后若已武装则调
-   *  api.longtask.start 并自动解除 —— 循环器从那一轮的第一个 turn.done 接管。 */
-  longTaskArmedBySession: Record<string, boolean>;
   /** Per-session transient upstream-network issue (the OpenAI bridge's retry
    *  loop: connect timeout / reset / refused — see UpstreamIssueEvent). Set on
    *  `upstream.issue{kind:"retry"}`; cleared on kind:"ok", turn end (turn.done
@@ -1779,10 +1769,6 @@ export interface SessionState {
     images?: PromptImage[],
   ) => Promise<void>;
   interrupt: (sessionId?: string) => Promise<void>;
-  /** 切换某会话「下一条消息挂长期任务循环」的一次性武装开关。 */
-  toggleLongTaskArmed: (sessionId: string) => void;
-  /** 关掉会话状态条上已结束的任务记录（仅清投映，不动主进程事实）。 */
-  dismissLongTask: (sessionId: string) => void;
   ingestEvent: (e: RuntimeEvent) => void;
   /** Update the window-focus flag. Called from useClaudeEvents on Electron
    *  `window:focusChanged` + `document.visibilitychange`. When the window
@@ -3024,10 +3010,6 @@ function dropSessionBuckets(s: SessionState, id: string) {
   delete turnErrorBySession[id];
   const interruptedBySession = { ...s.interruptedBySession };
   delete interruptedBySession[id];
-  const longTaskBySession = { ...s.longTaskBySession };
-  delete longTaskBySession[id];
-  const longTaskArmedBySession = { ...s.longTaskArmedBySession };
-  delete longTaskArmedBySession[id];
   const upstreamIssueBySession = { ...s.upstreamIssueBySession };
   delete upstreamIssueBySession[id];
   // Also drop the hint's decay timer (module-level side effect — idempotent).
@@ -3087,8 +3069,6 @@ function dropSessionBuckets(s: SessionState, id: string) {
     runningTurnModelBySession,
     turnErrorBySession,
     interruptedBySession,
-    longTaskBySession,
-    longTaskArmedBySession,
     upstreamIssueBySession,
     unreadBySession,
     todosBySession,
@@ -5790,8 +5770,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   worktreeInfoByRepo: {},
   interruptedBySession: {},
   turnIncompleteBySession: {},
-  longTaskBySession: {},
-  longTaskArmedBySession: {},
   upstreamIssueBySession: {},
   unreadBySession: {},
   isWindowFocused: true,
@@ -8078,19 +8056,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         get().drainPromptQueueIfIdle(sessionId);
         return;
       }
-      // 长期任务循环：**开着就一直管用**（2026-09-21 改）。
-      //
-      // ⚠️ 从前这里是"用完就清"（`clearLongTaskArmed`）—— 那条武装只管**下一条**
-      // 消息。用户的原话是「这个不能删，而且**一直是开启的状态**」：他要的是"打开
-      // 这个会话的长任务模式，之后每条都是任务"，而不是每条消息前都去点一次。
-      // 所以现在**不清除**，由用户自己关（`toggleLongTaskArmed`）。
-      //
-      // ⚠️ **绝不能按"来源"自动开**（曾经的 `isWebModelSend` 就是这么干的，已撤）：
-      // 那样随口一句「你好」也被当成任务书跑了 20 轮。判据只能是**用户自己按的开关**
-      // —— 他开着就知道自己在干什么，也随时能关。
-      if (get().longTaskArmedBySession[sessionId]) {
-        void api.longtask.start({ sessionId, goal: prompt }).catch(() => {});
-      }
       set((s) => {
         // Side chats never touch the left-bar caches — patch the ask tab's
         // per-parent bucket instead (the row carries the first-question
@@ -8325,24 +8290,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         };
       });
     })();
-  },
-
-  toggleLongTaskArmed: (sessionId) => {
-    set((s) => {
-      const next = { ...s.longTaskArmedBySession };
-      if (next[sessionId]) delete next[sessionId];
-      else next[sessionId] = true;
-      return { longTaskArmedBySession: next };
-    });
-  },
-
-  dismissLongTask: (sessionId) => {
-    set((s) => {
-      if (!s.longTaskBySession[sessionId]) return s;
-      const next = { ...s.longTaskBySession };
-      delete next[sessionId];
-      return { longTaskBySession: next };
-    });
   },
 
   interrupt: async (sessionIdArg) => {
@@ -8911,12 +8858,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             blocks.splice(tuIdx + 1, 0, imageBlock);
             return { ...m, blocks };
           });
-          break;
-        }
-        case "longtask.update": {
-          // 长期任务状态投映（主进程 LongTaskRunner 是事实来源）。只更新
-          // longTaskBySession，不动消息流 —— 状态条的展示交给 LongTaskBanner。
-          set((s) => ({ longTaskBySession: { ...s.longTaskBySession, [sid]: e.task } }));
           break;
         }
         case "turn.incomplete": {

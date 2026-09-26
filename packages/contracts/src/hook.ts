@@ -282,9 +282,6 @@ export const HOOK_EVENT_OF: Record<RuntimeEvent["type"], HookEvent | null> = {
   // `WorkflowNodeQueuedEvent`)。要挂"这一步跑完了"挂 `workflow.node.result`;排队
   // 只比它早一瞬间,单独给一个钩子只会让同一步触发两次。
   "workflow.node.queued": null,
-  // 长期任务的状态广播(见 `longTask.ts`)—— 钩子/触发器暂不暴露,和 `git.changed`
-  // 同一档"故意不给":它描述的是循环器内部进度,用户能表达的意图已经由 turn 级事件覆盖。
-  "longtask.update": null,
   // 引擎报上来的斜杠命令清单(见 `@contracts/runtime` 的 `CommandsAvailableEvent`)。
   // 这是**界面元数据** —— "菜单里该列哪些命令",不是对话里发生了什么事。给它一个钩子
   // 的话,用户能用它表达什么意图?想不出来。同一档的还有下面那批"不该给"。

@@ -49,7 +49,6 @@ import type { LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGeneri
 import type { TemplateListInput, TemplateAddInput, TemplateRenameInput, TemplateEntryRefInput, TemplateFileRefInput, TemplatesAttachToChatInput } from "./templates.js";
 import type { SubagentDefinition } from "../claudeSubagent.js";
 import type { ClaudeSubagentsSaveInput } from "../claudeSubagent.js";
-import type { LongTask, LongTaskStartInput, LongTaskStopInput, LongTaskGetInput } from "../longTask.js";
 
 /* ──────────────────────────  RPC method map  ───────────────────────────────── */
 
@@ -1198,15 +1197,6 @@ export interface RpcMap {
   /** 清除指定域名(或全部)的登录态。 */
   "institution.clearCookies": (input: InstitutionClearCookiesInput) => Promise<{ sites: AuthSiteStatus[] }>;
 
-  // 长期任务
-  /** 把刚发出的这一轮挂成一条长期任务:turn.done 后没有完成标记就自动续轮。
-   *  调用方(渲染端)**先**正常走 `claude.sendTurn` 发起第一轮,**再**调这里 ——
-   *  循环器从第一个 turn.done 开始接管。任务已在跑时返回 ok:false。 */
-  "longtask.start": (input: LongTaskStartInput) => Promise<{ ok: boolean; task?: LongTask; error?: string }>;
-  /** 停止当前会话的长期任务(进行中才有效)。已停止的回合不会被续上。 */
-  "longtask.stop": (input: LongTaskStopInput) => Promise<{ ok: boolean; task?: LongTask; error?: string }>;
-  /** 会话当前(或最近一条)长期任务,没有则 null。 */
-  "longtask.get": (input: LongTaskGetInput) => Promise<{ task: LongTask | null }>;
 }
 
 /** The channel names used in invoke/handle and send/on. Keep these centralized
@@ -1358,10 +1348,6 @@ export const IPC = {
   INSTITUTION_DELETE: "institution:delete",
   INSTITUTION_AUTH_STATUS: "institution:authStatus",
   INSTITUTION_CLEAR_COOKIES: "institution:clearCookies",
-  // 长期任务 — invoke/handle (RPC)。
-  LONGTASK_START: "longtask:start",
-  LONGTASK_STOP: "longtask:stop",
-  LONGTASK_GET: "longtask:get",
   /** Main → renderer push:下载任务状态变化(进度/失败/需要登录)。 */
   LIBRARY_JOB_CHANGED: "library:jobChanged",
   /** Main → renderer push:库的内容变了(含 AI 改的)。渲染端据此整体重载。 */

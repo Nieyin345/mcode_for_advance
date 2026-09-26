@@ -160,6 +160,14 @@ const MODE = process.argv[2];
 await initDb();
 
 if (MODE === "write") {
+  // Fresh installs no longer allocate storage for two retired composer features.
+  // An older DB is tested separately by db-migrate-smoke: its legacy data stays.
+  const oldTable = getDb().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'long_tasks'");
+  check("新库不再创建长任务表", !oldTable.step());
+  oldTable.free();
+  const oldColumn = getDb().prepare("SELECT name FROM pragma_table_info('sessions') WHERE name = 'active_plugin_names'");
+  check("新库不再创建会话插件列", !oldColumn.step());
+  oldColumn.free();
   seed();
 
   console.log("\n写一行运行:形状在往返里不能丢");

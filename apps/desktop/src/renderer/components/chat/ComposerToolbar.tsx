@@ -4,9 +4,7 @@ import { IconChartBar } from "@renderer/lib/icons.js";
 import { ModelDropdown } from "./ModelDropdown.js";
 import { EffortChip, PermissionChip } from "./EffortPermissionControl.js";
 import { WorkflowDropdown } from "./WorkflowDropdown.js";
-import { PluginResidencyControl } from "./PluginResidencyControl.js";
 import { WatchSegment } from "./WatchSegment.js";
-import { LongTaskSegment } from "./LongTaskSegment.js";
 import { isElectron } from "@renderer/lib/platform.js";
 import { ContextRing } from "./ContextRing.js";
 import { AttachMenuButton } from "./AttachMenuButton.js";
@@ -110,12 +108,9 @@ export function ComposerToolbar({
         <EffortChip layout="row" />
         <PermissionChip layout="row" />
         <WorkflowDropdown layout="row" />
-        <PluginResidencyControl sessionId={sessionId} layout="row" />
         {/* 长任务守望:把一条命令绑到这个会话上起跑。桌面专属(手机 RPC 白名单
             没有 automation.watch) —— 手机壳里这一行整个不出现。 */}
         {isElectron && <WatchSegment sessionId={sessionId} layout="row" />}
-        {/* 长期任务循环:把下一条消息当目标,自动续轮直到模型宣布完成。桌面专属。 */}
-        {isElectron && <LongTaskSegment sessionId={sessionId} layout="row" />}
         {/* 上下文占用。**不判空** —— 没有用量数据时 `ContextRing` 自己画空环 + 一句
             说明。判空的话这个环会在第一轮跑完时从无到有地冒出来,用户读到的是
             "这个小图标时有时无"(见 `ContextRing` 头注)。 */}
@@ -159,13 +154,9 @@ export function ComposerToolbar({
           绑哪个文献库仍由「+」菜单里的「文献库」负责 —— 药丸上不重复这个入口。 */}
       <span className="composer-minipill-mid" aria-hidden />
       <WorkflowDropdown layout="pill" />
-      <span className="composer-minipill-mid" aria-hidden />
-      <PluginResidencyControl sessionId={sessionId} layout="pill" />
       {/* 长任务守望(桌面专属):起跑面板里选模板 / 现写命令,把一条长命令绑到当前
           会话上 —— 与上面那个「跟会话走的工作模式」是两回事,它跑在自动化会话里。 */}
       {isElectron && <WatchSegment sessionId={sessionId} layout="pill" />}
-      {/* 长期任务循环(桌面专属):武装开关,下一条消息就是任务书。 */}
-      {isElectron && <LongTaskSegment sessionId={sessionId} layout="pill" />}
       {hasEffort && (
         <>
           <span className="composer-minipill-mid" aria-hidden />

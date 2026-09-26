@@ -238,6 +238,8 @@ export function LibrarySection({
   /** 正在新建(输入框态)。 */
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
+  /** 回车和失焦都可能提交，同一次输入只发一次新建请求。 */
+  const creatingPending = useRef(false);
   /** 正在重命名的库 id + 输入框内容。同时只有一个。 */
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -585,11 +587,12 @@ export function LibrarySection({
     const norm = candidate.trim().toLowerCase();
     return (
       norm.length > 0 &&
-      kindCollections.some((c) => c.id !== exceptId && c.name.trim().toLowerCase() === norm)
+      collections.some((c) => c.id !== exceptId && c.name.trim().toLowerCase() === norm)
     );
   };
 
   const submitNew = async () => {
+    if (creatingPending.current) return;
     const trimmed = name.trim();
     if (!trimmed) {
       setCreating(false);
@@ -601,16 +604,24 @@ export function LibrarySection({
       setError(t("library.collection.duplicateName"));
       return;
     }
-    const id = await createCollection(trimmed);
-    if (!id) {
-      // 理论上渲染端已经挡掉了;走到这里说明并发创建或绕过了 UI
-      setError(t("library.collection.duplicateName"));
-      return;
+    creatingPending.current = true;
+    try {
+      // 右键哪个大类，就建在哪个大类；activeGroupId 只是上次选中的分类所属大类。
+      const id = await createCollection(trimmed, group.id);
+      if (!id) {
+        setError(t("library.collection.createFailed"));
+        return;
+      }
+      setName("");
+      setCreating(false);
+      setError(null);
+      openCollection(id);
+    } catch (err) {
+      // API/数据库失败不能冒充“重名”；保留输入并显示实际原因，方便用户重试。
+      setError(err instanceof Error && err.message ? err.message : t("library.collection.createFailed"));
+    } finally {
+      creatingPending.current = false;
     }
-    setName("");
-    setCreating(false);
-    setError(null);
-    openCollection(id);
   };
 
   const startRename = (id: string, current: string) => {
@@ -1346,8 +1357,11 @@ export function LibrarySection({
       ) : (
         <ul className="space-y-0.5">
           {leftBarMode === "stream" ? (
-            // 会话流:**一切本来就是平的** —— 嵌套的分类也照样平铺,不分层
-            kindCollections.map(renderStreamCollection)
+            // 会话流:**一切本来就是平的**；新建输入也必须可见，不能只放在树模式。
+            <>
+              {kindCollections.map(renderStreamCollection)}
+              {creatingRootInput}
+            </>
           ) : (
             <>
               {rootCollections.map((c) => renderCollectionRow(c))}
@@ -1459,8 +1473,14 @@ export function LibrarySection({
         target={ctxGroup}
         onClose={() => setCtxGroup(null)}
         onNewCollection={() => {
-          // 展开本段、亮出输入行(输入行在树的末尾,见 creatingRootInput)。
+          // 展开本段并退出「只看文件」模式，否则输入框会被 showAll 分支藏掉。
           setCollapsed(false);
+          setShowAllKinds((current) => {
+            if (!current.has(group.id)) return current;
+            const next = new Set(current);
+            next.delete(group.id);
+            return next;
+          });
           setCreating(true);
           setName("");
           setError(null);

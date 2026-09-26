@@ -372,12 +372,6 @@ export const en = {
   "chat.worktree.keepWt": "Keep worktree",
   "chat.worktree.removeQ": "Remove worktree?",
   "chat.worktree.removeDesc": "Deletes the directory {path}; its sessions fall back to local with history kept.",
-  "chat.plugins.title": "Session plugins",
-  "chat.plugins.rowLabel": "Plugins",
-  "chat.plugins.allEnabled": "All enabled",
-  "chat.plugins.allEnabledHint": "Use every globally enabled plugin (legacy behavior).",
-  "chat.plugins.noneEnabled": "No globally enabled plugins.",
-  "chat.plugins.activeCount": "{count} plugins",
   "chat.worktree.removeFailed": "Failed to remove worktree",
   "chat.worktree.exportPatch": "Export all unmerged work as a patch before removing (committed changes included)",
   "chat.worktree.forceRemove": "Force remove (discard uncommitted changes)",
@@ -438,25 +432,6 @@ export const en = {
   "composer.watch.activeHint": "A watch is already running for this session",
   "composer.watch.failed": "Watch failed to start: {error}",
   "composer.watch.failedGeneric": "Watch failed to start",
-
-  // ── long-task loop (desktop only) ── arm toggle + session banner.
-  "composer.longtask.title": "Long task",
-  "composer.longtask.rowLabel": "Long task",
-  "composer.longtask.pillLabel": "Long task",
-  /** NOTE: means "EVERY message from now on is a goal", not "the next one" — it
-   *  stays on until the user turns it off. */
-  "composer.longtask.armHint": "When on, every message you send becomes a goal that runs turn after turn until the model declares it done; tap again to turn it off",
-  "composer.longtask.armed": "Armed",
-  "composer.longtask.running": "Running",
-  "composer.longtask.banner.goal": "Goal",
-  "composer.longtask.banner.round": "Round {n}/{m}",
-  "composer.longtask.banner.stop": "Stop",
-  "composer.longtask.banner.stopping": "Stopping…",
-  "composer.longtask.banner.dismiss": "Dismiss",
-  "composer.longtask.status.done": "Done",
-  "composer.longtask.status.blocked": "Blocked",
-  "composer.longtask.status.stopped": "Stopped",
-  "composer.longtask.status.maxed": "Out of rounds",
 
   // ── Criteria bar (renderer of the main agent's "fixed criteria" param, see chat/SearchFilterBar) ──
   "chat.nodeCriteria.title": "Fixed criteria",

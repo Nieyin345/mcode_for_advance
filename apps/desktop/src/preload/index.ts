@@ -100,14 +100,6 @@ const api = {
     getMany: ((input) =>
       ipcRenderer.invoke(IPC.SETTING_GET_MANY, input)) as RpcMap["setting.getMany"],
   },
-  /** 长期任务 —— 挂/停/查,见 @contracts/longTask。 */
-  longtask: {
-    start: ((input) =>
-      ipcRenderer.invoke(IPC.LONGTASK_START, input)) as RpcMap["longtask.start"],
-    stop: ((input) =>
-      ipcRenderer.invoke(IPC.LONGTASK_STOP, input)) as RpcMap["longtask.stop"],
-    get: ((input) => ipcRenderer.invoke(IPC.LONGTASK_GET, input)) as RpcMap["longtask.get"],
-  },
   /** Speech-to-text (voice input) — drives sherpa-onnx ASR in main. The
    *  renderer streams 16 kHz mono PCM via `feed`; live results arrive on
    *  `voiceResult`. */

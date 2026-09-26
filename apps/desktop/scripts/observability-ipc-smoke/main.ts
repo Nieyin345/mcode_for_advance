@@ -1,34 +1,9 @@
 /**
- * Headless smoke for **「长期任务」与「监控面板」这两条 IPC 路**
- * (`main/ipc/longtask.ts` + `main/ipc/monitoring.ts`)。
+ * Headless smoke for the monitoring-panel IPC route (`main/ipc/monitoring.ts`).
  *
- * ## 为什么单独一套
- *
- * 这两个文件此前**零覆盖**,而它们都是渲染端唯一的入口,"看起来没坏"不构成证据:
- *
- *  - **长期任务**:`attach` 失败**不抛** —— 把 `ok:false + error` 原样带回给渲染端
- *    提示(文件头明写的意图)。而渲染端调用点是 `.catch(() => {})`
- *    (`sessionStore.ts` 那句 `void api.longtask.start(...).catch(() => {})`)——
- *    所以 `ok:false` 这条分支的**形状**就是用户唯一读得到的线索。这里改成抛,
- *    用户看到的是"任务静默没挂上";`error` 丢了,他连为什么都不知道。
- *  - **监控面板**:渠道名 + `limit` 夹取 + `overview` 的无参调用。渠道名两边一旦
- *    对不上,`ipcRenderer.invoke` 会 reject,而面板按设计**只显示一行小字**
- *    (见 `MonitoringPanel.tsx` 文件头"读不到怎么办")—— 于是"面板永远空着"和
- *    "还没跑过运行"在界面上长得一模一样。这种 bug 不会自己浮出来,必须钉住。
- *
- * ## §4 是**扫**出来的,不是手抄的
- *
- * `registerMonitoringHandlers` 那条纪律 —— **无参 handler 不接 `raw`** —— 的判据
- * 就在 listener 的形参个数上(`async () => …` 是 0,`(_evt, raw) => …` 是 2)。
- * 所以 §4 不写死渠道清单:把注册进去的通道**全扫一遍**,按形参个数分类,再逐个
- * 真的调用。新加一条通道却忘了在这套里接,会因为"扫到了但没走"而 FAIL ——
- * 手抄清单的断言漏得掉新通道,这一条漏不掉。
- *
- * ## 它不碰用户真正的数据根
- *
- * `dataRoot` 换桩(环境变量没设就**抛**),`run.sh` 里 `mktemp -d` 出来的目录,
- * 跑完连目录一起删。sql.js 的 `db.export()` 重写整个 `mcode.db` —— 指错地方就是
- * 拿一个空库盖掉用户的聊天记录。监控数据是 NDJSON,同理落在临时目录。
+ * The contract and preload channel names must match the registered handlers.
+ * Runs and overview are exercised with a temporary data root and real NDJSON;
+ * collector subscriptions must not duplicate records. No real user DB is used.
  *
  * Run: scripts/observability-ipc-smoke/run.sh
  */
@@ -68,14 +43,7 @@ if (!DATA) {
 
 /* ──────────────── 0. ipcMain 的记名替身 ──────────────── */
 
-/**
- * 不起 Electron。`registerXxxHandlers` 对 `IpcMain` 的用法只有 `handle`
- * (见 `main/ipc/index.ts` 那句注释),所以一个 `Map` 就够 —— 这也是
- * `--alias:electron=` 能成立的前提。
- *
- * 两个文件各拿一个替身:§4 要**扫**监控那一个的全部通道,而"全部"这个说法只有在
- * 它只装了监控 handler 时才成立。
- */
+/** Monitor handler registrations are recorded without starting Electron. */
 function makeFakeIpc(): {
   ipc: IpcMain;
   handlers: Map<string, (event: unknown, raw: unknown) => unknown>;
@@ -103,15 +71,11 @@ const { IPC } = await import("@contracts/ipc");
 const { mobileEventBus } = await import("@main/mobile/MobileEventBus.js");
 const { readRunSummaries, appendRunSummary } = await import("@main/monitoring/store.js");
 const { limitsSince, limitsCount } = await import("./stubs/store.js");
-const { registerLongTaskHandlers } = await import("@main/ipc/longtask.js");
 const { registerMonitoringHandlers } = await import("@main/ipc/monitoring.js");
 const { initDb } = await import("@main/store/db.js");
-const { SessionRepo, ProjectRepo, LongTaskRepo } = await import(
-  "@main/store/repositories.js"
-);
+const { SessionRepo, ProjectRepo } = await import("@main/store/repositories.js");
 const { collectorDeps } = await import("./stubs/collector.js");
 const { lines: logLines } = await import("./stubs/logger.js");
-const { resetRuntimeStub, runtimeStub } = await import("./stubs/runtimeManager.js");
 
 // ⚠️ `dataRoot` 必须走桩:`getDb()` 在 `initDb()` 没 resolve 前会抛,而
 // `registerMonitoringHandlers` 不是 async —— 桩里那句"环境变量没设就抛"
@@ -123,7 +87,6 @@ if (DATA_FROM_STUB !== DATA) {
 }
 
 await initDb();
-resetRuntimeStub();
 
 /* ──────────────── 1. 夹具 ──────────────── */
 
@@ -175,373 +138,9 @@ function sessionOf(id: string, kind: Session["kind"]): Session {
   };
 }
 
-// 会话按用途分开,一个用处一条 —— 复用的话前一段留下的活跃任务会把后一段的
-// "停一个没有活任务的会话"变成"停一条真在跑的",红得看不出是被测代码还是夹具。
-//   s_chat   —— 主路径(start / get / stop 真在跑的 / 再挂一条)
-//   s_trim   —— 只用来验 goal 被 trim
-//   s_auto   —— 种类不对
-//   s_none   —— 从没挂过任何东西
-//   s_max    —— 只用来验 maxIterations 上界放行
-//   s_settled—— 库里有条已收场的历史(直接建行,不进活跃表)
-//   s_stale  —— 库里有条**还在 running** 的残留行(重启后的样子)
 SessionRepo.create(sessionOf("s_chat", "chat"));
-SessionRepo.create(sessionOf("s_trim", "side"));
-SessionRepo.create(sessionOf("s_auto", "automation"));
-SessionRepo.create(sessionOf("s_none", "chat"));
-SessionRepo.create(sessionOf("s_max", "chat"));
-SessionRepo.create(sessionOf("s_settled", "chat"));
-SessionRepo.create(sessionOf("s_stale", "chat"));
 
-const lt = makeFakeIpc();
-registerLongTaskHandlers(lt.ipc);
-
-const longtaskStart = callerOf(lt.handlers, IPC.LONGTASK_START);
-const longtaskStop = callerOf(lt.handlers, IPC.LONGTASK_STOP);
-const longtaskGet = callerOf(lt.handlers, IPC.LONGTASK_GET);
-
-same(
-  "三条 longtask 通道都注册上了",
-  [IPC.LONGTASK_START, IPC.LONGTASK_STOP, IPC.LONGTASK_GET].filter((c) => lt.handlers.has(c)),
-  [IPC.LONGTASK_START, IPC.LONGTASK_STOP, IPC.LONGTASK_GET],
-);
-
-// 本套**不**调 `longTaskRunner.start()` —— 那是生命周期订阅(事件流那一半是
-// `longtask-smoke` 的事)。这里测的是 IPC 这一层:入参怎么验、返回值怎么包。
-// 不 start 也不会有害:`emitExternal` / `interrupt` 都走替身。
-
-/* ──────────────── 2. LONGTASK_START:成功那条路 ──────────────── */
-
-console.log("\n长期任务 · start 成功");
-
-let firstTaskId = "";
-{
-  const res = (await longtaskStart({ sessionId: "s_chat", goal: "把论文写完" })) as {
-    ok: boolean;
-    task?: {
-      id: string;
-      sessionId: string;
-      projectId: string;
-      goal: string;
-      status: string;
-      iterations: number;
-      maxIterations: number;
-    };
-    error?: string;
-  };
-  eq("第一次挂上 → ok:true", res.ok, true);
-  eq("成功时不带 error", res.error, undefined);
-  eq("goal 是用户原话", res.task?.goal, "把论文写完");
-  eq("projectId 从会话行取(不是入参里编的)", res.task?.projectId, "p_obs");
-  eq("状态从 running 起步", res.task?.status, "running");
-  eq("轮数从 0 起步", res.task?.iterations, 0);
-  eq("没传 maxIterations → 用默认 20", res.task?.maxIterations, 20);
-  check(
-    "id 带 ltask_ 前缀",
-    typeof res.task?.id === "string" && res.task.id.startsWith("ltask_"),
-    res.task?.id,
-  );
-  eq("落库了(不是只回了个对象)", LongTaskRepo.get(res.task?.id ?? "")?.goal, "把论文写完");
-  firstTaskId = res.task?.id ?? "";
-
-  // 状态条(LongTaskBanner)的唯一事实来源是这条广播 —— 渲染端只认它,不自己猜。
-  const updates = runtimeStub().externals.filter((e) => e.type === "longtask.update");
-  eq("挂上时广播了一条 longtask.update", updates.length, 1);
-  eq(
-    "广播里带的是刚建的那条任务",
-    (updates[0] as { task?: { id?: string } } | undefined)?.task?.id,
-    firstTaskId,
-  );
-
-  // goal 走的是 zod 的 `z.string().trim().min(1)` —— 前后空白该被吃掉,
-  // 否则状态条上会显示出用户没打过的空格。
-  const padded = (await longtaskStart({ sessionId: "s_trim", goal: "  带空格的活  " })) as {
-    task?: { goal: string };
-  };
-  eq("goal 前后空白被 trim", padded.task?.goal, "带空格的活");
-}
-
-/* ──────────────── 3. ★ 已有进行中的任务:不抛,原样带回 ──────────────── */
-
-console.log("\n长期任务 · start 失败不抛");
-
-{
-  // ★ 这一段是 `ipc/longtask.ts` 文件头明写的意图:失败**不抛**,把
-  // `ok:false + error` 原样带回给渲染端提示("已有进行中的任务")。
-  // 渲染端是 `.catch(() => {})` —— 这里一旦改成抛,用户看到的是**任务静默
-  // 没挂上**,连一条提示都没有。所以"不抛"和"error 文案"必须分开钉。
-  let threw: string | null = null;
-  let res: { ok?: unknown; error?: unknown } | null = null;
-  try {
-    res = (await longtaskStart({ sessionId: "s_chat", goal: "再挂一次" })) as {
-      ok?: unknown;
-      error?: unknown;
-    };
-  } catch (err) {
-    threw = (err as Error).message;
-  }
-  eq("★ 已有进行中的任务时**不抛**", threw, null);
-  eq("★ 回的是 ok:false", res?.ok, false);
-  eq(
-    "★ error 文案原样带回来了(不是空的、也不是被包过一层)",
-    res?.error,
-    "这个会话已经有进行中的长期任务 —— 等它结束或先停止",
-  );
-  // 没挂上就不该多一行 —— 否则状态条会看到一条永远不会动的幽灵任务。
-  eq(
-    "★ 失败那次没有落库(还是只有一条)",
-    LongTaskRepo.listBySession("s_chat").length,
-    1,
-  );
-  eq(
-    "★ 失败那次没有多广播一条 longtask.update",
-    runtimeStub().externals.filter((e) => e.type === "longtask.update").length,
-    2,
-  );
-}
-
-/* ──────────────── 4. 别的失败分支 + zod 边界 ──────────────── */
-
-console.log("\n长期任务 · 别的失败分支");
-
-{
-  const missing = (await longtaskStart({ sessionId: "s_根本没有这个会话", goal: "x" })) as {
-    ok?: unknown;
-    error?: unknown;
-  };
-  same(
-    "会话不存在 → ok:false + 说得清的 error",
-    [missing.ok, missing.error],
-    [false, "会话不存在,任务没挂上"],
-  );
-
-  // 节点/自动化会话由调度器驱动,turn.done 语义不同(holdTurnEnd)—— 挂了会
-  // 得到一段永远不会收场的任务。
-  const wrongKind = (await longtaskStart({ sessionId: "s_auto", goal: "x" })) as {
-    ok?: unknown;
-    error?: unknown;
-  };
-  same(
-    "automation 会话不许挂 → ok:false + 说得清的 error",
-    [wrongKind.ok, wrongKind.error],
-    [false, "只有对话可以挂长期任务"],
-  );
-
-  // 校验是**安全边界**:坏入参要抛(和 start 的"失败不抛"是两回事 ——
-  // 前者是渲染端传错了,后者是业务上挂不上)。
-  const throwsOn = async (label: string, raw: unknown): Promise<void> => {
-    let threw = false;
-    try {
-      await longtaskStart(raw);
-    } catch {
-      threw = true;
-    }
-    eq(label, threw, true);
-  };
-  await throwsOn("全空白的 goal 被 zod 挡在外面(抛)", { sessionId: "s_none", goal: "   " });
-  await throwsOn("空 sessionId 被 zod 挡在外面(抛)", { sessionId: "", goal: "x" });
-  await throwsOn("goal 字段整个缺席也被挡(抛)", { sessionId: "s_none" });
-  await throwsOn(
-    "maxIterations 越界(201)被挡(抛)",
-    { sessionId: "s_none", goal: "x", maxIterations: 201 },
-  );
-  await throwsOn(
-    "maxIterations 给小数被挡(抛)",
-    { sessionId: "s_none", goal: "x", maxIterations: 2.5 },
-  );
-
-  // 合法但极端的值该放行 —— 上界 200 是契约允许的。用一条专用会话,
-  // 不然这条任务会挂在 `s_none` 上,把后面"从没挂过的会话"那条断言弄脏。
-  const maxed = (await longtaskStart({
-    sessionId: "s_max",
-    goal: "跑到上限",
-    maxIterations: 200,
-  })) as { ok?: boolean; task?: { maxIterations: number } };
-  same(
-    "maxIterations=200 是契约允许的上界,放行",
-    [maxed.ok, maxed.task?.maxIterations],
-    [true, 200],
-  );
-  await longtaskStop({ sessionId: "s_max" });
-}
-
-/* ──────────────── 5. LONGTASK_GET ──────────────── */
-
-console.log("\n长期任务 · get");
-
-{
-  const got = (await longtaskGet({ sessionId: "s_chat" })) as { task: { goal: string } | null };
-  eq("get 拿得到当前任务", got.task?.goal, "把论文写完");
-  // 形状是 `{ task }` 而不是裸的 task —— preload 的签名就是 `Promise<{ task: … }>`,
-  // 改成裸的会让调用方读 `res.task` 时拿到 undefined(而且不报错)。
-  check(
-    "get 回的是 { task } 包着的(preload 的签名就是这么写的)",
-    got !== null && typeof got === "object" && "task" in got,
-    got,
-  );
-
-  const none = (await longtaskGet({ sessionId: "s_stale" })) as { task: unknown };
-  eq("从没挂过的会话 → null(不是 undefined,渲染端按 null 判)", none.task, null);
-
-  let threw: string | null = null;
-  try {
-    await longtaskGet({ sessionId: "" });
-  } catch (err) {
-    threw = (err as Error).message;
-  }
-  check("get 的坏入参照样被 zod 挡住(抛)", threw !== null, threw);
-}
-
-/* ──────────────── 6. ★ LONGTASK_STOP:停真在跑的 ──────────────── */
-
-console.log("\n长期任务 · stop 真在跑的");
-
-{
-  // 先记下这一刻的 interrupt 账 —— §4 里收 `s_max` 那条也进这本账,不减去它
-  // 的话这条断言会在"顺带 interrupt 了正好这一个"里多出别人的一笔。
-  const interruptsBefore = runtimeStub().interrupts.length;
-  const res = (await longtaskStop({ sessionId: "s_chat" })) as {
-    ok?: unknown;
-    task?: { id: string; status: string; note: string | null };
-    error?: unknown;
-  };
-  eq("停一条真在跑的任务 → ok:true", res.ok, true);
-  eq("收的是刚挂的那条", res.task?.id, firstTaskId);
-  eq("状态收成 stopped", res.task?.status, "stopped");
-  eq("note 说明是用户停的", res.task?.note, "用户停止");
-  // "停止任务"应该立刻生效,而不是等当轮跑完 —— 所以 stop 顺带 interrupt。
-  same(
-    "★ 顺带 interrupt 了那个会话(而且只 interrupt 它一个)",
-    runtimeStub().interrupts.slice(interruptsBefore),
-    ["s_chat"],
-  );
-  eq("库里也真的变了(不是只改了内存)", LongTaskRepo.get(firstTaskId)?.status, "stopped");
-  eq("收场也广播了一条", runtimeStub().externals.at(-1)?.type, "longtask.update");
-
-  // 摘牌之后能再挂一条 —— 活跃表里那条要是没删干净,用户就永远只能看到
-  // "已有进行中的任务",而界面上早就是 stopped 了。
-  const again = (await longtaskStart({ sessionId: "s_chat", goal: "第二轮目标" })) as {
-    ok?: boolean;
-    task?: { id: string };
-  };
-  same(
-    "停掉之后能再挂一条(说明活跃表摘干净了)",
-    [again.ok, again.task?.id !== firstTaskId],
-    [true, true],
-  );
-  await longtaskStop({ sessionId: "s_chat" });
-}
-
-/* ──────────────── 7. ★ 停一个"没有进行中的任务" ──────────────── */
-
-console.log("\n长期任务 · stop 一个没有活任务的会话");
-
-{
-  // ★ 任务清单点名要钉的一条。三种"没有活任务"必须分清楚,而且都不抛:
-  //   ① 会话压根不存在        → 没残留行,只能报失败;
-  //   ② 会话存在但从没挂过     → 同上;
-  //   ③ 会话存在、任务已收场   → 同上 —— **不能把它重新标成 stopped**。
-  // 关键:error 统一是"这个会话没有进行中的长期任务",不是"会话不存在"
-  // —— 后者会让用户以为会话被删了。
-  let threw: string | null = null;
-  // ⚠️ 那个 `as typeof ghost` 不能写在 try 里面 —— `ghost` 在那儿的类型已经被
-  // `= null` 收窄成 `null` 了,`as typeof ghost` 于是断言成 `null`,后面 `ghost?.ok`
-  // 全落在 `never` 上。类型写在**外面**的那个别名上。
-  type StopResult = { ok?: unknown; task?: unknown; error?: unknown };
-  let ghost: StopResult | null = null;
-  try {
-    ghost = (await longtaskStop({ sessionId: "s_压根没有这个会话" })) as StopResult;
-  } catch (err) {
-    threw = (err as Error).message;
-  }
-  eq("★ 停一个不存在的会话**不抛**", threw, null);
-  same(
-    "★ 停不存在的会话 → ok:false + 「没有进行中的任务」",
-    [ghost?.ok, ghost?.error, ghost?.task],
-    [false, "这个会话没有进行中的长期任务", undefined],
-  );
-
-  const never = (await longtaskStop({ sessionId: "s_none" })) as {
-    ok?: unknown;
-    error?: unknown;
-  };
-  same(
-    "★ 从没挂过的会话 → 同一句 error(不区分'会话不存在')",
-    [never.ok, never.error],
-    [false, "这个会话没有进行中的长期任务"],
-  );
-
-  // ③ 已收场的历史:直接在库里建一条并收成 maxed(**不进活跃表** —— 正是重启
-  // 之后的形状:进程活着的循环器不认识它,但库里躺着一行终态)。
-  // 盯的是**状态别被改掉** —— 把 maxed 改写成 stopped 会把"轮数耗尽"这个
-  // 结论抹掉,用户就再也看不到任务是怎么结束的。
-  const settledTask = LongTaskRepo.create({
-    sessionId: "s_settled",
-    projectId: "p_obs",
-    goal: "早就结束了的目标",
-    maxIterations: 3,
-  });
-  LongTaskRepo.finish(settledTask.id, "maxed", "已达 3 轮上限,自动停止");
-  const before = LongTaskRepo.get(settledTask.id)!;
-
-  const settled = (await longtaskStop({ sessionId: "s_settled" })) as {
-    ok?: unknown;
-    error?: unknown;
-  };
-  const after = LongTaskRepo.get(settledTask.id)!;
-  same(
-    "★ 已收场的任务再停一次 → ok:false",
-    [settled.ok, settled.error],
-    [false, "这个会话没有进行中的长期任务"],
-  );
-  same(
-    "★ 再停一次不会把它的终态/说明/收场时刻改掉",
-    [after.status, after.note, after.finishedAt],
-    [before.status, before.note, before.finishedAt],
-  );
-  eq("★ 它还是 maxed", after.status, "maxed");
-}
-
-/* ──────────────── 8. ★ 重启后那条残留的 running 行 ──────────────── */
-
-console.log("\n长期任务 · 停一条重启前留下的 running 行");
-
-{
-  // `taskRunner.stop` 里那条兜底:活跃表是空的(进程重启过 —— 那张表在内存里,
-  // 重启即空),但库里还躺着一行 `running`。它**顺手把它标掉**并返回 ok:true。
-  // 没有这条兜底,用户重启后那条任务永远显示"进行中",而点停止只会得到
-  // "这个会话没有进行中的长期任务" —— 界面和事实互相矛盾,还没有出路。
-  const stale = LongTaskRepo.create({
-    sessionId: "s_stale",
-    projectId: "p_obs",
-    goal: "重启前留下的目标",
-    maxIterations: 5,
-  });
-  eq("造出来的残留行是 running", LongTaskRepo.get(stale.id)?.status, "running");
-
-  const res = (await longtaskStop({ sessionId: "s_stale" })) as {
-    ok?: unknown;
-    task?: { id: string; status: string; note: string | null };
-  };
-  same(
-    "★ 残留的 running 行被收场 → ok:true",
-    [res.ok, res.task?.id, res.task?.status],
-    [true, stale.id, "stopped"],
-  );
-  eq(
-    "★ note 说明它是残留的(不是用户刚按的停)",
-    res.task?.note,
-    "停止(任务未在运行)",
-  );
-  eq("★ 库里也真的变了", LongTaskRepo.get(stale.id)?.status, "stopped");
-  // 残留行不在活跃表里,所以不该去 interrupt 一个已经结束的回合。
-  same(
-    "★ 收残留行时没有多调一次 interrupt",
-    runtimeStub().interrupts.filter((s) => s === "s_stale"),
-    [],
-  );
-}
-
-/* ──────────────── 9. ★ 渠道名:两边一字不差 ──────────────── */
+/* ──────────────── 1. ★ 渠道名:两边一字不差 ──────────────── */
 
 console.log("\n监控 · 渠道名两边一字不差");
 
@@ -595,7 +194,7 @@ registerMonitoringHandlers(mon.ipc);
   );
 }
 
-/* ──────────────── 10. 监控 · 种数据 ──────────────── */
+/* ──────────────── 2. 监控 · 种数据 ──────────────── */
 
 console.log("\n监控 · 种 600 条运行摘要");
 
@@ -638,7 +237,7 @@ const SEEDED = 600;
   );
 }
 
-/* ──────────────── 11. ★ runs 的 limit 夹取 ──────────────── */
+/* ──────────────── 3. ★ runs 的 limit 夹取 ──────────────── */
 
 console.log("\n监控 · limit 夹取");
 
@@ -741,7 +340,7 @@ const LIMIT_CASES: Array<{ name: string; arg: unknown; expected: number }> = [
   );
 }
 
-/* ──────────────── 12. ★ overview 是无参 handler ──────────────── */
+/* ──────────────── 4. ★ overview 是无参 handler ──────────────── */
 
 console.log("\n监控 · overview 无参调用");
 
@@ -822,7 +421,7 @@ const monitoringOverview = callerOf(mon.handlers, IPC.MONITORING_OVERVIEW);
   );
 }
 
-/* ──────────────── 13. ★ 采集器只挂一次(本套最关键的一条) ──────────────── */
+/* ──────────────── 5. ★ 采集器只挂一次(本套最关键的一条) ──────────────── */
 console.log("\n监控 · 采集器只挂一次");
 
 {
@@ -830,7 +429,7 @@ console.log("\n监控 · 采集器只挂一次");
   // **同一份事件写两遍盘** —— 用户看到的是每次运行在面板里出现两条一模一样的记录。
   //
   // 判据落在 `mobileEventBus.size` 上:`startMonitoringCollector` 真跑起来就是
-  // 往总线上挂一个订阅者,而 `monitoring.ts` 已经注册过一次了(§9 那次)。
+  // 往总线上挂一个订阅者,而 `monitoring.ts` 已经注册过一次了(§1 那次)。
   // 所以此刻总线上应当**正好有一个**订阅者。
   eq("注册过一次之后,事件总线上只有一个监控订阅者", mobileEventBus.size, 1);
 
@@ -884,7 +483,7 @@ console.log("\n监控 · 采集器只挂一次");
   eq("★ 运行终态按 turn.done 的 reason 定", after[0]?.status, "success");
 }
 
-/* ──────────────── 13b. ★ 查不到会话行时不许静默 ──────────────── */
+/* ──────────────── 5b. ★ 查不到会话行时不许静默 ──────────────── */
 
 console.log("\n监控 · lookupWorkflowId 出错要留日志(不许静默吞)");
 
@@ -942,7 +541,7 @@ console.log("\n监控 · lookupWorkflowId 出错要留日志(不许静默吞)");
   );
 }
 
-/* ──────────────── 14. §4 的"每个通道都真的走一遍" ──────────────── */
+/* ──────────────── 6. 扫描注册表：每个通道都真的走一遍 ──────────────── */
 
 console.log("\n每个通道都真的走一遍(扫注册表,不手抄清单)");
 
@@ -967,7 +566,7 @@ console.log("\n每个通道都真的走一遍(扫注册表,不手抄清单)");
   );
   same("收 raw 的那个正是 runs", withRaw.map(([c]) => c), [IPC.MONITORING_RUNS]);
 
-  // 扫到的两个都已经被 §9–§13 真的调用过了(上面每一条断言的入参都取自适应
+  // 扫到的两个都已经被 §1–§5 真的调用过了(上面每一条断言的入参都取自适应
   // 变量,不是从清单里抄的)。这里再各自走一次最小调用,保证"扫到的都走过"
   // 这件事本身有一行断言,而不是靠读者去数上面的段落。
   const ov = (await monitoringOverview()) as { totalRuns?: number };

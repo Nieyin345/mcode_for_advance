@@ -81,26 +81,18 @@ cd apps/desktop
 2. 逐套件结果表：套件名 + PASS/FAIL + （FAIL 时贴该套件日志尾部 30 行）
 3. 与基线对比，见下方「基线」。
 
-### 基线（2026-09-18 第二轮整合门实测）
+### 基线（2026-09-18 的历史记录，非当前套件清单）
 
-套件总数 **33**，期望 **全部 PASS**。基线清单：
-
-```text
-agent-env / automation / budget-guard / capability / code-runner / command-runner /
-context-files / dataflow / db-migrate / execution-engine / extension-bridge / hooks /
-library-registry / longtask / mcode-admin / mcp-endpoint / mcp-engines / memory /
-model-anchor / monitoring / node-transcript / plugins / run-store / runtime-state /
-scheduler / session-fork / session-store / skill-engines / structured-output /
-templates / upstream-headers / workflow-validation / workflow-view
-```
+当时是 **33 套**；之后新增了套件，2026-09-26 又移除了退役功能的
+`longtask-smoke`。**不要用旧总数判定今天的结果**；按 `scripts/*-smoke/run.sh`
+实际发现到的套件为准，全部 PASS 才算通过。历史报告仍保留当时的原始结果。
 
 **已知观察项（不算新问题，但要记录是否复现）**：
 
-- `longtask-smoke` 曾偶发 1 条时序抖动（`held 的 turn.done 不续轮`）。若复现，**单独重跑一次**该套件（`bash scripts/longtask-smoke/run.sh`），并在报告里注明「单跑是否通过」。
 - `mcp-endpoint-smoke` 曾出现全套件连跑时的偶发失败，单跑 200/200 通过。同样注明单跑结果。
 - `upstream-headers-smoke` 有已知端口竞态。
 
-**判定**：33 套件全 PASS（或仅出现上述已知观察项且单跑通过）= PASS。
+**判定**：本次实际发现的套件全 PASS（或仅上述已知观察项且单跑通过）= PASS。
 
 ---
 
@@ -154,7 +146,8 @@ templates / upstream-headers / workflow-validation / workflow-view
 回答：**当前 MCode 是否有「agent 改完代码自动跑测试、失败自动回灌下一轮」的闭环？**
 
 要求：给出明确的是/否，并用文件证据支撑你的判断，重点检查：
-- 长期任务循环器**判定"干完了"的依据**是什么？（是客观验证还是模型自述？给出代码位置）
+- 检查目前是否存在"smoke 失败 → 自动回灌模型 → 重试"的实际接线；
+  不要将已移除的长期任务循环器当作当前能力的证据。
 - hook 的结果**会不会回到对话流**里给模型看见？（给出契约层注释证据）
 - 有没有任何 MCP 工具把 smoke 脚本暴露给模型？
 
@@ -233,7 +226,7 @@ templates / upstream-headers / workflow-validation / workflow-view
 ## 环境
 
 - 操作系统 / node 版本 / pnpm 版本 / 是否走 Git Bash
-- 与基线（33 套件）的差异：套件数是否一致？有没有新增/缺失？
+- 与历史基线（当时 33 套件）的差异：本次发现多少套？有哪些新增/移除？
 
 ## 环节 1 类型检查
 
@@ -258,7 +251,6 @@ templates / upstream-headers / workflow-validation / workflow-view
 
 ### 已知观察项是否复现
 
-- longtask-smoke：复现 / 未复现 / 单跑结果
 - mcp-endpoint-smoke：同上
 - upstream-headers-smoke：同上
 

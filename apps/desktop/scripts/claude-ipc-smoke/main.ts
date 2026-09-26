@@ -929,22 +929,6 @@ console.log("\n14. 会话设置");
   eq("只改模型时**不**碰权限闸门(碰了会把当前模式冲掉)", permissionModes.length, 0);
   eq("没传的字段保持原样", SessionRepo.get(s)?.permissionMode, "default");
 }
-{
-  fresh();
-  const s = mkSession(nid("s"));
-  await call(IPC.SESSION_UPDATE_SETTINGS, {
-    sessionId: s,
-    activePluginNames: ["remote-desktop", "research-tools"],
-  });
-  eq(
-    "会话插件名单经 updateSettings 落库",
-    JSON.stringify(SessionRepo.get(s)?.activePluginNames),
-    JSON.stringify(["remote-desktop", "research-tools"]),
-  );
-  await call(IPC.SESSION_UPDATE_SETTINGS, { sessionId: s, activePluginNames: [] });
-  eq("清空会话插件名单恢复 legacy unrestricted(NULL)", SessionRepo.get(s)?.activePluginNames, null);
-}
-
 console.log("\n14b. 换目录:只在「还没开始」的会话上放行");
 
 {

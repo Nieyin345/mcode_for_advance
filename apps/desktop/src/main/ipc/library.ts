@@ -607,7 +607,14 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
 
   ipcMain.handle(IPC.LIBRARY_CREATE_COLLECTION, async (_evt, raw) => {
     const input = CollectionCreateSchema.parse(raw);
-    CollectionRepo.create(input.name, input.parentId ?? null, input.groupId, input.prompt);
+    // 契约允许省略 groupId（默认为第一个大类），但不能把 NULL 写入库：
+    // 左栏按 groupId 过滤，这样的分类会“建成功”却在任何大类下都看不见。
+    const groups = loadLibraryGroups();
+    const groupId = input.groupId ?? groups[0]?.id;
+    if (!groupId || !groups.some((g) => g.id === groupId)) {
+      throw new Error("分类所属大类不存在，请刷新左栏后重试");
+    }
+    CollectionRepo.create(input.name, input.parentId ?? null, groupId, input.prompt);
     notifyLibraryChanged(`create_collection:${input.name}`);
     return { collections: collectionsForRenderer() };
   });

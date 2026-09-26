@@ -293,10 +293,6 @@ export const UpdateSessionSettingsSchema = z.object({
    *  an existing non-archived project — otherwise the whole call rejects and
    *  nothing changes. */
   projectId: z.string().optional(),
-  /** Conversation-scoped plugin residency. Omitted = leave unchanged; a
-   * non-empty array pins subsequent turns to those globally-enabled plugin
-   * names; null / [] clears the binding back to legacy unrestricted mode. */
-  activePluginNames: z.array(z.string().min(1).max(128)).max(64).nullable().optional(),
 });
 export type UpdateSessionSettingsInput = z.infer<typeof UpdateSessionSettingsSchema>;
 

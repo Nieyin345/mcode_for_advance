@@ -74,4 +74,4 @@ https://<隧道域名>/mcp/<密钥>
 | `main/mcp/webToolHost.ts` | 工具表与闸门。**也没有改动**——合成会话让它照常工作。 |
 | `main/mcp/agentTools.ts` | `resolveAgainstCwd` 里的沙箱判定（`isInsideRoot`）：文件工具的唯一路径入口，23 处调用点共用一份规矩。 |
 
-回归网：`scripts/mcp-endpoint-smoke/`（含公网端点、沙箱、阻塞读、结构化输出那几段断言）、`scripts/tunnel-manager-smoke/`（域名抠取与失败路径）。变异验证：`mut-public-mcp.py` / `mut-longtask.py` / `mut-sandbox-tunnel.py`。
+回归网：`scripts/mcp-endpoint-smoke/`（含公网端点、沙箱、阻塞读、结构化输出那几段断言）、`scripts/tunnel-manager-smoke/`（域名抠取与失败路径）。变异验证：`mut-public-mcp.py` / `mut-sandbox-tunnel.py`。

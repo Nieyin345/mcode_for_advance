@@ -1293,13 +1293,9 @@ class RuntimeManager {
       resumeProviderSessionId: rt.providerSessionId,
       apiConfig,
       skills: input.skills,
-      // 工作流节点仍可逐轮显式收窄；普通对话若没有逐轮 override，则复用
-      // session.activePluginNames。NULL/空名单保持历史行为（不限制），非空名单
-      // 才进入“本对话已激活插件”的常驻模式。这里只传稳定名字，provider 每轮
-      // 都重新与当前 globally-enabled plugins 求交集，所以禁用/卸载立即生效。
+      // 工作流节点仍可逐轮显式收窄插件；未指定时沿用全局启用的插件。
       mcpServerNames: input.mcpServerNames,
-      pluginNames: input.pluginNames ??
-        (session.activePluginNames && session.activePluginNames.length > 0 ? session.activePluginNames : undefined),
+      pluginNames: input.pluginNames,
       // User-attached images (base64 content blocks) — forwarded verbatim to
       // the provider; each adapter maps them onto its SDK's image shape.
       images: input.images,

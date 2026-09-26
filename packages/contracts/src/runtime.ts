@@ -5,7 +5,6 @@
  */
 
 import type { Session } from "./session.js";
-import type { LongTaskUpdateEvent } from "./longTask.js";
 import type { NodeReturnMode, NodeTypeManifest } from "./nodeType.js";
 import type { WorkflowNode } from "./workflow.js";
 import type { NodeArtifact, NodeExecutionRecord, NodeOutcomeStatus } from "./nodeType.js";
@@ -1346,6 +1345,5 @@ export type RuntimeEvent =
   | GitChangedEvent
   | LibraryItemImportedEvent
   | LibraryItemDownloadedEvent
-  | LongTaskUpdateEvent
   | CommandsAvailableEvent
   | LocalCommandOutputEvent;

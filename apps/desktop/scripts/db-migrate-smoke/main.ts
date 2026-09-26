@@ -140,6 +140,24 @@ old.run(`
   INSERT INTO messages VALUES ('msg_old', 'sess_old', 'user', '第一句话', 1000);
   INSERT INTO settings VALUES ('migrated_from', 'pre-columns');
   INSERT INTO library_items (id, doi, title, added_at, updated_at) VALUES ('item_old', '10.1234/old', '老论文', 1000, 1000);
+  -- 旧版会话插件名单和长任务已退役，但升级不得清除历史资料。
+  ALTER TABLE sessions ADD COLUMN active_plugin_names TEXT;
+  UPDATE sessions SET active_plugin_names = '["legacy-plugin"]' WHERE id = 'sess_old';
+  CREATE TABLE long_tasks (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    project_id TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    status TEXT NOT NULL,
+    iterations INTEGER NOT NULL DEFAULT 0,
+    max_iterations INTEGER NOT NULL,
+    note TEXT,
+    started_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    finished_at INTEGER
+  );
+  INSERT INTO long_tasks (id, session_id, project_id, goal, status, max_iterations, started_at, updated_at)
+    VALUES ('ltask_old', 'sess_old', 'proj_old', '旧任务', 'running', 20, 1000, 1000);
 `);
 const oldBytes = old.export();
 old.close();
@@ -161,6 +179,9 @@ eq("老 session 的 title 不变", valueOf(d, "SELECT title FROM sessions WHERE 
 eq("老 session 的 model 不变", valueOf(d, "SELECT model FROM sessions WHERE id='sess_old'"), "claude-sonnet-4");
 eq("老 message 的 content 不变", valueOf(d, "SELECT content FROM messages WHERE id='msg_old'"), "第一句话");
 eq("老 library 条目的 title 不变", valueOf(d, "SELECT title FROM library_items WHERE id='item_old'"), "老论文");
+eq("旧会话插件名单仍在原列，不再投映进 Session", valueOf(d, "SELECT active_plugin_names FROM sessions WHERE id='sess_old'"), '["legacy-plugin"]');
+check("旧插件名单不会出现在 SessionRepo.get 的返回值里", !("activePluginNames" in (SessionRepo.get("sess_old") ?? {})));
+eq("旧长任务行仍在，不再自动改写状态", valueOf(d, "SELECT status FROM long_tasks WHERE id='ltask_old'"), "running");
 
 // ② 补出来的 NOT NULL DEFAULT 列,老行上要有默认值
 eq("sessions.provider_id 补成默认", valueOf(d, "SELECT provider_id FROM sessions WHERE id='sess_old'"), "claude-sdk");
@@ -177,7 +198,7 @@ eq("library_items.kind 补成默认", valueOf(d, "SELECT kind FROM library_items
 for (const col of [
   "context_snapshot", "todos", "subagents", "plan_draft", "custom_model_id",
   "pinned_at", "turn_files", "bookmarks", "subagent_transcripts",
-  "usage_history", "parent_session_id", "worktree_path", "wt_style", "active_plugin_names",
+  "usage_history", "parent_session_id", "worktree_path", "wt_style",
 ]) {
   check(`sessions.${col} 在老行上是 NULL`, valueOf(d, `SELECT ${col} FROM sessions WHERE id='sess_old'`) === null);
 }
@@ -191,7 +212,7 @@ const NEW_SESSION_COLS = [
   "effort", "provider_id", "context_snapshot", "todos", "subagents", "plan_draft",
   "custom_model_id", "archived", "pinned_at", "turn_files", "bookmarks",
   "subagent_transcripts", "usage_history", "kind", "parent_session_id",
-  "env_mode", "worktree_path", "wt_style", "composer_mode", "active_plugin_names",
+  "env_mode", "worktree_path", "wt_style", "composer_mode",
 ];
 for (const c of NEW_SESSION_COLS) check(`sessions.${c} 列存在`, hasColumn(d, "sessions", c));
 for (const c of ["archived", "group", "sort_order", "pinned_at"]) {
@@ -205,10 +226,12 @@ for (const c of ["volume", "issue", "page", "publisher", "kind", "entry_mode", "
 {
   const freshSql = await initSqlJs();
   const fresh = new freshSql.Database(new Uint8Array(readFileSync(join(root, DATA_DB_FILENAME))));
-  for (const c of ["provider_id", "kind", "env_mode", "composer_mode", "active_plugin_names"]) {
+  for (const c of ["provider_id", "kind", "env_mode", "composer_mode"]) {
     check(`磁盘文件里 sessions.${c} 列存在`, hasColumn(fresh, "sessions", c));
   }
   eq("磁盘文件里老数据还在", valueOf(fresh, "SELECT title FROM sessions WHERE id='sess_old'"), "老对话");
+  eq("磁盘上的旧插件名单未被销毁", valueOf(fresh, "SELECT active_plugin_names FROM sessions WHERE id='sess_old'"), '["legacy-plugin"]');
+  eq("磁盘上的旧长任务未被销毁", valueOf(fresh, "SELECT goal FROM long_tasks WHERE id='ltask_old'"), "旧任务");
   fresh.close();
 }
 
@@ -243,7 +266,6 @@ console.log("db-migrate-smoke: 全字段 round-trip …");
     permissionMode: "bypassPermissions",
     workflowId: "wf-roundtrip",
     customModelId: "cm-full-1",
-    activePluginNames: ["remote-desktop", "research-tools"],
     archived: true,
     pinnedAt: 4242,
     contextSnapshot: { sentinel: "ctx-snap" },
@@ -278,11 +300,6 @@ console.log("db-migrate-smoke: 全字段 round-trip …");
     eq("round-trip permissionMode", back.permissionMode, "bypassPermissions");
     eq("round-trip workflowId(composer_mode 列)", back.workflowId, "wf-roundtrip");
     eq("round-trip customModelId", back.customModelId, "cm-full-1");
-    check(
-      "round-trip activePluginNames",
-      JSON.stringify(back.activePluginNames) === JSON.stringify(["remote-desktop", "research-tools"]),
-      back.activePluginNames,
-    );
     check("round-trip archived", back.archived === true);
     eq("round-trip pinnedAt", back.pinnedAt, 4242);
     // JSON 字段比较序列化后的形状(读回来是 parse 过的对象,逐键断言太啰嗦)。
@@ -304,18 +321,8 @@ console.log("db-migrate-smoke: 全字段 round-trip …");
     eq("round-trip createdAt", back.createdAt, 1111);
     eq("round-trip updatedAt", back.updatedAt, 2222);
   }
-  // 结构上的守门:SESSION_COLUMNS 必须恰好覆盖表里所有列 —— 多了(表里没有)
-  // 会让 INSERT 报 no such column,少了(表里有)会让 round-trip 读回 undefined。
-  SessionRepo.updateActivePluginNames("sess_full", ["remote-desktop", "remote-desktop", " research-tools "]);
-  const pinned = SessionRepo.get("sess_full");
-  check(
-    "session plugin binding de-duplicates and trims names",
-    JSON.stringify(pinned?.activePluginNames) === JSON.stringify(["remote-desktop", "research-tools"]),
-    pinned?.activePluginNames,
-  );
-  SessionRepo.updateActivePluginNames("sess_full", []);
-  eq("clearing session plugin binding restores legacy unrestricted NULL", SessionRepo.get("sess_full")?.activePluginNames, null);
-
+  // 结构守门：SESSION_COLUMNS 恰好覆盖现行列；旧库额外的退役插件列故意保留
+  // 在物理表里，但不再迁移、读写、发送。不能为了通过断言而 DROP 历史列。
   const dbCols: string[] = [];
   {
     const stmt = d.prepare("SELECT name FROM pragma_table_info('sessions')");
@@ -323,15 +330,17 @@ console.log("db-migrate-smoke: 全字段 round-trip …");
     stmt.free();
   }
   const defCols = SESSION_COLUMNS.map((c) => c.name).sort();
+  const currentCols = dbCols.filter((name) => name !== "active_plugin_names");
   check(
-    "SESSION_COLUMNS 与表结构列数一致",
-    dbCols.length === defCols.length,
-    { dbCols: dbCols.length, defCols: defCols.length },
+    "SESSION_COLUMNS 与现行表结构列数一致（不销毁旧插件列）",
+    currentCols.length === defCols.length,
+    { currentCols: currentCols.length, defCols: defCols.length },
   );
   check(
-    "SESSION_COLUMNS 与表结构列名一致",
-    JSON.stringify(dbCols.slice().sort()) === JSON.stringify(defCols),
+    "SESSION_COLUMNS 与现行表结构列名一致",
+    JSON.stringify(currentCols.slice().sort()) === JSON.stringify(defCols),
   );
+  eq("常规新会话写入不覆盖旧会话的插件资料", valueOf(d, "SELECT active_plugin_names FROM sessions WHERE id='sess_old'"), '["legacy-plugin"]');
 }
 
 console.log(`\n${failures === 0 ? "PASS" : "FAIL"} — ${checks} checks, ${failures} failures`);

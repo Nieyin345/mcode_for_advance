@@ -30,7 +30,6 @@ import { notificationManager } from "@main/notifications/NotificationManager.js"
 import { hookRunner } from "@main/hooks/HookRunner.js";
 import { automationRunner } from "@main/orchestration/automationRunner.js";
 import { hasActiveRun } from "@main/orchestration/runner.js";
-import { longTaskRunner } from "@main/longtask/taskRunner.js";
 import { is } from "@main/utils.js";
 import { preloadClaudeSdk } from "@main/providers/claude-sdk/ClaudeAgentSdkProvider.js";
 import { logStartup } from "@main/lib/startupTimer.js";
@@ -315,17 +314,6 @@ app.whenReady().then(async () => {
     }
   })();
 
-  // 长期任务(LongTaskRunner):对话里挂上目标后,turn.done 没有完成标记就自动续轮。
-  // 等数据库就绪(它的续轮路径要读会话/项目表)。
-  void (async () => {
-    try {
-      await awaitDb();
-      longTaskRunner.start();
-    } catch (err) {
-      log.error(`LongTaskRunner failed to start: ${(err as Error).message}`);
-    }
-  })();
-
   // Start the mobile companion HTTP server (LAN-facing). Fire-and-forget: it
   // awaits DB readiness internally to read its enabled/port settings, then
   // binds 0.0.0.0:<port>. If disabled (mobile.enabled=0) it resolves to an
@@ -399,7 +387,6 @@ app.on("before-quit", (event) => {
   // 关掉定时针、目录监听、事件订阅 —— 它们都挂在事件流 / 文件系统上,不关的话
   // 退出过程中还可能起一次运行(而那时数据库已经在关了,见下面 `closeDb`)。
   automationRunner.dispose();
-  longTaskRunner.dispose();
   stopMobileServer();
   closeDb();
 });

@@ -120,10 +120,12 @@ check(
 );
 check("普通聊天记忆走 memorySectionFrom + memorySnapshotFor", runtime.includes("memorySectionFrom") && runtime.includes("memorySnapshotFor"));
 
-console.log("\nsession-scoped plugin residency");
-check("RuntimeManager reads persisted session plugin binding", runtime.includes("session.activePluginNames"));
-check("per-turn plugin override wins over session binding", runtime.includes("input.pluginNames ??"));
-check("legacy NULL/empty binding stays unrestricted", runtime.includes("session.activePluginNames.length > 0"));
+console.log("\n插件边界：仅保留全局启用和工作流逐轮覆盖");
+check("RuntimeManager 不再读取会话插件名单", !runtime.includes("session.activePluginNames"));
+check("工作流逐轮插件名单原样交给 provider", runtime.includes("pluginNames: input.pluginNames,"));
+check("Session 契约不再包含会话插件名单", !source("../../packages/contracts/src/session.ts").includes("activePluginNames"));
+check("会话持久化不再迁移/读写插件名单", !source("src/main/store/sessionSchema.ts").includes("active_plugin_names"));
+check("全局插件 handler 继续注册", source("src/main/ipc/index.ts").includes("registerPluginsHandlers(ipc)"));
 
 console.log("\n三引擎一致消费");
 for (const [name, text] of [["Claude", claude], ["Pi", pi], ["Codex", codex]] as const) {

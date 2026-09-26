@@ -18,6 +18,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync 
 import { log } from "@main/lib/logger.js";
 import { dataRoot, migrateLegacyIntoDataRoot, DATA_DB_FILENAME } from "@main/lib/dataRoot.js";
 import { SESSION_COLUMNS, sessionsCreateSql } from "./sessionSchema.js";
+import { DEFAULT_LIBRARY_GROUPS, parseLibraryGroupsJson } from "@contracts/libraryTypes";
 
 let SQL: SqlJsStatic | null = null;
 let db: Database | null = null;
@@ -325,22 +326,6 @@ function migrate(database: Database): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_download_jobs_item ON download_jobs(item_id);
     CREATE INDEX IF NOT EXISTS idx_download_jobs_status ON download_jobs(status);
 
-    /* 长期任务(contracts/src/longTask.ts)。一条会话同时只有一条 running(任务循环器
-       把关),但历史上可以有多条 —— 每次「长任务」开关发送都是一条新行。 */
-    CREATE TABLE IF NOT EXISTS long_tasks (
-      id             TEXT PRIMARY KEY,
-      session_id     TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-      project_id     TEXT NOT NULL,
-      goal           TEXT NOT NULL,
-      status         TEXT NOT NULL,
-      iterations     INTEGER NOT NULL DEFAULT 0,
-      max_iterations INTEGER NOT NULL,
-      note           TEXT,
-      started_at     INTEGER NOT NULL,
-      updated_at     INTEGER NOT NULL,
-      finished_at    INTEGER
-    );
-    CREATE INDEX IF NOT EXISTS idx_long_tasks_session ON long_tasks(session_id, started_at);
   `);
   // Backward-compatible column adds for dbs created before these columns
   // existed (CREATE TABLE IF NOT EXISTS won't alter an existing table).
@@ -388,43 +373,58 @@ function migrate(database: Database): void {
   // 可移植写法；trash.ts 早有同款先例）。分类的归属改由 `group_id` 直接挂大类 ——
   // 从前分类挂在 kind 下、kind 再被大类表收编，现在是两步并一步。
   addColumnIfMissing(database, "library_collections", "group_id", "TEXT");
-  // 一次性回填：老分类只有 kind，按旧大类表（settings 里的 `library.groups`，
-  // LibraryGroupMeta.kinds）反查它该归哪个大类；查不到的归第一个大类。
-  // 幂等：只填 `group_id IS NULL` 的行 —— 用户此后挪分类不会被打回。
+  // 回填：老分类按旧组表里的 kinds 反查归属；前版新建缺 groupId 的分类、以及
+  // 前版迁移写出的空串归属都无法反查，归当前第一个大类（原右键目标已无法还原）。
+  // 幂等：只填 NULL 或旧迁移写出的空串；用户此后挪分类不会被打回。
   // ⚠️ 这里直接读 settings 表（不经 SettingRepo，避免模块加载顺序问题），
   // JSON 解析失败就全部归第一个大类，不抛 —— 迁移不能把启动卡死。
+  let recoveredCollections = 0;
   {
-    const needsBackfill = database
-      .prepare("SELECT COUNT(*) AS n FROM library_collections WHERE group_id IS NULL")
-      .getAsObject() as unknown as { n: number };
-    if (needsBackfill.n > 0) {
-      const row = database
-        .prepare(`SELECT value FROM settings WHERE key = 'library.groups'`)
-        .getAsObject() as unknown as { value: string | null };
-      let groups: Array<{ id: string; kinds?: string[] }> = [];
-      try {
-        groups = JSON.parse(row.value ?? "[]");
-      } catch {
-        /* 坏 JSON：走下面的空表兜底 */
+    // sql.js 的 getAsObject() 只读取**当前行**；未 step() 时得到 {}，旧代码因此
+    // 每次都读到 undefined，从来没执行过这段回填（即使库里已有隐藏分类）。
+    const countStmt = database.prepare("SELECT COUNT(*) AS n FROM library_collections WHERE group_id IS NULL OR group_id = ''");
+    countStmt.step();
+    const needsBackfill = Number((countStmt.getAsObject() as { n?: number }).n ?? 0);
+    countStmt.free();
+    if (needsBackfill > 0) {
+      const settingsStmt = database.prepare(`SELECT value FROM settings WHERE key = 'library.groups'`);
+      const row = settingsStmt.step()
+        ? (settingsStmt.getAsObject() as { value: string })
+        : null;
+      settingsStmt.free();
+      // 未保存过组表时 UI 展示的是出厂大类，不能把 fallback 写成空串。
+      // 已保存的 [] 则表示用户删光了大类，暂不回填，等重新建组后再归属。
+      let groups: Array<{ id: string; kinds?: string[] }> = DEFAULT_LIBRARY_GROUPS.map((g) => ({ id: g.id }));
+      if (row !== null) {
+        try {
+          const saved: unknown = JSON.parse(row.value);
+          // 与 loadLibraryGroups 用同一份校验。仅保存成功的旧 JSON 还保留 kinds，
+          // 校验通过后用原值保留这份映射供老分类回填。
+          if (parseLibraryGroupsJson(saved).ok) {
+            groups = saved as Array<{ id: string; kinds?: string[] }>;
+          }
+        } catch {
+          /* 坏 JSON：按出厂组表恢复（与 loadLibraryGroups 一致）。 */
+        }
       }
       const groupOfKind = new Map<string, string>();
       for (const g of groups) {
-        for (const k of g.kinds ?? []) groupOfKind.set(k, g.id);
+        for (const k of Array.isArray(g.kinds) ? g.kinds : []) groupOfKind.set(k, g.id);
       }
-      const fallback = groups[0]?.id ?? "";
-      const stmt = database.prepare("SELECT id, kind FROM library_collections WHERE group_id IS NULL");
-      stmt.bind([]);
-      const updates: Array<{ id: string; gid: string }> = [];
-      while (stmt.step()) {
-        const r = stmt.getAsObject() as unknown as { id: string; kind: string | null };
-        updates.push({ id: r.id, gid: groupOfKind.get(r.kind ?? "") ?? fallback });
-      }
-      stmt.free();
-      for (const u of updates) {
-        database.run("UPDATE library_collections SET group_id = ? WHERE id = ?", [
-          u.gid,
-          u.id,
-        ]);
+      const fallback = groups[0]?.id;
+      if (fallback) {
+        const stmt = database.prepare("SELECT id, kind FROM library_collections WHERE group_id IS NULL OR group_id = ''");
+        stmt.bind([]);
+        const updates: Array<{ id: string; gid: string }> = [];
+        while (stmt.step()) {
+          const r = stmt.getAsObject() as unknown as { id: string; kind: string | null };
+          updates.push({ id: r.id, gid: groupOfKind.get(r.kind ?? "") ?? fallback });
+        }
+        stmt.free();
+        for (const u of updates) {
+          database.run("UPDATE library_collections SET group_id = ? WHERE id = ?", [u.gid, u.id]);
+        }
+        recoveredCollections = updates.length;
       }
     }
   }
@@ -460,14 +460,6 @@ function migrate(database: Database): void {
     [Date.now()],
   );
 
-  // 长期任务同理:循环器是**内存里**的订阅者,进程没了循环就没了 —— 留着 running
-  // 只会让状态条显示一条永远不动的"进行中"。标成 stopped(带原因),不删:那条行
-  // 是"上一次干到第几轮"的凭据,续不续由用户重新开任务决定(上下文还在会话里)。
-  database.run(
-    "UPDATE long_tasks SET status = 'stopped', note = '应用重启,任务中断', finished_at = ?, updated_at = ? WHERE status = 'running'",
-    [Date.now(), Date.now()],
-  );
-
   // 结构变更**立刻落盘**。
   //
   // 不落的话,ALTER 只活在内存里:磁盘上那份仍是老结构,直到用户碰巧触发了第一次
@@ -476,9 +468,11 @@ function migrate(database: Database): void {
   // ② 假如那次 ALTER 之后进程被强杀,而磁盘上的老结构又被新版代码用新列去查,
   // 就会报 no such column。改一行换掉这种不确定性是值得的。
   //
-  // 只在**确实改过**时才写:没改的情况下落盘等于每次启动白白重写整个库文件。
-  if (schemaChanged) {
-    log.info("sqlite: schema changed — persisting migrated database");
+  // 回填也是数据修改：否则空串分类只在内存里恢复，退出后又变回隐藏状态。
+  // 没改的情况下不落盘，避免每次启动白白重写整个库文件。
+  if (schemaChanged || recoveredCollections > 0) {
+    log.info(schemaChanged ? "sqlite: schema changed — persisting migrated database"
+      : `sqlite: recovered ${recoveredCollections} ungrouped library collections`);
     persist();
   }
 }

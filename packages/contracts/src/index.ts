@@ -13,4 +13,3 @@ export * from "./templates.js";
 export * from "./claudeSubagent.js";
 export * from "./capability.js";
 export * from "./memory.js";
-export * from "./longTask.js";
