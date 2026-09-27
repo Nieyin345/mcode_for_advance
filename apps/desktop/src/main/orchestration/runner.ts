@@ -353,7 +353,10 @@ function resumeRun(args: {
   // 会话可能已经被删了(存档那一行的外键是 `ON DELETE CASCADE`,但渲染端手上那张
   // 卡片是更早读进来的)。
   const session = SessionRepo.get(args.sessionId);
-  if (session === undefined || runs.has(session.id)) return { ok: false };
+  // ⚠️ 用 `hasActiveRun`,不是 `runs.has`(BUG-M28-01):启动在引擎预检里时只登记在
+  // `pendingStarts`,`runs` 还没有它。只看 `runs` 会放行第二次点击 —— 那次
+  // `startWorkflowRun` 撞上 `hasActiveRun` 静静地不做事,而这里已经回了 `ok:true`。
+  if (session === undefined || hasActiveRun(session.id)) return { ok: false };
   // **这个对话换过工作流了。** 存档里那份状态是按**当时那张图**记的(nodeId、边的 id、
   // 流程记录都对着它),拿着去跑现在这张图,结果是随机的 —— 而且不报错。当作那张卡
   // 过期,用户重新发一条消息就是了。
@@ -379,7 +382,7 @@ function resumeRun(args: {
   );
   // **不 await**:一次运行可能几分钟,而这是从 IPC handler 里同步回来的 —— 让它
   // 立刻返回,和 `startWorkflowRun` 在别处的用法一致(见那里的注释)。
-  void startWorkflowRun({
+  launchContinuation(session, "续跑", {
     session,
     cwd: found.snapshot.cwd,
     prompt: found.snapshot.prompt,
@@ -395,6 +398,26 @@ function resumeRun(args: {
 
 export function hasActiveRun(sessionId: string): boolean {
   return runs.has(sessionId) || pendingStarts.has(sessionId);
+}
+
+/**
+ * 续跑/重试的启动**不 await**,但也**不能裸 `void`**(BUG-M28-02):`startWorkflowRun`
+ * 在引擎预检失败时会抛(`工作流启动前引擎检查失败`),裸 `void` 让它变成主进程的
+ * unhandledRejection,用户这边却是"点了重试,什么都没发生"。这里接住:记日志、给会话
+ * 发一条 `error` 和一条 `turn.done(error)`,让渲染端把这一回合收掉并显示原因。
+ * 起跑成功后的失败由 `startWorkflowRun` 自己的 try/finally 处理,不经这里。
+ */
+function launchContinuation(
+  session: Session,
+  what: string,
+  args: Parameters<typeof startWorkflowRun>[0],
+): void {
+  startWorkflowRun(args).catch((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error(`workflow ${what}启动失败 (${session.id}): ${message}`);
+    runtimeManager.emitExternal({ type: "error", sessionId: session.id, message });
+    runtimeManager.emitExternal({ type: "turn.done", sessionId: session.id, reason: "error", endedAt: Date.now() });
+  });
 }
 
 /**
@@ -441,7 +464,8 @@ export function resolveWorkflowRetry(args: {
   if (session === undefined) return { ok: false };
   // **正有运行在跑** —— 见上面那段注释:`startWorkflowRun` 撞上这个会静静地不做事,
   // 而调用方照样拿到 true。所以先查一次,查到了就照实回 false。
-  if (runs.has(args.sessionId)) return { ok: false };
+  // 同 `resumeRun`:预检中的启动也算"正有运行"(BUG-M28-01)。
+  if (hasActiveRun(args.sessionId)) return { ok: false };
   // 三道门(找不到 / 存档坏了 / 那一步不在结局表里)全在 `retryableRun` 里,与岔路口
   // 续跑的 `resumableRun` 并列 —— 那些判据值得单独测,不该埋在 IPC 后面。
   const found = retryableRun(args.sessionId, args.runId, args.nodeId);
@@ -477,7 +501,7 @@ export function resolveWorkflowRetry(args: {
     `workflow run ${found.runId}: 从 ${args.nodeId} 重跑(${found.outcome.status}) (${args.sessionId})`,
   );
   // **不 await** —— 同 `resumeRun`:这是一次可能跑几分钟的运行,IPC handler 该立刻返回。
-  void startWorkflowRun({
+  launchContinuation(session, "重试", {
     session,
     resume: {
       runId: found.runId,

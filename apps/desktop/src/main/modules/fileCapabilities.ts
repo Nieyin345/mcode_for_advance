@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { open, realpath, stat } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { ResourceSchema, ResultSchema, type ModuleResource } from "@contracts/modules";
 import type { JsonSchemaDocument, ModuleCapabilityMetadata } from "@contracts/moduleCapability";
 import type { Capability, CapabilityContext } from "./ModuleHost.js";
@@ -53,14 +53,29 @@ const fileInfoMetadata: ModuleCapabilityMetadata = {
   supportsCancellation: false,
 };
 
+const within = (root: string, target: string): boolean => {
+  const rel = relative(root, target);
+  return !(isAbsolute(rel) || rel === ".." || rel.startsWith(".." + sep));
+};
+// A child name that no registered project/worktree uses. If an ancestor admits
+// it too, that ancestor trusts its whole subtree (the documents roots).
+const SUBTREE_PROBE = ".mcode-module-subtree-probe";
+
 /** Resolve symlinks before authorizing the actual target, not only its spelling.
- * Known-root lookup is injected so tests use temporary directories, never user DB. */
+ * Known-root lookup is injected so tests use temporary directories, never user DB.
+ * A workspace admitted only because it lies below a subtree-trusted directory
+ * must canonically stay below that directory; a link inside it cannot promote
+ * an outside directory (for example the app data root) to a workspace. */
 export async function resolveModuleResource(resource: ModuleResource, knownRoot: (path:string)=>boolean): Promise<string> {
   if (!knownRoot(resource.projectPath)) throw Error("Unknown workspace");
-  const root = await realpath(resource.projectPath);
+  const lexicalRoot = resolve(resource.projectPath);
+  const root = await realpath(lexicalRoot);
+  for (let child = lexicalRoot, parent = dirname(lexicalRoot); parent !== child; child = parent, parent = dirname(parent)) {
+    if (!knownRoot(parent) || !knownRoot(join(parent, SUBTREE_PROBE))) continue;
+    if (!within(await realpath(parent), root)) throw Error("Workspace is outside its trusted root");
+  }
   const file = await realpath(resolve(resource.path));
-  const rel = relative(root,file);
-  if (isAbsolute(rel) || rel === ".." || rel.startsWith(".."+sep)) throw Error("Resource is outside workspace");
+  if (!within(root, file)) throw Error("Resource is outside workspace");
   if (!(await stat(file)).isFile()) throw Error("A regular file is required");
   return file;
 }
