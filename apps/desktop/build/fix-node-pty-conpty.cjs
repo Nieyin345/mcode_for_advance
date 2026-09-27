@@ -59,21 +59,33 @@ if (!fs.existsSync(conptyThirdParty)) {
 }
 
 // third_party/conpty/<version>/win10-<arch>/{conpty.dll,OpenConsole.exe}
-const versionFolder = fs.readdirSync(conptyThirdParty)[0];
+// 版本目录要挑得**确定**:原来取 readdirSync()[0],顺序由文件系统说了算,只要
+// 留着一个旧的/空的版本目录就可能指向一个空壳,然后一路 WARNING 退 0。排序后
+// 只认真正含 win10-<arch> 的那个,取最新的一个。
+const versionFolders = fs.readdirSync(conptyThirdParty).sort();
+const versionFolder = versionFolders
+  .filter((v) => fs.existsSync(path.join(conptyThirdParty, v, `win10-${arch}`)))
+  .pop();
 if (!versionFolder) {
-  console.warn("[fix-conpty] SKIPPED (no version folder under third_party/conpty)");
-  process.exit(0);
+  console.error(
+    `[fix-conpty] FAILED: third_party/conpty 下没有任何版本目录含 win10-${arch}(找到:${versionFolders.join(", ") || "无"})`,
+  );
+  process.exit(1);
 }
 const sourceFolder = path.join(conptyThirdParty, versionFolder, `win10-${arch}`);
 const destFolder = path.join(ptyRoot, "build", "Release", "conpty");
 
 fs.mkdirSync(destFolder, { recursive: true });
 let copied = 0;
+let missing = 0;
 for (const file of ["conpty.dll", "OpenConsole.exe"]) {
   const src = path.join(sourceFolder, file);
   const dst = path.join(destFolder, file);
   if (!fs.existsSync(src)) {
-    console.warn(`[fix-conpty] WARNING: source missing ${src}`);
+    // 这正是本脚本存在的理由。缺了它,打出来的包一开终端就是
+    // "Cannot find conpty.dll" —— 必须让构建停在这里,而不是 WARNING 之后退 0。
+    console.error(`[fix-conpty] FAILED: source missing ${src}`);
+    missing++;
     continue;
   }
   // Only copy if missing or stale (avoids needless writes on re-runs).
@@ -82,6 +94,10 @@ for (const file of ["conpty.dll", "OpenConsole.exe"]) {
     console.log(`[fix-conpty] copied ${src} -> ${dst}`);
     copied++;
   }
+}
+if (missing > 0) {
+  console.error("[fix-conpty] 打包中止:conpty 运行时文件缺失,打出来的包终端起不来。");
+  process.exit(1);
 }
 if (copied === 0) {
   console.log(`[fix-conpty] already up to date in ${destFolder}`);
