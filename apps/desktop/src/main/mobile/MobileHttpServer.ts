@@ -86,11 +86,11 @@ export interface MobileServerHandle {
 let currentHandle: MobileServerHandle | null = null;
 
 /** Read the request body as JSON, with a size guard. Mirrors bridgeServer. */
-function readJsonBody(req: IncomingMessage): Promise<unknown> {
+function readJsonBody(req: IncomingMessage, limit = 32 * 1024 * 1024): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
-    const LIMIT = 32 * 1024 * 1024;
+    const LIMIT = limit;
     req.on("data", (c: Buffer) => {
       size += c.length;
       if (size > LIMIT) {
@@ -265,11 +265,17 @@ function handleEvents(req: IncomingMessage, res: ServerResponse, device: PairedD
   }
 }
 
+/** Body cap for the **unauthenticated** pairing endpoint. A valid request is
+ *  `{nonce ≤64, code ≤8, deviceName ≤64}` — well under 1 KB. Reusing the 32 MB
+ *  RPC cap here let anyone who can reach the port (LAN, or the internet via the
+ *  relay) make the desktop buffer 32 MB per request without any credential. */
+const PAIR_VERIFY_BODY_LIMIT = 16 * 1024;
+
 /** POST /api/pair/verify — complete pairing. No auth required (nonce + code). */
 async function handlePairVerify(req: IncomingMessage, res: ServerResponse, endpoint: string): Promise<void> {
   let body: PairingVerifyInput;
   try {
-    body = PairingVerifyInputSchema.parse(await readJsonBody(req)) as PairingVerifyInput;
+    body = PairingVerifyInputSchema.parse(await readJsonBody(req, PAIR_VERIFY_BODY_LIMIT)) as PairingVerifyInput;
   } catch (err) {
     sendJson(res, 400, { error: `无效的配对请求: ${(err as Error).message}` });
     return;

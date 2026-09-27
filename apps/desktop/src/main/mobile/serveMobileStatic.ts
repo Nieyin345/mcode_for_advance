@@ -32,7 +32,7 @@
  * nothing" immediately diagnosable.
  */
 import { createReadStream, statSync } from "node:fs";
-import { extname, join, normalize } from "node:path";
+import { extname, isAbsolute, join, normalize, relative, sep } from "node:path";
 import { app } from "electron";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { log } from "@main/lib/logger.js";
@@ -155,8 +155,12 @@ export function serveMobileAsset(req: IncomingMessage, res: ServerResponse): voi
   // Default to index.html for the bare root.
   let rel = urlPath === "/" ? "/index.html" : urlPath;
   // Defend against path traversal: resolve under root and verify containment.
+  // ⚠️ Containment must be checked on the relative path, not with a string
+  // prefix: `startsWith(root)` also accepts sibling dirs whose names merely
+  // begin with the root's name (`/../dist-secret/x` under root `…/dist`).
   const filePath = normalize(join(root, rel));
-  if (!filePath.startsWith(normalize(root))) {
+  const relToRoot = relative(normalize(root), filePath);
+  if (relToRoot === ".." || relToRoot.startsWith(`..${sep}`) || isAbsolute(relToRoot)) {
     res.writeHead(403);
     res.end("forbidden");
     return;
