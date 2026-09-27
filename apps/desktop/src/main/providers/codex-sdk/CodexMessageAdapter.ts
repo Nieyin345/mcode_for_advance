@@ -109,6 +109,16 @@ export class CodexMessageAdapter {
    *  not matching the main thread is a subagent thread's live activity and
    *  routes to the transcript path instead of the chat stream. */
   private mainThreadId: string | null = null;
+  /** Latest cumulative turn diff per thread (main thread keyed by its id, or
+   *  "" before the id is known). Subagent threads write in the same cwd and
+   *  get their own `turn/diff/updated`; the snapshot receives the main
+   *  thread's diff first, then each subagent's — never one overwriting another. */
+  private turnDiffs = new Map<string, string>();
+  /** Main-thread thread-cumulative usage just before this turn's first
+   *  request (`total - last` of the first update) and the latest total —
+   *  their difference is what THIS turn processed across all its requests. */
+  private turnBaseTotal: CodexUsage | null = null;
+  private latestTotal: CodexUsage | null = null;
   /** Per-subagent live transcripts, keyed by subagent thread id. Fed by two
    *  sources: live item notifications for the subagent's thread (primary) and
    *  a thread/read reconciliation (bootstrap fallback — fires only while the
@@ -135,6 +145,13 @@ export class CodexMessageAdapter {
 
   setMainThreadId(id: string): void {
     this.mainThreadId = id;
+  }
+
+  /** True when a thread-scoped notification belongs to a subagent thread.
+   *  Absent threadId / unknown main thread → treated as main (legacy frames). */
+  private isForeignThread(p: Record<string, unknown>): boolean {
+    const threadId = typeof p.threadId === "string" ? p.threadId : null;
+    return !!(threadId && this.mainThreadId && threadId !== this.mainThreadId);
   }
 
   /**
@@ -244,6 +261,8 @@ export class CodexMessageAdapter {
         break;
       }
       case "turn/plan/updated": {
+        // A subagent's plan must not replace the main agent's todo card.
+        if (this.isForeignThread(p)) break;
         // Native plan steps → our todo card. status: pending|inProgress|completed.
         const steps = p.plan as Array<{ step?: string; status?: string }> | undefined;
         if (Array.isArray(steps)) {
@@ -265,14 +284,36 @@ export class CodexMessageAdapter {
         break;
       case "turn/diff/updated": {
         const diff = p.diff as string | undefined;
-        if (typeof diff === "string") this.snapshots.setTurnDiff(diff);
+        if (typeof diff === "string") {
+          const key = this.isForeignThread(p) ? (p.threadId as string) : (this.mainThreadId ?? "");
+          this.turnDiffs.set(key, diff);
+          const mainKey = this.mainThreadId ?? "";
+          const ordered = [
+            this.turnDiffs.get(mainKey) ?? "",
+            ...[...this.turnDiffs].filter(([k]) => k !== mainKey).map(([, d]) => d),
+          ].filter((d) => d.length > 0);
+          // Each diff starts with its own `diff --git` header; keep them on
+          // separate lines without injecting blank (context) lines.
+          this.snapshots.setTurnDiff(ordered.map((d) => (d.endsWith("\n") ? d : `${d}\n`)).join(""));
+        }
         break;
       }
       case "thread/tokenUsage/updated": {
+        // A subagent thread's usage is not the main context's occupancy and
+        // must not overwrite it.
+        if (this.isForeignThread(p)) break;
         const tu = p.tokenUsage as
-          | { last?: CodexUsage & { totalTokens?: number }; modelContextWindow?: number | null }
+          | {
+              last?: CodexUsage & { totalTokens?: number };
+              total?: CodexUsage & { totalTokens?: number };
+              modelContextWindow?: number | null;
+            }
           | undefined;
         if (tu?.last) this.lastUsage = tu.last;
+        if (tu?.total) {
+          if (!this.turnBaseTotal) this.turnBaseTotal = subtractUsage(tu.total, tu.last ?? null);
+          this.latestTotal = tu.total;
+        }
         if (typeof tu?.modelContextWindow === "number" && tu.modelContextWindow > 0) {
           this.modelContextWindow = tu.modelContextWindow;
         }
@@ -282,6 +323,13 @@ export class CodexMessageAdapter {
         // {error: {message, ...}, willRetry} — intermediate (retrying) vs
         // terminal. Terminal errors also flip turn/completed.status to
         // "failed", which drives turn.done; here we surface the message.
+        // A subagent's failure is not the main turn's failure — log it only
+        // (its own collab/wait items carry the status to the roster).
+        if (this.isForeignThread(p)) {
+          const subErr = p.error as { message?: string } | undefined;
+          this.ctx.log.warn(`codex: subagent thread ${String(p.threadId)} error: ${subErr?.message ?? "unknown"}`);
+          break;
+        }
         const willRetry = p.willRetry === true;
         const err = p.error as { message?: string } | undefined;
         if (!willRetry && err?.message) {
@@ -297,6 +345,11 @@ export class CodexMessageAdapter {
         break;
       }
       case "turn/completed": {
+        // ⚠️ Subagent threads complete their own turns on this same
+        // connection. Treating one as ours ended the main turn early — the
+        // provider then disposed the app-server mid-turn, killing the main
+        // agent and every other subagent.
+        if (this.isForeignThread(p)) break;
         const turn = p.turn as { id?: string; status?: string } | undefined;
         const status = turn?.status ?? "completed";
         this.emitTurnEndSnapshot();
@@ -921,9 +974,12 @@ export class CodexMessageAdapter {
   }
 
   private emitTurnEndSnapshot(): void {
+    const turnUsage =
+      this.turnBaseTotal && this.latestTotal ? subtractUsage(this.latestTotal, this.turnBaseTotal) : null;
     const snapshot = buildCodexTokenSnapshot(
       this.lastUsage,
       this.modelContextWindow ?? this.contextWindowFallback,
+      turnUsage,
     );
     if (!snapshot) return;
     this.emit({ type: "token-usage.updated", sessionId: this.sessionId, snapshot });
@@ -932,6 +988,17 @@ export class CodexMessageAdapter {
   private emit(e: RuntimeEvent): void {
     this.ctx.emit(e);
   }
+}
+
+/** Field-wise `a - b` of two usage counters, clamped at 0 (b null → a). */
+function subtractUsage(a: CodexUsage, b: CodexUsage | null): CodexUsage {
+  const d = (x: number | undefined, y: number | undefined): number => Math.max(0, (x ?? 0) - (y ?? 0));
+  return {
+    inputTokens: d(a.inputTokens, b?.inputTokens),
+    cachedInputTokens: d(a.cachedInputTokens, b?.cachedInputTokens),
+    outputTokens: d(a.outputTokens, b?.outputTokens),
+    reasoningOutputTokens: d(a.reasoningOutputTokens, b?.reasoningOutputTokens),
+  };
 }
 
 /** "Plan text" (markdown checkbox lines) → todo rows (PlanThreadItem path). */
