@@ -69,6 +69,9 @@ export async function forkSession(sourceId: string, title: string): Promise<Sess
     // 抢着写同一个会话文件。
     claudeSessionId: providerSessionId,
     title,
+    // A fork has no in-flight turn or pending approval of its own, even when
+    // the source snapshot was captured while active.
+    status: "idle",
     // 新开的一段不该一出生就钉在最上面,也不该落在归档里。
     archived: false,
     pinnedAt: null,
