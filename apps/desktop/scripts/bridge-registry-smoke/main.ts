@@ -39,6 +39,25 @@ BridgeRegistry.disposeAll();
 const firstCfg = cfg("https://one.invalid/v1", "token-one");
 const secondCfg = cfg("https://two.invalid/v1", "token-two");
 
+console.log("\n同一 config id 的并发首次初始化");
+const [parallel1, parallel2] = await Promise.all([
+  BridgeRegistry.acquire("parallel", firstCfg),
+  BridgeRegistry.acquire("parallel", firstCfg),
+]);
+check("并发 acquire 共享同一个 server", parallel1.localUrl === parallel2.localUrl);
+BridgeRegistry.release("parallel");
+check("释放一个并发持有者后 server 仍活着", await canConnect(parallel1.localUrl));
+BridgeRegistry.release("parallel");
+check("释放最后一个并发持有者后 server 关闭", !(await canConnect(parallel1.localUrl)));
+
+console.log("\ndisposeAll 与启动中的 bridge 并发");
+const starting = BridgeRegistry.acquire("dispose-during-start", firstCfg);
+await Promise.resolve();
+BridgeRegistry.disposeAll();
+let rejectedAfterDispose = false;
+try { await starting; } catch { rejectedAfterDispose = true; }
+check("disposeAll 阻止并关闭尚未完成的 bridge 启动", rejectedAfterDispose);
+
 console.log("\n共享 + refresh 不增 refCount");
 const h1 = await BridgeRegistry.acquire("same", firstCfg);
 const h2 = await BridgeRegistry.acquire("same", firstCfg);

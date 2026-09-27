@@ -46,6 +46,7 @@ import {
   stopPublicMcp,
 } from "@main/providers/bridge/publicMcpServer.js";
 import { createWebToolHost, type WebToolGate } from "@main/mcp/webToolHost.js";
+import { ApprovalBridge } from "@main/claude/ApprovalBridge.js";
 import { SESSION_LOG_TOOLS, WORKFLOW_READONLY_TOOLS, workflowMcpTools } from "@main/mcp/mcodeServer.js";
 import type { PermissionMode } from "@contracts/runtime";
 import type { ApprovalRequest } from "@contracts/provider";
@@ -1624,6 +1625,43 @@ mode = "default";
 rmSync(CWD, { recursive: true, force: true });
 
 /* ── 报告 ── */
+/* Approval cancellation: an interrupt/timeout invalidates stale clicks but keeps session grants. */
+const approvalLifecycle = new ApprovalBridge();
+approvalLifecycle.setPermissionMode("approval-owner", "acceptEdits");
+const granted = approvalLifecycle.makeApprovalHandler("approval-owner", () => {})({
+  requestId: "prior-always-grant",
+  toolName: "agent_bash",
+  input: { command: "safe fixture" },
+  description: "fixture",
+});
+eq("初次始终允许 resolve 到所属会话", approvalLifecycle.resolveApproval("prior-always-grant", { allow: true }, true), "approval-owner");
+await granted;
+const staleApproval = approvalLifecycle.makeApprovalHandler("approval-owner", () => {})({
+  requestId: "late-after-interrupt",
+  toolName: "agent_bash",
+  input: { command: "must not run" },
+  description: "fixture",
+});
+const staleOutcome = staleApproval.then(() => "allowed", (err: Error) => err.message);
+const otherSessionApproval = approvalLifecycle.makeApprovalHandler("another-owner", () => {})({
+  requestId: "other-session-pending",
+  toolName: "agent_bash",
+  input: {},
+  description: "fixture",
+});
+const otherOutcome = otherSessionApproval.then(() => "allowed", (err: Error) => err.message);
+eq(
+  "取消只返回所属会话的待处理请求",
+  approvalLifecycle.rejectPending("approval-owner"),
+  [{ requestId: "late-after-interrupt", kind: "approval" }],
+);
+eq("中断后的迟到批准已失效", approvalLifecycle.resolveApproval("late-after-interrupt", { allow: true }, true), null);
+eq("被取消的审批 promise 已拒绝", await staleOutcome, "Session cancelled");
+eq("取消保留此前的始终允许", approvalLifecycle.isAlwaysAllowed("approval-owner", "agent_bash"), true);
+eq("取消保留会话权限模式", approvalLifecycle.getPermissionMode("approval-owner"), "acceptEdits");
+eq("其他会话的待处理审批不受影响", approvalLifecycle.resolveApproval("other-session-pending", { allow: true }), "another-owner");
+eq("其他会话审批仍可正常完成", await otherOutcome, "allowed");
+
 configureMcpToolHost(null);
 
 console.log(`\n${passed}/${checks} 通过`);

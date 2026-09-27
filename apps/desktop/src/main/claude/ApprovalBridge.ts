@@ -202,26 +202,34 @@ export class ApprovalBridge {
 
   /* ── cleanup ── */
 
-  /** Reject all pending requests for a session (called on interrupt / dispose).
-   *  Scoped to the given session — with concurrent sessions (e.g. a side chat
-   *  running next to its parent) a blanket clear would kill the OTHER
-   *  session's pending prompts. */
-  rejectAll(sessionId: string): void {
+  /** Reject pending requests for one session and return their UI routing keys.
+   *  Persistent per-session grants and permission mode are intentionally kept. */
+  rejectPending(sessionId: string): Array<{ requestId: string; kind: "approval" | "question" | "plan" }> {
+    const rejected: Array<{ requestId: string; kind: "approval" | "question" | "plan" }> = [];
     for (const [id, p] of this.pendingApprovals) {
       if (p.sessionId !== sessionId) continue;
       p.reject(new Error("Session cancelled"));
       this.pendingApprovals.delete(id);
+      rejected.push({ requestId: id, kind: "approval" });
     }
     for (const [id, p] of this.pendingUserInputs) {
       if (p.sessionId !== sessionId) continue;
       p.reject(new Error("Session cancelled"));
       this.pendingUserInputs.delete(id);
+      rejected.push({ requestId: id, kind: "question" });
     }
     for (const [id, p] of this.pendingPlanApprovals) {
       if (p.sessionId !== sessionId) continue;
       p.reject(new Error("Session cancelled"));
       this.pendingPlanApprovals.delete(id);
+      rejected.push({ requestId: id, kind: "plan" });
     }
+    return rejected;
+  }
+
+  /** Reject pending requests and drop per-session state (called on dispose). */
+  rejectAll(sessionId: string): void {
+    this.rejectPending(sessionId);
     // Drop per-session always-allow + mode state so a reused session id
     // (shouldn't happen, but defensive) starts clean.
     this.alwaysAllowedTools.delete(sessionId);

@@ -48,29 +48,67 @@ function fingerprint(cfg: ApiConfig): string {
 
 class BridgeRegistryImpl {
   private entries = new Map<string, Entry>();
+  /** Startup and refresh are asynchronous. Serialize mutations per config id so
+   *  simultaneous first acquisitions cannot publish competing servers and lose
+   *  one of their reference counts. */
+  private operations = new Map<string, Promise<void>>();
+  /** Invalidates bridge startups that are still in flight when app shutdown
+   *  calls disposeAll(). */
+  private generation = 0;
+
+  private async withConfigLock<T>(id: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.operations.get(id) ?? Promise.resolve();
+    let unlock: () => void = () => {};
+    const current = new Promise<void>((resolve) => { unlock = resolve; });
+    const tail = previous.then(() => current);
+    this.operations.set(id, tail);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      unlock();
+      if (this.operations.get(id) === tail) this.operations.delete(id);
+    }
+  }
 
   /** Acquire a bridge for the given config id. Reuses an existing server when
    *  the config hasn't changed; rebuilds when the fingerprint drifts; creates
    *  fresh when none exists. Always bumps the ref count for the caller, who
    *  MUST pair this with {@link release}. */
   async acquire(customModelId: string, upstream: ApiConfig): Promise<BridgeHandle> {
-    const fp = fingerprint(upstream);
-    const existing = this.entries.get(customModelId);
-    if (existing) {
-      if (existing.fingerprint !== fp) {
-        // Config changed under us (user edited token/URL). Rebuild.
-        log.info(`bridge: config ${customModelId} changed, rebuilding server`);
-        existing.handle.close();
-        const handle = await startBridge(upstream);
-        this.entries.set(customModelId, { handle, fingerprint: fp, refCount: 1 });
-        return handle;
+    const generation = this.generation;
+    return this.withConfigLock(customModelId, async () => {
+      if (generation !== this.generation) throw new Error("bridge registry disposed during acquire");
+      const fp = fingerprint(upstream);
+      const existing = this.entries.get(customModelId);
+      if (existing) {
+        if (existing.fingerprint !== fp) {
+          // Config changed under us (user edited token/URL). Build the replacement
+          // before closing the old handle, so a failed bind does not strand holders.
+          log.info(`bridge: config ${customModelId} changed, rebuilding server`);
+          const handle = await startBridge(upstream);
+          if (generation !== this.generation) {
+            handle.close();
+            throw new Error("bridge registry disposed during acquire");
+          }
+          // release() is synchronous and may run while startBridge is binding.
+          // Preserve the live holders plus this new caller in the replacement entry.
+          const refCount = this.entries.get(customModelId) === existing ? existing.refCount + 1 : 1;
+          existing.handle.close();
+          this.entries.set(customModelId, { handle, fingerprint: fp, refCount });
+          return handle;
+        }
+        existing.refCount += 1;
+        return existing.handle;
       }
-      existing.refCount += 1;
-      return existing.handle;
-    }
-    const handle = await startBridge(upstream);
-    this.entries.set(customModelId, { handle, fingerprint: fp, refCount: 1 });
-    return handle;
+      const handle = await startBridge(upstream);
+      if (generation !== this.generation) {
+        handle.close();
+        throw new Error("bridge registry disposed during acquire");
+      }
+      this.entries.set(customModelId, { handle, fingerprint: fp, refCount: 1 });
+      return handle;
+    });
   }
 
   /** Refresh a bridge already held by the caller WITHOUT acquiring another
@@ -79,21 +117,33 @@ class BridgeRegistryImpl {
    *  entry disappeared (for example after an external dispose/recovery path),
    *  recreate it with the caller's one logical reference. */
   async refreshHeld(customModelId: string, upstream: ApiConfig): Promise<BridgeHandle> {
-    const fp = fingerprint(upstream);
-    const existing = this.entries.get(customModelId);
-    if (!existing) {
-      const handle = await startBridge(upstream);
-      this.entries.set(customModelId, { handle, fingerprint: fp, refCount: 1 });
-      return handle;
-    }
-    if (existing.fingerprint === fp) return existing.handle;
+    const generation = this.generation;
+    return this.withConfigLock(customModelId, async () => {
+      if (generation !== this.generation) throw new Error("bridge registry disposed during refresh");
+      const fp = fingerprint(upstream);
+      const existing = this.entries.get(customModelId);
+      if (!existing) {
+        const handle = await startBridge(upstream);
+        if (generation !== this.generation) {
+          handle.close();
+          throw new Error("bridge registry disposed during refresh");
+        }
+        this.entries.set(customModelId, { handle, fingerprint: fp, refCount: 1 });
+        return handle;
+      }
+      if (existing.fingerprint === fp) return existing.handle;
 
-    log.info(`bridge: config ${customModelId} changed, rebuilding held server`);
-    const refCount = Math.max(1, existing.refCount);
-    existing.handle.close();
-    const handle = await startBridge(upstream);
-    this.entries.set(customModelId, { handle, fingerprint: fp, refCount });
-    return handle;
+      log.info(`bridge: config ${customModelId} changed, rebuilding held server`);
+      const handle = await startBridge(upstream);
+      if (generation !== this.generation) {
+        handle.close();
+        throw new Error("bridge registry disposed during refresh");
+      }
+      const refCount = this.entries.get(customModelId) === existing ? Math.max(1, existing.refCount) : 1;
+      existing.handle.close();
+      this.entries.set(customModelId, { handle, fingerprint: fp, refCount });
+      return handle;
+    });
   }
 
   /** Release a previously-acquired bridge. Decrements the ref count; closes the
@@ -111,6 +161,7 @@ class BridgeRegistryImpl {
 
   /** Close every bridge, regardless of ref count. Called at app shutdown. */
   disposeAll(): void {
+    this.generation += 1;
     for (const [id, entry] of this.entries) {
       entry.handle.close();
       this.entries.delete(id);

@@ -1402,6 +1402,7 @@ class RuntimeManager {
       kind: "budget_limit",
       message: `已达到本轮预算上限（${reasons.join("、")}），正在停止当前回合`,
     });
+    this.rejectPendingRequests(sessionId);
     try {
       rt.handle.interrupt();
     } catch (err) {
@@ -1409,9 +1410,17 @@ class RuntimeManager {
     }
   }
 
+  private rejectPendingRequests(sessionId: string): void {
+    for (const request of approvalBridge.rejectPending(sessionId)) {
+      this.notifyRequestResolved(sessionId, request.requestId, request.kind);
+    }
+  }
+
   interrupt(sessionId: string): void {
     const rt = this.sessions.get(sessionId);
-    if (!rt?.handle) return;
+    if (!rt) return;
+    this.rejectPendingRequests(sessionId);
+    if (!rt.handle) return;
     rt.handle.interrupt();
   }
 
