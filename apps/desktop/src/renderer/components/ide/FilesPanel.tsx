@@ -1,3 +1,4 @@
+import { ModuleSurface, ModuleToolsButton } from "../modules/ModuleSurface.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { EMPTY_TURN_FILES, useSessionStore, selectActiveEnvPath } from "@renderer/stores/sessionStore.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
@@ -88,7 +89,7 @@ export function FilesPanel() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <ModuleSurface key={projectPath} projectPath={projectPath}><div className="flex h-full min-h-0 flex-col">
       {/* Compact header: the active project's folder name on the left (mirrors
           the explorer header in VS Code), refresh + search buttons on the
           right. The tree gets the full panel height below. */}
@@ -100,6 +101,7 @@ export function FilesPanel() {
           <IconFolder size={13} className="shrink-0 text-content-subtle" />
           <span className="truncate">{projectName}</span>
         </span>
+        <ModuleToolsButton/>
         <button
           type="button"
           onClick={() => setRefreshNonce((n) => n + 1)}
@@ -133,7 +135,7 @@ export function FilesPanel() {
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
         <FileTree key={`${projectPath}:${refreshNonce}`} projectPath={projectPath} />
       </div>
-    </div>
+    </div></ModuleSurface>
   );
 }
 

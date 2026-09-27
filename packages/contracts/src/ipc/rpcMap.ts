@@ -65,6 +65,13 @@ export const ClaudeSubagentsSaveSchema = z.object({ subagents: z.array(z.record(
 /** A typed map of all renderer→main RPC invocations. The preload exposes a
  * typed `window.api` matching this shape; the renderer imports it for safety. */
 export interface RpcMap {
+  "modules.catalog": () => Promise<import("../modules.js").ModuleCatalog>;
+  "modules.install": (input: import("./modules.js").ModuleInstallInput) => Promise<import("../modules.js").ModuleCatalog>;
+  "modules.remove": (input: {moduleId:string}) => Promise<import("../modules.js").ModuleCatalog>;
+  "modules.invoke": (input: import("../modules.js").ModuleInvoke) => Promise<import("../modules.js").ModuleReply>;
+  "modules.task": (input: import("../modules.js").ModuleTaskRef) => Promise<import("../modules.js").ModuleTask>;
+  "modules.cancel": (input: import("../modules.js").ModuleTaskRef) => Promise<import("../modules.js").ModuleTask>;
+  "modules.tasks": (input: {projectPath:string}) => Promise<import("../modules.js").ModuleTask[]>;
   // Claude
   "claude.startSession": (input: StartSessionInput) => Promise<{ session: Session }>;
   /** List a main session's side chats (kind="side"), newest first. */
@@ -1163,6 +1170,13 @@ export interface RpcMap {
 /** The channel names used in invoke/handle and send/on. Keep these centralized
  * so the preload allowlist and the main handlers never drift. */
 export const IPC = {
+  MODULE_CATALOG: "modules:catalog",
+  MODULE_INSTALL: "modules:install",
+  MODULE_REMOVE: "modules:remove",
+  MODULE_INVOKE: "modules:invoke",
+  MODULE_TASK: "modules:task",
+  MODULE_CANCEL: "modules:cancel",
+  MODULE_TASKS: "modules:tasks",
   // invoke/handle (RPC)
   CLAUDE_START_SESSION: "claude:startSession",
   CLAUDE_LIST_SIDE_CHATS: "claude:listSideChats",

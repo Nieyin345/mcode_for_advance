@@ -113,6 +113,7 @@ export {
  * contracts 模块,**绝不**反向 import 本文件(那会把门面变成环)。加一个域:
  * 在 ./ipc/ 建文件,回这里加一行 export *。
  */
+export * from "./ipc/modules.js";
 export * from "./ipc/settings.js";
 export * from "./ipc/session.js";
 export * from "./ipc/voice.js";

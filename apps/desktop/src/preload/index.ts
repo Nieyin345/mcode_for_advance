@@ -8,6 +8,15 @@ import type { MainToRendererMessage } from "@contracts/ipc";
  * This is the ONLY bridge into Node — the renderer cannot require() anything.
  */
 const api = {
+  modules: {
+    catalog: (() => ipcRenderer.invoke(IPC.MODULE_CATALOG)) as RpcMap["modules.catalog"],
+    install: ((input) => ipcRenderer.invoke(IPC.MODULE_INSTALL,input)) as RpcMap["modules.install"],
+    remove: ((input) => ipcRenderer.invoke(IPC.MODULE_REMOVE,input)) as RpcMap["modules.remove"],
+    invoke: ((input) => ipcRenderer.invoke(IPC.MODULE_INVOKE,input)) as RpcMap["modules.invoke"],
+    task: ((input) => ipcRenderer.invoke(IPC.MODULE_TASK,input)) as RpcMap["modules.task"],
+    cancel: ((input) => ipcRenderer.invoke(IPC.MODULE_CANCEL,input)) as RpcMap["modules.cancel"],
+    tasks: ((input) => ipcRenderer.invoke(IPC.MODULE_TASKS,input)) as RpcMap["modules.tasks"],
+  },
   // ── RPC (renderer → main) ──
   claude: {
     startSession: ((input) =>

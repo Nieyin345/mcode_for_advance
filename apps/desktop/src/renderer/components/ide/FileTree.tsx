@@ -1,3 +1,4 @@
+import { ModuleMenuItems } from "../modules/ModuleSurface.js";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ContextMenu } from "@base-ui/react/context-menu";
 import { api } from "@renderer/lib/api.js";
@@ -1338,6 +1339,7 @@ function FileNodeRow({
         // 再给一个"预览"项没有意义，而叫「打开」却不给改会让人以为坏了。
         onClick={onDoubleClick}
       />
+              <ModuleMenuItems path={path}/>
               {/* "新建" creates a sibling in this file's parent dir; only shown
                   when a container context is available (i.e. inside a tree). */}
               {startNewInParent && (

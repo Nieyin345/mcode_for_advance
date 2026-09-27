@@ -1,0 +1,45 @@
+{
+  "apiVersion": 1,
+  "id": "user.file-report",
+  "version": "1.0.0",
+  "title": {
+    "zh": "我的文件报告",
+    "en": "My file report"
+  },
+  "permissions": [
+    "resource.read"
+  ],
+  "contributions": [
+    {
+      "id": "inspect",
+      "slot": "files.context",
+      "title": {
+        "zh": "生成我的文件报告",
+        "en": "Create my file report"
+      },
+      "capability": "core.file.inspect",
+      "view": {
+        "title": {
+          "zh": "文件报告",
+          "en": "File report"
+        },
+        "fields": [
+          {
+            "key": "bytes",
+            "title": {
+              "zh": "字节数",
+              "en": "Bytes"
+            }
+          },
+          {
+            "key": "sha256",
+            "title": {
+              "zh": "SHA-256",
+              "en": "SHA-256"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

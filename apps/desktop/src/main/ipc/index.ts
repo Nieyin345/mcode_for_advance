@@ -1,3 +1,4 @@
+import { registerModuleHandlers } from "./modules.js";
 import { registerMemoryAssistantHandlers } from "./memoryAssistant.js";
 import { ipcMain, type IpcMain } from "electron";
 import { IPC } from "@contracts/ipc";
@@ -72,6 +73,7 @@ export function registerIpcHandlers(): void {
   registerCodexModelsHandlers(ipc);
   registerThemeHandlers(ipc);
   registerFileHandlers(ipc);
+  registerModuleHandlers(ipc);
   registerRgHandlers(ipc);
   registerGitHandlers(ipc);
   registerTerminalHandlers(ipc);
