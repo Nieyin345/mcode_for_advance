@@ -416,6 +416,12 @@ export async function listRuntimes(): Promise<RuntimeAgentState[]> {
   });
 }
 
+/** A runtime version becomes ONE directory name under `<root>/<agent>/`.
+ *  install-from-local-path reads it from a user-picked package.json, and the
+ *  finalize step below recursively deletes that slot before renaming into it,
+ *  so "..", "../pi" or "." must never get that far. */
+const SAFE_VERSION_DIR_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/;
+
 /** Shared tail of both install paths: verify the extracted payload, fix
  *  binary permissions, atomically move staging into place, write the install
  *  record and prune other versions. Throws on layout mismatch; on success the
@@ -440,7 +446,13 @@ function finalizeInstall(
     }
   }
   const root = getManagedRuntimeRoot() ?? join(app.getPath("userData"), "runtimes");
-  const finalDir = join(root, agent, version);
+  const agentDir = join(root, agent);
+  const finalDir = join(agentDir, version);
+  if (!SAFE_VERSION_DIR_RE.test(version) || dirname(finalDir) !== agentDir) {
+    throw new Error(
+      `版本号不能用作安装目录,已拒绝安装(unsafe runtime version ${JSON.stringify(version)} — expected something like 1.2.3)`,
+    );
+  }
   rmSync(finalDir, { recursive: true, force: true });
   renameSync(stagingDir, finalDir);
   writeFileSync(
