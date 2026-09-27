@@ -341,6 +341,9 @@ export const HOOK_EVENT_OF: Record<RuntimeEvent["type"], HookEvent | null> = {
   // "没有会话"和"会话 id 是空"。要给它们钩子,得先设计"不属于会话的事件"长什么样。
   "session.deleted": null,
   "git.changed": null,
+  // 设置 / 项目列表的跨端同步信号 —— 同上,不属于任何会话,纯界面同步。
+  "setting.changed": null,
+  "projects.changed": null,
 };
 
 /* ── 一条钩子 ── */

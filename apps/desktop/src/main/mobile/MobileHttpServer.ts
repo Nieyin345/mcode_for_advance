@@ -40,6 +40,7 @@ import {
 import { pairingManager, detectLanIp } from "./PairingManager.js";
 import { mobileEventBus } from "./MobileEventBus.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
+import { hasLiveRendererWindow } from "@main/window.js";
 import { dispatchMobileRpc, RpcError, type DeviceContext } from "./mobileRpc.js";
 import { registerMobileGitRpc } from "./mobileGitRpc.js";
 import { serveMobileAsset } from "./serveMobileStatic.js";
@@ -157,7 +158,13 @@ async function authorize(req: IncomingMessage, allowQueryToken = false): Promise
  *  read access to the same key — it is local, and the DB file it reads from is
  *  already the user's own trust boundary (see the note in PairingManager). The
  *  difference here is the **network**: the bridge is reachable by every device
- *  on the LAN, so it must not hand out other devices' credentials. */
+ *  on the LAN, so it must not hand out other devices' credentials.
+ *
+ *  This is the belt; the braces are in `mobileRpc.ts`: the `setting:*`
+ *  handlers only serve keys on an allowlist (`isMobileAccessibleSettingKey`),
+ *  which keeps the rest of the table (relay VPS config, public-MCP secret,
+ *  cookie vault, MCP / LSP / terminal-shell config, workflow review records)
+ *  away from the phone as well. */
 const LAN_UNREADABLE_SETTING_KEYS = new Set<string>([MOBILE_PAIRED_DEVICES_SETTING_KEY]);
 
 /** True if this RPC request carries a setting key the LAN surface must not
@@ -235,10 +242,19 @@ function handleEvents(req: IncomingMessage, res: ServerResponse, device: PairedD
     // The bus is unbuffered: reconnecting clients first restore running state.
     res.write(`data: ${JSON.stringify({
       sessionId: "",
-      event: { type: "session.runningSnapshot", sessionId: "", running: runtimeManager.runningSessionIds() },
+      event: {
+        type: "session.runningSnapshot",
+        sessionId: "",
+        running: runtimeManager.runningSessionIds(),
+        // 桌面窗口在不在 —— 决定回合消息谁来落库(见 contracts 里这个字段的注释)。
+        desktopAttached: hasLiveRendererWindow(),
+      },
     })}\n\n`);
     unsubscribe = mobileEventBus.subscribe((event) => {
-      if (!closed) res.write(`data: ${JSON.stringify({ sessionId: event.sessionId, event })}\n\n`);
+      if (closed) return;
+      // 这台自己写的设置不回推(连续输入时晚到的回声会把文本框拽回旧值)。
+      if (event.type === "setting.changed" && event.originDeviceId === device.deviceId) return;
+      res.write(`data: ${JSON.stringify({ sessionId: event.sessionId, event })}\n\n`);
     });
     heartbeat = setInterval(() => {
       if (!closed) res.write(": ping\n\n");

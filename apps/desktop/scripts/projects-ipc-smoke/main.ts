@@ -809,6 +809,34 @@ console.log("\n7. 标题搜索(Ctrl+K)");
   eq("搜不到就是空数组,不是 undefined", empty.sessions.length, 0);
 }
 
+/* ──────────────── 项目行变动 → projects.changed ──────────────── */
+//
+// 项目行的每一种变动都要广播一条 projects.changed —— 手机(以及桌面自己)据此重拉
+// 项目列表。少了它:桌面上删掉 / 改名的项目,手机要等重开页面才看得到;手机上删掉
+// 的项目,桌面左栏一直挂着,点进去全是报错。
+
+console.log("\n项目行变动 → projects.changed");
+
+{
+  fresh();
+  resetMobileEvents();
+  const count = () => mobileEvents.filter((e) => e.type === "projects.changed").length;
+  const { project } = await call<{ project: { id: string } }>(IPC.PROJECT_CREATE, { name: "广播", path: "C:/work/bc" });
+  eq("新建 → 一条", count(), 1);
+  await call(IPC.PROJECT_RENAME, { id: project.id, name: "广播 v2" });
+  eq("改名 → 又一条", count(), 2);
+  await call(IPC.PROJECT_PIN, { id: project.id, pinned: true });
+  eq("置顶 → 又一条", count(), 3);
+  await call(IPC.PROJECT_SET_GROUP, { id: project.id, group: "g" });
+  eq("分组 → 又一条", count(), 4);
+  await call(IPC.PROJECT_REORDER, { orderedIds: [project.id] });
+  eq("排序 → 又一条", count(), 5);
+  await call(IPC.PROJECT_ARCHIVE, { id: project.id, archived: true });
+  eq("归档 → 又一条", count(), 6);
+  await call(IPC.PROJECT_DELETE, { id: project.id });
+  eq("删除 → 又一条", count(), 7);
+}
+
 /* ──────────────── 收尾 ──────────────── */
 
 rmSync(DATA, { recursive: true, force: true });

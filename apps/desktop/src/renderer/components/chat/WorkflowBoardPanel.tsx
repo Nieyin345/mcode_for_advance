@@ -85,10 +85,12 @@ import {
   IconSparkles,
   IconTrash,
 } from "@renderer/lib/icons.js";
+import { UI_WORKFLOW_BOARD_FLOW_HEIGHT_SETTING_KEY } from "@contracts/ipc/settingsSync";
 
 /** 图那一块的高度存在哪个 setting 键下。和右栏宽度用同一个做法:面板自己的一个
- *  小偏好,不值得单开一个设置页。 */
-const FLOW_HEIGHT_SETTING_KEY = "ui.workflowBoard.flowHeight";
+ *  小偏好,不值得单开一个设置页。键本身住在 contracts —— 它在「跟着屏幕走」的表里
+ *  (手机上拖的高度不改桌面的,见 `@contracts/ipc/settingsSync`)。 */
+const FLOW_HEIGHT_SETTING_KEY = UI_WORKFLOW_BOARD_FLOW_HEIGHT_SETTING_KEY;
 
 /**
  * 现场那一格 → 卡片要的形状。

@@ -1076,7 +1076,7 @@ export const zh = {
 
   // ── mobile settings sheet (MobileSettingsSheet) ──
   "settings.mobile.displayModeHint":
-    "Tab 模式下,聊天区顶部会显示会话标签条,用于在已打开的会话间切换;该偏好与电脑端共享。",
+    "Tab 模式下,聊天区顶部会显示会话标签条,用于在已打开的会话间切换;该偏好只保存在这台设备上,不影响电脑端。",
 
   // 统一数据根(设置 → 数据位置)
   "settings.nav.dataRoot": "数据位置",

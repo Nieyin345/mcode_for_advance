@@ -5,6 +5,7 @@
  */
 
 import type { Session } from "./session.js";
+import type { ModuleWorkflowExecutionInput } from "./moduleCapability.js";
 import type { NodeReturnMode, NodeTypeManifest } from "./nodeType.js";
 import type { WorkflowNode } from "./workflow.js";
 import type { NodeArtifact, NodeExecutionRecord, NodeOutcomeStatus } from "./nodeType.js";
@@ -53,6 +54,10 @@ export interface NodeRunInput {
    */
   echoUserMessage?: boolean;
   providerId?: string;
+  /** Validated module parameters plus a host-created identity for ONE dispatch.
+   * cwd comes from WorkflowExecutionContext, never from these parameters.
+   * Preserve requestId on transport retries; replace it for an explicit rerun. */
+  moduleCall?: ModuleWorkflowExecutionInput;
   command?: { command: string; timeoutMs: number; input?: unknown };
   code?: {
     code: string;
@@ -1124,6 +1129,43 @@ export interface SessionRunningSnapshotEvent {
   sessionId: string;
   /** Every session id that currently has a running turn on the host. */
   running: string[];
+  /**
+   * 桌面窗口此刻是否开着。开着 = 桌面渲染端经 IPC 无损收到每一个事件,由它
+   * **唯一**负责把回合里推出来的消息写回库;手机只读不写 —— 否则 SSE 断过一截的
+   * 手机在 turn.done 时会拿缺块的整桶盖掉桌面写好的完整行。关着(macOS 关窗后
+   * 主进程还活着、手机照样能发起回合)= 没人写,手机自己写。
+   * 可选:老主进程不带这个字段,等同 false(手机沿用旧行为自己写)。
+   */
+  desktopAttached?: boolean;
+}
+
+/**
+ * 一个「跟着人走」的设置被某一端改了(键表见 `@contracts/ipc/settingsSync`
+ * 的 `SYNCED_SETTING_KEYS`)。主进程在两条写入口(桌面 `setting:set` IPC、手机
+ * `setting:set` RPC)写库之后广播。`sessionId` 恒为 ""(信封兼容)。
+ *
+ * **发起端收不到自己的回声**(见 `main/lib/sessionSync.ts` 的
+ * `broadcastSettingChanged`):桌面写的只推手机;手机写的推桌面 + 别的手机,
+ * SSE 按 `originDeviceId` 跳过发起的那台。回声会在连续输入时把文本框里的内容
+ * 拽回旧值(每敲一个字一次写入,回声晚到一拍)。
+ */
+export interface SettingChangedEvent {
+  type: "setting.changed";
+  sessionId: string;
+  key: string;
+  value: string;
+  /** 由哪台配对设备写的;桌面写的不带。只给 SSE 层过滤用。 */
+  originDeviceId?: string;
+}
+
+/**
+ * 项目列表变了(新建 / 删除 / 归档 / 改名 / 置顶 / 分组 / 排序,任一端发起)。
+ * 不带行 —— 项目行很轻,接收端直接重拉 `project.list()` 做差异合并(新项目补
+ * 会话列表,消失的项目连同它的会话 / 标签一起清掉)。`sessionId` 恒为 ""。
+ */
+export interface ProjectsChangedEvent {
+  type: "projects.changed";
+  sessionId: string;
 }
 
 /**
@@ -1349,6 +1391,8 @@ export type RuntimeEvent =
   | SessionDeletedEvent
   | RequestResolvedEvent
   | SessionRunningSnapshotEvent
+  | SettingChangedEvent
+  | ProjectsChangedEvent
   | UserMessageEvent
   | UpstreamIssueEvent
   | GitChangedEvent

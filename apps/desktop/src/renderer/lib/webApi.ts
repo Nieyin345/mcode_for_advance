@@ -30,6 +30,7 @@ import type { Api } from "../../preload/index.js";
 import { IPC } from "@contracts/ipc";
 import type { Locale, PickedImage, TerminalInfo } from "@contracts/ipc";
 import type { RuntimeEvent } from "@contracts/runtime";
+import { isDeviceLocalSettingKey } from "@contracts/ipc/settingsSync";
 import type { ThemeState } from "./theme.js";
 import type {
   MobileRpcResponse,
@@ -245,23 +246,107 @@ type RuntimeSubscriber = (e: RuntimeEvent) => void;
 const runtimeSubscribers = new Set<RuntimeSubscriber>();
 let sse: EventSource | null = null;
 
+/**
+ * 断线补齐。事件总线**不缓存**:断开期间推出去的事件(回合正文、会话 / 项目
+ * 列表变动、设置变动)手机一条都收不到。服务端每次 (重)连上都先发一帧
+ * `session.runningSnapshot`,它只救得回「哪些会话在跑」—— 缺掉的正文要重新从库里
+ * 拉。所以:**第二帧及以后的快照** = 这是一次重连,通知订阅者去补
+ * (`AppMobile` → `sessionStore.resyncAfterReconnect`)。
+ */
+let snapshotsSeen = 0;
+const resyncSubs = new Set<() => void>();
+
+/** 订阅「SSE 断过又连上了,该补数据了」。返回退订函数。 */
+export function onSseResync(cb: () => void): () => void {
+  resyncSubs.add(cb);
+  return () => {
+    resyncSubs.delete(cb);
+  };
+}
+
+/** 页面在后台待了这么久,回到前台时不再相信那条连接,直接重建。iOS / 安卓会把
+ *  后台页的连接悄悄挂起,回来时 `readyState` 还是 OPEN,但服务端那头早断了
+ *  —— 不重建的话要等下一次心跳超时才发现,这期间什么都收不到。 */
+const SSE_STALE_AFTER_HIDDEN_MS = 20_000;
+/** EventSource 自己放弃(CLOSED)之后,我们重建的退避:1s 起,翻倍,封顶 30s。 */
+const SSE_RETRY_MIN_MS = 1_000;
+const SSE_RETRY_MAX_MS = 30_000;
+let sseRetryMs = SSE_RETRY_MIN_MS;
+let sseRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let sseHiddenAt: number | null = null;
+let sseVisibilityHooked = false;
+
+function restartSse(): void {
+  if (sse) sse.close();
+  sse = null;
+  if (runtimeSubscribers.size > 0) ensureSse();
+}
+
+function scheduleSseRestart(): void {
+  if (sseRetryTimer) return;
+  const delay = sseRetryMs;
+  sseRetryMs = Math.min(sseRetryMs * 2, SSE_RETRY_MAX_MS);
+  sseRetryTimer = setTimeout(() => {
+    sseRetryTimer = null;
+    // 等待期间可能已经被别的路径(回到前台)重建好了。
+    if (sse && sse.readyState !== EventSource.CLOSED) return;
+    restartSse();
+  }, delay);
+}
+
+function hookSseVisibility(): void {
+  if (sseVisibilityHooked || typeof document === "undefined") return;
+  sseVisibilityHooked = true;
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      sseHiddenAt = Date.now();
+      return;
+    }
+    const away = sseHiddenAt != null ? Date.now() - sseHiddenAt : 0;
+    sseHiddenAt = null;
+    if (!sse) return;
+    if (sse.readyState === EventSource.CLOSED || away > SSE_STALE_AFTER_HIDDEN_MS) restartSse();
+  });
+}
+
 function ensureSse(): void {
   if (sse) return;
   const { token } = readAuth();
   if (!token) return;
+  hookSseVisibility();
   const es = new EventSource(`/api/events?token=${encodeURIComponent(token)}`);
   sse = es;
   es.onmessage = (ev) => {
+    let event: RuntimeEvent;
     try {
-      const parsed = JSON.parse(ev.data as string) as { sessionId: string; event: RuntimeEvent };
-      for (const fn of runtimeSubscribers) fn(parsed.event);
+      event = (JSON.parse(ev.data as string) as { sessionId: string; event: RuntimeEvent }).event;
     } catch {
-      // malformed frame — ignore
+      return; // malformed frame — ignore
+    }
+    for (const fn of runtimeSubscribers) fn(event);
+    if (event.type === "session.runningSnapshot") {
+      sseRetryMs = SSE_RETRY_MIN_MS; // 连上了,退避归零
+      snapshotsSeen += 1;
+      // 快照已经先交给 store 套用(running 集合是新的),再通知补数据。
+      if (snapshotsSeen > 1) {
+        for (const fn of resyncSubs) {
+          try {
+            fn();
+          } catch {
+            // 一个订阅者抛错不能挡住别的
+          }
+        }
+      }
     }
   };
-  // onerror is intentionally empty: EventSource auto-reconnects (transient
-  // Wi-Fi blips are common on phones). A hard 401 (revoked device) surfaces
-  // on the next RPC, which clears the token and returns the user to pairing.
+  // 短暂断线(Wi-Fi 抖一下)EventSource 自己会重连(readyState 回到 CONNECTING),
+  // 不用管。只有它**放弃了**(CLOSED:服务端回了非 200,例如中继隧道断掉时的
+  // 502)才需要我们退避重建 —— 否则这条流就永远停了,页面却看不出来。被撤销的
+  // 设备(401)在下一次 RPC 时清掉令牌回到配对页,那之后 ensureSse 因为没令牌不再重建。
+  es.onerror = () => {
+    if (es !== sse) return;
+    if (es.readyState === EventSource.CLOSED) scheduleSseRestart();
+  };
 }
 
 function subscribeRuntime(fn: RuntimeSubscriber): () => void {
@@ -560,10 +645,51 @@ const git: Api["git"] = {
   worktreeRemove: () => webUnsupported("git.worktreeRemove"),
 };
 
+/**
+ * 「跟着屏幕走」的设置(显示模式、字号、布局、上次打开的会话……,键表见
+ * `@contracts/ipc/settingsSync`)存在**这台手机浏览器**的 localStorage 里,不发给
+ * 桌面 —— 否则手机上换个字号、点开一个对话,桌面下次启动就跟着变。其余键照旧走
+ * RPC 读写桌面那份设置表(服务端还有一道白名单,见 `main/mobile/mobileRpc.ts`)。
+ */
+const LOCAL_SETTING_PREFIX = "mcode-web-setting:";
+
+function readLocalSetting(key: string): string | null {
+  try {
+    return localStorage.getItem(LOCAL_SETTING_PREFIX + key);
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalSetting(key: string, value: string): void {
+  try {
+    localStorage.setItem(LOCAL_SETTING_PREFIX + key, value);
+  } catch {
+    // 隐私模式等 —— 这次会话里的选择仍然生效(store 里有),只是不记住
+  }
+}
+
 const setting: Api["setting"] = {
-  get: (input) => rpc("setting:get", input),
-  set: (input) => rpc("setting:set", input),
-  getMany: (input) => rpc("setting:getMany", input),
+  get: async (input) => {
+    if (isDeviceLocalSettingKey(input.key)) return { value: readLocalSetting(input.key) };
+    return rpc("setting:get", input);
+  },
+  set: async (input) => {
+    if (isDeviceLocalSettingKey(input.key)) {
+      writeLocalSetting(input.key, input.value);
+      return;
+    }
+    return rpc("setting:set", input);
+  },
+  getMany: async (input) => {
+    const remoteKeys = input.keys.filter((k) => !isDeviceLocalSettingKey(k));
+    const out: Record<string, string | null> =
+      remoteKeys.length > 0 ? { ...(await rpc<Record<string, string | null>>("setting:getMany", { keys: remoteKeys })) } : {};
+    for (const k of input.keys) {
+      if (isDeviceLocalSettingKey(k)) out[k] = readLocalSetting(k);
+    }
+    return out;
+  },
 };
 
 /** Voice input requires the desktop main-process ASR engine; the mobile/web

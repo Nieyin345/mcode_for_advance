@@ -36,6 +36,15 @@ export function createMainWindow(): never {
   throw new Error("mobile-pairing-smoke 不该走到 createMainWindow(本套不起窗口)");
 }
 
+/** 真实现:桌面窗口在不在。无头环境没有窗口;脚本可用 `__setDesktopAttached` 改。 */
+let desktopAttached = false;
+export function hasLiveRendererWindow(): boolean {
+  return desktopAttached;
+}
+export function __setDesktopAttached(v: boolean): void {
+  desktopAttached = v;
+}
+
 export function updateTitleBarOverlay(): void {
   /* 主题相关,本套不验 */
 }

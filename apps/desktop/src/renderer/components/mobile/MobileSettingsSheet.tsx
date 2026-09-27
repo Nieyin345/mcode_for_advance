@@ -33,7 +33,9 @@ const THEME_OPTIONS: Array<{ value: ThemeName; labelKey: MessageId; icon: typeof
 ];
 
 /** Same two options (and dictionary keys) as the desktop GeneralPanel's
- *  selector — it's one persisted pref shared by both shells. */
+ *  selector. The value is per-device: the web shell keeps it in this
+ *  browser's localStorage (see `@contracts/ipc/settingsSync`), so the phone's
+ *  choice never flips the desktop's layout and vice versa. */
 const DISPLAY_MODE_OPTIONS: Array<{
   value: DisplayMode;
   labelKey: MessageId;
@@ -122,7 +124,7 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
           </div>
         </div>
 
-        {/* Display mode — the desktop-shared center-pane pref. On the phone
+        {/* Display mode — per-device center-pane pref (not synced). On the phone
             it gates the SessionTabs strip above the chat (tabs) vs.
             drawer-only session switching (single). */}
         <div className="flex flex-col gap-2">

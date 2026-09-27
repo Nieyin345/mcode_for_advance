@@ -262,6 +262,16 @@ export function getMainWindow(): BrowserWindow | null {
  *  throws "Object has been destroyed" (an uncaught main-process exception).
  *  Drop silently in that case - the renderer is gone and nobody can receive
  *  the message anyway. */
+/** 桌面渲染端此刻能不能收事件(窗口在、没销毁、没崩)。手机 SSE 连上时带给它
+ *  (`session.runningSnapshot.desktopAttached`):桌面在 = 回合消息由桌面唯一
+ *  落库,手机不写;桌面不在(macOS 关窗后主进程还活着)= 手机自己写。 */
+export function hasLiveRendererWindow(): boolean {
+  const win = mainWindow;
+  if (!win || win.isDestroyed()) return false;
+  const wc = win.webContents;
+  return !wc.isDestroyed() && !wc.isCrashed();
+}
+
 export function sendToRenderer(channel: string, ...args: unknown[]): void {
   const win = mainWindow;
   if (!win || win.isDestroyed()) return;

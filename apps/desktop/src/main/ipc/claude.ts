@@ -38,7 +38,8 @@ import { probeProviderHealth, providerRegistry } from "@main/providers/registry.
 import { updateTitleBarOverlay } from "@main/window.js";
 import { log } from "@main/lib/logger.js";
 import { forkSession as forkSessionIntoNew } from "@main/lib/sessionFork.js";
-import { broadcastSessionChanged } from "@main/lib/sessionSync.js";
+import { broadcastSessionChanged, broadcastSettingChanged } from "@main/lib/sessionSync.js";
+import { isSyncedSettingKey } from "@contracts/ipc/settingsSync";
 import { createOrReuseSession } from "@main/lib/sessionStart.js";
 import {
   cancelWorkflowRun,
@@ -528,6 +529,10 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.SETTING_SET, (_evt, raw) => {
     const input = SetSettingSchema.parse(raw);
     SettingRepo.set(input.key, input.value);
+    // 「跟着人走」的键(语言、强调色、自定义命令、快捷键……)写完推给已配对的
+    // 手机,当场生效;桌面自己也会收到回声,套用是幂等的。键表见
+    // `@contracts/ipc/settingsSync`。
+    if (isSyncedSettingKey(input.key)) broadcastSettingChanged(input.key, input.value);
     // The theme STYLE repaints native chrome accents (win/linux title-bar
     // overlay) that only main can reach — the renderer's .sketch class does
     // nothing for them. Refresh on flip; every other key has no main-side

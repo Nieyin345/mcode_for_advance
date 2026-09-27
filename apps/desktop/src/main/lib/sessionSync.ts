@@ -59,6 +59,29 @@ export function broadcastSessionDeleted(sessionId: string): void {
   broadcastRuntimeEvent({ type: "session.deleted", sessionId });
 }
 
+/** A synced setting was written — every OTHER client applies it live.
+ *  Callers filter with `isSyncedSettingKey` first; the device-local /
+ *  never-synced keys must not ride this event.
+ *
+ *  The writer never gets its own echo (a late echo drags a controlled text
+ *  field back to the previous keystroke's value):
+ *   - `originDeviceId` undefined = the desktop wrote it → phones only;
+ *   - a paired device wrote it → desktop + the bus, and the SSE writer in
+ *     `MobileHttpServer` skips the frame for that same device. */
+export function broadcastSettingChanged(key: string, value: string, originDeviceId?: string): void {
+  if (originDeviceId === undefined) {
+    mobileEventBus.broadcast({ type: "setting.changed", sessionId: "", key, value });
+    return;
+  }
+  broadcastRuntimeEvent({ type: "setting.changed", sessionId: "", key, value, originDeviceId });
+}
+
+/** The project list changed (create / delete / archive / rename / pin /
+ *  group / reorder). Receivers re-fetch `project.list()` and diff. */
+export function broadcastProjectsChanged(): void {
+  broadcastRuntimeEvent({ type: "projects.changed", sessionId: "" });
+}
+
 /** A repo's git state changed (commit / stage / unstage / push / pull /
  *  discard — issued by the desktop panel OR a paired phone). Every client
  *  bumps its per-repo git-change version so its git surfaces (status panel,

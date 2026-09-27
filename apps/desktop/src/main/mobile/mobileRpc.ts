@@ -77,7 +77,13 @@ import { SessionRepo, ProjectRepo, MessageRepo, SettingRepo } from "@main/store/
 import { probeProviderHealth, providerRegistry } from "@main/providers/registry.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { log } from "@main/lib/logger.js";
-import { broadcastSessionChanged, broadcastSessionDeleted } from "@main/lib/sessionSync.js";
+import {
+  broadcastProjectsChanged,
+  broadcastSessionChanged,
+  broadcastSettingChanged,
+} from "@main/lib/sessionSync.js";
+import { deleteProjectEverywhere, deleteSessionEverywhere, SystemProjectDeleteError } from "@main/lib/rowDeletion.js";
+import { isMobileAccessibleSettingKey, isSyncedSettingKey } from "@contracts/ipc/settingsSync";
 import { createOrReuseSession } from "@main/lib/sessionStart.js";
 import {
   cancelWorkflowRun,
@@ -272,19 +278,36 @@ const HANDLERS: Record<string, RpcHandler> = {
   "terminal:list": () => ({ terminals: TerminalManager.list() }),
 
   // ── Settings (app-level prefs shared with the desktop DB) ──
+  // ⚠️ 只放行白名单(`isMobileAccessibleSettingKey`)。设置表里还有配对令牌、
+  // 中继 VPS 配置、公网 MCP 密钥、浏览器 cookie 库、MCP / LSP / 终端 shell、
+  // 工作流安全审查记录 —— 不设门的话,任何一台配过对的手机都能读走、或者改掉
+  // (往 `mobile.pairedDevices` 里种一台设备、把 `terminal.shell` 换成别的程序)。
+  // 读:不放行的键一律当"没有"(null),不报错 —— 老网页壳的 getMany 会顺手带上
+  // 设备本地键,不该因此整批失败。写:拒绝,403。
   "setting:get": (raw) => {
     const input = GetSettingSchema.parse(raw);
+    if (!isMobileAccessibleSettingKey(input.key)) return { value: null };
     return { value: SettingRepo.get(input.key) };
   },
 
-  "setting:set": (raw) => {
+  "setting:set": (raw, ctx) => {
     const input = SetSettingSchema.parse(raw);
+    if (!isMobileAccessibleSettingKey(input.key)) {
+      throw new RpcError(`setting not writable from a paired device: ${input.key}`, 403);
+    }
     SettingRepo.set(input.key, input.value);
+    // 「跟着人走」的键写完推给桌面(以及别的手机),当场生效。
+    // 不回推给发起的这台(见 broadcastSettingChanged)。
+    if (isSyncedSettingKey(input.key)) broadcastSettingChanged(input.key, input.value, ctx.device.deviceId);
   },
 
   "setting:getMany": (raw) => {
     const input = GetManySettingsSchema.parse(raw);
-    return SettingRepo.getMany(input.keys);
+    const allowed = input.keys.filter(isMobileAccessibleSettingKey);
+    const values = SettingRepo.getMany(allowed);
+    const out: Record<string, string | null> = {};
+    for (const key of input.keys) out[key] = values[key] ?? null;
+    return out;
   },
 
   // ── Session lifecycle / turns ───────────────────────────────────────────
@@ -493,36 +516,35 @@ const HANDLERS: Record<string, RpcHandler> = {
 
   "session:delete": (raw) => {
     const input = DeleteSessionSchema.parse(raw);
-    // 同桌面端:先停掉可能还在跑的图,否则卡在节点问题上的那张图永远不会结束。
-    // ⚠️ 必须排在下面 `runtimeManager.dispose` **之前** —— dispose 会清掉审批池,
-    // 那时节点还挂在 promise 上。桌面端 SESSION_DELETE 是同一条顺序。
-    cancelWorkflowRun(input.id);
-    // Release the runtime (interrupt + approval/bridge/snapshot cleanup)
-    // BEFORE the row goes — mirrors the desktop SESSION_DELETE handler.
-    runtimeManager.dispose(input.id);
-    SessionRepo.delete(input.id);
-    broadcastSessionDeleted(input.id);
+    // 与桌面 SESSION_DELETE 同一份收尾(停图 → 清待并回 → 释放运行时 → 删 → 广播),
+    // 见 `lib/rowDeletion.ts`。
+    deleteSessionEverywhere(input.id);
     return { ok: true };
   },
 
-  // ── Project row mutations (DB-only). Note: cross-client PROJECT-row sync
-  //    (a phone archiving a project while the desktop has it open) is not yet
-  //    broadcast — the desktop refreshes its list on next launch. Session-row
-  //    sync is covered by session.changed/session.deleted above. ──
+  // ── Project row mutations. Every one broadcasts `projects.changed` (same as
+  //    the desktop IPC) so the other client re-fetches its project list;
+  //    session-row sync rides session.changed/session.deleted above. ──
   "project:archive": (raw) => {
     const input = ArchiveProjectSchema.parse(raw);
     ProjectRepo.setArchived(input.id, input.archived);
     const project = ProjectRepo.get(input.id);
     if (!project) throw new RpcError(`project not found after archive: ${input.id}`, 500);
+    broadcastProjectsChanged();
     return { project };
   },
 
   "project:delete": (raw) => {
     const input = DeleteProjectSchema.parse(raw);
-    // Release every session runtime BEFORE the SQL cascade removes the rows —
-    // mirrors the desktop PROJECT_DELETE handler.
-    runtimeManager.disposeProject(input.id);
-    ProjectRepo.delete(input.id);
+    // 与桌面 PROJECT_DELETE 同一份收尾(系统项目守卫、逐会话停图 / 清待并回、
+    // 释放运行时、逐条广播会话删除 + 项目列表变动),见 `lib/rowDeletion.ts`。
+    try {
+      const { sessions, stopped } = deleteProjectEverywhere(input.id);
+      log.info(`project deleted from phone: ${input.id} (${sessions} sessions, ${stopped} runs stopped)`);
+    } catch (err) {
+      if (err instanceof SystemProjectDeleteError) throw new RpcError(err.message, 403);
+      throw err;
+    }
     return { ok: true };
   },
 
@@ -531,6 +553,7 @@ const HANDLERS: Record<string, RpcHandler> = {
     ProjectRepo.setGroup(input.id, input.group);
     const project = ProjectRepo.get(input.id);
     if (!project) throw new RpcError(`project not found after setGroup: ${input.id}`, 500);
+    broadcastProjectsChanged();
     return { project };
   },
 
@@ -539,6 +562,7 @@ const HANDLERS: Record<string, RpcHandler> = {
     ProjectRepo.setPinned(input.id, input.pinned);
     const project = ProjectRepo.get(input.id);
     if (!project) throw new RpcError(`project not found after pin: ${input.id}`, 500);
+    broadcastProjectsChanged();
     return { project };
   },
 
@@ -547,12 +571,14 @@ const HANDLERS: Record<string, RpcHandler> = {
     ProjectRepo.rename(input.id, input.name);
     const project = ProjectRepo.get(input.id);
     if (!project) throw new RpcError(`project not found after rename: ${input.id}`, 500);
+    broadcastProjectsChanged();
     return { project };
   },
 
   "project:reorder": (raw) => {
     const input = ReorderProjectsSchema.parse(raw);
     ProjectRepo.reorder(input.orderedIds);
+    broadcastProjectsChanged();
     return { ok: true };
   },
 

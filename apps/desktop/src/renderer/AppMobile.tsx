@@ -36,7 +36,7 @@ import { useSessionStore } from "./stores/sessionStore.js";
 import { useTheme } from "./lib/theme.js";
 import { useChatAppearance, useRightPanelAppearance, useThemeStyle } from "./lib/appearance.js";
 import { useI18n } from "./lib/i18n/index.js";
-import { isPaired, onAuthLost } from "./lib/webApi.js";
+import { isPaired, onAuthLost, onSseResync } from "./lib/webApi.js";
 import {
   IconMenu2,
   IconSettings,
@@ -97,6 +97,10 @@ function MobileShell() {
   useEffect(() => {
     void init();
   }, [init]);
+  // SSE 断过又连上(锁屏回来、换网络、中继隧道重连):事件总线不缓存,断开期间的
+  // 项目 / 会话列表变动和回合正文都漏了 —— 从库里补齐(见 webApi 的 onSseResync)。
+  const resyncAfterReconnect = useSessionStore((s) => s.resyncAfterReconnect);
+  useEffect(() => onSseResync(() => void resyncAfterReconnect()), [resyncAfterReconnect]);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [view, setView] = useState<MobileView>("chat");

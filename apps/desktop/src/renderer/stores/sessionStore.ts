@@ -2,6 +2,8 @@ import { create } from "zustand";
 import type { Project, Session, MessageRecord, SessionTodoItem, SessionPlanDraft, SessionBookmark } from "@contracts/session";
 import type {
   SessionRunningSnapshotEvent,
+  SettingChangedEvent,
+  ProjectsChangedEvent,
   UserMessageEvent,
   TodoUpdateEvent,
   GitChangedEvent,
@@ -1705,6 +1707,17 @@ export interface SessionState {
    *  order is not persisted (openTabs is in-memory only). */
   reorderTab: (from: number, to: number) => void;
   deleteProject: (id: string) => Promise<void>;
+  /** 重拉项目列表并与本地做差异合并:新出现的项目补上会话列表,消失的项目
+   *  连同它的会话 / 标签 / 编辑器桶一起清掉,其余行(改名 / 归档 / 置顶 / 分组 /
+   *  排序)整体换成服务端那份。`projects.changed` 事件和断线补齐都走这里。 */
+  refreshProjects: () => Promise<void>;
+  /** 手机 SSE 重连之后补齐断开期间漏掉的东西:项目列表、已加载项目的会话列表、
+   *  置顶列表,以及每个已缓存会话的消息(不在跑的立刻从库里重拉;在跑的等它这一轮
+   *  结束再拉)。只由网页壳调用(见 `AppMobile` 的 `onSseResync`)。 */
+  resyncAfterReconnect: () => Promise<void>;
+  /** 用库里最新一页替换某个会话的消息(库为准),只保留比这一页更早的、已经
+   *  上翻加载过的消息。会话正在跑时不动。 */
+  resyncSessionMessages: (sessionId: string) => Promise<void>;
   archiveProject: (id: string, archived: boolean) => Promise<void>;
   /** Assign a project to a group (left-bar "grouped" view). Pass null to
    *  remove it from any group. */
@@ -4861,6 +4874,315 @@ export function selectActiveEnvPath(s: {
  * 函数体是**逐字节从原处搬过来的**，只把自由变量换成了 `ctx.` 前缀。
  * ═══════════════════════════════════════════════════════════════ */
 
+/* ═══════════════════════════════════════════════════════════════
+ * 跨端同步(桌面 ⇄ 手机浏览器):谁来落库、设置实时套用、项目列表差异合并
+ * ═══════════════════════════════════════════════════════════════ */
+
+/**
+ * 回合里**由事件推出来的**消息(turn.done / error 收尾、turn.files、compact、
+ * rewound、中断收尾),这一端要不要写回库。
+ *
+ * 以前每个连着的客户端都写:桌面写一遍,手机再写一遍。而手机的 SSE 是会断的 ——
+ * 断过一截的手机在 turn.done 时手里是缺块的消息,没有发送锚点时还会整桶写,
+ * 直接盖掉桌面写好的完整行。现在:桌面(IPC 无损,每个事件都收得到)是**唯一**
+ * 的写者;网页壳只在桌面窗口不在时才写(macOS 关窗后主进程还活着,手机照样能
+ * 发起回合,那时没人替它写)。用户自己的动作(发出去的那条消息、编辑重发的截断)
+ * 不受影响,仍由发起端写。
+ *
+ * 默认 false = 旧行为(网页壳自己写):老主进程的快照不带 `desktopAttached`,
+ * Node 里跑的冒烟(`isElectron` 为 false)也落在这一档。每次 SSE (重)连上的
+ * 那帧 `session.runningSnapshot` 会更新它。
+ */
+let desktopWritesTurns = false;
+
+function persistsTurnContent(): boolean {
+  return isElectron || !desktopWritesTurns;
+}
+
+/** 重连时正在跑的会话:等它这一轮的 turn.done 到了再从库里重拉(见
+ *  `resyncAfterReconnect`)。等一小会儿,给桌面把这一轮写进库的时间。 */
+const resyncAfterTurn = new Set<string>();
+const RESYNC_AFTER_TURN_DELAY_MS = 1500;
+
+/** `ui.customCommandsByProject` 的 JSON → 校验过的桶。坏条目丢掉,坏 JSON 当空。 */
+function parseCustomCommandsByProject(raw: string | null): Record<string, CustomCommand[]> {
+  if (!raw) return {};
+  let obj: unknown;
+  try {
+    obj = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return {};
+  const validated: Record<string, CustomCommand[]> = {};
+  for (const [pid, rawList] of Object.entries(obj as Record<string, unknown>)) {
+    if (!Array.isArray(rawList)) continue;
+    validated[pid] = rawList.filter(
+      (c): c is CustomCommand =>
+        !!c &&
+        typeof c === "object" &&
+        typeof c.id === "string" &&
+        typeof c.name === "string" &&
+        typeof c.command === "string",
+    );
+  }
+  return validated;
+}
+
+/** JSON 对象(字符串值)→ Record;坏 JSON / 非对象 → null(调用方保持原值)。 */
+function parseStringRecord(raw: string): Record<string, string> | null {
+  const obj: unknown = JSON.parse(raw);
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    if (typeof v === "string") out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * 另一端改了一个「跟着人走」的设置(`setting.changed`,键表见
+ * `@contracts/ipc/settingsSync` 的 `SYNCED_SETTING_KEYS`),在这里套用。
+ *
+ * 只动 store,**不再写回设置表**(库里已经是这个值了)。解析 / 夹取规则与
+ * `init` / `initDeferred` 读库时一致 —— 两边任何一处改了规则,另一处也要改。
+ */
+function applySyncedSetting(set: IngestCtx["set"], key: string, value: string): void {
+  try {
+    switch (key) {
+      case UI_LOCALE_SETTING_KEY:
+        if (value === "zh" || value === "en") {
+          set({ locale: value });
+          if (typeof document !== "undefined") {
+            document.documentElement.lang = value === "en" ? "en" : "zh-CN";
+          }
+        }
+        return;
+      case THEME_STYLE_SETTING_KEY:
+        if (value === "classic" || value === "sketch") set({ themeStyle: value });
+        return;
+      case UI_ACCENT_COLOR_SETTING_KEY:
+        set({ accentColor: RGB_TRIPLET_RE.test(value) ? value : null });
+        return;
+      case UI_USER_MSG_COLOR_SETTING_KEY:
+        set({ userMessageColor: RGB_TRIPLET_RE.test(value) ? value : null });
+        return;
+      case UI_EDITOR_THEME_SETTING_KEY:
+        set({ editorTheme: parseEditorThemeChoice(value) });
+        return;
+      case AGENT_OUTPUT_STYLE_SETTING_KEY:
+        set({ outputStyle: value || null });
+        return;
+      case UI_TITLE_GEN_ENABLED_SETTING_KEY:
+        set({ titleGenEnabled: value === "on" });
+        return;
+      case UI_TITLE_GEN_MODEL_SETTING_KEY:
+        set({ titleGenModel: value || null });
+        return;
+      case UI_COMMIT_GEN_MODEL_SETTING_KEY:
+        set({ commitGenModel: value || null });
+        return;
+      case UI_COMMIT_GEN_PROMPT_SETTING_KEY:
+        set({ commitGenPrompt: value });
+        return;
+      case UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY:
+        set({ conflictResolveModel: value || null });
+        return;
+      case WORKFLOW_MAX_PARALLEL_SETTING_KEY: {
+        const n = Number(value);
+        if (value !== "" && Number.isFinite(n)) set({ workflowMaxParallel: clampWorkflowMaxParallel(n) });
+        return;
+      }
+      case UI_PASTE_TAG_THRESHOLD_CHARS_SETTING_KEY: {
+        const n = Number(value);
+        if (value !== "" && Number.isFinite(n)) set({ pasteTagThresholdChars: clampPasteTagThresholdChars(n) });
+        return;
+      }
+      case PROJECT_COLORS_SETTING_KEY: {
+        const rec = value ? parseStringRecord(value) : {};
+        if (rec) set({ projectColors: rec });
+        return;
+      }
+      case WORKTREE_NAMES_SETTING_KEY: {
+        const rec = value ? parseStringRecord(value) : {};
+        if (rec) set({ worktreeNames: rec });
+        return;
+      }
+      case UI_PROJECT_GROUPS_SETTING_KEY: {
+        const parsed: unknown = value ? JSON.parse(value) : {};
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          set({ groupMeta: parsed as ProjectGroupsMeta });
+        }
+        return;
+      }
+      case UI_PROJECT_VIEW_SETTING_KEY:
+        if (value === "flat" || value === "grouped") set({ projectView: value });
+        return;
+      case UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY:
+        set({ customCommandsByProject: parseCustomCommandsByProject(value) });
+        return;
+      case AUTO_ARCHIVE_SETTING_KEY:
+        if (value) set({ autoArchiveConfig: parseAutoArchiveConfig(value) });
+        return;
+      case UI_SHORTCUTS_SETTING_KEY: {
+        if (!value) {
+          set({ shortcutOverrides: {} });
+          return;
+        }
+        const parsed = ShortcutBindingsSchema.safeParse(JSON.parse(value));
+        if (parsed.success) set({ shortcutOverrides: parsed.data });
+        return;
+      }
+      case UI_GESTURES_SETTING_KEY: {
+        if (!value) return;
+        const parsed = GestureSettingsSchema.safeParse(JSON.parse(value));
+        if (parsed.success) set({ gestureSettings: parsed.data });
+        return;
+      }
+      case SESSION_WORKTREE_DEFAULT_SETTING_KEY:
+        if (value === "local" || value === "wt-detached" || value === "wt-branch") {
+          set({ envChoice: value });
+        }
+        return;
+      default:
+        // 不在同步表里的键主进程根本不会广播;真收到了(新旧版本错配)就忽略。
+        return;
+    }
+  } catch (err) {
+    console.error(`apply(setting.changed ${key}) failed:`, err);
+  }
+}
+
+/**
+ * 从本地状态里摘掉一个项目:它的会话桶 / 归档桶 / 分页计数、IDE 编辑器桶、
+ * git diff、前进后退历史、属于它的标签;它是当前项目时换到下一个项目和它最新的
+ * 会话。本地 `deleteProject` 与「别的端删了项目」(`refreshProjects`)共用。
+ * 幂等:项目已经不在时各处 filter / delete 都是空操作。
+ */
+function removeProjectFromState(s: SessionState, id: string): Partial<SessionState> {
+  const projects = s.projects.filter((p) => p.id !== id);
+  const sessionsByProject = { ...s.sessionsByProject };
+  const archivedByProject = { ...s.archivedSessionsByProject };
+  const totalByProject = { ...s.sessionsTotalByProject };
+  const hasMoreByProject = { ...s.sessionsHasMoreByProject };
+  // Capture the deleted project's sessionIds BEFORE dropping the entries
+  // so we can scrub them from the tab strip — both caches may hold rows.
+  const removedSessionIds = new Set([
+    ...(sessionsByProject[id] ?? []).map((sess) => sess.id),
+    ...(archivedByProject[id] ?? []).map((sess) => sess.id),
+  ]);
+  delete sessionsByProject[id];
+  delete archivedByProject[id];
+  delete totalByProject[id];
+  delete hasMoreByProject[id];
+  // Scrub the deleted project's IDE editor buckets (open files / active
+  // file / view mode / expanded dirs) so they don't linger as orphans.
+  const ideOpenFilesByProject = { ...s.ideOpenFilesByProject };
+  const ideActiveFileByProject = { ...s.ideActiveFileByProject };
+  const ideFileViewModeByProject = { ...s.ideFileViewModeByProject };
+  const ideExpandedDirsByProject = { ...s.ideExpandedDirsByProject };
+  const gitDiffByProject = { ...s.gitDiffByProject };
+  const navBackByProject = { ...s.navBackByProject };
+  const navForwardByProject = { ...s.navForwardByProject };
+  delete ideOpenFilesByProject[id];
+  delete ideActiveFileByProject[id];
+  delete ideFileViewModeByProject[id];
+  delete ideExpandedDirsByProject[id];
+  delete gitDiffByProject[id];
+  delete navBackByProject[id];
+  delete navForwardByProject[id];
+  const wasActive = s.activeProjectId === id;
+  if (!wasActive) {
+    // Still need to scrub any open tabs that belonged to the deleted
+    // project (tabs the user may have opened earlier in a different
+    // active project).
+    const openTabs = s.openTabs.filter((sid) => !removedSessionIds.has(sid));
+    const activeSessionId = openTabs.includes(s.activeSessionId ?? "")
+      ? s.activeSessionId
+      : (openTabs[0] ?? null);
+    return {
+      projects, sessionsByProject, archivedSessionsByProject: archivedByProject,
+      sessionsTotalByProject: totalByProject, sessionsHasMoreByProject: hasMoreByProject,
+      ideOpenFilesByProject, ideActiveFileByProject, ideFileViewModeByProject, ideExpandedDirsByProject, gitDiffByProject,
+      navBackByProject, navForwardByProject,
+      openTabs, activeSessionId,
+    };
+  }
+  // Pick a new active project + its latest session.
+  const next = projects.find((p) => !p.archived) ?? projects[0];
+  const nextSessions = next ? (sessionsByProject[next.id] ?? []) : [];
+  const nextSession = nextSessions.find((sess) => !sess.archived);
+  // Tabs that belonged to other (still-living) projects survive; tabs
+  // for the deleted project are gone.
+  const openTabs = s.openTabs.filter((sid) => !removedSessionIds.has(sid));
+  return {
+    projects,
+    sessionsByProject,
+    archivedSessionsByProject: archivedByProject,
+    sessionsTotalByProject: totalByProject,
+    sessionsHasMoreByProject: hasMoreByProject,
+    ideOpenFilesByProject, ideActiveFileByProject, ideFileViewModeByProject, ideExpandedDirsByProject, gitDiffByProject,
+    navBackByProject, navForwardByProject,
+    activeProjectId: next?.id ?? null,
+    sessions: nextSessions,
+    activeSessionId: nextSession?.id ?? null,
+    openTabs: nextSession ? [nextSession.id] : openTabs,
+  };
+}
+
+/** 一批项目的会话列表首屏(活动页 + worktree 页 + 归档桶)—— `init` 与跨端同步
+ *  共用。单个项目失败不影响别的项目(它的桶留空,下次选中时再拉)。 */
+async function fetchProjectSessionBuckets(projects: readonly Project[]): Promise<{
+  byProject: Record<string, Session[]>;
+  hasMoreByProject: Record<string, boolean>;
+  totalByProject: Record<string, number>;
+  archivedByProject: Record<string, Session[]>;
+}> {
+  const byProject: Record<string, Session[]> = {};
+  const hasMoreByProject: Record<string, boolean> = {};
+  const totalByProject: Record<string, number> = {};
+  const archivedByProject: Record<string, Session[]> = {};
+  await Promise.all(
+    projects.map(async (p) => {
+      try {
+        const [active, worktreePage] = await Promise.all([
+          api.project.sessions({
+            projectId: p.id,
+            limit: SESSION_PAGE_SIZE,
+            offset: 0,
+            archived: false,
+            worktree: "exclude",
+          }),
+          api.project.sessions({
+            projectId: p.id,
+            archived: false,
+            worktree: "only",
+            limit: WORKTREE_SESSIONS_FETCH_LIMIT,
+          }),
+        ]);
+        byProject[p.id] = [...active.sessions, ...worktreePage.sessions];
+        hasMoreByProject[p.id] = active.hasMore;
+        totalByProject[p.id] = active.total;
+        const archived = await api.project.sessions({ projectId: p.id, archived: true });
+        if (archived.sessions.length > 0) archivedByProject[p.id] = archived.sessions;
+      } catch (err) {
+        console.error(`project.sessions(${p.id}) failed:`, err);
+      }
+    }),
+  );
+  return { byProject, hasMoreByProject, totalByProject, archivedByProject };
+}
+
+/** `e.type === "setting.changed"` */
+function reduceSettingChanged(ctx: IngestCtx, e: SettingChangedEvent): void {
+  applySyncedSetting(ctx.set, e.key, e.value);
+}
+
+/** `e.type === "projects.changed"` */
+function reduceProjectsChanged(ctx: IngestCtx, _e: ProjectsChangedEvent): void {
+  void ctx.get().refreshProjects();
+}
+
 /** 归约一个事件时用得着的那几样。**故意做窄** —— 只放这些分支真正用到的，
  *  多一样都会让「这个归约函数能用什么」变得说不清。 */
 interface IngestCtx {
@@ -4904,6 +5226,8 @@ function commandNameForLocalOutput(list: ChatMessage[]): string {
 }
 
 function reduceSessionRunningSnapshot(ctx: IngestCtx, e: SessionRunningSnapshotEvent): void {
+// 顺带更新「回合消息谁来落库」(见 persistsTurnContent)。
+desktopWritesTurns = e.desktopAttached === true;
 const running = new Set(e.running);
       ctx.set((s) => {
         const next: Record<string, boolean> = {};
@@ -5465,7 +5789,7 @@ const changedMessages: ChatMessage[] = [];
       // late turn.files never gets a turn.done persist pass. IPC ordering
       // preserves "last write wins" for the normal path (this lands after
       // the turn.done persist, which already covers the card).
-      if (changedMessages.length > 0) {
+      if (changedMessages.length > 0 && persistsTurnContent()) {
         void api.session.upsertMessages({ sessionId: ctx.sid, messages: toRecords(ctx.sid, changedMessages) });
       }
       return;
@@ -5501,7 +5825,7 @@ ctx.set((s) => {
       });
       // Persist so the card survives reload. Incremental upsert: only the
       // trailing assistant message (or a freshly-appended turn opener) changed.
-      {
+      if (persistsTurnContent()) {
         const list = ctx.get().messagesBySession[ctx.sid];
         if (list && list.length > 0) {
           const last = list[list.length - 1];
@@ -5709,7 +6033,7 @@ let rewoundLatest = false;
       // Persist the rewound state so the marker survives session reopen.
       // (The card is kept, so this is a mutation, not a removal.) Incremental
       // upsert: only the rows whose blocks actually changed need writing.
-      if (rewoundChanged.length > 0) {
+      if (rewoundChanged.length > 0 && persistsTurnContent()) {
         void api.session.upsertMessages({ sessionId: ctx.sid, messages: toRecords(ctx.sid, rewoundChanged) });
       }
       return;
@@ -6219,43 +6543,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // so a project heavy with worktree threads still shows its first 5 local
     // rows without pressing "load more". The archived bin is also pre-fetched
     // (grouped by project) so the bottom section is ready.
-    const byProject: Record<string, Session[]> = {};
-    const hasMoreByProject: Record<string, boolean> = {};
-    const totalByProject: Record<string, number> = {};
-    const archivedByProject: Record<string, Session[]> = {};
-    try {
-      await Promise.all(
-        projects.map(async (p) => {
-          const [active, worktreePage] = await Promise.all([
-            api.project.sessions({
-              projectId: p.id,
-              limit: SESSION_PAGE_SIZE,
-              offset: 0,
-              archived: false,
-              worktree: "exclude",
-            }),
-            api.project.sessions({
-              projectId: p.id,
-              archived: false,
-              worktree: "only",
-              limit: WORKTREE_SESSIONS_FETCH_LIMIT,
-            }),
-          ]);
-          byProject[p.id] = [...active.sessions, ...worktreePage.sessions];
-          hasMoreByProject[p.id] = active.hasMore;
-          totalByProject[p.id] = active.total;
-          const archived = await api.project.sessions({
-            projectId: p.id,
-            archived: true,
-          });
-          if (archived.sessions.length > 0) {
-            archivedByProject[p.id] = archived.sessions;
-          }
-        }),
-      );
-    } catch (err) {
-      console.error("project.sessions failed:", err);
-    }
+    const { byProject, hasMoreByProject, totalByProject, archivedByProject } =
+      await fetchProjectSessionBuckets(projects);
 
     // Pick the first non-archived project (fall back to the first project) and
     // its latest non-archived session as the landing target.
@@ -6600,23 +6889,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         ideExpandedDirsByProject: dirsByProject,
       });
       // Per-project terminal quick-commands.
-      {
-        const rawMap = parseBucket<unknown>(commandsByProjectRaw);
-        const validated: Record<string, CustomCommand[]> = {};
-        for (const [pid, rawList] of Object.entries(rawMap)) {
-          if (!Array.isArray(rawList)) continue;
-          const valid = rawList.filter(
-            (c): c is CustomCommand =>
-              !!c &&
-              typeof c === "object" &&
-              typeof c.id === "string" &&
-              typeof c.name === "string" &&
-              typeof c.command === "string",
-          );
-          validated[pid] = valid;
-        }
-        set({ customCommandsByProject: validated });
-      }
+      set({ customCommandsByProject: parseCustomCommandsByProject(commandsByProjectRaw) });
     } catch (err) {
       console.error("apply(ide deferred) failed:", err);
     }
@@ -6667,8 +6940,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const name = path.replace(/\\/g, "/").split("/").pop() ?? path;
     const { project } = await api.project.create({ name, path });
     set((s) => ({
-      projects: [...s.projects, project],
-      sessionsByProject: { ...s.sessionsByProject, [project.id]: [] },
+      // 主进程的 projects.changed 可能比这里先到、refreshProjects 已经把它加进来了
+      // —— 去重,不然左栏会出现两行同一个项目。
+      projects: [...s.projects.filter((p) => p.id !== project.id), project],
+      sessionsByProject: { ...s.sessionsByProject, [project.id]: s.sessionsByProject[project.id] ?? [] },
       sessionsHasMoreByProject: { ...s.sessionsHasMoreByProject, [project.id]: false },
       sessionsTotalByProject: { ...s.sessionsTotalByProject, [project.id]: 0 },
       activeProjectId: project.id,
@@ -7457,74 +7732,152 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         if (p !== displayed) disposeModel(p);
       }
     }
+    // 状态手术与「别的端删了项目」共用一份(removeProjectFromState)。主进程的
+    // projects.changed 可能比这里先到、已经摘过一次 —— 那样这里是空操作。
+    set((s) => removeProjectFromState(s, id));
+  },
+
+  refreshProjects: async () => {
+    let projects: Project[];
+    try {
+      ({ projects } = await api.project.list());
+    } catch (err) {
+      console.error("project.list(refresh) failed:", err);
+      return;
+    }
+    const known = new Set(get().projects.map((p) => p.id));
+    const added = projects.filter((p) => !known.has(p.id));
+    const buckets = added.length > 0 ? await fetchProjectSessionBuckets(added) : null;
+    const serverIds = new Set(projects.map((p) => p.id));
     set((s) => {
-      const projects = s.projects.filter((p) => p.id !== id);
-      const sessionsByProject = { ...s.sessionsByProject };
-      const archivedByProject = { ...s.archivedSessionsByProject };
-      const totalByProject = { ...s.sessionsTotalByProject };
-      const hasMoreByProject = { ...s.sessionsHasMoreByProject };
-      // Capture the deleted project's sessionIds BEFORE dropping the entries
-      // so we can scrub them from the tab strip — both caches may hold rows.
-      const removedSessionIds = new Set([
-        ...(sessionsByProject[id] ?? []).map((sess) => sess.id),
-        ...(archivedByProject[id] ?? []).map((sess) => sess.id),
-      ]);
-      delete sessionsByProject[id];
-      delete archivedByProject[id];
-      delete totalByProject[id];
-      delete hasMoreByProject[id];
-      // Scrub the deleted project's IDE editor buckets (open files / active
-      // file / view mode / expanded dirs) so they don't linger as orphans.
-      const ideOpenFilesByProject = { ...s.ideOpenFilesByProject };
-      const ideActiveFileByProject = { ...s.ideActiveFileByProject };
-      const ideFileViewModeByProject = { ...s.ideFileViewModeByProject };
-      const ideExpandedDirsByProject = { ...s.ideExpandedDirsByProject };
-      const gitDiffByProject = { ...s.gitDiffByProject };
-      const navBackByProject = { ...s.navBackByProject };
-      const navForwardByProject = { ...s.navForwardByProject };
-      delete ideOpenFilesByProject[id];
-      delete ideActiveFileByProject[id];
-      delete ideFileViewModeByProject[id];
-      delete ideExpandedDirsByProject[id];
-      delete gitDiffByProject[id];
-      delete navBackByProject[id];
-      delete navForwardByProject[id];
-      const wasActive = s.activeProjectId === id;
-      if (!wasActive) {
-        // Still need to scrub any open tabs that belonged to the deleted
-        // project (tabs the user may have opened earlier in a different
-        // active project).
-        const openTabs = s.openTabs.filter((sid) => !removedSessionIds.has(sid));
-        const activeSessionId = openTabs.includes(s.activeSessionId ?? "")
-          ? s.activeSessionId
-          : (openTabs[0] ?? null);
-        return {
-          projects, sessionsByProject, archivedSessionsByProject: archivedByProject,
-          sessionsTotalByProject: totalByProject, sessionsHasMoreByProject: hasMoreByProject,
-          ideOpenFilesByProject, ideActiveFileByProject, ideFileViewModeByProject, ideExpandedDirsByProject, gitDiffByProject,
-          navBackByProject, navForwardByProject,
-          openTabs, activeSessionId,
-        };
+      // 消失的项目:和本地删除同一套清理(标签、桶、当前项目回落)。
+      let cur: SessionState = s;
+      for (const p of s.projects) {
+        if (!serverIds.has(p.id)) cur = { ...cur, ...removeProjectFromState(cur, p.id) };
       }
-      // Pick a new active project + its latest session.
-      const next = projects.find((p) => !p.archived) ?? projects[0];
-      const nextSessions = next ? (sessionsByProject[next.id] ?? []) : [];
-      const nextSession = nextSessions.find((sess) => !sess.archived);
-      // Tabs that belonged to other (still-living) projects survive; tabs
-      // for the deleted project are gone.
-      const openTabs = s.openTabs.filter((sid) => !removedSessionIds.has(sid));
-      return {
+      const patch: Partial<SessionState> = {
+        ...(cur === s ? {} : cur),
+        // 行本身(名字 / 归档 / 置顶 / 分组 / 排序)以服务端为准。
         projects,
+      };
+      if (buckets) {
+        const sessionsByProject = { ...cur.sessionsByProject };
+        const hasMore = { ...cur.sessionsHasMoreByProject };
+        const total = { ...cur.sessionsTotalByProject };
+        const archived = { ...cur.archivedSessionsByProject };
+        for (const p of added) {
+          // 本地 create 已经先一步建好桶的(本端发起的新建)不覆盖。
+          if (sessionsByProject[p.id] !== undefined) continue;
+          sessionsByProject[p.id] = buckets.byProject[p.id] ?? [];
+          hasMore[p.id] = buckets.hasMoreByProject[p.id] ?? false;
+          total[p.id] = buckets.totalByProject[p.id] ?? 0;
+          if (buckets.archivedByProject[p.id]) archived[p.id] = buckets.archivedByProject[p.id];
+        }
+        patch.sessionsByProject = sessionsByProject;
+        patch.sessionsHasMoreByProject = hasMore;
+        patch.sessionsTotalByProject = total;
+        patch.archivedSessionsByProject = archived;
+      }
+      // 当前项目本身被别的端删了 → removeProjectFromState 已经挑好下一个;但
+      // 如果本地原来一个项目都没有(首次在另一端建项目),落到新项目上。
+      const activeProjectId = patch.activeProjectId !== undefined ? patch.activeProjectId : cur.activeProjectId;
+      if (activeProjectId == null && projects.length > 0) {
+        const landing = projects.find((p) => !p.archived) ?? projects[0];
+        patch.activeProjectId = landing.id;
+        patch.sessions = (patch.sessionsByProject ?? cur.sessionsByProject)[landing.id] ?? [];
+      }
+      patch.streamDirty = true;
+      return patch;
+    });
+  },
+
+  resyncAfterReconnect: async () => {
+    await get().refreshProjects();
+    // 已加载过会话列表的项目:首屏整页换成库里的(断开期间别的端新建 / 删除 /
+    // 改名的会话)。上翻加载过的更多页会收回到首屏 —— 用户再点「更多」即可。
+    const loaded = get().projects.filter((p) => get().sessionsByProject[p.id] !== undefined);
+    const [buckets, pinned] = await Promise.all([
+      fetchProjectSessionBuckets(loaded),
+      api.session.listPinned().catch((err: unknown) => {
+        console.error("session.listPinned(resync) failed:", err);
+        return null;
+      }),
+    ]);
+    set((s) => {
+      const sessionsByProject = { ...s.sessionsByProject };
+      const hasMore = { ...s.sessionsHasMoreByProject };
+      const total = { ...s.sessionsTotalByProject };
+      const archived = { ...s.archivedSessionsByProject };
+      for (const p of loaded) {
+        const fresh = buckets.byProject[p.id];
+        if (!fresh) continue; // 这个项目拉失败了 —— 保留旧的
+        sessionsByProject[p.id] = fresh;
+        hasMore[p.id] = buckets.hasMoreByProject[p.id] ?? false;
+        total[p.id] = buckets.totalByProject[p.id] ?? 0;
+        if (buckets.archivedByProject[p.id]) archived[p.id] = buckets.archivedByProject[p.id];
+        else delete archived[p.id];
+      }
+      return {
         sessionsByProject,
-        archivedSessionsByProject: archivedByProject,
-        sessionsTotalByProject: totalByProject,
-        sessionsHasMoreByProject: hasMoreByProject,
-        ideOpenFilesByProject, ideActiveFileByProject, ideFileViewModeByProject, ideExpandedDirsByProject, gitDiffByProject,
-        navBackByProject, navForwardByProject,
-        activeProjectId: next?.id ?? null,
-        sessions: nextSessions,
-        activeSessionId: nextSession?.id ?? null,
-        openTabs: nextSession ? [nextSession.id] : openTabs,
+        sessionsHasMoreByProject: hasMore,
+        sessionsTotalByProject: total,
+        archivedSessionsByProject: archived,
+        sessions: s.activeProjectId ? (sessionsByProject[s.activeProjectId] ?? s.sessions) : s.sessions,
+        ...(pinned ? { pinnedSessions: pinned.sessions } : {}),
+        streamDirty: true,
+      };
+    });
+    // 消息:每个有缓存的会话都可能缺了断开期间的正文。running 集合已经被重连
+    // 那帧快照校正过。
+    const st = get();
+    const sids = Object.keys(st.messagesBySession);
+    await Promise.all(
+      sids.map(async (sid) => {
+        if (st.runningBySession[sid]) {
+          resyncAfterTurn.add(sid);
+          return;
+        }
+        await get().resyncSessionMessages(sid);
+      }),
+    );
+  },
+
+  resyncSessionMessages: async (sessionId) => {
+    if (get().runningBySession[sessionId]) return;
+    let fetched: ChatMessage[];
+    let hasMore: boolean;
+    try {
+      const res = await api.session.messages({ sessionId, limit: MESSAGE_PAGE_SIZE });
+      fetched = fromRecords(res.messages);
+      hasMore = res.hasMore;
+    } catch (err) {
+      console.error("session.messages(resync) failed:", err);
+      return;
+    }
+    set((s) => {
+      // 拉的这段时间里新一轮开始了 —— 它的正文正在流进来,别动。
+      if (s.runningBySession[sessionId]) return s;
+      const live = s.messagesBySession[sessionId];
+      if (!live) return s; // 会话已被关掉 / 删掉
+      // 库里一条都没有:多半是这一端自己写的还没到(或根本没人写)—— 宁可留着
+      // 手里的,也不清空。
+      if (fetched.length === 0) return s;
+      const head = fetched[0];
+      const ids = new Set(fetched.map((m) => m.id));
+      // 只保留比这一页更早、之前上翻加载过的;这一页的时间窗里以库为准(断开期间
+      // 缺的块、重复的客户端 id 都随之消失)。
+      const older = live.filter(
+        (m) =>
+          !ids.has(m.id) &&
+          (m.createdAt < head.createdAt || (m.createdAt === head.createdAt && m.id < head.id)),
+      );
+      return {
+        messagesBySession: { ...s.messagesBySession, [sessionId]: [...older, ...fetched] },
+        hasMoreMessagesBySession: {
+          ...s.hasMoreMessagesBySession,
+          [sessionId]: older.length > 0 ? (s.hasMoreMessagesBySession[sessionId] ?? hasMore) : hasMore,
+        },
+        historyLoadedBySession: { ...s.historyLoadedBySession, [sessionId]: true },
       };
     });
   },
@@ -8402,8 +8755,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // 只存这一轮(按发送时的锚点过滤),不是整份快照:长会话整份存是 O(N),而这里
     // 和终态那条持久化路径是同一个道理。锚点可能缺失(恢复出来的、或没走 sendPrompt
     // 的一轮),那就退化成整份存 —— 宁可多写一次,也不能让记录丢掉。
+    //
+    // 网页壳且桌面窗口开着时不写:桌面没点停止,它会照常收到迟到的
+    // turn.done{interrupted} 并把这一轮写进库(见 persistsTurnContent)。
     const snapshot = get().messagesBySession[sessionId];
-    if (snapshot && snapshot.length > 0) {
+    if (snapshot && snapshot.length > 0 && persistsTurnContent()) {
       const tail =
         turnStartAt != null
           ? snapshot.filter(
@@ -8596,6 +8952,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // "" (envelope compatibility, see SessionRunningSnapshotEvent).
     if (e.type === "git.changed") {
       reduceGitChanged(ctx, e);
+      return;
+    }
+    // setting.changed / projects.changed — cross-client sync of account-level
+    // prefs and the project list (see @contracts/ipc/settingsSync). No
+    // sessionId semantics (""), same as git.changed.
+    if (e.type === "setting.changed") {
+      reduceSettingChanged(ctx, e);
+      return;
+    }
+    if (e.type === "projects.changed") {
+      reduceProjectsChanged(ctx, e);
       return;
     }
     // session.changed — cross-client list sync (a phone or another client
@@ -9215,7 +9582,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // every turn — the cost is O(this turn) regardless of session length.
     if (e.type === "turn.done" || e.type === "error") {
       const snapshot = get().messagesBySession[sid];
-      if (snapshot) {
+      if (snapshot && persistsTurnContent()) {
         // Identify this turn's messages by the captured send-time anchor.
         // Falls back to full saveMessages when the anchor is missing (e.g. a
         // turn done arrived for a session we never started, or resumed mid-
@@ -9234,6 +9601,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // no-op when still busy (e.g. backgrounded subagents still running) or
       // when the queue is empty.
       get().drainPromptQueueIfIdle(sid);
+      // 重连时这一轮还在跑、断开期间漏了正文 —— 现在它收尾了,等桌面写完库再
+      // 整页重拉(见 resyncAfterReconnect)。
+      if (e.type === "turn.done" && resyncAfterTurn.delete(sid)) {
+        setTimeout(() => void get().resyncSessionMessages(sid), RESYNC_AFTER_TURN_DELAY_MS);
+      }
     }
   },
 

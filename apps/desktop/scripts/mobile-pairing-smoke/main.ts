@@ -737,6 +737,126 @@ console.log("\nSSE");
   await new Promise((r) => setTimeout(r, 50));
 }
 
+/* ───────────────────── 7b. 设置:白名单 + 跨端同步 ─────────────────────
+ *
+ * 手机的 `setting:*` 只放行白名单(`isMobileAccessibleSettingKey`):设置表里除了
+ * 设备表,还有中继 VPS 配置、公网 MCP 密钥、终端 shell、工作流安全审查记录……
+ * 放行的「跟着人走」的键写完要推给桌面和别的手机,但**不回推给发起的那台**。
+ */
+
+console.log("\n设置白名单 / 同步");
+
+{
+  const windowStub = (await import("@main/window.js")) as unknown as {
+    sent: Array<{ channel: string; args: unknown[] }>;
+    resetSent: () => void;
+    __setDesktopAttached: (v: boolean) => void;
+  };
+  const pairDevice = async (name: string): Promise<string> => {
+    const st = pairingManager.startPairing(ENDPOINT, { force: true });
+    const r = await req("/api/pair/verify", { method: "POST", body: { nonce: st.nonce, code: st.code, deviceName: name } });
+    const tok = (JSON.parse(r.text) as { deviceToken: string }).deviceToken;
+    issuedSecrets.push(tok);
+    return tok;
+  };
+  const rpcAs = (tok: string, method: string, input: unknown) =>
+    req("/api/rpc", { method: "POST", token: tok, body: { method, input } });
+
+  const tA = await pairDevice("同步-甲");
+  const tB = await pairDevice("同步-乙");
+
+  // ── 读:不放行的键一律当"没有" ──
+  SettingRepo.set("relay.vpsConfig", "SECRET_VPS");
+  SettingRepo.set("ui.locale", "en");
+  {
+    const r = await rpcAs(tA, "setting:get", { key: "relay.vpsConfig" });
+    eq("setting:get 中继配置 → 200", r.status, 200);
+    check("但读不到内容(null)", !r.text.includes("SECRET_VPS") && r.text.includes("null"), r.text.slice(0, 200));
+    const many = await rpcAs(tA, "setting:getMany", { keys: ["ui.locale", "relay.vpsConfig"] });
+    eq("setting:getMany 混着要 → 200", many.status, 200);
+    const result = (JSON.parse(many.text) as { result: Record<string, string | null> }).result;
+    eq("放行的键照常拿到", result["ui.locale"], "en");
+    eq("不放行的键是 null", result["relay.vpsConfig"], null);
+  }
+
+  // ── 写:不放行的键 403,且真的没写进去 ──
+  SettingRepo.set("terminal.shell", "bash");
+  {
+    const r = await rpcAs(tA, "setting:set", { key: "terminal.shell", value: "evil.exe" });
+    eq("setting:set terminal.shell → 403", r.status, 403);
+    eq("终端 shell 没被改", SettingRepo.get("terminal.shell"), "bash");
+    const rv = await rpcAs(tA, "setting:set", { key: "workflow.review.v1.wf_x", value: "{}" });
+    eq("setting:set 工作流审查记录 → 403(workflow. 前缀不整体放行)", rv.status, 403);
+    eq("审查记录没被伪造", SettingRepo.get("workflow.review.v1.wf_x"), null);
+    const np = await rpcAs(tA, "setting:set", { key: "workflow.nodePrefs.wf_x", value: "{}" });
+    eq("setting:set workflow.nodePrefs.<id> → 200", np.status, 200);
+    const dl = await rpcAs(tA, "setting:set", { key: "ui.displayMode", value: "tabs" });
+    eq("设备本地键(网页壳本不该发来)→ 403", dl.status, 403);
+  }
+
+  // ── 同步:甲写强调色 → 桌面和乙收到,甲收不到自己的回声 ──
+  windowStub.__setDesktopAttached(true);
+  const open = async (tok: string) => {
+    const ctrl = new AbortController();
+    const res = await fetch(`${BASE}/api/events?token=${encodeURIComponent(tok)}`, { signal: ctrl.signal });
+    const reader = res.body!.getReader();
+    const dec = new TextDecoder();
+    const state = { buf: "" };
+    const until = async (needle: string, ms = 3000): Promise<boolean> => {
+      const deadline = Date.now() + ms;
+      while (Date.now() < deadline && !state.buf.includes(needle)) {
+        const r = await Promise.race([
+          reader.read(),
+          new Promise<{ value: undefined; done: true }>((resolve) =>
+            setTimeout(() => resolve({ value: undefined, done: true }), Math.max(1, deadline - Date.now())),
+          ),
+        ]);
+        if (r.done) break;
+        state.buf += dec.decode(r.value, { stream: true });
+      }
+      return state.buf.includes(needle);
+    };
+    return { ctrl, state, until };
+  };
+  const sa = await open(tA);
+  const sb = await open(tB);
+  check("甲的快照到了", await sa.until("runningSnapshot"));
+  check("乙的快照到了", await sb.until("runningSnapshot"));
+  check("快照带 desktopAttached:true(桌面窗口在)", sa.state.buf.includes('"desktopAttached":true'), sa.state.buf.slice(0, 300));
+
+  windowStub.resetSent();
+  const w = await rpcAs(tA, "setting:set", { key: "ui.accentColor", value: "10 20 30" });
+  eq("甲写强调色 → 200", w.status, 200);
+  check("乙收到 setting.changed", await sb.until('"setting.changed"'), sb.state.buf.slice(-300));
+  check("乙收到的是那个值", sb.state.buf.includes("10 20 30"));
+  const toDesktop = windowStub.sent.filter((x) => JSON.stringify(x.args).includes('"setting.changed"'));
+  eq("桌面渲染端也收到一条", toDesktop.length, 1);
+  // 甲:发一条探针事件,读到探针为止 —— 探针之前不许出现 setting.changed。
+  mobileEventBus.broadcast({ type: "session.title", sessionId: "probe", title: "探针" } as never);
+  check("甲读到了探针", await sa.until("探针"));
+  check("甲没收到自己的回声", !sa.state.buf.includes('"setting.changed"'), sa.state.buf.slice(-300));
+
+  // 非同步键(共享但不实时推)不广播。
+  windowStub.resetSent();
+  await rpcAs(tA, "setting:set", { key: "ui.composerModel", value: "{}" });
+  mobileEventBus.broadcast({ type: "session.title", sessionId: "probe2", title: "探针二" } as never);
+  check("乙读到探针二", await sb.until("探针二"));
+  check("ui.composerModel 不广播", (sb.state.buf.match(/"setting\.changed"/g) ?? []).length === 1);
+
+  // ── 项目行变动广播 projects.changed;系统项目删不掉 ──
+  const reorder = await rpcAs(tA, "project:reorder", { orderedIds: [] });
+  eq("project:reorder → 200", reorder.status, 200);
+  check("乙收到 projects.changed", await sb.until('"projects.changed"'), sb.state.buf.slice(-300));
+  const { SYSTEM_AUTOMATION_PROJECT_ID } = await import("@main/store/repositories.js");
+  const del = await rpcAs(tA, "project:delete", { id: SYSTEM_AUTOMATION_PROJECT_ID });
+  eq("手机删系统项目 → 403(与桌面同一道守卫)", del.status, 403);
+
+  sa.ctrl.abort();
+  sb.ctrl.abort();
+  windowStub.__setDesktopAttached(false);
+  await new Promise((r) => setTimeout(r, 50));
+}
+
 /* ───────────────────── 8. 出厂状态 ───────────────────── */
 
 console.log("\n收尾");

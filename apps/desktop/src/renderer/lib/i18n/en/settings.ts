@@ -1076,7 +1076,7 @@ export const en = {
 
   // ── mobile settings sheet (MobileSettingsSheet) ──
   "settings.mobile.displayModeHint":
-    "In tabs mode, a session tab strip appears above the chat for switching between open threads. This preference is shared with the desktop.",
+    "In tabs mode, a session tab strip appears above the chat for switching between open threads. This preference is saved on this device only and does not affect the desktop.",
 
   // Unified data root (Settings -> Data location)
   "settings.nav.dataRoot": "Data location",
