@@ -84,13 +84,15 @@ class NotificationManager {
 
   /** The main event observer. Decides whether an OS notification is warranted. */
   private onEvent(e: RuntimeEvent): void {
+    // Observe roster state before the focus gate, not only when notifying.
+    const rosterResult = e.type === "subagent.update" ? this.evaluate(e) : null;
     // Only notify when the window is unfocused. When focused, the renderer's
     // in-app layer (badges + toasts) handles surfacing.
     const win = getMainWindow();
     if (!win || win.isDestroyed()) return;
     if (win.isFocused() && !win.isMinimized()) return;
 
-    const result = this.evaluate(e);
+    const result = e.type === "subagent.update" ? rosterResult : this.evaluate(e);
     if (!result) return;
 
     this.showNotification(result.title, result.body, e.sessionId);
@@ -183,13 +185,19 @@ class NotificationManager {
     if (e.type === "subagent.update") {
       // Always track the roster so the transition map stays fresh (even when
       // backgroundTasks pref is off, so it's correct when toggled back on).
-      const prev = this.prevSubagents.get(e.sessionId) ?? new Map();
-      const justFinished = e.agents.some((a) => {
-        const was = prev.get(a.taskId);
-        prev.set(a.taskId, a.status);
-        return was === "running" && (a.status === "completed" || a.status === "failed");
-      });
-      this.prevSubagents.set(e.sessionId, prev);
+      const prev = this.prevSubagents.get(e.sessionId);
+      const next = new Map<string, "running" | "completed" | "failed" | "killed">();
+      let justFinished = false;
+      // Full snapshots replace the roster. A short-circuiting some() would
+      // leave later agents stale and replay or lose their completion.
+      for (const a of e.agents) {
+        next.set(a.taskId, a.status);
+        if (prev?.get(a.taskId) === "running" && (a.status === "completed" || a.status === "failed")) {
+          justFinished = true;
+        }
+      }
+      if (next.size === 0) this.prevSubagents.delete(e.sessionId);
+      else this.prevSubagents.set(e.sessionId, next);
       if (!this.prefs.backgroundTasks || !justFinished) return null;
       // 同 turn.done / error:工作流节点是隐藏会话,它的后台子代理跑完了也不该
       // 打扰用户(节点自己的结果会以卡片的形式回到对话里)。

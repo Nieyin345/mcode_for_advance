@@ -1,0 +1,12 @@
+{
+ "extends":"../../tsconfig.json",
+ "compilerOptions":{"baseUrl":"../..","paths":{
+  "@contracts/*":["../../packages/contracts/src/*"],
+  "@main/*":["src/main/*"],
+  "@main/lib/logger.js":["scripts/maint-m19-smoke/stubs/environment.ts"],
+  "@main/window.js":["scripts/maint-m19-smoke/stubs/environment.ts"],
+  "@main/store/repositories.js":["scripts/maint-m19-smoke/stubs/environment.ts"],
+  "@main/claude/RuntimeManager.js":["scripts/maint-m19-smoke/stubs/environment.ts"]
+ }},
+ "include":["./**/*.ts"]
+}
