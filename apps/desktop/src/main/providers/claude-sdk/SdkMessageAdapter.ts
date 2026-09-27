@@ -566,7 +566,7 @@ export class SdkMessageAdapter {
     // message → the main loop continues), so a result older than the last
     // agent edge is intermediate — the turn still has resumed phases to run
     // and their permission asks need the stdin hold.
-    if (this.state.lastResultAt < this.state.lastAgentActivityAt) return;
+    if (this.state.lastResultAt <= this.state.lastAgentActivityAt) return;
     for (const s of this.state.subagents.values()) {
       if (s.status === "running") return;
     }
