@@ -574,7 +574,9 @@ export function useLspDiagnostics(
 export function filePathToUri(p: string): string {
   const norm = p.replace(/\\/g, "/");
   const prefixed = /^[a-zA-Z]:/.test(norm) ? `/${norm}` : norm;
-  return `file://${prefixed}`;
+  // Encode filename data, not URI delimiters: literal %, # and ? must
+  // survive Monaco/LSP parsing without changing the addressed file.
+  return `file://${encodeURI(prefixed).replace(/#/g, "%23").replace(/\?/g, "%3F")}`;
 }
 
 /** Inverse of filePathToUri: `file:///c:/foo.ts` -> `C:\foo\bar.ts` (Windows,

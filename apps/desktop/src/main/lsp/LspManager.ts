@@ -1692,12 +1692,15 @@ function filePathToUri(p: string): string {
   const norm = p.replace(/\\/g, "/");
   // Windows absolute paths need a leading slash before the drive letter.
   const prefixed = /^[a-zA-Z]:/.test(norm) ? `/${norm}` : norm;
-  return `file://${prefixed}`;
+  // Encode filename data, not URI delimiters: literal %, # and ? must
+  // survive Monaco/LSP parsing without changing the addressed file.
+  return `file://${encodeURI(prefixed).replace(/#/g, "%23").replace(/\?/g, "%3F")}`;
 }
 
 /** Convert a directory path to a `file://` URI (for rootUri). */
 function dirPathToUri(p: string): string {
-  return filePathToUri(p) + "/";
+  const uri = filePathToUri(p);
+  return uri.endsWith("/") ? uri : uri + "/";
 }
 
 /** Build the server map key. */

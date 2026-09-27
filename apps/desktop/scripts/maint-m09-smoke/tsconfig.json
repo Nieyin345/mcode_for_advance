@@ -1,0 +1,1 @@
+{"extends":"../../tsconfig.json","include":["../../src/main/lsp/LspManager.ts","../../src/renderer/lib/lspProviders.ts","../../src/**/*.d.ts"]}
