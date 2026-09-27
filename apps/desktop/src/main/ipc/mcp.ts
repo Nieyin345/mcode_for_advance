@@ -87,6 +87,23 @@ function serializeMcpMutation<T>(operation: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/** A truth/matrix mutation is not complete until the engine views agree with
+ * it. If the required Claude view write fails, restore the previous source of
+ * truth and make a best-effort attempt to put both views back as well. */
+async function materializeMcpViewsOrRollback(rollback: () => void | Promise<void>): Promise<void> {
+  try {
+    await materializeAllMcpViews();
+  } catch (err) {
+    try {
+      await rollback();
+      await materializeAllMcpViews();
+    } catch (rollbackErr) {
+      log.error(`mcp: rollback materialization failed: ${(rollbackErr as Error).message}`);
+    }
+    throw err;
+  }
+}
+
 function readNeedsAuthNames(): Set<string> {
   try {
     const raw = JSON.parse(readFileSync(NEEDS_AUTH_CACHE_FILE, "utf-8")) as unknown;
@@ -572,8 +589,11 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
         // denylist. The config itself lives in the plugin tree and is never
         // rewritten here; the codex view re-derives from the denylist.
         const res = setPluginMcpDisabled(input.name, !input.enabled);
-        if (res.ok) await materializeAllMcpViews();
-        return res;
+        if (!res.ok) return res;
+        await materializeMcpViewsOrRollback(() => {
+          setPluginMcpDisabled(input.name, res.previousDisabled === true);
+        });
+        return { ok: true };
       }
 
       // User scope: flip the name between the truth layer and the disable
@@ -581,10 +601,11 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       // engine views (the claude file is a derived view now — it is never
       // edited in place).
       const state = await getMcpTruth();
+      const previous = structuredClone(state);
       const applied = applyUserMcpToggle(state, input.name, input.enabled);
       if (!applied.ok) return { ok: false, error: applied.error };
       saveMcpManagement(applied.state);
-      await materializeAllMcpViews();
+      await materializeMcpViewsOrRollback(() => saveMcpManagement(previous));
       return { ok: true };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
@@ -600,10 +621,11 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
     const input = McpEnginesSetSchema.parse(raw);
     try {
       const map = readMcpEnginesMap();
+      const previous = structuredClone(map);
       setMcpEnginesEntry(map, input.name, { claude: input.claude, codex: input.codex });
       writeMcpEnginesMap(map);
+      await materializeMcpViewsOrRollback(() => writeMcpEnginesMap(previous));
       const updated = readMcpEnginesMap();
-      await materializeAllMcpViews();
       return {
         ok: true,
         perEngine: {
@@ -747,6 +769,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
     }
     try {
       const state = await getMcpTruth();
+      const previous = structuredClone(state);
       const userServers = state.userServers ?? {};
       const inTruth = input.name in userServers;
       const inStash = Boolean(state.userDisabled?.[input.name]);
@@ -761,7 +784,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       }
       state.userServers = userServers;
       saveMcpManagement(state);
-      await materializeAllMcpViews();
+      await materializeMcpViewsOrRollback(() => saveMcpManagement(previous));
       return { ok: true };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
@@ -773,6 +796,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
     const input = McpRemoveSchema.parse(raw);
     try {
       const state = await getMcpTruth();
+      const previous = structuredClone(state);
       const userServers = state.userServers ?? {};
       const stash = state.userDisabled ?? {};
       const inTruth = input.name in userServers;
@@ -783,7 +807,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       state.userServers = userServers;
       state.userDisabled = stash;
       saveMcpManagement(state);
-      await materializeAllMcpViews();
+      await materializeMcpViewsOrRollback(() => saveMcpManagement(previous));
       return { ok: true };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
@@ -810,6 +834,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
     const errors: Array<{ name: string; error: string }> = [];
     try {
       const state = await getMcpTruth();
+      const previous = structuredClone(state);
       const userServers = state.userServers ?? {};
       const stash = state.userDisabled ?? {};
       let changed = false;
@@ -825,10 +850,11 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       if (changed) {
         state.userServers = userServers;
         saveMcpManagement(state);
-        await materializeAllMcpViews();
+        await materializeMcpViewsOrRollback(() => saveMcpManagement(previous));
       }
       return { imported, skipped, errors };
     } catch (err) {
+      imported.length = 0;
       return {
         imported,
         skipped,

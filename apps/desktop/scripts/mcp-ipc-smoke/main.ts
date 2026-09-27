@@ -92,7 +92,7 @@
  *
  * Run: bash scripts/mcp-ipc-smoke/run.sh
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { IpcMain } from "electron";
@@ -809,13 +809,12 @@ console.log("\n插件那一半的形状");
 await toggle({ name: "demo-plugin__stdio-plugin", scope: "plugin", enabled: false });
 
 // 插件启停**不在**本套的职责里(那是 plugins-ipc-smoke 的事),但 handler 依赖插件
-// 管理器的一个具体形状:`setPluginMcpDisabled` **永远**返回 ok(它是纯名单写入,
-// 没有失败路径可报 —— 真的那份也是)。这条断了的话,MCP_TOGGLE 的插件分支会静默
-// 不再重算引擎视图。
+// 管理器的一个具体形状:`setPluginMcpDisabled` **永远**返回 ok,并回传写入前状态
+// 供物化失败时精确回滚。这条断了的话,MCP_TOGGLE 的插件分支会静默不再重算视图。
 same(
-  "setPluginMcpDisabled 是纯名单写入,永远 ok",
+  "setPluginMcpDisabled 返回 ok 和可回滚的旧状态",
   pluginStub.setPluginMcpDisabled("whatever__x", true),
-  { ok: true },
+  { ok: true, previousDisabled: false },
 );
 pluginStub.setPluginMcpDisabled("whatever__x", false);
 check("名单写入之后确实清掉了", pluginStub.mcpDisabled.has("whatever__x") === false);
@@ -936,6 +935,62 @@ eq("errors 为空(没出错就别编一个)", importRes.errors.length, 0);
 // 空批次:什么都不该发生,但也不该报错。
 const emptyImport = (await importServers({ servers: [] })) as { imported: string[]; skipped: string[]; errors: unknown[] };
 same("空导入 → 三张表都是空的", [emptyImport.imported, emptyImport.skipped, emptyImport.errors], [[], [], []]);
+
+/* ── 派生视图写失败:事实源必须回滚,不能报失败却偷偷保存 ── */
+console.log("\n物化失败回滚");
+const claudeFileBeforeFailure = readFileSync(USER_CLAUDE_JSON, "utf-8");
+const truthBeforeFailure = JSON.stringify(await mcpConfig.getMcpTruth());
+const enginesBeforeFailure = JSON.stringify(enginesMapOnDisk());
+const pluginNameForRollback = "demo-plugin__remote-plugin";
+const pluginDisabledBeforeFailure = pluginStub.mcpDisabled.has(pluginNameForRollback);
+rmSync(USER_CLAUDE_JSON, { force: true });
+mkdirSync(USER_CLAUDE_JSON);
+try {
+  const failedSave = (await save({ name: "rollback-save", config: { command: "never-persists" } })) as {
+    ok: boolean;
+  };
+  eq("Claude 视图写失败时保存返回失败", failedSave.ok, false);
+  eq(
+    "★ 保存失败后事实源逐字段回到旧快照",
+    JSON.stringify(await mcpConfig.getMcpTruth()),
+    truthBeforeFailure,
+  );
+
+  const failedEngines = (await enginesSet({
+    name: "rollback-engine",
+    claude: true,
+    codex: false,
+  })) as { ok: boolean };
+  eq("Claude 视图写失败时引擎分配返回失败", failedEngines.ok, false);
+  eq("★ 引擎矩阵也回到旧快照", JSON.stringify(enginesMapOnDisk()), enginesBeforeFailure);
+
+  const failedPluginToggle = (await toggle({
+    name: pluginNameForRollback,
+    scope: "plugin",
+    enabled: false,
+  })) as { ok: boolean };
+  eq("Claude 视图写失败时插件 MCP 开关返回失败", failedPluginToggle.ok, false);
+  eq(
+    "★ 插件 denylist 恢复操作前的精确状态",
+    pluginStub.mcpDisabled.has(pluginNameForRollback),
+    pluginDisabledBeforeFailure,
+  );
+
+  const failedImport = (await importServers({
+    servers: [{ name: "rollback-import", config: { command: "never-persists" } }],
+  })) as { imported: string[]; errors: unknown[] };
+  same("导入落盘失败时不谎报 imported", failedImport.imported, []);
+  check("导入落盘失败带回错误", failedImport.errors.length > 0);
+  eq(
+    "★ 导入失败的名字不留在事实源",
+    "rollback-import" in ((await mcpConfig.getMcpTruth()).userServers ?? {}),
+    false,
+  );
+} finally {
+  rmSync(USER_CLAUDE_JSON, { recursive: true, force: true });
+  writeFileSync(USER_CLAUDE_JSON, claudeFileBeforeFailure, "utf-8");
+  await mcpConfig.materializeAllMcpViews();
+}
 
 /* ──────────────── 9. 派生视图与真相层的一致性 ──────────────── */
 

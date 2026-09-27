@@ -127,8 +127,9 @@ export async function getPluginMcpServerConfig(fullName: string): Promise<unknow
 export function setPluginMcpDisabled(
   serverName: string,
   disabledValue: boolean,
-): { ok: boolean; error?: string } {
+): { ok: boolean; error?: string; previousDisabled?: boolean } {
+  const previousDisabled = mcpDisabled.has(serverName);
   if (disabledValue) mcpDisabled.add(serverName);
   else mcpDisabled.delete(serverName);
-  return { ok: true };
+  return { ok: true, previousDisabled };
 }

@@ -6,6 +6,15 @@ export interface CodexMcpInventoryEntry {
   pluginName?: string;
 }
 
+/** Empty/absent is StartTurnRequest's unrestricted form. A non-empty list is
+ * exact and also gates Mcode's built-in browser dynamic tools. */
+export function codexTurnAllowsMcpServer(
+  serverName: string,
+  mcpServerNames?: readonly string[],
+): boolean {
+  return !mcpServerNames?.length || mcpServerNames.includes(serverName);
+}
+
 /** Quote one segment of a Codex `-c` dotted path when it is not a TOML bare key. */
 function configKeySegment(value: string): string {
   if (/^[A-Za-z0-9_-]+$/.test(value)) return value;

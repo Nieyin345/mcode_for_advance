@@ -1256,11 +1256,13 @@ export async function getPluginMcpServers(
 export function setPluginMcpDisabled(
   serverName: string,
   disabledValue: boolean,
-): { ok: boolean; error?: string } {
-  const next = new Set([...readMcpDisabled()].filter((n) => n !== serverName));
+): { ok: boolean; error?: string; previousDisabled?: boolean } {
+  const current = readMcpDisabled();
+  const previousDisabled = current.has(serverName);
+  const next = new Set([...current].filter((n) => n !== serverName));
   if (disabledValue) next.add(serverName);
   writeJsonSetting(PLUGINS_MCP_DISABLED_SETTING_KEY, [...next]);
-  return { ok: true };
+  return { ok: true, previousDisabled };
 }
 
 /** Rows for the MCP panel (scope "plugin"): one per server of each ENABLED

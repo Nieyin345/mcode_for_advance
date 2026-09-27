@@ -12,7 +12,7 @@ import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 import { PiMessageAdapter } from "../../src/main/providers/pi-sdk/PiMessageAdapter.ts";
-import { codexMcpDisableArgs } from "../../src/main/providers/codex-sdk/codexTurnScope.ts";
+import { codexMcpDisableArgs, codexTurnAllowsMcpServer } from "../../src/main/providers/codex-sdk/codexTurnScope.ts";
 import { createProviderHealthProbe } from "../../src/main/providers/providerHealth.ts";
 import { createProviderHealthRequestGate } from "../../src/renderer/lib/providerHealthRequestGate.ts";
 
@@ -136,6 +136,13 @@ test("Codex turn scope narrows MCP and plugin servers with process-local overrid
   assert.deepEqual(codexMcpDisableArgs([{ name: "with.dot" }], ["other"]), [
     "-c", 'mcp_servers."with.dot".enabled=false',
   ]);
+});
+
+test("Codex MCP allowlist also narrows the built-in browser dynamic tools", () => {
+  assert.equal(codexTurnAllowsMcpServer("mcode-browser"), true);
+  assert.equal(codexTurnAllowsMcpServer("mcode-browser", []), true);
+  assert.equal(codexTurnAllowsMcpServer("mcode-browser", ["user-one"]), false);
+  assert.equal(codexTurnAllowsMcpServer("mcode-browser", ["user-one", "mcode-browser"]), true);
 });
 
 test("Codex MCP config segments preserve quotes, slashes and controls", () => {

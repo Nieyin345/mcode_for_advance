@@ -70,6 +70,8 @@ import {
 } from "@main/lib/codexModelsStore.js";
 import { getOrSetFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
 import { getMcpManagement } from "@main/lib/mcpConfig.js";
+import { mcpEngineEnabled, readMcpEnginesMap } from "@main/lib/mcpEngines.js";
+import { BROWSER_MCP_SERVER } from "@main/mcp/toolRules.js";
 import { CODEX_IDENTITY_PROMPT, joinPromptSections, fileArchitecturePrompt } from "@main/lib/systemPrompt.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { readInstructionsSource, instructionsSourcePath } from "@main/lib/appContext.js";
@@ -77,7 +79,7 @@ import { defaultSkillsRoot, enabledSkillDirs, engineEnabled, readEnginesMap, ski
 import { scriptsDir } from "@main/workflows/seed.js";
 import { ASK_NATIVE_TOOL_PROMPT } from "@main/lib/askQuestion.js";
 import { turnContextSections } from "@main/providers/contextPrompt.js";
-import { codexMcpDisableArgs } from "./codexTurnScope.js";
+import { codexMcpDisableArgs, codexTurnAllowsMcpServer } from "./codexTurnScope.js";
 import {
   parseQuestions,
   formatAnswersForModel,
@@ -263,7 +265,10 @@ export class CodexAgentSdkProvider implements AgentProvider {
       ctx.log.info(`codex: disabled ${mcpScopeArgs.length / 2} MCP server(s) outside this turn's allowlists`);
     }
     const mcpManagement = await getMcpManagement();
-    const browserToolsEnabled = !mcpManagement.browserDisabled;
+    const browserToolsEnabled =
+      !mcpManagement.browserDisabled &&
+      mcpEngineEnabled(readMcpEnginesMap(), BROWSER_MCP_SERVER, "codex") &&
+      codexTurnAllowsMcpServer(BROWSER_MCP_SERVER, req.mcpServerNames);
 
     /* ── 2. Model resolution ("providerId/modelId", Pi-style) ── */
     const configured = new Set(providers.map((p) => p.id));
