@@ -137,11 +137,6 @@ const NAV_GROUPS: NavGroup[] = [
       // 节点都生效(见 `@contracts/hook`)。
       { id: "hooks", labelKey: "settings.nav.hooks", icon: IconActivity },
       { id: "mcp", labelKey: "settings.nav.mcp", icon: McpIcon },
-      // 上下文那一页**删掉了**(2026-09-20,用户定的),里面的两节搬进了「记忆库」——
-      // 它们本来就是一类东西(喂给引擎的长期信息),而记忆库已经是那个页面。
-      // 第三那节「工具占用」是静态估算,没搬(它没有实际用处)。
-      //
-      // 记忆库跟在 MCP 后面:两者都是"喂给引擎的长期信息"(MCP 是工具,记忆是内容)。
       { id: "memory", labelKey: "settings.nav.memory", icon: IconNotebook },
     ],
   },
@@ -311,10 +306,6 @@ export function SettingsPage() {
           {active === "hooks" && <HooksPanel />}
           {active === "runtimes" && <RuntimesPanel />}
           {active === "mcp" && <McpPanel />}
-          {/* 记忆库 —— 2026-09-20 起它**多担了两节**:全局指令(常驻指令的编辑器)
-              与项目记忆(CLI 自动记忆文件的编辑器)。两者原先在「上下文」那一页上,
-              而那一页整页删了(用户定的):三节里只有「工具占用」是只读估算,没有
-              实际用处,没有被搬过来。 */}
           {active === "memory" && <MemoryExplorerPanel />}
           {active === "plugins" && <PluginsPanel />}
           {active === "notifications" && <NotificationsPanel />}

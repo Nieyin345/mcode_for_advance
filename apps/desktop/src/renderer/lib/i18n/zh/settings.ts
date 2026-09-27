@@ -1029,22 +1029,14 @@ export const zh = {
     "使用此供应商的 Claude 会话中,Task 子代理改用该模型运行;下一轮对话生效。跟随主会话时不干预。",
   "settings.subagentModel.follow": "跟随主会话",
 
-  // ── ContextPanel ──
+  // ── Global instructions ──
   "settings.context.instructionsSection": "全局指令",
   "settings.context.instructionsDesc":
     "所有引擎共用的常驻指令。唯一事实源存在数据根下的 context/instructions.md,保存后自动物化:Claude → ~/.mcode/CLAUDE.md,Codex → AGENTS.md 组装链,Pi → 会话启动注入。改动对下一轮对话生效。",
   "settings.context.instructionsPlaceholder":
     "写给所有会话的常驻要求,例如:回复用中文;代码注释遵循仓库既有风格;不要主动建议重构……",
   "settings.context.save": "保存全局指令",
-  "settings.context.saveMemory": "保存记忆",
   "settings.context.saved": "已保存",
-  "settings.context.memoriesSection": "项目记忆",
-  "settings.context.memoriesDesc":
-    "引擎的常驻项目记忆(~/.mcode/projects/<项目>/memory/MEMORY.md)。这里直接编辑同一份文件;记忆的注入仍由引擎按需自动完成。",
-  "settings.context.memoriesEmpty":
-    "还没有项目记忆。引擎在会话里自行沉淀记忆后,这里会出现对应条目。",
-  "settings.context.noMemorySelected": "在左侧选择一个项目,查看或编辑它的记忆。",
-  "settings.context.updatedAt": "更新于",
   "settings.usage.title": "用量统计",
   "settings.usage.desc": "汇总各会话每轮对话的 token 用量。Pi 会话按增量折算。",
   "settings.usage.range.today": "今天",

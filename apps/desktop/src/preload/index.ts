@@ -672,20 +672,12 @@ const api = {
       ipcRenderer.invoke(IPC.MCP_IMPORT, input)) as RpcMap["mcp.import"],
   },
 
-  /** 上下文托管(设置面板):全局指令 + 记忆编辑器 + 工具上下文占用。
-   *  全局指令保存后由主进程物化到各引擎的消费点(CLAUDE.md / AGENTS.md 组装链);
-   *  记忆直接读写 CLI 原生 auto-memory 文件,注入仍由 CLI 自己完成。 */
+  /** Global instructions, materialized to each engine's consume point. */
   context: {
     get: ((input) =>
       ipcRenderer.invoke(IPC.CONTEXT_GET, input)) as RpcMap["context.get"],
     save: ((input) =>
       ipcRenderer.invoke(IPC.CONTEXT_SAVE, input)) as RpcMap["context.save"],
-    memoriesList: ((input) =>
-      ipcRenderer.invoke(IPC.CONTEXT_MEMORIES_LIST, input)) as RpcMap["context.memoriesList"],
-    memoryGet: ((input) =>
-      ipcRenderer.invoke(IPC.CONTEXT_MEMORY_GET, input)) as RpcMap["context.memoryGet"],
-    memorySave: ((input) =>
-      ipcRenderer.invoke(IPC.CONTEXT_MEMORY_SAVE, input)) as RpcMap["context.memorySave"],
   },
 
   /** 工具上下文占用(设置面板):按引擎静态枚举 Mcode 可控的工具 schema 估算。 */

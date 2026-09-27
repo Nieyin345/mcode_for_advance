@@ -33,7 +33,7 @@ function sourceText(id: string): string {
   if (id.startsWith("legacy:")) {
     const path = id.slice(7);
     if (!listMemoryFiles().some(m => m.path === path && m.scope === "legacy")) throw new Error("旧记忆源已改变");
-    return readMemoryFileWithRaw(path).raw;
+    return readMemoryFileWithRaw(path).content;
   }
   const path = nativeSources().get(id);
   if (!path) throw new Error("来源不存在、过大或不安全");
@@ -45,8 +45,11 @@ export function manageMemory(input: MemoryManageInput): MemoryManageResult {
   try {
     if (input.action === "list") return { ok: true,
       projects: ProjectRepo.list().map(p => ({ id: p.id, name: p.name })),
-      sources: [...listMemoryFiles().filter(m => m.scope === "legacy").map(m => ({ id: `legacy:${m.path}`, label: `MCode / ${m.path}` })),
-        ...Array.from(nativeSources().keys(), id => ({ id, label: id }))], history: memoryHistory() };
+      sources: [...listMemoryFiles().filter(m => m.scope === "legacy").map(m => ({ id: `legacy:${m.path}`, label: `MCode legacy · ${m.path}` })),
+        ...Array.from(nativeSources().keys(), id => {
+          const [owner, project, file] = id.split("/");
+          return { id, label: `${owner === ".claude" ? "Claude CLI" : "MCode CLI"} · ${project} · ${file}` };
+        })], history: memoryHistory() };
     if (input.action === "history") { const raw = readHistory(input.id).raw; return { ok: true, content: raw, digest: digest(raw) }; }
     if (input.action === "restore") {
       if (digest(readHistory(input.id).raw) !== input.digest) throw new Error("历史来源已改变，请重新预览");
@@ -58,9 +61,8 @@ export function manageMemory(input: MemoryManageInput): MemoryManageResult {
     if (hash !== input.digest) throw new Error("来源已改变，请重新预览后确认");
     if (!input.global && !ProjectRepo.list().some(p => p.id === input.projectId)) throw new Error("请选择有效项目");
     const prefix = input.global ? "global" : `projects/${input.projectId}`;
-    const path = `${prefix}/experiences/import-${digest(input.source).slice(0, 24)}.md`;
-    const content = `来源：${input.source}\n来源 SHA256：${hash}\n导入时间：${new Date().toISOString()}\n\n${raw}`;
-    saveMemoryFile({ path, title: input.source, content, expectedRevision: null });
+    const path = `${prefix}/${input.category}/import-${digest(input.source).slice(0, 24)}.md`;
+    saveMemoryFile({ path, title: input.source, content: raw, expectedRevision: null });
     notifyMemoryChanged("import:" + path);
     return { ok: true, path };
   } catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err) }; }

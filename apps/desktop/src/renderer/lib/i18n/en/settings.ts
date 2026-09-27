@@ -1028,22 +1028,14 @@ export const en = {
     "Claude sessions on this provider run Task-tool subagents with the picked model; applies from the next turn. \"Follow main session\" leaves it untouched.",
   "settings.subagentModel.follow": "Follow main session",
 
-  // ── ContextPanel ──
+  // ── Global instructions ──
   "settings.context.instructionsSection": "Global instructions",
   "settings.context.instructionsDesc":
     "Standing instructions shared by every engine. The single source of truth lives at <data root>/context/instructions.md; saving materializes it automatically: Claude → ~/.mcode/CLAUDE.md, Codex → the AGENTS.md assembly chain, Pi → injected at session start. Changes apply from the next turn.",
   "settings.context.instructionsPlaceholder":
     "Standing requirements for every session, e.g.: reply in English; keep code comments in the repo's existing style; never suggest refactors unprompted…",
   "settings.context.save": "Save instructions",
-  "settings.context.saveMemory": "Save memory",
   "settings.context.saved": "Saved",
-  "settings.context.memoriesSection": "Project memories",
-  "settings.context.memoriesDesc":
-    "The engines' persistent per-project memories (~/.mcode/projects/<project>/memory/MEMORY.md). This edits the same files; injection itself stays with the engines.",
-  "settings.context.memoriesEmpty":
-    "No project memories yet. Entries appear here after the engines write memories during sessions.",
-  "settings.context.noMemorySelected": "Pick a project on the left to view or edit its memory.",
-  "settings.context.updatedAt": "Updated",
   "settings.usage.title": "Usage",
   "settings.usage.desc": "Token usage aggregated from every session's turn history. Pi sessions are counted as increments.",
   "settings.usage.range.today": "Today",

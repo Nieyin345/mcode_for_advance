@@ -184,7 +184,8 @@ export const MemoryManageSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("list") }),
   z.object({ action: z.literal("preview"), source: z.string().min(1).max(500) }),
   z.object({ action: z.literal("import"), source: z.string().min(1).max(500), digest: MemoryRevisionSchema,
-    projectId: z.string().regex(/^[A-Za-z0-9_-]{1,120}$/).optional(), global: z.boolean(), confirmed: z.literal(true) }),
+    category: z.enum(MEMORY_CATEGORIES), projectId: z.string().regex(/^[A-Za-z0-9_-]{1,120}$/).optional(),
+    global: z.boolean(), confirmed: z.literal(true) }),
   z.object({ action: z.literal("history"), id: z.string().min(1).max(100) }),
   z.object({ action: z.literal("restore"), id: z.string().min(1).max(100), digest: MemoryRevisionSchema, confirmed: z.literal(true) }),
 ]);

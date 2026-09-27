@@ -59,25 +59,27 @@ export function MemoryAssistantButton({ sessionId }: { sessionId: string }) {
       <IconClipboardText size={14}/>{t(running ? "memory.assistant.running" : data.incoming ? "memory.assistant.incoming" : "memory.assistant.title")}
     </Button>
     <Dialog.Root open={open} onOpenChange={setOpen}>
-      <Dialog.Portal><Dialog.Backdrop/><Dialog.Popup className="w-[min(680px,94vw)] max-h-[80vh] overflow-y-auto p-5">
+      <Dialog.Portal><Dialog.Backdrop/><Dialog.Popup className="w-[min(720px,94vw)] max-h-[80vh] overflow-y-auto p-5">
         <Dialog.Title>{t("memory.assistant.title")}</Dialog.Title><Dialog.Close/>
         <Dialog.Description className="mt-2 text-sm text-content-muted">{t("memory.assistant.scope")}</Dialog.Description>
-        <p className="mt-2 text-sm text-content-subtle">{t("memory.assistant.lifecycle")}</p>
         {error && <ErrorNote className="mt-3">{error}</ErrorNote>}
         {data.incoming && <section className="mt-3 rounded border border-edge p-3">
           <h3 className="font-medium">{t("memory.assistant.incoming")}</h3>
           <p className="text-sm text-content-muted">{t("memory.assistant.receiveHint")}</p>
           <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-xs">{data.incoming.result}</pre>
         </section>}
-        <div className="mt-4 space-y-2">
-          {(["capture", "checkpoint", "health"] as const).map(kind => <div key={kind} className="rounded border border-edge p-3">
-            <Button variant="secondary" disabled={busy || running} onClick={() => void perform({ op: "start", sessionId, kind })}>{label(kind)}</Button>
-            <p className="mt-1 text-sm text-content-muted">{t(`memory.assistant.hint.${kind}`)}</p>
+        <div className="mt-4 grid gap-2 sm:grid-cols-3">
+          {(["capture", "checkpoint", "health"] as const).map(kind => <div key={kind} className="flex flex-col rounded-lg border border-edge p-3">
+            <h3 className="text-sm font-medium">{label(kind)}</h3>
+            <p className="mt-1 flex-1 text-xs leading-relaxed text-content-muted">{t(`memory.assistant.hint.${kind}`)}</p>
+            <Button className="mt-3 w-full" variant={kind === "capture" ? "primary" : "secondary"} disabled={busy || running}
+              onClick={() => void perform({ op: "start", sessionId, kind })}>{t("memory.assistant.start")}</Button>
           </div>)}
         </div>
-        <h3 className="mt-5 font-medium">{t("memory.assistant.records")}</h3>
-        {!data.jobs.length && <p className="mt-2 text-sm text-content-subtle">{t("memory.assistant.empty")}</p>}
-        {data.jobs.map(job => <section key={job.id} className="mt-3 rounded border border-edge p-3">
+        <details className="mt-5 border-t border-edge pt-3">
+          <summary className="cursor-pointer text-sm font-medium text-content-muted">{t("memory.assistant.records")} ({data.jobs.length})</summary>
+          {!data.jobs.length && <p className="mt-2 text-sm text-content-subtle">{t("memory.assistant.empty")}</p>}
+          {data.jobs.map(job => <section key={job.id} className="mt-3 rounded border border-edge p-3">
           <div className="flex justify-between gap-2"><span>{label(job.kind)}</span><span className="text-sm text-content-muted">{status(job)}</span></div>
           {job.error && <ErrorNote className="mt-2">{job.error}</ErrorNote>}
           {job.result && <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap text-sm">{job.result}</pre>}
@@ -93,7 +95,8 @@ export function MemoryAssistantButton({ sessionId }: { sessionId: string }) {
           </div>}
           {job.status === "queued" && <p className="mt-2 text-sm text-content-muted">{t("memory.assistant.queuedHint")}</p>}
           {(job.status === "ready" || job.status === "queued") && <Button size="sm" className="mt-2" variant="ghost" disabled={busy} onClick={() => void perform({ op: "discard", sessionId, jobId: job.id })}>{t("memory.assistant.discard")}</Button>}
-        </section>)}
+          </section>)}
+        </details>
       </Dialog.Popup></Dialog.Portal>
     </Dialog.Root>
   </>;

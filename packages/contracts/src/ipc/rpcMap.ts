@@ -38,7 +38,7 @@ import type { SkillsListInput, SkillInfo, SkillsReadInput, SkillsSaveInput, Skil
   SkillsProjectOverviewInput, SkillsProjectOverviewResult,
   ProviderInfo, OutputStyleListInput, OutputStyleEntry } from "./skills.js";
 import type { McpListInput, McpServerEntry, McpToggleInput, McpAuthorizeInput, McpUnauthorizeInput, McpSaveInput, McpRemoveInput, McpScanImportInput, McpImportSource, McpImportInput, McpEnginesSetInput, McpEngineState } from "./mcp.js";
-import type { ContextGetInput, ContextSaveInput, ContextMemoriesListInput, ContextMemoryDir, ContextMemoryGetInput, ContextMemorySaveInput, ToolsUsageGetInput, ToolsUsageResult } from "./context.js";
+import type { ContextGetInput, ContextSaveInput, ToolsUsageGetInput, ToolsUsageResult } from "./context.js";
 import type { UsageStatsInput, UsageStatsResult } from "./usage.js";
 import type { LspLanguageState, LspInstallInput, LspOpResult, LspInstallFromFileInput, LspUninstallInput, LspToggleInput, LspSetPathInput, LspHealthCheckInput, LspPrewarmInput, LspRestartInput, LspOpenDocInput, LspCloseDocInput, LspDidChangeInput, LspDidSaveInput, LspRequestInput, LspRequestResult } from "./lsp.js";
 import type { RuntimeAgentState, RuntimesInstallInput, RuntimesInstallLocalInput, RuntimesRemoveInput, ToolchainToolState, ToolchainInstallInput, ToolchainRemoveInput } from "./runtimes.js";
@@ -537,7 +537,7 @@ export interface RpcMap {
     skipped: string[];
     errors: Array<{ name: string; error: string }>;
   }>;
-  // Context hosting (settings panel): global instructions + memory editor + tool usage
+  // Context hosting (settings panel): global instructions + tool usage
   /** Read the global instructions (single source of truth file). Empty string
    *  = never configured. */
   "context.get": (input: ContextGetInput) => Promise<{ content: string }>;
@@ -546,12 +546,6 @@ export interface RpcMap {
    *  `warnings` carries per-target notes (e.g. an unmanaged hand-written file
    *  was left untouched). */
   "context.save": (input: ContextSaveInput) => Promise<{ ok: boolean; error?: string; warnings?: string[] }>;
-  /** List memory directories (the CLI's native auto-memory entries). */
-  "context.memoriesList": (input: ContextMemoriesListInput) => Promise<{ dirs: ContextMemoryDir[] }>;
-  /** Read one memory file's content. Missing file → empty content. */
-  "context.memoryGet": (input: ContextMemoryGetInput) => Promise<{ content: string }>;
-  /** Save one memory file's content. */
-  "context.memorySave": (input: ContextMemorySaveInput) => Promise<{ ok: boolean; error?: string }>;
   /** Static per-tool context-usage estimate for one engine. */
   "tools.usage": (input: ToolsUsageGetInput) => Promise<ToolsUsageResult>;
   /** Output styles (settings panel): list built-in + user styles. The
@@ -1501,12 +1495,9 @@ export const IPC = {
   MCP_REMOVE: "mcp:remove",
   MCP_SCAN_IMPORT: "mcp:scanImport",
   MCP_IMPORT: "mcp:import",
-  // Context hosting (settings panel): global instructions / memory editor / tool usage
+  // Context hosting (settings panel): global instructions / tool usage
   CONTEXT_GET: "context:get",
   CONTEXT_SAVE: "context:save",
-  CONTEXT_MEMORIES_LIST: "context:memoriesList",
-  CONTEXT_MEMORY_GET: "context:memoryGet",
-  CONTEXT_MEMORY_SAVE: "context:memorySave",
   TOOLS_USAGE: "tools:usage",
   // Output styles (settings panel): list built-in + user styles
   OUTPUT_STYLE_LIST: "outputStyle:list",

@@ -1,7 +1,6 @@
 /**
  * IPC handlers for the settings panel's context-hosting section:
- * global instructions (read/save + materialize) and the memory editor
- * (list/read/write over the CLI's native auto-memory files).
+ * global instructions (read/save + materialize) and tool usage estimates.
  *
  * 路径装配都在这一层 —— lib/appContext.ts 是纯核心(不 import electron),
  * 无头 smoke 直接 bundle 它。事实源 `<dataRoot>/context/instructions.md`;
@@ -16,9 +15,6 @@ import {
   IPC,
   ContextGetSchema,
   ContextSaveSchema,
-  ContextMemoriesListSchema,
-  ContextMemoryGetSchema,
-  ContextMemorySaveSchema,
   ToolsUsageGetSchema,
   type ToolUsageGroup,
   type ToolUsageItem,
@@ -40,40 +36,20 @@ import {
 import { listPluginMcpPanelEntries } from "@main/plugins/pluginManager.js";
 import {
   instructionsSourcePath,
-  memoryFilePath,
-  listMemoryDirs,
   ensureMaterialized,
   readInstructionsState,
   readInstructionsSource,
-  readMemoryFile,
   writeInstructionsAt,
-  writeMemoryFile,
 } from "@main/lib/appContext.js";
 import { MCODE_CONFIG_DIR } from "@main/providers/claude-sdk/customEnv.js";
-import { ProjectRepo } from "@main/store/repositories.js";
 
 /** claude 的消费点:CLAUDE_CONFIG_DIR 钉在 ~/.mcode,CLI 在 settingSources=
  *  ["user"] 下唯一会读的用户级记忆文件。 */
 const CLAUDE_MD = path.join(MCODE_CONFIG_DIR, "CLAUDE.md");
 
-/** CLI 原生 auto-memory 的项目根:`~/.mcode/projects/<slug>/memory/`。 */
-const PROJECTS_ROOT = path.join(MCODE_CONFIG_DIR, "projects");
-
 /** 收养候选(依序):目前只有 claude 的 CLAUDE.md —— 它是唯一可能装着用户
  *  手写指令的消费点。codex 的 AGENTS.md 是组装产物,不收养。 */
 const ADOPT_TARGETS = [CLAUDE_MD];
-
-/** 记忆目录显示名线索:已知项目路径(ProjectRepo)+ ~/.mcode/.claude.json 的
- *  projects 键(CLI 自己维护的绝对路径表)。slug 不可逆,匹配不上就显示 slug。 */
-async function memoryLabelHints(): Promise<string[]> {
-  const hints = ProjectRepo.list().map((p) => p.path);
-  const cfg = await readUserClaudeJson();
-  const projects = cfg.projects;
-  if (typeof projects === "object" && projects !== null && !Array.isArray(projects)) {
-    hints.push(...Object.keys(projects as Record<string, unknown>));
-  }
-  return hints;
-}
 
 export function registerContextHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.CONTEXT_GET, (_evt, raw) => {
@@ -95,21 +71,6 @@ export function registerContextHandlers(ipcMain: IpcMain): void {
       input.content,
       { force: true },
     );
-  });
-
-  ipcMain.handle(IPC.CONTEXT_MEMORIES_LIST, async (_evt, raw) => {
-    ContextMemoriesListSchema.parse(raw);
-    return { dirs: listMemoryDirs(PROJECTS_ROOT, await memoryLabelHints()) };
-  });
-
-  ipcMain.handle(IPC.CONTEXT_MEMORY_GET, (_evt, raw) => {
-    const input = ContextMemoryGetSchema.parse(raw);
-    return { content: readMemoryFile(memoryFilePath(PROJECTS_ROOT, input.slug)) };
-  });
-
-  ipcMain.handle(IPC.CONTEXT_MEMORY_SAVE, (_evt, raw) => {
-    const input = ContextMemorySaveSchema.parse(raw);
-    return writeMemoryFile(memoryFilePath(PROJECTS_ROOT, input.slug), input.content);
   });
 
   ipcMain.handle(IPC.TOOLS_USAGE, async (_evt, raw) => {

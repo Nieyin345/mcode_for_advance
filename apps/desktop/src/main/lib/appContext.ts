@@ -1,5 +1,5 @@
 /**
- * 托管上下文(设置面板):全局指令 + 记忆编辑器的存储与物化。
+ * 全局指令的存储与物化。
  *
  * ## 全局指令:一条事实源,三个消费点
  *
@@ -25,17 +25,12 @@
  * 默认路径装配在 main/ipc/context.ts。原子写沿用 codexModelsStore / mcpConfig
  * 的 tmp+rename 姿势(rename 被占用目标挡住时退回直接写)。
  *
- * ## 记忆
- *
- * CLI 原生 auto-memory:`~/.mcode/projects/<slug>/memory/MEMORY.md`。注入是 CLI
- * 自己的行为,这里只做「列出 + 读 + 写」的 UI 托管。slug 是 CLI 的项目目录名
- * (路径中每个非 `[A-Za-z0-9-]` 字符折成一个 `-`),**不可逆** —— 显示名靠把已知
- * 项目路径按同一规则算 slug 来匹配,匹配不上就原样显示 slug(见
- * {@link listMemoryDirs} 的 labelHints)。
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { ContextMemoryDir } from "@contracts/ipc";
+
+/** Legacy CLI memory discovery remains for migration tests; it is not an editable UI model. */
+interface ContextMemoryDir { slug: string; label: string; updatedAt: number | null }
 
 /** 物化文件头部的托管标记。有它 = Mcode 写的,可以放心改写/删除。 */
 export const MANAGED_MARKER = "<!-- mcode:managed -->";
