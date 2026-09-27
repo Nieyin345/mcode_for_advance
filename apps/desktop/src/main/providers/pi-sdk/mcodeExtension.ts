@@ -51,11 +51,11 @@ import type {
   BeforeAgentStartEventResult,
 } from "@earendil-works/pi-coding-agent";
 import type { ProviderContext } from "@contracts/provider";
-import type { PermissionMode } from "@contracts/runtime";
 import { normalizeToolFilePath } from "@main/lib/fileSnapshot.js";
 import { getFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
 import { normalizeBashCommand } from "@main/lib/msysPath.js";
 import { guardBashCommand, resolveBashWriteTargets, expandTilde } from "./bashWriteGuard.js";
+import { shouldAutoApproveForPi } from "./piToolApproval.js";
 import {
   parseQuestions,
   formatAnswersForModel,
@@ -123,9 +123,6 @@ export function guardToolPath(
   return { denied: false, path: norm.absPath };
 }
 
-/** Pi's read-only built-in tools — auto-approved in every mode (including plan). */
-const PI_READONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
-
 /** Mcode browser tools that are purely read-only (they can't mutate the page,
  *  navigate, or submit) — auto-approved in every mode, never routed through the
  *  approval prompt. scroll/wait/find are pure reading aids; save_pdf writes
@@ -144,26 +141,6 @@ const MCODE_BROWSER_READONLY = new Set([
   "browser_save_pdf",
   "browser_downloads",
 ]);
-
-/**
- * Decide whether a Pi tool should be auto-approved (skip the prompt) based on
- * the session's CURRENT permission mode. Mirrors the Claude provider's
- * `shouldAutoApprove`, but uses Pi's lowercase tool names
- * (`write`/`edit` not `Write`/`Edit`).
- *
- *   - bypassPermissions / dontAsk → everything auto-approved
- *   - acceptEdits                  → file-editing tools auto-approved
- *   - plan                         → read-only tools auto-approved, writes prompt
- *   - default / auto               → prompt the user (return false)
- */
-function shouldAutoApproveForPi(mode: PermissionMode | undefined, toolName: string): boolean {
-  if (!mode) return false;
-  // Read-only tools never need approval — they can't change anything.
-  if (PI_READONLY_TOOLS.has(toolName)) return true;
-  if (mode === "bypassPermissions" || mode === "dontAsk") return true;
-  if (mode === "acceptEdits") return toolName === "write" || toolName === "edit";
-  return false;
-}
 
 export interface CreateMcodeExtensionOptions {
   /** The host provider context — carries the IPC bridges for approval /
@@ -358,10 +335,8 @@ function registerToolCallGuard(
     //    applies to the next tool immediately). In plan mode, nothing is
     //    auto-approved — every tool hits the approval prompt below.
     const mode = ctx.getPermissionMode?.();
-    if (shouldAutoApproveForPi(mode, toolName)) {
-      return;
-    }
-    if (ctx.isToolAlwaysAllowed?.(toolName)) {
+    const alwaysAllowed = ctx.isToolAlwaysAllowed?.(toolName) ?? false;
+    if (shouldAutoApproveForPi(mode, toolName, planMode.active, alwaysAllowed)) {
       return;
     }
 
