@@ -9,6 +9,7 @@ import { IconSquare, IconStack2, IconList, IconListDetails, IconGripHorizontal, 
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import type { ChatDensity, DisplayMode, AutoArchiveConfig, Locale } from "@contracts/ipc";
 import type { ReactNode } from "react";
+import { useState } from "react";
 import { SettingRow } from "./SettingRow.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
@@ -71,6 +72,37 @@ export function GeneralPanel() {
   // ── Paste-to-card threshold ──
   const pasteTagThresholdChars = useSessionStore((s) => s.pasteTagThresholdChars);
   const setPasteTagThresholdChars = useSessionStore((s) => s.setPasteTagThresholdChars);
+  // In-progress text of the threshold field. The store setter clamps
+  // defensively — right for PERSISTED values, wrong for keystrokes: committing
+  // every keystroke turns the "3" on the way to "300" (or a cleared field)
+  // into the clamped min under the user's cursor, so the field can never be
+  // edited normally. Keep the raw draft locally, apply valid in-range numbers
+  // live, and clamp-commit only on blur. null = not editing (show the store).
+  const [pasteDraft, setPasteDraft] = useState<string | null>(null);
+
+  const onPasteThresholdChange = (raw: string) => {
+    setPasteDraft(raw);
+    const n = Number(raw);
+    if (
+      raw.trim() !== "" &&
+      Number.isFinite(n) &&
+      n >= PASTE_TAG_THRESHOLD_CHARS_MIN &&
+      n <= PASTE_TAG_THRESHOLD_CHARS_MAX
+    ) {
+      void setPasteTagThresholdChars(n);
+    }
+  };
+
+  const onPasteThresholdBlur = () => {
+    if (pasteDraft === null) return;
+    const n = Number(pasteDraft);
+    // Empty / unparsable drafts are abandoned edits: revert to the stored
+    // value instead of clamping "" to the minimum behind the user's back.
+    if (pasteDraft.trim() !== "" && Number.isFinite(n)) {
+      void setPasteTagThresholdChars(n);
+    }
+    setPasteDraft(null);
+  };
 
   // ── Session auto-archive rules ──
   const autoArchiveConfig = useSessionStore((s) => s.autoArchiveConfig);
@@ -256,8 +288,9 @@ export function GeneralPanel() {
             min={PASTE_TAG_THRESHOLD_CHARS_MIN}
             max={PASTE_TAG_THRESHOLD_CHARS_MAX}
             step={50}
-            value={pasteTagThresholdChars}
-            onChange={(e) => void setPasteTagThresholdChars(Number(e.target.value))}
+            value={pasteDraft ?? pasteTagThresholdChars}
+            onChange={(e) => onPasteThresholdChange(e.target.value)}
+            onBlur={onPasteThresholdBlur}
             className="w-full"
           />
         </SettingRow>

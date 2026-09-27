@@ -140,6 +140,11 @@ function RuntimeRow({
       const res = await api.runtimes.install({ agent: state.agent });
       if (!res.ok) setActionError(t("settings.runtimes.installFailed", { error: res.error ?? "" }));
       await onReload();
+    } catch (err) {
+      // IPC 拒绝(主进程异常/通道断开)与 ok:false 同级:错误必须对用户可见,
+      // 不能落成 unhandled rejection(界面毫无反应,只在 DevTools 里有一行)。
+      // 同页的 ToolchainSection 一直是这么做的 —— 两处行为要一致。
+      setActionError(t("settings.runtimes.installFailed", { error: err instanceof Error ? err.message : String(err) }));
     } finally {
       setBusy(false);
     }
@@ -153,6 +158,8 @@ function RuntimeRow({
       const res = await api.runtimes.remove({ agent: state.agent });
       if (!res.ok) setActionError(t("settings.runtimes.removeFailed", { error: res.error ?? "" }));
       await onReload();
+    } catch (err) {
+      setActionError(t("settings.runtimes.removeFailed", { error: err instanceof Error ? err.message : String(err) }));
     } finally {
       setBusy(false);
     }
@@ -164,14 +171,23 @@ function RuntimeRow({
    *  vendor/; pi: dir with node_modules/, i.e. what `pnpm pack:pi-runtime`
    *  stages) or a .tgz. */
   const doInstallLocal = async () => {
-    const { path } = await api.pickFolder();
+    setActionError(null);
+    let path: string | null;
+    try {
+      ({ path } = await api.pickFolder());
+    } catch (err) {
+      // 目录选择对话框失败(或该宿主没有这个桥)也要说出来,不能静默。
+      setActionError(t("settings.runtimes.installFailed", { error: err instanceof Error ? err.message : String(err) }));
+      return;
+    }
     if (!path) return;
     setBusy(true);
-    setActionError(null);
     try {
       const res = await api.runtimes.installLocal({ agent: state.agent, localPath: path });
       if (!res.ok) setActionError(t("settings.runtimes.installFailed", { error: res.error ?? "" }));
       await onReload();
+    } catch (err) {
+      setActionError(t("settings.runtimes.installFailed", { error: err instanceof Error ? err.message : String(err) }));
     } finally {
       setBusy(false);
     }
@@ -230,6 +246,7 @@ function RuntimeRow({
         <button
           type="button"
           onClick={() => setExpanded(!expanded)}
+          aria-expanded={expanded}
           className={cn(
             "flex shrink-0 items-center justify-center rounded p-0.5 text-content-subtle transition-colors",
             "hover:bg-surface-hover hover:text-content",
@@ -250,6 +267,7 @@ function RuntimeRow({
         <button
           type="button"
           onClick={() => setExpanded(!expanded)}
+          aria-expanded={expanded}
           className="min-w-0 flex-1 truncate text-left text-[0.7857em] text-content-subtle hover:text-content-muted"
           title={state.activePath ?? undefined}
         >

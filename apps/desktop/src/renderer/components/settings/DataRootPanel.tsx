@@ -70,12 +70,19 @@ export function DataRootPanel() {
   }, [load]);
 
   const move = async () => {
-    const { path } = await api.pickFolder();
+    setError(null);
+    let path: string | null;
+    try {
+      ({ path } = await api.pickFolder());
+    } catch (err) {
+      // 选目录对话框失败也要说出来 —— 不能静默吞成 unhandled rejection
+      setError(err instanceof Error ? err.message : String(err));
+      return;
+    }
     if (!path) return;
     // 说清楚会发生什么再动手 —— 会整体复制,并且应用会自己重启
     if (!window.confirm(t("settings.dataRoot.confirm", { path }))) return;
     setBusy(true);
-    setError(null);
     try {
       const res = await api.app.moveDataRoot({ path });
       if (!res.ok) {
@@ -83,6 +90,10 @@ export function DataRootPanel() {
         return;
       }
       setRestarting(true);
+    } catch (err) {
+      // IPC 拒绝(主进程异常/通道断开)与 ok:false 同样是"迁移失败":
+      // 必须让用户看见并能重试,而不是界面毫无反应。
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
