@@ -23,7 +23,8 @@
 import { app } from "electron";
 import { execFile, spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { access, mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { access, mkdir, readFile, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -339,28 +340,39 @@ async function download(dest: string, signal: AbortSignal): Promise<void> {
   if (total && progress.receivedBytes !== total) throw new Error("download incomplete");
 }
 
-/**
- * 提权 PowerShell：跑安装器（可选）→ 给 local.json 打开私网访问 → 重启两个服务。
- * 通过 `Start-Process -Verb RunAs -Wait` 弹一次 UAC；用户点「否」→ 抛错 → phase=error。
- * 成功与否看 marker 文件（提权进程的退出码拿不到）。
- */
-async function runElevated(o: { installerPath: string | null; port: number | null; installDir: string }): Promise<void> {
-  const dir = tempDir();
-  await mkdir(dir, { recursive: true });
-  const script = join(dir, "install.ps1");
-  const marker = join(dir, "install.ok");
-  const logFile = join(dir, "install.log");
-  await unlink(marker).catch(() => {});
+/** PowerShell 单引号字符串字面量的转义。 */
+const ps = (s: string): string => `'${s.replace(/'/g, "''")}'`;
 
-  const ps = (s: string) => `'${s.replace(/'/g, "''")}'`;
-  const lines: string[] = [
-    "$ErrorActionPreference = 'Stop'",
-    `Start-Transcript -Path ${ps(logFile)} -Force | Out-Null`,
-    "try {",
-  ];
+/**
+ * 生成提权执行的 PowerShell 脚本文本。**独立导出是为了能被测到** —— 这段东西
+ * 是以管理员身份跑的,它长什么样必须可断言。
+ *
+ * 两条安全约束刻在这里:
+ *
+ *  1. **安装器在跑之前必须验 Authenticode 签名**,且签名主体得是 ONLYOFFICE /
+ *     Ascensio。安装包是从网上下到用户可写目录里的 ~1 GB 可执行文件,之后要以
+ *     管理员身份执行 —— 只比对 Content-Length 不足以证明它还是官方那一个。
+ *  2. 脚本本身**不落盘**(见 runElevated 的 `-EncodedCommand`),所以这里返回的是
+ *     文本而不是路径。
+ */
+export function buildElevationCommand(o: {
+  installerPath: string | null;
+  port: number | null;
+  installDir: string;
+  markerPath?: string;
+  logPath?: string;
+}): string {
+  const lines: string[] = ["$ErrorActionPreference = 'Stop'"];
+  if (o.logPath) lines.push(`Start-Transcript -Path ${ps(o.logPath)} -Force | Out-Null`);
+  lines.push("try {");
   if (o.installerPath) {
     lines.push(
-      `  $p = Start-Process -FilePath ${ps(o.installerPath)} -ArgumentList @('/SILENT', '/DS_PORT=${o.port}') -Wait -PassThru`,
+      `  $exe = ${ps(o.installerPath)}`,
+      "  $sig = Get-AuthenticodeSignature -FilePath $exe",
+      "  if ($sig.Status -ne 'Valid') { throw \"installer signature is $($sig.Status), refusing to run it elevated\" }",
+      "  $subject = $sig.SignerCertificate.Subject",
+      "  if ($subject -notmatch 'Ascensio|ONLYOFFICE') { throw \"unexpected installer signer: $subject\" }",
+      `  $p = Start-Process -FilePath $exe -ArgumentList @('/SILENT', '/DS_PORT=${String(Number(o.port) || 8080)}') -Wait -PassThru`,
       "  if ($p.ExitCode -ne 0) { throw \"installer exit code $($p.ExitCode)\" }",
     );
   }
@@ -378,10 +390,35 @@ async function runElevated(o: { installerPath: string | null; port: number | nul
     ...SERVICE_NAMES.map((s) => `  & sc.exe stop ${s} | Out-Null`),
     "  Start-Sleep -Seconds 3",
     ...[...SERVICE_NAMES].reverse().map((s) => `  & sc.exe start ${s} | Out-Null`),
-    `  'OK' | Set-Content -Path ${ps(marker)}`,
-    "} finally { Stop-Transcript | Out-Null }",
+    ...(o.markerPath ? [`  'OK' | Set-Content -Path ${ps(o.markerPath)}`] : []),
+    o.logPath ? "} finally { Stop-Transcript | Out-Null }" : "} finally { }",
   );
-  await writeFileUtf8Bom(script, lines.join("\r\n") + "\r\n");
+  return lines.join("\r\n") + "\r\n";
+}
+
+/**
+ * 提权 PowerShell：跑安装器（可选）→ 给 local.json 打开私网访问 → 重启两个服务。
+ * 通过 `Start-Process -Verb RunAs -Wait` 弹一次 UAC；用户点「否」→ 抛错 → phase=error。
+ * 成功与否看 marker 文件（提权进程的退出码拿不到）。
+ */
+async function runElevated(o: { installerPath: string | null; port: number | null; installDir: string }): Promise<void> {
+  const dir = tempDir();
+  await mkdir(dir, { recursive: true });
+  // marker / 日志用一次性随机名：marker 是「脚本跑成功了吗」的唯一信号，固定名
+  // 意味着用户态进程可以提前放一个假的进去骗过校验。
+  const stamp = randomBytes(8).toString("hex");
+  const marker = join(dir, `install-${stamp}.ok`);
+  const logFile = join(dir, `install-${stamp}.log`);
+  await unlink(marker).catch(() => {});
+
+  const script = buildElevationCommand({ ...o, markerPath: marker, logPath: logFile });
+  // 脚本**不落盘**。先写成 `install.ps1` 再用 `-File <路径>` 提权加载，等于把一份
+  // 即将以管理员身份执行的文件放在**当前用户可写**的 `%TEMP%` 里：任何以该用户
+  // 身份运行的进程（在 Mcode 里，这包括 Agent 自己跑出来的代码）都能在用户点下
+  // 「本机安装」与 UAC 确认之间把它换掉 —— 一条从普通用户直通管理员的路。内联
+  // `-EncodedCommand`（UTF-16LE base64）没有这个时间窗，顺带也解决了 PowerShell
+  // 5.1 按 ANSI 读 .ps1 的编码问题（原先靠写 BOM 绕）。
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
 
   await new Promise<void>((resolve, reject) => {
     const child = spawn(
@@ -391,7 +428,7 @@ async function runElevated(o: { installerPath: string | null; port: number | nul
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        `Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',${ps(script)})`,
+        `Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-EncodedCommand','${encoded}')`,
       ],
       { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] },
     );
@@ -413,11 +450,6 @@ async function runElevated(o: { installerPath: string | null; port: number | nul
     }
     throw new Error(`install script failed${tail ? `: ${tail}` : ""}`);
   }
-}
-
-async function writeFileUtf8Bom(path: string, text: string): Promise<void> {
-  // Windows PowerShell 5.1 读 .ps1 默认按 ANSI；带 BOM 才能保证非 ASCII 路径不乱
-  await writeFile(path, "\ufeff" + text, "utf8");
 }
 
 async function waitHealthy(port: number, timeoutMs = 240_000): Promise<void> {
