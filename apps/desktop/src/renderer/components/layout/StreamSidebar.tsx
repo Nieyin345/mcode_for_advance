@@ -397,9 +397,10 @@ function StreamSidebarBase() {
       onClick={(e) => openProjectManage(p, e)}
       className={cn(
         "-mr-1 flex h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle opacity-50 transition-opacity",
-        "hover:bg-surface-hover hover:text-content group-hover:opacity-100",
+        "hover:bg-surface-hover hover:text-content group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:ring-2 focus-visible:ring-accent-strong",
       )}
       title={t("layout.projectManageIcon")}
+      aria-label={t("layout.projectManageIcon")}
     >
       <IconDots size={12} />
     </button>
@@ -997,8 +998,9 @@ function StreamCard({
   const { t } = useI18n();
   const [pendingConfirm, setPendingConfirm] = useState<null | "archive" | "delete">(null);
   const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
   const idle = pendingConfirm === null && status.kind !== "working";
-  const showActions = idle && hovered;
+  const showActions = idle && (hovered || focused);
   const { Icon: ProviderIcon, color: providerColor, label: providerLabel } =
     getProviderIcon(session.providerId);
 
@@ -1050,7 +1052,21 @@ function StreamCard({
   return (
     <li
       ref={(el) => registerNode(session.id, el)}
+      tabIndex={0}
+      aria-current={active ? "page" : undefined}
       onClick={() => { setPendingConfirm(null); onSelect(); }}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget || e.nativeEvent.isComposing || e.altKey || e.ctrlKey || e.metaKey) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          setPendingConfirm(null);
+          onSelect();
+        }
+      }}
+      onFocusCapture={() => setFocused(true)}
+      onBlurCapture={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
+      }}
       onMouseEnter={() => {
         setHovered(true);
         void useSessionStore.getState().prefetchSessionMessages(session.id);
@@ -1063,7 +1079,7 @@ function StreamCard({
       }}
       title={`${session.title}\n${formatFullTime(session.updatedAt)}`}
       className={cn(
-        "group relative flex cursor-pointer flex-col gap-[3px] rounded-lg px-2.5 py-2",
+        "group relative flex cursor-pointer flex-col gap-[3px] rounded-lg px-2.5 py-2 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-strong",
         active
           ? "bg-surface-hover text-content"
           : "text-content-muted hover:bg-surface-hover/60",
@@ -1117,6 +1133,7 @@ function StreamCard({
               <button
                 onClick={(e) => { e.stopPropagation(); setPendingConfirm(null); onArchive(); }}
                 className="flex items-center rounded px-1 text-accent hover:bg-surface-hover"
+                aria-label={t("layout.confirmArchive")}
                 title={t("layout.confirmArchive")}
               >
                 <IconCheck size={12} />
@@ -1124,6 +1141,7 @@ function StreamCard({
               <button
                 onClick={(e) => { e.stopPropagation(); setPendingConfirm(null); }}
                 className="flex items-center rounded px-1 text-content-subtle hover:bg-surface-hover hover:text-content"
+                aria-label={t("common.cancel")}
                 title={t("common.cancel")}
               >
                 <IconX size={12} />
@@ -1135,6 +1153,7 @@ function StreamCard({
               <button
                 onClick={(e) => { e.stopPropagation(); setPendingConfirm(null); onDelete(); }}
                 className="flex items-center rounded px-1 text-danger hover:bg-surface-hover"
+                aria-label={t("layout.confirmDelete")}
                 title={t("layout.confirmDelete")}
               >
                 <IconCheck size={12} />
@@ -1142,6 +1161,7 @@ function StreamCard({
               <button
                 onClick={(e) => { e.stopPropagation(); setPendingConfirm(null); }}
                 className="flex items-center rounded px-1 text-content-subtle hover:bg-surface-hover hover:text-content"
+                aria-label={t("common.cancel")}
                 title={t("common.cancel")}
               >
                 <IconX size={12} />

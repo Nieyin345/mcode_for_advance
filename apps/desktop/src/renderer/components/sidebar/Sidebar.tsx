@@ -67,7 +67,8 @@ export function SectionHeader({
           <button
             onClick={onToggleCollapse}
             title={collapsed ? expandTitle : collapseTitle}
-            className="flex w-3 shrink-0 items-center justify-center text-content-subtle hover:text-content"
+            aria-label={collapsed ? expandTitle : collapseTitle}
+            className="flex w-3 shrink-0 items-center justify-center text-content-subtle hover:text-content focus-visible:ring-2 focus-visible:ring-accent-strong"
           >
             <IconChevronRight
               size={10}
@@ -103,7 +104,8 @@ export function HeaderAction({
     <button
       onClick={onClick}
       title={title}
-      className="flex items-center rounded px-1 py-0.5 text-content-subtle transition-colors hover:bg-surface-hover hover:text-accent"
+      aria-label={title}
+      className="flex items-center rounded px-1 py-0.5 text-content-subtle transition-colors hover:bg-surface-hover hover:text-accent focus-visible:ring-2 focus-visible:ring-accent-strong"
     >
       {children}
     </button>
@@ -165,6 +167,7 @@ export function SectionTabs<K extends string>({
         return (
           <button
             key={tab.key}
+            aria-pressed={on}
             onClick={() => onChange(tab.key)}
             onContextMenu={
               onTabContextMenu
@@ -175,7 +178,7 @@ export function SectionTabs<K extends string>({
                 : undefined
             }
             className={cn(
-              "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors [font-size:var(--rp-fs-md)]",
+              "flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors focus-visible:ring-2 focus-visible:ring-accent-strong [font-size:var(--rp-fs-md)]",
               on
                 ? "bg-surface-hover font-medium text-content"
                 : "text-content-subtle hover:bg-surface-hover/60 hover:text-content",
@@ -281,7 +284,7 @@ export function SidebarRow({
         onDoubleClick={onDoubleClick}
         onContextMenu={onContextMenu}
         title={title ?? label}
-        className={cn(rowBase, tone, "w-full min-w-0 text-left transition-colors")}
+        className={cn(rowBase, tone, "w-full min-w-0 text-left transition-colors focus-visible:ring-2 focus-visible:ring-accent-strong")}
       >
         {icon}
         <span className="truncate">{label}</span>
@@ -297,8 +300,9 @@ export function SidebarRow({
         <button
           onClick={onToggleExpand}
           disabled={expandDisabled}
-          className="flex w-3 shrink-0 items-center justify-center text-content-subtle disabled:opacity-30"
+          className="flex w-3 shrink-0 items-center justify-center text-content-subtle disabled:opacity-30 focus-visible:ring-2 focus-visible:ring-accent-strong"
           title={expanded ? collapseTitle : expandTitle}
+          aria-label={expanded ? collapseTitle : expandTitle}
         >
           <IconChevronRight
             size={10}
@@ -310,14 +314,14 @@ export function SidebarRow({
         onClick={onClick}
         onDoubleClick={onDoubleClick}
         title={title ?? label}
-        className="flex min-w-0 flex-1 items-center gap-1 text-left"
+        className="flex min-w-0 flex-1 items-center gap-1 text-left focus-visible:ring-2 focus-visible:ring-accent-strong"
       >
         {icon}
         <span className="truncate">{label}</span>
       </button>
       {badgeNode}
       {actions && (
-        <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">{actions}</span>
+        <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex group-focus-within:flex">{actions}</span>
       )}
     </div>
   );
@@ -339,8 +343,9 @@ export function RowAction({
     <button
       onClick={onClick}
       title={title}
+      aria-label={title}
       className={cn(
-        "rounded p-0.5 text-content-subtle hover:bg-surface",
+        "rounded p-0.5 text-content-subtle hover:bg-surface focus-visible:ring-2 focus-visible:ring-accent-strong",
         danger ? "hover:text-red-500" : "hover:text-content",
       )}
     >

@@ -49,11 +49,12 @@ export function HoverIconButton({
       onClick={(e) => { e.stopPropagation(); onClick(); }}
       className={cn(
         "flex shrink-0 items-center rounded px-1 text-content-subtle opacity-0 transition-colors",
-        "hover:bg-surface-hover group-hover:opacity-100",
+        "hover:bg-surface-hover group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-accent-strong",
         danger ? "hover:text-danger" : "hover:text-content",
         className,
       )}
       title={title}
+      aria-label={title}
     >
       {children}
     </button>

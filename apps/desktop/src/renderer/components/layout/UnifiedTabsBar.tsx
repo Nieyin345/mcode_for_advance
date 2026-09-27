@@ -18,7 +18,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { IconClipboard, IconEye, IconX } from "@renderer/lib/icons.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useFileViewStore } from "@renderer/stores/fileViewStore.js";
-import { TabBarChevronButton, TabBarOverflowMenu } from "./TabBarChrome.js";
+import { handleTabListKeyDown, TabBarChevronButton, TabBarOverflowMenu } from "./TabBarChrome.js";
 import { SortableSessionTab, findSession } from "./SessionTabs.js";
 import {
   PLAN_TAB_KEY,
@@ -31,6 +31,7 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 /** Stable empty array so the selector never returns a fresh [] (Zustand
  *  Object.is rule — a new [] every render causes an infinite loop). */
 const EMPTY_OPEN_FILES: string[] = [];
+const FILE_VIEW_TAB_KEY = "mcode:readonly-preview";
 
 /** The unified center tab bar (`tabs` displayMode): ONE strip holding the
  *  open session tabs AND the editor's file tabs (+ the per-session plan
@@ -122,9 +123,10 @@ export function UnifiedTabsBar() {
   const [ctxMenu, setCtxMenu] = useState<{ path: string; x: number; y: number } | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  // Maps a tab key (session id | file path | PLAN_TAB_KEY) → its DOM node,
-  // used to scroll the active tab fully into view.
+  // Maps session, file, and plan tab keys to their DOM nodes for active-tab
+  // scrolling; the read-only preview has its own node because it is a store item.
   const tabNodes = useRef<Map<string, HTMLDivElement>>(new Map());
+  const fileViewTabNode = useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
 
@@ -148,17 +150,25 @@ export function UnifiedTabsBar() {
   }, [tabs.length, openFiles.length, hasPlanTab, recomputeScrollState]);
 
   // Scroll the active tab FULLY into view whenever it changes — works for
-  // all three tab kinds. Double-rAF so React's commit + the browser's layout
+  // all four tab kinds. Double-rAF so React's commit + the browser's layout
   // both settle before measuring (the active-state classes change tab
   // widths). See OpenTabsBar for the full rationale.
-  const activeTabKey = editorFocused ? (planTabActive ? PLAN_TAB_KEY : activeFile) : activeId;
+  const activeTabKey = fileViewFocused
+    ? null
+    : editorFocused
+      ? (planTabActive ? PLAN_TAB_KEY : activeFile)
+      : activeId;
   useEffect(() => {
-    if (!activeTabKey) return;
+    if (!activeTabKey && !fileViewFocused) return;
     let raf1 = 0;
     let raf2 = 0;
     let t = 0;
     const scrollTabFullyIntoView = () => {
-      const node = tabNodes.current.get(activeTabKey);
+      const node = fileViewFocused
+        ? fileViewTabNode.current
+        : activeTabKey
+          ? tabNodes.current.get(activeTabKey)
+          : null;
       const el = scrollRef.current;
       if (!node || !el) return;
       // Multi-row layout has no horizontal overflow — just reveal the tab's
@@ -192,7 +202,7 @@ export function UnifiedTabsBar() {
       cancelAnimationFrame(raf2);
       if (t) clearTimeout(t);
     };
-  }, [activeTabKey, tabs.length, openFiles.length, hasPlanTab, multiRow, recomputeScrollState]);
+  }, [activeTabKey, tabs.length, openFiles.length, hasPlanTab, multiRow, fileViewFocused, fileView, recomputeScrollState]);
 
   const scrollByPage = useCallback((dir: 1 | -1) => {
     const el = scrollRef.current;
@@ -209,7 +219,9 @@ export function UnifiedTabsBar() {
       const el = scrollRef.current;
       if (!el) return;
       if (e.deltaY !== 0 && e.deltaX === 0) {
+        const previous = el.scrollLeft;
         el.scrollLeft += e.deltaY;
+        if (el.scrollLeft !== previous) e.preventDefault();
       }
     },
     [multiRow],
@@ -270,6 +282,10 @@ export function UnifiedTabsBar() {
       <div className="relative min-w-0 flex-1">
         <div
           ref={scrollRef}
+          role="tablist"
+          aria-label={t("ide.editor.openTabs")}
+          aria-orientation="horizontal"
+          onKeyDown={handleTabListKeyDown}
           onScroll={recomputeScrollState}
           onWheel={onWheel}
           className={cn(
@@ -294,7 +310,7 @@ export function UnifiedTabsBar() {
                     key={id}
                     session={sess}
                     sessionId={id}
-                    isActive={id === activeId && !editorFocused}
+                    isActive={id === activeId && !editorFocused && !fileViewFocused}
                     running={!!runningBySession[id]}
                     unreadCount={unreadBySession[id] ?? 0}
                     multiRow={multiRow}
@@ -358,6 +374,7 @@ export function UnifiedTabsBar() {
                 else tabNodes.current.delete(PLAN_TAB_KEY);
               }}
               role="tab"
+              tabIndex={0}
               aria-selected={planTabActive && editorFocused}
               title={t("ide.editor.viewPlan")}
               onClick={() => {
@@ -393,7 +410,7 @@ export function UnifiedTabsBar() {
                   "ml-0.5 h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle hover:bg-surface-hover hover:text-content",
                   planTabActive && editorFocused
                     ? "inline-flex"
-                    : "hidden group-hover:inline-flex",
+                    : "hidden group-hover:inline-flex group-focus-within:inline-flex",
                 )}
                 title={t("common.close")}
               >
@@ -413,10 +430,16 @@ export function UnifiedTabsBar() {
               的话用户会以为"点了没反应"。 */}
           {fileView !== null && (
             <div
+              ref={fileViewTabNode}
               role="tab"
+              tabIndex={0}
               aria-selected={fileViewFocused}
               title={fileView.name}
-              onClick={() => setCenterTabFocus("editor")}
+              onClick={() => {
+                clearIdeActiveFile();
+                if (activeId && planTabActive) setPlanTabActive(activeId, false);
+                setCenterTabFocus("editor");
+              }}
               className={cn(
                 "group flex max-w-[200px] cursor-pointer select-none items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] transition-colors",
                 multiRow ? "min-w-[170px] flex-1" : "min-w-0 shrink-0",
@@ -437,7 +460,7 @@ export function UnifiedTabsBar() {
                 onPointerDown={(e) => e.stopPropagation()}
                 className={cn(
                   "ml-0.5 h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle hover:bg-surface-hover hover:text-content",
-                  fileViewFocused ? "inline-flex" : "hidden group-hover:inline-flex",
+                  fileViewFocused ? "inline-flex" : "hidden group-hover:inline-flex group-focus-within:inline-flex",
                 )}
                 title={t("common.close")}
               >
@@ -479,8 +502,8 @@ export function UnifiedTabsBar() {
               const sess = findSession(sessionsByProject, pinnedSessions, streamSessions, id);
               return {
                 key: id,
-                label: sess?.title ?? "(unknown)",
-                active: id === activeId && !editorFocused,
+                label: sess?.title ?? t("layout.unknownSession"),
+                active: id === activeId && !editorFocused && !fileViewFocused,
                 dotClass: runningBySession[id]
                   ? "bg-accent animate-pulse"
                   : "bg-content-subtle/50",
@@ -502,8 +525,23 @@ export function UnifiedTabsBar() {
                   dotClass: undefined as string | undefined,
                 }]
               : []),
+            ...(fileView
+              ? [{
+                  key: FILE_VIEW_TAB_KEY,
+                  label: fileView.name,
+                  title: fileView.name,
+                  active: fileViewFocused,
+                  dotClass: undefined as string | undefined,
+                }]
+              : []),
           ]}
           onSelect={(key) => {
+            if (key === FILE_VIEW_TAB_KEY) {
+              clearIdeActiveFile();
+              if (activeId && planTabActive) setPlanTabActive(activeId, false);
+              setCenterTabFocus("editor");
+              return;
+            }
             if (key === PLAN_TAB_KEY) {
               if (activeId) {
                 clearIdeActiveFile();

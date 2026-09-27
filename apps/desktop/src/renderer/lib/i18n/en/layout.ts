@@ -256,4 +256,5 @@ export const en = {
   "layout.image.download": "Download image",
   "layout.image.downloadName": "screenshot-{stamp}.png",
   "layout.image.closePreview": "Close preview",
+  "layout.unknownSession": "Unknown session",
 } as const;

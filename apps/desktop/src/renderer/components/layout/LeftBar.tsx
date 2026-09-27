@@ -686,6 +686,7 @@ function LeftBarBase({
           <button
             onClick={() => setProjectsCollapsed((v) => !v)}
             title={projectsCollapsed ? t("layout.expand") : t("layout.collapse")}
+            aria-label={projectsCollapsed ? t("layout.expand") : t("layout.collapse")}
             className="flex w-3 shrink-0 items-center justify-center text-content-subtle hover:text-content"
           >
             <IconChevronRight
@@ -705,7 +706,7 @@ function LeftBarBase({
           <div
             className={cn(
               "flex items-center rounded border border-edge transition-all",
-              "opacity-0 group-hover:opacity-100",
+              "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
             )}
             role="group"
             aria-label={t("layout.projectViewMode")}
@@ -719,6 +720,7 @@ function LeftBarBase({
                   : "text-content-subtle hover:bg-surface-hover/60 hover:text-content",
               )}
               title={t("layout.viewFlat")}
+              aria-label={t("layout.viewFlat")}
               aria-pressed={projectView === "flat"}
             >
               <IconList size={13} />
@@ -732,6 +734,7 @@ function LeftBarBase({
                   : "text-content-subtle hover:bg-surface-hover/60 hover:text-content",
               )}
               title={t("layout.viewGrouped")}
+              aria-label={t("layout.viewGrouped")}
               aria-pressed={projectView === "grouped"}
             >
               <IconCategoryFilled size={13} />
@@ -745,9 +748,10 @@ function LeftBarBase({
               // clear entry point to add one (no empty placeholder row anymore).
               projects.length === 0
                 ? "opacity-100 hover:text-accent"
-                : "opacity-0 hover:text-accent group-hover:opacity-100",
+                : "opacity-0 hover:text-accent group-hover:opacity-100 group-focus-within:opacity-100",
             )}
             title={t("layout.addProject")}
+            aria-label={t("layout.addProject")}
           >
             <IconPlus size={12} />
           </button>
@@ -1451,6 +1455,7 @@ function ProjectNode(props: ProjectNodeProps) {
           onClick={onToggleExpand}
           className="flex w-3 shrink-0 items-center justify-center text-content-subtle"
           title={expanded ? t("layout.collapse") : t("layout.expand")}
+          aria-label={expanded ? t("layout.collapse") : t("layout.expand")}
         >
           <IconChevronRight
             size={10}
@@ -1476,9 +1481,10 @@ function ProjectNode(props: ProjectNodeProps) {
           onClick={onNewSession}
           className={cn(
             "flex shrink-0 items-center rounded px-1 text-content-subtle opacity-0 transition-colors",
-            "hover:text-accent group-hover:opacity-100",
+            "hover:text-accent group-hover:opacity-100 group-focus-within:opacity-100",
           )}
           title={t("layout.newSessionHere")}
+          aria-label={t("layout.newSessionHere")}
         >
           <IconPlus size={12} />
         </button>
@@ -1591,15 +1597,17 @@ function SessionRow({
   // buttons (on hover), so the time can hug the right edge without the
   // always-reserved action buttons leaving a gap.
   const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
   const idle = pendingConfirm === null && !isRunning;
   const hasUnread = unreadCount > 0;
   // When there are unread events, suppress the time label so the badge can
   // hug the right edge - the badge is more actionable information than the
   // timestamp. On hover the action buttons take precedence (so the user can
   // archive/delete without the badge getting in the way).
-  const showTime = idle && !hovered && !hasUnread;
-  const showActions = idle && hovered;
-  const showUnreadBadge = idle && !hovered && hasUnread;
+  const revealActions = hovered || focused;
+  const showTime = idle && !revealActions && !hasUnread;
+  const showActions = idle && revealActions;
+  const showUnreadBadge = idle && !revealActions && hasUnread;
 
   const handleRowClick = () => {
     setPendingConfirm(null);
@@ -1609,7 +1617,20 @@ function SessionRow({
   return (
     <li
       ref={(el) => registerNode(session.id, el)}
+      tabIndex={0}
+      aria-current={active ? "page" : undefined}
       onClick={handleRowClick}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget || e.nativeEvent.isComposing || e.altKey || e.ctrlKey || e.metaKey) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          handleRowClick();
+        }
+      }}
+      onFocusCapture={() => setFocused(true)}
+      onBlurCapture={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
+      }}
       onMouseEnter={() => {
         setHovered(true);
         // Warm the message bucket on hover — by the time the click lands
@@ -1626,7 +1647,7 @@ function SessionRow({
         onContext(e.clientX, e.clientY);
       }}
       className={cn(
-        "group flex cursor-pointer items-center gap-1 rounded-md px-1 py-1 [font-size:var(--right-panel-font-size)]",
+        "group flex cursor-pointer items-center gap-1 rounded-md px-1 py-1 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-strong [font-size:var(--right-panel-font-size)]",
         active
           ? "bg-surface-hover text-content shadow-sm ring-1 ring-inset ring-accent/35"
           : "text-content-muted hover:bg-surface-hover/60",
@@ -1696,6 +1717,7 @@ function SessionRow({
           <button
             onClick={(e) => { e.stopPropagation(); setPendingConfirm(null); onArchive(); }}
             className="flex shrink-0 items-center rounded px-1 text-accent hover:bg-surface-hover"
+            aria-label={t("layout.confirmArchive")}
             title={t("layout.confirmArchive")}
           >
             <IconCheck size={13} />
@@ -1703,6 +1725,7 @@ function SessionRow({
           <button
             onClick={(e) => { e.stopPropagation(); setPendingConfirm(null); }}
             className="flex shrink-0 items-center rounded px-1 text-content-subtle hover:bg-surface-hover hover:text-content"
+            aria-label={t("common.cancel")}
             title={t("common.cancel")}
           >
             <IconX size={13} />
@@ -1714,6 +1737,7 @@ function SessionRow({
           <button
             onClick={(e) => { e.stopPropagation(); setPendingConfirm(null); onDelete(); }}
             className="flex shrink-0 items-center rounded px-1 text-danger hover:bg-surface-hover"
+            aria-label={t("layout.confirmDelete")}
             title={t("layout.confirmDelete")}
           >
             <IconCheck size={13} />
@@ -1721,6 +1745,7 @@ function SessionRow({
           <button
             onClick={(e) => { e.stopPropagation(); setPendingConfirm(null); }}
             className="flex shrink-0 items-center rounded px-1 text-content-subtle hover:bg-surface-hover hover:text-content"
+            aria-label={t("common.cancel")}
             title={t("common.cancel")}
           >
             <IconX size={13} />
@@ -1847,6 +1872,7 @@ function WorktreeGroupNode({
           onClick={onToggle}
           className="flex w-3 shrink-0 items-center justify-center text-content-subtle"
           title={expanded ? t("layout.collapse") : t("layout.expand")}
+          aria-label={expanded ? t("layout.collapse") : t("layout.expand")}
         >
           <IconChevronRight
             size={10}
@@ -1877,9 +1903,10 @@ function WorktreeGroupNode({
             onClick={onMergeBack}
             className={cn(
               "flex shrink-0 items-center rounded px-1 text-accent opacity-0 transition-colors",
-              "group-hover:opacity-100",
+              "group-hover:opacity-100 group-focus-within:opacity-100",
             )}
             title={t("layout.mergeWorktreeBack")}
+            aria-label={t("layout.mergeWorktreeBack")}
           >
             <IconGitMerge size={12} />
           </button>
@@ -1891,9 +1918,10 @@ function WorktreeGroupNode({
           onClick={onNewSession}
           className={cn(
             "flex shrink-0 items-center rounded px-1 text-content-subtle opacity-0 transition-colors",
-            "hover:text-accent group-hover:opacity-100",
+            "hover:text-accent group-hover:opacity-100 group-focus-within:opacity-100",
           )}
           title={t("layout.newSessionInWorktree")}
+          aria-label={t("layout.newSessionInWorktree")}
         >
           <IconPlus size={12} />
         </button>
@@ -1905,9 +1933,10 @@ function WorktreeGroupNode({
           onClick={onRemove}
           className={cn(
             "flex shrink-0 items-center rounded px-1 text-content-subtle opacity-0 transition-colors",
-            "hover:text-danger group-hover:opacity-100",
+            "hover:text-danger group-hover:opacity-100 group-focus-within:opacity-100",
           )}
           title={t("chat.worktree.removeWt")}
+          aria-label={t("chat.worktree.removeWt")}
         >
           <IconTrash size={12} />
         </button>
@@ -2068,6 +2097,7 @@ function GroupNode({
           onClick={onToggle}
           className="flex w-3 shrink-0 items-center justify-center"
           title={collapsed ? t("layout.expand") : t("layout.collapse")}
+          aria-label={collapsed ? t("layout.expand") : t("layout.collapse")}
         >
           <IconChevronRight
             size={10}
@@ -2091,7 +2121,8 @@ function GroupNode({
         <Menu.Root>
           <Menu.Trigger
             title={t("layout.setColor")}
-            className="flex shrink-0 items-center rounded px-1 text-content-subtle opacity-0 transition-colors hover:bg-surface-hover group-hover:opacity-100"
+            aria-label={t("layout.setColor")}
+            className="flex shrink-0 items-center rounded px-1 text-content-subtle opacity-0 transition-colors hover:bg-surface-hover group-hover:opacity-100 group-focus-within:opacity-100"
           >
             <IconPalette size={12} style={colorHex ? { color: colorHex } : undefined} />
           </Menu.Trigger>
@@ -2119,6 +2150,7 @@ function GroupNode({
                         borderColor: groupColor === p.triplet ? "var(--color-content)" : "var(--color-edge)",
                       }}
                       title={`${t(p.nameKey)} · ${p.hex.toUpperCase()}`}
+                      aria-label={`${t(p.nameKey)} · ${p.hex.toUpperCase()}`}
                     >
                       {groupColor === p.triplet && (
                         <IconCheck size={12} className="text-white drop-shadow" />
@@ -2152,8 +2184,9 @@ function GroupNode({
         </Menu.Root>
         <button
           onClick={onRenameGroup}
-          className="flex shrink-0 items-center rounded px-1 text-content-subtle opacity-0 transition-colors hover:text-accent group-hover:opacity-100"
+          className="flex shrink-0 items-center rounded px-1 text-content-subtle opacity-0 transition-colors hover:text-accent group-hover:opacity-100 group-focus-within:opacity-100"
           title={t("layout.renameGroup")}
+          aria-label={t("layout.renameGroup")}
         >
           <IconPencil size={12} />
         </button>

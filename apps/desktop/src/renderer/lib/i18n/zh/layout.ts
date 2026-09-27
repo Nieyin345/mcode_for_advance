@@ -266,4 +266,5 @@ export const zh = {
   "layout.image.download": "下载图片",
   "layout.image.downloadName": "截图-{stamp}.png",
   "layout.image.closePreview": "关闭预览",
+  "layout.unknownSession": "未知会话",
 } as const;

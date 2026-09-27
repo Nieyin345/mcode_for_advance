@@ -21,7 +21,8 @@ import { IconX, SpinnerIcon } from "@renderer/lib/icons.js";
 import { getProviderIcon } from "@renderer/lib/providerIcon.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { Session } from "@contracts/session";
-import { TabBarChevronButton, TabBarOverflowMenu } from "./TabBarChrome.js";
+import { handleTabListKeyDown, TabBarChevronButton, TabBarOverflowMenu } from "./TabBarChrome.js";
+import { useI18n } from "@renderer/lib/i18n/index.js";
 
 /** Tab strip rendered along the top of the center pane in `tabs` display
  *  mode. Each open tab shows the session's title, a running indicator
@@ -44,6 +45,7 @@ import { TabBarChevronButton, TabBarOverflowMenu } from "./TabBarChrome.js";
  *  In `single` displayMode this component is never mounted (the
  *  CenterPane router in App.tsx gates it). */
 export function SessionTabs() {
+  const { t } = useI18n();
   const tabs = useSessionStore((s) => s.openTabs);
   const activeId = useSessionStore((s) => s.activeSessionId);
   const sessionsByProject = useSessionStore((s) => s.sessionsByProject);
@@ -110,7 +112,9 @@ export function SessionTabs() {
       const el = scrollRef.current;
       if (!el) return;
       if (e.deltaY !== 0 && e.deltaX === 0) {
+        const previous = el.scrollLeft;
         el.scrollLeft += e.deltaY;
+        if (el.scrollLeft !== previous) e.preventDefault();
       }
     },
     [multiRow],
@@ -154,7 +158,7 @@ export function SessionTabs() {
         <TabBarChevronButton
           dir="left"
           onClick={() => scrollByPage(-1)}
-          title="Scroll tabs left"
+          title={t("ide.editor.scrollTabsLeft")}
         />
       )}
 
@@ -164,6 +168,10 @@ export function SessionTabs() {
       <div className="relative min-w-0 flex-1">
         <div
           ref={scrollRef}
+          role="tablist"
+          aria-label={t("ide.editor.openTabs")}
+          aria-orientation="horizontal"
+          onKeyDown={handleTabListKeyDown}
           onScroll={recomputeScrollState}
           onWheel={onWheel}
           className={cn(
@@ -226,7 +234,7 @@ export function SessionTabs() {
         <TabBarChevronButton
           dir="right"
           onClick={() => scrollByPage(1)}
-          title="Scroll tabs right"
+          title={t("ide.editor.scrollTabsRight")}
         />
       )}
 
@@ -235,14 +243,14 @@ export function SessionTabs() {
           toggle). */}
       {showOverflowMenu && (
         <TabBarOverflowMenu
-          heading="Open tabs"
+          heading={t("ide.editor.openTabs")}
           multiRow={multiRow}
           onToggleMultiRow={setTabBarMultiRow}
           items={tabs.map((id) => {
             const sess = findSession(sessionsByProject, pinnedSessions, streamSessions, id);
             return {
               key: id,
-              label: sess?.title ?? "(unknown)",
+              label: sess?.title ?? t("layout.unknownSession"),
               active: id === activeId,
               dotClass: runningBySession[id]
                 ? "bg-accent animate-pulse"
@@ -289,6 +297,7 @@ export function SortableSessionTab({
   onActivate,
   onClose,
 }: SortableTabProps) {
+  const { t } = useI18n();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: sessionId });
 
@@ -408,12 +417,12 @@ export function SortableSessionTab({
           activates the tab. */}
       <button
         type="button"
-        aria-label="Close tab"
+        aria-label={t("ide.editor.closeTabAria")}
         onClick={handleClose}
         onPointerDown={(e) => e.stopPropagation()}
         className={cn(
           "ml-0.5 h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle hover:bg-surface-hover hover:text-content",
-          isActive ? "inline-flex" : "hidden group-hover:inline-flex",
+          isActive ? "inline-flex" : "hidden group-hover:inline-flex group-focus-within:inline-flex",
         )}
       >
         <IconX size={11} />

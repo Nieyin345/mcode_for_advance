@@ -1,3 +1,4 @@
+import type { KeyboardEvent } from "react";
 import { Menu } from "@base-ui/react/menu";
 import { cn } from "@renderer/lib/cn.js";
 import { IconCheck, IconChevronLeft, IconChevronRight, IconDotsVertical } from "@renderer/lib/icons.js";
@@ -12,6 +13,28 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
  * the paging chevrons and the "⋯" overflow menu so the two bars stay visually
  * and behaviorally consistent (see SessionTabs for the full interaction model).
  */
+
+/** Keyboard behavior shared by session and unified tab strips. */
+export function handleTabListKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+  if (e.nativeEvent.isComposing || e.altKey || e.ctrlKey || e.metaKey) return;
+  const target = e.target;
+  if (!(target instanceof HTMLElement) || target.getAttribute("role") !== "tab") return;
+  const tabs = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]'));
+  const index = tabs.indexOf(target);
+  if (index < 0) return;
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    target.click();
+    return;
+  }
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+  e.preventDefault();
+  const nextIndex = e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1
+    : (index + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  const next = tabs[nextIndex];
+  next?.focus();
+  next?.click();
+}
 
 /* ───────────────────────── chevron buttons ───────────────────────── */
 
@@ -31,7 +54,7 @@ export function TabBarChevronButton({ dir, onClick, title }: ChevronButtonProps)
       onClick={onClick}
       title={title}
       aria-label={title}
-      className="mb-0.5 flex h-6 w-5 shrink-0 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-muted hover:text-content"
+      className="mb-0.5 flex h-6 w-5 shrink-0 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-muted hover:text-content focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-strong"
     >
       <Icon size={14} />
     </button>
@@ -81,9 +104,9 @@ export function TabBarOverflowMenu({
   return (
     <Menu.Root>
       <Menu.Trigger
-        className="mb-0.5 flex h-6 w-5 shrink-0 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-muted hover:text-content"
-        title="Show all tabs"
-        aria-label="Show all tabs"
+        className="mb-0.5 flex h-6 w-5 shrink-0 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-muted hover:text-content focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-strong"
+        title={t("ide.editor.openTabs")}
+        aria-label={t("ide.editor.openTabs")}
       >
         <IconDotsVertical size={14} />
       </Menu.Trigger>
