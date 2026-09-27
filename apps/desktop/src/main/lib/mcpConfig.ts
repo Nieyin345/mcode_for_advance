@@ -152,12 +152,29 @@ export async function readCliMcpSources(): Promise<CliMcpSource[]> {
 }
 
 /** Read the persisted MCP management state (settings table). AwaitDb-guarded
- *  because the provider's startTurn also calls this outside an IPC context. */
+ *  because the provider's startTurn also calls this outside an IPC context.
+ *
+ *  A row that is not valid JSON (torn write, an external tool that edited the
+ *  db, an older format) degrades to "no management state" — the same contract
+ *  every other reader in this module already honours (`readJson`,
+ *  `readUserClaudeJson`). It used to `JSON.parse` the row bare, so one bad row
+ *  threw out of `getMcpTruth()` and took `MCP_LIST` **and every turn's
+ *  `materializeAllMcpViews()`** down with it. Degrading instead lets the truth
+ *  migration lift `.claude.json` back up and persist it, which overwrites the
+ *  unreadable row — nothing is lost, because nothing could be read from it.
+ *  (The bare version also parsed the same text twice.) */
 export async function getMcpManagement(): Promise<McpManagementState> {
   await awaitDb();
   const raw = SettingRepo.get(MCP_MANAGEMENT_SETTING_KEY);
   if (!raw) return {};
-  return asRecord(JSON.parse(raw)) ? (JSON.parse(raw) as McpManagementState) : {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    log.warn(`mcp: management state is not valid JSON, treating it as empty: ${(err as Error).message}`);
+    return {};
+  }
+  return asRecord(parsed) ? (parsed as McpManagementState) : {};
 }
 
 /** Persist the MCP management state. */
