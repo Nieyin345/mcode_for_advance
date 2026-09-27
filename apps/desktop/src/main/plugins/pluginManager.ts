@@ -76,6 +76,12 @@ const GIT_TIMEOUT_MS = 120_000;
  *  (and the panel's busy state) forever. */
 const DOWNLOAD_TIMEOUT_MS = 300_000;
 
+/** Directory names under PLUGINS_ROOT that the manager owns itself. Compared
+ *  case-insensitively: Windows and macOS file systems usually are. */
+function isReservedPluginName(name: string): boolean {
+  return name.toLowerCase() === "marketplaces";
+}
+
 /* ── Settings-table helpers ── */
 
 function readJsonSetting<T>(key: string, fallback: T): T {
@@ -397,6 +403,7 @@ function readInstallRecord(pluginRoot: string): InstallRecord | null {
  *  model makes "newest" a plain lexicographic max — semver-ish strings sort
  *  well enough for the 0.x world this ships in). */
 function installedRootOf(name: string): string | null {
+  if (isReservedPluginName(name)) return null;
   const base = path.join(PLUGINS_ROOT, name);
   if (!existsSync(base)) return null;
   let newest: string | null = null;
@@ -608,7 +615,16 @@ async function stagePluginSource(source: StageSource): Promise<StageOutcome> {
  *  write the install record, prune other versions (single-version model).
  *  Copies (not renames) so the staging tree can be cleaned uniformly after. */
 async function finalizePluginInstall(stage: StageOutcome, source: PluginSourceInfo): Promise<string> {
-  const finalDir = path.join(PLUGINS_ROOT, stage.manifest.name, stage.version);
+  if (isReservedPluginName(stage.manifest.name)) {
+    throw new Error(`插件名 ${stage.manifest.name} 与插件目录的内部文件夹冲突,已拒绝安装`);
+  }
+  const nameDir = path.join(PLUGINS_ROOT, stage.manifest.name);
+  const finalDir = path.join(nameDir, stage.version);
+  // The swap and prune below delete siblings of finalDir; it must be exactly
+  // one level below this plugin's own directory.
+  if (path.dirname(finalDir) !== nameDir || path.basename(finalDir) !== stage.version) {
+    throw new Error(`插件版本号不能用作目录名,已拒绝安装:${stage.version}`);
+  }
   await fs.mkdir(path.dirname(finalDir), { recursive: true });
   // Stage the new copy BESIDE the final slot, then swap — a same-version
   // reinstall never leaves a half-copied directory at the live path.
@@ -703,7 +719,7 @@ export async function installFromGit(url: string, ref?: string): Promise<Install
 /* ── Enable / disable / remove ── */
 
 export function setPluginEnabled(name: string, enabledValue: boolean): { ok: boolean; error?: string } {
-  if (!PLUGIN_NAME_RE.test(name)) return { ok: false, error: "非法插件名" };
+  if (!PLUGIN_NAME_RE.test(name) || isReservedPluginName(name)) return { ok: false, error: "非法插件名" };
   if (!installedRootOf(name)) return { ok: false, error: `插件 ${name} 未安装` };
   const names = readEnabledPlugins().filter((n) => n !== name);
   if (enabledValue) names.push(name);
@@ -712,7 +728,7 @@ export function setPluginEnabled(name: string, enabledValue: boolean): { ok: boo
 }
 
 export function removePlugin(name: string): { ok: boolean; error?: string } {
-  if (!PLUGIN_NAME_RE.test(name)) return { ok: false, error: "非法插件名" };
+  if (!PLUGIN_NAME_RE.test(name) || isReservedPluginName(name)) return { ok: false, error: "非法插件名" };
   const base = path.join(PLUGINS_ROOT, name);
   if (!existsSync(base)) return { ok: false, error: `插件 ${name} 未安装` };
   rmSync(base, { recursive: true, force: true });

@@ -167,7 +167,12 @@ export function pluginVersionOf(manifest: PluginManifest): string {
   const raw = (manifest.version ?? "").trim();
   if (!raw) return "0.0.0";
   const safe = raw.replace(/[^A-Za-z0-9.+-]/g, "-");
-  return safe || "0.0.0";
+  // This value is also the install directory name (plugins/<name>/<version>).
+  // An all-dot value would be "." (the plugin's own base dir) or ".." (the
+  // plugins root), and the swap/prune steps would then delete the payload or
+  // every installed plugin and marketplace.
+  if (/^\.*$/.test(safe)) return "0.0.0";
+  return safe;
 }
 
 /* ── Frontmatter (SKILL.md / commands/*.md / agents/*.md) ── */
