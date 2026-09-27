@@ -283,27 +283,40 @@ function browserDownloadsDir(): string {
   return join(app.getPath("downloads"), "mcode-browser");
 }
 
-/** Dedupe a download filename against existing files on disk: `a.pdf` →
- *  `a-1.pdf`, `a-2.pdf` … (before the extension). Keeps repeated downloads of
- *  the same report from silently overwriting each other. */
-function uniqueDownloadPath(dir: string, filename: string): string {
+/** Dedupe a download filename against existing files on disk AND against
+ *  `reserved` (save paths of downloads still in flight): `a.pdf` → `a-1.pdf`,
+ *  `a-2.pdf` … (before the extension). Keeps repeated downloads of the same
+ *  report from silently overwriting each other.
+ *
+ *  Why the disk alone is not enough: Chromium streams into a `.crdownload`
+ *  temp file and only renames onto the save path when the transfer completes.
+ *  While the first `report.pdf` is still downloading, the path does not exist,
+ *  so a second same-name download that starts meanwhile (two links clicked,
+ *  two tabs, agent + user) used to get the identical save path — the later
+ *  `done` then overwrote the earlier file without any error. */
+function uniqueDownloadPath(
+  dir: string,
+  filename: string,
+  reserved: ReadonlySet<string> = new Set<string>(),
+): string {
   const safe = filename.replace(/[\\/:*?"<>|]/g, "_").trim() || "download";
+  const taken = (candidate: string): boolean => {
+    if (reserved.has(candidate)) return true;
+    try {
+      statSync(candidate);
+      return true;
+    } catch {
+      return false; // does not exist — free
+    }
+  };
   const ext = join(dir, safe);
-  try {
-    statSync(ext);
-  } catch {
-    return ext; // does not exist — take it
-  }
+  if (!taken(ext)) return ext;
   const dot = safe.lastIndexOf(".");
   const stem = dot > 0 ? safe.slice(0, dot) : safe;
   const tail = dot > 0 ? safe.slice(dot) : "";
   for (let i = 1; i < 1000; i++) {
     const candidate = join(dir, `${stem}-${i}${tail}`);
-    try {
-      statSync(candidate);
-    } catch {
-      return candidate;
-    }
+    if (!taken(candidate)) return candidate;
   }
   return join(dir, `${stem}-${Date.now()}${tail}`);
 }
@@ -1687,6 +1700,17 @@ class BrowserManagerImpl {
   private readonly downloads: BrowserDownloadEntry[] = [];
   private downloadListenerInstalled = false;
 
+  /** Save paths of downloads that have started but not reached a terminal
+   *  state — the names `uniqueDownloadPath` must treat as taken even though
+   *  nothing sits at those paths on disk yet (see its doc comment). */
+  private inFlightDownloadPaths(): Set<string> {
+    const paths = new Set<string>();
+    for (const d of this.downloads) {
+      if (d.state === "progressing") paths.add(d.path);
+    }
+    return paths;
+  }
+
   /** Hook the shared browser session's will-download ONCE. Idempotent.
    *
    *  由两处调用:创建浏览器视图时(`createBrowser`),以及**发起程序化下载时**
@@ -1716,7 +1740,7 @@ class BrowserManagerImpl {
 
       const path = intent
         ? intent.savePath
-        : uniqueDownloadPath(browserDownloadsDir(), item.getFilename());
+        : uniqueDownloadPath(browserDownloadsDir(), item.getFilename(), this.inFlightDownloadPaths());
       try {
         mkdirSync(intent ? dirname(path) : browserDownloadsDir(), { recursive: true });
       } catch (err) {

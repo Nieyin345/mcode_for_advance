@@ -50,7 +50,14 @@ function spec(language: CodeLanguage, file: string): [string, string[]] {
   if (language === "powershell") {
     return ["powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", file]];
   }
-  return process.platform === "win32" ? ["cmd.exe", ["/d", "/s", "/c", file]] : ["sh", [file]];
+  // ⚠️ Windows 上**不能带 `/s`**(2026-09-27 修)。`/s` 会把 cmd 的「引号保留」规则关掉:
+  // 脚本路径一含空格(用户名带空格的机器上,`os.tmpdir()` 就是
+  // `C:\Users\John Smith\AppData\Local\Temp`),cmd 会把 Node 加上的引号剥掉、
+  // 在空格处把命令切断 —— 实测报「'C:\...\Temp' 不是内部或外部命令」,用户填的
+  // shell 代码一行都没跑。去掉 `/s` 之后,带空格的路径被整段保留并执行;
+  // 不带空格的老路径本来就没有引号,行为一字不变。
+  // (残余:临时路径里含 `&` 这类控制字符时仍不可用 —— 见 M08 报告的观察项。)
+  return process.platform === "win32" ? ["cmd.exe", ["/d", "/c", file]] : ["sh", [file]];
 }
 
 function extensionOf(language: CodeLanguage): string {

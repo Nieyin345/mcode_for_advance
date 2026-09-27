@@ -4791,6 +4791,17 @@ function clearSessionDeltas(sessionId: string): void {
   }
 }
 
+/** 本端按了停止、但那一轮的 `turn.done{reason:"interrupted"}` 还没到 —— 「欠着一条中断
+ *  收口」的会话。`interrupt()` 登记,任何一条 `turn.done` 到达即销账。
+ *
+ *  ingestEvent 里那条「陈旧 turn.done 守卫」靠它判断:只有**本端**停过、收口还没来、
+ *  用户已经重发开了新一轮,late 的 interrupted 收口才是陈旧的、该丢。以前那条守卫只看
+ *  `interruptedBySession` 哨兵 —— 哨兵没立就丢,结果**不是本端发起的中断**(主进程轮预算
+ *  触顶 `enforceBudget`、手机端点停 `mobileRpc`、工作流取消)发来的收口也被整条丢掉:
+ *  `runningBySession` 永远为 true,输入框锁死、「开始·用时」一直在跳、这一轮不落库、
+ *  排队的提问不出发。模块级而非 store 状态:它不驱动任何渲染。 */
+const pendingInterruptDone = new Set<string>();
+
 /** Event types that append visible content to the transcript. While a session
  *  is interrupted these are ignored so the aborted turn's late events can't
  *  keep rendering text / tools / images after the Stop click. Status events
@@ -8686,6 +8697,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Capture the turn anchor BEFORE the set below deletes it — the persist at
     // the end of this function filters this turn's messages by it.
     const turnStartAt = get().runningTurnStartedAt[sessionId];
+    // 先登记「欠一条中断收口」,再发 IPC:收口可能在 await 期间就到(那时哨兵还没立,
+    // 守卫会把它当陈旧事件丢掉 —— 无妨,下面这段本来就把运行标志/计时/落库都做了)。
+    pendingInterruptDone.add(sessionId);
     await api.claude.interrupt({ sessionId });
     // Drop this session's buffered deltas: after abort, flushFinal may emit a
     // few straggler text.delta/thinking while the generator unwinds, but the
@@ -8849,14 +8863,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // panels) and (b) reset runningBySession to false (composer looks idle,
     // no spinner).
     //
-    // Detection: a turn.done with reason "interrupted" is the closing event
-    // of an aborted turn. If interruptedBySession is NOT set, either no abort
-    // happened (impossible for this reason) or a newer turn already started
-    // and cleared the sentinel → stale. Drop it. The legitimate path (user
-    // stopped, didn't resend) still has the sentinel set when the late
-    // turn.done arrives, so it runs and freezes the interrupted turn's opener.
-    if (e.type === "turn.done" && e.reason === "interrupted" && !get().interruptedBySession[sid]) {
-      return;
+    // Detection: the turn.done is stale only when THIS renderer still owes an
+    // interrupted close-out (`pendingInterruptDone`, registered by interrupt())
+    // AND a newer turn already cleared the sentinel. The legitimate local path
+    // (user stopped, didn't resend) still has the sentinel set, so it runs.
+    //
+    // "sentinel not set" alone is NOT proof of staleness: interrupts also come
+    // from main (turn budget → `enforceBudget` → handle.interrupt()), from the
+    // phone (`mobileRpc` → runtimeManager.interrupt) and from workflow cancel —
+    // none of those set this renderer's sentinel. Dropping their turn.done left
+    // `runningBySession` true forever: composer locked, timer ticking, turn not
+    // persisted, queued prompt never fired. Any turn.done settles the debt, so a
+    // stop whose close-out never arrived can't poison a later turn either.
+    if (e.type === "turn.done") {
+      const owed = pendingInterruptDone.delete(sid);
+      if (e.reason === "interrupted" && owed && !get().interruptedBySession[sid]) {
+        return;
+      }
     }
 
     // Turn end: snapshot the final subagent roster + transcripts onto the

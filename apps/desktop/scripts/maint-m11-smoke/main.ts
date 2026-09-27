@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import {createServer,type Server} from 'node:http';
 import {EventEmitter} from 'node:events';
-import {writeFileSync} from 'node:fs';
-import {join} from 'node:path';
+import {writeFileSync,readFileSync,mkdtempSync,statSync} from 'node:fs';
+import {join,resolve,dirname} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import ts from 'typescript';
 import {listenOnDialablePort,isBlockedPort} from '../../src/main/lib/loopbackPort.js';
 const dir=process.env.MAINT_M11_DIR;assert.ok(dir,'Isolated evidence directory required');
 const results:Array<{name:string;status:string;error?:string}>=[];
@@ -64,5 +66,48 @@ await test('server can be reused after asynchronous bind failure without stale c
  const server=new ScriptedServer([55001,55002],'async-error');let calls=0;
  await assert.rejects(listenOnDialablePort(server.asServer(),()=>calls++),/scripted async/);server.mode='ok';
  assert.equal(await listenOnDialablePort(server.asServer(),()=>calls++),55002);assert.equal(calls,1);assert.equal(server.listenerCount('error'),0);assert.equal(server.listenerCount('listening'),0);
+});
+// ── 下载落点去重(BrowserManager.uniqueDownloadPath)──
+// Chromium 传输期间目标文件并不存在(写的是 .crdownload,完成时才 rename),所以只查磁盘
+// 的去重挡不住**并发**的同名下载:两个 will-download 都拿到 report.pdf,后到的把先到的覆盖。
+// 生产函数是模块私有的、且模块顶层 import electron,这里用 TypeScript AST 按声明边界取出
+// 该函数原文、转译后以真实 join/statSync 执行 —— 不手抄算法。
+const desktopRoot=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
+const bmPath=join(desktopRoot,'src/main/browser/BrowserManager.ts');
+const bmSource=ts.createSourceFile('BrowserManager.ts',readFileSync(bmPath,'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);
+const fnDecls:ts.FunctionDeclaration[]=[];const callArgCounts:number[]=[];
+function visitBm(n:ts.Node):void{
+ if(ts.isFunctionDeclaration(n)&&n.name?.text==='uniqueDownloadPath')fnDecls.push(n);
+ if(ts.isCallExpression(n)&&ts.isIdentifier(n.expression)&&n.expression.text==='uniqueDownloadPath')callArgCounts.push(n.arguments.length);
+ ts.forEachChild(n,visitBm);
+}
+visitBm(bmSource);assert.equal(fnDecls.length,1,'unique production uniqueDownloadPath required');
+const udpJs=ts.transpileModule(fnDecls[0].getText(bmSource)+'\nreturn uniqueDownloadPath;',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;
+const uniqueDownloadPath=new Function('join','statSync',udpJs)(join,statSync) as (dir:string,filename:string,reserved?:ReadonlySet<string>)=>string;
+const dlDir=mkdtempSync(join(dir,'downloads-'));
+await test('download path: free name is taken as-is (control)',async()=>{
+ assert.equal(uniqueDownloadPath(dlDir,'report.pdf'),join(dlDir,'report.pdf'));
+});
+await test('download path: existing file on disk still dedupes to -1 (old behavior kept)',async()=>{
+ writeFileSync(join(dlDir,'report.pdf'),'x');
+ assert.equal(uniqueDownloadPath(dlDir,'report.pdf'),join(dlDir,'report-1.pdf'));
+});
+await test('download path: an in-flight download reserves its name even before the file exists',async()=>{
+ const fresh=mkdtempSync(join(dir,'downloads-inflight-'));
+ const first=uniqueDownloadPath(fresh,'paper.pdf');
+ assert.equal(first,join(fresh,'paper.pdf'));
+ // 第一份还在传(磁盘上没有文件),第二份同名到达 —— 不能再分到同一个落点。
+ const second=uniqueDownloadPath(fresh,'paper.pdf',new Set([first]));
+ assert.notEqual(second,first,'concurrent same-name download was assigned the same save path');
+ assert.equal(second,join(fresh,'paper-1.pdf'));
+});
+await test('download path: reservation and on-disk collision compose (-2)',async()=>{
+ const fresh=mkdtempSync(join(dir,'downloads-compose-'));
+ writeFileSync(join(fresh,'paper-1.pdf'),'x');
+ assert.equal(uniqueDownloadPath(fresh,'paper.pdf',new Set([join(fresh,'paper.pdf')])),join(fresh,'paper-2.pdf'));
+});
+await test('download path: will-download call site passes the in-flight reservation set',async()=>{
+ assert.equal(callArgCounts.length,1,'exactly one production call site expected');
+ assert.equal(callArgCounts[0],3,'call site must pass in-flight download paths as the third argument');
 });
 writeFileSync(join(dir,'checks.json'),JSON.stringify(results,null,2));console.log(results.filter(r=>r.status==='PASS').length+' passed; '+results.filter(r=>r.status==='FAIL').length+' failed');process.exitCode=results.some(r=>r.status==='FAIL')?1:0;
