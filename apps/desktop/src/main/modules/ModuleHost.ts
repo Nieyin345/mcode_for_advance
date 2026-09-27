@@ -2,14 +2,19 @@ import { createHash, randomUUID } from "node:crypto";
 import type { z } from "zod";
 import {
   ModuleManifestSchema, ModuleInvokeSchema, ModuleTaskRefSchema, ResourceSchema,
-  type ModuleManifest, type ModuleResource, type ModuleResult, type ModuleTask,
+  type ModuleManifest, type ModuleInvoke, type ModuleResource, type ModuleResult, type ModuleTask,
   type ModuleReply, type ModuleCatalog, type ModuleTaskRef,
 } from "@contracts/modules";
+import {
+  ModuleCapabilityDescriptorSchema,
+  type ModuleCapabilityDescriptor, type ModuleWorkflowTarget,
+} from "@contracts/moduleCapability";
 
 export interface CapabilityContext { signal: AbortSignal; progress(value: number): void; }
 export interface Capability<I> {
   id: string;
   kind: "query" | "action" | "task";
+  metadata?: ModuleCapabilityDescriptor["metadata"];
   input: z.ZodType<I>;
   output: z.ZodType<ModuleResult>;
   run(input: I, context: CapabilityContext): Promise<ModuleResult>;
@@ -33,9 +38,32 @@ export class ModuleHost {
 
   register<I>(definition: Capability<I>): void {
     if (this.capabilities.has(definition.id)) throw Error("Duplicate capability");
-    this.capabilities.set(definition.id, {
-      id: definition.id, kind: definition.kind, output: definition.output,
-      run: (input, context) => definition.run(definition.input.parse(input), context),
+    // Validate discovery data once at registration, and never retain a caller-
+    // owned metadata object. The display schema is not an execution validator.
+    const descriptor = structuredClone(ModuleCapabilityDescriptorSchema.parse({
+      id: definition.id, kind: definition.kind,
+      ...(definition.metadata === undefined ? {} : {metadata: definition.metadata}),
+    }));
+    // Every invocation requires the manifest's resource.read permission and
+    // runs authorize(resource). Optional discovery data must not claim less.
+    const metadata = descriptor.metadata;
+    if (metadata && !metadata.permissions.includes("resource.read")) {
+      throw Error("Capability metadata must declare resource.read permission");
+    }
+    // Queries have no job handle, timeout or exposed cancellation in this host.
+    if (descriptor.kind === "query" && metadata?.supportsCancellation) {
+      throw Error("Query capabilities cannot advertise cancellation");
+    }
+    if (descriptor.kind === "query" && metadata?.limits?.taskTimeoutMs !== undefined) {
+      throw Error("Query capabilities cannot advertise a task timeout");
+    }
+    // A later mutation of the caller's definition must not swap out the
+    // implementation or input validator after a capability was registered.
+    const inputSchema = definition.input;
+    const run = definition.run.bind(definition);
+    this.capabilities.set(descriptor.id, {
+      ...descriptor, output: definition.output,
+      run: (input, context) => run(inputSchema.parse(input), context),
     });
   }
   private validate(raw: unknown): ModuleManifest {
@@ -86,8 +114,43 @@ export class ModuleHost {
       return this.catalog();
     });
   }
+  /** A core-looking ID is not proof of trust. Only the host's actual builtin
+   * registration, an existing contribution and a live read-only capability
+   * may produce a workflow target (and pass the workflow invocation gate). */
+  private readonlyWorkflowTarget(moduleId: string, contributionId: string): ModuleWorkflowTarget | undefined {
+    if (!this.builtinIds.has(moduleId)) return undefined;
+    const module = this.modules.get(moduleId);
+    const contribution = module?.contributions.find(c => c.id === contributionId);
+    const capability = contribution && this.capabilities.get(contribution.capability);
+    if (!capability || (capability.kind !== "query" && capability.kind !== "task")) return undefined;
+    return {moduleId, contributionId, capabilityId: capability.id};
+  }
   catalog(): ModuleCatalog {
-    return structuredClone({ modules: [...this.modules.values()], capabilities: [...this.capabilities.values()].map(({id,kind}) => ({id,kind})) });
+    const workflowTargets: ModuleWorkflowTarget[] = [];
+    for (const id of this.builtinIds) {
+      const module = this.modules.get(id);
+      if (!module) continue;
+      for (const contribution of module.contributions) {
+        const target = this.readonlyWorkflowTarget(id, contribution.id);
+        if (target) workflowTargets.push(target);
+      }
+    }
+    const capabilities: ModuleCapabilityDescriptor[] = [...this.capabilities.values()].map(({id,kind,metadata}) => ({
+      id, kind, ...(metadata === undefined ? {} : {metadata}),
+    }));
+    return structuredClone({ modules: [...this.modules.values()], capabilities, workflowTargets });
+  }
+  /** Host-internal workflow entry. Never expose this through IPC/preload: a
+   * renderer is not permitted to self-declare automated-run authorization. */
+  async invokeForWorkflow(input: ModuleInvoke): Promise<ModuleReply> {
+    const parsed = ModuleInvokeSchema.parse(input);
+    await this.mutation;
+    if (!this.readonlyWorkflowTarget(parsed.moduleId, parsed.contributionId)) {
+      throw Error("Workflow requires an available registered builtin read-only contribution");
+    }
+    // Reuse the menu's envelope, contribution, extension, realpath/known-root
+    // authorization, task limits, cancellation and request-id deduplication.
+    return this.invoke(parsed);
   }
   private finish(job: LiveTask, status: ModuleTask["status"], result?: ModuleResult, error?: string): void {
     if (job.snapshot.status !== "running") return;

@@ -98,6 +98,7 @@ import {
   type NodeTypeManifest,
   type NodeTypeSource,
 } from "@contracts/nodeType";
+import { MODULE_CAPABILITY_NODE_TYPE_ID, MODULE_CAPABILITY_RUNNER_KIND } from "@contracts/moduleCapability";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { MEMORY_PARAM_KEY } from "@contracts/memory";
 import { loadLibraryGroups } from "@main/library/groupRegistry.js";
@@ -822,6 +823,33 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
     outputs: [{ key: "exitCode", label: "Exit code" }, { key: "stdout", label: "Stdout" }, { key: "stderr", label: "Stderr" }],
     usage:
       "General-purpose code execution. Read JSON from stdin; emit @@mcode:result {summary,outputs,artifacts} and @@mcode:progress {percent,message} on stdout. artifacts uses {kind,uri,name?,mimeType?,sizeBytes?} references; bytes stay external.",
+  },
+  {
+    id: MODULE_CAPABILITY_NODE_TYPE_ID,
+    manifestVersion: 1,
+    name: "模块能力调用 / Module capability",
+    description: "调用真实内置模块的只读文件能力；不运行用户导入模块。 / Invoke a built-in read-only file capability, not an imported user module.",
+    icon: "puzzle",
+    category: "自动化 / Automation",
+    runner: { kind: MODULE_CAPABILITY_RUNNER_KIND },
+    capability: "read",
+    params: [
+      { key: "moduleId", kind: "text", label: "模块 / Module", required: true },
+      { key: "contributionId", kind: "text", label: "贡献 / Contribution", required: true },
+      { key: "path", kind: "text", label: "文件路径 / File path", required: true,
+        help: "相对此次运行的工作区，支持既有变量；运行时仍检查实际路径。 / Relative to the run workspace; existing variables are resolved before host authorization." },
+    ],
+    // Manifest outputs describe referenceable fields, not mandatory output rules.
+    outputs: [
+      { key: "bytes", label: "字节数 / Bytes", description: "inspect / info" },
+      { key: "sha256", label: "SHA-256", description: "仅 inspect / inspect only" },
+      { key: "modifiedAt", label: "修改时间 / Modified at", description: "仅 info，Unix 毫秒 / info only, Unix milliseconds" },
+    ],
+    usage: "Only moduleId, contributionId and path are editable. Select a host-published workflow target. " +
+      "core.file-report / inspect returns bytes and sha256; info returns bytes and modifiedAt. " +
+      "The host supplies workspace and request identity, rejects user modules and real-path escapes, and owns cancellation/timeouts. " +
+      "No shell, model, caller-provided trusted/projectPath/requestId, or automatic restart recovery. " +
+      "Downstream nodes can reference {{File inspection.bytes}} (or sha256 for inspect, modifiedAt for info).",
   },
   {
     id: TRIGGER_NODE_TYPE_ID,

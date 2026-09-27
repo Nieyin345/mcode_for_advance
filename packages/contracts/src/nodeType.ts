@@ -1,3 +1,4 @@
+import { ModuleCapabilityRunnerSchema } from "./moduleCapability.js";
 /**
  * 节点类型(Node Type)—— 工作流底座**唯一的规范**。
  *
@@ -618,6 +619,8 @@ export type NodeParamSpec = z.infer<typeof NodeParamSpecSchema>;
  * (解析时会拒绝逃出该目录的路径,规则抄 `pluginManifest.ts` 的 `resolveInRoot`)。
  */
 export const NodeRunnerSchema = z.discriminatedUnion("kind", [
+  /** Contract recognized; host registration/authorization are separate rollout gates. */
+  ModuleCapabilityRunnerSchema,
   z.object({ kind: z.literal("prompt") }),
   /** 纯条件选择真假出边:不调用模型、不启动进程,不可作为环的人工闸门。 */
   z.object({ kind: z.literal("condition") }),
@@ -1254,6 +1257,9 @@ export function isAskChoice(value: unknown): value is AskChoice {
  * 放在 contracts 而不是主进程,是因为渲染端也要用它:画布上那种节点要标出"这个节点
  * 当前跑不了",否则用户画好一张图、发消息,才发现有一格是死的。
  */
+// module-capability is intentionally NOT enabled yet: ExecutionEngine has a
+// model fallback. Task 05 must prove both registry paths fail closed before
+// task 01 promotes this kind into this shared runnable list. See interface-v2.md.
 export const IMPLEMENTED_RUNNER_KINDS = ["prompt", "conversation", "branch", "condition", "trigger", "command", "code"] as const;
 export function isRunnerImplemented(kind: NodeRunnerKind): boolean {
   return (IMPLEMENTED_RUNNER_KINDS as readonly string[]).includes(kind);

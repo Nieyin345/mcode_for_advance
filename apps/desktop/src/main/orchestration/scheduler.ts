@@ -186,6 +186,9 @@ const RESTART_FROM_STEP_LABEL = "从这一步往下走";
 
 /** 调度器要问外面的六件事。真实实现在 `runner.ts`,冒烟脚本塞的是假的。 */
 export interface RunPorts {
+  /** Optional host-bound input factory. It retains the existing builder/variable
+   * pipeline while adding trusted run identity; ordinary test ports keep the default. */
+  buildInput?: typeof buildNodeInput;
   memorySnapshot?: () => string;
   /** 拿一个节点类型的清单。没有 = 这个类型没装(别人分享来的图会走到这里)。 */
   manifestOf(typeId: string): Promise<NodeTypeManifest | undefined>;
@@ -1502,7 +1505,7 @@ class Run {
       const outcome = await this.ports.execute(
         node,
         manifest,
-        buildNodeInput(params, manifest, inputScope, this.signal),
+        (this.ports.buildInput ?? buildNodeInput)(params, manifest, inputScope, this.signal),
       );
       // 产出回来,按**同一份**参数查硬约束。
       const checked = withOutputCheck(manifest, params, outcome, terminal);

@@ -81,10 +81,8 @@ import {
 import { injectEntryCriteria } from "./criteriaInject.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { transcriptText } from "@main/claude/nodeTranscript.js";
-import { ExecutionEngine } from "./executionEngine.js";
+import { createBuiltinExecutionEngine, createWorkflowInputBuilder } from "./executionEngine.js";
 import { conversationQueue } from "./conversationQueue.js";
-import { CodeExecutor } from "./codeExecutor.js";
-import { CommandExecutor } from "./commandExecutor.js";
 import { libraryRoot } from "@main/library/paths.js";
 import { broadcastRuntimeEvent } from "@main/lib/sessionSync.js";
 import { queueBackflow } from "@main/lib/pendingBackflow.js";
@@ -1377,9 +1375,7 @@ export async function startWorkflowRun(args: {
    * **这里没有、也不允许再长出 `kind === xxx` 分支** —— 新增一种执行方式 = 在某个
    * Registry(输入 builder 或这里的执行器)里注册,分派链一行不改。
    */
-  const runEngine = new ExecutionEngine()
-    .register(new CommandExecutor())
-    .register(new CodeExecutor())
+  const runEngine = createBuiltinExecutionEngine()
     .register({
       kind: "conversation",
       // **不隔离的那一种**:它不发新的会话,指令直接进主对话(见 `runInConversation`
@@ -1392,6 +1388,7 @@ export async function startWorkflowRun(args: {
     });
 
   const ports: RunPorts = {
+    buildInput: createWorkflowInputBuilder({ sessionId: session.id, runId }),
     memorySnapshot: () => scopedMemorySnapshot(session.projectId, prompt),
     // 清单**一次读完**再按 id 查:`loadNodeTypes()` 是刻意不缓存的(每次都要扫插件
     // 目录、读并解析每一个清单文件,而它底下还会把每个启用的插件的技能/命令/agent
@@ -1716,7 +1713,7 @@ export async function startWorkflowRun(args: {
               manifest: p.manifest,
               compatibleProviderIds: p.compatibleProviderIds,
             }));
-            const executorKinds = ["command", "code", "conversation"] as const;
+            const executorKinds = runEngine.kinds();
             return {
               inventory: collectCapabilityInventory({
                 providers: providerRegistry.list(),

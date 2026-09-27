@@ -31,7 +31,24 @@ async function createHost(): Promise<ModuleHost> {
     },
   });
   for(const capability of fileCapabilities(isKnownWorkspaceRoot))host.register(capability);
-  host.addBuiltin({ ...EXAMPLE_MODULE, id:"core.file-report", title:{zh:"内置文件检查",en:"Built-in file inspection"},contributions:[{...EXAMPLE_MODULE.contributions[0],title:{zh:"检查文件（大小 / SHA-256）",en:"Inspect file (size / SHA-256)"}}] });
+  host.addBuiltin({
+    ...EXAMPLE_MODULE, id:"core.file-report",
+    title:{zh:"内置文件检查",en:"Built-in file inspection"},
+    contributions:[
+      {...EXAMPLE_MODULE.contributions[0],title:{zh:"检查文件（大小 / SHA-256）",en:"Inspect file (size / SHA-256)"}},
+      {
+        id:"info",slot:"files.context",capability:"core.file.info",
+        title:{zh:"查看文件信息",en:"View file information"},
+        view:{
+          title:{zh:"文件信息",en:"File information"},
+          fields:[
+            {key:"bytes",title:{zh:"字节数",en:"Bytes"}},
+            {key:"modifiedAt",title:{zh:"修改时间",en:"Modified at"}},
+          ],
+        },
+      },
+    ],
+  });
   let saved:ModuleManifest[]=[];
   try {
     if((await stat(path)).size>512*1024)throw Error("Module store exceeds 512 KiB");

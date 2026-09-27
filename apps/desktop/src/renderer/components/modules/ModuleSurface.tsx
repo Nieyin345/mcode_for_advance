@@ -8,6 +8,7 @@ import { useRpc } from "@renderer/hooks/useRpc.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
 import { Dialog } from "@renderer/components/ui/dialog.js";
+import { CapabilityCatalogPanel } from "./CapabilityCatalogPanel.js";
 
 interface SurfaceContext {
   catalog:ModuleCatalog | undefined;
@@ -57,12 +58,11 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
         <Dialog.Title>{t("ide.modules.title")}</Dialog.Title><Dialog.Close/>
         <Dialog.Description>{t("ide.modules.boundary")}</Dialog.Description>
         {error && <ErrorNote>{error}</ErrorNote>}
-        {catalog.loading && !catalog.data && <LoadingNote label={t("common.loading")}/>}
-        {catalog.error && <ErrorNote action={<Button onClick={()=>void catalog.refetch()}>{t("common.retry")}</Button>}>{catalog.error.message}</ErrorNote>}
         <div className="space-y-2">{catalog.data?.modules.map(m=><div key={m.id} className="flex items-center gap-2 rounded border border-edge p-2 text-sm">
           <span className="flex-1">{text(m.title)} <code className="text-xs text-content-muted">{m.id} · {m.version}</code></span>
           {!m.id.startsWith("core.") && <Button disabled={busy} onClick={()=>void mutate(async()=>{await api.modules.remove({moduleId:m.id});await catalog.refetch();await history.refetch();})}>{t("ide.modules.remove")}</Button>}
         </div>)}</div>
+        <CapabilityCatalogPanel catalog={catalog.data} loading={catalog.loading} error={catalog.error} onRetry={()=>void catalog.refetch()}/>
         <label className="block space-y-2 text-sm"><span>{t("ide.modules.manifest")}</span>
           <textarea data-testid="module-manifest" className="h-52 w-full rounded border border-edge bg-surface-muted p-2 font-mono text-xs" value={draft} onChange={e=>{setDraft(e.target.value);setConsent(false);}} spellCheck={false}/>
         </label>

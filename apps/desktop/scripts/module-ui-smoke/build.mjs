@@ -13,7 +13,7 @@ const stubs={
  '@renderer/stores/sessionStore.js':'export const useSessionStore={getState:()=>({locale:"zh"})};',
  '@renderer/stores/toastStore.js':'export const useToastStore={getState:()=>({push:()=>{}})};',
  '@renderer/lib/i18n/index.js':`import {zh as ide} from ${JSON.stringify(root+'/lib/i18n/zh/ide.ts')};import {zh as common} from ${JSON.stringify(root+'/lib/i18n/zh/common.ts')};const dict={...ide,...common};export const useI18n=()=>({locale:'zh',t:key=>dict[key]??key});`,
- '@renderer/components/ui/index.js':['button','error-note','spinner'].map(n=>`export * from ${JSON.stringify(root+'/components/ui/'+n+'.tsx')};`).join('\n'),
+ '@renderer/components/ui/index.js':['button','error-note','spinner','empty-state','badge'].map(n=>`export * from ${JSON.stringify(root+'/components/ui/'+n+'.tsx')};`).join('\n'),
 };
 await esbuild.build({entryPoints:[join(source,'main.jsx')],bundle:true,platform:'browser',format:'iife',jsx:'automatic',tsconfig:join(desktop,'tsconfig.json'),define:{'process.env.NODE_ENV':'"production"'},outfile:join(dir,'bundle.js'),plugins:[{name:'transport-only',setup(b){b.onResolve({filter:/.*/},a=>a.path in stubs?{path:a.path,namespace:'mock'}:undefined);b.onLoad({filter:/.*/,namespace:'mock'},a=>({contents:stubs[a.path],loader:'tsx',resolveDir:desktop}));}}]});
 const configPath=join(dir,'tailwind.config.cjs');writeFileSync(configPath,readFileSync(join(desktop,'tailwind.config.js'),'utf8').replace('export default','module.exports =').replace('content: ["./src/renderer/**/*.{ts,tsx,html}"]','content: '+JSON.stringify([root.replaceAll('\\','/')+'/**/*.{ts,tsx,html}',join(source,'main.jsx').replaceAll('\\','/')])));

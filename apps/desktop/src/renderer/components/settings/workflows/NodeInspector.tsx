@@ -40,6 +40,7 @@ import {
   type NodeTypeEntry,
 } from "@contracts/nodeType";
 import { validateOutputRules, NODE_OUTPUT_VARS_KEY } from "@contracts/outputConstraint";
+import { MODULE_CAPABILITY_RUNNER_KIND } from "@contracts/moduleCapability";
 import { insertableGroups } from "./insertVariable.js";
 import {
   WORKFLOW_CAPABILITIES,
@@ -69,6 +70,7 @@ import {
 } from "./workflowView.js";
 import { wouldCycle } from "./workflowEdit.js";
 import { Field, GrowingTextarea, ParamField } from "./ParamField.js";
+import { MODULE_CALL_PARAM_KEYS, ModuleCapabilityFields } from "./ModuleCapabilityFields.js";
 import { workflowDisplayDescription, workflowDisplayName } from "@renderer/lib/workflowLabels.js";
 import { WorkflowBadge } from "./WorkflowBadge.js";
 import { AutomationRunSection } from "./AutomationRunSection.js";
@@ -509,6 +511,9 @@ function NodeSection({
    *  (存盘那一关会拒,见 `library.deriveTrigger`),所以这句话要在画的时候就说出来,
    *  而不是等用户画完一条线再被拒。 */
   const isTrigger = entry?.manifest.runner.kind === "trigger";
+  /** **模块能力调用节点**:目标只能从宿主发布的 `workflowTargets` 里挑,路径可插变量。
+   *  那三个参数由 `ModuleCapabilityFields` 接管,通用参数表跳过它们(不给第二个入口)。 */
+  const isModuleCall = entry?.manifest.runner.kind === MODULE_CAPABILITY_RUNNER_KIND;
   /** **决定权给了模型的分支**(见 `@contracts/nodeType` 的 `isModelDecider`):
    *  它自己跑一轮,跑完按自己交出来的「出路」挑一条出边(见
    *  `@contracts/outputConstraint` 的 `DECIDE_VAR_NAME`)。判据是**清单 + 参数** ——
@@ -617,7 +622,16 @@ function NodeSection({
         />
       )}
 
-      {(entry ? visibleNodeParams(node, entry) : []).map((spec) => (
+      {isModuleCall && (
+        <ModuleCapabilityFields
+          params={node.params}
+          onChange={(params) => onUpdateNode(node.id, { params })}
+          insertables={vars}
+        />
+      )}
+      {(entry ? visibleNodeParams(node, entry) : [])
+        .filter((spec) => !isModuleCall || !MODULE_CALL_PARAM_KEYS.includes(spec.key))
+        .map((spec) => (
         <ParamField
           key={spec.key}
           spec={spec}
@@ -659,7 +673,7 @@ function NodeSection({
           {t("settings.workflows.nodeTriggerHint")}
         </p>
       )}
-      {entry && entry.manifest.params.length === 0 && !isTrigger && !isBranch && (
+      {entry && entry.manifest.params.length === 0 && !isTrigger && !isBranch && !isModuleCall && (
         // ⚠️ **分支节点不摆这一句。** 它清单里确实是空的,但空空如也的右上角会让用户
         // 以为"这个节点没什么可配的" —— 而它的参数长在**出边**上(选项名 + 说明,
         // 就在下面那一段)。写了这一句,下面那段就长得像另一种东西了。

@@ -63,6 +63,7 @@ import {
   IconBolt,
   IconHelpCircle,
   IconMessages,
+  IconPuzzle,
   IconRobotFace,
   IconStar,
   IconTerminal2,
@@ -122,6 +123,10 @@ const KIND_LOOK: Record<NodeRunnerKind, NodeLook> = {
   trigger: { bar: "bg-accent", tint: "bg-accent/10", icon: "text-accent", Icon: IconBolt },
   command: { bar: "bg-success", tint: "bg-success/10", icon: "text-success", Icon: IconTerminal2 },
   code: { bar: "bg-success", tint: "bg-success/10", icon: "text-success", Icon: IconTerminal2 },
+  // 模块能力调用:经宿主调用一个**只读**内置能力,不起进程、不跑模型 —— 所以不用
+  // 命令那档「动手」的绿;拼图图标表示「接进来的能力」。在门禁激活前它会被上面的
+  // `isNodeRunnable` 判为跑不了,卡片走 DEAD_LOOK,这一档届时才显示。
+  "module-capability": { bar: "bg-info", tint: "bg-info/10", icon: "text-info", Icon: IconPuzzle },
 };
 
 /** 跑不起来的节点(`isNodeRunnable` 不过:执行方式没实现、或命令写在清单自带的脚本里

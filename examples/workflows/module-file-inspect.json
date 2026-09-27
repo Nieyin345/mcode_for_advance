@@ -1,0 +1,47 @@
+{
+  "id": "wf_module_file_inspect",
+  "name": "只读文件检查 / Read-only file inspection",
+  "schemaVersion": "1",
+  "description": "先在所选工作区创建 module-inspect-demo.txt；审查后手动运行。Create the demo file in the chosen workspace, review, then run manually.",
+  "trigger": "manual",
+  "builtin": false,
+  "updatedAt": 0,
+  "nodes": [
+    {
+      "id": "n_start",
+      "type": "mcode.trigger",
+      "title": "手动运行 / Manual start",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "params": {
+        "triggerKind": "manual",
+        "enabled": false,
+        "project": "",
+        "task": "只读检查 module-inspect-demo.txt，返回 bytes 和 sha256。Read the demo file without changing it."
+      }
+    },
+    {
+      "id": "n_inspect",
+      "type": "mcode.module-capability",
+      "title": "文件检查",
+      "position": {
+        "x": 360,
+        "y": 0
+      },
+      "params": {
+        "moduleId": "core.file-report",
+        "contributionId": "inspect",
+        "path": "module-inspect-demo.txt"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_start_inspect",
+      "from": "n_start",
+      "to": "n_inspect"
+    }
+  ]
+}

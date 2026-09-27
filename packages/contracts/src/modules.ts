@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ModuleCapabilityDescriptor, ModuleWorkflowTarget } from "./moduleCapability.js";
 
 /** v1 is a declarative, read-only extension surface, NOT a JavaScript sandbox.
  * Both bundled and imported manifests use this contract and the same host. */
@@ -51,7 +52,9 @@ export interface ModuleTask {
 export type ModuleReply = { type: "result"; value: ModuleResult; view: ModuleContribution["view"] } | { type: "task"; task: ModuleTask };
 export interface ModuleCatalog {
   modules: ModuleManifest[];
-  capabilities: { id: string; kind: "query" | "action" | "task" }[];
+  capabilities: ModuleCapabilityDescriptor[];
+  /** Host-derived read-only builtin targets. Missing means unavailable, not all modules. */
+  workflowTargets?: ModuleWorkflowTarget[];
 }
 
 /** This example is used by the import editor, docs and tests; no executable code. */
