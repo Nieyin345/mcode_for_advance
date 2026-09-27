@@ -225,6 +225,13 @@ export class AutomationFacts {
    * 允许的(见 `NODE_TRIGGER_ENABLED_PARAM_KEY`),但那不代表它从此会自动响。守望起跑
    * 那条 **ad-hoc** 路径没有经过 `buildTriggers` 的登记,`seed.enabled` 是 true,
    * 这一笔就顺带是它的登记。
+   *
+   * ⚠️ **运行侧的一笔不许改写挂载侧**(类头那条不变量的另一半)。已经登记过的条目,
+   * `armed`/`detail` 照旧:挂载坏着(目录监听失效、参数解不开、项目不在了)的那条,
+   * 手动跑一次**不等于它修好了** —— 从前这里把 `armed` 立成 `seed.enabled`、把
+   * `detail` 清掉,于是「立刻运行一次」之后界面说它**响着**、失效原因消失,用户等一个
+   * 永远不会响的触发器,而"为什么"已经被这笔抹掉了。挂载侧翻回 true 只有一条路:
+   * reload 里的 `recordSetup`(监听重试成功走 `markArmed`,也是它)。
    */
   recordFired(seed: AutomationFactsSeed, at: number): void {
     const key = automationTriggerKey(seed);
@@ -237,8 +244,11 @@ export class AutomationFacts {
       title: seed.title,
       kind: existing?.kind ?? seed.kind,
       enabled: seed.enabled,
-      armed: seed.enabled,
-      detail: seed.enabled ? undefined : existing?.detail,
+      // 没登记过的(ad-hoc)这一笔就是登记:armed 跟用户那一票。登记过的保持挂载侧
+      // 原状 —— 用户那一票只能把它**压成** false(关掉的不因手动跑一次而"响着"),
+      // 不能把坏着的抬成 true。
+      armed: existing === undefined ? seed.enabled : existing.armed && seed.enabled,
+      detail: existing === undefined ? undefined : existing.detail,
       lastFireAt: at,
     });
   }
