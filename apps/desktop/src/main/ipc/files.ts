@@ -55,30 +55,20 @@ import { resolveRg, rgListFiles, rgGrep } from "@main/lib/rgSearch.js";
 import {
   isKnownWorkspaceRoot,
   findContainingWorkspaceRoot,
+  pathWithin,
 } from "@main/lib/pathGuard.js";
 import { cachedTreeFiles, sortDirents, SEARCH_MAX_DEPTH, SEARCH_MAX_VISIT } from "@main/lib/walkCache.js";
 
-/** Compare two filesystem paths for equality after normalizing (resolving
- *  `.`, `..`, redundant separators, and trailing separators). Used instead of
- *  raw `===` when matching a caller-supplied projectPath against persisted
- *  Project.path values — the folder picker and the DB can disagree on trivial
- *  formatting (e.g. a trailing `/` on macOS) which would otherwise cause a
- *  silent "unknown projectPath" refusal. */
-function samePath(a: string, b: string): boolean {
-  return resolve(a) === resolve(b);
-}
-
-/** True if `abs` is inside `root` (or equals it), after normalizing both.
- *  This is the containment check used by the read/write/list handlers to
- *  enforce the project-root security boundary. Uses `resolve` + a
- *  separator-aware prefix check so "/foo/bar" doesn't match root "/foo/ba". */
-function pathWithin(root: string, abs: string): boolean {
-  const r = resolve(root);
-  const a = resolve(abs);
-  if (a === r) return true;
-  // Ensure the root ends with a separator so "/foo/bar" doesn't match "/foo/ba".
-  return a.startsWith(r + sep);
-}
+/* 包含性判定只用 `lib/pathGuard.ts` 那**一份**(见 CLAUDE.md「共享实现只有一份」)。
+ *
+ * ⚠️ 这里原先另有一份私有的 `pathWithin`(裸 `resolve()` 前缀比较,**大小写敏感**),
+ * 外加一个从未被用到的 `samePath`。外层闸(`findContainingWorkspaceRoot` /
+ * `isKnownWorkspaceRoot`)走的是共享那份 —— 它在 Windows / macOS 上刻意做了大小写
+ * 归一(Monaco / LSP 交回来的盘符可能是小写的 `d:\foo`,而项目根存的是 `D:\foo`)。
+ * 两份并存的后果是**同一次调用里两道闸结论相反**:外层认下了这条路径,内层那道
+ * "纵深防御"又判它越界,于是 `file:writeFile` / `file:rename` 静默返回
+ * `{ ok: false }`(编辑器"存不下去"、重命名没反应),只有主进程日志里留一句
+ * "escapes root"。红灯见 scripts/maint-m07-smoke。 */
 
 /** True if `abs` sits inside the clipboard-paste temp dir (see the
  *  `clipboard:saveFile` handler). Files there were written by THIS app from
