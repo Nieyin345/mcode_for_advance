@@ -44,7 +44,7 @@ export function GesturesPanel() {
   // currently filters it out (rebinding ahead of time must be possible).
   const commands = useMemo<CommandDef[]>(() => {
     const state = useSessionStore.getState();
-    const overrides = state.gestureSettings.overrides;
+    const overrides = gestureSettings.overrides;
     const visible = collectCommands(state).filter(
       (c) => !c.id.startsWith("session.switch."),
     );
@@ -64,7 +64,7 @@ export function GesturesPanel() {
     for (const id of Object.keys(overrides)) ensure(id);
     return Array.from(byId.values());
     // t changes identity on locale flip, rebuilding the fallback labels.
-  }, [t]);
+  }, [t, gestureSettings.overrides]);
 
   // Bucket by group, preserving COMMAND_GROUPS order.
   const grouped = useMemo(() => {

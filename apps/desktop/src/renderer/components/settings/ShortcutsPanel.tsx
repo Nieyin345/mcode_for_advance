@@ -35,6 +35,7 @@ import { IconRefresh } from "@renderer/lib/icons.js";
 export function ShortcutsPanel() {
   const { t } = useI18n();
   const resetAllShortcuts = useSessionStore((s) => s.resetAllShortcuts);
+  const shortcutOverrides = useSessionStore((s) => s.shortcutOverrides);
 
   // Build the display list: every command that has a default binding, plus
   // any palette-visible command the user has manually rebound (even if it
@@ -42,7 +43,7 @@ export function ShortcutsPanel() {
   // not bindable (one per session).
   const commands = useMemo<CommandDef[]>(() => {
     const state = useSessionStore.getState();
-    const overrides = state.shortcutOverrides;
+    const overrides = shortcutOverrides;
     const visible = collectCommands(state).filter(
       (c) => !c.id.startsWith("session.switch."),
     );
@@ -84,7 +85,7 @@ export function ShortcutsPanel() {
 
     return Array.from(byId.values());
     // t changes identity on locale flip, rebuilding the fallback labels.
-  }, [t]);
+  }, [t, shortcutOverrides]);
 
   // Bucket by group, preserving COMMAND_GROUPS order.
   const grouped = useMemo(() => {
