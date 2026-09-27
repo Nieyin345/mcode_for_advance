@@ -124,6 +124,9 @@ export function shouldSuppressBrowserView(): boolean {
   if (occluders.size === 0) return true;
   if (!stageRect) return true;
   for (const r of occluders.values()) {
+    // The invisible portal sentinel is not geometry. A stage spanning (0, 0)
+    // must not accidentally turn its zero-area placeholder into an overlap.
+    if (r === OCCLUDER_UNMEASURED) continue;
     if (!r) return true;
     if (
       r.left < stageRect.right &&

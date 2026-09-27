@@ -9,8 +9,11 @@
  *  (e.g. starts with a drive letter or `/`); this helper does the encoding. */
 export function localPathToFileUrl(p: string): string {
   const norm = p.trim().replace(/\\/g, "/");
+  // These are filename characters, not URL query/fragment delimiters.
+  // encodeURI preserves them, so escape them after its normal path encoding.
+  const encoded = encodeURI(norm).replace(/[?#]/g, (char) => encodeURIComponent(char));
   // Windows drive path → file:///C:/…
-  if (/^[a-z]:\//i.test(norm)) return `file:///${encodeURI(norm)}`;
+  if (/^[a-z]:\//i.test(norm)) return `file:///${encoded}`;
   // Unix absolute path → file:///foo (file:// + /foo)
-  return `file://${encodeURI(norm)}`;
+  return `file://${encoded}`;
 }
