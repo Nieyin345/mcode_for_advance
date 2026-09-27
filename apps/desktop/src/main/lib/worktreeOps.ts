@@ -42,6 +42,7 @@ import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { broadcastSessionChanged } from "@main/lib/sessionSync.js";
 import { log } from "@main/lib/logger.js";
 import { normPathKey } from "@main/lib/pathNorm.js";
+import { pathWithin } from "@main/lib/pathGuard.js";
 
 // Own lazy loader (mirrors git.ts's) — importing it from ipc/git.ts would
 // create a cycle once the handlers there pull this module in.
@@ -412,6 +413,28 @@ export async function mergeBackWorktree(
   opts: { message?: string } = {},
 ): Promise<GitWorktreeMergeBackResult> {
   try {
+    // Same ownership gate as removeWorktree, for the same reason: the IPC
+    // layer only guards `repoPath` (the worktree lives outside every
+    // project root by design), so `worktreePath` arrives uncontained — and
+    // the very next step runs `git add -A && git commit` INSIDE it. Aimed
+    // at an unrelated repository that silently commits the user's
+    // half-finished work there and then tries to merge its history into
+    // the project repo. Merging back is only ever meaningful for a
+    // worktree this repo actually registered, so demand exactly that. A
+    // failed probe does NOT block (same degrade-to-permissive choice as
+    // remove's `registered = true` fallback — merge-back is not itself
+    // destructive once the path is legitimate).
+    const ownerGit = (await loadSimpleGit())(repoPath);
+    const ownsWorktree = await ownerGit
+      .raw(["worktree", "list", "--porcelain"])
+      .then((raw) =>
+        parsePorcelain(raw).some((w) => normPathKey(w.path) === normPathKey(worktreePath)),
+      )
+      .catch(() => true);
+    if (!ownsWorktree) {
+      log.warn(`worktree merge-back refused — not a worktree of ${repoPath}: ${worktreePath}`);
+      return { ok: false, error: "该路径不是本仓库的工作树，拒绝合并回主仓库" };
+    }
     const wtGit = (await loadSimpleGit())(worktreePath);
     // Unknown status REFUSES the merge (rather than silently skipping the
     // auto-commit): proceeding dirty-but-unreadable would merge only the
@@ -536,6 +559,28 @@ export async function removeWorktree(
       registered = entry !== null;
     } catch {
       registered = true; // probe failure → assume registered, try the git way
+    }
+
+    // Ownership gate — the one thing standing between a caller-supplied
+    // string and `rm -rf`. `registered === false` SKIPS every data-safety
+    // rail below (dirty probe, patch export, `git worktree remove`) and
+    // falls straight through to the recursive delete of `worktreePath` at
+    // the bottom. That fall-through exists to finish a half-torn remove —
+    // but nothing else proved the path is ours: the IPC layer
+    // (GIT_WORKTREE_REMOVE) only guards `repoPath`, because the worktree
+    // lives outside every project root BY DESIGN, so `worktreePath` reaches
+    // us completely uncontained. A stale renderer entry, a changed
+    // `worktree.root` setting, or a malformed call would delete an
+    // arbitrary directory tree — permanently, and `rm` at that, not trash.
+    // Ours = still registered with git, OR recorded on a session row (a
+    // worktree created under a PREVIOUS managed root keeps self-healing),
+    // OR sitting under the current managed root.
+    if (!registered && refs.length === 0 && !pathWithin(managedWorktreeRoot(), worktreePath)) {
+      log.warn(`worktree remove refused — not a worktree of ${repoPath} and outside the managed root: ${worktreePath}`);
+      return {
+        ok: false,
+        error: "该路径既不是本仓库的工作树，也不在受管的工作树目录下，拒绝删除",
+      };
     }
 
     if (registered && dirExists) {
