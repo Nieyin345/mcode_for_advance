@@ -53,8 +53,8 @@ import {
   stopPublicMcp,
   type PublicMcpStore,
   type PublicMcpStatus,
-} from "./publicMcpServer.js";
-import { disposeTunnel, startTunnel, stopTunnel, tunnelStatus } from "./tunnelManager.js";
+} from "@main/providers/bridge/publicMcpServer.js";
+import { disposeTunnel, startTunnel, stopTunnel, tunnelStatus } from "@main/providers/bridge/tunnelManager.js";
 
 /**
  * 这条通路需要主进程提供的那点能力 —— 由 `main/index.ts` 注入。
@@ -141,6 +141,12 @@ function ensureSyntheticSession(): string {
     runtime?.setSessionPermissionMode(stored, "bypassPermissions");
     return stored;
   }
+  // The public endpoint reads this setting directly.  Leaving a deleted session id
+  // here makes the endpoint look ready even though webToolHost will reject every
+  // call because no approval gate exists for that session.  Clear the dangling
+  // reference before attempting to recreate it; if recreation fails, requests now
+  // fail at the endpoint boundary with the intended 503 instead.
+  if (stored) SettingRepo.set(PUBLIC_MCP_SESSION_ID_SETTING_KEY, "");
 
   const projectId = defaultProjectId();
   if (!projectId) {
@@ -287,15 +293,27 @@ export function stopPublicMcpTunnel(): PublicMcpStatus {
  * 那时进来的调用会因为没有会话而被拒(甚至更糟)。宁可先建会话。
  */
 export async function setPublicMcpEnabled(enabled: boolean): Promise<PublicMcpStatus> {
-  SettingRepo.set(PUBLIC_MCP_ENABLED_SETTING_KEY, enabled ? "on" : "off");
   if (enabled) {
-    const sessionId = ensureSyntheticSession();
-    log.warn(
-      `public mcp: ENABLED — tool calls from the internet run WITHOUT approval, ` +
-        `attributed to session ${sessionId}. Anyone with the URL secret controls this machine.`,
-    );
-    await startPublicMcp();
+    // Persist "on" before starting because publicMcpServer deliberately refuses
+    // to listen while disabled.  If either session provisioning or listen fails,
+    // roll the persisted switch back: reporting an error while leaving a dangerous
+    // public service configured to auto-start on the next launch is misleading.
+    SettingRepo.set(PUBLIC_MCP_ENABLED_SETTING_KEY, "on");
+    try {
+      const sessionId = ensureSyntheticSession();
+      log.warn(
+        `public mcp: ENABLED — tool calls from the internet run WITHOUT approval, ` +
+          `attributed to session ${sessionId}. Anyone with the URL secret controls this machine.`,
+      );
+      await startPublicMcp();
+    } catch (err) {
+      SettingRepo.set(PUBLIC_MCP_ENABLED_SETTING_KEY, "off");
+      stopTunnel();
+      stopPublicMcp();
+      throw err;
+    }
   } else {
+    SettingRepo.set(PUBLIC_MCP_ENABLED_SETTING_KEY, "off");
     // 关服务**也要停隧道** —— 否则留下一条指向死端口的公网隧道:外人还能连上那个
     // 域名(cloudflared 会回 502),而我们这边已经没人在听。关就是关干净。
     stopTunnel();

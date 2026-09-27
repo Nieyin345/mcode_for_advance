@@ -35,6 +35,7 @@ import {
   getPluginMcpServers,
   setPluginMcpDisabled,
   listPluginMcpPanelEntries,
+  assertSafeArchiveEntryNames,
   addMarketplace,
   listMarketplaces,
   refreshMarketplace,
@@ -57,6 +58,21 @@ function eq<T>(actual: T, expected: T, label: string): void {
   const e = JSON.stringify(expected);
   ok(a === e, label, a === e ? "" : `got ${a}, want ${e}`);
 }
+function throws(label: string, fn: () => void): void {
+  try {
+    fn();
+    ok(false, label, "expected rejection");
+  } catch {
+    ok(true, label);
+  }
+}
+
+throws("archive rejects parent traversal", () => assertSafeArchiveEntryNames(["../outside.txt"]));
+throws("archive rejects nested traversal", () => assertSafeArchiveEntryNames(["plugin/a/../../outside.txt"]));
+throws("archive rejects POSIX absolute path", () => assertSafeArchiveEntryNames(["/tmp/outside.txt"]));
+throws("archive rejects Windows absolute path", () => assertSafeArchiveEntryNames(["C:\\outside.txt"]));
+assertSafeArchiveEntryNames(["plugin/.claude-plugin/plugin.json", "plugin/skills/demo/SKILL.md"]);
+ok(true, "archive accepts contained member names");
 
 /* ── fixtures ── */
 

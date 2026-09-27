@@ -117,6 +117,8 @@ function readMcpDisabled(): Set<string> {
 interface SpawnResult {
   ok: boolean;
   message: string;
+  output?: string;
+  errorOutput?: string;
 }
 
 interface RunOpts {
@@ -125,6 +127,9 @@ interface RunOpts {
   /** Spawn WITHOUT the proxy env vars (http(s)_proxy / ALL_PROXY) — used by
    *  gitClone's proxy-bypass retry so curl can't fall back to them. */
   noProxyEnv?: boolean;
+  /** Capture complete output for security-sensitive archive inspection. */
+  captureOutput?: boolean;
+  maxOutputBytes?: number;
 }
 
 const PROXY_ENV_RE = /^(https?_proxy|all_proxy)$/i;
@@ -142,6 +147,9 @@ function runCommand(
       : undefined;
     const child = spawn(cmd, args, { cwd: opts.cwd, windowsHide: true, env });
     let tail = "";
+    let output = "";
+    let errorOutput = "";
+    let outputBytes = 0;
     let settled = false;
     const finish = (r: SpawnResult) => {
       if (settled) return;
@@ -153,16 +161,25 @@ function runCommand(
       child.kill("SIGKILL");
       finish({ ok: false, message: `${cmd} 超时(${Math.round((opts.timeoutMs ?? 30_000) / 1000)}s)` });
     }, opts.timeoutMs ?? 30_000);
-    const feed = (buf: Buffer) => {
+    const feed = (buf: Buffer, stderr: boolean) => {
       tail = (tail + buf.toString("utf-8")).slice(-2000);
+      if (!opts.captureOutput || settled) return;
+      outputBytes += buf.length;
+      if (outputBytes > (opts.maxOutputBytes ?? 8 * 1024 * 1024)) {
+        child.kill("SIGKILL");
+        finish({ ok: false, message: `${cmd} 输出过大,已拒绝处理` });
+        return;
+      }
+      if (stderr) errorOutput += buf.toString("utf-8");
+      else output += buf.toString("utf-8");
     };
-    child.stdout?.on("data", feed);
-    child.stderr?.on("data", feed);
+    child.stdout?.on("data", (buf: Buffer) => feed(buf, false));
+    child.stderr?.on("data", (buf: Buffer) => feed(buf, true));
     child.on("error", (err) => finish({ ok: false, message: `${cmd} 无法启动:${err.message}` }));
     child.on("close", (code) =>
       finish(
         code === 0
-          ? { ok: true, message: "" }
+          ? { ok: true, message: "", ...(opts.captureOutput ? { output, errorOutput } : {}) }
           : { ok: false, message: `${cmd} 退出码 ${code}:${tail.trim().slice(-400) || "(无输出)"}` },
       ),
     );
@@ -280,6 +297,54 @@ async function downloadFile(url: string, dest: string): Promise<void> {
 /** GNU tar's message when `C:\...` is misread as a remote `host:file` target
  *  (an MSYS/Git Bash tar sitting ahead of System32's bsdtar in PATH). */
 const TAR_REMOTE_HOST_RE = /Cannot connect to .* resolve failed/i;
+
+/** Reject archive members that can resolve outside the fresh staging folder.
+ * Platform tar/unzip versions disagree on whether such names are rejected,
+ * stripped, or only warned about, so this boundary cannot be delegated. */
+export function assertSafeArchiveEntryNames(entries: string[]): void {
+  for (const raw of entries) {
+    if (!raw) continue;
+    const name = raw.replace(/\\/g, "/");
+    if (
+      name.startsWith("/") ||
+      /^[A-Za-z]:/.test(name) ||
+      name.split("/").some((part) => part === "..")
+    ) {
+      throw new Error(`zip 包含越界路径,已拒绝安装:${raw}`);
+    }
+  }
+}
+
+async function inspectArchive(zipPath: string, tarBin: string): Promise<void> {
+  let names = await runCommand(tarBin, ["-tf", zipPath], {
+    timeoutMs: 60_000,
+    captureOutput: true,
+  });
+  let verbose: SpawnResult | null = null;
+  if (names.ok) {
+    verbose = await runCommand(tarBin, ["-tvf", zipPath], {
+      timeoutMs: 60_000,
+      captureOutput: true,
+    });
+  } else if (process.platform === "linux") {
+    // GNU tar cannot read zip archives; unzip is extractZip's Linux fallback.
+    names = await runCommand("unzip", ["-Z1", zipPath], {
+      timeoutMs: 60_000,
+      captureOutput: true,
+    });
+  }
+  if (!names.ok) throw new Error(`zip 目录读取失败:${names.message}`);
+  if (names.errorOutput?.trim()) {
+    throw new Error(`zip 目录包含不安全或异常路径,已拒绝安装:${names.errorOutput.trim().slice(-400)}`);
+  }
+  assertSafeArchiveEntryNames((names.output ?? "").split(/\r?\n/));
+  if (verbose?.ok) {
+    const link = (verbose.output ?? "")
+      .split(/\r?\n/)
+      .find((line) => /^[lh]/i.test(line.trimStart()));
+    if (link) throw new Error("zip 包含符号链接或硬链接,已拒绝安装");
+  }
+}
 /** Extract a .zip via the platform tool. bsdtar (macOS / Windows 10+) reads
  *  zip natively; Linux GNU tar doesn't, so unzip is the fallback there.
  *
@@ -292,6 +357,7 @@ async function extractZip(zipPath: string, dest: string): Promise<void> {
   if (process.platform === "win32") {
     const systemTar = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe");
     const tarBin = existsSync(systemTar) ? systemTar : "tar";
+    await inspectArchive(zipPath, tarBin);
     let viaTar = await runCommand(tarBin, ["-xf", zipPath, "-C", dest], { timeoutMs: 60_000 });
     if (!viaTar.ok && TAR_REMOTE_HOST_RE.test(viaTar.message)) {
       viaTar = await runCommand(tarBin, ["--force-local", "-xf", zipPath, "-C", dest], { timeoutMs: 60_000 });
@@ -299,6 +365,7 @@ async function extractZip(zipPath: string, dest: string): Promise<void> {
     if (viaTar.ok) return;
     throw new Error(`zip 解压失败:${viaTar.message}`);
   }
+  await inspectArchive(zipPath, "tar");
   const viaTar = await runCommand("tar", ["-xf", zipPath, "-C", dest], { timeoutMs: 60_000 });
   if (viaTar.ok) return;
   if (process.platform === "linux") {
