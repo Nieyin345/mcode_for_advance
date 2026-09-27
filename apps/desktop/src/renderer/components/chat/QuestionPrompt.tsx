@@ -57,7 +57,9 @@ export function QuestionPrompt({
   providerName: string;
   active?: boolean;
   questions: AskUserQuestionItem[];
-  onSubmit: (answers: UserInputAnswers) => void;
+  /** May return a promise; submit stays locked until it settles (the card
+   *  unmounts on success, stays for a retry on failure). */
+  onSubmit: (answers: UserInputAnswers) => void | Promise<unknown>;
   onDismiss: () => void;
 }) {
   const { t } = useI18n();
@@ -105,8 +107,11 @@ export function QuestionPrompt({
     setAnswers((prev) => prev.map((item, i) => (i === qi ? { ...item, text } : item)));
   };
 
+  // Guards the whole submit path (button clicks and Enter): one answer per
+  // in-flight submit, released when the parent's promise settles.
+  const submittingRef = useRef(false);
   const submit = () => {
-    if (!active) return;
+    if (!active || submittingRef.current) return;
     // Compose the SDK-shaped answers map: keyed by question text, value is
     // the joined labels (multi-select), the single label (single-select),
     // or the free text. Unanswered questions are omitted.
@@ -119,10 +124,14 @@ export function QuestionPrompt({
       out[qq.question] = qq.multiSelect ? bits : bits.join(", ");
     });
     if (Object.keys(out).length === 0) return;
-    onSubmit(out);
+    submittingRef.current = true;
+    void Promise.resolve(onSubmit(out))
+      .catch(() => {})
+      .finally(() => {
+        submittingRef.current = false;
+      });
   };
 
-  const submittingRef = useRef(false);
   // Use the card's event scope, not document. A portal outside the card and
   // an IME candidate-confirmation key are not answers to this question.
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -137,10 +146,7 @@ export function QuestionPrompt({
       e.preventDefault();
       e.stopPropagation();
       if (isLast) {
-        if (allAnswered) {
-          submittingRef.current = true;
-          submit();
-        }
+        if (allAnswered) submit();
       } else {
         setStep((s) => Math.min(s + 1, questions.length - 1));
       }

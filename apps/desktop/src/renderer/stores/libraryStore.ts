@@ -26,6 +26,14 @@ import { api } from "@renderer/lib/api.js";
 /** 左栏一次最多列多少篇。展开是浏览,不是检索 —— 再多就该去右栏搜了。 */
 const TREE_PAGE = 200;
 
+// IPC can return out of order (e.g. an import refresh overtakes an expanded tree
+// request). A later request/mutation owns the cache; older responses must not
+// paint a previously selected item or a deleted collection back into the UI.
+let collectionsRequest = 0;
+let itemsRequest = 0;
+const latestItemsRequest = new Map<string, number>();
+let allItemsRequest = 0;
+
 interface LibraryState {
   /** 全部文献库(Zotero 意义上的 collection)。左栏与选择器共用这一份缓存。 */
   collections: LibraryCollection[];
@@ -119,12 +127,17 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   allItems: null,
 
   loadCollections: async () => {
+    const request = ++collectionsRequest;
     try {
       const res = await api.library.listCollections();
+      if (request !== collectionsRequest) return;
       set({ collections: res.collections, loaded: true });
       // 选中的库可能已被删除 —— 清掉,否则主区会停在一个不存在的库上
       const { activeCollectionId, chatCollectionId } = get();
       const ids = new Set(res.collections.map((c) => c.id));
+      for (const id of latestItemsRequest.keys()) {
+        if (!ids.has(id)) latestItemsRequest.delete(id);
+      }
       if (activeCollectionId && !ids.has(activeCollectionId)) set({ activeCollectionId: null });
       if (chatCollectionId && !ids.has(chatCollectionId)) set({ chatCollectionId: null });
       // 同理,被删掉的库的文献缓存也一并丢掉,免得它留在左栏里
@@ -137,7 +150,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       }
     } catch {
       // 库还没建好(首次启动)或主进程未就绪 —— 保持空列表,不抛
-      set({ loaded: true });
+      if (request === collectionsRequest) set({ loaded: true });
     }
   },
 
@@ -146,7 +159,9 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     // 否则用户输入带首尾空格时匹配不上,调用方会误判成「创建失败/重名」。
     const trimmed = name.trim();
     const res = await api.library.createCollection({ name: trimmed, parentId, groupId });
-    set({ collections: res.collections });
+    // A listing started before this mutation is no longer authoritative.
+    ++collectionsRequest;
+    set({ collections: res.collections, loaded: true });
     // 取本次**目标大类**下最新的那条；别把其他大类的同名项误认成新建成功。
     const created = res.collections
       .filter((c) => c.name === trimmed && c.parentId === parentId && c.groupId === groupId)
@@ -173,8 +188,12 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   },
 
   loadCollectionItems: async (id) => {
+    const request = ++itemsRequest;
+    latestItemsRequest.set(id, request);
     try {
       const res = await api.library.list({ collectionId: id, limit: TREE_PAGE });
+      if (latestItemsRequest.get(id) !== request) return;
+      if (get().loaded && !get().collections.some((c) => c.id === id)) return;
       set((s) => ({ itemsByCollection: { ...s.itemsByCollection, [id]: res.items } }));
     } catch {
       // 主进程未就绪 —— 保持空列表,不抛
@@ -182,9 +201,10 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   },
 
   loadAllItems: async () => {
+    const request = ++allItemsRequest;
     try {
       const res = await api.library.list({ limit: TREE_PAGE });
-      set({ allItems: res.items });
+      if (request === allItemsRequest) set({ allItems: res.items });
     } catch {
       // 主进程未就绪 —— 保持空,不抛
     }

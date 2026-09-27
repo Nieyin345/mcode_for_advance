@@ -7,10 +7,11 @@ import {
   ModuleWorkflowExecutionInputSchema, MODULE_SCHEMA_MAX_BYTES,
 } from "@contracts/moduleCapability";
 import { EXAMPLE_MODULE, ModuleManifestSchema, ModuleInvokeSchema, ResourceSchema } from "@contracts/modules";
-import { NodeRunnerSchema, isRunnerImplemented, isNodeRunnable, renderNodeTypeCatalog, showsNodeCapability, type NodeTypeManifest } from "@contracts/nodeType";
+import { NodeRunnerSchema, isRunnerImplemented, isNodeRunnable, renderNodeTypeCatalog, showsNodeCapability, validateNodeParams, type NodeTypeManifest } from "@contracts/nodeType";
 
 let count = 0;
-function check(name: string, fn: () => void) { fn(); count++; console.log("PASS " + name); }
+let failed = 0;
+function check(name: string, fn: () => void) { try { fn(); count++; console.log("PASS " + name); } catch (error) { failed++; console.error("FAIL " + name, error); } }
 const text = { zh: "文件信息", en: "File information" };
 const schema = { type: "object", properties: { path: { type: "string", minLength: 1 } }, required: ["path"], additionalProperties: false };
 const metadata = { schemaVersion: 1, version: "1.0.0", title: text, description: text, permissions: ["resource.read"], inputSchema: schema, outputSchema: { type: "object" }, supportsCancellation: false };
@@ -23,10 +24,10 @@ function rejects(value: unknown) { assert.equal(JsonSchemaDocumentSchema.safePar
 check("recognizes new strict runner shape", () => assert.equal(NodeRunnerSchema.safeParse({ kind: "module-capability" }).success, true));
 for (const field of ["trusted", "projectPath", "entry", "capabilityId"]) check("runner rejects " + field, () => assert.equal(NodeRunnerSchema.safeParse({ kind: "module-capability", [field]: "x" }).success, false));
 check("old runner shapes retain compatibility", () => { for (const kind of ["prompt", "conversation", "branch", "condition", "trigger", "command", "code"]) assert.equal(NodeRunnerSchema.safeParse({ kind }).success, true); });
-check("new contract does not prematurely enable model fallback", () => assert.equal(isRunnerImplemented("module-capability"), false));
+check("verified production integration activates the module runner", () => assert.equal(isRunnerImplemented("module-capability"), true));
 const manifest: NodeTypeManifest = { id: "mcode.module-capability", manifestVersion: 1, name: "Module capability", runner: { kind: "module-capability" }, capability: "read", params: [] };
-check("unwired node is not runnable or shown as model permission", () => { assert.equal(isNodeRunnable(manifest), false); assert.equal(showsNodeCapability(manifest), false); });
-check("catalog rendering warns about unwired runner", () => assert.match(renderNodeTypeCatalog([{ id: manifest.id, source: "builtin", from: "mcode", manifest }]), /尚未实现/));
+check("module node is runnable but never a model permission", () => { assert.equal(isNodeRunnable(manifest), true); assert.equal(showsNodeCapability(manifest), false); });
+check("catalog rendering no longer marks the wired module runner unimplemented", () => assert.doesNotMatch(renderNodeTypeCatalog([{ id: manifest.id, source: "builtin", from: "mcode", manifest }]), /尚未实现/));
 check("v1 user manifest unchanged", () => assert.deepEqual(ModuleManifestSchema.parse(EXAMPLE_MODULE), EXAMPLE_MODULE));
 check("v1 manifest does not acquire automation/trusted flags", () => assert.equal(ModuleManifestSchema.safeParse({ ...EXAMPLE_MODULE, workflowTargets: [target] }).success, false));
 check("v1 invoke envelope unchanged", () => assert.equal(ModuleInvokeSchema.safeParse({ moduleId: call.moduleId, contributionId: call.contributionId, resource: { projectPath: "C:/project", path: "C:/project/a.txt" }, requestId: "same-attempt" }).success, true));
@@ -82,4 +83,26 @@ check("catalog rejects target without matching module contribution", () => asser
 check("catalog rejects mismatched capability target", () => assert.equal(ModuleCatalogSchema.safeParse({ ...catalog, workflowTargets: [{ ...target, capabilityId: "core.file.info" }] }).success, false));
 check("catalog never advertises action as workflow target", () => assert.equal(ModuleCatalogSchema.safeParse({ ...catalog, capabilities: [{ id: "core.file.inspect", kind: "action" }] }).success, false));
 check("catalog never advertises user module as workflow target", () => assert.equal(ModuleCatalogSchema.safeParse({ ...catalog, modules: [EXAMPLE_MODULE], workflowTargets: [{ ...target, moduleId: EXAMPLE_MODULE.id }] }).success, false));
-console.log(`${count} module contract checks passed`);
+// Shared save/import validation must reuse the frozen schema even for an old
+// manifest with no param specs. Execution-time validation is not a substitute.
+check("shared module validator accepts the frozen three fields", () => assert.deepEqual(validateNodeParams(manifest, call), { ok: true }));
+check("shared validator preserves a deferred path template", () => assert.equal(validateNodeParams(manifest, { ...call, path: "{{upstream.file}}" }).ok, true));
+for (const key of ["trusted", "requestId", "projectPath", "source", "capabilityId", "script"]) check("shared module validator rejects extra " + key, () => {
+  const params = { ...call, [key]: "forged" };
+  const before = structuredClone(params);
+  assert.equal(validateNodeParams(manifest, params).ok, false);
+  assert.deepEqual(params, before, "validation must reject, not silently strip the field");
+});
+for (const path of ["", " ", "a\0b", "x".repeat(4097)]) check("shared module validator rejects invalid path length=" + path.length, () => assert.equal(validateNodeParams(manifest, { ...call, path }).ok, false));
+check("shared validator rejects invalid identities and missing fields", () => {
+  for (const params of [{ ...call, moduleId: "CORE" }, { ...call, contributionId: "" }, { moduleId: call.moduleId }]) assert.equal(validateNodeParams(manifest, params).ok, false);
+});
+check("shared validation is not user module authorization", () => assert.equal(validateNodeParams(manifest, { ...call, moduleId: "user.file-report" }).ok, true));
+check("other runner parameter behavior is not tightened", () => {
+  const legacy: NodeTypeManifest = { ...manifest, id: "legacy.prompt", runner: { kind: "prompt" }, params: [{ key: "prompt", kind: "text", label: "Prompt", required: true }] };
+  assert.equal(validateNodeParams(legacy, { prompt: "hello", script: "legacy extra data" }).ok, true);
+  assert.equal(validateNodeParams(legacy, {}).ok, false);
+  assert.equal(NodeRunnerSchema.safeParse({ kind: "unknown-runner" }).success, false);
+});
+console.log(`${count} module contract checks passed, ${failed} failed`);
+if (failed) process.exitCode = 1;

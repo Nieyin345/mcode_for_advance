@@ -179,7 +179,7 @@ Mcode 是一个**本地优先的通用 Agent 桌面客户端**（Electron + Reac
 | ~~B2~~ | **通用条件节点 `mcode.condition`：已实现** | AND/OR、存在/相等/包含判断，true/false 分流，不调用模型；不是人工回环闸门 | 由 condition/scheduler/workflow-view 回归覆盖 |
 | B3 | ~~**工作流导入导出接线**~~ **已完成** | **本文这一行曾是错的**（2026-09-19 核实）：契约 / preload / 界面三层**全都在**（`rpcMap.ts` 的 `workflow_export` / `workflow_import` / `workflow_import_from_file`、`preload/index.ts` 的白名单、`TransferSection.tsx` 的「导出 / 导入为新 / 覆盖当前」），提交是 `914214c feat(workflow): 工作流能导出去、也能导进来了（WF-08 接线）` | 分享与备份。已落地 |
 | B4 | **executor 插件扩展点** | `ExecutionEngine.register()` 已经在了，但没有对第三方开放的正式约定 | 别人写的执行器接进来 |
-| B5 | **学术能力继续从 core 抽离** | **转录那半边已做完**（2026-09-19）：MinerU 客户端与「下载完自动转录」那条写死的钩子全删了，改成「下载完成」事件 + 内置自动化 + `library_adopt_markdown` 挂回库；剩下的文献**检索 / 下载**仍是资料库能力兼 agent 工具 | 让它们彻底变成"工作流可以调用的能力" |
+| B5 | **学术能力与自动化的实际边界** | **2026-09-27 复核**：核心内置的 DOI/学术元数据字段、联网文献检索与 PDF 下载队列已退役；`search` 仍是依赖外部检索 MCP 的**对话工作流**，不是事件自动化。`wf_auto_download` 是依赖外部下载工具的导入事件自动化，`wf_auto_convert` 是运行随应用发布的 MinerU 脚本、需要 `MINERU_TOKEN` 的文件到位事件自动化。核心仍保留本地条目检索、Markdown 全文检索及文件导入/归属/预览。**没有独立的 DOI 下载自动化和无人值守文献检索自动化。** | 如需四条各自独立的自动化，需另设计 DOI/检索触发器与无文件占位入库的模型侧入口，不能把目前的工作流名称当作已完成的能力 |
 
 ### C. 工程质量
 

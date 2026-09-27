@@ -58,10 +58,12 @@ export const zh = {
 
   // 中栏:列表
   "library.list.count": "{n} 篇",
-  "library.list.searchPlaceholder": "搜索标题、作者、摘要",
+  "library.list.selectAll": "全选当前条目",
+  "library.list.selectItem": "选择条目：{title}",
+  "library.list.searchPlaceholder": "搜索标题、简介、来源地址",
   "library.list.selected": "已选中 {n} 篇",
   "library.list.empty": "文献库还是空的",
-  "library.list.emptyHint": "导入本地的 PDF 文件（自动识别作者与期刊，并转成 Markdown），或用关键词检索、粘贴 DOI / arXiv ID / BibTeX。",
+  "library.list.emptyHint": "导入本地文档；联网检索与下载需要已配置的工作流和外部工具，Markdown 转录由自动化触发。",
   "library.list.noMatch": "没有匹配的文献",
   "library.list.emptyInCollection": "分类只是视图 —— 东西还在库里，只是不属于这个分类。",
   /** 回收站**空**的时候说的话。
@@ -109,7 +111,7 @@ export const zh = {
 
   // 检索
   "library.search.title": "检索外部数据库",
-  "library.search.scopeHint": "这里是在 Crossref / arXiv 上找**还没入库**的新文献。要搜已经在库里的，用列表上方的搜索框（搜标题/作者/摘要），或右栏的全文检索（搜已转 Markdown 的正文）。",
+  "library.search.scopeHint": "联网检索需要已配置的对话工作流与外部工具。要搜库内条目，用列表上方的搜索框（标题/简介/来源地址）；要搜已转录的 Markdown 正文，用全文检索。",
   "library.search.placeholder": "关键词，如 graph neural network scheduling",
   "library.search.submit": "检索",
   "library.search.searching": "检索中…",
@@ -125,12 +127,11 @@ export const zh = {
   "library.import.pickFile": "导入文件…",
   "library.import.pickFolder": "导入文件夹",
   "library.import.explodeFolder": "批量导入文件夹",
-  "library.import.hint": "文件夹作为一个条目收进；批量则把里面文件拆开逐个导入",
-  "library.import.autoConvert": "导入后自动转 Markdown",
-  "library.import.autoConvertHint": "（已经有转录好的 md？取消勾选，节省一次 MinerU API 转录）",
+  "library.import.hint": "文件夹作为一个条目；批量将第一层文件和子文件夹分别收库",
+  "library.import.automationHint": "导入只负责收库；工作流库中的「文件到位后在线转 Markdown」自动化开启时，会将受支持的文件上传 MinerU。若不想上传，请先关闭该自动化的触发器。",
   "library.import.pdfResult": "导入 {added} 份文档，跳过 {skipped} 份重复",
-  "library.import.convertFailed": "{n} 篇转 Markdown 失败",
-  "library.import.pdfErrors": "{n} 份文件导入或转录失败",
+  "library.import.pdfErrors": "{n} 份文件导入失败",
+  "library.import.operationFailed": "操作出错：{reason}。如已成功导入，请刷新列表确认。",
   "library.import.dropHint": "也可以直接把文档拖进来",
   "library.import.dropHere": "松手导入文档",
 
@@ -317,13 +318,13 @@ export const zh = {
   // 的事。文案里去掉了"MinerU 额度"那套说法 —— 现在花的是用户自己那套工具的成本。
   "settings.convert.title": "转换情况",
   "settings.convert.desc":
-    "统计库里有多少篇已经转成 Markdown。没有转换产物的文献，AI 读不到正文、全文检索也搜不到。",
+    "统计 Markdown 转录状态。未转录文件不参与 Markdown 全文检索；PDF 文本仍可由文档读取工具按需提取。",
   "settings.convert.total": "库里共 {n} 篇",
   "settings.convert.converted": "已转 {n} 篇",
   "settings.convert.pending": "未转 {n} 篇",
   "settings.convert.empty": "库里还没有文献",
   "settings.convert.localNote":
-    "软件只导入、保存和显示文件。上传转录、DOI 下载与学术元数据提取由你配置的自动化完成；没有 PDF.js 本地兜底。已有 Markdown 可用「用本地 Markdown…」采纳。",
+    "导入不直接转录；启用在线转 Markdown 自动化并提供 MINERU_TOKEN 后才会上传。DOI 下载与联网检索没有独立的事件自动化，需另配外部工具/工作流。已有 Markdown 可用「用本地 Markdown…」采纳。",
   "settings.convert.reasonNoMd": "还没转 Markdown",
   "settings.convert.reasonNoAssets": "有 {n} 张图没落盘",
   "settings.convert.runPending": "转换未转的 {n} 篇",

@@ -50,10 +50,12 @@ export const en = {
   "library.collection.linkCount": "{n} links",
 
   "library.list.count": "{n} papers",
-  "library.list.searchPlaceholder": "Search title, author, abstract",
+  "library.list.selectAll": "Select all items in this list",
+  "library.list.selectItem": "Select item: {title}",
+  "library.list.searchPlaceholder": "Search title, description, source URL",
   "library.list.selected": "{n} selected",
   "library.list.empty": "Your library is empty",
-  "library.list.emptyHint": "Import PDF files from your disk (authors and venue are detected automatically, then converted to Markdown), or search by keyword, or paste DOIs / arXiv IDs / BibTeX.",
+  "library.list.emptyHint": "Import local documents. Online paper search and downloads require a configured workflow and external tools; Markdown transcription runs through automation.",
   "library.list.noMatch": "No matching papers",
   "library.list.emptyInCollection": "A collection is just a view — your items are still in the library, they are simply not in this collection.",
   /** Shown when the trash itself is empty. Deliberately NOT
@@ -98,7 +100,7 @@ export const en = {
   "library.action.refresh": "Refresh",
 
   "library.search.title": "Search external databases",
-  "library.search.scopeHint": "This searches Crossref / arXiv for papers **not yet in your library**. To search what you already have, use the box above the list (title, author, abstract) or the full-text search (converted Markdown).",
+  "library.search.scopeHint": "Online search requires a configured conversational workflow and external tools. Search local entries by title, description or source URL above the list, or search converted Markdown with full-text search.",
   "library.search.placeholder": "Keywords, e.g. graph neural network scheduling",
   "library.search.submit": "Search",
   "library.search.searching": "Searching…",
@@ -112,12 +114,11 @@ export const en = {
   "library.import.pickFile": "Import files…",
   "library.import.pickFolder": "Import folder",
   "library.import.explodeFolder": "Batch import folder",
-  "library.import.hint": "A folder becomes one entry; batch splits its files into entries",
-  "library.import.autoConvert": "Convert to Markdown on import",
-  "library.import.autoConvertHint": "(Already have a converted .md? Uncheck this to save an API transcription.)",
+  "library.import.hint": "A folder becomes one entry; batch imports immediate files and subfolders as separate entries",
+  "library.import.automationHint": "Import only stores files. When the 'Online Markdown conversion when files arrive' automation is enabled, it uploads supported files to MinerU. Disable that automation's trigger first if you do not want uploads.",
   "library.import.pdfResult": "Imported {added} documents, skipped {skipped} duplicates",
-  "library.import.convertFailed": "{n} failed to convert to Markdown",
-  "library.import.pdfErrors": "{n} files could not be imported or transcribed",
+  "library.import.pdfErrors": "{n} files could not be imported",
+  "library.import.operationFailed": "Operation failed: {reason}. If import succeeded, refresh the list to confirm.",
   "library.import.dropHint": "or drop documents here",
   "library.import.dropHere": "Drop to import documents",
 
@@ -274,13 +275,13 @@ export const en = {
   // library have no Markdown yet — the library's own business.
   "settings.convert.title": "Conversion status",
   "settings.convert.desc":
-    "How many papers in the library have been converted to Markdown. Papers with no converted text are invisible to the AI and to full-text search.",
+    "Markdown transcription status. Unconverted files are not in Markdown full-text search; document tools can still extract PDF text on demand.",
   "settings.convert.total": "{n} in the library",
   "settings.convert.converted": "{n} converted",
   "settings.convert.pending": "{n} pending",
   "settings.convert.empty": "The library is empty",
   "settings.convert.localNote":
-    "The app imports, stores and displays files. Upload-based transcription, DOI downloads and scholarly metadata extraction run only through your configured automations, with no local PDF.js fallback. Attach existing Markdown with “Use local Markdown…”.",
+    "Import does not transcribe. Enable the online Markdown automation and provide MINERU_TOKEN before files are uploaded. DOI downloads and online paper search are not standalone event automations; they need external tools/workflows. Attach existing text with “Use local Markdown…”.",
   "settings.convert.reasonNoMd": "No Markdown yet",
   "settings.convert.reasonNoAssets": "{n} images not on disk",
   "settings.convert.runPending": "Convert the {n} pending",

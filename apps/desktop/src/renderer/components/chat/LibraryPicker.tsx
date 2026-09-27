@@ -204,6 +204,9 @@ export function LibraryPicker({
   useEffect(() => {
     if (!open) return undefined;
     const onKey = (e: KeyboardEvent) => {
+      // IME composition keys (candidate confirm / pinyin Space) belong to the
+      // input method, not the picker.
+      if (e.isComposing || e.keyCode === 229) return;
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();

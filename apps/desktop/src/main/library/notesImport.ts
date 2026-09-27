@@ -21,8 +21,9 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname } from "node:path";
 import type { LibraryItem } from "@contracts/library";
-import { CollectionRepo, LibraryRepo } from "@main/store/repositories.js";
+import { LibraryRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
+import { assignImportedToCollections } from "./operations.js";
 import { ensureLibraryDirs, fromLibraryRelative, isInsideLibrary, notePathForId, noteRelPathForId, toLibraryRelative } from "./paths.js";
 
 export interface NoteImportSummary {
@@ -77,24 +78,40 @@ export function importNoteFiles(paths: string[], collectionIds?: string[]): Note
       const text = readFileSync(path, "utf8");
       const title = deriveNoteTitle(text, path);
 
-      // 同一个库里标题相同 = 认为已经收过了
-      const dup = LibraryRepo.list({ query: title, limit: 50 }).items.some(
-        (i) => i.title.trim().toLowerCase() === title.trim().toLowerCase(),
+      // 同一个库里标题相同 = 认为已经收过了。
+      //
+      // 只认**有 md 文件**的行:半截行(建了记录、文件没落成 —— 见下面失败清理那
+      // 一段的理由)不许把重试判成"已存在",否则这篇笔记就永远进不来了。
+      const dup = LibraryRepo.list({ query: title, limit: 50 }).items.find(
+        (i) => Boolean(i.mdPath) && i.title.trim().toLowerCase() === title.trim().toLowerCase(),
       );
       if (dup) {
+        // 「这一份已经收过了」不改变「用户要它出现在这个分类里」—— 与 PDF 管线
+        // `alreadyPresent` 那条路同一口径。条目也要给回来:调用方(和用户)得知道
+        // 这次重复对应的是库里哪一条,不能第二次就空手而归。
+        assignImportedToCollections(dup.id, collectionIds);
+        out.items.push(dup);
         out.skipped += 1;
         continue;
       }
 
       const item = LibraryRepo.upsert({ title });
-      const dest = notePathForId(item.id);
-      mkdirSync(dirname(dest), { recursive: true });
-      copyFileSync(path, dest);
-      LibraryRepo.setMarkdown(item.id, noteRelPathForId(item.id));
-
-      for (const cid of collectionIds ?? []) {
-        CollectionRepo.assign(cid, [item.id], true);
+      try {
+        const dest = notePathForId(item.id);
+        mkdirSync(dirname(dest), { recursive: true });
+        copyFileSync(path, dest);
+        LibraryRepo.setMarkdown(item.id, noteRelPathForId(item.id));
+      } catch (err) {
+        // 半截行必须收拾掉:文件没落成的记录留在库里,按标题查重会把下一次重试
+        // 判成"已存在" —— 用户看到一次报错、之后怎么导都"跳过",笔记永远进不来。
+        LibraryRepo.delete([item.id]);
+        throw err;
       }
+
+      // 归属走导入统一的那道门(`assignImportedToCollections`):失效的分类 id
+      // **跳过**而不是抛 —— 裸调 `CollectionRepo.assign` 会撞外键直接炸,而此刻
+      // 条目已经入库,调用方收到的却是"导入失败"。
+      assignImportedToCollections(item.id, collectionIds);
 
       const saved = LibraryRepo.get(item.id);
       if (saved) out.items.push(saved);
@@ -125,7 +142,8 @@ export function createNote(title: string, collectionIds?: string[]): LibraryItem
 
 `, "utf8");
   LibraryRepo.setMarkdown(item.id, noteRelPathForId(item.id));
-  for (const cid of collectionIds ?? []) CollectionRepo.assign(cid, [item.id], true);
+  // 同上:失效的分类 id 跳过,不让"新建笔记"在文件已落盘之后整个抛掉。
+  assignImportedToCollections(item.id, collectionIds);
   return LibraryRepo.get(item.id);
 }
 

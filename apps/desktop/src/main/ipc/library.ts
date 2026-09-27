@@ -97,13 +97,13 @@ import {
   writeHighlights,
 } from "@main/library/pdfHighlightsStore.js";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
-import { assignToCollection } from "@main/library/operations.js";
+import { assignToCollection, assignImportedToCollections } from "@main/library/operations.js";
 import {
   attachToChat,
   writeCollectionManifest,
   writeItemManifest,
 } from "@main/library/manifest.js";
-import { ensureLibraryDirs, libraryRoot, fromLibraryRelative, isInsideLibrary, markdownArtifact, markdownArtifactsOfItem, countImageFiles } from "@main/library/paths.js";
+import { ensureLibraryDirs, libraryRoot, fromLibraryRelative, toLibraryRelative, isInsideLibrary, markdownArtifact, markdownArtifactsOfItem, countImageFiles } from "@main/library/paths.js";
 import { ensureWorkflows } from "@main/workflows/seed.js";
 
 /**
@@ -185,9 +185,11 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
         language: entry.language,
         url: entry.url,
       });
-      if (entry.collectionIds?.length) {
-        for (const cid of entry.collectionIds) CollectionRepo.assign(cid, [item.id], true);
-      }
+      // 归属走导入统一的那道门:失效的分类 id **跳过**而不是抛。裸调
+      // `CollectionRepo.assign` 会撞外键(FOREIGN KEY constraint failed)直接把
+      // handler 炸掉 —— 而此刻条目已经 upsert 进库,调用方收到的是报错、库里却
+      // 多了半截条目。顺带获得与文件导入一致的"归类时从回收站摘出来"语义。
+      assignImportedToCollections(item.id, entry.collectionIds);
       items.push(item);
       emitItemImported(item);
     }
@@ -423,12 +425,24 @@ function deleteItemsCore(
           dropAbs(id, "pdf", fromLibraryRelative(item.pdfPath), false);
         }
 
-        if (item.mdPath && !sharedWithSurvivor(item.mdPath)) {
-          // 一份 md 产物可能是一整个目录(外部工具转的 / 「采纳 Markdown」,里面还有 images/)。
-          // 该删哪个由 `markdownArtifact` 按**落点结构**决定 —— 早先这里按"父目录名像不像
-          // 一个 sha256"猜,猜不中「采纳」那一种,于是它的 images/ 永远留在磁盘上。
-          // 同哈希被两条记录引用时它们的 mdPath 是**同一个**,上面那道引用计数已经拦住了。
-          const artifact = markdownArtifact(fromLibraryRelative(item.mdPath));
+        // 一份 md 产物可能是一整个目录(外部工具转的 / 「采纳 Markdown」,里面还有 images/)。
+        // 该删哪个由 `markdownArtifact` 按**落点结构**决定 —— 早先这里按"父目录名像不像
+        // 一个 sha256"猜,猜不中「采纳」那一种,于是它的 images/ 永远留在磁盘上。
+        //
+        // ⚠️ **和 `deletePreviewCore` 用同一张清单**(M34 的复核请求):预览按
+        // `markdownArtifactsOfItem` 把"按 PDF sha 派生的旧平转录 / 旧整包"也列进「会一起删」,
+        // 而这里原先只删 `mdPath` 指的那一份 —— 用户勾了、界面说删了,旧产物却还躺在盘上。
+        // 守卫分两档:`mdPath` 那一份看 mdPath 的引用计数;sha 派生的那几份看 **PDF 本体**
+        // 是否还有别的记录指着(同 sha 的 PDF 只有一份,幸存者还在就一个字节都不动)。
+        const mdOwn = item.mdPath ? markdownArtifact(fromLibraryRelative(item.mdPath)).path : null;
+        const pdfShared = item.pdfPath ? sharedWithSurvivor(item.pdfPath) : false;
+        for (const artifact of markdownArtifactsOfItem(item)) {
+          const isMdOwn = artifact.path === mdOwn;
+          if (isMdOwn) {
+            if (!item.mdPath || sharedWithSurvivor(item.mdPath)) continue;
+          } else if (pdfShared || sharedWithSurvivor(toLibraryRelative(artifact.path))) {
+            continue;
+          }
           dropAbs(id, "markdown", artifact.path, artifact.recursive);
         }
 
@@ -485,6 +499,23 @@ function deleteItemsCore(
    * 只删记录(不动磁盘)时不展示转录那一项 —— 那时候 `！[](images/…)` 还指着盘上还在的
    * 文件,把 md 列进去说"会一起删"是假话。界面按同一个开关决定要不要问。
    */
+/**
+ * 高亮读写的路径围栏(OBS-M35-02)。
+ *
+ * 原来只认 `findContainingWorkspaceRoot`(项目根 / worktree / 用户文档根)。**已入库的
+ * linked PDF** 恰恰常在这些根之外(用户从别处关联进来的),于是它能预览却"这个位置不允许
+ * 写入"。补两档:库根之内;或**正是某条记录登记的路径**(`pathRefCounts` 的键就是三列
+ * 的原值 —— linked 存绝对路径)。不放开任意路径:未入库又不在根内的仍被拒。
+ */
+function highlightPathAllowed(pdfPath: string): boolean {
+  if (findContainingWorkspaceRoot(pdfPath)) return true;
+  if (isInsideLibrary(pdfPath)) return true;
+  const refs = LibraryRepo.pathRefCounts();
+  if (refs.has(pdfPath)) return true;
+  const rel = toLibraryRelative(pdfPath);
+  return refs.has(rel);
+}
+
 function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
   const entries: LibraryDeletePreviewEntry[] = [];
   const inBatch = new Set(ids);
@@ -800,10 +831,12 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
     const item = LibraryRepo.get(input.id);
     if (!item) return { ok: false, error: "找不到这篇文献" };
     const wantMd = input.which === "md";
-    const rel = wantMd ? item.mdPath : item.pdfPath;
-    if (!rel) return { ok: false, error: wantMd ? "还没有转换产物" : "还没有 PDF" };
-    const abs = fromLibraryRelative(rel);
-    if (!existsSync(abs)) return { ok: false, error: `文件不在了:${rel}` };
+    // 和 `readEntryFile` / `LIBRARY_ENTRY_PATH` 同一判据(OBS-M35-02):本体(`file_path`,
+    // 含 linked 的库外绝对路径)→ PDF → 转录。原来只认 pdf/md 两列,通用条目的「外部打开」
+    // 永远是"还没有 PDF"。
+    const abs = entryRootAbsPath(item, input.which);
+    if (!abs) return { ok: false, error: wantMd ? "还没有转换产物" : "这条资料还没有关联文件" };
+    if (!existsSync(abs)) return { ok: false, error: `文件不在了:${basename(abs)}` };
     const err = await shell.openPath(abs);
     return err ? { ok: false, error: err } : { ok: true };
   });
@@ -851,7 +884,7 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
    */
   ipcMain.handle(IPC.LIBRARY_READ_HIGHLIGHTS, (_evt, raw) => {
     const input = PdfHighlightsReadSchema.parse(raw);
-    const guard = findContainingWorkspaceRoot(input.pdfPath);
+    const guard = highlightPathAllowed(input.pdfPath);
     // ⚠️ **围栏不过就报错，不返回空数组。** 返回空数组的话，一个越界路径看起来
     //    就像"这篇还没划过高亮"—— 静默错，用户永远不知道自己在看一个假结果。
     if (!guard) return { highlights: [] };
@@ -866,7 +899,7 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
    */
   ipcMain.handle(IPC.LIBRARY_SAVE_HIGHLIGHTS, (_evt, raw) => {
     const input = PdfHighlightsSaveSchema.parse(raw);
-    if (!findContainingWorkspaceRoot(input.pdfPath)) {
+    if (!highlightPathAllowed(input.pdfPath)) {
       return { ok: false, error: "这个位置不允许写入" };
     }
     if (!existsSync(input.pdfPath)) return { ok: false, error: "文件不在了" };
@@ -889,7 +922,7 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
    */
   ipcMain.handle(IPC.LIBRARY_WRITE_HIGHLIGHTS, (_evt, raw) => {
     const input = PdfHighlightsWriteBackSchema.parse(raw);
-    if (!findContainingWorkspaceRoot(input.pdfPath)) {
+    if (!highlightPathAllowed(input.pdfPath)) {
       return { ok: false, error: "这个位置不允许写入" };
     }
     if (!existsSync(input.pdfPath)) return { ok: false, error: "文件不在了" };
@@ -1128,15 +1161,14 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
   // 指定了 collectionIds 就顺手归组 —— 和文献导入同一个体验,不用用户再点一遍。
   ipcMain.handle(IPC.LIBRARY_IMPORT_GENERIC, async (_evt, raw) => {
     const input = LibraryImportGenericSchema.parse(raw);
+    // 归属交给导入器自己(`importGenericFiles` → `assignImportedToCollections`):
+    // 失效的分类 id 跳过,不让 handler 在文件**已复制进库**之后撞外键整个抛掉;
+    // 重复导入给回的旧条目也照样归入 —— 与 LIBRARY_IMPORT_FILES 同一套行为。
     const res = importGenericFiles({
       paths: input.paths,
       mode: input.mode,
+      collectionIds: input.collectionIds,
     });
-    if (input.collectionIds?.length) {
-      for (const collectionId of input.collectionIds) {
-        assignToCollection(collectionId, res.items.map((i) => i.id), true);
-      }
-    }
     notifyLibraryChanged(`import_generic:${res.added}`);
     return res;
   });

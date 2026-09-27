@@ -244,6 +244,43 @@ eq("会话用 (system) 哨兵", (externals[0] as { sessionId?: string })?.sessio
 // ⚠️ `library:changed`(界面重拉)不在这一层 —— 它是**调用方**发的:用户那条路在
 // `ipc/library.ts` 的 handler 末尾。所以这里看不到它,也不该在这里断言它。
 
+/* ──────────────── 5a. 通用文件导入时分类不能被丢掉 ──────────────── */
+
+console.log("\n通用导入 · 选定分类要生效(文件/文件夹/已存在的 linked 条目)");
+{
+  const { CollectionRepo } = await import("@main/store/repositories.js");
+  const { importAnyFiles } = await import("@main/library/importDispatch.js");
+  const first = CollectionRepo.create("通用文件目标", null).id;
+  const second = CollectionRepo.create("再导入的目标", null).id;
+
+  const doc = join(SRC, "要归类的文档.docx");
+  writeFileSync(doc, "一份通用文档", "utf8");
+  const result = await importAnyFiles([doc], { collectionIds: [first] });
+  eq("通用文档入库一条", result.added, 1);
+  check("★ attached 文档归到了所选分类", CollectionRepo.collectionsOfItem(result.items[0]!.id).includes(first));
+
+  const folder = join(SRC, "要归类的文件夹");
+  mkdirSync(folder);
+  const linked = await importAnyFiles([folder], { mode: "folder", collectionIds: [first] });
+  eq("目录入库一条", linked.added, 1);
+  check("★ linked 文件夹归到了所选分类", CollectionRepo.collectionsOfItem(linked.items[0]!.id).includes(first));
+
+  // 再导入已存在的 linked 目录不应重复建条目，但仍应将它放进这次指定的分类。
+  const again = await importAnyFiles([folder], { mode: "folder", collectionIds: [second] });
+  eq("同一路径的目录不重复建条目", again.skipped, 1);
+  check("★ 已存在的 linked 条目也归入新选的分类", CollectionRepo.collectionsOfItem(linked.items[0]!.id).includes(second));
+
+  // 批量模式只拆第一层文件；第一层子文件夹应作为 linked 条目保留，不能无声丢掉。
+  const batch = join(SRC, "批量根");
+  const child = join(batch, "子文件夹");
+  mkdirSync(child, { recursive: true });
+  writeFileSync(join(batch, "报告.docx"), "正文", "utf8");
+  writeFileSync(join(child, "下层资料.txt"), "正文", "utf8");
+  const exploded = await importAnyFiles([batch], { mode: "explode", collectionIds: [first] });
+  eq("★ 批量导入同时保留文件与子目录", exploded.added, 2);
+  check("第一层子目录作为 linked 条目", exploded.items.some((i) => i.filePath === child && i.entryMode === "linked"), exploded.items);
+}
+
 /* ──────────────── 6. 一条都读不到的东西 ──────────────── */
 
 console.log("\n读不动的条目");

@@ -594,6 +594,23 @@ console.log("\n写工具的那道门只在有屏蔽时才拦");
   eq("library_write_note:笔记真的落库了", NoteRepo.listByItem(plain.id).length, 1);
 }
 
+/* ──────────────── 8. 库内搜索不能只看列表默认的前 200 条 ──────────────── */
+
+{
+  const { getDb } = await import("@main/store/db.js");
+  const old = LibraryRepo.upsert({ title: "第零条深藏的文档", url: "https://example.org/old-item" });
+  const db = getDb();
+  db.run("UPDATE library_items SET added_at = 1 WHERE id = ?", [old.id]);
+  // 直接造测试行以避免 201 次持久化；数据只存在本套的临时库。
+  for (let i = 0; i < 201; i += 1) {
+    db.run("INSERT INTO library_items (id, title, added_at, updated_at) VALUES (?, ?, ?, ?)",
+      [`li_search_fixture_${i}`, `其余文档 ${i}`, 10_000 + i, 10_000 + i]);
+  }
+  check("前置条件:旧条目不在列表默认的 200 条里", !LibraryRepo.list({}).items.some((it) => it.id === old.id));
+  const hit = await call("library_search", { query: "第零条深藏的文档" });
+  check("★ 库内搜索可查到第 200 条以外的文档", hit.includes(old.id), hit);
+}
+
 /* ──────────────── 收尾 ──────────────── */
 
 rmSync(DATA, { recursive: true, force: true });

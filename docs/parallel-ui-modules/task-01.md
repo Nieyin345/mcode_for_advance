@@ -2,7 +2,38 @@
 
 ## 状态
 
-**READY_FOR_INTEGRATION** — 01 的契约、定向验证和接口文档已完成；不代表整个第二阶段已经可运行或全量通过。
+**READY_FOR_INTEGRATION — 01 收尾已完成，阶段最终验收由 06/07 继续。**
+
+2026-09-27 用户授权本对话接手 01/07，另确认 06 的剩余测试移交。当前承接者：Arena Agent / UI-MODULES-P2 / P2-01-07-transfer-20260927。
+
+- 收尾开始 HEAD：`95d6a99f1a2507aeefbe21df78c93626aed72633`，这是用户授权的模块平台 75 文件检查点，未推送。
+- 本阶段仅在 01 所有文件中补共享严格保存/导入校验、生产 runnable 门禁及对应测试/冻结稿；保留既有冻结公共字段。
+- 已收到并核对 05 的 P2-01-REQ-01 / REQ-02 回应及 P2-05-REQ-01；先重现红灯，再实现，不把测试 fixture-open 当成生产激活。
+- 以下为前承接者的历史交接与证据；收尾的新结论将单独记录，不把历史待接线状态当成当前结果。
+
+## 2026-09-27 移交后的收尾结果
+
+- 冻结版本仍是 **P2-01 / 1.0.0**，没有破坏公共字段、旧 v1 或权限边界。
+- `validateNodeParams` 对模块 runner 调用已有 strict schema，保存/导入/预检共享拒绝非法参数；其他 runner 和模板语义不变。
+- 在收到 05 双生产入口、共同注册工厂、缺执行器不走模型的证据后，激活生产 runnable；不是 fixture-open。
+- 仅追加/调整 01 的契约测试与接口注记；`main.ts` 现在收集所有失败，正常 **106/106**。
+
+| 本阶段证据 | 结果 | `.tmp/` 产物 |
+|---|---|---|
+| 修复前契约红灯 | 92 pass / 14 fail，exit 1；已加载真实契约 | `module-contract-VunAFw` |
+| 修复前共享保存/导入 sentinel | 0/3，exit 1 | `module-workflow-ixWRFD` |
+| 修复后契约 | 106/106，exit 0 | `smoke-runs/1790485245302-50120-yhRS5j/module-contract-smoke.log` |
+| 原生工作流接线 | native-open 25/25；strict sentinel 3/3，exit 0 | 同目录 `module-workflow-smoke.log` |
+| 既有保存/导入验证 | PASS，exit 0 | 同目录 `workflow-validation-smoke.log` |
+| 01 修复后双包 tsc / owned diff | 各 exit 0 | `module-workflow-verify-ckgJde` |
+
+四套定向运行整体仍 exit 1：原 06 探针明确返回 9 PASS / 0 FAIL / 1 BLOCKED（exit 2），因为完整 Electron/持久化验收尚未补齐；没有将它写成全阶段绿灯。06 新增原生测试的开发与最终候选复验由其报告单独记录，不能用本节旧 tsc 代替后续新增测试的检查。
+
+`nodeType.ts` 此时 SHA-256：`61c5152016563320fe2e6261ae74ff2f4fc84d7158725022b003cb670c804d27`。当前严格参数规则及激活说明见 interface-v2.md。后续新增测试/正式交付只以 07 的冻结候选为最终证据。
+
+以下所有“未激活 / 未取得 05 回复 / 早期 desktop 类型失败”均为**前承接者的历史状态**，不是当前 01 结论；保留供审计追溯。
+
+### 前承接者的已交付记录（历史）
 
 - 承接对话标识：Arena / UI 模块平台原实现对话 / P2-01。
 - 开始 HEAD：`4e25a77fa0b95a97baf2f9423d399e442b98aab4`。

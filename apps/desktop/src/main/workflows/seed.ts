@@ -67,7 +67,7 @@ Mcode 把整个数据库放在内存里,任何一次变更都会把 \`mcode.db\`
 ### library.py —— 查库
 
     python library.py collections                 # 先看有哪些大类、分类(括号里是 id)
-    python library.py list [--group <大类 id>] [--collection <分类 id>]
+    python library.py list [--group <大类 id>]
     python library.py find 关键词 [--group ...]
     python library.py show <id 前缀或标题片段>
     python library.py files [--group ...] [--missing-md]
@@ -85,7 +85,7 @@ Mcode 把整个数据库放在内存里,任何一次变更都会把 \`mcode.db\`
     python check_citations.py refs.bib --manuscript 稿件.tex
 
 把 .bib 里每一条拿到库里对,分成三档:**库里有** / **库里没有但标题很像** /
-**库里没有也对不上**(最要紧的一档 —— 很可能是编造的)。
+**库里没有也对不上**(仅表示本地未核实,不能断定是编造;外部核实后再引用)。
 
 ## 改这些脚本
 

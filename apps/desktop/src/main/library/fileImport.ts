@@ -21,6 +21,7 @@ import { basename, extname, join } from "node:path";
 import type { LibraryItem } from "@contracts/library";
 import { LibraryRepo } from "@main/store/repositories.js";
 import { emitItemImported } from "./broadcast.js";
+import { assignImportedToCollections } from "./operations.js";
 import { libraryRoot, ensureLibraryDirs, fromLibraryRelative } from "./paths.js";
 import { log } from "@main/lib/logger.js";
 import { isFileSuppressed } from "./suppress.js";
@@ -74,16 +75,27 @@ export function importGenericFiles(input: {
         continue;
       }
       const isDir = statSync(abs).isDirectory();
+      // attached 的语义是"把**文件**复制进库"。目录条目的唯一合法形态是 linked
+      // (见文件头「linked **可以是目录**」;`importAnyFiles` 也是这么分派的)。
+      // 从前这里对目录照走 attached:复制那一步被 `if (!isDir)` 静默跳过,
+      // `file_path` 却写上了一个**从未创建过**的 `files/<id>-<名>` —— 条目点开
+      // 永远是「文件不存在(被移走了?)」。`library.importGeneric` 那条 IPC 允许
+      // attached + 任意路径,所以这一档在真实入口上够得到。目录一律按 linked 落。
+      const effectiveMode = isDir ? "linked" : mode;
       if (seen.has(abs)) {
         skipped += 1;
         const first = seen.get(abs);
-        if (first) items.push(first);
+        if (first) {
+          assignImportedToCollections(first.id, input.collectionIds);
+          items.push(first);
+        }
         continue;
       }
       // 查库只对 `linked` 有意义(理由见 `findExisting`)。`attached` 的重复只靠
       // 上面那张本趟的表挡。
-      const dup = mode === "linked" ? findExisting(abs) : undefined;
+      const dup = effectiveMode === "linked" ? findExisting(abs) : undefined;
       if (dup) {
+        assignImportedToCollections(dup.id, input.collectionIds);
         seen.set(abs, dup);
         skipped += 1;
         items.push(dup);
@@ -91,19 +103,33 @@ export function importGenericFiles(input: {
       }
 
       let filePath: string;
-      if (mode === "linked") {
+      if (effectiveMode === "linked") {
         filePath = abs;
       } else {
         // attached:复制进 `<库根>/files/<id 前缀>-<原名>`。先建条目拿 id,再复制,
-        // 再把路径写上 —— 反过来(先复制)的话,失败会留下没主的无文件条目。
+        // 再把路径写上(id 是路径的一部分,先复制做不到)。
+        //
+        // ⚠️ 失败要**收拾干净**:复制/写路径任何一步抛,刚建的那行必须删掉 ——
+        // 留下来就是一条无文件、无归属、界面上任何入口都够不着的半截条目;而且
+        // 用户重试时它还躺在库里。落点目录(`filesDir()`)也挪到 upsert **之前**
+        // 拿:它自己就可能建不出来,那种失败不该先留一行记录。
+        // (捕到就删、再原样往外抛,由下面统一的 per-file catch 记进 errors。)
+        const destDir = filesDir();
         const item = LibraryRepo.upsert({
           title: titleFor(abs),
           entryMode: "attached",
         });
-        const dest = join(filesDir(), `${item.id}-${basename(abs)}`);
-        if (!isDir) copyFileSync(abs, dest);
-        LibraryRepo.setFilePath(item.id, toRel(dest));
-        const fresh = LibraryRepo.get(item.id)!;
+        let fresh: LibraryItem;
+        try {
+          const dest = join(destDir, `${item.id}-${basename(abs)}`);
+          copyFileSync(abs, dest);
+          LibraryRepo.setFilePath(item.id, toRel(dest));
+          fresh = LibraryRepo.get(item.id)!;
+        } catch (err) {
+          LibraryRepo.delete([item.id]);
+          throw err;
+        }
+        assignImportedToCollections(fresh.id, input.collectionIds);
         seen.set(abs, fresh);
         items.push(fresh);
         added += 1;
@@ -116,6 +142,7 @@ export function importGenericFiles(input: {
         entryMode: "linked",
         filePath: abs,
       });
+      assignImportedToCollections(item.id, input.collectionIds);
       items.push(item);
       added += 1;
       seen.set(abs, item);
@@ -320,7 +347,8 @@ export function readEntryFile(
   }
   if (!existsSync(target)) return { type: "unsupported", error: "文件不存在(被移走了?)" };
 
-  if (statSync(target).isDirectory()) {
+  const st = statSync(target);
+  if (st.isDirectory()) {
     const names = readdirSync(target).sort();
     return {
       type: "dir",
@@ -329,6 +357,12 @@ export function readEntryFile(
   }
 
   const ext = extOf(target);
+  // ⚠️ **先看大小再读**(OBS-M35-01)。原来是 `readFileSync` 之后再比 `byteLength`,
+  // 一个几百 MB 的文件在返回"太大"之前已经整个进了主进程内存;文本分支更是没有上限。
+  // 两支共用同一条上限:预览走 IPC 送到渲染端,超过它的都该让用户去系统里开。
+  if (st.size > MAX_BINARY_BYTES) {
+    return { type: "unsupported", error: "文件太大(超过 20MB),请在系统里打开" };
+  }
   if (TEXT_EXTS.has(ext)) {
     const text = readFileSync(target, "utf8");
     return { type: "text", text };
@@ -338,8 +372,5 @@ export function readEntryFile(
     return { type: "unsupported", error: `不认识的文件类型:${ext || "(无扩展名)"}` };
   }
   const buf = readFileSync(target);
-  if (buf.byteLength > MAX_BINARY_BYTES) {
-    return { type: "unsupported", error: "文件太大(超过 20MB),请在系统里打开" };
-  }
   return { type: "binary", mime, base64: buf.toString("base64") };
 }

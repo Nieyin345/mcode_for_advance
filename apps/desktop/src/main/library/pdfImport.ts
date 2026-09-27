@@ -32,7 +32,8 @@ import { basename, dirname, extname } from "node:path";
 import type { LibraryItem } from "@contracts/library";
 import { hashFile, verifyPdf } from "@main/library/pdfFile.js";
 import { pdfPathForHash, toLibraryRelative } from "@main/library/paths.js";
-import { CollectionRepo, LibraryRepo } from "@main/store/repositories.js";
+import { LibraryRepo } from "@main/store/repositories.js";
+import { assignImportedToCollections } from "./operations.js";
 import { emitItemDownloaded, emitItemImported } from "./broadcast.js";
 import { log } from "@main/lib/logger.js";
 
@@ -67,18 +68,6 @@ export async function importPdfFiles(input: {
  * 批量着几十份,一个过期的分类 id 不该让整批都不入库。真正的报错留给调用方按
  * `errors` 回报。
  */
-function assignToCollections(itemId: string, collectionIds: string[] | undefined): void {
-  if (!collectionIds || collectionIds.length === 0) return;
-  const known = new Set(CollectionRepo.list().map((c) => c.id));
-  for (const cid of collectionIds) {
-    if (!known.has(cid)) {
-      log.warn(`library: 导入时指定的分类 ${cid} 不存在,跳过归属(${itemId})`);
-      continue;
-    }
-    CollectionRepo.assign(cid, [itemId], true);
-  }
-}
-
 async function importOne(rawPath: string, collectionIds?: string[]): Promise<ImportedFile> {
   try {
     if (!existsSync(rawPath)) return { path: rawPath, error: "文件不存在" };
@@ -100,7 +89,7 @@ async function importOne(rawPath: string, collectionIds?: string[]): Promise<Imp
       if (!dup.pdfPath) LibraryRepo.setPdf(dup.id, rel, sha);
       // **这条也要归属。** 用户选了分类导入,落点就该在那个分类里 —— 而"这一份内容
       // 库里已经有了"不改变这个诉求(反而更常见:他刚在别处导过,现在要把它放进这次的分类)。
-      assignToCollections(dup.id, collectionIds);
+      assignImportedToCollections(dup.id, collectionIds);
       return { path: rawPath, item: { ...dup, pdfPath: dup.pdfPath ?? rel }, alreadyPresent: true };
     }
 
@@ -110,7 +99,7 @@ async function importOne(rawPath: string, collectionIds?: string[]): Promise<Imp
     LibraryRepo.setPdf(item.id, rel, sha);
     // 归属要在**入库之后**(条目 id 才有),而在**事件之前** —— 事件起来的自动化
     // 会立刻去查这一条,它看到的状态该是已经归好类的。
-    assignToCollections(item.id, collectionIds);
+    assignImportedToCollections(item.id, collectionIds);
     log.info(`library: imported PDF ${basename(rawPath)} as ${item.id}`);
     // 成功点在这里:条目建好、PDF 也记上了。alreadyPresent 的不算 —— 那条本来就在库里,
     // 之前入库时已经发过事件,再发一次会让挂在事件上的自动化重复跑。

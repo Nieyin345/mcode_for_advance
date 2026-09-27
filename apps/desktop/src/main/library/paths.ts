@@ -243,14 +243,20 @@ export function markdownArtifactsOfItem(item: {
   if (sha && SHA256.test(sha)) {
     // ① 平的:内容寻址那一份 `.md`
     out.push(flat(markdownPathForHash(sha)));
-    // ② 整包(遗留):同 sha 的目录 `<2>/<2>/<sha>/full.md`
-    out.push({ path: join(markdownDirForHash(sha), "full.md"), recursive: true });
+    // ② 整包(遗留):正文与图床所在的目录；删除预览按此目录计数。
+    out.push({ path: markdownDirForHash(sha), recursive: true });
   }
   if (item.mdPath) {
     const artifact = markdownArtifact(fromLibraryRelative(item.mdPath));
     out.push(artifact);
   }
-  return out;
+  // mdPath 可能恰好指向上面的整包或平文件，预览不应重复列出。
+  const seen = new Set<string>();
+  return out.filter(({ path }) => {
+    if (seen.has(path)) return false;
+    seen.add(path);
+    return true;
+  });
 }
 
 function flat(abs: string): { path: string; recursive: boolean } {

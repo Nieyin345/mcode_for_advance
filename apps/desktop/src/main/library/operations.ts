@@ -19,6 +19,7 @@
  */
 import type { LibraryItem } from "@contracts/library";
 import { LibraryRepo, CollectionRepo } from "@main/store/repositories.js";
+import { log } from "@main/lib/logger.js";
 import { allTrashCollectionIds, shouldSweepAfterRemoval, sweepToTrash } from "./trash.js";
 
 /**
@@ -39,6 +40,21 @@ export function assignToCollection(collectionId: string, itemIds: string[], add:
     }
   } else if (shouldSweepAfterRemoval(collectionId)) {
     sweepToTrash(itemIds);
+  }
+}
+
+/** 导入时归入选定分类；重复导入现有条目也要归入，且在发导入事件之前完成。
+ * 已失效的分类 id 跳过（批量导入不能因一处旧 id 全盘失败）。
+ * 共用 assignToCollection 的回收站摘除规则，避免 PDF / 通用文件走成两套行为。 */
+export function assignImportedToCollections(itemId: string, collectionIds?: readonly string[]): void {
+  if (!collectionIds?.length) return;
+  const known = new Set(CollectionRepo.list().map((c) => c.id));
+  for (const cid of collectionIds) {
+    if (!known.has(cid)) {
+      log.warn(`library: 导入时指定的分类 ${cid} 不存在,跳过归属(${itemId})`);
+      continue;
+    }
+    assignToCollection(cid, [itemId], true);
   }
 }
 
@@ -78,7 +94,8 @@ export function renameItem(id: string, title: string): boolean {
 /** 按关键词找条目。给 AI 用:它需要"库里有没有这一篇"的确定答案。 */
 export function searchItems(query: string): LibraryItem[] {
   const q = query.trim().toLowerCase();
-  const all = LibraryRepo.list({}).items;
+  // list() 默认只返回 200 条；给 AI 的库内搜索不能把更旧的条目静默漏掉。
+  const all = LibraryRepo.listAllItems();
   if (!q) return all;
   return all.filter((i) => {
     const hay = [i.title, i.abstract ?? "", i.filePath ?? "", i.url ?? ""]

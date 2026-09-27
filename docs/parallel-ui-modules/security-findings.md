@@ -4,6 +4,16 @@
 
 本文件由第 06 号任务维护；重连后回写到仓库。安全红灯留给所有者修复，06 不修改生产。
 
+## 当前收尾结论（2026-09-27）
+
+- **冻结候选 B 复验（07 记录）：P2-SEC-001 / 002 / 003 关闭。** 候选 B（`apps/desktop/.tmp/p2-07-candidate-B-20260927143258/`，HEAD `e1d06d0`）动态全量 139/139，其中 `module-phase2-e2e-smoke` 10 PASS / 0 FAIL / **0 BLOCKED**（含 `FULL native persistence/UI plus real scheduler and browser negative states`，即此前 CDP 超时阶段），`module-phase2-security-smoke` 20/20；证据 `p2-06-e2e-gPeLQ8`、`p2-06-security-jngkup`。关闭依据仅为自动化与隔离 Electron 功能窗口；主应用实机/安装包仍"未验收"，见 integration.md。以下各项为历史状态。
+- **P2-SEC-001 / 002：定向复验已关闭，冻结候选复验待 07 记录。** 原独立探针现为 9 PASS / 0 FAIL / 1 BLOCKED，证明缺执行器 fail-closed 与默认引擎真实注册；05 的 native-open 25/25 另覆盖两条生产注册/变量/尝试身份。新原生窗口实际走完整 runner 而非 AST 替身（create 12、reopen 7）。
+- **P2-SEC-003：IN_PROGRESS。** 真实持久化、重开、审批、UI 调度及文件结果已有证据；首轮组合的目录浏览器 CDP 超时仍令 gate 失败，最终串行冻结候选尚未验收。
+- 证据：`p2-06-e2e-WFTGas`、`module-workflow-UMQi02`、`p2-06-native-eLglkj`、`p2-06-e2e-2qrXPv`；均位于 `apps/desktop/.tmp/`。完整失败/替身界限见 task-06.md。
+- 新增真实保存 guard mutation 和 Electron 提前 exit 0 控制均成功抓住指定错误，`p2-06-native-controls-z8Bne1`。没有以删 BLOCKED 或仅看进程 exit 0 代替真实回执。
+
+以下为**历史发现与当时状态**；其 OPEN / 待 05 修复不得覆盖本节当前结论。保留有效红灯供追溯。
+
 ## P2-SEC-001 — 未注册能力 kind 会进入模型 fallback
 - 状态：OPEN / 激活前阻断。
 - 归属：05（executionEngine.ts），01/07 协调 runnable 门禁。

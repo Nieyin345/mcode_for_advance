@@ -318,8 +318,10 @@ export function FilePreview({
     }
     if (content.mime === "application/pdf" || ext === "pdf") {
       // 字节直接喂给阅读器,不再走一次 readPdf(那条路只认条目的 pdfPath)。
-      // `pdfPath` 有的话一并给它 —— 那是"保存批注"唯一的落点。
-      return <PdfPreview item={item} bytes={bytes} {...(pdfPath ? { filePath: pdfPath } : {})} />;
+      // 目录条目的 entryPath 是目录本身；读的是 relPath 指向的子 PDF，
+      // 保存/外部打开也必须指向同一份子文件，否则写入会落到目录上。
+      const filePath = pdfPath ? (relPath ? joinPath(pdfPath, relPath) : pdfPath) : undefined;
+      return <PdfPreview item={item} bytes={bytes} {...(filePath ? { filePath } : {})} />;
     }
     if (content.mime.includes("wordprocessingml") || ext === "docx" || ext === "dotx") {
       // 失败路径上的「系统程序打开」对库条目没有现成 IPC,先留空 —— 渲染成功才是常态

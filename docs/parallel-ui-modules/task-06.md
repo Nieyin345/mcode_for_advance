@@ -1,7 +1,55 @@
 # UI-MODULES-P2 / 任务 06：独立安全与端到端回归
 
 ## 状态
-**BLOCKED（生产集成依赖）**。本任务独立安全测试和交接已交付；完整生产端到端验收尚未完成，不能标记 VERIFIED。
+**VERIFIED**（2026-09-27，依据 integration.md 候选 B：`module-phase2-e2e-smoke` 10/10、0 BLOCKED，`module-phase2-security-smoke` 20/20，全量 139/139）。原状态与移交记录保留如下：
+
+**IN_PROGRESS — 用户确认将剩余 E2E 测试移交本对话。**
+
+- 当前承接者：Arena Agent / UI-MODULES-P2 / P2-01-07-transfer-20260927。
+- 用户于 2026-09-27 明确选择“确认移交，完成剩余测试”；原 06 对话停止写入。保留全部既有独立安全断言和历史红灯，不删除末尾 BLOCKED 来制造绿灯。
+- 收尾开始 HEAD：`95d6a99f1a2507aeefbe21df78c93626aed72633`。本任务只改自己的测试目录、安全清单及本报告；不会据此改 02/03/04 生产代码。
+- 07 的最终验收等待新增真实持久化/UI/调度链和隔离 Electron 证据。
+- 以下为原承接者的历史交付记录；原先的生产缺注册与门禁状态需在当前候选复验，不直接照搬。
+
+## 移交后的实现与定向证据（最终候选复验待完成）
+
+保留原 9 个片段/生命周期/生产注册/缺执行器断言。末尾不再无条件 BLOCKED，但**只有同轮真实 native、生产工作流、共享保存与目录浏览器的完整回执都通过才允许通过**；单独运行片段而没有回执仍 exit 2。
+
+新增 `native-build.mjs`、`electron-host.cjs`、`native-main.ts`、`native-ports.ts`、`native-renderer.jsx`、`verify-native-mutations.mjs`；更新本套 `build.mjs/main.ts/README.md`。原独立安全 suite 的断言未删改。未修改 02/03/04 的源码或测试。
+
+| 定向执行 | 结果与证据（均在 `apps/desktop/.tmp/`） |
+|---|---|
+| 隔离真实 Electron 功能窗口 | `p2-06-native-eLglkj`：create 12 PASS、另起进程 reopen 7 PASS，exit 0；实走真实 SQLite、preload/IPC、UI 配置、AutomationRunner/runner/scheduler、宿主和文件 |
+| 共享严格保存 mutation | `p2-06-native-EQ53Ur`：只删临时 bundle 的共享 guard；真实 native save 错收伪造字段，指定断言失败，exit 1 |
+| 提前退出 mutation | `p2-06-native-xTEp98`：Electron 子进程故意 exit 0、没有断言回执；父 gate 正确 exit 1 |
+| 两个负向控制的校验器 | `p2-06-native-controls-z8Bne1`：2/2 达到指定失败而非任意构建错误，校验器 exit 0 |
+| 首轮组合 E2E | `p2-06-e2e-2qrXPv`：native 19 项、生产工作流 25 项、共享 sentinel 3 项通过；浏览器目录套件第 4 项后 CDP Runtime.evaluate 超时，组合最终 9 PASS / 1 FAIL，exit 1。保留失败，不记作完整通过 |
+| 新增测试后的活动树 tsc | `module-workflow-verify-86p7Cm`：contracts 0；desktop 180 秒 ETIMEDOUT / SIGTERM，日志无 TS 诊断，不算通过；diff 0 |
+
+上述组合/类型执行曾与两个 native 控制并行。后续冻结候选内按串行运行、独立记录时限；这改变执行条件，不抹去前次失败。仍不能仅凭超时确定产品有错或无错。
+
+### Harness 开发失败的明确分类
+
+- `p2-06-native-7wGUMH` / `eW2rXJ`：测试种子漏了 `trigger: manual`，触发既有主节点校验；不是产品回归，修正测试种子。
+- `p2-06-native-esy5Tp`：发现关闭最后一个窗口会使 Electron 隐式 exit 0，**实际断言未通过，旧 result.json 不能用作验收**。现拦截 window-all-closed，并要求完整回执；提前退出 mutation 专门证明此门禁。
+- `BIvyFi`：控件选择器误选 Select 的隐藏 input；现在只选路径的 `input[type=text]`，保存按钮也精确匹配文案。
+- `d2zNpm`：测试直接改自动化 session.workflowId，被真实来源链守卫拒绝；改为走真实 automation.run，由生产代码创建自己的会话/来源链。没有放宽生产守卫。
+
+### 冻结候选 A 与后续小修
+
+A 的隔离串行定向已全部通过：11/11、E2E 综合门禁 10/10（native 19、生产 workflow 25、save sentinel 3、目录 UI 21）；双包类型检查均 exit 0。A 的全量未完成，按 07 决定中止后重新冻结，不记作通过。
+
+用户随后明确授权**仅一个原分工外测试适配**：`scripts/projects-ipc-smoke/stubs/window.ts`，由 07 分配当前 06 接续补 hasLiveRendererWindow() 返回 false，保留 getMainWindow() 为 null 的真实无窗口语义。未改任何断言或生产代码。这是上述“仅两个专项目录”的明确单文件例外，不是开放其他目录。
+
+截图辅助证据已加强：先 warm capture，再等双动画帧/绘制，另存同帧 DOM 文本，避免拿过渡帧当最终截图。`p2-06-native-7Km4Oy` 的 create 12 + reopen 7 再次通过；已核看真实 bytes/hash/下游结果及取消终态。该测试代码修订会进入下一个冻结候选。
+
+### 替身与未验证范围
+
+真实业务路径包括数据库/仓库、配置 library/trust、实际生产目录、完整 AutomationRunner/runner/scheduler、模块执行器、service、ModuleHost、文件与资源授权。仅 agent/provider 与主应用窗口启动/事件桥、辅助项目列表引导端口隔离；模型调用会抛错并计数。UI 取消使用明确标注的只在测试宿主登记的计时 fixture，真实文件 IO 与取消竞态另由安全/生命周期断言覆盖。页面网络被拒绝。
+
+这是无显示但真实渲染的隔离 BrowserWindow 自动验收，不是正式安装包、主应用所有服务/面板、实际 FileTree/FilesPanel、原生 BrowserView 遮挡、真实模型或手机验收。任务历史仍仅内存；重开的持久化证明指工作流配置/运行结果及安装清单，不是 task 句柄恢复。
+
+### 历史交付（原状态 BLOCKED）
 
 - 承接对话标识：Arena / P2-06 / independent-regression。
 - 开始 HEAD：`fe62fe35831ab3bec97b6bcc06673c761ea5a91e`。

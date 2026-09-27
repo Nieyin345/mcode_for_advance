@@ -25,7 +25,8 @@
  * 也要用同一套（它不许 import 主进程），而"共享实现只有一份"是这个仓库的硬规矩。
  * 这里只管**盘上的事**（读文件、写文件）。
  */
-import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { constants, copyFileSync, existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { PdfHighlight } from "@contracts/library";
 import { validatePdfHighlight } from "@contracts/pdfHighlight";
@@ -104,11 +105,27 @@ export function readHighlights(pdfPath: string): PdfHighlight[] {
 
 /**
  * 全量覆盖写索引文件。原子替换（临时文件 + rename）—— 中途崩了原文件一个字节不动。
+ * 旧索引若读不出/含坏记录，先留一份不覆盖的备份，避免下一次保存抹掉可恢复内容。
  */
 export function writeHighlights(pdfPath: string, highlights: PdfHighlight[]): void {
   const target = highlightsPathFor(pdfPath);
   const tmp = `${target}.${Date.now().toString(36)}.tmp`;
   try {
+    if (existsSync(target)) {
+      let valid = false;
+      try {
+        const old = JSON.parse(readFileSync(target, "utf8")) as
+          | { version?: number; highlights?: PdfHighlight[] }
+          | null;
+        valid = old?.version === 1 && Array.isArray(old.highlights) &&
+          old.highlights.every((h) => validatePdfHighlight(h) === null);
+      } catch {
+        // 读不到或 JSON 不完整也算坏；备份失败时直接报错，绝不先覆盖原件。
+      }
+      if (!valid) {
+        copyFileSync(target, `${target}.corrupt-${randomUUID()}`, constants.COPYFILE_EXCL);
+      }
+    }
     writeFileSync(
       tmp,
       JSON.stringify({ version: 1, pdf: basename(pdfPath), highlights }, null, 2),

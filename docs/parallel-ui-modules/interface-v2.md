@@ -1,6 +1,6 @@
 # UI-MODULES-P2：第 01 号任务接口冻结稿
 
-- 状态：**FROZEN（类型、schema 与调用语义）；生产执行启用仍受集成门禁控制。**
+- 状态：**FROZEN（类型、schema 与调用语义）；生产 runnable 已按 01/05 的验证结果激活，最终验收见 07。**
 - 冻结版本：**P2-01 / 1.0.0**，2026-09-27。
 - 基线：`4e25a77`；共享工作区可能有其他对话的并行修改。
 - 所有者：任务 01。其他任务不得自行改写本文件或复制另一份 contracts。
@@ -10,11 +10,11 @@
 
 本稿冻结的是契约，不表示能力宿主、工作流执行器、UI 或生产接线已经完成。
 
-**安全启动门禁：** 新 `module-capability` 已进入 NodeRunnerSchema，但暂不加入 `IMPLEMENTED_RUNNER_KINDS`，因此 `isRunnerImplemented` / `isNodeRunnable` 仍返回 false，目录文字会显示尚未实现。
+**启动门禁历史与当前状态（2026-09-27 收尾）：** 冻结初期仅识别 `module-capability`，没有加入 `IMPLEMENTED_RUNNER_KINDS`，以防未注册 kind 落入模型 fallback。用户移交 01/07 后，01 核对了 05 的双生产注册、宿主身份绑定和缺执行器 fail-closed 证据，再在自己拥有的 `nodeType.ts` 中加入该 kind；现在 `isRunnerImplemented` / `isNodeRunnable` 返回 true。
 
-原因已在真实源码中确认：`ExecutionEngine.execute` 对未注册 kind 会使用 fallback；`runner.ts` 为该 fallback 安装了模型调用。若先把新 kind 标为可运行，会让尚未接好能力的节点误跑模型。
+`executionEngine.ts` 的共同生产工厂供默认引擎与真实 runner 使用。缺少模块执行器必须失败，保留其他既有 prompt fallback。未改 02/03/04 文件，没有把测试的 fixture-open 当作生产激活。**P2-01-REQ-02 已响应**；该状态变化不修改冻结字段，也不等于 07 的全量/Electron 验收已经完成。
 
-任务 05 完成两个注册入口、输入构造及“缺执行器必须失败、不得走模型”的验证后，向 01/07 提交 **P2-01-REQ-02**。由 01 在自己拥有的 nodeType.ts 中做最小激活改动，并调整本任务的启动门禁测试；05 不得越权直接改该文件。最终全量在激活后执行。激活属于集成状态变化，不改变本稿字段格式。
+共享 `validateNodeParams` 对该 runner 先使用冻结的 `ModuleWorkflowCallSchema.safeParse`，再执行既有参数规则。保存、导入与运行预检因此拒绝额外字段、NUL、超长或错误类型的调用参数；其他 runner 继续原规则。模板文本在这里保留，路径授权仍在执行时由宿主完成。契约专项现有 106 个断言；红/绿证据见 task-01.md。
 
 ## 1. 公共导出
 
@@ -41,7 +41,7 @@
 ### 其他既有文件
 
 - `@contracts/modules` 继续导出 `ModuleCatalog`；其 capabilities 元素改为 `ModuleCapabilityDescriptor`，并增加可选 `workflowTargets`。
-- `@contracts/nodeType` 的 `NodeRunnerSchema` / `NodeRunner` / `NodeRunnerKind` 识别新 kind，但当前启动门禁仍关闭。
+- `@contracts/nodeType` 的 `NodeRunnerSchema` / `NodeRunner` / `NodeRunnerKind` 识别新 kind，生产 runnable 已在双入口/fail-closed 验证后激活。
 - `@contracts/runtime` 的 `NodeRunInput` 增加可选 `moduleCall?: ModuleWorkflowExecutionInput`。
 - 原 ModuleInvoke、ModuleReply、ModuleTask、v1 清单及七条 RPC 不改名、不新增调用主体字段。
 - 新模块仅依赖 Zod 和其他契约，不导入 Electron、文件系统、crypto、用户数据库或主进程服务。
@@ -165,13 +165,13 @@ const execution = ModuleWorkflowExecutionInputSchema.parse({
 
 ### P2-01-REQ-01（给 05 / 07）
 
-核对本稿时 task-05.md 尚不存在，**没有伪称已取得 05 的确认**。05 应在自己的报告中回复以上身份语义与生产实现位置，并测试同次重试、明确重跑、循环及续跑。
+初次冻结时尚无 05 报告；现已核对其正式回应，**P2-01-REQ-01 已响应**。实际实现位于 `executionEngine.ts` 的 `createWorkflowInputBuilder({sessionId,runId})`：复用既有输入 registry/变量构造，每次分派生成宿主 nonce，再采用上文 67 字符 SHA-256 格式。已构造输入的重复 transport 调用沿用身份；循环、新运行、失败后的重新分派换新身份。既有 inFlight 屏障保留。定向测试覆盖同次重试、显式重跑、循环和失败续跑；最终快照证据见 07。
 
 另外发现真实输入构造扩展点在 `main/orchestration/nodeInputBuilders.ts`（导出 NodeInputBuilderRegistry / nodeInputBuilderRegistry）；该文件没有被原任务表分配写入所有权。如果接线必须修改其作用域接口或内置注册，由 07 先明确分配给 05。01 不越权修改，也不建议在调度器里复制一套输入构造逻辑。可复用现有可注册扩展点的方案优先。
 
 已复核任务 03 报告的身份缺陷，同意不能使用 rounds/choiceAttempts。03 提出的持久 dispatchSeq 是一种更重的替代方案；本轮采用每次新派发的宿主 nonce，避免扩展 RunSnapshot/任务持久化范围。若 05/07 要改用持久序号，应先协调存储所有权与恢复语义，不得悄悄扩大本阶段范围。
 
-接口字段与身份语义已经冻结；上述请求是生产落地确认，不代表本任务实现了分派工厂。03 现在可以实现独立执行器及测试，runnable 门禁只阻止未接好注册的生产派发，不阻止 executor/host 的定向开发。
+接口字段与身份语义继续冻结；分派工厂归 05，契约校验与 runnable 激活归 01。两条落地请求现已响应，不扩大任务持久化或跨重启 exactly-once 承诺。
 
 ## 6. 宿主调用、结果、错误与取消映射
 

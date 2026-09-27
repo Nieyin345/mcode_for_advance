@@ -834,10 +834,12 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
     runner: { kind: MODULE_CAPABILITY_RUNNER_KIND },
     capability: "read",
     params: [
-      { key: "moduleId", kind: "text", label: "模块 / Module", required: true },
-      { key: "contributionId", kind: "text", label: "贡献 / Contribution", required: true },
+      { key: "moduleId", kind: "text", label: "模块 / Module", required: true,
+        help: "宿主目录中的内置模块。Builtin module from the host catalog." },
+      { key: "contributionId", kind: "text", label: "贡献 / Contribution", required: true,
+        help: "所选模块的只读贡献。Read-only contribution of the selected module." },
       { key: "path", kind: "text", label: "文件路径 / File path", required: true,
-        help: "相对此次运行的工作区，支持既有变量；运行时仍检查实际路径。 / Relative to the run workspace; existing variables are resolved before host authorization." },
+        help: "工作区内的文件路径，支持变量。File path in run workspace; templates allowed." },
     ],
     // Manifest outputs describe referenceable fields, not mandatory output rules.
     outputs: [

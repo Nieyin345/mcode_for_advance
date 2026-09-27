@@ -33,6 +33,12 @@ export function getMainWindow(): null {
   return null;
 }
 
+/** This shared fixture never creates a window, so there is no live renderer.
+ * Keep the production window-readiness API available without bypassing its gate. */
+export function hasLiveRendererWindow(): boolean {
+  return false;
+}
+
 export function createMainWindow(): never {
   throw new Error("projects-ipc-smoke: 不该建窗口");
 }

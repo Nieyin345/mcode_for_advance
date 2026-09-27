@@ -33,20 +33,6 @@ export interface AnyImportResult {
   converted: { ok: number; failed: number };
 }
 
-/** 列出目录第一层的**文件**（子目录递归收进爆炸/条目本身由调用方决定）。 */
-function listFiles(dir: string): string[] {
-  if (!existsSync(dir) || !statSync(dir).isDirectory()) return [];
-  return readdirSync(dir)
-    .map((n) => `${dir.replace(/[\\/]+$/, "")}/${n}`)
-    .filter((p) => {
-      try {
-        return statSync(p).isFile();
-      } catch {
-        return false;
-      }
-    });
-}
-
 export async function importAnyFiles(paths: string[], opts: ImportMode = {}): Promise<AnyImportResult> {
   const out: AnyImportResult = { items: [], added: 0, skipped: 0, errors: [], converted: { ok: 0, failed: 0 } };
 
@@ -57,16 +43,18 @@ export async function importAnyFiles(paths: string[], opts: ImportMode = {}): Pr
     if (opts.mode === "folder") return [{ path: p, isDir: true }];
     if (opts.mode === "explode") {
       // 批量：第一层文件逐个导；子目录整体作为 linked 条目收进（不递归爆开）
-      const entries = readdirSync(p)
-        .map((n) => `${p.replace(/[\\/]+$/, "")}/${n}`)
-        .filter((e) => {
-          try {
-            return statSync(e).isFile();
-          } catch {
-            return false;
-          }
-        });
-      return entries.map((e) => ({ path: e, isDir: false }));
+      return readdirSync(p).flatMap((name) => {
+        const entry = `${p.replace(/[\\/]+$/, "")}/${name}`;
+        try {
+          const stat = statSync(entry);
+          return stat.isFile() || stat.isDirectory()
+            ? [{ path: entry, isDir: stat.isDirectory() }]
+            : [];
+        } catch {
+          // 条目在枚举与检查之间消失，不影响同一批的其他文件。
+          return [];
+        }
+      });
     }
     // files 模式下给目录？整体作为 linked 条目（与 folder 同义）
     return [{ path: p, isDir: true }];
@@ -136,6 +124,3 @@ export async function importAnyFiles(paths: string[], opts: ImportMode = {}): Pr
 
   return out;
 }
-
-/** 给 handler 的防未用警告（listFiles 目前只服务 explode 的第一层展开）。 */
-void listFiles;

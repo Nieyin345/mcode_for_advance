@@ -48,7 +48,8 @@ function manifestDir(): string {
  */
 export function writeItemManifest(itemId: string): ManifestResult {
   const item = LibraryRepo.get(itemId);
-  if (!item) return { path: "", count: 0, name: "" };
+  // IPC 的「+」菜单可直接调用这里，不经过 attachToChat 的入口过滤。
+  if (!item || trashedItemIds().has(itemId)) return { path: "", count: 0, name: "" };
 
   const lines: string[] = [];
   lines.push(`# ${item.title}`);
@@ -185,7 +186,9 @@ function writeManifest(fileName: string, lines: string[], count: number, name: s
 export function writeCollectionManifest(collectionId: string): ManifestResult {
   const collection = CollectionRepo.list().find((c) => c.id === collectionId);
   const all = LibraryRepo.listByCollection(collectionId);
-  const { items, suppressed } = dropSuppressed(all);
+  const trashed = trashedItemIds();
+  const trashedCount = all.filter((i) => trashed.has(i.id)).length;
+  const { items, suppressed } = dropSuppressed(all.filter((i) => !trashed.has(i.id)));
   const name = collection?.name ?? collectionId;
   const lines = [`# 文献库:${name}`, "", `共 ${items.length} 篇。`, ""];
   // 提示词**两层叠加,从大到小**:大类(组)→ 集合。大类说明经 `collection.groupId`
@@ -197,6 +200,9 @@ export function writeCollectionManifest(collectionId: string): ManifestResult {
   const prompt = collection?.prompt?.trim();
   if (prompt) {
     lines.push(`> 处理这一组时:${prompt}`, "");
+  }
+  if (trashedCount > 0) {
+    lines.push(`(回收站里另有 ${trashedCount} 篇,不在这次范围内。)`, "");
   }
   if (suppressed > 0) {
     lines.push(`(屏蔽规则挡掉了 ${suppressed} 篇,不在这次范围内。)`, "");
@@ -381,13 +387,20 @@ export function attachToChat(
 
   const extras = prefix === "i:" && id ? expandLinks(id) : { itemIds: [], failed: 0 };
   let extraFailed = extras.failed;
+  const trashedExtras = extras.itemIds.length > 0 ? trashedItemIds() : null;
   // 挡掉了几条 —— 与"挂不上"分开数:一个是用户自己设的规矩生效了,一个是出了问题。
   // 都值得说,但话不一样。
   let extraSuppressed = 0;
+  let extraTrashed = 0;
   for (const extraId of extras.itemIds) {
     // **关联过的是同一道门** —— 入口与关联在这里完全平级,没有任何一条享有豁免。
     if (suppressionReasonOfItem(extraId)) {
       extraSuppressed += 1;
+      continue;
+    }
+    // 关联与入口平级:用户丢进回收站的条目不能借关联绕过入口的拒挂规则。
+    if (trashedExtras?.has(extraId)) {
+      extraTrashed += 1;
       continue;
     }
     const extraRes = writeItemManifest(extraId);
@@ -404,6 +417,7 @@ export function attachToChat(
   // 而真的挂不上更要看见 —— 少挂几条而用户不知道,是"AI 到底读了什么"说不清的开端。
   const notes: string[] = [];
   if (extraSuppressed > 0) notes.push(`另有 ${extraSuppressed} 条关联被屏蔽规则挡下`);
+  if (extraTrashed > 0) notes.push(`另有 ${extraTrashed} 条关联在回收站里,未挂到对话`);
   if (extraFailed > 0) notes.push(`另有 ${extraFailed} 条关联没能挂上`);
   if (notes.length > 0) {
     return { ok: true, name: res.name, count: res.count, error: notes.join(";") };

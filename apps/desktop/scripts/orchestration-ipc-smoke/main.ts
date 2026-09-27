@@ -275,14 +275,15 @@ if (existsSync(promptReadme)) {
     ...new Set(
       tableLines
         .map((l) => l.split("|")[1] ?? "")
-        .map((cell) => /`([a-z]+)`/.exec(cell)?.[1] ?? "")
+        .map((cell) => /`([a-z]+(?:-[a-z]+)*)`/.exec(cell)?.[1] ?? "")
         .filter((k) => k.length > 0 && k !== "kind"),
     ),
   ].sort();
   const contractKinds = [...(IMPLEMENTED_RUNNER_KINDS as readonly string[])].sort();
 
-  // 表与契约严格相等:不仅新加的 condition 得入表,trigger 也不能再遗漏。
+  // 表与契约严格相等:包括带连字符的 module-capability，不删/弱化精确集合检查。
   // 不再把种类数写死 —— 新增执行原语时契约与给模型看的表要一起更新。
+  check("★ README 解析保留带连字符的模块 kind", tableKinds.includes("module-capability"));
   same("★ README 执行方式表与契约严格一致", tableKinds, contractKinds);
   check(
     "★ condition 与 trigger 都在表和契约里",
@@ -497,7 +498,7 @@ writeManifest("smoke-good.json", JSON.stringify(manifestFixture()));
 {
   const c = await catalog();
   const builtinIds = c.entries.filter((e) => e.source === "builtin").map((e) => e.id).sort();
-  same("内置节点类型包含新条件及原有类型", builtinIds, [
+  same("内置节点类型精确包含模块能力、条件及原有类型", builtinIds, [
     "mcode.agent",
     "mcode.branch",
     "mcode.code",
@@ -505,6 +506,7 @@ writeManifest("smoke-good.json", JSON.stringify(manifestFixture()));
     "mcode.condition",
     "mcode.conversation",
     "mcode.main",
+    "mcode.module-capability",
     "mcode.trigger",
   ]);
 }
@@ -1463,9 +1465,10 @@ console.log("\n新建节点:两条路会不会分家");
 {
   const catalog = obj(await callAsync(IPC.WORKFLOW_NODE_TYPES));
   const entries = catalog.entries as Array<{ id: string; manifest: { runner: { kind: string } } }>;
-  check("IPC 清单带着含 condition 在内的 8 种内置类型",
-    entries.filter((e) => e.id.startsWith("mcode.")).length >= 8 &&
-      entries.some((e) => e.id === "mcode.condition" && e.manifest.runner.kind === "condition"), {
+  check("IPC 清单带着含条件和模块能力的 9 种内置类型",
+    entries.filter((e) => e.id.startsWith("mcode.")).length === 9 &&
+      entries.some((e) => e.id === "mcode.condition" && e.manifest.runner.kind === "condition") &&
+      entries.some((e) => e.id === "mcode.module-capability" && e.manifest.runner.kind === "module-capability"), {
     got: entries.map((e) => e.id),
   });
   same("这一份读得干干净净 → problems 是空的", catalog.problems, []);

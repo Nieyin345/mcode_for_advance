@@ -22,7 +22,7 @@
  *
  * 存在的理由:模式提示词反复要求"只引用库里实际存在的条目",而模型手上没有查库的
  * 工具 —— 它只能去读清单文件,清单又只覆盖某一个分类。这个脚本让它能**按条件查
- * 整个库**(标题、作者、年份、摘要、全文 Markdown),拿到条目的绝对路径。
+ * 整个库**(标题、简介、来源地址、文件路径),拿到条目的绝对路径。
  */
 export const LIBRARY_PY = `#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
@@ -42,7 +42,7 @@ Mcode 把整个数据库放在内存里,任何一次变更都会把整份文件�
 用法:
     python library.py list                     列出全部条目
     python library.py list --group docs        只看「文档」大类下的(见 collections 查 id)
-    python library.py find 关键词               在标题/作者/期刊/摘要里搜
+    python library.py find 关键词               在标题/简介/来源地址/文件路径里搜
     python library.py show 0f3a2c              看一条的完整字段(id 前缀或标题片段)
     python library.py files --group docs       只列文件路径(给"我该读哪个文件"用)
     python library.py notes                    列出所有笔记,连同它挂在哪一条上
@@ -113,22 +113,6 @@ def connect(root):
     # 顺序无关了。
     conn.row_factory = sqlite3.Row
     return conn
-
-
-def author_names(raw):
-    """authors 列是 JSON 数组,元素形如 {"family":..., "given":...} 或 {"literal":...}。"""
-    try:
-        arr = json.loads(raw) if raw else []
-    except Exception:
-        return ""
-    out = []
-    for a in arr:
-        if not isinstance(a, dict):
-            continue
-        name = a.get("literal") or " ".join(x for x in [a.get("given"), a.get("family")] if x)
-        if name:
-            out.append(name)
-    return ", ".join(out)
 
 
 def file_of(root, md_path, pdf_path, file_path=None, sup=None):
@@ -483,51 +467,39 @@ def report_suppressed(reasons):
 def cmd_list(cur, root, args, sup):
     where, params = group_filter(args.group)
     rows = cur.execute(
-        "SELECT id, title, authors, year, venue, md_path, pdf_path, file_path"
-        " FROM library_items WHERE 1=1" + where + " ORDER BY year DESC, title",
+        "SELECT id, title, url, md_path, pdf_path, file_path"
+        " FROM library_items WHERE 1=1" + where + " ORDER BY added_at DESC, title",
         params,
     ).fetchall()
     kept, reasons = split_suppressed(cur, sup, rows)
     print("共 " + str(len(kept)) + " 条")
     report_suppressed(reasons)
     for row in kept:
-        iid, title, authors, year, venue, md, pdf, fp =(
-            row["id"], row["title"], row["authors"], row["year"], row["venue"],
-            row["md_path"], row["pdf_path"], row["file_path"],
-        )
-        print("- " + title)
-        bits = [author_names(authors), str(year) if year else "", venue or ""]
-        head = " · ".join([b for b in bits if b])
-        if head:
-            print("    " + head)
-        print("    id=" + iid + "  文件:" + file_of(root, md, pdf, fp, sup))
+        print("- " + row["title"])
+        if row["url"]:
+            print("    来源:" + row["url"])
+        print("    id=" + row["id"] + "  文件:" + file_of(root, row["md_path"], row["pdf_path"], row["file_path"], sup))
 
 
 def cmd_find(cur, root, args, sup):
     q = "%" + args.query + "%"
     where, params = group_filter(args.group)
     rows = cur.execute(
-        "SELECT id, title, authors, year, venue, md_path, pdf_path, file_path"
+        "SELECT id, title, url, md_path, pdf_path, file_path"
         " FROM library_items"
-        " WHERE (LOWER(title) LIKE LOWER(?) OR LOWER(IFNULL(authors,'')) LIKE LOWER(?)"
-        "        OR LOWER(IFNULL(abstract,'')) LIKE LOWER(?) OR LOWER(IFNULL(venue,'')) LIKE LOWER(?))"
-        + where + " ORDER BY year DESC, title",
+        " WHERE (LOWER(title) LIKE LOWER(?) OR LOWER(IFNULL(abstract,'')) LIKE LOWER(?)"
+        "        OR LOWER(IFNULL(url,'')) LIKE LOWER(?) OR LOWER(IFNULL(file_path,'')) LIKE LOWER(?))"
+        + where + " ORDER BY added_at DESC, title",
         [q, q, q, q] + params,
     ).fetchall()
     kept, reasons = split_suppressed(cur, sup, rows)
     print('匹配 "' + args.query + '":' + str(len(kept)) + " 条")
     report_suppressed(reasons)
     for row in kept:
-        iid, title, authors, year, venue, md, pdf, fp =(
-            row["id"], row["title"], row["authors"], row["year"], row["venue"],
-            row["md_path"], row["pdf_path"], row["file_path"],
-        )
-        print("- " + title)
-        bits = [author_names(authors), str(year) if year else "", venue or ""]
-        head = " · ".join([b for b in bits if b])
-        if head:
-            print("    " + head)
-        print("    id=" + iid + "  文件:" + file_of(root, md, pdf, fp, sup))
+        print("- " + row["title"])
+        if row["url"]:
+            print("    来源:" + row["url"])
+        print("    id=" + row["id"] + "  文件:" + file_of(root, row["md_path"], row["pdf_path"], row["file_path"], sup))
     if not kept:
         if reasons:
             # **"被屏蔽了"与"库里没有"是两句话。** 混成一句的话,模型会据此回答用户
@@ -540,8 +512,7 @@ def cmd_find(cur, root, args, sup):
 
 def resolve_one(cur, query):
     """id 前缀优先,其次标题片段。返回匹配到的行(可能多条)。"""
-    cols = ("id, title, authors, year, venue, doi, arxiv_id, volume, issue, page, publisher,"
-            " abstract, type, url, md_path, pdf_path, file_path")
+    cols = "id, title, abstract, language, url, md_path, pdf_path, file_path"
     rows = cur.execute(
         "SELECT " + cols + " FROM library_items WHERE id LIKE ?",
         [query + "%"],
@@ -578,38 +549,23 @@ def cmd_show(cur, root, args, sup):
             print("  " + r["id"] + "  " + r["title"])
         return
     row = rows[0]
-    iid, title, authors, year, venue, doi, arxiv, volume, issue, page =(
-        row["id"], row["title"], row["authors"], row["year"], row["venue"], row["doi"],
-        row["arxiv_id"], row["volume"], row["issue"], row["page"],
-    )
-    publisher, abstract, typ, url, md, pdf =(
-        row["publisher"], row["abstract"], row["type"], row["url"],
-        row["md_path"], row["pdf_path"],
-    )
-    print("# " + title)
+    print("# " + row["title"])
     print("")
     for label, value in [
-        ("作者", author_names(authors)),
-        ("年份", str(year) if year else ""),
-        ("期刊/会议", venue or ""),
-        ("类型", typ or ""),
-        ("卷期页", " ".join(x for x in [volume, issue, page] if x)),
-        ("出版商", publisher or ""),
-        ("DOI", doi or ""),
-        ("arXiv", arxiv or ""),
-        ("URL", url or ""),
+        ("语言", row["language"] or ""),
+        ("来源", row["url"] or ""),
     ]:
         if value:
             print(label + ":" + value)
-    print("id:" + iid)
-    print("文件:" + file_of(root, md, pdf, row["file_path"], sup))
-    if abstract:
+    print("id:" + row["id"])
+    print("文件:" + file_of(root, row["md_path"], row["pdf_path"], row["file_path"], sup))
+    if row["abstract"]:
         print("")
-        print("## 摘要")
-        print(abstract)
+        print("## 简介 / 摘要")
+        print(row["abstract"])
     notes = cur.execute(
         "SELECT content, origin, created_at FROM library_notes WHERE item_id = ? ORDER BY created_at",
-        [iid],
+        [row["id"]],
     ).fetchall()
     if notes:
         print("")
@@ -772,8 +728,8 @@ if __name__ == "__main__":
  * 而它是**可以被机械检查的** —— 把稿件引用的 .bib 逐条拿到库里对,对不上的挑出来。
  * 靠模型自己"注意别编"是自律;靠这个脚本是事实。
  *
- * 匹配分三档:DOI 精确 > 标题相似度(>=0.82) > 对不上。第三档最要紧 —— 那是最可能
- * 编出来的东西,必须让用户看见。
+ * 匹配分三档:来源 URL 中的 DOI / arXiv 精确 > 标题相似度(>=0.82) > 对不上。
+ * 新库不再有 DOI / arXiv 独立列；本脚本只能核对「是否已收录」，不能证明真实发表。
  */
 export const CHECK_CITATIONS_PY = `#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
@@ -785,9 +741,9 @@ export const CHECK_CITATIONS_PY = `#!/usr/bin/env python3
     python check_citations.py refs.bib --root "D:/destop/work_space/mcode"
 
 输出四段:
-    1. 库里有 —— 这些可以放心引
+    1. 库里有对应的来源链接 —— 仍需核实链接与原文的真实性
     2. 库里没有,但疑似同一条 —— 标题很像,可能是元数据写法不同,人工看一眼
-    3. 库里没有,也对不上 —— **最要紧的一档**:很可能是编造的,不要引
+    3. 库里没有,也对不上 —— 只能说明尚未在本地核实,请外部核实后再引用
     4. 稿件引用但 .bib 里没有 —— 用了不存在的 key
 
 这个脚本只读,绝不写 mcode.db(理由见 library.py 开头)。
@@ -798,6 +754,7 @@ import difflib
 import re
 import sys
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from library import connect, find_data_root  # noqa: E402  (同目录的兄弟脚本)
@@ -820,6 +777,24 @@ def norm(text):
     text = text.lower()
     text = re.sub(r"[^0-9a-z\\u4e00-\\u9fff]+", " ", text)
     return " ".join(text.split())
+
+
+def ids_from_url(url):
+    """只从用户/外部工具填写的来源 URL 中识别标识符，不依赖已退役的学术列。"""
+    if not url:
+        return "", ""
+    try:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+    except ValueError:
+        return "", ""
+    part = unquote(parsed.path).strip("/")
+    if host in ("doi.org", "dx.doi.org") and part.lower().startswith("10."):
+        return part.lower(), ""
+    if host in ("arxiv.org", "export.arxiv.org") and part.startswith(("abs/", "pdf/")):
+        arxiv = part.split("/", 1)[1]
+        return "", arxiv.removesuffix(".pdf").lower()
+    return "", ""
 
 
 def parse_bib(text):
@@ -887,19 +862,20 @@ def main():
     conn = connect(root)
     cur = conn.cursor()
     rows = cur.execute(
-        "SELECT id, title, doi, arxiv_id, year, venue FROM library_items",
+        "SELECT id, title, url FROM library_items",
     ).fetchall()
     conn.close()
 
     by_doi = {}
     by_arxiv = {}
     by_title = []
-    for iid, title, doi, arxiv, year, venue in rows:
+    for iid, title, url in rows:
+        doi, arxiv = ids_from_url(url)
         if doi:
-            by_doi[doi.strip().lower()] = (iid, title, year, venue)
+            by_doi[doi] = (iid, title, "", "")
         if arxiv:
-            by_arxiv[arxiv.strip().lower()] = (iid, title, year, venue)
-        by_title.append((iid, norm(title), title, year, venue))
+            by_arxiv[arxiv] = (iid, title, "", "")
+        by_title.append((iid, norm(title), title, "", ""))
 
     found, near, missing = [], [], []
     for e in entries:
@@ -942,7 +918,7 @@ def main():
 
     if missing:
         print("")
-        print("!! 库里没有,也对不上 " + str(len(missing)) + " 条 —— 这几条很可能是编造的,不要引:")
+        print("!! 库里没有,也对不上 " + str(len(missing)) + " 条 —— 仅凭本地库无法断定真伪,请外部核实后再引用:")
         for key, title, year, author, score, best in missing:
             print("  [X] " + key + "  " + (title or "(无标题)"))
             detail = ", ".join(x for x in [author, year] if x)

@@ -1,4 +1,4 @@
-import { ModuleCapabilityRunnerSchema } from "./moduleCapability.js";
+import { MODULE_CAPABILITY_RUNNER_KIND, ModuleCapabilityRunnerSchema, ModuleWorkflowCallSchema } from "./moduleCapability.js";
 /**
  * 节点类型(Node Type)—— 工作流底座**唯一的规范**。
  *
@@ -1257,10 +1257,10 @@ export function isAskChoice(value: unknown): value is AskChoice {
  * 放在 contracts 而不是主进程,是因为渲染端也要用它:画布上那种节点要标出"这个节点
  * 当前跑不了",否则用户画好一张图、发消息,才发现有一格是死的。
  */
-// module-capability is intentionally NOT enabled yet: ExecutionEngine has a
-// model fallback. Task 05 must prove both registry paths fail closed before
-// task 01 promotes this kind into this shared runnable list. See interface-v2.md.
-export const IMPLEMENTED_RUNNER_KINDS = ["prompt", "conversation", "branch", "condition", "trigger", "command", "code"] as const;
+// module-capability is wired in both production engines; a missing executor
+// fails closed instead of invoking the model fallback (P2-01-REQ-02).
+// This shared availability flag is not module/resource authorization.
+export const IMPLEMENTED_RUNNER_KINDS = ["prompt", "conversation", "branch", "condition", "trigger", "command", "code", "module-capability"] as const;
 export function isRunnerImplemented(kind: NodeRunnerKind): boolean {
   return (IMPLEMENTED_RUNNER_KINDS as readonly string[]).includes(kind);
 }
@@ -1524,6 +1524,16 @@ export function validateNodeParams(
   manifest: NodeTypeManifest,
   params: Record<string, unknown>,
 ): { ok: true } | { ok: false; error: string } {
+  // Save/import and execution preflight share the frozen user-parameter schema.
+  // Param specs alone do not reject extra host fields, NUL or oversized paths.
+  // Templates remain data here; resolution and real authorization happen later.
+  if (manifest.runner.kind === MODULE_CAPABILITY_RUNNER_KIND) {
+    const parsed = ModuleWorkflowCallSchema.safeParse(params);
+    if (!parsed.success) return {
+      ok: false,
+      error: parsed.error.issues.map(issue => `${issue.path.join(".") || "params"}: ${issue.message}`).join("; "),
+    };
+  }
   for (const spec of manifest.params) {
     const value = params[spec.key];
     if (value === undefined || value === null || value === "") {

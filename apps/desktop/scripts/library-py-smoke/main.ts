@@ -18,10 +18,10 @@
  *
  * Run: scripts/library-py-smoke/run.sh
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { LIBRARY_PY } from "@main/workflows/assets.js";
+import { CHECK_CITATIONS_PY, LIBRARY_PY } from "@main/workflows/assets.js";
 
 let failures = 0;
 let checks = 0;
@@ -49,7 +49,7 @@ function run(...args: string[]): string {
   return execFileSync("python", [PY, ...args], { encoding: "utf8", cwd: OUT });
 }
 
-/** 建一个临时库。**列形状照真库** —— 尤其 `kind` 那一列还在(代码停写但没删列)。 */
+/** 建一个临时库。列形状照**新装** Mcode：学术字段在新库根本不存在。 */
 function seed(root: string): void {
   mkdirSync(join(root, "library", "markdown"), { recursive: true });
   mkdirSync(join(root, "library", "notes"), { recursive: true });
@@ -63,25 +63,25 @@ db = root / "mcode.db"
 if db.exists(): db.unlink()
 c = sqlite3.connect(db)
 c.executescript("""
-CREATE TABLE library_items(id TEXT PRIMARY KEY, title TEXT, authors TEXT, year INTEGER, venue TEXT,
-  doi TEXT, arxiv_id TEXT, volume TEXT, issue TEXT, page TEXT, publisher TEXT, abstract TEXT,
-  type TEXT, url TEXT, md_path TEXT, pdf_path TEXT, file_path TEXT, kind TEXT);
+CREATE TABLE library_items(id TEXT PRIMARY KEY, title TEXT NOT NULL, abstract TEXT, language TEXT,
+  url TEXT, pdf_path TEXT, pdf_sha256 TEXT, md_path TEXT, entry_mode TEXT NOT NULL DEFAULT 'attached',
+  file_path TEXT, added_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE library_collections(id TEXT PRIMARY KEY, name TEXT, parent_id TEXT, group_id TEXT, sort_order INTEGER);
 CREATE TABLE library_collection_items(collection_id TEXT, item_id TEXT);
 CREATE TABLE library_notes(id TEXT, item_id TEXT, content TEXT, origin TEXT, created_at INTEGER);
 CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT);
 """)
-c.executemany("INSERT INTO library_items(id,title,authors,year,venue,md_path,pdf_path,file_path,kind) VALUES(?,?,?,?,?,?,?,?,?)", [
-  ("li_p1", "注意力就是全部", "[]", 2017, "NeurIPS", "markdown/a.md", None, None, "paper"),
-  ("li_n1", "一条随手记", "[]", None, None, "notes/li_n1.md", None, None, "note"),
-  ("li_t1", "LaTeX 论文模版", "[]", None, None, None, None, None, "latex"),
-  ("li_orphan", "无家可归的一条", "[]", None, None, None, None, "raw/x.bin", "document"),
+c.executemany("INSERT INTO library_items(id,title,abstract,url,md_path,pdf_path,file_path,added_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)", [
+  ("li_p1", "注意力就是全部", "关键摘要字串", "https://doi.org/10.1000/p1", "markdown/a.md", None, None, 1000, 1000),
+  ("li_n1", "一条随手记", None, None, "notes/li_n1.md", None, None, 1000, 1000),
+  ("li_t1", "LaTeX 论文模版", None, None, None, None, None, 1000, 1000),
+  ("li_orphan", "无家可归的一条", None, None, None, None, "raw/x.bin", 1000, 1000),
   # 按文件类型屏蔽按**份**算(见下面 extensions 的 .pdf):转录过的只给转录;只有 PDF 的整条挡
-  ("li_pm", "转录过的 PDF", "[]", None, None, "markdown/b.md", "papers/b.pdf", None, "paper"),
-  ("li_po", "只有 PDF 的论文", "[]", None, None, None, "papers/c.pdf", None, "paper"),
+  ("li_pm", "转录过的 PDF", None, None, "markdown/b.md", "papers/b.pdf", None, 1000, 1000),
+  ("li_po", "只有 PDF 的论文", None, None, None, "papers/c.pdf", None, 1000, 1000),
   # 通用文件只有 file_path —— 从前 file_of 只认 md / pdf,于是说它「没有文件」
-  ("li_doc", "课题报告", "[]", None, None, None, None, "files/li_doc-report.docx", "document"),
-  ("li_dm", "转录过的 Word", "[]", None, None, "markdown/imported/li_dm/full.md", None, "files/li_dm-a.docx", "document"),
+  ("li_doc", "课题报告", None, None, None, None, "files/li_doc-report.docx", 1000, 1000),
+  ("li_dm", "转录过的 Word", None, None, "markdown/imported/li_dm/full.md", None, "files/li_dm-a.docx", 1000, 1000),
 ])
 c.executemany("INSERT INTO library_collections(id,name,parent_id,group_id,sort_order) VALUES(?,?,?,?,?)", [
   ("lc_aw", "精读队列", None, "docs", 0),
@@ -194,6 +194,8 @@ console.log("\n其余几条命令都还跑得通");
 
   const found = at("find", "注意力");
   check("find 按关键词命中", found.includes("注意力就是全部"), found);
+  const inAbstract = at("find", "关键摘要字串");
+  check("find 能查到简介而不依赖旧的作者/期刊列", inAbstract.includes("注意力就是全部"), inAbstract);
   const miss = at("find", "根本不存在的东西");
   check("find 找不到时如实说", miss.includes("库里没有匹配的条目"), miss);
 }
@@ -201,6 +203,7 @@ console.log("\n其余几条命令都还跑得通");
 {
   const show = at("show", "li_p1");
   check("show 按 id 前缀取到一条", show.includes("注意力就是全部"), show);
+  check("show 显示仍在使用的来源 URL 与摘要", show.includes("https://doi.org/10.1000/p1") && show.includes("关键摘要字串"), show);
   // show 的 SELECT 里从前带 kind / type 那两列(一个已停写、一个是自由文本)——
   // 列名错一个就是一次运行期崩溃,这条钉住整条 SELECT 是好的。
   check("show 没有崩(整条 SELECT 是好的)", show.length > 0, show.length);
@@ -226,6 +229,25 @@ console.log("\n转录与原件:一起给,屏蔽按份去掉");
   check("转录排在原件前面", dmLine.indexOf("full.md") < dmLine.indexOf("li_dm-a.docx"), dmLine);
   const show = at("show", "li_doc");
   check("★ show 通用文件也给出文件本身", show.includes("li_doc-report.docx"), show);
+}
+
+/* ──────────────── 6. 引用核对不能读新库里根本不存在的 DOI 等列 ──────────────── */
+
+console.log("\n引用核对 · 新装库 + 来源 DOI URL");
+{
+  const script = join(OUT, "check_citations.py");
+  const bib = join(OUT, "refs.bib");
+  writeFileSync(script, CHECK_CITATIONS_PY, "utf8");
+  writeFileSync(bib, [
+    "@article{doiMatch, title={标题与库中不同}, doi={10.1000/p1}}",
+    "@article{unknown, title={从未收录的一篇文献}, doi={10.9999/unknown}}",
+  ].join("\n"), "utf8");
+  const checked = spawnSync("python", [script, bib, "--root", ROOT], { encoding: "utf8", cwd: OUT });
+  const result = checked.stdout;
+  check("未收录项令引用核对退出码为 1（不会假绿）", checked.status === 1, { status: checked.status, stderr: checked.stderr });
+  check("来源 URL 中的 DOI 可作为本地精确匹配", result.includes("库里有 1 条") && result.includes("[OK] doiMatch"), result);
+  check("未收录的仍如实列出", result.includes("[X] unknown"), result);
+  check("未收录不等于编造,明确需要外部核实", result.includes("请外部核实后再引用") && !result.includes("很可能是编造"), result);
 }
 
 console.log(`\n${checks - failures}/${checks} passed`);

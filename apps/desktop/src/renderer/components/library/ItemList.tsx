@@ -34,8 +34,8 @@ interface Props {
   onActivate: (id: string) => void;
   onToggleSelect: (id: string) => void;
   onSelectAll: (ids: string[]) => void;
-  /** 空态里那两个按钮的动作。空态是最该给下一步动作的地方 —— 只写"用检索或
-   *  粘贴 DOI"而不给按钮,用户会卡在这儿(真发生过:找不到导入入口)。 */
+  /** 空态里那两个按钮的动作。空态是最该给下一步动作的地方 —— 只写"导入或检索"
+   *  而不给按钮,用户会卡在这儿(真发生过:找不到导入入口)。 */
   onImport: () => void;
   onSearch: () => void;
   /**
@@ -112,10 +112,10 @@ export function ItemList({
       <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
         <IconCircleCheck size={28} className="text-content-subtle" />
         <div className="text-sm text-content-muted">
-          t("library.list.empty")
+          {t("library.list.empty")}
         </div>
         <div className="max-w-xs text-xs text-content-subtle">
-          t("library.list.emptyHint")
+          {t("library.list.emptyHint")}
         </div>
         <div className="flex items-center gap-2 pt-1">
           <button
@@ -123,7 +123,7 @@ export function ItemList({
             className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-xs text-white hover:opacity-90"
           >
             <IconUpload size={13} />
-            t("library.import.pickFile")
+            {t("library.import.pickFile")}
           </button>
           <button
             onClick={onSearch}
@@ -144,6 +144,7 @@ export function ItemList({
       <div className="flex items-center gap-2 border-b border-edge px-4 py-1">
         <input
           type="checkbox"
+          aria-label={t("library.list.selectAll")}
           checked={allSelected}
           onChange={() => onSelectAll(allSelected ? [] : items.map((i) => i.id))}
           className="h-3 w-3 accent-[var(--accent)]"
@@ -158,36 +159,43 @@ export function ItemList({
         return (
           <div
             key={item.id}
-            onClick={() => onActivate(item.id)}
             className={cn(
               // `relative` 不能省 —— 下面那条选中竖条是 `absolute`,锚的是**最近的
               // 定位祖先**。少了它,竖条会锚到整个列表容器上:每选中一行,同一根竖条
               // 就出现在列表左边线上那一行的位置(而不是行首),看起来像列表串了个门。
-              "relative flex cursor-pointer items-start gap-2 border-b border-edge/50 px-4 py-2 transition-colors",
+              "relative flex items-start gap-2 border-b border-edge/50 px-4 py-2 transition-colors",
               isActive ? "bg-surface-hover" : "hover:bg-surface-hover/60",
             )}
           >
             <input
               type="checkbox"
+              aria-label={t("library.list.selectItem", { title: item.title })}
               checked={isSelected}
-              onClick={(e) => e.stopPropagation()}
               onChange={() => onToggleSelect(item.id)}
               className="mt-0.5 h-3 w-3 shrink-0 accent-[var(--accent)]"
             />
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-xs font-medium text-content" title={item.title}>
-                {item.title}
-              </div>
-              {(item.abstract || item.url) && (
-                <div className="mt-0.5 flex items-center gap-2 text-[0.7143em] text-content-subtle">
-                  <span className="min-w-0 truncate">{item.abstract || item.url}</span>
+            <button
+              type="button"
+              aria-label={item.title}
+              aria-current={isActive ? "true" : undefined}
+              onClick={() => onActivate(item.id)}
+              className="flex min-w-0 flex-1 cursor-pointer items-start gap-2 text-left focus-visible:rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-xs font-medium text-content" title={item.title}>
+                  {item.title}
                 </div>
-              )}
-            </div>
-            {/* 纯 md 条目本来就没有 PDF,给它挂「没有 PDF」是纯噪音 */}
-            {!item.mdPath && <PdfBadge state={state} compact />}
+                {(item.abstract || item.url) && (
+                  <div className="mt-0.5 flex items-center gap-2 text-[0.7143em] text-content-subtle">
+                    <span className="min-w-0 truncate">{item.abstract || item.url}</span>
+                  </div>
+                )}
+              </div>
+              {/* 纯 md 条目本来就没有 PDF,给它挂「没有 PDF」是纯噪音 */}
+              {!item.mdPath && <PdfBadge state={state} compact />}
+            </button>
             {isActive && (
-              <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
+              <span aria-hidden="true" className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
             )}
           </div>
         );

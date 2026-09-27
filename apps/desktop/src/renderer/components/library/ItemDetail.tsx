@@ -98,6 +98,9 @@ export function ItemLinks({ item, onChanged }: { item: LibraryItem; onChanged?: 
   const [pickerOpen, setPickerOpen] = useState(false);
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const addBtnRef = useRef<HTMLButtonElement>(null);
+  const reloadRequest = useRef(0);
+  const currentItemId = useRef(item.id);
+  currentItemId.current = item.id;
 
   /** #11:「转录 md + 图床」与本条是一个整体 —— 在关联区把它说出来。 */
   const [mdBundle, setMdBundle] = useState<{ title: string; imageCount?: number } | null>(null);
@@ -131,17 +134,27 @@ export function ItemLinks({ item, onChanged }: { item: LibraryItem; onChanged?: 
   }, [item.id]);
 
   const reload = useCallback(async () => {
+    // An earlier item's response (or an older refresh of this item) cannot
+    // populate the newly selected item's detail pane.
+    if (currentItemId.current !== item.id) return;
+    const request = ++reloadRequest.current;
     try {
       const res = await api.library.linksOf({ itemId: item.id });
+      if (request !== reloadRequest.current || currentItemId.current !== item.id) return;
       setLinks(res.links);
       setError(null);
     } catch (err) {
-      setError((err as Error).message);
+      if (request === reloadRequest.current && currentItemId.current === item.id) {
+        setError((err as Error).message);
+      }
     }
   }, [item.id]);
 
   useEffect(() => {
+    setLinks(null);
+    setError(null);
     void reload();
+    return () => { ++reloadRequest.current; };
   }, [reload]);
 
   const remove = async (linkId: string) => {
@@ -328,7 +341,8 @@ export function ItemLinks({ item, onChanged }: { item: LibraryItem; onChanged?: 
                 onClick={() => void remove(l.id)}
                 disabled={busy}
                 title={t("library.links.remove")}
-                className="shrink-0 rounded p-0.5 text-content-subtle opacity-0 transition-opacity hover:text-content group-hover:opacity-100 disabled:opacity-50"
+                aria-label={t("library.links.remove")}
+                className="shrink-0 rounded p-0.5 text-content-subtle opacity-0 transition-opacity hover:text-content group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-accent-strong disabled:opacity-50"
               >
                 <IconX size={11} />
               </button>
@@ -479,13 +493,13 @@ export function ItemDetail({ item, onChanged }: Props) {
 
       {/* 关联 —— 放在笔记之前:它是"这条和哪些东西是一组",比随手记的笔记更靠前。
           任何 kind 都有(笔记库的条目也能互相关联)。 */}
-      <ItemLinks item={item} onChanged={onChanged} />
+      <ItemLinks key={item.id} item={item} onChanged={onChanged} />
 
       {/* 读文献时随手记的笔记(挂在**这一条**上)。纯 Markdown 条目自己就是一篇
           笔记,不需要再挂"笔记",所以那里不显示这一块。 */}
       {!isMdOnly && (
         <div className="mt-4">
-          <ItemNotes item={item} />
+          <ItemNotes key={item.id} item={item} />
         </div>
       )}
     </div>
@@ -552,7 +566,7 @@ export function ItemLinksDialog({
             )}
           </Dialog.Title>
           <div className="mt-2 max-h-[60vh] overflow-y-auto">
-            {item && <ItemLinks item={item} onChanged={onChanged} />}
+            {item && <ItemLinks key={item.id} item={item} onChanged={onChanged} />}
           </div>
           <Dialog.Close />
         </Dialog.Popup>

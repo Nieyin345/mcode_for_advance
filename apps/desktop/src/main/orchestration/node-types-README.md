@@ -104,6 +104,7 @@
 | `command`(命令进**参数**) | `{ "kind": "command" }` | ✅ **能跑** —— 内置的 `mcode.command` 就是这个形状:命令写在节点参数里,本机起进程跑 |
 | `command`(命令进**自带脚本**) | `{ "kind": "command", "entry": "./x.py", "interpreter": "python", "args": [] }` | ❌ **形状定好了,执行还没实现** |
 | `code` | `{ "kind": "code", "language": "python" }` | ✅ 能用 —— 内置的 `mcode.code`,写一段脚本跑,产出 `exitCode`/`stdout`/`stderr` |
+| `module-capability` | `{ "kind": "module-capability" }` | ✅ 内置 `mcode.module-capability`，通过同一宿主调用只读内置模块贡献，不运行用户模块或脚本 |
 
 `command` 的 `entry` 是**相对本文档所在目录**的路径,逃出这个目录的路径会被拒绝。
 
@@ -115,6 +116,33 @@
 >
 > 判定这件事的**唯一函数**是 `isNodeRunnable`(见 `contracts/src/nodeType.ts`)—— 
 > 调度器的拒绝与渲染端的徽标读的都是它,不要只看 `runner.kind` 自己判。
+
+### 模块能力调用：只读内置贡献
+
+优先直接使用内置节点类型 `mcode.module-capability`。它不是命令或模型节点，
+不填写 `entry`、`language` 或脚本；节点参数严格只有以下三项：
+
+```json
+{
+  "moduleId": "core.file-report",
+  "contributionId": "inspect",
+  "path": "module-inspect-demo.txt"
+}
+```
+
+- 从宿主目录的 `workflowTargets` 选择实际可用的目标。`core.` 前缀不是授权证明，
+  必须是宿主真正登记的内置模块贡献，且能力为只读 query/task。
+- `core.file-report / inspect` 返回 `bytes`、`sha256`（普通文件最多 32 MiB，
+  task 超时 30 秒，可取消）；`info` 返回 `bytes`、`modifiedAt`（Unix 毫秒）。
+  不把 task 的大小/取消/超时保证套到查询上。
+- `path` 可为运行工作区内的相对或绝对路径，沿用既有 `{{...}}` 变量规则。
+  宿主在执行前解析并检查真实路径及工作区边界；参数不会作为 JavaScript 求值。
+- 不添加 `projectPath`、`requestId`、`capabilityId`、`trusted` 或 `source`。
+  工作区和每次派发的身份由宿主提供，不能靠节点的 capability 标记扩大权限。
+- 用户导入的 `user.*` 模块仍可从原文件菜单调用，但**不能从工作流自动调用**。
+  此内部入口不暴露为新的 renderer/mobile RPC，缺执行器时失败而不回退到模型。
+- 工作流仍须保存并遵守既有审查规则。导入不会自行批准；改动执行内容会使旧审批失效。
+  明确重跑/循环是新尝试，模块 task 句柄不跨应用重启恢复。
 
 ### 自动条件:仅对上游数据做真假判定
 

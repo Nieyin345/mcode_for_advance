@@ -1436,7 +1436,25 @@ function ChatPaneForSession({
   const settingsOpen = useSessionStore((s) => s.settingsOpen);
   const promptActive = isActive && !settingsOpen;
   const pendingQuestion = useSessionStore((s) => s.pendingQuestionBySession[sessionId] ?? null);
-  const dismissQuestion = useSessionStore((s) => s.dismissQuestion);
+  // Session-scoped dismiss. The store's `dismissQuestion()` targets
+  // `activeSessionId`, but a side-chat pane shows a different session beside
+  // its parent — skipping the side card must resolve THIS session's request
+  // (same IPC + bucket drop as the store action), never the parent's.
+  const dismissQuestion = useCallback(() => {
+    const pending = useSessionStore.getState().pendingQuestionBySession[sessionId];
+    if (!pending) return;
+    const requestId = pending.requestId ?? `sentinel_${sessionId}_${Date.now()}`;
+    void api.claude
+      .respondQuestion({ sessionId, requestId, answers: {}, dismissed: true })
+      .catch((err) => {
+        console.error("respondQuestion(dismiss) failed:", err);
+      });
+    useSessionStore.setState((s) => {
+      if (s.pendingQuestionBySession[sessionId] !== pending) return {};
+      const { [sessionId]: _drop, ...rest } = s.pendingQuestionBySession;
+      return { pendingQuestionBySession: rest };
+    });
+  }, [sessionId]);
   const submitQuestion = useSessionStore((s) => s.submitQuestion);
   // (No sessionId filter needed — the bucket lookup above already scopes
   // to this session.)
@@ -3996,12 +4014,13 @@ function ChatPaneForSession({
               approval is pending (those take precedence). */}
           {activeQuestion && !headApproval && !pendingPlanApproval && (
             <QuestionPrompt
+              // A new question.ask replaces the pending one in place; key by
+              // requestId so the card's answers/step reset with it.
+              key={pendingQuestion?.requestId ?? "question"}
               active={promptActive}
               providerName={activeProviderName}
               questions={activeQuestion}
-              onSubmit={(answers) => {
-                void submitQuestion(answers, sessionId);
-              }}
+              onSubmit={(answers) => submitQuestion(answers, sessionId)}
               onDismiss={dismissQuestion}
             />
           )}

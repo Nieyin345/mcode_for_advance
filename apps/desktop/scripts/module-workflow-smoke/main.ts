@@ -87,6 +87,8 @@ await check("legacy prompt fallback behavior is unchanged", async () => {
 await check("production manifest is valid with exactly the three frozen parameters", () => {
   NodeTypeManifestSchema.parse(manifest);
   assert.deepEqual(manifest.params.map(spec => spec.key), ["moduleId", "contributionId", "path"]);
+  // Preserve the shared MCP/native tooltip contract for every builtin param.
+  for (const spec of manifest.params) assert.ok(spec.help?.trim() && spec.help.length <= 80, `Short nonempty help required: ${spec.key}`);
   assert.deepEqual(manifest.outputs?.map(output => output.key), ["bytes", "sha256", "modifiedAt"]);
 });
 await check("builder requires host identity, not an unbound global or caller parameter", () => {

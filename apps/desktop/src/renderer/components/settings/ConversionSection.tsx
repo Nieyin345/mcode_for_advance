@@ -66,7 +66,7 @@ export function ConversionSection() {
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
             <span className="text-content-muted">{t("settings.convert.total", { n: stats.total })}</span>
             <span className="text-accent">{t("settings.convert.converted", { n: stats.complete })}</span>
-            {/* 未转的用红色标出来 —— 这类文献 AI 读不到正文、全文检索也搜不到 */}
+            {/* 未转的用红色标出来 —— 尚未进入 Markdown 全文检索，PDF 仍可按需读文本 */}
             <span className={stats.pending > 0 ? "text-red-500" : "text-content-subtle"}>
               {t("settings.convert.pending", { n: stats.pending })}
             </span>

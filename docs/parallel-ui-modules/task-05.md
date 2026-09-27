@@ -1,6 +1,24 @@
 # UI-MODULES-P2 / 任务 05：生产接线与内置能力节点
 
-## 状态
+## 当前状态（01/06/07 收尾更新）
+
+**VERIFIED**（2026-09-27，依据 integration.md 候选 B：全量 139/139、双包 tsc 0、diff 0；05 的 `mcode-admin-smoke` 参数 help 缺口已确认关闭）。原 READY_FOR_INTEGRATION 说明保留如下。
+
+**READY_FOR_INTEGRATION**。用户后续移交 01/07 和 06 后，原两项跨任务阻塞已解决：共享严格保存/导入校验已补齐，生产 runnable 已在双入口/fail-closed 证据后激活。冻结契约仍是 P2-01 / 1.0.0。
+
+- 生产 native-open 工作流专项 25/25、strict save/import sentinel 3/3 已通过。
+- 新增 06 的隔离 Electron 功能窗口已实际经过 AutomationRunner、完整 runner、scheduler、原变量构造器、同一 service/host 和文件能力；首次 12/12、另起进程重开 7/7。证据 `apps/desktop/.tmp/p2-06-native-eLglkj/`。
+- 这不是完整安装包或实际 FileTree/BrowserView 场景验收；最终冻结候选、全量与类型检查归 07，当前不借定向通过宣称全阶段完成。
+- 先前“不自动提交”后来仅获一次明确例外：模块平台检查点 `95d6a99` 已提交，未推送。后续收尾不自动再提交。
+- 以下保留原交付历史。其 BLOCKED / gate closed / 未提交，是当时状态，不是当前结论。
+
+### 全量发现的短说明缺口（收尾修复）
+
+候选 A 的 mcode-admin-smoke 真正加载生产内置清单后 **246/248**：moduleId/contributionId 缺 help，path 的 help 为 121 字、超过通用 80 字限制。这是本任务清单问题，不删除或改宽旧测试。
+
+已在自己拥有的 nodeTypes.ts 中为三个参数提供非空、≤80 字的 help，并在 module-workflow-smoke 的清单检查中增加同样的断言；不改参数键、权限、输出或执行逻辑。旧失败日志保留在 `.tmp/p2-07-candidate-TC76Xw/repo/apps/desktop/.tmp/smoke-runs/1790487540009-5836-aYGqyy/mcode-admin-smoke.log`，新候选将复验。
+
+### 原交付状态（历史）
 
 **BLOCKED — 本任务拥有文件内的接线和定向验证已完成，但整项验收尚未完成。**
 

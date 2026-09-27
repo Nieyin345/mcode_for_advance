@@ -280,8 +280,6 @@ export function LibrarySection({
   const [collectionInfoFor, setCollectionInfoFor] = useState<LibraryCollection | null>(null);
   /** 「导入到这里」——分类行右键触发，null = 浮层关着（2026-09-21）。 */
   const [importInto, setImportInto] = useState<LibraryCollection | null>(null);
-  /** 导入后是否立刻转录。与右栏那条用同一个开关语义（有现成 md 的人要能关掉）。 */
-  const [importAutoConvert, setImportAutoConvert] = useState(true);
   /** 正在等用户确认的**彻底删除**（`DeleteItemsDialog` 开着的时候非 null）。
    *  带着 `activeItemId` 是因为删完要清掉可能悬空的选中态 —— 而这个组件在这一刻
    *  已经被重渲染了，不能指望从 `activeItemId` 现读。 */
@@ -1357,8 +1355,6 @@ export function LibrarySection({
                 <ImportBar
                   onClose={() => setImportInto(null)}
                   collectionId={importInto.id}
-                  autoConvert={importAutoConvert}
-                  onAutoConvertChange={setImportAutoConvert}
                   onImported={() => {
                     void loadCollections();
                     void refreshItems();

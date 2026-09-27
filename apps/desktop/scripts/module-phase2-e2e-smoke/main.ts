@@ -1,7 +1,8 @@
 /** P2-06 integration probes. Local registration is explicitly a segment test,
  * never evidence that runner/scheduler/UI production wiring is complete. */
 import assert from 'node:assert/strict';
-import { writeFile, mkdir } from 'node:fs/promises';
+import {z} from 'zod';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { ExecutionEngine, executionEngine } from '../../src/main/orchestration/executionEngine.js';
@@ -86,9 +87,35 @@ await test('SECURITY missing capability executor must never reach model fallback
 await test('PRODUCTION exported engine must register module-capability',()=>{
  assert.equal(executionEngine.has('module-capability'),true,'task 05 production engine registration is missing');
 });
-// Do not equate a manually composed engine segment with graph/UI E2E coverage.
-results.push({name:'FULL E2E runner/scheduler parameter mapping, dispatch nonce, loop/resume, configuration save and Electron',status:'BLOCKED',error:'Task 05 production wiring and task 01 runnable activation pending independent integration; segment fixtures do not cover these layers.'});
-console.log('BLOCKED full production/UI E2E; see README and task-06.md');
+// A segment cannot grant full acceptance. Fresh native + production scheduler +
+// browser negative-state evidence must exist and pass in this same build run.
+let receiptText: string | undefined;
+try { receiptText = await readFile(join(dir,'integration-receipt.json'),'utf8'); } catch {}
+if(receiptText===undefined){
+ results.push({name:'FULL production/UI completion receipt',status:'BLOCKED',error:'Run build.mjs; isolated segment execution does not prove native persistence/UI integration.'});
+}else{
+ await test('FULL native persistence/UI plus real scheduler and browser negative states completed',async()=>{
+  const receipt=z.object({schemaVersion:z.literal(1),stages:z.array(z.object({name:z.string(),exitCode:z.number().nullable(),evidence:z.string().optional(),proof:z.unknown()}))}).parse(JSON.parse(receiptText!));
+  assert.equal(receipt.stages.length,4);
+  const stage=(name:string)=>{const value=receipt.stages.find(s=>s.name===name);assert.ok(value);assert.equal(value.exitCode,0,name);assert.ok(value.evidence);return value;};
+  const native=stage('native-window');
+  const nativeProof=z.object({exitCode:z.literal(0),mutation:z.literal(false),phases:z.array(z.object({phase:z.string(),exitCode:z.literal(0),complete:z.literal(true),checks:z.number().int().positive()})).length(2)}).parse(native.proof);
+  assert.deepEqual(nativeProof.phases.map(p=>p.phase),['create','reopen']);
+  for(const phase of nativeProof.phases){
+   const checks=z.array(z.object({name:z.string(),status:z.literal('PASS')})).parse(JSON.parse(await readFile(join(native.evidence!,phase.phase+'-checks.json'),'utf8')));
+   assert.ok(checks.length>=(phase.phase==='create'?12:7));
+   assert.equal(checks.at(-1)?.name,'no real provider/model call, page exception or remote page request occurred');
+  }
+  const workflow=stage('production-workflow');
+  z.object({nativeGateOpen:z.literal(true),exitCode:z.literal(0),records:z.array(z.object({phase:z.literal('native-open'),exitCode:z.literal(0)})).length(1)}).parse(workflow.proof);
+  const checks=z.object({passed:z.number().int().min(25),failed:z.literal(0),results:z.array(z.object({name:z.string(),ok:z.literal(true)}))}).parse(JSON.parse(await readFile(join(workflow.evidence!,'native-open/native-open-checks.json'),'utf8')));
+  for(const wanted of ['loop iterations get fresh identities','explicit retry after failure','missing executor fails closed','both actual registration paths'])assert.ok(checks.results.some(c=>c.name.includes(wanted)),`Missing actual scheduler assertion: ${wanted}`);
+  const save=stage('shared-save-guard');
+  z.object({exitCode:z.literal(0),saveGuard:z.literal(true)}).parse(save.proof);
+  const browser=stage('catalog-browser');
+  z.object({passed:z.number().int().min(15)}).parse(browser.proof);
+ });
+}
 await writeFile(join(dir,'checks.json'),JSON.stringify(results,null,2));
 console.log(`${results.filter(r=>r.status==='PASS').length} passed; ${results.filter(r=>r.status==='FAIL').length} failed; ${results.filter(r=>r.status==='BLOCKED').length} blocked`);
-process.exitCode=results.some(r=>r.status==='FAIL')?1:2;
+process.exitCode=results.some(r=>r.status==='FAIL')?1:results.some(r=>r.status==='BLOCKED')?2:0;
