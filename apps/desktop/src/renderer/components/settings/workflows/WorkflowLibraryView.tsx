@@ -204,6 +204,7 @@ export function WorkflowLibraryView({
    *  不保证 —— 只认最后一次发出的那个,否则详情面板会显示成上一个的内容。 */
   const docRequestRef = useRef<string | null>(null);
   const docReadVersion = useRef(0);
+  const listReadVersion = useRef(0);
   const mounted = useRef(true);
   const editorRef = useRef<HTMLDivElement>(null);
   const history = useRef(new WorkflowEditHistory());
@@ -219,11 +220,15 @@ export function WorkflowLibraryView({
   }, []);
 
   const loadList = useCallback(async () => {
+    // 保存/外部变更/首次载入都可能重叠，晚回来的旧列表不能盖掉新列表。
+    const version = ++listReadVersion.current;
     try {
       const res = await api.workflow.list();
+      if (!mounted.current || version !== listReadVersion.current) return;
       setEntries(res.workflows);
       setListError(null);
     } catch (err) {
+      if (!mounted.current || version !== listReadVersion.current) return;
       setListError((err as Error).message);
     }
   }, []);
