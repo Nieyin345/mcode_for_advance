@@ -108,7 +108,19 @@ export function MobileGitScreen() {
   const [branchSheetOpen, setBranchSheetOpen] = useState(false);
 
   // Discover repos when the project changes.
+  //
+  // The seq guard is not optional here. The phone talks to the desktop over
+  // the LAN, and discovery walks the project tree — hundreds of milliseconds
+  // is normal, so switching projects while one is in flight is the common
+  // case, and the two replies can land in either order. Without the guard the
+  // late reply of the OLD project wins: repos/repoPath (and the status that
+  // follows them) come from the project the user already left. Same pattern
+  // the children already use (BranchSheet / DiffOverlay / FileViewer use a
+  // `cancelled` flag); these two top-level loaders were the hole.
+  const discoverSeq = useRef(0);
   const discover = useCallback(async () => {
+    const seq = ++discoverSeq.current;
+    const fresh = () => discoverSeq.current === seq;
     if (!project) {
       setReposLoading(false);
       return;
@@ -116,12 +128,13 @@ export function MobileGitScreen() {
     setReposLoading(true);
     try {
       const res = await api.git.discoverRepos({ projectPath: project.path });
+      if (!fresh()) return;
       setRepos(res.repos);
       if (res.repos.length > 0) setRepoPath(res.repos[0].path);
     } catch (err) {
-      setError((err as Error).message);
+      if (fresh()) setError((err as Error).message);
     } finally {
-      setReposLoading(false);
+      if (fresh()) setReposLoading(false);
     }
   }, [project]);
 
@@ -132,13 +145,23 @@ export function MobileGitScreen() {
   }, [discover]);
 
   // Refresh status whenever repoPath changes (and expose a manual refresh).
+  //
+  // Same guard, and this one is the one that bites: `status` drives the file
+  // list, while 暂存 / 提交 send the CURRENT `repoPath`. A late reply from the
+  // repo the user just left leaves the two disagreeing — tapping 暂存 on a
+  // listed file then sends the old repo's path to the new repo. Last request
+  // wins (the manual refresh button and the `git.changed` broadcast funnel
+  // through here too, so "latest" is the only correct winner).
+  const statusSeq = useRef(0);
   const refresh = useCallback(async () => {
     if (!repoPath) return;
+    const seq = ++statusSeq.current;
     try {
       const res = await api.git.status({ repoPath });
+      if (statusSeq.current !== seq) return;
       setStatus(res.status);
     } catch (err) {
-      setError((err as Error).message);
+      if (statusSeq.current === seq) setError((err as Error).message);
     }
   }, [repoPath]);
 
