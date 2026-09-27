@@ -268,6 +268,11 @@ export function MemoryExplorerPanel() {
   }, [files, scope]);
 
   const dirty = selected !== null && content !== savedContent;
+  /** 所有保留着未保存草稿的文件 —— 草稿跨文件切换/面板卸载保留，整理面板必须一并避开。 */
+  const unsavedDraftPaths = useMemo(
+    () => [...retainedDrafts].filter(([, d]) => d.content !== d.savedContent).map(([path]) => path),
+    [retainedDrafts],
+  );
   /**
    * 上面那个 `dirty` 的**引用版** —— 只给"库在别处被改了"那条订阅用。
    *
@@ -332,6 +337,7 @@ export function MemoryExplorerPanel() {
       </label>
       {reviewOpen && <MemoryMaintenanceReview
         dirty={dirty || draft !== null}
+        unsavedPaths={unsavedDraftPaths}
         onOpen={(path) => { void open(path); }}
         onDeleted={(paths) => {
           if (selected !== null && paths.includes(selected)) {

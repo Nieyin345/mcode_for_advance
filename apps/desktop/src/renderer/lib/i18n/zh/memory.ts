@@ -106,6 +106,7 @@ export const zh = {
   "memory.reviewOpenFile": "查看正文",
   "memory.reviewSelect": "勾选待删除：{path}",
   "memory.reviewDirty": "请先保存或取消编辑器中的改动／新建草稿，再查看或删除建议。",
+  "memory.reviewUnsavedDraft": "该文件有未保存的编辑草稿；请先在编辑器中保存或放弃，再决定是否删除。",
   "memory.reviewOutdated": "记忆库在扫描后发生变动；请重新扫描、复核后再删除。",
   "memory.reviewBoth": "不能把同一疑似重复对的两份都勾选删除；至少留下一份。",
   "memory.reviewSelectHint": "默认不勾选。选中文件后须再次确认；这里只执行删除，不会自动合并。",

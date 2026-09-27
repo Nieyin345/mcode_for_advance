@@ -10,16 +10,20 @@ import type { MemoryReviewEntry, MemoryReviewResult } from "@contracts/memory";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, ConfirmDialog } from "@renderer/components/ui/index.js";
-import { reviewSelectionConflict } from "./reviewSelection.js";
+import { reviewSelectionConflict, reviewSelectionHasUnsavedDraft } from "./reviewSelection.js";
 
 interface Props {
   /** 编辑器当前有未保存改动或未落盘的草稿。 */
   dirty: boolean;
+  /** 编辑器里保留着未保存草稿的文件（不只是当前打开的那一个）。这些文件不可勾选删除。 */
+  unsavedPaths?: readonly string[];
   onOpen: (path: string) => void;
   onDeleted: (paths: readonly string[]) => void;
 }
 
-export function MemoryMaintenanceReview({ dirty, onOpen, onDeleted }: Props) {
+const NO_PATHS: readonly string[] = [];
+
+export function MemoryMaintenanceReview({ dirty, unsavedPaths = NO_PATHS, onOpen, onDeleted }: Props) {
   const { t } = useI18n();
   const [report, setReport] = useState<MemoryReviewResult | null>(null);
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
@@ -72,8 +76,9 @@ export function MemoryMaintenanceReview({ dirty, onOpen, onDeleted }: Props) {
     return entries;
   }, [report]);
   const conflict = report !== null && reviewSelectionConflict(report, selectedPaths);
+  const draftBlocked = reviewSelectionHasUnsavedDraft(selectedPaths, unsavedPaths);
   const canDelete = report !== null && selectedPaths.length > 0 &&
-    !dirty && !outdated && !conflict && !loading && !working;
+    !dirty && !outdated && !conflict && !draftBlocked && !loading && !working;
 
   const toggle = (path: string): void => {
     setSelectedPaths((previous) => previous.includes(path)
@@ -109,13 +114,15 @@ export function MemoryMaintenanceReview({ dirty, onOpen, onDeleted }: Props) {
     }
   };
 
-  const row = (entry: MemoryReviewEntry) => (
+  const row = (entry: MemoryReviewEntry) => {
+    const hasDraft = unsavedPaths.includes(entry.path);
+    return (
     <div className="flex min-w-0 items-start gap-2 rounded border border-edge/60 bg-surface px-2 py-1.5">
       <input
         type="checkbox"
         aria-label={t("memory.reviewSelect", { path: entry.path })}
         checked={selectedPaths.includes(entry.path)}
-        disabled={dirty || outdated || loading || working}
+        disabled={dirty || outdated || loading || working || (hasDraft && !selectedPaths.includes(entry.path))}
         onChange={() => toggle(entry.path)}
         className="mt-1 shrink-0 accent-accent"
       />
@@ -137,9 +144,11 @@ export function MemoryMaintenanceReview({ dirty, onOpen, onDeleted }: Props) {
         <p className="break-words text-[0.7143em] text-content-muted">
           {entry.preview || t("memory.reviewNoPreview")}
         </p>
+        {hasDraft && <p className="break-words text-[0.7143em] text-warning">{t("memory.reviewUnsavedDraft")}</p>}
       </div>
     </div>
-  );
+    );
+  };
 
   return (
     <div className="mb-3 rounded border border-edge bg-surface-muted/30 p-3">

@@ -103,6 +103,7 @@ export const en = {
   "memory.reviewOpenFile": "Read body",
   "memory.reviewSelect": "Select for deletion: {path}",
   "memory.reviewDirty": "Save or discard unsaved editor changes / new drafts before reviewing or deleting suggestions.",
+  "memory.reviewUnsavedDraft": "This file has an unsaved draft in the editor. Save or discard it before deleting.",
   "memory.reviewOutdated": "The memory library changed after the scan. Scan and review again before deleting.",
   "memory.reviewBoth": "Do not delete both files in a possible duplicate pair; keep at least one.",
   "memory.reviewSelectHint": "Nothing is selected by default. Deletion requires confirmation; this does not merge files.",
