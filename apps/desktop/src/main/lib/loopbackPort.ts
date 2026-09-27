@@ -57,11 +57,11 @@ export function isBlockedPort(port: number): boolean {
  *
  *  `onBind(port)` runs after each successful bind so a caller with its own
  *  bookkeeping (logging, a stored handle) can see the accepted attempt. An
- *  `onBind` that throws aborts the loop.
+ *  `onBind` that throws closes this attempt's listener before aborting.
  *
- *  Rejects only after every attempt was blocked. That is deliberately the last
- *  resort: the caller is usually on a critical path (a session's first turn),
- *  and a silent hang there is worse than a loud error. */
+ *  Bind errors and callback errors reject immediately. Blocked ports reject
+ *  only after every attempt was blocked: the caller is usually on a critical
+ *  path (a session's first turn), and a silent hang is worse than a loud error. */
 export async function listenOnDialablePort(
   server: Server,
   onBind?: (port: number, attempt: number) => void,
@@ -69,16 +69,39 @@ export async function listenOnDialablePort(
   let lastBlocked = 0;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const port = await new Promise<number>((resolve, reject) => {
-      const onError = (err: Error) => reject(err);
-      server.once("error", onError);
-      server.listen(0, "127.0.0.1", () => {
+      const cleanup = () => {
+        // Remove only this attempt's callbacks, never the caller's listeners.
         server.off("error", onError);
+        server.off("listening", onListening);
+      };
+      const onError = (err: Error) => {
+        cleanup();
+        reject(err);
+      };
+      const onListening = () => {
+        cleanup();
         const addr = server.address() as AddressInfo | null;
         if (addr && typeof addr === "object") resolve(addr.port);
         else reject(new Error("failed to bind loopback server"));
-      });
+      };
+      server.once("error", onError);
+      try {
+        server.listen(0, "127.0.0.1", onListening);
+      } catch (err) {
+        // listen() can also throw synchronously (e.g. already listening).
+        // That listener is not ours to close, but our callbacks must go.
+        cleanup();
+        reject(err);
+      }
     });
-    onBind?.(port, attempt);
+    try {
+      onBind?.(port, attempt);
+    } catch (err) {
+      // We successfully bound this attempt. Do not leave an orphan listener
+      // when caller bookkeeping aborts before we can return its port.
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      throw err;
+    }
     if (!BAD_PORTS.has(port)) return port;
 
     // Blocked: close this listener before trying again. `close` is async, and
