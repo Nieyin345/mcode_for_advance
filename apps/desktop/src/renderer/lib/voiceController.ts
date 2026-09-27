@@ -57,18 +57,27 @@ export function voiceHandleFor(sessionId: string): VoiceHandle | undefined {
 
 type ActiveListener = (active: boolean) => void;
 const activeListeners = new Set<ActiveListener>();
+// Tabs can keep several composers mounted. One pane becoming idle/unmounting
+// must not hide the overlay while another still owns a live microphone.
+const activeOwners = new Set<symbol>();
 let voiceActive = false;
 
-/** Flip the global "listening" state and notify subscribers. */
-export function setVoiceActive(active: boolean): void {
-  if (voiceActive === active) return;
-  voiceActive = active;
-  for (const l of activeListeners) l(active);
+/** Track a composer's own listen, then notify when the aggregate changes. */
+export function setVoiceActive(active: boolean, owner: symbol): void {
+  if (active) activeOwners.add(owner);
+  else activeOwners.delete(owner);
+  const next = activeOwners.size > 0;
+  if (voiceActive === next) return;
+  voiceActive = next;
+  for (const l of activeListeners) l(next);
 }
 
 /** Subscribe to the global listening state. Returns an unsubscribe fn. */
 export function onVoiceActiveChange(fn: ActiveListener): () => void {
   activeListeners.add(fn);
+  // An overlay mounted while another pane is already listening needs the
+  // current snapshot too, not just future transitions.
+  fn(voiceActive);
   return () => {
     activeListeners.delete(fn);
   };

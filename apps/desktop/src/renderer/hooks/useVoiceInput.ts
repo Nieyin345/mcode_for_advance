@@ -323,7 +323,7 @@ export function useVoiceInput(options: UseVoiceInputOptions = {}): UseVoiceInput
   const stop = useCallback(async (): Promise<string> => {
     // Invalidate any start() still in its async window so it aborts (and
     // closes whatever it acquired) instead of resurrecting the mic.
-    genRef.current++;
+    const stoppingGen = ++genRef.current;
     const sessionId = sessionIdRef.current;
     if (!sessionId) return "";
     // Flush any residual samples before closing (force: sub-250ms tail).
@@ -338,7 +338,10 @@ export function useVoiceInput(options: UseVoiceInputOptions = {}): UseVoiceInput
     } catch {
       text = committedRef.current;
     }
-    if (text) onFinalRef.current?.(text);
+    // A cancel, new listen or unmount (including a chat-session switch) may
+    // have superseded this slow stop RPC. Never insert its late transcript
+    // into whichever composer is now mounted.
+    if (text && genRef.current === stoppingGen) onFinalRef.current?.(text);
     return text;
   }, [flush, teardownAudio]);
 

@@ -83,6 +83,12 @@ export function getModelDirInfo(): { modelDir: string; isCustom: boolean } {
  *  the caller runs {@link scanPresentModels} afterwards and adjusts if the
  *  previously-selected model isn't there. */
 export function setCustomModelRoot(raw: string): { modelDir: string; isCustom: boolean; downloaded: string[] } {
+  // A download captured its destination at start. Switching roots before it
+  // finishes would strand those bytes in the old directory and mark the new
+  // (empty) root's selection as ready. Wait or cancel before changing it.
+  if (activeDownloads.size > 0) {
+    throw new Error("模型正在下载中，请等待完成或取消后再切换存储位置。");
+  }
   const trimmed = raw.trim();
   // Reset case
   if (!trimmed) {
@@ -256,6 +262,11 @@ async function probeFileSizes(
       for (const url of candidateUrls(f.url)) {
         if (signal?.aborted) return null;
         const ctrl = new AbortController();
+        // The per-URL timeout is not the user's cancel signal: abort HEAD
+        // probes immediately too, rather than waiting up to 8s per origin.
+        const onOuterAbort = () => ctrl.abort();
+        signal?.addEventListener("abort", onOuterAbort, { once: true });
+        if (signal?.aborted) ctrl.abort();
         const timer = setTimeout(() => ctrl.abort(), 8000);
         try {
           const res = await fetch(url, { method: "HEAD", signal: ctrl.signal });
@@ -267,6 +278,7 @@ async function probeFileSizes(
           /* try the next origin */
         } finally {
           clearTimeout(timer);
+          signal?.removeEventListener("abort", onOuterAbort);
         }
       }
       return null;

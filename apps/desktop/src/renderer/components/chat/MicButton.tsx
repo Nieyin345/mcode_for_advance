@@ -53,7 +53,9 @@ export function MicButton(props: MicButtonProps) {
   // `isElectron` is a module constant, so the branch is stable per bundle —
   // the web (phone) shell never mounts the hooks below.
   if (!isElectron) return null;
-  return <MicButtonDesktop {...props} />;
+  // A single ChatPane may render a different chat session without unmounting.
+  // Dispose the old capture before its partials can enter the new editor.
+  return <MicButtonDesktop key={props.sessionId} {...props} />;
 }
 
 function MicButtonDesktop({
@@ -83,7 +85,8 @@ function MicButtonDesktop({
    *
    *  Paths, in order:
    *  1. Delta append (the norm): the engine's partials are append-only, so
-   *     `text` extends what we last wrote → append just the difference.
+   *     `text` extends what we last wrote AND that tail is still untouched →
+   *     append just the difference.
    *  2. Tail rewrite (first partial / engine revision): our previous text is
    *     still the editor's tail → replace it with the new cumulative text.
    *  3. Diverged (the user deleted/edited our tail): resync SILENTLY — never
@@ -94,7 +97,7 @@ function MicButtonDesktop({
     const prev = lastWrittenRef.current;
     if (text === prev) return;
     const cur = ed.getTextWithSkills();
-    if (prev && text.startsWith(prev)) {
+    if (prev && text.startsWith(prev) && cur.endsWith(prev)) {
       ed.replaceTextRange(cur.length, cur.length, text.slice(prev.length));
     } else if (cur.endsWith(prev)) {
       ed.replaceTextRange(cur.length - prev.length, cur.length, text);
@@ -124,6 +127,7 @@ function MicButtonDesktop({
   // where `busy` is still false. Drives the button's active visuals AND the
   // global overlay so feedback is instant on click/keypress.
   const armedRef = useRef(false);
+  const overlayOwnerRef = useRef(Symbol("voice-mic"));
   const [armed, setArmed] = useState(false);
   const arm = (on: boolean) => {
     armedRef.current = on;
@@ -171,8 +175,8 @@ function MicButtonDesktop({
 
   // Broadcast to the global listening overlay.
   useEffect(() => {
-    setVoiceActive(armed);
-    return () => setVoiceActive(false); // unmount safety
+    setVoiceActive(armed, overlayOwnerRef.current);
+    return () => setVoiceActive(false, overlayOwnerRef.current); // unmount safety
   }, [armed]);
 
   // Register this pane's mic with the global registry so the
@@ -209,7 +213,14 @@ function MicButtonDesktop({
   // re-render Toaster mid-frame).
   const lastToastRef = useRef<string>("");
   useEffect(() => {
-    if (!micError || micError === lastToastRef.current) return;
+    if (!micError) return;
+    if (micError === lastToastRef.current) {
+      // De-duplicate only the toast, not the attempt's teardown. A second
+      // permission denial must not leave the button/overlay stuck "listening".
+      if (armedRef.current) arm(false);
+      clearMicError();
+      return;
+    }
     lastToastRef.current = micError;
     const denied =
       /notallowed|permission/i.test(micError) || /denied/i.test(micError);
