@@ -22,7 +22,9 @@ export type SaveState =
   | { kind: "pending" }
   | { kind: "saving" }
   /** 存不下去 —— 校验没过或者 IPC 报错。`message` 是可以直接显示的一句话。 */
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string }
+  /** 存下去了,但校验器有提醒(断链、不会被走到的回头线…)。和磁盘一致,只是多一句话。 */
+  | { kind: "notice"; messages: string[] };
 
 /** 保存的状态行。**刻意做得很轻**:它常驻在那儿,不该跟"这个工作流是干什么的"
  *  抢注意力,所以只在有事时说一句;出问题时才换成警告色。
@@ -32,6 +34,22 @@ export type SaveState =
 export function SaveStateLine({ state }: { state: SaveState }) {
   const { t } = useI18n();
   if (state.kind === "clean") return null;
+  if (state.kind === "notice") {
+    // 提醒不拦存盘,所以用中性色;句子照样摆在明面上(理由同下面「保存受阻」那段)。
+    const joined = state.messages.join(";");
+    return (
+      <span
+        className="flex min-w-0 items-center gap-1 text-[0.7143em] text-content-subtle"
+        title={state.messages.join("\n")}
+      >
+        <IconAlertTriangle size={11} className="shrink-0 text-warning" />
+        <span className="shrink-0">
+          {t("settings.workflows.savedWithNotes", { n: state.messages.length })}
+        </span>
+        <span className="min-w-0 truncate opacity-80">· {joined}</span>
+      </span>
+    );
+  }
   if (state.kind === "error") {
     return (
       <span

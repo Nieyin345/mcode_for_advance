@@ -721,6 +721,14 @@ check("重复勾不会多一条边", setDependency(linked, "n2", "n1", true) ===
 eq("取消勾 → 边没了", setDependency(linked, "n2", "n1", false).edges.length, 0);
 check("取消本来就没有的边 → 原对象", setDependency(CHAIN_BASE, "n2", "n1", false) === CHAIN_BASE);
 check("不能依赖自己", setDependency(CHAIN_BASE, "n1", "n1", true) === CHAIN_BASE);
+// ★ **别处建的边(随机 id)也认得出来**(2026-09-27)。AI 走 MCP 存的图、导入的图,边 id
+//   是 `makeEdgeId()` 随机生成的,不是 `edgeId(from, to)`。原来按推出来的 id 找边:检查器
+//   里的勾选框看着勾上(它读邻接表)、点一下却取消不掉;再拉一次同一条线还会多出一条。
+{
+  const foreign: WorkflowDoc = { ...CHAIN_BASE, edges: [{ id: "e_lq3x_9f8a7b", from: "n1", to: "n2" }] };
+  eq("[随机 id] 取消勾 → 那条边真的没了", setDependency(foreign, "n2", "n1", false).edges.length, 0);
+  check("[随机 id] 重复勾不会多一条边", setDependency(foreign, "n2", "n1", true) === foreign);
+}
 
 const chain = setDependency(setDependency(CHAIN_BASE, "n2", "n1", true), "n3", "n2", true);
 /** **没有闸门**的情形 —— 环一律算环(原先的行为,现在仍然是对的:环上没岔路口)。 */
@@ -750,6 +758,14 @@ check(
   "有闸门也不等于什么都能连(不成环还是不成环)",
   !wouldCycle(chain4, "n3", "n1", gateIs("n2")),
 );
+// ★ **每一圈都得经过闸门,不是"有一圈经过就行"**(2026-09-27)。n1 → n2(闸门) → n3,
+//   另有 n1 → n3;这时从 n3 拉回 n1 闭出两圈:`n1→n2→n3→n1` 有闸门,`n1→n3→n1` 没有。
+//   原来只看"交集里有没有闸门",画布放行、存盘被拒(同一句"图里有环")。
+{
+  const bypass = setDependency(chain, "n3", "n1", true);
+  check("[绕开闸门] 有一圈不经过闸门 → 拒", wouldCycle(bypass, "n1", "n3", gateIs("n2")));
+  check("[绕开闸门] 没有那条旁路时照样放行", !wouldCycle(chain, "n1", "n3", gateIs("n2")));
+}
 
 console.log("\n环的闸门:决定权给模型的分支不算(2026-09-19)");
 {

@@ -643,7 +643,7 @@ export interface RpcMap {
   "workflow.nodeTypes": () => Promise<NodeTypeCatalog>;
   /** 存一份。**存盘前过 DAG 校验 + 每个节点的参数校验**,有环/悬空边/参数不合法
    *  直接拒绝 —— 有环的图会让调度器永远等不到就绪节点,那不是报错是静默卡死。 */
-  "workflow.save": (input: WorkflowSaveInput) => Promise<{ ok: boolean; error?: string }>;
+  "workflow.save": (input: WorkflowSaveInput) => Promise<{ ok: boolean; error?: string; warnings?: string[] }>;
   /** 删一份。删掉对内置工作流的覆盖 = 「恢复默认」;`wasBuiltin` 让界面能说对话
    *  (「已恢复默认」而不是「已删除」)。 */
   "workflow.remove": (input: WorkflowRemoveInput) => Promise<{ ok: boolean; wasBuiltin: boolean }>;

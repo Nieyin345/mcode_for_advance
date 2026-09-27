@@ -467,6 +467,18 @@ export interface BackEdge {
  *
  * 迭代而不是递归:图的规模是人画的(几十个节点),但**深链是合法的**,而爆栈后的症状
  * 是渲染进程整个白掉 —— 不值得为省几行冒这个险。
+ *
+ * ## 先从**真正的起点**出发(2026-09-27)
+ *
+ * 深搜认出来的回边取决于从哪儿开始走。原来按 `nodes` 的次序挑根,而 `nodes` 的次序是
+ * **建节点的先后**,不是流程的先后:用户先拖了一个分支节点、后补上前面几步,分支就排在
+ * 第一个。于是深搜从环的**中间**起步,把「成稿 → 分支」认成回边、把真正的回头线
+ * 「分支 → 成稿」认成前进边 —— 结果是分支节点没有上游、第一个跑,而「再改一轮」
+ * 不再回卷。同一张图只因节点存放次序不同就跑出两种行为,屏幕上看不出任何原因。
+ *
+ * 所以先从**没有入边的节点**(主代理、触发器这些真正的起点)出发走一遍,剩下走不到的
+ * (整片都在环里、没有起点的坏图)再按 `nodes` 的次序补。这样回边永远是"从后面指回前面"
+ * 的那一条,和用户画图时的意思一致。
  */
 export function backEdgesOf(
   nodes: readonly WorkflowNode[],
@@ -474,10 +486,12 @@ export function backEdgesOf(
 ): BackEdge[] {
   const ids = new Set(nodes.map((n) => n.id));
   const outgoing = new Map<string, WorkflowEdge[]>();
+  const hasIncoming = new Set<string>();
   for (const node of nodes) outgoing.set(node.id, []);
   for (const edge of edges) {
     if (!ids.has(edge.from) || !ids.has(edge.to)) continue;
     (outgoing.get(edge.from) as WorkflowEdge[]).push(edge);
+    if (edge.from !== edge.to) hasIncoming.add(edge.to);
   }
 
   const GRAY = 1;
@@ -485,7 +499,12 @@ export function backEdgesOf(
   const color = new Map<string, number>();
   const found: BackEdge[] = [];
 
-  for (const root of nodes) {
+  // 起点在前(保持 `nodes` 里的相对次序),其余在后 —— 顺序仍是确定的。
+  const roots = [
+    ...nodes.filter((n) => !hasIncoming.has(n.id)),
+    ...nodes.filter((n) => hasIncoming.has(n.id)),
+  ];
+  for (const root of roots) {
     if (color.has(root.id)) continue;
     const stack: Array<{ id: string; at: number }> = [{ id: root.id, at: 0 }];
     color.set(root.id, GRAY);
@@ -604,6 +623,32 @@ export function isLoopGateNode(
   return params !== undefined && isUserGateBranch(params);
 }
 
+/**
+ * 图上**没有闸门拦着**的环,返回环上的节点(去重、排好序);没有就是空数组。
+ *
+ * ## 判据:把闸门节点拿掉之后,剩下的图里还有没有环
+ *
+ * "每一圈都经过闸门" ⟺ "去掉闸门之后无环"。这是**唯一**不依赖遍历次序的说法。
+ *
+ * 原来的做法是"深搜找回边,看**那条回边闭出来的那一圈**上有没有闸门"。可一条回边能
+ * 闭出好几圈,深搜只拿到其中一圈:`A→G→C→A` 上有闸门 G,但同一条回边 `C→A` 还闭出
+ * `A→C→A`,那一圈谁也不拦。深搜先走哪条边,决定了它看到的是哪一圈 —— 于是**同一张图,
+ * 边的存放次序不同,一次放行、一次拒绝**,放行的那次存进去的恰恰是一个没人拦的环。
+ *
+ * `isGate` 就是 {@link isLoopGateNode} 那一个判据(分支 + 决定权在用户),由调用方组好。
+ */
+export function ungatedCycleNodes(
+  nodes: readonly WorkflowNode[],
+  edges: readonly WorkflowEdge[],
+  isGate: (nodeId: string) => boolean,
+): string[] {
+  const kept = nodes.filter((n) => !isGate(n.id));
+  const keptIds = new Set(kept.map((n) => n.id));
+  const keptEdges = edges.filter((e) => keptIds.has(e.from) && keptIds.has(e.to));
+  const open = backEdgesOf(kept, keptEdges);
+  return [...new Set(open.flatMap((b) => b.cycle))].sort();
+}
+
 /** 校验图时要知道的那点外部事实。不传 = **任何环都不放行**(老行为)。 */
 export interface DagCheckOptions {
   /**
@@ -660,12 +705,11 @@ export function validateDag(
   const paramsById = new Map(nodes.map((n) => [n.id, n.params]));
   // 没给回调 = 谁都不是分支(老行为:任何环都不放行)。
   const isBranch = opts?.isLoopGate ?? (() => false);
-  const open = backEdgesOf(nodes, edges).filter(
-    (b) =>
-      !b.cycle.some((id) => isLoopGateNode(isBranch, (want) => paramsById.get(want), id)),
+  // 判据见 {@link ungatedCycleNodes}:每一圈都要经过闸门,而不是"深搜碰巧看到的那一圈"。
+  const onCycle = ungatedCycleNodes(nodes, edges, (id) =>
+    isLoopGateNode(isBranch, (want) => paramsById.get(want), id),
   );
-  if (open.length > 0) {
-    const onCycle = [...new Set(open.flatMap((b) => b.cycle))].sort();
+  if (onCycle.length > 0) {
     return {
       ok: false,
       error:

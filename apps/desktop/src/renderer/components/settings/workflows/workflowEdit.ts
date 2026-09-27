@@ -271,7 +271,12 @@ export function setDependency(
 ): WorkflowDoc {
   if (nodeId === depId) return doc;
   const id = edgeId(depId, nodeId);
-  const exists = doc.edges.some((e) => e.id === id);
+  // **按两端找,不按 id 找**(2026-09-27)。画布自己画的边 id 是 `edgeId(from, to)` 推出来的,
+  // 但 AI 走 MCP 存的图、导入的图,边 id 是随机生成的(`makeEdgeId`)。原来按推出来的 id
+  // 判"有没有这条边":检查器里那个依赖勾选框看着是勾上的(它读的是邻接表),点一下却
+  // 取消不掉(这里判成"本来就没有"、原样返回);反过来再拉一次同一条线,会多出一条重复边。
+  const sameEnds = (e: WorkflowEdge): boolean => e.from === depId && e.to === nodeId;
+  const exists = doc.edges.some(sameEnds);
   if (on === exists) return doc;
   if (on) {
     // 内置条件一拉线就写上真假标签,不会让「看起来连好了」的图存不下去。
@@ -285,7 +290,7 @@ export function setDependency(
       edges: [...doc.edges, { id, from: depId, to: nodeId, ...(isCondition ? { label } : {}) }],
     };
   }
-  return { ...doc, edges: doc.edges.filter((e) => e.id !== id) };
+  return { ...doc, edges: doc.edges.filter((e) => !sameEnds(e)) };
 }
 
 /**
@@ -315,21 +320,27 @@ export function wouldCycle(
   isLoopGate: (nodeId: string) => boolean,
 ): boolean {
   if (nodeId === depId) return true;
-  const { deps, dependents } = buildForwardAdjacency(doc.nodes, doc.edges);
+  const { dependents } = buildForwardAdjacency(doc.nodes, doc.edges);
   // 新边是 `depId → nodeId`。成环 ⟺ `nodeId` 本来就能沿着边走到 `depId`。
   const after = reachableFrom(dependents, nodeId);
   if (!after.has(depId)) return false;
-  // 环上的节点 = 「nodeId 的下游」与「depId 的上游」的交。里面有一个闸门就放行 ——
-  // 绕这一圈必须经过它,而它要用户点一下,所以停得下来。
-  const before = reachableFrom(deps, depId);
-  for (const id of after) {
-    if (before.has(id) && isLoopGate(id)) return false;
-  }
-  return true;
+  // 新边的某一端就是闸门:经过这条新边的**每一圈**都经过它,放行。
+  if (isLoopGate(nodeId) || isLoopGate(depId)) return false;
+  // 否则要问的是"**每一圈**都经过闸门吗",不是"有没有哪一圈经过闸门"
+  // (2026-09-27)。原来只要「nodeId 的下游 ∩ depId 的上游」里有一个闸门就放行,可
+  // 那片交集里还可能有一条**绕开闸门**的路:`A→G→C` 加一条 `A→C` 时,从 C 拉回 A 这根线
+  // 闭出两圈,`A→G→C→A` 有闸门,`A→C→A` 没有 —— 画布放行,存盘却(应当)拒绝。
+  // 等价的判据:不经过任何闸门,`nodeId` 还能不能走到 `depId`。能,就有一圈没人拦。
+  return reachableFrom(dependents, nodeId, isLoopGate).has(depId);
 }
 
-/** 从 `start` 出发、按 `step` 这张邻接表能走到的全部节点(**含 `start` 自己**)。 */
-function reachableFrom(step: Map<string, string[]>, start: string): Set<string> {
+/** 从 `start` 出发、按 `step` 这张邻接表能走到的全部节点(**含 `start` 自己**)。
+ *  给了 `blocked` 时,被它拦下的节点不进结果、也不从它往下走("绕开闸门还能不能到")。 */
+function reachableFrom(
+  step: Map<string, string[]>,
+  start: string,
+  blocked?: (id: string) => boolean,
+): Set<string> {
   const seen = new Set<string>([start]);
   const stack: string[] = [start];
   while (stack.length > 0) {
@@ -337,6 +348,7 @@ function reachableFrom(step: Map<string, string[]>, start: string): Set<string> 
     if (id === undefined) continue;
     for (const next of step.get(id) ?? []) {
       if (seen.has(next)) continue;
+      if (blocked?.(next)) continue;
       seen.add(next);
       stack.push(next);
     }

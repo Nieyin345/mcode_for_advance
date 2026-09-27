@@ -2428,6 +2428,40 @@ const runsOf = (h: Harness, id: string): Call[] => h.calls.filter((c) => c.id ==
 }
 
 {
+  // ★ **节点的存放次序不改变回头的语义**(2026-09-27)。`nodes` 的次序是建节点的先后,
+  //   不是流程的先后:用户先拖了一个分支、后补上前面几步,分支就排在最前。原来深搜从
+  //   `nodes[0]` 起步,于是把「成稿 → 分支」认成回边 —— 分支没了上游、第一个就跑,
+  //   「再改一轮」也不再回卷。同一张图,换个存放次序,行为必须一模一样。
+  const base = loopDoc();
+  const byId = new Map(base.nodes.map((n) => [n.id, n]));
+  const shuffled: WorkflowDoc = {
+    ...base,
+    nodes: ["F", "D", "G", "A"].map((id) => byId.get(id) as WorkflowNode),
+  };
+  let asked = 0;
+  const h = makePorts({
+    pick: (_nodeId, options) => {
+      asked += 1;
+      const want = asked <= 1 ? "再改一轮" : "就这样，定稿";
+      const hit = options.find((o) => o.label === want) ?? options[0];
+      return { edgeId: hit?.id ?? "" };
+    },
+  });
+  const result = await runWorkflow({
+    doc: shuffled,
+    prompt: "写一篇引言",
+    ports: h.ports,
+    signal: controller().signal,
+  });
+  eq("[次序打乱] 跑完了,而且成功", result.status, "success");
+  eq("[次序打乱] ★ 分支不会第一个跑:第一个执行的是 A", h.executed()[0], "A");
+  eq("[次序打乱] ★「再改一轮」照样回卷(成稿跑了两轮)", runsOf(h, "D").length, 2);
+  eq("[次序打乱] 岔路口问了两次", h.choicesAsked.length, 2);
+  eq("[次序打乱] 环外的 A 只跑一次", runsOf(h, "A").length, 1);
+  eq("[次序打乱] 定稿跑了一次", runsOf(h, "G").length, 1);
+}
+
+{
   // **回头之后走另一条出路。** 这条钉的是"分支的其它出路要重新可选" —— 第一轮没被
   // 选中那条如果留着一个 `unselected` 的结局,第二轮用户回心转意点它,它**永远不会跑**,
   // 而卡片上写着"没走这条路",用户刚刚才点了它。

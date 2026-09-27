@@ -194,6 +194,8 @@ export function WorkflowLibraryView({
   const [docError, setDocError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  /** 上一次保存成功时校验器给的提醒。只在"和磁盘一致"时显示(一改动就换成"有未保存的改动")。 */
+  const [saveNotes, setSaveNotes] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [pendingRemove, setPendingRemove] = useState(false);
@@ -275,6 +277,7 @@ export function WorkflowLibraryView({
       setPendingApproval(false);
       setDocError(null);
       setSaveError(null);
+      setSaveNotes([]);
       setDocLoading(true);
       docRequestRef.current = id;
       try {
@@ -339,6 +342,7 @@ export function WorkflowLibraryView({
     inflight.current = gate;
     setSaving(true);
     setSaveError(null);
+    setSaveNotes([]);
     try {
       const res = await api.workflow.save({ workflow: payload });
       if (!res.ok) {
@@ -370,6 +374,7 @@ export function WorkflowLibraryView({
         setReview(saved.review);
         setReviewDoc(saved.workflow);
       }
+      if (mounted.current && latest.current?.working.id === id) setSaveNotes(res.warnings ?? []);
       void loadList();
       return "ok";
     } catch (err) {
@@ -444,7 +449,9 @@ export function WorkflowLibraryView({
         ? { kind: "saving" }
         : dirty
           ? { kind: "pending" }
-          : { kind: "clean" };
+          : saveNotes.length > 0
+            ? { kind: "notice", messages: saveNotes }
+            : { kind: "clean" };
 
   /* ── 动作 ── */
 
@@ -465,6 +472,7 @@ export function WorkflowLibraryView({
     latest.current = { ...current, working: normalized };
     setWorking(normalized);
     setSaveError(null);
+    setSaveNotes([]);
   };
   const travel = (direction: "undo" | "redo") => {
     const current = latest.current;
@@ -475,6 +483,7 @@ export function WorkflowLibraryView({
     latest.current = { ...current, working: normalized };
     setWorking(normalized);
     setSaveError(null);
+    setSaveNotes([]);
     if (!next.nodes.some((n) => n.id === selectedNodeId)) setSelectedNodeId(null);
   };
   const travelRef = useRef(travel);
@@ -486,6 +495,7 @@ export function WorkflowLibraryView({
     const id = reviewDoc.id;
     setApproving(true);
     setSaveError(null);
+    setSaveNotes([]);
     try {
       const result = await api.workflow.approve({ id, revision: review.revision });
       if (!result.ok) {
@@ -527,6 +537,7 @@ export function WorkflowLibraryView({
     refreshDrafts();
     setCreating(true);
     setSaveError(null);
+    setSaveNotes([]);
     try {
       const id = makeWorkflowId();
       // 名字在**整个库**里唯一,不只是这一栏 —— 两栏共用一个表,而选择器、确认框
@@ -610,6 +621,7 @@ export function WorkflowLibraryView({
     if (!entry) return;
     setRemoving(true);
     setSaveError(null);
+    setSaveNotes([]);
     removingRef.current = true;
     try {
       // 在飞的那次**先等落地再删**:反过来的话 `WorkflowRepo.save` 的 upsert 会把刚

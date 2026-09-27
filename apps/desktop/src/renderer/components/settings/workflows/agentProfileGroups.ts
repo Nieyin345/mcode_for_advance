@@ -68,7 +68,15 @@ export function groupProfiles(
   }
   // 排序键是**两个字段拼起来的**:只按分类排的话,同一类里的几组次序就看 Map 的插入
   // 次序(也就是磁盘给的次序)了 —— 那会随"最近改过哪一份"而变,列表每存一次就跳一下。
+  //
+  // 最前面还有一档:**没装的类型排在最后**,哪怕它和"装了但没写分类"的那几组分类都是
+  // 空串。原来只比分类 + 标题,两者都空时按标题比 —— 没装的标题是类型 id(`demo.xxx`),
+  // 拉丁字母在多数 locale 下排在中文前面,于是认不出来的东西反倒夹到了认得出来的前面。
+  const tierOf = (g: AgentProfileGroup): number =>
+    g.manifest === null ? 2 : g.category.length === 0 ? 1 : 0;
   return [...byId.values()].sort((a, b) => {
+    const tier = tierOf(a) - tierOf(b);
+    if (tier !== 0) return tier;
     if (a.category !== b.category) {
       // 空分类排最后:它是"没得说",不是"排在最前面"。
       if (a.category.length === 0) return 1;

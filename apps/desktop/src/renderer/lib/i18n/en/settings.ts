@@ -1518,6 +1518,7 @@ export const en = {
   "settings.workflows.savePending": "Unsaved changes",
   "settings.workflows.saving": "Saving…",
   "settings.workflows.saveBlocked": "Not saved",
+  "settings.workflows.savedWithNotes": "Saved with {n} note(s)",
   "settings.workflows.discard": "Discard",
   "settings.workflows.unsavedDot": "Unsaved changes",
 

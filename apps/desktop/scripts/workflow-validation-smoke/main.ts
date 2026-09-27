@@ -169,6 +169,40 @@ const modelCycle = validateWorkflowDoc(
 );
 check("模型选的分支当闸门 → 环仍被拒", hasCode(modelCycle, "graph.cycle"), modelCycle.errors);
 
+// ★ **每一圈都要经过闸门,而且判定不随边的存放次序变**(2026-09-27)。
+//   `A → BR(用户分支) → C`,另有 `A → C`,从 C 拉回 A:闭出两圈 —— `A→BR→C→A` 有闸门,
+//   `A→C→A` 没有。原来按"深搜碰巧闭出来的那一圈"判,边的次序一换结果就翻:一次放行、
+//   一次拒绝,而放行的那次存进去的恰恰是一个没人拦的环。
+{
+  const nodes = [node("A", "mcode.main", SAY), node("BR", "mcode.branch", { decider: "user" }), node("C", "mcode.agent", SAY)];
+  const e1 = edge("e1", "A", "BR");
+  const e2 = edge("e2", "BR", "C");
+  const e3 = edge("e3", "A", "C");
+  const e4 = edge("e4", "C", "A");
+  const orderA = validateWorkflowDoc(doc(nodes, [e1, e2, e3, e4]), OPTS);
+  const orderB = validateWorkflowDoc(doc(nodes, [e3, e1, e2, e4]), OPTS);
+  check("★ 绕开闸门的那一圈被拒(边次序 1)", hasCode(orderA, "graph.cycle"), orderA.errors);
+  check("★ 绕开闸门的那一圈被拒(边次序 2)—— 两种次序结论一致", hasCode(orderB, "graph.cycle"), orderB.errors);
+}
+
+// ★ **节点次序不改变"谁是回头线"**:分支排在 `nodes` 最前时,回头线仍是「分支 → 成稿」,
+//   合法的图照样放行、也不会冒出"回头线不会被走到"的误报。
+{
+  const D = node("D", "mcode.agent", SAY);
+  const BR = node("BR", "mcode.branch", { decider: "user" });
+  const F = node("F", "mcode.agent", SAY);
+  const A = node("A", "mcode.main", SAY);
+  const edges = [edge("e1", "A", "D"), edge("e2", "D", "BR"), edge("e3", "BR", "D"), edge("e4", "BR", "F")];
+  const shuffled = validateWorkflowDoc(doc([BR, D, F, A], edges), OPTS);
+  check("★ 分支排最前的合法回头图照样放行", shuffled.ok, shuffled.errors);
+  check("★ 而且不误报「回头线不会被走到」", !hasWarning(shuffled, "graph.inert-loop-edge"), shuffled.warnings);
+}
+
+// ★ **回头线得从岔路口拉出**:`A → BR → B`、再从 B 拉回 BR —— 环上有闸门,存得下去;
+//   但调度器只在"用户在分支上选中一条指回前面的出路"时回卷,从 B 拉回来的这根线谁也选
+//   不到,跑起来一圈都不转。不拦(不会卡死),但要说出来。
+check("★ 从普通节点拉回前面的线 → 提醒它不会被走到", hasWarning(gatedCycle, "graph.inert-loop-edge", "B"), gatedCycle.warnings);
+
 const bareBranch = validateWorkflowDoc(
   doc([node("A", "mcode.main", SAY), node("BR", "mcode.branch", {})], [edge("e1", "A", "BR")]),
   OPTS,

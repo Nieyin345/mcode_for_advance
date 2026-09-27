@@ -91,7 +91,9 @@ export function getWorkflowPrompt(id: string): string | undefined {
   return text && text.length > 0 ? text : undefined;
 }
 
-export type SaveResult = { ok: true } | { ok: false; error: string };
+/** `warnings`:校验器的**提醒**(能存、能跑,但多半画错了 —— 断链、不会被走到的回头线…)。
+ *  原来算完就扔了,界面和 AI 都看不到;现在随成功结果带回去,由调用方决定怎么说。 */
+export type SaveResult = { ok: true; warnings?: string[] } | { ok: false; error: string };
 
 /** 存一份工作流。**存盘前必须过校验闸门**(`workflowValidation.ts`):
  *
@@ -152,7 +154,8 @@ export async function saveWorkflow(
   // already finished, so rejected imports do not disarm the previous version.
   if (opts.untrustedOrigin) requireWorkflowReview(saved.id, opts.untrustedOrigin);
   WorkflowRepo.save(saved);
-  return { ok: true };
+  const warnings = report.warnings.map((w) => w.message);
+  return warnings.length > 0 ? { ok: true, warnings } : { ok: true };
 }
 
 /**

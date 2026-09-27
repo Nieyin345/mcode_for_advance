@@ -1506,6 +1506,7 @@ export const zh = {
   "settings.workflows.savePending": "有未保存的改动",
   "settings.workflows.saving": "保存中…",
   "settings.workflows.saveBlocked": "保存受阻",
+  "settings.workflows.savedWithNotes": "已保存,有 {n} 条提醒",
   "settings.workflows.discard": "放弃改动",
   "settings.workflows.unsavedDot": "有未保存的改动",
 

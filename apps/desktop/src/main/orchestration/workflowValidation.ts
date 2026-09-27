@@ -35,6 +35,7 @@ import {
   WorkflowDocSchema,
   backEdgesOf,
   buildForwardAdjacency,
+  ungatedCycleNodes,
   edgeOptionNameOf,
   isLoopGateNode,
   upstreamClosure,
@@ -259,16 +260,37 @@ export function validateWorkflowDoc(
     if (!node) return false;
     return manifestOf(node)?.runner.kind === "branch";
   };
-  const openBack = backEdgesOf(nodes, edges).filter(
-    (b) => !b.cycle.some((id) => isLoopGateNode(isBranchNode, (want) => byId.get(want)?.params, id)),
+  // 判据是"去掉闸门之后还有没有环"(`ungatedCycleNodes`),不是"深搜碰巧闭出来的那一圈上
+  // 有没有闸门" —— 后者随边的存放次序变,同一张图一次放行一次拒绝(2026-09-27)。
+  const onCycle = ungatedCycleNodes(nodes, edges, (id) =>
+    isLoopGateNode(isBranchNode, (want) => byId.get(want)?.params, id),
   );
-  if (openBack.length > 0) {
-    const onCycle = [...new Set(openBack.flatMap((b) => b.cycle))].sort();
+  if (onCycle.length > 0) {
     fail({
       code: "graph.cycle",
       message:
         `图里有环,涉及节点:${onCycle.map((id) => byId.get(id)).filter((n): n is WorkflowNode => n !== undefined).map(labelOf).join("、")}。` +
         "环上必须有一个**岔路口**(决定权给我的分支节点)—— 每一圈都要人点一下才走,有它在才停得下来。",
+    });
+  }
+
+  // **回头线得从岔路口拉出。** 调度器只在"用户在分支上选中一条指回前面的出路"时才把
+  // 那一圈抹掉重来(`scheduler.ts` 的 `chooseOne` → `rewindLoop`);从普通节点拉回前面的
+  // 线不是任何人的选项,跑起来**永远不会被走到** —— 画布上看着是个环,实际一圈都不转。
+  // 这不会卡死也不会乱跑,所以只提醒、不拦(同"断链"那条的口径)。
+  const isGateNode = (id: string): boolean =>
+    isLoopGateNode(isBranchNode, (want) => byId.get(want)?.params, id);
+  for (const back of backEdgesOf(nodes, edges)) {
+    if (!back.cycle.some(isGateNode) || isGateNode(back.edge.from)) continue;
+    const from = byId.get(back.edge.from);
+    const to = byId.get(back.edge.to);
+    if (!from || !to) continue;
+    hint({
+      code: "graph.inert-loop-edge",
+      nodeId: from.id,
+      message:
+        `「${labelOf(from)}」指回「${labelOf(to)}」的这根线不会被走到 —— 只有岔路口(分支节点)` +
+        "的出路才能指回前面:用户在分支上选了它,那一圈才重来。把这根线改成从环上的分支节点拉出。",
     });
   }
 

@@ -811,7 +811,13 @@ export function workflowMcpTools(opts?: { includeSessionLogs?: boolean }): McpTo
               "(同一层里的几步之间没有先后;分层是按依赖算的)"
             : `已保存「${doc.name}」 id=\`${doc.id}\` —— 一份提示词型工作流。`;
         const notes = normalized.notes.length > 0 ? `\n\n${normalized.notes.join("\n")}` : "";
-        return text(`${head}${notes}\n\n已保存但尚未启用：请用户在 设置 → 工作流/自动化 检查当前版本并明确批准后再运行。`);
+        // 校验器的提醒(不拦存盘,但多半画错了)—— 交给模型,让它顺手改掉或向用户说明。
+        const hints =
+          result.warnings && result.warnings.length > 0
+            ? `\n\n⚠️ 已保存,但有 ${result.warnings.length} 条提醒(不拦存盘,多半是画错了,请检查):\n` +
+              result.warnings.map((w) => `- ${w}`).join("\n")
+            : "";
+        return text(`${head}${notes}${hints}\n\n已保存但尚未启用：请用户在 设置 → 工作流/自动化 检查当前版本并明确批准后再运行。`);
       },
     },
     {
