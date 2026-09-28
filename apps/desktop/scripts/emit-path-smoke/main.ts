@@ -255,14 +255,22 @@ interface Site {
 
 const sites: Site[] = [];
 const filesWithEmit: string[] = [];
+/** 接线点接到的出口名(见 `unwrapMetadataEmitters` 的形状三)。每个注入一条。 */
+const wiringSinks: string[] = [];
 
 /** Resolve only the known metadata-preserving wrapper, using AST boundaries.
  * This is scanner input normalization, never executable production code.
  * Both safe and unsafe sinks are preserved. Unknown transformations, escaping
  * aliases, mutable bindings or shadowed names remain unresolved and fail the
  * existing unknown-site assertion rather than being silently skipped. */
-function unwrapMetadataEmitters(text: string): string {
-  if (!text.includes("withAutomationOrigin")) return text;
+function unwrapMetadataEmitters(text: string, wiring?: string[]): string {
+  // 三种形状各有自己的触发词,一个都不沾才能提前收工(这里对每个文件都跑一次,
+  // 建 AST 不便宜)。两处易错:`withAmbientAutomationOrigin` **不包含**子串
+  // `withAutomationOrigin`(中间多了 Ambient),所以统一只认 `AutomationOrigin`;
+  // 而形状三**连包装都没有** —— 它认的是 `(e) => sink(e)` 这种裸转发,能当触发词的
+  // 只有 sink 名本身。少写一个,对应那段新代码就永远走不到(这一条正是这么栽的)。
+  if (!text.includes("AutomationOrigin") && !text.includes("emitExternal")
+    && !text.includes("broadcastRuntimeEvent")) return text;
   const tree = ts.createSourceFile("emit-scan.ts", text, ts.ScriptTarget.Latest, true);
   const nodes: TypeScript.Node[] = [];
   const visit = (node: TypeScript.Node): void => { nodes.push(node); ts.forEachChild(node, visit); };
@@ -271,6 +279,62 @@ function unwrapMetadataEmitters(text: string): string {
   const replace = (node: TypeScript.Node, sink: string): void => {
     edits.push({ start: node.getStart(tree), end: node.getEnd(), sink });
   };
+  // ── 形状二:`withAmbientAutomationOrigin(<事件>)` —— 收一条事件,还回同一条事件 ──
+  //
+  // 和上面那个柯里化包装**不是一回事**(那个收 sink、还回一个函数;这个收事件、还回事件),
+  // 所以得单独认。它做的全部事情是"把当前作用域的来源记进一张 WeakMap":签名是
+  // `<E extends RuntimeEvent>(event: E): E`,实现是一次浅拷贝,**一个字都没碰 type**。
+  // 对"这条发出去的到底是哪个事件"这个问题,它是纯透传。
+  //
+  // 展开方式是**把包装的两头挖成空格、参数原样留在中间**,不是像上面那样替换成 sink 名:
+  // 这里要让扫描器看见的是内层那个对象字面量。挖空而不是删掉,报出来的行号才还指得准。
+  //
+  // ⚠️ 这一段是 2026-09-29 补的:`library/broadcast.ts` 那两条导入/下载事件在 09-28 被
+  // 加上了这层包装,而扫描器只认形状一 —— 于是它们在这张网里**失明**了两天,`emit-path`
+  // 每次都红着报"解析不出事件名"。网认不出的形状必须补进网里,不能反过来要求生产代码
+  // 迁就扫描器。
+  for (const node of nodes) {
+    if (!ts.isCallExpression(node) || !ts.isIdentifier(node.expression)
+      || node.expression.text !== "withAmbientAutomationOrigin") continue;
+    // 多参数 / 展开参数都不是它的签名。认不出就别猜 —— 留给"无法解析"那条断言去报。
+    const arg = node.arguments.length === 1 ? node.arguments[0] : undefined;
+    if (!arg || ts.isSpreadElement(arg)) continue;
+    edits.push({ start: node.getStart(tree), end: arg.getStart(tree), sink: "" });
+    edits.push({ start: arg.getEnd(), end: node.getEnd(), sink: "" });
+  }
+  // ── 形状三:接线 —— `(e) => sink(e)` 被**当作值传出去** ──
+  //
+  // `index.ts` 那句 `configureLibraryEvents({ emitExternal: (event) => rm.emitExternal(event) })`
+  // 一个事件都不发,它只是把出口**交给**另一个模块。扫描器原样看到的是一句
+  // `emitExternal(event)`,于是报"解析不出事件名" —— 而那里本来就没有事件名可解。
+  // 真正的发出点在拿到这个出口的那一侧(`library/broadcast.ts`),它们各自会被扫到。
+  //
+  // 整段挖空,但**把接的是哪个 sink 记下来**:豁免不许变成盲区。万一哪天有人把
+  // `broadcastRuntimeEvent` 注入成下游眼里的 `emitExternal`,下游每一个发出点都会被
+  // 误判成"走了对的那条路" —— 所以另有一条断言专门盯 `wiring` 这张表。
+  for (const node of nodes) {
+    if (!ts.isArrowFunction(node) || node.parameters.length !== 1) continue;
+    const param = node.parameters[0].name;
+    if (!ts.isIdentifier(param) || !ts.isCallExpression(node.body)) continue;
+    const callee = node.body.expression;
+    const sink = ts.isIdentifier(callee) ? callee.text
+      : ts.isPropertyAccessExpression(callee) ? callee.name.text : "";
+    if (sink !== "emitExternal" && sink !== "broadcastRuntimeEvent") continue;
+    // 必须是**原样转发**:`(e) => sink(e)`。中间多一个 transform 就不是接线、是加工,
+    // 那种得留给"未知转换不许猜成安全透传"去报。
+    if (node.body.arguments.length !== 1 || !ts.isIdentifier(node.body.arguments[0])
+      || node.body.arguments[0].text !== param.text) continue;
+    const parent = node.parent;
+    // 形状一那个箭头长得一模一样,但它归 `withAutomationOrigin` 那段管 —— 别抢。
+    if (ts.isCallExpression(parent) && ts.isIdentifier(parent.expression)
+      && parent.expression.text === "withAutomationOrigin") continue;
+    // 只认"被传出去"的两种位置:实参,或对象字面量的属性值(注入 deps 的常见写法)。
+    const passedOut = (ts.isCallExpression(parent) && parent.arguments.some((a) => a === node))
+      || ts.isPropertyAssignment(parent);
+    if (!passedOut) continue;
+    wiring?.push(sink);
+    replace(node, "");
+  }
   for (const node of nodes) {
     if (!ts.isCallExpression(node) || !ts.isIdentifier(node.expression)
       || node.expression.text !== "withAutomationOrigin") continue;
@@ -311,8 +375,8 @@ function unwrapMetadataEmitters(text: string): string {
 }
 
 /** 扫一份源码,把发出点找出来。抽成函数是为了让下面那段自检能喂人造样本。 */
-function scanSource(text: string, rel: string): Site[] {
-  text = unwrapMetadataEmitters(text);
+function scanSource(text: string, rel: string, wiring?: string[]): Site[] {
+  text = unwrapMetadataEmitters(text, wiring);
   const blanked = blankStrings(text);
   const out: Site[] = [];
   for (const m of blanked.matchAll(/(?<![\w$])(broadcastRuntimeEvent|emitExternal)\s*\(/g)) {
@@ -332,7 +396,7 @@ function scanSource(text: string, rel: string): Site[] {
 
 for (const file of walk(MAIN)) {
   const rel = relative(MAIN, file).replace(/\\/g, "/");
-  const found = scanSource(readFileSync(file, "utf-8"), rel);
+  const found = scanSource(readFileSync(file, "utf-8"), rel, wiringSinks);
   if (found.length > 0) filesWithEmit.push(rel);
   sites.push(...found);
 }
@@ -459,6 +523,61 @@ console.log("\n扫描器自检(能不能认出把通路写错的那种)");
     "<自检:包装内动态事件类型>",
   );
   check("包装不掩盖动态类型的未知状态", dynamicWrapped.some((site) => site.type === null), dynamicWrapped);
+  // 形状二(直接把事件对象包起来)同样不许藏住通路或事件名。
+  const ambientWrapped = scanSource(
+    `runtimeManager.emitExternal(withAmbientAutomationOrigin({ type: "library.item.imported", sessionId: "(system)" }));`,
+    "<自检:直接包裹事件对象的元数据包装>",
+  );
+  check(
+    "★ 认得出 withAmbientAutomationOrigin(它只往 WeakMap 记来源,不碰 type)",
+    ambientWrapped.length === 1 && ambientWrapped[0].type === "library.item.imported" && ambientWrapped[0].path === "external",
+    ambientWrapped,
+  );
+  const ambientWrong = scanSource(
+    `broadcastRuntimeEvent(withAmbientAutomationOrigin({ type: "workflow.node.result" }));`,
+    "<自检:直接包装里的错误通路>",
+  );
+  check(
+    "★ 这层包装不许把走错的那条通路盖住",
+    ambientWrong.length === 1 && ambientWrong[0].path === "broadcast" && ambientWrong[0].type === "workflow.node.result",
+    ambientWrong,
+  );
+  const ambientDynamic = scanSource(
+    `runtimeManager.emitExternal(withAmbientAutomationOrigin({ type: chooseType() }));`,
+    "<自检:直接包装里的动态类型>",
+  );
+  check("★ 包住的是动态类型时照样报无法解析", ambientDynamic.some((site) => site.type === null), ambientDynamic);
+  // 形状三:接线不是发出点 —— 但接错了出口必须看得见。
+  const wiredOk: string[] = [];
+  const wiredSites = scanSource(
+    `configureLibraryEvents({ emitExternal: (event) => runtimeManager.emitExternal(event) });`,
+    "<自检:把出口注入给别的模块>",
+    wiredOk,
+  );
+  check("★ 接线点不算发出点(那一行本来就没有事件名可解)", wiredSites.length === 0, wiredSites);
+  check("★ 但接的是哪个出口要记下来", wiredOk.length === 1 && wiredOk[0] === "emitExternal", wiredOk);
+  const wiredWrong: string[] = [];
+  scanSource(
+    `configureLibraryEvents({ emitExternal: (event) => broadcastRuntimeEvent(event) });`,
+    "<自检:注入了错误的出口>",
+    wiredWrong,
+  );
+  check(
+    "★ 注入 broadcast 会被记成 broadcast(豁免不许变成盲区)",
+    wiredWrong.length === 1 && wiredWrong[0] === "broadcastRuntimeEvent",
+    wiredWrong,
+  );
+  const notWiring: string[] = [];
+  const transformed = scanSource(
+    `configureLibraryEvents({ emitExternal: (event) => runtimeManager.emitExternal(transform(event)) });`,
+    "<自检:接线里夹了加工>",
+    notWiring,
+  );
+  check(
+    "★ 转发中间夹了加工就不算接线(照旧报无法解析)",
+    notWiring.length === 0 && transformed.some((site) => site.type === null),
+    { notWiring, transformed },
+  );
 }
 
 /* ────────────────── 检查 1:名字对不上 = 契约表整个漏了 ────────────────── */
@@ -475,6 +594,14 @@ check(
   "每条发出点都拿到了事件名(没有解析不出来的)",
   sites.every((s) => typeof s.type === "string" && s.type.length > 0),
   sites.filter((s) => !s.type).map((s) => `${s.file}:${s.line} ${s.func}`),
+);
+// 接线点被 `unwrapMetadataEmitters` 挖掉了,不会出现在 `sites` 里 —— 但"它接的是哪个
+// 出口"必须单独有人看。注入一个 `broadcastRuntimeEvent` 会让下游每一条发出点都被
+// 误判成走了对的路,而下游自己一点问题都看不出来。
+check(
+  `接线点接的都是 emitExternal(共 ${wiringSinks.length} 处注入)`,
+  wiringSinks.every((sink) => sink === "emitExternal"),
+  wiringSinks,
 );
 check(
   "拿到的事件名都在 RuntimeEvent 契约表里",
