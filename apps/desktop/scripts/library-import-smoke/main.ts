@@ -55,6 +55,13 @@ const { importGenericFiles, readEntryFile, entryFileAbsPath } = await import(
 );
 const { libraryRoot } = await import("@main/library/paths.js");
 const { importedIds, externals } = await import("./stubs/runtimeManager.js");
+// 库导入/下载事件的发出口由**装配点**注入(main/index.ts 里 configureLibraryEvents)。
+// `broadcast.ts` 早先直接 import RuntimeManager;为了不让 codeExecutor 的打包链把整条
+// provider 图(→ ssh2 原生模块)拖进来,那一刀换成了注入 —— 于是无头套件要自己接上,
+// 与真实装配同一句话。
+const { configureLibraryEvents } = await import("@main/library/broadcast.js");
+const runtimeStub = await import("./stubs/runtimeManager.js");
+configureLibraryEvents({ emitExternal: (event) => runtimeStub.runtimeManager.emitExternal(event) });
 
 await initDb();
 eq("库根就是临时数据根下面那个", libraryRoot(), ROOT);
