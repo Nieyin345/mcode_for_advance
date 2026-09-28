@@ -15,11 +15,13 @@ import {
   DEFAULT_CUSTOM_UI_CONFIG,
   parseCustomUiConfig,
   type CustomUiConfig,
+  type CustomUiInput,
   type CustomUiSlot,
 } from "@contracts/customUi";
 import { RightPanelTabSchema } from "@contracts/ipc";
 import { api } from "@renderer/lib/api.js";
 import { translate } from "@renderer/lib/i18n/core.js";
+import { buildDefaultLibraryItems, type SeedNote } from "@renderer/components/customUi/seedDefaults.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 
@@ -33,6 +35,13 @@ export interface CustomUiConfirm {
   description: string;
   confirmText: string;
   onConfirm: () => void;
+}
+
+/** automation 动作「运行前输入」的表单(见 `@contracts/customUi` 的 inputs)。 */
+export interface CustomUiForm {
+  title: string;
+  inputs: readonly CustomUiInput[];
+  onSubmit: (values: Readonly<Record<string, string | string[]>>) => void;
 }
 
 interface CustomUiState {
@@ -55,6 +64,10 @@ interface CustomUiState {
   openConfirm: (c: CustomUiConfirm) => void;
   closeConfirm: () => void;
 
+  form: CustomUiForm | null;
+  openForm: (f: CustomUiForm) => void;
+  closeForm: () => void;
+
   /**
    * 右栏正在显示的**自定义页签**(自定义项 id);`null` = 显示内置页签(`rightPanelTab`)。
    * 只在本次运行里记:自定义页签可能读文件,开机就自动去读一个上次停在那儿的文件没必要。
@@ -70,6 +83,40 @@ interface CustomUiState {
 /** 工具栏收起状态存的键。 */
 export const CUSTOM_UI_TOOLBAR_COLLAPSED_KEY = "customUi.toolbar.collapsed";
 
+/** 首启预置:拿自动化清单 → 构建默认项 → 落盘,并把绑定结果 toast 出来。 */
+async function seedDefaults(save: (next: CustomUiConfig) => Promise<boolean>): Promise<void> {
+  const { locale } = useSessionStore.getState();
+  try {
+    const [wf, facts] = await Promise.all([api.workflow.list(), api.automation.statusAll()]);
+    const { items, notes } = buildDefaultLibraryItems(
+      (wf.workflows ?? []).map((w) => ({ id: w.id, name: w.name, hasTrigger: w.trigger !== undefined })),
+      (facts ?? []).map((f) => ({ workflowId: f.workflowId, nodeId: f.nodeId, title: f.title, kind: f.kind })),
+    );
+    if (items.length === 0) return;
+    const ok = await save({ version: 1, items, layout: {} });
+    if (!ok) return;
+    const line = (n: SeedNote): string =>
+      n.kind === "transcribe"
+        ? translate(locale, "customUi.seed.bindTranscribe", { name: n.workflowName })
+        : n.kind === "import"
+          ? translate(locale, "customUi.seed.bindImport", { name: n.workflowName })
+          : n.kind === "missingTranscribe"
+            ? translate(locale, "customUi.seed.missingTranscribe")
+            : translate(locale, "customUi.seed.missingImport");
+    useToastStore.getState().push({
+      kind: "info",
+      title: translate(locale, "customUi.seed.done"),
+      body: notes.map(line).join("\n"),
+    });
+  } catch (err) {
+    useToastStore.getState().push({
+      kind: "error",
+      title: translate(locale, "customUi.seed.failed"),
+      body: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 let loading: Promise<void> | null = null;
 
 export const useCustomUiStore = create<CustomUiState>((set, get) => ({
@@ -84,7 +131,12 @@ export const useCustomUiStore = create<CustomUiState>((set, get) => ({
           api.setting.get({ key: CUSTOM_UI_SETTING_KEY }),
           api.setting.get({ key: CUSTOM_UI_TOOLBAR_COLLAPSED_KEY }).catch(() => ({ value: null })),
         ]);
-        set({ config: parseCustomUiConfig(res.value), loaded: true, toolbarCollapsed: collapsed.value === "1" });
+        const parsed = parseCustomUiConfig(res.value);
+        set({ config: parsed, loaded: true, toolbarCollapsed: collapsed.value === "1" });
+        // 首启预置(2026-09-28):从没配置过(一个自定义项都没有)时,按现有自动化
+        // 自动搭出文献菜单(seedDefaults 的绑定规则,冒烟钉住)。失败要说出来,
+        // 不静默 —— "没预置"读起来会像"功能不存在"。
+        if (parsed.items.length === 0) void seedDefaults(get().save);
       } catch {
         // 读不到(手机端 shim、库还没就绪)就当默认:菜单照常显示全部内置项
         set({ loaded: true });
@@ -120,6 +172,10 @@ export const useCustomUiStore = create<CustomUiState>((set, get) => ({
   confirm: null,
   openConfirm: (c) => set({ confirm: c }),
   closeConfirm: () => set({ confirm: null }),
+
+  form: null,
+  openForm: (f) => set({ form: f }),
+  closeForm: () => set({ form: null }),
 
   activeTab: null,
   setActiveTab: (id) => set({ activeTab: id }),

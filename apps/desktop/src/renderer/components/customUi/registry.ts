@@ -60,8 +60,10 @@ export interface BuiltinMeta {
 export const BUILTINS: Record<CustomUiSlot, readonly BuiltinMeta[]> = {
   "library.item": [
     { id: "attachToChat", labelKey: "library.ctx.attachToChat", icon: IconMessage },
-    { id: "info", labelKey: "library.info.title", icon: IconInfoCircle },
-    { id: "adoptMarkdown", labelKey: "library.convert.adopt", icon: IconFileText },
+    // ★ 2026-09-28 退役(通用 agent 方向,文献是用户需求不是通用需求):
+    //   「文献信息」→ 自定义 UI 的「条目信息卡」view 模板(templateDraft.itemInfo);
+    //   「采纳 MD」入口 → 能力仍在(library.adoptMarkdown RPC / MCP 工具 / 详情页),
+    //   转录本身在自动化;手动兜漏用「手动转录」automation 模板(带 skipWhen 检测)。
     { id: "viewTranscript", labelKey: "library.ctx.viewTranscript", icon: IconFileText },
     { id: "openMdExternal", labelKey: "library.ctx.openMdExternal", icon: IconExternalLink },
     { id: "links", labelKey: "library.links.title", icon: IconLink },

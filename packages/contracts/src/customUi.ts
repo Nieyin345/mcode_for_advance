@@ -129,6 +129,33 @@ export type CustomUiWhen = z.infer<typeof CustomUiWhenSchema>;
 
 const TemplateSchema = z.string().max(20_000);
 
+/** 运行前输入项的变量名:小写字母开头,进 `{{trigger.input.<key>}}`。 */
+const INPUT_KEY = /^[a-z][a-z0-9_]{0,23}$/;
+
+/**
+ * automation 动作的**运行前输入**(通用原语,2026-09-28)。点击后弹一个原生小表单,
+ * 值以 `input.<key>` 拍平进触发载荷 ⟹ 自动化里写 `{{trigger.input.<key>}}` 取
+ * (触发器变量本来就按字面查键、键名允许点)。
+ *
+ *   - `text`:一个文本框(DOI、检索词、备注……);
+ *   - `files`:系统文件选择器,值是绝对路径数组(用户显式选的,不受项目根约束
+ *     —— 与 `file` 目标"必须在项目里"是两回事,后者是自动化替你去读的)。
+ *
+ * 没有脚本、没有校验表达式:要校验去自动化里做(那边有审阅和运行记录)。
+ * 典型用法:「文献导入」= files(选 PDF)+ text(DOI),自动化自己判断哪个有值。
+ */
+export const CustomUiInputSchema = z
+  .object({
+    key: z.string().regex(INPUT_KEY),
+    kind: z.enum(["text", "files"]),
+    /** 表单里显示的名字;缺了显示 key。 */
+    label: LocalizedTextSchema.optional(),
+    /** 必填:没值不许提交(files = 至少选一个)。 */
+    required: z.boolean().optional(),
+  })
+  .strict();
+export type CustomUiInput = z.infer<typeof CustomUiInputSchema>;
+
 /** 动作。判别联合,`type` 决定剩下的字段。 */
 export const CustomUiActionSchema = z.discriminatedUnion("type", [
   /** 打开一个视图:标题 + Markdown 正文(都可以写 `{{变量}}`)。 */
@@ -154,17 +181,30 @@ export const CustomUiActionSchema = z.discriminatedUnion("type", [
   /**
    * 运行一条自动化:用**指定的那个触发器**手动起一次,右键的目标作为载荷带进去
    * (条目 / 分类 / 大类 → 条目清单,文件 → 文件列表;工具栏没有目标 → 同「立刻跑一次」)。
+   *
+   * `skipWhen`(通用原语,2026-09-28):展开时**满足条件的条目被跳过**,检测只在主进程
+   * 展开处做一次(`targets.shouldSkipItem`,复用 {@link matchesWhen})。典型用法:手动/
+   * 批量转录配 `{ requires: "markdown" }` —— 已有转录的不重复转录。载荷形状不变,
+   * 自动化侧零改动;确认框与结果如实报「带 N 条、跳过 M 条」,不静默少带。
    */
   z.object({
     type: z.literal("automation"),
     workflowId: z.string().min(1).max(200),
     triggerNodeId: z.string().min(1).max(200),
+    skipWhen: CustomUiWhenSchema.optional(),
+    /** 运行前输入(见 {@link CustomUiInputSchema})。v1 只在有目标的挂载位可用。 */
+    inputs: z.array(CustomUiInputSchema).max(4).optional(),
   }),
   /**
    * 一个文件(路径可以写 `{{变量}}`;相对路径按当前项目目录解析)。工具栏上 = 在中间
    * 打开它;右栏页签 = **实时显示**它的内容(Markdown 渲染,改了自动刷新)——
    * 「自动化把结果写进一个文件,页签一直显示它」就是这么搭出来的。
    * 只能是项目目录里的文件(读文件那条 RPC 本来就只放行项目根下的路径)。
+   *
+   * ⚠ 两条路的边界**不同**,别互相假设:页签那条路读内容走「读文件 RPC」,项目根
+   * 白名单在主进程里兜底;工具栏那条路是「在 IDE 里打开」,绝对路径不经过该白名单
+   * —— 等价于用户自己在本机打开一个文件(配置只有本机用户写得了,不是远程可达面),
+   * 但若未来把配置做成可分享/可导入,这条路要先补校验。
    */
   z.object({
     type: z.literal("file"),
@@ -449,10 +489,34 @@ export const TEMPLATE_VARS_BY_SLOT: Record<CustomUiSlot, readonly string[]> = {
  * 渲染 `{{ 变量 }}`。认不出的变量渲染成空串 —— 不留原样:原样留着的 `{{item.foo}}`
  * 被发给模型,它会以为那是要它填的东西。
  */
+const TEMPLATE_VAR_RE = /\{\{\s*([a-zA-Z][a-zA-Z0-9_.]*)\s*\}\}/g;
+
 export function renderTemplate(template: string, vars: Readonly<Record<string, string>>): string {
-  return template.replace(/\{\{\s*([a-zA-Z][a-zA-Z0-9_.]*)\s*\}\}/g, (_m, key: string) =>
+  return template.replace(TEMPLATE_VAR_RE, (_m, key: string) =>
     Object.hasOwn(vars, key) ? (vars[key] ?? "") : "",
   );
+}
+
+/** 模板里出现过的变量名(按出现顺序,去重)。 */
+export function extractTemplateVars(template: string): string[] {
+  const out: string[] = [];
+  for (const m of template.matchAll(TEMPLATE_VAR_RE)) {
+    const key = m[1] as string;
+    if (!out.includes(key)) out.push(key);
+  }
+  return out;
+}
+
+/**
+ * 模板里**这个挂载位认不出**的变量 —— 设置页保存前的提示用。
+ *
+ * 运行时的规矩不变:认不出的渲染成空串({@link renderTemplate} 的理由)。这里只是把
+ * 「打错了」在保存前点名:`{{item.titel}}` 静默变空串,用户在菜单上看到的只是一个
+ * 莫名其妙的空,没处排查。**宽容运行、严格提示**:提示不拦保存。
+ */
+export function unknownTemplateVars(template: string, slot: CustomUiSlot): string[] {
+  const known = new Set<string>(TEMPLATE_VARS_BY_SLOT[slot]);
+  return extractTemplateVars(template).filter((v) => !known.has(v));
 }
 
 /** 规范化扩展名写法:`pdf` / `.PDF` / `*.pdf` 都当 `.pdf`。 */
@@ -548,10 +612,20 @@ export const CustomUiRunAutomationSchema = z.object({
   workflowId: z.string().min(1),
   triggerNodeId: z.string().min(1),
   target: CustomUiRunTargetSchema,
+  /** 展开时的条目跳过条件(见 automation 动作的 skipWhen;主进程逐条目复核)。 */
+  skipWhen: CustomUiWhenSchema.optional(),
+  /** 运行前输入的值(键 = `inputs[].key`;files 是绝对路径数组)。 */
+  input: z
+    .record(
+      z.string().regex(INPUT_KEY),
+      z.union([z.string().max(4000), z.array(z.string().max(4096)).max(50)]),
+    )
+    .optional(),
   /** 只数一下这次会带多少条,不真跑 —— 批量跑之前给用户确认用。 */
   dryRun: z.boolean().optional(),
 });
 export type CustomUiRunAutomationInput = z.infer<typeof CustomUiRunAutomationSchema>;
 
-/** `ok: false` 时 `error` 是给人看的句子(同 `automation.run`)。`count` = 带进去的条目/文件数。 */
-export type CustomUiRunAutomationResult = { ok: boolean; error?: string; count?: number };
+/** `ok: false` 时 `error` 是给人看的句子(同 `automation.run`)。`count` = 带进去的条目/文件数;
+ * `skipped` = 被 `skipWhen` 跳过的条目数(没写条件时恒为 0/缺省)。 */
+export type CustomUiRunAutomationResult = { ok: boolean; error?: string; count?: number; skipped?: number };

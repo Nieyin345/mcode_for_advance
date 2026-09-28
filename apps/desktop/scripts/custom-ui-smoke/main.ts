@@ -35,7 +35,9 @@ import {
   targetKindOfSlot,
   TEMPLATE_VARS_BY_SLOT,
   templateVarsOf,
+  unknownTemplateVars,
   CUSTOM_UI_SLOTS,
+  CUSTOM_UI_ICONS,
   ACTIONS_BY_SLOT,
   isActionAllowed,
   localDateString,
@@ -43,7 +45,9 @@ import {
   type CustomUiTarget,
 } from "@contracts/customUi";
 import type { LibraryItem } from "@contracts/library";
-import { collectCollectionIds, isInsideAnyProject, itemFactsOf } from "../../src/main/customUi/targets.js";
+import { collectCollectionIds, isInsideAnyProject, itemFactsOf, shouldSkipItem } from "../../src/main/customUi/targets.js";
+import { describeTriggerPayload, payloadFactsOf } from "../../src/main/orchestration/automationPayload.js";
+import { buildDefaultLibraryItems } from "../../src/renderer/components/customUi/seedDefaults.js";
 
 let checks = 0;
 let passed = 0;
@@ -303,6 +307,146 @@ eq("盘符绝对路径原样", resolveWorkspacePath("C:\\x.md", undefined), "C:\
 eq("没项目 → 拼不出", resolveWorkspacePath("README.md", undefined), null);
 eq("空路径 → null", resolveWorkspacePath("   ", "/w/proj"), null);
 eq("本地日期补零", localDateString(new Date(2026, 0, 5)), "2026-01-05");
+
+/* ── 模板变量 lint（设置页保存前的提示；规矩 6：打错的变量要能被看见）── */
+
+eq("已知变量 → 无未知", unknownTemplateVars("A {{item.title}} B", "library.item"), []);
+eq("打错的变量被点名", unknownTemplateVars("{{item.titel}}", "library.item"), ["item.titel"]);
+eq("同一个错只报一次、顺序保持", unknownTemplateVars("{{a.b}} {{item.title}} {{a.b}} {{c}}", "library.item"), ["a.b", "c"]);
+eq("变量跟挂载位走：file.path 在文件右键是已知", unknownTemplateVars("{{file.path}}", "files.context"), []);
+eq("变量跟挂载位走：file.path 在条目右键是未知", unknownTemplateVars("{{file.path}}", "library.item"), ["file.path"]);
+eq("空白形态照样识别", unknownTemplateVars("{{  today }} {{nope}}", "toolbar"), ["nope"]);
+eq("没有变量 → 空", unknownTemplateVars("plain text", "toolbar"), []);
+
+/* ── 图标白名单只能往后加（名字存在用户配置里，改名/重排会让存量配置丢图标）── */
+
+eq("图标表前 16 项冻结", [...CUSTOM_UI_ICONS.slice(0, 16)], [
+  "sparkles", "bolt", "message", "file-text", "copy", "book", "robot", "world",
+  "code", "quote", "tag", "star", "flask", "eye", "template", "download",
+]);
+
+/* ── P1:automation 动作的 skipWhen（批量跳过条件;通用原语,转录检测是它的一个用法）── */
+
+{
+  const cfg = coerceCustomUiConfig({
+    version: 1,
+    items: [{
+      id: "transcribe",
+      slot: "library.item",
+      label: { zh: "手动转录" },
+      action: { type: "automation", workflowId: "w1", triggerNodeId: "t1", skipWhen: { requires: "markdown" } },
+    }],
+    layout: {},
+  });
+  const a = cfg.items[0]?.action;
+  check("skipWhen 在配置解析后保留", a?.type === "automation" && a.skipWhen?.requires === "markdown", a);
+}
+check("RunAutomation 输入接受 skipWhen", CustomUiRunAutomationSchema.safeParse({
+  workflowId: "w1", triggerNodeId: "t1", target: { kind: "item", itemId: "i1" },
+  skipWhen: { requires: "markdown" },
+}).success);
+
+const mkItem = (over: Partial<LibraryItem>): LibraryItem => ({
+  id: "i1", title: "T", collectionId: "c1", createdAt: 0, updatedAt: 0, ...over,
+} as LibraryItem);
+check("已有转录 → 跳过", shouldSkipItem(mkItem({ mdPath: "a.md" }), { requires: "markdown" }));
+check("没有转录 → 不跳过", !shouldSkipItem(mkItem({}), { requires: "markdown" }));
+check("没写 skipWhen → 不跳过", !shouldSkipItem(mkItem({ mdPath: "a.md" }), undefined));
+check("按扩展名跳过(pdf 条目)", shouldSkipItem(mkItem({ pdfPath: "x.pdf" }), { extensions: [".pdf"] }));
+check("扩展名不匹配 → 不跳过", !shouldSkipItem(mkItem({ filePath: "x.docx" }), { extensions: [".pdf"] }));
+
+/* ── P2:automation 动作的 inputs(运行前输入;通用原语,文献导入是它的一个用法)── */
+
+{
+  const cfg = coerceCustomUiConfig({
+    version: 1,
+    items: [{
+      id: "lit-import",
+      slot: "library.collection",
+      label: { zh: "文献导入" },
+      action: {
+        type: "automation", workflowId: "w1", triggerNodeId: "t1",
+        inputs: [
+          { key: "files", kind: "files", label: { zh: "文献文件" } },
+          { key: "doi", kind: "text", label: { zh: "DOI" } },
+        ],
+      },
+    }],
+    layout: {},
+  });
+  const a = cfg.items[0]?.action;
+  check("inputs 在配置解析后保留", a?.type === "automation" && a.inputs?.length === 2 && a.inputs[0]?.kind === "files", a);
+}
+{
+  const bad = coerceCustomUiConfig({
+    version: 1,
+    items: [{
+      id: "bad-key",
+      slot: "library.collection",
+      label: { zh: "坏输入名" },
+      action: { type: "automation", workflowId: "w", triggerNodeId: "t", inputs: [{ key: "DOI 名", kind: "text" }] },
+    }],
+    layout: {},
+  });
+  check("非法输入键 → 整条丢(同坏条目)", bad.items.length === 0, bad.items);
+}
+check("RunAutomation 输入接受 input 值表", CustomUiRunAutomationSchema.safeParse({
+  workflowId: "w1", triggerNodeId: "t1", target: { kind: "collection", collectionId: "c1" },
+  input: { doi: "10.1/x", files: ["D:/a.pdf", "D:/b.pdf"] },
+}).success);
+
+/* 载荷侧:input 拍平成 `input.<key>` 平面键(TRIGGER_REF_RE 按字面查键,含点 ⟹
+   {{trigger.input.doi}} 直接可解),人话段落带输入行。 */
+{
+  const facts = payloadFactsOf({ kind: "event", event: "library.item.imported", input: { doi: "10.1/x", files: ["D:/a.pdf"] } });
+  check("facts 拍平 input.doi", facts["input.doi"] === "10.1/x", facts);
+  check("facts 拍平 input.files(数组)", Array.isArray(facts["input.files"]) && facts["input.files"][0] === "D:/a.pdf", facts);
+  const said = describeTriggerPayload({ kind: "event", event: "library.item.imported", input: { doi: "10.1/x" } });
+  check("人话段落带输入", said.includes("doi") && said.includes("10.1/x"), said);
+}
+{
+  const facts = payloadFactsOf({ kind: "file", files: ["D:/w/x.md"], input: { note: "n1" } });
+  check("file 载荷同样拍平 input", facts["input.note"] === "n1", facts);
+  check("没 input 不加键", !("input.note" in payloadFactsOf({ kind: "file", files: [] })), payloadFactsOf({ kind: "file", files: [] }));
+}
+
+/* ── 首启预置(seedDefaults):按用户现有自动化自动搭出文献菜单,绑定要可解释 ── */
+
+{
+  const wfs = [
+    { id: "w-md", name: "文件到位后在线转 Markdown", hasTrigger: true },
+    { id: "w-dl", name: "DOI 文献下载", hasTrigger: true },
+  ];
+  const trs = [
+    { workflowId: "w-md", nodeId: "t1", title: "触发器", kind: "event" },
+    { workflowId: "w-dl", nodeId: "t2", title: "触发器", kind: "manual" },
+  ];
+  const r = buildDefaultLibraryItems(wfs, trs);
+  check("两条自动化都命中 → 6 个预置项", r.items.length === 6, r.items.map((i) => i.id));
+  const t = r.items.find((i) => i.id === "seed-transcribe");
+  check("手动转录绑 event 触发器 + skipWhen markdown",
+    t?.action.type === "automation" && t.action.workflowId === "w-md" && t.action.skipWhen?.requires === "markdown", t);
+  const imp = r.items.find((i) => i.id === "seed-lit-import");
+  check("文献导入绑名字含下载/doi 的自动化并带 files+doi 输入",
+    imp?.action.type === "automation" && imp.action.workflowId === "w-dl"
+      && imp.action.inputs?.map((x) => x.key).join(",") === "files,doi", imp);
+  check("绑定说明可解释", r.notes.some((n) => n.kind === "transcribe" && n.workflowName.includes("Markdown"))
+    && r.notes.some((n) => n.kind === "import"), r.notes);
+  check("预置项整体能过 schema", coerceCustomUiConfig({ version: 1, items: r.items, layout: {} }).items.length === 6);
+}
+{
+  const r = buildDefaultLibraryItems([], []);
+  check("没有自动化 → 只有信息卡 + 两条缺失说明", r.items.length === 1 && r.items[0]?.id === "seed-item-info"
+    && r.notes.filter((n) => n.kind === "missingTranscribe" || n.kind === "missingImport").length === 2, r);
+}
+{
+  const r = buildDefaultLibraryItems(
+    [{ id: "w1", name: "普通自动化", hasTrigger: true }],
+    [{ workflowId: "w1", nodeId: "t", title: "触发器", kind: "event" }],
+  );
+  check("只有 event 自动化 → 转录建、导入缺", r.items.some((i) => i.id === "seed-transcribe")
+    && !r.items.some((i) => i.id === "seed-lit-import") && r.notes.some((n) => n.kind === "missingImport"), r);
+}
 
 /* ── 汇总 ── */
 

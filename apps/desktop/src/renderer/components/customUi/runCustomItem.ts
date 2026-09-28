@@ -70,6 +70,21 @@ async function runAutomation(
 ): Promise<void> {
   const name = customUiLabel(item.label, useSessionStore.getState().locale);
   const runTarget = runTargetOf(target);
+  // 运行前输入(P2):先弹表单收值,值以 input 附进请求(载荷侧拍平成
+  // {{trigger.input.<key>}})。v1 只支持有目标的挂载位 —— 工具栏的 automation
+  // 走 runNow(没有 input 通道),带 inputs 的项在这里如实提示而不是静默丢输入。
+  if ((action.inputs?.length ?? 0) > 0) {
+    if (runTarget === null) {
+      toast("warning", "customUi.run.inputsNeedTarget");
+      return;
+    }
+    useCustomUiStore.getState().openForm({
+      title: name,
+      inputs: action.inputs ?? [],
+      onSubmit: (values) => void runAutomationWithTarget(item, action, target, runTarget, values),
+    });
+    return;
+  }
   if (runTarget === null) {
     // 工具栏:同自动化页的「立刻跑一次」(manual 那条路,用户关掉的触发器也能跑)
     try {
@@ -81,7 +96,25 @@ async function runAutomation(
     }
     return;
   }
-  const input = { workflowId: action.workflowId, triggerNodeId: action.triggerNodeId, target: runTarget };
+  await runAutomationWithTarget(item, action, target, runTarget);
+}
+
+/** 有目标的 automation 运行(dryRun 确认 / skipWhen / 可选的运行前输入值)。 */
+async function runAutomationWithTarget(
+  item: CustomUiItem,
+  action: Extract<CustomUiItem["action"], { type: "automation" }>,
+  target: CustomUiTarget,
+  runTarget: CustomUiRunTarget,
+  inputValues?: Readonly<Record<string, string | string[]>>,
+): Promise<void> {
+  const name = customUiLabel(item.label, useSessionStore.getState().locale);
+  const input = {
+    workflowId: action.workflowId,
+    triggerNodeId: action.triggerNodeId,
+    target: runTarget,
+    ...(action.skipWhen ? { skipWhen: action.skipWhen } : {}),
+    ...(inputValues && Object.keys(inputValues).length > 0 ? { input: inputValues } : {}),
+  };
   const go = async (): Promise<void> => {
     try {
       const res = await api.customUi.runAutomation(input);
@@ -97,12 +130,17 @@ async function runAutomation(
     try {
       const dry = await api.customUi.runAutomation({ ...input, dryRun: true });
       if (!dry.ok) {
-        toast("error", "customUi.run.failed", dry.error);
+        // 全部被 skipWhen 跳过是"没活可干",不是失败(典型:这个分类都转录过了)。
+        if ((dry.skipped ?? 0) > 0 && (dry.count ?? 0) === 0) toast("info", "customUi.run.allSkipped", dry.error, { name });
+        else toast("error", "customUi.run.failed", dry.error);
         return;
       }
       useCustomUiStore.getState().openConfirm({
         title: tr("customUi.run.confirmTitle", { name }),
-        description: tr("customUi.run.confirmBody", { n: dry.count ?? 0 }),
+        description:
+          (dry.skipped ?? 0) > 0
+            ? tr("customUi.run.confirmBodySkip", { n: dry.count ?? 0, m: dry.skipped ?? 0 })
+            : tr("customUi.run.confirmBody", { n: dry.count ?? 0 }),
         confirmText: tr("customUi.run.confirm"),
         onConfirm: () => void go(),
       });
@@ -111,7 +149,15 @@ async function runAutomation(
     }
     return;
   }
-  await go();
+  // 单条目:被 skipWhen 跳过时如实说(已有转录 → 不重复转录),别报成失败。
+  try {
+    const res = await api.customUi.runAutomation(input);
+    if (res.ok) toast("info", "customUi.run.started", undefined, { name, n: res.count ?? 1 });
+    else if ((res.skipped ?? 0) > 0 && (res.count ?? 0) === 0) toast("info", "customUi.run.allSkipped", res.error, { name });
+    else toast("error", "customUi.run.failed", res.error);
+  } catch (err) {
+    toast("error", "customUi.run.failed", err instanceof Error ? err.message : String(err));
+  }
 }
 
 export async function runCustomItem(item: CustomUiItem, target: CustomUiTarget): Promise<void> {

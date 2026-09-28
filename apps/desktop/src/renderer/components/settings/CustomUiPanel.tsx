@@ -30,6 +30,7 @@ import {
   moduleKey,
   normalizeExtension,
   targetKindOfSlot,
+  unknownTemplateVars,
   type CustomUiActionType,
   type CustomUiConfig,
   type CustomUiIcon,
@@ -93,6 +94,10 @@ interface Draft {
   copyTemplate: string;
   workflowId: string;
   triggerNodeId: string;
+  /** automation 的 skipWhen v1:只开放 requires 一档(空 = 不过滤)。 */
+  skipRequires: "" | "file" | "pdf" | "markdown";
+  /** automation 的运行前输入(P2;工具栏挂载位不可用)。 */
+  inputs: { key: string; kind: "text" | "files"; labelZh: string; required: boolean }[];
   filePath: string;
   openTab: string;
 }
@@ -124,6 +129,8 @@ function blankDraft(slot: CustomUiSlot, items: readonly CustomUiItem[]): Draft {
     copyTemplate: "",
     workflowId: "",
     triggerNodeId: "",
+    skipRequires: "",
+    inputs: [],
     filePath: "",
     openTab: "",
   };
@@ -150,6 +157,16 @@ function draftOf(item: CustomUiItem): Draft {
     copyTemplate: a.type === "copy" ? a.template : "",
     workflowId: a.type === "automation" ? a.workflowId : "",
     triggerNodeId: a.type === "automation" ? a.triggerNodeId : "",
+    skipRequires: a.type === "automation" ? (a.skipWhen?.requires ?? "") : "",
+    inputs:
+      a.type === "automation"
+        ? (a.inputs ?? []).map((i) => ({
+            key: i.key,
+            kind: i.kind,
+            labelZh: i.label?.zh ?? "",
+            required: i.required === true,
+          }))
+        : [],
     filePath: a.type === "file" ? a.path : "",
     openTab: a.type === "openTab" ? a.tab : "",
   };
@@ -169,9 +186,31 @@ function itemOf(d: Draft): { ok: true; item: CustomUiItem } | { ok: false; error
             ? { type: "file", path: d.filePath.trim() }
             : d.actionType === "openTab"
               ? { type: "openTab", tab: d.openTab }
-              : { type: "automation", workflowId: d.workflowId, triggerNodeId: d.triggerNodeId };
+              : {
+                  type: "automation",
+                  workflowId: d.workflowId,
+                  triggerNodeId: d.triggerNodeId,
+                  ...(d.skipRequires ? { skipWhen: { requires: d.skipRequires } } : {}),
+                  ...(d.inputs.length
+                    ? {
+                        inputs: d.inputs.map((i) => ({
+                          key: i.key.trim(),
+                          kind: i.kind,
+                          ...(i.labelZh.trim() ? { label: { zh: i.labelZh.trim() } } : {}),
+                          ...(i.required ? { required: true } : {}),
+                        })),
+                      }
+                    : {}),
+                };
   if (action.type === "automation" && (!action.workflowId || !action.triggerNodeId)) {
     return { ok: false, error: "customUi.editor.errorAutomation" };
+  }
+  if (action.type === "automation" && action.inputs) {
+    const keys = action.inputs.map((i) => i.key);
+    const keyOk = keys.every((k) => /^[a-z][a-z0-9_]{0,23}$/.test(k));
+    if (!keyOk || new Set(keys).size !== keys.length) {
+      return { ok: false, error: "customUi.editor.errorInputKey" };
+    }
   }
   if (action.type === "file" && !action.path) return { ok: false, error: "customUi.editor.errorFile" };
   if (action.type === "openTab" && !action.tab) return { ok: false, error: "customUi.editor.errorOpenTab" };
@@ -214,6 +253,18 @@ function templateDraft(
         icon: "file-text",
         actionType: "automation",
         requires: slot === "library.item" ? "pdf" : "",
+        // 手动转录 = 兜漏:已有转录(MD)的条目自动跳过(P1 skipWhen 检测)。
+        skipRequires: "markdown",
+      };
+    case "itemInfo":
+      // 「文献信息」内置项的通用替代(P3 退役后):模板变量拼一张信息卡。
+      return {
+        ...d,
+        ...both("customUi.template.itemInfo.label"),
+        icon: "eye",
+        actionType: "view",
+        viewTitle: "{{item.title}}",
+        viewBody: translate(locale, "customUi.template.itemInfo.body"),
       };
     case "cite":
       return {
@@ -243,6 +294,19 @@ function templateDraft(
       };
     case "runAutomation":
       return { ...d, ...both("customUi.template.runAutomation.label"), icon: "bolt", actionType: "automation" };
+    case "literatureImport":
+      // 文献导入(P2 的样板用法):选 PDF 或填 DOI,自动化那边"哪个有值办哪个"
+      //(提取文献信息 / DOI 下载都在自动化里,这里只是入口)。
+      return {
+        ...d,
+        ...both("customUi.template.literatureImport.label"),
+        icon: "download",
+        actionType: "automation",
+        inputs: [
+          { key: "files", kind: "files", labelZh: translate("zh", "customUi.template.literatureImport.files"), required: false },
+          { key: "doi", kind: "text", labelZh: translate("zh", "customUi.template.literatureImport.doi"), required: false },
+        ],
+      };
     case "readme":
       return { ...d, ...both("customUi.template.readme.label"), icon: "notebook", actionType: "file", filePath: "README.md" };
     case "dailyNote":
@@ -275,15 +339,18 @@ function templateDraft(
 const TEMPLATES_BY_SLOT: Record<CustomUiSlot, readonly { id: string; labelKey: MessageId }[]> = {
   "library.item": [
     { id: "transcribe", labelKey: "customUi.template.transcribe.label" },
+    { id: "itemInfo", labelKey: "customUi.template.itemInfo.label" },
     { id: "cite", labelKey: "customUi.template.cite.label" },
   ],
   "library.collection": [
     { id: "summarize", labelKey: "customUi.template.summarize.label" },
     { id: "transcribe", labelKey: "customUi.template.transcribe.label" },
+    { id: "literatureImport", labelKey: "customUi.template.literatureImport.label" },
   ],
   "library.subcategory": [
     { id: "summarize", labelKey: "customUi.template.summarize.label" },
     { id: "transcribe", labelKey: "customUi.template.transcribe.label" },
+    { id: "literatureImport", labelKey: "customUi.template.literatureImport.label" },
   ],
   "library.group": [{ id: "transcribe", labelKey: "customUi.template.transcribe.label" }],
   "files.context": [{ id: "copyPath", labelKey: "customUi.template.copyPath.label" }],
@@ -326,6 +393,16 @@ export function CustomUiPanel() {
   useEffect(() => setTemplateOpen(false), [slot]);
 
   const catalog = useRpc(() => api.modules.catalog(), [], { toastOnError: false });
+  // 失效徽标（B3）：自定义项引用的自动化被删后，列表要标出来，而不是点击才报错。
+  // 对齐模块平台的既有原则：「既有选择从目录消失时显示失效状态，不偷偷换成另一项」。
+  const workflowsAll = useRpc(() => api.workflow.list(), [], { toastOnError: false });
+  const automationMissing = (item: CustomUiItem | undefined): boolean => {
+    if (!item || item.action.type !== "automation") return false;
+    const list = workflowsAll.data?.workflows;
+    if (!list) return false; // 还没加载完 → 不误报
+    const wf = item.action.workflowId;
+    return !list.some((w) => w.id === wf && w.trigger !== undefined);
+  };
 
   const rows = useMemo<Row[]>(() => {
     const byKey = new Map<string, Row>();
@@ -450,6 +527,14 @@ export function CustomUiPanel() {
                     <span className="shrink-0 rounded border border-edge px-1.5 py-px text-[0.7143em] text-content-subtle">
                       {t(`customUi.source.${r.source}` as MessageId)}
                     </span>
+                    {automationMissing(r.item) && (
+                      <span
+                        className="shrink-0 rounded border border-danger/40 px-1.5 py-px text-[0.7143em] text-danger"
+                        title={t("customUi.entry.badgeMissingAutomationHint")}
+                      >
+                        {t("customUi.entry.badgeMissingAutomation")}
+                      </span>
+                    )}
                     <Button size="icon" variant="ghost" title={t("customUi.entry.moveUp")} disabled={i === 0} onClick={() => move(i, -1)}>
                       <IconArrowUp size={13} />
                     </Button>
@@ -587,6 +672,25 @@ function ItemEditor({
       {t("customUi.editor.vars")} {vars.map((v) => `{{${v}}}`).join("  ")}
     </p>
   );
+  // 模板变量 lint（B1）：打错的变量运行时会静默渲染成空串（那是对的——原样发给模型
+  // 会被当成要填的槽），所以「打错了」必须在这里点名。宽容运行、严格提示：不拦保存。
+  const unknownVars = useMemo(() => {
+    const parts =
+      draft.actionType === "view"
+        ? [draft.viewTitle, draft.viewBody]
+        : draft.actionType === "prompt"
+          ? [draft.promptTemplate]
+          : draft.actionType === "copy"
+            ? [draft.copyTemplate]
+            : draft.actionType === "file"
+              ? [draft.filePath]
+              : [];
+    const out: string[] = [];
+    for (const p of parts) {
+      for (const v of unknownTemplateVars(p, draft.slot)) if (!out.includes(v)) out.push(v);
+    }
+    return out;
+  }, [draft]);
 
   const submit = () => {
     const r = itemOf(draft);
@@ -811,6 +915,83 @@ function ItemEditor({
                 <p className="text-[0.7857em] leading-relaxed text-content-subtle">
                   {isWorkspace ? t("customUi.editor.automationHintToolbar") : t("customUi.editor.automationHint")}
                 </p>
+                {/* skipWhen v1(通用原语):展开时跳过满足条件的条目 —— 手动转录选
+                    「已有转录」即得"检测过再跑"。工具栏没有条目目标,不显示。 */}
+                {!isWorkspace && (
+                  <label className={LABEL}>
+                    <span>{t("customUi.editor.skipWhen")}</span>
+                    <select
+                      className={FIELD}
+                      value={draft.skipRequires}
+                      onChange={(e) => set("skipRequires", e.target.value as Draft["skipRequires"])}
+                    >
+                      <option value="">{t("customUi.editor.skipWhen.none")}</option>
+                      <option value="markdown">{t("customUi.editor.skipWhen.markdown")}</option>
+                      <option value="pdf">{t("customUi.editor.skipWhen.pdf")}</option>
+                      <option value="file">{t("customUi.editor.skipWhen.file")}</option>
+                    </select>
+                    <span className="text-[0.7857em] text-content-subtle">{t("customUi.editor.skipWhenHint")}</span>
+                  </label>
+                )}
+                {/* 运行前输入(P2):工具栏走 runNow、没有 input 通道 ⟹ 只在有目标的挂载位开放 */}
+                {!isWorkspace && (
+                  <div className={LABEL}>
+                    <span>{t("customUi.editor.inputs")}</span>
+                    {draft.inputs.map((row, idx) => (
+                      <div key={idx} className="flex items-center gap-2">
+                        <select
+                          className={cn(FIELD, "w-24 shrink-0")}
+                          value={row.kind}
+                          onChange={(e) =>
+                            set("inputs", draft.inputs.map((r, j) => (j === idx ? { ...r, kind: e.target.value as "text" | "files" } : r)))
+                          }
+                        >
+                          <option value="text">{t("customUi.editor.inputs.kindText")}</option>
+                          <option value="files">{t("customUi.editor.inputs.kindFiles")}</option>
+                        </select>
+                        <input
+                          className={cn(FIELD, "w-28 shrink-0 font-mono")}
+                          placeholder="key"
+                          value={row.key}
+                          onChange={(e) => set("inputs", draft.inputs.map((r, j) => (j === idx ? { ...r, key: e.target.value } : r)))}
+                          spellCheck={false}
+                        />
+                        <input
+                          className={cn(FIELD, "min-w-0 flex-1")}
+                          placeholder={t("customUi.editor.inputs.labelPh")}
+                          value={row.labelZh}
+                          onChange={(e) => set("inputs", draft.inputs.map((r, j) => (j === idx ? { ...r, labelZh: e.target.value } : r)))}
+                        />
+                        <label className="flex shrink-0 items-center gap-1 text-xs text-content">
+                          <input
+                            type="checkbox"
+                            checked={row.required}
+                            onChange={(e) => set("inputs", draft.inputs.map((r, j) => (j === idx ? { ...r, required: e.target.checked } : r)))}
+                          />
+                          {t("customUi.editor.inputs.required")}
+                        </label>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          title={t("customUi.entry.delete")}
+                          onClick={() => set("inputs", draft.inputs.filter((_r, j) => j !== idx))}
+                        >
+                          <IconTrash size={13} />
+                        </Button>
+                      </div>
+                    ))}
+                    {draft.inputs.length < 4 && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => set("inputs", [...draft.inputs, { key: "", kind: "text" as const, labelZh: "", required: false }])}
+                      >
+                        {t("customUi.editor.inputs.add")}
+                      </Button>
+                    )}
+                    <span className="text-[0.7857em] text-content-subtle">{t("customUi.editor.inputsHint")}</span>
+                  </div>
+                )}
               </>
             )}
             {draft.actionType === "file" && (
@@ -848,6 +1029,12 @@ function ItemEditor({
               </label>
             )}
           </fieldset>
+
+          {unknownVars.length > 0 && (
+            <p className="text-[0.7857em] leading-relaxed text-warning" data-testid="custom-ui-unknown-vars">
+              {t("customUi.editor.unknownVars", { vars: unknownVars.map((v) => `{{${v}}}`).join("  ") })}
+            </p>
+          )}
 
           <div className="flex justify-end gap-2">
             <Button size="md" variant="ghost" onClick={onCancel}>

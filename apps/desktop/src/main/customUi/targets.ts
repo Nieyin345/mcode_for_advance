@@ -3,6 +3,7 @@
  * (见 `scripts/custom-ui-smoke`)。调用方是同目录的 `runAutomation.ts`。
  */
 import { resolve, sep } from "node:path";
+import { matchesWhen, type CustomUiWhen } from "@contracts/customUi";
 import type { LibraryCollection, LibraryItem } from "@contracts/library";
 
 /** 一条条目的载荷事实(与 `emitItemImported` 同形)。 */
@@ -15,6 +16,26 @@ export function itemFactsOf(item: LibraryItem): ItemFacts {
     ...(item.pdfPath ? { pdfPath: item.pdfPath } : {}),
     ...(item.filePath ? { filePath: item.filePath } : {}),
   };
+}
+
+/**
+ * 这一条条目要不要被 `skipWhen` 跳过(automation 动作的批量过滤,见
+ * `@contracts/customUi`)。**满足条件 = 跳过**:手动转录配 `{ requires: "markdown" }`
+ * 时,已有转录的条目在这里被滤掉。复用 `matchesWhen` —— 菜单显隐与批量过滤是
+ * 同一套条件语义,不另造一份。
+ */
+export function shouldSkipItem(item: LibraryItem, skipWhen: CustomUiWhen | undefined): boolean {
+  if (!skipWhen) return false;
+  return matchesWhen(skipWhen, {
+    kind: "item",
+    item: {
+      id: item.id,
+      title: item.title,
+      ...(item.pdfPath ? { pdfPath: item.pdfPath } : {}),
+      ...(item.mdPath ? { mdPath: item.mdPath } : {}),
+      ...(item.filePath ? { filePath: item.filePath } : {}),
+    },
+  });
 }
 
 /**
