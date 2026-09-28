@@ -130,6 +130,16 @@ function stagedDirFor(id: string, tag: string): string {
  * 返回的是**去重后的、原样的引用串**(不在这里解码、不在这里拼绝对路径)—— 解码与
  * 越界判断在 {@link copyReferencedAssets} 里做,那边才知道源目录是谁。
  */
+/** 去掉 `#片段` / `?查询` 再做百分号解码。转义不合法时按原文返回(md 是数据)。 */
+function decodeRefPath(ref: string): string {
+  const raw = ref.split(/[?#]/)[0] ?? "";
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 function assetRefsOf(mdText: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -199,8 +209,13 @@ function copyReferencedAssets(
   let imageCount = 0;
 
   for (const ref of assetRefsOf(mdText)) {
-    // 引用可能带 `#片段` 或 `?查询`,查文件时要去掉
-    const clean = decodeURIComponent(ref.split(/[?#]/)[0] ?? "");
+    // 引用可能带 `#片段` 或 `?查询`,查文件时要去掉。
+    //
+    // ⚠️ `decodeURIComponent` 对**不合法的百分号转义**(`images/100%.png`、单个 `%`)
+    // 抛 URIError。md 的内容是数据,不是可信指令 —— 一处坏转义不该把**整份产物**的
+    // 采纳掀掉(外层 catch 会把它变成"采纳失败",正文都换不上去)。按原文用,交给下面
+    // 的 `missing` 报出去。
+    const clean = decodeRefPath(ref);
     if (clean.length === 0) continue;
     const abs = resolve(sourceDir, ...clean.split("/"));
 
