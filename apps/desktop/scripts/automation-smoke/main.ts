@@ -43,6 +43,7 @@ import {
   NODE_TRIGGER_CRON_PARAM_KEY,
   NODE_TRIGGER_DEBOUNCE_PARAM_KEY,
   NODE_TRIGGER_ENABLED_PARAM_KEY,
+  NODE_TRIGGER_EXCLUDE_PATHS_PARAM_KEY,
   NODE_TRIGGER_EVENTS_PARAM_KEY,
   NODE_TRIGGER_KIND_PARAM_KEY,
   NODE_TRIGGER_PATHS_PARAM_KEY,
@@ -406,6 +407,18 @@ console.log("\nparseTriggerSpec · 四种触发方式");
     "文件变化解得过,glob 是两枚",
     file.ok && file.spec.kind === "file" && file.spec.globs.join("|") === "*.md|src/*.ts",
     file,
+  );
+  const fileWithExcludes = parseTriggerSpec(TRIGGER, {
+    ...base,
+    triggerKind: "file",
+    paths: "*.md",
+    [NODE_TRIGGER_EXCLUDE_PATHS_PARAM_KEY]: "generated/**, dist/**",
+  });
+  check(
+    "文件变化可选排除 glob 会被解析并保留",
+    fileWithExcludes.ok && fileWithExcludes.spec.kind === "file" &&
+      fileWithExcludes.spec.excludeGlobs.join("|") === "generated/**|dist/**",
+    fileWithExcludes,
   );
   check(
     "合并窗口默认 2000ms",
@@ -1379,9 +1392,10 @@ console.log("\ntriggerSpecKeyOf · 攒着的触发要认得出「这条配置已
   // 改了事件名的**不会**被丢掉,于是几秒后它按**旧条件**起一次运行(旧条件正是用户
   // 刚改掉的东西)。签名就是拿来认这个的。
 
-  const fileSpec = (globs: string[], debounceMs = DEFAULT_TRIGGER_DEBOUNCE_MS): TriggerSpec => ({
+  const fileSpec = (globs: string[], debounceMs = DEFAULT_TRIGGER_DEBOUNCE_MS): Extract<TriggerSpec, { kind: "file" }> => ({
     kind: "file",
     globs,
+    excludeGlobs: [],
     debounceMs,
   });
   const key = triggerSpecKeyOf(fileSpec(["src/*.ts"]));
@@ -1397,6 +1411,10 @@ console.log("\ntriggerSpecKeyOf · 攒着的触发要认得出「这条配置已
   check("顺序变了签名也变(重跑一遍不吃亏)", triggerSpecKeyOf(fileSpec(["a", "b"])) !== triggerSpecKeyOf(fileSpec(["b", "a"])));
   // 合并窗口也是配置的一部分:从 2000 改成 0 是用户在说"别等,每次都跑"。
   check("合并窗口变了签名也变", triggerSpecKeyOf(fileSpec(["src/*.ts"], 0)) !== key);
+  check(
+    "改了排除 glob 签名也变",
+    triggerSpecKeyOf({ ...fileSpec(["src/*.ts"]), excludeGlobs: ["generated/**"] }) !== key,
+  );
 
   // 分隔符不能靠逗号:glob 里本来就有逗号(`a,b` 是"任意一个"的写法见 `splitGlobList`)。
   // 用逗号拼的话 `["a","b"]` 与 `["a,b"]` 会撞成同一个签名 —— 那一改就成了**漏判**。
@@ -2162,6 +2180,7 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
       params: {
         [NODE_TRIGGER_KIND_PARAM_KEY]: "file",
         [NODE_TRIGGER_PATHS_PARAM_KEY]: "*.md",
+        [NODE_TRIGGER_EXCLUDE_PATHS_PARAM_KEY]: "automation-generated.md",
         // 合并窗口压到最小,免得断言要等两秒。
         [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0,
         task: "有文件变了就看看",
@@ -2184,6 +2203,15 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     // + 这条触发器的 `debounceMs`(这里写 0)。
     await sleep(FLUSH_SLACK_MS);
     eq("而且不会攒出一次空载荷的运行", runsOfNode(nodeId).length, 0);
+
+    // 有明确排除配置的自动化产物不触发自己；普通匹配文件仍应照常触发。
+    const generated = join(PROJ_DIR, "automation-generated.md");
+    writeFileSync(generated, "# 自动化产物");
+    runner.onFsChange(PROJ_DIR, "automation-generated.md");
+    eq("命中排除 glob 的自动化产物不进入待触发队列", runner.pendingFires.get(pendingKey)?.files.length ?? 0, 0);
+    await sleep(FLUSH_SLACK_MS);
+    eq("排除的自动化产物不派发运行", runsOfNode(nodeId).length, 0);
+    resetRuns();
 
     // 对照:真新建的文件照常攒(别把闸门关过头)。
     const real = join(PROJ_DIR, "brand-new.md");

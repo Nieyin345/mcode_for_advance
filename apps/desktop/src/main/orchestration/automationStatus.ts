@@ -116,7 +116,7 @@ export function shouldFireThisMinute(last: number | undefined, minute: number): 
   return last !== minute;
 }
 
-/** 签名里两个集合的分隔符(见下面那段)。写成转义序列 —— 它在编辑器里看不见。 */
+/** 事件集合签名的分隔符(见下面那段)。写成转义序列 —— 它在编辑器里看不见。 */
 const SEP = "\u0000";
 
 /**
@@ -128,13 +128,13 @@ const SEP = "\u0000";
  * "触发器没了"的那些 —— 改了 glob / 改了事件名的**没被丢掉**,于是几秒后它按**旧条件**
  * 起一次运行,而旧条件正是用户刚刚改掉的东西。
  *
- * 签名只取**参与判定的那几项**(cron 文本、glob 集合、事件集合、matcher、合并窗口),
+ * 签名只取**参与判定的那几项**(cron 文本、文件 include/exclude glob 集合、事件集合、matcher、合并窗口),
  * 不掺别的。`manual` 没有参数,所以是常量。
  *
- * ⚠️ **两个集合用 `NUL` 拼**(下面写成转义序列,因为那个字符在编辑器里看不见)。不能用
- * 逗号:glob 本身就允许逗号(`"a,b"` 是"任意一个"),逗号拼的话 `["a","b"]` 与 `["a,b"]`
- * 会撞成同一个签名 —— 那就成了**漏判**,而漏判的后果正是这个函数要防的那件事。
- * `automation-smoke` 有一条断言专门盯这个;改分隔符前先看它。
+ * 文件 glob 集合用 JSON 数组保留 include/exclude 的边界;事件集合用 `NUL`(下面写成转义
+ * 序列,因为那个字符在编辑器里看不见)。不能用逗号:glob 本身就允许逗号(`"a,b"` 是
+ * "任意一个"),逗号拼的话 `["a","b"]` 与 `["a,b"]` 会撞成同一个签名 —— 那就成了
+ * **漏判**,而漏判的后果正是这个函数要防的那件事。`automation-smoke` 有断言专门盯住。
  */
 export function triggerSpecKeyOf(spec: TriggerSpec): string {
   switch (spec.kind) {
@@ -143,7 +143,9 @@ export function triggerSpecKeyOf(spec: TriggerSpec): string {
     case "schedule":
       return `schedule:${spec.cron.text}`;
     case "file":
-      return `file:${spec.globs.join(SEP)}:${spec.debounceMs}`;
+      // JSON keeps the include/exclude sets and their boundary unambiguous, even
+      // when a glob itself contains punctuation used by the old signature format.
+      return `file:${JSON.stringify([spec.globs, spec.excludeGlobs, spec.debounceMs])}`;
     case "event":
       return `event:${spec.events.join(SEP)}:${spec.matcher}:${spec.debounceMs}`;
   }

@@ -81,6 +81,7 @@ import {
   NODE_TRIGGER_CRON_PARAM_KEY,
   NODE_TRIGGER_DEBOUNCE_PARAM_KEY,
   NODE_TRIGGER_ENABLED_PARAM_KEY,
+  NODE_TRIGGER_EXCLUDE_PATHS_PARAM_KEY,
   NODE_TRIGGER_EVENTS_PARAM_KEY,
   NODE_TRIGGER_FILTER_PARAM_KEY,
   NODE_TRIGGER_KIND_PARAM_KEY,
@@ -936,6 +937,12 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
         kind: "text",
         label: "监听哪些文件",
         help: "仅在「文件变化」时生效。逗号分隔,相对项目目录,支持 `*`(如 `*.md, src/**/*.ts`)。",
+      },
+      {
+        key: NODE_TRIGGER_EXCLUDE_PATHS_PARAM_KEY,
+        kind: "text",
+        label: "排除哪些文件",
+        help: "可选。仅在「文件变化」时生效。逗号分隔,相对项目目录,支持 `*`(如 `dist/**, generated/**`)；匹配的文件变化不会触发。",
       },
       {
         key: NODE_TRIGGER_EVENTS_PARAM_KEY,

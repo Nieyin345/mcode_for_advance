@@ -749,6 +749,9 @@ class AutomationRunner {
       // 用户写下的是 `src/*.ts` 还是 `*.ts`,两种都有)。
       const subjects = fileSubjects([abs], trigger.cwd);
       if (!trigger.spec.globs.some((glob) => subjects.some((s) => matchesGlobList(glob, s)))) continue;
+      // 可选排除规则也用同一组绝对/相对主语与 glob 语义。只排除明确命中的路径
+      // (平台不给文件名时,按上面的约定只拿目录本身来匹配);不按"自动化正在运行"一概吞事件。
+      if (trigger.spec.excludeGlobs.some((glob) => subjects.some((s) => matchesGlobList(glob, s)))) continue;
       // **删掉的文件不进载荷**(问题 2,取舍见 `existingFilesOf`)。`fs.watch` 的 `rename`
       // 事件同时覆盖新建与删除,而这里**从前不区分** —— 于是删掉的路径也会进去,模型去读
       // 一个不存在的文件。

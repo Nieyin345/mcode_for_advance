@@ -165,6 +165,8 @@ export const NODE_TRIGGER_TASK_PARAM_KEY = "task";
 export const NODE_TRIGGER_CRON_PARAM_KEY = "cron";
 /** 只在「文件变化」时生效:逗号分隔的 glob,相对项目目录。 */
 export const NODE_TRIGGER_PATHS_PARAM_KEY = "paths";
+/** 文件变化的可选排除规则:逗号分隔的 glob,相对项目目录。 */
+export const NODE_TRIGGER_EXCLUDE_PATHS_PARAM_KEY = "excludePaths";
 /** 只在「事件发生时」生效:逗号分隔,取值来自 `@contracts/hook` 的 `HOOK_EVENTS`。 */
 export const NODE_TRIGGER_EVENTS_PARAM_KEY = "events";
 /** 事件触发时的进一步筛选(工具名 / 文件路径,glob,规则同钩子)。 */
@@ -319,7 +321,7 @@ export const DEFAULT_TRIGGER_DEBOUNCE_MS = 2000;
 export type TriggerSpec =
   | { kind: "manual" }
   | { kind: "schedule"; cron: CronSpec }
-  | { kind: "file"; globs: string[]; debounceMs: number }
+  | { kind: "file"; globs: string[]; excludeGlobs: string[]; debounceMs: number }
   | { kind: "event"; events: HookEvent[]; matcher: string; debounceMs: number };
 
 /** 一次触发条件的解读结果。**存盘与执行器共用这一份判定**(见 `parseTriggerSpec`)。 */
@@ -393,7 +395,8 @@ export function parseTriggerSpec(
     if (globs.length === 0) {
       return { ok: false, error: "触发方式是「文件变化」,但没写监听哪些文件 —— 逗号分隔,例如 `*.md, src/*.ts`" };
     }
-    return { ok: true, spec: { kind: "file", globs, debounceMs: debounce.value } };
+    const excludeGlobs = patternListOf(params[NODE_TRIGGER_EXCLUDE_PATHS_PARAM_KEY]);
+    return { ok: true, spec: { kind: "file", globs, excludeGlobs, debounceMs: debounce.value } };
   }
 
   const names = patternListOf(params[NODE_TRIGGER_EVENTS_PARAM_KEY]);

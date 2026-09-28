@@ -1152,6 +1152,10 @@ export const en = {
   "settings.automation.trigger.file": "On file changes",
   "settings.automation.trigger.event": "On an event",
   "settings.automation.trigger.webhook": "On a webhook",
+  "settings.automation.trigger.filePaths": "Files to watch",
+  "settings.automation.trigger.filePathsHelp": "Comma-separated globs relative to the project directory; supports `*` (for example, `*.md, src/**/*.ts`).",
+  "settings.automation.trigger.excludePaths": "Files to exclude",
+  "settings.automation.trigger.excludePathsHelp": "Optional. Comma-separated globs relative to the project directory; matching file changes will not trigger the automation (for example, `dist/**, generated/**`).",
   // The parameters live on the trigger node (see `TriggerSpec` in `@contracts/nodeType`),
   // so these say what makes it fire; what to fill in is on that node's parameter panel.
   "settings.automation.triggerHint.manual": "Runs only when you press Run once now.",

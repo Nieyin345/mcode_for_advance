@@ -1148,6 +1148,10 @@ export const zh = {
   "settings.automation.trigger.file": "文件变化",
   "settings.automation.trigger.event": "事件",
   "settings.automation.trigger.webhook": "Webhook",
+  "settings.automation.trigger.filePaths": "监听哪些文件",
+  "settings.automation.trigger.filePathsHelp": "相对项目目录的 glob,逗号分隔,支持 `*`(如 `*.md, src/**/*.ts`)。",
+  "settings.automation.trigger.excludePaths": "排除哪些文件",
+  "settings.automation.trigger.excludePathsHelp": "可选。相对项目目录的 glob,逗号分隔,支持 `*`(如 `dist/**, generated/**`)；匹配的文件变化不会触发。",
   // 触发方式的**参数在触发器节点上**（见 `@contracts/nodeType` 的 `TriggerSpec`），所以
   // 这几句说的是"它按什么响"，具体要填的东西在画布上那一格的参数面板里。
   "settings.automation.triggerHint.manual": "只有你按「立刻运行一次」的时候才跑。",

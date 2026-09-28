@@ -1,7 +1,8 @@
 import {
   NODE_DECIDER_KEY, NODE_INJECT_MODE_KEY, NODE_INJECT_TARGET_KEY, NODE_RETURN_PARAM_KEY,
   NODE_TRIGGER_ENABLED_PARAM_KEY, NODE_TRIGGER_KIND_PARAM_KEY, NODE_TRIGGER_PROJECT_PARAM_KEY,
-  NODE_TRIGGER_CRON_PARAM_KEY, NODE_TRIGGER_PATHS_PARAM_KEY, NODE_TRIGGER_EVENTS_PARAM_KEY,
+  NODE_TRIGGER_CRON_PARAM_KEY, NODE_TRIGGER_PATHS_PARAM_KEY, NODE_TRIGGER_EXCLUDE_PATHS_PARAM_KEY,
+  NODE_TRIGGER_EVENTS_PARAM_KEY, TRIGGER_NODE_TYPE_ID,
   NODE_TRIGGER_FILTER_PARAM_KEY, NODE_TRIGGER_DEBOUNCE_PARAM_KEY,
   deciderOf, injectModeOf, injectTargetOf, returnModeOf, triggerEnabledOf,
   type NodeTypeCatalog, type NodeTypeEntry, type NodeParamSpec,
@@ -24,6 +25,7 @@ export function visibleNodeParams(node: WorkflowNode, entry: NodeTypeEntry): Nod
   const kind = node.params[NODE_TRIGGER_KIND_PARAM_KEY];
   const only: Record<string, readonly string[]> = {
     [NODE_TRIGGER_CRON_PARAM_KEY]: ["schedule"], [NODE_TRIGGER_PATHS_PARAM_KEY]: ["file"],
+    [NODE_TRIGGER_EXCLUDE_PATHS_PARAM_KEY]: ["file"],
     [NODE_TRIGGER_EVENTS_PARAM_KEY]: ["event"], [NODE_TRIGGER_FILTER_PARAM_KEY]: ["event"],
     [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: ["file", "event"],
   };
@@ -46,6 +48,10 @@ export function displayedParam(node: WorkflowNode, spec: NodeParamSpec): unknown
 
 /** Built-in UI metadata only: user/plugin text and executable configuration are untouched. */
 export function localizeWorkflowCatalog(catalog: NodeTypeCatalog, t: Translate): NodeTypeCatalog {
+  const fileTriggerLabels: Record<string, [MessageId, MessageId]> = {
+    [NODE_TRIGGER_PATHS_PARAM_KEY]: ["settings.automation.trigger.filePaths", "settings.automation.trigger.filePathsHelp"],
+    [NODE_TRIGGER_EXCLUDE_PATHS_PARAM_KEY]: ["settings.automation.trigger.excludePaths", "settings.automation.trigger.excludePathsHelp"],
+  };
   const labels: Record<string, [MessageId, MessageId]> = {
     language: ["settings.workflows.code.language", "settings.workflows.code.languageHelp"],
     code: ["settings.workflows.code.source", "settings.workflows.code.sourceHelp"],
@@ -53,6 +59,13 @@ export function localizeWorkflowCatalog(catalog: NodeTypeCatalog, t: Translate):
     timeoutMs: ["settings.workflows.code.timeout", "settings.workflows.code.timeoutHelp"],
   };
   return { ...catalog, entries: catalog.entries.map(entry => {
+    if (entry.id === TRIGGER_NODE_TYPE_ID && entry.source === "builtin") {
+      return { ...entry, manifest: { ...entry.manifest,
+        params: entry.manifest.params.map(spec => Object.hasOwn(fileTriggerLabels, spec.key) ? {
+          ...spec, label: t(fileTriggerLabels[spec.key][0]), help: t(fileTriggerLabels[spec.key][1]),
+        } : spec),
+      } };
+    }
     if (entry.id !== "mcode.code" || entry.source !== "builtin") return entry;
     return { ...entry, manifest: { ...entry.manifest,
       name: t("settings.workflows.code.name"), description: t("settings.workflows.code.description"),
