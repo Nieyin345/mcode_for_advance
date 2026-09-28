@@ -114,9 +114,18 @@ function stagedDirFor(id: string, tag: string): string {
 /**
  * 从 md 正文里挑出**它实际引用的相对资源路径**。
  *
- * 只认 `![](…)` 这一种写法:`![]()` 是 Markdown 里引图的唯一标准语法,而转录工具的
- * 产物就是标准 Markdown。`http(s):` / `data:` / 协议相对(`//`)一律跳过 —— 那些不是
- * "这份产物带的图",去下载它们既慢又可能失败,而且库外的东西不该被拷进来。
+ * 三种写法都认,因为**用户手上那份 md 不一定出自哪个工具**:
+ *
+ *  - 行内式 `![](images/x.png)`,以及链接目标用尖括号包起来的 `![](<a b.png>)`;
+ *  - 引用式 `![图1][fig1]` / `![fig1][]` / `![fig1]` 配底下的 `[fig1]: images/x.png`
+ *    (Pandoc、Typora 导出常见);
+ *  - 裸 HTML `<img src="images/x.png" width="600">`(要控制宽度时几乎只能这么写)。
+ *
+ * ⚠️ 早先这里**只认行内式**。后两种写法的图既不搬、也不进 `missing` —— 用户得到一份
+ * 断图的包,而软件一声不吭。这与本文件"不静默丢"的原则相悖,所以补齐。
+ *
+ * `http(s):` / `data:` / `file:` / 协议相对(`//`)一律跳过 —— 那些不是"这份产物带的
+ * 图",去下载它们既慢又可能失败,而且库外的东西不该被拷进来。
  *
  * 返回的是**去重后的、原样的引用串**(不在这里解码、不在这里拼绝对路径)—— 解码与
  * 越界判断在 {@link copyReferencedAssets} 里做,那边才知道源目录是谁。
@@ -124,19 +133,49 @@ function stagedDirFor(id: string, tag: string): string {
 function assetRefsOf(mdText: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
-  for (const m of mdText.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
-    const raw = (m[1] ?? "").trim();
-    if (raw.length === 0) continue;
-    // 去掉 `"标题"` 那种可选的 title 部分:`![](a.png "说明")`
-    const ref = raw.split(/\s+/)[0] ?? "";
-    if (ref.length === 0) continue;
-    if (/^(https?:|data:|blob:|\/\/)/i.test(ref)) continue;
+  const push = (candidate: string): void => {
+    let ref = (candidate ?? "").trim();
+    // `![](<图 1.png>)`:尖括号是 Markdown 里给带空格的路径用的,不属于路径本身
+    if (ref.startsWith("<") && ref.endsWith(">")) ref = ref.slice(1, -1).trim();
+    if (ref.length === 0) return;
+    if (/^(https?:|data:|blob:|file:|\/\/)/i.test(ref)) return;
     // 纯锚点(`#fig1`)不是文件
-    if (ref.startsWith("#")) continue;
-    if (seen.has(ref)) continue;
+    if (ref.startsWith("#")) return;
+    if (seen.has(ref)) return;
     seen.add(ref);
     out.push(ref);
+  };
+
+  // 1)行内式 `![](a.png "说明")` / `![](<a b.png> "说明")`
+  for (const m of mdText.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
+    const raw = (m[1] ?? "").trim();
+    // 去掉 `"标题"` 那种可选的 title 部分;尖括号形式里空格是合法的,不能按空白切
+    push(raw.startsWith("<") ? (raw.match(/^<([^>]*)>/)?.[1] ?? "") : (raw.split(/\s+/)[0] ?? ""));
   }
+
+  // 2)引用式:先收集 `[标签]: 路径 "标题"` 定义(标签**不区分大小写**,按 CommonMark),
+  //    再把 `![alt][标签]`、`![标签][]`、`![标签]` 三种形态解析过去。解析不到定义的
+  //    就不是图片引用(多半只是正文里的方括号),不猜。
+  const labels = new Map<string, string>();
+  for (const m of mdText.matchAll(/^[ \t]{0,3}\[([^\]]+)\]:[ \t]*(\S+)/gm)) {
+    const label = (m[1] ?? "").trim().toLowerCase();
+    if (label.length > 0 && !labels.has(label)) labels.set(label, m[2] ?? "");
+  }
+  if (labels.size > 0) {
+    // `(?!\()` 把行内式排除掉 —— 那一种上面已经处理过了
+    for (const m of mdText.matchAll(/!\[([^\]]*)\](?:\[([^\]]*)\])?(?!\()/g)) {
+      const explicit = (m[2] ?? "").trim();
+      const label = (explicit.length > 0 ? explicit : (m[1] ?? "").trim()).toLowerCase();
+      const target = labels.get(label);
+      if (target) push(target);
+    }
+  }
+
+  // 3)裸 HTML `<img src=…>`(引号可有可无,属性顺序不限)
+  for (const m of mdText.matchAll(/<img\b[^>]*?\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)) {
+    push(m[1] ?? m[2] ?? m[3] ?? "");
+  }
+
   return out;
 }
 
