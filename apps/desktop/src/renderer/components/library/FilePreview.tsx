@@ -18,7 +18,7 @@
  * files 列表。base64 在这里就地转回字节喂给那几个预览组件,它们的 props 形状
  *(`data: Uint8Array`)不动。
  */
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LibraryItem } from "@contracts/library";
 import type { LibraryFileContent } from "@contracts/ipc";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -34,9 +34,9 @@ import { IconArrowLeft, IconFile, IconFolder, IconLoader2 } from "@renderer/lib/
 import { DocxPreview } from "@renderer/components/templates/DocxPreview.js";
 import { PptxPreview } from "@renderer/components/templates/PptxPreview.js";
 import { XlsxPreview } from "@renderer/components/templates/XlsxPreview.js";
-
-// The PDF engine (EmbedPDF + pdfium glue, >1MB) loads only when a PDF is shown.
-const PdfPreview = lazy(() => import("./PdfPreview.js").then((m) => ({ default: m.PdfPreview })));
+// PdfPreview is itself a lazy shell: the PDF engine (EmbedPDF + pdfium glue,
+// >1MB) loads only when a PDF is actually shown (see PdfPreview.tsx).
+import { PdfPreview } from "./PdfPreview.js";
 
 /** 取路径的扩展名(斜杠两种都认;无扩展名返回空串)。 */
 function extOf(path: string): string {
@@ -323,11 +323,7 @@ export function FilePreview({
       // 目录条目的 entryPath 是目录本身；读的是 relPath 指向的子 PDF，
       // 保存/外部打开也必须指向同一份子文件，否则写入会落到目录上。
       const filePath = pdfPath ? (relPath ? joinPath(pdfPath, relPath) : pdfPath) : undefined;
-      return (
-        <Suspense fallback={null}>
-          <PdfPreview item={item} bytes={bytes} {...(filePath ? { filePath } : {})} />
-        </Suspense>
-      );
+      return <PdfPreview item={item} bytes={bytes} {...(filePath ? { filePath } : {})} />;
     }
     if (content.mime.includes("wordprocessingml") || ext === "docx" || ext === "dotx") {
       // 失败路径上的「系统程序打开」对库条目没有现成 IPC,先留空 —— 渲染成功才是常态
