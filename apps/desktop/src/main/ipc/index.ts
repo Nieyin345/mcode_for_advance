@@ -1,3 +1,4 @@
+import { registerProjectInitHandlers } from "./projectInit.js";
 import { registerModuleHandlers } from "./modules.js";
 import { registerMemoryAssistantHandlers } from "./memoryAssistant.js";
 import { ipcMain, type IpcMain } from "electron";
@@ -100,6 +101,7 @@ export function registerIpcHandlers(): void {
   registerInstitutionAuthHandlers(ipc);
   registerOnlyOfficeHandlers(ipc);
   registerMemoryHandlers(ipc);
+  registerProjectInitHandlers(ipc);
   registerMemoryAssistantHandlers(ipc);
   registerMonitoringHandlers(ipc);
 }

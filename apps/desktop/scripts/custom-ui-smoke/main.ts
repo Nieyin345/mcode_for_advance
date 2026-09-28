@@ -458,8 +458,20 @@ check("RunAutomation 输入接受 input 值表", CustomUiRunAutomationSchema.saf
     [{ id: "w1", name: "普通自动化", hasTrigger: true }],
     [{ workflowId: "w1", nodeId: "t", title: "触发器", kind: "event" }],
   );
-  check("只有 event 自动化 → 转录建、导入缺", r.items.some((i) => i.id === "seed-transcribe")
+  check("无关 event 自动化不能误绑成转录", !r.items.some((i) => i.id === "seed-transcribe")
     && !r.items.some((i) => i.id === "seed-lit-import") && r.notes.some((n) => n.kind === "missingImport"), r);
+}
+
+{
+  for (const name of ["Markdown 转录", "DOI 下载"]) {
+    const r = buildDefaultLibraryItems(
+      [{ id: "a", name, hasTrigger: true }, { id: "b", name, hasTrigger: true }],
+      [{ workflowId: "a", nodeId: "t", title: name, kind: "event" }, { workflowId: "b", nodeId: "t", title: name, kind: "event" }],
+    );
+    check("歧义候选不自动绑定: " + name, r.items.length === 1, r);
+  }
+  const stale = buildDefaultLibraryItems([], [{workflowId:"gone",nodeId:"t",title:"Markdown DOI",kind:"event"}]);
+  check("已删除工作流的触发器不能预置", stale.items.length === 1, stale);
 }
 
 /* ── 文献导入:载荷 → 脚本 → importFiles 这道缝(2026-09-28)──

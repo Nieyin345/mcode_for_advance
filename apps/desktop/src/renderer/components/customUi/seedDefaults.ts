@@ -6,7 +6,7 @@
  *
  *   - **转录**:`kind === "event"` 的触发器(库事件自动化的结构特征,与
  *     `runWithTarget` 的事件同形假设一致);多条时优先名字像转录的
- *     (转录/markdown/mineru),再退到第一条。绑了哪条写进 `notes`,toast 打印。
+ *     (转录/markdown/mineru)，且必须只有一个候选；不猜测无关或歧义绑定。
  *   - **文献导入**:名字含 下载/download/doi 的任意触发器 —— 没有结构特征可依,
  *     只认名字;认不出**如实说缺**,不瞎绑。
  *
@@ -77,9 +77,9 @@ export function buildDefaultLibraryItems(
   });
 
   // 2) 转录(手动兜漏 + 分类/小类批量,全部带 skipWhen: 已有转录跳过)。
-  const events = triggers.filter((t) => t.kind === "event");
-  const transcribe =
-    events.find((t) => RE_TRANSCRIBE.test(t.title) || RE_TRANSCRIBE.test(nameOf(t.workflowId))) ?? events[0];
+  const eligible = triggers.filter(t => workflows.some(w => w.id === t.workflowId && w.hasTrigger));
+  const candidates = eligible.filter(t => t.kind === "event" && (RE_TRANSCRIBE.test(t.title) || RE_TRANSCRIBE.test(nameOf(t.workflowId))));
+  const transcribe = candidates.length === 1 ? candidates[0] : undefined;
   if (transcribe !== undefined) {
     const bind = { workflowId: transcribe.workflowId, triggerNodeId: transcribe.nodeId } as const;
     const skip = { skipWhen: { requires: "markdown" as const } };
@@ -110,9 +110,10 @@ export function buildDefaultLibraryItems(
   }
 
   // 3) 文献导入(选 PDF / 填 DOI → 下载自动化)。
-  const download = triggers.find(
+  const downloads = eligible.filter(
     (t) => RE_DOWNLOAD.test(t.title) || RE_DOWNLOAD.test(nameOf(t.workflowId)),
   );
+  const download = downloads.length === 1 ? downloads[0] : undefined;
   if (download !== undefined) {
     const bind = { workflowId: download.workflowId, triggerNodeId: download.nodeId } as const;
     const inputs = [

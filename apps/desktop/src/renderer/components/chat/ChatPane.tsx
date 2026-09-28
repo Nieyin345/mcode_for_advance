@@ -1,3 +1,4 @@
+import { useProjectInitializer } from "./useProjectInitializer.js";
 import { useState, useRef, useEffect, useMemo, memo, useCallback } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import {
@@ -1557,8 +1558,25 @@ function ChatPaneForSession({
    *  - `sidechat`: pure navigation — open the right-panel quick-ask tab. No
    *    prompt is inserted; deliberately NOT gated on sessionBusy, since asking
    *    beside a RUNNING turn is the feature's whole point. */
+  const projectInitializer = useProjectInitializer({
+    sessionId,
+    busy: isRunning || hasRunningSubagents,
+    menuOpen: pickerKind === "slash",
+    snapshot: () => {
+      const current = editorRef.current?.serialize();
+      return { text: current?.text ?? value, attached: tags.length > 0 || pendingImages.length > 0 || (current?.skillNames.length ?? 0) > 0 };
+    },
+    clear: () => { editorRef.current?.clear(); setValue(""); },
+  });
+
   const handleBuiltInPick = useCallback(
     (cmd: BuiltInCommand) => {
+      if (cmd.kind === "project-init") {
+        // Only remove the slash trigger, never the rest of the user's draft.
+        setPickerKind(null);
+        if (projectInitializer.start(cmd.name)) clearTriggerToken();
+        return;
+      }
       if (cmd.kind === "compact") {
         // Refuse while a turn is in flight; the agent can't process a second
         // prompt concurrently and compact mid-turn is undefined.
@@ -1615,7 +1633,7 @@ function ChatPaneForSession({
       // Refresh the mirrored text so empty-state / enqueue stay in sync.
       setValue(editorRef.current.getTextWithSkills());
     },
-    [sessionBusy, clearTriggerToken, sendPrompt, t, sessionId, openSideChatPanel],
+    [sessionBusy, clearTriggerToken, sendPrompt, t, sessionId, openSideChatPanel, projectInitializer.start],
   );
 
   /**
@@ -2053,6 +2071,7 @@ function ChatPaneForSession({
       skillNames: [],
     };
     const text = editorText.trim();
+    if (projectInitializer.intercept(text, tags.length > 0 || pendingImages.length > 0 || skillNames.length > 0)) return;
     // Nothing to send if the editor, tag list, and staged images are all empty.
     if (!text && tags.length === 0 && pendingImages.length === 0) return;
     // 注:文献检索模式以前在这里**短路**(不进模型,直接调 Crossref/arXiv → 入库 →
@@ -2110,6 +2129,7 @@ function ChatPaneForSession({
       skillNames: [],
     };
     const text = editorText.trim();
+    if (projectInitializer.intercept(text, tags.length > 0 || pendingImages.length > 0 || skillNames.length > 0)) return;
     if (!text && tags.length === 0 && pendingImages.length === 0) return;
     // Only meaningful while busy — when idle, Enter/click routes to handleSend.
     if (!sessionBusy) return;
@@ -2258,6 +2278,7 @@ function ChatPaneForSession({
   const handleInject = async () => {
     const { text: editorText } = editorRef.current?.serialize() ?? { text: value.trim() };
     const text = editorText.trim();
+    if (projectInitializer.intercept(text, tags.length > 0 || pendingImages.length > 0)) return;
     if (!text) return;
     if (tags.length > 0 || pendingImages.length > 0) {
       await handleEnqueue();
@@ -2884,6 +2905,7 @@ function ChatPaneForSession({
 
   return (
     <div className="relative flex h-full flex-col" data-chat-root>
+      {projectInitializer.dialog}
       {/* Message stream area */}
       <div
         ref={streamAreaRef}
@@ -3605,6 +3627,7 @@ function ChatPaneForSession({
           {/* Inline /-slash skill picker. Anchored above the textarea;
               selecting inserts `/name ` so the user can add arguments. */}
           <SlashCommandPicker
+            projectInitCommands={projectInitializer.commands}
             open={pickerKind === "slash"}
             query={pickerQuery}
             skills={skills}

@@ -815,6 +815,14 @@ const on: Api["on"] = {
  *  else missing) into a clear error instead of an opaque undefined-call. */
 export function createWebApi(): Api {
   const base = {
+    projectInit: {
+      list: async () => webUnsupported("projectInit.list"),
+      get: async () => webUnsupported("projectInit.get"),
+      save: async () => webUnsupported("projectInit.save"),
+      delete: async () => webUnsupported("projectInit.delete"),
+      preview: async () => webUnsupported("projectInit.preview"),
+      apply: async () => webUnsupported("projectInit.apply"),
+    } satisfies Api["projectInit"],
     // Module installation/execution is desktop-only in v1. Reject explicitly;
     // no new mobile whitelist or paired-device capability is implied.
     modules: {

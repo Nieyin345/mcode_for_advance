@@ -142,3 +142,5 @@ export * from "./ipc/orchestration.js";
 export * from "./ipc/rpcMap.js";
 
 export * from "./memoryAssistant.js";
+
+export * from "./ipc/projectInit.js";

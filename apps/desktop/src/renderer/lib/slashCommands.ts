@@ -38,7 +38,7 @@ export type { SkillSource } from "@contracts/ipc";
  *    prompt is inserted; the composer is left empty). Available even while a
  *    turn is running, which is the feature's core scenario: ask about the
  *    streaming output without interrupting it. */
-export type BuiltInCommandKind = "compact" | "init" | "browser" | "sidechat";
+export type BuiltInCommandKind = "compact" | "init" | "browser" | "sidechat" | "project-init";
 
 export interface BuiltInCommand {
   /** Command name without the leading slash, e.g. "compact". */

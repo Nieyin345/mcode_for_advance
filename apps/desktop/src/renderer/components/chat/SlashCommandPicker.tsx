@@ -44,6 +44,7 @@ export interface SlashCommandPickerProps {
   skills: SkillInfo[];
   /** 引擎（Claude Code CLI）自己报的命令清单。`undefined` = 还没取到。 */
   engineCommands?: EngineCommand[];
+  projectInitCommands?: BuiltInCommand[];
   /** Active provider display name used by the engine tab and empty states. */
   engineName: string;
   /** 引擎**明确说了**它不提供命令清单（Pi / Codex）。与"还没取到"是两件事，
@@ -64,6 +65,7 @@ export function SlashCommandPicker({
   query,
   skills,
   engineCommands,
+  projectInitCommands = [],
   engineName,
   engineUnsupported,
   anchorRect,
@@ -75,17 +77,17 @@ export function SlashCommandPicker({
 }: SlashCommandPickerProps) {
   const { t } = useI18n();
   // Compute every tab's filtered list up front so we can auto-switch.
-  const skillCmds = useMemo(() => filterSkillCommands(query, skills), [query, skills]);
-  const builtinCmds = useMemo(() => filterBuiltInCommands(query), [query]);
+  const skillCmds = useMemo(() => filterSkillCommands(query, skills.filter(s => !s.name.toLowerCase().startsWith("init-"))), [query, skills]);
+  const builtinCmds = useMemo(() => [...filterBuiltInCommands(query), ...projectInitCommands.filter(c => `${c.name} ${c.description}`.toLowerCase().includes(query.toLowerCase()))], [query, projectInitCommands]);
   const engineCmds = useMemo(
-    () => filterEngineCommands(query, engineCommands ?? []),
+    () => filterEngineCommands(query, (engineCommands ?? []).filter(c => !c.name.toLowerCase().startsWith("init-"))),
     [query, engineCommands],
   );
   // `compact` is disabled while a turn is running; filter it out of the
   // *interactive* list so it can't be arrow-selected or clicked, but keep it
   // counted in the tab badge so the user sees it exists.
   const activeBuiltinCmds = useMemo(
-    () => (busy ? builtinCmds.filter((c) => c.kind !== "compact") : builtinCmds),
+    () => (busy ? builtinCmds.filter((c) => c.kind !== "compact" && c.kind !== "project-init") : builtinCmds),
     [builtinCmds, busy],
   );
 
@@ -318,6 +320,8 @@ export function SlashCommandPicker({
                       user-owned scope). */}
                   {isEngine
                     ? t("chat.slash.engine")
+                    : isBuiltin && (entry as BuiltInCommand).kind === "project-init"
+                      ? t("init.customLabel")
                     : isBuiltin || (entry as SkillInfo).source === "builtin"
                       ? t("chat.slash.builtin")
                       : (entry as SkillInfo).source === "plugin"

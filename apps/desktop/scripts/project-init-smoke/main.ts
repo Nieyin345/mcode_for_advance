@@ -1,0 +1,118 @@
+import { registerProjectInitHandlers } from "../../src/main/ipc/projectInit.js";
+import { IPC } from "@contracts/ipc";
+import assert from "node:assert/strict";
+import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ProjectInitDraftSchema, type ProjectInitDraft } from "@contracts/ipc/projectInit";
+import { listProjectInitializers, getProjectInitializer, saveProjectInitializer, deleteProjectInitializer, previewProjectInitializer, applyProjectInitializer } from "../../src/main/projectInit/service.js";
+import { readMemoryFile } from "../../src/main/memory/store.js";
+import { setRoot, projects, sessions, events, settings } from "./stubs.js";
+const base = await mkdtemp(join(tmpdir(), "mcode-project-init-"));
+let root = "", data = "", passed = 0, failed = 0, count = 0;
+const draft = (name="学术"): ProjectInitDraft => ({ name, description:"A user-defined scenario", directories:["papers"], files:[{path:"notes/README.md",content:"# Research\n用户定义正文"}], memories:[{category:"project",filename:"init.md",title:"Project rules",content:"Cite primary sources",pinned:true}] });
+async function test(name:string, run:()=>unknown|Promise<unknown>) {
+ const folder=join(base,String(++count));root=join(folder,"workspace");data=join(folder,"data");
+ await mkdir(root,{recursive:true});await mkdir(data,{recursive:true});setRoot(data);
+ projects.set("p1",{id:"p1",name:"Project one",path:root});sessions.set("s1",{id:"s1",projectId:"p1"});
+ try {await run();passed++;console.log("PASS "+name);} catch(e){failed++;console.error("FAIL "+name+": "+String(e));}
+}
+const preview = () => previewProjectInitializer({sessionId:"s1",command:"init-学术"});
+const execute = async() => {const p=await preview();return applyProjectInitializer({sessionId:p.sessionId,command:"init-学术",digest:p.digest});};
+try {
+ await test("real IPC handlers validate and route preview/apply to the service",async()=>{
+  const handlers=new Map<string,(_event:unknown,input?:unknown)=>unknown>();
+  registerProjectInitHandlers({handle:(channel:string,handler:(_event:unknown,input?:unknown)=>unknown)=>{handlers.set(channel,handler);}} as Parameters<typeof registerProjectInitHandlers>[0]);
+  const invoke=async(channel:string,input?:unknown)=>{assert.ok(handlers.has(channel));return handlers.get(channel)!(null,input) as any;};
+  const saved=await invoke(IPC.PROJECT_INIT_SAVE,{draft:draft()});assert.equal(saved.name,"学术");assert.equal((await invoke(IPC.PROJECT_INIT_LIST)).templates.length,1);
+  const p=await invoke(IPC.PROJECT_INIT_PREVIEW,{sessionId:"s1",command:"init-学术"});assert.deepEqual(await readdir(root),[]);
+  const result=await invoke(IPC.PROJECT_INIT_APPLY,{sessionId:"s1",command:"init-学术",digest:p.digest});assert.ok(result.actions.every((a:any)=>a.status==="created"));
+  assert.equal(await readFile(join(root,"notes/README.md"),"utf8"),draft().files[0].content);
+  await assert.rejects(invoke(IPC.PROJECT_INIT_SAVE,{draft:{...draft(),files:[{path:"../escape",content:"x"}]}}));
+ });
+ await test("save/list/get persist summaries without content",()=>{
+  const t=saveProjectInitializer({draft:draft()});assert.equal(getProjectInitializer({id:t.id}).files[0].content,draft().files[0].content);
+  assert.equal(listProjectInitializers().templates[0].name,"学术");assert.ok(!("files" in listProjectInitializers().templates[0]));
+ });
+ await test("updates and deletes require original revision",()=>{
+  const t=saveProjectInitializer({draft:draft()});const changed=saveProjectInitializer({id:t.id,expectedRevision:t.revision,draft:draft("会议")});
+  assert.throws(()=>saveProjectInitializer({id:t.id,expectedRevision:t.revision,draft:draft()}),/changed/);
+  assert.throws(()=>deleteProjectInitializer({id:t.id,expectedRevision:t.revision}),/changed/);
+  deleteProjectInitializer({id:t.id,expectedRevision:changed.revision});assert.equal(listProjectInitializers().templates.length,0);
+ });
+ await test("normalized command names cannot collide",()=>{
+  saveProjectInitializer({draft:draft("Study")});assert.throws(()=>saveProjectInitializer({draft:draft("study")}),/already exists/);
+ });
+ await test("unreadable templates never get replaced silently",()=>{
+  const t=saveProjectInitializer({draft:draft()});settings.set("projectInit.template."+t.id,"{broken");
+  assert.throws(()=>saveProjectInitializer({id:t.id,expectedRevision:t.revision,draft:draft()}));assert.equal(settings.get("projectInit.template."+t.id),"{broken");
+ });
+ for (const path of ["../x","a/../x","/tmp/x","C:/x","a\\b","a//b",".git/config","CON.txt","name.","name ","a\u0000b"]) await test(`reject unsafe path ${JSON.stringify(path)}`,()=>{
+  assert.equal(ProjectInitDraftSchema.safeParse({...draft(),files:[{path,content:"x"}]}).success,false);
+ });
+ await test("reject file-parent conflicts and portable case collisions",()=>{
+  for(const files of [[{path:"a",content:""},{path:"a/b",content:""}],[{path:"A.md",content:""},{path:"a.md",content:""}]]) assert.equal(ProjectInitDraftSchema.safeParse({...draft(),files}).success,false);
+ });
+ await test("reject empty templates and out-of-scope memory filenames",()=>{
+  assert.equal(ProjectInitDraftSchema.safeParse({name:"x",directories:[],files:[],memories:[]}).success,false);
+  assert.equal(ProjectInitDraftSchema.safeParse({...draft(),memories:[{...draft().memories[0],filename:"../../global.md"}]}).success,false);
+ });
+ await test("bound path depth and generated directory work",()=>{
+  assert.equal(ProjectInitDraftSchema.safeParse({...draft(),files:[{path:Array(17).fill("a").join("/"),content:""}]}).success,false);
+  const files=Array.from({length:100},(_,i)=>({path:`d${i}/a/b/c/d/e/f/g/readme.md`,content:""}));
+  assert.equal(ProjectInitDraftSchema.safeParse({...draft(),files}).success,false);
+ });
+ await test("preview has no filesystem or memory writes",async()=>{
+  saveProjectInitializer({draft:draft()});const p=await preview();assert.ok(p.actions.every(a=>a.status==="create"));assert.deepEqual(await readdir(root),[]);assert.deepEqual(await readdir(data),[]);assert.equal(events.length,0);
+ });
+ await test("apply creates actual files, parents and scoped pinned memory",async()=>{
+  saveProjectInitializer({draft:draft()});const r=await execute();assert.ok(r.actions.every(a=>a.status==="created"));
+  assert.equal(await readFile(join(root,"notes/README.md"),"utf8"),draft().files[0].content);
+  assert.match(readMemoryFile("projects/p1/project/init.md").content,/Cite primary sources/);
+  assert.match(await readFile(join(data,"memory/projects/p1/project/init.md"),"utf8"),/pinned: true/);
+  assert.equal(events.length,1);assert.equal((await readdir(join(root,"notes"))).some(p=>p.endsWith(".tmp")),false);
+ });
+ await test("second execution skips all existing entries without rewriting",async()=>{
+  saveProjectInitializer({draft:draft()});await execute();await writeFile(join(root,"notes/README.md"),"User edited");
+  const r=await execute();assert.ok(r.actions.every(a=>a.status==="skip"));assert.equal(await readFile(join(root,"notes/README.md"),"utf8"),"User edited");assert.equal(events.length,1);
+ });
+ await test("files created after preview invalidate approval",async()=>{
+  saveProjectInitializer({draft:draft()});const p=await preview();await mkdir(join(root,"notes"));await writeFile(join(root,"notes/README.md"),"Do not touch");
+  await assert.rejects(applyProjectInitializer({sessionId:"s1",command:"init-学术",digest:p.digest}),/Preview changed/);assert.equal(await readFile(join(root,"notes/README.md"),"utf8"),"Do not touch");
+ });
+ await test("editing a template invalidates an old preview",async()=>{
+  const t=saveProjectInitializer({draft:draft()});const p=await preview();saveProjectInitializer({id:t.id,expectedRevision:t.revision,draft:{...draft(),description:"Changed"}});
+  await assert.rejects(applyProjectInitializer({sessionId:"s1",command:"init-学术",digest:p.digest}),/Preview changed/);assert.deepEqual(await readdir(root),[]);
+ });
+ await test("approval is bound to conversation and project",async()=>{
+  saveProjectInitializer({draft:draft()});const p=await preview();const other=join(base,"other-project");await mkdir(other);projects.set("p2",{id:"p2",name:"Other",path:other});sessions.set("s2",{id:"s2",projectId:"p2"});
+  await assert.rejects(applyProjectInitializer({sessionId:"s2",command:"init-学术",digest:p.digest}),/Preview changed/);assert.deepEqual(await readdir(other),[]);
+ });
+ await test("missing session and command fail explicitly",async()=>{
+  saveProjectInitializer({draft:draft()});await assert.rejects(previewProjectInitializer({sessionId:"missing",command:"init-学术"}));await assert.rejects(previewProjectInitializer({sessionId:"s1",command:"init-unknown"}));
+ });
+ await test("selected worktree receives files, original project receives memory",async()=>{
+  const worktree=join(base,"worktree");await mkdir(worktree);sessions.set("s1",{id:"s1",projectId:"p1",worktreePath:worktree});saveProjectInitializer({draft:draft()});await execute();
+  assert.deepEqual(await readdir(root),[]);assert.equal(await readFile(join(worktree,"notes/README.md"),"utf8"),draft().files[0].content);assert.match(readMemoryFile("projects/p1/project/init.md").content,/Cite/);
+ });
+ await test("file parents block the entire plan before any writes",async()=>{
+  await writeFile(join(root,"notes"),"not a directory");saveProjectInitializer({draft:draft()});const p=await preview();assert.ok(p.actions.some(a=>a.status==="blocked"));await assert.rejects(execute(),/blocked/);assert.deepEqual(await readdir(root),["notes"]);
+ });
+ await test("symlink/junction parents cannot escape project",async()=>{
+  const outside=join(base,"outside");await mkdir(outside);await symlink(outside,join(root,"notes"),process.platform==="win32"?"junction":"dir");
+  saveProjectInitializer({draft:draft()});assert.ok((await preview()).actions.some(a=>a.reason==="symlink"));await assert.rejects(execute(),/blocked/);assert.deepEqual(await readdir(outside),[]);
+ });
+ await test("memory symlink/junction is rejected before file creation",async()=>{
+  const outside=join(base,"outside-memory");await mkdir(outside);await symlink(outside,join(data,"memory"),process.platform==="win32"?"junction":"dir");
+  saveProjectInitializer({draft:draft()});await assert.rejects(execute(),/blocked/);assert.deepEqual(await readdir(root),[]);assert.deepEqual(await readdir(outside),[]);
+ });
+ await test("memory failures are explicit partial results, not silent success",async()=>{
+  saveProjectInitializer({draft:{...draft(),memories:[{...draft().memories[0],content:"sk-"+"A".repeat(30)}]}});const r=await execute();
+  assert.equal(r.actions.find(a=>a.kind==="memory")?.status,"failed");assert.equal(r.actions.find(a=>a.kind==="file")?.status,"created");assert.equal(events.length,0);
+ });
+ await test("parallel applies never overwrite or duplicate memories",async()=>{
+  saveProjectInitializer({draft:draft()});const p=await preview();const settled=await Promise.allSettled([1,2].map(()=>applyProjectInitializer({sessionId:"s1",command:"init-学术",digest:p.digest})));
+  assert.equal(settled.filter(r=>r.status==="fulfilled").length,1);assert.equal(events.length,1);assert.equal(await readFile(join(root,"notes/README.md"),"utf8"),draft().files[0].content);
+ });
+} finally { await rm(base,{recursive:true,force:true}); }
+console.log(`Project init smoke: ${passed} pass, ${failed} fail`);process.exitCode=failed?1:0;
