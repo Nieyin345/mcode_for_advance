@@ -8,5 +8,6 @@ if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
 "$ESBUILD" scripts/execution-engine-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
+  --external:ssh2 \
   --outfile="$OUT/smoke.mjs" --log-level=error
 node "$OUT/smoke.mjs"

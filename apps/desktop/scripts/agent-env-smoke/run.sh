@@ -18,6 +18,7 @@ if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
 "$ESBUILD" scripts/agent-env-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
+  --alias:electron=./scripts/library-delete-smoke/stubs/electron.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 node "$OUT/smoke.mjs"
