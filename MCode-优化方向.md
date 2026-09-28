@@ -2263,3 +2263,39 @@ sql.js prepare 一遍。附两条自检:一处都扫不到算失败(防这张网
 
 **验证**:maint-m38 6/6;db-persistence / db-migrate / run-store / session-store /
 automation 五套全绿。
+
+### 3.27 全量冒烟体检:162 套里 8 套是坏的,而 `npm test` 一直绿着(2026-09-29,用户要求全面检修)
+
+用户原话:「帮我检修这个项目,里面应该是有不少的错误,你碰到一个就修一个」。做法是**逐套**
+跑完 162 套拿一张 PASS/FAIL 矩阵 —— 不是 `npm test`,后者只跑 `CRITICAL_SUITES` 那 8 套。
+
+**结果:8 套失败。没有一个在 CRITICAL_SUITES 里** —— 这正是它们能烂这么久的原因。而其中
+**5 套是"根本没跑起来"**(esbuild 直接 `No matching export` / `Could not resolve`),
+不是某条断言失败:一套编译不过的冒烟和一套不存在的冒烟,对回归网来说是同一件事。
+
+分类与处置:
+
+| 套件 | 病因 | 处置 |
+|---|---|---|
+| (真 bug) | `SettingRepo.keysWithPrefix` 的 ESCAPE 多一层转义 | 见 3.26,另加 `maint-m38-smoke` |
+| `emit-path` | 扫描器不认 `withAmbientAutomationOrigin`(09-28 新加的元数据包装)与 `index.ts` 的接线,对 3 个发出点失明 | AST 展开新形状 + 接线单独记账,+7 条自检 |
+| `agent-env` | OnlyOffice 本地安装把 electron 拖进 `toolchain` 的依赖链 | `--alias:electron=<现成的桩>` |
+| `execution-engine` | `ssh2` 的原生依赖 `cpu-features` 没编译,打不进 bundle | `--external:ssh2`(同 agent-mail / mcode-admin) |
+| `maint-m35` | react 桩缺 5 个导出;icons 桩缺图标 | 补 react 桩;icons 改 **CJS + Proxy**,任意 `Icon*` 都兜住 |
+| `markdown-mode` | 手抄的 Office 扩展名正则过期 | 并行会话已修 |
+| `mcp-endpoint` | 内置清单快照过期 | 并行会话已修 |
+| `memory-injection-ui` | **flaky**:切会话关面板用 `sleep(200)` 等,机器一忙就不够 | 换条件等待;失败时 dump 页面文本 |
+| `code-electron` | Electron GUI 宿主启动超时(前 4 条 node 模式全过) | **环境限制**,本机修不了 |
+
+**一条贯穿的病**:冒烟里的**手抄副本**。`markdown-mode` 抄了一份 Office 扩展名正则、
+`maint-m35` 抄了一份图标清单、`emit-path` 的包装白名单硬编码了一个名字 —— 生产代码一动
+它们就过期,而过期的方式是**编译不过**或**悄悄答错**。处置上一律改成"从真源码现取"或
+"结构上兜住",而不是把副本更新一遍等下次再坏:`markdown-mode` 改为从 contracts 的
+`ONLYOFFICE_EDITABLE/VIEW_ONLY` 现取,`maint-m35` 的图标用 Proxy 兜住任意名字,
+`emit-path` 按 AST 形状识别而不是按名字。
+
+**另一条**:`sweepEventChains` 那个 bug 之所以能活着,是因为异常被 catch 成一行 warn。
+日志里它每次启动都在喊,只是没人看。可观测性够了,**看**的那一步没有。
+
+**验证**:曾失败的 8 套现在 7 套 PASS(第 8 套是环境);contracts + desktop `tsc` 均 0 错误;
+新增 `maint-m38-smoke` 6/6。分 6 次提交,每次单独验证。
