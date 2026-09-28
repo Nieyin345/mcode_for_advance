@@ -282,7 +282,7 @@ export function MemoryExplorerPanel() {
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
   const navigation = (
-    <div className="my-3 flex flex-wrap gap-1 rounded-lg bg-surface-subtle p-1">
+    <div className={`mx-auto my-3 flex w-full flex-wrap gap-1 rounded-lg bg-surface-subtle p-1 ${PANEL_MAX_W.form}`}>
       {(["library", "instructions", "import"] as const).map((item) => (
         <Button key={item} size="sm" variant={view === item ? "secondary" : "ghost"} onClick={() => setView(item)}>
           {t(`memory.tab.${item}`)}
@@ -320,8 +320,13 @@ export function MemoryExplorerPanel() {
     </section>
   );
 
+  // 与另外两个 tab 同一档宽度(form)。这里原来写的是 canvas(1152px),切到
+  // 「全局指令 / 导入与恢复」(form,768px)时整页宽度跳 384px —— 用户报的
+  // 「第一个 tab 宽度和其他的不一致」就是它。panelWidth.ts 的规矩本来就是:
+  // canvas 只给**正文里有可拖画布**的页(工作流/自动化,那有放不下节点的硬
+  // 计算),记忆库是列表+编辑器,没有画布,归 form 档。(2026-09-26)
   return (
-    <section className={`mx-auto flex h-full w-full ${PANEL_MAX_W.canvas} flex-col`}>
+    <section className={`mx-auto flex h-full w-full ${PANEL_MAX_W.form} flex-col`}>
       <PanelHeader title={t("settings.nav.memory")} icon={IconNotebook} action={
         <Button size="sm" variant="secondary" onClick={() => setReviewOpen((open) => !open)}>
           {t(reviewOpen ? "memory.reviewClose" : "memory.reviewOpen")}
