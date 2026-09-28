@@ -24,14 +24,14 @@
  * （改成本项目专用的版本、分享给同事），但不说清楚的话，他改完总库发现项目里没变
  * 会以为是 bug。所以下面有一行常驻说明。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { Project } from "@contracts/session";
 import type { SkillInfo } from "@contracts/ipc";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
-import { Button, ConfirmDialog } from "@renderer/components/ui/index.js";
+import { Button, ConfirmDialog, ErrorNote, Select } from "@renderer/components/ui/index.js";
 import { IconCopy, IconSparkles, IconFolderOpen, IconTrash } from "@renderer/lib/icons.js";
 
 /** 一次复制的结果，用来在界面上如实回报三种下场（成了 / 跳过 / 失败）。 */
@@ -42,39 +42,50 @@ interface CopyOutcome {
 }
 
 export function ProjectSkillsView({
+  project,
+  projects,
+  onSelectProject,
   skills,
   loading,
+  error,
+  onRetry,
   selected,
-  onToggleSelect,
   onClearSelection,
   onCopied,
   onGoToLibrary,
+  onEdit,
 }: {
+  /** Management target, independent of the currently active chat project. */
+  project: Project | undefined;
+  projects: Project[];
+  onSelectProject: (id: string) => void;
   /** **总库那一栏当前勾选的技能名**（源）。 */
   selected: readonly string[];
-  onToggleSelect: (name: string) => void;
   onClearSelection: () => void;
-  /** 项目技能列表（本页自己拉）。 */
+  /** Parent useRpc returns only rows belonging to the selected project. */
   skills: SkillInfo[];
   loading: boolean;
-  onCopied: () => void;
+  error: Error | null;
+  onRetry: () => void;
+  onCopied: () => void | Promise<void>;
+  onEdit: (skill: SkillInfo) => void;
   /** 切到「总库」那一栏去勾选 —— 底部那句引导可点,省得用户自己找 tab。 */
   onGoToLibrary: () => void;
 }) {
   const { t } = useI18n();
-  const activeProjectId = useSessionStore((s) => s.activeProjectId);
-  const projects = useSessionStore((s) => s.projects);
-  const project = useMemo(
-    () => projects.find((p) => p.id === activeProjectId),
-    [projects, activeProjectId],
-  );
-
   const [busy, setBusy] = useState(false);
-  /** 待确认删除的项目技能名（null = 没有）。 */
-  const [pendingRemove, setPendingRemove] = useState<string | null>(null);
+  const busyRef = useRef(false);
+  const [operationError, setOperationError] = useState<string | null>(null);
+  // Capture the complete target at confirmation time, never reinterpret a
+  // pending deletion using whichever project happens to be selected later.
+  const [pendingRemove, setPendingRemove] = useState<{ name: string; project: Project } | null>(null);
+  useEffect(() => {
+    setPendingRemove(null);
+    setOperationError(null);
+  }, [project?.path]);
 
   const copy = useCallback(async (): Promise<void> => {
-    if (!project) return;
+    if (!project || busyRef.current) return;
     // **没勾选时要说一句话,不能静默返回。** 按钮一直可点（见下面那个 ⚠️）,所以
     // 这条路径是用户真会走到的 —— 默默什么都不做等于"点了没反应"。
     if (selected.length === 0) {
@@ -85,7 +96,9 @@ export function ProjectSkillsView({
       });
       return;
     }
+    busyRef.current = true;
     setBusy(true);
+    setOperationError(null);
     try {
       const res = await api.skills.copyToProject({
         projectPath: project.path,
@@ -106,20 +119,45 @@ export function ProjectSkillsView({
         kind: outcome.failed > 0 ? "warning" : "info",
         title: parts.join(";") || t("settings.skills.copyNoneSelected"),
       });
+      if (res.failed.length) setOperationError(res.failed.map((item) => `${item.name}: ${item.reason}`).join("; "));
       if (outcome.copied > 0) {
         onClearSelection();
-        onCopied();
+        await onCopied();
       }
     } catch (err) {
+      setOperationError(err instanceof Error ? err.message : String(err));
       useToastStore.getState().push({
         kind: "error",
         title: t("settings.skills.copyFailed", { n: selected.length }),
         body: err instanceof Error ? err.message : String(err),
       });
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }, [project, selected, t, onClearSelection, onCopied]);
+
+  const remove = async () => {
+    const target = pendingRemove;
+    if (!target || busyRef.current) return;
+    setPendingRemove(null);
+    busyRef.current = true;
+    setBusy(true);
+    setOperationError(null);
+    try {
+      const res = await api.skills.delete({ source: "project", projectPath: target.project.path, name: target.name });
+      if (!res.ok) {
+        setOperationError(res.error ?? t("settings.deleteFailed"));
+        return;
+      }
+      await onCopied();
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : String(err));
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  };
 
   // ── 没有项目：这一页没有意义，直说 ──
   if (!project) {
@@ -133,15 +171,42 @@ export function ProjectSkillsView({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3">
+    <div data-testid="project-skills-view" className="flex min-h-0 flex-col gap-3">
       {/* 项目名 + 复制按钮。项目路径一并给出来 —— "复制到哪儿"是这一页唯一要紧的
           事实，而项目名可能重名（两个都叫"论文"），路径不会。 */}
-      <div className="flex items-center justify-between gap-3 rounded-md border border-edge bg-surface/40 px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-edge bg-surface/40 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
           <IconFolderOpen size={14} className="shrink-0 text-content-subtle" />
           <div className="min-w-0">
-            <div className="truncate text-[0.8571em] font-medium text-content">{project.name}</div>
-            <div className="truncate font-mono text-[0.7143em] text-content-subtle" title={project.path}>
+            <Select.Root
+              value={project.id}
+              disabled={busy || pendingRemove !== null}
+              onValueChange={(value) => { if (typeof value === "string") onSelectProject(value); }}
+            >
+              <Select.Trigger data-testid="skill-project-select" aria-label={t("settings.skills.selectProject")}
+                className="max-w-[min(320px,70vw)]">
+                <Select.Value>{project.name}</Select.Value>
+              </Select.Trigger>
+              <Select.Portal>
+                <Select.Positioner sideOffset={4} align="start">
+                  <Select.Popup className="max-h-[320px] max-w-[90vw] overflow-auto">
+                    <Select.List>
+                      {projects.map((item) => (
+                        <Select.Item key={item.id} value={item.id} data-project-option={item.id}>
+                          <Select.ItemText className="flex min-w-0 flex-col">
+                            <span>{item.name}</span>
+                            <span className="max-w-[440px] truncate font-mono text-[10px] text-content-subtle" title={item.path}>
+                              {item.path}
+                            </span>
+                          </Select.ItemText>
+                        </Select.Item>
+                      ))}
+                    </Select.List>
+                  </Select.Popup>
+                </Select.Positioner>
+              </Select.Portal>
+            </Select.Root>
+            <div className="mt-1 truncate font-mono text-[0.7143em] text-content-subtle" title={project.path}>
               {project.path}
             </div>
           </div>
@@ -162,19 +227,22 @@ export function ProjectSkillsView({
         </Button>
       </div>
 
+      {error && <ErrorNote action={<Button variant="ghost" onClick={onRetry}>{t("common.retry")}</Button>}>{error.message}</ErrorNote>}
+      {operationError && <ErrorNote>{operationError}</ErrorNote>}
+
       {/* 脱钩这件事**常驻**说一句，不做成一次性提示。 */}
       <p className="px-1 text-[0.7857em] leading-relaxed text-content-subtle">
         {t("settings.skills.copyHint")}
       </p>
 
       {/* ── 项目自己的技能 ── */}
-      <div className="min-h-0 flex-1 overflow-auto rounded-md border border-edge bg-surface/40">
+      <div className="max-h-[360px] min-h-[120px] overflow-auto rounded-md border border-edge bg-surface/40">
         {loading && (
           <div className="px-3 py-6 text-center text-[0.8571em] text-content-subtle">
             {t("common.loading")}
           </div>
         )}
-        {!loading && skills.length === 0 && (
+        {!loading && !error && skills.length === 0 && (
           <div className="px-4 py-8 text-center text-[0.8571em] leading-relaxed text-content-subtle">
             {t("settings.skills.projectEmpty1")}
             <br />
@@ -185,25 +253,30 @@ export function ProjectSkillsView({
           skills.map((s) => (
             <div
               key={s.name}
+              data-project-skill={s.name}
               className="group flex items-start gap-2 border-b border-edge/60 px-3 py-2 last:border-b-0"
             >
               <IconSparkles size={14} className="mt-0.5 shrink-0 text-accent" />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-[0.8571em] font-medium text-content">{s.name}</div>
-                <div className="truncate text-[0.7857em] text-content-muted">
+              <Button variant="ghost" data-testid="project-skill-edit" disabled={busy}
+                onClick={() => onEdit(s)} className="h-auto min-w-0 flex-1 flex-col items-start p-0 text-left text-[1em]">
+                <span className="max-w-full truncate text-[0.8571em] font-medium text-content">{s.name}</span>
+                <span className="max-w-full truncate text-[0.7857em] text-content-muted">
                   {s.description || t("settings.skills.noDesc")}
-                </div>
-              </div>
+                </span>
+              </Button>
               {/* 删除 —— 删的是**项目目录里的文件**（`<项目>/.claude/skills/<名字>/`），
                   不是总库里那份。确认框里要把这件事说清楚，否则用户会以为连总库一起删了。 */}
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="icon"
                 title={t("settings.skills.removeFromProject")}
-                onClick={() => setPendingRemove(s.name)}
-                className="mt-0.5 shrink-0 rounded p-1 text-content-subtle/50 opacity-0 transition-all hover:bg-danger/10 hover:text-danger focus:opacity-100 group-hover:opacity-100"
+                aria-label={`${t("settings.skills.removeFromProject")} · ${s.name}`}
+                disabled={busy}
+                onClick={() => setPendingRemove({ name: s.name, project })}
+                className="h-5 w-5 shrink-0 text-content-subtle hover:text-danger"
               >
                 <IconTrash size={12} />
-              </button>
+              </Button>
             </div>
           ))}
       </div>
@@ -249,30 +322,15 @@ export function ProjectSkillsView({
         open={pendingRemove != null}
         title={t("settings.skills.removeFromProject")}
         danger
-        description={t("settings.skills.removeFromProjectDesc", { name: pendingRemove ?? "" })}
+        description={<>
+          <span className="mb-2 block break-all font-mono">{pendingRemove?.project.name} · {pendingRemove?.project.path}</span>
+          {t("settings.skills.removeFromProjectDesc", { name: pendingRemove?.name ?? "" })}
+        </>}
         confirmText={t("common.delete")}
         onOpenChange={(o) => {
           if (!o) setPendingRemove(null);
         }}
-        onConfirm={() => {
-          const name = pendingRemove;
-          setPendingRemove(null);
-          if (!name || !project) return;
-          void (async () => {
-            try {
-              const res = await api.skills.delete({ source: "project", projectPath: project.path, name });
-              if (!res.ok) {
-                useToastStore.getState().push({ kind: "error", title: res.error ?? "" });
-              }
-              onCopied();
-            } catch (err) {
-              useToastStore.getState().push({
-                kind: "error",
-                title: err instanceof Error ? err.message : String(err),
-              });
-            }
-          })();
-        }}
+        onConfirm={() => void remove()}
       />
     </div>
   );

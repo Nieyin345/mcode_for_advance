@@ -36,6 +36,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
+import { useRpc } from "@renderer/hooks/useRpc.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, ConfirmDialog, Dialog, EmptyState, ErrorNote, Field, LoadingNote } from "@renderer/components/ui/index.js";
 import { ListPane } from "./ListPane.js";
@@ -74,22 +75,18 @@ const SKILL_NAME_RE = /^[A-Za-z0-9_-]+$/;
  *  empty (avoiding needless re-renders — same convention as sessionStore's
  *  EMPTY_SKILLS). */
 const EMPTY_PANEL_SKILLS: SkillInfo[] = [];
+const EMPTY_BUNDLES: SkillBundle[] = [];
 
-/** The sources the panel can SHOW and read. Plugin-contributed skills are
- *  excluded — they're read-only inventory owned by the Plugins panel (which
- *  owns install / enable / uninstall). Built-in skills ARE included: no plugin
- *  owns them, so this panel is the only place a user can read what `/docx`
- *  actually does. Writable sources are just "global" — the universal library
- *  is the only user-owned store (new skills are created there, always enabled
- *  for every engine until the matrix says otherwise). */
-type PanelSkillSource = Exclude<SkillSource, "plugin">;
+/** All listed sources are readable. Contributed sources remain readonly;
+ *  global and explicitly selected project copies are independently editable. */
+type SkillTarget = { source: SkillSource; name: string; projectPath?: string };
 
 /** True for skills the editor must not offer to save or delete — neither has a
  *  user-owned file root: a plugin skill lives in the plugin's install dir, a
  *  built-in one in the app's own resources (replaced wholesale on upgrade).
  *
  *  A type predicate rather than a plain boolean so the write call sites narrow
- *  `PanelSkillSource` down to the two writable sources after the guard — the
+ *  `SkillSource` down to the two writable sources after the guard — the
  *  contract's write schemas accept only those, and this is what proves it to
  *  the compiler instead of casting. */
 function isReadOnlySkill(source: SkillSource): source is ReadOnlySkillSource {
@@ -97,7 +94,7 @@ function isReadOnlySkill(source: SkillSource): source is ReadOnlySkillSource {
 }
 
 type Selection =
-  | { kind: "skill"; source: PanelSkillSource; name: string }
+  | ({ kind: "skill" } & SkillTarget)
   | { kind: "new" }
   | null;
 
@@ -201,11 +198,17 @@ export function SkillsPanel() {
   const projects = useSessionStore((s) => s.projects);
   const reloadSkills = useSessionStore((s) => s.reloadSkills);
 
-  /** 当前项目路径。项目技能的根是 `<项目>/.claude/skills/`，所以这次列表要它。 */
-  const projectPath = useMemo(
-    () => projects.find((p) => p.id === activeProjectId)?.path,
-    [projects, activeProjectId],
-  );
+  // Management scope is local to this panel. Selecting another project must
+  // not change activeProjectId (and therefore the user's active chat).
+  const [managedProjectId, setManagedProjectId] = useState<string | null>(activeProjectId);
+  const project = projects.find((p) => p.id === managedProjectId)
+    ?? projects.find((p) => p.id === activeProjectId)
+    ?? projects[0];
+  const projectPath = project?.path;
+  const activeProjectPath = projects.find((item) => item.id === activeProjectId)?.path;
+  useEffect(() => {
+    if (project && managedProjectId !== project.id) setManagedProjectId(project.id);
+  }, [managedProjectId, project?.id]);
 
   // ── 三个 tab ── 总库 / 项目 / 节点。形状照 `WorkflowsPanel` 那个段控。
   const [view, setView] = useState<"library" | "project" | "nodes">("library");
@@ -223,25 +226,38 @@ export function SkillsPanel() {
     });
   }, []);
 
-  // Panel-local skill list (the universal library + project + plugins). NOT the
-  // store cache (that one feeds the composer `/` menu).
-  const [panelSkills, setPanelSkills] = useState<SkillInfo[]>(EMPTY_PANEL_SKILLS);
-  /** 项目自己的技能（`source: "project"`）—— 「项目」那一栏列的就是它们。 */
-  const projectSkills = useMemo(
-    () => panelSkills.filter((s) => s.source === "project"),
-    [panelSkills],
-  );
+  // The global inventory must not use composer precedence: a project copy
+  // with the same name must never hide the independently editable global one.
+  const library = useRpc(() => api.skills.list({}), [], { toastOnError: false });
+  const bundleQuery = useRpc(() => api.skills.bundles({}), [], { toastOnError: false });
+  const panelSkills = library.data?.skills ?? EMPTY_PANEL_SKILLS;
+  const listLoading = library.loading;
+  const bundles = bundleQuery.data?.bundles ?? EMPTY_BUNDLES;
+  const projectQuery = useRpc(async () => {
+    const result = await api.skills.list({ projectPath });
+    return { projectPath, skills: result.skills.filter((skill) => skill.source === "project") };
+  }, [projectPath], { enabled: !!projectPath, toastOnError: false });
+  // useRpc intentionally retains old data while refetching. Do not expose
+  // the previous project's rows under a newly selected project's action bar.
+  const projectSkills = projectQuery.data?.projectPath === projectPath
+    ? projectQuery.data?.skills ?? EMPTY_PANEL_SKILLS : EMPTY_PANEL_SKILLS;
+  const projectLoading = !!projectPath && (projectQuery.loading ||
+    (!projectQuery.error && projectQuery.data?.projectPath !== projectPath));
+  // The readonly node overview keeps its original active-project inventory.
+  // Choosing a different management target must not hide project-only usages.
+  const nodeInventory = useRpc(async () => {
+    const result = await api.skills.list({ projectPath: activeProjectPath });
+    return { projectPath: activeProjectPath, skills: result.skills };
+  }, [activeProjectPath], { enabled: view === "nodes", toastOnError: false });
   /** 全选 / 清空 —— 总库那一栏标题上的两个小按钮，给"整包复制过去"用。 */
   const selectAllCopyable = useCallback((): void => {
     setChecked(new Set(panelSkills.filter((s) => s.source === "global").map((s) => s.name)));
   }, [panelSkills]);
-  const [listLoading, setListLoading] = useState(false);
   // Bundle manifest (import groups) + which grouping the left list uses.
   // Bundle grouping is the DEFAULT: with hundreds of imported skills, the
   // engine-state groups flatten everything into one undifferentiated mass,
   // while the bundle groups answer "这是什么、从哪个包来的" at a glance and
   // carry the group-level engine switches.
-  const [bundles, setBundles] = useState<SkillBundle[]>([]);
   const [groupMode, setGroupMode] = useState<"bundle" | "engine">("bundle");
   const [bulkBusy, setBulkBusy] = useState(false);
   const [engineBusyName, setEngineBusyName] = useState<string | null>(null);
@@ -315,35 +331,19 @@ export function SkillsPanel() {
   } | null>(null);
 
   const loadPanelSkills = useCallback(async () => {
-    setListLoading(true);
-    try {
-      // 三个作用域一起拿：**通用库**（`source: "global"`，三个引擎共用）、
-      // **项目**（`source: "project"`，`<项目>/.claude/skills/` —— 2026-09-20 回来
-      // 的）、以及**插件**（`source: "plugin"`，只读清单）。响应里 global 与 plugin
-      // 都带 perEngine（从 `.mcode-engines.json` 矩阵解出来的）；项目与内置不带 ——
-      // 项目技能属于那个项目、不参与全局矩阵。
-      //
-      // `projectPath` **要传**：不传就只剩通用库与插件（主进程里那个分支是刻意的，
-      // 见 `listSkillsForProject` 的头注）。当前项目路径从 store 里取。
-      // Bundles load alongside; their failure must not blank the list.
-      const [listRes, bundleRes] = await Promise.all([
-        api.skills.list(projectPath ? { projectPath } : {}),
-        api.skills.bundles({}).catch(() => ({ bundles: [] as SkillBundle[] })),
-      ]);
-      setPanelSkills(listRes.skills.length ? listRes.skills : EMPTY_PANEL_SKILLS);
-      setBundles(bundleRes.bundles);
-    } catch (err) {
-      console.error("SkillsPanel load failed:", err);
-      setPanelSkills(EMPTY_PANEL_SKILLS);
-    } finally {
-      setListLoading(false);
-    }
-  }, [projectPath]);
+    await Promise.all([library.refetch(), bundleQuery.refetch()]);
+  }, [library.refetch, bundleQuery.refetch]);
 
-  // Load once on mount.
+  // Remove deleted skills from the copy selection, without clearing valid
+  // selections on tab/project switches or during a refetch.
   useEffect(() => {
-    void loadPanelSkills();
-  }, [loadPanelSkills]);
+    if (!library.data) return;
+    const names = new Set(panelSkills.filter((skill) => skill.source === "global").map((skill) => skill.name));
+    setChecked((previous) => {
+      const next = new Set([...previous].filter((name) => names.has(name)));
+      return next.size === previous.size ? previous : next;
+    });
+  }, [library.data, panelSkills]);
 
   // skill name → its import bundle (from the manifest). Built once, shared by
   // the bundle grouping and the group switches.
@@ -420,14 +420,32 @@ export function SkillsPanel() {
   }, [panelSkills, t, groupMode, bundles, bundleOf]);
 
   const [selected, setSelected] = useState<Selection>(null);
-  // Full SKILL.md source for the skill being edited (null = not loaded yet).
-  const [editContent, setEditContent] = useState<string | null>(null);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  const [readVersion, setReadVersion] = useState(0);
+  const editorKey = selected?.kind === "skill"
+    ? JSON.stringify([selected.source, selected.name, selected.projectPath ?? null, readVersion]) : null;
+  const sourceQuery = useRpc(async () => {
+    if (!selected || selected.kind !== "skill") throw new Error("No skill selected");
+    const { kind: _kind, ...target } = selected;
+    const result = await api.skills.read(target);
+    return { key: editorKey, content: result.content };
+  }, [editorKey], { enabled: editorKey !== null, toastOnError: false });
+  const [editDraft, setEditDraft] = useState<{ key: string; content: string } | null>(null);
+  const sourceReady = !sourceQuery.loading && !sourceQuery.error && sourceQuery.data?.key === editorKey;
+  const editContent = sourceReady
+    ? (editDraft?.key === editorKey ? editDraft.content : sourceQuery.data?.content ?? null) : null;
+  const loading = sourceQuery.loading || (!sourceQuery.error && !sourceReady);
+  const setEditContent = (content: string) => {
+    if (editorKey) setEditDraft({ key: editorKey, content });
+  };
   // Structured form for creating a new skill.
   const [newForm, setNewForm] = useState<NewForm | null>(null);
-  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const mutationBusyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<{ source: PanelSkillSource; name: string } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<SkillTarget | null>(null);
   // Import dialog open state.
   const [importOpen, setImportOpen] = useState(false);
 
@@ -438,58 +456,50 @@ export function SkillsPanel() {
     void reloadSkills();
   }, [loadPanelSkills, reloadSkills]);
 
-  const startEdit = async (skill: SkillInfo) => {
-    // 到这里 source 只可能是可编辑的那几个（插件行不进 panelSkills 的这一路）。
-    setSelected({ kind: "skill", source: skill.source as PanelSkillSource, name: skill.name });
+  const startEdit = (skill: SkillInfo, targetProjectPath?: string) => {
+    if (mutationBusyRef.current) return;
+    if (skill.source === "project" && !targetProjectPath) return;
+    setSelected({ kind: "skill", source: skill.source, name: skill.name,
+      ...(skill.source === "project" ? { projectPath: targetProjectPath } : {}) });
+    setReadVersion((version) => version + 1);
     setNewForm(null);
+    setEditDraft(null);
     setError(null);
-    setLoading(true);
-    setEditContent(null);
-    try {
-      const { content } = await api.skills.read({
-        // Plugin rows are filtered out of panelSkills — only readable
-        // sources reach this call.
-        source: skill.source as PanelSkillSource,
-        name: skill.name,
-      });
-      setEditContent(content);
-    } catch (err) {
-      setError((err as Error).message);
-      setEditContent("");
-    } finally {
-      setLoading(false);
-    }
   };
 
   const startAdd = () => {
+    if (mutationBusyRef.current) return;
     setSelected({ kind: "new" });
     // New skills always land in the universal library, enabled for every
     // engine (the matrix only records restrictions; none exist yet).
     setNewForm(emptyNewForm());
-    setEditContent(null);
+    setEditDraft(null);
     setError(null);
   };
 
   const cancel = () => {
+    if (mutationBusyRef.current) return;
     setSelected(null);
-    setEditContent(null);
+    setEditDraft(null);
     setNewForm(null);
     setError(null);
   };
 
   const saveEdit = async () => {
     const sel = selected;
-    if (!sel || sel.kind !== "skill" || editContent === null) return;
+    if (!sel || sel.kind !== "skill" || editContent === null || mutationBusyRef.current) return;
     // Read-only skills have no writable root. The save button is hidden for
     // them, but guard here too — a stale selection could otherwise reach the
     // write RPC (whose schema would reject it anyway).
     if (isReadOnlySkill(sel.source)) return;
+    mutationBusyRef.current = true;
     setSaving(true);
     setError(null);
     try {
       const res = await api.skills.save({
         source: sel.source,
         name: sel.name,
+        ...(sel.projectPath ? { projectPath: sel.projectPath } : {}),
         content: editContent,
       });
       if (!res.ok) {
@@ -497,16 +507,18 @@ export function SkillsPanel() {
         return;
       }
       await refreshAfterMutation();
+      if (sel.source === "project") await projectQuery.refetch();
     } catch (err) {
       setError((err as Error).message);
     } finally {
+      mutationBusyRef.current = false;
       setSaving(false);
     }
   };
 
   const saveNew = async () => {
     const sel = selected;
-    if (!sel || sel.kind !== "new" || !newForm) return;
+    if (!sel || sel.kind !== "new" || !newForm || mutationBusyRef.current) return;
     const name = newForm.name.trim();
     if (!SKILL_NAME_RE.test(name)) {
       setError(t("settings.nameCharsError"));
@@ -520,6 +532,7 @@ export function SkillsPanel() {
     // body. Description may contain special chars, so quote it to be safe.
     const desc = newForm.description.trim().replace(/"/g, '\\"');
     const content = `---\nname: ${name}\ndescription: "${desc}"\n---\n\n${newForm.body.trimEnd()}\n`;
+    mutationBusyRef.current = true;
     setSaving(true);
     setError(null);
     try {
@@ -536,10 +549,12 @@ export function SkillsPanel() {
       // Land on the freshly created skill so the user sees it selected.
       setSelected({ kind: "skill", source: "global", name });
       setNewForm(null);
-      setEditContent(content);
+      setEditDraft(null);
+      setReadVersion((version) => version + 1);
     } catch (err) {
       setError((err as Error).message);
     } finally {
+      mutationBusyRef.current = false;
       setSaving(false);
     }
   };
@@ -566,10 +581,7 @@ export function SkillsPanel() {
         setError(res.error ?? t("settings.operationFailed"));
         return;
       }
-      const resolved = res.perEngine;
-      setPanelSkills((prev) =>
-        prev.map((s) => (s.name === name && s.source !== "builtin" ? { ...s, perEngine: resolved } : s)),
-      );
+      await refreshAfterMutation();
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -595,6 +607,7 @@ export function SkillsPanel() {
     // "我在这里关掉 Pi,那个项目里也关了",而实际什么都没发生。
     const editable = skills.filter((s) => s.source === "global" || s.source === "plugin");
     if (!editable.length) return;
+    matrixBusyRef.current = true;
     setBulkBusy(true);
     try {
       const byState = new Map<string, { names: string[]; state: SkillEngineState }>();
@@ -608,24 +621,17 @@ export function SkillsPanel() {
         if (bucket) bucket.names.push(s.name);
         else byState.set(key, { names: [s.name], state });
       }
-      const resolved: Record<string, SkillEngineState> = {};
       await Promise.all(
         [...byState.values()].map(async ({ names, state }) => {
           const res = await api.skills.enginesSetBulk({ names, ...state });
           if (!res.ok || !res.perEngine) throw new Error(res.error ?? "bulk toggle failed");
-          Object.assign(resolved, res.perEngine);
         }),
       );
-      setPanelSkills((prev) =>
-        prev.map((s) =>
-          (s.source === "global" || s.source === "plugin") && resolved[s.name]
-            ? { ...s, perEngine: resolved[s.name] }
-            : s,
-        ),
-      );
+      await refreshAfterMutation();
     } catch (err) {
       setError((err as Error).message);
     } finally {
+      matrixBusyRef.current = false;
       setBulkBusy(false);
     }
   };
@@ -637,26 +643,33 @@ export function SkillsPanel() {
    *  reported but do not abort the rest. */
   const confirmGroupDelete = async () => {
     const group = pendingGroupDelete;
-    if (!group) return;
-    const deletable = group.skills.filter((s) => s.source === "global");
-    if (deletable.length === 0) {
-      setPendingGroupDelete(null);
-      return;
-    }
+    if (!group || mutationBusyRef.current) return;
+    const deletable = group.skills.filter((skill) => skill.source === "global");
+    if (!deletable.length) return;
+    mutationBusyRef.current = true;
     setBulkBusy(true);
+    setError(null);
+    const failures: string[] = [];
+    const removed = new Set<string>();
     try {
-      let lastError: string | null = null;
-      for (const s of deletable) {
-        const res = await api.skills.delete({ source: s.source as "global", name: s.name });
-        if (!res.ok) lastError = res.error ?? lastError;
+      for (const skill of deletable) {
+        try {
+          const res = await api.skills.delete({ source: "global", name: skill.name });
+          if (res.ok) removed.add(skill.name);
+          else failures.push(`${skill.name}: ${res.error ?? t("settings.deleteFailed")}`);
+        } catch (err) {
+          failures.push(`${skill.name}: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
-      if (lastError) setError(lastError);
-      // The selection may have lived inside the deleted group.
-      if (selected?.kind === "skill") cancel();
+      const current = selectedRef.current;
+      if (current?.kind === "skill" && current.source === "global" && removed.has(current.name)) {
+        setSelected(null);
+        setEditDraft(null);
+      }
       await refreshAfterMutation();
-    } catch (err) {
-      setError((err as Error).message);
+      if (failures.length) setError(failures.join("; "));
     } finally {
+      mutationBusyRef.current = false;
       setBulkBusy(false);
       setPendingGroupDelete(null);
     }
@@ -664,33 +677,64 @@ export function SkillsPanel() {
 
   const confirmDelete = async () => {
     const target = pendingDelete;
-    if (!target) return;
-    // Same guard as saveEdit: read-only skills are never deletable.
-    if (isReadOnlySkill(target.source)) return;
+    if (!target || isReadOnlySkill(target.source) || mutationBusyRef.current) return;
+    mutationBusyRef.current = true;
+    setDeleting(true);
+    setError(null);
     try {
-      const res = await api.skills.delete({
-        source: target.source,
-        name: target.name,
-      });
+      const res = await api.skills.delete({ ...target, source: target.source });
       if (!res.ok) {
         setError(res.error ?? t("settings.deleteFailed"));
         return;
       }
-      // Clear selection if the deleted skill was selected.
-      if (
-        selected?.kind === "skill" &&
-        selected.source === target.source &&
-        selected.name === target.name
-      ) {
-        cancel();
+      const current = selectedRef.current;
+      if (current?.kind === "skill" && current.source === target.source &&
+          current.name === target.name && current.projectPath === target.projectPath) {
+        setSelected(null);
+        setEditDraft(null);
       }
       await refreshAfterMutation();
+      if (target.source === "project") {
+        await projectQuery.refetch();
+        setOverviewKey((key) => key + 1);
+      }
     } catch (err) {
-      setError((err as Error).message);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
+      mutationBusyRef.current = false;
+      setDeleting(false);
       setPendingDelete(null);
     }
   };
+
+  const selectedInfo = selected?.kind === "skill"
+    ? (selected.source === "project" ? projectSkills : panelSkills).find(
+      (skill) => skill.source === selected.source && skill.name === selected.name,
+    ) : undefined;
+  const editor = selected?.kind === "skill" ? (
+    <SkillSourceEditor
+      skill={selected}
+      perEngine={selectedInfo?.perEngine}
+      onToggleEngine={(engine) => {
+        if (selectedInfo?.perEngine) void setSkillEngines(selectedInfo.name, selectedInfo.perEngine, engine);
+      }}
+      engineBusy={bulkBusy || engineBusyName === selected.name}
+      content={editContent}
+      loading={loading}
+      saving={saving}
+      mutationBusy={saving || deleting || bulkBusy}
+      error={error}
+      readError={sourceQuery.error?.message ?? null}
+      onRetry={() => void sourceQuery.refetch()}
+      onChange={setEditContent}
+      onSave={() => void saveEdit()}
+      onCancel={cancel}
+      onDelete={() => {
+        const { kind: _kind, ...target } = selected;
+        setPendingDelete(target);
+      }}
+    />
+  ) : null;
 
   return (
     <div className={cn("mx-auto flex h-full w-full min-h-0 flex-col", PANEL_MAX_W.form)}>
@@ -698,6 +742,20 @@ export function SkillsPanel() {
         className="mb-3"
         title="Skills"
       />
+
+      {library.error && (
+        <ErrorNote className="mb-3" action={<Button variant="ghost" onClick={() => void library.refetch()}>{t("common.retry")}</Button>}>
+          {library.error.message}
+        </ErrorNote>
+      )}
+      {bundleQuery.error && (
+        <ErrorNote className="mb-3" action={<Button variant="ghost" onClick={() => void bundleQuery.refetch()}>{t("common.retry")}</Button>}>
+          {bundleQuery.error.message}
+        </ErrorNote>
+      )}
+      {error && (selected === null || (view !== "library" && !(selected.kind === "skill" && selected.source === "project"))) && (
+        <ErrorNote className="mb-3">{error}</ErrorNote>
+      )}
 
       {/* 三个 tab,形状照 `WorkflowsPanel`:段控 + `role="tabpanel"`。
           ⚠️ 面板用 `hidden` **类**藏,不用 `hidden` **属性** —— 那个 div 同时带
@@ -737,10 +795,16 @@ export function SkillsPanel() {
         })}
       </div>
 
+      {view === "nodes" && nodeInventory.error && (
+        <ErrorNote className="mb-3" action={<Button variant="ghost" onClick={() => void nodeInventory.refetch()}>{t("common.retry")}</Button>}>
+          {nodeInventory.error.message}
+        </ErrorNote>
+      )}
       {/* ── 节点总览:整页,不掺左右栏(它本来就没有"选一个去编辑"这回事) ── */}
       {view === "nodes" && (
         <SkillNodesView
-          skills={panelSkills}
+          skills={nodeInventory.data?.projectPath === activeProjectPath
+            ? nodeInventory.data?.skills ?? panelSkills : panelSkills}
           onJumpToWorkflow={() => {
             // 跳到「工作流」那一页 —— 那边自己能选中这一份。这里不传 id:
             // `setSettingsOpen` 只认 section,选中态是那个页面自己的事。
@@ -752,38 +816,30 @@ export function SkillsPanel() {
 
       {/* ── 项目:整页(复制按钮 + 项目自己的技能列表),也走单栏 ── */}
       {view === "project" && (
-        // 三段:**预设**(跨项目的"要哪几个") → **当前项目**(它自己装了什么 +
-        // 从总库复制) → **跨项目总览**(每个项目各装了什么)。
-        //
-        // 顺序是有意的:从"通用的那套"往下走到"这一个项目",再到"所有项目" ——
-        // 用户的动作大多发生在上面两段,总览是拿来看的。
+        // Select the managed project first. Presets and the read-only overview
+        // remain available, but never choose or mutate the active chat project.
         <div className="min-h-0 flex-1 space-y-4 overflow-auto pr-1">
-          <SkillPresetsView
-            librarySkills={panelSkills}
-            onCopyPreset={(skills) => {
-              // 用预设复制 = 把那一套勾上,再走同一条复制路径。
-              // **不另开一条实现** —— 复制的语义(不覆盖、逐条回报)只有一份。
-              setChecked(new Set(skills));
-            }}
-          />
           <ProjectSkillsView
+            project={project}
+            projects={projects}
+            onSelectProject={setManagedProjectId}
             skills={projectSkills}
-            loading={listLoading}
+            loading={projectLoading}
+            error={projectQuery.error}
+            onRetry={() => void projectQuery.refetch()}
             selected={[...checked]}
-            onToggleSelect={(name) =>
-              setChecked((prev) => {
-                const next = new Set(prev);
-                if (next.has(name)) next.delete(name);
-                else next.add(name);
-                return next;
-              })
-            }
             onClearSelection={() => setChecked(new Set())}
-            onCopied={() => {
-              void loadPanelSkills();
-              setOverviewKey((n) => n + 1);
+            onCopied={async () => {
+              await projectQuery.refetch();
+              void reloadSkills();
+              setOverviewKey((key) => key + 1);
             }}
             onGoToLibrary={() => setView("library")}
+            onEdit={(skill) => startEdit(skill, projectPath)}
+          />
+          <SkillPresetsView
+            librarySkills={panelSkills}
+            onCopyPreset={(skills) => setChecked(new Set(skills))}
           />
           <SkillProjectOverview refreshKey={overviewKey} />
         </div>
@@ -910,7 +966,11 @@ export function SkillsPanel() {
                   tabIndex={0}
                   onClick={() => toggleGroupExpanded(g.id)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") toggleGroupExpanded(g.id);
+                    if (e.target !== e.currentTarget) return;
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      toggleGroupExpanded(g.id);
+                    }
                   }}
                   className="flex cursor-pointer select-none items-center rounded px-2.5 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-content-subtle/80 hover:text-content-subtle"
                 >
@@ -919,7 +979,7 @@ export function SkillsPanel() {
                   ) : (
                     <IconChevronDown size={10} className="shrink-0" />
                   )}
-                  <span className="ml-1 truncate" title={g.label}>
+                  <span className="ml-1 min-w-0 flex-1 truncate" title={g.label}>
                     {g.label}
                   </span>
                   <span className="ml-1 shrink-0 tabular-nums normal-case">{g.skills.length}</span>
@@ -933,18 +993,20 @@ export function SkillsPanel() {
                     />
                   )}
                   {groupMode === "bundle" && deletableCount > 0 && (
-                    <button
-                      type="button"
+                    <Button
+                      variant="ghost"
+                      size="icon"
                       title={t("settings.skills.groupDeleteTitle")}
-                      disabled={bulkBusy}
+                      aria-label={`${t("settings.skills.groupDeleteTitle")} · ${g.label}`}
+                      disabled={bulkBusy || deleting || saving}
                       onClick={(e) => {
                         e.stopPropagation();
                         setPendingGroupDelete({ id: g.id, label: g.label, skills: g.skills });
                       }}
-                      className="ml-1 shrink-0 rounded p-0.5 text-content-subtle/50 transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-50"
+                      className="ml-1 h-5 w-5 shrink-0 text-content-subtle hover:text-danger"
                     >
-                      <IconTrash size={10} />
-                    </button>
+                      <IconTrash size={12} />
+                    </Button>
                   )}
                 </div>
                 {!isCollapsed &&
@@ -985,7 +1047,8 @@ export function SkillsPanel() {
                       )}
                       <button
                         type="button"
-                        onClick={() => void startEdit(s)}
+                        onClick={() => startEdit(s)}
+                        disabled={saving || deleting || bulkBusy}
                         className="min-w-0 flex-1 text-left"
                       >
                         <div className="flex items-center gap-1.5">
@@ -1001,6 +1064,23 @@ export function SkillsPanel() {
                           </span>
                         </div>
                       </button>
+                      {!isReadOnlySkill(s.source) && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          data-testid="skill-row-delete"
+                          title={t("settings.skills.deleteSkillTitle")}
+                          aria-label={`${t("settings.skills.deleteSkillTitle")} · ${s.name}`}
+                          disabled={deleting || bulkBusy || saving}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setPendingDelete({ source: s.source, name: s.name });
+                          }}
+                          className="ml-auto h-5 w-5 shrink-0 text-content-subtle hover:text-danger"
+                        >
+                          <IconTrash size={12} />
+                        </Button>
+                      )}
                     </div>
                   );
                   })}
@@ -1022,43 +1102,23 @@ export function SkillsPanel() {
               onSave={() => void saveNew()}
               onCancel={cancel}
             />
-          ) : selected.kind === "skill" ? (
-            <SkillSourceEditor
-              skill={selected}
-              perEngine={
-                panelSkills.find(
-                  (s) => s.source === selected.source && s.name === selected.name,
-                )?.perEngine
-              }
-              onToggleEngine={(engine) => {
-                const info = panelSkills.find(
-                  (s) => s.source === selected.source && s.name === selected.name,
-                );
-                if (info?.perEngine) {
-                  void setSkillEngines(info.name, info.perEngine, engine);
-                }
-              }}
-              engineBusy={bulkBusy || engineBusyName === selected.name}
-              content={editContent}
-              loading={loading}
-              saving={saving}
-              error={error}
-              onChange={setEditContent}
-              onSave={() => void saveEdit()}
-              onCancel={cancel}
-              onDelete={() => {
-                const target = panelSkills.find(
-                  (s) => s.source === selected.source && s.name === selected.name,
-                );
-                // selected is editable-scope; the found row matches it.
-                if (target) {
-                  setPendingDelete({ source: target.source as PanelSkillSource, name: target.name });
-                }
-              }}
-            />
-          ) : null}
+          ) : selected.kind === "skill" && selected.source !== "project" ? editor : <EmptyDetail />}
         </div>
       </div>
+
+      <Dialog.Root open={selected?.kind === "skill" && selected.source === "project"}
+        onOpenChange={(open) => { if (!open) cancel(); }}>
+        <Dialog.Portal>
+          <Dialog.Backdrop />
+          <Dialog.Popup className="flex max-h-[90vh] w-[760px] max-w-[95vw] flex-col overflow-auto p-4">
+            <Dialog.Title>{t("settings.skills.projectEditorTitle")}</Dialog.Title>
+            <Dialog.Description className="mb-3 break-all font-mono text-xs">
+              {selected?.kind === "skill" ? selected.projectPath : ""}
+            </Dialog.Description>
+            {selected?.kind === "skill" && selected.source === "project" && editor}
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
 
       {/* ───────── Delete confirmation ───────── */}
       <ConfirmDialog
@@ -1074,6 +1134,9 @@ export function SkillsPanel() {
             {t("settings.skills.deleteDescMid")}
             {pendingDelete?.name}
             {t("settings.skills.deleteDescPost")}
+            {pendingDelete?.projectPath && (
+              <span className="mt-2 block break-all font-mono">{pendingDelete.projectPath}</span>
+            )}
           </>
         }
         confirmText={t("common.delete")}
@@ -1128,7 +1191,9 @@ function SourceBadge({ source }: { source: SkillSource }) {
         builtin ? "bg-info/12 text-info" : "bg-surface-hover text-content-subtle",
       )}
     >
-      {builtin ? t("settings.skills.sourceBuiltin") : t("settings.skills.sourceGlobal")}
+      {builtin ? t("settings.skills.sourceBuiltin")
+        : source === "project" ? t("settings.skills.sourceProject")
+        : source === "plugin" ? t("settings.skills.groupPlugin") : t("settings.skills.sourceGlobal")}
     </span>
   );
 }
@@ -1149,7 +1214,10 @@ function SkillSourceEditor({
   content,
   loading,
   saving,
+  mutationBusy,
   error,
+  readError,
+  onRetry,
   onChange,
   onSave,
   onCancel,
@@ -1165,7 +1233,10 @@ function SkillSourceEditor({
   content: string | null;
   loading: boolean;
   saving: boolean;
+  mutationBusy: boolean;
   error: string | null;
+  readError: string | null;
+  onRetry: () => void;
   onChange: (v: string) => void;
   onSave: () => void;
   onCancel: () => void;
@@ -1232,14 +1303,20 @@ function SkillSourceEditor({
           </span>
         </div>
       )}
-      {loading ? (
+      {readError ? (
+        <ErrorNote action={<Button variant="ghost" onClick={onRetry}>{t("common.retry")}</Button>}>
+          {readError}
+        </ErrorNote>
+      ) : loading ? (
         <LoadingNote label={t("common.loading")} />
       ) : (
         <textarea
+          data-testid="skill-source-input"
+          aria-label={t("settings.skills.rawSource")}
           value={content ?? ""}
           onChange={(e) => onChange(e.target.value)}
           spellCheck={false}
-          readOnly={readOnly}
+          readOnly={readOnly || mutationBusy}
           className={cn(
             "min-h-[300px] flex-1 resize-y rounded border border-edge px-2.5 py-2 font-mono text-[0.7857em] leading-relaxed text-content placeholder:text-content-subtle focus:border-accent focus:outline-none",
             readOnly ? "cursor-default bg-surface-muted/40" : "bg-surface",
@@ -1247,20 +1324,23 @@ function SkillSourceEditor({
           placeholder={t("settings.skills.sourcePlaceholder")}
         />
       )}
+      {!loading && !readError && content === "" && (
+        <ErrorNote tone="warning" className="mt-2">{t("settings.skills.emptySource")}</ErrorNote>
+      )}
       {error && <ErrorNote className="mt-2">{error}</ErrorNote>}
       <div className="mt-2 flex items-center gap-2">
         {!readOnly && (
-          <Button variant="danger" size="sm" onClick={onDelete} title={t("settings.skills.deleteSkillTitle")}>
+          <Button variant="danger" size="sm" onClick={onDelete} disabled={mutationBusy} title={t("settings.skills.deleteSkillTitle")}>
             <IconTrash size={12} />
             {t("common.delete")}
           </Button>
         )}
         <div className="flex-1" />
-        <Button variant="ghost" size="sm" onClick={onCancel}>
+        <Button variant="ghost" size="sm" onClick={onCancel} disabled={mutationBusy}>
           {readOnly ? t("common.close") : t("common.cancel")}
         </Button>
         {!readOnly && (
-          <Button variant="primary" size="sm" onClick={onSave} disabled={saving || loading}>
+          <Button variant="primary" size="sm" onClick={onSave} disabled={mutationBusy || loading || !!readError || content === null}>
             {saving ? t("settings.saving") : t("common.save")}
           </Button>
         )}

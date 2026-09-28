@@ -35,6 +35,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { atomicWrite } from "./appContext.js";
+import { SKILL_NAME_RE } from "@contracts/ipc/skills";
 
 export const SKILL_ENGINES = ["claude", "codex", "pi"] as const;
 export type SkillEngine = (typeof SKILL_ENGINES)[number];
@@ -193,8 +194,10 @@ export function parseSkillFrontmatter(md: string): {
 /**
  * Scan one skills root: skill name → directory. A skill is a direct child
  * directory carrying SKILL.md; the frontmatter `name` (or the directory name
- * as fallback) is the identity engines match on. Symlinks are followed via
- * realpath. First occurrence wins on name collisions; never throws.
+ * as fallback) is the identity engines match on. Hidden containers, invalid
+ * names and directories without a readable SKILL.md are excluded. Symlinks
+ * are followed for reads; returned paths retain the link identity. First
+ * occurrence wins on name collisions; never throws.
  */
 export function skillNamesInRoot(rootDir: string): Map<string, string> {
   const byName = new Map<string, string>();
@@ -205,24 +208,24 @@ export function skillNamesInRoot(rootDir: string): Map<string, string> {
     return byName;
   }
   for (const entry of entries) {
+    // Hidden containers such as Codex's .system are not individual skills.
+    if (entry.name.startsWith(".")) continue;
     if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
     const dir = path.join(rootDir, entry.name);
-    // statSync follows symlinks — a linked skill passes, a broken link or a
-    // link to a file is skipped.
     try {
+      // Follow links for discovery, but return the lexical directory below:
+      // deleting a linked skill must unlink it, never delete the real target.
       if (!statSync(dir).isDirectory()) continue;
+      const file = path.join(dir, "SKILL.md");
+      if (!statSync(file).isFile()) continue;
+      const md = readFileSync(file, "utf-8");
+      const name = parseSkillFrontmatter(md).name?.trim() || entry.name;
+      if (!SKILL_NAME_RE.test(name)) continue;
+      if (!byName.has(name)) byName.set(name, dir);
     } catch {
-      continue;
+      // A missing/unreadable SKILL.md is not an installed skill. In contrast,
+      // a genuinely empty file is readable and falls back to its folder name.
     }
-    let name: string | undefined;
-    try {
-      const md = readFileSync(path.join(dir, "SKILL.md"), "utf-8");
-      name = parseSkillFrontmatter(md).name?.trim();
-    } catch {
-      // No readable SKILL.md — fall back to the directory name below.
-    }
-    const finalName = name || entry.name;
-    if (!byName.has(finalName)) byName.set(finalName, dir);
   }
   return byName;
 }

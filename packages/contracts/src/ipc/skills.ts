@@ -112,10 +112,10 @@ export interface SkillInfo {
   perEngine?: SkillEngineState;
 }
 
-/** List skills for the composer `/` menu and the settings panel. Always
- *  resolves (degrades to an empty list on IO errors). `projectPath` is
- *  accepted for RPC signature stability but IGNORED — the universal library
- *  is the only scope since external workspaces are no longer inherited. */
+/** List discovered skills. With projectPath, the selected project's skills
+ *  override same-name global entries (composer semantics). The global library
+ *  editor omits projectPath so its independent global copies remain visible.
+ *  Hidden containers and folders without a readable SKILL.md are not skills. */
 export const SkillsListSchema = z.object({
   projectPath: z.string().optional(),
 });
@@ -180,11 +180,10 @@ export const SkillsEnginesSetBulkSchema = z.object({
 });
 export type SkillsEnginesSetBulkInput = z.infer<typeof SkillsEnginesSetBulkSchema>;
 
-/** Read one skill's full SKILL.md source. Returns the complete file text (no
- *  truncation — skills can be large). A missing file resolves to empty
- *  content so the editor opens cleanly for a not-yet-written skill.
- *  `projectPath` is accepted for RPC signature stability but IGNORED (the
- *  universal library is the only scope). */
+/** Read the complete SKILL.md source without truncation. Project reads require
+ *  an absolute projectPath. The logical name is resolved through discovery,
+ *  not assumed to equal a folder name. Missing/unreadable files reject; only
+ *  an actual empty file returns empty content. New skills use skills.save. */
 export const SkillsReadSchema = z.object({
   projectPath: z.string().optional(),
   /** Which skills root to read from. Wider than the write schemas below:
@@ -192,7 +191,7 @@ export const SkillsReadSchema = z.object({
    *  writable root but ARE readable — the settings panel shows a built-in
    *  skill's SKILL.md read-only. */
   source: z.enum(SKILL_READ_SOURCES),
-  /** Skill name (= directory name under <root>/skills/). */
+  /** Discovered logical name (frontmatter name or directory fallback). */
   name: z.string().regex(SKILL_NAME_RE, "invalid skill name"),
 });
 export type SkillsReadInput = z.infer<typeof SkillsReadSchema>;
@@ -244,7 +243,7 @@ export type SkillsDeleteInput = z.infer<typeof SkillsDeleteSchema>;
 export const SkillsCopyToProjectSchema = z.object({
   /** 项目根目录（绝对路径）。没有它就没有"项目"可言。 */
   projectPath: z.string().min(1),
-  /** 要复制的技能名（通用库里的目录名）。 */
+  /** 要复制的逻辑技能名（由宿主解析实际目录）。 */
   names: z.array(z.string().regex(SKILL_NAME_RE, "invalid skill name")).min(1),
 });
 export type SkillsCopyToProjectInput = z.infer<typeof SkillsCopyToProjectSchema>;

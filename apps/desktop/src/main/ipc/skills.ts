@@ -156,55 +156,23 @@ async function readTextHead(filePath: string, maxBytes = 8192): Promise<string |
 
 /**
  * Scan one skills root dir and append its skills to `into`. Each direct child
- * directory is treated as a skill; its SKILL.md frontmatter supplies the
- * metadata, with the directory name as the `name` fallback. Symlinks are
- * followed (realpath). Any IO error is caught and skipped — this function
+ * directory must contain a readable SKILL.md; frontmatter supplies the name,
+ * with the directory name as fallback. Hidden/system containers are not skills.
+ * Linked skills remain supported. Any IO error is caught and skipped — this function
  * never throws. Frontmatter parsing lives in lib/skillEngines.ts (shared
  * with the engine providers' name scans).
  */
 async function scanSkillsRoot(rootDir: string, source: SkillSource, into: Map<string, SkillInfo>): Promise<void> {
-  const root = await safeRealPath(rootDir);
-  if (!root) return;
-  let entries: import("node:fs").Dirent[];
-  try {
-    entries = await fs.readdir(root, { withFileTypes: true });
-  } catch {
-    return; // not present / unreadable — nothing to list
-  }
-  for (const entry of entries) {
-    // A skill is a directory — either a real one or a symlink pointing at a
-    // directory (common when linking a shared checkout like gstack). NOTE:
-    // `Dirent.isDirectory()` does NOT follow symlinks — a symlink reports
-    // `isSymbolicLink()` and `isDirectory() === false` — so we must accept
-    // both and let `safeRealPath` resolve the link to its real target. Plain
-    // files (e.g. .DS_Store) fall through and are skipped.
-    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-    const skillPath = path.join(root, entry.name);
-    const real = await safeRealPath(skillPath);
-    if (!real) continue;
-    // Guard against symlinks that resolve to a file (not a dir) — `realpath`
-    // follows the link, so a stat on the resolved path tells the true type.
-    let isDir = true;
-    try {
-      const st = await fs.stat(real);
-      isDir = st.isDirectory();
-    } catch {
-      isDir = false;
-    }
-    if (!isDir) continue;
-
-    const md = await readTextHead(path.join(real, "SKILL.md"));
-    const fm = md ? parseSkillFrontmatter(md) : {};
-    const name = fm.name?.trim() || entry.name;
-    // ⚠️ **先到的留着,不让后到的覆盖。** 调用方按**优先级从高到低**扫同一个 map
-    // （项目 → 通用库 → 插件），先扫进来的就是该赢的那个。
-    //
-    // 这里从前是无条件的 `into.set(...)`,而注释写的却是"先到的留着" —— 两者不一致
-    // 的后果实测过(2026-09-20):项目技能先扫进来、紧接着被通用库那一遍**同名覆盖**成
-    // `source: "global"`,于是界面上「项目」那一栏**筛不出来**,用户看到的现象是
-    // 「复制之后为什么不显示」。注释写的是意图,`set` 做的是另一回事 —— 这类不一致
-    // 只能靠断言钉住(见 `skill-copy-smoke` 的「复制之后 list 看得到吗」那一段)。
+  // The engine scan is also the name-to-directory authority for read, save,
+  // delete and copy. A frontmatter name is not necessarily a folder name.
+  for (const [name, skillDir] of skillNamesInRoot(rootDir)) {
+    // First occurrence wins: project > global > contributed. The settings
+    // library requests no projectPath, so project overrides cannot hide the
+    // independent global copy there; composer precedence remains unchanged.
     if (into.has(name)) continue;
+    const md = await readTextHead(path.join(skillDir, "SKILL.md"));
+    if (md === null) continue; // disappeared since discovery
+    const fm = parseSkillFrontmatter(md);
     into.set(name, {
       name,
       description: fm.description?.trim() ?? "",
@@ -333,9 +301,8 @@ async function scanExternalSkillsRoot(
   }
   for (const entry of entries) {
     if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-    // Skip Codex's system skills directory - those are built-in, not user
-    // skills meant for import.
-    if (entry.name === ".system") continue;
+    // Hidden containers, including Codex's .system, are not importable skills.
+    if (entry.name.startsWith(".")) continue;
     const skillPath = path.join(root, entry.name);
     const real = await safeRealPath(skillPath);
     if (!real) continue;
@@ -349,7 +316,8 @@ async function scanExternalSkillsRoot(
     if (!isDir) continue;
 
     const md = await readTextHead(path.join(real, "SKILL.md"));
-    const fm = md ? parseSkillFrontmatter(md) : {};
+    if (md === null) continue;
+    const fm = parseSkillFrontmatter(md);
     const name = fm.name?.trim() || entry.name;
     // Dedupe within this tool only: if the same name appeared in another tool,
     // we still add it (different sourcePath). But within one tool's tree,
@@ -519,22 +487,19 @@ export async function listSkillsForProject(projectPath: string | undefined): Pro
   });
 }
 
-/** Read a skill directory's SKILL.md. Any failure → "" (the editor shows an
- *  empty buffer rather than an error dialog for a dir without SKILL.md). */
+/** Read the complete source. Only an actual empty file yields ""; IO failures
+ *  reject so users cannot accidentally save a failed read as an empty file. */
 async function readSkillMd(skillDir: string): Promise<string> {
-  try {
-    return await fs.readFile(path.join(skillDir, "SKILL.md"), "utf-8");
-  } catch {
-    return "";
-  }
+  // Do not turn ENOENT/EACCES/etc. into an editable empty buffer. The renderer
+  // shows the error and disables saving until a successful read.
+  return fs.readFile(path.join(skillDir, "SKILL.md"), "utf-8");
 }
 
 /** Locate a contributed ("plugin" / "builtin") skill's directory among the
  *  enabled plugins' skill roots + the built-in one.
  *
- *  Contributed skills live at `<skillsRoot>/<name>/SKILL.md` — note the extra
- *  level compared to global/project, where the resolved root already IS the
- *  skills directory. Several roots can carry the same name (two plugins each
+ *  Resolve the discovered logical name, not a guessed folder name. Several
+ *  roots can carry the same name (two plugins each
  *  shipping a `pdf`); the first hit wins, mirroring the listing's gap-fill
  *  order. Containment-guarded so a name like "../x" can't escape the root. */
 async function contributedSkillDir(
@@ -544,22 +509,16 @@ async function contributedSkillDir(
   const wantBuiltin = source === "builtin";
   for (const { rootDir, builtin } of await getPluginSkillSources()) {
     if (builtin !== wantBuiltin) continue;
-    const dir = path.join(rootDir, name);
-    if (!pathWithin(rootDir, dir)) continue;
-    try {
-      const st = await fs.stat(path.join(dir, "SKILL.md"));
-      if (st.isFile()) return dir;
-    } catch {
-      /* not in this root — keep looking */
-    }
+    const dir = skillNamesInRoot(rootDir).get(name);
+    if (dir && pathWithin(rootDir, dir)) return dir;
   }
   return null;
 }
 
 /** Shared skills-read core — used by both the desktop IPC handler and the
- *  mobile RPC whitelist. `projectPath` is accepted for RPC signature stability
- *  but IGNORED (the universal library is the only scope). Returns "" when a
- *  contributed skill doesn't exist or the skill dir escapes the root.
+ *  mobile RPC whitelist. Project reads require the selected absolute path.
+ *  Missing/unreadable skills and invalid identities reject, never return a
+ *  misleading empty document.
  *
  *  Contributed skills have no WRITABLE root (see `resolveSkillRootForRequest`)
  *  but they are readable — the settings panel shows a built-in skill's
@@ -570,15 +529,19 @@ export async function readSkillForProject(
   source: SkillSource,
   name: string,
 ): Promise<string> {
+  // This core is also called outside Electron IPC, so keep the same guard.
+  if (!SKILL_NAME_RE.test(name)) throw new Error("Invalid skill name");
   if (source === "plugin" || source === "builtin") {
     const dir = await contributedSkillDir(source, name);
-    return dir ? readSkillMd(dir) : "";
+    if (!dir) throw new Error(`Skill "${name}" was not found or has no readable SKILL.md`);
+    return readSkillMd(dir);
   }
   const root = resolveSkillRootForRequest(source, projectPath);
-  if (!root) return "";
-  const skillDir = path.join(root, name);
-  // Containment guard: the resolved skill dir must stay inside the root.
-  if (!pathWithin(root, skillDir)) return "";
+  if (!root) throw new Error("An absolute project path is required for project skills");
+  const skillDir = skillNamesInRoot(root).get(name);
+  if (!skillDir || !pathWithin(root, skillDir)) {
+    throw new Error(`Skill "${name}" was not found or has no readable SKILL.md`);
+  }
   return readSkillMd(skillDir);
 }
 
@@ -905,12 +868,21 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.SKILLS_SAVE, async (_evt, raw) => {
     const input = SkillsSaveSchema.parse(raw);
     const root = resolveSkillRootForRequest(input.source, input.projectPath);
-    if (!root) return { ok: false, error: "该来源为只读" };
-    const skillDir = path.join(root, input.name);
+    if (!root) return { ok: false, error: "项目路径无效（必须是绝对路径）" };
+    const discovered = skillNamesInRoot(root);
+    const existingDir = discovered.get(input.name);
+    const skillDir = existingDir ?? path.join(root, input.name);
     if (!pathWithin(root, skillDir)) {
       return { ok: false, error: "无效的 skill 路径" };
     }
     try {
+      if (!existingDir) {
+        const occupied = await fs.lstat(skillDir).then(() => true, (err: NodeJS.ErrnoException) => {
+          if (err.code === "ENOENT") return false;
+          throw err;
+        });
+        if (occupied) return { ok: false, error: "同名目录已存在，但不是这个技能；未覆盖任何文件" };
+      }
       // Rename (move) the skill directory when a new name is requested and it
       // actually differs. Reserved for future rename UI; v1 leaves it unset.
       if (input.newName && input.newName !== input.name) {
@@ -918,6 +890,11 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
         if (!pathWithin(root, newDir)) {
           return { ok: false, error: "无效的新 skill 名" };
         }
+        const occupied = discovered.has(input.newName) || await fs.lstat(newDir).then(() => true, (err: NodeJS.ErrnoException) => {
+          if (err.code === "ENOENT") return false;
+          throw err;
+        });
+        if (occupied) return { ok: false, error: "新的 skill 名已被占用；未覆盖任何文件" };
         await fs.rename(skillDir, newDir);
       }
       const targetDir = input.newName && input.newName !== input.name
@@ -937,8 +914,9 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.SKILLS_DELETE, async (_evt, raw) => {
     const input = SkillsDeleteSchema.parse(raw);
     const root = resolveSkillRootForRequest(input.source, input.projectPath);
-    if (!root) return { ok: false, error: "该来源为只读" };
-    const skillDir = path.join(root, input.name);
+    if (!root) return { ok: false, error: "项目路径无效（必须是绝对路径）" };
+    const skillDir = skillNamesInRoot(root).get(input.name);
+    if (!skillDir) return { ok: false, error: "技能不存在或无法读取 SKILL.md；未删除任何文件" };
     if (!pathWithin(root, skillDir)) {
       return { ok: false, error: "无效的 skill 路径" };
     }
@@ -982,11 +960,17 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
       return result;
     }
     const srcRoot = resolveSkillRoot();
+    const sourceSkills = skillNamesInRoot(srcRoot);
+    const destinationSkills = skillNamesInRoot(destRoot);
 
     for (const name of input.names) {
       // 源端也要过一遍包含校验：`name` 虽然在 schema 层已经被正则挡了，但这是
       // 写盘操作，多一道 resolve 比对不算贵。
-      const srcDir = path.join(srcRoot, name);
+      const srcDir = sourceSkills.get(name);
+      if (!srcDir) {
+        result.failed.push({ name, reason: "通用库里没有这个技能" });
+        continue;
+      }
       if (!pathWithin(srcRoot, srcDir)) {
         result.failed.push({ name, reason: "无效的 skill 名" });
         continue;
@@ -1004,13 +988,17 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
         }
         // **不覆盖已有的。** 项目里那个可能是用户改过的版本，复制一次把它冲掉
         // 是不可逆的（而且用户多半只是想"再放一个进去"，没打算覆盖）。
-        const exists = await fs.stat(destDir).then(() => true, () => false);
+        const exists = destinationSkills.has(name) || await fs.lstat(destDir).then(() => true, (err: NodeJS.ErrnoException) => {
+          if (err.code === "ENOENT") return false;
+          throw err;
+        });
         if (exists) {
           result.skipped.push({ name, reason: "项目里已经有同名的了（没有覆盖）" });
           continue;
         }
         await fs.mkdir(destRoot, { recursive: true });
-        await fs.cp(srcDir, destDir, { recursive: true });
+        await fs.cp(srcDir, destDir, { recursive: true, force: false, errorOnExist: true });
+        destinationSkills.set(name, destDir);
         result.copied.push(name);
       } catch (err) {
         result.failed.push({ name, reason: (err as Error).message });
@@ -1056,7 +1044,7 @@ async function writePresets(root: string, presets: SkillPreset[]): Promise<void>
 }
 
 /**
- * 列出某个技能根下的**直接子目录名**（就是技能名）。
+ * 列出某个技能根下有 SKILL.md 的**逻辑技能名**（不一定等于目录名）。
  *
  * **目录不存在返回 `null`**，与"目录存在但是空的"（返回 `[]`）分开 —— 前者是
  * 绝大多数项目的常态（还没放过技能），界面不该把它画成异常。这个区分是跨项目总览
@@ -1066,17 +1054,14 @@ async function writePresets(root: string, presets: SkillPreset[]): Promise<void>
  * 会先把技能内部的 `scripts/` `references/` 当成技能名报出来。
  */
 async function listSkillDirNames(root: string): Promise<string[] | null> {
-  let entries: import("node:fs").Dirent[];
   try {
-    entries = await fs.readdir(root, { withFileTypes: true });
+    await fs.readdir(root, { withFileTypes: true });
   } catch {
     return null; // 不存在 / 读不动 —— 调用方按 missing 处理
   }
-  return entries
-    .filter((e) => e.isDirectory() || e.isSymbolicLink())
-    .map((e) => e.name)
-    .filter((n) => !n.startsWith("."))
-    .sort();
+  // A project overview must count the same logical skills as the editor,
+  // not .system/support folders or aliased directory names.
+  return [...skillNamesInRoot(root).keys()].sort();
 }
 
 /* ── 技能预设（"一套技能"） ──

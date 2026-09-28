@@ -147,13 +147,13 @@ try {
   writeFileSync(join(skillsRoot, "alpha", "SKILL.md"), "---\nname: alpha\ndescription: A\n---\n", "utf-8");
   mkdirSync(join(skillsRoot, "beta"), { recursive: true });
   writeFileSync(join(skillsRoot, "beta", "SKILL.md"), "---\ndescription: no name field\n---\n", "utf-8"); // 目录名兜底
-  mkdirSync(join(skillsRoot, "empty-dir"), { recursive: true }); // 无 SKILL.md → 目录名兜底
+  mkdirSync(join(skillsRoot, "empty-dir"), { recursive: true }); // 无 SKILL.md → 不是技能
   writeFileSync(join(skillsRoot, "plain-file.txt"), "not a skill", "utf-8"); // 文件 → 跳过
 
   const names = skillNamesInRoot(skillsRoot);
   eq("frontmatter 名优先", names.get("alpha") !== undefined, true);
   eq("无 name 字段 → 目录名兜底", names.get("beta") !== undefined, true);
-  eq("无 SKILL.md 的目录也算技能(目录名)", names.get("empty-dir") !== undefined, true);
+  eq("无 SKILL.md 的目录不是技能", names.get("empty-dir"), undefined);
   eq("普通文件跳过", names.get("plain-file.txt"), undefined);
 
   // 矩阵:只给 claude 留 alpha(beta/empty-dir 对 claude 禁用)
