@@ -36,8 +36,48 @@
  * - 一条都没挂上 → **这一步失败**。转录成功而挂回全灭,不该显示成绿的。
  * - 挂上一部分 → 成功,但把没挂上的**逐条列在 summary 里**(与脚本自己对待"转不成的
  *   那几条"是同一个口径:不因一条坏的把好的一起毙掉,但绝不闷声吞掉)。
+ * - **导入那一步失败,不取消挂回。** 两件事互不相干:挂回针对的是**早就在库里**的条目,
+ *   而导入是往库里添新的。早先这里是「导入失败 → status 翻成 failed → 挂回整批早退」,
+ *   于是那些本来能挂上的 md **既没挂、也没在 summary 里留下一个字** —— 正是本文件开头
+ *   要根除的那种"转都转了,就是没挂上,也不报错"。现在两步各跑各的、失败原因合并上报。
  */
 import type { NodeOutcome } from "@contracts/nodeType";
+import type { importAnyFiles } from "@main/library/importDispatch.js";
+import type { adoptMarkdownFile } from "@main/library/adoptMarkdown.js";
+
+/**
+ * 写库那几样能力 —— 由 `main/index.ts` 注入(`configureCodeNodeLibraryHost`)。
+ *
+ * ## 为什么注入而不是(动态)import
+ *
+ * 早先这里是 `await import("@main/library/...")`,意图是「绝大多数 code 节点与库无关,
+ * 别为此把库加载起来」。运行时确实如此,但**打包时**不是:esbuild 在不分块时会把
+ * 能静态解析的动态 import 照样内联。`importFiles` 接进来之后(→ `importDispatch` →
+ * pdf 管线 / `LibraryRepo` / `CollectionRepo` / `dataRoot` / `broadcast` → RuntimeManager
+ * → ssh2 原生模块),凡是 bundle 了 `codeExecutor` 的无头 smoke(execution-engine /
+ * module-workflow / module-phase2-e2e)都在打包阶段就挂了,而且报的是与它们毫不相干的
+ * 桩缺导出。与 `publicMcpSession.configurePublicMcpRuntime` 同一个套路:纯逻辑留在
+ * 这里,碰库的那一点从装配点注入。
+ *
+ * 没注入(无头 smoke / 应用装配前)而脚本又真的报了写库请求 → 这一步**失败**并写明原因,
+ * 不静默跳过。
+ */
+export interface CodeNodeLibraryHost {
+  importAnyFiles: typeof importAnyFiles;
+  adoptMarkdownFile: typeof adoptMarkdownFile;
+  notifyLibraryChanged(reason: string): void;
+}
+let libraryHost: CodeNodeLibraryHost | null = null;
+
+export function configureCodeNodeLibraryHost(host: CodeNodeLibraryHost): void {
+  libraryHost = host;
+}
+
+function hostUnavailable(outcome: NodeOutcome, what: string): NodeOutcome {
+  const error = `${what}不可用：文档库宿主未装配（code 节点报了写库请求，但当前进程没有文档库）`;
+  return { ...outcome, status: "failed", summary: [outcome.summary, error].filter((s) => s !== "").join("\n"), error };
+}
+
 
 /** 脚本报上来的一条挂回请求。 */
 interface AdoptRequest {
@@ -92,7 +132,7 @@ function requestsOf(outputs: unknown): AdoptRequest[] {
 /**
  * 把 code 节点报上来的挂回请求办掉,并把结果并进它的产出。
  *
- * 没有请求就**原样返回**那个 outcome(连 import 都不会发生,见下面的动态 import)。
+ * 没有请求就**原样返回**那个 outcome(不碰文档库)。
  */
 export async function applyHostActions(outcome: NodeOutcome): Promise<NodeOutcome> {
   if (outcome.status !== "success") return outcome;
@@ -113,8 +153,8 @@ async function applyImports(outcome: NodeOutcome): Promise<NodeOutcome> {
   const req = importOf(outcome.outputs);
   if (req === null) return outcome;
 
-  const { importAnyFiles } = await import("@main/library/importDispatch.js");
-  const { notifyLibraryChanged } = await import("@main/library/broadcast.js");
+  if (libraryHost === null) return hostUnavailable(outcome, "收进库");
+  const { importAnyFiles, notifyLibraryChanged } = libraryHost;
   const res = await importAnyFiles(req.paths, {
     mode: "files",
     ...(req.collectionIds.length > 0 ? { collectionIds: req.collectionIds } : {}),
@@ -139,14 +179,14 @@ async function applyImports(outcome: NodeOutcome): Promise<NodeOutcome> {
 }
 
 async function applyMarkdownAdoptions(outcome: NodeOutcome): Promise<NodeOutcome> {
-  if (outcome.status !== "success") return outcome;
+  // 这里**故意不看 status**:进到这个函数说明 code 节点本身是成功的(`applyHostActions`
+  // 已经挡过一道),此刻的 failed 只可能来自上一步的导入 —— 那跟挂回是两件事,不该连坐。
   const requests = requestsOf(outcome.outputs);
   if (requests.length === 0) return outcome;
 
-  // **动态 import**:挂回要牵出 `LibraryRepo` → sql.js 那一整条链。绝大多数 code 节点
-  // 与文档库毫无关系,没理由让它们(以及只装了执行器的冒烟测试)为此把库加载起来。
-  const { adoptMarkdownFile } = await import("@main/library/adoptMarkdown.js");
-  const { notifyLibraryChanged } = await import("@main/library/broadcast.js");
+  // 挂回要牵出 `LibraryRepo` → sql.js 那一整条链 —— 由装配点注入(见 `CodeNodeLibraryHost`)。
+  if (libraryHost === null) return hostUnavailable(outcome, "挂回 Markdown ");
+  const { adoptMarkdownFile, notifyLibraryChanged } = libraryHost;
 
   const adopted: Array<{ itemId: string; relPath: string; imageCount: number; missing: string[] }> = [];
   const failed: string[] = [];
@@ -197,14 +237,13 @@ async function applyMarkdownAdoptions(outcome: NodeOutcome): Promise<NodeOutcome
   const summary = [outcome.summary, ...lines].filter((s) => s !== "").join("\n");
 
   // 全灭 = 这一步失败。转录成功而一条都没挂上,显示成绿的等于把问题藏起来。
+  // 上一步(导入)若已经失败,错误原因**合起来报**,不覆盖掉先发生的那条。
   if (adopted.length === 0) {
-    return {
-      ...outcome,
-      status: "failed",
-      summary,
-      outputs,
-      error: `挂回文档库全部失败：${failed.join("；")}`,
-    };
+    const reasons = [outcome.error, `挂回文档库全部失败：${failed.join("；")}`].filter(
+      (s): s is string => typeof s === "string" && s !== "",
+    );
+    return { ...outcome, status: "failed", summary, outputs, error: reasons.join("；") };
   }
+  // 挂回成功,但**不覆写 status** —— 导入失败时这一步整体仍是失败的。
   return { ...outcome, summary, outputs };
 }
