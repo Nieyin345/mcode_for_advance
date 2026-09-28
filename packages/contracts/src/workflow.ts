@@ -353,10 +353,14 @@ export const WorkflowListEntrySchema = z.object({
   name: z.string(),
   description: z.string().optional(),
   icon: z.string().optional(),
-  /** 这个 id 是不是内置的(内置的默认版在代码里,不在这张表里)。 */
+  /** ⚠️ 内置退役(2026-09-26):自带工作流播种成普通行后**恒为 false**。字段留着
+   *  是兼容(preload/webApi/老快照都带着它),别再拿它分叉行为。 */
   builtin: z.boolean(),
-  /** 内置 + 用户改过 = true。界面据此显示「已修改 · 恢复默认」。 */
+  /** 同上,恒为 false(从前的语义是"内置 + 用户改过")。 */
   edited: z.boolean(),
+  /** 钉过「自定默认」(设置表 workflow.pinnedDefaults 里有快照)——
+   *  界面据此画「恢复默认」那颗按钮(见 restoreWorkflowDefault)。 */
+  pinned: z.boolean().optional(),
   /** 提示词型还是图型 —— 由有没有节点决定,不是另存的标志位。 */
   kind: z.enum(["prompt", "graph"]),
   /** 有触发器 = 自动化,没有 = 工作流(见 {@link WorkflowDocSchema} 的 `trigger`)。

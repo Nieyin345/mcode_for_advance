@@ -172,7 +172,7 @@ function eq(name: string, actual: unknown, expected: unknown): void {
 
 /* ────────────────────────── fixtures ────────────────────────── */
 
-/** A built-in: its name/description live in the dictionary, not in the data. */
+/** 软件自带的一份(内置退役,2026-09-26:builtin 恒 false,名称/说明就是数据)。 */
 const BUILTIN: WorkflowDoc = {
   id: "read",
   name: "文献精读",
@@ -181,7 +181,7 @@ const BUILTIN: WorkflowDoc = {
   prompt: "## 流程\n先定位,再通读。",
   nodes: [],
   edges: [],
-  builtin: true,
+  builtin: false,
   updatedAt: 0,
 };
 
@@ -376,7 +376,7 @@ function entryOf(doc: WorkflowDoc, edited = false): WorkflowListEntry {
 /* ────────────────────── 1. 可改的字段 / 脏 ────────────────────── */
 
 console.log("\nisIdentityLocked / isDocDirty");
-eq("内置:名称与说明锁定", isIdentityLocked(BUILTIN), true);
+eq("自带:名称与说明不再锁定(内置退役)", isIdentityLocked(BUILTIN), false);
 eq("自建:名称与说明可改", isIdentityLocked(CUSTOM), false);
 check("同一份文档不算脏", !isDocDirty(CUSTOM, CUSTOM));
 check("改了 prompt 算脏", isDocDirty({ ...CUSTOM, prompt: "改了" }, CUSTOM));
@@ -385,7 +385,7 @@ check("换了 edges 数组算脏", isDocDirty({ ...CUSTOM, edges: [] as Workflow
 // `updatedAt` 由主进程盖,草稿里那份永远是旧的;比它会让"刚存完"立刻又判成脏,自动
 // 保存就此进入死循环。
 check("只换 updatedAt 不算脏", !isDocDirty({ ...CUSTOM, updatedAt: 999 }, CUSTOM));
-check("内置:名字变了也不算脏(界面上显示的是词条)", !isDocDirty({ ...BUILTIN, name: "随便改" }, BUILTIN));
+check("自带:名字变了算脏(名称就是数据,内置退役)", isDocDirty({ ...BUILTIN, name: "随便改" }, BUILTIN));
 
 console.log("\nisNodeDeleteKey(键盘删除节点)");
 const key = (k: string, mods: Partial<{ ctrlKey: boolean; metaKey: boolean; altKey: boolean }> = {}) => ({
@@ -413,16 +413,16 @@ check("方向键不删", !isNodeDeleteKey(key("ArrowDown"), false));
 
 console.log("\nforSave");
 const savedBuiltin = forSave({ ...BUILTIN, name: "乱改", description: "乱改", prompt: "新流程" }, BUILTIN);
-eq("内置:名称还原成基线", savedBuiltin.name, BUILTIN.name);
-eq("内置:说明还原成基线", savedBuiltin.description, BUILTIN.description);
-eq("内置:流程文字照写", savedBuiltin.prompt, "新流程");
+eq("自带:名称照写(内置退役,forSave 不再还原)", savedBuiltin.name, "乱改");
+eq("自带:说明照写", savedBuiltin.description, "乱改");
+eq("自带:流程文字照写", savedBuiltin.prompt, "新流程");
 const savedCustom = forSave({ ...CUSTOM, name: "改过的名字" }, CUSTOM);
 eq("自建:原样通过", savedCustom.name, "改过的名字");
 // **这条是自动保存的防死循环闸**:`forSave` 丢掉的字段,`isDocDirty` 必须也忽略。
 // 否则存完之后那两个字段仍然不同,"脏"永远为真,防抖窗口会一个接一个地写下去。
-check("内置:存完之后不再判脏", !isDocDirty(savedBuiltin, savedBuiltin));
+check("自带:存完之后不再判脏", !isDocDirty(savedBuiltin, savedBuiltin));
 check(
-  "内置:存完之后 working 与基线也不判脏",
+  "自带:存完之后 working 与基线也不判脏(照写后两边字面相同)",
   !isDocDirty({ ...BUILTIN, name: "乱改", description: "乱改", prompt: "新流程" }, savedBuiltin),
 );
 check("自建:存完之后不再判脏", !isDocDirty(savedCustom, savedCustom));
@@ -433,12 +433,12 @@ check("自建:只有空格也算空", missingRequiredName({ ...CUSTOM, name: "  
 check("自建:有内容就能存", !missingRequiredName({ ...CUSTOM, name: " 我的流程 " }));
 // 内置的名称不可改,界面根本不会让它变空 —— 判据和 `isIdentityLocked` 对齐,
 // 否则内置会被误判成"存不下去",自动保存永远不触发。
-check("内置:不参与这条判断", !missingRequiredName({ ...BUILTIN, name: "" }));
+check("自带:同样参与(名称就是数据,空了就存不下去)", missingRequiredName({ ...BUILTIN, name: "" }));
 
 /* ─────────────────── 2. 「恢复默认」/「删除」/ 命名 ─────────────────── */
 
 console.log("\nremoveActionOf / uniqueWorkflowName");
-eq("内置 → 恢复默认", removeActionOf({ builtin: true }), "reset");
+eq("内置退役:builtin=true 也一律「删除」", removeActionOf({ builtin: true }), "delete");
 eq("自建 → 删除", removeActionOf({ builtin: false }), "delete");
 eq("名字没被占 → 原样", uniqueWorkflowName("新工作流", ["别的"]), "新工作流");
 eq("名字被占 → 加序号", uniqueWorkflowName("新工作流", ["新工作流"]), "新工作流 2");
@@ -1078,13 +1078,13 @@ eq("重叠处取上面那张", hitTestNode(stacked, 100, 30), "over");
 console.log("\nworkflowDisplayName / nodeTitle");
 check("read 是内置 id", isBuiltinWorkflowId("read"));
 check("wf_demo 不是内置 id", !isBuiltinWorkflowId("wf_demo"));
-eq("内置:zh 用中文词条", workflowDisplayName(entryOf(BUILTIN), "zh"), "文献精读");
-eq("内置:en 用英文词条", workflowDisplayName(entryOf(BUILTIN), "en"), "Paper reading");
+eq("自带:显示数据里的名字(内置退役,词条不再盖)", workflowDisplayName(entryOf(BUILTIN), "zh"), "文献精读");
+eq("自带:en 也显示数据名(用户拍板的代价)", workflowDisplayName(entryOf(BUILTIN), "en"), "文献精读");
 eq("自建:两种语言都用自己起的名字", workflowDisplayName(entryOf(CUSTOM), "en"), "我的流程");
 eq(
-  "内置:说明取词条(与选择器同源)",
+  "自带:说明也是数据(内置退役,词条不再盖)",
   workflowDisplayDescription(entryOf(BUILTIN), "en"),
-  "Read one paper properly: problem, method, experiments, limits",
+  "定位、读全文、拆问题/方法/实验/局限。",
 );
 eq("卡片标题:用户起的优先", nodeTitle({ title: "检索", type: "mcode.agent" }, AGENT_ENTRY), "检索");
 eq("卡片标题:没起就用清单里的名字", nodeTitle({ title: "", type: "mcode.agent" }, AGENT_ENTRY), "子 agent");
@@ -1211,6 +1211,7 @@ function renderInspector(
   selectedNodeId: string | null = null,
   purpose: WorkflowPurpose = "workflow",
   profiles: AgentProfile[] = [],
+  pinned = false,
 ): string {
   return withLocale(locale, () =>
     html(
@@ -1230,6 +1231,8 @@ function renderInspector(
         onRemoveProfile: async () => {},
         onRemoveWorkflow: () => {},
         onPinDefault: () => {},
+        onRestoreDefault: () => {},
+        pinned,
         onImported: () => {},
       }),
     ),
@@ -1238,15 +1241,15 @@ function renderInspector(
 
 console.log("\nNodeInspector(工作流本体,内置)");
 const builtinPanel = renderInspector(BUILTIN, "zh");
-check("标题用词条里的名字", builtinPanel.includes("文献精读"));
+check("标题就是数据里的名字", builtinPanel.includes("文献精读"));
 check("列出 id", builtinPanel.includes(">read<"));
-check("名称与说明都只读", readOnlyCount(builtinPanel) === 2, readOnlyCount(builtinPanel));
-check("只读框显示界面上真正的名字", builtinPanel.includes(`value="文献精读"`));
-check("只读框显示词条里的说明", builtinPanel.includes(`value="把一篇讲透`));
-check("给出只读的解释", builtinPanel.includes("跟随界面语言"));
-check("按钮叫「恢复默认」", button(builtinPanel, "恢复默认").found);
-check("「设为默认」在(内置才有 —— 恢复默认回到的就是它钉住的那版)", button(builtinPanel, "设为默认").found);
-check("按钮不叫「删除」", !button(builtinPanel, "删除").found);
+check("自带:名称与说明可编辑(内置退役,不再只读)", readOnlyCount(builtinPanel) === 0, readOnlyCount(builtinPanel));
+check("输入框里是数据里的名字", builtinPanel.includes(`value="文献精读"`));
+check("输入框里是数据里的说明", builtinPanel.includes(`value="定位、读全文`));
+check("不再有只读的解释", !builtinPanel.includes("跟随界面语言"));
+check("自带:按钮是「删除」(删除就是删除)", button(builtinPanel, "删除").found);
+check("自带:没钉过默认 → 没有「恢复默认」", !button(builtinPanel, "恢复默认").found);
+check("「设为默认」对所有工作流都在", button(builtinPanel, "设为默认").found);
 check("流程文字在", builtinPanel.includes("先定位,再通读。"));
 
 console.log("\nNodeInspector(工作流本体,自建 / en)");
@@ -1254,15 +1257,20 @@ const customPanel = renderInspector(CUSTOM, "zh");
 check("自建:名称框可编辑", readOnlyCount(customPanel) === 0);
 check("自建:填的是数据里的名字", customPanel.includes(`value="我的流程"`));
 check("自建:按钮叫「删除」", button(customPanel, "删除").found);
-check("自建:不说「恢复默认」", !button(customPanel, "恢复默认").found);
-check("自建:不显示「设为默认」(自建没有默认可言)", !button(customPanel, "设为默认").found);
+check("自建:没钉过默认 → 不说「恢复默认」", !button(customPanel, "恢复默认").found);
+check("自建:「设为默认」也在(内置退役后对所有工作流开放)", button(customPanel, "设为默认").found);
 const customEn = renderInspector(CUSTOM, "en");
 check("英文界面:自建的名字不翻译", customEn.includes(`value="我的流程"`));
 check("英文界面:按钮跟着变", button(customEn, "Delete").found);
 const builtinEn = renderInspector(BUILTIN, "en");
-check("英文界面:内置的名字走词条", builtinEn.includes("Paper reading"));
-check("英文界面:不冒出中文名字", !builtinEn.includes("文献精读"));
-check("英文界面:不留中文提示", !builtinEn.includes("跟随界面语言"));
+check("英文界面:自带的名字也是数据,不查词条", !builtinEn.includes("Paper reading"));
+check("英文界面:显示数据里的中文名(用户拍板的代价)", builtinEn.includes("文献精读"));
+check("英文界面:没有只读提示", !builtinEn.includes("跟随界面语言"));
+
+console.log("\nNodeInspector(钉过默认 → 「恢复默认」出现)");
+const pinnedPanel = renderInspector(CUSTOM, "zh", null, "workflow", [], true);
+check("钉过默认:「恢复默认」在", button(pinnedPanel, "恢复默认").found);
+check("而且「删除」也还在(两颗按钮各管各的)", button(pinnedPanel, "删除").found);
 
 console.log("\nNodeInspector(导入 / 导出那一段,WF-08)");
 // 这两个按钮**只在文档级那一块出现**(选中节点时换成节点表单,整段不在)—— 所以这里
@@ -1271,14 +1279,14 @@ check("导出按钮在", button(customPanel, "导出").found);
 check("从文件导入按钮在", button(customPanel, "从文件导入").found);
 check("自建的能覆盖自己", button(customPanel, "覆盖当前工作流").found);
 check(
-  "内置的不显示「覆盖」",
-  !button(builtinPanel, "覆盖当前工作流").found,
+  "自带的也能覆盖(内置退役,它只是普通行)",
+  button(builtinPanel, "覆盖当前工作流").found,
 );
 // 导出导的是**磁盘上那一份**这句话必须写在界面上 —— 否则用户会以为画布上没保存的
 // 改动也一起出去了。
 check("说清导的是已保存的那一版", customPanel.includes("画布上没保存的改动不会被带出去"));
 check("英文界面跟着换", button(customEn, "Export").found);
-check("英文界面:覆盖也只给自建的", !button(builtinEn, "Overwrite this workflow").found);
+check("英文界面:自带的也有覆盖", button(builtinEn, "Overwrite this workflow").found);
 
 console.log("\nNodeInspector(选中节点:参数表单按清单生成)");
 const nodePanel = renderInspector(DIAMOND, "zh", "B");
@@ -1929,14 +1937,14 @@ function renderRow(entry: WorkflowListEntry, active: boolean, locale: "zh" | "en
 }
 const ACCENT_BAR = 'bg-accent"';
 const plainRow = renderRow(entryOf(BUILTIN), false, "zh");
-check("行:显示词条里的名字", plainRow.includes("文献精读"));
-check("行:显示词条里的说明", plainRow.includes("把一篇讲透"));
+check("行:显示数据里的名字", plainRow.includes("文献精读"));
+check("行:显示数据里的说明(内置退役,词条不再盖)", plainRow.includes("定位、读全文"));
 check("行:没选中就没有竖条", !plainRow.includes(ACCENT_BAR));
 check("行:没改过就没有「已修改」", !plainRow.includes("已修改"));
 const editedRow = renderRow(entryOf(BUILTIN, true), true, "zh");
 check("行:选中了有竖条", editedRow.includes(ACCENT_BAR));
 check("行:改过了有「已修改」", editedRow.includes("已修改"));
-check("行:英文界面下名字是英文", renderRow(entryOf(BUILTIN), false, "en").includes("Paper reading"));
+check("行:英文界面也显示数据名(用户拍板的代价)", renderRow(entryOf(BUILTIN), false, "en").includes("文献精读"));
 
 function renderCard(
   target: WorkflowNode,

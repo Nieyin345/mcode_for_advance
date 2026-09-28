@@ -44,6 +44,11 @@ export type WorkflowRemoveInput = z.infer<typeof WorkflowRemoveSchema>;
 export const WorkflowPinDefaultSchema = z.object({ id: z.string().min(1) });
 export type WorkflowPinDefaultInput = z.infer<typeof WorkflowPinDefaultSchema>;
 
+/** 「恢复默认」= 把钉住的快照写回(见 `restoreWorkflowDefault`)。只有钉过默认的
+ *  工作流才有这个动作 —— 内置退役后删除就是删除,恢复默认是另一颗按钮。 */
+export const WorkflowRestoreDefaultSchema = z.object({ id: z.string().min(1) });
+export type WorkflowRestoreDefaultInput = z.infer<typeof WorkflowRestoreDefaultSchema>;
+
 /**
  * 把一份工作流导出成 JSON 文本(**导入导出,WF-08**)。
  *

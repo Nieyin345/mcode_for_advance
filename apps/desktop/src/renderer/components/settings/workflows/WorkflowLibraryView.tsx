@@ -204,6 +204,8 @@ export function WorkflowLibraryView({
 
   /** 「设为默认」的确认框开关(非破坏性,但要把"覆盖之前的默认"这句话说出口)。 */
   const [pendingPin, setPendingPin] = useState(false);
+  /** 「恢复默认」的确认框开关(破坏性:当前版本会被钉住的快照覆盖)。 */
+  const [pendingRestore, setPendingRestore] = useState(false);
   /** 最后发起的那次 `workflow.get`。用户连点两个工作流时两次请求会并发,回来顺序
    *  不保证 —— 只认最后一次发出的那个,否则详情面板会显示成上一个的内容。 */
   const docRequestRef = useRef<string | null>(null);
@@ -490,8 +492,8 @@ export function WorkflowLibraryView({
    *  没改到的列表里漏进工作流那一栏。 */
   const visible = entries?.filter((e) => purposeOf(e) === purpose) ?? null;
   const displayName = entry ? workflowDisplayName(entry, locale) : "";
-  /** 这颗按钮该叫「恢复默认」还是「删除」—— 确认框的标题、正文、按钮共用一个答案。 */
-  const reset = entry !== null && removeActionOf(entry) === "reset";
+  // (内置退役,2026-09-26:从前这里有个 reset 判定 —— 「恢复默认还是删除」共用一颗
+  //  按钮。现在删除就是删除;「恢复默认」看 entry.pinned 另有一颗,判定不再共用。)
 
   /** 改编辑中的那一份。**唯一一处写 `working` 的地方** —— 于是"哪些动作会让文档变脏"
    *  这个问题只有一个答案。 */
@@ -658,27 +660,21 @@ export function WorkflowLibraryView({
       // 删掉的那一行写回去。等完之后 `removingRef` 继续挡着 —— 下面两次 await
       // (删一次、列一次,各自都是一次整库落盘)期间还可能又点了一下保存。
       if (inflight.current) await inflight.current.promise;
-      // 该说「已恢复默认」还是「已删除」,以**主进程的答复**为准(`wasBuiltin`)——
-      // 那是这个动作唯一的权威说法,不应该在渲染端另算一遍。
-      const res = await api.workflow.remove({ id: entry.id });
+      // 内置退役:删除就是删除(返回值里的 wasBuiltin 恒为 false)——
+      // 「恢复默认」是钉过快照才有的另一个动作(见 restoreDefault)。
+      await api.workflow.remove({ id: entry.id });
       // 草稿跟着一起走:这份文档已经不在了,留着它只会在下次新建出同 id 时诈尸。
       DRAFTS.delete(entry.id);
       refreshDrafts();
       setPendingRemove(false);
       await loadList();
       if (docRequestRef.current !== entry.id) return;
-      if (res.wasBuiltin) {
-        // 恢复默认之后把默认版**重新打开**,让用户直接看见回来了什么 —— 关掉面板
-        // 只会让人怀疑"是不是没生效"。
-        await openWorkflow(entry.id);
-      } else {
-        setSelectedId(null);
-        setBaseline(null);
-        setWorking(null);
-        setSelectedNodeId(null);
-        setReview(null);
-        setReviewDoc(null);
-      }
+      setSelectedId(null);
+      setBaseline(null);
+      setWorking(null);
+      setSelectedNodeId(null);
+      setReview(null);
+      setReviewDoc(null);
     } catch (err) {
       setSaveError(t("settings.workflows.actionFailed", { error: (err as Error).message }));
     } finally {
@@ -697,8 +693,36 @@ export function WorkflowLibraryView({
     setSaveNotes([]);
     try {
       const res = await api.workflow.pinDefault({ id: entry.id });
-      if (res.ok) setSaveNotes([t("settings.workflows.pinDefaultDone")]);
-      else setSaveError(res.error ?? t("settings.workflows.unknownError"));
+      if (res.ok) {
+        setSaveNotes([t("settings.workflows.pinDefaultDone")]);
+        // 列表上的 pinned 标记变了(「恢复默认」那颗按钮要跟着出现)—— 重拉一次。
+        await loadList();
+      } else {
+        setSaveError(res.error ?? t("settings.workflows.unknownError"));
+      }
+    } catch (err) {
+      setSaveError(t("settings.workflows.actionFailed", { error: (err as Error).message }));
+    }
+  };
+
+  /** 「恢复默认」= 让主进程把钉住的快照写回,然后**重开这份文档** —— 用户要直接
+   *  看见回来了什么,只关面板会让人怀疑"是不是没生效"。 */
+  const restoreDefault = async () => {
+    if (!entry) return;
+    setPendingRestore(false);
+    setSaveError(null);
+    setSaveNotes([]);
+    try {
+      const res = await api.workflow.restoreDefault({ id: entry.id });
+      if (!res.ok) {
+        setSaveError(res.error ?? t("settings.workflows.unknownError"));
+        return;
+      }
+      // 画布上的草稿属于被覆盖掉的旧版 —— 收掉,免得重开时诈尸。
+      DRAFTS.delete(entry.id);
+      refreshDrafts();
+      await loadList();
+      await openWorkflow(entry.id);
     } catch (err) {
       setSaveError(t("settings.workflows.actionFailed", { error: (err as Error).message }));
     }
@@ -1050,6 +1074,8 @@ export function WorkflowLibraryView({
                     onRemoveProfile={onRemoveProfile}
                     onRemoveWorkflow={() => setPendingRemove(true)}
                         onPinDefault={() => setPendingPin(true)}
+                        onRestoreDefault={() => setPendingRestore(true)}
+                        pinned={entry?.pinned === true}
                     onImported={handleImported}
                   />
                   </div>
@@ -1080,9 +1106,8 @@ export function WorkflowLibraryView({
         </div>
       </div>
 
-      {/* 破坏性操作先问一句。**两个名字背后是同一个动作**(见 `removeActionOf`),
-          所以标题、正文、按钮三处共用一个判别 —— 各写一遍的话,改错一处就会出现
-          「恢复默认」的标题配「删除」的按钮。 */}
+      {/* 破坏性操作先问一句。(内置退役后「删除」不再兼任「恢复默认」——
+          后者是下面单独那个确认框,只在钉过默认时能走到。) */}
       <ConfirmDialog
         open={pendingApproval && review?.pending === true}
         danger
@@ -1095,13 +1120,9 @@ export function WorkflowLibraryView({
       <ConfirmDialog
         open={pendingRemove && entry !== null}
         danger
-        title={reset ? t("settings.workflows.resetTitle") : t("settings.workflows.deleteTitle")}
-        description={
-          reset
-            ? t("settings.workflows.resetDesc", { name: displayName })
-            : t("settings.workflows.deleteDesc", { name: displayName })
-        }
-        confirmText={reset ? t("settings.workflows.reset") : t("common.delete")}
+        title={t("settings.workflows.deleteTitle")}
+        description={t("settings.workflows.deleteDesc", { name: displayName })}
+        confirmText={t("common.delete")}
         onOpenChange={(open) => {
           if (!open) setPendingRemove(false);
         }}
@@ -1118,6 +1139,18 @@ export function WorkflowLibraryView({
           if (!open) setPendingPin(false);
         }}
         onConfirm={() => void pinDefault()}
+      />
+      {/* 「恢复默认」会丢掉当前版本(被钉住的快照覆盖)—— 破坏性,先问一句。 */}
+      <ConfirmDialog
+        open={pendingRestore && entry !== null}
+        danger
+        title={t("settings.workflows.resetTitle")}
+        description={t("settings.workflows.resetDesc", { name: displayName })}
+        confirmText={t("settings.workflows.reset")}
+        onOpenChange={(open) => {
+          if (!open) setPendingRestore(false);
+        }}
+        onConfirm={() => void restoreDefault()}
       />
     </>
   );

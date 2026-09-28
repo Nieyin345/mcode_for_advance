@@ -98,6 +98,8 @@ export function NodeInspector({
   onRemoveProfile,
   onRemoveWorkflow,
   onPinDefault,
+  onRestoreDefault,
+  pinned = false,
   onImported,
 }: {
   doc: WorkflowDoc;
@@ -123,8 +125,12 @@ export function NodeInspector({
   onSaveProfile: (name: string) => Promise<boolean>;
   onRemoveProfile: (id: string) => Promise<void>;
   onRemoveWorkflow: () => void;
-  /** 把当前版本钉成「默认」(只对内置显示,见 WorkflowSection 里那颗按钮的注释)。 */
+  /** 把当前版本钉成「默认」(内置退役后对**所有**工作流开放)。 */
   onPinDefault: () => void;
+  /** 「恢复默认」= 回到钉住的那版。只在 `pinned` 为真时画按钮。 */
+  onRestoreDefault: () => void;
+  /** 这份工作流钉过自定默认吗(来自 `WorkflowListEntry.pinned`)。 */
+  pinned?: boolean;
   /** 导入成功之后叫一声(参数是落库后的 id)—— 见 `TransferSection`。 */
   onImported: (id: string) => void;
 }) {
@@ -157,6 +163,8 @@ export function NodeInspector({
           onUpdateWorkflow={onUpdateWorkflow}
           onRemoveWorkflow={onRemoveWorkflow}
           onPinDefault={onPinDefault}
+          onRestoreDefault={onRestoreDefault}
+          pinned={pinned}
           onImported={onImported}
         />
       )}
@@ -188,6 +196,8 @@ function WorkflowSection({
   onUpdateWorkflow,
   onRemoveWorkflow,
   onPinDefault,
+  onRestoreDefault,
+  pinned,
   onImported,
 }: {
   doc: WorkflowDoc;
@@ -199,14 +209,17 @@ function WorkflowSection({
   onUpdateWorkflow: (patch: Partial<Omit<WorkflowDoc, "id">>) => void;
   onRemoveWorkflow: () => void;
   onPinDefault: () => void;
+  onRestoreDefault: () => void;
+  pinned: boolean;
   /** 导入成功(新建或覆盖)之后叫一声 —— 让画布切到刚导进来的那一份。 */
   onImported: (id: string) => void;
 }) {
   const { t, locale } = useI18n();
+  // 内置退役(2026-09-26):这两个判定如今恒为 false / "delete" —— 自带工作流播种成
+  // 普通行,名称可改、删除就是删除。保留调用是让语义只住在 workflowView 那两个判定口
+  // 里(见那边的注释),这里不再各自分叉;`reset` 变量因此删掉了。
   const locked = isIdentityLocked(doc);
   const name = workflowDisplayName(doc, locale);
-  /** 这颗按钮该叫「恢复默认」还是「删除」—— 标题与文字共用一个答案。 */
-  const reset = removeActionOf(doc) === "reset";
   const isAutomation = purpose === "automation";
   // 自动化一定有 trigger(那是它之所以是自动化的判据),但类型上它是可选的 ——
   // 兜一个 manual 只是为了下拉有个值可显示。
@@ -215,9 +228,7 @@ function WorkflowSection({
     <div className="flex flex-col">
       <div className="flex items-center gap-1.5">
         <span className="truncate text-[0.8571em] font-medium text-content">{name}</span>
-        {doc.builtin && (
-          <WorkflowBadge tone="info">{t("settings.workflows.badgeBuiltin")}</WorkflowBadge>
-        )}
+        {/* （内置退役:原先这里挂「内置」角标。自带的就是普通行,不再另眼看待。） */}
       </div>
       <div className="mb-3 mt-0.5 flex items-center gap-2">
         <code className="rounded bg-surface-muted px-1 text-[0.7143em] text-content-subtle">
@@ -306,32 +317,37 @@ function WorkflowSection({
       <TransferSection doc={doc} onImported={onImported} />
 
       <div className="mt-3 flex items-center gap-2">
-        {/* 「设为默认」只对内置显示:「恢复默认」那颗按钮回到的"默认"就是这里钉住的
-            这一版(没钉过 = 应用自带那版)。自建工作流没有默认可言 —— 它的删除就是
-            删除,不给它长这颗按钮。禁用条件是 dirty:钉住的是**存盘的那一份**,画布
-            上还有未保存的改动时点它,钉住的不是眼前这份 —— 先存再钉,不留这种错觉。 */}
-        {reset && (
+        {/* 「设为默认」对**所有**工作流开放(内置退役后大家都是普通行)。禁用条件是
+            dirty:钉住的是**存盘的那一份**,画布上还有未保存的改动时点它,钉住的
+            不是眼前这份 —— 先存再钉,不留这种错觉。 */}
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={dirty}
+          onClick={onPinDefault}
+          title={dirty ? t("settings.workflows.pinDefaultDirty") : t("settings.workflows.pinDefaultDesc", { name })}
+        >
+          {t("settings.workflows.pinDefault")}
+        </Button>
+        {/* 「恢复默认」只在钉过默认时出现 —— 没钉过就没有"默认"可回,画一颗点了必然
+            报错的按钮,和"点了没反应"是同一种体验。 */}
+        {pinned && (
           <Button
             variant="secondary"
             size="sm"
-            disabled={dirty}
-            onClick={onPinDefault}
-            title={dirty ? t("settings.workflows.pinDefaultDirty") : t("settings.workflows.pinDefaultDesc", { name })}
+            onClick={onRestoreDefault}
+            title={t("settings.workflows.resetDesc", { name })}
           >
-            {t("settings.workflows.pinDefault")}
+            {t("settings.workflows.reset")}
           </Button>
         )}
         <Button
           variant="danger"
           size="sm"
           onClick={onRemoveWorkflow}
-          title={
-            reset
-              ? t("settings.workflows.resetDesc", { name })
-              : t("settings.workflows.deleteDesc", { name })
-          }
+          title={t("settings.workflows.deleteDesc", { name })}
         >
-          {reset ? t("settings.workflows.reset") : t("common.delete")}
+          {t("common.delete")}
         </Button>
       </div>
     </div>

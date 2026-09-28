@@ -2106,6 +2106,43 @@ tab(全局指令/导入与恢复)是 `form`(768px)—— 切 tab 时页面宽度
 本轮**未提交**(混着并行维护会话的 skills 文案在途改动),HEAD 上暂缺那 5 个键,
 工作树是绿的 —— 等那边落了一起进。
 
+### 3.24 内置工作流退役:自带内容 = 可删除的普通行(2026-09-26,用户需求)
+
+用户原话:「把当前的几个工作流和自动化不要设置为内置,可以删除,只不过是软件自带的」。
+三个单向门用户拍板:**删了就是删了**(不复活、无找回);「设为默认/恢复默认」
+**放开给所有工作流**;名称/说明**变普通文字**(英文界面也显示数据里的中文名)。
+
+**模型换血**(`orchestration/library.ts`):"内置打底 + 覆盖合并"那层拆掉,改为
+**播种**:首次读取把 `BUILTIN_WORKFLOWS` 写成表里的普通行(builtin 压成 false),
+设置表记"播过哪些 id"(`workflow.seededShipped`)—— 删掉不复活,新版本新增的自带
+id 照常播;老覆盖行的 doc.builtin 一次性迁移成 false。读取只看表。
+「删除」一条路(顺手删掉钉的快照,防同 id 重建诈尸;wasBuiltin 恒 false 留作契约
+兼容);「恢复默认」独立成 `restoreWorkflowDefault`(把钉住的快照写回,没钉过报错,
+界面只在 `WorkflowListEntry.pinned`(新字段)为真时画按钮);`pinWorkflowDefault`
+去掉内置门,对所有工作流开放。
+
+**连带改动**:contracts(pinned 字段、restoreDefault RPC/通道、builtin/edited 字段
+注为"恒 false 兼容位");ipc handler + preload + webApi;渲染端
+`isIdentityLocked`→恒 false、`removeActionOf`→恒 delete(两个判定口保留,语义只住
+这一处)、`workflowDisplayName/Description`→直读数据(词条不再盖)、NodeInspector
+撤「内置」角标 + 三颗按钮(设为默认/恢复默认[pinned]/删除)、WorkflowLibraryView
+删 reset 分叉 + restore 流程与确认框;mcodeServer 四处(保存提示改"自带"、builtin
+恒 false、列表不再标"内置/自建"改标"钉过默认"、删除措辞统一"已删掉")。
+
+**验证**:workflow-view-smoke **677/677**(改写 20+ 断言:锁定/脏判/forSave/命名
+显示/按钮组/覆盖导入全部按新语义,新增 pinned→恢复默认出现 2 断言);
+mcode-admin-smoke **245/245**(播种计数改相对基数并借此实证"重置后不重播=删了
+不复活";列表不再标内置;删 default 验措辞那段随语义一起退役);contracts+desktop
+tsc ✅。过程中撞出 gen_apply 的一课:上下文 2 行在"外层/内层组件 props 几乎同文"
+的文件里不唯一(CONTEXT_MISMATCH),上下文加到 8 行解决。
+
+**没验的(诚实版)**:没起 dev 实走播种/删除/钉-恢复整链(判断依据是两个 smoke +
+代码路径);老用户真库的迁移(覆盖行 builtin 压 false + 补播缺行)只在 admin-smoke
+的内存桩上走过,没拿真 mcode.db 试;对话模式下拉在自带工作流被删后如何退化
+(entry 消失、composer_mode 残值显示 id 本身)看的是代码不是屏幕;ipc-wiring-smoke
+/engine-regressions-smoke 没跑(它们在并行会话手里改着)。i18n 两个 settings.ts
+仍混着并行会话在途改动,继续不提交(HEAD 缺 pinDefault 等 7 个键,工作树是绿的)。
+
 ---
 
 ## 六、我这次没验的

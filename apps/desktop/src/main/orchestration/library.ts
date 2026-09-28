@@ -1,27 +1,25 @@
 /**
  * 工作流库 —— **内置默认版 + 用户覆盖** 合并之后的那一层。
  *
- * ## 三个概念别混
+ * ## 内置退役(2026-09-26):自带内容 = 播种进表的普通行
+ *
+ * 用户的原话:「不要设置为内置,可以删除,只不过是软件自带的」。于是:
  *
  * | 东西 | 在哪 |
  * |---|---|
- * | 内置工作流的**默认版** | 代码(`builtins.ts`),随发版更新 |
- * | 用户对某个内置的**覆盖** | `workflows` 表里同名 id 的一行 |
- * | 用户**自建**的工作流 | `workflows` 表里 `wf_` 前缀的行 |
+ * | 软件自带工作流的**出厂版** | 代码(`builtins.ts`)—— 只作**播种源** |
+ * | 播种进来的自带行 / 用户自建行 | `workflows` 表,一律普通行,可改可删 |
+ * | 用户钉的**自定默认** | 设置表 `workflow.pinnedDefaults`(见 pinWorkflowDefault) |
  *
- * 读取时合并:内置的按 id 打底,表里的同名行替换之,表里独有的追加。
- * 「恢复默认」= **删掉那一行** —— 代码里的默认版立刻回来,不需要在表里另存副本。
- * (2026-09-26 起多一层:用户可把当前版本「设为默认」(`pinWorkflowDefault`,快照存
- * 设置表)。恢复默认时若有这份自定默认,删完覆盖行随手把它写回去 —— 于是"默认"
- * 分两层:自定的优先,出厂的兜底。)
+ * 首次读取把出厂版**播种**成表里的普通行,并在设置表记下"播过哪些 id"
+ * (`workflow.seededShipped`)。删掉的自带行**不会复活**(升级也不装回来 ——
+ * 用户拍板「删了就是删了」);将来新版本新增的自带 id 不在已播名单里,照常播进来。
+ * 读取**只看表**,不再有"内置打底 + 用户覆盖合并"那一层。
  *
- * ## 为什么只有一个删除动词(和方案里写的不一样)
- *
- * 方案列了 `workflow.remove` 和 `workflow.reset` 两个 RPC。但它们在**存储层是同一个
- * 操作**:删掉表里那一行。对内置 id 来说那叫"恢复默认",对自建 id 来说那叫"删除" ——
- * 区别只在**界面的措辞**,不在行为。两个 RPC 做同一件事,后来的人一定会问"该调哪个"。
- * 所以这里只留 {@link removeWorkflow},返回值里带上"删的是不是内置的覆盖",
- * 界面据此决定提示语。
+ * 「恢复默认」不再是"删行让出厂版回来":它只对钉过自定默认的工作流存在
+ * ({@link restoreWorkflowDefault} 把快照写回);「删除」就是删除(顺手把钉的快照
+ * 也带走,免得同 id 重建时诈尸)。`removeWorkflow` 返回值里的 `wasBuiltin` 从此
+ * **恒为 false** —— 字段留着是契约兼容,mcodeServer 的措辞据此永远说"已删掉"。
  */
 
 import type { WorkflowDoc, WorkflowListEntry } from "@contracts/workflow";
@@ -29,20 +27,22 @@ import { makeWorkflowId, uniqueWorkflowName } from "@contracts/workflow";
 import type { NodeTypeManifest } from "@contracts/nodeType";
 import { parseTriggerSpec, WORKFLOW_TRIGGER_OF_TRIGGER_KIND } from "@contracts/nodeType";
 import { SettingRepo, WorkflowRepo } from "@main/store/repositories.js";
-import { BUILTIN_WORKFLOWS, getBuiltinWorkflow } from "./builtins.js";
+import { BUILTIN_WORKFLOWS } from "./builtins.js";
 import { loadNodeTypes } from "./nodeTypes.js";
 import { workflowSaveIsStale, workflowSaveVersion } from "./workflowSaveVersion.js";
 import { clearWorkflowReview, requireWorkflowReview, workflowReviewError, type WorkflowOrigin } from "./workflowTrust.js";
 import { importWorkflowDoc as parseWorkflowText, validateWorkflowDoc, exportWorkflowDoc } from "./workflowValidation.js";
 
-function summarize(doc: WorkflowDoc, builtin: boolean, edited: boolean): WorkflowListEntry {
+function summarize(doc: WorkflowDoc, pinned: boolean): WorkflowListEntry {
   return {
     id: doc.id,
     name: doc.name,
     ...(doc.description ? { description: doc.description } : {}),
     ...(doc.icon ? { icon: doc.icon } : {}),
-    builtin,
-    edited,
+    // 内置退役:这两个字段恒为 false,留着是契约兼容(见文件头),别再拿它们分叉行为。
+    builtin: false,
+    edited: false,
+    ...(pinned ? { pinned: true } : {}),
     kind: doc.nodes.length > 0 ? "graph" : "prompt",
     // 带过去,不然列表分不出"工作流"和"自动化"两栏(见 `WorkflowListEntry`)。
     ...(doc.trigger ? { trigger: doc.trigger } : {}),
@@ -50,35 +50,63 @@ function summarize(doc: WorkflowDoc, builtin: boolean, edited: boolean): Workflo
   };
 }
 
-/** 全部工作流(内置打底 + 用户覆盖 + 用户自建),**内置排在前面且顺序固定**。 */
-export function listWorkflows(): WorkflowListEntry[] {
-  const rows = WorkflowRepo.list();
-  const byId = new Map(rows.map((r) => [r.id, r]));
+/* ── 播种:软件自带的工作流就是表里的普通行 ── */
 
-  const out: WorkflowListEntry[] = BUILTIN_WORKFLOWS.map((builtinDoc) => {
-    const override = byId.get(builtinDoc.id);
-    return override
-      ? summarize(override.doc, true, true)
-      : summarize(builtinDoc, true, false);
-  });
+/** 已播过的自带 id 名单(设置表)。记**名单**而不是记"播过一次":将来新版本新增
+ *  自带工作流时老用户也该收到 —— 名单里没有的才播,删掉的因此不会复活。 */
+const WORKFLOW_SEEDED_SETTING_KEY = "workflow.seededShipped";
 
-  // 自建的按表里的顺序(WorkflowRepo.list 已经按 sort_order 排好)。
-  // 判重按**内置文档的实际 id 集合**,不是 `isBuiltinWorkflowId`:守望模板(`watch`)
-  // 是内置的,但故意不在 `BUILTIN_WORKFLOW_IDS` 里(那是对话模式下拉的名单,见
-  // `builtins.ts`)—— 按那份名单判的话,它的覆盖行会在下面再列一次。
-  const builtinIds = new Set(BUILTIN_WORKFLOWS.map((d) => d.id));
-  for (const row of rows) {
-    if (builtinIds.has(row.id)) continue;
-    out.push(summarize(row.doc, false, false));
+let seededThisRun = false;
+
+/** 把出厂版播种成表里的普通行(幂等,进程内只跑一次)。三件事:
+ *  - 名单里没有的自带 id:表里没行就写一行(`builtin` 压成 false —— 播进来的就是
+ *    普通行),已有行(旧模型下用户改过的"覆盖行")就只记名单、不动内容;
+ *  - 老行迁移:旧模型里覆盖行的 `doc.builtin` 为 true,渲染端拿它锁名称/挂角标,
+ *    这里一次性压成 false;
+ *  - DB 没就绪时静默跳过,下次读取入口再试(读取入口本该在 initDb 之后才被叫到,
+ *    这条是兜底不是常态)。 */
+function ensureShippedSeeded(): void {
+  if (seededThisRun) return;
+  try {
+    const raw = SettingRepo.get(WORKFLOW_SEEDED_SETTING_KEY);
+    let seeded: string[] = [];
+    try {
+      const parsed: unknown = raw === null ? [] : JSON.parse(raw);
+      if (Array.isArray(parsed)) seeded = parsed.filter((x): x is string => typeof x === "string");
+    } catch {
+      // 坏名单当空名单 —— 重播是幂等的(只补缺行,不覆盖既有行)。
+    }
+    const seededSet = new Set(seeded);
+    let changed = false;
+    for (const doc of BUILTIN_WORKFLOWS) {
+      if (seededSet.has(doc.id)) continue;
+      seededSet.add(doc.id);
+      changed = true;
+      if (WorkflowRepo.get(doc.id) === null) {
+        WorkflowRepo.save({ ...doc, builtin: false, updatedAt: Date.now() });
+      }
+    }
+    for (const row of WorkflowRepo.list()) {
+      if (row.doc.builtin) WorkflowRepo.save({ ...row.doc, builtin: false });
+    }
+    if (changed) SettingRepo.set(WORKFLOW_SEEDED_SETTING_KEY, JSON.stringify([...seededSet]));
+    seededThisRun = true;
+  } catch {
+    // DB 未就绪等瞬态问题:保持未播状态,下一次再试。
   }
-  return out;
 }
 
-/** 取一份**生效的**工作流(内置被覆盖时取覆盖版)。找不到返回 null。 */
+/** 全部工作流 —— 就是表里的行(含播种进来的自带行)。 */
+export function listWorkflows(): WorkflowListEntry[] {
+  ensureShippedSeeded();
+  const pinnedMap = loadPinnedDefaults();
+  return WorkflowRepo.list().map((row) => summarize(row.doc, pinnedMap[row.doc.id] !== undefined));
+}
+
+/** 取一份工作流 —— 只看表(内置退役后没有"代码里的默认版"这一层)。找不到返回 null。 */
 export function getWorkflow(id: string): WorkflowDoc | null {
-  const override = WorkflowRepo.get(id);
-  if (override) return override.doc;
-  return getBuiltinWorkflow(id) ?? null;
+  ensureShippedSeeded();
+  return WorkflowRepo.get(id)?.doc ?? null;
 }
 
 /** 取工作流的提示词正文 —— 供 `RuntimeManager` 在每轮拼系统提示词时调。
@@ -226,31 +254,21 @@ export function deriveTrigger(
 }
 
 /**
- * 删掉工作流。
- *
- * - `id` 是内置的 → 删掉的是**覆盖行**,效果是「恢复默认」;
- * - `id` 是自建的 → 删掉它本身。
- *
- * 两种在存储层是同一个动作,所以只有一个函数;`wasBuiltin` 让界面能说对话
- * (「已恢复默认」而不是「已删除」)。
+ * 删掉工作流 —— 自带的与自建的**同一种删除**(内置退役后不再有"删行 = 恢复默认"
+ * 的双关;「恢复默认」是钉过快照才有的另一个动作,见 restoreWorkflowDefault)。
  */
 export function removeWorkflow(id: string): { ok: boolean; wasBuiltin: boolean } {
-  // 按**内置文档的实际集合**判,不用 `isBuiltinWorkflowId`:守望模板是内置的
-  // (删除它的覆盖行 = 恢复默认),但它不在 `BUILTIN_WORKFLOW_IDS` 里。
-  const wasBuiltin = getBuiltinWorkflow(id) !== undefined;
   WorkflowRepo.remove(id);
   clearWorkflowReview(id);
-  // 「恢复默认」回到的"默认"分两层:**用户钉过的自定默认优先**,没钉过才是代码里
-  // 那份(用户要的语义:「把当前的设为默认,之后恢复默认就是恢复到这个最新的默认」)。
-  // 快照钉的时候已过审阅闸(见 pinWorkflowDefault 的第三道闸),最初保存时也过过
-  // 存盘闸,这里直接落库、不再重跑校验。只对内置 id 做:自建的删除就是删除。
-  if (wasBuiltin) {
-    const pinned = loadPinnedDefaults()[id];
-    if (pinned !== undefined) {
-      WorkflowRepo.save({ ...pinned, updatedAt: Date.now() });
-    }
+  // 钉过的自定默认**跟着删** —— 留着的话,将来重建同 id(或导入成同 id)时那份
+  // 旧快照会诈尸成"可恢复的默认"。
+  const map = loadPinnedDefaults();
+  if (map[id] !== undefined) {
+    delete map[id];
+    SettingRepo.set(WORKFLOW_PINNED_DEFAULTS_KEY, JSON.stringify(map));
   }
-  return { ok: true, wasBuiltin };
+  // `wasBuiltin` 恒为 false:字段留着是契约兼容(mcodeServer 据此永远说"已删掉")。
+  return { ok: true, wasBuiltin: false };
 }
 
 /* ── 「设为默认」(自定默认) ── */
@@ -275,28 +293,36 @@ function loadPinnedDefaults(): Record<string, WorkflowDoc> {
 }
 
 /**
- * 把 `id` **当前生效的版本**钉成它的默认。之后「恢复默认」回到这一版 —— 之前钉的
- * (以及应用自带那份的地位)被覆盖,这正是用户要的:「相当于是把之前的默认覆盖掉」。
+ * 把 `id` **当前存盘的版本**钉成它的默认。之后「恢复默认」(restoreWorkflowDefault)
+ * 回到这一版 —— 之前钉的被覆盖,这正是用户要的:「相当于是把之前的默认覆盖掉」。
+ * 内置退役后**对所有工作流开放**(自带的与自建的都只是普通行)。
  *
- * 三道闸:
- *  - 找不到 → 报错;
- *  - **只对内置 id 开放**:自建工作流没有"默认版"这回事(它的删除就是删除,见
- *    removeWorkflow)—— 给自建钉默认等于把「删除」偷偷变成「删不掉」;
- *  - **等待审阅的不许钉**:恢复时快照**直接落库、不再过审**(见 removeWorkflow),
- *    所以进来的必须已经是可信的版本。
+ * 两道闸:找不到 → 报错;**等待审阅的不许钉** —— 恢复时快照直接落库、不再过审,
+ * 所以进来的必须已经是可信的版本。
  */
 export function pinWorkflowDefault(id: string): { ok: boolean; error?: string } {
   const doc = getWorkflow(id);
   if (doc === null) return { ok: false, error: "找不到这份工作流" };
-  if (getBuiltinWorkflow(id) === undefined) {
-    return { ok: false, error: "只有内置工作流有「默认版」可言 —— 自建的删除就是删除,没有可恢复的默认" };
-  }
   if (workflowReviewError(doc) !== null) {
     return { ok: false, error: "这一版还在等待审阅 —— 先在审阅里启用,再把它设为默认" };
   }
   const map = loadPinnedDefaults();
   map[id] = doc;
   SettingRepo.set(WORKFLOW_PINNED_DEFAULTS_KEY, JSON.stringify(map));
+  return { ok: true };
+}
+
+/**
+ * 「恢复默认」= 把钉住的快照写回表里(覆盖当前行)。没钉过就没有这个动作 ——
+ * 界面只在 `WorkflowListEntry.pinned` 为真时画那颗按钮,这里的报错是防绕过 UI
+ * 的调用方。快照钉的时候过过审阅闸、最初保存时过过存盘闸,这里直接落库不重跑校验。
+ */
+export function restoreWorkflowDefault(id: string): { ok: boolean; error?: string } {
+  const pinned = loadPinnedDefaults()[id];
+  if (pinned === undefined) {
+    return { ok: false, error: "这份工作流没有钉过默认 —— 先「设为默认」,才谈得上恢复" };
+  }
+  WorkflowRepo.save({ ...pinned, builtin: false, updatedAt: Date.now() });
   return { ok: true };
 }
 

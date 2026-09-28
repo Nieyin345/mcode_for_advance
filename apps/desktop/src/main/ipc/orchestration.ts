@@ -36,6 +36,7 @@ import {
   WorkflowImportSchema,
   WorkflowPinDefaultSchema,
   WorkflowRemoveSchema,
+  WorkflowRestoreDefaultSchema,
   WorkflowSaveSchema,
 } from "@contracts/ipc";
 import { readAgentProfiles, removeAgentProfile, saveAgentProfile } from "@main/orchestration/agentProfiles.js";
@@ -47,6 +48,7 @@ import {
   listWorkflows,
   pinWorkflowDefault,
   removeWorkflow,
+  restoreWorkflowDefault,
   saveWorkflow,
 } from "@main/orchestration/library.js";
 import { notifyWorkflowsChanged } from "@main/orchestration/broadcast.js";
@@ -147,8 +149,21 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC.WORKFLOW_PIN_DEFAULT, async (_evt, raw) => {
     const input = WorkflowPinDefaultSchema.parse(raw);
-    // 只写设置表,不动 workflows 表 —— 列表与执行器都不需要因此重读。
-    return pinWorkflowDefault(input.id);
+    // 写设置表 + 列表的 pinned 标记变了 —— 广播让界面重拉;执行器不用重读(文档没变)。
+    const res = pinWorkflowDefault(input.id);
+    if (res.ok) notifyWorkflowsChanged(`ipc:workflow_pin:${input.id}`);
+    return res;
+  });
+
+  ipcMain.handle(IPC.WORKFLOW_RESTORE_DEFAULT, async (_evt, raw) => {
+    const input = WorkflowRestoreDefaultSchema.parse(raw);
+    const res = restoreWorkflowDefault(input.id);
+    if (res.ok) {
+      notifyWorkflowsChanged(`ipc:workflow_restore:${input.id}`);
+      // 文档真的换了一版 —— 执行器要重读(同 save 那条路)。
+      requestWorkflowReload(input.id);
+    }
+    return res;
   });
 
   // ── 导出 / 导入(WF-08)──

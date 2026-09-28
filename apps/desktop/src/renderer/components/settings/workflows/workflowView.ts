@@ -44,21 +44,16 @@ export function purposeOf(doc: { trigger?: WorkflowTrigger }): WorkflowPurpose {
 /* ── 可改的字段 ── */
 
 /**
- * 名称与说明是否**不可改** —— 内置工作流就是这种情况。
+ * 名称与说明是否**不可改** —— 内置退役(2026-09-26)后**恒为否**。
  *
- * 这不是保守,是因为内置的名字**根本不存在数据里**:它们走 i18n
- * (`composer.mode.*`,见 `lib/workflowLabels.tsx`),切语言时跟着变。让用户在这里
- * 改一个界面上永远不显示的名字,是"界面在说假话" —— 改完保存、刷新,它还是原来的
- * 样子,而没有任何地方解释为什么。自建的没有这个问题:它的名字就是 `name`,改了
- * 立刻生效(选择器也读它)。
- *
- * **判据取 `doc.builtin`**:它是 `WorkflowDocSchema` 里唯一一处"这是内置的"标记,
- * 而 `WorkflowListEntry.builtin` 由主进程从同一个字段派生
- * (`main/orchestration/library.ts` 的 `summarize`),两者不会分家。流程文字与节点图
- * 不受它影响 —— 那是这个功能存在的理由,两种工作流都可改。
+ * 从前内置工作流的名字走 i18n 词条、数据里的 `name` 永不显示,所以要锁。现在自带
+ * 内容播种成表里的普通行(见 `main/orchestration/library.ts` 文件头),名字/说明就是
+ * 数据本身(`workflowDisplayName` 也改为直读数据),没有"改了不生效"的假话可说,
+ * 锁也就没有存在的理由。函数保留(而不是删掉十来个调用点):它是"这类字段能不能改"
+ * 的**唯一判定口**,将来若真出现要锁的形态(如插件带来的只读工作流),改这一处就够。
  */
-export function isIdentityLocked(doc: WorkflowDoc): boolean {
-  return doc.builtin;
+export function isIdentityLocked(_doc: WorkflowDoc): boolean {
+  return false;
 }
 
 /* ── 什么时候该存 ── */
@@ -124,15 +119,15 @@ export { uniqueWorkflowName } from "@contracts/workflow";
 /* ── 「恢复默认」与「删除」 ── */
 
 /**
- * 那颗按钮该叫什么。
+ * 那颗按钮该叫什么 —— 内置退役后**恒为「删除」**。
  *
- * 两个名字背后是**同一个存储动作**(`workflow.remove`):删掉 `workflows` 表里那一行。
- * 对内置 id 来说那叫「恢复默认」(代码里的默认版立刻回来),对自建 id 来说那叫
- * 「删除」。区别只在措辞 —— 见 `main/orchestration/library.ts` 文件头,那里为此
- * 明确否掉了"两个 RPC"的初稿。
+ * 从前删内置的覆盖行等于"恢复默认"(代码里的默认版回来),措辞要分叉;现在自带的
+ * 也是普通行,删了就是删了(「恢复默认」是钉过自定默认才有的另一颗按钮,见
+ * `WorkflowListEntry.pinned`)。函数保留同 `isIdentityLocked` 的理由:调用点统一
+ * 从这里问,语义变化只改一处。
  */
-export function removeActionOf(w: { builtin: boolean }): "reset" | "delete" {
-  return w.builtin ? "reset" : "delete";
+export function removeActionOf(_w: { builtin: boolean }): "reset" | "delete" {
+  return "delete";
 }
 
 /* ── 节点类型 ── */

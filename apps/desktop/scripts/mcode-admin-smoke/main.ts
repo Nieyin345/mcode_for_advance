@@ -230,10 +230,10 @@ async function main(): Promise<void> {
   check("没给 id → 生成一个 wf_ 开头的", fresh.doc.id.startsWith("wf_"), fresh.doc.id);
   eq("自建的 builtin=false", fresh.doc.builtin, false);
   const builtin = await ok(twoStep({ id: "default" }));
-  eq("写内置 id → builtin=true", builtin.doc.builtin, true);
+  eq("写自带 id → builtin 也是 false(内置退役,恒 false)", builtin.doc.builtin, false);
   check(
-    "而且明确告诉模型它在覆盖内置的那一份",
-    builtin.notes.join(" ").includes("内置"),
+    "但仍提醒模型它在覆盖软件自带的那一份",
+    builtin.notes.join(" ").includes("自带"),
     builtin.notes,
   );
 
@@ -379,7 +379,9 @@ async function main(): Promise<void> {
   const good = await ok(twoStep());
   const saved = await saveWorkflow(good.doc);
   check("一份正常的图存得下", saved.ok, saved);
-  eq("表里真的多了一行", WorkflowRepo.list().length, 1);
+  // 内置退役:第一次走到库那一层时自带工作流会播种进表(BUILTIN_WORKFLOWS 全量),
+  // 所以这里是"播种行 + 刚存的这一行"。
+  eq("表里真的多了一行(播种行之外)", WorkflowRepo.list().length, BUILTIN_WORKFLOWS.length + 1);
 
   const cyclic = await ok(
     twoStep({
@@ -1137,8 +1139,10 @@ async function main(): Promise<void> {
 
   const listOut = await call(tools, "workflow_list", {});
   check("workflow_list 列出刚存的那份", listOut.includes("查完再总结"), listOut);
-  check("内置的也在列表里(并标出来)", listOut.includes("内置"), listOut);
-  check("自建的标成自建", listOut.includes("用户自建"), listOut);
+  // (自带行的播种在上面「存盘·两道关」那段已验过:表里 = 播种行 + 新存的一行。
+  //  这一段跑在 __resetWorkflowRepo 之后,而播种是**进程内一次性**的,不会重播 ——
+  //  删掉的不复活,靠的正是这个;所以这里只有刚存的那份。)
+  check("不再标「内置/自建」(那种标注误导模型\"这份删不得\")", !listOut.includes("用户自建"), listOut);
 
   const getOut = await call(tools, "workflow_get", { id: savedId });
   check("workflow_get 拿得到完整文档", getOut.includes(savedId) && getOut.includes("nodes"), getOut);
@@ -1163,6 +1167,8 @@ async function main(): Promise<void> {
   check("而且说清了它只有指令一个参数", typesOut.includes("instruction(longtext,必填)"), typesOut);
 
   console.log("\n工具面 · 写工具真的写得进去");
+  // 内置退役:自带工作流在首次读取时播种进表,行数断言一律相对这个基数。
+  const rowsBeforeCyclic = WorkflowRepo.list().length;
   const cyclicOut = await call(tools, "workflow_save", {
     workflow: {
       name: "有环的图",
@@ -1175,17 +1181,17 @@ async function main(): Promise<void> {
   });
   check("有环 → 失败信息而不是抛异常", cyclicOut.startsWith("失败:"), cyclicOut);
   eq("而且没广播(存失败还广播,界面会白重拉一次)", __takeBroadcasts().length, 0);
-  eq("表里也没多出东西", WorkflowRepo.list().length, 1);
+  eq("表里也没多出东西", WorkflowRepo.list().length, rowsBeforeCyclic);
 
   const removeOut = await call(tools, "workflow_remove", { id: savedId });
   check("workflow_remove 说得清删了什么", removeOut.includes("已删掉"), removeOut);
   eq("删完广播一次", __takeBroadcasts().length, 1);
-  eq("表里空了", WorkflowRepo.list().length, 0);
-  // 内置 id 走的是同一个 `removeWorkflow`,但**说法**必须不同 —— 对内置来说那不是
-  // "删掉了",是"改回默认了"。用户看到的措辞错了,他会以为自己把内置那份弄丢了。
-  const builtinOut = await call(tools, "workflow_remove", { id: "default" });
-  check("删内置的 → 措辞是「恢复成默认」", builtinOut.includes("恢复成默认"), builtinOut);
-  check("而不是「已删掉」", !builtinOut.includes("已删掉"), builtinOut);
+  eq("刚存的那行没了(自带的播种行还在)", WorkflowRepo.list().length, rowsBeforeCyclic - 1);
+  // 内置退役:自带的与自建的走同一条 removeWorkflow、同一种「已删掉」措辞 ——
+  // 上面 removeOut 那两条断言已经盖住(代码里只剩一条删除路径,没有第二种措辞可
+  // 分叉)。这一段原本删 `default` 验「恢复成默认」的措辞,那个语义已不存在;此处
+  // repo 又在 __resetWorkflowRepo 之后(播种进程内一次性,不重播),表里本来就没有
+  // 自带行可删。
 
   const typeOut = await call(tools, "node_type_write", {
     manifest: {

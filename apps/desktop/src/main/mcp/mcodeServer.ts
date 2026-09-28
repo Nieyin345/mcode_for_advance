@@ -380,7 +380,7 @@ export async function normalizeWorkflow(raw: Obj): Promise<NormalizeResult> {
   const notes: string[] = [];
   if (isBuiltinWorkflowId(id)) {
     notes.push(
-      `⚠️ \`${id}\` 是**内置**工作流的 id,这次保存覆盖的是内置那一份(用户在设置里可以「恢复默认」)。` +
+      `⚠️ \`${id}\` 是软件**自带**工作流的 id,这次保存会覆盖那一行(自带的也只是普通行,可改可删)。` +
         "如果你只是想另做一份,不要填这个 id。",
     );
   }
@@ -484,7 +484,8 @@ export async function normalizeWorkflow(raw: Obj): Promise<NormalizeResult> {
     ...(raw.trigger === undefined ? {} : { trigger: raw.trigger }),
     nodes,
     edges,
-    builtin: isBuiltinWorkflowId(id),
+    // 内置退役(2026-09-26):自带的也是普通行,这个字段恒为 false(留着是契约兼容)。
+    builtin: false,
     updatedAt: Date.now(),
   };
 
@@ -539,15 +540,16 @@ export function workflowMcpTools(opts?: { includeSessionLogs?: boolean }): McpTo
       name: "workflow_list",
       description:
         "列出用户全部的**工作流**与**自动化**。用 `workflow_get` 拿某一份的完整内容之前先调它。" +
-        "内置的那几份(`default` / `search` / `read` / `write` / `review` / `code`)也在里面," +
-        "`edited = true` 表示用户改过它 —— 别随手覆盖内置的那几份。",
+        "软件自带的那几份(`default` / `search` / `read` / `write` / `review` / `code`)也在里面 ——" +
+        "它们只是出厂时播种的普通行,可改可删;改/删任何一份前都**先跟用户确认是哪一个**。",
       inputSchema: {},
       handler: async () => {
         const rows = listWorkflows();
         if (rows.length === 0) return text("(一份工作流都没有)");
         const lines = rows.map((r) => {
           const bits = [
-            r.builtin ? (r.edited ? "内置·用户改过" : "内置") : "用户自建",
+            // 内置退役:不再标「内置/自建」—— 全是普通行,那种标注只会误导模型"这份删不得"。
+            r.pinned ? "钉过默认" : "",
             r.kind === "graph" ? "图" : "提示词",
             r.trigger ? `自动化(${r.trigger})` : "",
           ].filter(Boolean);
@@ -832,15 +834,12 @@ export function workflowMcpTools(opts?: { includeSessionLogs?: boolean }): McpTo
       handler: async (args: { id: string }) => {
         const existing = getWorkflow(args.id);
         if (!existing) return fail(`没有 id 为 \`${args.id}\` 的工作流 (用 workflow_list 看看有哪些)`);
-        const { wasBuiltin } = removeWorkflow(args.id);
+        removeWorkflow(args.id);
         notifyWorkflowsChanged(`mcp:workflow_remove:${args.id}`);
         // 删掉之后同理 —— 执行器读不到这一份就把它的触发器撤掉(同 IPC 那条路)。
         requestWorkflowReload(args.id);
-        return text(
-          wasBuiltin
-            ? `已把内置工作流「${existing.name}」恢复成默认版本。`
-            : `已删掉工作流「${existing.name}」。`,
-        );
+        // 内置退役:自带的与自建的同一种删除,措辞不再分叉。
+        return text(`已删掉工作流「${existing.name}」。`);
       },
     },
     {

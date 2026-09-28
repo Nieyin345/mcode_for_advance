@@ -62,24 +62,23 @@ export function isBuiltinWorkflowId(id: string): id is BuiltinWorkflowId {
   return (BUILTIN_WORKFLOW_IDS as readonly string[]).includes(id);
 }
 
-/** 界面语言下的名字:内置的查词条,自建的用作者写的 `name`。 */
-export function workflowDisplayName(w: { id: string; name: string }, locale: Locale): string {
-  const entry = NON_MODE_WORKFLOWS[w.id];
-  if (entry) return translate(locale, entry.label);
-  return isBuiltinWorkflowId(w.id)
-    ? translate(locale, BUILTIN_WORKFLOW_LABEL[w.id])
-    : w.name;
+/** 界面上显示的名字 —— **就是数据里的 `name`**(内置退役,2026-09-26)。
+ *
+ *  从前自带的查 i18n 词条、切语言跟着变;现在自带内容是播种进表的普通行,名称可改,
+ *  改完必须立刻到处生效 —— 词条继续盖在上面的话,用户改名后列表/下拉显示的还是旧
+ *  词条,就是"界面在说假话"。代价(用户拍板「可以」):没改过名的自带工作流在英文
+ *  界面下也显示数据里的中文名。词条表(`BUILTIN_WORKFLOW_LABEL`)留给
+ *  WorkflowDropdown 库读不到时的兜底与图标表用。 */
+export function workflowDisplayName(w: { id: string; name: string }, _locale: Locale): string {
+  return w.name;
 }
 
-/** 界面语言下的一句话说明。内置的用词条里的提示(与选择器同源),自建的用作者写的
- *  `description` —— 那份是中文兜底值,但自建工作流的作者就是用户自己,显示原文才对。 */
+/** 界面上显示的一句话说明 —— 同 `workflowDisplayName`:就是数据里的
+ *  `description`(没有就空着)。理由同上,不再按 id 查词条。 */
 export function workflowDisplayDescription(
   w: { id: string; description?: string },
-  locale: Locale,
+  _locale: Locale,
 ): string {
-  const entry = NON_MODE_WORKFLOWS[w.id];
-  if (entry) return translate(locale, entry.hint);
-  if (isBuiltinWorkflowId(w.id)) return translate(locale, BUILTIN_WORKFLOW_HINT[w.id]);
   return w.description ?? "";
 }
 
