@@ -339,7 +339,7 @@ export function FilePreview({
         />
       );
     }
-    const bytes = base64ToBytes(content.base64);
+    // 未知类型只报 mime：不解码 base64（从前这里白解一遍、结果没人用）。
     return (
       <div className="flex h-full items-start justify-center p-6">
         <span className="text-center text-xs text-content-muted">
