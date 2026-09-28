@@ -360,6 +360,13 @@ function extractArchive(archivePath: string, destDir: string, kind: "zip" | "tgz
   );
 }
 
+/** 解压的上限。ripgrep 的包只有几 MB,正常一两秒完事 —— 两分钟只为兜住
+ *  "卡死"这一种情形,不是给慢机器留余量。 */
+const TAR_TIMEOUT_MS = 120_000;
+
+/** 「跑一下 --version 看它是不是真能用」的上限。 */
+const VERIFY_TIMEOUT_MS = 15_000;
+
 function runTar(archivePath: string, destDir: string, kind: "zip" | "tgz", forceLocal = false): Promise<void> {
   const args = kind === "zip" ? ["-xf", archivePath, "-C", destDir] : ["-xzf", archivePath, "-C", destDir];
   if (forceLocal) args.unshift("--force-local");
@@ -376,14 +383,25 @@ function runTar(archivePath: string, destDir: string, kind: "zip" | "tgz", force
     // first, GBK as the fallback), see `lib/outBuf.ts`.
     const errBuf = new OutBuf(8 * 1024);
     p.stderr?.on("data", (c: Buffer) => errBuf.push(c));
-    p.on("error", rejectP);
-    p.on("exit", (code) => {
+    // ⏱ **没有超时的话,tar 卡住就是永远卡住** —— 这个 promise 是安装流程唯一的
+    // 出口,不 settle 的表现是对话框停在「安装中」,既不报错也不让重试,用户只能
+    // 杀掉整个应用。同文件里 execFile 那几处一律带 timeout,这里是漏的。
+    const timer = setTimeout(() => {
+      p.kill();
+      rejectP(new Error(`解压超时(超过 ${Math.round(TAR_TIMEOUT_MS / 1000)} 秒),压缩包可能损坏;请重试或手动安装`));
+    }, TAR_TIMEOUT_MS);
+    const settle = (fn: () => void): void => {
+      clearTimeout(timer);
+      fn();
+    };
+    p.on("error", (err) => settle(() => rejectP(err)));
+    p.on("exit", (code) => settle(() => {
       if (code === 0) {
         resolveP();
         return;
       }
       rejectP(new Error(describeExtractErr(archivePath, code, errBuf.text())));
-    });
+    }));
   });
 }
 
@@ -437,7 +455,14 @@ function verifyRg(bin: string): Promise<string | null> {
     const p = spawn(bin, ["--version"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
     const out = new OutBuf(4 * 1024);
     p.stdout?.on("data", (c: Buffer) => out.push(c));
+    // 同上:一个卡住的 rg 会让"校验"这一步永远不返回。这里连失败都是**一句人话**
+    // (它会被原样显示在「安装失败:…」里),超时也照这个口径。
+    const timer = setTimeout(() => {
+      p.kill();
+      resolveP("下载的 ripgrep 没有响应,请重试或手动安装");
+    }, VERIFY_TIMEOUT_MS);
     p.on("error", (err: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
       if (err.code === "EACCES" || err.code === "EPERM") {
         resolveP("下载的 ripgrep 没有可执行权限,请手动安装");
         return;
@@ -445,6 +470,7 @@ function verifyRg(bin: string): Promise<string | null> {
       resolveP(`下载的 ripgrep 无法运行(${err.code ?? err.name})`);
     });
     p.on("exit", (code) => {
+      clearTimeout(timer);
       if (code === 0 && /ripgrep/i.test(out.text())) {
         resolveP(null);
         return;
