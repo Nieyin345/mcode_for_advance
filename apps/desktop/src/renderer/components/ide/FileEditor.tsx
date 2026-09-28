@@ -503,6 +503,39 @@ function EditorToolbar({
  *  is the primary: re-opening a file puts the user back where they left off. */
 const viewStateCache = new Map<string, editor.ICodeEditorViewState>();
 
+/**
+ * 这两张表的**上限**。
+ *
+ * 一份 `ICodeEditorViewState` 不只是滚动位置:`contributionsState` 里还压着折叠
+ * 区间、code lens 这些东西。单看一份不大,乘以"这次开机点开过的每一个文件"就不是
+ * 小数 —— 而这两张表原来**只写不删**,翻一遍大仓库就再也没释放过。
+ *
+ * 按最近使用截断:Map 自带插入序,写和读都把这一条挪到队尾,超了从队头丢。120 份
+ * 足够覆盖"来回切换的那几十个文件",而被丢掉的那些代价只是**重开时回到文件开头**,
+ * 不是数据丢失。
+ */
+const VIEW_STATE_CACHE_MAX = 120;
+
+function putViewState<T>(cache: Map<string, T>, key: string, value: T): void {
+  cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > VIEW_STATE_CACHE_MAX) {
+    const oldest: string | undefined = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
+
+/** 读一份并把它提到队尾(最近用过的最后被丢)。 */
+function takeViewState<T>(cache: Map<string, T>, key: string): T | undefined {
+  const value = cache.get(key);
+  if (value !== undefined) {
+    cache.delete(key);
+    cache.set(key, value);
+  }
+  return value;
+}
+
 /** How long a mount-time view-state re-assert keeps trying (see EditPane's
  *  armMountReassert): the fallback for widgets whose post-mount layout change
  *  never arrives. Bounded so a later window resize can't jump the scroll. */
@@ -853,7 +886,7 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
       if (readyCtxRef.current?.path !== path) return stop();
       // Re-seed first: the widget may refuse to move (still unmeasured), and
       // the repair must survive that so the next switch isn't top-of-file too.
-      viewStateCache.set(path, saved);
+      putViewState(viewStateCache, path, saved);
       ed.restoreViewState(saved);
     };
     dom.addEventListener("wheel", onIntent, { passive: true });
@@ -1012,7 +1045,7 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
     if (ctx.projectPath) void openLspDocument(ctx.projectPath, readyPath, language);
     // Our eager-stashed view state wins over the lib's swap-time restore
     // (both hold the same data; ours is the more recent eager stash).
-    const saved = viewStateCache.get(readyPath);
+    const saved = takeViewState(viewStateCache, readyPath);
     if (saved) editorRef.current?.restoreViewState(saved);
     // Freshness verification (skipped when the model was just created from a
     // fresh read — its content IS the disk content).
@@ -1182,7 +1215,7 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
     // layout is real — otherwise a file re-opened after the editor column was
     // remounted lands back at the top.
     if (mountPath) {
-      const saved = viewStateCache.get(mountPath);
+      const saved = takeViewState(viewStateCache, mountPath);
       if (saved) {
         editor_.restoreViewState(saved);
         armMountReassert(editor_, mountPath, saved);
@@ -1195,7 +1228,7 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
     const stashViewState = () => {
       const p = readyCtxRef.current?.path;
       const vs = editor_.saveViewState();
-      if (p && vs) viewStateCache.set(p, vs);
+      if (p && vs) putViewState(viewStateCache, p, vs);
     };
     // Track the primary cursor alongside the view state (lib/editorNav): the
     // store's navigation-history actions read it to snapshot the OUTGOING
@@ -1807,7 +1840,7 @@ export function DiffPane({
   const prevFilePathRef = useRef<string | null>(null);
   if (prevFilePathRef.current !== filePath) {
     prevFilePathRef.current = filePath;
-    pendingRestoreRef.current = diffViewStateCache.get(filePath) ?? null;
+    pendingRestoreRef.current = takeViewState(diffViewStateCache, filePath) ?? null;
   }
   // Listener disposables of the CURRENT widget incarnation — replaced on
   // every onMount (remount) and disposed on unmount.
@@ -1836,8 +1869,8 @@ export function DiffPane({
     // count as success (the caller would clear the pending snapshot).
     if (!originalEditor.getModel() || !modifiedEditor.getModel()) return false;
     const pending = pendingRestoreRef.current;
-    if (pending) diffViewStateCache.set(path, pending);
-    const cached = diffViewStateCache.get(path);
+    if (pending) putViewState(diffViewStateCache, path, pending);
+    const cached = takeViewState(diffViewStateCache, path);
     if (!cached) return false;
     try {
       originalEditor.restoreViewState(cached.original);
@@ -1993,7 +2026,7 @@ export function DiffPane({
             const modifiedVs = editor.getModifiedEditor().saveViewState();
             dirtySinceRestoreRef.current = true;
             if (path && originalVs && modifiedVs) {
-              diffViewStateCache.set(path, { original: originalVs, modified: modifiedVs });
+              putViewState(diffViewStateCache, path, { original: originalVs, modified: modifiedVs });
             }
           };
           diffListenersRef.current = [

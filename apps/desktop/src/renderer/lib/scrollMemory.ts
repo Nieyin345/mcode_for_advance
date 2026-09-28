@@ -19,6 +19,22 @@ import { useCallback, useLayoutEffect, useState } from "react";
 
 const positions = new Map<string, number>();
 
+/** 上限(同 `FileEditor` 的 view state 表):一条只是个像素数,但键是
+ *  「surface:文件路径」—— 浏览过的每个文件都留一条,只增不减。挤掉的代价是
+ *  那个文件下次从头打开。 */
+const POSITIONS_MAX = 200;
+
+/** 写入并按最近使用截断(Map 按插入序迭代,队头即最久未用)。 */
+function rememberPosition(key: string, top: number): void {
+  positions.delete(key);
+  positions.set(key, top);
+  while (positions.size > POSITIONS_MAX) {
+    const oldest: string | undefined = positions.keys().next().value;
+    if (oldest === undefined) break;
+    positions.delete(oldest);
+  }
+}
+
 /** Retry offsets (ms) applied after the first restore attempt: the content may
  *  still be growing (async image decode, Shiki replacing the raw fallback),
  *  and a container shorter than the saved offset clamps the write — the user
@@ -56,7 +72,7 @@ export function useScrollMemory(key: string): (node: HTMLDivElement | null) => v
       applied = el.scrollTop;
     };
     const onScroll = () => {
-      if (el.scrollTop !== applied) positions.set(key, el.scrollTop);
+      if (el.scrollTop !== applied) rememberPosition(key, el.scrollTop);
     };
     const onIntent = () => {
       userActed = true;
