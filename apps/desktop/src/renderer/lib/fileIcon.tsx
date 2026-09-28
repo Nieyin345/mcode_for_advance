@@ -13,8 +13,11 @@
  * always resolves to the same icon (consistency). Unknown extensions and
  * extension-less files fall back to the generic `document` icon.
  *
- * The collection JSON (~830KB minified, every icon incl. folders) is loaded as
- * a separate chunk right after this module is first imported, then registered
+ * Only the icons these maps reference are bundled: `fileIconCollection.json`
+ * is generated from the full collection by `scripts/file-icon-subset/gen.mjs`
+ * (536 of 1175 icons, ~446KB vs ~851KB; perf-startup-smoke fails if it goes
+ * stale). It is loaded as a separate chunk right after this module is first
+ * imported, then registered
  * via `addCollection`; after that every lookup is a synchronous local
  * `getIcon` call - no network. Until it lands (a few ms after first paint),
  * `FileTypeIcon` renders a same-size blank box, so layout never shifts and
@@ -29,7 +32,7 @@ import { basename } from "@renderer/lib/path.js";
 // this, icons resolve synchronously via getIcon("material-icon-theme:<name>").
 let collectionReady = false;
 const readyListeners = new Set<() => void>();
-void import("@iconify-json/material-icon-theme/icons.json")
+void import("./fileIconCollection.json")
   .then((mod) => {
     addCollection(mod.default);
     collectionReady = true;

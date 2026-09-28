@@ -48,7 +48,21 @@
 - 桌面端 `tsc --noEmit` 通过；改动路径上 `git diff --check` 退出 0。
 - **未做**：没有在真实 Electron 窗口里实测启动毫秒数（需要本地启动应用）。建议本地打开一次，分别点设置、打开 PDF、新建终端，确认首次加载只有瞬间的空白。
 
-## 4. 待办清单（按收益/风险排序，本轮未改）
+## 4. 待办清单（按收益/风险排序）
+
+### 4.0 第二轮进度（同日）
+
+| # | 状态 | 结果 |
+|---|---|---|
+| 1 | ✅ 已做 | 新增 `scripts/file-icon-subset/gen.mjs`：从 `lib/fileIcon.tsx` 的 `EXT_ICON` / `NAME_ICON` / 默认图标里抽出被引用的图标，生成 `lib/fileIconCollection.json`（1175 → 536 个图标，851KB → 446KB）。`fileIcon.tsx` 改为异步导入这个子集，加载方式不变。`gen.mjs --check` 校验子集与映射表一致；perf-startup-smoke 里调用它，并断言完整图标集不再被打包。改映射表后要重跑 `node scripts/file-icon-subset/gen.mjs`。真实 Vite 构建：总 JS 35.75MB → 35.34MB。 |
+| 3 | ✅ 已做 | `components/chat/Markdown.tsx`：`remark-math` 与 `rehype-katex` 改为动态导入。remark-math 只识别 `$`，所以不含 `$` 的消息无论有没有这两个插件，输出都一样；含 `$` 的消息会等插件加载完再按原来的方式渲染。应用空闲时（`requestIdleCallback`，最迟 8 秒）会预取插件，所以第一条公式消息基本看不到纯文本那一帧。加载失败时允许重试。KaTeX 的 CSS 仍然在 `main.tsx` 里静态引入（体积小，字体本来就是按需加载）。真实 Vite 构建：App 首屏闭包（entry 之外）2765KB → 2494KB。perf-startup-smoke 新增 rehype-katex / remark-math 的静态闭包断言。 |
+| 2 | ✅ 已做 | 从 `apps/desktop/package.json` 删除三个无引用的依赖：`react-pdf-highlighter-plus`、`@shikijs/rehype`、`react-compiler-runtime`（React Compiler 以 React 19 为目标时用的是 `react/compiler-runtime`）。 |
+| 8 | ✅ 已做（新发现） | **只给渲染进程用的依赖原先放在 `dependencies` 里，electron-builder 会把它们原样复制进 app.asar**，而 Vite 早已把它们打包进 `out/renderer`。已把 38 个这样的包移到 `devDependencies`，包括 monaco-editor 93MB、react-icons 84MB、@tabler/icons-react 63MB、lxgw-wenkai-webfont 28.5MB、@base-ui/react 8.9MB、@xterm/xterm 5.6MB、katex、milkdown、tiptap、shiki、docx/pptx/excel 预览等。按直接依赖估算，asar 未压缩体积减少 300MB 以上。主进程用到的依赖保持不动，`dependencies` 只剩 14 个：claude-agent-sdk、contracts、electron-updater、node-pty、pdfjs-dist、sherpa-onnx-node/-win-x64、simple-git、sql.js、ssh2、tar、typebox、zod、zod-to-json-schema。main/preload 走 `externalizeDepsPlugin`，只外置 `dependencies` 里的包；移走的这些 main 本来就不引用，所以主进程产物不受影响。perf-startup-smoke 新增守卫：每个 production 依赖都必须被 main/preload/contracts 引用（白名单只有 `@mcode/contracts` 和 `sherpa-onnx-win-x64`）。 |
+| 2/8 附带 | ℹ️ | 用 `pnpm install --lockfile-only --offline` 刷新了 lockfile，再用 `pnpm install --offline --frozen-lockfile` 验证通过：+89 −20 个包，全部来自本地 store，没有下载任何东西。**顺带修掉了一个已有问题**：HEAD 的 `pnpm-lock.yaml` 里本来就没有 `@milkdown/*`（以及 codemirror、katex@0.18.9 等传递依赖），和 package.json 对不上，CI 的 `pnpm install --frozen-lockfile` 在这个状态下会失败。现在 lockfile 和已安装的依赖树一致（milkdown 7.22.2）。 |
+| 5 | ✅ 已做 | 去掉 `electron.vite.config.ts` 里的 `precompressAssets` 插件，构建不再生成 `.gz` / `.br` 副本（安装包约 −26MB）。`main/mobile/serveMobileStatic.ts` 改为首次请求时按需压缩：br q9 / gzip 9，与原插件参数相同；从磁盘上的最终文件压缩，字节和桌面端加载的完全一致。结果放进有上限的内存 LRU（48MB），键包含 size 和 mtime，dev 原地重建也不会返回旧内容。并发的首次请求共用同一次压缩。实测每 600KB JS 约 40ms。HTML、小于 256B 的文件、图片、`Accept-Encoding: *` 仍然返回原文件，和原来的策略一样。如果目录里已经有预压缩副本（比如旧的 `MCODE_WEB_DIST`），仍然优先用它。新增 `mobile-static-compress-smoke`（26 项检查）。 |
+| 4 / 6 / 7 | ⏭ 按用户决定本轮跳过 | 涉及其他会话正在修改的文件（ChatPane、i18n 字典），或改动风险高（拆分 sessionStore/ChatPane）。等那些会话提交后再做。 |
+
+### 4.1 原始清单
 | # | 项目 | 预期收益 | 风险 | 说明 |
 |---|---|---|---|---|
 | 1 | material 图标集**构建期子集化** | 包体 −600KB 左右；异步加载更快 | 低 | `EXT_ICON` / `NAME_ICON` 只用到一部分文件图标，文件夹图标完全不用。可以在构建时只抽取被引用的图标，生成小 JSON。 |

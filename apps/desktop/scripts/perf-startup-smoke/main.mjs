@@ -9,9 +9,12 @@
 //   2. each of them is still present in the bundle (reachable dynamically) —
 //      i.e. the feature was deferred, not dropped;
 //   3. the App static closure stays under a byte budget.
+//   4. only the generated file-icon subset is bundled, and it matches fileIcon.tsx;
+//   5. every production dependency is used by main/preload (installer weight).
 import {join,resolve,dirname} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {readdirSync,statSync,mkdirSync,mkdtempSync,rmSync} from 'node:fs';
+import {spawnSync} from 'node:child_process';
 const here=dirname(fileURLToPath(import.meta.url)),desktop=resolve(here,'../..');
 const root=join(desktop,'src/renderer'),contracts=resolve(desktop,'../../packages/contracts/src');
 const pnpm=resolve(desktop,'../../node_modules/.pnpm');
@@ -48,10 +51,12 @@ try{
     ['Vue runtime (via Milkdown)','/@vue/runtime-core/'],
     ['EmbedPDF viewer','/@embedpdf/'],
     ['xterm','/@xterm/xterm/'],
-    ['material-icon-theme collection','/@iconify-json/material-icon-theme/'],
+    ['file-icon collection (subset JSON)','renderer/lib/fileIconCollection.json'],
     ['docx-preview','/docx-preview/'],
     ['pptx-preview','/pptx-preview/'],
     ['@js-preview/excel','/@js-preview/excel/'],
+    ['KaTeX (rehype-katex, chat math)','/rehype-katex/'],
+    ['remark-math','/remark-math/'],
   ];
   const norm=p=>p.replaceAll('\\','/');
   for(const [label,frag] of HEAVY){
@@ -63,10 +68,31 @@ try{
   // Byte budget: outputs holding any module of App's static closure.
   let bytes=0;const reachSet=new Set(reach.keys());
   for(const o of Object.values(outputs))for(const [m,v] of Object.entries(o.inputs))if(reachSet.has(m))bytes+=v.bytesInOutput;
+  // The full material-icon-theme collection must not be bundled at all any
+  // more — only the generated subset — and the subset must match fileIcon.tsx.
+  const fullIcons=Object.keys(inputs).some(k=>norm(k).includes('/@iconify-json/material-icon-theme/'));
+  check('★ full material-icon-theme collection is not bundled (subset only)', !fullIcons);
+  const gen=spawnSync(process.execPath,[join(desktop,'scripts/file-icon-subset/gen.mjs'),'--check'],{encoding:'utf8'});
+  check('★ fileIconCollection.json matches the icons fileIcon.tsx references', gen.status===0, (gen.stderr||gen.stdout).trim());
   const BUDGET=4*1024*1024;
   console.log(`App static closure: ${(bytes/1024).toFixed(0)}KB minified (budget ${(BUDGET/1024).toFixed(0)}KB)`);
   check('★ App static closure within budget', bytes<=BUDGET, `${(bytes/1024).toFixed(0)}KB`);
 }finally{try{rmSync(out,{recursive:true,force:true});}catch{}}
+// Installer weight: electron-builder copies every `dependencies` package into
+// app.asar. Renderer-only libraries are already bundled by Vite into
+// out/renderer, so they belong in devDependencies. Every production dependency
+// must be referenced (as a quoted module specifier) by main / preload /
+// contracts, or be on the short allowlist of runtime-only packages.
+{
+  const {readFileSync}=await import('node:fs');
+  const deps=Object.keys(JSON.parse(readFileSync(join(desktop,'package.json'),'utf8')).dependencies??{});
+  const RUNTIME_ONLY=new Set(['@mcode/contracts','sherpa-onnx-win-x64']); // workspace pkg / native binary loaded by sherpa-onnx-node
+  const walk=d=>readdirSync(d,{withFileTypes:true}).flatMap(e=>e.isDirectory()?walk(join(d,e.name)):/\.(ts|tsx|mjs|cjs|js)$/.test(e.name)?[join(d,e.name)]:[]);
+  const srcText=[join(desktop,'src/main'),join(desktop,'src/preload'),contracts].flatMap(walk).map(f=>readFileSync(f,'utf8')).join('\n');
+  const esc=x=>x.replace(/[.*+?^${}()|[\]\\/]/g,'\\$&');
+  const unused=deps.filter(d=>!RUNTIME_ONLY.has(d)&&!new RegExp(`["']${esc(d)}(/[^"']*)?["']`).test(srcText));
+  check('★ every production dependency is used by main/preload (renderer-only libs live in devDependencies)', unused.length===0, unused.join(', '));
+}
 const failed=results.filter(x=>!x).length;
 console.log(`\n${results.length-failed}/${results.length} passed`);
 if(failed)throw Error(`${failed} perf-startup assertions failed`);

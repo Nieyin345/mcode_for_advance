@@ -4,7 +4,8 @@
  *
  * Performance layering:
  *  - react-markdown for the base markdown→React pipeline.
- *  - remark-math + rehype-katex for LaTeX math ($...$ / $$...$$).
+ *  - remark-math + rehype-katex for LaTeX math ($...$ / $$...$$), loaded on
+ *    demand (see `loadMath` below) so KaTeX stays off the first-paint path.
  *  - Shiki for fenced-code-block highlighting (+ diff annotations via
  *    transformerNotationDiff).
  *  - code-html cache (fnv1a hash → shiki HTML) to avoid re-highlighting.
@@ -18,8 +19,7 @@
 import { memo, useState, useEffect, useMemo, useRef, useLayoutEffect, createContext, useContext } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
-import rehypeKatex from "rehype-katex";
+import type { Options as MarkdownOptions } from "react-markdown";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { IconCheck, IconChevronDown, IconChevronUp, IconCopy, IconLoader2 } from "@renderer/lib/icons.js";
@@ -30,6 +30,36 @@ import { resolveRelativePath } from "@renderer/lib/path.js";
 import { convertHtmlTables } from "@renderer/lib/htmlTable.js";
 import { api } from "@renderer/lib/api.js";
 import { FileLink } from "./FileLink.js";
+
+// ── On-demand math (remark-math + rehype-katex) ───────────────────────
+// KaTeX is ~260KB of JS and most replies contain no math, so it is no longer
+// in the static import graph. remark-math only reacts to `$` delimiters, so a
+// source without `$` renders byte-for-byte the same with or without it; a
+// source WITH `$` waits for the (usually already prefetched) chunk and then
+// renders exactly as before. The chunk is also prefetched once the app is
+// idle, so in practice the first math reply never sees the plain-text frame.
+type PluggableList = NonNullable<MarkdownOptions["rehypePlugins"]>;
+type MathPlugins = { remark: PluggableList; rehype: PluggableList };
+let mathPlugins: MathPlugins | null = null;
+let mathPromise: Promise<MathPlugins> | null = null;
+function loadMath(): Promise<MathPlugins> {
+  mathPromise ??= Promise.all([import("remark-math"), import("rehype-katex")]).then(
+    ([m, k]) => (mathPlugins = { remark: [m.default], rehype: [k.default] }),
+    (err) => {
+      mathPromise = null; // allow a retry on the next math message
+      throw err;
+    },
+  );
+  return mathPromise;
+}
+if (typeof window !== "undefined") {
+  const prefetch = () => void loadMath().catch(() => {});
+  const w = window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number };
+  if (w.requestIdleCallback) w.requestIdleCallback(prefetch, { timeout: 8000 });
+  else setTimeout(prefetch, 3000);
+}
+/** Whether remark-math could match anything in `src` (it only parses `$`). */
+const mayContainMath = (src: string) => src.includes("$");
 
 // ── Lazy highlighter singleton ────────────────────────────────────────
 // Initialised on first encounter of a fenced code block; kept alive for the
@@ -760,15 +790,35 @@ export const Markdown = memo(function Markdown({
   // 默认会把 HTML 节点整个丢掉,表格会凭空消失(见 lib/htmlTable.ts 的说明)。
   // memo 住:流式输出时 children 每个 token 都变,但这一步只对有 `<table` 的文本有开销。
   const source = useMemo(() => convertHtmlTables(children), [children]);
-  // rehype-katex is always active; the skill-inline plugin is added only when
-  // we have known skill names to highlight. Recreated when `skillRe` changes
-  // (i.e. when the skills list updates), so react-markdown re-parses.
-  const rehypePlugins = useMemo(
-    () =>
-      skillRe
-        ? [rehypeKatex, rehypeStyleObjects(), rehypeSkillInline(skillRe)]
-        : [rehypeKatex, rehypeStyleObjects()],
-    [skillRe],
+  // Math plugins are active once loaded (see `loadMath`); a source that may
+  // contain math triggers the load and re-renders when it lands. The
+  // skill-inline plugin is added only when we have known skill names to
+  // highlight. Recreated when `skillRe` / math readiness changes, so
+  // react-markdown re-parses.
+  const needsMath = mayContainMath(source);
+  const [math, setMath] = useState<MathPlugins | null>(mathPlugins);
+  useEffect(() => {
+    if (!needsMath || math) return;
+    let alive = true;
+    loadMath().then(
+      (p) => alive && setMath(p),
+      (err) => console.warn("[markdown] math plugins failed to load", err),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [needsMath, math]);
+  const remarkPlugins = useMemo<PluggableList>(
+    () => (math ? [remarkGfm, ...math.remark] : [remarkGfm]),
+    [math],
+  );
+  const rehypePlugins = useMemo<PluggableList>(
+    () => [
+      ...(math ? math.rehype : []),
+      rehypeStyleObjects(),
+      ...(skillRe ? [rehypeSkillInline(skillRe)] : []),
+    ],
+    [skillRe, math],
   );
   // Block margins + line-height here are density-driven (--chat-md-gap-* /
   // --chat-md-leading, see the chat-density section in styles.css) so the
@@ -789,7 +839,7 @@ export const Markdown = memo(function Markdown({
       <MarkdownProjectContext.Provider value={projectPath ?? null}>
         <MarkdownBaseDirContext.Provider value={baseDir ?? null}>
           <ReactMarkdown
-            remarkPlugins={[remarkGfm, remarkMath]}
+            remarkPlugins={remarkPlugins}
             rehypePlugins={rehypePlugins}
             urlTransform={urlTransform}
             components={components}

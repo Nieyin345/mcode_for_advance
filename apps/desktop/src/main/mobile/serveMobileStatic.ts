@@ -17,9 +17,15 @@
  *    bundle first. After a successful verify the page redirects to the bare
  *    origin (nonce stripped) to load the full app.
  *
- * Static assets are served precompressed (`.br`/`.gz` siblings emitted by the
- * vite build plugin in electron.vite.config.ts) when the client's
+ * Static assets are served compressed (br / gzip) when the client's
  * Accept-Encoding allows — the cold-start payload drops from ~5.5MB to ~1.3MB.
+ * The build no longer ships `.br`/`.gz` siblings (they cost ~26MB of
+ * installer for a feature only the phone uses); each asset is compressed on
+ * first request from the file on disk and kept in a bounded in-memory LRU
+ * (see `compressOnDemand`). Hashed asset names make that cache safe; the key
+ * still includes size + mtime so a dev rebuild in place is picked up. A bundle
+ * that does carry precompressed siblings (e.g. an old `MCODE_WEB_DIST`) still
+ * gets them served directly.
  *
  * Resolution order for the bundle root:
  *   1. `MCODE_WEB_DIST` env var (dev override, e.g. a live `vite build --watch`).
@@ -32,6 +38,9 @@
  * nothing" immediately diagnosable.
  */
 import { createReadStream, statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { promisify } from "node:util";
+import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
 import { extname, isAbsolute, join, normalize, relative, sep } from "node:path";
 import { app } from "electron";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -204,30 +213,33 @@ export function serveMobileAsset(req: IncomingMessage, res: ServerResponse): voi
   streamFile(res, filePath, extname(rel), stat.size, acceptEncoding);
 }
 
-/** Extensions worth precompressing (JS/CSS dwarf everything else in size). */
+/** Extensions worth compressing (JS/CSS dwarf everything else in size). */
 const COMPRESSIBLE_EXT = new Set([".js", ".mjs", ".css", ".json", ".svg"]);
 
-/** Pick the best precompressed sibling (`.br`/`.gz`, emitted by the vite build
- *  plugin `precompressAssets()` in electron.vite.config.ts) honoring the
- *  client's Accept-Encoding. Returns null when the client wants no compression
- *  or no precompressed copy exists (e.g. a hand-built bundle) — the caller
- *  then serves the raw file. */
-function pickPrecompressed(
-  filePath: string,
-  ext: string,
-  acceptEncoding: string | undefined,
-): { path: string; encoding: "br" | "gzip"; size: number } | null {
-  if (!COMPRESSIBLE_EXT.has(ext.toLowerCase())) return null;
+type Encoding = "br" | "gzip";
+
+/** Encodings the client accepts for this asset, best first (empty = serve raw). */
+function acceptedEncodings(ext: string, acceptEncoding: string | undefined): readonly Encoding[] {
+  if (!COMPRESSIBLE_EXT.has(ext.toLowerCase())) return [];
   const accept = (acceptEncoding ?? "").toLowerCase();
   if (accept.includes("*")) {
     // "any encoding" is rare from browsers; serve raw rather than guess — the
     // raw copy is always present and correct.
-    return null;
+    return [];
   }
   const wantsBr = accept.includes("br");
   const wantsGzip = accept.includes("gzip");
-  if (!wantsBr && !wantsGzip) return null;
-  const encodings = wantsBr ? (["br", "gzip"] as const) : (["gzip"] as const);
+  if (!wantsBr && !wantsGzip) return [];
+  return wantsBr ? (wantsGzip ? ["br", "gzip"] : ["br"]) : ["gzip"];
+}
+
+/** Pick an existing precompressed sibling (`.br`/`.gz`) honoring the client's
+ *  Accept-Encoding. Current builds don't emit these (see the header); older
+ *  or hand-built bundles may. Returns null when none applies. */
+function pickPrecompressed(
+  filePath: string,
+  encodings: readonly Encoding[],
+): { path: string; encoding: Encoding; size: number } | null {
   for (const enc of encodings) {
     const suffix = enc === "br" ? ".br" : ".gz";
     const candidate = `${filePath}${suffix}`;
@@ -241,6 +253,74 @@ function pickPrecompressed(
   return null;
 }
 
+// ── On-demand compression ─────────────────────────────────────────────
+// Same settings the old build-time plugin used (br q9 / gzip 9): measured at
+// ~40ms per 600KB of JS, so even the largest chunk costs well under a second
+// once, and the phone caches every hashed asset immutably afterwards.
+const brotliAsync = promisify(brotliCompress);
+const gzipAsync = promisify(gzip);
+/** Below this, compression isn't worth a round of CPU — serve raw. */
+const MIN_COMPRESS_BYTES = 256;
+/** Upper bound on cached compressed bytes (whole renderer ≈ 10MB of br). */
+const CACHE_CAP_BYTES = 48 * 1024 * 1024;
+const compressedCache = new Map<string, Buffer>(); // insertion order = LRU order
+let compressedCacheBytes = 0;
+const compressing = new Map<string, Promise<Buffer>>();
+
+function cacheGet(key: string): Buffer | undefined {
+  const hit = compressedCache.get(key);
+  if (hit) {
+    compressedCache.delete(key);
+    compressedCache.set(key, hit);
+  }
+  return hit;
+}
+
+function cachePut(key: string, buf: Buffer): void {
+  if (buf.length > CACHE_CAP_BYTES / 4) return;
+  compressedCache.set(key, buf);
+  compressedCacheBytes += buf.length;
+  for (const [k, v] of compressedCache) {
+    if (compressedCacheBytes <= CACHE_CAP_BYTES) break;
+    compressedCache.delete(k);
+    compressedCacheBytes -= v.length;
+  }
+}
+
+/** Compressed bytes of `filePath` in `enc`, from cache or freshly compressed
+ *  (concurrent requests for the same asset share one compression). */
+function compressOnDemand(filePath: string, enc: Encoding, size: number, mtimeMs: number): Promise<Buffer> {
+  const key = `${enc}\0${size}\0${mtimeMs}\0${filePath}`;
+  const hit = cacheGet(key);
+  if (hit) return Promise.resolve(hit);
+  let pending = compressing.get(key);
+  if (!pending) {
+    pending = readFile(filePath)
+      .then((raw) =>
+        enc === "br"
+          ? brotliAsync(raw, {
+              params: {
+                [zlibConstants.BROTLI_PARAM_QUALITY]: 9,
+                [zlibConstants.BROTLI_PARAM_SIZE_HINT]: raw.length,
+              },
+            })
+          : gzipAsync(raw, { level: 9 }),
+      )
+      .then((buf) => {
+        cachePut(key, buf);
+        return buf;
+      })
+      .finally(() => compressing.delete(key));
+    compressing.set(key, pending);
+  }
+  return pending;
+}
+
+/** Test hook: number of cached compressed entries / bytes. */
+export function mobileCompressedCacheStats(): { entries: number; bytes: number } {
+  return { entries: compressedCache.size, bytes: compressedCacheBytes };
+}
+
 function streamFile(
   res: ServerResponse,
   filePath: string,
@@ -250,20 +330,72 @@ function streamFile(
 ): void {
   const mime = MIME[ext.toLowerCase()] ?? "application/octet-stream";
   const isHtml = ext === ".html";
-  const compressed = isHtml ? null : pickPrecompressed(filePath, ext, acceptEncoding);
-  const body = compressed ?? { path: filePath, size };
+  const encodings = isHtml ? [] : acceptedEncodings(ext, acceptEncoding);
+  const compressed = pickPrecompressed(filePath, encodings);
+  if (!compressed && encodings.length > 0 && size >= MIN_COMPRESS_BYTES) {
+    const enc = encodings[0];
+    let mtimeMs = 0;
+    try {
+      mtimeMs = statSync(filePath).mtimeMs;
+    } catch {
+      /* raced with a rebuild — the read below will fail and fall back */
+    }
+    compressOnDemand(filePath, enc, size, mtimeMs).then(
+      (buf) => {
+        if (res.headersSent || res.destroyed) return;
+        res.writeHead(200, {
+          "Content-Type": mime,
+          "Content-Length": buf.length,
+          "Cache-Control": "public, max-age=31536000, immutable",
+          "Content-Encoding": enc,
+          Vary: "Accept-Encoding",
+        });
+        res.end(buf);
+      },
+      (err) => {
+        log.warn(`mobile: on-demand ${enc} failed for ${filePath}, serving raw: ${String(err)}`);
+        if (!res.headersSent && !res.destroyed) streamRaw(res, filePath, mime, size, false, true);
+      },
+    );
+    return;
+  }
+  if (compressed) {
+    res.writeHead(200, {
+      "Content-Type": mime,
+      "Content-Length": compressed.size,
+      "Cache-Control": "public, max-age=31536000, immutable",
+      "Content-Encoding": compressed.encoding,
+      Vary: "Accept-Encoding",
+    });
+    pipeFile(res, compressed.path);
+    return;
+  }
+  // Compressible assets vary by Accept-Encoding even when served raw.
+  streamRaw(res, filePath, mime, size, isHtml, !isHtml && COMPRESSIBLE_EXT.has(ext.toLowerCase()));
+}
+
+function pipeFile(res: ServerResponse, path: string): void {
+  createReadStream(path).on("error", () => {
+    if (!res.headersSent) res.writeHead(500);
+    res.end();
+  }).pipe(res);
+}
+
+function streamRaw(
+  res: ServerResponse,
+  filePath: string,
+  mime: string,
+  size: number,
+  isHtml: boolean,
+  vary = false,
+): void {
   // Asset filenames are content-hashed by Vite → immutable caching is safe;
   // HTML is uncached so a fresh nonce / route always revalidates.
   res.writeHead(200, {
     "Content-Type": mime,
-    "Content-Length": body.size,
+    "Content-Length": size,
     "Cache-Control": isHtml ? "no-cache" : "public, max-age=31536000, immutable",
-    ...(compressed
-      ? { "Content-Encoding": compressed.encoding, Vary: "Accept-Encoding" }
-      : {}),
+    ...(vary ? { Vary: "Accept-Encoding" } : {}),
   });
-  createReadStream(body.path).on("error", () => {
-    if (!res.headersSent) res.writeHead(500);
-    res.end();
-  }).pipe(res);
+  pipeFile(res, filePath);
 }
