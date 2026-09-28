@@ -705,6 +705,10 @@ const AUTO_CONVERT_NODES: readonly NodeSpec[] = [
       // 正文见 `workflows/assets.ts` 的 `MINERU_PY`(同一份,不另抄)。
       [NODE_CODE_PARAM_KEY]: MINERU_PY,
       // 长论文 + 排队要时间。这一步真的会等:脚本自己轮询到 done 或超时。
+      //
+      // ⚠️ **改这个数就要同改 `MINERU_PY` 的 `RUN_BUDGET_S`(现在是 28 分钟)。**
+      // 脚本的预算必须**小于**这里:超时是由宿主**杀进程**实现的,被杀的进程发不出
+      // 协议行 —— 那一批里已经转好的也会跟着丢(宿主收不到 adoptMarkdown,一条都挂不回)。
       [NODE_CODE_TIMEOUT_KEY]: 30 * 60 * 1000,
     },
   },

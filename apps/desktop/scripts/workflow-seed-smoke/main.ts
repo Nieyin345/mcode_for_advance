@@ -9,7 +9,8 @@ import { readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ensureWorkflows, workflowsRoot, SHIPPED_RECORD_FILE, LEGACY_SHIPPED_SHA256, shippedHashOf } from "@main/workflows/seed.js";
-import { LIBRARY_PY, CHECK_CITATIONS_PY, MINERU_PY } from "@main/workflows/assets.js";
+import { LIBRARY_PY, CHECK_CITATIONS_PY, MINERU_PY, LIT_IMPORT_PY } from "@main/workflows/assets.js";
+import { spawnSync } from "node:child_process";
 
 let failures = 0;
 let checks = 0;
@@ -97,6 +98,43 @@ console.log("\n删掉的文件:重新写回(「恢复原版」的老办法照样
   rmSync(at(LIB));
   const r = ensureWorkflows();
   check("删掉后重启就写回当前版", read(LIB) === LIBRARY_PY && r.written.includes(LIB), r);
+}
+
+/* ── 这几段 Python 语法上真的成立吗(2026-09-28)──
+ *
+ * 它们是**TS 模板字符串**里的 Python:改错一个缩进、漏个括号,tsc 一声不吭,
+ * 而报错要等到某天某条自动化真被触发、在用户机器上炸成一段栈。编译一遍最便宜。
+ */
+console.log("\nPython 脚本语法检查");
+{
+  const py = ["python3", "python"].find((bin) => {
+    try { return spawnSync(bin, ["-c", "pass"], { encoding: "utf8" }).status === 0; } catch { return false; }
+  });
+  if (py === undefined) {
+    console.log("  skip 没装 python");
+  } else {
+    for (const [name, src] of [
+      ["library.py", LIBRARY_PY], ["check_citations.py", CHECK_CITATIONS_PY],
+      ["mineru_transcribe.py", MINERU_PY], ["lit_import.py", LIT_IMPORT_PY],
+    ] as const) {
+      // ⚠️ **经文件,不经 stdin/argv。** 这几段里满是中文,而 Windows 控制台那一层的
+      // 编码会把它们拧成代理对(`UnicodeEncodeError: surrogates not allowed`)——
+      // 那是**检查手段**坏了,不是脚本坏了,最容易被误读成真失败。
+      const tmp = join(workflowsRoot(), `.syntax-${name}`);
+      writeFileSync(tmp, src, "utf8");
+      const res = spawnSync(py, ["-c", "import sys;compile(open(sys.argv[1],encoding='utf-8').read(),sys.argv[1],'exec')", tmp], { encoding: "utf8" });
+      rmSync(tmp, { force: true });
+      check(`${name} 能编译`, res.status === 0, res.stderr.slice(-300));
+    }
+  }
+}
+
+/* 转录那一步的时间预算必须**小于**节点超时(见 builtins 的 AUTO_CONVERT_CODE_NODE_ID:
+ * 30 分钟)。超了的话宿主会**杀进程**,那一批里已经转好的也一起丢 —— 而这种丢是静默的。 */
+{
+  const budget = /RUN_BUDGET_S = (\d+) \* 60/.exec(MINERU_PY);
+  check("MinerU 脚本有整次运行的时间预算", budget !== null);
+  check("预算(分钟)小于节点超时 30 分钟", budget !== null && Number(budget[1]) < 30, budget?.[1]);
 }
 
 console.log(`\n${checks - failures}/${checks} passed`);

@@ -1066,9 +1066,21 @@ TOKEN = (TOKEN_INLINE or os.environ.get("MINERU_TOKEN") or "").strip()
 # vlm 是文档推荐的档（复杂版式明显更好）；pipeline 更快更便宜。给个开关，默认 vlm。
 MODEL_VERSION = (os.environ.get("MINERU_MODEL_VERSION") or "vlm").strip()
 
-# 轮询：每 3 秒看一眼，最多等 30 分钟（长论文 + 排队要时间）。
+# 轮询：每 3 秒看一眼，单条最多等 30 分钟（长论文 + 排队要时间）。
 POLL_INTERVAL_S = 3
 POLL_TIMEOUT_S = 30 * 60
+
+# ⚠️ **整次运行的时间预算，必须小于节点超时**（见 「builtins.ts」 的
+# 「AUTO_CONVERT_CODE_NODE_ID」：30 分钟）。
+#
+# 这一条是算出来的坑：合并窗口里常常是**好几条**一起进来（下载是并发的），而上面那个
+# 30 分钟是**每条**的。两条各等 20 分钟，节点在 30 分钟处被**杀掉** —— 杀掉的进程发不出
+# 协议行，于是**第一条明明已经转好了，也一起丢**（宿主没收到 adoptMarkdown，什么都没挂回），
+# 报出来只有一句冷冰冰的超时。
+#
+# 所以这里自己先收手：到点就把**已经转好的**照常报上去，没轮到的如实说"预算用完了"。
+# 留 2 分钟余量给上传/解压/挂回那几步。
+RUN_BUDGET_S = 28 * 60
 
 # 只转这三类:PDF 和 Word。
 #
@@ -1201,8 +1213,12 @@ def safe_extract(zip_path, dest_dir):
         zf.extractall(base)
 
 
-def transcribe_one(item, index):
-    """转一条。成功返回产物描述，失败抛 RuntimeError（带人话）。"""
+def transcribe_one(item, index, deadline=None):
+    """转一条。成功返回产物描述，失败抛 RuntimeError（带人话）。
+
+    「deadline」 是**整次运行**的截止时刻（time.time() 的秒数）：到点就停下这一条，
+    让 main() 把已经转好的那些报上去 —— 见 「RUN_BUDGET_S」。
+    """
     item_id = (item or {}).get("itemId") or ""
     # 统一文档库：优先读通用文件路径（linked 为绝对路径，attached 为库内相对路径），
     # 兼容论文/下载条目的旧 pdfPath。
@@ -1258,10 +1274,17 @@ def transcribe_one(item, index):
     started = time.time()
     zip_url = ""
     while True:
-        if time.time() - started > POLL_TIMEOUT_S:
+        now = time.time()
+        if now - started > POLL_TIMEOUT_S:
             raise RuntimeError(
                 f"{label}解析超过 {POLL_TIMEOUT_S // 60} 分钟还没完（batch {batch_id}）。"
                 "任务可能还在跑，稍后可以重试这一步。"
+            )
+        if deadline is not None and now > deadline:
+            # 整次运行的预算到了。**这不是这一条的错**，说清楚，别让用户以为文件有问题。
+            raise RuntimeError(
+                f"{label}还没解析完，而这次运行的时间预算（{RUN_BUDGET_S // 60} 分钟）已经用完"
+                f"（batch {batch_id}）。任务在 MinerU 那边还在跑，稍后重试这一步即可。"
             )
         time.sleep(POLL_INTERVAL_S)
         poll = http_json(
@@ -1383,10 +1406,20 @@ def main():
     # 「两篇一起下来，其中一篇是扫描件抽不出正文」时，另一篇不该跟着遭殃。
     ok = []
     failed = []
+    deadline = time.time() + RUN_BUDGET_S
     for i, item in enumerate(todo, start=1):
+        if time.time() > deadline:
+            # 预算用完了,后面这些**连试都不要试** —— 试了也只会把节点拖到被杀，
+            # 连前面转好的一起赔进去。
+            failed.append(f"（{i}）这次运行的时间预算用完了，这一条没轮到；稍后重试这一步。")
+            continue
         try:
-            ok.append(transcribe_one(item, i if len(todo) > 1 else 0))
-        except RuntimeError as err:
+            ok.append(transcribe_one(item, i if len(todo) > 1 else 0, deadline))
+        except Exception as err:
+            # ⚠️ **不能只接 RuntimeError。** 上面那些 helper 确实都转成了 RuntimeError，
+            # 可 「zipfile.BadZipFile」（结果包坏了）、「OSError」（磁盘满、Windows 路径过长、
+            # 权限）这些是**在它们之外**抛的 —— 漏出去一个，整批就当场死掉：
+            # 已经转好的那几条连同产物一起丢，而报出来的是一段 Python 栈。
             failed.append(f"（{i}）{err}")
 
     if not ok:

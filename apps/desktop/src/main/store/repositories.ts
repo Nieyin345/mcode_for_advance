@@ -1359,7 +1359,13 @@ export const SettingRepo = {
    *  的 `automation.eventChain.<sessionId>`:每次运行写一行,从前没有任何一处删得掉)。 */
   keysWithPrefix(prefix: string): string[] {
     const db = getDb();
-    const stmt = db.prepare("SELECT key FROM settings WHERE key LIKE ? ESCAPE '\\\\'");
+    // ⚠️ 这是**双引号字符串**,所以 `'\\'` 到了运行时正好是 `'\'` —— 一个反斜杠,
+    // 也就是 SQL 要的那个**单字符**转义符。写成 `'\\\\'` 的话运行时是两个,SQLite
+    // 当场拒绝(`ESCAPE expression must be a single character`),而唯一的调用方
+    // `sweepEventChains` 把异常 catch 成一行 warn —— 清理于是**一次都没跑成过**,
+    // `automation.eventChain.*` 只增不减,而这张表每写一次都要重写整个库文件。
+    // (下面 `findMany` 那两处是模板字符串,`\\` 同样只转出一个反斜杠,两边一致。)
+    const stmt = db.prepare("SELECT key FROM settings WHERE key LIKE ? ESCAPE '\\'");
     // `_` 与 `%` 在 LIKE 里是通配符,前缀里出现就会多匹配 —— 转义掉。
     stmt.bind([v(`${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`)]);
     const out: string[] = [];
