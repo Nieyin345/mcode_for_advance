@@ -64,7 +64,7 @@
  */
 import { delimiter } from "node:path";
 import { managedToolBinDirs } from "./managedToolRoots.js";
-import { systemToolBinDirs } from "./toolchain.js";
+import { systemToolBinDirs } from "./systemToolPaths.js";
 import { MCODE_CONFIG_DIR } from "@main/providers/claude-sdk/customEnv.js";
 
 /** 上一次由本模块注入的 PATH 目录 —— 下次重算时先摘掉它们。 */

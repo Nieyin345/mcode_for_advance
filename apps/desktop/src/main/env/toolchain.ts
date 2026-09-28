@@ -29,6 +29,7 @@ import { dirname, join } from "node:path";
 import type { ToolchainToolId, ToolchainToolState, ToolchainSource } from "@contracts/ipc";
 import { TOOLCHAIN_TOOL_IDS } from "@contracts/ipc";
 import { managedToolExecutable } from "./managedToolRoots.js";
+import { knownInstallPaths } from "./systemToolPaths.js";
 import { detectLocal } from "@main/onlyoffice/localInstall.js";
 import { getOnlyOfficeConfig } from "@main/onlyoffice/OnlyOfficeBridge.js";
 
@@ -84,48 +85,8 @@ async function findExecutable(name: string): Promise<string | null> {
   return null;
 }
 
-/** 某些工具装在 PATH 之外的标准位置。
- *
- *  判据是"这东西会不会自己把目录写进 PATH":LibreOffice 不会(装了也不上 PATH,
- *  所以必须替它找),而 TeX 发行版会(TeX Live 的 `bin/<平台>` 和 MiKTeX 都会自己
- *  注册)—— 所以 latex 不在这里列,它上了 PATH 就能被 findExecutable 找到。
- *  替一个会自动上 PATH 的东西维护一份硬编码路径表,只会在路径变了之后变成谎话。 */
-function knownInstallPaths(tool: ToolchainToolId): string[] {
-  if (tool !== "soffice") return [];
-  if (process.platform === "win32") {
-    return [
-      "C:\\Program Files\\LibreOffice\\program\\soffice.exe",
-      "C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe",
-    ];
-  }
-  if (process.platform === "darwin") {
-    return ["/Applications/LibreOffice.app/Contents/MacOS/soffice"];
-  }
-  return ["/usr/bin/soffice", "/usr/local/bin/soffice"];
-}
-
-/** "装了但不上 PATH"的那些工具,它们所在目录。
- *
- * ## 为什么检测之外还得有这个东西
- *
- * `knownInstallPaths` 让检测**找得到** LibreOffice,但找得到不等于 agent **敲得到**
- * —— LibreOffice 装完不会把自己加进 PATH,而技能里(以及 agent 自己写命令时)敲的
- * 是裸名字 `soffice`。没有这个函数就会进入一种很坑的状态:**面板显示 ✓,agent 的
- * shell 里却 `command not found`** —— 检查通过了、能力没接上,而且界面完全静默。
- *
- * 判据与检测**同源**(复用 `knownInstallPaths`),不另抄一份路径表:分开写的话,
- * 以后改了一处两边就开始互相矛盾。
- *
- * 同步的 —— 它要在 PATH 重算(同步操作)里被调用,不能去跑子进程探测。 */
-export function systemToolBinDirs(): string[] {
-  const dirs = new Set<string>();
-  for (const tool of TOOLCHAIN_TOOL_IDS) {
-    for (const file of knownInstallPaths(tool)) {
-      if (existsSync(file)) dirs.add(dirname(file));
-    }
-  }
-  return [...dirs];
-}
+// `knownInstallPaths` / `systemToolBinDirs` 住在 ./systemToolPaths.ts(见那边文件头)。
+export { systemToolBinDirs } from "./systemToolPaths.js";
 
 /** 只在系统里找(PATH → 标准安装位置),**不碰自管副本**。
  *
