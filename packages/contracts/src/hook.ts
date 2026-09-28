@@ -531,6 +531,11 @@ export interface HooksFile {
   problems: Array<{ where: string; error: string }>;
 }
 
+/** 去掉开头的 UTF-8 BOM(U+FEFF)。`hooks.json` 是用户手改的文件,读的一侧必须扛住它。 */
+export function stripBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
 /**
  * 解析 `hooks.json` 的正文。**纯函数**:不碰文件系统、不 import 主进程的任何东西。
  *
@@ -545,6 +550,9 @@ export interface HooksFile {
  *    让其它钩子一起失效。
  */
 export function parseHooksFile(text: string): HooksFile {
+  // 先剥 UTF-8 BOM:用户在 Windows 上用记事本 / PowerShell 5.1(`-Encoding UTF8`)
+  // 改过的文件开头带 U+FEFF,`JSON.parse` 见到就抛 —— 整份钩子会被当成“不是 JSON”。
+  text = stripBom(text);
   if (text.trim().length === 0) return { hooks: [], problems: [] };
 
   let raw: unknown;

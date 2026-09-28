@@ -23,7 +23,7 @@
  */
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { parseHooksFile, validateHook, type HookSpec, type HooksFile } from "@contracts/hook";
+import { parseHooksFile, stripBom, validateHook, type HookSpec, type HooksFile } from "@contracts/hook";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { log } from "@main/lib/logger.js";
 const HOOKS_FILENAME = "hooks.json";
@@ -89,7 +89,8 @@ function readRawHooks(): unknown[] | null {
   if (!existsSync(file)) return [];
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(file, "utf-8"));
+    // BOM 同 `parseHooksFile`:这里若读不出来就会走“整份重写”,把用户手写的内容全盖掉。
+    raw = JSON.parse(stripBom(readFileSync(file, "utf-8")));
   } catch {
     return null;
   }

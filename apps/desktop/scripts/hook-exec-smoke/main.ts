@@ -473,6 +473,23 @@ console.log("\nparseHooksFile 的进口(确认降级口径是契约定的)");
 eq("顶层直接是数组也认(用户手写最自然的写法)", parseHooksFile(JSON.stringify([hook()])).hooks.length, 1);
 eq("空文件 = 一条都没有(不是错误)", parseHooksFile("   ").problems.length, 0);
 
+/* ── 带 BOM 的 hooks.json(Windows 记事本 / PowerShell 5.1 写出来的) ── */
+
+console.log("\n带 UTF-8 BOM 的文件照常读、保存不整份重写");
+
+{
+  const kept = hook({ id: "bom-kept", name: "手写的那条" });
+  putOnDisk("\uFEFF" + JSON.stringify({ version: 1, hooks: [kept] }));
+  const loaded = readHooks();
+  eq("BOM 不算坏 JSON:一条都没报 problem", loaded.problems.length, 0);
+  eq("BOM 后面那条钩子读得出来", loaded.hooks.map((h) => h.id).join(","), "bom-kept");
+  eq("契约层同样认", parseHooksFile("\uFEFF[]").problems.length, 0);
+  // 读不出来时 commitHooks 会走“整份重写” —— 用户手写的内容就被盖掉了。
+  saveHook(hook({ id: "bom-added" }));
+  eq("保存一条新的之后,手写的那条还在盘上", onDisk().hooks.map((h) => (h as { id?: string }).id).join(","), "bom-kept,bom-added");
+  putOnDisk(JSON.stringify({ version: 1, hooks: [] }));
+}
+
 /* ────────────────────── 收尾 ────────────────────── */
 
 rmSync(DATA, { recursive: true, force: true });
