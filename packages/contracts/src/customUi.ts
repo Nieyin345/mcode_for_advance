@@ -3,8 +3,9 @@
  *
  * ## 这份契约管什么
  *
- * 主界面上有几个**挂载位**(slot):资料库四级右键(条目 / 分类 / 小类 / 大类)与
- * 右栏 Files 的文件右键。每个挂载位上的菜单由三种**条目**拼成:
+ * 主界面上有几个**挂载位**(slot):资料库四级右键(条目 / 分类 / 小类 / 大类)、
+ * 右栏 Files 的文件右键、右栏顶上那排页签、主页面与右栏之间的竖向工具栏。每个挂载位上的
+ * 入口由三种**条目**拼成:
  *
  *   - **内置项**(`builtin:<id>`):软件自带的功能项(文献信息、发到对话、采纳 MD……),
  *     实现写在渲染端,这里只管它们**显不显示、排第几**。
@@ -18,8 +19,8 @@
  *
  * ## 为什么没有脚本、没有 HTML
  *
- * 动作只有四种声明式的:打开视图(Markdown 模板)、发给对话(提示词模板)、复制文本、
- * 运行自动化。要写逻辑就去写自动化/工作流 —— 那边有审阅、有运行记录、有权限边界。
+ * 动作全是声明式的:打开视图(Markdown 模板)、发给对话(提示词模板)、复制文本、
+ * 运行自动化、打开文件、切到右栏某个页签(哪个挂载位能用哪几种见 {@link ACTIONS_BY_SLOT})。要写逻辑就去写自动化/工作流 —— 那边有审阅、有运行记录、有权限边界。
  * 在菜单项里塞可执行代码等于给每一次右键开了一个没人审的口子。
  *
  * ## 存哪
@@ -43,9 +44,11 @@ export const CUSTOM_UI_SETTING_KEY = "customUi.config.v1";
  *   - `library.subcategory` **小类**(第二级:大类下直挂的根分类)右键
  *   - `library.group`       **大类**标题行右键
  *   - `files.context`       右栏 Files 里的文件右键
+ *   - `rightPanel.tab`      右栏顶上那排页签(内置的文件 / Git / 浏览器……也在这里排)
+ *   - `toolbar`             主页面与右栏之间的竖向工具栏(右栏收起时它就在最右边)
  *
- * 右栏自定义页签与最右侧竖向工具栏是下一期(P3),届时往这里加值 —— 旧配置里没有
- * 它们的布局,按默认处理,不需要迁移。
+ * 后两个没有「右键的目标」,模板变量是当前工作区(项目 / 对话 / 日期),见
+ * {@link CustomUiTarget} 的 `workspace`。
  */
 export const CUSTOM_UI_SLOTS = [
   "library.item",
@@ -53,6 +56,8 @@ export const CUSTOM_UI_SLOTS = [
   "library.subcategory",
   "library.group",
   "files.context",
+  "rightPanel.tab",
+  "toolbar",
 ] as const;
 export type CustomUiSlot = (typeof CUSTOM_UI_SLOTS)[number];
 
@@ -85,6 +90,14 @@ export const CUSTOM_UI_ICONS = [
   "eye",
   "template",
   "download",
+  // 工具栏 / 页签常用的几个(2026-09-28 加;只能往后加,不能改名 —— 名字存在用户配置里)
+  "list-check",
+  "calendar",
+  "chart",
+  "folder",
+  "terminal",
+  "notebook",
+  "bulb",
 ] as const;
 export type CustomUiIcon = (typeof CUSTOM_UI_ICONS)[number];
 
@@ -140,16 +153,54 @@ export const CustomUiActionSchema = z.discriminatedUnion("type", [
   }),
   /**
    * 运行一条自动化:用**指定的那个触发器**手动起一次,右键的目标作为载荷带进去
-   * (条目 / 分类 / 大类 → 条目清单,文件 → 文件列表)。
+   * (条目 / 分类 / 大类 → 条目清单,文件 → 文件列表;工具栏没有目标 → 同「立刻跑一次」)。
    */
   z.object({
     type: z.literal("automation"),
     workflowId: z.string().min(1).max(200),
     triggerNodeId: z.string().min(1).max(200),
   }),
+  /**
+   * 一个文件(路径可以写 `{{变量}}`;相对路径按当前项目目录解析)。工具栏上 = 在中间
+   * 打开它;右栏页签 = **实时显示**它的内容(Markdown 渲染,改了自动刷新)——
+   * 「自动化把结果写进一个文件,页签一直显示它」就是这么搭出来的。
+   * 只能是项目目录里的文件(读文件那条 RPC 本来就只放行项目根下的路径)。
+   */
+  z.object({
+    type: z.literal("file"),
+    path: z.string().trim().min(1).max(1000),
+  }),
+  /**
+   * 切到右栏的某个页签(条目键:`builtin:files` / `custom:<id>`),右栏收着就先展开。
+   * 再点一次、而右栏正显示着它 → 收起右栏(同 IDE 活动栏的手感)。
+   */
+  z.object({
+    type: z.literal("openTab"),
+    tab: z.string().min(1).max(300),
+  }),
 ]);
 export type CustomUiAction = z.infer<typeof CustomUiActionSchema>;
 export type CustomUiActionType = CustomUiAction["type"];
+
+/**
+ * 每个挂载位能用哪几种动作。右键菜单有「目标」,所以能把目标带进自动化;页签是一块
+ * **常驻的显示区**,只有「显示什么」(Markdown / 文件)有意义;工具栏是按钮,什么都能点,
+ * 另外能切页签、开文件。不在表里的组合在读配置时整条丢掉(同坏条目)。
+ */
+const MENU_ACTIONS = ["view", "prompt", "copy", "automation"] as const;
+export const ACTIONS_BY_SLOT: Record<CustomUiSlot, readonly CustomUiActionType[]> = {
+  "library.item": MENU_ACTIONS,
+  "library.collection": MENU_ACTIONS,
+  "library.subcategory": MENU_ACTIONS,
+  "library.group": MENU_ACTIONS,
+  "files.context": MENU_ACTIONS,
+  "rightPanel.tab": ["view", "file"],
+  toolbar: ["view", "prompt", "copy", "automation", "file", "openTab"],
+};
+
+export function isActionAllowed(slot: CustomUiSlot, type: CustomUiActionType): boolean {
+  return ACTIONS_BY_SLOT[slot].includes(type);
+}
 
 /** 自定义项 id:短、URL 安全 —— 它会拼进 `custom:<id>` 这种布局键里。 */
 const ITEM_ID = /^[a-z0-9][a-z0-9-]{0,47}$/;
@@ -214,8 +265,9 @@ export function coerceCustomUiConfig(parsed: unknown): CustomUiConfig {
   if (Array.isArray(obj.items)) {
     for (const rawItem of obj.items.slice(0, 200)) {
       const r = CustomUiItemSchema.safeParse(rawItem);
-      // id 重复只留第一条:布局键靠 id 区分,两条同 id 会让排序/隐藏同时作用在两条上
-      if (r.success && !seen.has(r.data.id)) {
+      // id 重复只留第一条:布局键靠 id 区分,两条同 id 会让排序/隐藏同时作用在两条上。
+      // 动作不适用于这个挂载位(手改 JSON 把一个「运行自动化」挪进了页签)也当坏条目丢
+      if (r.success && !seen.has(r.data.id) && isActionAllowed(r.data.slot, r.data.action.type)) {
         seen.add(r.data.id);
         items.push(r.data);
       }
@@ -301,7 +353,17 @@ export type CustomUiTarget =
     }
   | { kind: "collection"; level: "collection" | "subcategory"; groupId?: string; collection: { id: string; name: string } }
   | { kind: "group"; group: { id: string; name: string } }
-  | { kind: "file"; projectPath: string; path: string };
+  | { kind: "file"; projectPath: string; path: string }
+  /**
+   * 页签与工具栏:没有「右键的那个」,只有当前工作区。`today` 由调用方给(`YYYY-MM-DD`,
+   * 本地日期)—— 这里保持纯函数,不自己读时钟。
+   */
+  | {
+      kind: "workspace";
+      project?: { path: string; name: string };
+      session?: { id: string; title: string };
+      today: string;
+    };
 
 /** 路径的最后一段(兼容 `\` 与 `/`)。 */
 function baseName(p: string): string {
@@ -350,8 +412,18 @@ export function templateVarsOf(target: CustomUiTarget): Record<string, string> {
         "file.dir": dirName(target.path),
         "project.path": target.projectPath,
       };
+    case "workspace":
+      return {
+        "project.path": target.project?.path ?? "",
+        "project.name": target.project?.name ?? "",
+        "session.id": target.session?.id ?? "",
+        "session.title": target.session?.title ?? "",
+        today: target.today,
+      };
   }
 }
+
+const WORKSPACE_VARS = ["project.path", "project.name", "session.id", "session.title", "today"] as const;
 
 /** 每个挂载位能用的变量名(设置页的「可用变量」提示照这张表列)。 */
 export const TEMPLATE_VARS_BY_SLOT: Record<CustomUiSlot, readonly string[]> = {
@@ -369,6 +441,8 @@ export const TEMPLATE_VARS_BY_SLOT: Record<CustomUiSlot, readonly string[]> = {
   "library.subcategory": ["collection.name", "collection.id"],
   "library.group": ["group.name", "group.id"],
   "files.context": ["file.path", "file.name", "file.ext", "file.dir", "project.path"],
+  "rightPanel.tab": WORKSPACE_VARS,
+  toolbar: WORKSPACE_VARS,
 };
 
 /**
@@ -392,7 +466,11 @@ export function matchesWhen(when: CustomUiWhen | undefined, target: CustomUiTarg
   if (!when) return true;
   if (when.groupIds && when.groupIds.length > 0) {
     const gid =
-      target.kind === "group" ? target.group.id : target.kind === "file" ? undefined : target.groupId;
+      target.kind === "group"
+        ? target.group.id
+        : target.kind === "item" || target.kind === "collection"
+          ? target.groupId
+          : undefined;
     if (gid === undefined || !when.groupIds.includes(gid)) return false;
   }
   if (when.requires) {
@@ -420,7 +498,29 @@ export function targetKindOfSlot(slot: CustomUiSlot): CustomUiTarget["kind"] {
   if (slot === "library.item") return "item";
   if (slot === "library.collection" || slot === "library.subcategory") return "collection";
   if (slot === "library.group") return "group";
-  return "file";
+  if (slot === "files.context") return "file";
+  return "workspace";
+}
+
+/**
+ * 「文件」动作的路径 → 绝对路径。相对路径按项目目录接上;没有项目又是相对路径 → `null`
+ * (调用方提示「先打开一个项目」)。`..` 不在这里拦 —— 读文件的 RPC 只放行项目根下的
+ * 路径,越界的读回来就是空。
+ */
+export function resolveWorkspacePath(path: string, projectPath: string | undefined): string | null {
+  const p = path.trim();
+  if (p.length === 0) return null;
+  if (/^(?:[a-zA-Z]:[\\/]|[\\/])/.test(p)) return p;
+  if (!projectPath) return null;
+  const sep = projectPath.includes("\\") && !projectPath.includes("/") ? "\\" : "/";
+  const root = projectPath.replace(/[\\/]+$/, "");
+  return `${root}${sep}${p.replace(/^\.[\\/]/, "").replace(/[\\/]/g, sep)}`;
+}
+
+/** 本地日期 `YYYY-MM-DD`(`{{today}}`)。 */
+export function localDateString(d: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 /** 自定义项显示的名字(英文缺了回落中文)。 */

@@ -10,6 +10,9 @@
  * 3. **模板里认不出的变量渲染成空串**,不原样留给模型。
  * 4. **批量跑自动化的展开**:分类带上全部子分类、有环不死循环;文件必须在某个项目
  *    目录里(`/a/proj2` 不算在 `/a/proj` 里)。
+ * 5. **右栏页签 / 工具栏(P3)**:每个挂载位只收它用得上的动作(页签只能「显示」,手改 JSON
+ *    塞进去的「运行自动化」整条丢);工作区目标没有「右键的那个东西」,带显示条件的项一律
+ *    不出现;相对路径按项目根拼、没有项目就拼不出。
  *
  * 纯模块(不 import electron / store),直接 bundle 就能跑。
  *
@@ -33,6 +36,10 @@ import {
   TEMPLATE_VARS_BY_SLOT,
   templateVarsOf,
   CUSTOM_UI_SLOTS,
+  ACTIONS_BY_SLOT,
+  isActionAllowed,
+  localDateString,
+  resolveWorkspacePath,
   type CustomUiTarget,
 } from "@contracts/customUi";
 import type { LibraryItem } from "@contracts/library";
@@ -157,7 +164,9 @@ for (const slot of CUSTOM_UI_SLOTS) {
         ? { kind, level: "collection", collection: { id: "c", name: "n" } }
         : kind === "group"
           ? { kind, group: { id: "g", name: "n" } }
-          : fileTarget;
+          : kind === "workspace"
+            ? { kind, today: "2026-09-28" }
+            : fileTarget;
   const vars = templateVarsOf(sample);
   check(
     `设置页列出的变量都真的存在(${slot})`,
@@ -229,6 +238,71 @@ check("项目根带尾斜杠也行", isInsideAnyProject("/w/proj/a.txt", ["/w/pr
 
 const libItem = { id: "i1", title: "T", pdfPath: "p/x.pdf", filePath: undefined } as unknown as LibraryItem;
 eq("条目事实:没有的路径不出现", itemFactsOf(libItem), { itemId: "i1", itemTitle: "T", pdfPath: "p/x.pdf" });
+
+/* ── 7. 右栏页签 / 竖向工具栏(P3)────────────────────────────────── */
+
+eq("七个挂载位", CUSTOM_UI_SLOTS.length, 7);
+eq("页签 → 工作区目标", targetKindOfSlot("rightPanel.tab"), "workspace");
+eq("工具栏 → 工作区目标", targetKindOfSlot("toolbar"), "workspace");
+eq("页签只能显示", [...ACTIONS_BY_SLOT["rightPanel.tab"]].sort(), ["file", "view"]);
+check("右键菜单不能「切页签」", !isActionAllowed("library.item", "openTab") && !isActionAllowed("files.context", "file"));
+check("工具栏六种都行", ACTIONS_BY_SLOT.toolbar.length === 6);
+for (const slot of CUSTOM_UI_SLOTS) {
+  check(`${slot} 有变量表`, Array.isArray(TEMPLATE_VARS_BY_SLOT[slot]) && TEMPLATE_VARS_BY_SLOT[slot].length > 0);
+}
+
+const p3 = coerceCustomUiConfig({
+  version: 1,
+  items: [
+    { id: "t1", slot: "rightPanel.tab", label: { zh: "README" }, action: { type: "file", path: "README.md" } },
+    // 页签里塞了个「运行自动化」→ 丢
+    { id: "t2", slot: "rightPanel.tab", label: { zh: "坏" }, action: { type: "automation", workflowId: "w", triggerNodeId: "n" } },
+    { id: "b1", slot: "toolbar", label: { zh: "切到 Git" }, action: { type: "openTab", tab: "builtin:git" } },
+    { id: "b2", slot: "toolbar", label: { zh: "开日志" }, action: { type: "file", path: "notes/{{today}}.md" } },
+    // 右键菜单里的「打开文件」→ 丢
+    { id: "m1", slot: "library.item", label: { zh: "坏" }, action: { type: "file", path: "a.md" } },
+    // 空路径 / 空页签 → schema 拒
+    { id: "b3", slot: "toolbar", label: { zh: "空" }, action: { type: "file", path: "" } },
+    { id: "b4", slot: "toolbar", label: { zh: "空" }, action: { type: "openTab", tab: "" } },
+  ],
+  layout: { "rightPanel.tab": { order: ["custom:t1", "builtin:files"], hidden: ["builtin:git"] } },
+});
+eq("P3 坏条目逐条丢", p3.items.map((i) => i.id), ["t1", "b1", "b2"]);
+eq("页签布局保留", p3.layout["rightPanel.tab"], { order: ["custom:t1", "builtin:files"], hidden: ["builtin:git"] });
+eq(
+  "自定义页签可以排到内置前面,藏掉的 git 不出现",
+  arrangeSlotEntries(["builtin:files", "builtin:git", "builtin:browser", "custom:t1"], p3.layout["rightPanel.tab"]),
+  ["custom:t1", "builtin:files", "builtin:browser"],
+);
+
+const ws: CustomUiTarget = {
+  kind: "workspace",
+  project: { path: "/w/proj", name: "proj" },
+  session: { id: "s1", title: "聊天" },
+  today: "2026-09-28",
+};
+const wsBare: CustomUiTarget = { kind: "workspace", today: "2026-09-28" };
+eq("工作区变量", templateVarsOf(ws), {
+  "project.path": "/w/proj",
+  "project.name": "proj",
+  "session.id": "s1",
+  "session.title": "聊天",
+  today: "2026-09-28",
+});
+eq("没项目 / 没对话 → 空串", renderTemplate("[{{project.name}}|{{session.title}}|{{today}}]", templateVarsOf(wsBare)), "[||2026-09-28]");
+check("没条件的项在工具栏出现", matchesWhen(undefined, ws));
+check("带分组条件的项在工具栏不出现", !matchesWhen({ groupIds: ["g"] }, ws));
+check("带 requires 的项在工具栏不出现", !matchesWhen({ requires: "pdf" }, ws));
+check("带扩展名的项在工具栏不出现", !matchesWhen({ extensions: [".md"] }, ws));
+
+eq("相对路径拼到项目根", resolveWorkspacePath("notes/2026-09-28.md", "/w/proj"), "/w/proj/notes/2026-09-28.md");
+eq("./ 前缀去掉、项目根尾斜杠去掉", resolveWorkspacePath("./README.md", "/w/proj/"), "/w/proj/README.md");
+eq("Windows 项目根用反斜杠", resolveWorkspacePath("docs/a.md", "D:\\w\\proj"), "D:\\w\\proj\\docs\\a.md");
+eq("绝对路径原样", resolveWorkspacePath("/etc/x.md", "/w/proj"), "/etc/x.md");
+eq("盘符绝对路径原样", resolveWorkspacePath("C:\\x.md", undefined), "C:\\x.md");
+eq("没项目 → 拼不出", resolveWorkspacePath("README.md", undefined), null);
+eq("空路径 → null", resolveWorkspacePath("   ", "/w/proj"), null);
+eq("本地日期补零", localDateString(new Date(2026, 0, 5)), "2026-01-05");
 
 /* ── 汇总 ── */
 

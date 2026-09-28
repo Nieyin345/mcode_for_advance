@@ -1,8 +1,9 @@
 /**
  * 设置 → **自定义 UI**。
  *
- * 用户定的规矩:主界面只放入口(右键菜单里的一项),点下去做什么、显示什么,全在这一页
- * 定义。左边列挂载位(资料库四级右键 + Files 文件右键),右边是这个位置上的功能项:
+ * 用户定的规矩:主界面只放入口(右键菜单里的一项、右栏的一个页签、工具栏的一颗按钮),
+ * 点下去做什么、显示什么,全在这一页定义。左边列挂载位(资料库四级右键 + Files 文件右键
+ * + 右栏页签 + 竖向工具栏),右边是这个位置上的功能项:
  *
  *   - 内置项(文献信息、加入对话、采纳 MD……):只能**显示/隐藏、排序**;
  *   - JSON 模块项(v1 模块清单声明的文件工具):同上;
@@ -17,6 +18,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   CUSTOM_UI_ICONS,
+  ACTIONS_BY_SLOT,
   CUSTOM_UI_SLOTS,
   CustomUiItemSchema,
   TEMPLATE_VARS_BY_SLOT,
@@ -91,6 +93,8 @@ interface Draft {
   copyTemplate: string;
   workflowId: string;
   triggerNodeId: string;
+  filePath: string;
+  openTab: string;
 }
 
 function newId(existing: readonly CustomUiItem[]): string {
@@ -112,14 +116,16 @@ function blankDraft(slot: CustomUiSlot, items: readonly CustomUiItem[]): Draft {
     extensions: "",
     requires: "",
     groupIds: [],
-    actionType: targetKindOfSlot(slot) === "file" ? "copy" : "prompt",
+    actionType: slot === "rightPanel.tab" ? "file" : targetKindOfSlot(slot) === "file" ? "copy" : "prompt",
     viewTitle: "",
     viewBody: "",
     promptTemplate: "",
-    promptAttach: targetKindOfSlot(slot) !== "file",
+    promptAttach: targetKindOfSlot(slot) !== "file" && targetKindOfSlot(slot) !== "workspace",
     copyTemplate: "",
     workflowId: "",
     triggerNodeId: "",
+    filePath: "",
+    openTab: "",
   };
 }
 
@@ -144,6 +150,8 @@ function draftOf(item: CustomUiItem): Draft {
     copyTemplate: a.type === "copy" ? a.template : "",
     workflowId: a.type === "automation" ? a.workflowId : "",
     triggerNodeId: a.type === "automation" ? a.triggerNodeId : "",
+    filePath: a.type === "file" ? a.path : "",
+    openTab: a.type === "openTab" ? a.tab : "",
   };
 }
 
@@ -157,10 +165,16 @@ function itemOf(d: Draft): { ok: true; item: CustomUiItem } | { ok: false; error
         ? { type: "prompt", template: d.promptTemplate, attach: d.promptAttach }
         : d.actionType === "copy"
           ? { type: "copy", template: d.copyTemplate }
-          : { type: "automation", workflowId: d.workflowId, triggerNodeId: d.triggerNodeId };
+          : d.actionType === "file"
+            ? { type: "file", path: d.filePath.trim() }
+            : d.actionType === "openTab"
+              ? { type: "openTab", tab: d.openTab }
+              : { type: "automation", workflowId: d.workflowId, triggerNodeId: d.triggerNodeId };
   if (action.type === "automation" && (!action.workflowId || !action.triggerNodeId)) {
     return { ok: false, error: "customUi.editor.errorAutomation" };
   }
+  if (action.type === "file" && !action.path) return { ok: false, error: "customUi.editor.errorFile" };
+  if (action.type === "openTab" && !action.tab) return { ok: false, error: "customUi.editor.errorOpenTab" };
   const extensions = d.extensions
     .split(/[,，\s]+/)
     .map((e) => e.trim())
@@ -219,6 +233,34 @@ function templateDraft(
         promptTemplate: translate(locale, "customUi.template.summarize.prompt"),
         promptAttach: true,
       };
+    case "projectSummary":
+      return {
+        ...d,
+        ...both("customUi.template.projectSummary.label"),
+        icon: "sparkles",
+        actionType: "prompt",
+        promptTemplate: translate(locale, "customUi.template.projectSummary.prompt"),
+      };
+    case "runAutomation":
+      return { ...d, ...both("customUi.template.runAutomation.label"), icon: "bolt", actionType: "automation" };
+    case "readme":
+      return { ...d, ...both("customUi.template.readme.label"), icon: "notebook", actionType: "file", filePath: "README.md" };
+    case "dailyNote":
+      return {
+        ...d,
+        ...both("customUi.template.dailyNote.label"),
+        icon: "calendar",
+        actionType: "file",
+        filePath: "notes/{{today}}.md",
+      };
+    case "projectInfo":
+      return {
+        ...d,
+        ...both("customUi.template.projectInfo.label"),
+        icon: "folder",
+        actionType: "view",
+        viewBody: translate(locale, "customUi.template.projectInfo.body"),
+      };
     default:
       return {
         ...d,
@@ -245,6 +287,15 @@ const TEMPLATES_BY_SLOT: Record<CustomUiSlot, readonly { id: string; labelKey: M
   ],
   "library.group": [{ id: "transcribe", labelKey: "customUi.template.transcribe.label" }],
   "files.context": [{ id: "copyPath", labelKey: "customUi.template.copyPath.label" }],
+  "rightPanel.tab": [
+    { id: "readme", labelKey: "customUi.template.readme.label" },
+    { id: "dailyNote", labelKey: "customUi.template.dailyNote.label" },
+    { id: "projectInfo", labelKey: "customUi.template.projectInfo.label" },
+  ],
+  toolbar: [
+    { id: "projectSummary", labelKey: "customUi.template.projectSummary.label" },
+    { id: "runAutomation", labelKey: "customUi.template.runAutomation.label" },
+  ],
 };
 
 /* ────────────────────────── 面板 ────────────────────────── */
@@ -507,10 +558,12 @@ function ItemEditor({
   onCancel: () => void;
   onSave: (item: CustomUiItem) => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [error, setError] = useState<MessageId | null>(null);
   const kind = targetKindOfSlot(draft.slot);
-  const isLibrary = kind !== "file";
+  const isLibrary = kind !== "file" && kind !== "workspace";
+  const isWorkspace = kind === "workspace";
+  const configItems = useCustomUiStore((s) => s.config.items);
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => onChange({ ...draft, [k]: v });
 
   const needAutomations = draft.actionType === "automation";
@@ -520,7 +573,14 @@ function ItemEditor({
   const automations = (workflows.data?.workflows ?? []).filter((w) => w.trigger !== undefined);
   const triggers = (facts.data ?? []).filter((f) => f.workflowId === draft.workflowId);
 
-  const actionTypes: CustomUiActionType[] = ["view", "prompt", "copy", "automation"];
+  const actionTypes: readonly CustomUiActionType[] = ACTIONS_BY_SLOT[draft.slot];
+  // 「切到右栏页签」可选的:内置页签 + 已有的自定义页签
+  const tabChoices = [
+    ...BUILTINS["rightPanel.tab"].map((b) => ({ key: builtinKey(b.id), label: t(b.labelKey) })),
+    ...configItems
+      .filter((i) => i.slot === "rightPanel.tab")
+      .map((i) => ({ key: customKey(i.id), label: customUiLabel(i.label, locale) })),
+  ];
   const vars = TEMPLATE_VARS_BY_SLOT[draft.slot];
   const varsHint = (
     <p className="text-[0.7857em] text-content-subtle">
@@ -585,6 +645,8 @@ function ItemEditor({
             </div>
           </div>
 
+          {/* 工具栏 / 右栏页签没有「右键的那个东西」,也就没有显示条件 */}
+          {!isWorkspace && (
           <fieldset className="space-y-2 rounded-md border border-edge p-3">
             <legend className="px-1 text-[0.8571em] font-medium text-content">{t("customUi.editor.when")}</legend>
             <p className="text-[0.7857em] text-content-subtle">{t("customUi.editor.whenHint")}</p>
@@ -627,9 +689,12 @@ function ItemEditor({
               </div>
             )}
           </fieldset>
+          )}
 
           <fieldset className="space-y-2 rounded-md border border-edge p-3">
-            <legend className="px-1 text-[0.8571em] font-medium text-content">{t("customUi.editor.action")}</legend>
+            <legend className="px-1 text-[0.8571em] font-medium text-content">
+              {draft.slot === "rightPanel.tab" ? t("customUi.editor.tabContent") : t("customUi.editor.action")}
+            </legend>
             <div className="flex flex-wrap gap-1">
               {actionTypes.map((type) => (
                 <button
@@ -641,17 +706,21 @@ function ItemEditor({
                     draft.actionType === type ? "border-accent bg-accent/10 text-accent" : "border-edge text-content-muted hover:bg-surface-muted",
                   )}
                 >
-                  {t(`customUi.editor.action.${type}` as MessageId)}
+                  {t(
+                    (draft.slot === "rightPanel.tab" ? `customUi.editor.tabAction.${type}` : `customUi.editor.action.${type}`) as MessageId,
+                  )}
                 </button>
               ))}
             </div>
 
             {draft.actionType === "view" && (
               <>
-                <label className={LABEL}>
-                  <span>{t("customUi.editor.viewTitle")}</span>
-                  <input className={FIELD} value={draft.viewTitle} onChange={(e) => set("viewTitle", e.target.value)} />
-                </label>
+                {draft.slot !== "rightPanel.tab" && (
+                  <label className={LABEL}>
+                    <span>{t("customUi.editor.viewTitle")}</span>
+                    <input className={FIELD} value={draft.viewTitle} onChange={(e) => set("viewTitle", e.target.value)} />
+                  </label>
+                )}
                 <label className={LABEL}>
                   <span>{t("customUi.editor.viewBody")}</span>
                   <textarea
@@ -739,8 +808,44 @@ function ItemEditor({
                     </label>
                   </div>
                 )}
-                <p className="text-[0.7857em] leading-relaxed text-content-subtle">{t("customUi.editor.automationHint")}</p>
+                <p className="text-[0.7857em] leading-relaxed text-content-subtle">
+                  {isWorkspace ? t("customUi.editor.automationHintToolbar") : t("customUi.editor.automationHint")}
+                </p>
               </>
+            )}
+            {draft.actionType === "file" && (
+              <>
+                <label className={LABEL}>
+                  <span>{t("customUi.editor.filePath")}</span>
+                  <input
+                    className={cn(FIELD, "font-mono")}
+                    value={draft.filePath}
+                    onChange={(e) => set("filePath", e.target.value)}
+                    placeholder="README.md"
+                    spellCheck={false}
+                  />
+                </label>
+                <p className="text-[0.7857em] leading-relaxed text-content-subtle">
+                  {draft.slot === "rightPanel.tab" ? t("customUi.editor.fileHintTab") : t("customUi.editor.fileHintToolbar")}
+                </p>
+                {varsHint}
+              </>
+            )}
+            {draft.actionType === "openTab" && (
+              <label className={LABEL}>
+                <span>{t("customUi.editor.openTab")}</span>
+                <select className={FIELD} value={draft.openTab} onChange={(e) => set("openTab", e.target.value)}>
+                  <option value="">—</option>
+                  {tabChoices.map((c) => (
+                    <option key={c.key} value={c.key}>
+                      {c.label}
+                    </option>
+                  ))}
+                  {draft.openTab && !tabChoices.some((c) => c.key === draft.openTab) && (
+                    <option value={draft.openTab}>{draft.openTab}</option>
+                  )}
+                </select>
+              </label>
             )}
           </fieldset>
 

@@ -12,27 +12,39 @@
  * 那些是固定的,用户定的规矩。
  */
 import type { ComponentType } from "react";
-import type { CustomUiIcon, CustomUiSlot } from "@contracts/customUi";
+import type { CustomUiActionType, CustomUiIcon, CustomUiSlot } from "@contracts/customUi";
 import type { MessageId } from "@renderer/lib/i18n/index.js";
 import {
   IconBolt,
   IconBook,
+  IconBulb,
+  IconCalendar,
+  IconChartBar,
   IconCode,
   IconCopy,
   IconDownload,
   IconExternalLink,
   IconEye,
+  IconFileSearch,
   IconFileText,
   IconFlask,
+  IconFolder,
+  IconGitBranch,
   IconInfoCircle,
+  IconLayoutSidebarRightExpand,
   IconLink,
+  IconListCheck,
+  IconListDetails,
+  IconListTree,
   IconMessage,
+  IconNotebook,
   IconQuote,
   IconRobot,
   IconSparkles,
   IconStar,
   IconTag,
   IconTemplate,
+  IconTerminal2,
   IconWorld,
   type TablerIconProps,
 } from "@renderer/lib/icons.js";
@@ -67,7 +79,27 @@ export const BUILTINS: Record<CustomUiSlot, readonly BuiltinMeta[]> = {
     { id: "addToChat", labelKey: "ide.tree.addToChat", icon: IconMessage },
     { id: "openInBrowser", labelKey: "ide.tree.openInBrowser", icon: IconWorld },
   ],
+  // 右栏自带的那排页签。id 就是 `RightPanelTab` 的值(`builtin:files` 这种键也被工具栏的
+  // 「切到页签」动作引用)。「宽屏模式」按钮不在这里 —— 它是布局开关,不是页签。
+  "rightPanel.tab": [
+    { id: "files", labelKey: "layout.tabFiles", icon: IconFolder },
+    { id: "git", labelKey: "customUi.builtin.git", icon: IconGitBranch },
+    { id: "browser", labelKey: "customUi.builtin.browser", icon: IconWorld },
+    { id: "turns", labelKey: "layout.tabTurns", icon: IconListDetails },
+    { id: "flow", labelKey: "layout.tabFlow", icon: IconListTree },
+    { id: "tasks", labelKey: "layout.tabTasks", icon: IconTerminal2 },
+    { id: "preview", labelKey: "layout.tabPreview", icon: IconFileSearch },
+  ],
+  // 工具栏没有内置按钮:整条都是用户自己摆的。
+  toolbar: [],
 };
+
+/** 右栏内置页签的 id(与 `RightPanelTab` 的值一一对应)。 */
+export const BUILTIN_TAB_IDS = ["files", "git", "browser", "turns", "flow", "tasks", "preview"] as const;
+export type BuiltinTabId = (typeof BUILTIN_TAB_IDS)[number];
+export function isBuiltinTabId(id: string): id is BuiltinTabId {
+  return (BUILTIN_TAB_IDS as readonly string[]).includes(id);
+}
 
 export const CUSTOM_ICONS: Record<CustomUiIcon, IconComponent> = {
   sparkles: IconSparkles,
@@ -86,12 +118,21 @@ export const CUSTOM_ICONS: Record<CustomUiIcon, IconComponent> = {
   eye: IconEye,
   template: IconTemplate,
   download: IconDownload,
+  "list-check": IconListCheck,
+  calendar: IconCalendar,
+  chart: IconChartBar,
+  folder: IconFolder,
+  terminal: IconTerminal2,
+  notebook: IconNotebook,
+  bulb: IconBulb,
 };
 
 /** 没选图标时按动作给一个。 */
-export const DEFAULT_ACTION_ICON: Record<"view" | "prompt" | "copy" | "automation", IconComponent> = {
+export const DEFAULT_ACTION_ICON: Record<CustomUiActionType, IconComponent> = {
   view: IconEye,
   prompt: IconMessage,
   copy: IconCopy,
   automation: IconBolt,
+  file: IconFileText,
+  openTab: IconLayoutSidebarRightExpand,
 };

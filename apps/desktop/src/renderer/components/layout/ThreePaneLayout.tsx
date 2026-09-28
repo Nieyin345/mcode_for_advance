@@ -6,6 +6,9 @@ interface Props {
   left: ReactNode;
   center: ReactNode;
   right: ReactNode;
+  /** 主区与右栏之间的一列(自定义 UI 的竖向工具栏)。排在右栏**左边**:右栏收起时
+   *  右栏整个不渲染,它就自然贴到最右边。它自己的收起/展开由它自己管。 */
+  toolbar?: ReactNode;
   leftOpen: boolean;
   rightOpen: boolean;
   /** Bottom-bar terminal node (keep-alive: always mounted). */
@@ -52,6 +55,7 @@ export function ThreePaneLayout({
   left,
   center,
   right,
+  toolbar,
   leftOpen,
   rightOpen,
   bottomTerminal,
@@ -128,6 +132,8 @@ export function ThreePaneLayout({
           </>
         )}
       </main>
+
+      {toolbar}
 
       {rightOpen && onResizeRight && (
         <Divider

@@ -1,13 +1,17 @@
 /**
  * 执行一条**自定义项**的动作(内置项的动作由挂载它的菜单自己带,不走这里)。
  *
- * 四种动作见 `@contracts/customUi` 的 `CustomUiActionSchema`。全部是渲染端能做完的事,
- * 只有「运行自动化」要过一次 IPC(`customUi.runAutomation`)—— 展开分类/大类成条目清单、
- * 过滤回收站、校验文件在项目里,都在主进程。
+ * 动作见 `@contracts/customUi` 的 `CustomUiActionSchema`。全部是渲染端能做完的事,
+ * 只有「运行自动化」要过一次 IPC:右键菜单走 `customUi.runAutomation`(展开分类/大类成
+ * 条目清单、过滤回收站、校验文件在项目里,都在主进程);工具栏没有目标,走的是自动化页
+ * 那颗「立刻跑一次」(`automation.run`)。
+ *
+ * 右栏页签上的项不经过这里 —— 页签是常驻显示区,由 `CustomTabView` 画。
  */
 import {
   customUiLabel,
   renderTemplate,
+  resolveWorkspacePath,
   templateVarsOf,
   type CustomUiItem,
   type CustomUiRunTarget,
@@ -16,7 +20,7 @@ import {
 import { api } from "@renderer/lib/api.js";
 import { attachToCurrentChat } from "@renderer/lib/attachToChat.js";
 import { translate, type MessageId } from "@renderer/lib/i18n/core.js";
-import { useCustomUiStore } from "@renderer/stores/customUiStore.js";
+import { openRightPanelTab, useCustomUiStore } from "@renderer/stores/customUiStore.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore, type ToastKind } from "@renderer/stores/toastStore.js";
 
@@ -38,11 +42,13 @@ export function attachKeyOf(target: CustomUiTarget): string | null {
     case "group":
       return `g:${target.group.id}`;
     case "file":
+    case "workspace":
       return null;
   }
 }
 
-export function runTargetOf(target: CustomUiTarget): CustomUiRunTarget {
+/** 右键目标 → 主进程的运行目标;工具栏(`workspace`)没有目标 → `null`。 */
+export function runTargetOf(target: CustomUiTarget): CustomUiRunTarget | null {
   switch (target.kind) {
     case "item":
       return { kind: "item", itemId: target.item.id };
@@ -52,6 +58,8 @@ export function runTargetOf(target: CustomUiTarget): CustomUiRunTarget {
       return { kind: "group", groupId: target.group.id };
     case "file":
       return { kind: "file", path: target.path };
+    case "workspace":
+      return null;
   }
 }
 
@@ -61,7 +69,19 @@ async function runAutomation(
   target: CustomUiTarget,
 ): Promise<void> {
   const name = customUiLabel(item.label, useSessionStore.getState().locale);
-  const input = { workflowId: action.workflowId, triggerNodeId: action.triggerNodeId, target: runTargetOf(target) };
+  const runTarget = runTargetOf(target);
+  if (runTarget === null) {
+    // 工具栏:同自动化页的「立刻跑一次」(manual 那条路,用户关掉的触发器也能跑)
+    try {
+      const res = await api.automation.run({ workflowId: action.workflowId, triggerNodeId: action.triggerNodeId });
+      if (res.ok) toast("info", "customUi.run.startedToolbar", undefined, { name });
+      else toast("error", "customUi.run.failed", res.error);
+    } catch (err) {
+      toast("error", "customUi.run.failed", err instanceof Error ? err.message : String(err));
+    }
+    return;
+  }
+  const input = { workflowId: action.workflowId, triggerNodeId: action.triggerNodeId, target: runTarget };
   const go = async (): Promise<void> => {
     try {
       const res = await api.customUi.runAutomation(input);
@@ -141,6 +161,20 @@ export async function runCustomItem(item: CustomUiItem, target: CustomUiTarget):
     }
     case "automation":
       await runAutomation(item, action, target);
+      return;
+    case "file": {
+      const projectPath =
+        target.kind === "workspace" ? target.project?.path : target.kind === "file" ? target.projectPath : undefined;
+      const abs = resolveWorkspacePath(renderTemplate(action.path, vars), projectPath);
+      if (abs === null) {
+        toast("warning", "customUi.run.noProject");
+        return;
+      }
+      useSessionStore.getState().openFileInIde(abs);
+      return;
+    }
+    case "openTab":
+      if (!openRightPanelTab(action.tab, { toggle: true })) toast("warning", "customUi.run.tabMissing");
       return;
   }
 }

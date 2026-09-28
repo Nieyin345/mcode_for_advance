@@ -18,6 +18,7 @@ import { AskChoiceDialog } from "./components/chat/AskChoiceDialog.js";
 import { BrowserPanel } from "./components/browser/BrowserPanel.js";
 import { Toaster } from "./components/layout/Toaster.js";
 import { CustomUiHost } from "./components/customUi/CustomUiHost.js";
+import { CustomUiToolbar } from "./components/customUi/CustomUiToolbar.js";
 import { UpdateNotification } from "./components/layout/UpdateNotification.js";
 import { VoiceListeningOverlay } from "./components/layout/VoiceListeningOverlay.js";
 import { useClaudeEvents } from "./hooks/useClaudeEvents.js";
@@ -343,6 +344,7 @@ export function App() {
             left={null}
             center={<CenterPane wide={widePanelOpen} />}
             right={<RightPanel />}
+            toolbar={<CustomUiToolbar />}
             leftOpen={false}
             rightOpen={rightOpen}
             bottomTerminal={<BottomTerminalBar active={bottomTerminalOpen} />}

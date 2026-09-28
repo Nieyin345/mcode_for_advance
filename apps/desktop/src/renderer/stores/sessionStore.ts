@@ -1504,6 +1504,11 @@ export interface SessionState {
    *  the last-used inspector. Only "files" is implemented in P4; the other
    *  three round-trip for forward-compat. */
   rightPanelTab: RightPanelTab;
+  /** 每「要求」一次内置页签就 +1(哪怕值没变)。session-only。右栏上正开着一个
+   *  **自定义页签**时,别处代码调 `setRightPanelTab`(左栏单击文件 → 预览、工作流起跑 →
+   *  运行看板……)意思是「把那个面板摆到用户眼前」,自定义页签得让位 ——
+   *  `customUiStore` 订阅这个数来清掉它。只看 `rightPanelTab` 不够:值常常没变。 */
+  rightPanelTabSeq: number;
   /** Per-project terminal quick-commands. Outer key = projectId, value = that
    *  project's saved commands. Persisted as a JSON object (keyed by projectId)
    *  in the settings table; read/written by the terminal toolbar's commands
@@ -6246,6 +6251,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // init() hydrates from the settings table. rightPanelTab / ideEditorMode
   // are global user prefs.
   rightPanelTab: "files",
+  rightPanelTabSeq: 0,
   customCommandsByProject: {},
   ideOpenFilesByProject: {},
   ideActiveFileByProject: {},
@@ -11487,7 +11493,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   /* ─────────────────── IDE right-panel actions ─────────────────── */
 
   setRightPanelTab: (tab) => {
-    set({ rightPanelTab: tab });
+    set((s) => ({ rightPanelTab: tab, rightPanelTabSeq: s.rightPanelTabSeq + 1 }));
     void api.setting.set({ key: UI_RIGHT_PANEL_TAB_SETTING_KEY, value: tab }).catch((err) => {
       console.error("setting.set(rightPanelTab) failed:", err);
     });
@@ -11866,7 +11872,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // 不然 set 落地之后中间永远"已经是文档页"，这条分支就再也进不去了。
       if (!centerWasDocument) {
         // 展开 + 切页放**同一个 set**：分两次会让右栏先以旧 tab 闪一帧。
-        set({ rightOpen: true, rightPanelTab: "flow" });
+        set((s) => ({ rightOpen: true, rightPanelTab: "flow", rightPanelTabSeq: s.rightPanelTabSeq + 1 }));
         if (main) void get().selectSideChat(main);
       }
     }
