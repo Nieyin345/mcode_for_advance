@@ -86,24 +86,12 @@ interface Props {
   /** 在回收站里彻底删掉这一条 —— 确认框与调接口都在左栏,这里只报"用户点了"。 */
   onDeleteForever: (item: LibraryItem) => void;
   /**
-   * 转 Markdown / 采纳本地 md —— 2026-09-21 从右栏 `ItemDetail` 搬过来的。
-   *
-   * 用户要把右栏那个 `library` tab 整个删掉，并要求「**全部堆到左栏右键**」。所以
-   * 详情页里那几件"对单条做事"的动作得先在右键里有去处，右栏才删得掉。
-   */
-  onAdoptMarkdown: (item: LibraryItem) => void;
-  /**
    * 管这一条的**关联**（2026-09-21）。
    *
    * 用户要把右栏 `library` tab 删掉，并要求关联的入口「**搬到左栏右键**」。
    * 关联天然是"某一条跟谁关联" —— 挂在条目行上比放在全局设置里合语义。
    */
   onManageLinks: (item: LibraryItem) => void;
-  /**
-   * 看这一条的**条目信息**(来源 / 摘要,2026-09-21;学术元数据与引用格式
-   * 随 2026-09-27 的清理退役)。
-   */
-  onShowInfo: (item: LibraryItem) => void;
   /** 这一段所属的大类 —— 自定义项的「只在这些大类里显示」按它判断。 */
   groupId?: string;
 }
@@ -118,9 +106,7 @@ export function LibraryItemContextMenu({
   onChanged,
   onRename,
   onDeleteForever,
-  onAdoptMarkdown,
   onManageLinks,
-  onShowInfo,
   groupId,
 }: Props) {
   const { t } = useI18n();
@@ -203,8 +189,8 @@ export function LibraryItemContextMenu({
         // 挂到当前对话 —— 与「+ → 添加文献库到上下文」和 AI 的 library_attach_to_chat
         // 共用主进程那一份实现(见 lib/attachToChat.ts)。
         attachToChat: { run: () => void attachToCurrentChat(`i:${item.id}`) },
-        info: { run: () => onShowInfo(item) },
-        adoptMarkdown: item.filePath || item.pdfPath ? { run: () => onAdoptMarkdown(item) } : undefined,
+        // 「文献信息」「采纳 MD」内置项已退役(2026-09-28,见 registry.ts 那条注释):
+        // 信息卡走自定义 view 模板;采纳/转录走自动化 + 自定义 automation 项。
         // ★ **看转录文本**（2026-09-21）。用户:「点击和双击都显示这个 pdf 本身，**右键加一个
         // 功能是能够看这个文件链接的转录**」—— 所以"转录"是显式入口。同时把右栏切到预览,
         // 否则面板正停在文件树上,点了没反应。

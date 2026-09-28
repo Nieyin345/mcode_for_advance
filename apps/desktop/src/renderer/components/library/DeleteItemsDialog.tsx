@@ -35,7 +35,11 @@
  * 显示了不给开关，比给一个假的开关诚实。
  */
 import { useEffect, useState } from "react";
-import type { LibraryDeletePreviewEntry, LibraryDeletePreviewLink } from "@contracts/ipc";
+import type {
+  LibraryDeleteFailure,
+  LibraryDeletePreviewEntry,
+  LibraryDeletePreviewLink,
+} from "@contracts/ipc";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
@@ -58,13 +62,20 @@ export function DeleteItemsDialog({
   /** 要删的那几条（批量删时不止一条）。 */
   ids: readonly string[];
   onOpenChange: (open: boolean) => void;
-  /** 真删完了 —— 宿主据此刷新列表。 */
-  onConfirmed: () => void;
+  /** 这些记录已不再保留 —— 宿主据此清掉选中态并刷新列表。 */
+  onConfirmed: (deletedIds: readonly string[]) => void;
 }) {
   const { t } = useI18n();
   const [entries, setEntries] = useState<LibraryDeletePreviewEntry[] | null>(null);
+  /** 首次请求的条目；部分失败后只留下仍保留、可重试的记录。 */
+  const [remainingIds, setRemainingIds] = useState<string[]>([]);
+  const [finishedWithFailures, setFinishedWithFailures] = useState(false);
   /** 勾了的那些 —— 意思是「这条也一起删」（见文件头）。 */
   const [cascade, setCascade] = useState<ReadonlySet<string>>(new Set());
+  /** **取消勾**了转录档的条目 id —— 意思是「这条的转录产物**留在盘上**」
+      (2026-09-28,用户:「弹出的窗口要可以选择的」)。默认空 = 全删(主用例:
+      删 PDF 连转录一起收,这也是这个弹窗当年被要出来的原因)。 */
+  const [skipTranscripts, setSkipTranscripts] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -74,7 +85,10 @@ export function DeleteItemsDialog({
     if (!open || ids.length === 0) return;
     let cancelled = false;
     setEntries(null);
+    setRemainingIds([...ids]);
+    setFinishedWithFailures(false);
     setCascade(new Set());
+    setSkipTranscripts(new Set());
     setError(null);
     void api.library
       .deletePreview({ ids: [...ids] })
@@ -89,25 +103,67 @@ export function DeleteItemsDialog({
     };
   }, [open, ids]);
 
-  /** 能勾的那些（只有库内条目那一档 —— 见文件头）。它决定摆哪一句说明。 */
+  /** 能勾的那些(库内条目 + 转录档;库外路径仍只显示)。它决定摆哪一句说明。 */
   const tickableLinks = (entries ?? []).reduce(
-    (n, e) => n + e.links.filter((l) => l.form === "item").length,
+    (n, e) => n + e.links.filter((l) => l.form === "item" || l.form === "transcript").length,
     0,
   );
   /** 全部会一起没的（三档都算）—— 都要显示出来。 */
   const totalLinks = (entries ?? []).reduce((n, e) => n + e.links.length, 0);
 
   const confirm = async (): Promise<void> => {
+    if (remainingIds.length === 0) return;
     setBusy(true);
+    setError(null);
     try {
-      await api.library.deleteItems({
-        ids: [...ids],
+      const cascadeIds = [...cascade];
+      const result = await api.library.deleteItems({
+        ids: [...remainingIds],
         deleteFiles: true,
         // 勾上的并进这一批一起删（见文件头：勾 = 这条也一起删）。
-        ...(cascade.size > 0 ? { cascadeLinks: [...cascade] } : {}),
+        ...(cascadeIds.length > 0 ? { cascadeLinks: cascadeIds } : {}),
+        // 转录档被**取消勾**的那些:产物留盘(keepTranscripts,方向与 cascade 相反)。
+        ...(skipTranscripts.size > 0 ? { keepTranscripts: [...skipTranscripts] } : {}),
       });
-      onConfirmed();
-      onOpenChange(false);
+      const affectedIds = [...new Set([...remainingIds, ...cascadeIds])];
+      const retainedIds = [
+        ...new Set(result.failed.filter((failure) => failure.recordRetained).map((failure) => failure.id)),
+      ];
+      const retained = new Set(retainedIds);
+      onConfirmed(affectedIds.filter((id) => !retained.has(id)));
+
+      if (result.failed.length === 0) {
+        onOpenChange(false);
+        return;
+      }
+
+      const failureMessage = [
+        t("library.del.failureSummary", { n: String(result.failed.length) }),
+        ...result.failed.map((failure: LibraryDeleteFailure) =>
+          `${failure.kind}: ${failure.path}\n${failure.error}\n${t(
+            failure.recordRetained ? "library.del.recordRetained" : "library.del.recordRemoved",
+          )}`,
+        ),
+      ].join("\n\n");
+      setError(failureMessage);
+      setRemainingIds(retainedIds);
+      setCascade(new Set());
+      setFinishedWithFailures(retainedIds.length === 0);
+
+      if (retainedIds.length === 0) {
+        setEntries([]);
+        return;
+      }
+
+      try {
+        const preview = await api.library.deletePreview({ ids: retainedIds });
+        setEntries(preview.entries);
+      } catch (previewError: unknown) {
+        setEntries(null);
+        setError(
+          `${failureMessage}\n\n${previewError instanceof Error ? previewError.message : String(previewError)}`,
+        );
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -115,10 +171,11 @@ export function DeleteItemsDialog({
     }
   };
 
-  const title =
-    entries !== null && entries.length === 1
+  const title = finishedWithFailures
+    ? t("library.del.doneWithWarnings")
+    : entries !== null && entries.length === 1
       ? t("library.del.title", { title: entries[0]!.title })
-      : t("library.del.title", { title: `${ids.length}` });
+      : t("library.del.titleMultiple", { n: String(remainingIds.length || ids.length) });
 
   return (
     <Dialog.Root open={open} onOpenChange={(next) => { if (!busy) onOpenChange(next); }}>
@@ -132,19 +189,24 @@ export function DeleteItemsDialog({
             <div className="min-w-0 flex-1">
               <Dialog.Title>{title}</Dialog.Title>
               <Dialog.Description className="mt-1 text-content-muted">
-                {t("library.del.ownLine")}
+                {finishedWithFailures
+                  ? t("library.del.doneWithWarningsDescription")
+                  : remainingIds.length === 1
+                    ? t("library.del.ownLine")
+                    : t("library.del.ownLineMultiple", { n: String(remainingIds.length) })}
               </Dialog.Description>
             </div>
           </div>
 
           <div className="mt-3 max-h-[45vh] overflow-y-auto">
-            {error !== null ? (
-              <div className="rounded border border-danger/40 bg-danger/5 px-2 py-1.5 text-[12px] text-danger">
+            {error !== null && (
+              <div className="mb-2 whitespace-pre-wrap break-words rounded border border-danger/40 bg-danger/5 px-2 py-1.5 text-[12px] text-danger">
                 {error}
               </div>
-            ) : entries === null ? (
-              <div className="px-1 py-2 text-[12px] text-content-subtle">…</div>
-            ) : totalLinks === 0 ? (
+            )}
+            {entries === null ? (
+              error === null ? <div className="px-1 py-2 text-[12px] text-content-subtle">…</div> : null
+            ) : finishedWithFailures ? null : totalLinks === 0 ? (
               <div className="px-1 py-2 text-[12px] text-content-subtle">{t("library.del.noLinks")}</div>
             ) : (
               <>
@@ -155,10 +217,14 @@ export function DeleteItemsDialog({
                   {entries.flatMap((entry) =>
                     entry.links.map((link) => {
                       const key = keyOf(link);
-                      // 只有库内条目那一档能勾（见文件头：转录是一体的、库外路径
-                      // 删的只是记录）。其余两档只显示。
-                      const tickable = link.form === "item";
-                      const checked = tickable && cascade.has(key);
+                      // 库内条目与**转录档**都能勾(2026-09-28):条目档 勾=一起删
+                      // (默认不勾);转录档 勾=一起删(默认勾,取消=产物留盘)。
+                      // 库外路径仍只显示 —— 删的只是记录,没有"要不要删文件"的问题。
+                      const tickable = link.form === "item" || link.form === "transcript";
+                      const checked =
+                        link.form === "transcript"
+                          ? !skipTranscripts.has(entry.id)
+                          : tickable && cascade.has(key);
                       const label =
                         link.form === "transcript"
                           ? t("library.del.form.transcript", { n: link.imageCount ?? 0 })
@@ -179,10 +245,17 @@ export function DeleteItemsDialog({
                               className="mt-[3px] h-3.5 w-3.5 shrink-0 accent-current"
                               checked={checked}
                               onChange={(e) => {
-                                const next = new Set(cascade);
-                                if (e.target.checked) next.add(key);
-                                else next.delete(key);
-                                setCascade(next);
+                                if (link.form === "transcript") {
+                                  const next = new Set(skipTranscripts);
+                                  if (e.target.checked) next.delete(entry.id);
+                                  else next.add(entry.id); // 取消勾 = 保留这条的转录
+                                  setSkipTranscripts(next);
+                                } else {
+                                  const next = new Set(cascade);
+                                  if (e.target.checked) next.add(key);
+                                  else next.delete(key);
+                                  setCascade(next);
+                                }
                               }}
                             />
                           ) : (
@@ -203,11 +276,18 @@ export function DeleteItemsDialog({
 
           <div className="mt-4 flex justify-end gap-2">
             <Button variant="ghost" size="sm" disabled={busy} onClick={() => onOpenChange(false)}>
-              {t("library.del.cancel")}
+              {finishedWithFailures ? t("library.del.done") : t("library.del.cancel")}
             </Button>
-            <Button variant="danger" size="sm" disabled={busy || entries === null} onClick={() => void confirm()}>
-              {t("library.del.confirm")}
-            </Button>
+            {!finishedWithFailures && (
+              <Button
+                variant="danger"
+                size="sm"
+                disabled={busy || entries === null || remainingIds.length === 0}
+                onClick={() => void confirm()}
+              >
+                {t("library.del.confirm")}
+              </Button>
+            )}
           </div>
           <Dialog.Close />
         </Dialog.Popup>

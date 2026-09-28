@@ -60,10 +60,10 @@ export const en = {
   // ── Office documents (OnlyOffice) ──
   "ide.office.opening": "Connecting to OnlyOffice…",
   "ide.office.loadingEditor": "Loading editor…",
+  "ide.office.documentLoadTimeout": "OnlyOffice did not finish loading this document. Check the server connection and try again.",
   "ide.office.notConfigured": "OnlyOffice Document Server is not configured",
-  "ide.office.notConfiguredDesc": "Visual editing of Word / Excel / PowerPoint files requires OnlyOffice Docs installed locally. Enter the server URL in Settings, or switch to the read-only preview.",
+  "ide.office.notConfiguredDesc": "Editing Office files requires an OnlyOffice Docs server. Configure its URL in Settings.",
   "ide.office.openSettings": "Open settings",
-  "ide.office.viewReadonly": "Read-only preview",
   "ide.office.openFailed": "Failed to open in OnlyOffice",
   "ide.editor.thisFile": "This file",
   "ide.editor.togglePreview": "Preview",

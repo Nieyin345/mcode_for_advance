@@ -6,7 +6,7 @@ import { textFileWrites } from "@renderer/lib/markdownFileWrites.js";
 import { cn } from "@renderer/lib/cn.js";
 import { basename, dirname, extname } from "@renderer/lib/path.js";
 import { useSessionStore, selectActiveEnvPath } from "@renderer/stores/sessionStore.js";
-import { isOnlyOfficeEditablePath, type FileViewMode } from "@contracts/ipc";
+import { isOnlyOfficeSupportedPath, isOnlyOfficeViewOnlyPath, type FileViewMode } from "@contracts/ipc";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import { ideDirtyTracker } from "./OpenTabsBar.js";
@@ -16,9 +16,6 @@ import { ChunkedMarkdown } from "../chat/ChunkedMarkdown.js";
 import { PdfPreview } from "../library/PdfPreview.js";
 import { MarkdownEditorPane } from "./MarkdownEditorPane.js";
 import { OnlyOfficeEditorPane } from "./OnlyOfficeEditorPane.js";
-import { DocxPreview } from "@renderer/components/templates/DocxPreview.js";
-import { XlsxPreview } from "@renderer/components/templates/XlsxPreview.js";
-import { PptxPreview } from "@renderer/components/templates/PptxPreview.js";
 import { SelectionToolbar, type SelectionToolbarState } from "@renderer/components/chat/SelectionToolbar.js";
 import { SelectionQuoteMenu, type QuoteTarget } from "@renderer/components/chat/SelectionQuoteMenu.js";
 import { makeQuoteTag } from "@renderer/lib/contentTag.js";
@@ -98,11 +95,11 @@ export function FileEditor({
   // 用户自己的选择仍然优先：`ideFileViewModeByProject` 里记着他在这个项目里为这个
   // 文件选过哪一档，改完照旧留着（`??` 只在**没有记录**时生效）。
   //
-  // Office（docx / xlsx / pptx…）与 md 同理（2026-09-27）：默认进 **OnlyOffice 可视化
-  // 编辑**（`wysiwyg`），「预览」那一档是 docx-preview / @js-preview/excel / pptx-preview
-  // 的只读渲染 —— DS 没配 / 连不上时的退路。它们**没有**源码档（二进制）。
+  // Office（docx / xlsx / pptx…）统一只走 **OnlyOffice 可视化编辑**（`wysiwyg`）。
+  // 本地 docx/pptx/xlsx 渲染组件留给 AI/其他专用流程，不作为 IDE 的用户预览档。
   const markdown = isMarkdown(filePath);
-  const defaultMode: FileViewMode = markdown || isOnlyOfficeEditablePath(filePath)
+  const office = isOnlyOfficeSupportedPath(filePath);
+  const defaultMode: FileViewMode = markdown || office
     ? "wysiwyg"
     : isPdfFile(filePath)
       ? "preview"
@@ -136,12 +133,13 @@ export function FileEditor({
 
   // Effective mode:
   //  - diff: history pairs (forced) OR explicitly requested with a snapshot.
-  //  - preview: non-Markdown previews (PDF / Office / images / legacy text).
-  //  - wysiwyg: Markdown 的所见即所得（Milkdown），以及 Office 可视化编辑。
+  //  - preview: non-Markdown previews (PDF / images / legacy text).
+  //  - wysiwyg: Markdown 的所见即所得（Milkdown），或 OnlyOffice 文档编辑器。
   // Markdown 的旧 preview 偏好只在此适配，不改其他文件/项目的已保存偏好。
   //  - edit: the normal editable Monaco instance (default for non-md files).
-  const effectiveMode: FileViewMode =
-    historyOnly || (viewMode === "diff" && diffBefore != null)
+  const effectiveMode: FileViewMode = office
+    ? "wysiwyg"
+    : historyOnly || (viewMode === "diff" && diffBefore != null)
       ? "diff"
       : viewMode === "preview"
         ? markdown ? "wysiwyg" : "preview"
@@ -150,8 +148,6 @@ export function FileEditor({
           : "edit";
 
   const image = isImage(filePath);
-  /** DS 能编辑的 Office 文档 —— 判据与主进程共用 `@contracts/ipc` 那一份。 */
-  const office = isOnlyOfficeEditablePath(filePath);
   const unsupported = isUnsupported(filePath);
   /** PDF 走**同一个** `PdfPreview`（pdf.js 官方 viewer 组件）—— 见文件头那段
    *  "同一个 PDF 不该有两套画法"（那是 `FileViewer` 的取舍,这里沿用）。 */
@@ -163,11 +159,10 @@ export function FileEditor({
         filePath={filePath}
         projectPath={projectPath}
         mode={effectiveMode}
-        canDiff={diffBefore != null && !historyOnly}
+        canDiff={diffBefore != null && !historyOnly && !office}
         onToggleMode={() => setViewMode(filePath, effectiveMode === "edit" ? "diff" : "edit")}
         isMarkdown={markdown}
         isImage={image}
-        isOffice={office}
         isUnsupported={unsupported}
         onTogglePreview={() =>
           // md 只在 Milkdown 编辑与源码之间切换；差异视图也可回到 Milkdown。
@@ -180,10 +175,7 @@ export function FileEditor({
                 filePath,
                 effectiveMode === "wysiwyg" ? "edit" : "wysiwyg",
               )
-            : office
-              // Office 两档对切：可视化编辑 ↔ 只读预览（没有源码档，二进制进 Monaco 只是乱码）
-              ? setViewMode(filePath, effectiveMode === "wysiwyg" ? "preview" : "wysiwyg")
-              : setViewMode(filePath, effectiveMode === "preview" ? "edit" : "preview")
+            : setViewMode(filePath, effectiveMode === "preview" ? "edit" : "preview")
         }
         editorMode={editorMode}
         onToggleEditorMode={() => setEditorMode(editorMode === "tabs" ? "replace" : "tabs")}
@@ -196,7 +188,7 @@ export function FileEditor({
             <OnlyOfficeEditorPane
               key={filePath}
               filePath={filePath}
-              onSwitchToPreview={() => setViewMode(filePath, "preview")}
+              readOnly={isOnlyOfficeViewOnlyPath(filePath)}
             />
           ) : (
             <MarkdownEditorPane key={filePath} filePath={filePath} projectPath={projectPath} />
@@ -204,8 +196,6 @@ export function FileEditor({
         ) : effectiveMode === "preview" ? (
           pdf ? (
             <PdfPreviewPane filePath={filePath} />
-          ) : office ? (
-            <OfficePreviewPane filePath={filePath} />
           ) : image ? (
             <ImagePreviewPane filePath={filePath} />
           ) : unsupported ? (
@@ -230,7 +220,7 @@ const EMPTY_NAV: NavEntry[] = [];
  * 「源码 / 预览」那个按钮的四档文案。
  *
  * 共享视图联合仍包含 diff/preview，但 md 只在源码和 Milkdown 之间切换。
- * 非 md 的预览和 Office 两档保持原样。按钮说的是"**点一下会切到哪儿**"，
+ * 非 md 文件（不含 Office）的预览/源码切换保持原样。按钮说的是"**点一下会切到哪儿**"，
  * 不是"现在在哪儿" —— 这和它原来的行为一致（`mode === "preview" ? Edit : Preview`）。
  */
 const TOGGLE_LABEL_KEY = {
@@ -247,7 +237,7 @@ const TOGGLE_TITLE_KEY = {
   wysiwyg: "ide.editor.switchToSourceView",
 } as const satisfies Record<FileViewMode, string>;
 
-/** Markdown 两档（Milkdown ↔ 源码）。与 Office/图片的预览按钮分开，避免误导。 */
+/** Markdown 两档（Milkdown ↔ 源码）。与图片/二进制预览按钮分开，避免误导。 */
 const MARKDOWN_TOGGLE_LABEL_KEY = {
   edit: "ide.editor.toggleEdit",
   diff: "ide.editor.toggleEdit",
@@ -261,18 +251,6 @@ const MARKDOWN_TOGGLE_TITLE_KEY = {
   wysiwyg: "ide.editor.switchToSourceView",
 } as const satisfies Record<FileViewMode, string>;
 
-/** Office 两档（可视化编辑 ↔ 只读预览）的按钮文案：wysiwyg 那一档下一步是**预览**，
- *  不是 md 的"源码"。 */
-const OFFICE_TOGGLE_LABEL_KEY = {
-  ...TOGGLE_LABEL_KEY,
-  wysiwyg: "ide.editor.togglePreview",
-} as const satisfies Record<FileViewMode, string>;
-const OFFICE_TOGGLE_TITLE_KEY = {
-  ...TOGGLE_TITLE_KEY,
-  preview: "ide.editor.switchToOfficeEdit",
-  wysiwyg: "ide.editor.switchToPreview",
-} as const satisfies Record<FileViewMode, string>;
-
 function EditorToolbar({
   filePath,
   projectPath,
@@ -281,7 +259,6 @@ function EditorToolbar({
   onToggleMode,
   isMarkdown,
   isImage,
-  isOffice,
   isUnsupported,
   onTogglePreview,
   editorMode,
@@ -294,7 +271,6 @@ function EditorToolbar({
   onToggleMode: () => void;
   isMarkdown: boolean;
   isImage: boolean;
-  isOffice: boolean;
   isUnsupported: boolean;
   onTogglePreview: () => void;
   editorMode: "tabs" | "replace";
@@ -364,16 +340,15 @@ function EditorToolbar({
   };
   const navBackTitle = withChord("editor.nav-back", t("ide.editor.navBack"));
   const navForwardTitle = withChord("editor.nav-forward", t("ide.editor.navForward"));
-  // Markdown gets Milkdown/Source; Office gets Edit/Preview. Images and
-  // unsupported types retain their preview/raw-source escape hatch.
+  // Markdown, images and unsupported types retain their relevant mode toggle.
   //
   // ⚠️ **PDF 故意不在这个列表里。** 它同样默认走预览（见上面 `defaultMode`），
   // 但**不该给"切到 Monaco 看看"那个按钮** —— pdf 是二进制，Monaco 画出来就是
   // 一屏乱码，那正是用户截图里那个坏状态。给它一个按下去只会看到乱码的按钮，
   // 比不给更坏（同 `FileViewer` 里"画一个按下去不动的按钮比不画更坏"那条取舍）。
-  const hasPreviewToggle = isMarkdown || isImage || isUnsupported || isOffice;
-  const labelKey = isMarkdown ? MARKDOWN_TOGGLE_LABEL_KEY : isOffice ? OFFICE_TOGGLE_LABEL_KEY : TOGGLE_LABEL_KEY;
-  const titleKey = isMarkdown ? MARKDOWN_TOGGLE_TITLE_KEY : isOffice ? OFFICE_TOGGLE_TITLE_KEY : TOGGLE_TITLE_KEY;
+  const hasPreviewToggle = isMarkdown || isImage || isUnsupported;
+  const labelKey = isMarkdown ? MARKDOWN_TOGGLE_LABEL_KEY : TOGGLE_LABEL_KEY;
+  const titleKey = isMarkdown ? MARKDOWN_TOGGLE_TITLE_KEY : TOGGLE_TITLE_KEY;
   // Show the path relative to the project root when possible (cleaner in the
   // narrow toolbar); fall back to the full path. Case-insensitive on Windows/
   // macOS so a lowercased drive letter from LSP (`d:\foo`) still matches a
@@ -478,8 +453,8 @@ function EditorToolbar({
             {mode === "edit" ? "Diff" : "Edit"}
           </button>
         )}
-        {/* Markdown: Milkdown/Source only. Office: Edit/Preview. Other binary
-            preview types keep their existing raw-source escape hatch. */}
+        {/* Office files stay in OnlyOffice. Other previewable binary types
+            keep their existing raw-source escape hatch. */}
         {hasPreviewToggle && (
           <button
             type="button"
@@ -1655,71 +1630,6 @@ function PdfPreviewPane({ filePath }: { filePath: string }) {
   );
 }
 
-/**
- * Office 文档的**只读预览**档：docx → `docx-preview`、xlsx → `@js-preview/excel`、
- * pptx → `pptx-preview`（三个都是已经在右栏 `FilePreview` 里用着的现成组件）。
- * 字节走 `file.readBinary`，与 `PdfPreviewPane` 同一条路、同一个 data URL → 字节的算法。
- */
-function OfficePreviewPane({ filePath }: { filePath: string }) {
-  const { t } = useI18n();
-  const [bytes, setBytes] = useState<Uint8Array | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    setBytes(null);
-    setErr(null);
-    api.file
-      .readBinary({ filePath })
-      .then(({ dataUrl }) => {
-        if (cancelled) return;
-        const comma = dataUrl.indexOf(",");
-        const b64 = comma >= 0 ? dataUrl.slice(comma + 1) : "";
-        const bin = atob(b64);
-        const out = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-        setBytes(out);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [filePath]);
-
-  if (err) {
-    return (
-      <div className="flex h-full items-center justify-center px-6 text-center">
-        <span className="text-xs text-red-500">{err}</span>
-      </div>
-    );
-  }
-  if (bytes === null) {
-    return (
-      <div className="flex h-full items-center justify-center gap-1.5 text-[11px] text-content-subtle">
-        <IconLoader2 size={12} className="animate-spin" />
-        {t("common.loading")}
-      </div>
-    );
-  }
-  const openExternal = () => void api.shell.openFile({ path: filePath });
-  const ext = extname(filePath);
-  const name = basename(filePath);
-  const inner =
-    ext === ".xlsx" || ext === ".xlsm" || ext === ".xltx" || ext === ".ods" || ext === ".csv" ? (
-      <XlsxPreview data={bytes} relPath={filePath} onOpenExternal={openExternal} />
-    ) : ext === ".pptx" || ext === ".pptm" || ext === ".potx" || ext === ".odp" ? (
-      <PptxPreview data={bytes} relPath={filePath} onOpenExternal={openExternal} />
-    ) : (
-      <DocxPreview data={bytes} relPath={name} onOpenExternal={openExternal} />
-    );
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="min-h-0 flex-1 overflow-auto">{inner}</div>
-    </div>
-  );
-}
-
 function ImagePreviewPane({ filePath }: { filePath: string }) {
   const { t } = useI18n();
   const [natural, setNatural] = useState(false);
@@ -2230,12 +2140,6 @@ function isImage(filePath: string): boolean {
  *  archives, binaries, audio/video, and databases. */
 function isUnsupported(filePath: string): boolean {
   switch (extname(filePath)) {
-    // Office 老格式（DS 只能转换后查看，不能编辑；OOXML/ODF 的那些走 OnlyOffice，
-    // 见 `isOnlyOfficeEditablePath`）
-    case ".doc":
-    case ".rtf":
-    case ".xls":
-    case ".ppt":
     // Archives
     case ".zip":
     case ".gz":

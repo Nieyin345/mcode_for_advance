@@ -8,19 +8,19 @@
  *   文本   ── md/markdown 走聊天那套 Markdown 渲染(长文由 ChunkedMarkdown 分段加载),其余进 <pre>;
  *   图片   ── data URL 直接摆;
  *   pdf    ── 复用 PdfPreview(给它喂字节);
- *   office ── 复用模版库的 DocxPreview / PptxPreview / XlsxPreview(它们吃字节);
+ *   office ── 用 OnlyOffice 只读 viewer；插件选区仍可引用到 AI;
  *   目录   ── 文件名列表,点一个子文件用 relPath 再读一次。
  *
  * ## 字节从哪来
  *
  * 渲染进程读不了本地文件,所以只有一条路:`library.readFile` 把内容分类交上来 ——
  * 文本给 text,二进制给 mime + base64(预览的体积上限在主进程挡住),目录给
- * files 列表。base64 在这里就地转回字节喂给那几个预览组件,它们的 props 形状
- *(`data: Uint8Array`)不动。
+ * files 列表。base64 在这里就地转回字节，供 PDF 等仍使用字节的 viewer。Office 则走
+ * `entryPath` + OnlyOffice，不再送进本地 Office renderer。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LibraryItem } from "@contracts/library";
-import type { LibraryFileContent } from "@contracts/ipc";
+import { isOnlyOfficeSupportedPath, type LibraryFileContent } from "@contracts/ipc";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { joinPath } from "@renderer/lib/path.js";
 import { api } from "@renderer/lib/api.js";
@@ -31,9 +31,7 @@ import { ChunkedMarkdown } from "@renderer/components/chat/ChunkedMarkdown.js";
 import { SelectionToolbar, type SelectionToolbarState } from "@renderer/components/chat/SelectionToolbar.js";
 import { SelectionQuoteMenu, type QuoteTarget } from "@renderer/components/chat/SelectionQuoteMenu.js";
 import { IconArrowLeft, IconFile, IconFolder, IconLoader2 } from "@renderer/lib/icons.js";
-import { DocxPreview } from "@renderer/components/templates/DocxPreview.js";
-import { PptxPreview } from "@renderer/components/templates/PptxPreview.js";
-import { XlsxPreview } from "@renderer/components/templates/XlsxPreview.js";
+import { OnlyOfficeEditorPane } from "@renderer/components/ide/OnlyOfficeEditorPane.js";
 // PdfPreview is itself a lazy shell: the PDF engine (EmbedPDF + pdfium glue,
 // >1MB) loads only when a PDF is actually shown (see PdfPreview.tsx).
 import { PdfPreview } from "./PdfPreview.js";
@@ -309,8 +307,6 @@ export function FilePreview({
     }
 
     // ── 二进制 ──
-    const bytes = base64ToBytes(content.base64);
-    const officeKey = `${item.id}:${relPath ?? ""}`; // 预览组件只拿它当重渲染的依赖键
     if (content.mime.startsWith("image/")) {
       return (
         <div className="h-full overflow-auto p-2">
@@ -319,22 +315,31 @@ export function FilePreview({
       );
     }
     if (content.mime === "application/pdf" || ext === "pdf") {
+      const bytes = base64ToBytes(content.base64);
       // 字节直接喂给阅读器,不再走一次 readPdf(那条路只认条目的 pdfPath)。
       // 目录条目的 entryPath 是目录本身；读的是 relPath 指向的子 PDF，
       // 保存/外部打开也必须指向同一份子文件，否则写入会落到目录上。
       const filePath = pdfPath ? (relPath ? joinPath(pdfPath, relPath) : pdfPath) : undefined;
       return <PdfPreview item={item} bytes={bytes} {...(filePath ? { filePath } : {})} />;
     }
-    if (content.mime.includes("wordprocessingml") || ext === "docx" || ext === "dotx") {
-      // 失败路径上的「系统程序打开」对库条目没有现成 IPC,先留空 —— 渲染成功才是常态
-      return <DocxPreview data={bytes} relPath={officeKey} onOpenExternal={() => {}} />;
+    if (isOnlyOfficeSupportedPath(viewing)) {
+      const filePath = pdfPath ? (relPath ? joinPath(pdfPath, relPath) : pdfPath) : undefined;
+      if (!filePath) {
+        return (
+          <div className="flex h-full items-start justify-center p-6">
+            <span className="text-center text-xs text-red-500">{t("ide.office.openFailed")}</span>
+          </div>
+        );
+      }
+      return (
+        <OnlyOfficeEditorPane
+          key={filePath}
+          filePath={filePath}
+          readOnly
+        />
+      );
     }
-    if (content.mime.includes("presentationml") || ext === "pptx" || ext === "ppsx" || ext === "potx") {
-      return <PptxPreview data={bytes} relPath={officeKey} onOpenExternal={() => {}} />;
-    }
-    if (content.mime.includes("spreadsheetml") || ext === "xlsx" || ext === "xlsm" || ext === "xltx") {
-      return <XlsxPreview data={bytes} relPath={officeKey} onOpenExternal={() => {}} />;
-    }
+    const bytes = base64ToBytes(content.base64);
     return (
       <div className="flex h-full items-start justify-center p-6">
         <span className="text-center text-xs text-content-muted">
@@ -346,7 +351,7 @@ export function FilePreview({
 
   return (
     // `ref` 挂在根那一层 —— 选中的文字必须落在这一整块里才算数（同 `FileViewer`）。
-    // **不多包 div**：多包一层会让 PdfPreview / OfficePreview 那几支"自己管滚动"的
+    // **不多包 div**：多包一层会让 PdfPreview / OnlyOfficeEditorPane 那几支"自己管滚动"的
     // 布局多经一道（它们靠父容器直接给高度）。
     <div ref={bodyRef} className="h-full min-h-0">
       {body}

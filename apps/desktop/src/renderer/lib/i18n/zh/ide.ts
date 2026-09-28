@@ -63,10 +63,10 @@ export const zh = {
   // ── Office 文档（OnlyOffice）──
   "ide.office.opening": "正在连接 OnlyOffice…",
   "ide.office.loadingEditor": "正在加载编辑器…",
+  "ide.office.documentLoadTimeout": "OnlyOffice 未能在规定时间内完成文档加载。请检查服务连接后重试。",
   "ide.office.notConfigured": "还没有配置 OnlyOffice Document Server",
-  "ide.office.notConfiguredDesc": "Word / Excel / PowerPoint 的可视化编辑需要本机安装 OnlyOffice Docs。先去设置里填服务地址，或者切到只读预览。",
+  "ide.office.notConfiguredDesc": "编辑 Office 文件需要 OnlyOffice Docs 服务，请先在设置中配置服务地址。",
   "ide.office.openSettings": "打开设置",
-  "ide.office.viewReadonly": "只读预览",
   "ide.office.openFailed": "OnlyOffice 打开失败",
   /** 编辑器里选中文字后，引用目标列表里"这一份文件"那一项的标题（同 FileViewer 的用法）。 */
   "ide.editor.thisFile": "这个文件",

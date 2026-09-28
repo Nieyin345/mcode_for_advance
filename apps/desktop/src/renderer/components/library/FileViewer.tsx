@@ -5,7 +5,7 @@
  *
  * 两条来源:文献库条目(`library.readFile`,目录会给一份文件名列表)与项目文件
  * (`file.readFile` / `file.readBinary`)。**渲染分支才是重复的大头**
- * (文本/图片/pdf/office/目录/不支持,六路),所以取数分两支、渲染只有一套。
+ * (文本/图片/pdf/OnlyOffice/目录/不支持),所以取数分两支、渲染只有一套。
  *
  * ⚠️ 从前还有第三条来源「模版库文件」(`templates.readFile`,office 由主进程直接给
  * `Uint8Array`)—— 它随模版库并进统一资料库一起撤掉了(左栏只剩一个「资料库」入口)。
@@ -30,9 +30,6 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { ChunkedMarkdown } from "@renderer/components/chat/ChunkedMarkdown.js";
 // Lazy shell: the PDF engine loads only when a PDF is shown (see PdfPreview.tsx).
 import { PdfPreview } from "./PdfPreview.js";
-import { DocxPreview } from "@renderer/components/templates/DocxPreview.js";
-import { PptxPreview } from "@renderer/components/templates/PptxPreview.js";
-import { XlsxPreview } from "@renderer/components/templates/XlsxPreview.js";
 import {
   IconArrowLeft,
   IconExternalLink,
@@ -41,13 +38,15 @@ import {
   IconLoader2,
 } from "@renderer/lib/icons.js";
 import { extOf, type FileViewTarget } from "@renderer/stores/fileViewStore.js";
+import { isOnlyOfficeSupportedPath } from "@contracts/ipc";
+import { OnlyOfficeEditorPane } from "@renderer/components/ide/OnlyOfficeEditorPane.js";
 
 /**
  * 归一之后的预览数据。**两条来源都落到这里**,下面的渲染分支只认这个类型。
  *
- * 与 `LibraryFileContent` 的差别只有一处,但很要紧:二进制那一支给的是**字节**
- * (`bytes`),不是 base64。文献库那条路回来的是 base64,在这里就地解掉 —— 于是
- * office 预览组件不必知道自己是"从哪条路来的",也省掉下游每个分支各解一次。
+ * 与 `LibraryFileContent` 的差别只有一处,但很要紧:二进制分支给的是**字节**
+ * (`bytes`),不是 base64。文献库那条路回来的是 base64,在这里就地解掉；PDF/图片
+ * 用这些字节，Office 则通过绝对路径交给 OnlyOffice。
  */
 type ViewData =
   | { type: "dir"; files: Array<{ name: string; isDir: boolean }> }
@@ -60,10 +59,9 @@ type ViewData =
       bytes: Uint8Array;
       base64: string;
       /**
-       * 这个二进制文件在磁盘上的**绝对路径** —— 目前只有 PDF 阅读器用它
-       * （保存批注要落回原文件）。条目那一支要走 `library.entryPath` 换一次
-       * （见 `loadViewData` 里 md 那段同一个调用）;换不出来就不给，阅读器
-       * 退化成只读（不画保存按钮）。
+       * 这个二进制文件在磁盘上的**绝对路径** —— PDF 保存批注与 OnlyOffice 打开都用它。
+       * 文献库条目要走 `library.entryPath` 换一次；换不出来就不给，PDF 退化成只读，
+       * Office 显示明确错误而不退回本地 renderer。
        */
       filePath?: string;
     }
@@ -381,17 +379,21 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
         />
       );
     }
-    // office 三种:预览组件吃字节,自己管滚动和缩放,所以不吃外面的容器样式。
-    // 渲染不出来时的那条出口一律指向 `openExternal` —— 模版那一支有 `templates.openFile`
-    // 通道,文献库那一支还没有,所以那里是 no-op(见文件头那段)。
-    if (mime.includes("wordprocessingml") || ext === "docx" || ext === "dotx") {
-      return <DocxPreview data={bytes} relPath={name} onOpenExternal={() => void openExternal()} />;
-    }
-    if (mime.includes("presentationml") || ext === "pptx" || ext === "ppsx" || ext === "potx") {
-      return <PptxPreview data={bytes} relPath={name} onOpenExternal={() => void openExternal()} />;
-    }
-    if (mime.includes("spreadsheetml") || ext === "xlsx" || ext === "xlsm" || ext === "xltx") {
-      return <XlsxPreview data={bytes} relPath={name} onOpenExternal={() => void openExternal()} />;
+    if (isOnlyOfficeSupportedPath(name)) {
+      if (!data.filePath) {
+        return (
+          <div className="flex flex-1 items-start justify-center p-6">
+            <span className="text-center text-xs text-danger">{t("ide.office.openFailed")}</span>
+          </div>
+        );
+      }
+      return (
+        <OnlyOfficeEditorPane
+          key={data.filePath}
+          filePath={data.filePath}
+          readOnly
+        />
+      );
     }
     return (
       <div className="flex flex-1 items-start justify-center p-6">
@@ -407,7 +409,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
       {header}
       {/* `ref` 挂在**根那一层**上（2026-09-21）—— 见下面 `root.contains` 那句：
           选中的文字必须落在这一整块里才算数。**不多包任何一层 div**：多包一层会让
-          `PdfPreview` / `DocxPreview` 那几支"自己管滚动"的布局多经一道（它们靠父容器
+          `PdfPreview` / `OnlyOfficeEditorPane` 那几支"自己管滚动"的布局多经一道（它们靠父容器
           直接给高度），而这层 ref 只需要"是个容器"就够了 —— 根 div 本来就是。 */}
       {body}
 

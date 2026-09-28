@@ -31,6 +31,7 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 /** Stable empty array so the selector never returns a fresh [] (Zustand
  *  Object.is rule — a new [] every render causes an infinite loop). */
 const EMPTY_OPEN_FILES: string[] = [];
+const EMPTY_FILE_DISPLAY_NAMES: Record<string, string> = {};
 const FILE_VIEW_TAB_KEY = "mcode:readonly-preview";
 
 /** The unified center tab bar (`tabs` displayMode): ONE strip holding the
@@ -73,6 +74,9 @@ export function UnifiedTabsBar() {
   const pid = useSessionStore((s) => s.activeProjectId);
   const openFiles = useSessionStore((s) =>
     pid ? s.ideOpenFilesByProject[pid] ?? EMPTY_OPEN_FILES : EMPTY_OPEN_FILES,
+  );
+  const fileDisplayNames = useSessionStore((s) =>
+    pid ? s.ideFileDisplayNamesByProject[pid] ?? EMPTY_FILE_DISPLAY_NAMES : EMPTY_FILE_DISPLAY_NAMES,
   );
   const activeFile = useSessionStore((s) =>
     pid ? s.ideActiveFileByProject[pid] ?? null : null,
@@ -339,6 +343,7 @@ export function UnifiedTabsBar() {
                 <SortableFileTab
                   key={path}
                   path={path}
+                  displayName={fileDisplayNames[path]}
                   isActive={path === activeFile && editorFocused && !planTabActive}
                   dirty={dirtySet.has(path)}
                   multiRow={multiRow}
@@ -511,7 +516,7 @@ export function UnifiedTabsBar() {
             }),
             ...openFiles.map((path) => ({
               key: path,
-              label: basename(path),
+              label: fileDisplayNames[path]?.trim() || basename(path),
               title: path,
               active: path === activeFile && editorFocused && !planTabActive,
               dotClass: dirtySet.has(path) ? "bg-accent animate-pulse" : undefined,

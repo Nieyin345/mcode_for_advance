@@ -443,10 +443,20 @@ export const LibraryDeleteItemsSchema = z.object({
    * `LibraryDeletePreviewLink` 的 `path` 那一档)。既然没有"那个文件要不要删"这个
    * 问题,它就不该出现在这份名单里 —— 界面上那一档**不给勾**。
    *
-   * ⚠️ **转录产物(`form: "transcript"`)也不在这里**,同理:它和正文是一个整体
-   * (md 里的 `![](images/…)` 指着它),随条目一起走,没有单独的开关。
+   * ⚠️ **转录产物(`form: "transcript"`)不在这里** —— 它有自己的开关
+   * `keepTranscripts`(2026-09-28 起可选,见下)。
    */
   cascadeLinks: z.array(z.string().min(1)).optional(),
+  /**
+   * **保留转录产物**的条目名单(2026-09-28,用户:「删除不是把所有的链路上面的
+   * 文件都默认删除,弹出的窗口要可以选择的」)。名单里的条目删除时**跳过**它的
+   * Markdown 产物与图床(文件留在盘上,记录照删 —— 留下的是用户点名要留的文件)。
+   *
+   * 不传 / 空 = 旧行为(转录随条目一起删),所有既有调用方零改动。
+   * 方向与 `cascadeLinks` 相反(那边是「勾了要多删的」,这边是「勾掉要保留的」):
+   * 两边的**默认**都是主用例 —— 关联默认不删、转录默认删,名单只装例外。
+   */
+  keepTranscripts: z.array(z.string().min(1)).optional(),
 });
 export type LibraryDeleteItemsInput = z.infer<typeof LibraryDeleteItemsSchema>;
 
@@ -518,7 +528,7 @@ export interface LibraryDeletePreviewResult {
  * 「这一次有几个没成、各自为什么」的表达,渲染端不用为它长第二套解析。
  */
 export interface LibraryDeleteFailure {
-  /** 哪个条目。**记录留没留要看 `error` 说的那一档**(见 `LibraryDeleteItemsResult`)。 */
+  /** 哪个条目。记录是否仍在库中由 `recordRetained` 明确给出。 */
   id: string;
   /** 哪一份文件:`pdf` / `markdown` / `file`。`file` 是通用条目的 `filePath`
    *  (attached 复制进 `<库根>/files/` 的那一份;`linked` 条目也可能是它,那种情况
@@ -529,6 +539,8 @@ export interface LibraryDeleteFailure {
   path: string;
   /** 原因。系统给的原因(errno 文案)或者一句说人话的"这个路径不在库里"。 */
   error: string;
+  /** 文件未删后，这条记录是否仍保留在库中；UI 只能对仍保留的记录提供重试。 */
+  recordRetained: boolean;
 }
 
 /**
@@ -551,6 +563,7 @@ export interface LibraryDeleteFailure {
  *
  * 所以渲染端那句提示要按语义写("有 N 个文件没能删掉"),不能写成"有 N 条没删掉" ——
  * 库外的 `linked` 那几条**记录是真的删掉了**。
+ * 每个失败项都带 `recordRetained`,调用方据此刷新已完成项,并只对仍保留的记录提供重试。
  *
  * 同一次调用里**成功的那几条照样成功**,不是整批回滚:一条卡的目录不该把另外九十九条
  * 正常的删除一起拖住。

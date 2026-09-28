@@ -202,7 +202,7 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
   /** 编排在下面 `deleteItemsCore`(那段有三块长说明,放这儿会把注册段撑散)。 */
   ipcMain.handle(IPC.LIBRARY_DELETE_ITEMS, async (_evt, raw) => {
     const input = LibraryDeleteItemsSchema.parse(raw);
-    return deleteItemsCore(input.ids, !!input.deleteFiles, input.cascadeLinks);
+    return deleteItemsCore(input.ids, !!input.deleteFiles, input.cascadeLinks, input.keepTranscripts);
   });
 
   /**
@@ -281,6 +281,8 @@ function deleteItemsCore(
    *  `targetItemId`）。它们并进这一批，走同一套文件清理与失败回报。
    *  见下面那一段 —— 语义是"连对面那条也删"，不是"保留关联行"。 */
   cascadeLinks?: string[],
+  /** 名单里的条目**保留**转录产物(md + 图床留盘,记录照删)。见契约注释。 */
+  keepTranscripts?: string[],
 ): LibraryDeleteItemsResult {
     /**
      * **用户勾了「这个也一起删」的那些**，并进这一批。
@@ -302,6 +304,7 @@ function deleteItemsCore(
      * 磁盘文件还在** —— 一条断言就是这么红的。
      */
     const cascade = (cascadeLinks ?? []).filter((x): x is string => typeof x === "string" && x.length > 0);
+    const keepTranscript = new Set((keepTranscripts ?? []).filter((x) => typeof x === "string" && x.length > 0));
     /** 这一批真正要动的（用户点名的 + 他勾了要一起删的）。 */
     const allIds = [...new Set([...ids, ...cascade])];
 
@@ -362,7 +365,7 @@ function deleteItemsCore(
         error: string,
         keepRecord: boolean,
       ): void => {
-        failures.push({ id, kind, path, error });
+        failures.push({ id, kind, path, error, recordRetained: keepRecord });
         if (keepRecord) keepIds.add(id);
       };
 
@@ -436,7 +439,11 @@ function deleteItemsCore(
         // 是否还有别的记录指着(同 sha 的 PDF 只有一份,幸存者还在就一个字节都不动)。
         const mdOwn = item.mdPath ? markdownArtifact(fromLibraryRelative(item.mdPath)).path : null;
         const pdfShared = item.pdfPath ? sharedWithSurvivor(item.pdfPath) : false;
-        for (const artifact of markdownArtifactsOfItem(item)) {
+        // 用户点名保留这条的转录(keepTranscripts):整段跳过 —— md + 图床留在盘上。
+        // ⚠️ 只对**真有转录**的条目生效(有原件才算转录;与 deletePreviewCore 同一
+        // 条件):纯 md 笔记的 mdPath 是正文本体,预览那头不给勾,这里也不认名单 ——
+        // 否则调用方塞个 id 就能把笔记正文留成没有记录指着的孤儿文件。
+        for (const artifact of keepTranscript.has(id) && hasConvertibleOriginal(item) ? [] : markdownArtifactsOfItem(item)) {
           const isMdOwn = artifact.path === mdOwn;
           if (isMdOwn) {
             if (!item.mdPath || sharedWithSurvivor(item.mdPath)) continue;
@@ -516,6 +523,24 @@ function highlightPathAllowed(pdfPath: string): boolean {
   return refs.has(rel);
 }
 
+/**
+ * 这条的 md 算不算**转录产物**(2026-09-28,两次收紧):
+ *
+ *   ① 纯 md 笔记(只有 mdPath)—— md 是正文本体,不是转录;
+ *   ② 导入的 .md(filePath 本身就是 markdown 家族)—— 同上,没有发生过\"转换\",
+ *     mdPath 只是正文(用户:「转录只有 pdf、word 这种才转录呀」)。
+ *
+ * 判定 = 有 **可转换的原件**:pdfPath,或扩展名不属于 markdown 家族的 filePath。
+ * `deletePreviewCore`(列不列「转录产物」档)与 `deleteItemsCore`(认不认
+ * keepTranscripts 名单)**必须用同一个判定** —— 分家就会出现\"预览不给勾、
+ * 删除却认名单\"这种把正文留成孤儿文件的缝。
+ */
+const MARKDOWN_FAMILY = /\.(md|markdown|mdown|mdwn|mkd|mkdn|mdtxt|mdtext)$/i;
+function hasConvertibleOriginal(item: { pdfPath?: string; filePath?: string }): boolean {
+  if (item.pdfPath) return true;
+  return !!item.filePath && !MARKDOWN_FAMILY.test(item.filePath);
+}
+
 function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
   const entries: LibraryDeletePreviewEntry[] = [];
   const inBatch = new Set(ids);
@@ -546,7 +571,9 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
     //    ⚠️ **只报真在盘上的**。删除那一步本来就不把"不在"当失败(`dropAbs` 里
     //    `!existsSync` 直接算成功),把一条不存在的产物列进"会一起删"的清单里,
     //    用户勾了它会以为自己删掉了什么 —— 那是假话。
-    for (const artifact of markdownArtifactsOfItem(item)) {
+    //
+    //    ⚠️ 纯 md 笔记 / 导入的 .md 不进这一档(md 即正文;见 hasConvertibleOriginal)。
+    for (const artifact of hasConvertibleOriginal(item) ? markdownArtifactsOfItem(item) : []) {
       if (!existsSync(artifact.path)) continue;
       const images = artifact.recursive ? countImageFiles(artifact.path) : 0;
       links.push({

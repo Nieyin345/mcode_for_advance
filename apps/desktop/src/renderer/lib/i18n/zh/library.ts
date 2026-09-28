@@ -15,7 +15,7 @@ export const zh = {
   "library.view.missingPdf": "未下载 PDF",
   "library.view.needsLogin": "需要登录",
   "library.collections": "分类",
-  "library.collection.new": "新建分类",
+  "library.collection.new": "新建三级分类",
   "library.collection.namePlaceholder": "分类名称",
   "library.collection.create": "创建",
   "library.collection.cancel": "取消",
@@ -27,29 +27,31 @@ export const zh = {
   "library.collection.deleteConfirm": "删除分类「{name}」？里面的文献不会被删除，只是不再属于这个分类。",
   "library.collection.empty": "这个分类还没有文献",
 
-  // 左栏管理:大类(段落)与小类(tab)的新建/删除/重命名都在左栏右键完成
-  "library.group.rename": "重命名大类",
-  "library.group.new": "新建大类",
-  "library.group.delete": "删除大类",
-  "library.group.deleteConfirm": "删除大类「{name}」？里面的类型会变成未分组（左栏不再显示），数据不会删。",
-  "library.group.namePlaceholder": "大类名称",
-  "library.group.emptyHint": "所有大类都被删掉了 —— 输入名字新建一个，数据都还在。",
-  "library.kind.new": "新建小类",
-  "library.kind.rename": "重命名小类",
-  "library.kind.delete": "删除小类",
+  // 左栏管理。层级术语(用户 2026-09-28 定名):一级分类(group) → 二级分类
+  // (根 collection) → 三级分类(嵌套 collection) → 条目。代码标识符不改,
+  // 只有用户可见文字统一按这套叫法。
+  "library.group.rename": "重命名一级分类",
+  "library.group.new": "新建一级分类",
+  "library.group.delete": "删除一级分类",
+  "library.group.deleteConfirm": "删除一级分类「{name}」？里面的类型会变成未分组（左栏不再显示），数据不会删。",
+  "library.group.namePlaceholder": "一级分类名称",
+  "library.group.emptyHint": "所有一级分类都被删掉了 —— 输入名字新建一个，数据都还在。",
+  "library.kind.new": "新建二级分类",
+  "library.kind.rename": "重命名二级分类",
+  "library.kind.delete": "删除二级分类",
   /** 「小类」= tab 那一层。
    *
    *  ⚠️ **必须点出"条目会从左栏消失"**（2026-09-21）。2026-09-21 起内置的那几个
    *  （论文/教材/笔记…）也能删了，而删掉之后**名下的条目没有入口能看见** ——
    *  数据还在库里，但左栏不再有它们的 tab。不说这句，用户删完会以为东西丢了。 */
-  "library.kind.deleteConfirm": "删除小类「{name}」？它名下的条目**会从左栏消失**（数据还在库里，只是没有入口显示它们了）。",
+  "library.kind.deleteConfirm": "删除二级分类「{name}」？它名下的条目**会从左栏消失**（数据还在库里，只是没有入口显示它们了）。",
   "library.kind.builtinLocked": "内置类型不能删除",
-  "library.kind.namePlaceholder": "小类名称",
+  "library.kind.namePlaceholder": "二级分类名称",
   "library.kind.showAll": "全部显示",
   "library.kind.showCollections": "只看分类",
   "library.kind.purpose.material": "查资料用",
   "library.kind.purpose.format": "照着写用",
-  "library.collection.newSub": "新建子分类",
+  "library.collection.newSub": "新建三级分类",
   "library.collection.createFailed": "创建失败",
   "library.collection.moveTo": "移动到",
   "library.collection.moveToTop": "移到最外层",
@@ -72,6 +74,12 @@ export const zh = {
    * —— 那句是给**分类**空时用的，在回收站场景下意思正好反了：回收站里的东西
    * 不是"还在库里"，它们就是被丢进来的。 */
   "library.trash.empty": "回收站是空的。",
+  "library.trash.selectAll": "全选",
+  "library.trash.deselectAll": "取消全选",
+  "library.trash.selected": "已选中 {n} 项",
+  "library.trash.deleteSelected": "彻底删除选中（{n}）",
+  "library.trash.selectItem": "选择“{title}”用于批量删除",
+  "library.trash.unselectItem": "取消选择“{title}”",
   "library.list.showAll": "看全部",
   "library.list.filteredOut": "{n} 条被筛选条件挡住了（不在这个视图里显示）",
   "library.list.clearFilters": "清除筛选",
@@ -165,13 +173,21 @@ export const zh = {
   /** 删除确认框（接 `library.deletePreview`）。**这是库里唯一不可逆的操作**，
    *  所以它先把"会跟着一起没的东西"摆出来，让用户一件件勾。 */
   "library.del.title": "删除《{title}》",
+  "library.del.titleMultiple": "彻底删除 {n} 项",
   "library.del.ownLine": "这一条本身（记录 + 磁盘文件）一定会删。",
+  "library.del.ownLineMultiple": "选中的 {n} 项（记录 + 磁盘文件）都会删除。",
   "library.del.linksHead": "这些也会跟着没 —— 不想删的就把勾去掉：",
   "library.del.linksHeadNoTick": "这些也会跟着没：",
   "library.del.form.item": "库内条目",
   "library.del.form.path": "库外文件（只删关联记录，不动你的文件）",
   "library.del.form.transcript": "转录产物 + 图床（{n} 张图）",
   "library.del.noLinks": "它没有关联别的东西。",
+  "library.del.failureSummary": "有 {n} 个文件未能删除：",
+  "library.del.recordRetained": "记录仍在回收站，可以修正后重试。",
+  "library.del.recordRemoved": "关联记录已删除，原文件仍在原处；无法从此处重试。",
+  "library.del.doneWithWarnings": "删除已完成（有文件未删除）",
+  "library.del.doneWithWarningsDescription": "未删除的是库外文件，对应记录已移除；文件仍在原位置。",
+  "library.del.done": "完成",
   "library.del.confirm": "删除",
   "library.del.cancel": "取消",
   "library.ctx.openFolder": "在文件夹中打开",
@@ -311,32 +327,6 @@ export const zh = {
   "settings.library.layoutTitle": "目录结构",
   "settings.library.layoutDesc":
     "PDF 按内容哈希存放——同一篇文件导两次会落到同一个路径，天然去重。markdown/ 下同样结构放转换产物，AI 读的是它。collections/ 下是给 AI 读的文献清单。",
-
-  // ── 设置:转换情况(文档管理)──
-  // 原先长在「外部集成」那一页上(那一页随写死的 MinerU 一起删了)。搬到这里是因为
-  // 它查的是**库里哪些文献还没转成 Markdown**,与「数据放在哪 / 怎么分」同属库本身
-  // 的事。文案里去掉了"MinerU 额度"那套说法 —— 现在花的是用户自己那套工具的成本。
-  "settings.convert.title": "转换情况",
-  "settings.convert.desc":
-    "统计 Markdown 转录状态。未转录文件不参与 Markdown 全文检索；PDF 文本仍可由文档读取工具按需提取。",
-  "settings.convert.total": "库里共 {n} 篇",
-  "settings.convert.converted": "已转 {n} 篇",
-  "settings.convert.pending": "未转 {n} 篇",
-  "settings.convert.empty": "库里还没有文献",
-  "settings.convert.localNote":
-    "导入不直接转录；启用在线转 Markdown 自动化并提供 MINERU_TOKEN 后才会上传。DOI 下载与联网检索没有独立的事件自动化，需另配外部工具/工作流。已有 Markdown 可用「用本地 Markdown…」采纳。",
-  "settings.convert.reasonNoMd": "还没转 Markdown",
-  "settings.convert.reasonNoAssets": "有 {n} 张图没落盘",
-  "settings.convert.runPending": "转换未转的 {n} 篇",
-  "settings.convert.rerunAll": "全部重转",
-  "settings.convert.rerunConfirm":
-    "把库里所有文献都重新转换一遍？已有的 Markdown 会被覆盖（共 {n} 篇）。只想补没转的点「转换未转的」。",
-  "settings.convert.running": "转换中…",
-  "settings.convert.done": "已转换 {n} 篇",
-  "settings.convert.failed": "{n} 篇失败",
-  "settings.convert.nonePending": "没有待转换的文献",
-  "settings.convert.rerunOne": "重转这篇",
-  "settings.convert.rerunOneTitle": "这份 Markdown 不完整（缺图或没转过），重新转一次",
 
   // 全文检索
   "library.fulltext.placeholder": "在已转换的文献全文中搜索",

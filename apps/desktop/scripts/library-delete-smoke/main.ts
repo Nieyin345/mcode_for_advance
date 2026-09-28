@@ -105,6 +105,7 @@ interface DeleteFailure {
   /** 删不掉的那个**库内**路径。 */
   path: string;
   error: string;
+  recordRetained: boolean;
 }
 interface DeleteResult {
   items: Array<{ id: string }>;
@@ -186,6 +187,7 @@ eq("库外的 linked 报了一条", linkedFailures.length, 1);
 eq("说的是哪一条", linkedFailures[0]?.id, linkedFile.id);
 eq("说的是哪一份", linkedFailures[0]?.kind, "file");
 eq("带上了库外那个路径", linkedFailures[0]?.path, outerFile);
+eq("linked 路径失败但记录已删除", linkedFailures[0]?.recordRetained, false);
 check("理由说清了那是他自己的文件", (linkedFailures[0]?.error ?? "").includes("不在资料库目录"), linkedFailures[0]);
 
 // linked 还**可以是目录**(模版"目录即条目")。目录那一档要更小心:
@@ -206,6 +208,7 @@ check("里面的文件也一个没少", existsSync(join(outerDir, "子目录", "
 const dirFailures = failedOf(delLinkedDir);
 eq("目录也报了一条", dirFailures.length, 1);
 eq("带上了那个目录", dirFailures[0]?.path, outerDir);
+eq("库外目录失败但记录已删除", dirFailures[0]?.recordRetained, false);
 
 /* ──────────────── 3. 库内文件被别的记录指着 → 不许删 ──────────────── */
 
@@ -251,6 +254,100 @@ check("记录删掉了", LibraryRepo.get(kept.id) === null);
 check("文件原地不动(契约里 deleteFiles 默认 false 就是这个意思)", existsSync(keptAbs), keptAbs);
 eq("也不是失败", failedOf(keptRes).length, 0);
 
+/* ──────────────── 4b. keepTranscripts:点名保留的转录产物留在盘上(2026-09-28) ──────────────── */
+
+console.log("\nkeepTranscripts · 勾掉的转录留在盘上");
+
+// 用户:「删除不是把所有的链路上面的文件都默认删除,弹出的窗口要可以选择的」。
+// 名单里的条目删除时跳过 markdown 产物;不传 = 旧行为(转录跟着走),对照见下。
+// ⚠️ 不能拿「导入一个 .md」造这个形状 —— md 后缀走的是**通用文件**管线(filePath),
+// mdPath 只由转录流程写。这里直接写库内产物 + SQL 置 md_path,模拟"转录完成"的条目。
+const { getDb: getDbForMd } = await import("@main/store/db.js");
+const mkTranscribed = (name: string): { id: string; mdAbs: string } => {
+  const src = join(SRC, `${name}.txt`);
+  writeFileSync(src, "占位正文", "utf8");
+  const it = importGenericFiles({ paths: [src], mode: "attached" }).items[0]!;
+  const mdDir = join(ROOT, "md", it.id);
+  mkdirSync(mdDir, { recursive: true });
+  const mdAbs = join(mdDir, "转录.md");
+  writeFileSync(mdAbs, "# 转录", "utf8");
+  getDbForMd().run("UPDATE library_items SET md_path = ? WHERE id = ?", [rel(mdAbs), it.id]);
+  return { id: it.id, mdAbs };
+};
+
+const keepCase = mkTranscribed("转录要留下来");
+check("条目带上了 mdPath(模拟转录完成)", LibraryRepo.get(keepCase.id)?.mdPath === rel(keepCase.mdAbs));
+const keptT = (await deleteItems({
+  ids: [keepCase.id],
+  deleteFiles: true,
+  keepTranscripts: [keepCase.id],
+})) as DeleteResult;
+check("记录删掉了", LibraryRepo.get(keepCase.id) === null);
+check("转录文件留在盘上(点名保留)", existsSync(keepCase.mdAbs), keepCase.mdAbs);
+eq("保留不算失败", failedOf(keptT).length, 0);
+
+// 对照:不传 keepTranscripts —— 同形条目的转录照旧被删(旧行为逐位不变)。
+const goCase = mkTranscribed("转录跟着走");
+await del([goCase.id]);
+check("不点名时转录照旧删掉(旧行为)", !existsSync(goCase.mdAbs), goCase.mdAbs);
+
+/* ── 4c. 纯 md 笔记 ≠ 转录(2026-09-28):正文就是 md 本体,预览不许把它标成「转录产物」 ── */
+
+console.log("\n纯 md 笔记 · 正文不是转录产物");
+
+// 「转录」的判定 = 有原件(pdfPath / filePath)且有 mdPath。笔记只有 mdPath ——
+// 用户:「转录只有 pdf、word 这种才转录呀,为什么我新建一个 md 文档,删除的时候
+// 也会显示有转录的 md 文档呢」。
+const deletePreview = handlerFor(IPC.LIBRARY_DELETE_PREVIEW);
+const mkNote = (name: string): { id: string; mdAbs: string } => {
+  const made = mkTranscribed(name);
+  // 把原件那一列清掉 —— 剩下的形状就是「新建笔记」:只有 mdPath,md 即正文。
+  getDbForMd().run("UPDATE library_items SET file_path = NULL, pdf_path = NULL WHERE id = ?", [made.id]);
+  return made;
+};
+const note = mkNote("我是一篇笔记");
+check("笔记形状:只有 mdPath,没有原件", (() => {
+  const it = LibraryRepo.get(note.id);
+  return !!it?.mdPath && !it.pdfPath && !it.filePath;
+})(), LibraryRepo.get(note.id));
+const notePreview = (await deletePreview({ ids: [note.id] })) as {
+  entries: Array<{ links: Array<{ form: string }> }>;
+};
+check(
+  "预览不把笔记正文标成「转录产物」",
+  !notePreview.entries.some((e) => e.links.some((l) => l.form === "transcript")),
+  notePreview.entries,
+);
+// 防御:就算调用方对笔记塞了 keepTranscripts,正文也照删 —— 「保留转录」对
+// 没有转录的条目没有意义,不能借这个口子把笔记正文留成孤儿文件。
+const note2 = mkNote("防御那一篇");
+await deleteItems({ ids: [note2.id], deleteFiles: true, keepTranscripts: [note2.id] });
+check("笔记正文照删(keepTranscripts 对无原件条目不生效)", !existsSync(note2.mdAbs), note2.mdAbs);
+
+/* ── 4d. 导入的 .md ≠ 转录(2026-09-28):原件本身就是 markdown 时,mdPath 是正文不是转录 ── */
+
+console.log("\n导入的 md · 原件是 markdown 家族就没有「转录」这回事");
+
+// 形状:filePath(.md 原件副本)+ mdPath(正文)。「有 filePath 就算有原件 ⟹ 算转录」
+// 在这里误判 —— 用户:「我删除一个 md 文件…为什么也会显示有转录的 md 文档呢」。
+// 判定必须看原件**类型**:pdf,或扩展名不是 markdown 家族的 filePath,才谈得上转录。
+const mdImport = mkTranscribed("导入的md原件");
+getDbForMd().run("UPDATE library_items SET file_path = ? WHERE id = ?", [
+  `files/${mdImport.id}-导入的md原件.md`,
+  mdImport.id,
+]);
+const mdImportPreview = (await deletePreview({ ids: [mdImport.id] })) as {
+  entries: Array<{ links: Array<{ form: string }> }>;
+};
+check(
+  "预览不把 md 原件条目的正文标成「转录产物」",
+  !mdImportPreview.entries.some((e) => e.links.some((l) => l.form === "transcript")),
+  mdImportPreview.entries,
+);
+// 防御同 4c:keepTranscripts 对它不生效,正文照删、不留孤儿。
+await deleteItems({ ids: [mdImport.id], deleteFiles: true, keepTranscripts: [mdImport.id] });
+check("md 原件条目的正文照删(不留孤儿)", !existsSync(mdImport.mdAbs), mdImport.mdAbs);
+
 /* ──────────────── 5. 删不掉的时候:如实报出来,而且记录留着 ──────────────── */
 
 console.log("\n删失败 · 不能静默吞掉");
@@ -275,6 +372,7 @@ eq("失败说的是哪一条", brokenFailed[0]?.id, dirCase.id);
 eq("失败说的是哪一份", brokenFailed[0]?.kind, "file");
 check("失败带上了库内路径", (brokenFailed[0]?.path ?? "").includes(dirCase.id), brokenFailed[0]);
 check("失败带上了原因(不是空串)", (brokenFailed[0]?.error ?? "").length > 0, brokenFailed[0]);
+eq("库内文件删除失败时记录仍保留", brokenFailed[0]?.recordRetained, true);
 
 // ② ⚠️ **记录必须留着。** 删了记录、文件还在,用户就从界面上再也够不着那个文件了
 // —— 失败清单只是锦上添花,这一条才是根子上的。
@@ -291,6 +389,7 @@ check("同批里正常的那条记录删掉了", LibraryRepo.get(okItem.id) === 
 check("它的文件也删掉了", !existsSync(okAbs), okAbs);
 eq("失败清单里只有那一条", failedOf(mixed).length, 1);
 eq("还是那一条", failedOf(mixed)[0]?.id, dirCase.id);
+eq("混合删除把保留状态一起返回", failedOf(mixed)[0]?.recordRetained, true);
 check("坏的那条记录仍然留着", LibraryRepo.get(dirCase.id) !== null);
 
 // 收尾:把那个删不掉的目录清掉,别让它拖累后面的断言。
@@ -391,6 +490,7 @@ eq("内容也没动", readFileSync(poisonSrc, "utf8"), "用户的原件");
 // —— 用户点的是"连文件一起删",实际什么都没删。静默的话他永远不知道有这件事。
 eq("如实报成一条失败", poisonFailed.length, 1);
 eq("说的是哪一条", poisonFailed[0]?.id, poisoned.id);
+eq("坏 attached 路径失败时记录仍保留", poisonFailed[0]?.recordRetained, true);
 // ⚠️ 与 linked 那一段刻意不同:**这条记录要留着**(所以它不算"删成功")。
 // 区别在 entryMode:linked 的语义本来就是"文件在库外",记录删掉是用户的本意;
 // 而 attached 的语义是"文件在库里",路径指到库外说明**这条记录是坏的** ——

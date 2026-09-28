@@ -2500,8 +2500,12 @@ export function hasFileIcon(filePath: string): boolean {
 
 /** Render the per-type file icon for a path. Falls back to the generic
  *  `document` icon for unknown extensions, so callers need no fallback of
- *  their own. Themed icons carry their own colors; `className` is currently
- *  unused but kept for API parity with the old Tabler-based helper. */
+ *  their own. Themed icons carry their own colors.
+ *
+ *  ★ `flexShrink: 0`(2026-09-28 修):SVG 在 flex 行里默认**可以被压缩** ——
+ *  长标题挤压行内空间时图标跟着缩(实测回收站里 PDF 行标题长、图标被压小,
+ *  MD 行标题短、看起来"没事",于是像是"PDF 图标会变、MD 不会")。图标尺寸
+ *  是身份标识,不参与弹性布局。占位 span 同样钉死,加载前后不跳版。 */
 export function FileTypeIcon({
   path,
   size = 16,
@@ -2516,10 +2520,11 @@ export function FileTypeIcon({
     return (
       <span
         aria-hidden
-        style={{ display: "inline-block", width: size, height: size, verticalAlign: "-0.125em" }}
+        className={className}
+        style={{ display: "inline-block", width: size, height: size, flexShrink: 0, verticalAlign: "-0.125em" }}
       />
     );
   }
   const id = fileIconIdForPath(path) ?? `${COLLECTION_PREFIX}:${DEFAULT_ICON}`;
-  return <IconifyIcon icon={id} width={size} height={size} inline />;
+  return <IconifyIcon icon={id} width={size} height={size} inline className={className} style={{ flexShrink: 0 }} />;
 }

@@ -25,10 +25,10 @@
  *
  * ## 图标
  *
- * 「每个都要有图标」:全部 = `IconFiles`、普通分类 = `IconBook`、回收站 =
+ * 「每个都要有图标」:全部 = `IconFiles`、普通分类 = 文件夹(展开时显示打开状态)、回收站 =
  * `IconArchive`(它是个"地方"而不是一个"动作",所以不用垃圾桶图标 —— 那是删除按钮
- * 用的)、文献 = `IconFileText`。回收站与普通分类**必须长得不一样**:一个是随时能
- * 打开翻的东西,另一个点进去删就是真的没了。
+ * 用的)、文献按 `FileTypeIcon` 根据文件路径扩展名区分类型。回收站与普通分类**必须长得
+ * 不一样**:一个是随时能打开翻的东西,另一个点进去删就是真的没了。
  *
  * ## 两种呈现,由顶部那个切换图标一起控制
  *
@@ -54,13 +54,14 @@ import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { previewLibraryItem } from "@renderer/lib/libraryPreview.js";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
+import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
 import { DEFAULT_LIBRARY_GROUPS, type LibraryGroupMeta } from "@contracts/libraryTypes";
 import type { LibraryCollection, LibraryItem } from "@contracts/library";
 import {
   IconArchive,
-  IconBook,
   IconChevronRight,
-  IconFileText,
+  IconFolder,
+  IconFolderOpen,
   IconFiles,
   IconMessage,
   IconPencil,
@@ -85,7 +86,7 @@ import {
 import { LibraryItemContextMenu, type LibraryCtxTarget } from "./LibraryItemContextMenu.js";
 import { DeleteItemsDialog } from "./DeleteItemsDialog.js";
 import { ImportBar } from "./ImportPanel.js";
-import { ItemLinksDialog, ItemInfoDialog, CollectionInfoDialog } from "./ItemDetail.js";
+import { ItemLinksDialog, CollectionInfoDialog } from "./ItemDetail.js";
 import { CollectionContextMenu, type CollectionCtxTarget } from "./CollectionContextMenu.js";
 import { GroupContextMenu, type GroupCtxTarget } from "./GroupContextMenu.js";
 
@@ -199,6 +200,7 @@ export function LibrarySection({
   const loadCollections = useLibraryStore((s) => s.loadCollections);
   const expandedIds = useLibraryStore((s) => s.expandedIds);
   const toggleExpanded = useLibraryStore((s) => s.toggleExpanded);
+  const loadCollectionItems = useLibraryStore((s) => s.loadCollectionItems);
   const itemsByCollection = useLibraryStore((s) => s.itemsByCollection);
   const allItems = useLibraryStore((s) => s.allItems);
   const loadAllItems = useLibraryStore((s) => s.loadAllItems);
@@ -260,6 +262,13 @@ export function LibrarySection({
   const [collapsed, setCollapsed] = useState(false);
   /** 正在新建(输入框态)。 */
   const [creating, setCreating] = useState(false);
+  /** 「新建子分类」输入行挂在哪个根分类下(2026-09-28 四级恢复)。null = 没在建。
+      与 creating(根分类)复用同一对 name/error —— 同一时刻只有一个新建输入行。 */
+  const [creatingSubFor, setCreatingSubFor] = useState<string | null>(null);
+  /** 树模式当前选中的**二级分类 tab**(2026-09-28 恢复 kind 时代的横排平铺形态;
+      数据仍是根 collection,只是二级不画成文件夹行,画成一排标签)。null/失效时
+      回落到第一个二级分类。 */
+  const [activeSubId, setActiveSubId] = useState<string | null>(null);
   const [name, setName] = useState("");
   /** 回车和失焦都可能提交，同一次输入只发一次新建请求。 */
   const creatingPending = useRef(false);
@@ -272,8 +281,6 @@ export function LibrarySection({
   const [ctxMenu, setCtxMenu] = useState<LibraryCtxTarget | null>(null);
   /** 分类行的右键菜单目标(新建笔记 / 重命名 / 删除)。 */
   const [ctxCollection, setCtxCollection] = useState<CollectionCtxTarget | null>(null);
-  /** 「文献信息」浮层管的是哪一条（2026-09-21）。null = 关着。 */
-  const [infoFor, setInfoFor] = useState<LibraryItem | null>(null);
   /** 「关联」浮层管的是哪一条（2026-09-21）。null = 关着。 */
   const [linksFor, setLinksFor] = useState<LibraryItem | null>(null);
   /** 「分类信息」浮层管的是哪个分类（2026-09-21）—— 导出引用从这里进。null = 关着。 */
@@ -284,6 +291,8 @@ export function LibrarySection({
    *  带着 `activeItemId` 是因为删完要清掉可能悬空的选中态 —— 而这个组件在这一刻
    *  已经被重渲染了，不能指望从 `activeItemId` 现读。 */
   const [deleting, setDeleting] = useState<{ ids: string[]; activeItemId: string | null } | null>(null);
+  /** 回收站批量删除的选择集。 */
+  const [selectedTrashIds, setSelectedTrashIds] = useState<ReadonlySet<string>>(new Set());
   /** 正在改名的**条目** id + 输入中的标题(三个库通用;分类改名是另一套)。 */
   const [renamingItemId, setRenamingItemId] = useState<string | null>(null);
   const [itemTitleDraft, setItemTitleDraft] = useState("");
@@ -330,8 +339,8 @@ export function LibrarySection({
    * 标上(用户自己建一个叫「回收站」的分类也算),渲染端不去猜名字。
    */
   const trashIds = useMemo(
-    () => new Set(kindCollections.filter((c) => c.isTrash).map((c) => c.id)),
-    [kindCollections],
+    () => new Set(collections.filter((c) => c.isTrash).map((c) => c.id)),
+    [collections],
   );
   /** 普通分类(`isTrash` 之外的那些)。树只管它们,回收站不参与嵌套。 */
   const liveCollections = useMemo(
@@ -391,6 +400,14 @@ export function LibrarySection({
     // 同级里的次序就是 `kindCollections` 的次序(数据库给的 sort_order),push 保序
     return { rootCollections: roots, childrenOf };
   }, [liveCollections]);
+
+  /** 选中的二级分类(tab)。默认第一个;被删/失效时自动回落。 */
+  const activeSub = rootCollections.find((c) => c.id === activeSubId) ?? rootCollections[0] ?? null;
+  const activeSubKey = activeSub?.id ?? null;
+  // tab 选中即"展开":条目按需拉一次(与 toggleExpanded 的「没缓存才拉」同一口径)。
+  useEffect(() => {
+    if (activeSubKey && itemsByCollection[activeSubKey] === undefined) void loadCollectionItems(activeSubKey);
+  }, [activeSubKey, itemsByCollection, loadCollectionItems]);
 
   // 会话流模式一次要列出所有库的文献,所以进模式(以及库增删)时全量拉一次。
   // 树模式不拉全量 —— 展开哪个库才拉哪个。
@@ -581,7 +598,7 @@ export function LibrarySection({
       }
       if (res.path && !res.isDir) {
         // **可编辑的那一支**：和文件树双击落到同一个组件。
-        openFileInIde(res.path);
+        openFileInIde(res.path, { displayName: item.title });
         setCenterTabFocus("editor");
         return;
       }
@@ -640,8 +657,43 @@ export function LibrarySection({
       setCreating(false);
       setError(null);
       openCollection(id);
+      setActiveSubId(id); // 新建的二级分类立刻成为选中的 tab(它就在排尾)
     } catch (err) {
       // API/数据库失败不能冒充“重名”；保留输入并显示实际原因，方便用户重试。
+      setError(err instanceof Error && err.message ? err.message : t("library.collection.createFailed"));
+    } finally {
+      creatingPending.current = false;
+    }
+  };
+
+  /** 新建**子分类**(第三级;入口 = 分类右键第一项,见 CollectionContextMenu.onNewSub)。
+      与 submitNew 同一套判重/防重入/错误保留;父分类 id 在 creatingSubFor 里。 */
+  const submitNewSub = async () => {
+    if (creatingPending.current) return;
+    const parentId = creatingSubFor;
+    if (!parentId) return;
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setCreatingSubFor(null);
+      setError(null);
+      return;
+    }
+    if (nameTaken(trimmed)) {
+      setError(t("library.collection.duplicateName"));
+      return;
+    }
+    creatingPending.current = true;
+    try {
+      const id = await createCollection(trimmed, group.id, parentId);
+      if (!id) {
+        setError(t("library.collection.createFailed"));
+        return;
+      }
+      setName("");
+      setCreatingSubFor(null);
+      setError(null);
+      openCollection(id);
+    } catch (err) {
       setError(err instanceof Error && err.message ? err.message : t("library.collection.createFailed"));
     } finally {
       creatingPending.current = false;
@@ -805,22 +857,9 @@ export function LibrarySection({
    * 反馈一律走 toast：左栏列表里没有"这一条的状态区"，而转换要花几秒到几十秒 ——
    * 没有反馈的话用户只会以为点了没反应。 */
 
-  /** 挂上用户已经转录好的 md（不重新转，见 `ItemDetail` 里那段说明）。 */
-  const adoptMarkdownFor = async (item: LibraryItem) => {
-    const picked = await api.pickFiles({ filters: [{ name: "Markdown", extensions: ["md", "markdown"] }] });
-    const path = picked.paths[0];
-    if (!path) return;
-    try {
-      const res = await api.library.adoptMarkdown({ id: item.id, path });
-      useToastStore.getState().push({
-        kind: res.ok ? "info" : "error",
-        title: res.ok ? t("library.convert.adoptDone", { n: res.imageCount }) : (res.error ?? t("library.convert.failed")),
-      });
-      if (res.ok) await refreshItems();
-    } catch (err) {
-      useToastStore.getState().push({ kind: "error", title: t("library.convert.failed"), body: (err as Error).message });
-    }
-  };
+  /* 「采纳 MD」「文献信息」的内置入口已退役(2026-09-28,通用 agent 方向;见
+     customUi/registry.ts 那条注释)。采纳能力仍在:library.adoptMarkdown RPC、
+     MCP 工具、右栏详情页;信息卡改走自定义 view 模板。 */
 
   const deleteForever = async (item: LibraryItem) => {
     // 先摆清单再删（见 `DeleteItemsDialog`）—— 原先这里是 `window.confirm` 一句
@@ -829,8 +868,10 @@ export function LibrarySection({
   };
 
   /** 确认框那边真删完之后：清掉可能悬空的选中态，再重拉列表。 */
-  const afterDeleteItems = async (deletedActiveId: string | null) => {
-    if (deletedActiveId !== null && activeItemId === deletedActiveId) setActiveItem(null);
+  const afterDeleteItems = async (deletedIds: readonly string[]) => {
+    if (activeItemId !== null && deletedIds.includes(activeItemId)) setActiveItem(null);
+    const deleted = new Set(deletedIds);
+    setSelectedTrashIds((previous) => new Set([...previous].filter((id) => !deleted.has(id))));
     await loadCollections();
     await refreshItems();
   };
@@ -840,6 +881,60 @@ export function LibrarySection({
     setRenamingItemId(item.id);
     setItemTitleDraft(item.title);
     setError(null);
+  };
+
+  /** 回收站批量操作栏：全选范围只限于当前显示的这一批条目。 */
+  const renderTrashBulkToolbar = (items: readonly LibraryItem[]) => {
+    const selected = items.filter((item) => selectedTrashIds.has(item.id));
+    const allSelected = items.length > 0 && selected.length === items.length;
+    return (
+      <li key="trash-bulk-toolbar" className="px-1 py-0.5">
+        {/* 与普通行同一视觉密度:无底色块,只在下缘一条淡分隔线(2026-09-28,
+            用户:「回收站…要和其他的统一一点」)。 */}
+        <div className="flex items-center justify-between gap-2 border-b border-edge/60 px-2 pb-1">
+          <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-[11px] text-content-muted hover:text-content">
+            <input
+              type="checkbox"
+              className="h-3.5 w-3.5 accent-current"
+              checked={allSelected}
+              aria-checked={selected.length > 0 && !allSelected ? "mixed" : allSelected}
+              aria-label={t(allSelected ? "library.trash.deselectAll" : "library.trash.selectAll")}
+              onChange={() => {
+                setSelectedTrashIds((previous) => {
+                  const next = new Set(previous);
+                  for (const item of items) {
+                    if (allSelected) next.delete(item.id);
+                    else next.add(item.id);
+                  }
+                  return next;
+                });
+              }}
+            />
+            <span>{allSelected ? t("library.trash.deselectAll") : t("library.trash.selectAll")}</span>
+          </label>
+          <span className="min-w-0 truncate text-[11px] text-content-subtle">
+            {t("library.trash.selected", { n: String(selected.length) })}
+          </span>
+          <button
+            type="button"
+            disabled={selected.length === 0}
+            onClick={() => {
+              if (selected.length === 0) return;
+              setDeleting({
+                ids: selected.map((item) => item.id),
+                activeItemId:
+                  activeItemId !== null && selected.some((item) => item.id === activeItemId)
+                    ? activeItemId
+                    : null,
+              });
+            }}
+            className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-danger hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {t("library.trash.deleteSelected", { n: String(selected.length) })}
+          </button>
+        </div>
+      </li>
+    );
   };
 
   /**
@@ -863,6 +958,8 @@ export function LibrarySection({
 
   /** 一篇文献的行。树模式嵌在分类下面,会话流模式平铺 —— 两处共用这一个。 */
   const renderItemRow = (item: LibraryItem, collectionId: string | null) => {
+    const isTrashItem = !!collectionId && trashIds.has(collectionId);
+    const isTrashItemSelected = selectedTrashIds.has(item.id);
     // 改名态:整行换成输入框(与分类改名的输入行同一套手感)
     if (renamingItemId === item.id) {
       return (
@@ -882,6 +979,7 @@ export function LibrarySection({
     return (
       <li
         key={item.id}
+        className={isTrashItem ? "flex items-center gap-1" : undefined}
         // 右键落在整行上(不只是文字),和会话行的手感一致
         onContextMenu={(e) => {
           e.preventDefault();
@@ -894,23 +992,66 @@ export function LibrarySection({
           });
         }}
       >
-        <SidebarRow
-          icon={<IconFileText size={12} className="shrink-0" />}
-          label={item.title}
-          active={item.id === activeItemId ? "fill" : false}
-          onClick={(e) => openItemDebounced(item, collectionId, e.detail)}
-          // 双击在**中间**打开（用户：「双击才会在中间显示」）。
-          onDoubleClick={() => openItemInCenter(item, collectionId)}
-          // 行尾那个「N 条关联」的徽标 —— 用户的抱怨是「文件之间的关联没有体现」:
-          // 右栏那份清单要点开某一篇才看得到,左栏扫一遍完全不知道谁有关联。
-          // 0 条**不画**(不画"0 条")—— 大多数条目没有关联,每行挂一个 0 会把
-          // 少数真正有关联的那几行淹掉,而徽标的意义正是"一眼看出谁有"。
-          badge={
-            (linkCounts[item.id] ?? 0) > 0
-              ? t("library.collection.linkCount", { n: String(linkCounts[item.id]) })
-              : undefined
-          }
-        />
+        {/* 行首勾选框:**默认不画**,顶部「全选」把选择模式带起来(size>0)才出现
+            —— 用户:「默认没有框,只有全选的时候才会有框」。单删走行尾垃圾桶。 */}
+        {isTrashItem && selectedTrashIds.size > 0 && (
+          <input
+            type="checkbox"
+            className="ml-1 h-3 w-3 shrink-0 accent-current"
+            checked={isTrashItemSelected}
+            aria-label={t(
+              isTrashItemSelected ? "library.trash.unselectItem" : "library.trash.selectItem",
+              { title: item.title },
+            )}
+            onChange={(event) => {
+              setSelectedTrashIds((previous) => {
+                const next = new Set(previous);
+                if (event.target.checked) next.add(item.id);
+                else next.delete(item.id);
+                return next;
+              });
+            }}
+          />
+        )}
+        <div className={isTrashItem ? "min-w-0 flex-1" : "w-full"}>
+          <SidebarRow
+            icon={<FileTypeIcon path={item.filePath || item.pdfPath || item.mdPath || item.title} size={12} />}
+            label={item.title}
+            active={
+              isTrashItem && isTrashItemSelected
+                ? "accent"
+                : item.id === activeItemId
+                  ? "fill"
+                  : false
+            }
+            onClick={(e) => openItemDebounced(item, collectionId, e.detail)}
+            // 双击在**中间**打开（用户：「双击才会在中间显示」）。
+            onDoubleClick={() => openItemInCenter(item, collectionId)}
+            // 行尾那个「N 条关联」的徽标 —— 用户的抱怨是「文件之间的关联没有体现」:
+            // 右栏那份清单要点开某一篇才看得到,左栏扫一遍完全不知道谁有关联。
+            // 0 条**不画**(不画"0 条")—— 大多数条目没有关联,每行挂一个 0 会把
+            // 少数真正有关联的那几行淹掉,而徽标的意义正是"一眼看出谁有"。
+            badge={
+              (linkCounts[item.id] ?? 0) > 0
+                ? t("library.collection.linkCount", { n: String(linkCounts[item.id]) })
+                : undefined
+            }
+          />
+        </div>
+        {isTrashItem && (
+          <button
+            type="button"
+            title={t("library.ctx.deleteForever")}
+            aria-label={t("library.ctx.deleteForever")}
+            className="mr-1 flex shrink-0 items-center rounded p-1 text-content-subtle hover:bg-danger/10 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger"
+            onClick={(event) => {
+              event.stopPropagation();
+              void deleteForever(item);
+            }}
+          >
+            <IconTrash size={12} />
+          </button>
+        )}
       </li>
     );
   };
@@ -960,6 +1101,51 @@ export function LibrarySection({
     />
   );
 
+  /** 「新建三级分类」的输入行(挂在选中的二级分类 tab 的内容区末尾)。 */
+  const creatingSubInputFor = (c: LibraryCollection) =>
+    creatingSubFor === c.id && (
+      <MiniInput
+        value={name}
+        onChange={(next) => {
+          setName(next);
+          if (error) setError(null);
+        }}
+        onSubmit={() => void submitNewSub()}
+        onCancel={() => {
+          setCreatingSubFor(null);
+          setName("");
+          setError(null);
+        }}
+        onBlur={() => void submitNewSub()}
+        placeholder={t("library.collection.namePlaceholder")}
+        error={error}
+      />
+    );
+
+  /** 选中的**二级分类 tab** 的内容区:直属条目 + 三级分类行(到此为止,三级下没有
+      第四级)+ 「新建三级分类」输入行。二级分类自己不画行 —— 它就是上面那个 tab。 */
+  const renderSubContent = (c: LibraryCollection) => {
+    const items = itemsByCollection[c.id];
+    const kids = childrenOf.get(c.id) ?? [];
+    return (
+      <>
+        {renamingId === c.id && renameInputRow(c)}
+        {items === undefined && kids.length === 0 ? (
+          <HintRow>…</HintRow>
+        ) : items !== undefined && items.length === 0 && kids.length === 0 && creatingSubFor !== c.id ? (
+          <HintRow>{t("library.collection.empty")}</HintRow>
+        ) : (
+          <>
+            {c.isTrash && (items?.length ?? 0) > 0 && renderTrashBulkToolbar(items ?? [])}
+            {(items ?? []).map((item) => renderItemRow(item, c.id))}
+            {kids.map((k) => renderCollectionRow(k, new Set([c.id])))}
+          </>
+        )}
+        {creatingSubInputFor(c)}
+      </>
+    );
+  };
+
   /**
    * 「全部显示」开着时的列表 —— **只平铺这一类下的全部条目,不画分类那一层**。
    *
@@ -1005,6 +1191,7 @@ export function LibrarySection({
    * 祖先**,撞上就当场把这条标出来(用户看得见),而不是白屏。
    */
   const renderCollectionRow = (c: LibraryCollection, seen: ReadonlySet<string> = new Set()) => {
+    // （二级分类不再走这里 —— 它是横排 tab;这里只画三级分类行与回收站行。）
     const isActive = c.id === activeId;
     const isExpanded = !!expandedIds[c.id];
     const items = itemsByCollection[c.id];
@@ -1024,7 +1211,10 @@ export function LibrarySection({
               (items.length === 0 && kids.length === 0 ? (
                 <HintRow>{t("library.collection.empty")}</HintRow>
               ) : (
-                items.map((item) => renderItemRow(item, c.id))
+                <>
+                  {c.isTrash && items.length > 0 && renderTrashBulkToolbar(items)}
+                  {items.map((item) => renderItemRow(item, c.id))}
+                </>
               ))}
             {/* 子分类**跟在文献后面**,并复用同一层缩进 —— 它们和文献都是
                 "这个分类里的东西",再套一层缩进会平白多出一级视觉台阶 */}
@@ -1043,7 +1233,7 @@ export function LibrarySection({
             c.isTrash ? (
               <IconArchive size={14} className="shrink-0" />
             ) : (
-              <IconBook size={14} className="shrink-0" />
+              isExpanded ? <IconFolderOpen size={14} className="shrink-0" /> : <IconFolder size={14} className="shrink-0" />
             )
           }
           label={c.name}
@@ -1144,7 +1334,7 @@ export function LibrarySection({
             c.isTrash ? (
               <IconArchive size={14} className="shrink-0" />
             ) : (
-              <IconBook size={14} className="shrink-0" />
+              <IconFolder size={14} className="shrink-0" />
             )
           }
           label={c.name}
@@ -1193,6 +1383,7 @@ export function LibrarySection({
             流模式里没有层级。 */}
         {items && items.length > 0 && (
           <SidebarList nested border={false}>
+            {c.isTrash && renderTrashBulkToolbar(items)}
             {items.map((item) => renderItemRow(item, c.id))}
           </SidebarList>
         )}
@@ -1207,16 +1398,41 @@ export function LibrarySection({
     if (items.length === 0) {
       return <HintRow>{t("library.trash.empty")}</HintRow>;
     }
-    return <SidebarList>{items.map((it) => renderItemRow(it, ids[0] ?? null))}</SidebarList>;
+    return (
+      <>
+        <SidebarList>
+          {renderTrashBulkToolbar(items)}
+          {items.map((it) => renderItemRow(it, ids[0] ?? null))}
+        </SidebarList>
+        {/* ★ 修(2026-09-28):这个早退分支此前**不带确认框** —— 点「彻底删除」把
+            deleting 设上了,但 DeleteItemsDialog 根本不在这棵树里(它只挂在主
+            return 里),于是"删了没反应"。早退的 return 也要带上它。 */}
+        <DeleteItemsDialog
+          open={deleting !== null}
+          ids={deleting?.ids ?? []}
+          onOpenChange={(open) => { if (!open) setDeleting(null); }}
+          onConfirmed={(deletedIds) => void afterDeleteItems(deletedIds)}
+        />
+      </>
+    );
   }
 
   // **只有回收站**那一档：挂在左栏滚动容器外面，钉死在底部（见 `trashOnly`）。
   // 它不画表头、不画 tab 排、不画树 —— 就是回收站那一行 + 展开后的条目。
   if (trashOnly) {
     return (
-      <ul className="space-y-0.5">
-        {trashCollections.map((c) => renderCollectionRow(c))}
-      </ul>
+      <>
+        <ul className="space-y-0.5">
+          {trashCollections.map((c) => renderCollectionRow(c))}
+        </ul>
+        {/* 同上:早退分支必须自带确认框,否则底部钉死的回收站里删除没反应。 */}
+        <DeleteItemsDialog
+          open={deleting !== null}
+          ids={deleting?.ids ?? []}
+          onOpenChange={(open) => { if (!open) setDeleting(null); }}
+          onConfirmed={(deletedIds) => void afterDeleteItems(deletedIds)}
+        />
+      </>
     );
   }
 
@@ -1304,14 +1520,33 @@ export function LibrarySection({
             </>
           ) : (
             <>
-              {rootCollections.map((c) => renderCollectionRow(c))}
-              {/* **新建分类的输入框就在树里**(2026-09-21 挪进来)。
-                  用户原话:「选择新建的时候要在对应的位置出现输入框,**现在的情况是
-                  位置全部设置在了 collection 列表里面**」（指的是全都堆在列表外面、
-                  表头下面那一坨）。它即将成为的那一行就是这里 —— 树的末尾。
-                  ⚠️ 它**在回收站之前**:新建出来的是一条普通分类,而回收站永远钉在
-                  整棵树的最后。 */}
-              {creatingRootInput}
+              {/* ── 二级分类 = 横排 tab(2026-09-28 按用户要求恢复 kind 时代的平铺
+                  形态;数据仍是根 collection)。右键 tab = 二级分类的管理菜单,
+                  第一项「新建三级分类」。trailing = 新建二级分类的输入框 ——
+                  「新的 tab 会出现在末尾,输入框就该在那儿」(SectionTabs 头注释)。
+                  count = 三级分类数(不含条目:未选中的 tab 条目是懒加载的,数字会
+                  忽有忽无)。 ── */}
+              {rootCollections.length > 0 ? (
+                <SectionTabs
+                  tabs={rootCollections.map((c) => ({
+                    key: c.id,
+                    label: c.name,
+                    count: (childrenOf.get(c.id) ?? []).length,
+                  }))}
+                  active={activeSub?.id ?? ""}
+                  onChange={(id) => setActiveSubId(id)}
+                  onTabContextMenu={(id, e) => {
+                    const c = rootCollections.find((x) => x.id === id);
+                    if (c) setCtxCollection({ collection: c, x: e.clientX, y: e.clientY });
+                  }}
+                  trailing={creatingRootInput}
+                />
+              ) : (
+                // 一个二级分类都没有:只摆新建输入(入口 = 一级分类右键第一项)
+                creatingRootInput
+              )}
+              {/* 选中 tab 的内容区(条目 + 三级分类行 + 新建三级分类输入行) */}
+              {activeSub && renderSubContent(activeSub)}
               {/* 回收站**永远在最后** —— 它不参与嵌套(树里只画普通分类),
                   所以由这里统一摆在整棵树的下面。数据库给的行序是任意的
                   (它就是一条普通记录),排序只能在渲染端做。 */}
@@ -1325,8 +1560,6 @@ export function LibrarySection({
       {/* 文献行的右键菜单:移动 / 复制到别的库、从当前库移除(在回收站里则是彻底删除)、
           打开文件夹、打开 md */}
       {/* 「文献信息」——条目行右键触发（元数据 + 引用 + 摘要）。 */}
-      <ItemInfoDialog item={infoFor} onOpenChange={(open) => { if (!open) setInfoFor(null); }} />
-
       {/* 「关联」——条目行右键触发。内容用的是详情页那同一个 `ItemLinks`。 */}
       <ItemLinksDialog
         item={linksFor}
@@ -1372,7 +1605,7 @@ export function LibrarySection({
         open={deleting !== null}
         ids={deleting?.ids ?? []}
         onOpenChange={(open) => { if (!open) setDeleting(null); }}
-        onConfirmed={() => void afterDeleteItems(deleting?.activeItemId ?? null)}
+        onConfirmed={(deletedIds) => void afterDeleteItems(deletedIds)}
       />
 
       <LibraryItemContextMenu
@@ -1382,9 +1615,7 @@ export function LibrarySection({
         onChanged={() => void refreshItems()}
         onRename={startItemRename}
         onDeleteForever={(item) => void deleteForever(item)}
-        onAdoptMarkdown={(item) => void adoptMarkdownFor(item)}
         onManageLinks={(item) => setLinksFor(item)}
-        onShowInfo={(item) => setInfoFor(item)}
         groupId={group.id}
       />
 
@@ -1392,6 +1623,14 @@ export function LibrarySection({
       <CollectionContextMenu
         target={ctxCollection}
         collections={kindCollections}
+        onNewSub={(c) => {
+          // tab 切到它(输入行长在它的内容区里),关掉其它新建输入,再摆行。
+          setActiveSubId(c.id);
+          setCreating(false);
+          setCreatingSubFor(c.id);
+          setName("");
+          setError(null);
+        }}
         onClose={() => setCtxCollection(null)}
         onRename={(c) => startRename(c.id, c.name)}
         onDelete={(c) => void removeCollection(c.id, c.name)}

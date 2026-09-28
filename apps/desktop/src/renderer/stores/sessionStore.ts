@@ -1172,6 +1172,9 @@ export interface SessionState {
    *  editor area. Drives the OpenTabsBar. Persisted as a JSON object keyed
    *  by projectId. */
   ideOpenFilesByProject: Record<string, string[]>;
+  /** Optional per-project labels for open file tabs, keyed by real file path.
+   *  Falls back to the path basename when absent; labels are session-only. */
+  ideFileDisplayNamesByProject: Record<string, Record<string, string>>;
   /** Per-project currently-active file (member of the project's open list,
    *  or null). Persisted as a JSON object keyed by projectId. */
   ideActiveFileByProject: Record<string, string | null>;
@@ -1984,7 +1987,7 @@ export interface SessionState {
    *  panel (files tab + tree reveal) into view. */
   openFileInIde: (
     filePath: string,
-    opts?: { diff?: boolean; before?: string; line?: number; column?: number },
+    opts?: { diff?: boolean; before?: string; line?: number; column?: number; displayName?: string },
   ) => void;
   /** Clear a consumed pending reveal (called by EditPane after applying it). */
   clearIdePendingReveal: () => void;
@@ -2704,6 +2707,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   rightPanelTabSeq: 0,
   customCommandsByProject: {},
   ideOpenFilesByProject: {},
+  ideFileDisplayNamesByProject: {},
   ideActiveFileByProject: {},
   ideFileViewModeByProject: {},
   ideEditorMode: "tabs",
@@ -8221,6 +8225,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         : existing
           ? prev
           : [...prev, canonicalPath];
+    const previousDisplayNames = get().ideFileDisplayNamesByProject[pid] ?? {};
+    const displayNames: Record<string, string> = {};
+    for (const path of open) {
+      const requestedName = path === canonicalPath ? opts?.displayName?.trim() : undefined;
+      const previousName = path !== canonicalPath || existing ? previousDisplayNames[path] : undefined;
+      const displayName = requestedName || previousName;
+      if (displayName) displayNames[path] = displayName;
+    }
     // Replace mode discards every other tab — drop their cached models now
     // (background tabs get no unmount event). The currently DISPLAYED file
     // is skipped: its model is attached to the live editor; EditPane's swap
@@ -8262,6 +8274,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         : prevDiffBefore;
     set((s) => ({
       ideOpenFilesByProject: { ...s.ideOpenFilesByProject, [pid]: open },
+      ideFileDisplayNamesByProject: { ...s.ideFileDisplayNamesByProject, [pid]: displayNames },
       ideActiveFileByProject: { ...s.ideActiveFileByProject, [pid]: canonicalPath },
       ideFileViewModeByProject: { ...s.ideFileViewModeByProject, [pid]: viewMode },
       ideDiffBeforeByProject: { ...s.ideDiffBeforeByProject, [pid]: diffBefore },

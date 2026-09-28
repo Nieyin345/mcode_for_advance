@@ -34,6 +34,7 @@ import { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
 /** Stable empty array so the selector never returns a fresh [] (Zustand
  *  Object.is rule — a new [] every render causes an infinite loop). */
 const EMPTY_OPEN_FILES: string[] = [];
+const EMPTY_FILE_DISPLAY_NAMES: Record<string, string> = {};
 
 /** Synthetic key for the plan tab in the tabNodes registry. Used so the
  *  scroll-into-view logic can target the plan tab the same way it targets
@@ -54,7 +55,8 @@ const MENU_ITEM_CLASS =
 
 /**
  * Open-tabs bar — the horizontal strip of open files above the Monaco editor,
- * analogous to an editor's tab bar. Each tab shows the file's base name;
+ * analogous to an editor's tab bar. Each tab shows its display name (falling
+ * back to the file's base name);
  * clicking activates it, the × closes it.
  *
  * Interaction model mirrors the session tabs (SessionTabs) — VS Code /
@@ -82,6 +84,9 @@ export function OpenTabsBar() {
   const pid = useSessionStore((s) => s.activeProjectId);
   const openFiles = useSessionStore((s) =>
     pid ? s.ideOpenFilesByProject[pid] ?? EMPTY_OPEN_FILES : EMPTY_OPEN_FILES,
+  );
+  const fileDisplayNames = useSessionStore((s) =>
+    pid ? s.ideFileDisplayNamesByProject[pid] ?? EMPTY_FILE_DISPLAY_NAMES : EMPTY_FILE_DISPLAY_NAMES,
   );
   const activeFile = useSessionStore((s) =>
     pid ? s.ideActiveFileByProject[pid] ?? null : null,
@@ -292,6 +297,7 @@ export function OpenTabsBar() {
                 <SortableFileTab
                   key={path}
                   path={path}
+                  displayName={fileDisplayNames[path]}
                   isActive={path === activeFile && !planTabActive}
                   dirty={dirtySet.has(path)}
                   multiRow={multiRow}
@@ -399,7 +405,7 @@ export function OpenTabsBar() {
           items={[
             ...openFiles.map((path) => ({
               key: path,
-              label: basename(path),
+              label: fileDisplayNames[path]?.trim() || basename(path),
               title: path,
               active: path === activeFile && !planTabActive,
               dotClass: dirtySet.has(path) ? "bg-accent animate-pulse" : undefined,
@@ -448,6 +454,7 @@ export function OpenTabsBar() {
 
 interface SortableFileTabProps {
   path: string;
+  displayName?: string;
   isActive: boolean;
   dirty: boolean;
   /** Multi-row wrapping layout: tabs flex to fill their row between a min
@@ -467,6 +474,7 @@ interface SortableFileTabProps {
  *  per-item, so the same component works under any shared context. */
 export function SortableFileTab({
   path,
+  displayName,
   isActive,
   dirty,
   multiRow,
@@ -516,6 +524,8 @@ export function SortableFileTab({
     [dirty, onClose],
   );
 
+  const tabLabel = displayName?.trim() || basename(path);
+
   return (
     <div
       ref={setRefs}
@@ -531,7 +541,7 @@ export function SortableFileTab({
       onContextMenu={onContextMenu}
       role="tab"
       aria-selected={isActive}
-      title={path}
+      title={displayName?.trim() ? `${tabLabel} (${path})` : path}
       className={cn(
         // Editor file tabs share the same chip style as session tabs
         // (rounded-md + resting bg); in the unified strip a vertical divider
@@ -553,7 +563,7 @@ export function SortableFileTab({
           truncation; the name flex-1 + min-w-0 truncates with ellipsis when
           space is tight. The tab's own max-w governs the overall cap. */}
       <FileTypeIcon path={path} size={13} className="shrink-0 text-content-subtle" />
-      <span className="min-w-0 flex-1 truncate font-mono">{basename(path)}</span>
+      <span className="min-w-0 flex-1 truncate font-mono">{tabLabel}</span>
       {/* Dirty dot (unsaved) OR close button. The close button occupies
           layout space ONLY when visible: always on the active tab, on hover
           otherwise — on inactive tabs it's removed from the flow (`hidden`)

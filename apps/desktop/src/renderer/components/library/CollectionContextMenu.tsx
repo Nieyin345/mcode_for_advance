@@ -71,6 +71,7 @@ export function CollectionContextMenu({
   onClose,
   onRename,
   onDelete,
+  onNewSub,
   onNewNote,
   onImportHere,
   onShowInfo,
@@ -83,6 +84,18 @@ export function CollectionContextMenu({
   onClose: () => void;
   onRename: (c: LibraryCollection) => void;
   onDelete: (c: LibraryCollection) => void;
+  /**
+   * 新建**子分类**(第三级)。「右键第 N 级 → 新建第 N+1 级」的那一项,永远排第一。
+   *
+   * ## 决策变更史(两次相反的要求,语境不同,别再撤回去)
+   *
+   * kind 时代这里挂过「新建子集合」,用户撤掉它的原话是「三级的 collection 还能新建
+   * 子集合,那就是四级了,我们只有三级呀」—— 那时 大类→小类→分类 已经三层。
+   * kind 退役(bcd3a2e)把整棵树塌掉一层,2026-09-28 用户要求「回到之前的那种」:
+   * 恢复 大类 → 分类 → 子分类 → 条目 四级。所以这一项**只在根分类上显示**
+   * (子分类不再往下建,四级封顶 —— 与自定义 UI 的两个 collection 挂载位对齐)。
+   */
+  onNewSub: (c: LibraryCollection) => void;
   /** 新建一篇笔记并归入这个分类。只在笔记库里用得上。 */
   onNewNote: (c: LibraryCollection) => void;
   /**
@@ -230,6 +243,24 @@ export function CollectionContextMenu({
               </>
             ) : (
               <>
+                {/* 新建子分类 —— 「右键第 N 级 → 建第 N+1 级」,永远第一项(见 onNewSub
+                    的决策注释)。只在根分类上;回收站不建。 */}
+                {c && !c.parentId && !c.isTrash && (
+                  <>
+                    <Menu.Item
+                      onClick={() => {
+                        onNewSub(c);
+                        onClose();
+                      }}
+                      className={itemClass}
+                    >
+                      <IconPlus size={12} className="shrink-0" />
+                      {/* 用户术语:小类(第二级,parentId=null)下建的是「分类」(第三级) */}
+                      {t("library.collection.new")}
+                    </Menu.Item>
+                    <div className="my-1 border-t border-edge/60" />
+                  </>
+                )}
                 {/* 功能项 —— 按「设置 → 自定义 UI」里这个挂载位的配置画。 */}
                 <CustomUiMenuEntries
                   slot={slot}
@@ -269,12 +300,8 @@ export function CollectionContextMenu({
                   </>
                 )}
 
-                {/* ⚠️ 这里**没有**「新建子集合」—— 左栏只有三级(大类 → 小类 → 分类),
-                    分类是**最后一级**。早先这里挂过一项「新建子集合」(于是有了第四级),
-                    用户的纠正原话是:「三级的 collection 还能新建子集合,那就是四级了,
-                    我们只有三级呀」。所以这一项撤掉,分类下面不再挂分类。
-                    树那一层还能画嵌套(历史数据里可能真有 parent 指向 parent 的老行),
-                    但那不是**入口**提供的能力。 */}
+                {/* 「新建子分类」在菜单最上面(2026-09-28 接回,决策变更史见 onNewSub
+                    的注释 —— kind 退役塌了一层之后,用户要求恢复四级)。 */}
 
                 {/* 挪走 —— 进第二步(点开才列落点,不然一个长列表会把这菜单撑爆) */}
                 {c && (

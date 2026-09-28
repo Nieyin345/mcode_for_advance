@@ -172,7 +172,11 @@ export function ImportBar({
 
   return (
     <div className="shrink-0 border-b border-edge bg-surface-hover/40 px-3 py-2">
-      <div className="flex items-center gap-2">
+      {/* ★ 布局修复(2026-09-28):提示文字原来以 `min-w-0 flex-1` 挤在按钮行里,
+          弹窗一窄就被压到 ~1 字宽 → 中文无空格逐字换行,整段变成竖排(实机截图)。
+          改:按钮行允许换行(flex-wrap),提示挪到下方与 automationHint 并列,
+          关闭钮 ml-auto 固定右上。 */}
+      <div className="flex flex-wrap items-center gap-2">
         {/* 在应用内新建:落一份带标题的骨架文件,然后直接打开编辑器 */}
         <Input
           value={noteTitle}
@@ -212,18 +216,18 @@ export function ImportBar({
         >
           {t("library.import.explodeFolder")}
         </button>
-        <span className="min-w-0 flex-1 text-[0.7143em] text-content-subtle">
-          {t("library.import.hint")}
-        </span>
         <button
           onClick={onClose}
           title={t("library.collection.cancel")}
-          className="shrink-0 rounded p-1 text-content-subtle hover:bg-surface-hover hover:text-content"
+          className="ml-auto shrink-0 rounded p-1 text-content-subtle hover:bg-surface-hover hover:text-content"
         >
           <IconX size={13} />
         </button>
       </div>
 
+      <p className="mt-1.5 text-[0.7143em] leading-relaxed text-content-subtle">
+        {t("library.import.hint")}
+      </p>
       {/* 转录只由工作流触发器控制。旧版逐次导入的 convert 开关已被核心忽略，
           继续显示会让用户误以为取消勾选就能阻止向 MinerU 上传。 */}
       <p className="mt-1.5 text-[0.7143em] leading-relaxed text-content-subtle">

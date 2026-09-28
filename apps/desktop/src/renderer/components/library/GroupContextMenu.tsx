@@ -6,8 +6,9 @@
  * 用户定的规矩是「**右键第 N 级 → 新建第 N+1 级**」:
  *
  *   右键大类标题 → 新建**分类**(本菜单第一项,它建的正是下一级)
- *   右键分类行   → 到头,不往下建(层级只有三级:大类 → 分类 → 条目;
- *                  见 CollectionContextMenu 里撤掉「新建子集合」的那段注释)
+ *   右键分类行   → 新建**子分类**(2026-09-28 恢复四级:大类 → 分类 → 子分类 → 条目;
+ *                  决策变更史见 CollectionContextMenu.onNewSub 的注释)
+ *   右键子分类   → 到头,不往下建(四级封顶,与自定义 UI 的两个 collection 挂载位对齐)
  *
  * 所以"往下一级建"永远排在**最前**、"管我自己"(重命名/删除)排后面 —— 两个菜单
  * 都是这个顺序。用户在任一级右键,第一项永远是他最可能想要的那个。
@@ -65,10 +66,11 @@ export function GroupContextMenu({
 
   return (
     <SidebarMenu open={!!target} anchor={anchor} onClose={onClose}>
-      {/* 新建分类 —— 「右键第 N 级 → 新建第 N+1 级」,永远第一项。kind 退役后
-          第二级就是分类,这里是它唯一的新建入口(2026-09-26 接回:退役那轮删掉了
-          旧入口「新建小类」却没补上这一项,左栏从此建不了第二级 —— creating
-          那个输入框一直在,只是没人能把它打开)。 */}
+      {/* 新建小类 —— 「右键第 N 级 → 新建第 N+1 级」,永远第一项。
+          ★ 术语按用户的叫法(2026-09-28):第二级 = **小类**,第三级 = **分类**。
+          数据上它就是根 collection(parentId=null),代码里的变量名不改,
+          只有用户可见文字用「小类」—— 之前写「新建分类」,用户认成了第三级,
+          断言「没有小类」;层级功能其实一直在,是文字没对上他的世界观。 */}
       <Menu.Item
         onClick={() => {
           onNewCollection();
@@ -77,7 +79,7 @@ export function GroupContextMenu({
         className={MENU_ITEM_CLASS}
       >
         <IconPlus size={12} className="shrink-0" />
-        {t("library.collection.new")}
+        {t("library.kind.new")}
       </Menu.Item>
       <MenuDivider />
       {/* 功能项 —— 按「设置 → 自定义 UI」里「大类右键」的配置画。内置的「加入当前对话」:

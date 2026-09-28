@@ -10,7 +10,7 @@ export const en = {
   "library.view.missingPdf": "Missing PDF",
   "library.view.needsLogin": "Needs sign-in",
   "library.collections": "Categories",
-  "library.collection.new": "New category",
+  "library.collection.new": "New level-3 category",
   "library.collection.namePlaceholder": "Category name",
   "library.collection.create": "Create",
   "library.collection.cancel": "Cancel",
@@ -24,25 +24,25 @@ export const en = {
   "library.collection.empty": "No papers in this category yet",
 
   // Sidebar management: groups (sections) and sub-types (tabs) are managed by right-click in the sidebar
-  "library.group.rename": "Rename group",
-  "library.group.new": "New group",
-  "library.group.delete": "Delete group",
-  "library.group.deleteConfirm": "Delete group “{name}”? Its types become ungrouped (hidden in the sidebar); no data is deleted.",
-  "library.group.namePlaceholder": "Group name",
-  "library.group.emptyHint": "All groups were deleted — type a name to create one. Your data is still there.",
-  "library.kind.new": "New sub-type",
-  "library.kind.rename": "Rename sub-type",
-  "library.kind.delete": "Delete sub-type",
+  "library.group.rename": "Rename level-1 category",
+  "library.group.new": "New level-1 category",
+  "library.group.delete": "Delete level-1 category",
+  "library.group.deleteConfirm": "Delete level-1 category “{name}”? Its types become ungrouped (hidden in the sidebar); no data is deleted.",
+  "library.group.namePlaceholder": "Level-1 category name",
+  "library.group.emptyHint": "All level-1 categories were deleted — type a name to create one. Your data is still there.",
+  "library.kind.new": "New level-2 category",
+  "library.kind.rename": "Rename level-2 category",
+  "library.kind.delete": "Delete level-2 category",
   // ⚠️ Must spell out that the items disappear from the sidebar — since 2026-09-21 the
   // built-in tabs are deletable too, and then nothing surfaces their items any more.
   "library.kind.deleteConfirm": "Delete “{name}”? Its items will **disappear from the sidebar** (the data stays in the library — there is just no tab showing it any more).",
   "library.kind.builtinLocked": "Built-in types cannot be deleted",
-  "library.kind.namePlaceholder": "Sub-type name",
+  "library.kind.namePlaceholder": "Level-2 category name",
   "library.kind.showAll": "Show all",
   "library.kind.showCollections": "Collections only",
   "library.kind.purpose.material": "For reading",
   "library.kind.purpose.format": "For writing",
-  "library.collection.newSub": "New sub-category",
+  "library.collection.newSub": "New level-3 category",
   "library.collection.createFailed": "Could not create it",
   "library.collection.moveTo": "Move to",
   "library.collection.moveToTop": "Move to top level",
@@ -62,6 +62,12 @@ export const en = {
    *  `library.list.emptyInCollection` — that one is for an empty collection
    *  and reads backwards here ("items are still in the library"). */
   "library.trash.empty": "The trash is empty.",
+  "library.trash.selectAll": "Select all",
+  "library.trash.deselectAll": "Clear selection",
+  "library.trash.selected": "{n} selected",
+  "library.trash.deleteSelected": "Delete permanently ({n})",
+  "library.trash.selectItem": "Select “{title}” for bulk deletion",
+  "library.trash.unselectItem": "Remove “{title}” from selection",
   "library.list.showAll": "Show all",
   "library.list.filteredOut": "{n} items are hidden by the current filter",
   "library.list.clearFilters": "Clear filters",
@@ -149,13 +155,21 @@ export const en = {
   /** Delete-confirm dialog (wired to `library.deletePreview`). This is the ONLY
    *  irreversible operation in the library, so it lists what else would go. */
   "library.del.title": "Delete “{title}”",
+  "library.del.titleMultiple": "Permanently delete {n} items",
   "library.del.ownLine": "This item itself (record + files on disk) is always deleted.",
+  "library.del.ownLineMultiple": "All {n} selected items (records + files on disk) will be deleted.",
   "library.del.linksHead": "These go too — untick any you want to keep:",
   "library.del.linksHeadNoTick": "These go too:",
   "library.del.form.item": "Library item",
   "library.del.form.path": "File outside the library (removes the link only; your file stays)",
   "library.del.form.transcript": "Transcript + its images ({n} images)",
   "library.del.noLinks": "It is not linked to anything else.",
+  "library.del.failureSummary": "{n} file(s) could not be deleted:",
+  "library.del.recordRetained": "The record is still in the trash; fix the issue and retry.",
+  "library.del.recordRemoved": "The linked record was removed, but the original file remains; it cannot be retried here.",
+  "library.del.doneWithWarnings": "Deletion finished with warnings",
+  "library.del.doneWithWarningsDescription": "The files outside the library were left in place, and their records were removed.",
+  "library.del.done": "Done",
   "library.del.confirm": "Delete",
   "library.del.cancel": "Cancel",
   "library.ctx.openFolder": "Open containing folder",
@@ -268,32 +282,6 @@ export const en = {
   "settings.library.layoutTitle": "Folder layout",
   "settings.library.layoutDesc":
     "PDFs are stored by content hash — importing the same file twice lands on the same path, so duplicates collapse naturally. markdown/ mirrors that layout for the converted text the AI actually reads. collections/ holds the manifests handed to the AI.",
-
-  // ── Settings: conversion status (document management) ──
-  // Used to live on the "Integrations" page, which went away with the hardcoded
-  // MinerU client. It belongs here: what it reports is which papers in the
-  // library have no Markdown yet — the library's own business.
-  "settings.convert.title": "Conversion status",
-  "settings.convert.desc":
-    "Markdown transcription status. Unconverted files are not in Markdown full-text search; document tools can still extract PDF text on demand.",
-  "settings.convert.total": "{n} in the library",
-  "settings.convert.converted": "{n} converted",
-  "settings.convert.pending": "{n} pending",
-  "settings.convert.empty": "The library is empty",
-  "settings.convert.localNote":
-    "Import does not transcribe. Enable the online Markdown automation and provide MINERU_TOKEN before files are uploaded. DOI downloads and online paper search are not standalone event automations; they need external tools/workflows. Attach existing text with “Use local Markdown…”.",
-  "settings.convert.reasonNoMd": "No Markdown yet",
-  "settings.convert.reasonNoAssets": "{n} images not on disk",
-  "settings.convert.runPending": "Convert the {n} pending",
-  "settings.convert.rerunAll": "Re-convert all",
-  "settings.convert.rerunConfirm":
-    "Re-convert every paper in the library? Existing Markdown gets overwritten ({n} items). To fill in only the missing ones, use “Convert pending”.",
-  "settings.convert.running": "Converting…",
-  "settings.convert.done": "Converted {n}",
-  "settings.convert.failed": "{n} failed",
-  "settings.convert.nonePending": "Nothing pending",
-  "settings.convert.rerunOne": "Re-convert",
-  "settings.convert.rerunOneTitle": "This Markdown is incomplete (missing images, or never converted) — run it again",
 
   "library.fulltext.placeholder": "Search inside converted paper text",
   "library.fulltext.hint": "Only papers already converted to Markdown; Chinese and English both supported",
