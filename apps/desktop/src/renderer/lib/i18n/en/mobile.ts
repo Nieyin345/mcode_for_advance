@@ -105,6 +105,8 @@ export const en = {
   "mobile.relay.host": "Server IP / domain",
   "mobile.relay.hostPlaceholder": "1.2.3.4 or vps.example.com",
   "mobile.relay.port": "SSH port",
+  "mobile.relay.hostKeyFingerprint": "SSH host-key fingerprint (SHA256, required)",
+  "mobile.relay.hostKeyHint": "Verify this fingerprint independently through your VPS console or another trusted channel. Never accept a value from this connection. Older configs must be updated.",
   "mobile.relay.passwordPlaceholder": "SSH password",
   "mobile.relay.publicPort": "Public port (the one the phone reaches)",
   "mobile.relay.forwarder": "Forwarder: {type}",

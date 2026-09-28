@@ -825,6 +825,7 @@ function AddServerDialog({
                   />
                 </Field>
                 <Field label={t("settings.mcp.fEnv")} hint={t("settings.mcp.fEnvHint")}>
+                  {editServer && <p className="mb-1 text-xs text-content-muted">{t("settings.mcp.secretEditHint")}</p>}
                   <textarea
                     value={envJson}
                     onChange={(e) => setEnvJson(e.target.value)}
@@ -847,6 +848,7 @@ function AddServerDialog({
                   />
                 </Field>
                 <Field label={t("settings.mcp.fHeaders")} hint={t("settings.mcp.fHeadersHint")}>
+                  {editServer && <p className="mb-1 text-xs text-content-muted">{t("settings.mcp.secretEditHint")}</p>}
                   <textarea
                     value={headersJson}
                     onChange={(e) => setHeadersJson(e.target.value)}
@@ -966,7 +968,7 @@ function ImportMcpDialog({
     try {
       const items = sources
         .filter((s) => selected.has(sourceKey(s)))
-        .map((s) => ({ name: s.name, config: s.config }));
+        .map((s) => ({ name: s.name, origin: s.origin }));
       const res = await api.mcp.import({ servers: items });
       setResult(res);
       setSelected(new Set());

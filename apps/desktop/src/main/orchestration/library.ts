@@ -28,6 +28,7 @@ import { parseTriggerSpec, WORKFLOW_TRIGGER_OF_TRIGGER_KIND } from "@contracts/n
 import { WorkflowRepo } from "@main/store/repositories.js";
 import { BUILTIN_WORKFLOWS, getBuiltinWorkflow } from "./builtins.js";
 import { loadNodeTypes } from "./nodeTypes.js";
+import { workflowSaveIsStale, workflowSaveVersion } from "./workflowSaveVersion.js";
 import { clearWorkflowReview, requireWorkflowReview, workflowReviewError, type WorkflowOrigin } from "./workflowTrust.js";
 import { importWorkflowDoc as parseWorkflowText, validateWorkflowDoc, exportWorkflowDoc } from "./workflowValidation.js";
 
@@ -107,7 +108,7 @@ export type SaveResult = { ok: true; warnings?: string[] } | { ok: false; error:
  *  图照样能存能看 —— 只是跑不了。把"类型缺失"做成硬错误会让工作流没法分享。 */
 export async function saveWorkflow(
   doc: WorkflowDoc,
-  opts: { untrustedOrigin?: WorkflowOrigin } = {},
+  opts: { untrustedOrigin?: WorkflowOrigin; expectedRevision?: string | null } = {},
 ): Promise<SaveResult> {
   const types = new Map((await loadNodeTypes()).entries.map((e) => [e.id, e.manifest]));
 
@@ -148,6 +149,12 @@ export async function saveWorkflow(
     .filter((w) => w.id !== doc.id)
     .map((w) => w.name);
 
+  // No awaits between this CAS check and the synchronous repository write.
+  // A renderer draft based on an old GUI/AI/import revision must not silently
+  // overwrite the newer document (including canvas-only changes or deletes).
+  if (opts.expectedRevision !== undefined && workflowSaveIsStale(getWorkflow(doc.id), opts.expectedRevision)) {
+    return { ok: false, error: "工作流已被其他写者修改或删除；请保留草稿并重新打开最新版本后再合并" };
+  }
   const saved = { ...derived.doc, name: uniqueWorkflowName(derived.doc.name, others), updatedAt: Date.now() };
   // The marker is written first: even a crash after this point cannot leave
   // an imported/AI-edited executable doc trusted by default. Validation has
@@ -303,7 +310,10 @@ export async function importWorkflowInto(
     .map((w) => w.name);
   const name = uniqueWorkflowName(doc.name, others);
 
-  const res = await saveWorkflow({ ...doc, id, name, builtin: false }, { untrustedOrigin: "import" });
+  const res = await saveWorkflow({ ...doc, id, name, builtin: false }, {
+    untrustedOrigin: "import",
+    expectedRevision: previous === null ? null : workflowSaveVersion(previous),
+  });
   if (!res.ok) return { ok: false, errors: [res.error], warnings: [] };
   return { ok: true, id, name };
 }

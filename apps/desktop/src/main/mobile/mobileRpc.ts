@@ -88,6 +88,7 @@ import { createOrReuseSession } from "@main/lib/sessionStart.js";
 import {
   cancelWorkflowRun,
   graphRunIntent,
+  launchContinuation,
   parkedRunTeardown,
   resolveWorkflowChoice,
   resolveWorkflowRetry,
@@ -377,7 +378,9 @@ const HANDLERS: Record<string, RpcHandler> = {
       run = "start";
     }
     if (run === "start") {
-      void startWorkflowRun({
+      // 同桌面端(ipc/claude.ts):预检失败不能变成 unhandledRejection,手机端
+      // 更看不见主进程日志 —— 交给 launchContinuation 给会话补收口事件。
+      launchContinuation(updated, "起跑", {
         session: updated,
         cwd: project.path,
         prompt: input.prompt,

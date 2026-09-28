@@ -1169,6 +1169,12 @@ def transcribe_one(item, index):
     if not item_id or not source_rel:
         raise RuntimeError(f"{label}缺 itemId / 文件路径，转不了。")
 
+    # itemId 是结果落点的目录名（见下面的 out_dir）。它来自载荷，而载荷可以被
+    # code 节点 / 外部触发器喂进来 —— 含路径分隔符或 "."/".." 的值会把结果目录
+    # 写到 cwd/mineru 之外（"../x" 甚至写出工作目录）。目录名只认单个路径分量。
+    if "/" in item_id or "\\\\" in item_id or item_id in (".", ".."):
+        raise RuntimeError(f"{label}的 itemId 含路径分隔符（{item_id!r}），拒绝用它建结果目录。")
+
     source_abs = Path(source_rel)
     if not source_abs.is_absolute():
         source_abs = find_data_root() / "library" / source_rel

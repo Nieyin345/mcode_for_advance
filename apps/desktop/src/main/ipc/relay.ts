@@ -19,7 +19,7 @@ export function registerRelayHandlers(ipcMain: IpcMain): void {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error(`relay.saveConfig failed: ${msg}`);
-      return { ok: true as const }; // still return ok; the form handles its own validation
+      return { ok: false as const, error: msg };
     }
   });
 

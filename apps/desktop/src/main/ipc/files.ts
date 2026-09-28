@@ -77,7 +77,7 @@ import { cachedTreeFiles, sortDirents, SEARCH_MAX_DEPTH, SEARCH_MAX_VISIT } from
  *  it to open/preview pasted files. Writes stay guarded as before. */
 function isPasteTempPath(abs: string): boolean {
   const dir = join(app.getPath("temp"), "mcode-pastes");
-  return resolve(abs).startsWith(resolve(dir) + sep);
+  return pathWithin(dir, abs);
 }
 
 /** Directory/file names hidden from the file tree. These are build artifacts

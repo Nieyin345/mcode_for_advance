@@ -51,6 +51,7 @@ import { notifyWorkflowsChanged } from "@main/orchestration/broadcast.js";
 import { decodeSnapshot, runHistory } from "@main/orchestration/runStore.js";
 import { requestWorkflowReload } from "@main/orchestration/reloadRequest.js";
 import { approveWorkflowRevision, workflowReviewOf } from "@main/orchestration/workflowTrust.js";
+import { workflowSaveVersion } from "@main/orchestration/workflowSaveVersion.js";
 import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
 import { ensureLocalNodeTypesDir } from "@main/orchestration/nodeTypesSeed.js";
 import { hasActiveRun, resolveWorkflowChoice, resolveWorkflowRetry } from "@main/orchestration/runner.js";
@@ -94,7 +95,8 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.WORKFLOW_GET, async (_evt, raw) => {
     const input = WorkflowGetSchema.parse(raw);
     const workflow = getWorkflow(input.id);
-    return { workflow, review: workflow === null ? null : workflowReviewOf(workflow) };
+    return { workflow, revision: workflow === null ? null : workflowSaveVersion(workflow),
+      review: workflow === null ? null : workflowReviewOf(workflow) };
   });
 
   ipcMain.handle(IPC.WORKFLOW_APPROVE, async (_evt, raw) => {
@@ -116,7 +118,7 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC.WORKFLOW_SAVE, async (_evt, raw) => {
     const input = WorkflowSaveSchema.parse(raw);
-    const res = await saveWorkflow(input.workflow);
+    const res = await saveWorkflow(input.workflow, { expectedRevision: input.expectedRevision ?? null });
     // 存成功了才广播。**用户这条路上其实不靠它**(渲染端自己会在 RPC 返回后重拉列表),
     // 广播在这里是为了另一半:AI 走 MCP 时改的是同一个落点,而界面上可能还开着另一个
     // 面板/窗口。两边都发才谈得上"谁改了另一边都知道"(同 `library/broadcast.ts`)。

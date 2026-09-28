@@ -56,6 +56,7 @@ export function RemoteConnectPanel() {
   const [form, setForm] = useState({
     host: "",
     sshPort: "22",
+    hostKeyFingerprint: "",
     username: "root",
     password: "",
     publicPort: "7331",
@@ -91,6 +92,7 @@ export function RemoteConnectPanel() {
         setForm({
           host: c.config.host,
           sshPort: String(c.config.sshPort),
+          hostKeyFingerprint: c.config.hostKeyFingerprint ?? "",
           username: c.config.username,
           password: c.config.password,
           publicPort: String(c.config.publicPort),
@@ -154,14 +156,21 @@ export function RemoteConnectPanel() {
     setBusy(true);
     try {
       // Save config first.
-      await api.relay.saveConfig({
+      const saved = await api.relay.saveConfig({
         host: form.host.trim(),
         sshPort: parseInt(form.sshPort, 10) || 22,
+        hostKeyFingerprint: form.hostKeyFingerprint.trim(),
         username: form.username.trim() || "root",
         password: form.password,
         publicPort: parseInt(form.publicPort, 10) || 7331,
         forwarder: form.forwarder,
       });
+      if (!saved.ok) {
+        setStatus((old) => ({ endpoint: null, vpsHost: form.host,
+          publicPort: parseInt(form.publicPort, 10) || 7331, forwarderType: null,
+          ...old, error: saved.error ?? t("settings.saveFailed"), state: "error" }));
+        return;
+      }
       const result = await api.relay.connect();
       if (!result.ok) {
         console.error("relay connect failed:", result.error);
@@ -275,6 +284,18 @@ export function RemoteConnectPanel() {
                 className="rounded-lg border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
                 disabled={isBusy}
               />
+            </label>
+            <label className="col-span-2 flex flex-col gap-1">
+              <span className="text-xs font-medium text-content-muted">{t("mobile.relay.hostKeyFingerprint")}</span>
+              <input
+                value={form.hostKeyFingerprint}
+                onChange={(e) => setForm({ ...form, hostKeyFingerprint: e.target.value })}
+                placeholder="SHA256:..."
+                className="rounded-lg border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
+                disabled={isBusy}
+                spellCheck={false}
+              />
+              <span className="text-xs text-content-muted">{t("mobile.relay.hostKeyHint")}</span>
             </label>
             <label className="col-span-2 flex flex-col gap-1">
               <span className="text-xs font-medium text-content-muted">{t("browser.password")}</span>

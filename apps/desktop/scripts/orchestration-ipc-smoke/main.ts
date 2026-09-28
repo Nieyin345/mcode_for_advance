@@ -1248,10 +1248,20 @@ console.log("\n导入");
   eq("刷新再看已不待审", obj(obj(await callAsync(IPC.WORKFLOW_GET, { id })).review).pending, false);
 
   const changed = { ...(before.workflow as WorkflowDoc), description: "这份图现在做另一件事" };
-  eq("用户本地改图后能保存", obj(await callAsync(IPC.WORKFLOW_SAVE, { workflow: changed })).ok, true);
+  const saveVersion = String(before.revision);
+  check("工作流读取返回完整保存版本", /^[a-f0-9]{64}$/.test(saveVersion));
+  eq("用户本地改图后能保存", obj(await callAsync(IPC.WORKFLOW_SAVE, { workflow: changed, expectedRevision: saveVersion })).ok, true);
   const updated = obj(await callAsync(IPC.WORKFLOW_GET, { id }));
   eq("同 id 改图撤销旧审批", obj(updated.review).pending, true);
   eq("拿旧摘要重新审批仍被拒", obj(await callAsync(IPC.WORKFLOW_APPROVE, { id, revision })).ok, false);
+  resetSent();
+  const staleSave = obj(await callAsync(IPC.WORKFLOW_SAVE, {
+    workflow: { ...changed, description: "陈旧草稿不该盖掉新图" }, expectedRevision: saveVersion,
+  }));
+  eq("旧保存版本拒绝跨写者覆盖", staleSave.ok, false);
+  check("冲突给出明确提示", String(staleSave.error).includes("修改"), staleSave.error);
+  eq("冲突不广播", sent.filter((s) => s.channel === IPC.WORKFLOW_CHANGED).length, 0);
+  eq("冲突保留服务端新图", obj(obj(await callAsync(IPC.WORKFLOW_GET, { id })).workflow).description, "这份图现在做另一件事");
 }
 
 /* ──────────────── 15. 导出 ──────────────── */

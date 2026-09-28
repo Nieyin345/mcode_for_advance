@@ -5717,6 +5717,19 @@ if (!isValidSnapshot(e.snapshot)) return;
 function reduceQuestionAsk(ctx: IngestCtx, e: AskUserQuestionEvent): void {
 ctx.bumpUnread();
       ctx.pushToast("warning", translate(ctx.get().locale, "store.toast.agentQuestion"), e.questions[0]?.question);
+      // 新提问会**顶掉**同会话的旧卡片。旧提问若还带着 requestId,主进程
+      // ApprovalBridge 里那个 Deferred 仍在等答案 —— 卡片没了就再没人能回它,
+      // provider 那头永远等下去(M22 报告点名的悬空,与 dismissQuestion 同一条
+      // 收口:按 dismissed 回掉,让那一轮继续)。同 requestId 重投(断线重发)
+      // 不算顶掉;哨兵形态(无 requestId)没有 Deferred,不许胡编一个 id 去回。
+      const prior = ctx.get().pendingQuestionBySession[ctx.sid];
+      if (prior?.requestId !== undefined && prior.requestId !== e.requestId) {
+        void api.claude
+          .respondQuestion({ sessionId: ctx.sid, requestId: prior.requestId, answers: {}, dismissed: true })
+          .catch((err) => {
+            console.error("respondQuestion(dismiss superseded) failed:", err);
+          });
+      }
       ctx.set((s) => ({
         pendingQuestionBySession: {
           ...s.pendingQuestionBySession,

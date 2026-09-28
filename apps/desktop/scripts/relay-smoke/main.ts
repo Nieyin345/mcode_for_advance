@@ -121,8 +121,14 @@ const mobileStub = (await import("@main/mobile/MobileHttpServer.js")) as unknown
   LOCAL_SENTINEL: string;
 };
 
-const { startFakeVps, phoneGet, realForwarderPy } = await import("./fakeVps.js");
-type FakeVpsHandle = Awaited<ReturnType<typeof startFakeVps>>;
+const { startFakeVps: startFakeVpsRaw, phoneGet, realForwarderPy } = await import("./fakeVps.js");
+type FakeVpsHandle = Awaited<ReturnType<typeof startFakeVpsRaw>>;
+const hostKeysByPort = new Map<number, string>();
+async function startFakeVps(opts: Parameters<typeof startFakeVpsRaw>[0]): Promise<FakeVpsHandle> {
+  const vps = await startFakeVpsRaw(opts);
+  hostKeysByPort.set(vps.port, vps.hostKeyFingerprint);
+  return vps;
+}
 
 /* ───────────────── 记账:日志里的凭据 ─────────────────
  *
@@ -236,6 +242,7 @@ function saveVps(port: number, extra: Record<string, unknown> = {}): number {
     JSON.stringify({
       host: "127.0.0.1",
       sshPort: port,
+      hostKeyFingerprint: hostKeysByPort.get(port) ?? [...hostKeysByPort.values()][0],
       username: "root",
       password: "SMOKE_SSH_PASSWORD_SENTINEL",
       publicPort,
@@ -346,6 +353,21 @@ console.log("\n══ 1. 前置条件");
 }
 
 /* ═══════════════════════ 2. 正常连接(含数据通路) ═══════════════════════ */
+
+await scenario("无指纹与错误指纹必须拒绝,不可静默信任首连", {}, async (vps) => {
+  saveVps(vps.port, { hostKeyFingerprint: undefined });
+  const missing = await relayManager.connect();
+  eq("旧配置没有指纹时不连接", missing.ok, false);
+  check("旧配置提示可信指纹", String(missing.error).includes("指纹"), missing);
+  eq("旧配置没有建立 SSH", vps.totalClients, 0);
+
+  saveVps(vps.port, { hostKeyFingerprint: "SHA256:" + "A".repeat(43) });
+  dumpConfig();
+  const mismatch = await relayManager.connect();
+  eq("错误主机密钥拒绝连接", mismatch.ok, false);
+  check("错误主机密钥提示不匹配", String(mismatch.error).includes("不匹配"), mismatch);
+  eq("错误主机密钥不建立隧道", vps.tunnelPorts.length, 0);
+});
 
 await scenario("正常连接:SSH 通 + 转发器起来 + 手机真的能穿过来", {}, async (vps) => {
   const publicPort = saveVps(vps.port);
@@ -969,6 +991,7 @@ console.log("\n══ 10. IPC handler");
   const saved = await call(IPC.RELAY_SAVE_CONFIG, {
     host: "127.0.0.1",
     sshPort: vps.port,
+    hostKeyFingerprint: vps.hostKeyFingerprint,
     username: "root",
     password: "IPC_SENTINEL_PW",
     publicPort: ipcPort,
@@ -1004,9 +1027,9 @@ console.log("\n══ 10. IPC handler");
   eq("status 与 connect 的返回值一致", afterStatus.state === "connected", conn.ok);
   if (conn.ok) eq("连上之后 status 里有 endpoint", afterStatus.endpoint, `http://127.0.0.1:${ipcPort}`);
 
-  // 坏输入:zod 拦住它 —— 但**返回值**是刻意的"照样回 ok"(表单自己校验)。
+  // 坏输入:zod 拦住它,主进程必须告知失败,不能谎报已保存。
   const bad = await call(IPC.RELAY_SAVE_CONFIG, { host: "", sshPort: 99999, username: "" });
-  eq("坏输入不抛异常", (bad as { ok: boolean }).ok, true);
+  eq("坏输入不抛异常且报告失败", (bad as { ok: boolean }).ok, false);
   const afterBad = (await call(IPC.RELAY_GET_CONFIG)) as { config: { host: string } | null };
   eq("坏输入没有覆盖掉刚才那份配置", afterBad.config?.host, "127.0.0.1");
   check(

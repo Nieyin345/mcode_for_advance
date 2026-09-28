@@ -48,6 +48,9 @@ export interface RelayVpsConfig {
   host: string;
   /** SSH port (default 22). */
   sshPort: number;
+  /** Independently verified OpenSSH SHA256 fingerprint of the VPS SSH host key.
+   *  Optional only to deserialize older settings; connections without it fail. */
+  hostKeyFingerprint?: string;
   /** SSH username (e.g. `root`, `ubuntu`). */
   username: string;
   /** SSH password (empty when using key auth). */
@@ -82,6 +85,7 @@ export interface RelayStatus {
 export const RelayVpsConfigSchema = z.object({
   host: z.string().min(1).max(256),
   sshPort: z.number().int().min(1).max(65535).default(22),
+  hostKeyFingerprint: z.string().regex(/^SHA256:[A-Za-z0-9+/]{43}$/, "需要可信的 SSH 主机密钥 SHA256 指纹"),
   username: z.string().min(1).max(128),
   password: z.string().max(256).default(""),
   privateKeyPath: z.string().max(512).optional(),

@@ -651,6 +651,7 @@ export const en = {
   "settings.mcp.fArgsHint": "Space-separated, e.g. -y @modelcontextprotocol/server-filesystem /data",
   "settings.mcp.fEnv": "Env vars (optional, JSON)",
   "settings.mcp.fEnvHint": "A JSON object such as {\"API_KEY\": \"xxx\"}",
+  "settings.mcp.secretEditHint": "Saved values are hidden. Leave a value blank to retain it, enter a new value to replace it, or remove its key to delete it.",
   "settings.mcp.fUrlHint": "Remote MCP endpoint, e.g. https://example.com/mcp",
   "settings.mcp.fHeaders": "Headers (optional, JSON)",
   "settings.mcp.fHeadersHint": "A JSON object such as {\"Authorization\": \"Bearer xxx\"}",

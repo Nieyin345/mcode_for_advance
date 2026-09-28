@@ -7,7 +7,8 @@
  * case-insensitive so a lowercased drive letter from Monaco/LSP (`d:\foo`)
  * still matches a project stored with an uppercase letter (`D:\foo`).
  */
-import { join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
+import { lstatSync, realpathSync } from "node:fs";
 import { platform } from "node:os";
 import { ProjectRepo, SessionRepo } from "@main/store/repositories.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
@@ -29,16 +30,48 @@ export function samePath(a: string, b: string): boolean {
   return norm(a) === norm(b);
 }
 
-/** True if `abs` is inside `root` (or equals it), after normalizing both.
- *  Uses `resolve` + a separator-aware prefix check so "/foo/bar" doesn't
- *  match root "/foo/ba". Case-insensitive on Windows/macOS. */
+/** Separator-aware containment; inputs have already been normalized. */
+function contained(root: string, abs: string): boolean {
+  return abs === root || abs.startsWith(root.endsWith(sep) ? root : root + sep);
+}
+
+/** Resolve existing ancestors (including junctions and symlinks) while still
+ *  allowing new files/directories below a root. A dangling symlink or any
+ *  unexpected filesystem error fails closed, not as a nonexistent child. */
+function physicalPath(path: string): string | null {
+  let current = resolve(path);
+  const missing: string[] = [];
+  for (;;) {
+    try {
+      return norm(join(realpathSync.native(current), ...missing.reverse()));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") return null;
+      try {
+        // lstat sees broken symlinks that realpath cannot follow.
+        lstatSync(current);
+        return null;
+      } catch (statErr) {
+        if ((statErr as NodeJS.ErrnoException).code !== "ENOENT") return null;
+      }
+      const parent = dirname(current);
+      if (parent === current) return null;
+      missing.push(basename(current));
+      current = parent;
+    }
+  }
+}
+
+/** True only if the lexical path AND its physical destination (including the
+ *  nearest existing ancestor for a new file) are inside the registered root.
+ *  Case-insensitive on Windows/macOS. This guards symlink/junction escapes in
+ *  files, git, terminal and LSP callers sharing this function. */
 export function pathWithin(root: string, abs: string): boolean {
   const r = norm(root);
   const a = norm(abs);
-  if (a === r) return true;
-  // Filesystem roots (/, D:\, UNC shares) already end in a separator.
-  // Doubling it would reject every child of a registered root workspace.
-  return a.startsWith(r.endsWith(sep) ? r : r + sep);
+  if (!contained(r, a)) return false;
+  const physicalRoot = physicalPath(root);
+  const physicalAbs = physicalPath(abs);
+  return physicalRoot !== null && physicalAbs !== null && contained(physicalRoot, physicalAbs);
 }
 
 /** Verify a path is inside SOME persisted project root. Returns the matching

@@ -44,6 +44,7 @@ import { createOrReuseSession } from "@main/lib/sessionStart.js";
 import {
   cancelWorkflowRun,
   graphRunIntent,
+  launchContinuation,
   parkedRunTeardown,
   startWorkflowRun,
 } from "@main/orchestration/runner.js";
@@ -279,7 +280,11 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       run = "start";
     }
     if (run === "start") {
-      void startWorkflowRun({
+      // 不 await(一次图运行可能几分钟),但也不能裸 `void`:引擎预检失败会抛,
+      // 裸 void 让它成为主进程 unhandledRejection,渲染端却停在“正在运行” ——
+      // `launchContinuation` 接住并给会话补 `error` + `turn.done(error)`(BUG-M28-02
+      // 的同型缺口,M28 报告点名本处)。
+      launchContinuation(updated, "起跑", {
         session: updated,
         cwd,
         prompt: input.prompt,

@@ -94,6 +94,8 @@ import { WorkflowListRow } from "./WorkflowListRow.js";
  * `saveState`),不能让人以为已经存过了。
  */
 const DRAFTS = new Map<string, WorkflowDoc>();
+/** Preserve the revision a draft actually branched from across panel remounts. */
+const DRAFT_REVISIONS = new Map<string, string | null>();
 
 /**
  * 两栏各自的文案。**做成一张表**,而不是在 JSX 里散落
@@ -204,6 +206,7 @@ export function WorkflowLibraryView({
    *  不保证 —— 只认最后一次发出的那个,否则详情面板会显示成上一个的内容。 */
   const docRequestRef = useRef<string | null>(null);
   const docReadVersion = useRef(0);
+  const baselineRevision = useRef<{ id: string; value: string | null } | null>(null);
   const listReadVersion = useRef(0);
   const mounted = useRef(true);
   const editorRef = useRef<HTMLDivElement>(null);
@@ -276,6 +279,7 @@ export function WorkflowLibraryView({
       setSelectedId(id);
       setSelectedNodeId(selectNodeId);
       setBaseline(null);
+      baselineRevision.current = null;
       setWorking(null);
       setReview(null);
       setReviewDoc(null);
@@ -289,6 +293,8 @@ export function WorkflowLibraryView({
         const res = await api.workflow.get({ id });
         if (!mounted.current || docReadVersion.current !== version) return;
         if (res.workflow) {
+          baselineRevision.current = { id, value: DRAFTS.has(id)
+            ? (DRAFT_REVISIONS.get(id) ?? null) : res.revision };
           setBaseline(res.workflow);
           setReview(res.review);
           setReviewDoc(res.workflow);
@@ -349,7 +355,9 @@ export function WorkflowLibraryView({
     setSaveError(null);
     setSaveNotes([]);
     try {
-      const res = await api.workflow.save({ workflow: payload });
+      const expectedRevision = baselineRevision.current?.id === id
+        ? baselineRevision.current.value : null;
+      const res = await api.workflow.save({ workflow: payload, expectedRevision });
       if (!res.ok) {
         // 报错也要看是哪一份文档的错 —— 用户已经切走的话,这句话不该挂到别人头上。
         if (latest.current?.working.id === id) {
@@ -370,9 +378,15 @@ export function WorkflowLibraryView({
       const active = mounted.current && latest.current?.working.id === id ? latest.current : null;
       const draft = active?.working ?? DRAFTS.get(id) ?? current.working;
       const merged = normalizeDraft(mergeSavedWorkflow(draft, current.working, saved.workflow), saved.workflow);
-      if (isDocDirty(merged, saved.workflow)) DRAFTS.set(id, merged);
-      else DRAFTS.delete(id);
+      if (isDocDirty(merged, saved.workflow)) {
+        DRAFTS.set(id, merged);
+        DRAFT_REVISIONS.set(id, saved.revision);
+      } else {
+        DRAFTS.delete(id);
+        DRAFT_REVISIONS.delete(id);
+      }
       if (mounted.current && active) {
+        baselineRevision.current = { id, value: saved.revision };
         latest.current = { baseline: saved.workflow, working: merged };
         setBaseline(saved.workflow);
         setWorking(merged);
@@ -408,8 +422,16 @@ export function WorkflowLibraryView({
   const stashDraft = useCallback(() => {
     const current = latest.current;
     if (!current) return;
-    if (isDocDirty(current.working, current.baseline)) DRAFTS.set(current.working.id, current.working);
-    else DRAFTS.delete(current.working.id);
+    if (isDocDirty(current.working, current.baseline)) {
+      DRAFTS.set(current.working.id, current.working);
+      if (!DRAFT_REVISIONS.has(current.working.id)) {
+        DRAFT_REVISIONS.set(current.working.id, baselineRevision.current?.id === current.working.id
+          ? baselineRevision.current.value : null);
+      }
+    } else {
+      DRAFTS.delete(current.working.id);
+      DRAFT_REVISIONS.delete(current.working.id);
+    }
   }, []);
 
   /** 列表上那颗"未保存"的点要跟着草稿袋走。袋子的内容不是 state,所以得有人在改动之后
@@ -440,6 +462,7 @@ export function WorkflowLibraryView({
     const id = working?.id;
     if (!id) return;
     DRAFTS.delete(id);
+    DRAFT_REVISIONS.delete(id);
     refreshDrafts();
     // 重新从磁盘读一遍 —— 顺手把基线也对齐(它本来就没动,读一遍最省心)。
     await openWorkflow(id);
@@ -605,7 +628,7 @@ export function WorkflowLibraryView({
       // **这一下直接落盘,不算破坏"点了保存才写"的规矩**:它落的是**刚建出来的那份**,
       // 此刻它在内存里连草稿都还不是 —— 不写下去的话,这个工作流在库里根本不存在,
       // 用户关掉设置页再回来会以为自己刚才没建成。
-      const res = await api.workflow.save({ workflow: doc });
+      const res = await api.workflow.save({ workflow: doc, expectedRevision: null });
       if (!res.ok) {
         setSaveError(res.error ?? t("settings.workflows.unknownError"));
         return;

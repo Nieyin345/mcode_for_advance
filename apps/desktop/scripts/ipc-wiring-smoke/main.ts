@@ -618,7 +618,6 @@ function sentToRendererChannels(): Set<string> {
  */
 const KNOWN_NON_CONTRACT_CHANNELS = new Set([
   "__mcode_pick_result__",
-  "dialog:pickFolder",
 ]);
 
 /* ══════════════════════════ 开始扫描 ══════════════════════════ */
@@ -778,8 +777,10 @@ check(
  */
 const literalInvokes = invokes.filter((r) => r.rpcKey === null);
 check(
-  "不带 RpcMap 标注的 invoke 仍然只有已知的 pickFolder",
-  literalInvokes.length === 1 && literalInvokes[0]?.channel === "dialog:pickFolder",
+  // MAINT M36:最后一条 B 类(pickFolder)已补进契约常量与 RpcMap,从此**零字面量**。
+  // 这里收紧为 0 —— 再出现一条就是新的接线债,不是"历史遗留"。
+  "不带 RpcMap 标注的 invoke 为零(pickFolder 已入契约,M36)",
+  literalInvokes.length === 0,
   literalInvokes.map((r) => `${r.ns}.? → ${r.channel}`),
 );
 

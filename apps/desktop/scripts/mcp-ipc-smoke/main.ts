@@ -412,11 +412,11 @@ writeFileSync(
   CLI_CLAUDE_JSON,
   JSON.stringify({
     mcpServers: {
-      "from-cli-global": { command: "uvx", args: ["mcp-server-git"] },
+      "from-cli-global": { command: "uvx", args: ["mcp-server-git"], env: { API_KEY: "fixture-import-secret" } },
       "stdio-one": { command: "SHOULD-NOT-WIN" },
     },
     projects: {
-      "/tmp/some-project": { mcpServers: { "from-cli-project": { type: "http", url: "https://p.example/mcp" } } },
+      "/tmp/some-project": { mcpServers: { "from-cli-project": { type: "http", url: "https://p.example/mcp", headers: { Authorization: "Bearer fixture-import-secret" } } } },
     },
   }),
   "utf-8",
@@ -474,10 +474,11 @@ same(
 
 eq("每条通道都只给一个 scope 值", new Set(all.map((r) => r.scope)).size, 3);
 eq(
-  "用户级行带着完整配置(编辑对话框靠它预填)",
+  "用户级行带着可编辑配置(密钥值单独脱敏)",
   (rowOf(all, "stdio-one")?.config as McpServerConfig | undefined)?.command,
   "node",
 );
+eq("已保存 env 值在面板读取时为空", (rowOf(all, "stdio-one")?.config as { env?: Record<string, string> } | undefined)?.env?.TOKEN, "");
 eq(
   "用户级行的 detail 不泄露 env 值,只说个数",
   rowOf(all, "stdio-one")?.detail,
@@ -850,7 +851,7 @@ same(
 console.log("\n扫描导入源(只读)");
 
 const scan = (await scanImport({})) as {
-  sources: Array<{ name: string; kind: string; detail: string; origin: unknown; config: McpServerConfig }>;
+  sources: Array<{ name: string; kind: string; detail: string; origin: { kind: string; path?: string }; config?: McpServerConfig }>;
 };
 same(
   "扫到的名字正好是本机 CLI 配置里的那些(全局 + 每个项目)",
@@ -869,10 +870,8 @@ eq(
 );
 eq("扫出来的行带 kind", scan.sources.find((s) => s.name === "from-cli-project")?.kind, "http");
 eq("扫出来的行带一个不泄露密钥的 detail", scan.sources.find((s) => s.name === "from-cli-project")?.detail, "https://p.example/mcp");
-check(
-  "扫出来的是完整配置(导入要用它)",
-  typeof scan.sources.find((s) => s.name === "from-cli-global")?.config === "object",
-);
+eq("扫描不向 renderer 返回配置密钥", scan.sources.find((s) => s.name === "from-cli-global")?.config, undefined);
+check("env/header 密钥不能出现在扫描响应", !JSON.stringify(scan).includes("fixture-import-secret"));
 
 // **只读**:扫描本身绝不能改动任何东西。
 check(
@@ -892,8 +891,8 @@ console.log("\n导入");
 
 const importRes = (await importServers({
   servers: [
-    { name: "from-cli-global", config: scan.sources.find((s) => s.name === "from-cli-global")!.config },
-    { name: "from-cli-project", config: scan.sources.find((s) => s.name === "from-cli-project")!.config },
+    { name: "from-cli-global", origin: scan.sources.find((s) => s.name === "from-cli-global")!.origin },
+    { name: "from-cli-project", origin: scan.sources.find((s) => s.name === "from-cli-project")!.origin },
     // 同名的跳过,而不是覆盖 —— 「导入」不该悄悄改掉用户已有的配置。
     { name: "stdio-one", config: { command: "SHOULD-NOT-WIN" } },
     // 关掉的也算已存在。
@@ -925,6 +924,8 @@ same("跳过的名字原样回传(界面要告诉用户跳了哪些)", importRes
 eq("★ 跳过的没有覆盖掉原来的配置", (await mcpConfig.getMcpTruth()).userServers?.["stdio-one"]?.command, "node2");
 
 eq("导入进来的进了引擎视图", "from-cli-global" in claudeViewOnDisk(), true);
+eq("导入由主进程解析真实 env", ((await mcpConfig.getMcpTruth()).userServers?.["from-cli-global"] as { env?: Record<string, string> })?.env?.API_KEY, "fixture-import-secret");
+eq("导入由主进程解析真实 header", ((await mcpConfig.getMcpTruth()).userServers?.["from-cli-project"] as { headers?: Record<string, string> })?.headers?.Authorization, "Bearer fixture-import-secret");
 eq(
   "★ 导入会立即同步 codex 的 config.toml",
   codexTomlOnDisk().includes("[mcp_servers.from-cli-global]"),

@@ -37,8 +37,10 @@ async function test(name: string, run: () => unknown): Promise<void> {
 const call = (moduleId: string, contributionId: string, projectPath: string, path: string, requestId: string) => ({
   moduleId, contributionId, resource: { projectPath, path }, requestId,
 });
-await test('the real workspace guard admits a lexical library child, not the canonical private root', () => {
-  assert.equal(isKnownWorkspaceRoot(escape), true);
+await test('shared workspace guard rejects library symlink into private app state', () => {
+  // The shared guard now resolves junctions too; lexical membership alone
+  // must not promote app-private data into an authorized workspace.
+  assert.equal(isKnownWorkspaceRoot(escape), false);
   assert.equal(isKnownWorkspaceRoot(dataRoot), false);
   assert.equal(isKnownWorkspaceRoot(projectAlias), true);
 });

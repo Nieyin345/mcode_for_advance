@@ -86,6 +86,7 @@ import {
   WATCH_WORKFLOW_ID,
 } from "./builtins.js";
 import { getWorkflow, listWorkflows, saveWorkflow } from "./library.js";
+import { workflowSaveVersion } from "./workflowSaveVersion.js";
 import { workflowReviewError } from "./workflowTrust.js";
 import { loadNodeTypes } from "./nodeTypes.js";
 import { setWorkflowReloader } from "./reloadRequest.js";
@@ -1039,7 +1040,7 @@ class AutomationRunner {
       };
     }
     if (changed) {
-      const saved = await saveWorkflow({ ...doc, nodes });
+      const saved = await saveWorkflow({ ...doc, nodes }, { expectedRevision: workflowSaveVersion(doc) });
       if (!saved.ok) return { ok: false, error: saved.error };
     }
 

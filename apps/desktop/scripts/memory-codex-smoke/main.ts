@@ -747,10 +747,10 @@ console.log("\n总注册表:registerIpcHandlers");
   const missing = [...table].filter((c) => !registeredChannels.has(c)).sort();
   same("表里有、注册表没有的正好是那 19 条推送渠道", missing, PUSH_CHANNELS);
 
-  // 注册表里有、表里没有 = 裸 channel 字面量。这两条是**刻意的**,仓库里另有两套
-  // 都认出它们(`ipc-wiring-smoke` 的 KNOWN_UNLISTED_CHANNELS / `ipc-parity-smoke`)。
+  // 注册表里有、表里没有 = 裸 channel 字面量。MAINT M36 把最后一条(dialog:pickFolder)
+  // 补进了共享 IPC 表,从此应为空;再出现就是新的接线债(`ipc-wiring-smoke` 同步收紧)。
   const extra = registered.filter((c) => !table.has(c));
-  same("healthCheck 已进入共享 IPC 表，只有文件夹选择仍是裸 channel", extra, ["dialog:pickFolder"]);
+  same("主进程注册的每条 invoke 通道都在共享 IPC 表里(零裸 channel,M36)", extra, []);
 
   // 每个域都注册到了:拿 memory / codex 两条已知的当锚,防止"数量对但内容整体错位"。
   check("记忆助手主页面入口真实注册", registeredChannels.has(IPC.MEMORY_ASSISTANT));

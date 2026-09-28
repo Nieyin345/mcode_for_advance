@@ -1,0 +1,11 @@
+import { strict as assert } from "node:assert";
+import { workflowSaveVersion, workflowSaveIsStale } from "@main/orchestration/workflowSaveVersion.js";
+const a = { id: "wf_test", name: "original", nodes: [{ id: "n", position: { x: 1, y: 2 } }], updatedAt: 123 };
+const b = { ...a, name: "AI changed", updatedAt: 123 };
+assert.notEqual(workflowSaveVersion(a as never), workflowSaveVersion(b as never));
+assert.equal(workflowSaveIsStale(b as never, workflowSaveVersion(a as never)), true);
+assert.equal(workflowSaveIsStale(a as never, workflowSaveVersion(a as never)), false);
+assert.equal(workflowSaveIsStale(a as never, null), true);
+assert.equal(workflowSaveIsStale(null, null), false);
+assert.notEqual(workflowSaveVersion(a as never), workflowSaveVersion({ ...a, nodes: [{ id: "n", position: { x: 9, y: 2 } }] } as never));
+console.log("maint-p1-workflow-smoke: 6/6 passed");

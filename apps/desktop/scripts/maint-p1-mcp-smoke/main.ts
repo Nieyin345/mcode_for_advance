@@ -1,0 +1,13 @@
+import { strict as assert } from "node:assert";
+import { maskMcpConfig, mergeMcpSecretEdits } from "@main/lib/mcpSecretEdit.js";
+const stdio = { type: "stdio" as const, command: "node", env: { TOKEN: "TOP_SECRET", EMPTY: "" } };
+const masked = maskMcpConfig(stdio);
+assert.equal(JSON.stringify(masked).includes("TOP_SECRET"), false);
+assert.deepEqual(masked.env, { TOKEN: "", EMPTY: "" });
+assert.deepEqual(mergeMcpSecretEdits(stdio, masked), stdio);
+assert.deepEqual(mergeMcpSecretEdits(stdio, { ...masked, env: { TOKEN: "REPLACED" } }).env, { TOKEN: "REPLACED" });
+assert.deepEqual(mergeMcpSecretEdits(stdio, { ...masked, env: {} }).env, {});
+const remote = { type: "http" as const, url: "https://example.invalid/mcp", headers: { Authorization: "Bearer SECRET" } };
+assert.equal(JSON.stringify(maskMcpConfig(remote)).includes("Bearer SECRET"), false);
+assert.deepEqual(mergeMcpSecretEdits(remote, maskMcpConfig(remote)), remote);
+console.log("maint-p1-mcp-smoke: 7/7 passed");

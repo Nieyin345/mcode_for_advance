@@ -433,6 +433,8 @@ export interface RpcMap {
   /** Native multi-file picker (project-external files allowed). Returns the
    *  selected absolute paths; empty array when the user cancels. */
   "dialog.pickFiles": (input: DialogPickFilesInput) => Promise<{ paths: string[] }>;
+  /** 原生单目录选择器(新建项目用)。桌面专有:手机端的 `webApi` 不提供。 */
+  "dialog.pickFolder": () => Promise<{ path: string | null }>;
   /** Discover skills for the composer `/` menu. Scans the user-global
    *  `~/.mcode/skills/` universal library and parses each SKILL.md's
    *  frontmatter. Always resolves (degrades to an empty list on any IO
@@ -627,6 +629,7 @@ export interface RpcMap {
   /** 取一份完整工作流。找不到返回 null(比如列表之后被别处删了)。 */
   "workflow.get": (input: WorkflowGetInput) => Promise<{
     workflow: WorkflowDoc | null;
+    revision: string | null;
     review: WorkflowReviewInfo | null;
   }>;
   /** Separate approval for the saved revision; saving/importing is not consent
@@ -861,7 +864,7 @@ export interface RpcMap {
   "mobile.getActiveCount": () => Promise<{ count: number }>;
   // ── Relay (SSH-based remote access) ──
   /** Save VPS connection config to settings (persisted across restarts). */
-  "relay.saveConfig": (input: RelayVpsConfigInput) => Promise<{ ok: true }>;
+  "relay.saveConfig": (input: RelayVpsConfigInput) => Promise<{ ok: boolean; error?: string }>;
   /** Read the saved VPS config (passwords included — main→renderer only). */
   "relay.getConfig": () => Promise<{ config: RelayVpsConfig | null }>;
   /** Connect to the VPS: SSH + deploy forwarder + reverse tunnel. */
@@ -1460,6 +1463,7 @@ export const IPC = {
   SHELL_OPEN_FILE: "shell:openFile",
   // Native multi-file picker (project-external files allowed) for the composer
   DIALOG_PICK_FILES: "dialog:pickFiles",
+  DIALOG_PICK_FOLDER: "dialog:pickFolder",
   // Skill discovery for the composer `/` menu (scans the universal ~/.mcode/skills)
   SKILLS_LIST: "skills:list",
   // Skill management (settings panel): read / save / delete a single skill

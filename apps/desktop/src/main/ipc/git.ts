@@ -655,7 +655,10 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
     }
     try {
       const git = (await loadSimpleGit())(input.repoPath);
-      await git.add(input.filePaths);
+      // `--` 之后才是路径:以 `-` 开头的文件名(如 `-f`)不能被 git 当成选项吃掉
+      // (`git add -f` 会把被 .gitignore 忽略的文件也暂存进去)。unstage/diff 两条
+      // 早就是这么写的,stage 从前漏了。
+      await git.add(["--", ...input.filePaths]);
       broadcastGitChanged(input.repoPath);
       return { ok: true };
     } catch (err) {

@@ -29,6 +29,7 @@
 import { createRequire } from "node:module";
 import * as net from "node:net";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import * as timers from "./timers.js";
 
@@ -114,6 +115,8 @@ export interface FakeVpsOptions {
 
 export interface FakeVpsHandle {
   port: number;
+  /** Derived from the SSH server's actual host public key, not a test constant. */
+  hostKeyFingerprint: string;
   /** 中继侧 SSH 连接**认证通过并 ready** 过几次。 */
   readonly readyCount: number;
   /** 服务端当前还挂着几个客户端连接。 */
@@ -162,15 +165,15 @@ export interface FakeVpsHandle {
  *  所以:生成之后拿 **`new Server()` 自己验一遍**(那正是后面要做的操作),
  *  不行就重来。ed25519 的这一手是纯随机的,重试必然收敛。
  */
-function usableHostKey(): string {
+function usableHostKey(): { private: string; public: string } {
   for (let i = 0; i < 32; i += 1) {
-    const pem = ssh2.utils.generateKeyPairSync("ed25519").private;
+    const pair = ssh2.utils.generateKeyPairSync("ed25519");
     try {
       // 这一步就是"ssh2 能不能用这份私钥"的判据(不 listen,建完即弃)。
-      new ssh2.Server({ hostKeys: [pem] }, () => {
+      new ssh2.Server({ hostKeys: [pair.private] }, () => {
         /* 只为验证 hostKey 能不能解析 */
       });
-      return pem;
+      return pair;
     } catch {
       /* 抽到了那份坏的(见上),换一份 */
     }
@@ -188,7 +191,11 @@ export async function startFakeVps(opts: FakeVpsOptions = {}): Promise<FakeVpsHa
   const rules = opts.execReplies ?? [];
   const connectPhone = opts.connectPhone ?? true;
 
-  const keys = { private: usableHostKey() };
+  const keys = usableHostKey();
+  const hostKeyBlob = keys.public.split(/\s+/)[1];
+  if (!hostKeyBlob) throw new Error("假 VPS 无法解析自己的 SSH 主机公钥");
+  const hostKeyFingerprint = "SHA256:" + createHash("sha256")
+    .update(Buffer.from(hostKeyBlob, "base64")).digest("base64").replace(/=+$/, "");
 
   let readyCount = 0;
   let liveClients = 0;
@@ -492,6 +499,7 @@ export async function startFakeVps(opts: FakeVpsOptions = {}): Promise<FakeVpsHa
 
   return {
     port: addr.port,
+    hostKeyFingerprint,
     get readyCount() {
       return readyCount;
     },

@@ -98,6 +98,17 @@ export function startWorkflowRun(input: Record<string, unknown>): void {
   started.push(input);
 }
 
+/** 生产版(runner.ts)是 `startWorkflowRun(args).catch(收口)`;桩里同一条记录路径,
+ *  `started` 的断言照旧看得见"发消息起图"那一笔。缺这个导出会让 esbuild 在打包期
+ *  报 No matching export(见文件头那段教训)。 */
+export function launchContinuation(
+  _session: unknown,
+  _what: string,
+  args: Record<string, unknown>,
+): void {
+  startWorkflowRun(args);
+}
+
 export function cancelWorkflowRun(sessionId: string): boolean {
   cancelled.push(sessionId);
   // 只有真有一张图在这个会话上跑的时候才认领(见 `activeRuns` 那段)。

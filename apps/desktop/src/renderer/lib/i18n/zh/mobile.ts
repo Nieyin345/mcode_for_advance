@@ -116,6 +116,8 @@ export const zh = {
   "mobile.relay.host": "服务器 IP / 域名",
   "mobile.relay.hostPlaceholder": "1.2.3.4 或 vps.example.com",
   "mobile.relay.port": "SSH 端口",
+  "mobile.relay.hostKeyFingerprint": "SSH 主机密钥指纹（SHA256，必填）",
+  "mobile.relay.hostKeyHint": "请从 VPS 控制台等可信渠道独立核对指纹；不要直接信任本次网络连接给出的值。旧配置须重新填写。",
   "mobile.relay.passwordPlaceholder": "SSH 登录密码",
   "mobile.relay.publicPort": "公网端口（手机访问的端口）",
   "mobile.relay.forwarder": "转发服务：{type}",

@@ -86,6 +86,7 @@ import {
   saveAgentProfile,
 } from "@main/orchestration/agentProfiles.js";
 import { getWorkflow, listWorkflows, removeWorkflow, saveWorkflow } from "@main/orchestration/library.js";
+import { workflowSaveVersion } from "@main/orchestration/workflowSaveVersion.js";
 import { MessageRepo, ProjectRepo, SessionRepo } from "@main/store/repositories.js";
 import type { Session } from "@contracts/session";
 import { NODE_AGENT_TYPE_ID, loadNodeTypes, localNodeTypesDir } from "@main/orchestration/nodeTypes.js";
@@ -723,7 +724,7 @@ export function workflowMcpTools(opts?: { includeSessionLogs?: boolean }): McpTo
           );
         }
         return text(
-          `${doc.name}${doc.trigger ? `(自动化:${doc.trigger})` : ""}\n\n\`\`\`json\n${JSON.stringify(doc, null, 2)}\n\`\`\``,
+          `${doc.name}${doc.trigger ? `(自动化:${doc.trigger})` : ""}\n版本: ${workflowSaveVersion(doc)}\n\n\`\`\`json\n${JSON.stringify(doc, null, 2)}\n\`\`\``,
         );
       },
     },
@@ -776,7 +777,7 @@ export function workflowMcpTools(opts?: { includeSessionLogs?: boolean }): McpTo
     {
       name: "workflow_save",
       description:
-        "**新建或整份覆盖**一份工作流 / 自动化。改一份已有的:先用 workflow_get 取出来,改完把整份存回去。\n" +
+        "**新建或整份覆盖**一份工作流 / 自动化。改已有的:先用 workflow_get 取出版本,保存时必须携带 expectedRevision；新建时不传。版本不符则拒绝覆盖并重新读取。\n" +
         // 用户在界面上点「新建」时,渲染端会**自动种一个** mcode.main 进去(`workflowEdit.ts`
         // 的 `seedMainAgent`)。AI 这条路不自动种 —— 往一份已经连好边的图里插一个节点并重新
         // 接线,正是最容易插错的活;模型自己建反而更准。所以这里只把规矩说清楚。
@@ -789,14 +790,16 @@ export function workflowMcpTools(opts?: { includeSessionLogs?: boolean }): McpTo
         "而 `mcode.main` 与 `mcode.conversation` **跑在主对话里**,那一整段聊天记录它们都看得见,指令可以写成「按刚才定的思路改第三章」这样的话。\n" +
         "不论哪种,**别让第一步就把整件事做完** —— 做完了下游就没得干。\n" +
         "存盘前会跑两道校验(图不能有环、每步的参数要符合它那个类型的要求),不通过会告诉你是哪一步、哪里不对,照着改再存一次。",
-      inputSchema: { workflow: WORKFLOW_IN },
-      handler: async (args: { workflow: Obj }) => {
+      inputSchema: { workflow: WORKFLOW_IN, expectedRevision: z.string().regex(/^[0-9a-f]{64}$/).optional() },
+      handler: async (args: { workflow: Obj; expectedRevision?: string }) => {
         const normalized = await normalizeWorkflow(args.workflow ?? {});
         if (!normalized.ok) return fail(normalized.error);
 
         // Approval to SAVE this tool call is not consent to EXECUTE its graph
         // in the background. The pending marker is installed before the write.
-        const result = await saveWorkflow(normalized.doc, { untrustedOrigin: "ai" });
+        const result = await saveWorkflow(normalized.doc, {
+          untrustedOrigin: "ai", expectedRevision: args.expectedRevision ?? null,
+        });
         if (!result.ok) return fail(result.error);
 
         notifyWorkflowsChanged(`mcp:workflow_save:${normalized.doc.id}`);

@@ -407,7 +407,10 @@ export function hasActiveRun(sessionId: string): boolean {
  * 发一条 `error` 和一条 `turn.done(error)`,让渲染端把这一回合收掉并显示原因。
  * 起跑成功后的失败由 `startWorkflowRun` 自己的 try/finally 处理,不经这里。
  */
-function launchContinuation(
+/** 导出:ipc/claude.ts 与 mobile/mobileRpc.ts 的"发消息起图"同样是不 await 的启动,
+ *  同一种预检失败从前在那两处是裸 `void` → unhandledRejection(M28 报告的跨任务
+ *  请求),现在共用这一条收口。 */
+export function launchContinuation(
   session: Session,
   what: string,
   args: Parameters<typeof startWorkflowRun>[0],

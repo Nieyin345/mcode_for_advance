@@ -252,9 +252,9 @@ console.log("\n0. 脚手架自己(通道名对不对得上一件真事)");
   // 通道名写错一个字上面那条也会红 —— 但真正要防的是**这条字符串本身**写错,
   // 那种情况下套件会拿着一个不存在的 IPC 名字一路空跑到收尾。
   eq("通道名不是编的(拿一条已知的跟契约对)", IPC.SHELL_OPEN_PATH, "shell:openPath");
-  // 裸字符串频道:`pickFolder` 不在 `IPC` 常量表里,preload 那边直接 invoke 那个字面量。
-  // 谁"顺手"把它加进常量表并改名,渲染端就静默打不通 —— 这条会在契约层就红。
-  eq("pickFolder 走的是裸字符串(不在 IPC 常量表里)", (IPC as Record<string, unknown>).DIALOG_PICK_FOLDER, undefined);
+  // MAINT M36:`pickFolder` 已进 `IPC` 常量表(值不变),preload 走 `IPC.DIALOG_PICK_FOLDER`。
+  // 钉住**值**:谁把常量改名/改值,主进程 `dialog.ts` 那条字面量注册就对不上,渲染端静默打不通。
+  eq("pickFolder 已入 IPC 常量表且通道值不变(M36)", IPC.DIALOG_PICK_FOLDER, "dialog:pickFolder");
 }
 
 /* ──────────────── 1. dialog:pickFiles / dialog:pickFolder ──────────────── */

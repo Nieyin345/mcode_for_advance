@@ -18,6 +18,7 @@
  * to the renderer via `relay:event`.
  */
 import { readFileSync } from "node:fs";
+import { verifyRelayHostKey } from "./hostKey.js";
 import * as nodeNet from "node:net";
 import {
   Client,
@@ -112,6 +113,11 @@ class RelayManagerImpl {
       this.setState({ state: "error", error: msg });
       return { ok: false, error: msg };
     }
+    if (!/^SHA256:[A-Za-z0-9+/]{43}$/.test(this.config.hostKeyFingerprint ?? "")) {
+      const msg = "缺少可信的 SSH 主机密钥 SHA256 指纹；请独立核对 VPS 指纹并重新保存配置";
+      this.setState({ state: "error", error: msg });
+      return { ok: false, error: msg };
+    }
 
     // Guard: the relay forwards to the local mobile HTTP server. If it's
     // not running, the phone will see connection errors.
@@ -194,10 +200,18 @@ class RelayManagerImpl {
         resolve(r);
       };
 
+      let hostKeyRejected = false;
       const connectOpts: Record<string, unknown> = {
         host: cfg.host,
         port: cfg.sshPort,
         username: cfg.username,
+        // ssh2 passes the raw public host key Buffer unless hostHash is set.
+        // Refuse an unknown/replaced key before authentication or forwarding.
+        hostVerifier: (key: Buffer) => {
+          const trusted = verifyRelayHostKey(key, cfg.hostKeyFingerprint);
+          if (!trusted) hostKeyRejected = true;
+          return trusted;
+        },
         keepaliveInterval: KEEPALIVE_INTERVAL * 1000,
         readyTimeout: 20_000,
         algorithms: {
@@ -250,6 +264,9 @@ class RelayManagerImpl {
 
       conn.on("error", (err: Error) => {
         log.error(`relay: SSH error: ${err.message}`);
+        const reason = hostKeyRejected
+          ? "SSH 主机密钥指纹不匹配，已拒绝连接；请通过可信渠道核对 VPS 主机密钥（勿直接接受网络返回的密钥）"
+          : friendlySshError(err);
         if (this.status.state === "connecting") {
           // Connection phase failure → resolve with error, and **say why**.
           //
@@ -260,11 +277,11 @@ class RelayManagerImpl {
           //    是一条泛泛的"重试 5 次后放弃" —— 于是他永远不知道到底是密码错了,
           //    还是地址错了。
           if (!this.intentionalDisconnect) {
-            this.setState({ state: "error", error: friendlySshError(err) });
+            this.setState({ state: "error", error: reason });
           }
         }
-        settle({ ok: false, error: friendlySshError(err) });
-        if (!this.intentionalDisconnect) {
+        settle({ ok: false, error: reason });
+        if (!this.intentionalDisconnect && !hostKeyRejected) {
           this.scheduleReconnect();
         }
       });
@@ -275,8 +292,8 @@ class RelayManagerImpl {
         this.tunnelPort = 0;
         // 握手还没完就断了(用户按了断开、或者对端直接挂断且没给 `error`)——
         // 调用方还等着一个答复,给不出"连上了"就只能说没连上。
-        if (!settled) settle({ ok: false, error: "SSH 连接已断开" });
-        if (!this.intentionalDisconnect) {
+        if (!settled) settle({ ok: false, error: hostKeyRejected ? "SSH 主机密钥指纹不匹配，已拒绝连接" : "SSH 连接已断开" });
+        if (!this.intentionalDisconnect && !hostKeyRejected) {
           this.scheduleReconnect();
         }
       });

@@ -1,4 +1,5 @@
-/** Pure path-guard regression: no real database, filesystem reads or Electron. */
+/** Path-guard regression: no real database or Electron. Physical containment
+ * now consults the filesystem and must fail closed on unreachable UNC shares. */
 import { join, parse, resolve } from "node:path";
 import { pathWithin, findContainingProject, findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { projectPaths, worktreeRoots } from "./stubs.js";
@@ -25,7 +26,9 @@ if (process.platform === "win32") {
   check("drive root child", pathWithin("D:\\", "D:\\work\\file.ts"), true);
   check("different drive rejected", pathWithin("D:\\", "E:\\work\\file.ts"), false);
   check("drive case normalized", pathWithin("D:\\", "d:\\work\\file.ts"), true);
-  check("UNC share child", pathWithin("\\\\server\\share\\", "\\\\server\\share\\dir\\file.ts"), true);
+  // An offline/unreachable UNC share cannot establish a physical root;
+  // accepting its lexical child would weaken the symlink/junction boundary.
+  check("unreachable UNC share fails closed", pathWithin("\\\\server\\share\\", "\\\\server\\share\\dir\\file.ts"), false);
   check("UNC sibling share rejected", pathWithin("\\\\server\\share\\", "\\\\server\\share-other\\file.ts"), false);
 } else {
   check("POSIX root child", pathWithin("/", "/tmp/mcode/file.ts"), true);

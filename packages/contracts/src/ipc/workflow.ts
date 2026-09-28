@@ -25,7 +25,12 @@ export type WorkflowApproveInput = z.infer<typeof WorkflowApproveSchema>;
 
 /** 存一份工作流。`workflow.id` 就是主键 —— 对内置 id 来说,存进去就是**覆盖它的
  *  默认版**(所以内置工作流可以直接改);「恢复默认」= 删掉那条覆盖。 */
-export const WorkflowSaveSchema = z.object({ workflow: WorkflowDocSchema });
+export const WorkflowSaveSchema = z.object({
+  workflow: WorkflowDocSchema,
+  /** Hash returned by workflow.get, or null only when creating a new id.
+   *  Missing legacy field is treated as null in IPC (cannot overwrite). */
+  expectedRevision: z.string().regex(/^[0-9a-f]{64}$/).nullable().optional(),
+});
 export type WorkflowSaveInput = z.infer<typeof WorkflowSaveSchema>;
 
 /** 删一份工作流。对内置 id 来说**这就是「恢复默认」** —— 两种在存储层是同一个操作,

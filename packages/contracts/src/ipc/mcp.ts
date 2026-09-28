@@ -126,9 +126,8 @@ export interface McpServerEntry {
    *  connecting, so a stored token the runtime can't use (wrong credential
    *  key, expired, revoked) must not mask an unauthenticated server. */
   authorized?: boolean;
-  /** Full transport config, present on user-scope rows only — the edit dialog
-   *  prefills from it (env/header values included; this entry shape never
-   *  leaves the app, unlike the `detail` summary). */
+  /** Editable transport config for user-scope rows. Env/header key names are
+   *  included but their values are blank; secrets never enter the renderer. */
   config?: McpServerConfig;
   /** Which engines may load this server. Absent on builtin rows (they follow
    *  the browserDisabled toggle only); user/plugin rows always carry it —
@@ -242,13 +241,12 @@ export type McpRemoveInput = z.infer<typeof McpRemoveSchema>;
 export type McpImportOrigin = { kind: "global" } | { kind: "project"; path: string };
 
 /** A server discovered in the local Claude CLI config (~/.claude.json),
- *  offered by the import dialog. */
+ *  offered by the import dialog without any credential values. */
 export interface McpImportSource {
   name: string;
   kind: McpKind;
   detail: string;
   origin: McpImportOrigin;
-  config: McpServerConfig;
 }
 
 /** Scan the local Claude CLI config for importable MCP servers. Read-only;
@@ -256,11 +254,17 @@ export interface McpImportSource {
 export const McpScanImportSchema = z.object({});
 export type McpScanImportInput = z.infer<typeof McpScanImportSchema>;
 
-/** A single server to import (name + full config, from a scanImport result). */
-export const McpImportItemSchema = z.object({
+/** Main resolves full config by scan source identity. Legacy callers may
+ * still supply a config directly (same authority as mcp.save); scanImport no
+ * longer sends one to the renderer. */
+const McpImportSourceItemSchema = z.object({
   name: z.string().min(1),
-  config: McpServerConfigSchema,
+  origin: z.union([z.object({ kind: z.literal("global") }), z.object({ kind: z.literal("project"), path: z.string() })]),
 });
+export const McpImportItemSchema = z.union([
+  McpImportSourceItemSchema,
+  z.object({ name: z.string().min(1), config: McpServerConfigSchema }),
+]);
 
 /** Import selected servers into the user scope (Mcode's own config file).
  *  Already-existing names are skipped. Returns per-server lists. */

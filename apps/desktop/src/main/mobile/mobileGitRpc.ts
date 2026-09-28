@@ -96,7 +96,8 @@ const handlers: Record<string, RpcHandler> = {
     if (!findContainingProject(input.repoPath)) return { ok: false, error: REFUSE };
     try {
       const git = (await loadSimpleGit())(input.repoPath);
-      await git.add(input.filePaths);
+      // 同桌面端 git:stage:`--` 之后才是路径,防以 `-` 开头的文件名被当成选项。
+      await git.add(["--", ...input.filePaths]);
       broadcastGitChanged(input.repoPath);
       return { ok: true };
     } catch (err) {

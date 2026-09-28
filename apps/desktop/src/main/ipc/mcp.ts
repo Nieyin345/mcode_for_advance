@@ -34,6 +34,7 @@ import {
   type McpServerEntry,
 } from "@contracts/ipc";
 import { log } from "@main/lib/logger.js";
+import { maskMcpConfig, mergeMcpSecretEdits } from "@main/lib/mcpSecretEdit.js";
 import { MCODE_CONFIG_DIR } from "@main/providers/claude-sdk/customEnv.js";
 import { resolveSdkBinaryPath } from "@main/providers/claude-sdk/sdkBinaryPath.js";
 import {
@@ -485,7 +486,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
         kind,
         detail,
         enabled: !(name in disabled),
-        config,
+        config: maskMcpConfig(config),
         perEngine: {
           claude: mcpEngineEnabled(enginesMap, name, "claude"),
           codex: mcpEngineEnabled(enginesMap, name, "codex"),
@@ -562,7 +563,10 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
     }
     await probeAll(probes);
     for (const s of servers) {
-      if (s.needsAuth || s.authorized) continue;
+      // 第一遍只探**已启用**的行(理由见上);这一遍回填也得按同一条判 —— 否则一个
+      // 曾经启用过、缓存里留着 requiresAuth 的 server,被停用之后仍会顶着「待授权」
+      // 徽章(OBS-M14-02)。停用的行不注入任何回合,没有“待授权”可言。
+      if (!s.enabled || s.needsAuth || s.authorized) continue;
       const config = remoteConfigs.get(rowKey(s.scope, s.name));
       if (config && authProbeCache.get(authProbeKey(s.name, config.url))?.requiresAuth) s.needsAuth = true;
     }
@@ -776,7 +780,10 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       if (!input.replace && (inTruth || inStash)) {
         return { ok: false, error: "同名 server 已存在" };
       }
-      userServers[input.name] = input.config;
+      const oldConfig = userServers[input.name] ?? state.userDisabled?.[input.name];
+      userServers[input.name] = input.replace && oldConfig
+        ? mergeMcpSecretEdits(oldConfig, input.config)
+        : input.config;
       // Edit on a disabled server re-enables it: the config lives in the truth
       // layer either way, so clear any stash copy to keep the two in sync.
       if (inStash && state.userDisabled) {
@@ -820,7 +827,6 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
     const sources = (await readCliMcpSources()).map((s) => ({
       name: s.name,
       origin: s.origin,
-      config: s.config,
       ...describeMcpConfig(s.config),
     }));
     return { sources };
@@ -838,12 +844,22 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       const userServers = state.userServers ?? {};
       const stash = state.userDisabled ?? {};
       let changed = false;
+      // Resolve on the trusted main side: scan results never return tokens to
+      // the renderer, so it cannot echo secrets back as import payloads.
+      const available = await readCliMcpSources();
       for (const item of input.servers) {
         if (item.name in userServers || item.name in stash) {
           skipped.push(item.name);
           continue;
         }
-        userServers[item.name] = item.config;
+        const source = "origin" in item ? available.find((s) => s.name === item.name &&
+          JSON.stringify(s.origin) === JSON.stringify(item.origin)) : undefined;
+        const config = "config" in item ? item.config : source?.config;
+        if (!config) {
+          errors.push({ name: item.name, error: "导入来源已变更，请重新扫描" });
+          continue;
+        }
+        userServers[item.name] = config;
         imported.push(item.name);
         changed = true;
       }
