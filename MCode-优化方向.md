@@ -2240,3 +2240,26 @@ params**(`NodeParamSpecSchema` 没有 `advanced` 那一格,加 param 会污染�
 **刻意没做**:不补跑;不给命令 / 代码 / 对话节点默认开重试;没加错误处理边(`onError`
 —— 要动图的数据模型和画布交互,不属于"补兜底"这一批);没给 agent 加可配置超时参数
 (看门狗复用既有心跳,零配置)。
+
+### 3.26 事件来源链清理从来没跑成过:SQL 的 ESCAPE 多了一层转义(2026-09-29,全量检修第 1 处)
+
+`SettingRepo.keysWithPrefix` 写的是 `ESCAPE '\\\\'` —— 那是个**双引号字符串**,四个反斜杠
+到运行时落成两个字符,SQLite 当场拒绝(`ESCAPE expression must be a single character`)。
+而唯一的调用方 `sweepEventChains` 按"这份数据坏掉不该让启动失败"把异常 catch 成一行 warn
+—— 于是那句清理**一次都没跑成过**:`automation.eventChain.<sessionId>` 每次运行写一行、
+从来没被删过,而 settings 表**每写一次都要重写整个库文件**。
+
+改成 `ESCAPE '\\'`(运行时一个反斜杠)。同文件 `findMany` 那两处用的是模板字符串、`\\`
+同样只转出一个反斜杠,本来就是对的 —— 两种写法在源码里长得几乎一样却只有一个能跑,
+这正是这个 bug 的全部成因。
+
+**新增 `maint-m38-smoke`**:把 `src/main` 下**所有** .ts 里的 SQL 字符串取出来(经 TS AST
+拿 **cooked 值** —— 源码字面量看不出区别,SQLite 收到的才算数),逐个 `ESCAPE` 子句真的交给
+sql.js prepare 一遍。附两条自检:一处都扫不到算失败(防这张网守着的东西被改没了还一直绿),
+以及"两个字符确实会被拒"的反面对照(防它变成一条永远绿的断言)。
+
+这类错误**三道网都漏**:类型系统只看到 `string`、编译器不解析 SQL、调用方还把异常吞了。
+发现它靠的是读 `automation-smoke` 日志里那行没人看的 warn。
+
+**验证**:maint-m38 6/6;db-persistence / db-migrate / run-store / session-store /
+automation 五套全绿。
