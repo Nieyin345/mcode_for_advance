@@ -460,7 +460,9 @@ function NodeBody({
   const archived = useSessionStore((s) =>
     needArchive ? findArchivedTranscript(s.messagesBySession[sessionId], node.nodeId, nodeSessionId) : undefined,
   );
-  const source = liveBlocks ?? node.nodeTranscript;
+  // 第三档是主对话里那张结束卡的存档(重启后节点会话自己不带过程)。从前 `archived`
+  // 算出来了却没接上,重启后展开卡片过程区一片空白。
+  const source = liveBlocks ?? node.nodeTranscript ?? archived;
   const blocks = useMemo(() => (source ?? []).map(mapTranscriptBlock), [source]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
