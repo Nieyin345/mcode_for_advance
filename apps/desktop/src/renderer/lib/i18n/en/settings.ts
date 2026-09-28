@@ -1176,6 +1176,7 @@ export const en = {
   // The wording must say "not backfilled" — otherwise users wait for a catch-up
   // run that is never coming.
   "settings.automation.facts.missed": "Missed {n} scheduled run(s) while the app was not running (not backfilled by design)",
+  "settings.automation.facts.queued": "The previous run is still going — {n} item(s) are queued and will start when it finishes",
 
   // ── Run history panel (settings/workflows/RunHistorySection) ──
   // A different source from `settings.automation.runHistory` (the inspector's

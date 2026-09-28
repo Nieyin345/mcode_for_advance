@@ -65,7 +65,8 @@ export function CustomUiHost() {
           c?.onConfirm();
         }}
       />
-      {form !== null && <InputFormDialog form={form} onClose={closeForm} />}
+      {/* `key` 按这一次打开的表单算:换一个自定义项时,上一份填过的值不会留在框里。 */}
+      {form !== null && <InputFormDialog key={form.id} form={form} onClose={closeForm} />}
     </>
   );
 }

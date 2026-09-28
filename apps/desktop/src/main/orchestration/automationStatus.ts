@@ -61,6 +61,16 @@ export interface AutomationTriggerFacts {
   missedCount?: number;
   /** 最近一次错过的那个时间点(ms)。 */
   lastMissedAt?: number;
+  /**
+   * 上一次运行还没结束时**攒着等它跑完**的那一批有多少条(见 {@link AutomationFacts.recordQueued})。
+   *
+   * 「上一次还在跑」对带数据的触发不是跳过而是排队,可这件事从前在界面上完全看不见:
+   * 它既没失败(不写 `lastError`)也没起跑(不动 `lastFireAt`)—— 与 AUTO-09 立的那条
+   * 「该跑而没跑成要看得见」正好对不上。真的起跑一次就清零。
+   */
+  queuedCount?: number;
+  /** 这一批是什么时候攒起来的(ms)。 */
+  queuedAt?: number;
 }
 
 /** 登记/更新一条事实所需的最低信息 —— `LoadedTrigger` 天然满足。 */
@@ -310,6 +320,39 @@ export class AutomationFacts {
       // 留着历史总账只会让界面上挂着一个永远不会消失的红字。
       missedCount: undefined,
       lastMissedAt: undefined,
+      // 攒着的那一批**正是这一次**在跑(排队的下一跳就是起跑),所以一并清掉。
+      queuedCount: undefined,
+      queuedAt: undefined,
+    });
+  }
+
+  /**
+   * 上一次还在跑,这一批**攒起来等它**(见 `automationRunner.fire` 的忙碌分支)。
+   *
+   * ⚠️ **不碰挂载侧,也不算失败** —— 它没出错,只是还没轮到。记的是"此刻攒着几条",
+   * 所以是**覆盖**不是累加:那一批本来就是合并成一份的。`count` 给 0 = 这一批已经
+   * 派发出去了(或者被作废了),把这行痕迹抹掉。
+   */
+  recordQueued(seed: AutomationFactsSeed, count: number, at: number): void {
+    const key = automationTriggerKey(seed);
+    const existing = this.entries.get(key);
+    this.entries.set(key, {
+      ...(existing ?? {
+        key,
+        workflowId: seed.workflowId,
+        nodeId: seed.nodeId,
+        title: seed.title,
+        kind: seed.kind,
+        enabled: seed.enabled,
+        armed: false,
+        detail: undefined,
+        lastFireAt: undefined,
+        lastError: undefined,
+        lastErrorAt: undefined,
+      }),
+      key,
+      queuedCount: count > 0 ? count : undefined,
+      queuedAt: count > 0 ? at : undefined,
     });
   }
 

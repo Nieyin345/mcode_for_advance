@@ -1171,6 +1171,7 @@ export const zh = {
   // 「错过」不是「坏了」:它挂得好好的,只是那几天这台机器没开着。措辞里必须带上
   // 「不补跑」—— 否则用户会等一次根本不会来的补偿运行。
   "settings.automation.facts.missed": "应用没运行时错过 {n} 次(按设计不补跑)",
+  "settings.automation.facts.queued": "上一次运行还没结束——{n} 条已攒着排队，等它跑完自动开始",
 
   // ── 运行历史面板（settings/workflows/RunHistorySection）──
   // 与 `settings.automation.runHistory`（检查器里那段摘要）不同源：这里读的是

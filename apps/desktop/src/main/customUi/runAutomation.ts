@@ -44,7 +44,13 @@ function expand(target: CustomUiRunTarget, skipWhen: CustomUiWhen | undefined): 
     if (!isInsideAnyProject(target.path, projects, process.platform === "win32")) {
       return { ok: false, error: "这个文件不在任何已打开的项目里" };
     }
-    if (!existsSync(target.path) || !statSync(target.path).isFile()) {
+    // `existsSync` 与 `statSync` 之间文件可能刚好被移走 —— `statSync` 那时会抛,
+    // 而抛出去的是一段栈信息,用户在 toast 里读到的不是人话。当"不在了"处理。
+    try {
+      if (!existsSync(target.path) || !statSync(target.path).isFile()) {
+        return { ok: false, error: "文件不存在(可能刚被移走或删掉)" };
+      }
+    } catch {
       return { ok: false, error: "文件不存在(可能刚被移走或删掉)" };
     }
     // skipWhen 对文件目标不适用(requires/extensions 的条目语义在这里没有对应物;
@@ -70,7 +76,12 @@ function expand(target: CustomUiRunTarget, skipWhen: CustomUiWhen | undefined): 
   const seen = new Set<string>();
   const items: ItemFacts[] = [];
   let skipped = 0;
+  // **回收站分类不进这一批。** 根那一层已经按 `isTrash` 筛过(大类那条路),但后代里
+  // 照样可能挂着回收站分类 —— 条目那一层有 `trashedItemIds` 兜着,分类这一层从前没有,
+  // 于是"这个分类里还在用的东西"这句话在两层上说的不是同一件事。
+  const trashCollections = new Set(all.filter((c) => c.isTrash).map((c) => c.id));
   for (const cid of collectCollectionIds(all, roots)) {
+    if (trashCollections.has(cid)) continue;
     for (const item of LibraryRepo.listByCollection(cid)) {
       if (trashed.has(item.id) || seen.has(item.id)) continue;
       seen.add(item.id);
@@ -93,6 +104,16 @@ export async function runCustomUiAutomation(input: CustomUiRunAutomationInput): 
     // 全被跳过 ≠ 空范围:如实说清,不让"没东西可跑"读起来像"想法不行"。
     const error = skipped > 0 ? `这 ${skipped} 条都满足跳过条件,无需运行` : "这个范围里没有条目";
     return { ok: false, error, count: 0, skipped };
+  }
+  // 用户是对着**确认框上那个数字**点的头(见 `expectCount`)。两次展开之间库变了的话,
+  // 这一次带的就不是他同意的那一批 —— 整次拒绝,比默默按新的数量开工强。
+  if (input.expectCount !== undefined && input.dryRun !== true && input.expectCount !== count) {
+    return {
+      ok: false,
+      error: `这个范围在你确认之后变了(确认时 ${input.expectCount} 条,现在 ${count} 条)—— 请重新右键运行一次`,
+      count,
+      skipped,
+    };
   }
   if (count > CUSTOM_UI_MAX_BATCH) {
     return {

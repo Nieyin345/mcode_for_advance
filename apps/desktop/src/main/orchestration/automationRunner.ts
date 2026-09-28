@@ -140,13 +140,69 @@ const WATCH_SETTLE_MS = 300;
 const LAST_MINUTE_SETTING_KEY = "automation.lastMinute";
 const SELF_TRIGGER_LIMIT = 10;
 const SELF_TRIGGER_COUNT_PREFIX = "automation.selfTriggerCount.";
-const SELF_TRIGGER_STOP_REASON = `自身或回环事件触发已达${SELF_TRIGGER_LIMIT}次，自动续跑已停止；请手动运行一次后继续`;
+/**
+ * 这条额度**最后一次被花掉**是什么时候(与计数分开存)。
+ *
+ * ## 为什么要有
+ *
+ * 从前额度**只有手动运行才清零**。无人值守的夜里一条链把 10 次用完之后,这条自动化
+ * 就永久停摆,直到有人早上来点一下 —— 而"不再依赖人看到并点一下"正是整批兜底改动的
+ * 出发点(见 `docs/workflow-automation-resilience-20260928.md` 的开头)。循环保护要
+ * 挡住的是**紧挨着的连环自触发**,不是"这条自动化这辈子一共回过自己几次"。
+ *
+ * 所以额度改成**滑动窗口**:离上一次自触发超过 {@link SELF_TRIGGER_WINDOW_MS} 就从头
+ * 开始数。真正的死循环在几秒到几分钟内就会把 10 次用光(窗口远没到期),而一天跑两次、
+ * 每次回自己一轮的正常自动化再也不会攒成停摆。
+ */
+const SELF_TRIGGER_AT_PREFIX = "automation.selfTriggerAt.";
+/** 自触发额度的滑动窗口。6 小时 = 比任何一次正常运行都长,比"永远"短。 */
+const SELF_TRIGGER_WINDOW_MS = 6 * 60 * 60_000;
+const SELF_TRIGGER_STOP_REASON = `自身或回环事件触发已达${SELF_TRIGGER_LIMIT}次，自动续跑已停止；请手动运行一次后继续（或等这一段安静下来自动恢复）`;
+
+/**
+ * 「上一次还在跑」时攒着的那一批,**多久回头看一次**。
+ *
+ * 从前写死 1 秒:一次跑几小时的自动化就是几小时里每秒一次 flush,每一次都要读工作流、
+ * 查会话表、问活跃状态。指数退避到半分钟封顶 —— 最坏多等 30 秒,而那批本来就在等一个
+ * 以小时计的运行。
+ */
+const BUSY_RETRY_MIN_MS = 1_000;
+const BUSY_RETRY_MAX_MS = 30_000;
+
+/**
+ * 文件监听**一律不看**的目录名。
+ *
+ * `fs.watch(dir, { recursive: true })` 盯的是项目根,`node_modules` / `.git` / 构建产物
+ * 全在里面:一次 `npm i` 或一次构建就是几万条事件,每条都要对所有文件触发器跑一遍 glob。
+ * 与 `lib/walkCache.ts` 跳过生成目录是同一条理由(那边为了快,这边为了不被淹)。
+ *
+ * ⚠️ 只按**路径段**比,不按前缀 —— `distribution/` 不该被 `dist` 吞掉。
+ */
+const WATCH_IGNORED_DIRS = new Set([
+  ".git", "node_modules", "dist", "build", "out", "target", ".next", ".nuxt", ".turbo", ".cache",
+  ".venv", "__pycache__", ".pytest_cache", ".mypy_cache", "coverage", ".idea", ".vscode",
+]);
+
+/**
+ * 一格攒着的文件路径上限。
+ *
+ * `pending.files` 是**只增不减**的(见 `rearm` 里那段:删掉的只在拼载荷时滤掉,数组本身
+ * 留着,好让"改名来回"那种情形下路径还在)。一个长期抖动的目录会让它无限长下去,最后
+ * 整批塞进提示词。资料库那一侧早就有 `CUSTOM_UI_MAX_BATCH = 200` 的对称上限。
+ */
+const PENDING_FILES_LIMIT = 500;
 
 
 /** 非本轮分钟的历史最多保留60条；本轮分钟记录不受条数限制。
  *  同分钟已触发的 key 是正确性状态，不能按容量淘汰，否则第61条之后的
  *  触发器会在下一次tick/重启后重复运行。保护分钟推进后，旧记录重新受限。 */
 const LAST_MINUTE_HISTORY_KEEP = 60;
+
+/** 「错过」结算到哪一分钟(见 `AutomationRunner.readMissedSwept`)。 */
+const MISSED_SWEPT_SETTING_KEY = "automation.missedSweptTo";
+
+/** 节点清单的短缓存窗口(见 `AutomationRunner.loadTypes`)。 */
+const TYPES_CACHE_TTL_MS = 5_000;
 
 /**
  * 落盘那份能读的判据。读不回来**不抛**,当空表 —— 见 `readLastMinutes`。
@@ -241,6 +297,8 @@ interface PendingFire {
   /** Ancestors captured when events arrive, not re-read after debounce/retry. */
   eventChain?: readonly string[];
   externalChain?: readonly string[];
+  /** 「上一次还在跑」时的回看间隔,指数退避(见 {@link BUSY_RETRY_MIN_MS})。 */
+  busyRetryMs?: number;
 }
 
 /** 一次手动运行的结论。IPC 那一路要把它变成给用户看的一句话。 */
@@ -277,10 +335,12 @@ class AutomationRunner {
   /**
    * 「错过」这件事**已经结算到哪一分钟**了(见 `sweepMissedSchedules`)。
    *
-   * **刻意只活在进程里**,不落盘:
-   *  - 落盘就是第二份真相,而这件事只需要"这次开机以来别重复数"这么大的记性;
-   *  - 重启之后重新算一遍**正是对的** —— 那时 `facts` 也是空的(它同样只在内存里),
-   *    两边一起从零开始,用户看到的数字才和"这次开机后发现的"对得上。
+   * **跟着 `lastMinute` 一起落盘**(`MISSED_SWEPT_SETTING_KEY`,2026-09-28 改)。
+   *
+   * 原来它刻意只活在进程里,理由是"重启之后重新算一遍正是对的"。但两张表不同寿这件事
+   * 本身就是 bug 的来源:`lastMinute` **跨重启**,于是重启后的第一次结算会从上一次真的
+   * 跑过的那一分钟重新数起 —— 同一段"错过"被反复数,用户每开一次应用都看到同一条
+   * 「错过了 N 次」,而它说的是同一件五天前的事。
    *
    * ⚠️ **不能拿 `lastMinute` 兼职做这个游标。** 那张表回答的是「这一分钟跑过没有」,
    * 而它**跨重启**(见 `LAST_MINUTE_SETTING_KEY`)—— 往里写一个"结算到此"的分钟,
@@ -339,8 +399,13 @@ class AutomationRunner {
     this.ticker.unref();
 
     await this.reloadAll();
+    // 上一次进程结算到哪一分钟(见 `missedSweptTo`)。**必须在 sweep 之前读回来**,
+    // 否则重启一次就把同一段又数一遍,用户每开一次应用都看到同一条「错过了 N 次」。
+    this.missedSweptTo = this.readMissedSwept();
     // **先把"睡过去的那几天"结算掉,再宣布起来了。** 只记录,不补跑。
     this.sweepMissedSchedules();
+    // 没人认领的来源链记录清掉(见 `sweepEventChains`)。
+    this.sweepEventChains();
     await this.watchPowerResume();
     log.info(`AutomationRunner started:${this.all().length} 个触发器`);
   }
@@ -436,6 +501,8 @@ class AutomationRunner {
           triggerSpecKeyOf(current.spec) !== triggerSpecKeyOf(pending.trigger.spec)) {
         if (pending.timer !== null) clearTimeout(pending.timer);
         this.pendingFires.delete(key);
+        // 攒着的那一批作废了,界面上那行「排队中」也要跟着走(见 `recordQueued`)。
+        this.facts.recordQueued(triggerSeedOf(pending.trigger), 0, Date.now());
       }
     }
     for (const key of [...this.lastMinute.keys()]) {
@@ -545,9 +612,27 @@ class AutomationRunner {
     return out;
   }
 
+  /**
+   * 节点清单。**带一个几秒的短缓存**。
+   *
+   * `loadNodeTypes()` 每次都要扫插件目录、读并解析每一份清单(底下还会把每个启用插件的
+   * 技能/命令/agent 文件再读一遍),所以文件头写着"它不该在热路径上被调"。可
+   * `runNow` / `runWithTarget` 找不到触发器时就会 `reload()` —— 而右键菜单里的「运行
+   * 自动化」正是热路径:连点几下就是连着几次全量扫盘。
+   *
+   * 缓存窗口取几秒:清单变化只来自装插件 / 手改清单文件,而那之后紧接着的"下一次运行"
+   * 晚几秒读到新的一份,后果只是这一次按旧清单跑;而保存工作流那条路读的是**工作流
+   * 文档**(`getWorkflow`),不经过这里,所以"存完马上点运行"照旧拿到新的图。
+   */
+  private typesCache: { at: number; types: Map<string, NodeTypeManifest> } | null = null;
+
   private async loadTypes(): Promise<Map<string, NodeTypeManifest> | null> {
+    const cached = this.typesCache;
+    if (cached !== null && Date.now() - cached.at < TYPES_CACHE_TTL_MS) return cached.types;
     try {
-      return new Map((await loadNodeTypes()).entries.map((e) => [e.id, e.manifest]));
+      const types = new Map((await loadNodeTypes()).entries.map((e) => [e.id, e.manifest]));
+      this.typesCache = { at: Date.now(), types };
+      return types;
     } catch (err) {
       log.warn(`[automation] 读节点清单失败:${(err as Error).message}`);
       return null;
@@ -592,8 +677,16 @@ class AutomationRunner {
     // 递归监听只在 win32 / darwin 上有(Node >= 19.1)。别的平台上文件触发**不会响**
     // —— 那是要**说出来**的事实,不是安静地少一个功能。事实表也要记上(AUTO-09):
     // 挂载侧从这里起是「挂不上」,界面那栏不能再说它启用着。
-    if (process.platform !== "win32" && process.platform !== "darwin") {
-      const why = "这个平台不支持递归监听,文件触发不会响";
+    // 递归监听:win32 / darwin 一直有,**Linux 从 Node 20 起也有**。
+    // 从前这里把 win32/darwin 之外一律判死,于是 Linux 桌面与无头那条路上(`mcodeServer.ts`)
+    // 文件触发是完全残废的 —— 而这个判断写下的时候 Linux 确实还不支持,如今只是过期了。
+    // 真不支持的平台/内核照样会在下面 `watch()` 那一下抛 ERR_FEATURE_UNAVAILABLE,
+    // 由 catch 如实记账 —— 与其在这里猜,不如试一次。
+    const nodeMajor = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
+    const recursiveMaybeSupported =
+      process.platform === "win32" || process.platform === "darwin" || nodeMajor >= 20;
+    if (!recursiveMaybeSupported) {
+      const why = `这个运行环境不支持递归监听(Node ${process.versions.node} / ${process.platform}),文件触发不会响`;
       log.warn(`[automation] ${why}:${dir}`);
       for (const t of this.all()) {
         if (t.spec.kind === "file" && t.cwd === dir) {
@@ -692,6 +785,68 @@ class AutomationRunner {
       log.warn(
         `[automation] 「${trigger.title}」在应用没运行的这段时间错过了 ${missed.count} 次定时(按设计不补跑)`,
       );
+    }
+    this.writeMissedSwept();
+  }
+
+  /**
+   * 「结算到哪一分钟」现在**落盘**(`MISSED_SWEPT_SETTING_KEY`)。
+   *
+   * 原来它刻意只活在进程里,理由是"重启之后重新算一遍正是对的,那时 facts 也是空的"。
+   * 可两边并不对称:`lastMinute` 是**跨重启**的,于是重启后的第一次结算会从上一次真的
+   * 跑过的那一分钟重新数起 —— 同一段"错过"被反复数,用户每开一次应用就看到同一条警告,
+   * 而它说的是同一件五天前的事。游标跟着 `lastMinute` 一起持久化,两张表才对得上。
+   */
+  private readMissedSwept(): Map<string, number> {
+    try {
+      const raw = SettingRepo.get(MISSED_SWEPT_SETTING_KEY);
+      if (raw === null || raw.length === 0) return new Map();
+      const parsed: unknown = JSON.parse(raw);
+      if (!isLastMinutes(parsed)) {
+        log.warn("[automation] 错过结算游标读不回来(形状不对),当空表");
+        return new Map();
+      }
+      return new Map(Object.entries(parsed));
+    } catch (err) {
+      log.warn(`[automation] 错过结算游标读不回来,当空表:${(err as Error).message}`);
+      return new Map();
+    }
+  }
+
+  /** 写回游标。写不进去只记日志 —— 退化成"重启后可能重复数一次",不影响任何运行。 */
+  private writeMissedSwept(): void {
+    try {
+      // 与 `lastMinute` 同一条修剪规矩:按"最近"留一截,别让删掉的工作流白占字节。
+      const rows = [...this.missedSweptTo.entries()].sort((a, b) => b[1] - a[1]).slice(0, LAST_MINUTE_HISTORY_KEEP);
+      const next = JSON.stringify(Object.fromEntries(rows));
+      if (SettingRepo.get(MISSED_SWEPT_SETTING_KEY) === next) return; // 值没变就不写(整库重写很贵)
+      this.missedSweptTo = new Map(rows);
+      SettingRepo.set(MISSED_SWEPT_SETTING_KEY, next);
+    } catch (err) {
+      log.warn(`[automation] 错过结算游标写不进去:${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * 清掉**没人认领**的自动化来源链记录(`automation.eventChain.<sessionId>`)。
+   *
+   * 那一行在每次起跑时写(见 `fire`),而从前**没有任何一处删得掉**:会话删了、工作流删了
+   * 都不管 —— settings 表只增不减,而每一次写又是一次整库重写。启动时按"这个会话还在不在"
+   * 扫一遍,一次性删掉(`deleteMany` 只 `persist()` 一次)。
+   *
+   * 读不回来/删不掉都只记日志:这份数据坏掉最多让一条链的归因不准,不该让启动失败。
+   */
+  private sweepEventChains(): void {
+    try {
+      const stale = SettingRepo.keysWithPrefix(EVENT_CHAIN_PREFIX).filter((key) => {
+        const sessionId = key.slice(EVENT_CHAIN_PREFIX.length);
+        return sessionId.length === 0 || SessionRepo.get(sessionId) === undefined;
+      });
+      if (stale.length === 0) return;
+      SettingRepo.deleteMany(stale);
+      log.info(`[automation] 清掉 ${stale.length} 条没人认领的事件来源链记录`);
+    } catch (err) {
+      log.warn(`[automation] 清理事件来源链记录失败:${(err as Error).message}`);
     }
   }
 
@@ -837,6 +992,10 @@ class AutomationRunner {
     // `filename` 给不出时用目录本身去比:那能匹配 `**` 这类规则;匹配不上具体的
     // `*.md` 也不冤 —— 平台没说改的是哪个文件,而"整个目录里有东西动了"是它给的全部。
     const abs = filename === null ? dir : join(dir, filename);
+    // **生成目录里的动静一律不看**(见 `WATCH_IGNORED_DIRS`)。拦在最前面:一次 `npm i`
+    // 是几万条事件,让它们各自去跑一遍 glob 纯属白烧 CPU,而且真有用户在 `node_modules`
+    // 里等一条自动化的场景 —— 没有。
+    if (filename !== null && filename.split(/[\\/]/).some((seg) => WATCH_IGNORED_DIRS.has(seg))) return;
     for (const trigger of this.all()) {
       if (trigger.disarmed || trigger.spec.kind !== "file" || trigger.cwd !== dir) continue;
       // 绝对路径与**相对这个触发器项目目录**的路径都试一遍(同 `fileSubjects` 的理由:
@@ -862,7 +1021,17 @@ class AutomationRunner {
       // flush 时还会再问一遍(见 `rearm`),管的是攒着这几秒里被删掉的那些。
       if (!existsSync(abs)) continue;
       const pending = this.pendingOf(trigger);
-      if (!pending.files.includes(abs)) pending.files.push(abs);
+      if (!pending.files.includes(abs)) {
+        // 上限(见 `PENDING_FILES_LIMIT`):挤掉最早的那一个。丢掉一条**要说出来** ——
+        // 静默少办一件事是这一路最坏的坏法。
+        if (pending.files.length >= PENDING_FILES_LIMIT) {
+          const dropped = pending.files.shift();
+          log.warn(
+            `[automation] 「${trigger.title}」攒着的文件超过 ${PENDING_FILES_LIMIT} 个,丢掉最早的一个:${dropped ?? ""}`,
+          );
+        }
+        pending.files.push(abs);
+      }
       this.rearm(pending, WATCH_SETTLE_MS + trigger.spec.debounceMs);
     }
   }
@@ -906,7 +1075,26 @@ class AutomationRunner {
     if (raw.trim().length === 0 || !Number.isInteger(count) || count < 0 || count > SELF_TRIGGER_LIMIT) {
       throw new Error("自触发计数损坏；请手动运行一次重置后继续");
     }
+    if (count === 0) return 0;
+    // **窗口过期就从头数**(见 `SELF_TRIGGER_AT_PREFIX`)。时刻读不回来/形状不对时
+    // 按"还在窗口里"处理 —— 循环保护宁可严一点,也不能因为一格坏数据放开。
+    const at = Number(SettingRepo.get(SELF_TRIGGER_AT_PREFIX + workflowId) ?? "");
+    if (Number.isFinite(at) && at > 0 && Date.now() - at > SELF_TRIGGER_WINDOW_MS) return 0;
     return count;
+  }
+
+  /** 花掉一格额度(带时刻)。`0` = 清零(手动运行那一下)。 */
+  private writeSelfTriggerCount(workflowId: string, count: number): void {
+    // **值没变就不写** —— `SettingRepo.set` 内部 `persist()` 会重写整个库文件
+    // (同 `rememberLastMinute` 那条注释)。
+    const key = SELF_TRIGGER_COUNT_PREFIX + workflowId;
+    if (SettingRepo.get(key) !== String(count)) SettingRepo.set(key, String(count));
+    const atKey = SELF_TRIGGER_AT_PREFIX + workflowId;
+    if (count === 0) {
+      if (SettingRepo.get(atKey) !== null) SettingRepo.delete(atKey);
+      return;
+    }
+    SettingRepo.set(atKey, String(Date.now()));
   }
 
   private selfTriggerBlockReason(workflowId: string): string | null {
@@ -936,6 +1124,8 @@ class AutomationRunner {
           if (pending.trigger.workflowId !== cancelledWorkflow) continue;
           if (pending.timer !== null) clearTimeout(pending.timer);
           this.pendingFires.delete(key);
+          // 用户按了停止 —— 排着的那一批也没了,别在界面上留一行永远不会开跑的「排队中」。
+          this.facts.recordQueued(triggerSeedOf(pending.trigger), 0, Date.now());
         }
       }
     }
@@ -1247,7 +1437,11 @@ class AutomationRunner {
       if (row.kind !== "event") return row;
       if (!reasons.has(row.workflowId)) reasons.set(row.workflowId, this.selfTriggerBlockReason(row.workflowId));
       const reason = reasons.get(row.workflowId);
-      return reason ? { ...row, lastError: reason } : row;
+      // ⚠️ **时刻要跟着这句话一起换。** 只改 `lastError` 的话,界面拿到的是"刚发生的
+      // 原因 + 上一条旧账的时刻";而 `latestFailureOf`(契约里那个判据)正是拿
+      // `lastErrorAt` 与 `lastFireAt` 比大小来决定显不显示 —— 时刻还停在起跑之前的话,
+      // 这条停摆提示会被整个吞掉,用户看到的是一条"一切正常却再也不跑"的自动化。
+      return reason ? { ...row, lastError: reason, lastErrorAt: Date.now() } : row;
     });
   }
 
@@ -1384,7 +1578,24 @@ class AutomationRunner {
           }
           // Reuse the same lifecycle as debounce: disable, project changes,
           // deletion, cancellation and dispose all clear the pending batch.
-          this.rearm(pending, 1_000);
+          //
+          // **指数退避**(见 `BUSY_RETRY_MIN_MS`):写死 1 秒的话,一次跑几小时的运行
+          // 期间就是每秒一遍"读工作流 + 查会话 + 问活跃",而那批本来就在等一个以小时
+          // 计的东西。
+          const next = Math.min(
+            pending.busyRetryMs === undefined ? BUSY_RETRY_MIN_MS : pending.busyRetryMs * 2,
+            BUSY_RETRY_MAX_MS,
+          );
+          pending.busyRetryMs = next;
+          // **让"排着队"看得见**(AUTO-09 那条规矩的另一半):它没失败、也没起跑,从前
+          // 在界面上和"跑完了"完全一样 —— 用户改完文件等了十分钟,没有任何一处说得出
+          // 它在等什么。
+          this.facts.recordQueued(
+            triggerSeedOf(trigger),
+            pending.files.length > 0 ? pending.files.length : (pending.event?.kind === "event" ? (pending.event.items?.length ?? 1) : 1),
+            Date.now(),
+          );
+          this.rearm(pending, next);
           return { ok: true };
         }
         return this.skip(trigger, "上一次还在跑,这一次触发已跳过");
@@ -1400,10 +1611,9 @@ class AutomationRunner {
       // conservatively spend a unit. A synchronous settings error prevents self
       // dispatch; crash durability still follows SettingRepo's persistence policy.
       if (opts?.manual === true) {
-        SettingRepo.set(SELF_TRIGGER_COUNT_PREFIX + trigger.workflowId, "0");
+        this.writeSelfTriggerCount(trigger.workflowId, 0);
       } else if (selfOrigin) {
-        SettingRepo.set(SELF_TRIGGER_COUNT_PREFIX + trigger.workflowId,
-          String(this.selfTriggerCount(trigger.workflowId) + 1));
+        this.writeSelfTriggerCount(trigger.workflowId, this.selfTriggerCount(trigger.workflowId) + 1);
       }
       // Capture ancestry before the runner can emit events. Explicit manual,
       // schedule, file and genuinely unattributed external runs start new roots.

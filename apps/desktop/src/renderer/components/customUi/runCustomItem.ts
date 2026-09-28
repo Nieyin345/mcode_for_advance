@@ -115,9 +115,11 @@ async function runAutomationWithTarget(
     ...(action.skipWhen ? { skipWhen: action.skipWhen } : {}),
     ...(inputValues && Object.keys(inputValues).length > 0 ? { input: inputValues } : {}),
   };
-  const go = async (): Promise<void> => {
+  const go = async (expectCount?: number): Promise<void> => {
     try {
-      const res = await api.customUi.runAutomation(input);
+      const res = await api.customUi.runAutomation(
+        expectCount === undefined ? input : { ...input, expectCount },
+      );
       if (res.ok) toast("info", "customUi.run.started", undefined, { name, n: res.count ?? 1 });
       else toast("error", "customUi.run.failed", res.error);
     } catch (err) {
@@ -142,7 +144,8 @@ async function runAutomationWithTarget(
             ? tr("customUi.run.confirmBodySkip", { n: dry.count ?? 0, m: dry.skipped ?? 0 })
             : tr("customUi.run.confirmBody", { n: dry.count ?? 0 }),
         confirmText: tr("customUi.run.confirm"),
-        onConfirm: () => void go(),
+        // 把用户点头的那个数字一起带过去:两次展开之间库变了就整次拒绝(见契约的 expectCount)。
+        onConfirm: () => void go(dry.count ?? 0),
       });
     } catch (err) {
       toast("error", "customUi.run.failed", err instanceof Error ? err.message : String(err));
@@ -160,6 +163,24 @@ async function runAutomationWithTarget(
   }
 }
 
+/** `navigator.clipboard` 不可用时的兜底。成功返回 true。 */
+function copyViaTextarea(text: string): boolean {
+  try {
+    const el = document.createElement("textarea");
+    el.value = text;
+    el.setAttribute("readonly", "");
+    el.style.position = "fixed";
+    el.style.opacity = "0";
+    document.body.appendChild(el);
+    el.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(el);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function runCustomItem(item: CustomUiItem, target: CustomUiTarget): Promise<void> {
   const vars = templateVarsOf(target);
   const action = item.action;
@@ -174,11 +195,19 @@ export async function runCustomItem(item: CustomUiItem, target: CustomUiTarget):
       return;
     }
     case "copy": {
+      const text = renderTemplate(action.template, vars);
       try {
-        await navigator.clipboard.writeText(renderTemplate(action.template, vars));
+        await navigator.clipboard.writeText(text);
         toast("info", "customUi.run.copied");
       } catch (err) {
-        toast("error", "customUi.run.copyFailed", err instanceof Error ? err.message : String(err));
+        // `navigator.clipboard` 不是永远都在(非安全上下文、权限被拒)。退回那条老办法:
+        // 一个看不见的 textarea + `execCommand("copy")` —— 成了就当成了,别让一条
+        // 「复制」在某些窗口里**永远**失败而用户无路可走。
+        if (!copyViaTextarea(text)) {
+          toast("error", "customUi.run.copyFailed", err instanceof Error ? err.message : String(err));
+          return;
+        }
+        toast("info", "customUi.run.copied");
       }
       return;
     }
@@ -193,12 +222,18 @@ export async function runCustomItem(item: CustomUiItem, target: CustomUiTarget):
       if (action.attach === true && key !== null) await attachToCurrentChat(key);
       const text = renderTemplate(action.template, vars).trim();
       if (text.length > 0) {
-        // 放进输入框,不替用户发送(同「跟主对话说」);已有的草稿保留,新内容接在后面
+        // 放进输入框,不替用户发送(同「跟主对话说」);已有的草稿保留,新内容接在后面。
+        //
+        // ⚠️ **`html` 不能写死成空串。** 输入框里那份草稿可能是富文本(贴进来的表格、
+        // 带格式的引文),`html` 一清用户就只剩纯文本 —— 而他并没有要求删掉什么。
+        // 有 html 就在它后面接一段;没有就维持空串(纯文本草稿的原样)。
         const prev = useSessionStore.getState().composerDraftBySession[sessionId];
         const prevText = prev?.text.trim() ?? "";
+        const prevHtml = prev?.html ?? "";
+        const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
         useSessionStore.getState().deliverComposerDraft(sessionId, {
           text: prevText.length > 0 ? `${prevText}\n\n${text}` : text,
-          html: "",
+          html: prevHtml.trim().length > 0 ? `${prevHtml}<p></p><p>${escaped.replace(/\n/g, "<br>")}</p>` : "",
           tags: prev?.tags ?? [],
         });
         toast("info", "customUi.run.promptDelivered");

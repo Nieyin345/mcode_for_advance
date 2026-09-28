@@ -253,6 +253,60 @@ export const CustomUiItemSchema = z.object({
   when: CustomUiWhenSchema.optional(),
   action: CustomUiActionSchema,
 });
+
+/**
+ * 这个挂载位上,条件里的哪几项**说得通**。
+ *
+ * 从前这张表不存在,于是有两种"配了却永远不生效"的写法能一路存下去:
+ *
+ *  - 工具栏 / 右栏页签上写 `requires` 或 `extensions` —— 它们的目标是 `workspace`,
+ *    而 {@link matchesWhen} 对这两项在 workspace 上一律返回 false:**这一项从此永远
+ *    不显示**,用户看到的是"我建的按钮不见了"。
+ *  - 文件右键上写 `requires` / `groupIds` —— 同理恒为 false。
+ *
+ * 判据放在契约里,{@link sanitizeWhen} 在读配置时按它裁掉,设置页也拿它决定显示哪几格。
+ * **裁掉而不是整条丢掉**:用户要的是那一项本身,条件只是他填错的一格。
+ */
+export function whenKeysForSlot(slot: CustomUiSlot): readonly (keyof CustomUiWhen)[] {
+  switch (targetKindOfSlot(slot)) {
+    case "item":
+      return ["extensions", "requires", "groupIds"];
+    case "collection":
+    case "group":
+      return ["groupIds"];
+    case "file":
+      return ["extensions"];
+    default:
+      return [];
+  }
+}
+
+/** 按 {@link whenKeysForSlot} 裁一份条件;裁完什么都不剩就返回 undefined。 */
+export function sanitizeWhen(when: CustomUiWhen | undefined, slot: CustomUiSlot): CustomUiWhen | undefined {
+  if (!when) return undefined;
+  const allowed = new Set<string>(whenKeysForSlot(slot));
+  const out: CustomUiWhen = {};
+  if (allowed.has("extensions") && when.extensions?.length) out.extensions = when.extensions;
+  if (allowed.has("requires") && when.requires) out.requires = when.requires;
+  if (allowed.has("groupIds") && when.groupIds?.length) out.groupIds = when.groupIds;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * `automation` 动作的 `skipWhen` 里说得通的那几项。
+ *
+ * **`groupIds` 不在内**:批量展开在主进程做(`customUi/targets.ts` 的 `shouldSkipItem`),
+ * 那里手上只有一条 `LibraryItem`,拼出来的目标不带 `groupId` —— 于是 `matchesWhen` 恒为
+ * false,**一条都不会被跳过**。契约允许写、实现永不命中,是最难查的那种坏法:用户会以为
+ * "这个分类里已经处理过的都被跳过了",而其实每一条都重跑了一遍。
+ */
+export function sanitizeSkipWhen(when: CustomUiWhen | undefined): CustomUiWhen | undefined {
+  if (!when) return undefined;
+  const out: CustomUiWhen = {};
+  if (when.extensions?.length) out.extensions = when.extensions;
+  if (when.requires) out.requires = when.requires;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 export type CustomUiItem = z.infer<typeof CustomUiItemSchema>;
 
 /**
@@ -309,7 +363,19 @@ export function coerceCustomUiConfig(parsed: unknown): CustomUiConfig {
       // 动作不适用于这个挂载位(手改 JSON 把一个「运行自动化」挪进了页签)也当坏条目丢
       if (r.success && !seen.has(r.data.id) && isActionAllowed(r.data.slot, r.data.action.type)) {
         seen.add(r.data.id);
-        items.push(r.data);
+        // 这个挂载位上说不通的条件**裁掉,不整条丢**(见 `sanitizeWhen` / `sanitizeSkipWhen`):
+        // 留着它们等于让这一项永远不显示、或让 skipWhen 永远不命中,而两者都是静默的。
+        const when = sanitizeWhen(r.data.when, r.data.slot);
+        const action =
+          r.data.action.type === "automation"
+            ? (() => {
+                const skipWhen = sanitizeSkipWhen(r.data.action.skipWhen);
+                const { skipWhen: _drop, ...rest } = r.data.action;
+                return skipWhen ? { ...rest, skipWhen } : rest;
+              })()
+            : r.data.action;
+        const { when: _dropWhen, ...restItem } = r.data;
+        items.push(when ? { ...restItem, when, action } : { ...restItem, action });
       }
     }
   }
@@ -568,14 +634,25 @@ export function targetKindOfSlot(slot: CustomUiSlot): CustomUiTarget["kind"] {
 
 /**
  * 「文件」动作的路径 → 绝对路径。相对路径按项目目录接上;没有项目又是相对路径 → `null`
- * (调用方提示「先打开一个项目」)。`..` 不在这里拦 —— 读文件的 RPC 只放行项目根下的
- * 路径,越界的读回来就是空。
+ * (调用方提示「先打开一个项目」)。
+ *
+ * ## `..` 现在拦在这里(2026-09-28)
+ *
+ * 从前的理由是"读文件的 RPC 只放行项目根下的路径",可那只覆盖**页签**那条路;工具栏的
+ * 「文件」动作走的是 `openFileInIde(abs)`,**不过那道白名单** —— `../../.ssh/id_rsa`
+ * 会被原样交给编辑器打开。而"配置只有本机用户写得了"这个前提也已经不成立:设置页有 JSON
+ * 导入(`coerceCustomUiConfig`),一份别人给的配置就能带着这样一条进来。
+ *
+ * 绝对路径仍然放行(等价于用户自己在本机打开一个文件,而且页签那条路上读文件的 RPC 照旧
+ * 会拦);拦的是**看起来在项目里、实际越界**的那种写法 —— 那一种没有任何正当用途。
  */
 export function resolveWorkspacePath(path: string, projectPath: string | undefined): string | null {
   const p = path.trim();
   if (p.length === 0) return null;
   if (/^(?:[a-zA-Z]:[\\/]|[\\/])/.test(p)) return p;
   if (!projectPath) return null;
+  // 相对路径里出现 `..` 一律拒(拆成段比,`..foo` 这种正常文件名不误伤)。
+  if (p.split(/[\\/]+/).some((seg) => seg === "..")) return null;
   const sep = projectPath.includes("\\") && !projectPath.includes("/") ? "\\" : "/";
   const root = projectPath.replace(/[\\/]+$/, "");
   return `${root}${sep}${p.replace(/^\.[\\/]/, "").replace(/[\\/]/g, sep)}`;
@@ -623,6 +700,13 @@ export const CustomUiRunAutomationSchema = z.object({
     .optional(),
   /** 只数一下这次会带多少条,不真跑 —— 批量跑之前给用户确认用。 */
   dryRun: z.boolean().optional(),
+  /**
+   * 用户在确认框上**看到并点头的那个条数**(只有走过 `dryRun` 的批量那条路会带)。
+   *
+   * 展开做两遍(数一遍、跑一遍),两遍之间库可能变了:确认框上写着 12 条,真跑时变成
+   * 87 条 —— 用户点的头不是给这 87 条点的。对不上就整次拒绝,让他重新点一次右键。
+   */
+  expectCount: z.number().int().min(0).max(100_000).optional(),
 });
 export type CustomUiRunAutomationInput = z.infer<typeof CustomUiRunAutomationSchema>;
 

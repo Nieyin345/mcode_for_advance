@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   customUiLabel,
+  localDateString,
   renderTemplate,
   resolveWorkspacePath,
   templateVarsOf,
@@ -33,7 +34,11 @@ type WorkspaceTarget = Extract<CustomUiTarget, { kind: "workspace" }>;
 
 export function CustomTabView({ item, target }: { item: CustomUiItem; target: WorkspaceTarget }) {
   const { t, locale } = useI18n();
-  const vars = templateVarsOf(target);
+  // **日期要自己会走。** 页签是常驻的:`notes/{{today}}.md` 这种路径开着过一夜之后,
+  // 没有任何东西会让它重新渲染(轮询只是重读同一个绝对路径),于是它整个白天都盯着
+  // 昨天那篇。这里每分钟对一次表,换天了才真的改状态(其余时候引用不变,不重渲染)。
+  const today = useRollingDate(target.today);
+  const vars = templateVarsOf(today === target.today ? target : { ...target, today });
   const title = customUiLabel(item.label, locale);
 
   if (item.action.type === "file") {
@@ -60,19 +65,26 @@ export function CustomTabView({ item, target }: { item: CustomUiItem; target: Wo
 function FileTab({ title, abs, projectPath }: { title: string; abs: string | null; projectPath: string | undefined }) {
   const { t } = useI18n();
   const [content, setContent] = useState<string | null>(null);
+  /** 读**失败**(不存在 / 在项目外 / 不是文本)与"文件确实是空的"是两回事,见下。 */
+  const [unreadable, setUnreadable] = useState(false);
 
   const load = useCallback(async () => {
     if (abs === null) return;
     try {
       const res = await api.file.readFile({ filePath: abs });
+      setUnreadable(false);
       setContent(res.content);
     } catch {
+      // 从前这里也 `setContent("")`,于是**路径写错**和**文件是空的**在界面上是同一句话,
+      // 用户没有任何线索去查 —— 而路径写错才是这两者里更常见、也更需要说出来的那个。
+      setUnreadable(true);
       setContent("");
     }
   }, [abs]);
 
   useEffect(() => {
     setContent(null);
+    setUnreadable(false);
     if (abs === null) return;
     void load();
     const timer = window.setInterval(() => {
@@ -115,8 +127,9 @@ function FileTab({ title, abs, projectPath }: { title: string; abs: string | nul
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2 text-sm">
         {abs === null ? (
           <Hint text={t("customUi.tab.noProject")} />
-        ) : content === null ? null : content === "" ? (
-          // 读失败(不存在 / 在项目外 / 不是文本)和空文件主进程都回空串,分不开 —— 一句话都说了
+        ) : content === null ? null : unreadable ? (
+          <Hint text={t("customUi.tab.fileUnreadable", { path: abs })} />
+        ) : content === "" ? (
           <Hint text={t("customUi.tab.fileEmpty")} />
         ) : isMarkdown ? (
           <Markdown projectPath={projectPath ?? null} baseDir={baseDir}>
@@ -129,6 +142,21 @@ function FileTab({ title, abs, projectPath }: { title: string; abs: string | nul
       </div>
     </div>
   );
+}
+
+/** 每分钟对一次表的本地日期(`YYYY-MM-DD`)。换天了才换引用。 */
+function useRollingDate(initial: string): string {
+  const [today, setToday] = useState(initial);
+  useEffect(() => {
+    const tick = (): void => {
+      const now = localDateString(new Date());
+      setToday((prev) => (prev === now ? prev : now));
+    };
+    tick();
+    const timer = window.setInterval(tick, 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return today;
 }
 
 function TabHeader({ title, subtitle, actions }: { title: string; subtitle?: string; actions?: React.ReactNode }) {

@@ -97,6 +97,11 @@ export function AutomationRunSection({ doc, catalog, dirty = false }: {
           {fact && missedNoticeOf(fact) > 0 && <p className="break-words text-warning">
             {t("settings.automation.facts.missed", { n: missedNoticeOf(fact) })}
           </p>}
+          {/* 「排着队」摆在失败那一行之前:它说的是"此刻正在等",而不是"刚才没跑成"。
+              没有这一行的时候,"上一次还在跑、这一批攒着"在界面上和"跑完了"长得一模一样。 */}
+          {fact && (fact.queuedCount ?? 0) > 0 && <p className="break-words text-content-muted">
+            {t("settings.automation.facts.queued", { n: fact.queuedCount ?? 0 })}
+          </p>}
           {fact && latestFailureOf(fact) && <p className="break-words text-danger">{latestFailureOf(fact)}</p>}
         </div>;
       })}

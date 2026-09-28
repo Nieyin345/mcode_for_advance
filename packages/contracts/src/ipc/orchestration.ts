@@ -87,6 +87,16 @@ export interface AutomationTriggerFacts {
   missedCount?: number;
   /** 最近一次错过的那个时间点(ms)。 */
   lastMissedAt?: number;
+  /**
+   * 上一次运行还没结束,而**已经攒着等它跑完**的那一批(文件 / 资料库条目)有多少条。
+   *
+   * 带数据的触发在忙碌时不是"丢掉",而是合并成一批排在后面(见主进程 `fire` 的忙碌分支)。
+   * 在这个字段之前那件事**在界面上没有任何痕迹**:既不算 `lastError`(它没失败),
+   * 也不算 `lastFireAt`(它还没跑)—— 用户改完文件等了十分钟,看到的和"跑完了"一模一样。
+   */
+  queuedCount?: number;
+  /** 这一批是什么时候攒起来的(ms)。 */
+  queuedAt?: number;
 }
 
 /**

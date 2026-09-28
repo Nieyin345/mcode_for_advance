@@ -29,6 +29,7 @@ import {
   customUiLabel,
   moduleKey,
   normalizeExtension,
+  sanitizeWhen,
   targetKindOfSlot,
   unknownTemplateVars,
   type CustomUiActionType,
@@ -219,17 +220,23 @@ function itemOf(d: Draft): { ok: true; item: CustomUiItem } | { ok: false; error
     .map((e) => e.trim())
     .filter(Boolean)
     .map(normalizeExtension);
-  const when = {
-    ...(extensions.length ? { extensions } : {}),
-    ...(d.requires ? { requires: d.requires } : {}),
-    ...(d.groupIds.length ? { groupIds: d.groupIds } : {}),
-  };
+  // 条件按挂载位裁一遍(见契约的 `sanitizeWhen`):草稿上留着的旧值 —— 比如把一项从
+  // 「条目右键」改挂到「工具栏」之后还躺在 draft 里的 requires —— 存下去会让这一项
+  // **永远不显示**。裁在这里,和读配置那一侧用的是同一把尺。
+  const when = sanitizeWhen(
+    {
+      ...(extensions.length ? { extensions } : {}),
+      ...(d.requires ? { requires: d.requires } : {}),
+      ...(d.groupIds.length ? { groupIds: d.groupIds } : {}),
+    },
+    d.slot,
+  );
   const candidate = {
     id: d.id,
     slot: d.slot,
     label: { zh: d.labelZh.trim(), ...(d.labelEn.trim() ? { en: d.labelEn.trim() } : {}) },
     ...(d.icon ? { icon: d.icon } : {}),
-    ...(Object.keys(when).length ? { when } : {}),
+    ...(when ? { when } : {}),
     action,
   };
   const r = CustomUiItemSchema.safeParse(candidate);

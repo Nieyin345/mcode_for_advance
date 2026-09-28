@@ -918,6 +918,20 @@ export async function startWorkflowRun(args: {
   /** 被看门狗判过死的会话 → 判死那一刻它已经静默了多久(写进错误里给人看)。 */
   const stalled = new Map<string, number>();
   /**
+   * 这一**次尝试**里,这段会话**已经动过工具**。
+   *
+   * 只为一件事:决定被看门狗判死的那一步**能不能自动重试**。
+   * `docs/workflow-automation-resilience-20260928.md` 把命令/代码节点排除在默认重试之外,
+   * 理由是"可能已经写了半个文件,重跑是把副作用做第二遍" —— 可 `mcode.agent` 同样在写盘、
+   * 同样在跑命令,而它被判死的那一刻**最可能正卡在一次工具调用中间**。那时重试就是
+   * 完整地再做一遍已经做过的事。
+   *
+   * 所以判据是**事实**而不是节点类型:这一轮一次工具都没调过(纯粹卡在模型那头,典型的
+   * 429/网络抖动)才认瞬时故障;调过了就把这一步交回给人。
+   * 每次 `armStallWatchdog`(含重试的每一轮)清一次 —— 它记的是"这一轮",不是这段会话的历史。
+   */
+  const toolUsed = new Set<string>();
+  /**
    * 这次运行里还活着的**进度心跳**(每个正在跑的节点各一个)。
    *
    * `runInNodeSession` 自己的 `finally` 会清掉自己那一个,所以正常路径上这里是空的。
@@ -1019,6 +1033,8 @@ export async function startWorkflowRun(args: {
       // 里那段注释),`conversation` 那种跑在主对话上的节点也在 `observed` 里 —— 它
       // 的工具名同样是实话,不必再分一道。
       activity.set(e.sessionId, e.toolName);
+      // 这一轮动过工具 —— 卡死之后就不再自动重跑了(见 `toolUsed`)。
+      toolUsed.add(e.sessionId);
     } else if (e.type === "subagent.update") {
       // 子代理是**这一轮里最长的静默期**:主代理派出去等着的时候,它自己一个字都不发。
       // 拿名单上那个还在跑的代理名报出去,比停在最后一个工具名上准确得多 —— 用户看到
@@ -1052,8 +1068,13 @@ export async function startWorkflowRun(args: {
    * 开头那句 `stalled.delete` 是给**重试**准备的:对话节点跑在主对话那段会话上,同一个
    * id 会被第二次挂上来 —— 不清的话上一轮的判死记录会让新的一轮一开跑就"已经卡死"。
    */
-  const armStallWatchdog = (sessionId: string): { tripped: Promise<void>; stop: () => void } => {
+  const armStallWatchdog = (
+    sessionId: string,
+    opts: { disposeOnTrip?: boolean } = {},
+  ): { tripped: Promise<void>; stop: () => void } => {
     stalled.delete(sessionId);
+    // 这一轮重新开始记"动没动过工具"(见 `toolUsed`)。
+    toolUsed.delete(sessionId);
     lastEventAt.set(sessionId, Date.now());
     let trip = (): void => {};
     const tripped = new Promise<void>((resolve) => {
@@ -1072,6 +1093,22 @@ export async function startWorkflowRun(args: {
       } catch (err) {
         // 打不断也照样收场 —— 下面那句 `trip()` 才是这道闸真正的出口。
         log.warn(`[workflow] 打断卡死的会话 ${sessionId} 失败:${(err as Error).message}`);
+      }
+      // ⚠️ **把那头的运行时也拆掉(只对隔离出来的节点会话)。**
+      //
+      // `trip()` 之后这一步立刻收场,而调度器可能当场发起重试 —— 可"卡死"的定义就是
+      // `interrupt` 没人接:那个回合在运行时看来**还开着**。不拆的话下一轮 `sendTurn`
+      // 要么被当成"它正忙"直接回 null(错误原因变成"节点会话没能启动",指向完全错误的
+      // 方向),要么两轮同时挂在一条会话上往同一处写。
+      //
+      // 主对话那条路(conversation 节点)**不拆**:那是用户自己的对话,拆它的运行时会
+      // 顺带丢掉用户正在进行的上下文 —— 那一路改成"判死后不自动重试"(见 `runInConversation`)。
+      if (opts.disposeOnTrip === true) {
+        try {
+          runtimeManager.dispose(sessionId);
+        } catch (err) {
+          log.warn(`[workflow] 拆掉卡死会话 ${sessionId} 的运行时失败:${(err as Error).message}`);
+        }
       }
       trip();
     }, NODE_STALL_CHECK_MS);
@@ -1097,11 +1134,17 @@ export async function startWorkflowRun(args: {
     // 唯一会带 `retryable` 的:卡死按定义就是瞬时故障,声明了重试的节点该自己再来一次。
     const stalledFor = stalled.get(nodeSessionId);
     if (stalledFor !== undefined) {
+      // **动过工具的那一轮不自动重试**(见 `toolUsed`):它很可能已经改过盘、起过进程,
+      // 重跑是把副作用做第二遍。如实说出这件事,把决定权交回给人。
+      const touched = toolUsed.has(nodeSessionId);
+      const minutes = Math.round(stalledFor / 60_000);
       return {
         status: "failed",
         summary,
-        error: `这一步连续 ${Math.round(stalledFor / 60_000)} 分钟没有任何动静,已按卡死处理`,
-        retryable: true,
+        error: touched
+          ? `这一步连续 ${minutes} 分钟没有任何动静,已按卡死处理;它**已经动过工具**,可能改了文件或起过进程 —— 没有自动重试,请先看一眼现状再决定要不要「再试一次」`
+          : `这一步连续 ${minutes} 分钟没有任何动静,已按卡死处理`,
+        retryable: !touched,
       };
     }
     const error = failure.get(nodeSessionId);
@@ -1325,7 +1368,14 @@ export async function startWorkflowRun(args: {
           // 这一步的产出 = 目标对话这一轮说的话(和其他节点同一个口径,见 `outcomeOf`)。
           // ⚠️ **拿到的是原文,不是补发出去的那张清单** —— 下游取的是产出变量,而变量是从
           // 原文里解出来的(`withOutputCheck` 也在查原文)。清单只是给人看的。
-          return outcomeOf(target.id);
+          const outcome = outcomeOf(target.id);
+          // **这一路判死之后绝不自动重试。** 它跑在**用户自己的对话**上,而"卡死"意味着
+          // `interrupt` 没人接 —— 上一轮在运行时看来还开着。再发一轮的结果是两轮交错着
+          // 往用户的聊天记录里吐字,或者被"它正忙"挡回来、报出一句指向错误方向的原因。
+          // 隔离节点那一路靠 `disposeOnTrip` 拆掉运行时才敢重试,主对话不能那么拆。
+          return outcome.status === "failed" && stalled.has(target.id)
+            ? { ...outcome, retryable: false }
+            : outcome;
         },
       );
     } catch (err) {
@@ -1470,7 +1520,7 @@ export async function startWorkflowRun(args: {
     input.signal.addEventListener("abort", onAbort, { once: true });
     // 卡死的兜底(见 `armStallWatchdog`)。挂在这里而不是 `try` 里面:它要和
     // `onAbort` 一样,在"起跑前最后一瞬"就位。
-    const watchdog = armStallWatchdog(nodeSession.id);
+    const watchdog = armStallWatchdog(nodeSession.id, { disposeOnTrip: true });
     // **从这一刻起整张图不再"停着等人"了**(见 `isRunParked`)。计数放在这里而不是
     // 函数开头:上面那几行还没真正开始干活,而 `createNodeSession` 万一抛了,加在
     // 开头的那一次就减不回来 —— 那个对话会永远显示"有节点在跑"。

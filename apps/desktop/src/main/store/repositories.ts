@@ -1354,6 +1354,33 @@ export const SettingRepo = {
     );
     persist();
   },
+
+  /** 按前缀列 key。给"一族按 id 分开存的小状态"清理用(见 `automationEventOrigin.ts`
+   *  的 `automation.eventChain.<sessionId>`:每次运行写一行,从前没有任何一处删得掉)。 */
+  keysWithPrefix(prefix: string): string[] {
+    const db = getDb();
+    const stmt = db.prepare("SELECT key FROM settings WHERE key LIKE ? ESCAPE '\\\\'");
+    // `_` 与 `%` 在 LIKE 里是通配符,前缀里出现就会多匹配 —— 转义掉。
+    stmt.bind([v(`${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`)]);
+    const out: string[] = [];
+    while (stmt.step()) out.push(String((stmt.getAsObject() as { key: BindValue }).key));
+    stmt.free();
+    return out;
+  },
+
+  /** 删一个 key(没有也不算错)。 */
+  delete(key: string): void {
+    getDb().run("DELETE FROM settings WHERE key = ?", [v(key)]);
+    persist();
+  },
+
+  /** 一次删掉一批(只 `persist()` 一次 —— 它重写整个库文件)。 */
+  deleteMany(keys: readonly string[]): void {
+    if (keys.length === 0) return;
+    const db = getDb();
+    for (const key of keys) db.run("DELETE FROM settings WHERE key = ?", [v(key)]);
+    persist();
+  },
 };
 
 /* ──────────────────────────────── 工作流 ───────────────────────────────── */

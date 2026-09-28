@@ -39,6 +39,8 @@ export interface CustomUiConfirm {
 
 /** automation 动作「运行前输入」的表单(见 `@contracts/customUi` 的 inputs)。 */
 export interface CustomUiForm {
+  /** 每次打开都不一样 —— 宿主拿它当 `key`,换一个表单时上一份填的值不会留在框里。 */
+  id: string;
   title: string;
   inputs: readonly CustomUiInput[];
   onSubmit: (values: Readonly<Record<string, string | string[]>>) => void;
@@ -49,7 +51,13 @@ interface CustomUiState {
   loaded: boolean;
   /** 读一次设置表。重复调用只有第一次真读。 */
   load: () => Promise<void>;
-  /** 整份替换并落盘。落盘失败会推一条 toast,内存里的新配置保留(用户能再点一次保存)。 */
+  /**
+   * 整份替换并落盘。**落盘失败会退回落盘前那一份**并推一条 toast。
+   *
+   * 从前失败时把新配置留在内存里:菜单看起来是保存成功的样子,之后每一次局部改动又以
+   * 这一份为基准写回去,而磁盘上一直是旧的 —— 用户要等到下次重启才发现全没了,那时也
+   * 没人说得清是哪一次没存上。退回去难看,但它说的是真话。
+   */
   save: (next: CustomUiConfig) => Promise<boolean>;
 
   /** 从菜单「自定义 UI…」进设置页时,设置页先选中的挂载位。 */
@@ -65,7 +73,7 @@ interface CustomUiState {
   closeConfirm: () => void;
 
   form: CustomUiForm | null;
-  openForm: (f: CustomUiForm) => void;
+  openForm: (f: Omit<CustomUiForm, "id">) => void;
   closeForm: () => void;
 
   /**
@@ -83,9 +91,20 @@ interface CustomUiState {
 /** 工具栏收起状态存的键。 */
 export const CUSTOM_UI_TOOLBAR_COLLAPSED_KEY = "customUi.toolbar.collapsed";
 
+/**
+ * **已经预置过**的标记键。
+ *
+ * 从前的判据是"一个自定义项都没有",于是一个**刻意把菜单清空**的用户每次开应用都会被
+ * 重新塞回一整套默认项(还附带一条 toast)。判据改成这个标记:预置**一台机器只做一次**,
+ * 成功与否都记(失败也记 —— 否则下次启动又来一遍,而失败的原因多半不会自己好)。
+ */
+export const CUSTOM_UI_SEEDED_KEY = "customUi.seeded.v1";
+
 /** 首启预置:拿自动化清单 → 构建默认项 → 落盘,并把绑定结果 toast 出来。 */
-async function seedDefaults(save: (next: CustomUiConfig) => Promise<boolean>): Promise<void> {
+async function seedDefaults(save: (next: CustomUiConfig) => Promise<boolean>, current: () => CustomUiConfig): Promise<void> {
   const { locale } = useSessionStore.getState();
+  // **先立标记再干活**:这一趟无论成败都不该在下次启动时重来(见 CUSTOM_UI_SEEDED_KEY)。
+  void api.setting.set({ key: CUSTOM_UI_SEEDED_KEY, value: "1" }).catch(() => {});
   try {
     const [wf, facts] = await Promise.all([api.workflow.list(), api.automation.statusAll()]);
     const { items, notes } = buildDefaultLibraryItems(
@@ -93,7 +112,12 @@ async function seedDefaults(save: (next: CustomUiConfig) => Promise<boolean>): P
       (facts ?? []).map((f) => ({ workflowId: f.workflowId, nodeId: f.nodeId, title: f.title, kind: f.kind })),
     );
     if (items.length === 0) return;
-    const ok = await save({ version: 1, items, layout: {} });
+    // **合进现在这一份,不整份覆盖。** 取清单是异步的,这几百毫秒里用户完全可能已经在
+    // 设置页建了一项、排过序 —— 整份覆盖会把那些连同 layout 一起吃掉。
+    const now = current();
+    const taken = new Set(now.items.map((i) => i.id));
+    const merged = [...now.items, ...items.filter((i) => !taken.has(i.id))];
+    const ok = await save({ version: 1, items: merged, layout: now.layout });
     if (!ok) return;
     const line = (n: SeedNote): string =>
       n.kind === "transcribe"
@@ -118,6 +142,8 @@ async function seedDefaults(save: (next: CustomUiConfig) => Promise<boolean>): P
 }
 
 let loading: Promise<void> | null = null;
+/** 表单序号(见 `CustomUiForm.id`)。 */
+let formSeq = 0;
 
 export const useCustomUiStore = create<CustomUiState>((set, get) => ({
   config: DEFAULT_CUSTOM_UI_CONFIG,
@@ -127,16 +153,21 @@ export const useCustomUiStore = create<CustomUiState>((set, get) => ({
     if (loading) return loading;
     loading = (async () => {
       try {
-        const [res, collapsed] = await Promise.all([
+        const [res, collapsed, seeded] = await Promise.all([
           api.setting.get({ key: CUSTOM_UI_SETTING_KEY }),
           api.setting.get({ key: CUSTOM_UI_TOOLBAR_COLLAPSED_KEY }).catch(() => ({ value: null })),
+          api.setting.get({ key: CUSTOM_UI_SEEDED_KEY }).catch(() => ({ value: null })),
         ]);
         const parsed = parseCustomUiConfig(res.value);
         set({ config: parsed, loaded: true, toolbarCollapsed: collapsed.value === "1" });
         // 首启预置(2026-09-28):从没配置过(一个自定义项都没有)时,按现有自动化
         // 自动搭出文献菜单(seedDefaults 的绑定规则,冒烟钉住)。失败要说出来,
         // 不静默 —— "没预置"读起来会像"功能不存在"。
-        if (parsed.items.length === 0) void seedDefaults(get().save);
+        // **只在从没预置过的机器上做**(见 CUSTOM_UI_SEEDED_KEY):清空过菜单的用户
+        // 不该每次开应用都被塞回默认项。
+        if (parsed.items.length === 0 && seeded.value !== "1") {
+          void seedDefaults(get().save, () => get().config);
+        }
       } catch {
         // 读不到(手机端 shim、库还没就绪)就当默认:菜单照常显示全部内置项
         set({ loaded: true });
@@ -147,11 +178,14 @@ export const useCustomUiStore = create<CustomUiState>((set, get) => ({
     return loading;
   },
   save: async (next) => {
+    // 乐观地先改内存(菜单立刻跟上),失败时退回这一份 —— 见 CustomUiState.save。
+    const previous = get().config;
     set({ config: next, loaded: true });
     try {
       await api.setting.set({ key: CUSTOM_UI_SETTING_KEY, value: JSON.stringify(next) });
       return true;
     } catch (err) {
+      set({ config: previous });
       const { locale } = useSessionStore.getState();
       useToastStore.getState().push({
         kind: "error",
@@ -174,7 +208,7 @@ export const useCustomUiStore = create<CustomUiState>((set, get) => ({
   closeConfirm: () => set({ confirm: null }),
 
   form: null,
-  openForm: (f) => set({ form: f }),
+  openForm: (f) => set({ form: { ...f, id: `f${++formSeq}` } }),
   closeForm: () => set({ form: null }),
 
   activeTab: null,
