@@ -586,6 +586,12 @@ const AUTO_DOWNLOAD_NODES: readonly NodeSpec[] = [
       //
       // 事件触发(载荷里压根没有 input 这一项)时读到的是**缺失** —— `readConditionRef`
       // 对触发器名字空间的缺失键给 found=false,走 false,不会炸。
+      //
+      // ⚠️ **但「整份载荷都没有」是另一回事**:`scope.trigger === undefined` 时
+      // `readConditionRef` 是**硬失败**(「这次运行没有触发器载荷」),条件节点当场判死、
+      // 整次运行失败。这条流程只从自定义 UI / 事件起跑,两条都带载荷,所以撞不上;
+      // 但把带 `{{trigger.*}}` 的条件节点放进一条**对话模式**的工作流就会炸 ——
+      // 下一个抄这段的人要知道这一点。
       [NODE_CONDITION_EXPRESSION_KEY]: {
         logic: "and",
         rules: [{ ref: "{{trigger.input.doi}}", op: "contains", value: "10." }],

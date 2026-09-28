@@ -47,6 +47,8 @@ import {
 import type { LibraryItem } from "@contracts/library";
 import { collectCollectionIds, isInsideAnyProject, itemFactsOf, shouldSkipItem } from "../../src/main/customUi/targets.js";
 import { describeTriggerPayload, payloadFactsOf } from "../../src/main/orchestration/automationPayload.js";
+import { LIT_IMPORT_PY } from "../../src/main/workflows/assets.js";
+import { spawnSync } from "node:child_process";
 import { buildDefaultLibraryItems } from "../../src/renderer/components/customUi/seedDefaults.js";
 
 let checks = 0;
@@ -433,6 +435,18 @@ check("RunAutomation 输入接受 input 值表", CustomUiRunAutomationSchema.saf
   check("绑定说明可解释", r.notes.some((n) => n.kind === "transcribe" && n.workflowName.includes("Markdown"))
     && r.notes.some((n) => n.kind === "import"), r.notes);
   check("预置项整体能过 schema", coerceCustomUiConfig({ version: 1, items: r.items, layout: {} }).items.length === 6);
+  // 文献导入是「只定位」那一种 —— 少了它,空分类会被「这个范围里没有条目」挡死。
+  const lit = r.items.find((i) => i.id === "seed-lit-import");
+  check("文献导入预置带 targetMode: context",
+    lit?.action.type === "automation" && lit.action.targetMode === "context", lit?.action);
+  check("批量转录仍是 scope(不带 targetMode)",
+    r.items.find((i) => i.id === "seed-batch-transcribe")?.action.type === "automation"
+      && (r.items.find((i) => i.id === "seed-batch-transcribe")?.action as { targetMode?: string }).targetMode === undefined);
+  check("targetMode 能过运行请求的 schema",
+    CustomUiRunAutomationSchema.safeParse({
+      workflowId: "w", triggerNodeId: "t", target: { kind: "collection", collectionId: "c" },
+      targetMode: "context", input: { files: ["C:/a.pdf"] },
+    }).success);
 }
 {
   const r = buildDefaultLibraryItems([], []);
@@ -446,6 +460,46 @@ check("RunAutomation 输入接受 input 值表", CustomUiRunAutomationSchema.saf
   );
   check("只有 event 自动化 → 转录建、导入缺", r.items.some((i) => i.id === "seed-transcribe")
     && !r.items.some((i) => i.id === "seed-lit-import") && r.notes.some((n) => n.kind === "missingImport"), r);
+}
+
+/* ── 文献导入:载荷 → 脚本 → importFiles 这道缝(2026-09-28)──
+ *
+ * 这道缝塌过一次:运行前输入在载荷里是**拍平**的 `input.files`,而脚本按嵌套的
+ * `input` 字典去取 —— 取到的永远是空,**而且不报错**(表现为"选了 PDF 却一个都没进库")。
+ * 类型对不出这种错,所以这里从两头钉死:载荷的键名 + 那段 Python 真跑一遍。
+ */
+{
+  const facts = payloadFactsOf({
+    kind: "event",
+    event: "library.item.imported",
+    collectionId: "col_1",
+    input: { files: ["C:/lib/a,b.pdf", "C:/lib/c.pdf"], doi: "10.1000/xyz" },
+  });
+  check("运行前输入在事实里是拍平的 input.<键>", facts["input.doi"] === "10.1000/xyz"
+    && Array.isArray(facts["input.files"]) && facts["input.files"].length === 2, facts);
+  check("落点分类进事实", facts.collectionId === "col_1", facts);
+  check("只定位的载荷不带 items", facts.items === undefined, facts);
+
+  // 真跑那段脚本。没装 python 就跳过(CI 的 Linux 镜像有,开发机不一定)。
+  const py = ["python3", "python"].find((bin) => {
+    try { return spawnSync(bin, ["-c", "pass"], { encoding: "utf8" }).status === 0; } catch { return false; }
+  });
+  if (py === undefined) {
+    console.log("custom-ui-smoke: 没有 python,跳过 LIT_IMPORT_PY 实跑");
+  } else {
+    const run = (payload: unknown): { summary?: string; outputs?: Record<string, unknown> } => {
+      const res = spawnSync(py, ["-c", LIT_IMPORT_PY], { input: `${JSON.stringify(payload)}\n`, encoding: "utf8" });
+      const line = res.stdout.split("\n").find((l) => l.startsWith("@@mcode:result "));
+      return line === undefined ? {} : JSON.parse(line.slice("@@mcode:result ".length));
+    };
+    const ok = run({ trigger: facts });
+    const req = ok.outputs?.["importFiles"] as { paths?: string[]; collectionIds?: string[] } | null | undefined;
+    check("选了文件 → 脚本报 importFiles.paths", Array.isArray(req?.paths) && req?.paths.length === 2, ok);
+    check("路径里的逗号不被切开", req?.paths?.[0] === "C:/lib/a,b.pdf", req);
+    check("落点分类带进 collectionIds", req?.collectionIds?.[0] === "col_1", req);
+    const none = run({ trigger: payloadFactsOf({ kind: "event", event: "library.item.imported", input: { doi: "10.1" } }) });
+    check("只填 DOI → 不报 importFiles,也不失败", none.outputs?.["importFiles"] === null, none);
+  }
 }
 
 /* ── 汇总 ── */

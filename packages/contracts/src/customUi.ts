@@ -194,6 +194,20 @@ export const CustomUiActionSchema = z.discriminatedUnion("type", [
     skipWhen: CustomUiWhenSchema.optional(),
     /** 运行前输入(见 {@link CustomUiInputSchema})。v1 只在有目标的挂载位可用。 */
     inputs: z.array(CustomUiInputSchema).max(4).optional(),
+    /**
+     * 右键那个目标**怎么用**(2026-09-28)。
+     *
+     *   - `scope`(默认):目标是**这次要办的那一批** —— 分类/大类展开成里面的条目,
+     *     批量转录就是这一种(先数一遍、让用户确认、超 200 条拒绝)。
+     *   - `context`:目标只是**上下文**(办事的地方),**不展开条目**。文献导入是这一种:
+     *     用户右键一个分类,意思是"把表单里选的 PDF 收进这个分类",而不是"对分类里
+     *     现有的条目办事"。
+     *
+     * ⚠️ 这一格不是可有可无的修饰:`scope` 那条路上**空分类一律被拒**
+     * (「这个范围里没有条目」),而"往空分类里导东西"恰恰是 `context` 的典型用法。
+     * 两种语义压在一条展开路径上时,导入入口在最常见的情形下 100% 失败。
+     */
+    targetMode: z.enum(["scope", "context"]).optional(),
   }),
   /**
    * 一个文件(路径可以写 `{{变量}}`;相对路径按当前项目目录解析)。工具栏上 = 在中间
@@ -691,6 +705,8 @@ export const CustomUiRunAutomationSchema = z.object({
   target: CustomUiRunTargetSchema,
   /** 展开时的条目跳过条件(见 automation 动作的 skipWhen;主进程逐条目复核)。 */
   skipWhen: CustomUiWhenSchema.optional(),
+  /** 目标怎么用(见 automation 动作的 targetMode)。缺省 = `scope`,与老行为一致。 */
+  targetMode: z.enum(["scope", "context"]).optional(),
   /** 运行前输入的值(键 = `inputs[].key`;files 是绝对路径数组)。 */
   input: z
     .record(

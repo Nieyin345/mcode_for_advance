@@ -119,19 +119,23 @@ export function buildDefaultLibraryItems(
       { key: "files", kind: "files" as const, label: { zh: "文献文件(PDF 等,可多选)", en: "Literature files" } },
       { key: "doi", kind: "text" as const, label: { zh: "DOI(可多个,用逗号分隔)", en: "DOI (comma-separated)" } },
     ];
+    // `targetMode: "context"`:右键的分类是**落点**(收进这儿),不是"这次要办的那一批"
+    // —— 少了它,空分类会被「这个范围里没有条目」挡死,而往空分类里导文献正是最常见的
+    // 用法(2026-09-28)。
+    const asContext = { targetMode: "context" as const, inputs };
     items.push({
       id: "seed-lit-import",
       slot: "library.collection",
       label: { zh: "文献导入(PDF / DOI)", en: "Literature import" },
       icon: "download",
-      action: { type: "automation", ...bind, inputs },
+      action: { type: "automation", ...bind, ...asContext },
     });
     items.push({
       id: "seed-lit-import-sub",
       slot: "library.subcategory",
       label: { zh: "文献导入(PDF / DOI)", en: "Literature import" },
       icon: "download",
-      action: { type: "automation", ...bind, inputs },
+      action: { type: "automation", ...bind, ...asContext },
     });
     notes.push({ kind: "import", workflowName: nameOf(download.workflowId) });
   } else {

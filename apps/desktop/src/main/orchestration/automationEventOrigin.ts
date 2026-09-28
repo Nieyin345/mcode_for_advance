@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { RuntimeEvent } from "@contracts/runtime";
 import type { Session } from "@contracts/session";
 import { SettingRepo } from "@main/store/repositories.js";
@@ -42,6 +43,43 @@ export function withAutomationOrigin(
     if (captured !== undefined) origins.set(copy, captured);
     emit(copy);
   };
+}
+
+/**
+ * **宿主侧副作用的来源链**(2026-09-28)。
+ *
+ * 模型那一路的事件由 `withAutomationOrigin` 逐个打标,可**宿主自己干的事**没人打标:
+ * code 节点报上来的「把这些文件收进库」由主进程执行(见 `adoptFromCode.applyImports`),
+ * 它发出的 `library.item.imported` 走的是 `broadcast.emitItemImported` —— 那条事件此前
+ * **不带任何来源**,于是自动化 A 通过入库触发 A(或 A→B→A)在自触发额度眼里是**外部
+ * 事件**,完全看不见。看不见的循环没有预算可花,只能一直转。
+ *
+ * 用 `AsyncLocalStorage` 而不是模块级变量:节点是并发跑的,一个全局变量会把 A 的来源
+ * 记到 B 的事件上。存的是**不可变快照**(同 `snapshotAutomationOrigin` 的规矩)。
+ */
+const ambient = new AsyncLocalStorage<AutomationEventOrigin>();
+
+/** 在这段异步作用域里发出的宿主事件都算作 `origin` 引出的。 */
+export function runWithAutomationOrigin<T>(origin: AutomationEventOrigin | undefined, fn: () => T): T {
+  const captured = snapshotAutomationOrigin(origin);
+  return captured === undefined ? fn() : ambient.run(captured, fn);
+}
+
+/** 当前异步作用域的来源链(不在自动化里跑 = undefined)。 */
+export function currentAutomationOrigin(): AutomationEventOrigin | undefined {
+  return ambient.getStore();
+}
+
+/**
+ * 给一条**马上要发出去的**事件打上当前作用域的来源。返回的是**新对象**:
+ * 来源表按事件对象身份记(WeakMap),而调用方手里那份可能被复用。
+ */
+export function withAmbientAutomationOrigin<E extends RuntimeEvent>(event: E): E {
+  const origin = ambient.getStore();
+  if (origin === undefined) return event;
+  const copy = { ...event } as E;
+  origins.set(copy, origin);
+  return copy;
 }
 
 /** Compatibility fallback for automation-owned sessions without a per-event tag. */

@@ -1240,11 +1240,17 @@ class AutomationRunner {
    *   - `items` → 与资料库事件同形的条目清单。事件名取**这条触发器自己订阅的**资料库
    *     事件(典型:「下载完自动转录」订的是 `library.item.downloaded`),没订阅就按
    *     「导入」说 —— 这样同一条自动化被事件叫起来和被右键叫起来,读到的载荷一模一样。
+   *   - `collectionId` → **只定位、不带条目**(自定义 UI 的 `targetMode: "context"`,
+   *     典型:文献导入)。用户右键的那个分类是**落点**,不是"这次要办的那一批" ——
+   *     所以载荷里只有分类 id 和运行前输入,`items` 一条都不给。
    */
   async runWithTarget(
     workflowId: string,
     triggerNodeId: string,
-    target: { files: readonly string[] } | { items: NonNullable<Extract<TriggerPayload, { kind: "event" }>["items"]> },
+    target:
+      | { files: readonly string[] }
+      | { items: NonNullable<Extract<TriggerPayload, { kind: "event" }>["items"]> }
+      | { collectionId: string },
     input?: Readonly<Record<string, string | readonly string[]>>,
   ): Promise<AutomationRunResult> {
     const find = (): LoadedTrigger | undefined =>
@@ -1259,12 +1265,21 @@ class AutomationRunner {
     }
     let payload: TriggerPayload;
     const withInput = input !== undefined && Object.keys(input).length > 0 ? { input } : {};
+    const subscribed = trigger.spec.kind === "event"
+      ? trigger.spec.events.find((e) => e === "library.item.downloaded" || e === "library.item.imported")
+      : undefined;
     if ("files" in target) {
       payload = { kind: "file", files: target.files, ...withInput };
+    } else if ("collectionId" in target) {
+      // 「只定位」那一种:没有 items。**别在这里塞一个空数组** —— `payloadFactsOf` 对
+      // 空 items 是不给键的,塞了也白塞,而读的人会以为"这次真有一批条目、只是空的"。
+      payload = {
+        kind: "event",
+        event: subscribed ?? "library.item.imported",
+        collectionId: target.collectionId,
+        ...withInput,
+      };
     } else {
-      const subscribed = trigger.spec.kind === "event"
-        ? trigger.spec.events.find((e) => e === "library.item.downloaded" || e === "library.item.imported")
-        : undefined;
       payload = { kind: "event", event: subscribed ?? "library.item.imported", items: target.items, ...withInput };
     }
     return this.fire(trigger, payload, { manual: true });

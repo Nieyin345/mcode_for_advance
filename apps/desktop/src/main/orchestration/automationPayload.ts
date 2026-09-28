@@ -58,6 +58,15 @@ export type TriggerPayload =
        * 配置)。塞进去等于告诉模型"可以拿它筛",而用户照着配会被当场拦下。
        */
       items?: readonly Partial<Record<EventItemFactKey, string>>[];
+      /**
+       * **这次运行的落点分类**(2026-09-28)。只有自定义 UI 的 `targetMode: "context"`
+       * 那条路带得出:用户在某个分类上右键「文献导入」,意思是"收进**这个**分类"。
+       *
+       * 真正的资料库事件**没有**这一项 —— 一条条目可以同时在好几个分类里,事件说的是
+       * "这一条变了",不是"哪个分类变了"。所以它不进 `TRIGGER_PAYLOAD_FACTS_OF` 的
+       * 候选名单(同 `itemCount` 的理由:列一个多半取不到的名字只会害人)。
+       */
+      collectionId?: string;
       /** 自定义 UI「运行前输入」带来的值(见 `@contracts/customUi` 的 inputs)。 */
       input?: TriggerInputValues;
     };
@@ -131,6 +140,11 @@ export interface TriggerPayloadFacts {
    */
   items?: ReadonlyArray<Partial<Record<EventItemFactKey, string>>>;
   /**
+   * 落点分类(见 `TriggerPayload` 的同名字段)。代码节点按 `trigger.collectionId` 取,
+   * 拿它拼 `importFiles.collectionIds`。
+   */
+  collectionId?: string;
+  /**
    * 运行前输入,**拍平**成 `input.<key>`(与 `itemId` 拍平同一个理由:
    * `expandTriggerVars` 按字面查一个键,而 `TRIGGER_REF_RE` 的键名允许点 ⟹
    * `{{trigger.input.doi}}` 直接可解,变量系统零改动)。files 类输入是路径数组,
@@ -177,6 +191,7 @@ export function payloadFactsOf(payload: TriggerPayload): TriggerPayloadFacts {
           ? { items: payload.items.map((it) => ({ ...it })) }
           : {}),
         ...(payload.items !== undefined && payload.items.length > 1 ? { itemCount: payload.items.length } : {}),
+        ...(payload.collectionId !== undefined ? { collectionId: payload.collectionId } : {}),
         ...inputFactsOf(payload.input),
       };
     }

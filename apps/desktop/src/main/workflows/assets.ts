@@ -1463,8 +1463,13 @@ export const LIT_IMPORT_PY = `
 
 stdin 一行 JSON，是这次运行的数据上下文。要的两样在触发器事实里:
 
-    trigger.input.files  —— 表单里选的文件路径(数组，或逗号分隔的一串)
-    trigger.collectionId —— 右键点的那个分类(有就把条目归进去)
+    trigger["input.files"]  —— 表单里选的文件路径(数组，或逗号分隔的一串)
+    trigger["collectionId"] —— 右键点的那个分类(有就把条目归进去)
+
+⚠️ **键名是拍平的字符串「input.files」，不是嵌套的 input 字典。** 运行前输入在
+「automationPayload.ts」的「inputFactsOf」里被拍成「input.<键>」——那是为了让
+「{{trigger.input.doi}}」这种插值按字面查一个键就能解出来。照嵌套字典去取的话
+取到的永远是空，而且**不报错**:表现为"选了 PDF 却一个都没进库"。
 
 没选文件是**正常情况**(用户只填了 DOI) —— 那就什么都不做，说一句，正常退出。
 """
@@ -1489,13 +1494,21 @@ def emit(summary, outputs=None):
     sys.stdout.flush()
 
 
-def as_list(value):
-    """表单的值可能是数组，也可能是一串(逗号/换行/分号分隔)。两种都收。"""
+def as_list(value, split_commas=True):
+    """表单的值可能是数组，也可能是一串。数组是正路。
+
+    ⚠️ 文件那一路 **不按逗号切**(split_commas=False):路径里带逗号的文件会被切成
+    两半，而那两半都不存在——报出来的错是"文件不存在"，看不出是切坏了。
+    只按换行切，那是用户手敲多行路径时唯一说得通的分隔。
+    """
     if isinstance(value, list):
         return [str(v).strip() for v in value if str(v).strip()]
     if isinstance(value, str):
+        text = value.replace(";", ",") if split_commas else value
+        seps = "," if split_commas else chr(10)
+        chunks = text.replace(chr(10), ",").split(",") if split_commas else text.split(seps)
         out = []
-        for chunk in value.replace(";", ",").replace(chr(10), ",").split(","):
+        for chunk in chunks:
             chunk = chunk.strip().strip('"')
             if chunk:
                 out.append(chunk)
@@ -1513,15 +1526,17 @@ def main():
         return
 
     # 触发器事实可能就在顶层，也可能裹在 trigger / data 里(见 MINERU_PY 同样的找法)。
+    # 认的判据是**拍平后的键**:kind 一定在，input.* 是表单带来的。
     scope = payload if isinstance(payload, dict) else {}
     for key in ("trigger", "data"):
         inner = scope.get(key) if isinstance(scope, dict) else None
-        if isinstance(inner, dict) and ("input" in inner or "collectionId" in inner):
+        if isinstance(inner, dict) and ("kind" in inner or any(str(k).startswith("input.") for k in inner)):
             scope = inner
             break
 
-    form = scope.get("input") if isinstance(scope.get("input"), dict) else {}
-    files = as_list(form.get("files"))
+    # 拍平的键("input.files")是正路;嵌套的 input 字典只是万一哪天载荷换了形状的兜底。
+    nested = scope.get("input") if isinstance(scope.get("input"), dict) else {}
+    files = as_list(scope.get("input.files", nested.get("files")), split_commas=False)
     collection_id = scope.get("collectionId") or ""
 
     if not files:

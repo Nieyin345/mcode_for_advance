@@ -1,5 +1,5 @@
 import { scopedMemorySnapshot } from "@main/memory/retrieval.js";
-import { readAutomationEventChain, snapshotAutomationOrigin, withAutomationOrigin } from "./automationEventOrigin.js";
+import { readAutomationEventChain, runWithAutomationOrigin, snapshotAutomationOrigin, withAutomationOrigin } from "./automationEventOrigin.js";
 /**
  * 一个节点在界面上叫什么:**用户起的标题 > 清单里的名字 > 类型 id**。
  *
@@ -1630,7 +1630,11 @@ export async function startWorkflowRun(args: {
       // 正是 `buildNodeInput` 的产物,它内部已经调过 `manifestOf` 了。这里再调一次
       // 是幂等的(表已经在了),不用额外加顺序假设。
       const dir = await ports.manifestDirOf(node.type);
-      return runEngine.execute({
+      // **宿主执行器的副作用也算这条自动化引出的**(2026-09-28)。code 节点会让主进程
+      // 往库里收文件,那会发 `library.item.imported` —— 不带来源的话,"自己入库触发
+      // 自己"在自触发额度眼里是外部事件,循环看不见也拦不住(见
+      // `automationEventOrigin.runWithAutomationOrigin`)。
+      return runWithAutomationOrigin(automationOrigin, () => runEngine.execute({
         node,
         manifest,
         input,
@@ -1638,7 +1642,7 @@ export async function startWorkflowRun(args: {
         metadata: { runId, sessionId: session.id, nodeId: node.id },
         emitProgress: (progress) => emitNodeProgress(node, manifest, progress),
         ...(dir !== undefined ? { manifestDir: dir } : {}),
-      });
+      }));
     },
 
     /**

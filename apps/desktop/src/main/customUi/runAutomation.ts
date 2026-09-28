@@ -95,7 +95,34 @@ function expand(target: CustomUiRunTarget, skipWhen: CustomUiWhen | undefined): 
   return { ok: true, items, skipped };
 }
 
+/**
+ * 「只定位、不展开」那一种(`targetMode: "context"`,见 `@contracts/customUi`)。
+ *
+ * 右键的分类是**落点**不是批次:载荷里只带分类 id 和运行前输入,一条条目都不带。
+ * 这条路**不数条目、不比 expectCount、不受 `CUSTOM_UI_MAX_BATCH` 约束** —— 那三样
+ * 问的都是"这次要对多少条现有条目办事",而这里的答案恒为零。
+ *
+ * ⚠️ 空分类**必须放行**:往新建的空分类里导文献正是这条路最典型的用法。走 `scope`
+ * 那条的话它会被「这个范围里没有条目」挡死(2026-09-28 修的就是这个)。
+ */
+function runInContext(input: CustomUiRunAutomationInput): Promise<CustomUiRunAutomationResult> {
+  const target = input.target;
+  if (target.kind !== "collection") {
+    // 大类没有唯一落点(它下面挂着好几个分类),条目和文件不是"地方"。如实说,
+    // 别挑一个猜出来的分类替用户做主。
+    return Promise.resolve({ ok: false, error: "这一项要在具体的分类(或小类)上右键运行" });
+  }
+  const collection = CollectionRepo.list().find((c) => c.id === target.collectionId);
+  if (!collection) return Promise.resolve({ ok: false, error: "这个分类已经不存在了" });
+  if (collection.isTrash) return Promise.resolve({ ok: false, error: "回收站不能作为落点" });
+  if (input.dryRun === true) return Promise.resolve({ ok: true, count: 0, skipped: 0 });
+  return automationRunner
+    .runWithTarget(input.workflowId, input.triggerNodeId, { collectionId: target.collectionId }, input.input)
+    .then((res) => (res.ok ? { ok: true, count: 0, skipped: 0 } : { ok: false, error: res.error, count: 0, skipped: 0 }));
+}
+
 export async function runCustomUiAutomation(input: CustomUiRunAutomationInput): Promise<CustomUiRunAutomationResult> {
+  if (input.targetMode === "context") return runInContext(input);
   const expanded = expand(input.target, input.skipWhen);
   if (!expanded.ok) return { ok: false, error: expanded.error };
   const count = "files" in expanded ? expanded.files.length : expanded.items.length;

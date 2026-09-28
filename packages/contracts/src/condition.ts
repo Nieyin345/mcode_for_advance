@@ -59,9 +59,13 @@ export function evaluateConditionExpression(
       answers.push(textOf(read.value) === rule.value);
     } else {
       const raw = read.value;
+      // 数组也按**子串**比,与字符串那一支同一个意思(2026-09-28)。
+      // 从前这里是逐项**全等** —— 于是同一个「包含」在两种值上说的不是同一件事:
+      // `{{trigger.input.files}} 包含 .pdf` 恒为 false,而界面上那个 op 明明写着「包含」。
+      // 全等的用法用「等于」表达得了(它对数组同样是逐项比),而子串对数组无从表达。
       answers.push(
         typeof raw === "string" ? raw.includes(rule.value) :
-        Array.isArray(raw) ? raw.some((item) => textOf(item) === rule.value) : false,
+        Array.isArray(raw) ? raw.some((item) => (textOf(item) ?? "").includes(rule.value)) : false,
       );
     }
   }

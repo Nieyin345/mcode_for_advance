@@ -99,6 +99,12 @@ interface Draft {
   skipRequires: "" | "file" | "pdf" | "markdown";
   /** automation 的运行前输入(P2;工具栏挂载位不可用)。 */
   inputs: { key: string; kind: "text" | "files"; labelZh: string; required: boolean }[];
+  /**
+   * automation 的 `targetMode === "context"`:右键的分类只是**落点**,不展开成条目。
+   * 文献导入那类"往这儿收东西"的入口要打开它 —— 不打开的话空分类会被
+   * 「这个范围里没有条目」挡死(见 `@contracts/customUi` 的 targetMode)。
+   */
+  targetIsContext: boolean;
   filePath: string;
   openTab: string;
 }
@@ -132,6 +138,7 @@ function blankDraft(slot: CustomUiSlot, items: readonly CustomUiItem[]): Draft {
     triggerNodeId: "",
     skipRequires: "",
     inputs: [],
+    targetIsContext: false,
     filePath: "",
     openTab: "",
   };
@@ -168,6 +175,7 @@ function draftOf(item: CustomUiItem): Draft {
             required: i.required === true,
           }))
         : [],
+    targetIsContext: a.type === "automation" && a.targetMode === "context",
     filePath: a.type === "file" ? a.path : "",
     openTab: a.type === "openTab" ? a.tab : "",
   };
@@ -191,6 +199,7 @@ function itemOf(d: Draft): { ok: true; item: CustomUiItem } | { ok: false; error
                   type: "automation",
                   workflowId: d.workflowId,
                   triggerNodeId: d.triggerNodeId,
+                  ...(d.targetIsContext ? { targetMode: "context" as const } : {}),
                   ...(d.skipRequires ? { skipWhen: { requires: d.skipRequires } } : {}),
                   ...(d.inputs.length
                     ? {
@@ -309,6 +318,8 @@ function templateDraft(
         ...both("customUi.template.literatureImport.label"),
         icon: "download",
         actionType: "automation",
+        // 右键的分类是**落点**(收进这儿),不是"这次要办的那一批" —— 见 targetMode。
+        targetIsContext: true,
         inputs: [
           { key: "files", kind: "files", labelZh: translate("zh", "customUi.template.literatureImport.files"), required: false },
           { key: "doi", kind: "text", labelZh: translate("zh", "customUi.template.literatureImport.doi"), required: false },
@@ -938,6 +949,21 @@ function ItemEditor({
                       <option value="file">{t("customUi.editor.skipWhen.file")}</option>
                     </select>
                     <span className="text-[0.7857em] text-content-subtle">{t("customUi.editor.skipWhenHint")}</span>
+                  </label>
+                )}
+                {/* 目标怎么用:展开成一批,还是只当落点。空分类那条路全靠它(见 targetMode)。 */}
+                {!isWorkspace && (
+                  <label className="flex items-start gap-2 text-[0.8571em]">
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={draft.targetIsContext}
+                      onChange={(e) => set("targetIsContext", e.target.checked)}
+                    />
+                    <span className="flex flex-col gap-0.5">
+                      <span>{t("customUi.editor.targetContext")}</span>
+                      <span className="text-[0.7857em] text-content-subtle">{t("customUi.editor.targetContextHint")}</span>
+                    </span>
                   </label>
                 )}
                 {/* 运行前输入(P2):工具栏走 runNow、没有 input 通道 ⟹ 只在有目标的挂载位开放 */}

@@ -108,10 +108,14 @@ async function runAutomationWithTarget(
   inputValues?: Readonly<Record<string, string | string[]>>,
 ): Promise<void> {
   const name = customUiLabel(item.label, useSessionStore.getState().locale);
+  // 「目标只是落点」那一种(文献导入):不展开条目、不数条数,所以下面那套
+  // dryRun + 确认框整段跳过 —— 那套问的是"要对多少条现有条目办事",而这里的答案恒为零。
+  const context = action.targetMode === "context";
   const input = {
     workflowId: action.workflowId,
     triggerNodeId: action.triggerNodeId,
     target: runTarget,
+    ...(context ? { targetMode: "context" as const } : {}),
     ...(action.skipWhen ? { skipWhen: action.skipWhen } : {}),
     ...(inputValues && Object.keys(inputValues).length > 0 ? { input: inputValues } : {}),
   };
@@ -128,7 +132,7 @@ async function runAutomationWithTarget(
   };
   // 分类 / 大类是**一批**:先数清楚会带多少条、让用户点一次确认,再真跑 ——
   // 右键误点一下就让一条自动化对两百篇论文开工,代价太大。
-  if (target.kind === "collection" || target.kind === "group") {
+  if (!context && (target.kind === "collection" || target.kind === "group")) {
     try {
       const dry = await api.customUi.runAutomation({ ...input, dryRun: true });
       if (!dry.ok) {
@@ -155,7 +159,10 @@ async function runAutomationWithTarget(
   // 单条目:被 skipWhen 跳过时如实说(已有转录 → 不重复转录),别报成失败。
   try {
     const res = await api.customUi.runAutomation(input);
-    if (res.ok) toast("info", "customUi.run.started", undefined, { name, n: res.count ?? 1 });
+    // context 那一种带的条目数恒为零,报「已开始运行」就够了 —— 说「带 0 条」会让人
+    // 以为什么都没带,而表单里的东西明明带过去了。
+    if (res.ok && context) toast("info", "customUi.run.startedContext", undefined, { name });
+    else if (res.ok) toast("info", "customUi.run.started", undefined, { name, n: res.count ?? 1 });
     else if ((res.skipped ?? 0) > 0 && (res.count ?? 0) === 0) toast("info", "customUi.run.allSkipped", res.error, { name });
     else toast("error", "customUi.run.failed", res.error);
   } catch (err) {
