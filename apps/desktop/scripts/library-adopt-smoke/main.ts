@@ -282,6 +282,28 @@ console.log("\n采纳 · 源文件就在落点里");
   eq("md_path 也没被改坏", LibraryRepo.get(item)!.mdPath, v4MdPath);
 }
 
+/* ──────────────── 3c. md 里有坏转义:一份坏引用不该掀掉整份产物 ──────────────── */
+
+console.log("\n采纳 · md 里有不合法的百分号转义");
+
+// md 的内容是数据。`![图](images/100%.png)` 里的 `%` 不是合法转义,`decodeURIComponent`
+// 对它抛 URIError —— 从前那一下掀掉**整份**产物的采纳(外层 catch 报"采纳失败"),
+// 正文都换不上去。正确口径:这一条记成"配图没找到",其余照常挂上。
+{
+  const bomItem = LibraryRepo.upsert({ title: "带坏转义的那一篇" }).id;
+  const dir = mkdtempSync(join(tmpdir(), "mcode-adopt-bom-"));
+  mkdirSync(join(dir, "images"), { recursive: true });
+  writeFileSync(join(dir, "images", "ok.png"), Buffer.from([1, 2, 3]));
+  writeFileSync(join(dir, "full.md"), "# 正文\n\n![好图](images/ok.png)\n\n![坏图](images/100%.png)\n", "utf8");
+  const res = adoptMarkdownFile(bomItem, join(dir, "full.md"));
+  check("整份还是挂上了(没被一处坏转义掀掉)", res.ok, res);
+  eq("正文换上了", textAt(inPackage(bomItem, "full.md")), "# 正文\n\n![好图](images/ok.png)\n\n![坏图](images/100%.png)\n");
+  check("能搬的那张图搬进来了", existsSync(inPackage(bomItem, "images", "ok.png")));
+  eq("图数报的是 1", res.imageCount, 1);
+  check("坏的那一条进了 missing", res.missing.some((m) => m.includes("100%")), res.missing);
+  check("落点下面没有暂存残渣", !packageOnly(bomItem).match(/stage|\.tmp|adopt-/i), packageOnly(bomItem));
+}
+
 /* ──────────────── 4. 重转:不许覆盖用户采纳进来的那份 ──────────────── */
 
 console.log("\n重转 · 用户给的那份不许被机器覆盖");
