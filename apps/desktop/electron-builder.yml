@@ -1,6 +1,11 @@
 # electron-builder packaging config.
 # Run via `pnpm package` (electron-vite build && electron-builder).
 # Output goes to `apps/desktop/release/` (gitignored).
+#
+# ⚠️ 在国内网络的 Windows 上本地打包会撞两个坑(CI 上不会):下载器不认 GitHub 证书
+# (Go 写的 app-builder 不走系统证书库)、winCodeSign 包里的 macOS 软链接建不了。
+# 解法(设镜像环境变量 + 手动解一次缓存)写在 `docs/tech-stack.md` 的 9.3.1 ——
+# **故意不写进这份配置**:那是本机环境的事,固化进项目会让 CI 绕远路。
 
 appId: com.huangbh.mcode
 productName: Mcode

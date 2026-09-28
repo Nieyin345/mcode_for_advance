@@ -422,3 +422,54 @@ autoUpdater.downloadUpdate()
   - **`latest*.yml` 必须作为 Asset 上传**--这是 electron-updater 检查更新的依据,漏传则自动更新失效。
   - 用内置 `GITHUB_TOKEN`,无需额外 secret。
 - **本地打包**:`pnpm package`(等价 `turbo run package` -> `electron-vite build && electron-builder`)。
+
+#### 9.3.1 国内网络下本地打包的两个坑(2026-09-28 实测)
+
+CI 上没有这两个问题(GitHub runner 直连、Linux/macOS 允许软链接),**只影响本机打包**。
+
+**坑一:下载器不认 GitHub 的证书。** 报错长这样:
+
+```
+⨯ Get "https://github.com/electron/electron/releases/download/v33.0.0/electron-v33.0.0-win32-x64.zip":
+  tls: failed to verify certificate: x509: certificate signed by unknown authority
+```
+
+判据:**浏览器和 PowerShell 访问 github.com 正常(200)**,只有打包报证书错。原因是
+electron-builder 的下载器是 Go 写的 `app-builder.exe`,它不走 Windows 证书库,撞上本机
+代理/杀软的 TLS 中间人就炸。改镜像绕开(顺带快得多,115MB 的 Electron 约 24 秒):
+
+```powershell
+$env:ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
+$env:ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/"
+pnpm package
+```
+
+⚠️ **故意没写进 `package` 脚本或 `.npmrc`**:那样等于把"走国内镜像"固化进项目,CI
+(GitHub runner)反倒绕远路。这是**本机环境**的事,不是项目的事。
+
+**坑二:Windows 建不了符号链接。** 报错长这样:
+
+```
+ERROR: Cannot create symbolic link : 客户端没有所需的特权 :
+  ...\winCodeSign\<数字>\darwin\10.12\lib\libcrypto.dylib
+```
+
+`winCodeSign-2.6.0.7z` 里带着 macOS 的两个 dylib 软链接,7za 用 `-snld` 按链接还原,
+非管理员没这个特权,于是**整包判失败** —— 而那两个文件对 Windows 打包毫无用处。
+
+两个办法,任选:
+
+1. 打开 Windows 的**开发者模式**(设置 → 隐私和安全性 → 开发者选项),非管理员即可建软链接;
+2. 手动把那个包解进缓存(**不带** `-snld`),让 electron-builder 直接用缓存 —— 一次性,
+   之后打包不再碰它:
+
+```powershell
+$cache = "$env:LOCALAPPDATA\electron-builder\Cache\winCodeSign"
+$tmp = "$cache\winCodeSign-2.6.0.7z"
+New-Item -ItemType Directory -Force -Path $cache | Out-Null
+Invoke-WebRequest "https://npmmirror.com/mirrors/electron-builder-binaries/winCodeSign-2.6.0/winCodeSign-2.6.0.7z" -OutFile $tmp
+& "<仓库>\node_modules\.pnpm\7zip-bin@5.2.0\node_modules\7zip-bin\win\x64\7za.exe" x -bd -y "-o$cache\winCodeSign-2.6.0" $tmp
+```
+
+7za 仍会以退出码 2 结束(就是那两个 dylib),**其余文件已经解出来了,不用管** ——
+确认 `winCodeSign-2.6.0\` 下有 `windows-10`、`windows-6`、`rcedit-x64.exe` 就算好了。

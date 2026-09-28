@@ -226,6 +226,26 @@ pnpm build
 pnpm package
 ```
 
+> **Packaging on Windows behind a TLS-intercepting proxy / in mainland China** hits two
+> snags (neither is a code problem; CI is unaffected):
+>
+> 1. **`tls: failed to verify certificate`** — electron-builder's downloader is a Go
+>    binary that ignores the Windows certificate store, so a MITM proxy breaks it (tell-tale
+>    sign: browsers reach github.com fine). Set mirrors before packaging:
+>
+>    ```powershell
+>    $env:ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
+>    $env:ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/"
+>    ```
+>
+> 2. **`Cannot create symbolic link`** — the `winCodeSign` archive ships macOS dylib
+>    symlinks that a non-admin Windows account may not create. Enable **Developer Mode**,
+>    or pre-extract the cache once as described in
+>    [docs/tech-stack.md](docs/tech-stack.md) §9.3.1.
+>
+> These are deliberately **not** baked into the package script: they are properties of one
+> machine's network, and hard-coding a regional mirror would send CI the long way round.
+
 ### Download
 
 Pre-built binaries are published on [GitHub Releases](https://github.com/huangbh2020/mcode/releases):

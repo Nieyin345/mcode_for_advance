@@ -226,6 +226,23 @@ pnpm build
 pnpm package
 ```
 
+> 🇨🇳 **国内网络在 Windows 上打包，多半会撞到两个坑**（都不是代码问题）：
+>
+> 1. **`tls: failed to verify certificate`** —— electron-builder 的下载器是 Go 写的，不走
+>    Windows 证书库，撞上本机代理/杀软的 TLS 中间人就炸（判据：浏览器访问 github.com 正常）。
+>    打包前先设镜像：
+>
+>    ```powershell
+>    $env:ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
+>    $env:ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/"
+>    ```
+>
+> 2. **`Cannot create symbolic link`** —— `winCodeSign` 包里带着 macOS 的 dylib 软链接，
+>    Windows 非管理员建不了。打开**开发者模式**即可；或按
+>    [docs/tech-stack.md](docs/tech-stack.md) 的 9.3.1 手动解一次缓存。
+>
+> 这两条**故意没写进脚本** —— 那样会把"走国内镜像"固化进项目，CI 反而绕远路。
+
 ### 下载
 
 预编译二进制发布在 [GitHub Releases](https://github.com/huangbh2020/mcode/releases)：
