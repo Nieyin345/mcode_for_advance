@@ -29,6 +29,7 @@ import {
   IconShieldCheck,
   McpIcon,
   IconNotebook,
+  IconAdjustmentsHorizontal,
   IconFileTypeDoc,
   type TablerIconProps,
 } from "@renderer/lib/icons.js";
@@ -37,6 +38,7 @@ import { InstitutionAuthPanel } from "./InstitutionAuthPanel.js";
 import { OfficePanel } from "./OfficePanel.js";
 import { DataRootPanel } from "./DataRootPanel.js";
 import { LibraryTypesPanel } from "./LibraryTypesPanel.js";
+import { CustomUiPanel } from "./CustomUiPanel.js";
 import { RuntimesPanel } from "./RuntimesPanel.js";
 import { SkillsPanel } from "./SkillsPanel.js";
 import { WorkflowsPanel } from "./workflows/WorkflowsPanel.js";
@@ -74,7 +76,7 @@ import { MemoryExplorerPanel } from "../memory/MemoryExplorerPanel.js";
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "data-root" | "library-types" | "runtimes" | "custom-models" | "institution" | "office" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
+type SectionId = "general" | "data-root" | "library-types" | "custom-ui" | "runtimes" | "custom-models" | "institution" | "office" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -159,6 +161,9 @@ const NAV_GROUPS: NavGroup[] = [
       // 两个入口放在一起,「数据在哪」和「数据怎么喂给 AI」一眼就看全。
       // (这一项 2026-09-26 接回:kind 退役那轮把整页删了,屏蔽/提示词从此没有编辑入口。)
       { id: "library-types", labelKey: "settings.nav.libraryTypes", icon: IconBook },
+      // 自定义 UI 紧跟文档管理:资料库右键菜单的功能项、Files 文件右键都在这里配置
+      // (主界面只放入口,点了做什么、显示什么在这一页定义)。
+      { id: "custom-ui", labelKey: "customUi.nav", icon: IconAdjustmentsHorizontal },
       // 机构认证归在「工作台」组:它是使用场景(下载文献要先登录),
       // 不是 AI 配置,放 ai 组会让人以为是模型相关设置。
       { id: "institution", labelKey: "settings.nav.institution", icon: IconShieldCheck },
@@ -295,6 +300,7 @@ export function SettingsPage() {
           {active === "custom-models" && <CustomModelsPanel />}
           {active === "data-root" && <DataRootPanel />}
           {active === "library-types" && <LibraryTypesPanel />}
+          {active === "custom-ui" && <CustomUiPanel />}
           {active === "institution" && <InstitutionAuthPanel />}
           {active === "office" && <OfficePanel />}
           {active === "shortcuts" && <ShortcutsPanel />}

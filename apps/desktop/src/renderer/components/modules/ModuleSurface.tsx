@@ -10,7 +10,7 @@ import { Button, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js
 import { Dialog } from "@renderer/components/ui/dialog.js";
 import { CapabilityCatalogPanel } from "./CapabilityCatalogPanel.js";
 
-interface SurfaceContext {
+export interface SurfaceContext {
   catalog:ModuleCatalog | undefined;
   busy:boolean;
   openManager():void;
@@ -81,6 +81,14 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
   </Surface.Provider>;
 }
 
+/** 自定义 UI 的文件右键(`components/customUi/FileMenuEntries.tsx`)取模块项用。
+ * 不在 ModuleSurface 里(比如别处挂的文件树)时是 null —— 那里就没有模块项。 */
+export function useModuleSurface(): SurfaceContext | null {
+  return useContext(Surface);
+}
+
+/** 打开模块管理浮窗。Files 面板上已经不挂它了(入口搬进「设置 → 自定义 UI → 高级」),
+ * 冒烟夹具仍按这个名字用。 */
 export function ModuleToolsButton() {
   const context=useContext(Surface),{t}=useI18n();
   if(!context)return null;

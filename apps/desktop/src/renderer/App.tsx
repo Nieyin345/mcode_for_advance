@@ -17,6 +17,7 @@ import { ModelConfigPrompt } from "./components/chat/ModelConfigPrompt.js";
 import { AskChoiceDialog } from "./components/chat/AskChoiceDialog.js";
 import { BrowserPanel } from "./components/browser/BrowserPanel.js";
 import { Toaster } from "./components/layout/Toaster.js";
+import { CustomUiHost } from "./components/customUi/CustomUiHost.js";
 import { UpdateNotification } from "./components/layout/UpdateNotification.js";
 import { VoiceListeningOverlay } from "./components/layout/VoiceListeningOverlay.js";
 import { useClaudeEvents } from "./hooks/useClaudeEvents.js";
@@ -232,6 +233,9 @@ export function App() {
           "当前会话有没有一问还在等",和具体是哪个面板在看没关系;挂在聊天面板里的话,
           切到设置页就看不见了,而那次运行还在那儿等着。 */}
       <AskChoiceDialog />
+      {/* 自定义 UI 的视图浮窗 + 批量运行确认(菜单点完就关了,弹出来的东西得挂在根上)。
+          顺带在应用起来时读一次自定义 UI 配置。 */}
+      <CustomUiHost />
       <BrowserPanel mode="overlay" />
       {/* Wide-mode plan dialog - mounts over the wide 3:7 workspace (fixed
           overlay below the titlebar) when a plan tab is open. Mounted here

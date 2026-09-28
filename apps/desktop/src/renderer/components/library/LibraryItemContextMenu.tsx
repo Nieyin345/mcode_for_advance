@@ -38,6 +38,12 @@ import { api } from "@renderer/lib/api.js";
 import { attachToCurrentChat } from "@renderer/lib/attachToChat.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
+import type { CustomUiTarget } from "@contracts/customUi";
+import {
+  CustomUiCustomizeItem,
+  CustomUiMenuEntries,
+  type BuiltinRuntime,
+} from "@renderer/components/customUi/CustomUiMenuItems.js";
 import { useLibraryStore } from "@renderer/stores/libraryStore.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import {
@@ -45,12 +51,7 @@ import {
   IconArrowsExchange,
   IconBook,
   IconChevronRight,
-  IconInfoCircle,
-  IconLink,
-  IconExternalLink,
-  IconFileText,
   IconFolderOpen,
-  IconMessage,
   IconPencil,
   IconPlus,
   IconTrash,
@@ -103,6 +104,8 @@ interface Props {
    * 随 2026-09-27 的清理退役)。
    */
   onShowInfo: (item: LibraryItem) => void;
+  /** 这一段所属的大类 —— 自定义项的「只在这些大类里显示」按它判断。 */
+  groupId?: string;
 }
 
 /** 面板当前显示哪一步。 */
@@ -118,6 +121,7 @@ export function LibraryItemContextMenu({
   onAdoptMarkdown,
   onManageLinks,
   onShowInfo,
+  groupId,
 }: Props) {
   const { t } = useI18n();
   // 虚拟锚点钉在右键的坐标上;菜单退场动画期间冻结在最后的位置(见 useCursorAnchor)
@@ -171,6 +175,55 @@ export function LibraryItemContextMenu({
     });
     done();
   };
+
+  /** 自定义 UI 看到的目标(模板变量 / 显示条件)。 */
+  const uiTarget: CustomUiTarget | null = item
+    ? {
+        kind: "item",
+        groupId,
+        item: {
+          id: item.id,
+          title: item.title,
+          abstract: item.abstract,
+          url: item.url,
+          language: item.language,
+          pdfPath: item.pdfPath,
+          mdPath: item.mdPath,
+          filePath: item.filePath,
+        },
+      }
+    : null;
+
+  /**
+   * 内置功能项「点了做什么」。显示与否、先后由自定义 UI 的配置决定;这里给 `undefined`
+   * 的项这一刻不画(「采纳 MD」只在有文件的条目上才有意义)。
+   */
+  const builtins: Record<string, BuiltinRuntime | undefined> = item
+    ? {
+        // 挂到当前对话 —— 与「+ → 添加文献库到上下文」和 AI 的 library_attach_to_chat
+        // 共用主进程那一份实现(见 lib/attachToChat.ts)。
+        attachToChat: { run: () => void attachToCurrentChat(`i:${item.id}`) },
+        info: { run: () => onShowInfo(item) },
+        adoptMarkdown: item.filePath || item.pdfPath ? { run: () => onAdoptMarkdown(item) } : undefined,
+        // ★ **看转录文本**（2026-09-21）。用户:「点击和双击都显示这个 pdf 本身，**右键加一个
+        // 功能是能够看这个文件链接的转录**」—— 所以"转录"是显式入口。同时把右栏切到预览,
+        // 否则面板正停在文件树上,点了没反应。
+        viewTranscript: {
+          run: () => {
+            useLibraryStore.getState().openPreview(item.id, "md");
+            useSessionStore.getState().setRightPanelTab("preview");
+            useSessionStore.getState().setRightOpen(true);
+          },
+          disabled: !item.mdPath,
+          label: item.mdPath ? undefined : t("library.ctx.viewTranscriptMissing"),
+        },
+        openMdExternal: {
+          run: () => void api.library.openFile({ id: item.id, which: "md" }),
+          disabled: !item.mdPath,
+        },
+        links: { run: () => onManageLinks(item) },
+      }
+    : {};
 
   return (
     <Menu.Root
@@ -232,55 +285,16 @@ export function LibraryItemContextMenu({
                   {t("library.collection.rename")}
                 </Menu.Item>
 
-                {/* 挂到当前对话 —— 与「+ → 添加文献库到上下文」和 AI 的
-                    library_attach_to_chat 共用主进程那一份实现(见 lib/attachToChat.ts)。 */}
-                <Menu.Item
-                  onClick={() => {
-                    if (item) void attachToCurrentChat(`i:${item.id}`);
-                    onClose();
-                  }}
-                  className={itemClass}
-                >
-                  <IconMessage size={12} className="shrink-0" />
-                  {t("library.ctx.attachToChat")}
-                </Menu.Item>
-
-                {item && (item.filePath || item.pdfPath) && (
-                  <Menu.Item
-                    onClick={() => {
-                      onAdoptMarkdown(item);
-                      onClose();
-                    }}
-                    className={itemClass}
-                  >
-                    <IconFileText size={12} className="shrink-0" />
-                    {t("library.convert.adopt")}
-                  </Menu.Item>
-                )}
-                {item && (
-                  <Menu.Item
-                    onClick={() => {
-                      onManageLinks(item);
-                      onClose();
-                    }}
-                    className={itemClass}
-                  >
-                    <IconLink size={12} className="shrink-0" />
-                    {t("library.links.title")}
-                  </Menu.Item>
-                )}
-                {item && (
-                  <Menu.Item
-                    onClick={() => {
-                      onShowInfo(item);
-                      onClose();
-                    }}
-                    className={itemClass}
-                  >
-                    <IconInfoCircle size={12} className="shrink-0" />
-                    {t("library.info.title")}
-                  </Menu.Item>
-                )}
+                {/* 功能项 —— 显示哪些、排第几、以及用户自己加的项,都按「设置 → 自定义 UI」
+                    来(见 components/customUi)。这里只递「内置项点了做什么」。管理项(改名 /
+                    移动复制 / 移除删除 / 打开文件夹)是固定的,不在这一段里。 */}
+                <CustomUiMenuEntries
+                  slot="library.item"
+                  target={uiTarget}
+                  builtins={builtins}
+                  itemClass={itemClass}
+                  onClose={onClose}
+                />
                 <div className="my-1 border-t border-edge/60" />
 
                 <Menu.Item
@@ -348,42 +362,12 @@ export function LibraryItemContextMenu({
                   <IconFolderOpen size={12} className="shrink-0" />
                   {t("library.ctx.openFolder")}
                 </Menu.Item>
-                <Menu.Item
-                  onClick={() => {
-                    if (!item) return;
-                    // ★ **看转录文本**（2026-09-21）。
-                    //
-                    // 用户的原话：「我点击的是 pdf，一直要展示的是关联的 md 转录……
-                    // 现在我要的效果是点击和双击都显示这个 pdf 本身，**右键加一个功能是
-                    // 能够看这个文件链接的转录**」。
-                    //
-                    // 所以"转录"从**默认**降成**显式入口**：单击/双击一律看本体（PDF），
-                    // 要看转录只能到这里来。`which: "md"` 就是那一格开关，主进程按它
-                    // 去取 `md_path` 而不是 PDF。
-                    //
-                    // 同时把右栏切到**预览** —— 否则面板正停在文件树上，点了没反应。
-                    useLibraryStore.getState().openPreview(item.id, "md");
-                    useSessionStore.getState().setRightPanelTab("preview");
-                    useSessionStore.getState().setRightOpen(true);
-                    onClose();
-                  }}
-                  disabled={!item?.mdPath}
-                  className={cn(itemClass, "disabled:cursor-not-allowed disabled:opacity-40")}
-                >
-                  <IconFileText size={12} className="shrink-0" />
-                  {item?.mdPath ? t("library.ctx.viewTranscript") : t("library.ctx.viewTranscriptMissing")}
-                </Menu.Item>
-                <Menu.Item
-                  onClick={() => {
-                    if (item) void api.library.openFile({ id: item.id, which: "md" });
-                    onClose();
-                  }}
-                  disabled={!item?.mdPath}
-                  className={cn(itemClass, "disabled:cursor-not-allowed disabled:opacity-40")}
-                >
-                  <IconExternalLink size={12} className="shrink-0" />
-                  {t("library.ctx.openMdExternal")}
-                </Menu.Item>
+                <CustomUiCustomizeItem
+                  slot="library.item"
+                  itemClass={itemClass}
+                  onClose={onClose}
+                  before={<div className="my-1 border-t border-edge/60" />}
+                />
               </>
             )}
           </Menu.Popup>

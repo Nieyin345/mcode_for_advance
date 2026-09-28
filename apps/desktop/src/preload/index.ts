@@ -869,6 +869,12 @@ const api = {
       ipcRenderer.invoke(IPC.AUTOMATION_STATUS_ALL)) as RpcMap["automation.statusAll"],
   },
 
+  /** 自定义 UI(见 `@contracts/customUi`):带着右键目标运行一条自动化。桌面专属。 */
+  customUi: {
+    runAutomation: ((input) =>
+      ipcRenderer.invoke(IPC.CUSTOM_UI_RUN_AUTOMATION, input)) as RpcMap["customUi.runAutomation"],
+  },
+
   /** 运行史(某个对话的全部图运行,新的在前):从存档折出来的轻量摘要,
    *  监控/历史页用 —— 整份快照不为一行列表过 IPC(见 `PersistedWorkflowRunLite`)。 */
   runs: {

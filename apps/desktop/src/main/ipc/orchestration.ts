@@ -41,6 +41,8 @@ import {
 } from "@contracts/ipc";
 import { readAgentProfiles, removeAgentProfile, saveAgentProfile } from "@main/orchestration/agentProfiles.js";
 import { automationRunner } from "@main/orchestration/automationRunner.js";
+import { CustomUiRunAutomationSchema } from "@contracts/customUi";
+import { runCustomUiAutomation } from "@main/customUi/runAutomation.js";
 import { log } from "@main/lib/logger.js";
 import {
   getWorkflow,
@@ -290,6 +292,13 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.AUTOMATION_RUN, async (_evt, raw) => {
     const input = AutomationRunSchema.parse(raw);
     return automationRunner.runNow(input.workflowId, input.triggerNodeId);
+  });
+
+  // 自定义 UI 的「运行自动化」:右键的目标(条目 / 分类 / 大类 / 文件)当载荷,手动跑一次。
+  // 展开与校验在 `main/customUi/runAutomation.ts`;`ok: false` 同样是给人看的句子。
+  ipcMain.handle(IPC.CUSTOM_UI_RUN_AUTOMATION, async (_evt, raw) => {
+    const input = CustomUiRunAutomationSchema.parse(raw);
+    return runCustomUiAutomation(input);
   });
 
   ipcMain.handle(IPC.AUTOMATION_RUNS, async (_evt, raw) => {

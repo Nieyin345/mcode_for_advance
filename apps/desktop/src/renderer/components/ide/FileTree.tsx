@@ -1,4 +1,5 @@
-import { ModuleMenuItems } from "../modules/ModuleSurface.js";
+import { FileMenuEntries } from "../customUi/FileMenuEntries.js";
+import { CustomUiCustomizeItem } from "../customUi/CustomUiMenuItems.js";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ContextMenu } from "@base-ui/react/context-menu";
 import { api } from "@renderer/lib/api.js";
@@ -17,7 +18,6 @@ import {
   IconClipboard,
   IconClipboardText,
   IconCopy,
-  IconMessage,
   IconCheck,
   IconAlertCircle,
   IconFolderPlus,
@@ -25,7 +25,6 @@ import {
   IconFiles,
   IconEdit,
   IconTrash,
-  IconWorld,
 } from "@renderer/lib/icons.js";
 import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
 import { localPathToFileUrl } from "@renderer/lib/browserUrl.js";
@@ -1339,7 +1338,6 @@ function FileNodeRow({
         // 再给一个"预览"项没有意义，而叫「打开」却不给改会让人以为坏了。
         onClick={onDoubleClick}
       />
-              <ModuleMenuItems path={path}/>
               {/* "新建" creates a sibling in this file's parent dir; only shown
                   when a container context is available (i.e. inside a tree). */}
               {startNewInParent && (
@@ -1383,20 +1381,21 @@ function FileNodeRow({
                 label={t("ide.tree.copyRelPath")}
                 onClick={() => copyWithFeedback(relativePath(path, projectPath))}
               />
-              <MenuItem
-                icon={<IconMessage size={12} />}
-                label={t("ide.tree.addToChat")}
-                onClick={() => enqueueChatFile(path)}
+              {/* 功能项(加入对话 / 用浏览器打开 / JSON 模块的文件工具 / 用户的自定义项)——
+                  显示哪些、排第几按「设置 → 自定义 UI → Files · 文件右键」。上面的复制 / 粘贴 /
+                  揭示和下面的重命名 / 删除是固定的管理项。 */}
+              <FileMenuEntries
+                path={path}
+                projectPath={projectPath}
+                itemClass={MENU_ITEM_CLASS}
+                builtins={{
+                  addToChat: { run: () => enqueueChatFile(path) },
+                  openInBrowser: /\.html?$/i.test(path)
+                    ? { run: () => useSessionStore.getState().openUrlInBrowser(localPathToFileUrl(path)) }
+                    : undefined,
+                }}
+                before={<MenuSeparator />}
               />
-              {/\.html?$/i.test(path) && (
-                <MenuItem
-                  icon={<IconWorld size={12} />}
-                  label={t("ide.tree.openInBrowser")}
-                  onClick={() =>
-                    useSessionStore.getState().openUrlInBrowser(localPathToFileUrl(path))
-                  }
-                />
-              )}
               <MenuSeparator />
               <MenuItem
                 icon={<IconEdit size={12} />}
@@ -1409,6 +1408,7 @@ function FileNodeRow({
                 danger
                 onClick={() => setPendingDelete(true)}
               />
+              <CustomUiCustomizeItem slot="files.context" itemClass={MENU_ITEM_CLASS} before={<MenuSeparator />} />
             </ContextMenu.Popup>
           </ContextMenu.Positioner>
         </ContextMenu.Portal>

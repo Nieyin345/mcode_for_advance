@@ -1385,6 +1385,7 @@ export function LibrarySection({
         onAdoptMarkdown={(item) => void adoptMarkdownFor(item)}
         onManageLinks={(item) => setLinksFor(item)}
         onShowInfo={(item) => setInfoFor(item)}
+        groupId={group.id}
       />
 
       {/* 分类行的右键菜单:新建子集合 / 新建笔记(仅笔记库)/ 移动到 / 重命名 / 删除 */}
@@ -1398,13 +1399,14 @@ export function LibrarySection({
         onImportHere={(c) => setImportInto(c)}
         onShowInfo={(c) => setCollectionInfoFor(c)}
         onMove={(c, parentId) => void moveCollection(c, parentId)}
-
+        groupId={group.id}
       />
 
       {/* 大类标题行的右键菜单 —— 第二级的**唯一**入口就在它的第一项(见 GroupContextMenu
           的文件头:菜单项顺序就是层级顺序)。 */}
       <GroupContextMenu
         target={ctxGroup}
+        group={group}
         onClose={() => setCtxGroup(null)}
         onNewCollection={() => {
           // 展开本段并退出「只看文件」模式，否则输入框会被 showAll 分支藏掉。

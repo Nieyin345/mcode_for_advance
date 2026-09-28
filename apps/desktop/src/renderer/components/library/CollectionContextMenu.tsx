@@ -41,6 +41,12 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { attachToCurrentChat } from "@renderer/lib/attachToChat.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
+import type { CustomUiSlot, CustomUiTarget } from "@contracts/customUi";
+import {
+  CustomUiCustomizeItem,
+  CustomUiMenuEntries,
+  type BuiltinRuntime,
+} from "@renderer/components/customUi/CustomUiMenuItems.js";
 import {
   IconArrowLeft,
   IconArrowsExchange,
@@ -48,8 +54,6 @@ import {
   IconChevronRight,
   IconDownload,
   IconFileText,
-  IconInfoCircle,
-  IconMessage,
   IconPencil,
   IconPlus,
   IconTrash,
@@ -71,6 +75,7 @@ export function CollectionContextMenu({
   onImportHere,
   onShowInfo,
   onMove,
+  groupId,
 }: {
   target: CollectionCtxTarget | null;
   /** 同一个 kind 下的全部集合 —— 「移动到」那一屏列的就是它们(去掉自己与自己的子树)。 */
@@ -99,6 +104,8 @@ export function CollectionContextMenu({
   onShowInfo: (c: LibraryCollection) => void;
   /** 把它挪到另一个父下面(`parentId: null` = 挪到最外层)。 */
   onMove: (c: LibraryCollection, parentId: string | null) => void;
+  /** 这一段所属的大类 —— 自定义项的「只在这些大类里显示」按它判断。 */
+  groupId?: string;
 }) {
   const { t } = useI18n();
   // 虚拟锚点钉在右键坐标上(与文献行菜单同一套)
@@ -140,6 +147,32 @@ export function CollectionContextMenu({
   })();
 
   const c2 = c;
+
+  /**
+   * 小类和分类是**两个挂载位**(用户要求四级右键各是各的列表):大类下直挂的根分类是
+   * 「小类」(第二级),挂在别的分类下面的是「分类」(第三级)。同一个菜单组件,按
+   * `parentId` 分流到不同的配置上。
+   */
+  const slot: CustomUiSlot = c?.parentId ? "library.collection" : "library.subcategory";
+  const uiTarget: CustomUiTarget | null = c
+    ? {
+        kind: "collection",
+        level: c.parentId ? "collection" : "subcategory",
+        groupId: c.groupId ?? groupId,
+        collection: { id: c.id, name: c.name },
+      }
+    : null;
+  /** 内置功能项「点了做什么」;显示与否、先后按自定义 UI 的配置。 */
+  const builtins: Record<string, BuiltinRuntime | undefined> = c
+    ? {
+        // 挂到当前对话 —— 整段流程与「+ → 添加文献库到上下文」共用主进程那一份
+        // 实现(见 lib/attachToChat.ts),所以挂出来的是同一个 chip、同一份清单。
+        attachToChat: { run: () => void attachToCurrentChat(`c:${c.id}`) },
+        // 「分类信息」卡片(条目数)。从前那三种引用格式的导出也在卡片里,
+        // 随 2026-09-27 学术功能的清理退役。
+        info: { run: () => onShowInfo(c) },
+      }
+    : {};
 
   return (
     <Menu.Root
@@ -197,19 +230,15 @@ export function CollectionContextMenu({
               </>
             ) : (
               <>
-                {/* 挂到当前对话 —— 整段流程与「+ → 添加文献库到上下文」共用主进程那一份
-                    实现(见 lib/attachToChat.ts),所以挂出来的是同一个 chip、同一份清单。 */}
-                <Menu.Item
-                  onClick={() => {
-                    if (c) void attachToCurrentChat(`c:${c.id}`);
-                    onClose();
-                  }}
-                  className={itemClass}
-                >
-                  <IconMessage size={12} className="shrink-0" />
-                  {t("library.ctx.attachToChat")}
-                </Menu.Item>
-                <div className="my-1 border-t border-edge/60" />
+                {/* 功能项 —— 按「设置 → 自定义 UI」里这个挂载位的配置画。 */}
+                <CustomUiMenuEntries
+                  slot={slot}
+                  target={uiTarget}
+                  builtins={builtins}
+                  itemClass={itemClass}
+                  onClose={onClose}
+                  after={<div className="my-1 border-t border-edge/60" />}
+                />
 
                 {/* 导入到这里 —— 三个库都该有（不限笔记库）。 */}
                 <Menu.Item
@@ -222,20 +251,6 @@ export function CollectionContextMenu({
                   <IconDownload size={12} className="shrink-0" />
                   {t("library.ctx.importHere")}
                 </Menu.Item>
-                {/* 「分类信息」卡片(条目数)。从前那三种引用格式的导出也在卡片里,
-                    随 2026-09-27 学术功能的清理退役。 */}
-                {c && (
-                  <Menu.Item
-                    onClick={() => {
-                      onShowInfo(c);
-                      onClose();
-                    }}
-                    className={itemClass}
-                  >
-                    <IconInfoCircle size={12} className="shrink-0" />
-                    {t("library.collection.info")}
-                  </Menu.Item>
-                )}
 
                 {/* （kind 退役：任何分类都能新建 md 笔记） */}
                 {c && (
@@ -294,6 +309,12 @@ export function CollectionContextMenu({
                   <IconTrash size={12} className="shrink-0" />
                   {t("library.collection.delete")}
                 </Menu.Item>
+                <CustomUiCustomizeItem
+                  slot={slot}
+                  itemClass={itemClass}
+                  onClose={onClose}
+                  before={<div className="my-1 border-t border-edge/60" />}
+                />
               </>
             )}
           </Menu.Popup>

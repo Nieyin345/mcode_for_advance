@@ -1,4 +1,4 @@
-import { ModuleSurface, ModuleToolsButton } from "../modules/ModuleSurface.js";
+import { ModuleSurface } from "../modules/ModuleSurface.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { EMPTY_TURN_FILES, useSessionStore, selectActiveEnvPath } from "@renderer/stores/sessionStore.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
@@ -101,7 +101,7 @@ export function FilesPanel() {
           <IconFolder size={13} className="shrink-0 text-content-subtle" />
           <span className="truncate">{projectName}</span>
         </span>
-        <ModuleToolsButton/>
+        {/* 「UI 扩展」按钮撤了:模块管理搬进「设置 → 自定义 UI → 高级」,文件工具在文件右键里 */}
         <button
           type="button"
           onClick={() => setRefreshNonce((n) => n + 1)}

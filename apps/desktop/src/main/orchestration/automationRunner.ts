@@ -947,6 +947,44 @@ class AutomationRunner {
   }
 
   /**
+   * **带着目标手动跑一次** —— 自定义 UI 的「运行自动化」动作(见 `@contracts/customUi`)。
+   *
+   * 与 {@link runNow} 同一条查找路、同一个 `fire`(`manual: true`:用户关掉的触发器
+   * 照样能从右键跑,上一次还在跑就如实说),差别只在**载荷**:
+   *
+   *   - `files` → 与文件触发同形的 `{ kind: "file" }`;
+   *   - `items` → 与资料库事件同形的条目清单。事件名取**这条触发器自己订阅的**资料库
+   *     事件(典型:「下载完自动转录」订的是 `library.item.downloaded`),没订阅就按
+   *     「导入」说 —— 这样同一条自动化被事件叫起来和被右键叫起来,读到的载荷一模一样。
+   */
+  async runWithTarget(
+    workflowId: string,
+    triggerNodeId: string,
+    target: { files: readonly string[] } | { items: NonNullable<Extract<TriggerPayload, { kind: "event" }>["items"]> },
+  ): Promise<AutomationRunResult> {
+    const find = (): LoadedTrigger | undefined =>
+      this.all().find((t) => t.workflowId === workflowId && t.nodeId === triggerNodeId);
+    let trigger = find();
+    if (trigger === undefined) {
+      await this.reload(workflowId);
+      trigger = find();
+    }
+    if (trigger === undefined) {
+      return { ok: false, error: "这个触发器不在一条已保存的自动化里(存一次再试)" };
+    }
+    let payload: TriggerPayload;
+    if ("files" in target) {
+      payload = { kind: "file", files: target.files };
+    } else {
+      const subscribed = trigger.spec.kind === "event"
+        ? trigger.spec.events.find((e) => e === "library.item.downloaded" || e === "library.item.imported")
+        : undefined;
+      payload = { kind: "event", event: subscribed ?? "library.item.imported", items: target.items };
+    }
+    return this.fire(trigger, payload, { manual: true });
+  }
+
+  /**
    * **守望起跑**(会话输入区那颗「守望」按钮,D3)。它不挂任何后台监听 —— 点击
    * 就是给**当前这条会话**起一次模板运行,命令跑完由「回话」那一步把结果注回来。
    *

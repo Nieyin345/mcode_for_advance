@@ -1,0 +1,123 @@
+/**
+ * 自定义 UI(设置 → 自定义 UI、各处右键菜单末尾的「自定义 UI…」、自定义项运行时的提示)。
+ * Keys: `customUi.*`。zh 是 `MessageId` 的源。
+ *
+ * 内置项的**名字**复用它们原来的键(`library.ctx.attachToChat`、`library.info.title`……),
+ * 不在这里另写一份 —— 同一个菜单项两处文案迟早对不上。
+ */
+export const zh = {
+  "customUi.nav": "自定义 UI",
+  "customUi.title": "自定义 UI",
+  "customUi.intro":
+    "主界面只放入口：右键菜单里的功能项显示哪些、排第几、点了做什么，都在这里定义。重命名、移动、删除这类管理项是固定的，不在这里。",
+
+  /* ── 菜单末尾那一项 ── */
+  "customUi.menu.customize": "自定义 UI…",
+
+  /* ── 挂载位 ── */
+  "customUi.slot.library.item": "资料库 · 条目右键",
+  "customUi.slot.library.collection": "资料库 · 分类右键",
+  "customUi.slot.library.subcategory": "资料库 · 小类右键",
+  "customUi.slot.library.group": "资料库 · 大类右键",
+  "customUi.slot.files.context": "Files · 文件右键",
+  "customUi.slotHint.library.item": "左栏资料库里单条资料的右键菜单。",
+  "customUi.slotHint.library.collection": "第三级「分类」（挂在小类下面的那层）的右键菜单。",
+  "customUi.slotHint.library.subcategory": "第二级「小类」（大类下直接挂的那层）的右键菜单。",
+  "customUi.slotHint.library.group": "大类标题行的右键菜单。",
+  "customUi.slotHint.files.context": "右栏 Files 文件树里文件的右键菜单。JSON 模块声明的文件工具也出现在这里。",
+
+  /* ── 条目列表 ── */
+  "customUi.entries.title": "菜单项",
+  "customUi.entries.empty": "这个位置还没有可配置的功能项。点下面「新建自定义项」加一个。",
+  "customUi.source.builtin": "内置",
+  "customUi.source.custom": "自定义",
+  "customUi.source.module": "JSON 模块",
+  "customUi.entry.show": "显示",
+  "customUi.entry.moveUp": "上移",
+  "customUi.entry.moveDown": "下移",
+  "customUi.entry.edit": "编辑",
+  "customUi.entry.delete": "删除",
+  "customUi.entry.deleteConfirm": "删除自定义项「{name}」？",
+  "customUi.entry.new": "新建自定义项",
+  "customUi.entry.fromTemplate": "从模板新建…",
+  "customUi.entry.resetLayout": "恢复默认顺序",
+
+  /* ── 编辑器 ── */
+  "customUi.editor.newTitle": "新建自定义项",
+  "customUi.editor.editTitle": "编辑自定义项",
+  "customUi.editor.labelZh": "名称（中文）",
+  "customUi.editor.labelEn": "名称（英文，可不填）",
+  "customUi.editor.icon": "图标",
+  "customUi.editor.when": "显示条件",
+  "customUi.editor.whenHint": "不填就总是显示。多个条件要同时满足。",
+  "customUi.editor.extensions": "扩展名（逗号分隔，如 .pdf, .md）",
+  "customUi.editor.requires": "条目需要有",
+  "customUi.editor.requires.none": "不限",
+  "customUi.editor.requires.file": "任意文件",
+  "customUi.editor.requires.pdf": "PDF",
+  "customUi.editor.requires.markdown": "Markdown 转录",
+  "customUi.editor.groups": "只在这些大类里显示",
+  "customUi.editor.groupsAll": "（都不勾 = 所有大类）",
+  "customUi.editor.action": "点击后",
+  "customUi.editor.action.view": "打开视图",
+  "customUi.editor.action.prompt": "发给对话",
+  "customUi.editor.action.copy": "复制文本",
+  "customUi.editor.action.automation": "运行自动化",
+  "customUi.editor.viewTitle": "视图标题（可用变量，可不填）",
+  "customUi.editor.viewBody": "视图内容（Markdown，可用变量）",
+  "customUi.editor.promptTemplate": "提示词（可用变量）",
+  "customUi.editor.promptAttach": "同时把右键的目标挂进对话上下文",
+  "customUi.editor.promptHint": "提示词会放进当前对话的输入框，不会替你发送。",
+  "customUi.editor.copyTemplate": "要复制的文本（可用变量）",
+  "customUi.editor.automation": "自动化",
+  "customUi.editor.trigger": "用哪个触发器起跑",
+  "customUi.editor.automationNone": "还没有自动化 —— 先到「设置 → 自动化」建一条。",
+  "customUi.editor.automationPick": "选一条自动化",
+  "customUi.editor.automationHint":
+    "右键的目标会作为载荷带进去：条目 / 分类 / 大类 → 条目清单（与「资料库事件」触发同形，指令里可用 {{trigger.itemId}} 等），文件 → 文件列表。分类和大类会先问你确认条数。",
+  "customUi.editor.vars": "可用变量：",
+  "customUi.editor.save": "保存",
+  "customUi.editor.cancel": "取消",
+  "customUi.editor.errorLabel": "名称不能为空",
+  "customUi.editor.errorAutomation": "请选择自动化和触发器",
+
+  /* ── 模板 ── */
+  "customUi.template.transcribe": "转录为 Markdown（运行自动化）",
+  "customUi.template.transcribe.label": "转录为 Markdown",
+  "customUi.template.cite": "生成引用（发给对话）",
+  "customUi.template.cite.label": "生成引用（BibTeX / GB/T 7714 / APA）",
+  "customUi.template.cite.prompt":
+    "请为下面这条资料生成三种引用格式：BibTeX、GB/T 7714—2015、APA 第 7 版。缺的元数据请先检索补全，查不到的字段标注“未知”，不要编造。\n\n标题：{{item.title}}\n来源地址：{{item.url}}",
+  "customUi.template.summarize": "总结这个分类（发给对话）",
+  "customUi.template.summarize.label": "总结这个分类",
+  "customUi.template.summarize.prompt": "请通读「{{collection.name}}」里的资料，给出一份要点总结和它们之间的关系。",
+  "customUi.template.copyPath": "复制路径",
+  "customUi.template.copyPath.label": "复制文件路径",
+
+  /* ── 高级 ── */
+  "customUi.advanced.title": "高级",
+  "customUi.advanced.json": "配置 JSON",
+  "customUi.advanced.jsonHint": "整份配置的导出 / 导入。粘贴后点「应用」，坏掉的条目会被丢掉，其余照常。",
+  "customUi.advanced.copy": "复制",
+  "customUi.advanced.apply": "应用",
+  "customUi.advanced.applied": "已应用（保留 {n} 个自定义项）",
+  "customUi.advanced.invalid": "不是合法的 JSON",
+  "customUi.advanced.modules": "JSON 模块（v1）",
+  "customUi.advanced.modulesHint":
+    "JSON 模块清单声明的文件工具会出现在「Files · 文件右键」里，可以在上面隐藏或排序。安装 / 删除模块、查看运行记录在这里。",
+  "customUi.advanced.modulesNoProject": "先在左侧打开一个项目，才能管理它的模块运行记录。",
+
+  /* ── 运行时 ── */
+  "customUi.run.copied": "已复制",
+  "customUi.run.copyFailed": "复制失败",
+  "customUi.run.noSession": "没有打开的对话 —— 先打开或新建一个对话",
+  "customUi.run.promptDelivered": "已放进输入框",
+  "customUi.run.started": "已开始运行「{name}」（{n} 条）",
+  "customUi.run.failed": "运行失败",
+  "customUi.run.confirmTitle": "运行「{name}」？",
+  "customUi.run.confirmBody": "将把 {n} 条资料作为一批交给这条自动化处理。",
+  "customUi.run.confirm": "运行",
+  "customUi.run.moduleUnavailable": "这个模块工具只能在 Files 面板里用",
+  "customUi.view.close": "关闭",
+  "customUi.saveFailed": "保存自定义 UI 配置失败",
+} as const;

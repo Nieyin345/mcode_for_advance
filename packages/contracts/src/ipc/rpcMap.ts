@@ -50,6 +50,7 @@ import type { LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGeneri
 import type { OnlyOfficeOpenInput, OnlyOfficeOpenResult, OnlyOfficeSessionInput, OnlyOfficeSessionState, OnlyOfficeStatusResult, OnlyOfficeConfig, OnlyOfficeSetConfigInput, OnlyOfficeLocalDetectResult, OnlyOfficeInstallInput, OnlyOfficeInstallProgress } from "./onlyoffice.js";
 import type { SubagentDefinition } from "../claudeSubagent.js";
 import type { ClaudeSubagentsSaveInput } from "../claudeSubagent.js";
+import type { CustomUiRunAutomationInput, CustomUiRunAutomationResult } from "../customUi.js";
 
 /* ──────────────────────────  RPC method map  ───────────────────────────────── */
 
@@ -760,6 +761,11 @@ export interface RpcMap {
   /** 全部触发器的**事实状态**(挂没挂上 / 为什么 / 最近一次跑,见
    *  `AutomationTriggerFacts`)。**无参 handler**,同 `workflow.agentProfiles`。 */
   "automation.statusAll": () => Promise<AutomationTriggerFacts[]>;
+  // ── 自定义 UI(见 `@contracts/customUi`)──
+  /** 自定义项的「运行自动化」动作:用指定触发器**手动**起一次,右键的目标当载荷带进去
+   *  (条目 / 分类 / 大类 → 条目清单,文件 → 文件列表)。`dryRun` 只数条数不真跑。
+   *  桌面专属(手机白名单不列即不暴露)。 */
+  "customUi.runAutomation": (input: CustomUiRunAutomationInput) => Promise<CustomUiRunAutomationResult>;
   // ── 运行史(某个对话的全部图运行)──
   /** 某个对话的图运行历史(新的在前)。**从存档折出来**,只给轻量摘要 ——
    *  见 `PersistedWorkflowRunLite`(整份快照不为一行列表过 IPC)。 */
@@ -1578,6 +1584,8 @@ export const IPC = {
   AUTOMATION_WATCH_TEMPLATES_SAVE: "automation:watchTemplatesSave",
   /** 全部触发器的事实状态(自动化管理页回答「它怎么没反应」的那份)。 */
   AUTOMATION_STATUS_ALL: "automation:statusAll",
+  /** 自定义 UI:带着右键目标运行一条自动化。 */
+  CUSTOM_UI_RUN_AUTOMATION: "customUi:runAutomation",
   /** 某个对话的图运行历史(从存档折出来的轻量摘要)。 */
   RUNS_HISTORY: "runs:history",
   // 记忆(main/memory/):渠道字符串本体钉在 `../memory.ts` 的那几个

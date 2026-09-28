@@ -1,0 +1,146 @@
+/**
+ * 执行一条**自定义项**的动作(内置项的动作由挂载它的菜单自己带,不走这里)。
+ *
+ * 四种动作见 `@contracts/customUi` 的 `CustomUiActionSchema`。全部是渲染端能做完的事,
+ * 只有「运行自动化」要过一次 IPC(`customUi.runAutomation`)—— 展开分类/大类成条目清单、
+ * 过滤回收站、校验文件在项目里,都在主进程。
+ */
+import {
+  customUiLabel,
+  renderTemplate,
+  templateVarsOf,
+  type CustomUiItem,
+  type CustomUiRunTarget,
+  type CustomUiTarget,
+} from "@contracts/customUi";
+import { api } from "@renderer/lib/api.js";
+import { attachToCurrentChat } from "@renderer/lib/attachToChat.js";
+import { translate, type MessageId } from "@renderer/lib/i18n/core.js";
+import { useCustomUiStore } from "@renderer/stores/customUiStore.js";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useToastStore, type ToastKind } from "@renderer/stores/toastStore.js";
+
+function tr(key: MessageId, params?: Record<string, string | number>): string {
+  return translate(useSessionStore.getState().locale, key, params);
+}
+
+function toast(kind: ToastKind, key: MessageId, body?: string, params?: Record<string, string | number>): void {
+  useToastStore.getState().push({ kind, title: tr(key, params), body });
+}
+
+/** 资料库目标在「挂进对话」那条通道上的键(与各级右键的「加入当前对话」同一套)。 */
+export function attachKeyOf(target: CustomUiTarget): string | null {
+  switch (target.kind) {
+    case "item":
+      return `i:${target.item.id}`;
+    case "collection":
+      return `c:${target.collection.id}`;
+    case "group":
+      return `g:${target.group.id}`;
+    case "file":
+      return null;
+  }
+}
+
+export function runTargetOf(target: CustomUiTarget): CustomUiRunTarget {
+  switch (target.kind) {
+    case "item":
+      return { kind: "item", itemId: target.item.id };
+    case "collection":
+      return { kind: "collection", collectionId: target.collection.id };
+    case "group":
+      return { kind: "group", groupId: target.group.id };
+    case "file":
+      return { kind: "file", path: target.path };
+  }
+}
+
+async function runAutomation(
+  item: CustomUiItem,
+  action: Extract<CustomUiItem["action"], { type: "automation" }>,
+  target: CustomUiTarget,
+): Promise<void> {
+  const name = customUiLabel(item.label, useSessionStore.getState().locale);
+  const input = { workflowId: action.workflowId, triggerNodeId: action.triggerNodeId, target: runTargetOf(target) };
+  const go = async (): Promise<void> => {
+    try {
+      const res = await api.customUi.runAutomation(input);
+      if (res.ok) toast("info", "customUi.run.started", undefined, { name, n: res.count ?? 1 });
+      else toast("error", "customUi.run.failed", res.error);
+    } catch (err) {
+      toast("error", "customUi.run.failed", err instanceof Error ? err.message : String(err));
+    }
+  };
+  // 分类 / 大类是**一批**:先数清楚会带多少条、让用户点一次确认,再真跑 ——
+  // 右键误点一下就让一条自动化对两百篇论文开工,代价太大。
+  if (target.kind === "collection" || target.kind === "group") {
+    try {
+      const dry = await api.customUi.runAutomation({ ...input, dryRun: true });
+      if (!dry.ok) {
+        toast("error", "customUi.run.failed", dry.error);
+        return;
+      }
+      useCustomUiStore.getState().openConfirm({
+        title: tr("customUi.run.confirmTitle", { name }),
+        description: tr("customUi.run.confirmBody", { n: dry.count ?? 0 }),
+        confirmText: tr("customUi.run.confirm"),
+        onConfirm: () => void go(),
+      });
+    } catch (err) {
+      toast("error", "customUi.run.failed", err instanceof Error ? err.message : String(err));
+    }
+    return;
+  }
+  await go();
+}
+
+export async function runCustomItem(item: CustomUiItem, target: CustomUiTarget): Promise<void> {
+  const vars = templateVarsOf(target);
+  const action = item.action;
+  switch (action.type) {
+    case "view": {
+      const locale = useSessionStore.getState().locale;
+      const title = action.title ? renderTemplate(action.title, vars) : "";
+      useCustomUiStore.getState().openView({
+        title: title.trim() || customUiLabel(item.label, locale),
+        body: renderTemplate(action.body, vars),
+      });
+      return;
+    }
+    case "copy": {
+      try {
+        await navigator.clipboard.writeText(renderTemplate(action.template, vars));
+        toast("info", "customUi.run.copied");
+      } catch (err) {
+        toast("error", "customUi.run.copyFailed", err instanceof Error ? err.message : String(err));
+      }
+      return;
+    }
+    case "prompt": {
+      const store = useSessionStore.getState();
+      const sessionId = store.activeSessionId;
+      if (!sessionId) {
+        toast("warning", "customUi.run.noSession");
+        return;
+      }
+      const key = attachKeyOf(target);
+      if (action.attach === true && key !== null) await attachToCurrentChat(key);
+      const text = renderTemplate(action.template, vars).trim();
+      if (text.length > 0) {
+        // 放进输入框,不替用户发送(同「跟主对话说」);已有的草稿保留,新内容接在后面
+        const prev = useSessionStore.getState().composerDraftBySession[sessionId];
+        const prevText = prev?.text.trim() ?? "";
+        useSessionStore.getState().deliverComposerDraft(sessionId, {
+          text: prevText.length > 0 ? `${prevText}\n\n${text}` : text,
+          html: "",
+          tags: prev?.tags ?? [],
+        });
+        toast("info", "customUi.run.promptDelivered");
+      }
+      return;
+    }
+    case "automation":
+      await runAutomation(item, action, target);
+      return;
+  }
+}

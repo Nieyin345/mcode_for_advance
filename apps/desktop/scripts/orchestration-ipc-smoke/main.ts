@@ -160,17 +160,17 @@ async function callAsync(channel: string, raw?: unknown): Promise<unknown> {
 /** 把 `unknown` 收成能点属性的形状 —— 断言里读返回值的字段用。 */
 const obj = (v: unknown): Record<string, unknown> => v as Record<string, unknown>;
 
-/* ──────────────── 1. 23 条 handler 一条不少、一条不多 ──────────────── */
+/* ──────────────── 1. 26 条 handler 一条不少、一条不多 ──────────────── */
 
 console.log("\n注册面");
 
-// 23 这个数字是**数出来的**(下面按名字逐条对),不是抄的。少一条 = 渲染端某个按钮
+// 26 这个数字是**数出来的**(下面按名字逐条对),不是抄的。少一条 = 渲染端某个按钮
 // 点了没反应;多一条 = 白名单那边没跟上(renderer 根本调不到,但说明有人改了这里
 // 却没改契约那一份)。
 const registered = [...handlers.keys()].sort();
 check(
-  `注册了 23 条 handler(实际 ${registered.length})`,
-  registered.length === 23,
+  `注册了 26 条 handler(实际 ${registered.length})`,
+  registered.length === 26,
   registered,
 );
 
@@ -199,9 +199,12 @@ const expectedChannels: Array<[string, string]> = [
   ["守望活跃状态", IPC.AUTOMATION_WATCH_STATUS],
   ["命令模板(读)", IPC.AUTOMATION_WATCH_TEMPLATES],
   ["命令模板(存)", IPC.AUTOMATION_WATCH_TEMPLATES_SAVE],
+  ["钉住默认工作流", IPC.WORKFLOW_PIN_DEFAULT],
+  ["恢复默认", IPC.WORKFLOW_RESTORE_DEFAULT],
+  ["自定义 UI 运行自动化", IPC.CUSTOM_UI_RUN_AUTOMATION],
 ];
 const missing = expectedChannels.filter(([, ch]) => !handlers.has(ch)).map(([name]) => name);
-same("剩下那条名叫「命令模板(读)」在内的 23 条一条不缺", missing, []);
+same("剩下那条名叫「命令模板(读)」在内的 26 条一条不缺", missing, []);
 
 /* ──────────────── 2. 种子铺出来的目录 ──────────────── */
 

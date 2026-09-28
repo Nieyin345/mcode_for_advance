@@ -28,7 +28,9 @@ import { Menu } from "@base-ui/react/menu";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
 import { cn } from "@renderer/lib/cn.js";
-import { IconMessage, IconPencil, IconPlus, IconTrash } from "@renderer/lib/icons.js";
+import { IconPencil, IconPlus, IconTrash } from "@renderer/lib/icons.js";
+import type { CustomUiTarget } from "@contracts/customUi";
+import { CustomUiCustomizeItem, CustomUiMenuEntries } from "@renderer/components/customUi/CustomUiMenuItems.js";
 import { MENU_ITEM_CLASS, MenuDivider, SidebarMenu } from "@renderer/components/sidebar/Sidebar.js";
 
 export interface GroupCtxTarget {
@@ -43,6 +45,7 @@ export function GroupContextMenu({
   onRename,
   onAttachToChat,
   onDelete,
+  group,
 }: {
   target: GroupCtxTarget | null;
   onClose: () => void;
@@ -52,10 +55,13 @@ export function GroupContextMenu({
   /** 把本段挂进当前对话(附件键 `g:<组 id>`)。 */
   onAttachToChat: () => void;
   onDelete: () => void;
+  /** 右键的是哪个大类 —— 自定义项的模板变量(`{{group.name}}`)与运行目标要它。 */
+  group: { id: string; name: string };
 }) {
   const { t } = useI18n();
   // 虚拟锚点钉在右键坐标上(与分类行菜单同一套)
   const anchor = useCursorAnchor(target);
+  const uiTarget: CustomUiTarget | null = target ? { kind: "group", group: { id: group.id, name: group.name } } : null;
 
   return (
     <SidebarMenu open={!!target} anchor={anchor} onClose={onClose}>
@@ -74,20 +80,17 @@ export function GroupContextMenu({
         {t("library.collection.new")}
       </Menu.Item>
       <MenuDivider />
-      {/* 挂进当前对话 —— 用户要求「每一级右键都可以选择加入到当前对话」。
-          大类是范围的**最外一层**:挂它等于把这个大类下所有小类的资料都给了 AI
-          (主进程那边按 `g:<组 id>` 展开清单)。 */}
-      <Menu.Item
-        onClick={() => {
-          onAttachToChat();
-          onClose();
-        }}
-        className={MENU_ITEM_CLASS}
-      >
-        <IconMessage size={12} className="shrink-0" />
-        {t("library.ctx.attachToChat")}
-      </Menu.Item>
-      <MenuDivider />
+      {/* 功能项 —— 按「设置 → 自定义 UI」里「大类右键」的配置画。内置的「加入当前对话」:
+          用户要求「每一级右键都可以选择加入到当前对话」。大类是范围的**最外一层**:挂它
+          等于把这个大类下所有小类的资料都给了 AI(主进程那边按 `g:<组 id>` 展开清单)。 */}
+      <CustomUiMenuEntries
+        slot="library.group"
+        target={uiTarget}
+        builtins={{ attachToChat: { run: onAttachToChat } }}
+        itemClass={MENU_ITEM_CLASS}
+        onClose={onClose}
+        after={<MenuDivider />}
+      />
       <Menu.Item
         onClick={() => {
           onRename();
@@ -109,6 +112,7 @@ export function GroupContextMenu({
         <IconTrash size={12} className="shrink-0" />
         {t("library.group.delete")}
       </Menu.Item>
+      <CustomUiCustomizeItem slot="library.group" itemClass={MENU_ITEM_CLASS} onClose={onClose} before={<MenuDivider />} />
     </SidebarMenu>
   );
 }
