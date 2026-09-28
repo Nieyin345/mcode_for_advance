@@ -1207,6 +1207,10 @@ export const en = {
   // checkbox is cleared), the second means the config itself is broken — the
   // reason is in that row's tooltip. One word for both reads as a broken app.
   "settings.automation.facts.off": "Off",
+  // "Missed" is not "broken": the trigger is fine, the machine was simply off.
+  // The wording must say "not backfilled" — otherwise users wait for a catch-up
+  // run that is never coming.
+  "settings.automation.facts.missed": "Missed {n} scheduled run(s) while the app was not running (not backfilled by design)",
 
   // ── Run history panel (settings/workflows/RunHistorySection) ──
   // A different source from `settings.automation.runHistory` (the inspector's

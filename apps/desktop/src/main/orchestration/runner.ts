@@ -140,6 +140,40 @@ export const NODE_PROGRESS_TICK_MS = 1_000;
 export const NODE_PROGRESS_HEARTBEAT_MS = 5_000;
 
 /**
+ * 节点会话**多久没有任何动静**,就判它卡死。
+ *
+ * ## 为什么必须有这道闸
+ *
+ * 上面那个心跳只负责**把秒数报给界面看**,它不做任何判断 —— 一个真卡住的节点,它照样
+ * 每 5 秒报一句「已跑 3 小时 12 分」。而卡住的代价远不止这一步:`runner` 那头认的是
+ * 「这个工作流还有没有在跑的运行」(见 `hasActiveRun`),它会一直是 true,于是这条自动化
+ * **后面每一次触发都被「上一次还在跑」挡掉** —— 一条每天九点的自动化就此永久停摆,而
+ * 界面上它显示「响着」。那不是一步失败,是整条自动化死了却没有人知道,只能靠人发现、
+ * 手点取消。无人值守的场景里没有那个人。
+ *
+ * ## 为什么按「静默」算,不按「总时长」算
+ *
+ * 模型轮跑几个小时是正常的(长任务守望就是干这个的),按总时长砍会误杀真在干活的步骤。
+ * **静默是另一回事**:只要引擎还在吐字、还在调工具、子代理还在汇报,这个窗口就一直被
+ * 推后(见 `lastEventAt`)。一条事件都没有的半小时,才是「它可能已经死了」。
+ *
+ * ## 30 分钟是怎么定的
+ *
+ * 取的是**最长的那个正常静默期**:主代理把活派给子代理之后自己一个字都不发,而
+ * `subagent.update` 只在名单变化时来 —— 一个子代理干一件大事可以干很久。30 分钟给足了
+ * 这种情况,同时和 code 节点的默认超时(`NODE_CODE_TIMEOUT_KEY`,也是 30 分钟)对齐:
+ * 两个都在回答「多久没动静算不对劲」,不该是两个数。
+ *
+ * ⚠️ 判死**不等于取消整张图**:它给这一步一个 `failed` 且 `retryable: true` 的收场
+ * (见 `outcomeOf`),声明了重试的节点会自己再来一次,没声明的按普通失败往下走、下游
+ * 照常 `skipped`。取消是用户的决定,看门狗不替他做。
+ */
+export const NODE_STALL_TIMEOUT_MS = 30 * 60_000;
+
+/** 看门狗多久看一次。它只比两个时间戳,便宜得很;30 秒的粒度对 30 分钟的判据绰绰有余。 */
+const NODE_STALL_CHECK_MS = 30_000;
+
+/**
  * 节点收场之后**过多久再回来问一次花费**。
  *
  * 用量是那个回合结束之后异步推上来、再结算落库的,而结算有一个**宽限计时器**
@@ -874,6 +908,16 @@ export async function startWorkflowRun(args: {
    */
   const activity = new Map<string, string>();
   /**
+   * 每段被观察的会话**最后一次有动静**是什么时候(见 `armStallWatchdog`)。
+   *
+   * 「有动静」= 订阅者收到它的**任何**一条事件,不挑类型:吐字、调工具、子代理汇报,
+   * 甚至一条错误 —— 都证明那头还活着。挑类型正是误杀的来源(不同引擎在不同阶段只发
+   * 某一类事件),而这张表唯一的用途是回答「它还喘气吗」,不是「它在干嘛」。
+   */
+  const lastEventAt = new Map<string, number>();
+  /** 被看门狗判过死的会话 → 判死那一刻它已经静默了多久(写进错误里给人看)。 */
+  const stalled = new Map<string, number>();
+  /**
    * 这次运行里还活着的**进度心跳**(每个正在跑的节点各一个)。
    *
    * `runInNodeSession` 自己的 `finally` 会清掉自己那一个,所以正常路径上这里是空的。
@@ -960,6 +1004,9 @@ export async function startWorkflowRun(args: {
 
   const unsubscribe = runtimeManager.subscribe((e) => {
     if (!observed.has(e.sessionId)) return;
+    // **任何一条事件都算「它还活着」**(见 `lastEventAt`)。放在类型分派之前,是因为
+    // 下面只认得四种事件,而看门狗要的是"有没有动静",不是"动的是哪一下"。
+    lastEventAt.set(e.sessionId, Date.now());
     if (e.type === "text.delta") {
       text.set(e.sessionId, (text.get(e.sessionId) ?? "") + e.text);
     } else if (e.type === "turn.done") {
@@ -988,8 +1035,75 @@ export async function startWorkflowRun(args: {
     }
   });
 
+
+  /**
+   * 给一段会话挂上看门狗(判据见 {@link NODE_STALL_TIMEOUT_MS})。
+   *
+   * 返回两样东西:
+   *  - **`tripped`** —— 判死时 resolve 的那个 promise。调用方必须把它和 `handle.done`
+   *    **一起 race**,不能只靠 `interrupt`:真正卡死的那种情形下(引擎进程没了、回合
+   *    永远收不了尾)`interrupt` 也没人接,`await handle.done` 就会一直等下去 —— 而那
+   *    恰恰是这道闸要解决的问题。race 之后这一步**一定会收场**,哪怕对面再也不回话。
+   *  - **`stop()`** —— 收场时清掉计时器。
+   *
+   * 判死时**先记账再打断**:顺序反了的话,`interrupt` 引发的 `turn.done` 可能抢在记账
+   * 前头把结局定成「被取消」,而那句话是错的 —— 没有任何人取消它。
+   *
+   * 开头那句 `stalled.delete` 是给**重试**准备的:对话节点跑在主对话那段会话上,同一个
+   * id 会被第二次挂上来 —— 不清的话上一轮的判死记录会让新的一轮一开跑就"已经卡死"。
+   */
+  const armStallWatchdog = (sessionId: string): { tripped: Promise<void>; stop: () => void } => {
+    stalled.delete(sessionId);
+    lastEventAt.set(sessionId, Date.now());
+    let trip = (): void => {};
+    const tripped = new Promise<void>((resolve) => {
+      trip = resolve;
+    });
+    const timer = setInterval(() => {
+      const silentFor = Date.now() - (lastEventAt.get(sessionId) ?? Date.now());
+      if (silentFor < NODE_STALL_TIMEOUT_MS) return;
+      if (stalled.has(sessionId)) return;
+      stalled.set(sessionId, silentFor);
+      log.warn(
+        `[workflow] 节点会话 ${sessionId} 已静默 ${Math.round(silentFor / 60_000)} 分钟,判定卡死并打断`,
+      );
+      try {
+        runtimeManager.interrupt(sessionId);
+      } catch (err) {
+        // 打不断也照样收场 —— 下面那句 `trip()` 才是这道闸真正的出口。
+        log.warn(`[workflow] 打断卡死的会话 ${sessionId} 失败:${(err as Error).message}`);
+      }
+      trip();
+    }, NODE_STALL_CHECK_MS);
+    // **别吊住进程**(同进度心跳那次 `unref()`)。
+    timer.unref?.();
+    // 兜底清理和进度心跳共用那张表(见 `heartbeats`):收尾那段 `finally` 会把还活着的
+    // 一起清掉。漏一条就是一个永远在跑的计时器。
+    heartbeats.add(timer);
+    return {
+      tripped,
+      stop: () => {
+        clearInterval(timer);
+        heartbeats.delete(timer);
+      },
+    };
+  };
+
   const outcomeOf = (nodeSessionId: string): NodeOutcome => {
     const summary = (text.get(nodeSessionId) ?? "").trim();
+    // **看门狗那一票排在最前面。** 判死时会 `interrupt`,而打断在下面会被读成
+    // 「运行被取消」—— 那句话是错的(没有任何人取消它),而且 `cancelled` 在调度器那头
+    // 的传播和 `failed` 完全不是一回事(前者停整张图,后者只让下游跳过)。这一票也是
+    // 唯一会带 `retryable` 的:卡死按定义就是瞬时故障,声明了重试的节点该自己再来一次。
+    const stalledFor = stalled.get(nodeSessionId);
+    if (stalledFor !== undefined) {
+      return {
+        status: "failed",
+        summary,
+        error: `这一步连续 ${Math.round(stalledFor / 60_000)} 分钟没有任何动静,已按卡死处理`,
+        retryable: true,
+      };
+    }
     const error = failure.get(nodeSessionId);
     if (error) return { status: "failed", summary, error };
     const reason = endReason.get(nodeSessionId);
@@ -1106,7 +1220,8 @@ export async function startWorkflowRun(args: {
                 { kind: "text", text: "*—— 由自动化注入*" },
               ],
             }, automationOrigin);
-            const handle = await runtimeManager.sendTurn(target, { prompt: input.prompt, cwd, automationOrigin, memoryManagedByWorkflow: true });
+            const handle = await runtimeManager.sendTurn(target, { prompt: input.prompt, cwd, automationOrigin, memoryManagedByWorkflow: true,
+              memoryTrace: { workflow: input.memoryInjection, nodeId: node.id, nodeTitle: node.title || node.id, runId } });
             if (!handle) {
               return { status: "failed", summary: "", error: "目标对话没能接上(它正忙)—— 稍后再试一次" };
             }
@@ -1166,20 +1281,24 @@ export async function startWorkflowRun(args: {
           // 取消要打断**这一个回合**,和隔离节点同一个道理(见上面那段注释)。
           const onAbort = (): void => runtimeManager.interrupt(target.id);
           input.signal.addEventListener("abort", onAbort, { once: true });
+          const watchdog = armStallWatchdog(target.id);
           active.executing += 1;
           try {
             // 目标的运行时**正常路径上早就绑好了**(self 是发消息那一下绑的;origin 是用户
             // 在那边聊过天)。这里补一次是为了**续跑**:用户点一张旧卡片时没有"发消息"那一下,
             // 而重启之后运行时表是空的。`bindSession` 是幂等的,已经绑过就是一句空操作。
             runtimeManager.bindSession(target);
-            const handle = await runtimeManager.sendTurn(target, { prompt: input.prompt, cwd, automationOrigin, memoryManagedByWorkflow: true });
+            const handle = await runtimeManager.sendTurn(target, { prompt: input.prompt, cwd, automationOrigin, memoryManagedByWorkflow: true,
+              memoryTrace: { workflow: input.memoryInjection, nodeId: node.id, nodeTitle: node.title || node.id, runId } });
             if (!handle) {
               // 目标正忙(上一轮还没收干净)时 `sendTurn` 返回 null。**如实说**,不要让这一步
               // 假装成功 —— 下游拿不到产出时,原因得看得出来。
               return { status: "failed", summary: "", error: "目标对话没能接上(它正忙)" };
             }
             if (input.signal.aborted) onAbort();
-            await handle.done;
+            // 看门狗那一头也能让这里收场(见 `armStallWatchdog`):真卡死的时候
+            // `interrupt` 没人接,只等 `handle.done` 就是永远等下去。
+            await Promise.race([handle.done, watchdog.tripped]);
             // 这一轮说了什么,已经攒在 `text` 里了(订阅者照收,只是没推给界面)。
             if (releaseText !== null) {
               held = structuredReplyText((text.get(target.id) ?? "").trim(), vars);
@@ -1187,6 +1306,7 @@ export async function startWorkflowRun(args: {
           } catch (err) {
             return { status: "failed", summary: "", error: (err as Error).message };
           } finally {
+            watchdog.stop();
             input.signal.removeEventListener("abort", onAbort);
             // **补发要排在解除之前。** 反过来的话,后面任何一条 `text.delta` 又会推给界面,
             // 而那一段本该是"解完之后的一句话"。
@@ -1348,6 +1468,9 @@ export async function startWorkflowRun(args: {
     // 的取消由 `if (signal.aborted)` 补齐。
     const onAbort = (): void => runtimeManager.interrupt(nodeSession.id);
     input.signal.addEventListener("abort", onAbort, { once: true });
+    // 卡死的兜底(见 `armStallWatchdog`)。挂在这里而不是 `try` 里面:它要和
+    // `onAbort` 一样,在"起跑前最后一瞬"就位。
+    const watchdog = armStallWatchdog(nodeSession.id);
     // **从这一刻起整张图不再"停着等人"了**(见 `isRunParked`)。计数放在这里而不是
     // 函数开头:上面那几行还没真正开始干活,而 `createNodeSession` 万一抛了,加在
     // 开头的那一次就减不回来 —— 那个对话会永远显示"有节点在跑"。
@@ -1356,6 +1479,7 @@ export async function startWorkflowRun(args: {
       const handle = await runtimeManager.sendTurn(nodeSession, {
         prompt: input.prompt,
         memoryManagedByWorkflow: true,
+        memoryTrace: { workflow: input.memoryInjection, nodeId: node.id, nodeTitle: node.title || node.id, runId },
         cwd,
         automationOrigin,
         // 这一步要用的技能 → 这一轮的技能允许清单(`@contracts/nodeType` 的
@@ -1374,7 +1498,7 @@ export async function startWorkflowRun(args: {
         return { status: "failed", summary: "", error: "节点会话没能启动(运行时没绑上)" };
       }
       if (input.signal.aborted) onAbort();
-      await handle.done;
+      await Promise.race([handle.done, watchdog.tripped]);
     } catch (err) {
       return { status: "failed", summary: "", error: (err as Error).message };
     } finally {
@@ -1386,6 +1510,7 @@ export async function startWorkflowRun(args: {
       // 它必须在最前面清掉,不能等到下面那几行(它们中间任何一处抛了都轮不到)。
       clearInterval(heartbeat);
       heartbeats.delete(heartbeat);
+      watchdog.stop();
       input.signal.removeEventListener("abort", onAbort);
       active.executing -= 1;
     }
@@ -1416,7 +1541,7 @@ export async function startWorkflowRun(args: {
 
   const ports: RunPorts = {
     buildInput: createWorkflowInputBuilder({ sessionId: session.id, runId }),
-    memorySnapshot: () => scopedMemorySnapshot(session.projectId, prompt),
+    memorySnapshot: (query) => scopedMemorySnapshot(session.projectId, query ?? prompt),
     // 清单**一次读完**再按 id 查:`loadNodeTypes()` 是刻意不缓存的(每次都要扫插件
     // 目录、读并解析每一个清单文件,而它底下还会把每个启用的插件的技能/命令/agent
     // 文件再读一遍)。按节点调 = 同一批文件读 N 遍,而这里 N 就是图的大小。

@@ -71,6 +71,7 @@ import { describeTriggerPayload, mergeEventPayload, payloadFactsOf, type Trigger
 import {
   AutomationFacts,
   automationTriggerKey as triggerKey,
+  missedMinutesSince,
   shouldFireThisMinute,
   triggerSeedOf,
   triggerSpecKeyOf,
@@ -87,7 +88,7 @@ import {
 } from "./builtins.js";
 import { getWorkflow, listWorkflows, saveWorkflow } from "./library.js";
 import { workflowSaveVersion } from "./workflowSaveVersion.js";
-import { workflowReviewError } from "./workflowTrust.js";
+import { workflowReviewError, workflowRevision } from "./workflowTrust.js";
 import { loadNodeTypes } from "./nodeTypes.js";
 import { setWorkflowReloader } from "./reloadRequest.js";
 import { hasActiveRun, startWorkflowRun } from "./runner.js";
@@ -193,6 +194,8 @@ function existingFilesOf(files: readonly string[]): string[] {
 /** 一条自动化的**触发条件(已解好)** —— 执行器要的全部信息。 */
 interface LoadedTrigger {
   workflowId: string;
+  /** Execution-affecting revision from the document used to build this trigger. */
+  workflowRevision: string;
   /** 工作流的名字,只用于给后台会话起个能给排查看的标题。 */
   workflowName: string;
   /** 触发器节点的 id —— 它同时是 `entry.nodeId`(这次运行从哪一格起)。 */
@@ -269,6 +272,22 @@ class AutomationRunner {
   /** 每条自动化连续 reload 的序号,防止慢的那次覆盖快的那次。 */
   private reloadSeq = new Map<string, number>();
   private ticker: ReturnType<typeof setInterval> | null = null;
+  /** 退订"机器醒了"那条监听(见 `watchPowerResume`)。无头环境里一直是 null。 */
+  private powerResumeOff: (() => void) | null = null;
+  /**
+   * 「错过」这件事**已经结算到哪一分钟**了(见 `sweepMissedSchedules`)。
+   *
+   * **刻意只活在进程里**,不落盘:
+   *  - 落盘就是第二份真相,而这件事只需要"这次开机以来别重复数"这么大的记性;
+   *  - 重启之后重新算一遍**正是对的** —— 那时 `facts` 也是空的(它同样只在内存里),
+   *    两边一起从零开始,用户看到的数字才和"这次开机后发现的"对得上。
+   *
+   * ⚠️ **不能拿 `lastMinute` 兼职做这个游标。** 那张表回答的是「这一分钟跑过没有」,
+   * 而它**跨重启**(见 `LAST_MINUTE_SETTING_KEY`)—— 往里写一个"结算到此"的分钟,
+   * 等于把"刚刚跑过"的记忆抹掉,下一跳就会在同一分钟里再跑一次。那正是那张表当初
+   * 要挡的 bug。
+   */
+  private missedSweptTo = new Map<string, number>();
   private unsubscribe: (() => void) | null = null;
   /** 与钩子共用一份逻辑、各持一个实例 —— `tool.result` 要回查工具名,所以它**有状态**。 */
   private subjects = createEventSubjects();
@@ -320,6 +339,9 @@ class AutomationRunner {
     this.ticker.unref();
 
     await this.reloadAll();
+    // **先把"睡过去的那几天"结算掉,再宣布起来了。** 只记录,不补跑。
+    this.sweepMissedSchedules();
+    await this.watchPowerResume();
     log.info(`AutomationRunner started:${this.all().length} 个触发器`);
   }
 
@@ -332,6 +354,8 @@ class AutomationRunner {
     }
     this.unsubscribe?.();
     this.unsubscribe = null;
+    this.powerResumeOff?.();
+    this.powerResumeOff = null;
     // 退订那条缝 —— 退出过程中还在写工作流的话,不该再让一个已经停掉的执行器去读盘。
     setWorkflowReloader(null);
     for (const [, entry] of this.watchers) {
@@ -347,6 +371,7 @@ class AutomationRunner {
     }
     this.pendingFires.clear();
     this.lastMinute.clear();
+    this.missedSweptTo.clear();
     this.facts.clear();
     this.entries.clear();
     log.info("AutomationRunner disposed");
@@ -445,6 +470,7 @@ class AutomationRunner {
       this.facts.retainWorkflow(workflowId, new Set());
       return [];
     }
+    const revision = workflowRevision(doc);
     const out: LoadedTrigger[] = [];
     const pendingReview = workflowReviewError(doc);
     /** 这次 reload 里**还在**的触发器(挂上的 + 挂不上的),reload 完拿它清事实表。 */
@@ -502,6 +528,7 @@ class AutomationRunner {
       this.facts.recordSetup(seed, true);
       out.push({
         workflowId,
+        workflowRevision: revision,
         workflowName: doc.name,
         nodeId: node.id,
         title: node.title || manifest.name,
@@ -627,6 +654,73 @@ class AutomationRunner {
   }
 
   /* ────────────────────────── 四类触发 ────────────────────────── */
+
+  /**
+   * **应用没开 / 机器睡着的那段时间里,哪些定时触发器本该响。**
+   *
+   * ⚠️ **只记录,不补跑。** 不补跑是原来就定下的(见文件头那张表),而且是对的:一台
+   * 关了五天的机器一开机连补五份「每天九点的日报」,只会刷出五份没人要的东西,其中
+   * 四份的上下文还全是错的(它们本该在各自那天跑)。这里补的是**另一半** —— 让"没跑"
+   * 这件事看得见。在这之前那几天连一条记录都不留:`lastFireAt` 停在五天前,界面照旧
+   * 说它「响着」,用户唯一的线索是"怎么没收到日报"。
+   *
+   * 起点取 `lastMinute` 那张**跨重启**的表(见 `LAST_MINUTE_SETTING_KEY`)—— 它本来就是
+   * 为「上次跑到哪一分钟」准备的,不用再存第二份真相。
+   *
+   * 数完把它推到**上一分钟**:不推的话下一次唤醒会把同一段再数一遍。推到上一分钟而不是
+   * 当前这一分钟,是为了不吃掉 `onTick` 马上要看的那一格 —— 正好在整点醒过来时,这一分钟
+   * 本身该不该跑由它自己判。
+   */
+  private sweepMissedSchedules(): void {
+    const nowMinute = Math.floor(Date.now() / 60_000);
+    for (const trigger of this.all()) {
+      if (trigger.disarmed || trigger.spec.kind !== "schedule") continue;
+      const key = triggerKey(trigger);
+      // 起点取「上次真的跑过」和「上次已经结算到」里**靠后**的那个。前者是基准(见
+      // `missedMinutesSince`:没跑过就不数),后者防的是同一段被数两遍 —— 启动结算过
+      // 一次,睡醒再结算时不该把启动前那段又算进来。
+      const swept = this.missedSweptTo.get(key);
+      const fired = this.lastMinute.get(key);
+      if (fired === undefined) continue;
+      const from = swept === undefined ? fired : Math.max(fired, swept);
+      const { cron } = trigger.spec;
+      const missed = missedMinutesSince(from, nowMinute, (at) => cronMatches(cron, at));
+      // **游标照推,哪怕这次一次都没错过** —— 它记的是"结算到哪儿了",不是"漏了几次"。
+      this.missedSweptTo.set(key, Math.max(from, nowMinute - 1));
+      if (missed.count <= 0) continue;
+      this.facts.recordMissed(triggerSeedOf(trigger), missed.count, missed.lastAt ?? Date.now());
+      log.warn(
+        `[automation] 「${trigger.title}」在应用没运行的这段时间错过了 ${missed.count} 次定时(按设计不补跑)`,
+      );
+    }
+  }
+
+  /**
+   * 机器从睡眠里醒过来的那一下,再结算一次(见 `sweepMissedSchedules`)。
+   *
+   * 合盖一整夜是**最常见**的那种"错过":进程一直在,`started` 是 true,ticker 那根针却
+   * 在休眠里一跳都没走 —— 启动时那一次结算根本轮不到。
+   *
+   * `powerMonitor` 只有 Electron 主进程有,而这个模块**在无头环境里也会被加载**
+   * (`mcodeServer.ts` 那条路,见 `setWorkflowReloader` 那段注释)—— 所以用动态 import
+   * 加 try:拿不到就安静退化成"只在启动时结算一次",别的什么都不受影响。
+   */
+  private async watchPowerResume(): Promise<void> {
+    try {
+      const { powerMonitor } = await import("electron");
+      const onResume = (): void => {
+        try {
+          this.sweepMissedSchedules();
+        } catch (err) {
+          log.warn(`[automation] 唤醒后结算错过的定时失败:${(err as Error).message}`);
+        }
+      };
+      powerMonitor.on("resume", onResume);
+      this.powerResumeOff = () => powerMonitor.removeListener("resume", onResume);
+    } catch {
+      /* 无头环境没有 powerMonitor —— 启动时那一次结算已经覆盖了绝大多数场景 */
+    }
+  }
 
   /** 定时:30 秒一次,把全部定时触发器的 cron 求一遍。 */
   private onTick(): void {
@@ -961,6 +1055,7 @@ class AutomationRunner {
     workflowId: string,
     triggerNodeId: string,
     target: { files: readonly string[] } | { items: NonNullable<Extract<TriggerPayload, { kind: "event" }>["items"]> },
+    input?: Readonly<Record<string, string | readonly string[]>>,
   ): Promise<AutomationRunResult> {
     const find = (): LoadedTrigger | undefined =>
       this.all().find((t) => t.workflowId === workflowId && t.nodeId === triggerNodeId);
@@ -973,13 +1068,14 @@ class AutomationRunner {
       return { ok: false, error: "这个触发器不在一条已保存的自动化里(存一次再试)" };
     }
     let payload: TriggerPayload;
+    const withInput = input !== undefined && Object.keys(input).length > 0 ? { input } : {};
     if ("files" in target) {
-      payload = { kind: "file", files: target.files };
+      payload = { kind: "file", files: target.files, ...withInput };
     } else {
       const subscribed = trigger.spec.kind === "event"
         ? trigger.spec.events.find((e) => e === "library.item.downloaded" || e === "library.item.imported")
         : undefined;
-      payload = { kind: "event", event: subscribed ?? "library.item.imported", items: target.items };
+      payload = { kind: "event", event: subscribed ?? "library.item.imported", items: target.items, ...withInput };
     }
     return this.fire(trigger, payload, { manual: true });
   }
@@ -1092,6 +1188,7 @@ class AutomationRunner {
     return this.fire(
       {
         workflowId: WATCH_WORKFLOW_ID,
+        workflowRevision: workflowRevision({ ...doc, nodes }),
         workflowName: doc.name,
         nodeId: WATCH_TRIGGER_NODE_ID,
         title: (triggerNode?.title ?? "").trim() || "守望入口",
@@ -1215,6 +1312,12 @@ class AutomationRunner {
       if (current === null) return this.skip(trigger, "这份自动化已被删除");
       const reviewError = workflowReviewError(current);
       if (reviewError !== null) return this.skip(trigger, reviewError);
+      // A save reloads node manifests asynchronously. A debounce timer or cron
+      // tick can fire before `entries` is replaced; never execute that stale
+      // trigger against the newly saved graph.
+      if (workflowRevision(current) !== trigger.workflowRevision) {
+        return this.skip(trigger, `工作流已修改（「${current.name}」），旧触发配置已作废，本次触发已跳过`);
+      }
       // **关掉的只挡自动那三条路,不挡手动。** 用户正盯着「立刻运行一次」那个按钮,
       // 点了就是"我现在要它跑" —— 被一个他在别的页面上设过的开关挡回去,只会让人
       // 以为坏了(见 `NODE_TRIGGER_ENABLED_PARAM_KEY`)。

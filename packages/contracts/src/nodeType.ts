@@ -471,6 +471,17 @@ export const NODE_MANIFEST_VERSION = 1;
 export const NODE_PARAM_KINDS = [
   "text", // 单行文本
   "longtext", // 多行文本(指令、脚本正文)
+  // 代码正文。存的值和 `longtext` 是同一种东西(一个字符串),差别只在**在哪儿改**:
+  // 画布那一栏给个只读预览,点开是一扇挂着 IDE 同一个编辑器(Monaco)的模态窗 ——
+  // 有高亮、缩进、查找替换、按语法折行。
+  //
+  // 为什么不做成 `longtext` 加个开关:`longtext` 的用户是指令、期望产出那类**散文**,
+  // 给散文配代码编辑器只会碍事(它会把中文按标识符断词、把整段话画成一片灰)。
+  //
+  // **用哪种语法高亮不写死在这里** —— 从 `fromParam` 指的那个参数现读(见
+  // {@link NodeParamSpecSchema} 的 `fromParam`)。`mcode.code` 的「Language」下拉就排
+  // 在它前面一格:改了下拉,高亮跟着变,不必为四种运行时各开一个 kind。
+  "code",
   "number",
   "boolean",
   "select", // 从 options 里选(候选写在清单里)
@@ -584,7 +595,12 @@ export const NodeParamSpecSchema = z.object({
    *  没有任何理由逼它退化成 `ref`。 */
   multiple: z.boolean().optional(),
   /**
-   * `kind: "ref"` 专用:**候选还要看另一个参数的脸色** —— 那个参数的 key 写在这里。
+   * **这一格要看另一个参数的脸色** —— 那个参数的 key 写在这里。
+   *
+   * 两种用法:`ref` 用它**收窄候选**(下面那段),`code` 用它**取语法高亮用哪一种**
+   * (「Language」那一格选了 python,编辑器就按 python 高亮)。共用一个字段是因为
+   * 它们问的是同一件事 —— "另一个参数此刻是什么值",而渲染端取值的那条路只有一条
+   * (`ParamField` 的 `resolvedFrom`)。
    *
    * 现在只有一处用它:「模型」的候选跟着「引擎」走。这两个参数都是引用型,而模型的
    * 候选本来就是**按引擎分家**的 —— `piAvailableModels` 是 pi 的、`codexAvailableModels`
@@ -1317,6 +1333,53 @@ export function showsNodeCapability(manifest: NodeTypeManifest | undefined): boo
 
 /* ── 清单 ── */
 
+/* ── 重试 ── */
+
+/**
+ * 一个步骤最多试几次的**上限**。清单里写得再大也会被夹到这里(见 {@link retryPlanOf})。
+ *
+ * 5 是按「值得再试的失败都是瞬时的」定的:限流、网络抖动、引擎那头临时 503 —— 这类东西
+ * 要么几十秒内自己好,要么根本不是瞬时故障。试到第六次还不成的多半是配置错了或者对面
+ * 真的挂了,而那时候继续试**只是在烧钱和拖时间**(模型轮的每一次重试都是一整轮调用)。
+ */
+export const NODE_RETRY_MAX_ATTEMPTS = 5;
+
+/** 清单没写 `backoffMs` 时,第一次重试之前等多久。 */
+export const NODE_RETRY_DEFAULT_BACKOFF_MS = 5_000;
+
+/** 每重试一次,等待时间乘这个倍数(指数退避)。 */
+export const NODE_RETRY_DEFAULT_BACKOFF_FACTOR = 3;
+
+/** 退避等待的上限。再长就该让用户自己看一眼,而不是让一张图挂在那儿空等。 */
+export const NODE_RETRY_DEFAULT_MAX_BACKOFF_MS = 120_000;
+
+/**
+ * **这个类型的步骤失败了,自动再试几次。**
+ *
+ * ## 为什么声明在清单上,而不是做成节点参数
+ *
+ * 「该不该重试」是**执行方式的属性**,不是用户每次摆图时要想的事:模型轮撞上限流值得
+ * 再试,而一个改文件的命令重跑一遍可能把事情做两遍。让类型的作者(内置类型是我们自己,
+ * 第三方是插件作者)在清单里回答一次,比在每个节点的参数面板上多两格强 —— 那两格绝大
+ * 多数用户不会动,却会挤掉他真正要填的东西。
+ *
+ * 缺省(不写这个字段)= **只试一次**,也就是这个字段加进来之前的行为。老清单原样可用。
+ *
+ * ⚠️ **重试只对「瞬时」的失败生效**(见 {@link shouldRetryOutcome})。参数填错了、产出
+ * 不合约束、类型没装 —— 这些重试一百次还是同一个结果,调度器不会浪费那一次调用。
+ */
+export const NodeRetrySchema = z.object({
+  /** 含第一次在内,总共最多跑几次。1 = 不重试。 */
+  maxAttempts: z.number().int().min(1).max(NODE_RETRY_MAX_ATTEMPTS),
+  /** 第一次重试前等多久,毫秒。省略取 {@link NODE_RETRY_DEFAULT_BACKOFF_MS}。 */
+  backoffMs: z.number().int().min(0).max(600_000).optional(),
+  /** 每多试一次,等待乘几倍。省略取 {@link NODE_RETRY_DEFAULT_BACKOFF_FACTOR}。 */
+  backoffFactor: z.number().min(1).max(10).optional(),
+  /** 等待上限,毫秒。省略取 {@link NODE_RETRY_DEFAULT_MAX_BACKOFF_MS}。 */
+  maxBackoffMs: z.number().int().min(0).max(3_600_000).optional(),
+});
+export type NodeRetrySpec = z.infer<typeof NodeRetrySchema>;
+
 export const NodeTypeManifestSchema = z.object({
   id: z.string().regex(NODE_TYPE_ID_RE, "类型 id 必须形如 作者.名字(小写,连字符分词)"),
   manifestVersion: z.literal(NODE_MANIFEST_VERSION),
@@ -1330,6 +1393,8 @@ export const NodeTypeManifestSchema = z.object({
   /** 这个类型的**默认**能力。节点上可以覆盖(见 `WorkflowNode.capability`)。 */
   capability: WorkflowCapabilitySchema,
   params: z.array(NodeParamSpecSchema),
+  /** 这个类型的步骤失败了自动再试几次。省略 = 只试一次(见 {@link NodeRetrySchema})。 */
+  retry: NodeRetrySchema.optional(),
   /** 声明产出什么。纯说明 —— 给下游节点和结果卡片看,不做强制。 */
   outputs: z
     .array(z.object({ key: z.string(), label: z.string(), description: z.string().optional() }))
@@ -1451,6 +1516,105 @@ export interface NodeOutcome {
   artifacts?: NodeArtifact[];
   execution?: NodeExecutionRecord;
   error?: string;
+  /**
+   * **这次失败要不要自动再跑一遍** —— 执行器自己的判断。
+   *
+   * 三种值三句话:`true` = 瞬时故障(限流、网络、被看门狗判死),同样的输入等一会儿
+   * 可能就成了;`false` = 终态,再跑一百遍还是这个结果(参数不对、产出不合约束);
+   * **缺席 = 不知道**,交给调度器按错误文本猜(见 {@link isTransientError})。
+   *
+   * ⚠️ 只在 `status === "failed"` 时有意义。写在别的状态上会被忽略 —— 取消是用户的
+   * 决定,不是一次可以"再试"的故障。
+   */
+  retryable?: boolean;
+}
+
+/* ── 重试:解算与判据(纯函数) ── */
+
+/** 夹过上下限、补齐默认值之后的重试策略 —— 调度器只认这个形状。 */
+export interface NodeRetryPlan {
+  maxAttempts: number;
+  backoffMs: number;
+  backoffFactor: number;
+  maxBackoffMs: number;
+}
+
+/**
+ * 把清单上的声明解成一份**能直接用**的策略。没声明 = 只试一次(`maxAttempts: 1`),
+ * 这一路上调度器里那段重试循环一圈就退出来,与这个字段加进来之前完全等价。
+ *
+ * 越界的值**夹住而不是报错**:清单是外部数据(第三方插件、用户手改的文件),一个写大了
+ * 的 `maxAttempts` 不该让整个类型加载不进来 —— 那是"因为一个可选项而丢掉一个能跑的
+ * 节点类型"。Schema 那一层已经挡住了形状错误,这里挡的是形状对但数值离谱。
+ */
+export function retryPlanOf(manifest: { retry?: NodeRetrySpec }): NodeRetryPlan {
+  const spec = manifest.retry;
+  if (spec === undefined) {
+    return {
+      maxAttempts: 1,
+      backoffMs: NODE_RETRY_DEFAULT_BACKOFF_MS,
+      backoffFactor: NODE_RETRY_DEFAULT_BACKOFF_FACTOR,
+      maxBackoffMs: NODE_RETRY_DEFAULT_MAX_BACKOFF_MS,
+    };
+  }
+  const clamp = (value: number, low: number, high: number): number =>
+    Number.isFinite(value) ? Math.min(Math.max(value, low), high) : low;
+  return {
+    maxAttempts: Math.trunc(clamp(spec.maxAttempts, 1, NODE_RETRY_MAX_ATTEMPTS)),
+    backoffMs: Math.trunc(clamp(spec.backoffMs ?? NODE_RETRY_DEFAULT_BACKOFF_MS, 0, 600_000)),
+    backoffFactor: clamp(spec.backoffFactor ?? NODE_RETRY_DEFAULT_BACKOFF_FACTOR, 1, 10),
+    maxBackoffMs: Math.trunc(
+      clamp(spec.maxBackoffMs ?? NODE_RETRY_DEFAULT_MAX_BACKOFF_MS, 0, 3_600_000),
+    ),
+  };
+}
+
+/**
+ * 第 `attempt` 次跑完(失败)之后,再试之前等多久。`attempt` 从 1 起 —— 也就是说第一次
+ * 失败等 `backoffMs`,第二次等 `backoffMs * factor`,以此类推,封顶 `maxBackoffMs`。
+ *
+ * **指数退避而不是固定间隔**:值得重试的失败里最常见的是限流,而限流窗口正是那种"等得
+ * 越久越可能过去"的东西。固定 5 秒试 5 次,总共才 20 秒,对一个分钟级的限流窗口毫无用处。
+ */
+export function retryDelayMs(attempt: number, plan: NodeRetryPlan): number {
+  const steps = Math.max(0, Math.trunc(attempt) - 1);
+  const raw = plan.backoffMs * plan.backoffFactor ** steps;
+  return Math.min(Math.round(Number.isFinite(raw) ? raw : plan.maxBackoffMs), plan.maxBackoffMs);
+}
+
+/**
+ * **这句错误像不像"等一会儿就好了"。**
+ *
+ * 判据是一串关键词,不是精确分类 —— 错误文本来自引擎、HTTP 客户端、子进程和我们自己,
+ * 统一不了。宁可**漏判**(少试一次,用户手点「再试一次」,和从前一样)也不要**误判**
+ * (把"参数填错了"当成瞬时故障,试满 5 次再告诉他同一句话,白等一分钟还多烧四轮)。
+ *
+ * 执行器要是自己知道答案,就在 `NodeOutcome.retryable` 上直说 —— 那一票优先于这里的
+ * 猜测(见 {@link shouldRetryOutcome})。
+ */
+const TRANSIENT_ERROR_RE =
+  /(429|408|500|502|503|504|rate.?limit|too many requests|overloaded|capacity|quota|service unavailable|bad gateway|gateway timeout|internal server error|temporar|transient|socket hang up|fetch failed|network|connection (reset|refused|closed|aborted)|stream (closed|error)|timed? ?out|timeout|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|EPIPE|EAI_AGAIN|ENETUNREACH|ENETDOWN|EHOSTUNREACH|超时|超过时限|网络|连接(被)?(重置|拒绝|断开|中断)|限流|频率|繁忙|忙|稍后(再)?试|暂时|临时|不可用|没能接上|没能启动|卡死)/i;
+
+/** 见 {@link TRANSIENT_ERROR_RE}。空错误当**不是**瞬时的 —— 没有线索时不自作主张。 */
+export function isTransientError(error: string | undefined): boolean {
+  if (typeof error !== "string" || error.trim().length === 0) return false;
+  return TRANSIENT_ERROR_RE.test(error);
+}
+
+/**
+ * **这一次收场值不值得再跑一遍。**
+ *
+ * 三条,按顺序:
+ *  1. **只有 `failed` 有资格。** `cancelled` 是用户按了停止(再试一次是跟他对着干),
+ *     `skipped` / `unselected` 根本没跑过,`success` 不用说。
+ *  2. **执行器说了算。** 它在 `retryable` 上表过态就听它的 —— 它比关键词表清楚自己
+ *     撞上的是什么(看门狗判死的那种就明确标 `true`)。
+ *  3. 没表态才去猜错误文本(见 {@link isTransientError})。
+ */
+export function shouldRetryOutcome(outcome: NodeOutcome): boolean {
+  if (outcome.status !== "failed") return false;
+  if (outcome.retryable !== undefined) return outcome.retryable;
+  return isTransientError(outcome.error);
 }
 
 /**

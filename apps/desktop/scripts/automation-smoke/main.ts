@@ -36,7 +36,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseCron, cronMatches, type CronSpec } from "@contracts/cron";
 import { HOOK_EVENT_OF, eventItemFactKeysOf, eventItemFactsOf, matchesAnyGlob, type HookEvent } from "@contracts/hook";
-import { latestFailureOf } from "@contracts/ipc";
+import { latestFailureOf, missedNoticeOf } from "@contracts/ipc";
 import {
   parseTriggerSpec,
   DEFAULT_TRIGGER_DEBOUNCE_MS,
@@ -65,6 +65,8 @@ import { describeTriggerPayload, mergeEventPayload, payloadFactsOf } from "@main
 import {
   AutomationFacts,
   automationTriggerKey,
+  missedMinutesSince,
+  MISSED_SCAN_LIMIT_MINUTES,
   shouldFireThisMinute,
   triggerSeedOf,
   triggerSpecKeyOf,
@@ -1380,6 +1382,103 @@ console.log("\nlatestFailureOf · 陈年旧账不能一直挂在界面上");
   clean.recordSetup(seed, true);
   clean.recordFired({ ...seed, workflowId: "wf_clean" }, 100);
   eq("没失败过就没有那句", latestFailureOf(clean.ofWorkflow("wf_clean")[0]), undefined);
+}
+
+/* ────────────── 11a-2b. 错过的定时:不补跑,但必须看得见 ────────────── */
+
+console.log("\nmissedMinutesSince · 关机那几天本该响几次");
+
+{
+  // 「每天九点」。用一个只认小时分钟的假 matcher —— 这几条要钉的是**数数那段**
+  // (窗口两头怎么取、没有基准时怎么办、回看封多久),不是 cron 解析(那边自己有测)。
+  const nineAm = (at: Date): boolean => at.getHours() === 9 && at.getMinutes() === 0;
+  const minuteOf = (iso: string): number => Math.floor(new Date(iso).getTime() / 60_000);
+
+  eq(
+    "从来没跑过 = 一次都不数(没有基准时凭空说「错过了」只会吓人)",
+    missedMinutesSince(undefined, minuteOf("2026-03-05T10:00:00"), nineAm).count,
+    0,
+  );
+
+  // 3 月 1 日九点跑过,现在是 3 月 5 日十点 → 2、3、4、5 日那四个九点都错过了。
+  const four = missedMinutesSince(
+    minuteOf("2026-03-01T09:00:00"),
+    minuteOf("2026-03-05T10:00:00"),
+    nineAm,
+  );
+  eq("关机四天 = 错过四次", four.count, 4);
+  eq("最近那一次就是 3 月 5 日九点", four.lastAt, minuteOf("2026-03-05T09:00:00") * 60_000);
+
+  // 两头都不数:起点那一分钟自己跑过了,终点那一分钟归 `onTick` 管(它马上会看到)。
+  eq(
+    "起点那一分钟不重复计(它自己跑过了)",
+    missedMinutesSince(minuteOf("2026-03-01T09:00:00"), minuteOf("2026-03-01T09:01:00"), nineAm).count,
+    0,
+  );
+  eq(
+    "当前这一分钟不算错过(onTick 马上就会看它)",
+    missedMinutesSince(minuteOf("2026-03-01T08:00:00"), minuteOf("2026-03-01T09:00:00"), nineAm).count,
+    0,
+  );
+
+  // 回看封顶:一台搁置半年的机器不该逐分钟扫二十多万次,而「错过 180 次」和
+  // 「错过 4000 次」对用户是同一句话。
+  const everyMinute = (): boolean => true;
+  const now = minuteOf("2026-03-05T10:00:00");
+  eq(
+    "回看窗口封在 7 天",
+    missedMinutesSince(now - 400_000, now, everyMinute).count,
+    MISSED_SCAN_LIMIT_MINUTES,
+  );
+}
+
+console.log("\nrecordMissed · 只记账,不碰挂载侧,跑成一次就清零");
+
+{
+  const facts = new AutomationFacts();
+  const seed: AutomationFactsSeed = {
+    workflowId: "wf_missed",
+    nodeId: "T",
+    title: "每天九点",
+    kind: "schedule",
+    enabled: true,
+  };
+  // 挂载侧先坏着 —— 下面要验它不被这一笔改写。
+  facts.recordSetup(seed, false, "项目不在了");
+  const row = (): ReturnType<typeof facts.ofWorkflow>[number] => facts.ofWorkflow("wf_missed")[0];
+
+  facts.recordMissed(seed, 3, 1_000);
+  eq("错过三次记下来了", row()?.missedCount, 3);
+  eq("界面该显示这个数", missedNoticeOf(row()), 3);
+  // **错过不是坏了**:它挂得好好的(或坏着),这一笔一个字都不该改挂载侧。
+  eq("不碰 armed", row()?.armed, false);
+  eq("不碰 detail(那句话是挂载侧的)", row()?.detail, "项目不在了");
+  eq("也不冒充一次失败", row()?.lastError, undefined);
+
+  // 醒一次数一段 —— 累加,不是覆盖。
+  facts.recordMissed(seed, 2, 2_000);
+  eq("再睡一觉醒来是累加", row()?.missedCount, 5);
+
+  // 真的跑成一次 → 这笔账翻篇(它说的是「自上一次成功以来」)。
+  facts.recordFired(seed, 3_000);
+  eq("跑成之后清零", row()?.missedCount, undefined);
+  eq("界面上那行也跟着消失", missedNoticeOf(row()), 0);
+
+  // 0 次不留痕(sweep 每次都会调,没错过的时候不该在事实表里留一个 0)。
+  const quiet = new AutomationFacts();
+  quiet.recordSetup({ ...seed, workflowId: "wf_quiet" }, true);
+  quiet.recordMissed({ ...seed, workflowId: "wf_quiet" }, 0, 1_000);
+  eq("一次都没错过时不写任何东西", quiet.ofWorkflow("wf_quiet")[0]?.missedCount, undefined);
+
+  // 第二道保险:事实是从 IPC 过来的外部数据,跑得比错过更近时那行就不该再显示。
+  eq(
+    "跑得更近时不显示(哪怕计数还在)",
+    missedNoticeOf({
+      key: "k", workflowId: "w", nodeId: "n", title: "t", kind: "schedule",
+      armed: true, missedCount: 4, lastMissedAt: 1_000, lastFireAt: 2_000,
+    }),
+    0,
+  );
 }
 
 /* ────────────────── 11a-3. 改了配置,攒着的那一次不该按旧条件跑 ────────────────── */

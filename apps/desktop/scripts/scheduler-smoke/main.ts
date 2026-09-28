@@ -64,6 +64,10 @@ import {
   ASK_RUN_CHOICE,
   ASK_SKIP_CHOICE,
   BRANCH_STOP_CHOICE,
+  isTransientError,
+  retryDelayMs,
+  retryPlanOf,
+  shouldRetryOutcome,
 } from "@contracts/nodeType";
 import type { NodeContextKind, NodeOutcome } from "@contracts/nodeType";
 import type { WorkflowDoc, WorkflowEdge, WorkflowNode } from "@contracts/workflow";
@@ -180,8 +184,22 @@ const CONVERSATION: NodeTypeManifest = {
   ],
 };
 
+/**
+ * 声明了**自动重试**的类型(见 `@contracts/nodeType` 的 `NodeRetrySchema`)。
+ *
+ * `backoffMs: 0` —— 冒烟要钉的是"重试了几趟",不是"等了多久";退避那条曲线由下面
+ * `retryDelayMs` 的纯函数断言单独量。真等上五秒只会让这套跑得更慢,量不到任何东西。
+ */
+const RETRY_AGENT: NodeTypeManifest = {
+  ...AGENT,
+  id: "mcode.retry-agent",
+  name: "会重试的子 agent",
+  retry: { maxAttempts: 3, backoffMs: 0 },
+};
+
 const MANIFESTS: Record<string, NodeTypeManifest> = {
   [AGENT.id]: AGENT,
+  [RETRY_AGENT.id]: RETRY_AGENT,
   [SHELL.id]: SHELL,
   [LOOSE.id]: LOOSE,
   [BRANCH.id]: BRANCH,
@@ -314,7 +332,14 @@ function makePorts(opts: {
    * 一张图里通常有两处岔路口,而"第一次运行时断在第二处"才是真会发生的那种。
    */
   hold?: (nodeId: string) => Promise<void> | undefined;
+  /**
+   * **这一趟尝试交回什么** —— `attempt` 从 1 起(重试那几条要的正是"第一趟炸、
+   * 第二趟成")。返回 `undefined` = 走下面 `fail` / 默认那条老路。
+   */
+  outcome?: (nodeId: string, attempt: number) => NodeOutcome | undefined;
 } = {}): Harness {
+  /** 每个节点被派发过几趟(含重试)。`calls` 也数得出来,但 execute 里要当场用。 */
+  const attempts = new Map<string, number>();
   const calls: Call[] = [];
   const reports: RunReport[] = [];
   const manifests = opts.manifests ?? MANIFESTS;
@@ -343,6 +368,8 @@ function makePorts(opts: {
       await sleep(opts.delayMs?.(target.id) ?? 5, input.signal);
       const end = Date.now();
       leave?.();
+      const attempt = (attempts.get(target.id) ?? 0) + 1;
+      attempts.set(target.id, attempt);
       calls.push({
         id: target.id,
         start,
@@ -354,6 +381,9 @@ function makePorts(opts: {
         providerId: input.providerId,
       });
       if (input.signal.aborted) return { status: "cancelled", summary: "", error: "被取消" };
+      // 用例点名的结局优先(见 `outcome`)——重试那几条靠它区分第几趟。
+      const scripted = opts.outcome?.(target.id, attempt);
+      if (scripted !== undefined) return scripted;
       if (opts.fail?.(target.id)) {
         return { status: "failed", summary: "", error: `${target.id} 炸了` };
       }
@@ -3425,6 +3455,103 @@ function forkDoc(): WorkflowDoc {
   // 提示词里**不该**凭空多出那一段 —— 那会告诉模型"用户拍过一个板",而他没有。
   const aPrompt = h2.calls.find((c) => c.id === "A")?.prompt ?? "";
   check("★ 而且提示词里没有凭空多出那一段", !aPrompt.includes("本次执行的前置选择"), aPrompt.slice(0, 400));
+}
+
+/* ────────────────────── 自动重试(瞬时故障) ────────────────────── */
+
+console.log("\n自动重试");
+
+{
+  // 规则本身先钉住 —— 「该不该再试一次」全写在这几个纯函数里,它们错了的话,
+  // 下面那几条端到端的断言只会跟着一起错得很一致。
+  eq("没声明 retry = 只试一次(老行为)", retryPlanOf({}).maxAttempts, 1);
+  eq("清单写大了会被夹到上限", retryPlanOf({ retry: { maxAttempts: 99 } }).maxAttempts, 5);
+
+  const plan = retryPlanOf({
+    retry: { maxAttempts: 4, backoffMs: 1_000, backoffFactor: 3, maxBackoffMs: 5_000 },
+  });
+  eq("第一次失败等 backoffMs", retryDelayMs(1, plan), 1_000);
+  eq("第二次乘一遍 factor", retryDelayMs(2, plan), 3_000);
+  eq("封顶不超过 maxBackoffMs", retryDelayMs(3, plan), 5_000);
+
+  check("限流算瞬时", isTransientError("429 Too Many Requests"));
+  check("连接被重置算瞬时", isTransientError("socket hang up (ECONNRESET)"));
+  check("中文的超时也算", isTransientError("请求超时,请稍后再试"));
+  check("参数填错不算瞬时", !isTransientError("「指令」这一格没填"));
+  check("产出不合约束不算瞬时", !isTransientError("产出里少了变量「总数」"));
+
+  // 执行器自己表的态**压过**关键词猜测 —— 两个方向都要钉住。
+  check(
+    "执行器说别试了就不试(哪怕话里带 timeout)",
+    !shouldRetryOutcome({ status: "failed", summary: "", error: "timeout", retryable: false }),
+  );
+  check(
+    "执行器说可以试就试(哪怕话里看不出来)",
+    shouldRetryOutcome({ status: "failed", summary: "", error: "这一步没交东西", retryable: true }),
+  );
+  check(
+    "取消不是可重试的失败(那是用户的决定)",
+    !shouldRetryOutcome({ status: "cancelled", summary: "", error: "运行被取消" }),
+  );
+}
+
+{
+  // ── 第一趟撞限流,第二趟就过了 ──
+  const doc = docOf(
+    [node("A", RETRY_AGENT.id), node("B", RETRY_AGENT.id)],
+    [edge("A", "B")],
+  );
+  const h = makePorts({
+    outcome: (id, attempt) =>
+      id === "A" && attempt === 1
+        ? { status: "failed", summary: "", error: "429 rate limit" }
+        : undefined,
+  });
+  const result = await runWorkflow({ doc, prompt: "x", ports: h.ports, signal: controller().signal });
+
+  eq("瞬时失败自动再试一趟就成了", result.status, "success");
+  eq("A 真的跑了两趟", h.calls.filter((c) => c.id === "A").length, 2);
+  eq("最终定案是成功(不是\"失败过\")", result.outcomes.get("A")?.status, "success");
+  eq("下游照常跑,没被那次失败拖成 skipped", h.calls.filter((c) => c.id === "B").length, 1);
+}
+
+{
+  // ── 终态失败一趟都不多跑 ──
+  const doc = docOf([node("A", RETRY_AGENT.id)], []);
+  const h = makePorts({
+    outcome: () => ({ status: "failed", summary: "", error: "「指令」这一格没填" }),
+  });
+  await runWorkflow({ doc, prompt: "x", ports: h.ports, signal: controller().signal });
+  eq("配置类错误不重试(试一百次还是同一句话)", h.calls.filter((c) => c.id === "A").length, 1);
+}
+
+{
+  // ── 一直瞬时失败:试满上限,而且"试过几次"要说得出口 ──
+  const doc = docOf([node("A", RETRY_AGENT.id), node("B", RETRY_AGENT.id)], [edge("A", "B")]);
+  const h = makePorts({
+    outcome: () => ({ status: "failed", summary: "", error: "503 service unavailable" }),
+  });
+  const result = await runWorkflow({ doc, prompt: "x", ports: h.ports, signal: controller().signal });
+
+  eq("试满清单声明的次数", h.calls.filter((c) => c.id === "A").length, 3);
+  eq("最终还是失败", result.outcomes.get("A")?.status, "failed");
+  check(
+    "原因里说得出试过几次(用户等的那一分多钟得有个交代)",
+    (result.outcomes.get("A")?.error ?? "").includes("已自动重试 2 次"),
+    result.outcomes.get("A")?.error,
+  );
+  // 重试耗尽之后,下游的语义**一个字都不该变** —— 上游没成功,它就是 skipped。
+  eq("重试耗尽后下游照旧 skipped", result.outcomes.get("B")?.status, "skipped");
+}
+
+{
+  // ── 回归:没声明 retry 的类型,行为和这个字段存在之前一模一样 ──
+  const doc = docOf([node("A")], []);
+  const h = makePorts({
+    outcome: () => ({ status: "failed", summary: "", error: "429 rate limit" }),
+  });
+  await runWorkflow({ doc, prompt: "x", ports: h.ports, signal: controller().signal });
+  eq("没声明 retry 的清单:瞬时失败也只跑一趟", h.calls.filter((c) => c.id === "A").length, 1);
 }
 
 console.log(`\n${total - failures}/${total} passed`);

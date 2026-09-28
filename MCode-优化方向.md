@@ -2179,3 +2179,64 @@ tsc ✅。过程中撞出 gen_apply 的一课:上下文 2 行在"外层/内层�
 - **确认过的（不是没验，是核过）**：`claudeSessionId` 落在会话行上、`bindSession` 从它
   取回 `providerSessionId`（`RuntimeManager.ts:809`）—— 这是"上下文接得回来"的全部依据。
   **但我没真跑过一次"重启后跟某一格接着说"**，只读了代码。
+
+### 3.25 工作流/自动化:无人值守的三层兜底(2026-09-28,评审后修复)
+
+先做了一轮只读评审,结论一句话:**作为「跟着对话跑的工作流」已经相当完善,作为「没人
+看着也能跑的自动化」还缺三层兜底** —— 所有失败路径最终都依赖"人看到并点一下",而无人
+值守的场景里没有那个人。用户拍板修前三条。改动说明另见
+`docs/workflow-automation-resilience-20260928.md`。三条都**不动核心抽象**(依赖只认
+`edges`、回边人工闸门、`unselected` ≠ `skipped`、漂移收口一个字没改)。
+
+**① agent 静默看门狗**(`runner.ts` +135):清单里只有 code(默认 30min)和 command(`0` =
+不限)有超时键,最贵也最常用的 `mcode.agent` 一个都没有,调度器也没有运行级 deadline。
+卡住的代价不止这一步 —— `hasActiveRun` 恒真会把这条自动化**后面每一次触发**都挡掉
+(「上一次还在跑」),一条每天九点的自动化就此永久停摆,而界面照旧显示「已挂上」。新增
+`NODE_STALL_TIMEOUT_MS`(30min,取主代理派活给子代理后的最长正常静默期,与 code 默认
+超时对齐)+ `armStallWatchdog()`:判据是**静默**不是总时长(任何事件都刷新窗口,模型跑
+几小时是正常的);**必须 `Promise.race([handle.done, tripped])`** —— 真卡死时 `interrupt`
+也没人接,只等 `handle.done` 会永远等下去;判死给 `failed + retryable`,**不给
+`cancelled`**(后者在调度器那头会停掉整张图)。agent 与对话节点两条路都挂上。
+
+**② 声明式自动重试**(`nodeType.ts` +148 / `scheduler.ts` +79 / `nodeTypes.ts` +19):
+`maxAttempts`、`autoRetry` 在调度器里零命中,重试只有手动点「再试一次」—— 一次 429 或
+网络抖动 = 整张图当场红掉。新增清单级可选 `retry`(`NodeRetrySchema`),**挂 manifest 不挂
+params**(`NodeParamSpecSchema` 没有 `advanced` 那一格,加 param 会污染每个节点面板)。
+循环**只包派发那一句** —— 上面每一处早退(类型没装 / 参数不对 / 产出规则自相矛盾 /
+能力预检没过)都是终态,重试只是把用户的等待乘五。`shouldRetryOutcome` 三级判据:仅
+`failed` → 执行器在 `NodeOutcome.retryable` 表过态就听它的 → 没表态才按关键词猜
+(`isTransientError`,中英文)。判据住在 contracts 里,因为冒烟要能单独钉住它 ——
+「什么算瞬时故障」一旦有两份实现,迟早说出两句不同的话。指数退避封顶 2min,退避期间
+可被取消打断(`sleepUnlessAborted`)。失败收场把「已自动重试 N 次」写进 `error`(用户等的
+那一分多钟得有个交代),成功那次不声张。**默认只给 `mcode.agent` 开(3 次)**:对话节点和
+主代理跑在主对话上、重试的每一轮都会留在用户自己的聊天记录里,命令 / 代码节点可能已经
+写了半个文件、起过一个进程。**没声明 `retry` 的清单,行为与这个字段存在之前完全一致。**
+
+**③ 错过的定时:不补跑,但看得见**(`automationStatus.ts` +94 / `automationRunner.ts`
++109 / UI + i18n):`lastMinute` 只做同分钟去重,应用没开的那几天一个字都不说。不补跑是
+刻意的(一开机连补五份昨天的日报只会刷出五份没人要的东西,其中四份上下文还是错的),但
+**连"错过了"都看不见**不是设计是漏了:`lastFireAt` 停在五天前,界面照旧说它「已挂上」,
+用户唯一的线索是"怎么没收到日报"。新增纯函数 `missedMinutesSince()`(两头都不数、
+**没有基准就一次都不数** —— 一条刚建好的「每天九点」不该在建好那一刻就说它错过了三百次、
+回看封 7 天)与 `AutomationFacts.recordMissed()`(照 `recordBlocked` 的形状,**不碰挂载侧**
+—— 错过不等于它坏了);`start()` 之后与 `powerMonitor` 的 `resume` 各结算一次(合盖一整夜
+是最常见的那种"错过",启动那一次根本轮不到;动态 import + try,兼容无头那条路);界面多
+一行 warning 色提示,措辞里带「按设计不补跑」—— 否则用户会等一次根本不会来的补偿运行;
+真的跑成一次就清零。
+
+⚠️ **过程中撞出的一个真 bug**:`sweepMissedSchedules` 第一版拿 `rememberLastMinute()`
+推进游标,被 `automation-smoke` 的「重启之后同一分钟不再触发」当场抓住 —— `lastMinute`
+是**跨重启**的同分钟去重表,往里写一个"结算到此"的分钟等于把"刚刚跑过"的记忆抹掉,
+下一跳就会在同一分钟里再跑一次,正是那张表当初要挡的 bug。改为进程内独立游标
+`missedSweptTo`(不落盘:重启后重新算一遍才对,那时 facts 也是空的)。
+
+**验证**:contracts + desktop `tsc` ✅;按 `scripts/smokes-for.py` 算出的 55 套关联冒烟
+**54 套 PASS**(`mcp-endpoint-smoke` 已用 `git stash` 剥离本次改动复跑,确认是**既有失败**、
+与编排无关;stash/pop 后 6 个文件 SHA256 逐一核对一致)。新增 **40 条断言**加进现有两套
+冒烟、**没有新建测试范式**:`scheduler-smoke` **533/533**(退避曲线、瞬时/终态判据、
+执行器表态压过关键词猜测、试满上限后下游照旧 `skipped`、没声明 retry 的回归);
+`automation-smoke` 全绿(窗口两头怎么取、无基准不数、7 天封顶、记账不碰挂载侧、跑成清零)。
+
+**刻意没做**:不补跑;不给命令 / 代码 / 对话节点默认开重试;没加错误处理边(`onError`
+—— 要动图的数据模型和画布交互,不属于"补兜底"这一批);没给 agent 加可配置超时参数
+(看门狗复用既有心跳,零配置)。

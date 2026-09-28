@@ -1,7 +1,7 @@
 // One saved-version dashboard: status and history share a read/refresh lifecycle.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AutomationTriggerFacts } from "@contracts/ipc";
-import { latestFailureOf } from "@contracts/ipc";
+import { latestFailureOf, missedNoticeOf } from "@contracts/ipc";
 import type { NodeTypeCatalog } from "@contracts/nodeType";
 import type { WorkflowDoc } from "@contracts/workflow";
 import { api } from "@renderer/lib/api.js";
@@ -91,6 +91,12 @@ export function AutomationRunSection({ doc, catalog, dirty = false }: {
             </span>}
           </div>
           {fact?.detail && <p className="break-words text-content-subtle">{fact.detail}</p>}
+          {/* 「漏了几次」摆在失败那一行**之前**:它解释的是"那几天什么都没发生",
+              而下面那行说的是"最近一次跑砸了"—— 两件事,先说前者读起来才是时间顺序。
+              用 warning 而不是 danger:没有东西坏掉。 */}
+          {fact && missedNoticeOf(fact) > 0 && <p className="break-words text-warning">
+            {t("settings.automation.facts.missed", { n: missedNoticeOf(fact) })}
+          </p>}
           {fact && latestFailureOf(fact) && <p className="break-words text-danger">{latestFailureOf(fact)}</p>}
         </div>;
       })}

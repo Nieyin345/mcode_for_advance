@@ -53,6 +53,14 @@ export interface AutomationTriggerFacts {
   /** 最近一次「该跑而没跑成」的原因(上一次还在跑 / 项目不在了 / 起跑失败)。 */
   lastError?: string;
   lastErrorAt?: number;
+  /**
+   * 定时那一路:应用没开 / 机器睡着的那段时间里,它**本该响却一次都没响**的次数
+   * (见 {@link AutomationFacts.recordMissed})。真的跑成一次就清零 —— 这个数说的是
+   * 「自上一次成功以来」,不是历史总账。
+   */
+  missedCount?: number;
+  /** 最近一次错过的那个时间点(ms)。 */
+  lastMissedAt?: number;
 }
 
 /** 登记/更新一条事实所需的最低信息 —— `LoadedTrigger` 天然满足。 */
@@ -114,6 +122,52 @@ export function triggerSeedOf(trigger: {
  */
 export function shouldFireThisMinute(last: number | undefined, minute: number): boolean {
   return last !== minute;
+}
+
+/**
+ * 回看多久。理由见 {@link missedMinutesSince}。
+ */
+export const MISSED_SCAN_LIMIT_MINUTES = 7 * 24 * 60;
+
+/**
+ * 应用没开 / 机器睡着的那段时间里,这条定时触发器**本该响几次**。
+ *
+ * ## 为什么需要它
+ *
+ * `lastMinute` 那张表只回答「这一分钟跑过没有」(见 {@link shouldFireThisMinute}),
+ * 应用没开的那几天它一个字都不会说。**不补跑是刻意的**(见 `automationRunner` 文件头
+ * 那张表),但「连错过了都看不见」不是设计,是漏了:用户看到的是「每天九点」安安静静
+ * 什么也没发生,而事实表里 `lastFireAt` 停在三天前,没有任何一条记录解释那三天。
+ *
+ * ## 判据
+ *
+ * 只数**两头之间**那些分钟:`lastMinute` 那一分钟自己已经跑过,`nowMinute` 这一分钟归
+ * `onTick` 管(它马上就会看到)。没有 `lastMinute`(从来没跑过)就**一次都不数** ——
+ * 没有基准时凭空说"错过了"只会吓人:一条刚建好的「每天九点」不该在建好那一刻就告诉
+ * 用户它错过了三百次。
+ *
+ * 回看窗口封在 {@link MISSED_SCAN_LIMIT_MINUTES}:一台搁置半年的机器逐分钟扫完是
+ * 二十多万次求值 × 每条触发器,而那个数字对人也没有意义 ——「错过 180 次」和
+ * 「错过 4000 次」说的是同一件事。超出窗口的只数最近这一段。
+ *
+ * `matches` 由调用方传进来(`cronMatches` 包一层),这里**不认识 cron** —— 纯函数,
+ * 冒烟可以直接钉住"错过几次"这条规则本身。
+ */
+export function missedMinutesSince(
+  lastMinute: number | undefined,
+  nowMinute: number,
+  matches: (at: Date) => boolean,
+): { count: number; lastAt?: number } {
+  if (lastMinute === undefined) return { count: 0 };
+  const from = Math.max(lastMinute + 1, nowMinute - MISSED_SCAN_LIMIT_MINUTES);
+  let count = 0;
+  let lastAt: number | undefined;
+  for (let minute = from; minute < nowMinute; minute += 1) {
+    if (!matches(new Date(minute * 60_000))) continue;
+    count += 1;
+    lastAt = minute * 60_000;
+  }
+  return lastAt === undefined ? { count } : { count, lastAt };
 }
 
 /** 事件集合签名的分隔符(见下面那段)。写成转义序列 —— 它在编辑器里看不见。 */
@@ -252,6 +306,10 @@ export class AutomationFacts {
       armed: existing === undefined ? seed.enabled : existing.armed && seed.enabled,
       detail: existing === undefined ? undefined : existing.detail,
       lastFireAt: at,
+      // **跑成了,"错过"就清零。** 这个数说的是「自上一次成功以来漏了几次」——
+      // 留着历史总账只会让界面上挂着一个永远不会消失的红字。
+      missedCount: undefined,
+      lastMissedAt: undefined,
     });
   }
 
@@ -277,6 +335,42 @@ export class AutomationFacts {
       enabled: seed.enabled,
       lastError: reason,
       lastErrorAt: at,
+    });
+  }
+
+  /** reload 之后,这个工作流**还在**的触发器就这些;其余的事实删掉。 */
+  /**
+   * 定时那一路**错过了几次**(应用没开 / 机器睡着的那段时间,见
+   * {@link missedMinutesSince})。
+   *
+   * ⚠️ **只记账,不补跑** —— 补跑是另一件事,而且是刻意不做的那件。这一笔的全部意义
+   * 是让"没跑"看得见。
+   *
+   * ⚠️ 和 `recordBlocked` 一样,**不碰挂载侧**(`armed`/`detail`):错过不等于它坏了,
+   * 恰恰相反 —— 它好好的,只是那几天没人给它通电。累加而不是覆盖:醒一次数一段,
+   * 用户看到的该是"这段时间一共漏了几次"。
+   */
+  recordMissed(seed: AutomationFactsSeed, count: number, at: number): void {
+    if (count <= 0) return;
+    const key = automationTriggerKey(seed);
+    const existing = this.entries.get(key);
+    this.entries.set(key, {
+      ...(existing ?? {
+        key,
+        workflowId: seed.workflowId,
+        nodeId: seed.nodeId,
+        title: seed.title,
+        kind: seed.kind,
+        enabled: seed.enabled,
+        armed: false,
+        detail: undefined,
+        lastFireAt: undefined,
+        lastError: undefined,
+        lastErrorAt: undefined,
+      }),
+      key,
+      missedCount: (existing?.missedCount ?? 0) + count,
+      lastMissedAt: at,
     });
   }
 

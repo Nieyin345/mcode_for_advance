@@ -75,6 +75,18 @@ export interface AutomationTriggerFacts {
   /** 最近一次「该跑而没跑成」的原因(上一次还在跑 / 项目不在了 / 起跑失败)。 */
   lastError?: string;
   lastErrorAt?: number;
+  /**
+   * 定时那一路:应用没开 / 机器睡着的那段时间里,它**本该响却一次都没响**的次数。
+   *
+   * 「错过不补跑」是设计(补五份昨天的日报没有意义),但**不补跑不等于不告诉人** ——
+   * 在这个字段之前,那几天在界面上完全没有痕迹:`lastFireAt` 停在几天前,而那一行照旧
+   * 写着「已挂上」,用户唯一的线索是"怎么没收到日报"。
+   *
+   * 真的跑成一次就清零(见主进程 `recordFired`)—— 它说的是「自上一次成功以来」。
+   */
+  missedCount?: number;
+  /** 最近一次错过的那个时间点(ms)。 */
+  lastMissedAt?: number;
 }
 
 /**
@@ -104,6 +116,24 @@ export function latestFailureOf(facts: AutomationTriggerFacts): string | undefin
   if (at === undefined) return facts.lastError;
   if (facts.lastFireAt !== undefined && facts.lastFireAt >= at) return undefined;
   return facts.lastError;
+}
+
+/**
+ * 「这段时间漏了几次」该不该显示 —— 返回要显示的次数,`0` = 不显示。
+ *
+ * 和 {@link latestFailureOf} 同一个道理、同一处摆放:判据只能有一份,否则设置页说
+ * 「漏了 3 次」、首屏说「一切正常」,而两边读的是同一条事实。
+ *
+ * 主进程 `recordFired` 已经会在真的跑成时清零,这里那道时刻比对是**第二道保险**:
+ * 事实是从 IPC 过来的外部数据,而"起跑之后那笔旧账就该翻篇"这条规则,不该指望
+ * 另一侧永远记得清。
+ */
+export function missedNoticeOf(facts: AutomationTriggerFacts): number {
+  const count = facts.missedCount ?? 0;
+  if (count <= 0) return 0;
+  const at = facts.lastMissedAt;
+  if (at !== undefined && facts.lastFireAt !== undefined && facts.lastFireAt >= at) return 0;
+  return count;
 }
 
 /* ── 监控(monitoring.*)── */

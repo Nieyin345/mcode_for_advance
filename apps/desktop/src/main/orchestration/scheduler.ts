@@ -95,6 +95,9 @@ import {
   isAskChoice,
   isModelDecider,
   isNodeRunnable,
+  retryDelayMs,
+  retryPlanOf,
+  shouldRetryOutcome,
   validateNodeParams,
   type NodeContextKind,
   type NodeOutcome,
@@ -189,7 +192,7 @@ export interface RunPorts {
   /** Optional host-bound input factory. It retains the existing builder/variable
    * pipeline while adding trusted run identity; ordinary test ports keep the default. */
   buildInput?: typeof buildNodeInput;
-  memorySnapshot?: () => string;
+  memorySnapshot?: (query?: string) => string;
   /** 拿一个节点类型的清单。没有 = 这个类型没装(别人分享来的图会走到这里)。 */
   manifestOf(typeId: string): Promise<NodeTypeManifest | undefined>;
   /**
@@ -1502,13 +1505,50 @@ class Run {
       if (this.entry?.payload !== undefined) {
         (inputScope as typeof inputScope & { trigger?: Record<string, unknown> }).trigger = this.entry.payload;
       }
-      const outcome = await this.ports.execute(
-        node,
-        manifest,
-        (this.ports.buildInput ?? buildNodeInput)(params, manifest, inputScope, this.signal),
-      );
-      // 产出回来,按**同一份**参数查硬约束。
-      const checked = withOutputCheck(manifest, params, outcome, terminal);
+      /* ── 派发(带自动重试) ──────────────────────────────────────────
+       *
+       * **重试只包这一段,不包上面那些。** 上面每一处早退(类型没装、参数不对、产出
+       * 规则自相矛盾、能力预检没过)都是**终态** —— 同一张图再跑一百遍还是同一句话,
+       * 重试只是把用户的等待乘以五。真正值得再来一次的只有"派发出去之后在对面炸了"
+       * 这一类:限流、网络抖动、引擎那头临时 503、被看门狗判死的卡死回合(见
+       * `runner.ts` 的 `NODE_STALL_TIMEOUT_MS`)。
+       *
+       * 试几次由**清单**说了算(见 `@contracts/nodeType` 的 `NodeRetrySchema`),没声明
+       * 就是一次 —— 也就是这个字段存在之前的行为,老清单和别人分享来的图原样照跑。
+       * 该不该试由 `shouldRetryOutcome` 说了算:执行器自己表过态就听它的,没表态才去
+       * 猜错误文本。两个判据都住在 contracts 里,因为**冒烟要能单独钉住它们** ——
+       * 「什么算瞬时故障」这种规则一旦有两份实现,迟早说出两句不同的话。
+       *
+       * ⚠️ 每一轮都**重新装一次输入**(`buildInput` 在循环里):变量解算过的参数不变,
+       * 但输入对象里带着 `signal` 和这一轮的上下文,复用上一次的等于把一个已经用过的
+       * 输入再交出去。
+       */
+      const plan = retryPlanOf(manifest);
+      let checked: NodeOutcome;
+      for (let attempt = 1; ; attempt += 1) {
+        const outcome = await this.ports.execute(
+          node,
+          manifest,
+          (this.ports.buildInput ?? buildNodeInput)(params, manifest, inputScope, this.signal),
+        );
+        // 产出回来,按**同一份**参数查硬约束。
+        checked = withOutputCheck(manifest, params, outcome, terminal);
+        if (attempt >= plan.maxAttempts || this.signal.aborted || !shouldRetryOutcome(checked)) {
+          // **试过不止一次的话,把这件事写进原因里。** 不写的话用户看到的是一句普通的
+          // 错误,而他刚刚等了一分多钟 —— 那一分钟去哪了得有个交代,否则下一步就是
+          // 「是不是卡了」。成功的那次不声张:重试本来就是为了让他不必知道。
+          if (attempt > 1 && checked.status === "failed") {
+            checked = {
+              ...checked,
+              error: `${checked.error ?? "这一步失败了"}(已自动重试 ${attempt - 1} 次)`,
+            };
+          }
+          break;
+        }
+        // 退避期间**必须能被打断** —— 用户按了停止之后不该再干等完那个窗口(最长两分钟)。
+        await sleepUnlessAborted(retryDelayMs(attempt, plan), this.signal);
+        if (this.signal.aborted) return cancelled();
+      }
       // **模型选的分支还要再走一步**:它得自己挑一条出边(见 `applyDecision`)。放在
       // 产出检查**之后** —— 一个连产出都没交齐的节点,去问"它选了哪条路"没有意义。
       if (!this.isModelDeciderNode(node.id)) return checked;
@@ -2212,6 +2252,29 @@ export async function runWorkflow(args: RunArgs): Promise<RunResult> {
 
 function cancelled(): NodeOutcome {
   return { status: "cancelled", summary: "", error: "运行被取消" };
+}
+
+/**
+ * 睡一会儿,**但随时可以被取消打断**。
+ *
+ * 退避等待最长两分钟(见 `NODE_RETRY_DEFAULT_MAX_BACKOFF_MS`),而用户按下停止之后还要
+ * 干等完那两分钟是说不过去的 —— 界面上那一步看起来就是"按了没反应"。中止之后这里立刻
+ * 返回,由调用方去查 `signal.aborted` 决定收场(它要返回的是「取消」,不是「等完了」)。
+ *
+ * 计时器 `unref()`:一个还在走的退避不该拖住整个进程退出(同 runner 那几处)。
+ */
+function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
+  if (ms <= 0 || signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const done = (): void => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    timer.unref?.();
+    signal.addEventListener("abort", done, { once: true });
+  });
 }
 
 /**

@@ -335,8 +335,8 @@ function memoryParam(): NodeParamSpec[] {
     {
       key: MEMORY_PARAM_KEY,
       kind: "boolean",
-      label: "注入记忆",
-      help: "打开后,本步骤的提示词末尾附上记忆库的一份快照(规则、项目、偏好、经验、教训、决定)。记忆库在左侧栏「记忆」里,可直接编辑。",
+      label: "本步骤自动附带项目＋全局记忆",
+      help: "每次执行按本步骤指令和当前请求检索当前项目＋显式全局记忆，受条数和正文预算限制；不复制主对话历史。关闭只停止自动附带，不禁止按需检索，也不擦除已发送的历史。",
     },
   ];
 }
@@ -612,6 +612,21 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
     icon: "message",
     category: "通用",
     runner: { kind: "prompt" },
+    /**
+     * **只有子 agent 默认开自动重试。** 三次,退避用默认值(5 秒起、每次乘三)。
+     *
+     * 为什么是它、而且只有它:
+     *  - 它是**一段独立会话**,重跑一次不会在用户的对话里多出一条消息 —— 对话节点
+     *    和主代理跑在主对话上,重试的每一轮都会留下痕迹,那是用户自己的聊天记录。
+     *  - 它**没有本机副作用的既成事实**:命令 / 代码节点可能已经写了半个文件、起过
+     *    一个进程,重跑是把副作用做第二遍,那必须由写图的人自己决定(在清单里显式声明)。
+     *  - 它是**最常用的那一格**,而它撞上的失败绝大多数是瞬时的:限流、网络抖动、
+     *    引擎临时 503、被看门狗判死的卡死回合。这些正是"等一会儿再来一次就好了"。
+     *
+     * 只有 `shouldRetryOutcome` 认可的失败才真的会重试 —— 指令写错、产出不合约束这些
+     * 一次都不会多跑。
+     */
+    retry: { maxAttempts: 3 },
     // 默认只读。**这是刻意的保守默认**:工作流里多数步骤是查、读、分析,而写盘
     // 是少数需要明确表达的动作。节点上可以覆盖(`WorkflowNode.capability`)——
     // 一个要产出文件的步骤应该显式声明 `write`,而不是继承一个宽松的默认值。
@@ -816,7 +831,9 @@ const BUILTIN_NODE_TYPES: readonly NodeTypeManifest[] = [
     capability: "exec",
     params: [
       { key: NODE_CODE_LANGUAGE_KEY, kind: "select", label: "Language", default: "python", help: "Runtime used to run the code.", options: [{ value: "python", label: "Python" }, { value: "node", label: "Node.js" }, { value: "shell", label: "Shell" }, { value: "powershell", label: "PowerShell" }] },
-      { key: NODE_CODE_PARAM_KEY, kind: "longtext", label: "Code", required: true, help: "Program source. Input JSON arrives on stdin." },
+      // `fromParam` 让编辑器按上面那一格选的运行时高亮(见 `NodeParamSpecSchema.fromParam`)——
+      // ⚠️ 语言那一条**必须排在它前面**,值是从已渲染过的参数里读的。
+      { key: NODE_CODE_PARAM_KEY, kind: "code", fromParam: NODE_CODE_LANGUAGE_KEY, label: "Code", required: true, help: "Program source. Input JSON arrives on stdin." },
       { key: NODE_CODE_INPUT_KEY, kind: "longtext", label: "Input JSON", help: "Optional. Use {{upstream.output}} style templates." },
       { key: NODE_CODE_TIMEOUT_KEY, kind: "number", label: "Timeout (ms)", help: "0 = unlimited." },
       ...outputVarsParam(),
