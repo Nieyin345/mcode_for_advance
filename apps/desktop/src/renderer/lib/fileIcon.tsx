@@ -13,20 +13,38 @@
  * always resolves to the same icon (consistency). Unknown extensions and
  * extension-less files fall back to the generic `document` icon.
  *
- * The collection is registered once on module load via `addCollection`; after
- * that every lookup is a synchronous local `getIcon` call - no async / network.
+ * The collection JSON (~830KB minified, every icon incl. folders) is loaded as
+ * a separate chunk right after this module is first imported, then registered
+ * via `addCollection`; after that every lookup is a synchronous local
+ * `getIcon` call - no network. Until it lands (a few ms after first paint),
+ * `FileTypeIcon` renders a same-size blank box, so layout never shifts and
+ * Iconify never tries its online API for a not-yet-registered icon.
  * Folders show no icon in the tree (chevron + name only) per the current design.
  */
+import { useSyncExternalStore } from "react";
 import { addCollection, Icon as IconifyIcon } from "@iconify/react";
-// Importing the data triggers the side-effect registration below. This is a
-// ~253KB JSON blob (1175 icons) bundled into the renderer chunk.
-import mitCollection from "@iconify-json/material-icon-theme/icons.json";
 import { basename } from "@renderer/lib/path.js";
 
-// Register the whole collection once. After this, icons resolve synchronously
-// via getIcon("material-icon-theme:<name>"). Safe at module scope - it just
-// populates an in-memory map; idempotent if imported twice.
-addCollection(mitCollection);
+// Register the whole collection once, off the startup critical path. After
+// this, icons resolve synchronously via getIcon("material-icon-theme:<name>").
+let collectionReady = false;
+const readyListeners = new Set<() => void>();
+void import("@iconify-json/material-icon-theme/icons.json")
+  .then((mod) => {
+    addCollection(mod.default);
+    collectionReady = true;
+    for (const cb of readyListeners) cb();
+  })
+  .catch((err: unknown) => {
+    console.error("fileIcon: failed to load the icon collection", err);
+  });
+function subscribeCollection(cb: () => void): () => void {
+  readyListeners.add(cb);
+  return () => {
+    readyListeners.delete(cb);
+  };
+}
+const collectionSnapshot = (): boolean => collectionReady;
 
 const COLLECTION_PREFIX = "material-icon-theme";
 
@@ -2490,6 +2508,15 @@ export function FileTypeIcon({
   size?: number;
   className?: string;
 }) {
+  const ready = useSyncExternalStore(subscribeCollection, collectionSnapshot);
+  if (!ready) {
+    return (
+      <span
+        aria-hidden
+        style={{ display: "inline-block", width: size, height: size, verticalAlign: "-0.125em" }}
+      />
+    );
+  }
   const id = fileIconIdForPath(path) ?? `${COLLECTION_PREFIX}:${DEFAULT_ICON}`;
   return <IconifyIcon icon={id} width={size} height={size} inline />;
 }

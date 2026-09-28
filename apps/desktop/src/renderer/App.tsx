@@ -10,7 +10,6 @@ import { SessionTabs } from "./components/layout/SessionTabs.js";
 import { UnifiedTabsBar } from "./components/layout/UnifiedTabsBar.js";
 import { RightPanel } from "./components/layout/RightPanel.js";
 import { BottomTerminalBar } from "./components/layout/BottomTerminalBar.js";
-import { SettingsPage } from "./components/settings/SettingsPage.js";
 import { CommandPalette } from "./components/layout/CommandPalette.js";
 import { SearchDialog } from "./components/ide/SearchDialog.js";
 import { ModelConfigPrompt } from "./components/chat/ModelConfigPrompt.js";
@@ -32,7 +31,6 @@ import { useTheme } from "./lib/theme.js";
 import { useChatAppearance, useRightPanelAppearance, useThemeStyle } from "./lib/appearance.js";
 import { useI18n } from "./lib/i18n/index.js";
 import { OpenTabsBar } from "./components/ide/OpenTabsBar.js";
-import { FileViewer } from "./components/library/FileViewer.js";
 import { useFileViewStore } from "./stores/fileViewStore.js";
 import { startWorkflowLive } from "./lib/workflowLive.js";
 
@@ -52,6 +50,16 @@ const GitDiffDialog = lazy(() =>
 );
 const PlanViewer = lazy(() =>
   import("./components/chat/PlanViewer.js").then((m) => ({ default: m.PlanViewer })),
+);
+// Same reasoning for the settings overlay and the read-only file preview:
+// SettingsPage reaches Monaco + the Milkdown editor through the memory panel,
+// and FileViewer pulls the PDF engine and Office previewers. Neither is on
+// screen at first paint, so keep them out of the App chunk.
+const SettingsPage = lazy(() =>
+  import("./components/settings/SettingsPage.js").then((m) => ({ default: m.SettingsPage })),
+);
+const FileViewer = lazy(() =>
+  import("./components/library/FileViewer.js").then((m) => ({ default: m.FileViewer })),
 );
 
 export function App() {
@@ -382,7 +390,9 @@ export function App() {
           */}
           {settingsOpen && (
             <div className="settings-root absolute inset-0 z-30 flex bg-surface-muted">
-              <SettingsPage />
+              <Suspense fallback={null}>
+                <SettingsPage />
+              </Suspense>
             </div>
           )}
         </div>
@@ -505,7 +515,9 @@ function UnifiedTabbedPane({ wide }: { wide: boolean }) {
             编辑器要保 Monaco 的挂载态,预览每换一个文件就该重读一次。 */}
         {showFileView && (
           <div className="absolute inset-0 flex min-h-0 flex-col">
-            <FileViewer target={fileView} />
+            <Suspense fallback={null}>
+              <FileViewer target={fileView} />
+            </Suspense>
           </div>
         )}
       </div>

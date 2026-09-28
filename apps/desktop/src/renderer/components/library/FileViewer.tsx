@@ -18,7 +18,7 @@
  * 「用系统程序打开」走 `shell.openPath`(它自带项目根围栏)。文献库那一侧还没有对应的
  * RPC,所以不画 —— 一个按下去什么都不发生的按钮比没有更坏。
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import { makeQuoteTag } from "@renderer/lib/contentTag.js";
@@ -28,7 +28,6 @@ import { api } from "@renderer/lib/api.js";
 import { dirname, extname, joinPath } from "@renderer/lib/path.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { ChunkedMarkdown } from "@renderer/components/chat/ChunkedMarkdown.js";
-import { PdfPreview } from "./PdfPreview.js";
 import { DocxPreview } from "@renderer/components/templates/DocxPreview.js";
 import { PptxPreview } from "@renderer/components/templates/PptxPreview.js";
 import { XlsxPreview } from "@renderer/components/templates/XlsxPreview.js";
@@ -40,6 +39,9 @@ import {
   IconLoader2,
 } from "@renderer/lib/icons.js";
 import { extOf, type FileViewTarget } from "@renderer/stores/fileViewStore.js";
+
+// The PDF engine (EmbedPDF + pdfium glue, >1MB) loads only when a PDF is shown.
+const PdfPreview = lazy(() => import("./PdfPreview.js").then((m) => ({ default: m.PdfPreview })));
 
 /**
  * 归一之后的预览数据。**两条来源都落到这里**,下面的渲染分支只认这个类型。
@@ -372,12 +374,14 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
     }
     if (mime === "application/pdf" || ext === "pdf") {
       return (
-        <PdfPreview
-          item={itemOf(target)}
-          bytes={bytes}
-          {...(data.filePath ? { filePath: data.filePath } : {})}
-          onOpenExternal={openExternal}
-        />
+        <Suspense fallback={null}>
+          <PdfPreview
+            item={itemOf(target)}
+            bytes={bytes}
+            {...(data.filePath ? { filePath: data.filePath } : {})}
+            onOpenExternal={openExternal}
+          />
+        </Suspense>
       );
     }
     // office 三种:预览组件吃字节,自己管滚动和缩放,所以不吃外面的容器样式。

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { useSessionStore, selectActiveEnvPath } from "@renderer/stores/sessionStore.js";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
@@ -10,13 +10,15 @@ import {
   IconPlayerStop,
   IconEraser,
 } from "@renderer/lib/icons.js";
-import {
-  TerminalView,
-  type TerminalSessionStatus,
-  type TerminalViewHandle,
-} from "./TerminalView.js";
+import type { TerminalSessionStatus, TerminalViewHandle } from "./TerminalView.js";
 import { TerminalCommandsMenu } from "./TerminalCommandsMenu.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+
+// xterm (+ its CSS) is only needed once a terminal tab actually exists; the
+// panel itself is part of the always-mounted layout, so load the view lazily.
+const TerminalView = lazy(() =>
+  import("./TerminalView.js").then((m) => ({ default: m.TerminalView })),
+);
 
 /** One UI terminal tab. `key` is stable; the underlying PTY id lives in the view.
  *  The tab title is derived at render time from the owning project's name plus
@@ -432,33 +434,35 @@ export function TerminalPanel({ active }: { active: boolean }) {
               )}
               aria-hidden={!isActive}
             >
-              <TerminalView
-                sessionKey={s.key}
-                projectPath={p}
-                active={active && isActive}
-                onStatusChange={(status, detail) => {
-                  updateStatus(s.key, status, detail);
-                  // Drain any command queued by runCommandInNewTerminal once the
-                  // freshly spawned PTY is ready. Same newline normalization as
-                  // runCommand (shell commits on "\r", not "\n").
-                  if (status === "running") {
-                    const cmd = pendingCommandBySession.current.get(s.key);
-                    if (cmd) {
-                      pendingCommandBySession.current.delete(s.key);
-                      const id = handlesRef.current.get(s.key)?.getTerminalId();
-                      if (id) {
-                        void api.terminal.write({
-                          terminalId: id,
-                          data: `${cmd.replace(/\r\n|\n|\r/g, "\r")}\r`,
-                        });
+              <Suspense fallback={null}>
+                <TerminalView
+                  sessionKey={s.key}
+                  projectPath={p}
+                  active={active && isActive}
+                  onStatusChange={(status, detail) => {
+                    updateStatus(s.key, status, detail);
+                    // Drain any command queued by runCommandInNewTerminal once the
+                    // freshly spawned PTY is ready. Same newline normalization as
+                    // runCommand (shell commits on "\r", not "\n").
+                    if (status === "running") {
+                      const cmd = pendingCommandBySession.current.get(s.key);
+                      if (cmd) {
+                        pendingCommandBySession.current.delete(s.key);
+                        const id = handlesRef.current.get(s.key)?.getTerminalId();
+                        if (id) {
+                          void api.terminal.write({
+                            terminalId: id,
+                            data: `${cmd.replace(/\r\n|\n|\r/g, "\r")}\r`,
+                          });
+                        }
                       }
                     }
-                  }
-                }}
-                onReady={(handle) => {
-                  handlesRef.current.set(s.key, handle);
-                }}
-              />
+                  }}
+                  onReady={(handle) => {
+                    handlesRef.current.set(s.key, handle);
+                  }}
+                />
+              </Suspense>
             </div>
           );
         })}
