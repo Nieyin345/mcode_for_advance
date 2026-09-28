@@ -12,7 +12,7 @@ if [[ -z "$ESBUILD" ]]; then echo 'Missing local esbuild; no network install' >&
   --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
   --alias:@renderer/lib/api.js=./scripts/maint-m35-smoke/stubs/api.ts \
   --alias:@renderer/lib/i18n/index.js=./scripts/maint-m35-smoke/stubs/i18n.ts \
-  --alias:@renderer/lib/icons.js=./scripts/maint-m35-smoke/stubs/icons.ts \
+  --alias:@renderer/lib/icons.js=./scripts/maint-m35-smoke/stubs/icons.cjs \
   --outfile="$OUT/main.mjs" --log-level=error
 status=0
 node "$OUT/main.mjs" || status=1
@@ -35,7 +35,7 @@ NODE
   --alias:@m35/PdfPreview=./scripts/maint-m35-smoke/stubs/previewDeps.ts \
   --alias:@renderer/lib/api.js=./scripts/maint-m35-smoke/stubs/previewDeps.ts \
   --alias:@renderer/lib/i18n/index.js=./scripts/maint-m35-smoke/stubs/i18n.ts \
-  --alias:@renderer/lib/icons.js=./scripts/maint-m35-smoke/stubs/icons.ts \
+  --alias:@renderer/lib/icons.js=./scripts/maint-m35-smoke/stubs/icons.cjs \
   --alias:@renderer/stores/sessionStore.js=./scripts/maint-m35-smoke/stubs/previewDeps.ts \
   --alias:@renderer/stores/toastStore.js=./scripts/maint-m35-smoke/stubs/previewDeps.ts \
   --alias:@renderer/lib/contentTag.js=./scripts/maint-m35-smoke/stubs/previewDeps.ts \
@@ -71,7 +71,7 @@ NODE
   --alias:@m35/ItemNotes=./scripts/maint-m35-smoke/stubs/linksDeps.ts \
   --alias:@renderer/lib/api.js=./scripts/maint-m35-smoke/stubs/linksDeps.ts \
   --alias:@renderer/lib/i18n/index.js=./scripts/maint-m35-smoke/stubs/i18n.ts \
-  --alias:@renderer/lib/icons.js=./scripts/maint-m35-smoke/stubs/icons.ts \
+  --alias:@renderer/lib/icons.js=./scripts/maint-m35-smoke/stubs/icons.cjs \
   --alias:@renderer/stores/sessionStore.js=./scripts/maint-m35-smoke/stubs/linksDeps.ts \
   --alias:@renderer/components/ui/dialog.js=./scripts/maint-m35-smoke/stubs/linksDeps.ts \
   --alias:@renderer/components/chat/LibraryPicker.js=./scripts/maint-m35-smoke/stubs/linksDeps.ts \
@@ -84,7 +84,7 @@ node "$OUT/links.mjs" || status=1
   --alias:react=./scripts/maint-m35-smoke/stubs/reactEffects \
   --alias:@renderer/lib/api.js=./scripts/maint-m35-smoke/stubs/importDeps.ts \
   --alias:@renderer/lib/i18n/index.js=./scripts/maint-m35-smoke/stubs/i18n.ts \
-  --alias:@renderer/lib/icons.js=./scripts/maint-m35-smoke/stubs/icons.ts \
+  --alias:@renderer/lib/icons.js=./scripts/maint-m35-smoke/stubs/icons.cjs \
   --alias:@renderer/components/ui/index.js=./scripts/maint-m35-smoke/stubs/importDeps.ts \
   --alias:@renderer/stores/libraryStore.js=./scripts/maint-m35-smoke/stubs/importDeps.ts \
   --outfile="$OUT/import.mjs" --log-level=error
