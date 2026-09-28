@@ -54,27 +54,61 @@ function modelsPath(): string {
   return path.join(homedir(), ".pi", "agent", "models.json");
 }
 
-async function readModelsFile(): Promise<PiModelsFile> {
+/**
+ * 读 models.json。
+ *
+ * `forWrite`:读出来是为了**改完写回去**(`saveProvider` / `deleteProvider`)。这个文件
+ * 是用户手改的(Pi 的文档就这么教),读不出来(手滑写坏、或者别的原因)时,列表那一侧
+ * 退化成空是对的;但写的那一侧如果也当它是空的,写回去就是**拿 Mcode 这一条盖掉整份
+ * 文件** —— 用户手配的其它 provider 全没了。所以写路径上读不出来就拒绝,把原因说清楚。
+ *
+ * UTF-8 BOM(Windows 记事本 / PowerShell 5.1 写出来的)先剥掉,它不算“写坏”。
+ */
+async function readModelsFile(forWrite = false): Promise<PiModelsFile> {
+  let raw: string;
   try {
-    const raw = await fs.readFile(modelsPath(), "utf-8");
-    const parsed = JSON.parse(raw) as PiModelsFile;
-    if (!parsed || typeof parsed !== "object") return { providers: {} };
-    if (!parsed.providers || typeof parsed.providers !== "object") {
-      return { ...parsed, providers: {} };
-    }
-    return parsed;
+    raw = await fs.readFile(modelsPath(), "utf-8");
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      log.warn(`piModels: failed to read models.json (treating as empty): ${(err as Error).message}`);
-    }
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { providers: {} };
+    if (forWrite) throw new Error(`读不了 ${modelsPath()},为免覆盖其中的内容,这次没有保存:${(err as Error).message}`);
+    log.warn(`piModels: failed to read models.json (treating as empty): ${(err as Error).message}`);
     return { providers: {} };
   }
+  let parsed: PiModelsFile;
+  try {
+    parsed = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw) as PiModelsFile;
+  } catch (err) {
+    if (forWrite) {
+      throw new Error(`${modelsPath()} 不是合法 JSON,为免覆盖你手写的内容,这次没有保存(先修好或删掉这个文件):${(err as Error).message}`);
+    }
+    log.warn(`piModels: models.json is not valid JSON (treating as empty): ${(err as Error).message}`);
+    return { providers: {} };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    if (forWrite) throw new Error(`${modelsPath()} 顶层不是对象,为免覆盖其中的内容,这次没有保存`);
+    return { providers: {} };
+  }
+  if (!parsed.providers || typeof parsed.providers !== "object" || Array.isArray(parsed.providers)) {
+    if (forWrite && parsed.providers !== undefined) {
+      throw new Error(`${modelsPath()} 的 providers 不是对象,为免覆盖其中的内容,这次没有保存`);
+    }
+    return { ...parsed, providers: {} };
+  }
+  return parsed;
 }
 
+/** 临时文件 + rename:Pi SDK 每轮都读它,不能让它读到写了一半的文件。 */
 async function writeModelsFile(file: PiModelsFile): Promise<void> {
-  const dir = path.dirname(modelsPath());
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(modelsPath(), JSON.stringify(file, null, 2), "utf-8");
+  const target = modelsPath();
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  const tmp = `${target}.${process.pid}.tmp`;
+  await fs.writeFile(tmp, JSON.stringify(file, null, 2), "utf-8");
+  try {
+    await fs.rename(tmp, target);
+  } catch (err) {
+    await fs.unlink(tmp).catch(() => {});
+    throw err;
+  }
 }
 
 /** Build a PiProviderPublic from stored config + hasApiKey flag. The apiKey
@@ -141,7 +175,7 @@ export const PiModelsStore = {
     // else: empty + existing → preserve old key (no-op on keys map)
 
     // ---- models.json handling (metadata only) ----
-    const file = await readModelsFile();
+    const file = await readModelsFile(true);
     const existing = file.providers[name] ?? {};
     const existingModels = new Map((existing.models ?? []).map((m) => [m.id, m]));
     const mergedModels = (config.models ?? []).map((m) => {
@@ -166,7 +200,7 @@ export const PiModelsStore = {
 
   /** Delete one provider. Removes both models.json entry and encrypted key. */
   async deleteProvider(name: string): Promise<Record<string, PiProviderPublic>> {
-    const file = await readModelsFile();
+    const file = await readModelsFile(true);
     if (name in file.providers) {
       delete file.providers[name];
       await writeModelsFile(file);
