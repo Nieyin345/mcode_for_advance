@@ -54,8 +54,12 @@ export const zh = {
   "ide.editor.switchToPreview": "切换到预览",
   "ide.editor.switchToSourceView": "切换到源码视图",
   "ide.editor.switchToOfficeEdit": "切换到可视化编辑（OnlyOffice）",
+  "ide.editor.switchToMarkdownEdit": "切换到可视化编辑（Milkdown）",
   /** Milkdown 空文档占位 */
   "ide.editor.mdPlaceholder": "开始输入，或按 / 插入内容…",
+  "ide.editor.quoteToCurrent": "引用到当前对话",
+  "ide.editor.quoteNoOpenChat": "请先打开一个对话，再引用所选内容。",
+  "ide.editor.quoteAdded": "已引用到当前对话的输入框",
   // ── Office 文档（OnlyOffice）──
   "ide.office.opening": "正在连接 OnlyOffice…",
   "ide.office.loadingEditor": "正在加载编辑器…",
@@ -66,7 +70,7 @@ export const zh = {
   "ide.office.openFailed": "OnlyOffice 打开失败",
   /** 编辑器里选中文字后，引用目标列表里"这一份文件"那一项的标题（同 FileViewer 的用法）。 */
   "ide.editor.thisFile": "这个文件",
-  /** 「源码 / 预览」那个按钮的文案 —— 说的是"点一下会切到哪儿"。md 有三档轮转。 */
+  /** 模式按钮显示目标档；md 只在 Milkdown 编辑与源码之间切换。 */
   "ide.editor.togglePreview": "预览",
   "ide.editor.toggleEdit": "编辑",
   "ide.editor.toggleSource": "源码",

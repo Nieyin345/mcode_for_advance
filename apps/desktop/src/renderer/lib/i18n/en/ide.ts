@@ -52,7 +52,11 @@ export const en = {
   "ide.editor.switchToPreview": "Switch to preview",
   "ide.editor.switchToSourceView": "Switch to source view",
   "ide.editor.switchToOfficeEdit": "Switch to visual editing (OnlyOffice)",
+  "ide.editor.switchToMarkdownEdit": "Switch to visual editing (Milkdown)",
   "ide.editor.mdPlaceholder": "Start typing, or press / to insert…",
+  "ide.editor.quoteToCurrent": "Quote to the open conversation",
+  "ide.editor.quoteNoOpenChat": "Open a conversation before quoting the selected text.",
+  "ide.editor.quoteAdded": "Added the quote to the open conversation's composer",
   // ── Office documents (OnlyOffice) ──
   "ide.office.opening": "Connecting to OnlyOffice…",
   "ide.office.loadingEditor": "Loading editor…",

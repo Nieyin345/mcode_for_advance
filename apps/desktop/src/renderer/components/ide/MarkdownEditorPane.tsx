@@ -27,6 +27,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Crepe } from "@milkdown/crepe";
+import { editorViewCtx } from "@milkdown/kit/core";
+import { TextSelection } from "@milkdown/kit/prose/state";
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/frame.css";
 import { api } from "@renderer/lib/api.js";
@@ -35,6 +37,9 @@ import { isEditingKey, shouldAutosave } from "@renderer/lib/serializedFileWrites
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { IconLoader2, IconCheck } from "@renderer/lib/icons.js";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { makeQuoteTag } from "@renderer/lib/contentTag.js";
+import { basename } from "@renderer/lib/path.js";
 
 export function MarkdownEditorPane({
   filePath,
@@ -43,6 +48,31 @@ export function MarkdownEditorPane({
   projectPath: string | null;
 }) {
   const { t } = useI18n();
+  // Resolve the visible conversation at click time, not when Crepe is mounted.
+  // The side panel may have switched to a different chat/node in the meantime.
+  const quoteToCurrent = useCallback((text: string) => {
+    if (!text.trim()) return;
+    const state = useSessionStore.getState();
+    const sessionId = state.activeSideChatId || state.activeSessionId;
+    if (!sessionId) {
+      useToastStore.getState().push({ kind: "info", title: t("ide.editor.quoteNoOpenChat") });
+      return;
+    }
+    const tag = makeQuoteTag({
+      text,
+      origin: { kind: "file", filePath, name: basename(filePath) },
+    });
+    // Shared draft delivery only: no picker, automatic send or conversation switch.
+    state.quoteIntoComposer(sessionId, tag);
+    window.getSelection()?.removeAllRanges();
+    useToastStore.getState().push({
+      kind: "info",
+      title: t("ide.editor.quoteAdded"),
+      sessionId,
+    });
+  }, [filePath, t]);
+  const quoteToCurrentRef = useRef(quoteToCurrent);
+  quoteToCurrentRef.current = quoteToCurrent;
   /** 编辑器实例。挂在 ref 上而不是 state：它不参与渲染，重建时机由 effect 管。 */
   const crepeRef = useRef<Crepe | null>(null);
   /** 外层容器 —— 真实输入事件监听的挂点（见下面那个 effect）。 */
@@ -189,6 +219,32 @@ export function MarkdownEditorPane({
         [Crepe.Feature.TopBar]: true,
       },
       featureConfigs: {
+        [Crepe.Feature.Toolbar]: {
+          buildToolbar: (builder) => {
+            builder.addGroup("mcode-context", t("ide.editor.quoteToCurrent")).addItem("mcode-quote", {
+              // A typographic quotation mark: no bespoke SVG or extra icon runtime.
+              icon: '<span aria-hidden="true">❞</span>',
+              label: t("ide.editor.quoteToCurrent"),
+              active: () => false,
+              onRun: (ctx) => {
+                if (disposed) return;
+                const view = ctx.get(editorViewCtx);
+                // ProseMirror retains its last selection after focus moves away.
+                // Never quote that stale range when the browser now selects elsewhere.
+                const nativeSelection = view.dom.ownerDocument.getSelection();
+                if (!nativeSelection || nativeSelection.isCollapsed ||
+                    !view.dom.contains(nativeSelection.anchorNode) ||
+                    !view.dom.contains(nativeSelection.focusNode)) return;
+                const { selection, doc } = view.state;
+                if (!(selection instanceof TextSelection) || selection.empty) return;
+                const { from, to } = selection;
+                const text = doc.textBetween(from, to, "\n\n").trim();
+                if (!text) return;
+                quoteToCurrentRef.current(text);
+              },
+            });
+          },
+        },
         [Crepe.Feature.Placeholder]: {
           text: t("ide.editor.mdPlaceholder"),
           mode: "doc",
@@ -212,7 +268,7 @@ export function MarkdownEditorPane({
       crepeRef.current = null;
       void crepe.destroy();
     };
-    // `t` 只影响占位文案，不值得为它重建编辑器（重建会丢撤销栈）。
+    // `t` 影响占位和工具栏文案，不为它重建编辑器（重建会丢撤销栈）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initial, filePath]);
 
@@ -253,6 +309,8 @@ export function MarkdownEditorPane({
     const onPointerDown = (e: PointerEvent) => {
       const t = e.target;
       if (!(t instanceof Element)) return;
+      // Quoting is read-only, even though its button lives in the editor toolbar.
+      if (t.closest('[data-toolbar-item="mcode-quote"]')) return;
       if (t.closest("milkdown-toolbar, milkdown-top-bar, milkdown-slash-menu, milkdown-block-handle, .milkdown-table-block, milkdown-latex-inline-edit, milkdown-image-block, milkdown-link-edit"))
         userTouchedRef.current = true;
     };

@@ -89,8 +89,8 @@ export function FileEditor({
   // ## 默认档（2026-09-21 改）：md 进**所见即所得**
   //
   // 用户的原话是「点开就该能改」—— 所以 md 不再先落一屏只读渲染，而是直接进
-  // 富文本编辑（`MarkdownEditorPane`，MDXEditor）。源码视图和只读预览都还在，
-  // 工具栏上那个按钮三档轮转。
+  // 富文本编辑（`MarkdownEditorPane`，Milkdown / Crepe）。只保留编辑与源码两档，
+  // 不再把同一份 md 切到另一套只读渲染器。旧 preview 偏好在下面兼容为 wysiwyg。
   //
   // PDF 仍然默认**预览**：它是二进制，Monaco 画出来就是一屏乱码（用户截图里
   // 那个坏状态）。其余文件（代码、json、日志）默认 `edit` —— 打开就是要改。
@@ -101,7 +101,8 @@ export function FileEditor({
   // Office（docx / xlsx / pptx…）与 md 同理（2026-09-27）：默认进 **OnlyOffice 可视化
   // 编辑**（`wysiwyg`），「预览」那一档是 docx-preview / @js-preview/excel / pptx-preview
   // 的只读渲染 —— DS 没配 / 连不上时的退路。它们**没有**源码档（二进制）。
-  const defaultMode: FileViewMode = isMarkdown(filePath) || isOnlyOfficeEditablePath(filePath)
+  const markdown = isMarkdown(filePath);
+  const defaultMode: FileViewMode = markdown || isOnlyOfficeEditablePath(filePath)
     ? "wysiwyg"
     : isPdfFile(filePath)
       ? "preview"
@@ -135,19 +136,19 @@ export function FileEditor({
 
   // Effective mode:
   //  - diff: history pairs (forced) OR explicitly requested with a snapshot.
-  //  - preview: explicitly requested (Markdown rendered read-only).
-  //  - wysiwyg: Markdown 的所见即所得（MDXEditor）。
+  //  - preview: non-Markdown previews (PDF / Office / images / legacy text).
+  //  - wysiwyg: Markdown 的所见即所得（Milkdown），以及 Office 可视化编辑。
+  // Markdown 的旧 preview 偏好只在此适配，不改其他文件/项目的已保存偏好。
   //  - edit: the normal editable Monaco instance (default for non-md files).
   const effectiveMode: FileViewMode =
     historyOnly || (viewMode === "diff" && diffBefore != null)
       ? "diff"
       : viewMode === "preview"
-        ? "preview"
+        ? markdown ? "wysiwyg" : "preview"
         : viewMode === "wysiwyg"
           ? "wysiwyg"
           : "edit";
 
-  const markdown = isMarkdown(filePath);
   const image = isImage(filePath);
   /** DS 能编辑的 Office 文档 —— 判据与主进程共用 `@contracts/ipc` 那一份。 */
   const office = isOnlyOfficeEditablePath(filePath);
@@ -169,20 +170,15 @@ export function FileEditor({
         isOffice={office}
         isUnsupported={unsupported}
         onTogglePreview={() =>
-          // md 三档轮转：所见即所得 → 预览 → 源码 → 回到所见即所得。
-          // 为什么不是"两档对切"：md 的默认档是 wysiwyg，对切的话源码那一档
-          // 就永远够不着了（用户要能看原始 markdown 改 frontmatter、调表格对齐）。
+          // md 只在 Milkdown 编辑与源码之间切换；差异视图也可回到 Milkdown。
+          // 保留源码入口，用于精确修改 frontmatter、表格及原始 Markdown。
           //
           // ⚠️ 判据用 `markdown`（上面从 `isMarkdown(filePath)` 算出来的**布尔**），
           // 不能用 prop 同名那个 `isMarkdown` —— 那是**函数**，恒真。
           markdown
             ? setViewMode(
                 filePath,
-                effectiveMode === "wysiwyg"
-                  ? "preview"
-                  : effectiveMode === "preview"
-                    ? "edit"
-                    : "wysiwyg",
+                effectiveMode === "wysiwyg" ? "edit" : "wysiwyg",
               )
             : office
               // Office 两档对切：可视化编辑 ↔ 只读预览（没有源码档，二进制进 Monaco 只是乱码）
@@ -233,8 +229,8 @@ const EMPTY_NAV: NavEntry[] = [];
 /**
  * 「源码 / 预览」那个按钮的四档文案。
  *
- * 为什么是四态而不是两态：md 现在有**三档**（源码 / 所见即所得 / 预览），
- * 非 md 还是两档（源码 / 预览）。按钮说的是"**点一下会切到哪儿**"，
+ * 共享视图联合仍包含 diff/preview，但 md 只在源码和 Milkdown 之间切换。
+ * 非 md 的预览和 Office 两档保持原样。按钮说的是"**点一下会切到哪儿**"，
  * 不是"现在在哪儿" —— 这和它原来的行为一致（`mode === "preview" ? Edit : Preview`）。
  */
 const TOGGLE_LABEL_KEY = {
@@ -248,6 +244,20 @@ const TOGGLE_TITLE_KEY = {
   edit: "ide.editor.switchToPreview",
   diff: "ide.editor.switchToPreview",
   preview: "ide.editor.switchToSource",
+  wysiwyg: "ide.editor.switchToSourceView",
+} as const satisfies Record<FileViewMode, string>;
+
+/** Markdown 两档（Milkdown ↔ 源码）。与 Office/图片的预览按钮分开，避免误导。 */
+const MARKDOWN_TOGGLE_LABEL_KEY = {
+  edit: "ide.editor.toggleEdit",
+  diff: "ide.editor.toggleEdit",
+  preview: "ide.editor.toggleEdit",
+  wysiwyg: "ide.editor.toggleSource",
+} as const satisfies Record<FileViewMode, string>;
+const MARKDOWN_TOGGLE_TITLE_KEY = {
+  edit: "ide.editor.switchToMarkdownEdit",
+  diff: "ide.editor.switchToMarkdownEdit",
+  preview: "ide.editor.switchToMarkdownEdit",
   wysiwyg: "ide.editor.switchToSourceView",
 } as const satisfies Record<FileViewMode, string>;
 
@@ -354,17 +364,16 @@ function EditorToolbar({
   };
   const navBackTitle = withChord("editor.nav-back", t("ide.editor.navBack"));
   const navForwardTitle = withChord("editor.nav-forward", t("ide.editor.navForward"));
-  // Files that default to a read-only preview pane (markdown rendered, image
-  // displayed, or an unsupported-type notice). These get a Preview/Edit toggle
-  // so the user can still drop into the raw Monaco editor if they want.
+  // Markdown gets Milkdown/Source; Office gets Edit/Preview. Images and
+  // unsupported types retain their preview/raw-source escape hatch.
   //
   // ⚠️ **PDF 故意不在这个列表里。** 它同样默认走预览（见上面 `defaultMode`），
   // 但**不该给"切到 Monaco 看看"那个按钮** —— pdf 是二进制，Monaco 画出来就是
   // 一屏乱码，那正是用户截图里那个坏状态。给它一个按下去只会看到乱码的按钮，
   // 比不给更坏（同 `FileViewer` 里"画一个按下去不动的按钮比不画更坏"那条取舍）。
   const hasPreviewToggle = isMarkdown || isImage || isUnsupported || isOffice;
-  const labelKey = isOffice ? OFFICE_TOGGLE_LABEL_KEY : TOGGLE_LABEL_KEY;
-  const titleKey = isOffice ? OFFICE_TOGGLE_TITLE_KEY : TOGGLE_TITLE_KEY;
+  const labelKey = isMarkdown ? MARKDOWN_TOGGLE_LABEL_KEY : isOffice ? OFFICE_TOGGLE_LABEL_KEY : TOGGLE_LABEL_KEY;
+  const titleKey = isMarkdown ? MARKDOWN_TOGGLE_TITLE_KEY : isOffice ? OFFICE_TOGGLE_TITLE_KEY : TOGGLE_TITLE_KEY;
   // Show the path relative to the project root when possible (cleaner in the
   // narrow toolbar); fall back to the full path. Case-insensitive on Windows/
   // macOS so a lowercased drive letter from LSP (`d:\foo`) still matches a
@@ -469,15 +478,8 @@ function EditorToolbar({
             {mode === "edit" ? "Diff" : "Edit"}
           </button>
         )}
-        {/* Preview/Edit toggle - for files that default to a read-only preview
-            pane (Markdown rendered, image displayed, or an unsupported-type
-            notice). In preview mode the button switches to the source editor;
-            in edit/diff mode it switches to the rendered preview. For binary
-            files (image/unsupported) "Edit" shows raw content as Monaco sees
-            it (garbled for non-utf-8) - kept as an escape hatch, not the norm.
-
-            ⚠️ md 多一档：它默认就是**所见即所得**（`wysiwyg`），所以这里的
-            三态是 源码(edit) ↔ 富文本(wysiwyg) ↔ 预览(preview)。 */}
+        {/* Markdown: Milkdown/Source only. Office: Edit/Preview. Other binary
+            preview types keep their existing raw-source escape hatch. */}
         {hasPreviewToggle && (
           <button
             type="button"
@@ -488,7 +490,7 @@ function EditorToolbar({
             )}
             title={t(titleKey[mode])}
           >
-            {mode === "edit" ? <IconEye size={12} /> : <IconEdit size={12} />}
+            {mode === "edit" && !isMarkdown ? <IconEye size={12} /> : <IconEdit size={12} />}
             {t(labelKey[mode])}
           </button>
         )}
@@ -2194,8 +2196,7 @@ function isPdfFile(filePath: string): boolean {
   return extname(filePath) === ".pdf";
 }
 
-/** True for `.md` / `.markdown` files - gates the preview/edit toolbar toggle
- *  and the preview render branch. */
+/** True for `.md` / `.markdown` files - gates Milkdown/source and adapts legacy preview preferences. */
 function isMarkdown(filePath: string): boolean {
   const ext = extname(filePath);
   return ext === ".md" || ext === ".markdown";
