@@ -1,4 +1,4 @@
-import { useEffect, useState, type ComponentType } from "react";
+import { lazy, Suspense, useEffect, useState, type ComponentType } from "react";
 import type { ProviderCapabilities } from "@contracts/provider";
 import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
@@ -31,31 +31,111 @@ import {
   IconAdjustmentsHorizontal,
   type TablerIconProps,
 } from "@renderer/lib/icons.js";
-import { CustomModelsPanel } from "./CustomModelsPanel.js";
-import { InstitutionAuthPanel } from "./InstitutionAuthPanel.js";
-import { DataRootPanel } from "./DataRootPanel.js";
-import { LibraryTypesPanel } from "./LibraryTypesPanel.js";
-import { CustomUiPanel } from "./CustomUiPanel.js";
-import { RuntimesPanel } from "./RuntimesPanel.js";
-import { SkillsPanel } from "./SkillsPanel.js";
-import { WorkflowsPanel } from "./workflows/WorkflowsPanel.js";
-import { HooksPanel } from "./HooksPanel.js";
-import { McpPanel } from "./McpPanel.js";
-import { PluginsPanel } from "./PluginsPanel.js";
-import { AppearancePanel } from "./AppearancePanel.js";
-import { ShortcutsPanel } from "./ShortcutsPanel.js";
-import { GesturesPanel } from "./GesturesPanel.js";
-import { GeneralPanel } from "./GeneralPanel.js";
-import { SettingsGitPanel } from "./SettingsGitPanel.js";
-import { SettingsTerminalPanel } from "./SettingsTerminalPanel.js";
-import { SettingsBrowserPanel } from "./SettingsBrowserPanel.js";
-import { LspLanguagesPanel } from "./LspLanguagesPanel.js";
-import { NotificationsPanel } from "./NotificationsPanel.js";
-import { VoicePanel } from "./VoicePanel.js";
-import { UsagePanel } from "./UsagePanel.js";
-import { AboutPanel } from "./AboutPanel.js";
-import { MonitoringPanel } from "../monitoring/MonitoringPanel.js";
-import { MemoryExplorerPanel } from "../memory/MemoryExplorerPanel.js";
+import { IconLoader2 } from "@renderer/lib/icons.js";
+
+/**
+ * Every panel is its own lazy chunk (perf, 2026-09-28).
+ *
+ * Only the active panel is ever rendered, but these used to be static imports,
+ * so opening settings for the first time had to fetch + evaluate ~6MB of JS
+ * — mostly Monaco, dragged in through MemoryExplorerPanel → FileEditor /
+ * monacoSetup — before even the "常规" tab could paint. Now the settings shell
+ * is small, each panel loads when first shown, and after the shell mounts the
+ * light panels are prefetched at idle so switching tabs stays instant. Heavy
+ * panels (Monaco) are left to load on first use. `perf-startup-smoke` /
+ * `settings-lazy-smoke` guard this.
+ */
+const PANEL_LOADERS = {
+  CustomModelsPanel: () => import("./CustomModelsPanel.js"),
+  InstitutionAuthPanel: () => import("./InstitutionAuthPanel.js"),
+  DataRootPanel: () => import("./DataRootPanel.js"),
+  LibraryTypesPanel: () => import("./LibraryTypesPanel.js"),
+  CustomUiPanel: () => import("./CustomUiPanel.js"),
+  RuntimesPanel: () => import("./RuntimesPanel.js"),
+  SkillsPanel: () => import("./SkillsPanel.js"),
+  WorkflowsPanel: () => import("./workflows/WorkflowsPanel.js"),
+  HooksPanel: () => import("./HooksPanel.js"),
+  McpPanel: () => import("./McpPanel.js"),
+  PluginsPanel: () => import("./PluginsPanel.js"),
+  AppearancePanel: () => import("./AppearancePanel.js"),
+  ShortcutsPanel: () => import("./ShortcutsPanel.js"),
+  GesturesPanel: () => import("./GesturesPanel.js"),
+  GeneralPanel: () => import("./GeneralPanel.js"),
+  SettingsGitPanel: () => import("./SettingsGitPanel.js"),
+  SettingsTerminalPanel: () => import("./SettingsTerminalPanel.js"),
+  SettingsBrowserPanel: () => import("./SettingsBrowserPanel.js"),
+  LspLanguagesPanel: () => import("./LspLanguagesPanel.js"),
+  NotificationsPanel: () => import("./NotificationsPanel.js"),
+  VoicePanel: () => import("./VoicePanel.js"),
+  UsagePanel: () => import("./UsagePanel.js"),
+  AboutPanel: () => import("./AboutPanel.js"),
+  MonitoringPanel: () => import("../monitoring/MonitoringPanel.js"),
+  MemoryExplorerPanel: () => import("../memory/MemoryExplorerPanel.js"),
+};
+type PanelName = keyof typeof PANEL_LOADERS;
+/** Panels whose chunk pulls an editor engine: never prefetched in the background. */
+const HEAVY_PANELS: ReadonlySet<PanelName> = new Set<PanelName>(["MemoryExplorerPanel"]);
+
+/**
+ * Warm panel chunks without rendering them. `names` defaults to every light
+ * panel. Safe to call repeatedly (the module loader dedupes) and never throws —
+ * a failed prefetch just means the panel loads (and reports) on first show.
+ */
+export function prefetchSettingsPanels(names?: readonly PanelName[]): void {
+  const list = names ?? (Object.keys(PANEL_LOADERS) as PanelName[]).filter((n) => !HEAVY_PANELS.has(n));
+  for (const n of list) void PANEL_LOADERS[n]().catch(() => undefined);
+}
+
+/** Run `fn` when the renderer is idle (falls back to a short timeout). */
+function whenIdle(fn: () => void, timeout = 3000): () => void {
+  if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") {
+    const id = window.requestIdleCallback(fn, { timeout });
+    return () => window.cancelIdleCallback(id);
+  }
+  const id = setTimeout(fn, 200);
+  return () => clearTimeout(id);
+}
+
+const CustomModelsPanel = lazy(() => PANEL_LOADERS.CustomModelsPanel().then((m) => ({ default: m.CustomModelsPanel })));
+const InstitutionAuthPanel = lazy(() => PANEL_LOADERS.InstitutionAuthPanel().then((m) => ({ default: m.InstitutionAuthPanel })));
+const DataRootPanel = lazy(() => PANEL_LOADERS.DataRootPanel().then((m) => ({ default: m.DataRootPanel })));
+const LibraryTypesPanel = lazy(() => PANEL_LOADERS.LibraryTypesPanel().then((m) => ({ default: m.LibraryTypesPanel })));
+const CustomUiPanel = lazy(() => PANEL_LOADERS.CustomUiPanel().then((m) => ({ default: m.CustomUiPanel })));
+const RuntimesPanel = lazy(() => PANEL_LOADERS.RuntimesPanel().then((m) => ({ default: m.RuntimesPanel })));
+const SkillsPanel = lazy(() => PANEL_LOADERS.SkillsPanel().then((m) => ({ default: m.SkillsPanel })));
+const WorkflowsPanel = lazy(() => PANEL_LOADERS.WorkflowsPanel().then((m) => ({ default: m.WorkflowsPanel })));
+const HooksPanel = lazy(() => PANEL_LOADERS.HooksPanel().then((m) => ({ default: m.HooksPanel })));
+const McpPanel = lazy(() => PANEL_LOADERS.McpPanel().then((m) => ({ default: m.McpPanel })));
+const PluginsPanel = lazy(() => PANEL_LOADERS.PluginsPanel().then((m) => ({ default: m.PluginsPanel })));
+const AppearancePanel = lazy(() => PANEL_LOADERS.AppearancePanel().then((m) => ({ default: m.AppearancePanel })));
+const ShortcutsPanel = lazy(() => PANEL_LOADERS.ShortcutsPanel().then((m) => ({ default: m.ShortcutsPanel })));
+const GesturesPanel = lazy(() => PANEL_LOADERS.GesturesPanel().then((m) => ({ default: m.GesturesPanel })));
+const GeneralPanel = lazy(() => PANEL_LOADERS.GeneralPanel().then((m) => ({ default: m.GeneralPanel })));
+const SettingsGitPanel = lazy(() => PANEL_LOADERS.SettingsGitPanel().then((m) => ({ default: m.SettingsGitPanel })));
+const SettingsTerminalPanel = lazy(() => PANEL_LOADERS.SettingsTerminalPanel().then((m) => ({ default: m.SettingsTerminalPanel })));
+const SettingsBrowserPanel = lazy(() => PANEL_LOADERS.SettingsBrowserPanel().then((m) => ({ default: m.SettingsBrowserPanel })));
+const LspLanguagesPanel = lazy(() => PANEL_LOADERS.LspLanguagesPanel().then((m) => ({ default: m.LspLanguagesPanel })));
+const NotificationsPanel = lazy(() => PANEL_LOADERS.NotificationsPanel().then((m) => ({ default: m.NotificationsPanel })));
+const VoicePanel = lazy(() => PANEL_LOADERS.VoicePanel().then((m) => ({ default: m.VoicePanel })));
+const UsagePanel = lazy(() => PANEL_LOADERS.UsagePanel().then((m) => ({ default: m.UsagePanel })));
+const AboutPanel = lazy(() => PANEL_LOADERS.AboutPanel().then((m) => ({ default: m.AboutPanel })));
+const MonitoringPanel = lazy(() => PANEL_LOADERS.MonitoringPanel().then((m) => ({ default: m.MonitoringPanel })));
+const MemoryExplorerPanel = lazy(() => PANEL_LOADERS.MemoryExplorerPanel().then((m) => ({ default: m.MemoryExplorerPanel })));
+
+/** Suspense fallback: stays blank for fast (prefetched) loads, spins only if it drags. */
+function PanelLoading() {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    const id = setTimeout(() => setShow(true), 150);
+    return () => clearTimeout(id);
+  }, []);
+  if (!show) return null;
+  return (
+    <div className="flex justify-center py-10 text-content-subtle">
+      <IconLoader2 size={18} className="animate-spin" />
+    </div>
+  );
+}
 
 /**
  * Settings page with a left functional menu + right content panel layout.
@@ -215,6 +295,10 @@ export function SettingsPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, [setSettingsOpen]);
 
+  // Warm the other light panels once the shell has painted, so tab switches
+  // don't wait on a chunk load. Heavy (editor) panels still load on first use.
+  useEffect(() => whenIdle(() => prefetchSettingsPanels()), []);
+
   return (
     <ThreePaneLayout
       left={
@@ -289,36 +373,38 @@ export function SettingsPage() {
           className="min-h-0 h-full overflow-y-auto px-6 pb-5"
           style={{ fontSize: "var(--right-panel-font-size)" }}
         >
-          {active === "general" && <GeneralPanel />}
-          {active === "appearance" && <AppearancePanel />}
-          {active === "custom-models" && <CustomModelsPanel />}
-          {active === "library-types" && (
-            <>
-              <DataRootPanel />
-              <LibraryTypesPanel />
-            </>
-          )}
-          {active === "custom-ui" && <CustomUiPanel />}
-          {active === "institution" && <InstitutionAuthPanel />}
-          {active === "shortcuts" && <ShortcutsPanel />}
-          {active === "gestures" && <GesturesPanel />}
-          {active === "voice" && <VoicePanel />}
-          {active === "skills" && <SkillsPanel />}
-          {active === "workflows" && <WorkflowsPanel purpose="workflow" />}
-          {active === "automation" && <WorkflowsPanel purpose="automation" />}
-          {active === "hooks" && <HooksPanel />}
-          {active === "runtimes" && <RuntimesPanel />}
-          {active === "mcp" && <McpPanel />}
-          {active === "memory" && <MemoryExplorerPanel />}
-          {active === "plugins" && <PluginsPanel />}
-          {active === "notifications" && <NotificationsPanel />}
-          {active === "git" && <SettingsGitPanel />}
-          {active === "terminal" && <SettingsTerminalPanel />}
-          {active === "browser" && <SettingsBrowserPanel />}
-          {active === "lsp-languages" && <LspLanguagesPanel />}
-          {active === "monitoring" && <MonitoringPanel />}
-          {active === "usage" && <UsagePanel />}
-          {active === "about" && <AboutPanel />}
+          <Suspense key={active} fallback={<PanelLoading />}>
+            {active === "general" && <GeneralPanel />}
+            {active === "appearance" && <AppearancePanel />}
+            {active === "custom-models" && <CustomModelsPanel />}
+            {active === "library-types" && (
+              <>
+                <DataRootPanel />
+                <LibraryTypesPanel />
+              </>
+            )}
+            {active === "custom-ui" && <CustomUiPanel />}
+            {active === "institution" && <InstitutionAuthPanel />}
+            {active === "shortcuts" && <ShortcutsPanel />}
+            {active === "gestures" && <GesturesPanel />}
+            {active === "voice" && <VoicePanel />}
+            {active === "skills" && <SkillsPanel />}
+            {active === "workflows" && <WorkflowsPanel purpose="workflow" />}
+            {active === "automation" && <WorkflowsPanel purpose="automation" />}
+            {active === "hooks" && <HooksPanel />}
+            {active === "runtimes" && <RuntimesPanel />}
+            {active === "mcp" && <McpPanel />}
+            {active === "memory" && <MemoryExplorerPanel />}
+            {active === "plugins" && <PluginsPanel />}
+            {active === "notifications" && <NotificationsPanel />}
+            {active === "git" && <SettingsGitPanel />}
+            {active === "terminal" && <SettingsTerminalPanel />}
+            {active === "browser" && <SettingsBrowserPanel />}
+            {active === "lsp-languages" && <LspLanguagesPanel />}
+            {active === "monitoring" && <MonitoringPanel />}
+            {active === "usage" && <UsagePanel />}
+            {active === "about" && <AboutPanel />}
+          </Suspense>
         </div>
       }
       right={null}

@@ -55,9 +55,11 @@ const PlanViewer = lazy(() =>
 // SettingsPage reaches Monaco + the Milkdown editor through the memory panel,
 // and FileViewer pulls the PDF engine and Office previewers. Neither is on
 // screen at first paint, so keep them out of the App chunk.
-const SettingsPage = lazy(() =>
-  import("./components/settings/SettingsPage.js").then((m) => ({ default: m.SettingsPage })),
-);
+// The SettingsPage module itself is only the shell + nav (every panel is its
+// own lazy chunk), so it is cheap to warm at idle after first paint: the first
+// click on the gear then opens instantly instead of waiting on a chunk load.
+const loadSettingsPage = () => import("./components/settings/SettingsPage.js");
+const SettingsPage = lazy(() => loadSettingsPage().then((m) => ({ default: m.SettingsPage })));
 const FileViewer = lazy(() =>
   import("./components/library/FileViewer.js").then((m) => ({ default: m.FileViewer })),
 );
@@ -134,6 +136,22 @@ const WorkspaceSidebar = memo(function WorkspaceSidebar({
 export function App() {
   // Subscribe to the claude event stream for the app's whole lifetime.
   useClaudeEvents();
+  // Idle-prefetch the settings shell and its default "常规" panel (see
+  // loadSettingsPage). Failures are ignored: the lazy import retries on open.
+  useEffect(() => {
+    let cancelled = false;
+    const run = () => {
+      loadSettingsPage()
+        .then((m) => { if (!cancelled) m.prefetchSettingsPanels(["GeneralPanel"]); })
+        .catch(() => undefined);
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      const id = window.requestIdleCallback(run, { timeout: 5000 });
+      return () => { cancelled = true; window.cancelIdleCallback(id); };
+    }
+    const id = setTimeout(run, 2000);
+    return () => { cancelled = true; clearTimeout(id); };
+  }, []);
   // 右栏「运行看板」的现场也常驻订阅 —— 看板没开着、停在别的页时照样记。否则图起跑时
   // 右栏关着,那段进度就永远丢了(打开看板一片灰)。见 `lib/workflowLive.ts` 文件头。
   useEffect(() => {

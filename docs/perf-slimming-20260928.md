@@ -65,6 +65,7 @@
 | 4 | ⏭ 按用户决定不做 | 实测两套字典在 V8 中编译加执行共约 25–33ms，只加载当前语言大约能省 15ms 和 260KB。代价是要异步拿语言、可能闪一下另一种语言、要改 smoke，不划算。 |
 | 修复 | ✅ | **第一轮提交 `1fb38a1` 弄坏了 `maint-m35-smoke`**：那个测试要求 FilePreview 以 `from "./PdfPreview.js"` 的形式静态引入 PdfPreview，并能在渲染树里找到它。现在把懒加载挪进 `PdfPreview.tsx` 自己：原实现整体搬到 `PdfPreviewImpl.tsx`，`PdfPreview.tsx` 变成 `lazy` + `Suspense` 的外壳，props 不变。FilePreview 和 FileViewer 恢复原来的静态 import 和原来的 JSX。首屏上依然没有 EmbedPDF（perf-startup-smoke 通过），m35 也恢复通过，测试一行没改。 |
 | 备注 | ℹ️ | `markdown-mode-smoke` 目前失败（Office 那 4 项）。原因是另一个会话正在改的 `ide/FileEditor.tsx`（未提交），与本轮无关：换成 HEAD 版的 FileEditor 跑，Office 那 4 项就过了。 |
+| 设置首开 | ✅（第四轮） | **现象**：第一次打开设置很慢，之后就快了。**原因**是第一轮把 SettingsPage 改成懒加载后，它仍然静态引入了全部约 25 个面板。其中 MemoryExplorerPanel 会经 FileEditor 和 monacoSetup 把 Monaco 拖进来，所以首次点开要加载并执行约 6MB JS，其中 Monaco 约 3.8MB。**修复**：每个面板改成独立的 lazy chunk，`PANEL_LOADERS` 表加上 `Suspense`，加载超过 150ms 才显示转圈。设置外壳在 App 已加载内容之外只多 **8KB**。App 在首屏空闲时预取这个外壳和「常规」面板；设置打开后，再在空闲时预取其余轻量面板。记忆面板（Monaco）不预取，首次点开时再加载。新增 `settings-lazy-smoke`（42 项）防回归。另外，`7862578` 把文献库 / 文件里的 Office 预览换成了 OnlyOffice，`docx-preview`、`pptx-preview` 和 `@js-preview/excel` 已经没有代码在用。perf-startup-smoke 里这三项的「仍被打包」检查随之改成 INFO，只保留「不在首屏静态图里」这一项检查。这三个依赖以及 `templates/DocxPreview.tsx`、`templates/PptxPreview.tsx`、`templates/XlsxPreview.tsx` 现在是死代码，是否删除由 Office 那边决定。 |
 
 ### 4.1 原始清单
 | # | 项目 | 预期收益 | 风险 | 说明 |

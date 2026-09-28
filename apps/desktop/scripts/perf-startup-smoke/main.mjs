@@ -52,17 +52,21 @@ try{
     ['EmbedPDF viewer','/@embedpdf/'],
     ['xterm','/@xterm/xterm/'],
     ['file-icon collection (subset JSON)','renderer/lib/fileIconCollection.json'],
-    ['docx-preview','/docx-preview/'],
-    ['pptx-preview','/pptx-preview/'],
-    ['@js-preview/excel','/@js-preview/excel/'],
+    // Retired 2026-09-28 (7862578): library/file Office preview moved to the
+    // OnlyOffice viewer, so nothing renders these any more. Keep guarding the
+    // static graph; the "still bundled" half no longer applies.
+    ['docx-preview','/docx-preview/','retired'],
+    ['pptx-preview','/pptx-preview/','retired'],
+    ['@js-preview/excel','/@js-preview/excel/','retired'],
     ['KaTeX (rehype-katex, chat math)','/rehype-katex/'],
     ['remark-math','/remark-math/'],
   ];
   const norm=p=>p.replaceAll('\\','/');
-  for(const [label,frag] of HEAVY){
+  for(const [label,frag,retired] of HEAVY){
     const hit=[...reach.keys()].find(k=>norm(k).includes(frag));
     check(`★ ${label} is not in App's static import graph`, !hit, hit&&chain(hit));
     const present=Object.keys(inputs).some(k=>norm(k).includes(frag));
+    if(retired){console.log(`INFO   ${label}: retired (replaced by OnlyOffice), ${present?'still':'no longer'} bundled`);continue;}
     check(`   ${label} is still bundled (loaded on demand)`, present, 'not found in any output');
   }
   // Byte budget: outputs holding any module of App's static closure.
