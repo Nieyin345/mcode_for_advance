@@ -29,14 +29,17 @@
  *
  * Run: scripts/maint-m14-smoke/run.sh
  */
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { MCP_MANAGEMENT_SETTING_KEY, type McpManagementState } from "@contracts/ipc";
 import {
   getMcpManagement,
   getMcpTruth,
+  materializeClaudeMcpView,
+  readUserClaudeJson,
   saveMcpManagement,
+  writeUserClaudeJson,
 } from "@main/lib/mcpConfig.js";
 // 桩自己的测试钩子 —— 走相对路径引它本人(而不是 `@main/store/repositories.js`),
 // 免得 tsc 去看真那份、报"没有 seedRaw"。alias 把真名也指到同一个文件,
@@ -205,6 +208,30 @@ async function main(): Promise<void> {
     })(),
     { after },
   );
+
+  // A5 (2026-09-29 检修)`.claude.json` 在、但读不出来时**不许整份写回**。它是 CLI 自己
+  // 的用户配置;读的一侧降级成 {} 是对的,写的一侧照着 {} 写回就是拿一个只剩
+  // mcpServers 的对象盖掉 CLI 的整份状态 —— 而每轮开场的物化都会走这一步。
+  {
+    const claudeJson = join(homedir(), ".mcode", ".claude.json");
+    const original = readFileSync(claudeJson, "utf-8");
+    const torn = '{ "mcpServers": { "seeded-remote": { "type": "http", ';
+    writeFileSync(claudeJson, torn, "utf-8");
+    // 物化照旧**抛**:变更那一路靠它回滚真相层(见 ipc/mcp.ts 的
+    // materializeMcpViewsOrRollback),吞掉的话真相层改了而视图没跟上。
+    await rejectsWith("坏 .claude.json 上物化抛出来", () => materializeClaudeMcpView(), /不是合法 JSON/);
+    eq("坏 .claude.json 物化之后一个字节不动", readFileSync(claudeJson, "utf-8"), torn);
+    await rejectsWith("坏 .claude.json 上直接写回被拒绝", () => writeUserClaudeJson({ mcpServers: {} }), /不是合法 JSON/);
+    eq("拒绝之后一个字节不动", readFileSync(claudeJson, "utf-8"), torn);
+    // BOM(记事本 / PowerShell 5.1)不算坏:照常读,照常写。
+    writeFileSync(claudeJson, "\uFEFF" + original, "utf-8");
+    const withBom = await readUserClaudeJson();
+    check("带 BOM 的 .claude.json 照常读出 CLI 自己的键", withBom.someUnrelatedCliKey === 1, withBom);
+    await resolvesWith("带 BOM 的 .claude.json 上物化照常完成", () => materializeClaudeMcpView(), () => true);
+    const rewritten = JSON.parse(readFileSync(claudeJson, "utf-8")) as Record<string, unknown>;
+    check("物化写回后 CLI 自己的键还在", rewritten.someUnrelatedCliKey === 1, rewritten);
+    writeFileSync(claudeJson, original, "utf-8");
+  }
 
   /* ══════════════ B. agentProcessSessions:隔离 / 限额 / 终结 ══════════════ */
   console.log("B. mcp/agentProcessSessions.ts —— 持久进程会话");

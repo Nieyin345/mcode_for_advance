@@ -60,10 +60,15 @@ function asRecord(v: unknown): Record<string, unknown> | null {
  *  invalid JSON). Never throws. */
 async function readJson(file: string): Promise<unknown> {
   try {
-    return JSON.parse(await fs.readFile(file, "utf-8"));
+    return JSON.parse(stripBom(await fs.readFile(file, "utf-8")));
   } catch {
     return null;
   }
+}
+
+/** UTF-8 BOM(记事本 / PowerShell 5.1 写出来的)不算坏文件。 */
+function stripBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
 /** Write JSON atomically-ish: tmp file + rename, falling back to a direct
@@ -97,7 +102,35 @@ export async function readUserClaudeJson(): Promise<Record<string, unknown>> {
 /** Overwrite ~/.mcode/.claude.json. Callers must pass a value derived from
  *  readUserClaudeJson() (read-modify-write) so unknown keys survive. */
 export async function writeUserClaudeJson(cfg: Record<string, unknown>): Promise<void> {
+  await assertUserClaudeJsonWritable();
   await writeJson(USER_CLAUDE_JSON, cfg);
+}
+
+/**
+ * 盘上那份**在、但读不出来**时拒绝写。
+ *
+ * `readUserClaudeJson()` 读不出来给 `{}`(读的一侧该降级),而所有写的一侧都是
+ * “读 → 改 mcpServers → 整份写回”。这个文件是 CLI 自己的用户配置(项目信任、引导
+ * 状态……都在里面),CLI 写到一半被我们读到、或者文件真坏了,写回去就是拿一个只剩
+ * `mcpServers` 的对象把 CLI 的整份状态盖掉 —— 而每轮开场的 `materializeAllMcpViews`
+ * 都会走这一步。拒绝之后:用户操作报错说明原因;每轮的物化跳过这一次(见下)。
+ */
+async function assertUserClaudeJsonWritable(): Promise<void> {
+  let text: string;
+  try {
+    text = await fs.readFile(USER_CLAUDE_JSON, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw new Error(`读不了 ${USER_CLAUDE_JSON},为免覆盖其中的内容,这次没有写入:${(err as Error).message}`);
+  }
+  if (text.trim().length === 0) return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripBom(text));
+  } catch (err) {
+    throw new Error(`${USER_CLAUDE_JSON} 不是合法 JSON,为免覆盖其中的内容,这次没有写入:${(err as Error).message}`);
+  }
+  if (!asRecord(parsed)) throw new Error(`${USER_CLAUDE_JSON} 顶层不是对象,为免覆盖其中的内容,这次没有写入`);
 }
 
 /** Validate an unknown config object against the contract schema. Returns the
@@ -242,6 +275,9 @@ export async function materializeClaudeMcpView(): Promise<void> {
   const view = deriveMcpEngineView(state, readMcpEnginesMap(), "claude");
   const cfg = await readUserClaudeJson();
   cfg.mcpServers = view;
+  // 写不进去就往上抛(见 assertUserClaudeJsonWritable):调用方分两种 ——
+  // 变更那一路靠它回滚真相层,开机预热那一路自己 catch 记一条。**不**在这里吞掉:
+  // 吞掉的话真相层改了、视图没跟上,用户看到的还是旧的那一份。
   await writeUserClaudeJson(cfg);
 }
 
