@@ -111,6 +111,14 @@ export const TOOLCHAIN_TOOL_IDS = [
   "zip-tools",
   "soffice",
   "pdftoppm",
+  // Office 文档的**可视化编辑**后端(ONLYOFFICE Document Server)。
+  //
+  // 它和上面几个不是一类东西 —— 上面是命令行工具,它是一套跑在本机的服务端
+  // (~1 GB,安装器自带 PostgreSQL / RabbitMQ / Erlang,装完是两个 Windows 服务)。
+  // 放进这张表是因为**用户的心智是一样的**:"我这台机器能不能编辑 docx"。
+  // 原先它自己占一个设置页,要用户填服务地址和 JWT 密钥 —— 而那两样装完就能从
+  // local.json 读出来,根本不该让人填。现在归到这里:检测、一键装、装完自动写配置。
+  "onlyoffice",
 ] as const;
 export type ToolchainToolId = (typeof TOOLCHAIN_TOOL_IDS)[number];
 

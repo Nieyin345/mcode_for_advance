@@ -18,8 +18,16 @@
  * ## document.key
  *
  * DS 用它做协同编辑与缓存的标识：**同一个 key 永远拿到同一份缓存**，哪怕磁盘上的
- * 文件变了。所以 key 由 `路径 + mtime + size` 哈希而来 —— 我们每写回一次 mtime 就变，
- * 下次打开自然是新 key；Agent 在外面改了文件也一样。
+ * 文件变了。所以 key 必须"内容变了就变、内容没变就别变"。
+ *
+ * 原先 key = `路径 + mtime + size`。mtime 满足前半句，却**不满足后半句**：我们每
+ * 写回一次 mtime 就变，于是用户只是关掉标签再打开同一份没改过的文档，DS 那边的
+ * 缓存（已经转换好的中间格式）也整份作废 —— 重下、重转，每次打开都像第一次。
+ * 改成 `路径 + 内容 sha1`：内容没动就命中 DS 缓存，打开肉眼可见地快；内容一变
+ * （我们写回、或 Agent 在外面改了）哈希自然变，正确性不受影响。
+ *
+ * 代价是每次打开要把文件读一遍算哈希。Office 文档通常几百 KB，毫秒级；超过
+ * {@link KEY_HASH_MAX_BYTES} 的大文件退回 mtime + size，不为了省一次转换去读几十 MB。
  *
  * ## 路径闸门
  *
@@ -29,14 +37,16 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
 import { mkdir, open, rename, stat, unlink } from "node:fs/promises";
-import { networkInterfaces } from "node:os";
+import { freemem, networkInterfaces } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import type { AddressInfo } from "node:net";
 import {
   DEFAULT_ONLYOFFICE_CONFIG,
   ONLYOFFICE_CONFIG_SETTING_KEY,
   ONLYOFFICE_EDITABLE,
+  ONLYOFFICE_VIEW_ONLY,
   OnlyOfficeConfigSchema,
   parseOnlyOfficeConfig,
   type OnlyOfficeConfig,
@@ -52,6 +62,26 @@ import { log } from "@main/lib/logger.js";
 
 /** 进程内缓存：CSP 头每个响应都要读它，不能每次查库。 */
 let cachedConfig: OnlyOfficeConfig | null = null;
+
+/** 超过这个大小就不为算 key 去读全文（见文件头 document.key 那一段）。 */
+const KEY_HASH_MAX_BYTES = 64 * 1024 * 1024;
+
+/**
+ * 这一份文件的 document.key。内容哈希优先,读不动(太大 / 读失败)再退回 mtime+size。
+ * DS 限制 key 只能是 `[0-9a-zA-Z.=_-]` 且 ≤128 字符,所以取十六进制前 40 位。
+ */
+async function documentKey(filePath: string, mtimeMs: number, size: number): Promise<string> {
+  if (size <= KEY_HASH_MAX_BYTES) {
+    try {
+      const hash = createHash("sha1");
+      await pipeline(createReadStream(filePath), hash);
+      return hash.digest("hex").slice(0, 40);
+    } catch {
+      /* 读不了就退回下面那条 —— 打不开文件的话后面 serveFile 也会报,不在这里失败 */
+    }
+  }
+  return createHash("sha1").update(`${filePath}|${mtimeMs}|${size}`).digest("hex").slice(0, 40);
+}
 
 export function getOnlyOfficeConfig(): OnlyOfficeConfig {
   if (cachedConfig) return cachedConfig;
@@ -138,10 +168,19 @@ interface EditSession {
   token: string;
   filePath: string;
   ext: string;
-  state: OnlyOfficeSessionState;
+  mode: "edit" | "view";
+  /** `freeMemMB` 是每次查询现算的（本机可用内存），不属于会话自身的状态。 */
+  state: Omit<OnlyOfficeSessionState, "freeMemMB">;
   references: number;
   serverSeen: boolean;
   finalized: boolean;
+  /**
+   * 我们**自己**最后一次见到的磁盘状态（开会话时、以及每次成功写回之后）。
+   *
+   * 用来回答一个问题：这份文件在会话开着的时候被别人动过吗？渲染端要靠它决定
+   * 能不能复用缓存着的编辑器 —— 那里面是旧内容，盖回去就是数据丢失。
+   */
+  disk: { mtimeMs: number; size: number };
   writing: Promise<void>;
   forcing: Promise<void>;
   waiters: Map<string, (result: SaveResult) => void>;
@@ -235,7 +274,7 @@ function waitForSave(session: EditSession, id: string, timeoutMs: number) {
 
 /** Save before shutdown, not after the HTTP callback bridge has been destroyed. */
 export async function flushOnlyOfficeSessions(timeoutMs = 30_000): Promise<void> {
-  const active = [...sessionsByKey.values()].filter((session) => session.serverSeen);
+  const active = [...sessionsByKey.values()].filter((session) => session.serverSeen && session.mode === "edit");
   const results = await Promise.all(active.map(async (session): Promise<SaveResult> => {
     if (session.finalized) return { ok: session.state.lastError === null, error: session.state.lastError ?? undefined };
     // A destroyed editor produces its final callback after the DS save delay.
@@ -374,6 +413,9 @@ async function handleCallback(session: EditSession, req: IncomingMessage, res: S
     || ![1, 2, 3, 4, 6, 7].includes(body.status)) {
     reply(400, 1, "invalid document callback"); return;
   }
+  if (session.mode === "view" && (body.status === 2 || body.status === 6)) {
+    reply(403, 1, "read-only session cannot save"); return;
+  }
   session.serverSeen = true;
   const status = body.status;
   const requestId = typeof body.userdata === "string" ? body.userdata : undefined;
@@ -431,6 +473,9 @@ async function writeBack(session: EditSession, url: string): Promise<boolean> {
     finally { await file.close(); }
     await rename(tmp, session.filePath);
     ownedTemp = null;
+    // 这一次落盘是**我们**干的：记下新的 mtime/size，免得它被当成"别人改的"。
+    const after = await stat(session.filePath).catch(() => null);
+    if (after) session.disk = { mtimeMs: after.mtimeMs, size: after.size };
     session.state.lastSavedAt = Date.now();
     session.state.lastError = null;
     log.info(`[onlyoffice] saved ${session.filePath} (${bytes.length} bytes)`);
@@ -469,26 +514,47 @@ function resolveCallbackHost(cfg: OnlyOfficeConfig): string {
 
 export async function openOnlyOfficeSession(
   filePath: string,
-  opts: { lang: string; dark: boolean; userName: string },
+  opts: {
+    lang: string;
+    dark: boolean;
+    userName: string;
+    mode?: "edit" | "view";
+    deviceType?: "desktop" | "mobile";
+  },
 ): Promise<OnlyOfficeOpenResult> {
+  const mode = opts.mode ?? "edit";
+  const deviceType = opts.deviceType ?? "desktop";
   const cfg = getOnlyOfficeConfig();
   if (!cfg.serverUrl) return { ok: false, notConfigured: true, error: "OnlyOffice Document Server not configured" };
   if (!findContainingWorkspaceRoot(filePath)) {
     return { ok: false, error: `path outside every workspace root: ${filePath}` };
   }
   const ext = extname(filePath).slice(1).toLowerCase();
-  const documentType = ONLYOFFICE_EDITABLE[ext];
+  const documentType = ONLYOFFICE_EDITABLE[ext] ?? ONLYOFFICE_VIEW_ONLY[ext];
   if (!documentType) return { ok: false, error: `unsupported file type: .${ext}` };
+  if (mode === "edit" && ext in ONLYOFFICE_VIEW_ONLY) {
+    return { ok: false, error: `read-only Office format: .${ext}` };
+  }
   const st = await stat(filePath).catch(() => null);
   if (!st || !st.isFile()) return { ok: false, error: `file not found: ${filePath}` };
 
   const bridgePort = await ensureServer();
-  // key：路径 + mtime + size（见文件头）。DS 限制 [0-9a-zA-Z.=_-]、≤128 字符。
-  const existing = [...sessionsByKey.values()].find((s) => s.filePath === filePath && !s.finalized);
-  const key = existing?.key ?? createHash("sha1")
-    .update(`${filePath}|${st.mtimeMs}|${st.size}`)
-    .digest("hex")
-    .slice(0, 40);
+  // 还活着的同文件会话:没结束的,或者**还有编辑器握着它**的(引用计数 > 0)。
+  //
+  // 后半句是给渲染端的编辑器池用的:文档存过一次(status 2)就 finalized,但只要
+  // 那个 iframe 还留着,它就仍然是这份文档的主人 —— 这时必须把同一个 key 还给它,
+  // 否则会凭空多出一个会话,而缓存的编辑器再也对不上号。
+  const existing = [...sessionsByKey.values()].find(
+    (s) => s.filePath === filePath && s.mode === mode && (!s.finalized || s.references > 0),
+  );
+  // key：路径 + 内容哈希（见文件头）。已经开着的会话沿用它自己的 key —— 那时
+  // 磁盘上的内容可能正被 DS 改着，重算只会得到一个对不上的新 key。
+  const contentKey = existing?.key ?? await documentKey(filePath, st.mtimeMs, st.size);
+  const key = existing?.key ?? `${contentKey}.${mode}`;
+  // 复用的会话：它上次落盘之后，磁盘上的东西还是不是它写的那份。
+  const externallyChanged = existing
+    ? existing.disk.mtimeMs !== st.mtimeMs || existing.disk.size !== st.size
+    : false;
   // 同一份文件已经开着一个会话（比如两个标签）→ 复用，别再发一枚令牌
   let session = existing ?? sessionsByKey.get(key);
   if (!session) {
@@ -497,10 +563,12 @@ export async function openOnlyOfficeSession(
       token: randomBytes(32).toString("base64url"),
       filePath,
       ext,
+      mode,
       state: { alive: true, lastSavedAt: null, lastError: null, lastStatus: null },
       references: 0,
       serverSeen: false,
       finalized: false,
+      disk: { mtimeMs: st.mtimeMs, size: st.size },
       writing: Promise.resolve(),
       forcing: Promise.resolve(),
       waiters: new Map(),
@@ -514,7 +582,7 @@ export async function openOnlyOfficeSession(
   const host = resolveCallbackHost(cfg);
   const base = `http://${host}:${bridgePort}/onlyoffice`;
   const config: Record<string, unknown> = {
-    type: "desktop",
+    type: deviceType,
     width: "100%",
     height: "100%",
     documentType,
@@ -524,19 +592,19 @@ export async function openOnlyOfficeSession(
       title: basename(filePath),
       url: `${base}/file/${session.token}`,
       permissions: {
-        edit: true,
+        edit: mode === "edit",
         download: true,
         print: true,
-        comment: true,
-        review: true,
-        fillForms: true,
+        comment: mode === "edit",
+        review: mode === "edit",
+        fillForms: mode === "edit",
         copy: true,
       },
     },
     editorConfig: {
-      mode: "edit",
+      mode,
       lang: opts.lang,
-      callbackUrl: `${base}/callback/${session.token}`,
+      ...(mode === "edit" ? { callbackUrl: `${base}/callback/${session.token}` } : {}),
       user: { id: "mcode-local", name: opts.userName },
       customization: {
         // 停止输入后自动存（DS 侧默认也是开的，显式写出来免得被服务端配置盖掉）
@@ -548,6 +616,8 @@ export async function openOnlyOfficeSession(
         hideRightMenu: false,
         toolbarNoTabs: false,
         uiTheme: opts.dark ? "theme-dark" : "theme-light",
+        plugins: false,
+        macros: false,
         // 嵌在 Mcode 里，DS 自己那套"关于/反馈/去官网"没有意义
         about: false,
         feedback: false,
@@ -564,12 +634,17 @@ export async function openOnlyOfficeSession(
     apiScriptUrl: `${cfg.serverUrl}/web-apps/apps/api/documents/api.js`,
     sessionKey: key,
     config,
+    reusedSession: Boolean(existing),
+    externallyChanged,
   };
 }
 
 export function getOnlyOfficeSessionState(key: string): OnlyOfficeSessionState {
   const s = sessionsByKey.get(key);
-  return s ? { ...s.state } : { alive: false, lastSavedAt: null, lastError: null, lastStatus: null };
+  const freeMemMB = Math.round(freemem() / (1024 * 1024));
+  return s
+    ? { ...s.state, freeMemMB }
+    : { alive: false, lastSavedAt: null, lastError: null, lastStatus: null, freeMemMB };
 }
 
 export function closeSession(key: string): boolean {
@@ -578,7 +653,7 @@ export function closeSession(key: string): boolean {
   session.references = Math.max(0, session.references - 1);
   // DS sends its final status 2/4 after destroyEditor, not synchronously with it.
   // Preserve failed saves for retry; never expire the only usable callback token.
-  if (session.references === 0 && (session.finalized || !session.serverSeen)) retireSession(session);
+  if (session.references === 0 && (session.mode === "view" || session.finalized || !session.serverSeen)) retireSession(session);
   return true;
 }
 
@@ -589,6 +664,7 @@ export function closeSession(key: string): boolean {
 export async function forceSave(key: string, timeoutMs = 30_000): Promise<SaveResult> {
   const session = sessionsByKey.get(key);
   if (!session) return { ok: false, error: "session not found" };
+  if (session.mode === "view") return { ok: false, error: "read-only session" };
   const task = session.forcing.then(async (): Promise<SaveResult> => {
     if (session.finalized) return { ok: session.state.lastError === null, error: session.state.lastError ?? undefined };
     const cfg = getOnlyOfficeConfig();

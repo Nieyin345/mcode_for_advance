@@ -6,7 +6,7 @@
  * 编辑器本体是 DS 的（`api.js` 在这个 div 里起一个 iframe，Office 级的 UI 全在里面），
  * 这一层只做四件事：
  *   1. `onlyoffice.open` 拿到 config → 加载 `api.js` → `new DocsAPI.DocEditor`；
- *   2. 未配置 / 连不上 / 路径越界时画出**能走的路**（去设置、重试、切只读预览）；
+ *   2. 未配置 / 连不上 / 路径越界时提供去设置或重试的入口；
  *   3. Ctrl+S → `onlyoffice.forceSave`；轮询 `sessionState` 画"已保存 / 保存失败"
  *      （真正的写盘发生在主进程收到 DS 回调时，不在这个进程里）；
  *   4. 卸载时 `destroyEditor()` + `onlyoffice.close`。
@@ -74,11 +74,12 @@ let idSeq = 0;
 
 export function OnlyOfficeEditorPane({
   filePath,
-  onSwitchToPreview,
+  readOnly = false,
+  deviceType = "desktop",
 }: {
   filePath: string;
-  /** "切到只读预览"那条退路（DS 没配 / 连不上时给用户一个能看的东西）。 */
-  onSwitchToPreview?: () => void;
+  readOnly?: boolean;
+  deviceType?: "desktop" | "mobile";
 }) {
   const { t } = useI18n();
   const setSettingsOpen = useSessionStore((s) => s.setSettingsOpen);
@@ -94,8 +95,12 @@ export function OnlyOfficeEditorPane({
 
   // 读：开会话（硬规矩 7 —— 读走 useRpc）。失败在面板里画，不弹 toast。
   const { data: opened, loading, error: openError, refetch } = useRpc(
-    () => api.onlyoffice.open({ filePath }),
-    [filePath],
+    () => api.onlyoffice.open({
+      filePath,
+      mode: readOnly ? "view" : "edit",
+      deviceType,
+    }),
+    [filePath, readOnly, deviceType],
     { toastOnError: false },
   );
   const sessionKey = opened?.ok ? opened.sessionKey ?? null : null;
@@ -104,8 +109,14 @@ export function OnlyOfficeEditorPane({
   useEffect(() => {
     if (!opened?.ok || !opened.apiScriptUrl || !opened.config) return;
     let disposed = false;
+    let documentSettled = false;
     setBootError(null);
     setReady(false);
+    const documentLoadTimer = window.setTimeout(() => {
+      if (disposed || documentSettled) return;
+      documentSettled = true;
+      setBootError(t("ide.office.documentLoadTimeout"));
+    }, 20_000);
     const scriptUrl = opened.apiScriptUrl;
     const config = opened.config;
     void loadDocsApi(scriptUrl)
@@ -115,25 +126,39 @@ export function OnlyOfficeEditorPane({
           ...config,
           events: {
             onAppReady: () => {
-              if (!disposed) setReady(true);
+              console.info("[onlyoffice] 应用壳已就绪，等待文档加载");
+            },
+            onDocumentReady: () => {
+              if (disposed) return;
+              documentSettled = true;
+              window.clearTimeout(documentLoadTimer);
+              setBootError(null);
+              setReady(true);
             },
             onError: (e: { data?: { errorCode?: number; errorDescription?: string } }) => {
               if (disposed) return;
+              documentSettled = true;
+              window.clearTimeout(documentLoadTimer);
               const d = e?.data;
               setBootError(d?.errorDescription ?? `Document Server error ${d?.errorCode ?? ""}`.trim());
             },
             // DS 自己会在停止输入后自动存（回调 status 2）；这里只把"有没改"映射到提示。
             onDocumentStateChange: (e: { data?: boolean }) => {
-              if (!disposed && e?.data) setSaveHint("idle");
+              if (!disposed && !readOnly && e?.data) setSaveHint("idle");
             },
           },
         });
       })
       .catch((err: unknown) => {
-        if (!disposed) setBootError(err instanceof Error ? err.message : String(err));
+        if (!disposed) {
+          documentSettled = true;
+          window.clearTimeout(documentLoadTimer);
+          setBootError(err instanceof Error ? err.message : String(err));
+        }
       });
     return () => {
       disposed = true;
+      window.clearTimeout(documentLoadTimer);
       try {
         editorRef.current?.destroyEditor();
       } catch {
@@ -142,11 +167,11 @@ export function OnlyOfficeEditorPane({
       editorRef.current = null;
       if (opened.sessionKey) void api.onlyoffice.close({ sessionKey: opened.sessionKey });
     };
-  }, [opened, hostId]);
+  }, [opened, hostId, t, readOnly]);
 
   /* ── 轮询保存状态：真正的写盘在主进程（DS 回调），这里只能问 ── */
   useEffect(() => {
-    if (!sessionKey || !ready) return;
+    if (!sessionKey || !ready || readOnly) return;
     let stopped = false;
     const tick = async () => {
       try {
@@ -169,11 +194,11 @@ export function OnlyOfficeEditorPane({
       stopped = true;
       clearInterval(timer);
     };
-  }, [sessionKey, ready]);
+  }, [sessionKey, ready, readOnly]);
 
   /* ── Ctrl+S → forcesave（DS 的 iframe 里按 Ctrl+S 它自己也会存；这条管的是焦点在外面时） ── */
   const forceSave = useCallback(async () => {
-    if (!sessionKey) return;
+    if (!sessionKey || readOnly) return;
     setSaveHint("saving");
     const r = await api.onlyoffice.forceSave({ sessionKey });
     if (!r.ok) {
@@ -181,10 +206,10 @@ export function OnlyOfficeEditorPane({
       setSaveHint("error");
     }
     // 成功的话轮询会看到 lastSavedAt 变化 → "saved"
-  }, [sessionKey]);
+  }, [sessionKey, readOnly]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+      if (!readOnly && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         const el = hostRef.current;
         if (el && el.contains(document.activeElement)) {
           e.preventDefault();
@@ -194,7 +219,7 @@ export function OnlyOfficeEditorPane({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [forceSave]);
+  }, [forceSave, readOnly]);
 
   /* ── 状态分支 ── */
   if (loading && !opened) {
@@ -215,11 +240,6 @@ export function OnlyOfficeEditorPane({
                   <IconSettings size={14} />
                   {t("ide.office.openSettings")}
                 </Button>
-                {onSwitchToPreview && (
-                  <Button size="sm" variant="ghost" onClick={onSwitchToPreview}>
-                    {t("ide.office.viewReadonly")}
-                  </Button>
-                )}
               </div>
             }
           />
@@ -234,11 +254,6 @@ export function OnlyOfficeEditorPane({
                 <Button size="sm" variant="ghost" onClick={() => setSettingsOpen(true, "office")}>
                   {t("ide.office.openSettings")}
                 </Button>
-                {onSwitchToPreview && (
-                  <Button size="sm" variant="ghost" onClick={onSwitchToPreview}>
-                    {t("ide.office.viewReadonly")}
-                  </Button>
-                )}
               </div>
             }
           >
@@ -252,7 +267,7 @@ export function OnlyOfficeEditorPane({
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       {/* 保存状态：浮在右上角，与 md 编辑器同一手感；DS 自己的顶栏在 iframe 里，不挡 */}
-      {(saveHint === "saving" || saveHint === "saved" || saveHint === "error") && (
+      {!readOnly && (saveHint === "saving" || saveHint === "saved" || saveHint === "error") && (
         <div className="pointer-events-none absolute right-2 top-2 z-10 flex items-center gap-1 rounded bg-surface/90 px-2 py-0.5 text-[0.7857em] text-content-muted shadow">
           {saveHint === "saving" && (
             <>

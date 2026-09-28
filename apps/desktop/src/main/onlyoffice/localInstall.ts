@@ -4,8 +4,8 @@
  * 用户不想装 Docker，所以走官方 Windows 安装包：
  *   https://download.onlyoffice.com/install/documentserver/windows/onlyoffice-documentserver.exe
  * （~1 GB，Community Edition，AGPL；安装器自己会把 PostgreSQL / RabbitMQ / Erlang 这些
- * 前置件一起装上，支持 `/SILENT /DS_PORT=<port>`；装完是两个 Windows 服务
- * `ds-docservice` / `ds-converter`，目录 `%ProgramFiles%\ONLYOFFICE\DocumentServer`。）
+ * 前置件一起装上，支持 `/SILENT /DS_PORT=<port>`；装完的 Windows 服务名是
+ * `DsDocServiceSvc` / `DsConverterSvc`，目录 `%ProgramFiles%\ONLYOFFICE\DocumentServer`。）
  *
  * 流程（`startLocalInstall`）：
  *   downloading  → 主进程用 fetch 流式下到 `%TEMP%\mcode-onlyoffice\`，带字节进度
@@ -40,7 +40,7 @@ import { getOnlyOfficeConfig, setOnlyOfficeConfig } from "./OnlyOfficeBridge.js"
 export const ONLYOFFICE_WIN_INSTALLER_URL =
   "https://download.onlyoffice.com/install/documentserver/windows/onlyoffice-documentserver.exe";
 
-const SERVICE_NAMES = ["ds-docservice", "ds-converter"] as const;
+const SERVICE_NAMES = ["DsDocServiceSvc", "DsConverterSvc"] as const;
 
 /* ───────────────────────── 检测 ───────────────────────── */
 
@@ -80,7 +80,18 @@ async function readLocalJson(dir: string): Promise<LocalJsonFacts> {
   const out: LocalJsonFacts = { jwtSecret: null, tokenEnabled: null, privateIpAllowed: null };
   try {
     const raw = await readFile(join(dir, "config", "local.json"), "utf8");
-    const j = JSON.parse(raw) as Record<string, unknown>;
+    // ⚠️ BOM 必须先剥掉。
+    //
+    // 我们自己那段提权脚本在 PowerShell 5.1 上写这个文件 —— 它的 `-Encoding UTF8`
+    // **带 BOM**。`JSON.parse` 见到开头的 U+FEFF 直接抛,而这里原本一个 catch 把
+    // 异常吞成"三个 null",于是:密钥读不出来 → `applyLocal()` 存了个**空密钥** →
+    // DS 开着 browser token 校验 → 编辑器一开就是「文档安全令牌的格式不正确」
+    // (error -20);同时 `privateIpAllowed` 也变 null,工具链那一行还显示绿色,
+    // 整条链路对不上号却处处"看着正常"。
+    //
+    // 写入侧已经改成不带 BOM,但用户机器上**已经存在**的那一份仍是带 BOM 的,
+    // 而且 DS 自己和别的工具写出来的文件也可能带 —— 读的这一侧必须自己扛住。
+    const j = JSON.parse(raw.replace(/^\uFEFF/, "")) as Record<string, unknown>;
     const co = pick(pick(j, "services"), "CoAuthoring");
     const secret = pick(pick(pick(co, "secret"), "inbox"), "string");
     if (typeof secret === "string" && secret) out.jwtSecret = secret;
@@ -169,7 +180,7 @@ export async function detectLocal(): Promise<OnlyOfficeLocalDetectResult> {
   if (!none.supported) return none;
   const dir = await findInstallDir();
   if (!dir) return none;
-  const [facts, version, svc] = await Promise.all([readLocalJson(dir), readVersion(dir), queryService("ds-docservice")]);
+  const [facts, version, svc] = await Promise.all([readLocalJson(dir), readVersion(dir), queryService("DsDocServiceSvc")]);
   const preferred = [portOfConfigured(getOnlyOfficeConfig()), progress.port].filter((x): x is number => !!x);
   const port = svc === "running" ? await findPort(preferred) : null;
   return {
@@ -186,12 +197,19 @@ export async function detectLocal(): Promise<OnlyOfficeLocalDetectResult> {
   };
 }
 
-/** 检测到的本机 DS 直接写进 Mcode 配置（地址 + 密钥）。没跑起来就报错，不写半截。 */
-export async function applyLocal(): Promise<OnlyOfficeConfig> {
+/** 检测到的本机 DS 直接写进 Mcode 配置（地址 + 密钥）。没跑起来就报错，不写半截。
+ *  模块内部用:装完 / 修完配置后自动落盘 —— 用户不需要、也没有入口手动触发它。 */
+async function applyLocal(): Promise<OnlyOfficeConfig> {
   const d = await detectLocal();
   if (!d.installed) throw new Error("ONLYOFFICE_NOT_INSTALLED");
   if (!d.suggestedServerUrl) throw new Error("ONLYOFFICE_NOT_RUNNING");
   const prev = getOnlyOfficeConfig();
+  // 密钥读不出来(local.json 打不开 / 不是合法 JSON)而 DS 又没明说关了 token 校验:
+  // **不能存半截**。存下来的空密钥会让每一次打开文档都报 -20,而设置页一片绿 ——
+  // 那种失败没人查得出来。宁可在这里响一声。
+  if (d.jwtSecret === null && d.tokenEnabled !== false && !prev.jwtSecret) {
+    throw new Error("ONLYOFFICE_SECRET_UNREADABLE");
+  }
   return setOnlyOfficeConfig({
     serverUrl: d.suggestedServerUrl,
     // DS 关了 token 校验时密钥无所谓；开着就必须一致 —— 以 local.json 为准
@@ -228,13 +246,6 @@ export function getInstallProgress(): OnlyOfficeInstallProgress {
   return { phase, receivedBytes, totalBytes, message, startedAt };
 }
 
-export function cancelInstall(): OnlyOfficeInstallProgress {
-  // 只有下载阶段能取消；安装器一旦提权跑起来就交给 Windows 了
-  if (progress.phase === "downloading" && progress.abort) {
-    progress.abort.abort();
-  }
-  return getInstallProgress();
-}
 
 function isBusy(): boolean {
   return ["downloading", "installing", "configuring", "waiting"].includes(progress.phase);
@@ -244,37 +255,64 @@ function tempDir(): string {
   return join(app.getPath("temp"), "mcode-onlyoffice");
 }
 
+/** 安装器 `/DS_PORT` 的默认值。80 常被 IIS / 其他东西占着,所以默认挑 8080。 */
+export const DEFAULT_DS_PORT = 8080;
+
 /**
- * 下载 + 静默安装 + 修配置 + 等服务起来 + 写 Mcode 配置。立即返回当前进度，
- * 剩下的在后台跑，渲染端轮询 `getInstallProgress()`。
+ * 下载 → 提权静默安装 → 改配置 → 等服务起来 → 写 Mcode 配置。
+ * 「设置 → 内核 → 文档工具链」里 ONLYOFFICE 那一行的「安装」走这条。
+ *
+ * `onProgress` 每秒回调一次当前进度快照(下载字节数是流式累加的,没有天然的回调点)。
  */
-export function startLocalInstall(opts: { port: number }): OnlyOfficeInstallProgress {
+export async function installLocalDocumentServer(opts: {
+  port?: number;
+  onProgress?: (p: OnlyOfficeInstallProgress) => void;
+} = {}): Promise<void> {
   if (process.platform !== "win32") {
     setPhase("error", "UNSUPPORTED_PLATFORM");
-    return getInstallProgress();
+    throw new Error("UNSUPPORTED_PLATFORM");
   }
-  if (isBusy()) return getInstallProgress();
+  if (isBusy()) throw new Error("ONLYOFFICE_INSTALL_BUSY");
+  const port = opts.port ?? DEFAULT_DS_PORT;
   progress.receivedBytes = 0;
   progress.totalBytes = null;
   progress.startedAt = Date.now();
-  progress.port = opts.port;
+  progress.port = port;
   progress.abort = new AbortController();
-  void runInstall(opts.port).catch((err: unknown) => {
+  const ticker = opts.onProgress
+    ? setInterval(() => opts.onProgress?.(getInstallProgress()), 1_000)
+    : null;
+  try {
+    await runInstall(port);
+  } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     setPhase(msg === "CANCELLED" ? "cancelled" : "error", msg);
-  });
-  return getInstallProgress();
+    throw err;
+  } finally {
+    if (ticker) clearInterval(ticker);
+  }
 }
 
-/** 只修配置（已装但 `allowPrivateIPAddress` 没开）：同一段提权脚本，跳过安装器。 */
-export function startLocalConfigure(): OnlyOfficeInstallProgress {
+/**
+ * **可等待**的「只修配置」—— 已经装好、但 `allowPrivateIPAddress` 被关掉(或服务停了)
+ * 时走这条:同一段提权脚本,**跳过安装器**,所以不用再碰那 1 GB 的包,秒级完成。
+ *
+ * 原先这条路要用户去设置页点「修复配置」。那个页面已经没了 —— 现在由工具链那一行的
+ * 「安装」自己判断:检测到已安装就只修配置,没装才走完整安装。
+ */
+export async function configureLocalDocumentServer(opts: {
+  onProgress?: (p: OnlyOfficeInstallProgress) => void;
+} = {}): Promise<void> {
   if (process.platform !== "win32") {
     setPhase("error", "UNSUPPORTED_PLATFORM");
-    return getInstallProgress();
+    throw new Error("UNSUPPORTED_PLATFORM");
   }
-  if (isBusy()) return getInstallProgress();
+  if (isBusy()) throw new Error("ONLYOFFICE_INSTALL_BUSY");
   progress.startedAt = Date.now();
-  void (async () => {
+  const ticker = opts.onProgress
+    ? setInterval(() => opts.onProgress?.(getInstallProgress()), 1_000)
+    : null;
+  try {
     const dir = await findInstallDir();
     if (!dir) throw new Error("ONLYOFFICE_NOT_INSTALLED");
     setPhase("configuring");
@@ -282,8 +320,25 @@ export function startLocalConfigure(): OnlyOfficeInstallProgress {
     await waitHealthy(progress.port ?? portOfConfigured(getOnlyOfficeConfig()) ?? 0);
     await applyLocal();
     setPhase("done");
-  })().catch((err: unknown) => {
+  } catch (err) {
     setPhase("error", err instanceof Error ? err.message : String(err));
+    throw err;
+  } finally {
+    if (ticker) clearInterval(ticker);
+  }
+}
+
+/**
+ * 轮询式包装:立刻返回,结果查 {@link getInstallProgress}。
+ *
+ * 留着是因为 `scripts/maint-m21-smoke` 用它驱动**提权那一步**的安全断言
+ * (脚本不许落在用户可写目录、提权命令行不许按路径去加载 .ps1)。那套断言盯的是
+ * 真的生产路径,不是为测试造的壳。
+ */
+export function startLocalConfigure(): OnlyOfficeInstallProgress {
+  if (isBusy()) return getInstallProgress();
+  void configureLocalDocumentServer().catch(() => {
+    /* 失败原因已经记进 phase/message,轮询拿得到 */
   });
   return getInstallProgress();
 }
@@ -378,7 +433,11 @@ export function buildElevationCommand(o: {
   }
   lines.push(
     `  $cfg = Join-Path ${ps(o.installDir)} 'config\\local.json'`,
-    "  if (-not (Test-Path $cfg)) { '{}' | Set-Content -Path $cfg -Encoding UTF8 }",
+    // ⚠️ 写这个文件**不能带 BOM**。PowerShell 5.1 的 `Set-Content -Encoding UTF8`
+    // 带 BOM,而 local.json 要被 Node 侧 `JSON.parse` 读(见 readLocalJson 的注释)。
+    // `UTF8Encoding($false)` 才是无 BOM 的 UTF-8。
+    "  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)",
+    "  if (-not (Test-Path $cfg)) { [System.IO.File]::WriteAllText($cfg, '{}', $utf8NoBom) }",
     "  $j = Get-Content -Path $cfg -Raw | ConvertFrom-Json",
     "  function Ensure($o, $n) { if ($null -eq $o.$n) { $o | Add-Member -NotePropertyName $n -NotePropertyValue ([pscustomobject]@{}) -Force }; return $o.$n }",
     "  $svc = Ensure $j 'services'",
@@ -386,7 +445,7 @@ export function buildElevationCommand(o: {
     "  $rf = Ensure $co 'request-filtering-agent'",
     "  $rf | Add-Member -NotePropertyName 'allowPrivateIPAddress' -NotePropertyValue $true -Force",
     "  $rf | Add-Member -NotePropertyName 'allowMetaIPAddress' -NotePropertyValue $true -Force",
-    "  $j | ConvertTo-Json -Depth 32 | Set-Content -Path $cfg -Encoding UTF8",
+    "  [System.IO.File]::WriteAllText($cfg, ($j | ConvertTo-Json -Depth 32), $utf8NoBom)",
     ...SERVICE_NAMES.map((s) => `  & sc.exe stop ${s} | Out-Null`),
     "  Start-Sleep -Seconds 3",
     ...[...SERVICE_NAMES].reverse().map((s) => `  & sc.exe start ${s} | Out-Null`),
@@ -452,15 +511,37 @@ async function runElevated(o: { installerPath: string | null; port: number | nul
   }
 }
 
-async function waitHealthy(port: number, timeoutMs = 240_000): Promise<void> {
+/**
+ * 等 DS 起来。
+ *
+ * ## ⚠️ 每一轮都要把回落端口一起探,不能只盯 `/DS_PORT=` 请求的那一个
+ *
+ * 安装器**并不保证**用上我们请求的端口 —— 那个端口被占时它自己挪到 80 / 8080。
+ * 于是会出现这样一种失败:DS 其实已经跑起来了,只是不在我们盯的那个端口上,
+ * 我们白等满整个超时然后报「没有响应」;而用户点一下「重新检测」反倒立刻就好 ——
+ * 因为 `detectLocal()` 走的 {@link findPort} 是**带回落的**。
+ *
+ * 两条路径对「端口在哪」的判断不一致,就是那个 bug 的现场。统一走 findPort 之后
+ * 两边同源:以后再改候选顺序,改一处即可。
+ *
+ * ## 超时要带出服务的真实状态
+ *
+ * 「装完了但没响应」对用户没有任何可操作性。而「服务根本没注册」(安装器其实失败了)
+ * 和「注册了但没在跑」(前置件没起来 / 端口冲突)是两种完全不同的处置 —— 把 `sc query`
+ * 的结果拼进错误码,让上层能说人话。
+ */
+async function waitHealthy(port: number, timeoutMs = 360_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
+  // 请求的端口优先,后面由 findPort 补上 8080 / 80 的回落。
+  const preferred = [port, progress.port].filter((x): x is number => !!x);
   while (Date.now() < deadline) {
-    const p = port ? (await healthcheck(`http://127.0.0.1:${port}`)) ? port : null : await findPort([]);
+    const p = await findPort(preferred);
     if (p) {
       progress.port = p;
       return;
     }
     await new Promise((r) => setTimeout(r, 4000));
   }
-  throw new Error("DS_NOT_RESPONDING");
+  // `missing` = 两个服务压根没注册上;`stopped` = 注册了但起不来。
+  throw new Error(`DS_NOT_RESPONDING:${await queryService("DsDocServiceSvc")}`);
 }

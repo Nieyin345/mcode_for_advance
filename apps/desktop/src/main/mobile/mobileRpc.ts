@@ -66,7 +66,11 @@ import {
   GetManySettingsSchema,
   ProviderHealthCheckSchema,
   ProviderCommandsSchema,
+  OnlyOfficeOpenSchema,
+  OnlyOfficeSessionSchema,
+  UI_LOCALE_SETTING_KEY,
 } from "@contracts/ipc";
+import { nativeTheme } from "electron";
 import type {
   SaveMessagesInput,
   UpsertMessagesInput,
@@ -104,6 +108,7 @@ import { generateSessionTitle } from "@main/ipc/titleGen.js";
 // 研究脚本)是两件事,别被名字带偏 —— 见 `main/ipc/orchestration.ts` 文件头。
 import { getWorkflow, listWorkflows } from "@main/orchestration/library.js";
 import { workflowReviewError } from "@main/orchestration/workflowTrust.js";
+import { closeSession, openOnlyOfficeSession } from "@main/onlyoffice/OnlyOfficeBridge.js";
 
 /** Identity of the calling device, made available to every handler. */
 export interface DeviceContext {
@@ -265,6 +270,26 @@ const HANDLERS: Record<string, RpcHandler> = {
   "file:search": (raw) => {
     const input = FileSearchSchema.parse(raw);
     return searchFilesGuarded(input);
+  },
+
+  // A paired phone may open an Office file only in the view-only surface.
+  // The desktop bridge still enforces workspace-root/path checks and this
+  // transport deliberately never exposes forceSave or write permissions.
+  "onlyoffice:open": async (raw) => {
+    const input = OnlyOfficeOpenSchema.parse(raw);
+    const locale = SettingRepo.get(UI_LOCALE_SETTING_KEY);
+    return openOnlyOfficeSession(input.filePath, {
+      lang: locale === "en" ? "en" : "zh",
+      dark: nativeTheme.shouldUseDarkColors,
+      userName: "Mcode",
+      mode: "view",
+      deviceType: "mobile",
+    });
+  },
+
+  "onlyoffice:close": (raw) => {
+    const input = OnlyOfficeSessionSchema.parse(raw);
+    return { ok: closeSession(input.sessionKey) };
   },
 
   /** 终端列表 —— **只读的一条**,手机端拿它显示"这台电脑上开着哪些终端、谁开的"。

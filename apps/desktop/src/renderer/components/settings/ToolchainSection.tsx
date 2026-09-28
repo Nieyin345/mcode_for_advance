@@ -27,6 +27,7 @@ import { api } from "@renderer/lib/api.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { Button } from "@renderer/components/ui/index.js";
 import { SettingsSection } from "./SettingsSection.js";
+import { OnlyOfficeConfigCard } from "./OnlyOfficeConfigCard.js";
 import type { ToolchainToolId, ToolchainToolState } from "@contracts/ipc";
 import {
   IconAlertTriangle,
@@ -48,6 +49,7 @@ const TOOL_META: Record<ToolchainToolId, { label: string } | { labelKey: Message
   "zip-tools": { label: "zip / unzip" },
   soffice: { label: "LibreOffice" },
   pdftoppm: { label: "poppler" },
+  onlyoffice: { label: "ONLYOFFICE" },
 };
 
 /** 文案键写死在这里,而不是 `t(\`settings.toolchain.tool.${id}.what\`)`。
@@ -78,6 +80,10 @@ const TOOL_TEXT: Record<ToolchainToolId, { what: MessageId; howto: MessageId }> 
   pdftoppm: {
     what: "settings.toolchain.tool.pdftoppm.what",
     howto: "settings.toolchain.tool.pdftoppm.howto",
+  },
+  onlyoffice: {
+    what: "settings.toolchain.tool.onlyoffice.what",
+    howto: "settings.toolchain.tool.onlyoffice.howto",
   },
 };
 
@@ -269,6 +275,11 @@ function ToolRow({
             </div>
           )}
 
+          {/* ONLYOFFICE 不是一个 PATH 上的可执行文件而是一套服务,所以它比别的项
+              多一块**连接配置**:地址 / 密钥 / 回连主机名。默认由它自己探本机安装
+              填好,展开只为 Docker、局域网、非 Windows 这三种装法留一条手动入口。 */}
+          {state.id === "onlyoffice" && <OnlyOfficeConfigCard onReload={onReload} />}
+
           {installing && (
             <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-surface-hover">
               <div
@@ -296,7 +307,13 @@ function ToolRow({
               className="gap-1"
             >
               <IconDownload size={12} />
-              {state.ok ? t("settings.toolchain.reinstall") : t("settings.toolchain.install")}
+              {state.id === "onlyoffice" &&
+              state.source === "system" &&
+              state.components.some((component) => component.name === "Mcode server URL" && !component.found)
+                ? t("settings.toolchain.useInstalled")
+                : state.ok
+                  ? t("settings.toolchain.reinstall")
+                  : t("settings.toolchain.install")}
             </Button>
           )}
           {state.source === "managed" && (

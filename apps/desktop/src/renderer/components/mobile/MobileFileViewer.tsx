@@ -11,7 +11,9 @@
  */
 import { useEffect, useState } from "react";
 import { api } from "@renderer/lib/api.js";
+import { isOnlyOfficeSupportedPath } from "@contracts/ipc";
 import { Markdown } from "@renderer/components/chat/Markdown.js";
+import { OnlyOfficeEditorPane } from "@renderer/components/ide/OnlyOfficeEditorPane.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { dirname } from "@renderer/lib/path.js";
 import { useScrollMemory } from "@renderer/lib/scrollMemory.js";
@@ -84,6 +86,7 @@ export function FileViewerContent({ name, path }: { name: string; path: string }
   const [sourceView, setSourceView] = useState(false);
   const ext = extOf(name);
   const isMd = MARKDOWN_EXT.has(ext);
+  const isOffice = isOnlyOfficeSupportedPath(path);
   // The overlay unmounts when the user taps 返回, so without a remembered
   // offset tapping the same file again landed back at the top. Rendered
   // preview and highlighted source are different renderings of the same file
@@ -100,6 +103,11 @@ export function FileViewerContent({ name, path }: { name: string; path: string }
     setImageUrl(null);
     setFailed(false);
     setSourceView(false);
+    if (isOffice) {
+      return () => {
+        cancelled = true;
+      };
+    }
     if (IMAGE_EXT.has(ext)) {
       void api.file
         .readBinary({ filePath: path })
@@ -127,10 +135,23 @@ export function FileViewerContent({ name, path }: { name: string; path: string }
     return () => {
       cancelled = true;
     };
-  }, [path, ext]);
+  }, [path, ext, isOffice]);
 
   const lang = LANG_BY_EXT[ext] ?? "text";
   const markdown = content === null ? "" : `\`\`\`${lang}\n${content}\n\`\`\``;
+
+  if (isOffice) {
+    return (
+      <div className="relative min-h-0 flex-1">
+        <OnlyOfficeEditorPane
+          key={path}
+          filePath={path}
+          readOnly
+          deviceType="mobile"
+        />
+      </div>
+    );
+  }
 
   if (imageUrl) {
     return (

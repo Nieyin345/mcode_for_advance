@@ -29,6 +29,8 @@ import { dirname, join } from "node:path";
 import type { ToolchainToolId, ToolchainToolState, ToolchainSource } from "@contracts/ipc";
 import { TOOLCHAIN_TOOL_IDS } from "@contracts/ipc";
 import { managedToolExecutable } from "./managedToolRoots.js";
+import { detectLocal } from "@main/onlyoffice/localInstall.js";
+import { getOnlyOfficeConfig } from "@main/onlyoffice/OnlyOfficeBridge.js";
 
 /** 技能脚本会 import 的第三方包(python-deps 这一项的全部内容)。
  *
@@ -371,6 +373,46 @@ async function detectMulti(
   };
 }
 
+/**
+ * ONLYOFFICE Document Server。
+ *
+ * ## 它和这张表里别的项**不同形**
+ *
+ * 上面几个都是 PATH 上的可执行文件,"找得到"就等于"能用"。这个是一套跑在本机的
+ * 服务:目录在、服务在跑、healthcheck 应答 —— 三样缺一不可,而且端口未必是安装时
+ * 请求的那个(安装器在端口被占时会自己挪)。
+ *
+ * 判据**不在这里重写一遍**,直接用 `onlyoffice/localInstall.ts` 的 `detectLocal()`:
+ * 那边是这套服务的真相源(IDE 里的编辑器面板读的也是它)。分开写两份,迟早互相矛盾
+ * —— 这正是 `knownInstallPaths` / `systemToolBinDirs` 共用一份路径表的同一条理由。
+ */
+async function detectOnlyOffice(): Promise<ToolchainToolState> {
+  const d = await detectLocal();
+  const responding = d.serviceState === "running" && d.port !== null;
+  const configured = Boolean(getOnlyOfficeConfig().serverUrl.trim());
+  return {
+    id: "onlyoffice",
+    // 光装上不算可用:服务得在跑,而且 `allowPrivateIPAddress` 得是开的 —— 否则 DS
+    // 回连不到 Mcode 在 127.0.0.1 上的回调桥,编辑器会开出一片空白。这一项装完由
+    // 提权脚本自动打开,列在 components 里是为了"它又被关上了"时能看见。
+    ok: d.installed && responding && d.privateIpAllowed !== false && configured,
+    source: d.installed ? "system" : "missing",
+    version: d.version,
+    path: d.installDir,
+    // 只有 Windows 有官方静默安装包;别的平台连装都装不了,只显示状态。
+    installable: d.supported,
+    installing: false,
+    lastError: "",
+    components: [
+      { name: "DocumentServer", found: d.installed },
+      { name: "DsDocServiceSvc", found: d.serviceState === "running" },
+      { name: "healthcheck", found: responding },
+      { name: "allowPrivateIPAddress", found: d.installed && d.privateIpAllowed !== false },
+      { name: "Mcode server URL", found: configured },
+    ],
+  };
+}
+
 /* ── 对外 ── */
 
 let cache: { at: number; tools: ToolchainToolState[] } | null = null;
@@ -386,6 +428,7 @@ export async function checkToolchain(): Promise<ToolchainToolState[]> {
     detectMulti("zip-tools", ["unzip", "zip"]),
     detectMulti("soffice", ["soffice"]),
     detectMulti("pdftoppm", ["pdftoppm"]),
+    detectOnlyOffice(),
   ]);
   cache = { at: Date.now(), tools };
   return tools;

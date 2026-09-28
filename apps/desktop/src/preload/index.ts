@@ -707,16 +707,6 @@ const api = {
       ipcRenderer.invoke(IPC.ONLYOFFICE_SET_CONFIG, input)) as RpcMap["onlyoffice.setConfig"],
     detectLocal: (() =>
       ipcRenderer.invoke(IPC.ONLYOFFICE_DETECT_LOCAL)) as RpcMap["onlyoffice.detectLocal"],
-    installLocal: ((input) =>
-      ipcRenderer.invoke(IPC.ONLYOFFICE_INSTALL_LOCAL, input)) as RpcMap["onlyoffice.installLocal"],
-    configureLocal: (() =>
-      ipcRenderer.invoke(IPC.ONLYOFFICE_CONFIGURE_LOCAL)) as RpcMap["onlyoffice.configureLocal"],
-    installProgress: (() =>
-      ipcRenderer.invoke(IPC.ONLYOFFICE_INSTALL_PROGRESS)) as RpcMap["onlyoffice.installProgress"],
-    cancelInstall: (() =>
-      ipcRenderer.invoke(IPC.ONLYOFFICE_CANCEL_INSTALL)) as RpcMap["onlyoffice.cancelInstall"],
-    applyLocal: (() =>
-      ipcRenderer.invoke(IPC.ONLYOFFICE_APPLY_LOCAL)) as RpcMap["onlyoffice.applyLocal"],
   },
 
   outputStyle: {

@@ -33,7 +33,12 @@ import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { IPC } from "@contracts/ipc";
-import type { ToolchainProgressPayload, ToolchainToolId } from "@contracts/ipc";
+import type { OnlyOfficeInstallProgress, ToolchainProgressPayload, ToolchainToolId } from "@contracts/ipc";
+import {
+  configureLocalDocumentServer,
+  detectLocal,
+  installLocalDocumentServer,
+} from "@main/onlyoffice/localInstall.js";
 import { sendToRenderer } from "@main/window.js";
 import { log } from "@main/lib/logger.js";
 import { getToolRoot, MANAGED_TOOLS } from "./managedToolRoots.js";
@@ -656,6 +661,67 @@ async function installPythonDeps(): Promise<void> {
   });
 }
 
+/**
+ * ONLYOFFICE Document Server。
+ *
+ * 和 pandoc / latex 那两项**不是一回事**:那两个是把一棵树解进 `<userData>/tools`,
+ * 这个是跑官方安装器 —— 装到 Program Files、注册两个 Windows 服务、过一次 UAC。
+ * 所以它也**卸不掉**(`removeTool` 只管自管目录),要卸得走 Windows 的卸载程序。
+ *
+ * 进度:下载阶段把字节数折成 0..1;提权安装与等服务起来这两段没有可测的进度,
+ * 报 -1(面板按"进行中"画,同 pip 那一项)。
+ */
+async function installOnlyOffice(): Promise<void> {
+  const onProgress = (p: OnlyOfficeInstallProgress): void => {
+    if (p.phase === "downloading") {
+      emit("onlyoffice", "downloading", p.totalBytes ? p.receivedBytes / p.totalBytes : -1);
+    } else if (p.phase === "installing" || p.phase === "configuring" || p.phase === "waiting") {
+      emit("onlyoffice", "installing", -1);
+    }
+  };
+  try {
+    // **已经装过就只修配置** —— 同一段提权脚本,跳过那 1 GB 的安装器。
+    //
+    // 用户点「安装」时多半是因为这一行显示不可用,而"装了但私网开关被关上"、
+    // "服务停了"这两种远比"根本没装"常见;那种情况下重下一遍安装包纯属浪费
+    // (而且用户会以为是卡住了)。这条分支也把老设置页里那个「修复配置」按钮
+    // 的能力接了回来 —— 现在不用他自己判断该点哪个。
+    const local = await detectLocal();
+    if (local.installed) await configureLocalDocumentServer({ onProgress });
+    else await installLocalDocumentServer({ onProgress });
+  } catch (err) {
+    throw new Error(onlyOfficeErrorText(err instanceof Error ? err.message : String(err)));
+  }
+}
+
+/**
+ * 把 localInstall 抛出的**错误码**翻成一句能照着做的话。
+ *
+ * 原先失败只会说"Document Server 一直没有响应,请到 services.msc 检查" ——
+ * 那句话对用户没有任何可操作性:他打开 services.msc 之后该看什么、看到了又怎么办?
+ * 现在 `waitHealthy` 把 `sc query` 的结果拼在错误码后面,这里按它分岔 ——
+ * "服务没注册上"和"注册了起不来"是两种完全不同的处置。
+ */
+function onlyOfficeErrorText(raw: string): string {
+  if (raw === "UAC_DENIED") return "安装要管理员权限,你在 UAC 弹窗里点了「否」——重试并选「是」";
+  if (raw === "UNSUPPORTED_PLATFORM") return "只有 Windows 有官方静默安装包,这台机器装不了";
+  if (raw === "ONLYOFFICE_INSTALL_BUSY") return "这一项正在装,别重复点";
+  if (raw === "ONLYOFFICE_SECRET_UNREADABLE") {
+    return "服务装好了,但读不出它的 JWT 密钥(%ProgramFiles%\\ONLYOFFICE\\DocumentServer\\config\\local.json 打不开或不是合法 JSON)。再点一次「安装」让应用重写一遍这个文件;还是不行就手动把 services.CoAuthoring.secret.inbox.string 的值填进下面的「JWT 密钥」";
+  }
+  if (raw.startsWith("DS_NOT_RESPONDING")) {
+    const svc = raw.split(":")[1];
+    if (svc === "missing") {
+      return "安装器跑完了,但 DsDocServiceSvc / DsConverterSvc 两个服务没注册上 —— 多半是安装器中途失败了。再点一次安装(安装包已经下好,会直接复用);还是这样就看 %TEMP%\\mcode-onlyoffice 下那份安装日志";
+    }
+    if (svc === "stopped") {
+      return "服务装上了但起不来 —— 常见原因是它要的端口被别的程序占了,或安装器自带的 PostgreSQL / RabbitMQ 没起来。在 services.msc 里手动启动 DsDocServiceSvc,它会把真正的原因写进事件日志";
+    }
+    return "服务在跑,但 healthcheck 一直不应答。首次启动有时要好几分钟,稍等一会儿点「重新检测」";
+  }
+  return raw;
+}
+
 /** 装(或重装)一个工具。 */
 export async function installTool(tool: ToolchainToolId): Promise<{ ok: boolean; error?: string }> {
   if (inFlight.has(tool)) return { ok: false, error: "这个工具正在安装中" };
@@ -666,6 +732,7 @@ export async function installTool(tool: ToolchainToolId): Promise<{ ok: boolean;
     if (tool === "pandoc") await installPandoc();
     else if (tool === "latex") await installLatex();
     else if (tool === "python-deps") await installPythonDeps();
+    else if (tool === "onlyoffice") await installOnlyOffice();
     else throw new Error("这个工具要管理员权限才能装,应用不代劳 —— 见面板上的安装指引");
     invalidateToolchainCache();
     applyAgentEnvironment();

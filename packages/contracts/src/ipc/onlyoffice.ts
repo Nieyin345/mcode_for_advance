@@ -76,6 +76,16 @@ export const ONLYOFFICE_EDITABLE: Readonly<Record<string, "word" | "cell" | "sli
   odp: "slide",
 };
 
+/** Office formats that Document Server can convert and display but not edit in place. */
+export const ONLYOFFICE_VIEW_ONLY: Readonly<Record<string, "word" | "cell" | "slide">> = {
+  doc: "word",
+  rtf: "word",
+  xls: "cell",
+  ppt: "slide",
+  pps: "slide",
+  ppsx: "slide",
+};
+
 /** 路径是否是 DS 能编辑的 Office 文档（按扩展名，大小写不敏感）。 */
 export function isOnlyOfficeEditablePath(filePath: string): boolean {
   const dot = filePath.lastIndexOf(".");
@@ -83,11 +93,30 @@ export function isOnlyOfficeEditablePath(filePath: string): boolean {
   return filePath.slice(dot + 1).toLowerCase() in ONLYOFFICE_EDITABLE;
 }
 
+/** True when OnlyOffice can open this file (including legacy conversion-only formats). */
+export function isOnlyOfficeSupportedPath(filePath: string): boolean {
+  const dot = filePath.lastIndexOf(".");
+  if (dot < 0) return false;
+  const ext = filePath.slice(dot + 1).toLowerCase();
+  return ext in ONLYOFFICE_EDITABLE || ext in ONLYOFFICE_VIEW_ONLY;
+}
+
+/** True when OnlyOffice must open this format as a read-only conversion. */
+export function isOnlyOfficeViewOnlyPath(filePath: string): boolean {
+  const dot = filePath.lastIndexOf(".");
+  if (dot < 0) return false;
+  return filePath.slice(dot + 1).toLowerCase() in ONLYOFFICE_VIEW_ONLY;
+}
+
 /* ── IPC 输入 / 输出 ── */
 
 export const OnlyOfficeOpenSchema = z.object({
   /** 绝对路径。必须落在某个已知工作区根内（与 `file:readFile` 同一道闸）。 */
   filePath: z.string(),
+  /** `view` 用于资料库/通用文件查看器；默认 `edit`。 */
+  mode: z.enum(["edit", "view"]).optional(),
+  /** 移动端查看器使用 OnlyOffice 的 mobile 布局。 */
+  deviceType: z.enum(["desktop", "mobile"]).optional(),
 });
 export type OnlyOfficeOpenInput = z.infer<typeof OnlyOfficeOpenSchema>;
 
@@ -103,6 +132,22 @@ export interface OnlyOfficeOpenResult {
   sessionKey?: string;
   /** 直接交给 `new DocsAPI.DocEditor(el, config)` 的对象（已带 token）。 */
   config?: Record<string, unknown>;
+  /**
+   * 这次 open **复用**了一个还活着的会话（同一份文件已经有面板 / 编辑器开着）。
+   *
+   * 渲染端据此决定能不能把上次那个 DS iframe 直接拿回来用（见
+   * `renderer/components/ide/onlyOfficeEditorPool.ts`）：只有复用同一个会话，
+   * 那个 iframe 里装的才还是这一份文档。
+   */
+  reusedSession?: boolean;
+  /**
+   * 被复用的那个会话开着的这段时间里，磁盘上的文件被**别人**改过（Agent 写了它、
+   * 或用户在 Mcode 外面改了）—— 判据是 mtime/size 与我们自己最后一次落盘的不一致。
+   *
+   * 为 true 时渲染端必须丢掉缓存的编辑器重开一个：那个编辑器里还是旧内容，
+   * 接着用它保存会把别人的改动盖掉。
+   */
+  externallyChanged?: boolean;
 }
 
 export const OnlyOfficeSessionSchema = z.object({ sessionKey: z.string() });
@@ -117,6 +162,13 @@ export interface OnlyOfficeSessionState {
   lastError: string | null;
   /** DS 最近一次回调的 status 码（1 编辑中 / 2 待保存 / 4 无改动关闭 / 6 强制保存…）。 */
   lastStatus: number | null;
+  /**
+   * 本机当前可用物理内存（MB）。
+   *
+   * 搭在这条上,是因为渲染端**本来就**每 2 秒拉一次它:编辑器池要靠这个数决定
+   * 「切走的编辑器还留不留」,而为一个纯提示值单开一条 IPC 不值得。
+   */
+  freeMemMB: number;
 }
 
 export interface OnlyOfficeStatusResult {
@@ -168,9 +220,3 @@ export interface OnlyOfficeInstallProgress {
   message: string | null;
   startedAt: number | null;
 }
-
-export const OnlyOfficeInstallSchema = z.object({
-  /** 安装器 `/DS_PORT`。默认 8080（80 常被 IIS / 其他东西占着）。 */
-  port: z.number().int().min(1).max(65535).default(8080),
-});
-export type OnlyOfficeInstallInput = z.infer<typeof OnlyOfficeInstallSchema>;

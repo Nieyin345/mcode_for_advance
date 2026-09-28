@@ -24,18 +24,15 @@ import {
   IconActivity,
   IconArrowsSplit,
   IconBolt,
-  IconDatabase,
   IconBook,
   IconShieldCheck,
   McpIcon,
   IconNotebook,
   IconAdjustmentsHorizontal,
-  IconFileTypeDoc,
   type TablerIconProps,
 } from "@renderer/lib/icons.js";
 import { CustomModelsPanel } from "./CustomModelsPanel.js";
 import { InstitutionAuthPanel } from "./InstitutionAuthPanel.js";
-import { OfficePanel } from "./OfficePanel.js";
 import { DataRootPanel } from "./DataRootPanel.js";
 import { LibraryTypesPanel } from "./LibraryTypesPanel.js";
 import { CustomUiPanel } from "./CustomUiPanel.js";
@@ -76,7 +73,7 @@ import { MemoryExplorerPanel } from "../memory/MemoryExplorerPanel.js";
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "data-root" | "library-types" | "custom-ui" | "runtimes" | "custom-models" | "institution" | "office" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
+type SectionId = "general" | "library-types" | "custom-ui" | "runtimes" | "custom-models" | "institution" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -154,12 +151,8 @@ const NAV_GROUPS: NavGroup[] = [
   {
     labelKey: "settings.navGroup.workbench",
     items: [
-      // 数据位置排在最前面 —— 它是"我的东西在哪"这个问题的唯一答案,其余设置都
-      // 建立在它之上(数据库、文献库、模版库都在它下面)。
-      { id: "data-root", labelKey: "settings.nav.dataRoot", icon: IconDatabase },
-      // 文档管理紧跟数据位置:提示词/屏蔽决定「AI 怎么用这些数据」,而库本身就住在数据根下 ——
-      // 两个入口放在一起,「数据在哪」和「数据怎么喂给 AI」一眼就看全。
-      // (这一项 2026-09-26 接回:kind 退役那轮把整页删了,屏蔽/提示词从此没有编辑入口。)
+      // 数据根与资料库设置合并在同一个入口;入口名保留「文档管理」,内容先显示
+      // 数据位置,再配置文档如何供 AI 使用。旧 data-root 深链在初始化时映射到这里。
       { id: "library-types", labelKey: "settings.nav.libraryTypes", icon: IconBook },
       // 自定义 UI 紧跟文档管理:资料库右键菜单的功能项、Files 文件右键都在这里配置
       // (主界面只放入口,点了做什么、显示什么在这一页定义)。
@@ -167,8 +160,6 @@ const NAV_GROUPS: NavGroup[] = [
       // 机构认证归在「工作台」组:它是使用场景(下载文献要先登录),
       // 不是 AI 配置,放 ai 组会让人以为是模型相关设置。
       { id: "institution", labelKey: "settings.nav.institution", icon: IconShieldCheck },
-      // 文档编辑（OnlyOffice）紧跟机构认证：同样是"接一个外部服务进来"的使用场景配置。
-      { id: "office", labelKey: "settings.nav.office", icon: IconFileTypeDoc },
       { id: "git", labelKey: "settings.nav.git", icon: IconBrandGit },
       { id: "terminal", labelKey: "settings.nav.terminal", icon: IconTerminal2 },
       { id: "browser", labelKey: "settings.nav.browser", icon: IconWorld },
@@ -205,10 +196,13 @@ export function SettingsPage() {
   // default must NOT be "custom-models", or every plain open would jump to
   // the model-config tab.
   const settingsSection = useSessionStore((s) => s.settingsSection);
+  // Existing callers or an already-open settings state may still request the
+  // retired data-root id; keep that deep link landing on the merged tab.
+  const requestedSection = settingsSection === "data-root" ? "library-types" : settingsSection;
   const [active, setActive] = useState<SectionId>(
     () =>
-      (settingsSection && NAV_ITEMS.some((n) => n.id === settingsSection)
-        ? settingsSection
+      (requestedSection && NAV_ITEMS.some((n) => n.id === requestedSection)
+        ? requestedSection
         : NAV_ITEMS[0].id) as SectionId,
   );
 
@@ -298,11 +292,14 @@ export function SettingsPage() {
           {active === "general" && <GeneralPanel />}
           {active === "appearance" && <AppearancePanel />}
           {active === "custom-models" && <CustomModelsPanel />}
-          {active === "data-root" && <DataRootPanel />}
-          {active === "library-types" && <LibraryTypesPanel />}
+          {active === "library-types" && (
+            <>
+              <DataRootPanel />
+              <LibraryTypesPanel />
+            </>
+          )}
           {active === "custom-ui" && <CustomUiPanel />}
           {active === "institution" && <InstitutionAuthPanel />}
-          {active === "office" && <OfficePanel />}
           {active === "shortcuts" && <ShortcutsPanel />}
           {active === "gestures" && <GesturesPanel />}
           {active === "voice" && <VoicePanel />}

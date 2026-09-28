@@ -29,11 +29,11 @@ Document Server ──(拉文件 / 回调)──▶ 127.0.0.1:<bridgePort>  或 
 
 设置 → 工作台 → **文档编辑** → 「本机安装」：
 
-1. 面板打开即自动检测 `%ProgramFiles%\ONLYOFFICE\DocumentServer`、`ds-docservice` 服务、探测端口、读出 `config\local.json` 里的 JWT 密钥。
+1. 面板打开即自动检测 `%ProgramFiles%\ONLYOFFICE\DocumentServer`、`DsDocServiceSvc` 服务、探测端口、读出 `config\local.json` 里的 JWT 密钥。
 2. 未安装 → 点「一键下载并安装」：主进程从 `download.onlyoffice.com/install/documentserver/windows/onlyoffice-documentserver.exe`（约 1 GB）流式下载到 `%TEMP%\mcode-onlyoffice\`，然后起一个**提权** PowerShell（弹一次 UAC）执行：
    - `onlyoffice-documentserver.exe /SILENT /DS_PORT=<端口>`（安装器自带 PostgreSQL / RabbitMQ / Erlang 前置件）
    - 给 `config\local.json` 写入 `services.CoAuthoring.request-filtering-agent.allowPrivateIPAddress/allowMetaIPAddress = true`
-   - 重启 `ds-converter` / `ds-docservice`
+   - 重启 `DsConverterSvc` / `DsDocServiceSvc`
    然后轮询 `/healthcheck` 直到起来，最后把地址 + 密钥自动写进 Mcode 配置。
 3. 已安装 → 「使用这一份」直接套用；`allowPrivateIPAddress` 没开时多出「修复配置」（同一段提权脚本，跳过安装器）。
 

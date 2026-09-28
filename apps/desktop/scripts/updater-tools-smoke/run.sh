@@ -117,6 +117,7 @@ done
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --alias:@main/window.js=./scripts/updater-tools-smoke/stubs/window.ts \
   --alias:@main/updater.js=./scripts/updater-tools-smoke/stubs/updater.ts \
+  --alias:@main/onlyoffice/localInstall.js=./scripts/updater-tools-smoke/stubs/onlyofficeInstall.ts \
   --external:./toolchain.js \
   --external:./agentEnv.js \
   --outfile="$OUT/smoke.mjs" --log-level=error

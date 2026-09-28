@@ -47,7 +47,7 @@ import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, Workflow
 import type { AutomationTriggerFacts, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
 import { MEMORY_CATEGORIES_CHANNEL, MEMORY_DELETE_CHANNEL, MEMORY_LIST_CHANNEL, MEMORY_READ_CHANNEL, MEMORY_REVIEW_CHANNEL, MEMORY_REVIEW_DELETE_CHANNEL, MEMORY_SAVE_CHANNEL, type MemoryDeleteInput, type MemoryFileMeta, type MemoryListInput, type MemoryReadInput, type MemoryReviewDeleteInput, type MemoryReviewResult, type MemorySaveInput } from "../memory.js";
 import type { LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDeleteItemsResult, LibraryRestoreItemsInput, LibraryDeletePreviewInput, LibraryDeletePreviewResult, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryEntryPathInput, LibraryEntryPathResult, PdfHighlightsReadInput, PdfHighlightsSaveInput, PdfHighlightsWriteBackInput, PdfHighlightsWriteResult, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryFullTextSearchInput, LibraryManifestInput, LibraryItemManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkCountsInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionMoveInput, CollectionAssignInput, InstitutionSaveInput, InstitutionDeleteInput, InstitutionAuthStatusInput, InstitutionClearCookiesInput } from "./library.js";
-import type { OnlyOfficeOpenInput, OnlyOfficeOpenResult, OnlyOfficeSessionInput, OnlyOfficeSessionState, OnlyOfficeStatusResult, OnlyOfficeConfig, OnlyOfficeSetConfigInput, OnlyOfficeLocalDetectResult, OnlyOfficeInstallInput, OnlyOfficeInstallProgress } from "./onlyoffice.js";
+import type { OnlyOfficeOpenInput, OnlyOfficeOpenResult, OnlyOfficeSessionInput, OnlyOfficeSessionState, OnlyOfficeStatusResult, OnlyOfficeConfig, OnlyOfficeSetConfigInput, OnlyOfficeLocalDetectResult } from "./onlyoffice.js";
 import type { SubagentDefinition } from "../claudeSubagent.js";
 import type { ClaudeSubagentsSaveInput } from "../claudeSubagent.js";
 import type { CustomUiRunAutomationInput, CustomUiRunAutomationResult } from "../customUi.js";
@@ -1094,17 +1094,15 @@ export interface RpcMap {
   "onlyoffice.status": () => Promise<OnlyOfficeStatusResult>;
   "onlyoffice.getConfig": () => Promise<OnlyOfficeConfig>;
   "onlyoffice.setConfig": (input: OnlyOfficeSetConfigInput) => Promise<OnlyOfficeConfig>;
-  /** 本机有没有装 Windows 原生的 Document Server(目录 / 服务 / 端口)。 */
+  /**
+   * 本机装没装 Document Server、跑没跑、密钥是什么。
+   *
+   * 设置页用它做**自动填写**:检测到本机那一份就把地址与密钥直接写进配置,用户
+   * 不用手抄 `local.json`。主进程里 `detectLocal()` 早就有了(安装流程与工具链
+   * 检测都在用),这里只是把它开给渲染端 —— 不然「自动帮我配好」这件事在 UI 侧
+   * 无从谈起。只读,不需要管理员权限。
+   */
   "onlyoffice.detectLocal": () => Promise<OnlyOfficeLocalDetectResult>;
-  /** 一键安装:下载官方安装包 → 提权静默安装 → 写配置。返回当前进度快照,之后轮询 `installProgress`。 */
-  "onlyoffice.installLocal": (input: OnlyOfficeInstallInput) => Promise<OnlyOfficeInstallProgress>;
-  /** 已装好但没配置好(端口 / 服务没起)时,只跑配置那一段。 */
-  "onlyoffice.configureLocal": () => Promise<OnlyOfficeInstallProgress>;
-  "onlyoffice.installProgress": () => Promise<OnlyOfficeInstallProgress>;
-  "onlyoffice.cancelInstall": () => Promise<OnlyOfficeInstallProgress>;
-  /** 把检测到的本机安装写进配置(serverUrl 指向本机端口)。 */
-  "onlyoffice.applyLocal": () => Promise<OnlyOfficeConfig>;
-
   // ── 统一数据根 ──
   /** 当前数据根,以及它下面两样东西的**实际路径**(设置页展示用)。 */
   "app.getDataRoot": () => Promise<{
@@ -1265,11 +1263,6 @@ export const IPC = {
   ONLYOFFICE_GET_CONFIG: "onlyoffice:getConfig",
   ONLYOFFICE_SET_CONFIG: "onlyoffice:setConfig",
   ONLYOFFICE_DETECT_LOCAL: "onlyoffice:detectLocal",
-  ONLYOFFICE_INSTALL_LOCAL: "onlyoffice:installLocal",
-  ONLYOFFICE_CONFIGURE_LOCAL: "onlyoffice:configureLocal",
-  ONLYOFFICE_INSTALL_PROGRESS: "onlyoffice:installProgress",
-  ONLYOFFICE_CANCEL_INSTALL: "onlyoffice:cancelInstall",
-  ONLYOFFICE_APPLY_LOCAL: "onlyoffice:applyLocal",
   LIBRARY_ITEM_MANIFEST: "library:itemManifest",
   /** 整个库的清单(「全部<库>」那一行)。 */
   /** 类型注册表:读(返回当前生效的全表,含内置)/ 写(整表替换,校验在主进程)。 */

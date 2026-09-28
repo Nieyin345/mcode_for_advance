@@ -1,19 +1,19 @@
 /**
  * 设置 → 文档管理 —— 资料库对 AI 的行为:**分级提示词**(大类 / 分类)、**屏蔽规则**
- * (哪些东西不进上下文)与**转换情况**(哪些文献还没有 Markdown)。
+ * (哪些东西不进上下文)。转录界面不在设置页展示,后续由专用 UI 承接。
  *
  * ## 这一页 2026-09-26 重建
  *
  * 旧版围着 kind(小类)建:小类提示词整段、屏蔽树的中间一层、集合按 kind 归段。
- * kind 退役(bcd3a2e)时它被整页删掉 —— 但**屏蔽的编辑器、大类/分类提示词、转换情况
+ * kind 退役(bcd3a2e)时它被整页删掉 —— 但**屏蔽的编辑器、大类/分类提示词
  * 都只活在这一页上**,删掉之后后端照常判定,用户却没有任何地方能配它们:i18n 键、
  * preload 的 suppressGet/suppressSave、报错里那句「去设置改」全成了空指。这次按
  * 三级结构(大类 → 分类 → 条目)重建,小类那一段不再存在。
  *
  * ## 管理与提示词分家(沿旧规矩)
  *
- * 大类/分类的**管理**(新建 / 删除 / 重命名)全在左栏右键;这里只做三件事:
- * 给 AI 写说明、勾屏蔽、看转换情况。
+ * 大类/分类的**管理**(新建 / 删除 / 重命名)全在左栏右键;这里只做两件事:
+ * 给 AI 写说明、勾屏蔽。
  *
  * ## 保存模型:草稿 + 一次交回
  *
@@ -40,7 +40,6 @@ import { api } from "@renderer/lib/api.js";
 import { Button } from "@renderer/components/ui/index.js";
 import { IconBook, IconLoader2, IconX } from "@renderer/lib/icons.js";
 import { PanelHeader } from "./PanelHeader.js";
-import { ConversionSection } from "./ConversionSection.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
 
@@ -348,11 +347,6 @@ export function LibraryTypesPanel() {
       <p className="px-1 text-[0.7857em] leading-relaxed text-content-subtle">
         {t("settings.libraryTypes.desc")}
       </p>
-
-      {/* ── 转换情况:哪些文献 AI 读不到 ──
-          放在提示词**前面**:它是这一页里唯一有"操作"的一段,也是用户更常来的原因。
-          提示词是配一次就不动的,没转的文献是天天在涨的。 */}
-      <ConversionSection />
 
       {saved && !saveError && (
         <div className="text-[0.7857em] text-emerald-600 dark:text-emerald-400">

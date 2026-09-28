@@ -6,7 +6,6 @@ import type { IpcMain } from "electron";
 import { nativeTheme } from "electron";
 import {
   IPC,
-  OnlyOfficeInstallSchema,
   OnlyOfficeOpenSchema,
   OnlyOfficeSessionSchema,
   OnlyOfficeSetConfigSchema,
@@ -22,18 +21,10 @@ import {
   probeOnlyOffice,
   setOnlyOfficeConfig,
 } from "@main/onlyoffice/OnlyOfficeBridge.js";
-import {
-  applyLocal,
-  cancelInstall,
-  detectLocal,
-  getInstallProgress,
-  startLocalConfigure,
-  startLocalInstall,
-} from "@main/onlyoffice/localInstall.js";
-
+import { detectLocal } from "@main/onlyoffice/localInstall.js";
 export function registerOnlyOfficeHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.ONLYOFFICE_OPEN, async (_evt, raw) => {
-    const { filePath } = OnlyOfficeOpenSchema.parse(raw);
+    const { filePath, mode, deviceType } = OnlyOfficeOpenSchema.parse(raw);
     // 界面语言跟着 Mcode 走（DS 的 lang 用 BCP-47 前两段就够）
     const locale = SettingRepo.get(UI_LOCALE_SETTING_KEY);
     const lang = locale === "en" ? "en" : "zh";
@@ -41,6 +32,8 @@ export function registerOnlyOfficeHandlers(ipcMain: IpcMain): void {
       lang,
       dark: nativeTheme.shouldUseDarkColors,
       userName: "Mcode",
+      mode: mode ?? "edit",
+      deviceType: deviceType ?? "desktop",
     });
   });
   ipcMain.handle(IPC.ONLYOFFICE_FORCE_SAVE, (_evt, raw) => {
@@ -58,11 +51,7 @@ export function registerOnlyOfficeHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.ONLYOFFICE_STATUS, () => probeOnlyOffice());
   ipcMain.handle(IPC.ONLYOFFICE_GET_CONFIG, () => getOnlyOfficeConfig());
   ipcMain.handle(IPC.ONLYOFFICE_SET_CONFIG, (_evt, raw) => setOnlyOfficeConfig(OnlyOfficeSetConfigSchema.parse(raw)));
-  // 本机安装（Windows 安装包），逻辑在 `@main/onlyoffice/localInstall.ts`
+  // 只读探测（目录 / 服务 / 端口 / local.json 里的密钥）。设置页拿它做自动填写，
+  // 判据不在渲染端重写一遍 —— 与工具链检测、安装流程同一个真相源。
   ipcMain.handle(IPC.ONLYOFFICE_DETECT_LOCAL, () => detectLocal());
-  ipcMain.handle(IPC.ONLYOFFICE_INSTALL_LOCAL, (_evt, raw) => startLocalInstall(OnlyOfficeInstallSchema.parse(raw ?? {})));
-  ipcMain.handle(IPC.ONLYOFFICE_CONFIGURE_LOCAL, () => startLocalConfigure());
-  ipcMain.handle(IPC.ONLYOFFICE_INSTALL_PROGRESS, () => getInstallProgress());
-  ipcMain.handle(IPC.ONLYOFFICE_CANCEL_INSTALL, () => cancelInstall());
-  ipcMain.handle(IPC.ONLYOFFICE_APPLY_LOCAL, () => applyLocal());
 }

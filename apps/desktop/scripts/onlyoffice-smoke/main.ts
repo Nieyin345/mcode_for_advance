@@ -71,6 +71,22 @@ async function open(name: string) {
   return { path, key: opened.sessionKey, fileUrl, callbackUrl };
 }
 try {
+  const viewPath = join(root!, "mobile-view.docx");
+  await writeFile(viewPath, "read-only quote test document");
+  const view = await openOnlyOfficeSession(viewPath, {
+    lang: "en", dark: false, userName: "Phone", mode: "view", deviceType: "mobile",
+  });
+  assert.ok(view.ok && view.config && view.sessionKey);
+  const viewDocument = view.config.document as Record<string, unknown>;
+  const viewEditor = view.config.editorConfig as Record<string, unknown>;
+  assert.equal(viewDocument.permissions && (viewDocument.permissions as Record<string, unknown>).edit, false);
+  assert.equal(viewEditor.mode, "view");
+  assert.equal(viewEditor.callbackUrl, undefined);
+  assert.equal(view.config.type, "mobile");
+  check("mobile Office opens are view-only and omit the save callback", viewDocument.permissions !== undefined && viewEditor.callbackUrl === undefined);
+  check("Office document opens without the Mcode quote plugin", typeof viewDocument.url === "string" && (await fetch(viewDocument.url as string)).status === 200 && !("plugins" in viewEditor));
+  closeSession(view.sessionKey);
+
   const concurrent = await Promise.all([open("concurrent-a.docx"), open("concurrent-b.docx")]);
   check("concurrent first opens share one callback server", new URL(concurrent[0].fileUrl).origin === new URL(concurrent[1].fileUrl).origin);
   for (const doc of concurrent) { closeSession(doc.key); await callback(doc.callbackUrl, doc.key, 4); }

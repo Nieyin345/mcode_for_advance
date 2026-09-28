@@ -28,7 +28,7 @@
  */
 import type { Api } from "../../preload/index.js";
 import { IPC } from "@contracts/ipc";
-import type { Locale, PickedImage, TerminalInfo } from "@contracts/ipc";
+import type { Locale, OnlyOfficeOpenResult, PickedImage, TerminalInfo } from "@contracts/ipc";
 import type { RuntimeEvent } from "@contracts/runtime";
 import { isDeviceLocalSettingKey } from "@contracts/ipc/settingsSync";
 import type { ThemeState } from "./theme.js";
@@ -712,6 +712,20 @@ const voice: Api["voice"] = {
   setModelDir: () => webUnsupported("voice.setModelDir"),
 };
 
+/** Only a view-only subset of OnlyOffice is exposed to paired phones. The
+ *  server-side RPC forcibly overrides mode/deviceType; write/admin operations
+ *  remain unavailable in the web transport. */
+const onlyoffice: Api["onlyoffice"] = {
+  open: (input) => rpc<OnlyOfficeOpenResult>("onlyoffice:open", input),
+  forceSave: () => webUnsupported("onlyoffice.forceSave"),
+  sessionState: () => webUnsupported("onlyoffice.sessionState"),
+  close: (input) => rpc<{ ok: boolean }>("onlyoffice:close", input),
+  status: () => webUnsupported("onlyoffice.status"),
+  getConfig: () => webUnsupported("onlyoffice.getConfig"),
+  setConfig: () => webUnsupported("onlyoffice.setConfig"),
+  detectLocal: () => webUnsupported("onlyoffice.detectLocal"),
+};
+
 const theme: Api["theme"] = {
   get: () => themeGet(),
   set: (input) => themeSet(input),
@@ -826,6 +840,7 @@ export function createWebApi(): Api {
     claude,
     setting,
     voice,
+    onlyoffice,
     theme,
     shell,
     terminal,
