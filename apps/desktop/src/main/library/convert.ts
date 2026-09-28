@@ -65,8 +65,16 @@ export function conversionReport(selectedItems?: LibraryItem[]): LibraryConversi
           const ref = m[1].trim();
           if (/^(https?:|data:)/i.test(ref)) continue;
           imageRefs += 1;
-          // 图片路径可能带 %20 之类,解码后再查
-          const rel = decodeURIComponent(ref.split(/[?#]/)[0]);
+          // 图片路径可能带 %20 之类,解码后再查。
+          // 转义不合法(`100%.png`、单个 `%`)时按原文查 —— 查不到就只把**这一条**
+          // 记成不齐,别把整篇判成"没转完"(外面那个 catch 是这么写的)。
+          const raw = ref.split(/[?#]/)[0];
+          let rel = raw;
+          try {
+            rel = decodeURIComponent(raw);
+          } catch {
+            /* 按原文查 */
+          }
           if (!existsSync(join(dir, ...rel.split("/")))) assetsOk = false;
         }
       } catch {
