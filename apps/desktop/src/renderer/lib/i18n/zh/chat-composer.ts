@@ -42,6 +42,10 @@ export const zh = {
   "chat.stopGenerating": "停止生成",
   "chat.enqueue": "加入队列",
   "chat.send": "发送",
+  // 发送/入队这条路自己炸了(不是模型拒绝,是前一步就抛了:图片处理、IPC 断了…)。
+  // 不提示的话表现是"按了回车什么都没发生",用户只会以为软件卡了。
+  "chat.sendFailed": "没能发出去",
+  "chat.enqueueFailed": "没能加入队列",
 
   // ── voice input (麦克风按钮) ──
   "chat.voice.startListening": "开始语音输入",

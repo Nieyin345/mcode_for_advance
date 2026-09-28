@@ -209,13 +209,21 @@ export function createMainWindow(): BrowserWindow {
 
   // Open external links in the system browser, never inside the app.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    // 打不开(没有默认浏览器、协议未注册、URL 畸形)时至少留一行日志 —— 丢着不接
+    // 就是主进程里的一条 unhandledRejection,而用户看到的是"点了外链没反应"。
+    void shell.openExternal(url).catch((err: unknown) => {
+      log.warn(`open external failed: ${url} — ${err instanceof Error ? err.message : String(err)}`);
+    });
     return { action: "deny" };
   });
 
   // Load the renderer.
   if (is.dev && process.env["ELECTRON_RENDERER_URL"]) {
-    mainWindow.loadURL(process.env["ELECTRON_RENDERER_URL"]);
+    // 加载失败另有 did-fail-load 在报,但那条 promise 本身不能丢:它 reject 的时候
+    // (dev server 还没起来)是一条无人接管的 rejection。
+    void mainWindow.loadURL(process.env["ELECTRON_RENDERER_URL"]).catch((err: unknown) => {
+      log.error(`loadURL failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
     // DevTools is intentionally NOT auto-opened. The detached DevTools
     // front-end emits harmless-but-noisy Chromium console errors on every
     // startup (e.g. "Autofill.enable wasn't found", "Unknown VE context:
@@ -227,7 +235,9 @@ export function createMainWindow(): BrowserWindow {
     // blank screen is debuggable without DevTools. Press Ctrl+Shift+I
     // (Cmd+Option+I on macOS) to open DevTools manually when needed.
   } else {
-    mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
+    void mainWindow.loadFile(join(__dirname, "../renderer/index.html")).catch((err: unknown) => {
+      log.error(`loadFile failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
   }
 
   // Safety net: if ready-to-show never fires within 3s (e.g. the renderer's

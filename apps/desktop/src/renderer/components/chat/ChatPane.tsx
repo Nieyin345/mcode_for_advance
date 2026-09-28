@@ -2199,16 +2199,49 @@ function ChatPaneForSession({
    *  **Ctrl/Cmd+Enter** while busy is the other thing: 插话 —— 那句话被直接塞进正在跑
    *  的那一轮,不排队也不打断它。Shift+Enter inserts a newline and never reaches here
    *  (handled by Tiptap). */
+  /**
+   * `handleSend` / `handleEnqueue` 里 **await 的每一步都可能抛**(图片预处理、
+   * `sendPrompt` 背后那一串 IPC)。这两个包装的存在只为一件事:**别让它静默地没反应**。
+   *
+   * 早先回车那条路是直接 `handleSend()`,返回的 promise 没人接;按钮那条路是
+   * `onClick={handleSend}`,React 同样把返回值丢掉。于是抛出来的错落进
+   * unhandledrejection,界面上**什么都不发生** —— 用户按了回车、输入框还在,
+   * 只会以为是卡了,然后再按几次。出错时至少要说一句。
+   */
+  const sendGuarded = async (): Promise<void> => {
+    try {
+      await handleSend();
+    } catch (err) {
+      useToastStore.getState().push({
+        kind: "error",
+        title: t("chat.sendFailed"),
+        body: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const enqueueGuarded = async (): Promise<void> => {
+    try {
+      await handleEnqueue();
+    } catch (err) {
+      useToastStore.getState().push({
+        kind: "error",
+        title: t("chat.enqueueFailed"),
+        body: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
   const handleEnter = (mods: { ctrl: boolean }) => {
     if (!sessionBusy) {
-      handleSend();
+      void sendGuarded();
       return;
     }
     if (mods.ctrl) {
       void handleInject();
       return;
     }
-    handleEnqueue();
+    void enqueueGuarded();
   };
 
   /**
@@ -3510,7 +3543,7 @@ function ChatPaneForSession({
                   </button>
                 ) : (
                   <button
-                    onClick={sessionBusy ? handleEnqueue : handleSend}
+                    onClick={sessionBusy ? () => void enqueueGuarded() : () => void sendGuarded()}
                     disabled={!hasComposerContent}
                     title={sessionBusy ? t("chat.enqueue") : t("chat.send")}
                     aria-label={sessionBusy ? t("chat.enqueue") : t("chat.send")}

@@ -416,9 +416,17 @@ function MarkdownLocalImage({
   useEffect(() => {
     let cancelled = false;
     setDataUrl(null);
-    loadMarkdownImageDataUrl(filePath).then((url) => {
-      if (!cancelled) setDataUrl(url);
-    });
+    // ⚠️ **失败也必须落地成 ""。** `null` 是"还在读",界面画的是转圈 —— 早先这里没有
+    // 拒绝分支,读失败(文件被删、越权、IPC 断)时状态永远停在 null:**图片位置一直转圈**,
+    // 而错误只落进 unhandledrejection,谁也看不见。"" 是本组件既有的"读失败"约定。
+    loadMarkdownImageDataUrl(filePath).then(
+      (url) => {
+        if (!cancelled) setDataUrl(url);
+      },
+      () => {
+        if (!cancelled) setDataUrl("");
+      },
+    );
     return () => {
       cancelled = true;
     };
@@ -526,7 +534,12 @@ function buildComponents(): Components {
     const [ready, setReady] = useState(!!highlighterInstance);
     useMemo(() => {
       if (!highlighterInstance) {
-        ensureHighlighter().then(() => setReady(true));
+        // 加载失败(取不到语法包、离线)也要收尾:`html` 那一段本来就有"高亮器不在 →
+        // 退化成纯文本"的兜底,这里只是别把错误丢进 unhandledrejection。
+        ensureHighlighter().then(
+          () => setReady(true),
+          () => setReady(true),
+        );
       }
     }, []);
 

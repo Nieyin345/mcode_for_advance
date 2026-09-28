@@ -33,6 +33,8 @@ export const en = {
   "chat.stopGenerating": "Stop generating",
   "chat.enqueue": "Enqueue",
   "chat.send": "Send",
+  "chat.sendFailed": "Could not send",
+  "chat.enqueueFailed": "Could not enqueue",
 
   // ── voice input (mic button) ──
   "chat.voice.startListening": "Start voice input",
