@@ -1424,3 +1424,123 @@ def main():
 if __name__ == "__main__":
     main()
 `;
+
+/**
+ * 「文献导入(PDF / DOI)」里**收文件**那一步的脚本(见 `orchestration/builtins.ts` 的
+ * `AUTO_DOWNLOAD_*`)。同 `MINERU_PY`:正文**直接当 code 参数**,不落文件再调。
+ *
+ * 它只做判断,不写库 —— 报一句 `outputs.importFiles`,由主进程调 `importAnyFiles`
+ * 真去收(界面上那两颗「导入文件」按钮同一个函数)。为什么写库必须在主进程:文档库
+ * 的底是 sql.js,子进程在旁边写 `mcode.db` 会把整个库覆盖掉,见
+ * `orchestration/adoptFromCode.ts` 的文件头。
+ *
+ * ⚠️ 与 `MINERU_PY` 同一条纪律:这是 **TS 模板字符串**,正文里不能出现反引号和
+ * 美元花括号,换行写 chr(10) 不写字面转义。
+ */
+export const LIT_IMPORT_PY = `
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""把「文献导入」表单里选中的文件收进文档库。
+
+## 这一步在整条链的什么位置
+
+    自定义 UI「文献导入(PDF / DOI)」
+        → 弹表单:files(选文件) + doi(填编号)
+        → 这个 code 节点:把 files 收进库        ← 你在这儿
+        → 库发 library.item.imported 事件
+        → 「文件到位后在线转 Markdown」自动化接手:MinerU 转录 + 挂回条目
+        → (DOI 那半交给下一步的子代理:调外部下载工具取原文)
+
+## 为什么收文件不能在这儿自己干
+
+写库只能在主进程做:文档库的底是 sql.js，整个库在主进程内存里、落盘是把
+「mcode.db」整个文件重写一遍 —— 子进程在旁边写同一个文件会把库覆盖掉。
+
+所以这里只**报一句**「收这些文件进库」，由宿主调 「importAnyFiles」（界面上那两颗
+「导入文件 / 导入文件夹」按钮同一个函数）真去收。判断在脚本里，写库在主进程。
+
+## 输入
+
+stdin 一行 JSON，是这次运行的数据上下文。要的两样在触发器事实里:
+
+    trigger.input.files  —— 表单里选的文件路径(数组，或逗号分隔的一串)
+    trigger.collectionId —— 右键点的那个分类(有就把条目归进去)
+
+没选文件是**正常情况**(用户只填了 DOI) —— 那就什么都不做，说一句，正常退出。
+"""
+
+import json
+import sys
+
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+PROTOCOL = "@@mcode:result "
+
+
+def emit(summary, outputs=None):
+    payload = {"summary": summary}
+    if outputs:
+        payload["outputs"] = outputs
+    sys.stdout.write(PROTOCOL + json.dumps(payload, ensure_ascii=False) + chr(10))
+    sys.stdout.flush()
+
+
+def as_list(value):
+    """表单的值可能是数组，也可能是一串(逗号/换行/分号分隔)。两种都收。"""
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str):
+        out = []
+        for chunk in value.replace(";", ",").replace(chr(10), ",").split(","):
+            chunk = chunk.strip().strip('"')
+            if chunk:
+                out.append(chunk)
+        return out
+    return []
+
+
+def main():
+    raw = sys.stdin.readline()
+    try:
+        payload = json.loads(raw) if raw.strip() else {}
+    except Exception:
+        emit("交给这一步的载荷不是合法 JSON，没法知道要收哪些文件。")
+        sys.exit(1)
+        return
+
+    # 触发器事实可能就在顶层，也可能裹在 trigger / data 里(见 MINERU_PY 同样的找法)。
+    scope = payload if isinstance(payload, dict) else {}
+    for key in ("trigger", "data"):
+        inner = scope.get(key) if isinstance(scope, dict) else None
+        if isinstance(inner, dict) and ("input" in inner or "collectionId" in inner):
+            scope = inner
+            break
+
+    form = scope.get("input") if isinstance(scope.get("input"), dict) else {}
+    files = as_list(form.get("files"))
+    collection_id = scope.get("collectionId") or ""
+
+    if not files:
+        # 只填了 DOI 的那条路 —— 这一步没活干，是正常的。
+        emit("这次没有选文件（只填了 DOI 的话，取原文交给下一步）。", outputs={"importFiles": None})
+        return
+
+    emit(
+        f"要收 {len(files)} 个文件进库：" + "、".join(files),
+        outputs={
+            # ↓ 宿主认的就是这一项(见 orchestration/adoptFromCode.ts)。
+            "importFiles": {
+                "paths": files,
+                "collectionIds": [collection_id] if collection_id else [],
+            }
+        },
+    )
+
+
+if __name__ == "__main__":
+    main()
+`;

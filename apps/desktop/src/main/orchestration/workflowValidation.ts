@@ -551,6 +551,15 @@ export function validateWorkflowDoc(
         // 它**不属于任何节点**,所以既不该报「不是上游」也不该报「没有这个产出」——
         // 那些话会把用户支去改图,而图没问题,该改的是那个键。
         if (name === TRIGGER_REF_NAMESPACE) {
+          // **运行前输入**(`{{trigger.input.<键>}}`)是另一回事:那些键**不在图上**
+          // —— 它们声明在自定义 UI 的那一项里(见 `@contracts/customUi` 的 inputs),
+          // 同一条自动化可以被好几个菜单项用不同的输入叫起来。所以这一层查不了,
+          // 也不该查:放行,由运行时去解(`automationPayload` 把它们拍平成
+          // `input.<键>`;取不到时 `expandTriggerVars` 会当场说清楚)。
+          //
+          // ⚠️ 不放行的后果是**存不下去**:这个名字空间运行时明明支持,校验却把它
+          // 判成"触发载荷里没有这一项" —— 用户照着表单插进去的变量,存盘被拒。
+          if (field.startsWith("input.") && field.length > "input.".length) continue;
           if (!triggerFacts.has(field)) {
             const have = [...triggerFacts];
             fail({

@@ -56,6 +56,7 @@ import {
   NODE_CODE_LANGUAGE_KEY,
   NODE_CODE_PARAM_KEY,
   NODE_CODE_TIMEOUT_KEY,
+  NODE_CONDITION_EXPRESSION_KEY,
   NODE_CRITERIA_PARAM_KEY,
   NODE_FLOW_RECORD_PARAM_KEY,
   NODE_INJECT_MODE_KEY,
@@ -67,7 +68,8 @@ import {
   NODE_TRIGGER_TASK_PARAM_KEY,
 } from "@contracts/nodeType";
 import { COMPOSER_MODE_PROMPTS } from "@main/lib/systemPrompt.js";
-import { MINERU_PY } from "@main/workflows/assets.js";
+import { CONDITION_NODE_TYPE_ID } from "@contracts/nodeType";
+import { LIT_IMPORT_PY, MINERU_PY } from "@main/workflows/assets.js";
 
 /** 内置工作流的 id。**直接引用 contracts 那一份,不在这里复制一份。**
  *
@@ -501,13 +503,17 @@ const WATCH_EDGES: readonly WorkflowEdge[] = [
 export const AUTO_DOWNLOAD_WORKFLOW_ID = "wf_auto_download";
 export const AUTO_DOWNLOAD_TRIGGER_NODE_ID = "auto-download-trigger";
 export const AUTO_DOWNLOAD_AGENT_NODE_ID = "auto-download-agent";
+/** 收下表单里选中的文件那一步(code)。2026-09-28 加。 */
+export const AUTO_DOWNLOAD_COLLECT_NODE_ID = "auto-download-collect";
+/** 「填了 DOI 吗」那道判断(condition)。 */
+export const AUTO_DOWNLOAD_GATE_NODE_ID = "auto-download-doi-gate";
 
 /**
  * 触发器上「这次要做什么」的兜底。被触发时这句话就是**这次运行的请求**(根节点
  * 读到的那一句)。
  */
 export const AUTO_DOWNLOAD_DEFAULT_TASK =
-  "资料库刚有新条目导入。只处理尚无本地文件的条目:用你手上的外部下载工具把原文拿到本地,再用 library_attach_pdf 交回库;已有 filePath 或 pdfPath 的一律跳过。";
+  "从「文献导入」表单来:选中的文件由第一步收进库,填的 DOI 由模型那一步用外部下载工具取回原文。转录由「文件在线转 MD」那条接手。";
 
 const AUTO_DOWNLOAD_NODES: readonly NodeSpec[] = [
   {
@@ -532,35 +538,77 @@ const AUTO_DOWNLOAD_NODES: readonly NodeSpec[] = [
   {
     id: AUTO_DOWNLOAD_AGENT_NODE_ID,
     type: "mcode.agent",
-    title: "取回原文",
+    title: "按 DOI 取原文",
     // **写能力**:把 PDF 挂回库是写操作(`library_attach_pdf` 不在只读集合里)。默认的
     // `read` 会把这一步按在计划模式里,连一次都挂不上。
     capability: "write",
     params: {
       instruction: [
-        "资料库里刚有新条目导入了。**是哪几条见下面那段载荷里的「条目:」那几行**(id 和标题",
-        "都在那儿;批量导入时那儿会有好几条,写着「一共有 N 条,这次都要办」)。",
-        "你的任务:检查载荷列出的每一条。只有**没有 filePath 和 pdfPath** 的条目才需要取原文;本地导入的文档文件一律跳过。",
+        "用户在「文献导入」表单里填的 DOI 是:{{trigger.input.doi}}",
         "",
-        "⚠️ 这个软件自己**不会下载**任何东西。取原文靠的是用户接入的外部 MCP 工具(检索 / 下载文献的那些,名字各家不同,看你的工具表)。**一个都没有时,什么都不做,如实说一句「没有可用的下载工具」**,不要用浏览器硬凑。",
+        "可能是多个,用逗号分隔。**上游那道判断已经确认它像个 DOI 才会走到你这儿**,所以不必再怀疑它是不是空的。",
         "",
-        "做法:",
+        "对每一个 DOI:",
         "",
-        "- **就照着载荷里那些 id 一条条办**,不要自己去查「最新导入的」—— 批量导入时好几条会",
-        "  连着进来,猜错了下的是别的一篇,而且不报错;",
-        "- 用外部工具按标题 / 来源地址 / 笔记里的 DOI 找到并下载 PDF 到本地,再调 `library_attach_pdf` 挂到**那个 id** 上;",
-        "- 找不到可下载版本的条目**如实说明,不要编造 DOI 或链接**;",
-        "- 已经有 filePath 或 pdfPath 的条目跳过;它可能是用户刚导入的 Word、图片或 PDF。",
+        "- 用你手上的**外部 MCP 下载工具**(检索 / 下载文献的那些,名字各家不同,看你的工具表)找到并下载 PDF 到本地;",
+        "- 下到了就调 `library_attach_pdf` 挂到对应条目上;库里还没有这一条时,先用 `library_import_files` 把 PDF 收进库,**不要另建空条目**;",
+        "- 找不到可下载版本的**如实说明**,不要编造 DOI、链接或文件路径。",
         "",
-        "**做完的样子**:载荷里列的每一条都交代过了(挂上的、跳过的、拿不到的),并向用户" +
-          "汇报 —— 挂了几条、各自什么标题;拿不到的说明原因。转录由「下载完转 Markdown」那条自动化接手。",
+        "⚠️ 这个软件自己**不会下载**任何东西(内置下载队列已随学术功能退役)。一个下载工具都没有时,如实说一句「没有可用的下载工具」,**不要用浏览器硬凑**。",
+        "",
+        "挂上 PDF 会触发「文件在线转 MD」那条自动化,**转录和挂回都不用你管**。",
+        "",
+        "**做完的样子**:每个 DOI 都交代过了(挂上的、拿不到的),各自什么标题、什么原因。",
       ].join("\n"),
+    },
+  },
+  {
+    id: AUTO_DOWNLOAD_COLLECT_NODE_ID,
+    type: "mcode.code",
+    title: "收下选中的文件",
+    params: {
+      [NODE_CODE_LANGUAGE_KEY]: "python",
+      // 正文见 `workflows/assets.ts` 的 `LIT_IMPORT_PY`(同一份,不另抄)。
+      [NODE_CODE_PARAM_KEY]: LIT_IMPORT_PY,
+      // 它只报一句给宿主,真正的拷贝入库在主进程里做 —— 五分钟绰绰有余。
+      [NODE_CODE_TIMEOUT_KEY]: 5 * 60 * 1000,
+    },
+  },
+  {
+    id: AUTO_DOWNLOAD_GATE_NODE_ID,
+    type: CONDITION_NODE_TYPE_ID,
+    title: "填了 DOI 吗",
+    params: {
+      // ⚠️ **判据是 contains \"10.\",不是 exists。** `exists` 问的是"有没有这个字段",
+      // 而**空串也算存在**(见 `@contracts/condition`)—— 表单交上来一个空的 doi 字段,
+      // 模型就得白跑一轮说"这次没填",那这道判断等于没立。所有 DOI 都以 10. 开头
+      // (`10.1038/...`),这一条同时挡住"没填"和"填了空白",粘整串 doi.org 链接也命中。
+      //
+      // 事件触发(载荷里压根没有 input 这一项)时读到的是**缺失** —— `readConditionRef`
+      // 对触发器名字空间的缺失键给 found=false,走 false,不会炸。
+      [NODE_CONDITION_EXPRESSION_KEY]: {
+        logic: "and",
+        rules: [{ ref: "{{trigger.input.doi}}", op: "contains", value: "10." }],
+      },
     },
   },
 ];
 
 const AUTO_DOWNLOAD_EDGES: readonly WorkflowEdge[] = [
-  wire(AUTO_DOWNLOAD_TRIGGER_NODE_ID, AUTO_DOWNLOAD_AGENT_NODE_ID),
+  // 两路**并行**从触发器分出去:文件那一路不花钱、直接跑;DOI 那一路先过判断。
+  wire(AUTO_DOWNLOAD_TRIGGER_NODE_ID, AUTO_DOWNLOAD_COLLECT_NODE_ID),
+  wire(AUTO_DOWNLOAD_TRIGGER_NODE_ID, AUTO_DOWNLOAD_GATE_NODE_ID),
+  wire(AUTO_DOWNLOAD_GATE_NODE_ID, AUTO_DOWNLOAD_AGENT_NODE_ID, {
+    label: "true",
+    note: "表单里填了 DOI —— 用外部下载工具把原文取回来。",
+  }),
+  // false 接回「收文件」而不是另造一个空节点:条件节点**必须恰好两条出边**
+  // (`workflowValidation` 的 condition.edges),而这条边的语义正好是"没填 DOI,
+  // 这次就只收文件"。汇合点在没走的支路上照常跑,所以收文件那步无论如何都执行。
+  wire(AUTO_DOWNLOAD_GATE_NODE_ID, AUTO_DOWNLOAD_COLLECT_NODE_ID, {
+    label: "false",
+    note: "没填 DOI,这一路没活可干(收文件那步照常跑)。",
+  }),
 ];
 
 /* ── 下载完自动转 Markdown(内置自动化,事件触发)───────────────── */
@@ -762,9 +810,9 @@ export const BUILTIN_WORKFLOWS: readonly WorkflowDoc[] = [
   {
     // 同守望:**自动化**,不出现在模式下拉里(见 AUTO_DOWNLOAD_WORKFLOW_ID 上的说明)。
     id: AUTO_DOWNLOAD_WORKFLOW_ID,
-    name: "导入后取原文",
+    name: "文献导入(PDF / DOI)",
     // 会进流程记录的开头(同 search/write 的规矩),写的是这条流程是干什么的。
-    description: "资料库有新条目导入时,把这次导入的那几条里还没有文件的,用外部下载工具取回原文并挂上。",
+    description: "自定义 UI 的「文献导入」入口:表单里选中的 PDF 由 code 节点收进库,填的 DOI 交给模型用外部下载工具取原文。",
     icon: "download",
     nodes: graph(AUTO_DOWNLOAD_NODES, AUTO_DOWNLOAD_EDGES),
     edges: [...AUTO_DOWNLOAD_EDGES],
