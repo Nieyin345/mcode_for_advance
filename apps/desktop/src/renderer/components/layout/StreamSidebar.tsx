@@ -295,7 +295,9 @@ function StreamSidebarBase() {
       return t("layout.stream.scopeWorktree");
     }
     return projectById.get(scope)?.name ?? t("layout.stream.scopeAll");
-  }, [scope, worktreesByProject, worktreeNames, t]);
+    // projectById 必须在依赖里:项目列表晚于 scope 到位、或项目改名时,标签得跟着变
+    // (从前漏了它:列表晚到时标签会停在「全部项目」,改名后也不更新)。
+  }, [scope, worktreesByProject, worktreeNames, projectById, t]);
 
   const knownGroups = useMemo(() => {
     const set = new Set<string>();
