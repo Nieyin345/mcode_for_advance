@@ -60,7 +60,7 @@ export const en = {
   "memory.transferSafety": "Existing files are never overwritten and sources are never removed. Global records are visible to all projects.",
   "memory.transferDone": "Completed; original source retained.",
   "memory.scope": "Scope (required before creating)",
-  "memory.allScopes": "All memories (choose a scope to create)",
+  "memory.allScopes": "---",
 
   // The six category names (rules/project/preferences/experiences/failures/decisions)
   // are data and shown verbatim — these keys only cover the UI actions.
@@ -112,4 +112,19 @@ export const en = {
   "memory.reviewConfirmDesc": "The following files will be permanently removed. Inspect differences first; save a manual merge before deleting if needed:",
   "memory.reviewDeleted": "Deleted {count} files. Scan again to see remaining suggestions.",
   "memory.reviewDeleteFailed": "Deleted {count} files; stopped before the rest: {error}. Scan again before continuing.",
+  "memory.scopeBanner": "The memory library stores long-term memory for the current project and explicit global memory. It differs from accumulated chat history and hard global instructions. Switching the scope dropdown only changes which files you view and edit; it does not change the actual memory scope of your current conversation.",
+  "memory.nodeParam.label": "Include project and global memory in this step",
+  "memory.nodeParam.help": "Retrieves current project and explicit global memory for this step's instruction and prompt, bounded by count and text budgets. Does not copy chat history. Turning off only disables automatic inclusion; it neither bans on-demand retrieval nor erases previously sent history.",
+  "memory.assistant.injections": "Automatic memory injection receipts",
+  "memory.assistant.injectionsEmpty": "No automatic memory injection receipts yet. Receipts are kept only during this application process lifetime and cleared on restart; they do not query the persistent memory library.",
+  "memory.assistant.injectionsPhase.preparing": "Preparing",
+  "memory.assistant.injectionsPhase.submitted": "Submitted to engine",
+  "memory.assistant.injectionsPhase.startFailed": "Failed to start",
+  "memory.assistant.injectionsState.off": "This step's switch is off; does not ban on-demand retrieval, the model can still use memory tools.",
+  "memory.assistant.injectionsState.empty": "No matching records (none injected)",
+  "memory.assistant.injectionsState.notAutomatic": "Non-automatic session",
+  "memory.assistant.injectionsState.unavailable": "Injection material unavailable",
+  "memory.assistant.injectionsTruncated": "(preview truncated)",
+  "memory.assistant.refresh": "Refresh",
+  "memory.assistant.retry": "Retry",
 } as const;

@@ -63,7 +63,7 @@ export const zh = {
   "memory.transferSafety": "不会覆盖现有文件、不会删除来源；若路径已存在将拒绝操作。全局记录对所有项目可见。",
   "memory.transferDone": "操作完成，原始来源保留。",
   "memory.scope": "范围（新建前必须选择）",
-  "memory.allScopes": "全部记忆（新建时请选择范围）",
+  "memory.allScopes": "---",
 
   // 六类目录（rules/project/preferences/experiences/failures/decisions）的名字是数据,
   // 原样显示 —— 这里只管界面动作的说法。
@@ -115,4 +115,19 @@ export const zh = {
   "memory.reviewConfirmDesc": "以下文件将从磁盘永久删除、不可恢复。请确认已查看差异，若要合并请先手动保存合并后的正文：",
   "memory.reviewDeleted": "已删除 {count} 条。请重新扫描以查看剩余建议。",
   "memory.reviewDeleteFailed": "已删除 {count} 条，其余未继续：{error}。请重新扫描后再操作。",
+  "memory.scopeBanner": "记忆库仅保存当前项目与明确指定的全局长期记忆；它不同于每轮累积的聊天历史，也不同于硬约束的全局指令。切换管理范围仅用于查看与编辑文件，不会改变当前对话的实际记忆归属。",
+  "memory.nodeParam.label": "本步骤自动附带项目＋全局记忆",
+  "memory.nodeParam.help": "每次执行按本步骤指令和当前请求检索当前项目＋显式全局记忆，受条数和正文预算限制；不复制主对话历史。关闭只停止自动附带，不禁止按需检索，也不擦除已发送的历史。",
+  "memory.assistant.injections": "自动记忆注入记录",
+  "memory.assistant.injectionsEmpty": "暂无自动注入记录。记录仅在当前应用进程运行期间保留，应用重启后清空；不查询长期记忆库。",
+  "memory.assistant.injectionsPhase.preparing": "正在准备",
+  "memory.assistant.injectionsPhase.submitted": "已提交到引擎",
+  "memory.assistant.injectionsPhase.startFailed": "未能启动",
+  "memory.assistant.injectionsState.off": "本步骤开关关闭；不禁止按需检索，模型仍可通过记忆工具主动查读。",
+  "memory.assistant.injectionsState.empty": "无匹配记录（未注入）",
+  "memory.assistant.injectionsState.notAutomatic": "非自动注入会话",
+  "memory.assistant.injectionsState.unavailable": "注入材料不可用",
+  "memory.assistant.injectionsTruncated": "（预览已截断）",
+  "memory.assistant.refresh": "刷新",
+  "memory.assistant.retry": "重试",
 } as const;

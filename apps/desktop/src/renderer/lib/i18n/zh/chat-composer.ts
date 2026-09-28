@@ -471,7 +471,7 @@ export const zh = {
   "chat.newSubChat.noProfiles": "还没有档案",
   "chat.newSubChat.noProfilesHint": "在「设置 → 代理档案」里建一份,或用工作流画布上的节点存一份",
   "chat.newSubChat.noMatch": "没有匹配的档案",
-  "chat.newSubChat.withMemory": "带记忆",
+  "chat.newSubChat.withMemory": "带记忆（创建快照）",
   "chat.newSubChat.memoryOn": "带上长期记忆",
   "chat.newSubChat.memoryHint": "建会话时取一份记忆快照,随第一轮带进去;之后改动不再刷新",
   // 那一行右边显示的快捷键 —— **必须**与选择器 keydown 里响应的键一致(不然是在骗人)。

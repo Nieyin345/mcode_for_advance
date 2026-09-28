@@ -1,3 +1,4 @@
+import { memoryInjectionsFor } from "./injection.js";
 import { randomUUID } from "node:crypto";
 import type { Session } from "@contracts/session";
 import type { MemoryAssistantInput, MemoryAssistantJob, MemoryAssistantResult } from "@contracts/memoryAssistant";
@@ -81,7 +82,7 @@ export async function memoryAssistant(input: MemoryAssistantInput): Promise<Memo
       if (job.status === "queued" && job.targetSessionId && (runtimeManager.isBusy(job.targetSessionId) || hasActiveRun(job.targetSessionId))) {
         throw new Error("目标对话已经开始接收，不能撤回已发送的上下文；请先停止目标回合");
       }
-      if (job.status === "consumed" || job.status === "expired") return { jobs: listAssistantJobs(source.id), incoming: pendingAssistantHandoff(source.id) ?? undefined };
+      if (job.status === "consumed" || job.status === "expired") return { jobs: listAssistantJobs(source.id), incoming: pendingAssistantHandoff(source.id) ?? undefined, injections: memoryInjectionsFor(source.id) };
       if (job.status === "running") { active.get(job.id)?.abort(); cancelWorkflowRun(job.workerSessionId); }
       job.status = "cancelled"; job.result = ""; saveAssistantJob(job);
     } else {
@@ -96,5 +97,5 @@ export async function memoryAssistant(input: MemoryAssistantInput): Promise<Memo
       queueAssistantHandoff(job.id, source.id, target.id);
     }
   }
-  return { jobs: listAssistantJobs(source.id), incoming: pendingAssistantHandoff(source.id) ?? undefined, target };
+  return { jobs: listAssistantJobs(source.id), incoming: pendingAssistantHandoff(source.id) ?? undefined, target, injections: memoryInjectionsFor(source.id) };
 }

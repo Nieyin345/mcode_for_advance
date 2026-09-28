@@ -1,3 +1,4 @@
+import type { MemoryInjectionSection } from "./memory.js";
 /**
  * Runtime events — the normalized stream of activity emitted by a provider
  * (claude.exe via stream-json). These are the lingua franca the renderer
@@ -33,6 +34,8 @@ export interface WorkflowDataContext {
 
 export interface NodeRunInput {
   prompt: string;
+  /** The exact host-built automatic memory section, for dispatch diagnostics only. */
+  memoryInjection?: MemoryInjectionSection;
   data: WorkflowDataContext;
   skills: string[];
   mcpServerNames: string[];

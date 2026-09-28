@@ -1,3 +1,4 @@
+import type { MemoryInjectionReceipt } from "./memory.js";
 import { z } from "zod";
 import type { Session } from "./session.js";
 export const MEMORY_ASSISTANT_CHANNEL = "memory:assistant";
@@ -20,4 +21,4 @@ export const MemoryAssistantSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("deliver"), sessionId, jobId: sessionId, targetSessionId: sessionId.optional() }),
 ]);
 export type MemoryAssistantInput = z.infer<typeof MemoryAssistantSchema>;
-export interface MemoryAssistantResult { jobs: MemoryAssistantJob[]; incoming?: MemoryAssistantJob; target?: Session }
+export interface MemoryAssistantResult { jobs: MemoryAssistantJob[]; incoming?: MemoryAssistantJob; target?: Session; injections?: MemoryInjectionReceipt[] }

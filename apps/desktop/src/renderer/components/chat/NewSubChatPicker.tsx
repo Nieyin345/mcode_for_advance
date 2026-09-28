@@ -305,7 +305,9 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
                 title={
                   isBlank
                     ? t("chat.newSubChat.blankHint")
-                    : (opt.profile?.description || opt.profile?.name)
+                    : opt.memory
+                      ? `${opt.profile?.description || opt.profile?.name} · ${t("chat.newSubChat.memoryHint")}`
+                      : (opt.profile?.description || opt.profile?.name)
                 }
               >
                 {/* 图标记：空白用「什么都没有」，档案用那颗星。 */}

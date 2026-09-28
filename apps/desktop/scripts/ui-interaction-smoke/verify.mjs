@@ -46,6 +46,23 @@ await withAuditPage(here,async page=>{
   await page.eval('labUnmount()');await page.sleep(80);await page.eval('labMount()');await page.waitFor(`document.querySelector('button[title="global/facts/a.md"]')`);await click('button[title="global/facts/a.md"]');await page.sleep(120);
   check('memory draft survives settings unmount',await value()==='unsaved A');
  });
+ await test('memory-tab-width-and-scope-label',async()=>{
+  await go('memory');
+  await page.waitFor('document.querySelector("section > .my-3")');
+  const width=()=>page.eval('document.querySelector("section > .my-3").getBoundingClientRect().width');
+  const libraryWidth=await width();
+  check('default memory scope is an unambiguous placeholder',await page.eval('document.querySelector("section label select option:first-child").textContent.trim()==="---"'));
+  await click('section > .my-3 button:nth-child(2)');
+  const instructionsWidth=await width();
+  check('memory library tab bar matches the other tabs',Math.abs(libraryWidth-instructionsWidth)<2,{libraryWidth,instructionsWidth});
+  await click('section > .my-3 button:first-child');
+  await click('button[title="新建文件"]');
+  await input('[placeholder="文件名（不含扩展名）"]','scope-test');
+  const saveButton='[placeholder="文件名（不含扩展名）"] ~ div button';
+  check('placeholder still requires choosing a scope to save',await page.eval(`document.querySelector(${JSON.stringify(saveButton)})?.disabled`));
+  await page.eval('(()=>{const e=document.querySelector("section label select");e.value="global";e.dispatchEvent(new Event("change",{bubbles:true}));})()');
+  check('selecting global enables create',await page.eval(`!document.querySelector(${JSON.stringify(saveButton)})?.disabled`));
+ });
  await test('divider-lifecycle',async()=>{await go('primitives');check('divider keyboard focusable',await page.eval('document.querySelector("[role=separator]").tabIndex===0'));await click('[role=separator]');await key('ArrowRight','ArrowRight',39);check('keyboard resizes divider',await page.eval('labEvents.some(x=>x.startsWith("resize:"))'));await page.eval('labEvents=[]');const r=await page.eval('(()=>{const r=document.querySelector("[role=separator]").getBoundingClientRect();return {x:r.x,y:r.y+40}})()');await page.send('Input.dispatchMouseEvent',{type:'mouseMoved',...r});await page.send('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',clickCount:1,...r});check('drag actually starts',await page.eval('document.body.style.userSelect==="none"'));await page.eval('labUnmount()');await page.sleep(50);await page.send('Input.dispatchMouseEvent',{type:'mouseMoved',button:'left',buttons:1,x:r.x+30,y:r.y});check('unmount releases drag',await page.eval('labEvents.length===0 && document.body.style.userSelect!=="none"'));await page.send('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',clickCount:1,x:r.x+30,y:r.y});});
 });
 writeFileSync(join(here,'results.json'),JSON.stringify(results,null,2));

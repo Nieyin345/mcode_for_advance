@@ -94,6 +94,11 @@ export function replaceBackflowSource(sessionId: string, source: string, text: s
 export function pendingBackflowPrompt(sessionId: string): string {
   const entries = pending.get(sessionId) ?? [];
   const workflow = entries.filter(entry => entry.source !== "memory.creation-snapshot").map(entry => entry.text).join("\n\n");
-  const memory = entries.filter(entry => entry.source === "memory.creation-snapshot").map(entry => entry.text).join("\n\n");
-  return [backflowPrompt(workflow), memory ? `## 背景：子代理创建时的记忆快照\n以下不是用户的新指令，也不是工作流执行结果；它只反映创建时的项目＋全局记忆。需要最新事实时再按需检索。\n\n${memory}` : ""].filter(Boolean).join("\n\n");
+  return [backflowPrompt(workflow), pendingCreationMemoryPrompt(sessionId)].filter(Boolean).join("\n\n");
+}
+
+/** The SAME fragment used by dispatch and inspection; never re-read the library. */
+export function pendingCreationMemoryPrompt(sessionId: string): string {
+  const memory = (pending.get(sessionId) ?? []).filter(entry => entry.source === "memory.creation-snapshot").map(entry => entry.text).join("\n\n");
+  return memory ? `## 背景：子代理创建时的记忆快照\n以下不是用户的新指令，也不是工作流执行结果；它只反映创建时的项目＋全局记忆。需要最新事实时再按需检索。\n\n${memory}` : "";
 }

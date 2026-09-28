@@ -267,6 +267,7 @@ function countOccurrencesUpTo(hay: string, needle: string, cap: number): number 
 export function scopedMemorySnapshot(projectId: string, query = ""): string {
   const all = listMemoryFiles().filter(meta => visibleMemory(meta.path, projectId));
   const relevant = searchMemory(query, { projectId, limit: 8 });
+  const terms = queryTerms(query);
   const ordered = [...all.filter(m => m.pinned).slice(0, 4), ...relevant.map(h => h.meta),
     ...all.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 2)];
   const seen = new Set<string>(), blocks: string[] = [];
@@ -276,7 +277,7 @@ export function scopedMemorySnapshot(projectId: string, query = ""): string {
     seen.add(meta.path);
     let record: ReturnType<typeof readMemoryFile>;
     try { record = readMemoryFile(meta.path); } catch { continue; }
-    const text = `- 【${meta.title}】 (${meta.path}; revision=${record.revision})\n${bodyPreview(record.content.trim())}`;
+    const text = `- 【${meta.title}】 (${meta.path}; revision=${record.revision})\n${bodyPreview(record.content.trim(), terms)}`;
     if (chars + text.length > SNAPSHOT_CAP - 300) continue;
     chars += text.length; blocks.push(text);
   }

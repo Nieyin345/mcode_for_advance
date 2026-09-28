@@ -455,7 +455,7 @@ export const en = {
   "chat.newSubChat.noProfiles": "No profiles yet",
   "chat.newSubChat.noProfilesHint": "Create one under Settings → Agent profiles, or save one from a node on the workflow canvas",
   "chat.newSubChat.noMatch": "No matching profile",
-  "chat.newSubChat.withMemory": "With memory",
+  "chat.newSubChat.withMemory": "With memory (creation snapshot)",
   "chat.newSubChat.memoryOn": "Include long-term memory",
   "chat.newSubChat.memoryHint": "A memory snapshot is taken when the conversation is created and carried into its first turn; later edits are not picked up",
   // Shown at the right of that row — MUST be the same key the picker's keydown answers.

@@ -26,10 +26,11 @@ import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
 import { mobileEventBus } from "@main/mobile/MobileEventBus.js";
 import { invalidateUsageStats } from "@main/lib/usageStats.js";
 import { log } from "@main/lib/logger.js";
-import { pendingBackflowPrompt, clearBackflow, peekBackflow } from "@main/lib/pendingBackflow.js";
+import { pendingBackflowPrompt, pendingCreationMemoryPrompt, clearBackflow, peekBackflow } from "@main/lib/pendingBackflow.js";
 import { clearAgentMail, peekAgentMailBatch, setDeliveryPort } from "@main/lib/agentMail.js";
 import { resolveAgentPrompt, resolveWorkflowPrompt } from "@main/orchestration/prompt.js";
-import { memorySectionFrom } from "@contracts/memory";
+import { memorySectionFrom, type MemoryInjectionSection, type MemoryInjectionTrace } from "@contracts/memory";
+import { traceMemoryTurn } from "@main/memory/injection.js";
 import { buildEnvPrompt, envPromptFingerprint } from "@main/providers/envPrompt.js";
 import { scopedMemorySnapshot } from "@main/memory/retrieval.js";
 // 只借类型 —— `import type` 整条会被编译掉,那条链(工具表 → repositories → db →
@@ -134,6 +135,7 @@ interface SessionRuntime {
   lastTurnInput?: {
     handoffDeliveryId?: string;
     memoryManagedByWorkflow?: boolean;
+    memoryTrace?: MemoryInjectionTrace;
     prompt: string;
     cwd: string;
     automationOrigin?: AutomationEventOrigin;
@@ -931,6 +933,7 @@ class RuntimeManager {
       /** Trusted scheduler owns injection, including OFF; prevents double injection in chat nodes. */
       handoffDeliveryId?: string;
       memoryManagedByWorkflow?: boolean;
+      memoryTrace?: MemoryInjectionTrace;
       /** Internal host provenance; deliberately absent from IPC/provider request contracts. */
       automationOrigin?: AutomationEventOrigin;
       cwd: string;
@@ -1239,13 +1242,24 @@ class RuntimeManager {
     // 普通主对话每轮都刷新长期记忆；side/node/automation 各有自己明确的记忆语义，
     // 这里绝不越权替它们自动打开（尤其 side 的「档案」/「档案+记忆」是两个用户选择）。
     let memoryPrompt: string | undefined;
+    const memorySections: MemoryInjectionSection[] = [];
     if (automaticMemoryForTurn(session.kind, input.memoryManagedByWorkflow)) {
       try {
         memoryPrompt = memorySectionFrom(scopedMemorySnapshot(session.projectId, input.prompt)) || undefined;
+        memorySections.push({ source: "chat", state: memoryPrompt ? "included" : "empty", text: memoryPrompt ?? "" });
       } catch (err) {
         log.warn(`[memory] 主对话取长期记忆失败，本轮不注入: ${(err as Error).message}`);
+        memorySections.push({ source: "chat", state: "error", text: "", error: (err instanceof Error ? err.message : String(err)).slice(0, 500) });
       }
+    } else if (input.memoryManagedByWorkflow) {
+      memorySections.push(input.memoryTrace?.workflow ?? { source: "workflow", state: "unavailable", text: "" });
+    } else {
+      memorySections.push({ source: "none", state: "not-automatic", text: "" });
     }
+    // Fallback retries already contain backflow in input.prompt; retain only its
+    // diagnostic identity, without delivering a second creation snapshot.
+    const creationMemory = input.memoryTrace?.creation ?? pendingCreationMemoryPrompt(session.id);
+    if (creationMemory) memorySections.push({ source: "creation", state: "included", text: creationMemory });
 
     // **环境背景** —— 用户有哪些项目、文档库在哪、库里有什么。让 agent 不必靠 `ls` 猜。
     //
@@ -1337,14 +1351,14 @@ class RuntimeManager {
       fallbackModels: rt.fallbackModels.length > 0 ? rt.fallbackModels : undefined,
     };
 
-    const handle = await provider.startTurn(req, {
+    const handle = await traceMemoryTurn(session, rt.turnCount, memorySections, req, () => provider.startTurn(req, {
       ...rt.ctx, emit,
       // These host callbacks emit too; use this turn's immutable provenance,
       // not the session-level handlers captured by bindSession.
       requestApproval: approvalBridge.makeApprovalHandler(session.id, emit),
       requestUserInput: approvalBridge.makeUserInputHandler(session.id, emit),
       requestPlanApproval: approvalBridge.makePlanApprovalHandler(session.id, emit),
-    });
+    }), input.memoryTrace);
     // 回合起来了,那两段才算真的送到了 —— 见上面 `peekBackflow` 那段注释。
     if (handle !== null && backflowAll.length > 0) {
       clearBackflow(session.id);
@@ -1358,6 +1372,7 @@ class RuntimeManager {
       rt.lastTurnInput = {
         handoffDeliveryId: handoff?.id,
         memoryManagedByWorkflow: input.memoryManagedByWorkflow,
+        memoryTrace: { ...input.memoryTrace, creation: creationMemory },
         prompt: req.prompt,
         cwd: req.cwd,
         skills: req.skills,

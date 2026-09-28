@@ -333,6 +333,9 @@ export function MemoryExplorerPanel() {
         </Button>
       } />
       {navigation}
+      <div className="mb-3 rounded border border-edge bg-surface-subtle/50 p-2.5 text-xs leading-relaxed text-content-muted">
+        {t("memory.scopeBanner")}
+      </div>
       <label className="mb-3 flex items-center gap-2 text-sm text-content-muted">{t("memory.scope")}
         <select value={scope} onChange={e => setScope(e.target.value)} className="rounded border border-edge bg-surface px-2 py-1.5 text-content">
           <option value="">{t("memory.allScopes")}</option>

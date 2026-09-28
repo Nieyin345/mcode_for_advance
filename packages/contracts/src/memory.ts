@@ -204,3 +204,40 @@ export interface MemoryWriteOrigin {
   parentSessionId?: string;
   nodeId?: string;
 }
+
+/** One switch interpretation shared by node execution and its renderer control. */
+export function isMemoryInjectionEnabled(value: unknown): boolean {
+  return value === true || value === "on" || value === "true";
+}
+
+/** Host-generated diagnostics, not another memory store or an authorization input.
+ * Text is captured before provider dispatch; opening a preview never re-retrieves it. */
+export interface MemoryInjectionSection {
+  source: "chat" | "workflow" | "creation" | "none";
+  state: "included" | "off" | "empty" | "error" | "not-automatic" | "unavailable";
+  text: string;
+  error?: string;
+  previewTruncated?: boolean;
+}
+export interface MemoryInjectionTrace {
+  workflow?: MemoryInjectionSection;
+  /** Already included in the final user prompt; retained only for fallback diagnostics. */
+  creation?: string;
+  nodeId?: string;
+  nodeTitle?: string;
+  runId?: string;
+}
+export interface MemoryInjectionReceipt {
+  id: string;
+  sessionId: string;
+  projectId: string;
+  kind: MemoryWriteOrigin["kind"];
+  title: string;
+  turnNumber: number;
+  at: number;
+  phase: "preparing" | "submitted" | "start-failed";
+  nodeId?: string;
+  nodeTitle?: string;
+  runId?: string;
+  sections: MemoryInjectionSection[];
+}

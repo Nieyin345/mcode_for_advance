@@ -6,10 +6,12 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useSuppressBrowserView } from "@renderer/hooks/useSuppressBrowserView.js";
 import { Button, Dialog, ErrorNote } from "@renderer/components/ui/index.js";
 import { IconClipboardText } from "@renderer/lib/icons.js";
+import { MemoryInjectionPreview } from "../memory/MemoryInjectionPreview.js";
+
 export function MemoryAssistantButton({ sessionId }: { sessionId: string }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
-  const [data, setData] = useState<MemoryAssistantResult>({ jobs: [] });
+  const [data, setData] = useState<MemoryAssistantResult>({ jobs: [], injections: [] });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [targetId, setTargetId] = useState("");
@@ -21,20 +23,54 @@ export function MemoryAssistantButton({ sessionId }: { sessionId: string }) {
   const targets = sessions.filter(s => s.projectId === source?.projectId && s.id !== sessionId && s.kind === "chat" && !s.archived);
   const running = data.jobs.some(j => j.status === "running");
   useSuppressBrowserView(open);
-  useEffect(() => { generation.current++; lock.current = false; setBusy(false); setData({ jobs: [] }); setTargetId(""); setError(""); setOpen(false); }, [sessionId]);
+
+  const read = async () => {
+    if (lock.current) return;
+    const own = generation.current;
+    try {
+      const next = await api.memory.assistant({ op: "list", sessionId });
+      if (!lock.current && own === generation.current) {
+        setData(next);
+        setError("");
+      }
+    } catch (e) {
+      if (own === generation.current) setError(String(e));
+    }
+  };
+
+  useEffect(() => {
+    generation.current++;
+    lock.current = false;
+    setBusy(false);
+    setData({ jobs: [], injections: [] });
+    setTargetId("");
+    setError("");
+    setOpen(false);
+  }, [sessionId]);
+
   useEffect(() => {
     let alive = true, fetching = false;
-    const read = async () => {
+    const poll = async () => {
       if (fetching || lock.current) return;
-      fetching = true; const own = generation.current;
-      try { const next = await api.memory.assistant({ op: "list", sessionId }); if (alive && !lock.current && own === generation.current) setData(next); }
-      catch (e) { if (alive) setError(String(e)); }
-      finally { fetching = false; }
+      fetching = true;
+      const own = generation.current;
+      try {
+        const next = await api.memory.assistant({ op: "list", sessionId });
+        if (alive && !lock.current && own === generation.current) {
+          setData(next);
+          setError("");
+        }
+      } catch (e) {
+        if (alive && own === generation.current) setError(String(e));
+      } finally {
+        fetching = false;
+      }
     };
-    void read();
-    const timer = open || running || data.incoming ? setInterval(() => void read(), 2000) : undefined;
+    void poll();
+    const timer = open || running || data.incoming ? setInterval(() => void poll(), 2000) : undefined;
     return () => { alive = false; if (timer) clearInterval(timer); };
   }, [sessionId, open, running, data.incoming?.id]);
+
   const perform = async (input: MemoryAssistantInput) => {
     if (lock.current) return;
     lock.current = true; setBusy(true); setError(""); const own = ++generation.current;
@@ -52,8 +88,10 @@ export function MemoryAssistantButton({ sessionId }: { sessionId: string }) {
     } catch (e) { if (own === generation.current) setError(String(e)); }
     finally { if (own === generation.current) { lock.current = false; setBusy(false); } }
   };
+
   const label = (kind: MemoryAssistantKind) => t(kind === "capture" ? "memory.assistant.capture" : kind === "checkpoint" ? "memory.assistant.checkpoint" : "memory.assistant.health");
   const status = (job: MemoryAssistantJob) => t(`memory.assistant.status.${job.status}`);
+
   return <>
     <Button size="sm" variant="ghost" className="gap-1 shrink-0" onClick={() => setOpen(true)} title={t("memory.assistant.scope")}>
       <IconClipboardText size={14}/>{t(running ? "memory.assistant.running" : data.incoming ? "memory.assistant.incoming" : "memory.assistant.title")}
@@ -61,8 +99,16 @@ export function MemoryAssistantButton({ sessionId }: { sessionId: string }) {
     <Dialog.Root open={open} onOpenChange={setOpen}>
       <Dialog.Portal><Dialog.Backdrop/><Dialog.Popup className="w-[min(720px,94vw)] max-h-[80vh] overflow-y-auto p-5">
         <Dialog.Title>{t("memory.assistant.title")}</Dialog.Title><Dialog.Close/>
-        <Dialog.Description className="mt-2 text-sm text-content-muted">{t("memory.assistant.scope")}</Dialog.Description>
-        {error && <ErrorNote className="mt-3">{error}</ErrorNote>}
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <Dialog.Description className="text-sm text-content-muted">{t("memory.assistant.scope")}</Dialog.Description>
+          <Button size="sm" variant="ghost" onClick={() => void read()} disabled={busy}>{t("memory.assistant.refresh")}</Button>
+        </div>
+        {error && (
+          <div className="mt-3 flex items-center justify-between gap-2 rounded border border-danger/40 bg-danger/5 px-3 py-2 text-xs text-danger">
+            <span>{error}</span>
+            <Button size="sm" variant="secondary" onClick={() => void read()}>{t("memory.assistant.retry")}</Button>
+          </div>
+        )}
         {data.incoming && <section className="mt-3 rounded border border-edge p-3">
           <h3 className="font-medium">{t("memory.assistant.incoming")}</h3>
           <p className="text-sm text-content-muted">{t("memory.assistant.receiveHint")}</p>
@@ -97,6 +143,7 @@ export function MemoryAssistantButton({ sessionId }: { sessionId: string }) {
           {(job.status === "ready" || job.status === "queued") && <Button size="sm" className="mt-2" variant="ghost" disabled={busy} onClick={() => void perform({ op: "discard", sessionId, jobId: job.id })}>{t("memory.assistant.discard")}</Button>}
           </section>)}
         </details>
+        <MemoryInjectionPreview receipts={data.injections} />
       </Dialog.Popup></Dialog.Portal>
     </Dialog.Root>
   </>;
