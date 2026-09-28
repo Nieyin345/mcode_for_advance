@@ -102,6 +102,12 @@ export function PdfPreview({
    * 所以只认 `create` / `update` / `delete` 三种 —— 见下面那个订阅。
    */
   const dirtyRef = useRef(false);
+  /**
+   * `t` 走 ref，**不进**下面加载 effect 的依赖：那个 effect 一跑就 `setDocBytes(null)`，
+   * 阅读器整个卸掉重载 —— 切一次界面语言，没保存的批注就没了。
+   */
+  const tRef = useRef(t);
+  tRef.current = t;
 
   useEffect(() => {
     let cancelled = false;
@@ -120,7 +126,7 @@ export function PdfPreview({
           : await api.library.readPdf({ id: item.id });
         if (cancelled) return;
         if (!res.ok || !res.bytes || res.bytes.byteLength === 0) {
-          setError(res.error ?? t("library.pdfViewer.failed"));
+          setError(res.error ?? tRef.current("library.pdfViewer.failed"));
           setLoading(false);
           return;
         }
@@ -138,7 +144,7 @@ export function PdfPreview({
     return () => {
       cancelled = true;
     };
-  }, [item.id, bytes, nonce, t]);
+  }, [item.id, bytes, nonce]);
 
   const open = useCallback(() => {
     if (onOpenExternal) onOpenExternal();

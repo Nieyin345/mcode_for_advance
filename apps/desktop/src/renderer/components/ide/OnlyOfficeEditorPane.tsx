@@ -92,6 +92,13 @@ export function OnlyOfficeEditorPane({
   const [saveHint, setSaveHint] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveErr, setSaveErr] = useState<string | null>(null);
   const lastSavedRef = useRef<number | null>(null);
+  /**
+   * `t` 走 ref：起编辑器那个 effect 的清理会 `destroyEditor()` + `onlyoffice.close`。
+   * 若把 `t` 放进依赖，切一次界面语言就会销毁编辑器（未落盘的改动跟着没了），再用
+   * **同一份已关闭的会话** config 起一个新的 —— 令牌已失效，之后的保存全部失败。
+   */
+  const tRef = useRef(t);
+  tRef.current = t;
 
   // 读：开会话（硬规矩 7 —— 读走 useRpc）。失败在面板里画，不弹 toast。
   const { data: opened, loading, error: openError, refetch } = useRpc(
@@ -115,7 +122,7 @@ export function OnlyOfficeEditorPane({
     const documentLoadTimer = window.setTimeout(() => {
       if (disposed || documentSettled) return;
       documentSettled = true;
-      setBootError(t("ide.office.documentLoadTimeout"));
+      setBootError(tRef.current("ide.office.documentLoadTimeout"));
     }, 20_000);
     const scriptUrl = opened.apiScriptUrl;
     const config = opened.config;
@@ -167,7 +174,7 @@ export function OnlyOfficeEditorPane({
       editorRef.current = null;
       if (opened.sessionKey) void api.onlyoffice.close({ sessionKey: opened.sessionKey });
     };
-  }, [opened, hostId, t, readOnly]);
+  }, [opened, hostId, readOnly]);
 
   /* ── 轮询保存状态：真正的写盘在主进程（DS 回调），这里只能问 ── */
   useEffect(() => {
