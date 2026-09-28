@@ -1229,6 +1229,7 @@ function renderInspector(
         onSaveProfile: async () => true,
         onRemoveProfile: async () => {},
         onRemoveWorkflow: () => {},
+        onPinDefault: () => {},
         onImported: () => {},
       }),
     ),
@@ -1244,6 +1245,7 @@ check("只读框显示界面上真正的名字", builtinPanel.includes(`value="�
 check("只读框显示词条里的说明", builtinPanel.includes(`value="把一篇讲透`));
 check("给出只读的解释", builtinPanel.includes("跟随界面语言"));
 check("按钮叫「恢复默认」", button(builtinPanel, "恢复默认").found);
+check("「设为默认」在(内置才有 —— 恢复默认回到的就是它钉住的那版)", button(builtinPanel, "设为默认").found);
 check("按钮不叫「删除」", !button(builtinPanel, "删除").found);
 check("流程文字在", builtinPanel.includes("先定位,再通读。"));
 
@@ -1253,6 +1255,7 @@ check("自建:名称框可编辑", readOnlyCount(customPanel) === 0);
 check("自建:填的是数据里的名字", customPanel.includes(`value="我的流程"`));
 check("自建:按钮叫「删除」", button(customPanel, "删除").found);
 check("自建:不说「恢复默认」", !button(customPanel, "恢复默认").found);
+check("自建:不显示「设为默认」(自建没有默认可言)", !button(customPanel, "设为默认").found);
 const customEn = renderInspector(CUSTOM, "en");
 check("英文界面:自建的名字不翻译", customEn.includes(`value="我的流程"`));
 check("英文界面:按钮跟着变", button(customEn, "Delete").found);

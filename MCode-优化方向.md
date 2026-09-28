@@ -2073,6 +2073,39 @@ tab(全局指令/导入与恢复)是 `form`(768px)—— 切 tab 时页面宽度
 分支改回 `form`,三个 tab 同宽。验证:desktop tsc ✅(第一版把说明写成了 JSX 注释
 放在 return 根元素之前,tsc 当场抓住,改成 JS 注释后过)。没起 dev 实看。
 
+### 3.23 工作流/自动化:「设为默认」(自定默认层)(2026-09-26,用户需求)
+
+用户原话:「加一个把当前的设置为默认值,之后恢复默认就是恢复到这个最新的默认值,
+相当于是把之前的默认覆盖掉」。原语义:恢复默认 = 删掉 workflows 表里的覆盖行,
+回到**代码里出厂那版**。现在"默认"分两层:**用户钉的自定默认优先,出厂兜底**。
+
+**实现(9 个文件,全链路)**:
+- contracts:`WorkflowPinDefaultSchema` + `workflow.pinDefault` RPC + 通道常量;
+- 主进程 `orchestration/library.ts`:`pinWorkflowDefault(id)` 把**当前生效版**快照进
+  设置表(键 `workflow.pinnedDefaults`,Record<id,doc> 的 JSON;存设置表而不是
+  workflows 表 —— 放那儿会被 listWorkflows 当覆盖行列出来)。三道闸:找不到报错;
+  **只对内置 id 开放**(自建的删除就是删除,给它钉默认等于把删除变成删不掉);
+  **等审阅的不许钉**(恢复时快照直接落库不再过审,进来的必须已可信)。
+  `removeWorkflow` 删完覆盖行后,若有钉住的快照就随手写回(updatedAt 刷新;
+  不重跑校验 —— 快照钉时过过审阅闸、最初保存时过过存盘闸)。存坏的快照表按
+  空表处理(坏数据退回"没配过",不把恢复默认挡死)。MCP 那侧的 workflow_remove
+  自动同语义(共用同一个 removeWorkflow)。
+- ipc handler + preload + webApi(手机端 `webUnsupported`,必须列名,见那文件头);
+- 渲染端:NodeInspector 动作行加「设为默认」(**只对内置显示**;dirty 时禁用 ——
+  钉的是存盘那份,画布有未保存改动时点它会钉错;title 说明),WorkflowLibraryView
+  出确认框(把"覆盖之前的默认,包括出厂那份"说出口)+ 成功走 saveNotes 说一声;
+- i18n zh/en 各 5 键 + resetDesc 改口(「回到默认版:钉住的那版,没钉过就是出厂」)。
+
+**验证**:workflow-view-smoke **675/675**(新增 2 断言:内置面板有「设为默认」、
+自建面板没有;PowerShell 复刻 run.sh 的 esbuild-cjs 配方);contracts+desktop tsc ✅。
+
+**没验的(诚实版)**:没起 dev 实点整条链(钉→改→恢复默认→回到钉住那版);
+主进程 pinWorkflowDefault/removeWorkflow 回落没有单独 smoke(判断依据是代码路径);
+**没有「取消自定默认/回到出厂」的入口** —— 用户要的语义就是覆盖,但这是一扇单向门,
+将来想回出厂只能手动改回再钉一次,记在这儿等要不要做的决定;i18n 两个 settings.ts
+本轮**未提交**(混着并行维护会话的 skills 文案在途改动),HEAD 上暂缺那 5 个键,
+工作树是绿的 —— 等那边落了一起进。
+
 ---
 
 ## 六、我这次没验的

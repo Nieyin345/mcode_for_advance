@@ -800,6 +800,8 @@ const api = {
     save: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_SAVE, input)) as RpcMap["workflow.save"],
     remove: ((input) =>
       ipcRenderer.invoke(IPC.WORKFLOW_REMOVE, input)) as RpcMap["workflow.remove"],
+    pinDefault: ((input) =>
+      ipcRenderer.invoke(IPC.WORKFLOW_PIN_DEFAULT, input)) as RpcMap["workflow.pinDefault"],
     // 导出 / 导入(WF-08)。**两个文件对话框都在主进程**,渲染端只给 id 或文本 ——
     // 它读不了任意路径(`file.readFile` 被项目根闸门挡着),也没有保存框那一层 API。
     export: ((input) =>

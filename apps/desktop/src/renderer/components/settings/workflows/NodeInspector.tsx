@@ -97,6 +97,7 @@ export function NodeInspector({
   onSaveProfile,
   onRemoveProfile,
   onRemoveWorkflow,
+  onPinDefault,
   onImported,
 }: {
   doc: WorkflowDoc;
@@ -122,6 +123,8 @@ export function NodeInspector({
   onSaveProfile: (name: string) => Promise<boolean>;
   onRemoveProfile: (id: string) => Promise<void>;
   onRemoveWorkflow: () => void;
+  /** 把当前版本钉成「默认」(只对内置显示,见 WorkflowSection 里那颗按钮的注释)。 */
+  onPinDefault: () => void;
   /** 导入成功之后叫一声(参数是落库后的 id)—— 见 `TransferSection`。 */
   onImported: (id: string) => void;
 }) {
@@ -153,6 +156,7 @@ export function NodeInspector({
           purpose={purpose}
           onUpdateWorkflow={onUpdateWorkflow}
           onRemoveWorkflow={onRemoveWorkflow}
+          onPinDefault={onPinDefault}
           onImported={onImported}
         />
       )}
@@ -183,6 +187,7 @@ function WorkflowSection({
   purpose,
   onUpdateWorkflow,
   onRemoveWorkflow,
+  onPinDefault,
   onImported,
 }: {
   doc: WorkflowDoc;
@@ -193,6 +198,7 @@ function WorkflowSection({
   purpose: WorkflowPurpose;
   onUpdateWorkflow: (patch: Partial<Omit<WorkflowDoc, "id">>) => void;
   onRemoveWorkflow: () => void;
+  onPinDefault: () => void;
   /** 导入成功(新建或覆盖)之后叫一声 —— 让画布切到刚导进来的那一份。 */
   onImported: (id: string) => void;
 }) {
@@ -300,6 +306,21 @@ function WorkflowSection({
       <TransferSection doc={doc} onImported={onImported} />
 
       <div className="mt-3 flex items-center gap-2">
+        {/* 「设为默认」只对内置显示:「恢复默认」那颗按钮回到的"默认"就是这里钉住的
+            这一版(没钉过 = 应用自带那版)。自建工作流没有默认可言 —— 它的删除就是
+            删除,不给它长这颗按钮。禁用条件是 dirty:钉住的是**存盘的那一份**,画布
+            上还有未保存的改动时点它,钉住的不是眼前这份 —— 先存再钉,不留这种错觉。 */}
+        {reset && (
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={dirty}
+            onClick={onPinDefault}
+            title={dirty ? t("settings.workflows.pinDefaultDirty") : t("settings.workflows.pinDefaultDesc", { name })}
+          >
+            {t("settings.workflows.pinDefault")}
+          </Button>
+        )}
         <Button
           variant="danger"
           size="sm"

@@ -34,6 +34,7 @@ import {
   WorkflowApproveSchema,
   WorkflowGetSchema,
   WorkflowImportSchema,
+  WorkflowPinDefaultSchema,
   WorkflowRemoveSchema,
   WorkflowSaveSchema,
 } from "@contracts/ipc";
@@ -44,6 +45,7 @@ import {
   getWorkflow,
   importWorkflowInto,
   listWorkflows,
+  pinWorkflowDefault,
   removeWorkflow,
   saveWorkflow,
 } from "@main/orchestration/library.js";
@@ -141,6 +143,12 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
     // 删掉/恢复默认之后同理 —— 执行器读不到这一份就把它的触发器撤掉(见 `apply`)。
     requestWorkflowReload(input.id);
     return res;
+  });
+
+  ipcMain.handle(IPC.WORKFLOW_PIN_DEFAULT, async (_evt, raw) => {
+    const input = WorkflowPinDefaultSchema.parse(raw);
+    // 只写设置表,不动 workflows 表 —— 列表与执行器都不需要因此重读。
+    return pinWorkflowDefault(input.id);
   });
 
   // ── 导出 / 导入(WF-08)──

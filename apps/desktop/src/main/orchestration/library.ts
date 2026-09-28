@@ -11,6 +11,9 @@
  *
  * 读取时合并:内置的按 id 打底,表里的同名行替换之,表里独有的追加。
  * 「恢复默认」= **删掉那一行** —— 代码里的默认版立刻回来,不需要在表里另存副本。
+ * (2026-09-26 起多一层:用户可把当前版本「设为默认」(`pinWorkflowDefault`,快照存
+ * 设置表)。恢复默认时若有这份自定默认,删完覆盖行随手把它写回去 —— 于是"默认"
+ * 分两层:自定的优先,出厂的兜底。)
  *
  * ## 为什么只有一个删除动词(和方案里写的不一样)
  *
@@ -25,7 +28,7 @@ import type { WorkflowDoc, WorkflowListEntry } from "@contracts/workflow";
 import { makeWorkflowId, uniqueWorkflowName } from "@contracts/workflow";
 import type { NodeTypeManifest } from "@contracts/nodeType";
 import { parseTriggerSpec, WORKFLOW_TRIGGER_OF_TRIGGER_KIND } from "@contracts/nodeType";
-import { WorkflowRepo } from "@main/store/repositories.js";
+import { SettingRepo, WorkflowRepo } from "@main/store/repositories.js";
 import { BUILTIN_WORKFLOWS, getBuiltinWorkflow } from "./builtins.js";
 import { loadNodeTypes } from "./nodeTypes.js";
 import { workflowSaveIsStale, workflowSaveVersion } from "./workflowSaveVersion.js";
@@ -237,7 +240,64 @@ export function removeWorkflow(id: string): { ok: boolean; wasBuiltin: boolean }
   const wasBuiltin = getBuiltinWorkflow(id) !== undefined;
   WorkflowRepo.remove(id);
   clearWorkflowReview(id);
+  // 「恢复默认」回到的"默认"分两层:**用户钉过的自定默认优先**,没钉过才是代码里
+  // 那份(用户要的语义:「把当前的设为默认,之后恢复默认就是恢复到这个最新的默认」)。
+  // 快照钉的时候已过审阅闸(见 pinWorkflowDefault 的第三道闸),最初保存时也过过
+  // 存盘闸,这里直接落库、不再重跑校验。只对内置 id 做:自建的删除就是删除。
+  if (wasBuiltin) {
+    const pinned = loadPinnedDefaults()[id];
+    if (pinned !== undefined) {
+      WorkflowRepo.save({ ...pinned, updatedAt: Date.now() });
+    }
+  }
   return { ok: true, wasBuiltin };
+}
+
+/* ── 「设为默认」(自定默认) ── */
+
+/** 自定默认的存储键:值是 `Record<内置工作流 id, WorkflowDoc>` 的 JSON。
+ *  存**设置表**而不是 workflows 表 —— 它不是一份"生效的"工作流,只是「恢复默认」
+ *  的回落目标;放 workflows 表会被 listWorkflows 当成覆盖行列出来。 */
+const WORKFLOW_PINNED_DEFAULTS_KEY = "workflow.pinnedDefaults";
+
+/** 读自定默认表。存坏(JSON 坏/形状不对)按**空表**处理 —— 与屏蔽规则同一条纪律:
+ *  坏数据退回"没配过"(恢复默认落回出厂),不反过来把用户挡死。 */
+function loadPinnedDefaults(): Record<string, WorkflowDoc> {
+  const raw = SettingRepo.get(WORKFLOW_PINNED_DEFAULTS_KEY);
+  if (raw === null) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed as Record<string, WorkflowDoc>;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 把 `id` **当前生效的版本**钉成它的默认。之后「恢复默认」回到这一版 —— 之前钉的
+ * (以及应用自带那份的地位)被覆盖,这正是用户要的:「相当于是把之前的默认覆盖掉」。
+ *
+ * 三道闸:
+ *  - 找不到 → 报错;
+ *  - **只对内置 id 开放**:自建工作流没有"默认版"这回事(它的删除就是删除,见
+ *    removeWorkflow)—— 给自建钉默认等于把「删除」偷偷变成「删不掉」;
+ *  - **等待审阅的不许钉**:恢复时快照**直接落库、不再过审**(见 removeWorkflow),
+ *    所以进来的必须已经是可信的版本。
+ */
+export function pinWorkflowDefault(id: string): { ok: boolean; error?: string } {
+  const doc = getWorkflow(id);
+  if (doc === null) return { ok: false, error: "找不到这份工作流" };
+  if (getBuiltinWorkflow(id) === undefined) {
+    return { ok: false, error: "只有内置工作流有「默认版」可言 —— 自建的删除就是删除,没有可恢复的默认" };
+  }
+  if (workflowReviewError(doc) !== null) {
+    return { ok: false, error: "这一版还在等待审阅 —— 先在审阅里启用,再把它设为默认" };
+  }
+  const map = loadPinnedDefaults();
+  map[id] = doc;
+  SettingRepo.set(WORKFLOW_PINNED_DEFAULTS_KEY, JSON.stringify(map));
+  return { ok: true };
 }
 
 /* ── 导入 / 导出(WF-08) ── */

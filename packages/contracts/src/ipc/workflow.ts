@@ -38,6 +38,12 @@ export type WorkflowSaveInput = z.infer<typeof WorkflowSaveSchema>;
 export const WorkflowRemoveSchema = z.object({ id: z.string().min(1) });
 export type WorkflowRemoveInput = z.infer<typeof WorkflowRemoveSchema>;
 
+/** 把某个**内置**工作流当前生效的版本钉成它的「默认」。此后「恢复默认」(=删覆盖行)
+ *  回到的是钉住的这一版,而不是应用自带那版 —— 快照存设置表,见
+ *  `main/orchestration/library.ts` 的 `pinWorkflowDefault`(那儿也有三道闸的理由)。 */
+export const WorkflowPinDefaultSchema = z.object({ id: z.string().min(1) });
+export type WorkflowPinDefaultInput = z.infer<typeof WorkflowPinDefaultSchema>;
+
 /**
  * 把一份工作流导出成 JSON 文本(**导入导出,WF-08**)。
  *

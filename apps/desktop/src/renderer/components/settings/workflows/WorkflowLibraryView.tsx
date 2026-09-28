@@ -202,6 +202,8 @@ export function WorkflowLibraryView({
   const [removing, setRemoving] = useState(false);
   const [pendingRemove, setPendingRemove] = useState(false);
 
+  /** 「设为默认」的确认框开关(非破坏性,但要把"覆盖之前的默认"这句话说出口)。 */
+  const [pendingPin, setPendingPin] = useState(false);
   /** 最后发起的那次 `workflow.get`。用户连点两个工作流时两次请求会并发,回来顺序
    *  不保证 —— 只认最后一次发出的那个,否则详情面板会显示成上一个的内容。 */
   const docRequestRef = useRef<string | null>(null);
@@ -685,6 +687,23 @@ export function WorkflowLibraryView({
     }
   };
 
+  /** 把当前**存盘的**版本钉成默认(见 NodeInspector 里那颗按钮:dirty 时不可点)。
+   *  成功的话用 saveNotes 那条通知带说一句 —— 它不改列表也不改画布,没有别的可见变化,
+   *  不说一声用户会怀疑"点了没反应"。 */
+  const pinDefault = async () => {
+    if (!entry) return;
+    setPendingPin(false);
+    setSaveError(null);
+    setSaveNotes([]);
+    try {
+      const res = await api.workflow.pinDefault({ id: entry.id });
+      if (res.ok) setSaveNotes([t("settings.workflows.pinDefaultDone")]);
+      else setSaveError(res.error ?? t("settings.workflows.unknownError"));
+    } catch (err) {
+      setSaveError(t("settings.workflows.actionFailed", { error: (err as Error).message }));
+    }
+  };
+
   /**
    * 导入成功之后(新建或覆盖)交接一下。
    *
@@ -1030,6 +1049,7 @@ export function WorkflowLibraryView({
                     onSaveProfile={handleSaveProfile}
                     onRemoveProfile={onRemoveProfile}
                     onRemoveWorkflow={() => setPendingRemove(true)}
+                        onPinDefault={() => setPendingPin(true)}
                     onImported={handleImported}
                   />
                   </div>
@@ -1086,6 +1106,18 @@ export function WorkflowLibraryView({
           if (!open) setPendingRemove(false);
         }}
         onConfirm={() => void removeWorkflow()}
+      />
+      {/* 「设为默认」不是破坏性操作,但**覆盖之前的默认(包括应用自带那份的地位)**
+          这件事必须先说出口 —— 静默覆盖等用户下次「恢复默认」时才发现,晚了。 */}
+      <ConfirmDialog
+        open={pendingPin && entry !== null}
+        title={t("settings.workflows.pinDefaultTitle")}
+        description={t("settings.workflows.pinDefaultDesc", { name: displayName })}
+        confirmText={t("settings.workflows.pinDefault")}
+        onOpenChange={(open) => {
+          if (!open) setPendingPin(false);
+        }}
+        onConfirm={() => void pinDefault()}
       />
     </>
   );
