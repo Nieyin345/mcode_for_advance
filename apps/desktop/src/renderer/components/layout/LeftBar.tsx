@@ -603,7 +603,8 @@ function LeftBarBase({
       sessionsByProject, sessionsHasMoreByProject, sessionsTotalByProject,
       expandedProjects, expandedWorktrees, worktreeNames,
       activeProjectId, activeSessionId, activeSessionProjectId,
-      runningBySession,
+      // unreadBySession 也是行里要画的数据 —— 漏了它，未读角标只能搭别的依赖的便车刷新。
+      runningBySession, unreadBySession,
       toggleProjectExpanded, toggleWorktreeExpanded, startSession, loadMoreSessions, openTab,
       archiveSession, deleteSession, setSessionPinned, registerNode,
     ],
