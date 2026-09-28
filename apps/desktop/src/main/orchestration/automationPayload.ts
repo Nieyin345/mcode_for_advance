@@ -16,10 +16,17 @@ import type { EventItemFactKey, HookEvent } from "@contracts/hook";
 const MAX_LISTED = 20;
 
 /** 一次触发的载荷。判别联合,与 `@contracts/nodeType` 的 `TriggerSpec` 一一对应。 */
+export type TriggerInputValues = Readonly<Record<string, string | readonly string[]>>;
+
 export type TriggerPayload =
   | { kind: "manual" }
   | { kind: "schedule"; at: number }
-  | { kind: "file"; files: readonly string[] }
+  | {
+      kind: "file";
+      files: readonly string[];
+      /** 自定义 UI「运行前输入」带来的值(见 `@contracts/customUi` 的 inputs)。 */
+      input?: TriggerInputValues;
+    }
   | {
       kind: "event";
       event: HookEvent;
@@ -51,6 +58,8 @@ export type TriggerPayload =
        * 配置)。塞进去等于告诉模型"可以拿它筛",而用户照着配会被当场拦下。
        */
       items?: readonly Partial<Record<EventItemFactKey, string>>[];
+      /** 自定义 UI「运行前输入」带来的值(见 `@contracts/customUi` 的 inputs)。 */
+      input?: TriggerInputValues;
     };
 
 /* ── 结构化事实(AUTO-10)── */
@@ -121,6 +130,21 @@ export interface TriggerPayloadFacts {
    * 就会取到别人那一条 —— 那种错位同样不报错,只是转错了论文。
    */
   items?: ReadonlyArray<Partial<Record<EventItemFactKey, string>>>;
+  /**
+   * 运行前输入,**拍平**成 `input.<key>`(与 `itemId` 拍平同一个理由:
+   * `expandTriggerVars` 按字面查一个键,而 `TRIGGER_REF_RE` 的键名允许点 ⟹
+   * `{{trigger.input.doi}}` 直接可解,变量系统零改动)。files 类输入是路径数组,
+   * 文本插值时按「、」连;代码节点从 `data.trigger` 按键取原值。
+   */
+  [key: `input.${string}`]: string | readonly string[] | undefined;
+}
+
+/** input 值表 → 拍平的 `input.<key>` 键(空表 → 不加键,同 items 的口径)。 */
+function inputFactsOf(input: TriggerInputValues | undefined): Record<string, string | readonly string[]> {
+  if (input === undefined) return {};
+  const out: Record<string, string | readonly string[]> = {};
+  for (const [k, v] of Object.entries(input)) out[`input.${k}`] = Array.isArray(v) ? [...v] : v;
+  return out;
 }
 
 /** 从载荷里取平面事实。**纯函数**:拷贝数组,调用方改不动原载荷。 */
@@ -131,7 +155,7 @@ export function payloadFactsOf(payload: TriggerPayload): TriggerPayloadFacts {
     case "schedule":
       return { kind: "schedule", at: payload.at };
     case "file":
-      return { kind: "file", files: [...payload.files] };
+      return { kind: "file", files: [...payload.files], ...inputFactsOf(payload.input) };
     case "event": {
       // 条目那几项**拍平进来**(见 `TriggerPayloadFacts.itemId` 上的说明)。合并窗口里
       // 攒了好几条时,take 第一条 —— 单数名字与 `describeTriggerPayload` 那段人话里的
@@ -153,6 +177,7 @@ export function payloadFactsOf(payload: TriggerPayload): TriggerPayloadFacts {
           ? { items: payload.items.map((it) => ({ ...it })) }
           : {}),
         ...(payload.items !== undefined && payload.items.length > 1 ? { itemCount: payload.items.length } : {}),
+        ...inputFactsOf(payload.input),
       };
     }
   }
@@ -202,6 +227,14 @@ export function mergeEventPayload(
 }
 
 /** 把载荷渲染成一段平实的话(整段就是提示词里 `task` 之后那一半)。 */
+function describeInput(input: TriggerInputValues | undefined): string {
+  if (input === undefined) return "";
+  const parts = Object.entries(input)
+    .filter(([, v]) => (Array.isArray(v) ? v.length > 0 : v !== ""))
+    .map(([k, v]) => `${k} = ${Array.isArray(v) ? v.join("、") : v}`);
+  return parts.length === 0 ? "" : `带着输入:${parts.join(";")}`;
+}
+
 export function describeTriggerPayload(payload: TriggerPayload): string {
   switch (payload.kind) {
     case "manual":
@@ -210,11 +243,13 @@ export function describeTriggerPayload(payload: TriggerPayload): string {
       return `到点了:${formatLocalMinute(payload.at)}。`;
     case "file": {
       const listed = capList(payload.files);
-      if (listed.shown.length === 0) return "监听的文件有变化。";
+      const inputSaid = describeInput(payload.input);
+      if (listed.shown.length === 0) return inputSaid === "" ? "监听的文件有变化。" : `手动带着输入运行。\n${inputSaid}`;
       return [
         "有文件变了:",
         ...listed.shown.map((f) => `- ${f}`),
         ...(listed.rest > 0 ? [`(还有 ${listed.rest} 个没列出来)`] : []),
+        ...(inputSaid === "" ? [] : [inputSaid]),
       ].join("\n");
     }
     case "event": {
@@ -227,7 +262,9 @@ export function describeTriggerPayload(payload: TriggerPayload): string {
         );
       }
       const items = itemBlock(payload.items);
-      return items === "" ? `${parts.join(",")}。` : `${parts.join(",")}。\n${items}`;
+      const inputSaid = describeInput(payload.input);
+      const tail = [items, inputSaid].filter((s) => s !== "").join("\n");
+      return tail === "" ? `${parts.join(",")}。` : `${parts.join(",")}。\n${tail}`;
     }
   }
 }

@@ -62,7 +62,8 @@
 | 字段 | 说明 |
 |---|---|
 | `key` | 在 `params` 里的键。字母开头,字母数字下划线 |
-| `kind` | `text` / `longtext` / `number` / `boolean` / `select` / `file` / `dir` / `ref` / `variables` / `selects` / `conditions` |
+| `kind` | `text` / `longtext` / `code` / `number` / `boolean` / `select` / `file` / `dir` / `ref` / `variables` / `selects` / `conditions` |
+| | `code` = 代码正文:那一栏只给只读预览,点「在编辑器中打开」进一扇挂着 Monaco 的模态窗(高亮、缩进、查找替换)。用哪种语法由 `fromParam` 指的那个参数现读 —— 见 `mcode.code` 的 `language`/`code` 两格 |
 | `label` | 画布上的字段名 |
 | `help` | 可选。字段下面的一行说明 |
 | `required` | 必填。必填项没填,图**存不下去**(会当场报错,不会等到执行) |

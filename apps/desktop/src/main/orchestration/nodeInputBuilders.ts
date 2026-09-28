@@ -1,5 +1,5 @@
 import type { NodeRunInput, WorkflowChoiceOption, WorkflowDataContext } from "@contracts/runtime";
-import { MEMORY_PARAM_KEY, memorySectionFrom } from "@contracts/memory";
+import { MEMORY_PARAM_KEY, memorySectionFrom, isMemoryInjectionEnabled, type MemoryInjectionSection } from "@contracts/memory";
 import { expandTriggerVars } from "./triggerVars.js";
 import {
   DEFAULT_DECIDER_INSTRUCTION,
@@ -132,7 +132,7 @@ export const nodeInputBuilderRegistry = new NodeInputBuilderRegistry()
  * 只负责"参数 + 上下文 → `NodeRunInput`"这最后一次翻译。
  */
 export interface ModelInputScope {
-  memorySnapshot?: () => string;
+  memorySnapshot?: (query?: string) => string;
   userPrompt: string;
   upstream: string;
   upstreamArtifacts: NodeArtifact[];
@@ -206,8 +206,7 @@ export { expandTriggerVars };
  * `"on"` / `"true"`;布尔 `true` 也认 —— AI 代填参数时偶尔会写真布尔。
  */
 function memoryEnabled(params: Record<string, unknown>): boolean {
-  const value = params[MEMORY_PARAM_KEY];
-  return value === true || value === "on" || value === "true";
+  return isMemoryInjectionEnabled(params[MEMORY_PARAM_KEY]);
 }
 
 /**
@@ -220,12 +219,16 @@ function memoryEnabled(params: Record<string, unknown>): boolean {
  * 会有两种叫法、两种措辞。这里保留"开关怎么判 + 读不出来怎么办"这一半 —— 那一半是
  * **节点参数**的语义,不是共享的拼装规则。纯拼装那一半在契约层。
  */
-function memorySectionOf(params: Record<string, unknown>, snapshot: (() => string) | undefined): string {
-  if (!memoryEnabled(params)) return "";
+function memorySectionOf(
+  params: Record<string, unknown>, snapshot: ((query?: string) => string) | undefined, query: string,
+): MemoryInjectionSection {
+  if (!memoryEnabled(params)) return { source: "workflow", state: "off", text: "" };
+  if (!snapshot) return { source: "workflow", state: "unavailable", text: "" };
   try {
-    return memorySectionFrom(snapshot?.() ?? "");
-  } catch {
-    return "";
+    const text = memorySectionFrom(snapshot(query));
+    return { source: "workflow", state: text ? "included" : "empty", text };
+  } catch (err) {
+    return { source: "workflow", state: "error", text: "", error: (err instanceof Error ? err.message : String(err)).slice(0, 500) };
   }
 }
 
@@ -335,7 +338,11 @@ export function buildNodeInput(
   // **记忆注入(MEM-02)**:开关开了才取快照,库空/读不动都安静地不出现这一节。
   // 拼装方式与 context 一致 —— 一节 `##` 标题 + 正文,追加在整个提示词末尾
   // (背景材料在读顺序的最后,不挤占"指令/产出要求"之间的既有顺序)。
-  const memorySection = memorySectionOf(expanded, scope.memorySnapshot);
+  // Resolve relevance for this step, not just the original workflow request.
+  // Do not forward arbitrary upstream transcripts or let text choose project authority.
+  const memoryQuery = `${instruction.trim().slice(0, 1200)}\n${scope.userPrompt.trim().slice(0, 800)}`;
+  const memoryInjection = memorySectionOf(expanded, scope.memorySnapshot, memoryQuery);
+  const memorySection = memoryInjection.text;
   const prompt = composeNodePrompt({
     userPrompt: scope.userPrompt,
     upstream: scope.upstream,
@@ -355,6 +362,7 @@ export function buildNodeInput(
   });
   return {
     prompt: memorySection.length > 0 ? `${prompt}\n\n${memorySection}` : prompt,
+    memoryInjection,
     data,
     skills,
     mcpServerNames,

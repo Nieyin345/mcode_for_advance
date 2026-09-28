@@ -13,7 +13,7 @@
  */
 import { mkdir, writeFile, stat, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { spawnCalls, spawnHooks } from "./childStub.js";
+import { serviceQueries, spawnCalls, spawnHooks } from "./childStub.js";
 import { detectLocal, startLocalConfigure } from "@main/onlyoffice/localInstall.js";
 import { getInstallProgress } from "@main/onlyoffice/localInstall.js";
 
@@ -61,8 +61,11 @@ async function main(): Promise<void> {
 
   /* ── 1) 检测:读得出目录/版本/密钥/端口 ───────────────────────────── */
   {
+    serviceQueries.length = 0;
     const d = await detectLocal();
     check("检测:认出已安装的 DS", d.installed === true && d.installDir === installDir, JSON.stringify(d));
+    check("检测:查询官方 Windows DocService 名称", serviceQueries.includes("DsDocServiceSvc"), serviceQueries.join(","));
+    check("检测:服务状态是 running", d.serviceState === "running", String(d.serviceState));
     check("检测:读出版本", d.version === "8.9.9", String(d.version));
     check("检测:读出 JWT 密钥与 token 开关", d.jwtSecret === "fake-secret" && d.tokenEnabled === true);
     check("检测:探到端口并给出建议地址", d.port === 8080 && d.suggestedServerUrl === "http://127.0.0.1:8080");
@@ -96,7 +99,7 @@ async function main(): Promise<void> {
     const enc = /-EncodedCommand['",\s]+([A-Za-z0-9+/=]+)/.exec(joined);
     const inline = enc?.[1] ? Buffer.from(enc[1], "base64").toString("utf16le") : "";
     check("提权:脚本以内联方式传递且内容完整",
-      inline.includes("allowPrivateIPAddress") && inline.includes("ds-docservice"),
+      inline.includes("allowPrivateIPAddress") && inline.includes("DsDocServiceSvc") && inline.includes("DsConverterSvc"),
       inline.slice(0, 200));
     check("提权:安装目录路径仍被正确转义进脚本", inline.includes(installDir), inline.slice(0, 300));
   }

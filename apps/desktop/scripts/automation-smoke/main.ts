@@ -1820,19 +1820,22 @@ console.log("\n内置自动化 · 参数解得开、项目留空也挂得上");
   eq("而且没有 detail(不是坏掉了)", facts.ofWorkflow(AUTO_CONVERT_WORKFLOW_ID)[0]?.detail, undefined);
 }
 
-/* ────────── 12a. 转录那条自动化的**三段结构**(2026-09-24)────────── */
+/* ────────── 12a. 转录那条自动化的**两段结构**(2026-09-28)────────── */
 
-// 「下载完自动转 Markdown」从「一条指令让模型自己挑工具」改成了**固定的三步**:
+// 「下载完自动转 Markdown」从「一条指令让模型自己挑工具」改成了**固定的两步**:
 //
-//     触发 → code 节点(调 MinerU 的在线 API) → 子代理(挂回库)
+//     触发 → code 节点(调 MinerU 的在线 API,并报出要挂回哪几条)
 //
 // 为什么不能只留一条指令:转录是**确定性**的事,而"模型会选对工具"不是 —— 它可能挑
 // 本地 `library_convert`(扫描件抽不出正文)、可能挑一个不存在的工具、可能干脆跳过。
 // 用户要的是"下完就转",那不该经过一次判断。
 //
-// 为什么"挂回"必须单独一步:`library_adopt_markdown` 是**主进程的 MCP 工具**,而 code
-// 节点起的是**子进程** —— 它碰不到。所以"转"和"挂回"结构上就分得开。
-console.log("\n「下载完自动转 Markdown」· 触发 → code(MinerU) → 子代理(挂回)");
+// **挂回那一步的子代理 2026-09-28 去掉了**:同样的理由 —— 「把这份 md 挂到那个条目上」
+// 也是确定性的事,让模型来做只会漏挂、挂错、还费钱,而漏挂不报错。现在脚本在
+// `outputs.adoptMarkdown` 里报「这几条要挂回」,由**主进程**调 `adoptMarkdownFile`
+// (见 `orchestration/adoptFromCode.ts`)—— 写库仍然只发生在主进程,因为库的底是
+// sql.js,子进程写 `mcode.db` 会把整个库覆盖掉。
+console.log("\n「下载完自动转 Markdown」· 触发 → code(MinerU + 报出挂回)");
 
 {
   const doc = getBuiltinWorkflow(AUTO_CONVERT_WORKFLOW_ID);
@@ -1840,10 +1843,12 @@ console.log("\n「下载完自动转 Markdown」· 触发 → code(MinerU) → �
   const agentNode = doc?.nodes.find((n) => n.type === "mcode.agent");
 
   check("★ 中间那一步是 code 节点(不是又一条指令)", codeNode !== undefined, doc?.nodes.map((n) => n.type));
-  check("★ 最后那一步是子代理", agentNode !== undefined, doc?.nodes.map((n) => n.type));
+  // ⚠️ 这一条是**反着盯**的:挂回不许再退回子代理。退回去的表现是转录照跑、挂回
+  // 时灵时不灵(模型漏一条不报错),而图看起来完全正常。
+  check("★ 不再有子代理那一步(挂回由宿主执行)", agentNode === undefined, doc?.nodes.map((n) => n.type));
 
   if (doc) {
-    // **三步连成一条线**:触发→code→子代理。少一条边就有一段落不到实处。
+    // **两步连成一条线**:触发→code。少这条边,整条自动化就不会动。
     const edges = new Set((doc.edges ?? []).map((e) => `${e.from}->${e.to}`));
     const trigger = doc.nodes.find((n) => n.type === "mcode.trigger");
     check(
@@ -1851,11 +1856,7 @@ console.log("\n「下载完自动转 Markdown」· 触发 → code(MinerU) → �
       trigger !== undefined && codeNode !== undefined && edges.has(`${trigger.id}->${codeNode.id}`),
       [...edges],
     );
-    check(
-      "★ code → 子代理有线",
-      codeNode !== undefined && agentNode !== undefined && edges.has(`${codeNode.id}->${agentNode.id}`),
-      [...edges],
-    );
+    eq("★ 图上就这两个节点", doc.nodes.length, 2);
   }
 
   if (codeNode) {
@@ -1869,18 +1870,14 @@ console.log("\n「下载完自动转 Markdown」· 触发 → code(MinerU) → �
     check("★ 正文打的是 code 节点的协议行", code.includes("@@mcode:result"), "");
     // 多条一起下来时**一条都不许漏**(下载是并发跑的,触发器有合并窗口)。
     check("★ 正文按 items 逐条办(不是只取第一条)", code.includes('get("items")'), "");
+    // 挂回的**入口**:这一项没了,转录照样绿,但没有一条会被挂回去。
+    check("★ 正文报出 adoptMarkdown(挂回交给宿主)", code.includes("adoptMarkdown"), "");
+    // token 现在有两条路:脚本顶上那一行,或环境变量。两条都要在。
+    check("★ 脚本里留了填 token 的位置", code.includes("TOKEN_INLINE"), "");
     const timeout = Number(codeNode.params["timeoutMs"] ?? 0);
     check("★ 给了足够长的超时(转录要等)", timeout >= 10 * 60 * 1000, timeout);
   }
 
-  if (agentNode) {
-    // 挂回是**写操作**;能力不是 write 的话,无人值守时会被计划模式按住。
-    eq("★ 挂回那一步有写能力", agentNode.capability, "write");
-    const instr = String(agentNode.params["instruction"] ?? "");
-    check("★ 指令点名了 library_adopt_markdown", instr.includes("library_adopt_markdown"), instr);
-    // **整份正文不能是死代码**:内置图必须真的被引用到,否则 esbuild 会 tree-shake 掉。
-    check("★ 指令说了产物是上一步给的", instr.includes("上一步"), instr);
-  }
 }
 
 /* ────────── 12b. 指令说的东西,载荷里得真有(2026-09-24)────────── */
@@ -1934,12 +1931,12 @@ console.log("\n内置自动化的指令 ↔ 载荷(拿真事件对账)");
   };
   const dlInstr = instrOf(AUTO_DOWNLOAD_WORKFLOW_ID);
   const cvInstr = instrOf(AUTO_CONVERT_WORKFLOW_ID);
-  check("两条内置图的指令都取到了", dlInstr.length > 0 && cvInstr.length > 0, [
-    dlInstr.length,
-    cvInstr.length,
-  ]);
+  // ⚠️ **只有下载那条还有指令**。转录那条 2026-09-28 去掉了子代理(挂回改由宿主
+  // 执行,见 12a),整张图上一个 `mcode.agent` 都没有 —— 所以这里不能再要求它有指令,
+  // 反过来要求它**没有**:那一步要是又冒出个代理,说明挂回退回了模型那条路。
+  check("下载那条内置图的指令取到了", dlInstr.length > 0, dlInstr.length);
+  check("★ 转录那条内置图不带指令(没有子代理)", cvInstr.length === 0, cvInstr);
   check("★ 下载指令不再提「类型」(载荷里没那个字段了)", !dlInstr.includes("类型"), dlInstr);
-  check("★ 转录指令不再提「类型」", !cvInstr.includes("类型"), cvInstr);
 
   // 指令让模型去读「条目:」那几行 —— 那个抬头在载荷里得真存在,否则模型照着一句
   // 空指认去翻,翻不到就只能自己猜。
@@ -1950,13 +1947,12 @@ console.log("\n内置自动化的指令 ↔ 载荷(拿真事件对账)");
   // `libraryServer` 会把 ssh2 的原生模块(`cpu-features.node`)拖进来,为一条断言给整套
   // 加一圈桩不划算。这里只断"指令里写着那几个名字",两半各在自己拿得到证据的地方。
   const talkedAbout = dlInstr + "\n" + cvInstr;
-  // ⚠️ 这里只列**下载那条**点名的工具。转录那条从前是"让模型按手上的条件选一条路",
-  // 会点名 `library_convert`/`library_adopt_markdown`;2026-09-24 改成固定三步之后,
-  // 模型那一步只剩"挂回"(`library_adopt_markdown`),而调 MinerU 移进了 code 节点的
-  // 代码里(它的断言在 12a 那一段)。
+  // ⚠️ 只剩**下载那条**点名工具了。转录那条一路退场:2026-09-24 调 MinerU 移进 code
+  // 节点的代码,2026-09-28 连挂回也不再由模型调 `library_adopt_markdown` —— 宿主读
+  // 脚本报的 `outputs.adoptMarkdown` 直接办(断言在 12a 那一段)。
   // 下载那条点名的是 `library_attach_pdf`(2026-09-27 起软件自己不下载,外部工具下完
   // 靠它交回库);`library_download` 已随学术功能退役。
-  for (const tool of ["library_attach_pdf", "library_adopt_markdown"]) {
+  for (const tool of ["library_attach_pdf"]) {
     check(`指令点名了 ${tool}`, talkedAbout.includes(tool), tool);
   }
 }
@@ -2469,6 +2465,51 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
       makeAutomation({ workflowId: wf, nodeId, params: { ...params, [NODE_TRIGGER_ENABLED_PARAM_KEY]: true } });
       await runner.reloadAll();
       eq("重新启用不会恢复旧事件", runner.pendingFires.has(`${wf}:${nodeId}`), false);
+    } finally { runner.dispose(); }
+  }
+
+  /* A debounced event must not run the previously loaded graph revision. */
+  {
+    resetRuns();
+    const wf = nextId(), nodeId = "t_stale_revision";
+    const params = {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "event",
+      [NODE_TRIGGER_EVENTS_PARAM_KEY]: "library.item.downloaded",
+      [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0,
+      task: "旧任务",
+    };
+    makeAutomation({ workflowId: wf, nodeId, params });
+    const runner = await startRunner();
+    const emit = (): void => runtimeManager.emit({
+      type: "library.item.downloaded",
+      sessionId: "stale-config-source",
+      itemId: "stale-config-item",
+      title: "更新中的条目",
+      pdfPath: "papers/stale-config.pdf",
+    } as unknown as RuntimeEvent);
+    try {
+      emit();
+      const saved = getWorkflow(wf)!;
+      WorkflowRepo.save({
+        ...saved,
+        nodes: saved.nodes.map((n) => ({
+          ...n,
+          params: { ...n.params, task: "更新后的任务" },
+        })),
+      });
+      await sleep(50);
+      eq("工作流变更后，旧版防抖事件不启动", runsOfNode(nodeId).length, 0);
+      check(
+        "丢弃旧版事件的原因可见",
+        runner.statusOf(wf)[0]?.lastError?.includes("工作流已修改") === true,
+        runner.statusOf(wf),
+      );
+
+      await runner.reloadAll();
+      emit();
+      await sleep(50);
+      eq("重载后新事件正常运行", runsOfNode(nodeId).length, 1);
+      check("重载后运行使用新任务", runsOfNode(nodeId)[0]?.prompt?.includes("更新后的任务") === true);
     } finally { runner.dispose(); }
   }
 

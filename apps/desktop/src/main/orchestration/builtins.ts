@@ -602,9 +602,9 @@ export const AUTO_CONVERT_DEFAULT_TASK =
  * 本地 `library_convert`(扫描件抽不出正文)、可能挑一个不存在的工具、可能干脆跳过。
  * 用户要的是"下完就转",那就不该经过一次判断。
  *
- * 现在改成**固定的三步**:触发 → code 节点调 MinerU → 子代理挂回。中间那步的判据全在
- * 脚本里(见 `workflows/assets.ts` 的 `MINERU_PY` 文件头:token 从 `MINERU_TOKEN` 取、
- * 失败带原因退 1)。
+ * 现在改成**固定的两步**:触发 → code 节点调 MinerU 并挂回。判据全在脚本里(见
+ * `workflows/assets.ts` 的 `MINERU_PY` 文件头:token 填在脚本顶上的 `TOKEN_INLINE`
+ * 或走 `MINERU_TOKEN`、失败带原因退 1)。
  *
  * ## 脚本正文**直接当 `code`**,不落文件再调
  *
@@ -613,10 +613,19 @@ export const AUTO_CONVERT_DEFAULT_TASK =
  * `<数据根>/workflows/scripts/` 里那份(那一份是给**模型**用 shell 调的,见
  * `systemPrompt.ts`;这条路完全不经过它)。
  *
- * ## 为什么挂回要单独一步(不能并进 code 节点)
+ * ## 挂回也在这一步里(2026-09-28 去掉了子代理那一节)
  *
- * `library_adopt_markdown` 是**主进程的 MCP 工具**,而 code 节点起的是**子进程** ——
- * 它碰不到。所以"转"和"挂回"必须分两步:code 节点产出 md,子代理拿它去挂。
+ * 挂回曾经是后面一个**子代理**节点:`library_adopt_markdown` 是主进程的 MCP 工具,
+ * 而 code 节点起的是子进程,碰不到它,于是只能让模型去调。
+ *
+ * 可「把这份 md 挂到那个条目上」是**确定性**的事 —— 该挂哪条、挂哪个文件,上一步的
+ * 产出里写得清清楚楚。让模型来做,换来的是它可能漏挂一条、可能挂错文件,每次还要
+ * 花模型的钱;而漏挂的表现特别难查:**转都转了,就是没挂上,还不报错**。
+ *
+ * 现在脚本在 `outputs.adoptMarkdown` 里报「这几条要挂回」,由**主进程**逐条调
+ * `adoptMarkdownFile`(与那个 MCP 工具同一个函数)。为什么不让脚本自己写库:文档库
+ * 的底是 sql.js,子进程在旁边写 `mcode.db` 会把整个库覆盖掉 —— 见
+ * `orchestration/adoptFromCode.ts` 的文件头。
  */
 const AUTO_CONVERT_NODES: readonly NodeSpec[] = [
   {
@@ -645,38 +654,10 @@ const AUTO_CONVERT_NODES: readonly NodeSpec[] = [
       [NODE_CODE_TIMEOUT_KEY]: 30 * 60 * 1000,
     },
   },
-  {
-    id: AUTO_CONVERT_AGENT_NODE_ID,
-    type: "mcode.agent",
-    title: "挂回库",
-    // **写能力**:转录产物要挂回条目(`library_adopt_markdown` 是写工具)。默认的
-    // `read` 会把这一步按在计划模式里 —— 无人值守时计划模式等于拒绝执行。
-    capability: "write",
-    params: {
-      instruction: [
-        "上一步已经用 MinerU 在线 API 把文档转成了 Markdown,产物路径在它的产出里",
-        "(`outputs` 里每条一个 `mdPath`;那是一份 `full.md`,同级的 `images/` 里是配图)。",
-        "",
-        "你的任务:**把每一份转出来的 Markdown 挂回它对应的条目**。",
-        "",
-        "做法:调 `library_adopt_markdown`,`itemId` 是那条条目、`path` 是那份 `full.md` 的",
-        "**绝对路径**。**配图按 md 里的引用搬,不用你挑目录** —— 所以你只需把 `full.md`",
-        "指对(不是它旁边那个 `images/`)。",
-        "",
-        "⚠️ **可能不止一份**(下载是并发跑的,合并窗口里可能攒了好几条)。上一步的产出里",
-        "每一条各自有一份 md,一条都不许落下 —— 少挂一条的表现是那篇**转都转了、却没人",
-        "挂上去**,而且不报错。",
-        "",
-        "**做完的样子**:每一条都交代过了 —— 挂上的(条目详情页读得到)、挂不上的",
-        "(说明为什么);并向用户汇报每条多少字、几张图。",
-      ].join("\n"),
-    },
-  },
 ];
 
 const AUTO_CONVERT_EDGES: readonly WorkflowEdge[] = [
   wire(AUTO_CONVERT_TRIGGER_NODE_ID, AUTO_CONVERT_CODE_NODE_ID),
-  wire(AUTO_CONVERT_CODE_NODE_ID, AUTO_CONVERT_AGENT_NODE_ID),
 ];
 
 /* ── 内置工作流(六个对话模式 + 两条自动化)── */

@@ -8,6 +8,7 @@ import { writeFileSync } from "node:fs";
 
 export interface SpawnCall { cmd: string; args: string[]; }
 export const spawnCalls: SpawnCall[] = [];
+export const serviceQueries: string[] = [];
 /** 测试设置:fake spawn 在"退出"前要创建的 marker 文件(模拟脚本跑成功)。 */
 export const spawnHooks: { markerToCreate: string | null } = { markerToCreate: null };
 
@@ -38,10 +39,15 @@ function markerFromArgs(args: string[]): string | null {
 
 export function execFile(
   _cmd: string,
-  _args: string[],
+  args: string[],
   _opts: unknown,
   cb: (err: Error | null, stdout: string) => void,
 ): void {
-  // `sc query ds-docservice` → 装好且在跑
-  setTimeout(() => cb(null, "        STATE              : 4  RUNNING"), 0);
+  const service = args[1] ?? "";
+  serviceQueries.push(service);
+  // ONLYOFFICE's Windows installer registers these service names. Legacy
+  // `ds-docservice` / `ds-converter` must not be treated as installed aliases.
+  const found = service === "DsDocServiceSvc" || service === "DsConverterSvc";
+  setTimeout(() => cb(found ? null : new Error(`service not found: ${service}`),
+    found ? "        STATE              : 4  RUNNING" : ""), 0);
 }

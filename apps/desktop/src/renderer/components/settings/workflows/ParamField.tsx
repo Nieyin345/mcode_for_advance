@@ -38,6 +38,7 @@ import {
   insertSnippet,
   type InsertableGroup,
 } from "./insertVariable.js";
+import { CodeParamField } from "./CodeParamField.js";
 import { useRefOptions, type RefOption } from "./useRefOptions.js";
 
 /** 一个带标题的表单行。档案编辑器和节点检查器共用,所以标题的字号只有一份。
@@ -173,13 +174,18 @@ export function ParamField({
     }
   };
 
+  const isMemory = spec.key === "memory";
+  const label = isMemory ? t("memory.nodeParam.label") : spec.label;
+  const help = isMemory ? t("memory.nodeParam.help") : spec.help;
+  const boolChecked = value === true || value === "on" || value === "true";
+
   return (
-    <Field label={spec.label} required={spec.required} help={spec.help}>
+    <Field label={label} required={spec.required} help={help}>
       {spec.kind === "boolean" ? (
         <Switch
-          checked={value === true}
-          onCheckedChange={onChange}
-          label={spec.label}
+          checked={boolChecked}
+          onCheckedChange={(checked) => onChange(checked)}
+          label={label}
           className="my-0.5"
         />
       ) : spec.kind === "longtext" ? (
@@ -190,6 +196,16 @@ export function ParamField({
           spellCheck={false}
           onChange={(e) => onChange(e.target.value)}
           className="min-h-[90px] w-full resize-y rounded border border-edge bg-surface px-2 py-1 text-[0.7857em] leading-relaxed text-content placeholder:text-content-subtle focus:border-accent focus:outline-none"
+        />
+      ) : spec.kind === "code" ? (
+        // 代码正文走**模态窗里的 Monaco**(见 `CodeParamField`):这一栏太窄,而代码
+        // 要的是宽和高。语言从 `fromParam` 指的那一格现读,没写就按 python ——
+        // `mcode.code` 的运行时默认值就是它。
+        <CodeParamField
+          label={label}
+          value={text}
+          language={resolvedFrom ?? "python"}
+          onChange={(next) => onChange(next)}
         />
       ) : spec.kind === "conditions" ? (
         <ConditionTable value={value} onChange={onChange} insertables={insertables} />

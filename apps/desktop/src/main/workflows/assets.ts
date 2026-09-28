@@ -988,8 +988,13 @@ MinerU 有两条 API（见 https://mineru.net/apiManage/docs）：
 
 ## token 从哪来
 
-「MINERU_TOKEN」 环境变量。**没有就明确报错退出**，不静默降级去打轻量那条 —— 降级的话
-用户拿到的是没有配图的转录，而它看起来"成功了"，比直接报错难查得多。
+两条路，**脚本里那一行优先**：
+
+1. 直接填在下面的 「TOKEN_INLINE」 —— 打开节点的代码编辑器，粘进引号里就行；
+2. 留空则回退读 「MINERU_TOKEN」 环境变量（老做法，仍然有效）。
+
+两条都没有就**明确报错退出**，不静默降级去打轻量那条 —— 降级的话用户拿到的是没有
+配图的转录，而它看起来"成功了"，比直接报错难查得多。
 
 ## 输入 / 输出（工作流 code 节点的约定）
 
@@ -1007,6 +1012,16 @@ stdin 收一行 JSON：
     <cwd>/mineru/<itemId>/images/*
 
 stdout 打一行 「@@mcode:result {...}」（见 「orchestration/codeRunner.ts」 的协议解析）。
+
+## 挂回库也是这一步的事（不再交给子代理）
+
+产出的 「outputs.adoptMarkdown」 里每转成一条就报一项 「{itemId, path}」，code 节点跑完后
+由**主进程**逐条调 「adoptMarkdownFile」（与 MCP 工具、界面按钮同一个函数）。
+
+为什么不在这里自己写库：文档库的底是 sql.js —— 整个库在主进程内存里、落盘是把
+「mcode.db」 整个重写一遍，子进程在旁边写同一个文件会把库覆盖掉。判断留在脚本里
+（它才知道哪条转成了），写库留在主进程（只有它能安全地写），中间不经过模型。
+详见 「orchestration/adoptFromCode.ts」 的文件头。
 
 ## 失败就是失败
 
@@ -1035,13 +1050,40 @@ for _stream in (sys.stdout, sys.stderr):
 PROTOCOL = "@@mcode:result "
 
 BASE_URL = os.environ.get("MINERU_BASE_URL", "https://mineru.net").rstrip("/")
-TOKEN = (os.environ.get("MINERU_TOKEN") or "").strip()
+
+# ─────────────────────────────────────────────────────────────────────
+#  ↓↓↓  在这里填 MinerU 的 API token  ↓↓↓
+#
+#  去 https://mineru.net 的「API 管理」建一个，把它粘到下面这对引号中间。
+#  留空 = 回退去读环境变量 「MINERU_TOKEN」。
+#
+#  ⚠️ 填在这里的 token 会**随这条自动化一起存进数据库**，导出 / 分享这条工作流时
+#     会跟着走。要发给别人之前记得先清空这一行。
+# ─────────────────────────────────────────────────────────────────────
+TOKEN_INLINE = ""
+
+TOKEN = (TOKEN_INLINE or os.environ.get("MINERU_TOKEN") or "").strip()
 # vlm 是文档推荐的档（复杂版式明显更好）；pipeline 更快更便宜。给个开关，默认 vlm。
 MODEL_VERSION = (os.environ.get("MINERU_MODEL_VERSION") or "vlm").strip()
 
 # 轮询：每 3 秒看一眼，最多等 30 分钟（长论文 + 排队要时间）。
 POLL_INTERVAL_S = 3
 POLL_TIMEOUT_S = 30 * 60
+
+# 只转这三类:PDF 和 Word。
+#
+# MinerU 精准解析本身还吃图片 / PPT / Excel / 网页，但那几类在这个库里转出来的东西
+# 多半没人看：一张截图转出来是几行 OCR，一个 xlsx 转出来是一张烂掉的表。它们照转的
+# 代价是真金白银的额度和几分钟的排队。
+#
+# ⚠️ 不在这张单子里的**直接跳过，不算失败** —— 往库里拖一张图片不该让这条自动化
+# 亮红灯（它没做错什么，只是没什么可做）。
+SUPPORTED_EXTS = {".pdf", ".doc", ".docx"}
+
+
+def source_of(item):
+    """条目的源文件路径：linked 是绝对路径，attached 是库内相对路径，旧论文条目是 pdfPath。"""
+    return (item or {}).get("filePath") or (item or {}).get("pdfPath") or ""
 
 
 def emit(summary, outputs=None, artifacts=None):
@@ -1181,14 +1223,12 @@ def transcribe_one(item, index):
     if not source_abs.is_file():
         raise RuntimeError(f"{label}的源文件不在了：{source_abs}")
 
-    # 只接受 MinerU 精准解析 API 支持的格式；绝不改走本地 PDF.js 或其他抽取器。
+    # 兜底再查一次。正常情况下 main() 已经把不转的挑走了 —— 这一条防的是有人直接
+    # 调 transcribe_one（比如以后加一条手动重试的路）。绝不改走本地抽取。
     ext = source_abs.suffix.lower()
-    supported = {".pdf", ".png", ".jpg", ".jpeg", ".jp2", ".webp", ".gif",
-                 ".bmp", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".html", ".htm"}
-    if ext not in supported:
-        unsupported_ext = ext or "无扩展名"
-        raise RuntimeError(f"MinerU 在线 API 不支持该文件格式（{unsupported_ext}）；未执行本地抽取。")
-    model_version = "MinerU-HTML" if ext in (".html", ".htm") else MODEL_VERSION
+    if ext not in SUPPORTED_EXTS:
+        raise RuntimeError(f"{label}不是要转的格式（{ext or '无扩展名'}）；只转 PDF 和 Word。")
+    model_version = MODEL_VERSION
 
     out_dir = Path.cwd() / "mineru" / item_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1306,17 +1346,36 @@ def main():
 
     # imported 事件也会覆盖 DOI/arXiv 占位记录；那类记录此刻没有本地文件，应留给
     # 下载完成事件稍后再转，而不是把正常导入报成转录失败。
-    ready = [it for it in items if it.get("filePath") or it.get("pdfPath")]
+    ready = [it for it in items if source_of(it)]
     if not ready:
         emit("本次导入尚无本地源文件，等待文件到位后再由下载事件转录。",
              outputs={"items": [], "skipped": len(items), "failed": []})
+        return
+
+    # ── 只留 PDF / Word，其余的挑出来放一边 ──
+    todo = []
+    skipped = []
+    for it in ready:
+        ext = Path(source_of(it)).suffix.lower()
+        if ext in SUPPORTED_EXTS:
+            todo.append(it)
+        else:
+            skipped.append(f"{(it or {}).get('itemTitle') or (it or {}).get('itemId') or '?'}（{ext or '无扩展名'}）")
+
+    if not todo:
+        # **这是成功，不是失败。** 拖进来的这批里没有要转的东西，说清楚就行。
+        emit(
+            "这批文件里没有 PDF 或 Word，不转录：" + "、".join(skipped),
+            outputs={"items": [], "skipped": skipped, "failed": []},
+        )
         return
 
     if not TOKEN:
         # **不复用轻量那条免 token 的路**：它不给配图，而挂着断图的转录看起来是成功的。
         die(
             "没有 MinerU 的 API token。去 https://mineru.net 的「API 管理」建一个，"
-            "然后把它设成环境变量 MINERU_TOKEN（设完重启应用）。"
+            "然后打开这个节点的代码编辑器，填到顶上的 TOKEN_INLINE 那一行里"
+            "（或者设成环境变量 MINERU_TOKEN，设完要重启应用）。"
         )
         return
 
@@ -1324,9 +1383,9 @@ def main():
     # 「两篇一起下来，其中一篇是扫描件抽不出正文」时，另一篇不该跟着遭殃。
     ok = []
     failed = []
-    for i, item in enumerate(ready, start=1):
+    for i, item in enumerate(todo, start=1):
         try:
-            ok.append(transcribe_one(item, i if len(items) > 1 else 0))
+            ok.append(transcribe_one(item, i if len(todo) > 1 else 0))
         except RuntimeError as err:
             failed.append(f"（{i}）{err}")
 
@@ -1338,16 +1397,23 @@ def main():
     lines = [
         f"已用 MinerU 转出 {len(ok)} 份 Markdown"
         + (f"，另有 {len(failed)} 条没转成。" if failed else "。"),
-        "（下一步用 library_adopt_markdown 把它们挂回各自的条目）",
     ]
+    if skipped:
+        lines.append(f"跳过 {len(skipped)} 个非 PDF/Word 的文件：" + "、".join(skipped))
     if failed:
         lines.append("没转成的：")
         lines.extend(failed)
 
     emit(
         chr(10).join(lines),
-        # 「items」 一栏给下游（子代理）逐条办的依据：每条一个 itemId + md 路径。
-        outputs={"items": ok, "failed": failed},
+        # 「adoptMarkdown」 是给**宿主**看的那一项：跑完由主进程逐条挂回文档库
+        # （见 「orchestration/adoptFromCode.ts」）。「items」 保留给下游节点当依据。
+        outputs={
+            "items": ok,
+            "failed": failed,
+            "skipped": skipped,
+            "adoptMarkdown": [{"itemId": r["itemId"], "path": r["mdPath"]} for r in ok],
+        },
         artifacts=[
             {"kind": "file", "uri": r["relMdPath"], "name": "full.md", "mimeType": "text/markdown"}
             for r in ok
