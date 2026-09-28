@@ -11,7 +11,9 @@ await withAuditPage(dir,async page=>{
  const open=async()=>click(btn('记忆与交接'));
  const injection=async()=>click(`[...document.querySelectorAll('summary')].find(e=>/自动记忆注入|Automatic memory/.test(e.textContent))`);
  const receipt=async name=>click(`[...document.querySelectorAll('[data-memory-receipt] summary')].find(e=>e.textContent.includes(${JSON.stringify(name)}))`);
- const test=async(name,fn)=>{try{await fn();assert.deepEqual(page.exceptions,[]);results.push({name,ok:true});console.log('PASS '+name);}catch(e){results.push({name,ok:false,error:String(e)});console.log('FAIL '+name+' '+String(e));}await page.screenshot(name+'.png');};
+ // 失败时把当时的页面文本一并留下(截断)。只有截图的话,要么得把 png 传出去看,要么
+ // 只能靠重跑碰运气 —— 而这套里最容易出问题的恰恰是时序,重跑往往就好了。
+ const test=async(name,fn)=>{try{await fn();assert.deepEqual(page.exceptions,[]);results.push({name,ok:true});console.log('PASS '+name);}catch(e){const seen=(await page.eval('document.body.innerText').catch(()=>'(unreadable)')).slice(0,1200);results.push({name,ok:false,error:String(e),seen});console.log('FAIL '+name+' '+String(e));console.log('---- body ----\n'+seen+'\n---- /body ----');}await page.screenshot(name+'.png');};
  await test('actual-captured-content-not-current-disk-and-escaped-as-text',async()=>{
   await go();await open();await injection();await receipt('Main A');
   assert.match(await page.eval('document.body.innerText'),/CAPTURED_ORIGINAL_A/);
@@ -35,8 +37,18 @@ await withAuditPage(dir,async page=>{
  });
  await test('session-switch-and-delayed-response-cannot-leak-old-receipts',async()=>{
   await go();await open();await injection();await page.eval("labHold.add('chat-A')");
-  await click(btn('刷新'));await page.eval("labPatchState({sessionId:'chat-B',activeSessionId:'chat-B',activeProjectId:'B'})");await page.sleep(200);
-  await open();await injection();await page.eval('labHolds.splice(0).forEach(r=>r())');await page.sleep(160);
+  await click(btn('刷新'));await page.eval("labPatchState({sessionId:'chat-B',activeSessionId:'chat-B',activeProjectId:'B'})");
+  // 切会话会**关掉面板**(MemoryAssistantButton 的 [sessionId] effect 里 setOpen(false))。
+  // 原来这里是 sleep(200):机器一忙就不够,于是下面那次 open 落在面板还开着的时候 ——
+  // 点上去是**关**,后面自然什么都找不到,报出来却是"没看到 Main B",看着像产品坏了。
+  await page.waitFor("!document.querySelector('[data-memory-receipt]')");
+  await open();await injection();
+  // B 的回执先真的到位,再放 A 那条延迟响应 —— 否则量到的是"B 还没来",不是"A 泄漏了"。
+  await page.waitFor("document.body.innerText.includes('Main B')");
+  await page.eval('labHolds.splice(0).forEach(r=>r())');
+  // ⚠️ 这一段 sleep 是**故意**留的,不能换成 waitFor:它要给泄漏一个发生的机会,
+  // 然后再断言它没发生。等一个"不该出现的东西出现"是等不到的。
+  await page.sleep(160);
   assert.match(await page.eval('document.body.innerText'),/Main B/);assert.doesNotMatch(await page.eval('document.body.innerText'),/Main A|CAPTURED_ORIGINAL_A/);
  });
  await test('empty-receipts-explain-process-lifetime-and-do-not-query-library',async()=>{
