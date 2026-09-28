@@ -538,21 +538,23 @@ const AUTO_DOWNLOAD_NODES: readonly NodeSpec[] = [
   {
     id: AUTO_DOWNLOAD_AGENT_NODE_ID,
     type: "mcode.agent",
-    title: "按 DOI 取原文",
+    title: "按 DOI / arXiv 号取原文",
     // **写能力**:把 PDF 挂回库是写操作(`library_attach_pdf` 不在只读集合里)。默认的
     // `read` 会把这一步按在计划模式里,连一次都挂不上。
     capability: "write",
     params: {
       instruction: [
-        "用户在「文献导入」表单里填的 DOI 是:{{trigger.input.doi}}",
+        "用户在「文献导入」表单里填的标识是:{{trigger.input.doi}}",
         "",
-        "可能是多个,用逗号分隔。**上游那道判断已经确认它像个 DOI 才会走到你这儿**,所以不必再怀疑它是不是空的。",
+        "可能是多个,用逗号分隔。**上游那道判断只确认了它非空**,具体是什么由你认:DOI(`10.1038/…`)、",
+        "doi.org 链接、arXiv 号(`2401.12345` / `arXiv:2401.12345` / arxiv.org 链接)都算数;",
+        "要是看着根本不是文献标识(比如一句话、一个书名),别硬猜,如实说这条认不出来。",
         "",
-        "对每一个 DOI:",
+        "对每一条:",
         "",
         "- 用你手上的**外部 MCP 下载工具**(检索 / 下载文献的那些,名字各家不同,看你的工具表)找到并下载 PDF 到本地;",
         "- 下到了就调 `library_attach_pdf` 挂到对应条目上;库里还没有这一条时,先用 `library_import_files` 把 PDF 收进库,**不要另建空条目**;",
-        "- 找不到可下载版本的**如实说明**,不要编造 DOI、链接或文件路径。",
+        "- 找不到可下载版本的、或认不出是什么的,**如实说明**,不要编造 DOI、链接或文件路径。",
         "",
         "⚠️ 这个软件自己**不会下载**任何东西(内置下载队列已随学术功能退役)。一个下载工具都没有时,如实说一句「没有可用的下载工具」,**不要用浏览器硬凑**。",
         "",
@@ -577,12 +579,21 @@ const AUTO_DOWNLOAD_NODES: readonly NodeSpec[] = [
   {
     id: AUTO_DOWNLOAD_GATE_NODE_ID,
     type: CONDITION_NODE_TYPE_ID,
-    title: "填了 DOI 吗",
+    title: "填了标识吗",
     params: {
-      // ⚠️ **判据是 contains \"10.\",不是 exists。** `exists` 问的是"有没有这个字段",
+      // ⚠️ **判据是 contains,不是 exists。** `exists` 问的是"有没有这个字段",
       // 而**空串也算存在**(见 `@contracts/condition`)—— 表单交上来一个空的 doi 字段,
-      // 模型就得白跑一轮说"这次没填",那这道判断等于没立。所有 DOI 都以 10. 开头
-      // (`10.1038/...`),这一条同时挡住"没填"和"填了空白",粘整串 doi.org 链接也命中。
+      // 模型就得白跑一轮说"这次没填",那这道判断等于没立。
+      //
+      // ⚠️ **判据也不能是 `10.`。** 那是 DOI 前缀,而用户在这一栏里粘的经常是 **arXiv
+      // 号**(`2401.12345` / `arXiv:2401.12345` / arxiv.org 链接)—— 那些一个 `10.` 都
+      // 没有,于是整条 DOI 支路走 false:**不下载、也不报一个字**。表单填了东西却什么都
+      // 没发生,是这条链里最难查的一种坏。
+      //
+      // 现在判的是"这一栏里有没有像标识的东西":**凡是文献标识都带点号** ——
+      // DOI 的 `10.xxxx/`、arXiv 的 `2401.12345`、任何 `xxx.org` 链接;而"没填"和
+      // "填了空白"都不带。认得准不准交给下游那个模型(它本来就要认多种形态),
+      // 这道判断只负责别把活儿**闷掉** —— 认不出来时它至少会回一句"这条认不出"。
       //
       // 事件触发(载荷里压根没有 input 这一项)时读到的是**缺失** —— `readConditionRef`
       // 对触发器名字空间的缺失键给 found=false,走 false,不会炸。
@@ -594,7 +605,7 @@ const AUTO_DOWNLOAD_NODES: readonly NodeSpec[] = [
       // 下一个抄这段的人要知道这一点。
       [NODE_CONDITION_EXPRESSION_KEY]: {
         logic: "and",
-        rules: [{ ref: "{{trigger.input.doi}}", op: "contains", value: "10." }],
+        rules: [{ ref: "{{trigger.input.doi}}", op: "contains", value: "." }],
       },
     },
   },
@@ -606,14 +617,14 @@ const AUTO_DOWNLOAD_EDGES: readonly WorkflowEdge[] = [
   wire(AUTO_DOWNLOAD_TRIGGER_NODE_ID, AUTO_DOWNLOAD_GATE_NODE_ID),
   wire(AUTO_DOWNLOAD_GATE_NODE_ID, AUTO_DOWNLOAD_AGENT_NODE_ID, {
     label: "true",
-    note: "表单里填了 DOI —— 用外部下载工具把原文取回来。",
+    note: "表单里填了标识(DOI / arXiv 号)—— 用外部下载工具把原文取回来。"
   }),
   // false 接回「收文件」而不是另造一个空节点:条件节点**必须恰好两条出边**
   // (`workflowValidation` 的 condition.edges),而这条边的语义正好是"没填 DOI,
   // 这次就只收文件"。汇合点在没走的支路上照常跑,所以收文件那步无论如何都执行。
   wire(AUTO_DOWNLOAD_GATE_NODE_ID, AUTO_DOWNLOAD_COLLECT_NODE_ID, {
     label: "false",
-    note: "没填 DOI,这一路没活可干(收文件那步照常跑)。",
+    note: "这一栏是空的,这一路没活可干(收文件那步照常跑)。",
   }),
 ];
 
