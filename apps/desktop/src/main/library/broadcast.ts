@@ -25,10 +25,33 @@
  */
 import { IPC } from "@contracts/ipc";
 import type { LibraryItem } from "@contracts/library";
+import type { RuntimeEvent } from "@contracts/runtime";
 import { sendToRenderer } from "@main/window.js";
-import { runtimeManager } from "@main/claude/RuntimeManager.js";
-import { withAmbientAutomationOrigin } from "@main/orchestration/automationEventOrigin.js";
+import { currentAutomationOrigin, withAutomationOrigin } from "@main/orchestration/automationEventOrigin.js";
 import { log } from "@main/lib/logger.js";
+
+/**
+ * 运行时的发出口 —— 由 `main/index.ts` 注入(`configureLibraryEvents`)。
+ *
+ * ## 为什么注入而不是直接 import RuntimeManager
+ *
+ * 与 `publicMcpSession.configurePublicMcpRuntime` 同一个套路。直接 import 会把整条
+ * provider 图(→ `agentTools` → `agentRemoteSsh` → `ssh2` → `cpu-features.node`)
+ * 拉进每个碰到库导入的模块。`adoptFromCode`(code 节点「收进库」)落地之后,
+ * `codeExecutor` → `adoptFromCode` → 这里 → RuntimeManager 这条链让
+ * execution-engine / module-workflow / module-phase2-e2e 三个与 provider 无关的
+ * 无头 smoke 在**打包阶段**就卡死在原生模块上(动态 import 在 esbuild 不分块时照样内联)。
+ *
+ * 没注入时(无头 smoke、应用装配前)事件静默丢弃 —— 那时也没有钩子/触发器在听。
+ */
+export interface LibraryEventRuntime {
+  emitExternal(event: RuntimeEvent): void;
+}
+let runtime: LibraryEventRuntime = { emitExternal: () => {} };
+
+export function configureLibraryEvents(next: LibraryEventRuntime): void {
+  runtime = next;
+}
 
 export function notifyLibraryChanged(reason: string): void {
   try {
@@ -63,15 +86,16 @@ export function emitItemImported(item: LibraryItem): void {
     // **带上来源链**(2026-09-28):这条事件可能是某条自动化自己入的库(code 节点报
     // 「收这些文件进库」,由主进程执行)。不打标的话它看起来像外部事件,A 通过入库
     // 触发 A 的循环就绕过了自触发额度 —— 而绕过去的循环没有任何地方拦得住。
-    // 不在自动化里跑(用户点「导入文件」)时 `withAmbientAutomationOrigin` 原样返回。
-    runtimeManager.emitExternal(withAmbientAutomationOrigin({
+    // 不在自动化里跑(用户点「导入文件」)时当前来源为 undefined,事件不带标。
+    // `withAutomationOrigin(发出口, 当前来源)(事件)`:emit-path-smoke 认得这个包装。
+    withAutomationOrigin((event) => runtime.emitExternal(event), currentAutomationOrigin())({
       type: "library.item.imported",
       sessionId: "(system)",
       itemId: item.id,
       title: item.title,
       ...(item.filePath ? { filePath: item.filePath } : {}),
       ...(item.pdfPath ? { pdfPath: item.pdfPath } : {}),
-    }));
+    });
   } catch (err) {
     log.warn(`[library] 发导入事件失败(${item.id}):${(err as Error).message}`);
   }
@@ -111,7 +135,7 @@ export function emitItemImported(item: LibraryItem): void {
 export function emitItemDownloaded(item: LibraryItem): void {
   try {
     // 同 {@link emitItemImported}:宿主侧的副作用也要带来源链。
-    runtimeManager.emitExternal(withAmbientAutomationOrigin({
+    withAutomationOrigin((event) => runtime.emitExternal(event), currentAutomationOrigin())({
       type: "library.item.downloaded",
       sessionId: "(system)",
       itemId: item.id,
@@ -120,7 +144,7 @@ export function emitItemDownloaded(item: LibraryItem): void {
       // 拼绝对路径:那会把一台机器的磁盘布局散进会被分享的钩子脚本里。
       pdfPath: item.pdfPath ?? "",
       ...(item.filePath ? { filePath: item.filePath } : {}),
-    }));
+    });
   } catch (err) {
     log.warn(`[library] 发下载完成事件失败(${item.id}):${(err as Error).message}`);
   }

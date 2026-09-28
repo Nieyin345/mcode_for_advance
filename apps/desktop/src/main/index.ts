@@ -39,6 +39,17 @@ import { applyAgentEnvironment } from "@main/env/agentEnv.js";
 import { getOnlyOfficeOrigin, shutdownOnlyOfficeBridge, flushOnlyOfficeSessions } from "@main/onlyoffice/OnlyOfficeBridge.js";
 import { showOnlyOfficeSaveError } from "@main/onlyoffice/persistenceAlerts.js";
 import { join } from "node:path";
+import { configureLibraryEvents, notifyLibraryChanged } from "@main/library/broadcast.js";
+import { importAnyFiles } from "@main/library/importDispatch.js";
+import { adoptMarkdownFile } from "@main/library/adoptMarkdown.js";
+import { configureCodeNodeLibraryHost } from "@main/orchestration/adoptFromCode.js";
+
+// 库导入/下载事件的发出口(钩子与「事件发生时」触发器都挂在 runtimeManager 上)。
+// 在模块顶层装配:下载队列可能在窗口出来前就恢复并完成条目。注入而非让
+// broadcast.ts 直接 import RuntimeManager 的理由见那边的 `LibraryEventRuntime`。
+configureLibraryEvents({ emitExternal: (event) => runtimeManager.emitExternal(event) });
+// code 节点「收进库 / 挂回 Markdown」的写库能力(理由见 adoptFromCode.ts 的 `CodeNodeLibraryHost`)。
+configureCodeNodeLibraryHost({ importAnyFiles, adoptMarkdownFile, notifyLibraryChanged });
 
 // App identity for OS-level surfaces (desktop notifications, taskbar grouping,
 // Windows AUMID). setName("Mcode") makes the system notification card title
