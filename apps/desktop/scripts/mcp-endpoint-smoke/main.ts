@@ -633,12 +633,15 @@ eq("…handler 真的被调了", __handlerCalls, ["library_probe:对齐"]);
 
 const realReadOnly = await host.callTool("workflow_list", {}, { sessionId: "s1" });
 eq("真工作流的只读工具也不弹卡", approvalCalls.length, 0);
-// 库是空的,但**内置工作流**还在(七份),所以这里的"跑出了结果"是指那份清单的
+// 库是空的,但**自带的那几份工作流**还在,所以这里的"跑出了结果"是指那份清单的
 // 形状对,而不是"一条都没有"。这一条要证的是"放行了并且真的走到了真 handler",
 // 内容本身由 mcode-admin-smoke 管。
+// ⚠️ 早先这里还要求正文含「内置」二字。「内置」标注已于 2026-09-26 退役
+// (mcodeServer.ts:「不再标内置/自建」),这条之所以一直绿,只是因为某份自带工作流的
+// 描述里碰巧有这两个字 —— f87c6fe 改了那段描述它就红了。改成认一份一定在的自带项。
 check(
-  "…并且真的跑出了结果(内置那几份的清单)",
-  realReadOnly.text.includes("份:") && realReadOnly.text.includes("内置"),
+  "…并且真的跑出了结果(自带那几份的清单)",
+  realReadOnly.text.includes("份:") && realReadOnly.text.includes("id=`default`"),
   realReadOnly.text,
 );
 check(
