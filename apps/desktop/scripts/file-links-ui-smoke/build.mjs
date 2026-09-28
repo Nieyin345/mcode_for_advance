@@ -1,0 +1,21 @@
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, copyFileSync } from 'node:fs';
+import {createRequire} from 'node:module';
+const source=dirname(fileURLToPath(import.meta.url));
+const desktop=resolve(source,'../..');
+const require=createRequire(join(desktop,'package.json'));
+const esbuild=createRequire(require.resolve('vite'))('esbuild');
+mkdirSync(join(desktop,'.tmp'),{recursive:true});
+const dir=mkdtempSync(join(desktop,'.tmp','file-links-ui-'));
+for(const name of ['main.tsx','stubs.tsx','verify.mjs'])copyFileSync(join(source,name),join(dir,name));
+copyFileSync(join(desktop,'scripts/workflow-ui-smoke/browser.mjs'),join(dir,'browser.mjs'));
+writeFileSync(join(dir,'index.html'),'<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="app.css"></head><body><div id="root"></div><script src="bundle.js"></script></body></html>');
+writeFileSync(join(dir,'app.css'),'body{font-family:sans-serif;padding:40px}#fixture{padding:20px} [role=menu]{background:white;border:1px solid #ccc;min-width:240px} [role=menuitem]{padding:10px;cursor:pointer} [role=menuitem]:focus{background:#ddeeff} .block{display:block} .flex{display:flex} .flex-1{flex:1}');
+console.log('File link browser artifacts: '+dir);
+const result=await esbuild.build({entryPoints:[join(dir,'main.tsx')],bundle:true,platform:'browser',format:'iife',jsx:'automatic',tsconfig:join(desktop,'tsconfig.json'),absWorkingDir:desktop,define:{'process.env.NODE_ENV':'"production"'},outfile:join(dir,'bundle.js'),logLevel:'error',metafile:true,plugins:[{name:'isolated-host',setup(build){
+ build.onResolve({filter:/^@renderer\/(lib\/(api|i18n\/index|platform|fileIcon)|stores\/sessionStore)\.js$/},()=>({path:join(dir,'stubs.tsx')}));
+}}]});
+for(const path of ['components/chat/FileLink.tsx','lib/fileLink.ts','lib/path.ts'])if(!Object.keys(result.metafile.inputs).some(p=>p.replaceAll('\\','/').endsWith(path)))throw Error('Production coverage missing: '+path);
+writeFileSync(join(dir,'metafile.json'),JSON.stringify(result.metafile,null,2));
+await import(pathToFileURL(join(dir,'verify.mjs')).href);

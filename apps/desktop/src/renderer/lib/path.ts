@@ -24,6 +24,8 @@ export function dirname(p: string): string {
   const last = p.lastIndexOf("/");
   const lastBack = p.lastIndexOf("\\");
   const cut = Math.max(last, lastBack);
+  // Keep filesystem roots: "D:" is drive-relative and "" loses POSIX root.
+  if (cut === 0 || (cut === 2 && /^[A-Za-z]:/.test(p))) return p.slice(0, cut + 1);
   return cut < 0 ? "" : p.slice(0, cut);
 }
 
@@ -72,34 +74,32 @@ export function relativePath(absPath: string, root: string): string {
  *  renderer-side stand-in for `path.resolve`/`path.normalize`.
  *  `resolveRelativePath("D:/proj/docs", "images/../img/a.png")`
  *    -> `"D:/proj/docs/img/a.png"`.
- *  Absolute inputs (drive-letter or POSIX root) are normalized in place
+ *  Absolute inputs (drive-letter, UNC share or POSIX root) are normalized in place
  *  without joining; `..` never escapes past a filesystem root. Output uses
  *  forward slashes (drive paths keep their `D:` prefix, POSIX keeps `/`).
  *  Renderer-safe: pure string arithmetic over both separators. */
 export function resolveRelativePath(baseDir: string, rel: string): string {
   const normRel = rel.replace(/\\/g, "/");
-  const joinedNorm = (
-    /^[A-Za-z]:[\\/]/.test(normRel) || normRel.startsWith("/")
-      ? normRel
-      : joinPath(baseDir.replace(/[\\/]+$/, ""), normRel)
-  ).replace(/\\/g, "/");
-  // Absolute joined paths (POSIX "/..." or drive "D:/...") clamp `..` at the
-  // filesystem root; only slash-rooted paths get the leading "/" back on
-  // output — drive paths start with the letter, not a slash.
-  const isAbsolute = joinedNorm.startsWith("/") || /^[A-Za-z]:\//.test(joinedNorm);
-  const slashRoot = joinedNorm.startsWith("/");
+  const base = baseDir.replace(/\\/g, "/");
+  const joined = /^[A-Za-z]:\//.test(normRel) || normRel.startsWith("/")
+    ? normRel
+    : base ? `${base.replace(/\/+$/, "")}/${normRel}` : normRel;
+  // Remove the root before collapsing segments so neither drive letters nor
+  // UNC server/share components can be popped by `..`.
+  const rootMatch = /^(?:[A-Za-z]:\/|\/\/[^/]+\/[^/]+(?:\/|$)|\/)/.exec(joined);
+  const root = rootMatch?.[0] ?? "";
   const segments: string[] = [];
-  for (const seg of joinedNorm.split("/")) {
+  for (const seg of joined.slice(root.length).split("/")) {
     if (!seg || seg === ".") continue;
     if (seg === "..") {
       if (segments.length > 0 && segments[segments.length - 1] !== "..") {
         segments.pop();
-      } else if (!isAbsolute) {
+      } else if (!root) {
         segments.push("..");
       }
       continue;
     }
     segments.push(seg);
   }
-  return (slashRoot ? "/" : "") + segments.join("/");
+  return root + segments.join("/");
 }

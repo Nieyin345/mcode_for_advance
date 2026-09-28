@@ -23,7 +23,21 @@ const selected = ast.statements.filter(node =>
   ts.isVariableStatement(node) && node.declarationList.declarations.some(d =>
     ts.isIdentifier(d.name) && /TOGGLE_(LABEL|TITLE)_KEY$/.test(d.name.text)));
 for (const name of functions) assert.ok(selected.some(n => n.name?.text === name), `Missing production AST boundary: ${name}`);
-const code = ts.transpileModule(selected.map(n => n.getText(ast)).join("\n"), {
+// Import the production contract classifiers at AST boundaries too. A copied
+// extension regex goes stale when Office support changes independently.
+const officePath = join(desktop, "../../packages/contracts/src/ipc/onlyoffice.ts");
+const officeSource = readFileSync(officePath, "utf8");
+const officeAst = ts.createSourceFile(officePath, officeSource, ts.ScriptTarget.Latest, true);
+const officeNames = ["ONLYOFFICE_EDITABLE", "ONLYOFFICE_VIEW_ONLY",
+  "isOnlyOfficeSupportedPath", "isOnlyOfficeViewOnlyPath"];
+const officeNodes = officeAst.statements.filter(node =>
+  ts.isFunctionDeclaration(node) && officeNames.includes(node.name?.text) ||
+  ts.isVariableStatement(node) && node.declarationList.declarations.some(d =>
+    ts.isIdentifier(d.name) && officeNames.includes(d.name.text)));
+assert.equal(officeNodes.length, officeNames.length, "Production Office classifier boundaries");
+const code = ts.transpileModule([
+  ...officeNodes.map(n => n.getText(officeAst)), ...selected.map(n => n.getText(ast)),
+].join("\n"), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS,
     jsx: ts.JsxEmit.React, jsxFactory: "h" },
 }).outputText;
@@ -43,7 +57,6 @@ const env = {
   useCallback: fn => fn,
   useI18n: () => ({ t: key => key }),
   extname: file => /\.[^./\\]+$/.exec(file)?.[0].toLowerCase() ?? "",
-  isOnlyOfficeEditablePath: file => /\.(docx|xlsx|pptx|odt|ods|odp)$/i.test(file),
   monacoLanguageToLsp: () => null,
   languageForExt: () => "plaintext",
   LSP_LANGUAGE_DISPLAY: {},
@@ -143,15 +156,20 @@ test("history diff cannot be replaced by the live editor", () => {
   render(file).toggle.props.onClick();
   assert.equal(render(file).pane.type, "DiffPane");
 });
-for (const extension of ["docx", "xlsx", "pptx", "odt"]) test(`${extension}: Office edit/preview unchanged`, () => {
-  const file = "/workspace/doc." + extension; reset(file);
-  let r = render(file); assert.equal(r.pane.type, "OnlyOfficeEditorPane");
-  assert.equal(r.toggle.props.title, "ide.editor.switchToPreview");
-  r.toggle.props.onClick(); r = render(file);
-  assert.equal(r.pane.type, "OfficePreviewPane");
-  assert.equal(r.toggle.props.title, "ide.editor.switchToOfficeEdit");
-  r.toggle.props.onClick(); assert.equal(render(file).pane.type, "OnlyOfficeEditorPane");
-});
+// Office now has one OnlyOffice surface; old preferences cannot reopen the
+// removed local preview/source route. This follows production, not a new UI change.
+for (const extension of ["docx", "xlsx", "pptx", "odt", "doc", "xls", "ppt", "rtf"]) {
+  test(`${extension}: Office remains on its supported surface`, () => {
+    const file = "/workspace/doc." + extension;
+    for (const mode of [undefined, "edit", "preview", "wysiwyg"]) {
+      reset(file, mode); const r = render(file);
+      assert.equal(r.pane.type, "OnlyOfficeEditorPane");
+      assert.equal(r.toggle, undefined, "No obsolete Office preview/source toggle");
+      assert.equal(r.pane.props.readOnly, ["doc", "xls", "ppt", "rtf"].includes(extension));
+      assert.equal(changes.length, 0, "Opening must not rewrite stored preferences");
+    }
+  });
+}
 test("PDF remains preview-only", () => {
   const file = "/workspace/doc.pdf"; reset(file);
   const r = render(file); assert.equal(r.pane.type, "PdfPreviewPane"); assert.equal(r.toggle, undefined);

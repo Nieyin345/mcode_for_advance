@@ -18,7 +18,7 @@
  */
 import { api } from "@renderer/lib/api.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
-import { basename, joinPath } from "@renderer/lib/path.js";
+import { basename, joinPath, resolveRelativePath } from "@renderer/lib/path.js";
 
 /** Maximum candidates returned from the ambiguous-path search fallback. */
 const MAX_CANDIDATES = 12;
@@ -155,18 +155,27 @@ function knownWorkspaceRoots(): string[] {
 
 /** True if `absPath` is contained by one of the known project/worktree roots. */
 function isUnderKnownProject(absPath: string): boolean {
-  const norm = absPath.replace(/\\/g, "/");
-  for (const root of knownWorkspaceRoots()) {
-    const r = root.replace(/\\/g, "/").replace(/\/+$/, "");
-    if (!r) continue;
-    if (norm === r || norm.startsWith(r + "/")) return true;
-  }
-  return false;
+  return knownWorkspaceRoots().some(root => pathWithinRoot(absPath, root) !== null);
 }
 
-/** True if `token` is an absolute path (POSIX or Windows drive). */
+/** Lexical UI eligibility only; the main process still enforces filesystem
+ * containment. Windows drives/UNC compare case-insensitively, POSIX does not. */
+function pathWithinRoot(absPath: string, root: string): string | null {
+  if (!isAbsolutePath(absPath) || !isAbsolutePath(root)) return null;
+  const absolute = resolveRelativePath("", absPath);
+  const normalizedRoot = resolveRelativePath("", root);
+  const windows = /^[A-Za-z]:\//.test(normalizedRoot) || normalizedRoot.startsWith("//");
+  const a = windows ? absolute.toLowerCase() : absolute;
+  const r = windows ? normalizedRoot.toLowerCase() : normalizedRoot;
+  if (a === r) return "";
+  const prefix = r.endsWith("/") ? r : r + "/";
+  return a.startsWith(prefix) ? absolute.slice(prefix.length) : null;
+}
+
+/** True if `token` is an absolute path (POSIX, Windows drive or UNC). */
 export function isAbsolutePath(token: string): boolean {
-  return token.startsWith("/") || /^[A-Za-z]:[\\/]/.test(token);
+  return token.startsWith("/") || /^[A-Za-z]:[\\/]/.test(token)
+    || /^\\\\[^\\/]+[\\/][^\\/]+/.test(token);
 }
 
 /**
@@ -205,7 +214,7 @@ function decodePercentLenient(s: string): string {
  * Convert a markdown href into a filesystem path (pure, no IPC).
  *
  * Two things to undo:
- *  - `file://` URIs: strip the `file://[host]` prefix and the extra leading
+ *  - `file://` URIs: retain remote hosts as UNC roots and strip the leading
  *    slash of drive URIs (`file:///D:/x` -> `D:/x`).
  *  - Percent-encoding: the markdown pipeline encodes non-ASCII in URLs at the
  *    hast layer (mdast-util-to-hast -> normalizeUri), so a Chinese filename
@@ -214,15 +223,17 @@ function decodePercentLenient(s: string): string {
  *    the raw form.
  */
 export function fileHrefToPath(href: string): string {
-  let h = href.trim();
-  if (/^file:\/\//i.test(h)) {
-    h = h.replace(/^file:\/\/(?:localhost)?/i, "");
+  // Strip URI suffixes BEFORE decoding: %23/%3F are literal filename chars.
+  let h = href.trim().split(/[?#]/, 1)[0];
+  const fileUri = /^file:\/\/([^/\\]*)([\s\S]*)$/i.exec(h);
+  if (fileUri) {
+    const [, host, path] = fileUri;
+    h = !host || host.toLowerCase() === "localhost"
+      ? path
+      : /^[A-Za-z]:$/.test(host) ? host + path : `//${host}${path}`;
     if (/^\/[A-Za-z]:[\\/]/.test(h)) h = h.slice(1);
   }
-  if (h.includes("%")) {
-    h = decodePercentLenient(h);
-  }
-  return h;
+  return h.includes("%") ? decodePercentLenient(h) : h;
 }
 
 /**
@@ -247,7 +258,8 @@ export async function resolveFilePathToken(
   // 1) Absolute path.
   if (isAbsolutePath(clean)) {
     if (isUnderKnownProject(clean)) {
-      return [{ path: clean, relativePath: relativeOrSelf(clean, projectPath) }];
+      const path = resolveRelativePath("", clean);
+      return [{ path, relativePath: relativeOrSelf(path, projectPath) }];
     }
     // Absolute but not under a known project — can't open it.
     return [];
@@ -267,17 +279,10 @@ export async function resolveFilePathToken(
     if (exact) {
       return [{ path: exact.path, relativePath: exact.relativePath }];
     }
-    // Also try the joined absolute path as a containment check fallback —
-    // some files may be excluded from search (ignored entries) but still
-    // openable. We can't stat from the renderer, but if the search returned
-    // a candidate whose path ends with our relative segment, treat as found.
-    const suffix = norm;
-    const suffixMatch = res.files.find(
-      (f) => f.path.endsWith(suffix) || f.path.endsWith("/" + suffix),
-    );
-    if (suffixMatch) {
-      return [{ path: suffixMatch.path, relativePath: suffixMatch.relativePath }];
-    }
+    // A suffix may identify several files. Preserve all choices and require
+    // a separator boundary; "not-a.ts" is not an exact suffix for "a.ts".
+    const suffixMatches = res.files.filter((f) => normalizeRel(f.relativePath).endsWith("/" + norm));
+    if (suffixMatches.length) return rankCandidates(suffixMatches, norm);
   } catch {
     // search failure -> fall through to ambiguous lookup
   }
@@ -299,6 +304,14 @@ async function resolveAmbiguous(
     return [];
   }
 
+  return rankCandidates(files, token);
+}
+
+/** Shared ranking for suffix choices and the broader substring fallback. */
+function rankCandidates(
+  files: { name: string; path: string; relativePath: string }[],
+  token: string,
+): ResolvedCandidate[] {
   const lower = token.toLowerCase();
   const base = basename(token).toLowerCase();
 
@@ -332,11 +345,7 @@ async function resolveAmbiguous(
 
 /** Relative path of `abs` against `root`, falling back to `abs` itself. */
 function relativeOrSelf(abs: string, root: string | null | undefined): string {
-  if (!root) return abs;
-  const normAbs = abs.replace(/\\/g, "/");
-  const normRoot = root.replace(/\\/g, "/").replace(/\/+$/, "");
-  if (normAbs.startsWith(normRoot + "/")) return normAbs.slice(normRoot.length + 1);
-  return abs;
+  return root ? pathWithinRoot(abs, root) ?? abs : abs;
 }
 
 // ── Text splitting (render-time, synchronous) ─────────────────────────
