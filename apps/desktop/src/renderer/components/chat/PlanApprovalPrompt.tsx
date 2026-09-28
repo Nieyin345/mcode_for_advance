@@ -97,6 +97,8 @@ export function PlanApprovalPrompt({
   const draft = useSessionStore(
     (s) => s.planApprovalDraftBySession[sessionId] ?? plan,
   );
+  const settingsOpen = useSessionStore((s) => s.settingsOpen);
+  const promptActive = active && !settingsOpen;
   const { t } = useI18n();
   const [feedback, setFeedback] = useState("");
 
@@ -195,7 +197,7 @@ export function PlanApprovalPrompt({
   };
 
   const handlePrimary = () => {
-    if (!active) return;
+    if (!promptActive) return;
     if (exec === "current") {
       handleApprove();
       return;
@@ -215,7 +217,7 @@ export function PlanApprovalPrompt({
   };
 
   const handleReject = () => {
-    if (!active) return;
+    if (!promptActive) return;
     onReject(hasFeedback ? feedback.trim() : undefined);
   };
 

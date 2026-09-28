@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button } from "@renderer/components/ui/index.js";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import {
   IconAlertTriangle,
   IconChevronDown,
@@ -62,6 +63,8 @@ export function ApprovalPrompt({
   onDecide: (granted: boolean, always?: boolean) => void;
 }) {
   const { t } = useI18n();
+  const settingsOpen = useSessionStore((s) => s.settingsOpen);
+  const promptActive = active && !settingsOpen;
   const [open, setOpen] = useState(false);
   const [always, setAlways] = useState(false);
   const allowRef = useRef<HTMLButtonElement>(null);
@@ -75,16 +78,16 @@ export function ApprovalPrompt({
   // so Enter confirms without an extra click. Also bring the whole card
   // into view in case the queue scrolled it out.
   useEffect(() => {
-    if (!active || !cardRef.current?.getClientRects().length ||
+    if (!promptActive || !cardRef.current?.getClientRects().length ||
         document.querySelector('[aria-modal="true"]')) return;
     allowRef.current?.focus();
     cardRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [active, toolName, queuePosition]);
+  }, [promptActive, toolName, queuePosition]);
 
   // Keyboard decisions are local to this card, never document-wide:
   // hidden keep-alive sessions must not consume another session's Escape.
   const decide = (granted: boolean) => {
-    if (!active) return;
+    if (!promptActive) return;
     onDecide(granted, granted ? always : undefined);
   };
 
@@ -95,7 +98,7 @@ export function ApprovalPrompt({
     <div
       ref={cardRef}
       onKeyDown={(e) => {
-        if (!active || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229 ||
+        if (!promptActive || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229 ||
             !e.currentTarget.contains(e.target as Node)) return;
         if (e.key === "Escape") {
           e.preventDefault();

@@ -556,8 +556,7 @@ function ChatPaneForSession({
   });
   // Pending AskUserQuestion (per-session bucket — another tab's question
   // does not clobber this one).
-  const settingsOpen = useSessionStore((s) => s.settingsOpen);
-  const promptActive = isActive && !settingsOpen;
+  const promptActive = isActive;
   const pendingQuestion = useSessionStore((s) => s.pendingQuestionBySession[sessionId] ?? null);
   // Session-scoped dismiss. The store's `dismissQuestion()` targets
   // `activeSessionId`, but a side-chat pane shows a different session beside

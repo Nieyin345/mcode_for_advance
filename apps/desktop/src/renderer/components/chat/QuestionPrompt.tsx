@@ -12,6 +12,7 @@ import {
 } from "@renderer/lib/icons.js";
 import type { AskUserQuestionItem } from "@contracts/runtime";
 import type { UserInputAnswers } from "@contracts/provider";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
 
 /**
  * Prompt card shown when claude invokes the AskUserQuestion tool.
@@ -63,6 +64,8 @@ export function QuestionPrompt({
   onDismiss: () => void;
 }) {
   const { t } = useI18n();
+  const settingsOpen = useSessionStore((s) => s.settingsOpen);
+  const promptActive = active && !settingsOpen;
   // answers[i] holds: selected option labels + optional free text.
   const [answers, setAnswers] = useState<Array<{ selected: string[]; text: string }>>(
     questions.map(() => ({ selected: [], text: "" })),
@@ -111,7 +114,7 @@ export function QuestionPrompt({
   // in-flight submit, released when the parent's promise settles.
   const submittingRef = useRef(false);
   const submit = () => {
-    if (!active || submittingRef.current) return;
+    if (!promptActive || submittingRef.current) return;
     // Compose the SDK-shaped answers map: keyed by question text, value is
     // the joined labels (multi-select), the single label (single-select),
     // or the free text. Unanswered questions are omitted.
@@ -135,7 +138,7 @@ export function QuestionPrompt({
   // Use the card's event scope, not document. A portal outside the card and
   // an IME candidate-confirmation key are not answers to this question.
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (!active || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229 ||
+    if (!promptActive || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229 ||
         !e.currentTarget.contains(e.target as Node)) return;
     if (e.key === "Escape") {
       e.preventDefault();
@@ -206,7 +209,7 @@ export function QuestionPrompt({
           )}
           <button
             type="button"
-            onClick={() => { if (active) onDismiss(); }}
+            onClick={() => { if (promptActive) onDismiss(); }}
             title={t("chat.question.dismiss")}
             aria-label={t("chat.question.dismiss")}
             className="shrink-0 rounded p-0.5 text-content-muted transition-colors hover:bg-surface-hover hover:text-content"

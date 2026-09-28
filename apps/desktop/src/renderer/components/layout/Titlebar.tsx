@@ -70,7 +70,8 @@ export function Titlebar({
   onBack,
 }: Props) {
   const { t } = useI18n();
-  const isSettings = mode === "settings";
+  const settingsOpen = useSessionStore((s) => s.settingsOpen);
+  const isSettings = mode === "settings" || settingsOpen;
   // The browser overlay toggle now lives in the right-panel rail, but the
   // overlay still forces the side panels closed and hides their toggles when
   // open. Read its state straight from the store; the "返回工作台" button

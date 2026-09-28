@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef } from "react";
+import { lazy, memo, Suspense, useEffect, useMemo, useRef } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { ThreePaneLayout } from "./components/layout/ThreePaneLayout.js";
 import { Divider } from "./components/layout/Divider.js";
@@ -61,6 +61,75 @@ const SettingsPage = lazy(() =>
 const FileViewer = lazy(() =>
   import("./components/library/FileViewer.js").then((m) => ({ default: m.FileViewer })),
 );
+
+/**
+ * Subscribe to settings visibility outside the App root. The workspace shell
+ * stays mounted underneath this overlay (terminals own live PTYs); subscribing
+ * in App itself made opening settings reconcile the entire chat/editor tree.
+ * The memo boundary also keeps unrelated App renders from re-rendering the
+ * overlay while it is open.
+ */
+const SettingsOverlay = memo(function SettingsOverlay() {
+  const open = useSessionStore((s) => s.settingsOpen);
+  if (!open) return null;
+  return (
+    <div className="settings-root absolute inset-0 z-30 flex bg-surface-muted">
+      <Suspense fallback={null}>
+        <SettingsPage />
+      </Suspense>
+    </div>
+  );
+});
+
+interface WorkspaceSidebarProps {
+  leftOpen: boolean;
+  leftBarMode: string;
+  leftWidthPct: number;
+  onResizeLeft: (deltaPx: number) => void;
+  onResetLeft: () => void;
+}
+
+const WorkspaceSidebarContents = memo(function WorkspaceSidebarContents({ mode }: { mode: string }) {
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      {mode === "stream" ? <StreamSidebar /> : <LeftBar />}
+    </div>
+  );
+});
+
+/** Keep settings visibility out of App's subscription set: opening settings
+ *  only needs to hide this rail, not reconcile the workspace below it. */
+const WorkspaceSidebar = memo(function WorkspaceSidebar({
+  leftOpen,
+  leftBarMode,
+  leftWidthPct,
+  onResizeLeft,
+  onResetLeft,
+}: WorkspaceSidebarProps) {
+  const settingsOpen = useSessionStore((s) => s.settingsOpen);
+  return (
+    <>
+      <aside
+        className={cn(
+          "flex h-full min-w-0 shrink-0 flex-col rounded-tl-3xl bg-surface-muted",
+          (!leftOpen || settingsOpen) && "hidden",
+        )}
+        style={{ flexGrow: 0, flexBasis: `${leftWidthPct}%` }}
+      >
+        <WorkspaceSidebarContents mode={leftBarMode} />
+      </aside>
+      {leftOpen && !settingsOpen && (
+        <Divider
+          orientation="vertical"
+          hideLine
+          className="z-20"
+          onResize={onResizeLeft}
+          onDoubleClick={onResetLeft}
+        />
+      )}
+    </>
+  );
+});
 
 export function App() {
   // Subscribe to the claude event stream for the app's whole lifetime.
@@ -140,7 +209,6 @@ export function App() {
   /** Settings page visibility — opened from the LeftBar ⚙ footer, the
    *  CLI-missing CTA, or the model-dropdown "manage models" entry. Renders as
    *  a sibling view (not a modal) sharing the same titlebar + pane shell. */
-  const settingsOpen = useSessionStore((s) => s.settingsOpen);
   const setSettingsOpen = useSessionStore((s) => s.setSettingsOpen);
 
   /** Left / right sidebar + bottom terminal visibility. Lifted from local
@@ -251,54 +319,13 @@ export function App() {
           beside the browser overlay so it covers both the chat and right
           columns. Renders null when not applicable. */}
       <WidePlanDialog />
-      {/*
-        Left sidebar — spans the FULL window height. Its share of the width
-        is a persisted percentage (default 12 ≈ a compact ~259px sidebar on a
-        2160px window); the Divider below is draggable (invisible hairline —
-        the sidebar and the toolbar/track share the same muted surface, a
-        hairline would cut the continuous frame; the resize cursor is the
-        affordance) and double-click resets to the default. Wide-panel mode
-        forces leftOpen=false in the store — the aside responds by CSS-hiding
-        (below), NOT unmounting, so toggling wide never cold-rebuilds the
-        project tree / stream list (which would refetch sessions via IPC).
-        While the settings view is open the aside is hidden via CSS too
-        (stays mounted to preserve scroll) so settings renders FULL-WIDTH
-        below the toolbar instead of only over the right column.
-        bg-surface-muted matches the toolbar to the right and the panel track,
-        so all three read as one continuous frame — no right-edge rounding;
-        rounded-tl alone carries the window-corner arc on macOS.
-      */}
-      <aside
-        className={cn(
-          // min-w-0 kills the flex `min-width: auto` content floor —
-          // without it the widest nowrap row in LeftBar (e.g. a long
-          // session title, which contributes its full text width to
-          // min-content) propped the aside open no matter how small
-          // leftWidthPct got.
-          "flex h-full min-w-0 shrink-0 flex-col rounded-tl-3xl bg-surface-muted",
-          (!leftOpen || settingsOpen) && "hidden",
-        )}
-        style={{ flexGrow: 0, flexBasis: `${leftWidthPct}%` }}
-      >
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          {/* Left-bar view preference: classic project tree or the
-              session-first stream. Both are pure renderers over the same
-              store; switching keeps running turns untouched. */}
-          {leftBarMode === "stream" ? <StreamSidebar /> : <LeftBar />}
-        </div>
-      </aside>
-      {leftOpen && !settingsOpen && (
-        <Divider
-          orientation="vertical"
-          hideLine
-          // z-20 lifts the invisible ±5px hit area above the center pane's
-          // z-10 — without it the pane (later in DOM, same z) swallowed the
-          // right half of the grab zone, leaving only the sidebar-side 5px.
-          className="z-20"
-          onResize={handleLeftResize}
-          onDoubleClick={resetLeftWidthPct}
-        />
-      )}
+      <WorkspaceSidebar
+        leftOpen={leftOpen}
+        leftBarMode={leftBarMode}
+        leftWidthPct={leftWidthPct}
+        onResizeLeft={handleLeftResize}
+        onResetLeft={resetLeftWidthPct}
+      />
       {/*
         Right column — the 7 of the 3:7 split: the toolbar (Titlebar) on top
         and the main panel below (center chat/editor pane + right IDE panel,
@@ -321,10 +348,10 @@ export function App() {
           left sidebar stays visible alongside it).
         */}
         <Titlebar
-          mode={settingsOpen ? "settings" : "workspace"}
+          mode="workspace"
           leftOpen={leftOpen}
-          rightOpen={settingsOpen ? false : rightOpen}
-          bottomTerminalOpen={settingsOpen ? false : bottomTerminalOpen}
+          rightOpen={rightOpen}
+          bottomTerminalOpen={bottomTerminalOpen}
           onBack={() => setSettingsOpen(false)}
           onToggleLeft={() => setLeftOpen(!leftOpen)}
           onToggleRight={() => setRightOpen(!rightOpen)}
@@ -372,29 +399,7 @@ export function App() {
           <Suspense fallback={null}>
             <GitDiffDialog />
           </Suspense>
-          {/*
-            Settings overlay — renders on top of the always-mounted workspace
-            shell, FULL-WIDTH: the left aside above is CSS-hidden while
-            settings is open, so this overlay (inset-0 of the panel row, which
-            now spans the whole window) covers everything below the toolbar.
-            The workspace still mounts underneath, keeping terminals alive,
-            just not visible. bg-surface-muted is opaque (no bleed-through)
-            and doubles as the settings "track": it shows through the content
-            pane's rounded-tl/bl notches so the settings arcs read exactly
-            like the workspace center pane against its frame.
-            `flex` is required: SettingsPage reuses
-            ThreePaneLayout, whose left <aside> + center <main> are sibling
-            nodes laid out horizontally by a flex parent. Without flex the
-            <main> collapses to height 0 and the settings content never
-            renders.
-          */}
-          {settingsOpen && (
-            <div className="settings-root absolute inset-0 z-30 flex bg-surface-muted">
-              <Suspense fallback={null}>
-                <SettingsPage />
-              </Suspense>
-            </div>
-          )}
+          <SettingsOverlay />
         </div>
       </div>
       {/* Global bottom-right corner: update notification card + toast stack
