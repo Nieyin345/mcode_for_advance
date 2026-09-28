@@ -45,6 +45,7 @@ NODE
   --alias:@renderer/components/templates/DocxPreview.js=./scripts/maint-m35-smoke/stubs/previewDeps.ts \
   --alias:@renderer/components/templates/PptxPreview.js=./scripts/maint-m35-smoke/stubs/previewDeps.ts \
   --alias:@renderer/components/templates/XlsxPreview.js=./scripts/maint-m35-smoke/stubs/previewDeps.ts \
+  --alias:@renderer/components/ide/OnlyOfficeEditorPane.js=./scripts/maint-m35-smoke/stubs/previewDeps.ts \
   --outfile="$OUT/preview.mjs" --log-level=error
 node "$OUT/preview.mjs" || status=1
 

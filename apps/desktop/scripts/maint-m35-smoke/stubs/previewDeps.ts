@@ -13,3 +13,6 @@ export const DocxPreview = () => null;
 export const PptxPreview = () => null;
 export const XlsxPreview = () => null;
 export const PdfPreview = () => null;
+// Office now renders through the OnlyOffice pane (7862578); like the other
+// viewers it is a non-rendered leaf here — the test is about the PDF branch.
+export const OnlyOfficeEditorPane = () => null;
