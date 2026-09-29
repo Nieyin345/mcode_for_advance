@@ -59,6 +59,19 @@ files:
   # main/runtimes/runtimeInstaller.ts). Exclude every platform variant; the
   # dash in the pattern keeps the JS package (claude-agent-sdk) itself.
   - "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**"
+  # `@napi-rs/canvas` 是 `pdfjs-dist` 的 optionalDependency,平台包里那个
+  # `skia.win32-x64-msvc.node` 有 **26MB**,占 `app.asar.unpacked` 的三成。
+  #
+  # 本仓**用不到它**:pdf.js 只在把页面**渲染成位图**(`page.render` / `createCanvas`)
+  # 时才需要一个 canvas 实现,而主进程对 PDF 只做**抽文本**(`library/pdfText.ts` 的
+  # `getTextContent`)—— 全仓 `page.render` 与 `createCanvas` 各 0 处,源码里也一处都没
+  # import 过 `@napi-rs/canvas`。渲染那一路在 renderer 里走浏览器原生 Canvas,与它无关。
+  #
+  # 缺了它 pdf.js 只打一行 warning 就继续(冒烟日志里那句
+  # `Cannot load "@napi-rs/canvas" package` 就是实证,那几套一直是绿的)。
+  #
+  # ⚠️ 哪天要加 PDF 缩略图 / 服务端渲染,把这条删掉即可 —— 别改成在代码里绕开。
+  - "!**/node_modules/@napi-rs/**"
 
 # 内置技能（`resources/builtin-skills/`，随应用发布的 docx/pptx/xlsx/pdf 四个）**已删**
 # —— 2026-09-20，用户决定不要内置技能，以后一律从 GitHub 自己导。
