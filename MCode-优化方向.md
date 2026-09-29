@@ -2299,3 +2299,45 @@ automation 五套全绿。
 
 **验证**:曾失败的 8 套现在 7 套 PASS(第 8 套是环境);contracts + desktop `tsc` 均 0 错误;
 新增 `maint-m38-smoke` 6/6。分 6 次提交,每次单独验证。
+
+### 3.28 发版前全面检修:打包链路实跑 + 173 套全量矩阵(2026-09-29,用户要打包)
+
+用户原话:「详细检查 mcode 代码,所有的方方面面都进行一轮检修,有问题直接修复,检修完成
+之后我要打包了」。**"要打包"决定了检修的重心** —— 不是泛泛读代码,而是把发版链路
+从头到尾真跑一遍,再用全量冒烟兜底。
+
+**做法与结果**:
+
+| 环节 | 结果 |
+|---|---|
+| `pnpm build`(electron-vite) | ✅ 7m57s,main 13.3MB / preload 0.2MB / renderer 70.8MB |
+| `electron-builder --publish never` | ✅ PACK_EXIT=0,`Mcode-0.1.54-x64.exe` |
+| 全量冒烟 **173 套**(逐套矩阵) | ✅ 172 通过,唯一失败已修 |
+| contracts + desktop `tsc` | ✅ 0 错误 |
+| 自动更新链路(`latest.yml` / `app-update.yml`) | ✅ url 无空格、sha512/size 齐全、owner/repo 正确 |
+| 安全面(contextIsolation / nodeIntegration / CSP) | ✅ 全对,无 `webSecurity:false` |
+| sourcemap 泄漏 | ✅ `out/` 无 `.map`;包里 19 个第三方 `.map` 共 0.06MB,不值得动 |
+
+**修的两处**:
+
+**① `@napi-rs/canvas` —— 26MB 的 skia 二进制,本仓一行都没用到**(`d67c0ff`)。
+它是 `pdfjs-dist` 的 optionalDependency,被 electron-builder 的依赖收集带进了包。
+但 pdf.js 只在把页面**渲染成位图**时才需要 canvas 实现,而主进程对 PDF 只做抽文本
+(`getTextContent`)—— 全仓 `page.render` / `createCanvas` 各 **0 处**。实测:
+安装包 **131.5 → 122.3 MB**,`app.asar.unpacked` **86.1 → 50.1 MB(-42%)**。
+
+**② 浏览器冒烟的 `DevToolsActivePort` 竞态 —— 4 份副本里修了 1 份、漏了 4 份**(`3a9a5b9`)。
+`file-links-ui-smoke` 在矩阵里报 `EBUSY: resource busy or locked`,单独重跑就过。根因是
+等浏览器就绪的判据写成了"文件出不出现",而 Windows 上 `existsSync` 为真那一刻浏览器
+可能还攥着独占句柄。**`maint-m25-smoke` 早就这么修过了**(注释都写着 "poll the READ,
+not just existence"),但没回传给另外 4 个副本 —— 仓库里 5 份 `browser.mjs`、**4 个不同
+哈希**,被 11 套 UI 冒烟各自 copy 走。套用 m25 那份已验证的写法,抽验 8 套在负载下全绿。
+
+**又一次撞上"副本"这条病根**(3.27 已记过一次:Office 扩展名正则 / 图标清单 / 包装名
+白名单)。这次是**工具本身**被复制了五份:一个 bug 修一次、剩下四处继续犯。
+**后续建议**:5 份 `browser.mjs` 收敛成一份共享实现 —— 但 4 个哈希说明它们已各自漂过,
+合并需要逐套回归,**不适合在发版前动**,记在这里等下一个窗口。
+
+**没做的**:`pnpm audit` 在国内镜像上不可用(`ERR_PNPM_AUDIT_ENDPOINT_NOT_EXISTS`),
+不是代码问题;node-pty 跨平台 prebuilds 约 2.6MB 可裁,但 `files` 是平台无关的、
+裁掉会伤 mac 打包,收益不抵风险。
