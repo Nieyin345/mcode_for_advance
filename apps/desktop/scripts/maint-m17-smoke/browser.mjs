@@ -53,13 +53,23 @@ export async function withAuditPage(dir, fn) {
   try{
     const deadline=Date.now()+25000;
     const activePort=join(profile,'DevToolsActivePort');
-    while(!existsSync(activePort)){
+    // ⚠️ Windows:浏览器刚建完这个文件时可能还攥着独占句柄(EBUSY),而且内容可能只写了
+    // 一半。所以轮询的判据是**能不能读出东西**,不是文件在不在 —— 只等 existsSync 会在
+    // 机器忙的时候偶发 `EBUSY: resource busy or locked`,报出来像被测代码坏了。
+    // (同 maint-m25-smoke/browser.mjs 那份已验证的写法。)
+    let portText='';
+    for(;;){
       if(spawnError)throw spawnError;
       if(child.exitCode!==null)throw new Error('Owned browser exited before publishing its port');
       if(Date.now()>deadline)throw new Error('Owned browser did not publish DevToolsActivePort');
       await sleep(100);
+      if(existsSync(activePort)){
+        try{portText=readFileSync(activePort,'utf8');}catch{portText='';}
+        if(portText.trim())break;
+      }
+      await sleep(100);
     }
-    const [port]=readFileSync(activePort,'utf8').trim().split(/\r?\n/);
+    const [port]=portText.trim().split(/\r?\n/);
     if(!/^\d+$/.test(port))throw new Error('Invalid owned browser port');
     const targets=await(await fetch(`http://127.0.0.1:${port}/json/list`)).json();
     const target=targets.find(x=>x.type==='page');
