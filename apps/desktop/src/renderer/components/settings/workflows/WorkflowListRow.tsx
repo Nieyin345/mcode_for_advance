@@ -59,6 +59,10 @@ export function WorkflowListRow({
         {entry.edited && (
           <WorkflowBadge tone="accent">{t("settings.workflows.badgeEdited")}</WorkflowBadge>
         )}
+        {/* 软件自带的这一份出厂版有更新(见 applyShippedWorkflowUpdate)。 */}
+        {entry.shippedUpdate && (
+          <WorkflowBadge tone="info">{t("settings.workflows.badgeShippedUpdate")}</WorkflowBadge>
+        )}
         {unsaved && (
           // 一颗实心小点,不是徽章:它说的是"还没定下来",而徽章读起来像个状态。
           // 用 `ml-auto` 顶到最右边,和名字之间隔着一段 —— 名字长短不一,挨着写会

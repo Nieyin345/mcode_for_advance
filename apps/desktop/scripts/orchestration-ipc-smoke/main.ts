@@ -160,17 +160,17 @@ async function callAsync(channel: string, raw?: unknown): Promise<unknown> {
 /** 把 `unknown` 收成能点属性的形状 —— 断言里读返回值的字段用。 */
 const obj = (v: unknown): Record<string, unknown> => v as Record<string, unknown>;
 
-/* ──────────────── 1. 26 条 handler 一条不少、一条不多 ──────────────── */
+/* ──────────────── 1. 28 条 handler 一条不少、一条不多 ──────────────── */
 
 console.log("\n注册面");
 
-// 26 这个数字是**数出来的**(下面按名字逐条对),不是抄的。少一条 = 渲染端某个按钮
+// 28 这个数字是**数出来的**(下面按名字逐条对),不是抄的。少一条 = 渲染端某个按钮
 // 点了没反应;多一条 = 白名单那边没跟上(renderer 根本调不到,但说明有人改了这里
 // 却没改契约那一份)。
 const registered = [...handlers.keys()].sort();
 check(
-  `注册了 26 条 handler(实际 ${registered.length})`,
-  registered.length === 26,
+  `注册了 28 条 handler(实际 ${registered.length})`,
+  registered.length === 28,
   registered,
 );
 
@@ -201,10 +201,12 @@ const expectedChannels: Array<[string, string]> = [
   ["命令模板(存)", IPC.AUTOMATION_WATCH_TEMPLATES_SAVE],
   ["钉住默认工作流", IPC.WORKFLOW_PIN_DEFAULT],
   ["恢复默认", IPC.WORKFLOW_RESTORE_DEFAULT],
+  ["应用出厂版更新", IPC.WORKFLOW_APPLY_SHIPPED_UPDATE],
+  ["忽略出厂版更新", IPC.WORKFLOW_DISMISS_SHIPPED_UPDATE],
   ["自定义 UI 运行自动化", IPC.CUSTOM_UI_RUN_AUTOMATION],
 ];
 const missing = expectedChannels.filter(([, ch]) => !handlers.has(ch)).map(([name]) => name);
-same("剩下那条名叫「命令模板(读)」在内的 26 条一条不缺", missing, []);
+same("剩下那条名叫「命令模板(读)」在内的 28 条一条不缺", missing, []);
 
 /* ──────────────── 2. 种子铺出来的目录 ──────────────── */
 
@@ -1516,6 +1518,82 @@ console.log("\n没有界面在听的时候");
     true,
   );
   setWindow({ alive: true });
+}
+
+/* ──────────────── 19. 自带工作流的出厂版更新(2026-09-30) ──────────────── */
+
+console.log("\n出厂版更新");
+
+{
+  const { WorkflowRepo } = await import("@main/store/repositories.js");
+  const { BUILTIN_WORKFLOWS } = await import("@main/orchestration/builtins.js");
+  type Entry = { id: string; shippedUpdate?: boolean };
+  const list = async (): Promise<Entry[]> => obj(await callAsync(IPC.WORKFLOW_LIST)).workflows as Entry[];
+  const flagOf = async (id: string) => (await list()).find((e) => e.id === id)?.shippedUpdate === true;
+  const staleAck = (id: string) => {
+    const raw = SettingRepo.get("workflow.shippedRevisions");
+    const map = raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    map[id] = "0".repeat(64);
+    SettingRepo.set("workflow.shippedRevisions", JSON.stringify(map));
+  };
+  const alive = new Set((await list()).map((e) => e.id));
+  const promptOne = BUILTIN_WORKFLOWS.find((d) => d.nodes.length === 0 && alive.has(d.id) && (d.prompt ?? "").length > 0);
+  const withTrigger = BUILTIN_WORKFLOWS.find((d) => alive.has(d.id) && d.nodes.some((n) => n.type === "mcode.trigger"));
+  check("找得到一份提示词型、一份带触发器的自带工作流", promptOne !== undefined && withTrigger !== undefined, [...alive]);
+
+  if (promptOne && withTrigger) {
+    const id = promptOne.id;
+    eq("刚播种的自带行:没有更新标记", await flagOf(id), false);
+
+    // 用户改过、出厂版没变 → 不提示(已记到当前出厂版)。
+    WorkflowRepo.save({ ...promptOne, prompt: "用户自己改的一版", builtin: false, updatedAt: Date.now() });
+    eq("用户改过但出厂版没变:不提示", await flagOf(id), false);
+
+    // 出厂版变了(记录落后)而这一行不等于新版 → 提示。
+    staleAck(id);
+    eq("出厂版变了、这一行不是新版:提示有更新", await flagOf(id), true);
+
+    // 忽略:标记消失,内容不动。
+    resetSent();
+    eq("忽略 → ok", obj(await callAsync(IPC.WORKFLOW_DISMISS_SHIPPED_UPDATE, { id })).ok, true);
+    eq("忽略之后不再提示", await flagOf(id), false);
+    eq("忽略不改内容", (obj(await callAsync(IPC.WORKFLOW_GET, { id })).workflow as WorkflowDoc).prompt, "用户自己改的一版");
+    check("忽略也广播了(列表标记变了)", sent.length > 0, sent.length);
+
+    // 应用:换成出厂版,标记消失。
+    staleAck(id);
+    eq("再次落后 → 又提示", await flagOf(id), true);
+    eq("应用更新 → ok", obj(await callAsync(IPC.WORKFLOW_APPLY_SHIPPED_UPDATE, { id })).ok, true);
+    eq("应用之后内容就是出厂版", (obj(await callAsync(IPC.WORKFLOW_GET, { id })).workflow as WorkflowDoc).prompt, promptOne.prompt);
+    eq("应用之后不再提示", await flagOf(id), false);
+
+    // 用户关掉的触发器,更新后保持关闭。
+    const tid = withTrigger.id;
+    const trig = withTrigger.nodes.find((n) => n.type === "mcode.trigger")!;
+    WorkflowRepo.save({
+      ...withTrigger,
+      nodes: withTrigger.nodes.map((n) => (n.id === trig.id ? { ...n, params: { ...n.params, enabled: false } } : n)),
+      description: "旧描述",
+      builtin: false,
+      updatedAt: Date.now(),
+    });
+    staleAck(tid);
+    eq("带触发器的那份:提示有更新", await flagOf(tid), true);
+    eq("应用更新 → ok", obj(await callAsync(IPC.WORKFLOW_APPLY_SHIPPED_UPDATE, { id: tid })).ok, true);
+    const after = obj(await callAsync(IPC.WORKFLOW_GET, { id: tid })).workflow as WorkflowDoc;
+    eq("更新后描述回到出厂版", after.description, withTrigger.description);
+    eq("用户关掉的触发器保持关闭", after.nodes.find((n) => n.id === trig.id)?.params.enabled, false);
+    eq("更新后不再提示(即便触发器开关与出厂版不同)", await flagOf(tid), false);
+
+    // 删掉的自带工作流:不提示,也更新不回来。
+    await callAsync(IPC.WORKFLOW_REMOVE, { id });
+    staleAck(id);
+    check("删掉的自带工作流不出现在列表里", !(await list()).some((e) => e.id === id));
+    eq("删掉的更新不回来", obj(await callAsync(IPC.WORKFLOW_APPLY_SHIPPED_UPDATE, { id })).ok, false);
+    eq("删掉的也不会被更新写回", obj(await callAsync(IPC.WORKFLOW_GET, { id })).workflow, null);
+  }
+  eq("不是自带的 id:应用被拒", obj(await callAsync(IPC.WORKFLOW_APPLY_SHIPPED_UPDATE, { id: "wf_nowindow" })).ok, false);
+  eq("不是自带的 id:忽略被拒", obj(await callAsync(IPC.WORKFLOW_DISMISS_SHIPPED_UPDATE, { id: "wf_nowindow" })).ok, false);
 }
 
 /* ──────────────── 收尾 ──────────────── */

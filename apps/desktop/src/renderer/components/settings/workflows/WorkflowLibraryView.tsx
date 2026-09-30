@@ -206,6 +206,8 @@ export function WorkflowLibraryView({
   const [pendingPin, setPendingPin] = useState(false);
   /** 「恢复默认」的确认框开关(破坏性:当前版本会被钉住的快照覆盖)。 */
   const [pendingRestore, setPendingRestore] = useState(false);
+  const [pendingShippedUpdate, setPendingShippedUpdate] = useState(false);
+  const [shippedBusy, setShippedBusy] = useState(false);
   /** 最后发起的那次 `workflow.get`。用户连点两个工作流时两次请求会并发,回来顺序
    *  不保证 —— 只认最后一次发出的那个,否则详情面板会显示成上一个的内容。 */
   const docRequestRef = useRef<string | null>(null);
@@ -728,6 +730,49 @@ export function WorkflowLibraryView({
     }
   };
 
+  /** 「更新到出厂版」:主进程用新出厂版覆盖这一行,然后像「恢复默认」一样重开这份
+   *  文档 —— 用户要直接看见换成了什么。画布上的草稿属于被覆盖的旧版,一并收掉。 */
+  const applyShippedUpdate = async () => {
+    if (!entry) return;
+    setPendingShippedUpdate(false);
+    setSaveError(null);
+    setSaveNotes([]);
+    setShippedBusy(true);
+    try {
+      if (inflight.current) await inflight.current.promise;
+      const res = await api.workflow.applyShippedUpdate({ id: entry.id });
+      if (!res.ok) {
+        setSaveError(res.error ?? t("settings.workflows.unknownError"));
+        return;
+      }
+      DRAFTS.delete(entry.id);
+      refreshDrafts();
+      await loadList();
+      await openWorkflow(entry.id);
+      setSaveNotes([t("settings.workflows.shippedUpdateDone")]);
+    } catch (err) {
+      setSaveError(t("settings.workflows.actionFailed", { error: (err as Error).message }));
+    } finally {
+      setShippedBusy(false);
+    }
+  };
+
+  /** 「忽略」:只把这一版出厂内容记为已看过,文档不动。 */
+  const dismissShippedUpdate = async () => {
+    if (!entry) return;
+    setSaveError(null);
+    setShippedBusy(true);
+    try {
+      const res = await api.workflow.dismissShippedUpdate({ id: entry.id });
+      if (!res.ok) setSaveError(res.error ?? t("settings.workflows.unknownError"));
+      await loadList();
+    } catch (err) {
+      setSaveError(t("settings.workflows.actionFailed", { error: (err as Error).message }));
+    } finally {
+      setShippedBusy(false);
+    }
+  };
+
   /**
    * 导入成功之后(新建或覆盖)交接一下。
    *
@@ -965,6 +1010,9 @@ export function WorkflowLibraryView({
               {entry?.edited && (
                 <WorkflowBadge tone="accent">{t("settings.workflows.badgeEdited")}</WorkflowBadge>
               )}
+              {entry?.shippedUpdate && (
+                <WorkflowBadge tone="info">{t("settings.workflows.badgeShippedUpdate")}</WorkflowBadge>
+              )}
               {/* 保存 / 放弃 + 状态行。**摆在标题行,和"我在编辑哪个工作流"同一行** ——
                   这是这一页唯一一处"整份文档"的位置,而这两个动作正是文档级的。
                   自动保存那会儿没有这一块,因为没有什么可点的。
@@ -990,6 +1038,20 @@ export function WorkflowLibraryView({
                 </Button>
               </span>
             </div>
+          )}
+
+          {/* 出厂版有更新:新版本改了这份自带工作流的出厂内容。「更新」会覆盖这一份
+              (先确认),「忽略」只把这一版记为已看过。 */}
+          {entry?.shippedUpdate && baseline && (
+            <section className="mb-2 flex flex-wrap items-center gap-2 rounded-md border border-info/40 bg-info/10 p-2 text-[0.7857em] leading-relaxed text-content" role="status">
+              <span className="min-w-0 flex-1">{t("settings.workflows.shippedUpdateHint")}</span>
+              <Button variant="ghost" size="sm" disabled={shippedBusy} onClick={() => void dismissShippedUpdate()}>
+                {t("settings.workflows.shippedUpdateDismiss")}
+              </Button>
+              <Button variant="secondary" size="sm" disabled={shippedBusy || saving} onClick={() => setPendingShippedUpdate(true)}>
+                {t("settings.workflows.shippedUpdateApply")}
+              </Button>
+            </section>
           )}
 
           {review?.pending && baseline && (
@@ -1151,6 +1213,18 @@ export function WorkflowLibraryView({
           if (!open) setPendingRestore(false);
         }}
         onConfirm={() => void restoreDefault()}
+      />
+      {/* 「更新到出厂版」同样会丢掉当前版本 —— 破坏性,先问一句。 */}
+      <ConfirmDialog
+        open={pendingShippedUpdate && entry !== null}
+        danger
+        title={t("settings.workflows.shippedUpdateTitle")}
+        description={t("settings.workflows.shippedUpdateDesc", { name: displayName })}
+        confirmText={t("settings.workflows.shippedUpdateApply")}
+        onOpenChange={(open) => {
+          if (!open) setPendingShippedUpdate(false);
+        }}
+        onConfirm={() => void applyShippedUpdate()}
       />
     </>
   );

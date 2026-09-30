@@ -49,6 +49,11 @@ export type WorkflowPinDefaultInput = z.infer<typeof WorkflowPinDefaultSchema>;
 export const WorkflowRestoreDefaultSchema = z.object({ id: z.string().min(1) });
 export type WorkflowRestoreDefaultInput = z.infer<typeof WorkflowRestoreDefaultSchema>;
 
+/** 软件自带工作流的「出厂版有更新」:应用(用出厂版覆盖)或忽略(记为已看过)。
+ *  见 `main/orchestration/library.ts` 的 `applyShippedWorkflowUpdate`。 */
+export const WorkflowShippedUpdateSchema = z.object({ id: z.string().min(1) });
+export type WorkflowShippedUpdateInput = z.infer<typeof WorkflowShippedUpdateSchema>;
+
 /**
  * 把一份工作流导出成 JSON 文本(**导入导出,WF-08**)。
  *

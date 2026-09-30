@@ -43,7 +43,7 @@ import type { ContextGetInput, ContextSaveInput, ToolsUsageGetInput, ToolsUsageR
 import type { UsageStatsInput, UsageStatsResult } from "./usage.js";
 import type { LspLanguageState, LspInstallInput, LspOpResult, LspInstallFromFileInput, LspUninstallInput, LspToggleInput, LspSetPathInput, LspHealthCheckInput, LspPrewarmInput, LspRestartInput, LspOpenDocInput, LspCloseDocInput, LspDidChangeInput, LspDidSaveInput, LspRequestInput, LspRequestResult } from "./lsp.js";
 import type { RuntimeAgentState, RuntimesInstallInput, RuntimesInstallLocalInput, RuntimesRemoveInput, ToolchainToolState, ToolchainInstallInput, ToolchainRemoveInput } from "./runtimes.js";
-import type { WorkflowApproveInput, WorkflowPinDefaultInput, WorkflowRestoreDefaultInput } from "./workflow.js";
+import type { WorkflowApproveInput, WorkflowPinDefaultInput, WorkflowRestoreDefaultInput, WorkflowShippedUpdateInput } from "./workflow.js";
 import type { WorkflowGetInput, WorkflowSaveInput, WorkflowRemoveInput, WorkflowExportInput, WorkflowImportInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchCommandTemplate } from "./workflow.js";
 import type { AutomationTriggerFacts, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
 import { MEMORY_CATEGORIES_CHANNEL, MEMORY_DELETE_CHANNEL, MEMORY_LIST_CHANNEL, MEMORY_READ_CHANNEL, MEMORY_REVIEW_CHANNEL, MEMORY_REVIEW_DELETE_CHANNEL, MEMORY_SAVE_CHANNEL, type MemoryDeleteInput, type MemoryFileMeta, type MemoryListInput, type MemoryReadInput, type MemoryReviewDeleteInput, type MemoryReviewResult, type MemorySaveInput } from "../memory.js";
@@ -658,6 +658,10 @@ export interface RpcMap {
   "workflow.pinDefault": (input: WorkflowPinDefaultInput) => Promise<{ ok: boolean; error?: string }>;
   /** 把钉住的快照写回(「恢复默认」)。没钉过 → 失败并说清。 */
   "workflow.restoreDefault": (input: WorkflowRestoreDefaultInput) => Promise<{ ok: boolean; error?: string }>;
+  /** 自带工作流的出厂版有更新时:用出厂版覆盖这一行(用户关掉的触发器保持关闭)。 */
+  "workflow.applyShippedUpdate": (input: WorkflowShippedUpdateInput) => Promise<{ ok: boolean; error?: string }>;
+  /** 忽略这次出厂更新(内容不动;出厂内容再变时重新提示)。 */
+  "workflow.dismissShippedUpdate": (input: WorkflowShippedUpdateInput) => Promise<{ ok: boolean; error?: string }>;
   /** 把**磁盘上那一份**导出成 JSON 文本,走系统「另存为」框落盘。用户取消时
    *  `canceled: true`,界面不该报错(取消不是失败)。路径**由主进程拿**,渲染端
    *  始终没有"写任意路径"的能力(同 `library.revealFile`)。 */
@@ -1554,6 +1558,8 @@ export const IPC = {
   WORKFLOW_REMOVE: "workflow:remove",
   WORKFLOW_PIN_DEFAULT: "workflow:pinDefault",
   WORKFLOW_RESTORE_DEFAULT: "workflow:restoreDefault",
+  WORKFLOW_APPLY_SHIPPED_UPDATE: "workflow:applyShippedUpdate",
+  WORKFLOW_DISMISS_SHIPPED_UPDATE: "workflow:dismissShippedUpdate",
   WORKFLOW_EXPORT: "workflow:export",
   WORKFLOW_IMPORT: "workflow:import",
   WORKFLOW_IMPORT_FROM_FILE: "workflow:importFromFile",

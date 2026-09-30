@@ -22,6 +22,7 @@
  * **恒为 false** —— 字段留着是契约兼容,mcodeServer 的措辞据此永远说"已删掉"。
  */
 
+import { createHash } from "node:crypto";
 import type { WorkflowDoc, WorkflowListEntry } from "@contracts/workflow";
 import { makeWorkflowId, uniqueWorkflowName } from "@contracts/workflow";
 import type { NodeTypeManifest } from "@contracts/nodeType";
@@ -33,7 +34,7 @@ import { workflowSaveIsStale, workflowSaveVersion } from "./workflowSaveVersion.
 import { clearWorkflowReview, requireWorkflowReview, workflowReviewError, type WorkflowOrigin } from "./workflowTrust.js";
 import { importWorkflowDoc as parseWorkflowText, validateWorkflowDoc, exportWorkflowDoc } from "./workflowValidation.js";
 
-function summarize(doc: WorkflowDoc, pinned: boolean): WorkflowListEntry {
+function summarize(doc: WorkflowDoc, pinned: boolean, shippedUpdate = false): WorkflowListEntry {
   return {
     id: doc.id,
     name: doc.name,
@@ -43,6 +44,7 @@ function summarize(doc: WorkflowDoc, pinned: boolean): WorkflowListEntry {
     builtin: false,
     edited: false,
     ...(pinned ? { pinned: true } : {}),
+    ...(shippedUpdate ? { shippedUpdate: true } : {}),
     kind: doc.nodes.length > 0 ? "graph" : "prompt",
     // 带过去,不然列表分不出"工作流"和"自动化"两栏(见 `WorkflowListEntry`)。
     ...(doc.trigger ? { trigger: doc.trigger } : {}),
@@ -90,6 +92,7 @@ function ensureShippedSeeded(): void {
       if (row.doc.builtin) WorkflowRepo.save({ ...row.doc, builtin: false });
     }
     if (changed) SettingRepo.set(WORKFLOW_SEEDED_SETTING_KEY, JSON.stringify([...seededSet]));
+    baselineShippedRevisions();
     seededThisRun = true;
   } catch {
     // DB 未就绪等瞬态问题:保持未播状态,下一次再试。
@@ -100,7 +103,124 @@ function ensureShippedSeeded(): void {
 export function listWorkflows(): WorkflowListEntry[] {
   ensureShippedSeeded();
   const pinnedMap = loadPinnedDefaults();
-  return WorkflowRepo.list().map((row) => summarize(row.doc, pinnedMap[row.doc.id] !== undefined));
+  const rows = WorkflowRepo.list();
+  const updates = shippedUpdatesOf(rows.map((row) => row.doc));
+  return rows.map((row) => summarize(row.doc, pinnedMap[row.doc.id] !== undefined, updates.has(row.doc.id)));
+}
+
+/* ── 出厂版更新(2026-09-30) ──
+ *
+ * 播种之后自带工作流就是普通行,新版本改了出厂内容(`builtins.ts`)老用户也收不到 ——
+ * 播种只补**缺**的行,从不覆盖。于是记一张「这一行跟到了哪一版出厂内容」的表
+ * (设置表 `workflow.shippedRevisions`:`id → 出厂内容哈希`),出厂内容变了而这一行
+ * 又不等于新版时,列表项带上 `shippedUpdate`,界面画「出厂版有更新」。
+ *
+ * - **更新** = 用新出厂版覆盖这一行(界面先确认:会丢掉对这份的修改),用户关掉的
+ *   触发器保持关闭;
+ * - **忽略** = 只把这一版记为已看过,内容不动;
+ * - 删掉的自带工作流不提示(删了就是删了,与播种同一立场);
+ * - 老安装第一次跑到这里时表是空的:行与当前出厂版一致 → 直接记上;不一致 → 分不清
+ *   是用户改过还是出厂版变过,如实提示,由用户选「更新」或「忽略」。 */
+
+const WORKFLOW_SHIPPED_REVISIONS_KEY = "workflow.shippedRevisions";
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .filter((key) => record[key] !== undefined)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/** 出厂内容的指纹 —— 不看 `updatedAt` / `builtin`(存盘时间与兼容字段不是内容)。 */
+export function shippedContentRevision(doc: WorkflowDoc): string {
+  const content: Record<string, unknown> = { ...doc };
+  delete content.updatedAt;
+  delete content.builtin;
+  return createHash("sha256").update(stableJson(content)).digest("hex");
+}
+
+function loadShippedRevisions(): Record<string, string> {
+  const raw = SettingRepo.get(WORKFLOW_SHIPPED_REVISIONS_KEY);
+  if (raw === null) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function markShippedRevision(id: string, revision: string): void {
+  const map = loadShippedRevisions();
+  map[id] = revision;
+  SettingRepo.set(WORKFLOW_SHIPPED_REVISIONS_KEY, JSON.stringify(map));
+}
+
+/** 表里还没有记录、而行正好等于当前出厂版的,直接记上(新播的行、老安装里没动过的行)。 */
+function baselineShippedRevisions(): void {
+  const map = loadShippedRevisions();
+  let changed = false;
+  for (const doc of BUILTIN_WORKFLOWS) {
+    if (map[doc.id] !== undefined) continue;
+    const row = WorkflowRepo.get(doc.id);
+    if (row === null) continue;
+    const revision = shippedContentRevision(doc);
+    if (shippedContentRevision(row.doc) === revision) {
+      map[doc.id] = revision;
+      changed = true;
+    }
+  }
+  if (changed) SettingRepo.set(WORKFLOW_SHIPPED_REVISIONS_KEY, JSON.stringify(map));
+}
+
+function shippedUpdatesOf(rows: WorkflowDoc[]): Set<string> {
+  const map = loadShippedRevisions();
+  const byId = new Map(rows.map((doc) => [doc.id, doc]));
+  const out = new Set<string>();
+  for (const shipped of BUILTIN_WORKFLOWS) {
+    const row = byId.get(shipped.id);
+    if (row === undefined) continue;
+    const revision = shippedContentRevision(shipped);
+    if (map[shipped.id] === revision || shippedContentRevision(row) === revision) continue;
+    out.add(shipped.id);
+  }
+  return out;
+}
+
+/** 用出厂版覆盖这一行。用户关掉的节点开关(`params.enabled === false`,即关掉的触发器)
+ *  原样保留 —— 更新内容不等于替用户重新打开一条他关掉的自动化。出厂内容是可信的,
+ *  所以顺手清掉这一行的待审阅标记。调用方负责广播与让执行器重读。 */
+export function applyShippedWorkflowUpdate(id: string): { ok: boolean; error?: string } {
+  const shipped = BUILTIN_WORKFLOWS.find((doc) => doc.id === id);
+  if (shipped === undefined) return { ok: false, error: "这份工作流不是软件自带的,没有出厂版可以更新" };
+  const current = getWorkflow(id);
+  if (current === null) return { ok: false, error: "这份工作流已经删掉了 —— 删掉的自带工作流不会再装回来" };
+  const disabled = new Set(current.nodes.filter((node) => node.params.enabled === false).map((node) => node.id));
+  const nodes = shipped.nodes.map((node) =>
+    disabled.has(node.id) ? { ...node, params: { ...node.params, enabled: false } } : node,
+  );
+  const others = listWorkflows().filter((w) => w.id !== id).map((w) => w.name);
+  WorkflowRepo.save({ ...shipped, nodes, name: uniqueWorkflowName(shipped.name, others), builtin: false, updatedAt: Date.now() });
+  clearWorkflowReview(id);
+  markShippedRevision(id, shippedContentRevision(shipped));
+  return { ok: true };
+}
+
+/** 「忽略这次更新」:记下当前出厂版,内容不动。出厂内容再变时会重新提示。 */
+export function dismissShippedWorkflowUpdate(id: string): { ok: boolean; error?: string } {
+  const shipped = BUILTIN_WORKFLOWS.find((doc) => doc.id === id);
+  if (shipped === undefined) return { ok: false, error: "这份工作流不是软件自带的,没有出厂版可以更新" };
+  markShippedRevision(id, shippedContentRevision(shipped));
+  return { ok: true };
 }
 
 /** 取一份工作流 —— 只看表(内置退役后没有"代码里的默认版"这一层)。找不到返回 null。 */

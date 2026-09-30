@@ -563,6 +563,8 @@ const workflow: Api["workflow"] = {
   // 理由见文件头:proxy 只对没列出的名字兜底,少一个方法就是 undefined is not a function。
   pinDefault: () => webUnsupported("workflow.pinDefault"),
   restoreDefault: () => webUnsupported("workflow.restoreDefault"),
+  applyShippedUpdate: () => webUnsupported("workflow.applyShippedUpdate"),
+  dismissShippedUpdate: () => webUnsupported("workflow.dismissShippedUpdate"),
   // 导出 / 导入(WF-08)。**桌面端的事**:两条路都要一个 OS 原生文件对话框(保存框 /
   // 打开框),手机上既没有那一层也可能是沙箱目录 —— 导出来的文件用户拿不到。所以
   // 三条一律挡在这儿,界面那边据此把它们画成不可点(见 `WorkflowLibraryView`)。

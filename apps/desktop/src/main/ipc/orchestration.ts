@@ -38,6 +38,7 @@ import {
   WorkflowRemoveSchema,
   WorkflowRestoreDefaultSchema,
   WorkflowSaveSchema,
+  WorkflowShippedUpdateSchema,
 } from "@contracts/ipc";
 import { readAgentProfiles, removeAgentProfile, saveAgentProfile } from "@main/orchestration/agentProfiles.js";
 import { automationRunner } from "@main/orchestration/automationRunner.js";
@@ -52,6 +53,8 @@ import {
   removeWorkflow,
   restoreWorkflowDefault,
   saveWorkflow,
+  applyShippedWorkflowUpdate,
+  dismissShippedWorkflowUpdate,
 } from "@main/orchestration/library.js";
 import { notifyWorkflowsChanged } from "@main/orchestration/broadcast.js";
 import { decodeSnapshot, runHistory } from "@main/orchestration/runStore.js";
@@ -165,6 +168,25 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
       // 文档真的换了一版 —— 执行器要重读(同 save 那条路)。
       requestWorkflowReload(input.id);
     }
+    return res;
+  });
+
+  // 自带工作流的出厂版更新:应用 = 文档换成出厂版(执行器要重读);忽略 = 只改设置表
+  // 里的已看记录(列表标记变了,执行器不用重读)。
+  ipcMain.handle(IPC.WORKFLOW_APPLY_SHIPPED_UPDATE, async (_evt, raw) => {
+    const input = WorkflowShippedUpdateSchema.parse(raw);
+    const res = applyShippedWorkflowUpdate(input.id);
+    if (res.ok) {
+      notifyWorkflowsChanged(`ipc:workflow_shipped_update:${input.id}`);
+      requestWorkflowReload(input.id);
+    }
+    return res;
+  });
+
+  ipcMain.handle(IPC.WORKFLOW_DISMISS_SHIPPED_UPDATE, async (_evt, raw) => {
+    const input = WorkflowShippedUpdateSchema.parse(raw);
+    const res = dismissShippedWorkflowUpdate(input.id);
+    if (res.ok) notifyWorkflowsChanged(`ipc:workflow_shipped_dismiss:${input.id}`);
     return res;
   });
 

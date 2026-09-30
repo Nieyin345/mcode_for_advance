@@ -794,6 +794,10 @@ const api = {
       ipcRenderer.invoke(IPC.WORKFLOW_PIN_DEFAULT, input)) as RpcMap["workflow.pinDefault"],
     restoreDefault: ((input) =>
       ipcRenderer.invoke(IPC.WORKFLOW_RESTORE_DEFAULT, input)) as RpcMap["workflow.restoreDefault"],
+    applyShippedUpdate: ((input) =>
+      ipcRenderer.invoke(IPC.WORKFLOW_APPLY_SHIPPED_UPDATE, input)) as RpcMap["workflow.applyShippedUpdate"],
+    dismissShippedUpdate: ((input) =>
+      ipcRenderer.invoke(IPC.WORKFLOW_DISMISS_SHIPPED_UPDATE, input)) as RpcMap["workflow.dismissShippedUpdate"],
     // 导出 / 导入(WF-08)。**两个文件对话框都在主进程**,渲染端只给 id 或文本 ——
     // 它读不了任意路径(`file.readFile` 被项目根闸门挡着),也没有保存框那一层 API。
     export: ((input) =>

@@ -361,6 +361,9 @@ export const WorkflowListEntrySchema = z.object({
   /** 钉过「自定默认」(设置表 workflow.pinnedDefaults 里有快照)——
    *  界面据此画「恢复默认」那颗按钮(见 restoreWorkflowDefault)。 */
   pinned: z.boolean().optional(),
+  /** 软件自带的这一份**出厂版有更新**(新版本改了 `builtins.ts`,而这一行不等于新版、
+   *  用户也没点过「忽略」)—— 界面据此画「更新 / 忽略」(见 `applyShippedWorkflowUpdate`)。 */
+  shippedUpdate: z.boolean().optional(),
   /** 提示词型还是图型 —— 由有没有节点决定,不是另存的标志位。 */
   kind: z.enum(["prompt", "graph"]),
   /** 有触发器 = 自动化,没有 = 工作流(见 {@link WorkflowDocSchema} 的 `trigger`)。
