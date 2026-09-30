@@ -272,8 +272,11 @@ const BAD_TOKENS: Array<[string, string]> = [
 
 for (const [label, token] of BAD_TOKENS) {
   const r = await req("/api/rpc", { method: "POST", token, body: { method: "setting:get", input: { key: "x" } } });
-  // `status === 0` 是连接被掐掉(超长头)。那**也是**拒 —— 而且是更早的拒。
-  check(`坏令牌(${label})被拒`, r.status === 401 || r.status === 0, {
+  // 超长头在 `node:http` **解析阶段**就被拦下:服务端先回 431 再断开。客户端读没读到
+  // 那个 431 是**时序**问题 —— Windows 上常常先看到连接被掐(`status === 0`),Linux CI
+  // 上稳定读到 431(2026-09-30 CI 红过)。两种都是拒,而且比 401 更早;判据只认
+  // "拒了",不认"用哪种方式拒"。
+  check(`坏令牌(${label})被拒`, r.status === 401 || r.status === 0 || r.status === 431, {
     status: r.status,
     body: r.text.slice(0, 120),
   });
