@@ -128,6 +128,21 @@ export interface SpawnRunResult {
  * **三个执行器原先各写了一遍**,完备程度还不同(`hooks/runCommand.ts` 那份有
  * try/catch 兜底、另外两份没有)。这里取最完备的那一份收口。
  */
+/**
+ * 起进程时展开进 spawn 选项,让 {@link killTree} 在类 Unix 上**真能杀到整棵树**。
+ *
+ * 类 Unix 上 `child.kill()` 只给那一个 pid 发信号。`shell: true` 时那个 pid 是
+ * `/bin/sh`,它起的真正命令(管道、`&&`、dash 不 exec 的简单命令)**收不到**,于是
+ * shell 死了命令还在跑 —— 还攥着 stdout 管道,`close` 永远不来,状态卡在"运行中"。
+ * `detached: true` 让子进程自成一个进程组(pgid = pid),`killTree` 按组发信号。
+ * (Linux CI 上 hooks-smoke「超时的进程真的被杀了」与 maint-m14「stop 后是
+ * stopped」就是这么红的;macOS 同理,只是 Windows 上的冒烟看不见。)
+ *
+ * ⚠️ **Windows 上绝不能给**:那里 `detached` 的意思是"开一个新控制台窗口";
+ * 而 `taskkill /T` 本来就连子树。
+ */
+export const TREE_KILLABLE: { detached?: true } = process.platform === "win32" ? {} : { detached: true };
+
 export function killTree(child: ChildProcess): void {
   const pid = child.pid;
   if (pid === undefined) {
@@ -152,19 +167,34 @@ export function killTree(child: ChildProcess): void {
     }
     return;
   }
-  try {
-    child.kill("SIGTERM");
-  } catch {
-    return;
-  }
+  // 先按**进程组**发(`-pid`,见 `TREE_KILLABLE`);子进程不是组长(调用方没带
+  // `TREE_KILLABLE`)时那个组不存在 → ESRCH,退回只杀它自己 —— 与从前一样。
+  const signalTree = (sig: NodeJS.Signals): void => {
+    try {
+      process.kill(-pid, sig);
+      return;
+    } catch {
+      /* 不是组长 / 组已经空了 */
+    }
+    try {
+      child.kill(sig);
+    } catch {
+      /* 已经没了 */
+    }
+  };
+  signalTree("SIGTERM");
   setTimeout(() => {
-    if (child.exitCode === null && child.signalCode === null) {
+    // shell 先走了、孙进程还在,也算"还没杀干净":看组里还有没有人。
+    let alive = child.exitCode === null && child.signalCode === null;
+    if (!alive) {
       try {
-        child.kill("SIGKILL");
+        process.kill(-pid, 0);
+        alive = true;
       } catch {
-        /* 已经没了 */
+        alive = false;
       }
     }
+    if (alive) signalTree("SIGKILL");
   }, 2_000).unref();
 }
 
@@ -218,6 +248,7 @@ export async function spawnRun(options: SpawnRunOptions): Promise<SpawnRunResult
       args !== undefined && !shell ? args : [],
       {
         ...(shell ? { shell: true } : {}),
+        ...TREE_KILLABLE,
         windowsHide: true,
         ...(cwd !== undefined ? { cwd } : {}),
         ...(env !== undefined ? { env } : {}),

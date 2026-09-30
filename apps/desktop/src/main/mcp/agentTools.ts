@@ -46,6 +46,7 @@ import {
   readEnginesMap,
 } from "@main/lib/skillEngines.js";
 import { extractPdfText } from "@main/library/pdfText.js";
+import { killTree, TREE_KILLABLE } from "@main/lib/spawnRun.js";
 // `agent_bash` 的写目标检查复用 Pi 那条路已有的解析器(不写第二份,硬规矩 2)。
 import { extractBashWriteTargets, expandTilde } from "@main/providers/pi-sdk/bashWriteGuard.js";
 // `agent_context` 要在工具层回答"我在什么环境里" —— 与注入到提示词里的那段环境块
@@ -1704,6 +1705,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
               const timeout = Math.min(args.timeout_ms ?? DEFAULT_BASH_TIMEOUT_MS, MAX_BASH_TIMEOUT_MS);
               const child = spawn(args.command, {
                 shell: true,
+                ...TREE_KILLABLE,
                 cwd,
                 windowsHide: true,
                 env: { ...process.env },
@@ -1719,7 +1721,9 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
               const timer = setTimeout(() => {
                 if (settled) return;
                 settled = true;
-                child.kill();
+                // 杀整棵树:`child.kill()` 只杀 shell,命令本身(Windows 的 cmd 子进程、
+                // 类 Unix 上 sh 起的那条)会留在后台接着跑。
+                killTree(child);
                 reject(new Error(`命令超过 ${timeout}ms 没跑完,已终止;可拆成多步或加大 timeout_ms 重试`));
               }, timeout);
               child.stdout.on("data", (d: Buffer) => {

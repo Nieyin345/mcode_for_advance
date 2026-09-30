@@ -8,6 +8,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import { killTree, TREE_KILLABLE } from "@main/lib/spawnRun.js";
 
 /**
  * `data` 事件给的是**字节块**,边界可以落在**一个多字节字符的中间**。
@@ -228,11 +229,9 @@ export function createAgentProcessSessions(): AgentProcessSessions {
         // Fall through to ChildProcess.kill below.
       }
     }
-    try {
-      session.child.kill("SIGTERM");
-    } catch {
-      // close/error will settle it if the process already disappeared.
-    }
+    // 类 Unix:按进程组杀(shell 与它起的命令一起),2 秒后还在就 KILL —— 见 `TREE_KILLABLE`。
+    // 只杀 shell 的话命令还攥着管道,`close` 不来,状态永远是 running。
+    killTree(session.child);
   };
 
   /**
@@ -373,6 +372,7 @@ export function createAgentProcessSessions(): AgentProcessSessions {
       );
       const child = spawn(input.command, {
         shell: true,
+        ...TREE_KILLABLE,
         cwd: input.cwd,
         windowsHide: true,
         env: { ...process.env },
