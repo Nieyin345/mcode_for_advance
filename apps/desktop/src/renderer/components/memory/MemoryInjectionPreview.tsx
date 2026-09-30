@@ -65,7 +65,14 @@ export function MemoryInjectionPreview({ receipts }: { receipts?: MemoryInjectio
                         </div>
                       ) : (
                         <p className="text-content-muted">
-                          {t(`memory.assistant.injectionsState.${s.state}` as any) || s.state}
+                          {/* Explicit map: the contract value is kebab-case ("not-automatic")
+                              while the dictionary key is camelCase — a template-literal
+                              key rendered the raw id, since translate() falls back to the key. */}
+                          {s.state === "not-automatic"
+                            ? t("memory.assistant.injectionsState.notAutomatic")
+                            : s.state === "unavailable"
+                              ? t("memory.assistant.injectionsState.unavailable")
+                              : s.state}
                         </p>
                       )}
                     </div>

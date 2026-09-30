@@ -3,6 +3,7 @@ import { PANEL_MAX_W } from "./panelWidth.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useTheme } from "@renderer/lib/theme.js";
 import { api } from "@renderer/lib/api.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 import { hexToTriplet, tripletToHex } from "@renderer/lib/colorUtils.js";
 import { useSessionStore, CHAT_FONT_SIZE_MIN, CHAT_FONT_SIZE_MAX, RIGHT_PANEL_FONT_SIZE_MIN, RIGHT_PANEL_FONT_SIZE_MAX } from "@renderer/stores/sessionStore.js";
 import { Button, Select } from "@renderer/components/ui/index.js";
@@ -222,7 +223,15 @@ export function AppearancePanel() {
         >
           <Select.Root
             value={theme}
-            onValueChange={(v) => void api.theme.set({ theme: v as ThemeName })}
+            onValueChange={(v) =>
+              void api.theme.set({ theme: v as ThemeName }).catch((err: unknown) => {
+                useToastStore.getState().push({
+                  kind: "error",
+                  title: t("settings.appearance.themeSetFailed"),
+                  body: err instanceof Error ? err.message : String(err),
+                });
+              })
+            }
           >
             <Select.Trigger id="setting-theme" className="w-full">
               <Select.Value>

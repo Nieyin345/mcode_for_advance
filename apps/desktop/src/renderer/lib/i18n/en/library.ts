@@ -353,4 +353,9 @@ export const en = {
   "library.fullText.searching": "Searching…",
   "library.fullText.noResult": "Not found in any text (that paper may not be converted yet)",
   "library.fullText.count": "{n} matches",
+  "library.attach.blocked": "Blocked, not attached: {list}",
+  "library.attach.blockedHint": "You can change the blocking rules in Settings → {page}.",
+  "library.attach.missing": "Not found, not attached: {list}",
+  "library.viewer.unreadable": "This file can't be read (it isn't text, and doesn't look like a previewable image or PDF).",
+  "library.import.allSupported": "All supported files",
 } as const;

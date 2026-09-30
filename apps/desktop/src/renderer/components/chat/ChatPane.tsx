@@ -1725,20 +1725,20 @@ function ChatPaneForSession({
       if (blocked.length > 0) {
         useToastStore.getState().push({
           kind: "warning",
-          title: `这些被屏蔽了,没挂上:${blocked.join(";")}`,
-          body: "设置 → 资料库类型 里可以改屏蔽规则。",
+          title: t("library.attach.blocked", { list: blocked.join("; ") }),
+          body: t("library.attach.blockedHint", { page: t("settings.nav.libraryTypes") }),
         });
       }
       if (missing.length > 0) {
         useToastStore.getState().push({
           kind: "warning",
-          title: `这些没找到,没挂上:${missing.join("、")}`,
+          title: t("library.attach.missing", { list: missing.join(locale === "zh" ? "、" : ", ") }),
         });
       }
       if (resolved.length === 0) return;
       setTags((prev) => appendUniqueLibraryTags(prev, resolved));
     },
-    [],
+    [t, locale],
   );
 
   /**

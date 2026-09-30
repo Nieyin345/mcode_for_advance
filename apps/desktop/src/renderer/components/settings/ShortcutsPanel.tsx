@@ -173,6 +173,14 @@ function labelForId(id: string): MessageId {
     "layout.toggle-right": "settings.shortcuts.cmdToggleRight",
     "layout.toggle-bottom-terminal": "settings.shortcuts.cmdToggleTerminal",
     "appearance.theme.toggle": "settings.shortcuts.cmdToggleTheme",
+    // Every DEFAULT_SHORTCUTS id must be listed: these commands are hidden by
+    // `available` whenever they don't apply (no editor / no browser pane), and
+    // an unmapped id fell through to the raw id string as its row label.
+    "layout.toggle-browser": "lib.commands.toggleBrowser",
+    "layout.toggle-wide-panel": "lib.commands.toggleWide",
+    "sidechat.open": "lib.commands.openSideChat",
+    "editor.nav-back": "lib.commands.navBack",
+    "editor.nav-forward": "lib.commands.navForward",
   };
   return map[id] ?? (id as MessageId);
 }

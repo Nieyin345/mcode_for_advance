@@ -178,6 +178,7 @@ export const zh = {
   "settings.appearance.themeLight": "浅色",
   "settings.appearance.themeDark": "深色",
   "settings.appearance.themeSystem": "跟随系统",
+  "settings.appearance.themeSetFailed": "切换主题失败",
   "settings.appearance.themeStyle": "界面风格",
   "settings.appearance.themeStyleDesc": "与明暗主题正交:「手绘」随明暗呈现两种形态——浅色是纸面手绘(暖纸底 + 墨线),深色是牛皮纸(暖深底 + 粉笔线);代码与终端保持等宽字体。",
   "settings.appearance.styleClassic": "经典",

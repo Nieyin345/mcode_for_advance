@@ -27,6 +27,7 @@ import { SelectionQuoteMenu, type QuoteTarget } from "@renderer/components/chat/
 import { api } from "@renderer/lib/api.js";
 import { dirname, extname, joinPath } from "@renderer/lib/path.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { translate } from "@renderer/lib/i18n/core.js";
 import { ChunkedMarkdown } from "@renderer/components/chat/ChunkedMarkdown.js";
 // Lazy shell: the PDF engine loads only when a PDF is shown (see PdfPreview.tsx).
 import { PdfPreview } from "./PdfPreview.js";
@@ -594,7 +595,10 @@ async function loadProjectFileData(filePath: string): Promise<ViewData> {
   }
   const bin = await api.file.readBinary({ filePath });
   if (!bin.dataUrl) {
-    return { type: "unsupported", error: "这个文件读不出来(可能不是文本,也不像能预览的图片/PDF)。" };
+    return {
+      type: "unsupported",
+      error: translate(useSessionStore.getState().locale, "library.viewer.unreadable"),
+    };
   }
   const comma = bin.dataUrl.indexOf(",");
   const base64 = comma >= 0 ? bin.dataUrl.slice(comma + 1) : "";

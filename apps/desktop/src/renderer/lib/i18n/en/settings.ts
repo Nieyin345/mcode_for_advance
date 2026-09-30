@@ -175,6 +175,7 @@ export const en = {
   "settings.appearance.themeLight": "Light",
   "settings.appearance.themeDark": "Dark",
   "settings.appearance.themeSystem": "Follow system",
+  "settings.appearance.themeSetFailed": "Couldn't switch the theme",
   "settings.appearance.themeStyle": "UI style",
   "settings.appearance.themeStyleDesc": "Independent of light/dark: \"Sketch\" takes two forms — paper in light mode (warm paper + ink) and kraft in dark mode (warm deep ground + chalk); code and terminals stay monospace.",
   "settings.appearance.styleClassic": "Classic",

@@ -71,7 +71,7 @@ export function ImportBar({
       const picked = await api.pickFiles({
         filters: [
           {
-            name: "全部支持的文件",
+            name: t("library.import.allSupported"),
             extensions: [
               "pdf", "md", "markdown", "mdown", "txt",
               "doc", "docx", "ppt", "pptx", "xls", "xlsx", "html", "htm",

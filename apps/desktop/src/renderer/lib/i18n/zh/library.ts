@@ -400,4 +400,11 @@ export const zh = {
   "library.fullText.searching": "检索中…",
   "library.fullText.noResult": "正文里没有找到这个词(也可能那一篇还没转成 Markdown)",
   "library.fullText.count": "命中 {n} 处",
+  // 聊天输入框「挂文献库」确认后的两类失败提示（ChatPane.handlePickLibraries）。
+  // {page} 取 `settings.nav.libraryTypes`，设置页改名时这里跟着走。
+  "library.attach.blocked": "这些被屏蔽了，没挂上：{list}",
+  "library.attach.blockedHint": "设置 → {page} 里可以改屏蔽规则。",
+  "library.attach.missing": "这些没找到，没挂上：{list}",
+  "library.viewer.unreadable": "这个文件读不出来（可能不是文本，也不像能预览的图片/PDF）。",
+  "library.import.allSupported": "全部支持的文件",
 } as const;

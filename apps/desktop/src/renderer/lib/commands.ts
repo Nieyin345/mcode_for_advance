@@ -100,7 +100,10 @@ export const COMMAND_GROUP_LABELS: Record<CommandGroup, MessageId> = {
  *  meant a new id prefix had to be added in two places. */
 export function groupForId(id: string): CommandGroup {
   if (id.startsWith("session.") || id.startsWith("tab.") || id.startsWith("voice.")) return "session";
-  if (id.startsWith("layout.")) return "layout";
+  // `sidechat.open` is declared in the layout group; keep the fallback in step
+  // with the static definitions so a filtered-out row doesn't jump sections.
+  if (id.startsWith("layout.") || id.startsWith("sidechat.")) return "layout";
+  if (id.startsWith("editor.")) return "editor";
   if (id.startsWith("appearance.")) return "appearance";
   return "view";
 }
