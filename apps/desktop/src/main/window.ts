@@ -1,3 +1,5 @@
+import { pathToFileURL } from "node:url";
+import { installMainWindowNavigation } from "@main/lib/windowNavigation.js";
 import { BrowserWindow, shell, session, type WebContents } from "electron";
 import { join } from "node:path";
 import { is } from "@main/utils.js";
@@ -105,18 +107,25 @@ function setupSessionPermissions(): void {
   // paste. Clipboard grants are scoped to the main window's webContents so
   // arbitrary pages can never touch the OS clipboard; the embedded browser
   // views use a separate persistent partition and are unaffected either way.
-  const isAllowed = (wc: WebContents | null, permission: string): boolean => {
-    if (permission === "media" || permission === "mediaKeySystem") return true;
-    if (permission !== "clipboard-sanitized-write" && permission !== "clipboard-read") return false;
+  const isAllowed = (wc: WebContents | null, permission: string, rawDetails?: unknown): boolean => {
     const main = getMainWindow();
-    return !!main && !main.isDestroyed() && wc?.id === main.webContents.id;
+    if (!main || main.isDestroyed() || wc?.id !== main.webContents.id) return false;
+    const details = (rawDetails ?? {}) as {
+      isMainFrame?: boolean; mediaType?: string; mediaTypes?: string[];
+    };
+    if (details.isMainFrame === false) return false;
+    if (permission === "media") {
+      return details.mediaType !== "video" && !details.mediaTypes?.includes("video");
+    }
+    return permission === "mediaKeySystem" || permission === "clipboard-sanitized-write"
+      || permission === "clipboard-read";
   };
 
-  ses.setPermissionRequestHandler((wc, permission, callback) => {
-    callback(isAllowed(wc, permission));
+  ses.setPermissionRequestHandler((wc, permission, callback, details) => {
+    callback(isAllowed(wc, permission, details));
   });
-  ses.setPermissionCheckHandler((wc, permission) => {
-    return isAllowed(wc, permission);
+  ses.setPermissionCheckHandler((wc, permission, _requestingOrigin, details) => {
+    return isAllowed(wc, permission, details);
   });
 }
 
@@ -207,15 +216,14 @@ export function createMainWindow(): BrowserWindow {
     log.error(line);
   });
 
-  // Open external links in the system browser, never inside the app.
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    // 打不开(没有默认浏览器、协议未注册、URL 畸形)时至少留一行日志 —— 丢着不接
-    // 就是主进程里的一条 unhandledRejection,而用户看到的是"点了外链没反应"。
-    void shell.openExternal(url).catch((err: unknown) => {
-      log.warn(`open external failed: ${url} — ${err instanceof Error ? err.message : String(err)}`);
-    });
-    return { action: "deny" };
-  });
+  // Never allow an untrusted page to inherit the main window's IPC preload.
+  const rendererEntry = is.dev && process.env["ELECTRON_RENDERER_URL"]
+    ? process.env["ELECTRON_RENDERER_URL"]!
+    : pathToFileURL(join(__dirname, "../renderer/index.html")).href;
+  installMainWindowNavigation(
+    mainWindow.webContents, rendererEntry,
+    url => shell.openExternal(url), message => log.warn(message),
+  );
 
   // Load the renderer.
   if (is.dev && process.env["ELECTRON_RENDERER_URL"]) {

@@ -61,6 +61,12 @@ await withAuditPage(here,async page=>{try{
  await click(`[...document.querySelectorAll('[data-testid=init-manager] button')].filter(e=>e.textContent.trim()==='Delete').at(-1)`);await page.waitFor('document.querySelector("[role=alertdialog], [role=dialog]")');
  await click(button('Delete','document.querySelector("[role=alertdialog], [role=dialog]")'));await page.waitFor('__audit.templates.length===0 && __commands.length===0');
  check('delete removes template and slash entry without file deletion calls',await page.eval('__audit.calls.some(c=>c.method==="delete") && !__audit.calls.some(c=>c.method==="deleteFile")'));
+ await page.goto('mobile','window.__ready && document.querySelector("#host")');
+ await page.eval('__setPicker(true)');await page.sleep(250);
+ check('mobile ordinary slash opening never requests desktop initializer list',await page.eval('__audit.calls.filter(c=>c.method==="list").length===0'));
+ check('mobile ordinary slash opening produces no unsupported error toast',await page.eval('__audit.toasts.length===0'));
+ await page.eval('__setPicker(false);__audit.toasts.length=0;__setText("/init-学术")');await page.sleep(80);await click('document.querySelector("#send")');
+ check('mobile reserved command is explicitly rejected without model or preview',await page.eval('__audit.toasts.length===1 && __audit.previews.length===0 && !__audit.calls.some(c=>c.method==="model")'));
  check('no uncaught browser exceptions',page.exceptions.length===0,page.exceptions);
  }catch(error){check('browser scenario completed',false,error.stack);await page.screenshot('failure.png');}});
 writeFileSync(join(here,'result.json'),JSON.stringify(checks,null,2));console.log(`Project init UI smoke: ${checks.filter(c=>c.pass).length}/${checks.length}`);if(checks.some(c=>!c.pass))process.exitCode=1;

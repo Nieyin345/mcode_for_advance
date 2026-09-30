@@ -24,7 +24,7 @@ export function useProjectInitializer(input:{sessionId:string;busy:boolean;menuO
  const [applying,setApplying]=useState(false);const lock=useRef(false);
  const templates=useRpc(()=>api.projectInit.list(),[version],{enabled:desktop,toastOnError:false});
  useEffect(()=>{const change=()=>setVersion(n=>n+1);window.addEventListener(CHANGED,change);return()=>window.removeEventListener(CHANGED,change);},[]);
- useEffect(()=>{if(input.menuOpen)void templates.refetch();},[input.menuOpen,templates.refetch]);
+ useEffect(()=>{if(desktop&&input.menuOpen)void templates.refetch();},[desktop,input.menuOpen,templates.refetch]);
  useEffect(()=>{if(templates.error)useToastStore.getState().push({kind:"error",title:t("init.title"),body:templates.error.message});},[templates.error,t]);
  const plan=useRpc(async()=>({request,preview:await api.projectInit.preview({sessionId:request!.sessionId,command:request!.command})}),[request],{enabled:desktop&&request!==null,toastOnError:false});
  const preview=plan.data?.request===request&&!plan.loading&&!plan.error?plan.data.preview:null;

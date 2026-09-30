@@ -4,7 +4,7 @@ export const audit={calls:[] as {method:string;input?:any}[],toasts:[] as any[],
 let serial=0;
 const clone=<T,>(v:T):T=>JSON.parse(JSON.stringify(v));
 export const api={projectInit:{
- async list(){audit.calls.push({method:"list"});return {templates:audit.templates.map(({id,name,description,revision})=>({id,name,description,revision}))};},
+ async list(){audit.calls.push({method:"list"});if(!window.api)throw Error("DESKTOP_ONLY");return {templates:audit.templates.map(({id,name,description,revision})=>({id,name,description,revision}))};},
  async get(input:{id:string}){audit.calls.push({method:"get",input});const value=clone(audit.templates.find(t=>t.id===input.id));if(audit.failRead)throw Error("READ_FAILED");if(audit.delayed)await new Promise<void>(resolve=>audit.pending.push(resolve));return value;},
  async save(input:any){audit.calls.push({method:"save",input});if(audit.delayedSave)await new Promise<void>(resolve=>audit.pending.push(resolve));let saved=audit.templates.find(t=>t.id===input.id);if(saved&&saved.revision!==input.expectedRevision)throw Error("REVISION_CONFLICT");const value={...clone(input.draft),id:input.id??`template-${++serial}`,revision:String(++serial).padStart(64,"0")};audit.templates=audit.templates.filter(t=>t.id!==value.id).concat(value);return clone(value);},
  async delete(input:any){audit.calls.push({method:"delete",input});audit.templates=audit.templates.filter(t=>t.id!==input.id);return {ok:true};},
@@ -17,4 +17,4 @@ export const translate=(_locale:string,key:string,args?:Record<string,unknown>)=
 const common:Record<string,string>={"common.save":"Save","common.delete":"Delete","common.cancel":"Cancel","common.close":"Close","common.loading":"Loading"};
 function t(key:string,args?:Record<string,unknown>){let value=(en as Record<string,string>)[key]??common[key]??key;for(const [k,v] of Object.entries(args??{}))value=value.replaceAll(`{${k}}`,String(v));return value;}
 export const useI18n=()=>({t,locale:"en"});
-Object.assign(window,{api,__audit:audit});
+Object.assign(window,{api:new URLSearchParams(location.search).has("mobile")?undefined:api,__audit:audit});

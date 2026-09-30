@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import react from "@vitejs/plugin-react";
@@ -61,6 +61,21 @@ const pdfjsPkgDir = resolve(__dirname, "node_modules/pdfjs-dist");
  * ⚠️ **必须自托管。** EmbedPDF 默认从 CDN 取这份 wasm，而这个应用是离线的、
  * CSP 还是 `default-src 'self'` —— 走 CDN 必然失败（表现是"只有工具栏、没有页面"）。
  */
+/** A version marker is not evidence that generated assets still exist. Validate
+ * every source entry so partial cleanup/copies cannot yield a green broken build.
+ * Metadata checks avoid reading a large WASM payload on every dev restart. */
+function assetTreeComplete(source: string, destination: string): boolean {
+  try {
+    const expected = statSync(source);
+    const actual = statSync(destination);
+    if (expected.isDirectory()) {
+      return actual.isDirectory() && readdirSync(source).every(name =>
+        assetTreeComplete(join(source, name), join(destination, name)));
+    }
+    return expected.isFile() && actual.isFile() && expected.size === actual.size;
+  } catch { return false; }
+}
+
 function copyPdfiumWasm(): Plugin {
   const publicDir = resolve(__dirname, "src/renderer/public/embedpdf");
   const versionFile = join(publicDir, ".pdfium-version");
@@ -102,7 +117,8 @@ function copyPdfiumWasm(): Plugin {
       }
       const version = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8")).version as string;
       try {
-        if (readFileSync(versionFile, "utf8").trim() === version) return;
+        if (readFileSync(versionFile, "utf8").trim() === version
+          && assetTreeComplete(join(pkgDir, "dist/pdfium.wasm"), join(publicDir, "pdfium.wasm"))) return;
       } catch {
         /* 标记不存在 = 还没复制过 */
       }
@@ -124,7 +140,8 @@ function copyPdfjsAssets(): Plugin {
     buildStart() {
       const version = JSON.parse(readFileSync(join(pdfjsPkgDir, "package.json"), "utf8")).version;
       try {
-        if (readFileSync(versionFile, "utf8").trim() === version) return;
+        if (readFileSync(versionFile, "utf8").trim() === version
+          && subdirs.every(sub => assetTreeComplete(join(pdfjsPkgDir, sub), join(publicDir, sub)))) return;
       } catch {
         // 标记不存在 = 还没复制过
       }
@@ -140,16 +157,19 @@ function copyPdfjsAssets(): Plugin {
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    // Providers resolve both Zod 3 and Zod 4 peers. Externalizing "zod/v4"
+    // flattens it onto the app's Zod 3.24 runtime package, which has no such
+    // export. Bundle schema peers (and their converter) at their resolved paths.
+    plugins: [externalizeDepsPlugin({ exclude: ["zod", "zod-to-json-schema"] })],
     build: {
       lib: { entry: "src/main/index.ts" },
       rollupOptions: {
         // contracts is a workspace source package — bundle it into main.
         // sql.js (asm.js build) is externalized and required at runtime like
-        // electron/zod — its ~6MB asm.js file is too large to inline cleanly.
+        // electron — its ~6MB asm.js file is too large to inline cleanly.
         // node-pty is a native addon — must load from node_modules at runtime
         // (never bundle the .node binary into the main chunk).
-        external: ["electron", "zod", "sql.js", /^sql\.js\//, "node-pty"],
+        external: ["electron", "sql.js", /^sql\.js\//, "node-pty"],
       },
     },
     resolve: {

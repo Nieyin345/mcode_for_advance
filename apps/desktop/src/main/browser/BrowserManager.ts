@@ -19,7 +19,8 @@
  * Security: each view runs with contextIsolation + sandbox + a locked-down
  * preload that exposes only `mcodeBridge.pickElement`. New-window requests
  * (target=_blank) for web URLs become new in-panel tabs on the same session;
- * other protocols go to the system browser. Desktop pages see a plain Chrome
+ * approved web/mail fallbacks may open externally; arbitrary OS protocols are blocked.
+ * Desktop pages see a plain Chrome
  * UA (the Electron/app tail is stripped) — sign-in flows refuse webview UAs.
  */
 import { randomUUID } from "node:crypto";
@@ -61,6 +62,7 @@ import type {
 import { getMainWindow, sendToRenderer } from "@main/window.js";
 import { getOsPrefersDark, getThemePreference } from "@main/lib/theme.js";
 import { log } from "@main/lib/logger.js";
+import { externalWindowUrl } from "@main/lib/windowNavigation.js";
 import { SettingRepo } from "@main/store/repositories.js";
 import { PICKER_INJECT_SCRIPT, PICKER_REMOVE_SCRIPT } from "./pickerScript.js";
 import { SNAPSHOT_SCRIPT, buildClickScript, buildCheckFileInputScript, buildElementCenterScript, buildTypeScript, buildEvaluateScript, buildScrollScript, buildWaitScript, buildSelectScript, buildFindScript } from "./snapshotScript.js";
@@ -958,7 +960,7 @@ class BrowserManagerImpl {
     try {
       proto = new URL(rawUrl).protocol;
     } catch {
-      /* unparseable → system browser below */
+      /* Unparseable URLs are rejected by the external policy below. */
     }
     if (proto === "http:" || proto === "https:" || proto === "file:") {
       const spawned = this.spawnView(parent.projectPath);
@@ -972,13 +974,19 @@ class BrowserManagerImpl {
           type: "tabOpened",
           payload: { url: rawUrl, background: disposition === "background-tab" },
         });
-        log.info(`browser window-open → new tab: ${child.id} url=${rawUrl} (from ${parent.id})`);
+        log.info(`browser window-open → new tab: ${child.id} (from ${parent.id})`);
         return;
       }
       log.warn(`browser window-open tab spawn failed, falling back to system browser: ${spawned.error}`);
     }
-    shell.openExternal(rawUrl).catch((err: unknown) => {
-      log.warn(`browser openExternal failed for ${rawUrl}: ${err instanceof Error ? err.message : String(err)}`);
+    const external = externalWindowUrl(rawUrl);
+    if (external === null) {
+      log.warn("browser blocked unsupported external URL scheme or credentials");
+      return;
+    }
+    void Promise.resolve().then(() => shell.openExternal(external)).catch(() => {
+      // URLs and OS exception messages may contain credentials/query tokens.
+      log.warn("browser could not open the approved external URL");
     });
   }
 
@@ -1120,7 +1128,14 @@ class BrowserManagerImpl {
       // only exists as in-memory cookies after the re-inject) is present from
       // the very first request — otherwise the site would see an anonymous
       // session and bounce to its login page.
-      void live.ready.then(() => wc.loadURL(url));
+      void live.ready.then(() => {
+        // Cookie restore can outlive a tab. Do not navigate destroyed contents.
+        if (!wc.isDestroyed()) return wc.loadURL(url);
+      }).catch(() => {
+        // A synchronous try/catch cannot contain restore/loadURL rejections.
+        // Keep arbitrary target URLs or query tokens out of persistent logs.
+        log.warn(`browser navigation failed: ${id}`);
+      });
       return { ok: true };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

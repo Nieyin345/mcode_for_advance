@@ -20,7 +20,8 @@
  */
 "use strict";
 const { readdirSync, readlinkSync, renameSync, rmSync, lstatSync, cpSync } = require("node:fs");
-const { dirname, join, resolve } = require("node:path");
+const { dirname, join, resolve, relative, isAbsolute, sep } = require("node:path");
+const { randomUUID } = require("node:crypto");
 
 const appDir = resolve(__dirname, "..");
 const scopedDir = join(appDir, "node_modules", "@mcode");
@@ -35,6 +36,8 @@ try {
 }
 
 for (const name of entries) {
+  // Interrupted-operation recovery files are not workspace packages.
+  if (/\.deref-(?:tmp|link)-/.test(name)) continue;
   const full = join(scopedDir, name);
   let st;
   try {
@@ -53,23 +56,42 @@ for (const name of entries) {
 
   // Only dereference if the symlink resolves outside the app dir. Workspace
   // packages point to ../../../../packages/* (outside); regular deps stay put.
-  if (!target.startsWith(appDir)) {
+  const rel = relative(appDir, target);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
     // 先拷到旁边、再换过去。原来的顺序是「先删链接、再拷贝」:拷贝一旦失败
     // (目标已被清掉、磁盘满、文件被占用),node_modules 里就只剩一个空洞——
     // 而当时只是 warn 且**退 0**,于是 `package` 脚本的 `&&` 链照样走到
     // electron-builder,打出一个缺了工作区包的安装包:装上能启动,用到那块才崩。
-    const staging = `${full}.deref-tmp`;
+    const staging = `${full}.deref-tmp-${randomUUID()}`;
+    const backup = `${full}.deref-link-${randomUUID()}`;
+    let movedOriginal = false;
+    let published = false;
     try {
-      rmSync(staging, { recursive: true, force: true });
       cpSync(target, staging, { recursive: true, dereference: true });
-      rmSync(full, { recursive: true, force: true });
+      // Keep the link recoverable until the staged copy has been published.
+      renameSync(full, backup);
+      movedOriginal = true;
       renameSync(staging, full);
+      published = true;
+      rmSync(backup, { recursive: true, force: true });
       count++;
       console.log(`[dereference] ${name}: ${target} -> real copy`);
     } catch (err) {
-      rmSync(staging, { recursive: true, force: true });
+      if (movedOriginal && !published) {
+        try {
+          let occupied = true;
+          try { lstatSync(full); }
+          catch (check) { if (check.code === "ENOENT") occupied = false; else throw check; }
+          if (occupied) throw new Error("destination was recreated; refusing to overwrite it");
+          renameSync(backup, full);
+        } catch (restore) {
+          console.error(`[dereference] recovery link retained at ${backup}: ${restore.message}`);
+        }
+      }
+      try { rmSync(staging, { recursive: true, force: true }); }
+      catch (cleanup) { console.error(`[dereference] staging cleanup failed: ${cleanup.message}`); }
       console.error(`[dereference] FAILED ${name}: ${target} -> ${err.message}`);
-      console.error("[dereference] 打包中止:asar 里会缺这个工作区包。原链接保持原样,修好后重跑。");
+      console.error("[dereference] Packaging stopped. Check the original link or the reported recovery path before retrying.");
       process.exit(1);
     }
   }
