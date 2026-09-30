@@ -2,10 +2,10 @@
 export const en = {
   "library.title": "Library",
   "library.docs.title": "Documents",
-  "library.subtitle": "Manage local paper collections for the AI to read and cite",
+  "library.subtitle": "Manage local materials (papers, textbooks, notes…) for the AI to read and cite",
   "library.open": "Library",
 
-  "library.view.all": "All papers",
+  "library.view.all": "All items",
   "library.view.recent": "Recently added",
   "library.view.missingPdf": "Missing PDF",
   "library.view.needsLogin": "Needs sign-in",
@@ -20,8 +20,8 @@ export const en = {
   // ⚠️ This is a *category*, not the whole library. "library" in this product means
   // the whole thing (papers / textbooks / notes). Calling it "library" here made
   // users think the entire library was about to be deleted.
-  "library.collection.deleteConfirm": "Delete the category “{name}”? Its papers are not deleted — they simply no longer belong to this category.",
-  "library.collection.empty": "No papers in this category yet",
+  "library.collection.deleteConfirm": "Delete the category “{name}”? Its items are not deleted — they simply no longer belong to this category.",
+  "library.collection.empty": "No items in this category yet",
 
   // Sidebar management: groups (sections) and sub-types (tabs) are managed by right-click in the sidebar
   "library.group.rename": "Rename level-1 category",
@@ -56,7 +56,7 @@ export const en = {
   "library.list.selected": "{n} selected",
   "library.list.empty": "Your library is empty",
   "library.list.emptyHint": "Import local documents. Online paper search and downloads require a configured workflow and external tools; Markdown transcription runs through automation.",
-  "library.list.noMatch": "No matching papers",
+  "library.list.noMatch": "No matching items",
   "library.list.emptyInCollection": "A collection is just a view — your items are still in the library, they are simply not in this collection.",
   /** Shown when the trash itself is empty. Deliberately NOT
    *  `library.list.emptyInCollection` — that one is for an empty collection
@@ -102,7 +102,7 @@ export const en = {
   "library.action.deleteSelected": "Remove {n} selected",
   "library.action.removeFromLibrary": "Delete permanently",
   "library.action.removeConfirm":
-    "Permanently delete {n} selected papers? The database rows and the PDF / Markdown files on disk are removed, and this cannot be undone. (To just take them out of this collection, use “Remove from this library” in the right-click menu — that moves them to the recycle bin.)",
+    "Permanently delete {n} selected items? The database rows and the PDF / Markdown files on disk are removed, and this cannot be undone. (To just take them out of this category, use “Remove from this category” in the right-click menu — that moves them to the recycle bin.)",
   "library.action.refresh": "Refresh",
 
   "library.search.title": "Search external databases",
@@ -114,7 +114,7 @@ export const en = {
   "library.search.addSelected": "Add to library",
   "library.search.source": "Source",
 
-  "library.import.title": "Import papers",
+  "library.import.title": "Import items",
   "library.import.result": "Imported {added}, skipped {skipped} duplicates",
   "library.import.pickPdf": "Choose PDF files",
   "library.import.pickFile": "Import files…",
@@ -189,7 +189,7 @@ export const en = {
   "library.ctx.attachNoSession": "No chat is open — pick one from the session list first",
   "library.ctx.attachFailed": "Could not add to the current chat",
 
-  "library.detail.noSelection": "Select a paper on the left to see details",
+  "library.detail.noSelection": "Select an item on the left to see details",
   "library.detail.meta": "Metadata",
   "library.detail.url": "Source URL",
   "library.detail.language": "Language",
@@ -283,8 +283,8 @@ export const en = {
   "settings.library.layoutDesc":
     "PDFs are stored by content hash — importing the same file twice lands on the same path, so duplicates collapse naturally. markdown/ mirrors that layout for the converted text the AI actually reads. collections/ holds the manifests handed to the AI.",
 
-  "library.fulltext.placeholder": "Search inside converted paper text",
-  "library.fulltext.hint": "Only papers already converted to Markdown; Chinese and English both supported",
+  "library.fulltext.placeholder": "Search inside converted full text",
+  "library.fulltext.hint": "Only items already converted to Markdown; Chinese and English both supported",
   "library.fulltext.noMatch": "No match in full text",
   "library.fulltext.line": "line {n}",
 

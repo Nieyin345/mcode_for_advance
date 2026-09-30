@@ -4,13 +4,13 @@
  */
 export const zh = {
   // 入口与标题
-  "library.title": "文献库",
+  "library.title": "资料库",
   "library.docs.title": "文档",
-  "library.subtitle": "管理本地文献集合，供 AI 阅读与引用",
-  "library.open": "文献库",
+  "library.subtitle": "管理本地资料（论文、教材、笔记等），供 AI 阅读与引用",
+  "library.open": "资料库",
 
   // 左栏:智能视图与集合
-  "library.view.all": "全部文献",
+  "library.view.all": "全部资料",
   "library.view.recent": "最近添加",
   "library.view.missingPdf": "未下载 PDF",
   "library.view.needsLogin": "需要登录",
@@ -24,8 +24,8 @@ export const zh = {
   "library.collection.delete": "删除分类",
   /** ⚠️ 说的是**分类**不是库 —— 「文献库」在这个产品里指整个库（论文/教材/笔记），
    *  而这一条删的是树上的一个节点。原来写成「删除文献库」会让用户以为整个库要没了。 */
-  "library.collection.deleteConfirm": "删除分类「{name}」？里面的文献不会被删除，只是不再属于这个分类。",
-  "library.collection.empty": "这个分类还没有文献",
+  "library.collection.deleteConfirm": "删除分类「{name}」？里面的资料不会被删除，只是不再属于这个分类。",
+  "library.collection.empty": "这个分类还没有资料",
 
   // 左栏管理。层级术语(用户 2026-09-28 定名):一级分类(group) → 二级分类
   // (根 collection) → 三级分类(嵌套 collection) → 条目。代码标识符不改,
@@ -64,9 +64,9 @@ export const zh = {
   "library.list.selectItem": "选择条目：{title}",
   "library.list.searchPlaceholder": "搜索标题、简介、来源地址",
   "library.list.selected": "已选中 {n} 篇",
-  "library.list.empty": "文献库还是空的",
+  "library.list.empty": "资料库还是空的",
   "library.list.emptyHint": "导入本地文档；联网检索与下载需要已配置的工作流和外部工具，Markdown 转录由自动化触发。",
-  "library.list.noMatch": "没有匹配的文献",
+  "library.list.noMatch": "没有匹配的资料",
   "library.list.emptyInCollection": "分类只是视图 —— 东西还在库里，只是不属于这个分类。",
   /** 回收站**空**的时候说的话。
    *
@@ -110,11 +110,11 @@ export const zh = {
   "library.action.search": "检索",
   "library.action.fullText": "全文检索",
   "library.action.import": "导入",
-  "library.action.addToContext": "添加文献库到上下文",
-  "library.action.deleteSelected": "移除选中的 {n} 篇",
+  "library.action.addToContext": "添加资料库到上下文",
+  "library.action.deleteSelected": "移除选中的 {n} 项",
   "library.action.removeFromLibrary": "彻底删除",
   "library.action.removeConfirm":
-    "从库中彻底删除选中的 {n} 篇？数据库记录和磁盘上的 PDF / Markdown 都会被删掉，不能还原。（只是不想让它们待在当前分组里的话，用右键的「从当前文献库移除」——那会把它们收进回收站。）",
+    "从库中彻底删除选中的 {n} 项？数据库记录和磁盘上的 PDF / Markdown 都会被删掉，不能还原。（只是不想让它们待在当前分类里的话，用右键的「从当前分类移除」——那会把它们收进回收站。）",
   "library.action.refresh": "刷新",
 
   // 检索
@@ -124,12 +124,12 @@ export const zh = {
   "library.search.submit": "检索",
   "library.search.searching": "检索中…",
   "library.search.noResult": "没有找到结果",
-  "library.search.addSelected": "加入文献库",
+  "library.search.addSelected": "加入资料库",
   "library.search.source": "来源",
 
   // 导入
-  "library.import.title": "导入文献",
-  "library.import.result": "导入 {added} 篇，跳过 {skipped} 篇重复",
+  "library.import.title": "导入资料",
+  "library.import.result": "导入 {added} 项，跳过 {skipped} 项重复",
   "library.import.pickPdf": "选择 PDF 文件",
   /** 通用导入（kind 退役后的入口文案）。 */
   "library.import.pickFile": "导入文件…",
@@ -207,7 +207,7 @@ export const zh = {
   "library.ctx.offerMd": "回到 PDF 原件",
   /** 右键 → 文献信息浮窗（元数据 + 引用 + 摘要）。
    *  与「关联」并列：两个都是"就这一条，看看它是什么/它跟谁一组"。 */
-  "library.info.title": "文献信息",
+  "library.info.title": "条目信息",
   "library.ctx.openMdMissing": "预览原文（还没转换）",
   "library.ctx.openMdExternal": "用外部编辑器打开 Markdown",
   "library.ctx.newNote": "新建笔记",
@@ -220,7 +220,7 @@ export const zh = {
   "library.ctx.attachFailed": "添加到当前对话失败",
 
   // 详情
-  "library.detail.noSelection": "从左侧选一篇文献查看详情",
+  "library.detail.noSelection": "从左侧选一个条目查看详情",
   "library.detail.meta": "元数据",
   "library.detail.url": "来源地址",
   "library.detail.language": "语言",
@@ -322,15 +322,15 @@ export const zh = {
 
 
   // 设置页:文献库
-  "settings.nav.library": "文献库",
-  "settings.library.title": "文献库",
+  "settings.nav.library": "资料库",
+  "settings.library.title": "资料库",
   "settings.library.layoutTitle": "目录结构",
   "settings.library.layoutDesc":
-    "PDF 按内容哈希存放——同一篇文件导两次会落到同一个路径，天然去重。markdown/ 下同样结构放转换产物，AI 读的是它。collections/ 下是给 AI 读的文献清单。",
+    "PDF 按内容哈希存放——同一篇文件导两次会落到同一个路径，天然去重。markdown/ 下同样结构放转换产物，AI 读的是它。collections/ 下是给 AI 读的资料清单。",
 
   // 全文检索
-  "library.fulltext.placeholder": "在已转换的文献全文中搜索",
-  "library.fulltext.hint": "只搜已转成 Markdown 的文献；中文与英文都支持",
+  "library.fulltext.placeholder": "在已转换的资料全文中搜索",
+  "library.fulltext.hint": "只搜已转成 Markdown 的资料；中文与英文都支持",
   "library.fulltext.noMatch": "全文里没有匹配",
   "library.fulltext.line": "第 {n} 行",
 
@@ -342,9 +342,9 @@ export const zh = {
   // 输入框里不再有提示条，药丸上那个词就是全部指示。
 
   // 输入框:让 AI 读哪个库
-  "library.chat.none": "不绑定文献库",
-  "library.chat.pick": "让 AI 读哪个文献库",
-  "library.chat.searchPlaceholder": "搜索文献库",
+  "library.chat.none": "不绑定资料库",
+  "library.chat.pick": "让 AI 读哪个资料库",
+  "library.chat.searchPlaceholder": "搜索资料库",
   "library.chat.addN": "添加 {n} 个",
   "library.chat.alreadyAdded": "已在上下文中",
   "library.chat.current": "当前：{name}",

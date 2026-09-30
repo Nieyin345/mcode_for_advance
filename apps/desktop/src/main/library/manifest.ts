@@ -190,7 +190,7 @@ export function writeCollectionManifest(collectionId: string): ManifestResult {
   const trashedCount = all.filter((i) => trashed.has(i.id)).length;
   const { items, suppressed } = dropSuppressed(all.filter((i) => !trashed.has(i.id)));
   const name = collection?.name ?? collectionId;
-  const lines = [`# 文献库:${name}`, "", `共 ${items.length} 篇。`, ""];
+  const lines = [`# 资料库:${name}`, "", `共 ${items.length} 条。`, ""];
   // 提示词**两层叠加,从大到小**:大类(组)→ 集合。大类说明经 `collection.groupId`
   // 查（kind 退役,不再是"从条目反查类型"）。哪层没写就跳过。
   const groupPrompt = collection?.groupId ? groupPromptOf(collection.groupId) : undefined;
