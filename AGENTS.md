@@ -90,7 +90,7 @@ apps/desktop/src/
 
 ```bash
 # 启动开发(electron-vite,HMR)
-cd D:\00-huangbh-project\my-claude-gui
+# 在当前仓库根目录执行
 pnpm dev
 
 # 类型检查(改完代码先跑这个,最快定位问题)
@@ -107,11 +107,12 @@ pnpm build
 
 ## 环境
 
-- Node.js ≥ 22.13(pnpm 11 要求,本机 v25.9.0)
+- Node.js ≥ 22.19.0（以根 package.json engines 为准；2026-09-30 打包验收宿主为 22.21.1，Electron 内置 Node 另计）
 - pnpm ≥ 9(经 `corepack enable` 启用,本机 11.16.0)
 - Claude Code CLI(本机装在 `D:\soft\nodejs\node_global`,非默认路径——`ClaudePathResolver` 已处理)
 - `.npmrc` 配了国内 electron 镜像(直连 GitHub 会超时),任何人重装不会踩
-- **`@anthropic-ai/claude-agent-sdk` 钉死精确版本 `0.3.238`(不带 `^`;2026-08-27 从 0.3.218 显式升级)**:防止 `^0.3.x` 在普通 `pnpm install` 时静默漂移(2026-08-23 曾意外漂到本版)。注意:本版捆绑 CLI 2.1.238 的 `sdkCompat.testedWrapperVersions` 名单止于 0.3.227、不含 wrapper 自身(该字段仅宿主元数据,`sdk.mjs` 不消费它);本次升级已过 checksum 比对 + 对话框 kind 存在性 + 冒烟(system/init 报 2.1.238)三项验证。升级要显式改版本号,升级前必查:changelog + issues 搜 "Stream closed"/permission;新包 manifest 的 testedWrapperVersions 要含 wrapper 自身;`grep -ac "permission_exit_plan_mode_v2" claude.exe` 确认对话框 kind 没改名;升级后回归计划审批/AskUserQuestion/工具审批/子代理收尾四条链路
+- **`@anthropic-ai/claude-agent-sdk` 钉死精确版本(不带 `^`),当前为 `0.3.258`——以 `apps/desktop/package.json` 为准**(2026-08-27 从 0.3.218 显式升到 0.3.238,之后又升到 0.3.258;下文「本版」的兼容性验证记录针对的是 0.3.238):防止 `^0.3.x` 在普通 `pnpm install` 时静默漂移(2026-08-23 曾意外漂到本版)。注意:本版捆绑 CLI 2.1.238 的 `sdkCompat.testedWrapperVersions` 名单止于 0.3.227、不含 wrapper 自身(该字段仅宿主元数据,`sdk.mjs` 不消费它);本次升级已过 checksum 比对 + 对话框 kind 存在性 + 冒烟(system/init 报 2.1.238)三项验证。升级要显式改版本号,升级前必查:changelog + issues 搜 "Stream closed"/permission;新包 manifest 的 testedWrapperVersions 要含 wrapper 自身;`grep -ac "permission_exit_plan_mode_v2" claude.exe` 确认对话框 kind 没改名;升级后回归计划审批/AskUserQuestion/工具审批/子代理收尾四条链路
+- **2026-09-30 SDK 打包依赖**：业务/contracts 保持 Zod 3.25.76；SDK 0.3.258 使用独立 Zod 4.4.3，由精确 `.pnpmfile.cjs` hook + `patches/@anthropic-ai__claude-agent-sdk@0.3.258.patch` 保证安装和打包声明一致。升级 SDK 必须一并重审 hook/patch，并重跑真实解包 SDK 导入检查；模块导入通过不代表真实模型/审批链路通过。
 - **Claude 的 UI「计划模式」在 provider 层翻译为 SDK `default` + `CLAUDE_PLAN_MODE_NUDGE` 引导模型走 EnterPlanMode 工具**(2026-08-26):CLI 的 plan permission-mode 在"上一轮后台子代理刚完成、新一轮立即 resume"的竞态下会把 ExitPlanMode 的审批请求在规则层秒拒(`toolDenialKind:"permission-rule"`,tool_result 显示 `Tool permission request failed: AbortError: Stream closed`,记入 permission_denials,宿主 canUseTool/onUserDialog 均不会被调用)——2.1.218 与 2.1.238 都复现,与 SDK 版本无关;default 模式下模型自调 EnterPlanMode→ExitPlanMode 的审批链路则一直可靠。安全性由宿主侧保持:ApprovalBridge 仍按配置级 "plan" 判定,所有写操作逐个弹审批(对齐 Pi 侧计划模式的设计)。adapter 已做降级呈现:ExitPlanMode 的通道故障显示琥珀色警告卡(`planApprovalBroken` 词条)
 - **CLI 排障入口**:CLI 开了 `--debug`,自写日志按 SDK 会话落在 `~/.mcode/debug/<sessionId>.txt`(权限判定、hook、agent 生命周期都在里面,main.log 看不到的 CLI 内部行为来这里查)
 
