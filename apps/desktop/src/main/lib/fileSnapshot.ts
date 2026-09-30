@@ -32,6 +32,11 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { TurnFileEntry } from "@contracts/runtime";
 import { msysToWindowsPath } from "@main/lib/msysPath.js";
 
+/** Strict decoder for pre-turn snapshots: throws on invalid UTF-8 instead of
+ *  substituting U+FFFD, and keeps a leading BOM (like readFile "utf-8") so a
+ *  rewind writes back the exact original text. */
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
 /** Internal record per snapshotted file. */
 interface FileRecord {
   /** Path the snapshot was taken from (cwd-resolved, absolute). */
@@ -55,6 +60,8 @@ export class FileSnapshot {
    *  pre-write hook for auto-approved edits and rebuilds `before` from the
    *  turn's unified diff instead (see codex-sdk/CodexFileSnapshot.ts). */
   protected originals = new Map<string, FileRecord>();
+  /** Paths whose pre-turn content was not valid UTF-8 (see recordPre). */
+  private readonly unrestorable = new Set<string>();
   /** Once frozen, recordPre() is a no-op. Lets us safely call
    *  freeze() at turn end and have any straggling tool_use events
    *  (rare, but possible) be ignored. */
@@ -75,8 +82,22 @@ export class FileSnapshot {
     const abs = safeResolve(cwd, filePath);
     if (abs === null) return; // path escapes cwd — silently ignore
     if (this.originals.has(abs)) return; // already snapshotted
+    if (this.unrestorable.has(abs)) return; // pre-turn bytes not representable
     try {
-      const content = await readFile(abs, "utf-8");
+      const bytes = await readFile(abs);
+      let content: string;
+      try {
+        content = STRICT_UTF8.decode(bytes);
+      } catch {
+        // Not valid UTF-8 (GBK/Shift-JIS/binary...). A lossy decode would put
+        // U+FFFD into `before`, and rewinding would then write that mangled
+        // text over the user's file — the undo itself would corrupt it. Leave
+        // the file out of the rewind set instead, and remember that: a later
+        // tool call must not snapshot the post-edit state as "before".
+        this.unrestorable.add(abs);
+        console.warn(`FileSnapshot: skip ${abs} (not valid UTF-8, cannot restore losslessly)`);
+        return;
+      }
       this.originals.set(abs, { absPath: abs, exists: true, content });
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
@@ -158,6 +179,7 @@ export class FileSnapshot {
    *  turn's snapshot. */
   clear(): void {
     this.originals.clear();
+    this.unrestorable.clear();
     this.frozen = false;
   }
 

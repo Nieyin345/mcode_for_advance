@@ -34,6 +34,10 @@ export const zh = {
   "common.persistenceFailureTitle": "数据库保存失败",
   "common.persistenceFailureMessage": "最近一次数据库保存失败，应用会自动重试。请检查磁盘空间和目录权限；恢复保存前请勿强制退出，以免丢失内存中的修改。",
   "common.keepAppOpen": "保持应用打开",
+  // 启动时 initDb 失败（main/store/persistenceAlerts.ts 的 showDbOpenError）。
+  "common.dbOpenFailureTitle": "数据库打开失败",
+  "common.dbOpenFailureMessage": "启动时无法打开 Mcode 的数据库，会话、设置等功能暂时都不可用。请检查数据目录的磁盘空间和权限（以及是否有另一个 Mcode 正在运行），然后重启应用。",
+  "common.quitApp": "退出应用",
   "common.discardChanges": "放弃改动",
   "common.saving": "保存中…",
   "common.saved": "已保存",

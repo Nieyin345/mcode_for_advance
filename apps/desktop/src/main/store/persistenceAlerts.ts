@@ -1,6 +1,6 @@
 /** Visible persistence failures without coupling db.ts to Electron or IPC.
  * Only the tiny common catalogs are imported; no React/store/full UI catalog. */
-import { dialog } from "electron";
+import { app, dialog } from "electron";
 import { UI_LOCALE_SETTING_KEY } from "@contracts/ipc";
 import { log } from "@main/lib/logger.js";
 import { SettingRepo } from "./repositories.js";
@@ -36,6 +36,31 @@ export function showDbPersistenceError(cause: unknown): void {
   }).catch((error: unknown) => {
     dialogOpen = false;
     log.error(`sqlite persistence dialog failed: ${String(error)}`);
+  });
+}
+
+/** initDb() rejected (unreadable/locked data file, sql.js load failure, failed
+ *  migration). Every IPC awaits the same rejected promise, so without this the
+ *  window just stays empty with the cause buried in main.log. The persistence
+ *  dialog above does not fit: its "retry" means flushDb(), a no-op with no DB. */
+export function showDbOpenError(cause: unknown): void {
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  log.error(`sqlite open failed at startup: ${cause instanceof Error ? cause.stack ?? detail : detail}`);
+  // The DB never opened, so the saved locale is unreadable: default catalog.
+  const messages = zh;
+  void Promise.resolve().then(() => dialog.showMessageBox({
+    type: "error",
+    title: messages["common.dbOpenFailureTitle"],
+    message: messages["common.dbOpenFailureMessage"],
+    detail,
+    buttons: [messages["common.quitApp"], messages["common.keepAppOpen"]],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  })).then(({ response }) => {
+    if (response === 0) app.quit();
+  }).catch((error: unknown) => {
+    log.error(`sqlite open-failure dialog failed: ${String(error)}`);
   });
 }
 

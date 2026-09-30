@@ -2,7 +2,7 @@ import { app, BrowserWindow, session } from "electron";
 import { createMainWindow } from "@main/window.js";
 import { registerIpcHandlers } from "@main/ipc/index.js";
 import { initDb, closeDb, awaitDb, flushDb } from "@main/store/db.js";
-import { installDbPersistenceAlerts, showDbPersistenceError } from "@main/store/persistenceAlerts.js";
+import { installDbPersistenceAlerts, showDbOpenError, showDbPersistenceError } from "@main/store/persistenceAlerts.js";
 import { initTheme } from "@main/lib/theme.js";
 import { TerminalManager } from "@main/terminal/TerminalManager.js";
 import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
@@ -209,6 +209,11 @@ app.whenReady().then(async () => {
       broadcastSessionChanged: (session) => broadcastSessionChanged(session),
     });
     initPublicMcp();
+  }, (err: unknown) => {
+    // Only initDb's own rejection lands here (not errors thrown by the ready
+    // callback above). Without it the failure was just an unhandledRejection
+    // line in main.log while every IPC silently failed on the same promise.
+    showDbOpenError(err);
   });
 
   // CSP only in production - in dev, Vite injects inline HMR scripts that a
