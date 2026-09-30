@@ -9,6 +9,8 @@
  *     (转录/markdown/mineru)，且必须只有一个候选；不猜测无关或歧义绑定。
  *   - **文献导入**:名字含 下载/download/doi 的任意触发器 —— 没有结构特征可依,
  *     只认名字;认不出**如实说缺**,不瞎绑。
+ *   - 两条都**先认内置自动化的 id**(见 `BUILTIN_TRANSCRIBE` / `BUILTIN_IMPORT`),名字规则
+ *     只给用户自建的自动化兜底。
  *
  * 纯函数(只依赖 contracts 类型):冒烟直接钉规则(custom-ui-smoke)。
  * 调用方在 `customUiStore.load()`:构建 → save → 按 notes 弹 toast。
@@ -41,6 +43,24 @@ export interface SeedResult {
 
 const RE_TRANSCRIBE = /转录|markdown|mineru/i;
 const RE_DOWNLOAD = /下载|download|doi/i;
+
+/**
+ * 内置自动化的固定落点 —— 与 `main/orchestration/builtins.ts` 的
+ * `AUTO_CONVERT_WORKFLOW_ID` / `AUTO_CONVERT_TRIGGER_NODE_ID`、
+ * `AUTO_DOWNLOAD_WORKFLOW_ID` / `AUTO_DOWNLOAD_TRIGGER_NODE_ID` 同值(渲染端不能 import main;
+ * custom-ui-smoke 拿**真的** `BUILTIN_WORKFLOWS` 钉住,两边漂了会红)。
+ *
+ * **先认 id,名字只是兜底。** 只按名字认时,内置「转 Markdown」的触发器标题
+ * 「文件导入或下载完成触发」含「下载」,和内置「文献导入(PDF / DOI)」一起命中导入规则 →
+ * 两个候选 → 按歧义规则不绑 —— 全新安装的用户右键分类看不到「文献导入」,首启 toast
+ * 还说「没找到导入自动化」(2026-09-30)。
+ */
+const BUILTIN_TRANSCRIBE = { workflowId: "wf_auto_convert", nodeId: "auto-convert-trigger" } as const;
+const BUILTIN_IMPORT = { workflowId: "wf_auto_download", nodeId: "auto-download-trigger" } as const;
+
+function isAt(t: SeedTrigger, at: { workflowId: string; nodeId: string }): boolean {
+  return t.workflowId === at.workflowId && t.nodeId === at.nodeId;
+}
 
 /** 条目信息卡正文(view 模板;与设置页 itemInfo 模板同一张卡)。 */
 const INFO_BODY = [
@@ -79,7 +99,8 @@ export function buildDefaultLibraryItems(
   // 2) 转录(手动兜漏 + 分类/小类批量,全部带 skipWhen: 已有转录跳过)。
   const eligible = triggers.filter(t => workflows.some(w => w.id === t.workflowId && w.hasTrigger));
   const candidates = eligible.filter(t => t.kind === "event" && (RE_TRANSCRIBE.test(t.title) || RE_TRANSCRIBE.test(nameOf(t.workflowId))));
-  const transcribe = candidates.length === 1 ? candidates[0] : undefined;
+  const transcribe = eligible.find((t) => t.kind === "event" && isAt(t, BUILTIN_TRANSCRIBE))
+    ?? (candidates.length === 1 ? candidates[0] : undefined);
   if (transcribe !== undefined) {
     const bind = { workflowId: transcribe.workflowId, triggerNodeId: transcribe.nodeId } as const;
     const skip = { skipWhen: { requires: "markdown" as const } };
@@ -110,10 +131,13 @@ export function buildDefaultLibraryItems(
   }
 
   // 3) 文献导入(选 PDF / 填 DOI → 下载自动化)。
+  // 已被认作「转录」的触发器不再参与导入的名字匹配(它的标题里常带「下载完成」)。
   const downloads = eligible.filter(
-    (t) => RE_DOWNLOAD.test(t.title) || RE_DOWNLOAD.test(nameOf(t.workflowId)),
+    (t) => !candidates.includes(t) && t !== transcribe
+      && (RE_DOWNLOAD.test(t.title) || RE_DOWNLOAD.test(nameOf(t.workflowId))),
   );
-  const download = downloads.length === 1 ? downloads[0] : undefined;
+  const download = eligible.find((t) => isAt(t, BUILTIN_IMPORT))
+    ?? (downloads.length === 1 ? downloads[0] : undefined);
   if (download !== undefined) {
     const bind = { workflowId: download.workflowId, triggerNodeId: download.nodeId } as const;
     const inputs = [

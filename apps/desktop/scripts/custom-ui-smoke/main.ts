@@ -50,6 +50,13 @@ import { describeTriggerPayload, payloadFactsOf } from "../../src/main/orchestra
 import { LIT_IMPORT_PY } from "../../src/main/workflows/assets.js";
 import { spawnSync } from "node:child_process";
 import { buildDefaultLibraryItems } from "../../src/renderer/components/customUi/seedDefaults.js";
+import {
+  AUTO_CONVERT_TRIGGER_NODE_ID,
+  AUTO_CONVERT_WORKFLOW_ID,
+  AUTO_DOWNLOAD_TRIGGER_NODE_ID,
+  AUTO_DOWNLOAD_WORKFLOW_ID,
+  BUILTIN_WORKFLOWS,
+} from "../../src/main/orchestration/builtins.js";
 
 let checks = 0;
 let passed = 0;
@@ -472,6 +479,37 @@ check("RunAutomation 输入接受 input 值表", CustomUiRunAutomationSchema.saf
   }
   const stale = buildDefaultLibraryItems([], [{workflowId:"gone",nodeId:"t",title:"Markdown DOI",kind:"event"}]);
   check("已删除工作流的触发器不能预置", stale.items.length === 1, stale);
+}
+{
+  // **拿真的内置工作流喂**(2026-09-30):只用假名字钉规则时漏过一次 —— 内置「转 Markdown」
+  // 的触发器标题「文件导入或下载完成触发」含「下载」,让导入规则出现两个候选 → 不绑,
+  // 全新安装看不到「文献导入」。这一组直接读 BUILTIN_WORKFLOWS,改标题/改 id 都会红。
+  const wfs = BUILTIN_WORKFLOWS.map((w) => ({ id: w.id, name: w.name, hasTrigger: w.trigger !== undefined }));
+  const trs = BUILTIN_WORKFLOWS.flatMap((w) => w.nodes
+    .filter((n) => n.type === "mcode.trigger")
+    .map((n) => ({ workflowId: w.id, nodeId: n.id, title: n.title || n.id,
+      kind: String((n.params as Record<string, unknown>)["triggerKind"] ?? "unknown") })));
+  const r = buildDefaultLibraryItems(wfs, trs);
+  const bound = (id: string): { workflowId: string; triggerNodeId: string } | undefined => {
+    const a = r.items.find((i) => i.id === id)?.action;
+    return a?.type === "automation" ? { workflowId: a.workflowId, triggerNodeId: a.triggerNodeId } : undefined;
+  };
+  check("真实内置:预置 6 项(信息卡 + 3 转录 + 2 导入)", r.items.length === 6, r.items.map((i) => i.id));
+  check("真实内置:转录绑 wf_auto_convert 的触发器",
+    bound("seed-transcribe")?.workflowId === AUTO_CONVERT_WORKFLOW_ID
+      && bound("seed-transcribe")?.triggerNodeId === AUTO_CONVERT_TRIGGER_NODE_ID, bound("seed-transcribe"));
+  check("真实内置:文献导入绑 wf_auto_download 的触发器",
+    bound("seed-lit-import")?.workflowId === AUTO_DOWNLOAD_WORKFLOW_ID
+      && bound("seed-lit-import")?.triggerNodeId === AUTO_DOWNLOAD_TRIGGER_NODE_ID, bound("seed-lit-import"));
+  check("真实内置:首启说明里没有「缺」", !r.notes.some((n) => n.kind === "missingImport" || n.kind === "missingTranscribe"), r.notes);
+  // 用户另建一条同名风格的自动化,内置那条仍然是确定的落点(不因歧义退成不绑)。
+  const extra = buildDefaultLibraryItems(
+    [...wfs, { id: "mine", name: "我的 DOI 下载", hasTrigger: true }],
+    [...trs, { workflowId: "mine", nodeId: "t", title: "触发器", kind: "event" }],
+  );
+  check("真实内置 + 用户同类自动化:仍绑内置导入",
+    extra.items.find((i) => i.id === "seed-lit-import")?.action.type === "automation"
+      && (extra.items.find((i) => i.id === "seed-lit-import")?.action as { workflowId?: string }).workflowId === AUTO_DOWNLOAD_WORKFLOW_ID);
 }
 
 /* ── 文献导入:载荷 → 脚本 → importFiles 这道缝(2026-09-28)──
