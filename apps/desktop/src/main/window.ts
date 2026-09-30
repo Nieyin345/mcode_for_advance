@@ -198,9 +198,13 @@ export function createMainWindow(): BrowserWindow {
   // even when launched from the Start Menu (no stderr sink). The renderer's
   // own errors never go through the main-process `log`, so without this a
   // blank-screen bug leaves no trace on disk after the app quits.
-  mainWindow.webContents.on("console-message", (_e, level, message, line, sourceId) => {
-    const tag = ["LOG", "WARN", "ERROR"][level] ?? "LOG";
-    const line2 = `[renderer:${tag}] ${message} (${sourceId}:${line})`;
+  // Electron ≥35 passes the details on the event object (positional args are
+  // deprecated). The old numeric level was 0=verbose 1=info 2=warning 3=error,
+  // so the former `["LOG","WARN","ERROR"][level]` mapping logged console.log
+  // as WARN and dropped console.error to LOG — never persisted to main.log.
+  mainWindow.webContents.on("console-message", ({ level, message, lineNumber, sourceId }) => {
+    const tag = level === "error" ? "ERROR" : level === "warning" ? "WARN" : "LOG";
+    const line2 = `[renderer:${tag}] ${message} (${sourceId}:${lineNumber})`;
     process.stderr.write(`${line2}\n`);
     if (tag === "ERROR") log.error(line2);
     else if (tag === "WARN") log.warn(line2);
