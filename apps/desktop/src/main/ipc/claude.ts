@@ -292,7 +292,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       });
       return { session: updated };
     }
-    await runtimeManager.sendTurn(updated, {
+    const handle = await runtimeManager.sendTurn(updated, {
       prompt: input.prompt,
       cwd,
       skills: input.skills,
@@ -300,6 +300,9 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       // User-message echo payload from the renderer (cross-client bubble).
       userMessage: input.userMessage,
     });
+    // null = 这一轮没有启动(上一轮仍在运行)。必须拒绝:渲染端已乐观地把会话标成
+    // 运行中,若照常返回,它会一直转圈等一个永远不会来的 turn.done,消息也没发出去。
+    if (handle === null) throw new Error("这个对话上一轮还在运行，消息未发送：请等本轮结束或按停止后再发");
     // Return the in-memory `updated` snapshot (it already carries every
     // per-turn override above — including providerId). Re-reading from the DB
     // here would hand back a stale providerId (the per-turn provider override

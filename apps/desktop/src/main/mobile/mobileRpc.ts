@@ -414,7 +414,7 @@ const HANDLERS: Record<string, RpcHandler> = {
       log.info(`mobile: workflow run started (${session.id}) by ${ctx.device.name}`);
       return { session: updated };
     }
-    await runtimeManager.sendTurn(updated, {
+    const handle = await runtimeManager.sendTurn(updated, {
       prompt: input.prompt,
       cwd: project.path,
       skills: input.skills,
@@ -422,6 +422,8 @@ const HANDLERS: Record<string, RpcHandler> = {
       // User-message echo payload from the phone (cross-client bubble).
       userMessage: input.userMessage,
     });
+    // 同桌面端:没启动就如实拒绝,别让手机端一直转圈、消息石沉大海。
+    if (handle === null) throw new Error("这个对话上一轮还在运行，消息未发送：请等本轮结束或按停止后再发");
     log.info(`mobile: turn sent (${session.id}) by ${ctx.device.name}`);
     return { session: updated };
   },

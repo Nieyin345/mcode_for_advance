@@ -129,6 +129,14 @@ interface SessionRuntime {
   /** 回退重试的下一个模型。emit 闭包 shift 后经它递进 sendTurn；sendTurn
    *  消费掉（置回 undefined）并据此跳过本轮回退链的重新解析。 */
   fallbackRetryModel?: string;
+  /** 当前 handle 已发出 turn.done(引擎可能还在收尾:Codex 冻结文件快照等)。
+   *  渲染端收到 turn.done 就回到空闲、排队消息会立刻发来 —— sendTurn 据此短暂
+   *  等待收尾,而不是把这条消息当「正在运行」丢掉。每次 startTurn 前复位。 */
+  turnDoneSeen?: boolean;
+  /** 当前这一轮的身份令牌。只有**这一轮**自己的 turn.done 才能置 turnDoneSeen ——
+   *  被打断的上一轮可能在新一轮开跑后才迟到地发出 turn.done,不能把新一轮误判成
+   *  「只差收尾」。 */
+  turnToken?: object;
   /** 回退重发用的最小输入快照（sendTurn 每轮刷新）。**不含 userMessage**
    *  —— 重试不得再回显用户气泡；prompt 用的是 req 里拼好的最终形态
    *  （backflow 已在首轮消费，重发时 peek 为空、原样通过）。 */
@@ -216,6 +224,8 @@ function customModelUnavailableMessage(id: string): string {
  *  imminent REAL turn-end snapshot settles via the token-usage.updated branch
  *  first; the timer only backfills when no snapshot ever comes. */
 const TURN_END_SETTLE_GRACE_MS = 4_000;
+/** turn.done 之后引擎收尾(文件快照冻结等)的最长等待;超时仍在跑才按「正在运行」拒绝。 */
+const TURN_FINALIZE_WAIT_MS = 5_000;
 
 /** 同时在内存里留着的「节点过程」份数上限(见 `evictNodeTranscripts`)。64 是个手感值:
  *  一张十来步的图跑几轮都装得下,同时又把"开一整天自动化"那种场景兜住了。 */
@@ -725,13 +735,31 @@ class RuntimeManager {
           });
           const retryInput = { ...rt.lastTurnInput, automationOrigin: automationOriginOf(e) };
           rt.fallbackRetryModel = nextModel;
-          // 下一跳事件循环再发：让 turn.done 的落盘链路先走完，也别在 emit
-          // 调用栈里递归 sendTurn（那会让嵌套事件和持久化交错）。
-          setTimeout(() => {
-            void this.sendTurn(session, retryInput).catch((err) => {
+          // 等失败那一轮的 handle 真正收尾再发：turn.done 并不等于 isRunning()
+          // 已为 false —— Codex 先发 turn.done 再 await flushFinal()(冻结文件快照,
+          // 真实 I/O),固定的 setTimeout(0) 会撞上「already running」被静默丢弃,
+          // 用户只看到「自动改用 X 重试」却什么也没发生。也别在 emit 调用栈里递归
+          // sendTurn(那会让嵌套事件和持久化交错)。
+          // 重发没真正启动(返回 null / 抛错)时清掉 fallbackRetryModel,否则它会
+          // 残留到用户下一次手动发送,把那一轮悄悄换成回退模型。
+          const failedTurnDone = rt.handle?.done ?? Promise.resolve();
+          const clearStaleRetry = (): void => {
+            if (rt.fallbackRetryModel === nextModel) rt.fallbackRetryModel = undefined;
+          };
+          void failedTurnDone
+            .catch(() => undefined)
+            .then(() => new Promise<void>((resolve) => setTimeout(resolve, 0).unref()))
+            .then(() => this.sendTurn(session, retryInput))
+            .then((handle) => {
+              if (handle === null) {
+                clearStaleRetry();
+                log.warn(`fallback resend to ${nextModel} did not start (session busy or unbound)`);
+              }
+            })
+            .catch((err) => {
+              clearStaleRetry();
               log.error(`fallback resend failed: ${(err as Error).message}`);
             });
-          }, 0).unref();
         }
       } else if (e.type === "todo.update") {
         try {
@@ -964,6 +992,16 @@ class RuntimeManager {
       log.warn(`sendTurn: no runtime bound for session ${session.id}`);
       return null;
     }
+    if (rt.handle?.isRunning() && rt.turnDoneSeen && !this.startingSessions.has(session.id)) {
+      // 上一轮已发出 turn.done、只差引擎收尾(Codex 在 turn.done 之后才 await
+      // flushFinal 冻结文件快照)。渲染端此刻已显示空闲,排队消息会立刻发来 ——
+      // 等收尾(有上限),别把用户的消息当「正在运行」静默丢掉。
+      const previous = rt.handle;
+      await Promise.race([
+        previous.done.catch(() => undefined),
+        new Promise<void>((resolve) => setTimeout(resolve, TURN_FINALIZE_WAIT_MS)),
+      ]);
+    }
     if (rt.handle?.isRunning() || this.startingSessions.has(session.id)) {
       log.warn(`sendTurn: session ${session.id} already running, ignoring`);
       return null;
@@ -1025,7 +1063,11 @@ class RuntimeManager {
     const provider = providerRegistry.resolve(session.providerId);
     const baseEmit = withAutomationOrigin(rt.ctx.emit, input.automationOrigin);
     let handoffDeliveryId: string | undefined;
+    const turnToken = {};
+    rt.turnToken = turnToken;
+    rt.turnDoneSeen = false;
     const emit = (event: RuntimeEvent): void => {
+      if (event.type === "turn.done" && rt.turnToken === turnToken) rt.turnDoneSeen = true;
       if (event.type === "turn.done" && handoffDeliveryId) {
         try { acknowledgeAssistantTurn(session.id, handoffDeliveryId, event.reason); }
         catch (error) { log.error(`handoff acknowledgement failed: ${String(error)}`); }

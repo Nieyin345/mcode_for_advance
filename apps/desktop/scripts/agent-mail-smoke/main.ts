@@ -943,12 +943,14 @@ console.log("\n⑯ 直接叫醒:配置失效要退回收件箱,启动失败也�
 {
   const contexts: ProviderContext[] = [];
   const finishes: Array<() => void> = [];
+  const requestedModels: Array<string | undefined> = [];
   const providerId = "origin-smoke-provider";
   providerRegistry.register({
     id: providerId, displayName: "Origin fixture",
     capabilities: { supportsApproval: false, supportsResume: false, supportsStreaming: true, supportsMcp: false, supportsAskUserQuestion: false },
     startTurn: async (req, ctx) => {
       contexts.push(ctx);
+      requestedModels.push(req.model);
       let running = true, resolve!: () => void;
       const done = new Promise<void>(r => { resolve = r; });
       const finish = (): void => { running = false; resolve(); };
@@ -1021,6 +1023,56 @@ console.log("\n⑯ 直接叫醒:配置失效要退回收件箱,启动失败也�
     } finally {
       finishes.at(-1)!(); runtimeManager.dispose(retry.id);
       SettingRepo.set(RUNTIME_FALLBACK_MODELS_SETTING_KEY, savedFallback ?? "[]");
+    }
+
+    // Codex 的真实顺序:先发 turn.done{error},再 await flushFinal()(文件快照 I/O),
+    // 之后 handle 才 isRunning()=false。回退重发必须等失败那一轮收尾,不能被
+    // 「already running」静默吞掉,也不能把回退模型残留给下一轮。
+    const late = mkSession({ kind: "chat", title: "回退等待收尾测试", providerId, workflowId: "" });
+    runtimeManager.bindSession(late);
+    const savedFallbackLate = SettingRepo.get(RUNTIME_FALLBACK_MODELS_SETTING_KEY);
+    SettingRepo.set(RUNTIME_FALLBACK_MODELS_SETTING_KEY, JSON.stringify(["haiku"]));
+    try {
+      await runtimeManager.sendTurn(late, { prompt: "late finish", cwd: "C:/work/paper" });
+      const failedContext = contexts.at(-1)!;
+      const failedFinish = finishes.at(-1)!;
+      const countBeforeRetry = contexts.length;
+      failedContext.emit({ type: "turn.done", sessionId: late.id, reason: "error" });
+      await new Promise(r => setTimeout(r, 80));
+      eq("turn.done 先于收尾时回退不抢跑", contexts.length, countBeforeRetry);
+      failedFinish();
+      for (let i = 0; i < 50 && contexts.length === countBeforeRetry; i++) await new Promise(r => setTimeout(r, 20));
+      eq("失败一轮收尾后执行回退重发", contexts.length, countBeforeRetry + 1);
+      eq("回退重发使用链上的下一个模型", requestedModels.at(-1), "haiku");
+      contexts.at(-1)!.emit({ type: "turn.done", sessionId: late.id, reason: "end_turn" });
+      finishes.at(-1)!();
+      await new Promise(r => setTimeout(r, 0));
+      await runtimeManager.sendTurn(late, { prompt: "next manual turn", cwd: "C:/work/paper" });
+      eq("回退之后的手动发送回到会话自己的模型", requestedModels.at(-1), late.model !== "default" ? late.model : undefined);
+    } finally {
+      finishes.at(-1)!(); runtimeManager.dispose(late.id);
+      SettingRepo.set(RUNTIME_FALLBACK_MODELS_SETTING_KEY, savedFallbackLate ?? "[]");
+    }
+
+    // 渲染端收到 turn.done 就回到空闲、排队消息立刻发来;此时引擎可能还在收尾。
+    // sendTurn 要等收尾而不是返回 null(返回 null 时 IPC 会拒绝,消息不发)。
+    const queued = mkSession({ kind: "chat", title: "收尾期间发送测试", providerId, workflowId: "" });
+    runtimeManager.bindSession(queued);
+    try {
+      await runtimeManager.sendTurn(queued, { prompt: "first", cwd: "C:/work/paper" });
+      const firstFinish = finishes.at(-1)!;
+      const beforeBusy = contexts.length;
+      eq("真正运行中(未发 turn.done)的发送立即拒绝", await runtimeManager.sendTurn(queued, { prompt: "busy", cwd: "C:/work/paper" }), null);
+      eq("被拒绝的发送没有启动新回合", contexts.length, beforeBusy);
+      contexts.at(-1)!.emit({ type: "turn.done", sessionId: queued.id, reason: "end_turn" });
+      const pending = runtimeManager.sendTurn(queued, { prompt: "queued after done", cwd: "C:/work/paper" });
+      await new Promise(r => setTimeout(r, 40));
+      eq("收尾未完成时不抢跑", contexts.length, beforeBusy);
+      firstFinish();
+      const secondHandle = await pending;
+      eq("收尾完成后排队消息正常启动", secondHandle !== null && contexts.length === beforeBusy + 1, true);
+    } finally {
+      finishes.at(-1)!(); runtimeManager.dispose(queued.id);
     }
 
   } finally { finishes.forEach(f => f()); off(); runtimeManager.dispose(chat.id); }
