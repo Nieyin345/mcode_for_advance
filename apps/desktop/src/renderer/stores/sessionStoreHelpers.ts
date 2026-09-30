@@ -3060,8 +3060,35 @@ const entry = e.session;
 }
 
 /** `e.type === "session.deleted"` */
+/** 自动落到另一个会话(删除 / 归档当前会话、关掉当前标签、别的端删了它)之后,补齐
+ *  `selectSession` 做的同步:引擎 / 工作流 / 项目等配置,状态胶囊、本轮文件、用量、
+ *  书签、子代理记录,以及消息历史。
+ *
+ *  原先这几处只内联了 model / effort / permissionMode / customModelId —— providerId
+ *  不跟着换,输入框就停在上一个会话的引擎上:发送要么被「请选择模型」拦下,要么让这条
+ *  会话这一轮跑在错的引擎上(主进程按请求里的 providerId 覆盖本轮);没加载过的会话
+ *  还会显示成一片空白。不动 centerTabFocus —— 那是调用方各自的决定。 */
+export function syncLandedSessionIfChanged(
+  set: (partial: Partial<SessionState> | ((s: SessionState) => Partial<SessionState>)) => void,
+  get: () => SessionState,
+  previousActiveId: string | null,
+): void {
+  const landed = get().activeSessionId;
+  if (!landed || landed === previousActiveId) return;
+  syncConfigFromSession(set, get, landed);
+  hydrateContextSnapshot(set, get, landed);
+  hydrateCapsule(set, get, landed);
+  hydrateTurnFiles(set, get, landed);
+  hydrateUsageHistory(set, get, landed);
+  hydrateBookmarks(set, get, landed);
+  hydrateSubagentTranscripts(set, get, landed);
+  if (!get().historyLoadedBySession[landed]) void get().prefetchSessionMessages(landed);
+}
+
 export function reduceSessionDeleted(ctx: IngestCtx, e: SessionDeletedEvent): void {
+const previousActiveId = ctx.get().activeSessionId;
 ctx.set((s) => applySessionDeletedState(s, ctx.sid));
+syncLandedSessionIfChanged(ctx.set, ctx.get, previousActiveId);
       return;
     
 }

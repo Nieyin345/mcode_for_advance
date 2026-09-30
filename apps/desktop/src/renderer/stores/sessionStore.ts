@@ -42,7 +42,7 @@ export interface BrowserTab {
 import type { BuiltinModelOption, UserInputAnswers } from "@contracts/provider";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 // Pure helpers live in sessionStoreHelpers.ts (split for file size; see its header).
-import { CONTENT_FROZEN_EVENTS, EMPTY_BOOKMARKS, EMPTY_CODEX_MODELS, EMPTY_CUSTOM_MODELS, EMPTY_LAST_MODEL_BY_PROVIDER, EMPTY_MESSAGES, EMPTY_PI_MODELS, EMPTY_PROMPT_QUEUE, EMPTY_PROVIDERS, EMPTY_SESSIONS, EMPTY_SKILLS, EMPTY_SUBAGENTS, IDE_BUCKETS_PERSIST_DEBOUNCE_MS, LEFT_WIDTH_PCT_DEFAULT, LIVE_PLAN_ID, MESSAGE_PAGE_SIZE, NAV_HISTORY_CAP, PROVIDER_HEALTH_STALE_MS, RESYNC_AFTER_TURN_DELAY_MS, RGB_TRIPLET_RE, SESSION_PAGE_SIZE, STREAM_PAGE_SIZE, WIDE_PANEL_PCT_DEFAULT, WORKFLOW_MAX_PARALLEL_DEFAULT_RENDERER, WORKTREE_SESSIONS_FETCH_LIMIT, appendDelta, appendTurnCardBlock, applySessionDeletedState, applySessionPinnedState, avgIntervalMs, buildPlanKickoffPrompt, centerRightRowWidth, clampBottomTerminalHeight, clampEditorWidthPct, clampFontSize, clampLeftWidthPct, clampPasteTagThresholdChars, clampRightPanelFontSize, clampRightWidth, clampWidePanelPct, clampWorkflowMaxParallel, clearSessionDeltas, clearUpstreamIssue, coerceSlotsForProvider, commandNameForLocalOutput, currentNavEntryFor, deltaArrivals, deltaBuf, demotePreviousLatestTurnFiles, extractImagesFromToolResult, fetchProjectSessionBuckets, findMsg, findOpenTurnLastAssistant, findSession, freezeLatestTurnFilesBlock, freezeOrPrunePlanBlocks, fromRecords, hasErrorInCurrentTurn, hasSelectableModel, hydrateBookmarks, hydrateCapsule, hydrateContextSnapshot, hydrateSubagentTranscripts, hydrateTurnFiles, hydrateUsageHistory, isCenterShowingDocument, isImagePath, isMarkdownPath, isPathWithinRoot, isSessionChatOnScreen, isSideChatSession, isUnsupportedPath, isValidRememberedModel, parseCustomCommandsByProject, patchSessionInCache, patchSessionRowBookmarks, pendingInterruptDone, persistComposerSelection, providerHealthRequestGate, recordDeltaArrival, reduceApprovalRequest, reduceGitChanged, reduceModeChange, reducePlanApprovalRequest, reducePlanUpdate, reduceProjectsChanged, reduceQuestionAsk, reduceRequestResolved, reduceSessionChanged, reduceSessionDeleted, reduceSettingChanged, reduceSubagentTranscript, reduceSubagentUpdate, reduceTodoUpdate, reduceTokenUsageUpdated, reduceUpstreamIssue, reduceUserMessage, reduceWorkflowNodeChoice, reduceWorkflowNodeProgress, reduceWorkflowNodeResult, reduceWorkflowNodeTranscript, reduceWorkflowNodeUsage, rememberedEntryOf, removeProjectFromState, resolveSendModel, resyncAfterTurn, sameNavEntry, sortPinnedByRecency, splitSessionSections, streamScopeQuery, surfaceRejectedCustomModelSend, syncConfigFromSession, toRecords, upsertLivePlanBlock, upsertLiveTurnFilesBlock, validateComposerSelection, worktreeFetchSeq } from "./sessionStoreHelpers.js";
+import { CONTENT_FROZEN_EVENTS, EMPTY_BOOKMARKS, EMPTY_CODEX_MODELS, EMPTY_CUSTOM_MODELS, EMPTY_LAST_MODEL_BY_PROVIDER, EMPTY_MESSAGES, EMPTY_PI_MODELS, EMPTY_PROMPT_QUEUE, EMPTY_PROVIDERS, EMPTY_SESSIONS, EMPTY_SKILLS, EMPTY_SUBAGENTS, IDE_BUCKETS_PERSIST_DEBOUNCE_MS, LEFT_WIDTH_PCT_DEFAULT, LIVE_PLAN_ID, MESSAGE_PAGE_SIZE, NAV_HISTORY_CAP, PROVIDER_HEALTH_STALE_MS, RESYNC_AFTER_TURN_DELAY_MS, RGB_TRIPLET_RE, SESSION_PAGE_SIZE, STREAM_PAGE_SIZE, WIDE_PANEL_PCT_DEFAULT, WORKFLOW_MAX_PARALLEL_DEFAULT_RENDERER, WORKTREE_SESSIONS_FETCH_LIMIT, appendDelta, appendTurnCardBlock, applySessionDeletedState, applySessionPinnedState, avgIntervalMs, buildPlanKickoffPrompt, centerRightRowWidth, clampBottomTerminalHeight, clampEditorWidthPct, clampFontSize, clampLeftWidthPct, clampPasteTagThresholdChars, clampRightPanelFontSize, clampRightWidth, clampWidePanelPct, clampWorkflowMaxParallel, clearSessionDeltas, clearUpstreamIssue, coerceSlotsForProvider, commandNameForLocalOutput, currentNavEntryFor, deltaArrivals, deltaBuf, demotePreviousLatestTurnFiles, extractImagesFromToolResult, fetchProjectSessionBuckets, findMsg, findOpenTurnLastAssistant, findSession, freezeLatestTurnFilesBlock, freezeOrPrunePlanBlocks, fromRecords, hasErrorInCurrentTurn, hasSelectableModel, hydrateBookmarks, hydrateCapsule, hydrateContextSnapshot, hydrateSubagentTranscripts, hydrateTurnFiles, hydrateUsageHistory, isCenterShowingDocument, isImagePath, isMarkdownPath, isPathWithinRoot, isSessionChatOnScreen, isSideChatSession, isUnsupportedPath, isValidRememberedModel, parseCustomCommandsByProject, patchSessionInCache, patchSessionRowBookmarks, pendingInterruptDone, persistComposerSelection, providerHealthRequestGate, recordDeltaArrival, reduceApprovalRequest, reduceGitChanged, reduceModeChange, reducePlanApprovalRequest, reducePlanUpdate, reduceProjectsChanged, reduceQuestionAsk, reduceRequestResolved, reduceSessionChanged, reduceSessionDeleted, reduceSettingChanged, reduceSubagentTranscript, reduceSubagentUpdate, reduceTodoUpdate, reduceTokenUsageUpdated, reduceUpstreamIssue, reduceUserMessage, reduceWorkflowNodeChoice, reduceWorkflowNodeProgress, reduceWorkflowNodeResult, reduceWorkflowNodeTranscript, reduceWorkflowNodeUsage, rememberedEntryOf, removeProjectFromState, resolveSendModel, resyncAfterTurn, sameNavEntry, sortPinnedByRecency, splitSessionSections, streamScopeQuery, surfaceRejectedCustomModelSend, syncConfigFromSession, syncLandedSessionIfChanged, toRecords, upsertLivePlanBlock, upsertLiveTurnFilesBlock, validateComposerSelection, worktreeFetchSeq } from "./sessionStoreHelpers.js";
 export { BOTTOM_TERMINAL_HEIGHT_MAX, BOTTOM_TERMINAL_HEIGHT_MIN, CHAT_FONT_SIZE_MAX, CHAT_FONT_SIZE_MIN, EDITOR_WIDTH_PCT_MAX, EDITOR_WIDTH_PCT_MIN, EMPTY_BOOKMARKS, EMPTY_CHAT_QUEUE, EMPTY_ELEMENT_QUEUE, EMPTY_MESSAGES, EMPTY_PLAN, EMPTY_PROMPT_QUEUE, EMPTY_SUBAGENTS, EMPTY_TODOS, EMPTY_TURN_FILES, EMPTY_USAGE, LEFT_WIDTH_PCT_DEFAULT, LEFT_WIDTH_PCT_MAX, LEFT_WIDTH_PCT_MIN, PASTE_TAG_THRESHOLD_CHARS_MAX, PASTE_TAG_THRESHOLD_CHARS_MIN, RIGHT_PANEL_FONT_SIZE_MAX, RIGHT_PANEL_FONT_SIZE_MIN, RIGHT_SHARE_MAX, RIGHT_WIDTH_MIN, WIDE_PANEL_PCT_DEFAULT, WIDE_PANEL_PCT_MAX, WIDE_PANEL_PCT_MIN, WORKFLOW_MAX_PARALLEL_DEFAULT_RENDERER, clampBottomTerminalHeight, clampEditorWidthPct, clampFontSize, clampLeftWidthPct, clampPasteTagThresholdChars, clampRightPanelFontSize, clampRightWidth, clampWidePanelPct, clampWorkflowMaxParallel, isCenterShowingDocument, selectActiveEnvPath } from "./sessionStoreHelpers.js";
 
 
@@ -4125,6 +4125,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    *  tab from the strip; the underlying session row + runtime binding
    *  are untouched. */
   closeTab: (sessionId) => {
+    const previousActiveId = get().activeSessionId;
     set((s) => {
       const idx = s.openTabs.indexOf(sessionId);
       if (idx === -1) return {};
@@ -4180,6 +4181,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
       return { openTabs: nextTabs, activeSessionId: nextActive, centerTabFocus };
     });
+    syncLandedSessionIfChanged(set, get, previousActiveId);
   },
 
   /** Move a tab within the strip. No-op for out-of-range / same index. */
@@ -4402,7 +4404,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Shared cleanup — a remote `session.deleted` event runs the same state
     // surgery (see applySessionDeletedState) so phone-side deletes behave
     // identically to local ones.
+    const previousActiveId = get().activeSessionId;
     set((s) => applySessionDeletedState(s, id));
+    syncLandedSessionIfChanged(set, get, previousActiveId);
   },
 
   /** Set a session's archived flag (soft-delete; restorable). The session
@@ -4414,6 +4418,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    *  server response so `hasMore` / the load-more button stay accurate. */
   archiveSession: async (id, archived) => {
     const { session } = await api.session.archive({ id, archived });
+    const previousActiveId = get().activeSessionId;
     set((s) => {
       const projectId = session.projectId;
       const isActiveProject = projectId === s.activeProjectId;
@@ -4520,6 +4525,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         streamDirty: true,
       };
     });
+    syncLandedSessionIfChanged(set, get, previousActiveId);
   },
 
   renameSession: async (id, title) => {

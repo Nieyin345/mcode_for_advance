@@ -1189,6 +1189,65 @@ await (async () => {
   }
 })();
 
+console.log("\n[22] 非自定义模型的发送拒绝也要显示;自动落到下一个会话要同步引擎");
+await (async () => {
+  const store = useSessionStore;
+  const SID = "generic-send-rejected";
+  seed([mkSession(SID, { model: "sonnet" })]);
+  store.setState((s) => ({
+    activeSessionId: SID, model: "sonnet", customModelId: null, providerId: "claude-sdk",
+    messagesBySession: { ...s.messagesBySession, [SID]: [] },
+    runningBySession: { ...s.runningBySession, [SID]: false },
+  }));
+  const errors = (): string[] => (store.getState().messagesBySession[SID] ?? [])
+    .flatMap((m) => m.blocks)
+    .filter((b) => b.kind === "error")
+    .map((b) => b.message);
+  const flushRpc = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+  try {
+    // 主进程专门写给用户看的拒绝(上一轮还在收尾 / 工作流还在跑……)原先只进 console。
+    const busy = "这个对话上一轮还在运行，消息未发送：请等本轮结束或按停止后再发";
+    setSendTurnStub(async () => { throw new Error(`Error invoking remote method 'claude:sendTurn': Error: ${busy}`); });
+    eq("被拒绝前消息仍被接受", await store.getState().sendPrompt("排队消息"), true);
+    await flushRpc();
+    deepEq("★ 写给用户的拒绝原因显示在对话里", errors(), [`消息未发送：${busy}`]);
+    eq("拒绝后输入框解锁", store.getState().runningBySession[SID], false);
+    // 内部异常(英文 / 堆栈)不把细节摆到界面上,只给通用说明。
+    setSendTurnStub(async () => { throw new TypeError("Cannot read properties of undefined (reading 'x')"); });
+    eq("再次发送仍被接受", await store.getState().sendPrompt("再来一次"), true);
+    await flushRpc();
+    eq("★ 内部异常只给通用说明", errors().at(-1), "消息发送失败，详情见日志");
+  } finally {
+    setSendTurnStub(null);
+    useToastStore.getState().clear();
+  }
+
+  // 关掉当前标签自动落到另一个会话:引擎要跟着那个会话走。原先只同步
+  // model/effort/permissionMode/customModelId,providerId 停在上一个会话上。
+  const CODEX = "land-codex";
+  const CLAUDE = "land-claude";
+  seed([
+    mkSession(CODEX, { providerId: "codex-sdk", model: "gpt-5-codex" }),
+    mkSession(CLAUDE, { providerId: "claude-sdk", model: "sonnet" }),
+  ]);
+  store.setState({ openTabs: [CLAUDE, CODEX], activeSessionId: CODEX, providerId: "codex-sdk", model: "gpt-5-codex" });
+  store.getState().closeTab(CODEX);
+  eq("关标签落到左侧标签", store.getState().activeSessionId, CLAUDE);
+  eq("★ 关标签后引擎跟着落到的会话走", store.getState().providerId, "claude-sdk");
+  eq("关标签后模型跟着走", store.getState().model, "sonnet");
+
+  // 别的端删掉当前会话(session.deleted 事件)同理。
+  seed([
+    mkSession(CODEX, { providerId: "codex-sdk", model: "gpt-5-codex" }),
+    mkSession(CLAUDE, { providerId: "claude-sdk", model: "sonnet" }),
+  ]);
+  store.setState({ openTabs: [CODEX, CLAUDE], activeSessionId: CLAUDE, providerId: "claude-sdk", model: "sonnet" });
+  store.getState().ingestEvent({ type: "session.deleted", sessionId: CLAUDE });
+  eq("远端删除后落到剩下的标签", store.getState().activeSessionId, CODEX);
+  eq("★ 远端删除后引擎跟着落到的会话走", store.getState().providerId, "codex-sdk");
+  eq("远端删除后模型跟着走", store.getState().model, "gpt-5-codex");
+})();
+
 console.log(`\n${checks - failures}/${checks} checks passed`);
 if (failures > 0) {
   console.error(`${failures} check(s) failed`);
