@@ -1,4 +1,5 @@
 import { memoryToolDescriptors, invokeMemoryTool } from "@main/memory/engineTools.js";
+import { libraryToolDescriptors, invokeLibraryTool, isLibraryReadonlyTool } from "@main/library/engineTools.js";
 /**
  * Inline Pi extension — bridges Mcode's host-side approval, AskUserQuestion,
  * and system-prompt capabilities into the Pi agent via the SDK's extension API.
@@ -207,6 +208,21 @@ export function createMcodeExtension(opts: CreateMcodeExtensionOptions): InlineE
           },
         });
       }
+      // 资料库工具(mcode-library 那一套)。Claude 经进程内 MCP 拿到,Pi 没有进程内 MCP,
+      // 原来就一个都没有 —— 内置工作流的「入库 / 挂 PDF / 挂转录」在 Pi 下全部落空。
+      // 审批不在 execute 里做:注册的工具天然经过上面的 tool_call 守卫(只读的在那儿直接过,
+      // 写操作走权限模式 + 审批卡),与 Claude 的 shouldAutoApprove 同一套语义。
+      // 见 library/engineTools.ts。
+      for (const tool of libraryToolDescriptors()) {
+        pi.registerTool({ name: tool.name, label: tool.name, description: tool.description,
+          parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
+          async execute(_id, args) {
+            const result = await invokeLibraryTool(tool.name, args, sessionId);
+            if (result.isError) throw new Error(result.content.map(c => c.type === "text" ? c.text : "").join("\n"));
+            return { content: result.content, details: {} };
+          },
+        });
+      }
       // Browser tools + their usage prompt ride the same switch: when the
       // built-in server is disabled in the MCP panel, the model must neither
       // see the tools nor the prompt section advertising them.
@@ -319,6 +335,12 @@ function registerToolCallGuard(
     //    `browser_navigate` / `browser_click` DO have side effects and fall
     //    through to the normal approval flow below.
     if (MCODE_BROWSER_READONLY.has(toolName)) {
+      return;
+    }
+    //    Read-only library tools (search / list / links) — same class as the
+    //    browser's read-only set, same answer as Claude's shouldAutoApprove.
+    //    Library WRITE tools fall through to the normal approval flow below.
+    if (isLibraryReadonlyTool(toolName)) {
       return;
     }
 

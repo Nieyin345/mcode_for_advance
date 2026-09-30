@@ -1,4 +1,5 @@
 import { memoryToolDescriptors, invokeMemoryTool } from "@main/memory/engineTools.js";
+import { libraryToolDescriptors, invokeLibraryToolGated, isLibraryToolName } from "@main/library/engineTools.js";
 /**
  * Codex agent provider — drives the OpenAI Codex harness via the
  * `codex app-server` JSON-RPC protocol (stdio JSONL) and implements the
@@ -1011,6 +1012,9 @@ async function answerNativeUserInput(p: Record<string, unknown>, deps: RequestDe
 function buildDynamicTools(browserToolsEnabled: boolean): Array<Record<string, unknown>> {
   const tools: Array<Record<string, unknown>> = [
     ...memoryToolDescriptors(),
+    // 资料库工具 —— Codex 没有进程内 MCP,不在这里挂的话 library_* 一个都没有,
+    // 内置工作流的入库 / 挂 PDF / 挂转录会落空。审批在 invokeDynamicTool 那一支做。
+    ...libraryToolDescriptors(),
     {
       type: "function",
       name: "ask_user_question",
@@ -1277,6 +1281,17 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
 
   if (name.startsWith("memory_")) {
     const result = await invokeMemoryTool(name, args, req.sessionId, ctx);
+    return { success: !result.isError, contentItems: result.content.map(c => ({ type: "inputText", text: c.type === "text" ? c.text : "" })) };
+  }
+
+  // 资料库工具:只读的直接跑,写操作先过审批(动态工具没有 codex 自己的审批钩子)。
+  // 「完全访问」档照官方语义不问 —— 与 decideApproval 对 full-access 的处理一致;
+  // 计划模式下一律问。
+  if (isLibraryToolName(name)) {
+    const mode = normalizeCodexMode(ctx.getPermissionMode?.() ?? req.permissionMode);
+    const result = await invokeLibraryToolGated(name, args, req.sessionId, ctx, {
+      autoApprove: mode === "full-access" && !planMode.active,
+    });
     return { success: !result.isError, contentItems: result.content.map(c => ({ type: "inputText", text: c.type === "text" ? c.text : "" })) };
   }
 

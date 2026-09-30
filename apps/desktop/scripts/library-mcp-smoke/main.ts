@@ -611,6 +611,80 @@ console.log("\n写工具的那道门只在有屏蔽时才拦");
   check("★ 库内搜索可查到第 200 条以外的文档", hit.includes(old.id), hit);
 }
 
+/* ──────────────── 9. 跨引擎桥:Pi / Codex 也拿得到库工具(2026-09-30) ──────────────── */
+
+// 库工具原来只经进程内 MCP 挂在 Claude 上,Pi / Codex 下一个都没有 —— 内置工作流的
+// 入库 / 挂 PDF / 挂转录在那两个引擎下全部落空。桥在 `library/engineTools.ts`。
+console.log("\n跨引擎桥(library/engineTools.ts)");
+{
+  const { libraryToolDescriptors, invokeLibraryTool, invokeLibraryToolGated, isLibraryToolName, isLibraryReadonlyTool } =
+    await import("@main/library/engineTools.js");
+  type Ctx = Parameters<typeof invokeLibraryToolGated>[3];
+  const textOf = (r: { content: Array<{ type: string; text?: string }> }): string =>
+    r.content.map((c) => (c.type === "text" ? c.text ?? "" : "")).join("\n");
+
+  const desc = libraryToolDescriptors();
+  // eq 是 Object.is(引用比较),数组要先拼成字符串再比。
+  eq("描述符与 spec 表一一对应(同一份表,不抄第二份)", desc.map((d) => d.name).join(","), libraryMcpTools().map((t) => t.name).join(","));
+  check("每个描述符都是 object 型 JSON Schema", desc.every((d) => d.inputSchema["type"] === "object"), desc.map((d) => [d.name, d.inputSchema["type"]]));
+  check("命名约定:全部 library_ 开头", desc.every((d) => isLibraryToolName(d.name)));
+  check("只读判定与 LIBRARY_READONLY_TOOLS 同源", [...LIBRARY_READONLY_TOOLS].every((n) => isLibraryReadonlyTool(n)) && !isLibraryReadonlyTool("library_rename"));
+
+  const probe = LibraryRepo.upsert({ title: "跨引擎桥的探针条目" });
+  const found = await invokeLibraryTool("library_search", { query: "跨引擎桥的探针" }, "s-bridge");
+  check("invokeLibraryTool:只读工具能跑出结果", !found.isError && textOf(found).includes(probe.id), textOf(found));
+  const badArgs = await invokeLibraryTool("library_search", { query: 42 }, "s-bridge");
+  check("invokeLibraryTool:入参过 zod(没有 SDK 兜着也不放坏形状进 handler)", badArgs.isError === true, textOf(badArgs));
+  const unknown = await invokeLibraryTool("library_nope", {}, "s-bridge");
+  check("invokeLibraryTool:未知工具报错而不是抛", unknown.isError === true, textOf(unknown));
+
+  let asked = 0;
+  const ctxWith = (allow: boolean | null, alwaysAllowed = false): Ctx => ({
+    ...(allow === null ? {} : {
+      requestApproval: async (req: { toolName: string }) => {
+        asked += 1;
+        check(`审批卡上的工具名是裸名(${req.toolName})`, req.toolName === "library_rename" || req.toolName === "library_search");
+        return { allow };
+      },
+    }),
+    isToolAlwaysAllowed: () => alwaysAllowed,
+  }) as unknown as Ctx;
+  const rename = (name: string, ctx: Ctx, autoApprove = false) =>
+    invokeLibraryToolGated("library_rename", { target: "item", id: probe.id, name }, "s-bridge", ctx, { autoApprove });
+  const titleNow = (): string => LibraryRepo.get(probe.id)?.title ?? "";
+
+  asked = 0;
+  const ro = await invokeLibraryToolGated("library_search", { query: "探针" }, "s-bridge", ctxWith(false), { autoApprove: false });
+  check("★ 只读工具不问(拒绝的审批卡也不会弹)", !ro.isError && asked === 0, { asked, text: textOf(ro) });
+
+  const noBridge = await rename("没有审批通道时改的名", ctxWith(null));
+  check("★ 写工具 + 没有审批通道 → 拒绝,不静默放行", noBridge.isError === true && titleNow() === "跨引擎桥的探针条目", { text: textOf(noBridge), title: titleNow() });
+
+  asked = 0;
+  const denied = await rename("被拒绝的改名", ctxWith(false));
+  check("★ 写工具 + 用户拒绝 → 不改", denied.isError === true && asked === 1 && titleNow() === "跨引擎桥的探针条目", { asked, title: titleNow() });
+
+  asked = 0;
+  const allowed = await rename("批准后的新名字", ctxWith(true));
+  check("★ 写工具 + 用户批准 → 真的改了", !allowed.isError && asked === 1 && titleNow() === "批准后的新名字", { asked, title: titleNow() });
+
+  asked = 0;
+  const auto = await rename("全放行档的名字", ctxWith(false), true);
+  check("全放行档(autoApprove)→ 不问直接改", !auto.isError && asked === 0 && titleNow() === "全放行档的名字", { asked, title: titleNow() });
+
+  asked = 0;
+  const always = await rename("始终允许过的名字", ctxWith(false, true));
+  check("用户点过「始终允许」→ 不问直接改", !always.isError && asked === 0 && titleNow() === "始终允许过的名字", { asked, title: titleNow() });
+
+  // 两个引擎真的接上了 —— 构造引擎太重(要起 Pi / codex 进程),这里钉接线本身。
+  const piSrc = readFileSync(join(process.cwd(), "src/main/providers/pi-sdk/mcodeExtension.ts"), "utf8");
+  check("Pi:注册了库工具", piSrc.includes("libraryToolDescriptors()") && piSrc.includes("invokeLibraryTool(tool.name"));
+  check("Pi:只读库工具在 tool_call 守卫里直接放行(写工具仍走审批)", piSrc.includes("isLibraryReadonlyTool(toolName)"));
+  const cxSrc = readFileSync(join(process.cwd(), "src/main/providers/codex-sdk/CodexAgentSdkProvider.ts"), "utf8");
+  check("Codex:动态工具表带上库工具", cxSrc.includes("...libraryToolDescriptors()"));
+  check("Codex:库工具走带审批的派发", cxSrc.includes("invokeLibraryToolGated("));
+}
+
 /* ──────────────── 收尾 ──────────────── */
 
 rmSync(DATA, { recursive: true, force: true });
