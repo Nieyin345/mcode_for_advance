@@ -443,15 +443,49 @@ try {
     check("★ 上传的字节数对得上", anyBatch?.bytes === readFileSync(join(ROOT, "library", "papers", "ab", "cd", "sha.pdf")).length, anyBatch?.bytes);
   }
 
-  console.log("\n② 没设 token → 明确报错，不静默降级");
+  console.log("\n② 手动点的、没设 token → 明确报错，不静默降级");
   {
+    // 宿主手动起跑时往触发器事实里加 `manual: true`(见 `automationRunner.fire`)。
     const r = await runScript(
-      { itemId: "li_notoken", pdfPath: join("papers", "ab", "cd", "sha.pdf") },
+      { itemId: "li_notoken", pdfPath: join("papers", "ab", "cd", "sha.pdf"), manual: true },
       { MINERU_BASE_URL: base, MCODE_DATA_ROOT: ROOT },
       CWD,
     );
     check("非零退出", r.code !== 0, { actual: r.code, stderr: r.stderr.slice(-800) });
     check("话里让它去设 MINERU_TOKEN", r.summary.includes("MINERU_TOKEN"), r.summary);
+  }
+
+  console.log("\n②b 事件自动叫起来的、没设 token → 跳过，不算失败(2026-09-30)");
+  {
+    // 没配 token 的人每导入一篇就亮一盏红灯 —— 那是噪音,不是提醒。载荷裹在 trigger 里,
+    // 与真实运行时 code 节点收到的 data 上下文同形。
+    const r = await runScript(
+      { trigger: { kind: "event", event: "library.item.imported",
+        items: [{ itemId: "li_auto_notoken", pdfPath: join("papers", "ab", "cd", "sha.pdf") }] } },
+      { MINERU_BASE_URL: base, MCODE_DATA_ROOT: ROOT },
+      CWD,
+    );
+    eqExit("退出码 0", r, 0);
+    check("打了协议行", r.result !== undefined, r.stdout.slice(-300));
+    // 成功那条的话在协议行里(`r.summary` 只在失败时取)。
+    const said = String((r.result as { summary?: unknown } | undefined)?.summary ?? "");
+    check("话里说了跳过", said.includes("跳过"), said);
+    check("话里告诉他去哪填 token", said.includes("TOKEN_INLINE") && said.includes("MINERU_TOKEN"), said);
+    const out = (r.result?.outputs ?? {}) as { items?: unknown[]; noToken?: unknown };
+    eq("没有转出任何条目", (out.items ?? []).length, 0);
+    eq("outputs.noToken 标了出来", out.noToken, true);
+    check("没往落点里建目录", !existsSync(join(CWD, "mineru", "li_auto_notoken")));
+  }
+
+  console.log("\n②c trigger 里带 manual、没设 token → 仍然报错(裹一层也认得出)");
+  {
+    const r = await runScript(
+      { trigger: { kind: "event", event: "library.item.imported", manual: true,
+        items: [{ itemId: "li_manual_wrapped", pdfPath: join("papers", "ab", "cd", "sha.pdf") }] } },
+      { MINERU_BASE_URL: base, MCODE_DATA_ROOT: ROOT },
+      CWD,
+    );
+    check("非零退出", r.code !== 0, { actual: r.code, stderr: r.stderr.slice(-800) });
   }
 
   console.log("\n③ token 错（服务端回 A0202）");

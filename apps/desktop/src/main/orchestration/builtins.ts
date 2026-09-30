@@ -62,6 +62,7 @@ import {
   NODE_INJECT_MODE_KEY,
   NODE_INJECT_TARGET_KEY,
   NODE_PROMPT_PARAM_KEY,
+  NODE_TRIGGER_ENABLED_PARAM_KEY,
   NODE_TRIGGER_EVENTS_PARAM_KEY,
   NODE_TRIGGER_FILTER_PARAM_KEY,
   NODE_TRIGGER_PROJECT_PARAM_KEY,
@@ -521,6 +522,16 @@ const AUTO_DOWNLOAD_NODES: readonly NodeSpec[] = [
     type: "mcode.trigger",
     title: "导入触发",
     params: {
+      // **默认关着 = 只手动跑**(2026-09-30)。这条流程的正门是资料库右键「文献导入」
+      // 那张表单;自定义 UI 起跑走 `runWithTarget`(`manual: true`),**不看这个开关**。
+      //
+      // 开着的时候它还会听「资料库导入了文件」—— 可那一路载荷里没有表单输入,
+      // DOI 判断走 false、收文件那步收到空列表,等于**每导入一次就空跑一次**
+      // (运行记录里多一条、白起一个 Python)。连它自己收进库的文件也会再叫醒它一遍。
+      //
+      // 不改成 `triggerKind: "manual"`:手动触发器**必须绑项目**(`parseTriggerSpec`),
+      // 内置模板预置不出项目 id —— 改了反而挂不上,右键就找不到它。
+      [NODE_TRIGGER_ENABLED_PARAM_KEY]: false,
       triggerKind: "event",
       // ⚠️ **空是故意的,而且现在是对的。** 内置模板没法预知这台机器上有哪些项目,
       // 而导入事件**不属于任何项目**。早先这里空着等于这条自动化**永远挂不上**

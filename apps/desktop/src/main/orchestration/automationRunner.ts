@@ -1655,7 +1655,13 @@ class AutomationRunner {
           summary: payloadText,
           // `TriggerPayloadFacts` 是无索引签名的 interface,赋给键值记录要过一道断言;
           // 形状本身是纯数据,这道断言不丢信息。
-          payload: payloadFactsOf(payload) as unknown as Record<string, unknown>,
+          payload: {
+            ...(payloadFactsOf(payload) as unknown as Record<string, unknown>),
+            // **手动起跑标一下**(右键自定义 UI / 「立刻运行一次」)。载荷形状与事件叫起来
+            // 的一模一样(见 `runWithTarget`),节点要区分"用户正等着"和"后台自己响的"只能
+            // 靠它 —— 典型:转录脚本没配 token 时,手动的要报错,自动的只记一句跳过。
+            ...(opts?.manual === true ? { manual: true } : {}),
+          },
         },
       }).catch((err) => {
         log.warn(`[automation] 运行失败:${(err as Error).message}`);

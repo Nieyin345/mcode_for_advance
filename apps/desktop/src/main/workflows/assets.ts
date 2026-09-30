@@ -993,8 +993,11 @@ MinerU 有两条 API（见 https://mineru.net/apiManage/docs）：
 1. 直接填在下面的 「TOKEN_INLINE」 —— 打开节点的代码编辑器，粘进引号里就行；
 2. 留空则回退读 「MINERU_TOKEN」 环境变量（老做法，仍然有效）。
 
-两条都没有就**明确报错退出**，不静默降级去打轻量那条 —— 降级的话用户拿到的是没有
-配图的转录，而它看起来"成功了"，比直接报错难查得多。
+两条都没有时：**用户手动点的**（右键「转录」、「立刻运行一次」，载荷里带 「manual」）
+**明确报错退出**；**导入 / 下载事件自动叫起来的**只记一句「没配 token，已跳过」、
+正常退出 —— 没配 token 的人每导入一篇就亮一盏红灯，那不是提醒，是噪音。
+两种情形都**不静默降级去打轻量那条** —— 降级的话用户拿到的是没有配图的转录，而它
+看起来"成功了"，比直接报错难查得多。
 
 ## 输入 / 输出（工作流 code 节点的约定）
 
@@ -1091,6 +1094,24 @@ RUN_BUDGET_S = 28 * 60
 # ⚠️ 不在这张单子里的**直接跳过，不算失败** —— 往库里拖一张图片不该让这条自动化
 # 亮红灯（它没做错什么，只是没什么可做）。
 SUPPORTED_EXTS = {".pdf", ".doc", ".docx"}
+
+
+def is_manual_run(payload):
+    """这次是不是**用户手动**起的（右键「转录」/「立刻运行一次」）。
+
+    宿主在手动起跑时往触发器事实里加 「manual: true」（见 「automationRunner.fire」）。
+    stdin 可能是事实本身，也可能外面裹着 「trigger」 / 「data」，逐层看一眼。
+    """
+    seen = [payload]
+    if isinstance(payload, dict):
+        for key in ("trigger", "data"):
+            inner = payload.get(key)
+            if isinstance(inner, dict):
+                seen.append(inner)
+                nested = inner.get("trigger")
+                if isinstance(nested, dict):
+                    seen.append(nested)
+    return any(isinstance(d, dict) and d.get("manual") is True for d in seen)
 
 
 def source_of(item):
@@ -1393,7 +1414,19 @@ def main():
         )
         return
 
+    if not TOKEN and not is_manual_run(payload):
+        # **自动叫起来的**（导入 / 下载事件）：没配 token 就跳过，不算失败。
+        # 用户多半只是没打算用 MinerU —— 每导入一篇就报一次错只会刷屏。
+        emit(
+            "未配置 MinerU API token，已跳过自动转录（" + str(len(todo)) + " 个文件）。"
+            "要用的话去 https://mineru.net 的「API 管理」建一个，"
+            "填到这个节点代码顶上的 TOKEN_INLINE 那一行（或设环境变量 MINERU_TOKEN）。",
+            outputs={"items": [], "skipped": len(todo), "failed": [], "noToken": True},
+        )
+        return
+
     if not TOKEN:
+        # **手动点的**：用户正等着结果，必须明确报错。
         # **不复用轻量那条免 token 的路**：它不给配图，而挂着断图的转录看起来是成功的。
         die(
             "没有 MinerU 的 API token。去 https://mineru.net 的「API 管理」建一个，"

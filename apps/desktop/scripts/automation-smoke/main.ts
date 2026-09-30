@@ -1793,6 +1793,11 @@ console.log("\n内置自动化 · 参数解得开、项目留空也挂得上");
   const convertTrigger = convertDoc?.nodes.find((n) => n.type === "mcode.trigger");
   const events = String(convertTrigger?.params[NODE_TRIGGER_EVENTS_PARAM_KEY] ?? "");
   eq("在线转录监听文件导入与下载完成", events, "library.item.imported,library.item.downloaded");
+  check("在线转录的触发器默认开着(自动转录靠它)", triggerEnabledOf(convertTrigger?.params ?? {}), convertTrigger?.params);
+  // 「文献导入」**只手动跑**(2026-09-30):正门是右键表单(`runWithTarget` 不看开关),
+  // 开着的话每导入一个文件就空跑一次 —— 连它自己收进库的文件也会再叫醒它。
+  const importTrigger = getBuiltinWorkflow(AUTO_DOWNLOAD_WORKFLOW_ID)?.nodes.find((n) => n.type === "mcode.trigger");
+  eq("「文献导入」的触发器默认关着(不监听导入事件)", importTrigger?.params[NODE_TRIGGER_ENABLED_PARAM_KEY], false);
   // 项目**故意留空** —— 它做的事(转录、挂回库)拿的都是绝对路径,不需要工作目录。
   // 「没绑项目」在这个仓里**一直**是空串这一个编码(守望那块也是),`buildTriggers`
   // 就是看它长度是不是 0 决定跳不跳查表。所以判据是"等于空串",不是"字段不存在"。

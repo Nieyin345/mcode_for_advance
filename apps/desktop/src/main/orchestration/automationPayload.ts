@@ -140,6 +140,11 @@ export interface TriggerPayloadFacts {
    */
   items?: ReadonlyArray<Partial<Record<EventItemFactKey, string>>>;
   /**
+   * **用户手动起的这一次**(右键自定义 UI / 「立刻运行一次」)。`payloadFactsOf` 不产出它 ——
+   * 载荷本身分不出手动与自动,是 `automationRunner.fire` 按 `manual` 选项补上的。
+   */
+  manual?: true;
+  /**
    * 落点分类(见 `TriggerPayload` 的同名字段)。代码节点按 `trigger.collectionId` 取,
    * 拿它拼 `importFiles.collectionIds`。
    */
