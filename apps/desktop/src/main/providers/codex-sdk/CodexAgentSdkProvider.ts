@@ -41,7 +41,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promises as fs, statSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import type {
   AgentProvider,
   StartTurnRequest,
@@ -680,7 +680,23 @@ export class CodexAgentSdkProvider implements AgentProvider {
     try {
       const codexPath = resolveCodexBinaryPath();
       if (!codexPath) return { ok: false, error: "未找到 Codex(设置 → Agent 可安装)" };
-      const r = spawnSync(codexPath, ["--version"], { timeout: 10_000, encoding: "utf-8" });
+      // Async on purpose: spawnSync froze the whole main process (every window)
+      // for up to the 10s timeout, and also starved providerHealth's own
+      // timeout race. Non-zero exit keeps spawnSync semantics: a status, not a
+      // spawn error (some builds print the version and still exit non-zero).
+      const r = await new Promise<{ error?: Error; status: number | null; stdout: string }>((resolve) => {
+        execFile(
+          codexPath,
+          ["--version"],
+          { timeout: 10_000, encoding: "utf-8", windowsHide: true },
+          (err, stdout) => {
+            const out = typeof stdout === "string" ? stdout : "";
+            if (!err) resolve({ status: 0, stdout: out });
+            else if (typeof err.code === "number") resolve({ status: err.code, stdout: out });
+            else resolve({ error: err, status: null, stdout: out });
+          },
+        );
+      });
       if (r.error) return { ok: false, error: r.error.message };
       const version = (r.stdout ?? "").trim().split("\n")[0] || undefined;
       return { ok: r.status === 0 || Boolean(version), version };

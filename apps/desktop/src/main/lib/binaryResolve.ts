@@ -31,6 +31,10 @@ export function which(name: string): string | null {
         encoding: "utf8",
         windowsHide: true,
         stdio: ["ignore", "pipe", "ignore"],
+        // Synchronous on the main process: never let a hung PATH entry (e.g. an
+        // unreachable network drive) freeze the app. On timeout this throws and
+        // we fall through to the well-known install dirs below.
+        timeout: 5000,
       })
         .split(/\r?\n/)
         .map((s) => s.trim())
