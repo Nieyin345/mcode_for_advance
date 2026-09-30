@@ -68,6 +68,14 @@ import { PICKER_INJECT_SCRIPT, PICKER_REMOVE_SCRIPT } from "./pickerScript.js";
 import { SNAPSHOT_SCRIPT, buildClickScript, buildCheckFileInputScript, buildElementCenterScript, buildTypeScript, buildEvaluateScript, buildScrollScript, buildWaitScript, buildSelectScript, buildFindScript } from "./snapshotScript.js";
 import { AddressHistory } from "./addressHistory.js";
 
+/** Caps for a forwarded pick result. `PICK_HTML_CAP` mirrors pickerScript's
+ *  PICKER_HTML_CAP (2000) plus the one-char ellipsis it appends; the others
+ *  are generous bounds for what the picker actually produces. */
+const PICK_HTML_CAP = 2001;
+const PICK_SELECTOR_CAP = 1000;
+const PICK_PREVIEW_CAP = 200;
+const PICK_URL_CAP = 4096;
+
 /** Normalize a URL to its origin (scheme://host[:port]). Returns "" for URLs
  *  the URL constructor can't parse. */
 function urlOrigin(url: string): string {
@@ -1039,9 +1047,23 @@ class BrowserManagerImpl {
     ipcMain.on("__mcode_pick_result__", (evt: IpcMainEvent, data: unknown) => {
       const browserId = this.wcToBrowser.get(evt.sender.id);
       if (!browserId) return;
-      // Best-effort shape check; the picker always sends this structure.
-      const el = data as PickedElement;
-      if (!el || typeof el.selector !== "string") return;
+      // `window.mcodeBridge.pickElement` is callable by ANY page script, not
+      // only by our injected picker — and in sidebar mode a pick result goes
+      // straight into the chat composer. So: accept it only while the user has
+      // pick mode on for this tab, keep exactly the contract fields with the
+      // picker's own caps, and take the URL from the webContents rather than
+      // from the page.
+      if (this.browsers.get(browserId)?.pickMode !== true) return;
+      if (!data || typeof data !== "object") return;
+      const raw = data as Partial<Record<keyof PickedElement, unknown>>;
+      if (typeof raw.selector !== "string" || raw.selector.length === 0) return;
+      const str = (v: unknown, cap: number): string => (typeof v === "string" ? v.slice(0, cap) : "");
+      const el: PickedElement = {
+        selector: raw.selector.slice(0, PICK_SELECTOR_CAP),
+        outerHTML: str(raw.outerHTML, PICK_HTML_CAP),
+        url: evt.sender.getURL().slice(0, PICK_URL_CAP),
+        preview: str(raw.preview, PICK_PREVIEW_CAP),
+      };
       sendToRenderer(IPC.BROWSER_EVENT, {
         channel: IPC.BROWSER_EVENT,
         browserId,

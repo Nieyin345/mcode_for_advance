@@ -231,7 +231,7 @@ export const GitLogSchema = z.object({
    *  Restricted to safe ref characters to avoid CLI injection. */
   ref: z
     .string()
-    .regex(/^[A-Za-z0-9._/\-@^{}~]+$/, "invalid git ref")
+    .regex(/^(?!-)[A-Za-z0-9._/\-@^{}~]+$/, "invalid git ref")
     .optional(),
 });
 export type GitLogInput = z.infer<typeof GitLogSchema>;
@@ -304,11 +304,11 @@ export interface GitBranchListResult {
  *    remote branch (`branch: "origin/foo"`, `newBranch: "foo"`). */
 export const GitCheckoutSchema = z.object({
   repoPath: z.string(),
-  branch: z.string().regex(/^[A-Za-z0-9._/\-@^{}~]+$/, "invalid git ref"),
+  branch: z.string().regex(/^(?!-)[A-Za-z0-9._/\-@^{}~]+$/, "invalid git ref"),
   /** When provided, create this new local branch from `branch` and check it out. */
   newBranch: z
     .string()
-    .regex(/^[A-Za-z0-9._/\-]+$/, "invalid branch name")
+    .regex(/^(?!-)[A-Za-z0-9._/\-]+$/, "invalid branch name")
     .optional(),
 });
 export type GitCheckoutInput = z.infer<typeof GitCheckoutSchema>;
@@ -319,7 +319,7 @@ export type GitCheckoutInput = z.infer<typeof GitCheckoutSchema>;
  *  branch-name charset. */
 export const GitDeleteBranchSchema = z.object({
   repoPath: z.string(),
-  branch: z.string().regex(/^[A-Za-z0-9._/\-]+$/, "invalid branch name"),
+  branch: z.string().regex(/^(?!-)[A-Za-z0-9._/\-]+$/, "invalid branch name"),
   /** Force delete (`git branch -D`) — skips the fully-merged safety check. */
   force: z.boolean().optional(),
 });
@@ -334,7 +334,7 @@ export type GitDeleteBranchInput = z.infer<typeof GitDeleteBranchSchema>;
  *  (source → current branch) so the UI can always state it unambiguously. */
 export const GitMergeSchema = z.object({
   repoPath: z.string(),
-  source: z.string().regex(/^[A-Za-z0-9._/\-@^{}~]+$/, "invalid git ref"),
+  source: z.string().regex(/^(?!-)[A-Za-z0-9._/\-@^{}~]+$/, "invalid git ref"),
 });
 export type GitMergeInput = z.infer<typeof GitMergeSchema>;
 

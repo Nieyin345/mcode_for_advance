@@ -42,7 +42,7 @@
  *  - 回合进行中扩展掉线 = 该回合立刻失败，不自动续传。
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { log } from "@main/lib/logger.js";
 import { listenOnDialablePort } from "@main/lib/loopbackPort.js";
 import { MCODE_SESSION_HEADER, MCP_ENDPOINT_PATH, handleMcpRequest } from "./mcpEndpoint.js";
@@ -493,8 +493,10 @@ function presentedToken(req: IncomingMessage, url: URL): string {
 }
 
 function authorize(req: IncomingMessage, url: URL): boolean {
-  const got = presentedToken(req, url);
-  return got.length > 0 && got === ensureToken();
+  const got = Buffer.from(presentedToken(req, url), "utf8");
+  const want = Buffer.from(ensureToken(), "utf8");
+  // Constant-time, like publicMcpServer / mobileTokens (length is not secret).
+  return got.length > 0 && got.length === want.length && timingSafeEqual(got, want);
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {

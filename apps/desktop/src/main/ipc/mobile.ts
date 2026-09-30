@@ -8,21 +8,51 @@
  * other domain).
  */
 import type { IpcMain } from "electron";
+import { z } from "zod";
 import { IPC, RevokeMobileDeviceSchema } from "@contracts/ipc";
 import { pairingManager, detectLanIp, detectLanIps } from "@main/mobile/PairingManager.js";
 import { getMobileServer } from "@main/mobile/MobileHttpServer.js";
 import { MOBILE_ACTIVE_WINDOW_MS } from "@contracts/mobile";
 import { log } from "@main/lib/logger.js";
 
+/** Renderer input for `mobile:startPairing` (shape mirrors RpcMap). Validated
+ *  like every other channel: `host` is spliced into the LAN endpoint that ends
+ *  up in the QR code, so it must be a bare host/IP — no scheme, path or `@`. */
+const StartPairingSchema = z
+  .object({
+    host: z.string().trim().min(1).max(253).regex(/^[A-Za-z0-9.\-:[\]]+$/)
+      .transform((host, ctx) => {
+        // URL handles hostname/IP syntax; bracket a bare IPv6 address first.
+        // Appending our port also rejects an injected second port in `host`.
+        const authority = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+        try { return new URL(`http://${authority}:7331`).hostname; }
+        catch {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: "invalid bare host or IP" });
+          return z.NEVER;
+        }
+      }).optional(),
+    mode: z.enum(["lan", "remote"]).optional(),
+    endpoint: z.string().trim().min(1).max(2048).refine((value) => {
+      try {
+        const url = new URL(value);
+        return (url.protocol === "http:" || url.protocol === "https:") &&
+          !url.username && !url.password && !value.includes("?") && !value.includes("#");
+      } catch { return false; }
+    }, "endpoint must be an HTTP(S) URL without credentials, query or fragment")
+      .transform((value) => new URL(value).href.replace(/\/+$/, "")).optional(),
+    force: z.boolean().optional(),
+  })
+  .superRefine((input, ctx) => {
+    if (input.mode === "remote" && !input.endpoint) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["endpoint"], message: "remote pairing requires an endpoint" });
+    }
+  })
+  .optional();
+
 export function registerMobileHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.MOBILE_START_PAIRING, async (_evt, raw) => {
     const server = getMobileServer();
-    const input = (raw ?? {}) as {
-      host?: string;
-      mode?: "lan" | "remote";
-      endpoint?: string;
-      force?: boolean;
-    };
+    const input = StartPairingSchema.parse(raw ?? undefined) ?? {};
     const force = { force: input.force === true };
 
     // Remote mode (SSH relay): the endpoint is the VPS's public URL.
