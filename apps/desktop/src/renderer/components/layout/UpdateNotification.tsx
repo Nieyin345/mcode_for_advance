@@ -44,7 +44,7 @@ import {
 
 /** GitHub Releases latest URL — where macOS users land for a manual download
  *  (ad-hoc signature, Squirrel.Mac can't auto-install). */
-const RELEASES_URL = "https://github.com/huangbh2020/mcode/releases/latest";
+const RELEASES_URL = "https://github.com/Nieyin345/mcode/releases/latest";
 
 /** Update flow state shown by the card. `hidden` = nothing to say. */
 type NoticeState =

@@ -170,5 +170,5 @@ nsis:
 # the installers (see .github/workflows/release.yml).
 publish:
   provider: github
-  owner: huangbh2020
+  owner: Nieyin345
   repo: mcode
