@@ -18,6 +18,7 @@ import { dataRoot } from "@main/lib/dataRoot.js";
 import { MEMORY_PROJECT_ID } from "@main/memory/paths.js";
 import { saveMemoryFile } from "@main/memory/store.js";
 import { notifyMemoryChanged } from "@main/memory/broadcast.js";
+import { SHIPPED_INITIALIZERS } from "./shipped.js";
 const PREFIX = "projectInit.template.";
 const MAX_TEMPLATES = 200;
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -37,6 +38,31 @@ export function listProjectInitializers(): { templates: ProjectInitSummary[] } {
     const { id, name, description, revision } = stored(key.slice(PREFIX.length));
     return { id, name, description, revision };
   }).sort((a, b) => a.name.localeCompare(b.name)) };
+}
+const SEEDED_KEY = "projectInit.seededShipped";
+/** 出厂模板只播种一次(见 `shipped.ts` 文件头):播过的 id 记下来,用户删了不复活;
+ *  命令名与用户已有模板冲突时不播,同样记下。启动时调一次(`main/index.ts`)——
+ *  不放进 `listProjectInitializers`,那是纯读取,不该有副作用。 */
+export function ensureShippedInitializersSeeded(): void {
+  let seeded: string[] = [];
+  try {
+    const parsed: unknown = JSON.parse(SettingRepo.get(SEEDED_KEY) ?? "[]");
+    if (Array.isArray(parsed)) seeded = parsed.filter((v): v is string => typeof v === "string");
+  } catch { /* 清单坏了就当空的;模板本身已存在时下面照样跳过,不会重复。 */ }
+  const pending = SHIPPED_INITIALIZERS.filter(s => !seeded.includes(s.id));
+  if (!pending.length) return;
+  const names = new Set(SettingRepo.keysWithPrefix(PREFIX).map(key => {
+    try { return initNameKey(stored(key.slice(PREFIX.length)).name); } catch { return ""; }
+  }));
+  for (const shipped of pending) {
+    const draft = ProjectInitDraftSchema.parse(shipped.draft);
+    if (SettingRepo.get(PREFIX + shipped.id) === null && !names.has(initNameKey(draft.name))) {
+      SettingRepo.set(PREFIX + shipped.id, JSON.stringify(draft));
+      names.add(initNameKey(draft.name));
+    }
+    seeded.push(shipped.id);
+  }
+  SettingRepo.set(SEEDED_KEY, JSON.stringify(seeded));
 }
 export function getProjectInitializer(input: { id: string }): ProjectInitTemplate {
   return stored(ProjectInitIdSchema.parse(input).id);

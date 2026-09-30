@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { ProjectInitDraftSchema, type ProjectInitDraft } from "@contracts/ipc/projectInit";
 import { listProjectInitializers, getProjectInitializer, saveProjectInitializer, deleteProjectInitializer, previewProjectInitializer, applyProjectInitializer } from "../../src/main/projectInit/service.js";
 import { readMemoryFile } from "../../src/main/memory/store.js";
+import { ensureShippedInitializersSeeded } from "../../src/main/projectInit/service.js";
+import { SHIPPED_INITIALIZERS } from "../../src/main/projectInit/shipped.js";
 import { setRoot, projects, sessions, events, settings } from "./stubs.js";
 const base = await mkdtemp(join(tmpdir(), "mcode-project-init-"));
 let root = "", data = "", passed = 0, failed = 0, count = 0;
@@ -113,6 +115,31 @@ try {
  await test("parallel applies never overwrite or duplicate memories",async()=>{
   saveProjectInitializer({draft:draft()});const p=await preview();const settled=await Promise.allSettled([1,2].map(()=>applyProjectInitializer({sessionId:"s1",command:"init-学术",digest:p.digest})));
   assert.equal(settled.filter(r=>r.status==="fulfilled").length,1);assert.equal(events.length,1);assert.equal(await readFile(join(root,"notes/README.md"),"utf8"),draft().files[0].content);
+ });
+ // 出厂模板(2026-09-30):只播一次、删了不复活、不抢用户的同名命令、内容本身能真的落盘。
+ await test("shipped initializer drafts pass the schema",()=>{
+  for(const s of SHIPPED_INITIALIZERS){assert.equal(ProjectInitDraftSchema.safeParse(s.draft).success,true,s.draft.name);assert.ok(s.draft.directories.every(d=>s.draft.files.some(f=>f.path.startsWith(d.split("/")[0]+"/README"))),"every top folder has a README");}
+ });
+ await test("shipped initializer seeds once and is idempotent",()=>{
+  ensureShippedInitializersSeeded();const names=listProjectInitializers().templates.map(t=>t.name);
+  assert.deepEqual(names,[...SHIPPED_INITIALIZERS.map(s=>s.draft.name)].sort((a,b)=>a.localeCompare(b)));
+  ensureShippedInitializersSeeded();assert.equal(listProjectInitializers().templates.length,SHIPPED_INITIALIZERS.length);
+ });
+ await test("deleted shipped initializer never resurrects",()=>{
+  ensureShippedInitializersSeeded();for(const t of listProjectInitializers().templates)deleteProjectInitializer({id:t.id,expectedRevision:t.revision});
+  ensureShippedInitializersSeeded();assert.equal(listProjectInitializers().templates.length,0);
+ });
+ await test("shipped initializer yields to a user template with the same command",()=>{
+  const mine=saveProjectInitializer({draft:draft(SHIPPED_INITIALIZERS[0].draft.name)});ensureShippedInitializersSeeded();
+  const all=listProjectInitializers().templates;assert.equal(all.length,1);assert.equal(all[0].id,mine.id);
+ });
+ await test("shipped research initializer creates folders, READMEs and pinned memories",async()=>{
+  ensureShippedInitializersSeeded();const shipped=SHIPPED_INITIALIZERS[0].draft;const command="init-"+shipped.name;
+  const p=await previewProjectInitializer({sessionId:"s1",command});const r=await applyProjectInitializer({sessionId:"s1",command,digest:p.digest});
+  assert.ok(r.actions.every(a=>a.status==="created"),JSON.stringify(r.actions.filter(a=>a.status!=="created")));
+  assert.match(await readFile(join(root,"data/README.md"),"utf8"),/raw/);assert.deepEqual(await readdir(join(root,"data/raw")),[]);
+  assert.match(readMemoryFile("projects/p1/rules/项目目录约定.md").content,/data\/raw/);
+  assert.match(await readFile(join(data,"memory/projects/p1/project/项目概况.md"),"utf8"),/pinned: true/);
  });
 } finally { await rm(base,{recursive:true,force:true}); }
 console.log(`Project init smoke: ${passed} pass, ${failed} fail`);process.exitCode=failed?1:0;
