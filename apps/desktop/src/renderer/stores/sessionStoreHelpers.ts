@@ -1217,14 +1217,28 @@ export function hasErrorInCurrentTurn(messages: readonly ChatMessage[], text: st
 }
 
 /** 手机 SSE 掉线时 RPC 仍会拒绝;桌面 IPC 也可能比事件先抵达。
- *  只兜底明确的自定义配置错误,避免意外把其他 IPC 的内部细节显示给用户。 */
+ *  自定义配置错误原样显示(主进程同时会推同一句 error 事件,按文本去重)。
+ *
+ *  其他拒绝原先只进 console:用户看到自己的气泡后面什么也没有 —— 而主进程有好几处
+ *  是**专门写给用户看**才抛的(「这个工作流还在跑」「上一轮还在运行」、worktree 建不
+ *  出来……)。所以一律补一个错误气泡:原因是面向用户的中文短句就附上,否则(英文异常 /
+ *  多行堆栈)只给通用说明,不把内部细节摆到界面上。 */
 export function surfaceRejectedCustomModelSend(get: () => SessionState, sessionId: string, err: unknown): void {
   const raw = err instanceof Error ? err.message : String(err);
-  if (!raw.includes("本次未发送到默认端点")) return;
   // Electron 给 IPC 异常加的前缀不是失败原因;手机 RPC 返回的则是原文。
   const message = raw.replace(/^Error invoking remote method ['"][^'"]+['"]: Error: /, "");
-  if (hasErrorInCurrentTurn(get().messagesBySession[sessionId] ?? [], message)) return;
-  get().ingestEvent({ type: "error", sessionId, message, code: "custom_model_unavailable" });
+  if (raw.includes("本次未发送到默认端点")) {
+    if (hasErrorInCurrentTurn(get().messagesBySession[sessionId] ?? [], message)) return;
+    get().ingestEvent({ type: "error", sessionId, message, code: "custom_model_unavailable" });
+    return;
+  }
+  const locale = get().locale;
+  const userFacing = /[\u4e00-\u9fff]/.test(message) && message.length <= 300 && !message.includes("\n");
+  const text = userFacing
+    ? translate(locale, "store.toast.sendFailed", { reason: message })
+    : translate(locale, "store.toast.sendFailedGeneric");
+  if (hasErrorInCurrentTurn(get().messagesBySession[sessionId] ?? [], text)) return;
+  get().ingestEvent({ type: "error", sessionId, message: text, code: "send_rejected" });
 }
 
 /**
