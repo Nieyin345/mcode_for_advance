@@ -171,4 +171,4 @@ nsis:
 publish:
   provider: github
   owner: Nieyin345
-  repo: mcode
+  repo: mcode_for_advance

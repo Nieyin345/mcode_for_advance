@@ -41,10 +41,10 @@ import {
 /** App display name (matches the root package.json "name"). */
 const APP_NAME = "Mcode";
 /** GitHub repo URL. */
-const REPO_URL = "https://github.com/Nieyin345/mcode";
+const REPO_URL = "https://github.com/Nieyin345/mcode_for_advance";
 /** GitHub Releases latest URL — where the user lands to manually download on
  *  macOS when Squirrel.Mac can't auto-install (ad-hoc signature). */
-const RELEASES_URL = "https://github.com/Nieyin345/mcode/releases/latest";
+const RELEASES_URL = "https://github.com/Nieyin345/mcode_for_advance/releases/latest";
 /** SPDX license identifier. */
 const LICENSE = "MIT";
 
