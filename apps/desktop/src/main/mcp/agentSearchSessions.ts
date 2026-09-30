@@ -74,6 +74,9 @@ export interface AgentSearchSessions {
   }): Promise<AgentSearchReadResult>;
   stop(ownerSessionId: string, searchId: string): AgentSearchReadResult;
   list(ownerSessionId: string): AgentSearchListItem[];
+  /** The owning conversation is gone: stop its running searches and drop all
+   *  of its entries now instead of waiting for a later start/list prune. */
+  disposeOwner(ownerSessionId: string): void;
 }
 
 export function createAgentSearchSessions(): AgentSearchSessions {
@@ -188,6 +191,14 @@ export function createAgentSearchSessions(): AgentSearchSessions {
           scannedFiles: s.scannedFiles,
           startedAt: s.startedAt,
         }));
+    },
+
+    disposeOwner(ownerSessionId) {
+      for (const [id, s] of [...sessions]) {
+        if (s.ownerSessionId !== ownerSessionId) continue;
+        if (s.status === "running") s.stopped = true;
+        sessions.delete(id);
+      }
     },
   };
 }

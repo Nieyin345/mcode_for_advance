@@ -149,6 +149,10 @@ export interface AgentProcessSessions {
     maxChars?: number;
   }): Promise<AgentProcessReadResult>;
   list(ownerSessionId: string): AgentProcessListItem[];
+  /** The owning conversation is gone: stop its running processes and forget
+   *  all of its entries (otherwise running ones keep going until their own
+   *  timeout, and finished ones stay listed until pruneCompleted evicts them). */
+  disposeOwner(ownerSessionId: string): void;
 }
 
 export function createAgentProcessSessions(): AgentProcessSessions {
@@ -469,6 +473,20 @@ export function createAgentProcessSessions(): AgentProcessSessions {
           startedAt: session.startedAt,
           endCursor: session.endCursor,
         }));
+    },
+
+    disposeOwner(ownerSessionId) {
+      for (const session of [...sessions.values()]) {
+        if (session.ownerSessionId !== ownerSessionId) continue;
+        if (session.status === "running") {
+          session.forcedStatus = "stopped";
+          terminate(session);
+        }
+        // Wake any in-flight read/write wait so it returns instead of idling
+        // out its waitMs against a conversation that no longer exists.
+        notify(session);
+        sessions.delete(session.id);
+      }
     },
   };
 }

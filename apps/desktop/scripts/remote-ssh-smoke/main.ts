@@ -166,6 +166,18 @@ const exec2 = await mgr.exec(owner, conn.connectionId, "echo two");
 check("exec works after reconnect", exec2.stdout.includes("ran:echo two"), exec2);
 await mgr.disconnect(owner, conn.connectionId);
 check("intentional disconnect stops connection", mgr.status(owner, conn.connectionId).state === "closed");
+// Conversation deleted (disposeOwner, OBS-M14-01): close without auto-reconnect
+// and forget every entry of that owner.
+const conn2 = await mgr.connect({ ownerSessionId: owner, host: "127.0.0.1", port: addr.port, username: "u", password: "p", keepaliveIntervalMs: 5000 });
+check("second connection reaches ready", conn2.state === "ready", conn2);
+mgr.disposeOwner(owner);
+check("disposeOwner forgets all of the conversation's connections", mgr.list(owner).length === 0, mgr.list(owner));
+let disposedGone = false;
+try { mgr.status(owner, conn2.connectionId); } catch { disposedGone = true; }
+check("disposed connection id no longer resolves", disposedGone);
+await waitFor(() => serverClients.size, (n) => n === 0, 2500);
+await new Promise((resolve) => setTimeout(resolve, 1500));
+check("disposed connection is closed and does not reconnect", serverClients.size === 0, serverClients.size);
 await new Promise<void>((resolve) => server.close(() => resolve()));
 
 console.log(`\nremote-ssh-smoke: ${passed}/${checks} passed`);

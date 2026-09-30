@@ -47,6 +47,7 @@ import {
 import { peekRaw, seedRaw } from "./stubs/repositories.js";
 import { createAgentProcessSessions } from "@main/mcp/agentProcessSessions.js";
 import { createAgentSearchSessions } from "@main/mcp/agentSearchSessions.js";
+import { disposeAgentSession, registerAgentSessionDisposer } from "@main/mcp/agentSessionCleanup.js";
 
 let failures = 0;
 let checks = 0;
@@ -312,6 +313,19 @@ async function main(): Promise<void> {
   const whole = await procs.read({ ownerSessionId: A, processId: bulk.processId, cursor: capped.bufferStartCursor, maxChars: 60_000 });
   check("跨块多字节没有被切坏(无 U+FFFD)", !whole.output.includes("\uFFFD"), whole.output.slice(0, 40));
 
+  // B7 对话删了(disposeOwner,OBS-M14-01):运行中的停掉、条目全部清走;别的对话不受牵连。
+  const doomedProc = await procs.start({ ownerSessionId: A, command: cmd(IDLE), cwd: work, waitMs: 0 });
+  const keptProc = await procs.start({ ownerSessionId: B, command: cmd(IDLE), cwd: work, waitMs: 0 });
+  procs.disposeOwner(A);
+  eq("disposeOwner 后 A 的进程 list 为空(含已结束的)", procs.list(A).length, 0);
+  await rejectsWith(
+    "disposeOwner 后 A 的旧进程 id 读不到",
+    () => procs.read({ ownerSessionId: A, processId: doomedProc.processId }),
+    /没有这个进程会话/,
+  );
+  eq("disposeOwner 不波及 B 运行中的进程", procs.list(B).filter((p) => p.status === "running").length, 1);
+  await procs.stop({ ownerSessionId: B, processId: keptProc.processId });
+
   /* ══════════════ C. agentSearchSessions:隔离 / 上限 ══════════════ */
   console.log("C. mcp/agentSearchSessions.ts —— 后台搜索会话");
   const searchRoot = join(work, "tree");
@@ -346,6 +360,32 @@ async function main(): Promise<void> {
   );
   const stoppedSearch = searches.stop(B, bSearch.searchId);
   check("stop 后搜索会话终结", stoppedSearch.status !== "running", stoppedSearch.status);
+
+  // C2 对话删了(disposeOwner):A 的搜索全部清走,B 的还在。
+  searches.disposeOwner(A);
+  eq("disposeOwner 后 A 的搜索 list 为空", searches.list(A).length, 0);
+  await rejectsWith("disposeOwner 后 A 的旧 search_id 读不到", () => searches.read({ ownerSessionId: A, searchId: s1.searchId }), /没有这个搜索会话/);
+  eq("disposeOwner 不波及 B 的搜索", searches.list(B).length, 1);
+
+  /* ══════════════ D. agentSessionCleanup:删会话时的统一释放点 ══════════════ */
+  console.log("D. mcp/agentSessionCleanup.ts —— 删会话时释放 agent 工具资源");
+  const seen: string[] = [];
+  const unregisterBoom = registerAgentSessionDisposer(() => {
+    throw new Error("boom");
+  });
+  const unregisterSeen = registerAgentSessionDisposer((id) => seen.push(id));
+  let threw = false;
+  try {
+    disposeAgentSession("conv-X");
+  } catch {
+    threw = true;
+  }
+  check("一个释放函数抛错不外泄给删除流程", !threw);
+  eq("抛错的那个不妨碍其余释放函数执行", seen.join(","), "conv-X");
+  unregisterBoom();
+  unregisterSeen();
+  disposeAgentSession("conv-Y");
+  eq("注销后不再被调用", seen.join(","), "conv-X");
 }
 
 main()

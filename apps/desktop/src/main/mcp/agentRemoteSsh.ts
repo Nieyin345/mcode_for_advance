@@ -306,8 +306,7 @@ export function createAgentRemoteSshManager() {
     return infoOf(entry);
   };
 
-  const disconnect = async (ownerSessionId: string, connectionId: string): Promise<void> => {
-    const entry = owned(ownerSessionId, connectionId);
+  const closeEntry = (entry: RemoteEntry): void => {
     entry.intentionalClose = true;
     if (entry.reconnectTimer) clearTimeout(entry.reconnectTimer);
     entry.reconnectTimer = null;
@@ -315,6 +314,21 @@ export function createAgentRemoteSshManager() {
     entry.client = null;
     entry.state = "closed";
     try { client?.end(); } catch { /* best effort */ }
+  };
+
+  const disconnect = async (ownerSessionId: string, connectionId: string): Promise<void> => {
+    closeEntry(owned(ownerSessionId, connectionId));
+  };
+
+  /** The owning conversation is gone: close (no auto-reconnect) and forget all
+   *  of its connections. Remote tmux/nohup jobs keep running on the host by
+   *  design; only the local connection state goes away. */
+  const disposeOwner = (ownerSessionId: string): void => {
+    for (const [id, entry] of [...entries]) {
+      if (entry.ownerSessionId !== ownerSessionId) continue;
+      closeEntry(entry);
+      entries.delete(id);
+    }
   };
 
   const startJob = async (args: {
@@ -380,6 +394,7 @@ export function createAgentRemoteSshManager() {
   return {
     connect,
     disconnect,
+    disposeOwner,
     exec: async (ownerSessionId: string, connectionId: string, command: string, timeoutMs?: number) =>
       execEntry(owned(ownerSessionId, connectionId), command, timeoutMs),
     list: (ownerSessionId: string) => [...entries.values()].filter((e) => e.ownerSessionId === ownerSessionId).map(infoOf),

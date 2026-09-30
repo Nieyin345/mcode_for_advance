@@ -60,6 +60,7 @@ import {
   type AgentProcessReadResult,
 } from "./agentProcessSessions.js";
 import { createAgentSearchSessions, type AgentSearchReadResult } from "./agentSearchSessions.js";
+import { registerAgentSessionDisposer } from "./agentSessionCleanup.js";
 import { createAgentRemoteSshManager, type RemoteConnectionInfo, type RemoteJobStatus, DEFAULT_SSH_EXEC_TIMEOUT_MS, MAX_SSH_EXEC_TIMEOUT_MS, DEFAULT_JOB_LOG_WAIT_MS, MAX_JOB_LOG_WAIT_MS } from "./agentRemoteSsh.js";
 import {
   editDocxXml,
@@ -929,6 +930,13 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
   const processes = createAgentProcessSessions();
   const searches = createAgentSearchSessions();
   const remoteSsh = createAgentRemoteSshManager();
+  // Deleting a conversation releases what its agent tools still hold (see
+  // agentSessionCleanup.ts — OBS-M14-01: SSH otherwise auto-reconnects forever).
+  registerAgentSessionDisposer((sessionId) => {
+    processes.disposeOwner(sessionId);
+    searches.disposeOwner(sessionId);
+    remoteSsh.disposeOwner(sessionId);
+  });
 
   return [
     {

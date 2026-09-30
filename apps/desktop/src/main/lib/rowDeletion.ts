@@ -12,6 +12,7 @@ import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { broadcastProjectsChanged, broadcastSessionDeleted } from "@main/lib/sessionSync.js";
 import { cancelWorkflowRun } from "@main/orchestration/runner.js";
 import { dropBackflow } from "@main/lib/pendingBackflow.js";
+import { disposeAgentSession } from "@main/mcp/agentSessionCleanup.js";
 
 /** 系统项目(后台自动化的外键归属)不能删 —— 调用方据此给出各自的错误形态。 */
 export class SystemProjectDeleteError extends Error {
@@ -38,6 +39,9 @@ export function deleteSessionEverywhere(id: string): void {
   // session, re-inserting orphaned message rows. bindSession re-binds from
   // the fresh row on any future send, so this is safe at any point.
   runtimeManager.dispose(id);
+  // 以及它的 agent 工具还占着的持久进程 / 后台搜索 / SSH 连接(不挂在 dispose 上
+  // 的理由见 `mcp/agentSessionCleanup.ts`)。
+  disposeAgentSession(id);
   SessionRepo.delete(id);
   broadcastSessionDeleted(id);
 }
@@ -66,6 +70,7 @@ export function deleteProjectEverywhere(id: string): { sessions: number; stopped
     // 返回值说的正是"这个会话上真有一张图被掐掉"。
     if (cancelWorkflowRun(sid)) stopped += 1;
     dropBackflow(sid);
+    disposeAgentSession(sid);
   }
   // Release every session runtime BEFORE the SQL cascade removes the rows
   // (disposeProject reads them to know what to dispose). Also interrupts a
