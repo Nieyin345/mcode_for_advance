@@ -74,6 +74,10 @@ jobs:
     name: Smoke (Windows)
     runs-on: windows-2022
     timeout-minutes: 120
+    env:
+      # Several smokes `ln -s` the app's node_modules next to a temp bundle. Git Bash's
+      # default makes a deep copy instead (pnpm links inside break); ask for a real link.
+      MSYS: winsymlinks:nativestrict
     steps:
       - uses: actions/checkout@v4
         with:
@@ -93,6 +97,22 @@ jobs:
       # openpyxl: mcp-endpoint-smoke builds its .xlsx fixture with it.
       - name: Python packages for native rebuild and fixtures
         run: python -m pip install setuptools openpyxl
+
+      # agent_write_pdf renders Markdown via pandoc + xelatex. mcp-endpoint-smoke reads the
+      # text back with pdfjs, so the raster Pillow fallback cannot satisfy it.
+      - name: Setup pandoc
+        uses: r-lib/actions/setup-pandoc@v2
+
+      - name: Setup TinyTeX (xelatex)
+        uses: r-lib/actions/setup-tinytex@v2
+
+      # The hosted image boots at 1024x768 and Windows clamps windows to the screen, so
+      # the native Electron probes (1440x1000) would render a squeezed layout.
+      - name: Desktop-sized display for native Electron windows
+        shell: pwsh
+        run: |
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force; Write-Host "display: 1920x1080" }
+          catch { Write-Warning "Set-DisplayResolution unavailable: $_" }
 
       - name: Setup MSVC dev cmd
         uses: ilammy/msvc-dev-cmd@v1

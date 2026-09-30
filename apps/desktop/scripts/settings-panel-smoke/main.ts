@@ -655,15 +655,16 @@ writeStyle("readme.txt", "不是 markdown,不该出现");
 
 const merged = await outputStyleList({});
 const mergedIds = idsOf(merged);
-// 用户项的名字刻意一个用中文、一个用 ASCII。⚠️ `localeCompare` **不带 locale**
-// 时中文排在拉丁字母**前面**(实测 zh-CN 机器上 `"早安".localeCompare("Alpha") < 0`),
-// 所以期望顺序是「早安, Alpha」而不是直觉上的「Alpha, 早安」。这条断言就是要在有人
-// 把 `.sort()` 换成 `.sort((a,b)=>a.id-b.id)` / 按文件名排的时候红 —— 那种改动会让
-// 用户看到的那列顺序变掉。
+// 用户项的名字刻意一个用中文、一个用 ASCII。⚠️ `localeCompare` **不带 locale**,
+// 结果随运行环境的默认语言变:zh-CN 机器上中文排在拉丁字母**前面**
+// (`"早安".localeCompare("Alpha") < 0`),en-US(GitHub 的 Windows 机器)上反过来。
+// 所以用户项的期望顺序**当场用同一个 localeCompare 算**,而不是写死其中一种。
+// 在中文环境(作者机器、用户机器)下它仍会在有人把 `.sort()` 换成按文件名
+// (zzz.md → 早安、aaa.md → Alpha)排的时候红;en-US 下两种排法恰好同序,抓不到这一种。
 same(
   "顺序是内置在前、用户项在后(用户项按 localeCompare 排)",
   mergedIds,
-  ["default", "Explanatory", "Learning", "Proactive", "Concise", "早安", "Alpha"],
+  ["default", "Explanatory", "Learning", "Proactive", "Concise", ...["早安", "Alpha"].sort((a, b) => a.localeCompare(b))],
 );
 eq("用户项带上了自己的 description", stylesOf(merged).find((s) => s.id === "早安")?.description, "用户自己的风格");
 eq("  没写 description 的那条就不带这个字段", stylesOf(merged).find((s) => s.id === "Alpha")?.description, undefined);

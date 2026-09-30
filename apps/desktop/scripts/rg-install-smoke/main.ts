@@ -59,6 +59,7 @@
  * Run: scripts/rg-install-smoke/run.sh
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import type { IpcMain } from "electron";
 // 类型用顶层 import(会被抹掉),值仍然走下面的 `await import` —— `F` 是个**值**,
@@ -670,11 +671,26 @@ console.log("\ntar 报错里的中文");
   );
   // 上面那条只证明"没有乱码";这一条证明**名字真的被读出来了** —— 否则换一句
   // "把 tar 的输出整个丢掉"的实现也能过。两个一起才是"解码解对了"。
-  check(
-    "★ tar 那半句话里的中文确实被解出来了(不是丢了、也不是套话)",
-    err14.includes("中文目录"),
-    { error: err14 },
-  );
+  // 「名字读得出来」只在**系统代码页写得出中文**时成立:英文系统(GitHub 的 Windows
+  // 机器是 437)上 bsdtar 写成员名时就已经把中文换成了 `?`,原始字节里没有中文可解。
+  // 上面那条「没有替换字符」照验。
+  const sysCodePage = (() => {
+    if (process.platform !== "win32") return undefined;
+    try {
+      return /(\d+)\s*$/.exec(execFileSync("cmd.exe", ["/d", "/c", "chcp"], { encoding: "latin1", windowsHide: true }).trim())?.[1];
+    } catch {
+      return undefined;
+    }
+  })();
+  if (sysCodePage === undefined || ["936", "950", "54936", "65001"].includes(sysCodePage)) {
+    check(
+      "★ tar 那半句话里的中文确实被解出来了(不是丢了、也不是套话)",
+      err14.includes("中文目录"),
+      { error: err14 },
+    );
+  } else {
+    console.log(`  NOTE 系统代码页是 ${sysCodePage}(写不出中文)—— tar 已把成员名写成 ?,「中文解出来」那条跳过`);
+  }
   check(
     "★ tar 那半句话本身还在(不是把 tar 的输出整个丢掉换成一句套话)",
     /Path contains|tar/i.test(err14),

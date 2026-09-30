@@ -838,11 +838,19 @@ if (realPty) {
     !realOut.data.includes("\uFFFD"),
     { body, fffd: (realOut.data.match(/\uFFFD/g) || []).length },
   );
-  check(
-    "真 PTY 的中文读得出来(『活动代码页』这五个字原样在)",
-    body.includes("活动代码页"),
-    { body },
-  );
+  // `chcp` 那句话的**语言**跟着 Windows 的显示语言走:英文系统(GitHub 的 Windows 机器)
+  // 吐的是 `Active code page: 437`,根本没有中文可读。上面那条「没有 U+FFFD」照验;
+  // 「中文读得出来」只在中文系统(代码页 936)上验 —— 作者与用户的机器都是。
+  const chcpPage = /(\d+)\s*$/.exec(body.trim())?.[1];
+  if (chcpPage === undefined || chcpPage === "936") {
+    check(
+      "真 PTY 的中文读得出来(『活动代码页』这五个字原样在)",
+      body.includes("活动代码页"),
+      { body },
+    );
+  } else {
+    console.log(`  NOTE 系统代码页是 ${chcpPage}(非中文 Windows)—— 『活动代码页』那条不适用,跳过`);
+  }
 }
 
 /* ───────────────────────── 8. 「谁开的」与输出尾巴(终端列表的地基) ─────────────────────────

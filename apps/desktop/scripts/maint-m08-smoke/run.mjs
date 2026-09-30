@@ -38,6 +38,7 @@
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -118,7 +119,20 @@ check("协议前缀来自契约本身(判据不写死)", typeof PREFIX === "stri
 
 /** 普通根(对照)与**带空格**的根(这一套要钉的那条路径)。 */
 const plainRoot = join(evidence, "plain-root");
-const spacedRoot = join(evidence, "spaced root with 中文");
+// 名字里的中文只在**系统代码页写得出中文**时才加:英文系统(GitHub 的 Windows 机器是
+// 437/1252)上 cmd 的 `%~f0` 会变成 `??`、python 往管道 print 直接 UnicodeEncodeError ——
+// 那是系统代码页的限制,不是本套要钉的「路径带空格」。空格那一维在哪都照验。
+const cjkCodePage = (() => {
+  if (process.platform !== "win32") return true;
+  try {
+    const cp = Number(/(\d+)\s*$/.exec(execFileSync("cmd.exe", ["/d", "/c", "chcp"], { encoding: "latin1", windowsHide: true }).trim())?.[1]);
+    return !Number.isFinite(cp) || [936, 950, 54936, 65001].includes(cp);
+  } catch {
+    return true;
+  }
+})();
+const spacedRoot = join(evidence, cjkCodePage ? "spaced root with 中文" : "spaced root with space");
+if (!cjkCodePage) lines.push("NOTE 系统代码页写不出中文 —— 带空格的临时根改用纯 ASCII 名(空格那一维照验)");
 const ampersandRoot = join(evidence, "ampersand-&-root");
 for (const root of [plainRoot, spacedRoot, ampersandRoot]) mkdirSync(root, { recursive: true });
 

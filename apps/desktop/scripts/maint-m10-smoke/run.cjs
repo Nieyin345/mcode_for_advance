@@ -1,7 +1,7 @@
 // Cross-platform runner:用仓库已装的 Vite 自带 esbuild,绝不 npx / 联网。
 // 需要本机有 git(本套件真的建仓库、真的 worktree add)。
 const { createRequire } = require("node:module");
-const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = require("node:fs");
+const { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } = require("node:fs");
 const { tmpdir } = require("node:os");
 const { resolve, join } = require("node:path");
 const { spawnSync } = require("node:child_process");
@@ -17,9 +17,14 @@ if (probe.status !== 0) {
   return;
 }
 
-const out = mkdtempSync(join(tmpdir(), "mcode-maint-m10-smoke-"));
-const wtRoot = mkdtempSync(join(tmpdir(), "mcode-maint-m10-wtroot-"));
-const userData = mkdtempSync(join(tmpdir(), "mcode-maint-m10-userdata-"));
+// 临时根先取**规范路径**:`git worktree list --porcelain` 报的是长路径 / 解析过软链的
+// 真路径,而 tmpdir() 可能是 8.3 短名(`C:\Users\RUNNER~1\...`,GitHub 的 Windows
+// 机器就是)或软链(macOS 的 /var → /private/var)。两边对不上,已注册的工作树就被
+// 当成"不是本仓库的"。产品的受管根在 userData 下,不走这条;这里只让夹具与 git 同口径。
+const tmpRoot = realpathSync.native(tmpdir());
+const out = mkdtempSync(join(tmpRoot, "mcode-maint-m10-smoke-"));
+const wtRoot = mkdtempSync(join(tmpRoot, "mcode-maint-m10-wtroot-"));
+const userData = mkdtempSync(join(tmpRoot, "mcode-maint-m10-userdata-"));
 try {
   const bundle = join(out, "smoke.mjs");
   esbuild.buildSync({
@@ -41,7 +46,11 @@ try {
   mkdirSync(join(appDir, ".tmp"), { recursive: true });
   const result = spawnSync(process.execPath, [bundle], {
     encoding: "utf-8", timeout: 120000,
-    env: { ...process.env, MCODE_M10_WT_ROOT: wtRoot, MCODE_M10_USERDATA: userData },
+    // TEMP/TMP(win32)与 TMPDIR(POSIX)一并指到规范根:main.ts 里的 tmpdir() 也建仓库。
+    env: {
+      ...process.env, TEMP: tmpRoot, TMP: tmpRoot, TMPDIR: tmpRoot,
+      MCODE_M10_WT_ROOT: wtRoot, MCODE_M10_USERDATA: userData,
+    },
   });
   // 自己落盘 —— PowerShell 的 `>` 重定向会把这个子进程的输出吞掉,日志路径写死
   // 在这里,报告和 CI 都能稳定拿到。

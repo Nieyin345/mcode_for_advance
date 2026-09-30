@@ -164,9 +164,13 @@ if (process.platform !== "win32") {
   const ci = readFileSync(resolve(__dirname, "..", "..", "..", "..", ".github", "workflows", "ci.yml"), "utf8");
   check("ci:测试步骤没有 continue-on-error", !/continue-on-error:\s*true/i.test(ci));
   check("ci:没有用 `|| true` 把失败吞掉", !/\|\|\s*true/.test(ci));
-  // 上传日志那一步用 always() 是对的,别的步骤不该用
+  // 上传日志那一步用 always() 是对的,别的步骤不该用。每个 job 各有自己的一步上传
+  // (Linux 关键关卡 + Windows 全量),所以判据是"每一处 always() 都挨着 upload-artifact"。
   const alwaysCount = (ci.match(/if:\s*always\(\)/g) ?? []).length;
-  check("ci:只有上传日志那一步用 always()", alwaysCount === 1, `出现 ${alwaysCount} 次`);
+  const alwaysUses = [...ci.matchAll(/if:\s*always\(\)[^\n]*\n\s*uses:\s*(\S+)/g)].map((m) => m[1] ?? "");
+  check("ci:只有上传日志那一步用 always()",
+    alwaysCount > 0 && alwaysUses.length === alwaysCount && alwaysUses.every((u) => u.startsWith("actions/upload-artifact")),
+    `出现 ${alwaysCount} 次,其中紧跟 upload-artifact 的 ${alwaysUses.filter((u) => u.startsWith("actions/upload-artifact")).length} 次`);
 }
 
 const summary = `\nmaint-m27-smoke: ${pass} passed, ${fail} failed`;
