@@ -259,7 +259,7 @@ pnpm build                  # electron-vite
 pnpm package                # macOS dmg/zip + Windows nsis -> apps/desktop/release/
 ```
 
-预编译二进制发布在 [GitHub Releases](https://github.com/huangbh2020/mcode/releases)(macOS `.dmg` arm64+x64、Windows `.exe` x64)。因未做付费代码签名,首次启动会有 Gatekeeper / SmartScreen 拦截,README 中给了完整处理方式(macOS 右键打开、macOS 26+ 系统设置放行、`xattr -dr com.apple.quarantine` 终端命令、`brew install --cask mcode`)。
+预编译二进制发布在 [GitHub Releases](https://github.com/Nieyin345/mcode_for_advance/releases)(macOS `.dmg` arm64+x64、Windows `.exe` x64)。因未做付费代码签名,首次启动会有 Gatekeeper / SmartScreen 拦截,README 中给了完整处理方式(macOS 右键打开、macOS 26+ 系统设置放行、`xattr -dr com.apple.quarantine` 终端命令、`brew install --cask mcode`)。
 
 ---
 

@@ -9,8 +9,8 @@
 #
 # Where it lives:
 #   - Self-hosted tap (recommended): put this file at `Casks/mcode.rb` in a
-#     new repo named `huangbh2020/homebrew-mcode`, then:
-#         brew tap huangbh2020/mcode
+#     new repo named `Nieyin345/homebrew-mcode`, then:
+#         brew tap Nieyin345/mcode
 #         brew install --cask mcode
 #   - Official homebrew-cask: the same content goes to `Casks/m/mcode.rb`
 #     in a PR to github.com/Homebrew/homebrew-cask.
@@ -28,17 +28,17 @@ cask "mcode" do
   on_arm do
     sha256 "e3a409da8eb6a51addfb316386f8c2e96d70d48288b0ceeaac5a52128a75d12a"
 
-    url "https://github.com/huangbh2020/mcode/releases/download/v#{version}/Mcode-#{version}-arm64.dmg"
+    url "https://github.com/Nieyin345/mcode_for_advance/releases/download/v#{version}/Mcode-#{version}-arm64.dmg"
   end
   on_intel do
     sha256 "c901fcd43629b89ec921bd079504daebcf74d9be5edb2765facde14139f82740"
 
-    url "https://github.com/huangbh2020/mcode/releases/download/v#{version}/Mcode-#{version}.dmg"
+    url "https://github.com/Nieyin345/mcode_for_advance/releases/download/v#{version}/Mcode-#{version}.dmg"
   end
 
   name "Mcode"
   desc "Desktop GUI for the Claude Agent SDK (my Code)"
-  homepage "https://github.com/huangbh2020/mcode"
+  homepage "https://github.com/Nieyin345/mcode_for_advance"
 
   app "Mcode.app"
 

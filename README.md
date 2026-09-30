@@ -1,7 +1,7 @@
 # Mcode
 
-![GitHub release](https://img.shields.io/github/v/release/huangbh2020/mcode?style=flat-square)
-![GitHub stars](https://img.shields.io/github/stars/huangbh2020/mcode?style=flat-square)
+![GitHub release](https://img.shields.io/github/v/release/Nieyin345/mcode_for_advance?style=flat-square)
+![GitHub stars](https://img.shields.io/github/stars/Nieyin345/mcode_for_advance?style=flat-square)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)
 ![Electron](https://img.shields.io/badge/Electron-33-47848F?style=flat-square)
 ![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square)
@@ -248,7 +248,7 @@ pnpm package
 
 ### Download
 
-Pre-built binaries are published on [GitHub Releases](https://github.com/huangbh2020/mcode/releases):
+Pre-built binaries are published on [GitHub Releases](https://github.com/Nieyin345/mcode_for_advance/releases):
 
 - **macOS**: `.dmg` (arm64 + x64)
 - **Windows**: `.exe` NSIS installer (x64)
@@ -294,7 +294,7 @@ Join the Mcode user group on WeChat — scan the QR code below to ask questions,
 
 ![Mcode WeChat user group QR code](docs/images/沟通群二维码.png)
 
-> Group QR codes expire — if the code is no longer valid or the group is full, please open an [issue](https://github.com/huangbh2020/mcode/issues) to reach us.
+> Group QR codes expire — if the code is no longer valid or the group is full, please open an [issue](https://github.com/Nieyin345/mcode_for_advance/issues) to reach us.
 
 ---
 

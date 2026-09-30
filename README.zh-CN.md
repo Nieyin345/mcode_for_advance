@@ -1,7 +1,7 @@
 # Mcode
 
-![GitHub release](https://img.shields.io/github/v/release/huangbh2020/mcode?style=flat-square)
-![GitHub stars](https://img.shields.io/github/stars/huangbh2020/mcode?style=flat-square)
+![GitHub release](https://img.shields.io/github/v/release/Nieyin345/mcode_for_advance?style=flat-square)
+![GitHub stars](https://img.shields.io/github/stars/Nieyin345/mcode_for_advance?style=flat-square)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)
 ![Electron](https://img.shields.io/badge/Electron-33-47848F?style=flat-square)
 ![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square)
@@ -245,7 +245,7 @@ pnpm package
 
 ### 下载
 
-预编译二进制发布在 [GitHub Releases](https://github.com/huangbh2020/mcode/releases)：
+预编译二进制发布在 [GitHub Releases](https://github.com/Nieyin345/mcode_for_advance/releases)：
 
 - **macOS**：`.dmg`（arm64 + x64）
 - **Windows**：`.exe` NSIS 安装包（x64）
@@ -291,7 +291,7 @@ MIT。本项目不重新分发或内嵌任何 agent 二进制——各 SDK 自�
 
 ![Mcode 微信交流群二维码](docs/images/沟通群二维码.png)
 
-> 群二维码有时效，如提示已过期或已满员，请提 [issue](https://github.com/huangbh2020/mcode/issues) 联系我们。
+> 群二维码有时效，如提示已过期或已满员，请提 [issue](https://github.com/Nieyin345/mcode_for_advance/issues) 联系我们。
 
 ---
 
