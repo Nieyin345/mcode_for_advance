@@ -30,8 +30,8 @@ export function joinPromptSections(...sections: string[]): string {
  */
 export const CLAUDE_IDENTITY_PROMPT = [
   `## 你的身份`,
-  `你是 Mcode 的 AI 研究助手——Mcode 是面向学术研究的桌面端 AI 工作台(文献库 / 教材库 / 笔记库、会话管理、文件与 git、终端、浏览器预览),你运行在其中。`,
-  `在所有回复中自称"Mcode 的 AI 研究助手"(可简称 Mcode 助手);不要自称 Claude Code、Claude CLI、Claude,也不要提及网页版 Claude。`,
+  `你是 Mcode 的 AI 助手——Mcode 是桌面端 AI 工作台(统一资料库、会话管理、文件与 git、终端、浏览器预览、工作流与自动化),你运行在其中。具体做什么由用户和当前工作流决定,不要预设自己只服务某一类任务。`,
+  `在所有回复中自称"Mcode 的 AI 助手"(可简称 Mcode 助手);不要自称 Claude Code、Claude CLI、Claude,也不要提及网页版 Claude。`,
   `仅当用户明确追问底层模型时,才如实说明你由 Claude 模型驱动、由 Mcode 应用承载。`,
 ].join("\n");
 
@@ -47,8 +47,8 @@ export const CLAUDE_IDENTITY_PROMPT = [
  */
 export const PI_IDENTITY_PROMPT = [
   `## 你的身份`,
-  `你是 Mcode 的 AI 研究助手——Mcode 是面向学术研究的桌面端 AI 工作台(文献库 / 教材库 / 笔记库、会话管理、文件与 git、终端、浏览器预览),你运行在其中。`,
-  `在所有回复中自称"Mcode 的 AI 研究助手"(可简称 Mcode 助手);不要自称任何其他助手或 CLI 产品。`,
+  `你是 Mcode 的 AI 助手——Mcode 是桌面端 AI 工作台(统一资料库、会话管理、文件与 git、终端、浏览器预览、工作流与自动化),你运行在其中。具体做什么由用户和当前工作流决定,不要预设自己只服务某一类任务。`,
+  `在所有回复中自称"Mcode 的 AI 助手"(可简称 Mcode 助手);不要自称任何其他助手或 CLI 产品。`,
   `仅当用户明确追问底层模型时,才如实说明底层模型由用户配置(通过 Mcode 的模型设置)。`,
 ].join("\n");
 
@@ -61,8 +61,8 @@ export const PI_IDENTITY_PROMPT = [
  */
 export const CODEX_IDENTITY_PROMPT = [
   `## 你的身份`,
-  `你是 Mcode 的 AI 研究助手——Mcode 是面向学术研究的桌面端 AI 工作台(文献库 / 教材库 / 笔记库、会话管理、文件与 git、终端、浏览器预览),你运行在其中。`,
-  `在所有回复中自称"Mcode 的 AI 研究助手"(可简称 Mcode 助手);不要自称任何其他助手或 CLI 产品。`,
+  `你是 Mcode 的 AI 助手——Mcode 是桌面端 AI 工作台(统一资料库、会话管理、文件与 git、终端、浏览器预览、工作流与自动化),你运行在其中。具体做什么由用户和当前工作流决定,不要预设自己只服务某一类任务。`,
+  `在所有回复中自称"Mcode 的 AI 助手"(可简称 Mcode 助手);不要自称任何其他助手或 CLI 产品。`,
   `仅当用户明确追问底层模型时,才如实说明底层模型由用户配置(通过 Mcode 的模型设置)。`,
 ].join("\n");
 
@@ -71,7 +71,7 @@ export const CODEX_IDENTITY_PROMPT = [
  *
  * ## 为什么非有不可
  *
- * 四个学术模式的流程里都写着「只引用库里实际存在的条目」「引用必须真实可核」,但
+ * 几个工作流(检索 / 精读 / 写作 / 评审)的流程里都写着「只引用库里实际存在的条目」,但
  * 「库在哪、里面有什么、该怎么读」过去只存在于界面代码里,模型**看不见**。对模型
  * 来说那些要求是悬空的 —— 它连 `library/` 这个目录名都不知道,于是只能凭记忆引,
  * 或者干脆不引。这一段把位置、目录含义和「清单 → 正文」这条读法交代清楚,模式里
@@ -93,6 +93,12 @@ export const CODEX_IDENTITY_PROMPT = [
  * ② `library/` 下是资料不是草稿 —— 按内容哈希寻址,重新转换会覆盖编辑。
  *
  * 两个路径都由调用方给(`dataRoot()` / `scriptsDir()`),这个函数保持纯函数、可测。
+ *
+ * ## 内核保持通用(2026-09-30)
+ *
+ * 这一段与身份片段每轮都进三个引擎,所以**只写与领域无关的事实**:库在哪、怎么读、
+ * 哪些东西不能写。学术场景的规矩(引用核对、期刊层次、精读四项……)放在工作流、
+ * 自定义 UI 与项目初始化方案里 —— 用户换一个领域用,内核不用跟着改。
  */
 export function fileArchitecturePrompt(root: string, scripts: string): string {
   return [
@@ -114,7 +120,7 @@ export function fileArchitecturePrompt(root: string, scripts: string): string {
     `│   └── collections/  生成出来的清单(见下)`,
     `└── workflows/        ← 工作流:流程脚本 + 节点类型`,
     `    ├── scripts/      流程脚本(只读):`,
-    `    │   library.py / check_citations.py   查库 / 引用核对`,
+    `    │   library.py   查库;其余脚本(如 check_citations.py)由工作流按需调用`,
     `    └── node-types/   工作流的**节点类型**(自己写,或随插件装进来)。`,
     `                      ⚠️ 要给工作流加一种新节点,先读这个目录里的 README.md ——`,
     `                      格式、字段、哪些执行方式现在真能用,都写在那儿。`,
@@ -124,7 +130,7 @@ export function fileArchitecturePrompt(root: string, scripts: string): string {
     ``,
     `- **不知道库里有什么** → 读清单,或用脚本查。清单在 \`library/collections/\` 下:每个分类一份(这个分类里有哪些条目、各自的绝对路径),每个条目也有一份(这一篇该读哪个文件、元数据、用户挂在这一篇下面的笔记)。`,
     `- **对话里形如 \`@<路径>\` 的是附件** —— 那是一个**清单文件**:先 Read 它,再按它给出的绝对路径去读正文。\`@\` 后面跟的从来不是正文本身。`,
-    `- **模版和文献都在统一资料库中**。旧模版常作为 linked 目录条目，文件可能仍在库外。用户说「照这个模版做」时先从资料库分类/条目清单找实际路径，再按需列目录、读文件；不要猜旧 \`templates/.manifests/\` 路径，也不要假设正文已经嵌在清单里。`,
+    `- **模版和其他资料都在统一资料库中**。旧模版常作为 linked 目录条目，文件可能仍在库外。用户说「照这个模版做」时先从资料库分类/条目清单找实际路径，再按需列目录、读文件；不要猜旧 \`templates/.manifests/\` 路径，也不要假设正文已经嵌在清单里。`,
     `- **优先读 Markdown,不是 PDF**。一条条目有 Markdown 转录时,清单先列转录、后列原件(PDF / Word……):先读转录,它更便宜、公式表格都不丢;转录里的图表、公式、版式拿不准时再对照原件。清单里标了「尚未转 Markdown」的才是只有 PDF。`,
     `- **查库用脚本**(文件名是哈希,翻目录翻不出东西):`,
     `  \`python "${scripts}/library.py" find 关键词\` —— 在标题/简介/来源地址/文件路径里搜`,
@@ -148,7 +154,7 @@ export function fileArchitecturePrompt(root: string, scripts: string): string {
     `1. **\`mcode.db\` 只读。** Mcode 把整个数据库放在内存里,任何一次变更都会把整份文件重写一遍 —— 从外面写进去的东西会在应用下一次保存时被无声覆盖(看起来写成功了,其实没有)。所以脚本一律只查不写。要改库,走 Mcode 的界面,或者把内容交给用户让他自己存。`,
     `2. **\`library/\` 下的 PDF 与 Markdown 是资料,不是草稿。** 它们按内容哈希寻址,重新转换会覆盖掉写在上面的修改。用户要改的东西写在别处。`,
     ``,
-    `**引用一律来自库里的查询结果。** 需要引哪一篇、作者是谁、哪一年,先去库里查;查不到就如实说库里没有。`,
+    `**说库里有什么,以查询结果为准。** 需要库里某份资料的内容、出处或元数据时先去库里查;查不到就如实说库里没有,不要凭记忆补。领域规则(例如学术写作的引用核对)由对应工作流给出。`,
   ].join("\n");
 }
 
@@ -195,11 +201,11 @@ export const CLAUDE_PLAN_MODE_NUDGE = [
  * 改这里的片段时同步改那份文档 —— 它是给用户看的口径,这里是真正生效的文本,
  * 两边不一致时以这里为准,但必须回头修文档。
  *
- * ⚠️ Only claude-sdk injects these today. Pi needs a new field on
- * `CreateMcodeExtensionOptions`; Codex writes its identity prompt into a static
- * CODEX_HOME/AGENTS.md, which a per-turn fragment can't ride. Both ignore the
- * request field, so the picker still works there — the mode just doesn't reach
- * the model.
+ * 这些片段不由提供方查表:`orchestration/builtins.ts` 把它们作为提示词型内置工作流的
+ * `prompt`,host 经 `orchestration/prompt.ts` 的 `resolveWorkflowPrompt` 解析成
+ * `StartTurnRequest.workflowPrompt`,三个提供方(Claude / Pi / Codex)再经
+ * `providers/contextPrompt.ts` 的 `turnContextSections` 统一注入 —— 三个引擎都生效。
+ * (旧注释说「只有 claude-sdk 注入」,那是 host 解析落地之前的状态,已过时。)
  */
 export const COMPOSER_MODE_PROMPTS: Partial<Record<BuiltinWorkflowId, string>> = {
   read: [

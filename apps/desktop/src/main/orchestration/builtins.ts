@@ -741,7 +741,7 @@ export const BUILTIN_WORKFLOWS: readonly WorkflowDoc[] = [
     // 走 i18n(`composer.mode.*`,和原来那个模式下拉是同一组键),这样切语言时
     // 它们跟着变 —— 而用户自建的工作流用的是 `name` 字段(用户自己起的名字不该被翻译)。
     name: "默认",
-    description: "不追加任何流程,通用研究助手。",
+    description: "不追加任何流程,通用助手。",
     icon: "message",
     // 默认模式**故意没有提示词** —— 它是"什么都不追加"的逃生口,身份片段与文件架构
     // 片段本来就在每一轮里。用空字符串而不是省略字段,是为了让"它有一条空提示词"
