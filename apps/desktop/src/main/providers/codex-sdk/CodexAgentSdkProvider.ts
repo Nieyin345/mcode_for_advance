@@ -1,5 +1,6 @@
 import { memoryToolDescriptors, invokeMemoryTool } from "@main/memory/engineTools.js";
 import { libraryToolDescriptors, invokeLibraryToolGated, isLibraryToolName } from "@main/library/engineTools.js";
+import { workflowEngineBridge } from "@main/mcp/workflowEngineTools.js";
 /**
  * Codex agent provider — drives the OpenAI Codex harness via the
  * `codex app-server` JSON-RPC protocol (stdio JSONL) and implements the
@@ -1015,6 +1016,9 @@ function buildDynamicTools(browserToolsEnabled: boolean): Array<Record<string, u
     // 资料库工具 —— Codex 没有进程内 MCP,不在这里挂的话 library_* 一个都没有,
     // 内置工作流的入库 / 挂 PDF / 挂转录会落空。审批在 invokeDynamicTool 那一支做。
     ...libraryToolDescriptors(),
+    // 工作流工具(工作流 / 节点类型 / 代理档案 / 对话记录 / 代理通信)—— 同理,审批也在
+    // invokeDynamicTool 那一支。见 mcp/workflowEngineTools.ts。
+    ...workflowEngineBridge.descriptors(),
     {
       type: "function",
       name: "ask_user_question",
@@ -1290,6 +1294,16 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
   if (isLibraryToolName(name)) {
     const mode = normalizeCodexMode(ctx.getPermissionMode?.() ?? req.permissionMode);
     const result = await invokeLibraryToolGated(name, args, req.sessionId, ctx, {
+      autoApprove: mode === "full-access" && !planMode.active,
+    });
+    return { success: !result.isError, contentItems: result.content.map(c => ({ type: "inputText", text: c.type === "text" ? c.text : "" })) };
+  }
+
+  // 工作流工具:与库工具同一套审批取向(只读直接跑,写操作按权限档问)。名字前缀混杂
+  // (workflow_ / node_ / agent_ / session_),所以按工具表认名字而不是看前缀。
+  if (workflowEngineBridge.has(name)) {
+    const mode = normalizeCodexMode(ctx.getPermissionMode?.() ?? req.permissionMode);
+    const result = await workflowEngineBridge.invokeGated(name, args, req.sessionId, ctx, {
       autoApprove: mode === "full-access" && !planMode.active,
     });
     return { success: !result.isError, contentItems: result.content.map(c => ({ type: "inputText", text: c.type === "text" ? c.text : "" })) };

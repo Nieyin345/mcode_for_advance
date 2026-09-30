@@ -1,5 +1,6 @@
 import { memoryToolDescriptors, invokeMemoryTool } from "@main/memory/engineTools.js";
 import { libraryToolDescriptors, invokeLibraryTool, isLibraryReadonlyTool } from "@main/library/engineTools.js";
+import { workflowEngineBridge } from "@main/mcp/workflowEngineTools.js";
 /**
  * Inline Pi extension — bridges Mcode's host-side approval, AskUserQuestion,
  * and system-prompt capabilities into the Pi agent via the SDK's extension API.
@@ -223,6 +224,19 @@ export function createMcodeExtension(opts: CreateMcodeExtensionOptions): InlineE
           },
         });
       }
+      // 工作流工具(mcode-workflow 那一套:工作流 / 节点类型 / 代理档案 / 对话记录 / 代理
+      // 通信)。与上面库工具同一个形状:审批交给 tool_call 守卫,只读的在那儿直接过。
+      // 见 mcp/workflowEngineTools.ts。
+      for (const tool of workflowEngineBridge.descriptors()) {
+        pi.registerTool({ name: tool.name, label: tool.name, description: tool.description,
+          parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
+          async execute(_id, args) {
+            const result = await workflowEngineBridge.invoke(tool.name, args, sessionId);
+            if (result.isError) throw new Error(result.content.map(c => c.type === "text" ? c.text : "").join("\n"));
+            return { content: result.content, details: {} };
+          },
+        });
+      }
       // Browser tools + their usage prompt ride the same switch: when the
       // built-in server is disabled in the MCP panel, the model must neither
       // see the tools nor the prompt section advertising them.
@@ -341,6 +355,12 @@ function registerToolCallGuard(
     //    browser's read-only set, same answer as Claude's shouldAutoApprove.
     //    Library WRITE tools fall through to the normal approval flow below.
     if (isLibraryReadonlyTool(toolName)) {
+      return;
+    }
+    //    Read-only workflow tools (workflow_list / workflow_get / node_types_list /
+    //    agent_profiles_list / session_read_log / agent_peers) — the same
+    //    WORKFLOW_READONLY_TOOLS list Claude's shouldAutoApprove uses.
+    if (workflowEngineBridge.isReadonly(toolName)) {
       return;
     }
 

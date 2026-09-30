@@ -24,7 +24,7 @@ import { __seedSessionLogs } from "./stubs/repositories.js";
  *
  * Run: scripts/mcode-admin-smoke/run.sh
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getWorkflow, importWorkflowInto, saveWorkflow } from "@main/orchestration/library.js";
 import { approveWorkflowRevision, workflowReviewError, workflowReviewOf, workflowRevision } from "@main/orchestration/workflowTrust.js";
@@ -51,7 +51,9 @@ import {
   WORKFLOW_READONLY_TOOLS,
   buildWorkflowMcpServer,
   normalizeWorkflow,
+  workflowMcpTools,
 } from "@main/mcp/mcodeServer.js";
+import { workflowEngineBridge } from "@main/mcp/workflowEngineTools.js";
 import {
   buildMemoryMcpServer,
   MEMORY_MCP_SERVER,
@@ -1313,6 +1315,52 @@ async function main(): Promise<void> {
   check("真实 SDK 记忆写入缺审批桥也拒绝", (await call(deniedSurface.tools, "memory_write", { category: "rules", title: "denied", content: "never write" })).includes("审批不可用"));
   const unknownSurface = await toolSurface(() => buildMemoryMcpServer({ sessionId: "unknown-session" }));
   check("真实 SDK 工具无法借匿名会话读库", (await call(unknownSurface.tools, "memory_list", {})).includes("拒绝访问"));
+
+  /* ── 工作流工具桥到 Pi / Codex(2026-09-30)──
+   * 原来这一套只挂在 Claude 上;现在经 `workflowEngineBridge` 注册到 Pi(registerTool)与
+   * Codex(动态工具)。验:工具表同源、只读清单同源、zod 校验、审批语义、两个引擎确实接上。 */
+  console.log("\n— 工作流工具桥(Pi / Codex)—");
+  {
+    const names = workflowEngineBridge.descriptors().map((d) => d.name).sort();
+    deepEq("桥的工具表与 workflowMcpTools() 同一份", names, workflowMcpTools().map((s) => s.name).sort());
+    check("桥里有代理通信与对话记录工具", ["agent_peers", "agent_notify", "agent_ask", "session_read_log", "session_list"].every((n) => names.includes(n)), names);
+    check("每个描述符的 schema 都是 object", workflowEngineBridge.descriptors().every((d) => d.inputSchema.type === "object"));
+    check("只读判定与 WORKFLOW_READONLY_TOOLS 一致", names.every((n) => workflowEngineBridge.isReadonly(n) === WORKFLOW_READONLY_TOOLS.has(n)));
+    check("agent_ask / workflow_save 不算只读", !workflowEngineBridge.isReadonly("agent_ask") && !workflowEngineBridge.isReadonly("workflow_save"));
+    check("has() 认得工作流工具、不认别家", workflowEngineBridge.has("workflow_list") && !workflowEngineBridge.has("library_search") && !workflowEngineBridge.has("read"));
+
+    const listed = await workflowEngineBridge.invoke("workflow_list", {}, "admin-smoke");
+    check("invoke workflow_list 能跑", !listed.isError, listed);
+    const unknown = await workflowEngineBridge.invoke("workflow_bogus", {}, "admin-smoke");
+    check("未知工具名 → 报错", unknown.isError === true && JSON.stringify(unknown).includes("未知工作流工具"), unknown);
+    const badArgs = await workflowEngineBridge.invoke("workflow_get", { id: 42 }, "admin-smoke");
+    check("入参过 zod:类型不对 → 报错而不是进 handler", badArgs.isError === true, badArgs);
+
+    const asked: string[] = [];
+    const ctxOf = (allow: boolean | null): any => ({
+      requestApproval: allow === null ? undefined : async (r: { toolName: string }) => {
+        asked.push(r.toolName);
+        return { allow };
+      },
+    });
+    const noBridge = await workflowEngineBridge.invokeGated("workflow_remove", { id: "wf_never" }, "admin-smoke", ctxOf(null), { autoApprove: false });
+    check("写操作 + 没有审批通道 → 拒绝", noBridge.isError === true && JSON.stringify(noBridge).includes("审批通道不可用"), noBridge);
+    const denied = await workflowEngineBridge.invokeGated("workflow_remove", { id: "wf_never" }, "admin-smoke", ctxOf(false), { autoApprove: false });
+    check("写操作 + 用户拒绝 → 不执行", denied.isError === true && JSON.stringify(denied).includes("用户未批准"), denied);
+    deepEq("审批卡上是这个工具名", asked, ["workflow_remove"]);
+    asked.length = 0;
+    const readOnly = await workflowEngineBridge.invokeGated("workflow_list", {}, "admin-smoke", ctxOf(false), { autoApprove: false });
+    check("只读工具不问、直接跑", !readOnly.isError && asked.length === 0, { readOnly, asked });
+    await workflowEngineBridge.invokeGated("workflow_remove", { id: "wf_never" }, "admin-smoke", ctxOf(false), { autoApprove: true });
+    eq("全放行档不弹审批", asked.length, 0);
+
+    const piSrc = readFileSync("src/main/providers/pi-sdk/mcodeExtension.ts", "utf8");
+    check("Pi 注册了工作流工具", piSrc.includes("workflowEngineBridge.descriptors()") && piSrc.includes("workflowEngineBridge.invoke(tool.name"));
+    check("Pi 守卫放行只读工作流工具", piSrc.includes("workflowEngineBridge.isReadonly(toolName)"));
+    const cxSrc = readFileSync("src/main/providers/codex-sdk/CodexAgentSdkProvider.ts", "utf8");
+    check("Codex 挂了工作流动态工具", cxSrc.includes("...workflowEngineBridge.descriptors()"));
+    check("Codex 派发走带审批的那条", cxSrc.includes("workflowEngineBridge.invokeGated(name"));
+  }
 
   console.log(`\n${checks - failures}/${checks} 通过`);
   if (failures > 0) {
