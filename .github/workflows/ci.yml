@@ -48,15 +48,63 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Setup browser for workflow regressions
-        id: chrome
-        uses: browser-actions/setup-chrome@v1
-
       - name: Setup virtual display for isolated Electron host
         run: sudo apt-get update && sudo apt-get install -y xvfb
 
       - name: Critical regression gate
         run: pnpm test
+
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs
+          path: |
+            apps/desktop/.tmp/smoke-runs/**/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The smoke suites are authored and maintained on Windows (hard-coded drive
+  # paths, cmd.exe / Windows services / case-insensitive FS assertions, the
+  # owned-Chrome DevTools handshake). The app ships for Windows and macOS only,
+  # so the broad gates run on the same Windows image the release job packages on.
+  # On ubuntu 38 of 173 suites failed purely on platform assumptions (2026-09-30).
+  smoke-windows:
+    name: Smoke (Windows)
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # workflow-seed-smoke compares an actual historical asset revision.
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # setuptools: distutils shim for node-gyp@9 on Python 3.12+ (same as release.yml).
+      # openpyxl: mcp-endpoint-smoke builds its .xlsx fixture with it.
+      - name: Python packages for native rebuild and fixtures
+        run: python -m pip install setuptools openpyxl
+
+      - name: Setup MSVC dev cmd
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup browser for workflow regressions
+        id: chrome
+        uses: browser-actions/setup-chrome@v1
 
       - name: Workflow integration regressions
         if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.full)
@@ -74,7 +122,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smoke-logs
+          name: smoke-logs-windows
           path: |
             apps/desktop/.tmp/smoke-runs/**/*.log
             apps/desktop/.tmp/workflow-ui-*/*.json
