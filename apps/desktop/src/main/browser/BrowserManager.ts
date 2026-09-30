@@ -1498,7 +1498,7 @@ class BrowserManagerImpl {
   }
 
   /** Clear the browser's HTTP cache + temporary site storage (localStorage,
-   *  IndexedDB, service workers, cache storage, websql, filesystem). Cookies
+   *  IndexedDB, service workers, cache storage, filesystem). Cookies
    *  are intentionally NOT cleared, so the user stays signed in on the sites
    *  they've logged into. Operates on the shared browser partition session, not
    *  the app shell's default session. */
@@ -1512,7 +1512,6 @@ class BrowserManagerImpl {
           "indexdb",
           "serviceworkers",
           "cachestorage",
-          "websql",
           "filesystem",
         ],
       });

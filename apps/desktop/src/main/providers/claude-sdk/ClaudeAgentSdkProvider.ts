@@ -1373,7 +1373,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
         if (refused) return { action: "decline" };
       }
       // enum 表单：答案按属性名回填（answers 以题面文本为键，映射时记录）。
-      const content: Record<string, unknown> = {};
+      const content: Record<string, string> = {};
       if (schemaProps && allEnum) {
         for (const n of propNames.slice(0, 4)) {
           const prop = schemaProps[n];

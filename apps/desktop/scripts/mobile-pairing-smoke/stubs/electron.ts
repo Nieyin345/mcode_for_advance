@@ -78,6 +78,8 @@ export class WebContentsView extends NotHereClass {}
 
 export const shell = notHereObj;
 export const clipboard = notHereObj;
+// Electron 44 export: this suite still must not exercise the OS clipboard.
+export const ClipboardItem = NotHereClass;
 export const dialog = notHereObj;
 export const nativeImage = notHereObj;
 export const safeStorage = notHereObj;

@@ -13,13 +13,23 @@
 
 ---
 
-## 2026-09-29 打包前检修：阶段一通过，运行时升级待续
+## 2026-09-30 打包前检修：最终自动门禁通过，正式发布边界保留
+
+- 阶段一八类修复之后，Electron 实际升级并锁定 **44.4.5**；迁移清缓存、无 webContents 登录认证、异步 ClipboardItem 图片写入 API，补安装器与四处严格测试替身。
+- 官方全依赖 audit 从 **96 条公告命中（1 critical / 47 high）降至 0**，peers 无冲突；builder **26.15.3**、electron-vite **3.1.0**、Tiptap **3.31.3**，宿主 Node 最低 **22.19.0**。无已知公告不是无未知漏洞保证。
+- 业务/contracts 保持 Zod **3.25.76**；SDK **0.3.258** 通过精确 resolution hook + pnpm 实体 manifest patch 使用独立 **4.4.3**。修复 tool adapter 异步契约、保留完整结果与 elicitation 字符串类型；真正验证解包 SDK 导入，不调用模型。
+- 同一冻结源码最终通过 **173/173 全量 smoke、runner 10/10、双包 typecheck、完整 main/preload/renderer build**；readiness **50/50**、原生窗口 **8/8**、真实浏览器依赖 **8/8**。另通过 offline frozen-lockfile 安装及 readiness 复验。
+- Windows x64 unsigned 目录包使用正常 **pnpm collector**；PDF 185 文件、20 原生文件、87 条静态引用，以及包内 SDK / Zod 4、preload、SQL、sherpa、ConPTY 隔离检查通过。**1,844 个输入源码文件 SHA 复核一致**。
+- **范围边界**：未执行正式 NSIS / 签名 / 安装卸载与覆盖升级、macOS/Linux；不启动产品 main / Mcode.exe、不用真实用户库、模型账户、外部服务或手机/录音硬件。下一步为正式安装器与关键真实环境验收，不宣布正式发布全部通过。
+- 验收对象为保留已有修改的工作区；BrowserManager / main index 只暂存本轮 hunks，不夹带其他改动，不 push。报告与实际产物位置：`docs/parallel-maintenance/reports/RELEASE-READINESS-2026-09-30.md`。
+
+## 2026-09-29 打包前检修：阶段一历史记录
 
 - 修复手机 slash 桌面 RPC 误调、PDF 缺失/截断资产恢复、主窗口导航/媒体权限、内嵌浏览器外链及异步导航、workspace 链接发布失败回滚。
 - 真实解包发现根 Zod 3.24 不提供被 provider chunk 引用的 `zod/v4`；按解析路径打包 schema peers 与转换器，保留不兼容版本，不升级业务依赖。
 - 本次重新验证：**173/173 全量 smoke、runner 10/10、双包 typecheck 0 错误**；新增 readiness 37/37、手机 UI 23/23。正式构建通过，末次主进程修改后补正式 main 配置重建。
 - Windows x64 unsigned `--dir --publish never` 与包内运行时检查通过：PDF 185 文件 + WASM 哈希、20 个原生文件、87 条静态引用；内存 SQL、sherpa 绑定、ConPTY echo 通过，不能借开发依赖。不启动真实应用或用户库。
-- **仍须继续处理**：现用 Electron 33.0.0 已停止支持，不能据此宣布正式发布已通过。用户重申全方面检修，后续升级受支持版本并重新验收。尚未执行正式 NSIS/签名/安装卸载与跨平台验收。
+- **当时待续、现已处理**：Electron 33 EOL 升级与新版本重新验收已于 2026-09-30 完成，见上一节；正式 NSIS/签名/安装卸载与跨平台仍未验。
 - 报告：`docs/parallel-maintenance/reports/RELEASE-READINESS-2026-09-29.md`。仅本地提交，不 push。
 
 ## 2026-09-29 已完成：学术链路审查与通用项目初始化

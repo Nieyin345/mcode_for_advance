@@ -22,7 +22,7 @@
  *  - `file:copy`      — copy a file into a dir, auto-rename on clash (file-tree 复制/粘贴)
  */
 import type { IpcMain } from "electron";
-import { app, clipboard, nativeImage, shell } from "electron";
+import { app, clipboard, ClipboardItem, nativeImage, shell } from "electron";
 import { readFile, writeFile, readdir, mkdir, rename, copyFile, access, stat } from "node:fs/promises";
 import { TextDecoder } from "node:util";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
@@ -900,8 +900,8 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
   /* ── clipboard:writeImage — copy an image data URL onto the OS clipboard.
      The renderer's navigator.clipboard can't reliably write images under
      contextIsolation, so main decodes the data URL into a nativeImage and
-     calls clipboard.writeImage (which handles the PNG/JPEG serialization per
-     platform). Schema already constrains input to `data:image/...`; an empty
+     awaits the current ClipboardItem/PNG writer before acknowledging success.
+     Schema already constrains input to `data:image/...`; an empty
      nativeImage (undecodable payload) degrades to ok:false instead of
      silently clobbering the clipboard. */
   ipcMain.handle(IPC.CLIPBOARD_WRITE_IMAGE, async (_evt, raw) => {
@@ -912,7 +912,8 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
         log.warn("clipboard.writeImage failed: data URL decoded to an empty image");
         return { ok: false, error: "图片数据无法解码" };
       }
-      clipboard.writeImage(image);
+      const png = new Blob([new Uint8Array(image.toPNG())], { type: "image/png" });
+      await clipboard.write([new ClipboardItem({ "image/png": png })]);
       return { ok: true };
     } catch (err) {
       const msg = (err as Error).message;

@@ -81,16 +81,16 @@ export interface McpToolSpec {
  * 把工具表按会话套成 SDK 要的形状 —— 两个 server 都走这一段。
  *
  * 会话在这里**闭合**进每个 handler:表本身是无状态的(它还得给网页端那条通路复用),
- * "挂进哪次对话"由调用方给的那一次决定。多一层 `as` 是因为 SDK 的 handler 入参是宽的
- * `{ [x: string]: unknown }`,而表里写的是具体形状(同 {@link SdkTool} 那段注释)。
+ * "挂进哪次对话"由调用方给的那一次决定。SDK 要求异步 handler;同步结果/异常也统一
+ * 转成 Promise。以普通结果对象跨越协议边界,保留错误标记、图片及结构化内容。
  */
 export function toSdkTools(specs: McpToolSpec[], ctx: McpToolContext): SdkTool[] {
   return specs.map((spec) => ({
     name: spec.name,
     description: spec.description,
     inputSchema: spec.inputSchema,
-    handler: (args: Record<string, unknown>) => spec.handler(args, ctx),
-  })) as SdkTool[];
+    handler: async (args: Record<string, unknown>) => ({ ...await spec.handler(args, ctx) }),
+  }));
 }
 
 /** 成功:把要说的写清楚。 */

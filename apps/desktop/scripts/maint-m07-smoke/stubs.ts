@@ -22,9 +22,15 @@ export const log = {
   error: (m: string): void => { warnings.push(m); },
 };
 
-/* ── electron 替身 ── files.ts 顶部 import 了这四个,但本套件只走 file:* 通道。 */
+/* ── electron 替身 ── files.ts 的 Electron 导入,但本套件只走 file:* 通道。 */
 export const app = { getPath: (_name: string): string => tmpdir() };
-export const clipboard = { writeImage: (): void => {}, writeText: (): void => {} };
+export const clipboard = {
+  write: async (): Promise<never> => { throw new Error("File-path smoke must not write the OS clipboard"); },
+  writeText: async (): Promise<never> => { throw new Error("File-path smoke must not write the OS clipboard"); },
+};
+export class ClipboardItem {
+  constructor(_data: unknown) { throw new Error("File-path smoke must not create ClipboardItem"); }
+}
 export const nativeImage = { createFromPath: (): unknown => ({ isEmpty: () => true }) };
 export const shell = { trashItem: async (): Promise<void> => {} };
 

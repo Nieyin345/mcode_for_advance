@@ -106,7 +106,32 @@ async function bundledSchemaPeers() {
  assert.ok(chunks.every(c=>c.imports.every(name=>!/^zod(?:\/|$)/.test(name))),'Schema peers escaped into the flat runtime package');
  const code=chunks.map(c=>c.code).join('\n');assert.ok(code.includes('fixture-zod-three')&&code.includes('fixture-zod-four'),'Both resolved schema peer versions must be preserved');
 }
+function sourceCallback(file, predicate, bindings) {
+ const sf=source(path.join(app,file));let callback;
+ const visit=n=>{if(ts.isCallExpression(n)&&predicate(n,sf))callback=n.arguments[n.arguments.length-1];ts.forEachChild(n,visit);};visit(sf);assert.ok(callback);
+ const exports={};new Function('exports',...Object.keys(bindings),compile('exports.callback='+callback.getText(sf)+';'))(exports,...Object.values(bindings));return exports.callback;
+}
+async function currentCacheStorage() {
+ const sf=source(path.join(app,'src/main/browser/BrowserManager.ts'));const klass=sf.statements.find(n=>ts.isClassDeclaration(n)&&n.name?.text==='BrowserManagerImpl');const method=klass.members.find(n=>n.name?.getText(sf)==='clearBrowserCache');let storages;
+ const Fixture=new Function('browserSession','log',compile('class Fixture {'+method.getText(sf)+'};')+';return Fixture;')(()=>({clearCache:async()=>{},clearStorageData:async opts=>{storages=opts.storages;assert.ok(!storages.includes('websql'),'WebSQL was removed from Electron');}}),{info(){},error(){}});
+ assert.equal((await new Fixture().clearBrowserCache()).ok,true);assert.ok(!storages.includes('cookies'),'Cache clear must preserve login cookies');
+}
+function installerFixture(env={},status=0) {
+ const dir=fs.mkdtempSync(path.join(base,'electron-install-'));const appDir=path.join(dir,'apps/desktop');const manifest=path.join(dir,'electron/package.json');
+ put(manifest,JSON.stringify({bin:{'install-electron':'install.js'}}));put(path.join(dir,'.npmrc'),'electron_mirror=https://mirror.example.org/electron/\n');
+ const calls=[];const process={env,execPath:'fixture-node',exitCode:undefined};
+ new Function('require','__dirname','process','console',fs.readFileSync(path.join(app,'build/ensure-electron.cjs'),'utf8'))(name=>name==='node:module'?{createRequire:()=>({resolve:()=>manifest})}:name==='node:child_process'?{spawnSync:(...args)=>{calls.push(args);return {status};}}:req(name),path.join(appDir,'build'),process,{error(){}});
+ return {calls,code:process.exitCode};
+}
 (async()=>{try{
+ await test('workspace postinstall forwards the configured mirror to the upstream installer',()=>{const f=installerFixture();assert.equal(f.code,0);assert.equal(f.calls[0][2].env.ELECTRON_MIRROR,'https://mirror.example.org/electron/');assert.ok(JSON.parse(fs.readFileSync(path.join(app,'package.json'),'utf8')).scripts.postinstall.includes('ensure-electron.cjs'));});
+ await test('runtime setup respects explicit mirror and skip-download choices',()=>{const f=installerFixture({ELECTRON_MIRROR:'https://explicit.example.org/'});assert.equal(f.calls[0][2].env.ELECTRON_MIRROR,'https://explicit.example.org/');assert.equal(installerFixture({ELECTRON_SKIP_BINARY_DOWNLOAD:'1'}).calls.length,0);});
+ await test('runtime setup propagates failed and signal-only installer exits',()=>{assert.equal(installerFixture({},7).code,7);assert.equal(installerFixture({},null).code,1);});
+ await test('runtime dependency is pinned to the supported release baseline',()=>{const version=JSON.parse(fs.readFileSync(path.join(app,'package.json'),'utf8')).devDependencies.electron;assert.match(version,/^\d+\.\d+\.\d+$/);assert.ok(Number(version.split('.')[0])>=44);});
+ await test('native build-script policy has no unresolved placeholder values',()=>{const builder=createRequire(req.resolve('electron-builder'));const lib=createRequire(builder.resolve('app-builder-lib'));const config=lib('js-yaml').load(fs.readFileSync(path.resolve(app,'../../pnpm-workspace.yaml'),'utf8'));assert.ok(Object.values(config.allowBuilds).every(value=>typeof value==='boolean'));});
+ await test('current Electron cache clear omits removed WebSQL and preserves cookies',currentCacheStorage);
+ await test('worker HTTP auth with no webContents is explicitly cancelled',()=>{let cancelled=0,prevented=0;const callback=sourceCallback('src/main/index.ts',(n,sf)=>n.expression.getText(sf)==='app.on'&&n.arguments[0]?.text==='login',{BrowserManager:{handleLogin(){throw Error('Null sender was forwarded');}}});callback({preventDefault(){prevented++;}},null,{}, {},()=>{cancelled++;});assert.equal(prevented,1);assert.equal(cancelled,1);});
+ await test('image IPC awaits the current PNG writer and preserves decode/write failures',async()=>{const writes=[];let empty=false,rejectWrite=false;const image={isEmpty:()=>empty,toPNG:()=>Buffer.from([137,80,78,71])};const callback=sourceCallback('src/main/ipc/files.ts',(n,sf)=>n.expression.getText(sf)==='ipcMain.handle'&&n.arguments[0]?.getText(sf)==='IPC.CLIPBOARD_WRITE_IMAGE',{ClipboardWriteImageSchema:{parse:v=>v},nativeImage:{createFromDataURL:()=>image},ClipboardItem:class {constructor(items){this.items=items;}},clipboard:{write:async items=>{if(rejectWrite)throw Error('platform write refused');assert.ok(Array.isArray(items));writes.push(items);}},log:{warn(){}}});assert.equal((await callback({}, {dataUrl:'data:image/png;base64,fixture'})).ok,true);assert.equal(writes[0][0].items['image/png'].type,'image/png');assert.deepEqual([...new Uint8Array(await writes[0][0].items['image/png'].arrayBuffer())],[137,80,78,71]);empty=true;assert.equal((await callback({}, {dataUrl:'data:image/png;base64,bad'})).ok,false);assert.equal(writes.length,1);empty=false;rejectWrite=true;assert.equal((await callback({}, {dataUrl:'data:image/png;base64,fixture'})).ok,false);});
  await test('main bundling preserves incompatible schema peers instead of flattening zod',bundledSchemaPeers);
  for(const mode of ['restore','load'])await test('browser navigation contains asynchronous '+mode+' rejection',async()=>{const errors=[];const listener=e=>errors.push(e);process.on('unhandledRejection',listener);try{const b=browserLoad(mode);b.run();await new Promise(resolve=>setTimeout(resolve,30));assert.deepEqual(errors,[]);assert.ok(b.messages.every(s=>!s.includes('private token')));}finally{process.removeListener('unhandledRejection',listener);}});
  await test('closing a browser before cookie restoration skips the stale navigation',async()=>{const b=browserLoad('destroyed');b.run();await Promise.resolve();assert.equal(b.calls(),0);});
@@ -130,4 +155,34 @@ async function bundledSchemaPeers() {
  await test('redirect to untrusted content is blocked',()=>{const n=navigation();let stopped=0;assert.ok(n.handlers.has('will-redirect'),'Redirect guard is absent');n.handlers.get('will-redirect')({preventDefault(){stopped++;}},'https://example.org/untrusted',false,true);assert.equal(stopped,1);});
  await test('subframe redirects stay with their own sandbox policy',()=>{const n=navigation();let stopped=0;n.handlers.get('will-redirect')({preventDefault(){stopped++;}},'https://office.example.org/frame',false,false);assert.equal(stopped,0);});
  await test('same entry hash navigation stays inside the app',()=>{const n=navigation();let stopped=0;assert.ok(n.handlers.has('will-navigate'));n.handlers.get('will-navigate')({preventDefault(){stopped++;}},'file:///C:/app/out/renderer/index.html#settings');assert.equal(stopped,0);});
+ await test('SDK peer repair materializes Zod 4 without mutating package metadata',()=>{
+  const hook=require(path.resolve(app,'../../.pnpmfile.cjs')).hooks.readPackage;
+  const input={name:'@anthropic-ai/claude-agent-sdk',version:'0.3.258',dependencies:{keep:'1.0.0'},peerDependencies:{zod:'^4.0.0',other:'^2.0.0'}};
+  const before=structuredClone(input),fixed=hook(input);
+  assert.deepEqual(input,before);assert.equal(fixed.dependencies.zod,'4.4.3');assert.equal(fixed.dependencies.keep,'1.0.0');
+  assert.deepEqual(fixed.peerDependencies,{other:'^2.0.0'});
+ });
+ await test('SDK peer repair leaves unrelated names and unreviewed versions unchanged',()=>{
+  const hook=require(path.resolve(app,'../../.pnpmfile.cjs')).hooks.readPackage;
+  for(const pkg of [{name:'another-sdk',version:'0.3.258'},{name:'@anthropic-ai/claude-agent-sdk',version:'0.3.259'},{name:'@anthropic-ai/claude-agent-sdk'}])assert.equal(hook(pkg),pkg);
+ });
+ await test('SDK tool adapter returns a Promise and preserves complete tool results',async()=>{
+  const target=path.join(base,'sdk-adapter.cjs');put(target,compile(fs.readFileSync(path.join(app,'src/main/mcp/sdk.ts'),'utf8')));
+  const {toSdkTools}=require(target),ctx={sessionId:'isolated'},result={isError:true,content:[{type:'text',text:'controlled error'},{type:'image',data:'AA==',mimeType:'image/png'}],structuredContent:{count:2}};
+  let observed;const [tool]=toSdkTools([{name:'fixture',description:'isolated',inputSchema:{},handler:(args,context)=>{observed={args,context};return result;}}],ctx);
+  const args={value:1},pending=tool.handler(args);assert.ok(pending instanceof Promise);assert.deepEqual(await pending,result);assert.deepEqual(observed,{args,context:ctx});
+ });
+ await test('SDK tool adapter converts synchronous throws into Promise rejections',async()=>{
+  const target=path.join(base,'sdk-adapter.cjs');put(target,compile(fs.readFileSync(path.join(app,'src/main/mcp/sdk.ts'),'utf8')));
+  const {toSdkTools}=require(target);const [tool]=toSdkTools([{name:'fixture',description:'isolated',inputSchema:{},handler:()=>{throw Error('controlled tool failure');}}],{sessionId:'isolated'});
+  let pending;assert.doesNotThrow(()=>{pending=tool.handler({});});await assert.rejects(pending,/controlled tool failure/);
+ });
+ await test('installed SDK metadata and its private Zod runtime agree',()=>{
+  // The resolution hook alone is not enough for packagers that read package.json.
+  const sdkPath=req.resolve('@anthropic-ai/claude-agent-sdk'),sdkReq=createRequire(sdkPath);
+  const manifest=JSON.parse(fs.readFileSync(path.join(path.dirname(sdkPath),'package.json'),'utf8'));
+  const version=sdkReq('zod/package.json').version;
+  assert.match(version,/^4\./);assert.equal(manifest.dependencies.zod,version);assert.equal(manifest.peerDependencies?.zod,undefined);
+  assert.match(req('zod/package.json').version,/^3\./,'Application schemas must retain their Zod 3 ABI');
+ });
 }finally{fs.rmSync(base,{recursive:true,force:true});}console.log(`Release readiness smoke: ${pass}/${pass+fail}`);process.exitCode=fail?1:0;})().catch(e=>{console.error(e);process.exitCode=1;});

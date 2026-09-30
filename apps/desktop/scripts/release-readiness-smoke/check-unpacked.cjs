@@ -17,7 +17,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 async function nativeHost() {
   assert.ok(process.versions.electron, 'The native host must be the installed Electron, not Mcode.exe');
-  const { app } = require('electron');
+  const { app, BrowserWindow } = require('electron');
   const [unpacked, fixture, references] = process.argv.slice(3);
   assert.ok(unpacked && fixture && references);
   const resources = path.join(unpacked, 'resources');
@@ -25,6 +25,7 @@ async function nativeHost() {
   app.setPath('userData', path.join(fixture, 'user-data'));
   app.setPath('sessionData', path.join(fixture, 'session-data'));
   app.setAppLogsPath(path.join(fixture, 'logs'));
+  app.on('window-all-closed', () => {});
   app.disableHardwareAcceleration();
   app.commandLine.appendSwitch('disable-background-networking');
   app.commandLine.appendSwitch('disk-cache-dir', path.join(fixture, 'cache'));
@@ -46,10 +47,21 @@ async function nativeHost() {
     at.resolve(specifier);
   }
   for (const name of ['sql.js/dist/sql-asm.js', 'node-pty', 'sherpa-onnx-node', 'electron-updater', '@anthropic-ai/claude-agent-sdk']) resolved[name] = req.resolve(name);
+  const sdkPath=req.resolve('@anthropic-ai/claude-agent-sdk');
+  const sdkReq=createRequire(sdkPath);
+  resolved.sdkZodV4=sdkReq.resolve('zod/v4');
+  assert.match(sdkReq('zod/package.json').version,/^4\./,'SDK must ship its declared Zod 4 runtime, not an incompatible app peer');
+  const sdkZod=sdkReq('zod/v4');
+  assert.equal(sdkZod.object({value:sdkZod.string()}).parse({value:'isolated'}).value,'isolated');
+  const sdk=await import(require('node:url').pathToFileURL(sdkPath).href);
+  assert.equal(typeof sdk.query,'function'); // Import only: never query a model or launch a CLI.
   const SQL = await req('sql.js/dist/sql-asm.js')();
   const db = new SQL.Database();
   assert.equal(db.exec('SELECT 42 AS answer')[0].values[0][0], 42);
   db.close();
+  req('ssh2');
+  req('simple-git');
+  req('electron-updater');
   req('sherpa-onnx-node'); // Load the shipped N-API/DLL binding, never a model or microphone.
   const pty = req('node-pty');
   await new Promise((resolve, reject) => {
@@ -62,7 +74,15 @@ async function nativeHost() {
       try { assert.equal(exitCode, 0); assert.ok(output.includes('mcode-release-pty')); resolve(); } catch (error) { reject(error); }
     });
   });
-  const result = { electron: process.versions.electron, resolved, sql: 'memory query passed', sherpa: 'native binding loaded without model', pty: 'packaged ConPTY echo passed' };
+  // Load only the shipped preload, never the product main or renderer app.
+  const html=path.join(fixture,'preload.html');fs.writeFileSync(html,'<!doctype html><body>Isolated preload check</body>');
+  const window=new BrowserWindow({show:false,webPreferences:{preload:path.join(archive,'out/preload/index.mjs'),sandbox:false,contextIsolation:true,nodeIntegration:false}});
+  try {
+    await window.loadFile(html);
+    const bridge=await window.webContents.executeJavaScript("({imageWriter:typeof window.api?.clipboardFile?.writeImage,nodeRequire:typeof require})");
+    assert.equal(bridge.imageWriter,'function');assert.equal(bridge.nodeRequire,'undefined');
+  } finally { window.destroy(); }
+  const result = { electron: process.versions.electron, preload: 'packaged context bridge loaded with Node isolation', sdk: 'module and its Zod v4 peer loaded without a model query', resolved, sql: 'memory query passed', sherpa: 'native binding loaded without model', pty: 'packaged ConPTY echo passed' };
   fs.writeFileSync(path.join(fixture, 'native-result.json'), JSON.stringify(result, null, 2));
   console.log('PASS package-only runtime resolution, SQL, sherpa binding, and ConPTY');
   app.exit(0);

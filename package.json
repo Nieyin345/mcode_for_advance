@@ -7,7 +7,7 @@
   "type": "module",
   "packageManager": "pnpm@11.16.0",
   "engines": {
-    "node": ">=22.13.0",
+    "node": ">=22.19.0",
     "pnpm": ">=9.0.0"
   },
   "scripts": {
@@ -19,6 +19,7 @@
     "test:smoke": "pnpm --filter @mcode/desktop test:smoke",
     "test:runner": "pnpm --filter @mcode/desktop test:runner",
     "lint": "turbo run lint",
+    "audit:deps": "pnpm audit --registry=https://registry.npmjs.org",
     "package": "turbo run package"
   },
   "devDependencies": {

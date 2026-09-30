@@ -1,0 +1,17 @@
+diff --git a/package.json b/package.json
+index 058b7703d45914a1e2456f0442c929b48812e050..8200e90a1b2be16c047fc1b89c7dd8da773c2281 100644
+--- a/package.json
++++ b/package.json
+@@ -53,8 +53,10 @@
+   ],
+   "peerDependencies": {
+     "@anthropic-ai/sdk": ">=0.93.0",
+-    "@modelcontextprotocol/sdk": "^1.29.0",
+-    "zod": "^4.0.0"
++    "@modelcontextprotocol/sdk": "^1.29.0"
++  },
++  "dependencies": {
++    "zod": "4.4.3"
+   },
+   "optionalDependencies": {
+     "@anthropic-ai/claude-agent-sdk-linux-x64": "0.3.258",

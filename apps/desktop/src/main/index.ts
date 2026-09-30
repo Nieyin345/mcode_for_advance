@@ -263,6 +263,8 @@ app.whenReady().then(async () => {
   // Requests not from a browser view are ignored (default cancel behavior).
   app.on("login", (event, webContents, _details, authInfo, callback) => {
     event.preventDefault();
+    // Service-worker authentication may not have a window in current Electron.
+    if (!webContents) { callback(); return; }
     BrowserManager.handleLogin(
       webContents.id,
       webContents.getURL(),
