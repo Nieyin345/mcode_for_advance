@@ -185,7 +185,9 @@ export const useCustomUiStore = create<CustomUiState>((set, get) => ({
       await api.setting.set({ key: CUSTOM_UI_SETTING_KEY, value: JSON.stringify(next) });
       return true;
     } catch (err) {
-      set({ config: previous });
+      // 只在界面上还是**这次**的配置时才回滚:连续两次保存、前一次失败时,原先会把
+      // 后一次(已经写进去的)配置一起撤掉,界面与磁盘对不上。
+      if (get().config === next) set({ config: previous });
       const { locale } = useSessionStore.getState();
       useToastStore.getState().push({
         kind: "error",

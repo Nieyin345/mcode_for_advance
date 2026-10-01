@@ -7397,6 +7397,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // Only dismiss on success — a failed IPC leaves the card in place
       // so the user can retry instead of thinking they answered.
       set((s) => {
+        // 等回复期间 agent 可能已经接着问了下一题 —— 只撤掉**刚答的这一张**卡片,
+        // 别把新来的问题一起清掉(那样 agent 会一直等一个用户看不到的问题)。
+        const current = s.pendingQuestionBySession[sessionId];
+        if (current && current !== pending && current.requestId !== pending.requestId) return {};
         const { [sessionId]: _drop, ...rest } = s.pendingQuestionBySession;
         return { pendingQuestionBySession: rest };
       });
