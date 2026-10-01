@@ -183,6 +183,19 @@ class RelayManagerImpl {
       publicPort: cfg.publicPort,
     });
 
+    // 上一条连接(例如握手成功但部署失败、仍然开着的那条)先收掉 —— 否则这里一覆盖
+    // `this.conn`,它就再也没人能关:SSH 会话带着 keepalive 一直挂到应用退出,
+    // 而它迟到的 `close` 还会把新连接的引用清掉、再触发一轮重连。
+    const stale = this.conn;
+    if (stale) {
+      this.conn = null;
+      try {
+        stale.end();
+      } catch {
+        /* best effort */
+      }
+    }
+
     return new Promise((resolve) => {
       const conn = new Client();
       this.conn = conn;
@@ -259,11 +272,27 @@ class RelayManagerImpl {
             this.setState({ state: "error", error: msg });
           }
           settle({ ok: false, error: msg });
+          // 部署失败就把这条 SSH 关掉(先摘下引用,`close` 便按「已作废」处理,不会
+          // 把面板上的错误原因盖成「正在重连」)。原先它会一直开着,没人再关。
+          if (this.conn === conn) {
+            this.conn = null;
+            this.tunnelPort = 0;
+          }
+          try {
+            conn.end();
+          } catch {
+            /* best effort */
+          }
         }
       });
 
       conn.on("error", (err: Error) => {
         log.error(`relay: SSH error: ${err.message}`);
+        // 已作废的连接(被断开 / 被新连接替换 / 部署失败后关掉)不再影响状态与重连。
+        if (this.conn !== conn) {
+          settle({ ok: false, error: friendlySshError(err) });
+          return;
+        }
         const reason = hostKeyRejected
           ? "SSH 主机密钥指纹不匹配，已拒绝连接；请通过可信渠道核对 VPS 主机密钥（勿直接接受网络返回的密钥）"
           : friendlySshError(err);
@@ -288,6 +317,11 @@ class RelayManagerImpl {
 
       conn.on("close", () => {
         log.info("relay: SSH closed");
+        if (this.conn !== conn) {
+          // 已作废的连接:只给还在等的调用方一个答复,不清新连接的引用、不重连。
+          if (!settled) settle({ ok: false, error: hostKeyRejected ? "SSH 主机密钥指纹不匹配，已拒绝连接" : "SSH 连接已断开" });
+          return;
+        }
         this.conn = null;
         this.tunnelPort = 0;
         // 握手还没完就断了(用户按了断开、或者对端直接挂断且没给 `error`)——

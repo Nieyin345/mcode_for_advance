@@ -30,7 +30,7 @@
  * smoke-test posture as main/runtimes/*.
  */
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { z } from "zod";
@@ -406,17 +406,30 @@ function installedRootOf(name: string): string | null {
   if (isReservedPluginName(name)) return null;
   const base = path.join(PLUGINS_ROOT, name);
   if (!existsSync(base)) return null;
-  let newest: string | null = null;
+  // ⚠️ 安装时的临时目录(`<版本>.swapping-*` / `<版本>.backup-*`)就落在同一层,删不掉
+  // (Windows 上文件被插件的 MCP 进程占着)时会留下来;按字符串取最大值的话
+  // `1.0.0.backup-…` 比 `1.0.0` 大,于是加载的是**旧的备份**。所以跳过这些目录,
+  // 并优先按安装记录的时间挑(剩下多个版本时,最后装的那个才是用户要的;
+  // 「1.10.0」按字符串还比「1.9.0」小),没有记录再按数字感知的版本号比较。
+  let best: { entry: string; at: number } | null = null;
   for (const entry of readdirSync(base)) {
+    if (entry.includes(".swapping-") || entry.includes(".backup-")) continue;
     const dir = path.join(base, entry);
     try {
       if (!statSync(dir).isDirectory()) continue;
     } catch {
       continue;
     }
-    if (!newest || entry > newest) newest = entry;
+    const at = Date.parse(readInstallRecord(dir)?.installedAt ?? "") || 0;
+    if (
+      !best ||
+      at > best.at ||
+      (at === best.at && entry.localeCompare(best.entry, undefined, { numeric: true }) > 0)
+    ) {
+      best = { entry, at };
+    }
   }
-  return newest ? path.join(base, newest) : null;
+  return best ? path.join(base, best.entry) : null;
 }
 
 /** Providers that can consume at least one executable component. An explicit
@@ -652,9 +665,15 @@ async function finalizePluginInstall(stage: StageOutcome, source: PluginSourceIn
     }
     throw err;
   }
+  // 清理其它版本是**尽力而为**:新版本已经就位,某个旧目录被占用(EBUSY / EPERM)
+  // 不能把一次成功的安装报成失败。删不掉的留到下次安装再清(`installedRootOf` 会跳过它)。
   for (const other of readdirSync(path.join(PLUGINS_ROOT, stage.manifest.name))) {
     if (other === stage.version) continue;
-    rmSync(path.join(PLUGINS_ROOT, stage.manifest.name, other), { recursive: true, force: true });
+    try {
+      rmSync(path.join(PLUGINS_ROOT, stage.manifest.name, other), { recursive: true, force: true });
+    } catch (err) {
+      console.warn(`[plugins] 旧版本目录暂时删不掉,下次再清:${other}(${(err as Error).message})`);
+    }
   }
   return finalDir;
 }
@@ -731,7 +750,23 @@ export function removePlugin(name: string): { ok: boolean; error?: string } {
   if (!PLUGIN_NAME_RE.test(name) || isReservedPluginName(name)) return { ok: false, error: "非法插件名" };
   const base = path.join(PLUGINS_ROOT, name);
   if (!existsSync(base)) return { ok: false, error: `插件 ${name} 未安装` };
-  rmSync(base, { recursive: true, force: true });
+  // 先整体改名挪开再删:Windows 上插件文件被占用(它的 MCP 服务还在跑)时,直接
+  // `rmSync` 会删掉一半后抛出 —— 插件残缺却仍处于启用状态。改名要么整体成功、要么
+  // 什么都没动,失败就如实告诉用户。
+  const trash = path.join(PLUGINS_ROOT, `.removing-${name}-${Date.now()}`);
+  try {
+    renameSync(base, trash);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `插件 ${name} 的文件正被占用(可能它的 MCP 服务还在运行),请结束相关对话或重启应用后再删除:${(err as Error).message}`,
+    };
+  }
+  try {
+    rmSync(trash, { recursive: true, force: true });
+  } catch {
+    /* 已经挪出插件目录、不会再被加载;残留的临时目录不影响使用 */
+  }
   writeEnabledPlugins(readEnabledPlugins().filter((n) => n !== name));
   // Drop this plugin's per-server MCP toggles (namespaced `<name>__`).
   const mcpDisabled = [...readMcpDisabled()].filter((n) => !n.startsWith(`${name}__`));
