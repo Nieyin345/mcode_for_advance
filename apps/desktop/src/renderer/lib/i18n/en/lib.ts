@@ -53,7 +53,7 @@ export const en = {
 
   /* ── lib/slashCommands.ts (built-in / commands shown in the picker) ── */
   "lib.slash.compact": "Compact the conversation (summarize and release context)",
-  "lib.slash.init": "Generate the project guide file AGENTS.md",
+  "lib.slash.init": "Initialize the project by scenario: folders, project memory and an AI-written AGENTS.md",
   "lib.slash.browser": "Open a page in the built-in browser (navigate/snapshot/click/screenshot)",
   "lib.slash.sidechat": "Open sub-sessions (won't interrupt this session)",
 

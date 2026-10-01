@@ -1,4 +1,4 @@
-import type { ProjectInitTemplate, ProjectInitSummary, ProjectInitSaveInput, ProjectInitPreviewInput, ProjectInitApplyInput, ProjectInitPreview, ProjectInitResult } from "./projectInit.js";
+import type { ProjectInitTemplate, ProjectInitList, ProjectInitSaveInput, ProjectInitPreviewInput, ProjectInitApplyInput, ProjectInitPreview, ProjectInitResult } from "./projectInit.js";
 import { MEMORY_ASSISTANT_CHANNEL, type MemoryAssistantInput, type MemoryAssistantResult } from "../memoryAssistant.js";
 import { MEMORY_MANAGE_CHANNEL, type MemoryManageInput, type MemoryManageResult } from "../memory.js";
 /**
@@ -780,12 +780,14 @@ export interface RpcMap {
   // **按 memory 根下的相对路径寻址**,主进程侧会校验路径不逃出 memory 根。
   /** 列记忆文件(可选按类目过滤),行形状见 `../memory.ts` 的 `MemoryFileMeta`。 */
   // Deterministic local scaffolds; deliberately excluded from mobile RPC.
-  "projectInit.list": () => Promise<{ templates: ProjectInitSummary[] }>;
+  "projectInit.list": () => Promise<ProjectInitList>;
   "projectInit.get": (input: {id: string}) => Promise<ProjectInitTemplate>;
   "projectInit.save": (input: ProjectInitSaveInput) => Promise<ProjectInitTemplate>;
   "projectInit.delete": (input: {id: string; expectedRevision: string}) => Promise<{ok: true}>;
   "projectInit.preview": (input: ProjectInitPreviewInput) => Promise<ProjectInitPreview>;
   "projectInit.apply": (input: ProjectInitApplyInput) => Promise<ProjectInitResult>;
+  /** 设定裸 `/init` 预选的场景;`null` 清除。 */
+  "projectInit.setDefault": (input: {id: string | null}) => Promise<{ok: true}>;
   "memory.assistant": (input: MemoryAssistantInput) => Promise<MemoryAssistantResult>;
   "memory.manage": (input: MemoryManageInput) => Promise<MemoryManageResult>;
   "memory.list": (input: MemoryListInput) => Promise<{ files: MemoryFileMeta[] }>;
@@ -1605,6 +1607,7 @@ export const IPC = {
   PROJECT_INIT_DELETE: "projectInit:delete",
   PROJECT_INIT_PREVIEW: "projectInit:preview",
   PROJECT_INIT_APPLY: "projectInit:apply",
+  PROJECT_INIT_SET_DEFAULT: "projectInit:setDefault",
   MEMORY_LIST: MEMORY_LIST_CHANNEL,
   MEMORY_READ: MEMORY_READ_CHANNEL,
   MEMORY_SAVE: MEMORY_SAVE_CHANNEL,

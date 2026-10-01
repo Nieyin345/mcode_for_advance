@@ -885,6 +885,7 @@ const api = {
     delete: ((input) => ipcRenderer.invoke(IPC.PROJECT_INIT_DELETE, input)) as RpcMap["projectInit.delete"],
     preview: ((input) => ipcRenderer.invoke(IPC.PROJECT_INIT_PREVIEW, input)) as RpcMap["projectInit.preview"],
     apply: ((input) => ipcRenderer.invoke(IPC.PROJECT_INIT_APPLY, input)) as RpcMap["projectInit.apply"],
+    setDefault: ((input) => ipcRenderer.invoke(IPC.PROJECT_INIT_SET_DEFAULT, input)) as RpcMap["projectInit.setDefault"],
   },
   memory: {
     assistant: ((input) => ipcRenderer.invoke(IPC.MEMORY_ASSISTANT, input)) as RpcMap["memory.assistant"],

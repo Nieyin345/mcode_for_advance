@@ -57,6 +57,13 @@ await withAuditPage(here,async page=>{try{
  await page.eval('__audit.templates=__audit.templates.filter(t=>t.id!=="template-b");window.dispatchEvent(new Event("mcode:project-initializers-changed"))');await page.waitFor('__commands.length===1');
  await fill('Command name','讨论');await click(button('Save'));await page.waitFor('__commands[0]?.name==="init-讨论"');
  check('renaming updates the slash command instead of duplicating it',await page.eval('__commands.length===1 && __audit.templates.length===1'));
+ check('new scenarios default to the AI guide step',await page.eval('__audit.templates[0].agentFile?.enabled===true && __audit.templates[0].agentFile.filename==="AGENTS.md"'));
+ await page.eval('__audit.agent=true;__setText("/init 重点写测试")');await page.sleep(80);await click('document.querySelector("#send")');
+ await page.waitFor(`document.querySelector('[aria-label="Scenario"]') && ${button('Initialize and generate')} && !${button('Initialize and generate')}.disabled`);
+ check('bare /init opens the scenario chooser with the typed note',await page.eval(`document.querySelector('[aria-label="Extra instructions (optional)"]').value==="重点写测试" && __audit.previews.at(-1).command==="init-讨论" && !__audit.calls.some(c=>c.method==="model")`));
+ await click(button('Initialize and generate'));await page.waitFor('__audit.calls.some(c=>c.method==="agentSend")');await page.sleep(80);
+ check('guide prompt is sent once with the note appended, command cleared',await page.eval(`(()=>{const s=__audit.calls.filter(c=>c.method==="agentSend");return s.length===1&&s[0].input.prompt.startsWith("PROMPT")&&s[0].input.prompt.includes("重点写测试")&&s[0].input.label==="AI writes AGENTS.md"&&document.querySelector("#chat").value==="";})()`));
+ await click(button('Close'));await page.eval('__audit.agent=false');await page.waitFor('!document.querySelector("[data-testid=init-preview]")');
  await page.screenshot('project-init-settings.png');
  await click(`[...document.querySelectorAll('[data-testid=init-manager] button')].filter(e=>e.textContent.trim()==='Delete').at(-1)`);await page.waitFor('document.querySelector("[role=alertdialog], [role=dialog]")');
  await click(button('Delete','document.querySelector("[role=alertdialog], [role=dialog]")'));await page.waitFor('__audit.templates.length===0 && __commands.length===0');

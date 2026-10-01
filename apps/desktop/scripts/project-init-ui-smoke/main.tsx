@@ -6,7 +6,7 @@ import { SlashCommandPicker } from "@renderer/components/chat/SlashCommandPicker
 import { audit } from "./stubs.js";
 function App(){
  const [manager,setManager]=useState(true);const [text,setText]=useState("");const [busy,setBusy]=useState(false);const [sessionId,setSession]=useState("s1");const [attached,setAttached]=useState(false);const [picker,setPicker]=useState(false);
- const init=useProjectInitializer({sessionId,busy,menuOpen:picker,snapshot:()=>({text,attached}),clear:()=>setText("")});
+ const init=useProjectInitializer({sessionId,busy,menuOpen:picker,snapshot:()=>({text,attached}),clear:()=>setText(""),send:(prompt,label)=>{audit.calls.push({method:"agentSend",input:{prompt,label}});return true;}});
  Object.assign(window,{__ready:true,__setManager:setManager,__setText:setText,__setBusy:setBusy,__setSession:setSession,__setAttached:setAttached,__setPicker:setPicker,__parse:parseProjectInitCommand,__commands:init.commands,__audit:audit});
  return <><div id="host"><textarea id="chat" value={text} onChange={e=>setText(e.target.value)}/><button id="send" onClick={()=>{if(!init.intercept(text,attached))audit.calls.push({method:"model"});}}>Send</button>
  <button id="pick" onClick={()=>init.start("init-学术")}>Pick initializer</button></div>

@@ -824,6 +824,7 @@ export function createWebApi(): Api {
       delete: async () => webUnsupported("projectInit.delete"),
       preview: async () => webUnsupported("projectInit.preview"),
       apply: async () => webUnsupported("projectInit.apply"),
+      setDefault: async () => webUnsupported("projectInit.setDefault"),
     } satisfies Api["projectInit"],
     // Module installation/execution is desktop-only in v1. Reject explicitly;
     // no new mobile whitelist or paired-device capability is implied.

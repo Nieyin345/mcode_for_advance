@@ -56,7 +56,7 @@ export const zh = {
 
   /* ── lib/slashCommands.ts (built-in / commands shown in the picker) ── */
   "lib.slash.compact": "压缩对话历史(总结并释放上下文)",
-  "lib.slash.init": "生成项目说明文件 AGENTS.md",
+  "lib.slash.init": "按场景初始化项目：建目录、写项目记忆，并让 AI 生成 AGENTS.md",
   "lib.slash.browser": "用应用内浏览器打开网页(导航/快照/点击/截图)",
   "lib.slash.sidechat": "打开子会话(不影响当前会话)",
 

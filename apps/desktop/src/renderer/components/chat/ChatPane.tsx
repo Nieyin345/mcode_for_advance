@@ -1567,6 +1567,10 @@ function ChatPaneForSession({
       return { text: current?.text ?? value, attached: tags.length > 0 || pendingImages.length > 0 || (current?.skillNames.length ?? 0) > 0 };
     },
     clear: () => { editorRef.current?.clear(); setValue(""); },
+    // 初始化确认后,「AI 生成 AGENTS.md」作为普通一轮发出:气泡只显示一行标题 + 一张
+    // 可展开的提示词卡片,完整提示词照常发给当前引擎(三个引擎同一段话)。
+    send: (prompt, label, targetSessionId) =>
+      sendPrompt(prompt, [{ preview: t("init.promptCard"), content: prompt, attachmentKind: "paste" }], label, undefined, undefined, undefined, targetSessionId),
   });
 
   const handleBuiltInPick = useCallback(
@@ -1576,6 +1580,16 @@ function ChatPaneForSession({
         setPickerKind(null);
         if (projectInitializer.start(cmd.name)) clearTriggerToken();
         return;
+      }
+      if (cmd.kind === "init") {
+        // 桌面端:打开场景选择框(建目录 / 记忆 + 让 AI 生成 AGENTS.md)。手机端没有文件
+        // 写入能力 → unavailable,退回下面原来的 `/init` 胶囊,照旧交给引擎。
+        const outcome = projectInitializer.startChooser();
+        if (outcome !== "unavailable") {
+          setPickerKind(null);
+          if (outcome === "started") clearTriggerToken();
+          return;
+        }
       }
       if (cmd.kind === "compact") {
         // Refuse while a turn is in flight; the agent can't process a second
@@ -1633,7 +1647,7 @@ function ChatPaneForSession({
       // Refresh the mirrored text so empty-state / enqueue stay in sync.
       setValue(editorRef.current.getTextWithSkills());
     },
-    [sessionBusy, clearTriggerToken, sendPrompt, t, sessionId, openSideChatPanel, projectInitializer.start],
+    [sessionBusy, clearTriggerToken, sendPrompt, t, sessionId, openSideChatPanel, projectInitializer.start, projectInitializer.startChooser],
   );
 
   /**

@@ -28,6 +28,7 @@ import {
   IconShieldCheck,
   McpIcon,
   IconNotebook,
+  IconTemplate,
   IconAdjustmentsHorizontal,
   type TablerIconProps,
 } from "@renderer/lib/icons.js";
@@ -71,6 +72,7 @@ const PANEL_LOADERS = {
   AboutPanel: () => import("./AboutPanel.js"),
   MonitoringPanel: () => import("../monitoring/MonitoringPanel.js"),
   MemoryExplorerPanel: () => import("../memory/MemoryExplorerPanel.js"),
+  ProjectInitPanel: () => import("./ProjectInitPanel.js"),
 };
 type PanelName = keyof typeof PANEL_LOADERS;
 /** Panels whose chunk pulls an editor engine: never prefetched in the background. */
@@ -121,6 +123,7 @@ const UsagePanel = lazy(() => PANEL_LOADERS.UsagePanel().then((m) => ({ default:
 const AboutPanel = lazy(() => PANEL_LOADERS.AboutPanel().then((m) => ({ default: m.AboutPanel })));
 const MonitoringPanel = lazy(() => PANEL_LOADERS.MonitoringPanel().then((m) => ({ default: m.MonitoringPanel })));
 const MemoryExplorerPanel = lazy(() => PANEL_LOADERS.MemoryExplorerPanel().then((m) => ({ default: m.MemoryExplorerPanel })));
+const ProjectInitPanel = lazy(() => PANEL_LOADERS.ProjectInitPanel().then((m) => ({ default: m.ProjectInitPanel })));
 
 /** Suspense fallback: stays blank for fast (prefetched) loads, spins only if it drags. */
 function PanelLoading() {
@@ -153,7 +156,7 @@ function PanelLoading() {
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "library-types" | "custom-ui" | "runtimes" | "custom-models" | "institution" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
+type SectionId = "general" | "library-types" | "custom-ui" | "runtimes" | "custom-models" | "institution" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "project-init" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -216,6 +219,7 @@ const NAV_GROUPS: NavGroup[] = [
       // 节点都生效(见 `@contracts/hook`)。
       { id: "hooks", labelKey: "settings.nav.hooks", icon: IconActivity },
       { id: "mcp", labelKey: "settings.nav.mcp", icon: McpIcon },
+      { id: "project-init", labelKey: "init.title", icon: IconTemplate },
       { id: "memory", labelKey: "settings.nav.memory", icon: IconNotebook },
     ],
   },
@@ -394,6 +398,7 @@ export function SettingsPage() {
             {active === "hooks" && <HooksPanel />}
             {active === "runtimes" && <RuntimesPanel />}
             {active === "mcp" && <McpPanel />}
+            {active === "project-init" && <ProjectInitPanel />}
             {active === "memory" && <MemoryExplorerPanel />}
             {active === "plugins" && <PluginsPanel />}
             {active === "notifications" && <NotificationsPanel />}

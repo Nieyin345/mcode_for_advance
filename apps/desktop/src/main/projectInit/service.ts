@@ -7,11 +7,11 @@ import { lstat, realpath, mkdir, open, link, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   ProjectInitDraftSchema, ProjectInitSaveSchema, ProjectInitDeleteSchema,
-  ProjectInitIdSchema, ProjectInitPreviewSchema, ProjectInitApplySchema,
-  initCommand, initNameKey,
+  ProjectInitIdSchema, ProjectInitPreviewSchema, ProjectInitApplySchema, ProjectInitDefaultSchema,
+  initCommand, initNameKey, buildAgentFilePrompt,
   type ProjectInitTemplate, type ProjectInitSummary, type ProjectInitSaveInput,
   type ProjectInitPreviewInput, type ProjectInitApplyInput, type ProjectInitPreview,
-  type ProjectInitAction, type ProjectInitResult,
+  type ProjectInitAction, type ProjectInitResult, type ProjectInitList, type ProjectInitAgentPlan,
 } from "@contracts/ipc/projectInit";
 import { SettingRepo, ProjectRepo, SessionRepo } from "@main/store/repositories.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
@@ -31,19 +31,32 @@ function stored(id: string): ProjectInitTemplate {
   try { value = JSON.parse(raw); } catch { throw new Error("Initialization template is unreadable; it was not replaced"); }
   return { ...ProjectInitDraftSchema.parse(value), id, revision: hash(raw) };
 }
-export function listProjectInitializers(): { templates: ProjectInitSummary[] } {
+const DEFAULT_KEY = "projectInit.defaultId";
+export function listProjectInitializers(): ProjectInitList {
   const keys = SettingRepo.keysWithPrefix(PREFIX);
   if (keys.length > MAX_TEMPLATES) throw new Error("Too many initialization templates");
-  return { templates: keys.map(key => {
-    const { id, name, description, revision } = stored(key.slice(PREFIX.length));
-    return { id, name, description, revision };
-  }).sort((a, b) => a.name.localeCompare(b.name)) };
+  const templates = keys.map((key): ProjectInitSummary => {
+    const { id, name, description, revision, agentFile } = stored(key.slice(PREFIX.length));
+    return { id, name, description, revision, ...(agentFile?.enabled ? { agentFile: agentFile.filename } : {}) };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+  // 默认场景删掉之后这里自然变回 null(不必在删除时联动清理)。
+  const saved = SettingRepo.get(DEFAULT_KEY);
+  return { templates, defaultId: templates.some(t => t.id === saved) ? saved : null };
+}
+/** 裸 `/init` 预选哪个场景。`null` 清除。 */
+export function setDefaultProjectInitializer(raw: { id: string | null }): { ok: true } {
+  const { id } = ProjectInitDefaultSchema.parse(raw);
+  if (id === null) { SettingRepo.delete(DEFAULT_KEY); return { ok: true }; }
+  stored(id); // 不存在 / 读不了就抛,不记一个悬空的 id
+  SettingRepo.set(DEFAULT_KEY, id);
+  return { ok: true };
 }
 const SEEDED_KEY = "projectInit.seededShipped";
 /** 出厂模板只播种一次(见 `shipped.ts` 文件头):播过的 id 记下来,用户删了不复活;
  *  命令名与用户已有模板冲突时不播,同样记下。启动时调一次(`main/index.ts`)——
  *  不放进 `listProjectInitializers`,那是纯读取,不该有副作用。 */
 export function ensureShippedInitializersSeeded(): void {
+  upgradeUntouchedShipped();
   let seeded: string[] = [];
   try {
     const parsed: unknown = JSON.parse(SettingRepo.get(SEEDED_KEY) ?? "[]");
@@ -63,6 +76,20 @@ export function ensureShippedInitializersSeeded(): void {
     seeded.push(shipped.id);
   }
   SettingRepo.set(SEEDED_KEY, JSON.stringify(seeded));
+}
+/** 出厂模板后来补了「AI 生成说明文件」(2026-10)。用户**从没改过**的那份 —— 存的正好是旧版
+ *  逐字内容(= 新版去掉 agentFile)—— 原地升级成新版;改过一个字、或自己关掉过 AI 生成的都不动。
+ *  逐字比较,所以只适用于「新版 = 旧版 + agentFile」;升级后不再相等,天然幂等。 */
+function upgradeUntouchedShipped(): void {
+  for (const shipped of SHIPPED_INITIALIZERS) {
+    if (!shipped.upgradeAddsAgentFile) continue;
+    const raw = SettingRepo.get(PREFIX + shipped.id);
+    if (raw === null) continue;
+    const next = ProjectInitDraftSchema.parse(shipped.draft);
+    const previous = { ...next };
+    delete previous.agentFile;
+    if (raw === JSON.stringify(previous)) SettingRepo.set(PREFIX + shipped.id, JSON.stringify(next));
+  }
 }
 export function getProjectInitializer(input: { id: string }): ProjectInitTemplate {
   return stored(ProjectInitIdSchema.parse(input).id);
@@ -140,7 +167,7 @@ async function publishFile(root: string, path: string, content: string): Promise
 async function build(raw: ProjectInitPreviewInput) {
   const input = ProjectInitPreviewSchema.parse(raw);
   const summary = listProjectInitializers().templates.find(t => initNameKey(initCommand(t.name)) === initNameKey(input.command));
-  if (!summary) throw new Error("Initialization command not found; configure it in Memory & context");
+  if (!summary) throw new Error("Initialization command not found; configure it in Settings → Project initialization");
   const template = stored(summary.id);
   const ctx = await context(input);
   const directories = new Set(template.directories);
@@ -158,9 +185,32 @@ async function build(raw: ProjectInitPreviewInput) {
     actions.push({ kind: "memory", path, title: memory.title, content: memory.content, pinned: memory.pinned,
       ...await inspect(ctx.memoryBase, `memory/${path}`, "memory") });
   }
+  const agentFile = await planAgentFile(template, ctx.root);
   const plan = { templateId: template.id, name: template.name, revision: template.revision,
-    sessionId: input.sessionId, projectId: ctx.project.id, projectName: ctx.project.name, root: ctx.root, actions };
+    sessionId: input.sessionId, projectId: ctx.project.id, projectName: ctx.project.name, root: ctx.root, actions,
+    ...(agentFile ? { agentFile } : {}) };
   return { ctx, plan: { ...plan, digest: hash(JSON.stringify({ ...plan, memoryBase: ctx.memoryBase, rootIdentity: ctx.rootIdentity })) } };
+}
+/** AI 生成说明文件那一步的计划。只看不写:文件本身由引擎在对话里写(它要先读项目)。
+ *  进 digest —— 预览之后文件冒出来 / 消失,会和其他条目一样要求重新预览。 */
+async function planAgentFile(template: ProjectInitTemplate, root: string): Promise<ProjectInitAgentPlan | undefined> {
+  const config = template.agentFile;
+  if (!config?.enabled) return undefined;
+  const seeds = new Set(template.files.map(f => initNameKey(f.path)));
+  const state = await inspect(root, config.filename, "file");
+  const exists = state.status === "skip" || seeds.has(initNameKey(config.filename));
+  let shadowed = false;
+  if (config.filename === "CLAUDE.md") {
+    shadowed = seeds.has(initNameKey("AGENTS.md")) || (await inspect(root, "AGENTS.md", "file")).status === "skip";
+  }
+  return {
+    filename: config.filename, exists, shadowed,
+    ...(state.status === "blocked" ? { blocked: state.reason } : {}),
+    prompt: buildAgentFilePrompt({
+      filename: config.filename, exists, scenario: template.name, focus: config.focus,
+      scaffold: [...template.directories, ...template.files.map(f => f.path)],
+    }),
+  };
 }
 export async function previewProjectInitializer(raw: ProjectInitPreviewInput): Promise<ProjectInitPreview> {
   return (await build(raw)).plan;
@@ -175,7 +225,7 @@ export async function applyProjectInitializer(raw: ProjectInitApplyInput): Promi
     const { ctx, plan } = await build({ sessionId: input.sessionId, command: input.command });
     if (ctx.project.id !== first.project.id) throw new Error("Conversation project changed; preview again");
     if (plan.digest !== input.digest) throw new Error("Preview changed; review the current plan before applying");
-    if (plan.actions.some(a => a.status === "blocked")) throw new Error("Initialization is blocked by unsafe paths or incompatible existing entries");
+    if (plan.actions.some(a => a.status === "blocked") || plan.agentFile?.blocked) throw new Error("Initialization is blocked by unsafe paths or incompatible existing entries");
     const results: ProjectInitAction[] = [];
     let memoryChanged = false;
     for (const action of plan.actions) {
@@ -203,6 +253,8 @@ export async function applyProjectInitializer(raw: ProjectInitApplyInput): Promi
       }
     }
     if (memoryChanged) notifyMemoryChanged(`project-init:${plan.templateId}`);
-    return { projectId: ctx.project.id, root: ctx.root, actions: results };
+    // 说明文件不在这里写:渲染端拿 agentPrompt 在本对话里发一轮,由当前引擎分析项目后写入。
+    return { projectId: ctx.project.id, root: ctx.root, actions: results,
+      ...(plan.agentFile ? { agentPrompt: plan.agentFile.prompt, agentFilename: plan.agentFile.filename } : {}) };
   } finally { busy.delete(first.project.id); }
 }

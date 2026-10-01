@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, symlink } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProjectInitDraftSchema, type ProjectInitDraft } from "@contracts/ipc/projectInit";
-import { listProjectInitializers, getProjectInitializer, saveProjectInitializer, deleteProjectInitializer, previewProjectInitializer, applyProjectInitializer } from "../../src/main/projectInit/service.js";
+import { listProjectInitializers, getProjectInitializer, saveProjectInitializer, deleteProjectInitializer, previewProjectInitializer, applyProjectInitializer, setDefaultProjectInitializer } from "../../src/main/projectInit/service.js";
 import { readMemoryFile } from "../../src/main/memory/store.js";
 import { ensureShippedInitializersSeeded } from "../../src/main/projectInit/service.js";
 import { SHIPPED_INITIALIZERS } from "../../src/main/projectInit/shipped.js";
@@ -131,7 +131,8 @@ try {
  });
  await test("shipped initializer yields to a user template with the same command",()=>{
   const mine=saveProjectInitializer({draft:draft(SHIPPED_INITIALIZERS[0].draft.name)});ensureShippedInitializersSeeded();
-  const all=listProjectInitializers().templates;assert.equal(all.length,1);assert.equal(all[0].id,mine.id);
+  const same=listProjectInitializers().templates.filter(t=>t.name===SHIPPED_INITIALIZERS[0].draft.name);assert.equal(same.length,1);assert.equal(same[0].id,mine.id);
+  assert.equal(listProjectInitializers().templates.length,SHIPPED_INITIALIZERS.length,"the other shipped scenarios still seed");
  });
  await test("shipped research initializer creates folders, READMEs and pinned memories",async()=>{
   ensureShippedInitializersSeeded();const shipped=SHIPPED_INITIALIZERS[0].draft;const command="init-"+shipped.name;
@@ -140,6 +141,71 @@ try {
   assert.match(await readFile(join(root,"data/README.md"),"utf8"),/raw/);assert.deepEqual(await readdir(join(root,"data/raw")),[]);
   assert.match(readMemoryFile("projects/p1/rules/项目目录约定.md").content,/data\/raw/);
   assert.match(await readFile(join(data,"memory/projects/p1/project/项目概况.md"),"utf8"),/pinned: true/);
+ });
+
+ // AI 生成说明文件(2026-10):只出计划和提示词,文件由引擎在对话里写;三个引擎拿到的是同一段提示词。
+ const agentDraft=(over:Partial<ProjectInitDraft>={}):ProjectInitDraft=>({name:"代码",description:"",directories:[],files:[],memories:[],agentFile:{enabled:true,filename:"AGENTS.md",focus:"重点写测试命令"},...over});
+ const agentRun=async(command="init-代码")=>{const p=await previewProjectInitializer({sessionId:"s1",command});return {p,r:await applyProjectInitializer({sessionId:"s1",command,digest:p.digest})};};
+ await test("agent-only template is valid, disabled agent alone is still empty",()=>{
+  assert.equal(ProjectInitDraftSchema.safeParse(agentDraft()).success,true);
+  assert.equal(ProjectInitDraftSchema.safeParse(agentDraft({agentFile:{enabled:false,filename:"AGENTS.md",focus:""}})).success,false);
+  assert.equal(ProjectInitDraftSchema.safeParse({...agentDraft(),agentFile:{enabled:true,filename:"README.md",focus:""}}).success,false);
+ });
+ await test("agent step: preview carries the prompt, apply writes nothing and returns it",async()=>{
+  saveProjectInitializer({draft:agentDraft()});const {p,r}=await agentRun();
+  assert.equal(p.actions.length,0);assert.equal(p.agentFile?.filename,"AGENTS.md");assert.equal(p.agentFile?.exists,false);assert.equal(p.agentFile?.shadowed,false);
+  assert.match(p.agentFile!.prompt,/创建 `AGENTS.md`/);assert.match(p.agentFile!.prompt,/重点写测试命令/);assert.match(p.agentFile!.prompt,/Claude、Codex、Pi/);
+  assert.equal(r.agentPrompt,p.agentFile!.prompt);assert.equal(r.agentFilename,"AGENTS.md");assert.deepEqual(await readdir(root),[]);
+  assert.equal(listProjectInitializers().templates[0].agentFile,"AGENTS.md");
+ });
+ await test("existing guide file switches the prompt to improve, never overwritten by apply",async()=>{
+  await writeFile(join(root,"AGENTS.md"),"# mine");saveProjectInitializer({draft:agentDraft()});const {p}=await agentRun();
+  assert.equal(p.agentFile?.exists,true);assert.match(p.agentFile!.prompt,/改进已有的/);assert.equal(await readFile(join(root,"AGENTS.md"),"utf8"),"# mine");
+ });
+ await test("a template seed file with the same name counts as existing; scaffold is listed",async()=>{
+  saveProjectInitializer({draft:agentDraft({directories:["src"],files:[{path:"AGENTS.md",content:"# seed"}]})});const {p}=await agentRun();
+  assert.equal(p.agentFile?.exists,true);assert.match(p.agentFile!.prompt,/- src/);assert.match(p.agentFile!.prompt,/- AGENTS.md/);
+ });
+ await test("CLAUDE.md is flagged as shadowed when AGENTS.md exists",async()=>{
+  await writeFile(join(root,"AGENTS.md"),"# a");saveProjectInitializer({draft:agentDraft({agentFile:{enabled:true,filename:"CLAUDE.md",focus:""}})});
+  const p=await previewProjectInitializer({sessionId:"s1",command:"init-代码"});assert.equal(p.agentFile?.shadowed,true);assert.match(p.agentFile!.prompt,/CLAUDE.md/);
+ });
+ await test("guide file appearing after preview invalidates approval",async()=>{
+  saveProjectInitializer({draft:agentDraft()});const p=await previewProjectInitializer({sessionId:"s1",command:"init-代码"});await writeFile(join(root,"AGENTS.md"),"late");
+  await assert.rejects(applyProjectInitializer({sessionId:"s1",command:"init-代码",digest:p.digest}),/Preview changed/);
+ });
+ await test("guide path occupied by a directory blocks the plan",async()=>{
+  await mkdir(join(root,"AGENTS.md"));saveProjectInitializer({draft:agentDraft()});const p=await previewProjectInitializer({sessionId:"s1",command:"init-代码"});
+  assert.equal(p.agentFile?.blocked,"wrongType");await assert.rejects(applyProjectInitializer({sessionId:"s1",command:"init-代码",digest:p.digest}),/blocked/);
+ });
+ await test("default scenario: set, list, clear, stale after delete, unknown id rejected",()=>{
+  const a=saveProjectInitializer({draft:agentDraft()});assert.equal(listProjectInitializers().defaultId,null);
+  setDefaultProjectInitializer({id:a.id});assert.equal(listProjectInitializers().defaultId,a.id);
+  setDefaultProjectInitializer({id:null});assert.equal(listProjectInitializers().defaultId,null);
+  setDefaultProjectInitializer({id:a.id});deleteProjectInitializer({id:a.id,expectedRevision:a.revision});assert.equal(listProjectInitializers().defaultId,null);
+  assert.throws(()=>setDefaultProjectInitializer({id:"00000000-0000-4000-8000-000000000000"}));assert.throws(()=>setDefaultProjectInitializer({id:"nope"}));
+ });
+ await test("untouched old research template is upgraded in place; edited or disabled copies are left alone",()=>{
+  const shipped=SHIPPED_INITIALIZERS[0];const next=ProjectInitDraftSchema.parse(shipped.draft);const old={...next};delete old.agentFile;
+  settings.set("projectInit.template."+shipped.id,JSON.stringify(old));settings.set("projectInit.seededShipped",JSON.stringify(SHIPPED_INITIALIZERS.map(s=>s.id)));
+  ensureShippedInitializersSeeded();assert.equal(getProjectInitializer({id:shipped.id}).agentFile?.enabled,true);
+  ensureShippedInitializersSeeded();assert.equal(settings.get("projectInit.template."+shipped.id),JSON.stringify(next),"idempotent");
+  const edited={...old,description:"我改过"};settings.set("projectInit.template."+shipped.id,JSON.stringify(edited));ensureShippedInitializersSeeded();
+  assert.equal(settings.get("projectInit.template."+shipped.id),JSON.stringify(edited));
+  const off={...next,agentFile:{...next.agentFile!,enabled:false}};settings.set("projectInit.template."+shipped.id,JSON.stringify(off));ensureShippedInitializersSeeded();
+  assert.equal(settings.get("projectInit.template."+shipped.id),JSON.stringify(off));
+ });
+ await test("every shipped scenario previews and applies cleanly on an empty project",async()=>{
+  ensureShippedInitializersSeeded();
+  let thesisRoot="";
+  for(const s of SHIPPED_INITIALIZERS){
+   // 每个场景一个空项目目录:研究项目与论文写作都有 notes/、references/,同一目录里第二个会是「跳过」。
+   const dir=join(base,"scenario-"+s.id);await mkdir(dir);projects.set("p1",{id:"p1",name:"Project one",path:dir});if(s.draft.name==="论文写作")thesisRoot=dir;
+   const command="init-"+s.draft.name;const p=await previewProjectInitializer({sessionId:"s1",command});
+   assert.ok(p.actions.every(a=>a.status==="create"),s.draft.name);assert.equal(p.agentFile?.filename,"AGENTS.md",s.draft.name);
+   const r=await applyProjectInitializer({sessionId:"s1",command,digest:p.digest});assert.ok(r.actions.every(a=>a.status==="created"),s.draft.name);assert.ok(r.agentPrompt,s.draft.name);
+  }
+  assert.match(await readFile(join(thesisRoot,"manuscript/README.md"),"utf8"),/main.tex/);assert.match(readMemoryFile("projects/p1/rules/写作约定.md").content,/不编造文献/);
  });
 } finally { await rm(base,{recursive:true,force:true}); }
 console.log(`Project init smoke: ${passed} pass, ${failed} fail`);process.exitCode=failed?1:0;

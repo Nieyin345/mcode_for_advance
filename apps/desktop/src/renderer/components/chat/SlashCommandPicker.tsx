@@ -80,14 +80,16 @@ export function SlashCommandPicker({
   const skillCmds = useMemo(() => filterSkillCommands(query, skills.filter(s => !s.name.toLowerCase().startsWith("init-"))), [query, skills]);
   const builtinCmds = useMemo(() => [...filterBuiltInCommands(query), ...projectInitCommands.filter(c => `${c.name} ${c.description}`.toLowerCase().includes(query.toLowerCase()))], [query, projectInitCommands]);
   const engineCmds = useMemo(
-    () => filterEngineCommands(query, (engineCommands ?? []).filter(c => !c.name.toLowerCase().startsWith("init-"))),
+    // 引擎自带的 `init`(Claude Code CLI 才有,只写 CLAUDE.md)与内置「项目初始化」重名,隐藏它:
+    // 内置的 /init 三个引擎通用,并且会先按场景建目录 / 记忆。
+    () => filterEngineCommands(query, (engineCommands ?? []).filter(c => { const name = c.name.toLowerCase(); return name !== "init" && !name.startsWith("init-"); })),
     [query, engineCommands],
   );
   // `compact` is disabled while a turn is running; filter it out of the
   // *interactive* list so it can't be arrow-selected or clicked, but keep it
   // counted in the tab badge so the user sees it exists.
   const activeBuiltinCmds = useMemo(
-    () => (busy ? builtinCmds.filter((c) => c.kind !== "compact" && c.kind !== "project-init") : builtinCmds),
+    () => (busy ? builtinCmds.filter((c) => c.kind !== "compact" && c.kind !== "project-init" && c.kind !== "init") : builtinCmds),
     [builtinCmds, busy],
   );
 

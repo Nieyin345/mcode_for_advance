@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { ProjectInitDraftSchema, type ProjectInitDraft, type ProjectInitTemplate } from "@contracts/ipc/projectInit";
+import { AGENT_FILE_NAMES, ProjectInitDraftSchema, buildAgentFilePrompt, type AgentFileConfig, type ProjectInitDraft, type ProjectInitTemplate } from "@contracts/ipc/projectInit";
 import { MEMORY_CATEGORIES } from "@contracts/memory";
 import { api } from "@renderer/lib/api.js";
 import { useRpc } from "@renderer/hooks/useRpc.js";
@@ -7,7 +7,8 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, ConfirmDialog, ErrorNote, Input } from "@renderer/components/ui/index.js";
 export const INIT_CHANGED = "mcode:project-initializers-changed";
 type Draft = { draft: ProjectInitDraft; id?: string; revision?: string; baseline: string };
-const empty = (): Draft => ({draft:{name:"",description:"",directories:[],files:[],memories:[]},baseline:""});
+// 新场景默认带上「AI 生成说明文件」:这是 /init 最常用的那一步。
+const empty = (): Draft => ({draft:{name:"",description:"",directories:[],files:[],memories:[],agentFile:{enabled:true,filename:"AGENTS.md",focus:""}},baseline:""});
 // Preserve unsaved drafts across settings tabs; never persist them as templates.
 const kept = new Map<string, Draft>();
 let last = "new";
@@ -57,14 +58,27 @@ export function ProjectInitManager() {
   try {await api.projectInit.delete({id:entry.id,expectedRevision:entry.revision});kept.delete(selected);accept("new",kept.get("new")??empty());notify();}
   catch(e){setError(String(e));}finally{setPending(false);setConfirmDelete(false);}
  };
+ const defaultId=list.data?.defaultId??null;
+ const toggleDefault=async()=>{
+  if(mutationPending||!entry.id)return;setPending(true);setError(null);
+  try {await api.projectInit.setDefault({id:defaultId===entry.id?null:entry.id});notify();}
+  catch(e){setError(String(e));}finally{setPending(false);}
+ };
+ /** 以当前内容(含未保存改动)开一个新场景,名称加后缀;不会自动保存。 */
+ const duplicate=()=>{
+  const draft:ProjectInitDraft={...structuredClone(entry.draft),name:(entry.draft.name+t("init.copySuffix")).slice(0,48)};
+  kept.set("new",{draft,baseline:""});choose("new");
+ };
  if(!desktop)return <p className="p-4 text-sm text-content-muted">{t("init.desktopOnly")}</p>;
  const d=entry.draft;const dirty=entry.baseline!==JSON.stringify(d);
+ const agent=d.agentFile;
+ const setAgent=(patch:Partial<AgentFileConfig>)=>update({...d,agentFile:{enabled:true,filename:"AGENTS.md",focus:"",...d.agentFile,...patch}});
  return <div className="space-y-4 p-4" data-testid="init-manager">
   <p className="text-sm text-content-muted">{t("init.description")}</p>
   <div className="flex flex-wrap items-center gap-2">
    <select aria-label={t("init.choose")} disabled={pending} value={selected} onChange={e=>choose(e.target.value)} className="min-w-0 flex-1 rounded border border-edge bg-surface p-2 text-sm">
     <option value="new">{t("init.new")}</option>
-    {list.data?.templates.map(item=><option key={item.id} value={item.id}>/init-{item.name}{kept.has(item.id)&&kept.get(item.id)!.baseline!==JSON.stringify(kept.get(item.id)!.draft)?" *":""}</option>)}
+    {list.data?.templates.map(item=><option key={item.id} value={item.id}>/init-{item.name}{item.id===defaultId?` · ${t("init.default")}`:""}{kept.has(item.id)&&kept.get(item.id)!.baseline!==JSON.stringify(kept.get(item.id)!.draft)?" *":""}</option>)}
    </select>
    <Button size="sm" disabled={pending} onClick={()=>{choose("new");}}>{t("init.new")}</Button>
    <Button size="sm" variant="ghost" disabled={pending} onClick={()=>void list.refetch()}>{t("memory.assistant.refresh")}</Button>
@@ -94,9 +108,24 @@ export function ProjectInitManager() {
     </div>;})}
     <Button size="sm" disabled={d.memories.length>=30} onClick={()=>update({...d,memories:[...d.memories,{category:"project",filename:"",title:"",content:"",pinned:true}]})}>{t("init.addMemory")}</Button>
    </section>
+   <section className="space-y-2" data-testid="init-agent-config"><h3 className="text-sm font-semibold">{t("init.agentFile")}</h3><p className="text-xs text-content-subtle">{t("init.agentFileHint")}</p>
+    <label className="flex gap-2 text-sm"><input type="checkbox" checked={!!agent?.enabled} onChange={e=>setAgent({enabled:e.target.checked})}/>{t("init.agentEnable")}</label>
+    {agent?.enabled&&<div className="space-y-2 rounded border border-edge p-3">
+     <label className="block space-y-1 text-sm">{t("init.agentFilename")}
+      <select className="block rounded border border-edge bg-surface p-2 text-sm" aria-label={t("init.agentFilename")} value={agent.filename} onChange={e=>setAgent({filename:e.target.value as AgentFileConfig["filename"]})}>{AGENT_FILE_NAMES.map(name=><option key={name} value={name}>{name}</option>)}</select>
+     </label>
+     <p className="text-xs text-content-subtle">{agent.filename==="AGENTS.md"?t("init.agentFilenameAgents"):t("init.agentFilenameClaude")}</p>
+     <label className="block space-y-1 text-sm">{t("init.agentFocus")}<textarea aria-label={t("init.agentFocus")} maxLength={8000} className={area} placeholder={t("init.agentFocusPlaceholder")} value={agent.focus} onChange={e=>setAgent({focus:e.target.value})}/></label>
+     <details className="text-xs"><summary className="cursor-pointer">{t("init.agentPromptPreview")}</summary>
+      <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words">{buildAgentFilePrompt({filename:agent.filename,exists:false,scenario:d.name||"…",focus:agent.focus,scaffold:[...d.directories.filter(p=>p!==""),...d.files.map(f=>f.path)]})}</pre>
+     </details>
+    </div>}
+   </section>
    <div className="flex flex-wrap items-center gap-2">
     <Button variant="primary" size="sm" onClick={()=>void save()}>{pending?t("common.loading"):t("common.save")}</Button>
     <Button size="sm" variant="ghost" onClick={()=>setConfirmReload(true)}>{t("init.discard")}</Button>
+    {entry.id&&<Button size="sm" variant="ghost" title={defaultId===entry.id?t("init.isDefault"):undefined} onClick={()=>void toggleDefault()}>{defaultId===entry.id?t("init.clearDefault"):t("init.setDefault")}</Button>}
+    {entry.id&&<Button size="sm" variant="ghost" onClick={duplicate}>{t("init.duplicate")}</Button>}
     {entry.id&&<Button size="sm" variant="ghost" onClick={()=>setConfirmDelete(true)}>{t("common.delete")}</Button>}
     <span className="text-xs text-content-subtle" role="status">{saved?t("init.saved"):dirty?t("init.unsaved"):""}</span>
    </div>

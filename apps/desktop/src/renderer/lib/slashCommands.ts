@@ -28,8 +28,10 @@ export type { SkillSource } from "@contracts/ipc";
  *  commands are fixed entries with bespoke behavior handled by the composer:
  *  - `compact`: immediately sends `/compact` to the agent (summarize + release
  *    context). Disabled while a turn is running.
- *  - `init`: fills the editor with an editable AGENTS.md-generation prompt so
- *    the user can tweak it before sending.
+ *  - `init`: desktop opens the project-initialization chooser (scenario →
+ *    folders / memories → the AI writes AGENTS.md, see useProjectInitializer);
+ *    without desktop file access it falls back to an inline `/init` pill that
+ *    goes to the engine.
  *  - `browser`: fills the editor with a browser-control prompt template so the
  *    user can fill in a URL + intent (snapshot / click / screenshot / device),
  *    then send. Surfaces the agent browser feature to users who otherwise
