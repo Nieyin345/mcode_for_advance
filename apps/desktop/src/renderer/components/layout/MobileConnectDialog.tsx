@@ -109,9 +109,10 @@ export function MobileConnectButton() {
       <Dialog.Root open={open} onOpenChange={setOpen}>
         <Dialog.Portal>
           <Dialog.Backdrop />
-          {/* 高度封顶 + 内部滚动:「远程访问」「自有域名」两页加上设备列表,在 768 高的屏幕上
-              会超出视口,而弹窗是居中定位的 —— 超出部分上下都被裁掉,标题和关闭钮一起看不见。 */}
-          <Dialog.Popup className="max-h-[90vh] w-[min(420px,92vw)] overflow-y-auto p-5">
+          {/* **固定高度** + 内部滚动(用户要求):切页签、展开表单时弹窗不再忽长忽短。
+              标题、页签、底部按钮固定,中间内容区自己出滚动条。90vh 封顶是给矮屏的 ——
+              弹窗居中定位,超出视口的部分上下都会被裁掉。 */}
+          <Dialog.Popup className="flex h-[min(640px,90vh)] w-[min(420px,92vw)] flex-col p-5">
             <MobileConnectPanel open={open} />
           </Dialog.Popup>
         </Dialog.Portal>
@@ -264,7 +265,7 @@ function MobileConnectPanel({ open }: { open: boolean }) {
       <Dialog.Close />
 
       {/* Mode tabs */}
-      <div className="mt-3 flex gap-1 border-b border-edge">
+      <div className="mt-3 flex shrink-0 gap-1 border-b border-edge">
         <button
           type="button"
           onClick={() => setTab("lan")}
@@ -306,6 +307,8 @@ function MobileConnectPanel({ open }: { open: boolean }) {
         </button>
       </div>
 
+      {/* 中间内容区:唯一会滚动的地方(-mr-2 pr-2 给滚动条留位,不挤内容)。 */}
+      <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
       {/* 自有域名 */}
       {tab === "domain" ? (
         <div className="mt-4">
@@ -438,7 +441,9 @@ function MobileConnectPanel({ open }: { open: boolean }) {
         )}
       </div>
 
-      <div className="mt-5 flex justify-end">
+      </div>
+
+      <div className="mt-3 flex shrink-0 justify-end">
         <Button variant="ghost" onClick={() => void refreshDevices()}>
           {t("layout.refreshDevices")}
         </Button>
