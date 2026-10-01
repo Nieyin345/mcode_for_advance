@@ -42,6 +42,7 @@ import {
   PUBLIC_MCP_PROJECT_ID_SETTING_KEY,
   PUBLIC_MCP_TUNNEL_MODE_SETTING_KEY,
   PUBLIC_MCP_TUNNEL_TOKEN_SETTING_KEY,
+  PUBLIC_MCP_AGENT_DELEGATE_SETTING_KEY,
   PUBLIC_MCP_TUNNEL_HOSTNAME_SETTING_KEY,
   PUBLIC_MCP_MOBILE_HOSTNAME_SETTING_KEY,
   PUBLIC_MCP_FIXED_PORT_SETTING_KEY,
@@ -110,6 +111,7 @@ function tunnelConfigView(): {
   tokenHint: string;
   fixedPort: number;
   mobilePort: number;
+  agentDelegate: boolean;
 } {
   const token = readTunnelToken();
   return {
@@ -120,6 +122,7 @@ function tunnelConfigView(): {
     fixedPort: readFixedPort(),
     // 手机服务此刻在听哪个端口 —— 用户要拿它核对 Cloudflare 那条 ingress 写得对不对。
     mobilePort: mobilePortProvider(),
+    agentDelegate: SettingRepo.get(PUBLIC_MCP_AGENT_DELEGATE_SETTING_KEY) === "1",
   };
 }
 
@@ -143,6 +146,13 @@ export function setPublicMcpTunnelConfig(config: PublicMcpTunnelConfig): PublicM
   SettingRepo.set(PUBLIC_MCP_FIXED_PORT_SETTING_KEY, String(Number.isFinite(port) && port > 0 && port < 65536 ? port : 0));
   const token = (config.token ?? "").trim();
   if (token) SettingRepo.set(PUBLIC_MCP_TUNNEL_TOKEN_SETTING_KEY, encrypt(token));
+  // 委派开关:**缺席 = 不改动**(与 token 同一种读法)。它不是隧道的一部分,搭在这条
+  // 已有的通道上只是为了不再多开一条 IPC —— 但语义上它比隧道配置危险得多,所以
+  // 每一次变化都单独记一行日志,事后能从日志里看出是谁在哪一刻把它打开的。
+  if (config.agentDelegate !== undefined) {
+    SettingRepo.set(PUBLIC_MCP_AGENT_DELEGATE_SETTING_KEY, config.agentDelegate ? "1" : "0");
+    log.info(`public mcp: agent delegate ${config.agentDelegate ? "ENABLED" : "disabled"}`);
+  }
   log.info(`public mcp: tunnel config saved (mode=${config.mode})`);
   return publicMcpStatus();
 }

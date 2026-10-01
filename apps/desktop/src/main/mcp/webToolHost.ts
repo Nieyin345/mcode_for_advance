@@ -58,6 +58,10 @@ import type {
 // 就换不掉,真那份会被打进 bundle 并且在模块载入时去找真的 sql.js 库。
 import { workflowMcpTools } from "@main/mcp/mcodeServer.js";
 import { agentMcpTools } from "@main/mcp/agentTools.js";
+// ⚠️ 这张表**平时是空的** —— `mcode_agent_*`(把 mcode agent 整个交给外面的 AI 支使)
+// 只在用户亲手打开那个开关后才报出来。引它是安全的:那个文件只依赖 zod 与类型,真正
+// 要碰 db/RuntimeManager 的那一半在 `delegateHost.ts`(见它文件头为什么拆两个)。
+import { delegateMcpTools } from "@main/mcp/delegateServer.js";
 import type { McpToolSpec } from "@main/mcp/sdk.js";
 // annotations 的判定从 `toolRules` 直接取(不经 `providers/toolGate.js`)—— 那条链会拉进
 // 整个 provider 图,而无头 smoke 只想验工具表。toolRules 本身在 `mcp/` 下,引它安全。
@@ -194,6 +198,10 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
     // 桌面本机那条路照旧带着它们（`buildWorkflowMcpServer` 不传这个参数）。
     ...workflowMcpTools({ includeSessionLogs: false }),
     ...agentMcpTools({ cwdFor: deps.cwdFor, sandboxRootFor: deps.sandboxRootFor }),
+    // 「指挥本机 agent 干整件事」那一组。**默认空**;用户在「远程控制」里打开之后才有。
+    // 它与上面那条 `includeSessionLogs: false` 的取舍是一体两面:叫醒本机会话这件事在
+    // 这条免审批通路上默认不给,要给就得用户明确点头一次。
+    ...delegateMcpTools(),
     // 测试注入的替身工具(生产为空)—— 见 `WebToolHostDeps.extraTools`。
     ...(deps.extraTools ?? []),
   ];

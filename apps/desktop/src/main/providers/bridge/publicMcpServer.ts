@@ -330,6 +330,7 @@ export function publicMcpStatus(): PublicMcpStatus {
       tokenHint: "",
       fixedPort: 0,
       mobilePort: 0,
+      agentDelegate: false,
     }),
   };
 }
@@ -342,6 +343,7 @@ export interface PublicMcpTunnelView {
   tokenHint: string;
   fixedPort: number;
   mobilePort: number;
+  agentDelegate: boolean;
 }
 
 /**

@@ -21,6 +21,7 @@ import { broadcastSessionChanged } from "@main/lib/sessionSync.js";
 import { lspManager } from "@main/lsp/LspManager.js";
 import { BrowserManager } from "@main/browser/BrowserManager.js";
 import { startMobileServer, stopMobileServer, getMobileServer } from "@main/mobile/MobileHttpServer.js";
+import { initAgentDelegate } from "@main/mcp/delegateHost.js";
 import { relayManager } from "@main/relay/RelayManager.js";
 import { RELAY_AUTO_START_SETTING_KEY } from "@contracts/relay";
 import { SettingRepo } from "@main/store/repositories.js";
@@ -219,6 +220,9 @@ app.whenReady().then(async () => {
     // 手机伴侣的端口走注入(见 publicMcpSession 里 `mobilePortProvider` 的注释:
     // 直接 import MobileHttpServer 会把 db→electron 拉进几个无关 smoke 的打包图)。
     initPublicMcp({ mobilePort: () => getMobileServer()?.port ?? 0 });
+    // 「把 mcode agent 交给外面的 AI 支使」那一组工具的装配。**只是接线** ——
+    // 工具报不报得出来由用户那个开关决定(默认关),见 `mcp/delegateServer.ts` 文件头。
+    initAgentDelegate();
   }, (err: unknown) => {
     // Only initDb's own rejection lands here (not errors thrown by the ready
     // callback above). Without it the failure was just an unhandledRejection

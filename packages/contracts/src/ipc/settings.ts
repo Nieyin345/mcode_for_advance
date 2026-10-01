@@ -729,6 +729,23 @@ export type PublicMcpTunnelMode = z.infer<typeof PublicMcpTunnelModeSchema>;
  */
 export const PUBLIC_MCP_TUNNEL_TOKEN_SETTING_KEY = "publicMcp.tunnelToken";
 
+/**
+ * **把 mcode agent 本身交给外面的 AI 支使**(`"1"` = 开,其它一律当关)。
+ *
+ * 开了之后,公网 MCP 的工具表里会多出 `mcode_agent_start` / `_result` / `_cancel`:
+ * 外面的 AI 不再只是"远程读写这台机器的文件",而是能把**整件事**丢进来,由本机 mcode
+ * 带着自己的技能/工作流/记忆跑一轮。
+ *
+ * ⚠️ **默认关,而且必须默认关。** 这条通路是免审批的,`webToolHost.ts` 正因为如此把
+ * `agent_notify` / `agent_ask`(能叫醒本机会话替它起一轮)从公网那张表上摘掉了。委派
+ * 干的是同一类事,只是更彻底 —— 所以它的闸门就是这个开关本身,开之前界面上给的是
+ * **警告**,不是提示。细节见 `main/mcp/delegateServer.ts` 的文件头。
+ */
+export const PUBLIC_MCP_AGENT_DELEGATE_SETTING_KEY = "publicMcp.agentDelegate";
+
+/** 委派专用会话的 id —— 与「ChatGPT 直连」那条分开(审计面要分得清)。 */
+export const PUBLIC_MCP_DELEGATE_SESSION_ID_SETTING_KEY = "publicMcp.delegateSessionId";
+
 /** named / external 模式下 **MCP 端点**的公网域名,如 `mcp.example.com`(不带协议)。 */
 export const PUBLIC_MCP_TUNNEL_HOSTNAME_SETTING_KEY = "publicMcp.tunnelHostname";
 

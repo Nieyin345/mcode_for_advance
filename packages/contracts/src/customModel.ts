@@ -400,6 +400,8 @@ export interface PublicMcpStatus {
   /** 手机伴侣服务此刻在不在听、听哪个端口 —— 用来核对 Cloudflare 那条 ingress
    *  写的端口对不对(写错的话公网访问手机端会连接被拒,而本机一切正常)。 */
   mobilePort: number;
+  /** 外面的 AI 能不能支使本机 mcode agent 跑整轮(默认关,见设置键上那段警告)。 */
+  agentDelegate: boolean;
 }
 
 /**
@@ -444,4 +446,6 @@ export interface PublicMcpTunnelConfig {
   mobileHostname?: string;
   /** 公网 MCP 服务的固定本机端口;0 = 随机(仅 quick 模式适用)。 */
   fixedPort?: number;
+  /** 把 mcode agent 本身交给外面的 AI 支使。缺席 = 不改动。默认关,见设置键上那段警告。 */
+  agentDelegate?: boolean;
 }
