@@ -337,8 +337,11 @@ export const zh = {
   "settings.remoteControl.tunnelModeHint.named":
     "用你自己在 Cloudflare 建好的命名隧道：地址固定，填一次就不用再改。需要先在 Cloudflare 后台把 public hostname 指到下面那个本机端口，再把 Tunnel Token 粘进来。",
   "settings.remoteControl.tunnelModeHint.external":
-    "隧道由你自己在外面跑（比如装成系统服务，关掉 Mcode 也在）。Mcode 不起进程，只记住域名用来拼链接，并定期从公网敲一下这个域名，确认整条链路真的通。",
+    "在 Cloudflare Zero Trust 里建隧道，用官方给的命令（cloudflared service install …）装成系统服务，再加一条 Public Hostname 指到下面的本机地址。Mcode 不起进程，只记住域名用来拼链接，并定期从公网检查这个域名通不通。",
   "settings.remoteControl.hostnameLabel": "MCP 端点的域名",
+  "settings.remoteControl.ingressLabel": "在 Cloudflare 里把这个域名指到",
+  "settings.remoteControl.namedRemoved":
+    "之前选的是「Mcode 拿 Token 跑隧道」，这个选项已去掉。请在 Cloudflare 后台用官方命令把 cloudflared 装成系统服务，然后点「保存」改成自己运行。",
   "settings.remoteControl.hostnameHint":
     "不带 https:// ，就是 Cloudflare 里那条 public hostname。它必须指向下面那个固定端口。",
   "settings.remoteControl.mobileHostnameLabel": "手机伴侣的域名（可留空）",

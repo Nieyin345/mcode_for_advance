@@ -89,16 +89,16 @@ function TunnelCard({
   onSave: (config: PublicMcpTunnelConfig) => void;
 }) {
   const { t } = useI18n();
-  const [mode, setMode] = useState<PublicMcpStatus["tunnelMode"]>(status.tunnelMode);
+  // 「Mcode 拿 Token 跑命名隧道」这一种已从界面去掉(用户:隧道自己在 Cloudflare 配、
+  // 用官方命令装成服务就行,不需要两种连法)。老配置里存的是 named 的,按「自己跑」显示,
+  // 存一次就改过来;后端仍认 named,不破坏已有安装。
+  const legacyNamed = status.tunnelMode === "named";
+  const [mode, setMode] = useState<PublicMcpStatus["tunnelMode"]>(legacyNamed ? "external" : status.tunnelMode);
   const [hostname, setHostname] = useState(status.tunnelHostname);
   const [fixedPort, setFixedPort] = useState(status.fixedPort ? String(status.fixedPort) : "");
-  // token **永远从空开始**:已存的那串不回传渲染层(只有尾 4 位的 tokenHint),
-  // 留空提交 = 沿用。所以空输入框的意思是"不改",不是"清空"。
-  const [token, setToken] = useState("");
-
-  const named = mode === "named";
   const external = mode === "external";
-  const needsHostname = named || external;
+  const needsHostname = external;
+  const ingressPort = Number(fixedPort) || status.fixedPort || 17331;
 
   return (
     <div className="space-y-2 rounded border border-edge bg-surface/40 p-2.5">
@@ -124,7 +124,7 @@ function TunnelCard({
             <Select.Positioner className="z-50">
               <Select.Popup>
                 <Select.List>
-                  {(["quick", "named", "external"] as const).map((m) => (
+                  {(["quick", "external"] as const).map((m) => (
                     <Select.Item key={m} value={m}>
                       <Select.ItemText>{t(`settings.remoteControl.tunnelMode.${m}`)}</Select.ItemText>
                     </Select.Item>
@@ -137,6 +137,11 @@ function TunnelCard({
         <p className="text-[0.6428em] leading-relaxed text-content-subtle">
           {t(`settings.remoteControl.tunnelModeHint.${mode}`)}
         </p>
+        {legacyNamed && (
+          <p className="text-[0.6428em] leading-relaxed text-warning">
+            {t("settings.remoteControl.namedRemoved")}
+          </p>
+        )}
       </div>
 
       {needsHostname && (
@@ -154,46 +159,15 @@ function TunnelCard({
               {t("settings.remoteControl.hostnameHint")}
             </p>
           </div>
+          <div className="space-y-1">
+            <span className="block text-[0.7857em] font-medium text-content-muted">
+              {t("settings.remoteControl.ingressLabel")}
+            </span>
+            <code className="block truncate rounded bg-surface-muted px-1.5 py-1 font-mono text-[0.7857em]">
+              {`http://127.0.0.1:${ingressPort}`}
+            </code>
+          </div>
         </>
-      )}
-
-      {named && (
-        <div className="space-y-1">
-          <span className="block text-[0.7857em] font-medium text-content-muted">
-            {t("settings.remoteControl.tokenLabel")}
-          </span>
-          <Input
-            type="password"
-            value={token}
-            placeholder={
-              status.tokenHint
-                ? t("settings.remoteControl.tokenKeep", { hint: status.tokenHint })
-                : t("settings.remoteControl.tokenPlaceholder")
-            }
-            onChange={(e) => setToken(e.target.value)}
-          />
-          <p className="text-[0.6428em] leading-relaxed text-content-subtle">
-            {t("settings.remoteControl.tokenHint")}
-          </p>
-          {/* 留空只能表达"沿用";要删掉已存的那串得有个明确的动作。 */}
-          {status.tokenHint && (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={busy}
-              onClick={() =>
-                onSave({
-                  mode,
-                  hostname: hostname.trim(),
-                  fixedPort: Number(fixedPort) || 0,
-                  clearToken: true,
-                })
-              }
-            >
-              {t("settings.remoteControl.tokenClear")}
-            </Button>
-          )}
-        </div>
       )}
 
       <div className="space-y-1">
@@ -222,7 +196,6 @@ function TunnelCard({
             mode,
             hostname: hostname.trim(),
             fixedPort: Number(fixedPort) || 0,
-            token: token.trim(),
           })
         }
       >

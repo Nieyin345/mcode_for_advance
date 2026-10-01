@@ -10,8 +10,11 @@
  * 同一个 Tunnel Token 被 MCP 和手机各起一个 cloudflared 也没问题:Cloudflare 允许一条
  * 隧道有多个连接器,两者都在本机、ingress 一样,请求走哪个都到得了。
  *
- * 老用户迁移:第一次读到「手机这边从没配过」时,把原来存在 MCP 那边的手机域名(和
- * named 模式下的 token)抄一份过来,已经配好的环境不用重填。
+ * 老用户迁移:第一次读到「手机这边从没配过」时,把原来存在 MCP 那边的手机域名抄过来
+ * (按 external 记)。
+ *
+ * 界面上现在只有「隧道你自己在 Cloudflare 跑」(用户决定:用官方命令装成服务即可,不要
+ * 两种连法);named(Mcode 拿 token 起 cloudflared)这条后端路径保留,不破坏已有安装。
  */
 import {
   MOBILE_DEFAULT_PORT,
@@ -23,11 +26,7 @@ import {
   type MobileTunnelStatus,
   type SetMobileTunnelInput,
 } from "@contracts/mobile";
-import {
-  PUBLIC_MCP_MOBILE_HOSTNAME_SETTING_KEY,
-  PUBLIC_MCP_TUNNEL_MODE_SETTING_KEY,
-  PUBLIC_MCP_TUNNEL_TOKEN_SETTING_KEY,
-} from "@contracts/ipc/settings";
+import { PUBLIC_MCP_MOBILE_HOSTNAME_SETTING_KEY } from "@contracts/ipc/settings";
 import { SettingRepo } from "@main/store/repositories.js";
 import { awaitDb } from "@main/store/db.js";
 import { encrypt, decrypt } from "@main/lib/secretStore.js";
@@ -53,16 +52,10 @@ function migrateFromPublicMcp(): void {
     SettingRepo.set(MOBILE_TUNNEL_MODE_SETTING_KEY, "off");
     return;
   }
-  const mcpMode = SettingRepo.get(PUBLIC_MCP_TUNNEL_MODE_SETTING_KEY)?.trim();
-  const mcpToken = SettingRepo.get(PUBLIC_MCP_TUNNEL_TOKEN_SETTING_KEY) ?? "";
+  // 界面只剩「隧道你自己在 Cloudflare 跑」这一种(用户决定),所以迁过来一律是 external:
+  // 只记域名用来出二维码和探测,不抄 token、不起进程。
   SettingRepo.set(MOBILE_TUNNEL_HOSTNAME_SETTING_KEY, host);
-  if (mcpMode === "named" && mcpToken) {
-    // 密文原样抄过去(同一台机器同一把 safeStorage 钥匙,解得开)。
-    SettingRepo.set(MOBILE_TUNNEL_TOKEN_SETTING_KEY, mcpToken);
-    SettingRepo.set(MOBILE_TUNNEL_MODE_SETTING_KEY, "named");
-  } else {
-    SettingRepo.set(MOBILE_TUNNEL_MODE_SETTING_KEY, "external");
-  }
+  SettingRepo.set(MOBILE_TUNNEL_MODE_SETTING_KEY, "external");
   log.info(`mobile tunnel: migrated phone domain ${host} from the remote-control (MCP) settings`);
 }
 

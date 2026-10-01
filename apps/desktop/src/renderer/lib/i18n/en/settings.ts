@@ -332,7 +332,10 @@ export const en = {
   "settings.remoteControl.tunnelModeHint.named":
     "Use a named tunnel you created in Cloudflare: the address is stable, set it once. Point a public hostname at the local port below first, then paste the Tunnel Token here.",
   "settings.remoteControl.tunnelModeHint.external":
-    "You run the tunnel yourself (e.g. installed as a system service, alive even when Mcode is closed). Mcode starts no process; it remembers the domain to build the link and periodically probes it from the internet to confirm the whole path works.",
+    "Create a tunnel in Cloudflare Zero Trust, install it as a system service with the official command (cloudflared service install …), and add a Public Hostname pointing at the local address below. Mcode starts no process; it remembers the domain to build the link and periodically checks it from the internet.",
+  "settings.remoteControl.ingressLabel": "In Cloudflare, point this hostname at",
+  "settings.remoteControl.namedRemoved":
+    "You previously chose \"Mcode runs the tunnel with a token\"; that option has been removed. Install cloudflared as a system service with the official command from the Cloudflare dashboard, then click Save to switch to running it yourself.",
   "settings.remoteControl.hostnameLabel": "MCP endpoint domain",
   "settings.remoteControl.hostnameHint":
     "Without https:// — the public hostname from Cloudflare. It must point at the fixed port below.",
