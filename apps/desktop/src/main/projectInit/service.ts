@@ -167,7 +167,7 @@ async function publishFile(root: string, path: string, content: string): Promise
 async function build(raw: ProjectInitPreviewInput) {
   const input = ProjectInitPreviewSchema.parse(raw);
   const summary = listProjectInitializers().templates.find(t => initNameKey(initCommand(t.name)) === initNameKey(input.command));
-  if (!summary) throw new Error("Initialization command not found; configure it in Settings → Project initialization");
+  if (!summary) throw new Error("Initialization command not found; configure it in Settings → Memory & Context → Project initialization");
   const template = stored(summary.id);
   const ctx = await context(input);
   const directories = new Set(template.directories);

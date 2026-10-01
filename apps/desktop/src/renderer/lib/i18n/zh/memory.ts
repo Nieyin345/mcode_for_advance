@@ -8,6 +8,7 @@ export const zh = {
   "init.discardHint": "当前方案未保存的改动将丢弃；已保存的文件与记忆不会被删除。",
   "init.memoryTitle": "记忆标题",
 
+  "memory.tab.initializers": "项目初始化",
   "init.description": "每个场景是一套初始化方案。文件夹、文件和项目记忆由 Mcode 直接创建，不调用模型、不执行脚本；说明文件由当前对话的 AI 分析项目后写入。",
   "init.desktopOnly": "项目初始化仅支持桌面端；手机端不会获得文件写入权限。",
   "init.choose": "选择初始化场景",
@@ -73,7 +74,7 @@ export const zh = {
   "init.agentFocusPlaceholder": "例如：重点写实验怎么复现、数据放在哪里、论文用什么模板编译……",
   "init.agentPromptPreview": "查看完整提示词",
   "init.scenario": "场景",
-  "init.noTemplates": "还没有初始化场景，请先到「设置 → 项目初始化」创建。",
+  "init.noTemplates": "还没有初始化场景，请先到「设置 → 记忆与上下文 → 项目初始化」创建。",
   "init.agentStep": "AI 生成 {file}",
   "init.agentCreate": "新建",
   "init.agentImprove": "已存在，AI 会在原文基础上改进",

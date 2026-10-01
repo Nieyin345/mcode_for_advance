@@ -1,3 +1,4 @@
+import { ProjectInitManager } from "./ProjectInitManager.js";
 import { MemoryTransferPanel } from "./MemoryTransferPanel.js";
 /** Settings surface for the scoped MCode memory library and global instructions.
  * Legacy CLI MEMORY.md files are available only through the explicit import flow. */
@@ -83,7 +84,7 @@ export function MemoryExplorerPanel() {
   const mutationPending = useRef(false);
   /** 只在用户主动打开时扫描；不会定时或后台自动清理。 */
   const [reviewOpen, setReviewOpen] = useState(false);
-  const [view, setView] = useState<"library" | "instructions" | "import">("library");
+  const [view, setView] = useState<"library" | "instructions" | "import" | "initializers">("library");
 
   /* Global instructions are always-on requirements, not remembered facts. */
   const [instructions, setInstructions] = useState("");
@@ -283,7 +284,7 @@ export function MemoryExplorerPanel() {
   dirtyRef.current = dirty;
   const navigation = (
     <div className={`mx-auto my-3 flex w-full flex-wrap gap-1 rounded-lg bg-surface-subtle p-1 ${PANEL_MAX_W.form}`}>
-      {(["library", "instructions", "import"] as const).map((item) => (
+      {(["library", "instructions", "import", "initializers"] as const).map((item) => (
         <Button key={item} size="sm" variant={view === item ? "secondary" : "ghost"} onClick={() => setView(item)}>
           {t(`memory.tab.${item}`)}
         </Button>
@@ -291,7 +292,15 @@ export function MemoryExplorerPanel() {
     </div>
   );
 
-  // 项目初始化已移到独立的设置页「项目初始化」(settings/ProjectInitPanel)。
+  if (view === "initializers") return (
+    <section className={`mx-auto h-full w-full overflow-y-auto ${PANEL_MAX_W.form}`}>
+      <PanelHeader title={t("settings.nav.memory")} icon={IconNotebook} />
+      {navigation}
+      <p className="px-4 pt-1 text-sm leading-relaxed text-content-muted">{t("init.panelIntro")}</p>
+      <ProjectInitManager />
+    </section>
+  );
+
   if (view === "instructions") return (
     <section className={`mx-auto h-full w-full overflow-y-auto ${PANEL_MAX_W.form}`}>
       <PanelHeader title={t("settings.nav.memory")} icon={IconNotebook} />

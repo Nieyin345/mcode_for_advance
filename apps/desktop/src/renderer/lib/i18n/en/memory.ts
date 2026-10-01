@@ -5,6 +5,7 @@ export const en = {
   "init.discardHint": "Unsaved edits to this template will be discarded. Existing files and memories will not be deleted.",
   "init.memoryTitle": "Memory title",
 
+  "memory.tab.initializers": "Project initialization",
   "init.description": "Each scenario is one initialization recipe. Mcode creates folders, files and project memories directly, without a model or scripts; the guide file is written by the AI in the current conversation after it analyzes the project.",
   "init.desktopOnly": "Project initialization is desktop-only. Mobile does not receive filesystem write access.",
   "init.choose": "Choose scenario",
@@ -70,7 +71,7 @@ export const en = {
   "init.agentFocusPlaceholder": "e.g. how to reproduce experiments, where data lives, which template compiles the paper...",
   "init.agentPromptPreview": "Show the full prompt",
   "init.scenario": "Scenario",
-  "init.noTemplates": "No initialization scenarios yet. Create one in Settings → Project initialization.",
+  "init.noTemplates": "No initialization scenarios yet. Create one in Settings → Memory & Context → Project initialization.",
   "init.agentStep": "AI writes {file}",
   "init.agentCreate": "new file",
   "init.agentImprove": "exists, the AI will improve it",
