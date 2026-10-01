@@ -43,6 +43,7 @@ import { automationOriginOf, readAutomationEventChain, EVENT_CHAIN_PREFIX, EVENT
  */
 
 import { existsSync, watch, type FSWatcher } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { cronMatches } from "@contracts/cron";
 import { HOOK_EVENT_OF, eventItemFactsOf, matchesAnyGlob, matchesGlobList, type HookEvent } from "@contracts/hook";
@@ -601,8 +602,9 @@ class AutomationRunner {
         title: node.title || manifest.name,
         spec: check.spec,
         projectId,
-        // 没绑项目时退回宿主目录 —— 见上面那段。只可能是「事件发生时」。
-        cwd: project?.path ?? process.cwd(),
+        // 没绑项目时退回用户主目录 —— 见上面那段。只可能是「事件发生时」。
+        // 不用 `process.cwd()`:打包后那是 `/`(macOS 从访达启动)或安装目录,写不进东西。
+        cwd: project?.path ?? homedir(),
         task: task.trim(),
         params: node.params,
         disarmed: off,
@@ -1563,7 +1565,7 @@ class AutomationRunner {
       if (trigger.projectId.length > 0 && project === undefined) {
         return this.skip(trigger, `项目不在了(${trigger.projectId})—— 这条自动化没有工作目录`);
       }
-      const cwd = project?.path ?? process.cwd();
+      const cwd = project?.path ?? homedir(); // 不用 process.cwd(),理由同上
       // Check ALL project sessions before creating/rebinding one. A newer idle
       // session must not hide an older active run or let us rewrite its origin.
       // Never overlap runs. Data-bearing triggers retain ONE coalesced next
@@ -1708,6 +1710,35 @@ class AutomationRunner {
    */
   private sessionOf(trigger: LoadedTrigger, projectId: string, originSessionId?: string): Session {
     projectId = projectId || SYSTEM_AUTOMATION_PROJECT_ID;
+    if (projectId === SYSTEM_AUTOMATION_PROJECT_ID) {
+      // 项目为空的事件触发器是合法的(内置「导入后下载/下载后转录」就是这样),
+      // 但 sessions.project_id 是 NOT NULL + 外键。以前建会话填 "" 会在这里
+      // FOREIGN KEY constraint failed,图明明响着却永远跑不起来。
+      // 专用行只满足 FK;ProjectRepo.list / listPaths 会隐藏它,不把宿主 cwd
+      // 变成用户可浏览的项目根,也不拿别人的项目给无人值守的自动化用。
+      // 路径用用户主目录 —— 对话节点跑在这个会话上时,工作目录取的就是它。
+      // ⚠️ 必须在「复用已有会话」那条早返回**之前** —— 老用户的系统会话一直被复用,
+      // 放在新建分支里的话,存坏的路径永远校正不到。
+      const systemPath = homedir();
+      const systemProject = ProjectRepo.get(SYSTEM_AUTOMATION_PROJECT_ID);
+      // 老版本存的是 `process.cwd()`(打包后为 `/` 或安装目录):不一致就校正。
+      if (systemProject !== undefined && systemProject.path !== systemPath) {
+        ProjectRepo.setSystemAutomationPath(systemPath);
+      }
+      if (systemProject === undefined) {
+        ProjectRepo.create({
+          id: SYSTEM_AUTOMATION_PROJECT_ID,
+          name: "后台自动化(系统)",
+          path: systemPath,
+          archived: true,
+          group: null,
+          sortOrder: 0,
+          pinnedAt: null,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+      }
+    }
     const origin = originSessionId ? SessionRepo.get(originSessionId) : undefined;
     const configuredProviderId = providerIdOf(trigger.params);
     const rawConfiguredModel = trigger.params[NODE_MODEL_PARAM_KEY];
@@ -1742,26 +1773,6 @@ class AutomationRunner {
       };
     }
     const now = Date.now();
-    if (projectId === SYSTEM_AUTOMATION_PROJECT_ID) {
-      // 项目为空的事件触发器是合法的(内置「导入后下载/下载后转录」就是这样),
-      // 但 sessions.project_id 是 NOT NULL + 外键。以前建会话填 "" 会在这里
-      // FOREIGN KEY constraint failed,图明明响着却永远跑不起来。
-      // 专用行只满足 FK;ProjectRepo.list / listPaths 会隐藏它,不把宿主 cwd
-      // 变成用户可浏览的项目根,也不拿别人的项目给无人值守的自动化用。
-      if (ProjectRepo.get(SYSTEM_AUTOMATION_PROJECT_ID) === undefined) {
-        ProjectRepo.create({
-          id: SYSTEM_AUTOMATION_PROJECT_ID,
-          name: "后台自动化(系统)",
-          path: process.cwd(),
-          archived: true,
-          group: null,
-          sortOrder: 0,
-          pinnedAt: null,
-          createdAt: now,
-          updatedAt: now,
-        });
-      }
-    }
     const session: Session = {
       id: uid("sess_"),
       projectId,

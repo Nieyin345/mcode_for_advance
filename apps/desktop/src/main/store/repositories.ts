@@ -190,6 +190,15 @@ export const ProjectRepo = {
     rootPathsCache = null;
   },
 
+  /** 只改**隐藏系统项目**(无项目自动化的 FK 占位行)的路径 —— 用户项目的路径按设计
+   *  永远不动,所以这里不提供通用的 setPath。老版本把宿主 `process.cwd()` 存了进去,
+   *  打包后那是 `/` 或安装目录;automationRunner 发现不一致时用它校正。 */
+  setSystemAutomationPath(path: string): void {
+    getDb().run("UPDATE projects SET path = ? WHERE id = ?", [v(path), v(SYSTEM_AUTOMATION_PROJECT_ID)]);
+    persist();
+    rootPathsCache = null;
+  },
+
   /** Pin/unpin a project: pinned rows write the current timestamp (most
    *  recent pin sorts first), unpinned rows write NULL. Mirrors
    *  SessionRepo.setPinned — sort_order is left alone so unpinning returns

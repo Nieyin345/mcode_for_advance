@@ -28,6 +28,7 @@
  * 钩子要重启应用才生效 —— 而"改了没反应"是最难查的一类问题。
  */
 import { statSync } from "node:fs";
+import { homedir } from "node:os";
 import type { RuntimeEvent } from "@contracts/runtime";
 import {
   HOOK_EVENT_OF,
@@ -93,7 +94,9 @@ class HookRunner {
       event: spec.event,
       at: Date.now(),
       session: { id: "(试跑)", kind: "chat", title: "试跑", projectId: "" },
-      cwd: process.cwd(),
+      // 不用 `process.cwd()`:打包后的应用里那是 `/`(macOS 从访达启动)或安装目录,
+      // 钩子里写的相对路径(`python scripts/x.py`)试跑必挂,真跑(项目目录)却好好的。
+      cwd: homedir(),
       ...(sample !== undefined ? { toolName: sample } : {}),
       data: { type: spec.event, sessionId: "(试跑)", note: "这是设置页的试跑,不是真实事件" },
     };
@@ -238,9 +241,10 @@ class HookRunner {
       const project = ProjectRepo.get(projectId);
       if (project) return project.path;
     } catch {
-      /* 读不到就退回宿主目录 */
+      /* 读不到就退回用户主目录 */
     }
-    return process.cwd();
+    // 不用 `process.cwd()` —— 理由见 `test()`。
+    return homedir();
   }
 }
 

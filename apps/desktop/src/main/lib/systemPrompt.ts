@@ -101,6 +101,9 @@ export const CODEX_IDENTITY_PROMPT = [
  * 自定义 UI 与项目初始化方案里 —— 用户换一个领域用,内核不用跟着改。
  */
 export function fileArchitecturePrompt(root: string, scripts: string): string {
+  // macOS / Linux 上通常只有 `python3`(macOS 12.3 起系统不带 `python`)。照写 `python`
+  // 的话,模型第一条命令必然 command not found,再自己猜 —— 白丢一轮。
+  const py = process.platform === "win32" ? "python" : "python3";
   return [
     `## 你的工作环境:用户的资料库`,
     `用户的资料库记录和复制入库的文件在一个可搬迁的**数据根**下,当前是:`,
@@ -133,10 +136,10 @@ export function fileArchitecturePrompt(root: string, scripts: string): string {
     `- **模版和其他资料都在统一资料库中**。旧模版常作为 linked 目录条目，文件可能仍在库外。用户说「照这个模版做」时先从资料库分类/条目清单找实际路径，再按需列目录、读文件；不要猜旧 \`templates/.manifests/\` 路径，也不要假设正文已经嵌在清单里。`,
     `- **优先读 Markdown,不是 PDF**。一条条目有 Markdown 转录时,清单先列转录、后列原件(PDF / Word……):先读转录,它更便宜、公式表格都不丢;转录里的图表、公式、版式拿不准时再对照原件。清单里标了「尚未转 Markdown」的才是只有 PDF。`,
     `- **查库用脚本**(文件名是哈希,翻目录翻不出东西):`,
-    `  \`python "${scripts}/library.py" find 关键词\` —— 在标题/简介/来源地址/文件路径里搜`,
-    `  \`python "${scripts}/library.py" show <id 前缀或标题片段>\` —— 看一条的完整字段 + 用户在这条上的笔记`,
-    `  \`python "${scripts}/library.py" list --group <大类 id>\` —— 列条目(不带 \`--group\` 就是全部;大类、分类的 id 用 \`collections\` 查)`,
-    `  \`python "${scripts}/library.py" notes\` / \`collections\` —— 列笔记 / 分类树`,
+    `  \`${py} "${scripts}/library.py" find 关键词\` —— 在标题/简介/来源地址/文件路径里搜`,
+    `  \`${py} "${scripts}/library.py" show <id 前缀或标题片段>\` —— 看一条的完整字段 + 用户在这条上的笔记`,
+    `  \`${py} "${scripts}/library.py" list --group <大类 id>\` —— 列条目(不带 \`--group\` 就是全部;大类、分类的 id 用 \`collections\` 查)`,
+    `  \`${py} "${scripts}/library.py" notes\` / \`collections\` —— 列笔记 / 分类树`,
     ``,
     `### 二进制文档(Word / Excel / PPT / PDF)`,
     ``,

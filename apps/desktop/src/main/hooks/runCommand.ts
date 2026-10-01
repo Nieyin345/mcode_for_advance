@@ -25,6 +25,7 @@
  *    当前目录里跑,而不是起不来。
  */
 import { existsSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import {
   DEFAULT_HOOK_TIMEOUT_MS,
   HOOK_ENV,
@@ -53,12 +54,15 @@ export async function runHookCommand(spec: HookSpec, payload: HookPayload): Prom
     shell: true,
     // 工作目录**可能已经不在那儿了**(工作树被删掉、项目被移除)。给一个不存在的
     // cwd 会让 spawn 直接失败,而那和"命令自己写错了"是两件事 —— 所以先探一下,
-    // 不在了就让命令在宿主当前的目录里跑。
+    // 不在了就退到用户主目录里跑(见下)。
     //
     // ⚠️ 探的是**目录**不是"存在"(`isDirectory`):一个**文件**也能通过 `existsSync`,
     // 于是它会被原样交给 spawn,而报错是 `ENOENT`。那句话指着 cmd.exe 说"找不到",
     // 用户去看自己写的命令,怎么看都是对的 —— 一个把排查方向带偏的错。
-    ...(isDirectory(payload.cwd) ? { cwd: payload.cwd } : {}),
+    //
+    // 退路是**用户主目录**而不是继承宿主进程的 cwd:打包后的应用里那是 `/`(macOS
+    // 从访达启动)或安装目录 —— 前者什么都写不了,后者会把钩子的产物撒进安装目录。
+    cwd: isDirectory(payload.cwd) ? payload.cwd : homedir(),
     env: { ...process.env, ...envOf(payload) },
     // 载荷走 stdin。命令没读 stdin 也不会卡住(写完就 end)。
     stdin: JSON.stringify(payload, null, 2),

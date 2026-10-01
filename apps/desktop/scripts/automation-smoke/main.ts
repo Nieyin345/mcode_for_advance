@@ -2655,9 +2655,15 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
       const system = runsOfNode(nodeId).at(-1)!.sessionId;
       eq("无项目事件归入系统项目而非借用 A", SessionRepo.get(system)?.projectId, SYSTEM_AUTOMATION_PROJECT_ID);
       check("系统会话独立于 A/B", system !== a && system !== b, system);
-      eq("无项目事件使用宿主目录", runsOfNode(nodeId).at(-1)?.cwd, process.cwd());
+      // 不是 process.cwd():打包后那是 `/` 或安装目录(见 automationRunner)。
+      eq("无项目事件使用用户主目录", runsOfNode(nodeId).at(-1)?.cwd, (await import("node:os")).homedir());
       await runner.runNow(wf, nodeId);
       eq("无项目重复运行复用系统会话", runsOfNode(nodeId).at(-1)?.sessionId, system);
+      // 老版本把 process.cwd() 存进了系统项目;复用会话(不新建)也得校正过来。
+      ProjectRepo.setSystemAutomationPath("/stale-legacy-cwd");
+      await runner.runNow(wf, nodeId);
+      eq("复用系统会话时校正老版本存坏的路径", ProjectRepo.get(SYSTEM_AUTOMATION_PROJECT_ID)?.path, (await import("node:os")).homedir());
+      eq("校正路径不换会话", runsOfNode(nodeId).at(-1)?.sessionId, system);
       await switchTo(projectB);
       await runner.runNow(wf, nodeId);
       eq("离开系统项目后认回 B 的会话", runsOfNode(nodeId).at(-1)?.sessionId, b);

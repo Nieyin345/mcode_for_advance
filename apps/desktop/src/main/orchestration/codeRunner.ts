@@ -44,11 +44,14 @@ const MAX_CAPTURE_BYTES = 16_000;
 /** 语言 → 怎么起它。`file` 是已经写好的那个临时文件。 */
 function spec(language: CodeLanguage, file: string): [string, string[]] {
   // `-u` = 不做缓冲。少了它进度上报会攒到进程结束才出来,实时看进度就成了空话。
-  if (language === "python") return ["python", ["-u", file]];
+  // macOS 12.3 起系统不再带 `python`,Homebrew / python.org / Xcode 命令行工具都只给
+  // `python3`(conda、pyenv 两个都给)。Windows 上官方安装包给的是 `python`,保持原样。
+  if (language === "python") return [process.platform === "win32" ? "python" : "python3", ["-u", file]];
   // 用**当前这个** Node —— PATH 上那个未必存在(打包后的应用里更是如此)。
   if (language === "node") return [process.execPath, [file]];
   if (language === "powershell") {
-    return ["powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", file]];
+    // 跨平台版 PowerShell(macOS / Linux)的可执行文件叫 `pwsh`,没有 `powershell`。
+    return [process.platform === "win32" ? "powershell" : "pwsh", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", file]];
   }
   // ⚠️ Windows 上**不能带 `/s`**(2026-09-27 修)。`/s` 会把 cmd 的「引号保留」规则关掉:
   // 脚本路径一含空格(用户名带空格的机器上,`os.tmpdir()` 就是

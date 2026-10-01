@@ -30,6 +30,7 @@
  */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { killTree, TREE_KILLABLE } from "@main/lib/spawnRun.js";
 import {
   chmodSync,
   cpSync,
@@ -305,7 +306,7 @@ async function assemblePiClosureWithNpm(stagingDir: string, version: string): Pr
         "--loglevel=error",
         "--no-save",
       ],
-      { cwd: stagingDir, shell: process.platform === "win32", stdio: ["ignore", "pipe", "pipe"] },
+      { cwd: stagingDir, shell: process.platform === "win32", ...TREE_KILLABLE, stdio: ["ignore", "pipe", "pipe"] },
     );
     // Keep only the tail — npm error context lives at the end, and a garbled
     // CN codepage flood shouldn't grow this without bound.
@@ -314,7 +315,9 @@ async function assemblePiClosureWithNpm(stagingDir: string, version: string): Pr
       output += chunk.toString();
       if (output.length > 8_000) output = output.slice(-8_000);
     };
-    const killTimer = setTimeout(() => child.kill(), PI_NPM_ASSEMBLE_TIMEOUT_MS);
+    // 杀整棵树:win32 上 child 是 cmd.exe 外壳,`child.kill()` 只杀它 —— npm 照跑,
+    // 还攥着 stdout/stderr 管道,`close` 要等 npm 自己退才来,超时形同虚设。
+    const killTimer = setTimeout(() => killTree(child), PI_NPM_ASSEMBLE_TIMEOUT_MS);
     child.stdout?.on("data", append);
     child.stderr?.on("data", append);
     child.on("error", (err) => {
