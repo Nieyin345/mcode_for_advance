@@ -29,6 +29,7 @@ import type { BrowserDevicePreset } from "@contracts/ipc";
 import { api } from "./lib/api.js";
 import { useTheme } from "./lib/theme.js";
 import { useChatAppearance, useRightPanelAppearance, useThemeStyle } from "./lib/appearance.js";
+import { useUiPrefsAppearance } from "./lib/uiPrefs.js";
 import { useI18n } from "./lib/i18n/index.js";
 import { OpenTabsBar } from "./components/ide/OpenTabsBar.js";
 import { useFileViewStore } from "./stores/fileViewStore.js";
@@ -223,6 +224,8 @@ export function App() {
   // Apply + keep in sync the theme STYLE (.sketch on <html>, orthogonal to
   // the light/dark scheme above) from the ui.themeStyle setting.
   useThemeStyle();
+  // 界面 / 代码字体、聊天内容宽度、自定义 CSS(lib/uiPrefs.ts)。
+  useUiPrefsAppearance();
 
   const init = useSessionStore((s) => s.init);
   useEffect(() => {

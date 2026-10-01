@@ -40,6 +40,7 @@ import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Mention, type MentionNodeAttrs } from "@tiptap/extension-mention";
 import { cn } from "@renderer/lib/cn.js";
+import { useUiPrefsStore } from "@renderer/lib/uiPrefs.js";
 import type { SkillInfo } from "@contracts/ipc";
 
 /** Sync the `is-empty` class the placeholder CSS rule keys on (styles.css).
@@ -312,7 +313,26 @@ export const ComposerEditor = forwardRef<
       // Suppress Enter during IME composition (so confirming a candidate
       // doesn't send the message). Ctrl/Cmd+Enter is passed through as a
       // modifier — the parent uses it for "插话"(塞进正在跑的那一轮)。
-      handleKeyDown: (_view, event) => {
+      handleKeyDown: (view, event) => {
+        // 发送键可在 设置 → 常规 里换成 Ctrl/⌘+Enter(lib/uiPrefs.ts)。那种模式下:
+        // Enter / Shift+Enter 换行,Ctrl/⌘+Enter 发送(=默认模式的 Enter),
+        // Ctrl/⌘+Shift+Enter 插话(=默认模式的 Ctrl+Enter)。
+        if (
+          event.key === "Enter" &&
+          !event.isComposing &&
+          useUiPrefsStore.getState().sendKey === "modEnter"
+        ) {
+          const mod = event.ctrlKey || event.metaKey;
+          event.preventDefault();
+          if (mod) {
+            onEnterRef.current({ ctrl: event.shiftKey });
+          } else {
+            // 插硬换行而不是拆段落:序列化(textWithSkills)只把 hardBreak 记成 "\n"。
+            const br = view.state.schema.nodes.hardBreak;
+            if (br) view.dispatch(view.state.tr.replaceSelectionWith(br.create()).scrollIntoView());
+          }
+          return true;
+        }
         if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
           event.preventDefault();
           onEnterRef.current({ ctrl: event.ctrlKey || event.metaKey });

@@ -5,6 +5,7 @@ import "@xterm/xterm/css/xterm.css";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { monoFontStack, useUiPrefsStore } from "@renderer/lib/uiPrefs.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import type { ITheme } from "@xterm/xterm";
 
@@ -150,6 +151,8 @@ export function TerminalView({
   // here so the Terminal constructor picks up the user's preference and the
   // effect below keeps a live instance in sync on change.
   const rightPanelFontSize = useSessionStore((s) => s.rightPanelFontSize);
+  // 设置 → 外观 → 代码字体(lib/uiPrefs.ts);xterm 用 canvas 画字,CSS 管不到,得走选项。
+  const fontMono = useUiPrefsStore((s) => s.fontMono);
 
   const setStatus = (s: TerminalSessionStatus, detail?: string) => {
     statusRef.current = s;
@@ -280,8 +283,7 @@ export function TerminalView({
       // Bundled JetBrains Mono Variable heads the stack (same face as the
       // rest of the app's `font-mono` surfaces - see tailwind.config.js) so
       // the terminal matches code blocks/diffs; OS monospace is the fallback.
-      fontFamily:
-        '"JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+      fontFamily: monoFontStack(useUiPrefsStore.getState().fontMono),
       lineHeight: 1.2,
       scrollback: 5000,
       theme: buildTheme(document.documentElement.classList.contains("dark")),
@@ -401,6 +403,21 @@ export function TerminalView({
       /* host may be display:none while the tab is hidden */
     }
   }, [rightPanelFontSize]);
+
+  // 代码字体改了 → 同步到活着的 xterm(同上,不重建实例)。
+  useEffect(() => {
+    const term = termRef.current;
+    const fit = fitRef.current;
+    if (!term || !fit) return;
+    const next = monoFontStack(fontMono);
+    if (term.options.fontFamily === next) return;
+    term.options.fontFamily = next;
+    try {
+      fit.fit();
+    } catch {
+      /* host may be display:none while the tab is hidden */
+    }
+  }, [fontMono]);
 
   // Spawn / re-spawn PTY whenever spawnGen changes (initial + restart).
   useEffect(() => {

@@ -16,6 +16,7 @@ import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { SettingRow } from "./SettingRow.js";
 import { FontSizeStepper } from "./FontSizeStepper.js";
+import { CustomCssSection, TypographySection } from "./AppearanceExtras.js";
 
 /**
  * Appearance settings — two grouped cards: 主题与颜色 + 字号.
@@ -501,6 +502,10 @@ export function AppearancePanel() {
           />
         </SettingRow>
       </SettingsSection>
+
+      {/* ── 字体与版式 / 自定义 CSS(状态在 lib/uiPrefs.ts) ── */}
+      <TypographySection />
+      <CustomCssSection />
 
       <p className="pt-1 text-[0.7143em] text-content-subtle">
         {t("settings.appearance.footer")}

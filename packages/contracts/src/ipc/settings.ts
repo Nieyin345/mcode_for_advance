@@ -361,7 +361,8 @@ export type GestureSequence = z.infer<typeof GestureSequenceSchema>;
 export const GestureSettingsSchema = z.object({
   enabled: z.boolean().default(true),
   trigger: z.enum(["right", "middle"]).default("right"),
-  overrides: z.record(z.string(), GestureSequenceSchema).default({}),
+  // 覆盖值允许空数组:表示用户明确解除了这条命令的手势(连默认手势也不要)。
+  overrides: z.record(z.string(), z.array(GestureDirectionSchema).max(8)).default({}),
 });
 export type GestureSettings = z.infer<typeof GestureSettingsSchema>;
 

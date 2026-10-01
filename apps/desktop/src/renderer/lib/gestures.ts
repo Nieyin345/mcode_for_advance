@@ -292,9 +292,16 @@ export function resolveGesture(
   commandId: string,
   overrides: Record<string, GestureSequence>,
 ): GestureSequence | null {
-  if (overrides[commandId]) return overrides[commandId];
+  const o = overrides[commandId];
+  // 空数组覆盖 = 用户解除了绑定(连默认手势也不要)。
+  if (o) return o.length > 0 ? o : null;
   if (DEFAULT_GESTURES[commandId]) return DEFAULT_GESTURES[commandId];
   return null;
+}
+
+/** 让某条命令「没有手势」应写入的覆盖值:有默认手势的写空数组,没有的直接删覆盖。 */
+export function unbindGestureFor(commandId: string): GestureSequence | null {
+  return DEFAULT_GESTURES[commandId] ? [] : null;
 }
 
 /** Merge defaults + overrides into one effective map (commandId → sequence).
@@ -302,7 +309,12 @@ export function resolveGesture(
 export function resolveAllGestures(
   overrides: Record<string, GestureSequence>,
 ): Record<string, GestureSequence> {
-  return { ...DEFAULT_GESTURES, ...overrides };
+  const out: Record<string, GestureSequence> = { ...DEFAULT_GESTURES };
+  for (const [id, seq] of Object.entries(overrides)) {
+    if (seq.length > 0) out[id] = seq;
+    else delete out[id]; // 空数组覆盖 = 解除绑定
+  }
+  return out;
 }
 
 /**

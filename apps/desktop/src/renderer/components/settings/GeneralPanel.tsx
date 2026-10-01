@@ -10,6 +10,7 @@ import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import type { ChatDensity, DisplayMode, AutoArchiveConfig, Locale } from "@contracts/ipc";
 import type { ReactNode } from "react";
 import { useState } from "react";
+import { useUiPrefsStore, type ComposerSendKey } from "@renderer/lib/uiPrefs.js";
 import { SettingRow } from "./SettingRow.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
@@ -53,6 +54,104 @@ const AUTO_ARCHIVE_DAY_VALUES = [7, 14, 30, 60, 90];
 /** Sentinel value for the per-project override select, distinct from the
  *  numeric day options. */
 const NEVER_OVERRIDE = "0";
+const CUSTOM_DAYS = "__custom__";
+const ARCHIVE_DAYS_MAX = 3650;
+
+/**
+ * 归档天数选择:预设(7/14/30/60/90)+「自定义…」(就地换成数字框)+ 可选「从不」。
+ *
+ * 以前是写死的五个预设:存进去的值只要不在预设里(手改配置、旧版本、或者「添加项目
+ * 覆盖」时抄过来的默认值),默认天数那一栏一律显示成「30 天」,项目覆盖那一栏一律显示
+ * 成「从不」——显示的和实际生效的对不上。现在当前值不在预设里时会作为一项补进列表。
+ */
+function ArchiveDaysSelect({
+  id,
+  value,
+  allowNever,
+  onChange,
+  className,
+}: {
+  id: string;
+  value: number;
+  allowNever?: boolean;
+  onChange: (days: number) => void;
+  className?: string;
+}) {
+  const { t } = useI18n();
+  const [custom, setCustom] = useState<string | null>(null);
+  const label = (d: number) =>
+    d === 0 ? t("settings.general.archiveNever") : t("common.dayCount", { n: d });
+  const options =
+    value === 0 || AUTO_ARCHIVE_DAY_VALUES.includes(value)
+      ? AUTO_ARCHIVE_DAY_VALUES
+      : [...AUTO_ARCHIVE_DAY_VALUES, value].sort((a, b) => a - b);
+
+  if (custom !== null) {
+    const commit = () => {
+      const n = Math.round(Number(custom));
+      if (custom.trim() !== "" && Number.isFinite(n) && n >= 1 && n <= ARCHIVE_DAYS_MAX) onChange(n);
+      setCustom(null);
+    };
+    return (
+      <Input
+        id={id}
+        type="number"
+        min={1}
+        max={ARCHIVE_DAYS_MAX}
+        step={1}
+        autoFocus
+        value={custom}
+        placeholder={t("settings.general.archiveCustomPlaceholder")}
+        onChange={(e) => setCustom(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") {
+            // 只退出编辑,别让设置页的 Esc 把整页关掉。
+            e.stopPropagation();
+            setCustom(null);
+          }
+        }}
+        className={className}
+      />
+    );
+  }
+
+  return (
+    <Select.Root
+      value={String(value)}
+      onValueChange={(v) => {
+        if (v === CUSTOM_DAYS) setCustom(String(value > 0 ? value : 30));
+        else if (v !== null && v !== undefined) onChange(Number(v));
+      }}
+    >
+      <Select.Trigger id={id} className={className}>
+        <Select.Value>{(val: string) => label(Number(val))}</Select.Value>
+      </Select.Trigger>
+      <Select.Portal>
+        <Select.Positioner>
+          <Select.Popup>
+            <Select.List>
+              {(allowNever || value === 0) && (
+                <Select.Item value={NEVER_OVERRIDE}>
+                  <Select.ItemText>{t("settings.general.archiveNever")}</Select.ItemText>
+                </Select.Item>
+              )}
+              {options.map((d) => (
+                <Select.Item key={d} value={String(d)}>
+                  <Select.ItemText>{label(d)}</Select.ItemText>
+                </Select.Item>
+              ))}
+              <Select.Item value={CUSTOM_DAYS}>
+                <Select.ItemText>{t("settings.general.archiveCustom")}</Select.ItemText>
+              </Select.Item>
+            </Select.List>
+          </Select.Popup>
+        </Select.Positioner>
+      </Select.Portal>
+    </Select.Root>
+  );
+}
 
 export function GeneralPanel() {
   const { t } = useI18n();
@@ -79,6 +178,8 @@ export function GeneralPanel() {
   // edited normally. Keep the raw draft locally, apply valid in-range numbers
   // live, and clamp-commit only on blur. null = not editing (show the store).
   const [pasteDraft, setPasteDraft] = useState<string | null>(null);
+  const sendKey = useUiPrefsStore((s) => s.sendKey);
+  const setSendKey = useUiPrefsStore((s) => s.setSendKey);
 
   const onPasteThresholdChange = (raw: string) => {
     setPasteDraft(raw);
@@ -108,11 +209,6 @@ export function GeneralPanel() {
   const autoArchiveConfig = useSessionStore((s) => s.autoArchiveConfig);
   const setAutoArchiveConfig = useSessionStore((s) => s.setAutoArchiveConfig);
   const projects = useSessionStore((s) => s.projects);
-
-  const dayLabel = (val: string) =>
-    AUTO_ARCHIVE_DAY_VALUES.some((d) => String(d) === val)
-      ? t("common.dayCount", { n: val })
-      : t("settings.general.archiveNever");
 
   const patchAutoArchive = (patch: Partial<AutoArchiveConfig>) =>
     void setAutoArchiveConfig({ ...autoArchiveConfig, ...patch });
@@ -294,6 +390,37 @@ export function GeneralPanel() {
             className="w-full"
           />
         </SettingRow>
+
+        {/* ── 发送键(lib/uiPrefs.ts) ── */}
+        <SettingRow
+          title={t("settings.general.sendKey")}
+          desc={t("settings.general.sendKeyDesc")}
+          htmlFor="setting-send-key"
+        >
+          <Select.Root value={sendKey} onValueChange={(v) => setSendKey(v === "modEnter" ? "modEnter" : "enter")}>
+            <Select.Trigger id="setting-send-key" className="w-full">
+              <Select.Value>
+                {(val: ComposerSendKey) =>
+                  val === "modEnter" ? t("settings.general.sendKeyMod") : t("settings.general.sendKeyEnter")
+                }
+              </Select.Value>
+            </Select.Trigger>
+            <Select.Portal>
+              <Select.Positioner>
+                <Select.Popup>
+                  <Select.List>
+                    <Select.Item value="enter">
+                      <Select.ItemText>{t("settings.general.sendKeyEnter")}</Select.ItemText>
+                    </Select.Item>
+                    <Select.Item value="modEnter">
+                      <Select.ItemText>{t("settings.general.sendKeyMod")}</Select.ItemText>
+                    </Select.Item>
+                  </Select.List>
+                </Select.Popup>
+              </Select.Positioner>
+            </Select.Portal>
+          </Select.Root>
+        </SettingRow>
       </SettingsSection>
 
       {/* ── 会话自动归档 ── */}
@@ -315,33 +442,12 @@ export function GeneralPanel() {
           desc={t("settings.general.archiveDefaultDaysDesc")}
           htmlFor="setting-autoarchive-default-days"
         >
-          <Select.Root
-            value={String(autoArchiveConfig.defaultDays)}
-            onValueChange={(v) => patchAutoArchive({ defaultDays: Number(v) })}
-          >
-            <Select.Trigger id="setting-autoarchive-default-days" className="w-full">
-              <Select.Value>
-                {(val: string) =>
-                  AUTO_ARCHIVE_DAY_VALUES.some((d) => String(d) === val)
-                    ? t("common.dayCount", { n: val })
-                    : t("common.dayCount", { n: 30 })
-                }
-              </Select.Value>
-            </Select.Trigger>
-            <Select.Portal>
-              <Select.Positioner>
-                <Select.Popup>
-                  <Select.List>
-                    {AUTO_ARCHIVE_DAY_VALUES.map((d) => (
-                      <Select.Item key={d} value={String(d)}>
-                        <Select.ItemText>{t("common.dayCount", { n: d })}</Select.ItemText>
-                      </Select.Item>
-                    ))}
-                  </Select.List>
-                </Select.Popup>
-              </Select.Positioner>
-            </Select.Portal>
-          </Select.Root>
+          <ArchiveDaysSelect
+            id="setting-autoarchive-default-days"
+            value={autoArchiveConfig.defaultDays}
+            onChange={(days) => patchAutoArchive({ defaultDays: days })}
+            className="w-full"
+          />
         </SettingRow>
 
         {overriddenProjects.map((p) => (
@@ -352,30 +458,13 @@ export function GeneralPanel() {
             htmlFor={`setting-autoarchive-project-${p.id}`}
           >
             <div className="flex items-center gap-2">
-              <Select.Root
-                value={String(autoArchiveConfig.overrides[p.id])}
-                onValueChange={(v) => setProjectOverride(p.id, v as string)}
-              >
-                <Select.Trigger id={`setting-autoarchive-project-${p.id}`} className="min-w-0 flex-1">
-                  <Select.Value>{(val: string) => dayLabel(val)}</Select.Value>
-                </Select.Trigger>
-                <Select.Portal>
-                  <Select.Positioner>
-                    <Select.Popup>
-                      <Select.List>
-                        <Select.Item value={NEVER_OVERRIDE}>
-                          <Select.ItemText>{t("settings.general.archiveNever")}</Select.ItemText>
-                        </Select.Item>
-                        {AUTO_ARCHIVE_DAY_VALUES.map((d) => (
-                          <Select.Item key={d} value={String(d)}>
-                            <Select.ItemText>{t("common.dayCount", { n: d })}</Select.ItemText>
-                          </Select.Item>
-                        ))}
-                      </Select.List>
-                    </Select.Popup>
-                  </Select.Positioner>
-                </Select.Portal>
-              </Select.Root>
+              <ArchiveDaysSelect
+                id={`setting-autoarchive-project-${p.id}`}
+                value={autoArchiveConfig.overrides[p.id] ?? autoArchiveConfig.defaultDays}
+                allowNever
+                onChange={(days) => setProjectOverride(p.id, String(days))}
+                className="min-w-0 flex-1"
+              />
               <Button
                 variant="ghost"
                 size="icon"

@@ -26,6 +26,7 @@ import {
   IPC,
   UI_TITLE_GEN_ENABLED_SETTING_KEY,
   UI_TITLE_GEN_MODEL_SETTING_KEY,
+  UI_LOCALE_SETTING_KEY,
 } from "@contracts/ipc";
 import type { Session } from "@contracts/session";
 import { SessionRepo, SettingRepo } from "@main/store/repositories.js";
@@ -62,6 +63,19 @@ const TITLE_GEN_SYSTEM_PROMPT = [
  * and latency on the one-shot query.
  */
 const TITLE_GEN_INPUT_CAP = 4000;
+
+/**
+ * 标题语言跟着界面语言走。以前不管界面是中文还是英文一律出中文标题 —— 英文界面的
+ * 会话列表里全是中文标题。界面是英文时把提示里的「中文」两处换成英文要求,其余规则
+ * (数据边界、斜杠命令、只输出标题)不变。
+ */
+function titleGenSystemPrompt(): string {
+  if (SettingRepo.get(UI_LOCALE_SETTING_KEY) !== "en") return TITLE_GEN_SYSTEM_PROMPT;
+  return TITLE_GEN_SYSTEM_PROMPT.replace("生成一个简短、准确的中文标题", "生成一个简短、准确的英文标题").replace(
+    "3. 用中文输出,即使用户消息是其他语言;命令名等专有标识可保留原文。",
+    "3. 用英文输出(不超过 8 个单词),即使用户消息是其他语言;命令名等专有标识可保留原文。",
+  );
+}
 
 /**
  * Wrap the raw first prompt into a fixed-shell user message.
@@ -162,7 +176,7 @@ export async function generateSessionTitle(
         // can drive file/bash/network actions during title generation.
         tools: [],
         // Fixed system prompt guarantees a clean, short title.
-        systemPrompt: TITLE_GEN_SYSTEM_PROMPT,
+        systemPrompt: titleGenSystemPrompt(),
         settingSources: ["project", "local"],
         includePartialMessages: false,
         ...(binaryPath ? { pathToClaudeCodeExecutable: binaryPath } : {}),

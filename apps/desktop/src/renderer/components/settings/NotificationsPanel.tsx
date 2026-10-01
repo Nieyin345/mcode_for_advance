@@ -33,10 +33,12 @@ export function NotificationsPanel() {
 
   // Load prefs on mount.
   useEffect(() => {
-    void api.notification.getPrefs().then((res) => {
-      setPrefs(res.prefs);
-      setLoaded(true);
-    });
+    // 读失败也要解锁开关(用默认值):以前没有 catch,一次 IPC 失败整页开关永远是灰的。
+    void api.notification
+      .getPrefs()
+      .then((res) => setPrefs(res.prefs))
+      .catch((err: unknown) => console.error("notification.getPrefs failed:", err))
+      .finally(() => setLoaded(true));
   }, []);
 
   // Persist a single pref change.

@@ -6809,7 +6809,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setGestureOverride: (commandId, seq) => {
     const cur = get().gestureSettings;
     const overrides = { ...cur.overrides };
-    if (seq && seq.length > 0) overrides[commandId] = seq;
+    // 空数组 = 明确解除绑定(连默认手势也不要),见 lib/gestures.ts unbindGestureFor。
+    if (seq) overrides[commandId] = seq;
     else delete overrides[commandId];
     const next = { ...cur, overrides };
     set({ gestureSettings: next });

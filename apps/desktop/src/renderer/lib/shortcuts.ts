@@ -58,9 +58,25 @@ export function resolveShortcut(
   commandId: string,
   overrides: ShortcutBindings,
 ): Accelerator | null {
-  if (overrides[commandId]) return normalizeAccelerator(overrides[commandId]);
+  if (overrides[commandId]) {
+    const a = normalizeAccelerator(overrides[commandId]);
+    // 「空键」覆盖 = 用户明确解除了绑定(连默认键也不要),见 UNBOUND_ACCELERATOR。
+    return a.key ? a : null;
+  }
   if (DEFAULT_SHORTCUTS[commandId]) return normalizeAccelerator(DEFAULT_SHORTCUTS[commandId]);
   return null;
+}
+
+/**
+ * 「解除绑定」的覆盖值:key 为空串。存进覆盖表后,该命令连默认快捷键也不再生效
+ * (null 覆盖只会退回默认键,解决不了「默认键被别的命令抢走后两条命令同键」)。
+ * 旧版本读到它也无害:空 key 匹配不到任何按键。
+ */
+export const UNBOUND_ACCELERATOR: Accelerator = { key: "", cmd: false, shift: false, alt: false };
+
+/** 让某条命令「没有快捷键」应该写入的覆盖值:有默认键的写空键覆盖,没有的直接删覆盖。 */
+export function unbindOverrideFor(commandId: string): Accelerator | null {
+  return DEFAULT_SHORTCUTS[commandId] ? UNBOUND_ACCELERATOR : null;
 }
 
 /**
@@ -76,7 +92,9 @@ export function resolveAllShortcuts(
     out[id] = normalizeAccelerator(accel);
   }
   for (const [id, accel] of Object.entries(overrides)) {
-    out[id] = normalizeAccelerator(accel);
+    const a = normalizeAccelerator(accel);
+    if (a.key) out[id] = a;
+    else delete out[id]; // 空键覆盖 = 解除绑定(连默认键一起去掉)
   }
   return out;
 }
@@ -167,7 +185,12 @@ function prettyKey(key: string, shiftHeld: boolean): string {
   // Single letter / digit: show as-is, uppercased unless Shift is part of
   // the chord (Shift already implies uppercase visually).
   if (/^[a-z0-9]$/.test(k)) return shiftHeld ? k.toUpperCase() : k.toUpperCase();
+  // F1–F12:允许不带修饰键单独绑定,显示成大写。
+  if (/^f\d{1,2}$/.test(k)) return k.toUpperCase();
   switch (k) {
+    // KeyboardEvent.key 对空格给的是 " "(单字符),录下来就是 " ";以前落到
+    // default 分支,键帽上显示成一个空白方块。
+    case " ":
     case "space": return isMac ? "Space" : "Space";
     case "enter": return isMac ? "↵" : "Enter";
     case "escape": return isMac ? "⎋" : "Esc";
@@ -268,7 +291,12 @@ export function isEditableTarget(target: EventTarget | null): boolean {
  * else through to the field.
  */
 export function shouldDispatchInEditable(a: Accelerator): boolean {
-  return a.cmd || a.shift || a.alt;
+  return a.cmd || a.shift || a.alt || isFunctionKey(a.key);
+}
+
+/** F1–F12 —— 不产生字符,单独绑定也不会和打字冲突。 */
+export function isFunctionKey(key: string): boolean {
+  return /^f([1-9]|1[0-2])$/.test(key.toLowerCase());
 }
 
 /**

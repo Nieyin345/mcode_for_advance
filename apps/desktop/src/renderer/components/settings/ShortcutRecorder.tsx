@@ -28,6 +28,8 @@ import {
   eventToAccelerator,
   acceleratorToDisplayTokens,
   findConflict,
+  isFunctionKey,
+  unbindOverrideFor,
 } from "@renderer/lib/shortcuts.js";
 import { collectCommands } from "@renderer/lib/commands.js";
 import type { Accelerator } from "@contracts/ipc";
@@ -92,10 +94,11 @@ export function ShortcutRecorder({ commandId }: { commandId: string }) {
     const all = resolveAllShortcuts(overrides);
     const conflictId = findConflict(pending, commandId, all);
     if (conflictId) {
-      // Clear the colliding command's override. If it had no default, it ends
-      // up unbound; if it had a default, it reverts to that. Either way the
-      // new chord is freed for this command.
-      setShortcutOverride(conflictId, null);
+      // 把冲突的那条命令「解除绑定」。以前这里只是删掉它的覆盖 —— 可如果它占着的
+      // 正是自己的**默认**键,删覆盖后默认键原样生效,两条命令照旧同键(按下去只有
+      // 先匹配到的那条触发)。unbindOverrideFor 对有默认键的命令写入「空键」覆盖,
+      // 真正把这个组合键让出来。
+      setShortcutOverride(conflictId, unbindOverrideFor(conflictId));
     }
     setShortcutOverride(commandId, pending);
     setPending(null);
@@ -133,8 +136,9 @@ export function ShortcutRecorder({ commandId }: { commandId: string }) {
 
       // Require at least one modifier; bare keys are not bindable (they'd
       // collide with typing). Show the conflict/idle flow otherwise.
-      if (!accel.cmd && !accel.alt) {
-        // Shift-only or no modifier: ignore, keep recording.
+      if (!accel.cmd && !accel.alt && !isFunctionKey(accel.key)) {
+        // Shift-only or no modifier: ignore, keep recording. F1–F12 不产生
+        // 字符,允许单独绑定。
         return;
       }
       commit(accel);
@@ -189,6 +193,17 @@ export function ShortcutRecorder({ commandId }: { commandId: string }) {
       <Button variant="outline" size="sm" onClick={startRecording}>
         {t("settings.shortcuts.modify")}
       </Button>
+      {effective && (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setShortcutOverride(commandId, unbindOverrideFor(commandId))}
+          title={t("settings.shortcuts.unbindTitle")}
+          className="px-1.5"
+        >
+          {t("settings.shortcuts.unbind")}
+        </Button>
+      )}
       {hasOverride && (
         <Button
           variant="ghost"

@@ -32,6 +32,7 @@ import {
   resolveAllGestures,
   resolveGesture,
   sequenceToArrows,
+  unbindGestureFor,
   type GesturePoint,
 } from "@renderer/lib/gestures.js";
 import type { GestureSequence } from "@contracts/ipc";
@@ -92,7 +93,9 @@ export function GestureRecorder({ commandId }: { commandId: string }) {
     if (!pending) return;
     const all = resolveAllGestures(gestureSettings.overrides);
     const conflictId = findGestureConflict(pending, commandId, all);
-    if (conflictId) setGestureOverride(conflictId, null);
+    // 冲突方占着的若是自己的**默认**手势,只删覆盖会让默认手势原样生效、两条命令
+    // 同一手势;unbindGestureFor 对这种情况写入空覆盖,真正把手势让出来。
+    if (conflictId) setGestureOverride(conflictId, unbindGestureFor(conflictId));
     setGestureOverride(commandId, pending);
     setPending(null);
     setConflictLabel("");
@@ -232,6 +235,17 @@ export function GestureRecorder({ commandId }: { commandId: string }) {
       <Button variant="outline" size="sm" onClick={startRecording}>
         {t("settings.gestures.modify")}
       </Button>
+      {effective && (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setGestureOverride(commandId, unbindGestureFor(commandId))}
+          title={t("settings.gestures.unbindTitle")}
+          className="px-1.5"
+        >
+          {t("settings.gestures.unbind")}
+        </Button>
+      )}
       {hasOverride && (
         <Button
           variant="ghost"
