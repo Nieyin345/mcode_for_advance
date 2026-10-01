@@ -22,6 +22,7 @@ import { IconCopy, IconDeviceMobile, IconRefresh, IconTrash, IconWifi, IconWorld
 import { api } from "@renderer/lib/api.js";
 import { copyText } from "@renderer/lib/clipboard.js";
 import { RemoteConnectPanel } from "@renderer/components/mobile/RemoteConnectPanel.js";
+import { MobileDomainPanel } from "@renderer/components/mobile/MobileDomainPanel.js";
 import type { PairingStartResult, PairedDevice } from "@contracts/mobile";
 import type { RelayStatus } from "@contracts/ipc";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -119,7 +120,9 @@ export function MobileConnectButton() {
 
 function MobileConnectPanel({ open }: { open: boolean }) {
   const { t } = useI18n();
-  const [tab, setTab] = useState<"lan" | "remote">("lan");
+  // ⚠️ 这里只是**多一个页签**:局域网直连与 SSH 反向隧道两条老路一行没动(用户明确要求
+  // 保留)。「自有域名」是第三条并列的路,不是替代品 —— 没有域名的人照旧走前两条。
+  const [tab, setTab] = useState<"lan" | "remote" | "domain">("lan");
   const [pairing, setPairing] = useState<PairingStartResult | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [devices, setDevices] = useState<PairedDevice[]>([]);
@@ -271,10 +274,27 @@ function MobileConnectPanel({ open }: { open: boolean }) {
           <IconWorld size={14} />
           {t("layout.remoteAccess")}
         </button>
+        <button
+          type="button"
+          onClick={() => setTab("domain")}
+          className={cn(
+            "flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-xs font-medium transition-colors",
+            tab === "domain"
+              ? "border-accent text-accent"
+              : "border-transparent text-content-muted hover:text-content",
+          )}
+        >
+          <IconWorld size={14} />
+          {t("layout.pairDomain")}
+        </button>
       </div>
 
-      {/* Remote mode */}
-      {tab === "remote" ? (
+      {/* 自有域名 */}
+      {tab === "domain" ? (
+        <div className="mt-4">
+          <MobileDomainPanel />
+        </div>
+      ) : /* Remote mode */ tab === "remote" ? (
         <div className="mt-4">
           <RemoteConnectPanel />
         </div>

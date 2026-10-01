@@ -20,11 +20,11 @@
  * "第一个项目"这种猜的）；密钥可一键换掉（唯一的拉闸手段）。
  */
 import { useEffect, useState } from "react";
-import type { PublicMcpStatus } from "@contracts/customModel";
+import type { PublicMcpStatus, PublicMcpTunnelConfig } from "@contracts/customModel";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { Button, Select, Switch } from "@renderer/components/ui/index.js";
+import { Button, Input, Select, Switch } from "@renderer/components/ui/index.js";
 import {
   IconCopy,
   IconCheck,
@@ -64,6 +64,170 @@ function ValueRow({
         <span className="ml-1">
           {copied ? t("settings.customModels.bridgeCopied") : t("settings.customModels.bridgeCopy")}
         </span>
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * **隧道那一段** —— 模式、域名、Tunnel Token、固定端口,外加「交给外面的 AI 支使」那个开关。
+ *
+ * 为什么挤在这张卡片里而不是单开一页:这几项全都是在回答同一个问题 ——「ChatGPT 该从
+ * 哪个地址找到这台机器」。拆到别处,用户要在两个页面之间来回对照域名和端口才填得对。
+ *
+ * 输入是**本地草稿**,点「保存」才落盘(域名和 token 是一起生效的一套,边打边存会在
+ * 打到一半时把隧道配成半截)。所以外面用 `key` 把这个组件绑在已存的配置上:存过一次
+ * 之后整块重挂,草稿与真值自然对齐。
+ */
+function TunnelCard({
+  status,
+  busy,
+  onSave,
+}: {
+  status: PublicMcpStatus;
+  busy: boolean;
+  onSave: (config: PublicMcpTunnelConfig) => void;
+}) {
+  const { t } = useI18n();
+  const [mode, setMode] = useState<PublicMcpStatus["tunnelMode"]>(status.tunnelMode);
+  const [hostname, setHostname] = useState(status.tunnelHostname);
+  const [mobileHostname, setMobileHostname] = useState(status.mobileHostname);
+  const [fixedPort, setFixedPort] = useState(status.fixedPort ? String(status.fixedPort) : "");
+  // token **永远从空开始**:已存的那串不回传渲染层(只有尾 4 位的 tokenHint),
+  // 留空提交 = 沿用。所以空输入框的意思是"不改",不是"清空"。
+  const [token, setToken] = useState("");
+
+  const named = mode === "named";
+  const external = mode === "external";
+  const needsHostname = named || external;
+
+  return (
+    <div className="space-y-2 rounded border border-edge bg-surface/40 p-2.5">
+      <div className="space-y-1">
+        <span className="block text-[0.7857em] font-medium text-content-muted">
+          {t("settings.remoteControl.tunnelModeLabel")}
+        </span>
+        <Select.Root value={mode} onValueChange={(v) => setMode(v as PublicMcpStatus["tunnelMode"])}>
+          <Select.Trigger className="w-full">
+            <Select.Value>
+              {/* `val` 从 Select 出来是裸 string,直接拼模板串会落在 i18n 键的联合类型外面。
+                  收窄回三选一再拼 —— 多这一步,键名写错就还是编译期报错。 */}
+              {(val: string) =>
+                t(
+                  `settings.remoteControl.tunnelMode.${
+                    (val === "named" || val === "external" ? val : "quick") as PublicMcpStatus["tunnelMode"]
+                  }`,
+                )
+              }
+            </Select.Value>
+          </Select.Trigger>
+          <Select.Portal>
+            <Select.Positioner className="z-50">
+              <Select.Popup>
+                <Select.List>
+                  {(["quick", "named", "external"] as const).map((m) => (
+                    <Select.Item key={m} value={m}>
+                      <Select.ItemText>{t(`settings.remoteControl.tunnelMode.${m}`)}</Select.ItemText>
+                    </Select.Item>
+                  ))}
+                </Select.List>
+              </Select.Popup>
+            </Select.Positioner>
+          </Select.Portal>
+        </Select.Root>
+        <p className="text-[0.6428em] leading-relaxed text-content-subtle">
+          {t(`settings.remoteControl.tunnelModeHint.${mode}`)}
+        </p>
+      </div>
+
+      {needsHostname && (
+        <>
+          <div className="space-y-1">
+            <span className="block text-[0.7857em] font-medium text-content-muted">
+              {t("settings.remoteControl.hostnameLabel")}
+            </span>
+            <Input
+              value={hostname}
+              placeholder="mcp.example.com"
+              onChange={(e) => setHostname(e.target.value)}
+            />
+            <p className="text-[0.6428em] leading-relaxed text-content-subtle">
+              {t("settings.remoteControl.hostnameHint")}
+            </p>
+          </div>
+
+          <div className="space-y-1">
+            <span className="block text-[0.7857em] font-medium text-content-muted">
+              {t("settings.remoteControl.mobileHostnameLabel")}
+            </span>
+            <Input
+              value={mobileHostname}
+              placeholder="m.example.com"
+              onChange={(e) => setMobileHostname(e.target.value)}
+            />
+            <p className="text-[0.6428em] leading-relaxed text-content-subtle">
+              {t("settings.remoteControl.mobileHostnameHint", {
+                port: status.mobilePort ? String(status.mobilePort) : "7331",
+              })}
+            </p>
+          </div>
+        </>
+      )}
+
+      {named && (
+        <div className="space-y-1">
+          <span className="block text-[0.7857em] font-medium text-content-muted">
+            {t("settings.remoteControl.tokenLabel")}
+          </span>
+          <Input
+            type="password"
+            value={token}
+            placeholder={
+              status.tokenHint
+                ? t("settings.remoteControl.tokenKeep", { hint: status.tokenHint })
+                : t("settings.remoteControl.tokenPlaceholder")
+            }
+            onChange={(e) => setToken(e.target.value)}
+          />
+          <p className="text-[0.6428em] leading-relaxed text-content-subtle">
+            {t("settings.remoteControl.tokenHint")}
+          </p>
+        </div>
+      )}
+
+      <div className="space-y-1">
+        <span className="block text-[0.7857em] font-medium text-content-muted">
+          {t("settings.remoteControl.fixedPortLabel")}
+        </span>
+        <Input
+          value={fixedPort}
+          placeholder="17331"
+          inputMode="numeric"
+          onChange={(e) => setFixedPort(e.target.value.replace(/[^0-9]/g, ""))}
+        />
+        <p className="text-[0.6428em] leading-relaxed text-content-subtle">
+          {t("settings.remoteControl.fixedPortHint", {
+            port: status.port ? String(status.port) : "—",
+          })}
+        </p>
+      </div>
+
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={busy || (needsHostname && !hostname.trim())}
+        onClick={() =>
+          onSave({
+            mode,
+            hostname: hostname.trim(),
+            mobileHostname: mobileHostname.trim(),
+            fixedPort: Number(fixedPort) || 0,
+            token: token.trim(),
+          })
+        }
+      >
+        {busy ? <IconLoader2 size={13} className="mr-1 animate-spin" /> : null}
+        {t("settings.remoteControl.saveTunnel")}
       </Button>
     </div>
   );
@@ -207,9 +371,20 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
       </div>
 
       {status?.enabled && (
+        <TunnelCard
+          // 存过之后整块重挂 —— 草稿与真值对齐(见 TunnelCard 文件内那段)。
+          key={`${status.tunnelMode}|${status.tunnelHostname}|${status.mobileHostname}|${status.fixedPort}|${status.tokenHint}`}
+          status={status}
+          busy={busy}
+          onSave={(config) => void run(() => api.publicMcp.setTunnelConfig(config))}
+        />
+      )}
+
+      {status?.enabled && (
         <div className="space-y-1.5 rounded border border-edge bg-surface/40 p-2.5">
-          {/* 一键隧道 */}
-          <div className="flex items-center gap-2">
+          {/* 一键隧道 —— external 模式下 Mcode 不起进程(隧道是用户自己在外面跑的),
+              按钮留着只会让人以为"没点所以没通"。 */}
+          <div className={cn("flex items-center gap-2", status.tunnelMode === "external" && "hidden")}>
             <Button
               variant="outline"
               size="sm"
@@ -279,6 +454,37 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
           <p className="text-[0.6428em] leading-relaxed text-content-subtle">
             {t("settings.customModels.publicMcpHint")}
           </p>
+
+          {/* ⚠️ 委派 —— 这个开关比上面任何一项都重。措辞是**警告**,不是提示。 */}
+          <div className="mt-1.5 space-y-1 rounded border border-danger/30 bg-danger/5 p-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="flex items-center gap-1.5 text-[0.7857em] font-medium text-danger">
+                <IconAlertTriangle size={13} className="shrink-0" />
+                {t("settings.remoteControl.delegateLabel")}
+              </span>
+              <Switch
+                checked={status.agentDelegate}
+                disabled={busy}
+                onCheckedChange={(v) =>
+                  void run(() =>
+                    api.publicMcp.setTunnelConfig({
+                      // 开关搭在隧道那条 IPC 上,所以**必须把现有配置原样带回去**,
+                      // 否则一次切换会把域名和模式顺手清掉。token 留空 = 沿用。
+                      mode: status.tunnelMode,
+                      hostname: status.tunnelHostname,
+                      mobileHostname: status.mobileHostname,
+                      fixedPort: status.fixedPort,
+                      agentDelegate: v,
+                    }),
+                  )
+                }
+                label={t("settings.remoteControl.delegateLabel")}
+              />
+            </div>
+            <p className="text-[0.6428em] leading-relaxed text-danger">
+              {t("settings.remoteControl.delegateWarning")}
+            </p>
+          </div>
         </div>
       )}
     </div>

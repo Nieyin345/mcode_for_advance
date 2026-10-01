@@ -323,6 +323,34 @@ export const en = {
   "settings.remoteControl.sandboxHint":
     "Pick a project — file operations coming from the internet only happen inside that directory. Changes apply immediately, no restart.",
   "settings.remoteControl.toggleLabel": "Enable remote control",
+  "settings.remoteControl.tunnelModeLabel": "How the public address is obtained",
+  "settings.remoteControl.tunnelMode.quick": "Quick tunnel (random address, zero setup)",
+  "settings.remoteControl.tunnelMode.named": "Your own domain (Cloudflare named tunnel)",
+  "settings.remoteControl.tunnelMode.external": "Your own domain (I run the tunnel myself)",
+  "settings.remoteControl.tunnelModeHint.quick":
+    "Mcode starts cloudflared itself and gets a random trycloudflare address. Nothing to configure, but the address changes on every restart — you have to re-enter it in ChatGPT each time.",
+  "settings.remoteControl.tunnelModeHint.named":
+    "Use a named tunnel you created in Cloudflare: the address is stable, set it once. Point a public hostname at the local port below first, then paste the Tunnel Token here.",
+  "settings.remoteControl.tunnelModeHint.external":
+    "You run the tunnel yourself (e.g. installed as a system service, alive even when Mcode is closed). Mcode starts no process and only remembers the domain.",
+  "settings.remoteControl.hostnameLabel": "MCP endpoint domain",
+  "settings.remoteControl.hostnameHint":
+    "Without https:// — the public hostname from Cloudflare. It must point at the fixed port below.",
+  "settings.remoteControl.mobileHostnameLabel": "Phone companion domain (optional)",
+  "settings.remoteControl.mobileHostnameHint":
+    "Empty = the phone companion stays off the internet. To expose it, point a hostname at http://127.0.0.1:{port} (the port the phone service is listening on right now).",
+  "settings.remoteControl.tokenLabel": "Tunnel Token",
+  "settings.remoteControl.tokenKeep": "Saved ({hint}) — leave empty to keep it",
+  "settings.remoteControl.tokenPlaceholder": "Copy it from the Cloudflare tunnel page",
+  "settings.remoteControl.tokenHint":
+    "Stored encrypted; never passed on the command line and never logged (only the last 4 characters appear). This token is control over that tunnel — do not share it.",
+  "settings.remoteControl.fixedPortLabel": "Fixed local port",
+  "settings.remoteControl.fixedPortHint":
+    "Required for your own domain (the Cloudflare ingress hard-codes a port); 17331 is a good default. Empty = random. If the port is taken, startup fails loudly and will NOT silently pick another — silently moving would leave Cloudflare pointing at nothing: unreachable from the internet while everything looks fine locally. Listening now: {port}",
+  "settings.remoteControl.saveTunnel": "Save tunnel settings",
+  "settings.remoteControl.delegateLabel": "Let external AI drive this machine's agent",
+  "settings.remoteControl.delegateWarning":
+    "⚠️ Once on, an outside AI can hand a whole task to the local mcode agent instead of just reading and writing files — it runs a full turn with your skills, workflows and memory, editing files and running commands, with no approval prompts. Each task runs in a separate \"External AI delegation\" conversation you can watch in the sidebar. Leave it off if unsure.",
   "settings.customModels.publicMcpOn": "Open",
   "settings.customModels.publicMcpOff": "Closed",
   "settings.customModels.publicMcpToggleLabel": "Expose the public MCP endpoint",

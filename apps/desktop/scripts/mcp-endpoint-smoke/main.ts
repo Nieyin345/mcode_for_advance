@@ -23,6 +23,9 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+// 固定端口那两条断言要自己占一个端口当"别的程序"。
+import { createServer } from "node:net";
+import type { AddressInfo } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -454,6 +457,55 @@ const racingStart = startPublicMcp();
 stopPublicMcp();
 await racingStart;
 check("★ 启动途中关闭不会在 bind 完成后复活公网端点", publicMcpPort() === 0, publicMcpPort());
+
+/* ── 固定端口:要么就是那个端口,要么如实失败 ──────────────────────────
+ *
+ * 命名隧道的 ingress 在 Cloudflare 后台写死了 `127.0.0.1:<端口>`。所以这里**绝不能**
+ * 在端口被占时悄悄换一个:换了的话,服务起来了、界面一切正常、`publicMcpStatus()` 也
+ * 说 ready,而 Cloudflare 指着一个没人听的端口 —— 表现是"公网连不上但本机全好",
+ * 是这摊里最难查的一种坏。这两条断言钉的就是这个取舍。
+ */
+let smokeFixedPort = 0;
+configurePublicMcpStore({
+  getEnabled: () => publicStoreEnabled,
+  setEnabled: () => {},
+  getSecret: () => PUBLIC_SECRET,
+  setSecret: () => {},
+  getSessionId: () => PUBLIC_SESSION,
+  setSessionId: () => {},
+  getFixedPort: () => smokeFixedPort,
+});
+
+// 先占住一个端口 —— 占位的是**另一个**监听器,模拟"那个端口已经被别的程序用了"。
+const squatter = createServer(() => {});
+await new Promise<void>((resolve) => squatter.listen(0, "127.0.0.1", resolve));
+const takenPort = (squatter.address() as AddressInfo).port;
+
+smokeFixedPort = takenPort;
+let fixedPortError: string | null = null;
+try {
+  await startPublicMcp();
+} catch (err) {
+  fixedPortError = (err as Error).message;
+}
+check("★ 固定端口被占用 → 如实抛错", fixedPortError !== null, fixedPortError);
+check(
+  "★ …而且不回落到随机端口(宁可没起来,也不能让 Cloudflare 指空)",
+  publicMcpPort() === 0,
+  publicMcpPort(),
+);
+check(
+  "★ 错误里说得出是哪个端口(不然用户不知道该去关谁)",
+  (fixedPortError ?? "").includes(String(takenPort)),
+  fixedPortError,
+);
+
+// 端口让出来之后,同一个固定端口必须**正好**起在那上面(不是"随便找一个")。
+await new Promise<void>((resolve) => squatter.close(() => resolve()));
+await startPublicMcp();
+eq("★ 固定端口可用时就听在那个端口上", publicMcpPort(), takenPort);
+stopPublicMcp();
+smokeFixedPort = 0;
 
 /* ══════════════════════ 下半:真宿主 + 闸门 ═════════════════════ */
 

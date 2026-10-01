@@ -328,6 +328,34 @@ export const zh = {
   "settings.remoteControl.sandboxHint":
     "选一个项目 —— 公网来的文件读写只会在这个目录里发生。改完立刻生效,不用重启。",
   "settings.remoteControl.toggleLabel": "开放远程控制",
+  "settings.remoteControl.tunnelModeLabel": "公网地址怎么来",
+  "settings.remoteControl.tunnelMode.quick": "快速隧道（随机地址，开箱即用）",
+  "settings.remoteControl.tunnelMode.named": "自有域名（Cloudflare 命名隧道）",
+  "settings.remoteControl.tunnelMode.external": "自有域名（隧道我自己跑）",
+  "settings.remoteControl.tunnelModeHint.quick":
+    "Mcode 自己起 cloudflared，拿一个随机的 trycloudflare 地址。不用配任何东西，但**每次重启地址都变**，要回 ChatGPT 里重填一遍。",
+  "settings.remoteControl.tunnelModeHint.named":
+    "用你自己在 Cloudflare 建好的命名隧道：地址固定，填一次就不用再改。需要先在 Cloudflare 后台把 public hostname 指到下面那个本机端口，再把 Tunnel Token 粘进来。",
+  "settings.remoteControl.tunnelModeHint.external":
+    "隧道由你自己在外面跑（比如装成系统服务，关掉 Mcode 也在）。Mcode 不起进程，只记住域名用来拼链接。",
+  "settings.remoteControl.hostnameLabel": "MCP 端点的域名",
+  "settings.remoteControl.hostnameHint":
+    "不带 https:// ，就是 Cloudflare 里那条 public hostname。它必须指向下面那个固定端口。",
+  "settings.remoteControl.mobileHostnameLabel": "手机伴侣的域名（可留空）",
+  "settings.remoteControl.mobileHostnameHint":
+    "留空 = 手机伴侣不上公网。要用的话，在 Cloudflare 里把它指到 http://127.0.0.1:{port}（这是手机服务此刻在听的端口）。",
+  "settings.remoteControl.tokenLabel": "Tunnel Token",
+  "settings.remoteControl.tokenKeep": "已保存（{hint}）—— 留空表示沿用",
+  "settings.remoteControl.tokenPlaceholder": "从 Cloudflare 隧道页面复制",
+  "settings.remoteControl.tokenHint":
+    "加密存放，不写进命令行、不进日志（日志里只留尾 4 位）。这串等于那条隧道的控制权，别发给别人。",
+  "settings.remoteControl.fixedPortLabel": "固定本机端口",
+  "settings.remoteControl.fixedPortHint":
+    "自有域名必须填（Cloudflare 那条 ingress 要写死端口），建议 17331；留空 = 随机。端口被占用时会直接报错**不会**悄悄换一个 —— 换了的话 Cloudflare 就指到空处，公网连不上而本机一切正常。此刻在听：{port}",
+  "settings.remoteControl.saveTunnel": "保存隧道配置",
+  "settings.remoteControl.delegateLabel": "允许外部 AI 支使本机 agent",
+  "settings.remoteControl.delegateWarning":
+    "⚠️ 打开后，外面的 AI 不再只是读写文件，而是能把整件事丢给本机 mcode agent 去做（它会带着你的技能、工作流、记忆跑一整轮，期间可以改文件、执行命令，全程不弹审批）。任务跑在单独的「外部 AI 委派」会话里，你能在左栏看到每一轮。不确定就关着。",
   "settings.customModels.publicMcpOn": "已开放",
   "settings.customModels.publicMcpOff": "已关闭",
   "settings.customModels.publicMcpToggleLabel": "开放公网 MCP 端点",

@@ -222,6 +222,16 @@ export const zh = {
   "layout.connectPhoneDesc": "用手机扫码并在手机上输入验证码，完成配对。",
   "layout.pairLan": "局域网配对",
   "layout.remoteAccess": "远程访问",
+  "layout.pairDomain": "自有域名",
+  "layout.domainWarning":
+    "⚠️ 填了域名就等于把手机伴侣放上公网：任何人都能打开这个地址。挡在前面的只有配对码那一道门（5 分钟过期、错 5 次作废）。不用的时候清空这里，手机伴侣就回到只走局域网。",
+  "layout.domainLabel": "手机伴侣的公网域名",
+  "layout.domainSave": "保存",
+  "layout.domainHint":
+    "不带 https:// 。在 Cloudflare 的隧道里把这个域名指到 {ingress}（端口是手机服务此刻真在听的那个，写错的表现是公网连不上而本机一切正常）。它和 MCP 端点共用同一条命名隧道，不用再开第二条。",
+  "layout.domainUrlLabel": "手机上打开这个地址",
+  "layout.domainPairHint":
+    "第一次仍要配对：在手机上打开这个地址，按提示输入 PC 上这个对话框里的 6 位验证码。建议先在局域网下配好，再换到公网用。",
   "layout.mobileServerDown": "手机服务未运行（端口被占用或已禁用）。请在设置中检查，或重启应用。",
   "layout.pairingQr": "配对二维码",
   "layout.generating": "生成中…",

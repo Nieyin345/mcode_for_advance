@@ -212,6 +212,16 @@ export const en = {
   "layout.connectPhoneDesc": "Scan the QR with your phone and enter the code there to pair.",
   "layout.pairLan": "LAN pairing",
   "layout.remoteAccess": "Remote access",
+  "layout.pairDomain": "Own domain",
+  "layout.domainWarning":
+    "⚠️ Setting a domain puts the phone companion on the public internet: anyone can open that address. The only thing in front of it is the pairing code (5-minute expiry, void after 5 wrong tries). Clear this field to go back to LAN-only.",
+  "layout.domainLabel": "Public domain for the phone companion",
+  "layout.domainSave": "Save",
+  "layout.domainHint":
+    "Without https://. In your Cloudflare tunnel, point this hostname at {ingress} (the port the phone service is actually listening on right now — getting it wrong looks like \"unreachable from outside while everything works locally\"). It shares the same named tunnel as the MCP endpoint, so there is no second tunnel to run.",
+  "layout.domainUrlLabel": "Open this address on the phone",
+  "layout.domainPairHint":
+    "Pairing is still required the first time: open the address on the phone and type the 6-digit code shown in this dialog. Easiest is to pair over the LAN first, then switch to the public address.",
   "layout.mobileServerDown": "The mobile service is not running (port in use or disabled). Check it in settings, or restart the app.",
   "layout.pairingQr": "Pairing QR code",
   "layout.generating": "Generating…",
