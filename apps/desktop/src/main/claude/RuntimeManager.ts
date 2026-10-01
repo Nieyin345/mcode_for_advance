@@ -137,6 +137,11 @@ interface SessionRuntime {
    *  被打断的上一轮可能在新一轮开跑后才迟到地发出 turn.done,不能把新一轮误判成
    *  「只差收尾」。 */
   turnToken?: object;
+  /** 「启动中」(startingSessions)收到的停止请求。那段空窗里还没有本轮的 handle ——
+   *  `rt.handle` 还是上一轮已经结束的那个,直接调它的 interrupt() 等于什么都没做,这一轮
+   *  会照常跑完(Pi 首次加载 SDK、Claude 拉起 MCP、自定义模型建桥都可能要好几秒)。
+   *  记在这里,sendTurn 拿到本轮 handle 后立即补发。 */
+  interruptRequested?: boolean;
   /** 回退重发用的最小输入快照（sendTurn 每轮刷新）。**不含 userMessage**
    *  —— 重试不得再回显用户气泡；prompt 用的是 req 里拼好的最终形态
    *  （backflow 已在首轮消费，重发时 peek 为空、原样通过）。 */
@@ -1010,10 +1015,19 @@ class RuntimeManager {
     // 从这里就占住启动闸:自定义模型的 BridgeRegistry.acquire 也要 await,
     // 不能等到 provider.startTurn 前才上锁。无论配置/桥/引擎哪一步抛错都释放。
     this.startingSessions.add(session.id);
+    rt.interruptRequested = false;
     try {
-      return await this.sendTurnBound(session, { ...input, automationOrigin: snapshotAutomationOrigin(input.automationOrigin) }, rt);
+      const handle = await this.sendTurnBound(session, { ...input, automationOrigin: snapshotAutomationOrigin(input.automationOrigin) }, rt);
+      if (handle && rt.interruptRequested && rt.handle === handle) {
+        // 用户在启动期间点了停止(见 interruptRequested):本轮 handle 一到手就补发。
+        log.info(`sendTurn: stop requested while session ${session.id} was starting; interrupting the new turn`);
+        this.rejectPendingRequests(session.id);
+        handle.interrupt();
+      }
+      return handle;
     } finally {
       this.startingSessions.delete(session.id);
+      rt.interruptRequested = false;
     }
   }
 
@@ -1477,6 +1491,12 @@ class RuntimeManager {
     const rt = this.sessions.get(sessionId);
     if (!rt) return;
     this.rejectPendingRequests(sessionId);
+    if (this.startingSessions.has(sessionId)) {
+      // 本轮还在启动、handle 还没到手 —— 记下来,由 sendTurn 补发(见 interruptRequested)。
+      // 此时 rt.handle 只可能是上一轮已经结束的 handle(sendTurn 拒绝在它运行时开新一轮)。
+      rt.interruptRequested = true;
+      return;
+    }
     if (!rt.handle) return;
     rt.handle.interrupt();
   }

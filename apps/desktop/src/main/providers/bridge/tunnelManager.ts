@@ -212,12 +212,9 @@ export function startTunnel(localPort: number, isReconnect = false): TunnelStatu
   }
   child = proc;
 
-  const onLine = (raw: string): void => {
-    const line = raw.trim();
-    if (!line) return;
-    pushTail(line);
+  const markReadyFrom = (text: string): void => {
     if (status.phase !== "starting") return;
-    const found = QUICK_TUNNEL_RE.exec(line);
+    const found = QUICK_TUNNEL_RE.exec(text);
     if (!found) return;
     clearTimer();
     status = { phase: "ready", url: found[0], error: null };
@@ -226,9 +223,26 @@ export function startTunnel(localPort: number, isReconnect = false): TunnelStatu
     reconnectAttempt = 0;
     log.info(`tunnel: ready at ${found[0]}`);
   };
-
-  proc.stdout?.on("data", (chunk: Buffer) => chunk.toString("utf-8").split(/\r?\n/).forEach(onLine));
-  proc.stderr?.on("data", (chunk: Buffer) => chunk.toString("utf-8").split(/\r?\n/).forEach(onLine));
+  const onLine = (raw: string): void => {
+    const line = raw.trim();
+    if (!line) return;
+    pushTail(line);
+    markReadyFrom(line);
+  };
+  // 一个 data 块不一定以换行结尾:域名正好被切在两块之间时,逐块 split 会把它拆成两半,
+  // 谁都匹配不上 —— 白等 readyTimeoutMs 再重连(快速隧道还会换个域名)。所以除了逐行
+  // 处理,再拿「上一块末尾一截 + 这一块」找一次域名(正则不跨空白/换行,拼接不会误配)。
+  const chunkReader = (): ((chunk: Buffer | string) => void) => {
+    let carry = "";
+    return (chunk) => {
+      const text = chunk.toString();
+      text.split(/\r?\n/).forEach(onLine);
+      markReadyFrom(carry + text);
+      carry = text.slice(-256);
+    };
+  };
+  proc.stdout?.on("data", chunkReader());
+  proc.stderr?.on("data", chunkReader());
   proc.on("error", (err) => {
     if (child !== proc) return; // 同上:迟到的事件不属于当前隧道
     clearTimer();

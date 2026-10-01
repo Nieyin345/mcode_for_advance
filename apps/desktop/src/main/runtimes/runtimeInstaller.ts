@@ -88,6 +88,10 @@ const PROGRESS_EMIT_INTERVAL_MS = 150;
  *  a slow mirror can take minutes; a hung npm must not wedge the panel's
  *  installing state forever). */
 const PI_NPM_ASSEMBLE_TIMEOUT_MS = 10 * 60_000;
+/** tarball 下载的「停滞」超时:连上之前、以及两块数据之间最多等这么久。按停滞而不是
+ *  总时长算 —— 慢网下 300MB+ 的包下十几分钟是正常的,但一条卡死的连接不能让安装
+ *  永远挂着(installing 标志一直为 true,面板上「重试」也点不了,只能重启应用)。 */
+const TARBALL_STALL_TIMEOUT_MS = 60_000;
 
 /* ── expected versions (from this app's package.json) ── */
 
@@ -237,8 +241,27 @@ async function downloadVerifiedTarball(
   if (!meta.integrity) {
     throw new Error("registry metadata has no dist.integrity — refusing to install an unverifiable artifact");
   }
-  const res = await fetch(meta.tarballUrl, { redirect: "follow" });
+  const stall = new AbortController();
+  let stallTimer: ReturnType<typeof setTimeout> | undefined;
+  const armStall = (): void => {
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => stall.abort(), TARBALL_STALL_TIMEOUT_MS);
+  };
+  const stallError = (): Error =>
+    new Error(
+      `tarball download failed: 下载超过 ${TARBALL_STALL_TIMEOUT_MS / 1000} 秒没有收到数据,已放弃(stalled) — 请检查网络/镜像后重试`,
+    );
+  armStall();
+  let res: Response;
+  try {
+    res = await fetch(meta.tarballUrl, { redirect: "follow", signal: stall.signal });
+  } catch (err) {
+    clearTimeout(stallTimer);
+    if (stall.signal.aborted) throw stallError();
+    throw err;
+  }
   if (!res.ok || !res.body) {
+    clearTimeout(stallTimer);
     throw new Error(`tarball download failed: HTTP ${res.status} for ${meta.tarballUrl}`);
   }
   const total = Number(res.headers.get("content-length") ?? 0);
@@ -251,6 +274,7 @@ async function downloadVerifiedTarball(
       Readable.fromWeb(res.body as unknown as NodeWebReadableStream),
       async function* (source: AsyncIterable<Uint8Array>) {
         for await (const chunk of source) {
+          armStall();
           hash.update(chunk);
           received += chunk.byteLength;
           const now = Date.now();
@@ -265,9 +289,12 @@ async function downloadVerifiedTarball(
     );
   } catch (err) {
     rmSync(tmpFile, { force: true });
+    if (stall.signal.aborted) throw stallError();
     throw new Error(
       `tarball download failed: ${err instanceof Error ? err.message : String(err)}`,
     );
+  } finally {
+    clearTimeout(stallTimer);
   }
   const computed = `sha512-${hash.digest("base64")}`;
   if (computed !== meta.integrity) {
@@ -456,8 +483,33 @@ function finalizeInstall(
       `版本号不能用作安装目录,已拒绝安装(unsafe runtime version ${JSON.stringify(version)} — expected something like 1.2.3)`,
     );
   }
-  rmSync(finalDir, { recursive: true, force: true });
-  renameSync(stagingDir, finalDir);
+  // 同版本重装:旧目录先「改名挪开」而不是直接 rmSync。安装没有「有回合在跑」的守卫
+  // (只有卸载有),而 win32 上递归删除一个正在用的目录会删掉一半(跑着的 exe 删不掉,
+  // 旁边的文件已经没了),原安装就坏了。改名是整体操作:被占用时直接失败,原安装
+  // 原封不动;挪开的 `.xxx.old-*` 是点目录,下面的清理会顺手扫掉。
+  let displaced: string | null = null;
+  if (existsSync(finalDir)) {
+    displaced = join(agentDir, `.${version}.old-${Date.now()}`);
+    try {
+      renameSync(finalDir, displaced);
+    } catch (err) {
+      throw new Error(
+        `${agent} ${version} 正在使用中,无法替换 —— 请先停止正在跑的回合再重装(${err instanceof Error ? err.message : String(err)})`,
+      );
+    }
+  }
+  try {
+    renameSync(stagingDir, finalDir);
+  } catch (err) {
+    if (displaced) {
+      try {
+        renameSync(displaced, finalDir);
+      } catch {
+        /* 尽力还原;失败时旧安装留在 displaced,下次安装会清掉 */
+      }
+    }
+    throw err;
+  }
   writeFileSync(
     join(finalDir, "install.json"),
     JSON.stringify({ agent, version, installedAt: new Date().toISOString(), ...record }, null, 2),
@@ -471,9 +523,25 @@ function finalizeInstall(
   // version" is worse than a leftover dir. So the sweep has to be explicit —
   // and only for THIS agent, which is the one we just installed, so a
   // concurrent install of a different agent is untouched.
+  //
+  // 清理是尽力而为:新版本此时已经就位,清理失败不能把整次安装报成失败。别的版本
+  // 可能正被在跑的回合使用 —— 同样先改名挪开(被占用就整体失败、原样保留,下次安装
+  // 再清),挪开成功才递归删除,避免把正在用的目录删掉一半。
   for (const other of [...listManagedVersions(agent), ...stagingDirsOf(agent)]) {
     if (other === version) continue;
-    rmSync(join(root, agent, other), { recursive: true, force: true });
+    let target = join(root, agent, other);
+    try {
+      if (!other.startsWith(".")) {
+        const trash = join(root, agent, `.${other}.trash-${Date.now()}`);
+        renameSync(target, trash);
+        target = trash;
+      }
+      rmSync(target, { recursive: true, force: true });
+    } catch (err) {
+      log.warn(
+        `runtime install: could not prune ${agent}/${other} (in use?), will retry next install: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
   return { finalDir, entry };
 }

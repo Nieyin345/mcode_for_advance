@@ -517,6 +517,15 @@ async function handleMessages(
 }
 
 /** Start a bridge server bound to a random local port. Resolves once listening. */
+/** Host 头是否指向回环地址(见 startBridge 里的 DNS 重绑定说明)。没有 Host 头
+ *  (HTTP/1.0)放行 —— 浏览器总会带 Host,这条路上没有重绑定。 */
+function isLoopbackHost(req: IncomingMessage): boolean {
+  const host = req.headers.host?.trim().toLowerCase();
+  if (!host) return true;
+  const port = req.socket.localPort;
+  return ["127.0.0.1", "localhost", "[::1]"].some((name) => host === name || host === `${name}:${port}`);
+}
+
 export async function startBridge(upstream: UpstreamConfig): Promise<BridgeHandle> {
   // Status subscribers (RuntimeManager fans these out as `upstream.issue`
   // RuntimeEvents per session using this bridge). Listener errors are
@@ -558,6 +567,14 @@ export async function startBridge(upstream: UpstreamConfig): Promise<BridgeHandl
     // 404 branch and the binary interpreted that 404 as "selected model may
     // not exist" - which is exactly the failure users saw with OpenAI-format
     // gateways (e.g. MiniMax-M3). Matching on the path alone fixes it.
+    // 防 DNS 重绑定:网页把自己的域名解析到 127.0.0.1 后就成了「同源」,能直接调这个
+    // 不验凭证的转发口、借用户的上游 key 跑模型并读到结果。Claude 二进制拨的是
+    // `http://127.0.0.1:<port>`,Host 头必然是回环地址;别的 Host 一律拒。
+    if (!isLoopbackHost(req)) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ type: "error", error: { message: "forbidden host" } }));
+      return;
+    }
     const rawUrl = req.url ?? "";
     const path = rawUrl.split("?", 2)[0];
     if (req.method === "POST" && (path.endsWith("/v1/messages") || path.endsWith("/messages"))) {

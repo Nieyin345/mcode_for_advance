@@ -1715,7 +1715,8 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
             // （outputFormat）由 SDK 端到端保证，不经过这里；降级路径只校验
             // 不重试 —— 到这一步轮已收尾，重试得再起一轮 resume query，复杂度
             // 配不上"降级路径"的定位，校验失败按错误收尾并出 notice 卡片。
-            if (structuredFallback) {
+            // 用户已停止时回复本来就不完整,不报「校验失败」。
+            if (structuredFallback && !ac.signal.aborted) {
               const parsed = parseStructuredOutput(activeAdapter.getFinalAssistantText(), structuredFallback);
               if (!parsed.ok) {
                 ctx.log.warn(`claude: structured output invalid: ${parsed.error.slice(0, 300)}`);

@@ -523,6 +523,8 @@ export class CodexAgentSdkProvider implements AgentProvider {
         const runTurnAndWait = async (
           input: Array<Record<string, unknown>>,
         ): Promise<TurnDoneReason> => {
+          // 用户已经点了停止(例如卡在 thread/start 时):不要再把提示词发给模型。
+          if (ac.signal.aborted) throw new Error("codex turn aborted before turn/start");
           const startedTurn = (await client.request("turn/start", {
             threadId,
             input,
@@ -546,10 +548,12 @@ export class CodexAgentSdkProvider implements AgentProvider {
 
           // Give the notification pump a short grace to deliver the terminal
           // turn/completed (it may still be in flight right after interrupt).
+          let graceTimer: ReturnType<typeof setTimeout> | undefined;
           await Promise.race([
             adapter.waitTurnDone(),
-            new Promise((r) => setTimeout(r, 2000)),
+            new Promise((r) => { graceTimer = setTimeout(r, 2000); }),
           ]);
+          clearTimeout(graceTimer);
           if (!adapter.hasTurnEnded) {
             adapter.finalizeAborted();
           }
@@ -645,6 +649,11 @@ export class CodexAgentSdkProvider implements AgentProvider {
       interrupt: () => {
         ac.abort();
         adapter.markAborted();
+        // 回合还没开始(进程冷启动 / initialize / thread/start / turn/start 还在等):
+        // turn/interrupt 无从发起,而这些请求最长要等 120 秒才超时,等它们回来后还会照常
+        // 发出 turn/start。直接结束这个只属于本轮的 app-server 进程 —— 挂起的请求立刻
+        // 失败,done 走「已中断」分支收尾。
+        if (!activeTurn.turnId) void client.dispose().catch(() => undefined);
       },
       isRunning: () => !finished && !ac.signal.aborted,
     };

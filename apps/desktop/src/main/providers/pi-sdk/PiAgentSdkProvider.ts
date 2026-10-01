@@ -385,6 +385,13 @@ export class PiAgentSdkProvider implements AgentProvider {
     const structuredSpec = req.structuredOutput;
     if (structuredSpec) adapter.setDeferTurnDone();
     const unsubscribe = session.subscribe((event) => {
+      // 停止点在 agent 循环真正开跑之前(prompt() 里还在做鉴权/压缩等准备):那时
+      // session.abort() 没有可中止的 run,是空操作,随后 agent 照常开跑。循环一开始
+      // (agent_start 时 run 的 AbortController 已建好)就补一次 abort。不 await ——
+      // abort() 会等 agent 空闲,而事件回调本身就在 agent 循环里。
+      if (event.type === "agent_start" && ac.signal.aborted) {
+        void session.abort().catch(() => undefined);
+      }
       adapter.dispatch(event);
     });
 
@@ -421,7 +428,10 @@ export class PiAgentSdkProvider implements AgentProvider {
         if (structuredSpec) {
           let finalReason: TurnDoneReason = adapter.getFinalDoneReason();
           let parsed = parseStructuredOutput(adapter.getFinalTurnText(), structuredSpec);
-          if (!parsed.ok) {
+          if (ac.signal.aborted) {
+            // 用户已停止:不再追纠错轮(会接着烧 token),也不报 schema 不符。
+            finalReason = "interrupted";
+          } else if (!parsed.ok) {
             ctx.log.warn(
               `pi: structured output invalid, one corrective prompt: ${parsed.error.slice(0, 200)}`,
             );
