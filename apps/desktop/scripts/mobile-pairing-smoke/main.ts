@@ -864,6 +864,73 @@ console.log("\n设置白名单 / 同步");
 
 console.log("\n收尾");
 
+/* ───────────────────── 8. 账号密码登录 ─────────────────────
+ *
+ * 第二种进门方式:电脑端设好账号密码,手机打开地址直接登录,拿到和配对**一样**的
+ * 设备令牌。钉住:未开启时进不来;库里不存明文;错了不发令牌;连错会锁(且不因为
+ * 密码对了就放行);手机读不到凭据键;关掉之后新登录进不来、已登录的不受影响。
+ */
+
+console.log("\n账号密码登录");
+
+{
+  const login = await import("@main/mobile/mobileLogin.js");
+  const PW = "correct horse 9";
+  const loginReq = (body: unknown, headers?: Record<string, string>) =>
+    req("/api/auth/login", { method: "POST", body, headers });
+  login.resetLoginThrottle();
+
+  const m0 = await req("/api/auth/methods");
+  eq("未设置时 methods.password = false", (JSON.parse(m0.text) as { password: boolean }).password, false);
+  eq("未设置时登录 → 401", (await loginReq({ username: "alice", password: PW })).status, 401);
+
+  await login.setMobileLogin("alice", PW);
+  const raw = SettingRepo.get("mobile.passwordLogin") ?? "";
+  check("库里只有哈希,没有明文密码", raw.includes('"hash"') && !raw.includes(PW), raw.slice(0, 80));
+  const m1 = await req("/api/auth/methods");
+  eq("设置后 methods.password = true", (JSON.parse(m1.text) as { password: boolean }).password, true);
+  check("methods 不泄露账号名", !m1.text.includes("alice"), m1.text);
+
+  eq("密码错 → 401", (await loginReq({ username: "alice", password: "wrong-password" })).status, 401);
+  eq("账号错 → 401", (await loginReq({ username: "bob", password: PW })).status, 401);
+  eq("缺密码 → 400", (await loginReq({ username: "alice" })).status, 400);
+
+  login.resetLoginThrottle();
+  const ok = await loginReq({ username: "alice", password: PW, deviceName: "密码手机" });
+  eq("账号密码正确 → 200", ok.status, 200);
+  const tok = (JSON.parse(ok.text) as { deviceToken: string }).deviceToken;
+  issuedSecrets.push(tok);
+  check("登录的手机进了设备列表", (await pairingManager.listDevices()).some((d) => d.name === "密码手机"));
+  eq("登录拿到的令牌能过 RPC", (await req("/api/rpc", { method: "POST", token: tok, body: RPC_OK_BODY })).status, 200);
+  const peek = await req("/api/rpc", {
+    method: "POST",
+    token: tok,
+    body: { method: "setting:get", input: { key: "mobile.passwordLogin" } },
+  });
+  eq("手机读不到登录凭据键 → 403", peek.status, 403);
+  const poke = await req("/api/rpc", {
+    method: "POST",
+    token: tok,
+    body: { method: "setting:set", input: { key: "mobile.passwordLogin", value: "{}" } },
+  });
+  eq("手机改不了登录凭据键 → 403", poke.status, 403);
+
+  login.resetLoginThrottle();
+  for (let i = 0; i < 5; i += 1) await loginReq({ username: "alice", password: `wrong-${i}-xxxx` });
+  const locked = await loginReq({ username: "alice", password: PW });
+  eq("连错 5 次后锁定:密码对了也 429", locked.status, 429);
+  check("锁定时不发令牌", !locked.text.includes("deviceToken"), locked.text.slice(0, 120));
+  const other = await loginReq({ username: "alice", password: PW, deviceName: "别处" }, { "x-forwarded-for": "10.9.9.9" });
+  eq("别的来源不受这台的锁影响", other.status, 200);
+  if (other.status === 200) issuedSecrets.push((JSON.parse(other.text) as { deviceToken: string }).deviceToken);
+
+  login.resetLoginThrottle();
+  login.clearMobileLogin();
+  eq("关闭后 methods.password = false", (JSON.parse((await req("/api/auth/methods")).text) as { password: boolean }).password, false);
+  eq("关闭后登录 → 401", (await loginReq({ username: "alice", password: PW })).status, 401);
+  eq("关闭后已登录的令牌仍可用(要踢走撤销)", (await req("/api/rpc", { method: "POST", token: tok, body: RPC_OK_BODY })).status, 200);
+}
+
 // 全部撤销,把库清干净(数据根是临时目录,整个删掉;这里只是让收尾状态可读)。
 {
   const list = await pairingManager.listDevices();
@@ -877,7 +944,9 @@ eq("收尾:设备清单空了", (await pairingManager.listDevices()).length, 0);
 {
   const leaked: Array<{ secret: string; path: string; snippet: string }> = [];
   for (const secret of issuedSecrets) {
-    const hit = allResponses.find((r) => r.path !== "/api/pair/verify" && r.text.includes(secret));
+    const hit = allResponses.find(
+      (r) => r.path !== "/api/pair/verify" && r.path !== "/api/auth/login" && r.text.includes(secret),
+    );
     if (hit) leaked.push({ secret: `${secret.slice(0, 8)}…`, path: hit.path, snippet: hit.text.slice(0, 160) });
   }
   check(

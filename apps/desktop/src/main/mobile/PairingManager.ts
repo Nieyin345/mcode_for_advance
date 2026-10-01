@@ -248,21 +248,28 @@ export class PairingManager {
       };
     }
 
+    this.pending = null;
+    const result = this.issueDevice(input.deviceName, endpoint);
+    log.info(`mobile: device paired (${result.deviceId}, name=${input.deviceName})`);
+    return { ok: true, result };
+  }
+
+  /** 签发一台新设备(令牌 + 设备记录)。扫码配对和账号密码登录共用这一条 ——
+   *  两条路发出来的令牌没有区别,都进设备列表、都能撤销。调用方负责先验明身份。 */
+  issueDevice(name: string, endpoint: string): PairingVerifyResult {
     const deviceId = generateDeviceId();
     const deviceToken = generateDeviceToken();
     const now = Date.now();
     const devices = this.readDevicesRaw();
     devices.push({
       deviceId,
-      name: input.deviceName,
+      name,
       pairedAt: now,
       lastSeenAt: now,
       deviceToken,
     });
     SettingRepo.set(MOBILE_PAIRED_DEVICES_SETTING_KEY, JSON.stringify(devices));
-    this.pending = null;
-    log.info(`mobile: device paired (${deviceId}, name=${input.deviceName})`);
-    return { ok: true, result: { deviceId, deviceToken, endpoint } };
+    return { deviceId, deviceToken, endpoint };
   }
 
   /** Validate a bearer token. Returns the public device record on success. Also

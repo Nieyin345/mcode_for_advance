@@ -102,6 +102,18 @@ export const zh = {
   "mobile.pair.submit": "完成配对",
   "mobile.pair.expiry": "配对码有效期 5 分钟 · 服务器:{origin}",
   "mobile.pair.unknown": "未知",
+  "mobile.pair.loginHint": "输入在电脑端「连接手机」里设置的账号和密码。",
+  "mobile.pair.noLoginHint":
+    "想直接用账号密码登录:在电脑端「连接手机」弹窗里设置账号密码后,刷新本页。",
+  "mobile.pair.username": "账号",
+  "mobile.pair.password": "密码",
+  "mobile.pair.showPassword": "显示密码",
+  "mobile.pair.hidePassword": "隐藏密码",
+  "mobile.pair.login": "登录",
+  "mobile.pair.loggingIn": "登录中…",
+  "mobile.pair.loginRequired": "请输入账号和密码",
+  "mobile.pair.useCode": "验证码配对",
+  "mobile.pair.usePassword": "账号密码",
 
   /* ── relay (VPS forwarding) ── */
   "mobile.relay.connected": "已连接",

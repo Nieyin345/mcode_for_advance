@@ -143,6 +143,40 @@ export async function pairWithCode(input: PairingVerifyInput): Promise<PairingVe
   return result;
 }
 
+/** 电脑端开没开「账号密码登录」(无需令牌)。拿不到就当没开。 */
+export async function fetchAuthMethods(): Promise<{ password: boolean }> {
+  try {
+    const res = await fetch("/api/auth/methods");
+    if (!res.ok) return { password: false };
+    const body = (await res.json().catch(() => null)) as { password?: unknown } | null;
+    return { password: body?.password === true };
+  } catch {
+    return { password: false };
+  }
+}
+
+/** 账号密码登录:换一张和配对一样的设备令牌(不需要电脑端的二维码 / 验证码)。 */
+export async function loginWithPassword(input: {
+  username: string;
+  password: string;
+  deviceName: string;
+}): Promise<PairingVerifyResult> {
+  const res = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(
+      body.error ?? translate(uiLocale(), "lib.web.pairFailed", { status: res.status }),
+    );
+  }
+  const result = (await res.json()) as PairingVerifyResult;
+  writeAuth(result.deviceToken, result.endpoint);
+  return result;
+}
+
 /** Lightweight connectivity probe — no auth required. */
 export async function webHealth(): Promise<boolean> {
   try {

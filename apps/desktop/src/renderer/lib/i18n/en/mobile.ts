@@ -90,6 +90,18 @@ export const en = {
   "mobile.pair.submit": "Pair",
   "mobile.pair.expiry": "Code valid for 5 minutes · Server: {origin}",
   "mobile.pair.unknown": "unknown",
+  "mobile.pair.loginHint": "Enter the account and password set in the desktop's “Connect phone” dialog.",
+  "mobile.pair.noLoginHint":
+    "To sign in with an account instead, set one in the desktop's “Connect phone” dialog, then reload this page.",
+  "mobile.pair.username": "Account",
+  "mobile.pair.password": "Password",
+  "mobile.pair.showPassword": "Show password",
+  "mobile.pair.hidePassword": "Hide password",
+  "mobile.pair.login": "Sign in",
+  "mobile.pair.loggingIn": "Signing in…",
+  "mobile.pair.loginRequired": "Enter the account and password",
+  "mobile.pair.useCode": "Pairing code",
+  "mobile.pair.usePassword": "Account",
 
   /* ── relay (VPS forwarding) ── */
   "mobile.relay.connected": "Connected",

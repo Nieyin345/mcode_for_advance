@@ -12,7 +12,8 @@ import { z } from "zod";
 import { IPC, RevokeMobileDeviceSchema } from "@contracts/ipc";
 import { pairingManager, detectLanIp, detectLanIps } from "@main/mobile/PairingManager.js";
 import { getMobileServer } from "@main/mobile/MobileHttpServer.js";
-import { MOBILE_ACTIVE_WINDOW_MS } from "@contracts/mobile";
+import { MOBILE_ACTIVE_WINDOW_MS, SetMobileLoginSchema } from "@contracts/mobile";
+import { clearMobileLogin, getMobileLoginStatus, setMobileLogin } from "@main/mobile/mobileLogin.js";
 import { log } from "@main/lib/logger.js";
 
 /** Renderer input for `mobile:startPairing` (shape mirrors RpcMap). Validated
@@ -101,6 +102,16 @@ export function registerMobileHandlers(ipcMain: IpcMain): void {
     const count = devices.filter((d) => d.lastSeenAt >= cutoff).length;
     return { count };
   });
+
+  // 账号密码登录:只回账号名 + 开没开,哈希永不出主进程。
+  ipcMain.handle(IPC.MOBILE_GET_LOGIN, async () => getMobileLoginStatus());
+
+  ipcMain.handle(IPC.MOBILE_SET_LOGIN, async (_e, raw: unknown) => {
+    const input = SetMobileLoginSchema.parse(raw);
+    return setMobileLogin(input.username, input.password);
+  });
+
+  ipcMain.handle(IPC.MOBILE_CLEAR_LOGIN, async () => clearMobileLogin());
 
   log.info("mobile: IPC handlers registered");
 }

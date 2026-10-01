@@ -23,6 +23,7 @@ import { api } from "@renderer/lib/api.js";
 import { copyText } from "@renderer/lib/clipboard.js";
 import { RemoteConnectPanel } from "@renderer/components/mobile/RemoteConnectPanel.js";
 import { MobileDomainPanel } from "@renderer/components/mobile/MobileDomainPanel.js";
+import { MobileLoginCard } from "@renderer/components/mobile/MobileLoginCard.js";
 import type { PairingStartResult, PairedDevice } from "@contracts/mobile";
 import type { RelayStatus } from "@contracts/ipc";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -404,6 +405,9 @@ function MobileConnectPanel({ open }: { open: boolean }) {
       </div>
         </>
       )}
+
+      {/* 账号密码登录:三个标签页共用(任一地址都能用账号密码登录)。 */}
+      <MobileLoginCard />
 
       <div className="mt-5">
         <div className="mb-2 text-xs font-medium text-content-muted">

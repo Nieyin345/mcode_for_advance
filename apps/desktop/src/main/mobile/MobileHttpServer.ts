@@ -30,8 +30,10 @@ import {
   MOBILE_PORT_SETTING_KEY,
   MOBILE_ENABLED_SETTING_KEY,
   MOBILE_PAIRED_DEVICES_SETTING_KEY,
+  MOBILE_LOGIN_SETTING_KEY,
   SSE_HEARTBEAT_INTERVAL_MS,
   PairingVerifyInputSchema,
+  MobileLoginInputSchema,
   type MobileRpcRequest,
   type MobileRpcResponse,
   type PairingVerifyInput,
@@ -44,6 +46,13 @@ import { hasLiveRendererWindow } from "@main/window.js";
 import { dispatchMobileRpc, RpcError, type DeviceContext } from "./mobileRpc.js";
 import { registerMobileGitRpc } from "./mobileGitRpc.js";
 import { serveMobileAsset } from "./serveMobileStatic.js";
+import {
+  isMobileLoginEnabled,
+  loginClientKey,
+  loginLockRemaining,
+  recordLoginResult,
+  verifyMobileLogin,
+} from "./mobileLogin.js";
 import { log } from "@main/lib/logger.js";
 
 /** Read the configured port from settings (post-DB). Falls back to default. */
@@ -165,7 +174,7 @@ async function authorize(req: IncomingMessage, allowQueryToken = false): Promise
  *  which keeps the rest of the table (relay VPS config, public-MCP secret,
  *  cookie vault, MCP / LSP / terminal-shell config, workflow review records)
  *  away from the phone as well. */
-const LAN_UNREADABLE_SETTING_KEYS = new Set<string>([MOBILE_PAIRED_DEVICES_SETTING_KEY]);
+const LAN_UNREADABLE_SETTING_KEYS = new Set<string>([MOBILE_PAIRED_DEVICES_SETTING_KEY, MOBILE_LOGIN_SETTING_KEY]);
 
 /** True if this RPC request carries a setting key the LAN surface must not
  *  touch — checked for **every** method, not just the `setting:*` family, so a
@@ -288,6 +297,40 @@ async function handlePairVerify(req: IncomingMessage, res: ServerResponse, endpo
   sendJson(res, 200, outcome.result);
 }
 
+/** POST /api/auth/login — 账号密码登录(未开启时一律 401)。成功发一张和配对一样的
+ *  设备令牌。失败按来源节流,见 `mobileLogin.ts`。 */
+async function handlePasswordLogin(req: IncomingMessage, res: ServerResponse, endpoint: string): Promise<void> {
+  await awaitDb();
+  const client = loginClientKey(req);
+  const locked = loginLockRemaining(client);
+  if (locked > 0) {
+    const sec = Math.ceil(locked / 1000);
+    res.setHeader("Retry-After", String(sec));
+    sendJson(res, 429, { error: `尝试次数过多，请 ${sec} 秒后再试`, retryAfter: sec });
+    return;
+  }
+  let body: { username: string; password: string; deviceName?: string };
+  try {
+    body = MobileLoginInputSchema.parse(await readJsonBody(req, PAIR_VERIFY_BODY_LIMIT));
+  } catch {
+    sendJson(res, 400, { error: "请输入账号和密码" });
+    return;
+  }
+  const ok = await verifyMobileLogin(body.username, body.password);
+  recordLoginResult(client, ok);
+  if (!ok) {
+    log.warn(`mobile: password login failed (from ${client})`);
+    sendJson(res, 401, {
+      error: isMobileLoginEnabled() ? "账号或密码错误" : "电脑端未开启账号密码登录",
+    });
+    return;
+  }
+  const name = body.deviceName?.trim() || "密码登录设备";
+  const result = pairingManager.issueDevice(name, endpoint);
+  log.info(`mobile: device logged in with password (${result.deviceId}, name=${name}, from ${client})`);
+  sendJson(res, 200, result);
+}
+
 /** POST /api/rpc — dispatch a whitelisted RPC. Auth required. */
 async function handleRpc(req: IncomingMessage, res: ServerResponse, device: PairedDevice): Promise<void> {
   let body: MobileRpcRequest;
@@ -374,6 +417,22 @@ export function createMobileRequestHandler(
       handlePairVerify(req, res, endpoint).catch((err) => {
         log.error(`mobile: pair/verify failed: ${(err as Error).message}`);
         sendJson(res, 500, { error: "internal error" });
+      });
+      return;
+    }
+
+    // 登录页据此决定显不显示账号密码表单(只说开没开,不泄露账号名)。
+    if (path === "/api/auth/methods" && req.method === "GET") {
+      let password = false;
+      try { password = !!getDb() && isMobileLoginEnabled(); }
+      catch { password = false; }
+      sendJson(res, 200, { password });
+      return;
+    }
+    if (path === "/api/auth/login" && req.method === "POST") {
+      handlePasswordLogin(req, res, endpoint).catch((err) => {
+        log.error(`mobile: auth/login failed: ${(err as Error).message}`);
+        if (!res.headersSent) sendJson(res, 500, { error: "internal error" });
       });
       return;
     }

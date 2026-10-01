@@ -1312,11 +1312,25 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ ok: true; }"
  },
  {
+  "method": "mobile.clearLogin",
+  "channel": "mobile:clearLogin",
+  "doc": "关闭账号密码登录(清掉凭据;已登录的设备保留,需要的话单独撤销)。",
+  "input": "(无参数)",
+  "output": "MobileLoginStatus"
+ },
+ {
   "method": "mobile.getActiveCount",
   "channel": "mobile:getActiveCount",
   "doc": "Count of paired devices that are currently \"active\" (made a request within {@link MOBILE_ACTIVE_WINDOW_MS }).",
   "input": "(无参数)",
   "output": "{ count: number; }"
+ },
+ {
+  "method": "mobile.getLogin",
+  "channel": "mobile:getLogin",
+  "doc": "账号密码登录的状态(只有账号名 + 开没开,哈希永不出主进程)。",
+  "input": "(无参数)",
+  "output": "MobileLoginStatus"
  },
  {
   "method": "mobile.getStatus",
@@ -1338,6 +1352,13 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "Revoke a paired device; its token stops working immediately.",
   "input": "{ deviceId: string }",
   "output": "{ ok: true; }"
+ },
+ {
+  "method": "mobile.setLogin",
+  "channel": "mobile:setLogin",
+  "doc": "设置/修改手机端登录的账号密码(密码至少 8 位)。改密码不会踢掉已登录的设备 —— 要踢就在设备列表里撤销。",
+  "input": "{ username: string; password: string }",
+  "output": "MobileLoginStatus"
  },
  {
   "method": "mobile.startPairing",

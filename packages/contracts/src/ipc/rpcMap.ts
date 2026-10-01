@@ -26,7 +26,7 @@ import type { AgentProfileCatalog } from "../agentProfile.js";
 import type { HookSpec, HookRun } from "../hook.js";
 import type { WorkflowDoc, WorkflowListEntry, WorkflowReviewInfo } from "../workflow.js";
 import type { PluginState, PluginMarketplaceState, PluginsInstallLocalInput, PluginsInstallGitInput, PluginsInstallMarketplaceInput, PluginsSetEnabledInput, PluginsRemoveInput, PluginsMarketplaceAddInput, PluginsMarketplaceRemoveInput, PluginsMarketplaceRefreshInput } from "../plugin.js";
-import type { PairingStartResult, PairedDevice } from "../mobile.js";
+import type { MobileLoginStatus, PairingStartResult, PairedDevice, SetMobileLoginInput } from "../mobile.js";
 import type { RelayStatus, RelayVpsConfig, RelayVpsConfigInput } from "../relay.js";
 import type { LibraryItem, LibraryItemLink, LibraryLinkView, LibraryCollection, InstitutionProfile, FullTextMatch, AuthSiteStatus, LibraryConversionRow, LibraryNote, PdfHighlight } from "../library.js";
 import type { LibraryGroupMeta, LibrarySuppressRule } from "../libraryTypes.js";
@@ -903,6 +903,13 @@ export interface RpcMap {
   /** Count of paired devices that are currently "active" (made a request
    *  within {@link MOBILE_ACTIVE_WINDOW_MS}). */
   "mobile.getActiveCount": () => Promise<{ count: number }>;
+  /** 账号密码登录的状态(只有账号名 + 开没开,哈希永不出主进程)。 */
+  "mobile.getLogin": () => Promise<MobileLoginStatus>;
+  /** 设置/修改手机端登录的账号密码(密码至少 8 位)。改密码不会踢掉已登录的设备 ——
+   *  要踢就在设备列表里撤销。 */
+  "mobile.setLogin": (input: SetMobileLoginInput) => Promise<MobileLoginStatus>;
+  /** 关闭账号密码登录(清掉凭据;已登录的设备保留,需要的话单独撤销)。 */
+  "mobile.clearLogin": () => Promise<MobileLoginStatus>;
   // ── Relay (SSH-based remote access) ──
   /** Save VPS connection config to settings (persisted across restarts). */
   "relay.saveConfig": (input: RelayVpsConfigInput) => Promise<{ ok: boolean; error?: string }>;
@@ -1667,6 +1674,9 @@ export const IPC = {
   MOBILE_REVOKE_DEVICE: "mobile:revokeDevice",
   MOBILE_GET_STATUS: "mobile:getStatus",
   MOBILE_GET_ACTIVE_COUNT: "mobile:getActiveCount",
+  MOBILE_GET_LOGIN: "mobile:getLogin",
+  MOBILE_SET_LOGIN: "mobile:setLogin",
+  MOBILE_CLEAR_LOGIN: "mobile:clearLogin",
   // Relay (SSH-based remote access) — invoke/handle (RPC).
   RELAY_SAVE_CONFIG: "relay:saveConfig",
   RELAY_GET_CONFIG: "relay:getConfig",

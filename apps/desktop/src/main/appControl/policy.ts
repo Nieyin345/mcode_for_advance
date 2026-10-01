@@ -133,6 +133,8 @@ const DANGER: Record<string, string> = {
   "publicMcp.regenerateProjectLinkSecret": "重置项目公网 MCP 链接的密钥",
   "mobile.startPairing": "开始手机配对",
   "mobile.revokeDevice": "撤销已配对手机",
+  "mobile.setLogin": "设置手机远程登录的账号密码",
+  "mobile.clearLogin": "关闭手机远程的账号密码登录",
   "relay.saveConfig": "改中继服务器配置",
   "relay.connect": "连接中继服务器",
   "relay.disconnect": "断开中继服务器",

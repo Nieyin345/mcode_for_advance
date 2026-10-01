@@ -89,6 +89,41 @@ export const PairingVerifyInputSchema = z.object({
   deviceName: z.string().min(1).max(64),
 });
 
+/* ───────────────────────── 账号密码登录 ───────────────────────── */
+
+/**
+ * **账号密码登录**的凭据(JSON:`{ username, salt, hash, n, r, p }`,scrypt)。
+ *
+ * 扫码配对要求人在电脑旁边(验证码显示在电脑上)。用户要的是**人不在电脑旁也能从
+ * 公网地址登录** —— 于是加这一条:在电脑上设好账号密码,手机打开地址输入即可,成功后
+ * 发一张和配对完全一样的设备令牌(进设备列表、可撤销)。
+ *
+ * ⚠️ 只存 scrypt 哈希,从不存明文;这个键不在手机可读写的白名单里
+ * (`isMobileAccessibleSettingKey`),配过对的手机也读不到、改不了。未设置 = 不开放。
+ */
+export const MOBILE_LOGIN_SETTING_KEY = "mobile.passwordLogin";
+
+/** 给电脑端界面看的状态 —— 只有账号名和开没开,哈希永不出主进程。 */
+export interface MobileLoginStatus {
+  enabled: boolean;
+  username: string;
+}
+
+/** 手机端提交的登录请求。 */
+export const MobileLoginInputSchema = z.object({
+  username: z.string().trim().min(1).max(64),
+  password: z.string().min(1).max(256),
+  deviceName: z.string().trim().max(64).optional(),
+});
+export type MobileLoginInput = z.infer<typeof MobileLoginInputSchema>;
+
+/** 电脑端设置账号密码。密码至少 8 位 —— 它挡在公网地址前面。 */
+export const SetMobileLoginSchema = z.object({
+  username: z.string().trim().min(1).max(64).regex(/^\S+$/, "账号不能包含空格"),
+  password: z.string().min(8, "密码至少 8 位").max(256),
+});
+export type SetMobileLoginInput = z.infer<typeof SetMobileLoginSchema>;
+
 /** A single RPC call from mobile → main. `method` names mirror the IPC channel
  *  names (`RpcMap` keys) for the whitelisted subset; `input` is the method's
  *  zod-validated payload. */

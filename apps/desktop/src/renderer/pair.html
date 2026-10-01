@@ -120,6 +120,17 @@
         line-height: 1.5;
         color: #dc2626;
       }
+      [hidden] { display: none !important; }
+      .switch { display: flex; padding: 4px; border-radius: 10px; background: var(--surface-muted); }
+      .switch button {
+        flex: 1;
+        min-height: 32px;
+        background: transparent;
+        color: var(--content-muted);
+        font-size: 13px;
+        font-weight: 400;
+      }
+      .switch button[aria-pressed="true"] { background: var(--surface); color: var(--content); font-weight: 500; }
       .foot { margin: 0; text-align: center; font-size: 11px; color: var(--content-subtle); word-break: break-all; }
       /* Pairing-complete state */
       .done { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 28px 16px; text-align: center; }
@@ -148,6 +159,30 @@
           <h1 id="title">连接 Mcode</h1>
           <p id="desc"></p>
         </div>
+
+        <div class="switch" id="switch" hidden>
+          <button type="button" id="tabCode" aria-pressed="true">验证码配对</button>
+          <button type="button" id="tabLogin" aria-pressed="false">账号密码</button>
+        </div>
+
+        <form class="form" id="loginForm" novalidate hidden>
+          <label class="field">
+            <span id="userLabel">账号</span>
+            <input id="username" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="64" />
+          </label>
+          <label class="field">
+            <span id="passLabel">密码</span>
+            <input id="password" type="password" autocomplete="current-password" maxlength="256" />
+          </label>
+          <label class="field">
+            <span id="loginNameLabel">设备名称（可选）</span>
+            <input id="loginName" maxlength="64" />
+          </label>
+          <p class="error" id="loginError" hidden></p>
+          <button type="submit" id="loginSubmit">
+            <span id="loginSubmitText">登录</span>
+          </button>
+        </form>
 
         <form class="form" id="form" novalidate>
           <label class="field">
