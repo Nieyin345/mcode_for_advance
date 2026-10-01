@@ -310,7 +310,7 @@ async function handlePublicRequest(req: IncomingMessage, res: ServerResponse): P
       return;
     }
     req.headers[MCODE_SESSION_HEADER] = linkSession;
-    await handleMcpRequest(req, res, { keepAliveLongCalls: true });
+    await handleMcpRequest(req, res, { keepAliveLongCalls: true, audience: "public" });
     return;
   }
 
@@ -339,7 +339,7 @@ async function handlePublicRequest(req: IncomingMessage, res: ServerResponse): P
   // 字节**就回 524(免费/Pro/Business 都不能调)。慢工具(agent_bash 默认 120 秒、
   // 长构建)会撞上 —— 所以这条路允许把慢调用改成 SSE 回、中途发保活注释。扩展的
   // `/mcp` 是本机回环,没这个问题,保持原样。
-  await handleMcpRequest(req, res, { keepAliveLongCalls: true });
+  await handleMcpRequest(req, res, { keepAliveLongCalls: true, audience: "public" });
 }
 
 /* ────────────────────────────── 状态快照 ────────────────────────────── */

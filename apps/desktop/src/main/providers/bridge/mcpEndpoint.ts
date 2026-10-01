@@ -101,8 +101,14 @@ export interface McpToolCallResult {
  * 工具的提供方。真实的那个(`main/mcp/webToolHost.ts`)拿的是与进程内 server 同一份
  * 工具表并复用 mcode 现有的审批闸门;smoke 里注的是假的。
  */
+/**
+ * 谁在问这张表:`local` = 本机浏览器扩展(`/mcp`,默认);`public` = 公网 MCP(ChatGPT 直连)。
+ * 两边给的工具不一样(公网:不给工作流那组、多给资料库只读那组),见 `webToolHost.ts`。
+ */
+export type McpAudience = "local" | "public";
+
 export interface McpToolHost {
-  listTools(): McpToolInfo[];
+  listTools(audience?: McpAudience): McpToolInfo[];
   /**
    * 调用一个工具。
    *
@@ -110,7 +116,11 @@ export interface McpToolHost {
    * 真实宿主会回一句"这次调用没带会话标识"的失败结果,因为审批闸门(权限模式、
    * 「始终允许」)全是按会话记的,没有会话就没有闸门,不能就这么放行。
    */
-  callTool(name: string, args: unknown, ctx: { sessionId: string | null }): Promise<McpToolCallResult>;
+  callTool(
+    name: string,
+    args: unknown,
+    ctx: { sessionId: string | null; audience?: McpAudience },
+  ): Promise<McpToolCallResult>;
 }
 
 let host: McpToolHost | null = null;
@@ -168,6 +178,8 @@ function json(res: ServerResponse, status: number, body: unknown): void {
  * 每次都从头里读,不靠连接上的状态记。
  */
 export interface McpRequestOptions {
+  /** 见 {@link McpAudience}。不给 = `local`。 */
+  audience?: McpAudience;
   /**
    * 慢的 `tools/call` 改用 SSE 回、中途发保活注释(见 {@link handleCall})。
    * **只给公网那条路开** —— 它前面是 Cloudflare:一个请求 100 秒内一个字节都没回就
@@ -256,7 +268,7 @@ export async function handleMcpRequest(
         rpcError(res, body.id, -32603, "mcode tool host is not ready");
         return;
       }
-      result(res, body.id, { tools: host.listTools() });
+      result(res, body.id, { tools: host.listTools(opts.audience) });
       return;
     }
 
@@ -298,7 +310,7 @@ async function handleCall(
     rpcError(res, body.id, -32603, "mcode tool host is not ready");
     return;
   }
-  if (!host.listTools().some((tool) => tool.name === name)) {
+  if (!host.listTools(opts.audience).some((tool) => tool.name === name)) {
     // 协议层错误:这个名字根本不在表里(不是"工具跑失败了")。
     rpcError(res, body.id, -32602, `unknown tool: ${name}`);
     return;
@@ -306,7 +318,7 @@ async function handleCall(
 
   const sessionId = sessionIdOf(req);
   const toolHost = host;
-  const call: Promise<unknown> = toolHost.callTool(name, params.arguments ?? {}, { sessionId }).then(
+  const call: Promise<unknown> = toolHost.callTool(name, params.arguments ?? {}, { sessionId, audience: opts.audience }).then(
     (out) => ({
       content: out.content?.length ? out.content : [{ type: "text", text: out.text }],
       ...(out.structuredContent ? { structuredContent: out.structuredContent } : {}),

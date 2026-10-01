@@ -58,6 +58,8 @@ import type {
 // 就换不掉,真那份会被打进 bundle 并且在模块载入时去找真的 sql.js 库。
 import { workflowMcpTools } from "@main/mcp/mcodeServer.js";
 import { agentMcpTools } from "@main/mcp/agentTools.js";
+import { LIBRARY_READONLY_TOOLS, libraryMcpTools } from "@main/mcp/libraryServer.js";
+import type { LibraryForAi, SandboxReadCheck } from "@main/mcp/sandboxReadPolicy.js";
 // ⚠️ 这张表**平时是空的** —— `mcode_agent_*`(把 mcode agent 整个交给外面的 AI 支使)
 // 只在用户亲手打开那个开关后才报出来。引它是安全的:那个文件只依赖 zod 与类型,真正
 // 要碰 db/RuntimeManager 的那一半在 `delegateHost.ts`(见它文件头为什么拆两个)。
@@ -102,6 +104,14 @@ export interface WebToolHostDeps {
    * 所以给它一个注入点,而不是让生产硬挂一张它已经不要的表。
    */
   extraTools?: McpToolSpec[];
+  /**
+   * 公网沙箱外的只读名单(资料库 / 技能库)—— 生产由 `main/index.ts` 传
+   * `sandboxReadPolicy.ts` 的那份;不给 = 沙箱外一律拒。走注入是因为那条链要拉库模块,
+   * 无头 smoke 的 bundle 装不下。
+   */
+  sandboxReadCheck?: SandboxReadCheck;
+  /** `agent_context` 资料库清单的给 AI 口径,同上由 `main/index.ts` 传。 */
+  libraryForAi?: LibraryForAi;
 }
 
 /** 没带会话标识时的回话。写清楚"怎么修"——模型唯一能做的就是告诉用户。 */
@@ -179,6 +189,23 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
   // **桌面引擎那条路照旧挂着它**(`ClaudeAgentSdkProvider` 的 `buildLibraryMcpServer`)
   // —— 那边没有 `agent_*` 那套文件工具,库工具是它读资料库的唯一通道,摘掉就瞎了。
   // 所以这一行只影响浏览器里的扩展/网页端(它走的是这张表)。
+  const agentSpecs = agentMcpTools({
+    cwdFor: deps.cwdFor,
+    sandboxRootFor: deps.sandboxRootFor,
+    sandboxReadCheck: deps.sandboxReadCheck,
+    libraryForAi: deps.libraryForAi,
+  });
+  // ── 公网那张表(ChatGPT 直连,2026-10-02 用户定):**不给工作流那组**(工作流 / 自动化
+  // 不需要远程 AI 去改),**给资料库的只读那组**(用户要远程 AI「能看我的资料库」)。
+  // 资料库的写工具(搬、删、改名、写笔记、导入)一个都不给 —— 这条路免审批。
+  // 库里的文件本身用 `agent_read_*` 读:沙箱对资料库 / 技能库开了只读门(见
+  // `sandboxReadPolicy.ts`,守屏蔽规则)。
+  // `extraTools`(测试替身)不进这张表 —— 公网表要验的就是生产给出去的那一份。
+  const publicSpecs: McpToolSpec[] = [
+    ...agentSpecs,
+    ...libraryMcpTools().filter((spec) => LIBRARY_READONLY_TOOLS.has(spec.name)),
+  ];
+  // ── 本机浏览器扩展那张表(`/mcp`):照旧。
   const specs: McpToolSpec[] = [
     // ⚠️ **`includeSessionLogs: false`（2026-09-24）—— 读用户对话记录那组工具
     // 不给公网。** 用户明确要求「公网不给」。
@@ -197,13 +224,14 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
     //
     // 桌面本机那条路照旧带着它们（`buildWorkflowMcpServer` 不传这个参数）。
     ...workflowMcpTools({ includeSessionLogs: false }),
-    ...agentMcpTools({ cwdFor: deps.cwdFor, sandboxRootFor: deps.sandboxRootFor }),
+    ...agentSpecs,
     // 「指挥本机 agent 干整件事」那一组(`delegateMcpTools`)**不在这张静态表里** ——
     // 见下面 listTools / callTool:它每次现问开关。
     // 测试注入的替身工具(生产为空)—— 见 `WebToolHostDeps.extraTools`。
     ...(deps.extraTools ?? []),
   ];
   const byName = new Map(specs.map((spec) => [spec.name, spec]));
+  const byNamePublic = new Map(publicSpecs.map((spec) => [spec.name, spec]));
   /**
    * 每个工具**实际报给客户端**的那份 outputSchema。规则：
    *  - 工具自己声明了 → 用它，但**保证 `text` 在里面**（见下），否则"只回文本"的
@@ -228,6 +256,7 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
     };
   };
   let listed: McpToolInfo[] | null = null;
+  let listedPublic: McpToolInfo[] | null = null;
   const toInfo = (spec: McpToolSpec): McpToolInfo => ({
     name: spec.name,
     description: spec.description,
@@ -251,14 +280,22 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
   const delegateSpecs = (): McpToolSpec[] => delegateMcpTools();
 
   return {
-    listTools(): McpToolInfo[] {
+    listTools(audience): McpToolInfo[] {
       const dynamic = delegateSpecs();
-      if (!listed) listed = specs.map(toInfo);
-      return dynamic.length ? [...listed, ...dynamic.map(toInfo)] : listed;
+      let base: McpToolInfo[];
+      if (audience === "public") {
+        if (!listedPublic) listedPublic = publicSpecs.map(toInfo);
+        base = listedPublic;
+      } else {
+        if (!listed) listed = specs.map(toInfo);
+        base = listed;
+      }
+      return dynamic.length ? [...base, ...dynamic.map(toInfo)] : base;
     },
 
     async callTool(name, args, ctx): Promise<McpToolCallResult> {
-      const spec = byName.get(name) ?? delegateSpecs().find((s) => s.name === name);
+      const table = ctx.audience === "public" ? byNamePublic : byName;
+      const spec = table.get(name) ?? delegateSpecs().find((s) => s.name === name);
       if (!spec) return { text: `没有这个工具:${name}`, isError: true };
 
       const sessionId = ctx.sessionId;

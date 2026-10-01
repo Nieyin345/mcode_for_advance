@@ -52,6 +52,7 @@ import { extractBashWriteTargets, expandTilde } from "@main/providers/pi-sdk/bas
 // `agent_context` 要在工具层回答"我在什么环境里" —— 与注入到提示词里的那段环境块
 // **共用同一份查询**(见 `readEnvSnapshot`),不在这里再查一遍库/项目。
 import { readEnvSnapshot } from "@main/providers/envPrompt.js";
+import type { LibraryForAi, SandboxReadCheck, SandboxReadKind } from "./sandboxReadPolicy.js";
 import { fail, image, text, type McpToolContext, type McpToolSpec } from "./sdk.js";
 import { structured as structuredResult } from "./sdk.js";
 import {
@@ -129,6 +130,17 @@ export interface AgentToolsDeps {
    * ⚠️ 只约束文件工具,`agent_bash` 不受它限制(见 `resolveAgainstCwd` 那段)。
    */
   sandboxRootFor?(sessionId: string): string | null;
+  /**
+   * 有沙箱时,**沙箱外**的路径还能不能**只读**地碰(资料库、技能库)—— 见
+   * `sandboxReadPolicy.ts`。没给 = 沙箱外一律拒(原来的行为)。写工具不问它。
+   */
+  sandboxReadCheck?: SandboxReadCheck;
+  /**
+   * `agent_context` 里资料库那份清单的**给 AI 的口径**(守屏蔽规则、给绝对路径)——
+   * 见 `sandboxReadPolicy.ts` 的 `libraryForAi`。没给 = 退回环境快照里的原样条目。
+   * 走注入是因为那条链要拉库模块,无头 smoke 的 bundle 装不下。
+   */
+  libraryForAi?: LibraryForAi;
 }
 
 /* ────────────────────────────── 共用小件 ────────────────────────────── */
@@ -931,6 +943,20 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
     const sandbox = sandboxOf(ctx);
     return resolveAgainstCwd(sandbox ?? cwdOf(ctx), p, sandbox);
   };
+  /**
+   * **只读**文件工具的路径解析入口:沙箱内照旧;沙箱外再问一次 `sandboxReadCheck`
+   * (资料库 / 技能库只读可达,守屏蔽规则)。写工具一律还走 {@link pOf}。
+   */
+  const pOfRead = (ctx: McpToolContext, p: string, kind: SandboxReadKind): string => {
+    const sandbox = sandboxOf(ctx);
+    if (!sandbox) return resolveAgainstCwd(cwdOf(ctx), p, null);
+    const abs = resolveAgainstCwd(sandbox, p, null);
+    if (pathWithin(sandbox, abs)) return abs;
+    const verdict = deps.sandboxReadCheck?.(abs, kind);
+    if (verdict === null) return abs;
+    if (typeof verdict === "string") throw new Error(verdict);
+    return resolveAgainstCwd(sandbox, p, sandbox);
+  };
   const processes = createAgentProcessSessions();
   const searches = createAgentSearchSessions();
   const remoteSsh = createAgentRemoteSshManager();
@@ -957,7 +983,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       },
       handler: (args: { path: string; offset?: number; limit?: number }, ctx) =>
         attempt(async () => {
-          const abs = pOf(ctx, args.path);
+          const abs = pOfRead(ctx, args.path, "read");
           return readTextRange(abs, args.offset ?? 1, args.limit ?? 2000);
         }),
     },
@@ -990,7 +1016,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           for (const requested of args.paths) {
             let body: string;
             try {
-              const abs = pOf(ctx, requested);
+              const abs = pOfRead(ctx, requested, "read");
               body = await readTextRange(abs, args.offset ?? 1, args.limit_per_file ?? 400);
             } catch (err) {
               body = `失败:${err instanceof Error ? err.message : String(err)}`;
@@ -1045,7 +1071,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         max_chars?: number;
       }, ctx) =>
         attempt(async () => readRichDocument({
-          abs: pOf(ctx, args.path),
+          abs: pOfRead(ctx, args.path, "read"),
           sheet: args.sheet,
           range: args.range,
           maxPages: args.max_pages,
@@ -1066,7 +1092,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       },
       handler: async (args: { path: string }, ctx) => {
         try {
-          const abs = pOf(ctx, args.path);
+          const abs = pOfRead(ctx, args.path, "read");
           const ext = path.extname(abs).toLowerCase();
           const mime = ({
             ".png": "image/png",
@@ -1105,7 +1131,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       },
       handler: (args: { path: string; part?: string; offset?: number; limit?: number }, ctx) =>
         attempt(async () => readDocxXml({
-          path: pOf(ctx, args.path),
+          path: pOfRead(ctx, args.path, "read"),
           part: args.part,
           offset: args.offset,
           limit: args.limit,
@@ -1330,7 +1356,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         count_lines: z.boolean().optional().describe("文本文件是否统计行数，默认 true；超大文件不需要时可关掉"),
       },
       handler: (args: { path: string; count_lines?: boolean }, ctx) =>
-        attempt(async () => fileInfoText(pOf(ctx, args.path), args.count_lines ?? true)),
+        attempt(async () => fileInfoText(pOfRead(ctx, args.path, "read"), args.count_lines ?? true)),
     },
 
     {
@@ -1381,7 +1407,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       },
       handler: (args: { path?: string; depth?: number; max_entries?: number }, ctx) =>
         attempt(async () => {
-          const abs = pOf(ctx, args.path ?? ".");
+          const abs = pOfRead(ctx, args.path ?? ".", "list");
           const depth = args.depth ?? 1;
           const cap = args.max_entries ?? 500;
           const rootStat = await fs.stat(abs).catch(() => null);
@@ -1442,7 +1468,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       },
       handler: (args: { pattern: string; path?: string }, ctx) =>
         attemptStructured(async () => {
-          const base = pOf(ctx, args.path ?? ".");
+          const base = pOfRead(ctx, args.path ?? ".", "list");
           const re = globToRegExp(args.pattern);
           const hits = await walkFiles(base, null);
           const matched = hits.filter((h) => re.test(h.rel.replace(/\\/g, "/")));
@@ -1485,7 +1511,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       },
       handler: (args: { pattern: string; path?: string; glob?: string; max_results?: number }, ctx) =>
         attemptStructured(async () => {
-          const base = pOf(ctx, args.path ?? ".");
+          const base = pOfRead(ctx, args.path ?? ".", "search");
           let re: RegExp;
           try {
             re = new RegExp(args.pattern, "i");
@@ -1567,7 +1593,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         first_page_length?: number;
       }, ctx) =>
         attempt(async () => {
-          const root = pOf(ctx, args.path ?? ".");
+          const root = pOfRead(ctx, args.path ?? ".", "search");
           const out = await searches.start({
             ownerSessionId: ctx.sessionId,
             type: args.search_type,
@@ -2180,6 +2206,26 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           }
           lines.push("## 项目\n" + projLines.join("\n"));
 
+          // **守屏蔽规则**(设置 → 资料库类型):整条挡的不列,按文件类型挡的那份不给路径 ——
+          // 与 `library_search` 同一口径(`suppressionReasonOfItem` / `aiVisibleFilesOf`)。
+          // 路径给**绝对路径**:库里存的是相对库根的,原样给出去,模型在公网那条路上会按
+          // 项目目录去解析,读不到。
+          let ai: ReturnType<LibraryForAi> = null;
+          try {
+            ai = snap.items.length > 0 ? (deps.libraryForAi?.(snap.items.length) ?? null) : null;
+          } catch {
+            ai = null;
+          }
+          const visibleItems = ai
+            ? ai.items
+            : snap.items.map((it) => ({
+                title: it.title,
+                kind: it.kind,
+                year: it.year,
+                venue: it.venue,
+                path: it.mdPath || it.pdfPath || null,
+              }));
+          const hiddenCount = ai ? ai.hidden : 0;
           const libLines = [`库根: ${snap.libraryRoot}`];
           if (snap.totalItems === 0) {
             libLines.push("(库是空的)");
@@ -2187,7 +2233,8 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
             libLines.push(
               `共 ${snap.totalItems} 条${snap.totalItems > snap.items.length ? `,列表只给前 ${snap.items.length} 条` : ""}:`,
             );
-            for (const it of snap.items) {
+            for (const it of visibleItems) {
+              const file = it.path;
               // **给标题,不是 sha256 文件名** —— 库是内容寻址的(`papers/ab/cd/<hash>.pdf`),
               // 只给路径的话模型认不出哪篇是哪篇,这份清单就白给了(见 envPrompt 文件头)。
               const bits = [
@@ -2196,10 +2243,11 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
                 it.year ? String(it.year) : "",
                 it.venue ? `· ${it.venue}` : "",
               ].filter(Boolean);
-              const file = it.mdPath || it.pdfPath;
               libLines.push(`- ${bits.join(" ")}${file ? `\n  文件: ${file}` : ""}`);
             }
           }
+          if (hiddenCount > 0) libLines.push(`(另有 ${hiddenCount} 条被屏蔽规则挡住了,没有列出来。)`);
+          libLines.push("要按关键词找、或按分类翻,用 library_search / library_collections / library_items(如果有这几个工具)。");
           lines.push("## 资料库\n" + libLines.join("\n"));
           lines.push("⚠️ 资料库只读 —— 读它、复制进项目都行,别在库里改。要改先复制到项目里。");
 
@@ -2210,12 +2258,12 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
               projects: snap.projects,
               library_root: snap.libraryRoot,
               library_total: snap.totalItems,
-              library_items: snap.items.map((it) => ({
+              library_items: visibleItems.map((it) => ({
                 title: it.title,
                 kind: it.kind,
                 year: it.year ?? null,
                 venue: it.venue ?? null,
-                path: it.mdPath || it.pdfPath || null,
+                path: it.path || null,
               })),
               library_truncated: snap.totalItems > snap.items.length,
             },
@@ -2260,9 +2308,9 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       name: "agent_skill_read",
       description:
         "读取一条技能的完整 SKILL.md 内容(按名字)。读了之后照着里面的步骤执行;" +
-        "技能里提到的附属文件在技能目录下(通常在 ~/.mcode/skills/<名字>/),不在项目里 —— " +
-        "用 agent_read_file 读它们时会被沙箱拒绝(公网那条通路限制在项目目录内)。" +
-        "SKILL.md 正文本身由本工具直接返回,不受该限制。",
+        "技能里提到的附属文件(脚本、模板、参考资料)在技能目录下(通常在 ~/.mcode/skills/<名字>/)," +
+        "用 agent_read_file / agent_list_dir 读;脚本用 agent_bash 按绝对路径执行。技能目录只读 —— " +
+        "产出的文件写到项目里。",
       inputSchema: {
         name: z.string().min(1).describe("技能名(agent_skill_list 里列出的名字)"),
       },

@@ -628,6 +628,8 @@ let cwdValue: string | null = CWD;
 /** 沙箱根。默认 null = 不限制(大多数断言要的是这个:它们读写 CWD 外面的临时文件)。
  *  专门那一段会临时设成 CWD,验越界被拒。 */
 let sandboxValue: string | null = null;
+/** 沙箱外只读门的替身(真那份要读库,见 `sandboxReadPolicy.ts`)。默认 = 都不归它管。 */
+let readCheckImpl: (abs: string, kind: "read" | "list" | "search") => string | null | undefined = () => undefined;
 
 const host = createWebToolHost({
   gateFor: () => (gateKnown ? makeGate() : null),
@@ -635,6 +637,7 @@ const host = createWebToolHost({
   // 不碰用户机器上的任何真项目。
   cwdFor: () => cwdValue,
   sandboxRootFor: () => sandboxValue,
+  sandboxReadCheck: (abs, kind) => readCheckImpl(abs, kind),
   // 替身工具表(见 stubs/libraryServer.ts):**网页端已经不挂真的库工具了**
   // (那 22 个从这张表撤掉了),但这一套要验的是**派发与闸门**,需要几件形状各异的
   // 替身把分支踩出来 —— 所以经这个注入点挂,而不是让生产硬挂一张它不要的表。
@@ -1378,6 +1381,56 @@ const bashInsideWrite = await host.callTool(
 );
 check("agent_bash 重定向到沙箱内正常", !bashInsideWrite.text.includes("之外"), bashInsideWrite.text);
 check("…而且真的写出来了", existsSync(path.join(CWD, "bash-inside.txt")));
+
+/* ── 沙箱外只读门(资料库 / 技能库,2026-10-02)────────────────────────────
+   用户要远程 AI「能看我的资料库、能用本地技能」,可两者都不在项目目录里。只读工具
+   沙箱外再问一次 `sandboxReadCheck`;写工具一个字没放宽。 */
+{
+  const LIB = mkdtempSync(path.join(tmpdir(), "mcode-lib-"));
+  writeFileSync(path.join(LIB, "ok.md"), "库里的内容", "utf8");
+  writeFileSync(path.join(LIB, "blocked.md"), "被屏蔽的内容", "utf8");
+  readCheckImpl = (abs, kind) => {
+    if (!abs.startsWith(LIB)) return undefined;
+    if (abs.endsWith("blocked.md")) return "被屏蔽了(测试)";
+    if (kind === "search") return "不能全文搜索(测试)";
+    return null;
+  };
+  const libRead = await host.callTool("agent_read_file", { path: path.join(LIB, "ok.md") }, { sessionId: "s1" });
+  check("只读门:库里的文件读得到", libRead.text.includes("库里的内容"), libRead.text);
+  const libBatch = await host.callTool("agent_read_files", { paths: [path.join(LIB, "ok.md")] }, { sessionId: "s1" });
+  check("只读门:批量读也走同一道门", libBatch.text.includes("库里的内容"), libBatch.text);
+  const libBlocked = await host.callTool("agent_read_file", { path: path.join(LIB, "blocked.md") }, { sessionId: "s1" });
+  check("只读门:被屏蔽的拒,原话给模型", libBlocked.text.includes("被屏蔽了(测试)"), libBlocked.text);
+  check("…内容没读出来", !libBlocked.text.includes("被屏蔽的内容"), libBlocked.text);
+  const libList = await host.callTool("agent_list_dir", { path: LIB }, { sessionId: "s1" });
+  check("只读门:列目录可以", libList.text.includes("ok.md"), libList.text);
+  const libGrep = await host.callTool("agent_grep", { pattern: "内容", path: LIB }, { sessionId: "s1" });
+  check("只读门:全文搜索按 search 问,被拒", libGrep.text.includes("不能全文搜索"), libGrep.text);
+  const libWrite = await host.callTool(
+    "agent_write_file",
+    { path: path.join(LIB, "x.md"), content: "x" },
+    { sessionId: "s1" },
+  );
+  check("只读门:写库被拒(写工具不问只读门)", libWrite.text.includes("越界"), libWrite.text);
+  check("…文件确实没被创建", !existsSync(path.join(LIB, "x.md")));
+  const stillOutside = await host.callTool("agent_read_file", { path: outsideFile }, { sessionId: "s1" });
+  check("只读门:不归它管的仍报越界", stillOutside.text.includes("越界"), stillOutside.text);
+  readCheckImpl = () => undefined;
+  rmSync(LIB, { recursive: true, force: true });
+}
+
+/* ── 公网那张表(audience=public):不给工作流、给库的只读那组 ── */
+{
+  const pub = host.listTools("public").map((t) => t.name);
+  check("公网表:没有工作流工具", !pub.some((n) => n.startsWith("workflow_") || n === "agent_profile_save"), pub);
+  check("公网表:有库的只读工具", pub.includes("library_probe"), pub);
+  check("公网表:库的写工具不给", !pub.includes("library_write"), pub);
+  check("公网表:agent 文件工具还在", pub.includes("agent_read_file") && pub.includes("agent_skill_read"), pub);
+  check("公网表:名字不重复", new Set(pub).size === pub.length, pub);
+  check("本机表:工作流照旧在", host.listTools().map((t) => t.name).includes("workflow_list"));
+  const wfPublic = await host.callTool("workflow_list", {}, { sessionId: "s1", audience: "public" });
+  check("公网:调工作流工具被拒", wfPublic.isError === true && wfPublic.text.includes("没有这个工具"), wfPublic.text);
+}
 
 // 关掉沙箱(null)= 不限制 —— 这条防的是"顺手给所有会话都套上沙箱",那会改掉
 // 本机 claude 引擎那条路一直在用的行为。

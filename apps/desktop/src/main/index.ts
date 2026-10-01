@@ -15,6 +15,7 @@ import {
 import { configureMcpToolHost } from "@main/providers/bridge/mcpEndpoint.js";
 import { initPublicMcp, disposePublicMcp, configurePublicMcpRuntime, publicMcpSandboxRoot } from "@main/providers/bridge/publicMcpSession.js";
 import { createWebToolHost } from "@main/mcp/webToolHost.js";
+import { libraryForAi, sandboxReadCheck } from "@main/mcp/sandboxReadPolicy.js";
 import { disposeAllAgentResources } from "@main/mcp/agentSessionCleanup.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { broadcastSessionChanged } from "@main/lib/sessionSync.js";
@@ -190,6 +191,9 @@ app.whenReady().then(async () => {
         gateFor: (sessionId) => runtimeManager.webToolGate(sessionId),
         cwdFor: (sessionId) => runtimeManager.cwdFor(sessionId),
         sandboxRootFor: (sessionId) => publicMcpSandboxRoot(sessionId),
+        // 沙箱外只读:资料库 / 技能库(守屏蔽规则),见 sandboxReadPolicy.ts。
+        sandboxReadCheck,
+        libraryForAi,
       }),
     );
     // 顺手把桥起起来，别等用户点开设置页才 listen：浏览器里的扩展是**主动来连**
