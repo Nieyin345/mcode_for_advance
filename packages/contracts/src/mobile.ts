@@ -117,6 +117,55 @@ export const MobileLoginInputSchema = z.object({
 });
 export type MobileLoginInput = z.infer<typeof MobileLoginInputSchema>;
 
+/* ───────────────────────── 手机自有域名的隧道 ───────────────────────── */
+
+/**
+ * 手机伴侣**自己的** Cloudflare 隧道配置 —— 和「设置 → 远程控制」(公网 MCP)**无关**。
+ *
+ * 以前手机域名挂在 MCP 那条命名隧道上:不打开「开放远程控制」(那是给 ChatGPT 用的 MCP
+ * 服务,公网调用免审批)手机域名就打不开。两样东西不该绑在一起,所以手机这边单独存一份,
+ * 单独起一个 cloudflared(同一个 Tunnel Token 被两边各起一个连接器也没关系,Cloudflare
+ * 允许一条隧道多个连接器)。
+ *
+ *  - `mode`:`off` 不用 / `named` Mcode 用 Tunnel Token 跑 cloudflared / `external` 你自己跑;
+ *  - `hostname`:手机的公网域名(如 `m.example.com`,不带协议);
+ *  - `token`:safeStorage 密文,**整串永不出主进程**(界面只拿尾 4 位);
+ *  - `autostart`:用户点过「开启」= `1`,下次启动 Mcode 自动拉起;点「停止」= `0`。
+ */
+export const MOBILE_TUNNEL_MODE_SETTING_KEY = "mobile.tunnel.mode";
+export const MOBILE_TUNNEL_HOSTNAME_SETTING_KEY = "mobile.tunnel.hostname";
+export const MOBILE_TUNNEL_TOKEN_SETTING_KEY = "mobile.tunnel.token";
+export const MOBILE_TUNNEL_AUTOSTART_SETTING_KEY = "mobile.tunnel.autostart";
+
+export type MobileTunnelMode = "off" | "named" | "external";
+
+/** 给「连接手机 → 自有域名」页看的状态。 */
+export interface MobileTunnelStatus {
+  mode: MobileTunnelMode;
+  hostname: string;
+  /** 已存 Tunnel Token 的尾 4 位(`****abcd`);没存过为空串。 */
+  tokenHint: string;
+  /** named:cloudflared 进程的状态;external:对 `https://域名/api/health` 的探测结论;off:stopped。 */
+  phase: "stopped" | "starting" | "ready" | "reconnecting" | "failed";
+  error: string | null;
+  /** 补充说明(例如域名挂了 Cloudflare Access、无法自动核对)。 */
+  note: string | null;
+  /** 手机服务此刻在听的端口 —— Cloudflare 那条 ingress 要指向它。 */
+  mobilePort: number;
+  /** 下次启动 Mcode 是否自动开启(named)。 */
+  autostart: boolean;
+}
+
+export const SetMobileTunnelSchema = z.object({
+  mode: z.enum(["off", "named", "external"]),
+  hostname: z.string().trim().max(253),
+  /** 留空 = 沿用已存的那串。 */
+  token: z.string().trim().max(4096).optional(),
+  /** 显式删掉已存的 token。 */
+  clearToken: z.boolean().optional(),
+});
+export type SetMobileTunnelInput = z.infer<typeof SetMobileTunnelSchema>;
+
 /** 电脑端设置账号密码。密码至少 8 位 —— 它挡在公网地址前面。 */
 export const SetMobileLoginSchema = z.object({
   username: z.string().trim().min(1).max(64).regex(/^\S+$/, "账号不能包含空格"),

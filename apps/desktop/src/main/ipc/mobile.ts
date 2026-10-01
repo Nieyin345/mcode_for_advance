@@ -12,7 +12,13 @@ import { z } from "zod";
 import { IPC, RevokeMobileDeviceSchema } from "@contracts/ipc";
 import { pairingManager, detectLanIp, detectLanIps } from "@main/mobile/PairingManager.js";
 import { getMobileServer } from "@main/mobile/MobileHttpServer.js";
-import { MOBILE_ACTIVE_WINDOW_MS, SetMobileLoginSchema } from "@contracts/mobile";
+import { MOBILE_ACTIVE_WINDOW_MS, SetMobileLoginSchema, SetMobileTunnelSchema } from "@contracts/mobile";
+import {
+  mobileTunnelStatus,
+  setMobileTunnelConfig,
+  startMobileTunnel,
+  stopMobileTunnel,
+} from "@main/mobile/mobileTunnel.js";
 import { clearMobileLogin, getMobileLoginStatus, setMobileLogin } from "@main/mobile/mobileLogin.js";
 import { log } from "@main/lib/logger.js";
 
@@ -112,6 +118,13 @@ export function registerMobileHandlers(ipcMain: IpcMain): void {
   });
 
   ipcMain.handle(IPC.MOBILE_CLEAR_LOGIN, async () => clearMobileLogin());
+
+  // 手机自有域名的隧道 —— 和「远程控制」(公网 MCP)无关,单独一份。
+  ipcMain.handle(IPC.MOBILE_GET_TUNNEL, async () => mobileTunnelStatus());
+  ipcMain.handle(IPC.MOBILE_SET_TUNNEL, async (_e, raw: unknown) =>
+    setMobileTunnelConfig(SetMobileTunnelSchema.parse(raw)));
+  ipcMain.handle(IPC.MOBILE_START_TUNNEL, async () => startMobileTunnel());
+  ipcMain.handle(IPC.MOBILE_STOP_TUNNEL, async () => stopMobileTunnel());
 
   log.info("mobile: IPC handlers registered");
 }

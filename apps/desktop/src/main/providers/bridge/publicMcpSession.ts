@@ -146,10 +146,14 @@ export async function setPublicMcpTunnelConfig(config: PublicMcpTunnelConfig): P
     PUBLIC_MCP_TUNNEL_HOSTNAME_SETTING_KEY,
     (config.hostname ?? "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, ""),
   );
-  SettingRepo.set(
-    PUBLIC_MCP_MOBILE_HOSTNAME_SETTING_KEY,
-    (config.mobileHostname ?? "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, ""),
-  );
+  // 手机域名已经搬到「连接手机 → 自有域名」单独管理(`main/mobile/mobileTunnel.ts`),
+  // 这里只在调用方**显式**带了才写(兼容老调用),缺席 = 不动。
+  if (config.mobileHostname !== undefined) {
+    SettingRepo.set(
+      PUBLIC_MCP_MOBILE_HOSTNAME_SETTING_KEY,
+      config.mobileHostname.trim().replace(/^https?:\/\//i, "").replace(/\/+$/, ""),
+    );
+  }
   const port = config.fixedPort ?? 0;
   // 自有域名(named / external)**必须**固定端口 —— Cloudflare 那条 ingress 写死了它。
   // 用户留空时落到界面上建议的 17331,而不是随机端口(随机 = ingress 必然指空)。

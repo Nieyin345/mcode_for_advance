@@ -1340,6 +1340,13 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ running: boolean; port: number; endpoint: string; lanIp: string | null; lanIps: string[]; }"
  },
  {
+  "method": "mobile.getTunnel",
+  "channel": "mobile:getTunnel",
+  "doc": "手机自有域名的隧道状态(和「远程控制」/ 公网 MCP 无关,单独一份)。",
+  "input": "(无参数)",
+  "output": "MobileTunnelStatus"
+ },
+ {
   "method": "mobile.listDevices",
   "channel": "mobile:listDevices",
   "doc": "List paired devices (token stripped).",
@@ -1361,11 +1368,32 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "MobileLoginStatus"
  },
  {
+  "method": "mobile.setTunnel",
+  "channel": "mobile:setTunnel",
+  "doc": "存手机隧道配置(token 留空 = 沿用)。隧道在跑且配置变了会按新配置重起。",
+  "input": "{ mode: 'named' | 'external' | 'off'; hostname: string; token?: string | undefined // 留空 = 沿用已存的那串。; clearToken?: boolean | undefined // 显式删掉已存的 token。 }",
+  "output": "MobileTunnelStatus"
+ },
+ {
   "method": "mobile.startPairing",
   "channel": "mobile:startPairing",
   "doc": "Begin a pairing session: returns QR URL + 6-digit code + endpoint. Optional `host` overrides auto-detected LAN IP (for multi-NIC machines where the phone can only reach one interface).",
   "input": "{ host?: string; mode?: 'lan' | 'remote'; endpoint?: string; force?: boolean; } | undefined",
   "output": "{ pairing: PairingStartResult; }"
+ },
+ {
+  "method": "mobile.startTunnel",
+  "channel": "mobile:startTunnel",
+  "doc": "启动手机隧道(named 模式起 cloudflared;并记住下次启动自动开)。",
+  "input": "(无参数)",
+  "output": "MobileTunnelStatus"
+ },
+ {
+  "method": "mobile.stopTunnel",
+  "channel": "mobile:stopTunnel",
+  "doc": "停止手机隧道(并取消自动开启)。",
+  "input": "(无参数)",
+  "output": "MobileTunnelStatus"
  },
  {
   "method": "modules.cancel",

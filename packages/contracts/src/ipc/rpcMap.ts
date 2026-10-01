@@ -26,7 +26,14 @@ import type { AgentProfileCatalog } from "../agentProfile.js";
 import type { HookSpec, HookRun } from "../hook.js";
 import type { WorkflowDoc, WorkflowListEntry, WorkflowReviewInfo } from "../workflow.js";
 import type { PluginState, PluginMarketplaceState, PluginsInstallLocalInput, PluginsInstallGitInput, PluginsInstallMarketplaceInput, PluginsSetEnabledInput, PluginsRemoveInput, PluginsMarketplaceAddInput, PluginsMarketplaceRemoveInput, PluginsMarketplaceRefreshInput } from "../plugin.js";
-import type { MobileLoginStatus, PairingStartResult, PairedDevice, SetMobileLoginInput } from "../mobile.js";
+import type {
+  MobileLoginStatus,
+  MobileTunnelStatus,
+  PairingStartResult,
+  PairedDevice,
+  SetMobileLoginInput,
+  SetMobileTunnelInput,
+} from "../mobile.js";
 import type { RelayStatus, RelayVpsConfig, RelayVpsConfigInput } from "../relay.js";
 import type { LibraryItem, LibraryItemLink, LibraryLinkView, LibraryCollection, InstitutionProfile, FullTextMatch, AuthSiteStatus, LibraryConversionRow, LibraryNote, PdfHighlight } from "../library.js";
 import type { LibraryGroupMeta, LibrarySuppressRule } from "../libraryTypes.js";
@@ -910,6 +917,14 @@ export interface RpcMap {
   "mobile.setLogin": (input: SetMobileLoginInput) => Promise<MobileLoginStatus>;
   /** 关闭账号密码登录(清掉凭据;已登录的设备保留,需要的话单独撤销)。 */
   "mobile.clearLogin": () => Promise<MobileLoginStatus>;
+  /** 手机自有域名的隧道状态(和「远程控制」/ 公网 MCP 无关,单独一份)。 */
+  "mobile.getTunnel": () => Promise<MobileTunnelStatus>;
+  /** 存手机隧道配置(token 留空 = 沿用)。隧道在跑且配置变了会按新配置重起。 */
+  "mobile.setTunnel": (input: SetMobileTunnelInput) => Promise<MobileTunnelStatus>;
+  /** 启动手机隧道(named 模式起 cloudflared;并记住下次启动自动开)。 */
+  "mobile.startTunnel": () => Promise<MobileTunnelStatus>;
+  /** 停止手机隧道(并取消自动开启)。 */
+  "mobile.stopTunnel": () => Promise<MobileTunnelStatus>;
   // ── Relay (SSH-based remote access) ──
   /** Save VPS connection config to settings (persisted across restarts). */
   "relay.saveConfig": (input: RelayVpsConfigInput) => Promise<{ ok: boolean; error?: string }>;
@@ -1677,6 +1692,10 @@ export const IPC = {
   MOBILE_GET_LOGIN: "mobile:getLogin",
   MOBILE_SET_LOGIN: "mobile:setLogin",
   MOBILE_CLEAR_LOGIN: "mobile:clearLogin",
+  MOBILE_GET_TUNNEL: "mobile:getTunnel",
+  MOBILE_SET_TUNNEL: "mobile:setTunnel",
+  MOBILE_START_TUNNEL: "mobile:startTunnel",
+  MOBILE_STOP_TUNNEL: "mobile:stopTunnel",
   // Relay (SSH-based remote access) — invoke/handle (RPC).
   RELAY_SAVE_CONFIG: "relay:saveConfig",
   RELAY_GET_CONFIG: "relay:getConfig",

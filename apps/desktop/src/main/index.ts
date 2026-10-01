@@ -21,6 +21,7 @@ import { broadcastSessionChanged } from "@main/lib/sessionSync.js";
 import { lspManager } from "@main/lsp/LspManager.js";
 import { BrowserManager } from "@main/browser/BrowserManager.js";
 import { startMobileServer, stopMobileServer, getMobileServer } from "@main/mobile/MobileHttpServer.js";
+import { autoStartMobileTunnel, disposeMobileTunnel } from "@main/mobile/mobileTunnel.js";
 import { initAgentDelegate } from "@main/mcp/delegateHost.js";
 import { relayManager } from "@main/relay/RelayManager.js";
 import { RELAY_AUTO_START_SETTING_KEY } from "@contracts/relay";
@@ -360,6 +361,8 @@ app.whenReady().then(async () => {
     try {
       await startMobileServer();
       await maybeAutoStartRelay();
+      // 手机自有域名的隧道(与公网 MCP 无关):上次开着就自动拉起。
+      await autoStartMobileTunnel();
     } catch (err) {
       log.error(`mobile server failed to start: ${(err as Error).message}`);
     }
@@ -454,6 +457,7 @@ app.on("before-quit", (event) => {
   // 关掉定时针、目录监听、事件订阅 —— 它们都挂在事件流 / 文件系统上,不关的话
   // 退出过程中还可能起一次运行(而那时数据库已经在关了,见下面 `closeDb`)。
   automationRunner.dispose();
+  disposeMobileTunnel();
   stopMobileServer();
   try { closeDb(); }
   catch (error) {

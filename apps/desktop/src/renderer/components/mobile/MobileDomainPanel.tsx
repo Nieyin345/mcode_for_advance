@@ -5,30 +5,30 @@
  *   - 「局域网配对」:同一个 Wi-Fi 下直连 `http://<内网 IP>:7331`;
  *   - 「远程访问」:SSH 反向隧道到自己的 VPS。
  *
- * 这一条给已经有域名托管在 Cloudflare 的人:手机伴侣挂在 `m.你的域名` 上,
- * 走的是和 MCP 端点**同一条命名隧道**(一条 cloudflared 进程按 hostname 分流,
- * 不用再开第二条)。所以这里**不另存一份配置** —— 域名存在同一处
- * (`publicMcp.setTunnelConfig` 的 `mobileHostname`),设置页的「远程控制」里也能改,
- * 两边看到的永远是同一个值。
+ * 这一条给已经有域名托管在 Cloudflare 的人:手机伴侣挂在 `m.你的域名` 上。
  *
- * ⚠️ 这一页不做配对。手机第一次连上来仍要走**配对码**那道门(`PairingManager`:
- * 验证码 5 分钟过期、错 5 次作废、常数时间比较)。公网暴露之后,那道门就是唯一的门 ——
- * 所以页面上写的是警告,不是提示。
+ * ⚠️ 这里的隧道**只给手机用**,和「设置 → 远程控制」(公网 MCP,给 ChatGPT 的)**无关**:
+ * 配置单独存、cloudflared 单独起(`main/mobile/mobileTunnel.ts`)。以前它寄生在 MCP 那条
+ * 隧道上,不开「开放远程控制」手机域名就打不开 —— 用户指出这是两样东西,已拆开。
+ *
+ * 进门仍要过配对码或账号密码(见 `PairingManager` / `mobileLogin.ts`)。
  */
 import { useCallback, useEffect, useState } from "react";
 import QRCode from "qrcode";
-import type { PublicMcpStatus } from "@contracts/customModel";
+import type { MobileTunnelMode, MobileTunnelStatus } from "@contracts/mobile";
 import { Button, Input } from "@renderer/components/ui/index.js";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { copyText } from "@renderer/lib/clipboard.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { IconAlertTriangle, IconCheck, IconCopy, IconRefresh } from "@renderer/lib/icons.js";
+import { IconAlertTriangle, IconCheck, IconCopy, IconLoader2, IconPlayerPlay, IconPlayerStop, IconRefresh } from "@renderer/lib/icons.js";
 
 export function MobileDomainPanel() {
   const { t } = useI18n();
-  const [status, setStatus] = useState<PublicMcpStatus | null>(null);
+  const [status, setStatus] = useState<MobileTunnelStatus | null>(null);
   const [draft, setDraft] = useState("");
+  const [modeDraft, setModeDraft] = useState<MobileTunnelMode>("off");
+  const [tokenDraft, setTokenDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,13 +46,16 @@ export function MobileDomainPanel() {
   useEffect(() => {
     let alive = true;
     const load = (first: boolean) =>
-      api.publicMcp
-        .status()
+      api.mobile
+        .getTunnel()
         .then((s) => {
           if (!alive) return;
           setStatus(s);
           // 草稿只在第一次对齐 —— 之后的轮询不能把用户正在输入的内容冲掉。
-          if (first) setDraft(s.mobileHostname);
+          if (first) {
+            setDraft(s.hostname);
+            setModeDraft(s.mode);
+          }
         })
         .catch(() => {
           /* 主进程还没就绪 —— 下一轮再看 */
@@ -66,29 +69,39 @@ export function MobileDomainPanel() {
     };
   }, []);
 
-  const save = async () => {
-    if (!status) return;
+  const run = async (fn: () => Promise<MobileTunnelStatus>) => {
     setBusy(true);
     setError(null);
     try {
-      // 原样带回其它几项:这条 IPC 存的是**整份**隧道配置,只填一项等于把别的清掉。
-      // token 不传 = 沿用已存的那串(见契约上那句注释)。
-      const next = await api.publicMcp.setTunnelConfig({
-        mode: status.tunnelMode,
-        hostname: status.tunnelHostname,
-        mobileHostname: draft.trim(),
-        fixedPort: status.fixedPort,
-      });
+      const next = await fn();
       setStatus(next);
-      setDraft(next.mobileHostname);
+      return next;
     } catch (err) {
       setError((err as Error).message);
+      return null;
     } finally {
       setBusy(false);
     }
   };
 
-  const url = status?.mobileHostname ? `https://${status.mobileHostname}` : "";
+  // token 留空 = 沿用已存的那串(界面永远拿不到整串,只有尾 4 位)。
+  const save = async (clearToken = false) => {
+    const next = await run(() =>
+      api.mobile.setTunnel({
+        mode: modeDraft,
+        hostname: draft.trim(),
+        token: tokenDraft.trim() || undefined,
+        clearToken: clearToken || undefined,
+      }),
+    );
+    if (next) {
+      setDraft(next.hostname);
+      setModeDraft(next.mode);
+      setTokenDraft("");
+    }
+  };
+
+  const url = status && status.mode !== "off" && status.hostname ? `https://${status.hostname}` : "";
 
   // 不带 force = 沿用正在进行的那次配对(同一个 nonce/验证码,只是二维码换成公网地址),
   // 不会把「局域网配对」页签上那张码作废;「刷新」才 force 换一组新的。
@@ -135,22 +148,29 @@ export function MobileDomainPanel() {
   // 不是默认值 —— 写错端口的表现是公网连接被拒,而本机一切正常,极难查。
   const ingress = `http://127.0.0.1:${status?.mobilePort || 7331}`;
 
-  // 手机域名**靠的是那条隧道**:快速隧道下它根本不生效;命名隧道要 Mcode 把 cloudflared
-  // 跑起来(那颗按钮在「远程控制」里);外部隧道我们看不见,只能提醒。以前这一页对这些
-  // 只字不提 —— 填完域名、扫完码,手机打不开,却看不出是隧道没跑。
-  const tunnelNote: { tone: "ok" | "warn" | "info"; text: string } | null = !status?.mobileHostname
+  // 隧道状态:named 看 cloudflared 进程;external 看对 `https://域名/api/health` 的探测。
+  const tunnelNote: { tone: "ok" | "warn" | "info"; text: string } | null = !status || !url
     ? null
-    : status.tunnelMode === "quick"
-      ? { tone: "warn", text: t("layout.domainTunnelQuick") }
-      : status.tunnelMode === "external"
-        ? { tone: "info", text: t("layout.domainTunnelExternal", { ingress }) }
-        : status.tunnelPhase === "ready"
-          ? { tone: "ok", text: t("layout.domainTunnelReady") }
-          : status.tunnelPhase === "starting" || status.tunnelPhase === "reconnecting"
-            ? { tone: "info", text: t("layout.domainTunnelStarting") }
-            : status.tunnelPhase === "failed" && status.tunnelError
-              ? { tone: "warn", text: t("layout.domainTunnelFailed", { error: status.tunnelError }) }
-              : { tone: "warn", text: t("layout.domainTunnelNamedOff") };
+    : status.mode === "external"
+      ? status.phase === "ready"
+        ? { tone: status.note ? "info" : "ok", text: status.note ?? t("layout.domainTunnelExternalOk", { url }) }
+        : status.phase === "failed" && status.error
+          ? { tone: "warn", text: t("layout.domainTunnelFailed", { error: status.error }) }
+          : { tone: "info", text: t("layout.domainTunnelProbing") }
+      : status.phase === "ready"
+        ? { tone: "ok", text: t("layout.domainTunnelReady") }
+        : status.phase === "starting" || status.phase === "reconnecting"
+          ? { tone: "info", text: status.error ? `${t("layout.domainTunnelStarting")} ${status.error}` : t("layout.domainTunnelStarting") }
+          : status.phase === "failed" && status.error
+            ? { tone: "warn", text: t("layout.domainTunnelFailed", { error: status.error }) }
+            : { tone: "warn", text: t("layout.domainTunnelOff") };
+
+  const dirty = !!status && (modeDraft !== status.mode || draft.trim() !== status.hostname || !!tokenDraft.trim());
+  const running = status?.phase === "starting" || status?.phase === "ready" || status?.phase === "reconnecting";
+  const canStart = status?.mode === "named" && !!status.hostname && !!status.tokenHint && !dirty;
+  const modes: MobileTunnelMode[] = ["off", "named", "external"];
+  const modeLabel = (m: MobileTunnelMode) =>
+    m === "off" ? t("layout.domainModeOff") : m === "named" ? t("layout.domainModeNamed") : t("layout.domainModeExternal");
 
   return (
     <div className="space-y-3">
@@ -159,26 +179,85 @@ export function MobileDomainPanel() {
         <span>{t("layout.domainWarning")}</span>
       </p>
 
+      <p className="text-[0.6875rem] leading-relaxed text-content-subtle">{t("layout.domainIndependent")}</p>
+
       <div className="space-y-1.5">
-        <span className="block text-xs font-medium text-content-muted">
-          {t("layout.domainLabel")}
-        </span>
-        <div className="flex items-center gap-1.5">
-          <Input
-            value={draft}
-            placeholder="m.example.com"
-            onChange={(e) => setDraft(e.target.value)}
-            className="flex-1"
-          />
-          <Button variant="outline" size="sm" disabled={busy || !status} onClick={() => void save()}>
-            {t("layout.domainSave")}
-          </Button>
+        <span className="block text-xs font-medium text-content-muted">{t("layout.domainModeLabel")}</span>
+        <div className="flex rounded bg-surface-muted p-0.5 text-xs">
+          {modes.map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setModeDraft(m)}
+              className={cn(
+                "flex-1 rounded px-2 py-1 transition-colors",
+                modeDraft === m ? "bg-surface font-medium text-content shadow-sm" : "text-content-muted hover:text-content",
+              )}
+            >
+              {modeLabel(m)}
+            </button>
+          ))}
         </div>
-        <p className="text-[0.6875rem] leading-relaxed text-content-subtle">
-          {t("layout.domainHint", { ingress })}
-        </p>
-        {error && <p className="text-[0.6875rem] text-danger">{error}</p>}
       </div>
+
+      {modeDraft !== "off" && (
+        <div className="space-y-1.5">
+          <span className="block text-xs font-medium text-content-muted">{t("layout.domainLabel")}</span>
+          <Input value={draft} placeholder="m.example.com" onChange={(e) => setDraft(e.target.value)} />
+          <p className="text-[0.6875rem] leading-relaxed text-content-subtle">{t("layout.domainHint", { ingress })}</p>
+        </div>
+      )}
+
+      {modeDraft === "named" && (
+        <div className="space-y-1.5">
+          <span className="block text-xs font-medium text-content-muted">{t("layout.domainTokenLabel")}</span>
+          <Input
+            type="password"
+            value={tokenDraft}
+            placeholder={
+              status?.tokenHint
+                ? t("layout.domainTokenKeep", { hint: status.tokenHint })
+                : t("layout.domainTokenPlaceholder")
+            }
+            onChange={(e) => setTokenDraft(e.target.value)}
+          />
+          <p className="text-[0.6875rem] leading-relaxed text-content-subtle">{t("layout.domainTokenHint")}</p>
+          {status?.tokenHint && (
+            <Button variant="ghost" size="sm" disabled={busy} onClick={() => void save(true)}>
+              {t("layout.domainTokenClear")}
+            </Button>
+          )}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Button variant="outline" size="md" disabled={busy || !status || !dirty} onClick={() => void save()}>
+          {busy ? <IconLoader2 size={13} className="mr-1 animate-spin" /> : null}
+          {t("layout.domainSave")}
+        </Button>
+        {status?.mode === "named" && !dirty && (
+          running ? (
+            <Button variant="secondary" size="md" disabled={busy} onClick={() => void run(() => api.mobile.stopTunnel())}>
+              <IconPlayerStop size={13} className="mr-1" />
+              {t("layout.domainStop")}
+            </Button>
+          ) : (
+            <Button variant="primary" size="md" disabled={busy || !canStart} onClick={() => void run(() => api.mobile.startTunnel())}>
+              <IconPlayerPlay size={13} className="mr-1" />
+              {t("layout.domainStart")}
+            </Button>
+          )
+        )}
+      </div>
+      {status?.mode === "named" && !dirty && !canStart && !running && (
+        <p className="text-[0.6875rem] text-content-subtle">
+          {t("layout.domainNeedSave", { token: status.tokenHint ? "" : t("layout.domainNeedToken") })}
+        </p>
+      )}
+      {status?.mode === "named" && running && (
+        <p className="text-[0.6875rem] text-content-subtle">{t("layout.domainAutostartNote")}</p>
+      )}
+      {error && <p className="text-[0.6875rem] text-danger">{error}</p>}
 
       {tunnelNote && (
         <p

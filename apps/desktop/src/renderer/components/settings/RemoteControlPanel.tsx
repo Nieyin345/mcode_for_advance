@@ -91,7 +91,6 @@ function TunnelCard({
   const { t } = useI18n();
   const [mode, setMode] = useState<PublicMcpStatus["tunnelMode"]>(status.tunnelMode);
   const [hostname, setHostname] = useState(status.tunnelHostname);
-  const [mobileHostname, setMobileHostname] = useState(status.mobileHostname);
   const [fixedPort, setFixedPort] = useState(status.fixedPort ? String(status.fixedPort) : "");
   // token **永远从空开始**:已存的那串不回传渲染层(只有尾 4 位的 tokenHint),
   // 留空提交 = 沿用。所以空输入框的意思是"不改",不是"清空"。
@@ -155,22 +154,6 @@ function TunnelCard({
               {t("settings.remoteControl.hostnameHint")}
             </p>
           </div>
-
-          <div className="space-y-1">
-            <span className="block text-[0.7857em] font-medium text-content-muted">
-              {t("settings.remoteControl.mobileHostnameLabel")}
-            </span>
-            <Input
-              value={mobileHostname}
-              placeholder="m.example.com"
-              onChange={(e) => setMobileHostname(e.target.value)}
-            />
-            <p className="text-[0.6428em] leading-relaxed text-content-subtle">
-              {t("settings.remoteControl.mobileHostnameHint", {
-                port: status.mobilePort ? String(status.mobilePort) : "7331",
-              })}
-            </p>
-          </div>
         </>
       )}
 
@@ -202,7 +185,6 @@ function TunnelCard({
                 onSave({
                   mode,
                   hostname: hostname.trim(),
-                  mobileHostname: mobileHostname.trim(),
                   fixedPort: Number(fixedPort) || 0,
                   clearToken: true,
                 })
@@ -239,7 +221,6 @@ function TunnelCard({
           onSave({
             mode,
             hostname: hostname.trim(),
-            mobileHostname: mobileHostname.trim(),
             fixedPort: Number(fixedPort) || 0,
             token: token.trim(),
           })
@@ -627,7 +608,6 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
                       // 否则一次切换会把域名和模式顺手清掉。token 留空 = 沿用。
                       mode: status.tunnelMode,
                       hostname: status.tunnelHostname,
-                      mobileHostname: status.mobileHostname,
                       fixedPort: status.fixedPort,
                       agentDelegate: v,
                     }),

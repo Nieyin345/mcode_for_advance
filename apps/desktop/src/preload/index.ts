@@ -755,6 +755,10 @@ const api = {
     getLogin: (() => ipcRenderer.invoke(IPC.MOBILE_GET_LOGIN)) as RpcMap["mobile.getLogin"],
     setLogin: ((input) => ipcRenderer.invoke(IPC.MOBILE_SET_LOGIN, input)) as RpcMap["mobile.setLogin"],
     clearLogin: (() => ipcRenderer.invoke(IPC.MOBILE_CLEAR_LOGIN)) as RpcMap["mobile.clearLogin"],
+    getTunnel: (() => ipcRenderer.invoke(IPC.MOBILE_GET_TUNNEL)) as RpcMap["mobile.getTunnel"],
+    setTunnel: ((input) => ipcRenderer.invoke(IPC.MOBILE_SET_TUNNEL, input)) as RpcMap["mobile.setTunnel"],
+    startTunnel: (() => ipcRenderer.invoke(IPC.MOBILE_START_TUNNEL)) as RpcMap["mobile.startTunnel"],
+    stopTunnel: (() => ipcRenderer.invoke(IPC.MOBILE_STOP_TUNNEL)) as RpcMap["mobile.stopTunnel"],
   },
 
   /** Relay (SSH-based remote access via user's own VPS) — drives the PC-side

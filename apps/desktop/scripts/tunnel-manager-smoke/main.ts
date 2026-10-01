@@ -23,6 +23,7 @@
 import { EventEmitter } from "node:events";
 import {
   configureTunnelDeps,
+  createTunnelManager,
   resetTunnelDeps,
   startTunnel,
   stopTunnel,
@@ -418,6 +419,28 @@ eq("停了再开 quick:不再带 token", spawnEnvs[1], undefined);
 procs[1]?.emitLog("https://back-to-quick.trycloudflare.com");
 eq("停了再开 quick:域名照常抠", tunnelStatus().url, "https://back-to-quick.trycloudflare.com");
 stopTunnel();
+
+/* ── 两份隧道互不影响(手机自有域名单独一份,不依赖 MCP 那条) ────────── */
+namedDeps();
+{
+  const phone = createTunnelManager("mobile-tunnel");
+  phone.start(7331, false, { mode: "named", token: "phone-tok", hostname: "m.example.com" });
+  eq("另一份:起来的是它自己的进程", procs.length, 1);
+  eq("另一份:默认那份没被带起来", tunnelStatus().phase, "stopped");
+  procs[0]?.emitLog(NAMED_LOG);
+  eq("另一份:就绪,域名是它自己的", phone.status().url, "https://m.example.com");
+  startTunnel(17331, false, { mode: "named", token: "mcp-tok", hostname: "mcp.example.com" });
+  eq("默认那份另起一个进程", procs.length, 2);
+  procs[1]?.emitLog(NAMED_LOG);
+  eq("默认那份就绪", tunnelStatus().url, "https://mcp.example.com");
+  stopTunnel();
+  eq("停默认那份:它 stopped", tunnelStatus().phase, "stopped");
+  eq("停默认那份:另一份仍 ready", phone.status().phase, "ready");
+  procs[1]?.close(0);
+  eq("默认那份迟到的 close 不影响另一份", phone.status().phase, "ready");
+  phone.stop();
+  eq("另一份 stop 后 stopped", phone.status().phase, "stopped");
+}
 
 /* ── 收尾:还原注入,确认 dispose 干净 ───────────────────────────── */
 resetTunnelDeps();
