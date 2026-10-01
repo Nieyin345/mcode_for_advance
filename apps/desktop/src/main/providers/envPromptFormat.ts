@@ -62,7 +62,7 @@ export function formatEnvSections(snap: EnvSnapshot): string | null {
   }
 
   if (snap.libraryRoot) {
-    const lines = [`## 文档库`, `库根:${snap.libraryRoot}`];
+    const lines = [`## 资料库`, `库根:${snap.libraryRoot}`];
     if (snap.totalItems === 0) {
       lines.push("(库是空的)");
     } else {
@@ -74,7 +74,7 @@ export function formatEnvSections(snap: EnvSnapshot): string | null {
     // 权限写清楚:库**只读**。agent 要改内容,得先复制进项目再改。
     lines.push(
       "",
-      "⚠️ 文档库**只读** —— 可以读、可以复制进项目,但不要在库里新建/修改/删除任何东西。",
+      "⚠️ 资料库**只读** —— 可以读、可以复制进项目,但不要在库里新建/修改/删除任何东西。",
       "要改某份内容:先读出来(或复制到当前项目目录),在**项目里**改。",
     );
     sections.push(lines.join("\n"));

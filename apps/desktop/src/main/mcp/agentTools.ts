@@ -411,7 +411,7 @@ const AGENT_CONTEXT_OUTPUT_SCHEMA: Record<string, z.ZodTypeAny> = {
   projects: z
     .array(z.object({ name: z.string(), path: z.string() }))
     .describe("用户的全部项目（名字 + 绝对路径）—— **只读**，只有 writable_project 那个能写"),
-  library_root: z.string().describe("文档库根的绝对路径（**只读**）"),
+  library_root: z.string().describe("资料库根的绝对路径（**只读**）"),
   library_total: z.number().int().describe("库里条目总数；0 = 空库"),
   library_items: z
     .array(
@@ -2144,10 +2144,10 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       name: "agent_context",
       description:
         "先问这个：**我在什么环境里** —— 用户有哪些项目(名字 + 路径)、当前这个对话属于哪个项目、" +
-        "文档库在哪、库里有什么。**每次现查**,所以刚建的会话/刚删的文档立刻反映出来。\n" +
+        "资料库在哪、库里有什么。**每次现查**,所以刚建的会话/刚删的文档立刻反映出来。\n" +
         "要读库里的东西就用普通文件工具读它给出的路径(库是磁盘上的真目录);库里每条给的是" +
         "**标题 + 类型 + 文件路径**,不是哈希文件名,所以能直接挑出想要的那一份。\n" +
-        "⚠️ 文档库**只读** —— 读它、把它复制进项目都行,但不要在库里改东西。",
+        "⚠️ 资料库**只读** —— 读它、把它复制进项目都行,但不要在库里改东西。",
       inputSchema: {},
       handler: (_args: Record<string, never>, ctx) =>
         attemptStructured(async () => {
@@ -2169,7 +2169,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
             };
           }
           const lines: string[] = [];
-          // **说清哪个能写** —— 用户明确要求"项目可写、文档库只读"。只列路径不说
+          // **说清哪个能写** —— 用户明确要求"项目可写、资料库只读"。只列路径不说
           // 权限,模型会去改一个其实只读的目录,然后撞一鼻子灰(而且它不知道为什么)。
           const projLines = [
             `✅ 可写(就只这一个): ${snap.currentProjectPath ?? "(没选 —— 在 Mcode 的「远程控制」里选一个项目)"}`,
@@ -2200,8 +2200,8 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
               libLines.push(`- ${bits.join(" ")}${file ? `\n  文件: ${file}` : ""}`);
             }
           }
-          lines.push("## 文档库\n" + libLines.join("\n"));
-          lines.push("⚠️ 文档库只读 —— 读它、复制进项目都行,别在库里改。要改先复制到项目里。");
+          lines.push("## 资料库\n" + libLines.join("\n"));
+          lines.push("⚠️ 资料库只读 —— 读它、复制进项目都行,别在库里改。要改先复制到项目里。");
 
           return {
             text: lines.join("\n\n"),

@@ -1145,7 +1145,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
             effectiveInput = { ...input, [pathKey]: norm.absPath };
             const mode = ctx.getPermissionMode?.();
             const bypass = mode === "bypassPermissions" || mode === "dontAsk";
-            // **文档库只读** —— 独立于项目边界的一条硬规则,`bypass` 也拦。
+            // **资料库只读** —— 独立于项目边界的一条硬规则,`bypass` 也拦。
             //
             // 为什么不能只靠下面那条"越出项目就拒":那只是**恰好**成立 —— 库根默认在
             // `<数据根>/library`,与用户的项目目录不重叠,于是"写只能在项目内"顺带
@@ -1160,7 +1160,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
               return {
                 behavior: "deny",
                 message:
-                  `拒绝:目标路径在**文档库**内(${norm.absPath})。文档库是只读的 —— ` +
+                  `拒绝:目标路径在**资料库**内(${norm.absPath})。资料库是只读的 —— ` +
                   `请先把它读到项目目录里(或复制过去),在项目里改。`,
               };
             }
@@ -1406,7 +1406,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     // becomes the base on every platform, with our fragments appended on top.
     const appends: string[] = [];
     appends.push(CLAUDE_IDENTITY_PROMPT);
-    // The user's file architecture — where 文献库/教材库/笔记库/模版库 live and how
+    // The user's file architecture — where the 资料库 lives and how
     // to read them. Every turn, every mode (the "读取层"; the modes are the
     // 流程 layer on top of it). The 精读/写作/评审 flows all tell the model to
     // check the library before citing anything, and that instruction is empty

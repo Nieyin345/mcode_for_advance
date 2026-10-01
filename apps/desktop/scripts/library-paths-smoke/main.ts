@@ -307,7 +307,7 @@ check(
     providerCode.indexOf("isInsideLibrary(norm.absPath)") <
       providerCode.indexOf("if (!norm.insideProject && !bypass)"),
 );
-check("拒绝文案说清「文档库是只读的」", providerSrc.includes("文档库是只读的"));
+check("拒绝文案说清「资料库是只读的」", providerSrc.includes("资料库是只读的"));
 check("…并给出正确出路（先复制进项目再改）", providerSrc.includes("在项目里改"));
 
 /* ──────────────── 收尾 ──────────────── */

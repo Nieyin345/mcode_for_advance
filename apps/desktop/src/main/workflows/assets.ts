@@ -1021,7 +1021,7 @@ stdout 打一行 「@@mcode:result {...}」（见 「orchestration/codeRunner.ts
 产出的 「outputs.adoptMarkdown」 里每转成一条就报一项 「{itemId, path}」，code 节点跑完后
 由**主进程**逐条调 「adoptMarkdownFile」（与 MCP 工具、界面按钮同一个函数）。
 
-为什么不在这里自己写库：文档库的底是 sql.js —— 整个库在主进程内存里、落盘是把
+为什么不在这里自己写库：资料库的底是 sql.js —— 整个库在主进程内存里、落盘是把
 「mcode.db」 整个重写一遍，子进程在旁边写同一个文件会把库覆盖掉。判断留在脚本里
 （它才知道哪条转成了），写库留在主进程（只有它能安全地写），中间不经过模型。
 详见 「orchestration/adoptFromCode.ts」 的文件头。
@@ -1241,7 +1241,7 @@ def transcribe_one(item, index, deadline=None):
     让 main() 把已经转好的那些报上去 —— 见 「RUN_BUDGET_S」。
     """
     item_id = (item or {}).get("itemId") or ""
-    # 统一文档库：优先读通用文件路径（linked 为绝对路径，attached 为库内相对路径），
+    # 资料库：优先读通用文件路径（linked 为绝对路径，attached 为库内相对路径），
     # 兼容论文/下载条目的旧 pdfPath。
     source_rel = (item or {}).get("filePath") or (item or {}).get("pdfPath") or ""
     label = f"第 {index} 条" if index else "那一条"
@@ -1472,7 +1472,7 @@ def main():
 
     emit(
         chr(10).join(lines),
-        # 「adoptMarkdown」 是给**宿主**看的那一项：跑完由主进程逐条挂回文档库
+        # 「adoptMarkdown」 是给**宿主**看的那一项：跑完由主进程逐条挂回资料库
         # （见 「orchestration/adoptFromCode.ts」）。「items」 保留给下游节点当依据。
         outputs={
             "items": ok,
@@ -1496,7 +1496,7 @@ if __name__ == "__main__":
  * `AUTO_DOWNLOAD_*`)。同 `MINERU_PY`:正文**直接当 code 参数**,不落文件再调。
  *
  * 它只做判断,不写库 —— 报一句 `outputs.importFiles`,由主进程调 `importAnyFiles`
- * 真去收(界面上那两颗「导入文件」按钮同一个函数)。为什么写库必须在主进程:文档库
+ * 真去收(界面上那两颗「导入文件」按钮同一个函数)。为什么写库必须在主进程:资料库
  * 的底是 sql.js,子进程在旁边写 `mcode.db` 会把整个库覆盖掉,见
  * `orchestration/adoptFromCode.ts` 的文件头。
  *
@@ -1506,7 +1506,7 @@ if __name__ == "__main__":
 export const LIT_IMPORT_PY = `
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""把「文献导入」表单里选中的文件收进文档库。
+"""把「文献导入」表单里选中的文件收进资料库。
 
 ## 这一步在整条链的什么位置
 
@@ -1519,7 +1519,7 @@ export const LIT_IMPORT_PY = `
 
 ## 为什么收文件不能在这儿自己干
 
-写库只能在主进程做:文档库的底是 sql.js，整个库在主进程内存里、落盘是把
+写库只能在主进程做:资料库的底是 sql.js，整个库在主进程内存里、落盘是把
 「mcode.db」整个文件重写一遍 —— 子进程在旁边写同一个文件会把库覆盖掉。
 
 所以这里只**报一句**「收这些文件进库」，由宿主调 「importAnyFiles」（界面上那两颗

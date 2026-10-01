@@ -69,7 +69,7 @@ const RESEARCH: ProjectInitDraft = {
 引用管理相关的文件:BibTeX(\`.bib\`)、引用样式(\`.csl\`)、文献清单。
 
 - PDF 原文建议导入资料库统一管理;这里只放写作时直接要用的引用数据。
-- 主文献库文件固定叫 \`references.bib\`,写作时从这里引用。
+- 主参考文献文件固定叫 \`references.bib\`,写作时从这里引用。
 `),
     },
     {
@@ -236,7 +236,7 @@ const THESIS: ProjectInitDraft = {
     {
       path: "references/README.md",
       content: readme("references — 参考文献", `
-- 文献库文件固定叫 \`references.bib\`,正文只引用这里有的条目。
+- 参考文献文件固定叫 \`references.bib\`,正文只引用这里有的条目。
 - 引用样式文件(\`.bst\` / \`.csl\`)也放这里。
 - PDF 原文建议导入资料库统一管理,这里只放写作直接要用的引用数据。
 `),

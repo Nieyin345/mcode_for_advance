@@ -40,7 +40,7 @@ import {
 } from "@renderer/lib/icons.js";
 
 /** 显示名 —— 除 Python 那一项以外都是专有名词,原样显示(与同页的 AGENT_META
- *  同一约定);Python 那一项是**说法**不是名词("Python 文档库"指的是这堆包
+ *  同一约定);Python 那一项是**说法**不是名词("Python 文档处理库"指的是这堆包
  *  *给什么用*),所以走词典键。表在模块顶层,拿不到语言 hook,故存键、渲染时 t()。 */
 const TOOL_META: Record<ToolchainToolId, { label: string } | { labelKey: MessageId }> = {
   pandoc: { label: "Pandoc" },

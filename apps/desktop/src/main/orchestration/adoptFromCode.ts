@@ -1,11 +1,11 @@
 /**
- * 让 **code 节点**把转录产物挂回文档库 —— 不经过子代理。
+ * 让 **code 节点**把转录产物挂回资料库 —— 不经过子代理。
  *
  * ## 为什么需要这一层
  *
  * 「挂回」(`library_adopt_markdown`)从来只有两个入口:界面按钮,和**模型**调的 MCP
  * 工具。而 code 节点起的是**子进程** —— 它既碰不到进程内的 MCP 服务(那个没有端口、
- * 没有 stdio 口,就在主进程里),也不能自己去写库:文档库的底是 **sql.js**,整个库在
+ * 没有 stdio 口,就在主进程里),也不能自己去写库:资料库的底是 **sql.js**,整个库在
  * 主进程内存里、落盘是把 `mcode.db` **整个文件重写一遍**。子进程在旁边写同一个文件,
  * 撞上一次就是整库被覆盖。
  *
@@ -74,7 +74,7 @@ export function configureCodeNodeLibraryHost(host: CodeNodeLibraryHost): void {
 }
 
 function hostUnavailable(outcome: NodeOutcome, what: string): NodeOutcome {
-  const error = `${what}不可用：文档库宿主未装配（code 节点报了写库请求，但当前进程没有文档库）`;
+  const error = `${what}不可用：资料库宿主未装配（code 节点报了写库请求，但当前进程没有资料库）`;
   return { ...outcome, status: "failed", summary: [outcome.summary, error].filter((s) => s !== "").join("\n"), error };
 }
 
@@ -132,7 +132,7 @@ function requestsOf(outputs: unknown): AdoptRequest[] {
 /**
  * 把 code 节点报上来的挂回请求办掉,并把结果并进它的产出。
  *
- * 没有请求就**原样返回**那个 outcome(不碰文档库)。
+ * 没有请求就**原样返回**那个 outcome(不碰资料库)。
  */
 export async function applyHostActions(outcome: NodeOutcome): Promise<NodeOutcome> {
   if (outcome.status !== "success") return outcome;
@@ -239,7 +239,7 @@ async function applyMarkdownAdoptions(outcome: NodeOutcome): Promise<NodeOutcome
   // 全灭 = 这一步失败。转录成功而一条都没挂上,显示成绿的等于把问题藏起来。
   // 上一步(导入)若已经失败,错误原因**合起来报**,不覆盖掉先发生的那条。
   if (adopted.length === 0) {
-    const reasons = [outcome.error, `挂回文档库全部失败：${failed.join("；")}`].filter(
+    const reasons = [outcome.error, `挂回资料库全部失败：${failed.join("；")}`].filter(
       (s): s is string => typeof s === "string" && s !== "",
     );
     return { ...outcome, status: "failed", summary, outputs, error: reasons.join("；") };

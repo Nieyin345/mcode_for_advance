@@ -666,7 +666,7 @@ export const AUTO_CONVERT_CODE_NODE_ID = "auto-convert-code";
 export const AUTO_CONVERT_AGENT_NODE_ID = "auto-convert-agent";
 
 export const AUTO_CONVERT_DEFAULT_TASK =
-  "文档库里有一批文件刚导入或下载完成（见载荷中的条目列表，可能不止一条；尚无本地文件的跳过）。只用 MinerU 在线 API 转录并挂回对应条目；禁止本地抽取。";
+  "资料库里有一批文件刚导入或下载完成（见载荷中的条目列表，可能不止一条；尚无本地文件的跳过）。只用 MinerU 在线 API 转录并挂回对应条目；禁止本地抽取。";
 
 /**
  * 转录那一步跑的 Python —— 调 MinerU 的**在线 API**。
@@ -699,7 +699,7 @@ export const AUTO_CONVERT_DEFAULT_TASK =
  * 花模型的钱;而漏挂的表现特别难查:**转都转了,就是没挂上,还不报错**。
  *
  * 现在脚本在 `outputs.adoptMarkdown` 里报「这几条要挂回」,由**主进程**逐条调
- * `adoptMarkdownFile`(与那个 MCP 工具同一个函数)。为什么不让脚本自己写库:文档库
+ * `adoptMarkdownFile`(与那个 MCP 工具同一个函数)。为什么不让脚本自己写库:资料库
  * 的底是 sql.js,子进程在旁边写 `mcode.db` 会把整个库覆盖掉 —— 见
  * `orchestration/adoptFromCode.ts` 的文件头。
  */
