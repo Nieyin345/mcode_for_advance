@@ -1438,6 +1438,14 @@ export async function startWorkflowRun(args: {
     active.nodeSessionIds.add(nodeSession.id);
     observed.add(nodeSession.id);
     active.nodeSessionOf.set(node.id, nodeSession.id);
+    // 同一次运行里这一格可能跑第二轮(回头 / 循环),而节点会话按 nodeId 复用 ——
+    // 上一轮攒下的回复文本、结束原因、报错都还在表里。不清掉的话这一轮的产出会是
+    // 「上一轮全文 + 这一轮」(下游提示词每绕一圈翻一倍),上一轮的报错也会让这一轮
+    // 明明成功了却按失败收场。对话节点那一路(runInConversation)一直是这么清的。
+    text.delete(nodeSession.id);
+    endReason.delete(nodeSession.id);
+    failure.delete(nodeSession.id);
+    activity.delete(nodeSession.id);
     // 先绑运行时**再**挂代理:反过来的话,`bindSession` 万一抛了,代理表里会留下
     // 一条指向不存在运行时的记录,而 `dispose()` 对没有运行时的会话是直接返回的
     // (那条记录就再也清不掉了)。

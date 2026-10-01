@@ -70,6 +70,29 @@ function extensionOf(language: CodeLanguage): string {
   return "cmd";
 }
 
+/**
+ * 写进临时文件的字节。中文 Windows 上两个解释器默认**不按 UTF-8 读脚本**:
+ *
+ * - Windows PowerShell 5.1 把不带 BOM 的 .ps1 当 ANSI(GBK)读 —— 代码里的中文字符串、
+ *   中文路径全成乱码。带上 UTF-8 BOM 它就认;pwsh 7 本来就认 BOM,不受影响。
+ * - cmd.exe 按控制台代码页(GBK)逐行读批处理,同样把中文读坏。代码里有非 ASCII 字符时
+ *   开头先 `chcp 65001`(cmd 是边读边执行的,切换之后的行就按 UTF-8 读)。另外批处理
+ *   必须是 CRLF:只有 LF 时 `goto` / `call :标签` 在某些位置会找不到标签。
+ *
+ * 输出那一侧不用管:`spawnRun` 的 `decodeOutput` UTF-8 / GBK 都认。
+ */
+function scriptBytes(language: CodeLanguage, code: string): Buffer {
+  if (process.platform === "win32" && language === "powershell") {
+    return Buffer.from("\uFEFF" + code, "utf8");
+  }
+  if (process.platform === "win32" && language === "shell") {
+    const body = code.replace(/\r?\n/g, "\r\n");
+    const nonAscii = [...code].some((ch) => (ch.codePointAt(0) ?? 0) > 0x7f);
+    return Buffer.from(nonAscii ? `@chcp 65001 >nul\r\n${body}` : body, "utf8");
+  }
+  return Buffer.from(code, "utf8");
+}
+
 export async function runCodeNode(a: {
   code: string;
   language: CodeLanguage;
@@ -85,7 +108,7 @@ export async function runCodeNode(a: {
   const dir = await mkdtemp(path.join(os.tmpdir(), "mcode-code-"));
   try {
     const file = path.join(dir, `main.${extensionOf(a.language)}`);
-    await writeFile(file, a.code, "utf8");
+    await writeFile(file, scriptBytes(a.language, a.code));
     const [cmd, argv] = spec(a.language, file);
 
     let result: ProtocolResult | undefined;
