@@ -27,6 +27,13 @@ import {
   UI_TITLE_GEN_ENABLED_SETTING_KEY,
   UI_TITLE_GEN_MODEL_SETTING_KEY,
   UI_LOCALE_SETTING_KEY,
+  UI_TITLE_GEN_PROMPT_SETTING_KEY,
+  UI_TITLE_GEN_MAX_LEN_SETTING_KEY,
+  UI_TITLE_GEN_LANG_SETTING_KEY,
+  TITLE_GEN_BUILTIN_MODEL_PREFIX,
+  TITLE_GEN_BUILTIN_ALIASES,
+  TitleGenLangSchema,
+  parseTitleGenMaxLen,
 } from "@contracts/ipc";
 import type { Session } from "@contracts/session";
 import { SessionRepo, SettingRepo } from "@main/store/repositories.js";
@@ -70,11 +77,34 @@ const TITLE_GEN_INPUT_CAP = 4000;
  * (数据边界、斜杠命令、只输出标题)不变。
  */
 function titleGenSystemPrompt(): string {
-  if (SettingRepo.get(UI_LOCALE_SETTING_KEY) !== "en") return TITLE_GEN_SYSTEM_PROMPT;
-  return TITLE_GEN_SYSTEM_PROMPT.replace("生成一个简短、准确的中文标题", "生成一个简短、准确的英文标题").replace(
-    "3. 用中文输出,即使用户消息是其他语言;命令名等专有标识可保留原文。",
-    "3. 用英文输出(不超过 8 个单词),即使用户消息是其他语言;命令名等专有标识可保留原文。",
-  );
+  // 语言:设置 → 会话标题生成 →「标题语言」。auto(默认)= 跟界面语言。
+  const langParsed = TitleGenLangSchema.safeParse(SettingRepo.get(UI_TITLE_GEN_LANG_SETTING_KEY) ?? "auto");
+  const langSetting = langParsed.success ? langParsed.data : "auto";
+  const lang =
+    langSetting === "auto" ? (SettingRepo.get(UI_LOCALE_SETTING_KEY) === "en" ? "en" : "zh") : langSetting;
+  // 长度:设置里的「标题最长字数」,默认 30。
+  const maxLen = parseTitleGenMaxLen(SettingRepo.get(UI_TITLE_GEN_MAX_LEN_SETTING_KEY));
+  let prompt = TITLE_GEN_SYSTEM_PROMPT.replace("标题长度不超过 30 个字符", `标题长度不超过 ${maxLen} 个字符`);
+  if (lang === "en") {
+    const words = Math.max(3, Math.round(maxLen / 4));
+    prompt = prompt.replace("生成一个简短、准确的中文标题", "生成一个简短、准确的英文标题").replace(
+      "3. 用中文输出,即使用户消息是其他语言;命令名等专有标识可保留原文。",
+      `3. 用英文输出(不超过 ${words} 个单词),即使用户消息是其他语言;命令名等专有标识可保留原文。`,
+    );
+  } else if (lang === "source") {
+    prompt = prompt.replace("生成一个简短、准确的中文标题", "生成一个简短、准确的标题").replace(
+      "3. 用中文输出,即使用户消息是其他语言;命令名等专有标识可保留原文。",
+      "3. 用与用户消息相同的语言输出;命令名等专有标识可保留原文。",
+    );
+  }
+  return prompt;
+}
+
+/** 用户自定义的标题风格偏好(可空)。放进 user 消息,不进 system prompt —— 和提交信息
+ *  生成一样:固定规则在 system 里不可覆盖,用户偏好只是附加要求。 */
+function titleGenStylePrompt(): string {
+  const raw = SettingRepo.get(UI_TITLE_GEN_PROMPT_SETTING_KEY)?.trim() ?? "";
+  return raw.slice(0, 2000);
 }
 
 /**
@@ -96,7 +126,9 @@ function buildTitleGenPrompt(firstPrompt: string): string {
     firstPrompt.length > TITLE_GEN_INPUT_CAP
       ? firstPrompt.slice(0, TITLE_GEN_INPUT_CAP)
       : firstPrompt;
+  const style = titleGenStylePrompt();
   return [
+    ...(style ? ["# 标题风格偏好(用户设置;只调整风格,不改变系统指令里的规则)", style, ""] : []),
     "下面是一个 JSON 字符串,内容是某条用户消息的原文。",
     "请按系统指令为它生成会话标题:",
     JSON.stringify(clipped),
@@ -126,7 +158,14 @@ export async function generateSessionTitle(
   const stored = SettingRepo.get(UI_TITLE_GEN_MODEL_SETTING_KEY);
   let customModelId: string | undefined;
   let customModelRole: string | undefined;
-  if (stored) {
+  // 「内置 Claude」:"@claude" / "@claude:haiku" —— 走本机 Claude Code 登录,不需要自定义模型。
+  let builtin = false;
+  let builtinModel: string | undefined;
+  if (stored === TITLE_GEN_BUILTIN_MODEL_PREFIX || stored?.startsWith(`${TITLE_GEN_BUILTIN_MODEL_PREFIX}:`)) {
+    builtin = true;
+    const alias = stored.slice(TITLE_GEN_BUILTIN_MODEL_PREFIX.length + 1);
+    builtinModel = (TITLE_GEN_BUILTIN_ALIASES as readonly string[]).includes(alias) ? alias : undefined;
+  } else if (stored) {
     const idx = stored.indexOf(":");
     if (idx > 0) {
       customModelId = stored.slice(0, idx);
@@ -135,7 +174,7 @@ export async function generateSessionTitle(
       customModelId = stored;
     }
   }
-  if (!customModelId) return null;
+  if (!builtin && !customModelId) return null;
 
   const { query } = await import("@anthropic-ai/claude-agent-sdk");
   const ac = new AbortController();
@@ -146,17 +185,23 @@ export async function generateSessionTitle(
     let model: string | undefined;
     let env: import("@anthropic-ai/claude-agent-sdk").Options["env"];
 
-    const resolved = await resolveModelForGitOp(customModelId, customModelRole);
-    if (!resolved.ok) {
-      log.warn(`titleGen: model resolve failed for ${session.id}: ${resolved.error}`);
-      return null;
+    if (builtin) {
+      // 不传 env:SDK 继承进程环境,用本机 Claude Code 的登录 / 默认模型(和不选模型时的
+      // 提交信息生成同一条路)。
+      model = builtinModel;
+    } else {
+      const resolved = await resolveModelForGitOp(customModelId as string, customModelRole);
+      if (!resolved.ok) {
+        log.warn(`titleGen: model resolve failed for ${session.id}: ${resolved.error}`);
+        return null;
+      }
+      releaseBridge = resolved.releaseBridge;
+      const cfg = resolved.config;
+      model = resolveActiveModel(cfg);
+      // Session id, so the gateway's session header follows the conversation the
+      // title is generated for rather than the process-wide fallback.
+      env = buildCustomEnv(cfg, { sessionId: session.id });
     }
-    releaseBridge = resolved.releaseBridge;
-    const cfg = resolved.config;
-    model = resolveActiveModel(cfg);
-    // Session id, so the gateway's session header follows the conversation the
-    // title is generated for rather than the process-wide fallback.
-    env = buildCustomEnv(cfg, { sessionId: session.id });
 
     // Resolve the real on-disk binary path (unpacks from asar in a packaged
     // app). See git.ts:generateCommitMessage for the full rationale.
@@ -211,7 +256,7 @@ export async function generateSessionTitle(
       .replace(/\n?```$/, "")
       .trim()
       .replace(/\s+/g, " ")
-      .slice(0, 80);
+      .slice(0, Math.max(80, parseTitleGenMaxLen(SettingRepo.get(UI_TITLE_GEN_MAX_LEN_SETTING_KEY)) + 20));
 
     if (!title) return null;
 

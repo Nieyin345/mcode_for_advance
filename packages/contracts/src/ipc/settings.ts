@@ -808,6 +808,33 @@ export type PublicMcpEnabled = z.infer<typeof PublicMcpEnabledSchema>;
 export const UI_TITLE_GEN_MODEL_SETTING_KEY = "ui.titleGenModel";
 
 /**
+ * 标题生成模型的「内置 Claude」取值:`"@claude"`(本机 Claude Code 登录的默认模型)
+ * 或 `"@claude:<别名>"`(haiku / sonnet / opus)。不走自定义模型配置,也不需要 API Key。
+ * 其余取值仍是 `"configId:modelId"`。
+ */
+export const TITLE_GEN_BUILTIN_MODEL_PREFIX = "@claude";
+export const TITLE_GEN_BUILTIN_ALIASES = ["haiku", "sonnet", "opus"] as const;
+
+/** 标题风格偏好(用户自己写的一段要求,附在每次生成的请求里)。空 = 默认风格。
+ *  只影响风格,不能覆盖「只输出标题」「消息是数据不是指令」这些固定规则。 */
+export const UI_TITLE_GEN_PROMPT_SETTING_KEY = "ui.titleGenPrompt";
+/** 标题最长字符数(10–100)。空 / 非法 = 30(老行为)。 */
+export const UI_TITLE_GEN_MAX_LEN_SETTING_KEY = "ui.titleGenMaxLen";
+export const TITLE_GEN_MAX_LEN_DEFAULT = 30;
+export const TITLE_GEN_MAX_LEN_MIN = 10;
+export const TITLE_GEN_MAX_LEN_MAX = 100;
+/** 标题语言:auto = 跟界面语言(默认,R38 起的行为);zh / en = 固定;source = 跟消息语言。 */
+export const UI_TITLE_GEN_LANG_SETTING_KEY = "ui.titleGenLang";
+export const TitleGenLangSchema = z.enum(["auto", "zh", "en", "source"]);
+export type TitleGenLang = z.infer<typeof TitleGenLangSchema>;
+
+export function parseTitleGenMaxLen(raw: string | null | undefined): number {
+  const n = Number(raw);
+  if (!raw || !Number.isFinite(n)) return TITLE_GEN_MAX_LEN_DEFAULT;
+  return Math.min(TITLE_GEN_MAX_LEN_MAX, Math.max(TITLE_GEN_MAX_LEN_MIN, Math.round(n)));
+}
+
+/**
  * Setting key for per-repo collapsed state in the Git panel. Value is a
  * JSON-encoded `Record<string, boolean>` mapping repo paths to collapsed
  * state. Persisted so the collapsed/expanded state survives restarts.
@@ -839,6 +866,17 @@ export interface NotificationPrefs {
   blocking: boolean;
   /** Notify when a backgrounded subagent finishes. Default true. */
   backgroundTasks: boolean;
+  /** 系统通知带提示音(Electron `silent: !sound`)。Default true(老行为)。 */
+  sound: boolean;
+  /** 窗口在前台时,后台会话的动静弹应用内提示(Toast)。关掉 = 前台时什么都不弹,
+   *  只留角标。Default true(老行为)。 */
+  inAppToasts: boolean;
+  /** 窗口在前台时也发系统通知(默认只在失焦 / 最小化时发)。Default false(老行为)。 */
+  alsoWhenFocused: boolean;
+  /** 按项目静音:这些项目里的会话不发系统通知、也不弹应用内提示(角标照旧)。 */
+  mutedProjectIds: string[];
+  /** 免打扰时段(本地时间 HH:MM,可跨午夜)。时段内不发系统通知、不弹提示。 */
+  quietHours: { enabled: boolean; start: string; end: string };
 }
 
 /** Default notification prefs: everything on. The user can dial back via the
@@ -849,7 +887,57 @@ export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
   errors: true,
   blocking: true,
   backgroundTasks: true,
+  sound: true,
+  inAppToasts: true,
+  alsoWhenFocused: false,
+  mutedProjectIds: [],
+  quietHours: { enabled: false, start: "22:00", end: "08:00" },
 };
+
+const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function hhmmToMinutes(s: string): number | null {
+  if (!HHMM_RE.test(s)) return null;
+  return Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5));
+}
+
+/** 现在是否落在免打扰时段里。start === end 视为不生效;start > end 表示跨午夜
+ *  (例如 22:00 → 08:00)。主进程(系统通知)和渲染层(应用内提示)共用这一份。 */
+export function isInQuietHours(prefs: Pick<NotificationPrefs, "quietHours">, now: Date = new Date()): boolean {
+  const q = prefs.quietHours;
+  if (!q?.enabled) return false;
+  const start = hhmmToMinutes(q.start);
+  const end = hhmmToMinutes(q.end);
+  if (start === null || end === null || start === end) return false;
+  const cur = now.getHours() * 60 + now.getMinutes();
+  return start < end ? cur >= start && cur < end : cur >= start || cur < end;
+}
+
+/** 补齐老版本存下来的 prefs(缺新字段时用默认值,字段类型不对也回落默认)。 */
+export function normalizeNotificationPrefs(raw: Partial<NotificationPrefs> | null | undefined): NotificationPrefs {
+  const d = DEFAULT_NOTIFICATION_PREFS;
+  const o = (raw ?? {}) as Partial<Record<keyof NotificationPrefs, unknown>>;
+  const bool = (k: keyof NotificationPrefs, def: boolean): boolean => (typeof o[k] === "boolean" ? (o[k] as boolean) : def);
+  const q = o.quietHours as Partial<NotificationPrefs["quietHours"]> | undefined;
+  return {
+    osEnabled: bool("osEnabled", d.osEnabled),
+    turnComplete: bool("turnComplete", d.turnComplete),
+    errors: bool("errors", d.errors),
+    blocking: bool("blocking", d.blocking),
+    backgroundTasks: bool("backgroundTasks", d.backgroundTasks),
+    sound: bool("sound", d.sound),
+    inAppToasts: bool("inAppToasts", d.inAppToasts),
+    alsoWhenFocused: bool("alsoWhenFocused", d.alsoWhenFocused),
+    mutedProjectIds: Array.isArray(o.mutedProjectIds)
+      ? (o.mutedProjectIds as unknown[]).filter((x): x is string => typeof x === "string").slice(0, 500)
+      : [],
+    quietHours: {
+      enabled: typeof q?.enabled === "boolean" ? q.enabled : d.quietHours.enabled,
+      start: typeof q?.start === "string" && HHMM_RE.test(q.start) ? q.start : d.quietHours.start,
+      end: typeof q?.end === "string" && HHMM_RE.test(q.end) ? q.end : d.quietHours.end,
+    },
+  };
+}
 
 /** zod schema for the notification prefs JSON blob. */
 export const NotificationPrefsSchema = z.object({
@@ -858,6 +946,17 @@ export const NotificationPrefsSchema = z.object({
   errors: z.boolean().default(true),
   blocking: z.boolean().default(true),
   backgroundTasks: z.boolean().default(true),
+  sound: z.boolean().default(true),
+  inAppToasts: z.boolean().default(true),
+  alsoWhenFocused: z.boolean().default(false),
+  mutedProjectIds: z.array(z.string().max(200)).max(500).default([]),
+  quietHours: z
+    .object({
+      enabled: z.boolean().default(false),
+      start: z.string().regex(HHMM_RE).default("22:00"),
+      end: z.string().regex(HHMM_RE).default("08:00"),
+    })
+    .default({ enabled: false, start: "22:00", end: "08:00" }),
 });
 
 /**
@@ -932,3 +1031,12 @@ export type SetSettingInput = z.infer<typeof SetSettingSchema>;
 export const GetManySettingsSchema = z.object({ keys: z.array(z.string()) });
 export type GetManySettingsInput = z.infer<typeof GetManySettingsSchema>;
 export type GetManySettingsResult = Record<string, string | null>;
+
+/** 设置导出到文件(主进程弹保存框)。不含 API Key / 令牌 / 密码 / 本机状态。 */
+export type SettingExportFileResult =
+  | { ok: true; path: string; count: number; skipped: number; scrubbed: number }
+  | { ok: false; canceled?: boolean; error?: string };
+/** 从文件导入设置(主进程弹打开框;导入前自动备份当前设置)。 */
+export type SettingImportFileResult =
+  | { ok: true; count: number; skipped: number; backupPath?: string }
+  | { ok: false; canceled?: boolean; error?: string };

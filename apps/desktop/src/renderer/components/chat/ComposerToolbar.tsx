@@ -1,3 +1,4 @@
+import { ComposerCustomButtons } from "@renderer/components/customUi/CustomSlotHosts.js";
 import { MemoryAssistantButton } from "./MemoryAssistantButton.js";
 import { useSessionStore, EMPTY_USAGE } from "@renderer/stores/sessionStore.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -113,6 +114,9 @@ export function ComposerToolbar({
             没有 automation.watch) —— 手机壳里这一行整个不出现。 */}
         {isElectron && <WatchSegment sessionId={sessionId} layout="row" />}
         {isElectron && <MemoryAssistantButton sessionId={sessionId} />}
+        <div className="flex flex-wrap items-center gap-1 px-2 empty:hidden">
+          <ComposerCustomButtons />
+        </div>
         {/* 上下文占用。**不判空** —— 没有用量数据时 `ContextRing` 自己画空环 + 一句
             说明。判空的话这个环会在第一轮跑完时从无到有地冒出来,用户读到的是
             "这个小图标时有时无"(见 `ContextRing` 头注)。 */}
@@ -160,6 +164,8 @@ export function ComposerToolbar({
           会话上 —— 与上面那个「跟会话走的工作模式」是两回事,它跑在自动化会话里。 */}
       {isElectron && <WatchSegment sessionId={sessionId} layout="pill" />}
       {isElectron && <MemoryAssistantButton sessionId={sessionId} />}
+      {/* 自定义 UI「输入框工具栏」挂载位(R39):用户加的按钮。没有就什么都不画。 */}
+      <ComposerCustomButtons />
       {hasEffort && (
         <>
           <span className="composer-minipill-mid" aria-hidden />

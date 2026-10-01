@@ -33,7 +33,7 @@ interface Props {
 }
 
 /** Zinc/emerald mirrors of styles.css tokens — xterm needs explicit hex. */
-function buildTheme(dark: boolean): ITheme {
+export function buildTheme(dark: boolean): ITheme {
   if (dark) {
     return {
       background: "#18181b", // surface zinc-900 (matches --surface)
@@ -86,7 +86,7 @@ function buildTheme(dark: boolean): ITheme {
   };
 }
 
-function useIsDark(): boolean {
+export function useIsDark(): boolean {
   const [dark, setDark] = useState(() =>
     typeof document !== "undefined"
       ? document.documentElement.classList.contains("dark")

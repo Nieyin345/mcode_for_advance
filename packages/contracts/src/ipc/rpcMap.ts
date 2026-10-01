@@ -37,7 +37,7 @@ import type {
 import type { RelayStatus, RelayVpsConfig, RelayVpsConfigInput } from "../relay.js";
 import type { LibraryItem, LibraryItemLink, LibraryLinkView, LibraryCollection, InstitutionProfile, FullTextMatch, AuthSiteStatus, LibraryConversionRow, LibraryNote, PdfHighlight } from "../library.js";
 import type { LibraryGroupMeta, LibrarySuppressRule } from "../libraryTypes.js";
-import type { GetSettingInput, SetSettingInput, GetManySettingsInput, GetManySettingsResult, GetVoiceModelDirInput, GetVoiceModelDirResult, SetVoiceModelDirInput, SetVoiceModelDirResult, NotificationPrefs } from "./settings.js";
+import type { GetSettingInput, SetSettingInput, GetManySettingsInput, GetManySettingsResult, SettingExportFileResult, SettingImportFileResult, GetVoiceModelDirInput, GetVoiceModelDirResult, SetVoiceModelDirInput, SetVoiceModelDirResult, NotificationPrefs } from "./settings.js";
 import type { StartSessionInput, ListSideChatsInput, SendTurnInput, InterruptInput, InjectInput, ApproveInput, RespondQuestionInput, RespondPlanApprovalInput, RewindTurnInput, UpdateSessionSettingsInput, CreateProjectInput, ProjectSessionsInput, SessionListAllInput, SetProjectGroupInput, ReorderProjectsInput, PinProjectInput, RenameProjectInput, SessionSearchInput, BookmarkSearchInput, BookmarkSearchResult, SessionMessagesInput, SaveMessagesInput, UpsertMessagesInput, TruncateAndInsertMessagesInput, RenameSessionInput, ForkSessionInput, PinSessionInput, UpdateBookmarksInput, OpenPathInput, ShowItemInFolderInput, OpenFileInput, SessionListNodesInput, SessionHasNodesInput } from "./session.js";
 import type { VoiceStartInput, VoiceFeedInput, VoiceStopInput, VoiceStopResult, VoiceCancelInput, VoiceModelListResult, VoiceDownloadModelInput } from "./voice.js";
 import type { FocusSessionInput, SetNotificationPrefsInput } from "./notifications.js";
@@ -196,6 +196,10 @@ export interface RpcMap {
   "setting.get": (input: GetSettingInput) => Promise<{ value: string | null }>;
   "setting.set": (input: SetSettingInput) => Promise<void>;
   "setting.getMany": (input: GetManySettingsInput) => Promise<GetManySettingsResult>;
+  /** 导出设置到 JSON 文件(主进程弹保存框;不含密钥与本机状态)。 */
+  "setting.exportToFile": () => Promise<SettingExportFileResult>;
+  /** 从 JSON 文件导入设置(主进程弹打开框;先备份当前设置)。 */
+  "setting.importFromFile": () => Promise<SettingImportFileResult>;
   // Voice input
   "voice.start": (input: VoiceStartInput) => Promise<void>;
   "voice.feed": (input: VoiceFeedInput) => Promise<void>;
@@ -1279,6 +1283,8 @@ export const IPC = {
   SETTING_GET: "setting:get",
   SETTING_SET: "setting:set",
   SETTING_GET_MANY: "setting:getMany",
+  SETTING_EXPORT_FILE: "setting:exportToFile",
+  SETTING_IMPORT_FILE: "setting:importFromFile",
   // 文献库 —— 条目
   LIBRARY_LIST: "library:list",
   LIBRARY_GET: "library:get",

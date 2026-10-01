@@ -18,6 +18,7 @@ import { createPortal } from "react-dom";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { IconBookmark, IconCheck, IconCopy, IconMessages, IconQuote } from "@renderer/lib/icons.js";
+import { SelectionCustomButtons } from "@renderer/components/customUi/CustomSlotHosts.js";
 
 /** What the owning ChatPane captured at mouseup: a viewport-space snapshot of
  *  the selection plus the message it belongs to (resolved from
@@ -169,6 +170,8 @@ export function SelectionToolbar({
       >
         <IconQuote size={12} />
       </button>
+      {/* 自定义 UI「选中文字」挂载位(R39) */}
+      <SelectionCustomButtons text={state.text} onDone={onClose} />
     </div>,
     document.body,
   );

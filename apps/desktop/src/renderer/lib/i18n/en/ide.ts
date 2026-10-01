@@ -328,6 +328,9 @@ export const en = {
   "ide.task.readOnly": "Read-only view (switch to the owning panel to type)",
   "ide.task.following": "Following this terminal's output",
   "ide.task.gone": "This terminal has exited",
+  "ide.task.killTerminal": "Close this terminal (end its process)",
+  "ide.task.killTerminalShort": "Close terminal",
+  "ide.task.killFailed": "Failed to close the terminal",
   "ide.task.transcriptWaiting": "This subagent has no output yet",
   /** Terminal variant — distinct from the subagent one ("This subagent has not
    *  produced output yet" reads as a wrong sentence on a terminal). */

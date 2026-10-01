@@ -94,6 +94,12 @@ export const BUILTINS: Record<CustomUiSlot, readonly BuiltinMeta[]> = {
   ],
   // 工具栏没有内置按钮:整条都是用户自己摆的。
   toolbar: [],
+  // R39 新挂载位:内置项仍由各自宿主直接画(不搬进排序表),这里只放自定义项。
+  "chat.message": [],
+  "text.selection": [],
+  "composer.toolbar": [],
+  "session.context": [],
+  "project.context": [],
 };
 
 /** 右栏内置页签的 id(与 `RightPanelTab` 的值一一对应)。 */
@@ -137,4 +143,6 @@ export const DEFAULT_ACTION_ICON: Record<CustomUiActionType, IconComponent> = {
   automation: IconBolt,
   file: IconFileText,
   openTab: IconLayoutSidebarRightExpand,
+  url: IconExternalLink,
+  shell: IconTerminal2,
 };

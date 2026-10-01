@@ -21,7 +21,7 @@
 import { Notification } from "electron";
 import { join } from "node:path";
 import type { RuntimeEvent } from "@contracts/runtime";
-import { IPC, DEFAULT_NOTIFICATION_PREFS, NOTIFICATION_PREFS_SETTING_KEY, type NotificationPrefs } from "@contracts/ipc";
+import { IPC, DEFAULT_NOTIFICATION_PREFS, NOTIFICATION_PREFS_SETTING_KEY, isInQuietHours, normalizeNotificationPrefs, type NotificationPrefs } from "@contracts/ipc";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { getMainWindow, sendToRenderer } from "@main/window.js";
 import { SettingRepo } from "@main/store/repositories.js";
@@ -40,7 +40,7 @@ function parsePrefs(raw: string | null): NotificationPrefs {
   if (!raw) return { ...DEFAULT_NOTIFICATION_PREFS };
   try {
     const obj = JSON.parse(raw) as Partial<NotificationPrefs>;
-    return { ...DEFAULT_NOTIFICATION_PREFS, ...obj };
+    return normalizeNotificationPrefs(obj);
   } catch {
     return { ...DEFAULT_NOTIFICATION_PREFS };
   }
@@ -90,10 +90,14 @@ class NotificationManager {
     // in-app layer (badges + toasts) handles surfacing.
     const win = getMainWindow();
     if (!win || win.isDestroyed()) return;
-    if (win.isFocused() && !win.isMinimized()) return;
+    // 窗口在前台:默认交给渲染层的应用内提示;用户打开「前台时也发系统通知」才继续。
+    if (win.isFocused() && !win.isMinimized() && !this.prefs.alsoWhenFocused) return;
 
     const result = e.type === "subagent.update" ? rosterResult : this.evaluate(e);
     if (!result) return;
+    // 免打扰时段 / 静音项目:只在真要发通知时才查(这里每条流事件都会进来)。
+    if (isInQuietHours(this.prefs)) return;
+    if (this.isMutedProject(e.sessionId)) return;
 
     this.showNotification(result.title, result.body, e.sessionId);
   }
@@ -224,6 +228,17 @@ class NotificationManager {
 
   /** 是不是工作流节点会话(`kind: "node"`,见 `main/orchestration/runner.ts`)。
    *  这类会话是隐藏的:它们的完成与报错不该打扰用户。 */
+  private isMutedProject(sessionId: string): boolean {
+    const muted = this.prefs.mutedProjectIds;
+    if (muted.length === 0) return false;
+    try {
+      const pid = SessionRepo.get(sessionId)?.projectId;
+      return pid !== undefined && muted.includes(pid);
+    } catch {
+      return false;
+    }
+  }
+
   private isNodeSession(sessionId: string): boolean {
     try {
       return SessionRepo.get(sessionId)?.kind === "node";
@@ -238,7 +253,7 @@ class NotificationManager {
     if (!this.prefs.osEnabled) return;
     if (!Notification.isSupported()) return;
 
-    const notif = new Notification({ title, body, icon: NOTIFICATION_ICON, silent: false });
+    const notif = new Notification({ title, body, icon: NOTIFICATION_ICON, silent: !this.prefs.sound });
     notif.on("click", () => {
       const win = getMainWindow();
       if (!win || win.isDestroyed()) return;

@@ -734,6 +734,9 @@ const setting: Api["setting"] = {
     }
     return out;
   },
+  // 设置导入 / 导出要弹电脑上的文件对话框,手机端不提供(设置页里那张卡片也不显示)。
+  exportToFile: () => Promise.resolve({ ok: false as const, error: translate(uiLocale(), "lib.web.unavailable", { name: "setting.exportToFile" }) }),
+  importFromFile: () => Promise.resolve({ ok: false as const, error: translate(uiLocale(), "lib.web.unavailable", { name: "setting.importFromFile" }) }),
 };
 
 /** Voice input requires the desktop main-process ASR engine; the mobile/web

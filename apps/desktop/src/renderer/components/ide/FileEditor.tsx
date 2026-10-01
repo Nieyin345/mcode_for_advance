@@ -38,6 +38,7 @@ import {
 } from "@renderer/lib/lspProviders.js";
 // Side-effect import: configures Monaco's worker environment + local instance
 // (no CDN). Must run before any <Editor> mounts. See monacoSetup.ts.
+import { registerEditorSelectionActions } from "@renderer/components/customUi/CustomSlotHosts.js";
 import "@renderer/lib/monacoSetup.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import type { MessageId } from "@renderer/lib/i18n/core.js";
@@ -1199,8 +1200,15 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
       setMdQuote(null);
     });
 
+    // 自定义 UI「选中文字」挂载位 → 编辑器右键菜单(R39)。
+    const unregisterCustom = registerEditorSelectionActions(editor_, () => ({
+      path: readyCtxRef.current?.path,
+      projectPath: readyCtxRef.current?.projectPath,
+    }));
+
     // 组件卸载时拆干净（Monaco 的 listener 不拆会一直持有闭包）。
     unmountCleanupsRef.current.push(() => {
+      unregisterCustom();
       domNode?.removeEventListener("mousedown", onDragStart);
       window.removeEventListener("mouseup", onDragEnd);
       selSub.dispose();

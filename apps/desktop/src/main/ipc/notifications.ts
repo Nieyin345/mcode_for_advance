@@ -1,5 +1,5 @@
 import type { IpcMain } from "electron";
-import { IPC, NOTIFICATION_PREFS_SETTING_KEY, FocusSessionSchema, NotificationPrefsSchema, type NotificationPrefs } from "@contracts/ipc";
+import { IPC, NOTIFICATION_PREFS_SETTING_KEY, FocusSessionSchema, NotificationPrefsSchema, normalizeNotificationPrefs, type NotificationPrefs } from "@contracts/ipc";
 import { notificationManager } from "@main/notifications/NotificationManager.js";
 import { SettingRepo } from "@main/store/repositories.js";
 import { sendToRenderer } from "@main/window.js";
@@ -12,13 +12,7 @@ export function registerNotificationHandlers(ipc: IpcMain): void {
 
   ipc.handle(IPC.NOTIFICATION_SET_PREFS, async (_event, raw) => {
     const parsed = NotificationPrefsSchema.parse(raw);
-    const prefs: NotificationPrefs = {
-      osEnabled: parsed.osEnabled,
-      turnComplete: parsed.turnComplete,
-      errors: parsed.errors,
-      blocking: parsed.blocking,
-      backgroundTasks: parsed.backgroundTasks,
-    };
+    const prefs: NotificationPrefs = normalizeNotificationPrefs(parsed);
     // Persist to the settings table as JSON.
     SettingRepo.set(NOTIFICATION_PREFS_SETTING_KEY, JSON.stringify(prefs));
     // Update the in-memory prefs so the observer picks up the change immediately.

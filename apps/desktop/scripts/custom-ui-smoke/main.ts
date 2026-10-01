@@ -35,6 +35,9 @@ import {
   targetKindOfSlot,
   TEMPLATE_VARS_BY_SLOT,
   templateVarsOf,
+  renderShellTemplate,
+  renderUrlTemplate,
+  shellQuote,
   unknownTemplateVars,
   CUSTOM_UI_SLOTS,
   CUSTOM_UI_ICONS,
@@ -179,7 +182,15 @@ for (const slot of CUSTOM_UI_SLOTS) {
           ? { kind, group: { id: "g", name: "n" } }
           : kind === "workspace"
             ? { kind, today: "2026-09-28" }
-            : fileTarget;
+            : kind === "message"
+              ? { kind, message: { id: "m1", role: "assistant", text: "hi" }, today: "2026-09-28" }
+              : kind === "selection"
+                ? { kind, text: "sel", source: "chat", today: "2026-09-28" }
+                : kind === "session"
+                  ? { kind, session: { id: "s1", title: "t" }, today: "2026-09-28" }
+                  : kind === "project"
+                    ? { kind, project: { id: "p1", path: "D:\\w\\p", name: "p" }, today: "2026-09-28" }
+                    : fileTarget;
   const vars = templateVarsOf(sample);
   check(
     `设置页列出的变量都真的存在(${slot})`,
@@ -254,12 +265,37 @@ eq("条目事实:没有的路径不出现", itemFactsOf(libItem), { itemId: "i1"
 
 /* ── 7. 右栏页签 / 竖向工具栏(P3)────────────────────────────────── */
 
-eq("七个挂载位", CUSTOM_UI_SLOTS.length, 7);
+eq("十二个挂载位(R39 加了消息 / 选中文字 / 输入框工具栏 / 对话右键 / 项目右键)", CUSTOM_UI_SLOTS.length, 12);
 eq("页签 → 工作区目标", targetKindOfSlot("rightPanel.tab"), "workspace");
 eq("工具栏 → 工作区目标", targetKindOfSlot("toolbar"), "workspace");
 eq("页签只能显示", [...ACTIONS_BY_SLOT["rightPanel.tab"]].sort(), ["file", "view"]);
 check("右键菜单不能「切页签」", !isActionAllowed("library.item", "openTab") && !isActionAllowed("files.context", "file"));
-check("工具栏六种都行", ACTIONS_BY_SLOT.toolbar.length === 6);
+check("工具栏八种都行(含 R39 的打开网址 / 运行终端命令)", ACTIONS_BY_SLOT.toolbar.length === 8);
+check("新挂载位都能「打开网址」「运行终端命令」", (["chat.message", "text.selection", "composer.toolbar", "session.context", "project.context"] as const).every((s) => isActionAllowed(s, "url") && isActionAllowed(s, "shell")));
+check("新的右键类挂载位不能「切页签」/「打开文件」", !isActionAllowed("session.context", "openTab") && !isActionAllowed("chat.message", "file"));
+
+/* ── R39:打开网址 / 运行终端命令的渲染 ── */
+
+eq("网址:变量做 URL 编码", renderUrlTemplate("https://g.cn/s?q={{selection.text}}", { "selection.text": "a b&c" }), "https://g.cn/s?q=a%20b%26c");
+eq("网址:整串就是一个变量时原样用", renderUrlTemplate("{{selection.text}}", { "selection.text": "https://x.org/a?b=1" }), "https://x.org/a?b=1");
+eq("网址:javascript: 一律拒绝", renderUrlTemplate("{{selection.text}}", { "selection.text": "javascript:alert(1)" }), null);
+eq("网址:file: 也拒绝", renderUrlTemplate("file:///C:/x", {}), null);
+check("网址:mailto 可以", renderUrlTemplate("mailto:{{x}}", { x: "a@b.c" }) !== null);
+eq("shell 引号(posix)", shellQuote("it's; rm", "posix"), "'it'\\''s; rm'");
+eq("shell 引号(powershell)", shellQuote("it's; rm", "powershell"), "'it''s; rm'");
+eq("shell 引号(cmd):去掉 \" 和 %", shellQuote('a"b%PATH%', "cmd"), '"abPATH"');
+eq("shell 引号:换行压成空格", shellQuote("a\nb", "posix"), "'a b'");
+eq(
+  "shell 渲染:变量值成一个参数、注入不生效",
+  renderShellTemplate("git log -- {{file.path}}", { "file.path": "x; rm -rf ~" }, "posix"),
+  "git log -- 'x; rm -rf ~'",
+);
+eq(
+  "shell 渲染:用户自己加的引号会被去掉,不双重",
+  renderShellTemplate('code "{{file.path}}"', { "file.path": "a b" }, "powershell"),
+  "code 'a b'",
+);
+eq("shell 渲染:未知变量是空参数", renderShellTemplate("echo {{nope}}", {}, "posix"), "echo ''");
 for (const slot of CUSTOM_UI_SLOTS) {
   check(`${slot} 有变量表`, Array.isArray(TEMPLATE_VARS_BY_SLOT[slot]) && TEMPLATE_VARS_BY_SLOT[slot].length > 0);
 }

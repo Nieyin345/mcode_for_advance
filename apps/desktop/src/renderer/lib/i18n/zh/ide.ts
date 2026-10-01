@@ -335,6 +335,9 @@ export const zh = {
   "ide.task.readOnly": "只读查看(要打字请切到这条终端所在的面板)",
   "ide.task.following": "正在跟随输出",
   "ide.task.gone": "这条终端已经退出了",
+  "ide.task.killTerminal": "关闭这个终端(结束它的进程)",
+  "ide.task.killTerminalShort": "关闭终端",
+  "ide.task.killFailed": "关闭终端失败",
   "ide.task.transcriptWaiting": "这个子代理还没有输出",
   /** 终端那档的空态。**要和子代理那句分开** —— "这个子代理还没有输出" 挂在
    *  一个终端上读起来是句错话（终端不是子代理）。 */

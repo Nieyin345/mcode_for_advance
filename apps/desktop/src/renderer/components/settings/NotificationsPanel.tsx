@@ -15,13 +15,15 @@
  *  - 错误            (errors)
  *  - 后台任务        (backgroundTasks)
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { PANEL_MAX_W } from "./panelWidth.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import type { NotificationPrefs } from "@contracts/ipc";
-import { DEFAULT_NOTIFICATION_PREFS } from "@contracts/ipc";
-import { Switch } from "@renderer/components/ui/index.js";
+import { DEFAULT_NOTIFICATION_PREFS, normalizeNotificationPrefs } from "@contracts/ipc";
+import { Input, Switch } from "@renderer/components/ui/index.js";
+import { setCachedNotificationPrefs } from "@renderer/lib/notifPrefsCache.js";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingRow } from "./SettingRow.js";
 import { SettingsSection } from "./SettingsSection.js";
@@ -36,7 +38,7 @@ export function NotificationsPanel() {
     // 读失败也要解锁开关(用默认值):以前没有 catch,一次 IPC 失败整页开关永远是灰的。
     void api.notification
       .getPrefs()
-      .then((res) => setPrefs(res.prefs))
+      .then((res) => setPrefs(normalizeNotificationPrefs(res.prefs)))
       .catch((err: unknown) => console.error("notification.getPrefs failed:", err))
       .finally(() => setLoaded(true));
   }, []);
@@ -45,8 +47,21 @@ export function NotificationsPanel() {
   const update = (patch: Partial<NotificationPrefs>) => {
     const next = { ...prefs, ...patch };
     setPrefs(next);
-    void api.notification.setPrefs(next);
+    setCachedNotificationPrefs(next);
+    void api.notification.setPrefs(next).catch((err: unknown) => console.error("notification.setPrefs failed:", err));
   };
+
+  const projects = useSessionStore((s) => s.projects);
+  const liveProjects = useMemo(() => projects.filter((p) => !p.archived), [projects]);
+  const muted = useMemo(() => new Set(prefs.mutedProjectIds), [prefs.mutedProjectIds]);
+  const toggleProject = (id: string, notify: boolean) => {
+    const set = new Set(prefs.mutedProjectIds);
+    if (notify) set.delete(id);
+    else set.add(id);
+    update({ mutedProjectIds: [...set] });
+  };
+  const setQuiet = (patch: Partial<NotificationPrefs["quietHours"]>) =>
+    update({ quietHours: { ...prefs.quietHours, ...patch } });
 
   return (
     <section className={`mx-auto w-full ${PANEL_MAX_W.form} space-y-4`}>
@@ -120,6 +135,83 @@ export function NotificationsPanel() {
             label={prefs.backgroundTasks ? t("settings.on") : t("settings.off")}
           />
         </SettingRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.notifications.styleSection")}>
+        <SettingRow title={t("settings.notifications.soundTitle")} desc={t("settings.notifications.soundDesc")}>
+          <Switch
+            checked={prefs.sound}
+            disabled={!loaded || !prefs.osEnabled}
+            onCheckedChange={(v) => update({ sound: v })}
+            label={prefs.sound ? t("settings.on") : t("settings.off")}
+          />
+        </SettingRow>
+        <SettingRow title={t("settings.notifications.inAppTitle")} desc={t("settings.notifications.inAppDesc")}>
+          <Switch
+            checked={prefs.inAppToasts}
+            disabled={!loaded}
+            onCheckedChange={(v) => update({ inAppToasts: v })}
+            label={prefs.inAppToasts ? t("settings.on") : t("settings.off")}
+          />
+        </SettingRow>
+        <SettingRow title={t("settings.notifications.focusedTitle")} desc={t("settings.notifications.focusedDesc")}>
+          <Switch
+            checked={prefs.alsoWhenFocused}
+            disabled={!loaded || !prefs.osEnabled}
+            onCheckedChange={(v) => update({ alsoWhenFocused: v })}
+            label={prefs.alsoWhenFocused ? t("settings.on") : t("settings.off")}
+          />
+        </SettingRow>
+        <SettingRow title={t("settings.notifications.quietTitle")} desc={t("settings.notifications.quietDesc")}>
+          <div className="flex items-center gap-2">
+            {prefs.quietHours.enabled && (
+              <>
+                <Input
+                  type="time"
+                  value={prefs.quietHours.start}
+                  onChange={(e) => {
+                    if (/^\d{2}:\d{2}$/.test(e.target.value)) setQuiet({ start: e.target.value });
+                  }}
+                  className="w-[6.5rem]"
+                  aria-label={t("settings.notifications.quietStart")}
+                />
+                <span className="text-xs text-content-subtle">→</span>
+                <Input
+                  type="time"
+                  value={prefs.quietHours.end}
+                  onChange={(e) => {
+                    if (/^\d{2}:\d{2}$/.test(e.target.value)) setQuiet({ end: e.target.value });
+                  }}
+                  className="w-[6.5rem]"
+                  aria-label={t("settings.notifications.quietEnd")}
+                />
+              </>
+            )}
+            <Switch
+              checked={prefs.quietHours.enabled}
+              disabled={!loaded}
+              onCheckedChange={(v) => setQuiet({ enabled: v })}
+              label={prefs.quietHours.enabled ? t("settings.on") : t("settings.off")}
+            />
+          </div>
+        </SettingRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.notifications.projectSection")}>
+        {liveProjects.length === 0 ? (
+          <div className="px-4 py-3 text-xs text-content-subtle">{t("settings.notifications.projectEmpty")}</div>
+        ) : (
+          liveProjects.map((p) => (
+            <SettingRow key={p.id} title={p.name} desc={p.path}>
+              <Switch
+                checked={!muted.has(p.id)}
+                disabled={!loaded}
+                onCheckedChange={(v) => toggleProject(p.id, v)}
+                label={muted.has(p.id) ? t("settings.notifications.projectMuted") : t("settings.on")}
+              />
+            </SettingRow>
+          ))
+        )}
       </SettingsSection>
     </section>
   );

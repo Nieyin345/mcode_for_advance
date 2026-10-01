@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
 import { useSessionStore, type Block } from "@renderer/stores/sessionStore.js";
@@ -12,7 +12,10 @@ import {
   IconRefresh,
   IconRobot,
   IconTerminal2,
+  IconX,
 } from "@renderer/lib/icons.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
+import { isElectron } from "@renderer/lib/platform.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import type { SubagentSnapshot, TranscriptBlock } from "@contracts/runtime";
 import type { TerminalInfo, TerminalOrigin } from "@contracts/ipc";
@@ -23,6 +26,26 @@ import type { TerminalInfo, TerminalOrigin } from "@contracts/ipc";
  *
  *  子代理与工作流节点**不用轮询** —— 它们本来就在渲染端的 store 里,事件一到就重渲染。 */
 const POLL_MS = 2_000;
+
+// xterm 只在点开一条终端时才加载(和终端面板一样懒加载)。
+const ReadonlyTerminal = lazy(() =>
+  import("./ReadonlyTerminal.js").then((m) => ({ default: m.ReadonlyTerminal })),
+);
+
+/**
+ * 关掉一条终端(结束它的进程)。以前这个列表只能看、不能关 —— 代理开出来的终端
+ * 没有别的入口能结束。手机端 `terminal.kill` 返回 ok:false + 原因,照样提示出来。
+ */
+async function killTerminal(terminalId: string, failTitle: string): Promise<boolean> {
+  try {
+    const res = await api.terminal.kill({ terminalId });
+    if (res.ok) return true;
+    useToastStore.getState().push({ kind: "error", title: failTitle, body: res.error });
+  } catch (err) {
+    useToastStore.getState().push({ kind: "error", title: failTitle, body: err instanceof Error ? err.message : String(err) });
+  }
+  return false;
+}
 
 /** 稳定空引用(避免每次渲染造新数组,把下游选择器打穿 —— 见 AGENTS.md 那条)。 */
 const EMPTY_TERMINALS: TerminalInfo[] = [];
@@ -163,6 +186,17 @@ export function TaskListPanel() {
         <DetailHeader
           target={detail}
           titleOf={titleOf}
+          onKill={
+            detail.kind === "terminal" && isElectron
+              ? () => {
+                  void killTerminal(detail.info.terminalId, t("ide.task.killFailed")).then((ok) => {
+                    if (!ok) return;
+                    setDetail(null);
+                    void refresh();
+                  });
+                }
+              : undefined
+          }
           onBack={() => {
             setDetail(null);
             // 返回时顺手刷一次:查看期间这条终端可能已经退出了,列表得跟上。
@@ -225,6 +259,14 @@ export function TaskListPanel() {
               full={info.cwd}
               actionTitle={t("ide.task.view")}
               onOpen={() => setDetail({ kind: "terminal", info })}
+              trailing={isElectron ? {
+                title: t("ide.task.killTerminal"),
+                onClick: () => {
+                  void killTerminal(info.terminalId, t("ide.task.killFailed")).then((ok) => {
+                    if (ok) void refresh();
+                  });
+                },
+              } : undefined}
             />
           ))}
           <More total={terminals.length} />
@@ -306,6 +348,7 @@ function Row({
   full,
   actionTitle,
   onOpen,
+  trailing,
 }: {
   icon: React.ReactNode;
   /** 还活着 —— 图标高亮。已退出的终端也照样列(它仍占着一个面板),只是暗一点。 */
@@ -316,13 +359,16 @@ function Row({
   full?: string;
   actionTitle: string;
   onOpen: () => void;
+  /** 行尾的小按钮(终端行:关闭)。和整行的「查看」分开,不嵌套 button。 */
+  trailing?: { title: string; onClick: () => void };
 }) {
   return (
+    <div className="group flex w-full items-start hover:bg-surface-muted/50">
     <button
       type="button"
       title={actionTitle}
       onClick={onOpen}
-      className="flex w-full items-start gap-2 px-2 py-1.5 text-left hover:bg-surface-muted/50"
+      className="flex min-w-0 flex-1 items-start gap-2 px-2 py-1.5 text-left"
     >
       <span className={cn("mt-0.5 shrink-0", lit ? "text-accent" : "text-content-subtle")}>
         {icon}
@@ -336,6 +382,18 @@ function Row({
         </span>
       </span>
     </button>
+    {trailing && (
+      <button
+        type="button"
+        title={trailing.title}
+        aria-label={trailing.title}
+        onClick={trailing.onClick}
+        className="mr-1 mt-1 shrink-0 rounded p-1 text-content-subtle opacity-60 hover:bg-surface-hover hover:text-danger group-hover:opacity-100"
+      >
+        <IconX size={12} />
+      </button>
+    )}
+    </div>
   );
 }
 
@@ -350,10 +408,13 @@ function DetailHeader({
   target,
   titleOf,
   onBack,
+  onKill,
 }: {
   target: DetailTarget;
   titleOf: (sessionId: string) => string;
   onBack: () => void;
+  /** 只有终端有:结束这条终端的进程。 */
+  onKill?: () => void;
 }) {
   const { t } = useI18n();
 
@@ -389,6 +450,17 @@ function DetailHeader({
           {sub}
         </div>
       </div>
+      {onKill && (
+        <button
+          type="button"
+          title={t("ide.task.killTerminal")}
+          onClick={onKill}
+          className="mt-0.5 flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[10px] text-content-subtle hover:bg-surface-hover hover:text-danger"
+        >
+          <IconX size={12} />
+          {t("ide.task.killTerminalShort")}
+        </button>
+      )}
     </div>
   );
 }
@@ -469,6 +541,13 @@ function TerminalOutputPanel({ info }: { info: TerminalInfo }) {
         <span className="truncate">{t("ide.task.readOnly")}</span>
         <span className="ml-auto shrink-0">{gone ? t("ide.task.gone") : t("ide.task.following")}</span>
       </div>
+      {text.length > 0 ? (
+        <div className="min-h-0 flex-1">
+          <Suspense fallback={null}>
+            <ReadonlyTerminal text={text} />
+          </Suspense>
+        </div>
+      ) : (
       <pre
         ref={preRef}
         className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-all bg-surface-muted/30 p-2 font-mono text-[11px] leading-tight text-content"
@@ -476,8 +555,9 @@ function TerminalOutputPanel({ info }: { info: TerminalInfo }) {
         {/* 没有输出时说一句（用户 2026-09-21 点名要的：「如果没有内容输出就显示
             还没有输出」）。**不能留空白** —— 一片空的 `<pre>` 和"终端卡住了/没接上"
             在用户眼里长得一模一样，而他没有任何线索能分辨这两件事。 */}
-        {text.length > 0 ? text : <span className="text-content-subtle">{t("ide.task.terminalNoOutput")}</span>}
+        <span className="text-content-subtle">{t("ide.task.terminalNoOutput")}</span>
       </pre>
+      )}
     </div>
   );
 }

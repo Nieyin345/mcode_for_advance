@@ -151,6 +151,11 @@ const ALL_OFF: NotificationPrefs = {
   errors: false,
   blocking: false,
   backgroundTasks: false,
+  sound: false,
+  inAppToasts: false,
+  alsoWhenFocused: false,
+  mutedProjectIds: [],
+  quietHours: { enabled: false, start: "22:00", end: "08:00" },
 };
 
 /* ──────────────── 1. 缺字段必须是"默认开" ──────────────── */
@@ -160,12 +165,17 @@ console.log("\n缺字段的输入要补成默认开");
 {
   // 「老版本渲染端」的形状:一个字段都不带。五个 `.default(true)` 必须全补上。
   const res = (await setPrefs({})) as { prefs: NotificationPrefs };
-  same("空对象进来 → 五个字段齐、全是 true", res.prefs, {
+  same("空对象进来 → 字段齐、全是默认值", res.prefs, {
     osEnabled: true,
     turnComplete: true,
     errors: true,
     blocking: true,
     backgroundTasks: true,
+    sound: true,
+    inAppToasts: true,
+    alsoWhenFocused: false,
+    mutedProjectIds: [],
+    quietHours: { enabled: false, start: "22:00", end: "08:00" },
   });
 
   // 只带一个字段:其余四个也要在,而不是 `undefined`。
@@ -183,12 +193,17 @@ console.log("\n缺字段的输入要补成默认开");
   // **落盘的那份也要五个字段。** 手写 `prefs` 字面量少抄一个字段的话,`JSON.stringify`
   // 会把它整个丢掉 —— 重启后那个开关就变回默认,用户的改动"存了但没存住"。
   const stored = storedPrefs();
-  eq("落盘的那份 JSON.parse 回来正好五个 key", Object.keys(stored ?? {}).length, 5);
-  same("落盘的 key 就是这五个", Object.keys(stored ?? {}).sort(), [
+  eq("落盘的那份 JSON.parse 回来正好十个 key", Object.keys(stored ?? {}).length, 10);
+  same("落盘的 key 就是这十个", Object.keys(stored ?? {}).sort(), [
+    "alsoWhenFocused",
     "backgroundTasks",
     "blocking",
     "errors",
+    "inAppToasts",
+    "mutedProjectIds",
     "osEnabled",
+    "quietHours",
+    "sound",
     "turnComplete",
   ]);
   check("落盘那份里没有 undefined 值", Object.values(stored ?? {}).every((v) => v !== undefined), stored);
@@ -202,12 +217,17 @@ console.log("\n系统通知总开关不牵连分类开关");
   // 用户只是关掉了"弹系统通知",不是关掉了四类事件。其余四个必须如实带着 true
   // 落盘 —— 否则他哪天再打开总开关,会发现分类也被人替他关了。
   const res = (await setPrefs({ osEnabled: false })) as { prefs: NotificationPrefs };
-  same("落盘那份里其余四个还是 true", storedPrefs(), {
+  same("落盘那份里其余几个还是默认值", storedPrefs(), {
     osEnabled: false,
     turnComplete: true,
     errors: true,
     blocking: true,
     backgroundTasks: true,
+    sound: true,
+    inAppToasts: true,
+    alsoWhenFocused: false,
+    mutedProjectIds: [],
+    quietHours: { enabled: false, start: "22:00", end: "08:00" },
   });
   eq("内存那份也跟着", memoryPrefs().turnComplete, true);
   check("osEnabled=false 的返回值是最先列出来的那个字段", res.prefs.osEnabled === false);
@@ -268,6 +288,11 @@ console.log("\n库里的坏值不能把通知系统带崩");
     errors: true,
     blocking: true,
     backgroundTasks: true,
+    sound: true,
+    inAppToasts: true,
+    alsoWhenFocused: false,
+    mutedProjectIds: [],
+    quietHours: { enabled: false, start: "22:00", end: "08:00" },
   };
   for (const c of cases) {
     SettingRepo.set(NOTIFICATION_PREFS_SETTING_KEY, c.raw);
@@ -292,7 +317,8 @@ console.log("\n库里的坏值不能把通知系统带崩");
   // `NotificationManager.ts` 的 `parsePrefs`(不在本文件,没改)。见套件报告的 §4。
   SettingRepo.set(NOTIFICATION_PREFS_SETTING_KEY, JSON.stringify({ turnComplete: "yes" }));
   notificationManager.reloadPrefs();
-  eq('字段类型错会被原样带进来("yes")', memoryPrefs().turnComplete, "yes" as unknown as boolean);
+  // R39:读库改走 `normalizeNotificationPrefs`,类型不对的字段落回默认 —— 上面说的那个 bug 修了。
+  eq('字段类型错 → 落回默认 true(不再原样带进 "yes")', memoryPrefs().turnComplete, true);
 
   // 另一头:空串同样是**假值**,弹不弹跟面板显示的对不上。
   SettingRepo.set(NOTIFICATION_PREFS_SETTING_KEY, JSON.stringify({ errors: "" }));
@@ -304,7 +330,8 @@ console.log("\n库里的坏值不能把通知系统带崩");
     sessionId: "s_none",
     message: "炸了",
   } as unknown as RuntimeEvent;
-  eq("空串被当假值用 → 报错不弹(面板上那个开关却显示着开)", wouldNotify(errEvt), false);
+  void errEvt;
+  eq("空串 → 落回默认 true(面板和实际行为一致)", memoryPrefs().errors, true);
 
   // 「JSON 但不是对象」里最阴的一个:字符串会被**按字符展开**成数字下标。
   // 五个开关没事,但内存那份多出三个键。钉住它,是为了下次有人往 prefs 里加字段时
@@ -312,9 +339,9 @@ console.log("\n库里的坏值不能把通知系统带崩");
   SettingRepo.set(NOTIFICATION_PREFS_SETTING_KEY, JSON.stringify("abc"));
   notificationManager.reloadPrefs();
   same(
-    "字符串被展开成数字下标(已知形状,加字段时留意)",
+    "字符串不再被展开成数字下标(R39 规整化后只留已知字段)",
     Object.keys(memoryPrefs()).filter((k) => /^\d+$/.test(k)).sort(),
-    ["0", "1", "2"],
+    [],
   );
   check("但五个开关还是全开", memoryPrefs().turnComplete === true && memoryPrefs().errors === true);
 }
@@ -331,10 +358,12 @@ console.log("\n从库里读回来的偏好是完整的一份");
   notificationManager.reloadPrefs();
   const got = (await getPrefs()) as { prefs: NotificationPrefs };
   same("reload 之后读回来 = 写进去的那份", got.prefs, ALL_OFF);
-  eq("五个字段一个不少", Object.keys(got.prefs).length, 5);
+  eq("十个字段一个不少", Object.keys(got.prefs).length, 10);
   check(
-    "每个字段都是布尔(渲染端的 Switch 直接吃它)",
-    Object.values(got.prefs).every((v) => typeof v === "boolean"),
+    "开关字段都是布尔(渲染端的 Switch 直接吃它)",
+    (["osEnabled", "turnComplete", "errors", "blocking", "backgroundTasks", "sound", "inAppToasts", "alsoWhenFocused"] as const).every(
+      (k) => typeof got.prefs[k] === "boolean",
+    ),
     got.prefs,
   );
 

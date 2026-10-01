@@ -108,6 +108,10 @@ const api = {
       ipcRenderer.invoke(IPC.SETTING_SET, input)) as RpcMap["setting.set"],
     getMany: ((input) =>
       ipcRenderer.invoke(IPC.SETTING_GET_MANY, input)) as RpcMap["setting.getMany"],
+    exportToFile: (() =>
+      ipcRenderer.invoke(IPC.SETTING_EXPORT_FILE)) as RpcMap["setting.exportToFile"],
+    importFromFile: (() =>
+      ipcRenderer.invoke(IPC.SETTING_IMPORT_FILE)) as RpcMap["setting.importFromFile"],
   },
   /** Speech-to-text (voice input) — drives sherpa-onnx ASR in main. The
    *  renderer streams 16 kHz mono PCM via `feed`; live results arrive on

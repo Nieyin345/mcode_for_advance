@@ -1476,7 +1476,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "notification.setPrefs",
   "channel": "notification:setPrefs",
   "doc": "Set (persist) the user's notification preferences.",
-  "input": "{ osEnabled: boolean // Master switch for OS-level notifications.; turnComplete: boolean // Notify on turn completion (non-active session).; errors: boolean // Notify on errors (non-active session).; blocking: boolean // Notify on blocking events (approval request / question / plan approval).; backgroundTasks: boolean // Notify when a backgrounded subagent finishes. }",
+  "input": "{ osEnabled: boolean // Master switch for OS-level notifications.; turnComplete: boolean // Notify on turn completion (non-active session).; errors: boolean // Notify on errors (non-active session).; blocking: boolean // Notify on blocking events (approval request / question / plan approval).; backgroundTasks: boolean // Notify when a backgrounded subagent finishes.; sound: boolean // 系统通知带提示音(Electron `silent: !sound`)。Default true(老行为)。; inAppToasts: boolean // 窗口在前台时,后台会话的动静弹应用内提示(Toast)。关掉 = 前台时什么都不弹, 只留角标。Default true(老行为)。; alsoWhenFocused: boolean // 窗口在前台时也发系统通知(默认只在失焦 / 最小化时发)。Default false(老行为)。; mutedProjectIds: string[] // 按项目静音:这些项目里的会话不发系统通知、也不弹应用内提示(角标照旧)。; quietHours: { enabled: boolean; start: string; end: string; } // 免打扰时段(本地时间 HH:MM,可跨午夜)。时段内不发系统通知、不弹提示。 }",
   "output": "{ prefs: NotificationPrefs; }"
  },
  {
@@ -2054,6 +2054,13 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "void"
  },
  {
+  "method": "setting.exportToFile",
+  "channel": "setting:exportToFile",
+  "doc": "导出设置到 JSON 文件(主进程弹保存框;不含密钥与本机状态)。",
+  "input": "(无参数)",
+  "output": "SettingExportFileResult"
+ },
+ {
   "method": "setting.get",
   "channel": "setting:get",
   "doc": "",
@@ -2066,6 +2073,13 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "",
   "input": "{ keys: string[] }",
   "output": "GetManySettingsResult"
+ },
+ {
+  "method": "setting.importFromFile",
+  "channel": "setting:importFromFile",
+  "doc": "从 JSON 文件导入设置(主进程弹打开框;先备份当前设置)。",
+  "input": "(无参数)",
+  "output": "SettingImportFileResult"
  },
  {
   "method": "setting.set",

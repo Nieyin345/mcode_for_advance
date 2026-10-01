@@ -53,6 +53,8 @@ const BLOCKED: Record<string, string> = {
   "dialog.pickFolder": "会弹系统对话框等用户操作;直接传路径给对应功能即可",
   "dialog.pickFiles": "会弹系统对话框等用户操作;直接传路径给对应功能即可",
   "file.pickImages": "会弹系统对话框等用户操作",
+  "setting.exportToFile": "会弹系统保存框等用户操作;导出设置请让用户在 设置 → 通用 里点「导出设置」",
+  "setting.importFromFile": "会弹系统打开框并整批改写设置;只能由用户本人在设置页操作",
 };
 
 const DANGER: Record<string, string> = {

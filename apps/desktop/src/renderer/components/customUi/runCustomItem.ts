@@ -10,18 +10,23 @@
  */
 import {
   customUiLabel,
+  renderShellTemplate,
   renderTemplate,
+  renderUrlTemplate,
   resolveWorkspacePath,
   templateVarsOf,
   type CustomUiItem,
   type CustomUiRunTarget,
   type CustomUiTarget,
+  type ShellFlavor,
 } from "@contracts/customUi";
+import { TERMINAL_SHELL_SETTING_KEY } from "@contracts/ipc";
+import { requestTerminalRun } from "@renderer/lib/terminalRunBus.js";
 import { api } from "@renderer/lib/api.js";
 import { attachToCurrentChat } from "@renderer/lib/attachToChat.js";
 import { translate, type MessageId } from "@renderer/lib/i18n/core.js";
 import { openRightPanelTab, useCustomUiStore } from "@renderer/stores/customUiStore.js";
-import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { selectActiveEnvPath, useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore, type ToastKind } from "@renderer/stores/toastStore.js";
 
 function tr(key: MessageId, params?: Record<string, string | number>): string {
@@ -43,6 +48,10 @@ export function attachKeyOf(target: CustomUiTarget): string | null {
       return `g:${target.group.id}`;
     case "file":
     case "workspace":
+    case "message":
+    case "selection":
+    case "session":
+    case "project":
       return null;
   }
 }
@@ -59,8 +68,52 @@ export function runTargetOf(target: CustomUiTarget): CustomUiRunTarget | null {
     case "file":
       return { kind: "file", path: target.path };
     case "workspace":
+    case "message":
+    case "selection":
+    case "session":
+    case "project":
       return null;
   }
+}
+
+/** 终端用的是哪种 shell —— 决定变量怎么加引号。看「设置 → 终端 → Shell」,没设就按平台默认
+ *  (Windows = PowerShell,其余 = POSIX shell)。 */
+async function shellFlavor(): Promise<ShellFlavor> {
+  let shell = "";
+  try {
+    shell = ((await api.setting.get({ key: TERMINAL_SHELL_SETTING_KEY })).value ?? "").toLowerCase();
+  } catch {
+    shell = "";
+  }
+  const isWin = typeof navigator !== "undefined" && /windows/i.test(navigator.userAgent);
+  if (/(^|[\\/])cmd(\.exe)?$/.test(shell) || shell === "cmd") return "cmd";
+  if (/pwsh|powershell/.test(shell)) return "powershell";
+  if (/bash|zsh|fish|wsl|(^|[\\/])sh(\.exe)?$/.test(shell)) return "posix";
+  return isWin ? "powershell" : "posix";
+}
+
+async function runShell(item: CustomUiItem, action: Extract<CustomUiItem["action"], { type: "shell" }>, vars: Record<string, string>): Promise<void> {
+  if (!selectActiveEnvPath(useSessionStore.getState())) {
+    toast("warning", "customUi.run.shellNoProject");
+    return;
+  }
+  const command = renderShellTemplate(action.command, vars, await shellFlavor());
+  if (!command) return;
+  const go = () => {
+    useSessionStore.getState().setBottomTerminalOpen(true);
+    requestTerminalRun(command);
+  };
+  if (action.confirm === false) {
+    go();
+    return;
+  }
+  const name = customUiLabel(item.label, useSessionStore.getState().locale);
+  useCustomUiStore.getState().openConfirm({
+    title: tr("customUi.run.shellConfirmTitle", { name }),
+    description: command,
+    confirmText: tr("customUi.run.shellConfirm"),
+    onConfirm: go,
+  });
 }
 
 async function runAutomation(
@@ -252,7 +305,11 @@ export async function runCustomItem(item: CustomUiItem, target: CustomUiTarget):
       return;
     case "file": {
       const projectPath =
-        target.kind === "workspace" ? target.project?.path : target.kind === "file" ? target.projectPath : undefined;
+        target.kind === "file"
+          ? target.projectPath
+          : target.kind === "workspace" || target.kind === "message" || target.kind === "selection" || target.kind === "session" || target.kind === "project"
+            ? target.project?.path
+            : undefined;
       const abs = resolveWorkspacePath(renderTemplate(action.path, vars), projectPath);
       if (abs === null) {
         toast("warning", "customUi.run.noProject");
@@ -263,6 +320,19 @@ export async function runCustomItem(item: CustomUiItem, target: CustomUiTarget):
     }
     case "openTab":
       if (!openRightPanelTab(action.tab, { toggle: true })) toast("warning", "customUi.run.tabMissing");
+      return;
+    case "url": {
+      const url = renderUrlTemplate(action.url, vars);
+      if (url === null) {
+        toast("warning", "customUi.run.badUrl");
+        return;
+      }
+      // 交给主窗口的 window-open 守卫:http(s) / mailto 走系统浏览器 / 邮件客户端。
+      window.open(url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    case "shell":
+      await runShell(item, action, vars);
       return;
   }
 }

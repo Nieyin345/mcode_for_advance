@@ -51,6 +51,7 @@ import { isMac } from "@renderer/lib/platform.js";
 import { getProviderIcon } from "@renderer/lib/providerIcon.js";
 import { Button, ConfirmDialog, Dialog, Input } from "@renderer/components/ui/index.js";
 import { BrandLogo } from "./BrandLogo.js";
+import { ProjectMenuCustomEntries } from "@renderer/components/customUi/CustomSlotHosts.js";
 import { SidebarQuickActions } from "./SidebarQuickActions.js";
 import { HoverIconButton, RenameDialog, SessionContextMenu, ArchivedRow } from "./SidebarShared.js";
 import { LeftBarModeSwitch } from "./StreamSidebar.js";
@@ -2345,6 +2346,8 @@ function ProjectContextMenu({
               <IconFolder size={14} className="shrink-0" />
               {t("layout.openInFileManager")}
             </Menu.Item>
+            {/* 自定义 UI「项目右键」挂载位(R39) */}
+            <ProjectMenuCustomEntries project={project} itemClass={itemClass} onClose={onClose} />
           </Menu.Popup>
         </Menu.Positioner>
       </Menu.Portal>

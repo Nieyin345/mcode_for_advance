@@ -32,6 +32,7 @@ import {
   sanitizeWhen,
   targetKindOfSlot,
   unknownTemplateVars,
+  whenKeysForSlot,
   type CustomUiActionType,
   type CustomUiConfig,
   type CustomUiIcon,
@@ -107,6 +108,16 @@ interface Draft {
   targetIsContext: boolean;
   filePath: string;
   openTab: string;
+  /** R39:「打开网址」的模板。 */
+  url: string;
+  /** R39:「运行终端命令」的模板 + 运行前是否确认(默认确认)。 */
+  shellCommand: string;
+  shellConfirm: boolean;
+}
+
+/** 资料库那几种挂载位(有分组 / 「附上文献」这些只对它们有意义)。 */
+function isLibraryKind(kind: ReturnType<typeof targetKindOfSlot>): boolean {
+  return kind === "item" || kind === "collection" || kind === "group";
 }
 
 function newId(existing: readonly CustomUiItem[]): string {
@@ -132,7 +143,7 @@ function blankDraft(slot: CustomUiSlot, items: readonly CustomUiItem[]): Draft {
     viewTitle: "",
     viewBody: "",
     promptTemplate: "",
-    promptAttach: targetKindOfSlot(slot) !== "file" && targetKindOfSlot(slot) !== "workspace",
+    promptAttach: isLibraryKind(targetKindOfSlot(slot)),
     copyTemplate: "",
     workflowId: "",
     triggerNodeId: "",
@@ -141,6 +152,9 @@ function blankDraft(slot: CustomUiSlot, items: readonly CustomUiItem[]): Draft {
     targetIsContext: false,
     filePath: "",
     openTab: "",
+    url: "",
+    shellCommand: "",
+    shellConfirm: true,
   };
 }
 
@@ -178,6 +192,9 @@ function draftOf(item: CustomUiItem): Draft {
     targetIsContext: a.type === "automation" && a.targetMode === "context",
     filePath: a.type === "file" ? a.path : "",
     openTab: a.type === "openTab" ? a.tab : "",
+    url: a.type === "url" ? a.url : "",
+    shellCommand: a.type === "shell" ? a.command : "",
+    shellConfirm: a.type === "shell" ? a.confirm !== false : true,
   };
 }
 
@@ -195,7 +212,11 @@ function itemOf(d: Draft): { ok: true; item: CustomUiItem } | { ok: false; error
             ? { type: "file", path: d.filePath.trim() }
             : d.actionType === "openTab"
               ? { type: "openTab", tab: d.openTab }
-              : {
+              : d.actionType === "url"
+                ? { type: "url", url: d.url.trim() }
+                : d.actionType === "shell"
+                  ? { type: "shell", command: d.shellCommand.trim(), ...(d.shellConfirm ? {} : { confirm: false }) }
+                  : {
                   type: "automation",
                   workflowId: d.workflowId,
                   triggerNodeId: d.triggerNodeId,
@@ -224,6 +245,8 @@ function itemOf(d: Draft): { ok: true; item: CustomUiItem } | { ok: false; error
   }
   if (action.type === "file" && !action.path) return { ok: false, error: "customUi.editor.errorFile" };
   if (action.type === "openTab" && !action.tab) return { ok: false, error: "customUi.editor.errorOpenTab" };
+  if (action.type === "url" && !action.url) return { ok: false, error: "customUi.editor.errorUrl" };
+  if (action.type === "shell" && !action.command) return { ok: false, error: "customUi.editor.errorShell" };
   const extensions = d.extensions
     .split(/[,，\s]+/)
     .map((e) => e.trim())
@@ -343,6 +366,54 @@ function templateDraft(
         actionType: "view",
         viewBody: translate(locale, "customUi.template.projectInfo.body"),
       };
+    case "translateMessage":
+      return {
+        ...d,
+        ...both("customUi.template.translate.label"),
+        icon: "sparkles",
+        actionType: "prompt",
+        promptTemplate: translate(locale, "customUi.template.translate.prompt"),
+      };
+    case "copyMessage":
+      return {
+        ...d,
+        ...both("customUi.template.copyMessage.label"),
+        icon: "copy",
+        actionType: "copy",
+        copyTemplate: "> {{message.text}}",
+      };
+    case "explainSelection":
+      return {
+        ...d,
+        ...both("customUi.template.explain.label"),
+        icon: "sparkles",
+        actionType: "prompt",
+        promptTemplate: translate(locale, "customUi.template.explain.prompt"),
+      };
+    case "searchWeb":
+      return {
+        ...d,
+        ...both("customUi.template.searchWeb.label"),
+        icon: "world",
+        actionType: "url",
+        url: "https://www.google.com/search?q={{selection.text}}",
+      };
+    case "gitStatus":
+      return {
+        ...d,
+        ...both("customUi.template.gitStatus.label"),
+        icon: "terminal",
+        actionType: "shell",
+        shellCommand: "git status",
+      };
+    case "copySessionId":
+      return {
+        ...d,
+        ...both("customUi.template.copySessionId.label"),
+        icon: "copy",
+        actionType: "copy",
+        copyTemplate: "{{session.id}}",
+      };
     default:
       return {
         ...d,
@@ -381,6 +452,20 @@ const TEMPLATES_BY_SLOT: Record<CustomUiSlot, readonly { id: string; labelKey: M
     { id: "projectSummary", labelKey: "customUi.template.projectSummary.label" },
     { id: "runAutomation", labelKey: "customUi.template.runAutomation.label" },
   ],
+  "chat.message": [
+    { id: "translateMessage", labelKey: "customUi.template.translate.label" },
+    { id: "copyMessage", labelKey: "customUi.template.copyMessage.label" },
+  ],
+  "text.selection": [
+    { id: "explainSelection", labelKey: "customUi.template.explain.label" },
+    { id: "searchWeb", labelKey: "customUi.template.searchWeb.label" },
+  ],
+  "composer.toolbar": [
+    { id: "projectSummary", labelKey: "customUi.template.projectSummary.label" },
+    { id: "gitStatus", labelKey: "customUi.template.gitStatus.label" },
+  ],
+  "session.context": [{ id: "copySessionId", labelKey: "customUi.template.copySessionId.label" }],
+  "project.context": [{ id: "gitStatus", labelKey: "customUi.template.gitStatus.label" }],
 };
 
 /* ────────────────────────── 面板 ────────────────────────── */
@@ -664,8 +749,10 @@ function ItemEditor({
   const { t, locale } = useI18n();
   const [error, setError] = useState<MessageId | null>(null);
   const kind = targetKindOfSlot(draft.slot);
-  const isLibrary = kind !== "file" && kind !== "workspace";
-  const isWorkspace = kind === "workspace";
+  const isLibrary = isLibraryKind(kind);
+  // 没有「运行目标」的挂载位:工具栏 + R39 新加的几个(自动化走 runNow,没有 skipWhen / 落点 / 运行前输入)。
+  const noRunTarget = !isLibrary && kind !== "file";
+  const whenKeys = whenKeysForSlot(draft.slot);
   const configItems = useCustomUiStore((s) => s.config.items);
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => onChange({ ...draft, [k]: v });
 
@@ -702,7 +789,11 @@ function ItemEditor({
             ? [draft.copyTemplate]
             : draft.actionType === "file"
               ? [draft.filePath]
-              : [];
+              : draft.actionType === "url"
+                ? [draft.url]
+                : draft.actionType === "shell"
+                  ? [draft.shellCommand]
+                  : [];
     const out: string[] = [];
     for (const p of parts) {
       for (const v of unknownTemplateVars(p, draft.slot)) if (!out.includes(v)) out.push(v);
@@ -768,11 +859,11 @@ function ItemEditor({
           </div>
 
           {/* 工具栏 / 右栏页签没有「右键的那个东西」,也就没有显示条件 */}
-          {!isWorkspace && (
+          {whenKeys.length > 0 && (
           <fieldset className="space-y-2 rounded-md border border-edge p-3">
             <legend className="px-1 text-[0.8571em] font-medium text-content">{t("customUi.editor.when")}</legend>
             <p className="text-[0.7857em] text-content-subtle">{t("customUi.editor.whenHint")}</p>
-            {(kind === "item" || kind === "file") && (
+            {whenKeys.includes("extensions") && (
               <label className={LABEL}>
                 <span>{t("customUi.editor.extensions")}</span>
                 <input className={FIELD} value={draft.extensions} onChange={(e) => set("extensions", e.target.value)} placeholder=".pdf, .md" />
@@ -931,11 +1022,11 @@ function ItemEditor({
                   </div>
                 )}
                 <p className="text-[0.7857em] leading-relaxed text-content-subtle">
-                  {isWorkspace ? t("customUi.editor.automationHintToolbar") : t("customUi.editor.automationHint")}
+                  {noRunTarget ? t("customUi.editor.automationHintToolbar") : t("customUi.editor.automationHint")}
                 </p>
                 {/* skipWhen v1(通用原语):展开时跳过满足条件的条目 —— 手动转录选
                     「已有转录」即得"检测过再跑"。工具栏没有条目目标,不显示。 */}
-                {!isWorkspace && (
+                {!noRunTarget && (
                   <label className={LABEL}>
                     <span>{t("customUi.editor.skipWhen")}</span>
                     <select
@@ -952,7 +1043,7 @@ function ItemEditor({
                   </label>
                 )}
                 {/* 目标怎么用:展开成一批,还是只当落点。空分类那条路全靠它(见 targetMode)。 */}
-                {!isWorkspace && (
+                {!noRunTarget && (
                   <label className="flex items-start gap-2 text-[0.8571em]">
                     <input
                       type="checkbox"
@@ -967,7 +1058,7 @@ function ItemEditor({
                   </label>
                 )}
                 {/* 运行前输入(P2):工具栏走 runNow、没有 input 通道 ⟹ 只在有目标的挂载位开放 */}
-                {!isWorkspace && (
+                {!noRunTarget && (
                   <div className={LABEL}>
                     <span>{t("customUi.editor.inputs")}</span>
                     {draft.inputs.map((row, idx) => (
@@ -1060,6 +1151,42 @@ function ItemEditor({
                   )}
                 </select>
               </label>
+            )}
+            {draft.actionType === "url" && (
+              <>
+                <label className={LABEL}>
+                  <span>{t("customUi.editor.url")}</span>
+                  <input
+                    className={cn(FIELD, "font-mono")}
+                    value={draft.url}
+                    onChange={(e) => set("url", e.target.value)}
+                    placeholder="https://www.google.com/search?q={{selection.text}}"
+                    spellCheck={false}
+                  />
+                </label>
+                <p className="text-[0.7857em] leading-relaxed text-content-subtle">{t("customUi.editor.urlHint")}</p>
+                {varsHint}
+              </>
+            )}
+            {draft.actionType === "shell" && (
+              <>
+                <label className={LABEL}>
+                  <span>{t("customUi.editor.shellCommand")}</span>
+                  <input
+                    className={cn(FIELD, "font-mono")}
+                    value={draft.shellCommand}
+                    onChange={(e) => set("shellCommand", e.target.value)}
+                    placeholder="git log --oneline -- {{file.path}}"
+                    spellCheck={false}
+                  />
+                </label>
+                <p className="text-[0.7857em] leading-relaxed text-content-subtle">{t("customUi.editor.shellHint")}</p>
+                <label className="flex items-center gap-2 text-xs text-content">
+                  <input type="checkbox" checked={draft.shellConfirm} onChange={(e) => set("shellConfirm", e.target.checked)} />
+                  {t("customUi.editor.shellConfirm")}
+                </label>
+                {varsHint}
+              </>
             )}
           </fieldset>
 

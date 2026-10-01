@@ -11,6 +11,7 @@ import {
   IconEraser,
 } from "@renderer/lib/icons.js";
 import type { TerminalSessionStatus, TerminalViewHandle } from "./TerminalView.js";
+import { subscribeTerminalRunRequests } from "@renderer/lib/terminalRunBus.js";
 import { TerminalCommandsMenu } from "./TerminalCommandsMenu.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 
@@ -266,6 +267,9 @@ export function TerminalPanel({ active }: { active: boolean }) {
     },
     [projectPath, appendSession],
   );
+
+  // 自定义 UI「运行终端命令」:新开一个页签跑(见 lib/terminalRunBus.ts)。
+  useEffect(() => subscribeTerminalRunRequests(runCommandInNewTerminal), [runCommandInNewTerminal]);
 
   if (!projectPath) {
     return (

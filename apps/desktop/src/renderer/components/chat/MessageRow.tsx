@@ -7,6 +7,7 @@
  */
 import { useState, useRef, useEffect, useMemo, memo } from "react";
 import { cn } from "@renderer/lib/cn.js";
+import { MessageCustomMenu } from "@renderer/components/customUi/CustomSlotHosts.js";
 import { IconSend2, IconCopy, IconCheck, IconPaperclip, IconX, IconPencil } from "@renderer/lib/icons.js";
 import type { Block, ChatMessage, TurnMeta, PromptImage } from "@renderer/stores/sessionStore.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -318,6 +319,8 @@ export const MessageRow = memo(function MessageRow({
             )}
           >
             {showCopy && <CopyButton text={copyText} />}
+            {/* 自定义 UI「消息」挂载位(R39):有自定义项才出现一个「⋯」。 */}
+            {showCopy && <MessageCustomMenu id={msg.id} role={isUser ? "user" : "assistant"} text={copyText} />}
             {showEdit && (
               <button
                 type="button"

@@ -46,6 +46,11 @@ export const CUSTOM_UI_SETTING_KEY = "customUi.config.v1";
  *   - `files.context`       右栏 Files 里的文件右键
  *   - `rightPanel.tab`      右栏顶上那排页签(内置的文件 / Git / 浏览器……也在这里排)
  *   - `toolbar`             主页面与右栏之间的竖向工具栏(右栏收起时它就在最右边)
+ *   - `chat.message`        聊天里一条消息的「⋯」菜单(悬停时出现,和复制按钮在一起)(R39)
+ *   - `text.selection`      选中文字:聊天里的选中浮条 + 代码编辑器的右键菜单(R39)
+ *   - `composer.toolbar`    输入框下面那排工具按钮(R39)
+ *   - `session.context`     左栏对话右键(R39)
+ *   - `project.context`     左栏项目右键(R39)
  *
  * 后两个没有「右键的目标」,模板变量是当前工作区(项目 / 对话 / 日期),见
  * {@link CustomUiTarget} 的 `workspace`。
@@ -58,6 +63,11 @@ export const CUSTOM_UI_SLOTS = [
   "files.context",
   "rightPanel.tab",
   "toolbar",
+  "chat.message",
+  "text.selection",
+  "composer.toolbar",
+  "session.context",
+  "project.context",
 ] as const;
 export type CustomUiSlot = (typeof CUSTOM_UI_SLOTS)[number];
 
@@ -232,6 +242,30 @@ export const CustomUiActionSchema = z.discriminatedUnion("type", [
     type: z.literal("openTab"),
     tab: z.string().min(1).max(300),
   }),
+  /**
+   * 打开链接(R39)。模板渲染后只放行 http / https / mailto —— 渲染结果可能来自消息
+   * 正文、文件名这些不受控的文字,`file:` / `javascript:` 一律拒。变量值会做 URL 编码
+   * (见 {@link renderUrlTemplate}),所以 `https://www.google.com/search?q={{selection.text}}`
+   * 这种写法是对的。
+   */
+  z.object({
+    type: z.literal("url"),
+    url: z.string().trim().min(1).max(2000),
+  }),
+  /**
+   * 运行终端命令(R39):在底部终端**新开一个页签**跑,cwd = 当前项目。
+   *
+   * 变量值会**自动加引号**并把换行压成空格(见 {@link renderShellTemplate})—— 消息正文、
+   * 选中文字都可能带 `;` `&&` `$(...)`,原样拼进命令就是注入。模板里自己写的部分原样保留。
+   *
+   * `confirm`:运行前弹框显示完整命令让用户确认。**缺省 = 确认**;导入别人的设置时一律
+   * 抹掉这一格(回到确认),防止导入的按钮静默执行命令。
+   */
+  z.object({
+    type: z.literal("shell"),
+    command: z.string().trim().min(1).max(4000),
+    confirm: z.boolean().optional(),
+  }),
 ]);
 export type CustomUiAction = z.infer<typeof CustomUiActionSchema>;
 export type CustomUiActionType = CustomUiAction["type"];
@@ -241,7 +275,10 @@ export type CustomUiActionType = CustomUiAction["type"];
  * **常驻的显示区**,只有「显示什么」(Markdown / 文件)有意义;工具栏是按钮,什么都能点,
  * 另外能切页签、开文件。不在表里的组合在读配置时整条丢掉(同坏条目)。
  */
-const MENU_ACTIONS = ["view", "prompt", "copy", "automation"] as const;
+// R39:所有菜单 / 按钮类挂载位都能「打开链接」「运行终端命令」。新挂载位(消息 / 选中文字 /
+// 对话 / 项目)没有能交给自动化的「条目」,自动化在那里按「立刻跑一次」处理。
+const MENU_ACTIONS = ["view", "prompt", "copy", "automation", "url", "shell"] as const;
+const BUTTON_ACTIONS = ["view", "prompt", "copy", "automation", "file", "openTab", "url", "shell"] as const;
 export const ACTIONS_BY_SLOT: Record<CustomUiSlot, readonly CustomUiActionType[]> = {
   "library.item": MENU_ACTIONS,
   "library.collection": MENU_ACTIONS,
@@ -249,7 +286,12 @@ export const ACTIONS_BY_SLOT: Record<CustomUiSlot, readonly CustomUiActionType[]
   "library.group": MENU_ACTIONS,
   "files.context": MENU_ACTIONS,
   "rightPanel.tab": ["view", "file"],
-  toolbar: ["view", "prompt", "copy", "automation", "file", "openTab"],
+  toolbar: BUTTON_ACTIONS,
+  "chat.message": MENU_ACTIONS,
+  "text.selection": MENU_ACTIONS,
+  "composer.toolbar": BUTTON_ACTIONS,
+  "session.context": MENU_ACTIONS,
+  "project.context": MENU_ACTIONS,
 };
 
 export function isActionAllowed(slot: CustomUiSlot, type: CustomUiActionType): boolean {
@@ -289,6 +331,7 @@ export function whenKeysForSlot(slot: CustomUiSlot): readonly (keyof CustomUiWhe
     case "group":
       return ["groupIds"];
     case "file":
+    case "selection":
       return ["extensions"];
     default:
       return [];
@@ -483,6 +526,37 @@ export type CustomUiTarget =
       project?: { path: string; name: string };
       session?: { id: string; title: string };
       today: string;
+    }
+  /** R39:聊天里的一条消息(`chat.message`)。 */
+  | {
+      kind: "message";
+      message: { id: string; role: "user" | "assistant"; text: string };
+      project?: { path: string; name: string };
+      session?: { id: string; title: string };
+      today: string;
+    }
+  /** R39:选中的文字(`text.selection`)—— 聊天里选的,或代码编辑器里选的(带文件)。 */
+  | {
+      kind: "selection";
+      text: string;
+      source: "chat" | "editor";
+      path?: string;
+      project?: { path: string; name: string };
+      session?: { id: string; title: string };
+      today: string;
+    }
+  /** R39:左栏右键的那条对话(`session.context`)。 */
+  | {
+      kind: "session";
+      session: { id: string; title: string };
+      project?: { path: string; name: string };
+      today: string;
+    }
+  /** R39:左栏右键的那个项目(`project.context`)。 */
+  | {
+      kind: "project";
+      project: { id: string; path: string; name: string };
+      today: string;
     };
 
 /** 路径的最后一段(兼容 `\` 与 `/`)。 */
@@ -540,6 +614,44 @@ export function templateVarsOf(target: CustomUiTarget): Record<string, string> {
         "session.title": target.session?.title ?? "",
         today: target.today,
       };
+    case "message":
+      return {
+        "message.text": target.message.text,
+        "message.role": target.message.role,
+        "message.id": target.message.id,
+        "project.path": target.project?.path ?? "",
+        "project.name": target.project?.name ?? "",
+        "session.id": target.session?.id ?? "",
+        "session.title": target.session?.title ?? "",
+        today: target.today,
+      };
+    case "selection":
+      return {
+        "selection.text": target.text,
+        "file.path": target.path ?? "",
+        "file.name": target.path ? baseName(target.path) : "",
+        "file.ext": extensionOf(target.path),
+        "project.path": target.project?.path ?? "",
+        "project.name": target.project?.name ?? "",
+        "session.id": target.session?.id ?? "",
+        "session.title": target.session?.title ?? "",
+        today: target.today,
+      };
+    case "session":
+      return {
+        "session.id": target.session.id,
+        "session.title": target.session.title,
+        "project.path": target.project?.path ?? "",
+        "project.name": target.project?.name ?? "",
+        today: target.today,
+      };
+    case "project":
+      return {
+        "project.id": target.project.id,
+        "project.path": target.project.path,
+        "project.name": target.project.name,
+        today: target.today,
+      };
   }
 }
 
@@ -563,6 +675,11 @@ export const TEMPLATE_VARS_BY_SLOT: Record<CustomUiSlot, readonly string[]> = {
   "files.context": ["file.path", "file.name", "file.ext", "file.dir", "project.path"],
   "rightPanel.tab": WORKSPACE_VARS,
   toolbar: WORKSPACE_VARS,
+  "chat.message": ["message.text", "message.role", "message.id", ...WORKSPACE_VARS],
+  "text.selection": ["selection.text", "file.path", "file.name", "file.ext", ...WORKSPACE_VARS],
+  "composer.toolbar": WORKSPACE_VARS,
+  "session.context": ["session.id", "session.title", "project.path", "project.name", "today"],
+  "project.context": ["project.id", "project.path", "project.name", "today"],
 };
 
 /**
@@ -578,6 +695,54 @@ export function renderTemplate(template: string, vars: Readonly<Record<string, s
 }
 
 /** 模板里出现过的变量名(按出现顺序,去重)。 */
+/**
+ * 「打开链接」用的渲染:变量值做 `encodeURIComponent`(选中的文字、标题里有空格 / `&` /
+ * `#` 是常态),模板里自己写的部分原样。结果不是 http(s) / mailto 就返回 null。
+ * 例外:模板**整个就是一个变量**(如 `{{item.url}}`)时值原样用 —— 那个变量本身就是链接。
+ */
+export function renderUrlTemplate(template: string, vars: Readonly<Record<string, string>>): string | null {
+  const whole = /^\s*\{\{\s*([a-zA-Z][a-zA-Z0-9_.]*)\s*\}\}\s*$/.exec(template);
+  const out = whole
+    ? (Object.hasOwn(vars, whole[1] as string) ? (vars[whole[1] as string] ?? "") : "").trim()
+    : template
+        .replace(TEMPLATE_VAR_RE, (_m, key: string) =>
+          encodeURIComponent(Object.hasOwn(vars, key) ? (vars[key] ?? "") : ""),
+        )
+        .trim();
+  return /^(https?:\/\/|mailto:)/i.test(out) ? out : null;
+}
+
+export type ShellFlavor = "powershell" | "posix" | "cmd";
+
+/** 把一个值包成单个 shell 参数。`powershell`:单引号,内部 `'` 写两遍;`posix`:单引号,
+ *  内部 `'` 写成 `'\''`;`cmd`:双引号(引号里 `& | < > ^` 都是字面量),值里的 `"` 和 `%`
+ *  去掉(cmd 交互模式下没法转义它们)。换行一律压成空格(命令是一行一行提交给 shell 的)。 */
+export function shellQuote(value: string, flavor: ShellFlavor): string {
+  const v = value.replace(/[\r\n]+/g, " ");
+  if (flavor === "powershell") return `'${v.replace(/'/g, "''")}'`;
+  if (flavor === "cmd") return `"${v.replace(/["%]/g, "")}"`;
+  return `'${v.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * 「运行终端命令」用的渲染:每个变量值都**自动加引号**成一个参数(见 {@link shellQuote}),
+ * 模板里自己写的部分原样。用户若已经在模板里给变量加了引号(`"{{file.path}}"` /
+ * `'{{file.path}}'`),那一层引号会被去掉,避免双重引号。
+ * ⚠ 变量请单独作为参数用,别塞进更长的双引号字符串中间(PowerShell / bash 的双引号里
+ * `$(...)` 仍会展开)。
+ */
+export function renderShellTemplate(
+  template: string,
+  vars: Readonly<Record<string, string>>,
+  flavor: ShellFlavor,
+): string {
+  const quoted = template.replace(
+    /(["']?)\{\{\s*([a-zA-Z][a-zA-Z0-9_.]*)\s*\}\}\1/g,
+    (_m, _q: string, key: string) => shellQuote(Object.hasOwn(vars, key) ? (vars[key] ?? "") : "", flavor),
+  );
+  return quoted.replace(/[\r\n]+/g, " ").trim();
+}
+
 export function extractTemplateVars(template: string): string[] {
   const out: string[] = [];
   for (const m of template.matchAll(TEMPLATE_VAR_RE)) {
@@ -627,7 +792,7 @@ export function matchesWhen(when: CustomUiWhen | undefined, target: CustomUiTarg
   if (when.extensions && when.extensions.length > 0) {
     const wanted = new Set(when.extensions.map(normalizeExtension));
     const paths =
-      target.kind === "file"
+      target.kind === "file" || target.kind === "selection"
         ? [target.path]
         : target.kind === "item"
           ? [target.item.filePath, target.item.pdfPath, target.item.mdPath]
@@ -643,6 +808,10 @@ export function targetKindOfSlot(slot: CustomUiSlot): CustomUiTarget["kind"] {
   if (slot === "library.collection" || slot === "library.subcategory") return "collection";
   if (slot === "library.group") return "group";
   if (slot === "files.context") return "file";
+  if (slot === "chat.message") return "message";
+  if (slot === "text.selection") return "selection";
+  if (slot === "session.context") return "session";
+  if (slot === "project.context") return "project";
   return "workspace";
 }
 

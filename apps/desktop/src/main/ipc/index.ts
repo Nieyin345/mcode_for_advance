@@ -32,6 +32,7 @@ import { registerHookHandlers } from "./hooks.js";
 import { registerPluginsHandlers } from "./plugins.js";
 import { registerBrowserHandlers } from "./browser.js";
 import { registerNotificationHandlers } from "./notifications.js";
+import { registerSettingsTransferHandlers } from "./settingsTransfer.js";
 import { registerMobileHandlers } from "./mobile.js";
 import { registerRelayHandlers } from "./relay.js";
 import { registerVoiceHandlers } from "./voice.js";
@@ -98,6 +99,7 @@ export function registerIpcHandlers(): void {
   registerPluginsHandlers(ipc);
   registerBrowserHandlers(ipc);
   registerNotificationHandlers(ipc);
+  registerSettingsTransferHandlers(ipc);
   registerMobileHandlers(ipc);
   registerRelayHandlers(ipc);
   registerVoiceHandlers(ipc);

@@ -11,6 +11,7 @@
  * tree view wires them to its bar-level dialogs, the stream view to its
  * own; entries the host omits simply don't render.
  */
+import { SessionMenuCustomEntries } from "@renderer/components/customUi/CustomSlotHosts.js";
 import { useEffect, useState } from "react";
 import { Menu } from "@base-ui/react/menu";
 import {
@@ -251,6 +252,8 @@ export function SessionContextMenu({
               <IconFolder size={14} className="shrink-0" />
               {t("layout.openInFileManager")}
             </Menu.Item>
+            {/* 自定义 UI「对话右键」挂载位(R39) */}
+            <SessionMenuCustomEntries session={session} itemClass={itemClass} onClose={onClose} />
           </Menu.Popup>
         </Menu.Positioner>
       </Menu.Portal>

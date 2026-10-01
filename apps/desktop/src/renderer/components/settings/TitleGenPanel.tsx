@@ -1,8 +1,22 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  TITLE_GEN_BUILTIN_ALIASES,
+  TITLE_GEN_BUILTIN_MODEL_PREFIX,
+  TITLE_GEN_MAX_LEN_DEFAULT,
+  TITLE_GEN_MAX_LEN_MAX,
+  TITLE_GEN_MAX_LEN_MIN,
+  TitleGenLangSchema,
+  UI_TITLE_GEN_LANG_SETTING_KEY,
+  UI_TITLE_GEN_MAX_LEN_SETTING_KEY,
+  UI_TITLE_GEN_PROMPT_SETTING_KEY,
+  parseTitleGenMaxLen,
+  type TitleGenLang,
+} from "@contracts/ipc";
+import { api } from "@renderer/lib/api.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { Select, Switch } from "@renderer/components/ui/index.js";
+import { Input, Select, Switch } from "@renderer/components/ui/index.js";
 import { IconRobot } from "@renderer/lib/icons.js";
 import { SettingRow } from "./SettingRow.js";
 import { SettingsSection } from "./SettingsSection.js";
@@ -37,7 +51,14 @@ export function TitleGenPanel() {
   // Build a flat list of selectable models: one entry per (config, model).
   // Each entry's value is `"configId:modelId"`, label is `"供应商名 -> 模型id"`.
   const modelOptions = useMemo(() => {
-    const opts: { value: string; label: string }[] = [];
+    // 内置 Claude(本机 Claude Code 登录)排在最前 —— 没配自定义模型也能用。
+    const opts: { value: string; label: string }[] = [
+      { value: TITLE_GEN_BUILTIN_MODEL_PREFIX, label: t("settings.titleGen.builtinDefault") },
+      ...TITLE_GEN_BUILTIN_ALIASES.map((a) => ({
+        value: `${TITLE_GEN_BUILTIN_MODEL_PREFIX}:${a}`,
+        label: `Claude Code -> ${a}`,
+      })),
+    ];
     for (const cfg of customModels) {
       for (const entry of cfg.models) {
         if (entry.id.trim()) {
@@ -49,7 +70,45 @@ export function TitleGenPanel() {
       }
     }
     return opts;
-  }, [customModels]);
+  }, [customModels, t]);
+
+  // 语言 / 长度 / 风格偏好:直接读写设置表(主进程生成时现读),不进 sessionStore。
+  const [lang, setLang] = useState<TitleGenLang>("auto");
+  const [maxLenText, setMaxLenText] = useState(String(TITLE_GEN_MAX_LEN_DEFAULT));
+  const [stylePrompt, setStylePrompt] = useState("");
+  const [savedStyle, setSavedStyle] = useState("");
+  useEffect(() => {
+    let alive = true;
+    void api.setting
+      .getMany({ keys: [UI_TITLE_GEN_LANG_SETTING_KEY, UI_TITLE_GEN_MAX_LEN_SETTING_KEY, UI_TITLE_GEN_PROMPT_SETTING_KEY] })
+      .then((r) => {
+        if (!alive) return;
+        const l = TitleGenLangSchema.safeParse(r[UI_TITLE_GEN_LANG_SETTING_KEY] ?? "auto");
+        setLang(l.success ? l.data : "auto");
+        setMaxLenText(String(parseTitleGenMaxLen(r[UI_TITLE_GEN_MAX_LEN_SETTING_KEY])));
+        const sp = r[UI_TITLE_GEN_PROMPT_SETTING_KEY] ?? "";
+        setStylePrompt(sp);
+        setSavedStyle(sp);
+      })
+      .catch((err: unknown) => console.error("titleGen settings load failed:", err));
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const saveSetting = (key: string, value: string) => {
+    void api.setting.set({ key, value }).catch((err: unknown) => console.error(`setting.set(${key}) failed:`, err));
+  };
+  const commitMaxLen = () => {
+    const n = parseTitleGenMaxLen(maxLenText);
+    setMaxLenText(String(n));
+    saveSetting(UI_TITLE_GEN_MAX_LEN_SETTING_KEY, String(n));
+  };
+  const commitStyle = (v: string) => {
+    if (v === savedStyle) return;
+    setSavedStyle(v);
+    saveSetting(UI_TITLE_GEN_PROMPT_SETTING_KEY, v);
+  };
+  const langLabel = (l: TitleGenLang) => t(`settings.titleGen.lang.${l}`);
 
   return (
     <SettingsSection
@@ -122,6 +181,88 @@ export function TitleGenPanel() {
             {t("settings.titleGen.noModelsHint")}
           </p>
         )}
+      </SettingRow>
+
+      <SettingRow title={t("settings.titleGen.langTitle")} desc={t("settings.titleGen.langDesc")}>
+        <Select.Root
+          value={lang}
+          onValueChange={(v) => {
+            const parsed = TitleGenLangSchema.safeParse(v);
+            if (!parsed.success) return;
+            setLang(parsed.data);
+            saveSetting(UI_TITLE_GEN_LANG_SETTING_KEY, parsed.data);
+          }}
+        >
+          <Select.Trigger
+            disabled={!titleGenEnabled}
+            className={cn("w-full", !titleGenEnabled && "cursor-not-allowed opacity-50")}
+          >
+            <Select.Value>{(val: TitleGenLang) => langLabel(val)}</Select.Value>
+          </Select.Trigger>
+          <Select.Portal>
+            <Select.Positioner>
+              <Select.Popup>
+                <Select.List>
+                  {TitleGenLangSchema.options.map((l) => (
+                    <Select.Item key={l} value={l}>
+                      <Select.ItemText>{langLabel(l)}</Select.ItemText>
+                    </Select.Item>
+                  ))}
+                </Select.List>
+              </Select.Popup>
+            </Select.Positioner>
+          </Select.Portal>
+        </Select.Root>
+      </SettingRow>
+
+      <SettingRow
+        title={t("settings.titleGen.maxLenTitle")}
+        desc={t("settings.titleGen.maxLenDesc", { min: TITLE_GEN_MAX_LEN_MIN, max: TITLE_GEN_MAX_LEN_MAX })}
+      >
+        <Input
+          type="number"
+          min={TITLE_GEN_MAX_LEN_MIN}
+          max={TITLE_GEN_MAX_LEN_MAX}
+          value={maxLenText}
+          disabled={!titleGenEnabled}
+          onChange={(e) => setMaxLenText(e.target.value)}
+          onBlur={commitMaxLen}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commitMaxLen();
+          }}
+          className="w-24"
+        />
+      </SettingRow>
+
+      <SettingRow title={t("settings.titleGen.promptTitle")} desc={t("settings.titleGen.promptDesc")}>
+        <div className="flex w-full flex-col items-end gap-1.5">
+          <textarea
+            value={stylePrompt}
+            disabled={!titleGenEnabled}
+            onChange={(e) => setStylePrompt(e.target.value)}
+            onBlur={(e) => commitStyle(e.target.value)}
+            placeholder={t("settings.titleGen.promptPlaceholder")}
+            rows={3}
+            maxLength={2000}
+            className={cn(
+              "w-full min-w-[16rem] resize-y rounded-md border border-edge bg-surface px-2 py-1.5 text-[0.8571em] text-content outline-none focus:border-accent",
+              !titleGenEnabled && "cursor-not-allowed opacity-50",
+            )}
+          />
+          {stylePrompt.length > 0 && (
+            <button
+              type="button"
+              disabled={!titleGenEnabled}
+              onClick={() => {
+                setStylePrompt("");
+                commitStyle("");
+              }}
+              className="text-[0.7857em] text-content-subtle hover:text-content"
+            >
+              {t("settings.titleGen.promptReset")}
+            </button>
+          )}
+        </div>
       </SettingRow>
     </SettingsSection>
   );

@@ -129,6 +129,12 @@ const ALL_PREFS = {
   errors: true,
   blocking: true,
   backgroundTasks: true,
+  // R39 新增的几项:声音 / 应用内提示 / 前台也弹 / 按项目静音 / 免打扰时段
+  sound: true,
+  inAppToasts: true,
+  alsoWhenFocused: false,
+  mutedProjectIds: [] as string[],
+  quietHours: { enabled: false, start: "22:00", end: "08:00" },
 };
 
 /* ──────────────── 架子 ──────────────── */
