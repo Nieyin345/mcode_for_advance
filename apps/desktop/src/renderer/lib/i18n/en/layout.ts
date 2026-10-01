@@ -222,6 +222,14 @@ export const en = {
   "layout.domainUrlLabel": "Open this address on the phone",
   "layout.domainPairHint":
     "Pair once first: scan the QR code above with the phone (or open the copied link there), then enter the code. Opening the bare domain is not enough — the link carries this pairing's one-time parameter. A LAN pairing does not carry over: the phone browser stores it per address, so the domain needs its own pairing.",
+  "layout.domainTunnelQuick":
+    "The tunnel is in quick mode (random address), so a custom domain has no effect. Go to Settings → Models → Remote control and switch the address mode to your own domain.",
+  "layout.domainTunnelNamedOff":
+    "The named tunnel is not running, so this domain won't open yet. Go to Settings → Models → Remote control, turn on \"Enable remote control\" and click \"Start public tunnel\".",
+  "layout.domainTunnelStarting": "Tunnel connecting…",
+  "layout.domainTunnelReady": "Tunnel connected — the phone can use this domain.",
+  "layout.domainTunnelFailed": "Tunnel error: {error}",
+  "layout.domainTunnelExternal": "You run this tunnel yourself, so Mcode can't see its state. Make sure it routes this domain to {ingress}.",
   "layout.mobileServerDown": "The mobile service is not running (port in use or disabled). Check it in settings, or restart the app.",
   "layout.pairingQr": "Pairing QR code",
   "layout.generating": "Generating…",

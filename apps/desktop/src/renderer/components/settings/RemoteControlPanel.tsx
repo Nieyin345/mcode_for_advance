@@ -391,8 +391,9 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
   }, []);
 
   // 起隧道是异步的（cloudflared 要先跑一段连通性预检），点完那一刻还没好，得轮询等。
+  // `reconnecting` 同理:隧道掉线后在自动重连,不轮询的话按钮会一直转圈到重开页面。
   useEffect(() => {
-    if (status?.tunnelPhase !== "starting") return;
+    if (status?.tunnelPhase !== "starting" && status?.tunnelPhase !== "reconnecting") return;
     const timer = window.setInterval(() => {
       api.publicMcp.status().then(setStatus).catch(() => {});
     }, 2000);
@@ -582,12 +583,15 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
             />
           )}
 
-          <ValueRow
-            label={t("settings.customModels.publicMcpTunnelLabel")}
-            value={tunnelCmd}
-            copied={copied === "cmd"}
-            onCopy={() => void copy("cmd", tunnelCmd)}
-          />
+          {/* 手动起快速隧道的命令只对 quick 有意义;自有域名模式下显示它只会误导人去另开一条随机隧道。 */}
+          {status.tunnelMode === "quick" && (
+            <ValueRow
+              label={t("settings.customModels.publicMcpTunnelLabel")}
+              value={tunnelCmd}
+              copied={copied === "cmd"}
+              onCopy={() => void copy("cmd", tunnelCmd)}
+            />
+          )}
 
           <Button
             variant="outline"

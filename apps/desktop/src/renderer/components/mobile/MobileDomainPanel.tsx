@@ -20,6 +20,7 @@ import QRCode from "qrcode";
 import type { PublicMcpStatus } from "@contracts/customModel";
 import { Button, Input } from "@renderer/components/ui/index.js";
 import { api } from "@renderer/lib/api.js";
+import { cn } from "@renderer/lib/cn.js";
 import { copyText } from "@renderer/lib/clipboard.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { IconAlertTriangle, IconCheck, IconCopy, IconRefresh } from "@renderer/lib/icons.js";
@@ -37,21 +38,31 @@ export function MobileDomainPanel() {
   const [pairingUrl, setPairingUrl] = useState<string | null>(null);
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  // 这次配对什么时候过期 —— 验证码 5 分钟就作废,不倒计时、不续期的话,用户照着一张
+  // 死码去输,只会看到"验证码错误"。
+  const [expiresAt, setExpiresAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     let alive = true;
-    api.publicMcp
-      .status()
-      .then((s) => {
-        if (!alive) return;
-        setStatus(s);
-        setDraft(s.mobileHostname);
-      })
-      .catch(() => {
-        /* 主进程还没就绪 —— 重开这个对话框再看 */
-      });
+    const load = (first: boolean) =>
+      api.publicMcp
+        .status()
+        .then((s) => {
+          if (!alive) return;
+          setStatus(s);
+          // 草稿只在第一次对齐 —— 之后的轮询不能把用户正在输入的内容冲掉。
+          if (first) setDraft(s.mobileHostname);
+        })
+        .catch(() => {
+          /* 主进程还没就绪 —— 下一轮再看 */
+        });
+    void load(true);
+    // 隧道状态会自己变(连上、掉线重连、出错),这一页要跟着显示,所以轻量轮询。
+    const timer = window.setInterval(() => void load(false), 4000);
     return () => {
       alive = false;
+      window.clearInterval(timer);
     };
   }, []);
 
@@ -86,6 +97,7 @@ export function MobileDomainPanel() {
       const res = await api.mobile.startPairing({ mode: "remote", endpoint, force });
       setPairingUrl(res.pairing.qrUrl);
       setPairingCode(res.pairing.code);
+      setExpiresAt(res.pairing.expiresAt);
       setQrDataUrl(
         await QRCode.toDataURL(res.pairing.qrUrl, { margin: 1, width: 200, color: { dark: "#0b0b0c", light: "#ffffff" } }),
       );
@@ -99,13 +111,46 @@ export function MobileDomainPanel() {
       setPairingUrl(null);
       setPairingCode(null);
       setQrDataUrl(null);
+      setExpiresAt(null);
       return;
     }
     void generatePairing(url);
   }, [url, generatePairing]);
+
+  // 倒计时 + 过期自动续一张(不带 force:别的页签若已续过,就沿用那一张,码保持一致)。
+  useEffect(() => {
+    if (!expiresAt) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [expiresAt]);
+  const expired = expiresAt !== null && now > expiresAt;
+  useEffect(() => {
+    if (url && expired) {
+      setExpiresAt(null);
+      void generatePairing(url);
+    }
+  }, [url, expired, generatePairing]);
+  const remainingSec = expiresAt ? Math.max(0, Math.ceil((expiresAt - now) / 1000)) : 0;
   // Cloudflare 那条 ingress 要写的就是这一行。端口取**此刻真在听的那个**,
   // 不是默认值 —— 写错端口的表现是公网连接被拒,而本机一切正常,极难查。
   const ingress = `http://127.0.0.1:${status?.mobilePort || 7331}`;
+
+  // 手机域名**靠的是那条隧道**:快速隧道下它根本不生效;命名隧道要 Mcode 把 cloudflared
+  // 跑起来(那颗按钮在「远程控制」里);外部隧道我们看不见,只能提醒。以前这一页对这些
+  // 只字不提 —— 填完域名、扫完码,手机打不开,却看不出是隧道没跑。
+  const tunnelNote: { tone: "ok" | "warn" | "info"; text: string } | null = !status?.mobileHostname
+    ? null
+    : status.tunnelMode === "quick"
+      ? { tone: "warn", text: t("layout.domainTunnelQuick") }
+      : status.tunnelMode === "external"
+        ? { tone: "info", text: t("layout.domainTunnelExternal", { ingress }) }
+        : status.tunnelPhase === "ready"
+          ? { tone: "ok", text: t("layout.domainTunnelReady") }
+          : status.tunnelPhase === "starting" || status.tunnelPhase === "reconnecting"
+            ? { tone: "info", text: t("layout.domainTunnelStarting") }
+            : status.tunnelPhase === "failed" && status.tunnelError
+              ? { tone: "warn", text: t("layout.domainTunnelFailed", { error: status.tunnelError }) }
+              : { tone: "warn", text: t("layout.domainTunnelNamedOff") };
 
   return (
     <div className="space-y-3">
@@ -135,6 +180,19 @@ export function MobileDomainPanel() {
         {error && <p className="text-[0.6875rem] text-danger">{error}</p>}
       </div>
 
+      {tunnelNote && (
+        <p
+          className={cn(
+            "rounded border px-2.5 py-1.5 text-[0.6875rem] leading-relaxed",
+            tunnelNote.tone === "ok" && "border-accent/30 bg-accent/5 text-accent",
+            tunnelNote.tone === "warn" && "border-warning/40 bg-warning/10 text-warning",
+            tunnelNote.tone === "info" && "border-edge bg-surface/40 text-content-subtle",
+          )}
+        >
+          {tunnelNote.text}
+        </p>
+      )}
+
       {url && (
         <div className="space-y-1.5 rounded border border-edge bg-surface/40 p-2.5">
           <span className="block text-xs font-medium text-content-muted">
@@ -147,6 +205,7 @@ export function MobileDomainPanel() {
             <Button
               variant="ghost"
               size="sm"
+              title={t("layout.copyPairingLinkTitle")}
               onClick={() => {
                 void copyText(pairingUrl ?? url).then((okay) => {
                   if (!okay) return;
@@ -164,6 +223,13 @@ export function MobileDomainPanel() {
               <div className="space-y-1.5">
                 <span className="block text-xs font-medium text-content-muted">{t("layout.verifyCode")}</span>
                 <code className="block font-mono text-lg tracking-[0.3em]">{pairingCode ?? "------"}</code>
+                <span className="block text-[0.6875rem] text-content-subtle">
+                  {expiresAt === null || expired
+                    ? t("layout.pairingExpired")
+                    : t("layout.pairingExpiresIn", {
+                        time: `${Math.floor(remainingSec / 60)}:${String(remainingSec % 60).padStart(2, "0")}`,
+                      })}
+                </span>
                 <Button variant="ghost" size="sm" onClick={() => void generatePairing(url, true)}>
                   <IconRefresh size={12} className="mr-1" />
                   {t("layout.refreshQr")}

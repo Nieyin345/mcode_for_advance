@@ -65,6 +65,10 @@ export function RemoteConnectPanel() {
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [pairingUrl, setPairingUrl] = useState<string | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  // 验证码 5 分钟过期。以前这一页不倒计时也不续期:放着不动几分钟后,屏幕上还是那张码,
+  // 手机输进去只会报错。
+  const [expiresAt, setExpiresAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -117,6 +121,7 @@ export function RemoteConnectPanel() {
       const res = await api.mobile.startPairing({ mode: "remote", endpoint, force });
       setPairingUrl(res.pairing.qrUrl);
       setPairingCode(res.pairing.code);
+      setExpiresAt(res.pairing.expiresAt);
       const dataUrl = await QRCode.toDataURL(res.pairing.qrUrl, {
         margin: 1,
         width: 220,
@@ -136,8 +141,24 @@ export function RemoteConnectPanel() {
       setPairingUrl(null);
       setPairingCode(null);
       setQrDataUrl(null);
+      setExpiresAt(null);
     }
   }, [status, pairingUrl, generatePairing]);
+
+  // 倒计时 + 过期自动续(不带 force:别的页签已续过就沿用同一张,码保持一致)。
+  useEffect(() => {
+    if (!expiresAt) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [expiresAt]);
+  const pairingExpired = expiresAt !== null && now > expiresAt;
+  useEffect(() => {
+    if (pairingExpired && status?.state === "connected" && status.endpoint) {
+      setExpiresAt(null);
+      void generatePairing(status.endpoint);
+    }
+  }, [pairingExpired, status, generatePairing]);
+  const remainingSec = expiresAt ? Math.max(0, Math.ceil((expiresAt - now) / 1000)) : 0;
 
   // Poll while not connected.
   useEffect(() => {
@@ -433,6 +454,13 @@ export function RemoteConnectPanel() {
             <div className="text-xs text-content-muted">{t("layout.verifyCode")}</div>
             <div className="mt-1 font-mono text-3xl font-bold tracking-[0.3em] text-content">
               {pairingCode ?? "------"}
+            </div>
+            <div className="mt-1 text-[11px] text-content-subtle">
+              {expiresAt === null || pairingExpired
+                ? t("layout.pairingExpired")
+                : t("layout.pairingExpiresIn", {
+                    time: `${Math.floor(remainingSec / 60)}:${String(remainingSec % 60).padStart(2, "0")}`,
+                  })}
             </div>
             <div className="mt-3 rounded border border-edge bg-surface-muted/30 px-3 py-2 text-[11px] leading-relaxed text-content-muted">
               <p className="mb-1 font-medium text-content">{t("mobile.relay.stepsTitle")}</p>

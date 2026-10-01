@@ -232,6 +232,14 @@ export const zh = {
   "layout.domainUrlLabel": "手机上打开这个地址",
   "layout.domainPairHint":
     "第一次要配对：用手机扫上面的二维码（或复制链接在手机上打开），再输入验证码。光打开域名配不上（链接里带着这次配对的一次性参数）。局域网里配过的不通用 —— 手机浏览器按地址分开保存，换成域名要再配一次。",
+  "layout.domainTunnelQuick":
+    "当前隧道是「快速隧道」(随机地址)，自有域名不会生效。到 设置 → 模型配置 → 远程控制，把「公网地址怎么来」改成自有域名。",
+  "layout.domainTunnelNamedOff":
+    "命名隧道没在运行，这个域名暂时打不开。到 设置 → 模型配置 → 远程控制：打开「开放远程控制」，再点「开启公网隧道」。",
+  "layout.domainTunnelStarting": "隧道正在连接…",
+  "layout.domainTunnelReady": "隧道已连通，手机可以用这个域名访问。",
+  "layout.domainTunnelFailed": "隧道出错：{error}",
+  "layout.domainTunnelExternal": "隧道由你自己运行，Mcode 看不到它的状态。请确认它把这个域名指到 {ingress}。",
   "layout.mobileServerDown": "手机服务未运行（端口被占用或已禁用）。请在设置中检查，或重启应用。",
   "layout.pairingQr": "配对二维码",
   "layout.generating": "生成中…",

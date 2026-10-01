@@ -18,7 +18,7 @@ import QRCode from "qrcode";
 import { Dialog } from "@renderer/components/ui/index.js";
 import { Button } from "@renderer/components/ui/index.js";
 import { cn } from "@renderer/lib/cn.js";
-import { IconCopy, IconDeviceMobile, IconRefresh, IconTrash, IconWifi, IconWorld } from "@renderer/lib/icons.js";
+import { IconCopy, IconDeviceMobile, IconRefresh, IconTrash, IconWifi, IconWorld, IconWorldWww } from "@renderer/lib/icons.js";
 import { api } from "@renderer/lib/api.js";
 import { copyText } from "@renderer/lib/clipboard.js";
 import { RemoteConnectPanel } from "@renderer/components/mobile/RemoteConnectPanel.js";
@@ -72,7 +72,7 @@ export function MobileConnectButton() {
       }
     };
     void tick();
-    const interval = setInterval(tick, 15_000);
+    const interval = setInterval(() => void tick(), 15_000);
     return () => {
       cancelled = true;
       clearInterval(interval);
@@ -109,7 +109,9 @@ export function MobileConnectButton() {
       <Dialog.Root open={open} onOpenChange={setOpen}>
         <Dialog.Portal>
           <Dialog.Backdrop />
-          <Dialog.Popup className="w-[min(420px,92vw)] p-5">
+          {/* 高度封顶 + 内部滚动:「远程访问」「自有域名」两页加上设备列表,在 768 高的屏幕上
+              会超出视口,而弹窗是居中定位的 —— 超出部分上下都被裁掉,标题和关闭钮一起看不见。 */}
+          <Dialog.Popup className="max-h-[90vh] w-[min(420px,92vw)] overflow-y-auto p-5">
             <MobileConnectPanel open={open} />
           </Dialog.Popup>
         </Dialog.Portal>
@@ -131,7 +133,10 @@ function MobileConnectPanel({ open }: { open: boolean }) {
   const [copied, setCopied] = useState(false);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // 最近一次手动选的网卡 IP —— 切回「局域网」页签重新对齐配对时沿用它,而不是回到自动检测那个。
+  const lastHost = useRef<string | undefined>(undefined);
   const beginPairing = useCallback(async (host?: string, force = false) => {
+    if (host !== undefined) lastHost.current = host;
     try {
       const res = await api.mobile.startPairing(
         host !== undefined || force ? { host, force } : undefined,
@@ -213,11 +218,23 @@ function MobileConnectPanel({ open }: { open: boolean }) {
     return () => clearInterval(t);
   }, [open]);
 
+  // 三个页签共用**同一个**待配对(主进程 PairingManager 只留一个)。在另外两页点过「刷新」
+  // 会换掉它,这一页手里的码就作废了却还在倒计时。所以切回来时按当前待配对重新取一次
+  // (不带 force = 沿用,不会把别的页签刚生成的码作废)。
+  const firstTab = useRef(true);
+  useEffect(() => {
+    if (firstTab.current) {
+      firstTab.current = false;
+      return;
+    }
+    if (open && tab === "lan") void beginPairing(lastHost.current);
+  }, [tab, open, beginPairing]);
+
   const expired = pairing ? now > pairing.expiresAt : false;
   useEffect(() => {
     if (open && pairing && expired) {
       // Auto-renew once expired so the user doesn't have to click.
-      void beginPairing();
+      void beginPairing(lastHost.current);
     }
   }, [open, pairing, expired, beginPairing]);
 
@@ -284,7 +301,7 @@ function MobileConnectPanel({ open }: { open: boolean }) {
               : "border-transparent text-content-muted hover:text-content",
           )}
         >
-          <IconWorld size={14} />
+          <IconWorldWww size={14} />
           {t("layout.pairDomain")}
         </button>
       </div>
