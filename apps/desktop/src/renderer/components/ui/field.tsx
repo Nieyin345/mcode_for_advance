@@ -14,6 +14,7 @@
  */
 import type { ReactNode } from "react";
 import { cn } from "@renderer/lib/cn.js";
+import { InfoHint } from "./info-hint.js";
 
 export interface FieldProps {
   /** Pre-translated label text. */
@@ -26,6 +27,8 @@ export interface FieldProps {
   error?: ReactNode;
   /** Required asterisk on the label (visual only — validate in the caller). */
   required?: boolean;
+  /** 说明收进标题旁的 ⓘ(悬停 / 点击弹出),不占版面。和 `desc` 二选一用。 */
+  hint?: ReactNode;
   className?: string;
   children: ReactNode;
 }
@@ -36,22 +39,26 @@ export function Field({
   desc,
   error,
   required,
+  hint,
   className,
   children,
 }: FieldProps) {
   return (
     <div className={cn("space-y-1", className)}>
-      <label
-        htmlFor={htmlFor}
-        className="block text-[0.7857em] font-medium text-content"
-      >
-        {label}
-        {required && (
-          <span className="ml-0.5 text-danger" aria-hidden>
-            *
-          </span>
-        )}
-      </label>
+      <div className="flex items-center gap-1.5">
+        <label
+          htmlFor={htmlFor}
+          className="block text-[0.7857em] font-medium text-content"
+        >
+          {label}
+          {required && (
+            <span className="ml-0.5 text-danger" aria-hidden>
+              *
+            </span>
+          )}
+        </label>
+        {hint !== undefined && hint !== null && hint !== "" && <InfoHint>{hint}</InfoHint>}
+      </div>
       {children}
       {error ? (
         <p className="text-[0.7143em] leading-relaxed text-danger" role="alert">

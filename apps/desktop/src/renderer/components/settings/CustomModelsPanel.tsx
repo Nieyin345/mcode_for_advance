@@ -5,7 +5,7 @@ import { PANEL_MAX_W } from "./panelWidth.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
-import { Button, ConfirmDialog, Input, Select, Switch, Tooltip } from "@renderer/components/ui/index.js";
+import { Button, ConfirmDialog, HintLabel, Input, Select, Switch, Tooltip } from "@renderer/components/ui/index.js";
 import {
   IconPlus,
   IconTrash,
@@ -1227,10 +1227,9 @@ function CodexProviderForm({
       </Field>
 
       <div className="flex items-start justify-between gap-3 rounded border border-edge bg-surface/40 p-2.5">
-        <span className="flex flex-col gap-0.5">
-          <span className="text-[0.7857em] font-medium text-content">{t("settings.customModels.imageGen")}</span>
-          <span className="text-[0.7143em] leading-relaxed text-content-subtle">{t("settings.customModels.imageGenHint")}</span>
-        </span>
+        <HintLabel hint={t("settings.customModels.imageGenHint")} className="text-[0.7857em] font-medium text-content">
+          {t("settings.customModels.imageGen")}
+        </HintLabel>
         <Switch
           checked={form.imageGeneration}
           onCheckedChange={(v) => update("imageGeneration", v)}
@@ -1389,7 +1388,10 @@ function ClaudeProviderForm({
 
   return (
     <div className="space-y-2.5">
-      <Field label={t("settings.customModels.protocolLabel")}>
+      <Field
+        label={t("settings.customModels.protocolLabel")}
+        hint={isOpenAi ? t("settings.customModels.openaiNote") : undefined}
+      >
         <Select.Root
           value={form.protocol}
           onValueChange={(v) => {
@@ -1425,11 +1427,6 @@ function ClaudeProviderForm({
           </Select.List></Select.Popup></Select.Positioner></Select.Portal>
         </Select.Root>
       </Field>
-      {isOpenAi && (
-        <p className="text-[0.6428em] leading-relaxed text-content-subtle">
-          {t("settings.customModels.openaiNote")}
-        </p>
-      )}
 
       <Field label={t("settings.customModels.nameLabel")}>
         <Input value={form.name} onChange={(e) => update("name", e.target.value)} placeholder={t("settings.customModels.namePlaceholder")} />
@@ -1477,9 +1474,9 @@ function ClaudeProviderForm({
 
           <div className="space-y-1.5 rounded border border-edge bg-surface/40 p-2.5">
             <div className="flex items-center gap-1.5">
-              <span className="text-[0.7857em] font-medium text-content-muted">
+              <HintLabel hint={t("settings.customModels.bridgeHint")} className="text-[0.7857em] font-medium text-content-muted">
                 {t("settings.customModels.bridgeTitle")}
-              </span>
+              </HintLabel>
               <span
                 className={cn(
                   "rounded px-1.5 py-0.5 text-[0.7143em]",
@@ -1520,9 +1517,6 @@ function ClaudeProviderForm({
               {t("settings.customModels.bridgeRegenerate")}
             </Button>
 
-            <p className="text-[0.6428em] leading-relaxed text-content-subtle">
-              {t("settings.customModels.bridgeHint")}
-            </p>
           </div>
 
           <p className="text-[0.6428em] leading-relaxed text-content-subtle">
@@ -1631,7 +1625,7 @@ function ClaudeProviderForm({
           Options come from the model rows above, so a pin whose row was
           deleted in this edit simply disappears from the list and is dropped
           on save. */}
-      <Field label={t("settings.subagentModel.select")}>
+      <Field label={t("settings.subagentModel.select")} hint={t("settings.subagentModel.hint")}>
         <Select.Root
           value={form.subagentModel || SUBAGENT_FOLLOW_MAIN}
           onValueChange={(v) => update("subagentModel", v === SUBAGENT_FOLLOW_MAIN ? "" : (v as string))}
@@ -1664,9 +1658,6 @@ function ClaudeProviderForm({
           </Select.List></Select.Popup></Select.Positioner></Select.Portal>
         </Select.Root>
       </Field>
-      <p className="text-[0.6428em] leading-relaxed text-content-subtle">
-        {t("settings.subagentModel.hint")}
-      </p>
 
       {/* Advanced */}
       <button type="button" onClick={() => setAdvancedOpen((v) => !v)} className="flex items-center gap-1 pt-1 text-[0.7857em] text-content-subtle hover:text-content-muted">
@@ -1690,9 +1681,9 @@ function ClaudeProviderForm({
               needs a routing/tenant hint works either way. */}
           <div className="space-y-1.5 border-t border-edge pt-2">
             <div className="flex items-center justify-between">
-              <span className="text-[0.7857em] text-content-muted">
+              <HintLabel hint={t("settings.customModels.customHeadersHint")} className="text-[0.7857em] text-content-muted">
                 {t("settings.customModels.customHeadersLabel")}
-              </span>
+              </HintLabel>
               <Button variant="ghost" size="sm" onClick={addHeader}>
                 <IconPlus size={12} />
                 {t("settings.customModels.customHeadersAdd")}
@@ -1720,9 +1711,6 @@ function ClaudeProviderForm({
                 </Button>
               </div>
             ))}
-            <p className="text-[0.6428em] leading-relaxed text-content-subtle">
-              {t("settings.customModels.customHeadersHint")}
-            </p>
           </div>
         </div>
       )}

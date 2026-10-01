@@ -37,7 +37,7 @@ import type { LibraryCollection } from "@contracts/library";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
-import { Button } from "@renderer/components/ui/index.js";
+import { Button, HintLabel } from "@renderer/components/ui/index.js";
 import { IconBook, IconLoader2, IconX } from "@renderer/lib/icons.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
@@ -329,6 +329,7 @@ export function LibraryTypesPanel() {
       <PanelHeader
         title={t("settings.libraryTypes.title")}
         icon={IconBook}
+        hint={t("settings.libraryTypes.desc")}
         action={
           <Button variant="outline" size="sm" disabled={busy || !groups || !suppress} onClick={() => void save()}>
             {busy ? (
@@ -343,10 +344,6 @@ export function LibraryTypesPanel() {
         }
       />
 
-      {/* 面板头部的分工说明:管理在左栏,这里只写提示词、勾屏蔽 */}
-      <p className="px-1 text-[0.7857em] leading-relaxed text-content-subtle">
-        {t("settings.libraryTypes.desc")}
-      </p>
 
       {saved && !saveError && (
         <div className="text-[0.7857em] text-emerald-600 dark:text-emerald-400">
@@ -412,17 +409,13 @@ export function LibraryTypesPanel() {
 
       {/* ── 屏蔽:哪些东西**不进**上下文 ──
           与提示词是同一类东西(「资料库对 AI 的行为」),所以住同一页、共用保存按钮。 */}
-      <SettingsSection title={t("settings.libraryTypes.section.suppress")}>
+      <SettingsSection title={t("settings.libraryTypes.section.suppress")} desc={t("settings.libraryTypes.suppressHint")}>
         {!suppress ? (
           <div className="flex items-center gap-2 px-4 py-3 text-xs text-content-muted">
             <IconLoader2 size={13} className="animate-spin" />
           </div>
         ) : (
           <>
-            <p className="px-4 pt-3 text-[0.7857em] leading-relaxed text-content-subtle">
-              {t("settings.libraryTypes.suppressHint")}
-            </p>
-
             {/* ── 按分类:大类 → 分类(含嵌套)的勾选树 ── */}
             <div className="px-4 pt-3 text-[0.7857em] font-medium text-content-muted">
               {t("settings.libraryTypes.suppressNodes")}
@@ -470,9 +463,9 @@ export function LibraryTypesPanel() {
 
             {/* ── 按文件类型 ── */}
             <div className="mt-2 border-t border-edge/60 px-4 pt-3 text-[0.7857em] font-medium text-content-muted">
-              {t("settings.libraryTypes.suppressExts")}
+              <HintLabel hint={t("settings.libraryTypes.suppressExtHint")}>{t("settings.libraryTypes.suppressExts")}</HintLabel>
             </div>
-            <div className="flex flex-wrap items-center gap-1.5 px-4 py-2">
+            <div className="flex flex-wrap items-center gap-1.5 px-4 pb-3 pt-2">
               {suppress.extensions.map((ext) => (
                 <span
                   key={ext}
@@ -506,9 +499,6 @@ export function LibraryTypesPanel() {
                 {t("settings.libraryTypes.suppressExtAdd")}
               </Button>
             </div>
-            <p className="px-4 pb-3 text-[0.7857em] leading-relaxed text-content-subtle">
-              {t("settings.libraryTypes.suppressExtHint")}
-            </p>
           </>
         )}
       </SettingsSection>

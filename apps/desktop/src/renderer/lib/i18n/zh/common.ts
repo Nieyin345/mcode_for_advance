@@ -47,4 +47,5 @@ export const zh = {
   "common.officeSaveFailureTitle": "Office 文档保存失败",
   "common.officeSaveFailureMessage": "尚未确认 Office 文档已保存，应用已取消退出。请检查 Document Server 连接、磁盘空间和目录权限，重试保存后再退出。",
   "common.officeMigrationBlocked": "请先关闭 Office 编辑器并等待保存完成，再迁移数据目录。若保存失败，请重新打开文档重试。",
+  "common.moreInfo": "说明",
 } as const;

@@ -45,7 +45,7 @@ import { translate, useI18n, type MessageId } from "@renderer/lib/i18n/index.js"
 import { useRpc } from "@renderer/hooks/useRpc.js";
 import { useCustomUiStore } from "@renderer/stores/customUiStore.js";
 import { selectActiveEnvPath, useSessionStore } from "@renderer/stores/sessionStore.js";
-import { Button, ConfirmDialog, ErrorNote, Switch } from "@renderer/components/ui/index.js";
+import { Button, ConfirmDialog, ErrorNote, HintLabel, Switch } from "@renderer/components/ui/index.js";
 import { Dialog } from "@renderer/components/ui/dialog.js";
 import { ModuleSurface, ModuleToolsButton } from "@renderer/components/modules/ModuleSurface.js";
 import {
@@ -583,8 +583,7 @@ export function CustomUiPanel() {
 
   return (
     <div className="space-y-5 pb-6">
-      <PanelHeader title={t("customUi.title")} icon={IconAdjustmentsHorizontal} />
-      <p className="text-[0.8571em] leading-relaxed text-content-subtle">{t("customUi.intro")}</p>
+      <PanelHeader title={t("customUi.title")} icon={IconAdjustmentsHorizontal} hint={t("customUi.intro")} />
 
       <div className="flex min-h-[320px] gap-4">
         {/* 挂载位 */}
@@ -612,8 +611,7 @@ export function CustomUiPanel() {
 
         {/* 这个挂载位上的功能项 */}
         <div className="min-w-0 flex-1 space-y-3">
-          <p className="text-[0.8571em] text-content-subtle">{t(`customUi.slotHint.${slot}` as MessageId)}</p>
-          <SettingsSection title={t("customUi.entries.title")}>
+          <SettingsSection title={t("customUi.entries.title")} desc={t(`customUi.slotHint.${slot}` as MessageId)}>
             {!loaded ? (
               <div className="px-3 py-3 text-xs text-content-subtle">{t("common.loading")}</div>
             ) : rows.length === 0 ? (
@@ -861,8 +859,9 @@ function ItemEditor({
           {/* 工具栏 / 右栏页签没有「右键的那个东西」,也就没有显示条件 */}
           {whenKeys.length > 0 && (
           <fieldset className="space-y-2 rounded-md border border-edge p-3">
-            <legend className="px-1 text-[0.8571em] font-medium text-content">{t("customUi.editor.when")}</legend>
-            <p className="text-[0.7857em] text-content-subtle">{t("customUi.editor.whenHint")}</p>
+            <legend className="px-1 text-[0.8571em] font-medium text-content">
+              <HintLabel hint={t("customUi.editor.whenHint")}>{t("customUi.editor.when")}</HintLabel>
+            </legend>
             {whenKeys.includes("extensions") && (
               <label className={LABEL}>
                 <span>{t("customUi.editor.extensions")}</span>
@@ -948,21 +947,20 @@ function ItemEditor({
             )}
             {draft.actionType === "prompt" && (
               <>
-                <label className={LABEL}>
-                  <span>{t("customUi.editor.promptTemplate")}</span>
+                <div className={LABEL}>
+                  <HintLabel hint={t("customUi.editor.promptHint")}>{t("customUi.editor.promptTemplate")}</HintLabel>
                   <textarea
                     className={cn(FIELD, "h-36")}
                     value={draft.promptTemplate}
                     onChange={(e) => set("promptTemplate", e.target.value)}
                   />
-                </label>
+                </div>
                 {isLibrary && (
                   <label className="flex items-center gap-2 text-xs text-content">
                     <input type="checkbox" checked={draft.promptAttach} onChange={(e) => set("promptAttach", e.target.checked)} />
                     {t("customUi.editor.promptAttach")}
                   </label>
                 )}
-                <p className="text-[0.7857em] text-content-subtle">{t("customUi.editor.promptHint")}</p>
                 {varsHint}
               </>
             )}
@@ -986,8 +984,10 @@ function ItemEditor({
                   <p className="text-xs text-content-subtle">{t("customUi.editor.automationNone")}</p>
                 ) : (
                   <div className="grid grid-cols-2 gap-3">
-                    <label className={LABEL}>
-                      <span>{t("customUi.editor.automation")}</span>
+                    <div className={LABEL}>
+                      <HintLabel hint={noRunTarget ? t("customUi.editor.automationHintToolbar") : t("customUi.editor.automationHint")}>
+                        {t("customUi.editor.automation")}
+                      </HintLabel>
                       <select
                         className={FIELD}
                         value={draft.workflowId}
@@ -1004,7 +1004,7 @@ function ItemEditor({
                           <option value={draft.workflowId}>{draft.workflowId}</option>
                         )}
                       </select>
-                    </label>
+                    </div>
                     <label className={LABEL}>
                       <span>{t("customUi.editor.trigger")}</span>
                       <select className={FIELD} value={draft.triggerNodeId} onChange={(e) => set("triggerNodeId", e.target.value)}>
@@ -1021,14 +1021,11 @@ function ItemEditor({
                     </label>
                   </div>
                 )}
-                <p className="text-[0.7857em] leading-relaxed text-content-subtle">
-                  {noRunTarget ? t("customUi.editor.automationHintToolbar") : t("customUi.editor.automationHint")}
-                </p>
                 {/* skipWhen v1(通用原语):展开时跳过满足条件的条目 —— 手动转录选
                     「已有转录」即得"检测过再跑"。工具栏没有条目目标,不显示。 */}
                 {!noRunTarget && (
-                  <label className={LABEL}>
-                    <span>{t("customUi.editor.skipWhen")}</span>
+                  <div className={LABEL}>
+                    <HintLabel hint={t("customUi.editor.skipWhenHint")}>{t("customUi.editor.skipWhen")}</HintLabel>
                     <select
                       className={FIELD}
                       value={draft.skipRequires}
@@ -1039,28 +1036,24 @@ function ItemEditor({
                       <option value="pdf">{t("customUi.editor.skipWhen.pdf")}</option>
                       <option value="file">{t("customUi.editor.skipWhen.file")}</option>
                     </select>
-                    <span className="text-[0.7857em] text-content-subtle">{t("customUi.editor.skipWhenHint")}</span>
-                  </label>
+                  </div>
                 )}
                 {/* 目标怎么用:展开成一批,还是只当落点。空分类那条路全靠它(见 targetMode)。 */}
                 {!noRunTarget && (
-                  <label className="flex items-start gap-2 text-[0.8571em]">
+                  <label className="flex items-center gap-2 text-[0.8571em]">
                     <input
                       type="checkbox"
-                      className="mt-1"
+                      className=""
                       checked={draft.targetIsContext}
                       onChange={(e) => set("targetIsContext", e.target.checked)}
                     />
-                    <span className="flex flex-col gap-0.5">
-                      <span>{t("customUi.editor.targetContext")}</span>
-                      <span className="text-[0.7857em] text-content-subtle">{t("customUi.editor.targetContextHint")}</span>
-                    </span>
+                    <HintLabel hint={t("customUi.editor.targetContextHint")}>{t("customUi.editor.targetContext")}</HintLabel>
                   </label>
                 )}
                 {/* 运行前输入(P2):工具栏走 runNow、没有 input 通道 ⟹ 只在有目标的挂载位开放 */}
                 {!noRunTarget && (
                   <div className={LABEL}>
-                    <span>{t("customUi.editor.inputs")}</span>
+                    <HintLabel hint={t("customUi.editor.inputsHint")}>{t("customUi.editor.inputs")}</HintLabel>
                     {draft.inputs.map((row, idx) => (
                       <div key={idx} className="flex items-center gap-2">
                         <select
@@ -1113,15 +1106,16 @@ function ItemEditor({
                         {t("customUi.editor.inputs.add")}
                       </Button>
                     )}
-                    <span className="text-[0.7857em] text-content-subtle">{t("customUi.editor.inputsHint")}</span>
                   </div>
                 )}
               </>
             )}
             {draft.actionType === "file" && (
               <>
-                <label className={LABEL}>
-                  <span>{t("customUi.editor.filePath")}</span>
+                <div className={LABEL}>
+                  <HintLabel hint={draft.slot === "rightPanel.tab" ? t("customUi.editor.fileHintTab") : t("customUi.editor.fileHintToolbar")}>
+                    {t("customUi.editor.filePath")}
+                  </HintLabel>
                   <input
                     className={cn(FIELD, "font-mono")}
                     value={draft.filePath}
@@ -1129,10 +1123,7 @@ function ItemEditor({
                     placeholder="README.md"
                     spellCheck={false}
                   />
-                </label>
-                <p className="text-[0.7857em] leading-relaxed text-content-subtle">
-                  {draft.slot === "rightPanel.tab" ? t("customUi.editor.fileHintTab") : t("customUi.editor.fileHintToolbar")}
-                </p>
+                </div>
                 {varsHint}
               </>
             )}
@@ -1154,8 +1145,8 @@ function ItemEditor({
             )}
             {draft.actionType === "url" && (
               <>
-                <label className={LABEL}>
-                  <span>{t("customUi.editor.url")}</span>
+                <div className={LABEL}>
+                  <HintLabel hint={t("customUi.editor.urlHint")}>{t("customUi.editor.url")}</HintLabel>
                   <input
                     className={cn(FIELD, "font-mono")}
                     value={draft.url}
@@ -1163,15 +1154,14 @@ function ItemEditor({
                     placeholder="https://www.google.com/search?q={{selection.text}}"
                     spellCheck={false}
                   />
-                </label>
-                <p className="text-[0.7857em] leading-relaxed text-content-subtle">{t("customUi.editor.urlHint")}</p>
+                </div>
                 {varsHint}
               </>
             )}
             {draft.actionType === "shell" && (
               <>
-                <label className={LABEL}>
-                  <span>{t("customUi.editor.shellCommand")}</span>
+                <div className={LABEL}>
+                  <HintLabel hint={t("customUi.editor.shellHint")}>{t("customUi.editor.shellCommand")}</HintLabel>
                   <input
                     className={cn(FIELD, "font-mono")}
                     value={draft.shellCommand}
@@ -1179,8 +1169,7 @@ function ItemEditor({
                     placeholder="git log --oneline -- {{file.path}}"
                     spellCheck={false}
                   />
-                </label>
-                <p className="text-[0.7857em] leading-relaxed text-content-subtle">{t("customUi.editor.shellHint")}</p>
+                </div>
                 <label className="flex items-center gap-2 text-xs text-content">
                   <input type="checkbox" checked={draft.shellConfirm} onChange={(e) => set("shellConfirm", e.target.checked)} />
                   {t("customUi.editor.shellConfirm")}

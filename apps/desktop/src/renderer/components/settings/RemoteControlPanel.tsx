@@ -24,7 +24,7 @@ import type { PublicMcpStatus, PublicMcpTunnelConfig } from "@contracts/customMo
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { Button, Input, Select, Switch } from "@renderer/components/ui/index.js";
+import { Button, HintLabel, InfoHint, Input, Select, Switch } from "@renderer/components/ui/index.js";
 import {
   IconCopy,
   IconCheck,
@@ -103,9 +103,9 @@ function TunnelCard({
   return (
     <div className="space-y-2 rounded border border-edge bg-surface/40 p-2.5">
       <div className="space-y-1">
-        <span className="block text-[0.7857em] font-medium text-content-muted">
+        <HintLabel hint={t(`settings.remoteControl.tunnelModeHint.${mode}`)} className="flex text-[0.7857em] font-medium text-content-muted">
           {t("settings.remoteControl.tunnelModeLabel")}
-        </span>
+        </HintLabel>
         <Select.Root value={mode} onValueChange={(v) => setMode(v as PublicMcpStatus["tunnelMode"])}>
           <Select.Trigger className="w-full">
             <Select.Value>
@@ -134,9 +134,6 @@ function TunnelCard({
             </Select.Positioner>
           </Select.Portal>
         </Select.Root>
-        <p className="text-[0.6428em] leading-relaxed text-content-subtle">
-          {t(`settings.remoteControl.tunnelModeHint.${mode}`)}
-        </p>
         {legacyNamed && (
           <p className="text-[0.6428em] leading-relaxed text-warning">
             {t("settings.remoteControl.namedRemoved")}
@@ -147,17 +144,14 @@ function TunnelCard({
       {needsHostname && (
         <>
           <div className="space-y-1">
-            <span className="block text-[0.7857em] font-medium text-content-muted">
+            <HintLabel hint={t("settings.remoteControl.hostnameHint")} className="flex text-[0.7857em] font-medium text-content-muted">
               {t("settings.remoteControl.hostnameLabel")}
-            </span>
+            </HintLabel>
             <Input
               value={hostname}
               placeholder="mcp.example.com"
               onChange={(e) => setHostname(e.target.value)}
             />
-            <p className="text-[0.6428em] leading-relaxed text-content-subtle">
-              {t("settings.remoteControl.hostnameHint")}
-            </p>
           </div>
           <div className="space-y-1">
             <span className="block text-[0.7857em] font-medium text-content-muted">
@@ -171,20 +165,18 @@ function TunnelCard({
       )}
 
       <div className="space-y-1">
-        <span className="block text-[0.7857em] font-medium text-content-muted">
+        <HintLabel
+          hint={t("settings.remoteControl.fixedPortHint", { port: status.port ? String(status.port) : "—" })}
+          className="flex text-[0.7857em] font-medium text-content-muted"
+        >
           {t("settings.remoteControl.fixedPortLabel")}
-        </span>
+        </HintLabel>
         <Input
           value={fixedPort}
           placeholder="17331"
           inputMode="numeric"
           onChange={(e) => setFixedPort(e.target.value.replace(/[^0-9]/g, ""))}
         />
-        <p className="text-[0.6428em] leading-relaxed text-content-subtle">
-          {t("settings.remoteControl.fixedPortHint", {
-            port: status.port ? String(status.port) : "—",
-          })}
-        </p>
       </div>
 
       <Button
@@ -232,12 +224,9 @@ function ProjectLinksCard({
 
   return (
     <div className="space-y-1.5 rounded border border-edge bg-surface/40 p-2.5">
-      <span className="block text-[0.7857em] font-medium text-content-muted">
+      <HintLabel hint={t("settings.remoteControl.projectLinksHint")} className="flex text-[0.7857em] font-medium text-content-muted">
         {t("settings.remoteControl.projectLinksTitle")}
-      </span>
-      <p className="text-[0.6428em] leading-relaxed text-content-subtle">
-        {t("settings.remoteControl.projectLinksHint")}
-      </p>
+      </HintLabel>
 
       {status.projectLinks.length === 0 && (
         <p className="text-[0.7143em] text-content-subtle">{t("settings.remoteControl.projectLinksEmpty")}</p>
@@ -381,12 +370,10 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
   return (
     <div className="flex h-full flex-col gap-2.5 overflow-y-auto">
       <div>
-        <h2 className="text-[0.9286em] font-medium text-content">
+        <h2 className="flex items-center gap-1.5 text-[0.9286em] font-medium text-content">
           {t("settings.remoteControl.title")}
+          <InfoHint>{t("settings.remoteControl.desc")}</InfoHint>
         </h2>
-        <p className="mt-1 text-[0.7143em] leading-relaxed text-content-subtle">
-          {t("settings.remoteControl.desc")}
-        </p>
       </div>
 
       {/* 警告 —— 不折叠、不藏。用户按开关之前就该读到。 */}
@@ -439,7 +426,7 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
       {/* 开关 */}
       <div className="flex items-center justify-between gap-2 rounded border border-edge bg-surface/40 px-2.5 py-2">
         <div className="flex items-center gap-1.5">
-          <span className="text-[0.7857em] font-medium text-content-muted">
+          <span className="flex text-[0.7857em] font-medium text-content-muted">
             {t("settings.remoteControl.toggleLabel")}
           </span>
           <span

@@ -16,6 +16,7 @@ import {
 } from "@renderer/lib/icons.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import { isElectron } from "@renderer/lib/platform.js";
+import { InfoHint } from "@renderer/components/ui/index.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import type { SubagentSnapshot, TranscriptBlock } from "@contracts/runtime";
 import type { TerminalInfo, TerminalOrigin } from "@contracts/ipc";
@@ -224,6 +225,7 @@ export function TaskListPanel() {
       <div className="flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1.5">
         <span className="text-[11px] font-medium text-content">{t("ide.task.pageTitle")}</span>
         <span className="text-[10px] tabular-nums text-content-subtle">{count}</span>
+        <InfoHint side="bottom">{t("ide.task.pageDesc")}</InfoHint>
         <button
           type="button"
           title={t("ide.task.refresh")}
@@ -233,9 +235,6 @@ export function TaskListPanel() {
           <IconRefresh size={12} />
         </button>
       </div>
-      <p className="shrink-0 border-b border-edge px-2 py-1 text-[10px] leading-relaxed text-content-subtle">
-        {t("ide.task.pageDesc")}
-      </p>
 
       {count === 0 ? (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-6 text-center">

@@ -27,15 +27,19 @@
  */
 import type { ComponentType, ReactNode } from "react";
 import { cn } from "@renderer/lib/cn.js";
+import { InfoHint } from "@renderer/components/ui/info-hint.js";
 import type { TablerIconProps } from "@renderer/lib/icons.js";
 
 export function PanelHeader({
   title,
   icon: Icon,
   action,
+  hint,
   className,
 }: {
   title: string;
+  /** 页面级说明:收进标题旁的 ⓘ(不再在标题下铺一段灰字)。 */
+  hint?: string;
   icon?: ComponentType<TablerIconProps>;
   /** Right-aligned action slot (e.g. a "恢复默认" button). */
   action?: ReactNode;
@@ -54,6 +58,7 @@ export function PanelHeader({
         <h2 className="truncate text-[0.9286em] font-semibold leading-tight text-content">
           {title}
         </h2>
+        {hint && <InfoHint side="bottom">{hint}</InfoHint>}
       </div>
       {action && <div className="shrink-0">{action}</div>}
     </header>

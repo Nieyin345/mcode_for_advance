@@ -54,6 +54,7 @@ import {
   Dialog,
   EmptyState,
   ErrorNote,
+  InfoHint,
   Input,
   LoadingNote,
   Switch,
@@ -511,6 +512,9 @@ function InstalledPane({
             spellCheck={false}
           />
         </div>
+        {/* The one fact that is not visible anywhere else in the pane: a plugin
+            enabled mid-conversation cannot reach the running turn. 收进 ⓘ。 */}
+        <InfoHint>{t("settings.plugins.installedSectionDesc")}</InfoHint>
         {/* Pill group, same treatment as the marketplace tab strip in the
             other pane — the two filters read as one family of controls. */}
         <div className="flex flex-none items-center gap-0.5 rounded-lg border border-edge bg-surface/40 p-0.5">
@@ -540,11 +544,6 @@ function InstalledPane({
         />
       </div>
 
-      {/* The one fact that is not visible anywhere else in the pane: a plugin
-          enabled mid-conversation cannot reach the running turn. */}
-      <p className="flex-none pb-2 text-[0.7857em] leading-relaxed text-content-subtle">
-        {t("settings.plugins.installedSectionDesc")}
-      </p>
 
       {/* Inline git form — only present once that source was chosen, but
           kept mounted while closed so a half-typed URL survives the toggle. */}
@@ -1238,6 +1237,7 @@ function MarketplacePane({
         <span className="text-[0.7857em] text-content-subtle">
           {t("settings.plugins.mpSourceCount", { n: marketplaces.length })}
         </span>
+        <InfoHint>{t("settings.plugins.marketplaceSectionDesc")}</InfoHint>
         <span className="flex-1" />
         <div className="relative w-44 shrink-0">
           <IconSearch
@@ -1269,9 +1269,6 @@ function MarketplacePane({
           />
         </Button>
       </div>
-      <p className="flex-none pb-2 text-[0.7857em] leading-relaxed text-content-subtle">
-        {t("settings.plugins.marketplaceSectionDesc")}
-      </p>
 
       {/* One tab per marketplace, with the add entry right beside them (a tab
           bar is where "another source" is looked for; the dashed button that

@@ -38,7 +38,7 @@ import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
 import { useRpc } from "@renderer/hooks/useRpc.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { Button, ConfirmDialog, Dialog, EmptyState, ErrorNote, Field, LoadingNote } from "@renderer/components/ui/index.js";
+import { Button, ConfirmDialog, Dialog, EmptyState, ErrorNote, Field, InfoHint, LoadingNote } from "@renderer/components/ui/index.js";
 import { ListPane } from "./ListPane.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { ProjectSkillsView } from "./ProjectSkillsView.js";
@@ -1377,16 +1377,26 @@ function NewSkillForm({
       <div className="mb-2 flex items-center gap-1.5">
         <IconPlus size={14} className="text-accent" />
         <span className="text-[0.8571em] font-medium text-content">{t("settings.skills.newSkill")}</span>
+        <InfoHint>
+          {t("settings.skills.newSkillGlobalIntro1")}
+          <code className="rounded bg-surface-muted px-0.5">~/.mcode/skills</code>
+          {t("settings.skills.newSkillGlobalIntro2")}
+          <code className="rounded bg-surface-muted px-0.5">allowed-tools</code>
+          {t("settings.skills.newSkillIntro3")}
+        </InfoHint>
       </div>
-      <p className="mb-2 text-[0.7143em] leading-relaxed text-content-subtle">
-        {t("settings.skills.newSkillGlobalIntro1")}
-        <code className="rounded bg-surface-muted px-0.5">~/.mcode/skills</code>
-        {t("settings.skills.newSkillGlobalIntro2")}
-        <code className="rounded bg-surface-muted px-0.5">allowed-tools</code>
-        {t("settings.skills.newSkillIntro3")}
-      </p>
 
-      <Field className="mb-2" label={t("settings.skills.fieldName")}>
+      <Field
+        className="mb-2"
+        label={t("settings.skills.fieldName")}
+        hint={
+          <>
+            {t("settings.skills.fieldNameHintPre")}
+            <code className="rounded bg-surface-muted px-0.5">/name</code>
+            {t("settings.skills.fieldNameHintPost")}
+          </>
+        }
+      >
         <input
           type="text"
           value={form.name}
@@ -1396,11 +1406,6 @@ function NewSkillForm({
           spellCheck={false}
           autoFocus
         />
-        <p className="mt-0.5 text-[10px] text-content-subtle">
-          {t("settings.skills.fieldNameHintPre")}
-          <code className="rounded bg-surface-muted px-0.5">/name</code>
-          {t("settings.skills.fieldNameHintPost")}
-        </p>
       </Field>
 
       <Field className="mb-2" label={t("settings.skills.fieldDesc")}>

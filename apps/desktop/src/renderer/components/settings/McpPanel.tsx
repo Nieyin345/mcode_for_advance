@@ -22,6 +22,7 @@ import {
   Button,
   ConfirmDialog,
   Dialog,
+  InfoHint,
   Select,
   Switch,
 } from "@renderer/components/ui/index.js";
@@ -516,6 +517,7 @@ export function McpPanel() {
               </span>
             }
             desc={builtin.detail}
+            descMode="inline"
           >
             <div
               className="flex shrink-0 items-center gap-1"
@@ -588,11 +590,14 @@ const textareaCls =
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
-    <label className="mb-2 block w-full">
-      <span className="mb-0.5 block text-[0.7857em] font-medium text-content-muted">{label}</span>
+    // div 而不是 label:ⓘ 是个 button,包在 label 里会抢走「点标题聚焦输入框」的目标。
+    <div className="mb-2 block w-full">
+      <span className="mb-0.5 flex items-center gap-1.5 text-[0.7857em] font-medium text-content-muted">
+        {label}
+        {hint && <InfoHint>{hint}</InfoHint>}
+      </span>
       {children}
-      {hint && <p className="mt-0.5 text-[10px] text-content-subtle">{hint}</p>}
-    </label>
+    </div>
   );
 }
 

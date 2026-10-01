@@ -19,7 +19,7 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { IconX } from "@renderer/lib/icons.js";
-import { Input } from "@renderer/components/ui/index.js";
+import { InfoHint, Input } from "@renderer/components/ui/index.js";
 import { useLibraryStore } from "@renderer/stores/libraryStore.js";
 
 interface Props {
@@ -216,6 +216,10 @@ export function ImportBar({
         >
           {t("library.import.explodeFolder")}
         </button>
+        <InfoHint className="ml-1">
+          <p>{t("library.import.hint")}</p>
+          <p className="mt-1.5">{t("library.import.automationHint")}</p>
+        </InfoHint>
         <button
           onClick={onClose}
           title={t("library.collection.cancel")}
@@ -225,14 +229,7 @@ export function ImportBar({
         </button>
       </div>
 
-      <p className="mt-1.5 text-[0.7143em] leading-relaxed text-content-subtle">
-        {t("library.import.hint")}
-      </p>
-      {/* 转录只由工作流触发器控制。旧版逐次导入的 convert 开关已被核心忽略，
-          继续显示会让用户误以为取消勾选就能阻止向 MinerU 上传。 */}
-      <p className="mt-1.5 text-[0.7143em] leading-relaxed text-content-subtle">
-        {t("library.import.automationHint")}
-      </p>
+      {/* 导入说明 + 「转录只由工作流触发器控制」收进标题行的 ⓘ(R40:常驻两段灰字太占地方)。 */}
 
       {message && (
         <div className={cn("mt-1.5 text-[0.7857em] leading-relaxed text-content-muted")}>

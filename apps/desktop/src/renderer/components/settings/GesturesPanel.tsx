@@ -109,6 +109,7 @@ export function GesturesPanel() {
         </SettingRow>
         <SettingRow
           title={t("settings.gestures.trigger")}
+          descMode="inline"
           desc={
             gestureSettings.trigger === "middle"
               ? t("settings.gestures.triggerMiddleNote")

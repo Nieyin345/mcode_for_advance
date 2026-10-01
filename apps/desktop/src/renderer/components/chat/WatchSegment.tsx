@@ -38,7 +38,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
 import { useSuppressBrowserView } from "@renderer/hooks/useSuppressBrowserView.js";
-import { Input, Button, Select } from "@renderer/components/ui/index.js";
+import { Input, Button, InfoHint, Select } from "@renderer/components/ui/index.js";
 import type { WatchCommandTemplate } from "@contracts/ipc";
 import { IconAlertTriangle, IconChevronRight, IconEye, IconTrash } from "@renderer/lib/icons.js";
 
@@ -263,10 +263,8 @@ function WatchPanel({
         <div className="flex items-center gap-1.5 text-[13px] font-semibold text-content">
           <IconEye size={14} className="text-accent" />
           {t("composer.watch.title")}
+          <InfoHint>{t("composer.watch.intro")}</InfoHint>
         </div>
-        <p className="mt-1 text-[11px] leading-relaxed text-content-subtle">
-          {t("composer.watch.intro")}
-        </p>
 
         {/* 命令模板:选中的直接填进下面的命令框;旁边那把回收站只对"已选中"生效。 */}
         <label className="mt-2.5 mb-1 block text-[11px] font-medium text-content-muted">

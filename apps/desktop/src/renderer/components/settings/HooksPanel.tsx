@@ -28,7 +28,7 @@ import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
-import { Button, ConfirmDialog, EmptyState, ErrorNote, Field, Input, Select, Switch } from "@renderer/components/ui/index.js";
+import { Button, ConfirmDialog, EmptyState, ErrorNote, Field, InfoHint, Input, Select, Switch } from "@renderer/components/ui/index.js";
 import {
   DEFAULT_HOOK_TIMEOUT_MS,
   HOOK_EVENTS,
@@ -296,11 +296,8 @@ export function HooksPanel() {
             </Button>
           </div>
         }
+        hint={t("settings.hooks.intro")}
       />
-
-      <p className="mb-3 text-[0.7143em] leading-relaxed text-content-subtle">
-        {t("settings.hooks.intro")}
-      </p>
 
       {/* 文件里读得见、但用不了的条目。**必须说出来** —— 用户写的钩子不生效时,这一页
           是唯一能解释为什么的地方(同 `workflow.nodeTypes` 的 problems)。 */}
@@ -498,7 +495,7 @@ function HookEditor({
         />
       </Field>
 
-      <Field className="mb-2" label={t("settings.hooks.fieldEvent")}>
+      <Field className="mb-2" label={t("settings.hooks.fieldEvent")} hint={t(EVENT_HINTS[draft.event])}>
         <Select.Root
           value={draft.event}
           onValueChange={(value) => onChange({ event: value as HookEvent })}
@@ -535,9 +532,6 @@ function HookEditor({
           </Select.Portal>
         </Select.Root>
       </Field>
-      <p className="-mt-1 mb-2 text-[0.7143em] leading-relaxed text-content-subtle">
-        {t(EVENT_HINTS[draft.event])}
-      </p>
 
       {/* 「这个引擎不发这类事件」——**选中时**必须说出来。理由见 `hooksView.ts` 那张表:
           能挂、能存、看着都对,就是不会响,而没有任何地方告诉他。
@@ -553,7 +547,7 @@ function HookEditor({
           一个灰着的输入框会让人以为"这里能填,只是现在不让",而它其实永远填不了。 */}
       {subject !== null && (
         <>
-          <Field className="mb-2" label={t(MATCHER_TEXT[subject].label)}>
+          <Field className="mb-2" label={t(MATCHER_TEXT[subject].label)} hint={t(MATCHER_TEXT[subject].hint)}>
             <Input
               type="text"
               value={draft.matcher ?? ""}
@@ -565,13 +559,10 @@ function HookEditor({
               }
             />
           </Field>
-          <p className="-mt-1 mb-2 text-[0.7143em] leading-relaxed text-content-subtle">
-            {t(MATCHER_TEXT[subject].hint)}
-          </p>
         </>
       )}
 
-      <Field className="mb-2" label={t("settings.hooks.fieldCommand")}>
+      <Field className="mb-2" label={t("settings.hooks.fieldCommand")} hint={t("settings.hooks.commandHint")}>
         <textarea
           value={draft.command}
           spellCheck={false}
@@ -580,9 +571,6 @@ function HookEditor({
           className="min-h-[80px] w-full resize-y rounded border border-edge bg-surface px-2 py-1 font-mono text-[0.7857em] leading-relaxed text-content placeholder:font-sans placeholder:text-content-subtle focus:border-accent focus:outline-none"
         />
       </Field>
-      <p className="-mt-1 mb-2 text-[0.7143em] leading-relaxed text-content-subtle">
-        {t("settings.hooks.commandHint")}
-      </p>
 
       <Field className="mb-2" label={t("settings.hooks.fieldTimeout")}>
         <Input
@@ -612,6 +600,7 @@ function HookEditor({
           <IconPlayerPlay size={12} />
           {testing ? t("settings.hooks.testing") : t("settings.hooks.test")}
         </Button>
+        <InfoHint>{t("settings.hooks.testHint")}</InfoHint>
         <Button variant="ghost" size="sm" onClick={onRemove} className="ml-auto gap-1 text-danger">
           <IconTrash size={12} />
           {t("settings.hooks.remove")}
@@ -634,9 +623,6 @@ function HookEditor({
         ) : null}
       </div>
 
-      <p className="mt-1 text-[0.7143em] leading-relaxed text-content-subtle">
-        {t("settings.hooks.testHint")}
-      </p>
       {testRun && <TestResult run={testRun} />}
     </div>
   );
@@ -738,4 +724,3 @@ function RunRow({
     </div>
   );
 }
-

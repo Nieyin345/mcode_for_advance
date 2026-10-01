@@ -210,15 +210,11 @@ export function AppearancePanel() {
         {/* ── Theme ── */}
         <SettingRow
           title={t("settings.appearance.theme")}
+          hint={t("settings.appearance.themeDesc")}
           desc={
-            <>
-              {t("settings.appearance.themeDesc")}
-              {theme === "system" && (
-                <span className="text-content-muted">
-                  {t("settings.appearance.currentTheme", { theme: effectiveLabel })}
-                </span>
-              )}
-            </>
+            theme === "system" ? (
+              <span className="text-content-muted">{t("settings.appearance.currentTheme", { theme: effectiveLabel })}</span>
+            ) : undefined
           }
           htmlFor="setting-theme"
         >
@@ -327,15 +323,11 @@ export function AppearancePanel() {
         <SettingRow
           layout="vertical"
           title={t("settings.appearance.userColor")}
+          hint={t("settings.appearance.userColorDescExtra")}
           desc={
             userMessageColor
               ? t("settings.appearance.userColorCustom", { hex: userColorHex.toUpperCase() })
               : t("settings.appearance.userColorDefault")
-          }
-          descExtra={
-            <span className="text-[0.7143em] text-content-subtle">
-              {t("settings.appearance.userColorDescExtra")}
-            </span>
           }
         >
           {/* Preset swatches — full-row row (palettes don't fit the fixed
@@ -397,15 +389,11 @@ export function AppearancePanel() {
         <SettingRow
           layout="vertical"
           title={t("settings.appearance.accentColor")}
+          hint={t("settings.appearance.accentColorDescExtra")}
           desc={
             accentColor
               ? t("settings.appearance.accentColorCustom", { hex: accentHex.toUpperCase() })
               : t("settings.appearance.accentColorDefault")
-          }
-          descExtra={
-            <span className="text-[0.7143em] text-content-subtle">
-              {t("settings.appearance.accentColorDescExtra")}
-            </span>
           }
         >
           {/* Preset swatches — full-row row (palettes don't fit the fixed

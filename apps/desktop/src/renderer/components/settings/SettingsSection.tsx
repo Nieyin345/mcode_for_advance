@@ -14,7 +14,7 @@
  */
 import type { ComponentType, ReactNode } from "react";
 import { cn } from "@renderer/lib/cn.js";
-import { Card } from "@renderer/components/ui/index.js";
+import { Card, InfoHint } from "@renderer/components/ui/index.js";
 import type { TablerIconProps } from "@renderer/lib/icons.js";
 
 export function SettingsSection({
@@ -39,8 +39,10 @@ export function SettingsSection({
         <h3 className="text-[0.9286em] font-semibold text-content">
           {title}
         </h3>
+        {/* 纯文字说明收进 ⓘ(见 InfoHint);带结构的说明照旧铺出来。 */}
+        {typeof desc === "string" && desc !== "" && <InfoHint>{desc}</InfoHint>}
       </div>
-      {desc && (
+      {desc && typeof desc !== "string" && (
         <p className="px-1 text-[0.7857em] leading-relaxed text-content-subtle">
           {desc}
         </p>

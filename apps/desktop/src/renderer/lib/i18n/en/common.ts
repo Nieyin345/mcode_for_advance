@@ -43,4 +43,5 @@ export const en = {
   "common.officeSaveFailureTitle": "Office document save failed",
   "common.officeSaveFailureMessage": "The app has stayed open because an Office document could not be confirmed saved. Check Document Server connectivity, disk space and folder permissions, retry saving, then quit again.",
   "common.officeMigrationBlocked": "Close Office editors and wait for saving to finish before moving the data folder. If saving failed, reopen the document and retry.",
+  "common.moreInfo": "More info",
 } as const;

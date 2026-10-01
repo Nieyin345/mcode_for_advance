@@ -48,6 +48,8 @@ export { Switch } from "./switch.js";
 export type { SwitchProps } from "./switch.js";
 
 export { Tooltip } from "./tooltip.js";
+export { HintLabel, InfoHint } from "./info-hint.js";
+export type { InfoHintProps } from "./info-hint.js";
 export type {
   TooltipRootProps,
   TooltipProviderProps,
