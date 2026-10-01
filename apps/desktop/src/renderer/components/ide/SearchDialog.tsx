@@ -306,7 +306,7 @@ export function SearchDialog() {
       setActiveIdx((i) => Math.max(0, i - 1));
       return;
     }
-    if (e.key === "Enter") {
+    if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) {
       if (flatCount === 0) return;
       e.preventDefault();
       openActive();

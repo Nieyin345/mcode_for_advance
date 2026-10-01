@@ -314,7 +314,7 @@ function InlineNewEntryRow({
           if (error) setError(null);
         }}
         onKeyDown={(e) => {
-          if (e.key === "Enter") {
+          if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) {
             e.preventDefault();
             void create();
           } else if (e.key === "Escape") {
@@ -447,7 +447,7 @@ function InlineRenameRow({
           if (error) setError(null);
         }}
         onKeyDown={(e) => {
-          if (e.key === "Enter") {
+          if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) {
             e.preventDefault();
             void commit();
           } else if (e.key === "Escape") {

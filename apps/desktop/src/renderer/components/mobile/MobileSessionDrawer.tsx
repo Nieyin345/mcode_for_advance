@@ -768,7 +768,7 @@ function RenameSheet({
           placeholder={t("layout.threadTitlePlaceholder")}
           onChange={(e) => setValue((e.target as HTMLInputElement).value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") {
+            if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) {
               e.preventDefault();
               submit();
             }

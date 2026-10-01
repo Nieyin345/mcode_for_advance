@@ -494,7 +494,7 @@ export function LibraryTypesPanel() {
                 value={extDraft}
                 onChange={(e) => setExtDraft(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") {
+                  if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) {
                     e.preventDefault();
                     addExt();
                   }
@@ -515,4 +515,3 @@ export function LibraryTypesPanel() {
     </section>
   );
 }
-

@@ -130,7 +130,7 @@ function MiniInput({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter") onSubmit();
+          if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) onSubmit();
           if (e.key === "Escape") onCancel();
         }}
         {...(onBlur ? { onBlur } : {})}
@@ -1696,7 +1696,7 @@ function NewGroupFallback({ onCreate }: { onCreate: (name: string) => void }) {
         value={name}
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter") submit();
+          if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) submit();
         }}
         onBlur={submit}
         placeholder={t("library.group.namePlaceholder")}

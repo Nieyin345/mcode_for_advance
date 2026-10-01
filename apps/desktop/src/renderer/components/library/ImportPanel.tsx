@@ -182,7 +182,7 @@ export function ImportBar({
           value={noteTitle}
           onChange={(e) => setNoteTitle(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") void createNoteNow();
+            if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) void createNoteNow();
             if (e.key === "Escape") onClose();
           }}
           placeholder={t("library.note.placeholder")}

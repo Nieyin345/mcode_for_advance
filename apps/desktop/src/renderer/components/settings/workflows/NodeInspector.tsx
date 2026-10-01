@@ -487,7 +487,7 @@ function ProfileRow({
             placeholder={t("settings.workflows.profileNamePlaceholder")}
             onChange={(e) => setNaming(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") void submitName();
+              if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) void submitName();
               if (e.key === "Escape") setNaming(null);
             }}
           />

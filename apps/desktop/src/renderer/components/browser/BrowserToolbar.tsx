@@ -546,7 +546,7 @@ export function BrowserToolbar({
                 return;
               }
             }
-            if (e.key === "Enter") {
+            if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) {
               e.preventDefault();
               if (historyOpen && filteredHistory[highlight]) {
                 pickHistoryEntry(filteredHistory[highlight]);
