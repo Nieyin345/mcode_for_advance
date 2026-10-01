@@ -346,7 +346,7 @@ export const en = {
     "Stored encrypted; never passed on the command line and never logged (only the last 4 characters appear). This token is control over that tunnel — do not share it.",
   "settings.remoteControl.fixedPortLabel": "Fixed local port",
   "settings.remoteControl.fixedPortHint":
-    "Required for your own domain (the Cloudflare ingress hard-codes a port); 17331 is a good default. Empty = random. If the port is taken, startup fails loudly and will NOT silently pick another — silently moving would leave Cloudflare pointing at nothing: unreachable from the internet while everything looks fine locally. Listening now: {port}",
+    "Required for your own domain (the Cloudflare ingress hard-codes a port); 17331 is a good default. Empty = random for the quick tunnel, 17331 for your own domain. Saving rebinds immediately, no restart needed. If the port is taken, startup fails loudly and will NOT silently pick another — silently moving would leave Cloudflare pointing at nothing: unreachable from the internet while everything looks fine locally. Listening now: {port}",
   "settings.remoteControl.saveTunnel": "Save tunnel settings",
   "settings.remoteControl.delegateLabel": "Let external AI drive this machine's agent",
   "settings.remoteControl.delegateWarning":

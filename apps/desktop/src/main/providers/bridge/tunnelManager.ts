@@ -94,7 +94,19 @@ const NAMED_READY_RE = /registered tunnel connection|connection .* registered/i;
  * cloudflared 对坏 token 的说法有好几种,这里把见得到的都收进来。
  */
 const NAMED_AUTH_FAIL_RE =
-  /invalid tunnel (token|credentials)|failed to parse (the )?token|unauthorized|401|token is invalid|provided token is not valid/i;
+  /tunnel token is not valid|provided token is not valid|invalid tunnel (token|credentials|secret)|failed to parse (the )?token|token is invalid/i;
+/**
+ * 「Unauthorized」只在**报错行**里才算(token 被吊销 / 隧道被删时 cloudflared 打的是
+ * `ERR Register tunnel error from server side error="Unauthorized: …"`)。
+ *
+ * ⚠️ 这里原先还有一个裸的 `401` —— 而 cloudflared 的每行日志都带十六进制的
+ * tunnelID / connection UUID,里面出现 "401" 的概率并不小(一条 UUID 约 0.7%),
+ * 一旦撞上就会把**正常**的隧道当成坏 token 当场杀掉,而且不重连。
+ * 另外 cloudflared 对坏 token 的真实原话是 `Provided Tunnel token is not valid.`
+ * (中间有个 Tunnel),原先那条 `provided token is not valid` 匹配不上它。
+ */
+const NAMED_UNAUTHORIZED_RE = /\bunauthorized\b/i;
+const ERROR_LINE_RE = /\bERR\b|error=/;
 
 /** hostname 打头的协议/斜杠去掉 —— 用户十有八九会把 `https://` 一起粘进来。 */
 function normalizeHostname(raw: string): string {
@@ -330,7 +342,8 @@ export function startTunnel(localPort: number, isReconnect = false, config?: Tun
   /** token 不对 → 当场判死(文件头第 3 点),不进重连。 */
   const failFatalIfAuth = (text: string): boolean => {
     if (!named || status.phase === "failed") return false;
-    if (!NAMED_AUTH_FAIL_RE.test(text)) return false;
+    const fatal = NAMED_AUTH_FAIL_RE.test(text) || (NAMED_UNAUTHORIZED_RE.test(text) && ERROR_LINE_RE.test(text));
+    if (!fatal) return false;
     const reason =
       "Cloudflare 拒绝了这串 Tunnel Token(鉴权失败)。重连多少次都一样,所以直接停了。" +
       "\n到 Zero Trust → Networks → Tunnels 里重新复制一遍 token —— 注意要复制**整串**,它很长。" +

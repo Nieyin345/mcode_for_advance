@@ -198,10 +198,8 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
     // 桌面本机那条路照旧带着它们（`buildWorkflowMcpServer` 不传这个参数）。
     ...workflowMcpTools({ includeSessionLogs: false }),
     ...agentMcpTools({ cwdFor: deps.cwdFor, sandboxRootFor: deps.sandboxRootFor }),
-    // 「指挥本机 agent 干整件事」那一组。**默认空**;用户在「远程控制」里打开之后才有。
-    // 它与上面那条 `includeSessionLogs: false` 的取舍是一体两面:叫醒本机会话这件事在
-    // 这条免审批通路上默认不给,要给就得用户明确点头一次。
-    ...delegateMcpTools(),
+    // 「指挥本机 agent 干整件事」那一组(`delegateMcpTools`)**不在这张静态表里** ——
+    // 见下面 listTools / callTool:它每次现问开关。
     // 测试注入的替身工具(生产为空)—— 见 `WebToolHostDeps.extraTools`。
     ...(deps.extraTools ?? []),
   ];
@@ -230,27 +228,37 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
     };
   };
   let listed: McpToolInfo[] | null = null;
+  const toInfo = (spec: McpToolSpec): McpToolInfo => ({
+    name: spec.name,
+    description: spec.description,
+    inputSchema: toJsonSchema(spec),
+    // 行为提示 —— ChatGPT 靠 readOnlyHint 决定要不要弹确认框(见 toolRules)。
+    annotations: annotationsForTool(spec.name),
+    // **每个工具都报 outputSchema**（没声明的用默认那个）—— ChatGPT 的开发者
+    // 模式对每个工具都提示"建议添加 outputSchema"，而声明了就必须回匹配的结构化
+    // 结果（见 DEFAULT_TEXT_OUTPUT_SHAPE 那段）。两者在 `callTool` 里一起兜住。
+    outputSchema: outputSchemaOf(spec),
+  });
+  /**
+   * 「指挥本机 agent」那一组(默认空,用户在「远程控制」里打开之后才有)。它与上面
+   * `includeSessionLogs: false` 的取舍是一体两面:叫醒本机会话这件事在免审批通路上默认
+   * 不给,要给就得用户明确点头一次。
+   *
+   * ⚠️ **每次现取,不进静态表。** 这个 host 在启动时就建好了,而那时委派的依赖还没装配
+   * (`initAgentDelegate` 在它之后跑)—— 放进静态表的话,这组工具**永远**报不出来;反过来,
+   * 用户关掉开关之后它也不会消失、还能照常调用。现取 = 开关一拨立刻生效(两个方向都是)。
+   */
+  const delegateSpecs = (): McpToolSpec[] => delegateMcpTools();
 
   return {
     listTools(): McpToolInfo[] {
-      if (!listed) {
-        listed = specs.map((spec) => ({
-          name: spec.name,
-          description: spec.description,
-          inputSchema: toJsonSchema(spec),
-          // 行为提示 —— ChatGPT 靠 readOnlyHint 决定要不要弹确认框(见 toolRules)。
-          annotations: annotationsForTool(spec.name),
-          // **每个工具都报 outputSchema**（没声明的用默认那个）—— ChatGPT 的开发者
-          // 模式对每个工具都提示"建议添加 outputSchema"，而声明了就必须回匹配的结构化
-          // 结果（见 DEFAULT_TEXT_OUTPUT_SHAPE 那段）。两者在 `callTool` 里一起兜住。
-          outputSchema: outputSchemaOf(spec),
-        }));
-      }
-      return listed;
+      const dynamic = delegateSpecs();
+      if (!listed) listed = specs.map(toInfo);
+      return dynamic.length ? [...listed, ...dynamic.map(toInfo)] : listed;
     },
 
     async callTool(name, args, ctx): Promise<McpToolCallResult> {
-      const spec = byName.get(name);
+      const spec = byName.get(name) ?? delegateSpecs().find((s) => s.name === name);
       if (!spec) return { text: `没有这个工具:${name}`, isError: true };
 
       const sessionId = ctx.sessionId;

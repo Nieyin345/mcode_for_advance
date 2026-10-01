@@ -177,12 +177,14 @@ export function registerCustomModelHandlers(ipcMain: IpcMain): void {
           hostname: z.string().max(253).optional(),
           mobileHostname: z.string().max(253).optional(),
           fixedPort: z.number().int().min(0).max(65535).optional(),
+          // ⚠️ 少了这一项,zod 会把界面传来的委派开关**静默剥掉** —— 开关怎么点都开不了。
+          agentDelegate: z.boolean().optional(),
         })
         .parse(raw);
     } catch (err) {
       throw new Error(errText(err));
     }
-    return setPublicMcpTunnelConfig(input);
+    return await setPublicMcpTunnelConfig(input);
   });
 
   ipcMain.handle(IPC.CUSTOM_MODEL_TEST, async (_evt, raw) => {

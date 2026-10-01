@@ -355,6 +355,31 @@ await new Promise((r) => setTimeout(r, 1400));
 eq("named:**没有**偷偷重连(重试 6 次对坏 token 毫无意义)", procs.length, afterAuthFail);
 stopTunnel();
 
+/* ── named 3b:cloudflared 对坏 token 的**真实原话**(中间带 Tunnel) ───── */
+namedDeps();
+startTunnel(17331, false, { mode: "named", token: "bad", hostname: "mcp.example.com" });
+procs[0]?.emitLog("Provided Tunnel token is not valid.\nSee 'cloudflared tunnel run --help'.");
+eq("named:真实的坏 token 原话 → failed", tunnelStatus().phase, "failed");
+check("named:真实原话也说是 token 的事", (tunnelStatus().error ?? "").includes("Tunnel Token"), tunnelStatus().error);
+stopTunnel();
+
+/* ── named 3c:token 被吊销 / 隧道被删 —— 报错行里的 Unauthorized ───────── */
+namedDeps();
+startTunnel(17331, false, { mode: "named", token: "revoked", hostname: "mcp.example.com" });
+procs[0]?.emitLog('2026-09-30T04:14:00Z ERR Register tunnel error from server side error="Unauthorized: Failed to get tunnel" connIndex=0');
+eq("named:服务端 Unauthorized → failed", tunnelStatus().phase, "failed");
+stopTunnel();
+
+/* ── named 3d:UUID 里碰巧有 401 —— **不能**当成坏 token 杀掉正常隧道 ──── */
+namedDeps();
+startTunnel(17331, false, { mode: "named", token: "tok", hostname: "mcp.example.com" });
+procs[0]?.emitLog("2026-09-30T04:15:00Z INF Starting tunnel tunnelID=4012ab9e-0b55-4c1a-9a0e-2f1b7c3d4e5f");
+eq("named:tunnelID 含 401 仍在 starting", tunnelStatus().phase, "starting");
+procs[0]?.emitLog("2026-09-30T04:15:01Z INF Registered tunnel connection connIndex=0 connection=a401b2c3-1111-2222-3333-444455556666 location=hkg07");
+eq("named:connection 含 401 照样 ready", tunnelStatus().phase, "ready");
+eq("named:没有被杀", procs.length, 1);
+stopTunnel();
+
 /* ── named 4:少填一项 → 起都不起,直接说缺什么 ─────────────────── */
 namedDeps();
 startTunnel(17331, false, { mode: "named", hostname: "mcp.example.com" });

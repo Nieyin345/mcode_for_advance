@@ -221,7 +221,7 @@ export const en = {
     "Without https://. In your Cloudflare tunnel, point this hostname at {ingress} (the port the phone service is actually listening on right now — getting it wrong looks like \"unreachable from outside while everything works locally\"). It shares the same named tunnel as the MCP endpoint, so there is no second tunnel to run.",
   "layout.domainUrlLabel": "Open this address on the phone",
   "layout.domainPairHint":
-    "Pairing is still required the first time: open the address on the phone and type the 6-digit code shown in this dialog. Easiest is to pair over the LAN first, then switch to the public address.",
+    "Pair once first: scan the QR code above with the phone (or open the copied link there), then enter the code. Opening the bare domain is not enough — the link carries this pairing's one-time parameter. A LAN pairing does not carry over: the phone browser stores it per address, so the domain needs its own pairing.",
   "layout.mobileServerDown": "The mobile service is not running (port in use or disabled). Check it in settings, or restart the app.",
   "layout.pairingQr": "Pairing QR code",
   "layout.generating": "Generating…",

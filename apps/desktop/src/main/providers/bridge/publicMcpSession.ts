@@ -46,6 +46,7 @@ import {
   PUBLIC_MCP_TUNNEL_HOSTNAME_SETTING_KEY,
   PUBLIC_MCP_MOBILE_HOSTNAME_SETTING_KEY,
   PUBLIC_MCP_FIXED_PORT_SETTING_KEY,
+  PUBLIC_MCP_DEFAULT_FIXED_PORT,
 } from "@contracts/ipc/settings";
 import type { PublicMcpTunnelConfig } from "@contracts/customModel";
 import { encrypt, decrypt } from "@main/lib/secretStore.js";
@@ -56,6 +57,7 @@ import {
   configurePublicMcpExtras,
   configurePublicMcpStore,
   newSecret,
+  publicMcpPort,
   publicMcpStatus,
   startPublicMcp,
   stopPublicMcp,
@@ -132,7 +134,12 @@ function tunnelConfigView(): {
  * **token 留空 = 沿用已存的那串**(界面上永远只显示尾 4 位,用户不改它时不该被迫重粘一遍)。
  * 真要清掉,传一个空格之外的显式空值由上层决定 —— 这里的语义就这一条,保持简单。
  */
-export function setPublicMcpTunnelConfig(config: PublicMcpTunnelConfig): PublicMcpStatus {
+export async function setPublicMcpTunnelConfig(config: PublicMcpTunnelConfig): Promise<PublicMcpStatus> {
+  const before = {
+    mode: readTunnelMode(),
+    hostname: SettingRepo.get(PUBLIC_MCP_TUNNEL_HOSTNAME_SETTING_KEY)?.trim() ?? "",
+    token: readTunnelToken(),
+  };
   SettingRepo.set(PUBLIC_MCP_TUNNEL_MODE_SETTING_KEY, config.mode);
   SettingRepo.set(
     PUBLIC_MCP_TUNNEL_HOSTNAME_SETTING_KEY,
@@ -143,7 +150,13 @@ export function setPublicMcpTunnelConfig(config: PublicMcpTunnelConfig): PublicM
     (config.mobileHostname ?? "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, ""),
   );
   const port = config.fixedPort ?? 0;
-  SettingRepo.set(PUBLIC_MCP_FIXED_PORT_SETTING_KEY, String(Number.isFinite(port) && port > 0 && port < 65536 ? port : 0));
+  // 自有域名(named / external)**必须**固定端口 —— Cloudflare 那条 ingress 写死了它。
+  // 用户留空时落到界面上建议的 17331,而不是随机端口(随机 = ingress 必然指空)。
+  const validPort = Number.isFinite(port) && port > 0 && port < 65536 ? port : 0;
+  SettingRepo.set(
+    PUBLIC_MCP_FIXED_PORT_SETTING_KEY,
+    String(validPort || (config.mode === "quick" ? 0 : PUBLIC_MCP_DEFAULT_FIXED_PORT)),
+  );
   const token = (config.token ?? "").trim();
   if (token) SettingRepo.set(PUBLIC_MCP_TUNNEL_TOKEN_SETTING_KEY, encrypt(token));
   // 委派开关:**缺席 = 不改动**(与 token 同一种读法)。它不是隧道的一部分,搭在这条
@@ -154,7 +167,40 @@ export function setPublicMcpTunnelConfig(config: PublicMcpTunnelConfig): PublicM
     log.info(`public mcp: agent delegate ${config.agentDelegate ? "ENABLED" : "disabled"}`);
   }
   log.info(`public mcp: tunnel config saved (mode=${config.mode})`);
+  await applySavedTunnelConfig(before);
   return publicMcpStatus();
+}
+
+/**
+ * 存完**立刻生效**,不用重启应用。
+ *
+ * ⚠️ 原先只落盘不应用:第一次配自有域名的典型流程是「开开关(随机端口 + 快速隧道)→
+ * 选自有域名、填 token 和 17331 → 保存 → 点开始隧道」—— 服务还听在**随机端口**上,
+ * 命名隧道却按 Cloudflare 面板里写死的 17331 转发,公网只拿到 502,而界面显示一切正常
+ * (恰恰是固定端口那段注释说要避免的情形)。同理,隧道正跑着时改模式/域名/token,
+ * 跑着的那条还是旧配置。
+ *
+ * 所以:端口对不上就换绑(被占用照样如实报错,不回落);隧道在跑且配置变了就按新配置重起。
+ */
+async function applySavedTunnelConfig(before: { mode: string; hostname: string; token: string }): Promise<void> {
+  if (SettingRepo.get(PUBLIC_MCP_ENABLED_SETTING_KEY) !== "on") return;
+  const phase = tunnelStatus().phase;
+  const tunnelActive = phase === "starting" || phase === "ready" || phase === "reconnecting";
+  const wantPort = readFixedPort();
+  const rebind = wantPort > 0 && publicMcpPort() !== wantPort;
+  const tunnelChanged =
+    readTunnelMode() !== before.mode ||
+    (SettingRepo.get(PUBLIC_MCP_TUNNEL_HOSTNAME_SETTING_KEY)?.trim() ?? "") !== before.hostname ||
+    readTunnelToken() !== before.token;
+  const restartTunnel = tunnelActive && (tunnelChanged || rebind);
+  if (!rebind && !restartTunnel) return;
+  if (restartTunnel) stopTunnel();
+  if (rebind) {
+    log.info(`public mcp: rebinding to fixed port ${wantPort} (was ${publicMcpPort() || "not listening"})`);
+    stopPublicMcp();
+    await startPublicMcp();
+  }
+  if (restartTunnel) startPublicMcpTunnel();
 }
 
 /**

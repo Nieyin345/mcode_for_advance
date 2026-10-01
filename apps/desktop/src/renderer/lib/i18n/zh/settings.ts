@@ -351,7 +351,7 @@ export const zh = {
     "加密存放，不写进命令行、不进日志（日志里只留尾 4 位）。这串等于那条隧道的控制权，别发给别人。",
   "settings.remoteControl.fixedPortLabel": "固定本机端口",
   "settings.remoteControl.fixedPortHint":
-    "自有域名必须填（Cloudflare 那条 ingress 要写死端口），建议 17331；留空 = 随机。端口被占用时会直接报错**不会**悄悄换一个 —— 换了的话 Cloudflare 就指到空处，公网连不上而本机一切正常。此刻在听：{port}",
+    "自有域名必须填（Cloudflare 那条 ingress 要写死端口），建议 17331；留空时快速隧道用随机端口、自有域名自动用 17331。保存后立即换绑，不用重启。端口被占用时会直接报错**不会**悄悄换一个 —— 换了的话 Cloudflare 就指到空处，公网连不上而本机一切正常。此刻在听：{port}",
   "settings.remoteControl.saveTunnel": "保存隧道配置",
   "settings.remoteControl.delegateLabel": "允许外部 AI 支使本机 agent",
   "settings.remoteControl.delegateWarning":

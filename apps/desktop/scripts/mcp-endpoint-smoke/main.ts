@@ -54,6 +54,7 @@ import { SESSION_LOG_TOOLS, WORKFLOW_READONLY_TOOLS, workflowMcpTools } from "@m
 import type { PermissionMode } from "@contracts/runtime";
 import type { ApprovalRequest } from "@contracts/provider";
 import { __handlerCalls, libraryMcpTools } from "./stubs/libraryServer.js";
+import { configureDelegateDeps } from "@main/mcp/delegateServer.js";
 // 会话夹具的灌入口 —— 与 `run.sh` 里 `@main/store/repositories.js` 的 alias 指向
 // **同一个文件**（`mcode-admin-smoke/stubs/repositories.ts`）。不能写成
 // `./stubs/repositories.js`：那个文件不存在，而 esbuild 会按真实路径去找。
@@ -549,6 +550,30 @@ const host = createWebToolHost({
 const tools = host.listTools();
 const names = tools.map((t) => t.name);
 check("表里有替身库的工具", names.includes("library_probe"), names);
+
+/* ── 委派工具(mcode_agent_*):开关一拨立刻生效 ───────────────────────
+   生产里 host 在启动时就建好了,委派的依赖是**之后**才装配的(initAgentDelegate)。
+   以前那组工具进了静态表 → 永远报不出来;关掉之后也不会消失、照样能调。 */
+{
+  let delegateOn = false;
+  configureDelegateDeps({
+    enabled: () => delegateOn,
+    ensureSession: async () => ({ sessionId: "s-delegate", cwd: CWD }),
+    isBusy: () => false,
+    runTurn: async () => ({ text: "ok" }),
+    interrupt: () => {},
+  });
+  const hasDelegate = () => host.listTools().some((t) => t.name === "mcode_agent_start");
+  check("委派:开关关着时不报", !hasDelegate());
+  delegateOn = true;
+  check("委派:host 建好之后才装配、再打开,也报得出来", hasDelegate());
+  delegateOn = false;
+  check("委派:关掉之后立刻从表里消失", !hasDelegate());
+  const offCall = await host.callTool("mcode_agent_start", { prompt: "x" }, { sessionId: "s1" });
+  check("委派:关掉之后调不动", offCall.isError === true && offCall.text.includes("没有这个工具"), offCall.text);
+  check("委派:静态那部分的表不受影响", host.listTools().length === tools.length, host.listTools().length);
+  configureDelegateDeps(null);
+}
 
 /* ── tool annotations:ChatGPT 靠它决定要不要弹确认框 ──────────────────
    不标的只读工具会被当成写工具、每次都弹(社区里踩过的坑)。这里钉住两件事:

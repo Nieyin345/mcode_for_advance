@@ -15,13 +15,14 @@
  * 验证码 5 分钟过期、错 5 次作废、常数时间比较)。公网暴露之后,那道门就是唯一的门 ——
  * 所以页面上写的是警告,不是提示。
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import QRCode from "qrcode";
 import type { PublicMcpStatus } from "@contracts/customModel";
 import { Button, Input } from "@renderer/components/ui/index.js";
 import { api } from "@renderer/lib/api.js";
 import { copyText } from "@renderer/lib/clipboard.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { IconAlertTriangle, IconCheck, IconCopy } from "@renderer/lib/icons.js";
+import { IconAlertTriangle, IconCheck, IconCopy, IconRefresh } from "@renderer/lib/icons.js";
 
 export function MobileDomainPanel() {
   const { t } = useI18n();
@@ -30,6 +31,12 @@ export function MobileDomainPanel() {
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 配对码 + 带 nonce 的二维码。**光打开域名配不上**:手机页要从 `?nonce=` 里拿到这次配对的
+  // 一次性 nonce(见 PairingScreen),所以这里和「远程访问」页签一样,按公网域名出一张二维码。
+  // 局域网里配过的也不通用 —— 手机浏览器按地址(origin)分开存登录凭据,换了域名就是新设备。
+  const [pairingUrl, setPairingUrl] = useState<string | null>(null);
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -71,6 +78,31 @@ export function MobileDomainPanel() {
   };
 
   const url = status?.mobileHostname ? `https://${status.mobileHostname}` : "";
+
+  // 不带 force = 沿用正在进行的那次配对(同一个 nonce/验证码,只是二维码换成公网地址),
+  // 不会把「局域网配对」页签上那张码作废;「刷新」才 force 换一组新的。
+  const generatePairing = useCallback(async (endpoint: string, force = false) => {
+    try {
+      const res = await api.mobile.startPairing({ mode: "remote", endpoint, force });
+      setPairingUrl(res.pairing.qrUrl);
+      setPairingCode(res.pairing.code);
+      setQrDataUrl(
+        await QRCode.toDataURL(res.pairing.qrUrl, { margin: 1, width: 200, color: { dark: "#0b0b0c", light: "#ffffff" } }),
+      );
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!url) {
+      setPairingUrl(null);
+      setPairingCode(null);
+      setQrDataUrl(null);
+      return;
+    }
+    void generatePairing(url);
+  }, [url, generatePairing]);
   // Cloudflare 那条 ingress 要写的就是这一行。端口取**此刻真在听的那个**,
   // 不是默认值 —— 写错端口的表现是公网连接被拒,而本机一切正常,极难查。
   const ingress = `http://127.0.0.1:${status?.mobilePort || 7331}`;
@@ -116,7 +148,7 @@ export function MobileDomainPanel() {
               variant="ghost"
               size="sm"
               onClick={() => {
-                void copyText(url).then((okay) => {
+                void copyText(pairingUrl ?? url).then((okay) => {
                   if (!okay) return;
                   setCopied(true);
                   window.setTimeout(() => setCopied(false), 1500);
@@ -126,6 +158,19 @@ export function MobileDomainPanel() {
               {copied ? <IconCheck size={12} /> : <IconCopy size={12} />}
             </Button>
           </div>
+          {qrDataUrl && (
+            <div className="flex items-start gap-3 pt-1">
+              <img src={qrDataUrl} alt={t("layout.pairingQr")} className="h-[140px] w-[140px] rounded bg-white p-1" />
+              <div className="space-y-1.5">
+                <span className="block text-xs font-medium text-content-muted">{t("layout.verifyCode")}</span>
+                <code className="block font-mono text-lg tracking-[0.3em]">{pairingCode ?? "------"}</code>
+                <Button variant="ghost" size="sm" onClick={() => void generatePairing(url, true)}>
+                  <IconRefresh size={12} className="mr-1" />
+                  {t("layout.refreshQr")}
+                </Button>
+              </div>
+            </div>
+          )}
           <p className="text-[0.6875rem] leading-relaxed text-content-subtle">
             {t("layout.domainPairHint")}
           </p>
@@ -134,4 +179,3 @@ export function MobileDomainPanel() {
     </div>
   );
 }
-
