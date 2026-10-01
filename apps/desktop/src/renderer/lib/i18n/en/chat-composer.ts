@@ -76,6 +76,7 @@ export const en = {
   "chat.approval.collapse": "Hide",
   "chat.approval.details": "Details",
   "chat.approval.alwaysAllow": "Always allow {tool} in this session",
+  "chat.approval.everyTime": "High-risk action — needs your approval every time",
   "chat.approval.denyTitle": "Deny (Esc)",
   "chat.approval.deny": "Deny",
   "chat.approval.allowTitle": "Allow (Enter)",

@@ -33,6 +33,7 @@ import { useI18n } from "./lib/i18n/index.js";
 import { OpenTabsBar } from "./components/ide/OpenTabsBar.js";
 import { useFileViewStore } from "./stores/fileViewStore.js";
 import { startWorkflowLive } from "./lib/workflowLive.js";
+import { installAppControlHost } from "./lib/appControlHost.js";
 
 // Lazy-load the Monaco-backed editor, diff dialog and plan viewer so the large
 // monaco-editor library (and its web workers) stay out of the initial renderer
@@ -156,6 +157,10 @@ export function App() {
   // 右栏关着,那段进度就永远丢了(打开看板一片灰)。见 `lib/workflowLive.ts` 文件头。
   useEffect(() => {
     startWorkflowLive();
+  }, []);
+  // mcode-app 的界面那半:主进程经 executeJavaScript 调进来切对话/开文件/发消息(见该文件头)。
+  useEffect(() => {
+    installAppControlHost();
   }, []);
   // When an agent browser tool opens/reuses a view, surface the browser panel
   // so the user sees the agent browsing and BrowserPanel can sync bounds.

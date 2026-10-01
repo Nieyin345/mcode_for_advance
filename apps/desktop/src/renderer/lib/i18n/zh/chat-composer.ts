@@ -87,6 +87,7 @@ export const zh = {
   "chat.approval.collapse": "收起",
   "chat.approval.details": "详情",
   "chat.approval.alwaysAllow": "本会话内始终允许 {tool}",
+  "chat.approval.everyTime": "高风险操作,每次都需要你本人批准",
   "chat.approval.denyTitle": "拒绝 (Esc)",
   "chat.approval.deny": "拒绝",
   "chat.approval.allowTitle": "允许 (Enter)",

@@ -3,6 +3,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button } from "@renderer/components/ui/index.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { APP_DANGER_APPROVAL_PREFIX } from "@contracts/appControl";
 import {
   IconAlertTriangle,
   IconChevronDown,
@@ -73,6 +74,8 @@ export function ApprovalPrompt({
   // One-line hint mirroring MessageBlocks.toolSummary so the user sees what
   // the tool is about without expanding.
   const summary = summarizeTool(toolName, input);
+  // mcode-app 的高风险操作每次都要本人点:不给「始终允许」(主进程那头也不认)。
+  const allowAlways = !toolName.startsWith(APP_DANGER_APPROVAL_PREFIX);
 
   // Auto-focus the "允许" button on mount (and on every queue head shift),
   // so Enter confirms without an extra click. Also bring the whole card
@@ -88,7 +91,7 @@ export function ApprovalPrompt({
   // hidden keep-alive sessions must not consume another session's Escape.
   const decide = (granted: boolean) => {
     if (!promptActive) return;
-    onDecide(granted, granted ? always : undefined);
+    onDecide(granted, granted && allowAlways ? always : undefined);
   };
 
   // Rendered in-flow above the composer (see ChatPane). `mb-2` lifts the card
@@ -172,15 +175,19 @@ export function ApprovalPrompt({
       {/* Footer: always-allow checkbox + buttons. Stays on a single row at
           the bottom of the card. */}
       <div className="flex items-center justify-between gap-2 border-t border-edge pt-2.5">
-        <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-content-muted">
-          <input
-            type="checkbox"
-            checked={always}
-            onChange={(e) => setAlways(e.target.checked)}
-            className="h-3 w-3 cursor-pointer accent-warning"
-          />
-          {t("chat.approval.alwaysAllow", { tool: toolName })}
-        </label>
+        {allowAlways ? (
+          <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-content-muted">
+            <input
+              type="checkbox"
+              checked={always}
+              onChange={(e) => setAlways(e.target.checked)}
+              className="h-3 w-3 cursor-pointer accent-warning"
+            />
+            {t("chat.approval.alwaysAllow", { tool: toolName })}
+          </label>
+        ) : (
+          <span className="text-[11px] text-warning">{t("chat.approval.everyTime")}</span>
+        )}
         <div className="flex items-center gap-1.5">
           <Button
             variant="ghost"

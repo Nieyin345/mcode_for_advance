@@ -1,4 +1,5 @@
 import { memoryToolDescriptors, invokeMemoryTool } from "@main/memory/engineTools.js";
+import { appToolDescriptors, invokeAppEngineTool, isAppToolName } from "@main/appControl/engineTools.js";
 import { libraryToolDescriptors, invokeLibraryToolGated, isLibraryToolName } from "@main/library/engineTools.js";
 import { workflowEngineBridge } from "@main/mcp/workflowEngineTools.js";
 /**
@@ -1022,6 +1023,8 @@ async function answerNativeUserInput(p: Record<string, unknown>, deps: RequestDe
 function buildDynamicTools(browserToolsEnabled: boolean): Array<Record<string, unknown>> {
   const tools: Array<Record<string, unknown>> = [
     ...memoryToolDescriptors(),
+    // mcode-app —— 控制 Mcode 本身(全部功能 + 界面操作)。审批在 invokeAppEngineTool 里按功能分档做。
+    ...appToolDescriptors(),
     // 资料库工具 —— Codex 没有进程内 MCP,不在这里挂的话 library_* 一个都没有,
     // 内置工作流的入库 / 挂 PDF / 挂转录会落空。审批在 invokeDynamicTool 那一支做。
     ...libraryToolDescriptors(),
@@ -1291,6 +1294,11 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
   const { ctx, req, planMode } = deps;
   const text = (t: string): unknown => ({ success: true, contentItems: [{ type: "inputText", text: t }] });
   const fail = (t: string): unknown => ({ success: false, contentItems: [{ type: "inputText", text: t }] });
+
+  if (isAppToolName(name)) {
+    const result = await invokeAppEngineTool(name, args, req.sessionId, ctx);
+    return { success: !result.isError, contentItems: result.content.map(c => ({ type: "inputText", text: c.type === "text" ? c.text : "" })) };
+  }
 
   if (name.startsWith("memory_")) {
     const result = await invokeMemoryTool(name, args, req.sessionId, ctx);

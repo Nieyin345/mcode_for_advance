@@ -1,4 +1,5 @@
 import { memoryToolDescriptors, invokeMemoryTool } from "@main/memory/engineTools.js";
+import { appToolDescriptors, invokeAppEngineTool } from "@main/appControl/engineTools.js";
 import { libraryToolDescriptors, invokeLibraryTool, isLibraryReadonlyTool } from "@main/library/engineTools.js";
 import { workflowEngineBridge } from "@main/mcp/workflowEngineTools.js";
 /**
@@ -199,6 +200,18 @@ export function createMcodeExtension(opts: CreateMcodeExtensionOptions): InlineE
     factory: (pi: ExtensionAPI) => {
       registerToolCallGuard(pi, { ctx, cwd, strict, sessionId, planMode });
       registerAskUserQuestionTool(pi, ctx);
+      // mcode-app —— 控制 Mcode 本身(全部功能 + 界面操作)。审批在 invokeAppEngineTool 里按
+      // 「调的是哪个功能」分档做,下面的 tool_call 守卫对 app_* 直接放行(同记忆工具)。
+      for (const tool of appToolDescriptors()) {
+        pi.registerTool({ name: tool.name, label: tool.name, description: tool.description,
+          parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
+          async execute(_id, args) {
+            const result = await invokeAppEngineTool(tool.name, args, sessionId, ctx);
+            if (result.isError) throw new Error(result.content.map(c => c.type === "text" ? c.text : "").join("\n"));
+            return { content: result.content, details: {} };
+          },
+        });
+      }
       for (const tool of memoryToolDescriptors()) {
         pi.registerTool({ name: tool.name, label: tool.name, description: tool.description,
           parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
@@ -341,6 +354,7 @@ function registerToolCallGuard(
     //    bridging; never route through the approval prompt or the plan-mode
     //    read-only gate.
     if (toolName.startsWith("memory_")) return; // execute uses the shared fail-closed approval policy.
+    if (toolName.startsWith("app_")) return; // mcode-app: same — invokeAppEngineTool gates per method.
     if (toolName === "EnterPlanMode" || toolName === "ExitPlanMode" || toolName === "AskUserQuestion") {
       return;
     }

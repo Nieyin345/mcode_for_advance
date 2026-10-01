@@ -2,6 +2,7 @@ import { registerProjectInitHandlers } from "./projectInit.js";
 import { registerModuleHandlers } from "./modules.js";
 import { registerMemoryAssistantHandlers } from "./memoryAssistant.js";
 import { ipcMain, type IpcMain } from "electron";
+import { recordRpcHandler } from "@main/appControl/registry.js";
 import { IPC } from "@contracts/ipc";
 import { awaitDb } from "@main/store/db.js";
 import { registerProjectHandlers } from "./projects.js";
@@ -54,10 +55,13 @@ import { registerMonitoringHandlers } from "./monitoring.js";
 function createDbGuardedIpc(target: IpcMain): IpcMain {
   const wrapped: Pick<IpcMain, "handle"> = {
     handle(channel, handler) {
-      target.handle(channel, async (event, raw) => {
+      const guarded = async (event: Parameters<typeof handler>[0], raw: unknown) => {
         await awaitDb();
         return handler(event, raw);
-      });
+      };
+      target.handle(channel, guarded);
+      // 同一个函数留一份给 mcode-app 的 `app_api_call`(agent 调功能 = 界面按按钮,走同一段代码)。
+      recordRpcHandler(channel, guarded as (event: unknown, raw: unknown) => unknown);
     },
   };
   return wrapped as unknown as IpcMain;

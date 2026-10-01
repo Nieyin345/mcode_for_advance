@@ -7,6 +7,7 @@
  * and the provider continues.
  */
 import type { RuntimeEvent, AskUserQuestionItem, PermissionMode } from "@contracts/runtime";
+import { APP_DANGER_APPROVAL_PREFIX } from "@contracts/appControl";
 import type {
   ApprovalRequest,
   ProviderApprovalDecision,
@@ -89,13 +90,15 @@ export class ApprovalBridge {
   resolveApproval(requestId: string, decision: ProviderApprovalDecision, always?: boolean): string | null {
     const p = this.pendingApprovals.get(requestId);
     if (!p) return null;
+    // mcode-app 的高风险操作**每次都得本人点** —— 就算客户端硬传了 always 也不认、不记。
+    const remember = always === true && !p.toolName.startsWith(APP_DANGER_APPROVAL_PREFIX);
     // Surface the "always allow" intent on the decision itself so providers
     // with a server-side session grant (codex acceptForSession) can scope
     // their grant accordingly (one-shot "accept" vs session-wide).
-    p.resolve(decision.allow && always ? { ...decision, persist: true } : decision);
+    p.resolve(decision.allow && remember ? { ...decision, persist: true } : decision);
     this.pendingApprovals.delete(requestId);
     // Record "always allow" so canUseTool auto-approves this tool next time.
-    if (decision.allow && always) {
+    if (decision.allow && remember) {
       let set = this.alwaysAllowedTools.get(p.sessionId);
       if (!set) {
         set = new Set();

@@ -92,6 +92,8 @@ import {
   buildMemoryMcpServer,
   MEMORY_MCP_SERVER,
 } from "@main/mcp/memoryServer.js";
+import { buildAppMcpServer } from "@main/mcp/appServer.js";
+import { APP_MCP_SERVER } from "@contracts/appControl";
 // 审批闸门(哪些工具不用问用户)只有一份 —— 它得与网页端那条通路共用,见该文件头。
 import { BROWSER_MCP_SERVER, shouldAutoApprove } from "@main/providers/toolGate.js";
 import { loadCreateMcpServer } from "@main/mcp/sdk.js";
@@ -1046,6 +1048,8 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     const canUseTool: CanUseTool = async (toolName, input, opts) => {
       // Shared memory handlers perform fail-closed approval even when SDK modes bypass hooks.
       if (toolName.startsWith(`mcp__${MEMORY_MCP_SERVER}__memory_`)) return { behavior: "allow" };
+      // mcode-app 同理:放行在这里,审批在 handler 里按「调的是哪个功能」分档做(main/appControl/tools.ts)。
+      if (toolName.startsWith(`mcp__${APP_MCP_SERVER}__app_`)) return { behavior: "allow" };
       if (toolName === "AskUserQuestion") {
         // AskUserQuestion only fires here when the native tool is available
         // (capabilities.supportsAskUserQuestion). Sentinel fallback path
@@ -1523,6 +1527,9 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       [WORKFLOW_MCP_SERVER]: workflowServer,
       [MEMORY_MCP_SERVER]: memoryServer,
     };
+    // mcode-app —— agent 控制 Mcode 本身(全部功能 + 界面操作,见 main/appControl/tools.ts)。
+    // 节点收窄(strictMcpConfig)时不进候选表,与记忆工具一样只在普通对话里挂。
+    options.mcpServers[APP_MCP_SERVER] = await buildAppMcpServer({ sessionId: req.sessionId, context: ctx });
 
     // Output style (settings panel): same Settings-not-Options trap as the
     // MCP lists above. The CLI reads the style once at session start and has
