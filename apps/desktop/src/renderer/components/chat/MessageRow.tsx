@@ -461,6 +461,8 @@ function UserMessageEditor({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // 输入法选词时的回车不是「发送」(同 ComposerEditor / QuestionPrompt 的判据)。
+    if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       const trimmed = text.trim();

@@ -421,7 +421,7 @@ export function InlineInputRow({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") onSubmit();
+            if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) onSubmit();
             if (e.key === "Escape") onCancel();
           }}
           {...(onBlur ? { onBlur } : {})}

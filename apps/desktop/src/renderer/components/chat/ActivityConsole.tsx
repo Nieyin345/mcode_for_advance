@@ -511,7 +511,7 @@ function BookmarkRow({
             maxLength={80}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") commit();
+              if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) commit();
               else if (e.key === "Escape") setEditing(false);
             }}
             onBlur={commit}

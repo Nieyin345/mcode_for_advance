@@ -383,7 +383,7 @@ export function RenameDialog({ renaming, onClose, onSubmit }: RenameDialogProps)
               placeholder={copy.placeholder}
               onChange={(e) => setValue((e.target as HTMLInputElement).value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") { e.preventDefault(); submit(); }
+                if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) { e.preventDefault(); submit(); }
                 if (e.key === "Escape") { e.preventDefault(); onClose(); }
               }}
               onFocus={(e) => (e.target as HTMLInputElement).select()}
