@@ -235,6 +235,8 @@ export const zh = {
   "layout.domainIndependent":
     "这条隧道只给手机用，和「设置 → 远程控制」(MCP) 互不相关 —— 不需要开启远程控制。",
   "layout.domainModeLabel": "隧道由谁运行",
+  "layout.domainStalePreload":
+    "Mcode 的后台部分还是旧版本（界面已更新，但主进程 / 预加载脚本没有重启）。请完全退出 Mcode 后重新启动；开发模式下要重启 dev 进程。",
   "layout.domainModeOff": "不用",
   "layout.domainModeNamed": "Mcode 运行",
   "layout.domainModeExternal": "我自己运行",

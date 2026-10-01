@@ -42,24 +42,29 @@ export function MobileDomainPanel() {
   // 死码去输,只会看到"验证码错误"。
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  // 主进程 / 预加载脚本比渲染层旧(开发模式热更新后没重启)—— 见下面 load 里的注释。
+  const stalePreload = typeof api.mobile.getTunnel !== "function";
 
   useEffect(() => {
     let alive = true;
-    const load = (first: boolean) =>
-      api.mobile
-        .getTunnel()
-        .then((s) => {
-          if (!alive) return;
-          setStatus(s);
-          // 草稿只在第一次对齐 —— 之后的轮询不能把用户正在输入的内容冲掉。
-          if (first) {
-            setDraft(s.hostname);
-            setModeDraft(s.mode);
-          }
-        })
-        .catch(() => {
-          /* 主进程还没就绪 —— 下一轮再看 */
-        });
+    const load = async (first: boolean) => {
+      // ⚠️ 预加载脚本是窗口创建时注入的:开发模式下渲染层热更新到了新代码,而主进程 /
+      // preload 还是旧的,`api.mobile.getTunnel` 就不存在。原先这里直接调,同步抛出的
+      // TypeError 冲出 useEffect,整个窗口白屏。现在认出来,提示重启。
+      if (stalePreload) return;
+      try {
+        const s = await api.mobile.getTunnel();
+        if (!alive) return;
+        setStatus(s);
+        // 草稿只在第一次对齐 —— 之后的轮询不能把用户正在输入的内容冲掉。
+        if (first) {
+          setDraft(s.hostname);
+          setModeDraft(s.mode);
+        }
+      } catch {
+        /* 主进程还没就绪 —— 下一轮再看 */
+      }
+    };
     void load(true);
     // 隧道状态会自己变(连上、掉线重连、出错),这一页要跟着显示,所以轻量轮询。
     const timer = window.setInterval(() => void load(false), 4000);
@@ -67,7 +72,7 @@ export function MobileDomainPanel() {
       alive = false;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [stalePreload]);
 
   const run = async (fn: () => Promise<MobileTunnelStatus>) => {
     setBusy(true);
@@ -171,6 +176,15 @@ export function MobileDomainPanel() {
   const modes: MobileTunnelMode[] = ["off", "named", "external"];
   const modeLabel = (m: MobileTunnelMode) =>
     m === "off" ? t("layout.domainModeOff") : m === "named" ? t("layout.domainModeNamed") : t("layout.domainModeExternal");
+
+  if (stalePreload) {
+    return (
+      <p className="flex items-start gap-1.5 rounded border border-warning/40 bg-warning/10 px-2.5 py-2 text-xs leading-relaxed text-warning">
+        <IconAlertTriangle size={14} className="mt-0.5 shrink-0" />
+        <span>{t("layout.domainStalePreload")}</span>
+      </p>
+    );
+  }
 
   return (
     <div className="space-y-3">

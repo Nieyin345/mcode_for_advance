@@ -225,6 +225,8 @@ export const en = {
   "layout.domainIndependent":
     "This tunnel is only for the phone and has nothing to do with Settings → Remote control (MCP) — remote control does not need to be on.",
   "layout.domainModeLabel": "Who runs the tunnel",
+  "layout.domainStalePreload":
+    "Mcode's background part is still the old version (the UI was updated but the main process / preload was not restarted). Quit Mcode completely and start it again; in dev mode, restart the dev process.",
   "layout.domainModeOff": "Off",
   "layout.domainModeNamed": "Mcode runs it",
   "layout.domainModeExternal": "I run it",
