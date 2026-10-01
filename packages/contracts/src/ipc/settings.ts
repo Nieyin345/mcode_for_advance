@@ -708,6 +708,50 @@ export const PUBLIC_MCP_SECRET_SETTING_KEY = "publicMcp.secret";
 export const PUBLIC_MCP_SESSION_ID_SETTING_KEY = "publicMcp.sessionId";
 
 /**
+ * **隧道模式**(见 `main/providers/bridge/tunnelManager.ts` 的文件头)。
+ *
+ * - `quick`(默认,原有行为):`cloudflared tunnel --url`,随机 trycloudflare 域名,
+ *   每次重启都变 —— 每次都要去 ChatGPT 里重填地址。
+ * - `named`:用户自己在 Cloudflare 建的命名隧道 + Tunnel Token,**域名固定**。
+ * - `external`:隧道由用户自己在外面跑(比如装成 Windows 服务,关掉 Mcode 也在),
+ *   Mcode 不起进程、只记住那个域名。
+ */
+export const PUBLIC_MCP_TUNNEL_MODE_SETTING_KEY = "publicMcp.tunnelMode";
+export const PublicMcpTunnelModeSchema = z.enum(["quick", "named", "external"]);
+export type PublicMcpTunnelMode = z.infer<typeof PublicMcpTunnelModeSchema>;
+
+/**
+ * Cloudflare 的 **Tunnel Token**(named 模式用)。
+ *
+ * ⚠️ **密文存**(`main/lib/secretStore.ts` 的 safeStorage,与自定义模型的 API key 同一套)。
+ * 这串 token 等于那条隧道的控制权 —— 拿到它的人可以把你的域名指向任何地方。
+ * 它也**不进命令行**:起进程时走 `TUNNEL_TOKEN` 环境变量,否则任务管理器里就能看到。
+ */
+export const PUBLIC_MCP_TUNNEL_TOKEN_SETTING_KEY = "publicMcp.tunnelToken";
+
+/** named / external 模式下 **MCP 端点**的公网域名,如 `mcp.example.com`(不带协议)。 */
+export const PUBLIC_MCP_TUNNEL_HOSTNAME_SETTING_KEY = "publicMcp.tunnelHostname";
+
+/**
+ * named / external 模式下 **手机伴侣**的公网域名,如 `m.example.com`。
+ *
+ * 一条命名隧道可以配多条 public hostname(按 hostname 分流到不同本地端口),所以
+ * **一个域名就够**:`mcp.x` → MCP 端点,`m.x` → 手机伴侣的 7331。空串 = 不暴露手机。
+ */
+export const PUBLIC_MCP_MOBILE_HOSTNAME_SETTING_KEY = "publicMcp.mobileHostname";
+
+/**
+ * 公网 MCP 服务的**固定本机端口**(0 = 随机,默认)。
+ *
+ * 命名隧道的 ingress 规则在 Cloudflare 面板里写死 `127.0.0.1:<端口>`,所以那条路
+ * 必须固定端口。被占用时**如实失败,不自动换** —— 换了 ingress 就指空了,而用户在
+ * Mcode 这边看不出任何异常(见 `publicMcpServer.ts` 的 `listenOnFixedPort`)。
+ */
+export const PUBLIC_MCP_FIXED_PORT_SETTING_KEY = "publicMcp.fixedPort";
+/** 固定端口的默认建议值(UI 预填用;实际生效的是设置里存的那个)。 */
+export const PUBLIC_MCP_DEFAULT_FIXED_PORT = 17331;
+
+/**
  * **沙箱目录** —— 公网进来的文件工具只允许在这个项目目录里动（见 `agentTools.ts`
  * 的 `resolveAgainstCwd`）。值是**项目 id**，不是路径 —— 项目改了路径它跟着走。
  *

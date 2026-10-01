@@ -386,6 +386,20 @@ export interface PublicMcpStatus {
   sandboxProjectId: string | null;
   /** 可选的沙箱项目清单 —— 设置页那个下拉框用它。名字 + id + 路径。 */
   availableProjects: { id: string; name: string; path: string }[];
+  /** 隧道模式(见 `PUBLIC_MCP_TUNNEL_MODE_SETTING_KEY`)。缺省 `quick`。 */
+  tunnelMode: "quick" | "named" | "external";
+  /** named / external 下用户配的 MCP 域名(不带协议);没配为空串。 */
+  tunnelHostname: string;
+  /** named / external 下手机伴侣的域名;空串 = 不暴露手机。 */
+  mobileHostname: string;
+  /** 已存的 Tunnel Token 的**尾 4 位**(形如 `****abcd`);没存过为空串。
+   *  **整串永远不回传渲染层** —— 界面只需要知道"存过没有"。 */
+  tokenHint: string;
+  /** 配置的固定端口(0 = 随机)。与 `port` 不同:那个是**实际**在听的。 */
+  fixedPort: number;
+  /** 手机伴侣服务此刻在不在听、听哪个端口 —— 用来核对 Cloudflare 那条 ingress
+   *  写的端口对不对(写错的话公网访问手机端会连接被拒,而本机一切正常)。 */
+  mobilePort: number;
 }
 
 /**
@@ -413,3 +427,21 @@ export interface PublicMcpStatus {
  * 转一圈，不会发到任何上游）。
  */
 export const MCODE_SESSION_HEADER = "x-mcode-session";
+
+/**
+ * 隧道配置(设置页那张卡片编辑它,主进程起隧道时用它)。
+ *
+ * `token` 在**进出 IPC 时是明文**(用户要能粘贴进来),落盘时由主进程加密;
+ * 读回给界面的那份**只给尾 4 位**(`tokenHint`),整串永远不回传渲染层。
+ */
+export interface PublicMcpTunnelConfig {
+  mode: "quick" | "named" | "external";
+  /** named 必填。空串 = 不改动已存的那串(界面上留空表示"沿用")。 */
+  token?: string;
+  /** named / external 必填:MCP 端点的公网域名,不带协议。 */
+  hostname?: string;
+  /** 可选:手机伴侣的公网域名。空 = 不暴露手机。 */
+  mobileHostname?: string;
+  /** 公网 MCP 服务的固定本机端口;0 = 随机(仅 quick 模式适用)。 */
+  fixedPort?: number;
+}

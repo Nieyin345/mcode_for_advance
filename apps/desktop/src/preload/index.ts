@@ -199,6 +199,8 @@ const api = {
       ipcRenderer.invoke(IPC.PUBLIC_MCP_STOP_TUNNEL)) as RpcMap["publicMcp.stopTunnel"],
     setProject: ((input) =>
       ipcRenderer.invoke(IPC.PUBLIC_MCP_SET_PROJECT, input)) as RpcMap["publicMcp.setProject"],
+    setTunnelConfig: ((input) =>
+      ipcRenderer.invoke(IPC.PUBLIC_MCP_SET_TUNNEL_CONFIG, input)) as RpcMap["publicMcp.setTunnelConfig"],
   },
 
   /** Pi models visual editor — reads/writes ~/.pi/agent/models.json.

@@ -12,7 +12,13 @@ import { MEMORY_MANAGE_CHANNEL, type MemoryManageInput, type MemoryManageResult 
 import { z } from "zod";
 import type { Project, Session, MessageRecord } from "../session.js";
 import type { BuiltinModelOption } from "../provider.js";
-import type { CustomModelPublic, ExtensionBridgeStatus, PublicMcpStatus, TestCustomModelResult } from "../customModel.js";
+import type {
+  CustomModelPublic,
+  ExtensionBridgeStatus,
+  PublicMcpStatus,
+  PublicMcpTunnelConfig,
+  TestCustomModelResult,
+} from "../customModel.js";
 import type { PiProviderPublic } from "../piModel.js";
 import type { CodexProviderPublic } from "../codexModel.js";
 import type { NodeTypeCatalog } from "../nodeType.js";
@@ -239,6 +245,9 @@ export interface RpcMap {
   "publicMcp.stopTunnel": () => Promise<PublicMcpStatus>;
   /** 改沙箱目录 —— 公网进来的文件工具能碰哪个项目。传 null 取消选择。 */
   "publicMcp.setProject": (input: { projectId: string | null }) => Promise<PublicMcpStatus>;
+  /** 存隧道配置(模式 / 自有域名 / Tunnel Token / 固定端口)。
+   *  token 留空 = 沿用已存的那串;返回的状态里**只带尾 4 位**。 */
+  "publicMcp.setTunnelConfig": (input: PublicMcpTunnelConfig) => Promise<PublicMcpStatus>;
   // Pi models (visual editor for ~/.pi/agent/models.json)
   "piModels.list": () => Promise<{ providers: Record<string, PiProviderPublic> }>;
   "piModels.save": (input: SavePiProviderInput) => Promise<{ providers: Record<string, PiProviderPublic> }>;
@@ -1370,6 +1379,7 @@ export const IPC = {
   PUBLIC_MCP_START_TUNNEL: "publicMcp:startTunnel",
   PUBLIC_MCP_STOP_TUNNEL: "publicMcp:stopTunnel",
   PUBLIC_MCP_SET_PROJECT: "publicMcp:setProject",
+  PUBLIC_MCP_SET_TUNNEL_CONFIG: "publicMcp:setTunnelConfig",
   // Pi models (visual editor for ~/.pi/agent/models.json)
   PI_MODELS_LIST: "piModels:list",
   PI_MODELS_SAVE: "piModels:save",

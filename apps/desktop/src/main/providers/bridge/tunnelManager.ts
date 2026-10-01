@@ -9,11 +9,29 @@
  *
  * 这个模块把那三步收成一个动作:起进程、从输出里抠出域名、把状态交给 UI 轮询。
  *
- * ## 为什么是**快速隧道**(`--url`)而不是命名隧道
+ * ## 两种模式:快速隧道与**命名隧道**
  *
- * 命名隧道要域名 + Cloudflare 账号 + `cloudflared tunnel login`,那是"部署"的量级。
- * 快速隧道不上账号、随机域名、用完即弃 —— 与"这个开关开着我就能用,关了就没了"正好
- * 对上。代价是域名每次变(UI 因此必须每次显示当前域名,而不是让人记住一个)。
+ * **`quick`(默认,原有行为)**:`cloudflared tunnel --url http://127.0.0.1:<端口>`。
+ * 不上账号、随机域名、用完即弃 —— 与"这个开关开着我就能用,关了就没了"正好对上。
+ * 代价是域名每次变(UI 因此必须每次显示当前域名,而不是让人记住一个),每次都要去
+ * ChatGPT 里重填一遍地址。
+ *
+ * **`named`(新增)**:用户在 Cloudflare 建好一条命名隧道、配好 public hostname,
+ * 把 **Tunnel Token** 交给我们,这里只负责 `cloudflared tunnel run`。换来的是
+ * **域名固定**:填一次就不用再动,还能在 Cloudflare 侧叠 Access / WAF 策略。
+ *
+ * 两者**并存**,不是替换:quick 那条路一行没动,默认仍是它。
+ *
+ * ### named 模式的三处不一样
+ *
+ * 1. **域名不来自日志。** 命名隧道的域名是用户在 Cloudflare 配的,cloudflared 的输出里
+ *    压根不会出现它 —— 所以 {@link QUICK_TUNNEL_RE} 那条正则在这个模式下永远匹配不上。
+ *    就绪判定改成认**连接注册**那行(`Registered tunnel connection`),域名直接用配置值。
+ * 2. **token 走环境变量,不走命令行。** `--token <值>` 会把它暴露在进程列表里
+ *    (任务管理器 / `ps` / 其它用户都看得到),而那串 token 等于这条隧道的控制权。
+ *    cloudflared 认 `TUNNEL_TOKEN` 环境变量,所以走它。日志里也只打码后几位。
+ * 3. **token 不对不重连。** 鉴权失败重试 6 次没有任何意义,只会把真正的原因埋进
+ *    "重连中…"里。认出这一类就**当场判死**并直说"token 不对"。
  *
  * ## 抠域名:为什么盯着 stderr
  *
@@ -49,8 +67,44 @@ export interface TunnelStatus {
   error: string | null;
 }
 
-/** 域名扫描:**只认 trycloudflare 的快速隧道域名**。 */
+/** 隧道模式。`quick` = 随机 trycloudflare 域名;`named` = 用户自己的域名 + Tunnel Token。 */
+export type TunnelMode = "quick" | "named";
+
+/** 起隧道要的配置。`quick` 只用 mode;`named` 两项都必填。 */
+export interface TunnelConfig {
+  mode: TunnelMode;
+  /** Cloudflare 的 Tunnel Token(named 必填)。**不进命令行、不进日志。** */
+  token?: string;
+  /** 用户在 Cloudflare 配的 public hostname,如 `mcp.example.com`(named 必填,**不带协议**)。 */
+  hostname?: string;
+}
+
+/** 域名扫描:**只认 trycloudflare 的快速隧道域名**(仅 quick 模式用得上)。 */
 const QUICK_TUNNEL_RE = /https:\/\/[a-z0-9][a-z0-9-]*\.trycloudflare\.com/i;
+
+/**
+ * named 模式的就绪信号:cloudflared 每与一个边缘节点建好连接就打一行
+ * `Registered tunnel connection connIndex=0 …`。第一条出现就说明**这条隧道通了**。
+ * 不同版本的措辞略有出入,所以认得宽一点(两个词都在即可)。
+ */
+const NAMED_READY_RE = /registered tunnel connection|connection .* registered/i;
+
+/**
+ * named 模式的**致命**信号:token 不对。重试多少次都一样,所以认出来就当场判死。
+ * cloudflared 对坏 token 的说法有好几种,这里把见得到的都收进来。
+ */
+const NAMED_AUTH_FAIL_RE =
+  /invalid tunnel (token|credentials)|failed to parse (the )?token|unauthorized|401|token is invalid|provided token is not valid/i;
+
+/** hostname 打头的协议/斜杠去掉 —— 用户十有八九会把 `https://` 一起粘进来。 */
+function normalizeHostname(raw: string): string {
+  return raw.trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+}
+
+/** token 只在日志里露尾 4 位,其余打码。 */
+function maskToken(token: string): string {
+  return token.length <= 4 ? "****" : `****${token.slice(-4)}`;
+}
 
 /** 等域名出现的上限。预检一般十几秒;给到 60 秒是为了容忍慢网络,又不至于让用户干等。 */
 const DEFAULT_READY_TIMEOUT_MS = 60_000;
@@ -64,12 +118,20 @@ const TAIL_LINES = 8;
  */
 export type FindCloudflared = () => string | null;
 
-/** 起进程。注入是为了 smoke 能不联网。 */
-export type SpawnTunnel = (exe: string, args: string[]) => ChildProcess;
+/** 起进程。注入是为了 smoke 能不联网。`env` 是 named 模式用来递 `TUNNEL_TOKEN` 的。 */
+export type SpawnTunnel = (exe: string, args: string[], env?: NodeJS.ProcessEnv) => ChildProcess;
+
+/** 生产用的 spawn。named 模式会带 `env`(里面有 TUNNEL_TOKEN),quick 模式不带。 */
+function defaultSpawnTunnel(exe: string, args: string[], env?: NodeJS.ProcessEnv): ChildProcess {
+  return nodeSpawn(exe, args, {
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    ...(env ? { env } : {}),
+  });
+}
 
 let findCloudflared: FindCloudflared = defaultFindCloudflared;
-let spawnTunnel: SpawnTunnel = (exe, args) =>
-  nodeSpawn(exe, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+let spawnTunnel: SpawnTunnel = defaultSpawnTunnel;
 /** 等域名的上限。可注入 —— smoke 要能把它调成一瞬间来测超时那条分支。 */
 let readyTimeoutMs = DEFAULT_READY_TIMEOUT_MS;
 
@@ -87,8 +149,7 @@ export function configureTunnelDeps(deps: {
 /** 还原成生产实现(测试收尾)。 */
 export function resetTunnelDeps(): void {
   findCloudflared = defaultFindCloudflared;
-  spawnTunnel = (exe, args) =>
-    nodeSpawn(exe, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  spawnTunnel = defaultSpawnTunnel;
   readyTimeoutMs = DEFAULT_READY_TIMEOUT_MS;
 }
 
@@ -137,6 +198,14 @@ let livePort: number | null = null;
 let reconnectAttempt = 0;
 let reconnectTimer: NodeJS.Timeout | null = null;
 
+/**
+ * 当前这条隧道**用的是哪套配置**。重连要照原样再起一次,所以必须记住 ——
+ * 只靠 `livePort` 的话,named 模式重连时会退化成 quick(端口对了、模式丢了)。
+ *
+ * 与 `livePort` 同生共死:`stopTunnel()` 把它复位成 quick。
+ */
+let liveConfig: TunnelConfig = { mode: "quick" };
+
 /** 重连退避:1s → 2s → 4s … 封顶 30s。**不无限重试** —— 见 {@link MAX_RECONNECT_ATTEMPTS}。 */
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
@@ -170,11 +239,30 @@ function clearTimer(): void {
  *
  *  `isReconnect` 是**重连回调内部用的** —— 见下面 `reconnectAttempt` 那段:
  *  用户主动开才把重试计数归零,重连进来必须保留,否则上限永远到不了。 */
-export function startTunnel(localPort: number, isReconnect = false): TunnelStatus {
+export function startTunnel(localPort: number, isReconnect = false, config?: TunnelConfig): TunnelStatus {
   // 幂等:已经在起/已经好/正在重连,都不再起第二条。
   if (status.phase === "starting" || status.phase === "ready" || status.phase === "reconnecting") {
     return tunnelStatus();
   }
+  // 配置只在**用户主动开**那次采纳;重连沿用 `liveConfig`(见它的注释)。
+  if (!isReconnect) liveConfig = config ?? { mode: "quick" };
+  const cfg = liveConfig;
+
+  // named 的两项必填**在起进程之前**查掉 —— 少一项就起不来,让 cloudflared 用一段
+  // 看不懂的错去报它,等于把一个一眼能说清的配置问题变成玄学。
+  if (cfg.mode === "named") {
+    const token = (cfg.token ?? "").trim();
+    const host = normalizeHostname(cfg.hostname ?? "");
+    if (!token) {
+      status = { phase: "failed", url: null, error: "命名隧道缺 Tunnel Token:到 Cloudflare Zero Trust → Networks → Tunnels 里复制那串 token 填进来。" };
+      return tunnelStatus();
+    }
+    if (!host) {
+      status = { phase: "failed", url: null, error: "命名隧道缺公网域名:填你在 Cloudflare 那条隧道的 Public Hostname(如 mcp.example.com)。" };
+      return tunnelStatus();
+    }
+  }
+
   // 记下"这条隧道该活着"。
   livePort = localPort;
   // ⚠️ **只有"用户主动开"才把重试计数归零。**
@@ -200,12 +288,24 @@ export function startTunnel(localPort: number, isReconnect = false): TunnelStatu
 
   tail = [];
   status = { phase: "starting", url: null, error: null };
-  const args = ["tunnel", "--url", `http://127.0.0.1:${localPort}`, "--no-autoupdate"];
-  log.info(`tunnel: starting ${exe} tunnel --url http://127.0.0.1:${localPort}`);
+
+  const named = cfg.mode === "named";
+  const namedHost = named ? normalizeHostname(cfg.hostname ?? "") : "";
+  // named:`tunnel run`,token 走环境变量(见文件头第 2 点,别放进 argv)。
+  // quick:原样不动。
+  const args = named
+    ? ["--no-autoupdate", "tunnel", "run"]
+    : ["tunnel", "--url", `http://127.0.0.1:${localPort}`, "--no-autoupdate"];
+  const env = named ? { ...process.env, TUNNEL_TOKEN: (cfg.token ?? "").trim() } : undefined;
+  log.info(
+    named
+      ? `tunnel: starting ${exe} tunnel run (named, host=${namedHost}, token=${maskToken((cfg.token ?? "").trim())})`
+      : `tunnel: starting ${exe} tunnel --url http://127.0.0.1:${localPort}`,
+  );
 
   let proc: ChildProcess;
   try {
-    proc = spawnTunnel(exe, args);
+    proc = spawnTunnel(exe, args, env);
   } catch (err) {
     status = { phase: "failed", url: null, error: `启动 cloudflared 失败:${(err as Error).message}` };
     return tunnelStatus();
@@ -214,19 +314,41 @@ export function startTunnel(localPort: number, isReconnect = false): TunnelStatu
 
   const markReadyFrom = (text: string): void => {
     if (status.phase !== "starting") return;
-    const found = QUICK_TUNNEL_RE.exec(text);
-    if (!found) return;
+    // named:域名不在日志里(文件头第 1 点),认"连接注册"那行,域名用配置值。
+    // quick:老样子,从日志里抠 trycloudflare 域名。
+    const url = named
+      ? (NAMED_READY_RE.test(text) ? `https://${namedHost}` : null)
+      : (QUICK_TUNNEL_RE.exec(text)?.[0] ?? null);
+    if (url === null) return;
     clearTimer();
-    status = { phase: "ready", url: found[0], error: null };
+    status = { phase: "ready", url, error: null };
     // **连上了就把重试计数归零** —— 否则"连上→掉→连上→掉"跑几轮之后,退避会一路
     // 涨到 30 秒,而每一次其实都只是短暂抖动。归零让每次新断开都从 1 秒重新开始。
     reconnectAttempt = 0;
-    log.info(`tunnel: ready at ${found[0]}`);
+    log.info(`tunnel: ready at ${url}`);
+  };
+  /** token 不对 → 当场判死(文件头第 3 点),不进重连。 */
+  const failFatalIfAuth = (text: string): boolean => {
+    if (!named || status.phase === "failed") return false;
+    if (!NAMED_AUTH_FAIL_RE.test(text)) return false;
+    const reason =
+      "Cloudflare 拒绝了这串 Tunnel Token(鉴权失败)。重连多少次都一样,所以直接停了。" +
+      "\n到 Zero Trust → Networks → Tunnels 里重新复制一遍 token —— 注意要复制**整串**,它很长。" +
+      tailNote();
+    // 顺序同超时那条:**先收进程、清掉"该活着"的标志,再写状态**,否则会被
+    // close 处理器的重连分支或 stopTunnel 的复位盖掉。
+    livePort = null;
+    liveConfig = { mode: "quick" };
+    clearReconnectTimer();
+    killChild();
+    status = { phase: "failed", url: null, error: reason };
+    return true;
   };
   const onLine = (raw: string): void => {
     const line = raw.trim();
     if (!line) return;
     pushTail(line);
+    if (failFatalIfAuth(line)) return;
     markReadyFrom(line);
   };
   // 一个 data 块不一定以换行结尾:域名正好被切在两块之间时,逐块 split 会把它拆成两半,
@@ -384,6 +506,9 @@ export function stopTunnel(): TunnelStatus {
   // **先把"它该活着"的标志清掉,再杀。** 反过来的话,杀出来的那个 close 事件到达时
   // `livePort` 还在,会被当成"隧道掉了"而触发重连 —— 用户点了停止,它自己又起来了。
   livePort = null;
+  // 配置跟着复位:下一次"开"必须自己带配置进来,不吃上一轮的残留
+  // (否则关掉命名隧道、再点一次快速隧道,会悄悄还用着上次那串 token)。
+  liveConfig = { mode: "quick" };
   reconnectAttempt = 0;
   clearReconnectTimer();
   killChild();

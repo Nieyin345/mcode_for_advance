@@ -20,7 +20,7 @@ import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { broadcastSessionChanged } from "@main/lib/sessionSync.js";
 import { lspManager } from "@main/lsp/LspManager.js";
 import { BrowserManager } from "@main/browser/BrowserManager.js";
-import { startMobileServer, stopMobileServer } from "@main/mobile/MobileHttpServer.js";
+import { startMobileServer, stopMobileServer, getMobileServer } from "@main/mobile/MobileHttpServer.js";
 import { relayManager } from "@main/relay/RelayManager.js";
 import { RELAY_AUTO_START_SETTING_KEY } from "@contracts/relay";
 import { SettingRepo } from "@main/store/repositories.js";
@@ -216,7 +216,9 @@ app.whenReady().then(async () => {
       bindSession: (session) => runtimeManager.bindSession(session),
       broadcastSessionChanged: (session) => broadcastSessionChanged(session),
     });
-    initPublicMcp();
+    // 手机伴侣的端口走注入(见 publicMcpSession 里 `mobilePortProvider` 的注释:
+    // 直接 import MobileHttpServer 会把 db→electron 拉进几个无关 smoke 的打包图)。
+    initPublicMcp({ mobilePort: () => getMobileServer()?.port ?? 0 });
   }, (err: unknown) => {
     // Only initDb's own rejection lands here (not errors thrown by the ready
     // callback above). Without it the failure was just an unhandledRejection

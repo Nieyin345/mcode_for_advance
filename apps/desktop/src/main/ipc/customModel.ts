@@ -19,7 +19,7 @@ import {
   TestCustomModelSchema,
   GetCustomModelTokenSchema,
 } from "@contracts/ipc";
-import type { ApiConfig } from "@contracts/customModel";
+import type { ApiConfig, PublicMcpTunnelConfig } from "@contracts/customModel";
 import { CustomModelStore } from "@main/lib/secretStore.js";
 import { buildCustomEnv, resolveActiveModel } from "@main/providers/claude-sdk/customEnv.js";
 import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
@@ -32,6 +32,7 @@ import {
   regeneratePublicMcpSecret,
   setPublicMcpEnabled,
   setPublicMcpProject,
+  setPublicMcpTunnelConfig,
   startPublicMcpTunnel,
   stopPublicMcpTunnel,
 } from "@main/providers/bridge/publicMcpSession.js";
@@ -161,6 +162,27 @@ export function registerCustomModelHandlers(ipcMain: IpcMain): void {
       throw new Error(errText(err));
     }
     return setPublicMcpProject(projectId);
+  });
+
+  // 隧道配置(模式 / 自有域名 / Tunnel Token / 固定端口)。
+  // **token 不做 min(1) 校验** —— 空串是合法输入,语义是"沿用已存的那串"
+  // (界面只显示尾 4 位,用户不改它时不该被迫整串重粘一遍)。
+  ipcMain.handle(IPC.PUBLIC_MCP_SET_TUNNEL_CONFIG, async (_evt, raw) => {
+    let input: PublicMcpTunnelConfig;
+    try {
+      input = z
+        .object({
+          mode: z.enum(["quick", "named", "external"]),
+          token: z.string().max(4096).optional(),
+          hostname: z.string().max(253).optional(),
+          mobileHostname: z.string().max(253).optional(),
+          fixedPort: z.number().int().min(0).max(65535).optional(),
+        })
+        .parse(raw);
+    } catch (err) {
+      throw new Error(errText(err));
+    }
+    return setPublicMcpTunnelConfig(input);
   });
 
   ipcMain.handle(IPC.CUSTOM_MODEL_TEST, async (_evt, raw) => {

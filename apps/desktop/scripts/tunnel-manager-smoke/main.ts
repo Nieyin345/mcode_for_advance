@@ -292,6 +292,108 @@ eq("stop 后是 stopped", tunnelStatus().phase, "stopped");
 await new Promise((r) => setTimeout(r, 1400));
 eq("…而且**没有**偷偷重连起来(用户停就是停)", procs.length, beforeStop);
 
+/* ══════════════ 命名隧道(named):用户自己的域名 ══════════════════ */
+
+/** named 模式下 cloudflared 真实输出的样子:一段启动信息,然后是连接注册。
+ *  **域名不在里面** —— 这正是不能沿用 quick 那条正则的原因。 */
+const NAMED_LOG = [
+  "2026-09-30T04:12:01Z INF Starting tunnel tunnelID=7f1c9a2e-0b55-4c1a-9a0e-2f1b7c3d4e5f",
+  "2026-09-30T04:12:01Z INF Version 2026.9.1",
+  "2026-09-30T04:12:02Z INF Initial protocol quic",
+  "2026-09-30T04:12:03Z INF Registered tunnel connection connIndex=0 connection=9b1a location=hkg07 protocol=quic",
+].join("\n");
+
+let spawnEnvs: (NodeJS.ProcessEnv | undefined)[] = [];
+const namedDeps = () => {
+  procs = [];
+  spawnArgs = [];
+  spawnEnvs = [];
+  configureTunnelDeps({
+    findCloudflared: () => "cloudflared",
+    spawnTunnel: (exe, args, env) => {
+      spawnArgs.push({ exe, args });
+      spawnEnvs.push(env);
+      const p = new FakeProc();
+      procs.push(p);
+      return p as unknown as import("node:child_process").ChildProcess;
+    },
+    readyTimeoutMs: 60_000,
+  });
+};
+
+/* ── named 1:正常起来 —— 域名来自配置,不是从日志里抠的 ───────────── */
+namedDeps();
+startTunnel(17331, false, { mode: "named", token: "eyJhIjoiTEST-TOKEN-1234", hostname: "mcp.example.com" });
+eq("named:起的是 tunnel run,不是 --url", spawnArgs[0]?.args, ["--no-autoupdate", "tunnel", "run"]);
+check(
+  "named:token **不在命令行里**(进程列表看不到)",
+  !JSON.stringify(spawnArgs[0]?.args ?? []).includes("TEST-TOKEN"),
+  spawnArgs[0]?.args,
+);
+eq("named:token 走 TUNNEL_TOKEN 环境变量", spawnEnvs[0]?.TUNNEL_TOKEN, "eyJhIjoiTEST-TOKEN-1234");
+eq("named:连接注册之前还在 starting", tunnelStatus().phase, "starting");
+procs[0]?.emitLog(NAMED_LOG);
+eq("named:认出连接注册 → ready", tunnelStatus().phase, "ready");
+eq("named:域名用的是配置值", tunnelStatus().url, "https://mcp.example.com");
+stopTunnel();
+
+/* ── named 2:用户把 https:// 一起粘进来,照样对 ─────────────────── */
+namedDeps();
+startTunnel(17331, false, { mode: "named", token: "t", hostname: "https://m.example.com/" });
+procs[0]?.emitLog("INF Registered tunnel connection connIndex=1");
+eq("named:协议与尾斜杠被规整掉", tunnelStatus().url, "https://m.example.com");
+stopTunnel();
+
+/* ── named 3:token 不对 → **当场判死,不重连** ───────────────────── */
+namedDeps();
+startTunnel(17331, false, { mode: "named", token: "bad", hostname: "mcp.example.com" });
+procs[0]?.emitLog("2026-09-30T04:13:00Z ERR Failed to parse token: invalid tunnel token");
+eq("named:鉴权失败 → failed", tunnelStatus().phase, "failed");
+check("named:错误里直说是 token 的事", (tunnelStatus().error ?? "").includes("Tunnel Token"), tunnelStatus().error);
+const afterAuthFail = procs.length;
+await new Promise((r) => setTimeout(r, 1400));
+eq("named:**没有**偷偷重连(重试 6 次对坏 token 毫无意义)", procs.length, afterAuthFail);
+stopTunnel();
+
+/* ── named 4:少填一项 → 起都不起,直接说缺什么 ─────────────────── */
+namedDeps();
+startTunnel(17331, false, { mode: "named", hostname: "mcp.example.com" });
+eq("named:缺 token → failed", tunnelStatus().phase, "failed");
+check("named:缺 token 的话说得清", (tunnelStatus().error ?? "").includes("Tunnel Token"), tunnelStatus().error);
+eq("named:缺项时**连进程都没起**", procs.length, 0);
+stopTunnel();
+namedDeps();
+startTunnel(17331, false, { mode: "named", token: "t" });
+eq("named:缺域名 → failed", tunnelStatus().phase, "failed");
+check("named:缺域名的话说得清", (tunnelStatus().error ?? "").includes("公网域名"), tunnelStatus().error);
+eq("named:缺项时**连进程都没起**(域名这条也一样)", procs.length, 0);
+stopTunnel();
+
+/* ── named 5:重连沿用 named 配置,不退化成 quick ─────────────────── */
+namedDeps();
+startTunnel(17331, false, { mode: "named", token: "tok", hostname: "mcp.example.com" });
+procs[0]?.emitLog(NAMED_LOG);
+eq("named:先起来", tunnelStatus().phase, "ready");
+procs[0]?.close(1);
+eq("named:掉了 → reconnecting", tunnelStatus().phase, "reconnecting");
+await new Promise((r) => setTimeout(r, 1200));
+eq("named:重连起的仍是 tunnel run(模式没丢)", spawnArgs[1]?.args, ["--no-autoupdate", "tunnel", "run"]);
+eq("named:重连仍带着 token", spawnEnvs[1]?.TUNNEL_TOKEN, "tok");
+procs[1]?.emitLog(NAMED_LOG);
+eq("named:重连后域名还是那个", tunnelStatus().url, "https://mcp.example.com");
+stopTunnel();
+
+/* ── named 6:停掉之后再开 quick,**不吃上一轮的残留配置** ────────── */
+namedDeps();
+startTunnel(17331, false, { mode: "named", token: "tok", hostname: "mcp.example.com" });
+stopTunnel();
+startTunnel(54321);
+eq("停了再开 quick:起的是 --url", spawnArgs[1]?.args?.[1], "--url");
+eq("停了再开 quick:不再带 token", spawnEnvs[1], undefined);
+procs[1]?.emitLog("https://back-to-quick.trycloudflare.com");
+eq("停了再开 quick:域名照常抠", tunnelStatus().url, "https://back-to-quick.trycloudflare.com");
+stopTunnel();
+
 /* ── 收尾:还原注入,确认 dispose 干净 ───────────────────────────── */
 resetTunnelDeps();
 stopTunnel();

@@ -40,7 +40,14 @@ import {
   PUBLIC_MCP_SECRET_SETTING_KEY,
   PUBLIC_MCP_SESSION_ID_SETTING_KEY,
   PUBLIC_MCP_PROJECT_ID_SETTING_KEY,
+  PUBLIC_MCP_TUNNEL_MODE_SETTING_KEY,
+  PUBLIC_MCP_TUNNEL_TOKEN_SETTING_KEY,
+  PUBLIC_MCP_TUNNEL_HOSTNAME_SETTING_KEY,
+  PUBLIC_MCP_MOBILE_HOSTNAME_SETTING_KEY,
+  PUBLIC_MCP_FIXED_PORT_SETTING_KEY,
 } from "@contracts/ipc/settings";
+import type { PublicMcpTunnelConfig } from "@contracts/customModel";
+import { encrypt, decrypt } from "@main/lib/secretStore.js";
 import { uid } from "@main/utils.js";
 import { log } from "@main/lib/logger.js";
 import { ProjectRepo, SessionRepo, SettingRepo } from "@main/store/repositories.js";
@@ -55,6 +62,90 @@ import {
   type PublicMcpStatus,
 } from "@main/providers/bridge/publicMcpServer.js";
 import { disposeTunnel, startTunnel, stopTunnel, tunnelStatus } from "@main/providers/bridge/tunnelManager.js";
+
+/**
+ * 手机伴侣此刻在听哪个端口 —— **注入**,不 import。
+ *
+ * ⚠️ 这里原先是 `import { getMobileServer } from "@main/mobile/MobileHttpServer.js"`,
+ * 结果 `custom-model-smoke` **在 esbuild 打包阶段就红了**:那个 smoke 只 alias 了
+ * electron / secretStore / SDK 几样,而 MobileHttpServer 会把 db → electron 整条图
+ * 拉进来。与本文件头说的"RuntimeManager 为什么走注入"是同一个坑,别再踩第二次。
+ *
+ * 默认返回 0(= 没在听),由 `main/index.ts` 在装配时换成真的。
+ */
+let mobilePortProvider: () => number = () => 0;
+
+/* ──────────────────────── 隧道配置的存取 ──────────────────────── */
+
+/** 隧道模式。认不出的值按 `quick` 处理(设置表是用户可改的文本,不能假设它干净)。 */
+function readTunnelMode(): "quick" | "named" | "external" {
+  const raw = SettingRepo.get(PUBLIC_MCP_TUNNEL_MODE_SETTING_KEY)?.trim();
+  return raw === "named" || raw === "external" ? raw : "quick";
+}
+
+/** 解出那串 Tunnel Token(落盘是 safeStorage 密文)。没存过给空串。 */
+function readTunnelToken(): string {
+  const raw = SettingRepo.get(PUBLIC_MCP_TUNNEL_TOKEN_SETTING_KEY);
+  if (!raw) return "";
+  try {
+    return decrypt(raw);
+  } catch (err) {
+    // 解不开(换了机器 / 系统密钥环变了)—— 当作没存,让用户重填,别把异常抛到 UI。
+    log.error(`public mcp: tunnel token decrypt failed: ${(err as Error).message}`);
+    return "";
+  }
+}
+
+/** 固定端口。非法值(非数字 / 越界)一律按 0 = 随机。 */
+function readFixedPort(): number {
+  const n = Number.parseInt(SettingRepo.get(PUBLIC_MCP_FIXED_PORT_SETTING_KEY) ?? "", 10);
+  return Number.isFinite(n) && n > 0 && n < 65536 ? n : 0;
+}
+
+/** 界面要的那份隧道配置视图。**token 只给尾 4 位** —— 整串不出主进程。 */
+function tunnelConfigView(): {
+  tunnelMode: "quick" | "named" | "external";
+  tunnelHostname: string;
+  mobileHostname: string;
+  tokenHint: string;
+  fixedPort: number;
+  mobilePort: number;
+} {
+  const token = readTunnelToken();
+  return {
+    tunnelMode: readTunnelMode(),
+    tunnelHostname: SettingRepo.get(PUBLIC_MCP_TUNNEL_HOSTNAME_SETTING_KEY)?.trim() ?? "",
+    mobileHostname: SettingRepo.get(PUBLIC_MCP_MOBILE_HOSTNAME_SETTING_KEY)?.trim() ?? "",
+    tokenHint: token ? `****${token.slice(-4)}` : "",
+    fixedPort: readFixedPort(),
+    // 手机服务此刻在听哪个端口 —— 用户要拿它核对 Cloudflare 那条 ingress 写得对不对。
+    mobilePort: mobilePortProvider(),
+  };
+}
+
+/**
+ * 存一份新的隧道配置。设置页那张卡片调它。
+ *
+ * **token 留空 = 沿用已存的那串**(界面上永远只显示尾 4 位,用户不改它时不该被迫重粘一遍)。
+ * 真要清掉,传一个空格之外的显式空值由上层决定 —— 这里的语义就这一条,保持简单。
+ */
+export function setPublicMcpTunnelConfig(config: PublicMcpTunnelConfig): PublicMcpStatus {
+  SettingRepo.set(PUBLIC_MCP_TUNNEL_MODE_SETTING_KEY, config.mode);
+  SettingRepo.set(
+    PUBLIC_MCP_TUNNEL_HOSTNAME_SETTING_KEY,
+    (config.hostname ?? "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, ""),
+  );
+  SettingRepo.set(
+    PUBLIC_MCP_MOBILE_HOSTNAME_SETTING_KEY,
+    (config.mobileHostname ?? "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, ""),
+  );
+  const port = config.fixedPort ?? 0;
+  SettingRepo.set(PUBLIC_MCP_FIXED_PORT_SETTING_KEY, String(Number.isFinite(port) && port > 0 && port < 65536 ? port : 0));
+  const token = (config.token ?? "").trim();
+  if (token) SettingRepo.set(PUBLIC_MCP_TUNNEL_TOKEN_SETTING_KEY, encrypt(token));
+  log.info(`public mcp: tunnel config saved (mode=${config.mode})`);
+  return publicMcpStatus();
+}
 
 /**
  * 这条通路需要主进程提供的那点能力 —— 由 `main/index.ts` 注入。
@@ -202,7 +293,8 @@ function ensureSyntheticSession(): string {
  * 由 `main/index.ts` 在启动时调一次(db 就绪之后,与 `configureExtensionBridgeTokenStore`
  * 同一个时机)。
  */
-export function initPublicMcp(): void {
+export function initPublicMcp(deps?: { mobilePort?: () => number }): void {
+  if (deps?.mobilePort) mobilePortProvider = deps.mobilePort;
   const store: PublicMcpStore = {
     getEnabled: () => SettingRepo.get(PUBLIC_MCP_ENABLED_SETTING_KEY) === "on",
     setEnabled: (on) => SettingRepo.set(PUBLIC_MCP_ENABLED_SETTING_KEY, on ? "on" : "off"),
@@ -216,15 +308,28 @@ export function initPublicMcp(): void {
     setSecret: (secret) => SettingRepo.set(PUBLIC_MCP_SECRET_SETTING_KEY, secret),
     getSessionId: () => SettingRepo.get(PUBLIC_MCP_SESSION_ID_SETTING_KEY),
     setSessionId: (id) => SettingRepo.set(PUBLIC_MCP_SESSION_ID_SETTING_KEY, id),
+    // 命名隧道要固定端口(ingress 规则里写死了它);0 = 随机,保持老行为。
+    getFixedPort: () => readFixedPort(),
   };
   configurePublicMcpStore(store);
 
   // 隧道状态 + 沙箱根:那两个都住在各自模块里(隧道要 child_process,沙箱要查库),
   // 纯的 `publicMcpServer` 不碰它们,只在这里接上。
   configurePublicMcpExtras({
-    tunnelUrl: () => tunnelStatus().url,
-    tunnelPhase: () => tunnelStatus().phase,
-    tunnelError: () => tunnelStatus().error,
+    tunnelConfig: () => tunnelConfigView(),
+    // external 模式:隧道不归我们管(用户自己在外面跑,比如装成了系统服务),所以
+    // 没有进程状态可报 —— 直接把他配的域名当作"地址",有域名就算 ready。
+    // 这不是在假装探测过:UI 文案会说明 external 下的可达性要用"测试"按钮确认。
+    tunnelUrl: () => {
+      if (readTunnelMode() !== "external") return tunnelStatus().url;
+      const host = SettingRepo.get(PUBLIC_MCP_TUNNEL_HOSTNAME_SETTING_KEY)?.trim();
+      return host ? `https://${host}` : null;
+    },
+    tunnelPhase: () => {
+      if (readTunnelMode() !== "external") return tunnelStatus().phase;
+      return SettingRepo.get(PUBLIC_MCP_TUNNEL_HOSTNAME_SETTING_KEY)?.trim() ? "ready" : "stopped";
+    },
+    tunnelError: () => (readTunnelMode() === "external" ? null : tunnelStatus().error),
     sandboxRoot: () => {
       const id = store.getSessionId();
       return id ? publicMcpSandboxRoot(id) : null;
@@ -276,7 +381,22 @@ export function startPublicMcpTunnel(): PublicMcpStatus {
     log.warn("public mcp: tunnel start ignored — the local server is not listening yet");
     return status;
   }
-  startTunnel(status.port);
+  const mode = readTunnelMode();
+  // external:隧道是用户自己在外面跑的,这里**什么都不起** —— 起了就是两条隧道抢
+  // 同一个 ingress,反而把本来好好的那条弄坏。
+  if (mode === "external") {
+    log.info("public mcp: tunnel mode is external — not spawning cloudflared");
+    return publicMcpStatus();
+  }
+  if (mode === "named") {
+    startTunnel(status.port, false, {
+      mode: "named",
+      token: readTunnelToken(),
+      hostname: SettingRepo.get(PUBLIC_MCP_TUNNEL_HOSTNAME_SETTING_KEY)?.trim() ?? "",
+    });
+    return publicMcpStatus();
+  }
+  startTunnel(status.port, false, { mode: "quick" });
   return publicMcpStatus();
 }
 

@@ -167,6 +167,24 @@ export const CustomModelStore = {
   },
 };
 
+/**
+ * `encrypt` / `decrypt` 的替身 —— **原样进出**。
+ *
+ * 真那两个要 electron 的 `safeStorage`(OS 钥匙串)。被测的 `ipc/customModel.ts` 这一层
+ * 用到它们是因为公网 MCP 的 **Tunnel Token** 落盘要加密
+ * (见 `publicMcpSession.ts` 的 `setPublicMcpTunnelConfig`)。
+ *
+ * 这里同样存明文,理由与上面那段「为什么存明文」完全一样:这一层验的是通道与入参,
+ * 加密本身是 `secretStore.ts` 自己的事。**明文还更严**:万一哪天有人把整串 token
+ * 回传给界面,`tokenHint` 那条断言会立刻红,而密文下它可能照样绿。
+ */
+export function encrypt(plain: string): string {
+  return plain;
+}
+export function decrypt(stored: string): string {
+  return stored;
+}
+
 /** 这一套自己用的：把库清空（每个段落之间互不干扰）。 */
 export function __resetCustomModelStore(): void {
   records = [];

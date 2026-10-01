@@ -83,6 +83,13 @@ export interface PublicMcpStore {
    */
   getSessionId(): string | null;
   setSessionId(id: string): void;
+  /**
+   * **固定端口**(0 / 不实现 = 沿用随机端口)。
+   *
+   * 随机端口对快速隧道是对的(没人需要知道它)。但**命名隧道不行**:ingress 规则
+   * 在 Cloudflare 面板里写死 `127.0.0.1:<端口>`,端口每次变就等于那条规则每次都指空。
+   */
+  getFixedPort?(): number;
 }
 
 let store: PublicMcpStore | null = null;
@@ -115,8 +122,16 @@ export function publicMcpPort(): number {
 /**
  * 确保服务在听。幂等 —— 并发调用共用同一个 promise。
  *
- * 端口用 `listenOnDialablePort` 随机取:`bind` 到哪不重要,因为**真正的入口是那条
- * 隧道**,用户看到的地址是隧道域名,不是这个端口。所以不必像扩展桥那样挑固定端口。
+ * 端口默认用 `listenOnDialablePort` 随机取:`bind` 到哪不重要,因为**真正的入口是那条
+ * 隧道**,用户看到的地址是隧道域名,不是这个端口。
+ *
+ * **命名隧道那条路要固定端口**(见 {@link PublicMcpStore.getFixedPort}),所以 store
+ * 给了非 0 值时就绑它。
+ *
+ * ⚠️ **固定端口被占用时如实失败,绝不回落到随机端口。** 回落看起来"更健壮",实际是
+ * 最坏的一种:服务起来了(UI 显示一切正常),而 Cloudflare 那条 ingress 还指着原来
+ * 那个端口 —— 公网访问得到的是连接被拒,用户在 Mcode 这边**看不到任何异常**。
+ * 宁可在这里报一句"17331 被占了",那是他三十秒能处理掉的事。
  */
 export async function startPublicMcp(): Promise<void> {
   if (server) return;
@@ -140,7 +155,8 @@ export async function startPublicMcp(): Promise<void> {
     });
 
     try {
-      const port = await listenOnDialablePort(srv);
+      const fixed = store!.getFixedPort?.() ?? 0;
+      const port = fixed > 0 ? await listenOnFixedPort(srv, fixed) : await listenOnDialablePort(srv);
       if (generation !== lifecycleGeneration) {
         // stopPublicMcp ran while listen was pending. Do not resurrect a
         // disabled public endpoint when the bind eventually completes.
@@ -160,6 +176,41 @@ export async function startPublicMcp(): Promise<void> {
   } finally {
     if (starting === pending) starting = null;
   }
+}
+
+/**
+ * 绑一个**指定**端口。失败就失败 —— 不换端口、不重试(理由见 `startPublicMcp` 的注释)。
+ *
+ * `EADDRINUSE` 单独翻译成人话:这是唯一一个用户自己能处理的失败,而 Node 原话
+ * (`listen EADDRINUSE: address already in use 127.0.0.1:17331`)不会告诉他该怎么办。
+ */
+function listenOnFixedPort(srv: Server, port: number): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const cleanup = (): void => {
+      srv.off("error", onError);
+      srv.off("listening", onListening);
+    };
+    const onError = (err: NodeJS.ErrnoException): void => {
+      cleanup();
+      if (err.code === "EADDRINUSE") {
+        reject(
+          new Error(
+            `端口 ${port} 已被占用,公网 MCP 服务起不来。换一个端口(设置里改),` +
+              `或者先把占着它的程序关掉。**没有自动换端口** —— 换了的话 Cloudflare 那条 ingress 就指空了。`,
+          ),
+        );
+        return;
+      }
+      reject(err);
+    };
+    const onListening = (): void => {
+      cleanup();
+      resolve(port);
+    };
+    srv.once("error", onError);
+    srv.once("listening", onListening);
+    srv.listen(port, "127.0.0.1");
+  });
 }
 
 /** 停机。幂等。不跑着的服务调用它无事发生。 */
@@ -270,7 +321,27 @@ export function publicMcpStatus(): PublicMcpStatus {
     sandboxRoot: sandboxRootProvider?.() ?? null,
     sandboxProjectId: sandboxProjectIdProvider?.() ?? null,
     availableProjects: availableProjectsProvider?.() ?? [],
+    // 隧道配置那一组:没注入(无头 smoke)时给一组"quick + 什么都没配"的缺省,
+    // 与这个功能上线前的行为一致。
+    ...(tunnelConfigProvider?.() ?? {
+      tunnelMode: "quick" as const,
+      tunnelHostname: "",
+      mobileHostname: "",
+      tokenHint: "",
+      fixedPort: 0,
+      mobilePort: 0,
+    }),
   };
+}
+
+/** `publicMcpStatus()` 里与隧道配置有关的那几项。 */
+export interface PublicMcpTunnelView {
+  tunnelMode: "quick" | "named" | "external";
+  tunnelHostname: string;
+  mobileHostname: string;
+  tokenHint: string;
+  fixedPort: number;
+  mobilePort: number;
 }
 
 /**
@@ -283,6 +354,8 @@ let tunnelErrorProvider: (() => string | null) | null = null;
 let sandboxRootProvider: (() => string | null) | null = null;
 let sandboxProjectIdProvider: (() => string | null) | null = null;
 let availableProjectsProvider: (() => { id: string; name: string; path: string }[]) | null = null;
+/** 隧道配置视图。**可选** —— 无头 smoke 装配时不给,状态里就是一组缺省值。 */
+let tunnelConfigProvider: (() => PublicMcpTunnelView) | null = null;
 
 export function configurePublicMcpExtras(next: {
   tunnelUrl: () => string | null;
@@ -291,7 +364,10 @@ export function configurePublicMcpExtras(next: {
   sandboxRoot: () => string | null;
   sandboxProjectId: () => string | null;
   availableProjects: () => { id: string; name: string; path: string }[];
+  /** 可选:不给就按 quick + 空配置显示(见 `publicMcpStatus`)。 */
+  tunnelConfig?: () => PublicMcpTunnelView;
 }): void {
+  tunnelConfigProvider = next.tunnelConfig ?? null;
   tunnelUrlProvider = next.tunnelUrl;
   tunnelPhaseProvider = next.tunnelPhase;
   tunnelErrorProvider = next.tunnelError;
