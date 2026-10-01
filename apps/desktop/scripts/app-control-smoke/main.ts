@@ -53,6 +53,7 @@ const pin: Array<[string, string]> = [
   ["project.delete", "danger"],
   ["setting.set", "danger"],
   ["publicMcp.setEnabled", "danger"],
+  ["publicMcp.addProjectLink", "danger"],
   ["app.moveDataRoot", "danger"],
   ["session.rename", "write"],
   ["project.create", "write"],

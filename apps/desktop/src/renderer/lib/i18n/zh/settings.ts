@@ -337,7 +337,7 @@ export const zh = {
   "settings.remoteControl.tunnelModeHint.named":
     "用你自己在 Cloudflare 建好的命名隧道：地址固定，填一次就不用再改。需要先在 Cloudflare 后台把 public hostname 指到下面那个本机端口，再把 Tunnel Token 粘进来。",
   "settings.remoteControl.tunnelModeHint.external":
-    "隧道由你自己在外面跑（比如装成系统服务，关掉 Mcode 也在）。Mcode 不起进程，只记住域名用来拼链接。",
+    "隧道由你自己在外面跑（比如装成系统服务，关掉 Mcode 也在）。Mcode 不起进程，只记住域名用来拼链接，并定期从公网敲一下这个域名，确认整条链路真的通。",
   "settings.remoteControl.hostnameLabel": "MCP 端点的域名",
   "settings.remoteControl.hostnameHint":
     "不带 https:// ，就是 Cloudflare 里那条 public hostname。它必须指向下面那个固定端口。",
@@ -356,6 +356,18 @@ export const zh = {
   "settings.remoteControl.delegateLabel": "允许外部 AI 支使本机 agent",
   "settings.remoteControl.delegateWarning":
     "⚠️ 打开后，外面的 AI 不再只是读写文件，而是能把整件事丢给本机 mcode agent 去做（它会带着你的技能、工作流、记忆跑一整轮，期间可以改文件、执行命令，全程不弹审批）。任务跑在单独的「外部 AI 委派」会话里，你能在左栏看到每一轮。不确定就关着。",
+  "settings.remoteControl.tokenClear": "清除已存的 Token",
+  "settings.remoteControl.externalProbing": "正在从公网探测这个域名…",
+  "settings.remoteControl.externalReady": "公网探测通过：域名 → 隧道 → 本机端口整条是通的",
+  "settings.remoteControl.projectLinksTitle": "多项目并行链接",
+  "settings.remoteControl.projectLinksHint":
+    "每个项目一条自己的链接：各自的密钥、各自的「ChatGPT 直连 · 项目名」会话、文件读写各自限制在那个项目目录里。在 ChatGPT 里为每个项目各建一个 Connector（或在不同对话里用不同链接），就能同时在几个项目里干活，互不串目录。上面那条是默认链接，照旧可用。",
+  "settings.remoteControl.projectLinksEmpty": "还没有。从下面选一个项目添加。",
+  "settings.remoteControl.projectLinksAdd": "为项目添加链接…",
+  "settings.remoteControl.projectLinkMissing": "（项目已删除，链接已失效）",
+  "settings.remoteControl.projectLinkUrlPending": "隧道就绪后显示完整地址",
+  "settings.remoteControl.projectLinkRegenerate": "换密钥",
+  "settings.remoteControl.projectLinkRemove": "删除",
   "settings.customModels.publicMcpOn": "已开放",
   "settings.customModels.publicMcpOff": "已关闭",
   "settings.customModels.publicMcpToggleLabel": "开放公网 MCP 端点",

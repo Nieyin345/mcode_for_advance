@@ -536,6 +536,9 @@ const publicMcp: Api["publicMcp"] = {
   stopTunnel: () => webUnsupported("publicMcp.stopTunnel"),
   setProject: () => webUnsupported("publicMcp.setProject"),
   setTunnelConfig: () => webUnsupported("publicMcp.setTunnelConfig"),
+  addProjectLink: () => webUnsupported("publicMcp.addProjectLink"),
+  removeProjectLink: () => webUnsupported("publicMcp.removeProjectLink"),
+  regenerateProjectLinkSecret: () => webUnsupported("publicMcp.regenerateProjectLinkSecret"),
 };
 
 const piModels: Api["piModels"] = {

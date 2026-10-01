@@ -47,8 +47,9 @@ import {
   PUBLIC_MCP_MOBILE_HOSTNAME_SETTING_KEY,
   PUBLIC_MCP_FIXED_PORT_SETTING_KEY,
   PUBLIC_MCP_DEFAULT_FIXED_PORT,
+  PUBLIC_MCP_PROJECT_LINKS_SETTING_KEY,
 } from "@contracts/ipc/settings";
-import type { PublicMcpTunnelConfig } from "@contracts/customModel";
+import type { PublicMcpProjectLink, PublicMcpTunnelConfig } from "@contracts/customModel";
 import { encrypt, decrypt } from "@main/lib/secretStore.js";
 import { uid } from "@main/utils.js";
 import { log } from "@main/lib/logger.js";
@@ -158,7 +159,9 @@ export async function setPublicMcpTunnelConfig(config: PublicMcpTunnelConfig): P
     String(validPort || (config.mode === "quick" ? 0 : PUBLIC_MCP_DEFAULT_FIXED_PORT)),
   );
   const token = (config.token ?? "").trim();
-  if (token) SettingRepo.set(PUBLIC_MCP_TUNNEL_TOKEN_SETTING_KEY, encrypt(token));
+  // 「清掉」优先于「沿用」:留空只能表达"不动",删 token 得显式说。
+  if (config.clearToken) SettingRepo.set(PUBLIC_MCP_TUNNEL_TOKEN_SETTING_KEY, "");
+  else if (token) SettingRepo.set(PUBLIC_MCP_TUNNEL_TOKEN_SETTING_KEY, encrypt(token));
   // 委派开关:**缺席 = 不改动**(与 token 同一种读法)。它不是隧道的一部分,搭在这条
   // 已有的通道上只是为了不再多开一条 IPC —— 但语义上它比隧道配置危险得多,所以
   // 每一次变化都单独记一行日志,事后能从日志里看出是谁在哪一刻把它打开的。
@@ -167,6 +170,8 @@ export async function setPublicMcpTunnelConfig(config: PublicMcpTunnelConfig): P
     log.info(`public mcp: agent delegate ${config.agentDelegate ? "ENABLED" : "disabled"}`);
   }
   log.info(`public mcp: tunnel config saved (mode=${config.mode})`);
+  // 配置一变,上一次 external 探测的结论就不作数了 —— 下次读状态立刻重探。
+  externalProbe = null;
   await applySavedTunnelConfig(before);
   return publicMcpStatus();
 }
@@ -270,9 +275,260 @@ export function publicMcpProjectId(): string | null {
  */
 export function publicMcpSandboxRoot(sessionId: string): string | null {
   const stored = SettingRepo.get(PUBLIC_MCP_SESSION_ID_SETTING_KEY);
-  if (!stored || stored !== sessionId) return null;
-  const projectId = publicMcpProjectId();
-  return projectId ? (ProjectRepo.get(projectId)?.path ?? null) : null;
+  if (stored && stored === sessionId) {
+    const projectId = publicMcpProjectId();
+    return projectId ? (ProjectRepo.get(projectId)?.path ?? null) : null;
+  }
+  // 项目链接的合成会话:沙箱 = **那条链接自己的项目**,与默认链接选了哪个无关。
+  const link = readProjectLinks().find((l) => l.sessionId === sessionId);
+  if (link) return ProjectRepo.get(link.projectId)?.path ?? null;
+  return null;
+}
+
+/**
+ * 某条公网合成会话**属于哪个项目** —— 委派(`delegateHost`)靠它把"外面的 AI 从哪条
+ * 链接进来"翻译成"在哪个项目里跑那一轮"。默认链接 → 默认项目;项目链接 → 链接的
+ * 项目;都不是 → null(调用方回退到默认项目)。
+ */
+export function publicMcpProjectIdForSession(sessionId: string | null): string | null {
+  if (!sessionId) return null;
+  if (SettingRepo.get(PUBLIC_MCP_SESSION_ID_SETTING_KEY) === sessionId) return publicMcpProjectId();
+  return readProjectLinks().find((l) => l.sessionId === sessionId)?.projectId ?? null;
+}
+
+/* ────────────────────────────── 多项目链接 ────────────────────────────── */
+
+/**
+ * 落盘的那一条(见 `PUBLIC_MCP_PROJECT_LINKS_SETTING_KEY`)。
+ *
+ * 为什么不是"默认链接换项目":ChatGPT 的一个 Connector 只记一个 URL。用户要的是
+ * **几个对话同时各管一个项目** —— 那就得几条 URL 同时有效、各自落到各自的会话与
+ * 沙箱,而不是一条 URL 来回切。
+ */
+interface StoredProjectLink {
+  projectId: string;
+  secret: string;
+  sessionId: string | null;
+}
+
+function readProjectLinks(): StoredProjectLink[] {
+  const raw = SettingRepo.get(PUBLIC_MCP_PROJECT_LINKS_SETTING_KEY);
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const seen = new Set<string>();
+  const out: StoredProjectLink[] = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    const projectId = typeof rec.projectId === "string" ? rec.projectId.trim() : "";
+    const secret = typeof rec.secret === "string" ? rec.secret.trim() : "";
+    // 太短的密钥不认 —— 手改坏的设置不能变成一条好猜的公网入口。
+    if (!projectId || secret.length < 32 || seen.has(projectId)) continue;
+    seen.add(projectId);
+    out.push({
+      projectId,
+      secret,
+      sessionId: typeof rec.sessionId === "string" && rec.sessionId ? rec.sessionId : null,
+    });
+  }
+  return out;
+}
+
+function writeProjectLinks(links: StoredProjectLink[]): void {
+  SettingRepo.set(PUBLIC_MCP_PROJECT_LINKS_SETTING_KEY, JSON.stringify(links));
+}
+
+/** 本进程里已经把权限模式钉成 bypass 的会话 —— 每次请求都来一遍没必要。 */
+const armedLinkSessions = new Set<string>();
+
+/**
+ * 某条项目链接的合成会话:有就用(并确认还属于这个项目),没有/被删了就现建一条
+ * 「ChatGPT 直连 · 项目名」。项目已经不在 → null(请求回 404)。
+ *
+ * 每次请求都会走到这里(密钥比对成功之后),所以只做两次按主键的读;建会话只在
+ * 第一次或会话被用户删掉之后发生。
+ */
+function ensureLinkSession(projectId: string): string | null {
+  const project = ProjectRepo.get(projectId);
+  if (!project) return null;
+  const links = readProjectLinks();
+  const link = links.find((l) => l.projectId === projectId);
+  if (!link) return null;
+  const existing = link.sessionId ? SessionRepo.get(link.sessionId) : null;
+  if (existing && existing.projectId === projectId) {
+    if (!armedLinkSessions.has(existing.id)) {
+      runtime?.setSessionPermissionMode(existing.id, "bypassPermissions");
+      armedLinkSessions.add(existing.id);
+    }
+    return existing.id;
+  }
+  const id = createSyntheticSession(projectId, `${PUBLIC_MCP_SESSION_TITLE} · ${project.name}`);
+  link.sessionId = id;
+  writeProjectLinks(links);
+  armedLinkSessions.add(id);
+  return id;
+}
+
+function projectLinksView(): PublicMcpProjectLink[] {
+  return readProjectLinks().map((l) => {
+    const project = ProjectRepo.get(l.projectId);
+    return {
+      projectId: l.projectId,
+      projectName: project?.name ?? "",
+      projectPath: project?.path ?? "",
+      secret: l.secret,
+      sessionId: l.sessionId,
+      missing: !project,
+    };
+  });
+}
+
+/** 总开关开着时把每条链接的会话都备好(会话出现在左栏,用户一眼看得到有哪几条在用)。 */
+function ensureAllLinkSessions(): void {
+  for (const link of readProjectLinks()) {
+    try {
+      ensureLinkSession(link.projectId);
+    } catch (err) {
+      log.error(`public mcp: 备项目链接会话失败(${link.projectId}): ${(err as Error).message}`);
+    }
+  }
+}
+
+/** 给一个项目发一条自己的链接。已经有了就不动(密钥不变,免得把用着的对话踢掉)。 */
+export function addPublicMcpProjectLink(projectId: string): PublicMcpStatus {
+  const id = projectId.trim();
+  if (!ProjectRepo.get(id)) throw new Error(`项目 ${id} 不存在`);
+  const links = readProjectLinks();
+  if (!links.some((l) => l.projectId === id)) {
+    links.push({ projectId: id, secret: newSecret(), sessionId: null });
+    writeProjectLinks(links);
+    log.warn(`public mcp: project link added for ${id} — anyone with that URL controls this project`);
+  }
+  if (SettingRepo.get(PUBLIC_MCP_ENABLED_SETTING_KEY) === "on") {
+    try {
+      ensureLinkSession(id);
+    } catch (err) {
+      log.error(`public mcp: 建项目链接会话失败(${id}): ${(err as Error).message}`);
+    }
+  }
+  return publicMcpStatus();
+}
+
+/** 删掉一条项目链接:URL 立刻失效。会话留着 —— 那是审计记录,不该跟着链接消失。 */
+export function removePublicMcpProjectLink(projectId: string): PublicMcpStatus {
+  const id = projectId.trim();
+  const links = readProjectLinks();
+  const next = links.filter((l) => l.projectId !== id);
+  if (next.length !== links.length) {
+    writeProjectLinks(next);
+    log.info(`public mcp: project link removed for ${id}`);
+  }
+  return publicMcpStatus();
+}
+
+/** 换某条项目链接的密钥(旧 URL 立刻失效,会话不变)。 */
+export function regeneratePublicMcpProjectLinkSecret(projectId: string): PublicMcpStatus {
+  const id = projectId.trim();
+  const links = readProjectLinks();
+  const link = links.find((l) => l.projectId === id);
+  if (!link) throw new Error(`项目 ${id} 还没有公网链接`);
+  link.secret = newSecret();
+  writeProjectLinks(links);
+  log.warn(`public mcp: project link secret regenerated for ${id} — the old URL no longer works`);
+  return publicMcpStatus();
+}
+
+/* ────────────────────────────── external 模式探测 ────────────────────────────── */
+
+/**
+ * external 模式下隧道是用户自己在外面跑的,Mcode 没有进程可看 —— 以前只要填了域名
+ * 就报 ready,于是"域名填了但 cloudflared 没跑 / ingress 端口写错"也显示连通。
+ *
+ * 现在真去敲一下:`GET https://<域名>/mcp/<密钥>`。我们自己的服务对 GET 回
+ * `405 POST-only` —— 看到它就说明 **公网 → Cloudflare → 隧道 → 本机这个端口**整条
+ * 都通了;看到别的就按状态码给一句能照着改的话。结果缓存 30 秒,读状态时过期才重探。
+ */
+interface ExternalProbe {
+  key: string;
+  phase: "starting" | "ready" | "failed";
+  error: string | null;
+  at: number;
+  inflight: boolean;
+}
+
+let externalProbe: ExternalProbe | null = null;
+const EXTERNAL_PROBE_TTL_MS = 30_000;
+const EXTERNAL_PROBE_TIMEOUT_MS = 10_000;
+
+function externalProbeView(): { phase: "stopped" | "starting" | "ready" | "failed"; error: string | null } {
+  const host = SettingRepo.get(PUBLIC_MCP_TUNNEL_HOSTNAME_SETTING_KEY)?.trim() ?? "";
+  const port = publicMcpPort();
+  if (!host || !port) return { phase: "stopped", error: null };
+  const secret = SettingRepo.get(PUBLIC_MCP_SECRET_SETTING_KEY)?.trim() ?? "";
+  if (!secret) return { phase: "stopped", error: null };
+  const key = `${host}|${port}|${secret}`;
+  const stale = !externalProbe || externalProbe.key !== key ||
+    (!externalProbe.inflight && Date.now() - externalProbe.at > EXTERNAL_PROBE_TTL_MS);
+  if (stale) {
+    // 换了目标就从"探测中"重来;同一目标过期重探时保留上次结论,界面不闪。
+    const keep = externalProbe && externalProbe.key === key ? externalProbe : null;
+    const probe: ExternalProbe = {
+      key,
+      phase: keep?.phase ?? "starting",
+      error: keep?.error ?? null,
+      at: Date.now(),
+      inflight: true,
+    };
+    externalProbe = probe;
+    void probeExternal(host, secret, port).then((r) => {
+      if (externalProbe !== probe) return; // 期间配置变了,这次结论作废
+      probe.phase = r.ok ? "ready" : "failed";
+      probe.error = r.ok ? null : r.error;
+      probe.at = Date.now();
+      probe.inflight = false;
+    });
+  }
+  return { phase: externalProbe!.phase, error: externalProbe!.error };
+}
+
+async function probeExternal(
+  host: string,
+  secret: string,
+  port: number,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const url = `https://${host}/mcp/${secret}`;
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      redirect: "manual",
+      signal: AbortSignal.timeout(EXTERNAL_PROBE_TIMEOUT_MS),
+    });
+    const body = await res.text().catch(() => "");
+    if (res.status === 405 && body.includes("POST-only")) return { ok: true };
+    const s = res.status;
+    if (s >= 300 && s < 400) {
+      return { ok: false, error: `https://${host} 把请求重定向了(HTTP ${s})。多半是这个域名挂了 Cloudflare Access —— MCP 域名不能挂 Access(ChatGPT 过不了登录页)。` };
+    }
+    if (s === 403) {
+      return { ok: false, error: `https://${host} 被 Cloudflare 拦下了(HTTP 403)。检查 Bot Fight Mode / WAF 规则 / Access 是否作用在这个域名上。` };
+    }
+    if (s === 404 && body.includes("not found")) {
+      return { ok: false, error: `https://${host} 通到了一个 Mcode 公网服务,但密钥对不上 —— ingress 指到的可能是另一台机器或另一份 Mcode。` };
+    }
+    if (s === 502 || s === 503 || s === 530 || /error code: 10(16|33)/i.test(body)) {
+      return { ok: false, error: `Cloudflare 连不到你的隧道(HTTP ${s})。确认 cloudflared 在跑,且这个域名的 ingress 指向 http://127.0.0.1:${port}。` };
+    }
+    return { ok: false, error: `https://${host} 的应答不像 Mcode(HTTP ${s})。确认这个域名的 ingress 指向 http://127.0.0.1:${port}。` };
+  } catch (err) {
+    const msg = (err as Error).name === "TimeoutError" ? "超时" : (err as Error).message;
+    return { ok: false, error: `连不上 https://${host}(${msg})。如果本机访问外网要走代理,这条探测可能误报 —— 以 ChatGPT 实际能否连上为准。` };
+  }
 }
 
 /**
@@ -281,40 +537,21 @@ export function publicMcpSandboxRoot(sessionId: string): string | null {
  * 复用判据是 `publicMcp.sessionId` 里存的那个 id **确实存在**。库里查不到
  * (被用户删了)就现建一条 —— 而不是让每次公网调用都撞 503。
  */
-function ensureSyntheticSession(): string {
-  const stored = SettingRepo.get(PUBLIC_MCP_SESSION_ID_SETTING_KEY);
-  if (stored && SessionRepo.get(stored)) {
-    // 已存在:只把权限模式重新钉死(见文件头为什么不可覆盖)。
-    runtime?.setSessionPermissionMode(stored, "bypassPermissions");
-    return stored;
-  }
-  // The public endpoint reads this setting directly.  Leaving a deleted session id
-  // here makes the endpoint look ready even though webToolHost will reject every
-  // call because no approval gate exists for that session.  Clear the dangling
-  // reference before attempting to recreate it; if recreation fails, requests now
-  // fail at the endpoint boundary with the intended 503 instead.
-  if (stored) SettingRepo.set(PUBLIC_MCP_SESSION_ID_SETTING_KEY, "");
-
-  const projectId = defaultProjectId();
-  if (!projectId) {
-    throw new Error("public mcp: 需要一个项目才能建「ChatGPT 直连」会话,但一个项目都没有");
-  }
-
+/** 建一条公网合成会话(默认链接与项目链接共用):可见的 chat 会话,权限钉死 bypass。 */
+function createSyntheticSession(projectId: string, title: string): string {
   const now = Date.now();
   const session: Session = {
     id: uid("sess_"),
     projectId,
     providerId: DEFAULT_PROVIDER_ID,
     claudeSessionId: null,
-    // 可见的正常会话 —— 这条会话就是这条通路的审计面(见文件头)。
     kind: "chat",
     parentSessionId: null,
     nodeId: null,
-    title: PUBLIC_MCP_SESSION_TITLE,
+    title,
     status: "idle",
     model: "default",
     effort: "default",
-    // ⚠️ 见文件头:免审批是这个功能的定义,不是可调的偏好。
     permissionMode: "bypassPermissions",
     workflowId: "default",
     customModelId: null,
@@ -334,12 +571,36 @@ function ensureSyntheticSession(): string {
     updatedAt: now,
   };
   SessionRepo.create(session);
-  SettingRepo.set(PUBLIC_MCP_SESSION_ID_SETTING_KEY, session.id);
   runtime?.bindSession(session);
   runtime?.broadcastSessionChanged(session);
-  log.info(`public mcp: created synthetic session ${session.id}`);
+  log.info(`public mcp: created synthetic session ${session.id} (${title})`);
   runtime?.setSessionPermissionMode(session.id, "bypassPermissions");
   return session.id;
+}
+
+function ensureSyntheticSession(): string {
+  const stored = SettingRepo.get(PUBLIC_MCP_SESSION_ID_SETTING_KEY);
+  if (stored && SessionRepo.get(stored)) {
+    // 已存在:只把权限模式重新钉死(见文件头为什么不可覆盖)。
+    runtime?.setSessionPermissionMode(stored, "bypassPermissions");
+    return stored;
+  }
+  // The public endpoint reads this setting directly.  Leaving a deleted session id
+  // here makes the endpoint look ready even though webToolHost will reject every
+  // call because no approval gate exists for that session.  Clear the dangling
+  // reference before attempting to recreate it; if recreation fails, requests now
+  // fail at the endpoint boundary with the intended 503 instead.
+  if (stored) SettingRepo.set(PUBLIC_MCP_SESSION_ID_SETTING_KEY, "");
+
+  const projectId = defaultProjectId();
+  if (!projectId) {
+    throw new Error("public mcp: 需要一个项目才能建「ChatGPT 直连」会话,但一个项目都没有");
+  }
+
+  // 可见的正常会话、权限钉死 bypass —— 两条都见文件头。
+  const id = createSyntheticSession(projectId, PUBLIC_MCP_SESSION_TITLE);
+  SettingRepo.set(PUBLIC_MCP_SESSION_ID_SETTING_KEY, id);
+  return id;
 }
 
 /**
@@ -366,6 +627,16 @@ export function initPublicMcp(deps?: { mobilePort?: () => number }): void {
     setSessionId: (id) => SettingRepo.set(PUBLIC_MCP_SESSION_ID_SETTING_KEY, id),
     // 命名隧道要固定端口(ingress 规则里写死了它);0 = 随机,保持老行为。
     getFixedPort: () => readFixedPort(),
+    // 多项目并行:几条项目链接各自的密钥与会话(见 `ensureLinkSession`)。
+    listProjectLinks: () => readProjectLinks().map((l) => ({ projectId: l.projectId, secret: l.secret })),
+    linkSessionId: (projectId) => {
+      try {
+        return ensureLinkSession(projectId);
+      } catch (err) {
+        log.error(`public mcp: 项目链接会话不可用(${projectId}): ${(err as Error).message}`);
+        return null;
+      }
+    },
   };
   configurePublicMcpStore(store);
 
@@ -373,6 +644,7 @@ export function initPublicMcp(deps?: { mobilePort?: () => number }): void {
   // 纯的 `publicMcpServer` 不碰它们,只在这里接上。
   configurePublicMcpExtras({
     tunnelConfig: () => tunnelConfigView(),
+    projectLinks: () => projectLinksView(),
     // external 模式:隧道不归我们管(用户自己在外面跑,比如装成了系统服务),所以
     // 没有进程状态可报 —— 直接把他配的域名当作"地址",有域名就算 ready。
     // 这不是在假装探测过:UI 文案会说明 external 下的可达性要用"测试"按钮确认。
@@ -383,9 +655,10 @@ export function initPublicMcp(deps?: { mobilePort?: () => number }): void {
     },
     tunnelPhase: () => {
       if (readTunnelMode() !== "external") return tunnelStatus().phase;
-      return SettingRepo.get(PUBLIC_MCP_TUNNEL_HOSTNAME_SETTING_KEY)?.trim() ? "ready" : "stopped";
+      // 真去敲一下公网那头(见 `externalProbeView`),不再“填了域名就算通”。
+      return externalProbeView().phase;
     },
-    tunnelError: () => (readTunnelMode() === "external" ? null : tunnelStatus().error),
+    tunnelError: () => (readTunnelMode() === "external" ? externalProbeView().error : tunnelStatus().error),
     sandboxRoot: () => {
       const id = store.getSessionId();
       return id ? publicMcpSandboxRoot(id) : null;
@@ -411,6 +684,7 @@ export function initPublicMcp(deps?: { mobilePort?: () => number }): void {
     void (async () => {
       try {
         ensureSyntheticSession();
+        ensureAllLinkSessions();
       } catch (err) {
         // 建不了会话(比如一个项目都没有)—— 记下来。服务还是起,但调用会被 503 挡住,
         // 那条路径自己的日志会说清原因。
@@ -477,6 +751,7 @@ export async function setPublicMcpEnabled(enabled: boolean): Promise<PublicMcpSt
     SettingRepo.set(PUBLIC_MCP_ENABLED_SETTING_KEY, "on");
     try {
       const sessionId = ensureSyntheticSession();
+      ensureAllLinkSessions();
       log.warn(
         `public mcp: ENABLED — tool calls from the internet run WITHOUT approval, ` +
           `attributed to session ${sessionId}. Anyone with the URL secret controls this machine.`,

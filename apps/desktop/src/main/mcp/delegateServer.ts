@@ -61,6 +61,9 @@ export type DelegateJobStatus = "running" | "done" | "failed" | "cancelled";
 export interface DelegateJob {
   id: string;
   sessionId: string;
+  /** 发起这次委派的**公网合成会话**(哪条链接进来的)。取结果 / 打断只认同一条链接 ——
+   *  多项目并行时,A 项目的链接不该看见或打断 B 项目的任务。 */
+  callerSessionId: string | null;
   prompt: string;
   status: DelegateJobStatus;
   /** agent 这一轮说的话(累加)。`running` 时也给 —— 外面的 AI 能看到进展,不至于干等。 */
@@ -79,7 +82,11 @@ export interface DelegateJob {
  */
 export interface DelegateDeps {
   /** 那条专用会话(没有就建),返回 id 与工作目录。 */
-  ensureSession(): Promise<{ sessionId: string; cwd: string }>;
+  /**
+   * 备好**这次调用该用的**委派会话。`callerSessionId` 是进来那条链接的合成会话 ——
+   * 宿主据此决定在哪个项目里跑(一个项目一条委派会话,项目之间可以并行)。
+   */
+  ensureSession(callerSessionId: string | null): Promise<{ sessionId: string; cwd: string }>;
   isBusy(sessionId: string): boolean;
   runTurn(args: {
     sessionId: string;
@@ -145,6 +152,16 @@ function render(job: DelegateJob): string {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** 只有**同一条链接**起的任务才看得见(别的链接拿到任务号也当不存在,不透露它有过)。 */
+function visibleJob(jobId: string, callerSessionId: string | null): DelegateJob | undefined {
+  const job = jobs.get(jobId);
+  if (!job) return undefined;
+  if (job.callerSessionId !== null && callerSessionId !== null && job.callerSessionId !== callerSessionId) {
+    return undefined;
+  }
+  return job;
+}
+
 export const DELEGATE_MCP_TOOLS = [
   "mcode_agent_start",
   "mcode_agent_result",
@@ -166,7 +183,7 @@ export function delegateMcpTools(): McpToolSpec[] {
         "立刻返回一个任务号。**这不是普通工具调用** —— 它会真的在用户机器上跑一轮,可能读写文件、执行命令。" +
         "适合「把 X 做完」这种成件的活儿;只想读一个文件就用 `agent_read`,别走这里。" +
         "跑多久不一定(常见十几秒到几分钟),拿结果用 `mcode_agent_result`。" +
-        "同一时刻只接一个:上一个还在跑就会告诉你 busy,等它完再来。",
+        "同一个项目同一时刻只接一个:上一个还在跑就会告诉你 busy,等它完再来(不同项目的链接之间互不影响,可以并行)。",
       inputSchema: {
         prompt: z
           .string()
@@ -176,10 +193,11 @@ export function delegateMcpTools(): McpToolSpec[] {
               "它看不到你和用户的对话,你不写的前提它就没有。",
           ),
       },
-      handler: async (args: { prompt: string }) => {
-        const { sessionId, cwd } = await d.ensureSession();
+      handler: async (args: { prompt: string }, ctx: { sessionId?: string | null } = {}) => {
+        const callerSessionId = ctx.sessionId ?? null;
+        const { sessionId, cwd } = await d.ensureSession(callerSessionId);
         if (d.isBusy(sessionId)) {
-          const running = [...jobs.values()].find((j) => j.status === "running");
+          const running = [...jobs.values()].find((j) => j.status === "running" && j.sessionId === sessionId);
           return bad(
             `busy:这台机器上的 mcode agent 正忙${running ? `(任务 ${running.id})` : ""}。` +
               `等它收场再起新的 —— 用 mcode_agent_result 看进展。`,
@@ -188,6 +206,7 @@ export function delegateMcpTools(): McpToolSpec[] {
         const job: DelegateJob = {
           id: `job_${randomUUID().slice(0, 8)}`,
           sessionId,
+          callerSessionId,
           prompt: args.prompt,
           status: "running",
           text: "",
@@ -247,8 +266,8 @@ export function delegateMcpTools(): McpToolSpec[] {
               "等过头会变成对方断线,而这边还在跑。",
           ),
       },
-      handler: async (args: { job_id: string; wait_seconds?: number }) => {
-        const job = jobs.get(args.job_id);
+      handler: async (args: { job_id: string; wait_seconds?: number }, ctx: { sessionId?: string | null } = {}) => {
+        const job = visibleJob(args.job_id, ctx.sessionId ?? null);
         if (!job) return bad(`没有这个任务号:${args.job_id}(可能太旧被清掉了)。`);
         const deadline = Date.now() + (args.wait_seconds ?? 20) * 1000;
         while (job.status === "running" && Date.now() < deadline) {
@@ -265,8 +284,8 @@ export function delegateMcpTools(): McpToolSpec[] {
       inputSchema: {
         job_id: z.string().min(1).describe("要打断的任务号。"),
       },
-      handler: async (args: { job_id: string }) => {
-        const job = jobs.get(args.job_id);
+      handler: async (args: { job_id: string }, ctx: { sessionId?: string | null } = {}) => {
+        const job = visibleJob(args.job_id, ctx.sessionId ?? null);
         if (!job) return bad(`没有这个任务号:${args.job_id}。`);
         if (job.status !== "running") return ok(`任务 ${job.id} 已经是 ${job.status},不用打断。`);
         job.status = "cancelled";
@@ -282,4 +301,3 @@ export function delegateMcpTools(): McpToolSpec[] {
 export function __resetDelegateJobs(): void {
   jobs.clear();
 }
-

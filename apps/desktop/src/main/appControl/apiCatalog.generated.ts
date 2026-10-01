@@ -1732,10 +1732,31 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ providers: ProviderInfo[]; }"
  },
  {
+  "method": "publicMcp.addProjectLink",
+  "channel": "publicMcp:addProjectLink",
+  "doc": "给一个项目单独发一条公网链接(自己的密钥 + 自己的合成会话 + 沙箱 = 该项目目录)。 已经有了就原样返回。几条链接可同时被不同的 ChatGPT 对话使用,互不干扰。",
+  "input": "{ projectId: string }",
+  "output": "PublicMcpStatus"
+ },
+ {
+  "method": "publicMcp.regenerateProjectLinkSecret",
+  "channel": "publicMcp:regenerateProjectLinkSecret",
+  "doc": "换某个项目链接的密钥(旧链接立刻失效)。",
+  "input": "{ projectId: string }",
+  "output": "PublicMcpStatus"
+ },
+ {
   "method": "publicMcp.regenerateSecret",
   "channel": "publicMcp:regenerateSecret",
   "doc": "换一把路径密钥（旧链接立刻失效）。这是用户唯一的\"拉闸\"手段。",
   "input": "(无参数)",
+  "output": "PublicMcpStatus"
+ },
+ {
+  "method": "publicMcp.removeProjectLink",
+  "channel": "publicMcp:removeProjectLink",
+  "doc": "删掉某个项目的公网链接(链接立刻失效;合成会话留着,记录不丢)。",
+  "input": "{ projectId: string }",
   "output": "PublicMcpStatus"
  },
  {
@@ -1756,7 +1777,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "publicMcp.setTunnelConfig",
   "channel": "publicMcp:setTunnelConfig",
   "doc": "存隧道配置(模式 / 自有域名 / Tunnel Token / 固定端口)。 token 留空 = 沿用已存的那串;返回的状态里**只带尾 4 位**。",
-  "input": "{ mode: 'quick' | 'named' | 'external'; token?: string | undefined // named 必填。空串 = 不改动已存的那串(界面上留空表示\"沿用\")。; hostname?: string | undefined // named / external 必填:MCP 端点的公网域名,不带协议。; mobileHostname?: string | undefined // 可选:手机伴侣的公网域名。空 = 不暴露手机。; fixedPort?: number | undefined // 公网 MCP 服务的固定本机端口;0 = 随机(仅 quick 模式适用)。; agentDelegate?: boolean | undefined // 把 mcode agent 本身交给外面的 AI 支使。缺席 = 不改动。默认关,见设置键上那段警告。 }",
+  "input": "{ mode: 'quick' | 'named' | 'external'; token?: string | undefined // named 必填。空串 = 不改动已存的那串(界面上留空表示\"沿用\")。; hostname?: string | undefined // named / external 必填:MCP 端点的公网域名,不带协议。; mobileHostname?: string | undefined // 可选:手机伴侣的公网域名。空 = 不暴露手机。; fixedPort?: number | undefined // 公网 MCP 服务的固定本机端口;0 = 随机。随机只适合 quick —— named / external 的 ingress 写死了端口,所以那两种模式下存 0 会被换成默…; clearToken?: boolean | undefined // 清掉已存的 Tunnel Token(`token` 留空只表示\"沿用\",没法表达\"删掉\")。; agentDelegate?: boolean | undefined // 把 mcode agent 本身交给外面的 AI 支使。缺席 = 不改动。默认关,见设置键上那段警告。 }",
   "output": "PublicMcpStatus"
  },
  {

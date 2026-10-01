@@ -167,7 +167,30 @@ function json(res: ServerResponse, status: number, body: unknown): void {
  * 独立的一次")。这里确实没有需要挂的东西 —— 工具表是静态的,而"这次是哪个会话"
  * 每次都从头里读,不靠连接上的状态记。
  */
-export async function handleMcpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+export interface McpRequestOptions {
+  /**
+   * 慢的 `tools/call` 改用 SSE 回、中途发保活注释(见 {@link handleCall})。
+   * **只给公网那条路开** —— 它前面是 Cloudflare:一个请求 100 秒内一个字节都没回就
+   * 524,这个上限免费/Pro/Business 都改不了。扩展的 `/mcp` 是本机回环,不需要。
+   */
+  keepAliveLongCalls?: boolean;
+}
+
+/** 慢调用多久之后切 SSE、多久发一次保活。smoke 用 {@link configureMcpLongCallTiming} 调短。 */
+let longCallSwitchAfterMs = 25_000;
+let longCallKeepaliveMs = 20_000;
+
+/** 仅供 smoke:把切换/保活的时间调短,免得一条断言等半分钟。 */
+export function configureMcpLongCallTiming(next: { switchAfterMs?: number; keepaliveMs?: number }): void {
+  if (next.switchAfterMs !== undefined) longCallSwitchAfterMs = next.switchAfterMs;
+  if (next.keepaliveMs !== undefined) longCallKeepaliveMs = next.keepaliveMs;
+}
+
+export async function handleMcpRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  opts: McpRequestOptions = {},
+): Promise<void> {
   if (req.method !== "POST") {
     // 我们不主动往客户端推消息,所以没有 GET(SSE 那条)可给。
     res.setHeader("Allow", "POST");
@@ -238,7 +261,7 @@ export async function handleMcpRequest(req: IncomingMessage, res: ServerResponse
     }
 
     case "tools/call":
-      await handleCall(req, res, body);
+      await handleCall(req, res, body, opts);
       return;
 
     default:
@@ -252,7 +275,19 @@ export async function handleMcpRequest(req: IncomingMessage, res: ServerResponse
   }
 }
 
-async function handleCall(req: IncomingMessage, res: ServerResponse, body: JsonRpcRequest): Promise<void> {
+/** 客户端声明收得下 SSE(Streamable HTTP 规定客户端 POST 时 Accept 要同时带两种)。 */
+function acceptsEventStream(req: IncomingMessage): boolean {
+  const accept = req.headers.accept;
+  const value = Array.isArray(accept) ? accept.join(",") : (accept ?? "");
+  return value.toLowerCase().includes("text/event-stream");
+}
+
+async function handleCall(
+  req: IncomingMessage,
+  res: ServerResponse,
+  body: JsonRpcRequest,
+  opts: McpRequestOptions = {},
+): Promise<void> {
   const params = (body.params ?? {}) as { name?: unknown; arguments?: unknown };
   const name = typeof params.name === "string" ? params.name : "";
   if (!name) {
@@ -270,20 +305,66 @@ async function handleCall(req: IncomingMessage, res: ServerResponse, body: JsonR
   }
 
   const sessionId = sessionIdOf(req);
-  try {
-    const out = await host.callTool(name, params.arguments ?? {}, { sessionId });
-    result(res, body.id, {
+  const toolHost = host;
+  const call: Promise<unknown> = toolHost.callTool(name, params.arguments ?? {}, { sessionId }).then(
+    (out) => ({
       content: out.content?.length ? out.content : [{ type: "text", text: out.text }],
       ...(out.structuredContent ? { structuredContent: out.structuredContent } : {}),
       ...(out.isError ? { isError: true } : {}),
-    });
-  } catch (err) {
-    // 工具自己抛了 —— 也是模型该看见的一次失败,不是连接该断的理由。
-    log.error(`mcp endpoint: tool ${name} threw: ${(err as Error).message}`);
-    result(res, body.id, {
-      content: [{ type: "text", text: `失败:${(err as Error).message}` }],
-      isError: true,
-    });
+    }),
+    (err: unknown) => {
+      // 工具自己抛了 —— 也是模型该看见的一次失败,不是连接该断的理由。
+      log.error(`mcp endpoint: tool ${name} threw: ${(err as Error).message}`);
+      return {
+        content: [{ type: "text", text: `失败:${(err as Error).message}` }],
+        isError: true,
+      };
+    },
+  );
+
+  if (!opts.keepAliveLongCalls || !acceptsEventStream(req)) {
+    result(res, body.id, await call);
+    return;
+  }
+
+  // 公网那条路:快的调用照旧回一个 JSON(绝大多数调用,行为与以前完全一样);
+  // 过了 `longCallSwitchAfterMs` 还没完,就改成 SSE —— 先回头,再隔一阵发一行
+  // `: keepalive` 注释(SSE 里冒号开头的行客户端会忽略),最后用一条 `message` 事件
+  // 把 JSON-RPC 结果送过去。Cloudflare 的 100 秒是"多久没收到字节",不是总时长,
+  // 所以这样能撑过任意长的调用。
+  const pending = Symbol("pending");
+  let switchTimer: ReturnType<typeof setTimeout> | undefined;
+  const early = await Promise.race([
+    call,
+    new Promise<typeof pending>((resolve) => {
+      switchTimer = setTimeout(() => resolve(pending), longCallSwitchAfterMs);
+    }),
+  ]);
+  if (switchTimer) clearTimeout(switchTimer);
+  if (early !== pending) {
+    result(res, body.id, early);
+    return;
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    // 让中间的反代别攒着不发(nginx 认这个头;Cloudflare 对 event-stream 本来就不攒)。
+    "X-Accel-Buffering": "no",
+    Connection: "keep-alive",
+  });
+  res.write(": mcode tool still running\n\n");
+  const keepalive = setInterval(() => {
+    if (!res.writableEnded) res.write(": keepalive\n\n");
+  }, longCallKeepaliveMs);
+  try {
+    const payload = await call;
+    if (!res.writableEnded) {
+      res.write(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: body.id, result: payload })}\n\n`);
+    }
+  } finally {
+    clearInterval(keepalive);
+    res.end();
   }
 }
 

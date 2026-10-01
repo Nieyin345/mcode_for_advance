@@ -192,6 +192,25 @@ function TunnelCard({
           <p className="text-[0.6428em] leading-relaxed text-content-subtle">
             {t("settings.remoteControl.tokenHint")}
           </p>
+          {/* 留空只能表达"沿用";要删掉已存的那串得有个明确的动作。 */}
+          {status.tokenHint && (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={busy}
+              onClick={() =>
+                onSave({
+                  mode,
+                  hostname: hostname.trim(),
+                  mobileHostname: mobileHostname.trim(),
+                  fixedPort: Number(fixedPort) || 0,
+                  clearToken: true,
+                })
+              }
+            >
+              {t("settings.remoteControl.tokenClear")}
+            </Button>
+          )}
         </div>
       )}
 
@@ -229,6 +248,123 @@ function TunnelCard({
         {busy ? <IconLoader2 size={13} className="mr-1 animate-spin" /> : null}
         {t("settings.remoteControl.saveTunnel")}
       </Button>
+    </div>
+  );
+}
+
+/**
+ * **多项目并行**那一块:每个项目一条自己的链接(密钥 / 合成会话 / 沙箱各自独立)。
+ *
+ * 用户原话:"希望能够并行的,可以实现多个项目的同时提供"。默认链接只能指一个项目,
+ * 改它就把正在用的对话一起挪走;这里改成**加链接**:A 项目一条、B 项目一条,两边的
+ * ChatGPT 对话同时在跑,各在各的目录里。
+ */
+function ProjectLinksCard({
+  status,
+  busy,
+  copied,
+  onCopy,
+  run,
+}: {
+  status: PublicMcpStatus;
+  busy: boolean;
+  copied: string | null;
+  onCopy: (key: string, value: string) => void;
+  run: (fn: () => Promise<PublicMcpStatus>) => void;
+}) {
+  const { t } = useI18n();
+  const linked = new Set(status.projectLinks.map((l) => l.projectId));
+  const addable = status.availableProjects.filter((p) => !linked.has(p.id));
+
+  return (
+    <div className="space-y-1.5 rounded border border-edge bg-surface/40 p-2.5">
+      <span className="block text-[0.7857em] font-medium text-content-muted">
+        {t("settings.remoteControl.projectLinksTitle")}
+      </span>
+      <p className="text-[0.6428em] leading-relaxed text-content-subtle">
+        {t("settings.remoteControl.projectLinksHint")}
+      </p>
+
+      {status.projectLinks.length === 0 && (
+        <p className="text-[0.7143em] text-content-subtle">{t("settings.remoteControl.projectLinksEmpty")}</p>
+      )}
+
+      {status.projectLinks.map((link) => {
+        const url = status.tunnelUrl ? `${status.tunnelUrl}/mcp/${link.secret}` : "";
+        return (
+          <div key={link.projectId} className="space-y-1 rounded border border-edge/60 p-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="min-w-0 truncate text-[0.7857em] text-content" title={link.projectPath}>
+                {link.projectName || link.projectId}
+                {link.missing && (
+                  <span className="ml-1 text-danger">{t("settings.remoteControl.projectLinkMissing")}</span>
+                )}
+              </span>
+              <div className="flex shrink-0 items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={busy || link.missing}
+                  onClick={() =>
+                    run(() => api.publicMcp.regenerateProjectLinkSecret({ projectId: link.projectId }))
+                  }
+                >
+                  {t("settings.remoteControl.projectLinkRegenerate")}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => run(() => api.publicMcp.removeProjectLink({ projectId: link.projectId }))}
+                >
+                  {t("settings.remoteControl.projectLinkRemove")}
+                </Button>
+              </div>
+            </div>
+            {!link.missing && (
+              <ValueRow
+                label={t("settings.customModels.publicMcpUrlLabel")}
+                value={url}
+                copied={copied === `link:${link.projectId}`}
+                onCopy={() => onCopy(`link:${link.projectId}`, url)}
+              />
+            )}
+            {!link.missing && !url && (
+              <p className="text-[0.6428em] text-content-subtle">
+                {t("settings.remoteControl.projectLinkUrlPending")}
+              </p>
+            )}
+          </div>
+        );
+      })}
+
+      {addable.length > 0 && (
+        <Select.Root
+          value=""
+          disabled={busy}
+          onValueChange={(v) => {
+            const projectId = v as string;
+            if (projectId) run(() => api.publicMcp.addProjectLink({ projectId }));
+          }}
+        >
+          <Select.Trigger className="w-full">
+            <Select.Value>{() => t("settings.remoteControl.projectLinksAdd")}</Select.Value>
+          </Select.Trigger>
+          <Select.Portal>
+            <Select.Positioner className="z-50">
+              <Select.Popup>
+                <Select.List>
+                  {addable.map((p) => (
+                    <Select.Item key={p.id} value={p.id}>
+                      <Select.ItemText>{p.name}</Select.ItemText>
+                    </Select.Item>
+                  ))}
+                </Select.List>
+              </Select.Popup>
+            </Select.Positioner>
+          </Select.Portal>
+        </Select.Root>
+      )}
     </div>
   );
 }
@@ -416,6 +552,21 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
             )}
           </div>
 
+          {/* external:Mcode 没有进程可看,状态来自一次真实的公网探测(见 publicMcpSession 的 externalProbeView)。 */}
+          {status.tunnelMode === "external" && (status.tunnelPhase === "starting" || status.tunnelPhase === "ready") && (
+            <p
+              className={cn(
+                "flex items-center gap-1 text-[0.7143em]",
+                status.tunnelPhase === "ready" ? "text-accent" : "text-content-subtle",
+              )}
+            >
+              {status.tunnelPhase === "starting" && <IconLoader2 size={12} className="animate-spin" />}
+              {status.tunnelPhase === "ready"
+                ? t("settings.remoteControl.externalReady")
+                : t("settings.remoteControl.externalProbing")}
+            </p>
+          )}
+
           {status?.tunnelPhase === "failed" && status.tunnelError && (
             <p className="rounded border border-danger/30 bg-danger/5 px-1.5 py-1 text-[0.6428em] leading-relaxed text-danger">
               {status.tunnelError}
@@ -486,6 +637,16 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
             </p>
           </div>
         </div>
+      )}
+
+      {status?.enabled && (
+        <ProjectLinksCard
+          status={status}
+          busy={busy}
+          copied={copied}
+          onCopy={(key, value) => void copy(key, value)}
+          run={(fn) => void run(fn)}
+        />
       )}
     </div>
   );

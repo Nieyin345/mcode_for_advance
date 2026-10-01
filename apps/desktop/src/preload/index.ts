@@ -201,6 +201,15 @@ const api = {
       ipcRenderer.invoke(IPC.PUBLIC_MCP_SET_PROJECT, input)) as RpcMap["publicMcp.setProject"],
     setTunnelConfig: ((input) =>
       ipcRenderer.invoke(IPC.PUBLIC_MCP_SET_TUNNEL_CONFIG, input)) as RpcMap["publicMcp.setTunnelConfig"],
+    addProjectLink: ((input) =>
+      ipcRenderer.invoke(IPC.PUBLIC_MCP_ADD_PROJECT_LINK, input)) as RpcMap["publicMcp.addProjectLink"],
+    removeProjectLink: ((input) =>
+      ipcRenderer.invoke(IPC.PUBLIC_MCP_REMOVE_PROJECT_LINK, input)) as RpcMap["publicMcp.removeProjectLink"],
+    regenerateProjectLinkSecret: ((input) =>
+      ipcRenderer.invoke(
+        IPC.PUBLIC_MCP_REGENERATE_PROJECT_LINK_SECRET,
+        input,
+      )) as RpcMap["publicMcp.regenerateProjectLinkSecret"],
   },
 
   /** Pi models visual editor — reads/writes ~/.pi/agent/models.json.

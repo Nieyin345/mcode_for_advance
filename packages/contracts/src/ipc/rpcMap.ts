@@ -248,6 +248,13 @@ export interface RpcMap {
   /** 存隧道配置(模式 / 自有域名 / Tunnel Token / 固定端口)。
    *  token 留空 = 沿用已存的那串;返回的状态里**只带尾 4 位**。 */
   "publicMcp.setTunnelConfig": (input: PublicMcpTunnelConfig) => Promise<PublicMcpStatus>;
+  /** 给一个项目单独发一条公网链接(自己的密钥 + 自己的合成会话 + 沙箱 = 该项目目录)。
+   *  已经有了就原样返回。几条链接可同时被不同的 ChatGPT 对话使用,互不干扰。 */
+  "publicMcp.addProjectLink": (input: { projectId: string }) => Promise<PublicMcpStatus>;
+  /** 删掉某个项目的公网链接(链接立刻失效;合成会话留着,记录不丢)。 */
+  "publicMcp.removeProjectLink": (input: { projectId: string }) => Promise<PublicMcpStatus>;
+  /** 换某个项目链接的密钥(旧链接立刻失效)。 */
+  "publicMcp.regenerateProjectLinkSecret": (input: { projectId: string }) => Promise<PublicMcpStatus>;
   // Pi models (visual editor for ~/.pi/agent/models.json)
   "piModels.list": () => Promise<{ providers: Record<string, PiProviderPublic> }>;
   "piModels.save": (input: SavePiProviderInput) => Promise<{ providers: Record<string, PiProviderPublic> }>;
@@ -1380,6 +1387,9 @@ export const IPC = {
   PUBLIC_MCP_STOP_TUNNEL: "publicMcp:stopTunnel",
   PUBLIC_MCP_SET_PROJECT: "publicMcp:setProject",
   PUBLIC_MCP_SET_TUNNEL_CONFIG: "publicMcp:setTunnelConfig",
+  PUBLIC_MCP_ADD_PROJECT_LINK: "publicMcp:addProjectLink",
+  PUBLIC_MCP_REMOVE_PROJECT_LINK: "publicMcp:removeProjectLink",
+  PUBLIC_MCP_REGENERATE_PROJECT_LINK_SECRET: "publicMcp:regenerateProjectLinkSecret",
   // Pi models (visual editor for ~/.pi/agent/models.json)
   PI_MODELS_LIST: "piModels:list",
   PI_MODELS_SAVE: "piModels:save",
@@ -1680,4 +1690,3 @@ export const IPC = {
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
-

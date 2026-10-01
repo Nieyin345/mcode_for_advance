@@ -402,6 +402,27 @@ export interface PublicMcpStatus {
   mobilePort: number;
   /** 外面的 AI 能不能支使本机 mcode agent 跑整轮(默认关,见设置键上那段警告)。 */
   agentDelegate: boolean;
+  /**
+   * **按项目分出来的额外链接**(多项目并行)。每条 = 一个项目 + 一把自己的密钥 +
+   * 一条自己的合成会话:不同的 ChatGPT 对话连不同的链接,就能同时在不同项目里干活,
+   * 互不串目录。上面那组 `secret` / `sandboxProjectId` 是**默认链接**,照旧可用。
+   */
+  projectLinks: PublicMcpProjectLink[];
+}
+
+/** 一条项目链接(见 `PublicMcpStatus.projectLinks`)。 */
+export interface PublicMcpProjectLink {
+  projectId: string;
+  /** 项目名;项目已被删时为空串(`missing` 为 true)。 */
+  projectName: string;
+  /** 项目目录 = 这条链接的沙箱根。 */
+  projectPath: string;
+  /** 路径里那把密钥(`/mcp/<secret>`)。明文,理由同 `PublicMcpStatus.secret`。 */
+  secret: string;
+  /** 这条链接的合成会话;还没建时为 null。 */
+  sessionId: string | null;
+  /** 项目已经不在了 —— 链接会回 404,界面上应提示用户删掉它。 */
+  missing: boolean;
 }
 
 /**
@@ -444,8 +465,11 @@ export interface PublicMcpTunnelConfig {
   hostname?: string;
   /** 可选:手机伴侣的公网域名。空 = 不暴露手机。 */
   mobileHostname?: string;
-  /** 公网 MCP 服务的固定本机端口;0 = 随机(仅 quick 模式适用)。 */
+  /** 公网 MCP 服务的固定本机端口;0 = 随机。随机只适合 quick —— named / external
+   *  的 ingress 写死了端口,所以那两种模式下存 0 会被换成默认的 17331。 */
   fixedPort?: number;
+  /** 清掉已存的 Tunnel Token(`token` 留空只表示"沿用",没法表达"删掉")。 */
+  clearToken?: boolean;
   /** 把 mcode agent 本身交给外面的 AI 支使。缺席 = 不改动。默认关,见设置键上那段警告。 */
   agentDelegate?: boolean;
 }

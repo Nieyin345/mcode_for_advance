@@ -36,6 +36,7 @@ import {
   stopExtensionBridge,
 } from "@main/providers/bridge/extensionBridge.js";
 import {
+  configureMcpLongCallTiming,
   configureMcpToolHost,
   MCODE_SESSION_HEADER,
   MCP_ENDPOINT_PATH,
@@ -434,6 +435,100 @@ const preflight = await publicRpc(null, { method: "OPTIONS", path: MCP_ENDPOINT_
 eq("OPTIONS 预检 → 204", preflight.status, 204);
 eq("…放行任意来源（ChatGPT 的 Connector 不是扩展来源）", preflight.headers.get("access-control-allow-origin"), "*");
 
+/* ── 多项目并行:每个项目一条链接,各落到各自的合成会话 ───────────────────
+ * 用户要"几个项目同时提供"。默认链接照旧;另外几条链接各有密钥,命中哪条就把哪条
+ * 的会话注入 —— 宿主据此给出各自的沙箱/工作目录。 */
+{
+  const LINK_A = "a".repeat(63) + "1";
+  const LINK_B = "b".repeat(63) + "2";
+  const linkSessions: Record<string, string | null> = { projA: "sess_link_a", projB: "sess_link_b", gone: null };
+  configurePublicMcpStore({
+    getEnabled: () => publicStoreEnabled,
+    setEnabled: () => {},
+    getSecret: () => PUBLIC_SECRET,
+    setSecret: () => {},
+    getSessionId: () => PUBLIC_SESSION,
+    setSessionId: () => {},
+    listProjectLinks: () => [
+      { projectId: "projA", secret: LINK_A },
+      { projectId: "projB", secret: LINK_B },
+      { projectId: "gone", secret: "c".repeat(64) },
+    ],
+    linkSessionId: (projectId) => linkSessions[projectId] ?? null,
+  });
+  const callVia = async (secret: string) => {
+    fakeCalls.length = 0;
+    const r = await publicRpc(
+      { jsonrpc: "2.0", id: 40, method: "tools/call", params: { name: "t_echo", arguments: {} } },
+      { path: `${MCP_ENDPOINT_PATH}/${secret}`, sessionHeader: "sess_spoof" },
+    );
+    return { status: r.status, session: fakeCalls[0]?.sessionId ?? null };
+  };
+  const viaA = await callVia(LINK_A);
+  eq("★ 项目链接 A → 落到 A 的合成会话", viaA.session, "sess_link_a");
+  const viaB = await callVia(LINK_B);
+  eq("★ 项目链接 B → 落到 B 的合成会话(与 A 互不串)", viaB.session, "sess_link_b");
+  const viaMain = await callVia(PUBLIC_SECRET);
+  eq("★ 默认链接照旧落到默认会话", viaMain.session, PUBLIC_SESSION);
+  eq("★ 项目已删的链接 → 404", (await callVia("c".repeat(64))).status, 404);
+  eq("★ 等长但不是任何一条链接 → 404", (await callVia("d".repeat(64))).status, 404);
+  // 几条链接同时打进来:各回各的会话(服务端没有"当前项目"这种全局状态)
+  const both = await Promise.all([
+    publicRpc({ jsonrpc: "2.0", id: 41, method: "tools/list" }, { path: `${MCP_ENDPOINT_PATH}/${LINK_A}` }),
+    publicRpc({ jsonrpc: "2.0", id: 42, method: "tools/list" }, { path: `${MCP_ENDPOINT_PATH}/${LINK_B}` }),
+  ]);
+  check("★ 两条链接并发都 200", both.every((r) => r.status === 200), both.map((r) => r.status));
+}
+
+/* ── 慢调用:Cloudflare 100 秒无字节就 524 —— 公网这条路把慢调用改成 SSE + 保活 ──
+ * 快调用照旧一个 JSON;慢调用(超过切换阈值)先回 event-stream 头、发保活注释、
+ * 最后一条 message 事件带上 JSON-RPC 结果。客户端没声明收 SSE 时一律老样子。 */
+{
+  configureMcpLongCallTiming({ switchAfterMs: 150, keepaliveMs: 60 });
+  configureMcpToolHost({
+    listTools: () => FAKE_TOOLS,
+    async callTool(name, args, ctx): Promise<McpToolCallResult> {
+      fakeCalls.push({ name, args, sessionId: ctx.sessionId });
+      const delay = Number((args as { delayMs?: unknown } | undefined)?.delayMs ?? 0);
+      if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+      return { text: `echo:${JSON.stringify(args)}` };
+    },
+  });
+  const rawCall = async (delayMs: number, accept: string) => {
+    const res = await fetch(`http://127.0.0.1:${publicPort}${MCP_ENDPOINT_PATH}/${PUBLIC_SECRET}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: accept },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 77, method: "tools/call", params: { name: "t_echo", arguments: { delayMs } } }),
+    });
+    return { type: res.headers.get("content-type") ?? "", text: await res.text() };
+  };
+  const BOTH = "application/json, text/event-stream";
+  const fast = await rawCall(0, BOTH);
+  check("★ 快调用照旧回 JSON", fast.type.includes("application/json"), fast.type);
+  const slow = await rawCall(400, BOTH);
+  check("★ 慢调用改回 SSE", slow.type.includes("text/event-stream"), slow.type);
+  check("★ …中途有保活注释", slow.text.includes(": keepalive"), slow.text.slice(0, 200));
+  const dataLine = slow.text.split("\n").find((l) => l.startsWith("data: ")) ?? "";
+  let parsedSse: { id?: unknown; result?: { content?: { text?: string }[] } } = {};
+  try {
+    parsedSse = JSON.parse(dataLine.slice(6)) as typeof parsedSse;
+  } catch {
+    /* 下面那条断言会红 */
+  }
+  check("★ …最后一条 message 带着同 id 的结果", parsedSse.id === 77 && (parsedSse.result?.content?.[0]?.text ?? "").startsWith("echo:"), dataLine);
+  check("★ …事件名是 message", slow.text.includes("event: message"), slow.text.slice(-200));
+  const slowJsonOnly = await rawCall(300, "application/json");
+  check("★ 客户端不收 SSE 时慢调用也回 JSON", slowJsonOnly.type.includes("application/json"), slowJsonOnly.type);
+  configureMcpLongCallTiming({ switchAfterMs: 25_000, keepaliveMs: 20_000 });
+  configureMcpToolHost({
+    listTools: () => FAKE_TOOLS,
+    async callTool(name, args, ctx): Promise<McpToolCallResult> {
+      fakeCalls.push({ name, args, sessionId: ctx.sessionId });
+      return { text: `echo:${JSON.stringify(args)}` };
+    },
+  });
+}
+
 /* ── 会话没备好时明确失败，而不是放一次没有闸门的调用 ── */
 configurePublicMcpStore({
   getEnabled: () => publicStoreEnabled,
@@ -572,6 +667,42 @@ check("表里有替身库的工具", names.includes("library_probe"), names);
   const offCall = await host.callTool("mcode_agent_start", { prompt: "x" }, { sessionId: "s1" });
   check("委派:关掉之后调不动", offCall.isError === true && offCall.text.includes("没有这个工具"), offCall.text);
   check("委派:静态那部分的表不受影响", host.listTools().length === tools.length, host.listTools().length);
+
+  // ── 多项目并行:不同链接(调用方会话)各有一条委派会话,能同时跑;同一项目仍一次一轮,
+  //    而且 A 链接看不见、打断不了 B 链接的任务。
+  const running = new Set<string>();
+  const releases: Array<() => void> = [];
+  configureDelegateDeps({
+    enabled: () => true,
+    ensureSession: async (caller) => ({ sessionId: `deleg-${caller ?? "none"}`, cwd: CWD }),
+    isBusy: (sid) => running.has(sid),
+    runTurn: ({ sessionId }) => {
+      running.add(sessionId);
+      return new Promise((resolve) => {
+        releases.push(() => {
+          running.delete(sessionId);
+          resolve({ text: `done ${sessionId}` });
+        });
+      });
+    },
+    interrupt: () => {},
+  });
+  const savedMode = mode;
+  mode = "bypassPermissions";
+  const jobOf = (text: string) => /任务号 (job_[0-9a-f]+)/.exec(text)?.[1] ?? "";
+  const startA = await host.callTool("mcode_agent_start", { prompt: "a" }, { sessionId: "linkA" });
+  const startB = await host.callTool("mcode_agent_start", { prompt: "b" }, { sessionId: "linkB" });
+  check("★ 委派:两个项目的链接能同时各起一轮", !startA.isError && !startB.isError, [startA.text, startB.text]);
+  const againA = await host.callTool("mcode_agent_start", { prompt: "a2" }, { sessionId: "linkA" });
+  check("★ 委派:同一项目仍一次一轮(busy)", againA.isError === true && againA.text.startsWith("busy"), againA.text);
+  const peek = await host.callTool("mcode_agent_result", { job_id: jobOf(startA.text), wait_seconds: 0 }, { sessionId: "linkB" });
+  check("★ 委派:B 链接看不见 A 的任务", peek.isError === true, peek.text);
+  const cancelPeek = await host.callTool("mcode_agent_cancel", { job_id: jobOf(startA.text) }, { sessionId: "linkB" });
+  check("★ 委派:B 链接打断不了 A 的任务", cancelPeek.isError === true, cancelPeek.text);
+  for (const r of releases.splice(0)) r();
+  const own = await host.callTool("mcode_agent_result", { job_id: jobOf(startA.text), wait_seconds: 2 }, { sessionId: "linkA" });
+  check("★ 委派:A 自己取得到结果", !own.isError && own.text.includes("done deleg-linkA"), own.text);
+  mode = savedMode;
   configureDelegateDeps(null);
 }
 

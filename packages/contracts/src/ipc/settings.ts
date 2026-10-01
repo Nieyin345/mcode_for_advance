@@ -743,8 +743,21 @@ export const PUBLIC_MCP_TUNNEL_TOKEN_SETTING_KEY = "publicMcp.tunnelToken";
  */
 export const PUBLIC_MCP_AGENT_DELEGATE_SETTING_KEY = "publicMcp.agentDelegate";
 
-/** 委派专用会话的 id —— 与「ChatGPT 直连」那条分开(审计面要分得清)。 */
+/** 委派专用会话的 id —— 与「ChatGPT 直连」那条分开(审计面要分得清)。
+ *  这是**默认链接**那个项目的;其余项目的委派会话记在下面那张表里。 */
 export const PUBLIC_MCP_DELEGATE_SESSION_ID_SETTING_KEY = "publicMcp.delegateSessionId";
+
+/** 各项目的委派会话:JSON `{ [projectId]: sessionId }`。一个项目一条,项目之间并行。 */
+export const PUBLIC_MCP_DELEGATE_SESSIONS_SETTING_KEY = "publicMcp.delegateSessions";
+
+/**
+ * **多项目并行**的那几条链接:JSON `[{ projectId, secret, sessionId }]`。
+ *
+ * 默认链接(`publicMcp.secret` + `publicMcp.projectId`)只能指一个项目;想让几个
+ * ChatGPT 对话同时各管一个项目,就每个项目各发一条链接 —— 各自的密钥、各自的
+ * 「ChatGPT 直连 · 项目名」合成会话、各自的沙箱根。坏 JSON / 坏条目一律丢弃。
+ */
+export const PUBLIC_MCP_PROJECT_LINKS_SETTING_KEY = "publicMcp.projectLinks";
 
 /** named / external 模式下 **MCP 端点**的公网域名,如 `mcp.example.com`(不带协议)。 */
 export const PUBLIC_MCP_TUNNEL_HOSTNAME_SETTING_KEY = "publicMcp.tunnelHostname";
@@ -918,4 +931,3 @@ export type SetSettingInput = z.infer<typeof SetSettingSchema>;
 export const GetManySettingsSchema = z.object({ keys: z.array(z.string()) });
 export type GetManySettingsInput = z.infer<typeof GetManySettingsSchema>;
 export type GetManySettingsResult = Record<string, string | null>;
-

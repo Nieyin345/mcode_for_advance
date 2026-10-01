@@ -332,7 +332,7 @@ export const en = {
   "settings.remoteControl.tunnelModeHint.named":
     "Use a named tunnel you created in Cloudflare: the address is stable, set it once. Point a public hostname at the local port below first, then paste the Tunnel Token here.",
   "settings.remoteControl.tunnelModeHint.external":
-    "You run the tunnel yourself (e.g. installed as a system service, alive even when Mcode is closed). Mcode starts no process and only remembers the domain.",
+    "You run the tunnel yourself (e.g. installed as a system service, alive even when Mcode is closed). Mcode starts no process; it remembers the domain to build the link and periodically probes it from the internet to confirm the whole path works.",
   "settings.remoteControl.hostnameLabel": "MCP endpoint domain",
   "settings.remoteControl.hostnameHint":
     "Without https:// — the public hostname from Cloudflare. It must point at the fixed port below.",
@@ -351,6 +351,18 @@ export const en = {
   "settings.remoteControl.delegateLabel": "Let external AI drive this machine's agent",
   "settings.remoteControl.delegateWarning":
     "⚠️ Once on, an outside AI can hand a whole task to the local mcode agent instead of just reading and writing files — it runs a full turn with your skills, workflows and memory, editing files and running commands, with no approval prompts. Each task runs in a separate \"External AI delegation\" conversation you can watch in the sidebar. Leave it off if unsure.",
+  "settings.remoteControl.tokenClear": "Clear saved token",
+  "settings.remoteControl.externalProbing": "Probing this hostname from the internet…",
+  "settings.remoteControl.externalReady": "Public probe passed: hostname → tunnel → local port all reachable",
+  "settings.remoteControl.projectLinksTitle": "Parallel per-project links",
+  "settings.remoteControl.projectLinksHint":
+    "Each project gets its own link: its own secret, its own \"ChatGPT direct · project\" conversation, and file access confined to that project folder. Create one Connector per project in ChatGPT (or use different links in different chats) to work in several projects at once without crossing folders. The link above is the default one and keeps working.",
+  "settings.remoteControl.projectLinksEmpty": "None yet. Pick a project below to add one.",
+  "settings.remoteControl.projectLinksAdd": "Add a link for a project…",
+  "settings.remoteControl.projectLinkMissing": "(project deleted — link no longer works)",
+  "settings.remoteControl.projectLinkUrlPending": "Full URL appears once the tunnel is ready",
+  "settings.remoteControl.projectLinkRegenerate": "New secret",
+  "settings.remoteControl.projectLinkRemove": "Remove",
   "settings.customModels.publicMcpOn": "Open",
   "settings.customModels.publicMcpOff": "Closed",
   "settings.customModels.publicMcpToggleLabel": "Expose the public MCP endpoint",

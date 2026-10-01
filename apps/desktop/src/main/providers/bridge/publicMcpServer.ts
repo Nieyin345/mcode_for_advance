@@ -90,6 +90,17 @@ export interface PublicMcpStore {
    * 在 Cloudflare 面板里写死 `127.0.0.1:<端口>`,端口每次变就等于那条规则每次都指空。
    */
   getFixedPort?(): number;
+  /**
+   * **按项目分出来的那几条链接**(多项目并行)。每条有自己的密钥、自己的合成会话、
+   * 自己的沙箱根 —— 一个 ChatGPT 对话连一个项目,几条链接可以同时被几个对话用。
+   *
+   * 不实现 = 只有上面那一条默认链接(这个功能上线前的行为)。这里只返回**密钥 +
+   * 项目 id**;会话由 `linkSessionId` 现取 —— 那一步可能要建/修会话(碰 db),
+   * 而且只该在密钥比对成功之后做。
+   */
+  listProjectLinks?(): { projectId: string; secret: string }[];
+  /** 某条项目链接的合成会话(没有就建;项目已删 → null)。 */
+  linkSessionId?(projectId: string): string | null;
 }
 
 let store: PublicMcpStore | null = null;
@@ -280,6 +291,29 @@ async function handlePublicRequest(req: IncomingMessage, res: ServerResponse): P
   const got = secretFromPath(pathname);
   const expected = store?.getSecret() ?? "";
 
+  // 先比**项目链接**(多项目并行那几条)。每一条都比完 —— 不在第一条命中就 break,
+  // 免得"命中第几条"变成可计时的信号;常量时间比较只防得住单条比较内部的时序。
+  let linkProject: string | null = null;
+  if (got) {
+    for (const link of store?.listProjectLinks?.() ?? []) {
+      if (link.secret && secretMatches(got, link.secret) && linkProject === null) {
+        linkProject = link.projectId;
+      }
+    }
+  }
+  if (linkProject !== null) {
+    const linkSession = store!.linkSessionId?.(linkProject) ?? null;
+    if (!linkSession) {
+      // 项目被删了(或者建会话失败)。与"密钥不对"同样回 404 —— 这条链接已经不指向任何东西。
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "not found" }));
+      return;
+    }
+    req.headers[MCODE_SESSION_HEADER] = linkSession;
+    await handleMcpRequest(req, res, { keepAliveLongCalls: true });
+    return;
+  }
+
   // 密钥不对 / 路径形状不对 / 没存 store —— 一律 404,不区分原因(不透露"这里有端点")。
   if (!got || !expected || !secretMatches(got, expected)) {
     res.writeHead(404, { "Content-Type": "application/json" });
@@ -301,7 +335,11 @@ async function handlePublicRequest(req: IncomingMessage, res: ServerResponse): P
   }
   req.headers[MCODE_SESSION_HEADER] = sessionId;
 
-  await handleMcpRequest(req, res);
+  // `keepAliveLongCalls`:这条路前面是 Cloudflare,它对**一个请求 100 秒内没有任何
+  // 字节**就回 524(免费/Pro/Business 都不能调)。慢工具(agent_bash 默认 120 秒、
+  // 长构建)会撞上 —— 所以这条路允许把慢调用改成 SSE 回、中途发保活注释。扩展的
+  // `/mcp` 是本机回环,没这个问题,保持原样。
+  await handleMcpRequest(req, res, { keepAliveLongCalls: true });
 }
 
 /* ────────────────────────────── 状态快照 ────────────────────────────── */
@@ -321,6 +359,7 @@ export function publicMcpStatus(): PublicMcpStatus {
     sandboxRoot: sandboxRootProvider?.() ?? null,
     sandboxProjectId: sandboxProjectIdProvider?.() ?? null,
     availableProjects: availableProjectsProvider?.() ?? [],
+    projectLinks: projectLinksProvider?.() ?? [],
     // 隧道配置那一组:没注入(无头 smoke)时给一组"quick + 什么都没配"的缺省,
     // 与这个功能上线前的行为一致。
     ...(tunnelConfigProvider?.() ?? {
@@ -358,6 +397,10 @@ let sandboxProjectIdProvider: (() => string | null) | null = null;
 let availableProjectsProvider: (() => { id: string; name: string; path: string }[]) | null = null;
 /** 隧道配置视图。**可选** —— 无头 smoke 装配时不给,状态里就是一组缺省值。 */
 let tunnelConfigProvider: (() => PublicMcpTunnelView) | null = null;
+/** 多项目链接的展示视图。**可选** —— 不给就是空表。 */
+let projectLinksProvider: (() => PublicMcpProjectLinkView[]) | null = null;
+
+export type PublicMcpProjectLinkView = ContractPublicMcpStatus["projectLinks"][number];
 
 export function configurePublicMcpExtras(next: {
   tunnelUrl: () => string | null;
@@ -368,8 +411,11 @@ export function configurePublicMcpExtras(next: {
   availableProjects: () => { id: string; name: string; path: string }[];
   /** 可选:不给就按 quick + 空配置显示(见 `publicMcpStatus`)。 */
   tunnelConfig?: () => PublicMcpTunnelView;
+  /** 可选:多项目链接(见 `PublicMcpStore.listProjectLinks`)。 */
+  projectLinks?: () => PublicMcpProjectLinkView[];
 }): void {
   tunnelConfigProvider = next.tunnelConfig ?? null;
+  projectLinksProvider = next.projectLinks ?? null;
   tunnelUrlProvider = next.tunnelUrl;
   tunnelPhaseProvider = next.tunnelPhase;
   tunnelErrorProvider = next.tunnelError;

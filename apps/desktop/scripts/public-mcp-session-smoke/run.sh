@@ -10,6 +10,7 @@ if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \
   --alias:@main/utils.js=./scripts/public-mcp-session-smoke/stubs/utils.ts \
   --alias:@main/lib/logger.js=./scripts/public-mcp-session-smoke/stubs/logger.ts \
+  --alias:@main/lib/secretStore.js=./scripts/custom-model-smoke/stubs/secretStore.ts \
   --alias:@main/store/repositories.js=./scripts/public-mcp-session-smoke/stubs/repositories.ts \
   --alias:@main/providers/bridge/publicMcpServer.js=./scripts/public-mcp-session-smoke/stubs/publicMcpServer.ts \
   --alias:@main/providers/bridge/tunnelManager.js=./scripts/public-mcp-session-smoke/stubs/tunnelManager.ts \

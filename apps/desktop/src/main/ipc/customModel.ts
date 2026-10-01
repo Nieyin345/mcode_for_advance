@@ -29,7 +29,10 @@ import {
   regenerateToken,
 } from "@main/providers/bridge/extensionBridge.js";
 import {
+  addPublicMcpProjectLink,
+  regeneratePublicMcpProjectLinkSecret,
   regeneratePublicMcpSecret,
+  removePublicMcpProjectLink,
   setPublicMcpEnabled,
   setPublicMcpProject,
   setPublicMcpTunnelConfig,
@@ -179,6 +182,7 @@ export function registerCustomModelHandlers(ipcMain: IpcMain): void {
           fixedPort: z.number().int().min(0).max(65535).optional(),
           // ⚠️ 少了这一项,zod 会把界面传来的委派开关**静默剥掉** —— 开关怎么点都开不了。
           agentDelegate: z.boolean().optional(),
+          clearToken: z.boolean().optional(),
         })
         .parse(raw);
     } catch (err) {
@@ -186,6 +190,22 @@ export function registerCustomModelHandlers(ipcMain: IpcMain): void {
     }
     return await setPublicMcpTunnelConfig(input);
   });
+
+  // 多项目并行:每个项目一条自己的链接(密钥 / 合成会话 / 沙箱各自独立)。
+  const ProjectLinkInput = z.object({ projectId: z.string().min(1).max(200) });
+  const parseProjectLink = (raw: unknown): string => {
+    try {
+      return ProjectLinkInput.parse(raw).projectId;
+    } catch (err) {
+      throw new Error(errText(err));
+    }
+  };
+  ipcMain.handle(IPC.PUBLIC_MCP_ADD_PROJECT_LINK, async (_evt, raw) =>
+    addPublicMcpProjectLink(parseProjectLink(raw)));
+  ipcMain.handle(IPC.PUBLIC_MCP_REMOVE_PROJECT_LINK, async (_evt, raw) =>
+    removePublicMcpProjectLink(parseProjectLink(raw)));
+  ipcMain.handle(IPC.PUBLIC_MCP_REGENERATE_PROJECT_LINK_SECRET, async (_evt, raw) =>
+    regeneratePublicMcpProjectLinkSecret(parseProjectLink(raw)));
 
   ipcMain.handle(IPC.CUSTOM_MODEL_TEST, async (_evt, raw) => {
     // 校验错也走人话（同上面几条）：这条通道的失败会原样显示在设置页那行红字里。
