@@ -7,7 +7,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { StringDecoder } from "node:string_decoder";
+import { ConsoleTextDecoder } from "@main/lib/outBuf.js";
 import { killTree, TREE_KILLABLE } from "@main/lib/spawnRun.js";
 
 /**
@@ -23,8 +23,9 @@ import { killTree, TREE_KILLABLE } from "@main/lib/spawnRun.js";
  *
  * (2026-09-24 审查发现;`agent_bash` 那处同款问题见那边。)
  */
-function newDecoder(): StringDecoder {
-  return new StringDecoder("utf8");
+function newDecoder(): ConsoleTextDecoder {
+  // 不只是扛跨块的半个字符:中文 Windows 上 cmd 的输出是 GBK,见 ConsoleTextDecoder。
+  return new ConsoleTextDecoder();
 }
 
 /** `data` 回调按 Node 的类型可以是 string(设了 encoding 时)——统一成 Buffer 喂解码器。 */
@@ -77,8 +78,8 @@ interface ProcessSession {
   id: string;
   /** stdout / stderr 各自的**流式**解码器 —— 扛跨界多字节字符,见 `newDecoder`。
    *  挂在会话上(不是模块级),否则两个进程的半个字符会互相补完、串味。 */
-  stdoutDecoder: StringDecoder;
-  stderrDecoder: StringDecoder;
+  stdoutDecoder: ConsoleTextDecoder;
+  stderrDecoder: ConsoleTextDecoder;
   ownerSessionId: string;
   command: string;
   cwd: string;
@@ -154,6 +155,8 @@ export interface AgentProcessSessions {
    *  all of its entries (otherwise running ones keep going until their own
    *  timeout, and finished ones stay listed until pruneCompleted evicts them). */
   disposeOwner(ownerSessionId: string): void;
+  /** 应用退出时:杀掉所有还在跑的进程(不分会话)。 */
+  disposeAll(): void;
 }
 
 export function createAgentProcessSessions(): AgentProcessSessions {
@@ -410,7 +413,13 @@ export function createAgentProcessSessions(): AgentProcessSessions {
         append(session, `\n[process error] ${err.message}\n`);
         finalize(session, "failed", null, null);
       });
-      child.on("close", (code, signal) => finalize(session, "exited", code, signal));
+      child.on("close", (code, signal) => {
+        // 解码器里可能还压着最后半个字符 —— 结束时吐出来。
+        append(session, session.stdoutDecoder.end());
+        const errRest = session.stderrDecoder.end();
+        if (errRest) append(session, `[stderr] ${errRest}`);
+        finalize(session, "exited", code, signal);
+      });
       session.timeout = setTimeout(() => {
         if (session.status !== "running") return;
         session.forcedStatus = "timed_out";
@@ -486,6 +495,14 @@ export function createAgentProcessSessions(): AgentProcessSessions {
         // out its waitMs against a conversation that no longer exists.
         notify(session);
         sessions.delete(session.id);
+      }
+    },
+
+    disposeAll() {
+      for (const session of sessions.values()) {
+        if (session.status !== "running") continue;
+        session.forcedStatus = "stopped";
+        terminate(session);
       }
     },
   };

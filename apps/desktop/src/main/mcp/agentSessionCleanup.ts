@@ -27,6 +27,33 @@ export function registerAgentSessionDisposer(fn: AgentSessionDisposer): () => vo
   };
 }
 
+const shutdownHooks = new Set<() => void>();
+
+/** 登记一个「应用退出时」的清理函数(杀掉还在跑的后台进程等);返回注销函数。 */
+export function registerAgentShutdownHook(fn: () => void): () => void {
+  shutdownHooks.add(fn);
+  return () => {
+    shutdownHooks.delete(fn);
+  };
+}
+
+/**
+ * 应用退出时调用(`index.ts` 的 `before-quit`)。
+ *
+ * agent 用 `agent_process_start` 起的后台进程(`npm run dev` 之类,最长可跑 60 分钟)
+ * 不会随应用一起死:类 Unix 上它们是独立进程组(`TREE_KILLABLE` 的 `detached`),
+ * Windows 上子进程本来就不随父进程退出。不在这里杀,关掉 Mcode 后端口还被占着。
+ */
+export function disposeAllAgentResources(): void {
+  for (const fn of shutdownHooks) {
+    try {
+      fn();
+    } catch (err) {
+      console.warn(`disposeAllAgentResources failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
 /** 释放该会话名下所有 agent 工具资源。单个管理器出错不影响其余几个,也不抛给调用方
  *  (调用方正走在删除流程里,不能因为清理失败半途而废)。 */
 export function disposeAgentSession(sessionId: string): void {

@@ -56,6 +56,7 @@ import {
   isKnownWorkspaceRoot,
   findContainingWorkspaceRoot,
   pathWithin,
+  samePath,
 } from "@main/lib/pathGuard.js";
 import { cachedTreeFiles, sortDirents, SEARCH_MAX_DEPTH, SEARCH_MAX_VISIT } from "@main/lib/walkCache.js";
 
@@ -275,7 +276,12 @@ export async function readFileGuarded(filePath: string): Promise<{ content: stri
     return { content: "" };
   }
   try {
-    const content = await readFile(filePath, "utf-8");
+    // 不能再按 UTF-8 硬读:GBK / UTF-16 的文件会显示成乱码,而编辑器一保存,替换字符
+    // 就把原文永久写坏了。走与搜索同一份 `decodeTextBuffer`;UTF-8 BOM 原样留在内容里
+    // (与原先的 `readFile(..., "utf-8")` 一致),保存时才能写回去(.ps1 要靠它认中文)。
+    const buf = await readFile(filePath);
+    const hasUtf8Bom = buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf;
+    const content = hasUtf8Bom ? buf.toString("utf-8") : (decodeTextBuffer(buf) ?? buf.toString("utf-8"));
     return { content };
   } catch (err) {
     // ENOENT (file gone), EACCES, or binary content that isn't valid utf-8.
@@ -725,6 +731,11 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
     const root = findContainingWorkspaceRoot(input.targetPath);
     if (!root) {
       log.warn(`file.delete refused — path outside any project root: ${input.targetPath}`);
+      return { ok: false };
+    }
+    // 项目根本身也"在项目里" —— 不拦的话,文件树上点一下就能把整个项目扔进回收站。
+    if (samePath(root, input.targetPath)) {
+      log.warn(`file.delete refused — target is the project root itself: ${input.targetPath}`);
       return { ok: false };
     }
     try {

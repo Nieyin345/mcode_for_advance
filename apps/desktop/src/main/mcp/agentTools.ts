@@ -37,7 +37,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { createInterface as createReadlineInterface } from "node:readline";
-import { StringDecoder } from "node:string_decoder";
+import { ConsoleTextDecoder } from "@main/lib/outBuf.js";
 import { z } from "zod";
 import {
   defaultSkillsRoot,
@@ -61,7 +61,7 @@ import {
   type AgentProcessReadResult,
 } from "./agentProcessSessions.js";
 import { createAgentSearchSessions, type AgentSearchReadResult } from "./agentSearchSessions.js";
-import { registerAgentSessionDisposer } from "./agentSessionCleanup.js";
+import { registerAgentSessionDisposer, registerAgentShutdownHook } from "./agentSessionCleanup.js";
 import { createAgentRemoteSshManager, type RemoteConnectionInfo, type RemoteJobStatus, DEFAULT_SSH_EXEC_TIMEOUT_MS, MAX_SSH_EXEC_TIMEOUT_MS, DEFAULT_JOB_LOG_WAIT_MS, MAX_JOB_LOG_WAIT_MS } from "./agentRemoteSsh.js";
 import {
   editDocxXml,
@@ -816,7 +816,7 @@ interface WalkHit {
  */
 function appendDecoded(
   acc: { text: string },
-  decoder: StringDecoder,
+  decoder: ConsoleTextDecoder,
   chunk: Buffer | string,
   cap: number,
   prefix = "",
@@ -828,8 +828,9 @@ function appendDecoded(
 }
 
 /** 每条流一个解码器(`appendDecoded` 用)。 */
-function newDecoder(): StringDecoder {
-  return new StringDecoder("utf8");
+function newDecoder(): ConsoleTextDecoder {
+  // 不只是扛跨块的半个字符:中文 Windows 上 cmd 的输出是 GBK,见 ConsoleTextDecoder。
+  return new ConsoleTextDecoder();
 }
 
 /**
@@ -940,6 +941,8 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
     searches.disposeOwner(sessionId);
     remoteSsh.disposeOwner(sessionId);
   });
+  // 应用退出时杀掉还在跑的后台进程,否则它们比 Mcode 活得久(端口一直被占)。
+  registerAgentShutdownHook(() => processes.disposeAll());
 
   return [
     {

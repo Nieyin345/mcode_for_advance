@@ -757,7 +757,9 @@ async function importGithubPackage(input: { url: string }): Promise<SkillsImport
         continue;
       }
       try {
-        await fs.cp(dir, dest, { recursive: true });
+        // 整个仓库就是一个技能时 `dir` 就是克隆目录 —— 别把 `.git`(几 MB 到几百 MB,
+        // Windows 上 pack 文件还是只读的,之后删技能会卡住)一起抄进技能库。
+        await fs.cp(dir, dest, { recursive: true, filter: (src) => path.basename(src) !== ".git" });
         imported.push(name);
       } catch (err) {
         errors.push({ name, error: (err as Error).message });

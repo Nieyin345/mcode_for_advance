@@ -53,6 +53,7 @@ function quitFixture(failAt: "flush" | "close" | null, options: {
     BrowserManager: { disposeAll: record("browser"), saveCookieVault: async () => { trace.push("cookies"); } },
     relayManager: { disposeAll: record("relay") }, automationRunner: { dispose: record("automation") },
     stopMobileServer: record("mobile"),
+    disposeAllAgentResources: record("agent-processes"),
     shutdownOnlyOfficeBridge: record("onlyoffice"),
     flushOnlyOfficeSessions: async () => {
       trace.push("office-save");
@@ -146,6 +147,7 @@ async function main(): Promise<void> {
   success.callback(success.event);
   check("successful quit saves before teardown and closes last", !success.prevented() && success.trace[0] === "flush" && success.trace.at(-1) === "close");
   check("successful quit includes the current OnlyOffice cleanup", success.trace.includes("onlyoffice"));
+  check("successful quit stops agent background processes", success.trace.includes("agent-processes"));
   const officeFailure = quitFixture(null, { cookiesFlushed: false, officeFailure: true });
   officeFailure.callback(officeFailure.event);
   await tick(); await tick();

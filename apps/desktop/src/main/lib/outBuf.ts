@@ -112,7 +112,9 @@ function decodeUtf8Strict(buf: Buffer): string | null {
     return strict.decode(buf);
   } catch {
     const trimmed = trimTrailingPartialUtf8(buf);
-    if (trimmed.length === buf.length) return null;
+    // 削完一个字节都不剩(整段就是半个字符,比如 GBK 的「或」= bb f2)时不能当成
+    // "解出了空串" —— 那会把这两个字节整个吞掉。
+    if (trimmed.length === buf.length || trimmed.length === 0) return null;
     try {
       return strict.decode(trimmed);
     } catch {
@@ -171,4 +173,77 @@ function countReplacement(text: string): number {
   let count = 0;
   for (const ch of text) if (ch === REPLACEMENT) count += 1;
   return count;
+}
+
+/**
+ * **流式**解码子进程输出 —— `StringDecoder("utf8")` 的替代品,给「边收边交给模型」的
+ * 场景用(`agent_bash`、后台进程会话)。
+ *
+ * `StringDecoder` 只解决了「多字节字符跨在两块之间」,却把输出**一律当 UTF-8**:中文
+ * Windows 上 `shell: true` 起的是 cmd.exe,`dir`、`ping`、「'xxx' 不是内部或外部命令」
+ * 这些输出是 GBK,模型拿到的是一串 U+FFFD —— 偏偏报错那句话最要紧。
+ *
+ * 做法:按 `0x0A` 切行(UTF-8 与 GBK 的多字节字符里都不会出现这个字节),完整的行交给
+ * {@link decodeOutput}(严格 UTF-8 优先,不行再比 GBK)。最后那截没换行的:
+ *
+ * 1. 整段是合法 UTF-8 → 直接吐出(合法 UTF-8 的结果与 `StringDecoder` 完全一样);
+ * 2. 只是尾巴上有半个 UTF-8 字符 → 吐出前面的,半个字符留到下一块;
+ * 3. 中间就不合法 → 按 GBK 吐出完整的双字节部分,落单的首字节留到下一块。
+ *
+ * `end()` 把留着的那点吐出来(进程结束时调用;不调也只丢最多一个字符)。
+ */
+export class ConsoleTextDecoder {
+  private pending: Buffer = Buffer.alloc(0);
+
+  write(chunk: Buffer | string): string {
+    const incoming = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
+    const buf = this.pending.length > 0 ? Buffer.concat([this.pending, incoming]) : incoming;
+    this.pending = Buffer.alloc(0);
+    let out = "";
+    const lastNl = buf.lastIndexOf(0x0a);
+    if (lastNl >= 0) {
+      let start = 0;
+      while (start <= lastNl) {
+        const nl = buf.indexOf(0x0a, start);
+        out += decodeOutput(buf.subarray(start, nl + 1));
+        start = nl + 1;
+      }
+    }
+    const tail = buf.subarray(lastNl + 1);
+    if (tail.length === 0) return out;
+    const whole = decodeUtf8Exact(tail);
+    if (whole !== null) return out + whole;
+    const trimmed = trimTrailingPartialUtf8(tail);
+    if (trimmed.length < tail.length) {
+      const head = decodeUtf8Exact(trimmed);
+      if (head !== null) {
+        this.pending = Buffer.from(tail.subarray(trimmed.length));
+        return out + head;
+      }
+    }
+    // 不是 UTF-8:按 GBK 切出完整的部分(ASCII 单字节,其余两字节一个字符)。
+    let i = 0;
+    while (i < tail.length) {
+      if ((tail[i] as number) < 0x80) i += 1;
+      else if (i + 1 < tail.length) i += 2;
+      else break;
+    }
+    this.pending = Buffer.from(tail.subarray(i));
+    return out + (i > 0 ? decodeOutput(tail.subarray(0, i)) : "");
+  }
+
+  end(): string {
+    const rest = this.pending;
+    this.pending = Buffer.alloc(0);
+    return rest.length > 0 ? decodeOutput(rest) : "";
+  }
+}
+
+/** 严格 UTF-8,**不做**尾部修剪:整段合法才返回。 */
+function decodeUtf8Exact(buf: Buffer): string | null {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(buf);
+  } catch {
+    return null;
+  }
 }

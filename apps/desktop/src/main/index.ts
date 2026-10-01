@@ -15,6 +15,7 @@ import {
 import { configureMcpToolHost } from "@main/providers/bridge/mcpEndpoint.js";
 import { initPublicMcp, disposePublicMcp, configurePublicMcpRuntime, publicMcpSandboxRoot } from "@main/providers/bridge/publicMcpSession.js";
 import { createWebToolHost } from "@main/mcp/webToolHost.js";
+import { disposeAllAgentResources } from "@main/mcp/agentSessionCleanup.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { broadcastSessionChanged } from "@main/lib/sessionSync.js";
 import { lspManager } from "@main/lsp/LspManager.js";
@@ -439,6 +440,8 @@ app.on("before-quit", (event) => {
   disposePublicMcp();
   shutdownOnlyOfficeBridge();
   TerminalManager.disposeAll();
+  // agent 起的后台进程(npm run dev 之类)不会随应用退出,这里杀掉。
+  disposeAllAgentResources();
   lspManager.disposeAll();
   BrowserManager.disposeAll();
   relayManager.disposeAll();
