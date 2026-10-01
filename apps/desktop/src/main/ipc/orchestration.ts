@@ -85,7 +85,9 @@ export function sanitizeFileBase(name: string | undefined, fallback: string): st
     .replace(/[. ]+$/, "")
     .slice(0, 80)
     .trim();
-  return cleaned.length > 0 ? cleaned : fallback;
+  if (cleaned.length === 0) return fallback;
+  // Windows 保留设备名(CON / NUL / COM1……,带扩展名也算)不能当文件名:加个后缀避开。
+  return /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(cleaned) ? `${cleaned}_` : cleaned;
 }
 
 export function registerWorkflowHandlers(ipcMain: IpcMain): void {

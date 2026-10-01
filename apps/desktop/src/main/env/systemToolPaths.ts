@@ -11,8 +11,8 @@
  * smoke 在运行时直接死在 `Dynamic require of "fs"` 上。这里只依赖 node:fs / node:path
  * 与契约里的工具 id 表。
  */
-import { existsSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { ToolchainToolId } from "@contracts/ipc";
 import { TOOLCHAIN_TOOL_IDS } from "@contracts/ipc";
 
@@ -57,4 +57,33 @@ export function systemToolBinDirs(): string[] {
     }
   }
   return [...dirs];
+}
+
+/** macOS:终端里有、但**从访达/程序坞启动的应用拿不到**的那些 PATH 目录。
+ *
+ * GUI 应用由 launchd 启动,PATH 只有 `/usr/bin:/bin:/usr/sbin:/sbin` —— `/etc/paths`、
+ * `/etc/paths.d/*` 是终端里的 `path_helper` 才会读的。于是 Homebrew(`/opt/homebrew/bin`、
+ * `/usr/local/bin`)装的 pandoc / python3 / node、MacTeX(`/etc/paths.d/TeX` →
+ * `/Library/TeX/texbin`)装的 xelatex,对应用全都"不存在":面板显示没装、agent
+ * command not found,用户却明明装了。
+ *
+ * 照 `path_helper` 的规则拼一份(Homebrew 的 Apple Silicon 目录它不管,`brew shellenv`
+ * 会把它放最前,这里同样放前面),只返回**真实存在**的目录;调用方只补 PATH 里还没有的。
+ * 从终端启动(PATH 已经齐了)时因此什么都不变。非 macOS 返回空。 */
+export function macShellPathDirs(): string[] {
+  if (process.platform !== "darwin") return [];
+  const out: string[] = [];
+  const add = (raw: string): void => {
+    const d = raw.trim();
+    if (d.startsWith("/") && !out.includes(d) && existsSync(d)) out.push(d);
+  };
+  const lines = (file: string): string[] => {
+    try { return readFileSync(file, "utf8").split("\n"); } catch { return []; }
+  };
+  for (const d of ["/opt/homebrew/bin", "/opt/homebrew/sbin"]) add(d);
+  for (const l of lines("/etc/paths")) add(l);
+  let names: string[] = [];
+  try { names = readdirSync("/etc/paths.d").sort(); } catch { /* 没有这个目录 */ }
+  for (const n of names) for (const l of lines(join("/etc/paths.d", n))) add(l);
+  return out;
 }

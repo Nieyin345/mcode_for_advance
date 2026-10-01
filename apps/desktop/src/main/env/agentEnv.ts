@@ -64,7 +64,7 @@
  */
 import { delimiter } from "node:path";
 import { managedToolBinDirs } from "./managedToolRoots.js";
-import { systemToolBinDirs } from "./systemToolPaths.js";
+import { macShellPathDirs, systemToolBinDirs } from "./systemToolPaths.js";
 import { MCODE_CONFIG_DIR } from "@main/providers/claude-sdk/customEnv.js";
 
 /** 上一次由本模块注入的 PATH 目录 —— 下次重算时先摘掉它们。 */
@@ -79,7 +79,8 @@ export function injectedToolDirs(): string[] {
  *  裸名字找到。装/卸工具后必须调。 */
 function refreshToolchainPath(): void {
   const previous = injected;
-  const dirs = [...managedToolBinDirs(), ...systemToolBinDirs()];
+  // macShellPathDirs:macOS 从访达启动时缺的 Homebrew / MacTeX 等目录(见那边注释)。
+  const dirs = [...managedToolBinDirs(), ...systemToolBinDirs(), ...macShellPathDirs()];
 
   const base = (process.env.PATH ?? "")
     .split(delimiter)

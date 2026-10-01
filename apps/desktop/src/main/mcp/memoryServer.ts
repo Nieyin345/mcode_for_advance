@@ -38,6 +38,14 @@ import { visibleMemory } from "@main/memory/paths.js";
  * 不写 = 交给 CLI 的工具检索,真要记的时候按需拉进来。
  */
 import { z } from "zod";
+
+/** 本地日期 YYYY-MM-DD。不用 `toISOString().slice(0, 10)` —— 那是 UTC 日期,
+ *  东八区凌晨 0–8 点会显示成"昨天"。 */
+function localDate(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
 import {
   MemoryRevisionSchema,
   MEMORY_CATEGORIES,
@@ -93,7 +101,9 @@ function slugify(title: string): string {
     .trim();
   // 截到 80 字:给 `.md` 后缀和可能的去重后缀留出余量(存储层上限 120)
   const cut = cleaned.slice(0, 80);
-  return cut.length > 0 ? cut : `note-${Date.now().toString(36)}`;
+  if (cut.length === 0) return `note-${Date.now().toString(36)}`;
+  // Windows 保留设备名(CON / NUL / COM1……,带 .md 也算)不能当文件名:加个后缀避开。
+  return /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(cut) ? `${cut}_` : cut;
 }
 
 /**
@@ -146,7 +156,7 @@ function rawMemoryMcpTools(): McpToolSpec[] {
           if (bucket.length === 0) continue;
           out.push(`## ${MEMORY_CATEGORY_LABELS[category]}(${category})`);
           for (const m of bucket) {
-            out.push(`- 【${m.title}】  \`${m.path}\`  (${new Date(m.updatedAt).toISOString().slice(0, 10)})`);
+            out.push(`- 【${m.title}】  \`${m.path}\`  (${localDate(m.updatedAt)})`);
           }
           out.push("");
         }

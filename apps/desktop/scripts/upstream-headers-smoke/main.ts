@@ -307,6 +307,39 @@ try {
     first[SESSION_HEADER] !== second[SESSION_HEADER],
     `${first[SESSION_HEADER]}, ${second[SESSION_HEADER]}`,
   );
+  // CRLF 上游(一部分中转/代理就这么发):SSE 规范允许 \r\n,桥只认 "\n\n" 时一帧都切不出来,
+  // 流结束后整段又被当成一帧、JSON 解析失败 —— 回复是空的。再故意把 \r 和 \n 拆进两个包。
+  (globalThis as unknown as { fetch: typeof fetch }).fetch = (async (url, init) => {
+    captured.push({ ...((init?.headers ?? {}) as Record<string, string>), __url: String(url) });
+    const whole = [
+      'data: {"choices":[{"delta":{"content":"crlf-ok"}}]}',
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+      "data: [DONE]",
+      "",
+    ].join("\r\n\r\n");
+    const cut = whole.indexOf("\r\n") + 1; // 切在第一个 \r 和 \n 之间
+    const enc = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(c) { c.enqueue(enc.encode(whole.slice(0, cut))); c.enqueue(enc.encode(whole.slice(cut))); c.close(); },
+    });
+    return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+  }) as typeof fetch;
+  {
+    captured = [];
+    const bridge = await startBridge({ baseUrl: DEEPSEEK, authToken: "tok", authMode: "auth_token" });
+    let text = "";
+    try {
+      const res = await realFetch(`${bridge.localUrl}/v1/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "m1", messages: [{ role: "user", content: "hi" }], max_tokens: 16, stream: true }),
+      });
+      text = await res.text();
+    } finally {
+      bridge.close();
+    }
+    check("bridge: CRLF 换行的上游 SSE 也能解析出正文", text.includes("text_delta") && text.includes("crlf-ok"), text.slice(0, 300));
+  }
 } finally {
   globalThis.fetch = realFetch;
 }

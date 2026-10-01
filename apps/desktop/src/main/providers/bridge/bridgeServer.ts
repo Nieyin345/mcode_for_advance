@@ -424,6 +424,16 @@ async function handleMessages(
   const reader = upstreamRes.body.getReader();
   const decoder = new TextDecoder();
   let sseBuffer = "";
+  /** 上一块以 \r 结尾:可能是被拆开的 \r\n,先扣着,等下一块再定。 */
+  let pendingCR = false;
+  /** SSE 允许 \r\n / \r / \n 三种换行(规范如此)。一部分中转/代理用 \r\n ——
+   *  只认 "\n\n" 的话一帧都切不出来,流结束后整段又被当成一帧、JSON 解析失败丢掉:
+   *  用户等半天,回复是空的。统一成 \n 再切。 */
+  const normalizeNewlines = (text: string): string => {
+    if (pendingCR) { text = "\r" + text; pendingCR = false; }
+    if (text.endsWith("\r")) { pendingCR = true; text = text.slice(0, -1); }
+    return text.replace(/\r\n?/g, "\n");
+  };
 
   /** Parse one SSE frame (the text between two blank-line separators) and
    *  feed its data chunk to the translator. Returns how many chunks were
@@ -459,7 +469,7 @@ async function handleMessages(
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      sseBuffer += decoder.decode(value, { stream: true });
+      sseBuffer += normalizeNewlines(decoder.decode(value, { stream: true }));
 
       // OpenAI SSE frames are separated by blank lines. Process whole frames,
       // keeping any partial tail in the buffer for the next chunk.
@@ -478,7 +488,8 @@ async function handleMessages(
     // which produced exactly the "text streamed fine, the announced tool call
     // never arrived" truncation shape; recovering it (or at least logging it
     // as malformed) makes the next occurrence attributable.
-    sseBuffer += decoder.decode();
+    sseBuffer += normalizeNewlines(decoder.decode());
+    if (pendingCR) sseBuffer += "\n";
     const tail = sseBuffer.trim();
     if (tail && processFrame(tail) > 0) {
       log.info(`bridge: recovered tail SSE frame after stream end (${tail.length} bytes) — upstream omitted the trailing blank line`);
