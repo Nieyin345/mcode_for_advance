@@ -10,6 +10,7 @@
 import { existsSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { decodeOutput } from "./outBuf.js";
 
 /** Try to locate `name` on PATH (and a few well-known install dirs on Win).
  *
@@ -27,15 +28,16 @@ export function which(name: string): string | null {
 
   if (process.platform === "win32") {
     try {
-      const out = execFileSync("where.exe", [name], {
-        encoding: "utf8",
+      // 中文 Windows 上 where.exe 按系统代码页(GBK)输出 —— 按 UTF-8 解码,用户目录带中文的
+      // 路径就成了乱码,existsSync 不过,工具被误报成"没装"。decodeOutput 会在 UTF-8/GBK 间择优。
+      const out = decodeOutput(execFileSync("where.exe", [name], {
         windowsHide: true,
         stdio: ["ignore", "pipe", "ignore"],
         // Synchronous on the main process: never let a hung PATH entry (e.g. an
         // unreachable network drive) freeze the app. On timeout this throws and
         // we fall through to the well-known install dirs below.
         timeout: 5000,
-      })
+      }))
         .split(/\r?\n/)
         .map((s) => s.trim())
         .find((s) => s.length > 0);

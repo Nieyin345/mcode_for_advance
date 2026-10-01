@@ -43,7 +43,9 @@ export function WorktreeModeChip({
 }) {
   const { t } = useI18n();
   const stacked = layout === "row";
-  const cascade = stacked && !useNarrowViewport();
+  // Hook 必须无条件调用:放在 `&&` 后面,layout 一变就是"Hook 数量不一致"崩溃。
+  const narrowViewport = useNarrowViewport();
+  const cascade = stacked && !narrowViewport;
   const [open, setOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
   useSuppressBrowserView(open, popupRef);

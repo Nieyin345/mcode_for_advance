@@ -1256,6 +1256,10 @@ async function loadCommitDetail(
 
   // name-status: status letter + path(s). --root handles the initial commit.
   const nameStatusRaw = await git.raw([
+    // core.quotePath=false:否则非 ASCII 文件名(中文)被转义成 "\346\226\207…" 带引号输出,
+    // 列表里是乱码、点开 diff 找不到文件、numstat 也按路径对不上。
+    "-c",
+    "core.quotePath=false",
     "diff-tree",
     "--no-commit-id",
     "--name-status",
@@ -1269,6 +1273,8 @@ async function loadCommitDetail(
   // numstat for +/- tallies (best-effort; binary files report "-" ).
   try {
     const numstatRaw = await git.raw([
+      "-c",
+      "core.quotePath=false",
       "diff-tree",
       "--no-commit-id",
       "--numstat",

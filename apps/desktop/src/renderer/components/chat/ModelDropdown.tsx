@@ -63,7 +63,9 @@ export function ModelDropdown({
   // phone-class viewport there is no horizontal room for panel + menu side
   // by side, so it opens upward instead (the phone's vertical space is
   // plentiful). Chip mode always opens upward (composer-bottom anchor).
-  const cascade = stacked && !useNarrowViewport();
+  // Hook 必须无条件调用:放在 `&&` 后面,layout 一变就是"Hook 数量不一致"崩溃。
+  const narrowViewport = useNarrowViewport();
+  const cascade = stacked && !narrowViewport;
   const { t } = useI18n();
   // While the menu (or its nested submenu) is open the embedded browser view
   // is suppressed so the portaled popup stays visible/clickable over the

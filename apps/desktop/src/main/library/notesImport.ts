@@ -23,6 +23,7 @@ import { basename, dirname, extname } from "node:path";
 import type { LibraryItem } from "@contracts/library";
 import { LibraryRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
+import { atomicWrite } from "@main/lib/appContext.js";
 import { assignImportedToCollections } from "./operations.js";
 import { ensureLibraryDirs, fromLibraryRelative, isInsideLibrary, notePathForId, noteRelPathForId, toLibraryRelative } from "./paths.js";
 
@@ -176,7 +177,8 @@ export function writeNote(id: string, text: string): { ok: boolean; error?: stri
     return { ok: false, error: "只有 Markdown 文件能在应用内编辑" };
   }
   try {
-    writeFileSync(abs, text, "utf8");
+    // 原子写:这是用户自己写的正文,写到一半崩溃不能留下半截文件。
+    atomicWrite(abs, text);
     // 正文里的第一个标题变了 → 列表行也跟着变,不然两处显示对不上
     const nextTitle = deriveNoteTitle(text, abs);
     if (nextTitle && nextTitle !== item.title) LibraryRepo.setTitle(id, nextTitle);

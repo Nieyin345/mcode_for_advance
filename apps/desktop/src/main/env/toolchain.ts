@@ -30,6 +30,7 @@ import type { ToolchainToolId, ToolchainToolState, ToolchainSource } from "@cont
 import { TOOLCHAIN_TOOL_IDS } from "@contracts/ipc";
 import { managedToolExecutable } from "./managedToolRoots.js";
 import { knownInstallPaths } from "./systemToolPaths.js";
+import { decodeOutput } from "@main/lib/outBuf.js";
 import { detectLocal } from "@main/onlyoffice/localInstall.js";
 import { getOnlyOfficeConfig } from "@main/onlyoffice/OnlyOfficeBridge.js";
 
@@ -65,8 +66,10 @@ interface ProbeResult {
  *  `ok:false` —— 探测不该抛异常。 */
 function run(file: string, args: string[], timeoutMs = 10_000): Promise<ProbeResult> {
   return new Promise((resolve) => {
-    execFile(file, args, { timeout: timeoutMs, windowsHide: true }, (err, stdout) => {
-      resolve({ ok: !err, stdout: stdout ?? "" });
+    // 中文 Windows 上 where.exe 按系统代码页(GBK)输出 —— 按 UTF-8 解码,用户目录带中文的
+    // 路径就成了乱码,existsSync 不过,工具被误报成"没装"。decodeOutput 会在 UTF-8/GBK 间择优。
+    execFile(file, args, { timeout: timeoutMs, windowsHide: true, encoding: "buffer" }, (err, stdout) => {
+      resolve({ ok: !err, stdout: stdout ? decodeOutput(stdout) : "" });
     });
   });
 }

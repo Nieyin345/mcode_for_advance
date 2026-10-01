@@ -551,6 +551,8 @@ async function listSystemProcesses(filter?: string, limit = 300): Promise<System
   let rows: SystemProcessInfo[] = [];
   if (process.platform === "win32") {
     const script = [
+      // 强制 UTF-8:管道里 PowerShell 默认按系统代码页(中文系统 GBK)输出,命令行里的中文路径会乱码。
+      "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;",
       "$p=Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,WorkingSetSize;",
       "$p | ConvertTo-Json -Compress",
     ].join("");

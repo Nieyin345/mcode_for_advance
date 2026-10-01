@@ -136,19 +136,8 @@ export function SideChatPanel() {
     };
   }, [activeSideChatId, fromSideList, activeSessionId]);
 
-  if (viewedSubagent && activeSessionId) {
-    return (
-      <SubagentView
-        agent={viewedSubagent}
-        sessionId={activeSessionId}
-        onBack={() => setViewSubagentTaskId(null)}
-      />
-    );
-  }
-
-  // The chat view only applies when the active side chat belongs to the
-  // CURRENT parent — after a main-session switch the stale id falls back to
-  // the list view (derived, so no reset effect is needed).
+  // ⚠️ 这个 useMemo 必须在下面「看子代理」那条提前 return **之前** —— 放在后面的话,
+  // 点开子代理时这一轮少调一个 Hook,React 直接抛"Rendered fewer hooks"、整个侧栏崩掉。
   /**
    * **`activeSideChatId` 也可能是主对话自己**（2026-09-21）—— 列表最上面那一行
    * （`MainSessionRow`）点开时就把主对话的 id 放进这个字段，好让展开/收起复用同一套。
@@ -162,6 +151,20 @@ export function SideChatPanel() {
       activeSideChatId && activeSideChatId === activeSessionId ? parentRow : undefined,
     [activeSideChatId, activeSessionId, parentRow],
   );
+
+  if (viewedSubagent && activeSessionId) {
+    return (
+      <SubagentView
+        agent={viewedSubagent}
+        sessionId={activeSessionId}
+        onBack={() => setViewSubagentTaskId(null)}
+      />
+    );
+  }
+
+  // The chat view only applies when the active side chat belongs to the
+  // CURRENT parent — after a main-session switch the stale id falls back to
+  // the list view (derived, so no reset effect is needed).
 
   const activeSide = fromSideList ?? nodeSession ?? mainRow ?? undefined;
   const view: "list" | "chat" = activeSide ? "chat" : "list";

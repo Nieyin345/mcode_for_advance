@@ -35,6 +35,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolveGitBash } from "./binaryResolve.js";
+import { decodeOutput } from "./outBuf.js";
 
 export type BashEnvKind = "unix" | "wsl" | "native" | "unknown";
 export type BashEnvScope = "pi" | "claude";
@@ -64,9 +65,11 @@ function classifyBashPath(shellPath: string): BashEnvKind | null {
 function whereFirst(name: string): string | null {
   if (process.platform !== "win32") return null;
   try {
-    const res = spawnSync("where", [name], { encoding: "utf-8", timeout: 5000, windowsHide: true });
+    // 中文 Windows 上 where.exe 按系统代码页(GBK)输出 —— 按 UTF-8 解码,用户目录带中文的
+    // 路径就成了乱码,existsSync 不过,工具被误报成"没装"。decodeOutput 会在 UTF-8/GBK 间择优。
+    const res = spawnSync("where", [name], { timeout: 5000, windowsHide: true });
     if (res.status === 0 && res.stdout) {
-      for (const line of res.stdout.split(/\r?\n/)) {
+      for (const line of decodeOutput(res.stdout).split(/\r?\n/)) {
         const p = line.trim();
         if (p && existsSync(p)) return p;
       }

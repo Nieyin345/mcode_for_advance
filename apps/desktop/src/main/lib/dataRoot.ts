@@ -34,6 +34,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, r
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { app } from "electron";
 import { log } from "@main/lib/logger.js";
+import { atomicWrite } from "@main/lib/appContext.js";
 
 /** 数据库文件名。 */
 export const DATA_DB_FILENAME = "mcode.db";
@@ -69,7 +70,9 @@ function readPointer(): string | null {
 export function setDataRoot(path: string): void {
   try {
     mkdirSync(dirname(pointerFile()), { recursive: true });
-    writeFileSync(pointerFile(), JSON.stringify({ root: path }, null, 2), "utf8");
+    // 原子写:写到一半崩溃/断电的话,坏掉的指针会让下次启动回落到默认位置、
+    // 在那儿建一个空库 —— 看起来就是"数据全丢了"。
+    atomicWrite(pointerFile(), JSON.stringify({ root: path }, null, 2));
     log.info(`dataRoot: pointer updated -> ${path}`);
   } catch (err) {
     log.error(`dataRoot: could not write pointer: ${(err as Error).message}`);
