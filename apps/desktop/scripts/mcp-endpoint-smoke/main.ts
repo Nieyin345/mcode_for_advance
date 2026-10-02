@@ -1593,6 +1593,62 @@ check("agent_glob 按模式找到了它", globbed.text.includes("note.md"), glob
 const grepped = await host.callTool("agent_grep", { pattern: "桥冒烟" }, { sessionId: "s1" });
 check("agent_grep 按内容找到了行", grepped.text.includes("note.md:1:"), grepped.text);
 
+/* 大目录不能把 glob/grep 的名额吃光:先放 900 个噪声文件(比旧的 800 上限多),
+ * 目标文件放在后面那个目录里 —— 旧实现先收前 800 个文件再过滤,就会回"没有匹配"。 */
+{
+  const noise = path.join(CWD, "aaa-noise");
+  mkdirSync(noise, { recursive: true });
+  for (let i = 0; i < 900; i += 1) writeFileSync(path.join(noise, `n${i}.txt`), "noise\n");
+  mkdirSync(path.join(CWD, "zzz", "deep"), { recursive: true });
+  writeFileSync(path.join(CWD, "zzz", "deep", "target-file.ts"), "const needle = call(1);\n");
+  writeFileSync(path.join(CWD, ".hidden-file.ts"), "const needle = 2;\n");
+  const g1 = await host.callTool("agent_glob", { pattern: "**/target-file.ts" }, { sessionId: "s1" });
+  check("glob:大目录后面的文件也找得到", g1.text.includes("zzz/deep/target-file.ts"), g1.text);
+  const g2 = await host.callTool("agent_glob", { pattern: "zzz/deep/*.ts" }, { sessionId: "s1" });
+  check("glob:带目录前缀的模式能用,路径相对工作目录", g2.text.includes("zzz/deep/target-file.ts"), g2.text);
+  const g3 = await host.callTool("agent_glob", { pattern: "*.ts" }, { sessionId: "s1" });
+  check("glob:隐藏文件默认不列", !g3.text.includes(".hidden-file.ts"), g3.text);
+  if (g3.text.includes("没有匹配")) check("glob:没匹配时提示用 **/ 递归", g3.text.includes("**/*.ts"), g3.text);
+  const g4 = await host.callTool("agent_glob", { pattern: ".hidden-*.ts" }, { sessionId: "s1" });
+  check("glob:模式里写了 . 段就包含隐藏项", g4.text.includes(".hidden-file.ts"), g4.text);
+  const r1 = await host.callTool("agent_grep", { pattern: "call(1)", literal: true }, { sessionId: "s1" });
+  check("grep:大目录后面的文件也搜得到 + literal", r1.text.includes("zzz/deep/target-file.ts:1:"), r1.text);
+  const r2 = await host.callTool("agent_grep", { pattern: "call(" }, { sessionId: "s1" });
+  check("grep:非法正则自动按原文搜", !r2.isError && r2.text.includes("target-file.ts:1:") && r2.text.includes("按原文"), r2.text);
+  const r3 = await host.callTool("agent_grep", { pattern: "needle", path: "zzz" }, { sessionId: "s1" });
+  check("grep:path 指向子目录时路径仍相对工作目录", r3.text.includes("zzz/deep/target-file.ts:1:"), r3.text);
+  rmSync(noise, { recursive: true, force: true });
+}
+
+/* edit:失败是 isError;多处一次改;CRLF 文件用 LF 原文也能对上。 */
+{
+  writeFileSync(path.join(CWD, "crlf.txt"), "one\r\ntwo\r\nthree\r\ntwo\r\n");
+  const miss = await host.callTool("agent_edit_file", { path: "crlf.txt", old_string: "nope", new_string: "x" }, { sessionId: "s1" });
+  check("edit:没找到 → isError", miss.isError === true, miss.text);
+  const dup = await host.callTool("agent_edit_file", { path: "crlf.txt", old_string: "two", new_string: "2" }, { sessionId: "s1" });
+  check("edit:出现多次 → isError 并报次数", dup.isError === true && dup.text.includes("2 次"), dup.text);
+  const crlfEdit = await host.callTool(
+    "agent_edit_file",
+    { path: "crlf.txt", old_string: "one\ntwo\nthree", new_string: "ONE\nTWO\nTHREE" },
+    { sessionId: "s1" },
+  );
+  check("edit:CRLF 文件用 LF 原文也能改", !crlfEdit.isError && crlfEdit.text.includes("第 1 行"), crlfEdit.text);
+  const multi = await host.callTool(
+    "agent_edit_file",
+    { path: "crlf.txt", edits: [{ old_string: "ONE", new_string: "1" }, { old_string: "THREE", new_string: "3" }] },
+    { sessionId: "s1" },
+  );
+  check("edit:edits 一次改多处", !multi.isError && multi.text.includes("替换 2 处"), multi.text);
+  const atomic = await host.callTool(
+    "agent_edit_file",
+    { path: "crlf.txt", edits: [{ old_string: "1", new_string: "uno" }, { old_string: "missing", new_string: "x" }] },
+    { sessionId: "s1" },
+  );
+  check("edit:edits 有一处对不上就整次不写", atomic.isError === true && atomic.text.includes("第 2 处"), atomic.text);
+  const after = await host.callTool("agent_read_file", { path: "crlf.txt" }, { sessionId: "s1" });
+  check("…文件保持上一次成功后的样子", after.text.includes("1\t1") && after.text.includes("3\t3") && !after.text.includes("uno"), after.text);
+}
+
 /* bash:acceptEdits 不放行(分界),弹卡;允许后真的跑出输出。 */
 approvalCalls.length = 0;
 const bashed = await host.callTool(

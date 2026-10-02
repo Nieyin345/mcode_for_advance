@@ -105,6 +105,9 @@ export const AGENT_READONLY_TOOLS = new Set([
   "agent_process_stop",
   "agent_skill_list",
   "agent_skill_read",
+  // 只报项目 / 资料库概况,不改任何东西。不在这张表里时它被标成 destructive,
+  // ChatGPT 之类的客户端每次调它都要弹确认框。
+  "agent_context",
 ]);
 
 /** 改文件工具:acceptEdits 档放行(与 claude 的 Write/Edit 同档)。 */
@@ -165,8 +168,13 @@ const MAX_BASH_TIMEOUT_MS = 600_000;
 /** 递归走目录时的深度与结果上限。 */
 const MAX_WALK_DEPTH = 15;
 const MAX_WALK_RESULTS = 800;
+/** 一次遍历最多看多少个目录项 —— 结果上限管不住"走了很久一个都没命中"的情况。 */
+const MAX_WALK_VISITS = 200_000;
+/** grep 最多扫多少个文件 / 单个文件多大就跳过。 */
+const MAX_GREP_FILES = 20_000;
+const MAX_GREP_FILE_BYTES = 8 * 1024 * 1024;
 /** 这些目录在任何递归遍历里都不进去 —— 搜索工具的基本卫生。 */
-const SKIP_DIRS = new Set([".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "out"]);
+const SKIP_DIRS = new Set([".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "out", "coverage"]);
 
 /**
  * 解析一个路径,并在给了**沙箱根**时把越界的拒掉。
@@ -443,17 +451,17 @@ const AGENT_CONTEXT_OUTPUT_SCHEMA: Record<string, z.ZodTypeAny> = {
 
 const GLOB_OUTPUT_SCHEMA: Record<string, z.ZodTypeAny> = {
   count: z.number().int().describe("匹配到的文件总数；0 = 没有匹配（换个模式或起点）"),
-  files: z.array(z.string()).describe("相对搜索起点的路径列表（最多 500 条）"),
-  truncated: z.boolean().describe("是否因为超过 500 条被截断"),
+  files: z.array(z.string()).describe("路径列表(相对会话工作目录;工作目录外的给绝对路径),最多 500 条"),
+  truncated: z.boolean().describe("是否没列全(超过 500 条或目录太大没搜完)"),
   base: z.string().describe("搜索起点目录的绝对路径"),
 };
 
 /** `agent_grep` 的返回结构 —— 同 glob 一个道理:模型靠 count 判断找到没有。 */
 const GREP_OUTPUT_SCHEMA: Record<string, z.ZodTypeAny> = {
   count: z.number().int().describe("匹配到的行数；0 = 没有匹配"),
-  matches: z.array(z.string()).describe("匹配行，形如 `相对路径:行号: 内容`"),
+  matches: z.array(z.string()).describe("匹配行，形如 `相对工作目录的路径:行号: 内容`"),
   scanned_files: z.number().int().describe("实际扫描过的文件数"),
-  truncated: z.boolean().describe("是否因为达到 max_results 上限而提前停止"),
+  truncated: z.boolean().describe("是否没搜完(达到 max_results,或文件太多只扫了一部分)"),
 };
 
 function formatRemoteConnection(info: RemoteConnectionInfo): string {
@@ -847,16 +855,32 @@ function newDecoder(): ConsoleTextDecoder {
   return new ConsoleTextDecoder();
 }
 
+interface WalkOptions {
+  /** 只收**文件名**匹配的(grep 的 `glob` 参数,如 `*.md`)。 */
+  nameFilter?: RegExp | null;
+  /** 只收**相对 root 的路径**(正斜杠)匹配的(agent_glob)。 */
+  relFilter?: RegExp | null;
+  /** 进不进 `.` 开头的目录/文件。默认不进(同 ripgrep)。 */
+  includeHidden?: boolean;
+  /** 命中多少个就停,默认 {@link MAX_WALK_RESULTS}。 */
+  maxHits?: number;
+}
+
 /**
- * 从 `root` 往下递归收集文件(含 `root` 自身)。`include` 是可选的 glob 过滤
- * (只对**文件名**匹配,如 `*.md`),跳过 {@link SKIP_DIRS} 与超出深度上限的分支。
- * 返回量到 {@link MAX_WALK_RESULTS} 就停 —— 搜索工具必须有底,不然一次调用
- * 能把主进程泡在 IO 里。
+ * 从 `root` 往下递归收集文件,跳过 {@link SKIP_DIRS}、隐藏项(除非 includeHidden)与超深分支。
+ *
+ * ⚠️ **过滤必须在遍历里做,上限只数命中的。** 从前是先收前 800 个文件、再在外面按模式
+ * 过滤 —— 项目根下随便一个缓存目录就把 800 个名额占满,`**\/foo.ts` 明明存在也回
+ * "没有匹配",grep 也只扫了前 800 个文件就说没找到(而且都不说自己没搜完)。
+ * 现在命中数和访问数各有上限,撞上了就如实报 `truncated`。
  */
-async function walkFiles(root: string, include: RegExp | null): Promise<WalkHit[]> {
+async function walkFiles(root: string, opts: WalkOptions = {}): Promise<{ hits: WalkHit[]; truncated: boolean }> {
   const hits: WalkHit[] = [];
+  const maxHits = opts.maxHits ?? MAX_WALK_RESULTS;
+  let visited = 0;
+  let truncated = false;
   const walk = async (dir: string, depth: number): Promise<void> => {
-    if (depth > MAX_WALK_DEPTH || hits.length >= MAX_WALK_RESULTS) return;
+    if (truncated || depth > MAX_WALK_DEPTH) return;
     let entries: import("node:fs").Dirent[];
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });
@@ -864,20 +888,48 @@ async function walkFiles(root: string, include: RegExp | null): Promise<WalkHit[
       return; // 无权限 / 已被删 —— 跳过,不炸整次遍历
     }
     for (const entry of entries) {
-      if (hits.length >= MAX_WALK_RESULTS) return;
+      if (hits.length >= maxHits || visited >= MAX_WALK_VISITS) {
+        truncated = true;
+        return;
+      }
+      visited += 1;
+      if (!opts.includeHidden && entry.name.startsWith(".")) continue;
       const abs = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (SKIP_DIRS.has(entry.name)) continue;
         await walk(abs, depth + 1);
+        if (truncated) return;
         continue;
       }
       if (!entry.isFile() && !entry.isSymbolicLink()) continue;
-      if (include && !include.test(entry.name)) continue;
-      hits.push({ abs, rel: path.relative(root, abs), isDir: false });
+      if (opts.nameFilter && !opts.nameFilter.test(entry.name)) continue;
+      const rel = path.relative(root, abs);
+      if (opts.relFilter && !opts.relFilter.test(rel.replace(/\\/g, "/"))) continue;
+      hits.push({ abs, rel, isDir: false });
     }
   };
   await walk(root, 0);
-  return hits;
+  return { hits, truncated };
+}
+
+/** glob 里不带通配符的前导目录段(`src/main/*.ts` → `src/main`),用来把遍历起点挪进去。 */
+function splitGlobPrefix(pattern: string): { prefix: string; rest: string } {
+  const segs = pattern.trim().replace(/\\/g, "/").replace(/^\.\//, "").split("/");
+  let i = 0;
+  while (i < segs.length - 1 && segs[i] !== "" && !/[*?[\]{}]/.test(segs[i]!)) i += 1;
+  return { prefix: segs.slice(0, i).join("/"), rest: segs.slice(i).join("/") };
+}
+
+/** 模式里明确写了 `.` 开头的段(`.github/**`、`.env`)就说明要看隐藏项。 */
+function globWantsHidden(pattern: string): boolean {
+  return pattern
+    .replace(/\\/g, "/")
+    .split("/")
+    .some((seg) => seg.startsWith(".") && seg !== "." && seg !== "..");
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
@@ -920,6 +972,15 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
   const cwdOf = (ctx: McpToolContext): string | null => deps.cwdFor(ctx.sessionId);
   /** 这个会话的沙箱根(null = 不限制,桌面本机那条路)。 */
   const sandboxOf = (ctx: McpToolContext): string | null => deps.sandboxRootFor?.(ctx.sessionId) ?? null;
+  /**
+   * 搜索结果里给模型看的路径:在工作目录(有沙箱就是沙箱)里面就给相对它的正斜杠路径 ——
+   * 和相对路径的解析基准是同一个,拿去 agent_read_file 直接能用;在外面就给绝对路径。
+   */
+  const shownPath = (ctx: McpToolContext, abs: string): string => {
+    const base = sandboxOf(ctx) ?? cwdOf(ctx);
+    if (base && pathWithin(base, abs)) return path.relative(base, abs).replace(/\\/g, "/") || ".";
+    return abs;
+  };
   /**
    * **文件工具**的路径解析入口 —— cwd 与沙箱根一起带上,走同一次越界判定。
    *
@@ -1060,7 +1121,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         max_slides: z.number().int().min(1).max(1000).optional().describe("PPTX 最多解析页数，默认 200"),
         max_rows: z.number().int().min(1).max(1000).optional().describe("Excel 最多返回行数，默认 200"),
         max_cols: z.number().int().min(1).max(200).optional().describe("Excel 最多返回列数，默认 50"),
-        max_chars: z.number().int().min(1000).max(300000).optional().describe("最多返回字符数，默认 100000"),
+        max_chars: z.number().int().min(100).max(300000).optional().describe("最多返回字符数，默认 100000"),
       },
       handler: (args: {
         path: string;
@@ -1147,7 +1208,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         "适合配置、日志、文档或本地开发服务；二进制资源请使用更合适的工具。",
       inputSchema: {
         url: z.string().min(1).describe("http/https URL"),
-        max_chars: z.number().int().min(1000).max(300000).optional().describe("正文最多字符数，默认 100000"),
+        max_chars: z.number().int().min(100).max(300000).optional().describe("正文最多字符数，默认 100000"),
         timeout_ms: z.number().int().min(1000).max(60000).optional().describe("超时毫秒数，默认 15000"),
       },
       handler: (args: { url: string; max_chars?: number; timeout_ms?: number }) =>
@@ -1158,7 +1219,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       name: "agent_write_file",
       description:
         "把 UTF-8 文本写入本地文件(整体覆盖;append=true 则追加到末尾)。" +
-        "父目录不存在会自动创建。需要用户在 mcode 里确认。",
+        "父目录不存在会自动创建。改已有文件优先用 agent_edit_file(只动需要改的那几处)。",
       inputSchema: {
         path: z.string().min(1).describe("目标文件路径"),
         content: z.string().describe("要写入的完整内容"),
@@ -1316,36 +1377,83 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
     {
       name: "agent_edit_file",
       description:
-        "对本地文本文件做精确替换:old_string 必须与文件内容逐字一致。" +
-        "同一处出现多次时会拒绝(除非 replace_all=true);建议先用 agent_read_file 拿到原文再改。",
+        "对本地文本文件做精确替换:old_string 必须与文件内容逐字一致(换行符 LF/CRLF 自动适配)。" +
+        "同一处出现多次时会拒绝(除非 replace_all=true);建议先用 agent_read_file 拿到原文再改。" +
+        "一次改多处传 edits 数组(按顺序替换,任何一处对不上就整次不写入)。",
       inputSchema: {
         path: z.string().min(1).describe("目标文件路径"),
-        old_string: z.string().min(1).describe("要被替换的原文(逐字一致)"),
-        new_string: z.string().describe("替换后的内容"),
+        old_string: z.string().min(1).optional().describe("要被替换的原文(逐字一致);用 edits 时省略"),
+        new_string: z.string().optional().describe("替换后的内容;用 edits 时省略"),
         replace_all: z.boolean().optional().describe("原文出现多次时全部替换,默认只允许恰好一处"),
+        edits: z
+          .array(
+            z.object({
+              old_string: z.string().min(1).describe("要被替换的原文(逐字一致)"),
+              new_string: z.string().describe("替换后的内容"),
+              replace_all: z.boolean().optional().describe("这一处出现多次时全部替换"),
+            }),
+          )
+          .min(1)
+          .max(50)
+          .optional()
+          .describe("一次改多处:按顺序依次替换(后一处看到的是前一处改完的内容)"),
       },
       handler: (
-        args: { path: string; old_string: string; new_string: string; replace_all?: boolean },
+        args: {
+          path: string;
+          old_string?: string;
+          new_string?: string;
+          replace_all?: boolean;
+          edits?: { old_string: string; new_string: string; replace_all?: boolean }[];
+        },
         ctx,
       ) =>
         attempt(async () => {
           const abs = pOf(ctx, args.path);
+          // 失败一律**抛**(→ isError),不是回一句普通文本:从前"没找到 old_string"回的是成功
+          // 结果,模型很容易当成改好了接着往下走。
+          const edits =
+            args.edits ??
+            (args.old_string !== undefined && args.new_string !== undefined
+              ? [{ old_string: args.old_string, new_string: args.new_string, replace_all: args.replace_all }]
+              : null);
+          if (!edits) throw new Error("要么给 old_string + new_string,要么给 edits 数组");
           const st = await fs.stat(abs).catch(() => null);
-          if (!st || !st.isFile()) return `文件不存在:${abs}`;
+          if (!st || !st.isFile()) throw new Error(`文件不存在:${abs}`);
           const buf = await fs.readFile(abs);
-          if (isBinary(buf)) return `看起来是二进制文件,改不了:${abs}`;
-          const content = buf.toString("utf-8");
-          const first = content.indexOf(args.old_string);
-          if (first < 0) return "没找到 old_string —— 内容必须逐字一致,先用 agent_read_file 确认原文";
-          const second = content.indexOf(args.old_string, first + 1);
-          if (second >= 0 && !args.replace_all) {
-            return "old_string 在文件里出现多次;请扩大上下文让匹配唯一,或传 replace_all=true";
-          }
-          const next = args.replace_all
-            ? content.split(args.old_string).join(args.new_string)
-            : content.slice(0, first) + args.new_string + content.slice(first + args.old_string.length);
-          await fs.writeFile(abs, next, "utf-8");
-          return `已修改 ${abs}`;
+          if (isBinary(buf)) throw new Error(`看起来是二进制文件,改不了:${abs}`);
+          let content = buf.toString("utf-8");
+          const crlf = content.includes("\r\n");
+          const touched: number[] = [];
+          let replaced = 0;
+          edits.forEach((edit, k) => {
+            const which = edits.length > 1 ? `第 ${k + 1} 处 edit:` : "";
+            let oldStr = edit.old_string;
+            let newStr = edit.new_string;
+            // Windows 上的文件多是 CRLF,而模型给的原文几乎总是 LF —— 逐字匹配会白白失败。
+            if (crlf && !content.includes(oldStr) && oldStr.includes("\n") && !oldStr.includes("\r\n")) {
+              oldStr = oldStr.replace(/\n/g, "\r\n");
+              newStr = newStr.replace(/\r?\n/g, "\r\n");
+            }
+            const first = content.indexOf(oldStr);
+            if (first < 0) {
+              throw new Error(`${which}没找到 old_string —— 内容必须逐字一致(含空格缩进),先用 agent_read_file 确认原文;这次没有写入任何改动`);
+            }
+            const count = content.split(oldStr).length - 1;
+            if (count > 1 && !edit.replace_all) {
+              throw new Error(
+                `${which}old_string 在文件里出现 ${count} 次;请扩大上下文让匹配唯一,或传 replace_all=true;这次没有写入任何改动`,
+              );
+            }
+            touched.push(content.slice(0, first).split("\n").length);
+            content = edit.replace_all
+              ? content.split(oldStr).join(newStr)
+              : content.slice(0, first) + newStr + content.slice(first + oldStr.length);
+            replaced += edit.replace_all ? count : 1;
+          });
+          await fs.writeFile(abs, content, "utf-8");
+          const lines = [...new Set(touched)].sort((x, y) => x - y).join("、");
+          return `已修改 ${abs}:替换 ${replaced} 处(起始于第 ${lines} 行)`;
         }),
     },
 
@@ -1463,38 +1571,50 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
     {
       name: "agent_glob",
       description:
-        "按 glob 模式找文件(如 `**/*.pdf`、`notes/*.md`),返回相对会话工作目录的路径列表。只搜文件名,不搜内容。",
+        "按 glob 模式找文件(如 `**/*.pdf`、`src/**/*.ts`、`notes/*.md`),只搜文件名不搜内容。" +
+        "`*` 不跨目录,递归要写 `**/`。默认跳过 . 开头的隐藏项和 node_modules/.git/dist 等目录。" +
+        "返回的路径相对会话工作目录,可直接交给 agent_read_file。",
       inputSchema: {
-        pattern: z.string().min(1).describe("glob 模式,支持 **、*、?"),
+        pattern: z.string().min(1).describe("glob 模式,支持 **、*、?;相对 path(默认工作目录)"),
         path: z.string().optional().describe("搜索起点目录,默认会话工作目录"),
+        include_hidden: z.boolean().optional().describe("是否包含 . 开头的隐藏目录/文件,默认 false(模式里写了 .xxx 段时自动包含)"),
       },
-      handler: (args: { pattern: string; path?: string }, ctx) =>
+      handler: (args: { pattern: string; path?: string; include_hidden?: boolean }, ctx) =>
         attemptStructured(async () => {
-          const base = pOfRead(ctx, args.path ?? ".", "list");
-          const re = globToRegExp(args.pattern);
-          const hits = await walkFiles(base, null);
-          const matched = hits.filter((h) => re.test(h.rel.replace(/\\/g, "/")));
-          const rels = matched.map((h) => h.rel.replace(/\\/g, "/"));
-          if (matched.length === 0) {
+          // 模式里不带通配符的前导目录直接并进起点:`mcode/apps/src/*.ts` 不必从项目根走一遍。
+          const { prefix, rest } = splitGlobPrefix(args.pattern);
+          const startRel = prefix ? path.join(args.path ?? ".", prefix) : (args.path ?? ".");
+          const base = pOfRead(ctx, startRel, "list");
+          const st = await fs.stat(base).catch(() => null);
+          const re = globToRegExp(rest);
+          const found =
+            st?.isDirectory()
+              ? await walkFiles(base, {
+                  relFilter: re,
+                  includeHidden: args.include_hidden ?? globWantsHidden(args.pattern),
+                  maxHits: 2000,
+                })
+              : { hits: [] as WalkHit[], truncated: false };
+          const rels = found.hits.map((h) => shownPath(ctx, h.abs));
+          if (rels.length === 0) {
+            const hint = !args.pattern.includes("/") && !args.pattern.includes("**")
+              ? `;\`*\` 不跨目录,要递归找请用 \`**/${args.pattern}\``
+              : "";
             return {
-              text: `没有匹配「${args.pattern}」的文件(从 ${base} 搜起)`,
+              text: `没有匹配「${args.pattern}」的文件(从 ${base} 搜起${found.truncated ? ",目录太大没搜完,请缩小起点" : ""})${hint}`,
               // 空结果也要给结构化 —— 模型靠 `count === 0` 判断"真没有,换个模式"，
               // 而不是从人话里读"没有匹配"。
-              structured: { count: 0, files: [], truncated: false, base },
+              structured: { count: 0, files: [], truncated: found.truncated, base },
             };
           }
-          const combined = `匹配 ${matched.length} 个:\n${rels
-            .slice(0, 500)
-            .map((r) => `- ${r}`)
-            .join("\n")}${matched.length > 500 ? `\n…(共 ${matched.length} 个,只列前 500,请收窄模式)` : ""}`;
+          const shown = rels.slice(0, 500);
+          const truncated = found.truncated || rels.length > 500;
+          const tail = truncated
+            ? `\n…(${found.truncated ? `至少 ${rels.length} 个` : `共 ${rels.length} 个`},只列前 ${shown.length} 个,请收窄模式或起点)`
+            : "";
           return {
-            text: combined,
-            structured: {
-              count: matched.length,
-              files: rels.slice(0, 500),
-              truncated: matched.length > 500,
-              base,
-            },
+            text: `匹配 ${found.truncated ? "≥" : ""}${rels.length} 个:\n${shown.map((r) => `- ${r}`).join("\n")}${tail}`,
+            structured: { count: rels.length, files: shown, truncated, base },
           };
         }),
       outputSchema: GLOB_OUTPUT_SCHEMA,
@@ -1503,60 +1623,98 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
     {
       name: "agent_grep",
       description:
-        "在文件内容里按正则搜索(类似 ripgrep),跳过 .git/node_modules 等目录与二进制文件。" +
-        "返回「文件:行号: 该行内容」。pattern 是 JavaScript 正则。",
+        "在文件内容里搜索(类似 ripgrep),跳过隐藏项、.git/node_modules 等目录与二进制文件。" +
+        "返回「路径:行号: 该行内容」,路径相对会话工作目录。pattern 默认是 JavaScript 正则(不区分大小写);" +
+        "搜代码里的括号、点号等原文时传 literal=true。大目录分页搜用 agent_search_start。",
       inputSchema: {
-        pattern: z.string().min(1).describe("正则表达式(JavaScript 语法)"),
+        pattern: z.string().min(1).describe("正则表达式(JavaScript 语法);literal=true 时按原文"),
         path: z.string().optional().describe("搜索的文件或目录,默认会话工作目录"),
-        glob: z.string().optional().describe("只搜文件名匹配这个 glob 的文件,如 *.md"),
+        glob: z.string().optional().describe("只搜文件名匹配这个 glob 的文件,如 *.md、*.ts"),
+        literal: z.boolean().optional().describe("按原文(字面量)搜索,默认 false"),
+        ignore_case: z.boolean().optional().describe("忽略大小写,默认 true"),
+        include_hidden: z.boolean().optional().describe("是否搜 . 开头的隐藏目录/文件,默认 false"),
         max_results: z.number().int().min(1).max(500).optional().describe("最多返回的匹配行数,默认 100"),
       },
-      handler: (args: { pattern: string; path?: string; glob?: string; max_results?: number }, ctx) =>
+      handler: (
+        args: {
+          pattern: string;
+          path?: string;
+          glob?: string;
+          literal?: boolean;
+          ignore_case?: boolean;
+          include_hidden?: boolean;
+          max_results?: number;
+        },
+        ctx,
+      ) =>
         attemptStructured(async () => {
           const base = pOfRead(ctx, args.path ?? ".", "search");
+          const flags = args.ignore_case === false ? "" : "i";
           let re: RegExp;
-          try {
-            re = new RegExp(args.pattern, "i");
-          } catch (err) {
-            return { text: `pattern 不是合法正则:${err instanceof Error ? err.message : String(err)}`, structured: null };
+          let note = "";
+          if (args.literal) {
+            re = new RegExp(escapeRegExp(args.pattern), flags);
+          } else {
+            try {
+              re = new RegExp(args.pattern, flags);
+            } catch {
+              // 模型最常见的失手:想搜 `foo(` 却忘了转义。直接按原文搜,比回一句错误再来一轮省事。
+              re = new RegExp(escapeRegExp(args.pattern), flags);
+              note = "(pattern 不是合法正则,已按原文搜索)\n";
+            }
           }
           const include = args.glob ? globToRegExp(args.glob) : null;
 
           const st = await fs.stat(base).catch(() => null);
-          if (!st) return { text: `路径不存在:${base}`, structured: null };
-          const targets = st.isFile()
-            ? [{ abs: base, rel: path.basename(base) }]
-            : (await walkFiles(base, include)).map((h) => ({ abs: h.abs, rel: h.rel }));
+          if (!st) throw new Error(`路径不存在:${base}`);
+          const walked = st.isFile()
+            ? { hits: [{ abs: base, rel: path.basename(base), isDir: false }], truncated: false }
+            : await walkFiles(base, {
+                nameFilter: include,
+                includeHidden: args.include_hidden ?? false,
+                maxHits: MAX_GREP_FILES,
+              });
 
           const cap = args.max_results ?? 100;
           const lines: string[] = [];
           let scanned = 0;
-          for (const t of targets) {
+          for (const t of walked.hits) {
             if (lines.length >= cap) break;
+            const size = (await fs.stat(t.abs).catch(() => null))?.size ?? 0;
+            if (size > MAX_GREP_FILE_BYTES) continue;
             const buf = await fs.readFile(t.abs).catch(() => null);
             if (!buf || isBinary(buf)) continue;
             scanned += 1;
+            const shown = shownPath(ctx, t.abs);
             const textLines = buf.toString("utf-8").split(/\r?\n/);
             for (let i = 0; i < textLines.length && lines.length < cap; i += 1) {
               if (!re.test(textLines[i])) continue;
               const clipped =
                 textLines[i].length > 300 ? `${textLines[i].slice(0, 300)}…` : textLines[i];
-              lines.push(`${t.rel}:${i + 1}: ${clipped}`);
+              lines.push(`${shown}:${i + 1}: ${clipped}`);
             }
           }
+          const unfinished = walked.truncated
+            ? `\n…(文件太多,只扫了前 ${walked.hits.length} 个;请缩小 path 或加 glob)`
+            : "";
           if (lines.length === 0) {
             return {
-              text: `没有匹配「${args.pattern}」的内容(扫了 ${scanned} 个文件)`,
-              structured: { count: 0, matches: [], scanned_files: scanned, truncated: false },
+              text: `${note}没有匹配「${args.pattern}」的内容(扫了 ${scanned} 个文件)${unfinished}`,
+              structured: { count: 0, matches: [], scanned_files: scanned, truncated: walked.truncated },
             };
           }
+          const hitCap = lines.length >= cap;
           return {
-            text: lines.join("\n") + (lines.length >= cap ? `\n…(达到上限 ${cap} 行,可能没搜完)` : ""),
+            text:
+              note +
+              lines.join("\n") +
+              (hitCap ? `\n…(达到上限 ${cap} 行,可能没搜完)` : "") +
+              unfinished,
             structured: {
               count: lines.length,
               matches: lines,
               scanned_files: scanned,
-              truncated: lines.length >= cap,
+              truncated: hitCap || walked.truncated,
             },
           };
         }),
@@ -1679,7 +1837,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
     {
       name: "agent_kill_process",
       description:
-        "按真实 OS PID 终止系统进程/进程树。它能影响任意本机程序，因此每次都需要用户确认。" +
+        "按真实 OS PID 终止系统进程/进程树。它能影响任意本机程序，动手前先确认 PID 没认错（本机会话每次都要用户确认）。" +
         "如果只是清理由 agent_process_start 创建的进程，优先用 agent_process_stop。",
       inputSchema: {
         pid: z.number().int().positive().describe("真实 OS PID（从 agent_list_processes 获取）"),
@@ -1799,7 +1957,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       name: "agent_process_start",
       description:
         "启动一个可持续交互的本地进程(REPL、开发服务器、长构建等)，立即返回 process_id 和初始输出。" +
-        "之后用 agent_process_read 读增量输出、agent_process_write 写 stdin、agent_process_stop 清理。需要用户确认。",
+        "之后用 agent_process_read 读增量输出、agent_process_write 写 stdin、agent_process_stop 清理。按 mcode 权限规则处理(本机会话可能要用户确认)。",
       inputSchema: {
         command: z.string().min(1).describe("要启动的命令,例如 `python -i`、`pnpm dev`"),
         cwd: z.string().optional().describe("工作目录,默认会话工作目录"),
@@ -1897,7 +2055,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       name: "agent_process_write",
       description:
         "向 agent_process_start 创建的进程写 stdin，并可顺手等待/返回这次输入之后的新输出。" +
-        "输入可能执行代码或命令，所以和启动进程一样需要用户确认。",
+        "输入可能执行代码或命令，所以和启动进程走同一档权限规则。",
       inputSchema: {
         process_id: z.string().min(1).describe("agent_process_start 返回的 id"),
         input: z.string().describe("写入 stdin 的文本"),
