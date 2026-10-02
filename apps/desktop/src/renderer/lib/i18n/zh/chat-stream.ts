@@ -319,6 +319,7 @@ export const zh = {
   "chatStream.quote.loadFailed": "没读到这个会话的节点，只列出了当前会话",
   "chatStream.quote.otherSession": "引用的目标不是当前会话",
   "chatStream.quote.doneToast": "已放进「{name}」的输入框",
+  "chatStream.regenerate": "重新生成",
 
   // ── ChatPane: streaming spinner hint ──
   "chatStream.upstreamRetry": "上游连接异常，正在重试（{attempt}/{attempts}）",

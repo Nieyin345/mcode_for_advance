@@ -683,9 +683,18 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
       //
       // `makeQuoteTag` 在正文外面套一层「user's quote（…）+ source」。编辑器这条
       // 手边就有绝对路径（`filePath`），直接给。
+      // 选区还在编辑器里(引用菜单不抢 Monaco 的选区):带上行号。
+      const sel = editorRef.current?.getSelection();
+      const lines = sel && !sel.isEmpty()
+        ? {
+            start: sel.startLineNumber,
+            // 选到下一行行首(整行选中的常见形态)不算那一行
+            end: sel.endColumn === 1 && sel.endLineNumber > sel.startLineNumber ? sel.endLineNumber - 1 : sel.endLineNumber,
+          }
+        : undefined;
       const tag = makeQuoteTag({
         text: quoted,
-        origin: { kind: "file", filePath, name: basename(filePath) },
+        origin: { kind: "file", filePath, name: basename(filePath), ...(lines ? { lines } : {}) },
       });
       useSessionStore.getState().quoteIntoComposer(target.id, tag);
       useToastStore.getState().push({
@@ -1859,7 +1868,9 @@ function UnsupportedPane({ filePath }: { filePath: string }) {
 /* ───────────────────────── Diff pane ───────────────────────── */
 
 /** Side-by-side diff: `before` vs `after` (or current on-disk content when
- *  `after` is omitted). Read-only — the diff is for review, not editing.
+ *  `after` is omitted). With `after` (history) it is read-only; without it the
+ *  right side IS the file on disk and can be reviewed change by change —
+ *  revert single hunks (↶ in the gutter), revert all, edit, then save.
  *
  *  Uses `keepCurrentOriginalModel` / `keepCurrentModifiedModel` and a manual
  *  onMount cleanup to avoid the "TextModel got disposed before
@@ -1884,6 +1895,20 @@ export function DiffPane({
   const [modified, setModified] = useState<string | null>(after ?? null);
   const theme = useMonacoTheme();
   const language = languageForExt(extname(filePath));
+  // ── 逐处审阅(AI 改动 / 工作区改动) ──
+  // 右边是磁盘上的真实文件(没给 `after` 时):可以点左侧 ↶ 撤回某一处修改、整篇撤回,
+  // 或者直接改,然后保存。历史版本对比(给了 `after`)仍是只读。
+  const editable = after == null;
+  /** 右边这份在磁盘上的样子(读到的 / 上次保存的)—— 判断"改过没"和保存核对都拿它比。 */
+  const diskRef = useRef<string | null>(null);
+  const [reviewDirty, setReviewDirty] = useState(false);
+  const [reviewSaving, setReviewSaving] = useState(false);
+  const [reviewConflict, setReviewConflict] = useState(false);
+  const [changeCount, setChangeCount] = useState(0);
+  const [reloadNonce, setReloadNonce] = useState(0);
+  /** 每处修改的 ↶ 画在哪一行 → 对应哪一处修改(随 onDidUpdateDiff 重算)。 */
+  const revertTargetsRef = useRef(new Map<number, import("monaco-editor").editor.ILineChange>());
+  const revertDecorationsRef = useRef<import("monaco-editor").editor.IEditorDecorationsCollection | null>(null);
   // Stash the editor + monaco instances so we can dispose in the right order
   // on unmount (widget first, then models).
   const editorRef = useRef<import("monaco-editor").editor.IDiffEditor | null>(null);
@@ -2003,10 +2028,15 @@ export function DiffPane({
     }
     let cancelled = false;
     setModified(null);
+    diskRef.current = null;
+    setReviewDirty(false);
+    setReviewConflict(false);
     textFileWrites.waitForPending(filePath)
       .then(() => api.file.readFile({ filePath }))
       .then(({ content }) => {
-        if (!cancelled) setModified(content);
+        if (cancelled) return;
+        diskRef.current = content;
+        setModified(content);
       })
       .catch(() => {
         if (!cancelled) setModified("");
@@ -2014,7 +2044,62 @@ export function DiffPane({
     return () => {
       cancelled = true;
     };
-  }, [filePath, after]);
+  }, [filePath, after, reloadNonce]);
+
+  const reviewSavingRef = useRef(false);
+  /** 保存右边(磁盘那一侧)。`force` = 文件被外部改过、用户仍选择覆盖。 */
+  const saveReview = useCallback(
+    async (force = false) => {
+      const model = editorRef.current?.getModifiedEditor().getModel();
+      if (!editable || !model || reviewSavingRef.current) return;
+      const value = model.getValue();
+      reviewSavingRef.current = true;
+      setReviewSaving(true);
+      try {
+        await textFileWrites.enqueue(filePath, value, force ? undefined : (diskRef.current ?? undefined));
+        diskRef.current = value;
+        setReviewConflict(false);
+        setReviewDirty(model.isDisposed() ? false : model.getValue() !== value);
+      } catch (err) {
+        if (err instanceof FileConflictError) {
+          setReviewConflict(true);
+        } else {
+          useToastStore.getState().push({
+            kind: "error",
+            title: t("ide.editor.saveFailed"),
+            body: err instanceof Error ? err.message : String(err),
+          });
+        }
+      } finally {
+        reviewSavingRef.current = false;
+        setReviewSaving(false);
+      }
+    },
+    [editable, filePath, t],
+  );
+  const saveReviewRef = useRef(saveReview);
+  useEffect(() => {
+    saveReviewRef.current = saveReview;
+  }, [saveReview]);
+
+  /** 放弃右边没保存的改动,回到磁盘上的样子。 */
+  const discardReview = useCallback(() => {
+    const model = editorRef.current?.getModifiedEditor().getModel();
+    if (!model || diskRef.current === null) return;
+    model.setValue(diskRef.current);
+    setReviewDirty(false);
+  }, []);
+
+  /** 整篇撤回:右边换成左边(改之前)的内容,等用户保存。走编辑操作,Ctrl+Z 可撤销。 */
+  const revertAll = useCallback(() => {
+    const diffEditor = editorRef.current;
+    const model = diffEditor?.getModifiedEditor().getModel();
+    const original = diffEditor?.getOriginalEditor().getModel();
+    if (!model || !original) return;
+    model.pushStackElement();
+    model.pushEditOperations([], [{ range: model.getFullModelRange(), text: original.getValue() }], () => null);
+    model.pushStackElement();
+  }, []);
 
   // LSP navigation in the diff view (F12 / Ctrl+F12 / Shift+F12 / hover /
   // references peek): ① bind the anonymous models to the real file so
@@ -2124,9 +2209,53 @@ export function DiffPane({
               if (!dirtySinceRestoreRef.current) restoreViewState();
             }),
           ];
+          if (editable) {
+            const modifiedEditor = editor.getModifiedEditor();
+            revertDecorationsRef.current?.clear();
+            revertDecorationsRef.current = modifiedEditor.createDecorationsCollection();
+            const hover = { value: t("ide.diff.revertHunk") };
+            const paintRevertGlyphs = () => {
+              const changes = editor.getLineChanges() ?? [];
+              const targets = new Map<number, import("monaco-editor").editor.ILineChange>();
+              for (const c of changes) {
+                const line = Math.max(1, c.modifiedStartLineNumber);
+                if (!targets.has(line)) targets.set(line, c);
+              }
+              revertTargetsRef.current = targets;
+              setChangeCount(changes.length);
+              revertDecorationsRef.current?.set(
+                [...targets.keys()].map((line) => ({
+                  range: new monaco.Range(line, 1, line, 1),
+                  options: { glyphMarginClassName: "mcode-diff-revert-glyph", glyphMarginHoverMessage: hover },
+                })),
+              );
+            };
+            diffListenersRef.current.push(
+              editor.onDidUpdateDiff(paintRevertGlyphs),
+              modifiedEditor.onMouseDown((e) => {
+                if (e.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) return;
+                const line = e.target.position?.lineNumber;
+                const change = line ? revertTargetsRef.current.get(line) : undefined;
+                const original = editor.getOriginalEditor().getModel();
+                const model = modifiedEditor.getModel();
+                if (change && original && model) revertLineChange(original, model, change);
+              }),
+              modifiedEditor.onDidChangeModelContent(() => {
+                const model = modifiedEditor.getModel();
+                setReviewDirty(!!model && diskRef.current !== null && model.getValue() !== diskRef.current);
+              }),
+            );
+            modifiedEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+              void saveReviewRef.current();
+            });
+          }
         }}
         options={{
-          readOnly: true,
+          readOnly: !editable,
+          originalEditable: false,
+          // 逐处撤回用我们自己的 ↶(见 paintRevertGlyphs),不用 Monaco 自带的那套
+          renderMarginRevertIcon: false,
+          renderGutterMenu: false,
           renderSideBySide: true,
           // Center column is often <900px (chat | editor split). Monaco's default
           // then collapses side-by-side into inline mode, which paints TWO line-
@@ -2138,13 +2267,48 @@ export function DiffPane({
           scrollBeyondLastLine: false,
           automaticLayout: true,
           // Slim gutters: no breakpoint glyph column, tighter line-number width.
-          glyphMargin: false,
+          // 可审阅时留出 glyph 列给 ↶。
+          glyphMargin: editable,
           folding: false,
           lineDecorationsWidth: 8,
           lineNumbersMinChars: 3,
           scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
         }}
       />
+      {editable && (reviewDirty || reviewConflict || changeCount > 0) && (
+        <div className="absolute right-4 top-1.5 z-10 flex items-center gap-1 rounded-md border border-edge bg-surface px-1.5 py-0.5 text-[11px] shadow-sm">
+          {reviewConflict ? (
+            <>
+              <IconAlertTriangle size={12} className="shrink-0 text-content-muted" />
+              <span className="px-1 text-content-muted">{t("ide.editor.externalChanged")}</span>
+              <button type="button" onClick={() => setReloadNonce((n) => n + 1)} title={t("ide.editor.reloadFromDiskHint")}
+                className="rounded px-1.5 py-0.5 text-accent transition-colors hover:bg-surface-hover">
+                {t("ide.editor.reloadFromDisk")}
+              </button>
+              <button type="button" onClick={() => void saveReview(true)} title={t("ide.editor.overwriteDiskHint")}
+                className="rounded px-1.5 py-0.5 text-content-muted transition-colors hover:bg-surface-hover">
+                {t("ide.editor.overwriteDisk")}
+              </button>
+            </>
+          ) : reviewDirty ? (
+            <>
+              <button type="button" onClick={() => void saveReview()} disabled={reviewSaving}
+                className="rounded px-1.5 py-0.5 text-accent transition-colors hover:bg-surface-hover disabled:opacity-50">
+                {reviewSaving ? t("ide.editor.saving") : t("ide.diff.saveReview")}
+              </button>
+              <button type="button" onClick={discardReview} disabled={reviewSaving}
+                className="rounded px-1.5 py-0.5 text-content-muted transition-colors hover:bg-surface-hover disabled:opacity-50">
+                {t("ide.diff.discardReview")}
+              </button>
+            </>
+          ) : (
+            <button type="button" onClick={revertAll} title={t("ide.diff.revertAllHint")}
+              className="rounded px-1.5 py-0.5 text-content-muted transition-colors hover:bg-surface-hover hover:text-content">
+              {t("ide.diff.revertAll")}
+            </button>
+          )}
+        </div>
+      )}
       {/* LSP goto activity pill — bottom-center, non-blocking, same as the
           edit pane: a diff-pane F12 can take seconds on a cold server, and
           cross-file jumps hand off to the store, so the query needs visible
@@ -2152,6 +2316,73 @@ export function DiffPane({
       <GotoActivityPill />
     </div>
   );
+}
+
+/**
+ * 把右边(修改后)的一处改动换回左边(修改前)的样子。`ILineChange` 的约定:
+ * `*EndLineNumber === 0` 表示那一侧是空的(纯新增 / 纯删除),此时 `*StartLineNumber`
+ * 指"在这一行之后"。走编辑操作,Ctrl+Z 能撤销这次撤回。
+ */
+function revertLineChange(
+  original: import("monaco-editor").editor.ITextModel,
+  model: import("monaco-editor").editor.ITextModel,
+  c: import("monaco-editor").editor.ILineChange,
+): void {
+  const eol = model.getEOL();
+  const lines: string[] = [];
+  if (c.originalEndLineNumber > 0) {
+    for (let l = c.originalStartLineNumber; l <= c.originalEndLineNumber; l++) lines.push(original.getLineContent(l));
+  }
+  const text = lines.join(eol);
+  const count = model.getLineCount();
+  let edit: { range: import("monaco-editor").IRange; text: string };
+  if (c.modifiedEndLineNumber === 0) {
+    // 纯删除:把原来的几行插回到第 modifiedStartLineNumber 行之后
+    edit = c.modifiedStartLineNumber === 0
+      ? { range: { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 1 }, text: text + eol }
+      : {
+          range: {
+            startLineNumber: c.modifiedStartLineNumber,
+            startColumn: model.getLineMaxColumn(c.modifiedStartLineNumber),
+            endLineNumber: c.modifiedStartLineNumber,
+            endColumn: model.getLineMaxColumn(c.modifiedStartLineNumber),
+          },
+          text: eol + text,
+        };
+  } else if (lines.length > 0) {
+    // 修改:整段换回原文
+    edit = {
+      range: {
+        startLineNumber: c.modifiedStartLineNumber,
+        startColumn: 1,
+        endLineNumber: c.modifiedEndLineNumber,
+        endColumn: model.getLineMaxColumn(c.modifiedEndLineNumber),
+      },
+      text,
+    };
+  } else if (c.modifiedEndLineNumber < count) {
+    // 纯新增(后面还有行):连同换行一起删掉
+    edit = {
+      range: { startLineNumber: c.modifiedStartLineNumber, startColumn: 1, endLineNumber: c.modifiedEndLineNumber + 1, endColumn: 1 },
+      text: "",
+    };
+  } else if (c.modifiedStartLineNumber > 1) {
+    // 纯新增(在文件末尾):把前一行的换行一起删掉
+    edit = {
+      range: {
+        startLineNumber: c.modifiedStartLineNumber - 1,
+        startColumn: model.getLineMaxColumn(c.modifiedStartLineNumber - 1),
+        endLineNumber: c.modifiedEndLineNumber,
+        endColumn: model.getLineMaxColumn(c.modifiedEndLineNumber),
+      },
+      text: "",
+    };
+  } else {
+    edit = { range: model.getFullModelRange(), text: "" };
+  }
+  model.pushStackElement();
+  model.pushEditOperations([], [edit], () => null);
+  model.pushStackElement();
 }
 
 /* ───────────────────────── hooks & helpers ───────────────────────── */

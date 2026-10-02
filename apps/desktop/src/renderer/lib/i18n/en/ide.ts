@@ -283,6 +283,11 @@ export const en = {
   "ide.diff.stagedBadge": "· Staged",
   "ide.diff.closeTabAria": "Close tab",
   "ide.diff.noDiff": "No diff to display",
+  "ide.diff.revertHunk": "Revert this change (then save)",
+  "ide.diff.revertAll": "Revert all",
+  "ide.diff.revertAllHint": "Replace the right side with the original; written to the file when you save",
+  "ide.diff.saveReview": "Save",
+  "ide.diff.discardReview": "Discard",
 
   /* ── terminal ── */
   "ide.term.tabTitle": "{name} {n}",

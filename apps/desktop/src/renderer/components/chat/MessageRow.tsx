@@ -8,7 +8,7 @@
 import { useState, useRef, useEffect, useMemo, memo } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { MessageCustomMenu } from "@renderer/components/customUi/CustomSlotHosts.js";
-import { IconSend2, IconCopy, IconCheck, IconPaperclip, IconX, IconPencil } from "@renderer/lib/icons.js";
+import { IconSend2, IconCopy, IconCheck, IconPaperclip, IconX, IconPencil, IconRefresh } from "@renderer/lib/icons.js";
 import type { Block, ChatMessage, TurnMeta, PromptImage } from "@renderer/stores/sessionStore.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useNow } from "@renderer/hooks/useNow.js";
@@ -152,6 +152,7 @@ export const MessageRow = memo(function MessageRow({
   canEdit,
   isEditing,
   onStartEdit,
+  onRegenerate,
   onSubmitEdit,
   onCancelEdit,
   onOpenPlan,
@@ -168,6 +169,8 @@ export const MessageRow = memo(function MessageRow({
   /** Whether THIS row is currently in inline-edit mode. */
   isEditing?: boolean;
   onStartEdit?: (msg: ChatMessage) => void;
+  /** 重新生成:原样重发这条(最后一条)用户消息,丢掉它之后的回复。 */
+  onRegenerate?: (msg: ChatMessage) => void;
   onSubmitEdit?: (msg: ChatMessage, newText: string, images: PromptImage[]) => void;
   onCancelEdit?: () => void;
   /** Called when the user clicks an inline plan block - opens the plan in
@@ -330,6 +333,17 @@ export const MessageRow = memo(function MessageRow({
                 className="inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-content-muted"
               >
                 <IconPencil size={12} />
+              </button>
+            )}
+            {showEdit && onRegenerate && (
+              <button
+                type="button"
+                onClick={() => onRegenerate(msg)}
+                title={t("chatStream.regenerate")}
+                aria-label={t("chatStream.regenerate")}
+                className="inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-content-muted"
+              >
+                <IconRefresh size={12} />
               </button>
             )}
           </div>

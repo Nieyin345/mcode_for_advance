@@ -143,7 +143,7 @@ export type QuoteOrigin =
   /** 当前对话的历史消息里选的一段。 */
   | { kind: "chat"; sessionTitle: string }
   /** 某个文件里选的一段。`filePath` 是绝对路径 —— 用户明确要求"说清楚文件在哪"。 */
-  | { kind: "file"; filePath: string; name: string }
+  | { kind: "file"; filePath: string; name: string; lines?: { start: number; end: number } }
   /** **别的对话**（整条引用）。不给正文，只给标题 + id —— 用户明确要求
    *  "不要把其他对话的全部内容直接插入进去，让模型自己查"。 */
   | { kind: "otherSession"; sessionTitle: string; sessionId: string };
@@ -184,7 +184,11 @@ export function makeQuoteTag(params: { text: string; origin: QuoteOrigin }): Con
   let sourceLine: string;
   if (origin.kind === "file") {
     // 文件：带上绝对路径 —— 用户明确要求"说清楚文件在哪里"。
-    sourceLine = `source: ${origin.filePath}`;
+    // 有行号就带上(编辑器里选的):模型能直接定位、按行改,不用再全文搜一遍。
+    const lines = origin.lines;
+    sourceLine = `source: ${origin.filePath}` + (lines
+      ? lines.start === lines.end ? ` (line ${lines.start})` : ` (lines ${lines.start}-${lines.end})`
+      : "");
   } else if (origin.kind === "otherSession") {
     // 别的对话：给 id，模型手边有读对话记录的工具时才能用上。
     sourceLine = `source: conversation "${origin.sessionTitle}" (id ${origin.sessionId})`;

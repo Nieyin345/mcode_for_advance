@@ -2369,6 +2369,18 @@ function ChatPaneForSession({
     );
   };
 
+  /** 重新生成:把最后一条用户消息**原样**重发(文字、附件、图片、技能都照旧),
+   *  走的就是编辑重发那条路 —— 截断它之后的回复再发。 */
+  const handleRegenerate = (msg: ChatMessage) => {
+    const textBlock = msg.blocks.find((b) => b.kind === "text") as Extract<Block, { kind: "text" }> | undefined;
+    const text = textBlock?.text ?? "";
+    if (!text.trim()) return;
+    const images: PromptImage[] = msg.blocks
+      .filter((b): b is Extract<Block, { kind: "image" }> => b.kind === "image")
+      .map((b) => ({ data: b.data, mimeType: b.mimeType as PromptImage["mimeType"] }));
+    void handleEditSubmit(msg, text, images);
+  };
+
   // On opening a session, jump to the bottom so the latest exchange is in view
   // (the keyed remount above starts the list scrolled to the top). This fires
   // once per mount: it waits for messages to load, then scrolls and latches
@@ -2632,6 +2644,7 @@ function ChatPaneForSession({
                   canEdit={isUser && !sessionBusy && m.id === lastUserMessageId}
                   isEditing={editingMessageId === m.id}
                   onStartEdit={(msg) => setEditingMessageId(msg.id)}
+                  onRegenerate={handleRegenerate}
                   onSubmitEdit={handleEditSubmit}
                   onCancelEdit={() => setEditingMessageId(null)}
                   onOpenPlan={(p) => openPlanDrawer(sessionId, p)}
@@ -2846,7 +2859,7 @@ function ChatPaneForSession({
         </div>
       );
     },
-    [beforeMap, sessionBusy, editingMessageId, lastUserMessageId, handleEditSubmit, sessionId, projectPath, upstreamIssue, pauseBottomAnchor, usageHistory, sessionProviderId],
+    [beforeMap, sessionBusy, editingMessageId, lastUserMessageId, handleEditSubmit, handleRegenerate, sessionId, projectPath, upstreamIssue, pauseBottomAnchor, usageHistory, sessionProviderId],
   );
 
   // Footer rendered after all message items. The plan card and per-turn

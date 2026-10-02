@@ -288,6 +288,11 @@ export const zh = {
   "ide.diff.stagedBadge": "·暂存",
   "ide.diff.closeTabAria": "关闭标签",
   "ide.diff.noDiff": "无可显示的差异",
+  "ide.diff.revertHunk": "撤回这处修改（之后记得保存）",
+  "ide.diff.revertAll": "全部撤回",
+  "ide.diff.revertAllHint": "右边整篇换回修改前的内容，保存后才写入文件",
+  "ide.diff.saveReview": "保存",
+  "ide.diff.discardReview": "放弃",
 
   /* ── terminal ── */
   "ide.term.tabTitle": "{name} {n}",

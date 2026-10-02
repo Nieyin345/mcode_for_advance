@@ -68,6 +68,16 @@ check(
 );
 check("…source 行走 `source:` 约定（与 makeElementTag 同一套，不混语法）", fileQuote.content.includes("source: D:/proj/notes/a.md"), fileQuote.content);
 check("…chip 上显示的是文件名", fileQuote.preview === "a.md", fileQuote.preview);
+const rangeQuote = makeQuoteTag({
+  text: "第 12 到 14 行",
+  origin: { kind: "file", filePath: "D:/proj/x.ts", name: "x.ts", lines: { start: 12, end: 14 } },
+});
+check("编辑器里选的引用带上行号范围", rangeQuote.content.includes("source: D:/proj/x.ts (lines 12-14)"), rangeQuote.content);
+const lineQuote = makeQuoteTag({
+  text: "就一行",
+  origin: { kind: "file", filePath: "D:/proj/x.ts", name: "x.ts", lines: { start: 7, end: 7 } },
+});
+check("…单行写成 line N", lineQuote.content.includes("source: D:/proj/x.ts (line 7)"), lineQuote.content);
 
 /* ── 2. 别的对话：只给标题 + id，**不给正文** ─────────────────────────── */
 

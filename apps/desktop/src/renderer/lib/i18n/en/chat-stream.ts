@@ -334,6 +334,7 @@ export const en = {
   "chatStream.quote.loadFailed": "Couldn't read this session's nodes — only the current session is listed",
   "chatStream.quote.otherSession": "The quote target isn't the current session",
   "chatStream.quote.doneToast": "Placed in the composer of “{name}”",
+  "chatStream.regenerate": "Regenerate",
 
   // ── ChatPane: streaming spinner hint ──
   "chatStream.upstreamRetry": "Upstream connection issue — retrying ({attempt}/{attempts})",
