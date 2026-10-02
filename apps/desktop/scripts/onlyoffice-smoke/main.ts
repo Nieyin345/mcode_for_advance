@@ -136,6 +136,27 @@ try {
   check("completed final save retires the closed session", !getOnlyOfficeSessionState(late.key).alive);
   check("retired session cannot serve its file", (await fetch(late.fileUrl)).status === 404);
 
+  // AI (or anything else) rewrites the file while the editor is open.
+  const raced = await open("ai-edited.docx");
+  check("an untouched open file reports no external change", getOnlyOfficeSessionState(raced.key).externalChange === false);
+  await new Promise<void>(done => setTimeout(done, 20));
+  await writeFile(raced.path, "AI rewrote the whole document");
+  check("an external rewrite is visible in session state", getOnlyOfficeSessionState(raced.key).externalChange === true);
+  const reopened = await openOnlyOfficeSession(raced.path, { lang: "en", dark: false, userName: "Reload" });
+  check("reopening after an external rewrite gets a fresh session (new content, new key)",
+    reopened.ok === true && reopened.sessionKey !== raced.key && reopened.externallyChanged === true);
+  bytes = "stale editor content plus user edits";
+  const stale = await callback(raced.callbackUrl, raced.key, 6);
+  check("a stale editor's save is acknowledged", stale.body?.error === 0);
+  check("a stale editor's save never overwrites the external rewrite",
+    await readFile(raced.path, "utf8") === "AI rewrote the whole document");
+  const copyPath = getOnlyOfficeSessionState(raced.key).conflictCopyPath;
+  check("the stale save is kept in a conflict copy next to the file",
+    typeof copyPath === "string" && copyPath !== raced.path && await readFile(copyPath, "utf8") === bytes);
+  check("no staging files are left behind", (await readdir(root)).every(name => !name.endsWith(".tmp")));
+  if (reopened.sessionKey) closeSession(reopened.sessionKey);
+  closeSession(raced.key); await callback(raced.callbackUrl, raced.key, 4);
+
   const shared = await open("shared.docx");
   const again = await openOnlyOfficeSession(shared.path, { lang: "en", dark: false, userName: "Second pane" });
   check("two panes reuse the same document session", again.sessionKey === shared.key);

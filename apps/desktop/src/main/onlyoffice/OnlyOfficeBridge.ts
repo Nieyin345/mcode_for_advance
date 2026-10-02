@@ -36,7 +36,7 @@
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createReadStream, statSync } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { mkdir, open, rename, stat, unlink } from "node:fs/promises";
 import { freemem, networkInterfaces } from "node:os";
@@ -181,6 +181,10 @@ interface EditSession {
    * 能不能复用缓存着的编辑器 —— 那里面是旧内容，盖回去就是数据丢失。
    */
   disk: { mtimeMs: number; size: number };
+  /** 正在把 DS 的新版本落盘(rename 和更新 `disk` 之间磁盘会短暂"对不上")。 */
+  inWriteBack: boolean;
+  /** 外部修改后,这个会话后续的保存都落到这一份冲突副本里。 */
+  conflictPath: string | null;
   writing: Promise<void>;
   forcing: Promise<void>;
   waiters: Map<string, (result: SaveResult) => void>;
@@ -455,6 +459,20 @@ async function handleCallback(session: EditSession, req: IncomingMessage, res: S
   reply(200, 0);
 }
 
+function differsFromSession(session: EditSession, st: { mtimeMs: number; size: number }): boolean {
+  return st.mtimeMs !== session.disk.mtimeMs || st.size !== session.disk.size;
+}
+
+/** `报告.docx` → `报告 (冲突副本 20261002-153012).docx`,和原文件放在一起。 */
+function conflictCopyPath(filePath: string): string {
+  const ext = extname(filePath);
+  const stem = basename(filePath, ext);
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  return join(dirname(filePath), `${stem} (冲突副本 ${stamp})${ext}`);
+}
+
 /** 下载 DS 给的新版本，临时文件 + rename 原子替换原文件。 */
 async function writeBack(session: EditSession, url: string): Promise<boolean> {
   let ownedTemp: string | null = null;
@@ -471,14 +489,32 @@ async function writeBack(session: EditSession, url: string): Promise<boolean> {
     ownedTemp = tmp;
     try { await file.writeFile(bytes); await file.sync(); }
     finally { await file.close(); }
-    await rename(tmp, session.filePath);
-    ownedTemp = null;
-    // 这一次落盘是**我们**干的：记下新的 mtime/size，免得它被当成"别人改的"。
-    const after = await stat(session.filePath).catch(() => null);
-    if (after) session.disk = { mtimeMs: after.mtimeMs, size: after.size };
+    // 编辑器打开(或我们上次落盘)之后,原文件被别人改过(多半是 AI 写了它)?
+    // 那就**不能**用编辑器里这份整篇替换 —— 那是旧内容加用户的改动,一盖就把别人的
+    // 修改冲掉了。改为另存一份冲突副本,原文件不动,界面提示用户。
+    const now = await stat(session.filePath).catch(() => null);
+    const externallyChanged = now !== null && differsFromSession(session, now);
+    const target = externallyChanged
+      ? (session.conflictPath ??= conflictCopyPath(session.filePath))
+      : session.filePath;
+    session.inWriteBack = true;
+    try {
+      await rename(tmp, target);
+      ownedTemp = null;
+      if (externallyChanged) {
+        session.state.conflictCopyPath = target;
+        log.warn(`[onlyoffice] ${session.filePath} changed on disk while open; saved to conflict copy ${target}`);
+      } else {
+        // 这一次落盘是**我们**干的：记下新的 mtime/size，免得它被当成"别人改的"。
+        const after = await stat(session.filePath).catch(() => null);
+        if (after) session.disk = { mtimeMs: after.mtimeMs, size: after.size };
+      }
+    } finally {
+      session.inWriteBack = false;
+    }
     session.state.lastSavedAt = Date.now();
     session.state.lastError = null;
-    log.info(`[onlyoffice] saved ${session.filePath} (${bytes.length} bytes)`);
+    log.info(`[onlyoffice] saved ${target} (${bytes.length} bytes)`);
     return true;
   } catch (err) {
     session.state.lastError = (err as Error).message;
@@ -544,17 +580,21 @@ export async function openOnlyOfficeSession(
   // 后半句是给渲染端的编辑器池用的:文档存过一次(status 2)就 finalized,但只要
   // 那个 iframe 还留着,它就仍然是这份文档的主人 —— 这时必须把同一个 key 还给它,
   // 否则会凭空多出一个会话,而缓存的编辑器再也对不上号。
-  const existing = [...sessionsByKey.values()].find(
+  const candidate = [...sessionsByKey.values()].find(
     (s) => s.filePath === filePath && s.mode === mode && (!s.finalized || s.references > 0),
   );
+  // 复用的会话：它上次落盘之后，磁盘上的东西还是不是它写的那份。
+  const externallyChanged = candidate
+    ? !candidate.inWriteBack && differsFromSession(candidate, st)
+    : false;
+  // 被别人改过的就**不复用**:那个会话里(DS 按 key 缓存着)是旧内容。新开一个会话
+  // (新内容 → 新 key)才能看到磁盘上的新版本;旧会话之后若还回调保存,会落到冲突
+  // 副本里(见 writeBack),不会盖掉新内容。
+  const existing = externallyChanged ? undefined : candidate;
   // key：路径 + 内容哈希（见文件头）。已经开着的会话沿用它自己的 key —— 那时
   // 磁盘上的内容可能正被 DS 改着，重算只会得到一个对不上的新 key。
   const contentKey = existing?.key ?? await documentKey(filePath, st.mtimeMs, st.size);
   const key = existing?.key ?? `${contentKey}.${mode}`;
-  // 复用的会话：它上次落盘之后，磁盘上的东西还是不是它写的那份。
-  const externallyChanged = existing
-    ? existing.disk.mtimeMs !== st.mtimeMs || existing.disk.size !== st.size
-    : false;
   // 同一份文件已经开着一个会话（比如两个标签）→ 复用，别再发一枚令牌
   let session = existing ?? sessionsByKey.get(key);
   if (!session) {
@@ -569,6 +609,8 @@ export async function openOnlyOfficeSession(
       serverSeen: false,
       finalized: false,
       disk: { mtimeMs: st.mtimeMs, size: st.size },
+      inWriteBack: false,
+      conflictPath: null,
       writing: Promise.resolve(),
       forcing: Promise.resolve(),
       waiters: new Map(),
@@ -639,11 +681,21 @@ export async function openOnlyOfficeSession(
   };
 }
 
+/** 渲染端每 2 秒问一次,同步 stat 一下足够便宜。读不到(被删)不算"被改"。 */
+function hasExternalChange(session: EditSession): boolean {
+  if (session.inWriteBack) return false;
+  try {
+    return differsFromSession(session, statSync(session.filePath));
+  } catch {
+    return false;
+  }
+}
+
 export function getOnlyOfficeSessionState(key: string): OnlyOfficeSessionState {
   const s = sessionsByKey.get(key);
   const freeMemMB = Math.round(freemem() / (1024 * 1024));
   return s
-    ? { ...s.state, freeMemMB }
+    ? { ...s.state, freeMemMB, externalChange: s.mode === "edit" && hasExternalChange(s) }
     : { alive: false, lastSavedAt: null, lastError: null, lastStatus: null, freeMemMB };
 }
 

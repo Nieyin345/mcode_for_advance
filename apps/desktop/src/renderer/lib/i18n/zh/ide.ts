@@ -68,6 +68,8 @@ export const zh = {
   "ide.office.notConfiguredDesc": "编辑 Office 文件需要 OnlyOffice Docs 服务，请先在设置中配置服务地址。",
   "ide.office.openSettings": "打开设置",
   "ide.office.openFailed": "OnlyOffice 打开失败",
+  "ide.office.externalChanged": "文件已被外部修改（例如 AI），这里还是旧内容",
+  "ide.office.savedToConflictCopy": "文件已被外部修改，你的保存已另存为 {name}",
   /** 编辑器里选中文字后，引用目标列表里"这一份文件"那一项的标题（同 FileViewer 的用法）。 */
   "ide.editor.thisFile": "这个文件",
   /** 模式按钮显示目标档；md 只在 Milkdown 编辑与源码之间切换。 */
@@ -120,6 +122,11 @@ export const zh = {
   "ide.editor.gotoFailed": "查找{kind}失败",
   "ide.editor.externalChanged": "文件已被外部修改",
   "ide.editor.reloadFromDisk": "重新加载",
+  "ide.editor.reloadFromDiskHint": "放弃这里没保存的修改，换成磁盘上的新内容",
+  "ide.editor.overwriteDisk": "用我的版本覆盖",
+  "ide.editor.overwriteDiskHint": "把这里的内容写回磁盘，替换掉外部（例如 AI）刚做的修改",
+  "ide.editor.externalChangedPaused": "文件已被外部修改，自动保存已暂停",
+  "ide.editor.externalChangedNotSaved": "文件已被外部修改，你的改动没有保存",
 
   /* ── search dialog ── */
   "ide.search.modeNameHint": "当前:文件名搜索 - 点击切到内容搜索",

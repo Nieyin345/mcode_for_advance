@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import Editor, { DiffEditor, useMonaco } from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
 import { api } from "@renderer/lib/api.js";
-import { textFileWrites } from "@renderer/lib/markdownFileWrites.js";
+import { FileConflictError, textFileWrites } from "@renderer/lib/markdownFileWrites.js";
+import { useDiskPoll } from "@renderer/lib/useDiskPoll.js";
 import { cn } from "@renderer/lib/cn.js";
 import { basename, dirname, extname } from "@renderer/lib/path.js";
 import { useSessionStore, selectActiveEnvPath } from "@renderer/stores/sessionStore.js";
@@ -1089,14 +1090,29 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
 
   // Ctrl+S. Attached once for the editor's lifetime; the handler reads the
   // displayed-file context from a ref so it survives every model swap.
-  const handleSave = useCallback(async () => {
+  const handleSave = useCallback(async (force = false) => {
     const ed = editorRef.current;
     const ctx = readyCtxRef.current;
     if (!ed || !ctx) return;
     const value = ed.getValue();
     const seq = ++saveSeqRef.current;
     setSaveState("saving");
-    const ok = await useSessionStore.getState().saveFileContent(ctx.path, value);
+    // 核对磁盘:编辑器载入之后文件被别人(多半是 AI)改过,就不整篇写回去冲掉它,
+    // 改为亮出"已被外部修改"那条横幅让用户选。`force` = 用户在横幅上点了覆盖保存。
+    let ok = true;
+    try {
+      await textFileWrites.enqueue(ctx.path, value, force ? undefined : getBaseline(ctx.path));
+    } catch (err) {
+      if (err instanceof FileConflictError) {
+        if (seq === saveSeqRef.current && !disposedRef.current) {
+          setSaveState("idle");
+          setExternalChange(true);
+        }
+        return;
+      }
+      console.error("file.writeFile failed:", err);
+      ok = false;
+    }
     if (ok) {
       updateBaseline(ctx.path, value);
       // A user can keep typing while the IPC write is pending. The saved
@@ -1147,6 +1163,54 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
         // Unreadable — keep the current content.
       });
   }, []);
+
+  // 文件开着的时候也盯着磁盘(AI 在改它的时候最常见):没有未保存的修改 → 直接换成
+  // 新内容(保留光标/滚动);有 → 亮横幅让用户选,不动用户正在改的内容。
+  // 切到这个文件那一刻的核对(上面 post-swap 那段)管不到"一直开着"的情况。
+  const diskPollBusyRef = useRef(false);
+  const pollDisk = useCallback((path: string) => {
+    if (diskPollBusyRef.current || readyCtxRef.current?.path !== path) return;
+    if (textFileWrites.hasPending(path)) return; // 自己的写还没落盘,别把它当外部修改
+    const entry = getModelEntry(path);
+    if (!entry || entry.model.isDisposed() || entry.model.getValueLength() > 2_000_000) return;
+    diskPollBusyRef.current = true;
+    void api.file
+      .readFile({ filePath: path })
+      .then(({ content: disk }) => {
+        if (disposedRef.current || readyCtxRef.current?.path !== path || textFileWrites.hasPending(path)) return;
+        const current = getModelEntry(path);
+        if (!current || current.model.isDisposed() || disk === current.baseline) return;
+        if (ideDirtyTracker.has(path)) {
+          setExternalChange(true);
+          return;
+        }
+        const ed = editorRef.current;
+        const view = ed?.getModel() === current.model ? ed.saveViewState() : null;
+        try {
+          // 走编辑操作而不是 setValue:撤销栈保留,用户 Ctrl+Z 就能撤回这次外部修改
+          // (换行风格变了的话编辑操作改不了 EOL,那就只能整篇 setValue。)
+          if (disk.includes("\r\n") !== (current.model.getEOL() === "\r\n")) {
+            current.model.setValue(disk);
+          } else {
+            current.model.pushStackElement();
+            current.model.pushEditOperations([], [{ range: current.model.getFullModelRange(), text: disk }], () => null);
+            current.model.pushStackElement();
+          }
+        } catch {
+          return;
+        }
+        if (view) ed?.restoreViewState(view);
+        updateBaseline(path, disk);
+        ideDirtyTracker.set(path, false);
+      })
+      .catch(() => {
+        // 读不到(被删/被移走)—— 保持当前内容
+      })
+      .finally(() => {
+        diskPollBusyRef.current = false;
+      });
+  }, []);
+  useDiskPoll(readyPath, pollDisk);
 
   // Theme: follow the .dark class on <html>.
   const theme = useMonacoTheme();
@@ -1373,9 +1437,21 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
           <button
             type="button"
             onClick={reloadFromDisk}
+            title={t("ide.editor.reloadFromDiskHint")}
             className="rounded px-1.5 py-0.5 text-accent transition-colors hover:bg-surface-hover"
           >
             {t("ide.editor.reloadFromDisk")}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setExternalChange(false);
+              void handleSave(true);
+            }}
+            title={t("ide.editor.overwriteDiskHint")}
+            className="rounded px-1.5 py-0.5 text-content-muted transition-colors hover:bg-surface-hover"
+          >
+            {t("ide.editor.overwriteDisk")}
           </button>
         </div>
       )}

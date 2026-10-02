@@ -7,11 +7,18 @@
 export class SerializedFileWrites {
   private readonly tails = new Map<string, Promise<void>>();
 
-  constructor(private readonly write: (filePath: string, content: string) => Promise<void>) {}
+  constructor(
+    private readonly write: (filePath: string, content: string, expected?: string) => Promise<void>,
+  ) {}
 
-  enqueue(filePath: string, content: string): Promise<void> {
+  /**
+   * `expected` = 调用方认为磁盘上**现在**是什么(它上次读到 / 写下的内容)。给了就由
+   * 写函数在**排到自己时**先核对一次 —— 放在队列里核对,自己排在前面的写不会被误判成
+   * "外部改了"。不给 = 照旧直接写(覆盖保存、关闭时补存这类明确要写的场合)。
+   */
+  enqueue(filePath: string, content: string, expected?: string): Promise<void> {
     const previous = this.tails.get(filePath) ?? Promise.resolve();
-    const current = previous.then(() => this.write(filePath, content));
+    const current = previous.then(() => this.write(filePath, content, expected));
     // The return value retains failure for its caller to display. Only the
     // *tail* swallows failure, so a later save can still run.
     const settled = current.then(() => undefined, () => undefined);

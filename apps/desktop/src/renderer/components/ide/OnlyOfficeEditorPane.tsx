@@ -24,7 +24,8 @@ import { useRpc } from "@renderer/hooks/useRpc.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { Button, EmptyState, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
-import { IconCheck, IconFileTypeDoc, IconLoader2, IconSettings } from "@renderer/lib/icons.js";
+import { IconAlertTriangle, IconCheck, IconFileTypeDoc, IconLoader2, IconSettings } from "@renderer/lib/icons.js";
+import { basename } from "@renderer/lib/path.js";
 
 /* ── DS 的全局 API（它没有类型包，这里只声明用到的那几个） ── */
 interface DocEditorInstance {
@@ -92,6 +93,12 @@ export function OnlyOfficeEditorPane({
   const [saveHint, setSaveHint] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveErr, setSaveErr] = useState<string | null>(null);
   const lastSavedRef = useRef<number | null>(null);
+  /** 磁盘上的文件在编辑器开着时被别人(多半是 AI)改过 —— 主进程每 2 秒报一次。 */
+  const [external, setExternal] = useState(false);
+  /** 外部修改后用户的保存被另存到的冲突副本(原文件没被覆盖)。 */
+  const [conflictCopy, setConflictCopy] = useState<string | null>(null);
+  /** 这个编辑器里用户动过没有:没动过的,外部一改就直接重新载入。 */
+  const editedRef = useRef(false);
   /**
    * `t` 走 ref：起编辑器那个 effect 的清理会 `destroyEditor()` + `onlyoffice.close`。
    * 若把 `t` 放进依赖，切一次界面语言就会销毁编辑器（未落盘的改动跟着没了），再用
@@ -151,7 +158,10 @@ export function OnlyOfficeEditorPane({
             },
             // DS 自己会在停止输入后自动存（回调 status 2）；这里只把"有没改"映射到提示。
             onDocumentStateChange: (e: { data?: boolean }) => {
-              if (!disposed && !readOnly && e?.data) setSaveHint("idle");
+              if (!disposed && !readOnly && e?.data) {
+                editedRef.current = true;
+                setSaveHint("idle");
+              }
             },
           },
         });
@@ -176,6 +186,24 @@ export function OnlyOfficeEditorPane({
     };
   }, [opened, hostId, readOnly]);
 
+  /**
+   * 重新载入磁盘上的版本。主进程发现文件被外部改过就不再复用旧会话(DS 按 key 缓存
+   * 着旧内容),这次 open 会拿到新会话;旧编辑器在 effect 清理里销毁,它若还有没落盘的
+   * 改动,DS 的最终回调会落到冲突副本,不会盖掉新内容。
+   */
+  const reloadFromDisk = useCallback(() => {
+    editedRef.current = false;
+    lastSavedRef.current = null;
+    setExternal(false);
+    setConflictCopy(null);
+    setSaveHint("idle");
+    void refetch();
+  }, [refetch]);
+  const reloadRef = useRef(reloadFromDisk);
+  useEffect(() => {
+    reloadRef.current = reloadFromDisk;
+  }, [reloadFromDisk]);
+
   /* ── 轮询保存状态：真正的写盘在主进程（DS 回调），这里只能问 ── */
   useEffect(() => {
     if (!sessionKey || !ready || readOnly) return;
@@ -184,6 +212,14 @@ export function OnlyOfficeEditorPane({
       try {
         const st = await api.onlyoffice.sessionState({ sessionKey });
         if (stopped) return;
+        if (st.conflictCopyPath) setConflictCopy(st.conflictCopyPath);
+        if (st.externalChange && !editedRef.current && !st.conflictCopyPath) {
+          // 用户没动过这份文档:直接换成磁盘上的新内容
+          stopped = true;
+          reloadRef.current();
+          return;
+        }
+        setExternal(Boolean(st.externalChange));
         if (st.lastError) {
           setSaveErr(st.lastError);
           setSaveHint("error");
@@ -294,6 +330,24 @@ export function OnlyOfficeEditorPane({
               {saveErr ? `: ${saveErr}` : ""}
             </span>
           )}
+        </div>
+      )}
+      {!readOnly && (external || conflictCopy) && (
+        <div className="absolute left-1/2 top-2 z-10 flex max-w-[90%] -translate-x-1/2 items-center gap-2 rounded-md border border-edge bg-surface px-2.5 py-1 text-[11px] shadow-sm">
+          <IconAlertTriangle size={12} className="shrink-0 text-content-muted" />
+          <span className="min-w-0 truncate text-content-muted" title={conflictCopy ?? undefined}>
+            {conflictCopy
+              ? t("ide.office.savedToConflictCopy", { name: basename(conflictCopy) })
+              : t("ide.office.externalChanged")}
+          </span>
+          <button
+            type="button"
+            onClick={reloadFromDisk}
+            title={t("ide.editor.reloadFromDiskHint")}
+            className="shrink-0 rounded px-1.5 py-0.5 text-accent transition-colors hover:bg-surface-hover"
+          >
+            {t("ide.editor.reloadFromDisk")}
+          </button>
         </div>
       )}
       {bootError && (

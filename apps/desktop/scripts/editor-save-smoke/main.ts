@@ -1,8 +1,8 @@
 /** Save ordering and failure smoke: real renderer queue + real IPC adapter,
  * with only the Electron API stubbed (no access to real user documents). */
 import { SerializedFileWrites, isEditingKey, shouldAutosave } from "@renderer/lib/serializedFileWrites.js";
-import { markdownFileWrites, textFileWrites } from "@renderer/lib/markdownFileWrites.js";
-import { setWriteHandler } from "./stubs/api.js";
+import { FileConflictError, markdownFileWrites, textFileWrites } from "@renderer/lib/markdownFileWrites.js";
+import { setReadHandler, setWriteHandler } from "./stubs/api.js";
 
 let checks = 0;
 let failures = 0;
@@ -94,6 +94,40 @@ await textFileWrites.enqueue("mode.md", "rejected").catch(() => { rejected = tru
 eq("IPC 返回 ok:false 是保存失败", rejected, true);
 await textFileWrites.enqueue("mode.md", "after-failure");
 eq("真实适配器失败后可重试", disk.get("mode.md"), "after-failure");
+
+console.log("外部修改(AI 写了文件)不会被编辑器保存冲掉");
+setReadHandler(async ({ filePath }) => {
+  const content = disk.get(filePath);
+  if (content === undefined) throw new Error("ENOENT");
+  return { content };
+});
+setWriteHandler(async ({ filePath, content }) => { disk.set(filePath, content); return { ok: true }; });
+disk.set("ai.md", "opened");
+await textFileWrites.enqueue("ai.md", "user edit 1", "opened");
+eq("磁盘还是打开时的版本 → 正常写", disk.get("ai.md"), "user edit 1");
+disk.set("ai.md", "AI rewrote this");
+let conflict: unknown = null;
+await textFileWrites.enqueue("ai.md", "user edit 2", "user edit 1").catch((e: unknown) => { conflict = e; });
+check("磁盘被 AI 改过 → 拒绝写入", conflict instanceof FileConflictError);
+eq("冲突带回磁盘上的新内容", (conflict as FileConflictError | null)?.disk, "AI rewrote this");
+eq("AI 的修改仍在磁盘上", disk.get("ai.md"), "AI rewrote this");
+await textFileWrites.enqueue("ai.md", "user edit 2");
+eq("用户选覆盖(不带 expected)才写", disk.get("ai.md"), "user edit 2");
+disk.set("ai.md", "same");
+await textFileWrites.enqueue("ai.md", "same", "stale");
+eq("磁盘内容已等于要写的 → 不算冲突", disk.get("ai.md"), "same");
+// 另一个面板(同一进程)刚写下的版本不算外部修改
+await textFileWrites.enqueue("ai.md", "pane B", "same");
+await textFileWrites.enqueue("ai.md", "pane A", "same");
+eq("本进程上次写下的版本不算外部修改", disk.get("ai.md"), "pane A");
+// 队列里排在前面的自己的写,不会让后面那次被误判
+const first = textFileWrites.enqueue("ai.md", "q1", "pane A");
+const second = textFileWrites.enqueue("ai.md", "q2", "q1");
+await Promise.all([first, second]);
+eq("连续两次保存按顺序落盘", disk.get("ai.md"), "q2");
+disk.delete("gone.md");
+await textFileWrites.enqueue("gone.md", "recreated", "old");
+eq("文件被删 → 照常写回", disk.get("gone.md"), "recreated");
 
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures) process.exitCode = 1;

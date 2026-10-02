@@ -169,6 +169,16 @@ export interface OnlyOfficeSessionState {
    * 「切走的编辑器还留不留」,而为一个纯提示值单开一条 IPC 不值得。
    */
   freeMemMB: number;
+  /**
+   * 编辑器开着的这段时间里,磁盘上的文件被**别人**改过(多半是 AI 的工具调用)——
+   * mtime/size 和我们自己最后一次见到/写下的不一致。渲染端据此提示"重新载入"。
+   */
+  externalChange?: boolean;
+  /**
+   * 外部修改之后 DS 又回调保存时,我们**没有**覆盖原文件(那会冲掉别人的修改),而是把
+   * 这一版另存到这里。null / 缺省 = 没发生过。
+   */
+  conflictCopyPath?: string | null;
 }
 
 export interface OnlyOfficeStatusResult {

@@ -65,6 +65,8 @@ export const en = {
   "ide.office.notConfiguredDesc": "Editing Office files requires an OnlyOffice Docs server. Configure its URL in Settings.",
   "ide.office.openSettings": "Open settings",
   "ide.office.openFailed": "Failed to open in OnlyOffice",
+  "ide.office.externalChanged": "File changed on disk (e.g. by AI); this view is outdated",
+  "ide.office.savedToConflictCopy": "File changed on disk; your save went to {name}",
   "ide.editor.thisFile": "This file",
   "ide.editor.togglePreview": "Preview",
   "ide.editor.toggleEdit": "Edit",
@@ -115,6 +117,11 @@ export const en = {
   "ide.editor.gotoFailed": "{kind} search failed",
   "ide.editor.externalChanged": "File changed on disk",
   "ide.editor.reloadFromDisk": "Reload",
+  "ide.editor.reloadFromDiskHint": "Discard unsaved edits here and load the new content from disk",
+  "ide.editor.overwriteDisk": "Overwrite with mine",
+  "ide.editor.overwriteDiskHint": "Write this content to disk, replacing the external (e.g. AI) changes",
+  "ide.editor.externalChangedPaused": "File changed on disk; autosave paused",
+  "ide.editor.externalChangedNotSaved": "File changed on disk; your edits were not saved",
 
   /* ── search dialog ── */
   "ide.search.modeNameHint": "Current: file name search — click to switch to content search",

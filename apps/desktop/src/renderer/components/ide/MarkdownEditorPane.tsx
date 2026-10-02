@@ -32,11 +32,12 @@ import { TextSelection } from "@milkdown/kit/prose/state";
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/frame.css";
 import { api } from "@renderer/lib/api.js";
-import { markdownFileWrites } from "@renderer/lib/markdownFileWrites.js";
+import { FileConflictError, markdownFileWrites } from "@renderer/lib/markdownFileWrites.js";
+import { useDiskPoll } from "@renderer/lib/useDiskPoll.js";
 import { isEditingKey, shouldAutosave } from "@renderer/lib/serializedFileWrites.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { IconLoader2, IconCheck } from "@renderer/lib/icons.js";
+import { IconLoader2, IconCheck, IconAlertTriangle } from "@renderer/lib/icons.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { makeQuoteTag } from "@renderer/lib/contentTag.js";
 import { basename } from "@renderer/lib/path.js";
@@ -73,6 +74,9 @@ export function MarkdownEditorPane({
   }, [filePath, t]);
   const quoteToCurrentRef = useRef(quoteToCurrent);
   quoteToCurrentRef.current = quoteToCurrent;
+  /** 占位和工具栏文案走 ref：换界面语言不该重建编辑器（重建会丢撤销栈）。 */
+  const tRef = useRef(t);
+  tRef.current = t;
   /** 编辑器实例。挂在 ref 上而不是 state：它不参与渲染，重建时机由 effect 管。 */
   const crepeRef = useRef<Crepe | null>(null);
   /** 外层容器 —— 真实输入事件监听的挂点（见下面那个 effect）。 */
@@ -101,6 +105,22 @@ export function MarkdownEditorPane({
   }, []);
   /** 用户在本面板里按下过键吗（见 `dirtyRef` 那段注释）。 */
   const userTouchedRef = useRef(false);
+  /**
+   * **磁盘上**此刻应该是什么 —— 上次读到的原文 / 上次写成功的内容。注意它和
+   * `baselineRef` 不是一回事:Crepe 挂载时会把 markdown 规范化,`baselineRef` 是规范化
+   * 之后的那份,拿它去和磁盘比永远"不一样"。
+   *
+   * 用途:(1) 保存前核对 —— 磁盘既不是它、也不是这次要写的,说明 AI 等别人改过,
+   * 不能整篇写回去冲掉;(2) 轮询时判断"磁盘变了没有"。
+   */
+  const diskRef = useRef<string | null>(null);
+  /** 发现外部修改、而用户手上又有没存的改动时:暂停自动保存,等用户选。 */
+  const [conflict, setConflict] = useState<string | null>(null);
+  const conflictRef = useRef<string | null>(null);
+  /** 重新载入时要恢复的滚动位置(Crepe 是整个重建的)。 */
+  const restoreScrollRef = useRef<number | null>(null);
+  /** 内容相同也要强制重建编辑器时递增(载入磁盘版本)。 */
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   /* ── 读文件 ── */
   useEffect(() => {
@@ -111,11 +131,15 @@ export function MarkdownEditorPane({
     baselineRef.current = null;
     userTouchedRef.current = false;
     latestContentRef.current = null;
+    diskRef.current = null;
+    conflictRef.current = null;
+    setConflict(null);
     setInitial(null);
     markdownFileWrites.waitForPending(filePath)
       .then(() => api.file.readFile({ filePath }))
       .then((r) => {
         if (cancelled) return;
+        diskRef.current = r.content;
         setInitial(r.content);
         setStatus("idle");
       })
@@ -130,7 +154,10 @@ export function MarkdownEditorPane({
   }, [filePath]);
 
   const save = useCallback(
-    (content: string, flush = false) => {
+    (content: string, flush = false, force = false) => {
+      // 有冲突没解决时不自动写(等用户在横幅上选);关面板时的补存也一样 —— 宁可这次
+      // 没存上,也不能把 AI 刚写的内容冲掉。用户点「用我的版本覆盖」走 force。
+      if (conflictRef.current !== null && !force) return;
       const version = ++saveVersionRef.current;
       queuedContentRef.current = content;
       failedContentRef.current = null;
@@ -140,8 +167,9 @@ export function MarkdownEditorPane({
       }
       // One queue per file outlives this pane: a slow, older write must never
       // finish AFTER a newer one (including a close/switch flush).
-      void markdownFileWrites.enqueue(filePath, content).then(
+      void markdownFileWrites.enqueue(filePath, content, force ? undefined : (diskRef.current ?? undefined)).then(
         () => {
+          diskRef.current = content;
           if (version !== saveVersionRef.current) return;
           failedContentRef.current = null;
           if (latestContentRef.current === content) {
@@ -151,6 +179,20 @@ export function MarkdownEditorPane({
           if (mountedRef.current && latestContentRef.current === content) setStatus("saved");
         },
         (e: unknown) => {
+          if (e instanceof FileConflictError) {
+            conflictRef.current = e.disk;
+            if (mountedRef.current) {
+              setConflict(e.disk);
+              setStatus("idle");
+            } else {
+              useToastStore.getState().push({
+                kind: "error",
+                title: t("ide.editor.externalChangedNotSaved"),
+                body: filePath,
+              });
+            }
+            return;
+          }
           if (version !== saveVersionRef.current) return;
           failedContentRef.current = content;
           const detail = e instanceof Error ? e.message : String(e);
@@ -204,6 +246,68 @@ export function MarkdownEditorPane({
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
+  /** 换成磁盘上的版本(放弃本面板没存的修改),保留滚动位置。 */
+  const loadDiskVersion = useCallback((disk: string) => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = null;
+    restoreScrollRef.current = rootRef.current?.scrollTop ?? null;
+    diskRef.current = disk;
+    conflictRef.current = null;
+    setConflict(null);
+    dirtyRef.current = false;
+    userTouchedRef.current = false;
+    baselineRef.current = null;
+    latestContentRef.current = null;
+    setInitial(disk);
+    setReloadNonce((n) => n + 1);
+  }, []);
+
+  /** 用户选「用我的版本覆盖」。 */
+  const overwriteDisk = useCallback(() => {
+    let md = latestContentRef.current;
+    try {
+      md = crepeRef.current?.getMarkdown() ?? md;
+    } catch {
+      /* 用最后一次 markdownUpdated 的内容 */
+    }
+    conflictRef.current = null;
+    setConflict(null);
+    if (md != null) save(md, false, true);
+  }, [save]);
+
+  /**
+   * 文件开着时盯磁盘(AI 改这篇文档时最常见)。没改动 → 直接换成新内容;
+   * 有没存的改动 → 亮横幅,暂停自动保存,等用户选。
+   */
+  const diskPollBusyRef = useRef(false);
+  const pollDisk = useCallback(
+    (path: string) => {
+      if (path !== filePath || diskPollBusyRef.current || diskRef.current === null) return;
+      if (saveTimer.current || markdownFileWrites.hasPending(path)) return; // 自己的写还没落盘
+      diskPollBusyRef.current = true;
+      void api.file
+        .readFile({ filePath: path })
+        .then(({ content: disk }) => {
+          if (!mountedRef.current || path !== filePath || markdownFileWrites.hasPending(path) || saveTimer.current) return;
+          if (disk === diskRef.current || disk === conflictRef.current) return;
+          if (dirtyRef.current) {
+            conflictRef.current = disk;
+            setConflict(disk);
+            return;
+          }
+          loadDiskVersion(disk);
+        })
+        .catch(() => {
+          /* 读不到 —— 保持当前内容 */
+        })
+        .finally(() => {
+          diskPollBusyRef.current = false;
+        });
+    },
+    [filePath, loadDiskVersion],
+  );
+  useDiskPoll(initial === null ? null : filePath, pollDisk);
+
   /* ── 建 / 拆编辑器（随 filePath + 首次读到的内容） ── */
   useEffect(() => {
     if (initial === null) return;
@@ -221,10 +325,10 @@ export function MarkdownEditorPane({
       featureConfigs: {
         [Crepe.Feature.Toolbar]: {
           buildToolbar: (builder) => {
-            builder.addGroup("mcode-context", t("ide.editor.quoteToCurrent")).addItem("mcode-quote", {
+            builder.addGroup("mcode-context", tRef.current("ide.editor.quoteToCurrent")).addItem("mcode-quote", {
               // A typographic quotation mark: no bespoke SVG or extra icon runtime.
               icon: '<span aria-hidden="true">❞</span>',
-              label: t("ide.editor.quoteToCurrent"),
+              label: tRef.current("ide.editor.quoteToCurrent"),
               active: () => false,
               onRun: (ctx) => {
                 if (disposed) return;
@@ -246,7 +350,7 @@ export function MarkdownEditorPane({
           },
         },
         [Crepe.Feature.Placeholder]: {
-          text: t("ide.editor.mdPlaceholder"),
+          text: tRef.current("ide.editor.mdPlaceholder"),
           mode: "doc",
         },
       },
@@ -258,19 +362,24 @@ export function MarkdownEditorPane({
       });
     });
     crepeRef.current = crepe;
-    void crepe.create().catch((e: unknown) => {
-      if (disposed) return;
-      setErr(e instanceof Error ? e.message : String(e));
-      setStatus("error");
-    });
+    void crepe.create().then(
+      () => {
+        const top = restoreScrollRef.current;
+        restoreScrollRef.current = null;
+        if (!disposed && top !== null && rootRef.current) rootRef.current.scrollTop = top;
+      },
+      (e: unknown) => {
+        if (disposed) return;
+        setErr(e instanceof Error ? e.message : String(e));
+        setStatus("error");
+      },
+    );
     return () => {
       disposed = true;
       crepeRef.current = null;
       void crepe.destroy();
     };
-    // `t` 影响占位和工具栏文案，不为它重建编辑器（重建会丢撤销栈）。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initial, filePath]);
+  }, [initial, filePath, reloadNonce]);
 
   /**
    * **把"用户动过"这件事钉在真实输入事件上。**
@@ -322,7 +431,14 @@ export function MarkdownEditorPane({
   useEffect(
     () => () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
-      if (dirtyRef.current) {
+      if (dirtyRef.current && conflictRef.current !== null) {
+        // 外部修改的冲突没解决就关了:不写(写了就冲掉 AI 的修改),但要让用户知道
+        useToastStore.getState().push({
+          kind: "error",
+          title: t("ide.editor.externalChangedNotSaved"),
+          body: filePath,
+        });
+      } else if (dirtyRef.current) {
         let md = latestContentRef.current;
         try {
           md = crepeRef.current?.getMarkdown() ?? md;
@@ -333,7 +449,8 @@ export function MarkdownEditorPane({
             (md !== queuedContentRef.current || failedContentRef.current === md)) save(md, true);
       }
     },
-    [filePath, save],
+    // `save` 本来就随 `t` 变,补上 `t` 不会多触发
+    [filePath, save, t],
   );
 
   if (err && initial === null) {
@@ -371,6 +488,28 @@ export function MarkdownEditorPane({
               </>
             )}
             {err && status === "error" && <span className="text-red-500">{err}</span>}
+          </div>
+        )}
+        {conflict !== null && (
+          <div className="sticky top-2 z-20 mx-auto flex w-fit items-center gap-2 rounded-md border border-edge bg-surface px-2.5 py-1 text-[11px] shadow-sm">
+            <IconAlertTriangle size={12} className="shrink-0 text-content-muted" />
+            <span className="text-content-muted">{t("ide.editor.externalChangedPaused")}</span>
+            <button
+              type="button"
+              onClick={() => loadDiskVersion(conflict)}
+              title={t("ide.editor.reloadFromDiskHint")}
+              className="rounded px-1.5 py-0.5 text-accent transition-colors hover:bg-surface-hover"
+            >
+              {t("ide.editor.reloadFromDisk")}
+            </button>
+            <button
+              type="button"
+              onClick={overwriteDisk}
+              title={t("ide.editor.overwriteDiskHint")}
+              className="rounded px-1.5 py-0.5 text-content-muted transition-colors hover:bg-surface-hover"
+            >
+              {t("ide.editor.overwriteDisk")}
+            </button>
           </div>
         )}
         {/* key=filePath：换文件时整棵重挂，Crepe 的 DOM 不会残留到下一篇 */}
