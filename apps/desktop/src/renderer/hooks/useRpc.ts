@@ -8,7 +8,7 @@ import { translate } from "@renderer/lib/i18n/core.js";
  *
  * Why this exists: 429 call sites across 99 component files each hand-rolled
  * `await api.*` with their own loading flag, and 328 catch blocks each decide
- * on their own how to report failure (MCode-优化方向.md §3.6 三). This hook is
+ * on their own how to report failure (`docs/planning/优化方向.md` §3.6 三). This hook is
  * the middle layer that was missing: one call gives
  * `{ data, loading, error, refetch }`, and errors surface through the shared
  * toast by default instead of vanishing into a silent catch.

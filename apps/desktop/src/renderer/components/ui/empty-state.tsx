@@ -3,7 +3,7 @@
  *
  * Before this existed the empty state was re-invented in 19 files with
  * divergent copy, spacing and call-to-action placement
- * (MCode-优化方向.md §3.6 二). One component keeps them recognizable as the
+ * (`docs/planning/优化方向.md` §3.6 二). One component keeps them recognizable as the
  * same app: muted icon, one-line title, optional explanation, optional CTA.
  *
  * All strings arrive pre-translated via props — the i18n rule (zh dictionary

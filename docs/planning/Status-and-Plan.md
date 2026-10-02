@@ -21,7 +21,7 @@
 - 同一冻结源码最终通过 **173/173 全量 smoke、runner 10/10、双包 typecheck、完整 main/preload/renderer build**；readiness **50/50**、原生窗口 **8/8**、真实浏览器依赖 **8/8**。另通过 offline frozen-lockfile 安装及 readiness 复验。
 - Windows x64 unsigned 目录包使用正常 **pnpm collector**；PDF 185 文件、20 原生文件、87 条静态引用，以及包内 SDK / Zod 4、preload、SQL、sherpa、ConPTY 隔离检查通过。**1,844 个输入源码文件 SHA 复核一致**。
 - **范围边界**：未执行正式 NSIS / 签名 / 安装卸载与覆盖升级、macOS/Linux；不启动产品 main / Mcode.exe、不用真实用户库、模型账户、外部服务或手机/录音硬件。下一步为正式安装器与关键真实环境验收，不宣布正式发布全部通过。
-- 验收对象为保留已有修改的工作区；BrowserManager / main index 只暂存本轮 hunks，不夹带其他改动，不 push。报告与实际产物位置：`docs/parallel-maintenance/reports/RELEASE-READINESS-2026-09-30.md`。
+- 验收对象为保留已有修改的工作区；BrowserManager / main index 只暂存本轮 hunks，不夹带其他改动，不 push。
 
 ## 2026-09-29 打包前检修：阶段一历史记录
 
@@ -30,7 +30,7 @@
 - 本次重新验证：**173/173 全量 smoke、runner 10/10、双包 typecheck 0 错误**；新增 readiness 37/37、手机 UI 23/23。正式构建通过，末次主进程修改后补正式 main 配置重建。
 - Windows x64 unsigned `--dir --publish never` 与包内运行时检查通过：PDF 185 文件 + WASM 哈希、20 个原生文件、87 条静态引用；内存 SQL、sherpa 绑定、ConPTY echo 通过，不能借开发依赖。不启动真实应用或用户库。
 - **当时待续、现已处理**：Electron 33 EOL 升级与新版本重新验收已于 2026-09-30 完成，见上一节；正式 NSIS/签名/安装卸载与跨平台仍未验。
-- 报告：`docs/parallel-maintenance/reports/RELEASE-READINESS-2026-09-29.md`。仅本地提交，不 push。
+- 报告：`docs/parallel-maintenance/reports/RELEASE-READINESS-2026-09-29.md`（该报告目录已清理）。仅本地提交，不 push。
 
 ## 2026-09-29 已完成：学术链路审查与通用项目初始化
 
@@ -40,7 +40,7 @@
 - 设置草稿与保存锁跨卸载保留；陈旧读取/预览、项目切换、未知命令、忙碌/参数/附件均有显式防护。手机不扩张文件写入白名单。
 - 最终验证：**172/172 全量 smoke、runner 10/10、双包 typecheck 0 错误**；新增后端 32/32、生产路由 24/24、浏览器交互 20/20。文件正文逆向变异 4 条红；保存跨卸载回归 17/19 → 19/19，再补陈旧读取后 20/20。
 - 未调用真实模型/用户库，未验证下载账户、外部 MCP/MinerU 真实联网，不冒领安装包/完整主题/真手机验收。本轮仅本地提交，不 push。
-- 详细归属、使用说明、测试与边界：`docs/parallel-maintenance/reports/ACADEMIC-INIT-2026-09-29.md`。
+- 详细归属、使用说明、测试与边界见当轮并行维护报告（该报告目录已清理）。
 
 ## 一、这个项目是什么
 

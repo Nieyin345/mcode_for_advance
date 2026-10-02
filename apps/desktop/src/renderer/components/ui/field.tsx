@@ -4,7 +4,7 @@
  * ⚠️ The shell is a `<div>`, deliberately NOT a `<label>`: a bare `<label>`
  * is an inline element, and inline elements report zero width/height for
  * layout — sizing children against it silently breaks (this exact trap is
- * called out in MCode-优化方向.md §3.6 二). Click-to-focus association is
+ * called out in `docs/planning/优化方向.md` §3.6 二). Click-to-focus association is
  * done properly via `htmlFor` on the inner `<label>` instead.
  *
  * @example

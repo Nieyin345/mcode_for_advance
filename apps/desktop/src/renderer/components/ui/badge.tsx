@@ -4,7 +4,7 @@
  * One shared pill so panels stop hand-rolling their own status chips with
  * slightly different radii, paddings and colors. Variants map to the theme's
  * semantic colors (styles.css tokens) — never hardcode hex here; the
- * 90-processes-of-hardcoded-colors count (MCode-优化方向.md §3.6 二) is the
+ * 90-processes-of-hardcoded-colors count (`docs/planning/优化方向.md` §3.6 二) is the
  * mess this exists to stop growing.
  *
  * @example

@@ -2,7 +2,7 @@
 
 > 项目：mcode · 日期：2026-09-27 · 文档版本：1.1
 > **本文区分“目标架构”与“第一/二阶段已实现内容”，不把规划能力描述为现成功能。**
-> 第一阶段见 `ui-module-platform.md`；第二阶段用法见 `ui-module-platform-phase2.md`，冻结候选与验收边界见 `parallel-ui-modules/integration.md`。
+> 第一阶段见 `ui-module-platform.md`；第二阶段用法见 `ui-module-platform-phase2.md`，冻结候选与验收边界见当轮 UI 模块并行工作记录（该目录已清理）。
 
 ## 1. 要解决什么问题
 

@@ -3,7 +3,7 @@
 第二阶段在原有文件菜单、JSON 清单和 `ModuleHost` 之上，增加**原生能力目录与只读内置能力调用节点**。不是任意代码平台，也没有把所有内置功能迁移成模块。
 
 - 公共接口冻结：**P2-01 / 1.0.0**；清单 `apiVersion` 仍为 **1**。
-- 生产接线已实现，runnable 已激活；最终候选、回归结果和未验收范围统一记录在 [集成报告](parallel-ui-modules/integration.md)。
+- 生产接线已实现，runnable 已激活；最终候选、回归结果和未验收范围记录在当轮 UI 模块并行工作记录（该目录已清理）。
 - 验证结果（2026-09-27 候选 B，HEAD `e1d06d0`）：动态全量 139 套全部通过，contracts/desktop 类型检查 0 错误，组合 E2E 与安全套件通过。**已验收范围**为自动化与隔离 Electron 功能窗口；正式安装包完整启动/升级、用户主应用全部面板组合、真实 FileTree/WebContentsView 遮挡与真实模型**未验收**。
 - 总体规划：[设计方案](ui-module-platform-design.md)；原菜单/清单说明：[第一阶段](ui-module-platform.md)。
 

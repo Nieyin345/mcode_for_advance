@@ -7,7 +7,7 @@
  * - `Skeleton`: the layout itself is still loading — render one gray block
  *   per future row/card so the panel doesn't jump when data lands.
  *
- * Added for the "loading 状态各管各的" cleanup (MCode-优化方向.md §3.6 二):
+ * Added for the "loading 状态各管各的" cleanup (`docs/planning/优化方向.md` §3.6 二):
  * SkillsPanel / McpPanel each hand-rolled ~6 loading indicators while
  * PluginsPanel / HooksPanel had none at all — their panels sat blank during
  * load. New panels should reach for these instead of drawing their own.

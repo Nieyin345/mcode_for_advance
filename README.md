@@ -47,7 +47,7 @@
 ### 工作流与自动化
 
 - **工作流**：用节点图把多步任务串起来，可以插入人工确认的分支；运行中断后能从停下的地方接着跑。
-- **自动化**：给工作流挂触发器，支持手动、定时、文件变化、事件和 Webhook 五种方式，例如「新文献入库后自动转 Markdown」。
+- **自动化**：给工作流挂触发器，支持手动、定时、文件变化、事件四种方式，例如「新文献入库后自动转 Markdown」。
 - **钩子**：某件事发生时（发消息、调用工具、一轮结束……）运行你自己的命令，每次执行都有记录。
 - **技能**：管理 AI 的技能（SKILL.md），自带编辑器。
 - **记忆**：跨会话记住规则、偏好、经验和决定，分全局和项目两级；可以查看、编辑，以及清理过期或重复的条目。
@@ -88,7 +88,7 @@ $env:ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
 $env:ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/"
 ```
 
-更多技术细节见 [docs/tech-stack.md](docs/tech-stack.md)。
+更多技术细节见 [docs/tech-stack.md](docs/tech-stack.md)；设计取舍与规划见 [docs/design/](docs/design/) 与 [docs/planning/](docs/planning/)（现状与任务书、优化方向、前端待办）。
 
 ## 许可证
 

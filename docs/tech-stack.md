@@ -238,7 +238,7 @@ Synara 拆独立 server 后用 WebSocket 通信(为多客户端/多 provider)。
 
 ## 七.5、上下文用量统计(token / context-window)
 
-> 实现:[`docs/claude-context-usage-tracking.md`](claude-context-usage-tracking.md) §2-§5。
+> 实现见 [`apps/desktop/src/main/providers/claude-sdk/claudeTokenUsage.ts`](../apps/desktop/src/main/providers/claude-sdk/claudeTokenUsage.ts) 与同目录的 `SdkMessageAdapter.ts`。
 
 ### 数据流
 
