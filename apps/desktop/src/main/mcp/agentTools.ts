@@ -279,6 +279,15 @@ function truncateOutput(s: string, label: string): string {
   return `${s.slice(0, MAX_OUTPUT_CHARS)}\n…[${label} 超过 ${MAX_OUTPUT_CHARS} 字符,已截断]`;
 }
 
+/** 远程命令输出的截断:保留**头和尾**。编译/训练/安装的报错几乎都在最后,只留开头
+ *  会把真正的错误截掉。 */
+function truncateHeadTail(s: string, label: string): string {
+  if (s.length <= MAX_OUTPUT_CHARS) return s;
+  const head = Math.floor(MAX_OUTPUT_CHARS * 0.4);
+  const tail = MAX_OUTPUT_CHARS - head;
+  return `${s.slice(0, head)}\n…[${label} 共 ${s.length} 字符,中间 ${s.length - head - tail} 字符已省略]…\n${s.slice(-tail)}`;
+}
+
 function clipLine(line: string, max = MAX_LINE_CHARS): string {
   return line.length > max ? `${line.slice(0, max)}…(行超长已截断)` : line;
 }
@@ -397,6 +406,7 @@ const REMOTE_JOB_LOG_OUTPUT_SCHEMA: Record<string, z.ZodTypeAny> = {
   next_cursor: z.number().int().describe("下次读的字节位置；原样传回 cursor"),
   total_bytes: z.number().int().describe("日志文件当前总字节数"),
   more_output: z.boolean().describe("还有未读输出；true 时应立刻再读一次"),
+  job_finished: z.boolean().describe("任务已结束（完成/取消/进程不在）；与 more_output=false 同时出现时说明日志已读完，不必再读"),
   output: z.string().describe("本次新增的日志文本"),
 };
 
@@ -2123,11 +2133,13 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       name: "agent_ssh_connect",
       description:
         "建立一个可自动重连的 SSH 连接，并返回当前对话专属的 connection_id。" +
-        "网络断开后会指数退避自动恢复；密码/密钥只保存在本机进程内存，不写入 MCP 返回。",
+        "网络断开后会指数退避自动恢复（认证失败不会重试）；密码/密钥只保存在本机进程内存，不写入 MCP 返回。" +
+        "不传 password/private_key_path 时像系统 ssh 一样自动用本机 ssh-agent、~/.ssh/config 的 IdentityFile 和 ~/.ssh 默认私钥；" +
+        "host 也可以是 ~/.ssh/config 里的 Host 别名。",
       inputSchema: {
-        host: z.string().min(1).describe("SSH 主机/IP"),
-        port: z.number().int().min(1).max(65535).optional().describe("SSH 端口，默认 22"),
-        username: z.string().min(1).describe("SSH 用户名"),
+        host: z.string().min(1).describe("SSH 主机/IP，或本机 ~/.ssh/config 里的 Host 别名"),
+        port: z.number().int().min(1).max(65535).optional().describe("SSH 端口，默认取 ~/.ssh/config，否则 22"),
+        username: z.string().min(1).optional().describe("SSH 用户名；省略时取 ~/.ssh/config 里该主机的 User"),
         password: z.string().optional().describe("密码；优先推荐密钥。不会出现在工具返回里"),
         private_key_path: z.string().optional().describe("本机私钥绝对路径；提供后优先于 password"),
         passphrase: z.string().optional().describe("私钥口令（如果有）"),
@@ -2136,7 +2148,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         ready_timeout_ms: z.number().int().min(5000).max(60000).optional().describe("单次握手超时，默认 20000"),
       },
       handler: (args: {
-        host: string; port?: number; username: string; password?: string; private_key_path?: string;
+        host: string; port?: number; username?: string; password?: string; private_key_path?: string;
         passphrase?: string; keepalive_interval_ms?: number; keepalive_count_max?: number; ready_timeout_ms?: number;
       }, ctx) => attempt(async () => {
         const info = await remoteSsh.connect({
@@ -2182,7 +2194,8 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       name: "agent_ssh_exec",
       description:
         "通过稳定 SSH 连接执行一条短命令并返回 stdout/stderr/exit。" +
-        "只适合状态检查、nvidia-smi、mkdir 等短操作；训练/长任务必须用 agent_remote_job_start，避免 SSH 断开牵连任务。",
+        "只适合状态检查、nvidia-smi、mkdir 等短操作；训练/长任务必须用 agent_remote_job_start，避免 SSH 断开牵连任务。" +
+        "没有 stdin（读输入的命令会立刻读到 EOF）；超时会杀掉远端整个进程组。",
       inputSchema: {
         connection_id: z.string().min(1),
         command: z.string().min(1),
@@ -2197,15 +2210,17 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       handler: (args: { connection_id: string; command: string; timeout_ms?: number }, ctx) => attemptStructured(async () => {
         const r = await remoteSsh.exec(ctx.sessionId, args.connection_id, args.command, args.timeout_ms);
         const parts = [`exit: ${r.code ?? "null"}${r.signal ? ` signal=${r.signal}` : ""}`];
-        if (r.stdout.trim()) parts.push(`--- stdout ---\n${truncateOutput(r.stdout.trim(), "remote stdout")}`);
-        if (r.stderr.trim()) parts.push(`--- stderr ---\n${truncateOutput(r.stderr.trim(), "remote stderr")}`);
+        const stdout = truncateHeadTail(r.stdout.trim(), "remote stdout");
+        const stderr = truncateHeadTail(r.stderr.trim(), "remote stderr");
+        if (stdout) parts.push(`--- stdout ---\n${stdout}`);
+        if (stderr) parts.push(`--- stderr ---\n${stderr}`);
         return {
           text: parts.join("\n"),
           structured: {
             exit_code: r.code,
             signal: r.signal,
-            stdout: r.stdout,
-            stderr: r.stderr,
+            stdout,
+            stderr,
           },
         };
       }),
@@ -2261,7 +2276,8 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       description:
         "按字节 cursor 增量读取远程训练 stdout/stderr；日志保存在服务器文件里，SSH 重连后可从上次 next_cursor 接着读。" +
         "**默认会阻塞等到有新输出**（最长约 55 秒）——不要传 wait_ms=0 去做短轮询，" +
-        "那只会制造大量空往返；一次调用就是等下一批日志。返回里 more_output 为 true 时立刻再读一次。",
+        "那只会制造大量空往返；一次调用就是等下一批日志。返回里 more_output 为 true 时立刻再读一次；" +
+        "任务已结束时不会等待，job_finished=true 且 more_output=false 就表示日志已读完。",
       inputSchema: {
         connection_id: z.string().min(1),
         job_id: z.string().min(1).max(64),
@@ -2295,8 +2311,9 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
               `next_cursor: ${r.nextCursor}`,
               `total_bytes: ${r.totalBytes}`,
               `more_output: ${r.truncated}`,
+              `job_finished: ${r.jobFinished}`,
               "--- output ---",
-              r.text || "(暂无输出)",
+              r.text || (r.jobFinished ? "(任务已结束，没有更多输出)" : "(暂无输出)"),
             ].join("\n"),
             structured: {
               job_id: r.jobId,
@@ -2305,6 +2322,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
               next_cursor: r.nextCursor,
               total_bytes: r.totalBytes,
               more_output: r.truncated,
+              job_finished: r.jobFinished,
               output: r.text,
             },
           };

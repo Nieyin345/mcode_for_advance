@@ -6,12 +6,14 @@
  * kill a training run, and reconnecting can re-attach to status/log files.
  */
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
 // 具名导入 —— **必须**这样写。`import ssh2 from "ssh2"` + 解构 `const { Client } = ssh2`
 // 拿到的是**值**,而 `Client` 在这里也要当**类型**用(`client: Client | null`),那条路
 // 编译不过(`'Client' refers to a value, but is being used as a type`)。同仓库的
 // `relay/RelayManager.ts` 就是这么导的,照它。
-import { Client, type ClientChannel, type ConnectConfig } from "ssh2";
+import { Client, type AnyAuthMethod, type ClientChannel, type ConnectConfig } from "ssh2";
 
 const DEFAULT_KEEPALIVE_MS = 15_000;
 const DEFAULT_KEEPALIVE_COUNT = 4;
@@ -32,6 +34,12 @@ const MAX_EXEC_TIMEOUT_MS = MAX_SSH_EXEC_TIMEOUT_MS;
 export const DEFAULT_JOB_LOG_WAIT_MS = 55_000;
 export const MAX_JOB_LOG_WAIT_MS = 55_000;
 const JOB_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/** 包在每条 exec 前面、写到 stderr 的进程号标记 —— 超时后靠它去远端杀掉整个进程组。 */
+const EXEC_PID_MARK = "__MCODE_EXEC_PID=";
+/** Windows 自带 OpenSSH 的 ssh-agent 走这个命名管道(没有 SSH_AUTH_SOCK)。 */
+const WINDOWS_OPENSSH_AGENT_PIPE = "\\\\.\\pipe\\openssh-ssh-agent";
+/** 与系统 ssh 一样的默认私钥查找顺序(只取存在且没加口令的)。 */
+const DEFAULT_IDENTITY_FILES = ["id_ed25519", "id_ecdsa", "id_rsa"];
 
 export type RemoteConnectionState = "connecting" | "ready" | "reconnecting" | "error" | "closed";
 
@@ -39,7 +47,8 @@ export interface RemoteConnectInput {
   ownerSessionId: string;
   host: string;
   port?: number;
-  username: string;
+  /** 省略时取 ~/.ssh/config 里该主机的 User。 */
+  username?: string;
   password?: string;
   privateKeyPath?: string;
   passphrase?: string;
@@ -51,7 +60,10 @@ export interface RemoteConnectInput {
 interface RemoteEntry {
   id: string;
   ownerSessionId: string;
-  cfg: Required<Pick<RemoteConnectInput, "host" | "port" | "username">> & Omit<RemoteConnectInput, "ownerSessionId" | "host" | "port" | "username">;
+  cfg: Required<Pick<RemoteConnectInput, "host" | "port" | "username">> & Omit<RemoteConnectInput, "ownerSessionId" | "host" | "port" | "username"> & {
+    /** ~/.ssh/config 里该主机配置的 IdentityFile(自动认证时优先于默认私钥)。 */
+    configIdentityFiles?: string[];
+  };
   client: Client | null;
   state: RemoteConnectionState;
   intentionalClose: boolean;
@@ -103,6 +115,8 @@ export interface RemoteJobLogResult {
   nextCursor: number;
   totalBytes: number;
   truncated: boolean;
+  /** 任务已结束(有退出码 / 已取消 / runner 不在了)—— 读到末尾后就不用再等了。 */
+  jobFinished: boolean;
 }
 
 export function createAgentRemoteSshManager() {
@@ -127,7 +141,9 @@ export function createAgentRemoteSshManager() {
   });
 
   const scheduleReconnect = (entry: RemoteEntry): void => {
-    if (entry.intentionalClose || entry.reconnectTimer || entry.state === "ready") return;
+    // 认证失败这类不可重试的错误(state=error)绝不自动重连:重连只会一遍遍撞同一堵墙,
+    // 还把状态改回 reconnecting,模型看到的就是"一直在重连"而不是真正的原因。
+    if (entry.intentionalClose || entry.reconnectTimer || entry.state === "ready" || entry.state === "error") return;
     entry.reconnectAttempt += 1;
     const base = Math.min(MAX_RECONNECT_DELAY_MS, 1_000 * 2 ** Math.min(entry.reconnectAttempt - 1, 5));
     const jitter = Math.floor(base * (Math.random() * 0.3));
@@ -151,12 +167,17 @@ export function createAgentRemoteSshManager() {
       readyTimeout: entry.cfg.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
     };
     if (entry.cfg.privateKeyPath) {
-      cfg.privateKey = readFileSync(entry.cfg.privateKeyPath, "utf8");
+      cfg.privateKey = readFileSync(expandHome(entry.cfg.privateKeyPath), "utf8");
       if (entry.cfg.passphrase) cfg.passphrase = entry.cfg.passphrase;
     } else if (entry.cfg.password) {
       cfg.password = entry.cfg.password;
-    } else if (process.env.SSH_AUTH_SOCK) {
-      cfg.agent = process.env.SSH_AUTH_SOCK;
+      // 不少服务器只开 keyboard-interactive(PAM)不开 password —— 同一个密码答上。
+      cfg.tryKeyboard = true;
+    } else {
+      // 既没给密码也没给私钥:像系统 ssh 一样依次试 ssh-agent(Windows 是命名管道)、
+      // ~/.ssh/config 的 IdentityFile、默认私钥。原先只认 SSH_AUTH_SOCK,Windows 上
+      // 没有这个变量,于是"命令行 ssh 能连、这里认证失败"。
+      cfg.authHandler = autoAuthMethods(entry.cfg.username, entry.cfg.configIdentityFiles ?? []);
     }
     return cfg;
   };
@@ -183,7 +204,14 @@ export function createAgentRemoteSshManager() {
       entry.lastActivityAt = Date.now();
       settleOk();
     });
+    client.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
+      const password = entry.cfg.password ?? "";
+      finish(prompts.map(() => password));
+    });
     client.on("error", (err: Error & { level?: string }) => {
+      // ssh-agent 连不上(没开服务/管道不存在)时 ssh2 会发一个 level=agent 的 error,
+      // 然后**自己接着试下一种认证** —— 这不是连接失败,不能据此判错或重连。
+      if (err.level === "agent") return;
       entry.lastError = friendlySshError(err);
       if (!ready) settleErr(err);
       if (!entry.intentionalClose && isRetryableSshError(err)) {
@@ -203,8 +231,11 @@ export function createAgentRemoteSshManager() {
       entry.client = null;
       if (!settled) settleErr(new Error("SSH 连接在握手完成前关闭"));
       if (!entry.intentionalClose) {
-        if (entry.state !== "error") entry.state = "reconnecting";
-        scheduleReconnect(entry);
+        // 已判定为不可重试(认证失败等)就停在 error,不再排重连。
+        if (entry.state !== "error") {
+          entry.state = "reconnecting";
+          scheduleReconnect(entry);
+        }
       } else {
         entry.state = "closed";
       }
@@ -241,10 +272,24 @@ export function createAgentRemoteSshManager() {
     const timeout = Math.max(1_000, Math.min(timeoutMs, MAX_EXEC_TIMEOUT_MS));
     return new Promise<RemoteExecResult>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | null = null;
-      client.exec(command, (err: Error | undefined, stream: ClientChannel) => {
+      client.exec(wrapExecCommand(command), (err: Error | undefined, stream: ClientChannel) => {
         if (err) return reject(err);
+        // 不给 stdin:立刻发 EOF。否则 `read`、`cat`、要确认的安装命令会一直等输入,
+        // 直到超时。
+        try { stream.end(); } catch { /* best effort */ }
         let stdout = "";
         let stderr = "";
+        let remotePid: number | null = null;
+        let pidParsed = false;
+        /** 剥掉 stderr 开头的进程号标记(只出现一次,在最前面)。 */
+        const takePid = (): void => {
+          if (pidParsed) return;
+          const parsed = splitExecPid(stderr);
+          if (!parsed) return;
+          pidParsed = true;
+          remotePid = parsed.pid;
+          stderr = parsed.rest;
+        };
         let code: number | null = null;
         let signal: string | null = null;
         let done = false;
@@ -256,25 +301,39 @@ export function createAgentRemoteSshManager() {
           fn();
         };
         timer = setTimeout(() => {
+          takePid();
+          // 只关通道,远端进程**不会**死(sshd 不给非 pty 会话发信号)—— 超时的
+          // `sleep 1000`、卡住的训练脚本会一直留在服务器上。按进程号把整个进程组杀掉。
+          if (remotePid !== null) killRemoteProcessGroup(client, remotePid);
           try { stream.close(); } catch { /* best effort */ }
-          finish(() => reject(new Error(`远程命令超过 ${timeout}ms；长任务请用 agent_remote_job_start`)));
+          const partial = tailText(stdout.trim() || stderr.trim(), 2_000);
+          finish(() => reject(new Error(
+            `远程命令超过 ${timeout}ms，已终止${remotePid !== null ? "远端进程" : ""}；长任务请用 agent_remote_job_start` +
+            (partial ? `\n--- 超时前的输出(末尾) ---\n${partial}` : ""),
+          )));
         }, timeout);
         stream.on("data", (d: Buffer) => { stdout += d.toString("utf8"); });
-        stream.stderr.on("data", (d: Buffer) => { stderr += d.toString("utf8"); });
+        stream.stderr.on("data", (d: Buffer) => { stderr += d.toString("utf8"); takePid(); });
         stream.on("exit", (c: number | null, s: string | null) => { code = c; signal = s; });
         stream.on("error", (e: Error) => finish(() => reject(e)));
-        stream.on("close", () => finish(() => resolve({ stdout, stderr, code, signal })));
+        stream.on("close", () => finish(() => { takePid(); resolve({ stdout, stderr, code, signal }); }));
       });
     });
   };
 
   const connect = async (input: RemoteConnectInput): Promise<RemoteConnectionInfo> => {
-    const port = input.port ?? 22;
+    // 和系统 ssh 一样认 ~/.ssh/config:Host 别名 → HostName / User / Port / IdentityFile。
+    // 显式参数优先;config 读不到就当没有。
+    const sshCfg = readUserSshConfig(input.host);
+    const host = sshCfg.hostName || input.host;
+    const port = input.port ?? sshCfg.port ?? 22;
+    const username = input.username?.trim() || sshCfg.user;
+    if (!username) throw new Error("缺少 SSH 用户名：参数没给 username，~/.ssh/config 里也没有这个主机的 User");
     for (const existing of entries.values()) {
       if (
         existing.ownerSessionId === input.ownerSessionId && !existing.intentionalClose &&
         existing.state !== "error" && existing.state !== "closed" &&
-        existing.cfg.host === input.host && existing.cfg.port === port && existing.cfg.username === input.username
+        existing.cfg.host === host && existing.cfg.port === port && existing.cfg.username === username
       ) {
         try { await ensureConnected(existing); } catch { /* background reconnect owns recovery */ }
         return infoOf(existing);
@@ -283,7 +342,7 @@ export function createAgentRemoteSshManager() {
     const entry: RemoteEntry = {
       id: `ssh_${randomBytes(8).toString("hex")}`,
       ownerSessionId: input.ownerSessionId,
-      cfg: { ...input, host: input.host, port, username: input.username },
+      cfg: { ...input, host, port, username, configIdentityFiles: sshCfg.identityFiles },
       client: null,
       state: "connecting",
       intentionalClose: false,
@@ -363,19 +422,8 @@ export function createAgentRemoteSshManager() {
     // 等待刚结束就可能被判定超时。留 5 秒余量(还要算 base64 编码 + 网络往返)。
     const execTimeoutMs = Math.max(20_000, waitMs + 5_000);
     const r = await execEntry(entry, buildJobLogCommand(args.jobId, args.stream, cursor, maxBytes, waitMs), execTimeoutMs);
-    const lines = r.stdout.split(/\r?\n/);
-    const size = Number((lines.shift() ?? "SIZE=0").replace(/^SIZE=/, "")) || 0;
-    const encoded = (lines.join("").match(/DATA=([A-Za-z0-9+/=]*)/)?.[1]) ?? "";
-    const buf = encoded ? Buffer.from(encoded, "base64") : Buffer.alloc(0);
-    return {
-      jobId: args.jobId,
-      stream: args.stream,
-      text: buf.toString("utf8"),
-      cursor,
-      nextCursor: cursor + buf.length,
-      totalBytes: size,
-      truncated: cursor + buf.length < size,
-    };
+    const parsed = parseJobLogOutput(r.stdout, cursor, maxBytes);
+    return { jobId: args.jobId, stream: args.stream, cursor, ...parsed };
   };
 
   const cancelJob = async (ownerSessionId: string, connectionId: string, jobId: string): Promise<RemoteJobStatus> => {
@@ -446,8 +494,12 @@ function buildJobLogCommand(
   waitMs = 0,
 ): string {
   const parts = [
-    `file="$HOME/.mcode/jobs/${jobId}/${stream}.log"`,
-    `if [ ! -f "$file" ]; then echo 'SIZE=0'; echo 'DATA='; exit 0; fi`,
+    `job="$HOME/.mcode/jobs/${jobId}"`,
+    `file="$job/${stream}.log"`,
+    `if [ ! -f "$file" ]; then echo 'SIZE=0'; echo 'DONE=1'; echo 'DATA='; exit 0; fi`,
+    // 任务是否已结束:有退出码 / 被取消 / runner 进程已不在(lost)。结束了就不会再有新
+    // 日志,等待必须立刻停 —— 否则读到末尾的每一次调用都要白白挂满 55 秒。
+    `job_done() { [ -f "$job/exit_code" ] || [ -f "$job/cancelled" ] && return 0; p="$(cat "$job/pid" 2>/dev/null || true)"; [ -n "$p" ] && ! kill -0 "$p" 2>/dev/null; }`,
     // 等:轮询文件大小,直到超过 cursor(有新字节)或超时。
     // 0.25 秒一格 —— 够细(用户几乎看不出延迟)又不至于把远端 CPU 吃住。
     // `waitMs<=0` 时整段跳过(保持"立刻返回"的老行为,给不做等待的调用方)。
@@ -456,12 +508,16 @@ function buildJobLogCommand(
           `waited=0`,
           // 用壁钟算而不是累加 sleep 的实际耗时 —— sleep 可能被信号打断/超时偏长。
           `deadline=$(($(date +%s) + ${Math.ceil(waitMs / 1000)}))`,
-          `while [ "$(wc -c < "$file" 2>/dev/null || echo 0)" -le ${cursor} ] && [ "$(date +%s)" -lt "$deadline" ]; do sleep 0.25; done`,
+          // 只在"恰好读到末尾"(size == cursor)时等:cursor 超过文件大小(传错/文件被截断)
+          // 不等,立刻把真实大小报回去。
+          `while [ "$(wc -c < "$file" 2>/dev/null || echo 0)" -eq ${cursor} ] && ! job_done && [ "$(date +%s)" -lt "$deadline" ]; do sleep 0.25; done`,
           `: "$waited"`,
         ]
       : []),
+    `if job_done; then done_flag=1; else done_flag=0; fi`,
     `size="$(wc -c < "$file" 2>/dev/null || echo 0)"`,
     `echo "SIZE=$size"`,
+    `echo "DONE=$done_flag"`,
     `printf 'DATA='`,
     `dd if="$file" bs=1 skip=${cursor} count=${maxBytes} 2>/dev/null | base64 | tr -d '\\n'`,
     `echo`,
@@ -502,16 +558,175 @@ function parseJobStatus(jobId: string, stdout: string): RemoteJobStatus {
   };
 }
 
+/** 解析 {@link buildJobLogCommand} 的输出。cursor 超过文件大小时把 nextCursor 拉回
+ *  文件大小;读满 maxBytes 时不把被截断的半个 UTF-8 字符算进来(下次从它开头读)。 */
+function parseJobLogOutput(stdout: string, cursor: number, maxBytes: number): Omit<RemoteJobLogResult, "jobId" | "stream" | "cursor"> {
+  const size = Number(stdout.match(/^SIZE=(\d+)/m)?.[1] ?? 0) || 0;
+  const jobFinished = /^DONE=1/m.test(stdout);
+  const encoded = stdout.match(/^DATA=([A-Za-z0-9+/=]*)/m)?.[1] ?? "";
+  let buf = encoded ? Buffer.from(encoded, "base64") : Buffer.alloc(0);
+  if (buf.length >= maxBytes) buf = buf.subarray(0, utf8SafeLength(buf));
+  const nextCursor = cursor > size ? size : cursor + buf.length;
+  return {
+    text: buf.toString("utf8"),
+    nextCursor,
+    totalBytes: size,
+    truncated: nextCursor < size,
+    jobFinished,
+  };
+}
+
+/** buf 末尾若是不完整的 UTF-8 多字节序列,返回去掉它之后的长度。 */
+function utf8SafeLength(buf: Buffer): number {
+  const len = buf.length;
+  for (let back = 1; back <= Math.min(4, len); back++) {
+    const b = buf[len - back];
+    if ((b & 0xc0) === 0x80) continue; // 续字节,继续往前找首字节
+    const need = b >= 0xf0 ? 4 : b >= 0xe0 ? 3 : b >= 0xc0 ? 2 : 1;
+    return need > back ? len - back : len;
+  }
+  return len;
+}
+
+function wrapExecCommand(command: string): string {
+  // 非 pty 的 sshd 会话里,登录 shell 是会话首进程,它的 pid 就是进程组号。用子 sh 的
+  // $PPID 取它,而不是 $$ —— 这样登录 shell 是 fish 之类不认 $$ 的也不会语法错误。
+  return `sh -c 'printf "${EXEC_PID_MARK}%s\\n" "$PPID" >&2'\n${command}`;
+}
+
+function splitExecPid(stderr: string): { pid: number | null; rest: string } | null {
+  if (!stderr.startsWith(EXEC_PID_MARK)) {
+    // 还没收全标记(分包)就先等;确定不是标记开头就放弃解析。
+    return EXEC_PID_MARK.startsWith(stderr) ? null : { pid: null, rest: stderr };
+  }
+  const nl = stderr.indexOf("\n");
+  if (nl < 0) return null;
+  const raw = stderr.slice(EXEC_PID_MARK.length, nl).trim();
+  return { pid: /^\d+$/.test(raw) && Number(raw) > 1 ? Number(raw) : null, rest: stderr.slice(nl + 1) };
+}
+
+function killRemoteProcessGroup(client: Client, pid: number): void {
+  const cmd = `kill -TERM -- -${pid} 2>/dev/null; pkill -TERM -P ${pid} 2>/dev/null; kill -TERM ${pid} 2>/dev/null; sleep 2; kill -KILL -- -${pid} 2>/dev/null; true`;
+  try {
+    client.exec(cmd, (err: Error | undefined, stream: ClientChannel) => {
+      if (err) return;
+      stream.on("data", () => undefined);
+      stream.stderr.on("data", () => undefined);
+      try { stream.end(); } catch { /* best effort */ }
+    });
+  } catch { /* 连接已断:远端进程无从清理,best effort */ }
+}
+
+function tailText(text: string, max: number): string {
+  return text.length > max ? `…${text.slice(-max)}` : text;
+}
+
+function expandHome(p: string, home = homedir()): string {
+  if (p === "~") return home;
+  if (p.startsWith("~/") || p.startsWith("~\\")) return path.join(home, p.slice(2));
+  return p;
+}
+
+interface SshConfigHit {
+  hostName?: string;
+  user?: string;
+  port?: number;
+  identityFiles: string[];
+}
+
+function sshHostPatternMatches(patterns: string, alias: string): boolean {
+  let matched = false;
+  for (const raw of patterns.split(/\s+/).filter(Boolean)) {
+    const negated = raw.startsWith("!");
+    const pat = negated ? raw.slice(1) : raw;
+    const body = pat.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+    const re = new RegExp(`^${body}$`, "i");
+    if (re.test(alias)) {
+      if (negated) return false;
+      matched = true;
+    }
+  }
+  return matched;
+}
+
+/** 极简的 ssh_config 解析:只取 HostName / User / Port / IdentityFile,首个匹配值生效
+ *  (与 OpenSSH 一致),`Match` 块整体跳过。 */
+function resolveSshConfig(text: string, alias: string, home = homedir()): SshConfigHit {
+  const hit: SshConfigHit = { identityFiles: [] };
+  let active = true; // 第一个 Host 之前的全局段对所有主机生效
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const m = line.match(/^(\S+?)(?:\s*=\s*|\s+)(.+)$/);
+    if (!m) continue;
+    const key = m[1].toLowerCase();
+    const value = m[2].trim().replace(/^"(.*)"$/, "$1");
+    if (key === "host") { active = sshHostPatternMatches(value, alias); continue; }
+    if (key === "match") { active = false; continue; }
+    if (!active) continue;
+    if (key === "hostname" && hit.hostName === undefined) hit.hostName = value.replace(/%h/g, alias);
+    else if (key === "user" && hit.user === undefined) hit.user = value;
+    else if (key === "port" && hit.port === undefined) {
+      const n = Number(value);
+      if (Number.isInteger(n) && n > 0 && n < 65536) hit.port = n;
+    } else if (key === "identityfile" && value.toLowerCase() !== "none") {
+      hit.identityFiles.push(expandHome(value.replace(/%d/g, home).replace(/%h/g, alias), home));
+    }
+  }
+  return hit;
+}
+
+function readUserSshConfig(alias: string): SshConfigHit {
+  try {
+    return resolveSshConfig(readFileSync(path.join(homedir(), ".ssh", "config"), "utf8"), alias);
+  } catch {
+    return { identityFiles: [] };
+  }
+}
+
+function defaultAgentPath(): string | undefined {
+  if (process.env.SSH_AUTH_SOCK) return process.env.SSH_AUTH_SOCK;
+  if (process.platform === "win32") {
+    try { if (existsSync(WINDOWS_OPENSSH_AGENT_PIPE)) return WINDOWS_OPENSSH_AGENT_PIPE; } catch { /* 当作没有 */ }
+  }
+  return undefined;
+}
+
+function autoAuthMethods(username: string, configIdentityFiles: string[]): AnyAuthMethod[] {
+  const methods: AnyAuthMethod[] = [];
+  const agent = defaultAgentPath();
+  if (agent) methods.push({ type: "agent", username, agent });
+  const sshDir = path.join(homedir(), ".ssh");
+  const files = [...configIdentityFiles, ...DEFAULT_IDENTITY_FILES.map((f) => path.join(sshDir, f))];
+  for (const file of [...new Set(files)]) {
+    let key: Buffer;
+    try { key = readFileSync(file); } catch { continue; }
+    // 加了口令又没给 passphrase 的私钥,ssh2 会自己跳过(Skipping invalid key)。
+    methods.push({ type: "publickey", username, key });
+  }
+  if (methods.length === 0) {
+    throw new Error(
+      "没有可用的 SSH 认证方式：没给 password / private_key_path，本机 ssh-agent 没开，~/.ssh 下也没有默认私钥。" +
+      "请传 private_key_path（本机私钥绝对路径）或 password",
+    );
+  }
+  return methods;
+}
+
 function isRetryableSshError(err: Error & { level?: string }): boolean {
   const msg = err.message.toLowerCase();
   if (err.level === "client-authentication") return false;
-  if (/authentication|private key|passphrase|host key|no supported authentication/i.test(msg)) return false;
+  if (/authentication|private key|passphrase|host key|no supported authentication|没有可用的 ssh 认证方式|enoent|eacces|eperm/i.test(msg)) return false;
   return true;
 }
 
 function friendlySshError(err: Error): string {
   const msg = err.message;
-  if (/authentication|all configured authentication/i.test(msg)) return "SSH 认证失败，请检查用户名、密码或密钥";
+  if (/authentication|all configured authentication/i.test(msg)) {
+    return "SSH 认证失败：服务器没接受所给的凭据。请检查用户名；没传 password/private_key_path 时会自动试本机 ssh-agent 和 ~/.ssh 默认私钥，" +
+      "若服务器要的是别的私钥，请传 private_key_path（本机私钥绝对路径）";
+  }
+  if (/ENOENT/i.test(msg)) return `找不到文件：${msg.replace(/^.*ENOENT[^']*'?/, "").replace(/'$/, "") || msg}`;
   if (/ENOTFOUND|getaddrinfo/i.test(msg)) return "SSH 地址无法解析";
   if (/ECONNREFUSED|connection refused/i.test(msg)) return "SSH 端口拒绝连接";
   if (/ETIMEDOUT|timeout|timed out/i.test(msg)) return "SSH 连接超时";
@@ -519,6 +734,10 @@ function friendlySshError(err: Error): string {
 }
 
 export const __remoteSshTest = {
+  resolveSshConfig,
+  parseJobLogOutput,
+  splitExecPid,
+  wrapExecCommand,
   buildJobStartCommand,
   buildJobStatusCommand,
   buildJobLogCommand,
