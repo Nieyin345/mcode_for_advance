@@ -39,6 +39,7 @@ import {
   type CustomUiItem,
   type CustomUiSlot,
 } from "@contracts/customUi";
+import { PANEL_HTML_MAX, panelExampleHtml } from "@contracts/customUiPanel";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { translate, useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
@@ -58,6 +59,8 @@ import {
   IconTrash,
 } from "@renderer/lib/icons.js";
 import { BUILTINS, CUSTOM_ICONS, DEFAULT_ACTION_ICON, type IconComponent } from "../customUi/registry.js";
+import { PanelFrame } from "../customUi/PanelFrame.js";
+import { useWorkspaceTarget } from "../customUi/useWorkspaceTarget.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
 
@@ -113,6 +116,11 @@ interface Draft {
   /** R39:「运行终端命令」的模板 + 运行前是否确认(默认确认)。 */
   shellCommand: string;
   shellConfirm: boolean;
+  /** R41:自定义面板 —— 标题(浮窗用)、HTML、允许联网、有副作用的调用前确认(默认确认)。 */
+  panelTitle: string;
+  panelHtml: string;
+  panelNetwork: boolean;
+  panelConfirm: boolean;
 }
 
 /** 资料库那几种挂载位(有分组 / 「附上文献」这些只对它们有意义)。 */
@@ -155,6 +163,10 @@ function blankDraft(slot: CustomUiSlot, items: readonly CustomUiItem[]): Draft {
     url: "",
     shellCommand: "",
     shellConfirm: true,
+    panelTitle: "",
+    panelHtml: "",
+    panelNetwork: false,
+    panelConfirm: true,
   };
 }
 
@@ -195,6 +207,10 @@ function draftOf(item: CustomUiItem): Draft {
     url: a.type === "url" ? a.url : "",
     shellCommand: a.type === "shell" ? a.command : "",
     shellConfirm: a.type === "shell" ? a.confirm !== false : true,
+    panelTitle: a.type === "panel" ? (a.title ?? "") : "",
+    panelHtml: a.type === "panel" ? a.html : "",
+    panelNetwork: a.type === "panel" && a.network === true,
+    panelConfirm: a.type === "panel" ? a.confirm !== false : true,
   };
 }
 
@@ -216,7 +232,15 @@ function itemOf(d: Draft): { ok: true; item: CustomUiItem } | { ok: false; error
                 ? { type: "url", url: d.url.trim() }
                 : d.actionType === "shell"
                   ? { type: "shell", command: d.shellCommand.trim(), ...(d.shellConfirm ? {} : { confirm: false }) }
-                  : {
+                  : d.actionType === "panel"
+                    ? {
+                        type: "panel",
+                        ...(d.panelTitle.trim() && d.slot !== "rightPanel.tab" ? { title: d.panelTitle.trim() } : {}),
+                        html: d.panelHtml,
+                        ...(d.panelNetwork ? { network: true } : {}),
+                        ...(d.panelConfirm ? {} : { confirm: false }),
+                      }
+                    : {
                   type: "automation",
                   workflowId: d.workflowId,
                   triggerNodeId: d.triggerNodeId,
@@ -247,6 +271,8 @@ function itemOf(d: Draft): { ok: true; item: CustomUiItem } | { ok: false; error
   if (action.type === "openTab" && !action.tab) return { ok: false, error: "customUi.editor.errorOpenTab" };
   if (action.type === "url" && !action.url) return { ok: false, error: "customUi.editor.errorUrl" };
   if (action.type === "shell" && !action.command) return { ok: false, error: "customUi.editor.errorShell" };
+  if (action.type === "panel" && !action.html.trim()) return { ok: false, error: "customUi.editor.errorPanel" };
+  if (action.type === "panel" && action.html.length > PANEL_HTML_MAX) return { ok: false, error: "customUi.editor.errorPanelTooLong" };
   const extensions = d.extensions
     .split(/[,，\s]+/)
     .map((e) => e.trim())
@@ -348,6 +374,14 @@ function templateDraft(
           { key: "doi", kind: "text", labelZh: translate("zh", "customUi.template.literatureImport.doi"), required: false },
         ],
       };
+    case "panelDemo":
+      return {
+        ...d,
+        ...both("customUi.template.panelDemo.label"),
+        icon: "code",
+        actionType: "panel",
+        panelHtml: panelExampleHtml(locale),
+      };
     case "readme":
       return { ...d, ...both("customUi.template.readme.label"), icon: "notebook", actionType: "file", filePath: "README.md" };
     case "dailyNote":
@@ -447,10 +481,12 @@ const TEMPLATES_BY_SLOT: Record<CustomUiSlot, readonly { id: string; labelKey: M
     { id: "readme", labelKey: "customUi.template.readme.label" },
     { id: "dailyNote", labelKey: "customUi.template.dailyNote.label" },
     { id: "projectInfo", labelKey: "customUi.template.projectInfo.label" },
+    { id: "panelDemo", labelKey: "customUi.template.panelDemo.label" },
   ],
   toolbar: [
     { id: "projectSummary", labelKey: "customUi.template.projectSummary.label" },
     { id: "runAutomation", labelKey: "customUi.template.runAutomation.label" },
+    { id: "panelDemo", labelKey: "customUi.template.panelDemo.label" },
   ],
   "chat.message": [
     { id: "translateMessage", labelKey: "customUi.template.translate.label" },
@@ -791,7 +827,9 @@ function ItemEditor({
                 ? [draft.url]
                 : draft.actionType === "shell"
                   ? [draft.shellCommand]
-                  : [];
+                  : draft.actionType === "panel"
+                    ? [draft.panelTitle]
+                    : [];
     const out: string[] = [];
     for (const p of parts) {
       for (const v of unknownTemplateVars(p, draft.slot)) if (!out.includes(v)) out.push(v);
@@ -808,16 +846,39 @@ function ItemEditor({
     onSave(r.item);
   };
 
+  // 面板「预览」:草稿的一份快照,**就地**显示在编辑框下面(不另开浮窗 —— 两个模态框
+  // 叠着,点到上面那个会被下面那个当成「点了外面」而关掉,草稿就没了)。再点一次 = 用
+  // 最新的草稿重新加载。目标 = 当前工作区。
+  const workspaceTarget = useWorkspaceTarget();
+  const [preview, setPreview] = useState<{ item: CustomUiItem; n: number } | null>(null);
+  const previewPanel = () => {
+    const r = itemOf(draft);
+    if (!r.ok) {
+      setError(r.error);
+      return;
+    }
+    setError(null);
+    setPreview((prev) => ({ item: r.item, n: (prev?.n ?? 0) + 1 }));
+  };
+  const isPanel = draft.actionType === "panel";
+
   return (
     <Dialog.Root
       open
+      // 写面板代码时点到框外不关(一大段 HTML 说没就没);面板弹的确认框也在框外。
+      disablePointerDismissal={isPanel}
       onOpenChange={(open) => {
         if (!open) onCancel();
       }}
     >
       <Dialog.Portal>
         <Dialog.Backdrop />
-        <Dialog.Popup className="bottom-0 left-0 right-0 top-0 m-auto h-fit max-h-[88vh] w-[600px] max-w-[94vw] transform-none space-y-3 overflow-y-auto p-5">
+        <Dialog.Popup
+          className={cn(
+            "bottom-0 left-0 right-0 top-0 m-auto h-fit max-h-[88vh] max-w-[94vw] transform-none space-y-3 overflow-y-auto p-5",
+            isPanel ? "w-[860px]" : "w-[600px]",
+          )}
+        >
           <Dialog.Title>{draft.isNew ? t("customUi.editor.newTitle") : t("customUi.editor.editTitle")}</Dialog.Title>
           <Dialog.Description>{t(`customUi.slot.${draft.slot}` as MessageId)}</Dialog.Description>
           {error && <ErrorNote>{t(error)}</ErrorNote>}
@@ -1175,6 +1236,85 @@ function ItemEditor({
                   {t("customUi.editor.shellConfirm")}
                 </label>
                 {varsHint}
+              </>
+            )}
+            {draft.actionType === "panel" && (
+              <>
+                {draft.slot !== "rightPanel.tab" && (
+                  <label className={LABEL}>
+                    <span>{t("customUi.editor.panelTitle")}</span>
+                    <input
+                      className={FIELD}
+                      value={draft.panelTitle}
+                      onChange={(e) => set("panelTitle", e.target.value)}
+                      placeholder={t("customUi.editor.panelTitlePlaceholder")}
+                    />
+                  </label>
+                )}
+                <div className={LABEL}>
+                  <div className="flex items-center gap-2">
+                    <HintLabel hint={t("customUi.editor.panelSdkHint")}>{t("customUi.editor.panelHtml")}</HintLabel>
+                    <span className="ml-auto text-[0.8571em] tabular-nums text-content-subtle">
+                      {draft.panelHtml.length.toLocaleString()} / {PANEL_HTML_MAX.toLocaleString()}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => set("panelHtml", panelExampleHtml(locale))}
+                      data-testid="custom-ui-panel-example"
+                    >
+                      {t("customUi.editor.panelInsertExample")}
+                    </Button>
+                    <Button size="sm" variant="secondary" onClick={previewPanel} data-testid="custom-ui-panel-preview">
+                      {t("customUi.editor.panelPreview")}
+                    </Button>
+                  </div>
+                  <textarea
+                    className={cn(FIELD, "h-[340px] resize-y whitespace-pre font-mono text-xs leading-relaxed")}
+                    value={draft.panelHtml}
+                    onChange={(e) => set("panelHtml", e.target.value)}
+                    onKeyDown={(e) => {
+                      // Tab 键插两个空格,而不是跳到下一个输入框(写代码的地方)。
+                      if (e.key !== "Tab" || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+                      e.preventDefault();
+                      const el = e.currentTarget;
+                      const { selectionStart: s, selectionEnd: en } = el;
+                      const next = `${draft.panelHtml.slice(0, s)}  ${draft.panelHtml.slice(en)}`;
+                      set("panelHtml", next);
+                      requestAnimationFrame(() => el.setSelectionRange(s + 2, s + 2));
+                    }}
+                    placeholder={t("customUi.editor.panelHtmlPlaceholder")}
+                    spellCheck={false}
+                    maxLength={PANEL_HTML_MAX}
+                    data-testid="custom-ui-panel-html"
+                  />
+                </div>
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+                  <label className="flex items-center gap-2 text-xs text-content">
+                    <input type="checkbox" checked={draft.panelConfirm} onChange={(e) => set("panelConfirm", e.target.checked)} />
+                    {t("customUi.editor.panelConfirm")}
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-content">
+                    <input type="checkbox" checked={draft.panelNetwork} onChange={(e) => set("panelNetwork", e.target.checked)} />
+                    {t("customUi.editor.panelNetwork")}
+                  </label>
+                </div>
+                {draft.panelNetwork && (
+                  <p className="text-[0.7857em] leading-relaxed text-warning">{t("customUi.editor.panelNetworkWarn")}</p>
+                )}
+                {preview !== null && (
+                  <div className="overflow-hidden rounded-md border border-edge" data-testid="custom-ui-panel-preview-box">
+                    <div className="flex h-7 items-center border-b border-edge bg-surface-muted px-2 text-[0.7857em] text-content-subtle">
+                      <span className="flex-1">{t("customUi.editor.panelPreviewing")}</span>
+                      <button type="button" className="hover:text-content" onClick={() => setPreview(null)}>
+                        {t("customUi.editor.panelPreviewClose")}
+                      </button>
+                    </div>
+                    <div className="h-[360px]">
+                      <PanelFrame item={preview.item} target={workspaceTarget} reloadKey={preview.n} />
+                    </div>
+                  </div>
+                )}
               </>
             )}
           </fieldset>

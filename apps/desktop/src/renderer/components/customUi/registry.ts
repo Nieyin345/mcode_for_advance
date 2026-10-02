@@ -145,4 +145,5 @@ export const DEFAULT_ACTION_ICON: Record<CustomUiActionType, IconComponent> = {
   openTab: IconLayoutSidebarRightExpand,
   url: IconExternalLink,
   shell: IconTerminal2,
+  panel: IconCode,
 };

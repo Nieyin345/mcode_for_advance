@@ -889,6 +889,12 @@ const api = {
   customUi: {
     runAutomation: ((input) =>
       ipcRenderer.invoke(IPC.CUSTOM_UI_RUN_AUTOMATION, input)) as RpcMap["customUi.runAutomation"],
+    /** 自定义面板:换一个 `mcode-panel://` 地址(R41)。 */
+    stagePanel: ((input) =>
+      ipcRenderer.invoke(IPC.CUSTOM_UI_STAGE_PANEL, input)) as RpcMap["customUi.stagePanel"],
+    /** 自定义面板的 `mcode.ask()`:一次性问模型,不带工具(R41)。 */
+    panelAsk: ((input) =>
+      ipcRenderer.invoke(IPC.CUSTOM_UI_PANEL_ASK, input)) as RpcMap["customUi.panelAsk"],
   },
 
   /** 运行史(某个对话的全部图运行,新的在前):从存档折出来的轻量摘要,

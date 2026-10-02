@@ -7,6 +7,9 @@
  *     文件会被别处改(代理写、自动化写、用户在编辑器里写),所以这里**隔几秒读一次**、
  *     窗口回到前台时也读一次 —— 不去接文件监听,读一个文件很便宜。
  *
+ *   - `panel`(R41):用户写的 HTML/JS 面板,沙箱 iframe 里常驻(见 `PanelFrame`);
+ *     切项目 / 换天时面板收到 `context` 事件。
+ *
  * 页签是常驻显示区:这里不跑动作。点页签只是显示,改显示什么去设置页。
  */
 import { useCallback, useEffect, useState } from "react";
@@ -24,6 +27,7 @@ import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { IconAdjustmentsHorizontal, IconExternalLink, IconRefresh } from "@renderer/lib/icons.js";
 import { openCustomUiSettings } from "@renderer/stores/customUiStore.js";
+import { PanelFrame } from "./PanelFrame.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 
 /** 读进来的文本超过这么长就截断 —— 右栏不是看大文件的地方,整本书塞进 Markdown 会卡。 */
@@ -40,6 +44,10 @@ export function CustomTabView({ item, target }: { item: CustomUiItem; target: Wo
   const today = useRollingDate(target.today);
   const vars = templateVarsOf(today === target.today ? target : { ...target, today });
   const title = customUiLabel(item.label, locale);
+
+  if (item.action.type === "panel") {
+    return <PanelTab item={item} title={title} target={today === target.today ? target : { ...target, today }} />;
+  }
 
   if (item.action.type === "file") {
     const abs = resolveWorkspacePath(renderTemplate(item.action.path, vars), target.project?.path);
@@ -139,6 +147,26 @@ function FileTab({ title, abs, projectPath }: { title: string; abs: string | nul
           <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-content">{text}</pre>
         )}
         {truncated && <Hint text={t("customUi.tab.truncated")} />}
+      </div>
+    </div>
+  );
+}
+
+function PanelTab({ item, title, target }: { item: CustomUiItem; title: string; target: WorkspaceTarget }) {
+  const { t } = useI18n();
+  const [reloadKey, setReloadKey] = useState(0);
+  return (
+    <div className="flex h-full flex-col" data-testid="custom-tab-view">
+      <TabHeader
+        title={title}
+        actions={
+          <HeaderButton title={t("customUi.panel.reload")} onClick={() => setReloadKey((k) => k + 1)}>
+            <IconRefresh size={13} />
+          </HeaderButton>
+        }
+      />
+      <div className="min-h-0 flex-1">
+        <PanelFrame item={item} target={target} reloadKey={reloadKey} />
       </div>
     </div>
   );

@@ -65,6 +65,7 @@ import type { OnlyOfficeOpenInput, OnlyOfficeOpenResult, OnlyOfficeSessionInput,
 import type { SubagentDefinition } from "../claudeSubagent.js";
 import type { ClaudeSubagentsSaveInput } from "../claudeSubagent.js";
 import type { CustomUiRunAutomationInput, CustomUiRunAutomationResult } from "../customUi.js";
+import type { CustomUiPanelAskInput, CustomUiPanelAskResult, CustomUiStagePanelInput, CustomUiStagePanelResult } from "../customUiPanel.js";
 
 /* ──────────────────────────  RPC method map  ───────────────────────────────── */
 
@@ -798,6 +799,10 @@ export interface RpcMap {
    *  (条目 / 分类 / 大类 → 条目清单,文件 → 文件列表)。`dryRun` 只数条数不真跑。
    *  桌面专属(手机白名单不列即不暴露)。 */
   "customUi.runAutomation": (input: CustomUiRunAutomationInput) => Promise<CustomUiRunAutomationResult>;
+  /** 自定义面板(R41):把包好的面板文档交给主进程,换一个 `mcode-panel://` 地址给 iframe 用。 */
+  "customUi.stagePanel": (input: CustomUiStagePanelInput) => Promise<CustomUiStagePanelResult>;
+  /** 自定义面板的 `mcode.ask()`:一次性问模型(不带工具),返回纯文本。 */
+  "customUi.panelAsk": (input: CustomUiPanelAskInput) => Promise<CustomUiPanelAskResult>;
   // ── 运行史(某个对话的全部图运行)──
   /** 某个对话的图运行历史(新的在前)。**从存档折出来**,只给轻量摘要 ——
    *  见 `PersistedWorkflowRunLite`(整份快照不为一行列表过 IPC)。 */
@@ -1643,6 +1648,8 @@ export const IPC = {
   AUTOMATION_STATUS_ALL: "automation:statusAll",
   /** 自定义 UI:带着右键目标运行一条自动化。 */
   CUSTOM_UI_RUN_AUTOMATION: "customUi:runAutomation",
+  CUSTOM_UI_STAGE_PANEL: "customUi:stagePanel",
+  CUSTOM_UI_PANEL_ASK: "customUi:panelAsk",
   /** 某个对话的图运行历史(从存档折出来的轻量摘要)。 */
   RUNS_HISTORY: "runs:history",
   // 记忆(main/memory/):渠道字符串本体钉在 `../memory.ts` 的那几个

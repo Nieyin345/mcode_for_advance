@@ -409,11 +409,25 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "TestCustomModelResult"
  },
  {
+  "method": "customUi.panelAsk",
+  "channel": "customUi:panelAsk",
+  "doc": "自定义面板的 `mcode.ask()`:一次性问模型(不带工具),返回纯文本。",
+  "input": "{ prompt: string; model?: string | undefined; system?: string | undefined }",
+  "output": "CustomUiPanelAskResult"
+ },
+ {
   "method": "customUi.runAutomation",
   "channel": "customUi:runAutomation",
   "doc": "自定义项的「运行自动化」动作:用指定触发器**手动**起一次,右键的目标当载荷带进去 (条目 / 分类 / 大类 → 条目清单,文件 → 文件列表)。`dryRun` 只数条数不真跑。 桌面专属(手机白名单不列即不暴露)。",
   "input": "{ workflowId: string; triggerNodeId: string; target: { kind: 'item'; itemId: string; } | { kind: 'collection'; collectionId: string; } | { kind: 'group'; groupId: string; } | { path: string; kind: 'file'; }; skipWhen?: { extensions?: string[] | undefined; requires?: 'file' | 'pdf' | 'markdown' | undefined; groupIds?: string[] | undefined; } | undefined // 展开时的条目跳过条件(见 automation 动作的 skipWhen;主进程逐条目复核)。; targetMode?: 'scope' | 'context' | undefined // 目标怎么用(见 automation 动作的 targetMode)。缺省 = `scope`,与老行为一致。; input?: Record<string, string | string[]> | undefined // 运行前输入的值(键 = `inputs[].key`;files 是绝对路径数组)。; dryRun?: boolean | undefined // 只数一下这次会带多少条,不真跑 —— 批量跑之前给用户确认用。; expectCount?: number | undefined // 用户在确认框上**看到并点头的那个条数**(只有走过 `dryRun` 的批量那条路会带)。 }",
   "output": "CustomUiRunAutomationResult"
+ },
+ {
+  "method": "customUi.stagePanel",
+  "channel": "customUi:stagePanel",
+  "doc": "自定义面板(R41):把包好的面板文档交给主进程,换一个 `mcode-panel://` 地址给 iframe 用。",
+  "input": "{ html: string; network?: boolean | undefined }",
+  "output": "CustomUiStagePanelResult"
  },
  {
   "method": "dialog.pickFiles",

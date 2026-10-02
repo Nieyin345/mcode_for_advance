@@ -55,6 +55,8 @@ const BLOCKED: Record<string, string> = {
   "file.pickImages": "会弹系统对话框等用户操作",
   "setting.exportToFile": "会弹系统保存框等用户操作;导出设置请让用户在 设置 → 通用 里点「导出设置」",
   "setting.importFromFile": "会弹系统打开框并整批改写设置;只能由用户本人在设置页操作",
+  "customUi.stagePanel": "自定义面板的界面内部接口;要建面板请改设置 customUi.config.v1",
+  "customUi.panelAsk": "自定义面板内部接口;要问模型请直接发消息"
 };
 
 const DANGER: Record<string, string> = {

@@ -24,6 +24,7 @@ import {
   coerceCustomUiConfig,
   customKey,
   customUiLabel,
+  CustomUiItemSchema,
   CustomUiRunAutomationSchema,
   DEFAULT_CUSTOM_UI_CONFIG,
   extensionOf,
@@ -48,6 +49,17 @@ import {
   type CustomUiTarget,
 } from "@contracts/customUi";
 import type { LibraryItem } from "@contracts/library";
+import {
+  buildPanelDocument,
+  isPanelMethod,
+  isPanelRequest,
+  isSafePanelUrl,
+  panelCsp,
+  panelExampleHtml,
+  PANEL_HTML_MAX,
+  PANEL_METHODS,
+} from "@contracts/customUiPanel";
+import { forceShellConfirm } from "../../src/main/settings/settingsTransfer.js";
 import { collectCollectionIds, isInsideAnyProject, itemFactsOf, shouldSkipItem } from "../../src/main/customUi/targets.js";
 import { describeTriggerPayload, payloadFactsOf } from "../../src/main/orchestration/automationPayload.js";
 import { LIT_IMPORT_PY } from "../../src/main/workflows/assets.js";
@@ -268,9 +280,9 @@ eq("条目事实:没有的路径不出现", itemFactsOf(libItem), { itemId: "i1"
 eq("十二个挂载位(R39 加了消息 / 选中文字 / 输入框工具栏 / 对话右键 / 项目右键)", CUSTOM_UI_SLOTS.length, 12);
 eq("页签 → 工作区目标", targetKindOfSlot("rightPanel.tab"), "workspace");
 eq("工具栏 → 工作区目标", targetKindOfSlot("toolbar"), "workspace");
-eq("页签只能显示", [...ACTIONS_BY_SLOT["rightPanel.tab"]].sort(), ["file", "view"]);
+eq("页签只能显示(R41 加了自定义面板)", [...ACTIONS_BY_SLOT["rightPanel.tab"]].sort(), ["file", "panel", "view"]);
 check("右键菜单不能「切页签」", !isActionAllowed("library.item", "openTab") && !isActionAllowed("files.context", "file"));
-check("工具栏八种都行(含 R39 的打开网址 / 运行终端命令)", ACTIONS_BY_SLOT.toolbar.length === 8);
+check("工具栏九种都行(含 R39 的打开网址 / 运行终端命令、R41 的自定义面板)", ACTIONS_BY_SLOT.toolbar.length === 9);
 check("新挂载位都能「打开网址」「运行终端命令」", (["chat.message", "text.selection", "composer.toolbar", "session.context", "project.context"] as const).every((s) => isActionAllowed(s, "url") && isActionAllowed(s, "shell")));
 check("新的右键类挂载位不能「切页签」/「打开文件」", !isActionAllowed("session.context", "openTab") && !isActionAllowed("chat.message", "file"));
 
@@ -586,6 +598,56 @@ check("RunAutomation 输入接受 input 值表", CustomUiRunAutomationSchema.saf
     const none = run({ trigger: payloadFactsOf({ kind: "event", event: "library.item.imported", input: { doi: "10.1" } }) });
     check("只填 DOI → 不报 importFiles,也不失败", none.outputs?.["importFiles"] === null, none);
   }
+}
+
+/* ── R41:自定义面板 ── */
+
+{
+  const panelItem = (action: Record<string, unknown>) =>
+    CustomUiItemSchema.safeParse({ id: "p1", slot: "toolbar", label: { zh: "面板" }, action: { type: "panel", ...action } });
+  check("面板:最简形状能存", panelItem({ html: "<p>hi</p>" }).success);
+  check("面板:HTML 不能为空", !panelItem({ html: "" }).success);
+  check("面板:超长 HTML 被拒", !panelItem({ html: "x".repeat(PANEL_HTML_MAX + 1) }).success);
+  check("面板:network / confirm / title 能存", panelItem({ html: "<p/>", network: true, confirm: false, title: "T" }).success);
+  check("面板:右键菜单也能挂", isActionAllowed("library.item", "panel") && isActionAllowed("chat.message", "panel"));
+
+  const doc = buildPanelDocument("<p id=x>hi</p><script>mcode.toast('a')</script>", { title: "<T>", locale: "zh" });
+  check("面板文档:SDK 在用户脚本之前", doc.indexOf("window.mcode = mcode") > -1 && doc.indexOf("window.mcode = mcode") < doc.indexOf("mcode.toast('a')"));
+  check("面板文档:标题转义", doc.includes("<title>&lt;T&gt;</title>"));
+  check("面板文档:片段包进 body", /<body><p id=x>hi<\/p>/.test(doc));
+  const full = buildPanelDocument("<html><head><title>x</title></head><body>b</body></html>");
+  check("面板文档:整页 → SDK 插进 head 开头", /<head><meta charset="utf-8">/.test(full) && full.includes("<title>x</title>"));
+  check("面板文档:没有 head 的整页也插得进去", buildPanelDocument("<html><body>b</body></html>").includes("<head><meta charset"));
+
+  const off = panelCsp(false);
+  const on = panelCsp(true);
+  check("CSP:默认不联网", off.includes("default-src 'none'") && !off.includes("https:") && off.includes("connect-src 'none'"));
+  check("CSP:内联脚本能跑", off.includes("script-src 'unsafe-inline'") || /script-src[^;]*'unsafe-inline'/.test(off));
+  check("CSP:联网放开 https / wss", /connect-src[^;]*https:/.test(on) && /connect-src[^;]*wss:/.test(on));
+  check("CSP:不许 iframe 套娃 / 改 base", /frame-src 'none'|child-src 'none'/.test(off) && off.includes("base-uri 'none'"));
+
+  check("桥:请求形状", isPanelRequest({ __mcode: 1, id: 3, method: "context", params: null }));
+  check("桥:不认没标记的消息", !isPanelRequest({ id: 3, method: "context" }) && !isPanelRequest(null) && !isPanelRequest("x"));
+  check("桥:id 必须是有限数字", !isPanelRequest({ __mcode: 1, id: Number.NaN, method: "context" }));
+  check("桥:方法白名单", isPanelMethod("files.read") && !isPanelMethod("eval") && !isPanelMethod("__proto__"));
+  check("桥:方法不重复", new Set(PANEL_METHODS).size === PANEL_METHODS.length);
+  check("链接:只放 http(s) / mailto", isSafePanelUrl("https://a.b") && isSafePanelUrl("mailto:x@y.z") && !isSafePanelUrl("javascript:alert(1)") && !isSafePanelUrl("file:///c:/x"));
+  check("示例:中英两份都有内容", panelExampleHtml("zh").includes("mcode.") && panelExampleHtml("en").includes("mcode."));
+
+  const imported = JSON.parse(
+    forceShellConfirm(
+      JSON.stringify({
+        version: 1,
+        items: [
+          { id: "a", slot: "toolbar", label: { zh: "a" }, action: { type: "panel", html: "<p/>", network: true, confirm: false } },
+          { id: "b", slot: "toolbar", label: { zh: "b" }, action: { type: "shell", command: "ls", confirm: false } },
+        ],
+      }),
+    ),
+  ) as { items: { action: Record<string, unknown> }[] };
+  const [pa, sh] = imported.items;
+  check("导入设置:面板去掉联网、回到确认", pa !== undefined && !("network" in pa.action) && !("confirm" in pa.action) && pa.action["html"] === "<p/>", pa);
+  check("导入设置:shell 仍回到确认", sh !== undefined && !("confirm" in sh.action), sh);
 }
 
 /* ── 汇总 ── */

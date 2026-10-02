@@ -172,7 +172,7 @@ export function buildSettingsExport(
 
 /**
  * 别人给的设置文件里,自定义 UI 的「运行终端命令」项一律改回「运行前确认」—— 否则导入一份
- * 设置就等于多了几个点一下就静默跑命令的按钮。只动 `action.type === "shell"` 的 `confirm`,
+ * 设置就等于多了几个点一下就静默跑命令的按钮。「自定义面板」同理:去掉联网、回到确认(R41)。只动 `action.type === "shell"` 的 `confirm`,
  * 其余原样;解析不了就原样返回(读配置那一侧本来就会 coerce / 丢弃坏数据)。
  */
 export function forceShellConfirm(raw: string): string {
@@ -191,6 +191,16 @@ export function forceShellConfirm(raw: string): string {
     if (action && typeof action === "object" && (action as { type?: unknown }).type === "shell" && "confirm" in action) {
       delete (action as { confirm?: unknown }).confirm;
       changed = true;
+    }
+    // R41 自定义面板:别人给的面板一律「不联网 + 有副作用的操作每次确认」—— 否则导入一份
+    // 设置就多了一个能静默跑自动化 / 写文件、还能把读到的东西发出去的面板。
+    if (action && typeof action === "object" && (action as { type?: unknown }).type === "panel") {
+      for (const k of ["confirm", "network"] as const) {
+        if (k in action) {
+          delete (action as { confirm?: unknown; network?: unknown })[k];
+          changed = true;
+        }
+      }
     }
   }
   return changed ? JSON.stringify(cfg) : raw;

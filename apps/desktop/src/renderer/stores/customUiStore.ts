@@ -16,7 +16,9 @@ import {
   parseCustomUiConfig,
   type CustomUiConfig,
   type CustomUiInput,
+  type CustomUiItem,
   type CustomUiSlot,
+  type CustomUiTarget,
 } from "@contracts/customUi";
 import { RightPanelTabSchema } from "@contracts/ipc";
 import { api } from "@renderer/lib/api.js";
@@ -35,6 +37,16 @@ export interface CustomUiConfirm {
   description: string;
   confirmText: string;
   onConfirm: () => void;
+  /** 用户关掉 / 取消时调(自定义面板等着一个结果,不能让它的 Promise 永远挂着)。
+   *  ⚠️ 确认那条路上也可能紧跟着被调一次 —— 调用方自己做「先到先得」。 */
+  onCancel?: () => void;
+}
+
+/** 浮窗里正在跑的自定义面板(R41)。`id` 每次打开都不一样,宿主拿它当 `key`。 */
+export interface CustomUiPanelOpen {
+  id: string;
+  item: CustomUiItem;
+  target: CustomUiTarget;
 }
 
 /** automation 动作「运行前输入」的表单(见 `@contracts/customUi` 的 inputs)。 */
@@ -75,6 +87,10 @@ interface CustomUiState {
   form: CustomUiForm | null;
   openForm: (f: Omit<CustomUiForm, "id">) => void;
   closeForm: () => void;
+
+  panel: CustomUiPanelOpen | null;
+  openPanel: (p: Omit<CustomUiPanelOpen, "id">) => void;
+  closePanel: () => void;
 
   /**
    * 右栏正在显示的**自定义页签**(自定义项 id);`null` = 显示内置页签(`rightPanelTab`)。
@@ -206,12 +222,20 @@ export const useCustomUiStore = create<CustomUiState>((set, get) => ({
   closeView: () => set({ view: null }),
 
   confirm: null,
-  openConfirm: (c) => set({ confirm: c }),
+  // 新确认框顶掉旧的那个时,旧的算「取消」—— 等着它的面板调用才能收到结果。
+  openConfirm: (c) => {
+    get().confirm?.onCancel?.();
+    set({ confirm: c });
+  },
   closeConfirm: () => set({ confirm: null }),
 
   form: null,
   openForm: (f) => set({ form: { ...f, id: `f${++formSeq}` } }),
   closeForm: () => set({ form: null }),
+
+  panel: null,
+  openPanel: (p) => set({ panel: { ...p, id: `p${++formSeq}` } }),
+  closePanel: () => set({ panel: null }),
 
   activeTab: null,
   setActiveTab: (id) => set({ activeTab: id }),

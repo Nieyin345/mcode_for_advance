@@ -48,6 +48,11 @@ import { configureLibraryEvents, notifyLibraryChanged } from "@main/library/broa
 import { importAnyFiles } from "@main/library/importDispatch.js";
 import { adoptMarkdownFile } from "@main/library/adoptMarkdown.js";
 import { configureCodeNodeLibraryHost } from "@main/orchestration/adoptFromCode.js";
+import { initPanelProtocol, registerPanelSchemePrivileged } from "@main/customUi/panelProtocol.js";
+import { PANEL_SCHEME } from "@contracts/customUiPanel";
+
+// 自定义面板的 `mcode-panel://` 协议(R41)。注册特权 scheme **必须**在 app ready 之前。
+registerPanelSchemePrivileged();
 
 // 库导入/下载事件的发出口(钩子与「事件发生时」触发器都挂在 runtimeManager 上)。
 // 在模块顶层装配:下载队列可能在窗口出来前就恢复并完成条目。注入而非让
@@ -148,6 +153,7 @@ app.on("second-instance", () => {
 app.whenReady().then(async () => {
   logStartup("whenReady entered");
   installDbPersistenceAlerts();
+  initPanelProtocol();
 
   // Kick off DB init in the background (sql.js loads ~6MB asm.js + reads the
   // file + migrates). We DON'T await it - the window is created next so the
@@ -239,6 +245,12 @@ app.whenReady().then(async () => {
   // strict CSP would block, leaving the page blank.
   if (is.prod) {
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+      // 自定义面板的文档自带 CSP(见 main/customUi/panelProtocol.ts),别拿主窗口这条盖掉 ——
+      // 盖掉的话面板里的内联脚本一行都跑不了。
+      if (details.url.startsWith(`${PANEL_SCHEME}:`)) {
+        callback({});
+        return;
+      }
       // OnlyOffice Document Server（Office 文档编辑）是**外部源**：它的 api.js 要能加载
       // （script-src）、编辑器 iframe 要能嵌（frame-src）、它的图片/字体/接口要能访问。
       // 未配置时这一串为空，CSP 与从前逐字相同。地址来自设置表，用户改了设置下一个
@@ -264,7 +276,7 @@ app.whenReady().then(async () => {
             // 只把 `blob:` 加进 `worker-src`，不碰 `script-src` —— 那个口子
             // （内联脚本）比这里需要的宽得多。手机端走 HTTP、没有这层 Electron
             // CSP，所以这条只影响桌面。
-            `default-src 'self'${ooSrc}; script-src 'self' 'wasm-unsafe-eval'${ooSrc}; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'${ooSrc}; img-src 'self' data:${ooSrc}; font-src 'self' data:${ooSrc}; frame-src 'self'${ooSrc}; connect-src 'self'${ooSrc}`,
+            `default-src 'self'${ooSrc}; script-src 'self' 'wasm-unsafe-eval'${ooSrc}; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'${ooSrc}; img-src 'self' data:${ooSrc}; font-src 'self' data:${ooSrc}; frame-src 'self' ${PANEL_SCHEME}:${ooSrc}; connect-src 'self'${ooSrc}`,
           ],
         },
       });

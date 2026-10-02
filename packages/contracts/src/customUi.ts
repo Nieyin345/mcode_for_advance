@@ -32,6 +32,7 @@
  * 纯函数、只依赖 zod,冒烟可以直接把渲染/条件/排序钉住(见 `scripts/custom-ui-smoke`)。
  */
 import { z } from "zod";
+import { PANEL_HTML_MAX } from "./customUiPanel.js";
 
 /** 设置表里存配置的键。版本号写进键名:将来格式大改就换一个键,旧值原地不动可回退。 */
 export const CUSTOM_UI_SETTING_KEY = "customUi.config.v1";
@@ -266,6 +267,23 @@ export const CustomUiActionSchema = z.discriminatedUnion("type", [
     command: z.string().trim().min(1).max(4000),
     confirm: z.boolean().optional(),
   }),
+  /**
+   * 自定义面板(R41):一段 HTML / CSS / JS,跑在隔离的 iframe 里,通过 `window.mcode`
+   * 读上下文、问模型、发到输入框、跑自动化、读写项目文件、读资料库……(见
+   * `@contracts/customUiPanel`)。右栏页签上常驻显示;其余挂载位点一下弹一个浮窗。
+   *
+   *   - `network`:允许面板自己联网(fetch、外链脚本 / 样式 / 图片)。**缺省 = 不允许**;
+   *     导入别人的设置时一律抹掉。
+   *   - `confirm`:面板要跑自动化 / 写文件 / 跑命令时每次弹确认。**缺省 = 确认**;导入时
+   *     同样抹掉(回到确认)。
+   */
+  z.object({
+    type: z.literal("panel"),
+    title: z.string().max(200).optional(),
+    html: z.string().min(1).max(PANEL_HTML_MAX),
+    network: z.boolean().optional(),
+    confirm: z.boolean().optional(),
+  }),
 ]);
 export type CustomUiAction = z.infer<typeof CustomUiActionSchema>;
 export type CustomUiActionType = CustomUiAction["type"];
@@ -277,15 +295,16 @@ export type CustomUiActionType = CustomUiAction["type"];
  */
 // R39:所有菜单 / 按钮类挂载位都能「打开链接」「运行终端命令」。新挂载位(消息 / 选中文字 /
 // 对话 / 项目)没有能交给自动化的「条目」,自动化在那里按「立刻跑一次」处理。
-const MENU_ACTIONS = ["view", "prompt", "copy", "automation", "url", "shell"] as const;
-const BUTTON_ACTIONS = ["view", "prompt", "copy", "automation", "file", "openTab", "url", "shell"] as const;
+// R41:「自定义面板」所有挂载位都能用(页签上常驻,别处弹浮窗)。
+const MENU_ACTIONS = ["view", "prompt", "copy", "automation", "url", "shell", "panel"] as const;
+const BUTTON_ACTIONS = ["view", "prompt", "copy", "automation", "file", "openTab", "url", "shell", "panel"] as const;
 export const ACTIONS_BY_SLOT: Record<CustomUiSlot, readonly CustomUiActionType[]> = {
   "library.item": MENU_ACTIONS,
   "library.collection": MENU_ACTIONS,
   "library.subcategory": MENU_ACTIONS,
   "library.group": MENU_ACTIONS,
   "files.context": MENU_ACTIONS,
-  "rightPanel.tab": ["view", "file"],
+  "rightPanel.tab": ["view", "file", "panel"],
   toolbar: BUTTON_ACTIONS,
   "chat.message": MENU_ACTIONS,
   "text.selection": MENU_ACTIONS,

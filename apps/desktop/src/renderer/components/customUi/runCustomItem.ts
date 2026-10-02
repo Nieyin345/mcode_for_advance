@@ -241,6 +241,44 @@ function copyViaTextarea(text: string): boolean {
   }
 }
 
+/** 复制到剪贴板。「复制文本」动作与自定义面板的 `mcode.copy()` 共用。 */
+export async function copyText(text: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return { ok: true };
+  } catch (err) {
+    // `navigator.clipboard` 不是永远都在(非安全上下文、权限被拒、焦点在面板 iframe 里)。
+    // 退回那条老办法:一个看不见的 textarea + `execCommand("copy")` —— 成了就当成了,
+    // 别让一条「复制」在某些窗口里**永远**失败而用户无路可走。
+    if (copyViaTextarea(text)) return { ok: true };
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * 把一段文字**放进当前对话的输入框**(不替用户发送;已有草稿保留,新内容接在后面)。
+ * 「发给对话」动作与自定义面板的 `mcode.prompt()` 共用。没有当前对话返回 false。
+ */
+export function deliverToComposer(text: string): boolean {
+  const sessionId = useSessionStore.getState().activeSessionId;
+  if (!sessionId) return false;
+  // 放进输入框,不替用户发送(同「跟主对话说」);已有的草稿保留,新内容接在后面。
+  //
+  // ⚠️ **`html` 不能写死成空串。** 输入框里那份草稿可能是富文本(贴进来的表格、
+  // 带格式的引文),`html` 一清用户就只剩纯文本 —— 而他并没有要求删掉什么。
+  // 有 html 就在它后面接一段;没有就维持空串(纯文本草稿的原样)。
+  const prev = useSessionStore.getState().composerDraftBySession[sessionId];
+  const prevText = prev?.text.trim() ?? "";
+  const prevHtml = prev?.html ?? "";
+  const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  useSessionStore.getState().deliverComposerDraft(sessionId, {
+    text: prevText.length > 0 ? `${prevText}\n\n${text}` : text,
+    html: prevHtml.trim().length > 0 ? `${prevHtml}<p></p><p>${escaped.replace(/\n/g, "<br>")}</p>` : "",
+    tags: prev?.tags ?? [],
+  });
+  return true;
+}
+
 export async function runCustomItem(item: CustomUiItem, target: CustomUiTarget): Promise<void> {
   const vars = templateVarsOf(target);
   const action = item.action;
@@ -255,20 +293,9 @@ export async function runCustomItem(item: CustomUiItem, target: CustomUiTarget):
       return;
     }
     case "copy": {
-      const text = renderTemplate(action.template, vars);
-      try {
-        await navigator.clipboard.writeText(text);
-        toast("info", "customUi.run.copied");
-      } catch (err) {
-        // `navigator.clipboard` 不是永远都在(非安全上下文、权限被拒)。退回那条老办法:
-        // 一个看不见的 textarea + `execCommand("copy")` —— 成了就当成了,别让一条
-        // 「复制」在某些窗口里**永远**失败而用户无路可走。
-        if (!copyViaTextarea(text)) {
-          toast("error", "customUi.run.copyFailed", err instanceof Error ? err.message : String(err));
-          return;
-        }
-        toast("info", "customUi.run.copied");
-      }
+      const res = await copyText(renderTemplate(action.template, vars));
+      if (res.ok) toast("info", "customUi.run.copied");
+      else toast("error", "customUi.run.copyFailed", res.error);
       return;
     }
     case "prompt": {
@@ -281,23 +308,7 @@ export async function runCustomItem(item: CustomUiItem, target: CustomUiTarget):
       const key = attachKeyOf(target);
       if (action.attach === true && key !== null) await attachToCurrentChat(key);
       const text = renderTemplate(action.template, vars).trim();
-      if (text.length > 0) {
-        // 放进输入框,不替用户发送(同「跟主对话说」);已有的草稿保留,新内容接在后面。
-        //
-        // ⚠️ **`html` 不能写死成空串。** 输入框里那份草稿可能是富文本(贴进来的表格、
-        // 带格式的引文),`html` 一清用户就只剩纯文本 —— 而他并没有要求删掉什么。
-        // 有 html 就在它后面接一段;没有就维持空串(纯文本草稿的原样)。
-        const prev = useSessionStore.getState().composerDraftBySession[sessionId];
-        const prevText = prev?.text.trim() ?? "";
-        const prevHtml = prev?.html ?? "";
-        const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-        useSessionStore.getState().deliverComposerDraft(sessionId, {
-          text: prevText.length > 0 ? `${prevText}\n\n${text}` : text,
-          html: prevHtml.trim().length > 0 ? `${prevHtml}<p></p><p>${escaped.replace(/\n/g, "<br>")}</p>` : "",
-          tags: prev?.tags ?? [],
-        });
-        toast("info", "customUi.run.promptDelivered");
-      }
+      if (text.length > 0 && deliverToComposer(text)) toast("info", "customUi.run.promptDelivered");
       return;
     }
     case "automation":
@@ -333,6 +344,10 @@ export async function runCustomItem(item: CustomUiItem, target: CustomUiTarget):
     }
     case "shell":
       await runShell(item, action, vars);
+      return;
+    case "panel":
+      // 自定义面板(R41):弹一个浮窗跑它。右栏页签上的面板不经过这里(CustomTabView 常驻显示)。
+      useCustomUiStore.getState().openPanel({ item, target });
       return;
   }
 }
