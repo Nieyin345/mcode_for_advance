@@ -141,8 +141,16 @@ const HANDLERS: Record<string, RpcHandler> = {
     // pagination); the active list paginates with a default page size of 5.
     const limit = input.limit ?? (archived ? undefined : 5);
     const offset = input.offset ?? 0;
-    const sessions = SessionRepo.listByProject(input.projectId, { limit, offset, archived });
-    const total = SessionRepo.countByProject(input.projectId, archived);
+    // ⚠️ `worktree`(exclude / only)必须照传,list 和 count 都要 —— 渲染端把「本地分页」和
+    // 「工作树全量」分两次取再拼起来;这里漏掉过滤时两次都返回全部会话,手机端每个项目
+    // 下的对话就**各出现两遍**(桌面端走 ipc/projects.ts,一直是对的)。
+    const sessions = SessionRepo.listByProject(input.projectId, {
+      limit,
+      offset,
+      archived,
+      worktree: input.worktree,
+    });
+    const total = SessionRepo.countByProject(input.projectId, archived, input.worktree);
     const hasMore = limit !== undefined ? offset + sessions.length < total : false;
     return { sessions, hasMore, total };
   },

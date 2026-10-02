@@ -3617,9 +3617,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // Union with rows that landed in the section while this fetch was in
       // flight (echo-inserted after the server snapshot) — the next full
       // fetch prunes them for real if they no longer belong.
-      const fetchedIds = new Set(res.sessions.map((x) => x.id));
+      // 只收真带 worktreePath、且不在本地段里的行(同 fetchProjectSessionBuckets 的防御)。
+      const localIds = new Set(local.map((x) => x.id));
+      const fetched = res.sessions.filter((x) => x.worktreePath && !localIds.has(x.id));
+      const fetchedIds = new Set(fetched.map((x) => x.id));
       const strays = worktree.filter((x) => !fetchedIds.has(x.id));
-      const merged = [...local, ...res.sessions, ...strays];
+      const merged = [...local, ...fetched, ...strays];
       if (merged.length === prev.length && merged.every((x, i) => x === prev[i])) return {};
       const isActive = projectId === s.activeProjectId;
       return {

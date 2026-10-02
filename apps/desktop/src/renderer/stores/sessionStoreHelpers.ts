@@ -2726,7 +2726,11 @@ export async function fetchProjectSessionBuckets(projects: readonly Project[]): 
             limit: WORKTREE_SESSIONS_FETCH_LIMIT,
           }),
         ]);
-        byProject[p.id] = [...active.sessions, ...worktreePage.sessions];
+        // 防御:工作树那一段只收真带 worktreePath 的、且不与本地段重复的行 —— 后端漏了
+        // `worktree` 过滤时(手机端 RPC 出过),两次请求会拿回同一批会话,列表里每条出现两遍。
+        const localIds = new Set(active.sessions.map((x) => x.id));
+        const worktreeOnly = worktreePage.sessions.filter((x) => x.worktreePath && !localIds.has(x.id));
+        byProject[p.id] = [...active.sessions, ...worktreeOnly];
         hasMoreByProject[p.id] = active.hasMore;
         totalByProject[p.id] = active.total;
         const archived = await api.project.sessions({ projectId: p.id, archived: true });
