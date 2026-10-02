@@ -7,3 +7,6 @@ export const api = {
 };
 export const useLibraryStore = { getState: () => ({ setActiveItem: () => {}, setDetailTab: () => {} }) };
 export const Input = () => null;
+// R40 起 ImportPanel 的说明收进 ⓘ(ui/info-hint)。
+export const InfoHint = () => null;
+export const HintLabel = ({ children }: { children?: unknown }) => children ?? null;

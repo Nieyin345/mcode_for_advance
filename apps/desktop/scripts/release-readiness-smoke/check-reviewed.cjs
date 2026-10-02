@@ -38,7 +38,9 @@ function pairing() {
     '@contracts/ipc': { IPC, RevokeMobileDeviceSchema: req('zod').z.object({ deviceId: req('zod').z.string() }) },
     '@main/mobile/PairingManager.js': { pairingManager: { startPairing: (endpoint, options) => { calls.push({ endpoint, options }); return { endpoint, qrUrl: endpoint + '/?nonce=fixture' }; } }, detectLanIp: () => '192.168.1.8', detectLanIps: () => [] },
     '@main/mobile/MobileHttpServer.js': { getMobileServer: () => ({ port: 7331 }) },
-    '@contracts/mobile': { MOBILE_ACTIVE_WINDOW_MS: 60000 },
+    '@contracts/mobile': { MOBILE_ACTIVE_WINDOW_MS: 60000, SetMobileLoginSchema: req('zod').z.object({}).passthrough(), SetMobileTunnelSchema: req('zod').z.object({}).passthrough() },
+    '@main/mobile/mobileTunnel.js': { mobileTunnelStatus: async () => ({}), setMobileTunnelConfig: async () => ({}), startMobileTunnel: async () => ({}), stopMobileTunnel: async () => ({}) },
+    '@main/mobile/mobileLogin.js': { clearMobileLogin: async () => ({}), getMobileLoginStatus: async () => ({}), setMobileLogin: async () => ({}) },
     '@main/lib/logger.js': { log: { info() {} } },
   }).registerMobileHandlers({ handle: (key, fn) => { handlers[key] = fn; } });
   return { invoke: input => handlers.MOBILE_START_PAIRING({}, input), calls };

@@ -20,7 +20,7 @@ const stubs={
  '@renderer/lib/api.js':'export const api=window.labApi;',
  '@renderer/stores/toastStore.js':'export const useToastStore={getState:()=>({push:()=>{}})};',
  '@renderer/lib/icons.js':"export * from '@tabler/icons-react';",
- '@renderer/components/ui/index.js':['button','input','switch','card','error-note','spinner','confirm-dialog','select'].map(n=>`export * from ${JSON.stringify(root+'/components/ui/'+n+'.tsx')};`).join('\n'),
+ '@renderer/components/ui/index.js':['button','input','switch','card','error-note','spinner','confirm-dialog','select','info-hint'].map(n=>`export * from ${JSON.stringify(root+'/components/ui/'+n+'.tsx')};`).join('\n'),
 };
 const locales=['settings','common','memory'];
 stubs['@renderer/lib/i18n/index.js']=locales.map((n,i)=>`import {zh as d${i}} from ${JSON.stringify(root+'/lib/i18n/zh/'+n+'.ts')};`).join('\n')+`const dict=Object.assign({},${locales.map((_,i)=>'d'+i).join(',')});const t=(key,params={})=>Object.entries(params).reduce((str,[k,v])=>str.replaceAll('{'+k+'}',String(v)),dict[key]??key);export const useI18n=()=>({t,locale:'zh'});`;

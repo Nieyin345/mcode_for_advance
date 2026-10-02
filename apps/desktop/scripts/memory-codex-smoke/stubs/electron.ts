@@ -135,6 +135,8 @@ export const ClipboardItem = NotHereClass;
 export const dialog = notHereObj;
 export const nativeImage = notHereObj;
 export const session = notHereObj;
+// R41 自定义面板的 mcode-panel:// 协议(main/customUi/panelProtocol.ts)只在 import 链上出现。
+export const protocol = notHereObj;
 export const Notification = NotHereClass;
 
 /** 纯类型,运行期不该存在 —— 留个值让 `import type` 被误写成普通 import 时炸。 */

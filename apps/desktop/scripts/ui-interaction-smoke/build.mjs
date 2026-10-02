@@ -29,7 +29,7 @@ const stubs={
  '@renderer/lib/shortcuts.js':'export const resolveShortcut=()=>null;export const acceleratorToDisplayString=()=>"";',
  '@renderer/lib/providerIcon.js':'export const getProviderIcon=()=>null;',
  '@renderer/lib/useRgStatus.js':'export const useRgStatus=()=>({ready:true});',
- '@renderer/components/ui/index.js':['button','input','switch','card','error-note','spinner','confirm-dialog','select'].map(n=>`export * from ${JSON.stringify(root+'/components/ui/'+n+'.tsx')};`).join('\n'),
+ '@renderer/components/ui/index.js':['button','input','switch','card','error-note','spinner','confirm-dialog','select','info-hint'].map(n=>`export * from ${JSON.stringify(root+'/components/ui/'+n+'.tsx')};`).join('\n'),
  '@contracts/ipc':"export const TURN_BUDGET_SETTING_KEY='runtime.turnBudget',RUNTIME_FALLBACK_MODELS_SETTING_KEY='runtime.fallbackModels';",
 };
 const locales=['chat-composer','settings','layout','mobile','common','browser','ide','memory'];

@@ -52,7 +52,7 @@ function quitFixture(failAt: "flush" | "close" | null, options: {
     TerminalManager: { disposeAll: record("terminal") }, lspManager: { disposeAll: record("lsp") },
     BrowserManager: { disposeAll: record("browser"), saveCookieVault: async () => { trace.push("cookies"); } },
     relayManager: { disposeAll: record("relay") }, automationRunner: { dispose: record("automation") },
-    stopMobileServer: record("mobile"),
+    stopMobileServer: record("mobile"), disposeMobileTunnel: record("mobile-tunnel"),
     disposeAllAgentResources: record("agent-processes"),
     shutdownOnlyOfficeBridge: record("onlyoffice"),
     flushOnlyOfficeSessions: async () => {
