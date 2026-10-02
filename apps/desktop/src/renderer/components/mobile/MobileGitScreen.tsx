@@ -219,7 +219,6 @@ export function MobileGitScreen() {
     run(andPush ? "commit+push" : "commit", async () => {
       if (!message.trim()) {
         setError(t("mobile.git.commitMsgRequired"));
-        setBusy(null);
         return;
       }
       const res = await api.git.commit({ repoPath: repoPath!, message: message.trim() });

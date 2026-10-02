@@ -2269,13 +2269,26 @@ function ChatPaneForSession({
     }
   };
 
+  /** 插话同样要守:它退回排队时走的是 `handleEnqueue`,那条会抛。 */
+  const injectGuarded = async (): Promise<void> => {
+    try {
+      await handleInject();
+    } catch (err) {
+      useToastStore.getState().push({
+        kind: "error",
+        title: t("chat.enqueueFailed"),
+        body: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
   const handleEnter = (mods: { ctrl: boolean }) => {
     if (!sessionBusy) {
       void sendGuarded();
       return;
     }
     if (mods.ctrl) {
-      void handleInject();
+      void injectGuarded();
       return;
     }
     void enqueueGuarded();

@@ -182,7 +182,12 @@ export function OnlyOfficeEditorPane({
         /* DS 在 iframe 已经没了的时候会抛，无所谓 */
       }
       editorRef.current = null;
-      if (opened.sessionKey) void api.onlyoffice.close({ sessionKey: opened.sessionKey });
+      if (opened.sessionKey) {
+        // 卸载路径,没人能接这个错;只记一笔,别变成未处理的 rejection。
+        api.onlyoffice.close({ sessionKey: opened.sessionKey }).catch((err: unknown) => {
+          console.warn("onlyoffice.close failed:", err);
+        });
+      }
     };
   }, [opened, hostId, readOnly]);
 

@@ -777,7 +777,19 @@ class LspManagerImpl {
     filePath: string,
     language: LspLanguageId,
   ): Promise<void> {
-    this.assertPaths(workspacePath, filePath);
+    try {
+      this.assertPaths(workspacePath, filePath);
+    } catch (err) {
+      // 路径护栏拒了(工作区已改名 / 移除、文件不在任何项目里):以前只在 IPC 那层
+      // log.warn,编辑器看起来一切正常,跳转 / 查引用却静默失灵。走启动前拒绝那条
+      // 同样的通道告诉工具栏 —— 红药丸带上原因。
+      this.pushStateEvent(workspacePath, language, {
+        phase: "stopped",
+        running: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
     const spec = LANGUAGE_SPECS[language];
     const handle = await this.ensureServer(workspacePath, language);
 

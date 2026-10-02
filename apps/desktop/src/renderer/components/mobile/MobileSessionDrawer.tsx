@@ -162,14 +162,26 @@ export function MobileSessionDrawer({
       return;
     }
     setSearching(true);
+    // `stale`:清理时置位。去抖定时器已经触发、请求已在途时,光 clearTimeout 拦不住它 ——
+    // 迟到的结果会把已清空 / 已改掉的查询盖回去(输入 abc → 清空 → abc 的结果又冒出来)。
+    let stale = false;
     const t = setTimeout(() => {
       void api.session
         .search({ query: q, limit: 30 })
-        .then((r) => setResults(r.sessions))
-        .catch(() => setResults([]))
-        .finally(() => setSearching(false));
+        .then((r) => {
+          if (!stale) setResults(r.sessions);
+        })
+        .catch(() => {
+          if (!stale) setResults([]);
+        })
+        .finally(() => {
+          if (!stale) setSearching(false);
+        });
     }, 250);
-    return () => clearTimeout(t);
+    return () => {
+      stale = true;
+      clearTimeout(t);
+    };
   }, [query]);
 
   const openSheet = useCallback((next: SheetTarget) => {

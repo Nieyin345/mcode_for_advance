@@ -2428,7 +2428,7 @@ const changedMessages: ChatMessage[] = [];
       // preserves "last write wins" for the normal path (this lands after
       // the turn.done persist, which already covers the card).
       if (changedMessages.length > 0 && persistsTurnContent()) {
-        void api.session.upsertMessages({ sessionId: ctx.sid, messages: toRecords(ctx.sid, changedMessages) });
+        persistMessages({ sessionId: ctx.sid, messages: toRecords(ctx.sid, changedMessages) });
       }
       return;
     
@@ -2467,7 +2467,7 @@ ctx.set((s) => {
         const list = ctx.get().messagesBySession[ctx.sid];
         if (list && list.length > 0) {
           const last = list[list.length - 1];
-          void api.session.upsertMessages({ sessionId: ctx.sid, messages: toRecords(ctx.sid, [last]) });
+          persistMessages({ sessionId: ctx.sid, messages: toRecords(ctx.sid, [last]) });
         }
       }
       return;
@@ -2517,11 +2517,35 @@ let rewoundLatest = false;
       // (The card is kept, so this is a mutation, not a removal.) Incremental
       // upsert: only the rows whose blocks actually changed need writing.
       if (rewoundChanged.length > 0 && persistsTurnContent()) {
-        void api.session.upsertMessages({ sessionId: ctx.sid, messages: toRecords(ctx.sid, rewoundChanged) });
+        persistMessages({ sessionId: ctx.sid, messages: toRecords(ctx.sid, rewoundChanged) });
       }
       return;
     
 }
+/**
+ * 落库消息(fire-and-forget)。**必须带 catch**:以前是裸 `void`,IPC / 手机 RPC 一 reject
+ * (401、断网、超时)这一轮就**静默没存下来**,而渲染端没有 unhandledrejection 监听,
+ * 谁也不知道。失败弹一条错误提示(toastStore 按标题去重,连续失败不会刷屏)。
+ */
+function persistMessages(req: Parameters<typeof api.session.upsertMessages>[0]): void {
+  api.session.upsertMessages(req).catch((err: unknown) => {
+    console.error("session.upsertMessages failed:", err);
+    useToastStore.getState().push({
+      kind: "error",
+      title: translate(useSessionStore.getState().locale, "store.toast.persistFailed"),
+      body: err instanceof Error ? err.message : String(err),
+    });
+  });
+}
+
+/** 写一条界面设置(fire-and-forget)。失败只记日志 —— 丢一次「上次打开的项目」不值得打扰用户,
+ *  但不能变成未处理的 rejection。 */
+function saveSetting(req: Parameters<typeof api.setting.set>[0]): void {
+  api.setting.set(req).catch((err: unknown) => {
+    console.error(`setting.set(${req.key}) failed:`, err);
+  });
+}
+
 export const useSessionStore = create<SessionState>((set, get) => ({
   projects: [],
   activeProjectId: null,
@@ -3472,7 +3496,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // the next launch's landing project. A project WITH sessions persists via
     // selectSession → syncConfigFromSession below; an EMPTY project otherwise
     // silently fell back to the first project on restart.
-    void api.setting.set({ key: UI_LAST_PROJECT_SETTING_KEY, value: projectId });
+    saveSetting({ key: UI_LAST_PROJECT_SETTING_KEY, value: projectId });
     if (next) {
       await get().selectSession(next.id);
     }
@@ -3916,8 +3940,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // which a move doesn't trigger — without this, a restart would land on
       // the pre-move project and a new session would default there instead
       // of the project the user chose in the new-session panel.
-      void api.setting.set({ key: UI_LAST_PROJECT_SETTING_KEY, value: toProjectId });
-      void api.setting.set({ key: UI_LAST_SESSION_SETTING_KEY, value: sessionId });
+      saveSetting({ key: UI_LAST_PROJECT_SETTING_KEY, value: toProjectId });
+      saveSetting({ key: UI_LAST_SESSION_SETTING_KEY, value: sessionId });
       try {
         const page = await api.project.sessions({
           projectId: toProjectId,
@@ -4760,7 +4784,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // 这一轮还在跑,但**有新内容**了 —— 让左栏那条"有动静"的提示跟上。
       streamDirty: true,
     }));
-    void api.session.upsertMessages({ sessionId, messages: toRecords(sessionId, [userMsg]) });
+    persistMessages({ sessionId, messages: toRecords(sessionId, [userMsg]) });
     return true;
   },
 
@@ -4877,7 +4901,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // 只写这一条而不是整份快照:它正是这一轮的锚,终态那条增量 upsert 按
     // `createdAt >= userMsg.createdAt` 挑尾巴,所以它先落库不会有任何副作用;而这一轮
     // 哪怕一条助手消息都没产出,用户至少看得到自己问过什么。
-    void api.session.upsertMessages({ sessionId, messages: toRecords(sessionId, [userMsg]) });
+    persistMessages({ sessionId, messages: toRecords(sessionId, [userMsg]) });
 
 	    // 2. fire the turn; events stream back via ingestEvent. Run the IPC in
 	    //    the BACKGROUND and return true the moment the user message lands
@@ -5264,7 +5288,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             )
           : snapshot;
       const toSave = tail.length > 0 ? tail : snapshot;
-      void api.session.upsertMessages({ sessionId, messages: toRecords(sessionId, toSave) });
+      persistMessages({ sessionId, messages: toRecords(sessionId, toSave) });
     }
   },
 
@@ -6106,7 +6130,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               )
             : snapshot;
         const toSave = tail.length > 0 ? tail : snapshot;
-        void api.session.upsertMessages({ sessionId: sid, messages: toRecords(sid, toSave) });
+        persistMessages({ sessionId: sid, messages: toRecords(sid, toSave) });
       }
       // The session may have just gone fully idle — if the user queued a
       // prompt while busy, fire the head now. drainPromptQueueIfIdle is a
@@ -6513,7 +6537,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   /** Write the current groupMeta to the settings blob (fire-and-forget). */
   persistGroupMeta: (meta) => {
     try {
-      void api.setting.set({
+      saveSetting({
         key: UI_PROJECT_GROUPS_SETTING_KEY,
         value: JSON.stringify(meta),
       });
@@ -6789,7 +6813,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     else delete next[commandId];
     set({ shortcutOverrides: next });
     try {
-      void api.setting.set({
+      saveSetting({
         key: UI_SHORTCUTS_SETTING_KEY,
         value: JSON.stringify(next),
       });
@@ -6803,7 +6827,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   resetAllShortcuts: () => {
     set({ shortcutOverrides: {} });
     try {
-      void api.setting.set({
+      saveSetting({
         key: UI_SHORTCUTS_SETTING_KEY,
         value: "{}",
       });
@@ -6825,7 +6849,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const next = { ...cur, overrides };
     set({ gestureSettings: next });
     try {
-      void api.setting.set({
+      saveSetting({
         key: UI_GESTURES_SETTING_KEY,
         value: JSON.stringify(next),
       });
@@ -6838,7 +6862,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const next = { ...get().gestureSettings, enabled };
     set({ gestureSettings: next });
     try {
-      void api.setting.set({
+      saveSetting({
         key: UI_GESTURES_SETTING_KEY,
         value: JSON.stringify(next),
       });
@@ -6851,7 +6875,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const next = { ...get().gestureSettings, trigger };
     set({ gestureSettings: next });
     try {
-      void api.setting.set({
+      saveSetting({
         key: UI_GESTURES_SETTING_KEY,
         value: JSON.stringify(next),
       });
@@ -6865,7 +6889,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const next = { ...get().gestureSettings, overrides: {} };
     set({ gestureSettings: next });
     try {
-      void api.setting.set({
+      saveSetting({
         key: UI_GESTURES_SETTING_KEY,
         value: JSON.stringify(next),
       });
@@ -8049,6 +8073,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
     } catch (err) {
       console.error("createSideChat failed:", err);
+      useToastStore.getState().push({
+        kind: "error",
+        title: translate(get().locale, "store.toast.createChatFailed"),
+        body: err instanceof Error ? err.message : String(err),
+      });
     }
   },
 
@@ -8122,6 +8151,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return session;
     } catch (err) {
       console.error("createSubChat failed:", err);
+      useToastStore.getState().push({
+        kind: "error",
+        title: translate(get().locale, "store.toast.createChatFailed"),
+        body: err instanceof Error ? err.message : String(err),
+      });
       throw err;
     }
   },

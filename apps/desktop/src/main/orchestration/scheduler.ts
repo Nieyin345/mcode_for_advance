@@ -732,7 +732,7 @@ class Run {
   /** 失败重试时用户写的那句话(见 `RunResume.note`)。不点名就没有。 */
   retryNote!: { nodeId: string; text: string } | undefined;
   awaiting!: Set<string>;
-  pendingLoopBack!: string | null;
+  pendingLoopBack!: Map<string, string>;
   manifests!: Map<string, ManifestSlot>;
 
   stateOf = (): RunState => ({
@@ -952,9 +952,9 @@ class Run {
     // 就是自己的结局,而它接下来要做的正是"等上一步重跑完、再问一次"。判据里放进它,
     // 是因为这两件事**必须是同一个时机**——晚一步就会被上面刚落的结局盖住。
     if ((branch || this.isAskBeforeRun(node.id)) && outcome.status === "success") {
-      const back = this.pendingLoopBack;
-      this.pendingLoopBack = null;
-      if (back !== null) {
+      const back = this.pendingLoopBack.get(node.id);
+      this.pendingLoopBack.delete(node.id);
+      if (back !== undefined) {
         this.rewindLoop(node.id, back);
         // 抹环改的是"谁跑过了",那是别人重跑与否的依据 —— 得立刻写出去。
         this.publish();
@@ -1070,7 +1070,7 @@ class Run {
     }
     // **回头**:选的这条指回前面。环体由 `settle` 在落定之后抹(见那里和 `rewindLoop`
     // 的注释 —— 抹早了会被刚落的结局盖回去)。
-    if (this.loopBackIds.has(pick.edgeId)) this.pendingLoopBack = pick.edgeId;
+    if (this.loopBackIds.has(pick.edgeId)) this.pendingLoopBack.set(node.id, pick.edgeId);
     // ## 它是**透传**的:岔路口不换你手上的行李
     //
     // 产出 = 上游那几步的结果拼起来那一段。**这不是可有可无的** —— 它是分支下游
@@ -1242,7 +1242,7 @@ class Run {
       }
       // 抹的时机交给 `settle`(见那里的注释:抹早了会被刚落的结局盖回去)。
       // 这里返回的结局只是"落一下再抹掉"的过场,`summary` 沿用岔路口那套透传。
-      this.pendingLoopBack = ASK_REPEAT_CHOICE;
+      this.pendingLoopBack.set(node.id, ASK_REPEAT_CHOICE);
       return { outcome: { status: "success", summary: this.carriedTextOf(node.id) } };
     }
 
@@ -1674,9 +1674,11 @@ class Run {
   this.rounds = new Map<string, number>(resumed?.rounds ?? []);
   /**
    * 刚选中的那条回边 —— 环体还没抹,因为**分支自己的结局要先落定**({@link settle}
-   * 是唯一记录结局的地方,抹环得在它之后)。为 null 表示这一轮没有回头。
+   * 是唯一记录结局的地方,抹环得在它之后)。**按节点存**(同 `presetChoices`):
+   * 两个岔路口可以同时在等人,一个标量会让 B 的 settle 拿走 A 刚选的回边。没有条目
+   * 表示这个节点这一轮没有回头。
    */
-  this.pendingLoopBack = null;
+  this.pendingLoopBack = new Map<string, string>();
   /**
    * 已经知道答案的岔路口 —— 续跑时用户刚在旧卡片上点的那一下(见
    * {@link RunResume.answer})。**只生效一次**:进 `chooseOne` 时取走,回头之后同一个

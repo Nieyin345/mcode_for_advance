@@ -18,6 +18,8 @@ export const zh = {
   "store.toast.turnIncomplete": "任务提前中断",
   // 复制对话失败。正文给的是主进程抛上来的那句具体原因(引擎不支持 / 会话文件不在了),
   // 因为那是用户唯一能据此做点什么的信息。
+  "store.toast.persistFailed": "存对话记录失败(这一轮可能没保存下来)",
+  "store.toast.createChatFailed": "新建对话失败",
   "store.toast.forkFailed": "复制对话失败",
   // 发送被主进程拒绝(不是模型报错):原因是写给用户的中文短句时带上,否则只给通用说明。
   "store.toast.sendFailed": "消息未发送：{reason}",

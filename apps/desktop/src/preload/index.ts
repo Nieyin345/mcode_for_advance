@@ -700,10 +700,6 @@ const api = {
     usage: ((input) => ipcRenderer.invoke(IPC.TOOLS_USAGE, input)) as RpcMap["tools.usage"],
   },
 
-  /** Output styles (settings panel): list built-in + user styles. The
-   *  selection is persisted via the generic setting channels and applies to
-   *  Claude sessions from the next turn. */
-  /** 外部服务集成(自带 API Key)。密钥只经 setKey 出去一次,回来的一律是打码串。 */
   /** OnlyOffice Document Server：Office 文档（docx / xlsx / pptx…）可视化编辑。
    *  编辑器本体由 DS 的 api.js 在渲染端起；这里只管开会话 / 存 / 关 / 配置。 */
   onlyoffice: {

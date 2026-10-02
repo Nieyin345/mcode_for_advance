@@ -1337,8 +1337,8 @@ export const zh = {
   "settings.hooks.removeTitle": "删除「{name}」？",
   "settings.hooks.removeDesc": "这条钩子会从 hooks.json 里去掉。已经跑过的记录不受影响。",
 
-  "settings.hooks.runsTitle": "最近的执行",
-  "settings.hooks.runsEmpty": "还没有执行过。",
+  "settings.hooks.runsTitle": "本次启动以来的执行",
+  "settings.hooks.runsEmpty": "本次启动以来还没有执行过（执行记录只保存在内存里，重启后清空）。",
   "settings.hooks.sessionNode": "节点",
   "settings.hooks.runStatus.ok": "成功",
   "settings.hooks.runStatus.failed": "失败",

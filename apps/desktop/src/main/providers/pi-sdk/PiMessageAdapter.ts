@@ -74,6 +74,9 @@ export class PiMessageAdapter {
    *  the same exhausted-retry failure. Per-turn state (adapter is recreated
    *  each startTurn). */
   private errorSurfaced = false;
+  /** 本轮的 turn.done 发过没有。两个终态 agent_end(willRetry:false)只许收一次尾 ——
+   *  Claude / Codex 两边都有同样的重入护栏。 */
+  private turnDoneEmitted = false;
   /** <think>-tag splitter: current region kind. "text" outside a think tag,
    *  "thinking" inside one. See {@link emitSplitText}. */
   private thinkRegion: "text" | "thinking" = "text";
@@ -141,6 +144,8 @@ export class PiMessageAdapter {
    *  turn.done 已由 handleAgentEnd 直发，这里不重复。 */
   flushDeferredTurnDone(reason: TurnDoneReason): void {
     if (!this.deferTurnDone) return;
+    if (this.turnDoneEmitted) return;
+    this.turnDoneEmitted = true;
     this.emitTurnEndSnapshot();
     this.emit({ type: "turn.done", sessionId: this.sessionId, reason });
   }
@@ -305,6 +310,8 @@ export class PiMessageAdapter {
     this.finalTurnText = this.extractFinalAssistantText(event.messages);
     this.finalTurnReason = this.pickDoneReason(event.messages);
     if (this.deferTurnDone) return;
+    if (this.turnDoneEmitted) return;
+    this.turnDoneEmitted = true;
 
     this.emitTurnEndSnapshot();
     this.emit({

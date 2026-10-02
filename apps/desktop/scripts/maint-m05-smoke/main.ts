@@ -148,8 +148,10 @@ const u = (i: number, c: number, o: number, r = 0) => ({ inputTokens: i, cachedI
   h.send("thread/tokenUsage/updated", { threadId: SUB, turnId: "ts", tokenUsage: { last: u(95000, 0, 60), total: u(185000, 0, 110), modelContextWindow: 100_000 } });
   h.send("turn/completed", { threadId: MAIN, turn: { id: "t", status: "completed" } });
   const tu = h.events.filter((e) => e.type === "token-usage.updated");
-  eq("one turn-end snapshot", tu.length, 1);
-  const s = tu[0]?.snapshot as { usedTokens: number; totalProcessedTokens: number; outputTokens: number; cacheReadTokens: number; pct: number } | undefined;
+  // 主线程每次 tokenUsage 更新发一张(中途,供轮预算止损)+ 回合末一张;子代理的不发。
+  eq("★ mid-turn snapshots (main thread only) + one turn-end snapshot", tu.length, 3);
+  eq("★ mid-turn snapshot already counts the first request (1000 in + 100 out)", (tu[0]?.snapshot as { totalProcessedTokens: number } | undefined)?.totalProcessedTokens, 1100);
+  const s = tu[tu.length - 1]?.snapshot as { usedTokens: number; totalProcessedTokens: number; outputTokens: number; cacheReadTokens: number; pct: number } | undefined;
   eq("★ occupancy is the main thread's last request, not the subagent's", s?.usedTokens, 1300);
   eq("★ turn totalProcessed covers both requests (2300 in + 250 out)", s?.totalProcessedTokens, 2550);
   eq("★ turn outputTokens covers both requests", s?.outputTokens, 250);

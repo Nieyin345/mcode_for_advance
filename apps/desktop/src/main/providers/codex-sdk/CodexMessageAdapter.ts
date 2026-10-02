@@ -317,6 +317,11 @@ export class CodexMessageAdapter {
         if (typeof tu?.modelContextWindow === "number" && tu.modelContextWindow > 0) {
           this.modelContextWindow = tu.modelContextWindow;
         }
+        // **回合中途也发一次快照。** 以前只在 turn/completed 发,而轮预算
+        // (`RuntimeManager.enforceBudget` 读的是最近一次快照的 totalProcessedTokens / costUsd)
+        // 因此要到回合结束才看得见用量 —— 失控的 Codex 回合永远来不及止损。
+        // 这条通知是每次模型请求结束发一次(不是逐 token),频率不高。
+        this.emitUsageSnapshot();
         break;
       }
       case "error": {
@@ -352,7 +357,7 @@ export class CodexMessageAdapter {
         if (this.isForeignThread(p)) break;
         const turn = p.turn as { id?: string; status?: string } | undefined;
         const status = turn?.status ?? "completed";
-        this.emitTurnEndSnapshot();
+        this.emitUsageSnapshot();
         const reason: TurnDoneReason =
           status === "failed" ? "error" : status === "interrupted" ? "interrupted" : "end_turn";
         this.finishTurn(reason);
@@ -973,7 +978,7 @@ export class CodexMessageAdapter {
     return this.turnEnded;
   }
 
-  private emitTurnEndSnapshot(): void {
+  private emitUsageSnapshot(): void {
     const turnUsage =
       this.turnBaseTotal && this.latestTotal ? subtractUsage(this.latestTotal, this.turnBaseTotal) : null;
     const snapshot = buildCodexTokenSnapshot(

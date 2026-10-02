@@ -1344,8 +1344,8 @@ export const en = {
   "settings.hooks.removeTitle": "Delete “{name}”?",
   "settings.hooks.removeDesc": "This removes the hook from hooks.json. Past runs are not touched.",
 
-  "settings.hooks.runsTitle": "Recent runs",
-  "settings.hooks.runsEmpty": "Nothing has run yet.",
+  "settings.hooks.runsTitle": "Runs since launch",
+  "settings.hooks.runsEmpty": "Nothing has run since launch (run history is kept in memory and cleared on restart).",
   "settings.hooks.sessionNode": "node",
   "settings.hooks.runStatus.ok": "ok",
   "settings.hooks.runStatus.failed": "failed",

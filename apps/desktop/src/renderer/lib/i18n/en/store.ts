@@ -13,6 +13,8 @@ export const en = {
   "store.toast.outputTruncated": "Output may be truncated",
   "store.toast.outputTruncatedBody": "This turn reached the output limit. The response may be incomplete; review it and continue if needed.",
   "store.toast.turnIncomplete": "Task ended early",
+  "store.toast.persistFailed": "Couldn't save the conversation (this turn may not be stored)",
+  "store.toast.createChatFailed": "Couldn't create the conversation",
   "store.toast.forkFailed": "Couldn't duplicate the conversation",
   "store.toast.sendFailed": "Message not sent: {reason}",
   "store.toast.sendFailedGeneric": "Message failed to send; see the log for details",

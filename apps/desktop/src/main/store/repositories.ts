@@ -28,6 +28,7 @@ import type {
 import { basename } from "node:path";
 import { normPathKey } from "@main/lib/pathNorm.js";
 import { getDb, persist } from "./db.js";
+import { log } from "@main/lib/logger.js";
 // sessions 表的列定义/绑定/读取全在 sessionSchema.ts(单一事实来源)。
 // v / safeJson / BindValue / SessionRow 也住在那儿 —— 仓库其余部分沿用。
 import { v, safeJson, SESSION_COLUMNS, type BindValue, type SessionRow } from "./sessionSchema.js";
@@ -1044,11 +1045,20 @@ export const SessionRepo = {
    *  a dangling pointer. */
   delete(id: string): void {
     const db = getDb();
-    db.run("UPDATE sessions SET parent_session_id = NULL, updated_at = ? WHERE parent_session_id = ?", [
-      v(Date.now()),
-      v(id),
-    ]);
-    db.run("DELETE FROM sessions WHERE id = ?", [v(id)]);
+    // 两条语句同进同退:DELETE 若抛错,不能留下「子会话已摘掉父指针、主会话还在」的半状态
+    // (后面任何一次写都会把它落盘)。
+    db.run("BEGIN");
+    try {
+      db.run("UPDATE sessions SET parent_session_id = NULL, updated_at = ? WHERE parent_session_id = ?", [
+        v(Date.now()),
+        v(id),
+      ]);
+      db.run("DELETE FROM sessions WHERE id = ?", [v(id)]);
+      db.run("COMMIT");
+    } catch (err) {
+      db.run("ROLLBACK");
+      throw err;
+    }
     persist();
   },
 
@@ -1123,9 +1133,23 @@ function rowToMessage(r: MessageRow): MessageRecord {
     id: r.id,
     sessionId: r.session_id,
     role: r.role as MessageRecord["role"],
-    content: JSON.parse(r.content),
+    content: parseMessageContent(r),
     createdAt: r.created_at,
   };
+}
+
+/**
+ * 解析一行消息的正文。**不能裸 `JSON.parse`**:只要有一行是坏的(半截写入、外部改库),
+ * 它一抛,`listBySession` 整个 reject —— 不是"少一条消息",是**整条对话打不开**。
+ * 坏行降级成一张错误块(渲染端认得 `kind:"error"`),把问题明着摆出来,其余消息照常加载。
+ */
+function parseMessageContent(r: MessageRow): unknown {
+  try {
+    return JSON.parse(r.content);
+  } catch (err) {
+    log.warn(`messages: 第 ${r.id} 行(会话 ${r.session_id})正文不是合法 JSON,已降级显示: ${(err as Error).message}`);
+    return [{ kind: "error", message: `这条消息在本地库里已损坏，读不出来（id ${r.id}）。` }];
+  }
 }
 
 export const MessageRepo = {
