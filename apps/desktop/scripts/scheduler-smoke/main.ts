@@ -2446,6 +2446,14 @@ const runsOf = (h: Harness, id: string): Call[] => h.calls.filter((c) => c.id ==
   const cards = h.reports.filter((r) => r.kind === "node.settled" && r.node.id === "F");
   eq("岔路口一张结果卡都不发", cards.length, 0);
   eq("岔路口起了三次(证明真的重新派发了)", h.reports.filter((r) => r.kind === "node.started" && r.node.id === "F").length, 3);
+  // ★ 不出卡片不等于还在执行(审查 D1):每次起跑都要有一次"停下"——这里是 parked。
+  //   少了它,岔路口会一直挂在存档的在飞集合里,这时候关应用,重试就会被当成
+  //   "可能已产生副作用"拒掉。
+  eq(
+    "★ 岔路口每次选完都报 parked(三次),宿主据此移出在飞集合",
+    h.reports.filter((r) => r.kind === "node.parked" && r.node.id === "F").length,
+    3,
+  );
   // **每一轮都报一次定案** —— 调度器该报的照报(渲染端拿 `round` 决定是换卡还是
   // 插卡,见 `WorkflowNodeResultEvent.round`)。这里钉的是**上报次数**和**轮次**:
   // 少报一轮,界面就看不见那一轮;轮次数错,渲染端会把新一版当成新一轮插一张新的。

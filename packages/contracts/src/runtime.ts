@@ -323,6 +323,11 @@ export interface ContextSnapshot {
   /** Cumulative tokens processed across this turn
    *  (`input + output + cache_read + cache_creation`). May exceed maxTokens. */
   totalProcessedTokens: number;
+  /** 本轮到目前为止**所有 API 调用**的累计处理量,只给轮预算(`maxTotalTokens`)用。
+   *  Claude 的中途快照里 `totalProcessedTokens` 只是当前这一次调用的量,要靠它才能在
+   *  轮中途按真实累计止损。缺省(Codex / Pi 的快照本来就是按轮累计的)时预算读
+   *  `totalProcessedTokens`。界面不读它。 */
+  turnProcessedTokens?: number;
   /** Context-window ceiling. Prefer SDK-reported (`modelUsage[model].
    *  contextWindow`); fall back to model-name heuristic; never downgrade
    *  (doc §4). */

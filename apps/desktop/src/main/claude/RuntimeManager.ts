@@ -670,7 +670,9 @@ class RuntimeManager {
           this.settlePendingTurnEnd(session.id, rt);
           // 轮预算：tokens/usd 直接读快照 —— ContextSnapshot 本身就是按轮
           // 累计的，turn.done 后的收尾快照也走这里（此时闸已触发，空操作）。
-          rt.budgetTokens = e.snapshot.totalProcessedTokens;
+          // Claude 的中途快照另带 `turnProcessedTokens`(本轮各次调用的累计),否则
+          // 读到的只是当前这一次调用的量,预算要到轮末才看得见真实累计。
+          rt.budgetTokens = e.snapshot.turnProcessedTokens ?? e.snapshot.totalProcessedTokens;
           rt.budgetUsd = e.snapshot.costUsd ?? rt.budgetUsd;
           this.enforceBudget(session.id, rt);
         }

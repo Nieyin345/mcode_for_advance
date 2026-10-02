@@ -1787,6 +1787,8 @@ export async function startWorkflowRun(args: {
         return;
       }
       active.inFlightNodeIds.delete(e.node.id);
+      // 分支选完 / 回环抹掉:不出卡片,只是不再"在飞"。紧跟着的 publish 会把存档写出去。
+      if (e.kind === "node.parked") return;
       log.info(`workflow run ${runId}: node ${e.node.id} settled: ${e.outcome.status}`);
       // 没跑过的节点(skipped / 还没轮到就取消)没有会话,也就没有过程可看 —— 那种
       // 情况下这个字段干脆不带,卡片便不会摆一个点开是空的入口。

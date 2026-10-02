@@ -423,7 +423,14 @@ export type RunReport =
    * (`rounds` 在它的闭包里),不交出来的话渲染端只能靠"同一格又收场了"去猜,
    * 而"同一格收场两次"在续跑、重试、补花费那几条路上都会发生。
    */
-  | { kind: "node.settled"; node: WorkflowNode; outcome: NodeOutcome; round: number };
+  | { kind: "node.settled"; node: WorkflowNode; outcome: NodeOutcome; round: number }
+  /**
+   * 这一步**这一趟不出结局、也不在执行了**:分支选完(它的卡片就是那张选择卡,不补
+   * 结果卡),或者选了「再来一轮 / 重复上一个任务」、结局被抹掉等环体重跑。宿主据此把
+   * 它移出"在飞"集合 —— 不报的话它会一直挂在存档的 inFlightNodeIds 里,这时候应用
+   * 一关,重试 / 续跑就会把一个**什么都没执行**的节点当成"可能已产生副作用"拒掉。
+   */
+  | { kind: "node.parked"; node: WorkflowNode };
 
 export interface RunResult {
   /** 全成功 = success;有失败 = failed;被取消 = cancelled。
@@ -956,6 +963,7 @@ class Run {
       this.pendingLoopBack.delete(node.id);
       if (back !== undefined) {
         this.rewindLoop(node.id, back);
+        this.ports.report({ kind: "node.parked", node });
         // 抹环改的是"谁跑过了",那是别人重跑与否的依据 —— 得立刻写出去。
         this.publish();
         return;
@@ -972,6 +980,7 @@ class Run {
     // 没见过什么选择卡,它的结局(含「出路」产出)得照常上报/落流程记录 —— 吞掉的话
     // 运行历史里这一步是空的,下游也取不到 `{{那一步.出路}}`。
     if (branch && !this.isModelDeciderNode(node.id) && outcome.status === "success") {
+      this.ports.report({ kind: "node.parked", node });
       this.publish();
       return;
     }

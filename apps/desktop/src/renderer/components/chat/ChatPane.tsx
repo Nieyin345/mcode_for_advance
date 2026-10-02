@@ -3251,9 +3251,11 @@ function ChatPaneForSession({
               hasPendingPrompt && "hidden",
             )}
             onDragOver={(e) => {
-              // Only react to OUR file drag (custom MIME). External drags
-              // (text, images, files from outside the app) are ignored.
-              if (e.dataTransfer.types.includes(FILE_DRAG_MIME)) {
+              // React to OUR file drag (custom MIME) and to files dragged in
+              // from the OS (Explorer / Finder → "Files"). Plain text / links
+              // dragged from elsewhere are still left to the editor.
+              const types = e.dataTransfer.types;
+              if (types.includes(FILE_DRAG_MIME) || types.includes("Files")) {
                 e.preventDefault();
                 e.dataTransfer.dropEffect = "copy";
                 if (!dragOver) setDragOver(true);
@@ -3269,10 +3271,36 @@ function ChatPaneForSession({
             }}
             onDrop={(e) => {
               const path = e.dataTransfer.getData(FILE_DRAG_MIME);
-              if (!path) return;
+              if (path) {
+                e.preventDefault();
+                setDragOver(false);
+                setTags((prev) => [...prev, makeFileTag(path)]);
+                return;
+              }
+              // 从资源管理器拖进来的文件(审查 FZ15)。图片和粘贴一样直接作为图片发给模型;
+              // 其它文件用它在磁盘上的真实路径做文件标签,代理自己去读 —— 不复制到临时
+              // 目录(PDF / 数据文件往往很大,而且路径本身就有意义)。拿不到路径的(手机
+              // 网页端、虚拟文件)退回粘贴那条路:把内容交给主进程落到临时目录。
+              const files = Array.from(e.dataTransfer.files);
+              if (files.length === 0) return;
               e.preventDefault();
               setDragOver(false);
-              setTags((prev) => [...prev, makeFileTag(path)]);
+              const viaPaste: File[] = [];
+              const dropped: string[] = [];
+              for (const file of files) {
+                let diskPath = "";
+                if (!file.type.startsWith("image/")) {
+                  try {
+                    diskPath = api.getPathForFile(file);
+                  } catch {
+                    diskPath = "";
+                  }
+                }
+                if (diskPath) dropped.push(diskPath);
+                else viaPaste.push(file);
+              }
+              if (dropped.length > 0) setTags((prev) => [...prev, ...dropped.map((p) => makeFileTag(p))]);
+              if (viaPaste.length > 0) handlePasteFiles(viaPaste);
             }}
           >
             {queue.length > 0 && (

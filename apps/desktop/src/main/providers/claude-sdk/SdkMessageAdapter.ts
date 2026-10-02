@@ -348,6 +348,20 @@ interface AdapterState {
    *  messages then arrive usage-less and path A never fires) — this counter
    *  tells us whether the delta-level source is viable. */
   streamDeltaUsageCount: number;
+  /** 本轮每次 API 调用的处理量(input+output+cache),按调用的 message id 记,同一次
+   *  调用后到的值只会更大 —— 取较大的那个。`message_delta` 和随后那几帧 assistant
+   *  消息报的是**同一次调用**,按 id 去重,不重复计。
+   *
+   *  为什么要它:中途快照(路径 A)的 `totalProcessedTokens` 只是**当前这一次调用**的
+   *  量 —— 一轮里读二十个文件、每次都把五万上下文重处理一遍,中途快照一直停在五万上下,
+   *  预算闸(`RuntimeManager.enforceBudget`)按它比,`maxTotalTokens` 要到轮末才看到真实
+   *  累计,那时已经停不了了。这里的累加值随快照一起发出(`turnProcessedTokens`),只给
+   *  预算用;界面上显示的各项仍按原来的口径。 */
+  callProcessed: Map<string, number>;
+  /** 当前流式调用的 key(`message_start` 的 message.id;拿不到 id 时用 `anon_<序号>`)。 */
+  streamCallKey: string | null;
+  /** 没有 message id 的调用的序号(网关流有时不带 id)。 */
+  anonCallSeq: number;
   /** Whether turn.done has been emitted for this turn. Guards against double
    *  emits when both a result message and flushFinal() fire it. */
   turnDoneEmitted: boolean;
@@ -510,6 +524,9 @@ export class SdkMessageAdapter {
       pendingContextUsage: null,
       assistantMessageCount: 0,
       streamDeltaUsageCount: 0,
+      callProcessed: new Map(),
+      streamCallKey: null,
+      anonCallSeq: 0,
       turnDoneEmitted: false,
       lastResultSubtype: null,
       toolUseNames: new Map(),
@@ -1128,7 +1145,16 @@ export class SdkMessageAdapter {
     const ev = m.event;
     if (!ev) return;
 
-    if (ev.type === "content_block_start") {
+    if (ev.type === "message_start") {
+      // 记下这次调用是谁,后面 message_delta 的用量按它归账(见 callProcessed)。
+      const id = (ev as { message?: { id?: unknown } }).message?.id;
+      if (typeof id === "string" && id.length > 0) {
+        this.state.streamCallKey = id;
+      } else {
+        this.state.anonCallSeq += 1;
+        this.state.streamCallKey = `anon_${this.state.anonCallSeq}`;
+      }
+    } else if (ev.type === "content_block_start") {
       const index = (ev as { index?: number }).index;
       if (typeof index === "number") {
         this.state.blockMessageIds.set(index, randomUUID());
@@ -1248,6 +1274,7 @@ export class SdkMessageAdapter {
           },
           undefined,
           undefined,
+          this.state.streamCallKey ?? this.anonCallKey(),
         );
       }
     }
@@ -1264,6 +1291,7 @@ export class SdkMessageAdapter {
         cache_creation_input_tokens?: number;
       };
       model?: string;
+      id?: string;
     };
     const blocks = message.content;
     if (!blocks) return;
@@ -1294,6 +1322,7 @@ export class SdkMessageAdapter {
         : undefined,
       message.model,
       undefined,
+      typeof message.id === "string" && message.id.length > 0 ? message.id : this.anonCallKey(),
     );
 
     // Path B kickoff: fire off `Query.getContextUsage()` now while the CLI
@@ -1881,8 +1910,16 @@ const costUsd = m.total_cost_usd ?? (muCost > 0 ? muCost : undefined);
     usage: RawClaudeUsage | undefined,
     model: string | undefined,
     reportedWindow: number | undefined,
+    /** 这份用量属于哪一次 API 调用(路径 A 才给)。给了就计入本轮累计,见 callProcessed。 */
+    callKey?: string,
   ): void {
     if (!usage) return;
+    if (callKey !== undefined) {
+      const processed = totalProcessedTokensFromRawUsage(usage);
+      if (processed > (this.state.callProcessed.get(callKey) ?? 0)) {
+        this.state.callProcessed.set(callKey, processed);
+      }
+    }
     const snapshot = normalizeClaudeTokenUsage(
       { ...usage, model: usage.model ?? model },
       {
@@ -1897,7 +1934,15 @@ const costUsd = m.total_cost_usd ?? (muCost > 0 ? muCost : undefined);
 
   /** Emit a pre-built snapshot (used by path C's merge branch) and update
    *  the adapter's never-downgrade state. */
-  private publishTokenUsageSnapshot(snapshot: ContextSnapshot): void {
+  private publishTokenUsageSnapshot(input: ContextSnapshot): void {
+    // 预算口径:本轮各次调用的累计,和这份快照自己的 totalProcessedTokens 取大的 ——
+    // 轮末快照(result.usage 累计)本来就是全轮的;压缩后的快照只有压缩后的量,不能
+    // 让预算计数因此倒退。一次调用都没记到(网关从不报中途用量)时不加这个字段,预算
+    // 照旧读 totalProcessedTokens。
+    let soFar = 0;
+    for (const n of this.state.callProcessed.values()) soFar += n;
+    const snapshot: ContextSnapshot =
+      soFar > 0 ? { ...input, turnProcessedTokens: Math.max(soFar, input.totalProcessedTokens) } : input;
     // Update never-downgrade state BEFORE emitting so the next resolve sees
     // the new ceiling. lastKnownContextWindow only grows.
     if (snapshot.maxTokens > this.state.lastKnownContextWindow) {
@@ -1909,6 +1954,11 @@ const costUsd = m.total_cost_usd ?? (muCost > 0 ? muCost : undefined);
       sessionId: this.sessionId,
       snapshot,
     } satisfies ContextUsageEvent);
+  }
+
+  /** 没有 message id 的调用:归到当前匿名序号上(和同一次调用的流式事件同一个 key)。 */
+  private anonCallKey(): string {
+    return `anon_${this.state.anonCallSeq}`;
   }
 
 /** Emit the turn-end context-usage snapshot. Runs OFF the turn's critical
