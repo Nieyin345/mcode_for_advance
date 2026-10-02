@@ -16,7 +16,7 @@ import type { RuntimeEvent, PermissionMode, ContextSnapshot, TurnUsageRecord, Tu
 import type { Session } from "@contracts/session";
 import type { ProviderContext, TurnHandle, StartTurnRequest, UserInputAnswers, PlanApprovalDecision } from "@contracts/provider";
 import { providerRegistry } from "@main/providers/registry.js";
-import { SessionRepo, ProjectRepo, SettingRepo } from "@main/store/repositories.js";
+import { SessionRepo, ProjectRepo, SettingRepo, MessageRepo } from "@main/store/repositories.js";
 import { CustomModelStore } from "@main/lib/secretStore.js";
 import { ApprovalBridge } from "./ApprovalBridge.js";
 import { foldTranscript } from "./nodeTranscript.js";
@@ -27,7 +27,7 @@ import { mobileEventBus } from "@main/mobile/MobileEventBus.js";
 import { invalidateUsageStats } from "@main/lib/usageStats.js";
 import { log } from "@main/lib/logger.js";
 import { pendingBackflowPrompt, pendingCreationMemoryPrompt, clearBackflow, peekBackflow } from "@main/lib/pendingBackflow.js";
-import { clearAgentMail, peekAgentMailBatch, setDeliveryPort } from "@main/lib/agentMail.js";
+import { clearAgentMail, mailNoticeText, peekAgentMailBatch, setDeliveryPort, type MailNotice } from "@main/lib/agentMail.js";
 import { resolveAgentPrompt, resolveWorkflowPrompt } from "@main/orchestration/prompt.js";
 import { memorySectionFrom, type MemoryInjectionSection, type MemoryInjectionTrace } from "@contracts/memory";
 import { traceMemoryTurn } from "@main/memory/injection.js";
@@ -1520,6 +1520,25 @@ class RuntimeManager {
     return handle.inject(text);
   }
 
+  /**
+   * 把一封代理消息**画进收件会话的对话流**(一条用户侧的气泡,带「📨 来自代理…」抬头)。
+   *
+   * 信本身是拼进提示词的(插播 / 叫醒 / 下次开口),原本对话流里看不到 —— 用户只看到
+   * 代理突然开始干活。这里先落库(那个会话此刻不一定开着),再回声给各个客户端。
+   * id 带 `u_mail_` 前缀,和用户自己发的 `u_<ts>` 区分开。
+   */
+  announceAgentMail(sessionId: string, notice: MailNotice): void {
+    const createdAt = Date.now();
+    const id = `u_mail_${createdAt}_${Math.random().toString(36).slice(2, 8)}`;
+    const blocks = [{ kind: "text", text: mailNoticeText(notice) }];
+    try {
+      MessageRepo.upsertMany([{ id, sessionId, role: "user", content: blocks, createdAt }]);
+    } catch (err) {
+      log.warn(`agentMail: 消息落库失败 ${sessionId}: ${(err as Error).message}`);
+    }
+    this.echoUserMessage(sessionId, { id, createdAt, blocks });
+  }
+
   /** 这个会话此刻有没有一轮在跑(名册上那个"正在跑"标记用它)。 */
   isRunning(sessionId: string): boolean {
     return this.sessions.get(sessionId)?.handle?.isRunning() ?? false;
@@ -1878,4 +1897,5 @@ setDeliveryPort({
   inject: (sessionId, text) => runtimeManager.injectMessage(sessionId, text),
   canWake: (sessionId) => runtimeManager.canWakeSession(sessionId),
   wake: (sessionId, text) => runtimeManager.wakeSession(sessionId, text),
+  announce: (sessionId, notice) => runtimeManager.announceAgentMail(sessionId, notice),
 });

@@ -86,6 +86,41 @@ export interface DeliveryPort {
   /** 替一个**空闲的**会话起一轮。text 是提示它读收件箱的短句,
    *  信本身由运行时拼进请求;直到提供方确认启动才从收件箱移除。 */
   wake(sessionId: string, text: string): boolean;
+  /**
+   * 把这封信**画给用户看**(收件会话的对话流里出现一条"代理消息")。可选 —— 测试里的
+   * 假端口可以不实现。只管展示,不影响投递结果;失败自己吞掉。
+   *
+   * 为什么要有:插播 / 叫醒 / 排队这三档,信都是**拼进提示词**的,对话流里原本什么也
+   * 不显示 —— 用户只看到某个代理突然开始干活、或者回答里冒出一句不知从哪来的话。
+   */
+  announce?(sessionId: string, notice: MailNotice): void;
+}
+
+/** 展示用的一封信(见 {@link DeliveryPort.announce})。 */
+export interface MailNotice {
+  fromName: string;
+  fromId: string;
+  kind: Envelope["kind"];
+  text: string;
+  re?: string;
+  /** 这封信是怎么递过去的 —— 排队的要让用户知道"对方还没看到"。 */
+  outcome: Exclude<DeliveryResult["outcome"], "failed">;
+}
+
+/** 展示用的一行抬头,例如「📨 来自代理「审稿人」的提问」。 */
+export function mailNoticeText(n: MailNotice): string {
+  const what = n.kind === "ask" ? "提问" : n.re !== undefined ? "回信" : "消息";
+  const tail = n.outcome === "queued" ? "(对方正忙或被工作流管着,已排队,下次开口时带给它)" : "";
+  return `📨 来自代理「${n.fromName}」的${what}${tail}\n\n${n.text}`;
+}
+
+function announce(peerId: string, env: Envelope, outcome: MailNotice["outcome"]): void {
+  if (!port?.announce) return;
+  try {
+    port.announce(peerId, { fromName: env.fromName, fromId: env.fromId, kind: env.kind, text: env.text, re: env.re, outcome });
+  } catch (err) {
+    log.warn(`agentMail: 展示消息失败: ${(err as Error).message}`);
+  }
 }
 
 let port: DeliveryPort | null = null;
@@ -597,10 +632,12 @@ export function deliver(peer: Peer, env: Envelope): DeliveryResult {
   if (port !== null && port.isRunning(peer.id)) {
     if (port.inject(peer.id, body)) {
       bumpCount(peer.id, now);
+      announce(peer.id, env, "injected");
       return { outcome: "injected", detail: `已插进「${peer.name}」正在跑的那一轮,它下一个安全点就会看到。` };
     }
     pushInbox(peer.id, body);
     bumpCount(peer.id, now);
+    announce(peer.id, env, "queued");
     return {
       outcome: "queued",
       detail:
@@ -614,6 +651,7 @@ export function deliver(peer: Peer, env: Envelope): DeliveryResult {
   if (port === null || !port.canWake(peer.id)) {
     pushInbox(peer.id, body);
     bumpCount(peer.id, now);
+    announce(peer.id, env, "queued");
     return {
       outcome: "queued",
       detail:
@@ -632,12 +670,14 @@ export function deliver(peer: Peer, env: Envelope): DeliveryResult {
   catch (err) { log.warn(`agentMail: 叫醒 ${peer.id} 失败: ${(err as Error).message}`); }
   if (woke) {
     bumpCount(peer.id, now);
+    announce(peer.id, env, "woke");
     return { outcome: "woke", detail: `已请求叫醒「${peer.name}」;消息已暂存,引擎成功启动后它会看到。` };
   }
 
   // ⑤ 起轮没成(运行时没绑上 / 配置失效)→ 信已经在收件箱,
   //    **如实说**是排队而不是直达。
   bumpCount(peer.id, now);
+  announce(peer.id, env, "queued");
   return {
     outcome: "queued",
     detail: `没能替「${peer.name}」起轮(运行时未绑定、模型配置无效或状态刚好变化)—— 已存下,等它下次开口时带进去。`,

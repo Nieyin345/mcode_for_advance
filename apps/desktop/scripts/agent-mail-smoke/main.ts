@@ -50,6 +50,8 @@ import {
   recordAsk,
   setDeliveryPort,
   setMessageWindowMs,
+  mailNoticeText,
+  type MailNotice,
   wakeQueued,
   undeliveredCount,
   unknownPeerMessage,
@@ -183,6 +185,8 @@ const graphBlocked = new Set<string>();
 /** 记下每一次 inject / wake,断言看它。 */
 const injected: Array<{ sessionId: string; text: string }> = [];
 const woken: Array<{ sessionId: string; text: string }> = [];
+/** 记下每一次"画给用户看"(announce)。 */
+const announced: Array<{ sessionId: string; notice: MailNotice }> = [];
 /** `inject` 该不该成功(模拟引擎不支持插话的 Pi / Codex)。 */
 let injectWorks = true;
 
@@ -201,6 +205,7 @@ setDeliveryPort({
     clearAgentMail(id, batch.through);
     return true;
   },
+  announce: (id, notice) => { announced.push({ sessionId: id, notice }); },
 });
 
 /* ──────────────────── 2. 取工具 ──────────────────── */
@@ -311,6 +316,13 @@ console.log("\n④ 投递:对方在跑 → 插播;空闲且图没管着 → 叫�
   eq("★ 在跑 → injected", r1.outcome, "injected");
   eq("★ 插播真的调了 inject", injected.at(-1)?.sessionId, busy.id);
   check("★ 插播的内容带着发信人", injected.at(-1)?.text.includes(self.name) === true, injected.at(-1)?.text);
+  eq("★ 插播的信画给了用户看(收件会话)", announced.at(-1)?.sessionId, busy.id);
+  eq("…标明是插播", announced.at(-1)?.notice.outcome, "injected");
+  check("…展示文字带发信人和正文", (() => {
+    const n = announced.at(-1)?.notice;
+    const s = n ? mailNoticeText(n) : "";
+    return s.includes(self.name) && s.includes("这句要插进去") && s.includes("消息");
+  })(), announced.at(-1));
   running.delete(busy.id);
 
   // ② 空闲 + 图没管着 → 叫醒
@@ -323,6 +335,8 @@ console.log("\n④ 投递:对方在跑 → 插播;空闲且图没管着 → 叫�
   eq("★ 空闲且无图 → woke", r2.outcome, "woke");
   eq("★ 叫醒真的调了 wake", woken.at(-1)?.sessionId, idle.id);
   eq("★ 叫醒没走收件箱", peekAgentMail(idle.id), "");
+  eq("★ 叫醒的信也画给用户看", announced.at(-1)?.sessionId, idle.id);
+  eq("…标明是叫醒", announced.at(-1)?.notice.outcome, "woke");
 
   // ③ 空闲但图正管着 → 排队(替它起一轮会废掉一步产出)
   graphBlocked.add(held.id);
@@ -369,6 +383,8 @@ console.log("\n④ 投递:对方在跑 → 插播;空闲且图没管着 → 叫�
     last = deliver(flood, { fromName: self.name, fromId: self.id, kind: "notify", text: `第 ${i} 条` });
   }
   eq("★ 超过上限 → failed", last.outcome, "failed");
+  check("★ 被挡下的那条不画给用户看(没送到)", announced.at(-1)?.notice.text !== `第 ${MAX_MESSAGES_PER_SESSION} 条`, announced.at(-1));
+  check("★ 排队的信画出来时说明了还没送到", announced.at(-1)?.notice.outcome === "queued" && mailNoticeText(announced.at(-1)!.notice).includes("排队"), announced.at(-1));
   check("★ 说清了是上限", last.detail.includes("上限"), last.detail);
   check("★ 说清了多半是在兜圈子", last.detail.includes("兜圈"), last.detail);
   // 对照组:没到上限的那些**确实送到了** —— 没有它,上面两条可能只因"它什么都拒"而绿。
