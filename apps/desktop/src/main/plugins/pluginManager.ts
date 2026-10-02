@@ -37,6 +37,9 @@ import type { z } from "zod";
 import {
   BUILTIN_MARKETPLACES,
   PLUGINS_ENABLED_SETTING_KEY,
+  PLUGINS_ENGINES_SETTING_KEY,
+  PLUGIN_ENGINE_IDS,
+  PLUGIN_ENGINE_PROVIDER_IDS,
   PLUGINS_MARKETPLACES_SETTING_KEY,
   PLUGINS_MCP_DISABLED_SETTING_KEY,
   PLUGIN_NAME_RE,
@@ -46,7 +49,10 @@ import {
   McpServerConfigSchema,
   type McpServerConfig,
   type PluginComponents,
+  type PluginEcosystem,
+  type PluginEngineSwitches,
   type PluginManifest,
+  type PluginMarketEntry,
   type PluginMarketEntrySource,
   type PluginMarketplaceRecord,
   type PluginMarketplaceState,
@@ -62,6 +68,7 @@ import {
   pluginSkillsDirs,
   pluginNodeTypesDirs,
   pluginMcpFiles,
+  pluginInlineMcpServers,
   pluginVersionOf,
   summarizeComponents,
   describePluginMcp,
@@ -116,6 +123,57 @@ function readMarketplaceRecords(): PluginMarketplaceRecord[] {
 function readMcpDisabled(): Set<string> {
   const names = readJsonSetting<string[]>(PLUGINS_MCP_DISABLED_SETTING_KEY, []);
   return new Set(Array.isArray(names) ? names.filter((n) => typeof n === "string") : []);
+}
+
+/* ── Per-engine switches (plugins.engines) ──
+ * The plugin counterpart of the skill matrix: per plugin, which of the three
+ * local engines receive it. Stored sparse — only plugins with at least one
+ * engine OFF have an entry, and a missing engine key reads as ON — so plugins
+ * installed before this existed keep delivering exactly as before. */
+
+type PluginEnginesMap = Record<string, Partial<PluginEngineSwitches>>;
+
+function readPluginEnginesMap(): PluginEnginesMap {
+  const raw = readJsonSetting<unknown>(PLUGINS_ENGINES_SETTING_KEY, {});
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as PluginEnginesMap) : {};
+}
+
+/** The user's switches for one plugin, all three resolved (missing = on). */
+export function pluginEngineSwitches(
+  name: string,
+  map: PluginEnginesMap = readPluginEnginesMap(),
+): PluginEngineSwitches {
+  const stored = map[name];
+  const e = stored && typeof stored === "object" ? stored : {};
+  return { claude: e.claude !== false, codex: e.codex !== false, pi: e.pi !== false };
+}
+
+/** `compatible` narrowed to the engines switched on. Provider ids outside the
+ *  three local engines (none today) pass through untouched. */
+function narrowToEngines(compatible: string[], switches: PluginEngineSwitches): string[] {
+  return compatible.filter((providerId) => {
+    const engine = PLUGIN_ENGINE_IDS.find((id) => PLUGIN_ENGINE_PROVIDER_IDS[id] === providerId);
+    return engine ? switches[engine] : true;
+  });
+}
+
+/** Update one plugin's engine switches (omitted engines keep their value).
+ *  Lands on the next turn start, like enable/disable. */
+export function setPluginEngines(
+  name: string,
+  patch: Partial<PluginEngineSwitches>,
+): { ok: boolean; error?: string } {
+  if (!PLUGIN_NAME_RE.test(name) || isReservedPluginName(name)) return { ok: false, error: "非法插件名" };
+  if (!installedRootOf(name)) return { ok: false, error: `插件 ${name} 未安装` };
+  const map = readPluginEnginesMap();
+  const next = pluginEngineSwitches(name, map);
+  for (const id of PLUGIN_ENGINE_IDS) {
+    if (typeof patch[id] === "boolean") next[id] = patch[id] as boolean;
+  }
+  if (PLUGIN_ENGINE_IDS.every((id) => next[id])) delete map[name];
+  else map[name] = next;
+  writeJsonSetting(PLUGINS_ENGINES_SETTING_KEY, map);
+  return { ok: true };
 }
 
 /* ── Process helpers (git / unzip) ── */
@@ -462,7 +520,11 @@ export function compatibleProviderIdsForPlugin(
 
 /** Build one PluginState row; null when the directory holds no valid
  *  manifest (orphans from interrupted installs are invisible by design). */
-function toPluginState(rootDir: string, enabled: Set<string>): PluginState | null {
+function toPluginState(
+  rootDir: string,
+  enabled: Set<string>,
+  enginesMap: PluginEnginesMap = readPluginEnginesMap(),
+): PluginState | null {
   let resolved;
   try {
     resolved = findPluginManifest(rootDir);
@@ -472,6 +534,8 @@ function toPluginState(rootDir: string, enabled: Set<string>): PluginState | nul
   if (!resolved) return null;
   const record = readInstallRecord(rootDir);
   const components = summarizeComponents(rootDir, resolved.manifest);
+  const compatibleProviderIds = compatibleProviderIdsForPlugin(resolved.manifest, components);
+  const engines = pluginEngineSwitches(resolved.manifest.name, enginesMap);
   return {
     name: resolved.manifest.name,
     version: pluginVersionOf(resolved.manifest),
@@ -481,7 +545,9 @@ function toPluginState(rootDir: string, enabled: Set<string>): PluginState | nul
     installedAt: record?.installedAt ?? "",
     source: record?.source ?? { kind: "unknown", ref: "" },
     components,
-    compatibleProviderIds: compatibleProviderIdsForPlugin(resolved.manifest, components),
+    compatibleProviderIds,
+    engines,
+    deliveredProviderIds: narrowToEngines(compatibleProviderIds, engines),
   };
 }
 
@@ -489,6 +555,7 @@ function toPluginState(rootDir: string, enabled: Set<string>): PluginState | nul
 export function listPlugins(): PluginState[] {
   const enabled = new Set(readEnabledPlugins());
   if (!existsSync(PLUGINS_ROOT)) return [];
+  const enginesMap = readPluginEnginesMap();
   const out: PluginState[] = [];
   for (const entry of readdirSync(PLUGINS_ROOT)) {
     // Skip housekeeping dirs (marketplaces / staging / dotfiles).
@@ -496,7 +563,7 @@ export function listPlugins(): PluginState[] {
     if (!PLUGIN_NAME_RE.test(entry)) continue;
     const rootDir = installedRootOf(entry);
     if (!rootDir) continue;
-    const state = toPluginState(rootDir, enabled);
+    const state = toPluginState(rootDir, enabled, enginesMap);
     if (state) out.push(state);
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));
@@ -768,6 +835,11 @@ export function removePlugin(name: string): { ok: boolean; error?: string } {
     /* 已经挪出插件目录、不会再被加载;残留的临时目录不影响使用 */
   }
   writeEnabledPlugins(readEnabledPlugins().filter((n) => n !== name));
+  const enginesMap = readPluginEnginesMap();
+  if (name in enginesMap) {
+    delete enginesMap[name];
+    writeJsonSetting(PLUGINS_ENGINES_SETTING_KEY, enginesMap);
+  }
   // Drop this plugin's per-server MCP toggles (namespaced `<name>__`).
   const mcpDisabled = [...readMcpDisabled()].filter((n) => !n.startsWith(`${name}__`));
   writeJsonSetting(PLUGINS_MCP_DISABLED_SETTING_KEY, mcpDisabled);
@@ -843,11 +915,45 @@ function ensureBuiltinMarketplaceRecords(
  *  shapes and keeps adding new ones, so ONE unrecognized entry must not blank
  *  the whole catalog — when the strict schema rejects the manifest, entries
  *  are re-validated individually and only the bad ones are skipped. */
+/** Manifest files probed in a marketplace tree, in order, with the ecosystem
+ *  each layout belongs to. Codex catalogs (openai/plugins) keep theirs under
+ *  `.agents/plugins/`; `api_marketplace.json` is the list Codex shows to
+ *  API-key logins — Mcode's Codex runs that way — so it wins over the
+ *  ChatGPT-login `marketplace.json` (which adds app-only plugins). */
+const MARKETPLACE_MANIFEST_CANDIDATES: ReadonlyArray<{ rel: string; ecosystem: PluginEcosystem }> = [
+  { rel: path.join(".claude-plugin", "marketplace.json"), ecosystem: "claude" },
+  { rel: "marketplace.json", ecosystem: "claude" },
+  { rel: path.join(".agents", "plugins", "api_marketplace.json"), ecosystem: "codex" },
+  { rel: path.join(".agents", "plugins", "marketplace.json"), ecosystem: "codex" },
+];
+
+/** Ecosystem of a marketplace tree from its manifest layout (null: none). */
+function marketplaceEcosystemOf(dir: string): PluginEcosystem | null {
+  const hit = MARKETPLACE_MANIFEST_CANDIDATES.find((c) => existsSync(path.join(dir, c.rel)));
+  return hit ? hit.ecosystem : null;
+}
+
+const ZCODE_MARKETPLACE_URL = normalizeGitUrl(
+  BUILTIN_MARKETPLACES.find((b) => b.name === "zcode-plugins-official")?.url ?? "",
+);
+const CODEX_MARKETPLACE_URL = normalizeGitUrl(
+  BUILTIN_MARKETPLACES.find((b) => b.name === "codex-plugins-official")?.url ?? "",
+);
+
+/** Ecosystem shown on a marketplace tab: the manifest layout once cloned; the
+ *  built-in URL decides before that (and marks ZCode's Claude-layout catalog). */
+function recordEcosystem(rec: PluginMarketplaceRecord, dir: string): PluginEcosystem | undefined {
+  const url = rec.source.kind === "git" ? normalizeGitUrl(rec.source.ref) : "";
+  if (url && url === ZCODE_MARKETPLACE_URL) return "zcode";
+  const fromTree = existsSync(dir) ? marketplaceEcosystemOf(dir) : null;
+  if (fromTree) return fromTree;
+  if (url && url === CODEX_MARKETPLACE_URL) return "codex";
+  if (url && BUILTIN_MARKETPLACE_URLS.has(url)) return "claude";
+  return undefined;
+}
+
 function readMarketplaceManifest(dir: string) {
-  const candidates = [
-    path.join(dir, ".claude-plugin", "marketplace.json"),
-    path.join(dir, "marketplace.json"),
-  ];
+  const candidates = MARKETPLACE_MANIFEST_CANDIDATES.map((c) => path.join(dir, c.rel));
   for (const file of candidates) {
     if (!existsSync(file)) continue;
     try {
@@ -925,7 +1031,9 @@ export async function addMarketplace(input: {
     await materializeMarketplaceTree({ kind: input.kind, ref: input.ref }, staging);
     const manifest = readMarketplaceManifest(staging);
     if (!manifest) {
-      throw new Error("marketplace 清单缺失或无效(需要 .claude-plugin/marketplace.json)");
+      throw new Error(
+        "marketplace 清单缺失或无效(需要 .claude-plugin/marketplace.json 或 Codex 的 .agents/plugins/marketplace.json)",
+      );
     }
     const rawName = input.name ?? manifest.name ?? sanitizeMarketplaceName(input.ref);
     if (!PLUGIN_NAME_RE.test(rawName)) {
@@ -1002,6 +1110,25 @@ export function listMarketplaces(): PluginMarketplaceState[] {
   return ensureBuiltinMarketplaceRecords(readMarketplaceRecords()).map((rec) => {
     const dir = marketplaceDirOf(rec.name);
     const manifest = existsSync(dir) ? readMarketplaceManifest(dir) : null;
+    const ecosystem = recordEcosystem(rec, dir);
+    const plugins: PluginMarketEntry[] = [];
+    for (const e of manifest?.plugins ?? []) {
+      // Codex entry policy: NOT_AVAILABLE entries are hidden by Codex itself.
+      if (entryInstallPolicy(e) === "NOT_AVAILABLE") continue;
+      const local = localEntryPath(e.source);
+      const peek = local !== null ? peekMarketplaceEntry(dir, local) : null;
+      plugins.push({
+        marketplace: rec.name,
+        name: e.name,
+        // Codex catalogs carry no description/version in the entry — the
+        // plugin's own manifest (already in the cloned tree) has them.
+        description: e.description || peek?.description || "",
+        version: e.version || peek?.version || "",
+        installed: installed.has(e.name),
+        ...(peek ? { compatibleProviderIds: peek.compatibleProviderIds } : {}),
+        ...(peek?.appsOnly ? { appsOnly: true } : {}),
+      });
+    }
     return {
       name: rec.name,
       sourceKind: rec.source.kind,
@@ -1009,15 +1136,77 @@ export function listMarketplaces(): PluginMarketplaceState[] {
       addedAt: rec.addedAt,
       builtin: rec.builtin === true,
       cloned: existsSync(dir),
-      plugins: (manifest?.plugins ?? []).map((e) => ({
-        marketplace: rec.name,
-        name: e.name,
-        description: e.description ?? "",
-        version: e.version ?? "",
-        installed: installed.has(e.name),
-      })),
+      ...(ecosystem ? { ecosystem } : {}),
+      plugins,
     };
   });
+}
+
+/** `policy.installation` of a Codex marketplace entry (undefined elsewhere). */
+function entryInstallPolicy(entry: object): string | undefined {
+  const policy = (entry as { policy?: unknown }).policy;
+  if (!policy || typeof policy !== "object") return undefined;
+  const installation = (policy as { installation?: unknown }).installation;
+  return typeof installation === "string" ? installation : undefined;
+}
+
+/** The marketplace-relative path of a local entry source (bare string or
+ *  Codex `{source:"local", path}`), or null for remote sources. */
+function localEntryPath(src: PluginMarketEntrySource): string | null {
+  if (typeof src === "string") return src;
+  return src.source === "local" ? src.path : null;
+}
+
+interface MarketEntryPeek {
+  description: string;
+  version: string;
+  compatibleProviderIds: string[];
+  appsOnly: boolean;
+}
+
+/** Peek cache, keyed by the entry's directory + its mtime: a refresh re-clones
+ *  the catalog (new directory mtime), so stale results cannot survive it. */
+const marketPeekCache = new Map<string, { mtimeMs: number; peek: MarketEntryPeek | null }>();
+
+/** Inspect a local-path marketplace entry inside the cloned catalog, so the
+ *  catalog can say which engines can use it BEFORE install. Null when the path
+ *  escapes the catalog, is missing, or holds no valid manifest. */
+function peekMarketplaceEntry(dir: string, rel: string): MarketEntryPeek | null {
+  if (path.isAbsolute(rel)) return null;
+  const abs = path.resolve(dir, rel);
+  const back = path.relative(dir, abs);
+  if (!back || back.startsWith("..") || path.isAbsolute(back)) return null;
+  let mtimeMs: number;
+  try {
+    mtimeMs = statSync(abs).mtimeMs;
+  } catch {
+    return null;
+  }
+  const cached = marketPeekCache.get(abs);
+  if (cached && cached.mtimeMs === mtimeMs) return cached.peek;
+  let peek: MarketEntryPeek | null = null;
+  try {
+    const resolved = findPluginManifest(abs);
+    if (resolved) {
+      const components = summarizeComponents(abs, resolved.manifest);
+      const usable =
+        components.skills.length +
+        components.commands.length +
+        components.agents.length +
+        components.hooks.length +
+        components.mcpServers.length;
+      peek = {
+        description: resolved.manifest.description ?? "",
+        version: resolved.manifest.version ?? "",
+        compatibleProviderIds: compatibleProviderIdsForPlugin(resolved.manifest, components),
+        appsOnly: usable === 0 && (components.apps?.length ?? 0) > 0,
+      };
+    }
+  } catch {
+    peek = null;
+  }
+  marketPeekCache.set(abs, { mtimeMs, peek });
+  return peek;
 }
 
 /** True when a marketplace `{source:"url"}` points at a downloadable archive
@@ -1055,18 +1244,19 @@ function resolveMarketplaceEntrySource(
   if (!entry) throw new Error(`marketplace ${marketplaceName} 中没有插件 ${entryName}`);
 
   const src: PluginMarketEntrySource = entry.source;
-  if (typeof src === "string") {
-    if (path.isAbsolute(src)) throw new Error("marketplace 条目 source 不允许绝对路径");
-    const abs = path.resolve(dir, src);
+  if (typeof src === "string" || src.source === "local") {
+    const localRel = typeof src === "string" ? src : src.path;
+    if (path.isAbsolute(localRel)) throw new Error("marketplace 条目 source 不允许绝对路径");
+    const abs = path.resolve(dir, localRel);
     const rel = path.relative(dir, abs);
     if (rel.startsWith("..") || path.isAbsolute(rel)) {
       throw new Error("marketplace 条目 source 逃逸出 marketplace 目录");
     }
-    if (!existsSync(abs)) throw new Error(`marketplace 条目路径不存在:${src}`);
+    if (!existsSync(abs)) throw new Error(`marketplace 条目路径不存在:${localRel}`);
     return {
       kind: "marketplace-path",
       ref: abs,
-      info: { kind: "marketplace", ref: `${marketplaceName}:${src}` },
+      info: { kind: "marketplace", ref: `${marketplaceName}:${localRel}` },
     };
   }
   if (src.source === "github") {
@@ -1123,6 +1313,9 @@ export interface EnabledPlugin {
   name: string;
   rootDir: string;
   manifest: PluginManifest;
+  /** Providers this plugin is DELIVERED to: what its components allow
+   *  ({@link compatibleProviderIdsForPlugin}) narrowed by the user's per-engine
+   *  switches (plugins.engines). Every delivery point filters on this. */
   compatibleProviderIds: string[];
   /** True when the plugin declares hooks (parsed for display; v1 never
    *  executes them — the Claude provider's disableAllHooks is the backstop). */
@@ -1149,6 +1342,7 @@ export interface EnabledPlugin {
 export async function getEnabledPlugins(): Promise<EnabledPlugin[]> {
   const enabledNames = new Set(readEnabledPlugins());
   if (enabledNames.size === 0) return [];
+  const enginesMap = readPluginEnginesMap();
   const out: EnabledPlugin[] = [];
   for (const name of enabledNames) {
     const rootDir = installedRootOf(name);
@@ -1163,7 +1357,10 @@ export async function getEnabledPlugins(): Promise<EnabledPlugin[]> {
         rootDir,
         manifest: resolved.manifest,
         hasHooks,
-        compatibleProviderIds: compatibleProviderIdsForPlugin(resolved.manifest, components),
+        compatibleProviderIds: narrowToEngines(
+          compatibleProviderIdsForPlugin(resolved.manifest, components),
+          pluginEngineSwitches(resolved.manifest.name, enginesMap),
+        ),
       });
     } catch {
       /* invalid manifest on disk — skip this plugin for this turn */
@@ -1241,7 +1438,7 @@ export async function getEnabledPluginNodeTypeSources(): Promise<PluginNodeTypeS
  *  plugin (the manifest may declare multiple — Claude's string[] form).
  *  Unreadable files are skipped, never fatal. */
 function readPluginMcpEntries(p: EnabledPlugin): Array<[string, unknown]> {
-  const out: Array<[string, unknown]> = [];
+  const out: Array<[string, unknown]> = Object.entries(pluginInlineMcpServers(p.manifest) ?? {});
   for (const file of pluginMcpFiles(p.rootDir, p.manifest)) {
     let cfg: unknown;
     try {

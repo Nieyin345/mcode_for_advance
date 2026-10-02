@@ -37,6 +37,34 @@ export const PLUGINS_MARKETPLACES_SETTING_KEY = "plugins.marketplaces";
  *  (namespaced `<plugin>__<server>` names). Value = JSON.stringify(string[]). */
 export const PLUGINS_MCP_DISABLED_SETTING_KEY = "plugins.mcpDisabled";
 
+/** Per-plugin, per-engine switches — the plugin counterpart of the skill
+ *  matrix (Settings → 技能). Value = JSON.stringify(Record<pluginName,
+ *  Partial<PluginEngineSwitches>>). A missing plugin / missing engine key means
+ *  ON, so plugins installed before this key existed keep their old delivery. The
+ *  switch can only NARROW delivery: an engine the plugin has nothing for (see
+ *  `PluginState.compatibleProviderIds`) never receives it, whatever is stored. */
+export const PLUGINS_ENGINES_SETTING_KEY = "plugins.engines";
+
+/** The three local engines a plugin can be delivered to. */
+export const PLUGIN_ENGINE_IDS = ["claude", "codex", "pi"] as const;
+export type PluginEngineId = (typeof PLUGIN_ENGINE_IDS)[number];
+
+/** Engine id → the provider id the delivery queries filter on. */
+export const PLUGIN_ENGINE_PROVIDER_IDS: Readonly<Record<PluginEngineId, string>> = {
+  claude: "claude-sdk",
+  codex: "codex-sdk",
+  pi: "pi-sdk",
+};
+
+/** The user's per-engine switches for one plugin (all three resolved). */
+export type PluginEngineSwitches = Record<PluginEngineId, boolean>;
+
+/** Which plugin ecosystem a marketplace catalog belongs to (from where its
+ *  manifest lives): `.claude-plugin/marketplace.json` → claude,
+ *  `.agents/plugins/*.json` → codex; the ZCode catalog uses the Claude layout
+ *  and is recognized by its built-in URL. */
+export type PluginEcosystem = "claude" | "codex" | "zcode";
+
 /* ── Built-in marketplaces ── */
 
 /** Marketplaces Mcode ships with: the canonical catalogs of the two plugin
@@ -56,6 +84,10 @@ export const BUILTIN_MARKETPLACES: ReadonlyArray<{ name: string; url: string }> 
     name: "claude-plugins-official",
     url: "https://github.com/anthropics/claude-plugins-official",
   },
+  // OpenAI's curated Codex catalog (`.agents/plugins/*.json`, local-path
+  // entries). Its plugins carry skills / MCP (usable by Codex — and by Claude/Pi
+  // where the component allows) plus ChatGPT "apps", which Mcode cannot run.
+  { name: "codex-plugins-official", url: "https://github.com/openai/plugins" },
 ];
 
 /* ── Manifest (plugin.json) ── */
@@ -104,10 +136,21 @@ export const PluginManifestSchema = z
     commands: z.union([z.string(), z.array(z.string())]).optional(),
     /** Agents directory name(s) (default "agents"). */
     agents: z.union([z.string(), z.array(z.string())]).optional(),
-    /** Hooks definition file(s), relative (default "hooks/hooks.json"). */
-    hooks: z.union([z.string(), z.array(z.string())]).optional(),
-    /** MCP servers definition file(s), relative (default ".mcp.json" at root). */
-    mcpServers: z.union([z.string(), z.array(z.string())]).optional(),
+    /** Hooks definition file(s), relative (default "hooks/hooks.json"), or the
+     *  hooks config inline (Claude's plugin.json allows an object; Codex
+     *  plugins such as superpowers ship `"hooks": {}`). */
+    hooks: z
+      .union([z.string(), z.array(z.string()), z.record(z.string(), z.unknown())])
+      .optional(),
+    /** MCP servers definition file(s), relative (default ".mcp.json" at root),
+     *  or an inline `{ "<server>": config }` map (Claude's object form). */
+    mcpServers: z
+      .union([z.string(), z.array(z.string()), z.record(z.string(), z.unknown())])
+      .optional(),
+    /** Codex "apps" (ChatGPT connectors) definition file (default ".app.json").
+     *  Counted for display only — they need a ChatGPT-account Codex login and
+     *  no Mcode engine can run them. */
+    apps: z.union([z.string(), z.array(z.string())]).optional(),
     /** Mcode 工作流节点类型的定义目录 (default "node-types"). Unlike the other
      *  component fields this one is consumed by **Mcode itself**, not forwarded
      *  to a provider — see packages/contracts/src/nodeType.ts for the manifest
@@ -132,6 +175,11 @@ export type PluginManifest = z.infer<typeof PluginManifestSchema>;
  *  skips such entries individually instead of dropping the whole catalog. */
 export const PluginMarketEntrySourceSchema = z.union([
   z.string(),
+  // Codex marketplaces (`.agents/plugins/marketplace.json`): a path relative to
+  // the marketplace root, wrapped — same resolution as the bare string form.
+  z
+    .object({ source: z.literal("local"), path: z.string().min(1) })
+    .passthrough(),
   z
     .object({ source: z.literal("github"), repo: z.string().min(1) })
     .passthrough(),
@@ -237,6 +285,10 @@ export interface PluginComponents {
   agents: PluginAgentSummary[];
   hooks: PluginHookSummary[];
   mcpServers: PluginMcpServerSummary[];
+  /** Codex "apps" (ChatGPT connectors) declared by the plugin — names only.
+   *  Never delivered: they need a ChatGPT-account Codex login. Optional so older
+   *  summaries (and test fixtures) stay valid. */
+  apps?: string[];
 }
 
 /* ── Panel state ── */
@@ -266,6 +318,12 @@ export interface PluginState {
    * of this plugin. Missing means an older host that did not expose this
    * metadata; clients must keep the row visible for compatibility. */
   compatibleProviderIds?: string[];
+  /** The user's per-engine switches (PLUGINS_ENGINES_SETTING_KEY), all three
+   *  resolved — missing in storage means on. Missing here means an older host. */
+  engines?: PluginEngineSwitches;
+  /** What is actually delivered when the plugin is enabled:
+   *  `compatibleProviderIds` ∩ the engines switched on. */
+  deliveredProviderIds?: string[];
 }
 
 /** A marketplace added by the user (or materialized from BUILTIN_MARKETPLACES).
@@ -286,6 +344,13 @@ export interface PluginMarketEntry {
   description: string;
   version: string;
   installed: boolean;
+  /** Provider ids the entry would be usable by, when it could be inspected
+   *  before install (local-path entries whose tree is in the cloned catalog).
+   *  Missing = unknown until installed (remote git / url sources). */
+  compatibleProviderIds?: string[];
+  /** True when the inspected entry carries ONLY Codex apps (ChatGPT
+   *  connectors) — nothing any Mcode engine can use. */
+  appsOnly?: boolean;
 }
 
 /** Marketplace panel state (records joined with their parsed manifests). */
@@ -301,6 +366,9 @@ export interface PluginMarketplaceState {
    *  built-in is listed before its first clone, so the panel can say "拉取中 /
    *  待拉取" instead of the misleading "清单为空或无法解析". */
   cloned: boolean;
+  /** Plugin ecosystem of the catalog (manifest layout); missing until cloned
+   *  for catalogs that are not built-in. */
+  ecosystem?: PluginEcosystem;
   plugins: PluginMarketEntry[];
 }
 
@@ -337,6 +405,16 @@ export const PluginsSetEnabledSchema = z.object({
   enabled: z.boolean(),
 });
 export type PluginsSetEnabledInput = z.infer<typeof PluginsSetEnabledSchema>;
+
+/** Per-engine switches of one plugin (the skill matrix's `enginesSet`
+ *  counterpart). Omitted engines keep their current value. */
+export const PluginsEnginesSetSchema = z.object({
+  name: z.string().regex(PLUGIN_NAME_RE),
+  claude: z.boolean().optional(),
+  codex: z.boolean().optional(),
+  pi: z.boolean().optional(),
+});
+export type PluginsEnginesSetInput = z.infer<typeof PluginsEnginesSetSchema>;
 
 /** Uninstall: deletes every installed version + clears enable/disable state.
  *  Rejected while any turn is running (a live turn may reference the files). */

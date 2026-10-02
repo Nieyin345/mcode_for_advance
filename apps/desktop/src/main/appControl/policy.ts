@@ -66,6 +66,7 @@ const DANGER: Record<string, string> = {
   "plugins.installMarketplace": "从市场安装插件",
   "plugins.remove": "卸载插件",
   "plugins.setEnabled": "启用/停用插件",
+  "plugins.enginesSet": "改插件对各引擎的投递",
   "plugins.marketplaceAdd": "添加插件市场源",
   "plugins.marketplaceRemove": "移除插件市场源",
   "plugins.marketplaceRefresh": "刷新插件市场(会联网拉取)",

@@ -1,5 +1,5 @@
 /**
- * 无头 smoke:**`main/ipc/plugins.ts`** —— 插件面板那 10 条 RPC 的那一层。
+ * 无头 smoke:**`main/ipc/plugins.ts`** —— 插件面板那 11 条 RPC 的那一层。
  *
  * ## 为什么单独一套
  *
@@ -7,7 +7,7 @@
  * (它自己 import `installFromLocal` 直接调)。`smokes-for.sh src/main/ipc/plugins.ts`
  * 的回答是「没有套件覆盖它」—— `ipc/plugins.ts` 这一层**零覆盖**:
  *
- *   - 10 条 channel 有没有全注册、返回形状对不对得上 `RpcMap` 契约;
+ *   - 11 条 channel 有没有全注册、返回形状对不对得上 `RpcMap` 契约;
  *   - 输入 schema 把坏东西挡住时,**是显式报还是静默当没看见**;
  *   - 「还有回合在跑就不许卸载」那道闸门;
  *   - 卸载之后盘上/设置表里有没有留下半截东西。
@@ -246,13 +246,14 @@ const asOk = (r: unknown) => r as OkRes;
 
 /* ────────────────────────── 1. 接线 ────────────────────────── */
 
-console.log("\n[1] 十条 channel 各就各位,返回形状对得上契约");
+console.log("\n[1] 十一条 channel 各就各位,返回形状对得上契约");
 const CHANNELS = [
   "PLUGINS_LIST",
   "PLUGINS_INSTALL_LOCAL",
   "PLUGINS_INSTALL_GIT",
   "PLUGINS_INSTALL_MARKETPLACE",
   "PLUGINS_SET_ENABLED",
+  "PLUGINS_ENGINES_SET",
   "PLUGINS_REMOVE",
   "PLUGINS_MARKETPLACE_LIST",
   "PLUGINS_MARKETPLACE_ADD",
@@ -419,6 +420,18 @@ const notInstalled = asOk(await call(IPC.PLUGINS_SET_ENABLED, { name: "never-ins
 eq("启用一个没装的插件 → ok:false", notInstalled.ok, false);
 check("…并且说清了是「未安装」", (notInstalled.error ?? "").includes("未安装"), notInstalled);
 
+/* 按引擎开关(plugins.enginesSet):只存关掉的,全开就不留记录 */
+const enginesOf = (): Record<string, unknown> => {
+  const raw = SettingRepo.__dump()["plugins.engines"];
+  return raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+};
+eq("关掉 Codex → ok", asOk(await call(IPC.PLUGINS_ENGINES_SET, { name: "canonical-wins", codex: false })).ok, true);
+same("引擎表里记下了这一条", enginesOf(), { "canonical-wins": { claude: true, codex: false, pi: true } });
+await call(IPC.PLUGINS_ENGINES_SET, { name: "canonical-wins", codex: true });
+same("重新全开 → 引擎表是空的", enginesOf(), {});
+const enginesNotInstalled = asOk(await call(IPC.PLUGINS_ENGINES_SET, { name: "never-installed", pi: false }));
+eq("给没装的插件开关引擎 → ok:false", enginesNotInstalled.ok, false);
+
 const mpSrc = mkMarketplace("mp-a", { name: "marketplace-a", plugins: [] });
 const mpAdd1 = asOk(await call(IPC.PLUGINS_MARKETPLACE_ADD, { kind: "local", ref: mpSrc }));
 const mpAdd2 = asOk(await call(IPC.PLUGINS_MARKETPLACE_ADD, { kind: "local", ref: mpSrc }));
@@ -440,7 +453,7 @@ same(
   ((await call(IPC.PLUGINS_MARKETPLACE_LIST)) as { marketplaces: Array<{ name: string }> }).marketplaces
     .map((m) => m.name)
     .sort(),
-  ["claude-plugins-official", "marketplace-a", "user-picked-name", "zcode-plugins-official"],
+  ["claude-plugins-official", "codex-plugins-official", "marketplace-a", "user-picked-name", "zcode-plugins-official"],
 );
 check(
   "…覆写生效:记录用的是用户给的名字,不是清单里的 manifest-says-this",
@@ -614,6 +627,7 @@ for (const [label, ch, raw, needle] of [
   ["remove 的名字带路径分隔符", IPC.PLUGINS_REMOVE, { name: "../evil" }, "name"],
   ["setEnabled 的名字是空的", IPC.PLUGINS_SET_ENABLED, { name: "", enabled: true }, "name"],
   ["setEnabled 的 enabled 不是布尔", IPC.PLUGINS_SET_ENABLED, { name: "ok", enabled: "yes" }, "enabled"],
+  ["enginesSet 的 codex 不是布尔", IPC.PLUGINS_ENGINES_SET, { name: "ok", codex: "no" }, "codex"],
   ["installLocal 的 localPath 是空的", IPC.PLUGINS_INSTALL_LOCAL, { localPath: "" }, "localPath"],
   ["installGit 缺 url", IPC.PLUGINS_INSTALL_GIT, {}, "url"],
   ["marketplaceAdd 的 kind 不在枚举里", IPC.PLUGINS_MARKETPLACE_ADD, { kind: "ftp", ref: "x" }, "kind"],

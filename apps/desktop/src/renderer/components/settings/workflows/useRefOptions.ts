@@ -319,10 +319,13 @@ function usePluginOptions(enabled: boolean, providerId: string | undefined): Ref
   return useLoadedOptions(enabled, `plugins:${wanted}`, async () => {
     const { plugins } = await api.plugins.list();
     return (plugins ?? [])
-      .filter((p) =>
-        p.enabled &&
-        (p.compatibleProviderIds === undefined || p.compatibleProviderIds.includes(wanted)),
-      )
+      .filter((p) => {
+        if (!p.enabled) return false;
+        // deliveredProviderIds = what the plugin can feed ∩ the engines the user
+        // left on in the plugin panel; older hosts only send compatibleProviderIds.
+        if (p.deliveredProviderIds) return p.deliveredProviderIds.includes(wanted);
+        return p.compatibleProviderIds === undefined || p.compatibleProviderIds.includes(wanted);
+      })
       .map((p) => ({
         id: p.name,
         label: p.name,

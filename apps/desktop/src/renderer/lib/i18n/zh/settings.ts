@@ -694,7 +694,8 @@ export const zh = {
   "settings.plugins.empty":
     "还没有安装插件。切到「插件市场」浏览,或用右上角「安装」从 git 仓库 / 本地目录 / zip 包安装。",
   "settings.plugins.installedSection": "已安装",
-  "settings.plugins.installedSectionDesc": "启用后自下一回合起生效;展开行可见各引擎的可用组件。",
+  "settings.plugins.installedSectionDesc":
+    "启用后自下一回合起生效;行尾 Claude / Codex / Pi 可按引擎开关,展开行可见每个引擎收到什么。",
   "settings.plugins.searchPlaceholder": "搜索插件或组件…",
   "settings.plugins.searchEmpty": "没有匹配「{query}」的插件",
   "settings.plugins.filterAll": "全部",
@@ -733,10 +734,22 @@ export const zh = {
   "settings.plugins.cmpMcp": "MCP",
   "settings.plugins.cmpHooks": "Hooks",
   "settings.plugins.noComponents": "未声明可识别组件",
-  "settings.plugins.matrixSkills": "Skills:Claude / Codex / Pi",
-  "settings.plugins.matrixMcp": "MCP:Claude / Codex",
-  "settings.plugins.matrixCommands": "Commands / Agents:仅 Claude",
-  "settings.plugins.matrixHooks": "Hooks:当前不执行",
+  "settings.plugins.cmpApps": "Apps",
+  "settings.plugins.appsNote":
+    "{n} 个 ChatGPT 应用(连接器)只在登录 ChatGPT 账号的 Codex 里可用,Mcode 的三个引擎都不会收到。",
+  "settings.plugins.engineFilterAll": "全部引擎",
+  "settings.plugins.engineFilterEmpty": "没有投递给 {engine} 的插件。",
+  "settings.plugins.engineSection": "引擎投递",
+  "settings.plugins.engineSectionDesc":
+    "和技能一样按引擎开关,下一回合起生效。Claude 收到技能 / 命令 / 子代理 / MCP(hooks 不执行),Codex 收到技能和 MCP,Pi 只收到技能。",
+  "settings.plugins.engineToggle": "{engine} 使用插件 {name}",
+  "settings.plugins.engineOn": "{engine}:收到 {what}(点击关闭)",
+  "settings.plugins.engineOff": "{engine}:已关闭(点击开启)",
+  "settings.plugins.engineDeclared": "由插件清单声明",
+  "settings.plugins.engineHooksNote": "hooks 不执行",
+  "settings.plugins.engineNoneClaude": "没有 Claude 能用的组件",
+  "settings.plugins.engineNoneCodex": "没有技能或 MCP,Codex 用不了",
+  "settings.plugins.engineNonePi": "没有技能,Pi 用不了",
   "settings.plugins.hooksNotExecuted": "已声明 {n} 条 hooks —— 当前版本不执行,相关自动化不会生效",
   "settings.plugins.reviewTitle": "插件已安装",
   "settings.plugins.reviewDesc":
@@ -749,7 +762,7 @@ export const zh = {
     "{name} 声明了 {n} 条 hooks。当前版本 Mcode 不执行任何插件 hooks,这些自动化不会生效;其余组件(skills / MCP 等)正常工作。",
   "settings.plugins.marketplaceSection": "插件市场",
   "settings.plugins.marketplaceSectionDesc":
-    "添加 Claude 生态的 marketplace 仓库(git 地址或本地目录),从中浏览并安装插件。",
+    "添加 marketplace 仓库(git 地址或本地目录),支持 Claude 格式(.claude-plugin/marketplace.json)和 Codex 格式(.agents/plugins/marketplace.json)。",
   "settings.plugins.mpAddPlaceholder": "marketplace git 地址",
   "settings.plugins.mpAdd": "添加",
   "settings.plugins.mpAddLocal": "本地市场",
@@ -771,6 +784,9 @@ export const zh = {
   "settings.plugins.mpSearchEmpty": "没有匹配「{query}」的插件",
   "settings.plugins.mpInstalled": "已安装",
   "settings.plugins.mpInstall": "安装",
+  "settings.plugins.mpEcosystemTitle": "{ecosystem} 生态的插件市场",
+  "settings.plugins.mpAppsOnly": "仅 ChatGPT 应用",
+  "settings.plugins.mpAppsOnlyTitle": "这个插件只有 ChatGPT 应用(连接器),Mcode 的三个引擎都用不了",
 
   // ── NotificationsPanel ──
   "settings.notifications.title": "消息通知",

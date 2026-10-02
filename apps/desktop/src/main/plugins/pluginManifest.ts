@@ -141,6 +141,9 @@ export function findPluginManifestDeep(root: string): ResolvedPlugin | null {
 const MARKETPLACE_MANIFEST_RELS = [
   path.join(".claude-plugin", "marketplace.json"),
   "marketplace.json",
+  // Codex marketplaces (openai/plugins layout).
+  path.join(".agents", "plugins", "api_marketplace.json"),
+  path.join(".agents", "plugins", "marketplace.json"),
 ];
 
 /** Detect a marketplace manifest in `root` (top level, or one wrapper level
@@ -227,9 +230,31 @@ function resolveInRoot(root: string, rel: string): string | null {
 /** Normalize a manifest component field to a path list: undefined → the
  *  conventional default, string → single entry, array → as-is (Claude's
  *  plugin.json allows both forms; real plugins use both). */
-function componentPaths(value: string | string[] | undefined, fallback: string): string[] {
+function componentPaths(
+  value: string | string[] | Record<string, unknown> | undefined,
+  fallback: string,
+): string[] {
   if (value === undefined) return [fallback];
-  return Array.isArray(value) ? value : [value];
+  if (typeof value === "string") return [value];
+  // An inline object (hooks / mcpServers config written straight into
+  // plugin.json) declares no file at all — and replaces the default file.
+  return Array.isArray(value) ? value : [];
+}
+
+/** A manifest field given inline as an object (Claude's `hooks` /
+ *  `mcpServers` object form), or null when it is a path / path list / absent. */
+function inlineObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/** MCP servers declared inline in plugin.json (`"mcpServers": { name: cfg }`,
+ *  optionally wrapped in another `mcpServers` key), or null. */
+export function pluginInlineMcpServers(manifest: PluginManifest): Record<string, unknown> | null {
+  const inline = inlineObject(manifest.mcpServers);
+  if (!inline) return null;
+  return inlineObject(inline.mcpServers) ?? inline;
 }
 
 /** Resolve every declared path, keeping only the ones that exist in-root. */
@@ -256,8 +281,14 @@ export function pluginHooksFiles(root: string, manifest: PluginManifest): string
   return resolveAllInRoot(root, componentPaths(manifest.hooks, "hooks/hooks.json"));
 }
 
+/** Codex "apps" definition files (`.app.json` by default) — display only. */
+export function pluginAppsFiles(root: string, manifest: PluginManifest): string[] {
+  return resolveAllInRoot(root, componentPaths(manifest.apps, ".app.json"));
+}
+
 /** The plugin's MCP definition files: manifest `mcpServers` path(s) or the
- *  conventional root `.mcp.json`. */
+ *  conventional root `.mcp.json` (none when the servers are declared inline —
+ *  see {@link pluginInlineMcpServers}). */
 export function pluginMcpFiles(root: string, manifest: PluginManifest): string[] {
   return resolveAllInRoot(root, componentPaths(manifest.mcpServers, ".mcp.json"));
 }
@@ -329,8 +360,18 @@ function parseHooksFile(file: string): PluginHookSummary[] {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return [{ event: "(unknown)", command: "(hooks 定义格式不受支持)" }];
   }
+  const out = parseHooksObject(raw as Record<string, unknown>);
+  if (out.length === 0) return [{ event: "(unknown)", command: "(hooks 定义为空)" }];
+  return out;
+}
+
+/** Event map → hook summaries. Accepts both the bare `{ "<Event>": [...] }`
+ *  map and Claude's documented hooks.json wrapper `{ "description"?, "hooks":
+ *  { "<Event>": [...] } }` (the wrapper used to read as "empty"). */
+function parseHooksObject(raw: Record<string, unknown>): PluginHookSummary[] {
+  const events = inlineObject(raw.hooks) ?? raw;
   const out: PluginHookSummary[] = [];
-  for (const [event, groups] of Object.entries(raw as Record<string, unknown>)) {
+  for (const [event, groups] of Object.entries(events)) {
     if (!Array.isArray(groups)) continue;
     for (const g of groups) {
       if (!g || typeof g !== "object") continue;
@@ -345,8 +386,22 @@ function parseHooksFile(file: string): PluginHookSummary[] {
       }
     }
   }
-  if (out.length === 0) return [{ event: "(unknown)", command: "(hooks 定义为空)" }];
   return out;
+}
+
+/** App names from Codex `.app.json` files (`{ "apps": { "<name>": {...} } }`). */
+function readAppNames(files: string[]): string[] {
+  const names = new Set<string>();
+  for (const file of files) {
+    try {
+      const raw = JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>;
+      const apps = inlineObject(raw.apps) ?? {};
+      for (const name of Object.keys(apps)) names.add(name);
+    } catch {
+      /* unreadable .app.json — counts as no apps */
+    }
+  }
+  return [...names].sort((a, b) => a.localeCompare(b));
 }
 
 /** Secret-free one-liner for an MCP server config (mirrors
@@ -370,6 +425,10 @@ export function describePluginMcp(config: unknown): {
 /** Build the full component summary for an installed/being-reviewed plugin. */
 export function summarizeComponents(root: string, manifest: PluginManifest): PluginComponents {
   const mcpServers: PluginComponents["mcpServers"] = [];
+  for (const [name, raw] of Object.entries(pluginInlineMcpServers(manifest) ?? {})) {
+    const desc = describePluginMcp(raw);
+    if (desc) mcpServers.push({ name, kind: desc.kind, detail: desc.detail });
+  }
   for (const mcpFile of pluginMcpFiles(root, manifest)) {
     try {
       const cfg = JSON.parse(readFileSync(mcpFile, "utf-8")) as Record<string, unknown>;
@@ -394,7 +453,11 @@ export function summarizeComponents(root: string, manifest: PluginManifest): Plu
   const agents = pluginAgentsDirs(root, manifest).flatMap(scanMarkdownFiles).sort(
     (a, b) => a.name.localeCompare(b.name),
   );
-  const hooks = pluginHooksFiles(root, manifest).flatMap(parseHooksFile);
+  const inlineHooks = inlineObject(manifest.hooks);
+  const hooks = inlineHooks
+    ? parseHooksObject(inlineHooks)
+    : pluginHooksFiles(root, manifest).flatMap(parseHooksFile);
+  const apps = readAppNames(pluginAppsFiles(root, manifest));
 
   return {
     skills,
@@ -402,5 +465,6 @@ export function summarizeComponents(root: string, manifest: PluginManifest): Plu
     agents,
     hooks,
     mcpServers,
+    ...(apps.length > 0 ? { apps } : {}),
   };
 }

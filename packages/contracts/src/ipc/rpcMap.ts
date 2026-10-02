@@ -25,7 +25,7 @@ import type { NodeTypeCatalog } from "../nodeType.js";
 import type { AgentProfileCatalog } from "../agentProfile.js";
 import type { HookSpec, HookRun } from "../hook.js";
 import type { WorkflowDoc, WorkflowListEntry, WorkflowReviewInfo } from "../workflow.js";
-import type { PluginState, PluginMarketplaceState, PluginsInstallLocalInput, PluginsInstallGitInput, PluginsInstallMarketplaceInput, PluginsSetEnabledInput, PluginsRemoveInput, PluginsMarketplaceAddInput, PluginsMarketplaceRemoveInput, PluginsMarketplaceRefreshInput } from "../plugin.js";
+import type { PluginState, PluginMarketplaceState, PluginsInstallLocalInput, PluginsInstallGitInput, PluginsInstallMarketplaceInput, PluginsSetEnabledInput, PluginsEnginesSetInput, PluginsRemoveInput, PluginsMarketplaceAddInput, PluginsMarketplaceRemoveInput, PluginsMarketplaceRefreshInput } from "../plugin.js";
 import type {
   MobileLoginStatus,
   MobileTunnelStatus,
@@ -872,6 +872,9 @@ export interface RpcMap {
   ) => Promise<{ ok: boolean; error?: string; plugin?: PluginState }>;
   /** Enable/disable a plugin for subsequent turns. */
   "plugins.setEnabled": (input: PluginsSetEnabledInput) => Promise<{ ok: boolean; error?: string }>;
+  /** Per-engine switches of one plugin (Claude / Codex / Pi), like the skill
+   *  matrix. Omitted engines keep their value; lands on the next turn. */
+  "plugins.enginesSet": (input: PluginsEnginesSetInput) => Promise<{ ok: boolean; error?: string }>;
   /** Uninstall every installed version of a plugin. Rejected while any turn
    *  is running. */
   "plugins.remove": (input: PluginsRemoveInput) => Promise<{ ok: boolean; error?: string }>;
@@ -1690,6 +1693,7 @@ export const IPC = {
   PLUGINS_INSTALL_GIT: "plugins:installGit",
   PLUGINS_INSTALL_MARKETPLACE: "plugins:installMarketplace",
   PLUGINS_SET_ENABLED: "plugins:setEnabled",
+  PLUGINS_ENGINES_SET: "plugins:enginesSet",
   PLUGINS_REMOVE: "plugins:remove",
   PLUGINS_MARKETPLACE_LIST: "plugins:marketplaceList",
   PLUGINS_MARKETPLACE_ADD: "plugins:marketplaceAdd",

@@ -1592,6 +1592,13 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ providers: Record<string, PiProviderPublic>; }"
  },
  {
+  "method": "plugins.enginesSet",
+  "channel": "plugins:enginesSet",
+  "doc": "Per-engine switches of one plugin (Claude / Codex / Pi), like the skill matrix. Omitted engines keep their value; lands on the next turn.",
+  "input": "{ name: string; claude?: boolean | undefined; codex?: boolean | undefined; pi?: boolean | undefined }",
+  "output": "{ ok: boolean; error?: string; }"
+ },
+ {
   "method": "plugins.installGit",
   "channel": "plugins:installGit",
   "doc": "Install by shallow-cloning a git repository. Same review flow.",

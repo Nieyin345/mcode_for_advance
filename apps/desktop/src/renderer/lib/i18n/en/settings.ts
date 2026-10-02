@@ -690,7 +690,7 @@ export const en = {
     "No plugins installed yet. Browse the Marketplaces tab, or use Install to add one from a git repo / local directory / zip archive.",
   "settings.plugins.installedSection": "Installed",
   "settings.plugins.installedSectionDesc":
-    "Changes take effect from the next turn; expand a row for the per-engine component matrix.",
+    "Changes take effect from the next turn; the Claude / Codex / Pi keys switch each engine, and an expanded row shows what each engine receives.",
   "settings.plugins.searchPlaceholder": "Search plugins or components…",
   "settings.plugins.searchEmpty": "No plugins matching \"{query}\"",
   "settings.plugins.filterAll": "All",
@@ -729,10 +729,22 @@ export const en = {
   "settings.plugins.cmpMcp": "MCP",
   "settings.plugins.cmpHooks": "Hooks",
   "settings.plugins.noComponents": "No recognizable components declared",
-  "settings.plugins.matrixSkills": "Skills: Claude / Codex / Pi",
-  "settings.plugins.matrixMcp": "MCP: Claude / Codex",
-  "settings.plugins.matrixCommands": "Commands / Agents: Claude only",
-  "settings.plugins.matrixHooks": "Hooks: not executed",
+  "settings.plugins.cmpApps": "Apps",
+  "settings.plugins.appsNote":
+    "{n} ChatGPT apps (connectors) only work in Codex signed in with a ChatGPT account; none of Mcode's engines receive them.",
+  "settings.plugins.engineFilterAll": "All engines",
+  "settings.plugins.engineFilterEmpty": "No plugins are delivered to {engine}.",
+  "settings.plugins.engineSection": "Engine delivery",
+  "settings.plugins.engineSectionDesc":
+    "Switch engines per plugin, like skills; takes effect from the next turn. Claude gets skills / commands / agents / MCP (hooks are not run), Codex gets skills and MCP, Pi gets skills only.",
+  "settings.plugins.engineToggle": "{engine} uses plugin {name}",
+  "settings.plugins.engineOn": "{engine}: receives {what} (click to turn off)",
+  "settings.plugins.engineOff": "{engine}: off (click to turn on)",
+  "settings.plugins.engineDeclared": "declared by the plugin manifest",
+  "settings.plugins.engineHooksNote": "hooks not run",
+  "settings.plugins.engineNoneClaude": "Nothing Claude can use",
+  "settings.plugins.engineNoneCodex": "No skills or MCP — nothing for Codex",
+  "settings.plugins.engineNonePi": "No skills — nothing for Pi",
   "settings.plugins.hooksNotExecuted":
     "{n} hooks declared — not executed in this version; their automation stays inactive",
   "settings.plugins.reviewTitle": "Plugin installed",
@@ -747,7 +759,7 @@ export const en = {
     "{name} declares {n} hooks. Mcode does not execute any plugin hooks in this version, so that automation stays inactive; the remaining components (skills / MCP) work normally.",
   "settings.plugins.marketplaceSection": "Marketplaces",
   "settings.plugins.marketplaceSectionDesc":
-    "Add Claude-ecosystem marketplace repositories (git URL or local directory) and install plugins from their catalogs.",
+    "Add marketplace repositories (git URL or local directory) in the Claude (.claude-plugin/marketplace.json) or Codex (.agents/plugins/marketplace.json) format.",
   "settings.plugins.mpAddPlaceholder": "marketplace git URL",
   "settings.plugins.mpAdd": "Add",
   "settings.plugins.mpAddLocal": "Local marketplace",
@@ -769,6 +781,9 @@ export const en = {
   "settings.plugins.mpSearchEmpty": "No plugins matching \"{query}\"",
   "settings.plugins.mpInstalled": "Installed",
   "settings.plugins.mpInstall": "Install",
+  "settings.plugins.mpEcosystemTitle": "{ecosystem}-ecosystem marketplace",
+  "settings.plugins.mpAppsOnly": "ChatGPT apps only",
+  "settings.plugins.mpAppsOnlyTitle": "This plugin only has ChatGPT apps (connectors); none of Mcode's engines can use it",
 
   // ── NotificationsPanel ──
   "settings.notifications.title": "Notifications",

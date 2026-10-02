@@ -28,6 +28,7 @@ import {
   installFromGit,
   installFromMarketplace,
   setPluginEnabled,
+  setPluginEngines,
   removePlugin,
   listPlugins,
   getEnabledPlugins,
@@ -456,6 +457,33 @@ eq(listed.length, 1, "one installed plugin listed");
 eq(listed[0].enabled, true, "enabled flag persisted");
 eq(listed[0].components.hooks.length, 2, "components in list");
 
+/* ── 4b. per-engine switches (plugins.engines, the skill-matrix twin) ── */
+console.log("\n[4b] per-engine switches");
+eq(listed[0].engines, { claude: true, codex: true, pi: true }, "engines default to all on");
+eq(
+  listed[0].deliveredProviderIds,
+  ["claude-sdk", "codex-sdk", "pi-sdk"],
+  "delivered = compatible while every engine is on",
+);
+eq(setPluginEngines("demo-plugin", { codex: false }).ok, true, "enginesSet ok");
+const narrowed = listPlugins()[0];
+eq(narrowed.engines, { claude: true, codex: false, pi: true }, "codex switched off, others untouched");
+ok(narrowed.compatibleProviderIds?.includes("codex-sdk") === true, "capability list unchanged by the switch");
+eq(narrowed.deliveredProviderIds, ["claude-sdk", "pi-sdk"], "delivered list narrowed");
+eq((await getEnabledPluginSkillRoots(undefined, "codex-sdk")).length, 0, "codex no longer gets the skill root");
+eq((await getPluginMcpServers(undefined, "codex-sdk")).length, 0, "codex no longer gets the plugin MCP");
+eq((await getEnabledPluginSkillRoots(undefined, "pi-sdk")).length, 1, "pi still gets the skill root");
+eq((await getPluginMcpServers(undefined, "claude-sdk")).length, 1, "claude still gets the plugin MCP");
+eq(
+  (await getEnabledPlugins())[0].compatibleProviderIds,
+  ["claude-sdk", "pi-sdk"],
+  "EnabledPlugin carries the narrowed list (Claude provider filters on it)",
+);
+eq(setPluginEngines("demo-plugin", { codex: true }).ok, true, "codex back on");
+eq(SettingRepo.__dump()["plugins.engines"], "{}", "an all-on plugin leaves no stored entry (sparse)");
+eq(setPluginEngines("never-installed", { pi: false }).ok, false, "switching a plugin that is not installed is refused");
+eq(setPluginEngines("demo-plugin", { pi: false }).ok, true, "pi off (checked again at uninstall)");
+
 /* ── 5. zip install (wrapper dir descent + same-version reinstall) ── */
 console.log("\n[5] install from zip");
 const zipInstall = await installFromLocal(zipPath);
@@ -513,7 +541,13 @@ console.log("\n[8] marketplace lifecycle");
 const mpAdd = await addMarketplace({ kind: "local", ref: mpDir });
 ok(mpAdd.ok, "addMarketplace(local) ok", mpAdd.error ?? "");
 const mps = listMarketplaces();
-eq(mps.length, 3, "user marketplace + the 2 shipped catalogs are listed");
+eq(mps.length, 4, "user marketplace + the 3 shipped catalogs are listed");
+eq(mps[0].ecosystem, "claude", "Claude-layout catalog badged claude");
+eq(
+  mps.slice(1).map((m) => m.ecosystem),
+  ["zcode", "claude", "codex"],
+  "built-in ecosystems known before the first fetch",
+);
 eq(mps[0].name, "test-mp", "marketplace name from manifest");
 eq(mps[0].builtin, false, "user marketplace is not built-in");
 eq(mps[0].cloned, true, "user marketplace tree is on disk");
@@ -521,7 +555,7 @@ eq(mps[0].cloned, true, "user marketplace tree is on disk");
 // shipped catalogs append, and both are listed BEFORE their first fetch.
 eq(
   mps.slice(1).map((m) => m.name),
-  ["zcode-plugins-official", "claude-plugins-official"],
+  ["zcode-plugins-official", "claude-plugins-official", "codex-plugins-official"],
   "shipped catalogs appended in declaration order",
 );
 eq(
@@ -542,7 +576,7 @@ ok(
   "same repo cannot be added twice (.git suffix normalized)",
   builtinDupAdd.error ?? "",
 );
-eq(listMarketplaces().length, 3, "refused mutations changed nothing");
+eq(listMarketplaces().length, 4, "refused mutations changed nothing");
 eq(mps[0].plugins.length, 2, "two catalog entries");
 eq(mps[0].plugins[0].installed, true, "demo-plugin entry marked installed");
 eq(mps[0].plugins[1].installed, false, "gh-plugin entry not installed");
@@ -672,6 +706,87 @@ ok(
 await new Promise<void>((resolve) => zipServer.close(() => resolve()));
 removeMarketplace("remote-mp");
 
+/* ── 8d. Codex marketplace (openai/plugins layout) ── */
+console.log("\n[8d] Codex marketplace (.agents/plugins/marketplace.json)");
+const codexMpDir = path.join(fixtureDir, "codex-mp");
+const cxSkills = path.join(codexMpDir, "plugins", "cx-skills");
+const cxApps = path.join(codexMpDir, "plugins", "cx-apps");
+mkdirSync(path.join(codexMpDir, ".agents", "plugins"), { recursive: true });
+mkdirSync(path.join(cxSkills, ".codex-plugin"), { recursive: true });
+mkdirSync(path.join(cxSkills, "skills", "plan"), { recursive: true });
+mkdirSync(path.join(cxApps, ".codex-plugin"), { recursive: true });
+writeFileSync(
+  path.join(codexMpDir, ".agents", "plugins", "marketplace.json"),
+  JSON.stringify({
+    name: "codex-test-mp",
+    interface: { displayName: "Codex test" },
+    plugins: [
+      {
+        name: "cx-skills",
+        source: { source: "local", path: "./plugins/cx-skills" },
+        policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
+        category: "Coding",
+      },
+      { name: "cx-apps", source: { source: "local", path: "./plugins/cx-apps" } },
+      {
+        name: "cx-hidden",
+        source: { source: "local", path: "./plugins/cx-hidden" },
+        policy: { installation: "NOT_AVAILABLE" },
+      },
+    ],
+  }),
+);
+// superpowers-style manifest: inline (empty) hooks object, skills as "./skills/",
+// plus inline MCP servers (Claude's object form).
+writeFileSync(
+  path.join(cxSkills, ".codex-plugin", "plugin.json"),
+  JSON.stringify({
+    name: "cx-skills",
+    version: "0.2.0",
+    description: "Codex skills plugin",
+    hooks: {},
+    skills: "./skills/",
+    mcpServers: { docs: { type: "http", url: "https://example.com/mcp" } },
+    interface: { displayName: "CX Skills" },
+  }),
+);
+writeFileSync(path.join(cxSkills, "skills", "plan", "SKILL.md"), "---\nname: plan\ndescription: Plan work\n---\nbody");
+writeFileSync(
+  path.join(cxApps, ".codex-plugin", "plugin.json"),
+  JSON.stringify({ name: "cx-apps", version: "0.1.0", description: "Gmail connector", apps: "./.app.json" }),
+);
+writeFileSync(path.join(cxApps, ".app.json"), JSON.stringify({ apps: { gmail: { id: "connector_x" } } }));
+
+const codexAdd = await addMarketplace({ kind: "local", ref: codexMpDir });
+ok(codexAdd.ok, "Codex-layout marketplace is accepted", codexAdd.error ?? "");
+const codexMp = listMarketplaces().find((m) => m.name === "codex-test-mp");
+eq(codexMp?.ecosystem, "codex", "badged as a Codex catalog");
+eq(codexMp?.plugins.map((p) => p.name), ["cx-skills", "cx-apps"], "NOT_AVAILABLE entry hidden");
+eq(codexMp?.plugins[0].description, "Codex skills plugin", "description read from the plugin's own manifest");
+eq(codexMp?.plugins[0].version, "0.2.0", "version read from the plugin's own manifest");
+eq(
+  codexMp?.plugins[0].compatibleProviderIds,
+  ["claude-sdk", "codex-sdk", "pi-sdk"],
+  "engines known before install (skills + MCP)",
+);
+eq(codexMp?.plugins[1].appsOnly, true, "app-only entry flagged");
+const cxInstall = await installFromMarketplace("codex-test-mp", "cx-skills");
+ok(cxInstall.ok, "{source:local} entry installs", cxInstall.error ?? "");
+eq(cxInstall.plugin?.components.hooks.length, 0, "inline empty hooks object = no hooks (no warning)");
+eq(cxInstall.plugin?.components.skills.map((s) => s.name), ["plan"], "skills from ./skills/");
+eq(cxInstall.plugin?.components.mcpServers.map((s) => s.name), ["docs"], "inline mcpServers summarized");
+eq(setPluginEnabled("cx-skills", true).ok, true, "enable cx-skills");
+ok(
+  (await getPluginMcpServers(undefined, "codex-sdk")).some(([n]) => n === "cx-skills__docs"),
+  "inline MCP server delivered to Codex",
+);
+const appsInstall = await installFromMarketplace("codex-test-mp", "cx-apps");
+ok(appsInstall.ok, "app-only entry still installs when asked", appsInstall.error ?? "");
+eq(appsInstall.plugin?.components.apps, ["gmail"], "apps listed by name");
+removePlugin("cx-skills");
+removePlugin("cx-apps");
+removeMarketplace("codex-test-mp");
+
 /* ── 9. remove cleanup ── */
 console.log("\n[9] remove cleanup");
 setPluginMcpDisabled("demo-plugin__fetcher", true);
@@ -685,12 +800,17 @@ eq(
 // denylist cleanup: demo-plugin__ entries dropped by removePlugin
 const denylisted = JSON.parse(SettingRepo.__dump()["plugins.mcpDisabled"] ?? "[]");
 eq(denylisted.length, 0, "per-plugin MCP denylist cleared on remove");
+eq(
+  Object.keys(JSON.parse(SettingRepo.__dump()["plugins.engines"] ?? "{}")),
+  [],
+  "per-plugin engine switches cleared on remove",
+);
 
 const mpRemove = removeMarketplace("test-mp");
 ok(mpRemove.ok, "marketplace removed");
 const afterRemove = listMarketplaces();
 eq(afterRemove.filter((m) => !m.builtin).length, 0, "no user marketplaces left");
-eq(afterRemove.length, 2, "shipped catalogs survive the removal of every user marketplace");
+eq(afterRemove.length, 3, "shipped catalogs survive the removal of every user marketplace");
 
 /* ── summary ── */
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -19,6 +19,7 @@ import {
   PluginsInstallGitSchema,
   PluginsInstallMarketplaceSchema,
   PluginsSetEnabledSchema,
+  PluginsEnginesSetSchema,
   PluginsRemoveSchema,
   PluginsMarketplaceAddSchema,
   PluginsMarketplaceRemoveSchema,
@@ -31,6 +32,7 @@ import {
   installFromGit,
   installFromMarketplace,
   setPluginEnabled,
+  setPluginEngines,
   removePlugin,
   listMarketplaces,
   addMarketplace,
@@ -61,6 +63,12 @@ export function registerPluginsHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.PLUGINS_SET_ENABLED, async (_evt, raw) => {
     const input = PluginsSetEnabledSchema.parse(raw);
     return setPluginEnabled(input.name, input.enabled);
+  });
+
+  ipcMain.handle(IPC.PLUGINS_ENGINES_SET, async (_evt, raw) => {
+    const input = PluginsEnginesSetSchema.parse(raw);
+    const { name, ...patch } = input;
+    return setPluginEngines(name, patch);
   });
 
   ipcMain.handle(IPC.PLUGINS_REMOVE, async (_evt, raw) => {

@@ -959,6 +959,8 @@ const api = {
       )) as RpcMap["plugins.installMarketplace"],
     setEnabled: ((input) =>
       ipcRenderer.invoke(IPC.PLUGINS_SET_ENABLED, input)) as RpcMap["plugins.setEnabled"],
+    enginesSet: ((input) =>
+      ipcRenderer.invoke(IPC.PLUGINS_ENGINES_SET, input)) as RpcMap["plugins.enginesSet"],
     remove: ((input) => ipcRenderer.invoke(IPC.PLUGINS_REMOVE, input)) as RpcMap["plugins.remove"],
     marketplaceList: (() =>
       ipcRenderer.invoke(IPC.PLUGINS_MARKETPLACE_LIST)) as RpcMap["plugins.marketplaceList"],

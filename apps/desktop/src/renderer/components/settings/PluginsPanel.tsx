@@ -23,6 +23,18 @@
  *    / hooks), the per-provider support matrix, source / install time and the
  *    install path — the same ComponentDetails the install-review dialog renders
  *    (one source of truth for "what does this plugin contain").
+ *  - Per-engine delivery, like the skill matrix (Settings → 技能): every row
+ *    carries Claude / Codex / Pi keys (plugins.enginesSet). An engine the plugin
+ *    has nothing for is struck through and disabled (Codex takes skills + MCP,
+ *    Pi skills only, Claude everything but hooks); the expanded row spells out
+ *    what each engine receives. A 全部引擎 / Claude / Codex / Pi filter lists
+ *    what a given engine actually gets.
+ *
+ * 插件市场 pane additions: each catalog is badged with its ecosystem (Claude /
+ * Codex / ZCode — openai/plugins is a built-in Codex catalog), and entries
+ * whose tree is inside the cloned catalog show which engines could use them
+ * before install; app-only Codex entries (ChatGPT connectors) are marked as
+ * unusable in Mcode.
  *
  * 插件市场 pane: one group card per marketplace (kind badge, entry count,
  * refresh / remove), entries as name+version / description with an 安装 button
@@ -60,7 +72,12 @@ import {
   Switch,
 } from "@renderer/components/ui/index.js";
 import { PanelHeader } from "./PanelHeader.js";
-import type { PluginState, PluginMarketplaceState } from "@contracts/ipc";
+import type {
+  PluginEcosystem,
+  PluginEngineId,
+  PluginMarketplaceState,
+  PluginState,
+} from "@contracts/ipc";
 import {
   IconPuzzle,
   IconLoader2,
@@ -119,6 +136,216 @@ interface PanelOps {
 }
 
 type TabId = "installed" | "market";
+
+/* ─────────────────── engines ─────────────────── */
+
+/** The three local engines in matrix order, with the provider id the main
+ *  process filters delivery on (mirrors PLUGIN_ENGINE_PROVIDER_IDS). */
+const ENGINES: ReadonlyArray<{ id: PluginEngineId; provider: string; label: string }> = [
+  { id: "claude", provider: "claude-sdk", label: "Claude" },
+  { id: "codex", provider: "codex-sdk", label: "Codex" },
+  { id: "pi", provider: "pi-sdk", label: "Pi" },
+];
+const ALL_PROVIDERS = ENGINES.map((e) => e.provider);
+
+/** Providers the plugin's components can feed (older hosts: assume all). */
+function capableProviders(p: PluginState): Set<string> {
+  return new Set(p.compatibleProviderIds ?? ALL_PROVIDERS);
+}
+
+/** The user's engine switches (older hosts: all on). */
+function engineSwitchesOf(p: PluginState): Record<PluginEngineId, boolean> {
+  return p.engines ?? { claude: true, codex: true, pi: true };
+}
+
+/** True when the plugin reaches `engine` (capable AND switched on) — what the
+ *  engine filter and the delivery table go by. */
+function deliveredTo(p: PluginState, engine: (typeof ENGINES)[number]): boolean {
+  const delivered = p.deliveredProviderIds;
+  if (delivered) return delivered.includes(engine.provider);
+  return capableProviders(p).has(engine.provider) && engineSwitchesOf(p)[engine.id];
+}
+
+/** Component labels one engine receives from this plugin ("Skills 3", …) —
+ *  the delivery paths documented in @contracts/plugin. Empty for an engine
+ *  that only gets the plugin through a manifest capability declaration. */
+function engineReceives(
+  p: PluginState,
+  engine: PluginEngineId,
+  t: ReturnType<typeof useI18n>["t"],
+): string[] {
+  const c = p.components;
+  const parts: string[] = [];
+  if (c.skills.length > 0) parts.push(`${t("settings.plugins.cmpSkills")} ${c.skills.length}`);
+  if (engine === "claude") {
+    if (c.commands.length > 0) parts.push(`${t("settings.plugins.cmpCommands")} ${c.commands.length}`);
+    if (c.agents.length > 0) parts.push(`${t("settings.plugins.cmpAgents")} ${c.agents.length}`);
+  }
+  if (engine !== "pi" && c.mcpServers.length > 0) {
+    parts.push(`${t("settings.plugins.cmpMcp")} ${c.mcpServers.length}`);
+  }
+  return parts;
+}
+
+/** Why an engine cannot use the plugin at all (tooltip of a struck-out key). */
+function engineNoneKey(engine: PluginEngineId): MessageId {
+  if (engine === "codex") return "settings.plugins.engineNoneCodex";
+  if (engine === "pi") return "settings.plugins.engineNonePi";
+  return "settings.plugins.engineNoneClaude";
+}
+
+/** Row-level engine keys — the plugin twin of the skill page's group switches.
+ *  On = accent; switched off = struck through (click to turn back on); an
+ *  engine with nothing to receive = dimmed + disabled. */
+function PluginEngineKeys({
+  plugin,
+  busy,
+  onToggle,
+}: {
+  plugin: PluginState;
+  busy: boolean;
+  onToggle: (engine: PluginEngineId, want: boolean) => void;
+}) {
+  const { t } = useI18n();
+  const capable = capableProviders(plugin);
+  const switches = engineSwitchesOf(plugin);
+  return (
+    <span className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-edge bg-surface/40 p-0.5">
+      {ENGINES.map((e) => {
+        const can = capable.has(e.provider);
+        const on = can && switches[e.id];
+        const what = engineReceives(plugin, e.id, t);
+        const title = !can
+          ? t(engineNoneKey(e.id))
+          : on
+            ? t("settings.plugins.engineOn", {
+                engine: e.label,
+                what: what.length > 0 ? what.join(" · ") : t("settings.plugins.engineDeclared"),
+              })
+            : t("settings.plugins.engineOff", { engine: e.label });
+        return (
+          <button
+            key={e.id}
+            type="button"
+            disabled={busy || !can}
+            aria-pressed={on}
+            title={title}
+            onClick={() => onToggle(e.id, !switches[e.id])}
+            className={cn(
+              "rounded px-1.5 py-0.5 text-[10px] font-semibold leading-tight transition-colors",
+              on
+                ? plugin.enabled
+                  ? "bg-accent/15 text-accent"
+                  : "bg-surface-hover text-content-muted"
+                : can
+                  ? "text-content-subtle line-through hover:text-content-muted"
+                  : "cursor-not-allowed text-content-subtle/40 line-through",
+              busy && can && "opacity-50",
+            )}
+          >
+            {e.label}
+          </button>
+        );
+      })}
+    </span>
+  );
+}
+
+/** Expanded-row delivery table: one line per engine with its switch and what
+ *  it receives — the editable form of the old static support matrix. */
+function EngineDeliveryTable({
+  plugin,
+  busy,
+  onToggle,
+}: {
+  plugin: PluginState;
+  busy: boolean;
+  onToggle: (engine: PluginEngineId, want: boolean) => void;
+}) {
+  const { t } = useI18n();
+  const capable = capableProviders(plugin);
+  const switches = engineSwitchesOf(plugin);
+  const hasHooks = plugin.components.hooks.length > 0;
+  return (
+    <div className="mb-2.5 border-b border-edge pb-2.5">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[0.7143em] font-semibold text-content-muted">
+        {t("settings.plugins.engineSection")}
+        <InfoHint>{t("settings.plugins.engineSectionDesc")}</InfoHint>
+      </div>
+      <div className="space-y-1">
+        {ENGINES.map((e) => {
+          const can = capable.has(e.provider);
+          const on = can && switches[e.id];
+          const what = engineReceives(plugin, e.id, t);
+          return (
+            <div key={e.id} className="flex items-center gap-2.5 text-[0.75em]">
+              <span
+                className={cn(
+                  "w-12 shrink-0 font-semibold",
+                  on ? "text-content" : "text-content-subtle",
+                )}
+              >
+                {e.label}
+              </span>
+              <Switch
+                checked={on}
+                disabled={busy || !can}
+                onCheckedChange={() => onToggle(e.id, !switches[e.id])}
+                label={t("settings.plugins.engineToggle", { engine: e.label, name: plugin.name })}
+              />
+              <span
+                className={cn(
+                  "min-w-0 flex-1 truncate",
+                  can ? "text-content-muted" : "text-content-subtle",
+                  can && !on && "line-through",
+                )}
+              >
+                {!can
+                  ? t(engineNoneKey(e.id))
+                  : what.length > 0
+                    ? what.join(" · ")
+                    : t("settings.plugins.engineDeclared")}
+                {can && e.id === "claude" && hasHooks && (
+                  <span className="ml-1.5 text-warning no-underline">
+                    {t("settings.plugins.engineHooksNote")}
+                  </span>
+                )}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** Ecosystem chip for a marketplace (tab + catalog header). */
+const ECOSYSTEM_LABEL: Record<PluginEcosystem, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  zcode: "ZCode",
+};
+
+function EcosystemBadge({ ecosystem }: { ecosystem?: PluginEcosystem }) {
+  const { t } = useI18n();
+  if (!ecosystem) return null;
+  const label = ECOSYSTEM_LABEL[ecosystem];
+  return (
+    <span
+      title={t("settings.plugins.mpEcosystemTitle", { ecosystem: label })}
+      className={cn(
+        "shrink-0 rounded px-1 py-px text-[0.78em] font-semibold leading-tight",
+        ecosystem === "codex"
+          ? "bg-info/10 text-info"
+          : ecosystem === "zcode"
+            ? "bg-surface-hover text-content-muted"
+            : "bg-accent/10 text-accent-strong",
+      )}
+    >
+      {label}
+    </span>
+  );
+}
 
 /* ─────────────────── plugin monogram ─────────────────── */
 
@@ -239,6 +466,22 @@ export function PluginsPanel() {
     }
   };
 
+  /** One engine switch of one plugin (plugins.enginesSet). */
+  const applyEngine = async (name: string, engine: PluginEngineId, want: boolean) => {
+    setBusyKey(`engines:${name}`);
+    setError(null);
+    try {
+      const res = await api.plugins.enginesSet({ name, [engine]: want });
+      if (!res.ok) setError(t("settings.plugins.enableFailed", { error: res.error ?? "" }));
+      await reload();
+      void useSessionStore.getState().reloadSkills();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
   /** Enable flow with the hooks gate: plugins declaring hooks get an explicit
    *  "these won't run" confirmation first. */
   const requestEnable = (p: PluginState) => {
@@ -315,6 +558,7 @@ export function PluginsPanel() {
         loaded={loaded}
         ops={ops}
         onToggle={toggleEnabled}
+        onEngine={(p, engine, want) => void applyEngine(p.name, engine, want)}
         onRemove={setPendingRemove}
       />
       <MarketplacePane
@@ -461,6 +705,7 @@ function InstalledPane({
   loaded,
   ops,
   onToggle,
+  onEngine,
   onRemove,
 }: {
   className?: string;
@@ -468,18 +713,26 @@ function InstalledPane({
   loaded: boolean;
   ops: PanelOps;
   onToggle: (plugin: PluginState) => void;
+  onEngine: (plugin: PluginState, engine: PluginEngineId, want: boolean) => void;
   onRemove: (plugin: PluginState) => void;
 }) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [onlyEnabled, setOnlyEnabled] = useState(false);
+  // Engine filter: only plugins that actually reach this engine (capable AND
+  // switched on) — "what does Codex get from my plugins".
+  const [engineFilter, setEngineFilter] = useState<PluginEngineId | null>(null);
   const [installFormOpen, setInstallFormOpen] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const enabledCount = plugins.filter((p) => p.enabled).length;
+  const activeEngine = ENGINES.find((e) => e.id === engineFilter) ?? null;
   const q = query.trim().toLowerCase();
   const filtered = plugins.filter(
-    (p) => (!onlyEnabled || p.enabled) && (!q || pluginHaystack(p).includes(q)),
+    (p) =>
+      (!onlyEnabled || p.enabled) &&
+      (!activeEngine || deliveredTo(p, activeEngine)) &&
+      (!q || pluginHaystack(p).includes(q)),
   );
 
   const installLocal = async (key: string, pick: () => Promise<string | null>) => {
@@ -530,6 +783,23 @@ function InstalledPane({
             count={enabledCount}
             onClick={() => setOnlyEnabled(true)}
           />
+        </div>
+        <div className="flex flex-none items-center gap-0.5 rounded-lg border border-edge bg-surface/40 p-0.5">
+          <FilterButton
+            active={engineFilter == null}
+            label={t("settings.plugins.engineFilterAll")}
+            count={plugins.length}
+            onClick={() => setEngineFilter(null)}
+          />
+          {ENGINES.map((e) => (
+            <FilterButton
+              key={e.id}
+              active={engineFilter === e.id}
+              label={e.label}
+              count={plugins.filter((p) => (!onlyEnabled || p.enabled) && deliveredTo(p, e)).length}
+              onClick={() => setEngineFilter(e.id)}
+            />
+          ))}
         </div>
         <InstallMenu
           busy={ops.busyKey != null}
@@ -588,7 +858,9 @@ function InstalledPane({
               title={
                 q
                   ? t("settings.plugins.searchEmpty", { query: query.trim() })
-                  : t("settings.plugins.filterEmpty")
+                  : activeEngine
+                    ? t("settings.plugins.engineFilterEmpty", { engine: activeEngine.label })
+                    : t("settings.plugins.filterEmpty")
               }
             />
           </Card>
@@ -604,6 +876,7 @@ function InstalledPane({
                 // while the filter hides it is harmless (it re-appears as-is).
                 onExpand={() => setExpanded((cur) => (cur === p.name ? null : p.name))}
                 onToggle={() => onToggle(p)}
+                onEngine={(engine, want) => onEngine(p, engine, want)}
                 onRemove={() => onRemove(p)}
               />
             ))}
@@ -681,6 +954,7 @@ function PluginRow({
   expanded,
   onExpand,
   onToggle,
+  onEngine,
   onRemove,
 }: {
   plugin: PluginState;
@@ -689,10 +963,15 @@ function PluginRow({
   expanded: boolean;
   onExpand: () => void;
   onToggle: () => void;
+  onEngine: (engine: PluginEngineId, want: boolean) => void;
   onRemove: () => void;
 }) {
   const { t } = useI18n();
-  const rowBusy = busy === `toggle:${plugin.name}` || busy === `remove:${plugin.name}`;
+  const rowBusy =
+    busy === `toggle:${plugin.name}` ||
+    busy === `remove:${plugin.name}` ||
+    busy === `engines:${plugin.name}`;
+  const enginesBusy = rowBusy || !!busy?.startsWith("install:");
   const on = plugin.enabled;
   const c = plugin.components;
 
@@ -702,6 +981,7 @@ function PluginRow({
     { key: "settings.plugins.cmpAgents", n: c.agents.length },
     { key: "settings.plugins.cmpMcp", n: c.mcpServers.length },
     { key: "settings.plugins.cmpHooks", n: c.hooks.length, warn: true },
+    { key: "settings.plugins.cmpApps", n: c.apps?.length ?? 0, warn: true },
   ];
   const empty = chips.every(({ n }) => n === 0);
 
@@ -758,6 +1038,7 @@ function PluginRow({
             )}
           </span>
         </button>
+        <PluginEngineKeys plugin={plugin} busy={enginesBusy} onToggle={onEngine} />
         <Switch
           checked={on}
           onCheckedChange={onToggle}
@@ -779,14 +1060,22 @@ function PluginRow({
         </Button>
       </div>
 
-      {expanded && <PluginDetail plugin={plugin} />}
+      {expanded && <PluginDetail plugin={plugin} busy={enginesBusy} onEngine={onEngine} />}
     </div>
   );
 }
 
 /** Expanded row body: where it came from, what works on which engine, the full
  *  inventory and where it lives on disk. */
-function PluginDetail({ plugin }: { plugin: PluginState }) {
+function PluginDetail({
+  plugin,
+  busy,
+  onEngine,
+}: {
+  plugin: PluginState;
+  busy: boolean;
+  onEngine: (engine: PluginEngineId, want: boolean) => void;
+}) {
   const { t } = useI18n();
   return (
     <div className="pb-3 pl-[52px] pr-3">
@@ -809,17 +1098,8 @@ function PluginDetail({ plugin }: { plugin: PluginState }) {
             </span>
           )}
         </div>
-        <div className="mb-2.5 flex flex-wrap gap-x-3.5 gap-y-1 border-b border-edge pb-2 text-[0.75em] text-content-subtle">
-          {plugin.components.skills.length > 0 && <span>{t("settings.plugins.matrixSkills")}</span>}
-          {plugin.components.mcpServers.length > 0 && <span>{t("settings.plugins.matrixMcp")}</span>}
-          {(plugin.components.commands.length > 0 || plugin.components.agents.length > 0) && (
-            <span>{t("settings.plugins.matrixCommands")}</span>
-          )}
-          {plugin.components.hooks.length > 0 && (
-            <span className="text-warning">{t("settings.plugins.matrixHooks")}</span>
-          )}
-        </div>
-        <ComponentDetails plugin={plugin} />
+        <EngineDeliveryTable plugin={plugin} busy={busy} onToggle={onEngine} />
+        <ComponentDetails plugin={plugin} showProviders={false} />
         <div className="mt-2.5 break-all text-[0.7143em] text-content-subtle">
           {t("settings.plugins.pathLabel")}: <span className="font-mono">{plugin.rootDir}</span>
         </div>
@@ -848,7 +1128,15 @@ function sourceLabelKey(kind: PluginState["source"]["kind"]): MessageId {
 /** The plugin's declarative inventory — rendered identically in the row's
  *  expanded area and the install-review dialog (one source of truth). MCP
  *  commands/urls and hook commands are exactly what would run, spelled out. */
-function ComponentDetails({ plugin }: { plugin: PluginState }) {
+function ComponentDetails({
+  plugin,
+  showProviders = true,
+}: {
+  plugin: PluginState;
+  /** The static "可用引擎" badges — the install-review dialog shows them; the
+   *  installed row has the editable delivery table instead. */
+  showProviders?: boolean;
+}) {
   const { t } = useI18n();
   const c = plugin.components;
   const compatible = new Set(plugin.compatibleProviderIds ?? ["claude-sdk", "codex-sdk", "pi-sdk"]);
@@ -881,34 +1169,36 @@ function ComponentDetails({ plugin }: { plugin: PluginState }) {
 
   return (
     <div>
-      <div className="mb-2.5 first:mt-0">
-        <div className="mb-1 text-[0.7143em] font-semibold text-content-muted">
-          {t("settings.plugins.compatibleProviders")}
+      {showProviders && (
+        <div className="mb-2.5 first:mt-0">
+          <div className="mb-1 text-[0.7143em] font-semibold text-content-muted">
+            {t("settings.plugins.compatibleProviders")}
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {([
+              ["claude-sdk", "Claude"],
+              ["codex-sdk", "Codex"],
+              ["pi-sdk", "Pi"],
+            ] as const).map(([id, label]) => {
+              const on = compatible.has(id);
+              return (
+                <span
+                  key={id}
+                  title={t(on ? "settings.plugins.providerCompatible" : "settings.plugins.providerIncompatible", { provider: label })}
+                  className={cn(
+                    "rounded px-1.5 py-0.5 text-[10px] font-medium leading-tight",
+                    on
+                      ? "bg-accent/15 text-accent"
+                      : "bg-surface-hover text-content-subtle line-through decoration-content-subtle/60",
+                  )}
+                >
+                  {label}
+                </span>
+              );
+            })}
+          </div>
         </div>
-        <div className="flex flex-wrap gap-1">
-          {([
-            ["claude-sdk", "Claude"],
-            ["codex-sdk", "Codex"],
-            ["pi-sdk", "Pi"],
-          ] as const).map(([id, label]) => {
-            const on = compatible.has(id);
-            return (
-              <span
-                key={id}
-                title={t(on ? "settings.plugins.providerCompatible" : "settings.plugins.providerIncompatible", { provider: label })}
-                className={cn(
-                  "rounded px-1.5 py-0.5 text-[10px] font-medium leading-tight",
-                  on
-                    ? "bg-accent/15 text-accent"
-                    : "bg-surface-hover text-content-subtle line-through decoration-content-subtle/60",
-                )}
-              >
-                {label}
-              </span>
-            );
-          })}
-        </div>
-      </div>
+      )}
       {namedList(t("settings.plugins.cmpSkills"), c.skills)}
       {namedList(t("settings.plugins.cmpCommands"), c.commands, "/")}
       {namedList(t("settings.plugins.cmpAgents"), c.agents)}
@@ -931,6 +1221,20 @@ function ComponentDetails({ plugin }: { plugin: PluginState }) {
           </ul>
           <p className="mt-1 text-[0.7143em] text-content-subtle">
             {t("settings.plugins.reviewMcpNote")}
+          </p>
+        </div>
+      )}
+
+      {(c.apps?.length ?? 0) > 0 && (
+        <div className="mt-2.5 first:mt-0">
+          <div className="mb-1 text-[0.7143em] font-semibold text-content-muted">
+            {t("settings.plugins.cmpApps")} · {c.apps?.length ?? 0}
+          </div>
+          <p className="break-all font-mono text-[0.75em] text-content-subtle">
+            {(c.apps ?? []).join(" · ")}
+          </p>
+          <p className="mt-1 text-[0.7143em] text-warning">
+            {t("settings.plugins.appsNote", { n: c.apps?.length ?? 0 })}
           </p>
         </div>
       )}
@@ -1298,6 +1602,7 @@ function MarketplacePane({
                           : "text-content-muted hover:text-content",
                       )}
                     >
+                      <EcosystemBadge ecosystem={mp.ecosystem} />
                       <span className="max-w-[220px] truncate">{mp.name}</span>
                       <span className="tabular-nums text-[0.8571em] text-content-subtle">
                         {mp.plugins.length}
@@ -1452,6 +1757,9 @@ function MarketplaceCatalog({
             {t("settings.plugins.mpBuiltin")}
           </span>
         )}
+        <span className="text-[0.92em]">
+          <EcosystemBadge ecosystem={marketplace.ecosystem} />
+        </span>
         <span className="min-w-0 flex-1 truncate font-mono text-[0.7857em] text-content-subtle">
           {marketplace.sourceRef}
         </span>
@@ -1509,6 +1817,7 @@ function MarketplaceCatalog({
                     v{entry.version}
                   </span>
                 )}
+                <MarketEntryEngines entry={entry} />
               </div>
               {entry.description && (
                 <p className="mt-0.5 truncate text-[0.7857em] text-content-subtle">
@@ -1526,7 +1835,9 @@ function MarketplaceCatalog({
                 size="sm"
                 className="h-7 shrink-0"
                 onClick={() => onInstall(entry.name)}
-                disabled={busy}
+                // App-only Codex entries would install as an empty shell.
+                disabled={busy || entry.appsOnly === true}
+                title={entry.appsOnly ? t("settings.plugins.mpAppsOnlyTitle") : undefined}
               >
                 {busyKey === `mpEntry:${marketplace.name}/${entry.name}` ? (
                   <IconLoader2 size={12} className="animate-spin" />
@@ -1539,5 +1850,48 @@ function MarketplaceCatalog({
         ))
       )}
     </div>
+  );
+}
+
+/** Engine chips of a catalog entry, when the entry could be inspected before
+ *  install (its tree is inside the cloned catalog). Remote entries show
+ *  nothing — that is "unknown", not "none". */
+function MarketEntryEngines({ entry }: { entry: PluginMarketplaceState["plugins"][number] }) {
+  const { t } = useI18n();
+  if (entry.appsOnly) {
+    return (
+      <span
+        title={t("settings.plugins.mpAppsOnlyTitle")}
+        className="shrink-0 rounded bg-warning/10 px-1.5 py-0.5 text-[0.72em] text-warning"
+      >
+        {t("settings.plugins.mpAppsOnly")}
+      </span>
+    );
+  }
+  const ids = entry.compatibleProviderIds;
+  if (!ids) return null;
+  return (
+    <span className="inline-flex shrink-0 items-center gap-0.5">
+      {ENGINES.map((e) => {
+        const can = ids.includes(e.provider);
+        return (
+          <span
+            key={e.id}
+            title={t(
+              can ? "settings.plugins.providerCompatible" : "settings.plugins.providerIncompatible",
+              { provider: e.label },
+            )}
+            className={cn(
+              "rounded px-1 py-px text-[10px] font-medium leading-tight",
+              can
+                ? "bg-accent/10 text-accent"
+                : "text-content-subtle/50 line-through",
+            )}
+          >
+            {e.label}
+          </span>
+        );
+      })}
+    </span>
   );
 }
