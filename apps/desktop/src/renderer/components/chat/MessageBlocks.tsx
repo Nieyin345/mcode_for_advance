@@ -49,6 +49,8 @@ import { ImageWithPreview } from "@renderer/components/ui/index.js";
 import { TagPopover } from "./TagPopover.js";
 import { isImageFilePath, type ContentTag } from "@renderer/lib/contentTag.js";
 import { BUILT_IN_COMMANDS } from "@renderer/lib/slashCommands.js";
+import { isAgentMailTool } from "@renderer/lib/agentMail.js";
+import { AgentMailOutCard } from "./AgentMailCard.js";
 
 /** Map of absolute file path → its pre-turn content. Built from the
  *  `turn.files` event payload so the Write tool card can diff the new
@@ -254,7 +256,13 @@ const BATCH_TOOL_NAMES = new Set([
  *  streaming layout merges foldable blocks across assistant messages into one
  *  card). */
 export function isFoldableBlock(b: Block): b is ProceduralBlock {
-  return b.kind === "tool_use" && (BATCH_TOOL_NAMES.has(b.toolName) || b.toolName.startsWith("mcp__"));
+  // 代理之间的信(agent_notify / agent_ask)虽然也是 MCP 调用,但它的正文就是用户
+  // 想看的东西 —— 不折进「操作集合」,单独成一张信件卡(见 AgentMailCard)。
+  return (
+    b.kind === "tool_use" &&
+    (BATCH_TOOL_NAMES.has(b.toolName) || b.toolName.startsWith("mcp__")) &&
+    !isAgentMailTool(b.toolName)
+  );
 }
 /** Narrow a fold-run member to its tool-call half (thinking has no status/
  *  result machinery — the group header only reads those off tool calls). */
@@ -1406,6 +1414,9 @@ function ToolCard({
   liveTurn?: boolean;
   projectPath?: string | null;
 }) {
+  if (isAgentMailTool(block.toolName)) {
+    return <AgentMailOutCard block={block} projectPath={projectPath} />;
+  }
   if (block.toolName === "Edit" && isEditInput(block.input)) {
     return (
       <EditToolCard

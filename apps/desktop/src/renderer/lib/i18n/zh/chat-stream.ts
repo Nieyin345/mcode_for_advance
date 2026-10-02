@@ -321,6 +321,18 @@ export const zh = {
   "chatStream.quote.doneToast": "已放进「{name}」的输入框",
   "chatStream.regenerate": "重新生成",
 
+  // ── 代理之间的信(AgentMailCard) ──
+  "chatStream.agentMail.outAsk": "向「{name}」提问",
+  "chatStream.agentMail.outNotify": "发给「{name}」",
+  "chatStream.agentMail.outReply": "回信给「{name}」",
+  "chatStream.agentMail.inAsk": "来自「{name}」的提问",
+  "chatStream.agentMail.inNotify": "来自「{name}」的消息",
+  "chatStream.agentMail.inReply": "来自「{name}」的回信",
+  "chatStream.agentMail.queued": "已排队 · 这个代理下次开口时才读到",
+  "chatStream.agentMail.sending": "发送中…",
+  "chatStream.agentMail.failed": "没送出去",
+  "chatStream.agentMail.someone": "另一个代理",
+
   // ── ChatPane: streaming spinner hint ──
   "chatStream.upstreamRetry": "上游连接异常，正在重试（{attempt}/{attempts}）",
 

@@ -8,6 +8,7 @@
  */
 import type { Block, ChatMessage, TurnMeta } from "@renderer/stores/sessionStore.js";
 import { isFoldableBlock, type ProceduralBlock, type ToolUseBlock } from "./MessageBlocks.js";
+import { isAgentMailTool } from "@renderer/lib/agentMail.js";
 
 /** Newest RUNNING tool among the given blocks — what the live summary row's
  *  operation ticker shows. Reverse scan so the newest wins; thinking blocks
@@ -495,7 +496,10 @@ export function groupMessagesForRender(
     // post-tool text segment stays in the reply.
     let lastToolIdx = -1;
     for (let j = 0; j < turnBlocks.length; j++) {
-      if (turnBlocks[j].block.kind === "tool_use" && !isMetaToolBlock(turnBlocks[j].block)) {
+      const b = turnBlocks[j].block;
+      // 信件工具同 meta 工具:不当分界锚点 —— 模型常常先写完答复、最后才给别的
+      // 代理捎一句,拿它当锚会把整段答复折进面板。它自己下面会被捞出来单独显示。
+      if (b.kind === "tool_use" && !isMetaToolBlock(b) && !isAgentMailTool(b.toolName)) {
         lastToolIdx = j;
       }
     }
@@ -588,6 +592,26 @@ export function groupMessagesForRender(
       }
       textMsgs.length = 0;
       textMsgs.push(...swept);
+    }
+
+    // 代理之间的信(agent_notify / agent_ask)从过程面板里捞出来:那段话是用户要
+    // 看的内容,不是过程。作为一条尾随消息接在答复后面、页脚卡(计划/改动文件)
+    // 前面;每条信渲染成一张信件卡(MessageBlocks → ToolCard → AgentMailOutCard)。
+    if (panelBlocks.some((b) => b.kind === "tool_use" && isAgentMailTool(b.toolName))) {
+      const mail = panelBlocks.filter((b) => b.kind === "tool_use" && isAgentMailTool(b.toolName));
+      panelBlocks = panelBlocks.filter((b) => !(b.kind === "tool_use" && isAgentMailTool(b.toolName)));
+      const tail = textMsgs.length > 0 ? textMsgs[textMsgs.length - 1] : null;
+      textMsgs.push(
+        tail
+          ? { ...tail, id: `mail_tail_${tail.id}`, turnMeta: undefined, blocks: mail }
+          : {
+              id: `mail_tail_${turnMeta?.startedAt ?? Date.now()}`,
+              sessionId: "",
+              role: "assistant",
+              blocks: mail,
+              createdAt: Date.now(),
+            },
+      );
     }
 
     // Per-turn footer cards (plan + turn-files) must ALWAYS render at the very

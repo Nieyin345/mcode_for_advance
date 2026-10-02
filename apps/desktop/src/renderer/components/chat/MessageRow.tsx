@@ -14,6 +14,8 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useNow } from "@renderer/hooks/useNow.js";
 import { MessageBlocks, type BeforeContentMap, type ToolUseBlock } from "./MessageBlocks.js";
 import { CurrentOpTicker } from "./CurrentOpTicker.js";
+import { AgentMailInCard } from "./AgentMailCard.js";
+import { isAgentMailMessageId } from "@renderer/lib/agentMail.js";
 import { ModelBadge } from "./ModelAvatar.js";
 
 /** Preserve a user-typed message's single line breaks when rendering through
@@ -252,6 +254,22 @@ export const MessageRow = memo(function MessageRow({
             onSubmit={(newText, images) => onSubmitEdit?.(msg, newText, images)}
             onCancel={() => onCancelEdit?.()}
           />
+        </div>
+      </div>
+    );
+  }
+
+  // 别的代理发进来的信(主进程回声的 `u_mail_` 消息):不是用户自己打的字,不画成
+  // 右侧的用户气泡,也不给编辑 / 重新生成 —— 画成一张左侧的信件卡,正文全文展开。
+  if (isUser && isAgentMailMessageId(msg.id)) {
+    const raw = msg.blocks
+      .filter((b): b is Extract<Block, { kind: "text" }> => b.kind === "text")
+      .map((b) => b.text)
+      .join("\n");
+    return (
+      <div data-message-id={msg.id} className="group mt-[var(--chat-row-gap-assistant)]">
+        <div className="w-full min-w-0" title={fmtFullDateTime(msg.createdAt)}>
+          <AgentMailInCard raw={raw} projectPath={projectPath} />
         </div>
       </div>
     );

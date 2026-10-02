@@ -336,6 +336,18 @@ export const en = {
   "chatStream.quote.doneToast": "Placed in the composer of “{name}”",
   "chatStream.regenerate": "Regenerate",
 
+  // ── 代理之间的信(AgentMailCard) ──
+  "chatStream.agentMail.outAsk": "Asked {name}",
+  "chatStream.agentMail.outNotify": "To {name}",
+  "chatStream.agentMail.outReply": "Reply to {name}",
+  "chatStream.agentMail.inAsk": "Question from {name}",
+  "chatStream.agentMail.inNotify": "Message from {name}",
+  "chatStream.agentMail.inReply": "Reply from {name}",
+  "chatStream.agentMail.queued": "Queued · read on this agent's next turn",
+  "chatStream.agentMail.sending": "Sending…",
+  "chatStream.agentMail.failed": "Not delivered",
+  "chatStream.agentMail.someone": "another agent",
+
   // ── ChatPane: streaming spinner hint ──
   "chatStream.upstreamRetry": "Upstream connection issue — retrying ({attempt}/{attempts})",
 

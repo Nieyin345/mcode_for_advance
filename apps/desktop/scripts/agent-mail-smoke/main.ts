@@ -60,6 +60,7 @@ import { AGENT_MAIL_TOOLS, WORKFLOW_READONLY_TOOLS, workflowMcpTools } from "@ma
 import { shouldAutoApprove } from "@main/mcp/toolRules.js";
 import { MCP_WORKFLOW_SERVER } from "@contracts/ipc/mcp";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
+import { parseIncomingMail, readOutgoingMail, isAgentMailTool } from "@renderer/lib/agentMail.js";
 import { providerRegistry } from "@main/providers/registry.js";
 import { CustomModelStore } from "@main/lib/secretStore.js";
 import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
@@ -323,6 +324,21 @@ console.log("\n④ 投递:对方在跑 → 插播;空闲且图没管着 → 叫�
     const s = n ? mailNoticeText(n) : "";
     return s.includes(self.name) && s.includes("这句要插进去") && s.includes("消息");
   })(), announced.at(-1));
+  // 渲染层把这段文字拆回「谁发的 / 哪一种 / 正文」画成信件卡 —— 两边的格式必须对得上。
+  {
+    const n = announced.at(-1)!.notice;
+    const p = parseIncomingMail(mailNoticeText(n));
+    eq("★ 渲染层拆得出发信人", p.from, self.name);
+    eq("…拆得出种类", p.what, "notify");
+    eq("…插播的不算排队", p.queued, false);
+    eq("…正文原样", p.text, n.text);
+    const ask = parseIncomingMail(mailNoticeText({ ...n, kind: "ask", text: "第一行\n\n第二段" }));
+    eq("…提问 + 多段正文也拆得开", JSON.stringify([ask.what, ask.text]), JSON.stringify(["ask", "第一行\n\n第二段"]));
+    eq("…回信认得出", parseIncomingMail(mailNoticeText({ ...n, re: "ask_1" })).what, "reply");
+    eq("…排队的认得出", parseIncomingMail(mailNoticeText({ ...n, outcome: "queued" })).queued, true);
+    check("…发信工具三家引擎的名字都认", ["mcp__mcode-workflow__agent_notify", "mcp__mcode__agent_ask"].every(isAgentMailTool) && !isAgentMailTool("mcp__mcode-workflow__agent_peers"));
+    eq("…发信参数读得出", JSON.stringify(readOutgoingMail("mcp__x__agent_notify", { to: "评审", text: "好了", re: "ask_9" })), JSON.stringify({ kind: "notify", to: "评审", text: "好了", re: "ask_9" }));
+  }
   running.delete(busy.id);
 
   // ② 空闲 + 图没管着 → 叫醒
