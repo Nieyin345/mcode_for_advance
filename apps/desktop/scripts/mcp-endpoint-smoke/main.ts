@@ -406,6 +406,15 @@ const pubInit = await publicRpc({
 });
 eq("密钥对 → initialize 200", pubInit.status, 200);
 eq("…serverInfo 是 mcode", (resultOf(pubInit).serverInfo as { name?: string }).name, "mcode");
+{
+  // 公网那条的说明必须跟它的工具表对得上:没有工作流、要先 agent_context、说清锁在项目里。
+  const pubInstr = String((resultOf(pubInit) as { instructions?: string }).instructions ?? "");
+  check("公网 instructions 不声称有工作流", !pubInstr.includes("资料库、工作流"), pubInstr);
+  check("公网 instructions 指引先调 agent_context", pubInstr.includes("agent_context"), pubInstr);
+  check("公网 instructions 说明只能写可写项目", pubInstr.includes("writable_project"), pubInstr);
+  check("公网 instructions 提到技能工具", pubInstr.includes("agent_skill_read"), pubInstr);
+  check("本机 instructions 照旧(有工作流)", instructions.includes("工作流"), instructions);
+}
 const pubList = await publicRpc({ jsonrpc: "2.0", id: 2, method: "tools/list" });
 eq("密钥对 → tools/list 200", pubList.status, 200);
 eq("…工具表就是共享的那份", ((resultOf(pubList).tools ?? []) as unknown[]).length, FAKE_TOOLS.length);

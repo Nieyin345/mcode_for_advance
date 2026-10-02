@@ -44,6 +44,8 @@ import {
   engineEnabled,
   parseSkillFrontmatter,
   readEnginesMap,
+  SKILL_ENGINES,
+  skillNamesInRoot,
 } from "@main/lib/skillEngines.js";
 import { extractPdfText } from "@main/library/pdfText.js";
 import { killTree, TREE_KILLABLE } from "@main/lib/spawnRun.js";
@@ -1691,7 +1693,11 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       description:
         "在用户机器上执行一条 shell 命令并返回 stdout / stderr / 退出码(无持久状态,每次独立执行)。" +
         "一次性命令优先用它；REPL、dev server、长构建等需要后续读写 stdin/stdout 的任务用 agent_process_start。" +
-        "默认超时 120 秒。执行前用户会在 mcode 里确认。",
+        "默认超时 120 秒。" +
+        (process.platform === "win32"
+          ? "这台机器是 Windows:命令由 cmd.exe 执行(不是 bash;要 PowerShell 写 powershell -NoProfile -Command \"...\")。"
+          : "命令由 /bin/sh 执行。") +
+        "有副作用的命令按 mcode 的权限规则处理(本机会话可能要用户确认;公网通道只允许写项目目录)。",
       inputSchema: {
         command: z.string().min(1).describe("要执行的命令(单条;多步用 && 串联)"),
         cwd: z.string().optional().describe("工作目录,默认会话工作目录"),
@@ -2274,41 +2280,44 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
     {
       name: "agent_skill_list",
       description:
-        "列出这个会话可用的技能(/skill)。返回每条技能的名字、一句话说明和 SKILL.md 的路径 —— " +
-        "用 agent_read_file 或 agent_skill_read 都能读到内容。",
+        "列出用户装在 Mcode 技能库里的技能。返回每条技能的名字、一句话说明和 SKILL.md 的路径 —— " +
+        "用 agent_skill_read(按名字)或 agent_read_file(按路径)读内容。",
       inputSchema: {},
       handler: (_args: Record<string, never>, _ctx) =>
         attempt(async () => {
           const root = defaultSkillsRoot();
+          // 与设置里「技能」页、三个引擎同一套发现规则(`skillNamesInRoot`):名字以 frontmatter
+          // 为准、隐藏目录(Codex 的 .system)不算。从前这里自己 readdir、显示 frontmatter 名,
+          // 而 agent_skill_read 按**目录名**找 —— 两边一对不上,列出来的技能读不到。
+          const byName = skillNamesInRoot(root);
+          if (byName.size === 0) return "技能库里没有可用的技能(~/.mcode/skills 下没有带 SKILL.md 的技能目录)";
           const engines = readEnginesMap(root);
-          let entries: import("node:fs").Dirent[];
-          try {
-            entries = await fs.readdir(root, { withFileTypes: true });
-          } catch {
-            return "技能库(~/.mcode/skills)还不存在或读不了 —— 用户还没装任何技能";
-          }
           const lines: string[] = [];
-          for (const entry of entries) {
-            if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-            if (!engineEnabled(engines, entry.name, "claude")) continue;
-            const dir = path.join(root, entry.name);
+          let disabled = 0;
+          for (const [name, dir] of byName) {
+            // 远程 / 网页端的 AI 不是三个引擎里的哪一个:只有用户把一条技能对**所有**引擎都关了,
+            // 才算它不想给 AI 用。从前按 claude 那一列过滤,关了 Claude 的技能在这里就整条消失。
+            if (!SKILL_ENGINES.some((engine) => engineEnabled(engines, name, engine))) {
+              disabled += 1;
+              continue;
+            }
             const mdPath = path.join(dir, "SKILL.md");
             const md = await fs.readFile(mdPath, "utf-8").catch(() => null);
             if (md == null) continue;
             const fm = parseSkillFrontmatter(md);
-            const name = fm.name?.trim() || entry.name;
             lines.push(`- ${name}${fm.description ? ` — ${fm.description.trim()}` : ""}\n  ${mdPath}`);
           }
-          if (lines.length === 0) return "技能库里没有可用的技能(~/.mcode/skills 下没有带 SKILL.md 的目录)";
-          return `可用技能 ${lines.length} 条:\n${lines.join("\n")}`;
+          const note = disabled > 0 ? `\n(另有 ${disabled} 条被用户在设置里对所有引擎关掉了,不列出。)` : "";
+          if (lines.length === 0) return `技能库里没有可用的技能。${note}`.trim();
+          return `可用技能 ${lines.length} 条:\n${lines.join("\n")}${note}`;
         }),
     },
 
     {
       name: "agent_skill_read",
       description:
-        "读取一条技能的完整 SKILL.md 内容(按名字)。读了之后照着里面的步骤执行;" +
-        "技能里提到的附属文件(脚本、模板、参考资料)在技能目录下(通常在 ~/.mcode/skills/<名字>/)," +
+        "读取一条技能的完整 SKILL.md 内容(按 agent_skill_list 里的名字)。读了之后照着里面的步骤执行;" +
+        "技能里提到的附属文件(脚本、模板、参考资料)在技能目录下(返回里会给出目录)," +
         "用 agent_read_file / agent_list_dir 读;脚本用 agent_bash 按绝对路径执行。技能目录只读 —— " +
         "产出的文件写到项目里。",
       inputSchema: {
@@ -2321,7 +2330,9 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           if (args.name.includes("/") || args.name.includes("\\") || args.name.includes("..")) {
             return `技能名不合法:${args.name}`;
           }
-          const dir = path.join(root, args.name);
+          // 先按技能名(frontmatter)找,再退回目录名 —— 与 agent_skill_list 列出的名字一致。
+          const byName = skillNamesInRoot(root);
+          const dir = byName.get(args.name) ?? path.join(root, args.name);
           if (!pathWithin(root, dir)) return `技能名不合法:${args.name}`;
           const mdPath = path.join(dir, "SKILL.md");
           const md = await fs.readFile(mdPath, "utf-8").catch(() => null);

@@ -188,6 +188,42 @@ export interface McpRequestOptions {
   keepAliveLongCalls?: boolean;
 }
 
+/** agent_* 的通用用法 —— 两条通道共用。 */
+const AGENT_TOOL_GUIDE =
+  "agent_* 支持文本/图片/Office/PDF 读取，文件与目录修改，后台搜索，系统进程和持久进程。" +
+  "同时读多个文本文件优先 agent_read_files。" +
+  "PDF 创建/页操作用 agent_write_pdf；Excel Range 用 agent_edit_excel_range；" +
+  "DOCX 结构修改先 agent_read_docx_xml 再 agent_edit_docx_xml。" +
+  "图片由 agent_read_image 返回标准 MCP image block，只有支持视觉输入的客户端/模型才能直接理解。" +
+  (process.platform === "win32"
+    ? "这台机器是 Windows：agent_bash 用 cmd.exe 执行（不是 bash；要 PowerShell 就写 powershell -NoProfile -Command \"...\"），路径用反斜杠或带引号。"
+    : "agent_bash 用 /bin/sh 执行。") +
+  "REPL/dev server/长构建优先 agent_process_start，然后用 agent_process_read 取增量输出——" +
+  "它**默认会阻塞等到有输出**（最多约 55 秒），不要传 wait_ms=0 去做短轮询，" +
+  "那只会制造大量空往返；一次调用就是等下一批日志。返回里 has_more 为 true 就立刻再读一次，" +
+  "status 不是 running 说明进程已结束。agent_process_* 的返回带 structuredContent，直接读字段，不用解析文本。" +
+  "远程 SSH 训练/长任务必须优先 agent_remote_job_start：任务状态和日志落在服务器 ~/.mcode/jobs，SSH/MCP 断线后可恢复；" +
+  "短远程检查才用 agent_ssh_exec；重要训练显式提供稳定 job_id，网络失败重试必须复用同一个 id，避免重复启动。";
+
+/** 本机浏览器扩展(`/mcp`)那条:工作流在、走 mcode 的审批闸门。 */
+const LOCAL_INSTRUCTIONS =
+  "Mcode 桌面端的工具。资料库、工作流和 agent_* 电脑操作能力都从这个 MCP 端点提供。" +
+  "相对路径以当前 mcode 会话工作目录为基准。" +
+  AGENT_TOOL_GUIDE +
+  "写入、启动命令、杀系统进程等有副作用操作遵循 mcode 当前权限模式，必要时会弹审批卡；" +
+  "用户拒绝后不要换说法重复同一个动作。";
+
+/** 公网 MCP 那条(远程 AI 直连):没有工作流/对话记录,资料库只读,免审批但锁在可写项目里。 */
+const PUBLIC_INSTRUCTIONS =
+  "Mcode 桌面端的远程工具：agent_* 电脑操作、资料库只读查询（library_*）和本地技能（agent_skill_list / agent_skill_read）。" +
+  "这条通道没有工作流/自动化工具，也读不到用户的对话记录。" +
+  "开始干活前先调一次 agent_context：它告诉你唯一可写的项目目录（writable_project）、其它只读项目和资料库概况。" +
+  "相对路径以可写项目目录为基准；写文件、建目录、移动和命令的写目标都只能落在这个目录里，越界会被拒绝——换成项目内的路径，别反复重试。" +
+  "资料库和技能目录可以用 agent_read_* / agent_list_dir 读，但不能改，要改先复制进项目。" +
+  "用户提到某个技能时先 agent_skill_list 确认，再 agent_skill_read 读 SKILL.md，照里面的步骤做。" +
+  AGENT_TOOL_GUIDE +
+  "这条通道不弹审批卡，调用会直接执行：删除、覆盖、杀进程这类不可逆操作先跟用户确认；用户拒绝后不要换说法重复同一个动作。";
+
 /** 慢调用多久之后切 SSE、多久发一次保活。smoke 用 {@link configureMcpLongCallTiming} 调短。 */
 let longCallSwitchAfterMs = 25_000;
 let longCallKeepaliveMs = 20_000;
@@ -237,21 +273,9 @@ export async function handleMcpRequest(
         // 工具表是静态的(它由主进程的代码决定),所以没有 listChanged。
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: "mcode", version: "1.0.0" },
-        instructions:
-          "Mcode 桌面端的工具。资料库、工作流和 agent_* 电脑操作能力都从这个 MCP 端点提供。" +
-          "agent_* 支持文本/图片/Office/PDF 读取，文件与目录修改，后台搜索，系统进程和持久进程。" +
-          "相对路径以当前 mcode 会话工作目录为基准；同时读多个文本文件优先 agent_read_files。" +
-          "PDF 创建/页操作用 agent_write_pdf；Excel Range 用 agent_edit_excel_range；" +
-          "DOCX 结构修改先 agent_read_docx_xml 再 agent_edit_docx_xml。" +
-          "图片由 agent_read_image 返回标准 MCP image block，只有支持视觉输入的客户端/模型才能直接理解。" +
-          "REPL/dev server/长构建优先 agent_process_start，然后用 agent_process_read 取增量输出——" +
-          "它**默认会阻塞等到有输出**（最多约 55 秒），不要传 wait_ms=0 去做短轮询，" +
-          "那只会制造大量空往返；一次调用就是等下一批日志。返回里 has_more 为 true 就立刻再读一次，" +
-          "status 不是 running 说明进程已结束。agent_process_* 的返回带 structuredContent，直接读字段，不用解析文本。" +
-          "远程 SSH 训练/长任务必须优先 agent_remote_job_start：任务状态和日志落在服务器 ~/.mcode/jobs，SSH/MCP 断线后可恢复；" +
-          "短远程检查才用 agent_ssh_exec；重要训练显式提供稳定 job_id，网络失败重试必须复用同一个 id，避免重复启动。" +
-          "写入、启动命令、杀系统进程等有副作用操作遵循 mcode 当前权限模式，必要时会弹审批卡；" +
-          "用户拒绝后不要换说法重复同一个动作。",
+        // 两条通道给的工具不一样(见 webToolHost.ts),说明也得跟着分开 —— 公网那条没有
+        // 工作流、免审批但锁在可写项目里;写成同一段会让远程 AI 去调根本不存在的工具。
+        instructions: opts.audience === "public" ? PUBLIC_INSTRUCTIONS : LOCAL_INSTRUCTIONS,
       });
       return;
 
