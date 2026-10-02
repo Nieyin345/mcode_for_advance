@@ -28,12 +28,24 @@ import {
   McpImportSchema,
   McpAuthorizeSchema,
   McpUnauthorizeSchema,
+  McpProjectListSchema,
+  McpProjectSaveSchema,
+  McpProjectRemoveSchema,
+  McpProjectTrustSchema,
+  McpProjectCopySchema,
   MCP_RESERVED_NAME,
   type McpScope,
   type McpServerConfig,
   type McpServerEntry,
 } from "@contracts/ipc";
 import { log } from "@main/lib/logger.js";
+import {
+  copyUserServersToProject,
+  listProjectMcp,
+  removeProjectMcp,
+  saveProjectMcp,
+  trustProjectMcp,
+} from "@main/lib/projectMcp.js";
 import { maskMcpConfig, mergeMcpSecretEdits } from "@main/lib/mcpSecretEdit.js";
 import { MCODE_CONFIG_DIR } from "@main/providers/claude-sdk/customEnv.js";
 import { resolveSdkBinaryPath } from "@main/providers/claude-sdk/sdkBinaryPath.js";
@@ -876,6 +888,55 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
         skipped,
         errors: [...errors, { name: "(批量写入)", error: (err as Error).message }],
       };
+    }
+  }));
+
+  // ── Project scope: <project>/.mcp.json (see lib/projectMcp.ts) ──
+  // Plain project-file edits: no engine view to re-materialize (each engine
+  // reads the file at its next turn start), so no serializeMcpMutation needed
+  // beyond keeping writes ordered.
+  ipcMain.handle(IPC.MCP_PROJECT_LIST, (_evt, raw) => {
+    const input = McpProjectListSchema.parse(raw);
+    return listProjectMcp(input.projectPath);
+  });
+
+  ipcMain.handle(IPC.MCP_PROJECT_SAVE, (_evt, raw) => serializeMcpMutation(async () => {
+    const input = McpProjectSaveSchema.parse(raw);
+    try {
+      return await saveProjectMcp(input.projectPath, input.name, input.config, input.replace === true);
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  }));
+
+  ipcMain.handle(IPC.MCP_PROJECT_REMOVE, (_evt, raw) => serializeMcpMutation(async () => {
+    const input = McpProjectRemoveSchema.parse(raw);
+    try {
+      return await removeProjectMcp(input.projectPath, input.name);
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  }));
+
+  ipcMain.handle(IPC.MCP_PROJECT_TRUST, (_evt, raw) => serializeMcpMutation(async () => {
+    const input = McpProjectTrustSchema.parse(raw);
+    try {
+      return trustProjectMcp(input.projectPath, input.name, input.trusted);
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  }));
+
+  ipcMain.handle(IPC.MCP_PROJECT_COPY, (_evt, raw) => serializeMcpMutation(async () => {
+    const input = McpProjectCopySchema.parse(raw);
+    try {
+      // Truth layer (enabled + stashed) holds the real values — the renderer
+      // only ever sees masked configs, so the copy must resolve them here.
+      const state = await getMcpTruth();
+      const configs: Record<string, McpServerConfig> = { ...(state.userDisabled ?? {}), ...(state.userServers ?? {}) };
+      return await copyUserServersToProject(input.projectPath, input.names, configs);
+    } catch (err) {
+      return { copied: [], skipped: [], failed: input.names.map((name) => ({ name, reason: (err as Error).message })) };
     }
   }));
 

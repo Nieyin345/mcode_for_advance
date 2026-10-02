@@ -9,6 +9,9 @@
  * one displaces the other. Both panes stay mounted (`hidden`) so the search
  * text, filter and expanded row survive a tab switch.
  *
+ * R66:与技能 / MCP 同一个管理模型 —— 总库(=已安装)/ 项目(每个项目单独开关、
+ * 单独选引擎,见 ProjectPluginsView)/ 节点(哪些节点挂了哪个插件,只读反查)/ 插件市场。
+ *
  * 已安装 pane:
  *  - Tool row: search (name / description / component names) + a 全部 / 已启用
  *    filter whose labels double as counts + ONE 「安装 ▾」 menu (git / local dir
@@ -72,6 +75,10 @@ import {
   Switch,
 } from "@renderer/components/ui/index.js";
 import { PanelHeader } from "./PanelHeader.js";
+import { NODE_PLUGINS_PARAM_KEY } from "@contracts/nodeType";
+import { useManagedProject } from "./ScopeTabs.js";
+import { ProjectPluginsView } from "./ProjectPluginsView.js";
+import { SkillNodesView } from "./SkillNodesView.js";
 import type {
   PluginEcosystem,
   PluginEngineId,
@@ -135,7 +142,7 @@ interface PanelOps {
   reload: () => Promise<PluginCollections | null>;
 }
 
-type TabId = "installed" | "market";
+type TabId = "installed" | "project" | "nodes" | "market";
 
 /* ─────────────────── engines ─────────────────── */
 
@@ -404,6 +411,7 @@ export function PluginsPanel() {
   // Key of the in-flight action (disables just that control).
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [tab, setTab] = useState<TabId>("installed");
+  const { project, projects, setManagedProjectId } = useManagedProject();
 
   // Post-install review dialog: shown for every successful install; enabling
   // is an explicit click inside it (installs land disabled).
@@ -568,6 +576,27 @@ export function PluginsPanel() {
         loaded={loaded}
         ops={ops}
       />
+      {tab === "project" && (
+        <ProjectPluginsView
+          project={project}
+          projects={projects}
+          onSelectProject={setManagedProjectId}
+          refreshKey={plugins}
+        />
+      )}
+      {tab === "nodes" && (
+        <div className="min-h-0 flex-1 overflow-auto pr-1">
+          <SkillNodesView
+            skills={plugins.map((p) => ({ name: p.name, description: p.description }))}
+            paramKey={NODE_PLUGINS_PARAM_KEY}
+            hint={t("settings.plugins.nodesHint")}
+            empty={t("settings.plugins.nodesEmpty")}
+            icon={IconPuzzle}
+            onJumpToWorkflow={() => useSessionStore.getState().setSettingsOpen(true, "workflows")}
+            onJumpToProfile={() => useSessionStore.getState().setSettingsOpen(true, "workflows")}
+          />
+        </div>
+      )}
 
       {/* ── Dialogs ── */}
       <PluginReviewDialog
@@ -638,8 +667,10 @@ function PanelTabs({
   marketCount: number;
 }) {
   const { t } = useI18n();
-  const items: Array<{ id: TabId; label: string; count: number }> = [
-    { id: "installed", label: t("settings.plugins.installedSection"), count: installedCount },
+  const items: Array<{ id: TabId; label: string; count?: number }> = [
+    { id: "installed", label: t("settings.skills.tabLibrary"), count: installedCount },
+    { id: "project", label: t("settings.skills.tabProject") },
+    { id: "nodes", label: t("settings.skills.tabNodes") },
     { id: "market", label: t("settings.plugins.marketplaceSection"), count: marketCount },
   ];
 
@@ -657,11 +688,13 @@ function PanelTabs({
             onClick={() => onChange(item.id)}
           >
             {item.label}
-            <span
-              className={cn("tabular-nums", isActive ? "opacity-80" : "text-content-subtle")}
-            >
-              {item.count}
-            </span>
+            {item.count !== undefined && (
+              <span
+                className={cn("tabular-nums", isActive ? "opacity-80" : "text-content-subtle")}
+              >
+                {item.count}
+              </span>
+            )}
           </Button>
         );
       })}

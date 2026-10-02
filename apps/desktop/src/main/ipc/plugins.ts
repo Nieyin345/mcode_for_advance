@@ -20,6 +20,8 @@ import {
   PluginsInstallMarketplaceSchema,
   PluginsSetEnabledSchema,
   PluginsEnginesSetSchema,
+  PluginsProjectListSchema,
+  PluginsProjectSetSchema,
   PluginsRemoveSchema,
   PluginsMarketplaceAddSchema,
   PluginsMarketplaceRemoveSchema,
@@ -33,6 +35,8 @@ import {
   installFromMarketplace,
   setPluginEnabled,
   setPluginEngines,
+  listPluginProjectRows,
+  setPluginProjectOverride,
   removePlugin,
   listMarketplaces,
   addMarketplace,
@@ -69,6 +73,20 @@ export function registerPluginsHandlers(ipcMain: IpcMain): void {
     const input = PluginsEnginesSetSchema.parse(raw);
     const { name, ...patch } = input;
     return setPluginEngines(name, patch);
+  });
+
+  // Per-project overrides (settings → 插件 → 项目).
+  ipcMain.handle(IPC.PLUGINS_PROJECT_LIST, async (_evt, raw) => {
+    const input = PluginsProjectListSchema.parse(raw);
+    return { plugins: listPluginProjectRows(input.projectPath) };
+  });
+
+  ipcMain.handle(IPC.PLUGINS_PROJECT_SET, async (_evt, raw) => {
+    const input = PluginsProjectSetSchema.parse(raw);
+    return setPluginProjectOverride(input.projectPath, input.name, {
+      ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+      ...(input.engines !== undefined ? { engines: input.engines } : {}),
+    });
   });
 
   ipcMain.handle(IPC.PLUGINS_REMOVE, async (_evt, raw) => {

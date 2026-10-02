@@ -416,6 +416,50 @@ export const PluginsEnginesSetSchema = z.object({
 });
 export type PluginsEnginesSetInput = z.infer<typeof PluginsEnginesSetSchema>;
 
+/* ── 项目级插件开关 ──
+ *  插件只在总库装一次;每个项目可以单独决定启用哪些、对哪个引擎启用。项目里没设的插件
+ *  跟随总库。存储:PLUGINS_PROJECT_SETTING_KEY = { [项目路径]: { [插件名]: 覆盖 } }。
+ *  会话的 cwd 落在某个项目目录里(取最长匹配)时按该项目的覆盖投递。 */
+export const PLUGINS_PROJECT_SETTING_KEY = "plugins.projectOverrides";
+
+/** One plugin's per-project override. Absent field = follow the global value. */
+export interface PluginProjectOverride {
+  enabled?: boolean;
+  engines?: Partial<PluginEngineSwitches>;
+}
+
+/** One installed plugin as seen from a project. */
+export interface PluginProjectRow {
+  name: string;
+  description: string;
+  globalEnabled: boolean;
+  globalEngines: PluginEngineSwitches;
+  override?: PluginProjectOverride;
+  /** Effective state in this project (override ∘ global). */
+  enabled: boolean;
+  engines: PluginEngineSwitches;
+  compatibleProviderIds: string[];
+  /** compatible ∩ effective engines (empty when not enabled here). */
+  deliveredProviderIds: string[];
+}
+
+export const PluginsProjectListSchema = z.object({ projectPath: z.string().min(1) });
+export type PluginsProjectListInput = z.infer<typeof PluginsProjectListSchema>;
+
+/** Set / clear one plugin's override in a project. `enabled`/`engines`:
+ *  undefined = unchanged, null = back to following the global value;
+ *  `engines` merges into the stored override. */
+export const PluginsProjectSetSchema = z.object({
+  projectPath: z.string().min(1),
+  name: z.string().regex(PLUGIN_NAME_RE),
+  enabled: z.boolean().nullable().optional(),
+  engines: z
+    .object({ claude: z.boolean().optional(), codex: z.boolean().optional(), pi: z.boolean().optional() })
+    .nullable()
+    .optional(),
+});
+export type PluginsProjectSetInput = z.infer<typeof PluginsProjectSetSchema>;
+
 /** Uninstall: deletes every installed version + clears enable/disable state.
  *  Rejected while any turn is running (a live turn may reference the files). */
 export const PluginsRemoveSchema = z.object({

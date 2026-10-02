@@ -685,6 +685,16 @@ const api = {
       ipcRenderer.invoke(IPC.MCP_SCAN_IMPORT, input)) as RpcMap["mcp.scanImport"],
     import: ((input) =>
       ipcRenderer.invoke(IPC.MCP_IMPORT, input)) as RpcMap["mcp.import"],
+    projectList: ((input) =>
+      ipcRenderer.invoke(IPC.MCP_PROJECT_LIST, input)) as RpcMap["mcp.projectList"],
+    projectSave: ((input) =>
+      ipcRenderer.invoke(IPC.MCP_PROJECT_SAVE, input)) as RpcMap["mcp.projectSave"],
+    projectRemove: ((input) =>
+      ipcRenderer.invoke(IPC.MCP_PROJECT_REMOVE, input)) as RpcMap["mcp.projectRemove"],
+    projectTrust: ((input) =>
+      ipcRenderer.invoke(IPC.MCP_PROJECT_TRUST, input)) as RpcMap["mcp.projectTrust"],
+    projectCopy: ((input) =>
+      ipcRenderer.invoke(IPC.MCP_PROJECT_COPY, input)) as RpcMap["mcp.projectCopy"],
   },
 
   /** Global instructions, materialized to each engine's consume point. */
@@ -961,6 +971,10 @@ const api = {
       ipcRenderer.invoke(IPC.PLUGINS_SET_ENABLED, input)) as RpcMap["plugins.setEnabled"],
     enginesSet: ((input) =>
       ipcRenderer.invoke(IPC.PLUGINS_ENGINES_SET, input)) as RpcMap["plugins.enginesSet"],
+    projectList: ((input) =>
+      ipcRenderer.invoke(IPC.PLUGINS_PROJECT_LIST, input)) as RpcMap["plugins.projectList"],
+    projectSet: ((input) =>
+      ipcRenderer.invoke(IPC.PLUGINS_PROJECT_SET, input)) as RpcMap["plugins.projectSet"],
     remove: ((input) => ipcRenderer.invoke(IPC.PLUGINS_REMOVE, input)) as RpcMap["plugins.remove"],
     marketplaceList: (() =>
       ipcRenderer.invoke(IPC.PLUGINS_MARKETPLACE_LIST)) as RpcMap["plugins.marketplaceList"],

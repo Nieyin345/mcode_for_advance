@@ -110,6 +110,12 @@ export interface SkillInfo {
    *  apart from these switches). Builtin rows omit it (always offered).
    *  Absent flags mean enabled (missing = enabled). */
   perEngine?: SkillEngineState;
+  /** Plugin rows only: the plugin that contributes this skill. */
+  pluginName?: string;
+  /** Plugin rows only: the plugin-level engine switches (Plugins panel). An
+   *  engine switched off there never receives the skill, whatever
+   *  `perEngine` says — the panel greys that switch. */
+  pluginEngines?: SkillEngineState;
 }
 
 /** List discovered skills. With projectPath, the selected project's skills

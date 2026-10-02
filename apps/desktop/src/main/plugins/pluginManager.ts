@@ -34,10 +34,12 @@ import { existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync } f
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { z } from "zod";
+import { matchProjectKey, sameProjectKey } from "@main/lib/projectScope.js";
 import {
   BUILTIN_MARKETPLACES,
   PLUGINS_ENABLED_SETTING_KEY,
   PLUGINS_ENGINES_SETTING_KEY,
+  PLUGINS_PROJECT_SETTING_KEY,
   PLUGIN_ENGINE_IDS,
   PLUGIN_ENGINE_PROVIDER_IDS,
   PLUGINS_MARKETPLACES_SETTING_KEY,
@@ -51,6 +53,8 @@ import {
   type PluginComponents,
   type PluginEcosystem,
   type PluginEngineSwitches,
+  type PluginProjectOverride,
+  type PluginProjectRow,
   type PluginManifest,
   type PluginMarketEntry,
   type PluginMarketEntrySource,
@@ -174,6 +178,122 @@ export function setPluginEngines(
   else map[name] = next;
   writeJsonSetting(PLUGINS_ENGINES_SETTING_KEY, map);
   return { ok: true };
+}
+
+/* ── Per-project overrides (plugins.projectOverrides) ──
+ * 插件只在总库装一次;项目可以单独决定启用哪些、对哪个引擎启用。项目里没设的字段跟随
+ * 总库。会话按 cwd 找项目(matchProjectKey,最长前缀)。 */
+
+type PluginProjectMap = Record<string, Record<string, PluginProjectOverride>>;
+
+function cleanOverride(raw: unknown): PluginProjectOverride | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const out: PluginProjectOverride = {};
+  if (typeof r.enabled === "boolean") out.enabled = r.enabled;
+  if (r.engines && typeof r.engines === "object" && !Array.isArray(r.engines)) {
+    const e: Partial<PluginEngineSwitches> = {};
+    for (const id of PLUGIN_ENGINE_IDS) {
+      const v = (r.engines as Record<string, unknown>)[id];
+      if (typeof v === "boolean") e[id] = v;
+    }
+    if (Object.keys(e).length > 0) out.engines = e;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function readPluginProjectMap(): PluginProjectMap {
+  const raw = readJsonSetting<unknown>(PLUGINS_PROJECT_SETTING_KEY, {});
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: PluginProjectMap = {};
+  for (const [project, plugins] of Object.entries(raw as Record<string, unknown>)) {
+    if (!plugins || typeof plugins !== "object" || Array.isArray(plugins)) continue;
+    const rows: Record<string, PluginProjectOverride> = {};
+    for (const [name, ov] of Object.entries(plugins as Record<string, unknown>)) {
+      const clean = cleanOverride(ov);
+      if (clean) rows[name] = clean;
+    }
+    if (Object.keys(rows).length > 0) out[project] = rows;
+  }
+  return out;
+}
+
+/** The overrides that apply to a session running in `cwd` (none = {}). */
+function projectOverridesFor(cwd: string | undefined, map: PluginProjectMap = readPluginProjectMap()): Record<string, PluginProjectOverride> {
+  const key = matchProjectKey(cwd, Object.keys(map));
+  return key ? map[key] : {};
+}
+
+/** Effective switches of one plugin under an override (missing = global). */
+function effectiveEngines(name: string, enginesMap: PluginEnginesMap, ov?: PluginProjectOverride): PluginEngineSwitches {
+  const g = pluginEngineSwitches(name, enginesMap);
+  const e = ov?.engines;
+  if (!e) return g;
+  return {
+    claude: typeof e.claude === "boolean" ? e.claude : g.claude,
+    codex: typeof e.codex === "boolean" ? e.codex : g.codex,
+    pi: typeof e.pi === "boolean" ? e.pi : g.pi,
+  };
+}
+
+/** Set / clear one plugin's override in a project. `enabled`/`engines`:
+ *  undefined = unchanged, null = follow the global value again. */
+export function setPluginProjectOverride(
+  projectPath: string,
+  name: string,
+  patch: { enabled?: boolean | null; engines?: Partial<PluginEngineSwitches> | null },
+): { ok: boolean; error?: string } {
+  if (!PLUGIN_NAME_RE.test(name) || isReservedPluginName(name)) return { ok: false, error: "非法插件名" };
+  if (!installedRootOf(name)) return { ok: false, error: `插件 ${name} 未安装` };
+  if (!path.isAbsolute(projectPath)) return { ok: false, error: "项目路径必须是绝对路径" };
+  const map = readPluginProjectMap();
+  const key = sameProjectKey(projectPath, Object.keys(map)) ?? path.resolve(projectPath);
+  const rows = { ...(map[key] ?? {}) };
+  const cur: PluginProjectOverride = { ...(rows[name] ?? {}) };
+  if (patch.enabled === null) delete cur.enabled;
+  else if (typeof patch.enabled === "boolean") cur.enabled = patch.enabled;
+  if (patch.engines === null) delete cur.engines;
+  else if (patch.engines) {
+    const e: Partial<PluginEngineSwitches> = { ...(cur.engines ?? {}) };
+    for (const id of PLUGIN_ENGINE_IDS) {
+      const v = patch.engines[id];
+      if (typeof v === "boolean") e[id] = v;
+    }
+    cur.engines = e;
+  }
+  const clean = cleanOverride(cur);
+  if (clean) rows[name] = clean;
+  else delete rows[name];
+  if (Object.keys(rows).length > 0) map[key] = rows;
+  else delete map[key];
+  writeJsonSetting(PLUGINS_PROJECT_SETTING_KEY, map);
+  return { ok: true };
+}
+
+/** Installed plugins as seen from one project (override ∘ global). */
+export function listPluginProjectRows(projectPath: string): PluginProjectRow[] {
+  const map = readPluginProjectMap();
+  const key = sameProjectKey(projectPath, Object.keys(map));
+  const ov = key ? map[key] : {};
+  const enginesMap = readPluginEnginesMap();
+  return listPlugins().map((p) => {
+    const o = ov[p.name];
+    const globalEngines = pluginEngineSwitches(p.name, enginesMap);
+    const engines = effectiveEngines(p.name, enginesMap, o);
+    const enabled = typeof o?.enabled === "boolean" ? o.enabled : p.enabled;
+    const compatible = p.compatibleProviderIds ?? [...Object.values(PLUGIN_ENGINE_PROVIDER_IDS)];
+    return {
+      name: p.name,
+      description: p.description,
+      globalEnabled: p.enabled,
+      globalEngines,
+      ...(o ? { override: o } : {}),
+      enabled,
+      engines,
+      compatibleProviderIds: compatible,
+      deliveredProviderIds: enabled ? narrowToEngines(compatible, engines) : [],
+    };
+  });
 }
 
 /* ── Process helpers (git / unzip) ── */
@@ -840,6 +960,16 @@ export function removePlugin(name: string): { ok: boolean; error?: string } {
     delete enginesMap[name];
     writeJsonSetting(PLUGINS_ENGINES_SETTING_KEY, enginesMap);
   }
+  // Drop this plugin's per-project overrides.
+  const projectMap = readPluginProjectMap();
+  let projectMapChanged = false;
+  for (const [key, rows] of Object.entries(projectMap)) {
+    if (!(name in rows)) continue;
+    delete rows[name];
+    if (Object.keys(rows).length === 0) delete projectMap[key];
+    projectMapChanged = true;
+  }
+  if (projectMapChanged) writeJsonSetting(PLUGINS_PROJECT_SETTING_KEY, projectMap);
   // Drop this plugin's per-server MCP toggles (namespaced `<name>__`).
   const mcpDisabled = [...readMcpDisabled()].filter((n) => !n.startsWith(`${name}__`));
   writeJsonSetting(PLUGINS_MCP_DISABLED_SETTING_KEY, mcpDisabled);
@@ -1317,6 +1447,8 @@ export interface EnabledPlugin {
    *  ({@link compatibleProviderIdsForPlugin}) narrowed by the user's per-engine
    *  switches (plugins.engines). Every delivery point filters on this. */
   compatibleProviderIds: string[];
+  /** The effective per-engine switches (global ∘ project override). */
+  engines?: PluginEngineSwitches;
   /** True when the plugin declares hooks (parsed for display; v1 never
    *  executes them — the Claude provider's disableAllHooks is the backstop). */
   hasHooks: boolean;
@@ -1339,8 +1471,14 @@ export interface EnabledPlugin {
  * 再加内置插件（比如期刊分区、文献检索），在这一层重新追加即可 —— 调用点用的还是
  * `...getEnabledPlugins()` 展开，不用改。
  */
-export async function getEnabledPlugins(): Promise<EnabledPlugin[]> {
+export async function getEnabledPlugins(projectPath?: string): Promise<EnabledPlugin[]> {
   const enabledNames = new Set(readEnabledPlugins());
+  // 项目级覆盖(会话 cwd 落在某个项目里时):项目里开的补进来、关的拿掉。
+  const overrides = projectOverridesFor(projectPath);
+  for (const [name, ov] of Object.entries(overrides)) {
+    if (ov.enabled === true) enabledNames.add(name);
+    else if (ov.enabled === false) enabledNames.delete(name);
+  }
   if (enabledNames.size === 0) return [];
   const enginesMap = readPluginEnginesMap();
   const out: EnabledPlugin[] = [];
@@ -1352,6 +1490,11 @@ export async function getEnabledPlugins(): Promise<EnabledPlugin[]> {
       if (!resolved) continue;
       const components = summarizeComponents(rootDir, resolved.manifest);
       const hasHooks = components.hooks.length > 0;
+      const engines = effectiveEngines(
+        resolved.manifest.name,
+        enginesMap,
+        overrides[name] ?? overrides[resolved.manifest.name],
+      );
       out.push({
         name: resolved.manifest.name,
         rootDir,
@@ -1359,8 +1502,9 @@ export async function getEnabledPlugins(): Promise<EnabledPlugin[]> {
         hasHooks,
         compatibleProviderIds: narrowToEngines(
           compatibleProviderIdsForPlugin(resolved.manifest, components),
-          pluginEngineSwitches(resolved.manifest.name, enginesMap),
+          engines,
         ),
+        engines,
       });
     } catch {
       /* invalid manifest on disk — skip this plugin for this turn */
@@ -1374,23 +1518,28 @@ export async function getEnabledPlugins(): Promise<EnabledPlugin[]> {
 export interface PluginSkillSource {
   rootDir: string;
   builtin: boolean;
+  /** The contributing plugin (manifest name). */
+  name: string;
+  /** That plugin's effective engine switches. */
+  engines?: PluginEngineSwitches;
 }
 
 /** {@link PluginSkillSource} 版本 —— 需要来源标记的调用点用它。 */
 export async function getPluginSkillSources(
   pluginNames?: readonly string[],
   providerId?: string,
+  projectPath?: string,
 ): Promise<PluginSkillSource[]> {
   const out: PluginSkillSource[] = [];
   const allow = pluginNames && pluginNames.length > 0 ? new Set(pluginNames) : null;
-  for (const p of await getEnabledPlugins()) {
+  for (const p of await getEnabledPlugins(projectPath)) {
     if (allow && !allow.has(p.name)) continue;
     // Candidate filtering and preflight are user-facing guardrails; enforce
     // the same applicability again at delivery so a stale/shared workflow
     // cannot mount a plugin into a provider the manifest excludes.
     if (providerId && !p.compatibleProviderIds.includes(providerId)) continue;
     for (const rootDir of pluginSkillsDirs(p.rootDir, p.manifest)) {
-      out.push({ rootDir, builtin: p.builtin === true });
+      out.push({ rootDir, builtin: p.builtin === true, name: p.name, ...(p.engines ? { engines: p.engines } : {}) });
     }
   }
   return out;
@@ -1403,8 +1552,9 @@ export async function getPluginSkillSources(
 export async function getEnabledPluginSkillRoots(
   pluginNames?: readonly string[],
   providerId?: string,
+  projectPath?: string,
 ): Promise<string[]> {
-  return (await getPluginSkillSources(pluginNames, providerId)).map((s) => s.rootDir);
+  return (await getPluginSkillSources(pluginNames, providerId, projectPath)).map((s) => s.rootDir);
 }
 
 /** 一个已启用插件提供的工作流节点类型目录。
@@ -1518,11 +1668,29 @@ export function setPluginMcpDisabled(
  *  plugins contribute no rows — the plugin's own switch is the master gate,
  *  so the two controls never contradict each other. */
 export async function listPluginMcpPanelEntries(): Promise<
-  Array<{ name: string; scope: "plugin"; kind: "stdio" | "http" | "sse"; detail: string; enabled: boolean }>
+  Array<{
+    name: string;
+    scope: "plugin";
+    kind: "stdio" | "http" | "sse";
+    detail: string;
+    enabled: boolean;
+    pluginName: string;
+    pluginEngines: { claude: boolean; codex: boolean };
+  }>
 > {
   const disabled = readMcpDisabled();
-  const out: Array<{ name: string; scope: "plugin"; kind: "stdio" | "http" | "sse"; detail: string; enabled: boolean }> = [];
+  const enginesMap = readPluginEnginesMap();
+  const out: Array<{
+    name: string;
+    scope: "plugin";
+    kind: "stdio" | "http" | "sse";
+    detail: string;
+    enabled: boolean;
+    pluginName: string;
+    pluginEngines: { claude: boolean; codex: boolean };
+  }> = [];
   for (const p of await getEnabledPlugins()) {
+    const sw = pluginEngineSwitches(p.name, enginesMap);
     for (const [serverName, raw] of readPluginMcpEntries(p)) {
       const desc = describePluginMcp(raw);
       if (!desc) continue;
@@ -1533,6 +1701,8 @@ export async function listPluginMcpPanelEntries(): Promise<
         kind: desc.kind,
         detail: desc.detail,
         enabled: !disabled.has(fullName),
+        pluginName: p.name,
+        pluginEngines: { claude: sw.claude, codex: sw.codex },
       });
     }
   }

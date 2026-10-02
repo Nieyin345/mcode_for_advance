@@ -264,7 +264,7 @@ export class PiAgentSdkProvider implements AgentProvider {
       allowNames: req.skills && req.skills.length > 0 ? req.skills : undefined,
       // Skills of ENABLED plugins (settings → Plugins) ride the same
       // additionalSkillPaths channel; Pi has no plugin concept of its own.
-      extraSkillPaths: await getEnabledPluginSkillRoots(req.pluginNames, "pi-sdk"),
+      extraSkillPaths: await getEnabledPluginSkillRoots(req.pluginNames, "pi-sdk", req.cwd),
       // Pi 没有每轮 systemPrompt 参数；DefaultResourceLoader 的 appendSystemPrompt
       // 就是它的原生入口。与 Claude/Codex 共用同一组 host-resolved sections。
       systemPromptAppends: turnContextSections(req),

@@ -25,7 +25,7 @@ import type { NodeTypeCatalog } from "../nodeType.js";
 import type { AgentProfileCatalog } from "../agentProfile.js";
 import type { HookSpec, HookRun } from "../hook.js";
 import type { WorkflowDoc, WorkflowListEntry, WorkflowReviewInfo } from "../workflow.js";
-import type { PluginState, PluginMarketplaceState, PluginsInstallLocalInput, PluginsInstallGitInput, PluginsInstallMarketplaceInput, PluginsSetEnabledInput, PluginsEnginesSetInput, PluginsRemoveInput, PluginsMarketplaceAddInput, PluginsMarketplaceRemoveInput, PluginsMarketplaceRefreshInput } from "../plugin.js";
+import type { PluginState, PluginMarketplaceState, PluginsInstallLocalInput, PluginsInstallGitInput, PluginsInstallMarketplaceInput, PluginsSetEnabledInput, PluginsEnginesSetInput, PluginsProjectListInput, PluginsProjectSetInput, PluginProjectRow, PluginsRemoveInput, PluginsMarketplaceAddInput, PluginsMarketplaceRemoveInput, PluginsMarketplaceRefreshInput } from "../plugin.js";
 import type {
   MobileLoginStatus,
   MobileTunnelStatus,
@@ -51,7 +51,7 @@ import type { SkillsListInput, SkillInfo, SkillsReadInput, SkillsSaveInput, Skil
   SkillPreset, SkillsPresetSaveInput, SkillsPresetDeleteInput,
   SkillsProjectOverviewInput, SkillsProjectOverviewResult,
   ProviderInfo, OutputStyleListInput, OutputStyleEntry } from "./skills.js";
-import type { McpListInput, McpServerEntry, McpToggleInput, McpAuthorizeInput, McpUnauthorizeInput, McpSaveInput, McpRemoveInput, McpScanImportInput, McpImportSource, McpImportInput, McpEnginesSetInput, McpEngineState } from "./mcp.js";
+import type { McpListInput, McpServerEntry, McpToggleInput, McpAuthorizeInput, McpUnauthorizeInput, McpSaveInput, McpRemoveInput, McpScanImportInput, McpImportSource, McpImportInput, McpEnginesSetInput, McpEngineState, McpProjectListInput, McpProjectListResult, McpProjectSaveInput, McpProjectRemoveInput, McpProjectTrustInput, McpProjectCopyInput, McpProjectCopyResult } from "./mcp.js";
 import type { ContextGetInput, ContextSaveInput, ToolsUsageGetInput, ToolsUsageResult } from "./context.js";
 import type { UsageStatsInput, UsageStatsResult } from "./usage.js";
 import type { LspLanguageState, LspInstallInput, LspOpResult, LspInstallFromFileInput, LspUninstallInput, LspToggleInput, LspSetPathInput, LspHealthCheckInput, LspPrewarmInput, LspRestartInput, LspOpenDocInput, LspCloseDocInput, LspDidChangeInput, LspDidSaveInput, LspRequestInput, LspRequestResult } from "./lsp.js";
@@ -569,6 +569,16 @@ export interface RpcMap {
     skipped: string[];
     errors: Array<{ name: string; error: string }>;
   }>;
+  /** Project scope (`<project>/.mcp.json`): list with trust state. */
+  "mcp.projectList": (input: McpProjectListInput) => Promise<McpProjectListResult>;
+  /** Add / overwrite one project server (auto-trusted). */
+  "mcp.projectSave": (input: McpProjectSaveInput) => Promise<{ ok: boolean; error?: string }>;
+  /** Remove one project server from the project file. */
+  "mcp.projectRemove": (input: McpProjectRemoveInput) => Promise<{ ok: boolean; error?: string }>;
+  /** Trust / untrust one project server as currently written. */
+  "mcp.projectTrust": (input: McpProjectTrustInput) => Promise<{ ok: boolean; error?: string }>;
+  /** Copy user-scope servers into the project file (existing names skipped). */
+  "mcp.projectCopy": (input: McpProjectCopyInput) => Promise<McpProjectCopyResult>;
   // Context hosting (settings panel): global instructions + tool usage
   /** Read the global instructions (single source of truth file). Empty string
    *  = never configured. */
@@ -875,6 +885,10 @@ export interface RpcMap {
   /** Per-engine switches of one plugin (Claude / Codex / Pi), like the skill
    *  matrix. Omitted engines keep their value; lands on the next turn. */
   "plugins.enginesSet": (input: PluginsEnginesSetInput) => Promise<{ ok: boolean; error?: string }>;
+  /** Installed plugins as seen from one project (override ∘ global). */
+  "plugins.projectList": (input: PluginsProjectListInput) => Promise<{ plugins: PluginProjectRow[] }>;
+  /** Set / clear one plugin's per-project override. */
+  "plugins.projectSet": (input: PluginsProjectSetInput) => Promise<{ ok: boolean; error?: string }>;
   /** Uninstall every installed version of a plugin. Rejected while any turn
    *  is running. */
   "plugins.remove": (input: PluginsRemoveInput) => Promise<{ ok: boolean; error?: string }>;
@@ -1573,6 +1587,11 @@ export const IPC = {
   MCP_REMOVE: "mcp:remove",
   MCP_SCAN_IMPORT: "mcp:scanImport",
   MCP_IMPORT: "mcp:import",
+  MCP_PROJECT_LIST: "mcp:projectList",
+  MCP_PROJECT_SAVE: "mcp:projectSave",
+  MCP_PROJECT_REMOVE: "mcp:projectRemove",
+  MCP_PROJECT_TRUST: "mcp:projectTrust",
+  MCP_PROJECT_COPY: "mcp:projectCopy",
   // Context hosting (settings panel): global instructions / tool usage
   CONTEXT_GET: "context:get",
   CONTEXT_SAVE: "context:save",
@@ -1694,6 +1713,8 @@ export const IPC = {
   PLUGINS_INSTALL_MARKETPLACE: "plugins:installMarketplace",
   PLUGINS_SET_ENABLED: "plugins:setEnabled",
   PLUGINS_ENGINES_SET: "plugins:enginesSet",
+  PLUGINS_PROJECT_LIST: "plugins:projectList",
+  PLUGINS_PROJECT_SET: "plugins:projectSet",
   PLUGINS_REMOVE: "plugins:remove",
   PLUGINS_MARKETPLACE_LIST: "plugins:marketplaceList",
   PLUGINS_MARKETPLACE_ADD: "plugins:marketplaceAdd",

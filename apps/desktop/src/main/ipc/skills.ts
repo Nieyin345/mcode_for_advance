@@ -457,8 +457,17 @@ export async function listSkillsForProject(projectPath: string | undefined): Pro
   // 以为是自己装过的哪个插件带来的。两者同样只读。
   try {
     const contributed = new Map<string, SkillInfo>();
-    for (const { rootDir, builtin } of await getPluginSkillSources()) {
-      await scanSkillsRoot(rootDir, builtin ? "builtin" : "plugin", contributed);
+    for (const source of await getPluginSkillSources()) {
+      const before = new Set(contributed.keys());
+      await scanSkillsRoot(source.rootDir, source.builtin ? "builtin" : "plugin", contributed);
+      // Attribute the new rows to their plugin (+ its plugin-level switches),
+      // so the panel can group by plugin and grey engines the plugin is off for.
+      if (source.builtin) continue;
+      for (const [skillName, info] of contributed) {
+        if (before.has(skillName)) continue;
+        if (source.name) info.pluginName = source.name;
+        if (source.engines) info.pluginEngines = { ...source.engines };
+      }
     }
     for (const [name, info] of contributed) {
       if (!byName.has(name)) byName.set(name, info);

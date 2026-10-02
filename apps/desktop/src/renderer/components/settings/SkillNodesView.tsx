@@ -52,10 +52,11 @@ interface SkillUsage {
   uses: SkillUse[];
 }
 
-/** 从一份工作流文档里数出"每个节点挂了哪些技能"。 */
-function collectWorkflowUses(doc: WorkflowDoc, into: Map<string, SkillUse[]>): void {
+/** 从一份工作流文档里数出"每个节点挂了哪些技能"(`paramKey` 换成 MCP / 插件那一格
+ *  就是同一张反查表 —— 三种东西在节点上都是"一组名字"参数)。 */
+function collectWorkflowUses(doc: WorkflowDoc, into: Map<string, SkillUse[]>, paramKey: string): void {
   for (const node of doc.nodes) {
-    const raw = node.params?.[NODE_SKILLS_PARAM_KEY];
+    const raw = node.params?.[paramKey];
     if (!Array.isArray(raw)) continue;
     for (const name of raw) {
       if (typeof name !== "string" || name.length === 0) continue;
@@ -72,8 +73,8 @@ function collectWorkflowUses(doc: WorkflowDoc, into: Map<string, SkillUse[]>): v
 }
 
 /** 从一份代理档案里数出它挂了哪些技能。档案存的就是"一组节点参数"。 */
-function collectProfileUses(profile: AgentProfile, into: Map<string, SkillUse[]>): void {
-  const raw = profile.params?.[NODE_SKILLS_PARAM_KEY];
+function collectProfileUses(profile: AgentProfile, into: Map<string, SkillUse[]>, paramKey: string): void {
+  const raw = profile.params?.[paramKey];
   if (!Array.isArray(raw)) return;
   for (const name of raw) {
     if (typeof name !== "string" || name.length === 0) continue;
@@ -87,8 +88,21 @@ export function SkillNodesView({
   skills,
   onJumpToWorkflow,
   onJumpToProfile,
+  paramKey = NODE_SKILLS_PARAM_KEY,
+  hint,
+  empty,
+  icon: RowIcon = IconSparkles,
 }: {
-  skills: SkillInfo[];
+  /** The inventory to report on (skills by default; MCP servers / plugins
+   *  reuse the view with their own `paramKey`). */
+  skills: ReadonlyArray<Pick<SkillInfo, "name"> & { description?: string }>;
+  /** Node param holding the name list (skills / mcp / plugins). */
+  paramKey?: string;
+  /** Replaces the skills hint line above the list. */
+  hint?: string;
+  /** Replaces the "no node uses a skill" line. */
+  empty?: string;
+  icon?: typeof IconSparkles;
   /** 跳到工作流那一页并选中这一份。 */
   onJumpToWorkflow: (workflowId: string) => void;
   /** 跳到代理档案那一页。 */
@@ -104,7 +118,7 @@ export function SkillNodesView({
     try {
       // 档案那一条一次就够（`agent_profiles.list` 带 params）。
       const catalog = await api.workflow.agentProfiles();
-      for (const p of catalog.profiles) collectProfileUses(p, into);
+      for (const p of catalog.profiles) collectProfileUses(p, into, paramKey);
 
       // 工作流**得逐个 get** —— `workflow.list` 只给列表项，不含 nodes。
       // 串行不并行：这些是本地 sqlite 读，并发几十个只会把连接池打满，
@@ -113,7 +127,7 @@ export function SkillNodesView({
       for (const entry of list.workflows) {
         try {
           const res = await api.workflow.get({ id: entry.id });
-          if (res.workflow) collectWorkflowUses(res.workflow, into);
+          if (res.workflow) collectWorkflowUses(res.workflow, into, paramKey);
         } catch {
           // 单份读不回来（存档坏了 / 刚被删）不该让整页失败 —— 跳过它。
         }
@@ -123,7 +137,7 @@ export function SkillNodesView({
       setError(err instanceof Error ? err.message : String(err));
       setUsage(new Map());
     }
-  }, []);
+  }, [paramKey]);
 
   useEffect(() => {
     void load();
@@ -133,7 +147,7 @@ export function SkillNodesView({
   // 后者是"这一堆我根本没配过"。
   const { used, unused } = useMemo(() => {
     const u: SkillUsage[] = [];
-    const un: SkillInfo[] = [];
+    const un: Array<Pick<SkillInfo, "name"> & { description?: string }> = [];
     for (const s of skills) {
       const uses = usage?.get(s.name);
       if (uses && uses.length > 0) u.push({ name: s.name, uses });
@@ -154,7 +168,7 @@ export function SkillNodesView({
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
       <p className="px-1 text-[0.7857em] leading-relaxed text-content-subtle">
-        {t("settings.skills.nodesHint")}
+        {hint ?? t("settings.skills.nodesHint")}
       </p>
       {error && (
         <div className="flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-[0.8571em] text-warning">
@@ -166,7 +180,7 @@ export function SkillNodesView({
       <div className="min-h-0 flex-1 overflow-auto rounded-md border border-edge bg-surface/40">
         {used.length === 0 && unused.length === 0 && (
           <div className="px-4 py-8 text-center text-[0.8571em] text-content-subtle">
-            {t("settings.skills.nodesEmpty")}
+            {empty ?? t("settings.skills.nodesEmpty")}
           </div>
         )}
 
@@ -174,7 +188,7 @@ export function SkillNodesView({
           <div key={row.name} className="border-b border-edge/60 last:border-b-0">
             {/* 技能名 + "被 N 处使用" */}
             <div className="flex items-center gap-2 px-3 py-2">
-              <IconSparkles size={14} className="shrink-0 text-accent" />
+              <RowIcon size={14} className="shrink-0 text-accent" />
               <span className="min-w-0 flex-1 truncate text-[0.8571em] font-medium text-content">
                 {row.name}
               </span>

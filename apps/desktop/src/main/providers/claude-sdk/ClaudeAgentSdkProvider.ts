@@ -51,6 +51,7 @@ import { getOutputStyleSetting } from "@main/lib/outputStyleConfig.js";
 import { getEnabledPlugins, getPluginMcpServers, getEnabledPluginSkillRoots } from "@main/plugins/pluginManager.js";
 import { defaultSkillsRoot, enabledSkillNames, engineEnabled, readEnginesMap, skillNamesInRoot } from "@main/lib/skillEngines.js";
 import { readMcpEnginesMap, mcpEngineEnabled } from "@main/lib/mcpEngines.js";
+import { getTrustedProjectMcpServers } from "@main/lib/projectMcp.js";
 import { resolveSubagentModelValue } from "@main/lib/subagentModel.js";
 import { normalizeBashCommand } from "@main/lib/msysPath.js";
 import {
@@ -642,6 +643,7 @@ function narrowByName<T extends { name: string }>(items: T[], names: string[] | 
 async function claudeSkillsOption(
   pluginNames?: readonly string[],
   allowNames?: readonly string[],
+  projectPath?: string,
 ): Promise<Options["skills"]> {
   // A node allowlist narrows the globally enabled set; it must never revive a
   // skill the user disabled for Claude in global management. Unknown names are
@@ -654,7 +656,7 @@ async function claudeSkillsOption(
   if (enabled === null) return "all";
   const enginesMap = readEnginesMap(defaultSkillsRoot());
   const pluginSkillNames = new Set<string>();
-  for (const root of await getEnabledPluginSkillRoots(pluginNames, "claude-sdk")) {
+  for (const root of await getEnabledPluginSkillRoots(pluginNames, "claude-sdk", projectPath)) {
     for (const name of skillNamesInRoot(root).keys()) {
       if (engineEnabled(enginesMap, name, "claude")) pluginSkillNames.add(name);
     }
@@ -854,7 +856,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       // can still self-discover/autoload skills), restricted → an allowlist of
       // the enabled skills + plugin contributions. Do NOT also add 'Skill' to
       // allowedTools. See sdk.d.ts Options.skills.
-      skills: await claudeSkillsOption(req.pluginNames, req.skills),
+      skills: await claudeSkillsOption(req.pluginNames, req.skills, req.cwd),
       // SDK #359: On Windows there is a timing/buffering race in the stdio
       // control-stream transport that causes "Tool permission request failed:
       // AbortError: Tool permission stream closed before response received"
@@ -1474,7 +1476,8 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     // MCP 服务器是**从同一份清单**里读出来的(下面 `getPluginMcpServers` 吃的就是这个
     // promise),两处各筛一次迟早分家 —— 而分家的表现是"这个插件没加载,它的工具却还在",
     // 正是这个参数想解决的那件事没解决。
-    const enabledPluginsPromise = getEnabledPlugins().then((plugins) =>
+    // 项目级插件开关:按会话 cwd 落在哪个项目里取覆盖(见 pluginManager 的 projectOverridesFor)。
+    const enabledPluginsPromise = getEnabledPlugins(req.cwd).then((plugins) =>
       narrowByName(
         plugins.filter((plugin) => plugin.compatibleProviderIds.includes("claude-sdk")),
         req.pluginNames,
@@ -1582,6 +1585,18 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       }
     }
 
+    // --- 项目级 MCP(<项目>/.mcp.json,见 lib/projectMcp.ts)---
+    // 只投递被信任过的条目;二进制自己那条项目源依旧关着(settingSources 钉在 user),
+    // 所以这里是唯一入口。项目条目不进引擎矩阵(同项目技能),与用户级同名时项目的赢。
+    const projectMcp = getTrustedProjectMcpServers(req.cwd);
+    if (projectMcp.length > 0) {
+      const servers = options.mcpServers ?? {};
+      for (const [name, config] of projectMcp) {
+        servers[name] = config as unknown as NonNullable<Options["mcpServers"]>[string];
+      }
+      options.mcpServers = servers;
+    }
+
     // --- 收窄:这一轮只挂哪几个 MCP 服务器(工作流节点填的 `mcp` 参数)---
     //
     // 空/缺席 = 不限制,这一段整个跳过 —— **普通对话与没填过这个参数的节点走的还是
@@ -1624,6 +1639,11 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       }
       // ③④ 剩下两路都**按名字选**,而且越靠用户本人配置的越优先(与设置面板里列的
       //       先后一致:用户 → 插件)。
+      //       ⓪ 项目 .mcp.json 里被信任的那几个 —— 同样按名字选,且排在用户级前面:
+      //          与 Claude Code 的作用域优先级一致(项目 > 用户),同名时项目那份赢。
+      for (const [name, config] of projectMcp) {
+        if (allow.has(name)) take(name, config);
+      }
       //       ③ 用户 config 文件里那几个 —— 平时二进制自己读,收窄后必须显式注入。
       for (const [name, raw] of Object.entries(mcpServersOf(await readUserClaudeJson()))) {
         if (allow.has(name)) take(name, raw);

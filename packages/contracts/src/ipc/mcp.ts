@@ -133,6 +133,12 @@ export interface McpServerEntry {
    *  the browserDisabled toggle only); user/plugin rows always carry it —
    *  absent flags mean enabled (missing = enabled). */
   perEngine?: McpEngineState;
+  /** Plugin rows only: the owning plugin (the `<plugin>` of `<plugin>__<server>`). */
+  pluginName?: string;
+  /** Plugin rows only: the plugin-level engine switches (Plugins panel). An
+   *  engine switched off there never sees this server, whatever `perEngine`
+   *  says — the panel greys that chip and points at the Plugins panel. */
+  pluginEngines?: McpEngineState;
 }
 
 /** List MCP servers for the settings panel. */
@@ -273,3 +279,79 @@ export const McpImportSchema = z.object({
 });
 export type McpImportInput = z.infer<typeof McpImportSchema>;
 
+
+/* ── 项目级 MCP(<项目>/.mcp.json)──
+ *  与项目技能(<项目>/.claude/skills)同一个思路:服务器写进项目目录,跟着项目走、能分享
+ *  给同事。文件格式是 Claude Code 的标准 `.mcp.json`({ "mcpServers": { 名: 配置 } }),
+ *  值里的 `${VAR}` / `${VAR:-默认}` 按本机环境变量展开 —— 密钥别直接写进去。
+ *
+ *  ⚠️ 信任:stdio 服务器 = 在本机跑一条命令。克隆来的仓库自带 .mcp.json 时不能自动跑,
+ *  所以只有**被信任过**的条目才会投递给引擎。信任按「名字 + 配置内容」的指纹记
+ *  (MCP_PROJECT_TRUST_SETTING_KEY),配置一改指纹就变、要重新信任;在 Mcode 里新增 /
+ *  编辑 / 从总库复制的条目自动信任。投递:Claude 每轮注入、Codex 每轮 `-c` 覆盖;Pi 没有
+ *  MCP。项目级条目不进引擎矩阵(同项目技能)。 */
+
+/** Settings key: JSON string[] of trusted project-server fingerprints. */
+export const MCP_PROJECT_TRUST_SETTING_KEY = "mcp.projectTrust";
+
+/** One server of a project's `.mcp.json`. `config` is the file content as-is
+ *  (a plain project file, not a secret store — it is shown for editing). */
+export interface McpProjectServer {
+  name: string;
+  kind: Exclude<McpKind, "builtin">;
+  detail: string;
+  config: McpServerConfig;
+  /** Delivered to the engines only when trusted (fingerprint matches). */
+  trusted: boolean;
+}
+
+export const McpProjectListSchema = z.object({ projectPath: z.string().min(1) });
+export type McpProjectListInput = z.infer<typeof McpProjectListSchema>;
+export interface McpProjectListResult {
+  /** Absolute path of the project's .mcp.json. */
+  file: string;
+  exists: boolean;
+  servers: McpProjectServer[];
+  /** Entry names present in the file whose config is not a valid server. */
+  invalid: string[];
+  /** File unreadable / not JSON — the panel shows it instead of an empty list. */
+  error?: string;
+}
+
+/** Add (or with `replace`, overwrite) one server in `<project>/.mcp.json`.
+ *  Other keys of the file are preserved; the saved entry becomes trusted. */
+export const McpProjectSaveSchema = z.object({
+  projectPath: z.string().min(1),
+  name: z.string().regex(MCP_NAME_RE, "invalid MCP server name"),
+  config: McpServerConfigSchema,
+  replace: z.boolean().optional(),
+});
+export type McpProjectSaveInput = z.infer<typeof McpProjectSaveSchema>;
+
+export const McpProjectRemoveSchema = z.object({
+  projectPath: z.string().min(1),
+  name: z.string().regex(MCP_NAME_RE, "invalid MCP server name"),
+});
+export type McpProjectRemoveInput = z.infer<typeof McpProjectRemoveSchema>;
+
+/** Trust / untrust one project server as it is currently written. */
+export const McpProjectTrustSchema = z.object({
+  projectPath: z.string().min(1),
+  name: z.string().regex(MCP_NAME_RE, "invalid MCP server name"),
+  trusted: z.boolean(),
+});
+export type McpProjectTrustInput = z.infer<typeof McpProjectTrustSchema>;
+
+/** Copy user-scope servers (总库) into the project file. Existing names are
+ *  skipped, never overwritten. Values are copied verbatim — the panel warns
+ *  that secrets in env/headers then live in the project file. */
+export const McpProjectCopySchema = z.object({
+  projectPath: z.string().min(1),
+  names: z.array(z.string().regex(MCP_NAME_RE, "invalid MCP server name")).min(1).max(200),
+});
+export type McpProjectCopyInput = z.infer<typeof McpProjectCopySchema>;
+export interface McpProjectCopyResult {
+  copied: string[];
+  skipped: string[];
+  failed: Array<{ name: string; reason: string }>;
+}

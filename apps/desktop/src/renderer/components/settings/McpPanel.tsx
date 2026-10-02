@@ -6,14 +6,15 @@
  *    binary 自动加载)。关闭 = 配置移出文件暂存到 settings 表;开启 = 移回。
  *  - 内置:进程内 mcode-browser server(应用内浏览器工具)。
  *
- * 项目级(`<projectRoot>/.mcp.json`)来源已整体移除:settingSources 钉在 ["user"] 后
- * 二进制不再读项目 .mcp.json,Mcode 也不做项目白名单 —— 外部项目级 MCP 一律不继承,
- * 用户可在下面把需要的服务器录成用户级(或从 CLI 配置里导进来)。
+ * 三个 tab,与技能页同一个管理模型(总库 / 项目 / 节点):
+ *  - 总库:上面两类 + 插件带来的服务器(按插件分组;插件层对某引擎关掉时那个开关变灰);
+ *  - 项目:`<项目>/.mcp.json`,由 Mcode 自己读、只投递信任过的条目(见 ProjectMcpView);
+ *  - 节点:哪些工作流节点 / 代理档案挂了哪个服务器(只读反查)。
  *
- * 改动自下一轮对话起生效(startTurn 每轮重建 options);仅 Claude 会话生效,
- * Pi 会话使用扩展机制,不受此面板影响。
+ * 改动自下一轮对话起生效(startTurn 每轮重建 options);Claude / Codex 生效,
+ * Pi 没有 MCP。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
 import { api } from "@renderer/lib/api.js";
@@ -38,12 +39,19 @@ import {
   IconExternalLink,
   IconLockOpen,
   IconPencil,
+  IconServer,
 } from "@renderer/lib/icons.js";
+import { NODE_MCP_PARAM_KEY } from "@contracts/nodeType";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { ScopeTabs, useManagedProject } from "./ScopeTabs.js";
+import { ProjectMcpView } from "./ProjectMcpView.js";
+import { SkillNodesView } from "./SkillNodesView.js";
 import {
   MCP_RESERVED_NAME,
   type McpImportOrigin,
   type McpImportSource,
   type McpKind,
+  type McpProjectServer,
   type McpScope,
   type McpServerConfig,
   type McpServerEntry,
@@ -127,6 +135,7 @@ function EngineVisibilityChips({
 }) {
   const { t } = useI18n();
   const current = s.perEngine ?? { claude: true, codex: true };
+  const blockedBy = s.pluginEngines;
   return (
     <div
       className="flex shrink-0 items-center gap-1"
@@ -136,6 +145,9 @@ function EngineVisibilityChips({
     >
       {(["claude", "codex"] as const).map((engine) => {
         const on = current[engine];
+        const label = engine === "claude" ? "Claude" : "Codex";
+        // 插件层(插件面板)对这个引擎关掉了:这一格怎么点都送不到,画成虚线框提示去插件页。
+        const blocked = blockedBy?.[engine] === false;
         return (
           <button
             key={engine}
@@ -145,15 +157,18 @@ function EngineVisibilityChips({
             disabled={busy}
             onClick={() => onToggle(s, engine)}
             title={
-              on
-                ? t("settings.mcp.engineOnHint", { engine: engine === "claude" ? "Claude" : "Codex" })
-                : t("settings.mcp.engineOffHint", { engine: engine === "claude" ? "Claude" : "Codex" })
+              blocked
+                ? t("settings.skills.pluginEngineOffNamed", { engine: label, plugin: s.pluginName ?? "" })
+                : on
+                  ? t("settings.mcp.engineOnHint", { engine: label })
+                  : t("settings.mcp.engineOffHint", { engine: label })
             }
             className={cn(
               "rounded px-1.5 py-0.5 text-[10px] font-medium leading-tight transition-colors",
-              on
+              on && !blocked
                 ? "bg-accent/15 text-accent"
                 : "bg-surface-hover text-content-subtle line-through decoration-content-subtle/60",
+              blocked && "border border-dashed border-warning/60",
             )}
           >
             {engine === "claude" ? "Claude" : "Codex"}
@@ -240,6 +255,13 @@ export function McpPanel() {
   const [editServer, setEditServer] = useState<McpServerEntry | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<McpServerEntry | null>(null);
+  // 三个 tab(总库 / 项目 / 节点)+ 总库的搜索词。
+  const [view, setView] = useState<"library" | "project" | "nodes">("library");
+  const [query, setQuery] = useState("");
+  const { project, projects, setManagedProjectId } = useManagedProject();
+  // 新增 / 编辑对话框的目标:null = 总库(用户级);非空 = 这个项目的 .mcp.json。
+  const [dialogProject, setDialogProject] = useState<string | null>(null);
+  const [projectRefresh, setProjectRefresh] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -366,9 +388,26 @@ export function McpPanel() {
     }
   };
 
-  const userServers = servers.filter((s) => s.scope === "user");
-  const pluginServers = servers.filter((s) => s.scope === "plugin");
+  const q = query.trim().toLowerCase();
+  const matches = (s: McpServerEntry): boolean =>
+    !q || s.name.toLowerCase().includes(q) || s.detail.toLowerCase().includes(q);
+  const allUserServers = servers.filter((s) => s.scope === "user");
+  const userServers = allUserServers.filter(matches);
+  const pluginServers = servers.filter((s) => s.scope === "plugin" && matches(s));
   const builtin = servers.find((s) => s.scope === "builtin");
+  // 插件服务器按插件分组(插件一多,平铺就分不清谁是谁的)。
+  const pluginGroupMap = new Map<string, McpServerEntry[]>();
+  for (const s of pluginServers) {
+    const key = s.pluginName ?? s.name.split("__")[0] ?? s.name;
+    const list = pluginGroupMap.get(key) ?? [];
+    list.push(s);
+    pluginGroupMap.set(key, list);
+  }
+  const pluginGroups = [...pluginGroupMap.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const nodeInventory = useMemo(
+    () => servers.filter((s) => s.scope !== "builtin").map((s) => ({ name: s.name, description: s.detail })),
+    [servers],
+  );
 
   return (
     <section className={cn("mx-auto w-full space-y-4", PANEL_MAX_W.form)}>
@@ -377,12 +416,74 @@ export function McpPanel() {
         icon={McpIcon}
       />
 
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <ScopeTabs
+          items={[
+            { id: "library", label: t("settings.skills.tabLibrary"), count: allUserServers.length },
+            { id: "project", label: t("settings.skills.tabProject") },
+            { id: "nodes", label: t("settings.skills.tabNodes") },
+          ]}
+          value={view}
+          onChange={setView}
+        />
+        {view === "library" && (
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t("settings.mcp.searchPlaceholder")}
+            aria-label={t("settings.mcp.searchPlaceholder")}
+            className="w-[200px] rounded border border-edge bg-surface px-2 py-1 text-[0.7857em] text-content placeholder:text-content-subtle focus:border-accent focus:outline-none"
+          />
+        )}
+      </div>
+
       {error && (
         <div className="rounded border border-danger/40 bg-danger/5 px-3 py-2 text-[0.7857em] text-danger">
           {error}
         </div>
       )}
 
+      {view === "project" && (
+        <ProjectMcpView
+          project={project}
+          projects={projects}
+          onSelectProject={setManagedProjectId}
+          userServers={allUserServers}
+          refreshKey={projectRefresh}
+          onAdd={(projectPath) => {
+            setDialogProject(projectPath);
+            setEditServer(null);
+            setAddOpen(true);
+          }}
+          onEdit={(projectPath, server: McpProjectServer) => {
+            setDialogProject(projectPath);
+            setEditServer({
+              name: server.name,
+              scope: "user",
+              kind: server.kind,
+              detail: server.detail,
+              enabled: true,
+              config: server.config,
+            });
+            setAddOpen(true);
+          }}
+        />
+      )}
+
+      {view === "nodes" && (
+        <SkillNodesView
+          skills={nodeInventory}
+          paramKey={NODE_MCP_PARAM_KEY}
+          hint={t("settings.mcp.nodesHint")}
+          empty={t("settings.mcp.nodesEmpty")}
+          icon={IconServer}
+          onJumpToWorkflow={() => useSessionStore.getState().setSettingsOpen(true, "workflows")}
+          onJumpToProfile={() => useSessionStore.getState().setSettingsOpen(true, "workflows")}
+        />
+      )}
+
+      <div className={cn("space-y-4", view === "library" ? "" : "hidden")}>
       {/* ───────── 用户级 ───────── */}
       <SettingsSection
         title={t("settings.mcp.userSection")}
@@ -473,7 +574,23 @@ export function McpPanel() {
             {t("settings.mcp.noPluginServers")}
           </div>
         ) : (
-          pluginServers.map((s) => (
+          pluginGroups.map(([pluginName, rows]) => (
+            <div key={pluginName}>
+            <div className="flex items-center gap-1.5 px-4 pb-0.5 pt-2 text-[10px] font-medium uppercase tracking-wide text-content-subtle/80">
+              <span className="truncate">{pluginName}</span>
+              <span className="tabular-nums normal-case">{rows.length}</span>
+              {rows[0]?.pluginEngines && (["claude", "codex"] as const).some((e) => rows[0]?.pluginEngines?.[e] === false) && (
+                <span className="normal-case tracking-normal text-warning">
+                  {t("settings.mcp.pluginEnginesOff", {
+                    engines: (["claude", "codex"] as const)
+                      .filter((e) => rows[0]?.pluginEngines?.[e] === false)
+                      .map((e) => (e === "claude" ? "Claude" : "Codex"))
+                      .join(" / "),
+                  })}
+                </span>
+              )}
+            </div>
+            {rows.map((s) => (
             <SettingRow
               key={rowKey(s)}
               title={
@@ -502,6 +619,8 @@ export function McpPanel() {
                 label={t(s.enabled ? "settings.mcp.toggleOff" : "settings.mcp.toggleOn", { name: s.name })}
               />
             </SettingRow>
+            ))}
+            </div>
           ))
         )}
       </SettingsSection>
@@ -541,6 +660,7 @@ export function McpPanel() {
           </SettingRow>
         )}
       </SettingsSection>
+      </div>
 
       <ConfirmDialog
         open={pendingDelete != null}
@@ -565,11 +685,18 @@ export function McpPanel() {
       <AddServerDialog
         open={addOpen}
         editServer={editServer}
+        projectPath={dialogProject}
         onOpenChange={(open) => {
           setAddOpen(open);
-          if (!open) setEditServer(null);
+          if (!open) {
+            setEditServer(null);
+            setDialogProject(null);
+          }
         }}
-        onSaved={() => void load()}
+        onSaved={() => {
+          if (dialogProject) setProjectRefresh((n) => n + 1);
+          else void load();
+        }}
       />
       <ImportMcpDialog
         open={importOpen}
@@ -632,12 +759,15 @@ function parseStringRecordJson(
 function AddServerDialog({
   open,
   editServer,
+  projectPath,
   onOpenChange,
   onSaved,
 }: {
   open: boolean;
   /** 非空 = 编辑模式:预填该行的 config,名字锁定,保存走 replace 通道。 */
   editServer: McpServerEntry | null;
+  /** 非空 = 写进这个项目的 `.mcp.json`(项目 tab);空 = 总库(用户级)。 */
+  projectPath?: string | null;
   onOpenChange: (open: boolean) => void;
   onSaved: () => void;
 }) {
@@ -738,11 +868,18 @@ function AddServerDialog({
     try {
       // 编辑模式带 replace:同名覆盖写回(主进程同时清掉 stash 里的禁用副本,
       // 编辑即重新启用 —— 面板会在保存后刷新看到)。
-      const res = await api.mcp.save({
-        name: trimmedName,
-        config,
-        ...(editServer ? { replace: true } : {}),
-      });
+      const res = projectPath
+        ? await api.mcp.projectSave({
+            projectPath,
+            name: trimmedName,
+            config,
+            ...(editServer ? { replace: true } : {}),
+          })
+        : await api.mcp.save({
+            name: trimmedName,
+            config,
+            ...(editServer ? { replace: true } : {}),
+          });
       if (!res.ok) {
         setError(res.error ?? t("settings.saveFailed"));
         return;
@@ -766,7 +903,9 @@ function AddServerDialog({
           </Dialog.Title>
           <Dialog.Description className="px-4 pt-1">
             {t("settings.mcp.addDescPre")}
-            <code className="rounded bg-surface-muted px-0.5">~/.mcode/.claude.json</code>
+            <code className="rounded bg-surface-muted px-0.5">
+              {projectPath ? `${projectPath}${projectPath.includes("\\") ? "\\" : "/"}.mcp.json` : "~/.mcode/.claude.json"}
+            </code>
             {t("settings.mcp.addDescPost")}
           </Dialog.Description>
           <Dialog.Close />

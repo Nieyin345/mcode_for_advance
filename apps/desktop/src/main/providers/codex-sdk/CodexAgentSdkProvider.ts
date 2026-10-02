@@ -82,6 +82,7 @@ import { defaultSkillsRoot, enabledSkillDirs, engineEnabled, readEnginesMap, ski
 import { scriptsDir } from "@main/workflows/seed.js";
 import { ASK_NATIVE_TOOL_PROMPT } from "@main/lib/askQuestion.js";
 import { turnContextSections } from "@main/providers/contextPrompt.js";
+import { codexProjectScopeArgs } from "./codexProjectScope.js";
 import { codexMcpDisableArgs, codexTurnAllowsMcpServer } from "./codexTurnScope.js";
 import {
   parseQuestions,
@@ -267,6 +268,13 @@ export class CodexAgentSdkProvider implements AgentProvider {
     if (mcpScopeArgs.length > 0) {
       ctx.log.info(`codex: disabled ${mcpScopeArgs.length / 2} MCP server(s) outside this turn's allowlists`);
     }
+    // 项目级:项目插件开关 + 项目 .mcp.json(见 codexProjectScope.ts)。
+    const projectScopeArgs = await codexProjectScopeArgs({
+      cwd: req.cwd,
+      inventory: await CodexModelsStore.listMaterializedMcpServers(),
+      mcpServerNames: req.mcpServerNames,
+      pluginNames: req.pluginNames,
+    });
     const mcpManagement = await getMcpManagement();
     const browserToolsEnabled =
       !mcpManagement.browserDisabled &&
@@ -369,6 +377,7 @@ export class CodexAgentSdkProvider implements AgentProvider {
         ...(contextWindow ? ["-c", `model_context_window=${contextWindow}`] : []),
         "-c", "project_doc_max_bytes=0", // Host compiles bounded project instructions.
         ...mcpScopeArgs,
+        ...projectScopeArgs,
       ],
       log: ctx.log,
       onExit: (code, signal) => {
@@ -485,7 +494,7 @@ export class CodexAgentSdkProvider implements AgentProvider {
           await client.request("skills/extraRoots/set", {
             extraRoots: [
               ...skillRootsFor(req.skills),
-              ...(await pluginSkillRootsFor(req.pluginNames, req.skills)),
+              ...(await pluginSkillRootsFor(req.pluginNames, req.skills, req.cwd)),
             ],
           });
         } catch (err) {
@@ -799,12 +808,13 @@ function skillRootsFor(allowNames?: readonly string[]): string[] {
 async function pluginSkillRootsFor(
   pluginNames?: readonly string[],
   allowNames?: readonly string[],
+  projectPath?: string,
 ): Promise<string[]> {
   const { getEnabledPluginSkillRoots } = await import("@main/plugins/pluginManager.js");
   const enginesMap = readEnginesMap(defaultSkillsRoot());
   const allow = allowNames?.length ? new Set(allowNames) : null;
   const out: string[] = [];
-  for (const root of await getEnabledPluginSkillRoots(pluginNames, "codex-sdk")) {
+  for (const root of await getEnabledPluginSkillRoots(pluginNames, "codex-sdk", projectPath)) {
     const byName = skillNamesInRoot(root);
     const enabled = [...byName.keys()].filter(
       (name) => (!allow || allow.has(name)) && engineEnabled(enginesMap, name, "codex"),

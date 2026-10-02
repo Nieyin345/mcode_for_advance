@@ -1221,6 +1221,41 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ servers: McpServerEntry[]; }"
  },
  {
+  "method": "mcp.projectCopy",
+  "channel": "mcp:projectCopy",
+  "doc": "Copy user-scope servers into the project file (existing names skipped).",
+  "input": "{ projectPath: string; names: string[] }",
+  "output": "McpProjectCopyResult"
+ },
+ {
+  "method": "mcp.projectList",
+  "channel": "mcp:projectList",
+  "doc": "Project scope (`<project>/.mcp.json`): list with trust state.",
+  "input": "{ projectPath: string }",
+  "output": "McpProjectListResult"
+ },
+ {
+  "method": "mcp.projectRemove",
+  "channel": "mcp:projectRemove",
+  "doc": "Remove one project server from the project file.",
+  "input": "{ projectPath: string; name: string }",
+  "output": "{ ok: boolean; error?: string; }"
+ },
+ {
+  "method": "mcp.projectSave",
+  "channel": "mcp:projectSave",
+  "doc": "Add / overwrite one project server (auto-trusted).",
+  "input": "{ projectPath: string; name: string; config: z.objectOutputType<{ type: z.ZodOptional<z.ZodLiteral<'stdio'>>; command: z.ZodString; args: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>; env: z.ZodOptional…; replace?: boolean | undefined }",
+  "output": "{ ok: boolean; error?: string; }"
+ },
+ {
+  "method": "mcp.projectTrust",
+  "channel": "mcp:projectTrust",
+  "doc": "Trust / untrust one project server as currently written.",
+  "input": "{ projectPath: string; name: string; trusted: boolean }",
+  "output": "{ ok: boolean; error?: string; }"
+ },
+ {
   "method": "mcp.remove",
   "channel": "mcp:remove",
   "doc": "Remove a user-scope server (from both the config file and the stash).",
@@ -1652,6 +1687,20 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "channel": "plugins:marketplaceRemove",
   "doc": "Remove a marketplace (cloned tree deleted; installed plugins stay).",
   "input": "{ name: string }",
+  "output": "{ ok: boolean; error?: string; }"
+ },
+ {
+  "method": "plugins.projectList",
+  "channel": "plugins:projectList",
+  "doc": "Installed plugins as seen from one project (override ∘ global).",
+  "input": "{ projectPath: string }",
+  "output": "{ plugins: PluginProjectRow[]; }"
+ },
+ {
+  "method": "plugins.projectSet",
+  "channel": "plugins:projectSet",
+  "doc": "Set / clear one plugin's per-project override.",
+  "input": "{ projectPath: string; name: string; enabled?: boolean | null | undefined; engines?: { claude?: boolean | undefined; codex?: boolean | undefined; pi?: boolean | undefined; } | null | undefined }",
   "output": "{ ok: boolean; error?: string; }"
  },
  {

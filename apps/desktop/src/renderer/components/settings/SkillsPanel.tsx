@@ -120,6 +120,12 @@ function engineLabel(e: MatrixEngine): string {
   return e === "claude" ? "Claude" : e === "codex" ? "Codex" : "Pi";
 }
 
+/** True when the skill's plugin is switched off for `e` at plugin level
+ *  (Plugins panel) — the skill's own matrix flag can't override that. */
+function pluginBlocks(s: { pluginEngines?: SkillEngineState }, e: MatrixEngine): boolean {
+  return s.pluginEngines?.[e] === false;
+}
+
 function moveTabFocus(event: React.KeyboardEvent<HTMLButtonElement>): void {
   if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
   const tabs = Array.from(
@@ -162,16 +168,18 @@ function GroupEngineSwitches({
   busy: boolean;
   onToggle: (engine: MatrixEngine, want: boolean) => void;
 }) {
+  const { t } = useI18n();
   return (
     <span className="ml-1 inline-flex shrink-0 items-center gap-0.5">
       {MATRIX_ENGINES.map((e) => {
         const allOn = skills.every((s) => s.perEngine?.[e] !== false);
+        const blocked = skills.length > 0 && skills.every((s) => pluginBlocks(s, e));
         return (
           <button
             key={e}
             type="button"
             disabled={busy}
-            title={engineLabel(e)}
+            title={blocked ? t("settings.skills.pluginEngineOff", { engine: engineLabel(e) }) : engineLabel(e)}
             onClick={(ev) => {
               // The switches sit inside the collapsible group title — clicking
               // one must not toggle the group's fold state.
@@ -180,7 +188,8 @@ function GroupEngineSwitches({
             }}
             className={cn(
               "rounded px-1 leading-4 text-[9px] font-semibold transition-colors",
-              allOn ? "bg-accent/15 text-accent" : "text-content-subtle/50 line-through hover:text-content-subtle",
+              allOn && !blocked ? "bg-accent/15 text-accent" : "text-content-subtle/50 line-through hover:text-content-subtle",
+              blocked && "border border-dashed border-warning/60",
               busy && "opacity-50",
             )}
           >
@@ -215,6 +224,8 @@ export function SkillsPanel() {
   /** 总库那一栏勾选的技能名 —— 「复制到项目」的源。跨 tab 保留（用户在总库勾完
    *  切到项目 tab 按按钮是**预期用法**，切一下就把勾清掉会让那条路走不通）。 */
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
+  /** 总库列表的搜索词(名字 / 描述 / 来源插件)。有词时所有组展开。 */
+  const [query, setQuery] = useState("");
   /** 复制完之后让跨项目总览重扫一次（那一行的数字要跟着变）。 */
   const [overviewKey, setOverviewKey] = useState(0);
   const toggleChecked = useCallback((name: string): void => {
@@ -231,6 +242,18 @@ export function SkillsPanel() {
   const library = useRpc(() => api.skills.list({}), [], { toastOnError: false });
   const bundleQuery = useRpc(() => api.skills.bundles({}), [], { toastOnError: false });
   const panelSkills = library.data?.skills ?? EMPTY_PANEL_SKILLS;
+  const q = query.trim().toLowerCase();
+  const visibleSkills = useMemo(
+    () =>
+      q
+        ? panelSkills.filter((s) =>
+            s.name.toLowerCase().includes(q) ||
+            s.description.toLowerCase().includes(q) ||
+            (s.pluginName ?? "").toLowerCase().includes(q),
+          )
+        : panelSkills,
+    [panelSkills, q],
+  );
   const listLoading = library.loading;
   const bundles = bundleQuery.data?.bundles ?? EMPTY_BUNDLES;
   const projectQuery = useRpc(async () => {
@@ -371,7 +394,7 @@ export function SkillsPanel() {
       groups[i].skills.push(skill);
     };
     if (groupMode === "bundle") {
-      for (const s of panelSkills) {
+      for (const s of visibleSkills) {
         // **项目技能单独一组，不按导入包分。** 它们不属于任何一次导入，混进
         // "未分组"会让那个名字骗人 —— 用户明明是从项目目录来的，却被说成
         // "没归类"。而且项目那一栏才是它们的归属地，这里要一眼看得出来。
@@ -380,7 +403,12 @@ export function SkillsPanel() {
           continue;
         }
         if (s.source === "plugin") {
-          push("plugin", t("settings.skills.groupPlugin"), s);
+          // 按插件分子组:插件一多,混成一组就看不出哪个技能是哪个插件带来的。
+          push(
+            s.pluginName ? `plugin:${s.pluginName}` : "plugin",
+            s.pluginName ? `${t("settings.skills.groupPlugin")} · ${s.pluginName}` : t("settings.skills.groupPlugin"),
+            s,
+          );
           continue;
         }
         // `builtin` 那条分支删了（2026-09-20）：随应用发布的那四个文档技能已移除，
@@ -393,7 +421,7 @@ export function SkillsPanel() {
       // （按 manifest 顺序）→ 未分组。
       const orderOf = (id: string): number => {
         if (id === "project") return -2;
-        if (id === "plugin") return -1;
+        if (id === "plugin" || id.startsWith("plugin:")) return -1;
         if (id.startsWith("bundle:")) {
           const i = bundles.findIndex((b) => `bundle:${b.id}` === id);
           return i >= 0 ? i : bundles.length;
@@ -401,13 +429,13 @@ export function SkillsPanel() {
         if (id === "ungrouped") return bundles.length + 1;
         return Number.MAX_SAFE_INTEGER;
       };
-      return groups.sort((a, b) => orderOf(a.id) - orderOf(b.id));
+      return groups.sort((a, b) => orderOf(a.id) - orderOf(b.id) || a.label.localeCompare(b.label));
     }
-    for (const s of panelSkills) {
+    for (const s of visibleSkills) {
       // 按引擎分组这一档里，项目技能按自己的 `perEngine` 走（主进程不给它挂矩阵，
       // 所以 `pe` 缺席 → 视为三引擎全开），与通用库同一个规则。
       const pe = s.perEngine;
-      const on = pe ? MATRIX_ENGINES.filter((e) => pe[e]) : [...MATRIX_ENGINES];
+      const on = (pe ? MATRIX_ENGINES.filter((e) => pe[e]) : [...MATRIX_ENGINES]).filter((e) => !pluginBlocks(s, e));
       if (on.length === MATRIX_ENGINES.length) {
         push("universal", t("settings.skills.groupUniversal"), s);
       } else if (on.length === 1) {
@@ -417,7 +445,7 @@ export function SkillsPanel() {
       }
     }
     return groups.sort((a, b) => groupRank(a.id) - groupRank(b.id));
-  }, [panelSkills, t, groupMode, bundles, bundleOf]);
+  }, [visibleSkills, t, groupMode, bundles, bundleOf]);
 
   const [selected, setSelected] = useState<Selection>(null);
   const selectedRef = useRef(selected);
@@ -715,6 +743,8 @@ export function SkillsPanel() {
     <SkillSourceEditor
       skill={selected}
       perEngine={selectedInfo?.perEngine}
+      pluginEngines={selectedInfo?.pluginEngines}
+      pluginName={selectedInfo?.pluginName}
       onToggleEngine={(engine) => {
         if (selectedInfo?.perEngine) void setSkillEngines(selectedInfo.name, selectedInfo.perEngine, engine);
       }}
@@ -948,6 +978,19 @@ export function SkillsPanel() {
             </>
           }
         >
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={t("settings.skills.searchPlaceholder")}
+              aria-label={t("settings.skills.searchPlaceholder")}
+              className="mb-1 mt-0.5 w-full rounded border border-edge bg-surface px-2 py-1 text-[0.7857em] text-content placeholder:text-content-subtle focus:border-accent focus:outline-none"
+            />
+            {q && visibleSkills.length === 0 && (
+              <div className="px-2 py-4 text-center text-[0.7857em] text-content-subtle">
+                {t("settings.skills.searchEmpty", { query: query.trim() })}
+              </div>
+            )}
             {selected?.kind === "new" && (
               <div className="relative block w-full rounded border border-dashed border-accent/60 bg-accent/5 px-2.5 py-1.5 text-left text-[0.7857em] italic text-accent">
                 <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
@@ -955,7 +998,7 @@ export function SkillsPanel() {
               </div>
             )}
             {groupedSkills.map((g) => {
-              const isCollapsed = !expanded.has(g.id);
+              const isCollapsed = !q && !expanded.has(g.id);
               // Deletable = universal-library rows. Plugin rows are owned by
               // the Plugins panel; builtin rows are not deletable at all.
               const deletableCount = g.skills.filter((s) => s.source === "global").length;
@@ -1209,6 +1252,8 @@ function EmptyDetail() {
 function SkillSourceEditor({
   skill,
   perEngine,
+  pluginEngines,
+  pluginName,
   onToggleEngine,
   engineBusy,
   content,
@@ -1227,6 +1272,9 @@ function SkillSourceEditor({
   /** Resolved per-engine availability — present only for universal-library
    *  skills; absent (built-in) → the matrix is not rendered. */
   perEngine?: SkillEngineState;
+  /** Plugin rows: the plugin-level switches; an engine off there greys the chip. */
+  pluginEngines?: SkillEngineState;
+  pluginName?: string;
   /** Toggle one engine's checkbox; the panel owns the RPC + state update. */
   onToggleEngine: (engine: keyof SkillEngineState) => void;
   engineBusy: boolean;
@@ -1273,6 +1321,8 @@ function SkillSourceEditor({
           <div className="flex items-center gap-1" role="group" aria-label={t("settings.skills.engines")}>
             {(Object.keys(perEngine) as Array<keyof SkillEngineState>).map((engine) => {
               const on = perEngine[engine];
+              const blocked = pluginEngines?.[engine] === false;
+              const label = engine === "claude" ? "Claude" : engine === "codex" ? "Codex" : "Pi";
               return (
                 <button
                   key={engine}
@@ -1282,15 +1332,18 @@ function SkillSourceEditor({
                   disabled={engineBusy}
                   onClick={() => onToggleEngine(engine)}
                   title={
-                    on
-                      ? t("settings.skills.engineOnHint", { engine })
-                      : t("settings.skills.engineOffHint", { engine })
+                    blocked
+                      ? t("settings.skills.pluginEngineOffNamed", { engine: label, plugin: pluginName ?? "" })
+                      : on
+                        ? t("settings.skills.engineOnHint", { engine })
+                        : t("settings.skills.engineOffHint", { engine })
                   }
                   className={cn(
                     "rounded px-1.5 py-0.5 text-[10px] font-medium leading-tight transition-colors",
-                    on
+                    on && !blocked
                       ? "bg-accent/15 text-accent"
                       : "bg-surface-hover text-content-subtle line-through decoration-content-subtle/60",
+                    blocked && "border border-dashed border-warning/60",
                   )}
                 >
                   {engine === "claude" ? "Claude" : engine === "codex" ? "Codex" : "Pi"}
