@@ -67,18 +67,31 @@ function persistRetryable(runId: string): void {
 console.log("maint-m28-smoke —— 续跑/重试启动竞态与启动失败可见性\n");
 
 /* 1. 预检挂起期间的第二次重试 */
+// Catalog lookup now precedes replay authorization: cancellation covers that
+// new async boundary too, before any health probe or actual node execution.
+{
+  const runId = "run_m28_catalog_cancel";
+  persistRetryable(runId);
+  const pending = runner.resolveWorkflowRetry({ sessionId: PARENT, runId, nodeId: "agentA" });
+  eq("catalog lookup reserves the session immediately", runner.hasActiveRun(PARENT), true);
+  runner.cancelWorkflowRun(PARENT);
+  eq("stop during catalog lookup rejects the continuation", (await pending).ok, false);
+  eq("cancelled catalog lookup never marks the old run running", WorkflowRunRepo.get(runId)?.status, "failed");
+  eq("cancelled catalog reservation is released", runner.hasActiveRun(PARENT), false);
+}
+
 {
   const runId = "run_m28_pending";
   persistRetryable(runId);
   let release!: () => void;
   health.holdNextHealth(new Promise<void>((r) => { release = r; }));
-  const first = runner.resolveWorkflowRetry({ sessionId: PARENT, runId, nodeId: "agentA" });
+  const first = await runner.resolveWorkflowRetry({ sessionId: PARENT, runId, nodeId: "agentA" });
   eq("第一次重试被受理", first.ok, true);
   await tick();
   eq("此时启动在预检中(pendingStarts):hasActiveRun 为真", runner.hasActiveRun(PARENT), true);
-  const second = runner.resolveWorkflowRetry({ sessionId: PARENT, runId, nodeId: "agentA" });
+  const second = await runner.resolveWorkflowRetry({ sessionId: PARENT, runId, nodeId: "agentA" });
   eq("预检中再点重试:不得返回 ok(实际不会启动第二次)", second.ok, false);
-  const choice = runner.resolveWorkflowChoice({ sessionId: PARENT, runId, nodeId: "agentA", edgeId: "e1" });
+  const choice = await runner.resolveWorkflowChoice({ sessionId: PARENT, runId, nodeId: "agentA", edgeId: "e1" });
   eq("预检中的岔路口续跑同样不得返回 ok", choice.ok, false);
   release();
   await waitFor("第一次重试真正启动", () => WorkflowRunRepo.get(runId)?.status === "running" && runner.hasActiveRun(PARENT));
@@ -93,7 +106,7 @@ console.log("maint-m28-smoke —— 续跑/重试启动竞态与启动失败可�
   const before = unhandled.length;
   const eventsBefore = rt.published.length;
   health.failNextHealth(new Error("m28: 引擎预检故意失败"));
-  const res = runner.resolveWorkflowRetry({ sessionId: PARENT, runId, nodeId: "agentA" });
+  const res = await runner.resolveWorkflowRetry({ sessionId: PARENT, runId, nodeId: "agentA" });
   eq("重试在同步阶段被受理(失败发生在异步预检)", res.ok, true);
   await tick(); await tick();
   await waitFor("启动失败后释放 active run", () => !runner.hasActiveRun(PARENT), 3_000);

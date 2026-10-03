@@ -33,10 +33,11 @@
  *     一律弹卡。
  */
 import { createReadStream, promises as fs } from "node:fs";
+import { createInterface as createReadlineInterface } from "node:readline";
 import { homedir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { createInterface as createReadlineInterface } from "node:readline";
+import { readTextPage, formatTextPage, withTextFileLock, replaceTextFile, textFileHash, grepMatchPreview, type TextPageOptions } from "./agentTextFiles.js";
 import { ConsoleTextDecoder } from "@main/lib/outBuf.js";
 import { z } from "zod";
 import {
@@ -150,10 +151,6 @@ export interface AgentToolsDeps {
 
 /* ────────────────────────────── 共用小件 ────────────────────────────── */
 
-/** 读出来的文本单行上限 —— 与 claude 引擎的 Read 同款取舍,超长行截断。 */
-const MAX_LINE_CHARS = 2000;
-/** 小文件走整读快路径；更大的文件改用逐行流式读取，不再因为体积直接拒绝。 */
-const EAGER_READ_BYTES = 2 * 1024 * 1024;
 /** 批量读取最多几个文件 / 最多返回多少字符，防一次调用把上下文灌满。 */
 const MAX_BATCH_READ_FILES = 20;
 const MAX_BATCH_OUTPUT_CHARS = 80_000;
@@ -288,64 +285,10 @@ function truncateHeadTail(s: string, label: string): string {
   return `${s.slice(0, head)}\n…[${label} 共 ${s.length} 字符,中间 ${s.length - head - tail} 字符已省略]…\n${s.slice(-tail)}`;
 }
 
-function clipLine(line: string, max = MAX_LINE_CHARS): string {
-  return line.length > max ? `${line.slice(0, max)}…(行超长已截断)` : line;
-}
+function clipLine(line: string, max = 2000): string { return line.length > max ? `${line.slice(0, max)}…(行超长已截断)` : line; }
 
-/**
- * 带行号读取文本范围。<=2MB 走整读快路径；大文件用 readline 流式扫到目标范围，
- * 所以 offset/limit 在大日志上仍然可用，而不是因为文件大就整次拒绝。
- */
 async function readTextRange(abs: string, offset = 1, limit = 2000): Promise<string> {
-  const st = await fs.stat(abs).catch(() => null);
-  if (!st) throw new Error(`文件不存在:${abs}`);
-  if (st.isDirectory()) throw new Error(`这是一个目录,不是文件:${abs}(列目录用 agent_list_dir)`);
-
-  const fd = await fs.open(abs, "r");
-  try {
-    const head = Buffer.alloc(Math.min(st.size, 8192));
-    if (head.length > 0) await fd.read(head, 0, head.length, 0);
-    if (isBinary(head)) throw new Error(`看起来是二进制文件,读不了正文:${abs}`);
-  } finally {
-    await fd.close();
-  }
-
-  const start = Math.max(0, offset - 1);
-  if (st.size <= EAGER_READ_BYTES) {
-    const all = (await fs.readFile(abs, "utf-8")).split(/\r?\n/);
-    const slice = all.slice(start, start + limit);
-    const numbered = slice.map((line, i) => `${start + i + 1}\t${clipLine(line)}`);
-    const tail =
-      start + slice.length < all.length
-        ? `\n…(还有 ${all.length - start - slice.length} 行,用 offset=${start + slice.length + 1} 继续)`
-        : "";
-    return `[${abs} 共 ${all.length} 行]\n${numbered.join("\n")}${tail}`;
-  }
-
-  const stream = createReadStream(abs, { encoding: "utf-8" });
-  const rl = createReadlineInterface({ input: stream, crlfDelay: Infinity });
-  const numbered: string[] = [];
-  let lineNo = 0;
-  let hasMore = false;
-  try {
-    for await (const line of rl) {
-      lineNo += 1;
-      if (lineNo <= start) continue;
-      if (numbered.length >= limit) {
-        hasMore = true;
-        break;
-      }
-      numbered.push(`${lineNo}\t${clipLine(line)}`);
-    }
-  } finally {
-    rl.close();
-    stream.destroy();
-  }
-  const nextOffset = start + numbered.length + 1;
-  const tail = hasMore
-    ? `\n…(大文件还有更多行,用 offset=${nextOffset} 继续)`
-    : `\n(已到文件结尾;扫描到 ${lineNo} 行)`;
-  return `[${abs} ${st.size} B,大文件流式读取]\n${numbered.join("\n") || "(这个范围没有内容)"}${tail}`;
+  return formatTextPage(await readTextPage(abs, { offset, limit }), offset);
 }
 
 function formatProcessResult(out: AgentProcessReadResult): string {
@@ -468,6 +411,7 @@ const GLOB_OUTPUT_SCHEMA: Record<string, z.ZodTypeAny> = {
 
 /** `agent_grep` 的返回结构 —— 同 glob 一个道理:模型靠 count 判断找到没有。 */
 const GREP_OUTPUT_SCHEMA: Record<string, z.ZodTypeAny> = {
+  line_truncated: z.boolean().optional().describe("是否存在只展示命中窗口的长行；与结果条数截断分开"),
   count: z.number().int().describe("匹配到的行数；0 = 没有匹配"),
   matches: z.array(z.string()).describe("匹配行，形如 `相对工作目录的路径:行号: 内容`"),
   scanned_files: z.number().int().describe("实际扫描过的文件数"),
@@ -1047,18 +991,27 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
     {
       name: "agent_read_file",
       description:
-        "读取本地文本文件(带行号,供后续 agent_edit_file 精确定位)。" +
-        "相对路径按会话工作目录解析；大文件会自动流式读取，offset/limit 仍然可用。",
+        "分页读取 UTF-8 文本，默认正文最多 30000 字符。structuredContent.content 是无损正文；text 是带行号预览，不能原样写回。" +
+        "has_more 时按 next_offset/next_column_offset 续读并带 expected_sha256；长行也能读全。版本变化会拒绝。",
       inputSchema: {
-        path: z.string().min(1).describe("文件路径(绝对,或相对会话工作目录)"),
-        offset: z.number().int().min(1).optional().describe("起始行号(从 1 起),默认从头"),
-        limit: z.number().int().min(1).max(5000).optional().describe("最多读取的行数,默认 2000"),
+        path: z.string().min(1).describe("文件路径，相对会话目录"),
+        offset: z.number().int().min(1).optional().describe("起始行，默认 1"),
+        limit: z.number().int().min(1).max(5000).optional().describe("最多行数，默认 2000"),
+        column_offset: z.number().int().min(0).optional().describe("起始行内 UTF-16 字符偏移，默认 0；续读使用返回值"),
+        max_chars: z.number().int().min(1000).max(60000).optional().describe("正文字符预算，默认 30000；元数据和行号另计"),
+        expected_sha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional().describe("上次读取的 sha256；防止跨版本拼接"),
       },
-      handler: (args: { path: string; offset?: number; limit?: number }, ctx) =>
-        attempt(async () => {
-          const abs = pOfRead(ctx, args.path, "read");
-          return readTextRange(abs, args.offset ?? 1, args.limit ?? 2000);
+      handler: (args: TextPageOptions & { path: string }, ctx) =>
+        attemptStructured(async () => {
+          const page = await readTextPage(pOfRead(ctx, args.path, "read"), args);
+          return { text: formatTextPage(page, args.offset ?? 1, args.column_offset ?? 0), structured: { ...page } };
         }),
+      outputSchema: {
+        path: z.string().optional(), content: z.string().optional(), sha256: z.string().optional(),
+        total_lines: z.number().optional(), size_bytes: z.number().optional(), returned_chars: z.number().optional(),
+        has_more: z.boolean().optional(), truncated: z.boolean().optional(),
+        next_offset: z.number().optional(), next_column_offset: z.number().optional(),
+      },
     },
 
     {
@@ -1239,7 +1192,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         attempt(async () => {
           const abs = pOf(ctx, args.path);
           await fs.mkdir(path.dirname(abs), { recursive: true });
-          await fs.writeFile(abs, args.content, { flag: args.append ? "a" : "w" });
+          await withTextFileLock(abs, (real) => fs.writeFile(real, args.content, { flag: args.append ? "a" : "w" }));
           return `已${args.append ? "追加" : "写入"} ${abs}(${args.content.length} 字符)`;
         }),
     },
@@ -1389,9 +1342,10 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       description:
         "对本地文本文件做精确替换:old_string 必须与文件内容逐字一致(换行符 LF/CRLF 自动适配)。" +
         "同一处出现多次时会拒绝(除非 replace_all=true);建议先用 agent_read_file 拿到原文再改。" +
-        "一次改多处传 edits 数组(按顺序替换,任何一处对不上就整次不写入)。",
+        "一次改多处传 edits 数组(按顺序替换,任何一处对不上就整次不写入)。同路径修改串行；可带读取时的 expected_sha256 拒绝过时编辑。",
       inputSchema: {
         path: z.string().min(1).describe("目标文件路径"),
+        expected_sha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional().describe("读取时的 sha256；变化则不写入"),
         old_string: z.string().min(1).optional().describe("要被替换的原文(逐字一致);用 edits 时省略"),
         new_string: z.string().optional().describe("替换后的内容;用 edits 时省略"),
         replace_all: z.boolean().optional().describe("原文出现多次时全部替换,默认只允许恰好一处"),
@@ -1411,6 +1365,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
       handler: (
         args: {
           path: string;
+          expected_sha256?: string;
           old_string?: string;
           new_string?: string;
           replace_all?: boolean;
@@ -1419,7 +1374,8 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         ctx,
       ) =>
         attempt(async () => {
-          const abs = pOf(ctx, args.path);
+          const target = pOf(ctx, args.path);
+          return withTextFileLock(target, async (abs) => {
           // 失败一律**抛**(→ isError),不是回一句普通文本:从前"没找到 old_string"回的是成功
           // 结果,模型很容易当成改好了接着往下走。
           const edits =
@@ -1431,6 +1387,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           const st = await fs.stat(abs).catch(() => null);
           if (!st || !st.isFile()) throw new Error(`文件不存在:${abs}`);
           const buf = await fs.readFile(abs);
+          if (args.expected_sha256 && textFileHash(buf) !== args.expected_sha256.toLowerCase()) throw new Error("文件版本已变化，本次不写入；请重新读取 / File version changed");
           if (isBinary(buf)) throw new Error(`看起来是二进制文件,改不了:${abs}`);
           let content = buf.toString("utf-8");
           const crlf = content.includes("\r\n");
@@ -1440,11 +1397,10 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
             const which = edits.length > 1 ? `第 ${k + 1} 处 edit:` : "";
             let oldStr = edit.old_string;
             let newStr = edit.new_string;
-            // Windows 上的文件多是 CRLF,而模型给的原文几乎总是 LF —— 逐字匹配会白白失败。
-            if (crlf && !content.includes(oldStr) && oldStr.includes("\n") && !oldStr.includes("\r\n")) {
-              oldStr = oldStr.replace(/\n/g, "\r\n");
-              newStr = newStr.replace(/\r?\n/g, "\r\n");
-            }
+            // Normalize replacement line endings even when old_string is a single line.
+            const newline = crlf ? "\r\n" : "\n";
+            if (!content.includes(oldStr)) oldStr = oldStr.replace(/\r?\n/g, newline);
+            newStr = newStr.replace(/\r?\n/g, newline);
             const first = content.indexOf(oldStr);
             if (first < 0) {
               throw new Error(`${which}没找到 old_string —— 内容必须逐字一致(含空格缩进),先用 agent_read_file 确认原文;这次没有写入任何改动`);
@@ -1461,9 +1417,10 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
               : content.slice(0, first) + newStr + content.slice(first + oldStr.length);
             replaced += edit.replace_all ? count : 1;
           });
-          await fs.writeFile(abs, content, "utf-8");
+          await replaceTextFile(abs, content, buf);
           const lines = [...new Set(touched)].sort((x, y) => x - y).join("、");
           return `已修改 ${abs}:替换 ${replaced} 处(起始于第 ${lines} 行)`;
+          });
         }),
     },
 
@@ -1688,6 +1645,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           const cap = args.max_results ?? 100;
           const lines: string[] = [];
           let scanned = 0;
+          let lineTruncated = false;
           for (const t of walked.hits) {
             if (lines.length >= cap) break;
             const size = (await fs.stat(t.abs).catch(() => null))?.size ?? 0;
@@ -1698,9 +1656,10 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
             const shown = shownPath(ctx, t.abs);
             const textLines = buf.toString("utf-8").split(/\r?\n/);
             for (let i = 0; i < textLines.length && lines.length < cap; i += 1) {
-              if (!re.test(textLines[i])) continue;
-              const clipped =
-                textLines[i].length > 300 ? `${textLines[i].slice(0, 300)}…` : textLines[i];
+              const match = re.exec(textLines[i]);
+              if (!match) continue;
+              const clipped = grepMatchPreview(textLines[i], match.index, match[0].length);
+              if (clipped !== textLines[i]) lineTruncated = true;
               lines.push(`${shown}:${i + 1}: ${clipped}`);
             }
           }
@@ -1722,6 +1681,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
               unfinished,
             structured: {
               count: lines.length,
+              line_truncated: lineTruncated,
               matches: lines,
               scanned_files: scanned,
               truncated: hitCap || walked.truncated,

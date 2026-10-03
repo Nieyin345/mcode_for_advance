@@ -11,6 +11,7 @@ export const zh = {
   "store.toast.planApprovalPending": "计划待审批",
   "store.toast.planApprovalPendingBody": "查看并批准执行计划",
   "store.toast.errorOccurred": "发生错误",
+  "store.toast.sessionLabel": "会话",
   "store.toast.turnComplete": "回合完成",
   "store.toast.turnCompleteBody": "Agent 已完成本轮任务",
   "store.toast.outputTruncated": "输出可能被截断",
@@ -19,6 +20,7 @@ export const zh = {
   // 复制对话失败。正文给的是主进程抛上来的那句具体原因(引擎不支持 / 会话文件不在了),
   // 因为那是用户唯一能据此做点什么的信息。
   "store.toast.persistFailed": "存对话记录失败(这一轮可能没保存下来)",
+  "store.toast.historyLoadFailed": "读取对话记录失败，请重新打开对话重试",
   "store.toast.createChatFailed": "新建对话失败",
   "store.toast.forkFailed": "复制对话失败",
   // 发送被主进程拒绝(不是模型报错):原因是写给用户的中文短句时带上,否则只给通用说明。

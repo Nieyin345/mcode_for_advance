@@ -1,3 +1,5 @@
+import { shellCommandTemplateError } from "./commandTemplateSafety.js";
+import { commandOf } from "@contracts/nodeType";
 /**
  * 工作流调度器 —— 把一张 `WorkflowDoc` 按依赖推到底。
  *
@@ -189,6 +191,8 @@ const RESTART_FROM_STEP_LABEL = "从这一步往下走";
 
 /** 调度器要问外面的六件事。真实实现在 `runner.ts`,冒烟脚本塞的是假的。 */
 export interface RunPorts {
+  /** Host language is read lazily; the scheduler remains independent of settings/DB. */
+  locale?: () => "zh" | "en";
   /** Optional host-bound input factory. It retains the existing builder/variable
    * pipeline while adding trusted run identity; ordinary test ports keep the default. */
   buildInput?: typeof buildNodeInput;
@@ -489,7 +493,12 @@ function expandParams(
   node: WorkflowNode,
   manifest: NodeTypeManifest,
   scope: NodeTemplateScope,
+  locale?: "zh" | "en",
 ): Record<string, unknown> {
+  if (manifest.runner.kind === "command") {
+    const error = shellCommandTemplateError(commandOf(node.params), locale);
+    if (error) throw new Error(error);
+  }
   const out: Record<string, unknown> = { ...node.params };
   for (const [key, value] of Object.entries(node.params)) {
     if (typeof value !== "string") continue;
@@ -569,10 +578,12 @@ function withOutputCheck(
     // **留一个 failed,不抛。** 抛会走到 `executeOne` 的 catch 里,那条路是给"宿主
     // 实现有 bug"用的,而这里是一个正常的、说得清的结局。
     return {
+      ...outcome,
       status: "failed",
-      // 原文留着 —— 界面上要看得出它到底交了什么,不然用户没法判断该改约束还是改指令。
-      summary: outcome.summary,
+      // Partial structured outputs, artifacts and execution records remain
+      // inspectable; the failed status still blocks dependent execution.
       error: checked.error,
+      retryable: false,
     };
   }
   if (checked.value === undefined) return outcome;
@@ -1303,6 +1314,9 @@ class Run {
   });
 
   executeOne = async (node: WorkflowNode): Promise<NodeOutcome> => {
+    // Only preserve data actually returned by this node. A later retry or
+    // validation exception must not erase already-created artifact references.
+    let lastOutcome: NodeOutcome | undefined;
     // ⚠️ **整个函数体在 try 里**,不只是 `ports.execute` 那一段。取清单、校验参数
     // 都可能抛(清单文件读坏了、宿主实现有 bug),而**一个抛出去的节点不会定案** ——
     // 调度器会把它当成"还没跑"再派发一次,那就是死循环。
@@ -1406,7 +1420,7 @@ class Run {
       // 解不出来会抛,由下面那层的 catch 兜成这个节点的失败。
       // **引用要在解算前扫**(见 `referencedNodeNames`),解算完就看不出引过谁了。
       const referenced = referencedNodeNames(node);
-      const params = expandParams(node, manifest, scope);
+      const params = expandParams(node, manifest, scope, this.ports.locale?.());
 
       // **能力预检(G4/CAP):派发前的最后一道闸。** 需求 = 清单声明的 requirements +
       // 参数推导(选了引擎 / 技能 / 插件 / 执行器),清单 = 调用方装配的这台机器的
@@ -1541,7 +1555,9 @@ class Run {
           (this.ports.buildInput ?? buildNodeInput)(params, manifest, inputScope, this.signal),
         );
         // 产出回来,按**同一份**参数查硬约束。
+        lastOutcome = outcome;
         checked = withOutputCheck(manifest, params, outcome, terminal);
+        lastOutcome = checked;
         if (attempt >= plan.maxAttempts || this.signal.aborted || !shouldRetryOutcome(checked)) {
           // **试过不止一次的话,把这件事写进原因里。** 不写的话用户看到的是一句普通的
           // 错误,而他刚刚等了一分多钟 —— 那一分钟去哪了得有个交代,否则下一步就是
@@ -1565,7 +1581,11 @@ class Run {
     } catch (err) {
       // 执行器自己抛了 = 这个节点失败。**不往上抛** —— 一个节点炸掉不该让整张图
       // 停摆,它的下游会因为依赖不满足而跳过。
-      return { status: "failed", summary: "", error: (err as Error).message };
+      const partial = lastOutcome ? { ...lastOutcome } : undefined;
+      // A prior attempt's retry classification does not classify this exception.
+      if (partial) delete partial.retryable;
+      return { ...partial, status: "failed", summary: partial?.summary ?? "",
+        error: err instanceof Error ? err.message : String(err) };
     }
   };
 

@@ -1,3 +1,5 @@
+import { shellCommandTemplateError } from "./commandTemplateSafety.js";
+import { commandOf } from "@contracts/nodeType";
 /**
  * Workflow 生成质量闸门 —— Agent(或任何人)给出的整份文档,存盘 / 导入前过这里。
  *
@@ -75,6 +77,7 @@ export const WORKFLOW_SCHEMA_VERSION = "1";
 /* ── 校验入口 ── */
 
 export interface WorkflowValidationOptions {
+  locale?: "zh" | "en";
   /**
    * 节点类型清单(键 = 类型 id,值 = 清单)。来自 `nodeTypes.ts` 的 `loadNodeTypes()`。
    * **不传 = 跳过**类型存在性、参数、分支语义这些"要认识类型才能判"的检查 —— 图结构
@@ -516,6 +519,10 @@ export function validateWorkflowDoc(
   }
 
   for (const node of nodes) {
+    if (manifestOf(node)?.runner.kind === "command") {
+      const error = shellCommandTemplateError(commandOf(node.params), opts.locale);
+      if (error) fail({ code: "param.invalid", nodeId: node.id, message: error });
+    }
     const upstream = upstreamClosure(forward.deps, node.id);
     // 结构化条件只扫描每条规则的 ref;比较的 value 始终是字面量。
     // 通用字符串扫描只深入一层,本来拿不到 rules[].ref。

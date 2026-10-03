@@ -654,3 +654,31 @@ JavaScript 字符串。例如:
 
 这里的文件**可以被下载来的插件提供**,所以规则比平时严:类型 id 的格式、参数的定义、
 执行方式都在装载时校验,不合规的会被**明确拒绝并列出来**,而不是悄悄跳过。
+
+
+
+## Shell 命令的动态输入（2026-10-03 安全迁移）
+
+`runner.kind: "command"` 的命令正文必须是固定命令。不再允许把 `{{user}}`、
+`{{trigger.*}}` 或上游变量直接拼进 shell 源码；保存/导入与运行时均检查。
+这也适用于第三方声明的 command 类型。不会自动改写用户工作流。
+
+- 旧写法：`python process.py "{{trigger.files}}"`（已拒绝；加引号不能可靠防止 shell 注入）。
+- 新写法：命令填 `python process.py`，脚本通过标准输入读取一份 JSON。
+- 字段：`userInput`、`upstreamText`、`upstreamOutputs`、`upstreamArtifacts`，以及有触发载荷时的 `trigger`。
+- 触发事实中的平面键原样保留，例如 `data["trigger"]["input.doi"]`；不要把数据重新传给 `eval` 或拼入另一个 shell。
+- 真正的字面花括号仍可沿用变量语法的 `\{{` 转义；固定 shell 操作符不受影响。
+
+```python
+import json
+import sys
+
+data = json.load(sys.stdin)
+trigger = data.get("trigger", {})
+# Treat values as data, not executable shell source.
+print(trigger.get("files", []))
+```
+
+English: shell command source must be fixed. Pass dynamic trigger/user/upstream values
+through the existing JSON stdin channel instead of interpolating them into shell code.
+Legacy workflows fail with a migration message; user-owned documents are not rewritten.

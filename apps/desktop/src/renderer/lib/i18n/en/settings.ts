@@ -1,5 +1,6 @@
 /** English mirror of `zh/settings.ts`. */
 export const en = {
+  "settings.workflow.commandTemplateUnsafe": "Dynamic variables ({{...}}) are not allowed in shell command source. Use a fixed command and read trigger, userInput and upstreamOutputs from JSON stdin in your script. This workflow has not been rewritten automatically.",
   // ── left nav (SettingsPage) ──
   "settings.nav.general": "General",
   "settings.nav.appearance": "Appearance",

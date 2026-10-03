@@ -13,7 +13,7 @@
  *
  * Run: scripts/session-store-smoke/run.sh
  */
-import { setSendTurnStub } from "./prelude.js";
+import { setSendTurnStub, setSessionMessagesStub } from "./prelude.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { ChatMessage } from "@renderer/stores/sessionStore.js";
@@ -1247,6 +1247,75 @@ await (async () => {
   eq("★ 远端删除后引擎跟着落到的会话走", store.getState().providerId, "codex-sdk");
   eq("远端删除后模型跟着走", store.getState().model, "gpt-5-codex");
 })();
+
+console.log("\n[23] 历史读取失败必须让用户看见,保持可重试,成功后恢复");
+await (async () => {
+  const sid = "history-failed-visible";
+  seed([mkSession(sid)]);
+  useSessionStore.setState((s) => ({
+    locale: "en", activeSessionId: sid,
+    messagesBySession: { ...s.messagesBySession, [sid]: [] },
+    historyLoadedBySession: { ...s.historyLoadedBySession, [sid]: false },
+    loadingMessagesBySession: { ...s.loadingMessagesBySession, [sid]: false },
+  }));
+  useToastStore.getState().clear();
+  try {
+    setSessionMessagesStub(async () => { throw new Error("private database path: /secret"); });
+    await useSessionStore.getState().prefetchSessionMessages(sid);
+    eq("失败后骨架屏关闭", useSessionStore.getState().loadingMessagesBySession[sid], false);
+    eq("失败后保留重试机会", useSessionStore.getState().historyLoadedBySession[sid], false);
+    eq("★ 活跃会话也有可见错误提示", useToastStore.getState().toasts[0]?.kind, "error");
+    eq("提示指向该会话", useToastStore.getState().toasts[0]?.sessionId, sid);
+    check("不泄露内部路径", !JSON.stringify(useToastStore.getState().toasts).includes("/secret"));
+    setSessionMessagesStub(async () => ({ messages: [], hasMore: false }));
+    await useSessionStore.getState().prefetchSessionMessages(sid);
+    eq("重试成功后标记已加载", useSessionStore.getState().historyLoadedBySession[sid], true);
+    eq("重试不新增错误提示", useToastStore.getState().toasts.length, 1);
+  } finally {
+    setSessionMessagesStub(null);
+    useToastStore.getState().clear();
+  }
+})();
+
+// FZ16: a completed background task must wake the queue even when there is
+// no second parent turn.done. Exercise real ingest/reducer/drain; only send is fake.
+{
+  const sid = "background-queue";
+  const store = useSessionStore;
+  const originalSend = store.getState().sendPrompt;
+  const sent: Array<string | undefined> = [];
+  const a = { taskId: "a", description: "A", status: "running" as const, isBackgrounded: true };
+  const b = { taskId: "b", description: "B", status: "running" as const, isBackgrounded: true };
+  seed([mkSession(sid, { model: "sonnet" })]);
+  store.setState({ activeSessionId: sid, model: "sonnet", customModelId: null, providerId: "claude-sdk",
+    runningBySession: { [sid]: false }, interruptedBySession: {}, subagentsBySession: { [sid]: [a, b] },
+    promptQueueBySession: { [sid]: [{ id: "one", prompt: "one", displayText: "one" }, { id: "two", prompt: "two", displayText: "two" }] },
+    sendPrompt: async (...args) => {
+      sent.push(args[6]);
+      store.setState({ runningBySession: { [sid]: true } });
+      return true;
+    },
+  });
+  try {
+    store.getState().ingestEvent({ type: "subagent.update", sessionId: sid, agents: [{ ...a, status: "completed" }, b] });
+    eq("queue stays blocked while another background task runs", sent.length, 0);
+    store.getState().ingestEvent({ type: "subagent.update", sessionId: sid, agents: [{ ...a, status: "completed" }, { ...b, status: "completed" }] });
+    eq("last background completion wakes one queued message", sent.length, 1);
+    eq("wake targets the queue's owning session", sent[0], sid);
+    eq("wake consumes only the queue head", store.getState().promptQueueBySession[sid]?.length, 1);
+    store.getState().ingestEvent({ type: "subagent.update", sessionId: sid, agents: [] });
+    eq("duplicate terminal roster cannot send twice", sent.length, 1);
+    store.setState({ subagentsBySession: { [sid]: [a] }, runningBySession: { [sid]: true } });
+    store.getState().ingestEvent({ type: "subagent.update", sessionId: sid, agents: [] });
+    eq("a live parent turn still blocks queue draining", sent.length, 1);
+    store.setState({ subagentsBySession: { [sid]: [a] }, runningBySession: { [sid]: false } });
+    store.getState().ingestEvent({ type: "subagent.update", sessionId: sid, agents: [] });
+    eq("a roster reset also releases the idle queue", sent.length, 2);
+  } finally {
+    store.setState({ sendPrompt: originalSend });
+    useToastStore.getState().clear();
+  }
+}
 
 console.log(`\n${checks - failures}/${checks} checks passed`);
 if (failures > 0) {

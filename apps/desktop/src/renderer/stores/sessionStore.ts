@@ -4090,13 +4090,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         historyLoadedBySession: { ...s.historyLoadedBySession, [sessionId]: true },
         loadingMessagesBySession: { ...s.loadingMessagesBySession, [sessionId]: false },
       }));
-    } catch {
-      // Never leave the skeleton stuck up on a failed fetch — fall back to
-      // the regular (empty) view so the composer stays usable. The hydration
-      // flag stays unset so a later open retries the fetch.
+    } catch (err) {
+      // Keep the previous live messages and leave hydration unset so reopening
+      // can retry. An empty-looking conversation must never hide a failed read.
+      console.error("session.messages(initial) failed:", err);
       set((s) => ({
         loadingMessagesBySession: { ...s.loadingMessagesBySession, [sessionId]: false },
       }));
+      // Hover prefetch is speculative; only surface failure when the user is
+      // actually viewing this session. Do not put DB paths/IPC internals in UI.
+      if (get().activeSessionId === sessionId) {
+        useToastStore.getState().push({
+          kind: "error",
+          title: translate(get().locale, "store.toast.historyLoadFailed"),
+          sessionId,
+        });
+      }
     }
   },
 

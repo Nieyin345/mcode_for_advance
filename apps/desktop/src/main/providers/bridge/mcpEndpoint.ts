@@ -1,3 +1,4 @@
+import desktopPackage from "../../../../package.json";
 /**
  * **MCP 端点** —— 让浏览器里的那个扩展把 mcode 的工具当成它自己的工具用。
  *
@@ -191,7 +192,7 @@ export interface McpRequestOptions {
 /** agent_* 的通用用法 —— 两条通道共用。 */
 const AGENT_TOOL_GUIDE =
   "agent_* 支持文本/图片/Office/PDF 读取，文件与目录修改，后台搜索，系统进程和持久进程。" +
-  "同时读多个文本文件优先 agent_read_files。" +
+  "同时读多个文本文件优先 agent_read_files；完整读取长行用 agent_read_file 的字符分页，续读带 expected_sha256，勿把带行号的预览写回文件。" +
   "PDF 创建/页操作用 agent_write_pdf；Excel Range 用 agent_edit_excel_range；" +
   "DOCX 结构修改先 agent_read_docx_xml 再 agent_edit_docx_xml。" +
   "图片由 agent_read_image 返回标准 MCP image block，只有支持视觉输入的客户端/模型才能直接理解。" +
@@ -218,7 +219,7 @@ const PUBLIC_INSTRUCTIONS =
   "Mcode 桌面端的远程工具：agent_* 电脑操作、资料库只读查询（library_*）和本地技能（agent_skill_list / agent_skill_read）。" +
   "这条通道没有工作流/自动化工具，也读不到用户的对话记录。" +
   "开始干活前先调一次 agent_context：它告诉你唯一可写的项目目录（writable_project）、其它只读项目和资料库概况。" +
-  "相对路径以可写项目目录为基准；写文件、建目录、移动和命令的写目标都只能落在这个目录里，越界会被拒绝——换成项目内的路径，别反复重试。" +
+  "相对路径以可写项目目录为基准；文件工具的写路径和命令 cwd 受项目边界约束；命令仅有有限静态检查，不是强沙箱，必须自行确保所有写目标在项目内。用户拒绝或路径越界后不要绕过限制。" +
   "资料库和技能目录可以用 agent_read_* / agent_list_dir 读，但不能改，要改先复制进项目。" +
   "用户提到某个技能时先 agent_skill_list 确认，再 agent_skill_read 读 SKILL.md，照里面的步骤做。" +
   AGENT_TOOL_GUIDE +
@@ -272,10 +273,10 @@ export async function handleMcpRequest(
         protocolVersion: negotiatedVersion(body.params),
         // 工具表是静态的(它由主进程的代码决定),所以没有 listChanged。
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "mcode", version: "1.0.0" },
+        serverInfo: { name: "mcode", version: desktopPackage.version },
         // 两条通道给的工具不一样(见 webToolHost.ts),说明也得跟着分开 —— 公网那条没有
         // 工作流、免审批但锁在可写项目里;写成同一段会让远程 AI 去调根本不存在的工具。
-        instructions: opts.audience === "public" ? PUBLIC_INSTRUCTIONS : LOCAL_INSTRUCTIONS,
+        instructions: (opts.audience === "public" ? PUBLIC_INSTRUCTIONS : LOCAL_INSTRUCTIONS) + " 工具契约：2026-10-03-text-v2；升级后重新获取 tools/list。",
       });
       return;
 

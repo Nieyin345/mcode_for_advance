@@ -118,6 +118,9 @@ export class ApprovalBridge {
   /** Set the session's current permission mode. canUseTool reads this on
    *  every call so a mid-turn mode change takes effect immediately. */
   setPermissionMode(sessionId: string, mode: PermissionMode): void {
+    // A remembered grant was given under the previous mode. Revoke it when
+    // the user changes the policy (especially when switching to read-only).
+    if (this.permissionModes.get(sessionId) !== mode) this.alwaysAllowedTools.delete(sessionId);
     this.permissionModes.set(sessionId, mode);
   }
 

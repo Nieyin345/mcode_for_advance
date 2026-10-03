@@ -1,3 +1,4 @@
+import type { NodeTypeManifest } from "@contracts/nodeType";
 /**
  * A saved workflow is not automatically an approved executable workflow.
  *
@@ -146,7 +147,11 @@ export function workflowResumeError(doc: WorkflowDoc, savedRevision: string | un
  * model may have written a file just before the process died, without getting
  * to record an outcome. Refuse automatic continuation; leave the old record
  * readable so the user can inspect it and start a fresh run deliberately. */
-export function workflowReplayError(doc: WorkflowDoc, inFlightNodeIds: readonly string[] | undefined): string | null {
+export function workflowReplayError(
+  doc: WorkflowDoc,
+  inFlightNodeIds: readonly string[] | undefined,
+  manifests?: ReadonlyMap<string, Pick<NodeTypeManifest, "runner">>,
+): string | null {
   if (inFlightNodeIds === undefined) {
     return "旧版运行未记录中断时正在执行的节点，可能重复命令或写入；请检查结果后重新发起运行";
   }
@@ -154,7 +159,12 @@ export function workflowReplayError(doc: WorkflowDoc, inFlightNodeIds: readonly 
     const node = doc.nodes.find((entry) => entry.id === id);
     // Branch and trigger nodes don't run external code. All other nodes,
     // including missing/third-party types and model agents, may have effects.
-    return node === undefined || (node.type !== "mcode.branch" && node.type !== "mcode.trigger");
+    if (!node) return true;
+    // With a runtime catalog, missing types fail closed. The fallback is only
+    // for callers without a catalog and recognizes reserved pure builtins.
+    const kind = manifests ? manifests.get(node.type)?.runner.kind
+      : ({ "mcode.branch": "branch", "mcode.trigger": "trigger", "mcode.condition": "condition" } as Record<string, string>)[node.type];
+    return kind !== "branch" && kind !== "trigger" && kind !== "condition";
   });
   if (risky.length > 0) {
     return `旧运行中「${risky.join("、")}」被中断时可能已产生文件、命令或网络副作用；为避免自动重放，请先核对结果，再重新发起运行`;

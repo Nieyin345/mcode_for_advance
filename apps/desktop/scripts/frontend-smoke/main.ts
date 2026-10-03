@@ -34,7 +34,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initDb } from "@main/store/db.js";
-import { ProjectRepo, SessionRepo } from "@main/store/repositories.js";
+import { ProjectRepo, SessionRepo, SettingRepo } from "@main/store/repositories.js";
+import { UI_LOCALE_SETTING_KEY } from "@contracts/ipc";
 import type { Session } from "@contracts/session";
 import { notificationManager } from "@main/notifications/NotificationManager.js";
 import { shown, resetShown } from "./stubs/electron.js";
@@ -380,6 +381,39 @@ console.log("\n其余事件");
   eq("子代理刚开始跑 → 不弹", notifyVia(running), null);
   check("子代理跑完 → 弹", notifyVia(finished) !== null);
   eq("同一条不会弹第二次", notifyVia(finished), null);
+}
+
+/* ──────────────── 8. OS 通知跟随 UI 语言,不缓存过期语言 ──────────────── */
+console.log("\n英文系统通知");
+{
+  const sid = makeSession("s_chat", "chat", "冒烟会话");
+  setWindow({ alive: true, focused: false, minimized: false });
+  notificationManager.setPrefs({ ...ALL_PREFS });
+  try {
+    SettingRepo.set(UI_LOCALE_SETTING_KEY, "en");
+    eq("★ 英文工具审批标题", notifyVia({ type: "approval.request", sessionId: sid, toolName: "shell" })?.title, "Tool call needs approval");
+    eq("★ 英文提问标题", notifyVia({ type: "question.ask", sessionId: sid, questions: [] })?.title, "The agent has a question for you");
+    const plan = notifyVia({ type: "plan.approval_request", sessionId: sid });
+    eq("★ 英文计划标题", plan?.title, "Plan awaiting approval");
+    check("英文计划正文", plan?.body.includes("Review and approve the plan") === true, plan);
+    const done = notifyVia(turnDone(sid, "end_turn"));
+    eq("★ 英文回合完成标题", done?.title, "Turn complete");
+    check("英文回合完成正文", done?.body.includes("The agent has finished this turn") === true, done);
+    const truncated = notifyVia(turnDone(sid, "max_tokens"));
+    eq("★ 英文截断标题", truncated?.title, "Output may be truncated");
+    check("英文截断正文", truncated?.body.includes("This turn reached the output limit") === true, truncated);
+    eq("★ 英文错误标题", notifyVia(errorEvent(sid, "sample error"))?.title, "Error occurred");
+    eq("★ 未找到会话时英文兜底", notifyVia(errorEvent("unknown-session", "sample error"))?.body, "Session: sample error");
+    const agents = (status: string) => ({ type: "subagent.update", sessionId: sid, agents: [{ taskId: "locale-task", status }] });
+    notifyVia(agents("running"));
+    const background = notifyVia(agents("completed"));
+    eq("★ 英文后台任务标题", background?.title, "Background task finished");
+    check("英文后台任务正文", background?.body.includes("A subagent task has finished") === true, background);
+    SettingRepo.set(UI_LOCALE_SETTING_KEY, "zh");
+    eq("切回中文立即生效", notifyVia(turnDone(sid, "end_turn"))?.title, "回合完成");
+  } finally {
+    SettingRepo.set(UI_LOCALE_SETTING_KEY, "zh");
+  }
 }
 
 /* ──────────────── 收尾 ──────────────── */

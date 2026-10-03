@@ -364,9 +364,9 @@ await runGraph(PARENT);
   const retry = () => runner.resolveWorkflowRetry({ sessionId: PARENT, runId, nodeId: "agentA" });
 
   persist(snapshot);
-  check("旧快照没有图修订:岔路口不能续", choice().error?.includes("旧版") === true);
-  check("旧快照没有图修订:失败步骤不能重试", retry().error?.includes("旧版") === true);
-  eq("续跑时旧卡的 runId 不匹配不得续其他运行", choice("run_another").ok, false);
+  check("旧快照没有图修订:岔路口不能续", (await choice()).error?.includes("旧版") === true);
+  check("旧快照没有图修订:失败步骤不能重试", (await retry()).error?.includes("旧版") === true);
+  eq("续跑时旧卡的 runId 不匹配不得续其他运行", (await choice("run_another")).ok, false);
   eq("直接调用 runner 也不能借旧快照绕过版本校验", await startWorkflowRun({
     session: SessionRepo.get(PARENT)!,
     resume: { runId, snapshot, nodeId: "agentA", rewind: ["agentA"] },
@@ -375,12 +375,15 @@ await runGraph(PARENT);
 
   const pinned = { ...snapshot, workflowRevision: revision, inFlightNodeIds: [] as string[] };
   persist({ ...pinned, inFlightNodeIds: ["agentA"] });
-  check("中断时正在执行代理:岔路口不能自动重放外部副作用", choice().error?.includes("重放") === true);
-  check("中断时正在执行代理:重试也不自动重放", retry().error?.includes("重放") === true);
+  check("中断时正在执行代理:岔路口不能自动重放外部副作用", (await choice()).error?.includes("重放") === true);
+  check("中断时正在执行代理:重试也不自动重放", (await retry()).error?.includes("重放") === true);
   eq("直调 runner 也不能绕过副作用保护", await startWorkflowRun({
     session: SessionRepo.get(PARENT)!,
     resume: { runId, snapshot: { ...pinned, inFlightNodeIds: ["agentA"] }, nodeId: "agentA", rewind: ["agentA"] },
   }), null);
+
+  persist({ ...pinned, inFlightNodeIds: ["agentA"], state: { ...pinned.state, outcomes: [], awaiting: [] } });
+  check("journal-only interrupted agent is still stopped by the actual replay gate", (await retry()).error?.includes("重放") === true);
 
   // Positive control: an unchanged graph with no in-flight external effect
   // really starts again under the old runId (not merely passes a pure helper).
@@ -392,7 +395,7 @@ await runGraph(PARENT);
     status: "failed",
     snapshot: { ...pinned, state: { ...pinned.state, awaiting: [] } },
   });
-  const resumed = runner.resolveWorkflowRetry({ sessionId: PARENT, runId: matchingId, nodeId: "agentA" });
+  const resumed = await runner.resolveWorkflowRetry({ sessionId: PARENT, runId: matchingId, nodeId: "agentA" });
   eq("未改图且没有在飞副作用的失败步骤可重试", resumed.ok, true);
   await waitFor("重试通过异步引擎预检并真正启动", () => WorkflowRunRepo.get(matchingId)?.status === "running" && runner.hasActiveRun(PARENT));
   eq("重试沿用旧 runId 并把原行标回 running", WorkflowRunRepo.get(matchingId)?.status, "running");
@@ -402,8 +405,8 @@ await runGraph(PARENT);
 
   persist(pinned);
   WorkflowRepo.save({ ...original, description: "保存时换了图语义" });
-  check("同 id 改图后岔路口不能沿用旧边和结局", choice().error?.includes("已修改") === true);
-  check("同 id 改图后重试不能沿用旧结局", retry().error?.includes("已修改") === true);
+  check("同 id 改图后岔路口不能沿用旧边和结局", (await choice()).error?.includes("已修改") === true);
+  check("同 id 改图后重试不能沿用旧结局", (await retry()).error?.includes("已修改") === true);
   eq("改图后直接续跑也不动旧存档", await startWorkflowRun({
     session: SessionRepo.get(PARENT)!,
     resume: { runId, snapshot: pinned, nodeId: "agentA", rewind: ["agentA"] },
@@ -665,6 +668,34 @@ const originalRunSave = repo.save;
   reject(new Error("fixture preflight failure"));
   check("预检失败仍向调用方报错", await failed);
   check("预检异常不留下永久 busy", !runner.hasActiveRun(id));
+}
+
+// Real persisted journal-only condition -> retry endpoint -> scheduler, no model.
+{
+  const sid = "pure-condition-resume", workflowId = "wf_pure_condition_resume", runId = "pure-condition-run";
+  const original = nodeSessionDoc();
+  const nodes: import("@contracts/workflow").WorkflowNode[] = [
+    { id: "pure", type: "mcode.condition", title: "Pure", position: { x: 0, y: 0 }, params: {
+      expression: { logic: "and", rules: [{ ref: "{{user}}", op: "contains", value: "go" }] },
+    } },
+    ...["yes", "no"].map(id => ({ id, type: "mcode.trigger", title: id, position: { x: 200, y: 0 }, params: { triggerKind: "manual", enabled: false } })),
+  ];
+  WorkflowRepo.save({ ...original, id: workflowId, nodes, edges: [
+    { id: "yes", from: "pure", to: "yes", label: "true" }, { id: "no", from: "pure", to: "no", label: "false" },
+  ] });
+  SessionRepo.create({ ...parentSession(sid), workflowId });
+  const doc = getWorkflow(workflowId)!;
+  saveRun({ runId, sessionId: sid, workflowId, status: "interrupted", snapshot: {
+    prompt: "go", cwd: process.cwd(), attempts: [], workflowRevision: workflowRevision(doc), inFlightNodeIds: ["pure"],
+    state: { record: [], rounds: [], picks: [], outcomes: [], awaiting: [] },
+  } });
+  const sends = rt.sentPrompts.length;
+  eq("a journal-only pure condition is accepted by the real retry endpoint", (await runner.resolveWorkflowRetry({ sessionId: sid, runId, nodeId: "pure" })).ok, true);
+  await waitFor("pure condition really finishes after restart", () => WorkflowRunRepo.get(runId)?.status === "success");
+  const completed = decodeSnapshot(WorkflowRunRepo.get(runId)?.payload ?? "");
+  eq("resumed pure condition produces its real outcome", completed?.state.outcomes.find(([id]) => id === "pure")?.[1].status, "success");
+  eq("pure continuation never dispatches a model", rt.sentPrompts.length, sends);
+  check("pure continuation releases the session", !runner.hasActiveRun(sid));
 }
 
 rmSync(DATA, { recursive: true, force: true });

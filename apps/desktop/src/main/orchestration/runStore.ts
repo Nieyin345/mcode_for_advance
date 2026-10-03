@@ -407,7 +407,8 @@ export interface RetryableRun {
    * 词不一样**:重试要带上用户写的「上次哪里不对」,挑起点不需要。所以这里把结局交出来,
    * 由调用方决定要不要 `note` —— 而不是在这一层替它判断"这次算不算重试"。
    */
-  outcome: NodeOutcome;
+  /** Undefined only for an interrupted, journaled step that never settled. */
+  outcome: NodeOutcome | undefined;
 }
 
 /**
@@ -421,9 +422,9 @@ export interface RetryableRun {
  *  1. **找不到那一行**(或它不属于这个对话)—— 卡片是别人的 / 已被清理;
  *  2. **存档读不回来** —— 同 `resumableRun`:硬续一份缺胳膊少腿的状态,比说一句
  *     "这张卡过期了"糟得多;
- *  3. **那一步不在存档的结局表里** —— 那说明这个 `nodeId` 对不上这次运行。**这一道
- *     最要紧**:少了它,重跑会从一步**根本没跑过**的节点开始,而用户会以为他在接着
- *     刚才那一步往下走。
+ *  3. **既没有结局，也不是 interrupted 存档中的在飞/等待节点** —— 节点必须确实
+ *     属于这次运行，不能凭空增加起点。中断节点可能来不及写结局，不伪造一个失败。
+ *     本函数只查身份与存档；图修订及副作用安全仍由 runner 按实际清单判断。
  *
  * ## 为什么**不**再要求"那次运行是失败的"、"那一步是失败的"
  *
@@ -453,7 +454,9 @@ export function retryableRun(sessionId: string, runId: string, nodeId: string): 
     return null;
   }
   const outcome = snapshot.state.outcomes.find(([id]) => id === nodeId)?.[1];
-  if (outcome === undefined) return null;
+  const interruptedStep = row.status === "interrupted" &&
+    (snapshot.inFlightNodeIds?.includes(nodeId) === true || snapshot.state.awaiting.includes(nodeId));
+  if (outcome === undefined && !interruptedStep) return null;
   return { runId: row.id, workflowId: row.workflowId, snapshot, outcome };
 }
 

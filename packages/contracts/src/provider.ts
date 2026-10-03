@@ -255,7 +255,7 @@ export interface ProviderApprovalDecision {
   allow: boolean;
   /** True when the user granted "always allow" for this session (the host
    *  also records the tool into its per-session always-allowed set). Backends
-   *  with a server-side session grant (codex acceptForSession) use this to
+   *  may use this to
    *  distinguish a one-shot approval from a session-scoped one. */
   persist?: boolean;
   /** Optionally modify the tool input before passing it to the tool. */

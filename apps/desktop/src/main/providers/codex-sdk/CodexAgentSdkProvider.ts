@@ -22,8 +22,9 @@ import { workflowEngineBridge } from "@main/mcp/workflowEngineTools.js";
  *     server-initiated requests when an action wants to escape it.
  *   - No canUseTool: approvals arrive as server→client REQUESTS
  *     (commandExecution / fileChange requestApproval) bridged to the host's
- *     IPC approval card. "Always allow" maps to acceptForSession (server
- *     grants for the rest of the thread). There is NO edit-then-approve.
+ *     IPC approval card. Host-side "always allow" still gives the server only
+ *     a one-shot accept, so permission-mode changes cannot inherit a server
+ *     grant. There is NO edit-then-approve.
  *   - File tracking: no pre-write hook for sandboxed writes. The turn's
  *     cumulative unified diff (turn/diff/updated) is reverse-applied at
  *     freeze time to reconstruct pre-turn content (CodexFileSnapshot);
@@ -57,6 +58,7 @@ import type {
 import type { ServerRequestFrame } from "./CodexAppServerClient.js";
 import { CodexAppServerClient } from "./CodexAppServerClient.js";
 import { CodexMessageAdapter } from "./CodexMessageAdapter.js";
+import { codexApprovalReply } from "./codexApprovalReply.js";
 import { CodexFileSnapshot } from "./CodexFileSnapshot.js";
 import { resolveCodexBinaryPath } from "./codexBinaryResolve.js";
 import type { TurnDoneReason } from "@contracts/runtime";
@@ -429,6 +431,7 @@ export class CodexAgentSdkProvider implements AgentProvider {
     const tempImagePaths: string[] = [];
 
     let finished = false;
+    let turnStartPending = false;
     const done = (async () => {
       try {
         await client.start();
@@ -535,12 +538,28 @@ export class CodexAgentSdkProvider implements AgentProvider {
         ): Promise<TurnDoneReason> => {
           // 用户已经点了停止(例如卡在 thread/start 时):不要再把提示词发给模型。
           if (ac.signal.aborted) throw new Error("codex turn aborted before turn/start");
-          const startedTurn = (await client.request("turn/start", {
-            threadId,
-            input,
-            ...turnOverrides,
-          })) as { turn?: { id?: string } } | undefined;
-          activeTurn.turnId = startedTurn?.turn?.id ?? null;
+          // Keep transport alive long enough to learn the new turn ID and
+          // interrupt it. Immediate disposal during this round trip loses the
+          // only addressable cancellation path (including corrective turns).
+          activeTurn.turnId = null;
+          turnStartPending = true;
+          let startAbortTimer: ReturnType<typeof setTimeout> | undefined;
+          const abortPendingStart = (): void => {
+            startAbortTimer = setTimeout(() => { void client.dispose().catch(() => undefined); }, 2000);
+          };
+          ac.signal.addEventListener("abort", abortPendingStart, { once: true });
+          try {
+            const startedTurn = (await client.request("turn/start", {
+              threadId,
+              input,
+              ...turnOverrides,
+            })) as { turn?: { id?: string } } | undefined;
+            activeTurn.turnId = startedTurn?.turn?.id ?? null;
+          } finally {
+            turnStartPending = false;
+            ac.signal.removeEventListener("abort", abortPendingStart);
+            clearTimeout(startAbortTimer);
+          }
 
           const abortedPromise = new Promise<"interrupted">((resolve) => {
             if (ac.signal.aborted) resolve("interrupted");
@@ -659,11 +678,11 @@ export class CodexAgentSdkProvider implements AgentProvider {
       interrupt: () => {
         ac.abort();
         adapter.markAborted();
-        // 回合还没开始(进程冷启动 / initialize / thread/start / turn/start 还在等):
+        // 回合还没开始(进程冷启动 / initialize / thread/start 还在等):
         // turn/interrupt 无从发起,而这些请求最长要等 120 秒才超时,等它们回来后还会照常
         // 发出 turn/start。直接结束这个只属于本轮的 app-server 进程 —— 挂起的请求立刻
-        // 失败,done 走「已中断」分支收尾。
-        if (!activeTurn.turnId) void client.dispose().catch(() => undefined);
+        // 失败,done 走「已中断」分支收尾。turn/start 窗口由上面的有界等待处理。
+        if (!activeTurn.turnId && !turnStartPending) void client.dispose().catch(() => undefined);
       },
       isRunning: () => !finished && !ac.signal.aborted,
     };
@@ -965,14 +984,13 @@ async function decideApproval(
 
   const alwaysAllowed = ctx.isToolAlwaysAllowed?.(args.toolName) ?? false;
   if (alwaysAllowed) {
-    // Recorded "always allow" — re-affirm the session-scoped server grant.
-    return { decision: "acceptForSession" };
+    return codexApprovalReply(null, true);
   }
 
   const requestApproval = ctx.requestApproval;
   if (!requestApproval) {
     // No bridge (shouldn't happen) — deny safe.
-    return { decision: "decline" };
+    return codexApprovalReply(null);
   }
   const approvalReq: ApprovalRequest = {
     requestId: randomUUID(),
@@ -982,14 +1000,9 @@ async function decideApproval(
   };
   const decision = await requestApproval(approvalReq);
 
-  if (!decision.allow) {
-    return { decision: "decline" };
-  }
-  // Scope the server grant to what the user actually chose: a one-shot
-  // approval maps to codex's "accept" (this execution only); "always allow"
-  // (persist, recorded host-side by ApprovalBridge) upgrades to
-  // acceptForSession so identical actions stop prompting for this thread.
-  return { decision: decision.persist ? "acceptForSession" : "accept" };
+  // Keep the host-side remembered choice, but never issue a Codex server
+  // session grant: it cannot be revoked when the user switches mode mid-turn.
+  return codexApprovalReply(decision);
 }
 
 /** Codex's native user-input request ({questions: [{title, options?}]},

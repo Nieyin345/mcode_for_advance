@@ -1,3 +1,4 @@
+import { workflowReplayError } from "@main/orchestration/workflowTrust.js";
 /**
  * Headless smoke for **工作流运行的存档**(`main/orchestration/runStore.ts` +
  * `workflow_runs` 表)。
@@ -392,7 +393,7 @@ if (MODE === "write") {
   check("★ 失败的运行 + 失败的那一步 → 能重试", canRetry !== null);
   eq("runId 就是它", canRetry?.runId, FAILED_RUN);
   eq("存档里的结局表原样带出来", canRetry?.snapshot.state.outcomes.length, 3);
-  eq("★ 结局一起交出来(调用方靠它分辨两种重跑)", canRetry?.outcome.status, "failed");
+  eq("★ 结局一起交出来(调用方靠它分辨两种重跑)", canRetry?.outcome?.status, "failed");
 
   /**
    * ② **成功过的那一步也能重跑** —— 用户在图上看中一步说"从这儿往下走"。
@@ -407,12 +408,12 @@ if (MODE === "write") {
    */
   const fromSuccess = retryableRun(SESSION_FAILED, FAILED_RUN, "A");
   check("★ 成功过的那一步也能重跑(图上挑起点)", fromSuccess !== null);
-  eq("★ 它的结局是 success —— 调用方据此不带 note", fromSuccess?.outcome.status, "success");
+  eq("★ 它的结局是 success —— 调用方据此不带 note", fromSuccess?.outcome?.status, "success");
   // `skipped` 也照样:它在结局表里,而"从这一步往下"对用户是一句有效的话 ——
   // 他要的是"重跑这一片",这一步上次是跳过还是失败不影响那个意图。
   const fromSkipped = retryableRun(SESSION_FAILED, FAILED_RUN, "C");
   check("★ 上次被跳过的也能重跑", fromSkipped !== null);
-  eq("它的结局是 skipped", fromSkipped?.outcome.status, "skipped");
+  eq("它的结局是 skipped", fromSkipped?.outcome?.status, "skipped");
   // ⚠️ **这一道不能松**:存档里根本没有的节点,重跑会从一步没跑过的地方开始。
   check("★ 存档里根本没有的节点不能重跑", retryableRun(SESSION_FAILED, FAILED_RUN, "Z") === null);
 
@@ -452,6 +453,18 @@ if (MODE === "write") {
   });
   getDb().run("UPDATE workflow_runs SET payload = ? WHERE id = ?", ["{oops", "run_broken"]);
   check("★ 存档读不回来 → 不能重试", retryableRun(SESSION_FAILED, "run_broken", "B") === null);
+  const interruptedSnapshot: RunSnapshot = {
+    prompt: "interrupted", cwd: process.cwd(), attempts: [], workflowRevision: "a".repeat(64),
+    inFlightNodeIds: ["unfinished"],
+    state: { record: [], rounds: [], picks: [], outcomes: [], awaiting: [] },
+  };
+  saveRun({ runId: "journal_only", sessionId: SESSION_FAILED, workflowId: "wf_test", status: "interrupted", snapshot: interruptedSnapshot });
+  const journal = retryableRun(SESSION_FAILED, "journal_only", "unfinished");
+  check("an interrupted in-flight node has a continuation lookup even without an outcome", journal !== null);
+  eq("lookup never fabricates an outcome for the interrupted node", journal?.outcome, undefined);
+  check("journal-only lookup still rejects a different node", retryableRun(SESSION_FAILED, "journal_only", "other") === null);
+  check("journal-only lookup still checks ownership", retryableRun(SESSION_RESUMABLE, "journal_only", "unfinished") === null);
+
 }
 
 // The origin belongs to the run, including restart/retry, not a reused session.
@@ -462,6 +475,21 @@ if (MODE === "write") {
   const manual = decodeSnapshot(JSON.stringify({ ...raw, originSessionId: null }));
   eq("explicitly absent origin survives decode", manual && "originSessionId" in manual ? manual.originSessionId : undefined, null);
   eq("invalid origin rejects snapshot", decodeSnapshot(JSON.stringify({ ...raw, originSessionId: 42 })), null);
+}
+
+// FG0-E: replay safety follows actual executor semantics, not a hard-coded type name.
+{
+  const doc = { id: "replay", name: "Replay", builtin: false, updatedAt: 0, edges: [],
+    nodes: [{ id: "pure", type: "mcode.condition", title: "Pure", params: {}, position: { x: 0, y: 0 } }] };
+  eq("builtin pure condition can resume", workflowReplayError(doc, ["pure"]), null);
+  const custom = { ...doc, nodes: [{ ...doc.nodes[0], type: "extension.condition" }] };
+  const safe = new Map([["extension.condition", { runner: { kind: "condition" as const } }]]);
+  eq("custom pure condition follows its runner kind", workflowReplayError(custom, ["pure"], safe), null);
+  check("unknown custom type fails closed", workflowReplayError(custom, ["pure"]) !== null);
+  check("missing node fails closed", workflowReplayError(doc, ["missing"]) !== null);
+  check("missing in-flight journal fails closed", workflowReplayError(doc, undefined) !== null);
+  const command = new Map([["extension.condition", { runner: { kind: "command" as const } }]]);
+  check("a condition-like name cannot whitelist a command", workflowReplayError(custom, ["pure"], command) !== null);
 }
 
 console.log(`\n${total - failures}/${total} passed`);

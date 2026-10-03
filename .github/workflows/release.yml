@@ -132,6 +132,12 @@ jobs:
             console.log("Release version: " + v);
           '
 
+      - name: MCP contract gate (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: apps/desktop
+        run: node --test scripts/run-smokes.test.mjs && node scripts/run-smokes.mjs mcp-text-smoke release-readiness-smoke
+
       - name: Build & package
         # Use bash on Windows too (the runner ships Git Bash) so the env vars
         # and any shell syntax in the package script work uniformly.
@@ -146,6 +152,20 @@ jobs:
       # Upload per-arch artifacts for the publish job. Each matrix leg gets its
       # own artifact name so they don't collide. The publish job merges the two
       # mac latest-mac.yml files and uploads everything to the GitHub Release.
+      - name: Verify Windows installer archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem apps/desktop/release -Filter *.exe -File)
+          if ($installers.Count -ne 1) { throw "Expected exactly one Windows installer" }
+          & "$env:ProgramFiles/7-Zip/7z.exe" t $installers[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw "Installer archive integrity check failed" }
+
+      - name: Verify packaged Windows runtime (isolated)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: node apps/desktop/scripts/release-readiness-smoke/check-unpacked.cjs apps/desktop/release/win-unpacked
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:

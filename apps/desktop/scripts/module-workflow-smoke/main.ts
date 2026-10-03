@@ -317,6 +317,90 @@ if (!gateOpen) {
     assert.equal(result.outcomes.get("n_inspect")?.outputs, undefined);
   });
 }
+// Z12: no shell process is spawned by these tests; the real scheduler feeds a
+// recording executor so injected content can never execute, even on the red run.
+const commandManifest = builtin("mcode.command");
+function commandDoc(command: string): WorkflowDoc {
+  return { ...structuredClone(example), nodes: [example.nodes[0]!, {
+    id: "n_inspect", title: "Command", type: commandManifest.id,
+    position: { x: 200, y: 0 }, params: { command },
+  }] };
+}
+await check("shell templates are rejected during workflow validation", () => {
+  const report = validateWorkflowDoc(commandDoc('node process.js "{{user}}"'), { types });
+  assert.ok(report.errors.some(issue => /stdin/i.test(issue.message)));
+});
+await check("runtime blocks legacy shell interpolation before executor dispatch", async () => {
+  let executed = 0;
+  const ports: RunPorts = {
+    buildInput: runnerInputFixture({ id: "shell-fixture" }, "shell-run"),
+    manifestOf: async id => types.get(id), manifestDirOf: async () => undefined,
+    contextLines: () => [], choose: async () => { throw new Error("unexpected choice"); },
+    maxParallel: () => 1, report: () => {},
+    execute: async () => { executed++; return { status: "success", summary: "recorded only" }; },
+  };
+  const result = await runWorkflow({ doc: commandDoc('node process.js "{{user}}"'),
+    prompt: 'x" & echo SHELL_INJECTION_SENTINEL & "', ports, signal: new AbortController().signal,
+    entry: { nodeId: "n_start", summary: "manual", payload: { kind: "manual" } } });
+  assert.equal(executed, 0);
+  assert.equal(result.outcomes.get("n_inspect")?.status, "failed");
+  assert.match(result.outcomes.get("n_inspect")?.error ?? "", /stdin/i);
+});
+await check("trigger-only command input reaches JSON stdin without shell interpolation", () => {
+  const trigger = { files: ['x" & echo SHELL_INJECTION_SENTINEL & "'], kind: "files" };
+  const input = buildNodeInput({ command: "node process.js" }, commandManifest,
+    { ...inputScope, userPrompt: "", upstream: "", upstreamArtifacts: [], upstreamOutputs: {}, trigger }, new AbortController().signal);
+  assert.equal(input.command?.command, "node process.js");
+  assert.deepEqual(input.command?.input, input.data);
+  assert.deepEqual(Reflect.get(input.command!.input as object, "trigger"), trigger);
+});
+
+await check("shell safety preserves escaped literals and localizes migration guidance", () => {
+  const literal = commandDoc(String.raw`echo "\{{user}}"`);
+  assert.equal(validateWorkflowDoc(literal, { types }).ok, true);
+  const unsafe = commandDoc('node process.js "{{user}}"');
+  assert.ok(validateWorkflowDoc(unsafe, { types, locale: "en" }).errors.some(issue => issue.message.includes("JSON stdin") && issue.message.includes("not allowed")));
+  assert.ok(validateWorkflowDoc(unsafe, { types, locale: "zh" }).errors.some(issue => issue.message.includes("JSON stdin") && issue.message.includes("不允许")));
+  const alias = { ...commandManifest, id: "extension.command" };
+  unsafe.nodes[1]!.type = alias.id;
+  assert.ok(validateWorkflowDoc(unsafe, { types: new Map([...types, [alias.id, alias]]) }).errors.some(issue => /stdin/i.test(issue.message)));
+});
+
+// D2: retain real returned data, never invent output for a promise that threw.
+for (const mode of ["constraint", "retry-throws"] as const) {
+  await check(`partial node outputs survive ${mode}`, async () => {
+    const doc = commandDoc("node process.js");
+    doc.nodes[1]!.params.outputVars = mode === "constraint" ? [{ name: "required", example: "value" }] : [];
+    doc.nodes.push({ ...doc.nodes[1]!, id: "after", params: { command: "node next.js" } });
+    doc.edges.push({ id: "after", from: "n_inspect", to: "after" });
+    const artifacts = [{ kind: "file" as const, uri: "partial-result.txt" }];
+    let calls = 0;
+    const ports: RunPorts = {
+      buildInput: runnerInputFixture({ id: "partial-session" }, "partial-run"),
+      manifestOf: async id => id === commandManifest.id
+        ? { ...commandManifest, retry: { maxAttempts: mode === "retry-throws" ? 2 : 1, backoffMs: 0 } }
+        : types.get(id),
+      manifestDirOf: async () => undefined, contextLines: () => [],
+      choose: async () => { throw new Error("unexpected choice"); }, maxParallel: () => 1, report: () => {},
+      execute: async () => {
+        calls++;
+        if (calls > 1) throw new Error("executor crashed");
+        return { status: mode === "constraint" ? "success" : "failed", summary: "partial text",
+          outputs: { partial: "kept" }, artifacts, ...(mode === "retry-throws" ? { error: "temporary", retryable: true } : {}) };
+      },
+    };
+    const result = await runWorkflow({ doc, prompt: "partial", ports, signal: new AbortController().signal,
+      entry: { nodeId: "n_start", summary: "manual", payload: { kind: "manual" } } });
+    const outcome = result.outcomes.get("n_inspect");
+    assert.equal(outcome?.status, "failed");
+    assert.equal(outcome?.summary, "partial text");
+    assert.deepEqual(outcome?.outputs, { partial: "kept" });
+    assert.deepEqual(outcome?.artifacts, artifacts);
+    assert.equal(result.outcomes.get("after")?.status, "skipped", "partial output must not make a failed prerequisite successful");
+    if (mode === "retry-throws") assert.equal(calls, 2);
+  });
+}
+
 console.log(`Module workflow: ${passed} passed, ${failed} failed (${process.env.P2_WORKFLOW_PHASE})`);
 await writeFile(join(evidenceDir, `${process.env.P2_WORKFLOW_PHASE}-checks.json`), JSON.stringify({ passed, failed, results }, null, 2));
 process.exitCode = failed ? 1 : 0;

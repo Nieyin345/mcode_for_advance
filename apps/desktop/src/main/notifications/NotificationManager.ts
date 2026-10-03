@@ -21,12 +21,13 @@
 import { Notification } from "electron";
 import { join } from "node:path";
 import type { RuntimeEvent } from "@contracts/runtime";
-import { IPC, DEFAULT_NOTIFICATION_PREFS, NOTIFICATION_PREFS_SETTING_KEY, isInQuietHours, normalizeNotificationPrefs, type NotificationPrefs } from "@contracts/ipc";
+import { IPC, DEFAULT_NOTIFICATION_PREFS, NOTIFICATION_PREFS_SETTING_KEY, UI_LOCALE_SETTING_KEY, isInQuietHours, normalizeNotificationPrefs, type NotificationPrefs } from "@contracts/ipc";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { getMainWindow, sendToRenderer } from "@main/window.js";
 import { SettingRepo } from "@main/store/repositories.js";
 import { SessionRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
+import { translate, type MessageId } from "@renderer/lib/i18n/core.js";
 
 /** Path to the app icon for OS notifications. Same source image as the
  *  taskbar/window icon (build/icon.png); resolves relative to the compiled
@@ -102,13 +103,22 @@ class NotificationManager {
     this.showNotification(result.title, result.body, e.sessionId);
   }
 
+  /** Read the current UI language when a notification is actually produced,
+   *  rather than caching it at startup (the user may switch language live). */
+  private t(key: MessageId): string {
+    let locale: "zh" | "en" = "zh";
+    try { if (SettingRepo.get(UI_LOCALE_SETTING_KEY) === "en") locale = "en"; }
+    catch { /* DB may be unavailable during startup: use the default locale. */ }
+    return translate(locale, key);
+  }
+
   /** Map a RuntimeEvent to a notification {title, body} or null (no notify). */
   private evaluate(e: RuntimeEvent): { title: string; body: string } | null {
     // Blocking events - the agent is stalled waiting for the user.
     if (e.type === "approval.request") {
       if (!this.prefs.blocking) return null;
       return {
-        title: "需要审批工具调用",
+        title: this.t("store.toast.toolApprovalNeeded"),
         body: `${this.sessionTitle(e.sessionId)}: ${e.toolName}`,
       };
     }
@@ -116,15 +126,15 @@ class NotificationManager {
       if (!this.prefs.blocking) return null;
       const firstQ = e.questions[0];
       return {
-        title: "Agent 有问题要问你",
+        title: this.t("store.toast.agentQuestion"),
         body: `${this.sessionTitle(e.sessionId)}${firstQ ? `: ${firstQ.question}` : ""}`,
       };
     }
     if (e.type === "plan.approval_request") {
       if (!this.prefs.blocking) return null;
       return {
-        title: "计划待审批",
-        body: `${this.sessionTitle(e.sessionId)}: 查看并批准执行计划`,
+        title: this.t("store.toast.planApprovalPending"),
+        body: `${this.sessionTitle(e.sessionId)}: ${this.t("store.toast.planApprovalPendingBody")}`,
       };
     }
 
@@ -164,13 +174,13 @@ class NotificationManager {
       // that the agent finished the task. No error event accompanies this case.
       if (e.reason === "max_tokens") {
         return {
-          title: "输出可能被截断",
-          body: `${this.sessionTitle(e.sessionId)}: 本轮输出已达到长度上限，回复可能不完整；请检查结果并继续。`,
+          title: this.t("store.toast.outputTruncated"),
+          body: `${this.sessionTitle(e.sessionId)}: ${this.t("store.toast.outputTruncatedBody")}`,
         };
       }
       return {
-        title: "回合完成",
-        body: `${this.sessionTitle(e.sessionId)}: Agent 已完成本轮任务`,
+        title: this.t("store.toast.turnComplete"),
+        body: `${this.sessionTitle(e.sessionId)}: ${this.t("store.toast.turnCompleteBody")}`,
       };
     }
 
@@ -180,7 +190,7 @@ class NotificationManager {
       // 同 turn.done:节点的报错已经由调度器变成对话里的一张卡了(见上)。
       if (this.isNodeSession(e.sessionId)) return null;
       return {
-        title: "发生错误",
+        title: this.t("store.toast.errorOccurred"),
         body: `${this.sessionTitle(e.sessionId)}: ${e.message}`,
       };
     }
@@ -207,8 +217,8 @@ class NotificationManager {
       // 打扰用户(节点自己的结果会以卡片的形式回到对话里)。
       if (this.isNodeSession(e.sessionId)) return null;
       return {
-        title: "后台任务完成",
-        body: `${this.sessionTitle(e.sessionId)}: 子代理任务已结束`,
+        title: this.t("store.toast.backgroundTaskDone"),
+        body: `${this.sessionTitle(e.sessionId)}: ${this.t("store.toast.backgroundTaskDoneBody")}`,
       };
     }
 
@@ -220,9 +230,9 @@ class NotificationManager {
   private sessionTitle(sessionId: string): string {
     try {
       const s = SessionRepo.get(sessionId);
-      return s?.title || "会话";
+      return s?.title || this.t("store.toast.sessionLabel");
     } catch {
-      return "会话";
+      return this.t("store.toast.sessionLabel");
     }
   }
 

@@ -36,7 +36,7 @@ type Ev = { type: string; [k: string]: unknown };
 const MAIN = "thr-main";
 const SUB = "thr-sub-1";
 
-function harness() {
+function harness(bindMain = true) {
   const events: Ev[] = [];
   const logs: string[] = [];
   const snap = {
@@ -54,7 +54,7 @@ function harness() {
     },
   };
   const adapter = new CodexMessageAdapter(ctx as never, "s1", snap as never, undefined);
-  adapter.setMainThreadId(MAIN);
+  if (bindMain) adapter.setMainThreadId(MAIN);
   const send = (method: string, params: Record<string, unknown>) =>
     adapter.handleNotification({ method, params } as never);
   return { adapter, events, logs, snap, send };
@@ -168,6 +168,48 @@ const u = (i: number, c: number, o: number, r = 0) => ({ inputTokens: i, cachedI
   const h = harness();
   h.send("turn/completed", { threadId: MAIN, turn: { id: "t", status: "completed" } });
   eq("control: no usage reported → no snapshot", h.events.filter((e) => e.type === "token-usage.updated").length, 0);
+}
+
+// Z6: all observers of one turn settle, including late observers, with its real reason.
+{
+  const h = harness();
+  const reasons: string[] = [];
+  void h.adapter.waitTurnDone().then((r) => reasons.push(r));
+  void h.adapter.waitTurnDone().then((r) => reasons.push(r));
+  h.send("turn/completed", { threadId: MAIN, turn: { id: "failed", status: "failed" } });
+  await tick();
+  eq("both turn waiters settle", reasons.length, 2);
+  eq("late waiter retains error reason", await h.adapter.waitTurnDone(), "error");
+  h.adapter.setDeferTurnDone();
+  h.adapter.beginCorrectiveTurn();
+  let previous: string | null = null;
+  void h.adapter.waitTurnDone().then((r) => { previous = r; });
+  h.adapter.beginCorrectiveTurn();
+  await tick();
+  eq("reset does not orphan prior waiter", previous, "interrupted");
+  h.send("turn/completed", { threadId: MAIN, turn: { id: "next", status: "completed" } });
+}
+// D3: notifications can arrive while the thread/start response is still in flight.
+{
+  const h = harness(false);
+  h.send("item/agentMessage/delta", { threadId: SUB, itemId: "early-sub", delta: "PRIVATE_SUB_TEXT" });
+  h.send("item/agentMessage/delta", { threadId: MAIN, itemId: "early-main", delta: "MAIN_TEXT" });
+  h.send("turn/completed", { threadId: SUB, turn: { id: "sub", status: "completed" } });
+  eq("unknown thread identity cannot close main turn", h.adapter.hasTurnEnded, false);
+  eq("no premature main-chat deltas", h.events.filter((e) => e.type === "text.delta").length, 0);
+  h.adapter.setMainThreadId(MAIN);
+  check("early subagent text never leaks into main chat", !h.events.some((e) => e.type === "text.delta" && String(e.text).includes("PRIVATE_SUB_TEXT")));
+  check("buffered main text is not lost", h.events.some((e) => e.type === "text.delta" && e.text === "MAIN_TEXT"));
+  h.send("turn/completed", { threadId: MAIN, turn: { id: "main", status: "completed" } });
+  await tick();
+}
+
+{
+  const h = harness(false);
+  for (let i = 0; i < 2050; i++) h.send("item/agentMessage/delta", { threadId: SUB, itemId: "pending", delta: "x" });
+  eq("pre-identity buffer overflow terminates rather than growing forever", h.adapter.hasTurnEnded, true);
+  eq("overflow retains its terminal error reason", await h.adapter.waitTurnDone(), "error");
+  eq("overflow reports one error, not one per late frame", h.events.filter(e => e.type === "error").length, 1);
 }
 
 console.log(`\n${checks - failures}/${checks} passed`);

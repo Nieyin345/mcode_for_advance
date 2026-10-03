@@ -57,6 +57,9 @@ export class CodexMessageAdapter {
   private turnEnded = false;
   /** Resolved when the turn reaches a terminal state (drives the provider's
    *  done promise — turn/start returns before the turn completes). */
+  private turnDonePromise: Promise<TurnDoneReason> | null = null;
+  private turnDoneReason: TurnDoneReason | null = null;
+  private pendingThreadNotifications: NotificationFrame[] = [];
   private turnDoneResolve: ((reason: TurnDoneReason) => void) | null = null;
   /** Terminal error text for the current turn (surfaced once). */
   private lastUsage: CodexUsage | null = null;
@@ -145,10 +148,13 @@ export class CodexMessageAdapter {
 
   setMainThreadId(id: string): void {
     this.mainThreadId = id;
+    const pending = this.pendingThreadNotifications;
+    this.pendingThreadNotifications = [];
+    for (const frame of pending) this.handleNotification(frame);
   }
 
   /** True when a thread-scoped notification belongs to a subagent thread.
-   *  Absent threadId / unknown main thread → treated as main (legacy frames). */
+   *  Absent threadId → main (legacy frames); scoped frames wait for identity. */
   private isForeignThread(p: Record<string, unknown>): boolean {
     const threadId = typeof p.threadId === "string" ? p.threadId : null;
     return !!(threadId && this.mainThreadId && threadId !== this.mainThreadId);
@@ -175,8 +181,12 @@ export class CodexMessageAdapter {
    *  再来一轮，turnEnded / waitTurnDone 要复位才能再等一次。文本按 itemId
    *  累计，新 item 自然追加，无需清空。 */
   beginCorrectiveTurn(): void {
+    // A replaced turn must not leave existing observers pending forever.
+    this.turnDoneResolve?.("interrupted");
     this.turnEnded = false;
     this.turnDoneResolve = null;
+    this.turnDonePromise = null;
+    this.turnDoneReason = null;
   }
 
   /** 延迟收尾：发出 turn.done（恰好一次）。非延迟模式（普通轮）下 turn.done
@@ -196,14 +206,30 @@ export class CodexMessageAdapter {
    *  state. Never rejects — transport failures surface through the provider's
    *  request-promise rejection instead. */
   waitTurnDone(): Promise<TurnDoneReason> {
-    if (this.turnEnded) return Promise.resolve("end_turn");
-    return new Promise<TurnDoneReason>((resolve) => {
+    if (this.turnEnded) return Promise.resolve(this.turnDoneReason ?? "end_turn");
+    this.turnDonePromise ??= new Promise<TurnDoneReason>((resolve) => {
       this.turnDoneResolve = resolve;
     });
+    return this.turnDonePromise;
   }
 
   handleNotification(frame: NotificationFrame): void {
     const p = (frame.params ?? {}) as Record<string, unknown>;
+    // thread/start may deliver scoped notifications before its response gives
+    // the provider our thread ID. Route only after identity is established.
+    if (!this.mainThreadId && typeof p.threadId === "string") {
+      if (this.aborted) return;
+      if (this.pendingThreadNotifications.length >= 1024) {
+        this.pendingThreadNotifications = [];
+        this.emit({ type: "error", sessionId: this.sessionId,
+          message: "Codex thread initialization notification limit exceeded", code: "CODEX_TURN_FAILED" });
+        this.aborted = true;
+        this.finalizeError();
+      } else {
+        this.pendingThreadNotifications.push(frame);
+      }
+      return;
+    }
     switch (frame.method) {
       case "item/agentMessage/delta": {
         if (this.aborted) return;
@@ -929,6 +955,7 @@ export class CodexMessageAdapter {
   private finishTurn(reason: TurnDoneReason): void {
     if (this.turnEnded) return;
     this.turnEnded = true;
+    this.turnDoneReason = reason;
     // Drain any throttled subagent-delta flushes NOW — the last partial block
     // must land before turn.done freezes the turn's view.
     if (this.transcriptFlushTimer !== null) {

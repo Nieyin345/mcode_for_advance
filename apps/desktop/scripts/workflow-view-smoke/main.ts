@@ -29,6 +29,8 @@ import { triggerKindLabel, visibleNodeParams, displayedParam } from "@renderer/c
  * Run: scripts/workflow-view-smoke/run.sh
  */
 import "./prelude.js";
+import { boardContinuationRunId } from "@renderer/lib/workflowLive.js";
+
 import { readFileSync, readdirSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -3119,5 +3121,19 @@ console.log("\n保存归并、撤销重做、多入口与标签布局回归");
   eq("未知触发方式安全显示", triggerKindLabel("toString", mockTranslate), "settings.automation.unknownTrigger");
 }
 
+
+
+
+// FZ10: the menu must remain available after the process-local live store is gone.
+{
+  const row = { runId: "stored-run", sessionId: "owner", workflowId: "graph", status: "failed" as const,
+    createdAt: 1, updatedAt: 2, nodeCount: 1 };
+  eq("restart restores the persisted continuation id", boardContinuationRunId(null, [row], "owner", "graph"), "stored-run");
+  eq("stale history from another session cannot be used", boardContinuationRunId(null, [row], "other", "graph"), undefined);
+  eq("a different workflow cannot borrow the old run", boardContinuationRunId(null, [row], "owner", "changed"), undefined);
+  eq("no history is not a fabricated run", boardContinuationRunId(null, [], "owner", "graph"), undefined);
+  const live = { runId: "live-run", sessionId: "owner", workflowId: "graph", startedAt: 3, touchedAt: 3, nodes: {}, order: [] };
+  eq("late history cannot override current live execution", boardContinuationRunId(live, [row], "owner", "graph"), "live-run");
+}
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures > 0) process.exit(1);

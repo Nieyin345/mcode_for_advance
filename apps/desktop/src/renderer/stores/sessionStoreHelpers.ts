@@ -3203,6 +3203,11 @@ const prevAgents = ctx.get().subagentsBySession[ctx.sid] ?? [];
           : e.agents;
         return { subagentsBySession: { ...s.subagentsBySession, [ctx.sid]: agents } };
       });
+      // A background task can outlive the parent turn. Its final roster event
+      // is then the only wake-up: no second parent turn.done will arrive.
+      if (prevRunning.size > 0 && !(ctx.get().subagentsBySession[ctx.sid] ?? []).some((a) => a.status === "running")) {
+        ctx.get().drainPromptQueueIfIdle(ctx.sid);
+      }
       return;
     
 }

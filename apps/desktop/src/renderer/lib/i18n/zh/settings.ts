@@ -3,6 +3,7 @@
  * Keys: `settings.*`. Owned by the settings/* migration batch.
  */
 export const zh = {
+  "settings.workflow.commandTemplateUnsafe": "命令正文不允许插入动态变量（{{...}}）。请改用固定命令，在脚本中读取 JSON stdin 的 trigger、userInput、upstreamOutputs 字段。不会自动改写此工作流。",
   // ── left nav (SettingsPage) ──
   "settings.nav.general": "常规",
   "settings.nav.appearance": "外观",

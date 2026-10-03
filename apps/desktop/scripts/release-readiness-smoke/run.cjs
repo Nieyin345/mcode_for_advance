@@ -99,7 +99,16 @@ async function bundledSchemaPeers() {
  const sf=source(path.join(app,'electron.vite.config.ts'));
  const exported=sf.statements.find(ts.isExportAssignment);const object=exported.expression.arguments[0];
  const main=object.properties.find(n=>n.name?.getText(sf)==='main').initializer;
- const exports={};new Function('exports','externalizeDepsPlugin','resolve',compile('exports.config='+main.getText(sf)+';'))(exports,req('electron-vite').externalizeDepsPlugin,path.resolve);
+ const banner=sf.statements.filter(ts.isVariableStatement).flatMap(n=>[...n.declarationList.declarations]).find(n=>n.name.getText(sf)==='mainEsmBanner');
+ assert.ok(banner&&ts.isNoSubstitutionTemplateLiteral(banner.initializer),'ESM shim banner must be a literal');
+ const mainEsmBanner=banner.initializer.text;
+ const exports={};new Function('exports','externalizeDepsPlugin','resolve','mainEsmBanner',compile('exports.config='+main.getText(sf)+';'))(exports,req('electron-vite').externalizeDepsPlugin,path.resolve,mainEsmBanner);
+ assert.equal(exports.config.build.rollupOptions.output.banner,mainEsmBanner);
+ const chunksDir=path.join(path.dirname(req.resolve('electron-vite')),'chunks');
+ const installedShim=fs.readdirSync(chunksDir).filter(n=>n.endsWith('.cjs')).map(n=>fs.readFileSync(path.join(chunksDir,n),'utf8')).find(s=>s.includes('const CJSShim_node_20_11 ='));
+ const expectedShim=installedShim?.match(/const CJSShim_node_20_11 = (`[\s\S]*?`);/);
+ assert.ok(expectedShim,'Review the shim workaround when updating electron-vite');
+ assert.equal(mainEsmBanner,new Function('return '+expectedShim[1])(),'Banner must bypass the upstream string-scanning shim injector');
  const config=exports.config;
  const result=await req('vite').build({configFile:false,root:fixture,logLevel:'silent',plugins:config.plugins,resolve:config.resolve,build:{...config.build,write:false,minify:false,lib:{entry,formats:['es']},rollupOptions:{...config.build.rollupOptions,output:{}}}});
  const chunks=(Array.isArray(result)?result:[result]).flatMap(r=>r.output).filter(n=>n.type==='chunk');

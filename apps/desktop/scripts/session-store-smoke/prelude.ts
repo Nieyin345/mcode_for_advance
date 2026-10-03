@@ -9,8 +9,12 @@
 const asyncNoop = (): Promise<undefined> => Promise.resolve(undefined);
 
 let sendTurnStub: ((input: unknown) => Promise<unknown>) | null = null;
+let sessionMessagesStub: ((input: unknown) => Promise<unknown>) | null = null;
 export function setSendTurnStub(fn: ((input: unknown) => Promise<unknown>) | null): void {
   sendTurnStub = fn;
+}
+export function setSessionMessagesStub(fn: ((input: unknown) => Promise<unknown>) | null): void {
+  sessionMessagesStub = fn;
 }
 
 function deepApiStub(path: string[] = []): unknown {
@@ -23,7 +27,9 @@ function deepApiStub(path: string[] = []): unknown {
     apply: (_target, _this, args: unknown[]) =>
       path.join(".") === "claude.sendTurn" && sendTurnStub
         ? sendTurnStub(args[0])
-        : Promise.resolve(undefined),
+        : path.join(".") === "session.messages" && sessionMessagesStub
+          ? sessionMessagesStub(args[0])
+          : Promise.resolve(undefined),
   });
 }
 

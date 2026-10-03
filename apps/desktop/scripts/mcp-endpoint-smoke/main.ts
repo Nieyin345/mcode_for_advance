@@ -1990,6 +1990,9 @@ eq("取消保留此前的始终允许", approvalLifecycle.isAlwaysAllowed("appro
 eq("取消保留会话权限模式", approvalLifecycle.getPermissionMode("approval-owner"), "acceptEdits");
 eq("其他会话的待处理审批不受影响", approvalLifecycle.resolveApproval("other-session-pending", { allow: true }), "another-owner");
 eq("其他会话审批仍可正常完成", await otherOutcome, "allowed");
+approvalLifecycle.setPermissionMode("approval-owner", "read-only");
+eq("★ 切到只读即撤销原会话的始终允许", approvalLifecycle.isAlwaysAllowed("approval-owner", "agent_bash"), false);
+eq("切权限不影响别的会话", approvalLifecycle.getPermissionMode("another-owner"), undefined);
 
 configureMcpToolHost(null);
 

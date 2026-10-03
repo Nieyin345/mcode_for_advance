@@ -13,10 +13,20 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 import { PiMessageAdapter } from "../../src/main/providers/pi-sdk/PiMessageAdapter.ts";
 import { codexMcpDisableArgs, codexTurnAllowsMcpServer } from "../../src/main/providers/codex-sdk/codexTurnScope.ts";
+import { codexApprovalReply } from "../../src/main/providers/codex-sdk/codexApprovalReply.ts";
 import { createProviderHealthProbe } from "../../src/main/providers/providerHealth.ts";
 import { createProviderHealthRequestGate } from "../../src/renderer/lib/providerHealthRequestGate.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+test("Codex host-approved actions never receive an unrevocable app-server grant", () => {
+  assert.deepEqual(codexApprovalReply({ allow: true, persist: true }), { decision: "accept" });
+  assert.deepEqual(codexApprovalReply(null, true), { decision: "accept" });
+  assert.deepEqual(codexApprovalReply({ allow: true }), { decision: "accept" });
+  assert.deepEqual(codexApprovalReply({ allow: false, persist: true }), { decision: "decline" });
+  const provider = readFileSync(resolve(here, "../../src/main/providers/codex-sdk/CodexAgentSdkProvider.ts"), "utf8");
+  assert.match(provider, /codexApprovalReply\(/, "approval handler must call the tested reply policy");
+});
 
 function adapterWithEvents() {
   const events = [];
@@ -450,4 +460,103 @@ test("workflow provider overrides survive node-session reuse and drive provider-
   assert.match(workflowsPanel, /tabIndex=\{active \? 0 : -1\}/);
   assert.match(fields, /paramRefMissingCount/);
   assert.match(fields, /aria-expanded=\{open\}/);
+});
+
+
+// D5: exercise the actual healthCheck method, not a reimplementation of its loop.
+test("Claude health probe closes the async iterator on early system/init return", async () => {
+  const path = resolve(here, "../../src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts");
+  const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);
+  const provider = source.statements.find((node) => ts.isClassDeclaration(node) && node.name?.text === "ClaudeAgentSdkProvider");
+  assert.ok(provider);
+  const method = provider.members.find((node) => ts.isMethodDeclaration(node) && node.name.getText(source) === "healthCheck");
+  assert.ok(method);
+  const js = ts.transpileModule(`class Probe { ${method.getText(source)} }`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  let closed = 0;
+  const iterator = {
+    [Symbol.asyncIterator]() { return this; },
+    async next() { return { done: false, value: { type: "system", subtype: "init", claude_code_version: "fake" } }; },
+    async return() { closed++; return { done: true }; },
+  };
+  const query = (args) => { assert.equal(args.options.maxTurns, 0); return iterator; };
+  const probe = new Function("loadQuery", "resolveSdkBinaryPath", `${js}; return new Probe();`)(async () => query, () => undefined);
+  assert.deepEqual(await probe.healthCheck(), { ok: true, version: "fake" });
+  assert.equal(closed, 1, "AsyncIteratorClose calls return exactly once; no duplicate cleanup needed");
+});
+
+// G5: bind the actual provider's turn-start and interrupt closures to a fake
+// app-server. No SDK process, network request, or model invocation is possible.
+function codexTurnBoundary(client, adapter, ac, activeTurn, clock = { setTimeout, clearTimeout }) {
+  const path = resolve(here, "../../src/main/providers/codex-sdk/CodexAgentSdkProvider.ts");
+  const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);
+  let run, interrupt;
+  function visit(node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === "runTurnAndWait") run = node.initializer;
+    if (ts.isPropertyAssignment(node) && node.name.getText(source) === "interrupt" && node.initializer.getText(source).includes("ac.abort()")) interrupt = node.initializer;
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  assert.ok(run && interrupt, "actual provider lifecycle closures must exist");
+  const js = ts.transpileModule(`let turnStartPending = false; const run = ${run.getText(source)}; const interrupt = ${interrupt.getText(source)};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  return new Function("client", "adapter", "ac", "activeTurn", "threadId", "turnOverrides", "setTimeout", "clearTimeout", `${js}; return { run, interrupt };`)(
+    client, adapter, ac, activeTurn, "thread", {}, clock.setTimeout, clock.clearTimeout);
+}
+test("Codex stop during turn/start waits for the id and sends interrupt before disposal", async () => {
+  let releaseStart, end;
+  const started = new Promise(resolve => { releaseStart = resolve; });
+  const ended = new Promise(resolve => { end = resolve; });
+  const calls = [];
+  const adapter = { hasTurnEnded: false, markAborted() {}, waitTurnDone: () => ended,
+    finalizeAborted() { this.hasTurnEnded = true; end("interrupted"); } };
+  const client = {
+    request(method, args) {
+      calls.push(method);
+      if (method === "turn/start") return started;
+      assert.equal(args.turnId, "new-turn");
+      adapter.finalizeAborted();
+      return Promise.resolve({});
+    },
+    async dispose() { calls.push("dispose"); },
+  };
+  const control = codexTurnBoundary(client, adapter, new AbortController(), { threadId: "thread", turnId: null });
+  const done = control.run([]);
+  control.interrupt();
+  const disposedEarly = calls.includes("dispose");
+  releaseStart({ turn: { id: "new-turn" } });
+  assert.equal(await done, "interrupted");
+  assert.equal(disposedEarly, false, "do not destroy the transport before the start reply can identify the turn");
+  assert.deepEqual(calls, ["turn/start", "turn/interrupt"]);
+});
+
+test("Codex pending-start cancellation is bounded and clears a previous corrective turn id", async () => {
+  let rejectStart;
+  const pending = new Promise((_resolve, reject) => { rejectStart = reject; });
+  const timers = new Map();
+  let timerId = 0, disposed = 0;
+  const clock = { setTimeout(fn, ms) { assert.equal(ms, 2000); timers.set(++timerId, fn); return timerId; }, clearTimeout(id) { timers.delete(id); } };
+  const client = { request: () => pending, async dispose() { disposed++; rejectStart(new Error("closed after bounded grace")); } };
+  const activeTurn = { threadId: "thread", turnId: "old-corrective-turn" };
+  const control = codexTurnBoundary(client, { markAborted() {} }, new AbortController(), activeTurn, clock);
+  const done = control.run([]);
+  assert.equal(activeTurn.turnId, null, "an old turn id must not mask a pending new turn");
+  control.interrupt();
+  assert.equal(disposed, 0);
+  assert.equal(timers.size, 1, "a hung start must not block stop for the 120-second RPC timeout");
+  timers.values().next().value();
+  await assert.rejects(done, /bounded grace/);
+  assert.equal(disposed, 1);
+  assert.equal(timers.size, 0, "terminal paths clear the grace timer");
+});
+test("Codex cold-start stop still disposes immediately and cannot send a prompt", async () => {
+  let disposed = 0, requests = 0;
+  const client = { request() { requests++; throw new Error("must not send"); }, async dispose() { disposed++; } };
+  const control = codexTurnBoundary(client, { markAborted() {} }, new AbortController(), { threadId: null, turnId: null });
+  control.interrupt();
+  await assert.rejects(control.run([]), /aborted before turn\/start/);
+  assert.equal(disposed, 1);
+  assert.equal(requests, 0);
 });

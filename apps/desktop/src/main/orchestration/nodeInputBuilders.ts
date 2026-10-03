@@ -110,7 +110,7 @@ const commandInputBuilder: NodeInputBuilder = {
     command: {
       command: commandOf(params),
       timeoutMs: commandTimeoutOf(params),
-      ...(base.data.upstreamText.trim() || base.data.upstreamArtifacts.length > 0 || Object.keys(base.data.upstreamOutputs).length > 0
+      ...(base.data.userInput.trim() || "trigger" in base.data || base.data.upstreamText.trim() || base.data.upstreamArtifacts.length > 0 || Object.keys(base.data.upstreamOutputs).length > 0
         ? { input: base.data }
         : {}),
     },

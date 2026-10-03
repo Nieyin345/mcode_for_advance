@@ -1,3 +1,4 @@
+import { UI_LOCALE_SETTING_KEY } from "@contracts/ipc";
 import { scopedMemorySnapshot } from "@main/memory/retrieval.js";
 import { readAutomationEventChain, runWithAutomationOrigin, snapshotAutomationOrigin, withAutomationOrigin } from "./automationEventOrigin.js";
 /**
@@ -329,13 +330,38 @@ function choiceKey(runId: string, nodeId: string): string {
  */
 export interface WorkflowContinuationResult { ok: boolean; error?: string }
 
-export function resolveWorkflowChoice(args: {
+/** Reserve even the catalog-lookup window. A stop or second click while disk /
+ * plugin discovery is pending must not later launch an unowned continuation. */
+async function prepareContinuationCatalog(sessionId: string) {
+  let cancelled = false;
+  const release = (): void => {
+    if (pendingStarts.get(sessionId) === cancel) pendingStarts.delete(sessionId);
+  };
+  const cancel = (): void => {
+    if (cancelled) return;
+    cancelled = true;
+    release();
+    runtimeManager.emitExternal({ type: "turn.done", sessionId, reason: "interrupted", endedAt: Date.now() });
+  };
+  pendingStarts.set(sessionId, cancel);
+  try {
+    const catalog = await loadNodeTypes();
+    // The caller owns release across this outer await, just like startWorkflowRun.
+    return { catalog, cancelled: () => cancelled, release };
+  } catch (error) {
+    release();
+    throw error;
+  }
+}
+
+
+export async function resolveWorkflowChoice(args: {
   sessionId: string;
   runId: string;
   nodeId: string;
   edgeId: string;
   comment?: string;
-}): WorkflowContinuationResult {
+}): Promise<WorkflowContinuationResult> {
   const key = choiceKey(args.runId, args.nodeId);
   const pending = pendingChoices.get(key);
   // **会话要对得上。** `runId` 已经是全局唯一的,这一道是防"另一个对话拿着一个
@@ -375,13 +401,13 @@ export function resolveWorkflowChoice(args: {
  * 是"这张卡过期了",而界面上那句话正是这么写的。**不抛错** —— 弹一个错误框只会让
  * 用户以为自己做错了什么。
  */
-function resumeRun(args: {
+async function resumeRun(args: {
   sessionId: string;
   runId: string;
   nodeId: string;
   edgeId: string;
   comment?: string;
-}): WorkflowContinuationResult {
+}): Promise<WorkflowContinuationResult> {
   const found = resumableRun(args.sessionId, args.nodeId);
   if (found === null || found.runId !== args.runId) return { ok: false };
   // 会话可能已经被删了(存档那一行的外键是 `ON DELETE CASCADE`,但渲染端手上那张
@@ -408,7 +434,17 @@ function resumeRun(args: {
     log.warn(`workflow run ${found.runId}: resume blocked: ${error}`);
     return { ok: false, error };
   }
-  const replayError = workflowReplayError(doc, found.snapshot.inFlightNodeIds);
+  const prepared = await prepareContinuationCatalog(session.id);
+  prepared.release();
+  if (prepared.cancelled()) return { ok: false };
+  const { catalog } = prepared;
+  // Catalog loading yields: recheck ownership, graph revision and launch
+  // reservation before acknowledging a continuation (including concurrent clicks).
+  if (hasActiveRun(session.id) || SessionRepo.get(session.id)?.workflowId !== doc.id) return { ok: false };
+  const currentDoc = getWorkflow(doc.id);
+  if (!currentDoc || workflowResumeError(currentDoc, found.snapshot.workflowRevision) !== null) return { ok: false };
+  const replayError = workflowReplayError(doc, found.snapshot.inFlightNodeIds,
+    new Map(catalog.entries.map((entry) => [entry.id, entry.manifest])));
   if (replayError !== null) return { ok: false, error: replayError };
   const comment = (args.comment ?? "").trim();
   log.info(
@@ -490,13 +526,13 @@ export function launchContinuation(
  * `runs.has` 的守卫会**静静地返回 null**(见那里的注释),而调用方照样会拿到 true ——
  * 于是用户点了按钮、卡片变了、什么都没发生。所以这里**先查一次**,查到了就照实回 false。
  */
-export function resolveWorkflowRetry(args: {
+export async function resolveWorkflowRetry(args: {
   sessionId: string;
   runId: string;
   nodeId: string;
   /** 用户写的那句话。空串 = 没写(那就只重跑,不往提示词里加东西)。 */
   note?: string;
-}): WorkflowContinuationResult {
+}): Promise<WorkflowContinuationResult> {
   const session = SessionRepo.get(args.sessionId);
   if (session === undefined) return { ok: false };
   // **正有运行在跑** —— 见上面那段注释:`startWorkflowRun` 撞上这个会静静地不做事,
@@ -523,7 +559,17 @@ export function resolveWorkflowRetry(args: {
     log.warn(`workflow run ${found.runId}: retry blocked: ${error}`);
     return { ok: false, error };
   }
-  const replayError = workflowReplayError(doc, found.snapshot.inFlightNodeIds);
+  const prepared = await prepareContinuationCatalog(session.id);
+  prepared.release();
+  if (prepared.cancelled()) return { ok: false };
+  const { catalog } = prepared;
+  // Catalog loading yields: recheck ownership, graph revision and launch
+  // reservation before acknowledging a continuation (including concurrent clicks).
+  if (hasActiveRun(session.id) || SessionRepo.get(session.id)?.workflowId !== doc.id) return { ok: false };
+  const currentDoc = getWorkflow(doc.id);
+  if (!currentDoc || workflowResumeError(currentDoc, found.snapshot.workflowRevision) !== null) return { ok: false };
+  const replayError = workflowReplayError(doc, found.snapshot.inFlightNodeIds,
+    new Map(catalog.entries.map((entry) => [entry.id, entry.manifest])));
   if (replayError !== null) return { ok: false, error: replayError };
 
   /**
@@ -533,9 +579,9 @@ export function resolveWorkflowRetry(args: {
    * "有没有 note"判的话,一次普通的"从这儿往下"会被当成重试,而提示词里会多出一段
    * 「用户选择的是「再试一次」」—— 说的是他没做过的事。
    */
-  const note = found.outcome.status === "failed" ? (args.note ?? "").trim() : "";
+  const note = found.outcome?.status === "failed" ? (args.note ?? "").trim() : "";
   log.info(
-    `workflow run ${found.runId}: 从 ${args.nodeId} 重跑(${found.outcome.status}) (${args.sessionId})`,
+    `workflow run ${found.runId}: 从 ${args.nodeId} 重跑(${found.outcome?.status ?? "interrupted"}) (${args.sessionId})`,
   );
   // **不 await** —— 同 `resumeRun`:这是一次可能跑几分钟的运行,IPC handler 该立刻返回。
   launchContinuation(session, "重试", {
@@ -702,11 +748,7 @@ export async function startWorkflowRun(args: {
       log.warn(`workflow: resume blocked: ${error}`);
       return null;
     }
-    const replayError = workflowReplayError(doc, resumed.snapshot.inFlightNodeIds);
-    if (replayError !== null) {
-      log.warn(`workflow: resume blocked: ${replayError}`);
-      return null;
-    }
+
   }
   if (hasActiveRun(session.id)) {
     // 兜底:调用方(`ipc/claude.ts` / `mobileRpc.ts`)已经先查过 `hasActiveRun` 并
@@ -735,6 +777,13 @@ export async function startWorkflowRun(args: {
       const catalogs = await loadNodeTypes();
       if (cancelled) return null;
       const manifests = new Map(catalogs.entries.map((e) => [e.id, e.manifest]));
+      if (resumed) {
+        const replayError = workflowReplayError(doc, resumed.snapshot.inFlightNodeIds, manifests);
+        if (replayError !== null) {
+          log.warn(`workflow run ${resumed.runId}: resume blocked: ${replayError}`);
+          return null;
+        }
+      }
       const manifestDirs = new Map(
         catalogs.entries.flatMap((e) => e.manifestDir !== undefined ? [[e.id, e.manifestDir] as const] : []),
       );
@@ -1598,6 +1647,7 @@ export async function startWorkflowRun(args: {
     });
 
   const ports: RunPorts = {
+    locale: () => SettingRepo.get(UI_LOCALE_SETTING_KEY) === "en" ? "en" : "zh",
     buildInput: createWorkflowInputBuilder({ sessionId: session.id, runId }),
     memorySnapshot: (query) => scopedMemorySnapshot(session.projectId, query ?? prompt),
     // 清单**一次读完**再按 id 查:`loadNodeTypes()` 是刻意不缓存的(每次都要扫插件

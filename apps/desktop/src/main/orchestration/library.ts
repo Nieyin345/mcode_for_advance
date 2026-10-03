@@ -1,3 +1,4 @@
+import { UI_LOCALE_SETTING_KEY } from "@contracts/ipc";
 /**
  * 工作流库 —— **内置默认版 + 用户覆盖** 合并之后的那一层。
  *
@@ -274,7 +275,7 @@ export async function saveWorkflow(
   //  - **类型认不出来不算硬错误**(见 `@contracts/workflow` 文件头):存盘这一关走
   //    `unknownTypeSeverity: "warning"`,分享来的工作流照样能存能看。import 是另一条
   //    门(那边默认 error)—— 环、参数、引用这些**硬错误**两处都拦。
-  const report = validateWorkflowDoc(doc, { types, unknownTypeSeverity: "warning" });
+  const report = validateWorkflowDoc(doc, { types, unknownTypeSeverity: "warning", locale: SettingRepo.get(UI_LOCALE_SETTING_KEY) === "en" ? "en" : "zh" });
   if (!report.ok) {
     const first = report.errors[0];
     return { ok: false, error: first ? first.message : "校验未通过" };
@@ -492,7 +493,7 @@ export async function importWorkflowInto(
   // mcode.trigger,会把一张正确的事件自动化误判成「没有触发器」。
   // 缺失的第三方类型仍按分享语义给 warning,与 saveWorkflow 同一档。
   const types = new Map((await loadNodeTypes()).entries.map((entry) => [entry.id, entry.manifest]));
-  const parsed = parseWorkflowText(text, { types, unknownTypeSeverity: "warning" });
+  const parsed = parseWorkflowText(text, { types, unknownTypeSeverity: "warning", locale: SettingRepo.get(UI_LOCALE_SETTING_KEY) === "en" ? "en" : "zh" });
   if (!parsed.ok) {
     return { ok: false, errors: parsed.report.errors.map((e) => e.message), warnings: [] };
   }

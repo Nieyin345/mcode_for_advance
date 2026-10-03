@@ -87,6 +87,12 @@ export interface NodeTemplateScope {
 /** 一次解算的结果。失败时 `error` 是**可以直接显示给用户**的一句话。 */
 export type TemplateResult = { ok: true; text: string } | { ok: false; error: string };
 
+/** Same lexical rules as renderTemplate, including escaped literal braces. */
+export function hasNodeTemplateReferences(text: string): boolean {
+  return !text.split("\\{{").join(ESCAPED_OPEN).matchAll(REF_RE).next().done;
+}
+
+
 /** `{{ ... }}`,中间不含花括号。 */
 const REF_RE = /\{\{([^{}]*)\}\}/g;
 

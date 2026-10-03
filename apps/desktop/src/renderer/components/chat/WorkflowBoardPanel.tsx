@@ -1,3 +1,6 @@
+import { isElectron } from "@renderer/lib/platform.js";
+import { useRpc } from "@renderer/hooks/useRpc.js";
+import { boardContinuationRunId } from "@renderer/lib/workflowLive.js";
 /**
  * 右栏的**运行看板** —— 上面一张小流程图,下面一列**这一步的卡**。
  *
@@ -251,6 +254,15 @@ export function WorkflowBoardPanel() {
 
   /** 画哪张图:这次运行按的那张优先(见文件头「图长什么样是另读一次」)。 */
   const boardWorkflowId = boardWorkflowIdOf(run, workflowId);
+  // History already exposes runId; do not ship full snapshots or pretend
+  // persisted outcomes are live events merely to enable the existing retry RPC.
+  const { data: history } = useRpc(
+    () => api.runs.history({ sessionId: sessionId ?? "", limit: 1 }),
+    [sessionId, run?.runId],
+    // Mobile has no runs.history namespace yet; retain its explicit capability boundary.
+    { enabled: isElectron && !!sessionId && !run },
+  );
+  const continuationRunId = boardContinuationRunId(run, history ?? [], sessionId, boardWorkflowId);
 
   useEffect(() => {
     let cancelled = false;
@@ -403,7 +415,7 @@ export function WorkflowBoardPanel() {
 
       <FlowNodeMenu
         target={ctxNode}
-        run={run}
+        runId={continuationRunId}
         sessionId={sessionId}
         onClose={() => setCtxNode(null)}
         onOpenCard={(nodeId) => setOpenId(nodeId)}
@@ -424,27 +436,25 @@ export function WorkflowBoardPanel() {
  *
  * ## 什么时候置灰
  *
- * 只有**这次运行还在现场**的节点才带 `runId`,而 `workflow.retry` 需要它。重启之后从库
- * 里读回来的那些卡片没有 `runId`(`runs.history` 只给轻量摘要,不含每一步的产出)——
- * 那时菜单项置灰并说明原因,而不是点下去什么都不发生。
+ * 现场优先；重启后从 `runs.history` 的轻量摘要取同一会话、同一图的最新 runId。
+ * 不需要传输或伪造每步产出。没有匹配记录时置灰；节点是否可重试、快照是否完整、
+ * 图修订和副作用安全仍由已有 `workflow.retry` 后端守卫裁决，拒绝时显示原因。
  */
 function FlowNodeMenu({
   target,
-  run,
+  runId,
   sessionId,
   onClose,
   onOpenCard,
 }: {
   target: FlowContextTarget | null;
-  run: LiveRun | null;
+  runId: string | undefined;
   sessionId: string | null;
   onClose: () => void;
   onOpenCard: (nodeId: string) => void;
 }) {
   const { t } = useI18n();
   const anchor = useCursorAnchor(target);
-  const node = target && run ? run.nodes[target.nodeId] : undefined;
-  const runId = node?.runId;
   const canRun = !!target && !!sessionId && !!runId;
 
   const startFrom = (): void => {

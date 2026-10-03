@@ -541,3 +541,21 @@ export function __releaseWorkflowLiveIfIdle(): boolean {
   releaseIfIdle();
   return unsubscribe !== null;
 }
+
+
+/** Select a continuation ID without importing persisted outcomes into live state. */
+export function boardContinuationRunId(
+  run: LiveRun | null,
+  history: readonly import("@contracts/ipc").PersistedWorkflowRunLite[],
+  sessionId: string | null,
+  workflowId: string | null,
+): string | undefined {
+  if (!sessionId || !workflowId) return undefined;
+  if (run?.sessionId === sessionId && run.workflowId === workflowId) return run.runId;
+  // useRpc retains its previous data during key changes. Never reuse another
+  // session's row, or jump over its latest run to an older, different graph.
+  const latest = history.filter((row) => row.sessionId === sessionId)
+    .reduce<import("@contracts/ipc").PersistedWorkflowRunLite | undefined>(
+      (best, row) => !best || row.createdAt > best.createdAt ? row : best, undefined);
+  return latest?.workflowId === workflowId ? latest.runId : undefined;
+}

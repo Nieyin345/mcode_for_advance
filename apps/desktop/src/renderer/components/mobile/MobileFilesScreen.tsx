@@ -50,7 +50,7 @@ export function MobileFilesScreen() {
   const current = stack[stack.length - 1];
   const requestKey = JSON.stringify([project?.id, project?.path, current?.path]);
   const query = useRpc(async () => {
-    if (!project || !current) throw new Error("No project directory selected");
+    if (!project || !current) throw new Error(t("browser.selectProjectFirst"));
     const dirPath = current.path.slice(project.path.length).replace(/^[\\/]/, "");
     const res = await api.file.listDir({ projectPath: project.path, dirPath });
     return { key: requestKey, entries: res.entries };

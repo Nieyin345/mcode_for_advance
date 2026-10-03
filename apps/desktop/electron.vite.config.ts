@@ -155,6 +155,18 @@ function copyPdfjsAssets(): Plugin {
   };
 }
 
+// electron-vite 3 scans rendered text for the "last import", including words in
+// translation strings. Supply its Node 20.11+ shim as a Rollup banner so it sees
+// the complete shim and does not inject declarations into a string literal.
+// The supported Electron runtime has import.meta.filename/dirname. Keep in sync with electron-vite.
+const mainEsmBanner = `
+// -- CommonJS Shims --
+import __cjs_mod__ from 'node:module';
+const __filename = import.meta.filename;
+const __dirname = import.meta.dirname;
+const require = __cjs_mod__.createRequire(import.meta.url);
+`;
+
 export default defineConfig({
   main: {
     // Providers resolve both Zod 3 and Zod 4 peers. Externalizing "zod/v4"
@@ -170,12 +182,15 @@ export default defineConfig({
         // node-pty is a native addon — must load from node_modules at runtime
         // (never bundle the .node binary into the main chunk).
         external: ["electron", "sql.js", /^sql\.js\//, "node-pty"],
+        output: { banner: mainEsmBanner },
       },
     },
     resolve: {
       alias: {
         "@contracts": resolve("../../packages/contracts/src"),
         "@main": resolve("src/main"),
+        // Only the pure translation core is shared with main; never externalize this source alias.
+        "@renderer/lib/i18n/core.js": resolve("src/renderer/lib/i18n/core.ts"),
       },
     },
   },
