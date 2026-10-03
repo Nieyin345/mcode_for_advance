@@ -44,6 +44,7 @@ import {
 import { NODE_MCP_PARAM_KEY } from "@contracts/nodeType";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { ScopeTabs, useManagedProject } from "./ScopeTabs.js";
+import { McpMarketView } from "./McpMarketView.js";
 import { ProjectMcpView } from "./ProjectMcpView.js";
 import { SkillNodesView } from "./SkillNodesView.js";
 import {
@@ -256,7 +257,11 @@ export function McpPanel() {
   const [importOpen, setImportOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<McpServerEntry | null>(null);
   // 三个 tab(总库 / 项目 / 节点)+ 总库的搜索词。
-  const [view, setView] = useState<"library" | "project" | "nodes">("library");
+  const [view, setView] = useState<"library" | "project" | "nodes" | "market">("library");
+  const [marketSeen, setMarketSeen] = useState(false);
+  useEffect(() => {
+    if (view === "market") setMarketSeen(true);
+  }, [view]);
   const [query, setQuery] = useState("");
   const { project, projects, setManagedProjectId } = useManagedProject();
   // 新增 / 编辑对话框的目标:null = 总库(用户级);非空 = 这个项目的 .mcp.json。
@@ -392,6 +397,7 @@ export function McpPanel() {
   const matches = (s: McpServerEntry): boolean =>
     !q || s.name.toLowerCase().includes(q) || s.detail.toLowerCase().includes(q);
   const allUserServers = servers.filter((s) => s.scope === "user");
+  const userServerNames = new Set(allUserServers.map((s) => s.name));
   const userServers = allUserServers.filter(matches);
   const pluginServers = servers.filter((s) => s.scope === "plugin" && matches(s));
   const builtin = servers.find((s) => s.scope === "builtin");
@@ -414,18 +420,21 @@ export function McpPanel() {
       <PanelHeader
         title={t("settings.mcp.title")}
         icon={McpIcon}
+        action={
+          <ScopeTabs
+            items={[
+              { id: "library", label: t("settings.skills.tabLibrary"), count: allUserServers.length },
+              { id: "project", label: t("settings.skills.tabProject") },
+              { id: "nodes", label: t("settings.skills.tabNodes") },
+              { id: "market", label: t("settings.market.tab") },
+            ]}
+            value={view}
+            onChange={setView}
+          />
+        }
       />
 
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <ScopeTabs
-          items={[
-            { id: "library", label: t("settings.skills.tabLibrary"), count: allUserServers.length },
-            { id: "project", label: t("settings.skills.tabProject") },
-            { id: "nodes", label: t("settings.skills.tabNodes") },
-          ]}
-          value={view}
-          onChange={setView}
-        />
+      <div className={cn("flex flex-wrap items-center justify-end gap-2", view === "library" ? "" : "hidden")}>
         {view === "library" && (
           <input
             type="search"
@@ -480,6 +489,15 @@ export function McpPanel() {
           icon={IconServer}
           onJumpToWorkflow={() => useSessionStore.getState().setSettingsOpen(true, "workflows")}
           onJumpToProfile={() => useSessionStore.getState().setSettingsOpen(true, "workflows")}
+        />
+      )}
+
+      {marketSeen && (
+        <McpMarketView
+          className={view === "market" ? "" : "hidden"}
+          visible={view === "market"}
+          installedNames={userServerNames}
+          onInstalled={() => void load()}
         />
       )}
 

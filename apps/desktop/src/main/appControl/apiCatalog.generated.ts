@@ -1221,6 +1221,34 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ servers: McpServerEntry[]; }"
  },
  {
+  "method": "mcp.marketSearch",
+  "channel": "mcp:marketSearch",
+  "doc": "Search one registry (network); entries carry ready install options.",
+  "input": "{ source: string; query?: string | undefined; cursor?: string | undefined }",
+  "output": "McpMarketSearchResult"
+ },
+ {
+  "method": "mcp.marketSourceAdd",
+  "channel": "mcp:marketSourceAdd",
+  "doc": "",
+  "input": "{ url: string; label?: string | undefined }",
+  "output": "{ ok: boolean; error?: string; id?: string; }"
+ },
+ {
+  "method": "mcp.marketSourceRemove",
+  "channel": "mcp:marketSourceRemove",
+  "doc": "",
+  "input": "{ id: string }",
+  "output": "{ ok: boolean; error?: string; }"
+ },
+ {
+  "method": "mcp.marketSources",
+  "channel": "mcp:marketSources",
+  "doc": "MCP market: registry sources (built-in official registry + user added).",
+  "input": "{}",
+  "output": "{ sources: McpMarketSource[]; }"
+ },
+ {
   "method": "mcp.projectCopy",
   "channel": "mcp:projectCopy",
   "doc": "Copy user-scope servers into the project file (existing names skipped).",
@@ -2234,6 +2262,41 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "Discover skills for the composer `/` menu. Scans the user-global `~/.mcode/skills/` universal library and parses each SKILL.md's frontmatter. Always resolves (degrades to an empty list on any IO error). `projectPath` is accepted but ignored (single-scope sinc…",
   "input": "{ projectPath?: string | undefined }",
   "output": "{ skills: SkillInfo[]; }"
+ },
+ {
+  "method": "skills.marketAdd",
+  "channel": "skills:marketAdd",
+  "doc": "Add a skill market (git URL / owner/repo / local directory) — fetches it.",
+  "input": "{ kind: 'local' | 'git'; ref: string // GitHub `owner/repo`, any git URL, or an absolute local directory.; name?: string | undefined }",
+  "output": "{ ok: boolean; error?: string; name?: string; }"
+ },
+ {
+  "method": "skills.marketInstall",
+  "channel": "skills:marketInstall",
+  "doc": "Copy market skills into the universal library (existing names skipped).",
+  "input": "{ names: string[]; market: string }",
+  "output": "SkillsMarketInstallResult"
+ },
+ {
+  "method": "skills.marketList",
+  "channel": "skills:marketList",
+  "doc": "Skill market: catalogs (built-in + user added) with their entries.",
+  "input": "{}",
+  "output": "{ markets: SkillMarketState[]; }"
+ },
+ {
+  "method": "skills.marketRefresh",
+  "channel": "skills:marketRefresh",
+  "doc": "Re-fetch one market's catalog (network).",
+  "input": "{ name: string }",
+  "output": "{ ok: boolean; error?: string; }"
+ },
+ {
+  "method": "skills.marketRemove",
+  "channel": "skills:marketRemove",
+  "doc": "Remove a user-added skill market (built-ins cannot be removed).",
+  "input": "{ name: string }",
+  "output": "{ ok: boolean; error?: string; }"
  },
  {
   "method": "skills.presetsDelete",

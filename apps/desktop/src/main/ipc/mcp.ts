@@ -33,6 +33,10 @@ import {
   McpProjectRemoveSchema,
   McpProjectTrustSchema,
   McpProjectCopySchema,
+  McpMarketSourcesSchema,
+  McpMarketSourceAddSchema,
+  McpMarketSourceRemoveSchema,
+  McpMarketSearchSchema,
   MCP_RESERVED_NAME,
   type McpScope,
   type McpServerConfig,
@@ -47,6 +51,12 @@ import {
   trustProjectMcp,
 } from "@main/lib/projectMcp.js";
 import { maskMcpConfig, mergeMcpSecretEdits } from "@main/lib/mcpSecretEdit.js";
+import {
+  addMcpMarketSource,
+  listMcpMarketSources,
+  removeMcpMarketSource,
+  searchMcpMarket,
+} from "@main/lib/mcpMarket.js";
 import { MCODE_CONFIG_DIR } from "@main/providers/claude-sdk/customEnv.js";
 import { resolveSdkBinaryPath } from "@main/providers/claude-sdk/sdkBinaryPath.js";
 import {
@@ -939,6 +949,16 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       return { copied: [], skipped: [], failed: input.names.map((name) => ({ name, reason: (err as Error).message })) };
     }
   }));
+
+  // ── MCP market (「市场」tab): registry API sources, see lib/mcpMarket.ts.
+  // Read-only towards the config — installing goes through MCP_SAVE.
+  ipcMain.handle(IPC.MCP_MARKET_SOURCES, (_evt, raw) => {
+    McpMarketSourcesSchema.parse(raw ?? {});
+    return { sources: listMcpMarketSources() };
+  });
+  ipcMain.handle(IPC.MCP_MARKET_SOURCE_ADD, (_evt, raw) => addMcpMarketSource(McpMarketSourceAddSchema.parse(raw)));
+  ipcMain.handle(IPC.MCP_MARKET_SOURCE_REMOVE, (_evt, raw) => removeMcpMarketSource(McpMarketSourceRemoveSchema.parse(raw).id));
+  ipcMain.handle(IPC.MCP_MARKET_SEARCH, (_evt, raw) => searchMcpMarket(McpMarketSearchSchema.parse(raw)));
 
   // Warm the truth-layer migration so the first panel open / codex turn never
   // pays for it (idempotent; also pins the derived views at boot).

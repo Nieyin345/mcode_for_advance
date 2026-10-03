@@ -355,3 +355,138 @@ export interface McpProjectCopyResult {
   skipped: string[];
   failed: Array<{ name: string; reason: string }>;
 }
+
+/* ── MCP market (settings panel, 「市场」tab) ──
+ *  Sources are MCP registries speaking the official registry API
+ *  (`GET <base>/v0.1/servers?search=&cursor=&version=latest`). The official
+ *  registry ships built in; users can add their own (company sub-registries,
+ *  mirrors). Entries are fetched live (the official registry holds thousands
+ *  of servers — no local catalog); each entry carries ready-made install
+ *  options (npm → npx, PyPI → uvx, OCI → docker, remote http/sse) plus the
+ *  inputs the user has to fill in (env vars, headers, required arguments).
+ *  Installing = `mcp.save` of the built config into the user scope. */
+
+export interface McpMarketSource {
+  id: string;
+  label: string;
+  /** Registry base URL (no trailing slash, no `/v0.1`). */
+  url: string;
+  builtin: boolean;
+}
+
+export const McpMarketSourcesSchema = z.object({});
+export type McpMarketSourcesInput = z.infer<typeof McpMarketSourcesSchema>;
+
+export const McpMarketSourceAddSchema = z.object({
+  url: z.string().min(1).max(500),
+  label: z.string().max(80).optional(),
+});
+export type McpMarketSourceAddInput = z.infer<typeof McpMarketSourceAddSchema>;
+
+export const McpMarketSourceRemoveSchema = z.object({ id: z.string().min(1).max(200) });
+export type McpMarketSourceRemoveInput = z.infer<typeof McpMarketSourceRemoveSchema>;
+
+export const McpMarketSearchSchema = z.object({
+  source: z.string().min(1).max(200),
+  query: z.string().max(200).optional(),
+  cursor: z.string().max(500).optional(),
+});
+export type McpMarketSearchInput = z.infer<typeof McpMarketSearchSchema>;
+
+/** A value the user supplies before installing. */
+export interface McpMarketInput {
+  /** Unique within the option. */
+  key: string;
+  kind: "env" | "header" | "arg";
+  /** Env var / header name, or the flag of a named argument ("" for positional). */
+  name: string;
+  description?: string;
+  required: boolean;
+  secret: boolean;
+  /** Pre-filled value (registry default / template such as "Bearer {token}"). */
+  default?: string;
+}
+
+/** One argv element of a stdio option: a literal, or a user input
+ *  (`flag` = named argument, emitted as `flag value`). */
+export type McpMarketArg = { value: string } | { input: string; flag?: string };
+
+export interface McpMarketOption {
+  id: string;
+  kind: "stdio" | "http" | "sse";
+  /** "npm · npx", "PyPI · uvx", "Docker", "远程 HTTP" … */
+  label: string;
+  command?: string;
+  args?: McpMarketArg[];
+  url?: string;
+  inputs: McpMarketInput[];
+}
+
+export interface McpMarketEntry {
+  /** Registry name, e.g. `io.github.owner/server`. */
+  id: string;
+  title: string;
+  description: string;
+  version: string;
+  repositoryUrl?: string;
+  websiteUrl?: string;
+  /** A valid local server name derived from the registry name. */
+  suggestedName: string;
+  options: McpMarketOption[];
+}
+
+export interface McpMarketSearchResult {
+  ok: boolean;
+  error?: string;
+  entries: McpMarketEntry[];
+  nextCursor?: string;
+}
+
+/** Build the server config for one option from the user's values. Pure —
+ *  shared by the install dialog and the smoke. `missing` lists required
+ *  inputs left empty (config is then undefined). */
+export function buildMcpMarketConfig(
+  option: McpMarketOption,
+  values: Readonly<Record<string, string>>,
+): { config?: McpServerConfig; missing: string[] } {
+  const val = (key: string): string => (values[key] ?? "").trim();
+  const missing = option.inputs.filter((i) => i.required && !val(i.key)).map((i) => i.key);
+  if (missing.length > 0) return { missing };
+  const env: Record<string, string> = {};
+  const headers: Record<string, string> = {};
+  for (const input of option.inputs) {
+    const v = val(input.key);
+    if (!v) continue;
+    if (input.kind === "env") env[input.name] = v;
+    else if (input.kind === "header") headers[input.name] = v;
+  }
+  if (option.kind === "stdio") {
+    const args: string[] = [];
+    for (const a of option.args ?? []) {
+      if ("value" in a) {
+        args.push(a.value);
+        continue;
+      }
+      const v = val(a.input);
+      if (!v) continue;
+      if (a.flag) args.push(a.flag);
+      args.push(v);
+    }
+    return {
+      missing,
+      config: {
+        command: option.command ?? "",
+        ...(args.length ? { args } : {}),
+        ...(Object.keys(env).length ? { env } : {}),
+      },
+    };
+  }
+  return {
+    missing,
+    config: {
+      type: option.kind,
+      url: option.url ?? "",
+      ...(Object.keys(headers).length ? { headers } : {}),
+    },
+  };
+}

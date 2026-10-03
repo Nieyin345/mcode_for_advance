@@ -52,9 +52,21 @@ import {
   SkillsPresetSaveSchema,
   SkillsPresetDeleteSchema,
   SkillsProjectOverviewSchema,
+  SkillsMarketListSchema,
+  SkillsMarketAddSchema,
+  SkillsMarketNameSchema,
+  SkillsMarketInstallSchema,
 } from "@contracts/ipc";
 import type { SkillInfo, SkillSource, ExternalSkillInfo, SkillTool, ReadOnlySkillSource, SkillEngineState, SkillBundle, SkillsImportGithubResult, SkillsCopyToProjectResult, SkillPreset, ProjectSkillRow, SkillsProjectOverviewResult } from "@contracts/ipc";
 import { log } from "@main/lib/logger.js";
+import {
+  addSkillMarket,
+  installSkillsFromMarket,
+  listSkillMarkets,
+  refreshSkillMarket,
+  removeSkillMarket,
+  skillMarketBundle,
+} from "@main/lib/skillMarket.js";
 import { getPluginSkillSources } from "@main/plugins/pluginManager.js";
 import {
   defaultSkillsRoot,
@@ -1308,5 +1320,24 @@ async function listSkillDirNames(root: string): Promise<string[] | null> {
   ipcMain.handle(IPC.SKILLS_IMPORT_GITHUB, async (_evt, raw) => {
     const input = SkillsImportGithubSchema.parse(raw);
     return importGithubPackage(input);
+  });
+
+  // ── Skill market (「市场」tab): catalog repos of skills, see lib/skillMarket.ts ──
+  ipcMain.handle(IPC.SKILLS_MARKET_LIST, async (_evt, raw) => {
+    SkillsMarketListSchema.parse(raw ?? {});
+    return { markets: await listSkillMarkets() };
+  });
+  ipcMain.handle(IPC.SKILLS_MARKET_ADD, async (_evt, raw) => addSkillMarket(SkillsMarketAddSchema.parse(raw)));
+  ipcMain.handle(IPC.SKILLS_MARKET_REMOVE, async (_evt, raw) => removeSkillMarket(SkillsMarketNameSchema.parse(raw).name));
+  ipcMain.handle(IPC.SKILLS_MARKET_REFRESH, async (_evt, raw) => refreshSkillMarket(SkillsMarketNameSchema.parse(raw).name));
+  ipcMain.handle(IPC.SKILLS_MARKET_INSTALL, async (_evt, raw) => {
+    const input = SkillsMarketInstallSchema.parse(raw);
+    const res = await installSkillsFromMarket(input.market, input.names);
+    const bundle = skillMarketBundle(input.market);
+    if (bundle && res.imported.length > 0) {
+      await upsertGithubBundle(resolveSkillRoot(), bundle.id, bundle.label, bundle.source, res.imported);
+    }
+    if (res.imported.length > 0) log.info(`[skills] market ${input.market}: ${res.imported.length} installed`);
+    return res;
   });
 }

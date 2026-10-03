@@ -23,7 +23,7 @@ const stubs = {
   '@renderer/hooks/useSuppressBrowserView.js': 'export const useSuppressBrowserView=()=>{};',
   '@renderer/stores/sessionStore.js': "import {useSyncExternalStore} from 'react';export const useSessionStore=fn=>fn(useSyncExternalStore(window.labSubscribe,()=>window.labState));useSessionStore.getState=()=>window.labState;",
   '@renderer/stores/toastStore.js': 'export const useToastStore={getState:()=>({push:message=>window.labToasts.push(message)})};',
-  '@renderer/components/ui/index.js': ['button', 'dialog', 'empty-state', 'error-note', 'field', 'spinner', 'confirm-dialog', 'select', 'info-hint'].map(n => `export * from ${JSON.stringify(join(root, 'components/ui', n + '.tsx'))};`).join('\n'),
+  '@renderer/components/ui/index.js': ['button', 'dialog', 'empty-state', 'error-note', 'field', 'spinner', 'confirm-dialog', 'select', 'info-hint', 'card', 'input'].map(n => `export * from ${JSON.stringify(join(root, 'components/ui', n + '.tsx'))};`).join('\n'),
 };
 await esbuild.build({
   entryPoints: [join(source, 'main.jsx')], bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic',

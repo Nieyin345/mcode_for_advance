@@ -50,8 +50,9 @@ import type { BrowserCreateInput, BrowserCreateResult, BrowserLoadUrlInput, Brow
 import type { SkillsListInput, SkillInfo, SkillsReadInput, SkillsSaveInput, SkillsDeleteInput, SkillsEnginesSetInput, SkillEngineState, SkillBundle, SkillsBundlesInput, SkillsEnginesSetBulkInput, SkillsScanSourcesInput, ExternalSkillInfo, SkillsImportInput, SkillsImportGithubInput, SkillsImportGithubResult, SkillsCopyToProjectInput, SkillsCopyToProjectResult,
   SkillPreset, SkillsPresetSaveInput, SkillsPresetDeleteInput,
   SkillsProjectOverviewInput, SkillsProjectOverviewResult,
-  ProviderInfo, OutputStyleListInput, OutputStyleEntry } from "./skills.js";
-import type { McpListInput, McpServerEntry, McpToggleInput, McpAuthorizeInput, McpUnauthorizeInput, McpSaveInput, McpRemoveInput, McpScanImportInput, McpImportSource, McpImportInput, McpEnginesSetInput, McpEngineState, McpProjectListInput, McpProjectListResult, McpProjectSaveInput, McpProjectRemoveInput, McpProjectTrustInput, McpProjectCopyInput, McpProjectCopyResult } from "./mcp.js";
+  ProviderInfo, OutputStyleListInput, OutputStyleEntry,
+  SkillMarketState, SkillsMarketListInput, SkillsMarketAddInput, SkillsMarketNameInput, SkillsMarketInstallInput, SkillsMarketInstallResult } from "./skills.js";
+import type { McpListInput, McpServerEntry, McpToggleInput, McpAuthorizeInput, McpUnauthorizeInput, McpSaveInput, McpRemoveInput, McpScanImportInput, McpImportSource, McpImportInput, McpEnginesSetInput, McpEngineState, McpProjectListInput, McpProjectListResult, McpProjectSaveInput, McpProjectRemoveInput, McpProjectTrustInput, McpProjectCopyInput, McpProjectCopyResult, McpMarketSource, McpMarketSourcesInput, McpMarketSourceAddInput, McpMarketSourceRemoveInput, McpMarketSearchInput, McpMarketSearchResult } from "./mcp.js";
 import type { ContextGetInput, ContextSaveInput, ToolsUsageGetInput, ToolsUsageResult } from "./context.js";
 import type { UsageStatsInput, UsageStatsResult } from "./usage.js";
 import type { LspLanguageState, LspInstallInput, LspOpResult, LspInstallFromFileInput, LspUninstallInput, LspToggleInput, LspSetPathInput, LspHealthCheckInput, LspPrewarmInput, LspRestartInput, LspOpenDocInput, LspCloseDocInput, LspDidChangeInput, LspDidSaveInput, LspRequestInput, LspRequestResult } from "./lsp.js";
@@ -535,6 +536,16 @@ export interface RpcMap {
   "skills.importGithub": (
     input: SkillsImportGithubInput,
   ) => Promise<SkillsImportGithubResult>;
+  /** Skill market: catalogs (built-in + user added) with their entries. */
+  "skills.marketList": (input: SkillsMarketListInput) => Promise<{ markets: SkillMarketState[] }>;
+  /** Add a skill market (git URL / owner/repo / local directory) — fetches it. */
+  "skills.marketAdd": (input: SkillsMarketAddInput) => Promise<{ ok: boolean; error?: string; name?: string }>;
+  /** Remove a user-added skill market (built-ins cannot be removed). */
+  "skills.marketRemove": (input: SkillsMarketNameInput) => Promise<{ ok: boolean; error?: string }>;
+  /** Re-fetch one market's catalog (network). */
+  "skills.marketRefresh": (input: SkillsMarketNameInput) => Promise<{ ok: boolean; error?: string }>;
+  /** Copy market skills into the universal library (existing names skipped). */
+  "skills.marketInstall": (input: SkillsMarketInstallInput) => Promise<SkillsMarketInstallResult>;
   // MCP management (settings panel)
   /** List all MCP servers across the three sources (user config file, project
    *  .mcp.json, built-in mcode-browser) with their enabled state. */
@@ -579,6 +590,12 @@ export interface RpcMap {
   "mcp.projectTrust": (input: McpProjectTrustInput) => Promise<{ ok: boolean; error?: string }>;
   /** Copy user-scope servers into the project file (existing names skipped). */
   "mcp.projectCopy": (input: McpProjectCopyInput) => Promise<McpProjectCopyResult>;
+  /** MCP market: registry sources (built-in official registry + user added). */
+  "mcp.marketSources": (input: McpMarketSourcesInput) => Promise<{ sources: McpMarketSource[] }>;
+  "mcp.marketSourceAdd": (input: McpMarketSourceAddInput) => Promise<{ ok: boolean; error?: string; id?: string }>;
+  "mcp.marketSourceRemove": (input: McpMarketSourceRemoveInput) => Promise<{ ok: boolean; error?: string }>;
+  /** Search one registry (network); entries carry ready install options. */
+  "mcp.marketSearch": (input: McpMarketSearchInput) => Promise<McpMarketSearchResult>;
   // Context hosting (settings panel): global instructions + tool usage
   /** Read the global instructions (single source of truth file). Empty string
    *  = never configured. */
@@ -1576,6 +1593,12 @@ export const IPC = {
   SKILLS_IMPORT: "skills:import",
   // Import a whole skill package from a GitHub repo URL (one repo = one bundle)
   SKILLS_IMPORT_GITHUB: "skills:importGithub",
+  // Skill market (catalog repos of skills)
+  SKILLS_MARKET_LIST: "skills:marketList",
+  SKILLS_MARKET_ADD: "skills:marketAdd",
+  SKILLS_MARKET_REMOVE: "skills:marketRemove",
+  SKILLS_MARKET_REFRESH: "skills:marketRefresh",
+  SKILLS_MARKET_INSTALL: "skills:marketInstall",
   // MCP management (settings panel): list / toggle / add / remove / import
   MCP_LIST: "mcp:list",
   MCP_TOGGLE: "mcp:toggle",
@@ -1592,6 +1615,11 @@ export const IPC = {
   MCP_PROJECT_REMOVE: "mcp:projectRemove",
   MCP_PROJECT_TRUST: "mcp:projectTrust",
   MCP_PROJECT_COPY: "mcp:projectCopy",
+  // MCP market (registry API sources)
+  MCP_MARKET_SOURCES: "mcp:marketSources",
+  MCP_MARKET_SOURCE_ADD: "mcp:marketSourceAdd",
+  MCP_MARKET_SOURCE_REMOVE: "mcp:marketSourceRemove",
+  MCP_MARKET_SEARCH: "mcp:marketSearch",
   // Context hosting (settings panel): global instructions / tool usage
   CONTEXT_GET: "context:get",
   CONTEXT_SAVE: "context:save",

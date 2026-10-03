@@ -76,7 +76,7 @@ import {
 } from "@renderer/components/ui/index.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { NODE_PLUGINS_PARAM_KEY } from "@contracts/nodeType";
-import { useManagedProject } from "./ScopeTabs.js";
+import { ScopeTabs, useManagedProject } from "./ScopeTabs.js";
 import { ProjectPluginsView } from "./ProjectPluginsView.js";
 import { SkillNodesView } from "./SkillNodesView.js";
 import type {
@@ -650,11 +650,8 @@ export function PluginsPanel() {
 
 /* ─────────────────── panel tabs ─────────────────── */
 
-/** The 已安装 / 插件市场 switch, in the header's right-hand action slot — the
- *  same treatment the usage panel gives its range presets (a row of small
- *  buttons, active = primary), because these two are fixed, mutually exclusive
- *  views of one page. Each label carries its count so "how much is in there"
- *  never needs a visit. */
+/** The 总库 / 项目 / 节点 / 市场 switch in the header's right-hand action slot.
+ *  Each label carries its count so "how much is in there" never needs a visit. */
 function PanelTabs({
   tab,
   onChange,
@@ -667,38 +664,18 @@ function PanelTabs({
   marketCount: number;
 }) {
   const { t } = useI18n();
-  const items: Array<{ id: TabId; label: string; count?: number }> = [
-    { id: "installed", label: t("settings.skills.tabLibrary"), count: installedCount },
-    { id: "project", label: t("settings.skills.tabProject") },
-    { id: "nodes", label: t("settings.skills.tabNodes") },
-    { id: "market", label: t("settings.plugins.marketplaceSection"), count: marketCount },
-  ];
-
+  // Same tab strip as the Skills / MCP panels (总库 / 项目 / 节点 / 市场).
   return (
-    <div className="flex items-center gap-1">
-      {items.map((item) => {
-        const isActive = item.id === tab;
-        return (
-          <Button
-            key={item.id}
-            size="sm"
-            variant={isActive ? "primary" : "secondary"}
-            className="gap-1.5"
-            aria-pressed={isActive}
-            onClick={() => onChange(item.id)}
-          >
-            {item.label}
-            {item.count !== undefined && (
-              <span
-                className={cn("tabular-nums", isActive ? "opacity-80" : "text-content-subtle")}
-              >
-                {item.count}
-              </span>
-            )}
-          </Button>
-        );
-      })}
-    </div>
+    <ScopeTabs
+      items={[
+        { id: "installed", label: t("settings.skills.tabLibrary"), count: installedCount },
+        { id: "project", label: t("settings.skills.tabProject") },
+        { id: "nodes", label: t("settings.skills.tabNodes") },
+        { id: "market", label: t("settings.market.tab"), count: marketCount },
+      ]}
+      value={tab}
+      onChange={onChange}
+    />
   );
 }
 

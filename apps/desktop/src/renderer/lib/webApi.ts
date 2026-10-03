@@ -645,6 +645,12 @@ const skills: Api["skills"] = {
   scanSources: () => webUnsupported("skills.scanSources"),
   import: () => webUnsupported("skills.import"),
   importGithub: () => webUnsupported("skills.importGithub"),
+  // 技能市场同属桌面设置页(拉仓库、写总库)。
+  marketList: () => webUnsupported("skills.marketList"),
+  marketAdd: () => webUnsupported("skills.marketAdd"),
+  marketRemove: () => webUnsupported("skills.marketRemove"),
+  marketRefresh: () => webUnsupported("skills.marketRefresh"),
+  marketInstall: () => webUnsupported("skills.marketInstall"),
 };
 
 const file: Api["file"] = {

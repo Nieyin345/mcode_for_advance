@@ -41,6 +41,8 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, ConfirmDialog, Dialog, EmptyState, ErrorNote, Field, InfoHint, LoadingNote } from "@renderer/components/ui/index.js";
 import { ListPane } from "./ListPane.js";
 import { PanelHeader } from "./PanelHeader.js";
+import { ScopeTabs } from "./ScopeTabs.js";
+import { SkillMarketView } from "./SkillMarketView.js";
 import { ProjectSkillsView } from "./ProjectSkillsView.js";
 import { SkillNodesView } from "./SkillNodesView.js";
 import { SkillPresetsView } from "./SkillPresetsView.js";
@@ -220,7 +222,14 @@ export function SkillsPanel() {
   }, [managedProjectId, project?.id]);
 
   // ── 三个 tab ── 总库 / 项目 / 节点。形状照 `WorkflowsPanel` 那个段控。
-  const [view, setView] = useState<"library" | "project" | "nodes">("library");
+  const [view, setView] = useState<"library" | "project" | "nodes" | "market">("library");
+  // The market pane mounts on first visit and then stays (search text, the
+  // fetched catalogs and the active source survive tab switches).
+  const [marketSeen, setMarketSeen] = useState(false);
+  const [marketCount, setMarketCount] = useState(0);
+  useEffect(() => {
+    if (view === "market") setMarketSeen(true);
+  }, [view]);
   /** 总库那一栏勾选的技能名 —— 「复制到项目」的源。跨 tab 保留（用户在总库勾完
    *  切到项目 tab 按按钮是**预期用法**，切一下就把勾清掉会让那条路走不通）。 */
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
@@ -771,6 +780,18 @@ export function SkillsPanel() {
       <PanelHeader
         className="mb-3"
         title="Skills"
+        action={
+          <ScopeTabs
+            items={[
+              { id: "library", label: t("settings.skills.tabLibrary"), count: panelSkills.length },
+              { id: "project", label: t("settings.skills.tabProject"), count: projectSkills.length },
+              { id: "nodes", label: t("settings.skills.tabNodes") },
+              { id: "market", label: t("settings.market.tab"), count: marketCount },
+            ]}
+            value={view}
+            onChange={setView}
+          />
+        }
       />
 
       {library.error && (
@@ -787,43 +808,18 @@ export function SkillsPanel() {
         <ErrorNote className="mb-3">{error}</ErrorNote>
       )}
 
-      {/* 三个 tab,形状照 `WorkflowsPanel`:段控 + `role="tabpanel"`。
-          ⚠️ 面板用 `hidden` **类**藏,不用 `hidden` **属性** —— 那个 div 同时带
-          `flex`,而 preflight 的 `[hidden]{display:none}` 与 `.flex` 同特异性又排在
-          utilities 之前,属性会输、两块一起显示(仓库既有做法见 `PluginsPanel`)。 */}
-      <div className="mb-3 flex gap-1" role="tablist">
-        {(["library", "project", "nodes"] as const).map((id) => {
-          const active = view === id;
-          const label =
-            id === "library"
-              ? t("settings.skills.tabLibrary")
-              : id === "project"
-                ? t("settings.skills.tabProject")
-                : t("settings.skills.tabNodes");
-          return (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              tabIndex={active ? 0 : -1}
-              onKeyDown={moveTabFocus}
-              onClick={() => setView(id)}
-              className={cn(
-                "rounded border px-2.5 py-1 text-[0.8571em] transition-colors",
-                active
-                  ? "border-accent bg-accent/10 font-medium text-accent"
-                  : "border-edge bg-surface text-content-muted hover:bg-surface-hover/60 hover:text-content",
-              )}
-            >
-              {label}
-              {id === "project" && projectSkills.length > 0 && (
-                <span className="ml-1.5 tabular-nums text-content-subtle">{projectSkills.length}</span>
-              )}
-            </button>
-          );
-        })}
-      </div>
+      {/* 四个 tab(总库 / 项目 / 节点 / 市场)在标题栏右侧,和 MCP、插件两页同一条
+          `ScopeTabs`。⚠️ 面板用 `hidden` **类**藏,不用 `hidden` **属性** —— 那个 div
+          同时带 `flex`,而 preflight 的 `[hidden]{display:none}` 与 `.flex` 同特异性又
+          排在 utilities 之前,属性会输、两块一起显示(仓库既有做法见 `PluginsPanel`)。 */}
+      {marketSeen && (
+        <SkillMarketView
+          className={cn("min-h-0 flex-1 overflow-auto pr-1", view === "market" ? "" : "hidden")}
+          visible={view === "market"}
+          onCountChange={setMarketCount}
+          onInstalled={() => void refreshAfterMutation()}
+        />
+      )}
 
       {view === "nodes" && nodeInventory.error && (
         <ErrorNote className="mb-3" action={<Button variant="ghost" onClick={() => void nodeInventory.refetch()}>{t("common.retry")}</Button>}>

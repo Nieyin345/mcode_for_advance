@@ -470,3 +470,64 @@ export interface OutputStyleEntry {
 export const OutputStyleListSchema = z.object({});
 export type OutputStyleListInput = z.infer<typeof OutputStyleListSchema>;
 
+
+/* ── Skill market (settings panel, 「市场」tab) ──
+ *  Same model as the plugin marketplaces: a market is a git repository (or a
+ *  local directory) holding skills — every directory with a SKILL.md is one
+ *  entry. Catalogs are cloned under ~/.mcode/skill-markets/<name>; installing
+ *  copies the skill directory into the universal library (~/.mcode/skills)
+ *  and files it under one bundle per market. Two catalogs ship built in
+ *  (anthropics/skills, openai/skills); they are fetched the first time the
+ *  user opens them. */
+
+export interface SkillMarketEntry {
+  market: string;
+  /** Skill name (directory name / frontmatter name). */
+  name: string;
+  description: string;
+  /** Path inside the catalog, for display ("skills/pdf"). */
+  relPath: string;
+  /** A skill with this name already exists in the universal library. */
+  installed: boolean;
+}
+
+export interface SkillMarketState {
+  name: string;
+  sourceKind: "git" | "local";
+  sourceRef: string;
+  builtin: boolean;
+  /** The catalog tree has been fetched at least once. */
+  cloned: boolean;
+  fetchedAt?: string;
+  skills: SkillMarketEntry[];
+}
+
+export const SKILL_MARKET_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+export const SkillsMarketListSchema = z.object({});
+export type SkillsMarketListInput = z.infer<typeof SkillsMarketListSchema>;
+
+export const SkillsMarketAddSchema = z.object({
+  kind: z.enum(["git", "local"]),
+  /** GitHub `owner/repo`, any git URL, or an absolute local directory. */
+  ref: z.string().min(1).max(2000),
+  name: z.string().regex(SKILL_MARKET_NAME_RE).optional(),
+});
+export type SkillsMarketAddInput = z.infer<typeof SkillsMarketAddSchema>;
+
+export const SkillsMarketNameSchema = z.object({ name: z.string().regex(SKILL_MARKET_NAME_RE) });
+export type SkillsMarketNameInput = z.infer<typeof SkillsMarketNameSchema>;
+
+export const SkillsMarketInstallSchema = z.object({
+  market: z.string().regex(SKILL_MARKET_NAME_RE),
+  names: z.array(z.string().min(1)).min(1).max(500),
+});
+export type SkillsMarketInstallInput = z.infer<typeof SkillsMarketInstallSchema>;
+
+export interface SkillsMarketInstallResult {
+  ok: boolean;
+  error?: string;
+  imported: string[];
+  skipped: string[];
+  errors: Array<{ name: string; error: string }>;
+}

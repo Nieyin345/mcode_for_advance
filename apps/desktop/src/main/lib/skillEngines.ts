@@ -173,7 +173,10 @@ export function parseSkillFrontmatter(md: string): {
   const fm = lines.slice(1, end);
 
   const out: { name?: string; description?: string; argumentHint?: string } = {};
-  for (const raw of fm) {
+  for (let i = 0; i < fm.length; i++) {
+    const raw = fm[i];
+    // Only top-level keys: indented lines belong to a block value.
+    if (/^\s/.test(raw)) continue;
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
     const m = line.match(/^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*)$/);
@@ -183,6 +186,18 @@ export function parseSkillFrontmatter(md: string): {
     let val = m[2].trim();
     if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
       val = val.slice(1, -1);
+    } else if (/^[>|][+-]?\d*$/.test(val)) {
+      // YAML block scalar (`description: >` + indented lines) — common in
+      // published skills (anthropics/skills). Folded `>` joins with spaces,
+      // literal `|` keeps the line breaks.
+      const block: string[] = [];
+      while (i + 1 < fm.length && (/^\s/.test(fm[i + 1]) || fm[i + 1].trim() === "")) {
+        block.push(fm[i + 1].trim());
+        i += 1;
+      }
+      val = val.startsWith(">")
+        ? block.join(" ").replace(/\s+/g, " ").trim()
+        : block.join("\n").trim();
     }
     if (key === "name") out.name = val;
     else if (key === "description") out.description = val;

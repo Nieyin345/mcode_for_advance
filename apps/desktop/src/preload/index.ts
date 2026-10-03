@@ -660,6 +660,16 @@ const api = {
       ipcRenderer.invoke(IPC.SKILLS_IMPORT, input)) as RpcMap["skills.import"],
     importGithub: ((input) =>
       ipcRenderer.invoke(IPC.SKILLS_IMPORT_GITHUB, input)) as RpcMap["skills.importGithub"],
+    marketList: ((input) =>
+      ipcRenderer.invoke(IPC.SKILLS_MARKET_LIST, input)) as RpcMap["skills.marketList"],
+    marketAdd: ((input) =>
+      ipcRenderer.invoke(IPC.SKILLS_MARKET_ADD, input)) as RpcMap["skills.marketAdd"],
+    marketRemove: ((input) =>
+      ipcRenderer.invoke(IPC.SKILLS_MARKET_REMOVE, input)) as RpcMap["skills.marketRemove"],
+    marketRefresh: ((input) =>
+      ipcRenderer.invoke(IPC.SKILLS_MARKET_REFRESH, input)) as RpcMap["skills.marketRefresh"],
+    marketInstall: ((input) =>
+      ipcRenderer.invoke(IPC.SKILLS_MARKET_INSTALL, input)) as RpcMap["skills.marketInstall"],
   },
 
   /** MCP server management (settings panel): list the three server sources
@@ -695,6 +705,14 @@ const api = {
       ipcRenderer.invoke(IPC.MCP_PROJECT_TRUST, input)) as RpcMap["mcp.projectTrust"],
     projectCopy: ((input) =>
       ipcRenderer.invoke(IPC.MCP_PROJECT_COPY, input)) as RpcMap["mcp.projectCopy"],
+    marketSources: ((input) =>
+      ipcRenderer.invoke(IPC.MCP_MARKET_SOURCES, input)) as RpcMap["mcp.marketSources"],
+    marketSourceAdd: ((input) =>
+      ipcRenderer.invoke(IPC.MCP_MARKET_SOURCE_ADD, input)) as RpcMap["mcp.marketSourceAdd"],
+    marketSourceRemove: ((input) =>
+      ipcRenderer.invoke(IPC.MCP_MARKET_SOURCE_REMOVE, input)) as RpcMap["mcp.marketSourceRemove"],
+    marketSearch: ((input) =>
+      ipcRenderer.invoke(IPC.MCP_MARKET_SEARCH, input)) as RpcMap["mcp.marketSearch"],
   },
 
   /** Global instructions, materialized to each engine's consume point. */
