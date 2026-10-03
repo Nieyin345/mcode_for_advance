@@ -835,6 +835,7 @@ const on: Api["on"] = {
   // **必须留这个空实现** —— `on` 是显式带类型的对象,少一个键连类型检查都过不去;
   // 而共用组件在 effect 里碰到会同步抛的 Proxy 会让 React 19 整棵卸载(见文件头)。
   toolchainEvent: () => () => {},
+  marketProgress: () => () => {}, // Desktop-only progress, like toolchain events.
   browserEvent: () => () => {},
   themeChanged: () => () => {},
   updateAvailable: () => () => {},

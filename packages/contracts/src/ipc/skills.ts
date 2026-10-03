@@ -508,6 +508,7 @@ export const SkillsMarketListSchema = z.object({});
 export type SkillsMarketListInput = z.infer<typeof SkillsMarketListSchema>;
 
 export const SkillsMarketAddSchema = z.object({
+  requestId: z.string().uuid().optional(),
   kind: z.enum(["git", "local"]),
   /** GitHub `owner/repo`, any git URL, or an absolute local directory. */
   ref: z.string().min(1).max(2000),
@@ -515,7 +516,7 @@ export const SkillsMarketAddSchema = z.object({
 });
 export type SkillsMarketAddInput = z.infer<typeof SkillsMarketAddSchema>;
 
-export const SkillsMarketNameSchema = z.object({ name: z.string().regex(SKILL_MARKET_NAME_RE) });
+export const SkillsMarketNameSchema = z.object({ requestId: z.string().uuid().optional(), name: z.string().regex(SKILL_MARKET_NAME_RE) });
 export type SkillsMarketNameInput = z.infer<typeof SkillsMarketNameSchema>;
 
 export const SkillsMarketInstallSchema = z.object({

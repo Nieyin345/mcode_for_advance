@@ -17,9 +17,9 @@
  *
  * 打开开关 = 拿到链接的人可以在本机为所欲为（**没有审批闸门**，见 `publicMcpServer.ts`
  * 文件头）。所以：警告不折叠、不藏 tooltip；沙箱目录必须让用户**明确选**（默认不是
- * "第一个项目"这种猜的）；密钥可一键换掉（唯一的拉闸手段）。
+ * "第一个项目"这种猜的）；密钥可一键换掉；总开关可关闭端点。
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PublicMcpStatus, PublicMcpTunnelConfig } from "@contracts/customModel";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
@@ -70,7 +70,7 @@ function ValueRow({
 }
 
 /**
- * **隧道那一段** —— 模式、域名、Tunnel Token、固定端口,外加「交给外面的 AI 支使」那个开关。
+ * **隧道那一段** —— 模式、域名、Tunnel Token、固定端口。
  *
  * 为什么挤在这张卡片里而不是单开一页:这几项全都是在回答同一个问题 ——「ChatGPT 该从
  * 哪个地址找到这台机器」。拆到别处,用户要在两个页面之间来回对照域名和端口才填得对。
@@ -316,14 +316,17 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
   const { t } = useI18n();
   const [status, setStatus] = useState<PublicMcpStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  const statusEpoch = useRef(0);
+  const actionPending = useRef(false);
   const [copied, setCopied] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
+    const epoch = statusEpoch.current;
     api.publicMcp
       .status()
       .then((s) => {
-        if (alive) setStatus(s);
+        if (alive && epoch === statusEpoch.current) setStatus(s);
       })
       .catch(() => {
         /* 主进程还没就绪 —— 下次进来再看 */
@@ -337,19 +340,31 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
   // `reconnecting` 同理:隧道掉线后在自动重连,不轮询的话按钮会一直转圈到重开页面。
   useEffect(() => {
     if (status?.tunnelPhase !== "starting" && status?.tunnelPhase !== "reconnecting") return;
+    let alive = true;
+    let polling = false;
     const timer = window.setInterval(() => {
-      api.publicMcp.status().then(setStatus).catch(() => {});
+      if (polling || actionPending.current) return;
+      polling = true;
+      const epoch = statusEpoch.current;
+      api.publicMcp.status().then((next) => {
+        if (alive && epoch === statusEpoch.current) setStatus(next);
+      }).catch(() => {}).finally(() => { polling = false; });
     }, 2000);
-    return () => window.clearInterval(timer);
+    return () => { alive = false; window.clearInterval(timer); };
   }, [status?.tunnelPhase]);
 
   const run = async (fn: () => Promise<PublicMcpStatus>) => {
+    if (actionPending.current) return;
+    actionPending.current = true;
+    statusEpoch.current += 1;
     setBusy(true);
     try {
       setStatus(await fn());
     } catch (err) {
       onError((err as Error).message);
+      try { setStatus(await api.publicMcp.status()); } catch { /* Keep the original operation error. */ }
     } finally {
+      actionPending.current = false;
       setBusy(false);
     }
   };
@@ -551,35 +566,10 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
             {t("settings.customModels.publicMcpHint")}
           </p>
 
-          {/* ⚠️ 委派 —— 这个开关比上面任何一项都重。措辞是**警告**,不是提示。 */}
-          <div className="mt-1.5 space-y-1 rounded border border-danger/30 bg-danger/5 p-2">
-            <div className="flex items-center justify-between gap-2">
-              <span className="flex items-center gap-1.5 text-[0.7857em] font-medium text-danger">
-                <IconAlertTriangle size={13} className="shrink-0" />
-                {t("settings.remoteControl.delegateLabel")}
-              </span>
-              <Switch
-                checked={status.agentDelegate}
-                disabled={busy}
-                onCheckedChange={(v) =>
-                  void run(() =>
-                    api.publicMcp.setTunnelConfig({
-                      // 开关搭在隧道那条 IPC 上,所以**必须把现有配置原样带回去**,
-                      // 否则一次切换会把域名和模式顺手清掉。token 留空 = 沿用。
-                      mode: status.tunnelMode,
-                      hostname: status.tunnelHostname,
-                      fixedPort: status.fixedPort,
-                      agentDelegate: v,
-                    }),
-                  )
-                }
-                label={t("settings.remoteControl.delegateLabel")}
-              />
-            </div>
-            <p className="text-[0.6428em] leading-relaxed text-danger">
-              {t("settings.remoteControl.delegateWarning")}
-            </p>
-          </div>
+          <p className="text-[0.6428em] leading-relaxed text-content-subtle">
+            {t("settings.remoteControl.basicToolsOnly")}
+          </p>
+
         </div>
       )}
 

@@ -1654,6 +1654,7 @@ export const IPC = {
   TOOLCHAIN_INSTALL: "toolchain:install",
   TOOLCHAIN_REMOVE: "toolchain:remove",
   TOOLCHAIN_EVENT: "toolchain:event",
+  MARKET_PROGRESS: "market:progress",
   // 工作流(设置 → 工作流):图形式的对话流程,取代原来写死的五个模式
   WORKFLOW_LIST: "workflow:list",
   WORKFLOW_GET: "workflow:get",

@@ -83,6 +83,7 @@ const PUSH_CHANNELS = [
   "composer:attach",
   "library:changed",
   "lsp:event",
+  "market:progress",
   "relay:event",
   "runtimes:event",
   "session:titleUpdated",
@@ -745,7 +746,7 @@ console.log("\n总注册表:registerIpcHandlers");
   // 表里有、注册表里没有 = 那一条**只能**是推送方向(主进程 → 渲染端,preload 用
   // `ipcRenderer.on` 收,主进程侧压根不该有 handler)。
   const missing = [...table].filter((c) => !registeredChannels.has(c)).sort();
-  same("表里有、注册表没有的正好是那 19 条推送渠道", missing, PUSH_CHANNELS);
+  same(`表里有、注册表没有的正好是这 ${PUSH_CHANNELS.length} 条推送渠道`, missing, PUSH_CHANNELS);
 
   // 注册表里有、表里没有 = 裸 channel 字面量。MAINT M36 把最后一条(dialog:pickFolder)
   // 补进了共享 IPC 表,从此应为空;再出现就是新的接线债(`ipc-wiring-smoke` 同步收紧)。

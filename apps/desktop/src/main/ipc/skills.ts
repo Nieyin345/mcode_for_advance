@@ -29,6 +29,7 @@
  * move. The three providers consume the same matrix at session start (claude:
  * Options.skills allowlist; pi: skillsOverride; codex: extraRoots).
  */
+import { marketProgressFor } from "@main/lib/marketProgress.js";
 import type { IpcMain } from "electron";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -1327,9 +1328,15 @@ async function listSkillDirNames(root: string): Promise<string[] | null> {
     SkillsMarketListSchema.parse(raw ?? {});
     return { markets: await listSkillMarkets() };
   });
-  ipcMain.handle(IPC.SKILLS_MARKET_ADD, async (_evt, raw) => addSkillMarket(SkillsMarketAddSchema.parse(raw)));
+  ipcMain.handle(IPC.SKILLS_MARKET_ADD, async (evt, raw) => {
+    const input = SkillsMarketAddSchema.parse(raw);
+    return addSkillMarket(input, marketProgressFor(evt, input.requestId));
+  });
   ipcMain.handle(IPC.SKILLS_MARKET_REMOVE, async (_evt, raw) => removeSkillMarket(SkillsMarketNameSchema.parse(raw).name));
-  ipcMain.handle(IPC.SKILLS_MARKET_REFRESH, async (_evt, raw) => refreshSkillMarket(SkillsMarketNameSchema.parse(raw).name));
+  ipcMain.handle(IPC.SKILLS_MARKET_REFRESH, async (evt, raw) => {
+    const input = SkillsMarketNameSchema.parse(raw);
+    return refreshSkillMarket(input.name, marketProgressFor(evt, input.requestId));
+  });
   ipcMain.handle(IPC.SKILLS_MARKET_INSTALL, async (_evt, raw) => {
     const input = SkillsMarketInstallSchema.parse(raw);
     const res = await installSkillsFromMarket(input.market, input.names);

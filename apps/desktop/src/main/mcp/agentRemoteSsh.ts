@@ -6,14 +6,14 @@
  * kill a training run, and reconnecting can re-attach to status/log files.
  */
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 // 具名导入 —— **必须**这样写。`import ssh2 from "ssh2"` + 解构 `const { Client } = ssh2`
 // 拿到的是**值**,而 `Client` 在这里也要当**类型**用(`client: Client | null`),那条路
 // 编译不过(`'Client' refers to a value, but is being used as a type`)。同仓库的
 // `relay/RelayManager.ts` 就是这么导的,照它。
-import { Client, type AnyAuthMethod, type ClientChannel, type ConnectConfig } from "ssh2";
+import { Client, type ClientChannel, type ConnectConfig } from "ssh2";
 
 const DEFAULT_KEEPALIVE_MS = 15_000;
 const DEFAULT_KEEPALIVE_COUNT = 4;
@@ -36,19 +36,15 @@ export const MAX_JOB_LOG_WAIT_MS = 55_000;
 const JOB_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 /** 包在每条 exec 前面、写到 stderr 的进程号标记 —— 超时后靠它去远端杀掉整个进程组。 */
 const EXEC_PID_MARK = "__MCODE_EXEC_PID=";
-/** Windows 自带 OpenSSH 的 ssh-agent 走这个命名管道(没有 SSH_AUTH_SOCK)。 */
-const WINDOWS_OPENSSH_AGENT_PIPE = "\\\\.\\pipe\\openssh-ssh-agent";
-/** 与系统 ssh 一样的默认私钥查找顺序(只取存在且没加口令的)。 */
-const DEFAULT_IDENTITY_FILES = ["id_ed25519", "id_ecdsa", "id_rsa"];
-
 export type RemoteConnectionState = "connecting" | "ready" | "reconnecting" | "error" | "closed";
 
 export interface RemoteConnectInput {
   ownerSessionId: string;
   host: string;
   port?: number;
-  /** 省略时取 ~/.ssh/config 里该主机的 User。 */
-  username?: string;
+  /** AI/user resolves SSH configuration before calling this transport. */
+  username: string;
+  agentPath?: string;
   password?: string;
   privateKeyPath?: string;
   passphrase?: string;
@@ -60,10 +56,7 @@ export interface RemoteConnectInput {
 interface RemoteEntry {
   id: string;
   ownerSessionId: string;
-  cfg: Required<Pick<RemoteConnectInput, "host" | "port" | "username">> & Omit<RemoteConnectInput, "ownerSessionId" | "host" | "port" | "username"> & {
-    /** ~/.ssh/config 里该主机配置的 IdentityFile(自动认证时优先于默认私钥)。 */
-    configIdentityFiles?: string[];
-  };
+  cfg: Required<Pick<RemoteConnectInput, "host" | "port" | "username">> & Omit<RemoteConnectInput, "ownerSessionId" | "host" | "port" | "username">;
   client: Client | null;
   state: RemoteConnectionState;
   intentionalClose: boolean;
@@ -171,14 +164,11 @@ export function createAgentRemoteSshManager() {
       if (entry.cfg.passphrase) cfg.passphrase = entry.cfg.passphrase;
     } else if (entry.cfg.password) {
       cfg.password = entry.cfg.password;
-      // 不少服务器只开 keyboard-interactive(PAM)不开 password —— 同一个密码答上。
-      cfg.tryKeyboard = true;
-    } else {
-      // 既没给密码也没给私钥:像系统 ssh 一样依次试 ssh-agent(Windows 是命名管道)、
-      // ~/.ssh/config 的 IdentityFile、默认私钥。原先只认 SSH_AUTH_SOCK,Windows 上
-      // 没有这个变量,于是"命令行 ssh 能连、这里认证失败"。
-      cfg.authHandler = autoAuthMethods(entry.cfg.username, entry.cfg.configIdentityFiles ?? []);
+    } else if (entry.cfg.agentPath) {
+      // An explicitly selected, already configured agent. Never stat a named pipe.
+      cfg.agent = entry.cfg.agentPath;
     }
+
     return cfg;
   };
 
@@ -204,14 +194,9 @@ export function createAgentRemoteSshManager() {
       entry.lastActivityAt = Date.now();
       settleOk();
     });
-    client.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
-      const password = entry.cfg.password ?? "";
-      finish(prompts.map(() => password));
-    });
     client.on("error", (err: Error & { level?: string }) => {
-      // ssh-agent 连不上(没开服务/管道不存在)时 ssh2 会发一个 level=agent 的 error,
-      // 然后**自己接着试下一种认证** —— 这不是连接失败,不能据此判错或重连。
-      if (err.level === "agent") return;
+      if (entry.client !== client) return;
+      // Explicit agent failure has no implicit fallback; report it instead of silently waiting.
       entry.lastError = friendlySshError(err);
       if (!ready) settleErr(err);
       if (!entry.intentionalClose && isRetryableSshError(err)) {
@@ -219,6 +204,7 @@ export function createAgentRemoteSshManager() {
         scheduleReconnect(entry);
       } else if (!entry.intentionalClose) {
         entry.state = "error";
+        if (!ready) { try { client.end(); } catch { /* best effort */ } }
       }
     });
     client.on("close", () => {
@@ -322,18 +308,21 @@ export function createAgentRemoteSshManager() {
   };
 
   const connect = async (input: RemoteConnectInput): Promise<RemoteConnectionInfo> => {
-    // 和系统 ssh 一样认 ~/.ssh/config:Host 别名 → HostName / User / Port / IdentityFile。
-    // 显式参数优先;config 读不到就当没有。
-    const sshCfg = readUserSshConfig(input.host);
-    const host = sshCfg.hostName || input.host;
-    const port = input.port ?? sshCfg.port ?? 22;
-    const username = input.username?.trim() || sshCfg.user;
-    if (!username) throw new Error("缺少 SSH 用户名：参数没给 username，~/.ssh/config 里也没有这个主机的 User");
+    const host = input.host.trim();
+    const port = input.port ?? 22;
+    const username = input.username?.trim();
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("SSH port 必须为 1..65535 的整数，请先确认连接配置");
+    if (!host || !username) throw new Error("SSH 配置不完整：请先由 AI 与用户确认实际 host、port、username；工具不会解析 SSH 配置或选择账号");
+    const credentials = [input.privateKeyPath, input.password, input.agentPath].filter(v => typeof v === "string" && v.length > 0);
+    if (credentials.length !== 1) throw new Error("SSH 认证未明确配置：请先与用户确认，并且只提供 private_key_path、agent_path 或 password 中的一种；工具不会扫描密钥、修改配置或替用户处理交互认证");
+    if (input.passphrase && !input.privateKeyPath) throw new Error("passphrase 只能与 private_key_path 一起使用");
     for (const existing of entries.values()) {
       if (
         existing.ownerSessionId === input.ownerSessionId && !existing.intentionalClose &&
         existing.state !== "error" && existing.state !== "closed" &&
-        existing.cfg.host === host && existing.cfg.port === port && existing.cfg.username === username
+        existing.cfg.host === host && existing.cfg.port === port && existing.cfg.username === username &&
+        existing.cfg.privateKeyPath === input.privateKeyPath && existing.cfg.password === input.password &&
+        existing.cfg.agentPath === input.agentPath && existing.cfg.passphrase === input.passphrase
       ) {
         try { await ensureConnected(existing); } catch { /* background reconnect owns recovery */ }
         return infoOf(existing);
@@ -342,7 +331,7 @@ export function createAgentRemoteSshManager() {
     const entry: RemoteEntry = {
       id: `ssh_${randomBytes(8).toString("hex")}`,
       ownerSessionId: input.ownerSessionId,
-      cfg: { ...input, host, port, username, configIdentityFiles: sshCfg.identityFiles },
+      cfg: { ...input, host, port, username },
       client: null,
       state: "connecting",
       intentionalClose: false,
@@ -415,7 +404,8 @@ export function createAgentRemoteSshManager() {
   }): Promise<RemoteJobLogResult> => {
     assertJobId(args.jobId);
     const cursor = Math.max(0, args.cursor ?? 0);
-    const maxBytes = Math.max(1, Math.min(args.maxBytes ?? 20_000, 60_000));
+    const maxBytes = args.maxBytes ?? 20_000;
+    if (!Number.isInteger(maxBytes) || maxBytes < 4 || maxBytes > 60_000) throw new Error("max_bytes 必须为 4..60000，至少容纳一个完整 UTF-8 字符");
     const waitMs = Math.max(0, Math.min(args.waitMs ?? 0, MAX_JOB_LOG_WAIT_MS));
     const entry = owned(args.ownerSessionId, args.connectionId);
     // exec 超时要**比等待时长更宽**:等待本身会挂满 waitMs,若 exec 超时与之相等,
@@ -627,104 +617,18 @@ function expandHome(p: string, home = homedir()): string {
   return p;
 }
 
-interface SshConfigHit {
-  hostName?: string;
-  user?: string;
-  port?: number;
-  identityFiles: string[];
-}
-
-function sshHostPatternMatches(patterns: string, alias: string): boolean {
-  let matched = false;
-  for (const raw of patterns.split(/\s+/).filter(Boolean)) {
-    const negated = raw.startsWith("!");
-    const pat = negated ? raw.slice(1) : raw;
-    const body = pat.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
-    const re = new RegExp(`^${body}$`, "i");
-    if (re.test(alias)) {
-      if (negated) return false;
-      matched = true;
-    }
-  }
-  return matched;
-}
-
-/** 极简的 ssh_config 解析:只取 HostName / User / Port / IdentityFile,首个匹配值生效
- *  (与 OpenSSH 一致),`Match` 块整体跳过。 */
-function resolveSshConfig(text: string, alias: string, home = homedir()): SshConfigHit {
-  const hit: SshConfigHit = { identityFiles: [] };
-  let active = true; // 第一个 Host 之前的全局段对所有主机生效
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) continue;
-    const m = line.match(/^(\S+?)(?:\s*=\s*|\s+)(.+)$/);
-    if (!m) continue;
-    const key = m[1].toLowerCase();
-    const value = m[2].trim().replace(/^"(.*)"$/, "$1");
-    if (key === "host") { active = sshHostPatternMatches(value, alias); continue; }
-    if (key === "match") { active = false; continue; }
-    if (!active) continue;
-    if (key === "hostname" && hit.hostName === undefined) hit.hostName = value.replace(/%h/g, alias);
-    else if (key === "user" && hit.user === undefined) hit.user = value;
-    else if (key === "port" && hit.port === undefined) {
-      const n = Number(value);
-      if (Number.isInteger(n) && n > 0 && n < 65536) hit.port = n;
-    } else if (key === "identityfile" && value.toLowerCase() !== "none") {
-      hit.identityFiles.push(expandHome(value.replace(/%d/g, home).replace(/%h/g, alias), home));
-    }
-  }
-  return hit;
-}
-
-function readUserSshConfig(alias: string): SshConfigHit {
-  try {
-    return resolveSshConfig(readFileSync(path.join(homedir(), ".ssh", "config"), "utf8"), alias);
-  } catch {
-    return { identityFiles: [] };
-  }
-}
-
-function defaultAgentPath(): string | undefined {
-  if (process.env.SSH_AUTH_SOCK) return process.env.SSH_AUTH_SOCK;
-  if (process.platform === "win32") {
-    try { if (existsSync(WINDOWS_OPENSSH_AGENT_PIPE)) return WINDOWS_OPENSSH_AGENT_PIPE; } catch { /* 当作没有 */ }
-  }
-  return undefined;
-}
-
-function autoAuthMethods(username: string, configIdentityFiles: string[]): AnyAuthMethod[] {
-  const methods: AnyAuthMethod[] = [];
-  const agent = defaultAgentPath();
-  if (agent) methods.push({ type: "agent", username, agent });
-  const sshDir = path.join(homedir(), ".ssh");
-  const files = [...configIdentityFiles, ...DEFAULT_IDENTITY_FILES.map((f) => path.join(sshDir, f))];
-  for (const file of [...new Set(files)]) {
-    let key: Buffer;
-    try { key = readFileSync(file); } catch { continue; }
-    // 加了口令又没给 passphrase 的私钥,ssh2 会自己跳过(Skipping invalid key)。
-    methods.push({ type: "publickey", username, key });
-  }
-  if (methods.length === 0) {
-    throw new Error(
-      "没有可用的 SSH 认证方式：没给 password / private_key_path，本机 ssh-agent 没开，~/.ssh 下也没有默认私钥。" +
-      "请传 private_key_path（本机私钥绝对路径）或 password",
-    );
-  }
-  return methods;
-}
-
 function isRetryableSshError(err: Error & { level?: string }): boolean {
   const msg = err.message.toLowerCase();
   if (err.level === "client-authentication") return false;
-  if (/authentication|private key|passphrase|host key|no supported authentication|没有可用的 ssh 认证方式|enoent|eacces|eperm/i.test(msg)) return false;
+  if (err.level === "agent") return false;
+  if (/authentication|private key|passphrase|host key|no supported authentication|认证未明确配置|配置不完整|enoent|eacces|eperm/i.test(msg)) return false;
   return true;
 }
 
 function friendlySshError(err: Error): string {
   const msg = err.message;
   if (/authentication|all configured authentication/i.test(msg)) {
-    return "SSH 认证失败：服务器没接受所给的凭据。请检查用户名；没传 password/private_key_path 时会自动试本机 ssh-agent 和 ~/.ssh 默认私钥，" +
-      "若服务器要的是别的私钥，请传 private_key_path（本机私钥绝对路径）";
+    return "SSH 认证失败：服务器未接受指定凭据。请让 AI 与用户确认账号及 private_key_path / agent_path / password；若需加载密钥、解锁或 MFA，请先完成交互配置再连接";
   }
   if (/ENOENT/i.test(msg)) return `找不到文件：${msg.replace(/^.*ENOENT[^']*'?/, "").replace(/'$/, "") || msg}`;
   if (/ENOTFOUND|getaddrinfo/i.test(msg)) return "SSH 地址无法解析";
@@ -734,7 +638,6 @@ function friendlySshError(err: Error): string {
 }
 
 export const __remoteSshTest = {
-  resolveSshConfig,
   parseJobLogOutput,
   splitExecPid,
   wrapExecCommand,

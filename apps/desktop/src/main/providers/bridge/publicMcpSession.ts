@@ -125,7 +125,7 @@ function tunnelConfigView(): {
     fixedPort: readFixedPort(),
     // 手机服务此刻在听哪个端口 —— 用户要拿它核对 Cloudflare 那条 ingress 写得对不对。
     mobilePort: mobilePortProvider(),
-    agentDelegate: SettingRepo.get(PUBLIC_MCP_AGENT_DELEGATE_SETTING_KEY) === "1",
+    agentDelegate: false, // Public MCP is basic tools + read-only library queries, regardless of legacy setting.
   };
 }
 
@@ -136,6 +136,7 @@ function tunnelConfigView(): {
  * 真要清掉,传一个空格之外的显式空值由上层决定 —— 这里的语义就这一条,保持简单。
  */
 export async function setPublicMcpTunnelConfig(config: PublicMcpTunnelConfig): Promise<PublicMcpStatus> {
+  if (config.agentDelegate === true) throw new Error("公网 MCP 仅提供基础工具与资料库只读查询，已不支持完整 Agent 委派；请刷新设置页");
   const before = {
     mode: readTunnelMode(),
     hostname: SettingRepo.get(PUBLIC_MCP_TUNNEL_HOSTNAME_SETTING_KEY)?.trim() ?? "",
@@ -166,12 +167,10 @@ export async function setPublicMcpTunnelConfig(config: PublicMcpTunnelConfig): P
   // 「清掉」优先于「沿用」:留空只能表达"不动",删 token 得显式说。
   if (config.clearToken) SettingRepo.set(PUBLIC_MCP_TUNNEL_TOKEN_SETTING_KEY, "");
   else if (token) SettingRepo.set(PUBLIC_MCP_TUNNEL_TOKEN_SETTING_KEY, encrypt(token));
-  // 委派开关:**缺席 = 不改动**(与 token 同一种读法)。它不是隧道的一部分,搭在这条
-  // 已有的通道上只是为了不再多开一条 IPC —— 但语义上它比隧道配置危险得多,所以
-  // 每一次变化都单独记一行日志,事后能从日志里看出是谁在哪一刻把它打开的。
-  if (config.agentDelegate !== undefined) {
-    SettingRepo.set(PUBLIC_MCP_AGENT_DELEGATE_SETTING_KEY, config.agentDelegate ? "1" : "0");
-    log.info(`public mcp: agent delegate ${config.agentDelegate ? "ENABLED" : "disabled"}`);
+  // Old clients may clear the retired flag; enabling was rejected before any writes.
+  if (config.agentDelegate === false) {
+    SettingRepo.set(PUBLIC_MCP_AGENT_DELEGATE_SETTING_KEY, "0");
+    log.info("public mcp: legacy agent delegate flag cleared");
   }
   log.info(`public mcp: tunnel config saved (mode=${config.mode})`);
   // 配置一变,上一次 external 探测的结论就不作数了 —— 下次读状态立刻重探。
@@ -778,7 +777,7 @@ export async function setPublicMcpEnabled(enabled: boolean): Promise<PublicMcpSt
   return publicMcpStatus();
 }
 
-/** 换一把路径密钥 —— 用户唯一的"拉闸"手段(旧链接立刻失效)。服务不用重启:密钥是
+/** 换一把路径密钥 —— 让旧链接失效(旧链接立刻失效)。服务不用重启:密钥是
  *  每次请求现读的(见 `publicMcpServer.handlePublicRequest`)。 */
 export function regeneratePublicMcpSecret(): PublicMcpStatus {
   const fresh = newSecret();

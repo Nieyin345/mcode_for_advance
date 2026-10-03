@@ -12,6 +12,7 @@
  * tree under it would corrupt that turn — same conservative global gate as
  * runtimes.remove.
  */
+import { marketProgressFor } from "@main/lib/marketProgress.js";
 import type { IpcMain } from "electron";
 import {
   IPC,
@@ -105,9 +106,9 @@ export function registerPluginsHandlers(ipcMain: IpcMain): void {
     return { marketplaces: listMarketplaces() };
   });
 
-  ipcMain.handle(IPC.PLUGINS_MARKETPLACE_ADD, async (_evt, raw) => {
+  ipcMain.handle(IPC.PLUGINS_MARKETPLACE_ADD, async (evt, raw) => {
     const input = PluginsMarketplaceAddSchema.parse(raw);
-    return await addMarketplace({ kind: input.kind, ref: input.ref, name: input.name });
+    return await addMarketplace({ kind: input.kind, ref: input.ref, name: input.name }, marketProgressFor(evt, input.requestId));
   });
 
   ipcMain.handle(IPC.PLUGINS_MARKETPLACE_REMOVE, async (_evt, raw) => {
@@ -115,8 +116,8 @@ export function registerPluginsHandlers(ipcMain: IpcMain): void {
     return removeMarketplace(input.name);
   });
 
-  ipcMain.handle(IPC.PLUGINS_MARKETPLACE_REFRESH, async (_evt, raw) => {
+  ipcMain.handle(IPC.PLUGINS_MARKETPLACE_REFRESH, async (evt, raw) => {
     const input = PluginsMarketplaceRefreshSchema.parse(raw);
-    return await refreshMarketplace(input.name);
+    return await refreshMarketplace(input.name, marketProgressFor(evt, input.requestId));
   });
 }

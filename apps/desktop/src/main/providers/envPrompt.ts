@@ -52,13 +52,13 @@ export {
  *
  * 拿不到就返回 null（库还没建 / 数据库没就绪）—— 调用方各自决定怎么办。
  */
-export function readEnvSnapshot(currentProjectPath: string | null): EnvSnapshot | null {
+export function readEnvSnapshot(currentProjectPath: string | null, options: { includeLibrary?: boolean } = {}): EnvSnapshot | null {
   try {
     const projects = ProjectRepo.list()
       .filter((p) => !p.archived)
       .map((p) => ({ name: p.name, path: p.path }));
-    const root = libraryRoot();
-    const listed = LibraryRepo.list({ limit: MAX_LISTED_ITEMS });
+    const root = options.includeLibrary ? libraryRoot() : "";
+    const listed = options.includeLibrary ? LibraryRepo.list({ limit: MAX_LISTED_ITEMS }) : { items: [], total: 0 };
     return {
       currentProjectPath,
       projects,
@@ -80,7 +80,8 @@ export function readEnvSnapshot(currentProjectPath: string | null): EnvSnapshot 
  * 而不是塞一段空标题进去。
  */
 export function buildEnvPrompt(currentProjectPath: string | null): string | null {
-  const snap = readEnvSnapshot(currentProjectPath);
+  // Desktop provider context is unchanged; public agent_context opts in separately.
+  const snap = readEnvSnapshot(currentProjectPath, { includeLibrary: true });
   if (!snap) return null;
   return formatEnvSections(snap);
 }

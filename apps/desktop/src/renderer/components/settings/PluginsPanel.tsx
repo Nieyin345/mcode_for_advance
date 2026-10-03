@@ -1,3 +1,4 @@
+import { useMarketProgress } from "./useMarketProgress.js";
 /**
  * Plugins settings panel (docs/plugin-feasibility.md v1).
  *
@@ -1413,6 +1414,7 @@ function MarketplacePane({
   ops: PanelOps;
 }) {
   const { t } = useI18n();
+  const marketProgress = useMarketProgress();
   const [activeName, setActiveName] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [addOpen, setAddOpen] = useState(false);
@@ -1438,7 +1440,7 @@ function MarketplacePane({
     ops.setError(null);
     const before = new Set(marketplaces.map((m) => m.name));
     try {
-      const res = await api.plugins.marketplaceAdd({ kind, ref });
+      const res = await marketProgress.run(requestId => api.plugins.marketplaceAdd({ kind, ref, requestId }));
       if (!res.ok) ops.setError(t("settings.plugins.mpAddFailed", { error: res.error ?? "" }));
       else setMpUrl("");
       const fresh = await ops.reload();
@@ -1470,7 +1472,7 @@ function MarketplacePane({
     try {
       const res =
         action === "refresh"
-          ? await api.plugins.marketplaceRefresh({ name })
+          ? await marketProgress.run(requestId => api.plugins.marketplaceRefresh({ name, requestId }))
           : await api.plugins.marketplaceRemove({ name });
       if (!res.ok) {
         ops.setError(
@@ -1516,7 +1518,7 @@ function MarketplacePane({
     for (const mp of marketplaces) {
       ops.setBusyKey(`mp:refresh:${mp.name}`);
       try {
-        const res = await api.plugins.marketplaceRefresh({ name: mp.name });
+        const res = await marketProgress.run(requestId => api.plugins.marketplaceRefresh({ name: mp.name, requestId }));
         if (!res.ok) {
           ops.setError(t("settings.plugins.mpRefreshFailed", { error: res.error ?? "" }));
           break;
@@ -1544,6 +1546,7 @@ function MarketplacePane({
 
   return (
     <div className={cn("flex-col", className)}>
+      {marketProgress.status}
       <div className="flex flex-none flex-wrap items-center gap-2 py-2.5">
         <span className="text-[0.9286em] font-semibold text-content">
           {t("settings.plugins.marketplaceSection")}

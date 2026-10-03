@@ -12,8 +12,8 @@ MUT = [
      "    const sandbox = sandboxOf(ctx);\n    return resolveAgainstCwd(sandbox ?? cwdOf(ctx), p, sandbox);",
      "    return resolveAgainstCwd(cwdOf(ctx), p, sandboxOf(ctx));"),
     ("C2 agent_context 的当前项目退回 cwd(不报沙箱)",
-     "          const sandbox = sandboxOf(ctx);\n          const snap = readEnvSnapshot(sandbox ?? cwdOf(ctx));",
-     "          const snap = readEnvSnapshot(cwdOf(ctx));"),
+     "          const sandbox = sandboxOf(ctx);\n          const snap = readEnvSnapshot(sandbox ?? cwdOf(ctx), { includeLibrary: args.include_library === true });",
+     "          const snap = readEnvSnapshot(cwdOf(ctx), { includeLibrary: args.include_library === true });"),
 ]
 
 def run():

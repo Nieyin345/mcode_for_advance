@@ -474,6 +474,7 @@ export type PluginsMarketplaceListInput = z.infer<typeof PluginsMarketplaceListS
  *  `~/.mcode/plugins/marketplaces/`). `name` overrides the manifest's own
  *  name when provided. */
 export const PluginsMarketplaceAddSchema = z.object({
+  requestId: z.string().uuid().optional(),
   kind: z.enum(["git", "local"]),
   /** git URL, or absolute local directory path. */
   ref: z.string().min(1),
@@ -488,6 +489,7 @@ export type PluginsMarketplaceRemoveInput = z.infer<typeof PluginsMarketplaceRem
 
 /** Re-fetch a marketplace (git: fresh shallow clone; local: re-copy). */
 export const PluginsMarketplaceRefreshSchema = z.object({
+  requestId: z.string().uuid().optional(),
   name: z.string().min(1),
 });
 export type PluginsMarketplaceRefreshInput = z.infer<typeof PluginsMarketplaceRefreshSchema>;

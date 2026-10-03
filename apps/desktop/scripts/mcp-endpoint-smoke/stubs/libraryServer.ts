@@ -26,13 +26,18 @@ import { text } from "@main/mcp/sdk.js";
 export const LIBRARY_MCP_SERVER = "mcode-library";
 export const LIBRARY_MCP_PREFIX = `mcp__${LIBRARY_MCP_SERVER}__`;
 
-export const LIBRARY_READONLY_TOOLS = new Set(["library_probe", "library_nested"]);
+export const LIBRARY_READONLY_TOOLS = new Set(["library_probe", "library_nested", "library_collections", "library_search", "library_items", "library_links"]);
 
 /** 每个 handler 被调到的次数 —— 断言用的"这个工具到底跑了没有"。 */
 export const __handlerCalls: string[] = [];
 
 export function libraryMcpTools(): McpToolSpec[] {
   return [
+    ...["collections", "search", "items", "links"].map(action => ({
+      name: `library_${action}`, description: "compact readonly fixture",
+      inputSchema: action === "search" ? { query: z.string().min(1) } : action === "items" ? { collectionId: z.string() } : action === "links" ? { itemId: z.string() } : {},
+      handler: (args: unknown) => { __handlerCalls.push(`compact:${action}`); return text(JSON.stringify({ action, args })); },
+    } as McpToolSpec)),
     {
       name: "library_probe",
       description: "只读:回显一个查询词。",

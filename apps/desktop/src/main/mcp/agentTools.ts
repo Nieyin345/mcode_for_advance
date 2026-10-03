@@ -32,6 +32,7 @@
  *   - bash:风险最高,**不在任何自动放行清单里**,除了 bypass/dontAsk/「始终允许」
  *     一律弹卡。
  */
+import { publicSkillReadDenial } from "@main/mcp/publicSkills.js";
 import { createReadStream, promises as fs } from "node:fs";
 import { createInterface as createReadlineInterface } from "node:readline";
 import { homedir } from "node:os";
@@ -256,11 +257,12 @@ async function attempt(run: () => Promise<string>): Promise<ReturnType<typeof te
  * 失败时同样只回文本:错误没有可描述的结构化形状。
  */
 async function attemptStructured(
-  run: () => Promise<{ text: string; structured: Record<string, unknown> | null }>,
+  run: () => Promise<{ text: string; structured: Record<string, unknown> | null; isError?: boolean }>,
 ): Promise<ReturnType<typeof text>> {
   try {
-    const { text: body, structured: fields } = await run();
-    return fields ? structuredResult(body, fields) : text(body);
+    const { text: body, structured: fields, isError } = await run();
+    const result = fields ? structuredResult(body, fields) : text(body);
+    return isError ? { ...result, isError: true } : result;
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
   }
@@ -386,8 +388,8 @@ const AGENT_CONTEXT_OUTPUT_SCHEMA: Record<string, z.ZodTypeAny> = {
   projects: z
     .array(z.object({ name: z.string(), path: z.string() }))
     .describe("用户的全部项目（名字 + 绝对路径）—— **只读**，只有 writable_project 那个能写"),
-  library_root: z.string().describe("资料库根的绝对路径（**只读**）"),
-  library_total: z.number().int().describe("库里条目总数；0 = 空库"),
+  library_root: z.string().optional().describe("资料库根的绝对路径（**只读**）"),
+  library_total: z.number().int().optional().describe("库里条目总数；0 = 空库"),
   library_items: z
     .array(
       z.object({
@@ -398,8 +400,9 @@ const AGENT_CONTEXT_OUTPUT_SCHEMA: Record<string, z.ZodTypeAny> = {
         path: z.string().nullable().describe("该条目的文件路径（相对库根）；没有文件为 null"),
       }),
     )
+    .optional()
     .describe("库里的条目（截断到上限；给的是**标题**不是哈希文件名）"),
-  library_truncated: z.boolean().describe("库条目是否因为超过上限被截断"),
+  library_truncated: z.boolean().optional().describe("库条目是否因为超过上限被截断"),
 };
 
 const GLOB_OUTPUT_SCHEMA: Record<string, z.ZodTypeAny> = {
@@ -810,6 +813,7 @@ function newDecoder(): ConsoleTextDecoder {
 }
 
 interface WalkOptions {
+  canRead?: (absolutePath: string) => boolean;
   /** 只收**文件名**匹配的(grep 的 `glob` 参数,如 `*.md`)。 */
   nameFilter?: RegExp | null;
   /** 只收**相对 root 的路径**(正斜杠)匹配的(agent_glob)。 */
@@ -849,6 +853,7 @@ async function walkFiles(root: string, opts: WalkOptions = {}): Promise<{ hits: 
       visited += 1;
       if (!opts.includeHidden && entry.name.startsWith(".")) continue;
       const abs = path.join(dir, entry.name);
+      if (opts.canRead && !opts.canRead(abs)) continue;
       if (entry.isDirectory()) {
         if (SKIP_DIRS.has(entry.name)) continue;
         await walk(abs, depth + 1);
@@ -958,7 +963,12 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
    */
   const pOf = (ctx: McpToolContext, p: string): string => {
     const sandbox = sandboxOf(ctx);
-    return resolveAgainstCwd(sandbox ?? cwdOf(ctx), p, sandbox);
+    const abs = resolveAgainstCwd(sandbox ?? cwdOf(ctx), p, sandbox);
+    if (ctx.audience === "public") {
+      const denial = publicSkillReadDenial(sandbox, abs);
+      if (denial) throw new Error(denial);
+    }
+    return abs;
   };
   /**
    * **只读**文件工具的路径解析入口:沙箱内照旧;沙箱外再问一次 `sandboxReadCheck`
@@ -966,13 +976,21 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
    */
   const pOfRead = (ctx: McpToolContext, p: string, kind: SandboxReadKind): string => {
     const sandbox = sandboxOf(ctx);
-    if (!sandbox) return resolveAgainstCwd(cwdOf(ctx), p, null);
-    const abs = resolveAgainstCwd(sandbox, p, null);
+    const abs = resolveAgainstCwd(sandbox ?? cwdOf(ctx), p, null);
+    if (ctx.audience === "public") {
+      const denial = publicSkillReadDenial(sandbox, abs);
+      if (denial) throw new Error(denial);
+    }
+    if (!sandbox) return abs;
     if (pathWithin(sandbox, abs)) return abs;
     const verdict = deps.sandboxReadCheck?.(abs, kind);
     if (verdict === null) return abs;
     if (typeof verdict === "string") throw new Error(verdict);
     return resolveAgainstCwd(sandbox, p, sandbox);
+  };
+  const canRead = (ctx: McpToolContext) => (abs: string): boolean => {
+    if (ctx.audience !== "public") return true;
+    try { pOfRead(ctx, abs, "read"); return true; } catch { return false; }
   };
   const processes = createAgentProcessSessions();
   const searches = createAgentSearchSessions();
@@ -1252,9 +1270,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           // lastCwd** 解析、却按**沙箱**校验 → 公网会话里每一个相对路径都被判越界,
           // 也就是"agent_write_pdf 永远用不了"(2026-09-24 审查发现,它是 pOf 之外
           // 唯一漏改的一处)。
-          const sandbox = sandboxOf(ctx);
-          const cwd = sandbox ?? cwdOf(ctx);
-          const p = (rel: string): string => resolveAgainstCwd(cwd, rel, sandbox);
+          const p = (rel: string): string => pOf(ctx, rel);
           const operations: AgentPdfOperation[] | undefined = args.operations?.map((op) => {
             if (op.type === "delete") {
               if (!op.page_indexes) throw new Error("PDF delete 操作缺少 page_indexes");
@@ -1511,6 +1527,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
                 return;
               }
               const child = path.join(dir, e.name);
+              if (!canRead(ctx)(child)) continue;
               const rel = path.relative(abs, child).replace(/\\/g, "/");
               const indent = "  ".repeat(Math.max(0, level - 1));
               if (e.isDirectory()) {
@@ -1557,6 +1574,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           const found =
             st?.isDirectory()
               ? await walkFiles(base, {
+                canRead: canRead(ctx),
                   relFilter: re,
                   includeHidden: args.include_hidden ?? globWantsHidden(args.pattern),
                   maxHits: 2000,
@@ -1637,6 +1655,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           const walked = st.isFile()
             ? { hits: [{ abs: base, rel: path.basename(base), isDir: false }], truncated: false }
             : await walkFiles(base, {
+                canRead: canRead(ctx),
                 nameFilter: include,
                 includeHidden: args.include_hidden ?? false,
                 maxHits: MAX_GREP_FILES,
@@ -1725,6 +1744,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         attempt(async () => {
           const root = pOfRead(ctx, args.path ?? ".", "search");
           const out = await searches.start({
+            canRead: canRead(ctx),
             ownerSessionId: ctx.sessionId,
             type: args.search_type,
             pattern: args.pattern,
@@ -2091,26 +2111,33 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
 
     {
       name: "agent_ssh_connect",
+      // Pre-connection validation failures have no connection record; they return isError + text.
+      outputSchema: {
+        connection_id: z.string().optional(),
+        state: z.enum(["connecting", "ready", "reconnecting", "error", "closed"]).optional(),
+        host: z.string().optional(), port: z.number().int().optional(), username: z.string().optional(),
+        reconnect_attempt: z.number().int().optional(), retryable: z.boolean().optional(), last_error: z.string().nullable().optional(),
+      },
       description:
-        "建立一个可自动重连的 SSH 连接，并返回当前对话专属的 connection_id。" +
-        "网络断开后会指数退避自动恢复（认证失败不会重试）；密码/密钥只保存在本机进程内存，不写入 MCP 返回。" +
-        "不传 password/private_key_path 时像系统 ssh 一样自动用本机 ssh-agent、~/.ssh/config 的 IdentityFile 和 ~/.ssh 默认私钥；" +
-        "host 也可以是 ~/.ssh/config 里的 Host 别名。",
+        "连接已由 AI 与用户明确配置的 SSH 目标。必须给出实际 host、username，并且只选 private_key_path / agent_path / password 一种认证。" +
+        "工具不扫描密钥、不读取或修改 ~/.ssh/config、不生成密钥、不启动 agent，也不代办 MFA/解锁等交互；需用户操作时先请求用户完成。" +
+        "网络断开后可以重连同一配置；认证失败不重试。敏感凭据仅用于本机连接，不写入工具返回。",
       inputSchema: {
-        host: z.string().min(1).describe("SSH 主机/IP，或本机 ~/.ssh/config 里的 Host 别名"),
-        port: z.number().int().min(1).max(65535).optional().describe("SSH 端口，默认取 ~/.ssh/config，否则 22"),
-        username: z.string().min(1).optional().describe("SSH 用户名；省略时取 ~/.ssh/config 里该主机的 User"),
-        password: z.string().optional().describe("密码；优先推荐密钥。不会出现在工具返回里"),
-        private_key_path: z.string().optional().describe("本机私钥绝对路径；提供后优先于 password"),
-        passphrase: z.string().optional().describe("私钥口令（如果有）"),
+        host: z.string().min(1).describe("已确认的 SSH 主机/IP，不自动展开 SSH Host 别名"),
+        port: z.number().int().min(1).max(65535).optional().describe("明确的 SSH 端口，默认 22"),
+        username: z.string().min(1).describe("已确认的 SSH 用户名"),
+        password: z.string().min(1).optional().describe("明确提供的密码；不要要求用户在公开聊天里粘贴秘密"),
+        private_key_path: z.string().min(1).optional().describe("已确认的本机私钥路径；不搜索其他私钥"),
+        agent_path: z.string().min(1).optional().describe("已配置 SSH agent 的 socket 或 Windows 命名管道；由调用者明确指定，不自动探测"),
+        passphrase: z.string().optional().describe("指定私钥的口令；需要交互解锁时先由用户完成"),
         keepalive_interval_ms: z.number().int().min(5000).max(60000).optional().describe("SSH keepalive 间隔，默认 15000"),
         keepalive_count_max: z.number().int().min(1).max(12).optional().describe("连续多少次 keepalive 无响应才判定断线，默认 4"),
         ready_timeout_ms: z.number().int().min(5000).max(60000).optional().describe("单次握手超时，默认 20000"),
       },
       handler: (args: {
-        host: string; port?: number; username?: string; password?: string; private_key_path?: string;
+        host: string; port?: number; username: string; password?: string; private_key_path?: string; agent_path?: string;
         passphrase?: string; keepalive_interval_ms?: number; keepalive_count_max?: number; ready_timeout_ms?: number;
-      }, ctx) => attempt(async () => {
+      }, ctx) => attemptStructured(async () => {
         const info = await remoteSsh.connect({
           ownerSessionId: ctx.sessionId,
           host: args.host,
@@ -2118,12 +2145,18 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           username: args.username,
           password: args.password,
           privateKeyPath: args.private_key_path,
+          agentPath: args.agent_path,
           passphrase: args.passphrase,
           keepaliveIntervalMs: args.keepalive_interval_ms,
           keepaliveCountMax: args.keepalive_count_max,
           readyTimeoutMs: args.ready_timeout_ms,
         });
-        return `${formatRemoteConnection(info)}${info.state === "ready" ? "" : "\nnote: 首次连接未就绪；可稍后用 agent_ssh_status 查看自动重连结果"}`;
+        const note = info.state === "error" ? "\n请修正明确的连接配置后重试；认证错误不会自动重连" : "";
+        return { text: formatRemoteConnection(info) + note, isError: info.state !== "ready", structured: {
+          connection_id: info.connectionId, state: info.state, host: info.host, port: info.port,
+          username: info.username, reconnect_attempt: info.reconnectAttempt, retryable: info.state === "reconnecting", last_error: info.lastError,
+        } };
+
       }),
     },
 
@@ -2243,7 +2276,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
         job_id: z.string().min(1).max(64),
         stream: z.enum(["stdout", "stderr"]).optional().describe("默认 stdout"),
         cursor: z.number().int().min(0).optional().describe("上次 next_cursor；默认 0"),
-        max_bytes: z.number().int().min(1).max(60000).optional().describe("本次最多读取字节数，默认 20000"),
+        max_bytes: z.number().int().min(4).max(60000).optional().describe("本次最多读取字节数，默认 20000；至少 4 字节以容纳完整 UTF-8 字符"),
         wait_ms: z
           .number()
           .int()
@@ -2273,7 +2306,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
               `more_output: ${r.truncated}`,
               `job_finished: ${r.jobFinished}`,
               "--- output ---",
-              r.text || (r.jobFinished ? "(任务已结束，没有更多输出)" : "(暂无输出)"),
+              r.text || (r.jobFinished && !r.truncated ? "(任务已结束，没有更多输出)" : "(暂无完整文本，请按游标继续读取)"),
             ].join("\n"),
             structured: {
               job_id: r.jobId,
@@ -2311,13 +2344,10 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
     {
       name: "agent_context",
       description:
-        "先问这个：**我在什么环境里** —— 用户有哪些项目(名字 + 路径)、当前这个对话属于哪个项目、" +
-        "资料库在哪、库里有什么。**每次现查**,所以刚建的会话/刚删的文档立刻反映出来。\n" +
-        "要读库里的东西就用普通文件工具读它给出的路径(库是磁盘上的真目录);库里每条给的是" +
-        "**标题 + 类型 + 文件路径**,不是哈希文件名,所以能直接挑出想要的那一份。\n" +
-        "⚠️ 资料库**只读** —— 读它、把它复制进项目都行,但不要在库里改东西。",
-      inputSchema: {},
-      handler: (_args: Record<string, never>, ctx) =>
+        "查询基本运行环境：操作系统、shell、当前可写项目及项目列表。默认不查询或列出资料库。" +
+        "只有任务明确需要资料库时才传 include_library=true，或使用 library_* 只读查询；资料库仍只读。",
+      inputSchema: { include_library: z.boolean().optional().describe("明确需要资料库概况时才开启，默认 false") },
+      handler: (args: { include_library?: boolean }, ctx) =>
         attemptStructured(async () => {
           // ⚠️ **"当前项目"取的是沙箱根,不是 `cwdFor`。**
           //
@@ -2329,10 +2359,10 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
           // 报给模型时按它说,模型才不会去改一个其实只读的目录。
           // 桌面本机会话没有沙箱根(返回 null),那时退回 cwd —— 那条路行为不变。
           const sandbox = sandboxOf(ctx);
-          const snap = readEnvSnapshot(sandbox ?? cwdOf(ctx));
+          const snap = readEnvSnapshot(sandbox ?? cwdOf(ctx), { includeLibrary: args.include_library === true });
           if (!snap) {
             return {
-              text: "环境信息暂时读不到(库还没建、或数据库没就绪)。可以先用 agent_list_dir 看当前目录。",
+              text: "环境信息暂时读不到(项目或数据库尚未就绪)。可以先用 agent_list_dir 看当前目录。",
               structured: null,
             };
           }
@@ -2347,6 +2377,11 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
             for (const p of snap.projects) projLines.push(`- ${p.name}\n  路径: ${p.path}`);
           }
           lines.push("## 项目\n" + projLines.join("\n"));
+
+          if (!args.include_library) return {
+            text: `操作系统: ${process.platform}\nshell: ${process.platform === "win32" ? "cmd.exe" : "/bin/sh"}\n\n${lines.join("\n\n")}`,
+            structured: { writable_project: snap.currentProjectPath, projects: snap.projects },
+          };
 
           // **守屏蔽规则**(设置 → 资料库类型):整条挡的不列,按文件类型挡的那份不给路径 ——
           // 与 `library_search` 同一口径(`suppressionReasonOfItem` / `aiVisibleFilesOf`)。
@@ -2389,7 +2424,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
             }
           }
           if (hiddenCount > 0) libLines.push(`(另有 ${hiddenCount} 条被屏蔽规则挡住了,没有列出来。)`);
-          libLines.push("要按关键词找、或按分类翻,用 library_search / library_collections / library_items(如果有这几个工具)。");
+          libLines.push(ctx.audience === "public" ? "按关键词或分类查询请用 library_query。" : "要按关键词找、或按分类翻,用 library_search / library_collections / library_items(如果有这几个工具)。");
           lines.push("## 资料库\n" + libLines.join("\n"));
           lines.push("⚠️ 资料库只读 —— 读它、复制进项目都行,别在库里改。要改先复制到项目里。");
 

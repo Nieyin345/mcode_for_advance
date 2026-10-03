@@ -181,6 +181,8 @@ function json(res: ServerResponse, status: number, body: unknown): void {
 export interface McpRequestOptions {
   /** 见 {@link McpAudience}。不给 = `local`。 */
   audience?: McpAudience;
+  /** Re-check endpoint state after the asynchronous body read. */
+  isAvailable?: () => boolean;
   /**
    * 慢的 `tools/call` 改用 SSE 回、中途发保活注释(见 {@link handleCall})。
    * **只给公网那条路开** —— 它前面是 Cloudflare:一个请求 100 秒内一个字节都没回就
@@ -203,7 +205,7 @@ const AGENT_TOOL_GUIDE =
   "它**默认会阻塞等到有输出**（最多约 55 秒），不要传 wait_ms=0 去做短轮询，" +
   "那只会制造大量空往返；一次调用就是等下一批日志。返回里 has_more 为 true 就立刻再读一次，" +
   "status 不是 running 说明进程已结束。agent_process_* 的返回带 structuredContent，直接读字段，不用解析文本。" +
-  "远程 SSH 训练/长任务必须优先 agent_remote_job_start：任务状态和日志落在服务器 ~/.mcode/jobs，SSH/MCP 断线后可恢复；" +
+  "SSH 是已配置连接的执行工具：AI 先和用户确认 host、username 及一种认证方式（private_key_path / agent_path / password）；需要交互配置或解锁时先请用户完成，工具不扫描密钥、不修改 SSH 配置。远程长任务必须优先 agent_remote_job_start：任务状态和日志落在服务器 ~/.mcode/jobs，SSH/MCP 断线后可恢复；" +
   "短远程检查才用 agent_ssh_exec；重要训练显式提供稳定 job_id，网络失败重试必须复用同一个 id，避免重复启动。";
 
 /** 本机浏览器扩展(`/mcp`)那条:工作流在、走 mcode 的审批闸门。 */
@@ -216,13 +218,14 @@ const LOCAL_INSTRUCTIONS =
 
 /** 公网 MCP 那条(远程 AI 直连):没有工作流/对话记录,资料库只读,免审批但锁在可写项目里。 */
 const PUBLIC_INSTRUCTIONS =
-  "Mcode 桌面端的远程工具：agent_* 电脑操作、资料库只读查询（library_*）和本地技能（agent_skill_list / agent_skill_read）。" +
-  "这条通道没有工作流/自动化工具，也读不到用户的对话记录。" +
-  "开始干活前先调一次 agent_context：它告诉你唯一可写的项目目录（writable_project）、其它只读项目和资料库概况。" +
+  "Mcode 桌面端的远程工具：agent_* 电脑操作、资料库只读查询（library_query）和当前项目技能（agent_skill）。" +
+  "这条通道没有完整 Agent 委派、工作流/自动化工具，也读不到用户的对话记录。" +
+  "开始干活前先调 agent_context 获取基本环境与唯一可写项目 writable_project；默认不查资料库。仅用户任务需要资料时才用 library_query 查询或 include_library=true。" +
   "相对路径以可写项目目录为基准；文件工具的写路径和命令 cwd 受项目边界约束；命令仅有有限静态检查，不是强沙箱，必须自行确保所有写目标在项目内。用户拒绝或路径越界后不要绕过限制。" +
-  "资料库和技能目录可以用 agent_read_* / agent_list_dir 读，但不能改，要改先复制进项目。" +
-  "用户提到某个技能时先 agent_skill_list 确认，再 agent_skill_read 读 SKILL.md，照里面的步骤做。" +
-  AGENT_TOOL_GUIDE +
+  "资料库只读；技能只开放绑定项目的 .claude/skills，不提供全局技能，也不继承其他项目或第三方 MCP/插件。项目技能文件属于当前项目。" +
+  "agent_context 附带轻量项目技能索引。遇到相关任务先用 agent_skill(action=list, query=任务关键词) 查名称/描述，选中后 action=read 按需读 SKILL.md；无匹配就正常处理，不假定模型一定自动选择。技能是指导，不会自动执行，也不能覆盖用户授权边界。" +
+  AGENT_TOOL_GUIDE.replace("同时读多个文本文件优先 agent_read_files", "同时读多个文本文件用 agent_read_file 的 paths 参数；单文件用 path，不能同时传") +
+  "agent_process_read 不传 process_id 可列出本会话进程；旧工具名称已合并，请刷新 tools/list。" +
   "这条通道不弹审批卡，调用会直接执行：删除、覆盖、杀进程这类不可逆操作先跟用户确认；用户拒绝后不要换说法重复同一个动作。";
 
 /** 慢调用多久之后切 SSE、多久发一次保活。smoke 用 {@link configureMcpLongCallTiming} 调短。 */
@@ -261,6 +264,11 @@ export async function handleMcpRequest(
     return;
   }
 
+  if (opts.isAvailable && !opts.isAvailable()) {
+    json(res, 404, { error: "not found" });
+    return;
+  }
+
   const method = typeof body.method === "string" ? body.method : "";
   if (!method) {
     rpcError(res, body.id, -32600, "missing method");
@@ -276,7 +284,7 @@ export async function handleMcpRequest(
         serverInfo: { name: "mcode", version: desktopPackage.version },
         // 两条通道给的工具不一样(见 webToolHost.ts),说明也得跟着分开 —— 公网那条没有
         // 工作流、免审批但锁在可写项目里;写成同一段会让远程 AI 去调根本不存在的工具。
-        instructions: (opts.audience === "public" ? PUBLIC_INSTRUCTIONS : LOCAL_INSTRUCTIONS) + " 工具契约：2026-10-03-text-v2；升级后重新获取 tools/list。",
+        instructions: (opts.audience === "public" ? PUBLIC_INSTRUCTIONS : LOCAL_INSTRUCTIONS) + (opts.audience === "public" ? " 工具契约：2026-10-03-project-compact-v4；升级后重新获取 tools/list。" : " 工具契约：2026-10-03-basic-ssh-v3；升级后重新获取 tools/list。"),
       });
       return;
 

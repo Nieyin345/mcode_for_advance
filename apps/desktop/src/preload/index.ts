@@ -1015,6 +1015,13 @@ const api = {
 
   // ── Push events (main → renderer) ──
   on: {
+    marketProgress(handler: (msg: Extract<MainToRendererMessage, { channel: "market:progress" }>) => void): () => void {
+      const listener = (_e: unknown, msg: MainToRendererMessage) => {
+        if (msg.channel === IPC.MARKET_PROGRESS) handler(msg);
+      };
+      ipcRenderer.on(IPC.MARKET_PROGRESS, listener);
+      return () => { ipcRenderer.off(IPC.MARKET_PROGRESS, listener); };
+    },
     /** Runtimes push events: download/extract progress and done/error per
      *  agent. Filter by `msg.payload.agent` / `msg.payload.phase`. */
     runtimesEvent(handler: (msg: Extract<MainToRendererMessage, { channel: "runtimes:event" }>) => void): () => void {

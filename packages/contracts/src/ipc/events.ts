@@ -204,7 +204,17 @@ export interface VoiceDownloadProgressMessage {
   error?: string;
 }
 
+export interface MarketProgress {
+  requestId: string;
+  phase: "clone" | "scan";
+  message: string;
+  elapsedMs: number;
+  timeoutMs?: number;
+}
+export interface MarketProgressMessage { channel: "market:progress"; payload: MarketProgress }
+
 export type MainToRendererMessage =
+  | MarketProgressMessage
   | ClaudeEventMessage
   | SessionTitleUpdatedMessage
   | TerminalDataMessage

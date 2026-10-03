@@ -1,3 +1,4 @@
+import { cloneMarketRepository, promoteMarketCatalog, type MarketProgressSink } from "@main/lib/marketClone.js";
 /**
  * Plugin lifecycle manager (docs/plugin-feasibility.md §3/v1).
  *
@@ -81,7 +82,6 @@ import {
 export const PLUGINS_ROOT = path.join(MCODE_CONFIG_DIR, "plugins");
 const MARKETPLACES_DIR = path.join(PLUGINS_ROOT, "marketplaces");
 const INSTALL_RECORD_FILE = ".mcode-install.json";
-const GIT_TIMEOUT_MS = 120_000;
 /** Archive downloads are one shot per install and can be tens of MB on a slow
  *  link — generous, but bounded so a stalled socket cannot hold the install
  *  (and the panel's busy state) forever. */
@@ -386,25 +386,8 @@ const PROXY_REFUSED_RE = /Failed to connect to (?:127\.0\.0\.1|localhost|\[?::1\
  *  connect-refused, retry once with proxies stripped: command-line `-c
  *  http.proxy=` overrides git config files, and the cleaned env stops curl's
  *  env-var fallback. */
-async function gitClone(url: string, dest: string, ref?: string): Promise<void> {
-  const baseArgs = ["clone", "--depth", "1", "--quiet"];
-  if (ref) baseArgs.push("--branch", ref);
-  baseArgs.push(url, dest);
-  const direct = await runCommand("git", baseArgs, { timeoutMs: GIT_TIMEOUT_MS });
-  if (direct.ok) return;
-  if (!PROXY_REFUSED_RE.test(direct.message)) {
-    throw new Error(`git clone 失败:${direct.message}`);
-  }
-  const bypass = await runCommand(
-    "git",
-    ["-c", "http.proxy=", "-c", "https.proxy=", ...baseArgs],
-    { timeoutMs: GIT_TIMEOUT_MS, noProxyEnv: true },
-  );
-  if (!bypass.ok) {
-    throw new Error(
-      `git clone 失败(代理不可用,绕过代理直连也失败):${bypass.message}。若 GitHub 需要代理访问,请先开启代理软件再重试。`,
-    );
-  }
+async function gitClone(url: string, dest: string, ref?: string, progress?: MarketProgressSink): Promise<void> {
+  await cloneMarketRepository(url, dest, ref, progress);
 }
 
 /** Node's fetch/undici collapses EVERY network failure into the bare string
@@ -1122,10 +1105,11 @@ function marketplaceDirOf(name: string): string {
 async function materializeMarketplaceTree(
   source: { kind: "git" | "local"; ref: string },
   dest: string,
+  progress?: MarketProgressSink,
 ): Promise<void> {
   await fs.mkdir(path.dirname(dest), { recursive: true });
   if (source.kind === "git") {
-    await gitClone(source.ref, dest);
+    await gitClone(source.ref, dest, undefined, progress);
     await fs.rm(path.join(dest, ".git"), { recursive: true, force: true });
   } else {
     const src = path.resolve(source.ref);
@@ -1144,7 +1128,7 @@ export async function addMarketplace(input: {
   kind: "git" | "local";
   ref: string;
   name?: string;
-}): Promise<{ ok: boolean; error?: string }> {
+}, progress?: MarketProgressSink): Promise<{ ok: boolean; error?: string }> {
   const records = readMarketplaceRecords();
   // Same repository (however it was spelled) already listed — usually one of the
   // shipped catalogs, which must be refreshed rather than added a second time.
@@ -1158,7 +1142,8 @@ export async function addMarketplace(input: {
   }
   const staging = path.join(PLUGINS_ROOT, `.mp-staging-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   try {
-    await materializeMarketplaceTree({ kind: input.kind, ref: input.ref }, staging);
+    await materializeMarketplaceTree({ kind: input.kind, ref: input.ref }, staging, progress);
+    progress?.({ phase: "scan", message: "校验插件市场 / Validating plugin catalog", elapsedMs: 0 });
     const manifest = readMarketplaceManifest(staging);
     if (!manifest) {
       throw new Error(
@@ -1174,8 +1159,7 @@ export async function addMarketplace(input: {
     }
     const dest = marketplaceDirOf(rawName);
     await fs.mkdir(path.dirname(dest), { recursive: true });
-    rmSync(dest, { recursive: true, force: true });
-    await fs.rename(staging, dest);
+    await promoteMarketCatalog(staging, dest);
     records.push({
       name: rawName,
       source: { kind: input.kind, ref: input.ref },
@@ -1214,16 +1198,17 @@ export function removeMarketplace(name: string): { ok: boolean; error?: string }
 }
 
 /** Re-fetch a marketplace tree (git: fresh clone; local: re-copy). */
-export async function refreshMarketplace(name: string): Promise<{ ok: boolean; error?: string }> {
+export async function refreshMarketplace(name: string, progress?: MarketProgressSink): Promise<{ ok: boolean; error?: string }> {
   const record = readMarketplaceRecords().find((r) => r.name === name);
   if (!record) return { ok: false, error: `marketplace ${name} 不存在` };
   const dest = marketplaceDirOf(name);
   const staging = path.join(PLUGINS_ROOT, `.mp-staging-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   try {
-    await materializeMarketplaceTree(record.source, staging);
+    await materializeMarketplaceTree(record.source, staging, progress);
+    progress?.({ phase: "scan", message: "校验插件市场 / Validating plugin catalog", elapsedMs: 0 });
+    if (!readMarketplaceManifest(staging)) throw new Error("市场清单无效，保留原有目录 / Invalid manifest; previous catalog preserved");
     await fs.mkdir(path.dirname(dest), { recursive: true });
-    rmSync(dest, { recursive: true, force: true });
-    await fs.rename(staging, dest);
+    await promoteMarketCatalog(staging, dest);
     return { ok: true };
   } catch (err) {
     await fs.rm(staging, { recursive: true, force: true }).catch(() => {});

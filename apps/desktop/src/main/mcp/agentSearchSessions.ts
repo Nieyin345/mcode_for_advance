@@ -60,6 +60,7 @@ export interface AgentSearchSessions {
     ignoreCase?: boolean;
     filePattern?: string;
     includeHidden?: boolean;
+    canRead?: (absolutePath: string) => boolean;
     contextLines?: number;
     maxResults?: number;
     waitMs?: number;
@@ -152,6 +153,7 @@ export function createAgentSearchSessions(): AgentSearchSessions {
       void runSearch(state, {
         matcher,
         fileMatcher,
+        canRead: input.canRead,
         includeHidden: input.includeHidden ?? false,
         contextLines: Math.max(0, Math.min(input.contextLines ?? 0, 5)),
       });
@@ -208,11 +210,13 @@ async function runSearch(
   opts: {
     matcher: (value: string) => boolean;
     fileMatcher: RegExp | null;
+    canRead?: (absolutePath: string) => boolean;
     includeHidden: boolean;
     contextLines: number;
   },
 ): Promise<void> {
   try {
+    if (opts.canRead && !opts.canRead(state.root)) throw new Error("搜索起点不可读");
     const st = await fs.stat(state.root);
     if (st.isFile()) {
       await visitFile(state, state.root, path.basename(state.root), opts);
@@ -236,15 +240,17 @@ async function walkDir(
   state: SearchSession,
   root: string,
   dir: string,
-  opts: { matcher: (value: string) => boolean; fileMatcher: RegExp | null; includeHidden: boolean; contextLines: number },
+  opts: { canRead?: (absolutePath: string) => boolean; matcher: (value: string) => boolean; fileMatcher: RegExp | null; includeHidden: boolean; contextLines: number },
   depth: number,
 ): Promise<void> {
   if (state.stopped || state.results.length >= state.maxResults || depth > 30) return;
+  if (opts.canRead && !opts.canRead(dir)) return;
   const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     if (state.stopped || state.results.length >= state.maxResults) return;
     if (!opts.includeHidden && entry.name.startsWith(".")) continue;
     const abs = path.join(dir, entry.name);
+    if (opts.canRead && !opts.canRead(abs)) continue;
     if (entry.isDirectory()) {
       if (SKIP_DIRS.has(entry.name)) continue;
       await walkDir(state, root, abs, opts, depth + 1);
@@ -260,8 +266,9 @@ async function visitFile(
   state: SearchSession,
   abs: string,
   rel: string,
-  opts: { matcher: (value: string) => boolean; fileMatcher: RegExp | null; includeHidden: boolean; contextLines: number },
+  opts: { canRead?: (absolutePath: string) => boolean; matcher: (value: string) => boolean; fileMatcher: RegExp | null; includeHidden: boolean; contextLines: number },
 ): Promise<void> {
+  if (opts.canRead && !opts.canRead(abs)) return;
   if (opts.fileMatcher && !opts.fileMatcher.test(rel)) return;
   state.scannedFiles += 1;
   if (state.type === "files") {

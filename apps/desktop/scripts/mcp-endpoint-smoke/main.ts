@@ -21,12 +21,13 @@
  *
  * Run: scripts/mcp-endpoint-smoke/run.sh
  */
+import { request as httpRequest } from "node:http";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 // 固定端口那两条断言要自己占一个端口当"别的程序"。
 import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -59,7 +60,7 @@ import { configureDelegateDeps } from "@main/mcp/delegateServer.js";
 // 会话夹具的灌入口 —— 与 `run.sh` 里 `@main/store/repositories.js` 的 alias 指向
 // **同一个文件**（`mcode-admin-smoke/stubs/repositories.ts`）。不能写成
 // `./stubs/repositories.js`：那个文件不存在，而 esbuild 会按真实路径去找。
-import { __seedSessionLogs } from "../mcode-admin-smoke/stubs/repositories.js";
+import { __seedSessionLogs, LibraryRepo } from "../mcode-admin-smoke/stubs/repositories.js";
 
 let checks = 0;
 let passed = 0;
@@ -317,6 +318,7 @@ stopExtensionBridge();
  */
 const PUBLIC_SESSION = "sess_smoke_synthetic";
 let publicStoreEnabled = true;
+let observedPublicRequest: (() => void) | null = null;
 // 上一段末尾把宿主卸了（验"宿主缺席"那两条）；这里重新装回同一份 —— 公网端点读的
 // 是**共享的**那份工具表，正是要验"两条通路的工具表是同一份"。
 configureMcpToolHost({
@@ -331,7 +333,7 @@ configurePublicMcpStore({
   setEnabled: (on) => {
     publicStoreEnabled = on;
   },
-  getSecret: () => PUBLIC_SECRET,
+  getSecret: () => { observedPublicRequest?.(); return PUBLIC_SECRET; },
   setSecret: () => {},
   getSessionId: () => PUBLIC_SESSION,
   setSessionId: () => {},
@@ -412,12 +414,41 @@ eq("…serverInfo 是 mcode", (resultOf(pubInit).serverInfo as { name?: string }
   check("公网 instructions 不声称有工作流", !pubInstr.includes("资料库、工作流"), pubInstr);
   check("公网 instructions 指引先调 agent_context", pubInstr.includes("agent_context"), pubInstr);
   check("公网 instructions 说明只能写可写项目", pubInstr.includes("writable_project"), pubInstr);
-  check("公网 instructions 提到技能工具", pubInstr.includes("agent_skill_read"), pubInstr);
+  check("公网 instructions 提到技能工具", pubInstr.includes("agent_skill") && !pubInstr.includes("agent_skill_read") && !pubInstr.includes("agent_read_files"), pubInstr);
   check("本机 instructions 照旧(有工作流)", instructions.includes("工作流"), instructions);
 }
 const pubList = await publicRpc({ jsonrpc: "2.0", id: 2, method: "tools/list" });
 eq("密钥对 → tools/list 200", pubList.status, 200);
 eq("…工具表就是共享的那份", ((resultOf(pubList).tools ?? []) as unknown[]).length, FAKE_TOOLS.length);
+
+// The setting must block both new requests and requests whose body was still arriving.
+publicStoreEnabled = false;
+eq("disabled setting refuses requests even on an existing listener", (await publicRpc({ jsonrpc: "2.0", id: 22, method: "tools/list" })).status, 404);
+let refusedDisabledStart = false;
+try { await startPublicMcp(); } catch { refusedDisabledStart = true; }
+check("disabled endpoint cannot be restarted directly", refusedDisabledStart);
+publicStoreEnabled = true;
+{
+  const body = JSON.stringify({ jsonrpc: "2.0", id: 23, method: "tools/call", params: { name: "t_echo", arguments: {} } });
+  const accepted = new Promise<void>(resolve => { observedPublicRequest = resolve; });
+  let finishBody!: () => void;
+  const response = new Promise<number>((resolve, reject) => {
+    const req = httpRequest({ hostname: "127.0.0.1", port: publicPort, path: `/mcp/${PUBLIC_SECRET}`, method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) } }, res => {
+      res.resume(); res.on("end", () => resolve(res.statusCode ?? 0));
+    });
+    req.on("error", reject);
+    req.flushHeaders();
+    finishBody = () => req.end(body);
+  });
+  await accepted;
+  observedPublicRequest = null;
+  publicStoreEnabled = false;
+  const before = fakeCalls.length;
+  finishBody();
+  eq("disable while request body arrives refuses dispatch", await response, 404);
+  eq("disabled buffered request does not execute a tool", fakeCalls.length, before);
+  publicStoreEnabled = true;
+}
 
 /* ── 合成会话注入：外部不带会话头，宿主却应该收到那条合成会话 ── */
 fakeCalls.length = 0;
@@ -454,7 +485,7 @@ eq("…放行任意来源（ChatGPT 的 Connector 不是扩展来源）", prefli
   configurePublicMcpStore({
     getEnabled: () => publicStoreEnabled,
     setEnabled: () => {},
-    getSecret: () => PUBLIC_SECRET,
+    getSecret: () => { observedPublicRequest?.(); return PUBLIC_SECRET; },
     setSecret: () => {},
     getSessionId: () => PUBLIC_SESSION,
     setSessionId: () => {},
@@ -542,7 +573,7 @@ eq("…放行任意来源（ChatGPT 的 Connector 不是扩展来源）", prefli
 configurePublicMcpStore({
   getEnabled: () => publicStoreEnabled,
   setEnabled: () => {},
-  getSecret: () => PUBLIC_SECRET,
+  getSecret: () => { observedPublicRequest?.(); return PUBLIC_SECRET; },
   setSecret: () => {},
   getSessionId: () => null,
   setSessionId: () => {},
@@ -574,7 +605,7 @@ let smokeFixedPort = 0;
 configurePublicMcpStore({
   getEnabled: () => publicStoreEnabled,
   setEnabled: () => {},
-  getSecret: () => PUBLIC_SECRET,
+  getSecret: () => { observedPublicRequest?.(); return PUBLIC_SECRET; },
   setSecret: () => {},
   getSessionId: () => PUBLIC_SESSION,
   setSessionId: () => {},
@@ -673,6 +704,10 @@ check("表里有替身库的工具", names.includes("library_probe"), names);
   const hasDelegate = () => host.listTools().some((t) => t.name === "mcode_agent_start");
   check("委派:开关关着时不报", !hasDelegate());
   delegateOn = true;
+  check("public MCP ignores legacy delegate setting in tools/list", !host.listTools("public").some(t => t.name.startsWith("mcode_agent_")));
+  const deniedPublicDelegate = await host.callTool("mcode_agent_start", { prompt: "must not run" }, { sessionId: "s1", audience: "public" });
+  check("public MCP rejects cached delegate tool calls", deniedPublicDelegate.isError === true, deniedPublicDelegate);
+  approvalCalls.length = 0;
   check("委派:host 建好之后才装配、再打开,也报得出来", hasDelegate());
   delegateOn = false;
   check("委派:关掉之后立刻从表里消失", !hasDelegate());
@@ -783,7 +818,7 @@ check("agent 工具进表：文件/搜索/系统进程/持久进程/技能", [
 // **工作流那 9 个 = 表里的 11 个减掉 2 个会话工具** —— `session_read_log` 与
 // `session_list`(2026-09-24 加)从公网摘掉了,见 `SESSION_LOG_TOOLS` 与上面那几条断言。
 // 这条数字就是防"谁又把它挂回来"或"谁不小心删了工具"。
-check("工具数量 = 替身 3 + 真工作流 9 + agent 41", names.length === 53, names.length);
+check("工具数量 = 替身 7 + 真工作流 9 + agent 41", names.length === 57, names.length);
 check(
   "同名工具只报一次",
   new Set(names).size === names.length,
@@ -1306,6 +1341,13 @@ sandboxValue = CWD;
   const savedRoot = process.env.MCODE_SMOKE_DATA_ROOT;
   const tmpRoot = mkdtempSync(path.join(tmpdir(), "mcode-ctx-root-"));
   process.env.MCODE_SMOKE_DATA_ROOT = tmpRoot;
+  const originalLibraryList = LibraryRepo.list;
+  let libraryReads = 0;
+  LibraryRepo.list = () => { libraryReads++; throw new Error("library must not be queried by default"); };
+  try {
+    const basic = await host.callTool("agent_context", {}, { sessionId: "s1" });
+    check("default context works without library access", basic.structuredContent?.writable_project === ctxB && libraryReads === 0, basic);
+  } finally { LibraryRepo.list = originalLibraryList; }
   const context = await host.callTool("agent_context", {}, { sessionId: "s1" });
   check(
     "agent_context 报的可写项目是**沙箱**那个(不是过期的 cwd)",
@@ -1313,7 +1355,21 @@ sandboxValue = CWD;
     context.structuredContent,
   );
   check("…并且明说这个能写", context.text.includes("可写"), context.text);
-  check("…文档库标成只读", context.text.includes("只读"), context.text);
+  check("default context excludes library details", !context.text.includes("## 资料库") && !("library_root" in (context.structuredContent ?? {})), context);
+  const libraryContext = await host.callTool("agent_context", { include_library: true }, { sessionId: "s1" });
+  check("explicit library context remains available/read-only", libraryContext.text.includes("资料库") && libraryContext.text.includes("只读"), libraryContext);
+  const noAuth = await host.callTool("agent_ssh_connect", { host: "127.0.0.1", username: "fixture" }, { sessionId: "ssh-contract" });
+  check("missing SSH auth is an error, not successful connection text", noAuth.isError === true, noAuth);
+  const conflictingAuth = await host.callTool("agent_ssh_connect", { host: "127.0.0.1", username: "fixture", password: "fixture", private_key_path: "/nonexistent-fixture-key" }, { sessionId: "ssh-contract" });
+  check("SSH refuses ambiguous auth before opening a key", conflictingAuth.isError === true && conflictingAuth.text.includes("一种"), conflictingAuth);
+  const badKey = await host.callTool("agent_ssh_connect", { host: "127.0.0.1", username: "fixture", private_key_path: "/nonexistent-fixture-key" }, { sessionId: "ssh-contract" });
+  check("SSH failure has structured state and error flag", badKey.isError === true && badKey.structuredContent?.state === "error" && typeof badKey.structuredContent?.connection_id === "string", badKey);
+  check("permanent SSH failure does not promise reconnection", !badKey.text.includes("稍后用 agent_ssh_status"), badKey);
+  const connectionIds = [...(await host.callTool("agent_ssh_status", {}, { sessionId: "ssh-contract" })).text.matchAll(/connection_id: (\S+)/g)].map(m => m[1]);
+  for (const connection_id of connectionIds) await host.callTool("agent_ssh_disconnect", { connection_id }, { sessionId: "ssh-contract" });
+  const tinyLog = await host.callTool("agent_remote_job_logs", { connection_id: "not-created", job_id: "fixture", max_bytes: 1 }, { sessionId: "ssh-contract" });
+  check("UTF8 log budget rejects less than one codepoint at schema boundary", tinyLog.isError === true && tinyLog.text.includes("参数不合法"), tinyLog);
+
   if (savedRoot === undefined) delete process.env.MCODE_SMOKE_DATA_ROOT;
   else process.env.MCODE_SMOKE_DATA_ROOT = savedRoot;
   rmSync(tmpRoot, { recursive: true, force: true });
@@ -1432,13 +1488,110 @@ check("…而且真的写出来了", existsSync(path.join(CWD, "bash-inside.txt"
 {
   const pub = host.listTools("public").map((t) => t.name);
   check("公网表:没有工作流工具", !pub.some((n) => n.startsWith("workflow_") || n === "agent_profile_save"), pub);
-  check("公网表:有库的只读工具", pub.includes("library_probe"), pub);
+  check("公网表:有库的只读工具", pub.includes("library_query"), pub);
   check("公网表:库的写工具不给", !pub.includes("library_write"), pub);
-  check("公网表:agent 文件工具还在", pub.includes("agent_read_file") && pub.includes("agent_skill_read"), pub);
+  check("公网表:agent 文件工具还在", pub.includes("agent_read_file") && pub.includes("agent_skill"), pub);
   check("公网表:名字不重复", new Set(pub).size === pub.length, pub);
   check("本机表:工作流照旧在", host.listTools().map((t) => t.name).includes("workflow_list"));
   const wfPublic = await host.callTool("workflow_list", {}, { sessionId: "s1", audience: "public" });
   check("公网:调工作流工具被拒", wfPublic.isError === true && wfPublic.text.includes("没有这个工具"), wfPublic.text);
+}
+
+/* Public compact regressions: temporary projects only; no global fixture writes. */
+{
+  const project = mkdtempSync(path.join(tmpdir(), "mcode-public-project-"));
+  const outside = mkdtempSync(path.join(tmpdir(), "mcode-public-other-"));
+  const skillDir = path.join(project, ".claude", "skills", "folder-name");
+  const foreign = path.join(outside, ".mcode", "skills", "foreign");
+  mkdirSync(skillDir, { recursive: true }); mkdirSync(foreign, { recursive: true });
+  writeFileSync(path.join(skillDir, "SKILL.md"), "---\nname: project-skill\ndescription: analyze tables\n---\nPROJECT_SKILL_BODY\n" + "长行".repeat(2000));
+  writeFileSync(path.join(foreign, "SKILL.md"), "---\nname: forbidden-global\n---\nSECRET_SKILL_BODY");
+  writeFileSync(path.join(project, "large.txt"), "x".repeat(90000));
+  const oldSandbox = sandboxValue, oldCwd = cwdValue;
+  sandboxValue = project; cwdValue = outside; readCheckImpl = () => null;
+  const ctx = { sessionId: "s1", audience: "public" as const };
+  const invoke = (name: string, args: Record<string, unknown> = {}) => host.callTool(name, args, ctx);
+  try {
+    eq("compact public tool count", host.listTools("public").length, 39);
+    const removed = ["agent_read_files", "agent_skill_list", "agent_skill_read", "agent_process_sessions", "library_collections", "library_search", "library_items", "library_links"];
+    for (const name of removed) {
+      check(`compact absent ${name}`, !host.listTools("public").some(t => t.name === name));
+      check(`compact rejects legacy call ${name}`, (await invoke(name)).isError === true);
+    }
+    check("desktop batch and skill tools retained", host.listTools().some(t => t.name === "agent_read_files") && host.listTools().some(t => t.name === "agent_skill_list"));
+    for (const name of ["agent_skill", "library_query", "agent_read_file"]) {
+      check(`compact readonly annotation ${name}`, host.listTools("public").find(t => t.name === name)?.annotations?.readOnlyHint === true);
+    }
+    const projectContext = await invoke("agent_context");
+    check("context includes lightweight project skill index", String(JSON.stringify(projectContext.structuredContent?.project_skills)).includes("project-skill") && !projectContext.text.includes("PROJECT_SKILL_BODY"), projectContext);
+    const list = await invoke("agent_skill", { query: "tables" });
+    check("project skill uses bound project, not cwd", list.text.includes("project-skill") && !list.text.includes("forbidden-global"), list);
+    check("skill index is metadata only", !list.text.includes("PROJECT_SKILL_BODY"), list);
+    check("skill query has no false hit", !(await invoke("agent_skill", { query: "unrelated" })).text.includes("project-skill"));
+    mkdirSync(path.join(project, ".claude", "skills", "other"), { recursive: true });
+    writeFileSync(path.join(project, ".claude", "skills", "other", "SKILL.md"), "---\nname: second-skill\ndescription: other task\n---\nSECOND_BODY");
+    const indexPage = await invoke("agent_skill", { limit: 1 });
+    check("skill index is paginated", indexPage.structuredContent?.has_more === true && indexPage.structuredContent?.next_offset === 1 && indexPage.structuredContent?.total === 2, indexPage);
+    const indexPage2 = await invoke("agent_skill", { offset: 1, limit: 1 });
+    check("skill index continuation is distinct", indexPage2.text.includes("second-skill") && indexPage2.structuredContent?.has_more === false, indexPage2);
+    const read = await invoke("agent_skill", { action: "read", name: "project-skill", page: { max_chars: 1000 } });
+    check("skill read preserves lossless pagination", read.structuredContent?.has_more === true && typeof read.structuredContent?.sha256 === "string", read);
+    const continuation = await invoke("agent_skill", { action: "read", name: "project-skill", page: { offset: read.structuredContent?.next_offset ?? 1, column_offset: read.structuredContent?.next_column_offset ?? 0, expected_sha256: read.structuredContent?.sha256 ?? "0".repeat(64) } });
+    check("skill continuation succeeds", !continuation.isError, continuation);
+    check("skill never falls back global", (await invoke("agent_skill", { action: "read", name: "forbidden-global" })).isError === true);
+    check("skill read requires name", (await invoke("agent_skill", { action: "read" })).isError === true);
+    const batch = await invoke("agent_read_file", { paths: ["large.txt", "missing.txt"], max_chars: 1000 });
+    const files = batch.structuredContent?.files as Array<Record<string, unknown>> | undefined;
+    check("batch preserves successful metadata and partial error", files?.length === 2 && files[0]?.has_more === true && files[1]?.isError === true && !batch.isError, batch);
+    const budget = await invoke("agent_read_file", { paths: ["large.txt", "large.txt", "large.txt", "large.txt"], max_chars: 60000 });
+    check("batch bounded with explicit pending requests", (budget.structuredContent?.pending_files as unknown[])?.length === 2, budget);
+    check("read rejects ambiguous path and paths", (await invoke("agent_read_file", { path: "large.txt", paths: ["large.txt"] })).isError === true);
+    const version = await invoke("agent_read_file", { paths: [{ path: "large.txt", expected_sha256: "0".repeat(64) }] });
+    check("batch enforces per-file expected hash", (version.structuredContent?.files as Array<Record<string, unknown>>)?.[0]?.isError === true, version);
+    const priorCalls = __handlerCalls.length;
+    for (const [action, params] of Object.entries({ collections: {}, search: { query: "fixture" }, items: { collectionId: "c1" }, links: { itemId: "i1" } })) {
+      const out = await invoke("library_query", { action, ...params });
+      check(`library dispatch ${action}`, !out.isError && out.text.includes(`"action":"${action}"`), out);
+    }
+    eq("four readonly library handlers dispatched", __handlerCalls.length - priorCalls, 4);
+    const beforeInvalid = __handlerCalls.length;
+    check("library missing argument rejected", (await invoke("library_query", { action: "items" })).isError === true);
+    check("library irrelevant argument rejected", (await invoke("library_query", { action: "collections", itemId: "i1" })).isError === true);
+    check("library mutation action rejected", (await invoke("library_query", { action: "remove", itemId: "i1" })).isError === true);
+    eq("invalid library input has no handler effects", __handlerCalls.length, beforeInvalid);
+    check("public missing-id process read still lists own sessions", !(await invoke("agent_process_read")).isError);
+    const forbiddenFile = path.join(foreign, "SKILL.md");
+    check("generic read cannot use library allowlist for global skills", (await invoke("agent_read_file", { path: forbiddenFile })).isError === true);
+    check("desktop generic read unchanged", !(await host.callTool("agent_read_file", { path: forbiddenFile }, { sessionId: "s1" })).isError);
+    symlinkSync(path.join(outside, ".mcode", "skills"), path.join(project, "escape"), process.platform === "win32" ? "junction" : "dir");
+    symlinkSync(skillDir, path.join(project, "safe-alias"), process.platform === "win32" ? "junction" : "dir");
+    check("in-project symlink is still readable", !(await invoke("agent_read_file", { path: "safe-alias/SKILL.md" })).isError);
+    symlinkSync(foreign, path.join(project, ".claude", "skills", "alias"), process.platform === "win32" ? "junction" : "dir");
+    check("skill scan filters external symlink before reading metadata", !(await invoke("agent_skill")).text.includes("forbidden-global"));
+    check("edit cannot read or mutate through global alias", (await invoke("agent_edit_file", { path: "escape/foreign/SKILL.md", old_string: "SECRET_SKILL_BODY", new_string: "changed" })).isError === true);
+    check("create cannot write through global alias parent", (await invoke("agent_write_file", { path: "escape/foreign/new.txt", content: "must not write" })).isError === true && !existsSync(path.join(foreign, "new.txt")));
+    check("direct alias read denied", (await invoke("agent_read_file", { path: "escape/foreign/SKILL.md" })).isError === true);
+    for (const [name, args] of [
+      ["agent_list_dir", { path: ".", depth: 4 }],
+      ["agent_glob", { path: ".", pattern: "**/*", include_hidden: true }],
+      ["agent_grep", { path: ".", pattern: "SECRET_SKILL_BODY", include_hidden: true }],
+      ["agent_search_start", { path: ".", pattern: "SECRET_SKILL_BODY", search_type: "content", include_hidden: true, wait_ms: 1000 }],
+    ] as const) {
+      const out = await invoke(name, args);
+      check(`recursive public guard ${name}`, !out.isError && (name === "agent_grep" ? out.structuredContent?.count === 0 : !out.text.includes("SECRET_SKILL_BODY")) && !out.text.includes("escape") && !out.text.includes("forbidden-global"), out);
+    }
+    const backgroundFiles = await invoke("agent_search_start", { path: ".", pattern: "escape", search_type: "files", include_hidden: true, wait_ms: 1000 });
+    check("background file walk skips external aliases", backgroundFiles.text.includes("total_results: 0"), backgroundFiles);
+    sandboxValue = null;
+    check("unbound public skill refuses cwd fallback", (await invoke("agent_skill")).isError === true);
+  } finally {
+    sandboxValue = oldSandbox; cwdValue = oldCwd; readCheckImpl = () => undefined;
+    // Remove junctions before temporary roots; never recursively follow a junction.
+    rmSync(path.join(project, "safe-alias"), { force: true, recursive: true });
+    rmSync(path.join(project, "escape"), { force: true, recursive: true });
+    rmSync(path.join(project, ".claude", "skills", "alias"), { force: true, recursive: true });
+    rmSync(project, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true });
+  }
 }
 
 // 关掉沙箱(null)= 不限制 —— 这条防的是"顺手给所有会话都套上沙箱",那会改掉

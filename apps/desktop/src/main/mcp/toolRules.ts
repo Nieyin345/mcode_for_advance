@@ -111,6 +111,7 @@ const MCP_TOOL_NAME_RE = /^mcp__(.+?)__(.+)$/;
  * 所以这里不必再问"是哪个 server 的"。
  */
 export function isReadOnlyToolName(bareName: string): boolean {
+  if (bareName === "agent_skill" || bareName === "library_query") return true;
   for (const set of Object.values(READONLY_BY_SERVER)) {
     if (set.has(bareName)) return true;
   }

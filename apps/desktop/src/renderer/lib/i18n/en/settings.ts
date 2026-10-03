@@ -352,9 +352,7 @@ export const en = {
   "settings.remoteControl.fixedPortHint":
     "Required for your own domain (the Cloudflare ingress hard-codes a port); 17331 is a good default. Empty = random for the quick tunnel, 17331 for your own domain. Saving rebinds immediately, no restart needed. If the port is taken, startup fails loudly and will NOT silently pick another — silently moving would leave Cloudflare pointing at nothing: unreachable from the internet while everything looks fine locally. Listening now: {port}",
   "settings.remoteControl.saveTunnel": "Save tunnel settings",
-  "settings.remoteControl.delegateLabel": "Let external AI drive this machine's agent",
-  "settings.remoteControl.delegateWarning":
-    "⚠️ Once on, an outside AI can hand a whole task to the local mcode agent instead of just reading and writing files — it runs a full turn with your skills, workflows and memory, editing files and running commands, with no approval prompts. Each task runs in a separate \"External AI delegation\" conversation you can watch in the sidebar. Leave it off if unsure.",
+  "settings.remoteControl.basicToolsOnly": "Public MCP provides basic tools and on-demand read-only library queries, not agent delegation, workflow management or conversation history. Disabling the endpoint disconnects MCP; externally managed tunnels must be stopped separately.",
   "settings.remoteControl.tokenClear": "Clear saved token",
   "settings.remoteControl.externalProbing": "Probing this hostname from the internet…",
   "settings.remoteControl.externalReady": "Public probe passed: hostname → tunnel → local port all reachable",

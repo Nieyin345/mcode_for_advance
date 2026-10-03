@@ -586,7 +586,8 @@ function scanMainHandlers(globals: Map<string, string>): HandlerScan {
 /* ────────────────────── 判据 A:每一条推送通道都要有人发 ────────────────── */
 
 /**
- * 主进程把事件送出界面的唯一出口是 `sendToRenderer(channel, …)`
+ * 主进程通常通过 `sendToRenderer(channel, …)` 推送；市场进度通过
+ * 请求所属的 `sender.send(channel, …)` 定向发送，不能为满足扫描器而广播。
  * (`main/window.ts`)。推送方向的判据是**两边的名单必须相等**:
  * preload 在监听谁,主进程就得发给谁;主进程发给谁,preload 就得有人听。
  * 少一边的症状:界面订阅了一个永不响的通道(或者主进程在往虚空里发)。
@@ -595,7 +596,7 @@ function sentToRendererChannels(): Set<string> {
   const out = new Set<string>();
   for (const path of walk(MAIN)) {
     const src = read(path);
-    for (const m of src.matchAll(/sendToRenderer\(\s*(?:IPC\.([A-Z0-9_]+)|"([^"]+)")/g)) {
+    for (const m of src.matchAll(/\b(?:sendToRenderer|sender\.send)\(\s*(?:IPC\.([A-Z0-9_]+)|"([^"]+)")/g)) {
       const channel = m[2] ?? (m[1] ? channelOf(m[1]) : undefined);
       if (channel) out.add(channel);
     }
@@ -849,17 +850,17 @@ check(
 
 console.log("\n推送方向:preload 监听的每一条,主进程都要发得出去");
 diff(
-  "preload 订阅的每个推送通道,主进程都 sendToRenderer 过",
+  "preload 订阅的每个推送通道,主进程都有推送出口",
   [...pushChannels].sort(),
   [...sentChannels].sort(),
   "preload.on",
-  "main.sendToRenderer",
+  "main.push",
 );
 diff(
-  "主进程 sendToRenderer 的每个通道,preload 都有人听",
+  "主进程推送的每个通道,preload 都有人听",
   [...sentChannels].sort(),
   [...pushChannels].sort(),
-  "main.sendToRenderer",
+  "main.push",
   "preload.on",
 );
 

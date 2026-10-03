@@ -5,8 +5,8 @@
  *
  * 工具表([libraryMcpTools] / [workflowMcpTools] / [agentMcpTools])就是进程内那些
  * server 用的那份,这里只是**换一种包装**:那边包给 SDK(`toSdkTools`),这边包成
- * {@link McpToolHost} 报给扩展。所以"网页端能调什么"永远等于"桌面端能调什么" ——
- * 加一个工具只需要在表里加一处,不会出现"桌面有、网页没有"的漏项。
+ * {@link McpToolHost} 报给扩展。基础声明共用；公网再经 publicToolSpecs 的精简只读适配表，
+ * 不把本机工作流、完整 Agent 或全局技能暴露出去。桌面内部工具不随公网合并。
  *
  * agent 工具段(`agent_*`,读/写/编辑/列目录/glob/grep/bash/技能)是网页端自己的
  * "通用 agent 基础操作":桌面 claude 引擎有原生 Read/Write/Bash,网页模型没有 ——
@@ -41,6 +41,7 @@
  * 那时只能拒绝(见 `mcpEndpoint.ts` 的 `MCODE_SESSION_HEADER`)。宁可让模型收到
  * "这次调用没带会话标识",也不能在没有闸门的情况下静默执行写操作。
  */
+import { compactPublicTools, PUBLIC_TOOL_MIGRATIONS } from "@main/mcp/publicToolSpecs.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
@@ -198,13 +199,10 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
   // ── 公网那张表(ChatGPT 直连,2026-10-02 用户定):**不给工作流那组**(工作流 / 自动化
   // 不需要远程 AI 去改),**给资料库的只读那组**(用户要远程 AI「能看我的资料库」)。
   // 资料库的写工具(搬、删、改名、写笔记、导入)一个都不给 —— 这条路免审批。
-  // 库里的文件本身用 `agent_read_*` 读:沙箱对资料库 / 技能库开了只读门(见
+  // 库里的文件本身用 `agent_read_*` 读；公网额外禁止全局技能，技能只属于绑定项目(见
   // `sandboxReadPolicy.ts`,守屏蔽规则)。
   // `extraTools`(测试替身)不进这张表 —— 公网表要验的就是生产给出去的那一份。
-  const publicSpecs: McpToolSpec[] = [
-    ...agentSpecs,
-    ...libraryMcpTools().filter((spec) => LIBRARY_READONLY_TOOLS.has(spec.name)),
-  ];
+  const publicSpecs = compactPublicTools(agentSpecs, libraryMcpTools().filter(spec => LIBRARY_READONLY_TOOLS.has(spec.name)), sessionId => deps.sandboxRootFor?.(sessionId) ?? null);
   // ── 本机浏览器扩展那张表(`/mcp`):照旧。
   const specs: McpToolSpec[] = [
     // ⚠️ **`includeSessionLogs: false`（2026-09-24）—— 读用户对话记录那组工具
@@ -268,20 +266,14 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
     // 结果（见 DEFAULT_TEXT_OUTPUT_SHAPE 那段）。两者在 `callTool` 里一起兜住。
     outputSchema: outputSchemaOf(spec),
   });
-  /**
-   * 「指挥本机 agent」那一组(默认空,用户在「远程控制」里打开之后才有)。它与上面
-   * `includeSessionLogs: false` 的取舍是一体两面:叫醒本机会话这件事在免审批通路上默认
-   * 不给,要给就得用户明确点头一次。
-   *
-   * ⚠️ **每次现取,不进静态表。** 这个 host 在启动时就建好了,而那时委派的依赖还没装配
-   * (`initAgentDelegate` 在它之后跑)—— 放进静态表的话,这组工具**永远**报不出来;反过来,
-   * 用户关掉开关之后它也不会消失、还能照常调用。现取 = 开关一拨立刻生效(两个方向都是)。
-   */
+  /** Keep local delegation's existing dynamic dependency/enablement behavior.
+   * Public MCP must never append or dispatch these tools, even if an old saved
+   * flag is enabled or a client retained their former tool names. */
   const delegateSpecs = (): McpToolSpec[] => delegateMcpTools();
 
   return {
     listTools(audience): McpToolInfo[] {
-      const dynamic = delegateSpecs();
+      const dynamic = audience === "public" ? [] : delegateSpecs();
       let base: McpToolInfo[];
       if (audience === "public") {
         if (!listedPublic) listedPublic = publicSpecs.map(toInfo);
@@ -295,8 +287,8 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
 
     async callTool(name, args, ctx): Promise<McpToolCallResult> {
       const table = ctx.audience === "public" ? byNamePublic : byName;
-      const spec = table.get(name) ?? delegateSpecs().find((s) => s.name === name);
-      if (!spec) return { text: `没有这个工具:${name}`, isError: true };
+      const spec = table.get(name) ?? (ctx.audience === "public" ? undefined : delegateSpecs().find((s) => s.name === name));
+      if (!spec) return { text: ctx.audience === "public" && Object.hasOwn(PUBLIC_TOOL_MIGRATIONS, name) ? `工具已合并，请刷新工具列表并使用 ${PUBLIC_TOOL_MIGRATIONS[name]}` : `没有这个工具:${name}`, isError: true };
 
       const sessionId = ctx.sessionId;
       if (!sessionId) return { text: NO_SESSION_TEXT, isError: true };
@@ -333,7 +325,7 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
         }
       }
 
-      const out = await spec.handler(parsed.data, { sessionId });
+      const out = await spec.handler(parsed.data, { sessionId, audience: ctx.audience === "public" ? "public" : "local" });
       const textProjection = out.content
         .filter((c): c is Extract<(typeof out.content)[number], { type: "text" }> => c.type === "text")
         .map((c) => c.text)

@@ -357,9 +357,7 @@ export const zh = {
   "settings.remoteControl.fixedPortHint":
     "自有域名必须填（Cloudflare 那条 ingress 要写死端口），建议 17331；留空时快速隧道用随机端口、自有域名自动用 17331。保存后立即换绑，不用重启。端口被占用时会直接报错**不会**悄悄换一个 —— 换了的话 Cloudflare 就指到空处，公网连不上而本机一切正常。此刻在听：{port}",
   "settings.remoteControl.saveTunnel": "保存隧道配置",
-  "settings.remoteControl.delegateLabel": "允许外部 AI 支使本机 agent",
-  "settings.remoteControl.delegateWarning":
-    "⚠️ 打开后，外面的 AI 不再只是读写文件，而是能把整件事丢给本机 mcode agent 去做（它会带着你的技能、工作流、记忆跑一整轮，期间可以改文件、执行命令，全程不弹审批）。任务跑在单独的「外部 AI 委派」会话里，你能在左栏看到每一轮。不确定就关着。",
+  "settings.remoteControl.basicToolsOnly": "公网 MCP 仅提供基础工具与按需资料库只读查询，不提供完整 Agent 委派、工作流管理或对话历史。关闭端点会断开当前 MCP；外部隧道进程需由你自行管理。",
   "settings.remoteControl.tokenClear": "清除已存的 Token",
   "settings.remoteControl.externalProbing": "正在从公网探测这个域名…",
   "settings.remoteControl.externalReady": "公网探测通过：域名 → 隧道 → 本机端口整条是通的",

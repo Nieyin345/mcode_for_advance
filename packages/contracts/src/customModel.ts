@@ -400,7 +400,7 @@ export interface PublicMcpStatus {
   /** 手机伴侣服务此刻在不在听、听哪个端口 —— 用来核对 Cloudflare 那条 ingress
    *  写的端口对不对(写错的话公网访问手机端会连接被拒,而本机一切正常)。 */
   mobilePort: number;
-  /** 外面的 AI 能不能支使本机 mcode agent 跑整轮(默认关,见设置键上那段警告)。 */
+  /** @deprecated Public MCP no longer exposes whole-Agent delegation; always false. */
   agentDelegate: boolean;
   /**
    * **按项目分出来的额外链接**(多项目并行)。每条 = 一个项目 + 一把自己的密钥 +
@@ -470,6 +470,6 @@ export interface PublicMcpTunnelConfig {
   fixedPort?: number;
   /** 清掉已存的 Tunnel Token(`token` 留空只表示"沿用",没法表达"删掉")。 */
   clearToken?: boolean;
-  /** 把 mcode agent 本身交给外面的 AI 支使。缺席 = 不改动。默认关,见设置键上那段警告。 */
+  /** @deprecated Compatibility only: true is rejected; false may clear the legacy setting. */
   agentDelegate?: boolean;
 }

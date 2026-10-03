@@ -10,10 +10,12 @@ import {
   regeneratePublicMcpProjectLinkSecret,
   removePublicMcpProjectLink,
   setPublicMcpEnabled,
+  startPublicMcpTunnel,
+  setPublicMcpTunnelConfig,
 } from "../../src/main/providers/bridge/publicMcpSession.js";
 import { resetRepositories, SessionRepo, SettingRepo } from "./stubs/repositories.js";
 import { extrasForTest, resetServer, serverCounts, setStartFailure, storeForTest } from "./stubs/publicMcpServer.js";
-import { resetTunnel, tunnelStops } from "./stubs/tunnelManager.js";
+import { resetTunnel, tunnelStops, tunnelCalls } from "./stubs/tunnelManager.js";
 
 function equal(label: string, actual: unknown, expected: unknown): void {
   if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, got ${String(actual)}`);
@@ -87,4 +89,40 @@ SettingRepo.set("publicMcp.projectLinks", "{not json");
 equal("corrupt links setting = no links", (store.listProjectLinks() as unknown[]).length, 0);
 SettingRepo.set("publicMcp.projectLinks", JSON.stringify([{ projectId: "p-a", secret: "short", sessionId: null }]));
 equal("too-short secret is ignored", (store.listProjectLinks() as unknown[]).length, 0);
+await setPublicMcpEnabled(false);
+equal("disable persists off", SettingRepo.get(PUBLIC_MCP_ENABLED_SETTING_KEY), "off");
+equal("disable stops tunnel", tunnelStops() > 0, true);
+equal("disable stops server", serverCounts().stops > 0, true);
+SettingRepo.set("publicMcp.agentDelegate", "1");
+equal("legacy delegate flag does not advertise public delegation", extrasForTest().tunnelConfig().agentDelegate, false);
+const beforeMode = SettingRepo.get("publicMcp.tunnelMode");
+await rejects("legacy clients cannot re-enable delegation", () => setPublicMcpTunnelConfig({ mode: "external", hostname: "fixture.invalid", agentDelegate: true }));
+equal("rejected delegate update does not change tunnel config", SettingRepo.get("publicMcp.tunnelMode"), beforeMode);
+resetRepositories([{ id: "p-a", name: "Alpha", path: "/tmp/alpha", archived: false }]);
+resetServer(); resetTunnel(); initPublicMcp();
+await setPublicMcpEnabled(false);
+startPublicMcpTunnel();
+equal("disabled endpoint cannot launch a tunnel", tunnelCalls().length, 0);
+await setPublicMcpTunnelConfig({ mode: "quick", hostname: "" });
+const enabledStatus = await setPublicMcpEnabled(true);
+equal("enable status reflects actual backend flag", enabledStatus.enabled, true);
+startPublicMcpTunnel();
+equal("quick mode starts a quick tunnel", tunnelCalls()[0]?.config.mode, "quick");
+equal("quick tunnel targets the actual listener", tunnelCalls()[0]?.port, enabledStatus.port);
+SettingRepo.set("publicMcp.mobileHostname", "mobile-fixture.invalid");
+await setPublicMcpTunnelConfig({ mode: "named", hostname: "https://named-fixture.invalid/", token: "isolated-fixture-token", fixedPort: 17331 });
+equal("named mode rebinds the listener", serverCounts().starts, 2);
+equal("named mode restarts the active tunnel", tunnelCalls()[1]?.config.mode, "named");
+equal("named tunnel uses configured port", tunnelCalls()[1]?.port, 17331);
+equal("hostname is normalized before use", tunnelCalls()[1]?.config.hostname, "named-fixture.invalid");
+equal("MCP config does not overwrite mobile hostname", SettingRepo.get("publicMcp.mobileHostname"), "mobile-fixture.invalid");
+await setPublicMcpTunnelConfig({ mode: "external", hostname: "external-fixture.invalid", fixedPort: 17331 });
+startPublicMcpTunnel();
+equal("external mode never spawns a managed tunnel", tunnelCalls().length, 2);
+equal("changing to external stops the old managed tunnel", tunnelStops() >= 3, true);
+await setPublicMcpTunnelConfig({ mode: "external", hostname: "external-fixture.invalid", clearToken: true });
+equal("clear token really removes the stored token", extrasForTest().tunnelConfig().tokenHint, "");
+const disabledStatus = await setPublicMcpEnabled(false);
+equal("disable returns backend off", disabledStatus.enabled, false);
+equal("disable returns no listening port", disabledStatus.port, 0);
 console.log("public MCP session lifecycle smoke passed");

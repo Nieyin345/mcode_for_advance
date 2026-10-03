@@ -1,5 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import fs, { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { createServer as createAgentServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -140,31 +142,23 @@ try {
   rmSync(home, { recursive: true, force: true });
 }
 
-console.log("\n[2b] pure helpers: ssh_config / utf-8 safe cursor / exec pid marker");
+console.log("\n[2b] pure helpers: utf-8 safe cursor / exec pid marker");
 {
-  const cfgText = [
-    "Host *.github.com",
-    "  User git",
-    "Host qkd qkd2",
-    "  HostName clnode302.clemson.cloudlab.us",
-    "  User qinglong",
-    "  Port 2222",
-    "  IdentityFile ~/.ssh/qkd_rl/qkd_rl_deploy",
-    "  IdentitiesOnly yes",
-    "Host *",
-    "  User fallback",
-    "  IdentityFile ~/.ssh/id_other",
-  ].join("\n");
-  const hit = __remoteSshTest.resolveSshConfig(cfgText, "qkd", "/h");
-  check("别名解析 HostName/User/Port", hit.hostName === "clnode302.clemson.cloudlab.us" && hit.user === "qinglong" && hit.port === 2222, hit);
-  check("IdentityFile 展开 ~ 并按顺序收集", hit.identityFiles.length === 2 && hit.identityFiles[0].replace(/\\/g, "/") === "/h/.ssh/qkd_rl/qkd_rl_deploy", hit.identityFiles);
-  const other = __remoteSshTest.resolveSshConfig(cfgText, "c240g5-110223.wisc.cloudlab.us", "/h");
-  check("不匹配的主机只吃到 Host * 段", other.hostName === undefined && other.user === "fallback", other);
-
   const zh = Buffer.from("训练", "utf8"); // 6 字节
   const encodedCut = zh.subarray(0, 4).toString("base64");
   const cut = __remoteSshTest.parseJobLogOutput(`SIZE=6\nDONE=0\nDATA=${encodedCut}\n`, 0, 4);
   check("读满 max_bytes 时不把半个 UTF-8 字符算进 next_cursor", cut.nextCursor === 3 && cut.text === "训" && cut.truncated, cut);
+
+  const unicode = Buffer.from("训练😀日志", "utf8");
+  let cursor = 0; let output = "";
+  while (cursor < unicode.length) {
+    const encoded = unicode.subarray(cursor, cursor + 4).toString("base64");
+    const page = __remoteSshTest.parseJobLogOutput(`SIZE=${unicode.length}\nDONE=1\nDATA=${encoded}\n`, cursor, 4);
+    check("minimum accepted budget advances UTF8 cursor", page.nextCursor > cursor, page);
+    if (page.nextCursor <= cursor) break;
+    output += page.text; cursor = page.nextCursor;
+  }
+  check("minimum-budget log pages preserve Chinese and emoji", output === "训练😀日志", output);
 
   const sp = __remoteSshTest.splitExecPid("__MCODE_EXEC_PID=4242\nreal err\n");
   check("exec 进程号标记能解析并从 stderr 剥掉", sp?.pid === 4242 && sp.rest === "real err\n", sp);
@@ -199,7 +193,30 @@ if (!addr || typeof addr === "string") throw new Error("fake ssh server missing 
 const mgr = createAgentRemoteSshManager();
 const owner = "sess-a";
 const conn = await mgr.connect({ ownerSessionId: owner, host: "127.0.0.1", port: addr.port, username: "u", password: "p", keepaliveIntervalMs: 5000 });
+let rejectedImplicitAuth = false;
+try { await mgr.connect({ ownerSessionId: owner, host: "127.0.0.1", port: addr.port, username: "u" }); }
+catch { rejectedImplicitAuth = true; }
+check("credentials must be explicit even when another connection is cached", rejectedImplicitAuth);
+let rejectedTinyBudget = false;
+try { await mgr.jobLogs({ ownerSessionId: owner, connectionId: conn.connectionId, jobId: "fixture", stream: "stdout", maxBytes: 1 }); }
+catch (e) { rejectedTinyBudget = /max_bytes/.test(String(e)); }
+check("tiny UTF8 budget rejects before remote execution", rejectedTinyBudget);
+
 check("initial ssh handshake reaches ready", conn.state === "ready", conn);
+const changedAuth = await mgr.connect({ ownerSessionId: owner, host: "127.0.0.1", port: addr.port, username: "u", password: "different" });
+check("different configured auth does not reuse an authenticated session", changedAuth.connectionId !== conn.connectionId);
+await mgr.disconnect(owner, changedAuth.connectionId);
+for (const invalid of [
+  { username: "" },
+  { port: 0 },
+  { password: "p", privateKeyPath: "/nonexistent-fixture-key" },
+  { password: "p", passphrase: "invalid-without-key" },
+]) {
+  let rejected = false;
+  try { await mgr.connect({ ownerSessionId: owner, host: "127.0.0.1", port: addr.port, username: "u", password: "p", ...invalid }); } catch { rejected = true; }
+  check("explicit SSH configuration rejects missing/ambiguous fields", rejected);
+}
+
 const exec1 = await mgr.exec(owner, conn.connectionId, "echo one");
 check("short remote exec works", exec1.stdout.includes("echo one"), exec1);
 let isolated = false;
@@ -252,6 +269,71 @@ console.log("\n[4] auth failure must not auto-reconnect");
   check("错误信息提示 private_key_path", (later.lastError ?? "").includes("private_key_path"), later.lastError);
   mgr2.disposeOwner("o");
   await new Promise<void>((resolve) => denyServer.close(() => resolve()));
+}
+
+console.log("\n[4b] explicitly configured SSH agent (named pipe on Windows)");
+{
+  const agentHome = mkdtempSync(path.join(tmpdir(), "mcode-agent-fixture-"));
+  const agentPath = process.platform === "win32" ? `\\\\.\\pipe\\mcode-agent-fixture-${process.pid}-${Date.now()}` : path.join(agentHome, "agent.sock");
+  const parsed = ssh2.utils.parseKey(hostKey);
+  if (parsed instanceof Error || Array.isArray(parsed)) throw new Error("fixture private key did not parse");
+  const u32 = (n: number) => { const b = Buffer.alloc(4); b.writeUInt32BE(n); return b; };
+  const str = (b: Buffer) => Buffer.concat([u32(b.length), b]);
+  let identities = 0; let signatures = 0;
+  const sockets = new Set<import("node:net").Socket>();
+  const agent = createAgentServer(socket => {
+    sockets.add(socket); socket.on("close", () => sockets.delete(socket)); socket.on("error", () => {});
+    let pending = Buffer.alloc(0);
+    socket.on("data", chunk => {
+      pending = Buffer.concat([pending, chunk]);
+      while (pending.length >= 4 && pending.length >= pending.readUInt32BE(0) + 4) {
+        const size = pending.readUInt32BE(0); const request = pending.subarray(4, size + 4); pending = pending.subarray(size + 4);
+        let response: Buffer;
+        if (request[0] === 11) {
+          identities++;
+          response = Buffer.concat([Buffer.from([12]), u32(1), str(parsed.getPublicSSH()), str(Buffer.from("isolated-fixture"))]);
+        } else if (request[0] === 13) {
+          signatures++;
+          let offset = 1;
+          const read = () => { const n = request.readUInt32BE(offset); offset += 4; const result = request.subarray(offset, offset + n); offset += n; return result; };
+          read(); const data = read(); const flags = request.readUInt32BE(offset);
+          const algorithm = flags & 4 ? "rsa-sha2-512" : flags & 2 ? "rsa-sha2-256" : "ssh-rsa";
+          const signature = parsed.sign(data, flags & 4 ? "sha512" : flags & 2 ? "sha256" : "sha1");
+          if (signature instanceof Error) throw signature;
+          response = Buffer.concat([Buffer.from([14]), str(Buffer.concat([str(Buffer.from(algorithm)), str(signature)]))]);
+        } else response = Buffer.from([5]);
+        socket.write(Buffer.concat([u32(response.length), response]));
+      }
+    });
+  });
+  await new Promise<void>((resolve, reject) => { agent.once("error", reject); agent.listen(agentPath, resolve); });
+  const target = new SshServer({ hostKeys: [hostKey] }, client => {
+    client.on("error", () => {});
+    client.on("authentication", ctx => { if (ctx.method === "publickey") ctx.accept(); else ctx.reject(["publickey"]); });
+  });
+  await new Promise<void>(resolve => target.listen(0, "127.0.0.1", resolve));
+  const targetAddress = target.address();
+  if (!targetAddress || typeof targetAddress === "string") throw new Error("fixture target missing port");
+  const explicit = createAgentRemoteSshManager();
+  const nativeExistsSync = fs.existsSync;
+  try {
+    // OpenSSH service pipes and Node-created pipes have different ACL/stat behavior.
+    // Deterministically reproduce a connectable endpoint whose filesystem probe is false.
+    fs.existsSync = (candidate) => String(candidate) === agentPath ? false : nativeExistsSync(candidate);
+    syncBuiltinESMExports();
+    check("fixture simulates a false filesystem probe for the selected agent", !existsSync(agentPath));
+    const connected = await explicit.connect({ ownerSessionId: "agent-fixture", host: "127.0.0.1", port: targetAddress.port, username: "fixture", agentPath });
+    check("explicit agent completes real ssh2 authentication", connected.state === "ready", connected);
+    check("the selected agent lists identities and signs", identities > 0 && signatures > 0, { identities, signatures });
+  } finally {
+    fs.existsSync = nativeExistsSync;
+    syncBuiltinESMExports();
+    explicit.disposeOwner("agent-fixture");
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>(resolve => target.close(() => resolve()));
+    await new Promise<void>(resolve => agent.close(() => resolve()));
+    rmSync(agentHome, { recursive: true, force: true });
+  }
 }
 
 console.log("\n[5] exec through a real shell: stdin EOF, pid marker hidden, timeout kills");

@@ -145,6 +145,7 @@ export function publicMcpPort(): number {
  * 宁可在这里报一句"17331 被占了",那是他三十秒能处理掉的事。
  */
 export async function startPublicMcp(): Promise<void> {
+  if (!store?.getEnabled()) throw new Error("公网 MCP 端点已关闭");
   if (server) return;
   if (starting) return starting;
   if (!store) throw new Error("public mcp: store is not configured");
@@ -168,7 +169,7 @@ export async function startPublicMcp(): Promise<void> {
     try {
       const fixed = store!.getFixedPort?.() ?? 0;
       const port = fixed > 0 ? await listenOnFixedPort(srv, fixed) : await listenOnDialablePort(srv);
-      if (generation !== lifecycleGeneration) {
+      if (generation !== lifecycleGeneration || !store?.getEnabled()) {
         // stopPublicMcp ran while listen was pending. Do not resurrect a
         // disabled public endpoint when the bind eventually completes.
         await new Promise<void>((resolve) => srv.close(() => resolve()));
@@ -278,6 +279,11 @@ function applyCors(res: ServerResponse): void {
 
 async function handlePublicRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   applyCors(res);
+  if (!store?.getEnabled()) {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "not found" }));
+    return;
+  }
 
   // 预检:不碰密钥(浏览器在发正式请求前就要这个答复,而那时代码还没机会看路径)。
   if (req.method === "OPTIONS") {
@@ -310,7 +316,7 @@ async function handlePublicRequest(req: IncomingMessage, res: ServerResponse): P
       return;
     }
     req.headers[MCODE_SESSION_HEADER] = linkSession;
-    await handleMcpRequest(req, res, { keepAliveLongCalls: true, audience: "public" });
+    await handleMcpRequest(req, res, { keepAliveLongCalls: true, audience: "public", isAvailable: () => store?.getEnabled() === true });
     return;
   }
 
@@ -339,7 +345,7 @@ async function handlePublicRequest(req: IncomingMessage, res: ServerResponse): P
   // 字节**就回 524(免费/Pro/Business 都不能调)。慢工具(agent_bash 默认 120 秒、
   // 长构建)会撞上 —— 所以这条路允许把慢调用改成 SSE 回、中途发保活注释。扩展的
   // `/mcp` 是本机回环,没这个问题,保持原样。
-  await handleMcpRequest(req, res, { keepAliveLongCalls: true, audience: "public" });
+  await handleMcpRequest(req, res, { keepAliveLongCalls: true, audience: "public", isAvailable: () => store?.getEnabled() === true });
 }
 
 /* ────────────────────────────── 状态快照 ────────────────────────────── */

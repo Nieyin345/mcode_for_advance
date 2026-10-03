@@ -49,7 +49,8 @@ import { importAnyFiles } from "@main/library/importDispatch.js";
 import { adoptMarkdownFile } from "@main/library/adoptMarkdown.js";
 import { configureCodeNodeLibraryHost } from "@main/orchestration/adoptFromCode.js";
 import { initPanelProtocol, registerPanelSchemePrivileged } from "@main/customUi/panelProtocol.js";
-import { PANEL_SCHEME } from "@contracts/customUiPanel";
+import { pathToFileURL } from "node:url";
+import { desktopCsp } from "@main/lib/desktopCsp.js";
 
 // 自定义面板的 `mcode-panel://` 协议(R41)。注册特权 scheme **必须**在 app ready 之前。
 registerPanelSchemePrivileged();
@@ -245,41 +246,11 @@ app.whenReady().then(async () => {
   // strict CSP would block, leaving the page blank.
   if (is.prod) {
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-      // 自定义面板的文档自带 CSP(见 main/customUi/panelProtocol.ts),别拿主窗口这条盖掉 ——
-      // 盖掉的话面板里的内联脚本一行都跑不了。
-      if (details.url.startsWith(`${PANEL_SCHEME}:`)) {
-        callback({});
-        return;
-      }
-      // OnlyOffice Document Server（Office 文档编辑）是**外部源**：它的 api.js 要能加载
-      // （script-src）、编辑器 iframe 要能嵌（frame-src）、它的图片/字体/接口要能访问。
-      // 未配置时这一串为空，CSP 与从前逐字相同。地址来自设置表，用户改了设置下一个
-      // 响应就生效（不用重启）。
-      const oo = getOnlyOfficeOrigin();
-      const ooSrc = oo ? ` ${oo}` : "";
-      callback({
-        responseHeaders: {
-          ...details.responseHeaders,
-            "Content-Security-Policy": [
-            // ⚠️ `worker-src 'self' blob:` 是 EmbedPDF 要的，不是可选的。
-            //
-            // 它把 PDFium 引擎跑在 **worker** 里，而那个 worker 是
-            // `URL.createObjectURL(new Blob([...]))` **现铸**出来的（见它的
-            // `worker-engine-*.js`），所以 URL 是 `blob:` 开头。CSP 里没写
-            // `worker-src` 时回落到 `default-src 'self'` —— `blob:` 不在其中，
-            // 于是 worker 起不来、引擎初始化不完，界面**永远停在
-            // "Initializing plugins…"**，而控制台只有一句被拒的报错，看着完全
-            // 不像"worker 的事"。
-            //
-            // `'wasm-unsafe-eval'` 同理：PDFium 是 WebAssembly。
-            //
-            // 只把 `blob:` 加进 `worker-src`，不碰 `script-src` —— 那个口子
-            // （内联脚本）比这里需要的宽得多。手机端走 HTTP、没有这层 Electron
-            // CSP，所以这条只影响桌面。
-            `default-src 'self'${ooSrc}; script-src 'self' 'wasm-unsafe-eval'${ooSrc}; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'${ooSrc}; img-src 'self' data:${ooSrc}; font-src 'self' data:${ooSrc}; frame-src 'self' ${PANEL_SCHEME}:${ooSrc}; connect-src 'self'${ooSrc}`,
-          ],
-        },
-      });
+      const policy = desktopCsp(details.url, pathToFileURL(join(__dirname, "../renderer/index.html")).href, getOnlyOfficeOrigin() ?? "");
+      if (!policy) { callback({}); return; }
+      const headers = { ...details.responseHeaders };
+      for (const name of Object.keys(headers)) if (name.toLowerCase() === "content-security-policy") delete headers[name];
+      callback({ responseHeaders: { ...headers, "Content-Security-Policy": [policy] } });
     });
   }
 

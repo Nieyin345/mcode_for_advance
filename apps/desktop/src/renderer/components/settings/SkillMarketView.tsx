@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { SkillMarketState } from "@contracts/ipc";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { useMarketProgress } from "./useMarketProgress.js";
 import { MarketView, type MarketRow } from "./MarketView.js";
 
 export function SkillMarketView({
@@ -26,6 +27,7 @@ export function SkillMarketView({
   onCountChange?: (n: number) => void;
 }) {
   const { t } = useI18n();
+  const marketProgress = useMarketProgress();
   const [markets, setMarkets] = useState<SkillMarketState[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [activeName, setActiveName] = useState<string | null>(null);
@@ -62,7 +64,7 @@ export function SkillMarketView({
     setBusyKey(`refresh:${name}`);
     setError(null);
     try {
-      const res = await api.skills.marketRefresh({ name });
+      const res = await marketProgress.run(requestId => api.skills.marketRefresh({ name, requestId }));
       if (!res.ok) setError(t("settings.market.refreshFailed", { error: res.error ?? "" }));
       await reload();
     } catch (err) {
@@ -89,7 +91,7 @@ export function SkillMarketView({
     for (const m of markets) {
       setBusyKey(`refresh:${m.name}`);
       try {
-        const res = await api.skills.marketRefresh({ name: m.name });
+        const res = await marketProgress.run(requestId => api.skills.marketRefresh({ name: m.name, requestId }));
         if (!res.ok) {
           setError(t("settings.market.refreshFailed", { error: res.error ?? "" }));
           break;
@@ -107,7 +109,7 @@ export function SkillMarketView({
     setBusyKey("add");
     setError(null);
     try {
-      const res = await api.skills.marketAdd({ kind, ref });
+      const res = await marketProgress.run(requestId => api.skills.marketAdd({ kind, ref, requestId }));
       if (!res.ok) {
         setError(t("settings.market.addFailed", { error: res.error ?? "" }));
         return false;
@@ -186,6 +188,7 @@ export function SkillMarketView({
 
   return (
     <div className={className}>
+      {marketProgress.status}
       {error && (
         <div role="alert" className="mb-2 rounded border border-danger/40 bg-danger/5 px-3 py-2 text-[0.7857em] text-danger">
           {error}

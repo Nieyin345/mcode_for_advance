@@ -29,12 +29,14 @@ export interface ToolResult {
   structuredContent?: Record<string, unknown>;
 }
 
-/** MCP 工具处理函数拿到的那点上下文。目前只有一样:**这是哪一次对话**。
+/** MCP 工具处理函数上下文：会话标识，以及可选的 public/local 来源。
+ * 来源由宿主设置，不接受工具参数伪造；省略时保持本机原有行为。
  *
  *  绝大多数工具用不上它 —— 它们动的是库里/工作流里那份全局状态。用得上的是
  *  「挂进这次对话」那类:附件是**按会话**存的,没有会话 id 就不知道该挂给谁。 */
 export interface McpToolContext {
   sessionId: string;
+  audience?: "public" | "local";
 }
 
 /**

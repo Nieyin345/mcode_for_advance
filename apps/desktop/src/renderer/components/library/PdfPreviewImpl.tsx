@@ -367,6 +367,8 @@ export function PdfPreview({
               wasmUrl,
               // ★ 关掉联网取回退字体
               fontFallback: null,
+              // Vendor the existing standard stamps; never fetch a CDN at runtime.
+              stamp: { manifests: [{ url: new URL("pdf-stamps/en/manifest.json", new URL(import.meta.env.BASE_URL, window.location.href)).href }] },
               /**
                * ★ **默认"适应宽度"**（用户 2026-09-22：「打开默认自适应宽度」）。
                *

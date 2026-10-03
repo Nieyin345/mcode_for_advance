@@ -10,7 +10,7 @@
  *
  * 记录存成文件(`markets.json`),不进数据库 —— 技能本来就全是文件,便于 smoke 隔离。
  */
-import { execFile } from "node:child_process";
+import { cloneMarketRepository, promoteMarketCatalog, type MarketProgressSink } from "@main/lib/marketClone.js";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
@@ -43,7 +43,6 @@ export const BUILTIN_SKILL_MARKETS: ReadonlyArray<{ name: string; url: string }>
 ];
 
 const RECORDS_FILE = "markets.json";
-const GIT_TIMEOUT_MS = 180_000;
 const SCAN_SKIP = new Set([".git", "node_modules", ".github"]);
 /** Upper bound on entries per catalog — a mis-added monorepo must not hang the panel. */
 const MAX_ENTRIES = 2000;
@@ -129,40 +128,6 @@ function sanitizeName(raw: string): string {
   return s || "market";
 }
 
-function execGit(args: string[], noProxy: boolean): Promise<{ ok: boolean; message: string }> {
-  return new Promise((resolve) => {
-    const env = noProxy
-      ? Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(https?|all|no)_proxy$/i.test(k)))
-      : process.env;
-    execFile(
-      "git",
-      noProxy ? ["-c", "http.proxy=", "-c", "https.proxy=", ...args] : args,
-      { windowsHide: true, timeout: GIT_TIMEOUT_MS, env, maxBuffer: 4 * 1024 * 1024 },
-      (err, _stdout, stderr) => {
-        if (!err) return resolve({ ok: true, message: "" });
-        const code = (err as NodeJS.ErrnoException).code;
-        const message =
-          code === "ENOENT"
-            ? "本机没有可用的 git 命令,请先安装 Git"
-            : (String(stderr || "").trim().split("\n").pop() || err.message).slice(0, 400);
-        resolve({ ok: false, message });
-      },
-    );
-  });
-}
-
-/** Shallow clone with the same dead-local-proxy fallback as plugin installs. */
-async function gitClone(url: string, dest: string, branch?: string): Promise<void> {
-  const args = ["clone", "--depth", "1", "--quiet", ...(branch ? ["--branch", branch] : []), url, dest];
-  const direct = await execGit(args, false);
-  if (direct.ok) return;
-  if (!/Failed to connect to (?:127\.0\.0\.1|localhost|\[?::1\]?)\s*port/i.test(direct.message)) {
-    throw new Error(`克隆失败:${direct.message}`);
-  }
-  await fs.rm(dest, { recursive: true, force: true }).catch(() => {});
-  const bypass = await execGit(args, true);
-  if (!bypass.ok) throw new Error(`克隆失败(本机代理不可用,直连也失败):${bypass.message}`);
-}
 
 function catalogDir(rec: MarketRecord): string {
   return rec.source.kind === "local" ? path.resolve(rec.source.ref) : path.join(skillMarketsRoot(), rec.name);
@@ -266,20 +231,19 @@ export async function listSkillMarkets(): Promise<SkillMarketState[]> {
 
 /** Clone a git catalog into place (staging + rename: a failed refresh keeps
  *  the previous tree). */
-async function fetchGitCatalog(rec: MarketRecord): Promise<void> {
+async function fetchGitCatalog(rec: MarketRecord, progress?: MarketProgressSink): Promise<void> {
   const parsed = parseSkillMarketGitRef(rec.source.ref);
   if (!parsed) throw new Error(`不是可识别的 git 地址:${rec.source.ref}`);
   const root = skillMarketsRoot();
   await fs.mkdir(root, { recursive: true });
   const staging = path.join(root, `.staging-${rec.name}-${Date.now()}`);
   try {
-    await gitClone(parsed.url, staging, parsed.branch);
+    await cloneMarketRepository(parsed.url, staging, parsed.branch, progress);
+    progress?.({ phase: "scan", message: "扫描技能目录 / Scanning skill catalog", elapsedMs: 0 });
+    if ((await scanCatalog({ ...rec, source: { kind: "local", ref: staging } })).length === 0) throw new Error("里面没有找到任何可用 SKILL.md，保留原有市场 / No valid skills; previous catalog preserved");
     await fs.rm(path.join(staging, ".git"), { recursive: true, force: true });
     const dest = path.join(root, rec.name);
-    const old = `${dest}.old-${Date.now()}`;
-    if (existsSync(dest)) await fs.rename(dest, old);
-    await fs.rename(staging, dest);
-    await fs.rm(old, { recursive: true, force: true }).catch(() => {});
+    await promoteMarketCatalog(staging, dest);
   } finally {
     await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
   }
@@ -289,7 +253,7 @@ export async function addSkillMarket(input: {
   kind: "git" | "local";
   ref: string;
   name?: string;
-}): Promise<{ ok: boolean; error?: string; name?: string }> {
+}, progress?: MarketProgressSink): Promise<{ ok: boolean; error?: string; name?: string }> {
   try {
     const records = withBuiltins(readRecords());
     let ref = input.ref.trim();
@@ -319,9 +283,10 @@ export async function addSkillMarket(input: {
     }
     const rec: MarketRecord = { name, source: { kind: input.kind, ref }, addedAt: new Date().toISOString() };
     if (rec.source.kind === "git") {
-      await fetchGitCatalog(rec);
+      await fetchGitCatalog(rec, progress);
       rec.fetchedAt = new Date().toISOString();
     }
+    progress?.({ phase: "scan", message: "扫描技能目录 / Scanning skill catalog", elapsedMs: 0 });
     if ((await scanCatalog(rec)).length === 0) {
       if (rec.source.kind === "git") await fs.rm(catalogDir(rec), { recursive: true, force: true }).catch(() => {});
       return { ok: false, error: "里面没有找到任何 SKILL.md —— 它不是技能仓库" };
@@ -342,14 +307,14 @@ export async function removeSkillMarket(name: string): Promise<{ ok: boolean; er
   return { ok: true };
 }
 
-export async function refreshSkillMarket(name: string): Promise<{ ok: boolean; error?: string }> {
+export async function refreshSkillMarket(name: string, progress?: MarketProgressSink): Promise<{ ok: boolean; error?: string }> {
   const rec = withBuiltins(readRecords()).find((r) => r.name === name);
   if (!rec) return { ok: false, error: `市场不存在:${name}` };
   if (rec.source.kind === "local") {
     return existsSync(catalogDir(rec)) ? { ok: true } : { ok: false, error: `目录不存在:${rec.source.ref}` };
   }
   try {
-    await fetchGitCatalog(rec);
+    await fetchGitCatalog(rec, progress);
     const records = readRecords();
     const fetchedAt = new Date().toISOString();
     const idx = records.findIndex((r) => r.name === name);

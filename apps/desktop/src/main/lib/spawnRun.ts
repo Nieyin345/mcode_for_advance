@@ -90,6 +90,11 @@ export interface SpawnRunOptions {
   onStdoutLine?: (line: string) => boolean;
   /** stderr 的每一行,语义同 {@link SpawnRunOptions.onStdoutLine}。 */
   onStderrLine?: (line: string) => boolean;
+  /** Optional streaming observation (e.g. Git uses CR, not newline, progress). */
+  /** Bounded raw capture for CR-only streams; bypasses line hooks. Opt-in only. */
+  rawOutput?: boolean;
+  onStdoutChunk?: (chunk: Buffer) => void;
+  onStderrChunk?: (chunk: Buffer) => void;
   /**
    * **把两条流并进同一个缓冲。** 默认分开。
    *
@@ -289,11 +294,15 @@ export async function spawnRun(options: SpawnRunOptions): Promise<SpawnRunResult
   };
 
   child.stdout?.on("data", (chunk: Buffer) => {
+    options.onStdoutChunk?.(chunk);
+    if (options.rawOutput) { out.push(chunk); return; }
     const { lines, rest } = splitLines(outRest, chunk);
     outRest = rest;
     for (const line of lines) feed(line, options.onStdoutLine, out, true);
   });
   child.stderr?.on("data", (chunk: Buffer) => {
+    options.onStderrChunk?.(chunk);
+    if (options.rawOutput) { (mergeStreams ? out : err).push(chunk); return; }
     const { lines, rest } = splitLines(errRest, chunk);
     errRest = rest;
     if (mergeStreams) {
