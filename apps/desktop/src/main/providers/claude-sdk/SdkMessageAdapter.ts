@@ -369,6 +369,8 @@ interface AdapterState {
    *  INTERMEDIATE one (held back because subagents were still running), the
    *  real turn.done is deferred to flushFinal(), which uses this reason. */
   lastResultReason?: TurnDoneEvent["reason"];
+  /** Per-main-API-call token-limit status; subagent streams cannot overwrite it. */
+  streamHitTokenLimit?: boolean;
   /** Subtype of the LAST `result` message ("success" / "error_max_turns" …).
    *  Read by the turn-incomplete check in flushFinal: only success-ending
    *  turns qualify (error subtypes already surface via the error event). */
@@ -1146,6 +1148,7 @@ export class SdkMessageAdapter {
     if (!ev) return;
 
     if (ev.type === "message_start") {
+      this.state.streamHitTokenLimit = false;
       // 记下这次调用是谁,后面 message_delta 的用量按它归账(见 callProcessed)。
       const id = (ev as { message?: { id?: unknown } }).message?.id;
       if (typeof id === "string" && id.length > 0) {
@@ -1247,6 +1250,7 @@ export class SdkMessageAdapter {
         } satisfies ThinkingEvent);
       }
     } else if (ev.type === "message_delta") {
+      if (ev.delta?.stop_reason === "max_tokens") this.state.streamHitTokenLimit = true;
       // Path A supplement: `message_delta` fires once per API call with that
       // call's FINAL usage (snake_case, like BetaUsage). Gateway streams
       // frequently omit usage, which leaves the aggregated assistant messages
@@ -1877,7 +1881,9 @@ const costUsd = m.total_cost_usd ?? (muCost > 0 ? muCost : undefined);
       // only when the generator truly closes — immune to any number of
       // intermediate results. `lastResultReason` carries the FINAL result's
       // reason through to flushFinal.
-      this.state.lastResultReason = (m.stop_reason ?? "end_turn") as TurnDoneEvent["reason"];
+      this.state.lastResultReason = this.state.streamHitTokenLimit
+        ? "max_tokens"
+        : (m.stop_reason ?? "end_turn") as TurnDoneEvent["reason"];
     } else {
       // Error result. Emit the error event so the frontend shows it, but defer
       // turn.done to flushFinal() — same rationale as the success branch: an

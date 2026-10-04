@@ -37,8 +37,8 @@ export interface AnthropicToolResultBlock {
   is_error?: boolean;
 }
 
-/** A thinking block — present on extended-thinking turns. Dropped on the
- *  OpenAI side (no equivalent), but must be tolerated on input. */
+/** A thinking block — present on extended-thinking turns. DeepSeek tool
+ *  conversations carry it back as reasoning_content; never as ordinary text. */
 export interface AnthropicThinkingBlock {
   type: "thinking";
   thinking: string;
@@ -86,6 +86,8 @@ export interface AnthropicRequest {
   messages: AnthropicMessage[];
   system?: string | AnthropicTextBlock[];
   max_tokens: number;
+  thinking?: { type: "enabled" | "disabled" | "adaptive"; budget_tokens?: number };
+  output_config?: { effort?: string; [key: string]: unknown };
   stream?: boolean;
   temperature?: number;
   top_p?: number;
@@ -131,12 +133,15 @@ export interface OpenAIMessage {
   content?: string | null | OpenAIContentPart[];
   tool_calls?: OpenAIToolCall[];
   tool_call_id?: string;
+  reasoning_content?: string;
 }
 
 export interface OpenAIRequest {
   model: string;
   messages: OpenAIMessage[];
   max_tokens?: number;
+  reasoning_effort?: string;
+  thinking?: { type: "enabled" | "disabled" };
   stream?: boolean;
   /** OpenAI only emits `usage` in a streaming response when this is set to
    *  `{ include_usage: true }`. Without it the token ring shows nothing. */
@@ -163,8 +168,9 @@ export interface OpenAIChoiceDelta {
   tool_calls?: OpenAIDeltaToolCall[];
   /** Reasoning content from some providers (e.g. DeepSeek). Forwarded as a
    *  thinking block when present, with an empty signature. */
-  reasoning?: string;
-  reasoning_content?: string;
+  reasoning?: string | null;
+  reasoning_content?: string | null;
+  reasoning_details?: Array<{ type: string; text?: string; summary?: string }>;
 }
 
 export interface OpenAIChoice {
@@ -223,7 +229,8 @@ export type AnthropicSseEvent =
   | { type: "content_block_delta"; index: number; delta: AnthropicContentBlockDelta }
   | { type: "content_block_stop"; index: number }
   | { type: "message_delta"; delta: { stop_reason: string; stop_sequence: null }; usage: AnthropicUsage }
-  | { type: "message_stop" };
+  | { type: "message_stop" }
+  | { type: "error"; error: { type: "api_error"; message: string } };
 
 /** The upstream endpoint the bridge forwards to. Extracted from an ApiConfig —
  *  only the fields the bridge needs; everything else (model list, selected

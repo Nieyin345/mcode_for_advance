@@ -29,7 +29,8 @@
  *
  * Run: scripts/maint-m14-smoke/run.sh
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { MCP_MANAGEMENT_SETTING_KEY, type McpManagementState } from "@contracts/ipc";
@@ -268,7 +269,17 @@ async function main(): Promise<void> {
   check("上限是按对话算的:B 仍能起", bProc.status === "running", bProc);
 
   // B3 stop 终结状态,并且幂等。
-  const stopped = await procs.stop({ ownerSessionId: A, processId: started.processId });
+  let stopped = await procs.stop({ ownerSessionId: A, processId: started.processId });
+  // stop() deliberately waits at most 1s; Windows process-tree termination
+  // can finish later. Read the real terminal state with a bounded wait rather
+  // than treating the stop-request acknowledgement as synchronous exit.
+  const stopDeadline = Date.now() + 5_000;
+  while (stopped.status === "running" && Date.now() < stopDeadline) {
+    stopped = await procs.read({
+      ownerSessionId: A, processId: started.processId, cursor: stopped.nextCursor,
+      waitMs: Math.max(1, Math.min(1_000, stopDeadline - Date.now())),
+    });
+  }
   eq("stop 后状态是 stopped", stopped.status, "stopped");
   const stoppedAgain = await procs.stop({ ownerSessionId: A, processId: started.processId });
   eq("重复 stop 幂等", stoppedAgain.status, "stopped");
@@ -389,17 +400,24 @@ async function main(): Promise<void> {
 }
 
 main()
-  .then(() => {
-    rmSync(work, { recursive: true, force: true });
+  .then(async () => {
+    // disposeOwner/stop initiate process-tree shutdown. Windows may still
+    // hold the child's cwd briefly; async retries also let close events drain.
+    // Bounded: a genuinely leaked handle still fails this suite, not ignored.
+    await rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     console.log(`\n${checks - failures}/${checks} checks passed`);
     if (failures > 0) {
       console.error(`maint-m14-smoke: ${failures} failing check(s)`);
       process.exit(1);
     }
   })
-  .catch((err: unknown) => {
-    rmSync(work, { recursive: true, force: true });
+  .catch(async (err: unknown) => {
     console.error(`maint-m14-smoke crashed: ${err instanceof Error ? err.stack : String(err)}`);
+    try {
+      await rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch (cleanupError) {
+      console.error("maint-m14-smoke cleanup failed:", cleanupError);
+    }
     process.exit(1);
   });
 

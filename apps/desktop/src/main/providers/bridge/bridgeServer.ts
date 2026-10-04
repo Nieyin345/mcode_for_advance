@@ -280,7 +280,7 @@ function writeSseEvent(res: ServerResponse, ev: AnthropicSseEvent): void {
  *  an `error` JSON body so the SDK surfaces a readable message. */
 function sendError(res: ServerResponse, status: number, message: string): void {
   if (res.headersSent) {
-    // Mid-stream — best we can do is a message_delta stop; just end.
+    if (!res.destroyed) writeSseEvent(res, { type: "error", error: { type: "api_error", message } });
     res.end();
     return;
   }
@@ -377,11 +377,12 @@ async function handleMessages(
   const upstreamUrl = buildUpstreamUrl(upstream.baseUrl);
   const jsonBody = JSON.stringify(openaiReq);
   const ac = new AbortController();
-  if (upstream.timeoutMs) {
-    setTimeout(() => ac.abort(), upstream.timeoutMs).unref();
-  }
-  // If the client disconnects, abort the upstream fetch.
-  req.on("close", () => ac.abort());
+  const timer = upstream.timeoutMs
+    ? setTimeout(() => ac.abort(), upstream.timeoutMs).unref() : undefined;
+  // IncomingMessage.close is request-body completion, not response disconnect.
+  const onClose = (): void => { if (!res.writableEnded) ac.abort(); };
+  res.once("close", onClose);
+  const cleanup = (): void => { clearTimeout(timer); res.off("close", onClose); };
 
   let upstreamRes: Response;
   try {
@@ -401,6 +402,7 @@ async function handleMessages(
     // `err.message` is always the opaque "fetch failed".
     const cause = describeFetchError(err);
     log.error(`bridge: upstream fetch failed: ${cause}`);
+    cleanup();
     sendError(res, 502, `upstream unreachable: ${cause}`);
     return;
   }
@@ -409,6 +411,7 @@ async function handleMessages(
     // Surface the upstream error text so the user sees auth/model failures.
     const errText = await upstreamRes.text().catch(() => "");
     log.warn(`bridge: upstream ${upstreamRes.status}: ${errText.slice(0, 500)}`);
+    cleanup();
     sendError(res, upstreamRes.status || 502, errText.slice(0, 1000) || `upstream ${upstreamRes.status}`);
     return;
   }
@@ -424,6 +427,7 @@ async function handleMessages(
   const reader = upstreamRes.body.getReader();
   const decoder = new TextDecoder();
   let sseBuffer = "";
+  let sawDone = false;
   /** 上一块以 \r 结尾:可能是被拆开的 \r\n,先扣着,等下一块再定。 */
   let pendingCR = false;
   /** SSE 允许 \r\n / \r / \n 三种换行(规范如此)。一部分中转/代理用 \r\n ——
@@ -437,10 +441,10 @@ async function handleMessages(
 
   /** Parse one SSE frame (the text between two blank-line separators) and
    *  feed its data chunk to the translator. Returns how many chunks were
-   *  fed (0 for [DONE] / empty / malformed frames). Malformed frames are
-   *  logged and skipped — dropping them silently made truncations
-   *  unattributable after the fact. */
+   *  fed (0 for [DONE] / comments). Malformed or error frames must fail the
+   *  stream: dropping them can silently discard reasoning/tool fragments. */
   const processFrame = (frame: string): number => {
+    if (sawDone) return 0;
     // Each frame is one or more `data: ...` lines. OpenAI sends a single
     // data line per frame; we parse anything that starts with "data:".
     const dataLines = frame
@@ -449,15 +453,20 @@ async function handleMessages(
       .map((l) => l.slice(5).trimStart());
     const dataStr = dataLines.join("\n");
     if (!dataStr || dataStr === "[DONE]") {
-      // [DONE] is the terminator — nothing to feed.
+      if (dataStr === "[DONE]") sawDone = true;
       return 0;
     }
     let chunk: OpenAIChunk;
     try {
       chunk = JSON.parse(dataStr) as OpenAIChunk;
     } catch {
-      log.warn(`bridge: malformed SSE frame skipped: ${dataStr.slice(0, 200)}`);
-      return 0;
+      throw new Error("上游 SSE 数据格式错误，响应未完成（未记录原始内容）。");
+    }
+    if (!chunk || typeof chunk !== "object" || Array.isArray(chunk)) {
+      throw new Error("上游 SSE 数据不是有效的响应对象，响应未完成。");
+    }
+    if (("error" in chunk && chunk.error != null) || frame.split("\n").some((line) => /^event:\s*error\s*$/.test(line))) {
+      throw new Error("上游返回 SSE 错误，响应未完成；请检查服务端错误记录。");
     }
     for (const ev of translator.feed(chunk)) {
       writeSseEvent(res, ev);
@@ -479,6 +488,7 @@ async function handleMessages(
         sseBuffer = sseBuffer.slice(sep + 2);
         processFrame(frame);
       }
+      if (sawDone) break;
     }
     // Flush the decoder (a multi-byte char can straddle the last read), then
     // process whatever is left in the buffer as a final frame. Some upstreams
@@ -494,25 +504,35 @@ async function handleMessages(
     if (tail && processFrame(tail) > 0) {
       log.info(`bridge: recovered tail SSE frame after stream end (${tail.length} bytes) — upstream omitted the trailing blank line`);
     }
-    // Stream ended. Close any open block + emit message_delta/message_stop.
-    // The translator captured finish_reason off the final choice-bearing
-    // chunk and maps it onto Anthropic's stop_reason (a bare stream end with
-    // no finish_reason anywhere degrades to end_turn).
+    // A bare EOF/[DONE] is not a successful model finish. Keep partial
+    // output, but emit an Anthropic error rather than inventing end_turn.
+    const reason = translator.finishReason;
+    const summary = translator.contentSummary;
+    log.info(`bridge: stream summary reasoningChars=${summary.reasoningChars} textChars=${summary.textChars} tools=${translator.toolBlockCount} terminal=${["stop", "length", "tool_calls", "function_call", "content_filter"].includes(reason ?? "") ? reason : "missing-or-unknown"}`);
+    if (!["stop", "length", "tool_calls", "function_call", "content_filter"].includes(reason ?? "")) {
+      throw new Error("上游流在缺少有效 finish_reason 时结束，响应可能被截断，不能标记为完成。");
+    }
+    if (reason === "stop" && summary.reasoningChars > 0 && !summary.visibleText && translator.toolBlockCount === 0) {
+      throw new Error("上游只返回了思考内容，没有最终回答或工具调用，响应未完成。");
+    }
+    if ((reason === "tool_calls" || reason === "function_call") && translator.toolBlockCount === 0) {
+      throw new Error("上游声明了工具调用，但没有返回工具调用内容，响应未完成。");
+    }
     for (const ev of translator.finish()) {
       writeSseEvent(res, ev);
     }
-    // Upstream-blame diagnostic: the stream TERMINATED claiming tool_calls,
-    // yet not a single tool_call fragment was translated. That combination
-    // means the upstream generated the call but dropped its wire fragments —
-    // the CLI then sees a text-only end_turn message and closes the turn as
-    // success (surfaced downstream as a turn.incomplete "unfinished-text").
-    if (translator.finishReason === "tool_calls" && translator.toolBlockCount === 0) {
-      log.warn("bridge: upstream finished with finish_reason=tool_calls but no tool-call fragments arrived — upstream dropped them");
-    }
   } catch (err) {
-    log.error(`bridge: stream read failed: ${(err as Error).message}`);
+    // Error events are understood by the Anthropic SDK. Previously this path
+    // only logged and closed HTTP 200, leaving the UI looking successful.
+    const message = ac.signal.aborted
+      ? "上游流请求超时或连接中断，响应未完成。"
+      : `上游流读取失败，响应未完成：${(err as Error).message}`;
+    log.error(`bridge: ${message}`);
+    sendError(res, 502, message);
   } finally {
-    res.end();
+    cleanup();
+    await reader.cancel().catch(() => {});
+    if (!res.writableEnded) res.end();
   }
 }
 

@@ -52,6 +52,14 @@ function genMessageId(): string {
 }
 
 export class OpenAiToAnthropicSse {
+  private reasoningChars = 0;
+  private textChars = 0;
+  private visibleText = false;
+  /** Counts only — never log model text or reasoning. */
+  get contentSummary(): { reasoningChars: number; textChars: number; visibleText: boolean } {
+    return { reasoningChars: this.reasoningChars, textChars: this.textChars, visibleText: this.visibleText };
+  }
+
   private messageId = genMessageId();
   private model = "bridge";
   private started = false;
@@ -140,6 +148,8 @@ export class OpenAiToAnthropicSse {
    *  matches and switching blocks (close + open) when it doesn't. */
   private emitTextLike(events: AnthropicSseEvent[], seg: ThinkSegment): void {
     if (seg.kind === "text") {
+      this.textChars += seg.text.length;
+      this.visibleText ||= seg.text.trim().length > 0;
       const index =
         this.openBlockKind === "text" ? this.openBlockIndex : this.openTextBlock(events);
       events.push({
@@ -148,6 +158,7 @@ export class OpenAiToAnthropicSse {
         delta: { type: "text_delta", text: seg.text },
       });
     } else {
+      this.reasoningChars += seg.text.length;
       const index =
         this.openBlockKind === "thinking" ? this.openBlockIndex : this.openThinkingBlock(events);
       events.push({
@@ -217,7 +228,14 @@ export class OpenAiToAnthropicSse {
       // Reasoning content (DeepSeek/o1-style dedicated field). Checked before
       // text: these models stream reasoning first, so block order matches the
       // model's actual output order when a chunk carries both.
-      const reasoning = delta.reasoning ?? delta.reasoning_content;
+      // Some gateways emit an empty alias alongside the actual payload.
+      // Prefer the non-empty canonical field; don't duplicate alias/details.
+      const reasoning = [delta.reasoning_content, delta.reasoning].find(
+        (value) => typeof value === "string" && value.length > 0,
+      ) ?? delta.reasoning_details?.flatMap((detail) =>
+        detail.type === "reasoning.text" && typeof detail.text === "string"
+          ? [detail.text] : [],
+      ).join("");
       if (typeof reasoning === "string" && reasoning.length > 0) {
         this.emitTextLike(events, { kind: "thinking", text: reasoning });
       }
@@ -328,6 +346,9 @@ export class OpenAiToAnthropicSse {
    *  The bridge currently creates a fresh instance per request, so this is
    *  mainly for test ergonomics. */
   reset(): void {
+    this.reasoningChars = 0;
+    this.textChars = 0;
+    this.visibleText = false;
     this.messageId = genMessageId();
     this.started = false;
     this.openBlockIndex = NO_BLOCK;

@@ -31,8 +31,9 @@
  *    math is unaffected: the binary's 1M behavior is driven by
  *    ANTHROPIC_MODEL (env), and the UI's window resolution keys off the
  *    role's `supports1m` flag (highest-priority input), not the echo.
- * 7. **Dropped fields**: `thinking` (no OpenAI equivalent), `cache_control`
- *    (OpenAI caches automatically). These are intentionally NOT forwarded.
+ * 7. **Reasoning**: explicit effort is preserved. DeepSeek thinking/tool-history
+ *    fields are translated separately from prose; no token budget is increased.
+ *    `cache_control` is not forwarded (OpenAI caches automatically).
  */
 import { strip1MSuffix } from "@main/providers/claude-sdk/customEnv.js";
 import type {
@@ -64,7 +65,7 @@ function joinText(content: string | AnthropicContentBlock[]): string {
  *  - A user message containing tool_result blocks → one OpenAI `{role:"tool"}`
  *    message PER result (plus a trailing user message if there's free text).
  */
-function translateMessage(msg: AnthropicMessage): OpenAIMessage[] {
+function translateMessage(msg: AnthropicMessage, preserveReasoning = false): OpenAIMessage[] {
   const out: OpenAIMessage[] = [];
 
   // Plain string content — the common case, no tool involvement.
@@ -76,10 +77,13 @@ function translateMessage(msg: AnthropicMessage): OpenAIMessage[] {
   if (msg.role === "assistant") {
     // Accumulate text into `content` and tool_use into `tool_calls`.
     const text: string[] = [];
+    const reasoning: string[] = [];
     const toolCalls: NonNullable<OpenAIMessage["tool_calls"]> = [];
     for (const block of msg.content) {
       if (block.type === "text") {
         text.push(block.text);
+      } else if (block.type === "thinking" && preserveReasoning) {
+        reasoning.push(block.thinking);
       } else if (block.type === "tool_use") {
         toolCalls.push({
           id: block.id,
@@ -92,10 +96,10 @@ function translateMessage(msg: AnthropicMessage): OpenAIMessage[] {
           },
         });
       }
-      // thinking blocks are dropped — they have no OpenAI representation and
-      // the upstream can't act on them.
+      // Never merge thinking into normal assistant content.
     }
     const oai: OpenAIMessage = { role: "assistant" };
+    if (preserveReasoning) oai.reasoning_content = reasoning.join("");
     if (text.length > 0) oai.content = text.join("");
     if (toolCalls.length > 0) oai.tool_calls = toolCalls;
     // OpenAI requires assistant messages to carry content or tool_calls; if
@@ -198,17 +202,35 @@ export function anthropicToOpenAI(req: AnthropicRequest): OpenAIRequest {
     if (sysText.length > 0) messages.push({ role: "system", content: sysText });
   }
 
+  const model = strip1MSuffix(req.model);
+  const deepseek = /(?:^|\/)deepseek(?:[-_]|$)/i.test(model);
   for (const msg of req.messages) {
-    messages.push(...translateMessage(msg));
+    messages.push(...translateMessage(msg, deepseek && !!req.tools?.length));
   }
 
   const out: OpenAIRequest = {
     // Strip the Anthropic-only `[1m]` context suffix — see header note 6.
-    model: strip1MSuffix(req.model),
+    model,
     messages,
     max_tokens: req.max_tokens,
     stream: req.stream,
   };
+  const effort = req.output_config?.effort;
+  if (typeof effort === "string" && effort !== "default") out.reasoning_effort = effort;
+  if (deepseek) {
+    // Documented DeepSeek mapping, not a blanket downgrade of Max.
+    if (out.reasoning_effort === "minimal") out.reasoning_effort = "low";
+    if (["medium", "xhigh"].includes(out.reasoning_effort ?? "")) out.reasoning_effort = "high";
+    if (out.reasoning_effort === "ultra") out.reasoning_effort = "max";
+    if (req.thinking?.type === "disabled" || effort === "none") {
+      out.thinking = { type: "disabled" };
+      out.reasoning_effort = "none";
+    } else if (["enabled", "adaptive"].includes(req.thinking?.type ?? "") || out.reasoning_effort) {
+      out.thinking = { type: "enabled" };
+    }
+    // budget_tokens is Anthropic-only. Preserve max_tokens exactly; don't
+    // silently remove a cap or increase user cost to obtain longer reasoning.
+  }
   if (req.temperature !== undefined) out.temperature = req.temperature;
   if (req.top_p !== undefined) out.top_p = req.top_p;
   if (req.stop_sequences && req.stop_sequences.length > 0) out.stop = req.stop_sequences;

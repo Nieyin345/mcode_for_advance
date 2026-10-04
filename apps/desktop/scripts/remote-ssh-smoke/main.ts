@@ -339,6 +339,7 @@ console.log("\n[4b] explicitly configured SSH agent (named pipe on Windows)");
 console.log("\n[5] exec through a real shell: stdin EOF, pid marker hidden, timeout kills");
 {
   const execCommands: string[] = [];
+  const fixtureChildren: ReturnType<typeof spawn>[] = [];
   const shellServer = new SshServer({ hostKeys: [hostKey] }, (client) => {
     client.on("authentication", (ctx) => ctx.accept());
     client.on("error", () => undefined);
@@ -349,11 +350,21 @@ console.log("\n[5] exec through a real shell: stdin EOF, pid marker hidden, time
           execCommands.push(info.command);
           const stream = acceptExec();
           const child = spawn("bash", ["-c", info.command], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+          fixtureChildren.push(child);
           stream.pipe(child.stdin);
           child.stdout.on("data", (d: Buffer) => { try { stream.write(d); } catch { /* channel gone */ } });
           child.stderr.on("data", (d: Buffer) => { try { stream.stderr.write(d); } catch { /* channel gone */ } });
           child.once("close", (c) => { try { stream.exit(c ?? 1); stream.end(); } catch { /* channel gone */ } });
-          stream.once("close", () => { try { child.kill(); } catch { /* exited */ } });
+          stream.once("close", () => {
+            try { child.kill(); } catch { /* exited */ }
+            // The local Bash fixture can leave descendants holding inherited
+            // pipes on Windows. Once the SSH channel is closed nobody can
+            // consume them; release our pipe handles as well as the child.
+            // Otherwise every assertion passes but Node never exits.
+            child.stdin.destroy();
+            child.stdout.destroy();
+            child.stderr.destroy();
+          });
         });
       });
     });
@@ -375,6 +386,11 @@ console.log("\n[5] exec through a real shell: stdin EOF, pid marker hidden, time
   check("超时后向远端发了杀进程组的命令", execCommands.some((c) => c.includes("kill -TERM -- -")), execCommands.slice(-2));
   mgr3.disposeOwner("o");
   await new Promise<void>((resolve) => { shellServer.close(() => resolve()); setTimeout(resolve, 1500); });
+  const pipesReleased = await waitFor(
+    () => fixtureChildren.every(child => child.stdin?.destroyed && child.stdout?.destroyed && child.stderr?.destroyed),
+    released => released, 3000,
+  );
+  check("模拟 SSH 通道关闭后释放全部本地子进程管道", pipesReleased, fixtureChildren.length);
 }
 
 console.log(`\nremote-ssh-smoke: ${passed}/${checks} passed`);
