@@ -29,5 +29,24 @@ try {
  await test("DOCX Unicode survives Python pipe decoding",async()=>{const r=await read("text.docx");assert.ok(!r.isError,text(r));assert.ok(text(r).includes("研究😀"),text(r).slice(0,120));});
  await test("Excel selection returns actual Unicode cells and values",async()=>{const r=await read("table.xlsx",{sheet:"Research",range:"A2:B2"});assert.ok(!r.isError,text(r));assert.match(text(r),/研究论文/);assert.match(text(r),/2026/);});
  await test("invalid sheet fails rather than claiming an empty document",async()=>{const r=await read("table.xlsx",{sheet:"absent"});assert.equal(r.isError,true);});
+ // Force legacy pipe encodings even on UTF-8 developer machines. Only these
+ // serial tests change parent env, restoring every key afterward.
+ const keys=["PYTHONIOENCODING","PYTHONUTF8","PYTHONCOERCECLOCALE"] as const;
+ const originalEnv=keys.map(key=>[key,process.env[key]] as const);
+ try {
+  for(const encoding of ["cp1252","gbk"]){
+   process.env.PYTHONIOENCODING=encoding+":strict";
+   process.env.PYTHONUTF8="0";process.env.PYTHONCOERCECLOCALE="0";
+   for(const [file,expected] of [["text.docx","研究😀"],["table.xlsx","研究论文😀"],["slides.pptx","研究😀"]]){
+    await test(`${encoding} parent: ${file} returns UTF-8 Unicode`,async()=>{
+     const r=await read(file!);assert.ok(!r.isError,text(r));assert.ok(text(r).includes(expected!),text(r).slice(0,160));
+     assert.equal(process.env.PYTHONIOENCODING,encoding+":strict","reader must not modify parent environment");
+    });
+   }
+   await test(`${encoding} parent: Python stderr retains Unicode`,async()=>{
+    const r=await read("table.xlsx",{sheet:"不存在😀"});assert.equal(r.isError,true);assert.ok(text(r).includes("不存在😀"),text(r));
+   });
+  }
+ }finally{for(const [key,value] of originalEnv){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
  console.log(`Document reading: ${passed} passed, ${failures.length} failed`);if(failures.length)process.exitCode=1;
 }finally{rmSync(root,{recursive:true,force:true});}

@@ -483,9 +483,9 @@ function formatSearchResult(out: AgentSearchReadResult): string {
   return `${meta.join("\n")}\n--- results ---\n${body}`;
 }
 
-async function runCaptured(exe: string, args: string[], timeoutMs = 10_000): Promise<{ stdout: string; stderr: string; code: number | null }> {
+async function runCaptured(exe: string, args: string[], timeoutMs = 10_000, env?: NodeJS.ProcessEnv): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(exe, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(exe, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"], ...(env ? { env: { ...process.env, ...env } } : {}) });
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -652,6 +652,12 @@ function capDocumentOutput(textValue: string, label: string, maxChars = MAX_DOCU
   return prefix + marker.slice(0, maxChars);
 }
 
+// runCaptured decodes UTF-8. Python redirected streams otherwise inherit the
+// system code page (e.g. cp1252/GBK), which can reject Chinese/emoji outright.
+// Scope overrides to owned document-reader children; never mutate parent env
+// or change the encoding of arbitrary shell commands.
+const PYTHON_DOCUMENT_ENV = { PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" };
+
 async function readRichDocument(input: {
   abs: string;
   sheet?: string;
@@ -694,7 +700,7 @@ async function readRichDocument(input: {
       "  txt=''.join((t.text or '') for t in para.findall('.//w:t',ns))",
       "  if txt: print(txt)",
     ].join("\n");
-    const out = await runCaptured(py, ["-c", script, input.abs], 60_000);
+    const out = await runCaptured(py, ["-c", script, input.abs], 60_000, PYTHON_DOCUMENT_ENV);
     if (out.code !== 0) throw new Error(`DOCX 抽取失败:${out.stderr.trim() || `exit ${out.code}`}`);
     return capDocumentOutput(out.stdout.trim() || "(文档没有可抽取文本)", "DOCX 文本", maxChars);
   }
@@ -722,7 +728,7 @@ async function readRichDocument(input: {
       " if len(rows)>=maxr: break",
       "print(json.dumps({'sheets':wb.sheetnames,'sheet':ws.title,'rows':rows},ensure_ascii=False,default=str))",
     ].join("\n");
-    const out = await runCaptured(py, ["-c", script, input.abs, input.sheet ?? "", input.range ?? "", String(Math.max(1, Math.min(input.maxRows ?? 200, 1000))), String(Math.max(1, Math.min(input.maxCols ?? 50, 200)))], 60_000);
+    const out = await runCaptured(py, ["-c", script, input.abs, input.sheet ?? "", input.range ?? "", String(Math.max(1, Math.min(input.maxRows ?? 200, 1000))), String(Math.max(1, Math.min(input.maxCols ?? 50, 200)))], 60_000, PYTHON_DOCUMENT_ENV);
     if (out.code !== 0) throw new Error(`Excel 抽取失败:${out.stderr.trim() || out.stdout.trim() || `exit ${out.code}`}`);
     const parsed = JSON.parse(out.stdout) as { error?: string; sheets?: string[]; sheet?: string; rows?: unknown[][] };
     if (parsed.error) throw new Error(parsed.error);
@@ -751,7 +757,7 @@ async function readRichDocument(input: {
       " slides.append({'n':i,'text':'\\n'.join(parts)})",
       "print(json.dumps({'count':len(prs.slides),'slides':slides},ensure_ascii=False))",
     ].join("\n");
-    const out = await runCaptured(py, ["-c", script, input.abs, String(Math.max(1, Math.min(input.maxSlides ?? 200, 1000)))], 60_000);
+    const out = await runCaptured(py, ["-c", script, input.abs, String(Math.max(1, Math.min(input.maxSlides ?? 200, 1000)))], 60_000, PYTHON_DOCUMENT_ENV);
     if (out.code !== 0) throw new Error(`PPTX 抽取失败:${out.stderr.trim() || out.stdout.trim() || `exit ${out.code}`}`);
     const parsed = JSON.parse(out.stdout) as { error?: string; count?: number; slides?: Array<{ n: number; text: string }> };
     if (parsed.error) throw new Error(parsed.error);
