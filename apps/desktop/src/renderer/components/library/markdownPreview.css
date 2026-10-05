@@ -1,0 +1,4 @@
+.mcode-markdown-preview .milkdown .editor { padding: 12px 16px; min-height: 0; }
+.mcode-markdown-preview .milkdown { min-width: 0; }
+.mcode-markdown-preview img { max-width: 100%; height: auto; }
+.mcode-markdown-preview .milkdown .ProseMirror { overflow-wrap: anywhere; }

@@ -1337,9 +1337,9 @@ async function listSkillDirNames(root: string): Promise<string[] | null> {
     const input = SkillsMarketNameSchema.parse(raw);
     return refreshSkillMarket(input.name, marketProgressFor(evt, input.requestId));
   });
-  ipcMain.handle(IPC.SKILLS_MARKET_INSTALL, async (_evt, raw) => {
+  ipcMain.handle(IPC.SKILLS_MARKET_INSTALL, async (evt, raw) => {
     const input = SkillsMarketInstallSchema.parse(raw);
-    const res = await installSkillsFromMarket(input.market, input.names);
+    const res = await installSkillsFromMarket(input.market, input.names, marketProgressFor(evt, input.requestId));
     const bundle = skillMarketBundle(input.market);
     if (bundle && res.imported.length > 0) {
       await upsertGithubBundle(resolveSkillRoot(), bundle.id, bundle.label, bundle.source, res.imported);

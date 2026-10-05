@@ -1,35 +1,8 @@
 /**
- * 用 pdf.js 从 PDF 里取**文本**与**内嵌元数据**。
- *
- * 两个用途:
- *
- *   1. **元数据探针** —— 读 XMP/Info + 首页文本,找 DOI / arXiv 号。离线、不联网,
- *      是分层采集的第一道。
- *   2. **Markdown 兜底** —— 本地只抽得出纯文本(排版/公式/表格都不保留),但总比
- *      没有强:写进 `md_path` 之后全文检索能用、AI 能读到正文。想要好结果的用户
- *      自己用外部工具转一份更好的,再挂回库(`library_adopt_markdown`)。
- *
- * ## 两个必须记住的坑
- *
- * **必须设 `cMapUrl`。** PDF 里 Identity-H 这类字体,内容流里存的是**字形索引**
- * 而不是字符;真正的 Unicode 映射在字体的 ToUnicode CMap 里。不设 `cMapUrl`,
- * 预定义的 CJK CMap 就取不到 —— 中文会**静默变成乱码**:不报错、不抛异常,只是
- * DOI 正则匹配不到、全文检索搜不出东西。中文文献是主力,这条不能省。
- *
- * **必须跑在主进程。** pdf.js 判断「是不是 Node」看的是 `process.type` —— 在主进程
- * 里是 `"browser"`,它当成 Node 走**假 worker**(同线程执行);在渲染进程里会被判成
- * 浏览器,转而要求一个真 worker。所以这个模块只该从 main 引。
- *
- * ## 失败一律分类返回,不抛
- *
- * 加密、扫描件(没有文本层)、超大小、字节不是 PDF —— 都要让调用方能够
- * 「转换失败但 PDF 照样入库」,而不是把整个导入流程打断。
- *
- * ## 代价
- *
- * 假 worker 意味着解析是**同线程 CPU 密集**的。所以这里一律限制页数(默认首页、
- * 探针只读 3 页),让常见情况在一秒内结束。真要整篇转 300 页,那应该挪到
- * utilityProcess —— 目前不做,先靠页数上限兜住。
+ * Low-level PDF text / embedded-metadata reading. This is NOT an automatic
+ * library transcription or OCR fallback: no Markdown is written or adopted here.
+ * Text extraction can be partial; callers must surface failed pages and limits.
+ * Loading, resource and parsing errors return classified results.
  */
 import { createRequire } from "node:module";
 import { readFileSync, statSync } from "node:fs";
@@ -37,7 +10,7 @@ import { dirname, join } from "node:path";
 
 /** 超过这个大小直接拒 —— 本地解析不该为一份超大 PDF 吃掉这么多内存。 */
 const MAX_BYTES = 200 * 1024 * 1024;
-/** 首页文本少于这个字数就认为「没有文本层」(扫描件)。 */
+/** A heuristic for useful extracted text, not proof that a document is scanned. */
 const TEXT_LAYER_MIN_CHARS = 80;
 
 type PdfjsModule = typeof import("pdfjs-dist/legacy/build/pdf.mjs");
@@ -49,7 +22,7 @@ let pdfjsPromise: Promise<PdfjsModule> | null = null;
  * 而绝大多数启动根本用不到 —— 不该让每次开应用都付这个代价。
  */
 function loadPdfjs(): Promise<PdfjsModule> {
-  if (!pdfjsPromise) pdfjsPromise = import("pdfjs-dist/legacy/build/pdf.mjs");
+  if (!pdfjsPromise) pdfjsPromise = import("pdfjs-dist/legacy/build/pdf.mjs").catch((error: unknown) => { pdfjsPromise = null; throw error; });
   return pdfjsPromise;
 }
 
@@ -75,11 +48,14 @@ export interface PdfProbe {
   /** 前几页拼起来的纯文本 —— 给标识符正则和标题猜测用。 */
   text: string;
   pageCount?: number;
-  /** 首页有足够的字符 = 有文本层。扫描件是 false。 */
+  /** True when sampled text is sufficient; false can also mean sparse text or page errors. */
   hasTextLayer: boolean;
   /** 需要密码且空密码打不开。 */
   encrypted?: boolean;
   error?: string;
+  pagesRead?: number;
+  failedPages?: number[];
+  truncated?: boolean;
 }
 
 /** 读出字节。非 PDF 魔数直接拒 —— 比 pdf.js 抛 InvalidPDFException 好定位得多。 */
@@ -119,20 +95,20 @@ async function openDocument(
 ): Promise<{ ok: true; doc: MinimalDoc } | { ok: false; error: string; encrypted?: boolean }> {
   const bytes = readPdfBytes(absPath);
   if (!bytes.ok) return bytes;
-  const pdfjs = await loadPdfjs();
-  const base = {
-    data: bytes.data,
-    // Node 里没有真 worker;这几项关掉它去 fetch 字体/执行 eval 的尝试
-    useWorkerFetch: false,
-    isEvalSupported: false,
-    disableFontFace: true,
-    // CJK 能不能认对全靠它 —— 见文件头
-    cMapUrl: cMapUrl(),
-    cMapPacked: true,
-    // 少往 stderr 喷 pdf.js 的告警(缺 canvas 之类),那些对本用途无意义
-    verbosity: 0,
-  };
   try {
+    const pdfjs = await loadPdfjs();
+    const base = {
+      data: bytes.data,
+      // Node 里没有真 worker;这几项关掉它去 fetch 字体/执行 eval 的尝试
+      useWorkerFetch: false,
+      isEvalSupported: false,
+      disableFontFace: true,
+      // CJK text extraction requires the packaged character maps
+      cMapUrl: cMapUrl(),
+      cMapPacked: true,
+      // 少往 stderr 喷 pdf.js 的告警(缺 canvas 之类),那些对本用途无意义
+      verbosity: 0,
+    };
     const doc = (await pdfjs.getDocument({ ...base, password: "" }).promise) as unknown as MinimalDoc;
     return { ok: true, doc };
   } catch (err) {
@@ -144,22 +120,34 @@ async function openDocument(
   }
 }
 
-/** 抽前 N 页的纯文本。 */
-async function textOfPages(doc: MinimalDoc, maxPages: number): Promise<string> {
+/** Failed pages are distinct from successfully parsed pages with no text. */
+interface PageText {
+  text: string;
+  pagesAttempted: number;
+  pagesRead: number;
+  failedPages: number[];
+  truncated: boolean;
+}
+function pageLimitError(maxPages: number): string | null {
+  return Number.isInteger(maxPages) && maxPages >= 1 && maxPages <= 500
+    ? null : "maxPages 必须是 1 到 500 的整数";
+}
+async function textOfPages(doc: MinimalDoc, maxPages: number): Promise<PageText> {
   const out: string[] = [];
+  const failedPages: number[] = [];
   const last = Math.min(doc.numPages, maxPages);
+  let pagesRead = 0;
   for (let n = 1; n <= last; n += 1) {
     try {
-      const page = (await doc.getPage(n)) as {
-        getTextContent: () => Promise<{ items: Array<{ str?: string }> }>;
-      };
+      const page = (await doc.getPage(n)) as { getTextContent: () => Promise<{ items: Array<{ str?: string }> }> };
       const content = await page.getTextContent();
       out.push(content.items.map((i) => i.str ?? "").join(" "));
+      pagesRead++;
     } catch {
-      // 单页坏掉不该让整篇失败 —— 跳过它,其余照抽
+      failedPages.push(n);
     }
   }
-  return out.join("\n\n").replace(/[ \t]+/g, " ").trim();
+  return { text: out.join("\n\n").replace(/[ \t]+/g, " ").trim(), pagesAttempted: last, pagesRead, failedPages, truncated: last < doc.numPages };
 }
 
 /** XMP 里挑出来的字段。`rawIdentifier` 保留原始串,便于诊断「为什么没认出 DOI」。 */
@@ -200,6 +188,8 @@ function pickFromXmp(all: Record<string, unknown>): XmpPicked {
 
 /** 探针:元数据 + 前几页文本。给分层采集用。 */
 export async function probePdf(absPath: string, maxPages = 3): Promise<PdfProbe> {
+  const invalid = pageLimitError(maxPages);
+  if (invalid) return { ok: false, meta: {}, text: "", hasTextLayer: false, error: invalid };
   const opened = await openDocument(absPath);
   if (!opened.ok) {
     return { ok: false, meta: {}, text: "", hasTextLayer: false, encrypted: opened.encrypted, error: opened.error };
@@ -227,9 +217,13 @@ export async function probePdf(absPath: string, maxPages = 3): Promise<PdfProbe>
       // 元数据读不到不算失败 —— 正文还能拿来猜
     }
 
-    const text = await textOfPages(doc, maxPages);
-    const hasTextLayer = text.length >= TEXT_LAYER_MIN_CHARS;
-    return { ok: true, meta, text, pageCount: doc.numPages, hasTextLayer };
+    const pages = await textOfPages(doc, maxPages);
+    const hasTextLayer = pages.text.length >= TEXT_LAYER_MIN_CHARS;
+    // Embedded metadata can remain useful even if some/all page content fails.
+    return { ok: true, meta, text: pages.text, pageCount: doc.numPages, hasTextLayer,
+      pagesRead: pages.pagesRead, failedPages: pages.failedPages, truncated: pages.truncated,
+      ...(pages.failedPages.length ? { error: `页面解析失败: ${pages.failedPages.join(", ")}; 不应据此认定为扫描件` } : {}) };
+
   } catch (err) {
     return { ok: false, meta: {}, text: "", hasTextLayer: false, error: (err as Error).message };
   } finally {
@@ -241,16 +235,21 @@ export async function probePdf(absPath: string, maxPages = 3): Promise<PdfProbe>
   }
 }
 
-/** 抽正文(兜底 Markdown)。`maxPages` 默认不限,但调用方应当给个上限。 */
+/** Bounded text reading only (1–500 pages), not OCR or Markdown transcription. */
 export async function extractPdfText(
   absPath: string,
   maxPages = 500,
-): Promise<{ ok: true; text: string; pageCount: number } | { ok: false; error: string; encrypted?: boolean }> {
+): Promise<({ ok: true; pageCount: number } & PageText) | { ok: false; error: string; encrypted?: boolean }> {
+  const invalid = pageLimitError(maxPages);
+  if (invalid) return { ok: false, error: invalid };
   const opened = await openDocument(absPath);
   if (!opened.ok) return opened;
   try {
-    const text = await textOfPages(opened.doc, maxPages);
-    return { ok: true, text, pageCount: opened.doc.numPages };
+    const pages = await textOfPages(opened.doc, maxPages);
+    if (pages.pagesAttempted > 0 && pages.pagesRead === 0) {
+      return { ok: false, error: `尝试读取的 ${pages.pagesAttempted} 页全部解析失败; 不能当作没有文本层或已完成 OCR` };
+    }
+    return { ok: true, ...pages, pageCount: opened.doc.numPages };
   } catch (err) {
     return { ok: false, error: `抽取文本失败:${(err as Error).message}` };
   } finally {

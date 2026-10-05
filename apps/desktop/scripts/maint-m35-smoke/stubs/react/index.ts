@@ -63,3 +63,7 @@ export function useContext<T>(context: StubContext<T>): T {
 
 /** 同 `useEffect`:这套只看**一次渲染的产物**,不跑副作用。 */
 export function useLayoutEffect(_effect: () => unknown, _deps?: unknown[]): void {}
+
+/** PDF branch test: lazy Markdown must not load or render a DOM editor. */
+export function lazy(_load: () => Promise<unknown>) { return () => { throw new Error("Unexpected lazy component rendering in PDF test"); }; }
+export const Suspense = (props: { children?: unknown }) => props.children;

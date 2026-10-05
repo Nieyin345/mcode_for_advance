@@ -1157,6 +1157,9 @@ export interface SessionRunningSnapshotEvent {
  * SSE 按 `originDeviceId` 跳过发起的那台。回声会在连续输入时把文本框里的内容
  * 拽回旧值(每敲一个字一次写入,回声晚到一拍)。
  */
+// Exception: desktop app-control emits a desktop-only invalidation for
+// customUi.config.v1 with an empty value. Its consumer re-reads the latest value;
+// this does NOT make the key mobile-accessible or broadcast its HTML to phones.
 export interface SettingChangedEvent {
   type: "setting.changed";
   sessionId: string;

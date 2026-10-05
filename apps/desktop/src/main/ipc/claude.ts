@@ -1,3 +1,5 @@
+import { CUSTOM_UI_SETTING_KEY } from "@contracts/customUi";
+import { validateCustomUiWrite } from "@main/customUi/configValidation.js";
 import type { IpcMain } from "electron";
 import {
   IPC,
@@ -536,6 +538,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC.SETTING_SET, (_evt, raw) => {
     const input = SetSettingSchema.parse(raw);
+    if (input.key === CUSTOM_UI_SETTING_KEY) validateCustomUiWrite(input.value);
     SettingRepo.set(input.key, input.value);
     // 「跟着人走」的键(语言、强调色、自定义命令、快捷键……)写完推给已配对的
     // 手机,当场生效;桌面自己也会收到回声,套用是幂等的。键表见

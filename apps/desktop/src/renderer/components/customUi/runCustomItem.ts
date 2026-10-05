@@ -8,6 +8,7 @@
  *
  * 右栏页签上的项不经过这里 —— 页签是常驻显示区,由 `CustomTabView` 画。
  */
+import { hasNodeTemplateReferences } from "@contracts/nodeTemplate";
 import {
   customUiLabel,
   renderShellTemplate,
@@ -95,6 +96,10 @@ async function shellFlavor(): Promise<ShellFlavor> {
 async function runShell(item: CustomUiItem, action: Extract<CustomUiItem["action"], { type: "shell" }>, vars: Record<string, string>): Promise<void> {
   if (!selectActiveEnvPath(useSessionStore.getState())) {
     toast("warning", "customUi.run.shellNoProject");
+    return;
+  }
+  if (hasNodeTemplateReferences(action.command)) {
+    toast("error", "customUi.run.shellDynamicDenied");
     return;
   }
   const command = renderShellTemplate(action.command, vars, await shellFlavor());

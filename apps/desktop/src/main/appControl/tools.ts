@@ -22,6 +22,9 @@
  * 只给本地三个引擎;浏览器扩展 / 公网 MCP 那条路(`webToolHost`)**不挂** —— 公网那条是
  * 免审批的,挂上去等于把整个软件交给拿到链接的人(用户 2026-10-02 明确选的)。
  */
+import { CUSTOM_UI_SETTING_KEY, CustomUiConfigSchema } from "@contracts/customUi";
+import { zodToJsonSchema } from "zod-to-json-schema";
+import { notifyAppSettingWrite } from "@main/customUi/settingSync.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { ProviderContext } from "@contracts/provider";
@@ -61,7 +64,9 @@ export function apiEntries(): ApiEntry[] {
   const known = new Set<string>();
   const out: ApiEntry[] = API_CATALOG.map((e) => {
     known.add(e.channel);
-    return { ...e, policy: policyFor(e.method), registered: registered.has(e.channel) };
+    const settingDoc = e.method === "setting.get" || e.method === "setting.set"
+      ? ` 自定义 UI / custom UI: ${CUSTOM_UI_SETTING_KEY} 是旧版全局 UI JSON 配置。先 setting.get 读取并保留其他项; app_api_describe({method:"setting.set", setting_key:"${CUSTOM_UI_SETTING_KEY}"}) 获取 JSON schema。写入必须审批,不可直接修改运行中的 mcode.db。` : "";
+    return { ...e, doc: e.doc + settingDoc, policy: policyFor(e.method), registered: registered.has(e.channel) };
   });
   for (const ch of registered) {
     if (known.has(ch)) continue;
@@ -211,8 +216,11 @@ export function appMcpTools(): McpToolSpec[] {
     {
       name: "app_api_describe",
       description: "看某个 Mcode 方法的完整说明、参数格式、返回格式和权限档。调用 app_api_call 之前先看一眼。",
-      inputSchema: { method: z.string().describe("方法名,如 session.rename(来自 app_api_list)") },
-      handler: async (args: { method: string }) => {
+      inputSchema: {
+        method: z.string().describe("方法名,如 session.rename(来自 app_api_list)"),
+        setting_key: z.string().optional().describe("查看已知 JSON 设置的结构,例如 customUi.config.v1"),
+      },
+      handler: async (args: { method: string; setting_key?: string }) => {
         const e = findEntry(args.method);
         if (!e) return fail(`没有这个方法:${args.method}。用 app_api_list 查。`);
         return text(
@@ -223,6 +231,8 @@ export function appMcpTools(): McpToolSpec[] {
             e.doc ? `说明:${e.doc}` : null,
             `参数:${e.input}`,
             `返回:${e.output}`,
+            args.setting_key === CUSTOM_UI_SETTING_KEY && ["setting.get", "setting.set"].includes(e.method)
+              ? `value 是 JSON 字符串;其解码后的结构为:\n${JSON.stringify(zodToJsonSchema(CustomUiConfigSchema, { target: "jsonSchema7", $refStrategy: "none" }))}\n条目 id 必须唯一,动作必须适用于相应插槽。保留未修改的条目与布局;先读再写。` : null,
           ]
             .filter(Boolean)
             .join("\n"),
@@ -458,7 +468,13 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
         );
         if (denied) return fail(denied);
         try {
-          return text(renderResult(await callRpc(entry, args.input)));
+          const result = await callRpc(entry, args.input);
+          try {
+            notifyAppSettingWrite(entry.method, args.input);
+          } catch (error) {
+            return fail(`操作已完成,但桌面刷新通知失败:${errText(error)}`);
+          }
+          return text(renderResult(result));
         } catch (err) {
           return fail(errText(err));
         }

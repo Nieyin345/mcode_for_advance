@@ -5,7 +5,7 @@
  * linked / attached 方式进库(见 `LibraryItem.entryMode` 的 `filePath`)。这类条目
  * 没有「PDF 状态 / 转录 / 笔记」那一套,有的只是文件本体 —— 这个组件就是它的预览页:
  *
- *   文本   ── md/markdown 走聊天那套 Markdown 渲染(长文由 ChunkedMarkdown 分段加载),其余进 <pre>;
+ *   文本   ── md/markdown 走 Milkdown / Crepe 只读预览，其余进 <pre>;
  *   图片   ── data URL 直接摆;
  *   pdf    ── 复用 PdfPreview(给它喂字节);
  *   office ── 用 OnlyOffice 只读 viewer；插件选区仍可引用到 AI;
@@ -18,7 +18,7 @@
  * files 列表。base64 在这里就地转回字节，供 PDF 等仍使用字节的 viewer。Office 则走
  * `entryPath` + OnlyOffice，不再送进本地 Office renderer。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LibraryItem } from "@contracts/library";
 import { isOnlyOfficeSupportedPath, type LibraryFileContent } from "@contracts/ipc";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -27,7 +27,7 @@ import { api } from "@renderer/lib/api.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import { makeQuoteTag } from "@renderer/lib/contentTag.js";
-import { ChunkedMarkdown } from "@renderer/components/chat/ChunkedMarkdown.js";
+const MarkdownPreviewPane = lazy(() => import("./MarkdownPreviewPane.js"));
 import { SelectionToolbar, type SelectionToolbarState } from "@renderer/components/chat/SelectionToolbar.js";
 import { SelectionQuoteMenu, type QuoteTarget } from "@renderer/components/chat/SelectionQuoteMenu.js";
 import { IconArrowLeft, IconFile, IconFolder, IconLoader2 } from "@renderer/lib/icons.js";
@@ -202,7 +202,7 @@ export function FilePreview({
    * 否则 `ext` 退化成空串,一份 **Markdown 转录会被当成普通文本塞进 `<pre>`**
    * (用户看到的是一堆 `#` 和 `*` 的源码)。见下面 `ext === "md"` 那个分支。
    */
-  const viewing = relPath ?? item.filePath ?? (which === "md" ? item.mdPath : item.pdfPath) ?? item.id;
+  const viewing = relPath ?? (which === "md" ? (pdfPath ?? item.mdPath ?? "transcript.md") : (item.filePath ?? item.pdfPath ?? item.id));
   const ext = extOf(viewing);
 
   const open = (name: string, isDir: boolean) => {
@@ -291,11 +291,10 @@ export function FilePreview({
     if (content.type === "text") {
       if (ext === "md" || ext === "markdown") {
         return (
-          // 这一层的 `overflow-y-auto` **就是**滚动容器，所以给 `scroll="parent"`
-          // —— 让它把内容放在这里滚，不再自己套一层（见 `ChunkedMarkdown` 文件头那段：
-          // 两层滚动叠在一起，能滚的那根和内层那根不是同一个，界面表现为"滑不动"）。
-          <div className="h-full overflow-y-auto px-4 py-3">
-            <ChunkedMarkdown text={content.text} scroll="parent" />
+          <div className="h-full overflow-y-auto">
+            <Suspense fallback={<div className="p-4"><IconLoader2 size={14} className="animate-spin" /></div>}>
+              <MarkdownPreviewPane markdown={content.text} filePath={pdfPath ? (relPath ? joinPath(pdfPath, relPath) : pdfPath) : undefined} />
+            </Suspense>
           </div>
         );
       }

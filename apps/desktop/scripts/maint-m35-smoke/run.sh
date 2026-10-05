@@ -19,19 +19,22 @@ node "$OUT/main.mjs" || status=1
 
 # Render the REAL FilePreview function with deterministic hook state: no Electron,
 # DOM, network or PDF engine. Check the actual filePath handed to PdfPreview.
-# Only its relative PDF import is rewired in a temporary copy for isolation;
+# Only its relative PDF and lazy Markdown imports are rewired in a temporary copy for isolation;
 # keep the function body identical and fail if the original import changes.
 node - "$OUT/FilePreview.tsx" <<'NODE'
 const { readFileSync, writeFileSync } = require('node:fs');
 const source = readFileSync('src/renderer/components/library/FilePreview.tsx', 'utf8');
 const needle = 'from "./PdfPreview.js"';
 if (!source.includes(needle)) throw Error('FilePreview PDF import changed: update the isolated test');
-writeFileSync(process.argv[2], source.replace(needle, 'from "@m35/PdfPreview"'));
+const mdNeedle = 'import("./MarkdownPreviewPane.js")';
+if (!source.includes(mdNeedle)) throw Error('FilePreview Markdown import changed: update the isolated test');
+writeFileSync(process.argv[2], source.replace(needle, 'from "@m35/PdfPreview"').replace(mdNeedle, 'import("@m35/MarkdownPreview")'));
 NODE
 "$ESBUILD" scripts/maint-m35-smoke/preview.ts \
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \
   --alias:react=./scripts/maint-m35-smoke/stubs/react \
   --alias:@renderer/components/library/FilePreview.js="$OUT/FilePreview.tsx" \
+  --alias:@m35/MarkdownPreview=./scripts/maint-m35-smoke/stubs/previewDeps.ts \
   --alias:@m35/PdfPreview=./scripts/maint-m35-smoke/stubs/previewDeps.ts \
   --alias:@renderer/lib/api.js=./scripts/maint-m35-smoke/stubs/previewDeps.ts \
   --alias:@renderer/lib/i18n/index.js=./scripts/maint-m35-smoke/stubs/i18n.ts \

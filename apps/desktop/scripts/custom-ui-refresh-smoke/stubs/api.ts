@@ -1,0 +1,2 @@
+export const state:{value:string|null;read:null|(()=>Promise<{value:string|null}>);write:null|((value:string)=>Promise<void>)}={value:null,read:null,write:null};
+export const api={setting:{get:async({key}:{key:string})=>key==='customUi.config.v1'?(state.read?state.read():{value:state.value}):{value:'1'},set:async({value}:{key:string;value:string})=>{if(state.write)return state.write(value);state.value=value;}},workflow:{list:async()=>({workflows:[]})},automation:{statusAll:async()=>[]}};

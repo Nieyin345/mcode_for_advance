@@ -32,6 +32,7 @@
  * 纯函数、只依赖 zod,冒烟可以直接把渲染/条件/排序钉住(见 `scripts/custom-ui-smoke`)。
  */
 import { z } from "zod";
+import { hasNodeTemplateReferences } from "./nodeTemplate.js";
 import { PANEL_HTML_MAX } from "./customUiPanel.js";
 
 /** 设置表里存配置的键。版本号写进键名:将来格式大改就换一个键,旧值原地不动可回退。 */
@@ -256,8 +257,9 @@ export const CustomUiActionSchema = z.discriminatedUnion("type", [
   /**
    * 运行终端命令(R39):在底部终端**新开一个页签**跑,cwd = 当前项目。
    *
-   * 变量值会**自动加引号**并把换行压成空格(见 {@link renderShellTemplate})—— 消息正文、
-   * 选中文字都可能带 `;` `&&` `$(...)`,原样拼进命令就是注入。模板里自己写的部分原样保留。
+   * 命令正文必须静态,动态变量不得插入 shell 源码。需要文件路径等动态数据时,
+   * 改用 automation 动作和既有工作流的固定命令 + JSON stdin。旧配置不自动改写,
+   * 运行时明确拒绝并提示迁移(见 {@link renderShellTemplate})。
    *
    * `confirm`:运行前弹框显示完整命令让用户确认。**缺省 = 确认**;导入别人的设置时一律
    * 抹掉这一格(回到确认),防止导入的按钮静默执行命令。
@@ -743,23 +745,19 @@ export function shellQuote(value: string, flavor: ShellFlavor): string {
   return `'${v.replace(/'/g, "'\\''")}'`;
 }
 
-/**
- * 「运行终端命令」用的渲染:每个变量值都**自动加引号**成一个参数(见 {@link shellQuote}),
- * 模板里自己写的部分原样。用户若已经在模板里给变量加了引号(`"{{file.path}}"` /
- * `'{{file.path}}'`),那一层引号会被去掉,避免双重引号。
- * ⚠ 变量请单独作为参数用,别塞进更长的双引号字符串中间(PowerShell / bash 的双引号里
- * `$(...)` 仍会展开)。
+/** Fixed shell source only; the existing workflow engine carries dynamic JSON stdin.
+ * Quoting a replacement cannot make interpolation safe in arbitrary shell syntax.
+ * Escaped \{{ literals follow the same policy as node command templates.
  */
 export function renderShellTemplate(
   template: string,
-  vars: Readonly<Record<string, string>>,
-  flavor: ShellFlavor,
+  _vars: Readonly<Record<string, string>>,
+  _flavor: ShellFlavor,
 ): string {
-  const quoted = template.replace(
-    /(["']?)\{\{\s*([a-zA-Z][a-zA-Z0-9_.]*)\s*\}\}\1/g,
-    (_m, _q: string, key: string) => shellQuote(Object.hasOwn(vars, key) ? (vars[key] ?? "") : "", flavor),
-  );
-  return quoted.replace(/[\r\n]+/g, " ").trim();
+  if (hasNodeTemplateReferences(template)) {
+    throw new Error("Dynamic shell templates are disabled. Use a static command or an automation workflow with fixed command source and JSON stdin. Existing configuration was not rewritten.");
+  }
+  return template.replace(/\\\{\{/g, "{{").replace(/[\r\n]+/g, " ").trim();
 }
 
 export function extractTemplateVars(template: string): string[] {

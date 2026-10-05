@@ -1,0 +1,2 @@
+import {state} from "./state.js";
+export function getDocument(){state.opened++;return {promise:Promise.resolve({numPages:3,getMetadata:async()=>({info:{Title:"Fixture"}}),getPage:async(n:number)=>{if(state.fail.has(n))throw Error("broken page "+n);return{getTextContent:async()=>({items:[{str:"PAGE_"+n}]})};},destroy:async()=>{state.destroyed++;if(state.cleanupFail)throw Error("cleanup failed");}})}};

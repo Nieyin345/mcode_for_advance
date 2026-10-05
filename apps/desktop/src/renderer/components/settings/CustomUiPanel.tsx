@@ -1227,7 +1227,7 @@ function ItemEditor({
                     className={cn(FIELD, "font-mono")}
                     value={draft.shellCommand}
                     onChange={(e) => set("shellCommand", e.target.value)}
-                    placeholder="git log --oneline -- {{file.path}}"
+                    placeholder="git log --oneline"
                     spellCheck={false}
                   />
                 </div>
@@ -1235,7 +1235,6 @@ function ItemEditor({
                   <input type="checkbox" checked={draft.shellConfirm} onChange={(e) => set("shellConfirm", e.target.checked)} />
                   {t("customUi.editor.shellConfirm")}
                 </label>
-                {varsHint}
               </>
             )}
             {draft.actionType === "panel" && (

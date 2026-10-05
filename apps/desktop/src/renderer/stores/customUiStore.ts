@@ -3,7 +3,7 @@
  * + 右栏当前是不是在显示一个**自定义页签** + 竖向工具栏收没收起。
  *
  * 配置存在设置表的一个键里(`CUSTOM_UI_SETTING_KEY`),读的时候过
- * `parseCustomUiConfig`(坏了当默认、坏条目逐条丢)。整个应用只读一次,之后以这里为准;
+ * `parseCustomUiConfig`(坏了当默认、坏条目逐条丢)。首屏只加载一次;外部写入通知会重新读取;
  * 设置页保存时先改这里再落盘 —— 菜单立刻跟上,不用等一次往返。
  *
  * ⚠️ 选择器要返回**稳定引用**(AGENTS.md):`config` 整份替换、不原地改,所以
@@ -14,6 +14,7 @@ import {
   CUSTOM_UI_SETTING_KEY,
   DEFAULT_CUSTOM_UI_CONFIG,
   parseCustomUiConfig,
+  CustomUiConfigSchema,
   type CustomUiConfig,
   type CustomUiInput,
   type CustomUiItem,
@@ -63,6 +64,8 @@ interface CustomUiState {
   loaded: boolean;
   /** 读一次设置表。重复调用只有第一次真读。 */
   load: () => Promise<void>;
+  /** Re-read an externally updated configuration, retaining the old UI on error. */
+  refresh: () => Promise<void>;
   /**
    * 整份替换并落盘。**落盘失败会退回落盘前那一份**并推一条 toast。
    *
@@ -158,8 +161,23 @@ async function seedDefaults(save: (next: CustomUiConfig) => Promise<boolean>, cu
 }
 
 let loading: Promise<void> | null = null;
+// A late read must never roll back a newer refresh or optimistic local save.
+let configEpoch = 0;
+// Serialize local writes: neither completion order nor rollback may resurrect
+// an optimistic configuration that was never persisted.
+let saveSeq = 0;
+let writeTail: Promise<void> = Promise.resolve();
+let confirmedConfig: CustomUiConfig | null = null;
 /** 表单序号(见 `CustomUiForm.id`)。 */
 let formSeq = 0;
+
+function configurationView(current: CustomUiState, config: CustomUiConfig) {
+  const item = current.panel && config.items.find((i) => i.id === current.panel!.item.id);
+  const panel = !current.panel ? null : !item || item.action.type !== "panel" || item.slot !== current.panel.item.slot ? null
+    : JSON.stringify(item) === JSON.stringify(current.panel.item) ? current.panel
+    : { ...current.panel, item, id: `p${++formSeq}` };
+  return { config, panel, activeTab: current.activeTab && config.items.some((i) => i.id === current.activeTab && i.slot === "rightPanel.tab") ? current.activeTab : null };
+}
 
 export const useCustomUiStore = create<CustomUiState>((set, get) => ({
   config: DEFAULT_CUSTOM_UI_CONFIG,
@@ -167,6 +185,7 @@ export const useCustomUiStore = create<CustomUiState>((set, get) => ({
   load: () => {
     if (get().loaded) return Promise.resolve();
     if (loading) return loading;
+    const epoch = configEpoch;
     loading = (async () => {
       try {
         const [res, collapsed, seeded] = await Promise.all([
@@ -175,13 +194,14 @@ export const useCustomUiStore = create<CustomUiState>((set, get) => ({
           api.setting.get({ key: CUSTOM_UI_SEEDED_KEY }).catch(() => ({ value: null })),
         ]);
         const parsed = parseCustomUiConfig(res.value);
-        set({ config: parsed, loaded: true, toolbarCollapsed: collapsed.value === "1" });
+        if (epoch === configEpoch) confirmedConfig = parsed;
+        set({ ...(epoch === configEpoch ? { config: parsed } : {}), loaded: true, toolbarCollapsed: collapsed.value === "1" });
         // 首启预置(2026-09-28):从没配置过(一个自定义项都没有)时,按现有自动化
         // 自动搭出文献菜单(seedDefaults 的绑定规则,冒烟钉住)。失败要说出来,
         // 不静默 —— "没预置"读起来会像"功能不存在"。
         // **只在从没预置过的机器上做**(见 CUSTOM_UI_SEEDED_KEY):清空过菜单的用户
         // 不该每次开应用都被塞回默认项。
-        if (parsed.items.length === 0 && seeded.value !== "1") {
+        if (epoch === configEpoch && parsed.items.length === 0 && seeded.value !== "1") {
           void seedDefaults(get().save, () => get().config);
         }
       } catch {
@@ -193,25 +213,41 @@ export const useCustomUiStore = create<CustomUiState>((set, get) => ({
     })();
     return loading;
   },
-  save: async (next) => {
-    // 乐观地先改内存(菜单立刻跟上),失败时退回这一份 —— 见 CustomUiState.save。
-    const previous = get().config;
+  refresh: async () => {
+    const epoch = ++configEpoch;
+    await writeTail;
+    if (epoch !== configEpoch) return;
+    const res = await api.setting.get({ key: CUSTOM_UI_SETTING_KEY });
+    if (epoch !== configEpoch) return;
+    // Unlike startup recovery, a malformed external write must not erase a live UI.
+    const config = CustomUiConfigSchema.parse(JSON.parse(res.value ?? "null"));
+    confirmedConfig = config;
+    set(configurationView(get(), config));
+  },
+  save: (next) => {
+    const saveId = ++saveSeq;
+    ++configEpoch;
+    confirmedConfig ??= get().config;
     set({ config: next, loaded: true });
-    try {
-      await api.setting.set({ key: CUSTOM_UI_SETTING_KEY, value: JSON.stringify(next) });
-      return true;
-    } catch (err) {
-      // 只在界面上还是**这次**的配置时才回滚:连续两次保存、前一次失败时,原先会把
-      // 后一次(已经写进去的)配置一起撤掉,界面与磁盘对不上。
-      if (get().config === next) set({ config: previous });
-      const { locale } = useSessionStore.getState();
-      useToastStore.getState().push({
-        kind: "error",
-        title: translate(locale, "customUi.saveFailed"),
-        body: err instanceof Error ? err.message : String(err),
-      });
-      return false;
-    }
+    const task = writeTail.then(async () => {
+      try {
+        await api.setting.set({ key: CUSTOM_UI_SETTING_KEY, value: JSON.stringify(next) });
+        confirmedConfig = next;
+        if (saveId === saveSeq && get().config === next) set(configurationView(get(), next));
+        return true;
+      } catch (err) {
+        if (saveId === saveSeq && get().config === next) set(configurationView(get(), confirmedConfig!));
+        const { locale } = useSessionStore.getState();
+        useToastStore.getState().push({
+          kind: "error",
+          title: translate(locale, "customUi.saveFailed"),
+          body: err instanceof Error ? err.message : String(err),
+        });
+        return false;
+      }
+    });
+    writeTail = task.then(() => {}, () => {});
+    return task;
   },
 
   focusSlot: null,

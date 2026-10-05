@@ -496,7 +496,7 @@ export interface SkillMarketState {
   sourceKind: "git" | "local";
   sourceRef: string;
   builtin: boolean;
-  /** The catalog tree has been fetched at least once. */
+  /** Compatibility name: true when metadata index or a legacy local cache is available. */
   cloned: boolean;
   fetchedAt?: string;
   skills: SkillMarketEntry[];
@@ -520,6 +520,7 @@ export const SkillsMarketNameSchema = z.object({ requestId: z.string().uuid().op
 export type SkillsMarketNameInput = z.infer<typeof SkillsMarketNameSchema>;
 
 export const SkillsMarketInstallSchema = z.object({
+  requestId: z.string().uuid().optional(),
   market: z.string().regex(SKILL_MARKET_NAME_RE),
   names: z.array(z.string().min(1)).min(1).max(500),
 });

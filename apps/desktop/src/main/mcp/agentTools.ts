@@ -645,7 +645,11 @@ const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
 function capDocumentOutput(textValue: string, label: string, maxChars = MAX_DOCUMENT_OUTPUT_CHARS): string {
   if (textValue.length <= maxChars) return textValue;
-  return `${textValue.slice(0, maxChars)}\n…[${label} 超过 ${maxChars} 字符，已截断]`;
+  const marker = `\n…[${label} 超过 ${maxChars} 字符，已截断]`;
+  const end = Math.max(0, maxChars - marker.length);
+  let prefix = textValue.slice(0, end);
+  if (/[\uD800-\uDBFF]$/.test(prefix)) prefix = prefix.slice(0, -1);
+  return prefix + marker.slice(0, maxChars);
 }
 
 async function readRichDocument(input: {
@@ -659,11 +663,15 @@ async function readRichDocument(input: {
   maxChars?: number;
 }): Promise<string> {
   const ext = path.extname(input.abs).toLowerCase();
-  const maxChars = Math.max(1_000, Math.min(input.maxChars ?? MAX_DOCUMENT_OUTPUT_CHARS, 300_000));
+  const maxChars = Math.max(100, Math.min(input.maxChars ?? MAX_DOCUMENT_OUTPUT_CHARS, 300_000));
   if (ext === ".pdf") {
     const out = await extractPdfText(input.abs, Math.max(1, Math.min(input.maxPages ?? 200, 500)));
     if (!out.ok) throw new Error(out.error);
-    return capDocumentOutput(`[PDF ${out.pageCount} 页]\n${out.text || "(没有可抽取的文本层)"}`, "PDF 文本", maxChars);
+    const notes = [
+      out.truncated ? "按 max_pages 截断,其余页未读取" : "",
+      out.failedPages.length ? `解析失败页: ${out.failedPages.join(", ")}` : "",
+    ].filter(Boolean);
+    return capDocumentOutput(`[PDF ${out.pageCount} 页] [成功读取 ${out.pagesRead} 页${notes.length ? "; " + notes.join("; ") : ""}]\n${out.text || "(没有可抽取的文本层; 未执行 OCR)"}`, "PDF 文本", maxChars);
   }
 
   if (ext === ".docx" || ext === ".dotx") {
@@ -735,7 +743,8 @@ async function readRichDocument(input: {
       "except Exception as e:",
       " print(json.dumps({'error':'缺少 python-pptx: '+str(e)},ensure_ascii=False));sys.exit(2)",
       "prs=Presentation(sys.argv[1]);limit=int(sys.argv[2]);slides=[]",
-      "for i,slide in enumerate(prs.slides[:limit],1):",
+      "for i,slide in enumerate(prs.slides,1):",
+      " if i>limit: break",
       " parts=[]",
       " for sh in slide.shapes:",
       "  if hasattr(sh,'text') and sh.text.strip(): parts.append(sh.text.strip())",
@@ -746,7 +755,9 @@ async function readRichDocument(input: {
     if (out.code !== 0) throw new Error(`PPTX 抽取失败:${out.stderr.trim() || out.stdout.trim() || `exit ${out.code}`}`);
     const parsed = JSON.parse(out.stdout) as { error?: string; count?: number; slides?: Array<{ n: number; text: string }> };
     if (parsed.error) throw new Error(parsed.error);
-    const body = [`[PPTX ${parsed.count ?? 0} 页]`, ...(parsed.slides ?? []).map((s) => `\n## Slide ${s.n}\n${s.text || "(无文本)"}`)];
+    const readCount = parsed.slides?.length ?? 0;
+    const clipped = readCount < (parsed.count ?? 0) ? "; 按 max_slides 截断,其余页未读取" : "";
+    const body = [`[PPTX ${parsed.count ?? 0} 页] [已读取 ${readCount} 页${clipped}]`, ...(parsed.slides ?? []).map((s) => `\n## Slide ${s.n}\n${s.text || "(无文本)"}`)];
     return capDocumentOutput(body.join("\n"), "PPTX 文本", maxChars);
   }
 

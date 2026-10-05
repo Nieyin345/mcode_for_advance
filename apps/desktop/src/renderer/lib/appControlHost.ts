@@ -25,7 +25,8 @@ function sessionTitle(st: Store, id: string | null): string | null {
   return st.streamSessions.find((s) => s.id === id)?.title ?? null;
 }
 
-function snapshot(st: Store): unknown {
+async function snapshot(st: Store): Promise<unknown> {
+  const { useCustomUiStore } = await import("@renderer/stores/customUiStore.js");
   const project = st.projects.find((p) => p.id === st.activeProjectId) ?? null;
   return {
     activeProject: project ? { id: project.id, name: project.name, path: project.path } : null,
@@ -45,6 +46,12 @@ function snapshot(st: Store): unknown {
     settings: { open: st.settingsOpen, section: st.settingsSection },
     composer: { permissionMode: st.permissionMode, workflowId: st.workflowId },
     prefs: { locale: st.locale, themeStyle: st.themeStyle, displayMode: st.displayMode },
+    customUi: {
+      loaded: useCustomUiStore.getState().loaded,
+      activeTabId: useCustomUiStore.getState().activeTab,
+      openPanelItemId: useCustomUiStore.getState().panel?.item.id ?? null,
+      configSettingKey: "customUi.config.v1",
+    },
   };
 }
 
@@ -82,7 +89,7 @@ async function execute(cmd: AppUiCommand): Promise<AppUiReply> {
   const st = useSessionStore.getState();
   switch (cmd.op) {
     case "state":
-      return { ok: true, data: snapshot(st) };
+      return { ok: true, data: await snapshot(st) };
     case "open_session":
       await st.selectSession(cmd.sessionId);
       return useSessionStore.getState().activeSessionId === cmd.sessionId

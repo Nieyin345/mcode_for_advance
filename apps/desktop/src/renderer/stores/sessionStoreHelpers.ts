@@ -11,6 +11,7 @@
  * working unchanged. Type-only imports from ./sessionStore.js are erased at
  * build time, so there is no runtime import cycle.
  */
+import { CUSTOM_UI_SETTING_KEY } from "@contracts/customUi";
 import type { Project, Session, MessageRecord, SessionBookmark } from "@contracts/session";
 import type { SettingChangedEvent, ProjectsChangedEvent, UserMessageEvent, TodoUpdateEvent, GitChangedEvent, SessionChangedEvent, SessionDeletedEvent, RequestResolvedEvent, ModeChangeEvent, UpstreamIssueEvent, SubagentUpdateEvent, SubagentTranscriptEvent, WorkflowNodeTranscriptEvent, ContextUsageEvent, AskUserQuestionEvent, WorkflowNodeProgressEvent, WorkflowNodeUsageEvent, WorkflowNodeChoiceEvent, RuntimeEvent, PermissionMode, EffortLevel, ApprovalRequestEvent, PlanApprovalRequestEvent, PlanUpdateEvent, WorkflowNodeResultEvent, SubagentSnapshot, TurnUsageRecord, SessionListEntry } from "@contracts/runtime";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
@@ -2514,6 +2515,14 @@ function parseStringRecord(raw: string): Record<string, string> | null {
  * `init` / `initDeferred` 读库时一致 —— 两边任何一处改了规则,另一处也要改。
  */
 function applySyncedSetting(set: IngestCtx["set"], key: string, value: string): void {
+  if (key === CUSTOM_UI_SETTING_KEY) {
+    // Lazy import: customUiStore subscribes to sessionStore at module initialization.
+    // A static import here would create a startup temporal-dead-zone cycle.
+    void import("@renderer/stores/customUiStore.js")
+      .then(({ useCustomUiStore }) => useCustomUiStore.getState().refresh())
+      .catch((error: unknown) => console.error("custom UI refresh failed; retaining previous configuration", error));
+    return;
+  }
   try {
     switch (key) {
       case UI_LOCALE_SETTING_KEY:

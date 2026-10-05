@@ -2,8 +2,8 @@
  * 技能市场 —— 设置 → Skills 的「市场」tab。
  *
  * 源 = 一个装着若干 SKILL.md 目录的仓库(内置 anthropics/skills、openai/skills,
- * 用户可加任意 git 仓库 / GitHub `owner/repo` / 本地文件夹)。内置源第一次被看到
- * 时才拉取(和插件市场同一个规矩)。安装 = 复制进总库(`~/.mcode/skills`),同名跳过;
+ * 用户可加公开 GitHub 仓库 / 本地文件夹)。内置源第一次被看到
+ * 时才读取目录与简介，不克隆仓库。安装 = 按需下载所选技能进总库(`~/.mcode/skills`),同名跳过;
  * 装好的技能出现在「总库」tab,引擎开关在那里调。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -144,7 +144,7 @@ export function SkillMarketView({
     setError(null);
     setNote(null);
     try {
-      const res = await api.skills.marketInstall({ market, names: [name] });
+      const res = await marketProgress.run(requestId => api.skills.marketInstall({ market, names: [name], requestId }));
       if (res.errors.length > 0 || !res.ok) {
         setError(t("settings.market.installFailed", { error: res.error ?? res.errors.map((e) => `${e.name}: ${e.error}`).join("; ") }));
       } else if (res.imported.length > 0) {

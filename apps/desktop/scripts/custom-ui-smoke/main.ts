@@ -297,17 +297,16 @@ eq("shell 引号(posix)", shellQuote("it's; rm", "posix"), "'it'\\''s; rm'");
 eq("shell 引号(powershell)", shellQuote("it's; rm", "powershell"), "'it''s; rm'");
 eq("shell 引号(cmd):去掉 \" 和 %", shellQuote('a"b%PATH%', "cmd"), '"abPATH"');
 eq("shell 引号:换行压成空格", shellQuote("a\nb", "posix"), "'a b'");
-eq(
-  "shell 渲染:变量值成一个参数、注入不生效",
-  renderShellTemplate("git log -- {{file.path}}", { "file.path": "x; rm -rf ~" }, "posix"),
-  "git log -- 'x; rm -rf ~'",
-);
-eq(
-  "shell 渲染:用户自己加的引号会被去掉,不双重",
-  renderShellTemplate('code "{{file.path}}"', { "file.path": "a b" }, "powershell"),
-  "code 'a b'",
-);
-eq("shell 渲染:未知变量是空参数", renderShellTemplate("echo {{nope}}", {}, "posix"), "echo ''");
+for (const flavor of ["posix", "powershell", "cmd"] as const) {
+  for (const command of ["echo {{file.path}}", 'echo "prefix {{selection.text}} suffix"', "echo {{nope}}", "echo {{ malformed + expression }}"]) {
+    let rejected = false;
+    try { renderShellTemplate(command, { "selection.text": "$(printf AUDIT_INJECTED)" }, flavor); }
+    catch (error) { rejected = String(error).includes("JSON stdin"); }
+    check(`shell 动态正文拒绝并提示迁移: ${flavor} ${command}`, rejected);
+  }
+  eq(`shell 静态命令仍可用: ${flavor}`, renderShellTemplate("git status", {}, flavor), "git status");
+  eq(`shell 转义字面量不解析: ${flavor}`, renderShellTemplate(String.raw`echo \{{literal}}`, {}, flavor), "echo {{literal}}");
+}
 for (const slot of CUSTOM_UI_SLOTS) {
   check(`${slot} 有变量表`, Array.isArray(TEMPLATE_VARS_BY_SLOT[slot]) && TEMPLATE_VARS_BY_SLOT[slot].length > 0);
 }

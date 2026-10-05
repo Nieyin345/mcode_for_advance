@@ -2,7 +2,7 @@
  * 技能市场 —— 设置 → Skills 的「市场」tab(与插件市场同一个模型)。
  *
  * 一个市场 = 一个装着技能的 git 仓库(或本地目录):里面每个含 SKILL.md 的目录是一条。
- *  - git 市场浅克隆到 `~/.mcode/skill-markets/<name>/`(去掉 .git),「刷新」= 重新克隆;
+ *  - GitHub 市场只缓存目录与 SKILL.md 头部简介；安装时才下载所选技能目录;
  *  - 本地市场就地读,不复制(刷新 = 重新扫描);
  *  - 内置两个:anthropics/skills、openai/skills。第一次打开那个 tab 时才去拉;
  *  - 安装 = 把技能目录整体复制进通用库 `~/.mcode/skills`(重名跳过),由调用方记进
@@ -10,9 +10,11 @@
  *
  * 记录存成文件(`markets.json`),不进数据库 —— 技能本来就全是文件,便于 smoke 隔离。
  */
-import { cloneMarketRepository, promoteMarketCatalog, type MarketProgressSink } from "@main/lib/marketClone.js";
+import { promoteMarketCatalog, type MarketProgressSink } from "@main/lib/marketClone.js";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { promises as fs } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { fetchGithubSkillIndex, downloadGithubSkill, parseGithubSkillIndex, githubSkillSource, GITHUB_INDEX_FILE, type GithubSkillIndex } from "@main/lib/githubSkillCatalog.js";
 import { homedir } from "node:os";
 import path from "node:path";
 import {
@@ -77,7 +79,8 @@ async function writeRecords(records: MarketRecord[]): Promise<void> {
 }
 
 function normalizeGitUrl(url: string): string {
-  return url.trim().replace(/\/+$/, "").replace(/\.git$/i, "").toLowerCase();
+  try { const s = githubSkillSource(url); return `${s.owner}/${s.repo}`.toLowerCase() + (s.ref ? `#${s.ref}` : ""); }
+  catch { return url.trim().replace(/\/+$/, "").replace(/\.git$/i, "").toLowerCase(); }
 }
 
 /** Built-ins merged in (missing ones appended; never written until something
@@ -100,23 +103,11 @@ function withBuiltins(records: MarketRecord[]): MarketRecord[] {
  *  clone URL + optional branch. Null for anything that is not a URL. */
 export function parseSkillMarketGitRef(input: string): { url: string; branch?: string; owner?: string; repo?: string } | null {
   const s = input.trim();
-  const bare = /^([\w.-]+)\/([\w.-]+?)(?:\.git)?$/.exec(s);
-  if (bare) return { url: `https://github.com/${bare[1]}/${bare[2]}.git`, owner: bare[1], repo: bare[2] };
+  try { const ref = githubSkillSource(s); return { url: `https://github.com/${ref.owner}/${ref.repo}.git`, owner: ref.owner, repo: ref.repo, branch: ref.ref }; }
+  catch { if (/github\.com/i.test(s) || /^[\w.-]+\/[\w.-]+$/.test(s)) return null; }
   if (/^git@[\w.-]+:[\w./-]+$/.test(s)) return { url: s };
-  try {
-    const u = new URL(s);
-    if (u.protocol !== "https:" && u.protocol !== "http:") return null;
-    if (u.hostname === "github.com" || u.hostname === "www.github.com") {
-      const seg = u.pathname.split("/").filter(Boolean);
-      if (seg.length < 2) return null;
-      const repo = seg[1].replace(/\.git$/i, "");
-      const branch = seg[2] === "tree" && seg.length > 3 ? seg[3] : undefined;
-      return { url: `https://github.com/${seg[0]}/${repo}.git`, branch, owner: seg[0], repo };
-    }
-    return { url: s };
-  } catch {
-    return null;
-  }
+  try { const u = new URL(s); return ["https:", "http:"].includes(u.protocol) ? { url: s } : null; }
+  catch { return null; }
 }
 
 function sanitizeName(raw: string): string {
@@ -131,6 +122,15 @@ function sanitizeName(raw: string): string {
 
 function catalogDir(rec: MarketRecord): string {
   return rec.source.kind === "local" ? path.resolve(rec.source.ref) : path.join(skillMarketsRoot(), rec.name);
+}
+
+function cachedGithubIndex(rec: MarketRecord): GithubSkillIndex | null {
+  const file = path.join(catalogDir(rec), GITHUB_INDEX_FILE);
+  if (rec.source.kind !== "git" || !existsSync(file)) return null;
+  const index = parseGithubSkillIndex(readFileSync(file, "utf8"));
+  const source = githubSkillSource(rec.source.ref);
+  if (source.owner.toLowerCase() !== index.source.owner.toLowerCase() || source.repo.toLowerCase() !== index.source.repo.toLowerCase() || source.ref !== index.source.ref) throw new Error("技能索引与来源不符，请刷新");
+  return index;
 }
 
 /** Every directory holding a SKILL.md (not descending into a skill). */
@@ -180,6 +180,8 @@ interface ScannedSkill {
 /** Scan one catalog tree; duplicate names keep the first (sorted) path. */
 async function scanCatalog(rec: MarketRecord): Promise<ScannedSkill[]> {
   const root = catalogDir(rec);
+  const index = cachedGithubIndex(rec);
+  if (index) return index.skills.map(s => ({ ...s, dir: "" }));
   if (!existsSync(root)) return [];
   const dirs: string[] = [];
   await findSkillDirs(root, dirs);
@@ -206,9 +208,11 @@ export async function listSkillMarkets(): Promise<SkillMarketState[]> {
   const out: SkillMarketState[] = [];
   for (const rec of withBuiltins(readRecords())) {
     const dir = catalogDir(rec);
-    const cloned = existsSync(dir);
+    let cloned = existsSync(dir);
+    let scanned: ScannedSkill[] = [];
+    if (cloned) { try { scanned = await scanCatalog(rec); } catch { cloned = false; } }
     const skills: SkillMarketEntry[] = cloned
-      ? (await scanCatalog(rec)).map((s) => ({
+      ? scanned.map((s) => ({
           market: rec.name,
           name: s.name,
           description: s.description,
@@ -229,24 +233,20 @@ export async function listSkillMarkets(): Promise<SkillMarketState[]> {
   return out;
 }
 
-/** Clone a git catalog into place (staging + rename: a failed refresh keeps
- *  the previous tree). */
+/** Replace an index only after a complete successful metadata fetch. Legacy
+ * checkout caches remain readable until the first successful refresh. */
 async function fetchGitCatalog(rec: MarketRecord, progress?: MarketProgressSink): Promise<void> {
-  const parsed = parseSkillMarketGitRef(rec.source.ref);
-  if (!parsed) throw new Error(`不是可识别的 git 地址:${rec.source.ref}`);
+  let previous: GithubSkillIndex | null = null;
+  try { previous = cachedGithubIndex(rec); } catch { /* refresh replaces a damaged index */ }
+  const index = await fetchGithubSkillIndex(rec.source.ref, rec.name, progress, previous ?? undefined);
   const root = skillMarketsRoot();
   await fs.mkdir(root, { recursive: true });
-  const staging = path.join(root, `.staging-${rec.name}-${Date.now()}`);
+  const staging = path.join(root, `.index-${randomUUID()}`);
   try {
-    await cloneMarketRepository(parsed.url, staging, parsed.branch, progress);
-    progress?.({ phase: "scan", message: "扫描技能目录 / Scanning skill catalog", elapsedMs: 0 });
-    if ((await scanCatalog({ ...rec, source: { kind: "local", ref: staging } })).length === 0) throw new Error("里面没有找到任何可用 SKILL.md，保留原有市场 / No valid skills; previous catalog preserved");
-    await fs.rm(path.join(staging, ".git"), { recursive: true, force: true });
-    const dest = path.join(root, rec.name);
-    await promoteMarketCatalog(staging, dest);
-  } finally {
-    await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
-  }
+    await fs.mkdir(staging);
+    await fs.writeFile(path.join(staging, GITHUB_INDEX_FILE), JSON.stringify(index), "utf8");
+    await promoteMarketCatalog(staging, path.join(root, rec.name));
+  } finally { await fs.rm(staging, { recursive: true, force: true }).catch(() => {}); }
 }
 
 export async function addSkillMarket(input: {
@@ -259,9 +259,10 @@ export async function addSkillMarket(input: {
     let ref = input.ref.trim();
     let defaultName: string;
     if (input.kind === "git") {
+      githubSkillSource(ref); // Fail explicitly for unsupported hosts, never clone as fallback.
       const parsed = parseSkillMarketGitRef(ref);
       if (!parsed) return { ok: false, error: "不是可识别的仓库地址(支持 owner/repo、GitHub 链接或 git 地址)" };
-      if (records.some((r) => r.source.kind === "git" && normalizeGitUrl(r.source.ref) === normalizeGitUrl(parsed.url))) {
+      if (records.some((r) => r.source.kind === "git" && normalizeGitUrl(r.source.ref) === normalizeGitUrl(ref))) {
         return { ok: false, error: `这个仓库已经在市场里了:${ref}` };
       }
       defaultName = parsed.repo ? `${parsed.owner}-${parsed.repo}` : sanitizeName(path.basename(parsed.url));
@@ -342,9 +343,11 @@ export function skillMarketBundle(market: string): { id: string; label: string; 
 export async function installSkillsFromMarket(
   market: string,
   names: readonly string[],
+  progress?: MarketProgressSink,
 ): Promise<SkillsMarketInstallResult> {
   const rec = withBuiltins(readRecords()).find((r) => r.name === market);
   if (!rec) return { ok: false, error: `市场不存在:${market}`, imported: [], skipped: [], errors: [] };
+  const remoteIndex = cachedGithubIndex(rec);
   const catalog = await scanCatalog(rec);
   const byName = new Map(catalog.map((s) => [s.name, s]));
   const libRoot = defaultSkillsRoot();
@@ -364,7 +367,16 @@ export async function installSkillsFromMarket(
       continue;
     }
     try {
-      await fs.cp(hit.dir, dest, { recursive: true, filter: (src) => path.basename(src) !== ".git" });
+      if (remoteIndex) {
+        const staging = path.join(path.dirname(libRoot), `.skill-install-${randomUUID()}`);
+        try {
+          await downloadGithubSkill(remoteIndex, hit.relPath, staging, progress);
+          if (existsSync(dest)) { skipped.push(name); continue; }
+          await fs.rename(staging, dest);
+        } finally { await fs.rm(staging, { recursive: true, force: true }).catch(() => {}); }
+      } else {
+        await fs.cp(hit.dir, dest, { recursive: true, filter: (src) => path.basename(src) !== ".git" });
+      }
       imported.push(name);
     } catch (err) {
       errors.push({ name, error: (err as Error).message });
