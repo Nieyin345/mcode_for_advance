@@ -1295,9 +1295,9 @@ verify.mjs[TU9T]: F:用CDP检查UI回归：审批隔离、IME Enter、草稿/保
 
 ===D:/destop/work_space/work_for_reseach/aoci-mcode-wt/apps/desktop/scripts/ui-probe/===
 .gitignore[FQ4T]: F:忽略UI probe派生PNG与变异备份，避免截图/临时源码进入版本库。 | R:code:apps/desktop/scripts/ui-probe/probe.mjs,code:apps/desktop/scripts/ui-probe/mut_probe.py | A:*.png | S:-
-agentprobe-selftest.mjs[TQ9S]: F:以已知色块、真鼠标/键盘、右键、对比度与inline盒子校准probe驱动后截图。 | R:code:apps/desktop/scripts/ui-probe/probe.mjs,code:apps/desktop/scripts/ui-probe/selftest.html,code:apps/desktop/scripts/ui-probe/mut_probe.py | A:runDriver | S:启动Chrome使用固定remote-debugging端口9455并写selftest.png；launch未配置独立profile，执行前需确保端口空闲。
+agentprobe-selftest.mjs[TQ9S]: F:以已知色块、真鼠标/键盘、右键、对比度与inline盒子校准probe驱动后截图。 | R:code:apps/desktop/scripts/ui-probe/probe.mjs,code:apps/desktop/scripts/ui-probe/selftest.html,code:apps/desktop/scripts/ui-probe/mut_probe.py | A:runDriver | S:不指定调试端口，由launch挑空闲端口，避免两个自检同时跑时操作同一个Chrome；仍写selftest.png作为人工核对产物。
 mut_probe.py[TQ8S]: F:对probe注入7种行为缺陷，要求自检对应断言失败、区分语法错误并逐字节还原。 | R:code:apps/desktop/scripts/ui-probe/probe.mjs,code:apps/desktop/scripts/ui-probe/agentprobe-selftest.mjs,code:apps/desktop/scripts/ui-probe/selftest.html | A:main | S:原位修改probe.mjs并借.probe.mjs.bak恢复；强制中断可能留下变异或备份，运行前应保留干净工作树。
-probe.mjs[XQ9L]: F:提供Chrome/CDP视口、DOM命中、鼠标键盘、裁剪、PNG像素/对比度测量与截图接口供UI断言。 | R:code:apps/desktop/scripts/ui-probe/agentprobe-selftest.mjs,code:apps/desktop/scripts/ui-probe/mut_probe.py,code:apps/desktop/scripts/ui-probe/selftest.html | A:launch | S:默认固定DevTools端口9444且未设置独立user-data-dir；冲突时可能连到非本次Chrome；像素中间图共用固定系统临时文件名，并非并发安全。
+probe.mjs[XQ9L]: F:提供Chrome/CDP视口、DOM命中、鼠标键盘、裁剪、PNG像素/对比度测量与截图接口供UI断言。 | R:code:apps/desktop/scripts/ui-probe/agentprobe-selftest.mjs,code:apps/desktop/scripts/ui-probe/mut_probe.py,code:apps/desktop/scripts/ui-probe/selftest.html | A:launch/capture/shot/runDriver | S:launch不传port时自行挑空闲端口，每次启动都用独立user-data-dir；共用默认profile会让第二个Chrome静默退出而驱动连到别人的浏览器，表现为输入叠加与事件翻倍。像素类读取走capture()取内存buf，不落盘。
 selftest.html[TQ8T]: F:提供已知色块、点击/contextmenu按钮、裁剪文本及有/无内容的inline元素校准页。 | R:code:apps/desktop/scripts/ui-probe/probe.mjs,code:apps/desktop/scripts/ui-probe/agentprobe-selftest.mjs | A:fixture | S:右键监听挂在可命中的按钮上，而非display:none菜单；避免测试在物理上无法触发的假夹具。
 
 ===D:/destop/work_space/work_for_reseach/aoci-mcode-wt/apps/desktop/scripts/updater-smoke/===
