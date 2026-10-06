@@ -2,7 +2,7 @@
  * Headless permission-policy regression for Pi's inline extension.
  * No Pi session, model, user DB, or application process is started.
  */
-import { shouldAutoApproveForPi } from "@main/providers/pi-sdk/piToolApproval.js";
+import { shouldAutoApproveForPi, PI_PERMISSION_MODES } from "@main/providers/pi-sdk/piToolApproval.js";
 
 let checks = 0;
 let failures = 0;
@@ -72,6 +72,22 @@ check(
 check(
   "dontAsk still honours the user's always-allow decision",
   shouldAutoApproveForPi("dontAsk", "write", false, true),
+  true,
+);
+
+// 模式列表本身:暴露的必须是真做到的。dontAsk 有实现所以上架;auto 没有 —— Pi 没有
+// 模型分类器那套,报了就是"看得见、做不到"的假菜单项。
+const modeValues = PI_PERMISSION_MODES.map((m) => m.value);
+check("dontAsk is offered in Pi's mode list", modeValues.includes("dontAsk"), true);
+check("auto is NOT offered in Pi's mode list (no classifier to back it)", modeValues.includes("auto"), false);
+check(
+  "every offered Pi mode has a label and a hint",
+  PI_PERMISSION_MODES.every((m) => m.label.length > 0 && (m.hint ?? "").length > 0),
+  true,
+);
+check(
+  "every offered Pi mode resolves to a known icon in the renderer's map",
+  PI_PERMISSION_MODES.every((m) => ["shield", "shieldCheck", "shieldHalf", "shieldLock"].includes(m.icon ?? "")),
   true,
 );
 

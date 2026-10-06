@@ -60,9 +60,11 @@ export interface ProviderCapabilities {
    *  never hardcodes provider-specific values. */
   thinkingLevels?: ThinkingLevelOption[];
   /** Permission modes this provider supports. Empty/undefined = hide the
-   *  permission chip. Claude and Pi both declare the same 4 user-facing modes
-   *  (default/acceptEdits/plan/bypassPermissions); Pi interprets them at
-   *  runtime via its inline extension's tool_call handler. */
+   *  permission chip. Each provider declares its own set — the UI never
+   *  hardcodes them. Claude 有 6 档（含 auto:交给 SDK 的模型分类器;dontAsk:
+   *  不弹审批、未预批准即拒），Pi 有 5 档（dontAsk 由 inline extension 的
+   *  tool_call 处理器执行,没有 auto —— 它没有分类器那套东西）。别把"两个
+   *  provider 档位必须一致"当成不变量:它们各自声明能真正做到的那些。 */
   permissionModes?: PermissionModeOption[];
   /** Built-in model aliases (non-custom-endpoint). Empty/undefined = the
    *  provider only works via custom endpoint configs or dynamic model list. */

@@ -396,8 +396,9 @@ function registerToolCallGuard(
       return;
     }
 
-    // dontAsk:不弹审批 —— 走到这里说明既不是只读、也没被「始终允许」放行,按 SDK
-    // 的定义直接拒。不能掉进下面的 fail-open 兜底(那是给"宿主没接审批桥"用的降级)。
+    // dontAsk:不弹审批 —— 走到这里说明既不是只读、也没被「始终允许」放行,按这一档的
+    // 定义直接拒(不问人,没预批准就不做)。不能掉进下面的 fail-open 兜底(那是给
+    // "宿主没接审批桥"用的降级,而 dontAsk 要的恰恰是 fail-closed)。
     if (mode === "dontAsk") {
       return {
         block: true,

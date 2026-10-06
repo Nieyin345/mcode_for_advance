@@ -46,24 +46,12 @@ import { loadPiSdk } from "./piSdkLoader.js";
 import { buildPiTokenSnapshot } from "./piTokenUsage.js";
 import { buildPiSkillLoader, rewriteSkillPrefix, createMntNormalizingReadTool } from "./piSkillBridge.js";
 import { createMcodeExtension } from "./mcodeExtension.js";
+import { PI_PERMISSION_MODES } from "./piToolApproval.js";
 import { getFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
 import { resolveGitBash } from "@main/lib/binaryResolve.js";
 import { getEnabledPluginSkillRoots } from "@main/plugins/pluginManager.js";
 import { getMcpManagement } from "@main/lib/mcpConfig.js";
 import { turnContextSections } from "@main/providers/contextPrompt.js";
-
-/** Pi's permission modes, shown in the composer dropdown. Pi has no native
- *  permission system — the inline extension's `tool_call` handler interprets
- *  these at runtime (see `shouldAutoApproveForPi` in mcodeExtension.ts). The
- *  semantics match Claude's (the same 4 user-facing modes, same icons/colors),
- *  so users get a consistent experience across providers. `dontAsk`/`auto` are
- *  intentionally not surfaced (same as Claude) but still work if set. */
-const PI_PERMISSION_MODES = [
-  { value: "default", label: "Default", icon: "shield", hint: "标准行为,工具按规则触发审批" },
-  { value: "acceptEdits", label: "Edit Auto", icon: "shieldCheck", color: "text-warning", hint: "工作目录内的文件编辑自动放行" },
-  { value: "plan", label: "Plan", icon: "shieldHalf", color: "text-info", hint: "只读探索,所有写操作都需审批" },
-  { value: "bypassPermissions", label: "Bypass", icon: "shieldLock", color: "text-danger", hint: "跳过所有权限检查(慎用)" },
-];
 
 export class PiAgentSdkProvider implements AgentProvider {
   readonly id = "pi-sdk";
