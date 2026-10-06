@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-05T00:27:41Z",
-  "updated_at": "2026-10-06T09:30:13Z",
+  "updated_at": "2026-10-06T11:51:27Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -71,9 +71,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "19601b26705c7ae33f9a0696425cc8c9a29fafe02805e9c95f0f1d15ffb9b2fe",
-      "size": 780433,
-      "normalized_sha256": "19601b26705c7ae33f9a0696425cc8c9a29fafe02805e9c95f0f1d15ffb9b2fe"
+      "sha256": "0901b652539e4bddc739524e15589bf714fa970100297e95a75f113016d7d1e4",
+      "size": 780707,
+      "normalized_sha256": "0901b652539e4bddc739524e15589bf714fa970100297e95a75f113016d7d1e4"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -119,9 +119,9 @@
     },
     "apps/desktop/package.json": {
       "role": "index",
-      "sha256": "ad783b576791d10ec409696365e6ada0bd255d0fe92e6ce9887b96d0a872075f",
+      "sha256": "04c52dffc80c137a88b048f9a03244e9d279359e4ebedf61396ed12eef7d98b9",
       "size": 3618,
-      "normalized_sha256": "ad783b576791d10ec409696365e6ada0bd255d0fe92e6ce9887b96d0a872075f"
+      "normalized_sha256": "04c52dffc80c137a88b048f9a03244e9d279359e4ebedf61396ed12eef7d98b9"
     },
     "apps/desktop/postcss.config.js": {
       "role": "index",
@@ -749,15 +749,15 @@
     },
     "apps/desktop/scripts/document-read-smoke/fixtures.py": {
       "role": "index",
-      "sha256": "5ace687498f3f414426ce7c471ba1fa75d8ed069342c11a4909f0867a5b4aa3c",
-      "size": 794,
-      "normalized_sha256": "5ace687498f3f414426ce7c471ba1fa75d8ed069342c11a4909f0867a5b4aa3c"
+      "sha256": "144b463ecf826c7286c026073931f1291e40a33eb6b20ad8f8025e91da6c691a",
+      "size": 809,
+      "normalized_sha256": "144b463ecf826c7286c026073931f1291e40a33eb6b20ad8f8025e91da6c691a"
     },
     "apps/desktop/scripts/document-read-smoke/main.ts": {
       "role": "index",
-      "sha256": "2b098c3be9d985989f3438b57adc09e178ff396866fad2982bdf61ee33504554",
-      "size": 4434,
-      "normalized_sha256": "2b098c3be9d985989f3438b57adc09e178ff396866fad2982bdf61ee33504554"
+      "sha256": "391204e166f4f5bf1f68104d208a7612cefdf1781d6819b022a3214b769b1a7c",
+      "size": 5699,
+      "normalized_sha256": "391204e166f4f5bf1f68104d208a7612cefdf1781d6819b022a3214b769b1a7c"
     },
     "apps/desktop/scripts/document-read-smoke/run.sh": {
       "role": "index",
@@ -3233,9 +3233,9 @@
     },
     "apps/desktop/scripts/module-ui-smoke/verify.ts": {
       "role": "index",
-      "sha256": "e2979d0285953b500e4f4e476ea0038df57d464e6ec96913adc973be1c77e855",
-      "size": 7350,
-      "normalized_sha256": "e2979d0285953b500e4f4e476ea0038df57d464e6ec96913adc973be1c77e855"
+      "sha256": "4972720dfdd7de6c92c2419533886db9d92821765e4a03d5f4c50a6b19da5fdf",
+      "size": 7768,
+      "normalized_sha256": "4972720dfdd7de6c92c2419533886db9d92821765e4a03d5f4c50a6b19da5fdf"
     },
     "apps/desktop/scripts/module-workflow-smoke/README.md": {
       "role": "index",
@@ -5879,9 +5879,9 @@
     },
     "apps/desktop/src/main/mcp/agentTools.ts": {
       "role": "index",
-      "sha256": "39e73e3eb823860930a5466ca13b981eb908f05f14c77f45e6f5050a57230af9",
-      "size": 126131,
-      "normalized_sha256": "39e73e3eb823860930a5466ca13b981eb908f05f14c77f45e6f5050a57230af9"
+      "sha256": "c26e231cda18f7ea2b9006807e0b6eeba5ac59a93f373b3f0abdcd31d2b9afe9",
+      "size": 126640,
+      "normalized_sha256": "c26e231cda18f7ea2b9006807e0b6eeba5ac59a93f373b3f0abdcd31d2b9afe9"
     },
     "apps/desktop/src/main/mcp/appServer.ts": {
       "role": "index",
