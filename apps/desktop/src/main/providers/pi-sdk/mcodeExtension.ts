@@ -396,6 +396,15 @@ function registerToolCallGuard(
       return;
     }
 
+    // dontAsk:不弹审批 —— 走到这里说明既不是只读、也没被「始终允许」放行,按 SDK
+    // 的定义直接拒。不能掉进下面的 fail-open 兜底(那是给"宿主没接审批桥"用的降级)。
+    if (mode === "dontAsk") {
+      return {
+        block: true,
+        reason: `当前是「不询问」权限模式,${toolName} 没有被预先允许(可用「始终允许」提前批准它,或切到别的模式)。`,
+      };
+    }
+
     // ⑥ Host-moderated approval via IPC. When no bridge is wired, fall open
     //    (fail-open matches the Claude provider's behavior when requestApproval
     //    is undefined).

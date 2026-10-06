@@ -134,10 +134,11 @@ export class PiAgentSdkProvider implements AgentProvider {
     // to handle the "plan mode → approve → execute" lifecycle on Pi.
     const tools = undefined; // all built-in + extension tools
     // guard): deny writes outside the project working directory, except in
-    // bypassPermissions/dontAsk where the user opted out of all checks. WSL
-    // paths are normalized in every mode. Enforced by the extension's
-    // tool_call handler (see mcodeExtension.ts).
-    const strict = !(req.permissionMode === "bypassPermissions" || req.permissionMode === "dontAsk");
+    // bypassPermissions where the user opted out of all checks. WSL paths are
+    // normalized in every mode. Enforced by the extension's tool_call handler
+    // (see mcodeExtension.ts). dontAsk 不在例外里 —— 它是"不问、没预批准就拒",
+    // 比 default 更严,让项目边界照常生效。
+    const strict = req.permissionMode !== "bypassPermissions";
 
     // Build a ModelRuntime that injects all configured API keys. Pi's
     // setRuntimeApiKey stores the key at the top of the auth priority chain

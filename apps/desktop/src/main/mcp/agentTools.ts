@@ -29,8 +29,8 @@
  *     任何权限模式都放行;
  *   - 改文件({@link AGENT_EDIT_TOOLS}):写 / 改,`acceptEdits` 档放行(与 claude 的
  *     Write/Edit 同档),default 模式弹卡;
- *   - bash:风险最高,**不在任何自动放行清单里**,除了 bypass/dontAsk/「始终允许」
- *     一律弹卡。
+ *   - bash:风险最高,**不在任何自动放行清单里**,除了 bypass/「始终允许」
+ *     一律弹卡(dontAsk 是不问就拒,不在放行之列)。
  */
 import { publicSkillReadDenial } from "@main/mcp/publicSkills.js";
 import { createReadStream, promises as fs } from "node:fs";

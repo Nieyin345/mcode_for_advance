@@ -22,7 +22,9 @@ export function shouldAutoApproveForPi(
   // every mutation still receives a fresh host approval.
   if (planModeActive) return false;
   if (!mode) return alwaysAllowed;
-  if (mode === "bypassPermissions" || mode === "dontAsk") return true;
+  if (mode === "bypassPermissions") return true;
+  // dontAsk 不是放行档:只读(上面已放行)与「alwaysAllowed」之外的都不自动放行,
+  // 由调用方在弹审批之前拒掉(见 mcodeExtension.ts ⑥ 之前那一段)。
   if (mode === "acceptEdits") return toolName === "write" || toolName === "edit";
   return alwaysAllowed;
 }

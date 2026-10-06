@@ -186,13 +186,20 @@ function isReadOnlyNamespacedTool(toolName: string): boolean {
  * Decide whether a tool should be auto-approved (skip the prompt) based on
  * the session's CURRENT permission mode. This runs in canUseTool on every
  * call, so a mid-turn mode flip applies to the next tool immediately.
- *  - bypassPermissions / dontAsk → everything auto-approved
- *  - acceptEdits                  → file-editing tools auto-approved
- *  - default / plan / auto        → prompt the user (return false)
+ *  - bypassPermissions → everything auto-approved
+ *  - dontAsk           → read-only tools only; the rest are DENIED by the
+ *                        caller (SDK: "don't prompt, deny if not pre-approved")
+ *  - acceptEdits       → file-editing tools auto-approved
+ *  - default / plan / auto → prompt the user (return false)
+ *
+ * `dontAsk` 不是"放行档":它**比 default 更严** —— 不问人,没被预先批准就直接拒。
+ * 从前这里把它和 bypassPermissions 并列,于是写工具在用户以为选了更保守的模式下
+ * 悄悄跑起来(同一个误解在 ClaudeAgentSdkProvider 的路径守卫与工具闸门里也有一份,
+ * 对照 appControl/tools.ts 里那条正确的处理)。
  */
 export function shouldAutoApprove(mode: PermissionMode | undefined, toolName: string): boolean {
   if (!mode) return false;
-  if (mode === "bypassPermissions" || mode === "dontAsk") return true;
+  if (mode === "bypassPermissions") return true;
   // 只读的那几类(浏览器 / 文献库 / 工作流 / 记忆)从来不问 —— 它们改不了任何东西。
   if (isReadOnlyNamespacedTool(toolName)) return true;
   if (mode === "acceptEdits") return FILE_EDIT_TOOLS.has(toolName);
@@ -211,7 +218,8 @@ export function shouldAutoApprove(mode: PermissionMode | undefined, toolName: st
  */
 export function shouldAutoApproveWebTool(mode: PermissionMode | undefined, bareName: string): boolean {
   if (!mode) return false;
-  if (mode === "bypassPermissions" || mode === "dontAsk") return true;
+  if (mode === "bypassPermissions") return true;
+  // dontAsk 同 shouldAutoApprove:只放只读,写工具由调用方拒(不是放行)。
   if (isReadOnlyToolName(bareName)) return true;
   if (mode === "acceptEdits" && AGENT_EDIT_TOOLS.has(bareName)) return true;
   return false;

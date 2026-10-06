@@ -1278,6 +1278,12 @@ async function main(): Promise<void> {
     "★ 带前缀的 memory_write 在 acceptEdits 档仍要问(它不是文件编辑工具)",
     !shouldAutoApprove("acceptEdits", `mcp__${MEMORY_MCP_SERVER}__memory_write`),
   );
+  // dontAsk 是**更严**的档,不是放行档 —— SDK 的定义是「不弹审批,未经预先批准的直接拒」。
+  // 从前这里和工具闸门都把它当无条件放行(与 appControl/tools.ts 的理解相反),写工具
+  // 会在用户以为"更保守"的模式下悄悄跑起来。只读工具不受影响(它们本来就不问)。
+  check("[dontAsk] 读工具仍然放行", shouldAutoApprove("dontAsk", `mcp__${MEMORY_MCP_SERVER}__memory_list`));
+  check("★ [dontAsk] 写工具必须拒绝(而不是无条件放行)", !shouldAutoApprove("dontAsk", `mcp__${MEMORY_MCP_SERVER}__memory_write`));
+  check("★ [dontAsk] 文件编辑工具必须拒绝(它不是 acceptEdits)", !shouldAutoApprove("dontAsk", "Edit"));
   // 骨干 server 名要进"始终挂着、不进候选表"那一组 —— 否则工作流节点的「MCP 服务器」
   // 参数会把记忆工具列成"用户装的东西",选了却不生效。
   check("记忆 server 归在骨干那一组", (MCP_ALWAYS_ON_SERVERS as readonly string[]).includes(MCP_MEMORY_SERVER));

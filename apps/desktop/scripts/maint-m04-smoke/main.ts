@@ -52,6 +52,28 @@ check(
   shouldAutoApproveForPi("acceptEdits", "read", true, false),
   true,
 );
+// dontAsk 是"不问、没预批准就拒",不是放行档 —— 从前它和 bypassPermissions 并列,
+// 写工具会在用户以为选了更保守的模式下悄悄跑起来。
+check(
+  "★ dontAsk does NOT auto-approve mutations",
+  shouldAutoApproveForPi("dontAsk", "write", false, false),
+  false,
+);
+check(
+  "★ dontAsk does NOT auto-approve bash",
+  shouldAutoApproveForPi("dontAsk", "bash", false, false),
+  false,
+);
+check(
+  "dontAsk still auto-approves read-only tools",
+  shouldAutoApproveForPi("dontAsk", "read", false, false),
+  true,
+);
+check(
+  "dontAsk still honours the user's always-allow decision",
+  shouldAutoApproveForPi("dontAsk", "write", false, true),
+  true,
+);
 
 console.log(`${checks - failures}/${checks} M04 checks passed`);
 if (failures > 0) process.exit(1);

@@ -226,6 +226,8 @@ export const en = {
   "chat.permission.tilePlan": "Read-only",
   "chat.permission.tileDefault": "Standard approval",
   "chat.permission.tileAcceptEdits": "Edits auto-allowed",
+  "chat.permission.tileDontAsk": "No prompts",
+  "chat.permission.tileAuto": "Model-judged",
   "chat.permission.tileBypass": "Skip checks",
   "chat.permission.tileCodexReadOnly": "Read only",
   "chat.permission.tileCodexDefault": "Workspace write",

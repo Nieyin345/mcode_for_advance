@@ -104,6 +104,8 @@ const PERMISSION_TILE_KEYS: Record<string, MessageId> = {
   plan: "chat.permission.tilePlan",
   default: "chat.permission.tileDefault",
   acceptEdits: "chat.permission.tileAcceptEdits",
+  dontAsk: "chat.permission.tileDontAsk",
+  auto: "chat.permission.tileAuto",
   bypassPermissions: "chat.permission.tileBypass",
   "codex-sdk:read-only": "chat.permission.tileCodexReadOnly",
   "codex-sdk:default": "chat.permission.tileCodexDefault",
@@ -122,14 +124,20 @@ const FALLBACK_LABEL: Record<string, string> = {
 };
 
 /** Grid ordering for the permission blocks (low → high risk). Unknown/future
- *  values keep their declaration order after the known ones. */
+ *  values keep their declaration order after the known ones.
+ *
+ *  dontAsk 紧挨 default 不是因为"更宽松" —— 它其实更严(不问就拒)。排这儿是因为
+ *  它**不打断人**,与相邻档位的"要不要弹卡"体感一致:用户挑的是"我要不要被问",
+ *  不是"给多大权限"。 */
 const RISK_RANK: Record<string, number> = {
   plan: 0,
   "read-only": 0,
   default: 1,
-  acceptEdits: 2,
-  bypassPermissions: 3,
-  "full-access": 3,
+  dontAsk: 2,
+  auto: 3,
+  acceptEdits: 4,
+  bypassPermissions: 5,
+  "full-access": 5,
 };
 
 /** Icon components by declaration name; resolved at render time so the

@@ -237,6 +237,8 @@ export const zh = {
   "chat.permission.tilePlan": "只读探索",
   "chat.permission.tileDefault": "标准审批",
   "chat.permission.tileAcceptEdits": "编辑放行",
+  "chat.permission.tileDontAsk": "不被打断",
+  "chat.permission.tileAuto": "模型判定",
   "chat.permission.tileBypass": "跳过检查",
   "chat.permission.tileCodexReadOnly": "仅读取",
   "chat.permission.tileCodexDefault": "工作区可写",

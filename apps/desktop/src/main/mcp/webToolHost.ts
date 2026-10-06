@@ -25,8 +25,8 @@
  * 全部自动继承(用户的原话:"这个决策和 mcode 的设置一样啊")。
  *
  * 顺序与 Claude 那条通路逐字一致(见 `toolGate.ts`):
- * ①「始终允许」→ ② 权限模式放行(只读工具 / bypass / dontAsk)→ ③ 弹卡问人。
- * 判定本身也共用同一个纯函数,所以两条通路不会漂移。
+ * ①「始终允许」→ ② 权限模式放行(只读工具 / bypass)→ ③ dontAsk 直接拒 →
+ * ④ 弹卡问人。判定本身也共用同一个纯函数,所以两条通路不会漂移。
  *
  * 差别只有两处,都是**通路性质**决定的:
  *   - 名字是裸的(`library_search`,没有 `mcp__mcode-library__` 前缀)—— 扩展是标准
@@ -305,9 +305,18 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
         return { text: `参数不合法,${describeIssues(parsed.error)}`, isError: true };
       }
 
-      const autoAllowed =
-        gate.isAlwaysAllowed(name) || shouldAutoApproveWebTool(gate.permissionMode(), name);
+      const mode = gate.permissionMode();
+      const autoAllowed = gate.isAlwaysAllowed(name) || shouldAutoApproveWebTool(mode, name);
       if (!autoAllowed) {
+        // dontAsk:不弹审批。走到这里说明它既不是只读、也没被「始终允许」放行 ——
+        // 按 SDK 的定义直接拒,而不是把卡弹出来(弹了就等于 default,用户选这档
+        // 本来就是不想被打断)。
+        if (mode === "dontAsk") {
+          return {
+            text: `当前是「不询问」权限模式,${name} 没有被预先允许,未执行。请让用户用「始终允许」提前批准它,或切换到别的权限模式。`,
+            isError: true,
+          };
+        }
         const decision = await gate.requestApproval({
           requestId: randomUUID(),
           toolName: name,

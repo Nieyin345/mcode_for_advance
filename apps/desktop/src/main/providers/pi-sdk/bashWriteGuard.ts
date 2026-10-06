@@ -269,7 +269,7 @@ export function resolveBashWriteTargets(
  *
  * @param cwd       project working directory
  * @param command   the raw bash command string from the tool params
- * @param strict    when false (bypassPermissions/dontAsk), allow escapes
+ * @param strict    when false (bypassPermissions only), allow escapes
  * @returns         denial message, or null to allow
  */
 export function guardBashCommand(

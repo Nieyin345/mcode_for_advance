@@ -760,6 +760,12 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       { value: "default", label: "Default", icon: "shield", hint: "标准行为,工具按规则触发审批" },
       { value: "acceptEdits", label: "Edit Auto", icon: "shieldCheck", color: "text-warning", hint: "工作目录内的文件编辑自动放行" },
       { value: "plan", label: "Plan", icon: "shieldHalf", color: "text-info", hint: "只读探索,所有写操作都需审批" },
+      // SDK 还有两档能力,过去没接到 UI 上(用户能选的只有上面四种)。
+      //  - auto:交给**模型分类器**判该不该放行 —— 想少被打断又不想全放开时用它;
+      //  - dontAsk:不弹审批,没被「始终允许」预先批准的直接拒。它**比 default 更严**
+      //    (default 至少会问你),不是放行档。
+      { value: "auto", label: "Auto", icon: "shieldCheck", color: "text-info", hint: "由模型分类器判断,自动放行低风险操作" },
+      { value: "dontAsk", label: "Don't Ask", icon: "shieldHalf", color: "text-warning", hint: "不弹审批:只跑已批准(「始终允许」)与只读操作,其余直接拒绝" },
       { value: "bypassPermissions", label: "Bypass", icon: "shieldLock", color: "text-danger", hint: "跳过所有权限检查(慎用)" },
     ],
     builtinModels: [
@@ -1150,7 +1156,10 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
             const pathKey = toolName === "NotebookEdit" ? "notebook_path" : "file_path";
             effectiveInput = { ...input, [pathKey]: norm.absPath };
             const mode = ctx.getPermissionMode?.();
-            const bypass = mode === "bypassPermissions" || mode === "dontAsk";
+            // 只有 bypassPermissions 是"用户明确放弃所有检查"。dontAsk **不是** ——
+            // 它是"不问,但没预批准就拒",比 default 更严;把它并进来会让越出项目的
+            // 写入在这档下被静默放行(与 appControl/tools.ts 同一条理解)。
+            const bypass = mode === "bypassPermissions";
             // **资料库只读** —— 独立于项目边界的一条硬规则,`bypass` 也拦。
             //
             // 为什么不能只靠下面那条"越出项目就拒":那只是**恰好**成立 —— 库根默认在
@@ -1207,8 +1216,8 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       // host-side gates so the change takes effect immediately:
       //  (1) "always allow" — the user previously granted this tool with
       //      the always checkbox; skip the prompt for the rest of the session.
-      //  (2) permission mode — bypassPermissions/dontAsk auto-allows every
-      //      tool; acceptEdits auto-allows file-editing tools. The SDK's own
+      //  (2) permission mode — bypassPermissions auto-allows every tool;
+      //      acceptEdits auto-allows file-editing tools. The SDK's own
       //      permissionMode option is fixed at query() start, but our host
       //      gate reads the LIVE value so a mid-turn flip applies to the
       //      next tool right away. Out-of-project writes never reach these
@@ -1223,6 +1232,18 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
         return effectiveInput
           ? { behavior: "allow", updatedInput: effectiveInput }
           : { behavior: "allow" };
+      }
+
+      // dontAsk:不弹审批 —— 走到这里说明它**没有被预先批准**(「始终允许」那条已在
+      // 上面放行过),所以按 SDK 的定义直接拒。**不能**掉进下面那条"没有审批通道就
+      // 放行"的兜底:那是个 fail-open 的降级路径,而 dontAsk 要的恰恰是 fail-closed。
+      if (mode === "dontAsk") {
+        ctx.log.info(`dontAsk denied ${toolName} (not pre-approved)`);
+        return {
+          behavior: "deny",
+          message:
+            `拒绝:当前是「不询问」权限模式,${toolName} 没有被预先允许(可用「始终允许」提前批准它,或切到别的模式)。`,
+        };
       }
 
       if (!requestApproval) {
