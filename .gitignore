@@ -53,3 +53,7 @@ apps/desktop/build/pi-runtime-dist/
 .tmp/
 .scholar_tmp/
 .claude/
+
+# AOCI agent host integration (machine-bound; do not commit)
+.mcp.json
+.mcp.json.backup.*
