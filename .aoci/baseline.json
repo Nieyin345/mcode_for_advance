@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-05T00:27:41Z",
-  "updated_at": "2026-10-06T14:04:52Z",
+  "updated_at": "2026-10-06T14:43:48Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -71,9 +71,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "10d88e400aab12c08e8a378e7e0f560110bda094e05ed79e285939131b1da02e",
-      "size": 782006,
-      "normalized_sha256": "10d88e400aab12c08e8a378e7e0f560110bda094e05ed79e285939131b1da02e"
+      "sha256": "880b2a6a300667e3d16370e0e69eaf3dba9380790ef8ad5a60706fcc609ee3ac",
+      "size": 782591,
+      "normalized_sha256": "880b2a6a300667e3d16370e0e69eaf3dba9380790ef8ad5a60706fcc609ee3ac"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1559,9 +1559,9 @@
     },
     "apps/desktop/scripts/maint-m04-smoke/main.ts": {
       "role": "index",
-      "sha256": "54829233330c406e2e47ac9e262ad39d020abae54abb68373734e8fe96582ce9",
-      "size": 2355,
-      "normalized_sha256": "54829233330c406e2e47ac9e262ad39d020abae54abb68373734e8fe96582ce9"
+      "sha256": "4fe677d28593f881d51b70a3457858fe1694010351dc0503cd5fa3a6561e1963",
+      "size": 3185,
+      "normalized_sha256": "4fe677d28593f881d51b70a3457858fe1694010351dc0503cd5fa3a6561e1963"
     },
     "apps/desktop/scripts/maint-m04-smoke/run.sh": {
       "role": "index",
@@ -6617,9 +6617,9 @@
     },
     "apps/desktop/src/main/providers/pi-sdk/PiAgentSdkProvider.ts": {
       "role": "index",
-      "sha256": "08dfe55073dc11140669c6d9c093aa77d695cc4f73f830e76a10657f7432cb0c",
-      "size": 30029,
-      "normalized_sha256": "08dfe55073dc11140669c6d9c093aa77d695cc4f73f830e76a10657f7432cb0c"
+      "sha256": "d2b9dca83cf7ec0f01571f2698b33cdab772290b296b26a1beb68ca79cc642a9",
+      "size": 29073,
+      "normalized_sha256": "d2b9dca83cf7ec0f01571f2698b33cdab772290b296b26a1beb68ca79cc642a9"
     },
     "apps/desktop/src/main/providers/pi-sdk/PiMessageAdapter.ts": {
       "role": "index",
@@ -6635,9 +6635,9 @@
     },
     "apps/desktop/src/main/providers/pi-sdk/mcodeExtension.ts": {
       "role": "index",
-      "sha256": "701e21e597633ad9da10d65c90409bd7c54b563ad4774466a2b68b961c40a79c",
-      "size": 52074,
-      "normalized_sha256": "701e21e597633ad9da10d65c90409bd7c54b563ad4774466a2b68b961c40a79c"
+      "sha256": "f79b25dc713c7180e3d5ed047d3f2df06ac206f297d246b2eecaee6b5e308be2",
+      "size": 52160,
+      "normalized_sha256": "f79b25dc713c7180e3d5ed047d3f2df06ac206f297d246b2eecaee6b5e308be2"
     },
     "apps/desktop/src/main/providers/pi-sdk/piSdkLoader.ts": {
       "role": "index",
@@ -6659,9 +6659,9 @@
     },
     "apps/desktop/src/main/providers/pi-sdk/piToolApproval.ts": {
       "role": "index",
-      "sha256": "4ba76acd51516736222fc8b4a48d614dab0ca09ca0e8045d3563fcfa8c33909f",
-      "size": 1429,
-      "normalized_sha256": "4ba76acd51516736222fc8b4a48d614dab0ca09ca0e8045d3563fcfa8c33909f"
+      "sha256": "05633593b3dabb7f1a467a9050d795b097fb6208d6d39fddac33617f367f6865",
+      "size": 3055,
+      "normalized_sha256": "05633593b3dabb7f1a467a9050d795b097fb6208d6d39fddac33617f367f6865"
     },
     "apps/desktop/src/main/providers/providerHealth.ts": {
       "role": "index",
@@ -10845,9 +10845,9 @@
     },
     "packages/contracts/src/provider.ts": {
       "role": "index",
-      "sha256": "2fd0f024b2ffeaa2ff3ebb14a61812d1649aefde3edb2f1051e46fb69ed995b9",
-      "size": 24549,
-      "normalized_sha256": "2fd0f024b2ffeaa2ff3ebb14a61812d1649aefde3edb2f1051e46fb69ed995b9"
+      "sha256": "3299124d66519713cacce9523392896e8bb391ee424b33f36429bbbed69ddf7e",
+      "size": 24790,
+      "normalized_sha256": "3299124d66519713cacce9523392896e8bb391ee424b33f36429bbbed69ddf7e"
     },
     "packages/contracts/src/relay.ts": {
       "role": "index",
