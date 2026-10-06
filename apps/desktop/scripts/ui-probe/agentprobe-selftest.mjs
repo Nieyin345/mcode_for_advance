@@ -17,7 +17,9 @@ const nearColor = (p, [r, g, b], tol = 6) =>
   p && near(p.r, r, tol) && near(p.g, g, tol) && near(p.b, b, tol);
 
 await runDriver(async () => {
-  const probe = await launch({ page: "selftest.html", port: 9455, size: "700,400" });
+  // 不钉端口 —— 由 launch() 挑一个空闲的。写死端口的话,两个自检同时跑会在同一个
+  // Chrome 上操作同一个页面,断言崩得莫名其妙(输入叠加、事件翻倍)。
+  const probe = await launch({ page: "selftest.html", size: "700,400" });
 
   /* ── 0. 视口 ── */
   probe.eq("视口宽度钉在 700", probe.viewport.w, 700);

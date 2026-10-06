@@ -64,9 +64,9 @@
  */
 import { spawn } from "node:child_process";
 import { inflateSync } from "node:zlib";
-import { existsSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -81,9 +81,8 @@ const CHROME = [
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/* 只为了"量一个像素"而拍的中间截图。放在**系统临时目录**而不是本目录:它是每次
-   跑都会变的派生物,落在这儿就会被 git 看见,也会被当成"核对产物"留着。 */
-const TMP_PNG = resolve(tmpdir(), "mcode-ui-probe-scratch.png");
+/* "量一个像素"用的中间截图不再落盘 —— 走 api.capture() 拿内存里的 PNG。
+   从前它写进系统临时目录里一个固定文件名,并发跑两个 probe 会互相覆盖。 */
 
 /* ─────────────────────────── PNG 解码(纯 Node,无依赖) ───────────────────────────
    只有 zlib 来自 node。用来把截图变成可以算的像素 —— 这样"颜色对不对""这块
@@ -180,20 +179,54 @@ export function contrast(a, b) {
 
 /* ─────────────────────────────── 启动 ─────────────────────────────── */
 
-export async function launch({ page, port = 9444, size = "1000,800", waitMs = 300 }) {
+/** 探一个空闲端口。并发的两个 probe 各自挑,撞车概率约 1/500 —— 真撞上会由下面的
+ *  target 找不到而报错,不会像从前那样**静默连到别人的 Chrome**。要彻底消除,可以让
+ *  Chrome 用 `--remote-debugging-port=0` 自动分配、再从 profile 里的 DevToolsActivePort
+ *  读回来;眼下这点碰撞概率不值得那份复杂度。 */
+async function pickFreePort() {
+  for (let i = 0; i < 50; i++) {
+    const candidate = 9500 + Math.floor(Math.random() * 500);
+    const busy = await fetch(`http://127.0.0.1:${candidate}/json/version`).then(
+      () => true,
+      () => false,
+    );
+    if (!busy) return candidate;
+  }
+  throw new Error("找不到空闲的调试端口");
+}
+
+export async function launch({ page, port, size = "1000,800", waitMs = 300 }) {
   if (!CHROME) throw new Error("找不到 Chrome,设 CHROME_PATH 或改 probe.mjs 里那个路径");
+  if (port === undefined) port = await pickFreePort();
   const [vw, vh] = size.split(",").map(Number);
   const url = `file:///${resolve(HERE, page).replace(/\\/g, "/")}`;
+
+  // 独立的 user-data-dir:共用默认 profile 时,第二个 Chrome 会因为 profile 被锁而
+  // **静默退出**,而我们仍然从**别人的**浏览器上取到 target —— 两个驱动操作同一个
+  // 页面,输入叠加、事件翻倍,报出来的错跟真正的原因毫无关系(实测:并发时
+  // insertText 打出"汉字abc汉字abc"、contextmenu 触发两次)。
+  const profileDir = mkdtempSync(join(tmpdir(), "mcode-ui-probe-profile-"));
   const chrome = spawn(CHROME, [
     "--headless=new",
     "--disable-gpu",
     "--no-sandbox",
     "--hide-scrollbars",
+    `--user-data-dir=${profileDir}`,
     `--window-size=${vw},${vh}`,
     `--remote-debugging-port=${port}`,
     url,
   ]);
   chrome.stderr.on("data", () => {});
+
+  // 关 Chrome 时顺手带走它那份 profile —— 每跑一次攒一个临时目录,不清会长草。
+  const killChrome = () => {
+    chrome.kill();
+    try {
+      rmSync(profileDir, { recursive: true, force: true });
+    } catch {
+      // Windows 上 Chrome 可能还没放开文件句柄;留着也无妨(是系统临时目录)。
+    }
+  };
 
   let target = null;
   for (let i = 0; i < 80 && !target; i++) {
@@ -207,7 +240,7 @@ export async function launch({ page, port = 9444, size = "1000,800", waitMs = 30
     if (!target) await sleep(250);
   }
   if (!target) {
-    chrome.kill();
+    killChrome();
     throw new Error(`Chrome 没起来(端口 ${port})`);
   }
 
@@ -259,11 +292,11 @@ export async function launch({ page, port = 9444, size = "1000,800", waitMs = 30
     ).result.result.value,
   );
   if (Math.abs(vp[0] - vw) > 2 || Math.abs(vp[1] - vh) > 2) {
-    chrome.kill();
+    killChrome();
     throw new Error(`视口钉不住:要 ${vw}x${vh},拿到 ${vp[0]}x${vp[1]}`);
   }
   if (vh < 400) {
-    chrome.kill();
+    killChrome();
     throw new Error(`视口只有 ${vh} 高,鼠标点不到下半屏 —— 至少给 400`);
   }
 
@@ -468,18 +501,25 @@ export async function launch({ page, port = 9444, size = "1000,800", waitMs = 30
 
     /* ── 截图与像素 ── */
 
-    async shot(name) {
+    /** 裸截图:只回内存里的 PNG,不落盘、不记账。像素/对比度这类中间量走它 ——
+        从前的写法是拍一张写进一个**固定的**临时文件再读回来,两个 probe 并发时
+        会互相覆盖,断言就会读到别人的像素(而且那圈盘根本不需要)。 */
+    async capture() {
       const r = await send("Page.captureScreenshot", { format: "png" });
-      const buf = Buffer.from(r.result.data, "base64");
-      const path = resolve(HERE, name);
-      writeFileSync(path, buf);
+      return Buffer.from(r.result.data, "base64");
+    },
+
+    /** 存进本目录的截图 —— 是给人看的产物,会记进 shots 清单。 */
+    async shot(name) {
+      const buf = await api.capture();
+      writeFileSync(resolve(HERE, name), buf);
       shots.push(name);
       return buf;
     },
 
     /** 取一个点的像素。传元素选择器也行(取它的中心)。 */
     async pixel(x, y) {
-      const buf = await api.shot(TMP_PNG);
+      const buf = await api.capture();
       return decodePng(buf).px(x, y);
     },
     async pixelOf(sel) {
@@ -491,7 +531,7 @@ export async function launch({ page, port = 9444, size = "1000,800", waitMs = 30
     async inkRatio(sel, bg = { r: 255, g: 255, b: 255 }, tol = 12) {
       const el = await api.el(sel);
       if (!el.found || el.zeroBox) return 0;
-      const buf = await api.shot(TMP_PNG);
+      const buf = await api.capture();
       const img = decodePng(buf);
       let ink = 0;
       let all = 0;
@@ -510,7 +550,7 @@ export async function launch({ page, port = 9444, size = "1000,800", waitMs = 30
     async regionContrast(sel) {
       const el = await api.el(sel);
       if (!el.found || el.zeroBox) return null;
-      const buf = await api.shot(TMP_PNG);
+      const buf = await api.capture();
       const img = decodePng(buf);
       let dark = { r: 255, g: 255, b: 255 };
       let light = { r: 0, g: 0, b: 0 };
@@ -535,7 +575,7 @@ export async function launch({ page, port = 9444, size = "1000,800", waitMs = 30
       }
       console.log(`\n${checks.length - failures}/${checks.length} 通过${shots.length ? ` · 截图 ${shots.length} 张` : ""}`);
       ws.close();
-      chrome.kill();
+      killChrome();
       return failures;
     },
     get failures() {
