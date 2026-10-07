@@ -26,8 +26,20 @@ export async function withAuditPage(dir, fn) {
     res.writeHead(200,{'Content-Type':type,'Cache-Control':'no-store','Content-Security-Policy':"default-src 'self';script-src 'self' 'unsafe-inline';style-src 'self' 'unsafe-inline';img-src 'self' data:;font-src 'self' data:;connect-src 'none';worker-src 'none'"});
     res.end(readFileSync(join(dir,path.slice(1))));
   });
-  await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
-  const base = `http://127.0.0.1:${server.address().port}/index.html`;
+  // **端口要能被 fetch 拨通。** `listen(0)` 让 OS 随便给一个,但它会给到 fetch spec 的
+  // 黑名单端口(IRC 6665-6669/6679/6697、SIP 5060-5061、X11 6000…),那种端口 undici 在
+  // 发包前就抛 `bad port` —— 整套崩。与 `src/main/lib/loopbackPort.ts` 同一件事,这里内联
+  // 一份最小实现(本文件拷到临时目录后直接 import,不打包,引不到那个 TS 模块)。
+  const AUDIT_BAD_PORTS = new Set([1,7,9,11,13,15,17,19,20,21,22,23,25,37,42,43,53,69,77,79,87,95,101,102,103,104,109,110,111,113,115,117,119,123,135,137,138,139,143,161,179,389,427,465,512,513,514,515,526,530,531,532,540,548,554,556,563,587,601,636,989,990,993,995,1719,1720,1723,2049,3659,4045,4190,5060,5061,6000,6566,6665,6666,6667,6668,6669,6679,6697,10080]);
+  let auditPort = 0;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
+    const p = server.address().port;
+    if (!AUDIT_BAD_PORTS.has(p)) { auditPort = p; break; }
+    await new Promise(resolve => server.close(() => resolve()));
+  }
+  if (!auditPort) throw new Error('failed to bind a fetch-dialable audit port after 5 attempts');
+  const base = `http://127.0.0.1:${auditPort}/index.html`;
   const profile = mkdtempSync(join(dir,'.audit-browser-'));
   const child = spawn(browser,[
     ...(process.platform==='linux' && process.getuid?.()===0 ? ['--no-sandbox'] : []),

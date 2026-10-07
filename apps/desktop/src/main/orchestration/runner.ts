@@ -1470,6 +1470,9 @@ export async function startWorkflowRun(args: {
     broadcastRuntimeEvent({
       type: "workflow.node.progress",
       sessionId: session.id,
+      // 与 `workflow.node.queued` 同源同义 —— 见 `WorkflowNodeProgressEvent.workflowId`:
+      // 不带的话监控只能查库兜底、看板要等后续事件补,一个事实两处口径。
+      workflowId: session.workflowId,
       runId,
       nodeId: node.id,
       nodeType: node.type,
@@ -1785,6 +1788,8 @@ export async function startWorkflowRun(args: {
         broadcastRuntimeEvent({
           type: "workflow.node.choice",
           sessionId: session.id,
+          // 见 `WorkflowNodeChoiceEvent.workflowId`:与 queued/progress/result 同一处事实。
+          workflowId: session.workflowId,
           runId,
           nodeId: node.id,
           nodeType: node.type,
@@ -1932,6 +1937,9 @@ export async function startWorkflowRun(args: {
       emitWorkflowEvent({
         type: "workflow.node.result",
         sessionId: session.id,
+        // 见 `WorkflowNodeResultEvent.workflowId`:与 queued/progress 同源同义,带上它
+        // 监控收口就不必查库兜底(库没起来时那张卡才看得出跟的是哪张图)。
+        workflowId: session.workflowId,
         runId,
         ...(nodeSessionId ? { nodeSessionId } : {}),
         // 拷成可变数组:通道那一头是 `readonly`(主进程的那份不许别人改),

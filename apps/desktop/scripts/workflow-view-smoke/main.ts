@@ -3055,6 +3055,37 @@ console.log("\nworkflowLive 常驻订阅 / 晚到的 workflowId / boardWorkflowI
   eq("只补空的,不覆盖已经记下的", s2.runs["run_late"]?.workflowId, "wf_late");
 }
 {
+  // **事件自带的 workflowId 直接用**(C4,2026-10-08)。从前只有 `queued` 带它,progress
+  // 先到时 workflowId 只能是空串、要等后面某条补 —— 一个事实两处口径不一。现在
+  // progress/result/choice 都带,第一条到的事件就能定下"这次运行按的是哪张图"。
+  __resetWorkflowLive();
+  const base = { sessionId: "s_direct", runId: "run_direct" };
+  const s = __applyWorkflowLiveEvent({
+    ...base,
+    type: "workflow.node.progress",
+    workflowId: "wf_direct",
+    nodeId: "a",
+    nodeType: "mcode.agent",
+    title: "甲",
+  } as unknown as RuntimeEvent);
+  eq("★ progress 自带 workflowId → 当场就记下(不必等 queued)", s.runs["run_direct"]?.workflowId, "wf_direct");
+
+  // result 那条同理(它常常是这次运行的第一条事件 —— 没有进度、只有收场)。
+  __resetWorkflowLive();
+  const s2 = __applyWorkflowLiveEvent({
+    ...base,
+    runId: "run_direct2",
+    type: "workflow.node.result",
+    workflowId: "wf_direct2",
+    nodeId: "b",
+    nodeType: "mcode.agent",
+    title: "乙",
+    status: "success",
+    summary: "ok",
+  } as unknown as RuntimeEvent);
+  eq("★ result 自带 workflowId → 也当场记下", s2.runs["run_direct2"]?.workflowId, "wf_direct2");
+}
+{
   // **看板画哪张图:这次运行按的那张优先。** 输入框的药丸是"下一句话用哪个模式",
   // 图跑着时用户换了它(或者跑的是自动化),看板仍该画正在跑的那张。
   eq(

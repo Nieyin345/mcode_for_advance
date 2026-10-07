@@ -167,6 +167,48 @@ async function main(): Promise<void> {
   // 5 行 → 4 个唯一 runId(run_2 两条取最新),坏行不占位
   check("坏行与缺字段行都被跳过", !idsAfterJunk.includes("ok-shape") && idsAfterJunk.length === 4, idsAfterJunk);
 
+  /* ── 7. 事件自带的 workflowId 优先(从前只有 queued 带,progress/result 只能查库) ── */
+  {
+    // 事件带了 workflowId → 直接用,**不查会话表**(库没起来那几秒才看得出跟的是哪张图)。
+    let lookupCalls = 0;
+    const withEvent = new MonitoringCollector({
+      root: rootOf,
+      lookupWorkflowId: () => {
+        lookupCalls += 1;
+        return "wf_FROM_DB";
+      },
+    });
+    // 关键形状:**lookup 查不到**(模拟库没起来)—— 从前这会记空串。
+    const dbDown = new MonitoringCollector({
+      root: rootOf,
+      lookupWorkflowId: () => undefined,
+    });
+    withEvent.handle(ev({ type: "workflow.node.progress", sessionId: "s9", runId: "run_ev", workflowId: "wf_from_event", nodeId: "n1", nodeType: "agent", title: "一步" }));
+    withEvent.handle(ev({ type: "workflow.node.result", sessionId: "s9", runId: "run_ev", workflowId: "wf_from_event", nodeId: "n1", nodeType: "agent", title: "一步", status: "success", summary: "ok" }));
+    withEvent.handle(ev({ type: "turn.done", sessionId: "s9", reason: "end_turn", endedAt: Date.now() }));
+    eq("★ 事件自带 workflowId → 记的是它", readRunSummaries(root).find((r) => r.runId === "run_ev")?.workflowId, "wf_from_event");
+    eq("★ 事件带了就不查会话表", lookupCalls, 0);
+
+    // 库查不到、但事件带了 → 仍记对(这正是"启动那几秒监控卡不空白"的判据)
+    dbDown.handle(ev({ type: "workflow.node.result", sessionId: "s10", runId: "run_dbdown", workflowId: "wf_survives", nodeId: "n1", nodeType: "agent", title: "一步", status: "success", summary: "ok" }));
+    dbDown.handle(ev({ type: "turn.done", sessionId: "s10", reason: "end_turn", endedAt: Date.now() }));
+    eq("★ 库查不到但事件带了 → 监控卡看得出是哪张图", readRunSummaries(root).find((r) => r.runId === "run_dbdown")?.workflowId, "wf_survives");
+
+    // 老/畸形事件(不带 workflowId)→ 仍走查库兜底(既有行为不变)
+    let fallbackCalls = 0;
+    const legacy = new MonitoringCollector({
+      root: rootOf,
+      lookupWorkflowId: () => {
+        fallbackCalls += 1;
+        return "wf_legacy_db";
+      },
+    });
+    legacy.handle(ev({ type: "workflow.node.progress", sessionId: "s11", runId: "run_legacy", nodeId: "n1", nodeType: "agent", title: "一步" }));
+    legacy.handle(ev({ type: "turn.done", sessionId: "s11", reason: "end_turn", endedAt: Date.now() }));
+    eq("★ 老事件(不带)→ 仍查库兜底", readRunSummaries(root).find((r) => r.runId === "run_legacy")?.workflowId, "wf_legacy_db");
+    check("★ …而且确实查了库", fallbackCalls > 0, fallbackCalls);
+  }
+
   busCollector();
 }
 

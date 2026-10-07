@@ -217,8 +217,8 @@ Mcode 是一个**本地优先的通用 Agent 桌面客户端**（Electron + Reac
 | C1 | **`browser/` 等模块零 smoke 覆盖** | `main/browser/`（2726 行的 `BrowserManager`）、`mobile/`、`relay/`、`lsp/`、`terminal/`、`voice/` 全部零覆盖。工程量最大的一项（`integrations/` 整个目录已随 MinerU 一起删掉，不必再算） |
 | ~~C2~~ | ~~**死接口**（preload 暴露但渲染端无人调用）~~ **已做（2026-09-19）** | 删了 8 个（7 个死名字 + `templates.setRoot`），连带清掉只剩死名字引用的 schema 与设置键。其中 `getRoot`/`setRoot` 其实是**已失效的功能**（统一数据根架空了它们，写进去也没人读）。**另一半点反过来做**：`library.fullTextSearch` 后端写完了、界面没接，已补上「库内全文检索」面板 | — |
 | ~~C3~~ | ~~**per-trigger 启停没做**~~ **已做（2026-09-19）** | 触发器节点上加了「启用」勾选框（参数键 `enabled`，**缺席 = 开** —— 老存档升级那一刻不许静默停摆）。关掉的**只挡自动那三条路**，手动「立刻运行一次」照跑。事实行因此分成三种说法：「已挂上」/「已关闭」（你自己关的，灰）/「没挂上」（坏了，黄）—— 关掉的和坏掉的 `armed` 都是 false，光看它分不清 |
-| C4 | **运行事件标准化** | `started / progress / settled / error` 四类事件的形状还不统一 |
-| C5 | **观察名单 2 项** | `longtask-smoke` 随功能于 2026-09-26 退役，不再列为当前观察项。剩下 `mcp-endpoint-smoke` 连跑偶发、`upstream-headers-smoke` 端口竞态。**复现再查** |
+| ~~C4~~ | ~~**运行事件标准化**~~ **已修（2026-10-08）** | 具体缺陷是 `workflowId` 的口径不一致：只有 `workflow.node.queued` 带它，`progress` / `result` / `choice` 不带 → 监控采集器只能查会话行兜底（库没起来/行被删就丢成空串，**面板那张卡看不出跟的是哪张图**），看板也要等后续事件补。已给四类事件统一带上（可选字段，兼容老事件），collector 事件优先、查库作兜底。回归 `monitoring-smoke`（+5，变异验证 3 条红）、`workflow-view-smoke`（+2，变异验证 2 条红） |
+| ~~C5~~ | ~~**观察名单 2 项**~~ **已核实不复现（2026-10-08）** | `mcp-endpoint-smoke` 单跑 8 次、`upstream-headers-smoke` 单跑 10 次、两者并行 4 路**全绿**。根因（OS 抽到 fetch 黑名单端口）已由 `main/lib/loopbackPort.ts` 修掉（commit `9e67d08f` + `a21446fe`：`listenOnDialablePort` 重抽端口），两个套件走的就是这条修好的路径。**描述过时（且指错了套件）**。**同日追加**：跑全量时 `module-catalog-ui-smoke` 真红了一次（`fetch failed / bad port`）—— 真凶是共享的 `scripts/ui-interaction-smoke/browser.mjs`（约 10 个 UI 套件拷走用）用裸 `listen(0)`，没走 `loopbackPort.ts` 的保护。已给 5 份副本内联重抽端口逻辑并验证。**观察名单本身也要复核** |
 
 ### D. 产品化方向（更远）
 

@@ -70,7 +70,7 @@ export class MonitoringCollector {
           break;
         case "workflow.node.choice":
           // 岔路口不进 nodes(它没有定案),但它证明这次运行还活着 —— 登记。
-          this.ensureActive(event.runId, event.sessionId, Date.now());
+          this.ensureActive(event.runId, event.sessionId, event.workflowId, Date.now());
           break;
         case "workflow.node.result":
           this.onNodeResult(event);
@@ -88,20 +88,28 @@ export class MonitoringCollector {
     }
   }
 
-  /** 登记一个活跃 run(已存在就原样返回 —— 续跑沿用旧 id,登记不重置)。 */
-  private ensureActive(runId: string, sessionId: string, now: number): void {
+  /** 登记一个活跃 run(已存在就原样返回 —— 续跑沿用旧 id,登记不重置)。
+   *
+   *  `eventWorkflowId` —— 事件自带的图 id(progress / result 现在都带,见
+   *  `@contracts/runtime` 的 `WorkflowNodeProgressEvent.workflowId`)。有它就**直接信**,
+   *  省掉查库;没有(老事件 / 畸形事件)才回落到 `lookupWorkflowId`。 */
+  private ensureActive(runId: string, sessionId: string, eventWorkflowId: string | undefined, now: number): void {
     // 畸形事件(缺 id)不登记 —— 一条没有身份的运行没法收口也没法查
     if (typeof runId !== "string" || runId.length === 0) return;
     if (typeof sessionId !== "string" || sessionId.length === 0) return;
     const existing = this.active.get(runId);
     if (existing) return;
 
-    let workflowId = "";
-    try {
-      workflowId = this.deps.lookupWorkflowId?.(sessionId) ?? "";
-    } catch (err) {
-      // 会话行查不到(库还没起来/行被删了)不拦着登记 —— workflowId 记空串
-      log.warn(`monitoring: 会话 ${sessionId} 的工作流 id 查不到: ${(err as Error).message}`);
+    // 事件带的图 id 优先。从前只有 `queued` 带、progress/result 不带,于是这里**只能**
+    // 查库兜底 —— 库没起来(启动那几秒)/ 会话行被删就丢成空串,监控卡看不出跟的是哪张图。
+    let workflowId = typeof eventWorkflowId === "string" ? eventWorkflowId : "";
+    if (workflowId === "") {
+      try {
+        workflowId = this.deps.lookupWorkflowId?.(sessionId) ?? "";
+      } catch (err) {
+        // 会话行查不到(库还没起来/行被删了)不拦着登记 —— workflowId 记空串
+        log.warn(`monitoring: 会话 ${sessionId} 的工作流 id 查不到: ${(err as Error).message}`);
+      }
     }
     const record: ActiveRunRecord = {
       runId,
@@ -120,7 +128,7 @@ export class MonitoringCollector {
   /** 节点开跑:登记活跃 run + 记下这一步的起点(结果事件来时好算耗时)。 */
   private onNodeProgress(e: Extract<RuntimeEvent, { type: "workflow.node.progress" }>): void {
     const now = Date.now();
-    this.ensureActive(e.runId, e.sessionId, now);
+    this.ensureActive(e.runId, e.sessionId, e.workflowId, now);
     // 只记第一次:回头/重试会让同一 nodeId 反复发进度,起点还是最早那次
     if (!this.active.get(e.runId)?.nodeStarts.has(e.nodeId)) {
       this.active.get(e.runId)?.nodeStarts.set(e.nodeId, now);
@@ -129,7 +137,7 @@ export class MonitoringCollector {
 
   private onNodeResult(e: Extract<RuntimeEvent, { type: "workflow.node.result" }>): void {
     const now = Date.now();
-    this.ensureActive(e.runId, e.sessionId, now);
+    this.ensureActive(e.runId, e.sessionId, e.workflowId, now);
     const record = this.active.get(e.runId);
     if (!record) return;
 

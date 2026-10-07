@@ -183,9 +183,11 @@ function patchNode(
     nodes: {},
     order: [],
   };
-  // 只有 `queued` 带 `workflowId`(见 `@contracts/runtime`)。这次运行要是先被
-  // progress / result 建出来的,当时只能记成空串 —— 之后任何一条带着它的事件都要**补上**,
-  // 否则看板永远不知道这次运行按的是哪张图(见 `boardWorkflowIdOf`)。只补空的,不覆盖。
+  // **四条事件现在都带 `workflowId`**(queued/progress/result/choice,见
+  // `@contracts/runtime`)。从前的形状只有 `queued` 带,于是 progress/result 先到的那次
+  // 运行只能记空串、等后续带它的事件补上 —— 一个事实在两处口径不一。现在事件自带就
+  // 直接用;调用点传 `e.workflowId ?? runs[e.runId]?.workflowId ?? ""`,老/畸形事件
+  // (没带)仍走这条兜底。只补空的,不覆盖。
   const run: LiveRun =
     created.workflowId === "" && workflowId !== "" ? { ...created, workflowId } : created;
   const prevNode = run.nodes[nodeId];
@@ -321,7 +323,7 @@ function apply(e: RuntimeEvent): void {
     case "workflow.node.progress":
       emit(
         recompute(
-          patchNode(runs, e.sessionId, e.runId, runs[e.runId]?.workflowId ?? "", e.nodeId, {
+          patchNode(runs, e.sessionId, e.runId, e.workflowId ?? runs[e.runId]?.workflowId ?? "", e.nodeId, {
             nodeType: e.nodeType,
             title: e.title,
             phase: "running",
@@ -342,7 +344,7 @@ function apply(e: RuntimeEvent): void {
       emit(
         recompute(
           prune(
-            patchNode(runs, e.sessionId, e.runId, runs[e.runId]?.workflowId ?? "", e.nodeId, {
+            patchNode(runs, e.sessionId, e.runId, e.workflowId ?? runs[e.runId]?.workflowId ?? "", e.nodeId, {
               nodeType: e.nodeType,
               title: e.title,
               phase: "settled",
@@ -367,7 +369,7 @@ function apply(e: RuntimeEvent): void {
       const settled = e.chosen !== undefined;
       emit(
         recompute(
-          patchNode(runs, e.sessionId, e.runId, runs[e.runId]?.workflowId ?? "", e.nodeId, {
+          patchNode(runs, e.sessionId, e.runId, e.workflowId ?? runs[e.runId]?.workflowId ?? "", e.nodeId, {
             nodeType: e.nodeType,
             title: e.title,
             // **不给 `phase`** —— 选完了不是收场,图从这一格接着往下跑,阶段还是"在跑";

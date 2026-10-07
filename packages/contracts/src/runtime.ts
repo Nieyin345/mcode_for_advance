@@ -798,7 +798,16 @@ export interface WorkflowNodeQueuedEvent {
 
 export interface WorkflowNodeProgressEvent {
   type: "workflow.node.progress";
+  /** 父对话的 sessionId,和 `WorkflowNodeResultEvent` 一样。 */
   sessionId: string;
+  /** 这张图的 id(设置 → 工作流里的那份)。**与 `workflow.node.queued` 同源、同义。**
+   *
+   *  ⚠️ **可缺席,但新事件一律要带。** 从前 progress / result **不带**它,只有 `queued` 带
+   *  —— 于是两个消费端各自绕:监控采集器只能拿 `sessionId` 去查会话行兜底(库没起来 /
+   *  会话被删就丢成空串,监控卡看不出跟的是哪张图),看板则靠后续某条带它的事件"补上"。
+   *  一条事件流里同一个事实两处口径不一,是**缺陷**不是取舍。老事件(或畸形事件)仍读得进,
+   *  所以是可选;消费端保留兜底。 */
+  workflowId?: string;
   runId: string;
   nodeId: string;
   nodeType: string;
@@ -824,6 +833,10 @@ export interface WorkflowNodeResultEvent {
   /** Which run this belongs to. One user message = one run; a later message
    *  starts a new one, so the card can be read in order even if node ids repeat. */
   runId: string;
+  /** 这张图的 id。**与 `workflow.node.queued` / `progress` 同源、同义、同一取舍**
+   *  (见 `WorkflowNodeProgressEvent.workflowId` 那段)——从前只有 `queued` 带,
+   *  result 不带,监控收口时只能查库兜底、查不到就空。可选只为兼容老/畸形事件。 */
+  workflowId?: string;
   /** 这是这个节点在第几轮跑出来的(**1 起**)。第 1 轮不带,第 2 轮起带上。
    *
    *  ## 为什么只在回头的时候带
@@ -983,6 +996,9 @@ export interface WorkflowNodeChoiceEvent {
   type: "workflow.node.choice";
   /** 父对话的 sessionId,和 `WorkflowNodeResultEvent` 一样。 */
   sessionId: string;
+  /** 这张图的 id。**与 `queued` / `progress` / `result` 同源同义** —— 见
+   *  `WorkflowNodeProgressEvent.workflowId` 那段。可选只为兼容老/畸形事件。 */
+  workflowId?: string;
   /** 哪一次运行。见 `WorkflowNodeResultEvent.runId`。 */
   runId: string;
   /** 分支节点的 id 与标题,直接来自 `WorkflowNode`。 */
