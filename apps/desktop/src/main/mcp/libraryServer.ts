@@ -56,6 +56,8 @@ import { importAnyFiles } from "@main/library/importDispatch.js";
 import { attachPdfToItem } from "@main/library/pdfImport.js";
 import { aiVisibleFilesOf } from "@main/library/fileImport.js";
 import { attachToChat } from "@main/library/manifest.js";
+import { loadLibraryGroups } from "@main/library/groupRegistry.js";
+import { trashedItemIds } from "@main/library/trash.js";
 import { MCP_LIBRARY_SERVER } from "@contracts/ipc";
 import { notifyLibraryChanged } from "@main/library/broadcast.js";
 import { suppressionReasonOfItem } from "@main/library/suppress.js";
@@ -155,6 +157,51 @@ function suppressedNote(reason: string): string {
 }
 
 /**
+ * 「翻库」两条路(`library_search` / `library_items`)共用的可见性筛子。
+ *
+ * 两道硬过滤,与所有其它面向 AI 的出口**同一套规则**(「共享实现只有一份」):
+ *
+ *   - **回收站里的条目**(`library/trash.ts` 的 `trashedItemIds`)—— 用户丢进回收站
+ *     的意思就是"我不要它了",它不该进上下文。清单三处、`attachToChat`、系统提示词
+ *     (`envPrompt`)、自定义 UI 展开(`runAutomation`)全都剔它;这两条从前漏了。
+ *   - **被屏蔽的条目**(`library/suppress.ts` 的 `suppressionReasonOfItem`)—— 判定
+ *     只有一份,这里不重写它。
+ *
+ * 两样**分开数**:一个是用户自己设的规矩("进不了上下文"),一个是"我不要它了"，
+ * 说的话不一样。返回剔掉了各几条,调用方据此如实回报(仓规:少列了东西要说出来)。
+ */
+function visibleLibraryItems(items: readonly LibraryItem[]): {
+  items: LibraryItem[];
+  suppressed: number;
+  trashed: number;
+} {
+  const trash = trashedItemIds();
+  const kept: LibraryItem[] = [];
+  let suppressed = 0;
+  let trashed = 0;
+  for (const item of items) {
+    if (trash.has(item.id)) {
+      trashed += 1;
+      continue;
+    }
+    if (suppressionReasonOfItem(item.id)) {
+      suppressed += 1;
+      continue;
+    }
+    kept.push(item);
+  }
+  return { items: kept, suppressed, trashed };
+}
+
+/** 「哪些条目没列出来、为什么」的一句话 —— 两条路共用,免得各写一份措辞。 */
+function hiddenNote(trashed: number, suppressed: number): string {
+  const bits: string[] = [];
+  if (suppressed > 0) bits.push(`${suppressed} 条被屏蔽规则挡住`);
+  if (trashed > 0) bits.push(`${trashed} 条在回收站里`);
+  return bits.join("、");
+}
+
+/**
  * 这个 server 的工具表 —— **只有声明,不碰 SDK**。
  *
  * 抽出来的原因见 `./sdk.ts` 的 `McpToolSpec`:同一份表还要给网页端那条通路用
@@ -184,30 +231,41 @@ export function libraryMcpTools(): McpToolSpec[] {
         },
         handler: async (args: { query: string }) => {
           const items = searchItems(args.query ?? "");
-          // **屏蔽是硬过滤,这里也必须过。** `searchItems` 是纯仓储查询(纯 SQL,
-          // 见 `library/operations.ts`),它不看屏蔽规则 —— 而这一条是模型"翻库"的
-          // 主要出口,工具说明里还写着"判断库里有没有某一篇时用它"。不过这道门,
-          // 被屏蔽的条目会照常列出来,而且 `itemLine` 顺手带上 PDF 的**绝对路径**:
-          // 模型拿着它 Read / shell 一下就绕过去了,用户在设置里设的屏蔽等于白设。
-          //
-          // 判定只有一份(`library/suppress.ts`),这里不重写它。
-          const kept = items.filter((i) => !suppressionReasonOfItem(i.id));
-          const dropped = items.length - kept.length;
+          // **两道硬过滤都要过**(回收站 + 屏蔽),判定各有唯一一份(见
+          // `visibleLibraryItems`)。`searchItems` 是纯仓储查询(纯 SQL,见
+          // `library/operations.ts`),它两样都不看 —— 而这一条是模型"翻库"的主要出口,
+          // 工具说明里还写着"判断库里有没有某一篇时用它"。不过这道门,条目会照常列出
+          // 来,而且 `itemLine` 顺手带上 PDF 的**绝对路径**:模型拿着它 Read / shell
+          // 一下就绕过去了,用户设的屏蔽、丢进回收站的东西都等于白设。
+          const { items: kept, suppressed, trashed } = visibleLibraryItems(items);
+          const hidden = suppressed + trashed;
           if (kept.length === 0) {
             // 挡掉的和"库里没有"必须分开说 —— 前者是用户自己设的规矩在管事,模型
             // 不该据此回答"库里没有这一篇"(那是 `library_search` 最要紧的那个用途,
             // 见工具说明)。
-            if (dropped > 0) {
+            if (hidden > 0) {
               return text(
-                `匹配「${args.query}」的 ${dropped} 条都在屏蔽列表里(设置 → 资料库类型)。` +
-                  `如实告诉用户"被屏蔽了",不要当不存在,也不要凭空引用。`,
+                `匹配「${args.query}」的 ${hidden} 条都不可见(${hiddenNote(trashed, suppressed)};` +
+                  `屏蔽在设置 → 资料库类型,回收站里的可在左栏还原)。` +
+                  `如实告诉用户,不要当不存在,也不要凭空引用。`,
               );
             }
             return text(`库里没有匹配「${args.query}」的条目。不要因此凭空引用 —— 如实告诉用户库里没有。`);
           }
-          const tail =
-            dropped > 0 ? `\n\n(另有 ${dropped} 条被屏蔽规则挡住了,没有列出来。)` : "";
-          return text(`匹配 ${kept.length} 条:\n\n${kept.slice(0, 60).map(itemLine).join("\n")}${tail}`);
+          const note = hiddenNote(trashed, suppressed);
+          const tail = note ? `\n\n(另有 ${note},没有列出来。)` : "";
+          // ⚠️ **列不完必须写出来。** 只摆前 60 条(免得一次把上下文撑爆),而抬头那句
+          // 是**匹配总数** —— 不注明的话,模型会把"我看到 60 条"当成"库里就 60 条"。
+          // 仓库的既定口径是"少列了东西模型看不出来,比慢一点糟得多"(见
+          // `listAllItems` 注释;`envPromptFormat` 与 `library.py` 遇到截断都会显式写一句)。
+          const SHOWN = 60;
+          const shown = kept.slice(0, SHOWN);
+          const more =
+            kept.length > shown.length
+              ? `\n\n(上面只列了前 ${shown.length} 条,还有 ${kept.length - shown.length} 条没列出 —— ` +
+                `要精确找某一篇,把关键词收窄一点再用 library_search。)`
+              : "";
+          return text(`匹配 ${kept.length} 条:\n\n${shown.map(itemLine).join("\n")}${tail}${more}`);
         },
       },
       {
@@ -216,19 +274,21 @@ export function libraryMcpTools(): McpToolSpec[] {
         inputSchema: { collectionId: z.string().describe("分类 id,来自 library_collections") },
         handler: async (args: { collectionId: string }) => {
           const all = LibraryRepo.listByCollection(args.collectionId);
-          // 同 `library_search`:这条也是直连仓储,而它给出的每一条同样带着 PDF 绝对
-          // 路径。屏蔽判定只有一份(见 `library/suppress.ts`)。
-          const items = all.filter((i) => !suppressionReasonOfItem(i.id));
-          const dropped = all.length - items.length;
+          // 同 `library_search`:这两道硬过滤都要过(回收站 + 屏蔽),判定各有唯一一份
+          // (见 `visibleLibraryItems`)。
+          const { items, suppressed, trashed } = visibleLibraryItems(all);
+          const hidden = suppressed + trashed;
           if (items.length === 0) {
-            if (dropped > 0) {
+            if (hidden > 0) {
               return text(
-                `这个分类里的 ${dropped} 条都在屏蔽列表里(设置 → 资料库类型)。如实告诉用户。`,
+                `这个分类里的 ${hidden} 条都不可见(${hiddenNote(trashed, suppressed)};` +
+                  `屏蔽在设置 → 资料库类型,回收站里的可在左栏还原)。如实告诉用户。`,
               );
             }
             return text("(这个分类里还没有条目)");
           }
-          const tail = dropped > 0 ? `\n\n(另有 ${dropped} 条被屏蔽规则挡住了,没有列出来。)` : "";
+          const note = hiddenNote(trashed, suppressed);
+          const tail = note ? `\n\n(另有 ${note},没有列出来。)` : "";
           return text(`${items.length} 条:\n\n${items.map(itemLine).join("\n")}${tail}`);
         },
       },
@@ -248,7 +308,18 @@ export function libraryMcpTools(): McpToolSpec[] {
             // 重名会让用户分不清两个同名分类 —— 让模型换个名字再试,而不是静默建出来
             return fail(`已经有一个叫「${name}」的分类了。换一个名字,或直接用现成的那个。`);
           }
-          const c = CollectionRepo.create(name, args.parentId ?? null);
+          // **新建的分类必须挂进一个大类**,否则它在左栏里永远看不见 —— 左栏按
+          // `group_id` 过滤(`LibrarySection.tsx` 的 `collections.filter(c => c.groupId === group.id)`),
+          // 大类清单也按它收(`manifest.ts` 的 `writeGroupManifest`)。NULL 就是一条
+          // "建成功了却谁也不认"的幽灵分类。
+          //
+          // 与 IPC 那条路**同一份规矩**(用户原话:AI 的操作要和 UI 的一样):契约允许
+          // 省略 groupId,两条路都兜底到第一个大类 —— 见 `ipc/library.ts` 的
+          // `LIBRARY_CREATE_COLLECTION`(`loadLibraryGroups()[0].id`)。MCP 工具的表没有
+          // groupId 入参,所以它永远是"省略"那一档,必须在这里补上默认值。
+          const groupId = loadLibraryGroups()[0]?.id;
+          if (!groupId) return fail("还没有任何大类,请先在资料库设置里建一个大类");
+          const c = CollectionRepo.create(name, args.parentId ?? null, groupId);
           notifyLibraryChanged(`create_collection:${c.name}`);
           return text(`已新建分类「${c.name}」  id=${c.id}`);
         },
@@ -264,7 +335,13 @@ export function libraryMcpTools(): McpToolSpec[] {
           "用户没有挂任何分类、但你确实需要看某个库时用它;挂之前先问用户要挂哪个(用 library_collections 列出候选)," +
           "不要自作主张挂一堆。挂重复了不会重复显示。",
         inputSchema: {
-          collectionId: z.string().describe("要挂的分类 id;挂单独一篇时用 itemId"),
+          // ⚠️ **`collectionId` 必须可选。** 说明与 handler 都写着"与 itemId 二选一"
+          // (`args.itemId ? i: : c:`),而 schema 里它是 required 的话,只有 `itemId`
+          // 的调用会被 zod **在校验那一步**就拒掉 —— handler 根本进不去。走真正校验
+          // 入参的两条路(Claude 的 SDK、Pi/Codex 的 engine bridge 用同一个 zod shape),
+          // "挂单独一篇"这个能力就整体用不了,而直接调 handler 的调用方看不出这件事。
+          // 至少给一个由 handler 自己判(它会 `return fail`),这里不做 required。
+          collectionId: z.string().optional().describe("要挂的分类 id;与 itemId 二选一"),
           itemId: z.string().optional().describe("改挂单独一篇时给条目 id,与 collectionId 二选一"),
         },
         handler: async (args: { collectionId?: string; itemId?: string }, ctx: McpToolContext) => {

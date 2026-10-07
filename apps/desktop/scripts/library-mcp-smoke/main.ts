@@ -498,6 +498,51 @@ console.log("\n屏蔽:翻库的路");
   saveSuppress({ nodes: [], extensions: [] });
 }
 
+/* ──────────────── 5b. 回收站里的条目也不能从"翻库"这两条漏给 AI ──────────────── */
+
+console.log("\n回收站:翻库的路");
+
+// **「回收站里的东西不进上下文」是一条既定的硬规矩**(见 `library/trash.ts` 的
+// `trashedItemIds` 注释:它是那道筛子的唯一判据)。所有面向 AI 的出口都守着它:
+//   - `manifest.ts` 的三处清单(整库 / 分类 / 大类)都按 `trashedItemIds` 逐条剔;
+//   - `attachToChat` 挂单篇时直接拒(`它在回收站里 —— 先还原出来再挂到对话上`);
+//   - `envPrompt.ts` 的系统提示词走 `selectVisibleItems`(回收站 + 屏蔽);
+//   - `customUi/runAutomation.ts` 展开分类时也按 `trashedItemIds` 剔。
+//
+// 而 `library_search` / `library_items` 是模型"翻库"的两个出口 —— 它们过了**屏蔽**
+// 那道门(见上一段),却**没过回收站**那道,于是条目连带 `itemLine` 给的**PDF 绝对
+// 路径**照样漏给模型。用户把一条丢进回收站的意思就是"我不要它了",模型却拿得到它的
+// 路径去 Read/shell —— 与"屏蔽了 pdf、模型却还能读"是同一类漏(正是上一段要防的)。
+//
+// 判据只有一份(`library/trash.ts` 的 `trashedItemIds`),这里不重写它。
+{
+  const { ensureTrashCollection, trashedItemIds } = await import("@main/library/trash.js");
+
+  // 造一条**普通分类里**的条目,再走**真的那条 MCP 工具**把它移进回收站。
+  const doomed = LibraryRepo.upsert({ title: "要丢进回收站的那一篇" });
+  const home = CollectionRepo.create("回收站翻库冒烟分类", null, "paper");
+  CollectionRepo.assign(home.id, [doomed.id], true);
+  const removed = await call("library_remove", { itemIds: [doomed.id] });
+  check("前提:library_remove 真把它移进了回收站", trashedItemIds().has(doomed.id), { removed, trashed: [...trashedItemIds()] });
+  ensureTrashCollection();
+
+  // ① library_search —— 不能把它当"库里的一篇"报给模型。
+  const searched = await call("library_search", { query: "要丢进回收站的那一篇" });
+  check("★ library_search:回收站里的条目不出现", !searched.includes(doomed.id), searched);
+  // 留空列全部时同样不能出现。
+  const all = await call("library_search", { query: "" });
+  check("★ library_search:留空列全部时也不出现", !all.includes(doomed.id), all.slice(0, 600));
+
+  // ② library_items —— 按分类列,回收站本身也是一个分类;它的内容同样不该进上下文
+  //    (对照 `writeCollectionManifest`:传回收站 id 时它整份清单是空的)。
+  const trashText = await call("library_items", { collectionId: ensureTrashCollection() });
+  check("★ library_items:回收站分类里的条目不出现", !trashText.includes(doomed.id), trashText);
+
+  // 收尾:还原出来,免得影响后面的段(以及"库里没有"那几条判断)。
+  const { restoreItemsFromTrash } = await import("@main/library/trash.js");
+  restoreItemsFromTrash([doomed.id]);
+}
+
 /* ──────────────── 6. 长尾:调用方最可能踩的两个错 ──────────────── */
 
 console.log("\n长尾");
@@ -609,6 +654,20 @@ console.log("\n写工具的那道门只在有屏蔽时才拦");
   check("前置条件:旧条目不在列表默认的 200 条里", !LibraryRepo.list({}).items.some((it) => it.id === old.id));
   const hit = await call("library_search", { query: "第零条深藏的文档" });
   check("★ 库内搜索可查到第 200 条以外的文档", hit.includes(old.id), hit);
+
+  // ★ **列不完的时候必须说出来。** 搜索输出里只摆前 60 条(免得一次把上下文撑爆),
+  // 但抬头那句写的是**匹配总数** —— 不注明"只列了前 60"的话,模型会把"看到 60 条"
+  // 当成"库里就 60 条"。仓库的既定口径是"少几条比慢一点糟得多,而少列了东西模型看不
+  // 出来"(见 `listAllItems` 的注释;`envPromptFormat` 与 `library.py` 遇到截断都会
+  // 显式写一句)。
+  const many = await call("library_search", { query: "其余文档" });
+  const listed = (many.match(/^\s*id=/gm) ?? []).length;
+  check("前置条件:这次匹配超过 60 条(否则下面那条断不到东西)", listed > 0 && many.includes("匹配 201 条"), { listed, head: many.slice(0, 40) });
+  check(
+    "★ 列不完时说了「只列前 60 条」(抬头总数与列表长度不一致时不能沉默)",
+    listed <= 60 && /只列|前 \d+ 条|未列出|还有 \d+ 条/.test(many),
+    { listed, tail: many.slice(-160) },
+  );
 }
 
 /* ──────────────── 9. 跨引擎桥:Pi / Codex 也拿得到库工具(2026-09-30) ──────────────── */
@@ -637,6 +696,29 @@ console.log("\n跨引擎桥(library/engineTools.ts)");
   check("invokeLibraryTool:入参过 zod(没有 SDK 兜着也不放坏形状进 handler)", badArgs.isError === true, textOf(badArgs));
   const unknown = await invokeLibraryTool("library_nope", {}, "s-bridge");
   check("invokeLibraryTool:未知工具报错而不是抛", unknown.isError === true, textOf(unknown));
+
+  // ★ **`itemId` 是 `collectionId` 的合法替代**,不是"必须两个都给"。
+  // 工具说明与 handler 都写着"二选一"(`args.itemId ? i: : c:`)。但 schema 里
+  // `collectionId` 是 **required** —— 于是走**真正校验入参的那两条路**(Claude 的 SDK、
+  // Pi / Codex 的桥)时,只给 itemId 的调用会被 zod 直接拒掉,handler 根本进不去。
+  // 也就是说"挂单独一篇"这个能力在**所有 AI 路径**上都用不了,而直接调 handler 的
+  // 冒烟看不到它(本套上面几段都是直接调 handler)。
+  //
+  // `attachToChat` 本身完全支持 `i:` 键(左栏右键走的就是它),所以这是纯粹的入口
+  // schema 与实现/说明不一致。这里断的是**过校验的那条路**能走通。
+  {
+    const attachItem = LibraryRepo.upsert({ title: "只挂这一篇" });
+    const attached = await invokeLibraryTool("library_attach_to_chat", { itemId: attachItem.id }, "s-bridge");
+    check(
+      "★ 只给 itemId 挂单篇:过得了 zod 校验(不该被当成缺 collectionId 拒掉)",
+      attached.isError !== true,
+      textOf(attached),
+    );
+    // 只给 collectionId 仍然照旧。
+    const col = CollectionRepo.create("桥挂载冒烟分类", null, "docs");
+    const attachedCol = await invokeLibraryTool("library_attach_to_chat", { collectionId: col.id }, "s-bridge");
+    check("只给 collectionId 挂分类:照旧可用", attachedCol.isError !== true, textOf(attachedCol));
+  }
 
   let asked = 0;
   const ctxWith = (allow: boolean | null, alwaysAllowed = false): Ctx => ({
@@ -683,6 +765,38 @@ console.log("\n跨引擎桥(library/engineTools.ts)");
   const cxSrc = readFileSync(join(process.cwd(), "src/main/providers/codex-sdk/CodexAgentSdkProvider.ts"), "utf8");
   check("Codex:动态工具表带上库工具", cxSrc.includes("...libraryToolDescriptors()"));
   check("Codex:库工具走带审批的派发", cxSrc.includes("invokeLibraryToolGated("));
+}
+
+/* ──────────────── 10. AI 建的分类必须挂在大类下(否则左栏看不见) ──────────────── */
+
+console.log("\nlibrary_create_collection · 新建的分类要进得了左栏");
+
+// ★ 左栏按 `group_id` 过滤(`LibrarySection.tsx` 的 `collections.filter(c => c.groupId === group.id)`),
+// 大类清单也按它收(`manifest.ts` 的 `writeGroupManifest`)。`group_id` 为 NULL 的分类
+// **在任何大类下都看不见** —— 用户会以为 AI 没干活,而库里其实多了一条。
+//
+// IPC 那条路(`library.createCollection`)专门堵了这个:契约允许省略 groupId,handler
+// 兜底到 `loadLibraryGroups()[0].id` 并拒绝无效 id(`ipc/library.ts` 里那段注释)。MCP 的
+// `library_create_collection` 是**同一件事的另一条入口**(用户原话「他对文件系统的操作
+// 要和用户在 ui 的操作一样」),它必须落进同一个大类 —— 少这一步 AI 建的分类就成了
+// 左栏里永远看不见的幽灵。
+//
+// 把参考实现(IPC)与 MCP 这条路**摆在一起断**:两者建出来的分类都该有非空 groupId,
+// 而且落在同一个(第一个)大类下。谁先分叉都会被这一条抓住。
+{
+  const { loadLibraryGroups } = await import("@main/library/groupRegistry.js");
+  const firstGroupId = loadLibraryGroups()[0]!.id;
+
+  const viaMcp = await call("library_create_collection", { name: "AI 建的分类" });
+  check("library_create_collection 成功", viaMcp.includes("已新建分类"), viaMcp);
+  const mcpCreated = CollectionRepo.list().find((c) => c.name === "AI 建的分类");
+  check("MCP 建的分类真的落库了", Boolean(mcpCreated), viaMcp);
+  eq("★ MCP 建的分类挂在第一个大类下(不是 NULL)", mcpCreated?.groupId, firstGroupId);
+  check(
+    "★ 它能被左栏那条过滤规则命中(否则用户看不见)",
+    CollectionRepo.list().some((c) => c.name === "AI 建的分类" && c.groupId === firstGroupId),
+    CollectionRepo.list().filter((c) => c.name === "AI 建的分类").map((c) => c.groupId),
+  );
 }
 
 /* ──────────────── 收尾 ──────────────── */
