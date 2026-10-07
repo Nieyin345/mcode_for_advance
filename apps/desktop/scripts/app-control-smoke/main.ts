@@ -303,9 +303,37 @@ check("ipc/index.ts 登记 handler", src("src/main/ipc/index.ts").includes("reco
 check("审批卡认高风险前缀", src("src/renderer/components/chat/ApprovalPrompt.tsx").includes("APP_DANGER_APPROVAL_PREFIX"));
 check("公网/扩展那条路不挂 mcode-app", !src("src/main/mcp/webToolHost.ts").includes("appMcpTools"));
 check("描述符与工具表一致", appToolDescriptors().length === appMcpTools().length && appMcpTools().every((t) => isAppToolName(t.name)));
-const rpcKeys = (src("../../packages/contracts/src/ipc/rpcMap.ts").match(/^\s+"[a-zA-Z]+\.[a-zA-Z.]+":/gm) ?? []).length;
-if (Math.abs(rpcKeys - API_CATALOG.length) > 3) {
-  console.warn(`⚠️ 功能清单可能过期:RpcMap ${rpcKeys} 项、清单 ${API_CATALOG.length} 项 —— 跑一次 node scripts/gen-app-api-catalog.mjs`);
+// ★ **功能清单必须与 RpcMap 逐条对齐,不是「数量差不多」。**
+//
+// 从前这里写的是 `Math.abs(rpcKeys - API_CATALOG.length) > 3` 才 `console.warn` —— 两层
+// 都漏:`> 3` 的容差让 **1~3 条**的漂移静默通过(实测 `engineTools.get` / `engineTools.set`
+// 就不在清单里,差 2 条,一直没报);而且它只是 `warn`,不是断言,套件照样绿。
+//
+// 后果不是"清单好看不好看":`invokeAppTool` 只认清单里的方法,所以**缺的那两条 agent 调不到**
+// ——注册好的 IPC 从 agent 这条路进不去,而且没有任何一处会说出来。
+//
+// 判据用**集合**而不是计数:数目相等而成员不同的情形,恰恰是计数容差最容易放过的那种。
+{
+  const catalogMethods = new Set(API_CATALOG.map((e) => e.method));
+  const rpcMethods = new Set(
+    (src("../../packages/contracts/src/ipc/rpcMap.ts").match(/^\s+"([a-zA-Z]+\.[a-zA-Z.]+)":/gm) ?? [])
+      .map((m) => m.trim().replace(/^"|":$/g, "")),
+  );
+  // 防"空过":正则改一行、或 rpcMap 的写法变了,两个集合双双变空 —— 上面那条对齐断言
+  // 就成了"0 个缺、0 个多"的假绿。先钉住解析确实取到了东西。
+  check("RpcMap 解析得到方法名（防断言空过）", rpcMethods.size > 300, rpcMethods.size);
+  const missing = [...rpcMethods].filter((m) => !catalogMethods.has(m)).sort();
+  const extra = [...catalogMethods].filter((m) => !rpcMethods.has(m)).sort();
+  check(
+    "★ 功能清单与 RpcMap 逐条对齐（差一条 agent 就调不到）",
+    missing.length === 0 && extra.length === 0,
+    { missing, extra, hint: "跑一次 node scripts/gen-app-api-catalog.mjs" },
+  );
+  // 钉住那两条曾漂移的:光对齐还不够,它们必须**真的在**清单里(免得将来又被别的手法漏掉)。
+  check(
+    "engineTools.get / engineTools.set 在清单里",
+    catalogMethods.has("engineTools.get") && catalogMethods.has("engineTools.set"),
+  );
 }
 
 console.log(`\n${passed}/${passed + failures.length} 通过`);

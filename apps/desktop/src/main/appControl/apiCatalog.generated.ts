@@ -444,6 +444,20 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ path: string | null; }"
  },
  {
+  "method": "engineTools.get",
+  "channel": "engineTools:get",
+  "doc": "Per-engine **built-in tool** exclusion policy (设置 → 引擎工具). Returns the stored policy plus, per engine, whether that engine can actually drop a named built-in tool (Codex cannot — only sandbox/approval levels).",
+  "input": "{}",
+  "output": "EngineToolsSnapshot"
+ },
+ {
+  "method": "engineTools.set",
+  "channel": "engineTools:set",
+  "doc": "Replace the exclusion list for one engine. Claude → `disallowedTools`, Pi → `excludeTools`; Codex accepts the write but reports `supported:false`. Takes effect on the next turn.",
+  "input": "{ exclude: string[] // 工具名列表；空数组 = 该引擎不设限。非法名由主进程逐项剔除。; engine: 'claude' | 'codex' | 'pi' }",
+  "output": "{ ok: boolean; error?: string; snapshot?: EngineToolsSnapshot; }"
+ },
+ {
   "method": "file.copy",
   "channel": "file:copy",
   "doc": "",
@@ -1693,7 +1707,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "plugins.marketplaceAdd",
   "channel": "plugins:marketplaceAdd",
   "doc": "Add a marketplace (git URL or local directory).",
-  "input": "{ kind: 'local' | 'git'; ref: string // git URL, or absolute local directory path.; name?: string | undefined }",
+  "input": "{ kind: 'local' | 'git'; ref: string // git URL, or absolute local directory path.; requestId?: string | undefined; name?: string | undefined }",
   "output": "{ ok: boolean; error?: string; }"
  },
  {
@@ -1707,7 +1721,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "plugins.marketplaceRefresh",
   "channel": "plugins:marketplaceRefresh",
   "doc": "Re-fetch a marketplace's tree.",
-  "input": "{ name: string }",
+  "input": "{ name: string; requestId?: string | undefined }",
   "output": "{ ok: boolean; error?: string; }"
  },
  {
@@ -1924,7 +1938,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "publicMcp.setTunnelConfig",
   "channel": "publicMcp:setTunnelConfig",
   "doc": "存隧道配置(模式 / 自有域名 / Tunnel Token / 固定端口)。 token 留空 = 沿用已存的那串;返回的状态里**只带尾 4 位**。",
-  "input": "{ mode: 'quick' | 'named' | 'external'; token?: string | undefined // named 必填。空串 = 不改动已存的那串(界面上留空表示\"沿用\")。; hostname?: string | undefined // named / external 必填:MCP 端点的公网域名,不带协议。; mobileHostname?: string | undefined // 可选:手机伴侣的公网域名。空 = 不暴露手机。; fixedPort?: number | undefined // 公网 MCP 服务的固定本机端口;0 = 随机。随机只适合 quick —— named / external 的 ingress 写死了端口,所以那两种模式下存 0 会被换成默…; clearToken?: boolean | undefined // 清掉已存的 Tunnel Token(`token` 留空只表示\"沿用\",没法表达\"删掉\")。; agentDelegate?: boolean | undefined // 把 mcode agent 本身交给外面的 AI 支使。缺席 = 不改动。默认关,见设置键上那段警告。 }",
+  "input": "{ mode: 'quick' | 'named' | 'external'; token?: string | undefined // named 必填。空串 = 不改动已存的那串(界面上留空表示\"沿用\")。; hostname?: string | undefined // named / external 必填:MCP 端点的公网域名,不带协议。; mobileHostname?: string | undefined // 可选:手机伴侣的公网域名。空 = 不暴露手机。; fixedPort?: number | undefined // 公网 MCP 服务的固定本机端口;0 = 随机。随机只适合 quick —— named / external 的 ingress 写死了端口,所以那两种模式下存 0 会被换成默…; clearToken?: boolean | undefined // 清掉已存的 Tunnel Token(`token` 留空只表示\"沿用\",没法表达\"删掉\")。; agentDelegate?: boolean | undefined }",
   "output": "PublicMcpStatus"
  },
  {
@@ -2267,14 +2281,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "skills.marketAdd",
   "channel": "skills:marketAdd",
   "doc": "Add a skill market (git URL / owner/repo / local directory) — fetches it.",
-  "input": "{ kind: 'local' | 'git'; ref: string // GitHub `owner/repo`, any git URL, or an absolute local directory.; name?: string | undefined }",
+  "input": "{ kind: 'local' | 'git'; ref: string // GitHub `owner/repo`, any git URL, or an absolute local directory.; requestId?: string | undefined; name?: string | undefined }",
   "output": "{ ok: boolean; error?: string; name?: string; }"
  },
  {
   "method": "skills.marketInstall",
   "channel": "skills:marketInstall",
   "doc": "Copy market skills into the universal library (existing names skipped).",
-  "input": "{ names: string[]; market: string }",
+  "input": "{ names: string[]; market: string; requestId?: string | undefined }",
   "output": "SkillsMarketInstallResult"
  },
  {
@@ -2288,14 +2302,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "skills.marketRefresh",
   "channel": "skills:marketRefresh",
   "doc": "Re-fetch one market's catalog (network).",
-  "input": "{ name: string }",
+  "input": "{ name: string; requestId?: string | undefined }",
   "output": "{ ok: boolean; error?: string; }"
  },
  {
   "method": "skills.marketRemove",
   "channel": "skills:marketRemove",
   "doc": "Remove a user-added skill market (built-ins cannot be removed).",
-  "input": "{ name: string }",
+  "input": "{ name: string; requestId?: string | undefined }",
   "output": "{ ok: boolean; error?: string; }"
  },
  {
