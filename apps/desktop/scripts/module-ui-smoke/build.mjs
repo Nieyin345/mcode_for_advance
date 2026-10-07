@@ -2,6 +2,7 @@ import {dirname,join,resolve} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {readdirSync,readFileSync,writeFileSync,mkdirSync,mkdtempSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
+import { buildTailwindCached } from "../lib/tailwind-cache.mjs";
 const source=dirname(fileURLToPath(import.meta.url)),desktop=resolve(source,'../..'),root=join(desktop,'src/renderer');
 const pnpm=resolve(desktop,'../../node_modules/.pnpm');
 const pkg=(prefix,sub)=>{const n=readdirSync(pnpm).filter(n=>n.startsWith(prefix)).sort().at(-1);if(!n)throw Error('Missing installed dependency '+prefix);return join(pnpm,n,'node_modules',sub);};
@@ -17,6 +18,6 @@ const stubs={
 };
 await esbuild.build({entryPoints:[join(source,'main.jsx')],bundle:true,platform:'browser',format:'iife',jsx:'automatic',tsconfig:join(desktop,'tsconfig.json'),define:{'process.env.NODE_ENV':'"production"'},outfile:join(dir,'bundle.js'),plugins:[{name:'transport-only',setup(b){b.onResolve({filter:/.*/},a=>a.path in stubs?{path:a.path,namespace:'mock'}:undefined);b.onLoad({filter:/.*/,namespace:'mock'},a=>({contents:stubs[a.path],loader:'tsx',resolveDir:desktop}));}}]});
 const configPath=join(dir,'tailwind.config.cjs');writeFileSync(configPath,readFileSync(join(desktop,'tailwind.config.js'),'utf8').replace('export default','module.exports =').replace('content: ["./src/renderer/**/*.{ts,tsx,html}"]','content: '+JSON.stringify([root.replaceAll('\\','/')+'/**/*.{ts,tsx,html}',join(source,'main.jsx').replaceAll('\\','/')])));
-const css=spawnSync(process.execPath,[pkg('tailwindcss@','tailwindcss/lib/cli.js'),'-c',configPath,'-i','src/renderer/styles.css','-o',join(dir,'app.css')],{cwd:desktop,encoding:'utf8'});if(css.status!==0)throw Error(css.stderr);
+const css = buildTailwindCached({ cliPath: pkg('tailwindcss@','tailwindcss/lib/cli.js'), configPath: configPath, inputCss: 'src/renderer/styles.css', outPath: join(dir,'app.css'), cwd: desktop });if (css.status !== undefined && css.status !== 0) throw Error('tailwind failed');
 await esbuild.build({entryPoints:[join(source,'verify.ts')],bundle:true,platform:'node',format:'esm',tsconfig:join(desktop,'tsconfig.json'),outfile:join(dir,'verify.mjs'),banner:{js:"import {createRequire} from 'node:module';const require=createRequire(import.meta.url);"}});
 await import(pathToFileURL(join(dir,'verify.mjs')).href);

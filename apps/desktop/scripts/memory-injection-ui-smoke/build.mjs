@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readdirSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, copyFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { buildTailwindCached } from "../lib/tailwind-cache.mjs";
 const source = dirname(fileURLToPath(import.meta.url)), desktop = resolve(source, '../..');
 const root = join(desktop, 'src/renderer'), pnpm = resolve(desktop, '../../node_modules/.pnpm');
 const pkg = (prefix, sub) => {
@@ -39,8 +40,8 @@ await esbuild.build({
 });
 const configPath = join(dir, 'tailwind.config.cjs');
 writeFileSync(configPath, readFileSync(join(desktop, 'tailwind.config.js'), 'utf8').replace('export default', 'module.exports =').replace('content: ["./src/renderer/**/*.{ts,tsx,html}"]', 'content: ' + JSON.stringify([root.replaceAll('\\', '/') + '/**/*.{ts,tsx,html}', join(source, 'main.jsx').replaceAll('\\', '/')])));
-const css = spawnSync(process.execPath, [pkg('tailwindcss@', 'tailwindcss/lib/cli.js'), '-c', configPath, '-i', 'src/renderer/styles.css', '-o', join(dir, 'app.css')], { cwd: desktop, encoding: 'utf8' });
-if (css.status !== 0) throw Error(css.stderr);
+const css = buildTailwindCached({ cliPath: pkg('tailwindcss@','tailwindcss/lib/cli.js'), configPath: configPath, inputCss: 'src/renderer/styles.css', outPath: join(dir,'app.css'), cwd: desktop });if (css.status !== undefined && css.status !== 0) throw Error('tailwind failed');
+
 const paths = ['src/renderer/components/chat/MemoryAssistantButton.tsx', 'src/renderer/components/chat/NewSubChatPicker.tsx', 'src/renderer/components/memory/MemoryExplorerPanel.tsx', 'src/renderer/components/settings/workflows/ParamField.tsx', 'src/renderer/hooks/useRpc.ts', 'scripts/ui-interaction-smoke/browser.mjs'];
 writeFileSync(join(dir, 'sources.json'), JSON.stringify(Object.fromEntries(paths.map(p => [p, createHash('sha256').update(readFileSync(join(desktop, p))).digest('hex')])), null, 2));
 writeFileSync(join(dir, 'index.html'), '<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>Isolated memory injection regression</title><link rel="stylesheet" href="/app.css"></head><body><div id="root"></div><script>' + readFileSync(join(source, 'mocks.js'), 'utf8') + '</script><script src="/bundle.js"></script></body></html>');

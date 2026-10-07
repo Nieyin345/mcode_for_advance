@@ -3,7 +3,8 @@
  * bundling/stubs. Windows explicitly selects Git Bash (not the WSL shim).
  * Logs are unique per invocation; empty selections and child failures fail. */
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpus } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -169,6 +170,44 @@ async function runPool(items, jobs, runner) {
   return results;
 }
 
+/** 清理 `.tmp` 里的**残留构建目录**(`<名字>-<6位随机>`),只留最近 `keepRecent` 个。
+ *
+ *  ## 为什么需要它
+ *
+ * 各 UI 套件的 `build.mjs` 用 `mkdtempSync` 在 `.tmp/` 建工作目录、且**故意不删**
+ * (留给失败时排查)。但从不清理会累积:实测一台机器上攒了 **1200+ 个目录、8.5 GB**
+ * (`workflow-ui` 每个 29 MB)——既吃磁盘(用户反馈内存/磁盘不够),又拖慢 `find`/`du`
+ * 这类工具(Windows 上遍历上万文件很慢)。
+ *
+ *  ## 策略
+ *
+ * 保留**最近 `keepRecent` 个**(按 mtime)——刚跑完/刚失败的那些正好留着可查,更老的删掉。
+ * **只删** `.tmp` 顶层的构建目录,不碰缓存(`esbuild-path`/`tw-cache`/`*.tsbuildinfo`)
+ * 与 `smoke-runs`(日志)。删不掉的(Chrome 还占着 profile)跳过,不算错。
+ */
+function pruneBuildDirs(appDir, keepRecent = 6) {
+  const tmp = join(appDir, ".tmp");
+  if (!existsSync(tmp)) return { removed: 0 };
+  const KEEP = new Set(["smoke-runs", "tw-cache", "flow-preview", "md-preview"]);
+  let entries;
+  try { entries = readdirSync(tmp, { withFileTypes: true }); } catch { return { removed: 0 }; }
+  const candidates = [];
+  for (const e of entries) {
+    if (!e.isDirectory() || KEEP.has(e.name)) continue;
+    // 构建目录的形状:`<套件名>-<6位随机>`(mkdtemp 后缀)。排除其它普通目录。
+    if (!/-[A-Za-z0-9]{6}$/.test(e.name)) continue;
+    try { candidates.push({ name: e.name, mtime: statSync(join(tmp, e.name)).mtimeMs }); }
+    catch { /* ignore */ }
+  }
+  candidates.sort((a, b) => b.mtime - a.mtime);
+  let removed = 0;
+  for (const c of candidates.slice(keepRecent)) {
+    try { rmSync(join(tmp, c.name), { recursive: true, force: true, maxRetries: 2, retryDelay: 50 }); removed++; }
+    catch { /* Chrome 可能还占着 profile —— 跳过,下次再清 */ }
+  }
+  return { removed };
+}
+
 export async function runSuites(names, { appDir = APP_DIR, bash = resolveBash(), timeoutMs = 240_000, jobs, logger = console } = {}) {
   precomputeEsbuildPath(appDir, logger);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("Invalid smoke timeout");
@@ -183,11 +222,18 @@ export async function runSuites(names, { appDir = APP_DIR, bash = resolveBash(),
   mkdirSync(logRoot, { recursive: true });
   const logDir = mkdtempSync(join(logRoot, `${Date.now()}-${process.pid}-`));
   logger.log(`Smoke logs: ${logDir}`);
-  // 并发档:显式 `jobs` 优先,其次 env,最后默认 4。重型(浏览器)套件限 2。
-  const totalJobs = Math.max(1, jobs ?? (Number(process.env.MCODE_SMOKE_JOBS) || 4));
-  logger.log(`Running ${selected.length} suites with up to ${totalJobs} in parallel`);
+  // 并发档:**按机器核数**定,显式 `jobs` / env 优先覆盖。
+  //   轻量套件(无头,CPU 几乎闲置) → min(8, 核数) —— 它们等 IO 多,开满才不浪费。
+  // 并发档:**内存是瓶颈**(每个真浏览器套件起一个 Chrome,几百 MB 起),不是核数。
+  //   轻量套件(无头 node 进程,各几十 MB) → min(6, 核数)。
+  //   浏览器套件(Chrome + 打包页,各几百 MB) → min(3, 核数/4) —— 保守,宁慢勿 OOM。
+  //   显式 `jobs` / `MCODE_SMOKE_JOBS` / `MCODE_SMOKE_HEAVY_JOBS` 可覆盖。
+  const cores = cpus().length;
+  const totalJobs = Math.max(1, jobs ?? (Number(process.env.MCODE_SMOKE_JOBS) || Math.min(6, cores)));
+  const heavyJobs = Math.max(1, jobs ?? (Number(process.env.MCODE_SMOKE_HEAVY_JOBS) || Math.min(3, Math.ceil(cores / 4))));
+  logger.log(`Running ${selected.length} suites (light ×${totalJobs}, browser ×${heavyJobs})`);
 
-  // 重型套件单独一条(限流)通道 —— 先跑它们、且最多 2 个同时;其余走主通道。
+  // 浏览器套件单独一条通道(它们各起一个 Chrome,吃内存);其余走主通道。
   const heavy = selected.filter((n) => isBrowserSuite(appDir, n));
   const light = selected.filter((n) => !isBrowserSuite(appDir, n));
   let failed = 0;
@@ -206,9 +252,16 @@ export async function runSuites(names, { appDir = APP_DIR, bash = resolveBash(),
     return result;
   };
 
-  // 先跑轻量(量大、快),再跑重型(慢)。两条池共享日志与 failed 计数。
-  await runPool(light, totalJobs, runOneLogged);
-  if (!interrupted) await runPool(heavy, Math.min(2, totalJobs), runOneLogged);
+  // 轻量与重型**同时**开跑:重型(浏览器,各 ~20s)是长尾,先让它们起跑、与轻量段时间重叠,
+  // 而不是等 178 个轻量跑完才轮到它们。两条池各有自己的并发上限(重型更保守,吃内存)。
+  await Promise.all([
+    runPool(light, totalJobs, runOneLogged),
+    runPool(heavy, heavyJobs, runOneLogged),
+  ]);
+
+  // 收尾清掉老的构建目录(留最近几个供排查),避免 `.tmp` 无限膨胀。
+  const pruned = pruneBuildDirs(appDir);
+  if (pruned.removed > 0) logger.log(`pruned ${pruned.removed} stale build dir(s) from .tmp`);
 
   if (interrupted) {
     logger.error("Smoke run interrupted; remaining suites were NOT run.");

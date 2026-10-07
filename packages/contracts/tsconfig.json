@@ -2,7 +2,10 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "./dist",
-    "rootDir": "./src"
+    "rootDir": "./src",
+    // 增量缓存(同 apps/desktop):`tsc --noEmit` 每次全量检查,开增量后命中缓存。
+    "incremental": true,
+    "tsBuildInfoFile": "./.tsbuildinfo/typecheck.tsbuildinfo"
   },
   "include": ["src/**/*"]
 }

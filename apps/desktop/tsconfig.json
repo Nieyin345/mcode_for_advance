@@ -10,7 +10,12 @@
       "@main/*": ["src/main/*"],
       "@renderer/*": ["src/renderer/*"]
     },
-    "noEmit": true
+    "noEmit": true,
+    // **增量缓存。** 这个包 1200+ 个文件(含 monaco/pdfjs 的巨型 .d.ts),全量 tsc 一次
+    // **30~50 秒**——而"改一处、跑一次 typecheck"是每次改动的必经路,这部分时间白等。
+    // 开增量后首跑建缓存、之后命中:**8~10 秒**。tsbuildinfo 落在 `.tmp/`(已被 git 忽略)。
+    "incremental": true,
+    "tsBuildInfoFile": "./.tmp/tsconfig.desktop.tsbuildinfo"
   },
   // `scripts/**/*` 是那些无头冒烟脚本。它们用 esbuild 打包(只转译、不做类型检查),
   // 而夹具是按真实契约写的(`const BUILTIN: WorkflowDoc`、`mkSession(): Session`),

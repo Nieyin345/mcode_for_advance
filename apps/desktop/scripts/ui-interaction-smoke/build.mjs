@@ -2,6 +2,7 @@ import {dirname,join,resolve} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {readdirSync,readFileSync,writeFileSync,mkdirSync,mkdtempSync,copyFileSync,existsSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
+import { buildTailwindCached } from "../lib/tailwind-cache.mjs";
 const source=dirname(fileURLToPath(import.meta.url)),desktop=resolve(source,'../..');
 const root=join(desktop,'src/renderer');
 const deps=process.env.MCODE_UI_TEST_DEPS;
@@ -42,8 +43,8 @@ await esbuild.build({entryPoints:[join(dir,'main.jsx')],bundle:true,platform:'br
 const configPath=join(dir,'tailwind.config.cjs');
 const config=readFileSync(join(desktop,'tailwind.config.js'),'utf8').replace('export default','module.exports =').replace('content: ["./src/renderer/**/*.{ts,tsx,html}"]','content: '+JSON.stringify([root.replaceAll('\\','/')+'/**/*.{ts,tsx,html}',join(source,'main.jsx').replaceAll('\\','/')]));
 writeFileSync(configPath,config);
-const css=spawnSync(process.execPath,[pkg('tailwindcss@','tailwindcss/lib/cli.js'),'-c',configPath,'-i','src/renderer/styles.css','-o',join(dir,'app.css')],{cwd:desktop,encoding:'utf8'});
-if(css.status!==0)throw Error(css.stderr);
+const css = buildTailwindCached({ cliPath: pkg('tailwindcss@','tailwindcss/lib/cli.js'), configPath: configPath, inputCss: 'src/renderer/styles.css', outPath: join(dir,'app.css'), cwd: desktop });if (css.status !== undefined && css.status !== 0) throw Error('tailwind failed');
+
 const mocks=readFileSync(join(source,'mocks.js'),'utf8');
 writeFileSync(join(dir,'index.html'),'<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Isolated UI regression</title><link rel="stylesheet" href="/app.css"></head><body><div id="root"></div><script>'+mocks+'</script><script src="/bundle.js"></script></body></html>');
 await import(pathToFileURL(join(dir,'verify.mjs')).href);

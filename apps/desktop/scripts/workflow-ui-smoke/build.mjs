@@ -2,6 +2,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readdirSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync, copyFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { buildTailwindCached } from "../lib/tailwind-cache.mjs";
 const source=dirname(fileURLToPath(import.meta.url));
 const desktop=resolve(source,'../..');
 mkdirSync(join(desktop,'.tmp'),{recursive:true});
@@ -32,6 +33,6 @@ await esbuild.build({entryPoints:[join(dir,'main.tsx')],bundle:true,platform:'br
  build.onResolve({filter:/^@renderer\/lib\/api\.js$/},()=>({path:join(dir,'api-stub.ts')}));
  build.onResolve({filter:/MarkdownEditorPane\.js$/},()=>({path:join(dir,'unrelated-editor.tsx')}));
 }}]});
-const css=spawnSync(process.execPath,[pkg('tailwindcss@','tailwindcss/lib/cli.js'),'-c','tailwind.config.js','-i','src/renderer/styles.css','-o',join(dir,'app.css')],{cwd:desktop,encoding:'utf8'});
-if(css.status!==0)throw new Error('CSS build failed: '+css.stderr);
+const css = buildTailwindCached({ cliPath: pkg('tailwindcss@','tailwindcss/lib/cli.js'), configPath: 'tailwind.config.js', inputCss: 'src/renderer/styles.css', outPath: join(dir,'app.css'), cwd: desktop });if (css.status !== undefined && css.status !== 0) throw Error('tailwind failed');
+
 await import(pathToFileURL(join(dir,'verify.mjs')).href);
