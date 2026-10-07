@@ -167,6 +167,16 @@ const DANGER: Record<string, string> = {
 
 /** 动词猜不准、需要钉死的几条。 */
 const EXPLICIT: Record<string, AppPolicyLevel> = {
+  // ⚠️ **动词前缀的陷阱(2026-10-08)。** `policyFor` 的兜底是拿**动词前缀**正则
+  // (`^history`、`^check`…)猜"只读",于是**名字像只读、实际会写**的方法会被静默放行:
+  //   - `browser.historyClear` / `browser.historyRemove` —— 以 `history` 开头,但**清空 /
+  //     删除**地址栏历史(写设置键);
+  //   - `git.checkout` —— 以 `check` 开头,但会**切分支、改工作区文件**。
+  // 这几条必须显式钉在 write 档,否则 agent 能不经审批跑它们。`app-control-smoke` 里
+  // 有一条系统性断言盯着"同类新方法"不再落进这个坑。
+  "browser.historyClear": "write",
+  "browser.historyRemove": "write",
+  "git.checkout": "write",
   "notification.focusSession": "ui",
   "shell.showItemInFolder": "ui",
   "library.revealFile": "ui",

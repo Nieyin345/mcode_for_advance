@@ -7,6 +7,9 @@
  *  2. **最小持久化**：只写非空 exclude；空条目整条删掉（缺省 = 不禁用）。
  *  3. **接线**：Claude 走 `disallowedTools`、Pi 走 `excludeTools`，且都从这份策略读。
  *
+ * 外加 agent 只读桥的两块 —— 桥只桥只读的（读），以及 cwd 登记表删会话真的摘掉（第 8 节）。
+ * 后者是**行为**断言（真的注册、真的删、真的看它查不到），不是"源码里有没有那一行"。
+ *
  * 用临时文件测读写，不碰 `~/.mcode`。
  */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -19,6 +22,8 @@ import {
   readEngineToolPolicyFile,
   writeEngineToolPolicyFile,
 } from "@main/lib/engineToolPolicy.js";
+import { agentEngineCwdFor, registerAgentEngineSession } from "@main/mcp/agentEngineCwd.js";
+import { disposeAgentSession } from "@main/mcp/agentSessionCleanup.js";
 
 let failures = 0;
 let total = 0;
@@ -122,6 +127,26 @@ try {
       piSrc2.includes("invokeAgentTool(tool.name, args, sessionId)") &&
       readFileSync(resolve(process.cwd(), "src/main/providers/pi-sdk/PiAgentSdkProvider.ts"), "utf8").includes("registerAgentEngineSession(req.sessionId, req.cwd)"),
   );
+
+  /* ── 8. cwd 登记表：删会话真的摘掉（不是"源码里有没有那一行"）────────────────
+   *
+   * 从前桥里只有一个从没人调的 `unregisterAgentEngineSession`：三个 provider 每轮
+   * `sendTurn` 都登记，却没有任何一处删，`cwdBySession` 只涨不落。这条断言**真的注册、
+   * 真的删、真的看它查不到** —— 检测泄漏的那一步（`disposeAgentSession`）就是生产代码
+   * 删会话/删项目时走的那一步。 */
+  registerAgentEngineSession("conv-live", "/tmp/x");
+  eq("登记后查得到", agentEngineCwdFor("conv-live"), "/tmp/x");
+  registerAgentEngineSession("conv-live", "/tmp/y");
+  eq("再登记覆盖旧值（每轮 sendTurn 都会登）", agentEngineCwdFor("conv-live"), "/tmp/y");
+  disposeAgentSession("conv-live");
+  eq("★ 删会话后登记被摘掉（从前只涨不落）", agentEngineCwdFor("conv-live"), null);
+  eq("没登记过的会话查出来是 null", agentEngineCwdFor("conv-never"), null);
+  // 释放是**按会话**的：删 A 不能顺手把 B 也清了（B 的对话还在跑）。
+  registerAgentEngineSession("conv-a", "/tmp/a");
+  registerAgentEngineSession("conv-b", "/tmp/b");
+  disposeAgentSession("conv-a");
+  eq("按会话释放，不波及别的会话", agentEngineCwdFor("conv-b"), "/tmp/b");
+  disposeAgentSession("conv-b");
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

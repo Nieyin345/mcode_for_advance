@@ -64,11 +64,46 @@ const pin: Array<[string, string]> = [
   ["setting.get", "read"],
   ["notification.focusSession", "ui"],
   ["totally.newThing", "write"],
+  // ★ **动词前缀的陷阱(C4/权限,2026-10-08)**:`READ_VERB` 是**前缀**匹配
+  // (`^history`、`^check`、`^task` 都算"只读"),而 `browser.historyClear` 只是**以
+  // `history` 开头**——它其实清空浏览历史。`git.checkout` 同理:以 `check` 开头,实际会
+  // **切换分支、改工作区文件**。这类"名字像只读、实际会写"的必须钉在显式表里,否则
+  // agent 能不经审批跑它们。
+  ["browser.historyClear", "write"],
+  ["browser.historyRemove", "write"],
+  ["git.checkout", "write"],
 ];
 for (const [m, l] of pin) check(`权限 ${m} = ${l}`, policyFor(m).level === l, policyFor(m));
 // 凡是名字里带 getToken / getApiKey 的都不能是可读档
 for (const e of API_CATALOG) {
   if (/getToken|getApiKey/i.test(e.method)) check(`${e.method} 不开放`, policyFor(e.method).level === "blocked");
+}
+// ★ **系统性兜底:不许"名字像只读、后缀却是破坏性动作"的方法自动放行。**
+// `READ_VERB` 是前缀匹配,`browser.historyClear`(`history` 开头)与 `git.checkout`
+// (`check` 开头)会误落只读档 —— 这两个是已发现的实例,但**将来新增的同类**也要被拦。
+// 判据:方法名的动作部分以只读词开头、**紧接着的剩余部分恰好是一个破坏性动词**
+// (clear/remove/delete/reset/drop/kill/truncate/wipe/checkout) → 不得是 read/ui。
+// 用"恰好等于"而不是"包含",是为了不误伤 `showCommit`(rest=`Commit`,只读)、
+// `checkForUpdates`(rest=`ForUpdates`,只读)这类"只读词 + 宾语名词"。
+{
+  const DESTRUCTIVE = new Set(["clear", "remove", "delete", "reset", "drop", "kill", "truncate", "wipe", "checkout"]);
+  const READ_PREFIX = /^(list|get|read|status|search|info|stats|overview|catalog|history|runs|sessions|tasks|task|has|show|preview|check|describe|count)/;
+  const misread = API_CATALOG.filter((e) => {
+    const verb = e.method.slice(e.method.lastIndexOf(".") + 1);
+    const rest = verb.replace(READ_PREFIX, "");
+    if (verb === rest) return false; // 压根不是只读词开头
+    // 破坏性动作可能整段就是(`git.checkout` → 前缀吃掉 `check` 剩 `out`,所以要看整词),
+    // 也可能是剩余部分(`historyClear` → `Clear`)。两者任一命中即算。
+    const isDestructive = DESTRUCTIVE.has(verb.toLowerCase()) || DESTRUCTIVE.has(rest.toLowerCase());
+    if (!isDestructive) return false;
+    const lvl = policyFor(e.method).level;
+    return lvl === "read" || lvl === "ui";
+  });
+  check(
+    "★ 没有「名字像只读、实际会写」的方法被放行",
+    misread.length === 0,
+    misread.map((e) => `${e.method}=${policyFor(e.method).level}`),
+  );
 }
 
 /* ── 2. 打码 ── */

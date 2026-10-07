@@ -25,6 +25,7 @@
 import type { ProviderContext } from "@contracts/provider";
 import { agentMcpTools, AGENT_READONLY_TOOLS, type AgentToolsDeps } from "@main/mcp/agentTools.js";
 import { makeEngineBridge, type EngineToolDescriptor } from "@main/mcp/engineBridge.js";
+import { agentEngineCwdFor } from "@main/mcp/agentEngineCwd.js";
 import type { McpToolSpec, ToolResult } from "@main/mcp/sdk.js";
 import { loadCreateMcpServer, toSdkTools } from "@main/mcp/sdk.js";
 import { log } from "@main/lib/logger.js";
@@ -79,25 +80,18 @@ const bridge = makeEngineBridge("agent", () => agentEngineReadonlySpecs(bridgeDe
 
 /**
  * `makeEngineBridge` 的 `specs()` 取法没有 session 参数，而 `agentMcpTools` 的 deps 需要
- * `cwdFor`。这里用一个**进程内登记表**：桥的调用方（provider）在开跑前把本轮会话的 cwd
- * 登进来，`specs()` 现取时用得到就去查。
+ * `cwdFor`。登记表本身在 {@link ./agentEngineCwd.js} —— 单独一个零依赖模块，好让
+ * 「删会话后登记真的被摘掉」能被无头套件直接验（桥这份 import 图带 `ssh2`，套件打不动）。
  *
  * 取不到（会话没登记）→ `cwdFor` 返回 null，`agent_*` 会拒绝相对路径并提示用绝对路径 ——
  * 这是既有语义，不是本桥引入的新行为。
  */
-const cwdBySession = new Map<string, string>();
-
 const bridgeDeps: AgentEngineDeps = {
-  cwdFor: (sessionId) => cwdBySession.get(sessionId) ?? null,
+  cwdFor: (sessionId) => agentEngineCwdFor(sessionId),
 };
 
-export function registerAgentEngineSession(sessionId: string, cwd: string): void {
-  cwdBySession.set(sessionId, cwd);
-}
-
-export function unregisterAgentEngineSession(sessionId: string): void {
-  cwdBySession.delete(sessionId);
-}
+// 重新导出：三个 provider 与桥的调用方一直从 `agentEngineBridge` 取这个函数。
+export { registerAgentEngineSession } from "@main/mcp/agentEngineCwd.js";
 
 export function isAgentToolName(name: string): boolean {
   return AGENT_ENGINE_READONLY.includes(name);
