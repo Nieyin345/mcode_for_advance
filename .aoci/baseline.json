@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-05T00:27:41Z",
-  "updated_at": "2026-10-07T13:31:00Z",
+  "updated_at": "2026-10-07T14:35:38Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -71,9 +71,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "a035c172a3b242f82ae85c1a60d2f965fa5975532b24dde13d33e1cc35d7e6c2",
-      "size": 806705,
-      "normalized_sha256": "a035c172a3b242f82ae85c1a60d2f965fa5975532b24dde13d33e1cc35d7e6c2"
+      "sha256": "c2bfc7d504fd64c96df5f0ad86be2eb77b74805e4cc42ff4b93bcc7df443a42b",
+      "size": 806726,
+      "normalized_sha256": "c2bfc7d504fd64c96df5f0ad86be2eb77b74805e4cc42ff4b93bcc7df443a42b"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -4403,9 +4403,9 @@
     },
     "apps/desktop/scripts/session-store-smoke/main.ts": {
       "role": "index",
-      "sha256": "20b2258c373e28b6bd180da6d4962d32e47bbdcbbac01ed0f757782c42f1c720",
-      "size": 70780,
-      "normalized_sha256": "20b2258c373e28b6bd180da6d4962d32e47bbdcbbac01ed0f757782c42f1c720"
+      "sha256": "b3d72a39998e97b0dcdbbc06b898c0d05f6b81e93c9cccaa4773213ed1ed253a",
+      "size": 75780,
+      "normalized_sha256": "b3d72a39998e97b0dcdbbc06b898c0d05f6b81e93c9cccaa4773213ed1ed253a"
     },
     "apps/desktop/scripts/session-store-smoke/prelude.ts": {
       "role": "index",
@@ -10292,15 +10292,15 @@
     },
     "apps/desktop/src/renderer/stores/sessionStore.ts": {
       "role": "index",
-      "sha256": "af2df383c12441a4e384c105a839247bad805d50ef26835c5da3a19278685fbb",
-      "size": 461776,
-      "normalized_sha256": "97269fd45b053d9969455ce67ae925e449ada08581db4987327f9e14a7370442"
+      "sha256": "49353f96f5fe4575dcfb21d70f776ec064a4f41b92402fce770b5038bd8eb0da",
+      "size": 458864,
+      "normalized_sha256": "5b4955692b0f23d44f402415ff3926f158894a4babdef4757351855d5ff68026"
     },
     "apps/desktop/src/renderer/stores/sessionStoreHelpers.ts": {
       "role": "index",
-      "sha256": "0b984b0a17aee7f870ff632b719467918a892fb61ba3e45130323ac8238e0a89",
-      "size": 167884,
-      "normalized_sha256": "0b984b0a17aee7f870ff632b719467918a892fb61ba3e45130323ac8238e0a89"
+      "sha256": "8fa91b6f100b28be81dd33be25db069df677f5e170f5c1f11f4ba04266070274",
+      "size": 172750,
+      "normalized_sha256": "8fa91b6f100b28be81dd33be25db069df677f5e170f5c1f11f4ba04266070274"
     },
     "apps/desktop/src/renderer/stores/toastStore.ts": {
       "role": "index",
@@ -10557,9 +10557,9 @@
     },
     "docs/planning/优化方向.md": {
       "role": "index",
-      "sha256": "619b5be14d2c1d76036138ccec09d97ee24c4571b1a6231f0cf6fe6dccdf2a32",
-      "size": 182226,
-      "normalized_sha256": "619b5be14d2c1d76036138ccec09d97ee24c4571b1a6231f0cf6fe6dccdf2a32"
+      "sha256": "e07de16e1f8a86ad7e16fde686660ff4242ed8d1cbdc9b35851065f9413ce14b",
+      "size": 184837,
+      "normalized_sha256": "e07de16e1f8a86ad7e16fde686660ff4242ed8d1cbdc9b35851065f9413ce14b"
     },
     "docs/planning/前端待办.md": {
       "role": "index",
@@ -10653,9 +10653,9 @@
     },
     "docs/功能性问题审查记录.md": {
       "role": "index",
-      "sha256": "db3a16dface5ded6952c8a4d8fc4e32d6dddebfc08325332eeffa8d259b3cb0e",
-      "size": 37227,
-      "normalized_sha256": "db3a16dface5ded6952c8a4d8fc4e32d6dddebfc08325332eeffa8d259b3cb0e"
+      "sha256": "91747acc24f19ec43524b9c5333c4d085ff4ac5cdca783876944b84d9d1d31d8",
+      "size": 40455,
+      "normalized_sha256": "91747acc24f19ec43524b9c5333c4d085ff4ac5cdca783876944b84d9d1d31d8"
     },
     "docs/功能文档.md": {
       "role": "index",

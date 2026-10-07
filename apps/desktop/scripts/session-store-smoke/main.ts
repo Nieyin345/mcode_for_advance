@@ -17,6 +17,7 @@ import { setSendTurnStub, setSessionMessagesStub } from "./prelude.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { ChatMessage } from "@renderer/stores/sessionStore.js";
+import { applyDeltaEntries } from "@renderer/stores/sessionStoreHelpers.js";
 import { outputRowsOf } from "@renderer/components/chat/outputRows.js";
 import { normWorktreeKey } from "@renderer/lib/worktree.js";
 import { ideDirtyTracker } from "@renderer/lib/ideDirty.js";
@@ -1463,6 +1464,105 @@ console.log("\n[IDE] close guard: unsaved files survive bulk close");
 
   // 清干净,别把状态漏给后面的小节。
   reset([], null);
+}
+
+// ── 流式分段冲刷(applyDeltaEntries):从前内联在 flushDeltas 的热路径里,零覆盖 ──
+// 这是每帧(~60Hz)都跑的路径。抽成纯函数后,分段合并、建新回合、迟到 delta 冻结、
+// 上一张最新回合卡降级这些规则都能在无头里直接钉住。判据立在**用户看到的内容**上。
+console.log("\n[delta] flush: segment merge, turn open, ended-turn freeze");
+{
+  const SID = "delta-s";
+  const mk = (id: string, over: Partial<ChatMessage> = {}): ChatMessage =>
+    ({ id, sessionId: SID, role: "assistant", blocks: [], createdAt: 0, ...over });
+  const ent = (messageId: string, segs: Array<{ k: "text" | "thinking"; text: string }>) =>
+    ({ sessionId: SID, messageId, segs });
+
+  // ① 首次 delta → 建一条新的 assistant 消息,文本落地。
+  {
+    const next = applyDeltaEntries([], [ent("m1", [{ k: "text", text: "hello" }])], { now: 100 });
+    eq("新回合建出一条消息", next.length, 1);
+    eq("内容是那句 delta", (next[0].blocks[0] as { text: string }).text, "hello");
+    check("block 类型是 text", next[0].blocks[0].kind === "text");
+  }
+
+  // ② 追加到同一消息的已有 text block 上(不新开 block)。
+  {
+    const start = [mk("m1", { blocks: [{ kind: "text", text: "hello" }] })];
+    const next = applyDeltaEntries(start, [ent("m1", [{ k: "text", text: " world" }])], { now: 100 });
+    eq("仍是一个 block", next[0].blocks.length, 1);
+    eq("文本拼接", (next[0].blocks[0] as { text: string }).text, "hello world");
+  }
+
+  // ③ ★ 分段顺序:跨文本↔思考边界必须按到达顺序,不许颠倒。
+  {
+    const next = applyDeltaEntries([], [ent("m1", [
+      { k: "text", text: "prose" },
+      { k: "thinking", text: "reason" },
+      { k: "text", text: "more" },
+    ])], { now: 100 });
+    eq("三段 → 三个 block", next[0].blocks.length, 3);
+    eq("① 先是文本", next[0].blocks[0].kind, "text");
+    eq("② 再是思考(不被换到文本前面)", next[0].blocks[1].kind, "thinking");
+    eq("③ 最后又是文本", next[0].blocks[2].kind, "text");
+  }
+
+  // ④ ★ 已收尾的回合:迟到 delta 一律丢弃(转录冻在用户停下那刻)。
+  {
+    const ended = [mk("m1", {
+      blocks: [{ kind: "text", text: "frozen" }],
+      turnMeta: { startedAt: 1, endedAt: 2 },
+    })];
+    const next = applyDeltaEntries(ended, [ent("m1", [{ k: "text", text: "LATE" }])], { now: 100 });
+    eq("★ 迟到内容没进去", (next[0].blocks[0] as { text: string }).text, "frozen");
+    check("★ 未变的列表返回原引用(调用方据此跳过写回)", next === ended);
+  }
+
+  // ⑤ 新回合开启 → 上一张"最新"回合文件卡降为只读。
+  {
+    const prev = [mk("m0", {
+      blocks: [{ kind: "turn-files", files: [], isLatestTurn: true } as never],
+      turnMeta: { startedAt: 1, endedAt: 2 },
+    })];
+    const next = applyDeltaEntries(prev, [ent("m1", [{ k: "text", text: "new turn" }])], {
+      runningTurnStartedAt: 999, runningTurnModel: "sonnet", now: 100,
+    });
+    eq("新回合追加在后面", next.length, 2);
+    const prevCard = next[0].blocks[0] as { isLatestTurn?: boolean };
+    eq("★ 上一张最新回合卡被降级", prevCard.isLatestTurn, false);
+    eq("新回合的 turnMeta 用发送锚点", next[1].turnMeta?.startedAt, 999);
+    eq("新回合记下模型", next[1].turnMeta?.model, "sonnet");
+  }
+
+  // ⑥ 回合已开着(有未收尾的 assistant 消息)→ 不重复建、不重设 turnMeta。
+  {
+    const open = [mk("m1", { blocks: [{ kind: "text", text: "a" }], turnMeta: { startedAt: 5 } })];
+    const next = applyDeltaEntries(open, [ent("m2", [{ k: "text", text: "b" }])], {
+      runningTurnStartedAt: 999, runningTurnModel: "sonnet", now: 100,
+    });
+    eq("同一回合里第二条消息", next.length, 2);
+    eq("第二条不带 turnMeta(回合已开)", next[1].turnMeta, undefined);
+  }
+
+  // ⑦ 原引用不变式:分段应用后**不许**原地改传入的列表/消息(每帧都复用它)。
+  {
+    const original = [mk("m1", { blocks: [{ kind: "text", text: "orig" }] })];
+    const snapshot = JSON.stringify(original);
+    const next = applyDeltaEntries(original, [ent("m1", [{ k: "text", text: "xxx" }])], { now: 100 });
+    eq("★ 传入的原列表未被改动", JSON.stringify(original), snapshot);
+    check("★ 返回的是新列表", next !== original);
+    eq("新列表里文本已更新", (next[0].blocks[0] as { text: string }).text, "origxxx");
+  }
+
+  // ⑧ 多条目(不同 messageId)各自落地,互不串。
+  {
+    const next = applyDeltaEntries([], [
+      ent("m1", [{ k: "text", text: "one" }]),
+      ent("m2", [{ k: "text", text: "two" }]),
+    ], { now: 100 });
+    eq("两条消息", next.length, 2);
+    eq("第一条内容", (next[0].blocks[0] as { text: string }).text, "one");
+    eq("第二条内容", (next[1].blocks[0] as { text: string }).text, "two");
+  }
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

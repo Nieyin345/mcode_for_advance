@@ -2376,6 +2376,108 @@ export function appendDelta(entry: DeltaEntry, k: "text" | "thinking", text: str
 
 export const deltaBuf = new Map<string, DeltaEntry>();
 
+/**
+ * 把一个会话的**已缓冲 delta 条目**应用到它的消息列表上,返回新列表(未变则返回**原引用**)。
+ *
+ * ## 为什么是纯函数
+ *
+ * 这段逻辑从前整个内联在 `sessionStore.flushDeltas` 的 `setState` 回调里 —— 那是**每帧
+ * (~60Hz)都跑**的最烫热路径,却因此**一套测试都碰不到**(回调要真 store + 真 rAF)。
+ * 抽出来之后,分段合并、建新回合、丢弃已收尾回合的迟到 delta、最新回合卡的降级
+ * 这些规则都能在无头里直接钉住。
+ *
+ * ## 复杂度:每帧 O(N) 而不是 O(段落数 × N)
+ *
+ * 原实现在**分段循环里**对每个分段都 `findMsg`(线性扫全表)再 `next.map`(整表重建)——
+ * 一个跨文本/思考边界的冲刷窗口带很多分段时,成本是 O(segments × N),N=转录长度。
+ * 这里改成:每个条目只 `findIndex` **一次**拿到下标,分段循环里按下标原地更新
+ * (列表只 **copy-on-write 一次**)。长对话里这是数量级的差别(几百条消息 × 多个分段)。
+ *
+ * ## 保真的几处细节
+ *
+ * - **`next !== list` 才算变**:整条转录都停在终态(全是迟到 delta)时返回原引用,
+ *   调用方据此跳过写回 —— 与从前一致,别让每帧都换一次列表身份触发无谓重渲染。
+ * - **建新回合**:只有当前没有"未收尾的 assistant 消息"时才算新回合,并从
+ *   `runningTurnStartedAt` 取锚点(与 `sendPrompt` 对时,避免时长跳变)。
+ * - **收尾过的不再追加**:`turnMeta.endedAt` 已设的消息,迟到 delta 一律丢
+ *   (stop→resend 竞态下转录必须冻在用户停下的地方)。
+ */
+export function applyDeltaEntries(
+  list: ChatMessage[],
+  sessionEntries: readonly DeltaEntry[],
+  opts: {
+    /** 当前回合的发送时刻锚点(sendPrompt 落的时间戳),新回合取它当 startedAt。 */
+    runningTurnStartedAt?: number;
+    /** 当前回合的模型(新回合写进 turnMeta.model,供"开始时间·工作时长"那行)。 */
+    runningTurnModel?: string;
+    /** 注入的"现在"(省得测试要控制时钟)。 */
+    now?: number;
+  },
+): ChatMessage[] {
+  const now = opts.now ?? Date.now();
+  let next: ChatMessage[] = list;
+
+  for (const e of sessionEntries) {
+    // 一个条目就是一个 messageId(缓冲表按 `sid:messageId` 建键),所以每个条目只
+    // 查一次下标即可;下面的分段循环按下标原地改,不再重扫。
+    let idx = -1;
+    for (let i = 0; i < next.length; i++) {
+      if (next[i].id === e.messageId) { idx = i; break; }
+    }
+    const found = idx === -1 ? undefined : next[idx];
+    // 已经收尾的回合:迟到 delta 丢弃,转录冻在收尾那刻。
+    if (found && found.turnMeta && found.turnMeta.endedAt !== undefined) continue;
+
+    if (!found) {
+      // 当前没有被打开的回合(assistant 消息且未设 endedAt)才算"新回合"。
+      const isNewTurn = !next.some(
+        (m) => m.role === "assistant" && m.turnMeta && m.turnMeta.endedAt === undefined,
+      );
+      // 新回合优先用发送时刻的锚点,让 turnMeta 接着那句"待定回合"的时间走,时长不跳变。
+      const startedAt = (isNewTurn && opts.runningTurnStartedAt) || now;
+      const created: ChatMessage = {
+        id: e.messageId,
+        sessionId: e.sessionId,
+        role: "assistant",
+        blocks: [],
+        createdAt: now,
+        ...(isNewTurn
+          ? { turnMeta: { startedAt, model: opts.runningTurnModel } }
+          : {}),
+      };
+      if (next === list) next = list.slice();
+      next.push(created);
+      idx = next.length - 1;
+      // 新回合开启 → 上一个"最新"回合的文件卡降为只读(它不再是可撤回的最近一轮)。
+      if (isNewTurn) next = demotePreviousLatestTurnFiles(next);
+    }
+
+    // 按到达顺序应用分段(跨文本↔思考边界的窗口不能颠倒)。
+    for (const seg of e.segs) {
+      const cur = next[idx];
+      if (!cur || cur.id !== e.messageId) break;
+      const blocks = cur.blocks;
+      const lastBlock = blocks[blocks.length - 1];
+      let updatedMsg: ChatMessage;
+      if (seg.k === "text") {
+        updatedMsg =
+          lastBlock && lastBlock.kind === "text"
+            ? { ...cur, blocks: [...blocks.slice(0, -1), { ...lastBlock, text: lastBlock.text + seg.text }] }
+            : { ...cur, blocks: [...blocks, { kind: "text", text: seg.text } as Block] };
+      } else {
+        updatedMsg =
+          lastBlock && lastBlock.kind === "thinking"
+            ? { ...cur, blocks: [...blocks.slice(0, -1), { ...lastBlock, text: lastBlock.text + seg.text }] }
+            : { ...cur, blocks: [...blocks, { kind: "thinking", text: seg.text } as Block] };
+      }
+      if (next === list) next = list.slice(); // 只在真要改时才复制(只此一次/每帧)
+      next[idx] = updatedMsg;
+    }
+  }
+
+  return next;
+}
+
 /* ─── Adaptive throttling ───
  *
  * Instead of a fixed rAF cadence, we track the inter-arrival time of deltas

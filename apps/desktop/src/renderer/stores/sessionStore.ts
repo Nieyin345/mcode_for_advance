@@ -45,7 +45,7 @@ import type { BuiltinModelOption, UserInputAnswers } from "@contracts/provider";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import { inAppToastAllowed } from "@renderer/lib/notifPrefsCache.js";
 // Pure helpers live in sessionStoreHelpers.ts (split for file size; see its header).
-import { CONTENT_FROZEN_EVENTS, EMPTY_BOOKMARKS, EMPTY_CODEX_MODELS, EMPTY_CUSTOM_MODELS, EMPTY_LAST_MODEL_BY_PROVIDER, EMPTY_MESSAGES, EMPTY_PI_MODELS, EMPTY_PROMPT_QUEUE, EMPTY_PROVIDERS, EMPTY_SESSIONS, EMPTY_SKILLS, EMPTY_SUBAGENTS, IDE_BUCKETS_PERSIST_DEBOUNCE_MS, LEFT_WIDTH_PCT_DEFAULT, LIVE_PLAN_ID, MESSAGE_PAGE_SIZE, NAV_HISTORY_CAP, PROVIDER_HEALTH_STALE_MS, RESYNC_AFTER_TURN_DELAY_MS, RGB_TRIPLET_RE, SESSION_PAGE_SIZE, STREAM_PAGE_SIZE, WIDE_PANEL_PCT_DEFAULT, WORKFLOW_MAX_PARALLEL_DEFAULT_RENDERER, WORKTREE_SESSIONS_FETCH_LIMIT, appendDelta, appendTurnCardBlock, applySessionDeletedState, applySessionPinnedState, avgIntervalMs, buildPlanKickoffPrompt, centerRightRowWidth, clampBottomTerminalHeight, clampEditorWidthPct, clampFontSize, clampLeftWidthPct, clampPasteTagThresholdChars, clampRightPanelFontSize, clampRightWidth, clampWidePanelPct, clampWorkflowMaxParallel, clearSessionDeltas, clearUpstreamIssue, coerceSlotsForProvider, commandNameForLocalOutput, currentNavEntryFor, deltaArrivals, deltaBuf, demotePreviousLatestTurnFiles, extractImagesFromToolResult, fetchProjectSessionBuckets, findMsg, findOpenTurnLastAssistant, findSession, freezeLatestTurnFilesBlock, freezeOrPrunePlanBlocks, fromRecords, hasErrorInCurrentTurn, hasSelectableModel, hydrateBookmarks, hydrateCapsule, hydrateContextSnapshot, hydrateSubagentTranscripts, hydrateTurnFiles, hydrateUsageHistory, isCenterShowingDocument, isImagePath, isMarkdownPath, isPathWithinRoot, isSessionChatOnScreen, isSideChatSession, isUnsupportedPath, isValidRememberedModel, parseCustomCommandsByProject, patchSessionInCache, patchSessionRowBookmarks, pendingInterruptDone, persistComposerSelection, providerHealthRequestGate, recordDeltaArrival, reduceApprovalRequest, reduceGitChanged, reduceModeChange, reducePlanApprovalRequest, reducePlanUpdate, reduceProjectsChanged, reduceQuestionAsk, reduceRequestResolved, reduceSessionChanged, reduceSessionDeleted, reduceSettingChanged, reduceSubagentTranscript, reduceSubagentUpdate, reduceTodoUpdate, reduceTokenUsageUpdated, reduceUpstreamIssue, reduceUserMessage, reduceWorkflowNodeChoice, reduceWorkflowNodeProgress, reduceWorkflowNodeResult, reduceWorkflowNodeTranscript, reduceWorkflowNodeUsage, rememberedEntryOf, removeProjectFromState, resolveSendModel, resyncAfterTurn, sameNavEntry, sortPinnedByRecency, splitSessionSections, streamScopeQuery, surfaceRejectedCustomModelSend, syncConfigFromSession, syncLandedSessionIfChanged, toRecords, upsertLivePlanBlock, upsertLiveTurnFilesBlock, validateComposerSelection, worktreeFetchSeq } from "./sessionStoreHelpers.js";
+import { CONTENT_FROZEN_EVENTS, EMPTY_BOOKMARKS, EMPTY_CODEX_MODELS, EMPTY_CUSTOM_MODELS, EMPTY_LAST_MODEL_BY_PROVIDER, EMPTY_MESSAGES, EMPTY_PI_MODELS, EMPTY_PROMPT_QUEUE, EMPTY_PROVIDERS, EMPTY_SESSIONS, EMPTY_SKILLS, EMPTY_SUBAGENTS, IDE_BUCKETS_PERSIST_DEBOUNCE_MS, LEFT_WIDTH_PCT_DEFAULT, LIVE_PLAN_ID, MESSAGE_PAGE_SIZE, NAV_HISTORY_CAP, PROVIDER_HEALTH_STALE_MS, RESYNC_AFTER_TURN_DELAY_MS, RGB_TRIPLET_RE, SESSION_PAGE_SIZE, STREAM_PAGE_SIZE, WIDE_PANEL_PCT_DEFAULT, WORKFLOW_MAX_PARALLEL_DEFAULT_RENDERER, WORKTREE_SESSIONS_FETCH_LIMIT, appendDelta, appendTurnCardBlock, applyDeltaEntries, applySessionDeletedState, applySessionPinnedState, avgIntervalMs, buildPlanKickoffPrompt, centerRightRowWidth, clampBottomTerminalHeight, clampEditorWidthPct, clampFontSize, clampLeftWidthPct, clampPasteTagThresholdChars, clampRightPanelFontSize, clampRightWidth, clampWidePanelPct, clampWorkflowMaxParallel, clearSessionDeltas, clearUpstreamIssue, coerceSlotsForProvider, commandNameForLocalOutput, currentNavEntryFor, deltaArrivals, deltaBuf, demotePreviousLatestTurnFiles, extractImagesFromToolResult, fetchProjectSessionBuckets, findOpenTurnLastAssistant, findSession, freezeLatestTurnFilesBlock, freezeOrPrunePlanBlocks, fromRecords, hasErrorInCurrentTurn, hasSelectableModel, hydrateBookmarks, hydrateCapsule, hydrateContextSnapshot, hydrateSubagentTranscripts, hydrateTurnFiles, hydrateUsageHistory, isCenterShowingDocument, isImagePath, isMarkdownPath, isPathWithinRoot, isSessionChatOnScreen, isSideChatSession, isUnsupportedPath, isValidRememberedModel, parseCustomCommandsByProject, patchSessionInCache, patchSessionRowBookmarks, pendingInterruptDone, persistComposerSelection, providerHealthRequestGate, recordDeltaArrival, reduceApprovalRequest, reduceGitChanged, reduceModeChange, reducePlanApprovalRequest, reducePlanUpdate, reduceProjectsChanged, reduceQuestionAsk, reduceRequestResolved, reduceSessionChanged, reduceSessionDeleted, reduceSettingChanged, reduceSubagentTranscript, reduceSubagentUpdate, reduceTodoUpdate, reduceTokenUsageUpdated, reduceUpstreamIssue, reduceUserMessage, reduceWorkflowNodeChoice, reduceWorkflowNodeProgress, reduceWorkflowNodeResult, reduceWorkflowNodeTranscript, reduceWorkflowNodeUsage, rememberedEntryOf, removeProjectFromState, resolveSendModel, resyncAfterTurn, sameNavEntry, sortPinnedByRecency, splitSessionSections, streamScopeQuery, surfaceRejectedCustomModelSend, syncConfigFromSession, syncLandedSessionIfChanged, toRecords, upsertLivePlanBlock, upsertLiveTurnFilesBlock, validateComposerSelection, worktreeFetchSeq } from "./sessionStoreHelpers.js";
 export { BOTTOM_TERMINAL_HEIGHT_MAX, BOTTOM_TERMINAL_HEIGHT_MIN, CHAT_FONT_SIZE_MAX, CHAT_FONT_SIZE_MIN, EDITOR_WIDTH_PCT_MAX, EDITOR_WIDTH_PCT_MIN, EMPTY_BOOKMARKS, EMPTY_CHAT_QUEUE, EMPTY_ELEMENT_QUEUE, EMPTY_MESSAGES, EMPTY_PLAN, EMPTY_PROMPT_QUEUE, EMPTY_SUBAGENTS, EMPTY_TODOS, EMPTY_TURN_FILES, EMPTY_USAGE, LEFT_WIDTH_PCT_DEFAULT, LEFT_WIDTH_PCT_MAX, LEFT_WIDTH_PCT_MIN, PASTE_TAG_THRESHOLD_CHARS_MAX, PASTE_TAG_THRESHOLD_CHARS_MIN, RIGHT_PANEL_FONT_SIZE_MAX, RIGHT_PANEL_FONT_SIZE_MIN, RIGHT_SHARE_MAX, RIGHT_WIDTH_MIN, WIDE_PANEL_PCT_DEFAULT, WIDE_PANEL_PCT_MAX, WIDE_PANEL_PCT_MIN, WORKFLOW_MAX_PARALLEL_DEFAULT_RENDERER, clampBottomTerminalHeight, clampEditorWidthPct, clampFontSize, clampLeftWidthPct, clampPasteTagThresholdChars, clampRightPanelFontSize, clampRightWidth, clampWidePanelPct, clampWorkflowMaxParallel, isCenterShowingDocument, selectActiveEnvPath } from "./sessionStoreHelpers.js";
 
 
@@ -2230,77 +2230,13 @@ function flushDeltas(): void {
 
     for (const [sid, sessionEntries] of bySession) {
       const list = s.messagesBySession[sid] ?? [];
-      let next: typeof list = list;
-
-      for (const e of sessionEntries) {
-        let msg = findMsg(next, e.messageId);
-        // Never append streamed content onto a message whose turn already
-        // ended — happens only with straggler deltas from an aborted turn
-        // (e.g. a stop→resend race where the sentinel got cleared). The
-        // transcript must freeze where the user stopped it.
-        if (msg && msg.turnMeta && msg.turnMeta.endedAt !== undefined) {
-          continue;
-        }
-        if (!msg) {
-          // First delta for this message — create a new assistant message.
-          // Check if a turn is already open (assistant message without endedAt).
-          const isNewTurn = !next.some(
-            (m) => m.role === "assistant" && m.turnMeta && m.turnMeta.endedAt === undefined,
-          );
-          // Prefer the send-time anchor (stamped in sendPrompt) so the real
-          // turnMeta continues the synthesized pendingTurn row's timing
-          // seamlessly - otherwise the duration would jump (the anchor is
-          // earlier than this first-delta arrival). Falls back to now if the
-          // anchor is missing (e.g. a resumed/legacy turn with no anchor).
-          const startedAt =
-            (isNewTurn && useSessionStore.getState().runningTurnStartedAt[sid]) || Date.now();
-          msg = {
-            id: e.messageId,
-            sessionId: sid,
-            role: "assistant",
-            blocks: [],
-            createdAt: Date.now(),
-            ...(isNewTurn
-              ? {
-                  turnMeta: {
-                    startedAt,
-                    model: useSessionStore.getState().runningTurnModelBySession[sid],
-                  },
-                }
-              : {}),
-          };
-          next = [...next, msg];
-          // A new turn is opening → demote the previous "latest" turn-files
-          // card to read-only (it's no longer the latest rewindable turn).
-          // The new turn's own card, if any, sets isLatestTurn=true on insert
-          // and gets re-promoted at turn.done via freezeLatestTurnFilesBlock.
-          if (isNewTurn) next = demotePreviousLatestTurnFiles(next);
-        } else {
-          // Message already exists — we'll replace it below.
-        }
-
-        // Apply the buffered segments in arrival order (see DeltaEntry.segs —
-        // a window straddling a text↔thinking boundary must not swap them).
-        for (const seg of e.segs) {
-          const cur = findMsg(next, e.messageId);
-          if (!cur) break;
-          const blocks = cur.blocks;
-          const lastBlock = blocks[blocks.length - 1];
-          let updatedMsg: ChatMessage;
-          if (seg.k === "text") {
-            updatedMsg =
-              lastBlock && lastBlock.kind === "text"
-                ? { ...cur, blocks: [...blocks.slice(0, -1), { ...lastBlock, text: lastBlock.text + seg.text }] }
-                : { ...cur, blocks: [...blocks, { kind: "text", text: seg.text } as Block] };
-          } else {
-            updatedMsg =
-              lastBlock && lastBlock.kind === "thinking"
-                ? { ...cur, blocks: [...blocks.slice(0, -1), { ...lastBlock, text: lastBlock.text + seg.text }] }
-                : { ...cur, blocks: [...blocks, { kind: "thinking", text: seg.text } as Block] };
-          }
-          next = next.map((m) => (m.id === cur.id ? updatedMsg : m));
-        }
-      }
+      // 纯函数,见 `applyDeltaEntries` 的文件头:分段合并、建新回合、丢迟到 delta、
+      // 降级上一张最新回合卡都在那里,且成本每帧 O(N) 而不是 O(分段数 × N)。
+      // `runningTurn*` 从 store 现读 —— 与从前内联时一致(它可能就是本帧刚变的)。
+      const next = applyDeltaEntries(list, sessionEntries, {
+        runningTurnStartedAt: useSessionStore.getState().runningTurnStartedAt[sid],
+        runningTurnModel: useSessionStore.getState().runningTurnModelBySession[sid],
+      });
 
       // Write back only if the session changed — avoid touching unrelated sessions.
       if (next !== list) {
