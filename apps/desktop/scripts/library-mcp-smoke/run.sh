@@ -32,9 +32,7 @@ DATA=$(mktemp -d /tmp/mcode-lib-mcp-data.XXXXXX)
 # 动态 import 走的是 ESM(ESM 不认 NODE_PATH)。软链对两种都成立。
 ln -s "$PWD/node_modules" "$OUT/node_modules"
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/library-mcp-smoke/main.ts \
   --bundle --platform=node --format=esm \

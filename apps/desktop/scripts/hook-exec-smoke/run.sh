@@ -16,8 +16,7 @@ trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # 换桩的两个,都是因为 import 了 electron(`app.getPath("userData")`):
 #  - `dataRoot` —— 存放层的文件系统根;

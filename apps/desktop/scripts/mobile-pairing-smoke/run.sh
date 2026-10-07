@@ -38,9 +38,7 @@ mkdir -p ./.tmp
 OUT=$(mktemp -d ./.tmp/mcode-mobile-pairing-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-mobile-pairing-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # `--banner` 有两件事要做:
 #   1. 给 **sql.js** 一个真的 `require`:它的 asm 构建里有 `require("node:fs")` /

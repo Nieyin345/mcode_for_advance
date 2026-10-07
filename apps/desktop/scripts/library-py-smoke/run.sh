@@ -29,8 +29,7 @@ trap 'rm -rf "$OUT"' EXIT
 #    ⚠️ 走 esbuild 打包再 import,而不是正则抠源码 —— 抠源码的话,TMPl literal 里
 #    将来出现转义(`\${`、`\`)时抠出来的东西与真实运行的那份不一样,而那正是这套
 #    要防的。打包是**真值**。
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/library-py-smoke/main.ts \
   --bundle --platform=node --format=esm \

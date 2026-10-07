@@ -9,9 +9,7 @@ cd "$(dirname "$0")/../.."
 
 OUT=.tmp/md-preview
 mkdir -p "$OUT"
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 cp scripts/md-preview/index.html "$OUT/index.html"
 cp scripts/md-preview/styles.css "$OUT/styles.css"

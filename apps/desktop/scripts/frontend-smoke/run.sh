@@ -14,9 +14,7 @@ cd "$(dirname "$0")/../.."
 OUT=$(mktemp -d /tmp/mcode-frontend-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-frontend-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # `main.ts` 用**相对路径** import 桩(绕开 @main 映射,typecheck 才不会去对真模块
 # 要测试钩子);run.sh 这里再把被测代码内部的引用也指过去 —— 两个入口解析到同一个

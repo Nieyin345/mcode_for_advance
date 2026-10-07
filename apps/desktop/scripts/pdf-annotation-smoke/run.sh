@@ -20,9 +20,7 @@ cd "$(dirname "$0")/../.."
 OUT=$(mktemp -d /tmp/mcode-pdf-annot-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 ln -s "$PWD/node_modules" "$OUT/node_modules"
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/pdf-annotation-smoke/main.ts \
   --bundle --platform=node --format=esm \

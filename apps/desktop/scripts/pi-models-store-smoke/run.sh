@@ -9,9 +9,7 @@ cd "$(dirname "$0")/../.."
 OUT=$(mktemp -d /tmp/mcode-pi-models-store-smoke.XXXXXX)
 FAKE_HOME=$(mktemp -d /tmp/mcode-pi-models-home.XXXXXX)
 trap 'rm -rf "$OUT" "$FAKE_HOME"' EXIT
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # 换桩的三个都是因为 electron:SettingRepo(数据库)、safeStorage、日志文件。
 "$ESBUILD" scripts/pi-models-store-smoke/main.ts \

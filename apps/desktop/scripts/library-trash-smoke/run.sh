@@ -23,9 +23,7 @@ DATA=$(mktemp -d /tmp/mcode-trash-data.XXXXXX)
 # `require.resolve("pdfjs-dist/package.json")`,运行期从 bundle 自己位置解析。
 ln -s "$PWD/node_modules" "$OUT/node_modules"
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # `--banner` 那一行是给 sql.js 的(理由同 run-store-smoke/run.sh):它的 asm 构建里有
 # `require("node:fs")`,而定死的 ESM 输出没有 `require`。

@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 OUT=$(mktemp -d /tmp/mcode-m35-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo 'Missing local esbuild; no network install' >&2; exit 2; fi
 
 "$ESBUILD" scripts/maint-m35-smoke/main.ts \

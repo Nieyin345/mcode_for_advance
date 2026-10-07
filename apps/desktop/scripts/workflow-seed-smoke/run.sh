@@ -17,9 +17,7 @@ cd "$(dirname "$0")/../.."
 
 OUT=$(mktemp -d /tmp/mcode-seed-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # 真发过的旧版:e1687e4 那一版 assets.ts(用户磁盘上那份 library.py 就出自它)。
 # 走 esbuild 打包取字面量的真值,而不是正则抠 —— 与 library-py-smoke 同理。

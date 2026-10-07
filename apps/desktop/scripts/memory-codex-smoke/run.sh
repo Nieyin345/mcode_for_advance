@@ -25,9 +25,7 @@ HOMEDIR=$(mktemp -d /tmp/mcode-memcodex-home.XXXXXX)
 # 由它自己 `import` 的依赖,运行期从 bundle 的位置解析)。
 ln -s "$PWD/node_modules" "$OUT/node_modules"
 trap 'rm -rf "$OUT" "$DATA" "$HOMEDIR"' EXIT
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/memory-codex-smoke/main.ts \
   --bundle --platform=node --format=esm \

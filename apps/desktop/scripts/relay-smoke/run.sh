@@ -49,9 +49,7 @@ DATA=$(mktemp -d /tmp/mcode-relay-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 ln -s "$PWD/node_modules" "$OUT/node_modules"
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # `--banner` 给 sql.js:它的 asm 构建里有 `require("node:fs")` / `require("node:crypto")`,
 # 而定死的 ESM 输出**没有 `require`** —— esbuild 会把它换成一句

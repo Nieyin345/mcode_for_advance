@@ -9,8 +9,7 @@ cd "$(dirname "$0")/../.."
 
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/mcode-maint-m05.XXXXXX")
 trap 'rm -rf "$OUT"' EXIT
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo "esbuild not found in node_modules (no network fallback)" >&2; exit 1; fi
 
 "$ESBUILD" scripts/maint-m05-smoke/main.ts \

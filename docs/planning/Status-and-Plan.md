@@ -214,7 +214,7 @@ Mcode 是一个**本地优先的通用 Agent 桌面客户端**（Electron + Reac
 
 | # | 事项 | 现状 |
 |---|---|---|
-| C1 | **`browser/` 等模块零 smoke 覆盖** | `main/browser/`（2726 行的 `BrowserManager`）、`mobile/`、`relay/`、`lsp/`、`terminal/`、`voice/` 全部零覆盖。工程量最大的一项（`integrations/` 整个目录已随 MinerU 一起删掉，不必再算） |
+| C1 | **`browser/` 等模块零 smoke 覆盖** | **部分已做（2026-10-08）**：`browser-smoke` 其实测的是书签，`BrowserManager` 那 2786 行本体被换成桩 → 真逻辑没跑过。已把它里面**不碰 Electron** 的 7 个纯函数（键名/组合键、UA 清洗、下载去重、设备判定、超时、origin）抽到 `browserPure.ts` 并用 `browser-pure-smoke` 覆盖（51 条 + 变异验证）。**余量**：依赖 Electron 的 40+ 方法（create/snapshot/click/setDevice…）仍需造替身才测得起。`mobile/`/`relay/`/`lsp/`/`terminal/`/`voice/` 已有套件但深度未达。 |
 | ~~C2~~ | ~~**死接口**（preload 暴露但渲染端无人调用）~~ **已做（2026-09-19）** | 删了 8 个（7 个死名字 + `templates.setRoot`），连带清掉只剩死名字引用的 schema 与设置键。其中 `getRoot`/`setRoot` 其实是**已失效的功能**（统一数据根架空了它们，写进去也没人读）。**另一半点反过来做**：`library.fullTextSearch` 后端写完了、界面没接，已补上「库内全文检索」面板 | — |
 | ~~C3~~ | ~~**per-trigger 启停没做**~~ **已做（2026-09-19）** | 触发器节点上加了「启用」勾选框（参数键 `enabled`，**缺席 = 开** —— 老存档升级那一刻不许静默停摆）。关掉的**只挡自动那三条路**，手动「立刻运行一次」照跑。事实行因此分成三种说法：「已挂上」/「已关闭」（你自己关的，灰）/「没挂上」（坏了，黄）—— 关掉的和坏掉的 `armed` 都是 false，光看它分不清 |
 | ~~C4~~ | ~~**运行事件标准化**~~ **已修（2026-10-08）** | 具体缺陷是 `workflowId` 的口径不一致：只有 `workflow.node.queued` 带它，`progress` / `result` / `choice` 不带 → 监控采集器只能查会话行兜底（库没起来/行被删就丢成空串，**面板那张卡看不出跟的是哪张图**），看板也要等后续事件补。已给四类事件统一带上（可选字段，兼容老事件），collector 事件优先、查库作兜底。回归 `monitoring-smoke`（+5，变异验证 3 条红）、`workflow-view-smoke`（+2，变异验证 2 条红） |

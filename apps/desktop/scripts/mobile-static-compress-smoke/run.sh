@@ -14,8 +14,7 @@ mkdir -p ./.tmp
 OUT=$(mktemp -d ./.tmp/mcode-mobile-static-compress-smoke.XXXXXX)
 BOX=$(mktemp -d "${TMPDIR:-/tmp}/mcode-mobile-static-box.XXXXXX")
 trap 'rm -rf "$OUT" "$BOX"' EXIT
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo "esbuild not found in node_modules (no network fallback)" >&2; exit 1; fi
 
 BANNER="import { createRequire as __cr } from 'node:module'; \

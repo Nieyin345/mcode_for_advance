@@ -44,6 +44,15 @@ import {
   type DownloadItem,
 } from "electron";
 import {
+  urlOrigin,
+  chromeLikeUserAgent,
+  normalizeKeyName,
+  parseKeyCombo,
+  uniqueDownloadPath,
+  isMobileUa,
+  withTimeout,
+} from "./browserPure.js";
+import {
   IPC,
   resolveBrowserDeviceSpec,
   BROWSER_COOKIE_VAULT_SETTING_KEY,
@@ -78,14 +87,6 @@ const PICK_URL_CAP = 4096;
 
 /** Normalize a URL to its origin (scheme://host[:port]). Returns "" for URLs
  *  the URL constructor can't parse. */
-function urlOrigin(url: string): string {
-  try {
-    return new URL(url).origin;
-  } catch {
-    return "";
-  }
-}
-
 /** Strip the Electron/app-name tokens Electron appends after the Safari marker
  *  (`…Safari/537.36 AppName/1.2.3 Electron/33.0.0` → `…Safari/537.36`) so
  *  desktop-mode pages see a plain Chrome UA. Sites like Google sign-in and
@@ -93,12 +94,6 @@ function urlOrigin(url: string): string {
  *  Chrome token itself stays genuine (real Chromium version), only the trailing
  *  framework identifiers are removed. Falls back to removing just the
  *  Electron/app tail if the Safari marker is ever absent. */
-function chromeLikeUserAgent(ua: string): string {
-  const m = ua.match(/^.*?Safari\/[\d.]+/);
-  if (m) return m[0];
-  return ua.replace(/\s*[\w.-]+\/[\d.]+\s+Electron\/[\d.]+\s*$|\s+Electron\/[\d.]+\s*$/, "").trim();
-}
-
 /** Metadata for a live browser view, returned by `list()` for agent discovery. */
 export interface BrowserInfo {
   browserId: string;
@@ -111,77 +106,9 @@ export interface BrowserInfo {
  *  `sendInputEvent`. Accepts KeyboardEvent.key-style names (ArrowUp, Escape…)
  *  as well as the accelerator names themselves (Up, Esc…). Single characters
  *  pass through lowercased (shift comes in as an explicit modifier). */
-function normalizeKeyName(raw: string): string | null {
-  const key = raw.trim();
-  if (!key) return null;
-  const named: Record<string, string> = {
-    enter: "Enter",
-    return: "Enter",
-    tab: "Tab",
-    esc: "Esc",
-    escape: "Esc",
-    space: "Space",
-    spacebar: "Space",
-    backspace: "Backspace",
-    delete: "Del",
-    del: "Del",
-    up: "Up",
-    arrowup: "Up",
-    down: "Down",
-    arrowdown: "Down",
-    left: "Left",
-    arrowleft: "Left",
-    right: "Right",
-    arrowright: "Right",
-    pageup: "PageUp",
-    pagedown: "PageDown",
-    home: "Home",
-    end: "End",
-    insert: "Ins",
-    ins: "Ins",
-  };
-  const lower = key.toLowerCase();
-  if (named[lower]) return named[lower];
-  if (/^f([1-9]|1\d|2[0-4])$/.test(lower)) return key.toUpperCase();
-  if (key.length === 1) return key.toLowerCase();
-  return null;
-}
-
 /** Parse a key combo like "Control+Shift+Enter" into sendInputEvent modifiers
  *  + a key code. CmdOrCtrl maps to Meta on macOS / Control elsewhere (the
  *  usual convention). Exactly one non-modifier key per combo. */
-function parseKeyCombo(
-  combo: string,
-): { modifiers: Array<"control" | "shift" | "alt" | "meta">; key: string } | { error: string } {
-  const parts = combo
-    .split("+")
-    .map((p) => p.trim())
-    .filter(Boolean);
-  if (parts.length === 0) return { error: "按键为空" };
-  const modifiers: Array<"control" | "shift" | "alt" | "meta"> = [];
-  let key: string | null = null;
-  for (const part of parts) {
-    const lower = part.toLowerCase();
-    if (lower === "control" || lower === "ctrl" || lower === "cmdorctrl") {
-      modifiers.push(process.platform === "darwin" ? "meta" : "control");
-    } else if (lower === "meta" || lower === "cmd" || lower === "command" || lower === "super" || lower === "win") {
-      modifiers.push("meta");
-    } else if (lower === "alt" || lower === "option") {
-      modifiers.push("alt");
-    } else if (lower === "shift") {
-      modifiers.push("shift");
-    } else if (key === null) {
-      const norm = normalizeKeyName(part);
-      if (!norm) return { error: `无法识别的按键 "${part}"(支持 Enter/Escape/Tab/Arrow*/PageUp/F1-F12/单字符等)` };
-      key = norm;
-    } else {
-      return { error: `一次只能按一个主键:"${combo}"` };
-    }
-  }
-  if (key === null) return { error: `组合键缺少主键:"${combo}"` };
-  return { modifiers, key };
-}
-
 /** Result of a `snapshot()` — the structured page data handed to the agent. */
 export interface BrowserSnapshotResult {
   ok: boolean;
@@ -304,33 +231,6 @@ function browserDownloadsDir(): string {
  *  so a second same-name download that starts meanwhile (two links clicked,
  *  two tabs, agent + user) used to get the identical save path — the later
  *  `done` then overwrote the earlier file without any error. */
-function uniqueDownloadPath(
-  dir: string,
-  filename: string,
-  reserved: ReadonlySet<string> = new Set<string>(),
-): string {
-  const safe = filename.replace(/[\\/:*?"<>|]/g, "_").trim() || "download";
-  const taken = (candidate: string): boolean => {
-    if (reserved.has(candidate)) return true;
-    try {
-      statSync(candidate);
-      return true;
-    } catch {
-      return false; // does not exist — free
-    }
-  };
-  const ext = join(dir, safe);
-  if (!taken(ext)) return ext;
-  const dot = safe.lastIndexOf(".");
-  const stem = dot > 0 ? safe.slice(0, dot) : safe;
-  const tail = dot > 0 ? safe.slice(dot) : "";
-  for (let i = 1; i < 1000; i++) {
-    const candidate = join(dir, `${stem}-${i}${tail}`);
-    if (!taken(candidate)) return candidate;
-  }
-  return join(dir, `${stem}-${Date.now()}${tail}`);
-}
-
 /** Result of a `screenshot()` — `data` is a base64 PNG string. */
 export interface BrowserScreenshotResult {
   ok: boolean;
@@ -660,22 +560,6 @@ export async function printUrlToPdf(req: {
 }
 
 /** 给一个 promise 套上超时。用于 loadURL / printToPDF 这类可能永远不返回的原生调用。 */
-function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(message)), ms);
-    p.then(
-      (v) => {
-        clearTimeout(timer);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(timer);
-        reject(e);
-      },
-    );
-  });
-}
-
 /** How often the cookie vault is refreshed in the background, so a force-kill
  *  (dev Ctrl+C, crash) loses at most one interval of sign-in state. */
 const PERSIST_LOGIN_INTERVAL_MS = 5 * 60 * 1000;
@@ -761,12 +645,6 @@ const MOBILE_USER_AGENTS: Partial<Record<BrowserDevicePreset, DeviceUaSpec>> = {
  *  is desktop; the phone/tablet presets always mobile; "custom" is mobile only
  *  while narrow enough to be a phone/tablet viewport (wide custom sizes behave
  *  like desktop pages). */
-function isMobileUa(device: BrowserDevicePreset, effWidth: number): boolean {
-  if (device === "desktop") return false;
-  if (device === "custom") return effWidth <= 1024;
-  return true;
-}
-
 /** CDP UserAgentMetadata for the emulated device: drives the `sec-ch-ua*`
  *  client-hint headers and navigator.userAgentData. Without it a UA override
  *  leaves client hints reporting the real desktop Chrome — the exact "judged

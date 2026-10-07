@@ -7,7 +7,7 @@ trap 'rm -rf "$OUT"' EXIT
 export MCODE_SMOKE_DATA_ROOT="$OUT/data"
 export TMPDIR="$OUT"
 mkdir -p "$MCODE_SMOKE_DATA_ROOT" "$OUT/stubs"
-ESBUILD=$(find ../../node_modules/.pnpm -path '*esbuild/bin/esbuild' -type f 2>/dev/null | sort -V | tail -1)
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo 'Installed esbuild not found; no network install attempted.' >&2; exit 1; fi
 node "$ESBUILD" scripts/automation-smoke/stubs/runner.ts \
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \

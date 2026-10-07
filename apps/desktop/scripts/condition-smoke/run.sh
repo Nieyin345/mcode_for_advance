@@ -6,7 +6,7 @@ mkdir -p .tmp
 OUT=$(mktemp -d "${PWD}/.tmp/mcode-condition-smoke.XXXXXX")
 trap 'rm -rf "$OUT"' EXIT
 export TMPDIR="$OUT"
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo 'Installed esbuild not found; no network install attempted.' >&2; exit 1; fi
 node "$ESBUILD" scripts/condition-smoke/main.ts \
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \

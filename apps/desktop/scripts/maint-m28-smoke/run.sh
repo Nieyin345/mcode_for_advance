@@ -7,7 +7,7 @@ cd "$(dirname "$0")/../.."
 OUT=$(mktemp -d /tmp/mcode-maint-m28-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-maint-m28-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 if [ -z "$ESBUILD" ]; then ESBUILD="npx esbuild"; fi
 "$ESBUILD" scripts/maint-m28-smoke/main.ts \
   --bundle --platform=node --format=esm \

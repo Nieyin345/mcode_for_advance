@@ -15,8 +15,7 @@ DATA=$(mktemp -d /tmp/mcode-maint-m01-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 # esbuild 是 vite 的传递依赖(不是直接依赖),找不到再退回 npx。
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # banner 那一行是给 sql.js 的 asm 构建用的(它内部 require("node:fs"),而 ESM 输出
 # 没有 require)。electron 相关的两个模块换成 stubs/,被测代码一行未改。

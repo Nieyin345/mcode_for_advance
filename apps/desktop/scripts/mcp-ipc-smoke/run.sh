@@ -51,8 +51,7 @@ trap 'rm -rf "$OUT" "$DATA" "$fake_home"' EXIT
 # `require("node:crypto")`,而定死的 ESM 输出**没有 `require`** —— esbuild 会把它换成
 # 一句 `throw new Error('Dynamic require of "node:fs" is not supported')`。
 # 本套真的建 sql.js 库(不是内存桩),所以这一行是能不能跑起来的前提。
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # ## ⚠️ 假 HOME 是**唯一一件替掉用户 `~/.mcode` 的东西** —— 别把它删了
 #

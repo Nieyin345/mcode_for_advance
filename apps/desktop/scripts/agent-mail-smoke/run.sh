@@ -41,9 +41,7 @@ mkdir -p .tmp
 OUT=$(mktemp -d ./.tmp/agent-mail-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-agent-mail-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # `--external:ssh2` 与 mcode-admin-smoke 同一条理由:它链上来的 `cpu-features` 是个
 # 原生模块(`.node` 二进制),esbuild 解析不了;而这一套根本不碰 ssh。

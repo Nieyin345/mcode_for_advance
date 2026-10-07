@@ -5,7 +5,7 @@ cd "$(dirname "$0")/../.."
 OUT=".tmp/memory-review-$(date +%s)-$$"
 mkdir -p "$OUT/data"
 trap 'rm -rf "$OUT"' EXIT
-ESBUILD=$(find ../../node_modules/.pnpm -path '*/esbuild/bin/esbuild' -type f 2>/dev/null | sort -V | tail -1)
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo 'project esbuild not found' >&2; exit 1; fi
 node "$ESBUILD" scripts/memory-review-smoke/main.ts \
   --bundle --platform=node --format=cjs --tsconfig=tsconfig.json \

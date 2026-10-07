@@ -35,9 +35,7 @@ trap 'rm -rf "$OUT" "$HOME_DIR"' EXIT
 #   `.claude/`     —— 配置目录本身
 printf '{"hasCompletedOnboarding":true}' > "$HOME_DIR/.claude.json"
 mkdir -p "$HOME_DIR/.claude"
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # `--banner` 那一行非有不可:sql.js 的 asm 构建里有 `require("node:fs")`,定死的 ESM
 # 输出没有 `require`,esbuild 会把它换成一句抛错。这一套经 `secretStore` 桩绕开了

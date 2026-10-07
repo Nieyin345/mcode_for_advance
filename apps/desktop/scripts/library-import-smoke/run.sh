@@ -14,9 +14,7 @@ DATA=$(mktemp -d /tmp/mcode-lib-import-data.XXXXXX)
 # (同 `library-intake-smoke` 里那一段,理由一致)。
 ln -s "$PWD/node_modules" "$OUT/node_modules"
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # 换掉 `@main/window.js` 与 `@main/claude/RuntimeManager.js`(理由见那两个 stub):
 # 真的两个都 import 了 electron,而 RuntimeManager 还一路拖到三个引擎实现(每个都要

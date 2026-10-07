@@ -11,9 +11,7 @@ cd "$(dirname "$0")/../.."
 
 OUT=$(mktemp -d /tmp/mcode-model-anchor-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # Same monaco exclusion as session-store-smoke: the store's sole dynamic import
 # drags in vite-only asset types and is never reached here.

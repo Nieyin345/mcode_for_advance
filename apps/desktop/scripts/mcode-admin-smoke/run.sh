@@ -23,8 +23,7 @@ trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # SDK 保持惰性 `import`(不打进 bundle):它很大,而且里面那套东西本来就不是给无头脚本
 # 准备的。留着 external,node 从 .tmp/ 往上就能找到 apps/desktop/node_modules 里那一份。

@@ -37,9 +37,7 @@ cd "$(dirname "$0")/../.."
 OUT=$(mktemp -d /tmp/mcode-terminal-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-terminal-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # ── 真 node-pty 的绝对路径(给 §7 用) ──
 # ⚠️ **不能写 `node -e "…'$PWD/src/main/'…"`** —— 在 git-bash 里 `$PWD` 是 MSYS 形态

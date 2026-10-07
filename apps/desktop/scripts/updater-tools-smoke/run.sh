@@ -73,9 +73,7 @@ cd "$(dirname "$0")/../.."          # → apps/desktop
 OUT=$(mktemp -d /tmp/mcode-updater-tools-smoke.XXXXXX)
 USER_DATA=$(mktemp -d /tmp/mcode-updater-tools-userdata.XXXXXX)
 trap 'rm -rf "$OUT" "$USER_DATA"' EXIT
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # 被外置的那几个模块要在 `$OUT` 里能被解析到 node 内建以外的依赖;`--platform=node`
 # 把内建标成 external,所以只需要一份 node_modules 让 esbuild 自己找得到它的运行时。

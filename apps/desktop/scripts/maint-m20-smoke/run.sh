@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/mcode-maint-m20.XXXXXX")
 trap 'rm -rf "$OUT"' EXIT
-ESBUILD=$(find ../../node_modules/.pnpm -path '*esbuild/bin/esbuild' -type f 2>/dev/null | sort -V | tail -1)
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo 'Local esbuild is required (no network installs)' >&2; exit 2; fi
 "$ESBUILD" scripts/maint-m20-smoke/main.ts \
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \

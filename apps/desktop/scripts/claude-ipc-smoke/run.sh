@@ -37,9 +37,7 @@ DATA=$(mktemp -d /tmp/mcode-claude-ipc-data.XXXXXX)
 # (同 library-trash-smoke 那一行)。
 ln -s "$PWD/node_modules" "$OUT/node_modules"
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # 这里**只留 alias 一条路**(下面那行 `--alias:@main/orchestration/runner.js=...`),
 # 不再单独打一份外置的桩、也不再 `--external` —— 理由见下面那段长注释:那两样凑在一起

@@ -67,22 +67,28 @@ await test('server can be reused after asynchronous bind failure without stale c
  await assert.rejects(listenOnDialablePort(server.asServer(),()=>calls++),/scripted async/);server.mode='ok';
  assert.equal(await listenOnDialablePort(server.asServer(),()=>calls++),55002);assert.equal(calls,1);assert.equal(server.listenerCount('error'),0);assert.equal(server.listenerCount('listening'),0);
 });
-// ── 下载落点去重(BrowserManager.uniqueDownloadPath)──
+// ── 下载落点去重(browserPure.uniqueDownloadPath,原 BrowserManager 私有)──
 // Chromium 传输期间目标文件并不存在(写的是 .crdownload,完成时才 rename),所以只查磁盘
 // 的去重挡不住**并发**的同名下载:两个 will-download 都拿到 report.pdf,后到的把先到的覆盖。
 // 生产函数是模块私有的、且模块顶层 import electron,这里用 TypeScript AST 按声明边界取出
 // 该函数原文、转译后以真实 join/statSync 执行 —— 不手抄算法。
 const desktopRoot=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
+const purePath=join(desktopRoot,'src/main/browser/browserPure.ts');
 const bmPath=join(desktopRoot,'src/main/browser/BrowserManager.ts');
+const pureSource=ts.createSourceFile('browserPure.ts',readFileSync(purePath,'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);
 const bmSource=ts.createSourceFile('BrowserManager.ts',readFileSync(bmPath,'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);
 const fnDecls:ts.FunctionDeclaration[]=[];const callArgCounts:number[]=[];
-function visitBm(n:ts.Node):void{
+function visitPure(n:ts.Node):void{
  if(ts.isFunctionDeclaration(n)&&n.name?.text==='uniqueDownloadPath')fnDecls.push(n);
- if(ts.isCallExpression(n)&&ts.isIdentifier(n.expression)&&n.expression.text==='uniqueDownloadPath')callArgCounts.push(n.arguments.length);
- ts.forEachChild(n,visitBm);
+ ts.forEachChild(n,visitPure);
 }
-visitBm(bmSource);assert.equal(fnDecls.length,1,'unique production uniqueDownloadPath required');
-const udpJs=ts.transpileModule(fnDecls[0].getText(bmSource)+'\nreturn uniqueDownloadPath;',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;
+function visitCalls(n:ts.Node):void{
+ if(ts.isCallExpression(n)&&ts.isIdentifier(n.expression)&&n.expression.text==='uniqueDownloadPath')callArgCounts.push(n.arguments.length);
+ ts.forEachChild(n,visitCalls);
+}
+visitPure(pureSource);assert.equal(fnDecls.length,1,'unique production uniqueDownloadPath required (browserPure.ts)');
+visitCalls(bmSource);
+const udpSrc=fnDecls[0].getText(pureSource).replace(/^export\s+/,'');const udpJs=ts.transpileModule(udpSrc+'\nreturn uniqueDownloadPath;',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;
 const uniqueDownloadPath=new Function('join','statSync',udpJs)(join,statSync) as (dir:string,filename:string,reserved?:ReadonlySet<string>)=>string;
 const dlDir=mkdtempSync(join(dir,'downloads-'));
 await test('download path: free name is taken as-is (control)',async()=>{

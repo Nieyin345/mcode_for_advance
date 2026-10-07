@@ -26,9 +26,7 @@ cd "$(dirname "$0")/../.."
 OUT=$(mktemp -d /tmp/mcode-notif-ipc-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-notif-ipc-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # ⚠️ **banner 里那两行是给 `__dirname` 补的,别删。** `NotificationManager` 顶层有一句
 # `join(__dirname, "../../build/icon.png")`(通知卡片的图标),esbuild 会把 `__dirname`

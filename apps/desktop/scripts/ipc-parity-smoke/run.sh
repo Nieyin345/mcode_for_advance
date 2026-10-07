@@ -13,9 +13,7 @@ cd "$(dirname "$0")/../.."          # → apps/desktop
 
 OUT=$(mktemp -d /tmp/mcode-ipc-parity.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # `--banner` 那一行留着:今天这条 import 图够不到 sql.js,但 `IPC` 表所在的
 # `@contracts/ipc` 是个 barrel,加一条 import 就可能把 sql.js 的 asm 构建拉进来

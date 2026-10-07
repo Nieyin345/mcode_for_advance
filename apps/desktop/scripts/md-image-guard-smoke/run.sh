@@ -18,9 +18,7 @@ OUT=$(mktemp -d /tmp/mcode-mdimg-guard.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-mdimg-data.XXXXXX)
 ln -s "$PWD/node_modules" "$OUT/node_modules"
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/md-image-guard-smoke/main.ts \
   --bundle --platform=node --format=esm \

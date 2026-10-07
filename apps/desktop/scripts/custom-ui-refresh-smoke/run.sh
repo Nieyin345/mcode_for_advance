@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 OUT=$(mktemp -d /tmp/mcode-custom-ui-refresh.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-ESBUILD=$(find ../../node_modules/.pnpm -path '*esbuild/bin/esbuild' -type f | sort -V | tail -1)
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 "$ESBUILD" scripts/custom-ui-refresh-smoke/main.ts --bundle --platform=node --format=esm --tsconfig=tsconfig.json \
  --banner:js="import {createRequire} from 'node:module';const require=createRequire(import.meta.url);" \
  --alias:@main/window.js=./scripts/custom-ui-refresh-smoke/stubs/window.ts \

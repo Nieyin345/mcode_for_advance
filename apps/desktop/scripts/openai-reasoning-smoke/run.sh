@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 OUT=$(mktemp -d /tmp/mcode-openai-reasoning.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo "Existing esbuild required; no network fallback." >&2; exit 127; fi
 "$ESBUILD" scripts/openai-reasoning-smoke/main.ts \
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \

@@ -18,8 +18,7 @@ trap 'rm -rf "$OUT"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # `--banner` 给 sql.js 的 asm 构建一个真的 require(同 automation-smoke / run-store-smoke)。
 # 两个 `--alias` 是**对着内置节点清单那一段**加的:冒烟现在要 import
