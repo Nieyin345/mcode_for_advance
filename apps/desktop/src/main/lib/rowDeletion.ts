@@ -12,6 +12,7 @@ import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { broadcastProjectsChanged, broadcastSessionDeleted } from "@main/lib/sessionSync.js";
 import { cancelWorkflowRun } from "@main/orchestration/runner.js";
 import { dropBackflow } from "@main/lib/pendingBackflow.js";
+import { dropAgentMail } from "@main/lib/agentMail.js";
 import { disposeAgentSession } from "@main/mcp/agentSessionCleanup.js";
 
 /** 系统项目(后台自动化的外键归属)不能删 —— 调用方据此给出各自的错误形态。 */
@@ -33,6 +34,10 @@ export function deleteSessionEverywhere(id: string): void {
   // 还没被带进下一轮的那段「并回主对话」的内容也一起清掉 —— 会话都没了,它永远等不到
   // 那个取用它的人(见 `lib/pendingBackflow.ts`)。
   dropBackflow(id);
+  // 代理互发的收件箱与限流窗口同理(见 `lib/agentMail.ts`)。`dropAgentMail` 一直存在、
+  // 也一直被 `agent-mail-smoke` 逐条测着,却**没有任何生产代码调它** —— 两个模块级 Map
+  // 于是只涨不落,删掉的会话的条目留到应用退出。
+  dropAgentMail(id);
   // Release the runtime (interrupt + approval/bridge/snapshot cleanup)
   // BEFORE the row goes. Without this the runtime entry leaked for the
   // app's lifetime, and a running turn kept streaming into the dead
@@ -70,6 +75,7 @@ export function deleteProjectEverywhere(id: string): { sessions: number; stopped
     // 返回值说的正是"这个会话上真有一张图被掐掉"。
     if (cancelWorkflowRun(sid)) stopped += 1;
     dropBackflow(sid);
+    dropAgentMail(sid);
     disposeAgentSession(sid);
   }
   // Release every session runtime BEFORE the SQL cascade removes the rows

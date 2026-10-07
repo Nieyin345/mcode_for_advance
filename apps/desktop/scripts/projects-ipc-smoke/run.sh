@@ -42,6 +42,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --alias:@main/mobile/MobileEventBus.js=./scripts/projects-ipc-smoke/stubs/mobileEventBus.ts \
   --alias:@main/orchestration/runner.js=./scripts/projects-ipc-smoke/stubs/runner.ts \
   --alias:@main/lib/pendingBackflow.js=./scripts/projects-ipc-smoke/stubs/pendingBackflow.ts \
+  --alias:@main/lib/agentMail.js=./scripts/projects-ipc-smoke/stubs/agentMail.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 export MCODE_SMOKE_DATA_ROOT="$DATA"

@@ -44,6 +44,7 @@ import { eventsOfType, resetSent, sentChannels } from "./stubs/window.js";
 import { mobileEvents, resetMobileEvents } from "./stubs/mobileEventBus.js";
 import { cancelAsked, markRunActive, resetRunnerStub, stoppedRuns } from "./stubs/runner.js";
 import { dropped, queueBackflow, resetBackflowStub } from "./stubs/pendingBackflow.js";
+import { mailDropped, resetAgentMailStub } from "./stubs/agentMail.js";
 import { callTrace, resetCallTrace } from "./stubs/callTrace.js";
 import {
   disposedIds,
@@ -148,6 +149,7 @@ function fresh(): void {
   resetMobileEvents();
   resetRunnerStub();
   resetBackflowStub();
+  resetAgentMailStub();
   resetRuntimeStub();
   resetCallTrace();
 }
@@ -347,6 +349,14 @@ console.log("\n2. 删项目 —— 级联删掉的每一条会话,收尾做全�
     [a, b, side].every((id) => dropped.includes(id)),
     dropped,
   );
+  // 代理互发的收件箱 / 限流窗口(`lib/agentMail.ts`)同理。`dropAgentMail` 存在、
+  // `agent-mail-smoke` 也逐条测着它,但生产代码从前**从不调** —— 两个模块级 Map 只涨不落。
+  // 判据和上一条一样立"每一条",因为项目级走的是逐会话循环。
+  check(
+    "**每一条**的代理收件箱也清了(从前生产代码从不调 dropAgentMail)",
+    [a, b, side].every((id) => mailDropped.includes(id)),
+    mailDropped,
+  );
 
   // 3) 手机端那边这几条会话是"刚才还在列表里"的,要逐条告诉它。
   const deletedIds = mobileEvents
@@ -425,6 +435,7 @@ console.log("\n3. 删一条会话");
   eq("图被停了", stoppedRuns.length, 1);
   check("停的是这一条", stoppedRuns[0] === s, stoppedRuns);
   check("待并回内容清了", dropped.includes(s), dropped);
+  check("代理收件箱也清了(会话级)", mailDropped.includes(s), mailDropped);
   check(
     "运行时也放掉了(逐条的那一句 —— 会话级的 dispose)",
     disposedIds().includes(s),
