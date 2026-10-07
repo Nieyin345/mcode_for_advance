@@ -47,6 +47,10 @@ import { lspManager } from "@main/lsp/LspManager.js";
 import { lspEvents, otherChannels, resetSent, lastEvent, countEvents } from "./stubs/window.js";
 import { registerWorkspaceRoot, setKnownRoots } from "./stubs/pathGuard.js";
 import { setBinaries, clearBinaries, probed } from "./stubs/binaryResolve.js";
+// 同一个 stub 文件(与 `--alias:electron=…` 指的那份是同一路径,esbuild 打包成同一个
+// 模块),所以这里拿到的 `__userData()` 和被测代码 `electron.app.getPath("userData")`
+// 是同一份 —— §6f 正要在那个目录下摆 jdtls 的安装布局。
+import { __userData } from "./stubs/electron.js";
 
 /* ─────────────────────────── 断言助手 ─────────────────────────── */
 
@@ -231,6 +235,68 @@ writeCmdShim(DEAD_SERVER, [`echo x>>"${DEAD_LOG}"`, `exit /b 1`]);
 const JAVA_PLUGINS = join(SRV, "java", "plugins");
 mkdirSync(JAVA_PLUGINS, { recursive: true });
 writeFileSync(join(JAVA_PLUGINS, "org.eclipse.equinox.launcher_1.0.0.jar"), "");
+
+/* ── 假的 JDK(§6e 的退出码 13 恢复路径)──
+ *
+ * jdtls 是 `java -jar …` 起的(`shell:false`),而 `checkJavaVersionAtLeast` 又要
+ * 先跑 `java -version` 拿版本号。所以要一条真的能执行、能按参数分岔的 PE 可执行文件
+ * —— `.cmd` 在 `shell:false` 下 `spawn` 会 EINVAL(实测),替身在 Windows 上接不住
+ * (真 `spawn` 起的是操作系统进程)。
+ *
+ * 用系统自带的 C# 编译器(`Add-Type` → csc)现编一个:不下载任何东西,产物是标准 PE。
+ * 它按参数分岔:带 `-version` 报一个 JDK 21 的版本串并退 0(骗过版本检查);其余参数
+ * (即 jdtls 的启动参数)记一笔日志后**退 13** —— 正是 Equinox「workspace 打不开」的
+ * 退出码,也正是 §6e 要触发的那条恢复分支。目录摆成 JDK home 的形状(`bin/java.exe`),
+ * 好让 `resolveJavaExecutable(javaHome)` 认它。
+ *
+ * 编不出来(非 Windows / 系统缺 csc)时**不静默跳过**:`FAKE_JAVA` 保持 null,§6e 那条
+ * 会以红的形式说出来,理由见那一段。 */
+const FAKE_JAVA_LOG = join(FIX, "fake-java.log");
+const FAKE_JAVA_HOME = join(SRV, "fakejdk");
+const FAKE_JAVA_BIN = join(FAKE_JAVA_HOME, "bin");
+mkdirSync(FAKE_JAVA_BIN, { recursive: true });
+const FAKE_JAVA = join(FAKE_JAVA_BIN, "java.exe");
+let fakeJavaBuildError = "";
+try {
+  const csPath = join(FAKE_JAVA_HOME, "FakeJava.cs");
+  writeFileSync(
+    csPath,
+    [
+      "using System;",
+      "public class FakeJava {",
+      "  public static int Main(string[] args) {",
+      '    if (args.Length >= 1 && args[0] == "-version") { Console.Error.WriteLine(@"openjdk version ""21.0.1"" 2023-10-17"); return 0; }',
+      '    var lg = Environment.GetEnvironmentVariable("MCODE_FAKE_JAVA_LOG_INNER");',
+      '    if (lg != null) { try { System.IO.File.AppendAllText(lg, string.Join(" ", args) + "\\n"); } catch {} }',
+      // 别秒退:停一下(jdtls 也不是一启动就退的),好让 initialize 请求真的写到 stdin、
+      // 也让退出事件到达时进程的 ExitCode 确实已经落定(否则恢复分支可能读到 null)。
+      "    System.Threading.Thread.Sleep(500);",
+      '    Console.Error.WriteLine("Equinox: could not open workspace");',
+      "    return 13;",
+      "  }",
+      "}",
+    ].join("\n"),
+    "utf8",
+  );
+  const ps1 = join(FAKE_JAVA_HOME, "build.ps1");
+  writeFileSync(
+    ps1,
+    `Add-Type -Path ${JSON.stringify(csPath)} -OutputAssembly ${JSON.stringify(FAKE_JAVA)} -OutputType ConsoleApplication\n`,
+    "utf8",
+  );
+  execFileSync(
+    "powershell",
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ps1],
+    { stdio: ["ignore", "ignore", "pipe"], windowsHide: true },
+  );
+  if (!existsSync(FAKE_JAVA)) fakeJavaBuildError = "Add-Type 没有产出 java.exe";
+} catch (err) {
+  fakeJavaBuildError = err instanceof Error ? err.message : String(err);
+}
+// 假 java 记日志用的环境变量(子进程 spawn 时继承 process.env)。§6e 数它的行数,
+// 证明「退出码 13 → 轮转 → 重试」那条路真的又起了一次进程。
+process.env.MCODE_FAKE_JAVA_LOG_INNER = FAKE_JAVA_LOG;
+
 
 /* ─────────────────────────── 环境 ─────────────────────────── */
 
@@ -794,6 +860,124 @@ console.log("\n§6c 退出时安装进程要一起收走");
   );
 
   void installing;
+}
+
+/* ─────────────── 6e. Java 的 javaHome override 存得进去也读得回来 ─────────────── */
+
+console.log("\n§6e Java 的 JDK override(javaHome)必须能往返,不能是只写的");
+
+{
+  // 界面上「高级」那一栏写着:「留空 = 用系统 java,填一个 JDK 17+ 路径就能让 jdtls
+  // 用另一个 JDK 起」。`loadConfig` 是**唯一**的配置读出口 —— 它建的 map 少带一个键,
+  // 那个设置就永远读不回来,buildJavaSpawnCommand / installJava / checkJavaRuntime
+  // 一律回落系统 java,而用户照提示填了却毫无效果、也没有任何报错指向它。
+  clearBinaries();
+  const FAKE_HOME = join(SRV, "jdk-you-set-by-hand");
+  const FAKE_HOME_BIN = join(FAKE_HOME, "bin");
+  mkdirSync(FAKE_HOME_BIN, { recursive: true });
+  configure([{ language: "java", enabled: true, javaHome: FAKE_HOME }]);
+
+  const merged = lspManager.loadConfig();
+  eq(
+    "★ 用户填的 javaHome 从配置里读得回来(不是存进去就没了)",
+    merged.find((c) => c.language === "java")?.javaHome,
+    FAKE_HOME,
+  );
+  // `getConfig` 走的是同一个 loadConfig —— 给它也钉一条,防止将来有人只修一处。
+  const gc = (lspManager as unknown as { getConfig(l: string): { javaHome?: string } | undefined }).getConfig("java");
+  eq("★ getConfig('java') 也带回了它(启动路径读的就是这个)", gc?.javaHome, FAKE_HOME);
+
+  // 换路径要能覆盖,置空要能清掉 —— 否则「清除」那条动作是哑的。
+  await lspManager.setPath("java", undefined, undefined, join(SRV, "other-jdk"));
+  eq(
+    "换个 JDK 路径 → 覆盖成功",
+    lspManager.loadConfig().find((c) => c.language === "java")?.javaHome,
+    join(SRV, "other-jdk"),
+  );
+  await lspManager.setPath("java", undefined, undefined, "");
+  eq(
+    "清空 javaHome → 真的没了(不是清不掉)",
+    lspManager.loadConfig().find((c) => c.language === "java")?.javaHome,
+    undefined,
+  );
+}
+
+/* ─────────────── 6f. Java 退出码 13 的恢复路径:轮转 + 重试,且**不能挂死** ─────────────── */
+
+console.log("\n§6f jdtls 退出码 13(workspace 打不开):轮转 + 重试一次,而且必须把结局返回出来");
+
+{
+  // ⚠️ **这一段的核心判据是"它有没有返回",不只是"它有没有重试"。**
+  //
+  // 恢复路径是这样:jdtls 以 `java -jar …` 起(`shell:false`),握手失败后如果进程退出码
+  // 是 13,就轮转掉损坏的 `<userData>/lsp/java/workspaces/<hash>` 目录、**再起一次**。
+  //
+  // 这条重试若写成 `return this.ensureServer(...)` 会**自己等自己**:并发去重把同一 key
+  // 的在飞 promise 原样返回,而那个 promise 正是当前这次启动 —— 于是 await 永不 settle,
+  // 整个 Java 语言服务器永久挂起(打开文件、跳转、prewarm 全吊死,且不报错)。所以这里
+  // 用 Promise.race 把「挂死」变成一条看得见的红。
+  if (!FAKE_JAVA || fakeJavaBuildError) {
+    // 编不出 PE 就不静默跳过 —— 静默跳过等于给出一份"全绿"的假象(仓库里那两次
+    // 「测试绿着而问题还在」正是这么来的)。如实报红,并说明是夹具没造起来。
+    check(
+      `★ §6f 需要一个假的 java.exe(退出码 13),但它没造起来:${fakeJavaBuildError || "FAKE_JAVA 为空"}`,
+      false,
+    );
+  } else {
+    const USER_DATA = __userData();
+    // 触发恢复路径需要的东西:equinox launcher jar(buildJavaSpawnCommand 用
+    // findLauncherJar 找它),以及会被轮转的那个 workspace data 目录。
+    const JAVA_INSTALL = join(USER_DATA, "lsp", "java");
+    mkdirSync(join(JAVA_INSTALL, "plugins"), { recursive: true });
+    writeFileSync(join(JAVA_INSTALL, "plugins", "org.eclipse.equinox.launcher_1.0.0.jar"), "");
+    mkdirSync(join(JAVA_INSTALL, "workspaces"), { recursive: true });
+
+    clearBinaries();
+    resetPidLog();
+    resetSent();
+    rmSync(FAKE_JAVA_LOG, { force: true });
+    // serverPath 只要存在即可(resolveServerPath 用它过"找得到"那道检查);真正的命令
+    // 由 buildJavaSpawnCommand 从 javaHome + launcher jar 现拼,jdtls 走 shell:false。
+    configure([{ language: "java", enabled: true, serverPath: FAKE_JAVA, javaHome: FAKE_JAVA_HOME }]);
+
+    const attempts = () =>
+      existsSync(FAKE_JAVA_LOG)
+        ? readFileSync(FAKE_JAVA_LOG, "utf8").trim().split("\n").filter(Boolean).length
+        : 0;
+
+    let settled: { ok: boolean; error?: string } | "HUNG" = "HUNG";
+    try {
+      settled = await Promise.race([
+        lspManager.ensureServer(WS1, "java").then(
+          () => ({ ok: true as const }),
+          (err: unknown) => ({ ok: false as const, error: err instanceof Error ? err.message : String(err) }),
+        ),
+        new Promise<"HUNG">((r) => setTimeout(() => r("HUNG"), 15_000)),
+      ]);
+    } catch (err) {
+      settled = { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+
+    // ★ 最要紧的一条:它**返回了**。挂死的话这里是 "HUNG"(超时),红。
+    check("★★ 恢复路径把结局返回出来了(没有自己等自己的永久挂起)", settled !== "HUNG", settled);
+    // ★ 轮转 + 重试 = **两次**真正启动 jdtls 的 spawn(每次退出码 13)。
+    //   只起一次 = 恢复没跑;起三次及以上 = 恢复循环了。日志里每条一次 jdtls 启动。
+    eq("★ 退出码 13 触发了「轮转 + 重试一次」——恰好起了两次 jdtls", attempts(), 2);
+    // 重试仍失败,应当把失败如实抛回(不是假装成功)。
+    check("重试也失败 → 如实报失败(不假装连上了)", typeof settled === "object" && settled.ok === false, settled);
+    // 损坏的 workspace data 目录被轮转走了(移开或删掉),下一次能干净重来。
+    const leftover = readdirSync(join(JAVA_INSTALL, "workspaces")).filter(
+      (n) => n.includes(".corrupt-"),
+    );
+    check(
+      "损坏的 workspace data 被轮转移开了(下次是干净的一遍)",
+      leftover.length >= 1,
+      { workspaces: readdirSync(join(JAVA_INSTALL, "workspaces")) },
+    );
+
+    lspManager.disposeAll();
+    await sleep(300);
+  }
 }
 
 /* ─────────────────────────── 7. 起不来的时候 ─────────────────────────── *//* ─────────────────────────── 7. 起不来的时候 ─────────────────────────── */

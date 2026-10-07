@@ -21,6 +21,12 @@ function userData(): string {
   return fakeUserData;
 }
 
+/** 把 userData 暴露给脚本 —— §6e 要在 `<userData>/lsp/java/plugins/` 里放一个
+ *  equinox launcher jar,好让 Java 的退出码 13 恢复路径真的能走到。 */
+export function __userData(): string {
+  return userData();
+}
+
 function notHere(name: string): () => never {
   return () => {
     throw new Error(`lsp-smoke 不该走到 electron.${name}(被验的两条路都不碰 Electron)`);

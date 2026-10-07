@@ -192,6 +192,14 @@ class LspManagerImpl {
       enabled: byLang.get(spec.language)?.enabled ?? false,
       serverPath: byLang.get(spec.language)?.serverPath,
       args: byLang.get(spec.language)?.args,
+      // ⚠️ **`javaHome` 非带不可。** 这份 map 是**唯一**的配置读出口(getConfig /
+      // updateConfig / list 全走它)。从前这里只带了 language/enabled/serverPath/args,
+      // 于是用户在「高级」里填的 JDK 17+ 路径**存得进去、读不回来** ——
+      // buildJavaSpawnCommand / installJava / checkJavaRuntime 拿到的 `config?.javaHome`
+      // 永远是 undefined,一律回落到系统 java。而界面上那句提示偏偏就是叫用户"在这里
+      // 指定 JDK 17+ 的路径" —— 用户照做之后 jdtls 仍用旧的 Java 起、仍旧起不来,
+      // 且没有任何报错指向这个设置。带回来,让 override 真的生效。
+      javaHome: byLang.get(spec.language)?.javaHome,
     }));
   }
 
@@ -1263,7 +1271,12 @@ class LspManagerImpl {
         this.rotateJavaWorkspaceData(workspacePath);
         // The retry must not be blocked by the failure we just recorded.
         this.spawnFailures.delete(key);
-        return this.ensureServer(workspacePath, language, false);
+        // ⚠️ **必须直接走 `spawnServer`,不能 `this.ensureServer(...)`。** 这次重试发生在
+        // 外层的启动 promise 还没结束的时候,而 `ensureServer` 会把**同一个 key** 的在飞
+        // promise(`this.spawning`,它正是当前这一个)原样返回 —— 于是重试 await 的是它自己,
+        // 永远不 settle:Java 一旦碰上损坏的 workspace(Equinox exit 13),恢复路径就永久挂起,
+        // 请求/打开文件/prewarm 全部吊死。直接在启动体内重跑,绕开这层去重。
+        return this.spawnServer(workspacePath, language, false);
       }
       throw err;
     }
