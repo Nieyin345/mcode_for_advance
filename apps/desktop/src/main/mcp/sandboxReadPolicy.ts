@@ -27,6 +27,7 @@ import { defaultSkillsRoot } from "@main/lib/skillEngines.js";
 import { libraryRoot, markdownArtifact } from "@main/library/paths.js";
 import { aiVisibleFilesOf, readableFilesOf } from "@main/library/fileImport.js";
 import { isFileSuppressed, loadSuppress, suppressionReasonOfItem } from "@main/library/suppress.js";
+import { trashedItemIds } from "@main/library/trash.js";
 import { LibraryRepo } from "@main/store/repositories.js";
 
 /** 读一份文件 / 列目录(含 glob)/ 全文搜索(grep、后台搜索)。 */
@@ -133,16 +134,23 @@ export const sandboxReadCheck: SandboxReadCheck = (abs, kind) => {
 };
 
 /**
- * `agent_context` 的资料库清单 —— 与 `library_search` 同一口径:整条被屏蔽的不列
- * (`suppressionReasonOfItem`),按文件类型屏蔽的那份不给路径(`aiVisibleFilesOf`)。
- * 路径是**绝对路径**(库里存的是相对库根的;原样给出去,公网那条路会按项目目录解析)。
+ * `agent_context` 的资料库清单 —— 与 `library_search` 同一口径:回收站里的与整条被屏蔽的
+ * 都不列(`trashedItemIds` / `suppressionReasonOfItem`),按文件类型屏蔽的那份不给路径
+ * (`aiVisibleFilesOf`)。路径是**绝对路径**(库里存的是相对库根的;原样给出去,公网那条路
+ * 会按项目目录解析)。
+ *
+ * ⚠️ **回收站这道过滤补于 2026-10-08。** 从前只过屏蔽,漏了回收站 —— 而同类的每个面向
+ * AI 的出口都两道都过(`envPromptFormat.selectVisibleItems`、`manifest.ts` 三处、
+ * `attachToChat`、`libraryServer.ts`)。`agent_context` 走的是公网那条路(`libraryForAi`
+ * 就是它的底),用户丢进回收站("我不要它了")的条目连同绝对路径照常进上下文。
  */
 export const libraryForAi: LibraryForAi = (limit) => {
   try {
     const items: AiLibraryEntry[] = [];
     let hidden = 0;
+    const trash = trashedItemIds();
     for (const it of LibraryRepo.list({ limit }).items) {
-      if (suppressionReasonOfItem(it.id)) {
+      if (trash.has(it.id) || suppressionReasonOfItem(it.id)) {
         hidden += 1;
         continue;
       }

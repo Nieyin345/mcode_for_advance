@@ -194,6 +194,18 @@ def group_filter(group):
 SUPPRESS_SETTING_KEY = "library.suppress"
 GROUPS_SETTING_KEY = "library.groups"
 
+# 回收站(2026-10-08 补)。**「回收站里的东西不进上下文」是一条既定的硬规矩** —— 用户把
+# 一条丢进回收站的意思就是"我不要它了"。所有其它面向 AI 的出口都守着它(manifest 三处、
+# attachToChat、envPrompt 的 selectVisibleItems、libraryServer 的翻库两条、customUi),
+# 而这个脚本从前只过**屏蔽**那道门、漏了回收站 —— 被丢掉的条目连同绝对路径照样列给模型。
+# 判定与主进程**同口径**(library/trash.ts 的 allTrashCollectionIds):全局键给的集合
+# (要核对它还在)+ 叫「回收站」的集合。kind 退役后每库键都指回全局键,故只读这一个。
+TRASH_SETTING_KEY = "library.trashCollectionId"
+TRASH_NAME = "回收站"
+# 被回收站挡下的条目的"原因"标记 —— report_suppressed 拿它把回收站与屏蔽分开报。
+# 两者是**不同的用户动作**("我不要它了" vs "不给 AI 看"),说的话也该不一样。
+TRASH_REASON = "回收站里的条目(可在左栏还原)"
+
 # 出厂的两个大类。与契约的 DEFAULT_LIBRARY_GROUPS 逐字一致 —— 用户没动过大类表
 # 时它就是生效的那一份。
 #
@@ -351,6 +363,38 @@ def load_suppress_rule(cur):
     return {"nodes": nodes, "extensions": extensions}
 
 
+def load_trash_ids(cur):
+    """回收站里的条目 id 集合。与主进程 allTrashCollectionIds 同口径:全局键给的集合
+    (要核对它还在)+ 表里叫「回收站」的集合。读不到 / 表缺 → 空集(什么都没进回收站),
+    绝不抛 —— 同屏蔽那条退路。
+
+    违规代价同屏蔽:漏了它,用户丢进回收站的条目(连同绝对路径)照常进模型上下文。
+    """
+    ids = set()
+    trash_cols = set()  # 只有**回收站集合**的 id,不是全部集合
+    existing = set()  # 表里还在的集合 id —— 全局键那条要核对它还在(同主进程 alive())
+    try:
+        for row in cur.execute("SELECT id, name FROM library_collections"):
+            cid = str(row["id"])
+            existing.add(cid)
+            if (row["name"] or "").strip() == TRASH_NAME:
+                trash_cols.add(cid)
+    except sqlite3.Error:
+        return ids
+    global_id = read_setting(cur, TRASH_SETTING_KEY)
+    if global_id and str(global_id) in existing:
+        trash_cols.add(str(global_id))
+    for cid in trash_cols:
+        try:
+            for row in cur.execute(
+                "SELECT item_id FROM library_collection_items WHERE collection_id = ?", [cid]
+            ):
+                ids.add(str(row["item_id"]))
+        except sqlite3.Error:
+            continue
+    return ids
+
+
 def describe_node_key(cur, group_names, key):
     """一个节点键 → 用户看得懂的名字。都查不到就退回键本身 —— 那说明这一条指向的
     东西已经被删了,说清"是哪一条"比说一个空字符串有用。"""
@@ -371,6 +415,10 @@ def suppress_reason(cur, sup, rec):
     rec 是 as_rec 出来的那几列 —— 判定要 id 和条目名下的几份文件。
     这是**整条挡**那一层;按份去掉在 file_of 里。
     """
+    # 回收站**先判,且不看屏蔽规则空不空**:回收站拦下的条目与屏蔽无关,屏蔽一条都没设
+    # 时它照样要把回收站里的挡掉(与主进程同一套可见性)。判据落在条目自己身上。
+    if rec["id"] in sup["trash_ids"]:
+        return TRASH_REASON
     if not sup["nodes"] and not sup["extensions"]:
         return None
 
@@ -449,19 +497,29 @@ def report_suppressed(reasons):
     仓库的硬规矩:坏东西(这里是被挡掉的东西)要显式报出来,不静默跳过。模型看不见
     这几行,就会拿"剩下这些"当整个库向用户汇报;而那是它给不出正确答案,不是它偷懒。
     按原因归并成几行:挡掉五百条而原因只有一个时,逐条列出来只是噪声。
+
+    回收站与屏蔽是**两句不同的话**(用户的两个不同动作:"我不要它了" 与 "不给 AI 看"),
+    所以分开报,各说各的退路(回收站→左栏还原;屏蔽→设置)。
     """
     if not reasons:
         return
     order = []
     counts = {}
     for r in reasons:
+        if r == TRASH_REASON:
+            continue  # 回收站单独一段,见下
         if r not in counts:
             counts[r] = 0
             order.append(r)
         counts[r] += 1
-    print("⚠️ 屏蔽规则挡掉了 " + str(len(reasons)) + " 条(设置 → 资料库屏蔽),它们不在下面:")
-    for r in order:
-        print("    - " + r + ":" + str(counts[r]) + " 条")
+    trash_n = reasons.count(TRASH_REASON)
+    if order:
+        print("⚠️ 屏蔽规则挡掉了 " + str(sum(counts.values())) + " 条(设置 → 资料库屏蔽),它们不在下面:")
+        for r in order:
+            print("    - " + r + ":" + str(counts[r]) + " 条")
+    if trash_n:
+        print("⚠️ 回收站里的 " + str(trash_n) + " 条不在下面 —— 用户丢进回收站的意思是不要它了。"
+              "要它们回来:在左栏的回收站里还原。")
 
 
 def cmd_list(cur, root, args, sup):
@@ -711,6 +769,9 @@ def main():
             "nodes": set(rule["nodes"]),
             "extensions": rule["extensions"],
             "group_names": group_names,
+            # 回收站集合里的条目 id —— 「丢进回收站的条目不进上下文」那道门(与屏蔽同在
+            # suppress_reason 里判,见那里的说明)。
+            "trash_ids": load_trash_ids(cur),
         }
         args.fn(cur, root, args, sup)
     finally:

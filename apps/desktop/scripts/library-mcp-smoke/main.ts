@@ -543,6 +543,34 @@ console.log("\n回收站:翻库的路");
   restoreItemsFromTrash([doomed.id]);
 }
 
+/* ──────────────── 5c. `agent_context`(公网那条路的底)也守着回收站那道门 ──────────── */
+
+console.log("\n回收站:agent_context 的路");
+
+// `libraryForAi`(`sandboxReadPolicy.ts`)是公网 `agent_context` 的资料库清单底 ——
+// 它从前只过**屏蔽**那道门、漏了**回收站**。回收站里的条目(连同绝对路径)会照常列给
+// 外面的 AI。与 5b 同一类漏、同一份判据(`trashedItemIds`)。
+{
+  const { ensureTrashCollection, trashedItemIds, restoreItemsFromTrash } = await import("@main/library/trash.js");
+  const { libraryForAi } = await import("@main/mcp/sandboxReadPolicy.js");
+
+  const doomed = LibraryRepo.upsert({ title: "公网路要挡的那一篇" });
+  const home = CollectionRepo.create("回收站公网冒烟分类", null, "paper");
+  CollectionRepo.assign(home.id, [doomed.id], true);
+  await call("library_remove", { itemIds: [doomed.id] });
+  check("前提:它真的进了回收站", trashedItemIds().has(doomed.id));
+  ensureTrashCollection();
+
+  const view = libraryForAi(500);
+  check(
+    "★ libraryForAi 不把回收站里的条目列给公网 AI",
+    !!view && !view.items.some((i) => i.title === "公网路要挡的那一篇"),
+    view?.items.map((i) => i.title),
+  );
+
+  restoreItemsFromTrash([doomed.id]);
+}
+
 /* ──────────────── 6. 长尾:调用方最可能踩的两个错 ──────────────── */
 
 console.log("\n长尾");

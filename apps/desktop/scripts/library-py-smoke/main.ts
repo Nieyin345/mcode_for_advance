@@ -82,16 +82,20 @@ c.executemany("INSERT INTO library_items(id,title,abstract,url,md_path,pdf_path,
   # 通用文件只有 file_path —— 从前 file_of 只认 md / pdf,于是说它「没有文件」
   ("li_doc", "课题报告", None, None, None, None, "files/li_doc-report.docx", 1000, 1000),
   ("li_dm", "转录过的 Word", None, None, "markdown/imported/li_dm/full.md", None, "files/li_dm-a.docx", 1000, 1000),
+  # 回收站里的条目 —— 用户"我不要它了"的意思,不该进模型上下文(见下面 3b 段)
+  ("li_trash", "被丢进回收站的那一篇", None, None, "markdown/t.md", None, None, 1000, 1000),
 ])
 c.executemany("INSERT INTO library_collections(id,name,parent_id,group_id,sort_order) VALUES(?,?,?,?,?)", [
   ("lc_aw", "精读队列", None, "docs", 0),
   ("lc_sub", "子分类", "lc_aw", "docs", 1),
   ("lc_tpl", "模版集", None, "templates", 0),
   ("lc_orphan", "没挂大类的", None, None, 0),
+  ("lc_trash", "回收站", None, "docs", 2),
 ])
 c.executemany("INSERT INTO library_collection_items(collection_id,item_id) VALUES(?,?)", [
   ("lc_aw", "li_p1"), ("lc_sub", "li_p1"), ("lc_tpl", "li_t1"), ("lc_orphan", "li_orphan"),
   ("lc_aw", "li_pm"), ("lc_aw", "li_po"), ("lc_aw", "li_doc"), ("lc_aw", "li_dm"),
+  ("lc_trash", "li_trash"),
 ])
 c.execute("INSERT INTO settings(key,value) VALUES(?,?)", ("library.groups", json.dumps([
   # NOTE: 老库里这份 JSON 仍然带着 kinds —— 代码停写但没删列。脚本必须忽略它,
@@ -171,6 +175,23 @@ console.log("\nlist · 全量、按大类、屏蔽");
   // 挂在 templates 下的那条本来就被屏蔽了,所以"看不到"不构成证据;换个说法:
   // 它至少不该出现在 docs 这一路。
   check("★ --group docs 不给别的大类的条目", !docs.includes("LaTeX 论文模版"), docs);
+}
+
+/* ──────────────── 3b. 回收站里的条目也不该进上下文(2026-10-08 补) ──────────────── */
+
+console.log("\nlist · 回收站那道门");
+
+// **「回收站里的东西不进上下文」是一条既定的硬规矩** —— 用户把一条丢进回收站的意思
+// 就是"我不要它了"。所有面向 AI 的出口都守着它(manifest 三处、attachToChat、
+// envPrompt.selectVisibleItems、libraryServer 的翻库两条、customUi)。而这个脚本从前
+// 只过**屏蔽**、漏了回收站 —— 被丢掉的条目连同绝对路径照样列给模型。
+{
+  const all = at("list");
+  check("★ list:回收站里的条目不出现", !all.includes("被丢进回收站的那一篇"), all);
+  // 与屏蔽**分开报**:两者是不同的用户动作,说的话该不一样("还原" vs "改设置")。
+  check("★ 而且如实说是回收站挡的(不是笼统的屏蔽)", all.includes("回收站里的"), all);
+  const f = at("find", "回收站");
+  check("★ find:回收站里的条目不出现", !f.includes("被丢进回收站的那一篇"), f);
 }
 
 {
