@@ -360,6 +360,10 @@ const HANDLERS: Record<string, RpcHandler> = {
     if (!session) throw new RpcError(`session not found: ${input.sessionId}`, 404);
     const project = ProjectRepo.get(session.projectId);
     if (!project) throw new RpcError(`project not found for session ${input.sessionId}`, 500);
+    // 已物化的隔离工作树优先(与桌面 `resolveSessionCwd` 同一优先级):手机发的这一轮
+    // 必须跑在会话自己的工作树里,不能把 agent 的编辑写进用户主检出。手机上不物化新
+    // 工作树(那需要 Git 操作与主进程交互),只用已存在的那份;没物化就走项目根。
+    const cwd = session.envMode === "worktree" && session.worktreePath ? session.worktreePath : project.path;
 
     let updated = session;
     const isFirstMessage = session.title === "New session" && input.prompt.trim().length > 0;
@@ -387,6 +391,9 @@ const HANDLERS: Record<string, RpcHandler> = {
 
     SessionRepo.updateStatus(session.id, "running");
     runtimeManager.bindSession(updated);
+    // 状态置 running 后到运行时真正接管前，任何抛错都要把状态放回去（同桌面端
+    // ipc/claude.ts）—— 否则会话永远停在 running、`findFreshByProject` 不再复用它。
+    try {
     // Background auto-title generation — same one-shot LLM routine the desktop
     // sendTurn fires (see titleGen.ts). Fire-and-forget. **放在分岔之前**:图型
     // 工作流那一轮同样要起标题。
@@ -415,7 +422,7 @@ const HANDLERS: Record<string, RpcHandler> = {
       // 更看不见主进程日志 —— 交给 launchContinuation 给会话补收口事件。
       launchContinuation(updated, "起跑", {
         session: updated,
-        cwd: project.path,
+        cwd,
         prompt: input.prompt,
         userMessage: input.userMessage,
       });
@@ -424,7 +431,7 @@ const HANDLERS: Record<string, RpcHandler> = {
     }
     const handle = await runtimeManager.sendTurn(updated, {
       prompt: input.prompt,
-      cwd: project.path,
+      cwd,
       skills: input.skills,
       images: input.images,
       // User-message echo payload from the phone (cross-client bubble).
@@ -434,6 +441,10 @@ const HANDLERS: Record<string, RpcHandler> = {
     if (handle === null) throw new Error("这个对话上一轮还在运行，消息未发送：请等本轮结束或按停止后再发");
     log.info(`mobile: turn sent (${session.id}) by ${ctx.device.name}`);
     return { session: updated };
+    } catch (err) {
+      SessionRepo.updateStatus(session.id, "idle");
+      throw err;
+    }
   },
 
   "claude:interrupt": (raw) => {
@@ -466,6 +477,13 @@ const HANDLERS: Record<string, RpcHandler> = {
   // included) re-syncs its list and its composer chips for this thread.
   "session:updateSettings": (raw) => {
     const input = UpdateSessionSettingsSchema.parse(raw);
+    // **providerId 过了首条消息就锁死** —— 与桌面那条 handler 同一条规矩(见
+    // `ipc/claude.ts` 的 `SESSION_UPDATE_SETTINGS`)。手机能改这条的话,一条跑过对话的
+    // 会话会被改成另一个引擎的 DB 行,而运行时(启动时捕获的 provider)不动 ——
+    // 界面是 A、实跑是 B。这里也要拒,不然锁定只对桌面成立。
+    if (input.providerId !== undefined && MessageRepo.hasAny(input.sessionId)) {
+      throw new Error("会话已经有消息了,引擎不能再改");
+    }
     SessionRepo.updateSettings(input.sessionId, {
       model: input.model,
       effort: input.effort,

@@ -56,6 +56,7 @@ const PANEL_LOADERS = {
   WorkflowsPanel: () => import("./workflows/WorkflowsPanel.js"),
   HooksPanel: () => import("./HooksPanel.js"),
   McpPanel: () => import("./McpPanel.js"),
+  EngineToolsPanel: () => import("./EngineToolsPanel.js"),
   PluginsPanel: () => import("./PluginsPanel.js"),
   AppearancePanel: () => import("./AppearancePanel.js"),
   ShortcutsPanel: () => import("./ShortcutsPanel.js"),
@@ -106,6 +107,7 @@ const SkillsPanel = lazy(() => PANEL_LOADERS.SkillsPanel().then((m) => ({ defaul
 const WorkflowsPanel = lazy(() => PANEL_LOADERS.WorkflowsPanel().then((m) => ({ default: m.WorkflowsPanel })));
 const HooksPanel = lazy(() => PANEL_LOADERS.HooksPanel().then((m) => ({ default: m.HooksPanel })));
 const McpPanel = lazy(() => PANEL_LOADERS.McpPanel().then((m) => ({ default: m.McpPanel })));
+const EngineToolsPanel = lazy(() => PANEL_LOADERS.EngineToolsPanel().then((m) => ({ default: m.EngineToolsPanel })));
 const PluginsPanel = lazy(() => PANEL_LOADERS.PluginsPanel().then((m) => ({ default: m.PluginsPanel })));
 const AppearancePanel = lazy(() => PANEL_LOADERS.AppearancePanel().then((m) => ({ default: m.AppearancePanel })));
 const ShortcutsPanel = lazy(() => PANEL_LOADERS.ShortcutsPanel().then((m) => ({ default: m.ShortcutsPanel })));
@@ -153,7 +155,7 @@ function PanelLoading() {
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "library-types" | "custom-ui" | "runtimes" | "custom-models" | "institution" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
+type SectionId = "general" | "library-types" | "custom-ui" | "runtimes" | "custom-models" | "institution" | "skills" | "workflows" | "automation" | "hooks" | "mcp" | "engine-tools" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -216,6 +218,9 @@ const NAV_GROUPS: NavGroup[] = [
       // 节点都生效(见 `@contracts/hook`)。
       { id: "hooks", labelKey: "settings.nav.hooks", icon: IconActivity },
       { id: "mcp", labelKey: "settings.nav.mcp", icon: McpIcon },
+      // 引擎工具紧挨着 MCP：两者都在回答"**模型能用哪些工具**"——MCP 管外部接入的，
+      // 这一页管引擎自带的（内置工具增减）。放一起，工具面才是一整块。
+      { id: "engine-tools", labelKey: "settings.nav.engineTools", icon: IconAdjustmentsHorizontal },
       { id: "memory", labelKey: "settings.nav.memory", icon: IconNotebook },
     ],
   },
@@ -278,7 +283,16 @@ export function SettingsPage() {
   const settingsSection = useSessionStore((s) => s.settingsSection);
   // Existing callers or an already-open settings state may still request the
   // retired data-root id; keep that deep link landing on the merged tab.
-  const requestedSection = settingsSection === "data-root" ? "library-types" : settingsSection;
+  // ⚠️ **`"office"` 也是同一种遗留 id** —— `OnlyOfficeEditorPane` 的三处「打开设置」
+  // 用的是它,而导航里没有这一项(OnlyOffice 的配置卡在「运行时」页里)。不映射的话
+  // 那三处深链会回落到 `NAV_ITEMS[0]`(常规),用户点了「打开设置」却看不到任何
+  // OnlyOffice 的东西。映射到真正承载它的 `runtimes`。
+  const requestedSection =
+    settingsSection === "data-root"
+      ? "library-types"
+      : settingsSection === "office"
+        ? "runtimes"
+        : settingsSection;
   const [active, setActive] = useState<SectionId>(
     () =>
       (requestedSection && NAV_ITEMS.some((n) => n.id === requestedSection)
@@ -394,6 +408,7 @@ export function SettingsPage() {
             {active === "hooks" && <HooksPanel />}
             {active === "runtimes" && <RuntimesPanel />}
             {active === "mcp" && <McpPanel />}
+            {active === "engine-tools" && <EngineToolsPanel />}
             {active === "memory" && <MemoryExplorerPanel />}
             {active === "plugins" && <PluginsPanel />}
             {active === "notifications" && <NotificationsPanel />}

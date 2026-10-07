@@ -5,6 +5,7 @@ import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, Dialog, Input, Select } from "@renderer/components/ui/index.js";
+import { ErrorNote } from "@renderer/components/ui/index.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { SettingRow } from "./SettingRow.js";
@@ -52,6 +53,9 @@ function ShellSection() {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  /** 保存失败的原因。**失败必须说出来** —— 从前这里只有 `try/finally`,抛了就静默:
+   *  用户点「保存」既看不到「已保存」也看不到任何错,像按钮坏了。 */
+  const [error, setError] = useState<string | null>(null);
 
   // Load the current setting on mount (panel is freshly mounted per nav
   // switch, so reload its value each time it's shown).
@@ -66,9 +70,12 @@ function ShellSection() {
 
   const save = async () => {
     setSaving(true);
+    setError(null);
     try {
       await api.setting.set({ key: TERMINAL_SHELL_SETTING_KEY, value: shell.trim() });
       setSaved(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
     }
@@ -109,6 +116,11 @@ function ShellSection() {
         </div>
         {saved && (
           <p className="mt-1 text-[0.7857em] text-accent">{t("settings.terminal.shellSaved")}</p>
+        )}
+        {error !== null && (
+          <ErrorNote title={t("settings.saveFailed")} className="mt-1">
+            {error}
+          </ErrorNote>
         )}
       </SettingRow>
     </SettingsSection>

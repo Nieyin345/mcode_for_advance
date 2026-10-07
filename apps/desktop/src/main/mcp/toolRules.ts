@@ -64,11 +64,12 @@ export const BROWSER_MCP_SERVER = "mcode-browser";
 export const BROWSER_MCP_PREFIX = `mcp__${BROWSER_MCP_SERVER}__`;
 
 /** Read-only browser tools (can't mutate the page, navigate, or submit) —
- *  auto-approved in every mode, like the Pi provider's MCODE_BROWSER_READONLY
- *  set. scroll/wait/find are pure reading aids; save_pdf writes only into the
- *  managed artifacts dir with sanitized names (same class as screenshot's
- *  best-effort save). The side-effecting navigate/click/type/keys/select/
- *  upload_file/history/close_tab go through approval. */
+ *  auto-approved in every mode. **唯一的一份清单** —— Claude 的 canUseTool、Pi 的
+ *  `tool_call` 守卫(mcodeExtension)、Codex 的动态工具闸门都从这里取。scroll/wait/
+ *  find are pure reading aids; save_pdf writes only into the managed artifacts dir
+ *  with sanitized names (same class as screenshot's best-effort save). The
+ *  side-effecting navigate/click/type/keys/select/upload_file/history/close_tab
+ *  go through approval. */
 export const BROWSER_READONLY_SUFFIXES = new Set([
   "browser_list",
   "browser_snapshot",

@@ -992,6 +992,29 @@ console.log("\n§11 守卫:断言没有空过");
   check("数据根指向临时目录(没碰用户的 mcode.db)", DATA.includes("mcode-lsp-data-"), DATA);
 }
 
+console.log("\n§8 并发 ensureServer:同一个 key 只起一个进程");
+{
+  // 两个调用一起穿过「已有吗」检查(ensureServer 中途有 await),各自 spawn 一个进程,
+  // 输的那个 handle 被覆盖 → disposeAll 遍历不到、永远杀不掉(jdtls 一个孤儿约 1GB)。
+  // 判据住在"起了几个进程"上:并发拿同一个 key,只允许一个。
+  clearBinaries();
+  resetPidLog();
+  configure([{ language: "typescript", enabled: true, serverPath: GOOD_TS }]);
+
+  await Promise.all([
+    lspManager.ensureServer(WS1, "typescript"),
+    lspManager.ensureServer(WS1, "typescript"),
+    lspManager.ensureServer(WS1, "typescript"),
+  ]);
+  await sleep(500);
+  eq("三个并发调用只起了一个 server", pidsFor("ts").length, 1);
+
+  // disposeAll 必须能收走它(证明我们缓存的是同一个 handle,不是被覆盖的孤儿)。
+  await lspManager.disposeAll();
+  await sleep(700);
+  same("disposeAll 把它收干净了(没有杀不到的孤儿)", pidsFor("ts").filter(alive), []);
+}
+
 /* ─────────────────────────── 收尾 ─────────────────────────── */
 
 lspManager.disposeAll();

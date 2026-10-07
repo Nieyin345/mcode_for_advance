@@ -779,7 +779,7 @@ export function SkillsPanel() {
     <div className={cn("mx-auto flex h-full w-full min-h-0 flex-col", PANEL_MAX_W.form)}>
       <PanelHeader
         className="mb-3"
-        title="Skills"
+        title={t("settings.skills.pageTitle")}
         action={
           <ScopeTabs
             items={[
@@ -831,10 +831,11 @@ export function SkillsPanel() {
         <SkillNodesView
           skills={nodeInventory.data?.projectPath === activeProjectPath
             ? nodeInventory.data?.skills ?? panelSkills : panelSkills}
-          onJumpToWorkflow={() => {
-            // 跳到「工作流」那一页 —— 那边自己能选中这一份。这里不传 id:
-            // `setSettingsOpen` 只认 section,选中态是那个页面自己的事。
-            useSessionStore.getState().setSettingsOpen(true, "workflows");
+          onJumpToWorkflow={(workflowId) => {
+            // 跳到「工作流」那一页,**并把要打开的那一份 id 带过去** ——
+            // `WorkflowLibraryView` 挂载后选中它、用完即清。不传的话那边停在空编辑器,
+            // 用户得自己在一长串列表里再找一遍(这正是反查点进来时最不想做的事)。
+            useSessionStore.getState().setSettingsOpen(true, "workflows", workflowId);
           }}
           onJumpToProfile={() => useSessionStore.getState().setSettingsOpen(true, "workflows")}
         />

@@ -543,6 +543,14 @@ eq(
 windowStub.resetSent();
 const killAgain = await kill({ terminalId: a.terminalId });
 eq("把一个已经关掉的 terminalId 再 kill 一次 → 仍然 ok:true(点两下关闭不该弹错)", killAgain.ok, true);
+// ⚠️ **成功就不该带 `error`。** `TerminalOpResult` 里 `error` 只在 `ok:false` 时有意义 ——
+// 从前的形状是 `{ok:true, error:"终端不存在或已退出"}`,自相矛盾两边都用不对:消费者见
+// `ok` 就成功、那句原因永远不显示;若谁改成"见 error 即失败",又会在真正成功时报假错。
+eq(
+  "★ 而且成功那一支**不带 error**(不许出现 ok:true 还挂着原因的自相矛盾形状)",
+  (killAgain as { error?: string }).error,
+  undefined,
+);
 eq("…重复 kill 不会再推一条 exit(那条 id 已经不在了)", exitsFor(a.terminalId as string).length, 0);
 
 // 重复 kill 要给 list 留下东西吗?

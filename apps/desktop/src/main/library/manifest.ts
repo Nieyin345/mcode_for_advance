@@ -185,11 +185,21 @@ function writeManifest(fileName: string, lines: string[], count: number, name: s
  */
 export function writeCollectionManifest(collectionId: string): ManifestResult {
   const collection = CollectionRepo.list().find((c) => c.id === collectionId);
+  // **找不到就空手返回,和两个兄弟一样**(`writeItemManifest` / `writeGroupManifest`)。
+  //
+  // 这里**必须挡在写文件之前**,而且必须是"早退"这个形状(不是抛):文件名直接用
+  // `collectionId` 拼,未校验的 id(`..\..\..\x`)会被 `join` 规范化后写到 manifestDir 之外
+  // —— 未知 id 早退就永远走不到那一句,路径穿越无从发生。
+  //
+  // ⚠️ **早退而不是抛**是有原因的:`attachToChat` 用 `res.path` 是否为空来判断"找不到",
+  // 抛出去会穿过它(`c:某个不存在的分类` 在左栏点了、或一条 kind 时代遗留的 `c:xxx`
+  // 粘过来,都是正常会发生的事)—— 调用方看到的是异常而不是一句"找不到这个分类"。
+  if (!collection) return { path: "", count: 0, name: "" };
   const all = LibraryRepo.listByCollection(collectionId);
   const trashed = trashedItemIds();
   const trashedCount = all.filter((i) => trashed.has(i.id)).length;
   const { items, suppressed } = dropSuppressed(all.filter((i) => !trashed.has(i.id)));
-  const name = collection?.name ?? collectionId;
+  const name = collection.name;
   const lines = [`# 资料库:${name}`, "", `共 ${items.length} 条。`, ""];
   // 提示词**两层叠加,从大到小**:大类(组)→ 集合。大类说明经 `collection.groupId`
   // 查（kind 退役,不再是"从条目反查类型"）。哪层没写就跳过。

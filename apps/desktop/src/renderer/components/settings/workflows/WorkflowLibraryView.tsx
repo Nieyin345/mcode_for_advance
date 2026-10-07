@@ -81,6 +81,7 @@ import { WorkflowCanvas } from "./WorkflowCanvas.js";
 import { NodeInspector } from "./NodeInspector.js";
 import { SaveStateLine, type SaveState } from "./SaveStateLine.js";
 import { WorkflowListRow } from "./WorkflowListRow.js";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
 
 /**
  * **还没保存的草稿**,按工作流 id 存。
@@ -155,6 +156,7 @@ export function WorkflowLibraryView({
   profileError,
   onSaveProfile,
   onRemoveProfile,
+  focusWorkflowId,
 }: {
   /** 这一栏在编**工作流**还是**自动化**。两者共用这一整个视图 —— 同一张画布、同一个
    *  检查器、同一套保存与草稿,差别只有三处:列哪些、新建出来的带不带触发器、以及
@@ -171,6 +173,11 @@ export function WorkflowLibraryView({
   profileError: string | null;
   onSaveProfile: (profile: AgentProfile) => Promise<boolean>;
   onRemoveProfile: (id: string) => Promise<void>;
+  /**
+   * 一次性焦点:挂载后**打开这一份**图(技能/插件页「节点」反查点一行时带过来的)。
+   * 打开并**清掉**这个意图(见下面的 effect)—— 不清的话关掉设置再打开会又选它。
+   */
+  focusWorkflowId?: string | null;
 }) {
   const { t, locale } = useI18n();
   const labels = PURPOSE_LABELS[purpose];
@@ -322,6 +329,19 @@ export function WorkflowLibraryView({
     },
     [loadList, t],
   );
+
+  /**
+   * **一次性焦点**:技能/插件页的「节点」反查点了某一行 → 打开它指的那份图。
+   *
+   * 打开之后立刻把意图清掉(用完即清):留着的话,关掉设置再打开会莫名其妙又选中它。
+   * 等 `entries` 读回来再开**没必要** —— `openWorkflow` 直接按 id 取文档,列表在不在
+   * 都不影响;id 已删时它自己会报"打开失败"并重拉列表。
+   */
+  useEffect(() => {
+    if (!focusWorkflowId) return;
+    void openWorkflow(focusWorkflowId);
+    useSessionStore.setState({ settingsFocusWorkflowId: null });
+  }, [focusWorkflowId, openWorkflow]);
 
   /* ── 保存 / 草稿 ── */
 

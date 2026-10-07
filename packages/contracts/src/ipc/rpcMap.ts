@@ -37,6 +37,7 @@ import type {
 import type { RelayStatus, RelayVpsConfig, RelayVpsConfigInput } from "../relay.js";
 import type { LibraryItem, LibraryItemLink, LibraryLinkView, LibraryCollection, InstitutionProfile, FullTextMatch, AuthSiteStatus, LibraryConversionRow, LibraryNote, PdfHighlight } from "../library.js";
 import type { LibraryGroupMeta, LibrarySuppressRule } from "../libraryTypes.js";
+import type { EngineToolsGetInput, EngineToolsSetInput, EngineToolsSnapshot } from "./engineTools.js";
 import type { GetSettingInput, SetSettingInput, GetManySettingsInput, GetManySettingsResult, SettingExportFileResult, SettingImportFileResult, GetVoiceModelDirInput, GetVoiceModelDirResult, SetVoiceModelDirInput, SetVoiceModelDirResult, NotificationPrefs } from "./settings.js";
 import type { StartSessionInput, ListSideChatsInput, SendTurnInput, InterruptInput, InjectInput, ApproveInput, RespondQuestionInput, RespondPlanApprovalInput, RewindTurnInput, UpdateSessionSettingsInput, CreateProjectInput, ProjectSessionsInput, SessionListAllInput, SetProjectGroupInput, ReorderProjectsInput, PinProjectInput, RenameProjectInput, SessionSearchInput, BookmarkSearchInput, BookmarkSearchResult, SessionMessagesInput, SaveMessagesInput, UpsertMessagesInput, TruncateAndInsertMessagesInput, RenameSessionInput, ForkSessionInput, PinSessionInput, UpdateBookmarksInput, OpenPathInput, ShowItemInFolderInput, OpenFileInput, SessionListNodesInput, SessionHasNodesInput } from "./session.js";
 import type { VoiceStartInput, VoiceFeedInput, VoiceStopInput, VoiceStopResult, VoiceCancelInput, VoiceModelListResult, VoiceDownloadModelInput } from "./voice.js";
@@ -561,6 +562,16 @@ export interface RpcMap {
   "mcp.enginesSet": (
     input: McpEnginesSetInput,
   ) => Promise<{ ok: boolean; error?: string; perEngine?: McpEngineState }>;
+  /** Per-engine **built-in tool** exclusion policy (设置 → 引擎工具). Returns the
+   *  stored policy plus, per engine, whether that engine can actually drop a
+   *  named built-in tool (Codex cannot — only sandbox/approval levels). */
+  "engineTools.get": (input: EngineToolsGetInput) => Promise<EngineToolsSnapshot>;
+  /** Replace the exclusion list for one engine. Claude → `disallowedTools`,
+   *  Pi → `excludeTools`; Codex accepts the write but reports `supported:false`.
+   *  Takes effect on the next turn. */
+  "engineTools.set": (
+    input: EngineToolsSetInput,
+  ) => Promise<{ ok: boolean; error?: string; snapshot?: EngineToolsSnapshot }>;
   /** Run the OAuth browser login for a remote MCP server (claude mcp login).
    *  Opens the system browser; resolves when the CLI reports the flow done. */
   "mcp.authorize": (input: McpAuthorizeInput) => Promise<{ ok: boolean; error?: string }>;
@@ -1604,6 +1615,9 @@ export const IPC = {
   MCP_TOGGLE: "mcp:toggle",
   // Per-engine visibility matrix for MCP servers (claude/codex; pi has no MCP)
   MCP_ENGINES_SET: "mcp:enginesSet",
+  // Per-engine built-in tool exclusion (settings panel): read / write
+  ENGINE_TOOLS_GET: "engineTools:get",
+  ENGINE_TOOLS_SET: "engineTools:set",
   MCP_AUTHORIZE: "mcp:authorize",
   MCP_UNAUTHORIZE: "mcp:unauthorize",
   MCP_SAVE: "mcp:save",

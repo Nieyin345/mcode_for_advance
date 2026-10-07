@@ -349,7 +349,7 @@ export async function generateCommitMessageForRepo(input: {
    *  (staged AND unstaged) — used by the worktree merge-back dialog, whose
    *  pre-merge auto-commit captures ALL uncommitted changes. */
   scope?: "staged" | "worktree";
-}): Promise<{ ok: boolean; message?: string; error?: string; cancelled?: boolean }> {
+}): Promise<{ ok: boolean; message?: string; error?: string }> {
   try {
     // 1. Collect the diff the generation is based on. The worktree scope
     //    reads the whole working tree against HEAD — `git diff --cached`
@@ -819,18 +819,37 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
     }
     try {
       const git = (await loadSimpleGit())(input.repoPath);
-      // Separate tracked (modified/staged/deleted) from untracked files:
-      // tracked → git checkout -- <file> (restore to index)
-      // untracked → git clean -f -- <file> (remove)
+      // 分三类,不是两类:
+      //   untracked  → `git clean -f`(从磁盘删掉,它从没进过索引)
+      //   added      → 索引里是**新增**、磁盘上还有工作区副本。`git checkout --` 对它
+      //                **什么都不做**(没有 HEAD 版本可还原),于是"丢弃"变成静默空操作、
+      //                还回 `{ok:true}`,用户以为删干净了其实文件还在、还暂存着。
+      //                正确做法:`git rm --cached` 退暂存 + 删磁盘副本。
+      //   其余已跟踪 → `git checkout --`(从索引还原)
       const status = await git.status();
       const untrackedSet = new Set(
         status.files.filter((f) => f.working_dir === "?" || f.index === "?").map((f) => f.path),
       );
+      // index 是 "A"(新增已暂存)且**不是** untracked —— porcelain `A ` 的语义就是
+      // "索引里有、HEAD 里没有"。`AM` / `AD` 同样落这一档(它们也有暂存的新增内容)。
+      const addedSet = new Set(
+        status.files
+          .filter((f) => f.index === "A" && f.working_dir !== "?")
+          .map((f) => f.path),
+      );
       const tracked: string[] = [];
+      const added: string[] = [];
       const untracked: string[] = [];
       for (const fp of input.filePaths) {
         if (untrackedSet.has(fp)) untracked.push(fp);
+        else if (addedSet.has(fp)) added.push(fp);
         else tracked.push(fp);
+      }
+      if (added.length > 0) {
+        // `--cached` 只动索引、不碰工作区,所以不会被 safe-guard 拦。`-f` 是必需的:
+        // 一个"新增"文件的索引内容既不同于 HEAD(压根没有)、也可能不同于工作区(cached 后
+        // 又改过),git 的默认安全检查会拒;而这里本就是"丢弃",覆盖它是对的。
+        await git.raw(["rm", "--cached", "-f", "-r", "--", ...added]);
       }
       if (tracked.length > 0) {
         await git.checkout(["--", ...tracked]);
@@ -838,7 +857,14 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
       if (untracked.length > 0) {
         await git.clean("f", ["-d", "--", ...untracked]);
       }
-      log.info(`git.discard succeeded in ${input.repoPath} (${tracked.length} tracked, ${untracked.length} untracked)`);
+      // `git rm --cached` 不删磁盘副本 —— 补上,否则"新增"那一档只退了暂存、文件还在。
+      // 与 untracked 走的是同一条删除路径(它俩的磁盘状态是一样的:一个未跟踪的文件)。
+      if (added.length > 0) {
+        await git.clean("f", ["-d", "--", ...added]);
+      }
+      log.info(
+        `git.discard succeeded in ${input.repoPath} (${tracked.length} tracked, ${added.length} added, ${untracked.length} untracked)`,
+      );
       broadcastGitChanged(input.repoPath);
       return { ok: true };
     } catch (err) {

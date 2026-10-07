@@ -94,6 +94,10 @@ export function UsagePanel() {
   // 这里只是把同一个设置键读出来显示、改了写回去。
   const maxParallel = useSessionStore((s) => s.workflowMaxParallel);
   const setMaxParallel = useSessionStore((s) => s.setWorkflowMaxParallel);
+  // **在编辑中的原始文本**(见 `GeneralPanel` 的 `pasteDraft` 那段)。store 的 setter 会
+  // 把 `0` 夹成下限(对**落盘值**是对的),但每敲一字符就夹是错的:想把 4 改成 10,清空
+  // 那一刻 `Number("")===0` → 夹成 1 并**当场落盘**,输入框跳到 1。留着草稿、失焦才夹取提交。
+  const [maxParallelDraft, setMaxParallelDraft] = useState<string | null>(null);
 
   const [preset, setPreset] = useState<UsageStatsPreset>("7d");
   const [result, setResult] = useState<UsageStatsResult | null>(null);
@@ -414,8 +418,30 @@ export function UsagePanel() {
                 min={WORKFLOW_MAX_PARALLEL_MIN}
                 max={WORKFLOW_MAX_PARALLEL_MAX}
                 step={1}
-                value={maxParallel}
-                onChange={(e) => void setMaxParallel(Number(e.target.value))}
+                value={maxParallelDraft ?? maxParallel}
+                onChange={(e) => {
+                  const raw = (e.target as HTMLInputElement).value;
+                  setMaxParallelDraft(raw);
+                  // 只有**在范围内的合法整数**才即时应用;空串/中间态留在草稿里。
+                  const n = Number(raw);
+                  if (
+                    raw.trim() !== "" &&
+                    Number.isFinite(n) &&
+                    n >= WORKFLOW_MAX_PARALLEL_MIN &&
+                    n <= WORKFLOW_MAX_PARALLEL_MAX
+                  ) {
+                    void setMaxParallel(n);
+                  }
+                }}
+                onBlur={() => {
+                  // 失焦才夹取提交;空/不可解析的草稿当作"放弃这次编辑",收回 store 的值。
+                  if (maxParallelDraft === null) return;
+                  const n = Number(maxParallelDraft);
+                  if (maxParallelDraft.trim() !== "" && Number.isFinite(n)) {
+                    void setMaxParallel(n);
+                  }
+                  setMaxParallelDraft(null);
+                }}
                 className="w-full"
               />
             </SettingRow>

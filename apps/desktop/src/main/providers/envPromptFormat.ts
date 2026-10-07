@@ -9,6 +9,24 @@
 /** 清单里最多列多少条库条目。库可能有几千条,全列会撑爆上下文。 */
 export const MAX_LISTED_ITEMS = 50;
 
+/**
+ * 从库条目里挑出**能列进系统提示词**的那些:去掉回收站里的,以及被屏蔽
+ * (设置里"不给 AI 看")的。**纯函数**——屏蔽判定与回收站集合由调用方
+ * (`envPrompt.ts`,它拿得到 repo)算好传进来,这样这里不碰 IO、无头可测。
+ *
+ * 为什么必须有这一步:环境块是**面向 AI** 的出口,必须和 `manifest.ts` 的
+ * `dropSuppressed`、`libraryServer.ts`、`sandboxReadPolicy.ts` 用同一套可见性规则
+ * ——否则用户屏蔽了一条,系统提示词里照样带着它的标题/年份/路径。
+ */
+export function selectVisibleItems<T extends { id: string }>(
+  items: readonly T[],
+  isTrashed: (id: string) => boolean,
+  isSuppressed: (id: string) => boolean,
+  limit: number = MAX_LISTED_ITEMS,
+): T[] {
+  return items.filter((i) => !isTrashed(i.id) && !isSuppressed(i.id)).slice(0, limit);
+}
+
 /** 构建环境块的**输入** —— 与 IO 分开,好让纯格式化那半能被无头 smoke 直接测。 */
 export interface EnvSnapshot {
   currentProjectPath: string | null;
@@ -86,7 +104,10 @@ export function formatEnvSections(snap: EnvSnapshot): string | null {
 
 /** 供测试与去重用的指纹 —— 内容没变就不必重复注入。 */
 export function envPromptFingerprint(prompt: string | null): string {
-  // 不引 crypto:这里只需要"变了没有",一个长度 + 首尾片段就够,且省一次 hash。
   if (!prompt) return "";
-  return `${prompt.length}:${prompt.slice(0, 64)}:${prompt.slice(-64)}`;
+  // 只取 长度+首尾 会漏中段改动:库里换/挪一条、或改个同长度的标题,首尾与长度都不变,
+  // 指纹就不变 → 环境块不会重新注入(而同一会话内只靠这指纹决定要不要重灌)。
+  // 加一段中段采样,成本可忽略,却把这种"命中碰撞"的概率压到实用上可忽略。
+  const mid = prompt.length > 128 ? prompt.slice(prompt.length / 2 - 32, prompt.length / 2 + 32) : "";
+  return `${prompt.length}:${prompt.slice(0, 64)}:${mid}:${prompt.slice(-64)}`;
 }

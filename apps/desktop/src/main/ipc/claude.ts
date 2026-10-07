@@ -229,6 +229,11 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     }
 
     SessionRepo.updateStatus(session.id, "running");
+    // 状态置 running 之后、本轮真正被运行时接管之前，任何一步抛错都必须把状态**放回**。
+    // 否则会话永远停在 running：`findFreshByProject`(要求 idle)不再复用它、其它客户端
+    // 永久显示"运行中"，且全仓没有别的地方把活着的会话从 running 收回。下面所有 throw
+    // 都经这个 catch 回滚 `idle` 再抛（渲染端照旧弹那句话）。
+    try {
     // Resolve the turn's cwd (worktree materialization happens here — before
     // bindSession so the runtime sees the final environment). Throws surface
     // as an IPC rejection the renderer toasts; a retry after a FAILED create
@@ -314,6 +319,11 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     // providerId patched in; the DB-only `status` flip is surfaced via the
     // event stream, so it doesn't need to ride this return value.
     return { session: updated };
+    } catch (err) {
+      // 没走到"运行时接管了这一轮"就把状态放回去，别把会话钉死在 running。
+      SessionRepo.updateStatus(session.id, "idle");
+      throw err;
+    }
   });
 
   ipcMain.handle(IPC.CLAUDE_INTERRUPT, async (_evt, raw) => {
@@ -589,6 +599,25 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       }
       if (sess.projectId !== input.projectId) {
         SessionRepo.updateSettings(input.sessionId, { projectId: input.projectId });
+      }
+    }
+    // **三个字段各有各的「首条消息后锁定」。** schema 的注释白纸黑字写着
+    // providerId「once a turn has run the provider is fixed」、envMode/wtStyle
+    // 「only meaningful while the session is un-materialized」—— 而那两道守卫此前
+    // **只长在 `projectId` 那一支里**。单独发 `{sessionId, providerId}` 就能改一条
+    // 已经跑过对话的会话的引擎:DB 行被改,而运行时(捕获的是启动那一刻的 provider)
+    // 纹丝不动 —— 界面上是 A 引擎,实际跑的是 B,一句提示都没有。
+    //
+    // 与 projectId 同一取舍:**整条拒**,而不是"悄悄忽略这个字段" —— 后者会让渲染端
+    // 以为改成功了(它没有回读),下次同步又弹回原样,用户看着像"改了没用"。
+    if (input.providerId !== undefined || input.envMode !== undefined || input.wtStyle !== undefined) {
+      const sess = SessionRepo.get(input.sessionId);
+      if (!sess) throw new Error(`updateSettings: unknown session ${input.sessionId}`);
+      if (input.providerId !== undefined && MessageRepo.hasAny(input.sessionId)) {
+        throw new Error("updateSettings: providerId is fixed once a session has messages");
+      }
+      if ((input.envMode !== undefined || input.wtStyle !== undefined) && sess.worktreePath) {
+        throw new Error("updateSettings: environment is fixed once the worktree is materialized");
       }
     }
     SessionRepo.updateSettings(input.sessionId, {

@@ -481,11 +481,13 @@ export const SessionRepo = {
    *  session counts make a full-table LIKE scan cheap; no FTS index needed. */
   searchByTitle(query: string, opts?: { limit?: number }): Session[] {
     const db = getDb();
-    const q = `%${query.trim()}%`;
+    // LIKE 的转义:用户输入里的 % 和 _ 是通配符,不转义就会多匹配(搜 `a_b` 命中 `axb`)。
+    // 与 LibraryRepo.list / SettingRepo.keysWithPrefix 同一套写法。
+    const q = `%${query.trim().replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
     const params: BindValue[] = [v(q)];
     const limit = opts?.limit ?? 30;
     params.push(v(limit));
-    const sql = `SELECT * FROM sessions WHERE archived = 0 AND kind = 'chat' AND title LIKE ? ORDER BY updated_at DESC, created_at DESC LIMIT ?`;
+    const sql = `SELECT * FROM sessions WHERE archived = 0 AND kind = 'chat' AND title LIKE ? ESCAPE '\\' ORDER BY updated_at DESC, created_at DESC LIMIT ?`;
     const stmt = db.prepare(sql);
     stmt.bind(params);
     const out: Session[] = [];
@@ -1417,7 +1419,15 @@ export const SettingRepo = {
   deleteMany(keys: readonly string[]): void {
     if (keys.length === 0) return;
     const db = getDb();
-    for (const key of keys) db.run("DELETE FROM settings WHERE key = ?", [v(key)]);
+    // 同 LibraryRepo.delete:多行删除要么全成、要么全不成,不留半状态。
+    db.run("BEGIN");
+    try {
+      for (const key of keys) db.run("DELETE FROM settings WHERE key = ?", [v(key)]);
+      db.run("COMMIT");
+    } catch (err) {
+      db.run("ROLLBACK");
+      throw err;
+    }
     persist();
   },
 };
@@ -2079,8 +2089,17 @@ export const LibraryRepo = {
   delete(ids: string[]): void {
     if (ids.length === 0) return;
     const db = getDb();
+    // 多行删除同进同退:中途抛错不能留下「删了一半」的状态(下一次 persist 会落盘)。
     const stmt = db.prepare("DELETE FROM library_items WHERE id = ?");
-    for (const id of ids) stmt.run([v(id)]);
+    db.run("BEGIN");
+    try {
+      for (const id of ids) stmt.run([v(id)]);
+      db.run("COMMIT");
+    } catch (err) {
+      db.run("ROLLBACK");
+      stmt.free();
+      throw err;
+    }
     stmt.free();
     persist();
   },

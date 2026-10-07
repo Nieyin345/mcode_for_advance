@@ -347,7 +347,15 @@ export async function installSkillsFromMarket(
 ): Promise<SkillsMarketInstallResult> {
   const rec = withBuiltins(readRecords()).find((r) => r.name === market);
   if (!rec) return { ok: false, error: `市场不存在:${market}`, imported: [], skipped: [], errors: [] };
-  const remoteIndex = cachedGithubIndex(rec);
+  // cachedGithubIndex 在缓存索引与来源不符时会**抛**(仓库改名/记录被改/索引来自别的源)。
+  // 列表路径(listSkillMarkets)已 try/catch,安装路径过去没有 —— 于是点"安装"会以异常
+  // 结束 IPC,而不是像其它写操作一样返回 {ok:false, error} 让界面显示"刷新市场"指引。
+  let remoteIndex: ReturnType<typeof cachedGithubIndex>;
+  try {
+    remoteIndex = cachedGithubIndex(rec);
+  } catch (err) {
+    return { ok: false, error: (err as Error).message, imported: [], skipped: [], errors: [] };
+  }
   const catalog = await scanCatalog(rec);
   const byName = new Map(catalog.map((s) => [s.name, s]));
   const libRoot = defaultSkillsRoot();

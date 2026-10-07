@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { joinPath, basename } from "@renderer/lib/path.js";
@@ -70,6 +70,8 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 列表加载的请求序号 —— 过期响应不许写状态(见 `loadCommits`)。 */
+  const commitsSeqRef = useRef(0);
 
   // Detail view
   const [selected, setSelected] = useState<GitCommitInfo | null>(null);
@@ -89,7 +91,7 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
     }
   }, [repos, repoPath]);
 
-  const loadCommits = useCallback(async (opts?: { append?: boolean; skip?: number }) => {
+  const loadCommits = useCallback(async (opts?: { append?: boolean; skip?: number; keepDetail?: boolean }) => {
     if (!repoPath) {
       setCommits([]);
       setHasMore(false);
@@ -97,25 +99,38 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
       return;
     }
     const append = !!opts?.append;
+    // **请求序号:只有最新一次响应能写状态。** 没有它的话,"在 A 仓点加载更多(在飞)
+    // → 切到 B 仓"时,A 的 append 回来会把 **A 的提交接到 B 的列表上**(并覆盖 hasMore)。
+    // 切仓/刷新会让 seq 前进,过期的响应自己认输。
+    const seq = ++commitsSeqRef.current;
     if (append) setLoadingMore(true);
     else {
       setLoading(true);
       setError(null);
-      setSelected(null);
-      setFiles([]);
+      // ⚠️ **只有"换仓 / 用户主动刷新"才清掉正在看的提交详情。** 从前这里无条件清 ——
+      // 而 `git.changed` 也会调它(任何一次 git 写操作都会广播),于是你正看某个提交的
+      // 文件列表时,别处一个 commit 就能把你踢回列表顶部、丢掉位置。
+      if (!opts?.keepDetail) {
+        setSelected(null);
+        setFiles([]);
+      }
     }
     try {
       const skip = opts?.skip ?? 0;
       const res = await api.git.log({ repoPath, limit: PAGE_SIZE, skip });
+      if (seq !== commitsSeqRef.current) return; // superseded by a newer load
       setCommits((prev) => (append ? [...prev, ...res.commits] : res.commits));
       setHasMore(res.hasMore);
     } catch (err) {
+      if (seq !== commitsSeqRef.current) return;
       setError((err as Error).message || t("ide.git.loadHistoryFailed"));
       if (!append) setCommits([]);
       setHasMore(false);
     } finally {
-      setLoading(false);
-      setLoadingMore(false);
+      if (seq === commitsSeqRef.current) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   }, [repoPath, t]);
 
@@ -126,11 +141,12 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
   // Cross-client auto-refresh: the host broadcasts `git.changed` after ANY
   // client's commit / pull / checkout; bumping this version reloads the
   // history so a fresh commit shows up without tapping the manual refresh.
+  // `keepDetail` —— 只刷列表,不动正在看的那条提交详情。
   const gitChangeVersion = useSessionStore(
     (s) => (repoPath ? s.gitChangeVersionByRepo[repoPath] ?? 0 : 0),
   );
   useEffect(() => {
-    void loadCommits();
+    void loadCommits({ keepDetail: true });
   }, [gitChangeVersion, loadCommits]);
 
   // Graph gutter layout over the full loaded list — recomputed on append so

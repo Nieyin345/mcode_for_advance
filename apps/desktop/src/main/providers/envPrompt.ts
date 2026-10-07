@@ -35,13 +35,16 @@
  */
 import { ProjectRepo, LibraryRepo } from "@main/store/repositories.js";
 import { libraryRoot } from "@main/library/paths.js";
+import { suppressionReasonOfItem } from "@main/library/suppress.js";
+import { trashedItemIds } from "@main/library/trash.js";
 import { log } from "@main/lib/logger.js";
-import { MAX_LISTED_ITEMS, formatEnvSections, type EnvSnapshot } from "./envPromptFormat.js";
+import { MAX_LISTED_ITEMS, formatEnvSections, selectVisibleItems, type EnvSnapshot } from "./envPromptFormat.js";
 
 // 纯的那半从这里转出,调用方(与测试)不必知道文件是怎么拆的。
 export {
   MAX_LISTED_ITEMS,
   formatEnvSections,
+  selectVisibleItems,
   envPromptFingerprint,
   type EnvSnapshot,
 } from "./envPromptFormat.js";
@@ -58,13 +61,30 @@ export function readEnvSnapshot(currentProjectPath: string | null, options: { in
       .filter((p) => !p.archived)
       .map((p) => ({ name: p.name, path: p.path }));
     const root = options.includeLibrary ? libraryRoot() : "";
-    const listed = options.includeLibrary ? LibraryRepo.list({ limit: MAX_LISTED_ITEMS }) : { items: [], total: 0 };
+    let items: EnvSnapshot["items"] = [];
+    let total = 0;
+    if (options.includeLibrary) {
+      // 与所有其它面向 AI 的资料库出口(`manifest.ts` 的 dropSuppressed、
+      // `libraryServer.ts`、`sandboxReadPolicy.ts`)一致:被屏蔽(设置里"不给 AI 看")
+      // 与回收站里的条目**不列进系统提示词**——否则模型会看到标题/年份/路径,用户
+      // 以为屏蔽生效了其实没有。宽容量 + 再筛,避免筛完凑不满一页。
+      const trashed = trashedItemIds();
+      const overFetch = Math.max(MAX_LISTED_ITEMS * 2, MAX_LISTED_ITEMS + 50);
+      const listed = LibraryRepo.list({ limit: overFetch });
+      items = selectVisibleItems(
+        listed.items,
+        (id) => trashed.has(id),
+        (id) => suppressionReasonOfItem(id) !== null,
+        MAX_LISTED_ITEMS,
+      );
+      total = listed.total;
+    }
     return {
       currentProjectPath,
       projects,
       libraryRoot: root,
-      items: listed.items,
-      totalItems: listed.total,
+      items,
+      totalItems: total,
     };
   } catch (err) {
     log.warn(`env: 查询环境失败: ${(err as Error).message}`);

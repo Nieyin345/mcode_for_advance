@@ -1,0 +1,45 @@
+/* flow-preview 用的最小样式表 —— 只放 WorkflowFlowMini 真正用到的类与 token。
+   不跑 Tailwind:预览台要能在 chrome 里 file:// 直接打开,少一层构建更稳。
+   token 值与 src/renderer/styles.css 的浅色 :root 一致。 */
+:root {
+  --surface: 255 255 255;
+  --surface-muted: 240 242 246;
+  --surface-hover: 226 229 235;
+  --content: 9 9 11;
+  --content-muted: 63 63 70;
+  --content-subtle: 113 113 122;
+  --edge: 213 216 222;
+  --accent: 5 150 105;
+  --accent-strong: 4 120 87;
+  --danger: 220 38 38;
+  --warning: 180 83 9;
+  --success: 4 120 87;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: rgb(var(--surface-muted));
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+#root { padding: 12px; }
+
+/* WorkflowFlowMini 用到的几个工具类 */
+.flex { display: flex; }
+.justify-center { justify-content: center; }
+.overflow-y-auto { overflow-y: auto; }
+.overflow-x-hidden { overflow-x: hidden; }
+.block { display: block; }
+.shrink-0 { flex-shrink: 0; }
+.select-none { user-select: none; }
+.cursor-pointer { cursor: pointer; }
+
+/* 走动亮边:沿边框走一段(见组件头注)。 */
+@keyframes wf-mini-march {
+  to { stroke-dashoffset: -100; }
+}
+.wf-mini-march {
+  animation: wf-mini-march 1.6s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wf-mini-march { animation: none; }
+}

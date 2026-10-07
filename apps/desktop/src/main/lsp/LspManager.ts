@@ -138,6 +138,12 @@ type LspEventPayload =
 class LspManagerImpl {
   /** Keyed by `${workspacePath}::${language}`. */
   private servers = new Map<string, ServerHandle>();
+  /** In-flight spawns keyed like {@link servers}. `ensureServer` has awaits
+   *  (`buildSpawnCommand`, the initialize handshake) between its "已有吗" 检查与
+   *  `servers.set`;两个并发调用会一起穿过那道检查、各起一个进程,而输的那个 handle
+   *  被覆盖 → `disposeAll` 遍历不到它、永远杀不掉(jdtls 一个孤儿约 1GB)。这里缓存
+   *  在飞的 promise,后来者 await 它而不是再起一个。 */
+  private spawning = new Map<string, Promise<ServerHandle>>();
   /** Keyed by language id. */
   private installs = new Map<LspLanguageId, InstallHandle>();
   /** Cached install logs retained after a process exits (truncated). */
@@ -1035,17 +1041,44 @@ class LspManagerImpl {
     return { cmd: javaBin, args, spawnOpts: { shell: false } };
   }
 
-  /** Lazily spawn (or reuse) the server for (workspacePath, language). Throws
-   *  if the language is disabled, the server binary isn't found, or the server
-   *  has failed to start too many times recently (crash-loop guard).
-   *  `allowWorkspaceRecovery` gates the java corrupt-workspace retry so the
-   *  single recursive retry can't loop. */
-  private async ensureServer(
+  /**
+   * 取（必要时启动）某 workspace+language 的语言服务器。**并发去重**：同一 key 的在飞
+   * 启动共享同一个 promise，避免两个调用各起一个进程（见 {@link spawning}）。
+   * `allowWorkspaceRecovery` gates the java corrupt-workspace retry so the
+   * single recursive retry can't loop.
+   */
+  async ensureServer(
     workspacePath: string,
     language: LspLanguageId,
     allowWorkspaceRecovery = true,
   ): Promise<ServerHandle> {
     this.assertWorkspace(workspacePath);
+    const key = serverKey(workspacePath, language);
+    const existing = this.servers.get(key);
+    if (existing && !existing.proc.killed && existing.proc.exitCode === null) {
+      await existing.initialized;
+      return existing;
+    }
+    const inflight = this.spawning.get(key);
+    if (inflight) return inflight;
+    let started!: Promise<ServerHandle>;
+    started = (async (): Promise<ServerHandle> => {
+      try {
+        return await this.spawnServer(workspacePath, language, allowWorkspaceRecovery);
+      } finally {
+        if (this.spawning.get(key) === started) this.spawning.delete(key);
+      }
+    })();
+    this.spawning.set(key, started);
+    return started;
+  }
+
+  /** {@link ensureServer} 的实际启动体（已由外层做完在飞去重）。 */
+  private async spawnServer(
+    workspacePath: string,
+    language: LspLanguageId,
+    allowWorkspaceRecovery = true,
+  ): Promise<ServerHandle> {
     const key = serverKey(workspacePath, language);
     const existing = this.servers.get(key);
     if (existing && !existing.proc.killed && existing.proc.exitCode === null) {

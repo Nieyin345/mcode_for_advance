@@ -670,16 +670,23 @@ class RuntimeManager {
           this.settlePendingTurnEnd(session.id, rt);
           // 轮预算：tokens/usd 直接读快照 —— ContextSnapshot 本身就是按轮
           // 累计的，turn.done 后的收尾快照也走这里（此时闸已触发，空操作）。
-          // Claude 的中途快照另带 `turnProcessedTokens`(本轮各次调用的累计),否则
-          // 读到的只是当前这一次调用的量,预算要到轮末才看得见真实累计。
+          // Claude 的中途快照另带 `turnProcessedTokens`(本轮各次调用的累计)，Pi 带
+          // `turnProcessedTokens`/`turnCostUsd`(会话累计的差值);没有单轮字段时(Claude
+          // 无、Codex 本来就按轮)读到的就是本轮量。
           rt.budgetTokens = e.snapshot.turnProcessedTokens ?? e.snapshot.totalProcessedTokens;
-          rt.budgetUsd = e.snapshot.costUsd ?? rt.budgetUsd;
+          rt.budgetUsd = e.snapshot.turnCostUsd ?? e.snapshot.costUsd ?? rt.budgetUsd;
           this.enforceBudget(session.id, rt);
         }
       } else if (e.type === "message.complete") {
-        // 轮预算：assistant 轮计数（三引擎的 message.complete 均只在主 agent
-        // 的 assistant 消息上发，作 maxTurns 的近似）。不落盘 —— 只是本轮的
+        // 轮预算：assistant 轮计数，作 `maxTurns` 的**近似**。不落盘 —— 只是本轮的
         // 计数器，下一轮 sendTurn 归零。
+        //
+        // ⚠️ **只有 Pi 与 Codex 会发 `message.complete`；Claude 的适配器不发**，所以
+        // 宿主侧的 `maxTurns` 对 Claude 是**不生效的**（从前的注释说"三引擎都发"是错的）。
+        // Claude 的轮上限靠 provider 传给 SDK 的原生 `maxTurns`（见
+        // ClaudeAgentSdkProvider 的 `maxTurns: req.budget?.maxTurns`）兜底 —— 那条按
+        // SDK 自己的"轮"口径计数，与这里的"assistant 消息数"不完全等同，但确实会止损。
+        // 所以这里是"能给 Pi/Codex 补一层宿主侧计数"而非"三引擎统一闸门"，别据此宣称一致。
         const rt = this.sessions.get(session.id);
         if (rt) {
           rt.budgetTurns++;

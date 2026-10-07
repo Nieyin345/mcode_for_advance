@@ -178,6 +178,13 @@ export async function cachedTreeFiles(
     return { files: entry.files, incompleteScan: entry.incompleteScan };
   }
 
+  // **清零在走之前,判据才回得去。** `dirty` 是"自上次建好之后又变过" —— 它必须在
+  // **重新枚举之前**清掉,否则它一旦被 watcher 置真就**再也不会归位**:下面那句
+  // `if (!entry.dirty)` 永远为假,缓存从此**永久作废**,每次搜索都整棵重走(而没有 rg
+  // 的机器上这条 walk 正是这个缓存存在的理由)。清零放在走之后、判之前也不行 —— 那样
+  // 走的过程中落进来的变更会被当成"没变过"。所以:先清、再走,走的过程里 watcher
+  // 若又置真,就说明这棵树在枚举期间变过,那一份不可信(下面 else 丢弃)。
+  entry.dirty = false;
   const { files, incompleteScan } = await collectTreeFilesUncached(key, ignored);
   if (!entry.dirty) {
     // Nothing changed while we walked — safe to cache.

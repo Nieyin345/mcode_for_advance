@@ -5,6 +5,8 @@ import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import type { ContentTag } from "@renderer/lib/contentTag.js";
 import { type NavEntry } from "@renderer/lib/editorNav.js";
 import { disposeModel, getDisplayedPath } from "@renderer/lib/editorModelCache.js";
+import { ideDirtyTracker, partitionClosable, type IdeCloseResult } from "@renderer/lib/ideDirty.js";
+import { basename } from "@renderer/lib/path.js";
 import type { CustomModelPublic } from "@contracts/customModel";
 import { api } from "@renderer/lib/api.js";
 import { textFileWrites } from "@renderer/lib/markdownFileWrites.js";
@@ -811,6 +813,12 @@ export interface SessionState {
    *  entry → "custom-models" / "pi-models") pass it to setSettingsOpen; null
    *  means "use the default section". Cleared on close. */
   settingsSection: string | null;
+  /**
+   * **一次性**的"打开设置后选中哪一份工作流/自动化"。技能/插件页的「节点」反查里点一行
+   * 时带上它,`WorkflowLibraryView` 挂载后选中并清掉(见 `setSettingsOpen` 的第三参)。
+   * `null` = 不指定(打开停在库列表,不自动选)。和 `settingsSection` 一样 **close 时清**。
+   */
+  settingsFocusWorkflowId: string | null;
   /** "尚未配置模型" dialog visibility. Opened by sendPrompt / editAndResendMessage
    *  when the active provider has no configured model to send with (model is
    *  auto/"default" and nothing is configured). NOT persisted. */
@@ -1492,7 +1500,7 @@ export interface SessionState {
    *  regains focus, the active session's unread counter is cleared (the user
    *  is looking at it now). */
   setWindowFocused: (focused: boolean) => void;
-  setSettingsOpen: (open: boolean, section?: string) => void;
+  setSettingsOpen: (open: boolean, section?: string, focusWorkflowId?: string) => void;
   /** Toggle the "尚未配置模型" dialog open/closed (send-time guard). */
   setModelConfigPromptOpen: (open: boolean) => void;
   /** Toggle the Cmd/Ctrl+K command palette open/closed. */
@@ -2005,8 +2013,12 @@ export interface SessionState {
    *  when the forward stack is empty. */
   navigateForward: () => void;
   /** Remove a file from the editor's open list; active shifts to the
-   *  previous file (or next, or null). */
-  closeFileInIde: (filePath: string) => void;
+   *  previous file (or next, or null).
+   *
+   *  **有未保存改动时拦住**(返回 `blocked`),与标签栏 × 的规矩一致 —— 编辑器没有
+   *  自动保存,Ctrl+S 是唯一的落盘入口,静默关掉就是静默丢改动。`force=true` 给
+   *  "文件已经不在了"那几条路(删除文件/目录),那时未保存已无意义。 */
+  closeFileInIde: (filePath: string, force?: boolean) => IdeCloseResult;
   /** Remove every open file that lives under `dirPath` (prefix match), and
    *  drop expanded-dir records under it too. Used by the file-tree "删除"
    *  action when a directory is trashed, so stale editor tabs disappear. */
@@ -2017,11 +2029,16 @@ export interface SessionState {
    *  re-prefixed. Used by the file-tree "重命名" action. */
   renamePathInIde: (oldPath: string, newPath: string, isDir: boolean) => void;
   /** Close every open file EXCEPT the given one; the given file becomes
-   *  active. Used by the tab context menu's "关闭其他". */
-  closeOtherFilesInIde: (keepFilePath: string) => void;
+   *  active. Used by the tab context menu's "关闭其他". Files with unsaved
+   *  edits are left open and reported in `blocked` (see `closeFileInIde`). */
+  closeOtherFilesInIde: (keepFilePath: string, force?: boolean) => IdeCloseResult;
   /** Close all open files; active becomes null (editor column hides). Used
-   *  by the tab context menu's "关闭全部". */
-  closeAllFilesInIde: () => void;
+   *  by the tab context menu's "关闭全部". Unsaved files stay open and are
+   *  reported in `blocked` (see `closeFileInIde`). */
+  closeAllFilesInIde: (force?: boolean) => IdeCloseResult;
+  /** 把一次被守卫拦下的关闭(未保存改动)显式告诉用户。批量关闭的菜单项在动作后
+   *  调它;单条关闭靠菜单项置灰,不走这里。 */
+  reportBlockedIdeClose: (blocked: readonly string[]) => void;
   /** Set the active file (must already be open). */
   setIdeActiveFile: (filePath: string) => void;
   /** Hide the editor column by clearing the active file, WITHOUT removing it
@@ -2546,7 +2563,42 @@ function saveSetting(req: Parameters<typeof api.setting.set>[0]): void {
   });
 }
 
+/**
+ * 一条**用户显式改的偏好**(主题/语言/密度/布局…)落盘失败时报给用户。
+ *
+ * 为什么与 {@link saveSetting} 分开:那些 setter 都是"先乐观 `set` store、再落盘",
+ * 而界面上已经是新值了。落盘失败只打日志的话,用户看到的就是"改动生效了" ——
+ * 直到重启,一切**静默**弹回旧值,而他从没被告知过。数据根所在磁盘写满 / 被占用 /
+ * sql.js 导出失败都会走到这里。(toastStore 按标题去重,连续失败不会刷屏。)
+ */
+function reportSettingSaveFailed(err: unknown): void {
+  useToastStore.getState().push({
+    kind: "error",
+    title: translate(useSessionStore.getState().locale, "store.toast.settingSaveFailed"),
+    body: err instanceof Error ? err.message : String(err),
+  });
+}
+
 export const useSessionStore = create<SessionState>((set, get) => ({
+  /**
+   * 一次关闭请求被守卫拦下(callback 返回了 `blocked`)时,把"哪些文件没关、
+   * 为什么"显式说出来 —— 见仓库硬规矩「坏东西显式报出来,不静默跳过」。文件多了就
+   * 只报数量,免得标题被一串路径淹掉(toast 是单行)。
+   *
+   * 单条关闭(菜单里那个**置灰**的「关闭」)不走这里:用户点不动它,提示挂在菜单项的
+   * `title` 上,再弹一条 toast 是重复。
+   */
+  reportBlockedIdeClose: (blocked) => {
+    if (blocked.length === 0) return;
+    const locale = get().locale;
+    const names = blocked.slice(0, 3).map((p) => basename(p));
+    const title = translate(locale, "store.toast.ideCloseBlockedTitle");
+    const body = blocked.length <= 3
+      ? translate(locale, "store.toast.ideCloseBlockedBody", { names: names.join(locale === "en" ? ", " : "、") })
+      : translate(locale, "store.toast.ideCloseBlockedMany", { count: blocked.length });
+    useToastStore.getState().push({ kind: "warning", title, body });
+  },
+
   projects: [],
   activeProjectId: null,
   sessionsByProject: {},
@@ -2653,6 +2705,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   providerHealthById: {},
   settingsOpen: false,
   settingsSection: null,
+  settingsFocusWorkflowId: null,
   modelConfigPromptOpen: false,
   modelGuardPulse: 0,
   commandPaletteOpen: false,
@@ -6154,8 +6207,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
-  setSettingsOpen: (open, section) => {
-    set(open ? { settingsOpen: true, settingsSection: section ?? null } : { settingsOpen: false, settingsSection: null });
+  setSettingsOpen: (open, section, focusWorkflowId) => {
+    set(
+      open
+        ? {
+            settingsOpen: true,
+            settingsSection: section ?? null,
+            settingsFocusWorkflowId: focusWorkflowId ?? null,
+          }
+        : { settingsOpen: false, settingsSection: null, settingsFocusWorkflowId: null },
+    );
     // Closing the settings dialog may have changed the voice model setup
     // (download / select / remove in 语音输入) — re-check so the composer mic
     // appears/disappears without a restart.
@@ -6384,6 +6445,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await api.setting.set({ key: DISPLAY_MODE_SETTING_KEY, value: mode });
     } catch (err) {
       console.error("setting.set(displayMode) failed:", err);
+      reportSettingSaveFailed(err);
     }
   },
 
@@ -6391,7 +6453,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set({ tabBarMultiRow: on });
     // Fire-and-forget — a failed write keeps the in-session choice.
     api.setting.set({ key: TAB_BAR_MULTI_ROW_SETTING_KEY, value: on ? "true" : "false" })
-      .catch((err) => console.error("setting.set(tabBarMultiRow) failed:", err));
+      .catch((err) => {
+        console.error("setting.set(tabBarMultiRow) failed:", err);
+        reportSettingSaveFailed(err);
+      });
   },
 
   setLeftBarMode: async (mode) => {
@@ -6403,6 +6468,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await api.setting.set({ key: LEFTBAR_MODE_SETTING_KEY, value: mode });
     } catch (err) {
       console.error("setting.set(leftBarMode) failed:", err);
+      reportSettingSaveFailed(err);
     }
   },
 
@@ -6413,7 +6479,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // useThemeStyle (lib/appearance.ts), which also refreshes the
     // localStorage cache the boot FOUC guard reads.
     api.setting.set({ key: THEME_STYLE_SETTING_KEY, value: style })
-      .catch((err) => console.error("setting.set(themeStyle) failed:", err));
+      .catch((err) => {
+        console.error("setting.set(themeStyle) failed:", err);
+        reportSettingSaveFailed(err);
+      });
   },
 
   setStreamScope: (scope) => {
@@ -6505,6 +6574,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await api.setting.set({ key: UI_LOCALE_SETTING_KEY, value: locale });
     } catch (err) {
       console.error("setting.set(locale) failed:", err);
+      reportSettingSaveFailed(err);
     }
   },
 
@@ -6529,6 +6599,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await api.setting.set({ key: UI_CHAT_DENSITY_SETTING_KEY, value: mode });
     } catch (err) {
       console.error("setting.set(chatDensity) failed:", err);
+      reportSettingSaveFailed(err);
     }
   },
 
@@ -6540,6 +6611,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await api.setting.set({ key: UI_PROJECT_VIEW_SETTING_KEY, value: mode });
     } catch (err) {
       console.error("setting.set(projectView) failed:", err);
+      reportSettingSaveFailed(err);
     }
   },
 
@@ -6654,7 +6726,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     try {
       await api.project.reorder({ orderedIds });
     } catch (err) {
+      // **写失败必须把顺序收回去。** 只打一行日志的话,左栏会一直显示那个**没有落盘**
+      // 的新顺序 —— 直到下次启动、或者任何一条 `projects.changed`(比如手机碰了一下
+      // 项目触发 `refreshProjects`)把它**静默**弹回旧序。用户看到的是"我拖好的顺序
+      // 自己变回去了",查无对证。这里重读一次列表收回乐观改动(与 `setProjectPinned`
+      // 失败后同一条路)。
       console.error("project.reorder failed:", err);
+      try {
+        const { projects } = await api.project.list();
+        set({ projects });
+      } catch {
+        // 连重读都失败:保持乐观顺序(总比清空强),让下一条 projects.changed 收口。
+      }
     }
   },
 
@@ -8477,12 +8560,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
-  closeFileInIde: (filePath) => {
+  closeFileInIde: (filePath, force = false) => {
     const pid = get().activeProjectId;
-    if (!pid) return;
+    if (!pid) return { closed: [], blocked: [] };
     const prev = get().ideOpenFilesByProject[pid] ?? [];
     const idx = prev.indexOf(filePath);
-    if (idx === -1) return; // not open — nothing to do
+    if (idx === -1) return { closed: [], blocked: [] }; // not open — nothing to do
+    // 未保存的改动不能静默丢 —— 见接口上的说明。批量关闭共用一个收敛函数。
+    const gate = partitionClosable([filePath], ideDirtyTracker.has, force);
+    if (gate.blocked.length > 0) return gate;
+    // force = 文件已经不在了(删除路径):它的脏标记也没有意义了,一并清掉,
+    // 免得同名文件后来再建出来时被一条陈旧的"未保存"挡住。
+    if (force) ideDirtyTracker.set(filePath, false);
     const open = prev.filter((p) => p !== filePath);
     // Active shifts to the previous file (or next, or null).
     let active = get().ideActiveFileByProject[pid] ?? null;
@@ -8517,6 +8606,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       };
     });
     persistIdeBuckets(get);
+    return { closed: [filePath], blocked: [] };
   },
 
   closeFilesUnderDir: (dirPath) => {
@@ -8573,6 +8663,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       };
     });
     persistIdeBuckets(get);
+    // 这些文件已经被删掉了 —— 它们的脏标记随之作废。
+    for (const p of removed) ideDirtyTracker.set(p, false);
   },
 
   renamePathInIde: (oldPath, newPath, isDir) => {
@@ -8618,6 +8710,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         ideExpandedDirsByProject: { ...s.ideExpandedDirsByProject, [pid]: expanded },
       }));
       persistIdeBuckets(get);
+      // 脏标记跟着路径走(旧路径的条目换成新路径),否则重命名之后那个标签的
+      // "未保存"会在关不掉/不提示之间漂移。
+      for (const p of prevOpen) {
+        if (!ideDirtyTracker.has(p)) continue;
+        ideDirtyTracker.set(p, false);
+        ideDirtyTracker.set(p === oldPath ? newPath : newPath + p.slice(oldPath.length), true);
+      }
       return;
     }
     // Single file rename: rewrite the single path if it's open.
@@ -8648,27 +8747,37 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       ideDiffBeforeByProject: { ...s.ideDiffBeforeByProject, [pid]: diffBefore },
     }));
     persistIdeBuckets(get);
+    // 单文件重命名同理:脏标记跟着新路径走。
+    if (ideDirtyTracker.has(oldPath)) {
+      ideDirtyTracker.set(oldPath, false);
+      ideDirtyTracker.set(newPath, true);
+    }
   },
 
-  closeOtherFilesInIde: (keepFilePath) => {
+  closeOtherFilesInIde: (keepFilePath, force = false) => {
     const pid = get().activeProjectId;
-    if (!pid) return;
+    if (!pid) return { closed: [], blocked: [] };
     const prev = get().ideOpenFilesByProject[pid] ?? [];
-    if (!prev.includes(keepFilePath)) return;
-    const open = [keepFilePath];
+    if (!prev.includes(keepFilePath)) return { closed: [], blocked: [] };
+    // 未保存的改动不能被"关闭其他"顺手丢掉 —— 它们留在打开列表里,随 `blocked` 报出去。
+    const others = prev.filter((p) => p !== keepFilePath);
+    const gate = partitionClosable(others, ideDirtyTracker.has, force);
+    if (force) for (const p of gate.closed) ideDirtyTracker.set(p, false);
+    const survivors = new Set([keepFilePath, ...(force ? [] : gate.blocked)]);
+    const open = prev.filter((p) => survivors.has(p));
     // Model cache: dispose the dropped background models; the DISPLAYED one
     // (if among the dropped) is owned by EditPane's swap bookkeeping.
     const displayed = getDisplayedPath();
     for (const p of prev) {
-      if (p !== keepFilePath && p !== displayed) disposeModel(p);
+      if (!survivors.has(p) && p !== displayed) disposeModel(p);
     }
     // Clean up per-file view-mode + diff-before for the dropped paths.
     const prevViewMode = get().ideFileViewModeByProject[pid] ?? {};
     const viewMode: Record<string, FileViewMode> = {};
-    if (keepFilePath in prevViewMode) viewMode[keepFilePath] = prevViewMode[keepFilePath];
+    for (const p of open) if (p in prevViewMode) viewMode[p] = prevViewMode[p];
     const prevDiffBefore = get().ideDiffBeforeByProject[pid] ?? {};
     const diffBefore: Record<string, string> = {};
-    if (keepFilePath in prevDiffBefore) diffBefore[keepFilePath] = prevDiffBefore[keepFilePath];
+    for (const p of open) if (p in prevDiffBefore) diffBefore[p] = prevDiffBefore[p];
     set((s) => ({
       ideOpenFilesByProject: { ...s.ideOpenFilesByProject, [pid]: open },
       ideActiveFileByProject: { ...s.ideActiveFileByProject, [pid]: keepFilePath },
@@ -8676,33 +8785,50 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       ideDiffBeforeByProject: { ...s.ideDiffBeforeByProject, [pid]: diffBefore },
     }));
     persistIdeBuckets(get);
+    return gate;
   },
 
-  closeAllFilesInIde: () => {
+  closeAllFilesInIde: (force = false) => {
     const pid = get().activeProjectId;
-    if (!pid) return;
+    if (!pid) return { closed: [], blocked: [] };
     const prev = get().ideOpenFilesByProject[pid] ?? [];
-    if (prev.length === 0) return;
-    // Model cache: dispose all background models; the DISPLAYED one is
+    if (prev.length === 0) return { closed: [], blocked: [] };
+    // 有未保存改动的继续开着 —— 用户没打算丢它们(编辑器没有自动保存)。
+    const gate = partitionClosable(prev, ideDirtyTracker.has, force);
+    if (force) for (const p of gate.closed) ideDirtyTracker.set(p, false);
+    const survivors = new Set(force ? [] : gate.blocked);
+    const open = prev.filter((p) => survivors.has(p));
+    // Model cache: dispose the dropped background models; the DISPLAYED one is
     // owned by EditPane's swap/teardown bookkeeping.
     const displayed = getDisplayedPath();
     for (const p of prev) {
-      if (p !== displayed) disposeModel(p);
+      if (!survivors.has(p) && p !== displayed) disposeModel(p);
     }
+    // The active file must survive — fall back to a surviving unsaved file.
+    let active = get().ideActiveFileByProject[pid] ?? null;
+    if (active && !survivors.has(active)) active = open[open.length - 1] ?? null;
+    // View-mode / diff-before: keep only the survivors (mirrors closeFileInIde).
+    const prevViewMode = get().ideFileViewModeByProject[pid] ?? {};
+    const viewMode: Record<string, FileViewMode> = {};
+    for (const p of open) if (p in prevViewMode) viewMode[p] = prevViewMode[p];
+    const prevDiffBefore = get().ideDiffBeforeByProject[pid] ?? {};
+    const diffBefore: Record<string, string> = {};
+    for (const p of open) if (p in prevDiffBefore) diffBefore[p] = prevDiffBefore[p];
     set((s) => {
       // Unified-bar fallback: no files left — the plan tab may still own the
       // editor view; otherwise return to the chat.
       const sid = s.activeSessionId;
       const planActive = !!(sid && s.planTabActiveBySession[sid]);
       return {
-        ideOpenFilesByProject: { ...s.ideOpenFilesByProject, [pid]: [] },
-        ideActiveFileByProject: { ...s.ideActiveFileByProject, [pid]: null },
-        ideFileViewModeByProject: { ...s.ideFileViewModeByProject, [pid]: {} },
-        ideDiffBeforeByProject: { ...s.ideDiffBeforeByProject, [pid]: {} },
-        centerTabFocus: !planActive ? ("chat" as const) : s.centerTabFocus,
+        ideOpenFilesByProject: { ...s.ideOpenFilesByProject, [pid]: open },
+        ideActiveFileByProject: { ...s.ideActiveFileByProject, [pid]: active },
+        ideFileViewModeByProject: { ...s.ideFileViewModeByProject, [pid]: viewMode },
+        ideDiffBeforeByProject: { ...s.ideDiffBeforeByProject, [pid]: diffBefore },
+        centerTabFocus: active == null && !planActive ? ("chat" as const) : s.centerTabFocus,
       };
     });
     persistIdeBuckets(get);
+    return gate;
   },
 
   setIdeActiveFile: (filePath) => {

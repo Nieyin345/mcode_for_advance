@@ -51,6 +51,8 @@ import { getFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
 import { resolveGitBash } from "@main/lib/binaryResolve.js";
 import { getEnabledPluginSkillRoots } from "@main/plugins/pluginManager.js";
 import { getMcpManagement } from "@main/lib/mcpConfig.js";
+import { excludedToolsForEngine, readEngineToolPolicy } from "@main/lib/engineToolPolicy.js";
+import { registerAgentEngineSession } from "@main/mcp/agentEngineBridge.js";
 import { turnContextSections } from "@main/providers/contextPrompt.js";
 
 export class PiAgentSdkProvider implements AgentProvider {
@@ -89,6 +91,8 @@ export class PiAgentSdkProvider implements AgentProvider {
   async startTurn(req: StartTurnRequest, ctx: ProviderContext): Promise<TurnHandle> {
     const sdk = await loadPiSdk();
     const ac = new AbortController();
+    // 会话 cwd 登进 agent 桥(agent_read_document 等解析相对路径用)。见 mcp/agentEngineBridge.ts。
+    registerAgentEngineSession(req.sessionId, req.cwd);
 
     // Resolve the resume target: the persisted pi session file (if any).
     // We reuse the generic provider-session-id slot (`claudeSessionId`) which
@@ -121,6 +125,9 @@ export class PiAgentSdkProvider implements AgentProvider {
     // flips and they pass through immediately. This is the only correct way
     // to handle the "plan mode → approve → execute" lifecycle on Pi.
     const tools = undefined; // all built-in + extension tools
+    // 用户在设置里关掉的 Pi 内置工具（见 `lib/engineToolPolicy.ts`）。轮开始读一次，
+    // 下面 `createAgentSession` 用它当 `excludeTools`（黑名单）。空数组 = 不设限。
+    const piExcludedTools = excludedToolsForEngine(readEngineToolPolicy(), "pi");
     // guard): deny writes outside the project working directory, except in
     // bypassPermissions where the user opted out of all checks. WSL paths are
     // normalized in every mode. Enforced by the extension's tool_call handler
@@ -298,6 +305,12 @@ export class PiAgentSdkProvider implements AgentProvider {
       cwd: req.cwd,
       thinkingLevel: req.effort && req.effort !== "default" ? (req.effort as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max") : undefined,
       tools,
+      // 按引擎的内置工具禁用（见 `lib/engineToolPolicy.ts`）：用户在设置里关掉的 Pi
+      // 内置工具从工具表里移除。用 **`excludeTools`（黑名单）而不是 `tools`（白名单）** ——
+      // 上面那段注释解释了为什么 `tools` 必须保持 `undefined`（白名单在会话创建时固定，
+      // 会把写/edit/bash 在计划模式后永久关掉）。`excludeTools` 在 `tools` 之后生效，正合适。
+      // 空列表不传 —— 保持原生全量。
+      ...(piExcludedTools.length > 0 ? { excludeTools: piExcludedTools } : {}),
       customTools,
       sessionManager,
       modelRuntime,
@@ -346,6 +359,18 @@ export class PiAgentSdkProvider implements AgentProvider {
     // getSessionStats / getContextUsage never throw on a healthy session, but
     // the adapter still guards against a thrown read.
     const modelId = session.model?.id ?? req.model;
+    // 会话累计基线:预算(`maxTotalTokens` / `maxUsd`)读的是单轮量,而 Pi 的 stats
+    // 是**会话**累计 —— 没有基线的话,累计值一旦越过上限,之后每一轮都会立刻被判超
+    // 预算并中断。在轮开始抓一次 `tokens.total` 与 `cost`,快照据此给出单轮增量。
+    let sessionTotalBaseline: number | undefined;
+    let sessionCostBaseline: number | undefined;
+    try {
+      const started = session.getSessionStats();
+      if (typeof started?.tokens?.total === "number") sessionTotalBaseline = started.tokens.total;
+      if (typeof started?.cost === "number") sessionCostBaseline = started.cost;
+    } catch {
+      // 轮开始时读不到(极罕见):不设基线,快照省略单轮字段,宿主退回累计值。
+    }
     const provideTokenSnapshot = () => {
       let ctxUsage, stats;
       try {
@@ -355,7 +380,7 @@ export class PiAgentSdkProvider implements AgentProvider {
         // Session torn down / mid-dispose — nothing to report this turn.
         return undefined;
       }
-      return buildPiTokenSnapshot(ctxUsage, stats, modelId);
+      return buildPiTokenSnapshot(ctxUsage, stats, modelId, sessionTotalBaseline, sessionCostBaseline);
     };
 
     // Per-session file snapshot for the "本轮修改" card + 撤销本轮 (rewind) —
@@ -446,17 +471,15 @@ export class PiAgentSdkProvider implements AgentProvider {
         // ordering (same shape as Claude's flushFinal).
         await adapter.flushFinal();
       } catch (err) {
-        // A user-initiated abort makes prompt() reject.
+        // A user-initiated abort makes prompt() reject. agent 循环可能已经发过
+        // 终态 agent_end(用户中断/传输断开时常见),所以收尾一律走 adapter 的统一
+        // 守卫 —— 已收过尾就不重复 turn.done(从前 catch 里直接 ctx.emit 会重发)。
         if (ac.signal.aborted) {
           // Still run the end-of-turn finalization so partially-written files
           // surface on the "本轮修改" card and can be rewound — mirrors
           // ClaudeAgentSdkProvider's abort path, which also calls flushFinal.
+          adapter.finalizeTurn("interrupted");
           await adapter.flushFinal();
-          ctx.emit({
-            type: "turn.done",
-            sessionId: req.sessionId,
-            reason: "interrupted",
-          });
         } else {
           ctx.log.error(`pi SDK error: ${(err as Error).message}`);
           ctx.emit({
@@ -470,12 +493,8 @@ export class PiAgentSdkProvider implements AgentProvider {
           // failure (SDK crash / transport break) doesn't undo the writes
           // that already landed, so the user must still see them. Mirrors
           // the abort path above and ClaudeAgentSdkProvider's error path.
+          adapter.finalizeTurn("error");
           await adapter.flushFinal();
-          ctx.emit({
-            type: "turn.done",
-            sessionId: req.sessionId,
-            reason: "error",
-          });
         }
       } finally {
         unsubscribe();

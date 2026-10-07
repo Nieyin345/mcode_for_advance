@@ -175,7 +175,11 @@ export function pluginVersionOf(manifest: PluginManifest): string {
   // plugins root), and the swap/prune steps would then delete the payload or
   // every installed plugin and marketplace.
   if (/^\.*$/.test(safe)) return "0.0.0";
-  return safe;
+  // 安装交换用的 scratch 目录是 `<版本>.swapping-*` / `<版本>.backup-*`,而
+  // `installedRootOf` 会跳过**目录名里含**这两个标记的那些。若版本字符串本身
+  // (清洗后)含 `.swapping-`/`.backup-`,插件装好的目录会被自己跳过 → 列表里看不见、
+  // 也卸不掉。把标记打碎(不能恢复出原样也能接受 —— 这本来就是畸形版本号)。
+  return safe.replace(/\.(swapping|backup)-/gi, "-$1-");
 }
 
 /* ── Frontmatter (SKILL.md / commands/*.md / agents/*.md) ── */

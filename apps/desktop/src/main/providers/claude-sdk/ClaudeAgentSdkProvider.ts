@@ -50,6 +50,7 @@ import {
 import { getOutputStyleSetting } from "@main/lib/outputStyleConfig.js";
 import { getEnabledPlugins, getPluginMcpServers, getEnabledPluginSkillRoots } from "@main/plugins/pluginManager.js";
 import { defaultSkillsRoot, enabledSkillNames, engineEnabled, readEnginesMap, skillNamesInRoot } from "@main/lib/skillEngines.js";
+import { excludedToolsForEngine, readEngineToolPolicy } from "@main/lib/engineToolPolicy.js";
 import { readMcpEnginesMap, mcpEngineEnabled } from "@main/lib/mcpEngines.js";
 import { getTrustedProjectMcpServers } from "@main/lib/projectMcp.js";
 import { resolveSubagentModelValue } from "@main/lib/subagentModel.js";
@@ -98,6 +99,7 @@ import { APP_MCP_SERVER } from "@contracts/appControl";
 // 审批闸门(哪些工具不用问用户)只有一份 —— 它得与网页端那条通路共用,见该文件头。
 import { BROWSER_MCP_SERVER, shouldAutoApprove } from "@main/providers/toolGate.js";
 import { loadCreateMcpServer } from "@main/mcp/sdk.js";
+import { AGENT_ENGINE_MCP_SERVER, buildAgentEngineMcpServer, registerAgentEngineSession } from "@main/mcp/agentEngineBridge.js";
 import { loadSubagents, subagentsToAgentsRecord } from "@main/claude/subagentStore.js";
 
 // Lazy-load the Agent SDK so the (large) module and its bundled claude binary
@@ -805,6 +807,9 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
 
   async startTurn(req: StartTurnRequest, ctx: ProviderContext): Promise<TurnHandle> {
     const ac = new AbortController();
+    // 把本轮会话的 cwd 登进 agent 桥 —— agent_read_document 等要它解析相对路径
+    // (见 mcp/agentEngineBridge.ts)。每轮登记,覆盖旧值即可。
+    registerAgentEngineSession(req.sessionId, req.cwd);
 
     // UI "Plan" mode → run the CLI under `default` and steer the model into
     // plan mode via the EnterPlanMode tool instead. The CLI's plan
@@ -863,6 +868,13 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       // the enabled skills + plugin contributions. Do NOT also add 'Skill' to
       // allowedTools. See sdk.d.ts Options.skills.
       skills: await claudeSkillsOption(req.pluginNames, req.skills, req.cwd),
+      // 按引擎的内置工具禁用（见 `lib/engineToolPolicy.ts`）：用户在设置里关掉的
+      // Claude 内置工具从模型上下文里移除。空列表不传 —— 保持原生全量。这是"统一
+      // 基础工具"的正解之一：关掉原生 Read，才能把读取收敛到统一的工具实现上。
+      disallowedTools: (() => {
+        const excluded = excludedToolsForEngine(readEngineToolPolicy(), "claude");
+        return excluded.length > 0 ? excluded : undefined;
+      })(),
       // SDK #359: On Windows there is a timing/buffering race in the stdio
       // control-stream transport that causes "Tool permission request failed:
       // AbortError: Tool permission stream closed before response received"
@@ -1504,7 +1516,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
         req.pluginNames,
       ),
     );
-    const [mcpState, browserServer, libraryServer, workflowServer, memoryServer, outputStyle, enabledPlugins, pluginMcp] =
+    const [mcpState, browserServer, libraryServer, workflowServer, memoryServer, agentServer, outputStyle, enabledPlugins, pluginMcp] =
       await Promise.all([
         getMcpManagement(),
         // Pure constructor after the (cached) SDK import — building it
@@ -1526,6 +1538,10 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
         // 存储与注入早就有了,缺的一直是这个写入口:没有它,记忆库永远是空的,
         // 注入的那段快照永远是空串(见 mcp/memoryServer.ts 文件头)。
         buildMemoryMcpServer({ sessionId: req.sessionId, context: ctx }),
+        // Agent 只读工具(统一文档/图片读取 + 环境概况)—— agent_read_document 读
+        // PDF/DOCX/XLSX/PPTX,补 Claude 原生 Read 缺的 Office 那一块。见
+        // mcp/agentEngineBridge.ts(已保证只桥只读的那几个)。
+        buildAgentEngineMcpServer({ sessionId: req.sessionId }),
         getOutputStyleSetting(),
         enabledPluginsPromise,
         enabledPluginsPromise.then((plugins) => getPluginMcpServers(plugins)),
@@ -1550,6 +1566,7 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       [LIBRARY_MCP_SERVER]: libraryServer,
       [WORKFLOW_MCP_SERVER]: workflowServer,
       [MEMORY_MCP_SERVER]: memoryServer,
+      [AGENT_ENGINE_MCP_SERVER]: agentServer,
     };
     // mcode-app —— agent 控制 Mcode 本身(全部功能 + 界面操作,见 main/appControl/tools.ts)。
     // 节点收窄(strictMcpConfig)时不进候选表,与记忆工具一样只在普通对话里挂。

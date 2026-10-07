@@ -150,6 +150,31 @@ export class PiMessageAdapter {
     this.emit({ type: "turn.done", sessionId: this.sessionId, reason });
   }
 
+  /**
+   * 异常收尾：token 快照 + turn.done（error / interrupted）。
+   *
+   * 供提供方在 `session.prompt()` **抛出**时调用 —— 这条路径走不到
+   * {@link handleAgentEnd}，而 agent 循环很可能**已经**发过一个终态
+   * `agent_end`（用户中断 / 传输断开时相当常见）。若这里再用 `ctx.emit`
+   * 直发 turn.done，同一个回合会收到**两次** turn.done，且 token 快照可能
+   * 重复计入 `TokenTracker`。所以复用一个统一的守卫（`turnDoneEmitted`），
+   * 已发过就只补 token 快照、不再重复发 turn.done。
+   *
+   * 与 {@link flushDeferredTurnDone} 的区别：那个只在 defer 模式下动作；这个
+   * 无论是否 defer 都收尾（异常路径必须保证 turn.done 至少一次）。
+   */
+  finalizeTurn(reason: TurnDoneReason): void {
+    if (this.turnDoneEmitted) {
+      // 已经收过尾（通常来自 agent_end）—— 补一次 token 快照即可，
+      // 不再重复 turn.done。重发快照是无害的：内容是同一份。
+      this.emitTurnEndSnapshot();
+      return;
+    }
+    this.turnDoneEmitted = true;
+    this.emitTurnEndSnapshot();
+    this.emit({ type: "turn.done", sessionId: this.sessionId, reason });
+  }
+
   /** Dispatch a single Pi agent-session event into RuntimeEvents. */
   dispatch(event: AgentSessionEvent): void {
     switch (event.type) {

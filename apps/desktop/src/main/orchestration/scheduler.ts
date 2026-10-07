@@ -947,7 +947,9 @@ class Run {
 
   carriedTextOf = (nodeId: string): string => {
     const parts: string[] = [];
-    for (const up of this.deps.get(nodeId) ?? []) {
+    // **走活跃上游,不是原始依赖表。** 见 {@link upstreamTextOf} 上面那一段:
+    // 被别的分支砍掉的边**不是来路**,哪怕那一头（一个岔路口）自己的结局是 success。
+    for (const up of this.liveUpstreamOf(nodeId)) {
       const outcome = this.outcomes.get(up);
       if (outcome?.status !== "success") continue;
       const body = producedTextOf(outcome);
@@ -1011,9 +1013,31 @@ class Run {
     this.publish();
   };
 
+  /**
+   * 上游结果拼成的一段。按依赖顺序,只取**活跃上游里成功且有话说**的那些。
+   *
+   * ## 为什么走 {@link effectiveUpstreamOf} 而不是原始依赖表 `deps`
+   *
+   * `deps` 是**这张图**的前向邻接表:它记的是"图上画着这么一根线",不是"这次运行
+   * 真的走了这条路"。岔路口没被选中的那条出边**还在** `deps` 里,而它那一头的上游
+   * —— 那个岔路口节点本身 —— 结局往往是 `success`(透传成功)。按 `deps` 遍历的话,
+   * 一条**明确没走的路**上的内容会被整段拼进这一步的提示词,模型读到它、以为那是
+   * 上游交出来的东西。
+   *
+   * 就绪判断(`{@link effectiveUpstreamOf}`)读的是相反的规矩:"没走的那条路不算
+   * 上游"。两处必须读同一份判据 —— 否则会出现那种最难查的坏法:**图明明按用户选的
+   * 路跑,提示词里却带着另一条路的产出**,而且一个字都不报错。
+   *
+   * `referenced` 里点过名的上游**跳过**。理由见 `referencedNodeNamesIn` 的文件头:
+   * 那几步的产出已经被变量引用定点取进指令里了,再整段拼一遍的话,同一份内容会以
+   * **两种形状**(干净的值 + 原始全文)在同一段提示词里出现两遍 —— 白烧一截 token,
+   * 还让模型得自己判断"这两份是不是一回事"。
+   *
+   * 这是**互斥的两种取法**,不是"两个都有":点名了就是"我要这个",没点名才是默认整段给。
+   */
   upstreamTextOf = (node: WorkflowNode, referenced: ReadonlySet<string>): string => {
     const parts: string[] = [];
-    for (const up of this.deps.get(node.id) ?? []) {
+    for (const up of this.effectiveUpstreamOf(node.id)) {
       if (referenced.has(up)) continue;
       const upTitle = this.storedTitleOf.get(up) ?? "";
       if (upTitle.length > 0 && referenced.has(upTitle)) continue;
@@ -1479,9 +1503,11 @@ class Run {
       const inputScope = {
         userPrompt: this.prompt,
         upstream: this.upstreamTextOf(node, referenced),
-        upstreamArtifacts: (this.deps.get(node.id) ?? []).flatMap((up) => this.outcomes.get(up)?.artifacts ?? []),
+        // 上游的结构化产出与产物引用 —— **只取活跃上游**(与 {@link upstreamTextOf}
+        // 同一份判据)。按 `deps` 取的话,被分支砍掉那条路上的东西会跟着漏进来。
+        upstreamArtifacts: this.effectiveUpstreamOf(node.id).flatMap((up) => this.outcomes.get(up)?.artifacts ?? []),
         upstreamOutputs: Object.fromEntries(
-          (this.deps.get(node.id) ?? [])
+          this.effectiveUpstreamOf(node.id)
             .map((up) => [up, this.outcomes.get(up)?.outputs] as const)
             .filter((e): e is readonly [string, Record<string, unknown>] => e[1] !== undefined),
         ),

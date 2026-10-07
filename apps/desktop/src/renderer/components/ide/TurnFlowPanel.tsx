@@ -127,15 +127,20 @@ export function TurnFlowPanel() {
     [groups, usageHistory],
   );
 
-  /* Expansion state (turn index → open). The latest turn auto-expands; older
-   * ones render collapsed (their headers already summarize the actions). A
-   * NEW latest turn (keyed by its user message id, so loading an older page
+  /* Expansion state (turn **stable key** → open). The latest turn auto-expands;
+   * older ones render collapsed (their headers already summarize the actions).
+   * A NEW latest turn (keyed by its user message id, so loading an older page
    * doesn't re-trigger) re-opens itself and folds the previous one.
+   *
+   * ⚠️ **键是稳定 id,不是 `g.index`。** `index` 是"本窗口内第几组"(`buildTurnGroups`
+   * 按 `i+1` 现算)—— "加载更早"往前插消息会让**每一个** index 都变。从前按 index 存
+   * 展开态:加一页之后,原来展开的最新一轮 index 变了 → 它**静默收起**,而另一个旧回合
+   * 悄悄展开(它占了那个被记下的 index)。稳定键取自回合的第一条消息 id。
    *
    * Declared BEFORE the latest-turn effect: on mount / session switch the
    * reset must run first, or it would wipe the expansion the latest-turn
    * effect just seeded (effects run in declaration order). */
-  const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const seenLatestRef = useRef<string | null>(null);
   useEffect(() => {
     seenLatestRef.current = null;
@@ -151,15 +156,14 @@ export function TurnFlowPanel() {
     }
     if (seenLatestRef.current === latestKey) return;
     seenLatestRef.current = latestKey;
-    setExpanded(new Set([groups[groups.length - 1].index]));
-    // groups only matters for the last index; latestKey captures the change.
-  }, [latestKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    setExpanded(new Set([latestKey]));
+  }, [latestKey]);
 
-  const toggle = (index: number) => {
+  const toggle = (key: string) => {
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(index)) next.delete(index);
-      else next.add(index);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   };
@@ -258,23 +262,27 @@ export function TurnFlowPanel() {
       )}
 
       <div className="space-y-2 px-2 py-2 pb-4">
-        {groups.map((g) => (
-          <TurnSection
-            key={g.userMessage?.id ?? `headless-${g.index}`}
-            group={g}
-            usage={usageByTurn.get(g.index)}
-            subagents={subagents}
-            waitingModel={
-              g.index === groups.length &&
-              sessionRunning &&
-              g.assistantMessages.length === 0
-            }
-            expanded={expanded.has(g.index)}
-            onToggle={() => toggle(g.index)}
-            onJump={jumpToChat}
-            onOpenSubagent={openSubagent}
-          />
-        ))}
+        {groups.map((g) => {
+          // 稳定键:与 `key=` 同一个表达式 —— 展开态按它存,不按会随"加载更早"漂移的 index。
+          const groupKey = g.userMessage?.id ?? g.assistantMessages[0]?.id ?? `headless-${g.index}`;
+          return (
+            <TurnSection
+              key={groupKey}
+              group={g}
+              usage={usageByTurn.get(g.index)}
+              subagents={subagents}
+              waitingModel={
+                g.index === groups.length &&
+                sessionRunning &&
+                g.assistantMessages.length === 0
+              }
+              expanded={expanded.has(groupKey)}
+              onToggle={() => toggle(groupKey)}
+              onJump={jumpToChat}
+              onOpenSubagent={openSubagent}
+            />
+          );
+        })}
       </div>
     </div>
   );

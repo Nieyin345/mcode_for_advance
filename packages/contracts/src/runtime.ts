@@ -340,6 +340,11 @@ export interface ContextSnapshot {
   cacheCreationTokens?: number;
   /** Estimated USD cost for this turn, if known. Includes subagent activity. */
   costUsd?: number;
+  /** 本轮累计花费,只给轮预算(`maxUsd`)用。与 {@link turnProcessedTokens} 对称:
+   *  `costUsd` 对某些提供方(当前是 Pi)是**会话累计**,直接当本轮花费会让跨过上限之后
+   *  每一轮都立刻超预算。提供方给出单轮值时预算读它;缺省(Claude / Codex 本来就按轮)
+   *  时预算读 `costUsd`。界面不读它。 */
+  turnCostUsd?: number;
   /** Active model identifier (from SDK result message). */
   model?: string;
   /** Context occupancy as a percentage [0, 100], clamped. */

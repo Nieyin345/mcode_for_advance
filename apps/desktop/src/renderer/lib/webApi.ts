@@ -798,13 +798,14 @@ const shell: Api["shell"] = {
  *    React 19 把整棵树卸掉。返回一个带 error 的结果,调用方本来就把它写进终端
  *    首行(`result.ok === false` → `term.writeln(...)`),用户看到的是一句说得清的
  *    话,而不是一片空白或白屏。 */
-const TERMINAL_WEB_UNSUPPORTED = "终端只能在电脑端操作";
-
 const terminal: Api["terminal"] = {
-  create: () => Promise.resolve({ ok: false as const, error: TERMINAL_WEB_UNSUPPORTED }),
-  write: () => Promise.resolve({ ok: false, error: TERMINAL_WEB_UNSUPPORTED }),
-  resize: () => Promise.resolve({ ok: false, error: TERMINAL_WEB_UNSUPPORTED }),
-  kill: () => Promise.resolve({ ok: false, error: TERMINAL_WEB_UNSUPPORTED }),
+  // ⚠️ 走 `translate(uiLocale(), …)` 而不是硬编码中文 —— 与这个文件里别的 web 错误
+  // (pairFailed / notPaired / …)同一条规矩。硬编码的话,英文界面的手机用户打开终端
+  // 面板,首行是一句中文。
+  create: () => Promise.resolve({ ok: false as const, error: translate(uiLocale(), "lib.web.terminalUnsupported") }),
+  write: () => Promise.resolve({ ok: false, error: translate(uiLocale(), "lib.web.terminalUnsupported") }),
+  resize: () => Promise.resolve({ ok: false, error: translate(uiLocale(), "lib.web.terminalUnsupported") }),
+  kill: () => Promise.resolve({ ok: false, error: translate(uiLocale(), "lib.web.terminalUnsupported") }),
   list: (input) => rpc<{ terminals: TerminalInfo[] }>("terminal:list", input),
 };
 

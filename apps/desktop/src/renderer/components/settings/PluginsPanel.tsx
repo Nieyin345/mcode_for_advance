@@ -593,7 +593,7 @@ export function PluginsPanel() {
             hint={t("settings.plugins.nodesHint")}
             empty={t("settings.plugins.nodesEmpty")}
             icon={IconPuzzle}
-            onJumpToWorkflow={() => useSessionStore.getState().setSettingsOpen(true, "workflows")}
+            onJumpToWorkflow={(workflowId) => useSessionStore.getState().setSettingsOpen(true, "workflows", workflowId)}
             onJumpToProfile={() => useSessionStore.getState().setSettingsOpen(true, "workflows")}
           />
         </div>

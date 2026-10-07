@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore, selectActiveEnvPath } from "@renderer/stores/sessionStore.js";
@@ -35,16 +35,23 @@ export function GitPanel() {
 
   const [repos, setRepos] = useState<GitRepo[]>([]);
   const [loading, setLoading] = useState(true);
+  /** 扫描请求序号 —— 过期响应不许写状态(见 `scan`)。 */
+  const scanSeqRef = useRef(0);
 
   const scan = async (path: string) => {
+    // **请求序号:只有最新一次扫描能写状态。** 快速在项目 A→B 之间切换时,
+    // scan(A) 的 discoverRepos 可能**后**回来,把 A 的仓库列表写进 B 的页面。
+    const seq = ++scanSeqRef.current;
     setLoading(true);
     try {
       const { repos } = await api.git.discoverRepos({ projectPath: path });
+      if (seq !== scanSeqRef.current) return;
       setRepos(repos);
     } catch {
+      if (seq !== scanSeqRef.current) return;
       setRepos([]);
     } finally {
-      setLoading(false);
+      if (seq === scanSeqRef.current) setLoading(false);
     }
   };
 

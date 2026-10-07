@@ -47,7 +47,7 @@
  * 同一批类型,说明书放一份就够了(在工作流那一边);而自动化那一页根本画不出档案能套
  * 的节点(它的起点是触发器)。
  */
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRpc } from "@renderer/hooks/useRpc.js";
 import { Button, ErrorNote } from "@renderer/components/ui/index.js";
 import { localizeWorkflowCatalog } from "./workflowPresentation.js";
@@ -62,6 +62,7 @@ import { WorkflowLibraryView } from "./WorkflowLibraryView.js";
 import { NodeTypesView } from "./NodeTypesView.js";
 import { AgentProfilesView } from "./AgentProfilesView.js";
 import type { WorkflowPurpose } from "./workflowView.js";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
 
 type WorkflowsView = "library" | "nodeTypes" | "profiles";
 
@@ -74,6 +75,13 @@ const VIEWS: ReadonlyArray<{ id: WorkflowsView; labelKey: MessageId }> = [
 export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
   const { t } = useI18n();
   const [view, setView] = useState<WorkflowsView>("library");
+  // 一次性焦点:技能/插件页的「节点」反查点一行时带的"要打开哪一份"(见 store 的
+  // `settingsFocusWorkflowId`)。这里只负责**切到库那一页**;真正打开那份图、用完清掉
+  // 由 `WorkflowLibraryView` 做(它才拿得到 `openWorkflow`)。
+  const focusWorkflowId = useSessionStore((s) => s.settingsFocusWorkflowId);
+  useEffect(() => {
+    if (focusWorkflowId) setView("library");
+  }, [focusWorkflowId]);
   const isAutomation = purpose === "automation";
   // 自动化只有"库"这一个页签,而另外两页的文案(「工作流库」)也不适用 ——
   // 所以页签集合是按用途筛出来的,不是写死两份。
@@ -189,6 +197,7 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
           profileError={profileError}
           onSaveProfile={saveProfile}
           onRemoveProfile={removeProfile}
+          focusWorkflowId={focusWorkflowId}
         />
       </div>
       {/* 节点类型与代理档案这两页只有工作流那边有(`views` 里已经筛掉了),所以这整块

@@ -899,6 +899,11 @@ function dropSessionBuckets(s: SessionState, id: string) {
   delete sideChatSeedBySession[id];
   const composerDraftTouchBySession = { ...s.composerDraftTouchBySession };
   delete composerDraftTouchBySession[id];
+  // 排队待发的提示词(见 `QueuedPrompt`)。漏删的话,一条**删掉/归档**的会话在
+  // `promptQueue` 里留下的那一队(连同它拖着的附件、图片 data URL)**整个进程生命期
+  // 都留着** —— 而这条清理本来就是"把这一行有关的东西全收掉"。
+  const promptQueueBySession = { ...s.promptQueueBySession };
+  delete promptQueueBySession[id];
   const pendingApprovals = s.pendingApprovals.filter((p) => p.sessionId !== id);
   return {
     messagesBySession,
@@ -932,6 +937,7 @@ function dropSessionBuckets(s: SessionState, id: string) {
     composerDraftBySession,
     sideChatSeedBySession,
     composerDraftTouchBySession,
+    promptQueueBySession,
     pendingApprovals,
   };
 }
@@ -2796,7 +2802,12 @@ ctx.bumpUnread();
         const list = s.messagesBySession[ctx.sid] ?? EMPTY_MESSAGES;
         // Originator's own echo (id already present) — nothing to append (the
         // originator already truncated + optimistically appended at edit time).
-        if (list.some((m) => m.id === e.messageId)) return s;
+        // ⚠️ **但仍要把冻结哨兵撤掉** —— 见下面那段说明。
+        if (list.some((m) => m.id === e.messageId)) {
+          return s.interruptedBySession[ctx.sid]
+            ? { interruptedBySession: { ...s.interruptedBySession, [ctx.sid]: false } }
+            : s;
+        }
         // Cross-client EDIT (e.g. edited on the phone, echoed here): drop the
         // stale pre-edit tail — the message being replaced and everything
         // after it — BEFORE appending the re-sent bubble. Without this, a
@@ -2820,7 +2831,24 @@ ctx.bumpUnread();
           blocks: e.blocks as Block[],
           createdAt: e.createdAt,
         };
-        return { messagesBySession: { ...s.messagesBySession, [ctx.sid]: [...base, msg] } };
+        return {
+          messagesBySession: { ...s.messagesBySession, [ctx.sid]: [...base, msg] },
+          // **新的一轮开始了 → 撤掉"停过"的冻结哨兵。**
+          //
+          // `interruptedBySession` 是给本端 `interrupt()` 之后那段**迟到的**
+          // `text.delta` / `thinking`(SDK 生成器 unwind 时 flushFinal 补发的)设的闸。
+          // 但它以前**只有本端的 sendPrompt / editAndResend 会清** —— 于是另一条路起的
+          // 新一轮(手机发来的、自动化起的、别的客户端起的)在这台机器上**永远收不到内容**:
+          // `turn.done` / `user.message` 都不清它,这个会话所有 `text.delta` 都被那条闸丢掉。
+          // 用户看到的是"手机上发出来了,这台只显示我那句、没有回复"。
+          //
+          // 清在这里是安全的:`user.message` 由主进程**在 provider 回合之前**广播
+          // (见 `RuntimeManager` 的跨端回声),所以此刻能到的迟到内容只可能属于**上一轮那次
+          // 停**,而这一轮的内容全在它之后 —— 撤闸不会把上一轮的残渣放进来。
+          ...(s.interruptedBySession[ctx.sid]
+            ? { interruptedBySession: { ...s.interruptedBySession, [ctx.sid]: false } }
+            : {}),
+        };
       });
       return;
     

@@ -91,6 +91,16 @@ check(
   })(),
 );
 
+// 前置说明里出现一个**配平但不合法**的花括号片段(模型爱写"示例 {x}"),真正的文档在末尾。
+// 只取第一个 `{` 会挑中示例、parse 失败,白白触发一次纠错轮。应当取最后一个能 parse 的。
+check(
+  "前置说明里的花括号示例不抢走真正的 JSON 文档",
+  (() => {
+    const r = extractJsonDocument(`可选的 shape 是 {key: value}(示意),正式结果:\n${JSON.stringify(obj)}`);
+    return r.ok && (r.value as typeof obj).score === 3;
+  })(),
+);
+
 // 字符串字面量里的花括号 / 引号不该骗过配平扫描 —— 模型最爱在值里写 JSON 示例。
 check(
   "字符串里的花括号不破坏配平",

@@ -194,6 +194,21 @@ const MCP_NAME_RE = /^[A-Za-z0-9_-]+$/;
 export const MCP_RESERVED_NAME = "mcode-browser";
 
 /**
+ * 「保留名」判定 —— 所有以 `mcode-` / `mcode_` 开头的名字都是 Mcode 自带服务器的身份。
+ *
+ * **为什么是整段前缀而不是单个字面名**:内置服务器不止 `mcode-browser` —— 还有
+ * `mcode-app` / `mcode-library` / `mcode-workflow` / `mcode-memory`(见
+ * {@link MCP_ALWAYS_ON_SERVERS} 与内置浏览器 server),而且 Claude provider 对其中几个
+ * **按前缀自动放行**
+ * (`mcp__mcode-app__app_*`)。用户(或经审批的 AI)若在用户级 config 里注册一个同名
+ * server,面板与引擎矩阵就会显示一个与内置身份重名的伪造项。项目级 `.mcp.json` 一直
+ * 挡的是整段 `mcode[-_]` 前缀(见 `projectMcp.isReservedProjectServerName`),用户级这条
+ * 路必须与它一致 —— 两条路规矩相反正是漏洞的来源。 */
+export function isReservedMcpServerName(name: string): boolean {
+  return /^mcode[-_]/i.test(name);
+}
+
+/**
  * 应用自带的**骨干** MCP 服务器(库操作 / 工作流操作 / 记忆操作)的注册名。
  *
  * 它们的定义放在契约层而不是各自的主进程文件里,是因为**渲染端也要认这几个名字**:

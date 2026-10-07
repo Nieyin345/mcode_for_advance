@@ -1627,6 +1627,10 @@ class AutomationRunner {
       // failures do not reset or spend the budget; failed provider starts may
       // conservatively spend a unit. A synchronous settings error prevents self
       // dispatch; crash durability still follows SettingRepo's persistence policy.
+      //
+      // 手动运行**同步清零**是故意的:这是用户从"自触发额度耗尽/损坏"里恢复的唯一途径
+      // (automation-smoke 有专门的用例:手动运行能恢复损坏的计数)。即使这次手动运行
+      // 随后因 provider 预检失败而没跑成,也保持清零 —— 用户点"跑一次"的语义就是"重置"。
       if (opts?.manual === true) {
         this.writeSelfTriggerCount(trigger.workflowId, 0);
       } else if (selfOrigin) {

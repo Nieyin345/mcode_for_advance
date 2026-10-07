@@ -108,9 +108,16 @@ export function registerTerminalHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.TERMINAL_KILL, async (_evt, raw) => {
     try {
       const input = TerminalKillSchema.parse(raw);
-      const ok = TerminalManager.kill(input.terminalId);
-      // Killing an already-gone id is still ok from the renderer's POV.
-      return { ok: true as const, ...(ok ? {} : { error: "终端不存在或已退出" }) };
+      // **关一个已经不在的终端仍是成功。** 这是刻意的:用户连点两下「关闭」、
+      // 或者一条终端刚自己退出了又被点了一次 —— 从界面那侧看,结果就是"它没了",
+      // 和成功关掉一模一样(`TaskListPanel.killTerminal` 见 ok 就 return,不弹错)。
+      //
+      // ⚠️ **所以这里不能挂 `error`。** 从前回的是 `{ok:true, error:"终端不存在或已退出"}`
+      // —— 自相矛盾:`error` 在 `TerminalOpResult` 里只在 `ok:false` 时有意义,而这个
+      // 形状两边都用不对(见 ok 就成功,那句原因永远不会显示;若谁改成"见 error 即失败",
+      // 又会在真正成功时报一句假错)。这一档的真正含义是"它已经不在了",用 ok 表达即可。
+      TerminalManager.kill(input.terminalId);
+      return { ok: true as const };
     } catch (err) {
       const msg = errText(err);
       return { ok: false as const, error: msg };

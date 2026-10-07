@@ -202,8 +202,16 @@ function LanguageRow({
   };
 
   const doToggle = async (enabled: boolean) => {
-    await api.lsp.toggle({ language: state.language, enabled });
-    await onReload();
+    // **失败要说出来。** 从前没有 catch:`api.lsp.toggle` 抛了的话,那个被 Switch
+    // 丢弃的 promise 就静默 reject 了 —— 开关按 store 状态渲染,于是它纹丝不动,
+    // 用户看到的是「点了没反应」。复用同一行的 `healthResult` 报错位。
+    setHealthResult(null);
+    try {
+      await api.lsp.toggle({ language: state.language, enabled });
+      await onReload();
+    } catch (err) {
+      setHealthResult(`✗ ${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   /** Manual-download fallback: pick a user-downloaded binary/archive. */

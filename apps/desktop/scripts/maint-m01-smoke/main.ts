@@ -19,8 +19,8 @@
  *
  * Run: scripts/maint-m01-smoke/run.sh
  */
-import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { dataRoot, DATA_DB_FILENAME } from "@main/lib/dataRoot.js";
 import { initDb, getDb, flushDb, closeDb, persist } from "@main/store/db.js";
 import { ProjectRepo, SessionRepo, MessageRepo } from "@main/store/repositories.js";
@@ -158,6 +158,15 @@ eq("二次重开:interrupted 保持幂等", scalar("SELECT status FROM workflow_
 eq("二次重开:没有重复的项目行", count("SELECT COUNT(*) FROM projects"), 2);
 check("二次重开:外键开关为 ON", fkOn());
 closeDb();
+
+/* ── 8. initDb 必须走 dataRoot 的 dbPath() 安全网,而不是自己 join ──────────── */
+// 曾经 db.ts 自己 `join(dataRoot(), DATA_DB_FILENAME)`,把 dbPath() 那道安全网绕过了:
+// 搬迁失败(老库还在 userData、新位置没有)时会新建一个**空库**,用户以为记录全丢了。
+{
+  const dbSrc = readFileSync(resolve(process.cwd(), "src/main/store/db.ts"), "utf8");
+  check("initDb 调用 dataRoot 的 dbPath() 解析器", /resolveDbPath\(\)/.test(dbSrc));
+  check("initDb 不再自行拼接数据库路径", !/dbPath\s*=\s*join\(/.test(dbSrc));
+}
 
 console.log(`\nmaint-m01-smoke: ${checks - failures}/${checks} checks passed`);
 if (failures > 0) { console.error(`maint-m01-smoke: ${failures} FAILED`); process.exit(1); }

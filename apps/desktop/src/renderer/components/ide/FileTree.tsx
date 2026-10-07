@@ -1246,7 +1246,8 @@ function FileNodeRow({
     deletingRef.current = false;
     if (!result.ok) return;
     actions?.bumpReload();
-    closeFileInIde(path);
+    // force:文件已经被删掉了,留着它的标签只会指向空气 —— 未保存的守卫在这里无意义。
+    closeFileInIde(path, true);
   }, [actions, path, closeFileInIde]);
 
   // Paste the tree's stashed file into this file's parent dir (VS Code parity:

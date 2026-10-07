@@ -20,6 +20,11 @@ export const zh = {
   // 复制对话失败。正文给的是主进程抛上来的那句具体原因(引擎不支持 / 会话文件不在了),
   // 因为那是用户唯一能据此做点什么的信息。
   "store.toast.persistFailed": "存对话记录失败(这一轮可能没保存下来)",
+  "store.toast.settingSaveFailed": "设置没能保存",
+  // 关闭标签时被守卫拦下的未保存文件 —— 编辑器没有自动保存,静默关掉就是丢改动。
+  "store.toast.ideCloseBlockedTitle": "有文件没关：内容还没保存",
+  "store.toast.ideCloseBlockedBody": "{names} 有未保存的修改，已保留。保存或撤销后即可关闭。",
+  "store.toast.ideCloseBlockedMany": "{count} 个文件有未保存的修改，已保留。保存或撤销后即可关闭。",
   "store.toast.historyLoadFailed": "读取对话记录失败，请重新打开对话重试",
   "store.toast.createChatFailed": "新建对话失败",
   "store.toast.forkFailed": "复制对话失败",

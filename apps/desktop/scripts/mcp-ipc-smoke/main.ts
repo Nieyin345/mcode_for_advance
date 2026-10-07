@@ -723,7 +723,20 @@ console.log("\n增删");
 same(
   "保留名挡在门外,而且那句话是给人看的",
   await save({ name: MCP_RESERVED_NAME, config: { command: "x" } }),
-  { ok: false, error: `「${MCP_RESERVED_NAME}」是内置 server 的保留名` },
+  { ok: false, error: `「${MCP_RESERVED_NAME}」是 Mcode 内置服务器的保留名(mcode- 开头)` },
+);
+// 整段 `mcode-`/`mcode_` 前缀都是内置身份(mcode-app / mcode-library / mcode-memory …)——
+// 过去只挡了一个字面名 mcode-browser,用户能塞一个 mcode-app 伪造内置 server。项目级
+// .mcp.json 一直挡整段前缀,这两条路现在一致了。
+same(
+  "其它内置名(mcode-app)也挡住",
+  await save({ name: "mcode-app", config: { command: "x" } }),
+  { ok: false, error: "「mcode-app」是 Mcode 内置服务器的保留名(mcode- 开头)" },
+);
+same(
+  "下划线形态(mcode_memory)同样挡",
+  await save({ name: "mcode_memory", config: { command: "x" } }),
+  { ok: false, error: "「mcode_memory」是 Mcode 内置服务器的保留名(mcode- 开头)" },
 );
 same(
   "同名(已启用)再存 → 拒绝",

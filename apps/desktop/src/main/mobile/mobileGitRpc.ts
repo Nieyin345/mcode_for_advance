@@ -25,6 +25,7 @@ import {
   type GitRepo,
 } from "@contracts/ipc";
 import { ProjectRepo } from "@main/store/repositories.js";
+import { isKnownWorkspaceRoot } from "@main/lib/pathGuard.js";
 import {
   loadSimpleGit,
   findContainingProject,
@@ -45,7 +46,10 @@ const REFUSE = "仓库路径不在任何已添加的项目内";
 const handlers: Record<string, RpcHandler> = {
   "git:discoverRepos": async (raw) => {
     const input = GitDiscoverReposSchema.parse(raw);
-    const known = ProjectRepo.listPaths().some((p) => resolve(p) === resolve(input.projectPath));
+    // 与桌面 ipc/git.ts 一致:用 isKnownWorkspaceRoot(win32/darwin 会归一大小写),
+    // 而不是 resolve()===resolve()(大小写敏感)。否则手机发个小写盘符的项目路径会被
+    // 拒成"无仓库",而桌面同样的路径是接受的。
+    const known = isKnownWorkspaceRoot(input.projectPath);
     if (!known) return { repos: [] };
     try {
       const repoPaths = await findGitRepos(input.projectPath, MAX_SCAN_DEPTH);

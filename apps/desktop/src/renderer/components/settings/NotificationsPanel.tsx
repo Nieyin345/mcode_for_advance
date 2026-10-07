@@ -24,6 +24,7 @@ import { DEFAULT_NOTIFICATION_PREFS, normalizeNotificationPrefs } from "@contrac
 import { Input, Switch } from "@renderer/components/ui/index.js";
 import { setCachedNotificationPrefs } from "@renderer/lib/notifPrefsCache.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingRow } from "./SettingRow.js";
 import { SettingsSection } from "./SettingsSection.js";
@@ -45,10 +46,24 @@ export function NotificationsPanel() {
 
   // Persist a single pref change.
   const update = (patch: Partial<NotificationPrefs>) => {
+    const prev = prefs;
     const next = { ...prefs, ...patch };
     setPrefs(next);
     setCachedNotificationPrefs(next);
-    void api.notification.setPrefs(next).catch((err: unknown) => console.error("notification.setPrefs failed:", err));
+    // **写失败要把两边都收回去。** 只打日志的话:UI 与渲染端缓存都按新值走了
+    // (应用内 toast 立刻按新偏好),而主进程 NotificationManager 仍是旧偏好 ——
+    // 用户以为关掉了某类系统通知、实际照旧弹;缓存还被 `primed` 锁住不再重取,
+    // 进一步掩盖不一致。回滚 + 弹一条可见错误。
+    void api.notification.setPrefs(next).catch((err: unknown) => {
+      console.error("notification.setPrefs failed:", err);
+      setPrefs(prev);
+      setCachedNotificationPrefs(prev);
+      useToastStore.getState().push({
+        kind: "error",
+        title: t("settings.saveFailed"),
+        body: err instanceof Error ? err.message : String(err),
+      });
+    });
   };
 
   const projects = useSessionStore((s) => s.projects);

@@ -10,7 +10,7 @@ import { useSessionStore, selectActiveEnvPath } from "@renderer/stores/sessionSt
 import { isOnlyOfficeSupportedPath, isOnlyOfficeViewOnlyPath, type FileViewMode } from "@contracts/ipc";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
-import { ideDirtyTracker } from "./OpenTabsBar.js";
+import { ideDirtyTracker } from "@renderer/lib/ideDirty.js";
 import { IconEye, IconEdit, IconLoader2, IconAlertTriangle, IconSquare, IconColumns3, IconPhotoOff, IconArrowLeft, IconArrowRight } from "@renderer/lib/icons.js";
 import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
 import { ChunkedMarkdown } from "../chat/ChunkedMarkdown.js";
@@ -452,7 +452,7 @@ function EditorToolbar({
             title={mode === "edit" ? t("ide.editor.switchToDiff") : t("ide.editor.switchToEditView")}
           >
             {mode === "edit" ? <IconEye size={12} /> : <IconEdit size={12} />}
-            {mode === "edit" ? "Diff" : "Edit"}
+            {t(mode === "edit" ? "ide.editor.modeDiffLabel" : "ide.editor.modeEditLabel")}
           </button>
         )}
         {/* Office files stay in OnlyOffice. Other previewable binary types
@@ -1339,11 +1339,10 @@ function EditPane({ filePath, projectPath }: { filePath: string; projectPath: st
   // LSP diagnostics subscription: applies publishDiagnostics markers to the
   // DISPLAYED file's model; re-subscribes (and clears the old file's
   // markers) when the displayed file changes.
-  useLspDiagnostics(
-    readyPath ?? filePath,
-    () => monacoRef.current,
-    () => editorRef.current,
-  );
+  // ⚠️ 传 **ref 本身**(不是 `() => monacoRef.current` 那种内联箭头)—— 箭头每次渲染
+  // 都是新身份,会让这个 effect 每渲染重订一次,其 cleanup 会把诊断标记清空。见
+  // `useLspDiagnostics` 的注释。
+  useLspDiagnostics(readyPath ?? filePath, monacoRef, editorRef);
 
   // Final teardown — the editor column went away (focus moved to chat / no
   // active file / mode switched to diff or preview). Model-cache ownership

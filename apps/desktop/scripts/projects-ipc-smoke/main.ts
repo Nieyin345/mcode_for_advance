@@ -837,9 +837,21 @@ console.log("\n项目行变动 → projects.changed");
   eq("删除 → 又一条", count(), 7);
 }
 
+/* ── 会话标题搜索:LIKE 通配符必须被转义(搜 `a_b` 不该命中 `axb`) ── */
+{
+  fresh();
+  const pid = mkProject("搜索");
+  mkSession("s_lit", pid, { title: "a_b" });
+  mkSession("s_wild", pid, { title: "axb" });
+  mkSession("s_pct", pid, { title: "100% 完成" });
+  const underscore = await call<{ sessions: { title: string }[] }>(IPC.SESSION_SEARCH, { query: "a_b" });
+  eqArr("下划线按字面搜", underscore.sessions.map((s) => s.title), ["a_b"]);
+  const pct = await call<{ sessions: { title: string }[] }>(IPC.SESSION_SEARCH, { query: "%" });
+  eqArr("百分号按字面搜", pct.sessions.map((s) => s.title), ["100% 完成"]);
+}
+
 /* ──────────────── 收尾 ──────────────── */
 
 rmSync(DATA, { recursive: true, force: true });
-
 console.log(`\nprojects-ipc-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exit(1);

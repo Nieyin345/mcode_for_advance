@@ -908,6 +908,20 @@ console.log("\n§5 模型缺失:是显式报错还是静默不工作");
   eq("★ cancel 之后喂音频不再推任何东西", stubWindow.pushes.length, 0);
   eq("★ cancel 之后 stop 是空操作", stopSession("v-half").text, "");
 
+  // cancel 必须**优雅关闭原生流**(inputFinished),而不是只丢引用 —— 否则反复取消
+  // 会累积悬着的原生 OnlineStream。stub 把 `inputFinished` 记进模块级 `calls` 账本。
+  {
+    resetRecognizerCache();
+    await startSession("v-cancel", "zh-CN", "zipformer");
+    sherpaStub.resetRecorder();
+    cancelSession("v-cancel");
+    eq(
+      "★ cancel 对原生流调了 inputFinished(不是直接丢引用)",
+      sherpaStub.calls.filter((c) => c === "inputFinished").length,
+      1,
+    );
+  }
+
   // ── (e) 识别产出文字时,推的那一帧要带上 `channel` ──
   //  preload 是按 `msg.channel === IPC.VOICE_RESULT` 过滤的 —— 缺了它渲染端
   //  一条都收不到,而主进程这边看起来"发出去了"。

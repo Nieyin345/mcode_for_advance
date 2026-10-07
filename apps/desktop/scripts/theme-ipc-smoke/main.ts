@@ -561,14 +561,17 @@ console.log("\n§8 搬数据根失败:原样返回,一个副作用都不许有")
   assertUntouched("搬到不存在的盘上");
 
   // ⑧ 目标在当前位置内部、但**大小写不同**(`…/mcode/sub` 对 `…/Mcode`)。
-  //    `copyDataRootTo` 的嵌套判断是**大小写敏感**的字符串前缀比较,挡不住它;
-  //    挡住它的是 `cpSync` 自己(它认 Windows 的路径等价)。所以这一档**确实被
-  //    拒**,只是拒的理由是复制失败而不是"目标不能在当前位置的内部"。这条钉的是
-  //    "结论对"(拒了、没动任何东西),不钉"用哪句话拒的" —— 换个平台的
-  //    `cpSync` 可能给出别的错,那是实现细节。
+  //    `copyDataRootTo` 的嵌套判断现在按平台归一大小写(与 pathGuard 同一套),
+  //    所以这一档由**守卫本身**拒绝,给出"目标不能在当前位置的内部",而不是靠
+  //    `cpSync` 事后报复制失败。钉两样:拒了、且理由是那条嵌套守卫。
   const cased = join(resolve(rootBefore, ".."), "mcode", "case-sub");
   const r8 = call<{ ok: boolean; error?: string }>(IPC.APP_MOVE_DATA_ROOT, { path: cased });
   eq("搬运目标大小写不同也拒(路径是同一个地方)", r8.ok, false);
+  check(
+    "★ 拒的理由是嵌套守卫,不是复制失败(大小写归一后认得是同一个根)",
+    (r8.error ?? "").includes("目标不能在当前位置的内部"),
+    r8,
+  );
   check("而且没有真的在那边建出目录来", !existsSync(cased), { cased });
   assertUntouched("大小写不同的内部目标");
 

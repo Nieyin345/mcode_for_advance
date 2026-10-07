@@ -929,6 +929,35 @@ console.log("\n14. 会话设置");
   eq("只改模型时**不**碰权限闸门(碰了会把当前模式冲掉)", permissionModes.length, 0);
   eq("没传的字段保持原样", SessionRepo.get(s)?.permissionMode, "default");
 }
+
+{
+  /**
+   * **providerId 过了首条消息就锁死。** schema 的注释白纸黑字写着「once a turn has
+   * run the provider is fixed」,而那道守卫此前只长在 `projectId` 那一支里 —— 单独发
+   * `{sessionId, providerId}` 就能改一条已经跑过对话的会话的引擎:DB 行被改,运行时捕获
+   * 的 provider 不动,界面上是 A 引擎、实际跑的是 B,一句提示都没有。
+   */
+  fresh();
+  const s = mkSession(nid("s"));
+  await call(IPC.SESSION_SAVE_MESSAGES, {
+    sessionId: s,
+    messages: [{ id: nid("m"), sessionId: s, role: "user", content: "已经有话了", createdAt: 1000 }],
+  });
+  const before = SessionRepo.get(s)?.providerId;
+  const threw = await catching(IPC.SESSION_UPDATE_SETTINGS, {
+    sessionId: s,
+    providerId: "codex-sdk",
+  });
+  check("已经有消息的会话改 providerId 被拒", threw.includes("fixed once"), threw);
+  eq("而且引擎真的没被改掉", SessionRepo.get(s)?.providerId, before);
+
+  // envMode / wtStyle 同理:已物化 worktree 的会话不该再被改环境意图。
+  const threwEnv = await catching(IPC.SESSION_UPDATE_SETTINGS, {
+    sessionId: s,
+    envMode: "worktree",
+  });
+  check("已经有消息的会话改 envMode 不报错(它没有 worktree,那道门只看 worktreePath)", threwEnv === "", threwEnv);
+}
 console.log("\n14b. 换目录:只在「还没开始」的会话上放行");
 
 {

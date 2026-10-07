@@ -153,3 +153,11 @@ export const LibraryRepo = {
     return { items: [], total: 0 };
   },
 };
+
+/** 资料库集合 —— 只在 `library/trash.ts`(经 `LibraryRepo` 的 AI 可见性过滤)里
+ *  被 `envPrompt` 间接拉到。无头场景没有真集合,返回空表即可。 */
+export const CollectionRepo = {
+  list(): { id: string; name: string; parentId: string | null }[] {
+    return [];
+  },
+};

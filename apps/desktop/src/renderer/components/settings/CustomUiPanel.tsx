@@ -1358,7 +1358,7 @@ function AdvancedSection() {
   const envPath = useSessionStore(selectActiveEnvPath);
   const projectPath = envPath ?? projects.find((p) => p.id === activeProjectId)?.path ?? null;
 
-  const apply = () => {
+  const apply = async () => {
     let parsed: unknown;
     try {
       parsed = JSON.parse(text);
@@ -1367,9 +1367,16 @@ function AdvancedSection() {
       return;
     }
     const next = coerceCustomUiConfig(parsed);
-    void save(next);
+    // **等落盘结果再报「已应用」。** 从前 `void save(next)` 之后无条件写这句话 ——
+    // 而 `save` 会返回 false(失败时它自己会 pushToast 报错)。于是两处提示互相矛盾,
+    // 只看到 inline note 的用户会以为 JSON 已经生效了。
+    const ok = await save(next);
     setDirty(false);
-    setNote(t("customUi.advanced.applied", { n: next.items.length }));
+    setNote(
+      ok
+        ? t("customUi.advanced.applied", { n: next.items.length })
+        : t("settings.saveFailed"),
+    );
   };
 
   return (

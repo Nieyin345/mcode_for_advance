@@ -38,6 +38,7 @@ import {
   McpMarketSourceRemoveSchema,
   McpMarketSearchSchema,
   MCP_RESERVED_NAME,
+  isReservedMcpServerName,
   type McpScope,
   type McpServerConfig,
   type McpServerEntry,
@@ -790,8 +791,10 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
   // ── Add a user-scope server (or overwrite when input.replace is set) ──
   ipcMain.handle(IPC.MCP_SAVE, (_evt, raw) => serializeMcpMutation(async () => {
     const input = McpSaveSchema.parse(raw);
-    if (input.name === MCP_RESERVED_NAME) {
-      return { ok: false, error: `「${MCP_RESERVED_NAME}」是内置 server 的保留名` };
+    // 保留名:整段 `mcode-`/`mcode_` 前缀都是内置身份,不能注册成用户 server
+    // (见 isReservedMcpServerName)。项目级 .mcp.json 一直这么挡,这里与它对齐。
+    if (isReservedMcpServerName(input.name)) {
+      return { ok: false, error: `「${input.name}」是 Mcode 内置服务器的保留名(mcode- 开头)` };
     }
     try {
       const state = await getMcpTruth();
@@ -870,6 +873,11 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
       // the renderer, so it cannot echo secrets back as import payloads.
       const available = await readCliMcpSources();
       for (const item of input.servers) {
+        // 保留名直接拒 —— 导入路径过去完全没挡,用户能塞进一个 mcode-app 之类的伪造内置身份。
+        if (isReservedMcpServerName(item.name)) {
+          errors.push({ name: item.name, error: "mcode- 开头是 Mcode 内置服务器的保留名" });
+          continue;
+        }
         if (item.name in userServers || item.name in stash) {
           skipped.push(item.name);
           continue;

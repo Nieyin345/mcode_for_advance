@@ -14,7 +14,7 @@ import type { BuildPiSkillLoaderOptions } from "@main/providers/pi-sdk/piSkillBr
 import { turnContextSections } from "@main/providers/contextPrompt.js";
 // 从**纯的那个模块**导入 —— `envPrompt.ts` 拉了 repositories(→ db → electron),
 // 这套 smoke 没桩它。格式化那半本来就是纯的,拆出来才测得到。
-import { formatEnvSections } from "@main/providers/envPromptFormat.js";
+import { formatEnvSections, selectVisibleItems } from "@main/providers/envPromptFormat.js";
 
 void (0 as unknown as RuntimeManagerSingleton | ClaudeAgentSdkProvider | PiAgentSdkProvider | CodexAgentSdkProvider | BuildPiSkillLoaderOptions);
 
@@ -102,6 +102,23 @@ check("截断时仍报出总数", !!truncated && truncated.includes("共 500 条
 check("…并说明只列了前几条", !!truncated && truncated.includes("前 1 条"), truncated);
 check("空库时明说库是空的", (formatEnvSections({ currentProjectPath: null, projects: [], libraryRoot: "C:/lib", items: [], totalItems: 0 }) ?? "").includes("库是空的"));
 
+const envItems = [
+  { id: "a", title: "可见" },
+  { id: "b", title: "被屏蔽" },
+  { id: "c", title: "在回收站" },
+  { id: "d", title: "也可见" },
+];
+const keptEnvItems = selectVisibleItems(
+  envItems,
+  (id) => id === "c", // 回收站
+  (id) => id === "b", // 屏蔽
+);
+same("回收站与被屏蔽的条目都不进环境块", keptEnvItems.map((i) => i.id), ["a", "d"]);
+same(
+  "上限在过滤之后生效（筛掉的不占名额）",
+  selectVisibleItems(envItems, () => false, () => false, 2).map((i) => i.id),
+  ["a", "b"],
+);
 const root = resolve(process.cwd());
 const source = (rel: string) => readFileSync(resolve(root, rel), "utf8");
 const runtime = source("src/main/claude/RuntimeManager.ts");
@@ -110,6 +127,12 @@ const pi = source("src/main/providers/pi-sdk/PiAgentSdkProvider.ts");
 const piBridge = source("src/main/providers/pi-sdk/piSkillBridge.ts");
 const codex = source("src/main/providers/codex-sdk/CodexAgentSdkProvider.ts");
 const memoryServer = source("src/main/mcp/memoryServer.ts");
+
+console.log("\n环境块的屏蔽与回收站过滤");
+// 环境块是**面向 AI**的出口:被屏蔽(设置里"不给 AI 看")与回收站里的条目
+// 绝不能进系统提示词。曾经这里直接列 LibraryRepo.list 的全部,漏了这层过滤。
+const envModule = source("src/main/providers/envPrompt.ts");
+check("envPrompt 把屏蔽/回收站过滤接到查库那一侧", envModule.includes("selectVisibleItems(") && envModule.includes("suppressionReasonOfItem(") && envModule.includes("trashedItemIds("));
 
 console.log("\n主对话记忆边界");
 check("普通 chat 自动注记忆", automaticMemoryForTurn("chat"));

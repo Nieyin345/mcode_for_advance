@@ -160,6 +160,12 @@ function WorktreeManagerRow({
       }
       setConfirmOpen(false);
       onRemoved();
+    } catch (err) {
+      // **IPC 本身抛了(参数不过校验 / 传输断)也要有话说。** 从前只有 try/finally:
+      // 异常穿过 `onClick={handleRemove}` 变成未处理的 rejection,弹窗既不关也不报错,
+      // 用户看到的是"点了没反应"。`removeWorktree` 内部已把 git/fs 失败收成 `{ok:false}`,
+      // 但这一层仍要挡住真正 reject 的那一类。
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }

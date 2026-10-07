@@ -24,9 +24,10 @@ import {
   PLAN_TAB_KEY,
   SortableFileTab,
   FileTabContextMenu,
-  useDirtyFiles,
 } from "../ide/OpenTabsBar.js";
+import { useDirtyFiles } from "@renderer/hooks/useDirtyFiles.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 
 /** Stable empty array so the selector never returns a fresh [] (Zustand
  *  Object.is rule — a new [] every render causes an infinite loop). */
@@ -88,6 +89,7 @@ export function UnifiedTabsBar() {
   const reorderIdeFile = useSessionStore((s) => s.reorderIdeFile);
   const clearIdeActiveFile = useSessionStore((s) => s.clearIdeActiveFile);
   const enqueueChatFile = useSessionStore((s) => s.enqueueChatFile);
+  const reportBlocked = useSessionStore((s) => s.reportBlockedIdeClose);
   const dirtySet = useDirtyFiles();
 
   // ── Editor focus + plan pseudo-tab (scoped to the active session) ──
@@ -570,6 +572,8 @@ export function UnifiedTabsBar() {
       <FileTabContextMenu
         ctxMenu={ctxMenu}
         onClose={() => setCtxMenu(null)}
+        dirtySet={dirtySet}
+        reportBlocked={reportBlocked}
         actions={{
           close: (p) => closeFile(p),
           closeOthers: (p) => closeOthers(p),

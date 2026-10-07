@@ -996,7 +996,7 @@ const BlockView = memo(function BlockView({
   // blocks regardless of whether they were inserted as pills (block.skillNames)
   // or typed as plain text. See useKnownSkillNames.
   const knownSkillNames = useKnownSkillNames();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   // Hoisted ABOVE the switch so every branch calls the same hooks in the same
   // order. The text branch used to be the ONLY branch adding useDeferredValue,
   // which made the hook count kind-dependent: when a recycled list cell is
@@ -1098,8 +1098,11 @@ const BlockView = memo(function BlockView({
           </div>
           {block.pendingToolNames.length > 0 && (
             <div className="text-content-muted">
+              {/* 分隔符**跟着语言走** —— 中文用「、」、英文用 ", "。硬编码「、」的话
+                  英文界面会显示成 "Unfinished calls: bash、read、grep"(与
+                  `ChatPane` 里那几处同一条规矩:`locale === "en" ? ", " : "、"`)。 */}
               {t("chatStream.turnIncomplete.pendingTools", {
-                tools: block.pendingToolNames.join("、"),
+                tools: block.pendingToolNames.join(locale === "en" ? ", " : "、"),
               })}
             </div>
           )}

@@ -1,5 +1,6 @@
 /** Real adapter events and a fake pnpm store: no live model, database or user data. */
 // @smoke-covers src/main/providers/pi-sdk/PiMessageAdapter.ts
+// @smoke-covers src/main/providers/pi-sdk/piTokenUsage.ts
 // @smoke-covers src/main/providers/codex-sdk/codexBinaryResolve.ts
 // @smoke-covers src/main/providers/pi-sdk/bashWriteGuard.ts
 // @smoke-covers src/main/lib/fileSnapshot.ts
@@ -12,6 +13,7 @@ import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 import { PiMessageAdapter } from "../../src/main/providers/pi-sdk/PiMessageAdapter.ts";
+import { buildPiTokenSnapshot } from "../../src/main/providers/pi-sdk/piTokenUsage.ts";
 import { codexMcpDisableArgs, codexTurnAllowsMcpServer } from "../../src/main/providers/codex-sdk/codexTurnScope.ts";
 import { codexApprovalReply } from "../../src/main/providers/codex-sdk/codexApprovalReply.ts";
 import { createProviderHealthProbe } from "../../src/main/providers/providerHealth.ts";
@@ -89,6 +91,63 @@ test("Pi structured-output defer preserves the actual final reason", () => {
   assert.deepEqual(events.filter((e) => e.type === "turn.done").map((e) => e.reason), ["max_tokens"]);
   const provider = readFileSync(resolve(here, "../../src/main/providers/pi-sdk/PiAgentSdkProvider.ts"), "utf8");
   assert.match(provider, /adapter\.getFinalDoneReason\(\)/, "provider must forward the mapped reason");
+});
+
+test("Pi abort/error finalization never double-emits turn.done after agent_end", () => {
+  // A user abort (or transport break) makes prompt() reject — but the agent
+  // loop frequently emitted a terminal agent_end FIRST (the adapter already
+  // fired turn.done). finalizeTurn must reuse the one-shot guard so the turn
+  // ends exactly once with the interruption reason the user's stop implies.
+  const { adapter, events } = adapterWithEvents();
+  adapter.dispatch(agentEnd("stop")); // adapter emits turn.done{end_turn}
+  adapter.finalizeTurn("interrupted"); // aborted catch branch
+  const done = events.filter((e) => e.type === "turn.done");
+  assert.equal(done.length, 1, "abort after a terminal agent_end must not resend turn.done");
+  assert.equal(done[0].reason, "end_turn");
+  // No terminal agent_end (SDK crash before the loop closed): finalizeTurn is
+  // the single source of turn.done, carrying the error reason.
+  const crashes = adapterWithEvents();
+  crashes.adapter.finalizeTurn("error");
+  assert.deepEqual(
+    crashes.events.filter((e) => e.type === "turn.done").map((e) => e.reason),
+    ["error"],
+  );
+});
+
+test("Pi per-turn budget reads the turn delta, not the session-cumulative total", () => {
+  // Regression: piTokenUsage filled totalProcessedTokens from the SESSION
+  // total, and the budget (RuntimeManager reads turnProcessedTokens ??
+  // totalProcessedTokens) therefore tripped on every turn once the
+  // session total crossed maxTotalTokens. buildPiTokenSnapshot now reports a
+  // per-turn delta when given the turn-start baseline, while KEEPING the
+  // cumulative total for the usage panel's adjacent-difference math.
+  const ctxUsage = { tokens: 3000, contextWindow: 200000, percent: 1.5 };
+  const stats = { tokens: { total: 52000, output: 900, cacheRead: 400, cacheWrite: 100 }, cost: 0.42 };
+
+  const withBaseline = buildPiTokenSnapshot(ctxUsage, stats, "openai/gpt-4o", 50000);
+  assert.equal(withBaseline.turnProcessedTokens, 2000, "turn delta = total - turn-start baseline");
+  assert.equal(withBaseline.totalProcessedTokens, 52000, "cumulative total stays for usageStats diffing");
+
+  const noBaseline = buildPiTokenSnapshot(ctxUsage, stats, "openai/gpt-4o");
+  assert.equal(noBaseline.turnProcessedTokens, undefined, "no baseline → omit; host falls back to cumulative");
+  assert.equal(noBaseline.totalProcessedTokens, 52000);
+});
+
+test("Pi per-turn USD budget reads the cost delta, not the session-cumulative cost", () => {
+  // Same class as the token fix above, for money: stats.cost is session-cumulative
+  // and the usage panel diffs it, so the stored costUsd must stay cumulative — but
+  // the budget needs the per-turn delta or every turn trips maxUsd once the
+  // running total crosses it.
+  const ctxUsage = { tokens: 3000, contextWindow: 200000, percent: 1.5 };
+  const stats = { tokens: { total: 52000, output: 900 }, cost: 1.75 };
+
+  const withBaseline = buildPiTokenSnapshot(ctxUsage, stats, "openai/gpt-4o", 50000, 1.5);
+  assert.equal(withBaseline.turnCostUsd, 0.25, "turn cost = cumulative - turn-start baseline");
+  assert.equal(withBaseline.costUsd, 1.75, "cumulative cost stays for usageStats diffing");
+
+  const noBaseline = buildPiTokenSnapshot(ctxUsage, stats, "openai/gpt-4o");
+  assert.equal(noBaseline.turnCostUsd, undefined, "no baseline → omit; host falls back to cumulative");
+  assert.equal(noBaseline.costUsd, 1.75);
 });
 
 test("Codex pnpm fallback finds this platform's binary (not the macOS package)", async () => {
@@ -559,4 +618,45 @@ test("Codex cold-start stop still disposes immediately and cannot send a prompt"
   await assert.rejects(control.run([]), /aborted before turn\/start/);
   assert.equal(disposed, 1);
   assert.equal(requests, 0);
+});
+
+// Codex browser dynamic tools had NO approval path (unlike Claude's canUseTool
+// and Pi's tool_call guard): navigate/click/upload_file ran in read-only mode
+// with no card. The policy is now a pure helper; exercise it directly and assert
+// the dispatch actually calls it.
+test("Codex browser tools gate side effects through the shared read-only set", () => {
+  const path = resolve(here, "../../src/main/providers/codex-sdk/CodexAgentSdkProvider.ts");
+  const source = readFileSync(path, "utf8");
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const decl = file.statements.find(
+    (n) => ts.isFunctionDeclaration(n) && n.name?.text === "codexBrowserToolNeedsApproval",
+  );
+  assert.ok(decl, "policy helper must exist");
+  // The one shared read-only set — not a second copy (硬规矩 2).
+  const readonly = new Set([
+    "browser_list", "browser_snapshot", "browser_screenshot", "browser_find",
+    "browser_scroll", "browser_wait", "browser_switch_tab", "browser_save_pdf", "browser_downloads",
+  ]);
+  const js = ts.transpileModule(`${decl.getText(file)} module.exports.codexBrowserToolNeedsApproval = codexBrowserToolNeedsApproval;`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  const mod = { exports: {} };
+  new Function("BROWSER_READONLY_SUFFIXES", "module", "exports", js)(readonly, mod, mod.exports);
+  const needs = mod.exports.codexBrowserToolNeedsApproval;
+
+  // Read-only tools never prompt, in any mode.
+  for (const tool of ["browser_snapshot", "browser_screenshot", "browser_wait"]) {
+    assert.equal(needs(tool, "read-only", false, false), false, `${tool} is read-only`);
+  }
+  // Side effects prompt in every mode except full-access.
+  for (const tool of ["browser_navigate", "browser_click", "browser_upload_file", "browser_type"]) {
+    assert.equal(needs(tool, "read-only", false, false), true, `${tool} in read-only must prompt`);
+    assert.equal(needs(tool, "default", false, false), true, `${tool} in default must prompt`);
+    assert.equal(needs(tool, "full-access", false, false), false, `${tool} in full-access runs`);
+    assert.equal(needs(tool, "full-access", true, false), true, `${tool} in plan mode must prompt`);
+    assert.equal(needs(tool, "default", false, true), false, `${tool} with always-allow runs`);
+  }
+  // Wiring: the dispatch consults the helper and can deny when no channel exists.
+  assert.match(source, /codexBrowserToolNeedsApproval\(/, "invokeDynamicTool must call the policy");
+  assert.match(source, /浏览器工具「\$\{name\}」需要用户批准,但审批通道不可用/);
 });

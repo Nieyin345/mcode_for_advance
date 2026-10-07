@@ -52,19 +52,43 @@ export function buildCorrectivePrompt(spec: StructuredOutputSpec, error: string)
  */
 export function extractJsonDocument(text: string): ParseResult {
   const stripped = stripCodeFence(text);
-  const start = findFirst(stripped, ["{", "["]);
-  if (start < 0) {
+  // 枚举每个 `{`/`[` 起点,配平后尝试 parse,**在所有能 parse 的候选里取"结束位置最靠后"
+  // 的那个**(并列则取起点最靠前的,即最外层)。
+  //
+  // 为什么不是"第一个"(从前的做法):前置说明里出现一个配平但不合法的花括号片段
+  // (模型爱写"示例 {x}")时,首个候选 parse 失败就整段判失败,白白触发一次纠错轮。
+  // 为什么不是"最后一个起点":那会把嵌套文档的**内层**对象抠出来(测试
+  // `{"outer":{"inner":…}}` 就是这么被抓住的)。
+  // "结束最靠后"两头都对:真正的交付文档总在末尾,且外层对象比内层结束得更晚。
+  const starts: number[] = [];
+  for (let i = 0; i < stripped.length; i++) {
+    const ch = stripped[i];
+    if (ch === "{" || ch === "[") starts.push(i);
+  }
+  if (starts.length === 0) {
     return { ok: false, error: "回复中没有找到 JSON 文档" };
   }
-  const end = balancedEnd(stripped, start);
-  if (end < 0) {
-    return { ok: false, error: "JSON 文档不完整（括号未配平）" };
+  let best: { start: number; end: number; value: unknown } | null = null;
+  let firstError: string | null = null;
+  for (const start of starts) {
+    const end = balancedEnd(stripped, start);
+    if (end < 0) {
+      if (firstError === null) firstError = "JSON 文档不完整（括号未配平）";
+      continue;
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(stripped.slice(start, end + 1));
+    } catch (err) {
+      if (firstError === null) firstError = `JSON 解析失败：${(err as Error).message}`;
+      continue;
+    }
+    if (best === null || end > best.end || (end === best.end && start < best.start)) {
+      best = { start, end, value };
+    }
   }
-  try {
-    return { ok: true, value: JSON.parse(stripped.slice(start, end + 1)) };
-  } catch (err) {
-    return { ok: false, error: `JSON 解析失败：${(err as Error).message}` };
-  }
+  if (best === null) return { ok: false, error: firstError ?? "回复中没有找到 JSON 文档" };
+  return { ok: true, value: best.value };
 }
 
 /** 校验 `value` 是否符合 schema（支持的子集见文件头）。返回错误列表，空 = 通过。 */
@@ -125,15 +149,6 @@ export function parseStructuredOutput(text: string, spec: StructuredOutputSpec):
 function stripCodeFence(text: string): string {
   const fence = text.match(/```(?:json)?\s*\n([\s\S]*?)\n```/i);
   return fence ? fence[1] : text;
-}
-
-function findFirst(text: string, chars: string[]): number {
-  let at = Infinity;
-  for (const ch of chars) {
-    const i = text.indexOf(ch);
-    if (i >= 0 && i < at) at = i;
-  }
-  return at === Infinity ? -1 : at;
 }
 
 /** 从 `start`（必是 `{` 或 `[`）起扫描到配平的闭合符，跳过字符串字面量。找不到返回 -1。 */

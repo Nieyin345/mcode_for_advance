@@ -20,7 +20,7 @@ import type { editor, languages, IDisposable, IRange, MarkerSeverity, Uri } from
 import type { LspDiagnostic, LspLanguageId } from "@contracts/ipc";
 import { api } from "@renderer/lib/api.js";
 import { useSessionStore, selectActiveEnvPath } from "@renderer/stores/sessionStore.js";
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useEffect, useRef, useSyncExternalStore, type RefObject } from "react";
 
 /** Map a Monaco language id to the LSP language id we route requests through.
  *  TS server handles both typescript + javascript, so both map to "typescript".
@@ -524,15 +524,22 @@ function lspSeverityToMonaco(sev: number, monaco: typeof import("monaco-editor")
  *
  *  The model is created with `path={filePathToUri(filePath)}` (a `file://`
  *  URI), so `Uri.parse(filePathToUri(filePath))` finds it, and the server's
- *  diagnostics `uri` (also a `file://` URI) matches directly. */
+ *  diagnostics `uri` (also a `file://` URI) matches directly.
+ *
+ *  ⚠️ **`monacoRef` / `editorRef` 收的是 ref 本身,不是 getter 函数。** 从前是
+ *  `() => monacoRef.current` 那种内联箭头 —— 而箭头每次渲染都是新身份,`useEffect`
+ *  的依赖就每次渲染都变、**每渲染重订一次**。重订时 cleanup 会跑
+ *  `setModelMarkers(model, "lsp", [])`,于是:打开一个有诊断的文件、在正文里点一下
+ *  (光标移动 → 重渲染)→ 标记被清空,而文件没变、不会再有新诊断到来 ——
+ *  **诊断就这么凭空消失了**。ref 对象本身身份恒定,依赖只在 `filePath` 变时重跑。 */
 export function useLspDiagnostics(
   filePath: string,
-  getMonaco: () => typeof import("monaco-editor") | null,
-  getEditor: () => editor.IStandaloneCodeEditor | null,
+  monacoRef: RefObject<typeof import("monaco-editor") | null>,
+  editorRef: RefObject<editor.IStandaloneCodeEditor | null>,
 ): void {
   const versionRef = useRef(0);
   useEffect(() => {
-    const monaco = getMonaco();
+    const monaco = monacoRef.current;
     if (!monaco) return;
     const lspUri = filePathToUri(filePath);
     const modelUri = monaco.Uri.parse(lspUri);
@@ -560,7 +567,7 @@ export function useLspDiagnostics(
       const m = monaco.editor.getModel(modelUri);
       if (m) monaco.editor.setModelMarkers(m, "lsp", []);
     };
-  }, [filePath, getMonaco, getEditor]);
+  }, [filePath, monacoRef, editorRef]);
 }
 
 /* ──────────────────────── uri helper (mirrors LspManager) ──────────────────────── */

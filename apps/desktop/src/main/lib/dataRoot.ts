@@ -66,16 +66,25 @@ function readPointer(): string | null {
   }
 }
 
-/** 把数据根写到指针文件。**迁移时调**,写完下次启动就读它。 */
-export function setDataRoot(path: string): void {
+/**
+ * 把数据根写到指针文件。**迁移时调**,写完下次启动就读它。
+ *
+ * 返回**是否写成功**。⚠️ **当前调用方(`ipc/app.ts` 的搬迁那一支)还没用这个返回值** ——
+ * 它排在 `closeDb()` 之后,而"指针写失败之后怎么办"是个未决的设计取舍(见那个 handler
+ * 的注释和 `docs/底层修复记录-2026-10-07.md` 的「搁置待议」)。先让这个函数**如实报告**
+ * 成败,是那件事的前置条件:从前它只 `log.error` 就咽下去,调用方连"失败了"都不知道。
+ */
+export function setDataRoot(path: string): boolean {
   try {
     mkdirSync(dirname(pointerFile()), { recursive: true });
     // 原子写:写到一半崩溃/断电的话,坏掉的指针会让下次启动回落到默认位置、
     // 在那儿建一个空库 —— 看起来就是"数据全丢了"。
     atomicWrite(pointerFile(), JSON.stringify({ root: path }, null, 2));
     log.info(`dataRoot: pointer updated -> ${path}`);
+    return true;
   } catch (err) {
     log.error(`dataRoot: could not write pointer: ${(err as Error).message}`);
+    return false;
   }
 }
 
@@ -163,11 +172,17 @@ export function copyDataRootTo(target: string): string | null {
   const from = resolve(root);
   const to = resolve(target);
   if (from === to) return "新旧位置是同一个地方";
-  // 互相嵌套会导致递归复制 —— 必须挡住
-  if (to.startsWith(from + "\\") || to.startsWith(from + "/")) {
+  // 互相嵌套会导致递归复制 —— 必须挡住。Windows/macOS 大小写不敏感,所以比较前先把
+  // 大小写与尾分隔符归一(与 pathGuard 同一套规则);`resolve` 保留调用方的大小写,直接
+  // startsWith 会被 `c:\users\x` 对 `C:\Users\X` 骗过。
+  const fold = (p: string) =>
+    (process.platform === "win32" || process.platform === "darwin" ? p.toLowerCase() : p).replace(/[\\/]+$/, "");
+  const f = fold(from);
+  const t = fold(to);
+  if (t.startsWith(f + "\\") || t.startsWith(f + "/")) {
     return "目标不能在当前位置的内部";
   }
-  if (from.startsWith(to + "\\") || from.startsWith(to + "/")) {
+  if (f.startsWith(t + "\\") || f.startsWith(t + "/")) {
     return "目标不能是当前位置的上级目录";
   }
   if (existsSync(to) && statSync(to).isDirectory()) {

@@ -2,6 +2,7 @@ import { memoryToolDescriptors, invokeMemoryTool } from "@main/memory/engineTool
 import { appToolDescriptors, invokeAppEngineTool } from "@main/appControl/engineTools.js";
 import { libraryToolDescriptors, invokeLibraryTool, isLibraryReadonlyTool } from "@main/library/engineTools.js";
 import { workflowEngineBridge } from "@main/mcp/workflowEngineTools.js";
+import { agentToolDescriptors, invokeAgentTool, isAgentReadonlyTool } from "@main/mcp/agentEngineBridge.js";
 /**
  * Inline Pi extension — bridges Mcode's host-side approval, AskUserQuestion,
  * and system-prompt capabilities into the Pi agent via the SDK's extension API.
@@ -132,18 +133,11 @@ export function guardToolPath(
  *  only into the managed artifacts dir with sanitized names. `browser_navigate`
  *  / `browser_click` / `browser_keys` / `browser_upload_file` etc. have side
  *  effects and DO go through approval (the user can still "always allow" them
- *  per session). */
-const MCODE_BROWSER_READONLY = new Set([
-  "browser_list",
-  "browser_snapshot",
-  "browser_screenshot",
-  "browser_find",
-  "browser_scroll",
-  "browser_wait",
-  "browser_switch_tab",
-  "browser_save_pdf",
-  "browser_downloads",
-]);
+ *  per session).
+ *
+ *  清单**只有一份** —— 从 `mcp/toolRules.ts` 的 `BROWSER_READONLY_SUFFIXES` 引入,
+ *  Claude 的 canUseTool 与 Codex 的动态工具闸门用的是同一份(硬规矩 2)。 */
+import { BROWSER_READONLY_SUFFIXES as MCODE_BROWSER_READONLY } from "@main/mcp/toolRules.js";
 
 export interface CreateMcodeExtensionOptions {
   /** The host provider context — carries the IPC bridges for approval /
@@ -245,6 +239,19 @@ export function createMcodeExtension(opts: CreateMcodeExtensionOptions): InlineE
           parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
           async execute(_id, args) {
             const result = await workflowEngineBridge.invoke(tool.name, args, sessionId);
+            if (result.isError) throw new Error(result.content.map(c => c.type === "text" ? c.text : "").join("\n"));
+            return { content: result.content, details: {} };
+          },
+        });
+      }
+      // Agent 只读工具(统一文档/图片读取 + 环境概况):agent_read_document 读
+      // PDF/DOCX/XLSX/PPTX,是三家原生 Read 都缺的那一块。桥已确保只有只读的进来
+      // (见 mcp/agentEngineBridge.ts),审批交给 tool_call 守卫 —— 只读的在下面直接过。
+      for (const tool of agentToolDescriptors()) {
+        pi.registerTool({ name: tool.name, label: tool.name, description: tool.description,
+          parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
+          async execute(_id, args) {
+            const result = await invokeAgentTool(tool.name, args, sessionId);
             if (result.isError) throw new Error(result.content.map(c => c.type === "text" ? c.text : "").join("\n"));
             return { content: result.content, details: {} };
           },
@@ -375,6 +382,11 @@ function registerToolCallGuard(
     //    agent_profiles_list / session_read_log / agent_peers) — the same
     //    WORKFLOW_READONLY_TOOLS list Claude's shouldAutoApprove uses.
     if (workflowEngineBridge.isReadonly(toolName)) {
+      return;
+    }
+    //    Agent read-only tools (agent_read_document / agent_read_image /
+    //    agent_context) — 桥保证只有只读那几个,直接放行(同 Claude shouldAutoApprove)。
+    if (isAgentReadonlyTool(toolName)) {
       return;
     }
 

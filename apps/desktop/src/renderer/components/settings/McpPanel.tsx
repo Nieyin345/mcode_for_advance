@@ -487,7 +487,7 @@ export function McpPanel() {
           hint={t("settings.mcp.nodesHint")}
           empty={t("settings.mcp.nodesEmpty")}
           icon={IconServer}
-          onJumpToWorkflow={() => useSessionStore.getState().setSettingsOpen(true, "workflows")}
+          onJumpToWorkflow={(workflowId) => useSessionStore.getState().setSettingsOpen(true, "workflows", workflowId)}
           onJumpToProfile={() => useSessionStore.getState().setSettingsOpen(true, "workflows")}
         />
       )}

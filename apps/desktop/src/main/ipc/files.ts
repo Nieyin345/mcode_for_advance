@@ -837,7 +837,11 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
         return { ok: false };
       }
       const name = basename(input.srcPath);
-      const suffix = input.suffix?.trim() || "copy";
+      // `suffix` 来自渲染端(本地化的"副本"之类)。它是**文件名片段**,不是路径 ——
+      // 但渲染端可能被攻破,所以先剥掉任何目录分量/分隔符(同 paste 那条的作法),
+      // 否则 `"../../x"` 会被 `join` 规范化后把新文件写到项目根之外。
+      const rawSuffix = input.suffix?.trim() || "copy";
+      const suffix = basename(rawSuffix).replace(/[\\/:*?"<>|\x00-\x1f]/g, "_") || "copy";
       const dot = name.lastIndexOf(".");
       const stem = dot > 0 ? name.slice(0, dot) : name;
       const ext = dot > 0 ? name.slice(dot) : "";
@@ -863,6 +867,12 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
       }
       if (!free) {
         log.warn(`file.copy refused — no free name under: ${input.destDir}`);
+        return { ok: false };
+      }
+      // 纵深防御:目标必须仍在 destDir 内(词法 + 物理)。即便上面的 suffix 清洗
+      // 被绕过,`..` 或符号链接也不能把写入带出目录。
+      if (!pathWithin(input.destDir, target)) {
+        log.warn(`file.copy refused — derived target escaped destDir: ${target}`);
         return { ok: false };
       }
       await copyFile(input.srcPath, target);

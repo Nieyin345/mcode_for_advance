@@ -203,7 +203,9 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
         if (planActive && sid) {
           s.closePlanDrawer(sid);
         } else if (activeFile) {
-          s.closeFileInIde(activeFile);
+          // 有未保存改动时这个关闭**不会发生**(见 store 的 closeFileInIde)—— 静默
+          // 无反应比丢改动更糟,所以显式报一声。
+          s.reportBlockedIdeClose(s.closeFileInIde(activeFile).blocked);
         }
         return;
       }
@@ -235,7 +237,7 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
       if (target === "file" && s.activeProjectId) {
         const file = s.ideActiveFileByProject[s.activeProjectId];
         if (file) {
-          s.closeFileInIde(file);
+          s.reportBlockedIdeClose(s.closeFileInIde(file).blocked);
           return;
         }
       }

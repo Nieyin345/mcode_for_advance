@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { PANEL_MAX_W } from "./panelWidth.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { Button, ConfirmDialog, Input, Switch } from "@renderer/components/ui/index.js";
+import { Button, ConfirmDialog, ErrorNote, Input, Switch } from "@renderer/components/ui/index.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { SettingRow } from "./SettingRow.js";
@@ -59,6 +59,7 @@ function ScreenshotDirRow() {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Load the current setting on mount (panel is freshly mounted per nav
   // switch, so reload its value each time it's shown).
@@ -81,9 +82,14 @@ function ScreenshotDirRow() {
 
   const save = async () => {
     setSaving(true);
+    setError(null);
     try {
       await api.setting.set({ key: BROWSER_SCREENSHOT_DIR_SETTING_KEY, value: dir.trim() });
       setSaved(true);
+    } catch (err) {
+      // **失败要说出来** —— 从前只有 try/finally,抛了就静默:用户点「保存」
+      // 既看不到「已保存」也看不到错,像按钮坏了。
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
     }
@@ -122,6 +128,11 @@ function ScreenshotDirRow() {
       {saved && (
         <p className="mt-1 text-[0.7857em] text-accent">{t("settings.browser.savedScreenshot")}</p>
       )}
+      {error !== null && (
+        <ErrorNote title={t("settings.saveFailed")} className="mt-1">
+          {error}
+        </ErrorNote>
+      )}
     </SettingRow>
   );
 }
@@ -135,6 +146,7 @@ function DataDirRow() {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setSaved(false);
@@ -155,9 +167,14 @@ function DataDirRow() {
 
   const save = async () => {
     setSaving(true);
+    setError(null);
     try {
       await api.setting.set({ key: BROWSER_DATA_DIR_SETTING_KEY, value: dir.trim() });
       setSaved(true);
+    } catch (err) {
+      // **失败要说出来** —— 从前只有 try/finally,抛了就静默:用户点「保存」
+      // 既看不到「已保存」也看不到错,像按钮坏了。
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
     }
@@ -197,6 +214,11 @@ function DataDirRow() {
         <p className="mt-1 text-[0.7857em] text-accent">
           {t("settings.browser.savedDataDir")}
         </p>
+      )}
+      {error !== null && (
+        <ErrorNote title={t("settings.saveFailed")} className="mt-1">
+          {error}
+        </ErrorNote>
       )}
     </SettingRow>
   );

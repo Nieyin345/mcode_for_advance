@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   PointerSensor,
@@ -30,6 +30,8 @@ import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
 import { TabBarChevronButton, TabBarOverflowMenu } from "../layout/TabBarChrome.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
+import { useDirtyFiles } from "@renderer/hooks/useDirtyFiles.js";
+import type { IdeCloseResult } from "@renderer/lib/ideDirty.js";
 
 /** Stable empty array so the selector never returns a fresh [] (Zustand
  *  Object.is rule — a new [] every render causes an infinite loop). */
@@ -51,7 +53,10 @@ const MENU_POPUP_CLASS = cn(
   "transition-[transform,opacity] duration-100",
 );
 const MENU_ITEM_CLASS =
-  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted";
+  // disabled 项**不加** `pointer-events-none`:那样连原生 title(说明为什么关不了)都
+  // 看不到了。base-ui 对 disabled 项本就不发 click,也不会给它 data-highlighted,
+  // 所以悬停不会假装可点。 */
+  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted data-[disabled]:opacity-40";
 
 /**
  * Open-tabs bar — the horizontal strip of open files above the Monaco editor,
@@ -75,7 +80,7 @@ const MENU_ITEM_CLASS =
  * via a per-file dirty map kept in a module-level store subscription. To keep
  * this simple and avoid plumbing dirty state through the global store, the
  * FileEditor reports dirty changes through a lightweight event the bar
- * subscribes to — see `ideDirtyTracker`.
+ * subscribes to — see `@renderer/lib/ideDirty` (`ideDirtyTracker`).
  */
 export function OpenTabsBar() {
   const { t } = useI18n();
@@ -98,6 +103,7 @@ export function OpenTabsBar() {
   const reorderFile = useSessionStore((s) => s.reorderIdeFile);
   const clearIdeActiveFile = useSessionStore((s) => s.clearIdeActiveFile);
   const enqueueChatFile = useSessionStore((s) => s.enqueueChatFile);
+  const reportBlocked = useSessionStore((s) => s.reportBlockedIdeClose);
   const dirtySet = useDirtyFiles();
   // Multi-row wrapping (toggled from the ⋯ overflow menu) vs the classic
   // single horizontally-scrolling row.
@@ -440,6 +446,8 @@ export function OpenTabsBar() {
       <FileTabContextMenu
         ctxMenu={ctxMenu}
         onClose={() => setCtxMenu(null)}
+        dirtySet={dirtySet}
+        reportBlocked={reportBlocked}
         actions={{
           close: (p) => close(p),
           closeOthers: (p) => closeOthers(p),
@@ -597,11 +605,12 @@ export function SortableFileTab({
 
 /** Actions available from the file-tab context menu. Passed in from
  *  OpenTabsBar (or the unified tab bar) so the menu component stays
- *  presentational. */
+ *  presentational. The close* actions return what actually got closed vs.
+ *  blocked on unsaved edits, so the menu can report the skipped ones. */
 export interface FileTabContextMenuActions {
-  close: (path: string) => void;
-  closeOthers: (keepPath: string) => void;
-  closeAll: () => void;
+  close: (path: string) => IdeCloseResult;
+  closeOthers: (keepPath: string) => IdeCloseResult;
+  closeAll: () => IdeCloseResult;
   activate: (path: string) => void;
   addToChat: (path: string) => void;
 }
@@ -610,15 +619,28 @@ export interface FileTabContextMenuActions {
  *  controlled `Menu.Root` (open iff ctxMenu is non-null) with a virtual anchor
  *  positioned at the cursor coordinates. Items: close, close others, close
  *  all, copy path, add to chat. Closes after any action. Exported for the
- *  unified tab bar. */
+ *  unified tab bar.
+ *
+ *  ## 未保存的守卫
+ *
+ *  × 和中键在文件脏时**故意不关**(见 `SortableFileTab`);右键菜单从前不看脏,
+ *  「关闭 / 关闭其他 / 关闭全部」直接把改动丢掉 —— 而编辑器没有自动保存。这里补上同一
+ *  条规矩:「关闭」对脏目标置灰并说明原因(和 × 一样够不着);两个批量项照点,但被
+ *  守卫留下的文件由 `reportBlocked` 显式报出来(「坏东西显式报出来,不静默跳过」)。 */
 export function FileTabContextMenu({
   ctxMenu,
   onClose,
   actions,
+  dirtySet,
+  reportBlocked,
 }: {
   ctxMenu: { path: string; x: number; y: number } | null;
   onClose: () => void;
   actions: FileTabContextMenuActions;
+  /** 未保存文件的集合 —— 用来置灰「关闭」。 */
+  dirtySet: ReadonlySet<string>;
+  /** 批量关闭后,把被守卫留下的文件报给用户。 */
+  reportBlocked: (blocked: readonly string[]) => void;
 }) {
   const { t } = useI18n();
   // Virtual anchor at the cursor position so the menu opens exactly where the
@@ -628,6 +650,7 @@ export function FileTabContextMenu({
   const anchor = useCursorAnchor(ctxMenu);
 
   const path = ctxMenu?.path;
+  const targetDirty = !!path && dirtySet.has(path);
 
   const handleCopyPath = () => {
     if (path) navigator.clipboard.writeText(path).catch(() => {});
@@ -639,6 +662,8 @@ export function FileTabContextMenu({
         <Menu.Positioner anchor={anchor} side="bottom" align="start" sideOffset={4}>
           <Menu.Popup className={MENU_POPUP_CLASS}>
             <Menu.Item
+              disabled={targetDirty}
+              title={targetDirty ? t("ide.editor.closeBlockedUnsaved") : undefined}
               onClick={() => { if (path) actions.close(path); }}
               className={MENU_ITEM_CLASS}
             >
@@ -646,14 +671,14 @@ export function FileTabContextMenu({
               <span>{t("common.close")}</span>
             </Menu.Item>
             <Menu.Item
-              onClick={() => { if (path) actions.closeOthers(path); }}
+              onClick={() => { if (path) reportBlocked(actions.closeOthers(path).blocked); }}
               className={MENU_ITEM_CLASS}
             >
               <IconX size={14} className="shrink-0 opacity-50" />
               <span>{t("ide.editor.closeOthers")}</span>
             </Menu.Item>
             <Menu.Item
-              onClick={() => actions.closeAll()}
+              onClick={() => reportBlocked(actions.closeAll().blocked)}
               className={MENU_ITEM_CLASS}
             >
               <IconStack2 size={14} className="shrink-0" />
@@ -684,45 +709,10 @@ export function FileTabContextMenu({
 /* ───────────────────────── dirty tracking ─────────────────────────
  *
  * FileEditor instances report their dirty state (content diverges from the
- * last-saved content) through this tiny pub/sub. It avoids putting transient
- * per-file dirty flags into the global store (which would churn selectors on
- * every keystroke). The bar subscribes and re-renders only when the set of
- * dirty files changes.
+ * last-saved content) through a tiny pub/sub — now living in
+ * `@renderer/lib/ideDirty` so the STORE's close actions can enforce the same
+ * "an unsaved file can't be closed" rule the bar's × button follows. See that
+ * module for why it is a module-level store rather than a global-store slice.
  *
- * The tracker is module-scoped and resets on full app reload — acceptable
- * since dirty state is inherently ephemeral (unsaved edits don't survive a
- * restart anyway). */
-
-const dirtyFiles = new Set<string>();
-const listeners = new Set<() => void>();
-
-export const ideDirtyTracker = {
-  set(filePath: string, dirty: boolean) {
-    const had = dirtyFiles.has(filePath);
-    if (dirty && !had) dirtyFiles.add(filePath);
-    else if (!dirty && had) dirtyFiles.delete(filePath);
-    else return; // no change
-    listeners.forEach((fn) => fn());
-  },
-  has(filePath: string) {
-    return dirtyFiles.has(filePath);
-  },
-  subscribe(fn: () => void) {
-    listeners.add(fn);
-    return () => listeners.delete(fn);
-  },
-};
-
-/** Hook returning the current set of dirty file paths. Re-renders the caller
- *  when the set changes. Exported for the unified tab bar, which shows the
- *  same dirty dots on its file tabs. */
-export function useDirtyFiles(): Set<string> {
-  // We use useSyncExternalStore for correctness (tears-free under concurrent
-  // React). The snapshot is the Set itself; since we never mutate it in place
-  // without notifying, identity is stable between notifications.
-  return useSyncExternalStore(
-    ideDirtyTracker.subscribe,
-    () => dirtyFiles,
-    () => dirtyFiles,
-  );
-}
+ * This component file no longer owns the registry; it imports it (see the
+ * `ideDirtyTracker` / `useDirtyFiles` imports at the top). */

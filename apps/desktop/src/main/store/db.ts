@@ -13,13 +13,13 @@
  */
 import { app } from "electron";
 import initSqlJs, { type Database, type SqlJsStatic } from "sql.js/dist/sql-asm.js";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync, openSync, fsyncSync, closeSync } from "node:fs";
 import { log } from "@main/lib/logger.js";
-import { dataRoot, migrateLegacyIntoDataRoot, DATA_DB_FILENAME } from "@main/lib/dataRoot.js";
+import { migrateLegacyIntoDataRoot, dbPath as resolveDbPath } from "@main/lib/dataRoot.js";
 import { SESSION_COLUMNS, sessionsCreateSql } from "./sessionSchema.js";
-import { DEFAULT_LIBRARY_GROUPS, parseLibraryGroupsJson } from "@contracts/libraryTypes";
+import { DEFAULT_LIBRARY_GROUPS, parseLibraryGroupsJson, LIBRARY_GROUPS_SETTING_KEY } from "@contracts/libraryTypes";
 
 let SQL: SqlJsStatic | null = null;
 let db: Database | null = null;
@@ -74,7 +74,10 @@ export function initDb(): Promise<Database> {
     // 先把老位置(旧版把库和数据库放在 userData 下)搬进统一数据根,**再**定路径 ——
     // 顺序反了就会读到一个还不存在的文件、当成空库建一个新的。
     migrateLegacyIntoDataRoot();
-    dbPath = join(dataRoot(), DATA_DB_FILENAME);
+    // 用 `dataRoot.ts` 的 `dbPath()` 而不是自己 join —— 它带**安全网**:搬迁失败
+    // (老库还在 userData、新位置没有)时继续用老库,避免在建空库让聊天记录看起来
+    // "全丢了"。过去这里自己 join,把那道网绕过了。
+    dbPath = resolveDbPath();
 
     if (existsSync(dbPath)) {
       db = new SQL.Database(new Uint8Array(readFileSync(dbPath)));
@@ -365,7 +368,9 @@ function migrate(database: Database): void {
     const needsBackfill = Number((countStmt.getAsObject() as { n?: number }).n ?? 0);
     countStmt.free();
     if (needsBackfill > 0) {
-      const settingsStmt = database.prepare(`SELECT value FROM settings WHERE key = 'library.groups'`);
+      // 用共享常量而不是字面量:键一旦改名,这里的回填会静默读空、把所有旧分类归到首组。
+      const settingsStmt = database.prepare("SELECT value FROM settings WHERE key = ?");
+      settingsStmt.bind([LIBRARY_GROUPS_SETTING_KEY]);
       const row = settingsStmt.step()
         ? (settingsStmt.getAsObject() as { value: string })
         : null;

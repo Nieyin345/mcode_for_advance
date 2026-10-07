@@ -39,5 +39,11 @@ try {
   check("no outside child created", existsSync(join(outside, "new.txt")), false);
   check("genuine missing descendant allowed", pathWithin(root, join(root, "fresh", "note.txt")), true);
   check("same-prefix sibling refused", pathWithin(root, `${root}-other`), false);
-  console.log("maint-p1-path-smoke: 11/11 passed");
+  // file.copy 的 suffix 来自渲染端;`../../escape` 曾能被 join 规范化后写到项目根之外。
+  writeFileSync(join(root, "s.txt"), "SRC");
+  const copyRes = await invoke(IPC.FILE_COPY, { srcPath: join(root, "s.txt"), destDir: root, suffix: "../../escape" });
+  check("copy with traversal suffix still succeeds (sanitized)", copyRes.ok, true);
+  check("copy landed inside the project root", existsSync(join(root, "s escape.txt")), true);
+  check("traversal suffix did not write outside the root", existsSync(join(base, "escape.txt")), false);
+  console.log("maint-p1-path-smoke: 14/14 passed");
 } finally { rmSync(base, { recursive: true, force: true }); }

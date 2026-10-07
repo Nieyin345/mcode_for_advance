@@ -1210,8 +1210,24 @@ export async function startWorkflowRun(args: {
    * 分类表**一次建好重复用**:`CollectionRepo.list()` 是全表扫描,而主提示词里可能
    * 挂着好几份附件、每个节点又各问一次,乘起来很可观。条目那个不用缓存 ——
    * `LibraryRepo.get` 是按主键查一行。
+   *
+   * ⚠️ **这一步在 `runs.set` 之后、下面那个大 `try` 之前**,所以它自己带一个兜底:
+   * 这是一段**没有网**的同步代码(`runs` 条目已经挂上,但没人会替它摘下来),而读库
+   * 是这里唯一会抛的动作(库句柄被关掉 / 文件损坏)。抛出去而不清的话,`runs` 里那条
+   * 永远留着 → `hasActiveRun` 从此恒真 → 这个对话之后发什么都只得到"这个工作流还在跑",
+   * 一个用户自己走不出来的死状态。
+   *
+   * 不把它降级成"没有分类":那会让**每一条**要继承的上下文都解析不出所属大类,于是
+   * 静默丢掉 —— 少给了模型东西而一个字都不说,比直接失败难查得多。
    */
-  const collections = new Map(CollectionRepo.list().map((c) => [c.id, c]));
+  let collections: Map<string, ReturnType<typeof CollectionRepo.list>[number]>;
+  try {
+    collections = new Map(CollectionRepo.list().map((c) => [c.id, c]));
+  } catch (err) {
+    if (runs.get(session.id) === active) runs.delete(session.id);
+    active.finish();
+    throw new Error(`工作流开跑前读取分类失败:${(err as Error).message}`);
+  }
   const lookup: ContextLookup = {
     libraryRoot: libraryRoot(),
     // 分类 → 它挂着的大类。**查不到返回 `undefined`(不是 `[]`)** —— 那是本模块
@@ -1742,6 +1758,22 @@ export async function startWorkflowRun(args: {
       const seen = choiceAttempts.get(node.id) ?? 0;
       const attempt = preset !== undefined ? Math.max(seen, 1) : seen + 1;
       choiceAttempts.set(node.id, attempt);
+      // **这一个数要当场落盘,不能等下一次快照。** 调度器的 `askUser` 是**先
+      // `publish()`(→ 快照端口 → `writeRun`)再调 `choose`** 的,所以它写下的
+      // `attempts` 还是**上一轮**那个数。若在下面那个 `await` 里被杀掉(用户关掉应用
+      // 去睡觉 —— 这正是岔路口最常发生的事),重启续跑时 `choiceAttempts` 读回来是旧值,
+      // 续跑那一支算出 `max(seen,1)` = 旧值,于是 `patchBranchChoiceBlock` 按
+      // `runId+nodeId+attempt` 认卡时**改掉上一轮那张已经答过的卡**,而用户正看着的这张
+      // 永远停在按钮上。
+      //
+      // 用 `latest.state`:它此刻带着调度器刚写进去的 `awaiting`(谁停在这一格),
+      // 于是这一次写把"停在哪儿"和"问过几次"一起落成一致的。
+      //
+      // **`durable` 不可省。** 岔路口等的是一个可能永远不来的人 —— 用户点了运行就去吃饭、
+      // 去睡觉,应用被硬杀(关机 / 崩溃)在这条路上比任何别的地方都常见。非 durable 的
+      // 写只落进内存里的 sql.js,要等到别处某次 durable 写或退出时的 flushDb 才真正上
+      // 文件 —— 硬杀就全丢。代价是一次同步整库写,而岔路口是"人的手速"级别的事件,值得。
+      writeRun("running", latest.state, true);
       // 取标题要在**广播之前** —— `manifests` 是懒加载的,调度器开跑前已经取过一轮,
       // 所以这里基本一定有;真没有也只是标题回落成类型 id,不影响流程。
       const title = displayTitle(node, manifests?.get(node.type));
@@ -2079,25 +2111,37 @@ export async function startWorkflowRun(args: {
     //    ——它正要再跑一轮。代价是一份内存状态(provider 会话 id / 快照 / 审批池)留到
     //    进程结束。**不是活进程**:`sendTurn` 的子进程随那一轮结束就退,留下的是内存里的
     //    账。发过消息的节点会话有几个,就留几份。
-    const toWake: Array<{ session: Session; text: string }> = [];
-    for (const id of active.nodeSessionIds) {
-      const waiting = peekAgentMail(id);
-      if (waiting.length === 0) continue;
-      const target = SessionRepo.get(id);
-      if (target) toWake.push({ session: target, text: waiting });
-    }
-    const wokenNow = new Set(wakeQueued(toWake));
-    // 节点会话的行留着(v1 的取舍:可查、以后加保留策略),但运行时没必要留着 ——
-    // 它握着 provider 会话 id、文件快照和审批池。
-    for (const id of active.nodeSessionIds) {
-      if (wokenNow.has(id)) continue;
-      runtimeManager.dispose(id);
-    }
-    // **「并回主对话」的内容在这里挂上去。** 时机是要紧的:它得在下面那句 `turn.done`
-    // **之前** —— 那一句一落地,渲染端就把这一轮收了,用户接着说的话会立刻去取这段内容,
-    // 晚一步就赶不上那一轮(而"晚一轮"的表现是助手答"我不知道",查都没处查)。
-    if (backflow.length > 0) {
-      queueBackflow(session.id, [`**${doc.name}** 各步的产出:`, ...backflow].join("\n\n"));
+    // **这一段是「尽力而为」的清理**,它和下面的终态收口分开包 try —— 理由见下。
+    //
+    // 从前这一段直接摊在 `finally` 里,后面紧跟着 `writeRun(settled)` / `turn.done` /
+    // `active.finish()`。而 `wakeQueued`(写库 + `sendTurn`)、`dispose`(审批池
+    // `rejectAll`)都会抛:它们之中任何一个抛了,`finally` 余下几行**整段被跳过** ——
+    // 现象是运行**永远停在 `running`**(终态没写)、渲染端一直转圈(没有 `turn.done`)、
+    // 而 `claude.ts` 里那句 `await teardown` 永远挂在那儿(没有 `finish()`),用户接下来
+    // 发的消息一条都进不去。清理失败不该把"收口"一起带走。
+    try {
+      const toWake: Array<{ session: Session; text: string }> = [];
+      for (const id of active.nodeSessionIds) {
+        const waiting = peekAgentMail(id);
+        if (waiting.length === 0) continue;
+        const target = SessionRepo.get(id);
+        if (target) toWake.push({ session: target, text: waiting });
+      }
+      const wokenNow = new Set(wakeQueued(toWake));
+      // 节点会话的行留着(v1 的取舍:可查、以后加保留策略),但运行时没必要留着 ——
+      // 它握着 provider 会话 id、文件快照和审批池。
+      for (const id of active.nodeSessionIds) {
+        if (wokenNow.has(id)) continue;
+        runtimeManager.dispose(id);
+      }
+      // **「并回主对话」的内容在这里挂上去。** 时机是要紧的:它得在下面那句 `turn.done`
+      // **之前** —— 那一句一落地,渲染端就把这一轮收了,用户接着说的话会立刻去取这段内容,
+      // 晚一步就赶不上那一轮(而"晚一轮"的表现是助手答"我不知道",查都没处查)。
+      if (backflow.length > 0) {
+        queueBackflow(session.id, [`**${doc.name}** 各步的产出:`, ...backflow].join("\n\n"));
+      }
+    } catch (err) {
+      log.warn(`workflow run ${runId}: 收尾清理失败,照常收口:${(err as Error).message}`);
     }
     // **收尾这一下要写。** 它把这一行从 `running` 收成一个**终态** —— 而那是"能不能
     // 续跑"的唯一判据(`resumableFor` 只认 `interrupted`)。漏了它的话,一次跑完的
@@ -2111,8 +2155,14 @@ export async function startWorkflowRun(args: {
     // `result === null ? "failed" : result.status`,那里是 `result?.status === "cancelled" ? …`),
     // 而"图定案为 failed、发出去的却是 end_turn"正是两处判据分家的那半截。收成一个
     // 变量之后,以后谁改了其中一处,另一处不会悄悄漂走。
+    //
+    // ⚠️ **终态必须 durable。** 这一列是"能不能续跑"的唯一判据 —— 写到内存里而没落盘
+    // 的话,一次**已经跑完**的图在硬杀(关机 / 崩)之后,磁盘上留的还是上一次 durable 写的
+    // `running`。重启后 `resumableFor` 那条路会拿这个陈旧的 `running` 去比对,而用户看着
+    // 一张旧卡片点下去,**一次已经结束的运行会被接起来重跑**(还会因为状态对不上而报错)。
+    // 代价是一次同步整库写,而这是**每次运行只有一次**的收口,值得。
     const settled: RunResult["status"] = result === null ? "failed" : result.status;
-    writeRun(settled, result?.state ?? latest.state);
+    writeRun(settled, result?.state ?? latest.state, true);
 
     // 这一轮对用户来说结束了。**用既有的 `turn.done` 收口**,不另发明一个事件:
     // 渲染端的"运行中"状态、这一轮消息的落盘、其他客户端的同步、以及系统通知全都挂在
@@ -2153,12 +2203,19 @@ export async function startWorkflowRun(args: {
     // 那条路(见 `parkedRunTeardown`)—— 它等到了就会立刻起新的一次运行,而新的会
     // 回声用户消息、开一个新回合。收口落在那之后的话,前一次的 `turn.done` 会把
     // **新的**那个回合提前关掉,现象是"图明明在跑,界面上却像已经结束了"。
-    emitWorkflowEvent({
-      type: "turn.done",
-      sessionId: session.id,
-      reason: settled === "cancelled" ? "interrupted" : settled === "failed" ? "error" : "end_turn",
-      endedAt: Date.now(),
-    });
+    try {
+      emitWorkflowEvent({
+        type: "turn.done",
+        sessionId: session.id,
+        reason: settled === "cancelled" ? "interrupted" : settled === "failed" ? "error" : "end_turn",
+        endedAt: Date.now(),
+      });
+    } catch (err) {
+      // 广播失败(窗口没了、某个订阅者抛了)不该把下面的 `finish()` 一起带走 ——
+      // 那一下是**唯一**解开 `claude.ts` 那句 `await teardown` 的东西,漏了它,
+      // 这个对话从此发不出任何消息。
+      log.warn(`workflow run ${runId}: turn.done 广播失败,仍照常收口:${(err as Error).message}`);
+    }
 
     // **收干净了。** 等在这里的那个人可以往下走了 —— 上面这几行(地图条目、等待池、
     // 节点运行时、落盘、收口)**就是它等的全部内容**。这一句放在最后,是因为放在

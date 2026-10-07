@@ -24,6 +24,7 @@ import { emitItemImported } from "./broadcast.js";
 import { assignImportedToCollections } from "./operations.js";
 import { libraryRoot, ensureLibraryDirs, fromLibraryRelative } from "./paths.js";
 import { log } from "@main/lib/logger.js";
+import { pathWithin } from "@main/lib/pathGuard.js";
 import { isFileSuppressed } from "./suppress.js";
 
 /** attached 文件的落点:`<库根>/files/`。**扁平 + 条目 id 前缀** —— 不按扩展名分子
@@ -338,10 +339,11 @@ export function readEntryFile(
 
   let target = root;
   if (relPath) {
-    // relPath 只用于**目录条目内**寻址;拼完后必须在目录里(`..` 逃逸直接拒),
-    // 否则任意路径读文件就是个洞。
+    // relPath 只用于**目录条目内**寻址;拼完后必须在目录里(`..` 逃逸与符号链接都拒),
+    // 否则任意路径读文件就是个洞。用共享的 pathWithin(解析 realpath/junction、按平台
+    // 归一大小写),而不是裸 startsWith —— 后者既漏符号链接越界、又在 Windows 上被大小写骗过。
     target = path.resolve(root, relPath);
-    if (!target.startsWith(path.resolve(root) + path.sep)) {
+    if (!pathWithin(root, target)) {
       return { type: "unsupported", error: "路径越出了这条资料的目录" };
     }
   }

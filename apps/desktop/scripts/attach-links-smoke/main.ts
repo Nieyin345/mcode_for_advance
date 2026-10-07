@@ -126,12 +126,25 @@ console.log("\n分类 / 整库不展开");
   const a = LibraryRepo.upsert({ title: "分类里 A" });
   const b = LibraryRepo.upsert({ title: "分类里 B" });
   LibraryLinkRepo.add(a.id, { targetItemId: b.id });
+  // **建一个真分类**。从前这里用的是 `c:note` —— 一个 kind 时代遗留的键,而当时
+  // `writeCollectionManifest` 对找不到的分类**不挡**、照写一份清单,于是它一路绿灯。
+  // 那条路现在是早退(挡住了未知 id 的路径穿越),`c:note` 也就成了"找不到的分类"。
+  const coll = CollectionRepo.create("附挂用的分类", null);
+  CollectionRepo.assign(coll.id, [a.id, b.id], true);
 
   resetSent();
-  const res = attachToChat(SID, "c:note");
-  check("整库挂载成功", res.ok, res);
-  eq("整库只推一条", sent.length, 1);
-  eq("键是整库那个", keysOf()[0], "c:note");
+  const res = attachToChat(SID, `c:${coll.id}`);
+  check("分类挂载成功", res.ok, res);
+  eq("分类只推一条(分类本身不逐条展开)", sent.length, 1);
+  eq("键是分类那个", keysOf()[0], `c:${coll.id}`);
+
+  // **找不到的分类**不许抛 —— 左栏点了、或一条遗留键粘过来都是正常的事,
+  // 该得到一句"找不到",不是一个异常穿过调用方。
+  resetSent();
+  const missing = attachToChat(SID, "c:根本没有这个分类");
+  check("挂一个不存在的分类 → ok:false(不抛)", missing.ok === false, missing);
+  check("而且说的是「找不到」", (missing.error ?? "").includes("找不到") === true, missing);
+  eq("一条都没推出去", sent.length, 0);
 }
 
 console.log("\n库外路径:先导入成 linked 条目再挂");

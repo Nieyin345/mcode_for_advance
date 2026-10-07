@@ -216,7 +216,10 @@ export function registerLibraryHandlers(ipcMain: IpcMain): void {
     const input = LibraryRestoreItemsSchema.parse(raw);
     const moved = restoreItemsFromTrash(input.ids);
     if (moved.length > 0) notifyLibraryChanged(`restore:${moved.length}`);
-    return { items: LibraryRepo.list({}).items };
+    // **全量,不是 `list({})`。** 那个有 200 条的默认上限 —— 大库上"完整列表"会被
+    // 静默截断成 200 条,渲染端拿它直接替换本地列表,于是超过 200 条的那些从界面上
+    // **凭空消失**(而库里一条没少)。`listAllItems` 正是为这种"必须是全量"的场合留的。
+    return { items: LibraryRepo.listAllItems() };
   });
 
   /** 预览的编排在下面 `deletePreviewCore`。 */
@@ -485,7 +488,9 @@ function deleteItemsCore(
     // 删掉的可能正是右栏正在看的那一篇 —— 广播出去,右栏自己会清掉悬空的选中态。
     // 一条都没删成时不广播:那是一次什么都没发生的调用,没必要惊动界面重拉。
     if (toDelete.length > 0) notifyLibraryChanged(`delete:${toDelete.length}`);
-    return { items: LibraryRepo.list({}).items, failed: failures };
+    // **全量**(不是 `list({})` —— 它有 200 条上限,大库上"完整列表"被截断,渲染端拿
+    // 它替换本地列表会让第 200 条之后的条目凭空消失)。与 `restoreItems` 同一条口径。
+    return { items: LibraryRepo.listAllItems(), failed: failures };
 }
 
 /**
@@ -613,6 +618,9 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
     let ok = true;
     if (input.name !== undefined) {
       ok = CollectionRepo.rename(input.id, input.name);
+      // 改名被拒(重名)时**不要**再写 prompt —— 否则界面显示"失败"但说明已落盘,
+      // 半应用;用户重试还会再写一遍。
+      if (!ok) return { collections: collectionsForRenderer(), ok };
     }
     if (input.prompt !== undefined) {
       CollectionRepo.setPrompt(input.id, input.prompt);
@@ -912,9 +920,10 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
   ipcMain.handle(IPC.LIBRARY_READ_HIGHLIGHTS, (_evt, raw) => {
     const input = PdfHighlightsReadSchema.parse(raw);
     const guard = highlightPathAllowed(input.pdfPath);
-    // ⚠️ **围栏不过就报错，不返回空数组。** 返回空数组的话，一个越界路径看起来
-    //    就像"这篇还没划过高亮"—— 静默错，用户永远不知道自己在看一个假结果。
-    if (!guard) return { highlights: [] };
+    // ⚠️ **围栏不过就报错,不返回空数组。** 返回空数组的话,一个越界路径看起来
+    //    就像"这篇还没划过高亮"—— 静默错,用户永远不知道自己在看一个假结果。
+    //    (从前这里写着同一句话、代码却回的是 `{highlights: []}` —— 注释和实现对不上。)
+    if (!guard) throw new Error("这个位置不允许读取高亮(不在任何已知工作区/资料库内)");
     return { highlights: readHighlights(input.pdfPath) };
   });
 

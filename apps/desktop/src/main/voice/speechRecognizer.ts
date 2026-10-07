@@ -395,6 +395,14 @@ export function stopSession(sessionId: string): { text: string } {
 
 /** Cancel/discard a session without committing text. */
 export function cancelSession(sessionId: string): void {
+  const s = sessions.get(sessionId);
+  // 与 stopSession 一样**优雅关闭原生流**再丢引用:直接 delete 会让那个 OnlineStream
+  // 悬着等 GC,用户反复取消(或每次按键都 start/cancel)会累积原生流。
+  try {
+    if (s?.stream) s.stream.inputFinished();
+  } catch (err) {
+    log.warn(`[voice] cancel: inputFinished failed: ${(err as Error).message}`);
+  }
   sessions.delete(sessionId);
   log.info(`[voice] session cancelled ${sessionId}`);
 }

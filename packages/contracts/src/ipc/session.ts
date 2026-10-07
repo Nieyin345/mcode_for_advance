@@ -297,8 +297,11 @@ export const UpdateSessionSettingsSchema = z.object({
 export type UpdateSessionSettingsInput = z.infer<typeof UpdateSessionSettingsSchema>;
 
 export const CreateProjectSchema = z.object({
-  name: z.string(),
-  path: z.string(),
+  // **不许空**。空 `path` 经 `norm("")` 会解析成进程的**当前工作目录** —— 于是应用起
+  // 来的那个目录(打包后可能是 `/` 或安装目录)被登记成一个"已知项目根",`pathGuard`
+  // 的包含性判定从此对它放行。`RenameProjectSchema` 一直是 `.min(1)`,这条没有是不对称。
+  name: z.string().min(1).max(200),
+  path: z.string().min(1),
 });
 export type CreateProjectInput = z.infer<typeof CreateProjectSchema>;
 

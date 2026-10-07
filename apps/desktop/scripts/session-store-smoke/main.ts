@@ -19,6 +19,7 @@ import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { ChatMessage } from "@renderer/stores/sessionStore.js";
 import { outputRowsOf } from "@renderer/components/chat/outputRows.js";
 import { normWorktreeKey } from "@renderer/lib/worktree.js";
+import { ideDirtyTracker } from "@renderer/lib/ideDirty.js";
 import type { Session } from "@contracts/session";
 import type { ContextSnapshot, SessionListEntry, TurnFileEntry } from "@contracts/runtime";
 
@@ -915,6 +916,58 @@ console.log("\n[15] ingestEvent:user.message 追加 / 去重 / 编辑截断");
   eq("编辑目标不在场 → 当普通追加", list().length, 3);
 }
 
+console.log("\n[15b] 停过之后,别端起的新一轮在这个渲染端不再是死的");
+await (async () => {
+  // 场景:本端点了「停止」→ `interruptedBySession[sid]` 立起,冻结本会话的内容事件;
+  //      随后**别的端**(手机 / 自动化)往同一个会话发了一条新消息。
+  // 从前这个哨兵只有本端 sendPrompt / editAndResend 会清 —— 于是这一轮在**本端**
+  // 永远收不到 `text.delta`,用户看到的是"手机上发出去了、这台只有我那句、没有回复"。
+  const SID = "stale-sentinel";
+  seed([mkSession(SID)], { total: 1 });
+  const store = useSessionStore;
+  const msg = (id: string, text: string) => ({
+    type: "user.message" as const, sessionId: SID, messageId: id,
+    blocks: [{ kind: "text", text }] as never, createdAt: 1,
+  });
+
+  // 先把哨兵立起来(模拟本端点过停止)。
+  store.setState((s) => ({ interruptedBySession: { ...s.interruptedBySession, [SID]: true } }));
+  eq("前置:哨兵已立", store.getState().interruptedBySession[SID], true);
+
+  // 冻结闸确实在拦内容事件 —— **要等一帧**:`text.delta` 走 rAF 缓冲,派完那一刻还没落地。
+  store.getState().ingestEvent({ type: "text.delta", sessionId: SID, messageId: "a1", text: "被丢掉" });
+  await new Promise((r) => setTimeout(r, 60));
+  const frozen = store.getState().messagesBySession[SID] ?? [];
+  eq("哨兵立着时 text.delta 被丢掉", JSON.stringify(frozen).includes("被丢掉"), false);
+
+  // ★ 别端起新的一轮 —— 哨兵该被撤掉,后续内容能进来。
+  store.getState().ingestEvent(msg("来自手机的提问", "再写一段"));
+  eq("★ 别端发来 user.message → 撤掉哨兵", store.getState().interruptedBySession[SID], false);
+  store.getState().ingestEvent({ type: "text.delta", sessionId: SID, messageId: "a2", text: "这轮的回复" });
+  await new Promise((r) => setTimeout(r, 60));
+  const after = store.getState().messagesBySession[SID] ?? [];
+  check("★ 这一轮的内容不再被丢", JSON.stringify(after).includes("这轮的回复"), after.length);
+})();
+
+console.log("\n[15c] 删会话时排队提示词桶也要收掉");
+{
+  // `dropSessionBuckets` 清了三十来个 per-session 桶,却漏了 `promptQueueBySession`
+  // —— 一条删掉/归档的会话在队列里留下的那队(连同附件、图片 data URL)会**留到进程结束**。
+  const SID = "queued-then-deleted";
+  seed([mkSession(SID)], { total: 1 });
+  const store = useSessionStore;
+  store.setState((s) => ({
+    promptQueueBySession: {
+      ...s.promptQueueBySession,
+      [SID]: [{ id: "q1", prompt: "排着的话", displayText: "排着的话", attachments: [] }] as never,
+    },
+  }));
+  eq("前置:队列里有东西", (store.getState().promptQueueBySession[SID] ?? []).length, 1);
+
+  store.getState().ingestEvent({ type: "session.deleted", sessionId: SID });
+  eq("★ 删会话后队列桶被收掉", store.getState().promptQueueBySession[SID], undefined);
+}
+
 // ── 14. ingestEvent:时序敏感的那几条 ───────────────────────────────────────
 //
 // 上面三条是"给一个事件、断言状态"。这一节的三条不一样:**中间隔着 rAF 缓冲**,
@@ -1315,6 +1368,101 @@ await (async () => {
     store.setState({ sendPrompt: originalSend });
     useToastStore.getState().clear();
   }
+}
+
+// ── IDE 关闭守卫:未保存的标签不能被"关闭全部/关闭其他"顺手丢掉 ────────────
+// 编辑器没有自动保存(Ctrl+S 是唯一落盘入口),所以菜单里的批量关闭必须和标签栏的
+// × 一样,对脏文件说不。这里验 store 那一层的取舍(哪些关、哪些留、active 落在谁身上)。
+console.log("\n[IDE] close guard: unsaved files survive bulk close");
+{
+  const A = "D:\\proj\\a.ts";
+  const B = "D:\\proj\\b.ts"; // 脏
+  const C = "D:\\proj\\c.ts";
+  const D = "D:\\proj\\d.ts"; // 脏
+  const store = useSessionStore;
+  const openNow = () => store.getState().ideOpenFilesByProject[PROJECT] ?? [];
+  const activeNow = () => store.getState().ideActiveFileByProject[PROJECT] ?? null;
+
+  const reset = (open: string[], active: string | null) => {
+    store.setState({
+      activeProjectId: PROJECT,
+      ideOpenFilesByProject: { [PROJECT]: open },
+      ideActiveFileByProject: { [PROJECT]: active },
+      ideFileViewModeByProject: { [PROJECT]: {} },
+      ideDiffBeforeByProject: { [PROJECT]: {} },
+    });
+    ideDirtyTracker.set(A, false);
+    ideDirtyTracker.set(B, false);
+    ideDirtyTracker.set(C, false);
+    ideDirtyTracker.set(D, false);
+    useToastStore.getState().clear();
+  };
+
+  // ① 关闭单个脏文件 → 拦住,列表不变。
+  reset([A, B, C], B);
+  ideDirtyTracker.set(B, true);
+  const r1 = store.getState().closeFileInIde(B);
+  eq("单个:脏文件被拦下", r1.blocked.join(","), B);
+  eq("单个:没关掉任何东西", r1.closed.length, 0);
+  eq("单个:它还在打开列表里", openNow().includes(B), true);
+  eq("单个:active 不动", activeNow(), B);
+  // force(删除路径)→ 放行。
+  const r1f = store.getState().closeFileInIde(B, true);
+  eq("单个:force 放行", r1f.closed.join(","), B);
+  eq("单个:force 后确实关掉了", openNow().includes(B), false);
+  eq("单个:force 后脏标记被清", ideDirtyTracker.has(B), false);
+
+  // ② 关闭其他:干净的关、脏的留,保留文件成为 active。
+  reset([A, B, C, D], C);
+  ideDirtyTracker.set(B, true);
+  ideDirtyTracker.set(D, true);
+  const r2 = store.getState().closeOtherFilesInIde(C);
+  eq("其他:干净的被关", r2.closed.join(","), A);
+  eq("其他:脏的被拦下(按请求顺序)", r2.blocked.join(","), `${B},${D}`);
+  deepEq("其他:留下来的正是保留文件 + 脏文件", openNow(), [B, C, D]);
+  eq("其他:保留文件成为 active", activeNow(), C);
+  eq("其他:脏文件的脏标记还在", ideDirtyTracker.has(B) && ideDirtyTracker.has(D), true);
+
+  // ③ 关闭全部:只关干净的;active 若被关掉就落到幸存的脏文件上。
+  reset([A, B, C, D], C);
+  ideDirtyTracker.set(B, true);
+  ideDirtyTracker.set(D, true);
+  const r3 = store.getState().closeAllFilesInIde();
+  eq("全部:干净的关掉", r3.closed.join(","), `${A},${C}`);
+  eq("全部:脏的拦下", r3.blocked.join(","), `${B},${D}`);
+  deepEq("全部:只剩脏文件", openNow(), [B, D]);
+  eq("★ 全部:active 从被关掉的 C 落到幸存的脏文件", activeNow(), D);
+
+  // ④ 全干净时,"关闭全部"就是老行为(全关、active 归 null)。
+  reset([A, C], A);
+  const r4 = store.getState().closeAllFilesInIde();
+  eq("全干净:全部关掉", r4.closed.join(","), `${A},${C}`);
+  eq("全干净:没人被拦", r4.blocked.length, 0);
+  eq("全干净:列表已空", openNow().length, 0);
+  eq("全干净:active 归 null", activeNow(), null);
+
+  // ⑤ 提示:被拦下的文件显式报给用户(不静默)。
+  reset([A, B], A);
+  ideDirtyTracker.set(B, true);
+  store.getState().reportBlockedIdeClose([B]);
+  const t1 = useToastStore.getState().toasts;
+  eq("拦下时弹一条提示", t1.length, 1);
+  eq("提示是警告级", t1[0]?.kind, "warning");
+  check("提示正文点名了那个文件", (t1[0]?.body ?? "").includes("b.ts"), t1[0]?.body);
+  useToastStore.getState().clear();
+  store.getState().reportBlockedIdeClose([]);
+  eq("没人被拦时不弹提示", useToastStore.getState().toasts.length, 0);
+
+  // ⑥ 重命名:脏标记跟着新路径走,否则新标签既关不掉也不提示。
+  reset([A], A);
+  ideDirtyTracker.set(A, true);
+  store.getState().renamePathInIde(A, "D:\\proj\\a2.ts", false);
+  eq("重命名:旧路径的脏标记清了", ideDirtyTracker.has(A), false);
+  eq("重命名:新路径继承了脏标记", ideDirtyTracker.has("D:\\proj\\a2.ts"), true);
+  ideDirtyTracker.set("D:\\proj\\a2.ts", false);
+
+  // 清干净,别把状态漏给后面的小节。
+  reset([], null);
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

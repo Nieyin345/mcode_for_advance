@@ -73,4 +73,5 @@ export const en = {
   "lib.web.unavailable": "api.{name} is not available on mobile",
   "lib.web.pickerFailed": "Unable to open the file picker",
   "lib.web.pasteUnsupported": "Pasting external files is not supported on mobile, images only",
+  "lib.web.terminalUnsupported": "The terminal can only be used on the desktop",
 } as const;

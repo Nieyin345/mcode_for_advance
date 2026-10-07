@@ -388,6 +388,25 @@ same(
 eq("重装之后版本目录还是同一个", dup2.plugin?.rootDir, dup1.plugin?.rootDir);
 eq("两次拿到的插件名一样", dup2.plugin?.name, dup1.plugin?.name);
 
+/* 畸形版本号里含 `.backup-`/`.swapping-` 时,装好的目录名会被 installedRootOf 自己的
+ * scratch 跳过规则误跳 → 插件列表里看不见、也卸不掉。pluginVersionOf 要把标记打碎。 */
+{
+  const weird = path.join(path.dirname(PLUGINS_ROOT), "weird-version-src");
+  mkdirSync(weird, { recursive: true });
+  writeFileSync(
+    path.join(weird, "plugin.json"),
+    JSON.stringify({ name: "weird-version", version: "1.0.0.backup-1", source: "." }),
+  );
+  const res = asInstall(await installLocal(weird));
+  eq("含 .backup- 的版本号仍装成功", res.ok, true);
+  const listed = (await call(IPC.PLUGINS_LIST, {})) as { plugins: { name: string }[] };
+  eq(
+    "装完能在列表里看见(不被 scratch 跳过规则误跳)",
+    listed.plugins.some((p) => p.name === "weird-version"),
+    true,
+  );
+}
+
 await call(IPC.PLUGINS_SET_ENABLED, { name: "canonical-wins", enabled: true });
 const dup3 = asInstall(await installLocal(bothLayouts));
 eq("重装不会把用户的启用状态抹掉", dup3.plugin?.enabled, true);

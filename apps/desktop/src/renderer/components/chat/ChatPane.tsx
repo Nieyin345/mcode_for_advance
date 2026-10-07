@@ -3626,7 +3626,13 @@ function ChatPaneForSession({
                 <ProviderDropdown compact={composerTier >= 1} />
                 {sessionBusy && !hasComposerContent ? (
                   <button
-                    onClick={() => void interrupt()}
+                    // ⚠️ **必须带上 `sessionId`。** 不带的话 `interrupt()` 回落到
+                    // 全局 `activeSessionId` —— 而右栏「问答」那条侧边会话的
+                    // `sessionId` 是**它自己**,`activeSessionId` 却是它的**父对话**。
+                    // 于是侧边那条点「停止」停的是**主对话**的回合(主对话没在跑时
+                    // 则什么都停不掉)。这个面板里别的动作(发送、回答问题)都显式
+                    // 传了 `sessionId`,只有这里漏了。
+                    onClick={() => void interrupt(sessionId)}
                     title={t("chat.stopGenerating")}
                     aria-label={t("chat.stopGenerating")}
                     className={cn(

@@ -715,6 +715,15 @@ const api = {
       ipcRenderer.invoke(IPC.MCP_MARKET_SEARCH, input)) as RpcMap["mcp.marketSearch"],
   },
 
+  /** Per-engine built-in tool exclusion (设置 → 引擎工具). File-backed policy;
+   *  Claude/Pi can drop named built-ins, Codex cannot (sandbox/approval only). */
+  engineTools: {
+    get: ((input) =>
+      ipcRenderer.invoke(IPC.ENGINE_TOOLS_GET, input)) as RpcMap["engineTools.get"],
+    set: ((input) =>
+      ipcRenderer.invoke(IPC.ENGINE_TOOLS_SET, input)) as RpcMap["engineTools.set"],
+  },
+
   /** Global instructions, materialized to each engine's consume point. */
   context: {
     get: ((input) =>

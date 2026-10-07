@@ -76,4 +76,5 @@ export const zh = {
   "lib.web.unavailable": "api.{name} 在移动端不可用",
   "lib.web.pickerFailed": "无法打开文件选择器",
   "lib.web.pasteUnsupported": "移动端不支持粘贴外部文件,仅支持图片",
+  "lib.web.terminalUnsupported": "终端只能在电脑端操作",
 } as const;

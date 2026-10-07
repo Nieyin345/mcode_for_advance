@@ -65,11 +65,21 @@ function warningsFromPct(pct: number, maxTokens: number): ContextWarningKind[] {
  *
  *  @param ctx    Result of `session.getContextUsage()` — window occupancy.
  *  @param stats  Result of `session.getSessionStats()` — cumulative totals.
- *  @param modelId  Optional model id (e.g. "openai/gpt-4o") for the snapshot. */
+ *  @param modelId  Optional model id (e.g. "openai/gpt-4o") for the snapshot.
+ *  @param sessionTotalBaseline  `stats.tokens.total` captured at turn START.
+ *    Given it, the snapshot carries a per-turn `turnProcessedTokens` (the delta
+ *    since the turn began) so the host's `maxTotalTokens` budget reads a value
+ *    that resets each turn. Without it (stats unreadable at turn start) the
+ *    field is omitted and the budget falls back to the cumulative total.
+ *  @param sessionCostBaseline  `stats.cost` captured at turn START — the USD
+ *    twin of `sessionTotalBaseline`. Given it, the snapshot carries a per-turn
+ *    `turnCostUsd` for the `maxUsd` budget; omitted when unknown. */
 export function buildPiTokenSnapshot(
   ctx: ContextUsage | undefined,
   stats: SessionStats | undefined,
   modelId?: string,
+  sessionTotalBaseline?: number,
+  sessionCostBaseline?: number,
 ): ContextSnapshot | undefined {
   if (!ctx) return undefined;
   const maxTokens = ctx.contextWindow > 0 ? ctx.contextWindow : 0;
@@ -84,17 +94,33 @@ export function buildPiTokenSnapshot(
   const warning = warningFromPct(pct);
 
   const t = stats?.tokens;
+  // 轮预算用的单轮增量:`t.total` 是**会话**累计,直接当中止阈值会让跨过上限之后
+  // 每一轮都立刻"超预算"。有轮开始基线时给出差值;基线未知时省略该字段,让宿主退回
+  // 累计值(见 ContextSnapshot.turnProcessedTokens 的契约)。
+  const turnProcessed =
+    typeof t?.total === "number" && typeof sessionTotalBaseline === "number"
+      ? Math.max(0, t.total - sessionTotalBaseline)
+      : undefined;
+  // 花费同理:`stats.cost` 也是**会话**累计(用量面板靠相邻差分还原单轮量),但轮
+  // 预算(`maxUsd`)直接读 `costUsd` 会把每轮都判超。有基线时给出单轮增量。
+  const turnCost =
+    typeof stats?.cost === "number" && typeof sessionCostBaseline === "number"
+      ? Math.max(0, stats.cost - sessionCostBaseline)
+      : undefined;
   return {
     usedTokens,
     // Session-wide throughput (cumulative, includes compacted-away history).
     // Falls back to `usedTokens` when stats are unavailable so the field is
-    // never zero for a non-empty snapshot.
+    // never zero for a non-empty snapshot. 用量面板按相邻记录差分还原单轮量
+    // (`lib/usageStats.ts` 的 diffCumulative),所以这里**必须**保留累计语义。
     totalProcessedTokens: t?.total ?? usedTokens,
+    ...(turnProcessed !== undefined ? { turnProcessedTokens: turnProcessed } : {}),
     maxTokens,
     outputTokens: t?.output ?? 0,
     cacheReadTokens: t?.cacheRead,
     cacheCreationTokens: t?.cacheWrite,
     costUsd: typeof stats?.cost === "number" && stats.cost > 0 ? stats.cost : undefined,
+    ...(turnCost !== undefined && turnCost > 0 ? { turnCostUsd: turnCost } : {}),
     model: modelId,
     pct,
     warning,

@@ -2,6 +2,7 @@ import { memoryToolDescriptors, invokeMemoryTool } from "@main/memory/engineTool
 import { appToolDescriptors, invokeAppEngineTool, isAppToolName } from "@main/appControl/engineTools.js";
 import { libraryToolDescriptors, invokeLibraryToolGated, isLibraryToolName } from "@main/library/engineTools.js";
 import { workflowEngineBridge } from "@main/mcp/workflowEngineTools.js";
+import { agentToolDescriptors, invokeAgentToolGated, isAgentToolName, registerAgentEngineSession } from "@main/mcp/agentEngineBridge.js";
 /**
  * Codex agent provider — drives the OpenAI Codex harness via the
  * `codex app-server` JSON-RPC protocol (stdio JSONL) and implements the
@@ -76,7 +77,7 @@ import {
 import { getOrSetFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
 import { getMcpManagement } from "@main/lib/mcpConfig.js";
 import { mcpEngineEnabled, readMcpEnginesMap } from "@main/lib/mcpEngines.js";
-import { BROWSER_MCP_SERVER } from "@main/mcp/toolRules.js";
+import { BROWSER_MCP_SERVER, BROWSER_READONLY_SUFFIXES } from "@main/mcp/toolRules.js";
 import { CODEX_IDENTITY_PROMPT, joinPromptSections, fileArchitecturePrompt } from "@main/lib/systemPrompt.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { readInstructionsSource, instructionsSourcePath } from "@main/lib/appContext.js";
@@ -171,6 +172,28 @@ function normalizeCodexMode(mode: string | undefined | null): CodexPermissionMod
   return LEGACY_MODE_MAP[mode] ?? "default";
 }
 
+/**
+ * Does a browser dynamic-tool call need the user's approval before it runs?
+ *
+ * Codex's dynamic tools have no `canUseTool` / `tool_call` guard of their own
+ * (unlike Claude and Pi), so the decision lives here. Read-only browser tools
+ * (list/snapshot/screenshot/find/scroll/wait/switch_tab/save_pdf/downloads)
+ * never need approval — same set Claude and Pi use, imported rather than
+ * re-listed. Everything else (navigate/click/type/keys/select/upload_file/
+ * history/close_tab) is a page side effect: it runs only under full-access or
+ * when the user already said "always allow" for this tool.
+ */
+export function codexBrowserToolNeedsApproval(
+  name: string,
+  mode: CodexPermissionMode,
+  planModeActive: boolean,
+  alwaysAllowed: boolean,
+): boolean {
+  if (BROWSER_READONLY_SUFFIXES.has(name)) return false;
+  if (mode === "full-access" && !planModeActive) return false;
+  return !alwaysAllowed;
+}
+
 /** camelCase SandboxPolicy `type` for turn/start's sandboxPolicy object form
  *  (thread/start takes the kebab SandboxMode string; turn overrides use the
  *  tagged object — see SandboxPolicy in the protocol schema). */
@@ -244,6 +267,8 @@ export class CodexAgentSdkProvider implements AgentProvider {
 
   async startTurn(req: StartTurnRequest, ctx: ProviderContext): Promise<TurnHandle> {
     const ac = new AbortController();
+    // 会话 cwd 登进 agent 桥(agent_read_document 等解析相对路径用)。见 mcp/agentEngineBridge.ts。
+    registerAgentEngineSession(req.sessionId, req.cwd);
 
     /* ── 1. Binary + config bootstrap ── */
     const codexPath = resolveCodexBinaryPath();
@@ -1054,6 +1079,16 @@ function buildDynamicTools(browserToolsEnabled: boolean): Array<Record<string, u
     // 工作流工具(工作流 / 节点类型 / 代理档案 / 对话记录 / 代理通信)—— 同理,审批也在
     // invokeDynamicTool 那一支。见 mcp/workflowEngineTools.ts。
     ...workflowEngineBridge.descriptors(),
+    // Agent 只读工具(统一文档/图片读取 + 环境概况)。Codex 没有进程内 MCP,不在这里挂就
+    // 一个都没有 —— agent_read_document 处理 PDF/DOCX/XLSX/PPTX,是 Codex 壳命令读不了的
+    // 那类。审批在 invokeDynamicTool 那一支做(只读的 invokeGated 直接过)。
+    // 见 mcp/agentEngineBridge.ts。
+    ...agentToolDescriptors().map((t) => ({
+      type: "function",
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema,
+    })),
     {
       type: "function",
       name: "ask_user_question",
@@ -1313,7 +1348,8 @@ function buildDynamicTools(browserToolsEnabled: boolean): Array<Record<string, u
 /** Execute a dynamic-tool invocation from the server against host bridges. */
 async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps): Promise<unknown> {
   const name = typeof p.tool === "string" ? p.tool : typeof p.name === "string" ? p.name : "";
-  const args = (p.arguments ?? p.args ?? {}) as Record<string, unknown>;
+  // `let`: the browser-approval gate below may swap in a user-edited input.
+  let args = (p.arguments ?? p.args ?? {}) as Record<string, unknown>;
   const { ctx, req, planMode } = deps;
   const text = (t: string): unknown => ({ success: true, contentItems: [{ type: "inputText", text: t }] });
   const fail = (t: string): unknown => ({ success: false, contentItems: [{ type: "inputText", text: t }] });
@@ -1349,12 +1385,45 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
     return { success: !result.isError, contentItems: result.content.map(c => ({ type: "inputText", text: c.type === "text" ? c.text : "" })) };
   }
 
+  // Agent 只读工具(agent_read_document / agent_read_image / agent_context)。只读,
+  // invokeGated 直接过;走 gated 是为了统一"没有审批通道就拒绝"的语义(它不会走到那步)。
+  if (isAgentToolName(name)) {
+    const result = await invokeAgentToolGated(name, args, req.sessionId, ctx, { autoApprove: true });
+    return { success: !result.isError, contentItems: result.content.map(c => ({ type: "inputText", text: c.type === "text" ? c.text : "" })) };
+  }
+
   // MCP panel's built-in browser switch. Registration-time filtering can't
   // cover resumed threads (dynamicTools persist in the rollout), so rejected
   // calls are answered here — the tool stays visible to the model but every
   // invocation returns this error instead of touching the browser.
   if (name.startsWith("browser_") && !deps.browserToolsEnabled) {
     return fail("内置浏览器工具已停用(设置 → MCP)。请改用其他方式完成任务。");
+  }
+
+  // 浏览器工具:只读的(scroll/wait/find/snapshot/screenshot…)直接跑,有副作用的
+  // (navigate/click/type/keys/select/upload_file/history/close_tab)按当前权限档审批。
+  // Codex 的动态工具**没有** canUseTool / tool_call 那种守卫,不在这里问就等于**完全
+  // 绕过审批** —— 只读档下也能导航、点击、上传本地文件、跑页面 JS。语义与 Claude 的
+  // canUseTool、Pi 的 tool_call 守卫一致(见 toolRules.ts 的 BROWSER_READONLY_SUFFIXES,
+  // 唯一的一份清单),别另写一份放行表。
+  if (name.startsWith("browser_") && deps.browserToolsEnabled) {
+    const mode = normalizeCodexMode(ctx.getPermissionMode?.() ?? req.permissionMode);
+    const needsApproval = codexBrowserToolNeedsApproval(
+      name,
+      mode,
+      planMode.active,
+      ctx.isToolAlwaysAllowed?.(name) ?? false,
+    );
+    if (needsApproval) {
+      if (!ctx.requestApproval) {
+        return fail(`浏览器工具「${name}」需要用户批准,但审批通道不可用;没有执行。`);
+      }
+      const decision = await ctx.requestApproval({ requestId: randomUUID(), toolName: name, input: args });
+      if (!decision.allow) {
+        return fail(decision.reason ? `用户未批准浏览器操作:${decision.reason}` : "用户未批准浏览器操作。");
+      }
+      if (decision.updatedInput !== undefined) args = decision.updatedInput as Record<string, unknown>;
+    }
   }
 
   try {
