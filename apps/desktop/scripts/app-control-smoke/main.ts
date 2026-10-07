@@ -309,8 +309,11 @@ check("描述符与工具表一致", appToolDescriptors().length === appMcpTools
 // 都漏:`> 3` 的容差让 **1~3 条**的漂移静默通过(实测 `engineTools.get` / `engineTools.set`
 // 就不在清单里,差 2 条,一直没报);而且它只是 `warn`,不是断言,套件照样绿。
 //
-// 后果不是"清单好看不好看":`invokeAppTool` 只认清单里的方法,所以**缺的那两条 agent 调不到**
-// ——注册好的 IPC 从 agent 这条路进不去,而且没有任何一处会说出来。
+// 后果是**可发现性**:`apiEntries()` 把「清单」与「实际注册过的通道」并起来(`findEntry`
+// 走的是它),所以缺的那两条**调得到**——但只能通过注册那条兜底路径,拿到的说明是空的
+// (`"(清单里没有说明,按报错提示传参)"`),`app_api_list` 按域列时也数不到它们。agent 也就
+// 看不见「按引擎禁用内置工具」这个能力(设置 → 引擎工具),自然想不起来用。
+// ⚠️ 别把它说成"调不到"——那是错的,兜底路径一直在。
 //
 // 判据用**集合**而不是计数:数目相等而成员不同的情形,恰恰是计数容差最容易放过的那种。
 {
@@ -325,7 +328,7 @@ check("描述符与工具表一致", appToolDescriptors().length === appMcpTools
   const missing = [...rpcMethods].filter((m) => !catalogMethods.has(m)).sort();
   const extra = [...catalogMethods].filter((m) => !rpcMethods.has(m)).sort();
   check(
-    "★ 功能清单与 RpcMap 逐条对齐（差一条 agent 就调不到）",
+    "★ 功能清单与 RpcMap 逐条对齐（差一条 agent 就看不见它的说明）",
     missing.length === 0 && extra.length === 0,
     { missing, extra, hint: "跑一次 node scripts/gen-app-api-catalog.mjs" },
   );
