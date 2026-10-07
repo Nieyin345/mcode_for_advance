@@ -52,7 +52,7 @@ MUTATIONS = [
 
 
 def run_suite():
-    proc = subprocess.run([BASH, "scripts/scheduler-smoke/run.sh"], cwd=DESK, capture_output=True)
+    proc = subprocess.run([BASH, "scripts/scheduler-flow-smoke/run.sh"], cwd=DESK, capture_output=True)
     out = proc.stdout.decode("utf-8", "replace") + proc.stderr.decode("utf-8", "replace")
     fails = [ln.strip() for ln in out.splitlines() if ln.strip().startswith("FAIL")]
     concluded = "passed" in out

@@ -10,7 +10,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 export const APP_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const CRITICAL_SUITES = Object.freeze([
   "db-migrate-smoke", "db-persistence-smoke", "mobile-pairing-smoke",
-  "run-store-smoke", "session-store-smoke", "scheduler-smoke",
+  "run-store-smoke", "session-store-smoke",
+  // 调度器拆成三套(A5,2026-10-07):核心/数据/控制流。都是核心逻辑,一起算关键集。
+  "scheduler-smoke", "scheduler-data-smoke", "scheduler-flow-smoke",
   "ipc-wiring-smoke", "path-guard-smoke",
 ]);
 const SUITE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*-smoke$/;
