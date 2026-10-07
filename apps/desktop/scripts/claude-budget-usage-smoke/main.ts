@@ -67,6 +67,12 @@ function assistant(id: string | undefined, u: ReturnType<typeof usage>): unknown
   };
 }
 
+/** 转发的**子代理** assistant 消息(带 `parent_tool_use_id`)。它的 usage 该记账、
+ *  但不该发布占用快照。 */
+function subagentAssistant(id: string, u: ReturnType<typeof usage>, parent = "toolu_parent"): unknown {
+  return { ...(assistant(id, u) as Record<string, unknown>), parent_tool_use_id: parent };
+}
+
 /** 一次带流式事件的调用:message_start → message_delta(带用量)→ 两帧 assistant(同一 id)。 */
 async function call(adapter: SdkMessageAdapter, id: string | undefined, u: ReturnType<typeof usage>): Promise<void> {
   await adapter.dispatch(stream({ type: "message_start", message: id !== undefined ? { id } : {} }) as never);
@@ -117,6 +123,35 @@ async function main(): Promise<void> {
     await call(adapter, undefined, usage(21_000, 100));
     const last = snaps().at(-1);
     check("两次匿名调用 → 41200(既不漏也不重复)", last?.turnProcessedTokens === 41_200, last?.turnProcessedTokens);
+  }
+
+  console.log("\n子代理消息:记账,但不覆盖主线程的占用环");
+  {
+    // 主线程一次大调用 → 环 150k(75%)。
+    const { adapter, snaps } = makeAdapter();
+    await adapter.dispatch(assistant("main_1", usage(150_000, 10)) as never);
+    const beforeSub = snaps().at(-1);
+    check("主线程先报出大占用", beforeSub?.usedTokens === 150_000, beforeSub?.usedTokens);
+    const countBefore = snaps().length;
+    // 转发的子代理消息:**小得多的** usage(它有自己的窗口)。
+    await adapter.dispatch(subagentAssistant("sub_1", usage(5_000, 10)) as never);
+    // ★ 环不许退步 —— 子代理的占用不是主线程的占用。
+    const afterSub = snaps().at(-1);
+    check(
+      "★ 子代理消息不发布占用快照(条数不变)",
+      snaps().length === countBefore,
+      { before: countBefore, after: snaps().length },
+    );
+    check("★ 主线程占用环未被拉低", afterSub?.usedTokens === 150_000, afterSub?.usedTokens);
+    // 但**记账照旧**:子代理的 processed tokens 该进本轮吞吐/预算。
+    // 下一次主线程快照的 turnProcessedTokens 才把它算进去(150010 + 5010 = 155020)。
+    await adapter.dispatch(assistant("main_2", usage(152_000, 10)) as never);
+    const afterNextMain = snaps().at(-1);
+    check(
+      "★ 子代理的吞吐仍被记入(下一次主线程快照含它)",
+      (afterNextMain?.turnProcessedTokens ?? 0) >= 150_010 + 5_010,
+      afterNextMain?.turnProcessedTokens,
+    );
   }
 
   console.log(`\n${checks - failures}/${checks} passed`);

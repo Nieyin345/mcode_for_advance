@@ -1315,6 +1315,16 @@ export class SdkMessageAdapter {
     // turn-end fallback degrades to pathC-direct (cumulative result.usage as
     // occupancy), overstating the ring on multi-call turns. Map fields here.
     const usage = message.usage;
+    // **占用快照只由主线程发布。** 转发来的子代理消息也走到这里,它带的 usage 是
+    // **子代理自己那次调用**的量 —— 子代理有自己的上下文窗口,它的占用不是主线程的
+    // 占用。从前无差别发布,于是主线程刚报 150k(75%),紧接着一条子代理消息就把环拉到
+    // 5k(2.5%)—— 一个凭空的"上下文几乎空了"。Codex 侧同一问题早已挡
+    // (`CodexMessageAdapter` 的 `thread/tokenUsage/updated` 走 `isForeignThread→break`,
+    // `maint-m05-smoke` 钉着"occupancy 是主线程最后一次请求,不是子代理的")。这里补齐。
+    //
+    // 但**记账照旧**:子代理的 processed tokens 仍进 `callProcessed`,计入本轮吞吐/预算
+    // (那正是原来那句"subagent occupancy deliberately counts"想保住的 —— 该保的是计费,
+    // 不是占用环)。所以传 `publish: !parent`,而不是提前 return 整段跳过。
     this.emitTokenUsage(
       usage
         ? {
@@ -1327,6 +1337,7 @@ export class SdkMessageAdapter {
       message.model,
       undefined,
       typeof message.id === "string" && message.id.length > 0 ? message.id : this.anonCallKey(),
+      !m.parent_tool_use_id,
     );
 
     // Path B kickoff: fire off `Query.getContextUsage()` now while the CLI
@@ -1359,10 +1370,12 @@ export class SdkMessageAdapter {
     }
 
     // Forwarded subagent message (forwardSubagentText). The usage path above
-    // still ran — subagent occupancy deliberately counts toward the session
-    // total (same as it did before the blocks were routed off the main
-    // stream). Everything below belongs to the main agent only, so hand the
-    // blocks to the transcript channel and stop here.
+    // still ran, but with `publish:false` — a subagent's usage is booked into
+    // this turn's throughput/budget (that part deliberately counts), while its
+    // window occupancy is NOT published (it is not the main thread's occupancy
+    // — see the guard in the emitTokenUsage call above). Everything below
+    // belongs to the main agent only, so hand the blocks to the transcript
+    // channel and stop here.
     if (m.parent_tool_use_id) {
       this.handleSubagentAssistant(m.parent_tool_use_id, blocks);
       return;
@@ -1918,6 +1931,10 @@ const costUsd = m.total_cost_usd ?? (muCost > 0 ? muCost : undefined);
     reportedWindow: number | undefined,
     /** 这份用量属于哪一次 API 调用(路径 A 才给)。给了就计入本轮累计,见 callProcessed。 */
     callKey?: string,
+    /** 是否发布占用快照。子代理转发的消息 **只有记账**、不发布 ——
+     *  见 `handleAssistant` 里那段:子代理有自己的上下文窗口,它的占用不是主线程的占用。
+     *  记账照旧(吞吐/预算该含子代理),只是不拿它去盖主线程的环。 */
+    publish = true,
   ): void {
     if (!usage) return;
     if (callKey !== undefined) {
@@ -1926,6 +1943,7 @@ const costUsd = m.total_cost_usd ?? (muCost > 0 ? muCost : undefined);
         this.state.callProcessed.set(callKey, processed);
       }
     }
+    if (!publish) return;
     const snapshot = normalizeClaudeTokenUsage(
       { ...usage, model: usage.model ?? model },
       {
