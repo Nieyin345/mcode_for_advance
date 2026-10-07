@@ -477,12 +477,45 @@ const HANDLERS: Record<string, RpcHandler> = {
   // included) re-syncs its list and its composer chips for this thread.
   "session:updateSettings": (raw) => {
     const input = UpdateSessionSettingsSchema.parse(raw);
-    // **providerId 过了首条消息就锁死** —— 与桌面那条 handler 同一条规矩(见
-    // `ipc/claude.ts` 的 `SESSION_UPDATE_SETTINGS`)。手机能改这条的话,一条跑过对话的
-    // 会话会被改成另一个引擎的 DB 行,而运行时(启动时捕获的 provider)不动 ——
-    // 界面是 A、实跑是 B。这里也要拒,不然锁定只对桌面成立。
-    if (input.providerId !== undefined && MessageRepo.hasAny(input.sessionId)) {
-      throw new Error("会话已经有消息了,引擎不能再改");
+    // 与桌面 `SESSION_UPDATE_SETTINGS`(ipc/claude.ts)同一条规矩:**共享组件**
+    // (`ChatPane` → `WorktreeModeChip` / `SessionDirectoryChip`)在手机上也挂,
+    // 它们调的正是下面这几个字段。转发漏一个的表现是"界面上改成功了、库里没变"
+    // —— 手机端是乐观更新(先改缓存),而这条路连拒绝都不给。
+    //
+    // 两道「首条消息 / 物化后锁定」的守卫也必须在这里重来一遍,否则锁定只对桌面成立:
+    //  - projectId(目录再瞄准):只有还没跑过、也没物化工作树的会话能改;
+    //  - providerId / envMode / wtStyle:同样按各自的新鲜度判据,而且是**整条拒**
+    //    (不是悄悄忽略那个字段 —— 那会让渲染端以为改成功了,下次同步又弹回原样)。
+    if (input.projectId !== undefined) {
+      const sess = SessionRepo.get(input.sessionId);
+      if (!sess) throw new RpcError(`session not found: ${input.sessionId}`, 404);
+      const target = ProjectRepo.get(input.projectId);
+      if (!target || target.archived) {
+        throw new RpcError("改不了目录:目标项目不存在或已归档", 409);
+      }
+      if (sess.worktreePath) {
+        throw new RpcError("改不了目录:会话已经在工作树里跑过了", 409);
+      }
+      if (MessageRepo.hasAny(input.sessionId)) {
+        throw new RpcError("改不了目录:会话已经有消息了", 409);
+      }
+      if (sess.projectId !== input.projectId) {
+        SessionRepo.updateSettings(input.sessionId, { projectId: input.projectId });
+      }
+    }
+    if (input.providerId !== undefined || input.envMode !== undefined || input.wtStyle !== undefined) {
+      const sess = SessionRepo.get(input.sessionId);
+      if (!sess) throw new RpcError(`session not found: ${input.sessionId}`, 404);
+      // **providerId 过了首条消息就锁死** —— 与桌面那条 handler 同一条规矩(见
+      // `ipc/claude.ts` 的 `SESSION_UPDATE_SETTINGS`)。手机能改这条的话,一条跑过对话的
+      // 会话会被改成另一个引擎的 DB 行,而运行时(启动时捕获的 provider)不动 ——
+      // 界面是 A、实跑是 B。
+      if (input.providerId !== undefined && MessageRepo.hasAny(input.sessionId)) {
+        throw new RpcError("会话已经有消息了,引擎不能再改", 409);
+      }
+      if ((input.envMode !== undefined || input.wtStyle !== undefined) && sess.worktreePath) {
+        throw new RpcError("工作树已物化,环境不能再改", 409);
+      }
     }
     SessionRepo.updateSettings(input.sessionId, {
       model: input.model,
@@ -493,10 +526,14 @@ const HANDLERS: Record<string, RpcHandler> = {
       workflowId: workflowIdFromInput(input),
       customModelId: input.customModelId,
       providerId: input.providerId,
+      envMode: input.envMode,
+      wtStyle: input.wtStyle,
     });
     if (input.permissionMode) {
       runtimeManager.setPermissionMode(input.sessionId, input.permissionMode);
     }
+    // 与桌面那条 handler 完全一致:只广播这一条(迁项目后的列表重排由渲染端自己的
+    // `moveSession` 收口 —— 别在这里多加一条 `projects.changed`,那会与桌面分家)。
     const updated = SessionRepo.get(input.sessionId);
     if (updated) broadcastSessionChanged(updated);
     return { ok: true };
@@ -678,7 +715,10 @@ const HANDLERS: Record<string, RpcHandler> = {
       if (prompt) {
         SessionRepo.updateStatus(session.id, "running");
         runtimeManager.bindSession(session);
-        await runtimeManager.sendTurn(session, { prompt, cwd: project.path });
+        // 工作树会话在第一次发言时就已经物化过了(这个 sentinel 追问只可能在那一轮
+        // 之后出现),所以这里要按 sendTurn 的同一条优先级取 cwd —— 写成 `project.path`
+        // 会把这一轮送进用户的**主检出**,而它本该跑在隔离工作树里。
+        await runtimeManager.sendTurn(session, { prompt, cwd: session.worktreePath ?? project.path });
       }
       return { ok: true };
     }

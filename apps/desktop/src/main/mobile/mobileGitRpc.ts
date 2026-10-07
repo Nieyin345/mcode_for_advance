@@ -52,7 +52,13 @@ const handlers: Record<string, RpcHandler> = {
     const known = isKnownWorkspaceRoot(input.projectPath);
     if (!known) return { repos: [] };
     try {
-      const repoPaths = await findGitRepos(input.projectPath, MAX_SCAN_DEPTH);
+      // rootOnly → depth 0: findGitRepos returns [root] iff `.git` exists at
+      // the root level itself. MUST be forwarded — the shared `WorktreeModeChip`
+      // probes with rootOnly because worktree materialization requires `.git`
+      // at the project ROOT; without it a repo merely nested in a subdirectory
+      // lights the picker up and offers an environment that silently degrades
+      // back to local. Mirrors ipc/git.ts.
+      const repoPaths = await findGitRepos(input.projectPath, input.rootOnly ? 0 : MAX_SCAN_DEPTH);
       const repos: GitRepo[] = repoPaths.map((p) => {
         const rel = relative(input.projectPath, p);
         const name = rel === "" ? input.projectPath.split(/[/\\]/).pop() || p : rel;

@@ -42,7 +42,7 @@
  * Run: scripts/mobile-pairing-smoke/run.sh
  */
 import { createServer, type Server } from "node:http";
-import { existsSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -858,6 +858,148 @@ console.log("\n设置白名单 / 同步");
   sb.ctrl.abort();
   windowStub.__setDesktopAttached(false);
   await new Promise((r) => setTimeout(r, 50));
+}
+
+/* ────────────── 7c. 手机 RPC 必须转发桌面 handler 的每一个字段 ──────────────
+ *
+ * 手机 RPC 与桌面 IPC 是**两条独立实现**。桌面那条 handler 支持的每个字段,手机这条
+ * 漏掉一个,表现就是「界面上改成功了、库里没变」—— 因为手机端是**乐观更新**(先改缓存
+ * 再等回执),而这条路径连拒绝都不给。共享的 `ChatPane` 在手机上也挂
+ * `WorktreeModeChip` / `SessionDirectoryChip`,那两个控件调的正是这些字段。
+ */
+console.log("\n设置转发:updateSettings 的 envMode / wtStyle / projectId");
+
+/** 配一台新设备并返回它的令牌 —— 上面那段里的 `pairDevice` 是块级作用域。 */
+async function pairFresh(name: string): Promise<string> {
+  const st = pairingManager.startPairing(ENDPOINT, { force: true });
+  const r = await req("/api/pair/verify", { method: "POST", body: { nonce: st.nonce, code: st.code, deviceName: name } });
+  const tok = (JSON.parse(r.text) as { deviceToken: string }).deviceToken;
+  issuedSecrets.push(tok);
+  return tok;
+}
+const rpcTok = (tok: string, method: string, input: unknown) =>
+  req("/api/rpc", { method: "POST", token: tok, body: { method, input } });
+const tA = await pairFresh("转发断言");
+
+{
+  const { ProjectRepo, SessionRepo } = await import("@main/store/repositories.js");
+
+  const mkProj = (id: string, path: string): void => {
+    const now = Date.now();
+    ProjectRepo.create({ id, name: id, path, archived: false, pinnedAt: null, sortOrder: 0, createdAt: now, updatedAt: now } as never);
+  };
+  const mkSess = (id: string, projectId: string, over: Record<string, unknown> = {}): void => {
+    const now = Date.now();
+    SessionRepo.create({
+      id, projectId, providerId: "claude-sdk", claudeSessionId: null, kind: "chat",
+      parentSessionId: null, nodeId: null, title: "New session", status: "idle",
+      model: "default", effort: "default", permissionMode: "default", workflowId: "default",
+      customModelId: null, envMode: "local", worktreePath: null, archived: false, pinnedAt: null,
+      contextSnapshot: null, todos: null, subagents: null, planDraft: null, turnFiles: null,
+      usageHistory: null, bookmarks: null, subagentTranscripts: null, createdAt: now, updatedAt: now,
+      ...over,
+    } as never);
+  };
+
+  const pathA = mkdtempSync(join(tmpdir(), "mcode-mobile-rpc-proj-a-"));
+  const pathB = mkdtempSync(join(tmpdir(), "mcode-mobile-rpc-proj-b-"));
+  mkProj("mp_a", pathA);
+  mkProj("mp_b", pathB);
+  mkSess("ms_env", "mp_a");
+  mkSess("ms_move", "mp_a");
+
+  // 环境意图(WorktreeModeChip 的 setEnvChoice)——这是手机端也渲染的共用控件。
+  const envRes = await rpcTok(tA, "session:updateSettings", { sessionId: "ms_env", envMode: "worktree", wtStyle: "branch" });
+  eq("手机 updateSettings(envMode/wtStyle) → 200", envRes.status, 200);
+  const afterEnv = SessionRepo.get("ms_env");
+  eq("envMode 真的落库了(不是只改了前端缓存)", afterEnv?.envMode, "worktree");
+  eq("wtStyle 真的落库了", afterEnv?.wtStyle, "branch");
+
+  // 目录再瞄准(SessionDirectoryChip 的 moveSession)。
+  const moveRes = await rpcTok(tA, "session:updateSettings", { sessionId: "ms_move", projectId: "mp_b" });
+  eq("手机 updateSettings(projectId) → 200", moveRes.status, 200);
+  eq("会话真的挪到目标项目了", SessionRepo.get("ms_move")?.projectId, "mp_b");
+
+  // 已经物化在 worktree 里的会话不许再改环境(与桌面同一条守卫)。
+  mkSess("ms_locked", "mp_a", { envMode: "worktree", worktreePath: pathA });
+  const locked = await rpcTok(tA, "session:updateSettings", { sessionId: "ms_locked", envMode: "local" });
+  eq("已物化的会话改 envMode 被拒(整条拒,不是悄悄忽略)", locked.status === 200, false);
+
+  rmSync(pathA, { recursive: true, force: true });
+  rmSync(pathB, { recursive: true, force: true });
+}
+
+/* ────────────── 7d. sentinel 回答必须落在会话自己的工作树里 ──────────────
+ *
+ * 兜底路径(native AskUserQuestion 不可用时)的答案会作为**新一轮提示词**发出去。
+ * 桌面 handler 用的是 `session.worktreePath ?? project.path`;手机这条如果写成
+ * `project.path`,那么一条跑在隔离工作树里的会话、从手机上回答那个问题,这一轮会被
+ * 送进**用户的主检出** —— agent 的编辑落错地方,而没有任何提示。
+ */
+console.log("\nsentinel 回答的工作目录");
+
+{
+  const { ProjectRepo, SessionRepo } = await import("@main/store/repositories.js");
+  const { turnCwds } = (await import("@main/claude/RuntimeManager.js")) as unknown as {
+    turnCwds: Array<{ sessionId: string; cwd: string }>;
+  };
+  const pathW = mkdtempSync(join(tmpdir(), "mcode-mobile-sentinel-proj-"));
+  const wtDir = mkdtempSync(join(tmpdir(), "mcode-mobile-sentinel-wt-"));
+  const now = Date.now();
+  ProjectRepo.create({ id: "sp_p", name: "sp_p", path: pathW, archived: false, pinnedAt: null, sortOrder: 0, createdAt: now, updatedAt: now } as never);
+  SessionRepo.create({
+    id: "sp_s", projectId: "sp_p", providerId: "claude-sdk", claudeSessionId: null, kind: "chat",
+    parentSessionId: null, nodeId: null, title: "工作树会话", status: "idle",
+    model: "default", effort: "default", permissionMode: "default", workflowId: "default",
+    customModelId: null, envMode: "worktree", worktreePath: wtDir, archived: false, pinnedAt: null,
+    contextSnapshot: null, todos: null, subagents: null, planDraft: null, turnFiles: null,
+    usageHistory: null, bookmarks: null, subagentTranscripts: null, createdAt: now, updatedAt: now,
+  } as never);
+
+  turnCwds.length = 0;
+  const ans = await rpcTok(tA, "claude:respondQuestion", {
+    sessionId: "sp_s",
+    requestId: "sentinel_smoke_1",
+    answers: { "要不要继续?": "继续" },
+  });
+  eq("sentinel 回答 → 200", ans.status, 200);
+  const sent = turnCwds.find((c) => c.sessionId === "sp_s");
+  check("sentinel 回答这一轮跑在工作树里,不是主检出", sent?.cwd === wtDir, sent);
+
+  rmSync(pathW, { recursive: true, force: true });
+  rmSync(wtDir, { recursive: true, force: true });
+}
+
+/* ────────────── 7e. discoverRepos 的 rootOnly 必须转发 ──────────────
+ *
+ * 桌面 `git:discoverRepos` 认 `rootOnly`(工作树选择器要的是"项目根自己是不是仓库",
+ * 因为工作树只能在根上物化)。手机这条漏掉它,共用控件 `WorktreeModeChip` 就会把
+ * "某个子目录是仓库"误当成"项目根是仓库",点出来一个**注定退化成本地**的选项。
+ */
+console.log("\ndiscoverRepos:rootOnly");
+
+{
+  // git:* handlers are normally registered when the server starts
+  // (`startMobileServer` → registerMobileGitRpc). This suite builds its own
+  // handler, so register them here.
+  const { registerMobileGitRpc } = await import("@main/mobile/mobileGitRpc.js");
+  registerMobileGitRpc();
+
+  const { ProjectRepo } = await import("@main/store/repositories.js");
+  const rootNoRepo = mkdtempSync(join(tmpdir(), "mcode-mobile-norepo-"));
+  mkdirSync(join(rootNoRepo, "nested", ".git"), { recursive: true });
+  const now = Date.now();
+  ProjectRepo.create({ id: "nr_p", name: "nr_p", path: rootNoRepo, archived: false, pinnedAt: null, sortOrder: 0, createdAt: now, updatedAt: now } as never);
+
+  const recursive = await rpcTok(tA, "git:discoverRepos", { projectPath: rootNoRepo });
+  const recursiveRepos = (JSON.parse(recursive.text) as { result: { repos: unknown[] } }).result.repos;
+  check("递归扫描找得到子目录里的仓库(前提成立)", recursiveRepos.length === 1, recursiveRepos);
+
+  const rootOnly = await rpcTok(tA, "git:discoverRepos", { projectPath: rootNoRepo, rootOnly: true });
+  const rootOnlyRepos = (JSON.parse(rootOnly.text) as { result: { repos: unknown[] } }).result.repos;
+  eq("rootOnly 时项目根不是仓库 → 返回空(与桌面一致)", rootOnlyRepos.length, 0);
+
+  rmSync(rootNoRepo, { recursive: true, force: true });
 }
 
 /* ───────────────────── 8. 出厂状态 ───────────────────── */
