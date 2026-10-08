@@ -39,6 +39,7 @@ import { tmpdir } from "node:os";
 
 import { setToolRoot, getToolRoot } from "@main/env/managedToolRoots.js";
 import { installTool, removeTool, isToolInstalling, lastToolError } from "@main/env/toolInstall.js";
+import { setOnlyOfficeFailure } from "./stubs/onlyofficeInstall.js";
 import { registerUpdaterHandlers } from "@main/ipc/updater.js";
 
 import * as cp from "./stubs/childProcess.js";
@@ -993,6 +994,39 @@ section("辰、checkForUpdates 的 source 参数");
     args[0] === "manual",
     args,
   );
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 丙·末、ONLYOFFICE 失败的原始码都要翻成人话
+ * ══════════════════════════════════════════════════════════════ */
+
+section("ONLYOFFICE 失败原因必须翻成能照着做的中文(不许把内部码/英文原样画在面板上)");
+
+{
+  // `onlyOfficeErrorText` 只映射了 5 个错误码,末尾 `return raw`。而 `localInstall`
+  // 还会抛别的码与英文句 —— 那些会原样进工具链面板那一行。这一段把 `localInstall` 真会抛的
+  // 每一条都塞一遍,判据:落下面板的那句话**不是**原始码/英文(至少得是中文提示)。
+  const raws = [
+    "ONLYOFFICE_NOT_INSTALLED",
+    "ONLYOFFICE_NOT_RUNNING",
+    "download failed: HTTP 404",
+    "download incomplete",
+    "install script failed: exit 1",
+    "elevation failed (1223): user cancelled",
+    "UAC_DENIED",
+  ];
+  for (const raw of raws) {
+    setOnlyOfficeFailure(raw);
+    const res = await installTool("onlyoffice");
+    const shown = res.error ?? "";
+    check(
+      `★ ${raw} → 翻成人话(面板不显示原始内部串)`,
+      !res.ok && shown !== raw && /[一-鿿]/.test(shown),
+      { raw, shown },
+    );
+    eq(`lastToolError 记的就是翻好的那句(${raw})`, lastToolError("onlyoffice"), shown);
+  }
+  setOnlyOfficeFailure(null); // 收工:恢复"不该走到 ONLYOFFICE"
 }
 
 /* ══════════════════════════════════════════════════════════════

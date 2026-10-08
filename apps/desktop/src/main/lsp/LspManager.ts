@@ -1382,7 +1382,7 @@ class LspManagerImpl {
     // Reject any pending requests.
     for (const [id, entry] of handle.pending) {
       clearTimeout(entry.timer);
-      entry.reject(new Error("language server stopped"));
+      entry.reject(new Error("语言服务器已停止(可能是刚被关掉或崩溃了,重试一次通常就好)"));
       void id;
     }
     handle.pending.clear();
@@ -1433,7 +1433,7 @@ class LspManagerImpl {
   ): Promise<unknown> {
     return new Promise((resolveP, rejectP) => {
       if (!handle.proc.stdin || handle.proc.stdin.destroyed) {
-        rejectP(new Error("language server stdin closed"));
+        rejectP(new Error("语言服务器的输入通道已关闭(它可能刚退出)"));
         return;
       }
       const id = handle.nextId++;

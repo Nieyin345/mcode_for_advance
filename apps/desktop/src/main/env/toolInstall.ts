@@ -719,6 +719,15 @@ function onlyOfficeErrorText(raw: string): string {
     }
     return "服务在跑,但 healthcheck 一直不应答。首次启动有时要好几分钟,稍等一会儿点「重新检测」";
   }
+  // ── 下面这些是 `onlyoffice/localInstall.ts` 直接抛的码/英文句。**必须都映射** ——
+  //    末尾的 `return raw` 会让内部串原样画在工具链面板那一行上。onboarding 里那条
+  //    "只修配置"的路(`applyLocal`)会抛前两个码,下载/提权/脚本失败则抛后几个。
+  if (raw === "ONLYOFFICE_NOT_INSTALLED") return "这台机器上没找到 ONLYOFFICE Document Server —— 点「安装」装一个";
+  if (raw === "ONLYOFFICE_NOT_RUNNING") return "Document Server 装了但没在跑 —— 去 services.msc 启动 DsDocServiceSvc,或用系统托盘里的 ONLYOFFICE 启动它";
+  if (raw.startsWith("download failed")) return `安装包下载失败(${raw.replace(/^download failed:\s*/, "")})—— 检查网络/代理后重试`;
+  if (raw === "download incomplete") return "安装包下载不完整(连接中断)—— 重试一次";
+  if (raw.startsWith("install script failed")) return `安装脚本执行失败${raw.includes(":") ? `:${raw.slice(raw.indexOf(":"))}` : ""} —— 看 %TEMP%\\mcode-onlyoffice 下的安装日志`;
+  if (raw.startsWith("elevation failed")) return `提权失败,安装没能开始(${raw.replace(/^elevation failed\s*/, "")})—— 确认你在 UAC 弹窗里点了「是」`;
   return raw;
 }
 

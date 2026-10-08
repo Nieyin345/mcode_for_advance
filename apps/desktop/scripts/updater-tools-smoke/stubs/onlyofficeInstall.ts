@@ -16,15 +16,34 @@
  */
 export const DEFAULT_DS_PORT = 8080;
 
+/**
+ * 本套对 ONLYOFFICE 安装结果的**唯一控制点**。
+ *
+ * 默认 `null` = 不该走到这条路(与从前一致:抛"本套不该走到 ONLYOFFICE 的提权安装")。
+ * 用例若要验 `toolInstall` 的**错误文案映射**(`onlyOfficeErrorText`),就 `setOnlyOfficeFailure`
+ * 塞一个 `localInstall` 真会抛的原始码/英文句,那段就把它当真错误重抛出去 —— 于是
+ * `installTool("onlyoffice")` 会走真实的 catch → 映射 → 抛出,判据钉在被翻出来的那句话上。
+ */
+let injectedFailure: string | null = null;
+
+/** 让下一次(以及之后直至清空)`installLocalDocumentServer` 抛这条原始错误。 */
+export function setOnlyOfficeFailure(raw: string | null): void {
+  injectedFailure = raw;
+}
+
 export function installLocalDocumentServer(): Promise<void> {
+  if (injectedFailure !== null) return Promise.reject(new Error(injectedFailure));
   return Promise.reject(new Error("本套不该走到 ONLYOFFICE 的提权安装"));
 }
 
-export function detectLocal(): Promise<never> {
+/** 「已经装过 → 只修配置」那条路。同样受 {@link setOnlyOfficeFailure} 控制。 */
+export function detectLocal(): Promise<{ installed: boolean; suggestedServerUrl?: string }> {
+  if (injectedFailure !== null) return Promise.resolve({ installed: true, suggestedServerUrl: "http://127.0.0.1:8080" });
   throw new Error("本套不该走到 ONLYOFFICE 检测");
 }
 
 export function configureLocalDocumentServer(): Promise<void> {
+  if (injectedFailure !== null) return Promise.reject(new Error(injectedFailure));
   return Promise.reject(new Error("本套不该走到 ONLYOFFICE 的提权配置"));
 }
 
