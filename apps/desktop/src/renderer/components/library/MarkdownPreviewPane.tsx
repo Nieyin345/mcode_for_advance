@@ -7,9 +7,11 @@ import "@milkdown/crepe/theme/frame.css";
 import { api } from "@renderer/lib/api.js";
 import { fileHrefToPath, isAbsolutePath } from "@renderer/lib/fileLink.js";
 import { dirname, resolveRelativePath } from "@renderer/lib/path.js";
+import { useI18n } from "@renderer/lib/i18n/index.js";
 import "./markdownPreview.css";
 
 export default function MarkdownPreviewPane({ markdown, filePath }: { markdown: string; filePath?: string }) {
+  const { t } = useI18n();
   const mount = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [failed, setFailed] = useState<string[]>([]);
@@ -72,8 +74,8 @@ export default function MarkdownPreviewPane({ markdown, filePath }: { markdown: 
     // local-file URL. Normal web links retain the app's existing navigation guard.
     if (link && !/^(https?:\/\/|mailto:|#)/i.test(link.getAttribute("href") ?? "")) event.preventDefault();
   }}>
-    {error && <div role="alert" className="p-3 text-xs text-red-500">Markdown 预览失败 / Preview failed: {error}</div>}
-    {failed.length > 0 && <div role="status" className="p-3 text-xs text-content-muted">部分图片无法读取（文件缺失或读取受限） / Some images could not be loaded: {failed.length}</div>}
+    {error && <div role="alert" className="p-3 text-xs text-red-500">{t("library.preview.crepeFailed", { error })}</div>}
+    {failed.length > 0 && <div role="status" className="p-3 text-xs text-content-muted">{t("library.preview.imagesFailed", { count: failed.length })}</div>}
     <div ref={mount} />
   </div>;
 }

@@ -97,6 +97,46 @@ await withAuditPage(dir,async page=>{
   assert.match(text,/pdf, docx/);
   assert.doesNotMatch(text,/pdf、docx/);
  });
+ await test('composer-chip-tooltips-follow-locale-not-hardcoded-english',async()=>{
+  // 输入框上思考级别 / 权限模式两颗 chip 的悬停说明此前是**硬编码英文**
+  // (`title="Reasoning effort for the next session"` / `"Permission mode for the
+  // next session"`),中文界面里冒纯英文。现在走 chat.effort.triggerTitle /
+  // chat.permission.triggerTitle。判据:标题必须跟着语言走。
+  const titles=async()=>page.eval("Array.from(document.querySelectorAll('[data-chip-fixture] [title]')).map(e=>e.title)");
+  await go('?view=chips');await page.waitFor("document.querySelectorAll('[data-chip-fixture] [title]').length===2");
+  const zh=await titles();
+  assert.deepEqual(zh,['下一个会话的思考级别','下一个会话的权限模式']);
+  await go('?view=chips&lang=en');await page.waitFor("document.querySelectorAll('[data-chip-fixture] [title]').length===2");
+  const en=await titles();
+  assert.deepEqual(en,['Reasoning effort for the next session','Permission mode for the next session']);
+  // 中文界面里**不许**再漏出那句英文原话。
+  assert.doesNotMatch(zh.join('|'),/Reasoning effort for the next session/);
+ });
+ await test('markdown-preview-banners-follow-locale-not-bilingual-hardcode',async()=>{
+  // 资料库 Markdown 预览的两条横幅此前是**硬编码中英双语**拼在一起
+  // (`"Markdown 预览失败 / Preview failed: …"` 与 `"部分图片无法读取（文件缺失或读取受限）
+  // / Some images could not be loaded: …"`),于是中文界面里一条红字里冒出半句英文。
+  // 现在走 library.preview.crepeFailed / library.preview.imagesFailed。
+  // 判据:每条横幅**只**出现当前语言那一句,不许再出现另一语言,也不许出现 " / " 拼装。
+  const statusText=async()=>page.eval("(document.querySelector('[data-md-preview] [role=status]')||{}).textContent||''");
+  await go('?view=mdpreview');await page.waitFor("document.querySelector('[data-md-preview] [role=status]')");
+  const zhStatus=await statusText();
+  assert.match(zhStatus,/部分图片无法读取/);
+  assert.doesNotMatch(zhStatus,/Some images could not be loaded|\/ Preview failed/);
+  await go('?view=mdpreview&lang=en');await page.waitFor("document.querySelector('[data-md-preview] [role=status]')");
+  const enStatus=await statusText();
+  assert.match(enStatus,/Some images could not be loaded/);
+  assert.doesNotMatch(enStatus,/部分图片无法读取/);
+ });
+ await test('markdown-preview-failure-banner-follows-locale',async()=>{
+  const alertText=async()=>page.eval("(document.querySelector('[data-md-preview] [role=alert]')||{}).textContent||''");
+  await go('?view=mdpreview&crepefail');await page.waitFor("document.querySelector('[data-md-preview] [role=alert]')");
+  const zhAlert=await alertText();
+  assert.match(zhAlert,/Markdown 预览失败/);assert.doesNotMatch(zhAlert,/Preview failed|Markdown 预览失败 \/ /);
+  await go('?view=mdpreview&crepefail&lang=en');await page.waitFor("document.querySelector('[data-md-preview] [role=alert]')");
+  const enAlert=await alertText();
+  assert.match(enAlert,/Preview failed/);assert.doesNotMatch(enAlert,/Markdown 预览失败/);
+ });
 });
 const failed=results.filter(r=>!r.ok).length;writeFileSync(join(dir,'results.json'),JSON.stringify({passed:results.length-failed,failed,checks:results},null,2));
 console.log(`${results.length-failed}/${results.length} memory injection UI checks passed; ${failed} failed`);if(failed)throw Error(`${failed} UI checks failed; artifacts: ${dir}`);

@@ -25,16 +25,16 @@ const stubs={
  '@renderer/stores/toastStore.js':'export const useToastStore={getState:()=>({push:()=>{}})};',
  '@renderer/lib/i18n/core.js':'export const translate=(_locale,key)=>key;',
  '@renderer/stores/fileViewStore.js':'export const useFileViewStore={getState:()=>({open:()=>{}})};',
- '@renderer/lib/icons.js':"export * from '@tabler/icons-react';",
+ '@renderer/lib/icons.js':"export { SiClaude, SiGoogle } from 'react-icons/si';export function OpenAIBrandIcon(){return null;}export * from '@tabler/icons-react';",
  '@renderer/lib/commands.js':'export const collectCommands=()=>[];export const commandMatches=()=>true;',
  '@renderer/lib/shortcuts.js':'export const resolveShortcut=()=>null;export const acceleratorToDisplayString=()=>"";',
  '@renderer/lib/providerIcon.js':'export const getProviderIcon=()=>null;',
  '@renderer/lib/useRgStatus.js':'export const useRgStatus=()=>({ready:true});',
- '@renderer/components/ui/index.js':['button','input','switch','card','error-note','spinner','confirm-dialog','select','info-hint'].map(n=>`export * from ${JSON.stringify(root+'/components/ui/'+n+'.tsx')};`).join('\n'),
+ '@renderer/components/ui/index.js':['button','input','switch','card','error-note','spinner','confirm-dialog','select','info-hint','tooltip'].map(n=>`export * from ${JSON.stringify(root+'/components/ui/'+n+'.tsx')};`).join('\n'),
  '@contracts/ipc':"export const TURN_BUDGET_SETTING_KEY='runtime.turnBudget',RUNTIME_FALLBACK_MODELS_SETTING_KEY='runtime.fallbackModels';",
 };
 const locales=['chat-composer','settings','layout','mobile','common','browser','ide','memory'];
-stubs['@renderer/lib/i18n/index.js']=locales.map((n,i)=>`import {zh as d${i}} from ${JSON.stringify(root+'/lib/i18n/zh/'+n+'.ts')};`).join('\n')+`const dict=Object.assign({},${locales.map((_,i)=>'d'+i).join(',')});const t=(key,params={})=>Object.entries(params).reduce((str,[k,v])=>str.replaceAll('{'+k+'}',String(v)),dict[key]??key);export const useI18n=()=>({t,locale:'zh'});`;
+stubs['@renderer/lib/i18n/index.js']=locales.map((n,i)=>`import {zh as d${i}} from ${JSON.stringify(root+'/lib/i18n/zh/'+n+'.ts')};`).join('\n')+`const dict=Object.assign({},${locales.map((_,i)=>'d'+i).join(',')});const t=(key,params={})=>{const base=(window.labI18nOverride&&Object.prototype.hasOwnProperty.call(window.labI18nOverride,key))?window.labI18nOverride[key]:(dict[key]??key);return Object.entries(params).reduce((str,[k,v])=>str.replaceAll('{'+k+'}',String(v)),base);};export const useI18n=()=>({t,locale:'zh'});`;
 const esbuild=await import(pathToFileURL(pkg('esbuild@','esbuild/lib/main.js')).href);
 await esbuild.build({entryPoints:[join(dir,'main.jsx')],bundle:true,platform:'browser',format:'iife',jsx:'automatic',nodePaths:deps?[deps]:[],absWorkingDir:desktop,define:{'process.env.NODE_ENV':'"production"'},outfile:join(dir,'bundle.js'),plugins:[{name:'mock-ipc-not-ui',setup(b){
  b.onResolve({filter:/.*/},a=>{if(a.path in stubs)return {path:a.path,namespace:'mock'};if(a.path==='./MobileFileViewer.js')return {path:'viewer',namespace:'mock'};if(a.path.startsWith('@renderer/')){let p=join(root,a.path.slice(10));if(!existsSync(p))p=p.replace(/\.js$/,existsSync(p.replace(/\.js$/,'.tsx'))?'.tsx':'.ts');return {path:p};}});

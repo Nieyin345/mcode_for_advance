@@ -1213,11 +1213,11 @@ function CodexProviderForm({
         </Field>
       </div>
 
-      <Field label="Base URL" hint={t("settings.customModels.codexResponsesNote")}>
+      <Field label={t("settings.customModels.baseUrlLabel")} hint={t("settings.customModels.codexResponsesNote")}>
         <Input value={form.baseUrl} onChange={(e) => update("baseUrl", e.target.value)} placeholder="https://api.deepseek.com/v1" />
       </Field>
 
-      <Field label="API Key" hint={t("settings.customModels.apiKeyHint")}>
+      <Field label={t("settings.customModels.apiKeyLabel")} hint={t("settings.customModels.apiKeyHint")}>
         <SecretInput
           value={form.apiKey}
           onChange={(v) => update("apiKey", v)}
@@ -1525,12 +1525,12 @@ function ClaudeProviderForm({
         </>
       ) : (
         <>
-          <Field label="Base URL">
+          <Field label={t("settings.customModels.baseUrlLabel")}>
             <Input value={form.baseUrl} onChange={(e) => update("baseUrl", e.target.value)} placeholder={isOpenAi ? "https://api.openai.com/v1" : "https://api.deepseek.com/anthropic"} />
           </Field>
 
           <div className="grid grid-cols-[1fr_120px] gap-2">
-            <Field label="Token / API Key">
+            <Field label={t("settings.customModels.authTokenLabel")}>
               <SecretInput
                 value={form.authToken}
                 onChange={(v) => update("authToken", v)}
@@ -1791,11 +1791,11 @@ function PiProviderForm({
         </Field>
       </div>
 
-      <Field label="Base URL">
+      <Field label={t("settings.customModels.baseUrlLabel")}>
         <Input value={form.baseUrl} onChange={(e) => update("baseUrl", e.target.value)} placeholder="https://api.deepseek.com" />
       </Field>
 
-      <Field label="API Key" hint={t("settings.customModels.apiKeyHint")}>
+      <Field label={t("settings.customModels.apiKeyLabel")} hint={t("settings.customModels.apiKeyHint")}>
         <SecretInput
           value={form.apiKey}
           onChange={(v) => update("apiKey", v)}

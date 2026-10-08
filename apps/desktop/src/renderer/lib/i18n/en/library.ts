@@ -263,6 +263,8 @@ export const en = {
   "library.collection.itemCount": "{n} entries",
 
   "library.preview.failed": "Could not read the Markdown",
+  "library.preview.crepeFailed": "Preview failed: {error}",
+  "library.preview.imagesFailed": "Some images could not be loaded (missing or restricted): {count}",
   "library.preview.retry": "Retry",
   "library.preview.more": "Showing {shown}/{total} sections — scroll for more",
   "library.preview.noMarkdown": "This paper has no Markdown yet — convert it first to preview.",

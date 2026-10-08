@@ -16,3 +16,28 @@ window.labApi.memory={manage:async()=>({projects:[]}),categories:async()=>['fact
 window.labDelayMemorySave=false;
 
 Object.assign(window.labState,{planApprovalDraftBySession:{},providers:[],customModels:[],piAvailableModels:[],providerId:'mock',model:'mock',customModelId:null});
+
+// ── 模型配置页(CustomModelsPanel)夹具 ──
+// 一家 Claude 端点 + 一家 Pi + 一家 Codex,好让三种表单(各有 Base URL / API Key /
+// Token / API Key 三个标签)都能被开出来。只需三张表单的静态标签,不需要真连通。
+window.labModels = {
+  claude: [{
+    id:'a', name:'Claude 端点', baseUrl:'https://api.deepseek.com/anthropic', authMode:'auth_token', protocol:'anthropic',
+    authTokenMasked:'sk-***ab12', models:[{id:'m1'}], disableNonEssentialTraffic:true, createdAt:1,
+  }],
+  pi: { deepseek: { name:'deepseek', baseUrl:'https://api.deepseek.com', api:'openai-completions', hasApiKey:true, models:[{id:'m1'}] } },
+  codex: [{ id:'cx', name:'Codex 端点', baseUrl:'https://api.deepseek.com/v1', hasApiKey:true, models:[{id:'m1'}] }],
+};
+window.labApi.publicMcp = { status: async () => ({ enabled:false, port:0, secret:'', sessionId:null, tunnelUrl:null, tunnelPhase:'stopped', tunnelError:null, sandboxRoot:null, sandboxProjectId:null, availableProjects:[], tunnelMode:'quick', tunnelHostname:'', mobileHostname:'', tokenHint:'', fixedPort:0, mobilePort:0, agentDelegate:false, projectLinks:[] }) };
+window.labApi.piModels = { list: async () => ({ providers: window.labModels.pi }), getApiKey: async () => ({ apiKey:'' }), save: async () => ({ providers: window.labModels.pi }), delete: async () => ({ providers: {} }) };
+window.labApi.codexModels = { list: async () => ({ providers: window.labModels.codex }), getApiKey: async () => ({ apiKey:'' }), save: async () => ({ providers: window.labModels.codex }), delete: async () => ({ providers: [] }) };
+window.labApi.customModel = { getToken: async () => ({ token:'' }), save: async () => ({ models: window.labModels.claude }), delete: async () => ({ models: [] }), test: async () => ({ ok:true }) };
+window.labState.customModels = window.labModels.claude;
+// 哨兵覆盖:`?sentinel=models` 时,把模型配置表单那三个标签键换成**醒目的替换文案** ——
+// 只要源码走的是 `t(...)`,界面就会显示替换值;硬编码则显示原文。因为 zh/en 两份值都是
+// 同样的专有名词("Base URL"),光切语言分辨不出"走了 key"还是"写死了字面量"。
+window.labI18nOverride = new URLSearchParams(location.search).get('sentinel')==='models' ? {
+  'settings.customModels.baseUrlLabel':'OVR::baseUrl',
+  'settings.customModels.apiKeyLabel':'OVR::apiKey',
+  'settings.customModels.authTokenLabel':'OVR::authToken',
+} : null;

@@ -64,6 +64,29 @@ await withAuditPage(here,async page=>{
   check('selecting global enables create',await page.eval(`!document.querySelector(${JSON.stringify(saveButton)})?.disabled`));
  });
  await test('divider-lifecycle',async()=>{await go('primitives');check('divider keyboard focusable',await page.eval('document.querySelector("[role=separator]").tabIndex===0'));await click('[role=separator]');await key('ArrowRight','ArrowRight',39);check('keyboard resizes divider',await page.eval('labEvents.some(x=>x.startsWith("resize:"))'));await page.eval('labEvents=[]');const r=await page.eval('(()=>{const r=document.querySelector("[role=separator]").getBoundingClientRect();return {x:r.x,y:r.y+40}})()');await page.send('Input.dispatchMouseEvent',{type:'mouseMoved',...r});await page.send('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',clickCount:1,...r});check('drag actually starts',await page.eval('document.body.style.userSelect==="none"'));await page.eval('labUnmount()');await page.sleep(50);await page.send('Input.dispatchMouseEvent',{type:'mouseMoved',button:'left',buttons:1,x:r.x+30,y:r.y});check('unmount releases drag',await page.eval('labEvents.length===0 && document.body.style.userSelect!=="none"'));await page.send('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',clickCount:1,x:r.x+30,y:r.y});});
+ // 模型配置表单里的三个字段标签此前是**裸字面量** `label="Base URL"` / `label="API Key"` /
+ // `label="Token / API Key"`,绕过了字典(同页其它标签都走 `t(...)`)。zh 与 en 两份值都是
+ // 同样的专有名词,所以**切语言分辨不出**"走了 key"还是"写死了字面量" —— 判据改立成
+ // **哨兵覆盖**:把这三个键在运行期换成醒目串,界面显示替换值 = 走了 `t`,显示原文 = 硬编码。
+ const labelsOf=()=>page.eval("[...document.querySelectorAll('label > span:first-child')].map(e=>e.textContent.trim()).filter(Boolean)");
+ await test('model-form-labels-route-through-i18n-keys',async()=>{
+  // Claude 端点表单(选左栏那家已存在的端点 → 右侧出表单):Base URL + Token / API Key。
+  await go('models&sentinel=models');
+  await click('aside nav button');
+  await page.waitFor("document.body.innerText.includes('OVR::baseUrl')");
+  const claude=await labelsOf();
+  check('claude form base URL label comes from its i18n key',claude.includes('OVR::baseUrl'));
+  check('claude form token label comes from its i18n key',claude.includes('OVR::authToken'));
+  check('claude form no raw hardcoded label leaks',!claude.includes('Base URL')&&!claude.includes('Token / API Key'));
+  // 切到 Codex 标签,开一家 Codex 端点:Base URL + API Key。
+  await page.eval(`(()=>{const b=[...document.querySelectorAll('button')].find(e=>e.textContent.trim().startsWith('Codex'));b&&b.click()})()`);
+  await page.waitFor("document.querySelector('aside nav button')");
+  await click('aside nav button');
+  await page.waitFor("document.body.innerText.includes('OVR::baseUrl')");
+  const codex=await labelsOf();
+  check('codex form base URL label comes from its i18n key',codex.includes('OVR::baseUrl'));
+  check('codex form API key label comes from its i18n key',codex.includes('OVR::apiKey'));
+ });
 });
 writeFileSync(join(here,'results.json'),JSON.stringify(results,null,2));
 if(results.some(x=>!x.ok))throw Error(`${results.filter(x=>!x.ok).length} UI interaction assertions failed; artifacts: ${here}`);

@@ -309,6 +309,8 @@ export const zh = {
 
   /* ── 原文预览 ── */
   "library.preview.failed": "读不出 Markdown 正文",
+  "library.preview.crepeFailed": "Markdown 预览失败：{error}",
+  "library.preview.imagesFailed": "部分图片无法读取（文件缺失或读取受限）：{count}",
   "library.preview.retry": "重试",
   "library.preview.more": "已显示 {shown}/{total} 段 —— 继续向下滚动会接着加载",
   "library.preview.noMarkdown": "这篇还没有 Markdown 转换产物，转换后才能预览。",

@@ -177,6 +177,7 @@ export const en = {
 
   // ── effort (thinking level) dropdown ──
   "chat.effort.section": "Thinking level",
+  "chat.effort.triggerTitle": "Reasoning effort for the next session",
   "chat.effort.hintDefault": "Let {provider} decide",
   "chat.effort.hintOff": "Thinking off",
   "chat.effort.hintMinimal": "Barely any thinking",
@@ -214,6 +215,7 @@ export const en = {
 
   // ── permission mode dropdown ──
   "chat.permission.section": "Permission level",
+  "chat.permission.triggerTitle": "Permission mode for the next session",
   "chat.permission.hintDefault": "Standard behavior; tools request approval per the rules",
   "chat.permission.hintCodexReadOnly": "Files in the current workspace can be read; approval is required to edit files or access the internet",
   "chat.permission.hintCodexDefault": "Files in the current workspace can be read and edited, and commands can run; approval is required to access the internet or edit files outside the workspace",

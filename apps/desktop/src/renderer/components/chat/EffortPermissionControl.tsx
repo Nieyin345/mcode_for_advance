@@ -306,7 +306,7 @@ export function EffortChip({
             : "composer-minipill-seg text-content-muted",
           open && stacked && "bg-surface-muted",
         )}
-        title="Reasoning effort for the next session"
+        title={t("chat.effort.triggerTitle")}
       >
         {stacked ? (
           <>
@@ -430,7 +430,7 @@ export function PermissionChip({
         // Pill segment: inline color so the semantic risk telegraph survives
         // (the segment's unlayered CSS color beats Tailwind classes).
         style={!stacked && permColorVar ? { color: `rgb(${permColorVar})` } : undefined}
-        title="Permission mode for the next session"
+        title={t("chat.permission.triggerTitle")}
       >
         {stacked ? (
           <>

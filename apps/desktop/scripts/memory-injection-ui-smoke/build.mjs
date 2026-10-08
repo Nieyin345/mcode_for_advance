@@ -27,6 +27,27 @@ const stubs = {
   '@renderer/hooks/useSuppressBrowserView.js': 'export const useSuppressBrowserView=()=>{};',
   '@renderer/stores/sessionStore.js': "import {useSyncExternalStore} from 'react';export const useSessionStore=fn=>fn(useSyncExternalStore(window.labSubscribe,()=>window.labState));useSessionStore.getState=()=>window.labState;useSessionStore.setState=fn=>window.labPatchState(typeof fn==='function'?fn(window.labState):fn);",
   '@renderer/stores/toastStore.js': 'export const useToastStore={getState:()=>({push:message=>window.labToasts.push(message)})};',
+  // Markdown 预览的真实 Crepe 太重(CSS + ProseMirror),这里换一个**最小替身**:
+  // 它只做两件事 —— 把 markdown 里的图片 URL 逐个喂给 proxyDomURL(于是「图片读不出」
+  // 那条横幅按真实路径触发),以及按开关让 create() 失败(触发「预览失败」那条)。
+  // 被断言的是**那两条横幅的文案走不走 i18n**,不是 Crepe 本身。
+  '@milkdown/crepe': `export class Crepe{
+    static Feature={Toolbar:'toolbar',TopBar:'topbar',BlockEdit:'blockedit',Placeholder:'placeholder',ImageBlock:'imageblock'};
+    constructor(opts){this.opts=opts;}
+    setReadonly(){}
+    destroy(){}
+    create(){
+      const cfg=this.opts.featureConfigs?.[Crepe.Feature.ImageBlock];
+      const md=this.opts.defaultValue??'';
+      const urls=[...md.matchAll(/!\\[[^\\]]*\\]\\(([^)\\s]+)/g)].map(m=>m[1]);
+      return (async()=>{
+        if(cfg?.proxyDomURL)for(const u of urls){try{await cfg.proxyDomURL(u);}catch{}}
+        if(window.labCrepeFail)throw Error('lab crepe failure');
+      })();
+    }
+  }`,
+  '@milkdown/crepe/theme/common/style.css': '',
+  '@milkdown/crepe/theme/frame.css': '',
   '@renderer/components/ui/index.js': ['button', 'dialog', 'empty-state', 'error-note', 'field', 'spinner', 'confirm-dialog', 'select', 'input', 'switch', 'tooltip', 'card', 'info-hint'].map(n => `export * from ${JSON.stringify(join(root, 'components/ui', n + '.tsx'))};`).join('\n'),
 };
 await esbuild.build({
@@ -42,7 +63,7 @@ const configPath = join(dir, 'tailwind.config.cjs');
 writeFileSync(configPath, readFileSync(join(desktop, 'tailwind.config.js'), 'utf8').replace('export default', 'module.exports =').replace('content: ["./src/renderer/**/*.{ts,tsx,html}"]', 'content: ' + JSON.stringify([root.replaceAll('\\', '/') + '/**/*.{ts,tsx,html}', join(source, 'main.jsx').replaceAll('\\', '/')])));
 const css = buildTailwindCached({ cliPath: pkg('tailwindcss@','tailwindcss/lib/cli.js'), configPath: configPath, inputCss: 'src/renderer/styles.css', outPath: join(dir,'app.css'), cwd: desktop });if (css.status !== undefined && css.status !== 0) throw Error('tailwind failed');
 
-const paths = ['src/renderer/components/chat/MemoryAssistantButton.tsx', 'src/renderer/components/chat/NewSubChatPicker.tsx', 'src/renderer/components/memory/MemoryExplorerPanel.tsx', 'src/renderer/components/settings/workflows/ParamField.tsx', 'src/renderer/hooks/useRpc.ts', 'scripts/ui-interaction-smoke/browser.mjs'];
+const paths = ['src/renderer/components/chat/MemoryAssistantButton.tsx', 'src/renderer/components/chat/NewSubChatPicker.tsx', 'src/renderer/components/chat/EffortPermissionControl.tsx', 'src/renderer/components/library/MarkdownPreviewPane.tsx', 'src/renderer/components/memory/MemoryExplorerPanel.tsx', 'src/renderer/components/settings/workflows/ParamField.tsx', 'src/renderer/hooks/useRpc.ts', 'scripts/ui-interaction-smoke/browser.mjs'];
 writeFileSync(join(dir, 'sources.json'), JSON.stringify(Object.fromEntries(paths.map(p => [p, createHash('sha256').update(readFileSync(join(desktop, p))).digest('hex')])), null, 2));
 writeFileSync(join(dir, 'index.html'), '<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>Isolated memory injection regression</title><link rel="stylesheet" href="/app.css"></head><body><div id="root"></div><script>' + readFileSync(join(source, 'mocks.js'), 'utf8') + '</script><script src="/bundle.js"></script></body></html>');
 await import(pathToFileURL(join(dir, 'verify.mjs')).href);

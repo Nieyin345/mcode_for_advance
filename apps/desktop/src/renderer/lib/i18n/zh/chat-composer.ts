@@ -188,6 +188,7 @@ export const zh = {
 
   // ── effort (thinking level) dropdown ──
   "chat.effort.section": "思考级别",
+  "chat.effort.triggerTitle": "下一个会话的思考级别",
   "chat.effort.hintDefault": "让 {provider} 自选",
   "chat.effort.hintOff": "关闭思考",
   "chat.effort.hintMinimal": "极少思考",
@@ -225,6 +226,7 @@ export const zh = {
 
   // ── permission mode dropdown ──
   "chat.permission.section": "权限级别",
+  "chat.permission.triggerTitle": "下一个会话的权限模式",
   "chat.permission.hintDefault": "标准行为,工具按规则触发审批",
   "chat.permission.hintCodexReadOnly": "仅可读取当前工作区文件;编辑文件或访问互联网需要审批",
   "chat.permission.hintCodexDefault": "可读写当前工作区文件并执行命令;访问互联网或修改工作区外文件需要审批",

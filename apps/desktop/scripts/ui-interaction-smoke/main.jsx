@@ -10,6 +10,7 @@ import {MobileFilesScreen} from '@renderer/components/mobile/MobileFilesScreen.j
 import {Button} from '@renderer/components/ui/button.js';
 import {Dialog} from '@renderer/components/ui/dialog.js';
 import {Divider} from '@renderer/components/layout/Divider.js';
+import {CustomModelsPanel} from '@renderer/components/settings/CustomModelsPanel.js';
 const mode=new URLSearchParams(location.search).get('case')||'approval';
 const theme=new URLSearchParams(location.search).get('theme')||'light';
 document.documentElement.className=theme==='light'?'':theme;
@@ -36,6 +37,7 @@ function App(){
   {mode.startsWith('mobile')&&<div style={{height:'calc(100vh - 40px)'}}><MobileFilesScreen/></div>}
   {mode==='primitives'&&<main className="p-6"><h1>共享组件</h1><Button variant="primary">保存</Button><Button variant="secondary">取消</Button><div className="flex h-40 mt-6"><div className="w-40">左侧</div>{shown&&<Divider orientation="vertical" onResize={d=>emit('resize: '+d)}/>}<div className="px-4">右侧</div></div><pre>{ev.join('\n')}</pre></main>}
   {mode==='dialog'&&<Dialog.Root open><Dialog.Portal><Dialog.Backdrop/><Dialog.Popup className="w-[360px] p-4"><Dialog.Title>设置示例</Dialog.Title><Dialog.Description>检查共享关闭按钮的可访问名称。</Dialog.Description><Dialog.Close/></Dialog.Popup></Dialog.Portal></Dialog.Root>}
+  {mode==='models'&&<div className="h-screen overflow-auto bg-surface text-content"><CustomModelsPanel/></div>}
  </div>
 }
 createRoot(document.getElementById('root')).render(<App/>);
