@@ -37,6 +37,14 @@ export interface DiffFileSection {
  *  skipped by consumers. */
 export function parseUnifiedDiff(diff: string): DiffFileSection[] {
   const lines = diff.split("\n");
+  // A unified diff is newline-terminated, so split() yields one extra "" at the
+  // end. Left in place it is consumed as an empty CONTEXT line and poisoned the
+  // last section's hunk: a file without a final newline no longer matched its
+  // new-side segment (reconstruction returned null) and a whole-file deletion
+  // reconstructed with a stray trailing blank line. Git never emits a bare
+  // empty context line (it prefixes context with a space), so dropping exactly
+  // the terminal artifact is safe.
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
   const sections: DiffFileSection[] = [];
   let cur: DiffFileSection | null = null;
   let hunk: { oldLines: string[]; newLines: string[] } | null = null;
@@ -53,9 +61,10 @@ export function parseUnifiedDiff(diff: string): DiffFileSection[] {
     }
     if (line.startsWith("--- ")) {
       const raw = line.slice(4).split("\t")[0].trim();
+      const fromDevNull = raw === "/dev/null";
       cur = {
         path: stripPrefix(raw),
-        created: raw === "/dev/null",
+        created: fromDevNull,
         deleted: false,
         hunks: [],
         adds: 0,
@@ -65,10 +74,17 @@ export function parseUnifiedDiff(diff: string): DiffFileSection[] {
     }
     if (line.startsWith("+++ ")) {
       const raw = line.slice(4).split("\t")[0].trim();
+      const toDevNull = raw === "/dev/null";
       if (!cur) {
         cur = { path: stripPrefix(raw), created: false, deleted: false, hunks: [], adds: 0, dels: 0 };
+      } else if (cur.created) {
+        // `--- /dev/null` marks a CREATED file: the real path lives on the
+        // +++ side. Without this the section kept path "/dev/null" and was
+        // dropped below — every created file silently vanished from the card
+        // and could not be rewound (unlink).
+        cur.path = stripPrefix(raw);
       }
-      cur.deleted = raw === "/dev/null";
+      cur.deleted = toDevNull;
       if (cur.path !== "/dev/null") sections.push(cur);
       continue;
     }

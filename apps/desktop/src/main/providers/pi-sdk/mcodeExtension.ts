@@ -58,6 +58,7 @@ import type { ProviderContext } from "@contracts/provider";
 import { normalizeToolFilePath } from "@main/lib/fileSnapshot.js";
 import { getFileSnapshot } from "@main/lib/fileSnapshotRegistry.js";
 import { normalizeBashCommand } from "@main/lib/msysPath.js";
+import { isInsideLibrary } from "@main/library/paths.js";
 import { guardBashCommand, resolveBashWriteTargets, expandTilde } from "./bashWriteGuard.js";
 import { shouldAutoApproveForPi } from "./piToolApproval.js";
 import {
@@ -115,6 +116,22 @@ export function guardToolPath(
 ): { denied: true; message: string } | { denied: false; path: string } {
   const norm = normalizeToolFilePath(cwd, expandTilde(rawPath));
   if (!norm) return { denied: false, path: rawPath };
+  // **资料库只读** —— 独立于项目边界的一条硬规则，bypass 也拦。与 Claude 的
+  // `canUseTool` 同一判据（复用 `library/paths.ts` 的 `isInsideLibrary`）。
+  //
+  // 为什么不能只靠下面那条"越出项目就拒"：那只是**恰好**成立 —— 库根默认在
+  // `<数据根>/library`，与用户项目目录不重叠，于是"写只能在项目内"顺带等于"库只读"。
+  // 可一旦库被搬进项目目录（或项目设在数据根下），那条规则就**静默失效**，而
+  // bypassPermissions 档下项目边界本就不拦 —— 两种情形下 Pi 都会悄悄改掉库文件。
+  // 用户明确要求"库的内容不能动"，所以它得是显式的一条，不是巧合的副产品。
+  if (isInsideLibrary(norm.absPath)) {
+    return {
+      denied: true,
+      message:
+        `拒绝:目标路径在**资料库**内(${norm.absPath})。资料库是只读的 —— ` +
+        `请先把它读到项目目录里(或复制过去),在项目里改。`,
+    };
+  }
   if (!norm.insideProject && strict) {
     return {
       denied: true,

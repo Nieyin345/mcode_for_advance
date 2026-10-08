@@ -216,8 +216,17 @@ export async function handleWebMessages(
   }
 
   // claude 侧断开（用户点了停止）→ 顺带把中断下发给扩展，让它点网页的停止按钮。
+  //
+  // ⚠️ 盯的是 **res** 的 close，不是 req 的。本函数跑起来时请求体已经被
+  // `bridgeServer.handleMessages` 读完（readJsonBody），而 IncomingMessage 的
+  // `close` 是**请求流结束**时触发、与响应侧断连无关 —— 挂在 req 上等于**永不触发**：
+  // 用户点停止后页面上那一轮照常在跑（连同它调出去的工具），扩展收不到 abort。
+  // 与 `bridgeServer` 里那条同义路径一致：res 的 close + writableEnded 守卫
+  // （正常收尾时 res 自己 end，close 紧随其后，那个守卫把这次排除掉）。
   const ac = new AbortController();
-  req.on("close", () => ac.abort());
+  res.once("close", () => {
+    if (!res.writableEnded) ac.abort();
+  });
 
   let produced = false;
   /** 失败原因。流式当场写进流里，非流式留到收尾时定 HTTP 状态。 */

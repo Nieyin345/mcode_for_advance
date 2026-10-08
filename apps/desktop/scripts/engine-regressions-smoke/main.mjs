@@ -16,6 +16,7 @@ import { PiMessageAdapter } from "../../src/main/providers/pi-sdk/PiMessageAdapt
 import { buildPiTokenSnapshot } from "../../src/main/providers/pi-sdk/piTokenUsage.ts";
 import { codexMcpDisableArgs, codexTurnAllowsMcpServer } from "../../src/main/providers/codex-sdk/codexTurnScope.ts";
 import { codexApprovalReply } from "../../src/main/providers/codex-sdk/codexApprovalReply.ts";
+import { parseUnifiedDiff, reverseApplySection } from "../../src/main/providers/codex-sdk/codexTurnDiff.ts";
 import { createProviderHealthProbe } from "../../src/main/providers/providerHealth.ts";
 import { createProviderHealthRequestGate } from "../../src/renderer/lib/providerHealthRequestGate.ts";
 
@@ -214,6 +215,82 @@ test("Pi per-turn USD budget reads the cost delta, not the session-cumulative co
   const noBaseline = buildPiTokenSnapshot(ctxUsage, stats, "openai/gpt-4o");
   assert.equal(noBaseline.turnCostUsd, undefined, "no baseline → omit; host falls back to cumulative");
   assert.equal(noBaseline.costUsd, 1.75);
+});
+
+test("Pi publishes a mid-turn token snapshot so the budget can stop a runaway turn", () => {
+  // Claude (path A — a snapshot per assistant response) and Codex (a snapshot
+  // per `thread/tokenUsage/updated`) both publish `token-usage.updated`
+  // MID-TURN. That mid-turn publish is exactly what RuntimeManager.enforceBudget
+  // reads to interrupt a turn that has blown `maxTotalTokens` / `maxUsd`. Pi
+  // only published at `agent_end` (turn end), so a runaway Pi turn could never
+  // be stopped until it was already over — the other two engines' budget guard
+  // with no Pi counterpart. The Pi SDK fires `turn_end` once per LLM+tool round
+  // (agent-loop: `emit({type:"turn_end", …})`), which is the mid-turn point.
+  const events = [];
+  let snapshots = 0;
+  const ctx = { emit: (event) => events.push(event), log: { info() {}, warn() {}, error() {} } };
+  const adapter = new PiMessageAdapter(
+    ctx,
+    "smoke-session",
+    () => {
+      snapshots += 1;
+      return {
+        usedTokens: 1000, totalProcessedTokens: 1000, turnProcessedTokens: 1000,
+        maxTokens: 200_000, outputTokens: 10, pct: 0.5, warning: "ok", warnings: [],
+      };
+    },
+    { async freeze() { return []; } },
+  );
+  adapter.dispatch({ type: "turn_end", message: { role: "assistant", stopReason: "toolUse" }, toolResults: [] });
+  const usage = events.filter((e) => e.type === "token-usage.updated");
+  assert.equal(usage.length, 1, `a mid-turn turn_end must publish token-usage.updated (got ${usage.length})`);
+  assert.equal(usage[0]?.snapshot?.turnProcessedTokens, 1000, "the snapshot carries the turn-relative value the budget reads");
+  assert.equal(snapshots, 1, "the snapshot provider is consulted mid-turn");
+  assert.equal(events.some((e) => e.type === "turn.done"), false, "a mid-turn publish must NOT end the turn");
+});
+
+test("Pi's write/edit guard enforces the library read-only rule like Claude's canUseTool", () => {
+  // Claude's canUseTool refuses a write into the 资料库 even under
+  // bypassPermissions ("独立于项目边界的一条硬规则，bypass 也拦" — the user's
+  // "库的内容不能动"). Pi's guardToolPath claims in its own comment to "mirror
+  // the Claude provider's canUseTool guard" but only implements the in-project
+  // boundary, which the library happens to sit outside of — so under bypass (or
+  // a library moved inside the project) Pi silently lets the model overwrite
+  // library files. This exercises the REAL guardToolPath via AST extraction with
+  // its module-scope deps injected (same pattern as codexBrowserToolNeedsApproval).
+  const path = resolve(here, "../../src/main/providers/pi-sdk/mcodeExtension.ts");
+  const source = readFileSync(path, "utf8");
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const decl = file.statements.find(
+    (n) => ts.isFunctionDeclaration(n) && n.name?.text === "guardToolPath",
+  );
+  assert.ok(decl, "guardToolPath must exist");
+  const js = ts.transpileModule(
+    `${decl.getText(file)} module.exports.guardToolPath = guardToolPath;`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } },
+  ).outputText;
+
+  const make = (absPath, insideProject) => {
+    const mod = { exports: {} };
+    new Function("normalizeToolFilePath", "expandTilde", "isInsideLibrary", "module", "exports", js)(
+      () => ({ absPath, insideProject }),
+      (p) => p,
+      (abs) => abs.startsWith("/lib"),
+      mod, mod.exports,
+    );
+    return mod.exports.guardToolPath;
+  };
+
+  // A write resolving into the library, under bypass (strict=false) — the
+  // in-project boundary would not catch it; the library rule must.
+  const lib = make("/lib/papers/x.md", false);
+  const res = lib("/proj", "papers/x.md", false);
+  assert.equal(res.denied, true, "a write inside the library is refused even under bypass");
+  assert.match(res.message, /资料库/, "the refusal names the library");
+
+  // Reverse control: an out-of-library path under bypass is still allowed.
+  const outside = make("/tmp/x.md", false);
+  assert.equal(outside("/proj", "../x.md", false).denied, false, "a non-library path is unaffected");
 });
 
 test("Codex pnpm fallback finds this platform's binary (not the macOS package)", async () => {
@@ -725,4 +802,90 @@ test("Codex browser tools gate side effects through the shared read-only set", (
   // Wiring: the dispatch consults the helper and can deny when no channel exists.
   assert.match(source, /codexBrowserToolNeedsApproval\(/, "invokeDynamicTool must call the policy");
   assert.match(source, /浏览器工具「\$\{name\}」需要用户批准,但审批通道不可用/);
+});
+
+test("Codex turn diff reconstructs a CREATED file (not silently dropped)", () => {
+  // A turn that creates a brand-new file must show up on the "本轮修改" card
+  // and be rewindable (unlink). The parser's `created` field is read by
+  // CodexFileSnapshot (kind: created, before "") and reverseApplySection
+  // (returns ""), but it was never written — the `--- /dev/null` branch built a
+  // section whose path stayed "/dev/null" and the `+++` branch then dropped it,
+  // so every created file vanished from the card and could not be undone.
+  const created = [
+    "diff --git a/new.txt b/new.txt",
+    "new file mode 100644",
+    "index 0000000..94954ab",
+    "--- /dev/null",
+    "+++ b/new.txt",
+    "@@ -0,0 +1,2 @@",
+    "+hello",
+    "+world",
+    "",
+  ].join("\n");
+  const sections = parseUnifiedDiff(created);
+  assert.equal(sections.length, 1, `created file section must survive parsing, got ${sections.length}`);
+  assert.equal(sections[0].path, "new.txt", "path must come from the +++ side when --- is /dev/null");
+  assert.equal(sections[0].created, true);
+  assert.equal(sections[0].deleted, false);
+  assert.equal(sections[0].adds, 2);
+  assert.equal(sections[0].dels, 0);
+  // Reverse-apply against the just-created content yields empty pre-turn
+  // content — what CodexFileSnapshot.freeze stores as `before` (kind created).
+  assert.equal(reverseApplySection("hello\nworld\n", sections[0]), "");
+});
+
+test("Codex turn diff reconstructs a modified file with no trailing newline", () => {
+  // Real git output (captured verbatim): the LAST section's hunk is followed by
+  // the diff string's own final newline, which split() turns into a trailing ""
+  // element. The parser treated that "" as a context line, so the new-side
+  // segment no longer matched a file that lacks a final newline and the whole
+  // path's reconstruction returned null (silently dropped from rewind).
+  const modified = [
+    "diff --git a/mod.txt b/mod.txt",
+    "index 1c943a9..36ef1ba 100644",
+    "--- a/mod.txt",
+    "+++ b/mod.txt",
+    "@@ -1,3 +1,3 @@",
+    " a",
+    "-b",
+    "+B",
+    " c",
+    "\\ No newline at end of file",
+    "",
+  ].join("\n");
+  const sections = parseUnifiedDiff(modified);
+  assert.equal(sections.length, 1);
+  assert.equal(reverseApplySection("a\nB\nc", sections[0]), "a\nb\nc", "pre-turn content restored exactly");
+});
+
+test("Codex turn diff still reconstructs a normal modified file and a deletion", () => {
+  // Controls: the common cases must keep working after the created/artifact fix.
+  const modified = [
+    "diff --git a/f.txt b/f.txt",
+    "--- a/f.txt",
+    "+++ b/f.txt",
+    "@@ -1,3 +1,3 @@",
+    " a",
+    "-b",
+    "+B",
+    " c",
+    "",
+  ].join("\n");
+  const [m] = parseUnifiedDiff(modified);
+  assert.equal(reverseApplySection("a\nB\nc\n", m), "a\nb\nc\n");
+
+  const deleted = [
+    "diff --git a/old.txt b/old.txt",
+    "deleted file mode 100644",
+    "--- a/old.txt",
+    "+++ /dev/null",
+    "@@ -1,2 +0,0 @@",
+    "-bye",
+    "-now",
+    "",
+  ].join("\n");
+  const [d] = parseUnifiedDiff(deleted);
+  assert.equal(d.deleted, true);
+  assert.equal(d.path, "old.txt");
+  assert.equal(reverseApplySection("", d), "bye\nnow\n");
 });

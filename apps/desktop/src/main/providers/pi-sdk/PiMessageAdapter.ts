@@ -34,15 +34,18 @@ import type { FileSnapshot } from "@main/lib/fileSnapshot.js";
 /**
  * Hook the provider installs so the adapter can ask for a token-usage snapshot
  * at the points where it makes sense to emit `token-usage.updated`:
+ *   - at `turn_end` (once per LLM+tool round — the MID-TURN read that lets the
+ *     host's turn budget see a runaway turn and stop it, matching Claude's
+ *     per-response path A and Codex's `thread/tokenUsage/updated`);
  *   - at `agent_end` (turn end — the authoritative post-turn read), where the
  *     SDK's messages list is finalized and `getContextUsage()` reflects the
  *     just-completed turn.
  *
- * The adapter fires this callback BEFORE emitting `turn.done`, so the runtime
- * sees `token-usage.updated` → `turn.done` in order — the latter consumes the
- * snapshot to append the per-turn usage-history record. Returning `undefined`
- * (e.g. right after compaction, when the SDK reports null tokens) skips the
- * emit cleanly.
+ * At `agent_end` the adapter fires this callback BEFORE emitting `turn.done`, so
+ * the runtime sees `token-usage.updated` → `turn.done` in order — the latter
+ * consumes the snapshot to append the per-turn usage-history record. Returning
+ * `undefined` (e.g. right after compaction, when the SDK reports null tokens)
+ * skips the emit cleanly.
  */
 export type PiTokenSnapshotProvider = () => ContextUsageEvent["snapshot"] | undefined;
 
@@ -239,6 +242,17 @@ export class PiMessageAdapter {
       case "agent_end":
         this.handleAgentEnd(event);
         break;
+      case "turn_end":
+        // **轮中用量快照** —— 让轮预算(`maxTotalTokens` / `maxUsd`)在跑飞的 Pi 回合里
+        // 能中途止损。RuntimeManager.enforceBudget 读的是**最近一次** `token-usage.updated`
+        // 快照;Claude 每次 assistant 响应发一次(path A),Codex 每条 `thread/tokenUsage/
+        // updated` 发一次,而 Pi 从前**只在 agent_end(轮末)发** —— 于是预算对 Pi 要到
+        // 回合已经结束才看得见,一个失控的 Pi 回合永远拦不住。`turn_end` 每个 LLM+tool
+        // 轮发一次(agent-loop 源码核实:`emit({type:"turn_end", …})`),正是那个轮中点。
+        //
+        // 只发快照,**不发 turn.done** —— 回合仍在进行,收尾由 agent_end 负责。
+        this.emitTurnEndSnapshot();
+        break;
       case "auto_retry_start":
         // Informational: the model hit a retryable transient error
         // (overloaded / rate-limit / 5xx) and the SDK will retry after
@@ -297,9 +311,10 @@ export class PiMessageAdapter {
         // the intended UX (a compaction visibly just happened).
         break;
       }
-      // turn_start / turn_end / agent_start / queue_update /
+      // turn_start / agent_start / agent_settled / queue_update /
       // session_info_changed / thinking_level_changed — not surfaced to the
       // renderer. Forward-compatible: unknown types are silently ignored.
+      // (`turn_end` is handled above: it publishes the mid-turn usage snapshot.)
       default:
         break;
     }
@@ -609,9 +624,10 @@ export class PiMessageAdapter {
     }
   }
 
-  /** Ask the provider for a turn-end token snapshot and emit
-   *  `token-usage.updated` when one is available. Called at `agent_end`, before
-   *  `turn.done`. A no-op when the provider returns `undefined` (no snapshot
+  /** Ask the provider for a token snapshot and emit `token-usage.updated` when
+   *  one is available. Called at `turn_end` (mid-turn — the host's budget reads
+   *  the latest snapshot to stop a runaway turn) and at `agent_end` (before
+   *  `turn.done`). A no-op when the provider returns `undefined` (no snapshot
    *  yet — e.g. right after compaction), so a missing snapshot never blocks
    *  turn completion. */
   private emitTurnEndSnapshot(): void {

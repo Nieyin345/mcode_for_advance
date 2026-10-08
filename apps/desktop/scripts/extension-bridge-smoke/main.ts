@@ -32,6 +32,7 @@ import {
 import { configureWebEnvProvider, handleWebMessages } from "@main/providers/bridge/webUpstream.js";
 import { webSiteById, webSiteDriven } from "@contracts/customModel";
 import type { AnthropicRequest, UpstreamConfig } from "@main/providers/bridge/types.js";
+import { EventEmitter } from "node:events";
 
 let passed = 0;
 const failures: string[] = [];
@@ -80,30 +81,50 @@ interface Frame {
   data: Record<string, unknown>;
 }
 
-/** 一个足够像 `node:http` 的收发对，用来直接调 `handleWebMessages` —— 那边只用到
- *  `req.on` 和 `res.writeHead/write/end`。 */
+/** 一个足够像 `node:http` 的收发对，用来直接调 `handleWebMessages`。
+ *
+ *  **故意的语义**:`res` 是真的 EventEmitter，`'close'` 的触发与 `writableEnded`
+ *  与真 `ServerResponse` 一致 —— 正常收尾时 `end()` 先把 `writableEnded` 置真再发
+ *  `'close'`；客户端断开时只发 `'close'`、`writableEnded` 仍是 false。`req` 同样是
+ *  真 EventEmitter，但**客户端断开时它不发任何事件** —— 请求体在 `handleWebMessages`
+ *  跑起来之前就已经读完，IncomingMessage 的 `'close'` 是请求流结束那一刻的事，跟
+ *  响应侧断连无关（这正是下面那条断连断言要钉住的语义）。 */
 function makeReqRes() {
   const chunks: string[] = [];
   const state = { status: 0, headers: {} as Record<string, string> };
-  const req = { on: () => undefined };
-  const res = {
-    writeHead(status: number, headers: Record<string, string>) {
-      state.status = status;
-      Object.assign(state.headers, headers);
-      return res;
-    },
-    write(chunk: string) {
-      chunks.push(chunk);
-      return true;
-    },
-    end(chunk?: string) {
-      if (chunk) chunks.push(chunk);
-      return res;
-    },
+  const req = new EventEmitter();
+  const res = new EventEmitter() as EventEmitter & {
+    writableEnded: boolean;
+    writeHead(status: number, headers: Record<string, string>): unknown;
+    write(chunk: string): boolean;
+    end(chunk?: string): unknown;
+  };
+  res.writableEnded = false;
+  res.writeHead = (status: number, headers: Record<string, string>) => {
+    state.status = status;
+    Object.assign(state.headers, headers);
+    return res;
+  };
+  res.write = (chunk: string) => {
+    chunks.push(chunk);
+    return true;
+  };
+  res.end = (chunk?: string) => {
+    if (chunk) chunks.push(chunk);
+    // Normal completion: the response finishes, THEN 'close' fires — with
+    // writableEnded already true (the guard must skip this one).
+    res.writableEnded = true;
+    res.emit("close");
+    return res;
+  };
+  /** The Claude binary dropped the /v1/messages connection (user hit stop). */
+  const disconnect = () => {
+    res.emit("close");
   };
   return {
     req: req as unknown as Parameters<typeof handleWebMessages>[0],
     res: res as unknown as Parameters<typeof handleWebMessages>[1],
+    disconnect,
     body: () => chunks.join(""),
     state,
   };
@@ -583,6 +604,63 @@ check(
     (err: Error) => err,
   )) instanceof Error,
 );
+
+/* ── a client disconnect on /v1/messages must reach the extension ── */
+
+// `handleWebMessages` tells the extension "the user hit stop" by aborting its own
+// controller when the Claude binary drops the SSE connection. It armed that on
+// `req.on("close")` — but by the time it runs, the request body has already been
+// read by `bridgeServer.handleMessages`, and `close` on an IncomingMessage fires
+// when its request stream ends, NOT when the response side disconnects. So the
+// abort never fired: stopping a web-model turn left the page generating (and its
+// tool calls running) with no `abort` sent down-channel. The sibling path in
+// bridgeServer.ts watches `res.once("close")` with a writableEnded guard.
+{
+  // Drain frames the previous cases left queued (an already-aborted signal emits
+  // its own `abort`) so the reads below see THIS turn's frames.
+  while (await ext.next(50)) { /* discard */ }
+  const disc = makeReqRes();
+  const discRun = handleWebMessages(
+    disc.req,
+    disc.res,
+    {
+      model: "deepseek-web",
+      max_tokens: 16,
+      stream: true,
+      messages: [{ role: "user", content: "用户中途点停止" }],
+    } as AnthropicRequest,
+    WEB_UPSTREAM,
+    null,
+  );
+  const discPrompt = await ext.next();
+  eq("the web turn reached the extension before the disconnect", discPrompt?.event, "prompt");
+  // The binary (user hit stop) drops the connection: the response closes while
+  // the request stream already ended long ago.
+  disc.disconnect();
+  const discAbort = await ext.next();
+  eq("★ a client disconnect aborts the extension turn", discAbort?.event, "abort");
+  eq("★ the abort names the turn", discAbort?.data.turnId, discPrompt?.data.turnId);
+  await withDeadline("disconnect turn", discRun);
+  // Control: a normal completion (res.end) must NOT be mistaken for a disconnect.
+  const ok = makeReqRes();
+  const okRun = handleWebMessages(
+    ok.req,
+    ok.res,
+    {
+      model: "deepseek-web",
+      max_tokens: 16,
+      stream: true,
+      messages: [{ role: "user", content: "正常跑完" }],
+    } as AnthropicRequest,
+    WEB_UPSTREAM,
+    null,
+  );
+  const okPrompt = await ext.next();
+  await postEvent(url, token, { type: "delta", turnId: okPrompt?.data.turnId, text: "好" });
+  await postEvent(url, token, { type: "done", turnId: okPrompt?.data.turnId });
+  eq("a normal web turn still completes", await withDeadline("normal web turn", okRun), undefined);
+  eq("a normal completion cannot send an abort", await ext.next(200), null);
+}
 
 const dropTurn = runPrompt({ sessionKey: "session-6", siteId: "deepseek", text: "扩展会掉线" });
 const dropTurnResult = dropTurn.then(() => null, (err: Error) => err);
