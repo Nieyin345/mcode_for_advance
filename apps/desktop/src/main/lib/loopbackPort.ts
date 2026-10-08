@@ -82,7 +82,7 @@ export async function listenOnDialablePort(
         cleanup();
         const addr = server.address() as AddressInfo | null;
         if (addr && typeof addr === "object") resolve(addr.port);
-        else reject(new Error("failed to bind loopback server"));
+        else reject(new Error("绑定 loopback 监听端口失败(拿不到端口号)"));
       };
       server.once("error", onError);
       try {
@@ -110,6 +110,6 @@ export async function listenOnDialablePort(
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
   throw new Error(
-    `failed to bind a dialable loopback port after ${MAX_ATTEMPTS} attempts (last was ${lastBlocked})`,
+    `试了 ${MAX_ATTEMPTS} 次都没能拿到一个可用的 loopback 端口(最后一次是 ${lastBlocked})—— 系统可能把这几百个端口都占了或被安全软件拦了`,
   );
 }

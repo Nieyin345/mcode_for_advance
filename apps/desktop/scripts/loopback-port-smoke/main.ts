@@ -150,6 +150,11 @@ function fakeServer(ports: number[]) {
 {
   // The error must name the last blocked port: without it the message is
   // "failed to bind" with no clue that the ports were the problem.
+  //
+  // ⚠️ 这句话会经 `BridgeRegistry.acquire → RuntimeManager` 包成
+  // `自定义模型翻译桥启动失败: …` 画给用户,所以它**必须是人话中文**,不能是英文原句
+  // (从前是 `failed to bind a dialable loopback port after 5 attempts (last was 6000)` ——
+  // 半中半英)。
   const srv = fakeServer([6667, 6668, 6669, 6697, 6000]);
   let message = "";
   try {
@@ -158,8 +163,9 @@ function fakeServer(ports: number[]) {
     message = (err as Error).message;
   }
   check("giving up: throws rather than hanging", message !== "");
-  check("giving up: names the attempt count", /after 5 attempts/.test(message), message);
-  check("giving up: names the last blocked port", /last was 6000/.test(message), message);
+  check("giving up: names the attempt count", /5/.test(message), message);
+  check("giving up: names the last blocked port", /6000/.test(message), message);
+  check("★ giving up: 说的是人话中文(不是英文原句)", /[一-鿿]/.test(message) && !/failed to bind/.test(message), message);
 }
 
 /* ───────────────────────────── report ───────────────────────────── */
