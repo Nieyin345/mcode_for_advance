@@ -62,6 +62,16 @@ const NODE_FOREVER = `node -e "setInterval(function(){},1000)"`;
  */
 const NODE_MIXED_ENCODING = `node -e "process.stdout.write('utf8-part-ok\\n');process.stdout.write(Buffer.from([195,252,193,238]));process.stdout.write('\\n')"`;
 
+/**
+ * 命令**只往 stderr 写、而且不写换行**。
+ *
+ * 这是"合并两条流"那条路上的一个真实缺口:`spawnRun` 把 stdout / stderr 并进**同一段**
+ * 「输出尾部」时,流式到达的行都进得去;但进程退出后**残留在缓冲里、没以换行结尾**的
+ * 那一小段,stdout 侧交了、stderr 侧被 `!mergeStreams` 那道守卫漏掉了 —— 于是一句
+ * `console.error("...")`(不带 `\n`)在命令节点里**看不见**。而它多半正是那句失败原因。
+ */
+const NODE_STDERR_NO_NEWLINE = `node -e "process.stderr.write('STDERR-TAIL-NO-NEWLINE')"`;
+
 /* ────────────────────────── 1. 真进程:等它跑完 ────────────────────────── */
 
 console.log("\n真进程 · 编码判定(UTF-8 与 GBK 混着来)");
@@ -79,7 +89,6 @@ console.log("\n真进程 · 编码判定(UTF-8 与 GBK 混着来)");
 }
 
 console.log("\n真进程 · 正常退出");
-
 {
   const out = await runCommandNode({ command: NODE_EXIT0, timeoutMs: 0, signal: controller().signal });
   eq("非零才算失败之外的情况都是 success", out.status, "success");
@@ -96,6 +105,15 @@ console.log("\n真进程 · 非零退出码不算这一步失败");
   eq("退出码原样进产出(分流是下游的事)", out.outputs?.["exitCode"], 3);
   // stderr 并进尾部 —— 报错的东西恰恰是"跑完了要看的东西"。
   check("stderr 也进了输出尾部", String(out.outputs?.["stdout"]).includes("boom-stderr"), out.outputs);
+}
+
+console.log("\n真进程 · stderr 末尾那段「没换行」的也要进尾部");
+
+{
+  // 合并两条流时,退出后**没以换行结尾**的残留段:stdout 侧交了、stderr 侧从前被漏掉。
+  // 一句 `console.error("...")` 不带 `\n` 是最常见的写法,而它多半正是失败原因。
+  const out = await runCommandNode({ command: NODE_STDERR_NO_NEWLINE, timeoutMs: 0, signal: controller().signal });
+  check("★ stderr 末尾无换行的那段也并进了输出尾部", String(out.outputs?.["stdout"]).includes("STDERR-TAIL-NO-NEWLINE"), out.outputs);
 }
 
 console.log("\n真进程 · 超长只留尾部");

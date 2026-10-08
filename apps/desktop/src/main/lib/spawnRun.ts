@@ -377,7 +377,15 @@ export async function spawnRun(options: SpawnRunOptions): Promise<SpawnRunResult
   // 残行(没有以换行结尾的最后一段)也要交出去 —— 一个只写了一句不带换行的脚本,
   // 输出全在这一段里。**不补换行**(它本来就没有)。
   if (outRest.length > 0) feed(outRest, options.onStdoutLine, out, false);
-  if (errRest.length > 0 && !mergeStreams) feed(errRest, options.onStderrLine, err, false);
+  // ⚠️ **合并模式下 stderr 的残行也要进同一个缓冲。** 从前这里写的是
+  // `if (errRest.length > 0 && !mergeStreams)`,于是合并时 stderr 末尾那段**没换行**的
+  // 输出被整个丢掉 —— 流式到达的行进得去、残留的尾巴进不去。而一句
+  // `console.error("...")`(不带 `\n`)恰恰是最常见的写法,在命令节点里就**看不见**,
+  // 偏偏它多半正是那句失败原因。合并模式该走 out(见上面 data 里那两支的同一取舍)。
+  if (errRest.length > 0) {
+    if (mergeStreams) feed(errRest, options.onStderrLine ?? options.onStdoutLine, out, false);
+    else feed(errRest, options.onStderrLine, err, false);
+  }
 
   return {
     code: exit.code,
