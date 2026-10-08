@@ -32,8 +32,8 @@ MUTATIONS = [
     ),
     (
         "M2 门4 复活:要求那一步必须是 failed 的",
-        "  const outcome = snapshot.state.outcomes.find(([id]) => id === nodeId)?.[1];\n  if (outcome === undefined) return null;",
-        '  const outcome = snapshot.state.outcomes.find(([id]) => id === nodeId)?.[1];\n  if (outcome?.status !== "failed") return null;',
+        '  const outcome = snapshot.state.outcomes.find(([id]) => id === nodeId)?.[1];\n  const interruptedStep = row.status === "interrupted" &&\n    (snapshot.inFlightNodeIds?.includes(nodeId) === true || snapshot.state.awaiting.includes(nodeId));\n  if (outcome === undefined && !interruptedStep) return null;',
+        '  const outcome = snapshot.state.outcomes.find(([id]) => id === nodeId)?.[1];\n  const interruptedStep = row.status === "interrupted" &&\n    (snapshot.inFlightNodeIds?.includes(nodeId) === true || snapshot.state.awaiting.includes(nodeId));\n  if (outcome?.status !== "failed") return null;',
     ),
     (
         "M3 结局不交出来(调用方分不清两种重跑)",
