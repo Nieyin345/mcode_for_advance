@@ -45,5 +45,10 @@ try {
   check("copy with traversal suffix still succeeds (sanitized)", copyRes.ok, true);
   check("copy landed inside the project root", existsSync(join(root, "s escape.txt")), true);
   check("traversal suffix did not write outside the root", existsSync(join(base, "escape.txt")), false);
-  console.log("maint-p1-path-smoke: 14/14 passed");
+  // 剪贴板粘贴目录**只有一个出口**(`pasteTempDir()`):写(通过 clipboard:saveFile)与
+  // 读放行(isPasteTempPath 守卫)必须指向同一个目录。从前两处各写一份字面量,改名漏一处
+  // 就"写进 A、放行的却是 B",粘贴的图片在编辑器里打不开。这条盯住它别再分家。
+  const filesSrc = readFileSync(join(process.cwd(), "src/main/ipc/files.ts"), "utf8");
+  check("粘贴目录名只有一份字面量(读/写共用 pasteTempDir)", (filesSrc.match(/"mcode-pastes"/g) ?? []).length, 1);
+  console.log("maint-p1-path-smoke: 15/15 passed");
 } finally { rmSync(base, { recursive: true, force: true }); }

@@ -71,14 +71,20 @@ import { cachedTreeFiles, sortDirents, SEARCH_MAX_DEPTH, SEARCH_MAX_VISIT } from
  * `{ ok: false }`(编辑器"存不下去"、重命名没反应),只有主进程日志里留一句
  * "escapes root"。红灯见 scripts/maint-m07-smoke。 */
 
+/** 剪贴板粘贴的临时目录 —— **只有一个出口**。写(下面 `clipboard:saveFile`)与
+ *  读放行(`isPasteTempPath` 的守卫)必须指向同一个目录:从前两处各写一份字面量,
+ *  改名漏一处,就会"粘进来的文件写进 A、放行的却是 B",编辑器预览粘贴图片直接打不开。 */
+function pasteTempDir(): string {
+  return join(app.getPath("temp"), "mcode-pastes");
+}
+
 /** True if `abs` sits inside the clipboard-paste temp dir (see the
  *  `clipboard:saveFile` handler). Files there were written by THIS app from
  *  user pastes (images/files copied into the composer), so reads are allowed
  *  even though the dir sits outside every project root — the IDE editor needs
  *  it to open/preview pasted files. Writes stay guarded as before. */
 function isPasteTempPath(abs: string): boolean {
-  const dir = join(app.getPath("temp"), "mcode-pastes");
-  return pathWithin(dir, abs);
+  return pathWithin(pasteTempDir(), abs);
 }
 
 /** Directory/file names hidden from the file tree. These are build artifacts
@@ -903,7 +909,7 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
       // the temp path stays a single flat file; keep the extension.
       const cleanName =
         basename(input.name).replace(/[\\/:*?"<>|\x00-\x1f]/g, "_") || "paste.bin";
-      const dir = join(app.getPath("temp"), "mcode-pastes");
+      const dir = pasteTempDir();
       await mkdir(dir, { recursive: true });
       const target = join(
         dir,
