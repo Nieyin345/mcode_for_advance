@@ -34,8 +34,12 @@ export interface NoteImportSummary {
   errors: Array<{ path: string; error: string }>;
 }
 
-/** 认得的笔记扩展名。`.markdown` 少见但确实是合法的。 */
-const NOTE_EXTS = new Set([".md", ".markdown", ".mdown", ".txt"]);
+/** 认得的笔记扩展名。`.markdown` 少见但确实是合法的。
+ *
+ * **只有这一份** —— 分派器(`importDispatch.ts`)按它决定一个文件走不走笔记管线,
+ * 导入器(`importNoteFiles`)按它决定收不收;两份字面量迟早漂移(从前就是两份,
+ * 分派器那份的注释已经漏写了 `.mdown`)。谁要认新扩展名,改这里。 */
+export const NOTE_EXTS = new Set([".md", ".markdown", ".mdown", ".txt"]);
 
 /**
  * 从正文里取标题:第一个 `# 一级标题`;没有就用第一行有内容的文字(截断)。

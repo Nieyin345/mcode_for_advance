@@ -94,6 +94,24 @@ const bothWays = importGenericFiles({ paths: [linkedSrc], mode: "attached" });
 eq("同源文件另存一份 attached", bothWays.added, 1);
 check("而且是一条新条目", bothWays.items[0]?.id !== linkedItem?.id, bothWays.items[0]?.id);
 
+// **标题去掉扩展名的口径只有一份** —— PDF(`pdfImport`)/ 笔记(`notesImport`)两条
+// 管线用的是 `basename(p, extname(p))`,通用导入从前自作一份正则
+// (`basename(p).replace(/\.[^.]+$/, "")`)。两者对**点文件**给出不同结果:正则把
+// `.env` 整串吃掉 → 标题**空串**(界面上就是一行没名字的记录),而 `extname(".env")`
+// 是空串、`basename` 原样保留 `.env`。通用文件导入这条路正是拖任意文件进来的口子,
+// 点文件完全够得到,所以这一档必须和另两条管线对齐。
+const dotfile = join(SRC, ".gitignore");
+writeFileSync(dotfile, "node_modules\n", "utf8");
+const dotItem = importGenericFiles({ paths: [dotfile], mode: "linked" });
+eq("点文件也能导入", dotItem.added, 1);
+eq("★ 点文件的标题不空、原样保留(.env/.gitignore 这类)", dotItem.items[0]?.title, ".gitignore");
+
+// 普通文件仍按老口径去掉扩展名(收紧不能把这档弄坏)。
+const plainDoc = join(SRC, "毕设答辩.pptx");
+writeFileSync(plainDoc, "x", "utf8");
+const plainItem = importGenericFiles({ paths: [plainDoc], mode: "linked" });
+eq("★ 普通文件仍去掉扩展名", plainItem.items[0]?.title, "毕设答辩");
+
 // 一次导入**同一个文件两遍**:只该进去一条。去重表是在这一趟开始时拍的快照
 // (所以不能用数据库查),同一批里重复的路径必须靠它挡掉。
 const twiceSrc = join(SRC, "同一批里出现两次.md");
@@ -231,14 +249,14 @@ const emitted = importedIds();
 check("attached 那条发了", emitted.includes(attachedItem.id), { emitted, want: attachedItem.id });
 check("linked 那条发了", emitted.includes(linkedItem!.id), { emitted, want: linkedItem!.id });
 check("目录条目也发了", emitted.includes(dirItem.id), { emitted, want: dirItem.id });
-// 一次导入一条,不多不少:**八条**进过库(linked 的文件、那个目录、linked 同源另存的
+// 一次导入一条,不多不少:**十条**进过库(linked 的文件、那个目录、linked 同源另存的
 // attached 副本、同一批里那第二条路径首次入库、attached 的 md、那个不认识的扩展名、
-// 上面那条 attached 重复导入(它确实又进了一条,那是这个落法的形态代价)、以及
-// attached 同一批里的第二条路径首次入库)。上面被跳过的那三次(重复导入、同一批里的
-// 第二次、同源另存之后再按 attached 存一次)以及那个不存在的路径都**不该**发 ——
-// 计数正好把这一点也钉住(数目对不上就是"跳过/失败也发了",那种假信号会让自动化
-// 对着一条根本没进库的东西跑起来)。
-eq("一次导入一条,不多不少", emitted.length, 8);
+// 上面那条 attached 重复导入(它确实又进了一条,那是这个落法的形态代价)、
+// attached 同一批里的第二条路径首次入库、点文件那一份、以及普通文件那一份)。上面被
+// 跳过的那三次(重复导入、同一批里的第二次、同源另存之后再按 attached 存一次)以及
+// 那个不存在的路径都**不该**发 —— 计数正好把这一点也钉住(数目对不上就是"跳过/失败
+// 也发了",那种假信号会让自动化对着一条根本没进库的东西跑起来)。
+eq("一次导入一条,不多不少", emitted.length, 10);
 
 // 而 attached 那条**真的复制了一份进库** —— 去重若按来源路径判,这里会被当成
 // "已经导过"而跳过,文件就不会出现在库里(条目还在,点开是空的)。
@@ -286,6 +304,28 @@ console.log("\n通用导入 · 选定分类要生效(文件/文件夹/已存在�
   const exploded = await importAnyFiles([batch], { mode: "explode", collectionIds: [first] });
   eq("★ 批量导入同时保留文件与子目录", exploded.added, 2);
   check("第一层子目录作为 linked 条目", exploded.items.some((i) => i.filePath === child && i.entryMode === "linked"), exploded.items);
+
+  // ★ **笔记扩展名只有一份判据**(`notesImport.NOTE_EXTS`)。从前分派器
+  // (`importDispatch.ts`)自己抄了一份字面量,和导入器那份是两份 —— 那种"同一规则
+  // 两处实现"迟早漂移。挑 `.mdown`(辨识集里最容易被漏写的一个)验证分派器认它、
+  // 走笔记管线(条目带 md_path),而不是掉进通用文件管线。
+  const mdown = join(SRC, "一份笔记.mdown");
+  writeFileSync(mdown, "# 笔记标题\n\n正文", "utf8");
+  const mdownRes = await importAnyFiles([mdown], { collectionIds: [first] });
+  check("★ .mdown 走笔记管线(条目带 md_path,不是通用文件)", mdownRes.items[0]?.mdPath !== undefined, mdownRes.items[0]);
+  check("★ .mdown 归到了所选分类", CollectionRepo.collectionsOfItem(mdownRes.items[0]!.id).includes(first));
+
+  // ★ 分派器的扩展名判据必须走**共享的** `extOf`(即 `extname`),不能内联
+  // `lastIndexOf(".")`。后者对**点文件**`.md`(整个文件名就是一个扩展名)切出 `.md`,
+  // 于是把该走通用管线的点文件塞进笔记管线;而笔记导入器用 `extname` 判(`.md` 的
+  // extname 是空串 → 不在 NOTE_EXTS),判成"不是 Markdown 文件"直接报错 —— 分派与导入
+  // 各说各话,这个文件**永远进不来**还白报一次错。修好后它按普通文件收进库。
+  const dotMd = join(SRC, ".md");
+  writeFileSync(dotMd, "是被点文件,不是笔记", "utf8");
+  const dotMdRes = await importAnyFiles([dotMd]);
+  eq("★ 名叫 .md 的点文件不被笔记管线误收", dotMdRes.errors.length, 0);
+  eq("★ 它作为通用文件进了库", dotMdRes.added, 1);
+  check("★ 而且没有 md_path(走的不是笔记管线)", dotMdRes.items[0]?.mdPath === undefined, dotMdRes.items[0]);
 }
 
 /* ──────────────── 6. 一条都读不到的东西 ──────────────── */

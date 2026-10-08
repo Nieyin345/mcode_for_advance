@@ -35,9 +35,17 @@ function filesDir(): string {
   return dir;
 }
 
-/** 一个路径的显示标题:文件名 / 目录名,去掉扩展名(ppt 模版 →「毕设答辩」不带走 .pptx)。 */
+/** 一个路径的显示标题:文件名 / 目录名,去掉扩展名(ppt 模版 →「毕设答辩」不带走 .pptx)。
+ *
+ * 用 `basename(p, extname(p))`,**与 PDF(`pdfImport.ts`)/ 笔记(`notesImport.ts`)
+ * 两条管线的口径是同一条规则** —— 独立导入的三个入口给同一个文件起名时不该有两种结果。
+ *
+ * ⚠️ 从前这里写的是 `basename(p).replace(/\.[^.]+$/, "")`。对**点文件**(`.env` /
+ * `.gitignore`)那个正则会把整名吃掉(`.env` 整串匹配 `\.[^.]+$`),标题变成**空串**
+ * —— 界面上就是一行没有名字的记录。`basename(p, extname(p))` 对点文件原样保留
+ * (`.env` 的 `extname` 是空串),对普通文件则和正则一样去掉扩展名。 */
 function titleFor(p: string): string {
-  return basename(p).replace(/\.[^.]+$/, "");
+  return basename(p, extname(p));
 }
 
 /** 一批文件/目录导入为通用条目。

@@ -3,7 +3,7 @@
  *
  * 三条管线，判据是**文件是什么**而不是"它属于哪个库"：
  *   - `.pdf`                    → 文献管线（文件校验 + 入库，不抽取学术元数据或转录）
- *   - `.md` / `.markdown` / `.txt` → 笔记管线（入库即完成）
+ *   - `.md` / `.markdown` / `.mdown` / `.txt` → 笔记管线（判据是 `notesImport.NOTE_EXTS`,一份)
  *   - 其余                       → 通用文件管线（attached 收库）
  *
  * 两种目录模式（schema 的 `mode`）：
@@ -13,10 +13,8 @@
  */
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { importPdfFiles } from "./pdfImport.js";
-import { importNoteFiles } from "./notesImport.js";
-import { importGenericFiles } from "./fileImport.js";
-
-const NOTE_EXTS = new Set([".md", ".markdown", ".mdown", ".txt"]);
+import { importNoteFiles, NOTE_EXTS } from "./notesImport.js";
+import { extOf, importGenericFiles } from "./fileImport.js";
 
 export interface ImportMode {
   mode?: "files" | "folder" | "explode";
@@ -70,8 +68,12 @@ export async function importAnyFiles(paths: string[], opts: ImportMode = {}): Pr
         generic.push({ path: p, isDir: true });
         continue;
       }
-      const dot = p.lastIndexOf(".");
-      const ext = dot >= 0 ? p.slice(dot).toLowerCase() : "";
+      // 扩展名判据走**共享的** `extOf`(`fileImport.ts`),不要在这里内联
+      // `lastIndexOf(".")` —— 后者对**点文件**(`.md`)切出 `.md`,比 `extname` 多认
+      // 一档,于是把一个本来该走通用管线的点文件塞进笔记管线,而笔记导入器那边用
+      // `extname` 判、判成"不是 Markdown 文件" —— 分派与导入各说各话,文件永远进不来
+      // 还白报一次错。同一规则只能有一份。
+      const ext = extOf(p);
       if (ext === ".pdf") pdfs.push(p);
       else if (NOTE_EXTS.has(ext)) notes.push(p);
       else generic.push({ path: p, isDir: false });
