@@ -289,7 +289,12 @@ function haltedOf(runs: Record<string, LiveRun>): WorkflowLiveSnapshot["halted"]
 }
 
 function recompute(runs: Record<string, LiveRun>): WorkflowLiveSnapshot {
-  return { runs, halted: haltedOf(runs) };
+  // 封顶在这一层做,**每一条事件都走** —— 从前只在 `result` 那一支调 `prune`,于是
+  // 一次运行**要是没收到过 `result`**(成功的分支节点只走 `node.parked`、不发结果事件;
+  // 一直「等人」被弃掉的分支也没有结果),它那份现场就永远留在这儿,`MAX_RUNS` 形同虚设
+  // —— 一次会话翻下来就是只增不减。收口在唯一的汇总点,四种事件一视同仁。
+  const kept = prune(runs);
+  return { runs: kept, halted: haltedOf(kept) };
 }
 
 /** 只留最近 `MAX_RUNS` 次运行的现场(按最后动静的时刻)。 */
@@ -343,24 +348,22 @@ function apply(e: RuntimeEvent): void {
     case "workflow.node.result":
       emit(
         recompute(
-          prune(
-            patchNode(runs, e.sessionId, e.runId, e.workflowId ?? runs[e.runId]?.workflowId ?? "", e.nodeId, {
-              nodeType: e.nodeType,
-              title: e.title,
-              phase: "settled",
-              status: e.status,
-              summary: e.summary,
-              ...(e.error ? { error: e.error } : {}),
-              endedAt: Date.now(),
-              ...(e.nodeSessionId !== undefined ? { nodeSessionId: e.nodeSessionId } : {}),
-              // 过程快照跟着结果事件一起到(见 `sessionStore` 与 `@contracts/runtime`
-              // 的 `WorkflowNodeResultEvent.transcript`)—— 看板拿它当 `nodeSessionId`
-              // 查不到时的退路。
-              ...(e.transcript !== undefined && e.transcript.length > 0
-                ? { nodeTranscript: e.transcript }
-                : {}),
-            }),
-          ),
+          patchNode(runs, e.sessionId, e.runId, e.workflowId ?? runs[e.runId]?.workflowId ?? "", e.nodeId, {
+            nodeType: e.nodeType,
+            title: e.title,
+            phase: "settled",
+            status: e.status,
+            summary: e.summary,
+            ...(e.error ? { error: e.error } : {}),
+            endedAt: Date.now(),
+            ...(e.nodeSessionId !== undefined ? { nodeSessionId: e.nodeSessionId } : {}),
+            // 过程快照跟着结果事件一起到(见 `sessionStore` 与 `@contracts/runtime`
+            // 的 `WorkflowNodeResultEvent.transcript`)—— 看板拿它当 `nodeSessionId`
+            // 查不到时的退路。
+            ...(e.transcript !== undefined && e.transcript.length > 0
+              ? { nodeTranscript: e.transcript }
+              : {}),
+          }),
         ),
       );
       return;

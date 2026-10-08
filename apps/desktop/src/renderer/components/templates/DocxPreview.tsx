@@ -71,6 +71,33 @@
  * ⚠️ 2026-09-16 之后那 30px 内边距**被我们抹成 0 了**(用户要"纸贴着面板边")。公式
  * 里照样减一次 padding,是因为它得**对库改版免疫** —— 哪天它把内边距换个值、或者又从
  * 别处加回来,量到的就是新的真值,不用再改一遍代码。
+ *
+ * ## 2026-10-09 修的那个 bug:内嵌图片 / 字体**每次都在漏 blob URL**
+ *
+ * 这个库把 Word 里的内嵌图片和字体各转成一个 `blob:` URL 塞进 `<img>` / `@font-face`
+ * (dist 里的 `HtmlRenderer.blobToURL`):
+ *
+ * ```js
+ * if (this._options.useBase64URL) return blobToBase64(blob);
+ * return URL.createObjectURL(blob);   // ← 默认走这支
+ * ```
+ *
+ * `defaultOptions.useBase64URL = false`,而**整个 dist 里 `revokeObjectURL` 一次都没出现**。
+ * 也就是说:每遇到一张内嵌图 / 一个内嵌字体,它 `createObjectURL` 一份,**从不撤销**,
+ * 而且**不把那串 URL 还给我们** —— 组件想自己 `revoke` 也没有对象。下面 `fit()` 之外
+ * 那段清理只 `host.innerHTML = ""`,摘掉的是 DOM,**摘不掉浏览器里那份 blob URL 登记表**。
+ * 于是一份带图的稿子 = N 个永久占用的 Blob,来回翻着看会一直涨。
+ *
+ * 同目录的 `XlsxPreview.tsx` 把**同一个库行为**当缺陷处理(它自己建 blob URL、解析完
+ * 立刻 `revokeObjectURL`)。Word 这一条当时没接上。
+ *
+ * 修法只有一根杆:**传 `useBase64URL: true`** —— 图片 / 字体转成 `data:` 内联,
+ * 压根不创建 blob URL,也就无所谓撤销。CSP 本来就是放行的(`main/lib/desktopCsp.ts`
+ * 的 `img-src … data:` 与 `font-src … data:`),所以不引入任何新的安全面。
+ *
+ * 为什么不能"组件自己 revoke":库不交出 URL,组件手里只有渲染后的 DOM —— 遍历
+ * `<img src="blob:…">` 去撤销是脆的(字体那条在 `<style>` 里,且库改版就断)。
+ * 关掉它创建 blob 的那条路,才是不依赖库内部结构的修法。
  */
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -187,6 +214,12 @@ export function DocxPreview({
           // 页边距 / 页面尺寸要真的按文档里写的来 —— 见文件头第 2 条。
           ignoreWidth: false,
           ignoreHeight: false,
+          // ⚠️ **内嵌图片 / 字体走 `data:` 内联,不创建 blob URL**(见文件头
+          // 「2026-10-09 修的那个 bug」):库默认用 `URL.createObjectURL` 且**从不
+          // revoke**,而它不把那串 URL 交出来,组件无从销毁 —— 每看一份带图的稿子
+          // 就漏一批永不释放的 Blob。CSP 已允许 `img-src data:` / `font-src data:`
+          // (见 `main/lib/desktopCsp.ts`),所以内联是安全且彻底的一条。
+          useBase64URL: true,
         });
         if (cancelled) return;
         // 先记下当前的宽再排:不然下面 `fit()` 里那次 `clientWidth` 读到的会是
