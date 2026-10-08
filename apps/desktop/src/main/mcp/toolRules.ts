@@ -41,6 +41,7 @@
  * 底下是同一份清单。
  */
 import type { PermissionMode } from "@contracts/runtime";
+import { MCP_RESERVED_NAME } from "@contracts/ipc/mcp.js";
 import {
   AGENT_EDIT_TOOLS,
   AGENT_MCP_SERVER,
@@ -60,7 +61,10 @@ export const FILE_EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookE
  *
  *  浏览器 server 本身建在那个 provider 里(它的工具要用到 cwd / turnNumber 那些
  *  每轮才有的东西),但**它的名字**得在这儿:闸门要用它去认前缀。 */
-export const BROWSER_MCP_SERVER = "mcode-browser";
+/** 浏览器内置 server 的名字。与契约里的 `MCP_RESERVED_NAME`(用户**不许**占用它的
+ *  那道闸门)是**同一个事实** —— 从前两处各写一份字面量,改名时漏一处就:闸门拦的和
+ *  实际注册的不是同一个名字。现在两边共用契约里那一份。 */
+export const BROWSER_MCP_SERVER = MCP_RESERVED_NAME;
 export const BROWSER_MCP_PREFIX = `mcp__${BROWSER_MCP_SERVER}__`;
 
 /** Read-only browser tools (can't mutate the page, navigate, or submit) —

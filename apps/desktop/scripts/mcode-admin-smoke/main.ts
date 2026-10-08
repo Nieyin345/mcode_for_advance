@@ -59,8 +59,8 @@ import {
   MEMORY_MCP_SERVER,
   MEMORY_READONLY_TOOLS,
 } from "@main/mcp/memoryServer.js";
-import { isReadOnlyToolName, shouldAutoApprove } from "@main/mcp/toolRules.js";
-import { MCP_ALWAYS_ON_SERVERS, MCP_MEMORY_SERVER } from "@contracts/ipc";
+import { isReadOnlyToolName, shouldAutoApprove, BROWSER_MCP_SERVER } from "@main/mcp/toolRules.js";
+import { MCP_ALWAYS_ON_SERVERS, MCP_MEMORY_SERVER, MCP_RESERVED_NAME } from "@contracts/ipc";
 import { __resetWorkflowRepo, WorkflowRepo } from "./stubs/repositories.js";
 import { __takeBroadcasts } from "./stubs/broadcast.js";
 import { COMPOSER_MODE_PROMPTS } from "@main/lib/systemPrompt.js";
@@ -1287,6 +1287,11 @@ async function main(): Promise<void> {
   // 骨干 server 名要进"始终挂着、不进候选表"那一组 —— 否则工作流节点的「MCP 服务器」
   // 参数会把记忆工具列成"用户装的东西",选了却不生效。
   check("记忆 server 归在骨干那一组", (MCP_ALWAYS_ON_SERVERS as readonly string[]).includes(MCP_MEMORY_SERVER));
+
+  // 内置浏览器 server 名**只有一份**:闸门(用户不许占用保留名)与实际注册的 server
+  // 必须是同一个字符串。从前 `toolRules.BROWSER_MCP_SERVER` 与契约 `MCP_RESERVED_NAME`
+  // 各写一份字面量 —— 改名时漏一处就"闸门拦的名字 ≠ 实际注册的名字",静默失效。
+  eq("★ 内置浏览器 server 名与保留名是同一个(不再两处字面量)", BROWSER_MCP_SERVER, MCP_RESERVED_NAME);
 
   // 写一条再读回来 —— 证明这个工具面**真能落盘**(不是只有个壳)
   const written = await call(memSurface.tools, "memory_write", {
