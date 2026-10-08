@@ -102,8 +102,22 @@ export function isTransferableSettingKey(key: string): boolean {
   return !EXCLUDED_PREFIXES.some((p) => key.startsWith(p));
 }
 
+/** 深度去掉值里像密钥的字段。
+ *
+ *  ⚠️ **匹配的是"词",不是"子串"。** 判据落在段的边界上(`^` / `$` / `-` / `_` / `.`),
+ *  所以:
+ *    - `x-api-key`、`X-Api-Key`、`x-auth-token`(常见的网关鉴权头名)、`authToken`、
+ *      `access_token` 都命中 —— 命中即删;
+ *    - 而 `maxTotalTokens`、`tokenBudget`、`cacheReadTokens` 这类**恰好含**
+ *      token 字样、却不是密钥的字段**不**命中。
+ *
+ *  从前的写法是"整名等于密钥词,或以下划线+大写结尾"(`^api[-_]?key$` /
+ *  `(_API_KEY|_TOKEN|…)$`),`x-api-key` 这两种都不落在里面 —— 于是 `customModels`
+ *  那份**该导出**的公开元数据里,用户配在 `customHeaders` 上的网关密钥原样跟着走。
+ *  (清洗"删多了"只丢一个字段,是安全的一侧;"漏删"是把真令牌写进一个专门拿去分享的
+ *  文件。两者不对等,所以这里宁可偏严。) */
 const SECRET_FIELD_RE =
-  /^(api[-_]?key|apikey|access[-_]?token|refresh[-_]?token|token|auth[-_]?token|secret|client[-_]?secret|password|passwd|authorization|cookie|cookies|private[-_]?key)$|(_API_KEY|_TOKEN|_SECRET|_PASSWORD)$/i;
+  /(^|[-_.])(api[-_.]?keys?|apikeys?|access[-_.]?tokens?|refresh[-_.]?tokens?|auth(orization)?[-_.]?tokens?|tokens?|secrets?|client[-_.]?secrets?|passw(or)?ds?|passwd|authorization|credentials?|cookies?|private[-_.]?keys?)([-_.]|$)/i;
 
 /** 深度去掉值里像密钥的字段。返回 [清洗后的值, 删了几处]。 */
 export function scrubSecrets(value: unknown, depth = 0): [unknown, number] {

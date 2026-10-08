@@ -26,6 +26,7 @@
 import {
   buildSettingsExport,
   isTransferableSettingKey,
+  scrubSecrets,
 } from "@main/settings/settingsTransfer.js";
 
 let failures = 0;
@@ -69,6 +70,51 @@ for (const key of SECRET_KEYS) {
   check("★ 导出文档里没有任何密钥设置键", leaked.length === 0, { leaked });
   check("正控:普通偏好键照常导出", doc.settings["ui.locale"] === "zh", doc.settings);
   check("正控:另一条普通键也不受影响", isTransferableSettingKey("ui.accentColor"), true);
+}
+
+// ── 值里的密钥字段:深度清洗不能只认恰好等于 `apiKey` 的那种名字 ──
+//
+// `customModels` 是**公开元数据**(该导出),但它的 `customHeaders` 里放的常常就是网关
+// 的鉴权头 —— 而用户管它叫 `x-api-key` / `x-auth-token` / `Authorization` 都属常见。
+// 若清洗只认 `^api[-_]?key$` 这种"整名恰好相等",这些前缀/后缀命名的头就原样导出去。
+console.log("\n值清洗:常见鉴权头名一律打码");
+{
+  const [clean, n] = scrubSecrets({
+    id: "c1",
+    name: "gateway",
+    customHeaders: {
+      "x-api-key": "sk-live-REAL",
+      "x-auth-token": "tok-REAL",
+      Authorization: "Bearer REAL",
+      "api-key": "sk-REAL",
+      "X-Api-Key": "sk-REAL2",
+      "x-tenant": "acme", // 正控:非密钥头必须留下
+    },
+  }) as [Record<string, unknown>, number];
+  const headers = clean.customHeaders as Record<string, string> | undefined;
+  check("★ x-api-key 被清洗", !("x-api-key" in (headers ?? {})), headers);
+  check("★ x-auth-token 被清洗", !("x-auth-token" in (headers ?? {})), headers);
+  check("★ Authorization 被清洗", !("Authorization" in (headers ?? {})), headers);
+  check("★ X-Api-Key(带前缀大写)被清洗", !("X-Api-Key" in (headers ?? {})), headers);
+  check("正控:非密钥头 x-tenant 保留", headers?.["x-tenant"] === "acme", headers);
+  check("清洗计数 ≥ 5", n >= 5, { n });
+
+  // ⚠️ **反向控制:不能把"恰好含 token 字样"的非密钥字段一起删掉。** 放宽正则最
+  // 容易踩的就是这个 —— `runtime.turnBudget` 的值里就有 `maxTotalTokens`,用量快照里
+  // 有 `totalTokens` / `cacheReadTokens`。被误删的字段是**真的会跟着导出**的偏好,悄悄
+  // 少一项比多清洗一处更难查。判据:这些名字必须**原样留下**。
+  const [, keepN] = scrubSecrets({
+    maxTotalTokens: 200000,
+    maxTurns: 30,
+    maxUsd: 5,
+    totalTokens: 100,
+    cacheReadTokens: 50,
+    turnProcessedTokens: 10,
+    outputTokens: 20,
+    tokenBudget: 200000,
+    shortKeys: ["a"],
+  }) as [unknown, number];
+  check("★ 含 token 字样但非密钥的字段不被误删", keepN === 0, { keepN });
 }
 
 console.log(`\nsettings-export-secrets-smoke:${checks - failures}/${checks} 通过`);
