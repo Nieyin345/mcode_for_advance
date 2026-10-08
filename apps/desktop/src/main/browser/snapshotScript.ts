@@ -183,14 +183,14 @@ export const SNAPSHOT_SCRIPT = `
 export const CLICK_SCRIPT = `
 (function (selectorJson) {
   var sel;
-  try { sel = JSON.parse(selectorJson); } catch (e) { return { error: 'invalid selector json' }; }
-  if (typeof sel !== 'string' || !sel) return { error: 'empty selector' };
+  try { sel = JSON.parse(selectorJson); } catch (e) { return { error: 'selector 不是合法的 JSON' }; }
+  if (typeof sel !== 'string' || !sel) return { error: 'selector 是空的' };
   var el = document.querySelector(sel);
-  if (!el) return { error: 'element not found for selector: ' + sel };
+  if (!el) return { error: '找不到选择器对应的元素: ' + sel };
   try {
     el.click();
   } catch (e) {
-    return { error: 'click threw: ' + (e && e.message ? e.message : String(e)) };
+    return { error: 'browser_click 执行出错: ' + (e && e.message ? e.message : String(e)) };
   }
   return { ok: true, url: location.href, title: document.title };
 })(%SELECTOR_JSON%);
@@ -208,10 +208,10 @@ export const CLICK_SCRIPT = `
 export const ELEMENT_CENTER_SCRIPT = `
 (function (selectorJson) {
   var sel;
-  try { sel = JSON.parse(selectorJson); } catch (e) { return { error: 'invalid selector json' }; }
-  if (typeof sel !== 'string' || !sel) return { error: 'empty selector' };
+  try { sel = JSON.parse(selectorJson); } catch (e) { return { error: 'selector 不是合法的 JSON' }; }
+  if (typeof sel !== 'string' || !sel) return { error: 'selector 是空的' };
   var el = document.querySelector(sel);
-  if (!el) return { error: 'element not found for selector: ' + sel };
+  if (!el) return { error: '找不到选择器对应的元素: ' + sel };
   try { el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }); } catch (e) { /* detached */ }
   var r = el.getBoundingClientRect();
   if (r.width === 0 && r.height === 0) return { fallback: true };
@@ -248,14 +248,14 @@ export const ELEMENT_CENTER_SCRIPT = `
 export const TYPE_SCRIPT = `
 (function (selectorJson, textJson, clearJson) {
   var sel, text, clear;
-  try { sel = JSON.parse(selectorJson); } catch (e) { return { error: 'invalid selector json' }; }
-  try { text = JSON.parse(textJson); } catch (e) { return { error: 'invalid text json' }; }
+  try { sel = JSON.parse(selectorJson); } catch (e) { return { error: 'selector 不是合法的 JSON' }; }
+  try { text = JSON.parse(textJson); } catch (e) { return { error: 'text 不是合法的 JSON' }; }
   try { clear = JSON.parse(clearJson); } catch (e) { clear = true; }
-  if (typeof sel !== 'string' || !sel) return { error: 'empty selector' };
-  if (typeof text !== 'string') return { error: 'text must be a string' };
+  if (typeof sel !== 'string' || !sel) return { error: 'selector 是空的' };
+  if (typeof text !== 'string') return { error: 'text 必须是字符串' };
   if (clear !== false) clear = true;
   var el = document.querySelector(sel);
-  if (!el) return { error: 'element not found for selector: ' + sel };
+  if (!el) return { error: '找不到选择器对应的元素: ' + sel };
   try {
     el.focus();
     if (el.isContentEditable || el.getAttribute('contenteditable') === 'true') {
@@ -269,18 +269,18 @@ export const TYPE_SCRIPT = `
       var proto = Object.getPrototypeOf(el);
       var inputDesc = Object.getOwnPropertyDescriptor(proto, 'value') ||
                  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
-      if (!inputDesc || !inputDesc.set) return { error: 'input value setter unavailable' };
-      if (el.type === 'checkbox' || el.type === 'radio') return { error: 'element is a checkbox/radio — use browser_click instead' };
+      if (!inputDesc || !inputDesc.set) return { error: '无法设置输入框的值(页面覆盖了 setter)' };
+      if (el.type === 'checkbox' || el.type === 'radio') return { error: '这是复选框/单选框 —— 请改用 browser_click' };
       var cur = clear ? '' : String(el.value || '');
       inputDesc.set.call(el, cur + text);
     } else {
-      return { error: 'element is not an input, textarea or contenteditable: ' + sel };
+      return { error: '元素不是输入框、textarea 或 contenteditable: ' + sel };
     }
     // Dispatch change/input so framework state (React/Vue) picks the value up.
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
   } catch (e) {
-    return { error: 'type threw: ' + (e && e.message ? e.message : String(e)) };
+    return { error: 'browser_type 执行出错: ' + (e && e.message ? e.message : String(e)) };
   }
   return { ok: true, value: String(el.value !== undefined ? el.value : ''), url: location.href, title: document.title };
 })(%SELECTOR_JSON%, %TEXT_JSON%, %CLEAR_JSON%);
@@ -294,13 +294,13 @@ export const TYPE_SCRIPT = `
 export const SCROLL_SCRIPT = `
 (function (argJson) {
   var arg;
-  try { arg = JSON.parse(argJson); } catch (e) { return { error: 'invalid args json' }; }
+  try { arg = JSON.parse(argJson); } catch (e) { return { error: '参数不是合法的 JSON' }; }
   var dir = arg.dir === 'up' ? -1 : 1;
   var pages = typeof arg.pages === 'number' && isFinite(arg.pages) && arg.pages > 0 ? arg.pages : 1;
   var target = null;
   if (arg.selector) {
     target = document.querySelector(arg.selector);
-    if (!target) return { error: 'element not found for selector: ' + arg.selector };
+    if (!target) return { error: '找不到选择器对应的元素: ' + arg.selector };
   }
   var amount = Math.round(pages * (target ? target.clientHeight : window.innerHeight));
   if (target) {
@@ -327,7 +327,7 @@ export const SCROLL_SCRIPT = `
 export const WAIT_SCRIPT = `
 (function (argJson) {
   var arg;
-  try { arg = JSON.parse(argJson); } catch (e) { return { error: 'invalid args json' }; }
+  try { arg = JSON.parse(argJson); } catch (e) { return { error: '参数不是合法的 JSON' }; }
   if (arg.selector) {
     var el = document.querySelector(arg.selector);
     if (!el) return { found: false, reason: 'selector 未出现' };
@@ -359,11 +359,11 @@ export const WAIT_SCRIPT = `
 export const SELECT_SCRIPT = `
 (function (selectorJson, valueJson) {
   var sel, value;
-  try { sel = JSON.parse(selectorJson); } catch (e) { return { error: 'invalid selector json' }; }
-  try { value = JSON.parse(valueJson); } catch (e) { return { error: 'invalid value json' }; }
-  if (typeof sel !== 'string' || !sel) return { error: 'empty selector' };
+  try { sel = JSON.parse(selectorJson); } catch (e) { return { error: 'selector 不是合法的 JSON' }; }
+  try { value = JSON.parse(valueJson); } catch (e) { return { error: 'value 不是合法的 JSON' }; }
+  if (typeof sel !== 'string' || !sel) return { error: 'selector 是空的' };
   var el = document.querySelector(sel);
-  if (!el) return { error: 'element not found for selector: ' + sel };
+  if (!el) return { error: '找不到选择器对应的元素: ' + sel };
   if (el.tagName !== 'SELECT') {
     return { error: '元素不是原生 <select>(自定义下拉组件请用 browser_click 展开后再点击选项): ' + sel };
   }
@@ -387,7 +387,7 @@ export const SELECT_SCRIPT = `
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
   } catch (e) {
-    return { error: 'select threw: ' + (e && e.message ? e.message : String(e)) };
+    return { error: 'browser_select 执行出错: ' + (e && e.message ? e.message : String(e)) };
   }
   return {
     ok: true,
@@ -409,7 +409,7 @@ export const SELECT_SCRIPT = `
 export const FIND_SCRIPT = `
 (function (argJson) {
   var arg;
-  try { arg = JSON.parse(argJson); } catch (e) { return { error: 'invalid args json' }; }
+  try { arg = JSON.parse(argJson); } catch (e) { return { error: '参数不是合法的 JSON' }; }
   var maxResults = typeof arg.maxResults === 'number' && arg.maxResults > 0 ? Math.min(arg.maxResults, 100) : 25;
   function clip(s, n) {
     if (!s) return '';
@@ -499,13 +499,13 @@ export const FIND_SCRIPT = `
 export const EVALUATE_SCRIPT = `
 (function (scriptJson) {
   var code;
-  try { code = JSON.parse(scriptJson); } catch (e) { return { error: 'invalid script json' }; }
-  if (typeof code !== 'string' || !code) return { error: 'empty script' };
+  try { code = JSON.parse(scriptJson); } catch (e) { return { error: 'script 不是合法的 JSON' }; }
+  if (typeof code !== 'string' || !code) return { error: 'script 是空的' };
   var result;
   try {
     result = new Function(code)();
   } catch (e) {
-    return { error: 'script threw: ' + (e && e.message ? e.message : String(e)) };
+    return { error: 'browser_evaluate 执行出错: ' + (e && e.message ? e.message : String(e)) };
   }
   var text;
   if (result === undefined) {
@@ -531,10 +531,10 @@ export const EVALUATE_SCRIPT = `
 export const CHECK_FILE_INPUT_SCRIPT = `
 (function (selectorJson) {
   var sel;
-  try { sel = JSON.parse(selectorJson); } catch (e) { return { error: 'invalid selector json' }; }
-  if (typeof sel !== 'string' || !sel) return { error: 'empty selector' };
+  try { sel = JSON.parse(selectorJson); } catch (e) { return { error: 'selector 不是合法的 JSON' }; }
+  if (typeof sel !== 'string' || !sel) return { error: 'selector 是空的' };
   var el = document.querySelector(sel);
-  if (!el) return { error: 'element not found for selector: ' + sel };
+  if (!el) return { error: '找不到选择器对应的元素: ' + sel };
   if (el.tagName !== 'INPUT' || (el.type || '').toLowerCase() !== 'file') {
     return { error: '元素不是 <input type="file">' + (el.tagName === 'INPUT' ? '(type=' + el.type + ')' : '') + ': ' + sel };
   }

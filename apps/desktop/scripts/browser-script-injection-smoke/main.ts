@@ -154,5 +154,29 @@ console.log("\n没有占位符残留");
   check("★ 生成的脚本里没有残留的 %XXX_JSON%", leaks.length === 0, leaks);
 }
 
+/* ── 3. 注入脚本里的错误消息是中文(它们原样回给模型)── */
+
+console.log("\n注入脚本的错误消息是中文");
+
+{
+  // 这些 `{ error: '…' }` 经 `agentBrowserTools` 原样回给模型,而同一个文件里
+  // WAIT/SELECT/文件输入框那几条一直是中文 —— 中英混杂没有理由,统一成中文。
+  // 判据:生成的脚本里,`error: '…'` 那些字符串不得是纯英文。
+  const all = [
+    buildClickScript("a"),
+    buildEvaluateScript("1"),
+    buildTypeScript("a", "b", true),
+    buildSelectScript("a", "b"),
+    buildFindScript({ text: "x" }),
+    buildScrollScript({ selector: "a", direction: "up", pages: 1 }),
+    buildWaitScript({ text: "x" }),
+    buildCheckFileInputScript("a"),
+    buildElementCenterScript("a"),
+  ].join("\n");
+  const errs = [...all.matchAll(/error:\s*'([^']*)'/g)].map((m) => m[1]!);
+  const english = errs.filter((t) => /[A-Za-z]{3}/.test(t) && !/[一-鿿]/.test(t));
+  check("★ 注入脚本里没有纯英文的 error 消息", english.length === 0, english);
+}
+
 console.log(`\nbrowser-script-injection-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;
