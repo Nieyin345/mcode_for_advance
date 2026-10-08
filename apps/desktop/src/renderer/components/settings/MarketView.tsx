@@ -148,7 +148,7 @@ export function MarketView({
             value={query}
             onChange={(e) => onQuery(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") onSearchSubmit?.();
+              if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) onSearchSubmit?.();
             }}
             placeholder={searchPlaceholder}
             aria-label={searchPlaceholder}
@@ -223,7 +223,7 @@ export function MarketView({
           className="h-7 text-[0.7857em]"
           spellCheck={false}
           onKeyDown={(e) => {
-            if (e.key === "Enter") void submitAdd();
+            if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) void submitAdd();
           }}
         />
         <div className="mt-1.5 flex items-center gap-1.5">

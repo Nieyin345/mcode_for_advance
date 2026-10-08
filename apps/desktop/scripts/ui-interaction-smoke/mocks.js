@@ -41,3 +41,34 @@ window.labI18nOverride = new URLSearchParams(location.search).get('sentinel')===
   'settings.customModels.apiKeyLabel':'OVR::apiKey',
   'settings.customModels.authTokenLabel':'OVR::authToken',
 } : null;
+
+// ── 引擎工具页(EngineToolsPanel)夹具 ──
+// 三引擎快照 + 记录 set 调用,用来验证「自定义工具名」输入框的 Enter 是否过 IME 守卫。
+window.labEngineToolsEvents=[];
+const engineState=(exclude,supported,known)=>({exclude,supported,known});
+window.labEngineTools={engines:{claude:engineState([],true,['Bash','Read','Edit']),pi:engineState([],true,['read','edit']),codex:engineState([],false,[])}};
+window.labApi.engineTools={
+  get:async()=>structuredClone(window.labEngineTools),
+  set:async(input)=>{window.labEngineToolsEvents.push(input);window.labEngineTools.engines[input.engine]={...window.labEngineTools.engines[input.engine],exclude:input.exclude};return {ok:true,snapshot:structuredClone(window.labEngineTools)};},
+};
+
+// ── 插件页(PluginsPanel)夹具 ──
+window.labPluginEvents=[];
+window.labPlugins=[];  // 空列表:已安装 pane 直接显示空态,安装表单仍可打开
+window.labMarketplaces=[];
+window.labApi.plugins={
+  list:async()=>({plugins:window.labPlugins}),
+  marketplaceList:async()=>({marketplaces:window.labMarketplaces}),
+  installGit:async(input)=>{window.labPluginEvents.push({m:'installGit',input});return {ok:true};},
+  marketplaceAdd:async(input)=>{window.labPluginEvents.push({m:'marketplaceAdd',input});return {ok:true};},
+  marketplaceRefresh:async(input)=>{window.labPluginEvents.push({m:'marketplaceRefresh',input});return {ok:true};},
+  marketplaceRemove:async(input)=>({ok:true}),
+  installMarketplace:async(input)=>({ok:true}),
+  installLocal:async(input)=>({ok:true}),
+  setEnabled:async()=>({ok:true}),
+  enginesSet:async()=>({ok:true}),
+  remove:async()=>({ok:true}),
+};
+window.labApi.pickFolder=async()=>({path:null});
+
+

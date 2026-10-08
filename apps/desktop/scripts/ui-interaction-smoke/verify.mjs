@@ -87,6 +87,89 @@ await withAuditPage(here,async page=>{
   check('codex form base URL label comes from its i18n key',codex.includes('OVR::baseUrl'));
   check('codex form API key label comes from its i18n key',codex.includes('OVR::apiKey'));
  });
+ // MarketView 的「添加来源」是一个文本输入框(用户粘 `owner/repo` 或注册中心地址)。中文
+ // 输入法按 Enter 确认候选词时不能提交;只有真 Enter 才提交。兄弟文本框都带同一守卫。
+ await test('market-add-enter-respects-ime',async()=>{
+  await go('market');
+  await click('[aria-expanded]');
+  const sel='[aria-label="公开 GitHub owner/repo 或仓库网址"]';
+  await input(sel,'owner/repo');
+  await page.eval(`document.querySelector(${JSON.stringify(sel)}).dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}))`);
+  await page.sleep(120);
+  check('composing Enter does not add a source',await page.eval('document.getElementById("market-events").textContent===""'));
+  await page.eval(`document.querySelector(${JSON.stringify(sel)}).dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))`);
+  await page.sleep(120);
+  check('plain Enter adds the source once',await page.eval('document.getElementById("market-events").textContent==="owner/repo"'));
+  // 搜索框同样是文本输入(中文可打),同样只在真 Enter 上提交。
+  const search='[aria-label="搜索技能"]';
+  await input(search,'技能');
+  await page.eval(`document.querySelector(${JSON.stringify(search)}).dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}))`);
+  await page.sleep(120);
+  check('composing Enter does not submit a search',await page.eval('document.getElementById("market-searches").textContent==="0"'));
+  await page.eval(`document.querySelector(${JSON.stringify(search)}).dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))`);
+  await page.sleep(120);
+  check('plain Enter submits the search once',await page.eval('document.getElementById("market-searches").textContent==="1"'));
+ });
+ // 引擎工具页的「自定义工具名」是文本输入框。中文输入法按 Enter 确认候选词时不能把
+ // 半截拼音当成工具名加进去;只有真 Enter 才加。
+ await test('engine-tools-custom-enter-respects-ime',async()=>{
+  await go('enginetools');
+  await page.waitFor("document.querySelector('[placeholder*=\"Bash\"]')");
+  const sel='[placeholder*="Bash"]';
+  await input(sel,'my_tool');
+  await page.eval(`document.querySelector(${JSON.stringify(sel)}).dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}))`);
+  await page.sleep(80);
+  check('composing Enter does not add a custom tool',await page.eval('!document.body.innerText.includes("my_tool")'));
+  await page.eval(`document.querySelector(${JSON.stringify(sel)}).dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))`);
+  await page.sleep(80);
+  check('plain Enter adds the custom tool',await page.eval('document.body.innerText.includes("my_tool")'));
+ });
+ // 插件页「从 Git 安装」的 URL 是文本输入框。中文输入法按 Enter 确认候选词时不能提交安装。
+ await test('plugins-git-install-enter-respects-ime',async()=>{
+  await go('plugins');
+  // 打开「安装 ▾」菜单 → 选「从 Git 安装」。
+  await page.eval(`(()=>{const b=[...document.querySelectorAll('button')].find(e=>e.offsetParent!==null&&e.textContent.includes('安装'));b&&b.click();})()`);
+  await page.waitFor('document.querySelector("[role=menuitem]")');
+  await page.eval(`(()=>{const m=[...document.querySelectorAll('[role=menuitem]')].find(e=>e.textContent.includes('Git'));m&&m.click();})()`);
+  await page.waitFor("document.querySelector('[placeholder*=\"github.com\"]')");
+  const sel='[placeholder*="github.com"]';
+  await input(sel,'https://github.com/o/r.git');
+  await page.eval(`document.querySelector(${JSON.stringify(sel)}).dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}))`);
+  await page.sleep(100);
+  check('composing Enter does not install from git',await page.eval('labPluginEvents.filter(e=>e.m==="installGit").length===0'));
+  await page.eval(`document.querySelector(${JSON.stringify(sel)}).dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))`);
+  await page.sleep(100);
+  check('plain Enter installs from git once',await page.eval('labPluginEvents.filter(e=>e.m==="installGit").length===1'));
+  // 插件市场 pane 的「添加市场」地址框是同一类文本框,同样只在真 Enter 上加。
+  await page.eval(`(()=>{const b=[...document.querySelectorAll('[role=tab],button')].find(e=>e.textContent.trim()==='市场');b&&b.click();})()`);
+  await page.waitFor('document.querySelector("[placeholder=\\"marketplace git 地址\\"]")');
+  const mp='[placeholder="marketplace git 地址"]';
+  // open the add form: the dashed "添加插件市场" button (no marketplaces loaded).
+  await page.eval(`(()=>{const b=[...document.querySelectorAll('button')].find(e=>e.offsetParent!==null&&e.textContent.includes('添加插件市场'));b&&b.click();})()`);
+  await page.sleep(80);
+  await input(mp,'https://git.example/mp.git');
+  await page.eval(`document.querySelector(${JSON.stringify(mp)}).dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}))`);
+  await page.sleep(100);
+  check('composing Enter does not add a marketplace',await page.eval('labPluginEvents.filter(e=>e.m==="marketplaceAdd").length===0'));
+  await page.eval(`document.querySelector(${JSON.stringify(mp)}).dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))`);
+  await page.sleep(100);
+  check('plain Enter adds the marketplace once',await page.eval('labPluginEvents.filter(e=>e.m==="marketplaceAdd").length===1'));
+ });
+ // 界面字体名是 CJK 文本(如「思源黑体」)。中文输入法按 Enter 确认候选词时不能 blur
+ // (=不能提交);只有真 Enter 才 blur 提交。判据用焦点:守卫在 → 组词后输入框仍有焦点。
+ await test('font-family-enter-respects-ime',async()=>{
+  await go('font');
+  const sel='#setting-font-sans';
+  const focused=()=>page.eval(`document.activeElement===${JSON.stringify(sel)}?'1':(document.activeElement&&document.activeElement.id)`);
+  await input(sel,'思源黑体');
+  await page.eval(`document.querySelector(${JSON.stringify(sel)}).focus()`);
+  await page.eval(`document.querySelector(${JSON.stringify(sel)}).dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}))`);
+  await page.sleep(120);
+  check('composing Enter does not blur (commit) the font field',await page.eval(`document.activeElement===document.querySelector(${JSON.stringify(sel)})`));
+  await page.eval(`document.querySelector(${JSON.stringify(sel)}).dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))`);
+  await page.sleep(120);
+  check('plain Enter blurs (commits) the font field',await page.eval(`document.activeElement!==document.querySelector(${JSON.stringify(sel)})`));
+ });
 });
 writeFileSync(join(here,'results.json'),JSON.stringify(results,null,2));
 if(results.some(x=>!x.ok))throw Error(`${results.filter(x=>!x.ok).length} UI interaction assertions failed; artifacts: ${here}`);

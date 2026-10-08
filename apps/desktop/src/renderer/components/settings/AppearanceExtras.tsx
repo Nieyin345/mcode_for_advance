@@ -88,7 +88,7 @@ function FontInput({
           onChange={(e) => setDraft((e.target as HTMLInputElement).value)}
           onBlur={commit}
           onKeyDown={(e) => {
-            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) (e.target as HTMLInputElement).blur();
           }}
           className="min-w-0 flex-1 font-sans"
         />

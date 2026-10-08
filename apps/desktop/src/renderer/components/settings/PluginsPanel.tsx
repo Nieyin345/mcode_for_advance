@@ -1365,7 +1365,7 @@ function GitInstallForm({
         className="h-7 min-w-0 flex-1 text-[0.7857em]"
         spellCheck={false}
         onKeyDown={(e) => {
-          if (e.key === "Enter") void submit();
+          if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) void submit();
         }}
       />
       <Input
@@ -1665,7 +1665,7 @@ function MarketplacePane({
           className="h-7 text-[0.7857em]"
           spellCheck={false}
           onKeyDown={(e) => {
-            if (e.key === "Enter") void addGit();
+            if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) void addGit();
           }}
         />
         <div className="mt-1.5 flex items-center gap-1.5">

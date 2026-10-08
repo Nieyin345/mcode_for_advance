@@ -130,7 +130,7 @@ function EngineCard({
                 value={custom}
                 onChange={(e) => setCustom(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") {
+                  if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) {
                     e.preventDefault();
                     addCustom();
                   }

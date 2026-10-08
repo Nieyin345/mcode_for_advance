@@ -181,6 +181,24 @@ await withAuditPage(dir, async page => {
     await page.waitFor("document.querySelector('[data-testid=skill-project-select]').textContent.includes('Project B')", 3000);
     assert.equal(await page.eval('labState.activeProjectId'), 'A');
   });
+  // The GitHub-import field is a text box (users paste "owner/repo"). Pressing
+  // Enter to confirm a pinyin candidate must not fire the import; only a real
+  // Enter does. The sibling text inputs in this repo carry the same guard.
+  await test('github-import-enter-respects-ime', async () => {
+    await go();
+    await clickExpr(`[...document.querySelectorAll('button')].find(e=>e.offsetParent!==null && e.textContent.trim()==='导入 Skill')`);
+    await page.waitFor("document.querySelector('[role=dialog] input[placeholder*=github]')");
+    await page.eval(`(()=>{const e=document.querySelector('[role=dialog] input[placeholder*=github]');e.focus();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,'owner/repo');e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+    await page.sleep(80);
+    // Composing (Chinese IME confirming a candidate): must NOT import.
+    await page.eval(`document.querySelector('[role=dialog] input[placeholder*=github]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}))`);
+    await page.sleep(120);
+    assert.equal(await page.eval("labEvents.filter(e=>e.method==='importGithub').length"), 0, 'composing Enter must not trigger the GitHub import');
+    // A genuine Enter imports exactly once.
+    await page.eval(`document.querySelector('[role=dialog] input[placeholder*=github]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))`);
+    await page.sleep(120);
+    assert.deepEqual(await page.eval("labEvents.filter(e=>e.method==='importGithub').map(e=>e.input)"), [{ url: 'owner/repo' }], 'plain Enter imports once with the typed url');
+  });
 });
 const failed = results.filter(r => !r.ok).length;
 writeFileSync(join(dir, 'results.json'), JSON.stringify({ passed: results.length - failed, failed, results }, null, 2));

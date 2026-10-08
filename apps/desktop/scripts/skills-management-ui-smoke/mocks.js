@@ -58,6 +58,7 @@ window.labApi = {
       return { content: labContents[scope(input)]?.[input.name] ?? '' };
     },
     save: async input => { record('save', input); if (!scope(input)) return { ok: false, error: 'missing project path' }; labContents[scope(input)][input.name] = input.content; return { ok: true }; },
+    importGithub: async input => { record('importGithub', input); return { ok: true, imported: [], skipped: [], errors: [], bundleLabel: null }; },
     delete: async input => {
       record('delete', input);
       if (input.name === 'delete-error' && labDeleteFailure) return { ok: false, error: 'delete fixture denied' };

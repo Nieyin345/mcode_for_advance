@@ -1869,7 +1869,7 @@ function ImportSkillsDialog({
                   value={ghUrl}
                   onChange={(e) => setGhUrl(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") void doGithubImport();
+                    if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) void doGithubImport();
                   }}
                   placeholder={t("settings.skills.githubPlaceholder")}
                   disabled={ghBusy}

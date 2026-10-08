@@ -11,11 +11,38 @@ import {Button} from '@renderer/components/ui/button.js';
 import {Dialog} from '@renderer/components/ui/dialog.js';
 import {Divider} from '@renderer/components/layout/Divider.js';
 import {CustomModelsPanel} from '@renderer/components/settings/CustomModelsPanel.js';
+import {MarketView} from '@renderer/components/settings/MarketView.js';
+import {EngineToolsPanel} from '@renderer/components/settings/EngineToolsPanel.js';
+import {PluginsPanel} from '@renderer/components/settings/PluginsPanel.js';
+import {TypographySection} from '@renderer/components/settings/AppearanceExtras.js';
 const mode=new URLSearchParams(location.search).get('case')||'approval';
 const theme=new URLSearchParams(location.search).get('theme')||'light';
 document.documentElement.className=theme==='light'?'':theme;
 const w=window;
 // Stubs are initialized in a prior script by the test runner (no real IPC/network).
+// MarketView is presentational: onAdd is called with the typed address. Used to
+// prove the add-textbox Enter respects the IME composition guard.
+function MarketCase(){
+ const [q,setQ]=React.useState('');
+ const [ev,setEv]=React.useState([]);
+ const [searches,setSearches]=React.useState(0);
+ return <main className="p-6" style={{maxWidth:640}}>
+  <MarketView
+   className="flex"
+   title="来源" hint={undefined} sourceCountLabel="1 个来源"
+   sources={[{id:'s1',label:'Source',title:'git'}]} activeId="s1" onSelect={()=>{}}
+   query={q} onQuery={setQ} searchPlaceholder="搜索技能"
+   onSearchSubmit={()=>setSearches(n=>n+1)}
+   busy={false} addLabel="添加来源" addPlaceholder="公开 GitHub owner/repo 或仓库网址" addBusy={false}
+   onAdd={async v=>{setEv(e=>[...e,v]);return true;}}
+   loading={false}
+   catalog={{kind:'git',kindMono:true,builtin:false,ref:'git',countLabel:'0',refreshing:false}}
+   notice={null} rows={[]} onInstall={()=>{}}
+  />
+  <pre id="market-events">{ev.join(',')}</pre>
+  <pre id="market-searches">{String(searches)}</pre>
+ </main>;
+}
 function App(){
  const [shown,setShown]=useState(true);
  const [ev,setEv]=useState([]);
@@ -38,6 +65,10 @@ function App(){
   {mode==='primitives'&&<main className="p-6"><h1>共享组件</h1><Button variant="primary">保存</Button><Button variant="secondary">取消</Button><div className="flex h-40 mt-6"><div className="w-40">左侧</div>{shown&&<Divider orientation="vertical" onResize={d=>emit('resize: '+d)}/>}<div className="px-4">右侧</div></div><pre>{ev.join('\n')}</pre></main>}
   {mode==='dialog'&&<Dialog.Root open><Dialog.Portal><Dialog.Backdrop/><Dialog.Popup className="w-[360px] p-4"><Dialog.Title>设置示例</Dialog.Title><Dialog.Description>检查共享关闭按钮的可访问名称。</Dialog.Description><Dialog.Close/></Dialog.Popup></Dialog.Portal></Dialog.Root>}
   {mode==='models'&&<div className="h-screen overflow-auto bg-surface text-content"><CustomModelsPanel/></div>}
+  {mode==='market'&&<MarketCase/>}
+  {mode==='enginetools'&&<div className="h-screen overflow-auto bg-surface text-content"><EngineToolsPanel/></div>}
+  {mode==='plugins'&&<div className="h-screen overflow-auto bg-surface text-content"><PluginsPanel/></div>}
+  {mode==='font'&&<main className="p-6"><TypographySection/></main>}
  </div>
 }
 createRoot(document.getElementById('root')).render(<App/>);
