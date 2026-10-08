@@ -598,5 +598,19 @@ check("表里每一个键都是真事件", Object.keys(HOOK_EVENT_UNSUPPORTED_BY
 
 /* ────────────────────── 收尾 ────────────────────── */
 
+// ★ `matchesHook` 的"空 = 不限制"判定必须走共享的 `splitGlobList`,不许在这里再内联一份
+//   `.split(",").map(trim).filter(…)`。那个函数的注释白纸黑字写着"两处要用同一份,各写一遍
+//   迟早分家" —— 而 `matchesHook` 从前正是各写了一遍:拆分规则一旦变化(支持 `;`、转义逗号),
+//   它的判定与真正走的那条匹配路(`matchesAnyGlob → matchesGlobList → splitGlobList`)会分家,
+//   表现为用户存的钩子"界面合法、却安静地不匹配"。
+{
+  const hookSrc = readFileSync(join(process.cwd(), "../../packages/contracts/src/hook.ts"), "utf8");
+  const fn = /export function matchesHook[\s\S]*?\n\}/.exec(hookSrc)?.[0] ?? "";
+  // 去掉注释再判 —— 那条"别内联 .split(',')"的说明本身就会提到这个写法。
+  const code = fn.replace(/\/\/[^\n]*/g, "");
+  check("★ matchesHook 用共享的 splitGlobList(不再内联拆分)", code.includes("splitGlobList("), code.slice(0, 120));
+  check("★ matchesHook 里没有内联的 `.split(\",\")` 拆分", !/\.split\(","\)/.test(code), code.slice(0, 200));
+}
+
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures > 0) process.exit(1);

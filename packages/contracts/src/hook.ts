@@ -442,14 +442,16 @@ export function matchesAnyGlob(patterns: string, values: readonly string[]): boo
 export function matchesHook(spec: HookSpec, event: HookEvent, subjects?: readonly string[]): boolean {
   if (!spec.enabled) return false;
   if (spec.event !== event) return false;
-  const patterns = (spec.matcher ?? "")
-    .split(",")
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0);
   // 没有有效模式 = 没有限制。**只写了逗号或空格也算**,那是个笔误,而两种解释里
   // "不限制"是安全的那一种:钩子会跑起来,用户当场就看得见。反过来把笔误当成"什么都
   // 不匹配",钩子永远不响 —— 那是最难查的一种坏。
-  if (patterns.length === 0) return true;
+  //
+  // ⚠️ 用 `splitGlobList`,**不要在这儿再内联一份 `.split(",").map(trim).filter(…)`** ——
+  // 那个函数的注释白纸黑字写着"两处要用同一份,各写一遍迟早分家"。这里从前正是各写了一遍:
+  // 它的"空 = 不限制"判定与本函数真正走的那条匹配路(`matchesAnyGlob → matchesGlobList
+  // → splitGlobList`)一旦对拆分规则的理解不同(比如以后支持 `;` 或转义逗号),用户存的
+  // 钩子会"界面合法、却安静地不匹配"。
+  if (splitGlobList(spec.matcher ?? "").length === 0) return true;
   // 没给主语却在 matcher 里写了东西 → 不匹配。这多半是配错了(见 `validateHook`,
   // 界面上会直接拦住),而"配错了却每次都跑"比"配错了不跑"危险得多。
   return matchesAnyGlob(spec.matcher ?? "", subjects ?? []);
