@@ -34,9 +34,12 @@ MUTATIONS = [
     ),
     (
         # 密钥不对时回 401 而不是 404 —— 等于告诉扫描者"这里有端点"。
+        # ⚠️ 锚点必须带上那句守卫本身:同一段 404 主体(`writeHead(404)+not found+return`)
+        # 在本文件里出现**三处**(未启停用 / 项目链接的会话没了 / 密钥不对),只给主体会数到
+        # 3 次、变异落不了地(实测如此)。带上 `if (!got || …)` 才唯一。
         "M2 密钥不对回 401(泄露端点存在)",
-        '    res.writeHead(404, { "Content-Type": "application/json" });\n    res.end(JSON.stringify({ error: "not found" }));\n    return;',
-        '    res.writeHead(401, { "Content-Type": "application/json" });\n    res.end(JSON.stringify({ error: "no" }));\n    return;',
+        '  if (!got || !expected || !secretMatches(got, expected)) {\n    res.writeHead(404, { "Content-Type": "application/json" });\n    res.end(JSON.stringify({ error: "not found" }));\n    return;\n  }',
+        '  if (!got || !expected || !secretMatches(got, expected)) {\n    res.writeHead(401, { "Content-Type": "application/json" });\n    res.end(JSON.stringify({ error: "no" }));\n    return;\n  }',
     ),
     (
         # 不注入合成会话:ChatGPT 不带会话头,结果每次调用都会被闸门拒 ——

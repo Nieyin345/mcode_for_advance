@@ -9,8 +9,8 @@ BASH = GIT_BASH if os.path.exists(GIT_BASH) else "bash"
 
 MUT = [
     ("C1 相对路径退回按过期的 cwd 解析(用户报的那个 bug)",
-     "    const sandbox = sandboxOf(ctx);\n    return resolveAgainstCwd(sandbox ?? cwdOf(ctx), p, sandbox);",
-     "    return resolveAgainstCwd(cwdOf(ctx), p, sandboxOf(ctx));"),
+     "    const sandbox = sandboxOf(ctx);\n    const abs = resolveAgainstCwd(sandbox ?? cwdOf(ctx), p, sandbox);",
+     "    const abs = resolveAgainstCwd(cwdOf(ctx), p, sandboxOf(ctx));"),
     ("C2 agent_context 的当前项目退回 cwd(不报沙箱)",
      "          const sandbox = sandboxOf(ctx);\n          const snap = readEnvSnapshot(sandbox ?? cwdOf(ctx), { includeLibrary: args.include_library === true });",
      "          const snap = readEnvSnapshot(cwdOf(ctx), { includeLibrary: args.include_library === true });"),

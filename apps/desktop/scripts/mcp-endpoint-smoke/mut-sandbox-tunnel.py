@@ -49,17 +49,22 @@ MUTATIONS = [
         "tunnel-manager-smoke",
     ),
     (
-        "T2 超时时不做任何标记(错误信息丢失)",
+        # ⚠️ **这条 2026-10-08 重写过。** 原锚点盯着超时块里那句
+        # `status = { phase: "failed", … reason }`,而隧道自愈改造之后超时也走
+        # `scheduleReconnect`(不再直接落 failed)—— 那句话没了,锚点失配 0 次,
+        # 于是这条变异静默失效。重写成盯**超时守卫本身**:拿掉它就是"起不来就干等
+        # 到用户手动点",正是这条变异要抓的退化。
+        "T2 超时守卫失效(起不来就干等,不退避重连)",
         TUNNEL,
-        "    const reason = `等了 ${readyTimeoutMs / 1000} 秒还没拿到公网域名。` + tailNote();\n    killChild();\n    status = { phase: \"failed\", url: null, error: reason };",
-        "    killChild();",
+        '    readyTimer = setTimeout(() => {\n      if (status.phase !== "starting") return;',
+        '    readyTimer = setTimeout(() => {\n      if (true) return;',
         "tunnel-manager-smoke",
     ),
     (
         "T3 close 处理器不认自己的进程(旧进程迟到会打死新隧道)",
         TUNNEL,
-        '  proc.on("close", (code) => {\n    // ⚠️ **先认这是不是当前那个进程。** 用户"停 → 立刻重开"时,旧进程的 close\n    // 会**迟到**(killTree 发信号到真正退出有时间差),那时全局 status 说的已经是\n    // **新隧道**的事 —— 不看这一眼就会把刚起来的新隧道误判成 failed。\n    if (child !== proc) return;\n    clearTimer();',
-        '  proc.on("close", (code) => {\n    clearTimer();',
+        '    proc.on("close", (code) => {\n      // ⚠️ **先认这是不是当前那个进程。** 用户"停 → 立刻重开"时,旧进程的 close\n      // 会**迟到**(killTree 发信号到真正退出有时间差),那时全局 status 说的已经是\n      // **新隧道**的事 —— 不看这一眼就会把刚起来的新隧道误判成 failed。\n      if (child !== proc) return;\n      clearTimer();',
+        '    proc.on("close", (code) => {\n      clearTimer();',
         "tunnel-manager-smoke",
     ),
     (
