@@ -1174,7 +1174,8 @@ function buildDynamicTools(browserToolsEnabled: boolean): Array<Record<string, u
       description: BROWSER_TOOL_SPECS.browser_navigate.description,
       inputSchema: schema({
         url: { type: "string", description: "目标 URL,http(s):// 网页或 file:/// 本地文件" },
-        device: { type: "string", enum: ["desktop", "iphone", "android"], description: "设备仿真档位,默认 desktop" },
+        device: { type: "string", enum: ["desktop", "iphone", "android"], description: "打开方式:desktop(PC 全宽,默认)/iphone(移动端)/android(移动端),仅新建视图时生效" },
+        newTab: { type: "boolean", description: "true=强制新开一个标签页再导航" },
         browserId: optId,
       }, ["url"]),
     },
@@ -1204,7 +1205,7 @@ function buildDynamicTools(browserToolsEnabled: boolean): Array<Record<string, u
         index: { type: "number", description: "目标输入元素的索引(来自最近一次 browser_snapshot),优先使用" },
         selector: { type: "string", description: "目标输入元素的 CSS selector(index 的替代写法)" },
         text: { type: "string", description: "要输入的文本内容;空串=清空字段" },
-        clear: { type: "boolean", description: "true(默认)=清空后输入;false=追加" },
+        clear: { type: "boolean", description: "true(默认)=清空后输入;false=追加到现有内容之后" },
         browserId: optId,
       }, ["text"]),
     },
@@ -1332,7 +1333,7 @@ function buildDynamicTools(browserToolsEnabled: boolean): Array<Record<string, u
       name: "browser_evaluate",
       description: BROWSER_TOOL_SPECS.browser_evaluate.description,
       inputSchema: schema({
-        script: { type: "string", description: "要在页面中执行的 JavaScript 代码" },
+        script: { type: "string", description: "要在页面中执行的 JavaScript 代码(可访问 document/window 等页面对象)" },
         browserId: optId,
       }, ["script"]),
     },
