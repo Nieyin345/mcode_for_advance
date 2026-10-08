@@ -34,7 +34,7 @@
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { dirname, join, sep } from "node:path";
 import type { IpcMain } from "electron";
 
 let failures = 0;
@@ -240,6 +240,44 @@ eq("而且不算失败(那不是失败,是刻意不动)", failedOf(keepFirst).le
 const dropLast = await del([holderB.id]);
 check("删最后一条:副本该删了", !existsSync(sharedAbs), sharedAbs);
 eq("也没有失败", failedOf(dropLast).length, 0);
+
+/* ──────────── 3b. PDF 的两份 sidecar 要跟着一起删(2026-10-08) ──────────── */
+
+// 一条 PDF 条目在盘上**不止一个文件**:PDF 本体之外,旁边还躺着两份 sidecar ——
+// PDF 阅读器写下的 `.<名字>.mcode-highlights.json`(批注索引)与
+// `.<名字>.mcode-original.pdf`(**干净底稿**,第一次"烤进 PDF"前存的一份**整份 PDF 拷贝**,
+// 见 `pdfHighlightsStore.ts` 头注)。它们由 `ipc/library.ts` 的高亮 handler **创建**,
+// 却**从来没有被删过**(全仓对这两个后缀的引用只有创建/读取,零删除)。
+// 后果:硬删一篇划过批注的 PDF,本体没了、两份 sidecar 留在 `papers/<ab>/<cd>/` 下 ——
+// 其中那份底稿是**与 PDF 等大**的拷贝,而 `papers/` 从不被用户翻,谁都看不见。
+console.log("\nPDF 的 sidecar(批注索引 + 干净底稿)跟着一起删");
+
+const { createHash } = await import("node:crypto");
+const { pdfPathForHash } = await import("@main/library/paths.js");
+const { highlightsPathFor, originalPathFor } = await import("@main/library/pdfHighlightsStore.js");
+
+const pdfBytes = "假装这是一份 PDF 的字节(PDF 本体已按内容哈希落盘)";
+const sha = createHash("sha256").update(pdfBytes, "utf8").digest("hex");
+const pdfItem = LibraryRepo.upsert({ title: "划过批注的一篇" });
+const pdfAbs = pdfPathForHash(sha);
+mkdirSync(dirname(pdfAbs), { recursive: true });
+writeFileSync(pdfAbs, pdfBytes, "utf8");
+LibraryRepo.setPdf(pdfItem.id, rel(pdfAbs), sha);
+
+// 造出两份 sidecar(路径由真实现的两个 helper 给出 —— 判据必须落在**真实现算出来的落点**上)。
+const hlAbs = highlightsPathFor(pdfAbs);
+writeFileSync(hlAbs, JSON.stringify([]), "utf8");
+const origAbs = originalPathFor(pdfAbs);
+writeFileSync(origAbs, pdfBytes, "utf8");
+check("夹具:批注索引真的在盘上", existsSync(hlAbs), hlAbs);
+check("夹具:干净底稿真的在盘上", existsSync(origAbs), origAbs);
+check("夹具:这两份都落在库内(papers/ 下)", hlAbs.startsWith(ROOT + sep) && origAbs.startsWith(ROOT + sep), { hlAbs, origAbs });
+
+const pdfRes = await del([pdfItem.id]);
+check("PDF 本体删了", !existsSync(pdfAbs), pdfAbs);
+check("批注索引 sidecar 也删了(不然每次硬删都留一份孤儿)", !existsSync(hlAbs), hlAbs);
+check("干净底稿 sidecar 也删了(那份是与 PDF 等大的拷贝)", !existsSync(origAbs), origAbs);
+eq("没有报失败", failedOf(pdfRes).length, 0);
 
 /* ──────────────── 4. deleteFiles 关掉时,一个字都不许碰 ──────────────── */
 

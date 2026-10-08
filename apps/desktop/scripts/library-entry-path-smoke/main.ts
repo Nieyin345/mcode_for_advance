@@ -216,6 +216,70 @@ console.log("\n5. 坏情况：逐条说清是哪一种");
   check("★ 那句话是给用户看的", (res.error ?? "").includes("没有关联文件"), res);
 }
 
+/* ──────────────── 6. 预览里的图片引用不许借符号链接/junction 越界 ──────────────── */
+
+console.log("\n6. readMarkdown 的图片解析不许越界（符号链接/junction）");
+
+// `library.readMarkdown`(`markdownPreview.ts`)把 md 里 `![]()` 引到的图片读成
+// data URL 交给渲染端。md 正文是**外部工具转完挂回来的**、够不着的内容,所以它被当作
+// **不可信输入**:解析出的绝对路径必须落在 md 所在目录的**真实**子树里,越界就跳过。
+//
+// ⚠️ 判据必须是**解析符号链接/junction 之后**的包含性,不能是裸字符串前缀。仓库里
+// `fileImport.ts` 的 `readEntryFile` 早就因为同一件事从 `startsWith` 换成了共享的
+// `pathWithin`(realpath 解析 + 平台归一),而 `markdownPreview.ts` 这两个判据**各写一份、
+// 只做了裸前缀**:于是一份 md 写 `![](evil/x.png)`,而 md 目录下有个名叫 `evil` 的 junction
+// 指向库外(或用户别处),图片就被读成 data URL 交出去了 —— 与"屏蔽了 pdf、模型却还能读"
+// 同一类漏,只不过这里是把**库外任意文件**的内联给渲染端。
+{
+  const { execFileSync } = await import("node:child_process");
+  const { readMarkdownForPreview } = await import("@main/library/markdownPreview.js");
+
+  const OUTSIDE = join(TMP, "outside");
+  mkdirSync(OUTSIDE, { recursive: true });
+  const secret = join(OUTSIDE, "secret.png");
+  writeFileSync(secret, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x53, 0x45, 0x43]));
+
+  const mdDirRel = join("markdown", "imported", "li_linkescape");
+  const mdDirAbs = join(LIB, mdDirRel);
+  mkdirSync(join(mdDirAbs, "images"), { recursive: true });
+  writeFileSync(join(mdDirAbs, "full.md"), "# 越界引用\n\n![好图](images/ok.png)\n\n![越界](evil/secret.png)\n");
+  // 一张**真在目录里**的图 —— 反面断言:收紧判据不能把正常引用也一起挡掉。
+  const okBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 9, 9, 9]);
+  writeFileSync(join(mdDirAbs, "images", "ok.png"), okBytes);
+
+  // 在 md 目录里放一个 junction 指向库外。造不出来（权限/平台）就跳过这一档，别把
+  // "环境造不出夹具"错报成"被测代码坏了"。
+  let planted = true;
+  try {
+    execFileSync("cmd", ["/c", "mklink", "/J", join(mdDirAbs, "evil"), OUTSIDE], { stdio: "pipe" });
+  } catch {
+    planted = false;
+  }
+  if (!planted) {
+    check("（跳过:这个环境建不出 junction 夹具）", true);
+  } else {
+    const item = LibraryRepo.upsert({ title: "带越界图片引用的一篇" });
+    await setMdPath(item.id, join(mdDirRel, "full.md"));
+    const readMarkdown = handlers.get(IPC.LIBRARY_READ_MARKDOWN);
+    if (!readMarkdown) throw new Error("没注册 LIBRARY_READ_MARKDOWN");
+    const preview = (await Promise.resolve(readMarkdown(null, { id: item.id }))) as {
+      ok: boolean;
+      images: Record<string, string>;
+      skipped: string[];
+    };
+    check("预览本身成功", preview.ok, preview);
+    // 正面控制:目录里真有的那张照常内联（收紧判定不能连正常引用一起挡掉）。
+    check(
+      "正常引用真在目录里的图仍然内联",
+      preview.images["images/ok.png"]?.startsWith("data:image/png") === true,
+      Object.keys(preview.images),
+    );
+    // ★ 症结:裸前缀判定认不出 junction,库外那份文件被内联进 images。
+    check("★ 借 junction 越界的图片**没有**被内联", !preview.images["evil/secret.png"], Object.keys(preview.images));
+    check("★ 而是记进 skipped 如实报出", preview.skipped.some((r) => r.includes("evil")), preview.skipped);
+  }
+}
+
 /* ──────────────── 收尾 ──────────────── */
 
 rmSync(TMP, { recursive: true, force: true });

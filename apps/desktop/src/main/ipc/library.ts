@@ -92,6 +92,7 @@ import { importAnyFiles } from "@main/library/importDispatch.js";
 import {
   ensureOriginal,
   hasOriginal,
+  highlightsPathFor,
   originalPathFor,
   readHighlights,
   writeHighlights,
@@ -428,7 +429,22 @@ function deleteItemsCore(
         if (!item) continue;
 
         if (item.pdfPath && !sharedWithSurvivor(item.pdfPath)) {
-          dropAbs(id, "pdf", fromLibraryRelative(item.pdfPath), false);
+          const pdfAbs = fromLibraryRelative(item.pdfPath);
+          dropAbs(id, "pdf", pdfAbs, false);
+          // **PDF 旁边的两份 sidecar 跟着本体一起走。** 一条 PDF 条目在盘上不止一个文件:
+          //   - `.<名字>.mcode-highlights.json` —— 批注索引(`pdfHighlightsStore.ts` 的"事实来源");
+          //   - `.<名字>.mcode-original.pdf` —— **干净底稿**,第一次"烤进 PDF"前存的一份
+          //     **整份 PDF 拷贝**。
+          // 它们由高亮 handler 创建,而在这次修复之前**全仓没有任何一处删过它们**(只有创建/
+          // 读取)。硬删一篇划过批注的 PDF,本体没了、两份 sidecar 留在 `papers/<ab>/<cd>/` 下,
+          // 其中底稿是**与 PDF 等大**的拷贝 —— 而 `papers/` 用户根本不翻,谁都看不见。
+          //
+          // 只在**本体真的要被删**时删(上面那道 `sharedWithSurvivor`)。sidecar 属于那个 PDF
+          // 文件本身,不属于某一条记录:同 sha 的 PDF 还有别的条目指着时,它连同批注一起留着。
+          // `kind` 用 "pdf"(它们是这个 PDF 的footprint,契约只认 pdf/markdown/file 三档)。
+          for (const sidecar of [highlightsPathFor(pdfAbs), originalPathFor(pdfAbs)]) {
+            dropAbs(id, "pdf", sidecar, false);
+          }
         }
 
         // 一份 md 产物可能是一整个目录(外部工具转的 / 「采纳 Markdown」,里面还有 images/)。

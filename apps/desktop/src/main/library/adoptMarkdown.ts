@@ -312,6 +312,21 @@ export function adoptMarkdownFile(itemId: string, sourcePath: string): AdoptResu
         // 老包挪不动(Windows 上常见的是被别的程序占用)→ **整体放弃**。不做"就地删了再拷"
         // 那种重试:那一步会把"已经删了"的窗口重新打开,正是这个文件要修的东西。
         backupDir = null;
+        // ⚠️ **退出前把暂存清干净。** 这一刻暂存里已经拷好了**完整的一包**(正文 + 全部
+        // 配图)—— 不清的话,每一次"老包被占用"都在 `markdown/imported/` 里永久留下一个
+        // `.adopt-<id>-<随机>/` 的整包副本(几十 MB 的图床尤其刺眼),而用户只收到一句
+        // "关掉它再试一次"。这正是文件头那段"换上去之前失败 → **只删暂存**,老包一个
+        // 字节都没动"要守住的形状:`return fail` 绕过了下面那个统一的 catch,所以清理
+        // 必须在这里自己做。老包挪不动(连 rename 都没成功)时它一个字节都没动。
+        const stage = stageDir;
+        stageDir = null;
+        if (stage) {
+          try {
+            rmSync(stage, { recursive: true, force: true });
+          } catch (cleanupErr) {
+            log.warn(`library: 老包挪不动,暂存目录也没清掉(${stage}):${(cleanupErr as Error).message}`);
+          }
+        }
         return fail(
           `替换失败(老的那一份挪不动,可能正被别的程序占用;关掉它再试一次):${(err as Error).message}`,
         );

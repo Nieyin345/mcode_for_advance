@@ -21,9 +21,10 @@
  * 用户会以为是转换漏了,跑去重转一遍。所以跳过的张数如实返回,界面上要显示出来。
  */
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, extname, join, resolve, sep } from "node:path";
+import { extname, dirname, join } from "node:path";
 import { LibraryRepo } from "@main/store/repositories.js";
 import { fromLibraryRelative } from "./paths.js";
+import { pathWithin } from "@main/lib/pathGuard.js";
 import { log } from "@main/lib/logger.js";
 
 /** 单张图片的上限。超过就不内联 —— base64 之后还要再涨三分之一。 */
@@ -91,9 +92,13 @@ function inlineImage(absMdDir: string, ref: string): string | null {
   // md 里一律是 `/` 分隔,落盘要按平台分隔符拼
   const abs = join(absMdDir, ...rel.split("/"));
 
-  // 越界就跳过 —— md 的内容是数据,不是可信指令
-  const root = resolve(absMdDir);
-  if (abs !== root && !abs.startsWith(root + sep)) {
+  // 越界就跳过 —— md 的内容是数据,不是可信指令。用共享的 `pathWithin`
+  // (解析 realpath/junction、按平台归一大小写),**不是**裸 `startsWith`:
+  // 后者既漏符号链接/junction 越界(一份 md 写 `![](evil/x.png)`,而 md 目录下有个
+  // 名叫 `evil` 的 junction 指向库外,就把库外任意文件内联进 data URL 交给渲染端),
+  // 又在 Windows 上被大小写骗过。`fileImport.ts` 的 `readEntryFile` 早已因同一件事
+  // 换成了这个判据 —— 这里从前是**各写一份**的孪生,漏掉了。
+  if (!pathWithin(absMdDir, abs)) {
     log.warn(`library: md image outside its own directory, skipped: ${ref}`);
     return null;
   }

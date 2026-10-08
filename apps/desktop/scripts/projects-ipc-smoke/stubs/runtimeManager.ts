@@ -32,6 +32,8 @@ import { traceCall } from "./callTrace.js";
 
 const disposed: string[] = [];
 const disposedProjects: string[] = [];
+/** 被 `forgetSession()` 过的会话 id(活数组,断言直接 `.includes`)。 */
+export const forgot: string[] = [];
 
 /** 被 `dispose()` 过的会话 id,按调用顺序。 */
 export function disposedIds(): string[] {
@@ -46,6 +48,7 @@ export function disposedProjectIds(): string[] {
 export function resetRuntimeStub(): void {
   disposed.length = 0;
   disposedProjects.length = 0;
+  forgot.length = 0;
 }
 
 export const runtimeManager = {
@@ -58,6 +61,13 @@ export const runtimeManager = {
   disposeProject(projectId: string): void {
     disposedProjects.push(projectId);
     traceCall("disposeProject", projectId);
+  },
+  /** 硬删时摘掉按会话残留状态(`lastEnvFingerprint`)。见 `RuntimeManager.forgetSession` ——
+   *  刻意**不并进 `dispose`**:归档也走 dispose,而归档的会话重开时环境块已在历史里,
+   *  那时清指纹会重复注入。 */
+  forgetSession(sessionId: string): void {
+    forgot.push(sessionId);
+    traceCall("forgetSession", sessionId);
   },
   /** 归档也走这一句(本套不测归档,但注册路径上会被引用)。 */
   interrupt(sessionId: string): void {

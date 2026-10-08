@@ -1672,6 +1672,25 @@ class RuntimeManager {
     this.sessions.delete(sessionId);
   }
 
+  /**
+   * 会话**硬删**了:把它留在 manager 上的按会话状态摘干净(`lastEnvFingerprint`)。
+   *
+   * ## 为什么不能并进 `dispose()`
+   *
+   * `dispose()` 也走**归档**(`ipc/projects.ts`:archive → dispose,行还在)。归档的会话
+   * 被重新打开时,provider 按 `claudeSessionId` **续上同一条 SDK 线程**(见
+   * `ClaudeAgentSdkProvider` 的 `resume`),环境块**已经在历史里**了 —— 指纹正是为
+   * "别重复灌"而存在的。在 dispose 里清掉它,归档往返一次就会把环境块**再灌一遍**。
+   *
+   * 所以清在这里,只有"行真的没了"这条路上调(见 `lib/rowDeletion.ts`)。
+   *
+   * ⚠️ `forgetSession` **不**替代 `dispose`:调用方**先** `dispose`(放运行时、掐回合),
+   * 再 `forgetSession`(摘按会话的残留状态)。
+   */
+  forgetSession(sessionId: string): void {
+    this.lastEnvFingerprint.delete(sessionId);
+  }
+
   /** Dispose every session runtime bound to a project. Called BEFORE a
    *  project hard-delete: the SQL cascade removes the session rows, so this
    *  is the last chance to look up which runtimes to release (otherwise each

@@ -47,6 +47,11 @@ export function deleteSessionEverywhere(id: string): void {
   // 以及它的 agent 工具还占着的持久进程 / 后台搜索 / SSH 连接(不挂在 dispose 上
   // 的理由见 `mcp/agentSessionCleanup.ts`)。
   disposeAgentSession(id);
+  // `RuntimeManager` 上按会话留的状态(`lastEnvFingerprint`)也摘掉。**不并进上面那句
+  // `dispose`**:归档也走 dispose、而归档的会话重新打开时 provider 续同一条线程、环境块
+  // 已在历史里 —— 那时清指纹会重复注入(见 `RuntimeManager.forgetSession`)。只有"行真没了"
+  // 这条路上才该清,否则一张会话键的表随会话数只涨不落(与 `dropAgentMail` 同一类)。
+  runtimeManager.forgetSession(id);
   SessionRepo.delete(id);
   broadcastSessionDeleted(id);
 }
@@ -77,6 +82,9 @@ export function deleteProjectEverywhere(id: string): { sessions: number; stopped
     dropBackflow(sid);
     dropAgentMail(sid);
     disposeAgentSession(sid);
+    // 按会话残留状态(`lastEnvFingerprint`)同理 —— 级联把这个项目的会话全带走,每一条
+    // 都欠一遍(见 `deleteSessionEverywhere` 上那条的同款理由)。
+    runtimeManager.forgetSession(sid);
   }
   // Release every session runtime BEFORE the SQL cascade removes the rows
   // (disposeProject reads them to know what to dispose). Also interrupts a

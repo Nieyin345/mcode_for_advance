@@ -49,6 +49,7 @@ import { callTrace, resetCallTrace } from "./stubs/callTrace.js";
 import {
   disposedIds,
   disposedProjectIds,
+  forgot,
   resetRuntimeStub,
 } from "./stubs/runtimeManager.js";
 
@@ -357,6 +358,15 @@ console.log("\n2. 删项目 —— 级联删掉的每一条会话,收尾做全�
     [a, b, side].every((id) => mailDropped.includes(id)),
     mailDropped,
   );
+  // `RuntimeManager` 上按会话留的 `lastEnvFingerprint` 同理:每轮 chat 写一条、从不删,
+  // 会话键的表随会话数只涨不落。判据同样立在"每一条"(项目级走逐会话循环)。**刻意不并进
+  // dispose**:归档也走 dispose、归档会话重开时环境块已在历史里,那时清指纹会重复注入 ——
+  // 所以硬删这条路上有单独一句 `forgetSession`。
+  check(
+    "**每一条**的环境指纹残留都摘了(会话键的表不能只涨不落)",
+    [a, b, side].every((id) => forgot.includes(id)),
+    forgot,
+  );
 
   // 3) 手机端那边这几条会话是"刚才还在列表里"的,要逐条告诉它。
   const deletedIds = mobileEvents
@@ -436,6 +446,7 @@ console.log("\n3. 删一条会话");
   check("停的是这一条", stoppedRuns[0] === s, stoppedRuns);
   check("待并回内容清了", dropped.includes(s), dropped);
   check("代理收件箱也清了(会话级)", mailDropped.includes(s), mailDropped);
+  check("环境指纹残留也摘了(会话级,会话键的表不能只涨不落)", forgot.includes(s), forgot);
   check(
     "运行时也放掉了(逐条的那一句 —— 会话级的 dispose)",
     disposedIds().includes(s),

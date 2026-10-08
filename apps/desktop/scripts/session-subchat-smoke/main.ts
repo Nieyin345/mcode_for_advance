@@ -327,6 +327,48 @@ console.log("\n复用不能跨角色 —— 本套最要紧的一组");
   eq("乙那个壳里记的是乙那份指令", bShell.agentProfile?.instruction, INSTR_B);
 }
 
+/* ── 4b. 复用判据不能被 LIKE 通配符骗到 ───────────────────────────────────── */
+
+/**
+ * `findFreshSideByParent` 用 `agent_profile LIKE '%"id":"<id>"%'` 认「上一次为这份
+ * 档案开的那个空壳」。而**档案 id 的字符集里 `_` 是 LIKE 的单字符通配符** ——
+ * 方法自己的注释却写着"`[a-z0-9_]` 塞不进 LIKE 的通配符"(那是错的:每个 id 都以
+ * `p_` 开头,`_` 必然出现)。
+ *
+ * 症状:两个 id 只在某个 `_` 的位置上不同时,搜甲会匹配到乙的空壳。`sessionStart`
+ * 那边的 `sameProfile` 拿**精确 id** 再判一次,于是不会把乙的角色错给甲 —— 但
+ * `findFresh...` 只回**最近的那一个**,乙的壳更新时它会先返回乙、被 `sameProfile`
+ * 拒掉,然后在甲**明明有空壳**的情况下**再建一个**。那正是这个函数存在的意义
+ * ("别每点一次堆一个空壳")失效。
+ *
+ * 这里造一对真会互撞的 id:`p_p_one` 的 LIKE 模式 `p?p?one` 逐字命中 `p_paone`。
+ */
+{
+  const parent = newParent();
+  const ID_A = "p_paone"; // 甲:LIKI 模式 `p_p?one` 命中不了它,但反向会被命中
+  const ID_B = "p_p_one"; // 乙:模式 `p?p?one` 会误命中甲的 id
+  writeProfile({ id: ID_A, name: "甲档案", instruction: "我是甲。" });
+  writeProfile({ id: ID_B, name: "乙档案", instruction: "我是乙。" });
+
+  const shellB = call(parent, { agentProfileId: ID_B }).session;
+  // 隔开一点,保证甲的壳 updated_at 更大(被查的那个"最近的那一个")。
+  await new Promise((r) => setTimeout(r, 8));
+  const shellA = call(parent, { agentProfileId: ID_A }).session;
+  eq("先各建了一个空壳", sideCount(parent), 2);
+
+  // 甲更近,而乙的模式会误命中甲 —— 修复前这里返回甲。
+  eq("★ findFreshSideByParent 按精确 id 命中乙(不被甲的通配符骗走)",
+    SessionRepo.findFreshSideByParent(parent, ID_B)?.id, shellB.id);
+
+  const again = call(parent, { agentProfileId: ID_B });
+  eq("★ 点乙复用的是乙那个壳", again.session.id, shellB.id);
+  eq("没有在乙明明有空壳时又堆一个", sideCount(parent), 2);
+  eq("标成复用了", again.reused, true);
+  eq("甲的壳原样在", SessionRepo.get(shellA.id)?.id, shellA.id);
+  removeProfile(ID_A);
+  removeProfile(ID_B);
+}
+
 console.log("\n用过了的壳不再复用(判据是「有没有消息」,不是标题)");
 {
   const parent = newParent();

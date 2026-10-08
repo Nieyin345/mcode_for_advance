@@ -31,10 +31,12 @@
  */
 import { execFileSync } from "node:child_process";
 import {
+  closeSync,
   copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -302,6 +304,57 @@ console.log("\n采纳 · md 里有不合法的百分号转义");
   eq("图数报的是 1", res.imageCount, 1);
   check("坏的那一条进了 missing", res.missing.some((m) => m.includes("100%")), res.missing);
   check("落点下面没有暂存残渣", !packageOnly(bomItem).match(/stage|\.tmp|adopt-/i), packageOnly(bomItem));
+}
+
+/* ──────────────── 3d. 老包挪不动时的"整体放弃":暂存也必须清干净 ──────────────── */
+
+console.log("\n采纳 · 老包挪不动 → 放弃,但暂存不许留下");
+
+// 文件头写着"换上去之前失败 → **只删暂存**,老包一个字节都没动"。而"老包挪不动"这一档
+// (`renameSync(destDir, backupDir)` 抛 EPERM —— Windows 上落点里有一份文件被别的程序
+// 打开就是这一档)走的是**另一个** return:它在把老包 rename 到退路的那一步失败时就
+// `return fail(...)` 了,此时**暂存里已经拷好了完整的一包**(正文 + 全部配图)。
+//
+// 那条 early return **没有清理暂存** —— 于是每次"老包被占用"都在 `markdown/imported/`
+// 里永久留下一个 `.adopt-<id>-<随机>/` 的整包副本(几十 MB 的教材图床尤其刺眼),
+// 而用户得到的只是一句"关掉它再试一次"。这正是文件头那段"失败路径上要守住"要防的东西。
+//
+// 注入方式与真实故障同一形态:持有一个**包内文件**的读句柄(不关),rename 就该抛 EPERM
+// (实测:只要包里有文件被打开,rename 该目录在 Windows 上必 EPERM)。
+{
+  const stuckItem = LibraryRepo.upsert({ title: "老包被占用的一篇" }).id;
+  const s0 = mkdtempSync(join(tmpdir(), "mcode-adopt-stuck0-"));
+  mkdirSync(join(s0, "images"), { recursive: true });
+  writeFileSync(join(s0, "full.md"), "# 老的那一版\n", "utf8");
+  writeFileSync(join(s0, "images", "a.png"), Buffer.from([1, 2, 3, 4, 5]));
+  eq("先正常挂上第一版", adoptMarkdownFile(stuckItem, join(s0, "full.md")).ok, true);
+  const stuckMd = inPackage(stuckItem, "full.md");
+  const stuckBefore = readFileSync(stuckMd, "utf8");
+
+  // 占住包里的那份正文 —— rename(destDir → backupDir) 从此必 EPERM。
+  const held = openSync(stuckMd, "r");
+  try {
+    const s1 = mkdtempSync(join(tmpdir(), "mcode-adopt-stuck1-"));
+    mkdirSync(join(s1, "images"), { recursive: true });
+    writeFileSync(join(s1, "full.md"), "# 想换上去的那一版\n", "utf8");
+    writeFileSync(join(s1, "images", "b.png"), Buffer.from([9, 9, 9, 9, 9]));
+
+    const stuck = adoptMarkdownFile(stuckItem, join(s1, "full.md"));
+    check("这次失败了", !stuck.ok, stuck);
+    eq("老包的正文一字未动", textAt(stuckMd), stuckBefore);
+    // ★ 症结:stageDir 从没被清掉,一整包(含全部配图)永久留在 imported/ 下。
+    check(
+      "★ 暂存整包没有留下(失败时要清干净,不留垃圾)",
+      !packageOnly(stuckItem).match(/\.adopt-|\.old-|stage/i),
+      packageOnly(stuckItem),
+    );
+  } finally {
+    closeSync(held);
+  }
+  // 反转后能再挂上去 —— 证明上面确实只是"被占用",不是别的坏法。
+  const s2 = mkdtempSync(join(tmpdir(), "mcode-adopt-stuck2-"));
+  writeFileSync(join(s2, "full.md"), "# 关掉之后换上的那一版\n", "utf8");
+  eq("关掉占用后重试成功", adoptMarkdownFile(stuckItem, join(s2, "full.md")).ok, true);
 }
 
 /* ──────────────── 4. 重转:不许覆盖用户采纳进来的那份 ──────────────── */

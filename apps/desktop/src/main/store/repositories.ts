@@ -613,9 +613,15 @@ export const SessionRepo = {
    *  壳复用),`undefined` = 不收窄。
    *
    *  ⚠️ 判据是**在 JSON 文本里找 `"id":"<id>"`**,不是解析 JSON —— sql.js 装的这版
-   *  SQLite 不保证有 JSON1 扩展(`json_extract` 可能直接报错),而档案 id 的字符集被
-   *  `AGENT_PROFILE_ID_RE` 限死在 `[a-z0-9_]`,塞不进 LIKE 的通配符。这条路窄但确定
-   *  (模式里带着收尾的双引号,所以 `p_a` 不会命中 `p_ab`)。 */
+   *  SQLite 不保证有 JSON1 扩展(`json_extract` 可能直接报错)。这条路窄但确定
+   *  (模式里带着收尾的双引号,所以 `p_a` 不会命中 `p_ab`)。
+   *
+   *  ⚠️ **`_` 是 LIKE 通配符,而档案 id 里必然有它**(每个 id 都以 `p_` 开头)。
+   *  把 id 原样拼进 LIKE 模式,`p_p_one` 会连同 `p_paone` 一起命中(逐位对上:两个
+   *  `_` 各吃掉一个字符)。症状是"点乙拿到甲的壳" —— `sessionStart` 的 `sameProfile`
+   *  用精确 id 再判一次,于是它先拒掉甲、再**在乙明明有空壳时另建一个**(那正是本
+   *  函数存在的意义失效)。所以 id 里那三个字符(`\` `%` `_`)必须先转义,再配
+   *  `ESCAPE '\'` —— 与 `searchByTitle` / `LibraryRepo.list` 同一套写法。 */
   findFreshSideByParent(
     parentSessionId: string,
     profileId?: string | null,
@@ -633,8 +639,11 @@ export const SessionRepo = {
       if (profileId === null) {
         where.push("agent_profile IS NULL");
       } else {
-        where.push("agent_profile LIKE ?");
-        params.push(v(`%"id":"${profileId}"%`));
+        // 转义 id 里的 `\` `%` `_`(后两个是 LIKE 通配符),两端的 `%` 是刻意的
+        // 通配符(JSON 文本的前后缀),不能转。
+        const escaped = profileId.replace(/[\\%_]/g, (m) => `\\${m}`);
+        where.push("agent_profile LIKE ? ESCAPE '\\'");
+        params.push(v(`%"id":"${escaped}"%`));
       }
     }
     const stmt = db.prepare(
