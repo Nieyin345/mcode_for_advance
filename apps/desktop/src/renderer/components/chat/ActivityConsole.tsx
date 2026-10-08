@@ -738,6 +738,12 @@ export function ActivityConsole({
 
   if (node === "subagents") {
     const failed = settledAgents.filter((a) => a.status === "failed").length;
+    // The "completed" chip must count EXACTLY the rows the completed tab lists.
+    // `killed` (a user-interrupted turn demotes still-running agents to `killed`
+    // — see sessionStore.interrupt) is NOT completed: `settled - failed` folded
+    // it in, so the chip said "2" while the tab listed 1 (one was killed).
+    // Same predicate the body's `completed` group uses (`status === "completed"`).
+    const completed = subagents.filter((a) => a.status === "completed").length;
     subtitle = runningAgents.length
       ? t("chatStream.activity.subagentsSubRunning", { running: runningAgents.length, ended: settledAgents.length })
       : t("chatStream.activity.subagentsSubIdle", { n: subagents.length });
@@ -760,7 +766,7 @@ export function ActivityConsole({
     filters = [
       { key: "all", label: t("chatStream.activity.tabAll"), n: subagents.length },
       { key: "running", label: t("chatStream.activity.groupRunning"), n: runningAgents.length },
-      { key: "completed", label: t("chatStream.activity.groupCompleted"), n: settledAgents.length - failed },
+      { key: "completed", label: t("chatStream.activity.groupCompleted"), n: completed },
       { key: "failed", label: t("chatStream.activity.groupFailed"), n: failed },
     ];
     footer = t("chatStream.activity.subagentsFooter");
