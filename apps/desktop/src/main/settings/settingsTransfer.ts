@@ -23,12 +23,24 @@ import { validateCustomUiWrite } from "@main/customUi/configValidation.js";
 export const SETTINGS_EXPORT_FORMAT = "mcode-settings";
 export const SETTINGS_EXPORT_VERSION = 1;
 
-/** key 名里出现这些片段就当密钥,不导出也不导入。 */
+/** key 名里出现这些片段就当密钥,不导出也不导入。
+ *
+ *  ⚠️ **词尾的 `s?` 不是可有可无的。** 自定义模型密钥存在 `customModelKeys` 里 ——
+ *  复数形式。早先这里只认单数(`api[-_.]?key|apikey|token|...`),`Keys` 一个都没命中,
+ *  于是那个键从两道筛子里**同时漏过去**(见 `EXCLUDED_KEYS` 里那一条的注释)。复数不该
+ *  让一道按名字设的闸门失效。 */
 const SECRET_KEY_RE =
-  /(api[-_.]?key|apikey|token|secret|password|passwd|credential|cookie|authorization|private[-_.]?key|paireddevices|passwordlogin|\.enc$)/i;
+  /(api[-_.]?keys?|apikeys?|tokens?|secrets?|passw(or)?ds?|credentials?|cookies?|authorization|private[-_.]?keys?|paireddevices|passwordlogin|\.enc$)/i;
 
 /** 精确排除的键(本机路径 / 运行状态 / 含密钥的整块配置)。 */
 const EXCLUDED_KEYS = new Set<string>([
+  // ⚠️ **自定义模型的密钥本体。** 这个键名**不会**被 `SECRET_KEY_RE` 命中 —— 正则认的是
+  // `api[-_.]?key` / `apikey`,而它是 `customModel**Keys**(复数)`,两个词都不在表里。
+  // 值在 `safeStorage` 不可用的机器上是**明文 base64**(见 `main/lib/secretStore.ts` 的
+  // `encrypt()` 降级路径),可逆。少这一条,导出设置就把全部网关密钥写进那个 JSON 文件,
+  // 而用户导出它正是为了分享 / 搬机器 —— 与文件头「绝不导出密钥」那句直接相悖。
+  // (`customModels` 那一条是**公开元数据**、不含密钥,该照常导出,不要一起排掉。)
+  "customModelKeys",
   "app.dataRoot",
   "browser.dataDir",
   "browser.screenshotDir",
