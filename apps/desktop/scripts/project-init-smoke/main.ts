@@ -1,6 +1,7 @@
 import { registerProjectInitHandlers } from "../../src/main/ipc/projectInit.js";
 import { IPC } from "@contracts/ipc";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +13,7 @@ import { SHIPPED_INITIALIZERS } from "../../src/main/projectInit/shipped.js";
 import { setRoot, projects, sessions, events, settings } from "./stubs.js";
 const base = await mkdtemp(join(tmpdir(), "mcode-project-init-"));
 let root = "", data = "", passed = 0, failed = 0, count = 0;
+const sha256 = (s: string): string => createHash("sha256").update(s, "utf8").digest("hex");
 const draft = (name="学术"): ProjectInitDraft => ({ name, description:"A user-defined scenario", directories:["papers"], files:[{path:"notes/README.md",content:"# Research\n用户定义正文"}], memories:[{category:"project",filename:"init.md",title:"Project rules",content:"Cite primary sources",pinned:true}] });
 async function test(name:string, run:()=>unknown|Promise<unknown>) {
  const folder=join(base,String(++count));root=join(folder,"workspace");data=join(folder,"data");
@@ -38,12 +40,12 @@ try {
  });
  await test("updates and deletes require original revision",()=>{
   const t=saveProjectInitializer({draft:draft()});const changed=saveProjectInitializer({id:t.id,expectedRevision:t.revision,draft:draft("会议")});
-  assert.throws(()=>saveProjectInitializer({id:t.id,expectedRevision:t.revision,draft:draft()}),/changed/);
-  assert.throws(()=>deleteProjectInitializer({id:t.id,expectedRevision:t.revision}),/changed/);
+  assert.throws(()=>saveProjectInitializer({id:t.id,expectedRevision:t.revision,draft:draft()}),/改动/);
+  assert.throws(()=>deleteProjectInitializer({id:t.id,expectedRevision:t.revision}),/改动/);
   deleteProjectInitializer({id:t.id,expectedRevision:changed.revision});assert.equal(listProjectInitializers().templates.length,0);
  });
  await test("normalized command names cannot collide",()=>{
-  saveProjectInitializer({draft:draft("Study")});assert.throws(()=>saveProjectInitializer({draft:draft("study")}),/already exists/);
+  saveProjectInitializer({draft:draft("Study")});assert.throws(()=>saveProjectInitializer({draft:draft("study")}),/已存在/);
  });
  await test("unreadable templates never get replaced silently",()=>{
   const t=saveProjectInitializer({draft:draft()});settings.set("projectInit.template."+t.id,"{broken");
@@ -80,33 +82,48 @@ try {
  });
  await test("files created after preview invalidate approval",async()=>{
   saveProjectInitializer({draft:draft()});const p=await preview();await mkdir(join(root,"notes"));await writeFile(join(root,"notes/README.md"),"Do not touch");
-  await assert.rejects(applyProjectInitializer({sessionId:"s1",command:"init-学术",digest:p.digest}),/Preview changed/);assert.equal(await readFile(join(root,"notes/README.md"),"utf8"),"Do not touch");
+  await assert.rejects(applyProjectInitializer({sessionId:"s1",command:"init-学术",digest:p.digest}),/预览已改变/);assert.equal(await readFile(join(root,"notes/README.md"),"utf8"),"Do not touch");
  });
  await test("editing a template invalidates an old preview",async()=>{
   const t=saveProjectInitializer({draft:draft()});const p=await preview();saveProjectInitializer({id:t.id,expectedRevision:t.revision,draft:{...draft(),description:"Changed"}});
-  await assert.rejects(applyProjectInitializer({sessionId:"s1",command:"init-学术",digest:p.digest}),/Preview changed/);assert.deepEqual(await readdir(root),[]);
+  await assert.rejects(applyProjectInitializer({sessionId:"s1",command:"init-学术",digest:p.digest}),/预览已改变/);assert.deepEqual(await readdir(root),[]);
  });
  await test("approval is bound to conversation and project",async()=>{
   saveProjectInitializer({draft:draft()});const p=await preview();const other=join(base,"other-project");await mkdir(other);projects.set("p2",{id:"p2",name:"Other",path:other});sessions.set("s2",{id:"s2",projectId:"p2"});
-  await assert.rejects(applyProjectInitializer({sessionId:"s2",command:"init-学术",digest:p.digest}),/Preview changed/);assert.deepEqual(await readdir(other),[]);
+  await assert.rejects(applyProjectInitializer({sessionId:"s2",command:"init-学术",digest:p.digest}),/预览已改变/);assert.deepEqual(await readdir(other),[]);
  });
  await test("missing session and command fail explicitly",async()=>{
   saveProjectInitializer({draft:draft()});await assert.rejects(previewProjectInitializer({sessionId:"missing",command:"init-学术"}));await assert.rejects(previewProjectInitializer({sessionId:"s1",command:"init-unknown"}));
+ });
+ // 这些报错**原样画在渲染端的 ErrorNote 上**(ProjectInitManager / useProjectInitializer),
+ // 与同仓其它主进程报错一样是中文;从前 service.ts 全部是英文(同一页一屏中文里蹦出英文)。
+ await test("user-visible errors are Chinese, not English",async()=>{
+  saveProjectInitializer({draft:draft()});
+  const zh=/[一-龥]/, en=/^[A-Za-z]/;
+  const grab=async(fn:()=>unknown)=>{try{await fn();return "";}catch(e){return String((e as Error).message);}};
+  const notFound=await grab(()=>previewProjectInitializer({sessionId:"s1",command:"init-不存在"}));
+  const noProject=await grab(()=>previewProjectInitializer({sessionId:"nope",command:"init-学术"}));
+  const collide=await grab(()=>saveProjectInitializer({draft:draft()}));
+  for(const [name,msg] of [["未找到命令",notFound],["无有效项目",noProject],["命令重名",collide]] as const){
+   assert.ok(msg.length>0,`${name}: 有报错`);
+   assert.ok(zh.test(msg),`${name} 是中文:${msg}`);
+   assert.ok(!en.test(msg),`${name} 不是英文开头:${msg}`);
+  }
  });
  await test("selected worktree receives files, original project receives memory",async()=>{
   const worktree=join(base,"worktree");await mkdir(worktree);sessions.set("s1",{id:"s1",projectId:"p1",worktreePath:worktree});saveProjectInitializer({draft:draft()});await execute();
   assert.deepEqual(await readdir(root),[]);assert.equal(await readFile(join(worktree,"notes/README.md"),"utf8"),draft().files[0].content);assert.match(readMemoryFile("projects/p1/project/init.md").content,/Cite/);
  });
  await test("file parents block the entire plan before any writes",async()=>{
-  await writeFile(join(root,"notes"),"not a directory");saveProjectInitializer({draft:draft()});const p=await preview();assert.ok(p.actions.some(a=>a.status==="blocked"));await assert.rejects(execute(),/blocked/);assert.deepEqual(await readdir(root),["notes"]);
+  await writeFile(join(root,"notes"),"not a directory");saveProjectInitializer({draft:draft()});const p=await preview();assert.ok(p.actions.some(a=>a.status==="blocked"));await assert.rejects(execute(),/阻止/);assert.deepEqual(await readdir(root),["notes"]);
  });
  await test("symlink/junction parents cannot escape project",async()=>{
   const outside=join(base,"outside");await mkdir(outside);await symlink(outside,join(root,"notes"),process.platform==="win32"?"junction":"dir");
-  saveProjectInitializer({draft:draft()});assert.ok((await preview()).actions.some(a=>a.reason==="symlink"));await assert.rejects(execute(),/blocked/);assert.deepEqual(await readdir(outside),[]);
+  saveProjectInitializer({draft:draft()});assert.ok((await preview()).actions.some(a=>a.reason==="symlink"));await assert.rejects(execute(),/阻止/);assert.deepEqual(await readdir(outside),[]);
  });
  await test("memory symlink/junction is rejected before file creation",async()=>{
   const outside=join(base,"outside-memory");await mkdir(outside);await symlink(outside,join(data,"memory"),process.platform==="win32"?"junction":"dir");
-  saveProjectInitializer({draft:draft()});await assert.rejects(execute(),/blocked/);assert.deepEqual(await readdir(root),[]);assert.deepEqual(await readdir(outside),[]);
+  saveProjectInitializer({draft:draft()});await assert.rejects(execute(),/阻止/);assert.deepEqual(await readdir(root),[]);assert.deepEqual(await readdir(outside),[]);
  });
  await test("memory failures are explicit partial results, not silent success",async()=>{
   saveProjectInitializer({draft:{...draft(),memories:[{...draft().memories[0],content:"sk-"+"A".repeat(30)}]}});const r=await execute();
@@ -172,11 +189,11 @@ try {
  });
  await test("guide file appearing after preview invalidates approval",async()=>{
   saveProjectInitializer({draft:agentDraft()});const p=await previewProjectInitializer({sessionId:"s1",command:"init-代码"});await writeFile(join(root,"AGENTS.md"),"late");
-  await assert.rejects(applyProjectInitializer({sessionId:"s1",command:"init-代码",digest:p.digest}),/Preview changed/);
+  await assert.rejects(applyProjectInitializer({sessionId:"s1",command:"init-代码",digest:p.digest}),/预览已改变/);
  });
  await test("guide path occupied by a directory blocks the plan",async()=>{
   await mkdir(join(root,"AGENTS.md"));saveProjectInitializer({draft:agentDraft()});const p=await previewProjectInitializer({sessionId:"s1",command:"init-代码"});
-  assert.equal(p.agentFile?.blocked,"wrongType");await assert.rejects(applyProjectInitializer({sessionId:"s1",command:"init-代码",digest:p.digest}),/blocked/);
+  assert.equal(p.agentFile?.blocked,"wrongType");await assert.rejects(applyProjectInitializer({sessionId:"s1",command:"init-代码",digest:p.digest}),/阻止/);
  });
  await test("default scenario: set, list, clear, stale after delete, unknown id rejected",()=>{
   const a=saveProjectInitializer({draft:agentDraft()});assert.equal(listProjectInitializers().defaultId,null);
@@ -195,6 +212,25 @@ try {
   const off={...next,agentFile:{...next.agentFile!,enabled:false}};settings.set("projectInit.template."+shipped.id,JSON.stringify(off));ensureShippedInitializersSeeded();
   assert.equal(settings.get("projectInit.template."+shipped.id),JSON.stringify(off));
  });
+ // 老安装里那份「逐字原版」**不等于**「新版去掉 agentFile」时的升级。
+ // 610403b8 统一「资料库」叫法时顺手改了 RESEARCH 的 references/README.md 一句话,于是
+ // 首发(4cf6f00c)那份原版再也不逐字相等 —— `upgradeUntouchedShipped` 认不出来,老用户
+ // 那份没改过的模板就永远补不上 agentFile。用 legacyPristineRevisions 认回它。
+ // 这里直接用**当时存进库的字符串**(与首发出厂正文逐字相同)做输入,不靠「新版改字还原」。
+ await test("a shipped template whose published body later changed still upgrades (legacy pristine revision)",()=>{
+  const shipped=SHIPPED_INITIALIZERS[0];
+  assert.ok(shipped.legacyPristineRevisions?.length, "RESEARCH 必须记着历次发过的正文哈希");
+  const next=ProjectInitDraftSchema.parse(shipped.draft);const old={...next};delete old.agentFile;
+  // 首发 4cf6f00c 的正文:与当前版本的唯一差别是那句参考文献说明(「主文献库文件」)。
+  const legacyStored=JSON.stringify(old).split("主参考文献文件固定叫").join("主文献库文件固定叫");
+  assert.notEqual(legacyStored,JSON.stringify(old),"前提:老版本与当前版正文确实不同");
+  assert.ok(shipped.legacyPristineRevisions!.includes(sha256(legacyStored)),"前提下:那个哈希就记在 legacyPristineRevisions 里");
+  settings.set("projectInit.template."+shipped.id,legacyStored);settings.set("projectInit.seededShipped",JSON.stringify(SHIPPED_INITIALIZERS.map(s=>s.id)));
+  ensureShippedInitializersSeeded();
+  assert.equal(getProjectInitializer({id:shipped.id}).agentFile?.enabled,true,"★ 老安装那份没改过的模板补上了 agentFile");
+  ensureShippedInitializersSeeded();assert.equal(settings.get("projectInit.template."+shipped.id),JSON.stringify(next),"升级后与新版逐字相等、幂等");
+ });
+
  await test("every shipped scenario previews and applies cleanly on an empty project",async()=>{
   ensureShippedInitializersSeeded();
   let thesisRoot="";

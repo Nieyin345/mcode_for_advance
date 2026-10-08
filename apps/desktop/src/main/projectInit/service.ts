@@ -26,15 +26,15 @@ const busy = new Set<string>();
 const errorText = (e: unknown) => e instanceof Error ? e.message : String(e);
 function stored(id: string): ProjectInitTemplate {
   const raw = SettingRepo.get(PREFIX + ProjectInitIdSchema.parse({ id }).id);
-  if (raw === null) throw new Error("Initialization template not found");
+  if (raw === null) throw new Error("初始化方案不存在");
   let value: unknown;
-  try { value = JSON.parse(raw); } catch { throw new Error("Initialization template is unreadable; it was not replaced"); }
+  try { value = JSON.parse(raw); } catch { throw new Error("初始化方案无法读取;未替换它"); }
   return { ...ProjectInitDraftSchema.parse(value), id, revision: hash(raw) };
 }
 const DEFAULT_KEY = "projectInit.defaultId";
 export function listProjectInitializers(): ProjectInitList {
   const keys = SettingRepo.keysWithPrefix(PREFIX);
-  if (keys.length > MAX_TEMPLATES) throw new Error("Too many initialization templates");
+  if (keys.length > MAX_TEMPLATES) throw new Error("初始化方案数量已达上限");
   const templates = keys.map((key): ProjectInitSummary => {
     const { id, name, description, revision, agentFile } = stored(key.slice(PREFIX.length));
     return { id, name, description, revision, ...(agentFile?.enabled ? { agentFile: agentFile.filename } : {}) };
@@ -79,7 +79,11 @@ export function ensureShippedInitializersSeeded(): void {
 }
 /** 出厂模板后来补了「AI 生成说明文件」(2026-10)。用户**从没改过**的那份 —— 存的正好是旧版
  *  逐字内容(= 新版去掉 agentFile)—— 原地升级成新版;改过一个字、或自己关掉过 AI 生成的都不动。
- *  逐字比较,所以只适用于「新版 = 旧版 + agentFile」;升级后不再相等,天然幂等。 */
+ *  逐字比较,所以只适用于「新版 = 旧版 + agentFile」;升级后不再相等,天然幂等。
+ *
+ *  后来一种情况让「逐字相等」失效:出厂正文本身被改过(`610403b8` 统一「资料库」叫法时顺手
+ *  改了 RESEARCH 的 references/README.md 一句话)。那样老安装里那份**原版**就不等于「新版
+ *  去掉 agentFile」了——用 `legacyPristineRevisions`(历次发过的正文哈希)把它认回来。 */
 function upgradeUntouchedShipped(): void {
   for (const shipped of SHIPPED_INITIALIZERS) {
     if (!shipped.upgradeAddsAgentFile) continue;
@@ -88,7 +92,9 @@ function upgradeUntouchedShipped(): void {
     const next = ProjectInitDraftSchema.parse(shipped.draft);
     const previous = { ...next };
     delete previous.agentFile;
-    if (raw === JSON.stringify(previous)) SettingRepo.set(PREFIX + shipped.id, JSON.stringify(next));
+    const pristine = raw === JSON.stringify(previous)
+      || (shipped.legacyPristineRevisions ?? []).includes(hash(raw));
+    if (pristine) SettingRepo.set(PREFIX + shipped.id, JSON.stringify(next));
   }
 }
 export function getProjectInitializer(input: { id: string }): ProjectInitTemplate {
@@ -97,28 +103,28 @@ export function getProjectInitializer(input: { id: string }): ProjectInitTemplat
 export function saveProjectInitializer(raw: ProjectInitSaveInput): ProjectInitTemplate {
   const input = ProjectInitSaveSchema.parse(raw);
   const templates = listProjectInitializers().templates;
-  if (!input.id && templates.length >= MAX_TEMPLATES) throw new Error("Too many initialization templates");
-  if (input.id && stored(input.id).revision !== input.expectedRevision) throw new Error("Template changed; reload before saving");
-  if (templates.some(t => t.id !== input.id && initNameKey(t.name) === initNameKey(input.draft.name))) throw new Error("Initialization command name already exists");
+  if (!input.id && templates.length >= MAX_TEMPLATES) throw new Error("初始化方案数量已达上限");
+  if (input.id && stored(input.id).revision !== input.expectedRevision) throw new Error("方案已改动;保存前请重新加载");
+  if (templates.some(t => t.id !== input.id && initNameKey(t.name) === initNameKey(input.draft.name))) throw new Error("已存在同名的初始化命令");
   const id = input.id ?? randomUUID();
   SettingRepo.set(PREFIX + id, JSON.stringify(input.draft));
   return stored(id);
 }
 export function deleteProjectInitializer(raw: { id: string; expectedRevision: string }): { ok: true } {
   const input = ProjectInitDeleteSchema.parse(raw);
-  if (stored(input.id).revision !== input.expectedRevision) throw new Error("Template changed; reload before deleting");
+  if (stored(input.id).revision !== input.expectedRevision) throw new Error("方案已改动;删除前请重新加载");
   SettingRepo.delete(PREFIX + input.id);
   return { ok: true };
 }
 async function context(input: ProjectInitPreviewInput) {
   const session = SessionRepo.get(input.sessionId);
   const project = session ? ProjectRepo.get(session.projectId) : undefined;
-  if (!session || !project || !MEMORY_PROJECT_ID.test(project.id)) throw new Error("No valid project for this conversation");
+  if (!session || !project || !MEMORY_PROJECT_ID.test(project.id)) throw new Error("当前对话没有有效的项目");
   // The selected checkout, not the renderer's mutable active-project setting.
   const root = await realpath(session.worktreePath || project.path);
   const memoryBase = await realpath(dataRoot());
   const rootStat = await lstat(root);
-  if (!rootStat.isDirectory()) throw new Error("Project root is not a directory");
+  if (!rootStat.isDirectory()) throw new Error("项目根路径不是文件夹");
   return { session, project, root, memoryBase, rootIdentity: `${rootStat.dev}:${rootStat.ino}` };
 }
 /** Inspect each ancestor without reading existing content. Missing parents are
@@ -154,7 +160,7 @@ async function publishFile(root: string, path: string, content: string): Promise
   try {
     await handle.writeFile(content, "utf8");
     await handle.sync();
-    if ((await inspect(root, path, "file")).status !== "create") throw new Error("Target changed before publication; nothing was overwritten");
+    if ((await inspect(root, path, "file")).status !== "create") throw new Error("发布前目标已被改动;没有覆盖任何内容");
     await link(temporary, target); // Atomic no-clobber, same filesystem.
   } finally {
     await handle.close();
@@ -167,7 +173,7 @@ async function publishFile(root: string, path: string, content: string): Promise
 async function build(raw: ProjectInitPreviewInput) {
   const input = ProjectInitPreviewSchema.parse(raw);
   const summary = listProjectInitializers().templates.find(t => initNameKey(initCommand(t.name)) === initNameKey(input.command));
-  if (!summary) throw new Error("Initialization command not found; configure it in Settings → Memory & Context → Project initialization");
+  if (!summary) throw new Error("未找到初始化命令;请在「设置 → 记忆与上下文 → 项目初始化」中配置");
   const template = stored(summary.id);
   const ctx = await context(input);
   const directories = new Set(template.directories);
@@ -219,20 +225,20 @@ export async function applyProjectInitializer(raw: ProjectInitApplyInput): Promi
   const input = ProjectInitApplySchema.parse(raw);
   const first = await context(input);
   // Different worktree sessions still share project memories; serialize per project.
-  if (busy.has(first.project.id)) throw new Error("An initialization is already running for this project");
+  if (busy.has(first.project.id)) throw new Error("该项目已有一个初始化正在进行");
   busy.add(first.project.id);
   try {
     const { ctx, plan } = await build({ sessionId: input.sessionId, command: input.command });
-    if (ctx.project.id !== first.project.id) throw new Error("Conversation project changed; preview again");
-    if (plan.digest !== input.digest) throw new Error("Preview changed; review the current plan before applying");
-    if (plan.actions.some(a => a.status === "blocked") || plan.agentFile?.blocked) throw new Error("Initialization is blocked by unsafe paths or incompatible existing entries");
+    if (ctx.project.id !== first.project.id) throw new Error("对话的项目已改变;请重新预览");
+    if (plan.digest !== input.digest) throw new Error("预览已改变;应用前请重新查看当前方案");
+    if (plan.actions.some(a => a.status === "blocked") || plan.agentFile?.blocked) throw new Error("初始化被不安全的路径或不兼容的已有条目阻止");
     const results: ProjectInitAction[] = [];
     let memoryChanged = false;
     for (const action of plan.actions) {
       if (action.status === "skip") { results.push(action); continue; }
       try {
         const current = await context(input);
-        if (current.project.id !== ctx.project.id || current.root !== ctx.root || current.rootIdentity !== ctx.rootIdentity || current.memoryBase !== ctx.memoryBase) throw new Error("Project or memory root changed during initialization");
+        if (current.project.id !== ctx.project.id || current.root !== ctx.root || current.rootIdentity !== ctx.rootIdentity || current.memoryBase !== ctx.memoryBase) throw new Error("初始化期间项目或记忆根已改变");
         const root = action.kind === "memory" ? ctx.memoryBase : ctx.root;
         const path = action.kind === "memory" ? `memory/${action.path}` : action.path;
         const state = await inspect(root, path, action.kind);

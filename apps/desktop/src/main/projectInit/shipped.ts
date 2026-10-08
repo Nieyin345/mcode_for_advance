@@ -22,6 +22,14 @@
  * 「研究项目」是先出厂的,老用户库里已经有一份不带 AI 生成的:`upgradeAddsAgentFile` 让
  * **从没改过**的那份原地升级(见 `service.ts` 的 `upgradeUntouchedShipped`)。所以 RESEARCH
  * 除了 agentFile 之外的内容**不要再改** —— 改了老用户那份就不再「逐字相等」,升级不了。
+ *
+ * ⚠️ **这条冻结在 2026-10-02 已经被破坏过一次。** `610403b8`(统一「资料库」叫法)顺手改了
+ * RESEARCH 的 references/README.md 一句话(「主文献库文件」→「主参考文献文件」),于是
+ * 老安装里那份**逐字原版**再也不等于「新版去掉 agentFile」,`upgradeUntouchedShipped`
+ * 认不出来 → 不给补 agentFile,老用户永远拿不到 AI 生成那一步。补救办法与
+ * `workflows/seed.ts` 的 `LEGACY_SHIPPED_SHA256` 同一取向:把**曾经发出去过**的原版正文
+ * 哈希记在 `legacyPristineRevisions` 里认。以后**要么别动 RESEARCH 正文,要么改了就在这里
+ * 补一条哈希**——否则升级静默失效。
  */
 import type { ProjectInitDraft } from "@contracts/ipc/projectInit";
 
@@ -31,6 +39,11 @@ export interface ShippedInitializer {
   draft: ProjectInitDraft;
   /** 老版本出厂时没有 agentFile:用户没改过的那份原地补上(只为「研究项目」设)。 */
   upgradeAddsAgentFile?: true;
+  /** 历次**发布过的**原版正文的 sha256(存库字符串的哈希,见 `service.ts` 的
+   *  `upgradeUntouchedShipped`)。只在「当前正文与老用户库里那份**不再逐字相等**」
+   *  时才需要 —— 与 `workflows/seed.ts` 的 `LEGACY_SHIPPED_SHA256` 同一取向。
+   *  绝大多数条目为空。 */
+  legacyPristineRevisions?: readonly string[];
 }
 
 const readme = (title: string, body: string): string => `# ${title}\n\n${body.trim()}\n`;
@@ -305,7 +318,15 @@ const THESIS: ProjectInitDraft = {
 
 /** 顺序即播种顺序;RESEARCH 保持第一个(project-init-smoke 按下标取它)。 */
 export const SHIPPED_INITIALIZERS: readonly ShippedInitializer[] = [
-  { id: "7a3c5e0b-2f4d-4b8a-9c1e-6d0f3a8b5c21", draft: RESEARCH, upgradeAddsAgentFile: true },
+  {
+    id: "7a3c5e0b-2f4d-4b8a-9c1e-6d0f3a8b5c21",
+    draft: RESEARCH,
+    upgradeAddsAgentFile: true,
+    // 老安装库里那份**逐字原版**的 sha256(2026-09-30 首发出厂、`4cf6f00c`;当时
+    // references/README.md 还写「主文献库文件」)。610403b8 改了那句话,于是它不再等于
+    // 「新版去掉 agentFile」—— 记在这里认它,老用户那份没改过的才能照常升级(见文件头)。
+    legacyPristineRevisions: ["110b779fae7356586f612e617230f0d6999024b84e6d9f9504b378ed64afd214"],
+  },
   { id: "3e8d1f52-6b7a-4c3e-9f20-8a1d5c7b4e63", draft: CODE },
   { id: "c51a9e07-2d84-4f6b-b3a9-0e7c62d58f14", draft: THESIS },
 ];
