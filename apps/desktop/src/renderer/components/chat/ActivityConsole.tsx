@@ -60,6 +60,7 @@ import {
   formatDuration,
   subagentEndpoints,
   subagentTimeline,
+  usageUnits,
   type ActivityNodeKey,
   type ActivityTabs,
   type PlanBlock,
@@ -200,10 +201,10 @@ function SubagentRow({
   const StatusIcon = SUBAGENT_STATUS_ICON[agent.status];
   const win = subagentEndpoints(agent, now);
   const running = agent.status === "running";
-  const chips: string[] = [];
-  if (typeof agent.totalTokens === "number") chips.push(`${(agent.totalTokens / 1000).toFixed(1)}k tok`);
-  if (typeof agent.toolUses === "number") chips.push(`${agent.toolUses} tools`);
-  chips.push(formatDuration(win.end - win.start));
+  const chips: string[] = [
+    ...usageUnits(t, agent.totalTokens, agent.toolUses),
+    formatDuration(win.end - win.start),
+  ];
 
   return (
     <li
@@ -746,9 +747,9 @@ export function ActivityConsole({
         <Sep />
         <Stat value={runningAgents.length} label={t("chatStream.activity.labelRunning")} />
         <Sep />
-        <Stat value={`${(subagents.reduce((a, s) => a + (s.totalTokens ?? 0), 0) / 1000).toFixed(1)}k`} label="tok" />
+        <Stat value={`${(subagents.reduce((a, s) => a + (s.totalTokens ?? 0), 0) / 1000).toFixed(1)}k`} label={t("chatStream.activity.statTokUnit")} />
         <Sep />
-        <Stat value={subagents.reduce((a, s) => a + (s.toolUses ?? 0), 0)} label="tools" />
+        <Stat value={subagents.reduce((a, s) => a + (s.toolUses ?? 0), 0)} label={t("chatStream.activity.statToolsUnit")} />
         <Sep />
         <Stat
           value={formatDuration(subagents.reduce((a, s) => a + (s.durationMs ?? 0), 0))}

@@ -106,12 +106,33 @@ export const SUBAGENT_STATUS_META: Record<
   killed: { labelKey: "chatStream.subagent.statusKilled", cls: "text-danger" },
 };
 
-/** Compact "1.2k tokens · 5 tools · 12s" string, still used by the side
- *  panel's subagent header. */
-export function fmtUsage(snap: SubagentSnapshot): string {
+/** 用量里的两个**单位词**(token / 工具次数)—— 子代理头和活动控制台**共用这一份**。
+ *
+ *  ⚠️ 从前这两句在 `activityShared.fmtUsage` 与 `ActivityConsole.SubagentRow` 里各写
+ *  了一遍,而且**互相打架**:一个 `"${n}k tokens"`,另一个 `"${n}k tok"`(硬规矩 2)。
+ *  更糟的是两边都把英文写死 —— 中文界面上、子代理旁边就嵌着 "1.2k tokens · 5 tools"。
+ *  仓库对这段话早有定论:`ide.turns.subagentDetail` 就是「{tools} 次工具」的中文写法。
+ *  所以单位词一律走词典,且只有这一份拼装。 */
+export function usageUnits(
+  t: Translate,
+  totalTokens: number | undefined,
+  toolUses: number | undefined,
+): string[] {
   const parts: string[] = [];
-  if (typeof snap.totalTokens === "number") parts.push(`${(snap.totalTokens / 1000).toFixed(1)}k tokens`);
-  if (typeof snap.toolUses === "number") parts.push(`${snap.toolUses} tools`);
+  if (typeof totalTokens === "number") {
+    parts.push(t("chatStream.activity.usageTokens", { n: (totalTokens / 1000).toFixed(1) }));
+  }
+  if (typeof toolUses === "number") {
+    parts.push(t("chatStream.activity.usageTools", { n: toolUses }));
+  }
+  return parts;
+}
+
+/** Compact "1.2k tokens · 5 tools · 12s" string, still used by the side
+ *  panel's subagent header. 单位词走 {@link usageUnits}(共同的本地化实现),
+ *  只有末尾那段时长是这里自己补的。 */
+export function fmtUsage(snap: SubagentSnapshot, t: Translate): string {
+  const parts = usageUnits(t, snap.totalTokens, snap.toolUses);
   if (typeof snap.durationMs === "number") parts.push(`${Math.round(snap.durationMs / 1000)}s`);
   return parts.join(" · ");
 }

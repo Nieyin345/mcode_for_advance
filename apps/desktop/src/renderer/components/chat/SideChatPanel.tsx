@@ -348,7 +348,7 @@ function SubagentRow({
 }) {
   const { t } = useI18n();
   const running = agent.status === "running";
-  const usage = fmtUsage(agent);
+  const usage = fmtUsage(agent, t);
   return (
     <li>
       <button
@@ -579,7 +579,7 @@ function SubagentView({
     [rawBlocks],
   );
   const running = agent.status === "running";
-  const usage = fmtUsage(agent);
+  const usage = fmtUsage(agent, t);
   const meta = SUBAGENT_STATUS_META[agent.status];
 
   // Follow the tail while the subagent is live — new blocks scroll the view
