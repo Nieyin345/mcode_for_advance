@@ -53,7 +53,12 @@ const ADOPT_TARGETS = [CLAUDE_MD];
 
 export function registerContextHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.CONTEXT_GET, (_evt, raw) => {
-    ContextGetSchema.parse(raw);
+    // `?? {}`(同 `outputStyle.list` / `library.*` / `memory.list` 的写法):无参
+    // invoke 时 handler 收到的是 `undefined`,`z.object({})` 不接受它("Required")。
+    // 渲染端走 `api.context.get({})` 没事,但 `app_api_call` 那条 AI 通路**明确
+    // 让人对无参方法省略 input**(见 `appControl/tools.ts` 的 `app_api_call` 描述)→
+    // 收到 `undefined` 就抛,AI 拿到的是一句 "参数不对:undefined Required" 而不是内容。
+    ContextGetSchema.parse(raw ?? {});
     const source = instructionsSourcePath(dataRoot());
     // 惰性补物化:面板打开即修复漂移(消费点被手删/内容过期),不动 index.ts
     ensureMaterialized(source, [CLAUDE_MD]);

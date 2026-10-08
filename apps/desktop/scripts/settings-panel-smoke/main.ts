@@ -705,6 +705,33 @@ const blank = await outputStyleList({});
 eq("frontmatter 的 name 是空的 → 回退到文件名", idsOf(blank).includes("blank-name"), true);
 eq("  描述照常带上", stylesOf(blank).find((s) => s.id === "blank-name")?.description, "只有描述");
 
+// ⑧ frontmatter 解析必须与技能库那份**同源**(`skillEngines.parseSkillFrontmatter`)。
+//
+// 这是硬规矩 2("共享实现只有一份")的一个具体落点:outputStyleConfig 曾经自带一份
+// skills.ts 那套行扫描的**未加固副本**,而技能库那份后来加了折叠块 / 缩进键 / 块标量的
+// 处理,风格这份没跟上 → 两份对同一份 frontmatter 给出不同结果:
+//   - `description: >`(YAML 折叠块,已发布风格里很常见)在这份里被当成**字面量 ">"**,
+//     面板详情里显示一个孤零零的 ">"(用户看不到自己写的说明);
+//   - 缩进的嵌套键(`metadata:\n  name: Inner`)会**覆盖顶层 name** —— 选中值指到
+//     另一个风格名上,CLI 按名字逐字匹配,于是选中根本不生效。
+// 判据立在**面板显示的那行字 / 列表里那个 id** 上,不是立在"调了哪个函数"上。
+writeStyle("folded.md", "---\nname: Folded\ndescription: >\n  Reviews papers.\n  Focuses on method.\n---\n正文");
+const folded = await outputStyleList({});
+eq(
+  "折叠块 description 解析成续行正文,不是字面量 >",
+  stylesOf(folded).find((s) => s.id === "Folded")?.description,
+  "Reviews papers. Focuses on method.",
+);
+
+writeStyle("nested.md", "---\nname: Outer\nmetadata:\n  name: Inner\ndescription: top\n---\n正文");
+const nested = await outputStyleList({});
+check(
+  "缩进的嵌套键不会覆盖顶层 name",
+  idsOf(nested).includes("Outer") && !idsOf(nested).includes("Inner"),
+  { ids: idsOf(nested) },
+);
+eq("  顶层 description 照常解析", stylesOf(nested).find((s) => s.id === "Outer")?.description, "top");
+
 // ⑦ 目录里有一个**与 .md 同名的子目录**:读它会 EISDIR,但不能让整份列表崩掉。
 mkdirSync(join(USER_STYLE_DIR, "adir.md"), { recursive: true });
 const withDir = await outputStyleList({});

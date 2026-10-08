@@ -23,6 +23,7 @@ import {
   type OutputStyleEntry,
 } from "@contracts/ipc";
 import { MCODE_CONFIG_DIR } from "@main/providers/claude-sdk/customEnv.js";
+import { parseSkillFrontmatter } from "@main/lib/skillEngines.js";
 import { awaitDb } from "@main/store/db.js";
 import { SettingRepo } from "@main/store/repositories.js";
 
@@ -78,34 +79,20 @@ function bundledCliVersion(): string | null {
 }
 
 /**
- * Parse the YAML frontmatter of an output-style markdown file. Same
- * hand-rolled line scan as skills.ts (we only need `name` / `description`,
- * no yaml dependency).
+ * Parse the YAML frontmatter of an output-style markdown file.
+ *
+ * ⚠️ **共用技能库那份解析器**(`skillEngines.parseSkillFrontmatter`),不在这里再抄
+ * 一遍行扫描。硬规矩 2("共享实现只有一份"):这两份曾经各写一份同样的 hand-rolled
+ * 扫描,而技能库那份后来加固了(YAML 折叠块 `>` / 块标量 `|`、缩进的嵌套键不在顶层),
+ * 风格这份没跟上 → 同一份 frontmatter 两份给出不同结果(`description: >` 被当成字面量
+ * `">"`;缩进的 `metadata: { name }` 覆盖顶层 `name`,选中值指错风格)。风格只用到
+ * `name` / `description`,其余字段忽略。
  */
 function parseStyleFrontmatter(md: string): { name?: string; description?: string } {
-  if (!md.startsWith("---\n") && !md.startsWith("---\r\n")) return {};
-  const lines = md.split(/\r?\n/);
-  let end = -1;
-  for (let i = 1; i < lines.length; i++) {
-    if (lines[i].trim() === "---") {
-      end = i;
-      break;
-    }
-  }
-  if (end === -1) return {};
+  const fm = parseSkillFrontmatter(md);
   const out: { name?: string; description?: string } = {};
-  for (const raw of lines.slice(1, end)) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const m = line.match(/^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*)$/);
-    if (!m) continue;
-    let val = m[2].trim();
-    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-      val = val.slice(1, -1);
-    }
-    if (m[1].toLowerCase() === "name" && val) out.name = val;
-    else if (m[1].toLowerCase() === "description" && val) out.description = val;
-  }
+  if (fm.name) out.name = fm.name;
+  if (fm.description) out.description = fm.description;
   return out;
 }
 

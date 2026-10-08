@@ -776,6 +776,30 @@ console.log("\n总注册表:registerIpcHandlers");
     check(`裸 channel ${bare} 传 undefined 不炸在入参上`, !looksLikeParamBug, { bareThrew, out });
   }
 
+  // `context:get` 也是**零参** handler(`ContextGetSchema` 是 `z.object({})`)。渲染端走
+  // `api.context.get({})` 没事,但 AI 那条路(`app_api_call`)**明确让人对无参方法省略
+  // input**(见 `appControl/tools.ts` 的 `app_api_call` 描述),转手到 handler 时 `raw`
+  // 就是 `undefined`。判据立在**真正拿到的返回**上:`undefined` / `null` 都要像 `{}` 那样
+  // 出内容,而不是抛一句 "参数不对:undefined Required" 糊在 AI 脸上。
+  // (同族落点:`outputStyle:list` / `library:*Get` / `memory:list` 都写的 `parse(raw ?? {})`。)
+  {
+    const fn = registeredChannels.get(IPC.CONTEXT_GET)!;
+    for (const arg of [undefined, null, {}] as const) {
+      let threw = "";
+      let out: { content?: unknown } | undefined;
+      try {
+        out = (await fn(null, arg)) as { content: unknown };
+      } catch (err) {
+        threw = (err as Error).message;
+      }
+      check(
+        `context:get 传 ${JSON.stringify(arg)} 出内容、不炸在入参上`,
+        threw === "" && typeof out?.content === "string",
+        { threw, out },
+      );
+    }
+  }
+
   // `createDbGuardedIpc` 那一层:handler 抛错时 `awaitDb()` 还得先被等到 ——
   // 顺序反了的话,DB 还没就绪的 handler 会先炸在 `getDb()` 上,用户看到的是
   // "getDb() called before initDb() resolved"这种内部句子。
