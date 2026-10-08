@@ -76,6 +76,27 @@ await withAuditPage(dir,async page=>{
  await test('english-memory-controls-use-translated-scope-and-policy',async()=>{
   await go('?view=param&value=false&lang=en');assert.match(await page.eval('document.body.innerText'),/project.*global/i);assert.doesNotMatch(await page.eval('document.body.innerText'),/注入记忆/);
  });
+ await test('picker-ignores-ime-composition-enter-then-picks-on-plain-enter',async()=>{
+  // 中文输入法里敲拼音、按回车**确认候选词**时,keydown 带 isComposing=true —— 那不是
+  // "选定并关闭",而是输入法自己的按键。四个选择器(FileMention/Library/Slash/NewSubChat)
+  // 走同一套键盘处理,前三处都挡了 IME,NewSubChatPicker 漏了 → 用户用拼音选档案时
+  // 一确认候选词就把子对话建了出来(点都没点)。
+  await go('?view=picker');await page.waitFor("document.body.innerText.includes('Auditor')");
+  await page.eval("labPicks.length=0");
+  await page.eval("document.querySelector('input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}))");await page.sleep(160);
+  assert.deepEqual(await page.eval('labPicks'),[]);
+  await page.eval("document.querySelector('input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))");await page.sleep(160);
+  assert.equal(await page.eval('labPicks.length'),1);
+ });
+ await test('multi-ref-collapsed-summary-joins-with-locale-separator',async()=>{
+  // 收起的那一行把选中的一组名字拼起来给用户看。分隔符**必须跟语言走**(中文「、」英文
+  // ", ")—— 与 MessageBlocks / ChatPane / store 里那条 `locale === 'en' ? ', ' : '、'`
+  // 同一条规矩。这里从前的实现是硬编码 `join("、")`,于是英文界面显示 "pdf、docx"。
+  await go('?view=mref&lang=en');await page.waitFor("document.body.innerText.includes('pdf')");
+  const text=await page.eval('document.body.innerText');
+  assert.match(text,/pdf, docx/);
+  assert.doesNotMatch(text,/pdf、docx/);
+ });
 });
 const failed=results.filter(r=>!r.ok).length;writeFileSync(join(dir,'results.json'),JSON.stringify({passed:results.length-failed,failed,checks:results},null,2));
 console.log(`${results.length-failed}/${results.length} memory injection UI checks passed; ${failed} failed`);if(failed)throw Error(`${failed} UI checks failed; artifacts: ${dir}`);

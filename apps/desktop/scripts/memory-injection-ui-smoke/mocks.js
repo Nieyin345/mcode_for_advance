@@ -1,6 +1,8 @@
 const query = new URLSearchParams(location.search), subscribers = new Set();
 window.labSubscribe = fn => { subscribers.add(fn); return () => subscribers.delete(fn); };
 window.labState = { locale: query.get('lang') || 'zh', sessionId: 'chat-A', activeProjectId: 'A', activeSessionId: 'chat-A',
+  skills: [], providers: [], providerId: null, projects: [], customModels: [], customModelId: null,
+  piAvailableModels: [], codexAvailableModels: [],
   sessionsByProject: { A: [{id:'chat-A',projectId:'A',kind:'chat',title:'Main A',archived:false}], B:[{id:'chat-B',projectId:'B',kind:'chat',title:'Main B',archived:false}] },
   openTab: async id => labPatchState({sessionId:id,activeSessionId:id}) };
 window.labPatchState = patch => { window.labState = {...window.labState,...patch}; for(const fn of subscribers)fn(); };

@@ -161,6 +161,11 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
   useEffect(() => {
     if (!open) return undefined;
     const onKey = (e: KeyboardEvent) => {
+      // IME composition keys (candidate confirm / pinyin Space) belong to the
+      // input method, not the picker: a Chinese-IME user typing pinyin and
+      // hitting Enter to confirm the candidate must NOT create a subchat.
+      // Same guard as the sibling pickers (FileMentionPicker / LibraryPicker).
+      if (e.isComposing || e.keyCode === 229) return;
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();

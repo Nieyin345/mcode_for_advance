@@ -1178,7 +1178,7 @@ function MultiRefValue({
         <span className={cn("min-w-0 flex-1 truncate", selected.length === 0 && "text-content-muted")}>
           {selected.length === 0
             ? t("settings.workflows.paramRefUnlimited")
-            : selected.join("、")}
+            : selected.join(t("settings.workflows.listSeparator"))}
         </span>
         <span className={cn("shrink-0 text-[0.7143em]", missing.length > 0 ? "text-warning" : "text-content-subtle")}>
           {missing.length > 0
