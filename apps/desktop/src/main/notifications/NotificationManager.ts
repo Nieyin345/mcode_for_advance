@@ -236,8 +236,7 @@ class NotificationManager {
     }
   }
 
-  /** 是不是工作流节点会话(`kind: "node"`,见 `main/orchestration/runner.ts`)。
-   *  这类会话是隐藏的:它们的完成与报错不该打扰用户。 */
+  /** 这个项目被用户静音了 —— 它的通知一律不弹(见设置里按项目静音)。 */
   private isMutedProject(sessionId: string): boolean {
     const muted = this.prefs.mutedProjectIds;
     if (muted.length === 0) return false;
@@ -249,6 +248,8 @@ class NotificationManager {
     }
   }
 
+  /** 是不是工作流节点会话(`kind: "node"`,见 `main/orchestration/runner.ts`)。
+   *  这类会话是隐藏的:它们的完成与报错不该打扰用户。 */
   private isNodeSession(sessionId: string): boolean {
     try {
       return SessionRepo.get(sessionId)?.kind === "node";
