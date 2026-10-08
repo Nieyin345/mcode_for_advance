@@ -552,17 +552,20 @@ export async function readSkillForProject(
   name: string,
 ): Promise<string> {
   // This core is also called outside Electron IPC, so keep the same guard.
-  if (!SKILL_NAME_RE.test(name)) throw new Error("Invalid skill name");
+  // 下面这几句会经 `skills.read` 的拒绝路径直接画到设置面板的错误条上(以及手机的
+  // 技能页)—— 与同文件其它用户可见报错(「无效的 skill 路径」「技能不存在或无法
+  // 读取 SKILL.md」)同一口径,一律中文;从前它们是英文,与兄弟说法打架。
+  if (!SKILL_NAME_RE.test(name)) throw new Error(`技能的「名字」不合法:${name}`);
   if (source === "plugin" || source === "builtin") {
     const dir = await contributedSkillDir(source, name);
-    if (!dir) throw new Error(`Skill "${name}" was not found or has no readable SKILL.md`);
+    if (!dir) throw new Error(`没找到技能「${name}」,或者它没有可读的 SKILL.md`);
     return readSkillMd(dir);
   }
   const root = resolveSkillRootForRequest(source, projectPath);
-  if (!root) throw new Error("An absolute project path is required for project skills");
+  if (!root) throw new Error("读取项目技能需要绝对项目路径");
   const skillDir = skillNamesInRoot(root).get(name);
   if (!skillDir || !pathWithin(root, skillDir)) {
-    throw new Error(`Skill "${name}" was not found or has no readable SKILL.md`);
+    throw new Error(`没找到技能「${name}」,或者它没有可读的 SKILL.md`);
   }
   return readSkillMd(skillDir);
 }
@@ -805,7 +808,11 @@ async function importGithubPackage(input: { url: string }): Promise<SkillsImport
 
 export function registerSkillsHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.SKILLS_LIST, async (_evt, raw) => {
-    const input = SkillsListSchema.parse(raw);
+    // `?? {}` 非有不可:无参 invoke / `app_api_call`(它**明确让人对无参方法省略
+    // input**)时 handler 收到的是 `undefined`,而 `z.object({}).parse(undefined)`
+    // 抛 "Required"。渲染端走 `api.skills.list(…)` 没事,AI 通路会收到一句 zod
+    // 报错而不是清单。兄弟无参 handler 一律这个写法(见 `context.get` /`memory.list`)。
+    const input = SkillsListSchema.parse(raw ?? {});
     const skills = await listSkillsForProject(input.projectPath);
     return { skills };
   });
@@ -844,7 +851,9 @@ export function registerSkillsHandlers(ipcMain: IpcMain): void {
   // Display-only data for the settings panel's bundle grouping; degrades to
   // an empty list on any IO/parse problem.
   ipcMain.handle(IPC.SKILLS_BUNDLES, async (_evt, raw) => {
-    SkillsBundlesSchema.parse(raw);
+    // 同 SKILLS_LIST:`app_api_call` 无参方法省略 input → `raw` 是 `undefined`,
+    // `z.object({}).parse(undefined)` 会抛。
+    SkillsBundlesSchema.parse(raw ?? {});
     return { bundles: await readBundlesManifest(resolveSkillRoot()) };
   });
 
@@ -1152,7 +1161,8 @@ async function listSkillDirNames(root: string): Promise<string[] | null> {
    *  - 目录不存在**不算问题**（绝大多数项目都没放过技能），标 `missing` 而已。
    */
   ipcMain.handle(IPC.SKILLS_PROJECT_OVERVIEW, async (_evt, raw) => {
-    const input = SkillsProjectOverviewSchema.parse(raw);
+    // `projectIds` 可省 = 全部项目;省略 input 时 `raw` 是 `undefined`,同 SKILLS_LIST。
+    const input = SkillsProjectOverviewSchema.parse(raw ?? {});
     const rows: ProjectSkillRow[] = [];
     const problems: SkillsProjectOverviewResult["problems"] = [];
 
@@ -1208,7 +1218,8 @@ async function listSkillDirNames(root: string): Promise<string[] | null> {
   // Returns a flat list with the tool origin and source path for each, so the
   // UI can present them and the import handler can copy them.
   ipcMain.handle(IPC.SKILLS_SCAN_SOURCES, async (_evt, raw) => {
-    const input = SkillsScanSourcesSchema.parse(raw);
+    // 两个可选字段都可省;省略 input 时 `raw` 是 `undefined`,同 SKILLS_LIST。
+    const input = SkillsScanSourcesSchema.parse(raw ?? {});
     const byKey = new Map<string, ExternalSkillInfo>();
     try {
       const dirs = getExternalSkillDirs();

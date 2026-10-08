@@ -863,6 +863,14 @@ same(
 
 console.log("\n扫描导入源(只读)");
 
+// 无参通道要能吃**省略的 input**(`undefined`):`app_api_call` 明确让模型对无参方法
+// 省略 input(见 appControl/tools.ts 的 `app_api_call` 描述)→ handler 收到 `undefined`,
+// 而 `z.object({}).parse(undefined)` 抛 "Required"。渲染端走 `{}` 掩盖了它,AI 通路
+// 会拿到一句 zod 报错而不是内容。兄弟无参通道(mcp.marketSources / skills.bundles)是
+// `parse(raw ?? {})`,MCP_LIST / MCP_SCAN_IMPORT 从前漏了那个 `?? {}`。
+check("MCP_LIST 接受省略的 input(undefined)", await list(undefined).then(() => true, () => false));
+check("MCP_SCAN_IMPORT 接受省略的 input(undefined)", await scanImport(undefined).then(() => true, () => false));
+
 const scan = (await scanImport({})) as {
   sources: Array<{ name: string; kind: string; detail: string; origin: { kind: string; path?: string }; config?: McpServerConfig }>;
 };

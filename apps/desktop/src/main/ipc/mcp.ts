@@ -472,7 +472,10 @@ function runCaptured(
 export function registerMcpHandlers(ipcMain: IpcMain): void {
   // ── List servers across all sources ──
   ipcMain.handle(IPC.MCP_LIST, async (_evt, raw) => {
-    McpListSchema.parse(raw);
+    // `?? {}` 非有不可:无参 invoke / `app_api_call`(它**明确让人对无参方法省略
+    // input**)时 handler 收到的是 `undefined`,而 `z.object({}).parse(undefined)`
+    // 抛 "Required"。兄弟无参 handler 一律这个写法(`mcp.marketSources` 就在下面)。
+    McpListSchema.parse(raw ?? {});
     const state = await getMcpTruth();
     const servers: McpServerEntry[] = [];
 
@@ -848,7 +851,8 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
 
   // ── Scan the local Claude CLI config for importable servers ──
   ipcMain.handle(IPC.MCP_SCAN_IMPORT, async (_evt, raw) => {
-    McpScanImportSchema.parse(raw);
+    // 无参方法,同 MCP_LIST:`app_api_call` 省略 input 时 `raw` 是 `undefined`。
+    McpScanImportSchema.parse(raw ?? {});
     const sources = (await readCliMcpSources()).map((s) => ({
       name: s.name,
       origin: s.origin,

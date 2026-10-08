@@ -141,6 +141,29 @@ await test("missing or unreadable SKILL.md rejects rather than looking like a su
   await assert.rejects(() => call(IPC.SKILLS_READ, { source: "global", name: "missing" }));
   await assert.rejects(() => call(IPC.SKILLS_READ, { source: "global", name: "not-markdown" }));
 });
+await test("skill read errors are the Chinese text the settings panel shows, not raw English", async () => {
+  // 这几句经 `skills.read` 的拒绝路径画在设置面板的错误条上(见 SkillsPanel 的
+  // readError)/手机的技能页 —— 与同文件其它用户可见报错(「无效的 skill 路径」)同一口径。
+  // 从前它们是英文("Skill \"...\" was not found..."),与兄弟说法打架。
+  const messageOf = (p: Promise<unknown>): Promise<string> =>
+    p.then(() => "", (e: Error) => e.message);
+  const missing = await messageOf(call(IPC.SKILLS_READ, { source: "global", name: "missing" }));
+  assert.ok(missing, "expected a rejection");
+  assert.match(missing, /没找到/);
+  assert.doesNotMatch(missing, /was not found|has no readable/);
+  const badProject = await messageOf(call(IPC.SKILLS_READ, { source: "project", name: "shared" }));
+  assert.match(badProject, /绝对项目路径/);
+  assert.doesNotMatch(badProject, /absolute project path/);
+});
+await test("zero-arg channels accept an omitted input, as app_api_call sends them", async () => {
+  // `app_api_call` 明确让模型对无参方法**省略 input**(见 appControl/tools.ts 的
+  // `app_api_call` 描述)→ handler 收到 `undefined`。`z.object({}).parse(undefined)`
+  // 会抛 "Required" —— 渲染端走 `{}` 掩盖了它,AI 通路会拿到一句 zod 报错而不是内容。
+  await assert.doesNotReject(() => call(IPC.SKILLS_LIST, undefined));
+  await assert.doesNotReject(() => call(IPC.SKILLS_BUNDLES, undefined));
+  await assert.doesNotReject(() => call(IPC.SKILLS_SCAN_SOURCES, undefined));
+  await assert.doesNotReject(() => call(IPC.SKILLS_PROJECT_OVERVIEW, undefined));
+});
 await test("a truly zero-byte SKILL.md remains distinguishable and readable", async () => {
   assert.equal((await call<{ content: string }>(IPC.SKILLS_READ, { source: "global", name: "empty-source" })).content, "");
 });
