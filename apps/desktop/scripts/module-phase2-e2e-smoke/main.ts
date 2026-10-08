@@ -78,7 +78,7 @@ await test('LIFECYCLE abort while polling cancels its real host task',async()=>{
 await test('LIFECYCLE restarted host loses task explicitly without repeating invoke',async()=>{
  const {h,finish}=controlled();const restarted=new ModuleHost({authorize:async()=>{},persist:async()=>{}});let invokes=0;
  const port:WorkflowModuleHostPort={invokeForWorkflow:i=>{invokes++;return h.invokeForWorkflow(i);},task:r=>restarted.task(r),cancel:r=>h.cancel(r)};
- try{const result=await new ModuleCapabilityExecutor({host:port,pollIntervalMs:1}).execute(context('lost'));assert.equal(result.status,'failed');assert.match(result.error??'',/no longer available/);assert.equal(invokes,1);}finally{finish();for(const t of h.tasks({projectPath:root}))h.cancel({moduleId:t.moduleId,taskId:t.id});}
+ try{const result=await new ModuleCapabilityExecutor({host:port,pollIntervalMs:1}).execute(context('lost'));assert.equal(result.status,'failed');assert.match(result.error??'',/不可用/);assert.equal(invokes,1);}finally{finish();for(const t of h.tasks({projectPath:root}))h.cancel({moduleId:t.moduleId,taskId:t.id});}
 });
 await test('SECURITY missing capability executor must never reach model fallback',async()=>{
  let fallbackCalls=0;const engine=new ExecutionEngine().setDefault({execute:async()=>{fallbackCalls++;return {status:'success',summary:'FORBIDDEN fake model fallback'};}});

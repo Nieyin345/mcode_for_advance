@@ -83,4 +83,22 @@ fallbackEngine.register({
 const exact = await fallbackEngine.execute(context("test"));
 ok(exact.summary === "exact", "registered kind wins over fallback");
 
+// —— 内置 code / command 执行器:未配置时那句失败原因必须是中文 ——
+// 它画在**失败节点卡片**上(见 runner.ts 的 workflow.node.result),而编排里其它节点错误
+// 一律中文。这两处从前写着英文 "Code/Command node is missing execution config",同一件事
+// 在 `codeRunner`/`commandRunner` 里却是中文 —— 一处中一处英。
+{
+  const { CodeExecutor } = await import("../../src/main/orchestration/codeExecutor.js");
+  const { CommandExecutor } = await import("../../src/main/orchestration/commandExecutor.js");
+  const codeCtx = context("code");
+  (codeCtx.input as { code?: unknown }).code = undefined;
+  const codeOut = await new CodeExecutor().execute(codeCtx);
+  ok(codeOut.status === "failed" && /没有填写/.test(codeOut.error ?? ""), "code 节点未配置 -> 中文失败原因");
+
+  const cmdCtx = context("command");
+  (cmdCtx.input as { command?: unknown }).command = undefined;
+  const cmdOut = await new CommandExecutor().execute(cmdCtx);
+  ok(cmdOut.status === "failed" && /没有填/.test(cmdOut.error ?? ""), "command 节点未配置 -> 中文失败原因");
+}
+
 console.log(`PASS: ${checks.length} checks`);

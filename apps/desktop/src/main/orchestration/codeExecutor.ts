@@ -13,7 +13,10 @@ export class CodeExecutor implements NodeExecutor {
       return {
         status: "failed",
         summary: "",
-        error: "Code node is missing execution config",
+        // 用户可见(失败节点卡片上的那行字)—— 与 `codeRunner` 里同一件事的说法一致
+        // (`代码节点没有填写代码`)。仓库对「画在卡片上的失败原因」一律用中文;这两处
+        // 判据相同、说法必须同源,别一处中文一处英文。
+        error: "代码节点没有填写代码",
       };
     }
     const outcome = await runCodeNode({

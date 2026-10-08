@@ -172,7 +172,9 @@ await test("missing moduleCall fails without touching the host", async () => {
   const host = new FakeHost(resultReply({ bytes: 1 }));
   const outcome = await fast(host).execute(contextOf({ cwd: "/w" }));
   assert.equal(outcome.status, "failed");
-  assert.match(outcome.error ?? "", /missing execution config/);
+  // 失败原因会画在**失败节点卡片**上(见 runner.ts 的 workflow.node.result 事件),所以
+  // 与编排里其它节点错误一样是中文 —— 别处都是中文,这里曾写着英文。
+  assert.match(outcome.error ?? "", /没有配置/);
   assert.equal(host.invocations.length, 0);
 });
 
@@ -283,7 +285,7 @@ await test("completed without a result is a failure, not an empty success", asyn
   const host = new FakeHost(taskReply(taskOf())).withPolls([taskOf({ status: "completed", progress: 1 })]);
   const outcome = await fast(host).execute(contextOf({ cwd: "/w", moduleCall: callOf() }));
   assert.equal(outcome.status, "failed");
-  assert.match(outcome.error ?? "", /without a result/);
+  assert.match(outcome.error ?? "", /没有结果/);
 });
 
 await test("host rejection surfaces as the node failure reason", async () => {
@@ -366,7 +368,7 @@ await test("lost task fails explicitly and is never silently re-run", async () =
   host.lost = true;
   const outcome = await fast(host).execute(contextOf({ cwd: "/w", moduleCall: callOf() }));
   assert.equal(outcome.status, "failed");
-  assert.match(outcome.error ?? "", /no longer available/);
+  assert.match(outcome.error ?? "", /不可用/);
   assert.equal(host.invocations.length, 1);
 });
 
@@ -374,7 +376,7 @@ await test("executor deadline fails the node and releases the host task", async 
   const host = new FakeHost(taskReply(taskOf()));
   const outcome = await fast(host, 40).execute(contextOf({ cwd: "/w", moduleCall: callOf() }));
   assert.equal(outcome.status, "failed");
-  assert.match(outcome.error ?? "", /did not settle/);
+  assert.match(outcome.error ?? "", /没有结束/);
   assert.equal(host.cancels.length, 1);
 });
 

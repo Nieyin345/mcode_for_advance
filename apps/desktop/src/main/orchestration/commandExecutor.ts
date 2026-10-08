@@ -49,7 +49,9 @@ export class CommandExecutor implements NodeExecutor {
       return Promise.resolve({
         status: "failed",
         summary: "",
-        error: "Command node is missing execution config",
+        // 用户可见(失败节点卡片上的那行字)。与 `commandRunner` 里「命令节点没有填要跑的
+        // 命令」同一件事、同一说法 —— 别一处中文一处英文。
+        error: "命令节点没有填要跑的命令",
       });
     }
     return runCommandNode({

@@ -113,10 +113,10 @@ export class ModuleCapabilityExecutor implements NodeExecutor {
     const parsed = ModuleWorkflowExecutionInputSchema.safeParse(context.input.moduleCall);
     if (!parsed.success) {
       if (context.input.moduleCall === undefined) {
-        return failedOutcome("Module capability node is missing execution config");
+        return failedOutcome("模块能力节点没有配置要调用的能力");
       }
       const first = parsed.error.issues[0];
-      return failedOutcome(`Invalid module capability execution input: ${first?.message ?? "unknown issue"}`);
+      return failedOutcome(`模块能力执行入参不合法:${first?.message ?? "未知问题"}`);
     }
     const call = parsed.data;
     const { signal } = context.input;
@@ -140,7 +140,7 @@ export class ModuleCapabilityExecutor implements NodeExecutor {
     try {
       host = this.hostOf();
     } catch (error) {
-      return failedOutcome(`Module host unavailable: ${messageOf(error)}`);
+      return failedOutcome(`模块宿主不可用:${messageOf(error)}`);
     }
 
     let reply: ModuleReply;
@@ -218,7 +218,7 @@ export class ModuleCapabilityExecutor implements NodeExecutor {
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
         this.safeCancel(host, ref);
-        return failedOutcome("Module capability task did not settle before the executor deadline");
+        return failedOutcome("模块能力任务在执行器截止时间之前没有结束");
       }
       await waitFor(Math.min(interval, remaining), signal);
       interval = Math.min(interval * 2, maxInterval);
@@ -227,7 +227,7 @@ export class ModuleCapabilityExecutor implements NodeExecutor {
       } catch (error) {
         // 任务被淘汰 / 应用重启后内存里已经没有它。**显式失败,不静默重跑** ——
         // 那一次调用的副作用是否发生过,这里无从得知。
-        return failedOutcome(`Module capability task is no longer available: ${messageOf(error)}`);
+        return failedOutcome(`模块能力任务已经不可用(可能被淘汰或应用重启):${messageOf(error)}`);
       }
       emit(snapshot);
     }
@@ -236,12 +236,12 @@ export class ModuleCapabilityExecutor implements NodeExecutor {
       if (signal.aborted) return cancelledOutcome();
       const result = snapshot.result;
       if (result === undefined) {
-        return failedOutcome("Module capability task completed without a result");
+        return failedOutcome("模块能力任务完成了但没有结果");
       }
       return ModuleCapabilityExecutor.succeed(result);
     }
     if (snapshot.status === "cancelled") return cancelledOutcome();
-    return failedOutcome(snapshot.error ?? "Module capability task failed");
+    return failedOutcome(snapshot.error ?? "模块能力任务失败");
   }
 
   /** 取消是**尽力而为**:任务可能已经定案或被淘汰,那不是本节点的失败原因。 */
