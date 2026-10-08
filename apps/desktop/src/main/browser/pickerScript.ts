@@ -12,6 +12,8 @@
  * browserPicker preload). It never modifies page DOM beyond its own overlay,
  * and it never touches Node/Electron APIs.
  */
+import { SELECTOR_BUILDER_SNIPPET } from "./selectorBuilder.js";
+
 
 /** Cap the outerHTML we forward so a giant subtree can't blow up the prompt. */
 const PICKER_HTML_CAP = 2000;
@@ -52,35 +54,8 @@ export const PICKER_INJECT_SCRIPT = `
     overlay.style.display = 'block';
   }
   function hideOverlay() { overlay.style.display = 'none'; }
+  ${SELECTOR_BUILDER_SNIPPET}
 
-  // Generate a stable CSS selector for the element: prefer id, then a
-  // class chain, falling back to nth-child path. Best-effort - the goal is
-  // a human-readable selector the model can reason about, not uniqueness
-  // under all transformations.
-  function buildSelector(el) {
-    if (el.id) return '#' + CSS.escape(el.id);
-    var parts = [];
-    var node = el;
-    while (node && node.nodeType === 1 && node !== document.documentElement) {
-      var part = node.tagName.toLowerCase();
-      if (node.id) { part += '#' + CSS.escape(node.id); parts.unshift(part); break; }
-      var classes = Array.from(node.classList).filter(Boolean);
-      if (classes.length) part += '.' + classes.map(function (c) { return CSS.escape(c); }).join('.');
-      // Add nth-child only when siblings of the same tag exist, to keep it short.
-      var parent = node.parentElement;
-      if (parent) {
-        var sameTag = Array.from(parent.children).filter(function (c) { return c.tagName === node.tagName; });
-        if (sameTag.length > 1) {
-          var idx = sameTag.indexOf(node) + 1;
-          part += ':nth-child(' + idx + ')';
-        }
-      }
-      parts.unshift(part);
-      node = node.parentElement;
-      if (parts.length >= 5) break; // cap depth
-    }
-    return parts.join(' > ');
-  }
 
   function previewFor(el, selector) {
     var tag = el.tagName.toLowerCase();

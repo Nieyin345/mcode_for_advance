@@ -39,7 +39,9 @@ import {
   buildCheckFileInputScript,
   buildElementCenterScript,
   fillSlot,
+  SNAPSHOT_SCRIPT,
 } from "../../src/main/browser/snapshotScript.js";
+import { PICKER_INJECT_SCRIPT } from "../../src/main/browser/pickerScript.js";
 
 let failures = 0;
 let total = 0;
@@ -176,6 +178,41 @@ console.log("\n注入脚本的错误消息是中文");
   const errs = [...all.matchAll(/error:\s*'([^']*)'/g)].map((m) => m[1]!);
   const english = errs.filter((t) => /[A-Za-z]{3}/.test(t) && !/[一-鿿]/.test(t));
   check("★ 注入脚本里没有纯英文的 error 消息", english.length === 0, english);
+}
+
+/* ── 4. 选择器构造器三个入口共用一份(不许再各抄一份)── */
+
+console.log("\nbuildSelector 三个入口共用一份");
+
+{
+  // `buildSelector` 从前在 SNAPSHOT / FIND / PICKER 三份脚本里各内联一份,注释口头声称
+  // "Mirrors",而已经漂过(深度 5 vs 4)。现在三份都插同一段,判据:
+  //   ① 三份生成的脚本里都能摘出一段 `function buildSelector`;
+  //   ② 三段**逐字相同**(同一段源码);③ 深度上限是 5(统一后那个值)。
+  const dump = (s: string): string | null => {
+    const i = s.indexOf("function buildSelector(");
+    if (i < 0) return null;
+    const b = s.indexOf("{", i);
+    let d = 0;
+    for (let j = b; j < s.length; j += 1) {
+      if (s[j] === "{") d += 1;
+      else if (s[j] === "}") {
+        d -= 1;
+        if (d === 0) return s.slice(i, j + 1).replace(/\s+/g, " ");
+      }
+    }
+    return null;
+  };
+  const a = dump(SNAPSHOT_SCRIPT);
+  const b = dump(buildFindScript({ text: "x" }));
+  const c = dump(PICKER_INJECT_SCRIPT);
+  check("三份脚本都有 buildSelector", a !== null && b !== null && c !== null, { a: !!a, b: !!b, c: !!c });
+  check("★ 三份 buildSelector 逐字相同(同一段源码,不再各抄一份)", a === b && b === c, {
+    snapshot: a?.slice(0, 80),
+    find: b?.slice(0, 80),
+    picker: c?.slice(0, 80),
+  });
+  check("★ 深度上限统一为 5(漂过一次的 4 不许回来)", !!a && a.includes("parts.length >= 5"), a?.slice(-60));
 }
 
 console.log(`\nbrowser-script-injection-smoke:${total - failures}/${total} 通过`);

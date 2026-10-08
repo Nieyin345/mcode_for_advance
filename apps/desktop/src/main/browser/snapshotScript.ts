@@ -22,6 +22,8 @@
  * The IIFEs return plain JSON-serializable objects, which Electron
  * auto-marshals back across the process boundary as the awaited return value.
  */
+import { SELECTOR_BUILDER_SNIPPET } from "./selectorBuilder.js";
+
 
 /** Caps so a giant page can't blow up the agent's context window. */
 export const SNAPSHOT_HTML_CAP = 20000;
@@ -53,33 +55,8 @@ export const SNAPSHOT_SCRIPT = `
     s = String(s).replace(/\\s+/g, ' ').trim();
     return s.length > n ? s.slice(0, n) + '\\u2026' : s;
   }
+  ${SELECTOR_BUILDER_SNIPPET}
 
-  // Stable CSS selector for an element: prefer id, then a class chain, falling
-  // back to nth-child path. Mirrors pickerScript's buildSelector so selectors
-  // are consistent between the human picker and the agent snapshot/click path.
-  function buildSelector(el) {
-    if (el.id) return '#' + CSS.escape(el.id);
-    var parts = [];
-    var node = el;
-    while (node && node.nodeType === 1 && node !== document.documentElement) {
-      var part = node.tagName.toLowerCase();
-      if (node.id) { part += '#' + CSS.escape(node.id); parts.unshift(part); break; }
-      var classes = Array.from(node.classList).filter(Boolean);
-      if (classes.length) part += '.' + classes.map(function (c) { return CSS.escape(c); }).join('.');
-      var parent = node.parentElement;
-      if (parent) {
-        var sameTag = Array.from(parent.children).filter(function (c) { return c.tagName === node.tagName; });
-        if (sameTag.length > 1) {
-          var idx = sameTag.indexOf(node) + 1;
-          part += ':nth-child(' + idx + ')';
-        }
-      }
-      parts.unshift(part);
-      node = node.parentElement;
-      if (parts.length >= 5) break;
-    }
-    return parts.join(' > ');
-  }
 
   // Best-effort accessible name: aria-label/aria-labelledby > associated
   // <label> > placeholder > visible inner text.
@@ -416,26 +393,7 @@ export const FIND_SCRIPT = `
     s = String(s).replace(/\\s+/g, ' ').trim();
     return s.length > n ? s.slice(0, n) + '\\u2026' : s;
   }
-  function buildSelector(el) {
-    if (el.id) return '#' + CSS.escape(el.id);
-    var parts = [];
-    var node = el;
-    while (node && node.nodeType === 1 && node !== document.documentElement) {
-      var part = node.tagName.toLowerCase();
-      if (node.id) { part += '#' + CSS.escape(node.id); parts.unshift(part); break; }
-      var classes = Array.from(node.classList).filter(Boolean);
-      if (classes.length) part += '.' + classes.map(function (c) { return CSS.escape(c); }).join('.');
-      var parent = node.parentElement;
-      if (parent) {
-        var sameTag = Array.from(parent.children).filter(function (c) { return c.tagName === node.tagName; });
-        if (sameTag.length > 1) part += ':nth-child(' + (sameTag.indexOf(node) + 1) + ')';
-      }
-      parts.unshift(part);
-      node = node.parentElement;
-      if (parts.length >= 4) break;
-    }
-    return parts.join(' > ');
-  }
+    ${SELECTOR_BUILDER_SNIPPET}
   var scope = document;
   if (arg.cssScope) {
     scope = document.querySelector(arg.cssScope);
