@@ -254,6 +254,16 @@ eq("库里没有的 id → 认不出来", kindOf(libManifest("不认识.md")), n
 eq("模版分类 → 查出来是大类 templates", kindOf(libManifest("lc_模版集.md")), "templates");
 eq("模版条目 → 查出来是大类 templates", kindOf(libManifest("li_模版图.md")), "templates");
 
+// ⚠️ **单篇清单的**真实**文件名带 `item-` 前缀。** 主进程写它的时候用的是
+// `item-${item.id}.md`(见 `library/manifest.ts` 的 `writeItemManifest`),而挂在对话上的
+// `@路径` 行正是那个 `res.path`(见 `manifest.pushAttach` → 渲染端 `contentTag` 的
+// `content: \`@${manifestPath}\``)。所以解析这一端必须认这个前缀 —— 上面那些裸
+// `li_论文.md` 是**文档表格里的形状**,不是库里真正的文件名。
+// 认不出来的后果:用户挂的**单篇**在「资料」这一类里被静默丢掉(少给了模型东西而一个字
+// 都不说),而分类 / 整库那两种挂法照常 —— 只有"点开分类挑了其中一篇"那条路断。
+eq("★ 单篇清单的真文件名(item-<条目 id>.md)认得出来", kindOf(libManifest("item-li_论文.md")), "docs");
+eq("模版单篇的真文件名也认得出来", kindOf(libManifest("item-li_模版图.md")), "templates");
+
 console.log("\ncontextRefOfPath(类目 + 层级 + 用途)");
 // **层级也是算出来的**:一个 id 是"分类"还是"单篇",取决于它在哪张表里查到
 // (`groupsOfCollection` / `groupsOfItem` 是两次不同的查询)。提示词里那个 `·单篇·`
@@ -266,6 +276,8 @@ const refOf = (path: string): string => {
 eq("整个大类", refOf(libManifest("group-docs.md")), "docs/all/material");
 eq("分类 id", refOf(libManifest("lc_文献.md")), "docs/collection/material");
 eq("条目 id", refOf(libManifest("li_论文.md")), "docs/item/material");
+// 真文件名的单篇:层级必须是「单篇」而不是「分类」(前缀剥掉之后查到的是条目那张表)。
+eq("★ 单篇真文件名 → 层级是「单篇」", refOf(libManifest("item-li_论文.md")), "docs/item/material");
 eq("模版分类", refOf(libManifest("lc_模版集.md")), "templates/collection/format");
 eq("模版条目", refOf(libManifest("li_模版图.md")), "templates/item/format");
 eq("认不出来的照样是 null", refOf(join(LIB_ROOT, "papers", "x.pdf")), "null");

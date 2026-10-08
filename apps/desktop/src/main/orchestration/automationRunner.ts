@@ -1034,6 +1034,10 @@ class AutomationRunner {
         }
         pending.files.push(abs);
       }
+      // **来了新东西 → 回看间隔从头数。** 退避(见 `BUSY_RETRY_MIN_MS`)管的是
+      // "一直没新输入、只是在上一次运行没结束时反复回看"这一种;新文件到达说明
+      // 这一批**变了**,该尽快收口而不是接着等比等下去。
+      pending.busyRetryMs = undefined;
       this.rearm(pending, WATCH_SETTLE_MS + trigger.spec.debounceMs);
     }
   }
@@ -1201,6 +1205,9 @@ class AutomationRunner {
         { toolName, subjects },
         item,
       );
+      // **来了新东西 → 回看间隔从头数。** 同 `onFsChange` 那条:退避只管"没有新输入、
+      // 只是在上一次运行没结束时反复回看"这一种,新事件说明这一批变了,该尽快收口。
+      pending.busyRetryMs = undefined;
       this.rearm(pending, trigger.spec.debounceMs);
     }
   }
@@ -1497,7 +1504,10 @@ class AutomationRunner {
           ? ({ kind: "file", files: existingFilesOf(pending.files) } as const)
           : (pending.event ?? { kind: "manual" });
       this.fire(trigger, payload, { selfOrigin: pending.selfOrigin === true, externalEvent: pending.externalEvent,
-        eventChain: pending.eventChain, externalChain: pending.externalChain });
+        eventChain: pending.eventChain, externalChain: pending.externalChain,
+        // 这一格刚在这一句之前被删掉(见上一行 `pendingFires.delete`),忙时分支
+        // 会重建一格 —— 把退避累乘值一起带过去,否则它每次都从下限重新数(见 `fire`)。
+        ...(pending.busyRetryMs !== undefined ? { busyRetryMs: pending.busyRetryMs } : {}) });
     }, Math.max(0, delayMs));
     // 攒着的那一下不该拖着进程不退出(退出时这一跑本来就该丢 —— 它还没开始)。
     pending.timer.unref();
@@ -1515,7 +1525,11 @@ class AutomationRunner {
     trigger: LoadedTrigger,
     payload: TriggerPayload,
     opts?: { originSessionId?: string; manual?: boolean; selfOrigin?: boolean; externalEvent?: TriggerPayload;
-      eventChain?: readonly string[]; externalChain?: readonly string[] },
+      eventChain?: readonly string[]; externalChain?: readonly string[];
+      /** 上一格攒着的那次**忙时回看间隔**。见 {@link rearm} 里那段:计时器回调先删掉
+       *  pending 再 fire,于是忙时分支重建的那一格会丢掉这个累乘值 —— 带着它走,
+       *  退避才真的会退。 */
+      busyRetryMs?: number },
   ): AutomationRunResult {
     try {
       // An old debounced event may fire while a new workflow revision reloads.
@@ -1575,6 +1589,11 @@ class AutomationRunner {
         if (opts?.manual !== true && (payload.kind === "file" ||
             (payload.kind === "event" && (payload.items?.length ?? 0) > 0))) {
           const pending = this.pendingOf(trigger);
+          // **接着上一格的退避走。** `rearm` 的计时器回调**先删掉**那一格再 fire
+          // (见那里的注释),于是忙时分支这里 `pendingOf` 建的是**全新**的一格 ——
+          // `busyRetryMs` 不复原的话它每次都是 undefined,`next` 永远等于下限,
+          // 退避形同虚设(一次跑几小时的自动化仍然每秒重扫一遍)。把上一轮的值接回来。
+          if (pending.busyRetryMs === undefined) pending.busyRetryMs = opts?.busyRetryMs;
           pending.selfOrigin = pending.selfOrigin === true || selfOrigin;
           pending.eventChain = this.mergeEventChains(pending.eventChain, eventChain);
           pending.externalChain = this.mergeEventChains(pending.externalChain, selfOrigin ? opts?.externalChain : eventChain);

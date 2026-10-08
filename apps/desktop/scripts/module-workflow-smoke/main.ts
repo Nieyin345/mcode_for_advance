@@ -205,6 +205,19 @@ await check("mobile modules are explicitly rejected before any network request",
 });
 const catalog = await loadNodeTypes();
 const types = new Map(catalog.entries.map(entry => [entry.id, entry.manifest]));
+await check("builtin node types survive a library-groups table the user emptied", () => {
+  // 本套的 `loadLibraryGroups` 桩恒返回 `[]` —— 那正是用户在大类管理里把最后一个大类
+  // 删掉之后的形状(`LibrarySection.removeGroup` 只做 `filter`,没有"至少留一个"的闸,
+  // `parseLibraryGroupsJson` 也认空数组)。而 `ioParams` 的「资料」下拉候选就是现读这张表。
+  //
+  // ⚠️ 于是"下拉一个选项都没有"会让 `validateNodeTypeManifest` 拒掉**整个内置清单**
+  // (`参数 context 是下拉,但没有给选项`),`loadBuiltin` 把 mcode.main / mcode.agent /
+  // mcode.conversation **三个一起从注册表里丢出去**。这正是文件头那条
+  // 「随应用发出去、自己却加载不了的内置类型,是这套机制里最难查的一种坏法」。
+  for (const id of ["mcode.main", "mcode.agent", "mcode.conversation"]) {
+    assert.ok(types.has(id), `builtin ${id} dropped from the catalog when the library-groups table is empty`);
+  }
+});
 const example = WorkflowDocSchema.parse(JSON.parse(await readFile(resolve("../../examples/workflows/module-file-inspect.json"), "utf8")));
 await check("real node catalog and workflow import/export round-trip keep configuration", () => {
   assert.ok(types.has(MODULE_CAPABILITY_NODE_TYPE_ID));

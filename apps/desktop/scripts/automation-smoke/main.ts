@@ -2001,7 +2001,7 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     activeWatchOf(originSessionId: string): boolean;
     statusOf(workflowId: string): Array<{ lastError?: string }>;
     lastMinute: Map<string, number>;
-    pendingFires: Map<string, { files: string[] }>;
+    pendingFires: Map<string, { files: string[]; busyRetryMs?: number }>;
     runNow(workflowId: string, triggerNodeId: string): Promise<{ ok: boolean; error?: string }>;
     onTick(): void;
     onFsChange(dir: string, filename: string | null): void;
@@ -2611,6 +2611,40 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
       eq("文件批次在空闲后只执行一次", runsOfNode(nodeId).length, 2);
       const files = runsOfNode(nodeId)[1]?.entry?.payload?.files as string[] | undefined;
       check("跨窗口积压的两个文件都在", files?.includes(join(PROJ_DIR,"busy-a.md")) === true && files?.includes(join(PROJ_DIR,"busy-b.md")) === true, files);
+    } finally { setRunBusy(sessionId, false); runner.dispose(); }
+  }
+  /* ── 忙时回看间隔按指数退避增长(不是每秒重扫一遍) ──
+   *
+   * `BUSY_RETRY_MIN_MS` 那段注释白纸黑字写着"指数退避到半分钟封顶",而它的实现靠
+   * `PendingFire.busyRetryMs` 在**同一条 pending** 上累乘。可 `rearm` 的计时器回调
+   * **先删掉**那一格(`pendingFires.delete`)再调 `fire()` —— 于是 `fire` 的忙时分支
+   * 走 `pendingOf` 建的是**全新**的一格,`busyRetryMs` 每次都被重置成 undefined,
+   * 回看间隔永远停在 1 秒:一次跑几小时的自动化仍然每秒一遍"读工作流 + 查会话 +
+   * 问活跃",而那正是退避要挡掉的东西。 */
+  {
+    resetRuns();
+    const wf = nextId(), nodeId = "t_busy_backoff";
+    makeAutomation({ workflowId: wf, nodeId, params: {
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "file", [NODE_TRIGGER_PATHS_PARAM_KEY]: "backoff-*.md",
+      [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0, task: "忙时回看间隔要退避",
+    } });
+    const runner = await startRunner();
+    await runner.runNow(wf, nodeId);
+    const sessionId = runsOfNode(nodeId)[0]!.sessionId;
+    const key = `${wf}:${nodeId}`;
+    setRunBusy(sessionId, true);
+    try {
+      writeFileSync(join(PROJ_DIR, "backoff-a.md"), "a");
+      runner.onFsChange(PROJ_DIR, "backoff-a.md");
+      // 第一次忙时回看:合并窗口(WATCH_SETTLE_MS=300)+ 下限(1000)之后。
+      await sleep(600);
+      const first = runner.pendingFires.get(key)?.busyRetryMs;
+      eq("忙时第一批:第一次回看间隔是下限", first, 1000);
+      // 再等一轮 —— 修复后退避该翻倍;坏的那份每次重置回 1000。
+      await sleep(1100);
+      const second = runner.pendingFires.get(key)?.busyRetryMs;
+      check("忙时回看间隔按指数退避增长(第二轮比第一轮长)", (second ?? 0) > (first ?? 0), { first, second });
+      eq("退避期间那一批仍然攒着,没丢", runner.pendingFires.get(key)?.files.length, 1);
     } finally { setRunBusy(sessionId, false); runner.dispose(); }
   }
 

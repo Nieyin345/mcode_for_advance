@@ -169,7 +169,14 @@ function purposeOfKinds(kinds: readonly string[]): ContextPurpose {
  * |---|---|---|
  * | `<库根>/collections/group-<大类 id>.md` | 整个大类 | 那个大类自己 |
  * | `<库根>/collections/<分类 id>.md` | 一个分类 | 它挂着的大类 |
- * | `<库根>/collections/<条目 id>.md` | 单独一篇 | 它所属分类挂着的大类(去重) |
+ * | `<库根>/collections/item-<条目 id>.md` | 单独一篇 | 它所属分类挂着的大类(去重) |
+ *
+ * ⚠️ **单篇那份文件名带 `item-` 前缀,分类那份不带。** 那是写它的那一端定的
+ * (`library/manifest.ts` 的 `writeItemManifest`:`item-${item.id}.md`;分类走
+ * `writeCollectionManifest` 的 `${collectionId}.md`)。挂在对话上的 `@路径` 行就是那个
+ * `res.path`(见 `manifest.pushAttach` → 渲染端 `contentTag` 的 `content: \`@${manifestPath}\``),
+ * 所以解析这一端必须认这个前缀 —— 不认的话用户**点开分类挑了其中一篇**挂上来的那条,
+ * 在「资料」这一类里会被静默丢掉(少给了模型东西而一个字都不说)。
  *
  * ## `kinds` 是**数组**,不是单个
  *
@@ -205,8 +212,14 @@ function resolveRef(path: string, lookup: ContextLookup): Omit<ContextRef, "kind
     if (byCollection !== undefined) {
       return { kinds: byCollection, level: "collection", purpose: purposeOfKinds(byCollection) };
     }
-    // 条目清单:`<条目 id>.md`,取它所属分类挂着的大类。
-    const byItem = lookup.groupsOfItem(stem);
+    // 条目清单:`item-<条目 id>.md`(写它的是 `writeItemManifest`,前缀由那一端定),
+    // 取它所属分类挂着的大类。**先剥前缀再查** —— 裸 stem 是 `item-li_xxx`,不是条目 id。
+    //
+    // ⚠️ 为什么把剥前缀放在**查分类之后**:前缀是 `item-`,而分类 id 是 `lc_…`,两者
+    // 不会撞;就算某个分类真叫 `item-foo`,那也先按分类命中(与 `group-` 那条同理,
+    // 先试更具体的形状)。剥下来的空串(`item-.md`)查不到,自然落 null。
+    const itemStem = stem.startsWith("item-") ? stem.slice("item-".length) : stem;
+    const byItem = itemStem.length > 0 ? lookup.groupsOfItem(itemStem) : undefined;
     if (byItem !== undefined) {
       return { kinds: byItem, level: "item", purpose: purposeOfKinds(byItem) };
     }

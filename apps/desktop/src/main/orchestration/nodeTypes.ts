@@ -102,6 +102,7 @@ import {
 import { MODULE_CAPABILITY_NODE_TYPE_ID, MODULE_CAPABILITY_RUNNER_KIND } from "@contracts/moduleCapability";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { MEMORY_PARAM_KEY } from "@contracts/memory";
+import { DEFAULT_LIBRARY_GROUPS } from "@contracts/libraryTypes";
 import { loadLibraryGroups } from "@main/library/groupRegistry.js";
 import {
   NODE_OUTPUT_CONTRACT_KEY,
@@ -144,6 +145,15 @@ export const NODE_COMMAND_TYPE_ID = "mcode.command";
  *
  * 名字显示的是**库里的 name**(大类即用户起的名) —— 它是清单的一部分,由库的作者
  * (内置=我们,自定义=用户)写,不走 i18n,和清单里其他 label 同一规则。按 value 去重。
+ *
+ * ⚠️ **一个候选都没有时退回出厂两组。** 大类表可以被用户清空(`LibrarySection`
+ * 的删除只做 `filter`,`parseLibraryGroupsJson` 也认空数组),而这是个 `kind: "select"`
+ * 参数 —— `validateNodeTypeManifest` 对"下拉没有选项"是**硬拒绝**,于是整个内置清单
+ * 会被丢掉,`loadBuiltin` 把 mcode.main / mcode.agent / mcode.conversation **一起从
+ * 注册表里摘出去**(文件头那条"随应用发出去、自己却加载不了的内置类型"正是它)。
+ * 退回出厂两组与 `loadLibraryGroups` 自己的兜底同一条规矩:表读不到 = "用户从没动过
+ * 大类",而那两种情形本就该给出同一个答案。空表下选中的项本来就是不存在的分类
+ * (`inheritContextLines` 按真实库过滤),让下拉至少长得出来,比丢掉三个内置类型强。
  */
 function contextOptions(): Array<{ value: string; label: string }> {
   const out: Array<{ value: string; label: string }> = [];
@@ -154,6 +164,7 @@ function contextOptions(): Array<{ value: string; label: string }> {
     out.push({ value, label });
   };
   for (const g of loadLibraryGroups()) push(g.id, g.name);
+  if (out.length === 0) for (const g of DEFAULT_LIBRARY_GROUPS) push(g.id, g.name);
   return out;
 }
 
