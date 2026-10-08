@@ -27,13 +27,14 @@ import {
 } from "@contracts/ipc";
 import { lspManager } from "@main/lsp/LspManager.js";
 import { log } from "@main/lib/logger.js";
+import { errText } from "@main/lib/ipcError.js";
 
 export function registerLspHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.LSP_LIST, async () => {
     try {
       return await lspManager.list();
     } catch (err) {
-      log.warn(`lsp.list failed: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn(`lsp.list failed: ${errText(err)}`);
       return { languages: [] };
     }
   });
@@ -43,7 +44,7 @@ export function registerLspHandlers(ipcMain: IpcMain): void {
       const input = LspInstallSchema.parse(raw);
       return await lspManager.install(input.language);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errText(err);
       log.error(`lsp.install failed: ${msg}`);
       return { ok: false, error: msg };
     }
@@ -54,7 +55,7 @@ export function registerLspHandlers(ipcMain: IpcMain): void {
       const input = LspInstallFromFileSchema.parse(raw);
       return await lspManager.installFromFile(input.language, input.archivePath);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errText(err);
       log.error(`lsp.installFromFile failed: ${msg}`);
       return { ok: false, error: msg };
     }
@@ -65,7 +66,7 @@ export function registerLspHandlers(ipcMain: IpcMain): void {
       const input = LspUninstallSchema.parse(raw);
       return await lspManager.uninstall(input.language);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errText(err);
       log.error(`lsp.uninstall failed: ${msg}`);
       return { ok: false, error: msg };
     }
@@ -76,7 +77,7 @@ export function registerLspHandlers(ipcMain: IpcMain): void {
       const input = LspToggleSchema.parse(raw);
       return await lspManager.toggle(input.language, input.enabled);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errText(err);
       log.error(`lsp.toggle failed: ${msg}`);
       return { languages: [] };
     }
@@ -87,7 +88,7 @@ export function registerLspHandlers(ipcMain: IpcMain): void {
       const input = LspSetPathSchema.parse(raw);
       return await lspManager.setPath(input.language, input.serverPath, input.args, input.javaHome);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errText(err);
       log.error(`lsp.setPath failed: ${msg}`);
       return { languages: [] };
     }
@@ -98,7 +99,7 @@ export function registerLspHandlers(ipcMain: IpcMain): void {
       const input = LspHealthCheckSchema.parse(raw);
       return await lspManager.healthCheck(input.language);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errText(err);
       log.error(`lsp.healthCheck failed: ${msg}`);
       return { ok: false, error: msg };
     }
@@ -109,7 +110,7 @@ export function registerLspHandlers(ipcMain: IpcMain): void {
       const input = LspPrewarmSchema.parse(raw);
       return await lspManager.prewarm(input.workspacePath);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errText(err);
       log.warn(`lsp.prewarm failed: ${msg}`);
       return { ok: false, error: msg };
     }
@@ -120,7 +121,7 @@ export function registerLspHandlers(ipcMain: IpcMain): void {
       const input = LspRestartSchema.parse(raw);
       return await lspManager.restart(input.workspacePath, input.language);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errText(err);
       log.error(`lsp.restart failed: ${msg}`);
       return { ok: false, error: msg };
     }
@@ -132,7 +133,7 @@ export function registerLspHandlers(ipcMain: IpcMain): void {
       await lspManager.openDocument(input.workspacePath, input.filePath, input.language);
       return;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errText(err);
       log.warn(`lsp.openDocument failed: ${msg}`);
     }
   });
@@ -142,7 +143,7 @@ export function registerLspHandlers(ipcMain: IpcMain): void {
       const input = LspCloseDocSchema.parse(raw);
       await lspManager.closeDocument(input.workspacePath, input.filePath);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errText(err);
       log.warn(`lsp.closeDocument failed: ${msg}`);
     }
   });
@@ -152,7 +153,7 @@ export function registerLspHandlers(ipcMain: IpcMain): void {
       const input = LspDidChangeSchema.parse(raw);
       await lspManager.didChange(input.workspacePath, input.filePath, input.text, input.version);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errText(err);
       log.warn(`lsp.didChange failed: ${msg}`);
     }
   });
@@ -162,7 +163,7 @@ export function registerLspHandlers(ipcMain: IpcMain): void {
       const input = LspDidSaveSchema.parse(raw);
       await lspManager.didSave(input.workspacePath, input.filePath, input.text);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errText(err);
       log.warn(`lsp.didSave failed: ${msg}`);
     }
   });
@@ -172,7 +173,7 @@ export function registerLspHandlers(ipcMain: IpcMain): void {
       const input = LspRequestSchema.parse(raw);
       return await lspManager.request(input.workspacePath, input.language, input.method, input.params);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errText(err);
       log.warn(`lsp.request failed: ${msg}`);
       return { error: { code: -32603, message: msg } };
     }

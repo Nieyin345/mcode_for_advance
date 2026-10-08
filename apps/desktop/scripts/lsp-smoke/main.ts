@@ -1088,6 +1088,22 @@ console.log("\n§9 安装与路径那条路上的错误");
 }
 
 {
+  // ★ 入参不合法时交出去的是**人话**,不是 zod 的 JSON。
+  //
+  // 这批 handle 全是 `try { Schema.parse(raw) … } catch { return { ok:false, error: msg } }`,
+  // 而 `ZodError.message` 是一整段 `[{code,path,message}]` JSON —— 原样放进 `error`
+  // 就把它糊在了用户脸上:面板 `setHealthResult(\`✗ ${res.error}\`)` 原样画出来,
+  // 模型走 `app_api_call` 也会读到一屏 JSON(见 `apiCatalog.generated.ts` 的 lsp.*)。
+  // 同族的 6 个 handler 文件都走共享的 `errText`,lsp.ts 早先漏了,这里钉住。
+  const ZOD_JSON = /\[[\s\S]*"code"[\s\S]*\]/;
+  const bad = (await call(IPC.LSP_INSTALL, { language: "ruby" })) as { ok: boolean; error?: string };
+  eq("不认识的语言被拒", bad.ok, false);
+  says("★ 拒绝理由是人话(「入参不合法」而不是 zod JSON)", bad.error, "入参不合法");
+  check("★ 错误里没有 zod 的 JSON 形状", !ZOD_JSON.test(bad.error ?? ""), bad.error);
+  says("★ 错误里点出了是哪个字段", bad.error, "language");
+}
+
+{
   // Java 的健康检查:先看 JDK,再看 equinox launcher jar。这台机器上是 Java 8,
   // 所以报的是 JDK 那条 —— 而那句话必须告诉用户「去哪儿指定」。
   const hc = (await call(IPC.LSP_HEALTH_CHECK, { language: "java" })) as { ok: boolean; error?: string };
