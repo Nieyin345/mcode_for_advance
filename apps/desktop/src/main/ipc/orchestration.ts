@@ -45,6 +45,7 @@ import { automationRunner } from "@main/orchestration/automationRunner.js";
 import { CustomUiRunAutomationSchema } from "@contracts/customUi";
 import { runCustomUiAutomation } from "@main/customUi/runAutomation.js";
 import { log } from "@main/lib/logger.js";
+import { dialogText } from "@main/lib/dialogText.js";
 import {
   getWorkflow,
   importWorkflowInto,
@@ -206,9 +207,9 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
 
     const base = sanitizeFileBase(input.suggestedName ?? doc.name, doc.id);
     const result = await dialog.showSaveDialog({
-      title: "导出工作流",
+      title: dialogText("common.dialog.exportWorkflow"),
       defaultPath: `${base}.json`,
-      filters: [{ name: "工作流 JSON", extensions: ["json"] }],
+      filters: [{ name: dialogText("common.dialog.workflowJsonFilter"), extensions: ["json"] }],
     });
     if (result.canceled || !result.filePath) return { ok: false, canceled: true };
 
@@ -246,9 +247,9 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.WORKFLOW_IMPORT_FROM_FILE, async (_evt, raw) => {
     const input = WorkflowImportSchema.pick({ id: true }).parse(raw ?? {});
     const picked = await dialog.showOpenDialog({
-      title: "导入工作流",
+      title: dialogText("common.dialog.importWorkflow"),
       properties: ["openFile"],
-      filters: [{ name: "工作流 JSON", extensions: ["json"] }],
+      filters: [{ name: dialogText("common.dialog.workflowJsonFilter"), extensions: ["json"] }],
     });
     if (picked.canceled || picked.filePaths.length === 0) return { ok: false, canceled: true };
 

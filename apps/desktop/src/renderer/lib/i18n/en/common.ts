@@ -44,4 +44,13 @@ export const en = {
   "common.officeSaveFailureMessage": "The app has stayed open because an Office document could not be confirmed saved. Check Document Server connectivity, disk space and folder permissions, retry saving, then quit again.",
   "common.officeMigrationBlocked": "Close Office editors and wait for saving to finish before moving the data folder. If saving failed, reopen the document and retry.",
   "common.moreInfo": "More info",
+  "common.dialog.pickFiles": "Choose files",
+  "common.dialog.pickImages": "Choose images",
+  "common.dialog.imagesFilter": "Images",
+  "common.dialog.exportWorkflow": "Export workflow",
+  "common.dialog.importWorkflow": "Import workflow",
+  "common.dialog.workflowJsonFilter": "Workflow JSON",
+  "common.dialog.exportSettings": "Export Mcode settings",
+  "common.dialog.importSettings": "Import Mcode settings",
+  "common.dialog.settingsFilter": "Mcode settings",
 } as const;

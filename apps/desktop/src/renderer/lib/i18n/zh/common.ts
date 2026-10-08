@@ -48,4 +48,15 @@ export const zh = {
   "common.officeSaveFailureMessage": "尚未确认 Office 文档已保存，应用已取消退出。请检查 Document Server 连接、磁盘空间和目录权限，重试保存后再退出。",
   "common.officeMigrationBlocked": "请先关闭 Office 编辑器并等待保存完成，再迁移数据目录。若保存失败，请重新打开文档重试。",
   "common.moreInfo": "说明",
+  // 主进程弹出的**系统对话框**(保存/打开)的标题与文件类型名 —— 它们画在 OS 的原生
+  // 模态上,但语言该跟界面走(英文界面下不该出现中文标题)。
+  "common.dialog.pickFiles": "选择文件",
+  "common.dialog.pickImages": "选择图片",
+  "common.dialog.imagesFilter": "图片",
+  "common.dialog.exportWorkflow": "导出工作流",
+  "common.dialog.importWorkflow": "导入工作流",
+  "common.dialog.workflowJsonFilter": "工作流 JSON",
+  "common.dialog.exportSettings": "导出 Mcode 设置",
+  "common.dialog.importSettings": "导入 Mcode 设置",
+  "common.dialog.settingsFilter": "Mcode 设置",
 } as const;

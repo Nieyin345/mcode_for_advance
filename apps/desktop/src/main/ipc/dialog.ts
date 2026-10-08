@@ -25,6 +25,7 @@ import { basename } from "node:path";
 import { IPC, DialogPickFilesSchema, PickImagesSchema } from "@contracts/ipc";
 import type { PickedImage } from "@contracts/ipc";
 import { log } from "@main/lib/logger.js";
+import { dialogText } from "@main/lib/dialogText.js";
 
 /** Per-file ceiling for the image picker (raw bytes). Anything larger is
  *  skipped — the renderer downsizes to ~4.5MB before sending anyway, so
@@ -60,7 +61,7 @@ export function registerDialogHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.DIALOG_PICK_FILES, async (_evt, raw) => {
     const input = DialogPickFilesSchema.parse(raw);
     const result = await dialog.showOpenDialog({
-      title: input.title ?? "选择文件",
+      title: input.title ?? dialogText("common.dialog.pickFiles"),
       properties: ["openFile", "multiSelections"],
       ...(input.filters ? { filters: input.filters } : {}),
     });
@@ -80,9 +81,9 @@ export function registerDialogHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.FILE_PICK_IMAGES, async (_evt, raw) => {
     PickImagesSchema.parse(raw);
     const result = await dialog.showOpenDialog({
-      title: "选择图片",
+      title: dialogText("common.dialog.pickImages"),
       properties: ["openFile", "multiSelections"],
-      filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }],
+      filters: [{ name: dialogText("common.dialog.imagesFilter"), extensions: ["png", "jpg", "jpeg", "gif", "webp"] }],
     });
     if (result.canceled || result.filePaths.length === 0) {
       return { images: [], skipped: [] };

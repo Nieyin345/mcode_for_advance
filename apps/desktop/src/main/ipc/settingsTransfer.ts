@@ -12,6 +12,7 @@ import { SettingRepo } from "@main/store/repositories.js";
 import { getMainWindow } from "@main/window.js";
 import { notificationManager } from "@main/notifications/NotificationManager.js";
 import { log } from "@main/lib/logger.js";
+import { dialogText } from "@main/lib/dialogText.js";
 import { broadcastSettingChanged } from "@main/lib/sessionSync.js";
 import { isSyncedSettingKey } from "@contracts/ipc/settingsSync";
 import { buildSettingsExport, parseSettingsImport } from "@main/settings/settingsTransfer.js";
@@ -32,9 +33,9 @@ export function registerSettingsTransferHandlers(ipc: IpcMain): void {
       const { doc, count, skipped, scrubbed } = buildSettingsExport(allSettings(), { appVersion: app.getVersion() });
       const win = getMainWindow();
       const opts = {
-        title: "导出 Mcode 设置",
+        title: dialogText("common.dialog.exportSettings"),
         defaultPath: `mcode-settings-${stamp()}.json`,
-        filters: [{ name: "Mcode 设置", extensions: ["json"] }],
+        filters: [{ name: dialogText("common.dialog.settingsFilter"), extensions: ["json"] }],
       };
       const res = win && !win.isDestroyed() ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
       if (res.canceled || !res.filePath) return { ok: false as const, canceled: true };
@@ -51,9 +52,9 @@ export function registerSettingsTransferHandlers(ipc: IpcMain): void {
     try {
       const win = getMainWindow();
       const opts = {
-        title: "导入 Mcode 设置",
+        title: dialogText("common.dialog.importSettings"),
         properties: ["openFile" as const],
-        filters: [{ name: "Mcode 设置", extensions: ["json"] }],
+        filters: [{ name: dialogText("common.dialog.settingsFilter"), extensions: ["json"] }],
       };
       const res = win && !win.isDestroyed() ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
       const file = res.filePaths[0];

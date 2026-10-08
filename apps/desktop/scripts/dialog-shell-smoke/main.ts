@@ -42,9 +42,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { IpcMain } from "electron";
 
-import { IPC } from "@contracts/ipc";
+import { IPC, UI_LOCALE_SETTING_KEY } from "@contracts/ipc";
 import { initDb } from "@main/store/db.js";
-import { ProjectRepo } from "@main/store/repositories.js";
+import { ProjectRepo, SettingRepo } from "@main/store/repositories.js";
 import { registerDialogHandlers } from "@main/ipc/dialog.js";
 import { registerShellHandlers } from "@main/ipc/shell.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
@@ -306,6 +306,35 @@ console.log("\n1. 文件 / 目录选择:取消、空、多选");
   pushDialogResult({ canceled: true, filePaths: [] });
   await call(IPC.DIALOG_PICK_FILES, {});
   check("没给 filters 时不硬塞一个空的", !("filters" in (dialogCalls[0] as object)), dialogCalls[0]);
+}
+
+{
+  // ★ 系统对话框的**默认标题 / 文件类型名跟着界面语言走**。
+  //
+  // 这些字符串画在 OS 的原生模态上(不是渲染端画的),早先在三处各自写死中文 ——
+  // 英文界面下点「导出工作流」弹出来的是「导出工作流」+「工作流 JSON」。判据立在
+  // **真的传给 `showOpenDialog` 的那个 title** 上:把语言切成 en,它必须变英文。
+  // (撤掉 `dialogText` 换回硬编码中文 → 这条红。)
+  const saved = SettingRepo.get(UI_LOCALE_SETTING_KEY);
+  try {
+    resetDialog();
+    pushDialogResult({ canceled: true, filePaths: [] });
+    SettingRepo.set(UI_LOCALE_SETTING_KEY, "en");
+    await call(IPC.FILE_PICK_IMAGES, {});
+    const en = dialogCalls[0] as { title?: string; filters?: { name?: string }[] };
+    check("★ 英文界面:选图对话框标题是英文", en?.title === "Choose images", en?.title);
+    check("★ 英文界面:文件类型名也是英文", en?.filters?.[0]?.name === "Images", en?.filters);
+
+    resetDialog();
+    pushDialogResult({ canceled: true, filePaths: [] });
+    SettingRepo.set(UI_LOCALE_SETTING_KEY, "zh");
+    await call(IPC.FILE_PICK_IMAGES, {});
+    const zh = dialogCalls[0] as { title?: string };
+    check("★ 中文界面:同一条变回中文", zh?.title === "选择图片", zh?.title);
+  } finally {
+    if (saved === null) SettingRepo.set(UI_LOCALE_SETTING_KEY, "");
+    else SettingRepo.set(UI_LOCALE_SETTING_KEY, saved);
+  }
 }
 
 {
