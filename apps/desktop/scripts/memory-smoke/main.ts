@@ -653,7 +653,19 @@ console.log("\n流程记录:这一层只负责照搬,不自己判谁该读");
   };
   const path = "projects/p_memory/rules/tool-cas.md";
   const base = { category: "rules", path, title: "Tool CAS", content: "v1" };
-  eq("真实工具可新建记忆", (await invoke("memory_write", base)).isError, undefined);
+  const w1 = await invoke("memory_write", base);
+  eq("真实工具可新建记忆", w1.isError, undefined);
+  // ★ 回报里的日期必须是**本地日期**,不是 UTC。写这句的人从一开始就懂这个坑
+  //   (文件头为它单开了 `localDate`,理由写在 `mcp/memoryServer.ts:42`),可 write 的
+  //   回报偏偏用了 `new Date(updatedAt).toISOString()` —— 东八区凌晨 0–8 点会显示成
+  //   "昨天"。判据:回报文本里那个 `YYYY-MM-DD` 必须等于本地日期。
+  {
+    const txt = w1.content.map((c) => (c.type === "text" ? c.text : "")).join("\n");
+    const shown = /(\d{4}-\d{2}-\d{2})/.exec(txt)?.[1];
+    const d = new Date();
+    const local = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    eq("★ 写入回报的日期是本地日期(不是 UTC)", shown, local);
+  }
   const firstRead = await invoke("memory_read", { path });
   const text = firstRead.content.map(c => c.type === "text" ? c.text : "").join("\n");
   const revision = /revision: ([a-f0-9]{64})/.exec(text)?.[1];

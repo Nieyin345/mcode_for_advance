@@ -114,13 +114,14 @@ function slugify(title: string): string {
  * 而 `saveMemoryFile` 会保留旧标题(除非这次明确给了新的)。
  *
  * 真正的去重判断留给调用方:**先 `memory_search` 看看有没有**,再决定 write 还是忘掉。
+ *
+ * ⚠️ **这里不再去列已有文件。** 从前这里先 `listMemoryFiles` 建一个 Set、再判
+ * `if (!existing.has(...)) return candidate; return candidate;` —— 两个分支返回的是**同一个**
+ * 东西,那个 Set 对结果毫无影响(而且每次 `memory_write` 都白读一遍磁盘)。路径**恒等于**
+ * `slugify` 的结果;要"避免覆盖别人"是存储层版本检查的职责,不是这里的。
  */
 function pathFor(category: MemoryCategory, title: string): string {
-  const existing = new Set(listMemoryFiles({ category }).map((m) => m.path.toLowerCase()));
-  const base = slugify(title);
-  const candidate = `${category}/${base}.md`;
-  if (!existing.has(candidate.toLowerCase())) return candidate;
-  return candidate; // 同名不暗中换路径，也不授权无版本覆盖。
+  return `${category}/${slugify(title)}.md`;
 }
 
 /**
@@ -266,7 +267,7 @@ function rawMemoryMcpTools(): McpToolSpec[] {
           // 界面上要能看见它在记 —— 面板与快照都靠这个广播刷新
           notifyMemoryChanged(`write:${path}`);
           return text(
-            `已记下「${title}」 → \`${path}\`(${MEMORY_CATEGORY_LABELS[args.category]},${new Date(updatedAt).toISOString()})\n` +
+            `已记下「${title}」 → \`${path}\`(${MEMORY_CATEGORY_LABELS[args.category]},${localDate(updatedAt)})\n` +
               `用户打开记忆面板就能看到、也能改。\nrevision: ${revision}`,
           );
         } catch (err) {
