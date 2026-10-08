@@ -2767,6 +2767,12 @@ export const LibraryLinkRepo = {
    * 那么在 A 和 B 的左边栏都该看到一个 1)—— 否则徽标说 0、点进去有 1 条,
    * 那种"数字对不上"是最容易被当成 bug 的一类。
    *
+   * ⚠️ **自关联(A→A)只算一条。** `linksOf` 的 `item_id = ? OR target_item_id = ?`
+   * 对 A→A 只匹配到**一行**,`viewsOf` 也只画一条;而下面这句 UNION ALL 会把两端
+   * 各数一次 → 同一行被算成 2,徽标说 2、点进去 1 条。自关联渲染端会跳过,但
+   * `library:linkAdd` / `library_link_add`(MCP)这两条**绕过 UI 的入口没有那道守卫**,
+   * 所以库里真的会出现 A→A —— 出口计数必须自己按"一行 = 一条关系"对账。
+   *
    * 没关联的条目**不出现在返回里**(不是 0),调用方用 `?? 0` 兜 —— 返回一整份
    * 全是 0 的对象在库大起来时纯属浪费。
    */
@@ -2779,11 +2785,16 @@ export const LibraryLinkRepo = {
     // 一条 SQL 两个方向各数一次:UNION ALL 之后按 id 分组。
     // 不写成两条查询再在 JS 里合并 —— 同一条关联的两头都要 +1,合并逻辑放在
     // SQL 里更不容易写错(而且走的是同一次扫描)。
+    //
+    // `target_item_id <> item_id` 排掉自关联的**入边**那一份:出边已经数过它了,
+    // 再数一次就与 `linksOf`(`OR` 只匹配一行)差一。NULL 的路径边不走这一支
+    // (`target_item_id IN (…)` 对 NULL 恒假),所以这句只影响自关联。
     const stmt = db.prepare(
       `SELECT owner, COUNT(*) AS n FROM (
          SELECT item_id AS owner FROM library_item_links WHERE item_id IN (${marks})
          UNION ALL
-         SELECT target_item_id AS owner FROM library_item_links WHERE target_item_id IN (${marks})
+         SELECT target_item_id AS owner FROM library_item_links
+           WHERE target_item_id IN (${marks}) AND target_item_id <> item_id
        ) GROUP BY owner`,
     );
     stmt.bind([...ids.map((x) => v(x)), ...ids.map((x) => v(x))]);
@@ -2913,9 +2924,18 @@ export const LibraryLinkRepo = {
       // 这一行属于**哪个**被问的条目:出边归 `item_id`,入边归 `target_item_id`。
       // 两侧都在问的那一批里时(用户一次删 A 和 B,而 A→B 有一条关联)**两边的
       // 列表里都该有它** —— 各自看过去都确实有这一条。
+      //
+      // ⚠️ **自关联(A→A)只画一条**,与 `viewsOf` / `linksOf` 一致(`linksOf` 的
+      // `link.itemId === itemId ? "out" : "in"` 对 A→A 恒判 out,只出一行)。
+      // 不加这一道,出边与入边的 owner 都是 A,同一行被 push 两次:删除预览里
+      // A 显示 2 条关联,而详情面板(`viewsOf`)只显示 1 条 —— 两处数字对不上。
       const owners: Array<{ owner: string; isOut: boolean }> = [];
       if (idSet.has(link.item_id)) owners.push({ owner: link.item_id, isOut: true });
-      if (link.target_item_id && idSet.has(link.target_item_id)) {
+      if (
+        link.target_item_id &&
+        link.target_item_id !== link.item_id &&
+        idSet.has(link.target_item_id)
+      ) {
         owners.push({ owner: link.target_item_id, isOut: false });
       }
       for (const { owner, isOut } of owners) {

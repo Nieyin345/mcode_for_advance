@@ -89,7 +89,7 @@ const { registerLibraryHandlers } = await import("@main/ipc/library.js");
 registerLibraryHandlers(fakeIpc);
 
 const { initDb } = await import("@main/store/db.js");
-const { LibraryRepo, CollectionRepo, SettingRepo } = await import("@main/store/repositories.js");
+const { LibraryRepo, CollectionRepo, SettingRepo, LibraryLinkRepo } = await import("@main/store/repositories.js");
 const {
   trashCollectionId,
   allTrashCollectionIds,
@@ -369,6 +369,39 @@ console.log("\n标给界面");
   const expected = allTrashCollectionIds().slice().sort();
   same("标出来的正好是那几个回收站", flagged, expected);
   eq("原数组没被就地改", cols.some((c) => c.isTrash === true), false);
+}
+
+/* ──────────────── 7. 关联计数与关联列表的口径必须一致(自关联) ──────────────── */
+//
+// `countsOf`(左栏行尾那个徽标)与 `viewsOf`(点进去看到的那份列表)在注释里都写着
+// **"口径逐字一致"** —— 徽标说 N,点进去就该是 N 条。据此在 tests 里断言。
+//
+// 缺口是**自关联**(A 关联 A)。渲染端的 `ItemDetail` 自己 `continue` 掉了"选到自己",
+// 但这条 RPC/MCP 工具(`library_link_add`)是公开入口,没有那道守卫 —— 一旦库里有一行
+// A→A:
+//   - `linksOf` 返回一行,`viewsOf` 按"另一头"去查,出边/入边**都指向 A 同一个 id**,
+//     于是 `viewsOf` 只 push 一次(去重靠 `out[owner]` 里那一行),
+//   - 而 `countsOf` 的 UNION ALL 两个方向各数一次 → 同一条关系被算成 2。
+// 结果:徽标 2、列表 1,两个数字对不上;`viewsOfMany`(删除预览)也是 2。
+console.log("\n关联计数与列表口径一致");
+{
+  const hub = LibraryRepo.upsert({ title: "自关联的那一条" }).id;
+  const other = LibraryRepo.upsert({ title: "正常关联目标" }).id;
+  // 直接经仓储建一行自关联 —— 这条路正是 IPC/MCP 走的(没有渲染端那道 `continue`)。
+  LibraryLinkRepo.add(hub, { targetItemId: hub });
+  LibraryLinkRepo.add(hub, { targetItemId: other });
+
+  const views = LibraryLinkRepo.viewsOf(hub);
+  const counts = LibraryLinkRepo.countsOf([hub]);
+  const many = LibraryLinkRepo.viewsOfMany([hub])[hub] ?? [];
+  const single = LibraryLinkRepo.linksOf(hub);
+
+  eq("★ 徽标数与列表数一致(countsOf == viewsOf.length)", counts[hub] ?? 0, views.length);
+  eq("★ 批量列表与单条列表一致(viewsOfMany == viewsOf)", many.length, views.length);
+  eq("linksOf 与 viewsOf 条数也一致", single.length, views.length);
+  // 自关联不该让一条关系被数两次 —— 两行(add: hub→hub、hub→other)就是 2 个"另一头",
+  // 而 hub 自己那两个方向合起来只该算一条。
+  eq("两条关联(含一条自关联)共 2 条", views.length, 2);
 }
 
 rmSync(DATA, { recursive: true, force: true });
