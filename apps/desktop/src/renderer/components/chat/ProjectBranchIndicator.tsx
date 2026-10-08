@@ -12,7 +12,7 @@
  * matching how every other git surface in the app works: discover on mount,
  * refresh status, load branches on menu open, checkout then re-refresh.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Menu } from "@base-ui/react/menu";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
@@ -57,17 +57,24 @@ export function ProjectBranchIndicator({
   const [branchesLoading, setBranchesLoading] = useState(false);
   const [branchQuery, setBranchQuery] = useState("");
   const [checkingOut, setCheckingOut] = useState(false);
+  /** 请求序号:只有最新一次 `refresh` 的响应能写 `status`。切项目时 A 慢、B 快,
+   *  A 的旧回包不许把 B 的分支盖掉(与 `GitPanel.scanSeqRef` / `GitHistoryView.
+   *  commitsSeqRef` / `GitDiffDialog.statusSeqRef` 同一类守卫,见底层修复记录 #38/#91/#92)。 */
+  const statusSeqRef = useRef(0);
 
   /** Re-fetch the current branch + ahead/behind for the primary repo. */
   const refresh = useCallback(async () => {
+    const seq = ++statusSeqRef.current;
     if (!repo) {
       setStatus(null);
       return;
     }
     try {
       const { status } = await api.git.status({ repoPath: repo.path });
+      if (seq !== statusSeqRef.current) return; // superseded (project switched)
       setStatus(status);
     } catch {
+      if (seq !== statusSeqRef.current) return;
       setStatus(null);
     }
   }, [repo]);
