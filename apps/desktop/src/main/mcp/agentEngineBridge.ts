@@ -23,7 +23,7 @@
  * 纯模块：只依赖 `./agentTools.js`（那张表本身是无状态纯构造）与 `./engineBridge.js`。
  */
 import type { ProviderContext } from "@contracts/provider";
-import { agentMcpTools, AGENT_READONLY_TOOLS, type AgentToolsDeps } from "@main/mcp/agentTools.js";
+import { agentMcpTools, AGENT_MCP_SERVER, AGENT_READONLY_TOOLS, type AgentToolsDeps } from "@main/mcp/agentTools.js";
 import { makeEngineBridge, type EngineToolDescriptor } from "@main/mcp/engineBridge.js";
 import { agentEngineCwdFor } from "@main/mcp/agentEngineCwd.js";
 import type { McpToolSpec, ToolResult } from "@main/mcp/sdk.js";
@@ -107,10 +107,15 @@ export function agentToolDescriptors(): EngineToolDescriptor[] {
 
 /**
  * Claude 那条路用的**进程内 MCP server**（Claude 有 in-process MCP，另两家没有，走上面的
- * descriptors/invoke）。名字用 `mcode-agent-` 前缀 —— 它同时被
+ * descriptors/invoke）。名字用 `mcode-agent-tools` —— `mcode-agent-` 前缀同时被
  * `isReservedMcpServerName` 挡在用户/项目可注册名之外（内置身份）。
+ *
+ * ⚠️ **别名,不是第二个字面量。** `toolRules` 的只读索引按 {@link AGENT_MCP_SERVER} 建键,
+ * 而这里是实际注册给 SDK 的名字 —— 两处写着不同的字符串时,那三个只读工具的全名
+ * (`mcp__<server>__agent_read_*`)在索引里查不到,于是"任何权限模式都不需要审批"落空:
+ * default 档每读一份 PDF 都弹卡,dontAsk 档直接拒。同一个事实只留一份(硬规矩 2)。
  */
-export const AGENT_ENGINE_MCP_SERVER = "mcode-agent-tools";
+export const AGENT_ENGINE_MCP_SERVER = AGENT_MCP_SERVER;
 
 export async function buildAgentEngineMcpServer(opts: { sessionId: string }) {
   const createSdkMcpServer = await loadCreateMcpServer();

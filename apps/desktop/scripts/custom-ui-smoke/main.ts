@@ -59,7 +59,7 @@ import {
   PANEL_HTML_MAX,
   PANEL_METHODS,
 } from "@contracts/customUiPanel";
-import { forceShellConfirm } from "../../src/main/settings/settingsTransfer.js";
+import { forceShellConfirm, parseSettingsImport, SETTINGS_EXPORT_FORMAT } from "../../src/main/settings/settingsTransfer.js";
 import { collectCollectionIds, isInsideAnyProject, itemFactsOf, shouldSkipItem } from "../../src/main/customUi/targets.js";
 import { describeTriggerPayload, payloadFactsOf } from "../../src/main/orchestration/automationPayload.js";
 import { LIT_IMPORT_PY } from "../../src/main/workflows/assets.js";
@@ -647,6 +647,35 @@ check("RunAutomation 输入接受 input 值表", CustomUiRunAutomationSchema.saf
   const [pa, sh] = imported.items;
   check("导入设置:面板去掉联网、回到确认", pa !== undefined && !("network" in pa.action) && !("confirm" in pa.action) && pa.action["html"] === "<p/>", pa);
   check("导入设置:shell 仍回到确认", sh !== undefined && !("confirm" in sh.action), sh);
+
+  // ── 导入那条路与 setting.set 是**同一个键的两个写者**,策略必须一致 ──────────────
+  // `setting.set` 写 customUi.config.v1 之前会过 `validateCustomUiWrite`(重复 id / 非法动作
+  // 组合 / 动态 shell 模板一律拒)。而设置**导入**是另一个写者,它只做 `forceShellConfirm`
+  // 就直接进 `SettingRepo.set`(见 ipc/settingsTransfer.ts)—— 于是同一份非法配置,手工写
+  // 当场被拒、从文件导进来却照收。渲染端 `parseCustomUiConfig` 是"逐条丢坏条目",倒不会白屏;
+  // 但"两个写者一个校验一个不校验"本身就是漂移,正是硬规矩 2 说的那种。
+  const exportDoc = (value: string) =>
+    JSON.stringify({ format: SETTINGS_EXPORT_FORMAT, version: 1, exportedAt: "", settings: { "customUi.config.v1": value } });
+  const goodCfg = JSON.stringify({ version: 1, items: [{ id: "a", slot: "toolbar", label: { zh: "a" }, action: { type: "shell", command: "ls" } }], layout: {} });
+  const dupCfg = JSON.stringify({ version: 1, items: [
+    { id: "a", slot: "toolbar", label: { zh: "a" }, action: { type: "shell", command: "ls" } },
+    { id: "a", slot: "toolbar", label: { zh: "b" }, action: { type: "shell", command: "ls" } },
+  ], layout: {} });
+  const dynCfg = JSON.stringify({ version: 1, items: [{ id: "a", slot: "toolbar", label: { zh: "a" }, action: { type: "shell", command: "echo {{file.path}}" } }], layout: {} });
+  const okImport = parseSettingsImport(exportDoc(goodCfg));
+  check("导入:合法自定义 UI 照常收下", okImport.ok && okImport.entries.length === 1, okImport);
+  const dupImport = parseSettingsImport(exportDoc(dupCfg));
+  check(
+    "导入:重复 id 的非法自定义 UI 被挡下(与 setting.set 同一道校验,不静默收进库里)",
+    dupImport.ok === false || dupImport.entries.length === 0,
+    dupImport,
+  );
+  const dynImport = parseSettingsImport(exportDoc(dynCfg));
+  check(
+    "导入:含动态 shell 模板的非法自定义 UI 被挡下(运行时会拒,别先存进库)",
+    dynImport.ok === false || dynImport.entries.length === 0,
+    dynImport,
+  );
 }
 
 /* ── 汇总 ── */

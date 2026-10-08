@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { z } from "zod";
 import { agentMcpTools } from "@main/mcp/agentTools.js";
+import { __registeredDisposerCount, __registeredShutdownHookCount } from "@main/mcp/agentSessionCleanup.js";
 import type { ToolResult } from "@main/mcp/sdk.js";
 const root=mkdtempSync(join(tmpdir(),"mcode-doc-read-"));
 const failures:string[]=[];let passed=0;
@@ -29,6 +30,36 @@ try {
  await test("DOCX Unicode survives Python pipe decoding",async()=>{const r=await read("text.docx");assert.ok(!r.isError,text(r));assert.ok(text(r).includes("研究😀"),text(r).slice(0,120));});
  await test("Excel selection returns actual Unicode cells and values",async()=>{const r=await read("table.xlsx",{sheet:"Research",range:"A2:B2"});assert.ok(!r.isError,text(r));assert.match(text(r),/研究论文/);assert.match(text(r),/2026/);});
  await test("invalid sheet fails rather than claiming an empty document",async()=>{const r=await read("table.xlsx",{sheet:"absent"});assert.equal(r.isError,true);});
+ // agent 工具表是**按会话**持有进程 / 后台搜索 / SSH 的"进程级单例"(见 agentTools.ts
+ // 文件头与 agentSessionCleanup.ts)。但桥(agentEngineBridge)的 specs() 每次取都要现调
+ // agentMcpTools —— 也就是**每轮 sendTurn、每次工具调用**都调。若每次都新建三张管理器
+ // 再登记一条释放函数,闭包就一条会话一份、且永远没人回收:登记的 set 只涨不落。
+ await test("重复取工具表不会让释放登记无限增长(进程级单例只建一次)",async()=>{
+  const before=__registeredDisposerCount(),beforeShutdown=__registeredShutdownHookCount();
+  for(let i=0;i<5;i++)agentMcpTools({cwdFor:()=>root});
+  assert.equal(__registeredDisposerCount(),before,"每次调 agentMcpTools 都登记新释放函数,登记的 set 只涨不落");
+  assert.equal(__registeredShutdownHookCount(),beforeShutdown,"每次调 agentMcpTools 都登记新退出钩子,钩子只涨不落");
+ });
+ // 上一条断言的是"登记不涨";这一条断言它**为什么**要紧 —— 用户的真实症状。桥给 Pi / Codex
+ // 是按名现取工具表再派发的:start 一次拿到 process_id,之后 write/read/stop 是**另几次**
+ // 取表。若每次取表都换一张空管理器,那句 process_id 在后一次取的表里根本查不到 ——
+ // "进程不存在" 而不是 "Start 后读不到输出"。用**两次独立取表**模拟那一串调用。
+ await test("一个表里 start 的进程句柄,另一次取表仍查得到(否则 Pi/Codex 的进程工具整个坏掉)",async()=>{
+  const cmd=process.platform==="win32"?'node -e "setTimeout(function(){},8000)"':"sleep 8";
+  const started=await agentMcpTools({cwdFor:()=>root}).find(x=>x.name==="agent_process_start")!.handler(
+    z.object({command:z.string(),timeout_ms:z.number().optional(),wait_ms:z.number().optional()}).parse({command:cmd,timeout_ms:8000,wait_ms:0}),
+    {sessionId:"proc-persist"},
+  );
+  const id=/process_id[:：]?\s*`?([A-Za-z0-9_]+)/.exec(text(started))?.[1] ?? /(proc_[0-9a-f]+)/.exec(text(started))?.[1];
+  assert.ok(id,"start 必须报出 process_id");
+  try{
+    // **另取一次表**(模拟 Pi/Codex 的下一次派发),按那个 id 读。
+    const listed=await agentMcpTools({cwdFor:()=>root}).find(x=>x.name==="agent_process_sessions")!.handler({},{sessionId:"proc-persist"});
+    assert.ok(text(listed).includes(id!),`后一次取表里查不到 ${id} —— 进程工具在 Pi/Codex 下会整个失效`);
+  }finally{
+    try{await agentMcpTools({cwdFor:()=>root}).find(x=>x.name==="agent_process_stop")!.handler({process_id:id!},{sessionId:"proc-persist"});}catch{/* best effort */}
+  }
+ });
  // Force legacy pipe encodings even on UTF-8 developer machines. Only these
  // serial tests change parent env, restoring every key afterward.
  const keys=["PYTHONIOENCODING","PYTHONUTF8","PYTHONCOERCECLOCALE"] as const;

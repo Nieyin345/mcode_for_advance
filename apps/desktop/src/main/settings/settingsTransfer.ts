@@ -18,6 +18,7 @@
  */
 
 import { CUSTOM_UI_SETTING_KEY } from "@contracts/customUi";
+import { validateCustomUiWrite } from "@main/customUi/configValidation.js";
 
 export const SETTINGS_EXPORT_FORMAT = "mcode-settings";
 export const SETTINGS_EXPORT_VERSION = 1;
@@ -235,7 +236,22 @@ export function parseSettingsImport(text: string): ParsedSettingsImport {
       continue;
     }
     const clean = scrubValue(v).value;
-    entries.push([k, k === CUSTOM_UI_SETTING_KEY ? forceShellConfirm(clean) : clean]);
+    if (k === CUSTOM_UI_SETTING_KEY) {
+      // 导入是 customUi.config.v1 的**第二个写者**,必须过 `setting.set` 那道同一份校验
+      // (`validateCustomUiWrite`:重复 id / 非法动作组合 / 动态 shell 模板)—— 否则同一份
+      // 非法配置手工写当场被拒、从文件导进来却照收,两个写者就此漂移(硬规矩 2)。
+      // 挡下的整条键进 skipped 交给界面,不因此让整次导入失败(同"被挡下的键名"那条语义)。
+      const forced = forceShellConfirm(clean);
+      try {
+        validateCustomUiWrite(forced);
+      } catch {
+        skipped.push(k);
+        continue;
+      }
+      entries.push([k, forced]);
+      continue;
+    }
+    entries.push([k, clean]);
   }
   if (entries.length > 5000) return { ok: false, error: "设置项数量异常(超过 5000 条)" };
   return { ok: true, entries, skipped };

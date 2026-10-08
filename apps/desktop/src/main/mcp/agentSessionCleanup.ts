@@ -65,3 +65,16 @@ export function disposeAgentSession(sessionId: string): void {
     }
   }
 }
+
+/**
+ * 测试用:当前登记了几条按会话释放 / 退出清理。
+ *
+ * 「登记一次就够」这件事没有别的观察点 —— 这两张表是模块私有的,重复登记的代价
+ * (闭包各自捕着三张管理器)从外面看不见。冒烟据它断言"重复取工具表不会一直往上堆"。
+ */
+export function __registeredDisposerCount(): number {
+  return disposers.size;
+}
+export function __registeredShutdownHookCount(): number {
+  return shutdownHooks.size;
+}

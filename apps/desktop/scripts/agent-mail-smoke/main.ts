@@ -58,6 +58,8 @@ import {
 } from "@main/lib/agentMail.js";
 import { AGENT_MAIL_TOOLS, WORKFLOW_READONLY_TOOLS, workflowMcpTools } from "@main/mcp/mcodeServer.js";
 import { shouldAutoApprove } from "@main/mcp/toolRules.js";
+import { AGENT_MCP_SERVER } from "@main/mcp/agentTools.js";
+import { AGENT_ENGINE_MCP_SERVER } from "@main/mcp/agentEngineBridge.js";
 import { MCP_WORKFLOW_SERVER } from "@contracts/ipc/mcp";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { parseIncomingMail, readOutgoingMail, isAgentMailTool } from "@renderer/lib/agentMail.js";
@@ -642,6 +644,38 @@ console.log("\n⑫ 能干预:写工具弹审批卡,只读工具免问");
   eq("★ agent_peers 是只读,免问", shouldAutoApprove("default", full("agent_peers")), true);
   check("★ agent_peers 登记在只读集合里", WORKFLOW_READONLY_TOOLS.has("agent_peers"));
   check("★ 两个有副作用的没混进只读集合", !WORKFLOW_READONLY_TOOLS.has("agent_notify") && !WORKFLOW_READONLY_TOOLS.has("agent_ask"));
+}
+
+console.log("\n⑫b 桥给三引擎的 agent 只读工具,也要按**它真正注册的 server 名**免问");
+{
+  // 这三个工具(agent_read_document / agent_read_image / agent_context)在 toolRules 的
+  // 只读索引里,本该"任何权限模式都不需要审批"—— 但索引是按 `AGENT_MCP_SERVER`("mcode-agent")
+  // 建的键,而 Claude 实际注册的 server 名是 `AGENT_ENGINE_MCP_SERVER`("mcode-agent-tools")。
+  // 于是 SDK 报出来的 `mcp__mcode-agent-tools__agent_read_document` 拆出来的 server 名
+  // 在索引里查不到 → 表里"任何权限模式都不需要审批"落空,default 档每读一份 PDF 都弹卡,
+  // dontAsk 档**直接拒**。断言用**真正注册的那个 server 名**拼出工具全名,判定必须放行。
+  const namespaced = (server: string, tool: string): string => `mcp__${server}__${tool}`;
+  eq(
+    "★ default 档读 PDF 不弹卡(server 名要和注册时一致)",
+    shouldAutoApprove("default", namespaced(AGENT_ENGINE_MCP_SERVER, "agent_read_document")),
+    true,
+  );
+  eq(
+    "★ default 档读图片不弹卡",
+    shouldAutoApprove("default", namespaced(AGENT_ENGINE_MCP_SERVER, "agent_read_image")),
+    true,
+  );
+  eq(
+    "★ default 档问项目概况不弹卡",
+    shouldAutoApprove("default", namespaced(AGENT_ENGINE_MCP_SERVER, "agent_context")),
+    true,
+  );
+  // 只读索引按 server 名建键,两边不一致时这条会红 —— 这正是上面三条红的根因。
+  eq(
+    "★ 索引里那个 server 名就是 registered 的那个",
+    shouldAutoApprove("default", namespaced(AGENT_MCP_SERVER, "agent_read_document")),
+    true,
+  );
 }
 
 console.log("\n⑬ 公网门控:三个工具一条都不许上");
