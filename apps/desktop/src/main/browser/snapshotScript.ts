@@ -5,11 +5,19 @@
  * Like `pickerScript.ts`, these are string constants (NOT modules) because
  * executeJavaScript runs in the page's own context with no access to our
  * process's module scope. Each IIFE takes its arguments as JSON-stringified
- * slots (`%XXX_JSON%`) that `build*Script()` fills with `JSON.stringify` —
+ * slots (`%XXX_JSON%`) that `build*Script()` fills with {@link fillSlot} —
  * which produces a valid JS string literal, so quotes / backslashes /
  * newlines in selectors, texts and code can never break out of the script
  * syntax. Values are only ever consumed by `JSON.parse` / `querySelector`,
  * never interpolated into the source.
+ *
+ * ⚠️ **The fill must go through a replacer FUNCTION, not a plain string.** A
+ * string replacement interprets `$$`, `` $` ``, `$&` and `$'` as replacement
+ * patterns — so a model-supplied `browser_evaluate` script like
+ * `` `Total: $${cost}` `` would silently lose a `$` (its literal-`$` escape
+ * turned into real interpolation), and a selector/text/typed text containing
+ * `` $` `` would throw a page-side SyntaxError. `fillSlot` passes
+ * `() => json`, which disables that interpretation entirely.
  *
  * The IIFEs return plain JSON-serializable objects, which Electron
  * auto-marshals back across the process boundary as the awaited return value.
@@ -539,47 +547,67 @@ export const CHECK_FILE_INPUT_SCRIPT = `
  * Each fills the JSON slots of its script constant. JSON.stringify output
  * is a valid JS string literal, so arbitrary model-supplied values are
  * injection-safe.
+ *
+ * ⚠️ **必须用替换函数 `() => json`,不能直接把 json 当替换串传。**
+ * `String.prototype.replace` 会把替换**字符串**里的 `$$`/`` $` ``/`$&`/`$'`
+ * 当替换模式解释,于是:
+ *   - `` `Total: $${cost}` ``(模板字面量里转义一个字面 `$`)会静默变成
+ *     `` `Total: ${cost}` `` —— 模型给的代码语义被悄悄改了;
+ *   - 含 `` $` `` 的选择器/文本会直接抛 SyntaxError。
+ * 换成函数就不会解释这些序列。
  * ────────────────────────────────────────────────────────────────────── */
 
+/** 把一个 JSON 字符串安全地填进脚本的 `%XXX_JSON%` 槽。 */
+export function fillSlot(script: string, slot: string, json: string): string {
+  return script.replace(slot, () => json);
+}
+
 export function buildClickScript(selector: string): string {
-  return CLICK_SCRIPT.replace("%SELECTOR_JSON%", JSON.stringify(JSON.stringify(selector)));
+  return fillSlot(CLICK_SCRIPT, "%SELECTOR_JSON%", JSON.stringify(JSON.stringify(selector)));
 }
 
 export function buildCheckFileInputScript(selector: string): string {
-  return CHECK_FILE_INPUT_SCRIPT.replace("%SELECTOR_JSON%", JSON.stringify(JSON.stringify(selector)));
+  return fillSlot(CHECK_FILE_INPUT_SCRIPT, "%SELECTOR_JSON%", JSON.stringify(JSON.stringify(selector)));
 }
 
 export function buildEvaluateScript(code: string): string {
-  return EVALUATE_SCRIPT.replace("%SCRIPT_JSON%", JSON.stringify(JSON.stringify(code)));
+  return fillSlot(EVALUATE_SCRIPT, "%SCRIPT_JSON%", JSON.stringify(JSON.stringify(code)));
 }
 
 export function buildElementCenterScript(selector: string): string {
-  return ELEMENT_CENTER_SCRIPT.replace("%SELECTOR_JSON%", JSON.stringify(JSON.stringify(selector)));
+  return fillSlot(ELEMENT_CENTER_SCRIPT, "%SELECTOR_JSON%", JSON.stringify(JSON.stringify(selector)));
 }
 
 export function buildTypeScript(selector: string, text: string, clear = true): string {
-  return TYPE_SCRIPT.replace("%SELECTOR_JSON%", JSON.stringify(JSON.stringify(selector)))
-    .replace("%TEXT_JSON%", JSON.stringify(JSON.stringify(text)))
-    .replace("%CLEAR_JSON%", JSON.stringify(JSON.stringify(clear)));
+  return fillSlot(
+    fillSlot(fillSlot(TYPE_SCRIPT, "%SELECTOR_JSON%", JSON.stringify(JSON.stringify(selector))), "%TEXT_JSON%", JSON.stringify(JSON.stringify(text))),
+    "%CLEAR_JSON%",
+    JSON.stringify(JSON.stringify(clear)),
+  );
 }
 
 export function buildScrollScript(arg: { selector?: string; direction: "up" | "down"; pages: number }): string {
-  return SCROLL_SCRIPT.replace(
+  return fillSlot(
+    SCROLL_SCRIPT,
     "%ARG_JSON%",
     JSON.stringify(JSON.stringify({ selector: arg.selector, dir: arg.direction, pages: arg.pages })),
   );
 }
 
 export function buildWaitScript(arg: { selector?: string; text?: string }): string {
-  return WAIT_SCRIPT.replace(
+  return fillSlot(
+    WAIT_SCRIPT,
     "%ARG_JSON%",
     JSON.stringify(JSON.stringify({ selector: arg.selector, text: arg.text })),
   );
 }
 
 export function buildSelectScript(selector: string, value: string): string {
-  return SELECT_SCRIPT.replace("%SELECTOR_JSON%", JSON.stringify(JSON.stringify(selector)))
-    .replace("%VALUE_JSON%", JSON.stringify(JSON.stringify(value)));
+  return fillSlot(
+    fillSlot(SELECT_SCRIPT, "%SELECTOR_JSON%", JSON.stringify(JSON.stringify(selector))),
+    "%VALUE_JSON%",
+    JSON.stringify(JSON.stringify(value)),
+  );
 }
 
 export function buildFindScript(arg: {
@@ -592,5 +620,5 @@ export function buildFindScript(arg: {
   attributes?: string[];
   cssScope?: string;
 }): string {
-  return FIND_SCRIPT.replace("%ARG_JSON%", JSON.stringify(JSON.stringify(arg)));
+  return fillSlot(FIND_SCRIPT, "%ARG_JSON%", JSON.stringify(JSON.stringify(arg)));
 }
