@@ -13,7 +13,7 @@ const stubs = {
   "@contracts/ipc": `export const IPC={COMPOSER_ATTACH:'composer:attach'};`,
   "@main/window.js": `export const sendToRenderer=(_channel,msg)=>globalThis.__m34.events.push(msg);`,
   "./trash.js": `export const trashedItemIds=()=>globalThis.__m34.trashed;`,
-  "./suppress.js": `export const suppressionReasonOfItem=()=>null;`,
+  "./suppress.js": `export const suppressionReasonOfItem=()=>null;export const LIBRARY_BLOCK_SETTINGS_PAGE="文档管理";`,
   "./groupRegistry.js": `export const groupPromptOf=()=>undefined;export const loadLibraryGroups=()=>[];`,
   "./fileImport.js": `export const aiVisibleFilesOf=()=>({original:null,markdown:null,hasTranscript:false});export const extOf=()=>'';export const importGenericFiles=()=>({items:[]});`,
 };

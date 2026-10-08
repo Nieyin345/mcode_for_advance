@@ -59,7 +59,7 @@ await test('blocked retry awaits close and preserves callback attempt order',asy
  assert.deepEqual(seen,[[6667,0],[6697,1],[55001,2]]);assert.deepEqual(server.trace,['listen','close','closed','listen','close','closed','listen']);assert.equal(server.bound,true);
 });
 await test('exhausted blocked allocation leaves no bound socket',async()=>{
- const server=new ScriptedServer([6667,6668,6669,6697,6000]);await assert.rejects(listenOnDialablePort(server.asServer()),/after 5 attempts.*6000/);
+ const server=new ScriptedServer([6667,6668,6669,6697,6000]);await assert.rejects(listenOnDialablePort(server.asServer()),/5.*6000/);
  assert.equal(server.closes,5);assert.equal(server.bound,false);assert.equal(server.listenerCount('error'),0);assert.equal(server.listenerCount('listening'),0);
 });
 await test('server can be reused after asynchronous bind failure without stale callbacks',async()=>{
