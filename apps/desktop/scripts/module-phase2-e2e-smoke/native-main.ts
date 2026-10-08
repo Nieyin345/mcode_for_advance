@@ -224,7 +224,7 @@ export async function runNativeProbe(dir: string, phase: string): Promise<void> 
         await until(() => WorkflowRunRepo.listForAutomationWorkflow(deniedDoc.id, 10).some(row => row.status === "failed"), "user workflow denied by actual runner");
         const row = WorkflowRunRepo.listForAutomationWorkflow(deniedDoc.id, 10)[0];
         const failed = decodeSnapshot(row.payload); assert.ok(failed);
-        assert.match(new Map(failed.state.outcomes).get("inspect")?.error ?? "", /builtin|built-in/i);
+        assert.match(new Map(failed.state.outcomes).get("inspect")?.error ?? "", /工作流需要一个已注册的内置只读贡献/);
       });
       await check("real file menu uses the same service and renders real query results in Electron", async () => {
         await js("window.p2.setView('modules')");

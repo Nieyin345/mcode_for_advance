@@ -146,7 +146,7 @@ export class ModuleHost {
     const parsed = ModuleInvokeSchema.parse(input);
     await this.mutation;
     if (!this.readonlyWorkflowTarget(parsed.moduleId, parsed.contributionId)) {
-      throw Error("Workflow requires an available registered builtin read-only contribution");
+      throw Error("工作流需要一个已注册的内置只读贡献");
     }
     // Reuse the menu's envelope, contribution, extension, realpath/known-root
     // authorization, task limits, cancellation and request-id deduplication.
@@ -162,14 +162,14 @@ export class ModuleHost {
     await this.mutation;
     const module = this.modules.get(input.moduleId);
     const contribution = module?.contributions.find(c => c.id === input.contributionId);
-    if (!module || !contribution) throw Error("Module/contribution unavailable");
+    if (!module || !contribution) throw Error("模块或贡献不可用");
     const definition = this.capabilities.get(contribution.capability);
-    if (!definition) throw Error("Capability unavailable");
+    if (!definition) throw Error("能力不可用");
     const resource = ResourceSchema.parse(input.resource);
-    if (contribution.extensions && !contribution.extensions.some(ext => resource.path.toLowerCase().endsWith(ext))) throw Error("Unsupported file type");
+    if (contribution.extensions && !contribution.extensions.some(ext => resource.path.toLowerCase().endsWith(ext))) throw Error("不支持的文件类型");
     await this.options.authorize(resource);
     // Authorization may await disk IO while a module is replaced/removed.
-    if (this.modules.get(input.moduleId) !== module) throw Error("Module changed; retry with its current definition");
+    if (this.modules.get(input.moduleId) !== module) throw Error("模块已变化,请按其当前定义重试");
     if (definition.kind !== "task") {
       const value = definition.output.parse(await definition.run(resource, {signal:new AbortController().signal,progress:()=>{}}));
       return {type:"result",value:structuredClone(value),view:structuredClone(contribution.view)};
@@ -179,13 +179,13 @@ export class ModuleHost {
     const priorId = this.requests.get(requestKey);
     if (priorId) {
       const prior = this.jobs.get(priorId);
-      if (!prior || prior.fingerprint !== fingerprint) throw Error("Request ID reused with different input");
+      if (!prior || prior.fingerprint !== fingerprint) throw Error("请求 ID 被复用于不同的输入");
       return {type:"task",task:structuredClone(prior.snapshot)};
     }
-    if ([...this.jobs.values()].filter(j => j.snapshot.status === "running").length >= 4) throw Error("Too many active tasks");
+    if ([...this.jobs.values()].filter(j => j.snapshot.status === "running").length >= 4) throw Error("同时运行的任务过多");
     while (this.jobs.size >= 64) {
       const evict = [...this.jobs.values()].find(j => j.snapshot.status !== "running");
-      if (!evict) throw Error("Task limit reached");
+      if (!evict) throw Error("任务数已达上限");
       this.jobs.delete(evict.snapshot.id); this.requests.delete(evict.requestKey);
     }
     const id = randomUUID(), controller = new AbortController();
@@ -207,7 +207,7 @@ export class ModuleHost {
   }
   task(raw: ModuleTaskRef): ModuleTask {
     const input = ModuleTaskRefSchema.parse(raw), job = this.jobs.get(input.taskId);
-    if (!job || job.snapshot.moduleId !== input.moduleId) throw Error("Task not found for this module");
+    if (!job || job.snapshot.moduleId !== input.moduleId) throw Error("找不到该模块的这个任务");
     return structuredClone(job.snapshot);
   }
   cancel(raw: ModuleTaskRef): ModuleTask {

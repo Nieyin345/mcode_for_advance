@@ -29,7 +29,7 @@ async function terminal(h:ModuleHost, reply:ModuleReply):Promise<ModuleTask> {
 const results: Array<{name:string;status:string;error?:string}> = [];
 async function test(name:string, fn:()=>unknown){try{await fn();results.push({name,status:'PASS'});console.log('PASS '+name);}catch(e){const error=String(e);results.push({name,status:'FAIL',error});console.error('FAIL '+name+' '+error);}}
 async function denies(p:Promise<unknown>, pattern:RegExp){await assert.rejects(p,e=>{assert.ok(e instanceof Error);assert.notEqual(e.name,'TypeError');assert.match(e.message,pattern);return true;});}
-const denyWorkflow = /registered builtin read-only/;
+const denyWorkflow = /工作流需要一个已注册的内置只读贡献/;
 
 await test('AUTH user module works from menu but not workflow',async()=>{
   await host.install(EXAMPLE_MODULE);
@@ -68,20 +68,20 @@ await test('AUTH extra trusted source projectPath capabilityId and requestId can
   await denies(host.invokeForWorkflow({...call(),trusted:true} as ModuleInvoke),/Unrecognized key/);
 });
 await test('RESOURCE unknown registered root is rejected',async()=>{
-  await denies(host.invokeForWorkflow({...call(),resource:{projectPath:outside,path:secret}}),/Unknown workspace/);
+  await denies(host.invokeForWorkflow({...call(),resource:{projectPath:outside,path:secret}}),/未知工作区/);
 });
 await test('RESOURCE absolute outside file is rejected',async()=>{
-  await denies(host.invokeForWorkflow(call('core.file-report','inspect','absolute',secret)),/outside workspace/);
+  await denies(host.invokeForWorkflow(call('core.file-report','inspect','absolute',secret)),/资源在工作区之外/);
 });
 await test('RESOURCE dot-dot path escaping root is rejected',async()=>{
-  await denies(host.invokeForWorkflow(call('core.file-report','inspect','relative',join(root,'..','outside','secret.txt'))),/outside workspace/);
+  await denies(host.invokeForWorkflow(call('core.file-report','inspect','relative',join(root,'..','outside','secret.txt'))),/资源在工作区之外/);
 });
 await test('RESOURCE symlink or Windows junction escape is rejected',async()=>{
   const link=join(root,'escape');await symlink(outside,link,process.platform==='win32'?'junction':'dir');
-  await denies(host.invokeForWorkflow(call('core.file-report','inspect','link',join(link,'secret.txt'))),/outside workspace/);
+  await denies(host.invokeForWorkflow(call('core.file-report','inspect','link',join(link,'secret.txt'))),/资源在工作区之外/);
 });
 await test('RESOURCE directory is not a regular file',async()=>{
-  await denies(host.invokeForWorkflow(call('core.file-report','info','directory',root)),/regular file/);
+  await denies(host.invokeForWorkflow(call('core.file-report','info','directory',root)),/需要一个普通文件/);
 });
 await test('RESOURCE oversize inspect fails but info still works',async()=>{
   const large=join(root,'large.bin');await writeFile(large,'');await truncate(large,32*1024*1024+1);
@@ -119,7 +119,7 @@ await test('IDENTITY concurrent same attempt deduplicates and new attempt reexec
   const next=await host.invokeForWorkflow(call('core.file-report','inspect','next-attempt'));
   assert.equal(next.type,'task');if(next.type==='task')assert.notEqual(next.task.id,replies[0].task.id);
   await terminal(host,next);
-  await denies(host.invokeForWorkflow({...input,resource:{projectPath:root,path:join(root,'large.bin')}}),/different input/);
+  await denies(host.invokeForWorkflow({...input,resource:{projectPath:root,path:join(root,'large.bin')}}),/请求 ID 被复用于不同的输入/);
 });
 function controlled(run:(signal:AbortSignal)=>Promise<{bytes:number}>) {
   const h=new ModuleHost({authorize:async r=>{await resolveModuleResource(r,p=>p===root);},persist:async()=>{}});
@@ -142,8 +142,8 @@ await test('LIFECYCLE evicted and restarted task handles fail explicitly',async(
   const h=controlled(async()=>({bytes:1}));let first:ModuleTask|undefined;
   for(let i=0;i<65;i++){const t=await terminal(h,await h.invokeForWorkflow(call('core.controlled','inspect','evict-'+i)));first??=t;}
   assert.ok(first);const ref={moduleId:'core.controlled',taskId:first.id};
-  assert.throws(()=>h.task(ref),/not found/);
-  const restarted=controlled(async()=>({bytes:2}));assert.throws(()=>restarted.task(ref),/not found/);
+  assert.throws(()=>h.task(ref),/找不到该模块的这个任务/);
+  const restarted=controlled(async()=>({bytes:2}));assert.throws(()=>restarted.task(ref),/找不到该模块的这个任务/);
 });
 }
 await writeFile(join(base,'checks.json'),JSON.stringify(results,null,2));

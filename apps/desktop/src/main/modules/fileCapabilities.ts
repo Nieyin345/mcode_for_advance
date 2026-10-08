@@ -67,16 +67,16 @@ const SUBTREE_PROBE = ".mcode-module-subtree-probe";
  * must canonically stay below that directory; a link inside it cannot promote
  * an outside directory (for example the app data root) to a workspace. */
 export async function resolveModuleResource(resource: ModuleResource, knownRoot: (path:string)=>boolean): Promise<string> {
-  if (!knownRoot(resource.projectPath)) throw Error("Unknown workspace");
+  if (!knownRoot(resource.projectPath)) throw Error("未知工作区");
   const lexicalRoot = resolve(resource.projectPath);
   const root = await realpath(lexicalRoot);
   for (let child = lexicalRoot, parent = dirname(lexicalRoot); parent !== child; child = parent, parent = dirname(parent)) {
     if (!knownRoot(parent) || !knownRoot(join(parent, SUBTREE_PROBE))) continue;
-    if (!within(await realpath(parent), root)) throw Error("Workspace is outside its trusted root");
+    if (!within(await realpath(parent), root)) throw Error("工作区在其受信根之外");
   }
   const file = await realpath(resolve(resource.path));
-  if (!within(root, file)) throw Error("Resource is outside workspace");
-  if (!(await stat(file)).isFile()) throw Error("A regular file is required");
+  if (!within(root, file)) throw Error("资源在工作区之外");
+  if (!(await stat(file)).isFile()) throw Error("需要一个普通文件");
   return file;
 }
 export function fileCapabilities(knownRoot: (path:string)=>boolean): Capability<ModuleResource>[] {
@@ -85,21 +85,21 @@ export function fileCapabilities(knownRoot: (path:string)=>boolean): Capability<
     const file=await open(path,"r");
     try {
       const initial=await file.stat();
-      if (!initial.isFile() || initial.size > 32*1024*1024) throw Error("File inspection is limited to regular files up to 32 MiB");
+      if (!initial.isFile() || initial.size > 32*1024*1024) throw Error("文件检查仅限不超过 32 MiB 的普通文件");
       const hash=createHash("sha256"), buffer=Buffer.alloc(64*1024);
       let bytes=0;
       while(true) {
-        if(context.signal.aborted)throw Error("Cancelled");
+        if(context.signal.aborted)throw Error("已取消");
         const read=await file.read(buffer,0,buffer.length,null);
         if(!read.bytesRead)break;
         bytes+=read.bytesRead;
-        if(bytes>32*1024*1024)throw Error("File grew beyond the 32 MiB limit");
+        if(bytes>32*1024*1024)throw Error("文件在读取期间增大,超过 32 MiB 上限");
         hash.update(buffer.subarray(0,read.bytesRead));
         context.progress(initial.size?Math.min(0.99,bytes/initial.size):0.99);
       }
       const final=await file.stat();
       const current=await stat(await resolveModuleResource(resource,knownRoot));
-      if(final.size!==initial.size || final.mtimeMs!==initial.mtimeMs || current.ino!==initial.ino || current.dev!==initial.dev || current.mtimeMs!==initial.mtimeMs) throw Error("File changed during inspection; retry");
+      if(final.size!==initial.size || final.mtimeMs!==initial.mtimeMs || current.ino!==initial.ino || current.dev!==initial.dev || current.mtimeMs!==initial.mtimeMs) throw Error("文件在检查期间发生变化,请重试");
       return {bytes,sha256:hash.digest("hex")};
     } finally {await file.close();}
   };

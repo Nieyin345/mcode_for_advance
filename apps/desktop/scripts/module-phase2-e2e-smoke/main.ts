@@ -42,9 +42,9 @@ await test('SEGMENT real registry task computes SHA256 and uses the menu host',a
 await test('SEGMENT user module and relative path traversal fail at real host',async()=>{
  await host.install(EXAMPLE_MODULE);
  const user=context('user');user.input.moduleCall!.moduleId=EXAMPLE_MODULE.id;
- const denied=await segment.execute(user);assert.equal(denied.status,'failed');assert.match(denied.error??'',/registered builtin/);
+ const denied=await segment.execute(user);assert.equal(denied.status,'failed');assert.match(denied.error??'',/工作流需要一个已注册的内置只读贡献/);
  await writeFile(join(dir,'outside.txt'),'fixture only');const outside=context('outside');outside.input.moduleCall!.path='../outside.txt';
- const rejected=await segment.execute(outside);assert.equal(rejected.status,'failed');assert.match(rejected.error??'',/outside workspace/);
+ const rejected=await segment.execute(outside);assert.equal(rejected.status,'failed');assert.match(rejected.error??'',/资源在工作区之外/);
 });
 function controlled(){
  const resolvers:Array<()=>void>=[];

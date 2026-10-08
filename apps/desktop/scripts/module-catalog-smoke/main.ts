@@ -205,7 +205,7 @@ await test('only actual built-ins may use core namespace; action contributions c
 });
 await test('user module still works from menu but workflow denies it before file authorization', async () => {
   const before = authorized;
-  await denied(workflow(host, input('user.file-report', 'inspect', 'user-workflow')), /[Bb]uiltin|[Ww]orkflow|[Tt]rust/);
+  await denied(workflow(host, input('user.file-report', 'inspect', 'user-workflow')), /工作流需要一个已注册的内置只读贡献/);
   assert.equal(authorized, before, 'workflow must reject untrusted module before authorize');
   const menu = await host.invoke(input('user.file-report', 'inspect', 'user-menu'));
   assert.equal(menu.type, 'task');
@@ -213,8 +213,8 @@ await test('user module still works from menu but workflow denies it before file
   assert.equal((await settled(host, 'user.file-report', menu.task.id)).status, 'completed');
 });
 await test('unknown and missing contributions are rejected, not treated as capabilities', async () => {
-  await denied(workflow(host, input('core.unknown', 'inspect', 'unknown')), /[Bb]uiltin|[Uu]navailable|[Uu]nknown/);
-  await denied(workflow(host, input('core.file-report', 'missing', 'missing')), /[Cc]ontribution|[Uu]navailable|[Uu]nknown/);
+  await denied(workflow(host, input('core.unknown', 'inspect', 'unknown')), /工作流需要一个已注册的内置只读贡献/);
+  await denied(workflow(host, input('core.file-report', 'missing', 'missing')), /工作流需要一个已注册的内置只读贡献/);
 });
 await test('builtin extension restrictions are enforced before authorization', async () => {
   host.addBuiltin({ ...builtin, id: 'core.text-only', contributions: [
@@ -223,7 +223,7 @@ await test('builtin extension restrictions are enforced before authorization', a
   const other = join(root, 'other.md');
   await writeFile(other, 'not a text extension');
   const before = authorized;
-  await denied(workflow(host, input('core.text-only', 'inspect', 'wrong-extension', other)), /Unsupported file type/);
+  await denied(workflow(host, input('core.text-only', 'inspect', 'wrong-extension', other)), /不支持的文件类型/);
   assert.equal(authorized, before);
 });
 await test('workflow input cannot declare itself trusted or override the capability', async () => {
@@ -256,7 +256,7 @@ await test('workflow task returns a handle with actual hash and reuses normal id
   assert.equal(done.status, 'completed');
   assert.equal(done.result?.bytes, Buffer.byteLength(body));
   assert.equal(done.result?.sha256, createHash('sha256').update(body).digest('hex'));
-  await denied(workflow(host, { ...request, resource: { ...resource, path: secret } }), /[Rr]equest ID reused|[Oo]utside/);
+  await denied(workflow(host, { ...request, resource: { ...resource, path: secret } }), /请求 ID 被复用于不同的输入|资源在工作区之外/);
 });
 await test('workflow task cancellation uses the same host job table', async () => {
   const request = input('core.file-report', 'inspect', 'workflow-cancel');
@@ -292,7 +292,7 @@ await test('menu and workflow share the four-running-task limit, with cancellati
       refs.push({ moduleId: reply.task.moduleId, taskId: reply.task.id });
     }
     assert.equal(limited.tasks({ projectPath: root }).filter(task => task.status === 'running').length, 4);
-    await denied(workflow(limited, input('core.wait-report', 'inspect', 'shared-limit-rejected')), /Too many active tasks/);
+    await denied(workflow(limited, input('core.wait-report', 'inspect', 'shared-limit-rejected')), /同时运行的任务过多/);
     assert.equal(limited.cancel(refs[0]).status, 'cancelled');
     const reopened = await workflow(limited, input('core.wait-report', 'inspect', 'shared-limit-reopened'));
     assert.equal(reopened.type, 'task');
@@ -303,12 +303,12 @@ await test('menu and workflow share the four-running-task limit, with cancellati
   }
 });
 await test('unknown workspace, escaping paths and non-files fail from the workflow entrance', async () => {
-  await denied(workflow(host, { ...input('core.file-report', 'info', 'wrong-root'), resource: { projectPath: outside, path: secret } }), /Unknown workspace/);
-  await denied(workflow(host, input('core.file-report', 'info', 'outside', secret)), /outside workspace/);
-  await denied(workflow(host, input('core.file-report', 'inspect', 'task-outside', secret)), /outside workspace/);
-  await denied(workflow(host, input('core.file-report', 'info', 'directory', root)), /regular file/);
+  await denied(workflow(host, { ...input('core.file-report', 'info', 'wrong-root'), resource: { projectPath: outside, path: secret } }), /未知工作区/);
+  await denied(workflow(host, input('core.file-report', 'info', 'outside', secret)), /资源在工作区之外/);
+  await denied(workflow(host, input('core.file-report', 'inspect', 'task-outside', secret)), /资源在工作区之外/);
+  await denied(workflow(host, input('core.file-report', 'info', 'directory', root)), /需要一个普通文件/);
   await symlink(outside, join(root, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
-  await denied(workflow(host, input('core.file-report', 'info', 'symlink', join(root, 'escape', 'secret.txt'))), /outside workspace/);
+  await denied(workflow(host, input('core.file-report', 'info', 'symlink', join(root, 'escape', 'secret.txt'))), /资源在工作区之外/);
 });
 await test('32 MiB belongs to inspect task, not the info query', async () => {
   const big = join(root, 'sparse.bin');

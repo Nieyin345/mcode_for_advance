@@ -159,16 +159,16 @@ await check("same finished input retry deduplicates, new dispatch starts a new t
 });
 await check("runtime authorization rejects outside files and unknown workspaces", async () => {
   const outside = await runner.execute(contextFor(inputFor({ ...node.params, path: "../outside.txt" })));
-  assert.equal(outside.status, "failed"); assert.match(outside.error ?? "", /outside workspace/);
+  assert.equal(outside.status, "failed"); assert.match(outside.error ?? "", /资源在工作区之外/);
   const unknown = await runner.execute(contextFor(inputFor(), evidenceDir));
-  assert.equal(unknown.status, "failed"); assert.match(unknown.error ?? "", /Unknown workspace/);
+  assert.equal(unknown.status, "failed"); assert.match(unknown.error ?? "", /未知工作区/);
 });
 await host.install({ ...EXAMPLE_MODULE, id: "user.workflow-fixture" });
 await check("user modules stay menu-callable but are rejected by the workflow path", async () => {
   const menu = await host.invoke({ moduleId: "user.workflow-fixture", contributionId: "inspect", requestId: "menu-fixture", resource: { projectPath: workspace, path: join(workspace, "module-inspect-demo.txt") } });
   assert.equal(menu.type, "task");
   const outcome = await runner.execute(contextFor(inputFor({ ...node.params, moduleId: "user.workflow-fixture" })));
-  assert.equal(outcome.status, "failed"); assert.match(outcome.error ?? "", /builtin|built-in/i);
+  assert.equal(outcome.status, "failed"); assert.match(outcome.error ?? "", /内置只读贡献/);
 });
 await check("unknown contribution fails instead of falling back to a model", async () => {
   const outcome = await runner.execute(contextFor(inputFor({ ...node.params, contributionId: "missing" })));
