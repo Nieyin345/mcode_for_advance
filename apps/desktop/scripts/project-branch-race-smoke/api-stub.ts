@@ -14,6 +14,8 @@ export const server = {
   statusFiles: {} as Record<string, string>,
   /** worktreePath → 那棵树有没有未并回的活(true 时工具按钮出现)。 */
   worktreeDirty: {} as Record<string, boolean>,
+  /** repoPath → 该仓库的工作树列表(回值在调用那一刻快照)。 */
+  worktreeLists: {} as Record<string, Array<Record<string, unknown>>>,
   calls: [] as Array<{ method: string; input: Record<string, unknown> }>,
   hold: new Set<string>(),
   held: [] as Held[],
@@ -32,12 +34,26 @@ export function release(method: string, match?: (input: Record<string, unknown>)
   return true;
 }
 
+/** 放行**最后**一条满足条件的挂起回包(输入相同、要靠发起先后区分新旧时用)。 */
+export function releaseLast(method: string, match?: (input: Record<string, unknown>) => boolean): boolean {
+  for (let i = server.held.length - 1; i >= 0; i--) {
+    const h = server.held[i];
+    if (h.method === method && (!match || match(h.input))) {
+      server.held.splice(i, 1);
+      h.release();
+      return true;
+    }
+  }
+  return false;
+}
+
 export function resetApi(): void {
   server.calls.length = 0;
   server.held.length = 0;
   server.repos = {};
   server.statusBranch = {};
   server.statusFiles = {};
+  server.worktreeLists = {};
   server.hold.clear();
 }
 
@@ -63,6 +79,12 @@ function handle(method: string, input: Record<string, unknown>): unknown {
       // 每棵树配一份"有没有活"的判定(由测试通过 server.worktreeDirty 指定)。
       const dirty = server.worktreeDirty[wp] ?? false;
       return { status: { dirty, merged: !dirty } };
+    }
+    case "git:worktreeList": {
+      // 回值在**调用那一刻**快照 —— 测试先改 server.worktreeLists 再放行旧回包,
+      // 旧回包带的仍是当时那份列表(竞态据此显形)。
+      const rp = (input.repoPath as string) ?? "";
+      return { worktrees: server.worktreeLists[rp] ?? [] };
     }
     default:
       return {};

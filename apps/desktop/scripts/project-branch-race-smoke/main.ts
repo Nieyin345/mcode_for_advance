@@ -28,9 +28,10 @@
  */
 import "./prelude.js";
 import { __mount, __render, __flush, __text, __nodes } from "./fakeReact.js";
-import { server, resetApi, release } from "./api-stub.js";
+import { server, resetApi, release, releaseLast } from "./api-stub.js";
 import { ProjectBranchIndicator } from "@renderer/components/chat/ProjectBranchIndicator.js";
 import { WorktreeMergeToolbarButton } from "@renderer/components/chat/WorktreeMergeBack.js";
+import { WorktreeManagerPanel } from "@renderer/components/ide/WorktreeManagerPanel.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 
 let failures = 0;
@@ -112,13 +113,6 @@ async function reverseScenario(): Promise<void> {
   check("★ 反向:迟到的 P2 回包不许盖掉 P1 的分支", shown().includes("branch-of-P1") && !shown().includes("branch-of-P2"), shown());
 }
 
-await scenario();
-await reverseScenario();
-await worktreeScenario();
-
-console.log(`\nproject-branch-race-smoke:${checks - failures}/${checks} 通过`);
-if (failures > 0) process.exitCode = 1;
-
 // ── [3] WorktreeMergeBack:同一个同类竞态(切工作树后旧回包盖新的"有没有活"判定) ──
 //
 // `WorktreeMergeToolbarButton` 也按 prop(worktreePath/repoPath)换树,refresh 拉的
@@ -171,3 +165,64 @@ async function worktreeScenario(): Promise<void> {
   await __flush();
   check("★ 迟到的 A(没活)回包不许弄没 B 的「并回」按钮", mergeButton(), __text());
 }
+
+// ── [4] WorktreeManagerPanel:同一类"两次 load 重叠"竞态 ──
+//
+// 一次 git 变更(合并回/提交/删除工作树)会 bump `gitChangeVersion` 触发重跑,而删除后的
+// `onRemoved` 也直接调 `load` —— 两次 `worktreeList` 同时在飞、且**输入相同**时,先发起的
+// 那次若后回来,会把新列表用旧数据盖掉(删除过的树又冒出来 / 刚建的不见)。
+const WREPO = "/w/repo";
+/** 稳定引用 —— 真实场景里 repos 来自 GitPanel 的 state,不是每次渲染新建的数组
+ *  (否则 `load` 的 useCallback 依赖每次变 → effect 每渲染都重跑,不是我们要验的重叠)。 */
+const WREPOS = [{ path: WREPO, name: "repo", isRepo: true }];
+
+/** 面板把 `entries` 喂给每个 `WorktreeManagerRow` —— 行是子组件,fakeReact 不调用它,
+ *  所以读**它 props 里的 info.path**(而不是渲染后的文本)。 */
+function listedWorktreePaths(): string[] {
+  return __nodes()
+    .map((n) => (n.props.info as { path?: string } | undefined)?.path)
+    .filter((p): p is string => typeof p === "string");
+}
+
+function wtRow(path: string, dirty: boolean): Record<string, unknown> {
+  return { path, head: "abc1234", branch: "mcode/x", main: false, dirty, missing: false, referencedBy: 1, merged: false };
+}
+
+async function worktreeManagerScenario(): Promise<void> {
+  resetApi();
+  server.hold.add("git:worktreeList");
+  server.worktreeLists[WREPO] = [wtRow("/wt/t1", true), wtRow("/wt/t2", true)];
+
+  __mount(() => WorktreeManagerPanel({ repos: WREPOS as never }));
+  await __flush();
+  check("第一次 worktreeList 在飞(被扣住)", server.held.some((h) => h.input.repoPath === WREPO), server.held.map((h) => h.input));
+
+  // 触发第二次 load —— 输入**相同**(同一个 repo),只有发起先后不同。
+  // 用 store 的 gitChangeVersion 变化驱动(GitPanel 里也是这么触发的)。
+  server.worktreeLists[WREPO] = [wtRow("/wt/t2", true)]; // 新数据:t1 已被删掉
+  useSessionStore.setState({ gitChangeVersionByRepo: { [WREPO]: 1 } } as never);
+  __render();
+  await __flush();
+  check("第二次 worktreeList 发出(两次重叠)", server.held.filter((h) => h.input.repoPath === WREPO).length >= 2, server.held.map((h) => h.input));
+
+  // ★ 新的(第二次)先回 → 列表只有 t2。
+  releaseLast("git:worktreeList", (i) => i.repoPath === WREPO); // 最后一条 = 第二次发起 = 最新
+  await __flush();
+  check("新列表先回 → 只剩 t2", listedWorktreePaths().includes("/wt/t2") && !listedWorktreePaths().includes("/wt/t1"), { paths: listedWorktreePaths(), titles: __nodes().filter((n)=>n.props.title!==undefined).map((n)=>n.props.title) });
+
+  // ★★ 旧的(第一次,含 t1 t2)迟到 → 不许把 t1 弄回来。
+  release("git:worktreeList", (i) => i.repoPath === WREPO);
+  await __flush();
+  check("★ 迟到的旧列表回包不许把已删的 t1 弄回来", !listedWorktreePaths().includes("/wt/t1"), listedWorktreePaths());
+}
+
+await scenario();
+await reverseScenario();
+await worktreeScenario();
+await worktreeManagerScenario();
+
+console.log(`\nproject-branch-race-smoke:${checks - failures}/${checks} 通过`);
+if (failures > 0) process.exitCode = 1;
+// WorktreeMergeToolbarButton 起了 12s 轮询的 setInterval —— 无头跑真组件时得显式收尾,
+// 否则 node 不退出(这套是"无头驱动真组件"的代价,别的套件没这问题)。
+process.exit(failures > 0 ? 1 : 0);

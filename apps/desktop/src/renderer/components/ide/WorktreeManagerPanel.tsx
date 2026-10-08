@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { basename } from "@renderer/lib/path.js";
@@ -28,6 +28,8 @@ export function WorktreeManagerPanel({ repos }: { repos: GitRepo[] }) {
   const { t } = useI18n();
   const [entries, setEntries] = useState<Record<string, GitWorktreeInfo[]>>({});
   const [loading, setLoading] = useState(true);
+  /** 请求序号:只有最新一次 `load` 的响应能写 `entries`(见 `load` 内的说明)。 */
+  const loadSeqRef = useRef(0);
 
   // Refresh whenever ANY of the listed repos sees a git mutation (merge-back
   // in the session dialog, commits from the changes tab, …). Summed version —
@@ -36,6 +38,11 @@ export function WorktreeManagerPanel({ repos }: { repos: GitRepo[] }) {
     repos.reduce((n, r) => n + (s.gitChangeVersionByRepo[r.path] ?? 0), 0),
   );
   const load = useCallback(async () => {
+    // **请求序号:只有最新一次 load 能写状态。** 一次 git 变更(合并回、提交、
+    // 删除工作树)会 bump `gitChangeVersion` 触发重跑,而删除后的 `onRemoved`
+    // 也直接调 `load` —— 两次 `worktreeList` 同时在飞时,先发起的那次若后回来,
+    // 会把新列表用旧数据盖掉(列表里出现已删掉的工作树 / 少掉刚建的)。
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     try {
       const next: Record<string, GitWorktreeInfo[]> = {};
@@ -45,11 +52,13 @@ export function WorktreeManagerPanel({ repos }: { repos: GitRepo[] }) {
           next[r.path] = worktrees;
         }),
       );
+      if (seq !== loadSeqRef.current) return; // superseded
       setEntries(next);
     } catch {
+      if (seq !== loadSeqRef.current) return;
       setEntries({});
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
     // repo paths identity: repos come from GitPanel's scan state.
   }, [repos]);
