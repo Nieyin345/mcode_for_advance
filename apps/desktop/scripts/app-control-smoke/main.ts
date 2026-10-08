@@ -225,6 +225,41 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   const r = await call("setting.get", { key: "x" }, ctx);
   check("返回值打码", !textOf(r).includes('"k"') && textOf(r).includes(REDACTED), textOf(r));
 }
+
+/* ── 2b. 密钥设置键:setting.get 直读那条旁路 ── */
+// `customModel.getToken` / `piModels.getApiKey` / `codexModels.getApiKey` 都显式
+// 钉在 blocked 档(「API Key / 令牌不给模型」)。但设置表里那几份**密钥本体**是普通
+// 设置键,而 `setting.get` 是 `read` 档、**自动放行** —— 于是同一个东西换条路就拿到了:
+// `app_api_call { method: "setting.get", input: { key: "customModelKeys" } }`。而
+// renderResult 的打码只认字段名与值的形态,`customModelKeys` 的**值**是一张
+// `id → base64(密文)` 的表,id 是随机串、密文不含 `sk-` 之类,两道都绕过了。
+{
+  const calls2: Record<string, unknown[]> = {};
+  // 不 clearRpcHandlers():本文件后面的断言还要用先前那批 handler。只覆盖这两条。
+  recordRpcHandler("setting:get", async (_e, raw) => {
+    const k = (raw as { key?: string }).key;
+    // 真实 handler 直读设置表,这里照抄那份"密钥本体在表里"的事实。
+    return { value: k === "customModelKeys" ? JSON.stringify({ c1: "RU5DSVBIRVJFRF9BUFBfS0VZ" }) : "ok" };
+  });
+  recordRpcHandler("setting:getMany", async (_e, raw) => {
+    const keys = (raw as { keys?: string[] }).keys ?? [];
+    return Object.fromEntries(keys.map((k) => [k, k === "customModelKeys" ? JSON.stringify({ c1: "RU5DSVBIRVJFRF9BUFBfS0VZ" }) : "ok"]));
+  });
+  void calls2;
+  const { ctx } = ctxWith();
+  const single = await call("setting.get", { key: "customModelKeys" }, ctx);
+  check(
+    "★ setting.get 不许直读密钥设置键(customModelKeys)",
+    single.isError === true && !textOf(single).includes("RU5DSVBIRVJFRF9BUFBfS0VZ"),
+    textOf(single),
+  );
+  const many = await call("setting.getMany", { keys: ["ui.locale", "customModelKeys"] }, ctx);
+  check(
+    "★ setting.getMany 也不许夹带密钥设置键",
+    many.isError === true || !textOf(many).includes("RU5DSVBIRVJFRF9BUFBfS0VZ"),
+    textOf(many),
+  );
+}
 {
   const { ctx } = ctxWith({ mode: "bypassPermissions" });
   const r = await call("session.archive", { nope: 1 }, ctx);

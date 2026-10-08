@@ -38,6 +38,51 @@ import { runUiCommand } from "./uiBridge.js";
 
 export const APP_APPROVAL_PREFIX = "mcode-app:";
 
+/**
+ * **密钥本体的设置键** —— `setting.get` / `setting.getMany` 一律不许把它们读给模型。
+ *
+ * ## 为什么需要这一条(它在补哪个洞)
+ *
+ * 密钥存在于设置表里(见 `main/lib/secretStore.ts`)。通向它们的那几条**专门**的路都被
+ * 显式钉在 blocked 档 —— `customModel.getToken`、`piModels.getApiKey`、
+ * `codexModels.getApiKey`,理由都写着「API Key / 令牌不给模型」。但 `setting.get` 是
+ * `read` 档、**自动放行**,而它读的是**任意**键 —— 于是同一份密钥换条路就拿到了:
+ * `app_api_call { method: "setting.get", input: { key: "customModelKeys" } }`。
+ *
+ * ## 为什么打码拦不住
+ *
+ * `renderResult` 的打码分两道:字段名像不像密钥、值的形态像不像密钥。而
+ * `customModelKeys` 的**值**是一张 `id → base64(密文)` 的表 —— 键是随机串,值在
+ * `safeStorage` 不可用的机器上也只是普通 base64(base64 字母表里没有 `-`/`_`,
+ * 也不匹配 `sk-` 那类前缀),两道都绕过去了。所以这里必须按**键名**拦在调用之前,
+ * 而不是指望结果打码。
+ *
+ * 将来再有"密钥存在设置表里"的键,加进这个集合(或让它匹配下面那条正则)。
+ */
+const SECRET_SETTING_KEYS: ReadonlySet<string> = new Set([
+  "customModelKeys",
+  "customModels",
+]);
+/** 兜底:名字里带密钥词的设置键也不给。宁可多拦一个键,也不漏一个。 */
+const SECRET_SETTING_KEY_RE = /(api[-_]?keys?|apikeys?|tokens?|secrets?|passw(or)?ds?|credentials?|cookieVault)/i;
+
+/** 这个设置键是不是"密钥本体",不能经 `setting.get*` 交给模型。 */
+export function isSecretSettingKey(key: unknown): boolean {
+  if (typeof key !== "string" || key.length === 0) return false;
+  return SECRET_SETTING_KEYS.has(key) || SECRET_SETTING_KEY_RE.test(key);
+}
+
+/** `setting.get` / `setting.getMany` 的入参里,有没有踩到密钥键。 */
+function secretSettingRefusal(method: string, input: unknown): string | null {
+  if (method !== "setting.get" && method !== "setting.getMany") return null;
+  const o = (input ?? {}) as { key?: unknown; keys?: unknown };
+  const keys: unknown[] = Array.isArray(o.keys) ? [...o.keys] : [o.key];
+  const hit = keys.find((k) => isSecretSettingKey(k));
+  return hit === undefined
+    ? null
+    : `设置键「${String(hit)}」是密钥本体,不读给模型(与 customModel.getToken / piModels.getApiKey 同一条规矩)。要改密钥请让用户在 设置 里操作。`;
+}
+
 const LEVEL_LABEL: Record<AppPolicyLevel, string> = {
   read: "只读·自动",
   ui: "界面·自动",
@@ -467,6 +512,9 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
           entry.policy.reason,
         );
         if (denied) return fail(denied);
+        // 密钥设置键:在**调用之前**拦(见 isSecretSettingKey —— 结果打码拦不住它)。
+        const secretRefusal = secretSettingRefusal(entry.method, args.input);
+        if (secretRefusal) return fail(secretRefusal);
         try {
           const result = await callRpc(entry, args.input);
           try {
