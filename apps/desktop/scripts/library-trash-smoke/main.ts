@@ -155,6 +155,34 @@ SettingRepo.set(LIBRARY_TRASH_COLLECTION_SETTING_KEY, "");
 SettingRepo.set(libraryTrashSettingKey("paper"), rebuilt);
 eq("没有全局键时退回读老的每库键", trashCollectionId(), rebuilt);
 
+// ★ 老的每库键是**带 kind 后缀的**,不是那个不带后缀的全局键。上面那条断言用
+//   `libraryTrashSettingKey` 写、又用它读,两边同源 —— 就算它退化成直接返回全局键
+//   (曾经就是这样:kind 退役时 `libraryTrashSettingKey` 被收成 `return GLOBAL`),
+//   上面那条**照样绿**。所以这里用**裸字面量**拼出老格式的键直接写库,再断它认不认得出。
+//   ⚠️ 故意不经过 `libraryTrashSettingKey` —— 它就是要被这条断言钉住的那个函数。
+{
+  const rawLegacyKey = `${LIBRARY_TRASH_COLLECTION_SETTING_KEY}.paper`;
+  check(
+    "★ 老的每库键与全局键不是同一个(否则三处循环读的是同一份)",
+    rawLegacyKey !== LIBRARY_TRASH_COLLECTION_SETTING_KEY,
+    { rawLegacyKey, global: LIBRARY_TRASH_COLLECTION_SETTING_KEY },
+  );
+  eq(
+    "★ libraryTrashSettingKey 吐出的是带 kind 后缀的老格式",
+    libraryTrashSettingKey("paper"),
+    rawLegacyKey,
+  );
+  // 改过名的老回收站:名字那条来源认不出它,只有**每库键**能救它。
+  const renamed = CollectionRepo.create("归档处（改过名的老回收站）", null).id;
+  SettingRepo.set(LIBRARY_TRASH_COLLECTION_SETTING_KEY, "");
+  SettingRepo.set(libraryTrashSettingKey("textbook"), "");
+  SettingRepo.set(rawLegacyKey, renamed);
+  eq("★ 只认得出改过名的老回收站(裸老的每库键)", trashCollectionId(), renamed);
+  check("★ 它进了 allTrashCollectionIds", allTrashCollectionIds().includes(renamed), allTrashCollectionIds());
+  SettingRepo.set(rawLegacyKey, "");
+  CollectionRepo.delete(renamed);
+}
+
 /* ──────────────── 2. 别自己把自己收回来 ──────────────── */
 
 console.log("\n从回收站移除时不收");

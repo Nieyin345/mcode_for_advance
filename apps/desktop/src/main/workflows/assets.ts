@@ -199,8 +199,16 @@ GROUPS_SETTING_KEY = "library.groups"
 # attachToChat、envPrompt 的 selectVisibleItems、libraryServer 的翻库两条、customUi),
 # 而这个脚本从前只过**屏蔽**那道门、漏了回收站 —— 被丢掉的条目连同绝对路径照样列给模型。
 # 判定与主进程**同口径**(library/trash.ts 的 allTrashCollectionIds):全局键给的集合
-# (要核对它还在)+ 叫「回收站」的集合。kind 退役后每库键都指回全局键,故只读这一个。
+# (要核对它还在)+ 老的**每库键**(带 kind 后缀,升级线索)+ 叫「回收站」的集合。
+#
+# ⚠️ 老的每库键是**带后缀**的(library.trashCollectionId.paper),不是那个不带后缀的
+# 全局键 —— 主进程 libraryTrashSettingKey(kind) 就是拼这个格式。收成全库共用一个之后
+# 它们降级成只读的升级线索,但**必须照读**:用户可能把老回收站改过名,名字那条来源就认
+# 不出了,只剩这些键能救它。漏读的代价是那个老回收站里的条目(连同绝对路径)照常进模型
+# 上下文 —— 正是这段注释开头那条硬规矩要守的东西。
 TRASH_SETTING_KEY = "library.trashCollectionId"
+# kind 退役前的三个内置库(与 library/trash.ts 的 LEGACY_TRASH_KINDS 逐字一致)。
+LEGACY_TRASH_KINDS = ("paper", "textbook", "note")
 TRASH_NAME = "回收站"
 # 被回收站挡下的条目的"原因"标记 —— report_suppressed 拿它把回收站与屏蔽分开报。
 # 两者是**不同的用户动作**("我不要它了" vs "不给 AI 看"),说的话也该不一样。
@@ -384,6 +392,13 @@ def load_trash_ids(cur):
     global_id = read_setting(cur, TRASH_SETTING_KEY)
     if global_id and str(global_id) in existing:
         trash_cols.add(str(global_id))
+    # 老的**每库键**:全局键 + "." + kind(如 library.trashCollectionId.paper)。与主进程
+    # allTrashCollectionIds 的那三处循环同口径(见上面那段注释)—— 收成全库共用一个之前,
+    # 回收站是每个内置库一个,它的集合 id 存在这些带后缀的键上。只读,但要照读。
+    for kind in LEGACY_TRASH_KINDS:
+        legacy_id = read_setting(cur, TRASH_SETTING_KEY + "." + kind)
+        if legacy_id and str(legacy_id) in existing:
+            trash_cols.add(str(legacy_id))
     for cid in trash_cols:
         try:
             for row in cur.execute(

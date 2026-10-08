@@ -14,14 +14,26 @@ import { z } from "zod";
 export const LIBRARY_TRASH_COLLECTION_SETTING_KEY = "library.trashCollectionId";
 
 /**
- * 回收站的设置键 —— **每个库一个**(论文的回收站和笔记的回收站是两回事)。
+ * **老的「每库回收站键」** —— 升级线索,只读。
  *
- * 不带库的旧键仍然保留:`library.trashCollectionId` 是老数据里那个全局回收站的
- * 位置(它建在论文库下),论文库会回退去读它,不然改完键就不认那个集合了。
+ * kind 退役前(`< bcd3a2e`),回收站是**每个库一个**,它的集合 id 存在带 kind 后缀的键上:
+ *
+ *     library.trashCollectionId.paper     论文库的回收站
+ *     library.trashCollectionId.textbook  教材库的回收站
+ *     library.trashCollectionId.note      笔记库的回收站
+ *
+ * 这些键在旧库里**真实存在**。回收站改成「全库共用一个」之后,新键写不带后缀的那个
+ * ({@link LIBRARY_TRASH_COLLECTION_SETTING_KEY}),而这三个带后缀的降级成**只读的升级
+ * 线索**:`main/library/trash.ts` 靠它们把老回收站认出来并合并(用户可能把回收站改过名,
+ * 名字那条来源就认不出了,只剩这些键能救它)。
+ *
+ * ⚠️ **必须返回带后缀的老格式。** 这里曾被收成直接返回不带后缀的全局键 —— 于是
+ * `trash.ts` 里遍历三个 kind 的那三处读的是**同一个**键,老的每库键从来没被读到,
+ * 改过名的老回收站会被认成"没有回收站",`ensureTrashCollection` 再建一个空壳,老回收站
+ * 里的条目就成了界面上再也够不着的僵尸(见 `trash.ts` 文件头的 warning)。
  */
-/** 废弃遗留：回收站设置键曾是按 kind 分的。现在共用一个（老键格式保留以兼容回退读取）。 */
-export function libraryTrashSettingKey(_kind: string): string {
-  return LIBRARY_TRASH_COLLECTION_SETTING_KEY;
+export function libraryTrashSettingKey(kind: string): string {
+  return `${LIBRARY_TRASH_COLLECTION_SETTING_KEY}.${kind}`;
 }
 
 /* ── 文献库:PDF 文件导入 + 转 Markdown ── */

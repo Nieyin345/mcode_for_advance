@@ -84,6 +84,8 @@ c.executemany("INSERT INTO library_items(id,title,abstract,url,md_path,pdf_path,
   ("li_dm", "转录过的 Word", None, None, "markdown/imported/li_dm/full.md", None, "files/li_dm-a.docx", 1000, 1000),
   # 回收站里的条目 —— 用户"我不要它了"的意思,不该进模型上下文(见下面 3b 段)
   ("li_trash", "被丢进回收站的那一篇", None, None, "markdown/t.md", None, None, 1000, 1000),
+  # ★ 改过名的**老回收站**:名字不是「回收站」,只有老的**每库键**认得它(见 3b 段)
+  ("li_legacy_trash", "老回收站里改过名的那一篇", None, None, "markdown/lt.md", None, None, 1000, 1000),
 ])
 c.executemany("INSERT INTO library_collections(id,name,parent_id,group_id,sort_order) VALUES(?,?,?,?,?)", [
   ("lc_aw", "精读队列", None, "docs", 0),
@@ -91,11 +93,14 @@ c.executemany("INSERT INTO library_collections(id,name,parent_id,group_id,sort_o
   ("lc_tpl", "模版集", None, "templates", 0),
   ("lc_orphan", "没挂大类的", None, None, 0),
   ("lc_trash", "回收站", None, "docs", 2),
+  # 改过名的老回收站:它叫「归档处」,名字那条来源认不出 —— 只有老的每库键认它。
+  ("lc_legacy_trash", "归档处(改过名的老回收站)", None, "docs", 3),
 ])
 c.executemany("INSERT INTO library_collection_items(collection_id,item_id) VALUES(?,?)", [
   ("lc_aw", "li_p1"), ("lc_sub", "li_p1"), ("lc_tpl", "li_t1"), ("lc_orphan", "li_orphan"),
   ("lc_aw", "li_pm"), ("lc_aw", "li_po"), ("lc_aw", "li_doc"), ("lc_aw", "li_dm"),
   ("lc_trash", "li_trash"),
+  ("lc_legacy_trash", "li_legacy_trash"),
 ])
 c.execute("INSERT INTO settings(key,value) VALUES(?,?)", ("library.groups", json.dumps([
   # NOTE: 老库里这份 JSON 仍然带着 kinds —— 代码停写但没删列。脚本必须忽略它,
@@ -107,6 +112,10 @@ c.execute("INSERT INTO settings(key,value) VALUES(?,?)", ("library.suppress", js
   "nodes": ["group:templates", "type:paper"],  # 老数据里残留的 type: 那条该被丢掉
   "extensions": [".pdf"],
 })))
+# ★ 老的每库键(带 kind 后缀)指向**改过名**的那个老回收站。它名字不是「回收站」,
+#   全局键也没有 —— 只有这条老的每库键认得出它。主进程 libraryTrashSettingKey(kind)
+#   就是这个格式,脚本必须照读(见 assets.ts 里 load_trash_ids 那段注释)。
+c.execute("INSERT INTO settings(key,value) VALUES(?,?)", ("library.trashCollectionId.paper", "lc_legacy_trash"))
 c.commit(); c.close()
 `,
     "utf8",
@@ -192,6 +201,20 @@ console.log("\nlist · 回收站那道门");
   check("★ 而且如实说是回收站挡的(不是笼统的屏蔽)", all.includes("回收站里的"), all);
   const f = at("find", "回收站");
   check("★ find:回收站里的条目不出现", !f.includes("被丢进回收站的那一篇"), f);
+
+  // ★ 改过名的**老回收站**:名字不是「回收站」,全局键也没有 —— 只有老的**每库键**
+  //   (`library.trashCollectionId.paper`)认得它。漏读它 = 那个老回收站里的条目(连同
+  //   绝对路径)照常进模型上下文,正是这段要守的那条硬规矩被绕过。
+  check(
+    "★ 老的每库键认出的(改过名)回收站里的条目不出现",
+    !all.includes("老回收站里改过名的那一篇"),
+    all,
+  );
+  check(
+    "★ find 也拿不到老回收站里那条",
+    !at("find", "老回收站").includes("老回收站里改过名的那一篇"),
+    at("find", "老回收站"),
+  );
 }
 
 {
