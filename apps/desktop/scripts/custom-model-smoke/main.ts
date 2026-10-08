@@ -648,6 +648,22 @@ check(
   quiet.result?.error,
 );
 
+// 另一条出口:流**既没有 init、也没有 `result` 帧**就结束了(桩里只给 user 帧)。
+// 这时走的是 `customModel.ts` 循环外那一句 —— 从前它是**英文**
+// ("endpoint did not send an init message"),而同一个判断在 `result` 分支里
+// (上面 `noInit` 那条)却是中文,同一页面上两种情况一个中一个英。两处必须同句。
+const noFrame = await runProbe(probeInput, {
+  messages: [{ type: "user", message: { content: [] } }],
+});
+eq("对照:流里连 result 帧都没有也不算通过", noFrame.result?.ok, false);
+check(
+  "★ 没有 result 帧那条出口说的也是中文「没收到握手」(不是英文那一句)",
+  typeof noFrame.result?.error === "string" &&
+    noFrame.result.error.includes("没收到握手") &&
+    !noFrame.result.error.startsWith("endpoint"),
+  noFrame.result?.error,
+);
+
 const threw = await runProbe(probeInput, { throwMsg: "connect ECONNREFUSED 127.0.0.1:9" });
 eq("SDK 直接抛（连不上）→ ok:false，不把异常漏给界面", threw.result?.ok, false);
 check(

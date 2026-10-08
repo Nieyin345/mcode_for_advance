@@ -405,7 +405,11 @@ async function probeEndpoint(
         error: "握手通了,但模型一句话都没答 —— 端点能连上,是这个模型名它不认",
       };
     }
-    return { ok: false, error: "endpoint did not send an init message" };
+    // ⚠️ 这一句也是**用户会看到的那行字**(渲染端原样画在设置页红字上)。它与上面
+    // `result` 分支里那句「没收到握手消息(...)」是同一个判断、同一件事,所以必须
+    // 用**同一句中文** —— 从前的英文 "endpoint did not send an init message" 是从
+    // 那条中文里截出来的一半,同一页面上两种情况的说法一个中一个英。
+    return { ok: false, error: "没收到握手消息(endpoint did not send an init message)" };
   } catch (err) {
     const msg = (err as Error).message || String(err);
     // Translate the most common failure modes into friendlier text, keeping a
