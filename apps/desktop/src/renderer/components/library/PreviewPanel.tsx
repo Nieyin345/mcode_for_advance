@@ -60,14 +60,16 @@ export function PreviewPanel() {
           {item.title}
         </span>
         {/* 正在看转录时标一下 —— 否则"这篇论文怎么不是 PDF"要靠用户自己猜。
-            点它切回 PDF 本体（用户要的默认就是本体）。 */}
+            点它切回 PDF 本体（用户要的默认就是本体）。**可见文字要说这件事**：
+            此刻用户已经在看转录，印「查看转录文本」是反的 —— 那是右键菜单里
+            另一个方向那一项的标签。这里用 offerMd（“回到 PDF 原件”），与 title 同向。 */}
         {which === "md" && (
           <button
             onClick={() => useLibraryStore.getState().openPreview(item.id)}
             title={t("library.ctx.offerMd")}
             className="shrink-0 rounded px-1.5 py-0.5 text-[0.7857em] text-accent hover:bg-surface-hover"
           >
-            {t("library.ctx.viewTranscript")}
+            {t("library.ctx.offerMd")}
           </button>
         )}
       </div>
