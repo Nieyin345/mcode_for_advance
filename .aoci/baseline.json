@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-05T00:27:41Z",
-  "updated_at": "2026-10-08T08:42:43Z",
+  "updated_at": "2026-10-08T09:12:06Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -71,9 +71,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "e9eda453c8afab65d19f2b3b31c92700c1bd4411d79eac45557c335e37a8d651",
-      "size": 818388,
-      "normalized_sha256": "e9eda453c8afab65d19f2b3b31c92700c1bd4411d79eac45557c335e37a8d651"
+      "sha256": "79455cb5adcb4eb281a620dfa9494d0d976ee47564d232bdf5c0a70899110b08",
+      "size": 818510,
+      "normalized_sha256": "79455cb5adcb4eb281a620dfa9494d0d976ee47564d232bdf5c0a70899110b08"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -10749,9 +10749,9 @@
     },
     "docs/底层修复记录-2026-10-07.md": {
       "role": "index",
-      "sha256": "3ce4990f7b0c6a55d09c891968817a1e95eb3f90ffddf67ab951009102993724",
-      "size": 34979,
-      "normalized_sha256": "3ce4990f7b0c6a55d09c891968817a1e95eb3f90ffddf67ab951009102993724"
+      "sha256": "2aaa954f53303e74871fb6c992ac3020a828ec2b7d305f723577dc2630cba200",
+      "size": 56241,
+      "normalized_sha256": "2aaa954f53303e74871fb6c992ac3020a828ec2b7d305f723577dc2630cba200"
     },
     "docs/文档代码对照复核-2026-10-03.md": {
       "role": "index",
