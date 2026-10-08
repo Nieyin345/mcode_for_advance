@@ -1546,7 +1546,7 @@ function WriteToolCard({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const { t } = useI18n();
-  const lineCount = content ? content.split("\n").length : 0;
+  const lineCount = countContentLines(content);
 
   // Look up the pre-turn content for this file. The turn.files payload
   // carries absolute paths, but the Write tool's file_path may be relative
@@ -1752,6 +1752,21 @@ function Collapsible({
 function summarize(text: string): string {
   const t = text.trim();
   return t.length > 60 ? t.slice(0, 60) + "…" : t;
+}
+
+/** Line count for the Write card's "N 行" badge when there is no pre-turn
+ *  snapshot to diff against. A file ending in a single `\n` is N lines, yet a
+ *  naive `content.split("\n").length` counts the terminator as an extra empty
+ *  line (the phantom-row class — same rule as `lineDiff`'s `splitLines` in
+ *  lib/lineDiff.ts and main's fileSnapshot.ts, which both drop that trailing
+ *  empty). Keep this on the SAME basis as the adjacent +N/-M diff, which runs
+ *  through lineDiff: otherwise the badge and the diff on one card would
+ *  disagree about how many lines the file has. */
+export function countContentLines(content: string): number {
+  if (content === "") return 0;
+  const lines = content.split("\n");
+  if (lines[lines.length - 1] === "" && content.endsWith("\n")) lines.pop();
+  return lines.length;
 }
 
 /** Format a wall-clock ms timestamp as HH:MM:SS (local time). Mirrors the
