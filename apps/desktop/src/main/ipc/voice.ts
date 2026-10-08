@@ -129,7 +129,7 @@ export function registerVoiceHandlers(ipcMain: IpcMain): void {
   });
 
   ipcMain.handle(IPC.VOICE_GET_MODEL_DIR, (_evt, raw) => {
-    GetVoiceModelDirSchema.parse(raw);
+    GetVoiceModelDirSchema.parse(raw ?? {});
     return getModelDirInfo();
   });
 

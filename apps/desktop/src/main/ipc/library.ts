@@ -732,7 +732,7 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
    * 所以重复点这个按钮不会做白工。
    */
   ipcMain.handle(IPC.LIBRARY_CONVERT, async (_evt, raw) => {
-    const input = LibraryConvertSchema.parse(raw);
+    const input = LibraryConvertSchema.parse(raw ?? {});
     if (input.repair) {
       const result = await repairCollectionMarkdown(input.collectionId!);
       if (result.converted > 0 || result.cleaned > 0) notifyLibraryChanged(`repair:${result.converted}:${result.cleaned}`);

@@ -1080,6 +1080,21 @@ console.log("\n§6 用户点的那条路:真的 handler,不是复述");
     resolve(listed.modelDir as string),
   );
 
+  // ★ 无参方法:`app_api_call` 对无参方法**明确让模型省略 input**(tools.ts 的
+  //   `input` 是 `.optional()`),那时 handler 收到的是 `undefined`。`GetVoiceModelDirSchema`
+  //   是 `z.object({})`,`.parse(undefined)` 抛 "Required" —— 渲染端走 `{}` 掩盖了它,
+  //   模型会拿到一句 zod 报错而不是目录。同 `context.get` 的 ?#115。
+  {
+    const viaOmitted = (await call(IPC.VOICE_GET_MODEL_DIR, undefined)) as {
+      modelDir: string;
+    };
+    eq(
+      "★ getModelDir 接受省略的 input(undefined)",
+      resolve(viaOmitted.modelDir),
+      resolve(listed.modelDir as string),
+    );
+  }
+
   const badDir = await messageOf(() => call(IPC.VOICE_SET_MODEL_DIR, { modelDir: "C:\\" }));
   check("★ 坏目录经过 IPC 之后仍然是显式报错", /驱动器根目录/.test(badDir), badDir);
 

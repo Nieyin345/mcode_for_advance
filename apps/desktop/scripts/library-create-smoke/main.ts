@@ -79,6 +79,18 @@ if (process.argv.includes("--recover")) {
     await assert.rejects(() => useLibraryStore.getState().createCollection("模版分类", "templates"), /已经有叫/);
     console.log("  ok   重名失败会抛给 UI，而不是静默返回成功");
 
+    // ★ 无参方法:`library.convert` 的 schema 全字段可选(ids/collectionId/force),
+    //   而 `app_api_call` 对无参方法**明确让模型省略 input**(tools.ts 的 `input` 是
+    //   `.optional()`),那时 handler 收到 `undefined`。`Schema.parse(undefined)` 会抛
+    //   "Required" —— 渲染端走 `{}` 掩盖了它,模型调 `library.convert` 时会拿到一句
+    //   zod 报错而不是转换结果。同 `context.get` 的 ?#115。这里只验"不炸",
+    //   不真跑转换(库里没有条目,转换是空跑)。
+    {
+      const res = (await invoke(IPC.LIBRARY_CONVERT, undefined)) as { converted: number };
+      equal("library.convert 接受省略的 input(undefined)", typeof res.converted, "number");
+      console.log("  ok   library.convert 接受省略的 input(undefined)");
+    }
+
     // 模拟此前创建成功却看不见的记录，以及旧回填写出的空串记录。
     CollectionRepo.create("旧版无归属");
     CollectionRepo.create("旧版空串归属", null, "");

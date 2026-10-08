@@ -466,6 +466,21 @@ console.log("\n2. 图片选择:白名单、上限、坏文件");
 }
 
 {
+  // ★ 无参方法:该 RPC 的 schema 是 `z.object({})`,而 `app_api_call` 对无参方法
+  //   **明确让模型省略 input**(tools.ts 的 `input` 是 `.optional()`),那时 handler 收到
+  //   的是 `undefined`。`PickImagesSchema.parse(undefined)` 抛 "Required" —— 渲染端走
+  //   `{}` 掩盖了它,模型点「选图」时会拿到一句 zod 报错而不是图片。同 `context.get` 的 ?#115。
+  //   (`pickImages` 助手固定喂 `{}`;这里直接调 channel 传 `undefined`。)
+  resetDialog();
+  pushDialogResult({ canceled: false, filePaths: [P.png] });
+  const [omitErr, omitRes] = await settled(() =>
+    call<PickImagesResult>(IPC.FILE_PICK_IMAGES, undefined),
+  );
+  eq("★ file:pickImages 接受省略的 input(undefined)", omitErr, "");
+  eqArr("省略 input 时照常返回选中的图", omitRes?.images.map((i) => i.name), ["photo.png"]);
+}
+
+{
   // 超限是**按每个文件算**的,不是"有一个超了就全不读了":两个 16MB 里夹一个好文件。
   const res = await pickImages(P.huge, P.jpg, P.huge);
   eqArr("夹在超大文件中间的好文件照常返回", res.images.map((i) => i.name), ["scan.jpg"]);

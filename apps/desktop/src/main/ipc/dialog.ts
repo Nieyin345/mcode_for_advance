@@ -79,7 +79,7 @@ export function registerDialogHandlers(ipcMain: IpcMain): void {
 
   // ── image picker: dialog + main-side read → base64 (composer 图片 button) ──
   ipcMain.handle(IPC.FILE_PICK_IMAGES, async (_evt, raw) => {
-    PickImagesSchema.parse(raw);
+    PickImagesSchema.parse(raw ?? {});
     const result = await dialog.showOpenDialog({
       title: dialogText("common.dialog.pickImages"),
       properties: ["openFile", "multiSelections"],
