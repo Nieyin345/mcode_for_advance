@@ -25,7 +25,7 @@
  *
  * Run: scripts/walk-cache-smoke/run.sh
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cachedTreeFiles, sortDirents, SEARCH_MAX_DEPTH, SEARCH_MAX_VISIT } from "@main/lib/walkCache.js";
@@ -205,6 +205,21 @@ section("§6 预算常量");
 }
 
 rmSync(ROOT, { recursive: true, force: true });
+
+// ★ 源码不变量:`collectTreeFilesUncached` 里不许再出现 `startsWith(root + sep)` 那种**恒真**
+//   越界守卫。`abs` 始终在 `root` 子树内、`d.name` 来自 readdir 永不含分隔符,所以那句永远
+//   为真 —— 看着在拦越界、其实拦不住任何东西,给人"这里已经查过"的错觉。真需要越界判断时
+//   得用 `pathWithin`(见 `ipc/files.ts`)。
+{
+  const src = readFileSync(join(process.cwd(), "src/main/lib/walkCache.ts"), "utf8");
+  // 去注释再判 —— 说明那句"别写 startsWith(root + sep)"的注释本身会提到这个写法。
+  const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  check(
+    "★ walkCache 里没有恒真的 startsWith(root+sep) 假越界守卫",
+    !/startsWith\(root \+ /.test(code),
+    /startsWith\(root \+ [^)]*\)/.exec(code)?.[0] ?? "",
+  );
+}
 
 console.log(`\nwalk-cache-smoke:${total - failures}/${total} 通过`);
 // ⚠️ **显式退。** `cachedTreeFiles` 会挂一个**递归 `fs.watch`**(见 §5),watcher 活着

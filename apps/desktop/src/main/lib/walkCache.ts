@@ -98,7 +98,12 @@ async function collectTreeFilesUncached(
         continue; // Skip broken symlinks.
       }
       const fullPath = join(abs, d.name);
-      if (!fullPath.startsWith(root + "\\") && !fullPath.startsWith(root + "/")) continue;
+      // ⚠️ 这里**不**做 `startsWith(root + sep)` 越界判断 —— 那不是"守卫",是**恒真**:
+      // `abs` 始终在 `root` 子树里(队列起点是 `root`,子项是 `join(abs, name)`),而
+      // `d.name` 来自 `readdir` 永不含分隔符。从前的写法看着在拦越界、其实拦不住任何东西,
+      // 给人"这里已经查过"的错觉(与 `ipc/files.ts` 真用 `pathWithin` 是两回事)。
+      // 符号链接按 `isDirectory()===false` 当文件处理,不会走进来;哪天真要支持 symlink
+      // 目录,得在这条路上补真检查(`pathWithin(root, fullPath)`),别指望这句。
       visited += 1;
       if (isDir) {
         if (depth + 1 <= SEARCH_MAX_DEPTH) {
