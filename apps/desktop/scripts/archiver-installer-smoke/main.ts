@@ -479,6 +479,10 @@ const rPiFake = await installRuntimeFromLocalPath("pi", piFake);
 check("★ 缺 package.json 的“看着像 pi 包”的目录 → ok:false(不许装出一个加载不起来的版本)",
   rPiFake.ok === false, rPiFake);
 check("错误说清了是载荷缺失(而不是别的)", /missing|expected payload|载荷/i.test(rPiFake.error ?? ""), rPiFake.error);
+// 这条错误**原样画在设置面板上**(`RuntimesPanel` 的 `installFailed` 把 {error} 直接摆出来),
+// 所以必须是人话中文。旧的英文 `extracted archive but the expected payload is missing…`
+// 也满足上面那条 /载荷/ 的正则,那条抓不住"没本地化" —— 这条可以。
+check("★ 载荷缺失那句是中文(设置面板原样显示,不该是英文)", /[一-鿿]/.test(rPiFake.error ?? ""), rPiFake.error);
 eq("★ 失败之后盘上那个版本还是原来的", readdirSync(agentDir("pi")).sort().join(","), piBefore);
 eq("★ 暂存目录也没留下", readdirSync(agentDir("pi")).filter((e) => e.startsWith(".")).length, 0);
 

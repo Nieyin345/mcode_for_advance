@@ -239,7 +239,7 @@ async function downloadVerifiedTarball(
   meta: { tarballUrl: string; integrity: string },
 ): Promise<string> {
   if (!meta.integrity) {
-    throw new Error("registry metadata has no dist.integrity — refusing to install an unverifiable artifact");
+    throw new Error("registry 元数据里没有 dist.integrity —— 无法校验安装包完整性,拒绝安装");
   }
   const stall = new AbortController();
   let stallTimer: ReturnType<typeof setTimeout> | undefined;
@@ -262,7 +262,7 @@ async function downloadVerifiedTarball(
   }
   if (!res.ok || !res.body) {
     clearTimeout(stallTimer);
-    throw new Error(`tarball download failed: HTTP ${res.status} for ${meta.tarballUrl}`);
+    throw new Error(`安装包下载失败:HTTP ${res.status}(${meta.tarballUrl})`);
   }
   const total = Number(res.headers.get("content-length") ?? 0);
   const hash = createHash("sha512");
@@ -291,7 +291,7 @@ async function downloadVerifiedTarball(
     rmSync(tmpFile, { force: true });
     if (stall.signal.aborted) throw stallError();
     throw new Error(
-      `tarball download failed: ${err instanceof Error ? err.message : String(err)}`,
+      `安装包下载失败:${err instanceof Error ? err.message : String(err)}`,
     );
   } finally {
     clearTimeout(stallTimer);
@@ -299,7 +299,7 @@ async function downloadVerifiedTarball(
   const computed = `sha512-${hash.digest("base64")}`;
   if (computed !== meta.integrity) {
     rmSync(tmpFile, { force: true });
-    throw new Error(`sha512 mismatch for ${meta.tarballUrl} (expected ${meta.integrity}, got ${computed})`);
+    throw new Error(`安装包校验失败:sha512 对不上(${meta.tarballUrl},期望 ${meta.integrity},实得 ${computed})`);
   }
   return tmpFile;
 }
@@ -349,7 +349,7 @@ async function assemblePiClosureWithNpm(stagingDir: string, version: string): Pr
     child.stderr?.on("data", append);
     child.on("error", (err) => {
       clearTimeout(killTimer);
-      reject(new Error(`npm spawn failed: ${err.message}`));
+      reject(new Error(`npm 启动失败:${err.message}`));
     });
     child.on("close", (code) => {
       clearTimeout(killTimer);
@@ -358,7 +358,7 @@ async function assemblePiClosureWithNpm(stagingDir: string, version: string): Pr
         return;
       }
       const tail = output.trim().split("\n").slice(-4).join(" | ");
-      reject(new Error(`npm install exited ${code ?? "abnormally"}${tail ? `: ${tail}` : ""}`));
+      reject(new Error(`npm install 退出码 ${code ?? "异常"}${tail ? `: ${tail}` : ""}`));
     });
   });
 }
@@ -464,7 +464,7 @@ function finalizeInstall(
 ): { finalDir: string; entry: string } {
   const entry = payloadEntryPath(agent, stagingDir);
   if (!entry || !existsSync(entry)) {
-    throw new Error(`extracted archive but the expected payload is missing — wrong package for "${agent}", or the upstream layout changed?`);
+    throw new Error(`解压成功但没找到应有的载荷 —— 可能是选错了包("${agent}"),或上游目录结构变了`);
   }
   if (process.platform !== "win32" && agent !== "pi") {
     // node-tar preserves the tarball's modes, but be defensive: the binary
@@ -605,7 +605,7 @@ export async function installRuntime(agent: RuntimeAgentId): Promise<{ ok: boole
     const meta = await fetchPackageMeta(pkg.name, pkg.version);
     if (!meta && agent !== "pi") {
       throw new Error(
-        `registry has no ${pkg.name}@${pkg.version} — check the network/mirror, or the version hasn't been published yet`,
+        `registry 上没有 ${pkg.name}@${pkg.version} —— 请检查网络/镜像,或该版本还没发布`,
       );
     }
     if (meta) {
@@ -637,8 +637,8 @@ export async function installRuntime(agent: RuntimeAgentId): Promise<{ ok: boole
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         throw new Error(
-          `registry has no ${pkg.name}@${pkg.version} and local npm assembly failed (${reason}) — ` +
-            `check the network/npm, or pack locally with \`pnpm pack:pi-runtime\` and use install-from-file`,
+          `registry 上没有 ${pkg.name}@${pkg.version},本地 npm 组装也失败了(${reason})—— ` +
+            `请检查网络/npm,或用 \`pnpm pack:pi-runtime\` 本地打包后走 install-from-file`,
         );
       }
     }
