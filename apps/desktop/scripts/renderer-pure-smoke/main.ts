@@ -15,6 +15,7 @@
  *
  * Run: scripts/renderer-pure-smoke/run.sh
  */
+import "./prelude.js";
 import {
   layoutCommitGraph,
 } from "../../src/renderer/components/ide/commitGraph.js";
@@ -27,6 +28,9 @@ import {
   codeCacheKey,
 } from "../../src/renderer/lib/markdownCache.js";
 import { convertHtmlTables } from "../../src/renderer/lib/htmlTable.js";
+import { isPathWithin } from "../../src/renderer/lib/path.js";
+import { collectCommands } from "../../src/renderer/lib/commands.js";
+import type { SessionState } from "../../src/renderer/stores/sessionStore.js";
 import { partitionClosable, ideDirtyTracker } from "../../src/renderer/lib/ideDirty.js";
 import {
   buildTurnGroups,
@@ -595,6 +599,75 @@ section("7. ideDirty:关闭守卫(未保存的标签不许被关掉)");
   eq("旧快照不变", snapA.has("/p/y.ts"), false);
   unsub();
   ideDirtyTracker.set("/p/y.ts", false);
+}
+
+/* ──────────── 8. path.isPathWithin:项目根包含性(分隔符无关) ──────────── */
+
+section("8. path.isPathWithin:分隔符无关 + Windows 大小写");
+
+{
+  // ★ 核心:项目根来自 OS 目录选择器,**Windows 上是反斜杠**(`D:\proj`),
+  //   而 LSP / 文件树 / 命令面板给出的路径也是反斜杠。旧实现只给 root 尾部补一个
+  //   `/` 再 startsWith,于是 `D:\proj` 对 `D:\proj\src\a.ts` 判 false —— 水合时把
+  //   **每一个** IDE 打开标签 / 展开目录都当成"不在项目里"丢掉。这条钉住它。
+  const BS = "\\";
+  const winRoot = "D:" + BS + "proj";
+  check("★ Windows 反斜杠根:文件在项目里", isPathWithin(winRoot, "D:" + BS + "proj" + BS + "src" + BS + "a.ts"));
+  check("★ Windows 反斜杠根:目录在项目里", isPathWithin(winRoot, "D:" + BS + "proj" + BS + "src"));
+  eq("Windows 反斜杠根:根自身算在里", isPathWithin(winRoot, winRoot), true);
+  check("分隔符混用也算在里(主进程按分隔符无关比较)", isPathWithin(winRoot, "D:/proj/src/a.ts"));
+  eq("同级前缀目录**不**算在里", isPathWithin(winRoot, "D:" + BS + "project-evil" + BS + "x.ts"), false);
+  eq("项目外绝对路径不算在里", isPathWithin(winRoot, "C:" + BS + "other" + BS + "x.ts"), false);
+  eq("★ 盘符大小写不同也算在里(main 的 norm 会 lowercase)", isPathWithin("d:" + BS + "proj", "D:" + BS + "proj" + BS + "a.ts"), true);
+
+  // POSIX:区分大小写(与主进程的 Linux 语义一致),分隔符只有 `/`。
+  eq("POSIX 根:文件在项目里", isPathWithin("/home/u/proj", "/home/u/proj/src/a.ts"), true);
+  eq("POSIX 根:同级前缀不算在里", isPathWithin("/home/u/proj", "/home/u/project-evil/x.ts"), false);
+  eq("POSIX 根:大小写不同**不**成立(Linux 大小写敏感)", isPathWithin("/Home/u/proj", "/home/u/proj/a.ts"), false);
+  eq("正斜杠 Windows 根:仍然算在里", isPathWithin("D:/proj", "D:/proj/src/a.ts"), true);
+  eq("尾部多余分隔符的根也认", isPathWithin("D:/proj/", "D:/proj/src/a.ts"), true);
+  eq("空根一律拒绝(拒绝优先于放行)", isPathWithin("", "/x/y.ts"), false);
+}
+
+/* ──────────── 9. commands:右栏类命令必须把右栏打开 ──────────── */
+
+section("9. 命令:右栏类动作都得把右栏露出来");
+
+{
+  // 兄弟命令(`view.right-panel.files` / `.git` / `.turns`)都是"切 tab + 打开右栏"。
+  // `layout.toggle-browser` 只切了 tab、**没调 setRightOpen(true)** —— 右栏关着时按
+  // 快捷键 / 命令面板选它,右栏仍关着,用户看不到浏览器面板(以为按键坏了)。
+  const run = (id: string, initial: Partial<SessionState>) => {
+    const calls: string[] = [];
+    const state = {
+      locale: "zh",
+      activeProjectId: "p1",
+      sessionsByProject: {},
+      // 这些 setter 是命令真正会调的那几个;其余用不到。
+      setRightPanelTab: (t: string) => calls.push(`tab:${t}`),
+      setRightOpen: (b: boolean) => calls.push(`open:${b}`),
+      ...initial,
+    } as unknown as SessionState;
+    const cmd = collectCommands(state).find((c) => c.id === id);
+    if (!cmd) throw new Error(`command ${id} not found`);
+    cmd.perform(state);
+    return calls;
+  };
+
+  // ★ 右栏关着 + 停在别的 tab → 切到 browser,**而且要打开右栏**。
+  const closed = run("layout.toggle-browser", { rightOpen: false, rightPanelTab: "files" } as Partial<SessionState>);
+  check("右栏关着切到 browser:切了 tab", closed.includes("tab:browser"), closed);
+  check("★ 右栏关着切到 browser:右栏被打开", closed.includes("open:true"), closed);
+
+  // 右栏开着、已经停在 browser → 退回 files(不重复 setRightOpen(true),无妨)。
+  const back = run("layout.toggle-browser", { rightOpen: true, rightPanelTab: "browser" } as Partial<SessionState>);
+  check("已停在 browser 时退到 files", back.includes("tab:files"), back);
+
+  // 兄弟命令的正控:它们本来就打开右栏,别被这次改动带偏。
+  for (const [id, tab] of [["view.right-panel.files", "files"], ["view.right-panel.git", "git"], ["view.right-panel.turns", "turns"]] as const) {
+    const c = run(id, { rightOpen: false, rightPanelTab: "files" } as Partial<SessionState>);
+    check(`正控 ${id}:切到 ${tab} 且打开右栏`, c.includes(`tab:${tab}`) && c.includes("open:true"), c);
+  }
 }
 
 console.log(`\nrenderer-pure-smoke:${total - failures}/${total} 通过`);

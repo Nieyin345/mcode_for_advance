@@ -103,3 +103,32 @@ export function resolveRelativePath(baseDir: string, rel: string): string {
   }
   return root + segments.join("/");
 }
+
+/**
+ * True if `abs` is inside (or equals) `root`, comparing path SEGMENTS (not a
+ * raw string prefix — so `/foo/bar` does not match root `/foo/ba`).
+ *
+ * Renderer-safe (no `node:path`): renderer-side mirror of the main process's
+ * `pathGuard.pathWithin` (`lib/pathGuard.ts`). Two properties matter and both
+ * used to be missing from the store's local copy:
+ *
+ *  - **Separator-agnostic**: `\` and `/` compare equal. Project roots come from
+ *    the OS directory picker — **backslashes on Windows** (`D:\proj`) — while
+ *    LSP / file-tree / command-palette paths are also backslashed. A root that
+ *    only matched on `/` silently dropped every IDE tab / expanded dir at
+ *    hydration ("reopen the app and the editor forgot everything").
+ *  - **Case-insensitive on Windows-style paths** (drive letter / UNC) — the
+ *    same heuristic `fileLink.ts` uses, mirroring main's `norm()` (lowercase on
+ *    win32/darwin). A lowercased drive letter from Monaco/LSP must still match
+ *    a project stored with an uppercase one.
+ */
+export function isPathWithin(root: string, abs: string): boolean {
+  const normRoot = root.replace(/\\/g, "/").replace(/\/+$/, "");
+  const normAbs = abs.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!normRoot) return false;
+  const windows = /^[a-zA-Z]:\//.test(normRoot) || normRoot.startsWith("//");
+  const r = windows ? normRoot.toLowerCase() : normRoot;
+  const a = windows ? normAbs.toLowerCase() : normAbs;
+  if (a === r) return true;
+  return a.startsWith(r + "/");
+}

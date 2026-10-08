@@ -22,6 +22,7 @@ import { api } from "@renderer/lib/api.js";
 import { normWorktreeKey } from "@renderer/lib/worktree.js";
 import { translate } from "@renderer/lib/i18n/core.js";
 import { createProviderHealthRequestGate } from "@renderer/lib/providerHealthRequestGate.js";
+import { isPathWithin } from "@renderer/lib/path.js";
 import { parseEditorThemeChoice } from "@renderer/lib/editorThemes.js";
 import { THEME_STYLE_SETTING_KEY, UI_LOCALE_SETTING_KEY, DEFAULT_PROVIDER_ID, UI_PASTE_TAG_THRESHOLD_CHARS_SETTING_KEY, WORKFLOW_MAX_PARALLEL_SETTING_KEY, WORKFLOW_MAX_PARALLEL_MIN, WORKFLOW_MAX_PARALLEL_MAX, UI_USER_MSG_COLOR_SETTING_KEY, UI_ACCENT_COLOR_SETTING_KEY, UI_COMMIT_GEN_MODEL_SETTING_KEY, UI_COMMIT_GEN_PROMPT_SETTING_KEY, UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY, UI_COMPOSER_MODEL_SETTING_KEY, UI_TITLE_GEN_ENABLED_SETTING_KEY, UI_TITLE_GEN_MODEL_SETTING_KEY, AGENT_OUTPUT_STYLE_SETTING_KEY, UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY, UI_PROJECT_VIEW_SETTING_KEY, UI_PROJECT_GROUPS_SETTING_KEY, UI_LAST_PROJECT_SETTING_KEY, UI_LAST_SESSION_SETTING_KEY, UI_SHORTCUTS_SETTING_KEY, UI_GESTURES_SETTING_KEY, UI_EDITOR_THEME_SETTING_KEY, AUTO_ARCHIVE_SETTING_KEY, parseAutoArchiveConfig, SESSION_WORKTREE_DEFAULT_SETTING_KEY, WORKTREE_NAMES_SETTING_KEY, PROJECT_COLORS_SETTING_KEY, ShortcutBindingsSchema, GestureSettingsSchema, type ProjectGroupsMeta, type CustomCommand, type SkillInfo, type ProviderInfo, type PickedElement } from "@contracts/ipc";
 import type { BuiltinModelOption } from "@contracts/provider";
@@ -589,15 +590,20 @@ export function clampWidePanelPct(pct: number): number {
  *  (which feeds the --user-bubble CSS var). */
 export const RGB_TRIPLET_RE = /^\s*(\d{1,3})\s+(\d{1,3})\s+(\d{1,3})\s*$/;
 
-/** True if `abs` is inside `root` (prefix match on path segments, not a raw
+/** True if `abs` is inside `root` (prefix match on path SEGMENTS, not a raw
  *  string prefix — so "/foo/bar" doesn't match root "/foo/ba"). Renderer-side
- *  mirror of main's `safeResolveOk`: used to filter persisted IDE paths at
- *  hydration time. Handles the root === abs case (a file/dir AT the root). */
+ *  mirror of main's `pathGuard.pathWithin`: used to filter persisted IDE paths
+ *  at hydration time. Handles the root === abs case (a file/dir AT the root).
+ *
+ *  The implementation is **the one shared pure helper** (`lib/path.ts`'s
+ *  {@link isPathWithin}); this used to be a local copy that only appended a
+ *  `/` to the root and `startsWith`-ed, so a Windows backslash root
+ *  (`D:\proj`, what the OS directory picker returns) failed to contain its own
+ *  files → every persisted IDE tab / expanded dir was dropped at hydration
+ *  ("reopen the app and the editor forgot everything"). Keeping one copy
+ *  prevents the two from drifting again. */
 export function isPathWithinRoot(root: string, abs: string): boolean {
-  if (abs === root) return true;
-  // Ensure the root is a directory boundary in the comparison.
-  const r = root.endsWith("/") || root.endsWith("\\") ? root : root + "/";
-  return abs.startsWith(r);
+  return isPathWithin(root, abs);
 }
 
 /** Page size for the left-bar thread list. The first page is fetched on

@@ -434,7 +434,15 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
       // icon: open it if another tab is active, or close it (fall back to
       // files) if it's already showing. The PC-fullscreen overlay is reached
       // from inside the sidebar via its own "展开为 PC 全屏" button.
-      s.setRightPanelTab(s.rightPanelTab === "browser" ? "files" : "browser");
+      //
+      // ⚠️ **必须像右栏兄弟命令一样把右栏露出来**(`setRightOpen(true)`)。
+      // 只切 tab 的话,右栏本来就关着时(启动默认 `rightOpen: false`)按快捷键 /
+      // 命令面板选它,只会悄悄改一个隐藏的 tab 值 —— 用户看不到任何变化,以为按键
+      // 坏了。`view.right-panel.files|git|turns` 三条都是"切 tab + 开右栏",这条
+      // 是同一个动作面,不能少那一半。
+      const showing = s.rightPanelTab === "browser";
+      s.setRightPanelTab(showing ? "files" : "browser");
+      if (!showing) s.setRightOpen(true);
     },
   },
   {
