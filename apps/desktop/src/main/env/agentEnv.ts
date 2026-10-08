@@ -65,6 +65,7 @@
 import { delimiter } from "node:path";
 import { managedToolBinDirs } from "./managedToolRoots.js";
 import { macShellPathDirs, systemToolBinDirs } from "./systemToolPaths.js";
+import { normPathKey } from "@main/lib/pathNorm.js";
 import { MCODE_CONFIG_DIR } from "@main/providers/claude-sdk/customEnv.js";
 
 /** 上一次由本模块注入的 PATH 目录 —— 下次重算时先摘掉它们。 */
@@ -78,18 +79,23 @@ export function injectedToolDirs(): string[] {
 /** 重算 `process.env.PATH`,让自管工具与"装了但不在 PATH 上"的系统工具都能被
  *  裸名字找到。装/卸工具后必须调。 */
 function refreshToolchainPath(): void {
-  const previous = injected;
+  const previous = new Set(injected.map(normPathKey));
   // macShellPathDirs:macOS 从访达启动时缺的 Homebrew / MacTeX 等目录(见那边注释)。
   const dirs = [...managedToolBinDirs(), ...systemToolBinDirs(), ...macShellPathDirs()];
 
   const base = (process.env.PATH ?? "")
     .split(delimiter)
-    // 空段(结尾多一个分隔符)会让 Windows 把当前目录塞进查找路径 —— 掉它
-    .filter((entry) => entry.length > 0 && !previous.includes(entry));
+    // 空段(结尾多一个分隔符)会让 Windows 把当前目录塞进查找路径 —— 掉它。
+    // 上一次注入的那几条按**规范键**摘(大小写 / 分隔符 / 尾分隔符都归一),免得
+    // 换了拼法的那一份摘不掉、留在 base 里与下面新加的重叠。
+    .filter((entry) => entry.length > 0 && !previous.has(normPathKey(entry)));
 
   // 只加 PATH 上还没有的:用户可能自己装了 pandoc 并且已经在 PATH 里,
-  // 那就没必要让自管的那份抢在前面(他的那份是他明确选择的)。
-  const fresh = dirs.filter((d) => !base.includes(d));
+  // 那就没必要让自管的那份抢在前面(他的那份是他明确选择的)。按**规范键**判"有
+  // 没有目录",这样拼法略有出入(Windows 大小写、尾部分隔符)的同一个目录不会
+  // 被再插一份 —— 跨 surface 的路径比较一律走 `lib/pathNorm.ts` 那一份实现。
+  const baseKeys = new Set(base.map(normPathKey));
+  const fresh = dirs.filter((d) => !baseKeys.has(normPathKey(d)));
   injected = fresh;
   process.env.PATH = [...fresh, ...base].join(delimiter);
 }

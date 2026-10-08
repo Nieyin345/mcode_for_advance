@@ -27,9 +27,11 @@
  * Run: scripts/project-branch-race-smoke/run.sh
  */
 import "./prelude.js";
-import { __mount, __render, __flush, __text } from "./fakeReact.js";
+import { __mount, __render, __flush, __text, __nodes } from "./fakeReact.js";
 import { server, resetApi, release } from "./api-stub.js";
 import { ProjectBranchIndicator } from "@renderer/components/chat/ProjectBranchIndicator.js";
+import { WorktreeMergeToolbarButton } from "@renderer/components/chat/WorktreeMergeBack.js";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
 
 let failures = 0;
 let checks = 0;
@@ -112,6 +114,60 @@ async function reverseScenario(): Promise<void> {
 
 await scenario();
 await reverseScenario();
+await worktreeScenario();
 
 console.log(`\nproject-branch-race-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exitCode = 1;
+
+// ── [3] WorktreeMergeBack:同一个同类竞态(切工作树后旧回包盖新的"有没有活"判定) ──
+//
+// `WorktreeMergeToolbarButton` 也按 prop(worktreePath/repoPath)换树,refresh 拉的
+// `git.worktreeStatus` 在飞时切到另一棵树,旧回包会把新的判定盖掉 —— 结果是要么该出现的
+// 「并回」按钮不出现、要么出现在没有活的树上。
+/** 顶栏那颗「并回」按钮在不在树里 —— 按它的 title(渲染出来的 zh 文案)认。 */
+function mergeButton(): boolean {
+  return __nodes().some(
+    (n) =>
+      n.type === "button" &&
+      typeof n.props.title === "string" &&
+      n.props.title.includes("合并回"),
+  );
+}
+
+function setWorktreeSession(wt: string): void {
+  useSessionStore.setState({
+    projects: [{ id: "p1", name: "p1", path: "/w/p1", archived: false, pinnedAt: null, sortOrder: 0, createdAt: 1, updatedAt: 1 } as never],
+    activeProjectId: "p1",
+    activeSessionId: "s1",
+    sessionsByProject: { p1: [{ id: "s1", title: "s", kind: "chat", projectId: "p1", worktreePath: wt, archived: false, status: "idle" } as never] },
+    pinnedSessions: [],
+    sessions: [],
+  } as never);
+}
+
+async function worktreeScenario(): Promise<void> {
+  resetApi();
+  server.hold.add("git:worktreeStatus");
+  server.worktreeDirty["/wt/A"] = false; // A 没有活
+  server.worktreeDirty["/wt/B"] = true; // B 有活 → 应出现「并回」按钮
+  setWorktreeSession("/wt/A");
+  __mount(() => WorktreeMergeToolbarButton());
+  await __flush();
+  check("A 的 worktreeStatus 在飞(被扣住)", server.held.some((h) => h.input.worktreePath === "/wt/A"), server.held.map((h) => h.input));
+
+  // 切到 B(同一个组件实例换 prop)。
+  setWorktreeSession("/wt/B");
+  __render();
+  await __flush();
+  check("切到 B 后发出的是 B 的 worktreeStatus", server.held.some((h) => h.input.worktreePath === "/wt/B"), server.held.map((h) => h.input));
+
+  // B(有活)先回 → 按钮应出现。
+  release("git:worktreeStatus", (i) => i.worktreePath === "/wt/B");
+  await __flush();
+  check("B 有活 → 「并回」按钮出现", mergeButton(), __nodes().filter((n)=>n.type==="button").map((n)=>n.props.title));
+
+  // A(没活)迟到 → 不许把 B 的按钮弄没。
+  release("git:worktreeStatus", (i) => i.worktreePath === "/wt/A");
+  await __flush();
+  check("★ 迟到的 A(没活)回包不许弄没 B 的「并回」按钮", mergeButton(), __text());
+}

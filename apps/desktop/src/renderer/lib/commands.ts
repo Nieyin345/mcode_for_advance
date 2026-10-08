@@ -195,19 +195,26 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
       // Unified center bar: close whichever tab kind currently holds the
       // center — the focused plan/file tab while the editor is showing,
       // else the active session tab (legacy behavior).
-      const pid = s.activeProjectId;
-      const activeFile = pid ? s.ideActiveFileByProject[pid] ?? null : null;
-      const sid = s.activeSessionId;
-      const planActive = sid ? s.planTabActiveBySession[sid] ?? false : false;
-      if (s.centerTabFocus === "editor" && (activeFile || planActive)) {
-        if (planActive && sid) {
-          s.closePlanDrawer(sid);
-        } else if (activeFile) {
+      //
+      // ⚠️ **走共享的 `editorCenterTarget`,不要在这里内联一份。** 这条曾经内联了一个
+      // 只查 `centerTabFocus === "editor"` 的简化版,漏掉 `editorCenterTarget`(以及 store
+      // 的 `isSessionChatOnScreen`)都带的 **`widePanelOpen` 前置条件** —— 于是宽屏面板
+      // 开着时(中间栏被聊天列占着、编辑器其实**不在屏上**)按 Ctrl+W,它会把一个看不见的
+      // 编辑器文件悄悄关掉,而用户在屏上看到的是会话标签,`session.close` 在同状态下关的
+      // 正是那个会话 —— **两条命令对同一次"关闭"意图给出相反结果**。共用一处判据即杜绝。
+      const target = editorCenterTarget(s);
+      if (target === "plan" && s.activeSessionId) {
+        s.closePlanDrawer(s.activeSessionId);
+        return;
+      }
+      if (target === "file" && s.activeProjectId) {
+        const file = s.ideActiveFileByProject[s.activeProjectId];
+        if (file) {
           // 有未保存改动时这个关闭**不会发生**(见 store 的 closeFileInIde)—— 静默
           // 无反应比丢改动更糟,所以显式报一声。
-          s.reportBlockedIdeClose(s.closeFileInIde(activeFile).blocked);
+          s.reportBlockedIdeClose(s.closeFileInIde(file).blocked);
+          return;
         }
-        return;
       }
       if (s.activeSessionId) s.closeTab(s.activeSessionId);
     },

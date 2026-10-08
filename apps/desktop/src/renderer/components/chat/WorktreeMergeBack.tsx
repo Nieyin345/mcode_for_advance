@@ -14,7 +14,7 @@
  *    a directory share ONE checkout, so a single merge covers every thread
  *    in the group).
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { normWorktreeKey } from "@renderer/lib/worktree.js";
@@ -63,8 +63,13 @@ export function WorktreeMergeToolbarButton() {
   const [open, setOpen] = useState(false);
   useSuppressBrowserView(open);
   const [hasChanges, setHasChanges] = useState(false);
+  /** 请求序号:只有最新一次 `refresh` 的响应能写 `hasChanges`。对话框是同一个实例、
+   *  只换 prop(worktreePath/repoPath),切到另一个工作树时旧回包不许把新的判定盖掉
+   *  (与 `ProjectBranchIndicator` / `GitPanel` / `GitHistoryView` 同一类守卫)。 */
+  const changesSeqRef = useRef(0);
 
   const refresh = useCallback(async () => {
+    const seq = ++changesSeqRef.current;
     if (!repoPath || !worktreePath) {
       setHasChanges(false);
       return;
@@ -75,10 +80,12 @@ export function WorktreeMergeToolbarButton() {
       // and this runs on a 12s interval — the poller must only ever pay for
       // the one tree it cares about.
       const { status } = await api.git.worktreeStatus({ repoPath, worktreePath });
+      if (seq !== changesSeqRef.current) return; // superseded (worktree switched)
       // "Has work" = uncommitted files OR commits not contained in the main
       // HEAD (worktreeStatus's `merged` flag is the ancestor probe).
       setHasChanges(!!status && (status.dirty || !status.merged));
     } catch {
+      if (seq !== changesSeqRef.current) return;
       setHasChanges(false);
     }
   }, [repoPath, worktreePath]);

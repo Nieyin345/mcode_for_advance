@@ -80,9 +80,12 @@ export function readRunSummaries(root: string, limit?: number): MonitoringRunSum
     const parsed = parseRunSummary(line);
     if (parsed === undefined) continue;
     if (seen.has(parsed.runId)) continue;
+    // `limit` 是"去重之后还要多少条"(见函数头),所以**先判满再 push** ——
+    // push 之后才比会让 `limit: 0` 也带出一条,恰好违反这个约定(越界入参的
+    // 兜底夹取在 `ipc/monitoring.ts`,这里只保证自己按承诺办事)。
+    if (limit !== undefined && out.length >= limit) break;
     seen.add(parsed.runId);
     out.push(parsed);
-    if (limit !== undefined && out.length >= limit) break;
   }
   return out;
 }

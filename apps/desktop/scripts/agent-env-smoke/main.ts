@@ -22,8 +22,12 @@
  *
  * Run: scripts/agent-env-smoke/run.sh
  */
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
 import { MCODE_CONFIG_DIR } from "@main/providers/claude-sdk/customEnv.js";
-import { applyAgentEnvironment } from "@main/env/agentEnv.js";
+import { applyAgentEnvironment, injectedToolDirs } from "@main/env/agentEnv.js";
+import { setToolRoot } from "@main/env/managedToolRoots.js";
 import { buildTerminalEnv } from "@main/terminal/envRefresh.js";
 
 let failures = 0;
@@ -100,6 +104,87 @@ check(
 // 还原,免得后面别的东西(同一进程里的其他断言)看到我们摆出来的状态。
 if (before === undefined) delete process.env.CLAUDE_CONFIG_DIR;
 else process.env.CLAUDE_CONFIG_DIR = before;
+
+/* ─────────────────── 工具目录注入的**去重**(agentEnv.ts 的 PATH 重算) ───────────────────
+ *
+ * 这一段钉的是文件头第 1 节那句"幂等:同一个目录不重复加"。原先的比较是**字面
+ * `includes`** —— Windows 上路径大小写不敏感、`\` 与 `/` 等价、末尾分隔符不算
+ * 另一个目录,三种拼法里任意一种都能让"同一个目录"被判成"不同的",于是它被
+ * **再插一份**。用户看到的是 PATH 越跑越长,而界面上完全看不出来。
+ *
+ * 做法:造一个真的装了 pandoc 的临时工具根 → setToolRoot → 把该目录(换一种
+ * Windows 拼法)先塞进 PATH → applyAgentEnvironment → 数它出现几次。
+ * 这条断言**撤掉 pathEntryKey 就红**(变异验证)。
+ */
+console.log("\n工具目录注入:同一个目录不因拼法不同而被重复插入");
+
+{
+  const tools = mkdtempSync(join(tmpdir(), "mcode-agent-env-smoke-tools-"));
+  const verDir = join(tools, "pandoc", "3.1.11");
+  mkdirSync(verDir, { recursive: true });
+  writeFileSync(join(verDir, process.platform === "win32" ? "pandoc.exe" : "pandoc"), "x");
+  setToolRoot(tools);
+
+  const binDir = verDir; // pandoc 平铺:可执行文件就在版本目录根下
+  const savedPath = process.env.PATH;
+
+  /** 数某个目录(按平台归一后)在 PATH 里出现几次。 */
+  const countDir = (target: string): number => {
+    const key = (s: string): string =>
+      process.platform === "win32"
+        ? s.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase()
+        : s.replace(/\/+$/, "");
+    return (process.env.PATH ?? "")
+      .split(delimiter)
+      .filter(Boolean)
+      .filter((s) => key(s) === key(target)).length;
+  };
+
+  try {
+    // ① Windows 上用户 PATH 里已有同一目录,只大小写不同。
+    //    POSIX 大小写敏感,折成小写会误判两个不同目录 —— 所以只在 win32 上钉。
+    if (process.platform === "win32") {
+      process.env.PATH = [binDir.toUpperCase(), "C:\\somewhere-else"].join(delimiter);
+      applyAgentEnvironment();
+      eq("★ 同一目录只是大小写不同 → 不再插第二份", countDir(binDir), 1);
+    }
+
+    // ② 末尾多一个分隔符也是同一个目录(两平台都成立)。
+    process.env.PATH = [binDir + (process.platform === "win32" ? "\\" : "/"), "/somewhere-else"].join(
+      delimiter,
+    );
+    applyAgentEnvironment();
+    eq("★ 末尾多一个分隔符 → 不再插第二份", countDir(binDir), 1);
+
+    // ③ 连续两次 apply:第二次即使第一次注入的那份换了拼法,也不该多出来。
+    process.env.PATH = savedPath;
+    applyAgentEnvironment();
+    const first = injectedToolDirs();
+    check("第一次确实注入了(否则下面这条什么都没验到)", first.length >= 1, first);
+    if (process.platform === "win32" && first[0]) {
+      process.env.PATH = (process.env.PATH ?? "")
+        .split(delimiter)
+        .map((s) => (s === first[0] ? s.toUpperCase() : s))
+        .join(delimiter);
+      applyAgentEnvironment();
+      eq(
+        "★ 第二次 apply 时已注入的那份换了大小写 → 仍只出现一次",
+        countDir(first[0]),
+        1,
+      );
+    }
+    check(
+      "注入的目录确实是那个 pandoc 的 bin 目录(夹具真的命中了)",
+      injectedToolDirs().includes(binDir) ||
+        injectedToolDirs().some((d) => d.replace(/\\/g, "/").toLowerCase() === binDir.replace(/\\/g, "/").toLowerCase()),
+      injectedToolDirs(),
+    );
+  } finally {
+    process.env.PATH = savedPath;
+    setToolRoot("");
+    rmSync(tools, { recursive: true, force: true });
+  }
+}
 
 /* ───────────────────────────── report ───────────────────────────── */
 

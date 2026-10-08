@@ -12,6 +12,8 @@ export const server = {
   /** repoPath → status 里的分支名(回值在**调用那一刻**算出来) */
   statusBranch: {} as Record<string, string>,
   statusFiles: {} as Record<string, string>,
+  /** worktreePath → 那棵树有没有未并回的活(true 时工具按钮出现)。 */
+  worktreeDirty: {} as Record<string, boolean>,
   calls: [] as Array<{ method: string; input: Record<string, unknown> }>,
   hold: new Set<string>(),
   held: [] as Held[],
@@ -56,6 +58,12 @@ function handle(method: string, input: Record<string, unknown>): unknown {
     }
     case "git:listBranches":
       return { branches: { current: "", detached: false, local: [], remote: [], tags: [] } };
+    case "git:worktreeStatus": {
+      const wp = (input.worktreePath as string) ?? "";
+      // 每棵树配一份"有没有活"的判定(由测试通过 server.worktreeDirty 指定)。
+      const dirty = server.worktreeDirty[wp] ?? false;
+      return { status: { dirty, merged: !dirty } };
+    }
     default:
       return {};
   }

@@ -114,6 +114,14 @@ async function main(): Promise<void> {
   check("durationMs 不为负", (runs3[0]?.durationMs ?? -1) >= 0, runs3[0]);
   eq("runs(limit) 截取", readRunSummaries(root, 1).length, 1);
 
+  /* ── 3b. limit 的边界:`0` 是"去重之后要 0 条",不是"至少给一条" ──
+   * 函数头写着"`limit` 给的是去重之后还要多少条"。原先的循环是**先 push 再比**,
+   * 于是 `limit: 0` 也会先带出一条 —— 越界入参的兜底夹取在 IPC 那层,但存储这一
+   * 层也该按自己的承诺办事。撤掉"先判满再 push"这条断言就红。 */
+  eq("★ limit=0 给 0 条(不是先 push 再比)", readRunSummaries(root, 0).length, 0);
+  eq("limit=2 给 2 条", readRunSummaries(root, 2).length, 2);
+  eq("limit 缺省给全部", readRunSummaries(root).length >= 2, true);
+
   /* ── 4. 续跑沿用旧 runId:存储里两条,查询取最新 ── */
   collector.handle(ev({ type: "workflow.node.result", sessionId: "s2", runId: "run_2", nodeId: "n1", nodeType: "agent", title: "第一步", status: "success", summary: "这次成了" }));
   collector.handle(ev({ type: "turn.done", sessionId: "s2", reason: "end_turn", endedAt: Date.now() + 20 }));
