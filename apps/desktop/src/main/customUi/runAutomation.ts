@@ -28,7 +28,7 @@ import {
   type CustomUiWhen,
 } from "@contracts/customUi";
 import { CollectionRepo, LibraryRepo, ProjectRepo } from "@main/store/repositories.js";
-import { trashedItemIds } from "@main/library/trash.js";
+import { allTrashCollectionIds, trashedItemIds } from "@main/library/trash.js";
 import { automationRunner } from "@main/orchestration/automationRunner.js";
 import { collectCollectionIds, isInsideAnyProject, itemFactsOf, shouldSkipItem, type ItemFacts } from "./targets.js";
 
@@ -65,23 +65,28 @@ function expand(target: CustomUiRunTarget, skipWhen: CustomUiWhen | undefined): 
     return { ok: true, items: [itemFactsOf(item)], skipped: 0 };
   }
   const all = CollectionRepo.list();
+  // 「哪个分类是回收站」的唯一判据在 `trash.ts`(`allTrashCollectionIds`)。**不能读
+  // `c.isTrash`** —— `CollectionRepo.list()` 里那一格恒为 `false`(回收站标记由
+  // `ipc/library.ts` 那层 `markTrashCollections` 事后贴,见 `rowToCollection` 的注释),
+  // 于是读它等于"回收站分类"这道筛子永远不生效:用户在回收站上右键,回收站里的条目
+  // 会被当成"还在用"的一批带进自动化。
+  const trashIds = new Set(allTrashCollectionIds());
   let roots: string[];
   if (target.kind === "collection") {
     if (!all.some((c) => c.id === target.collectionId)) return { ok: false, error: "这个分类已经不存在了" };
     roots = [target.collectionId];
   } else {
-    roots = all.filter((c) => c.groupId === target.groupId && !c.isTrash).map((c) => c.id);
+    roots = all.filter((c) => c.groupId === target.groupId && !trashIds.has(c.id)).map((c) => c.id);
   }
   const trashed = trashedItemIds();
   const seen = new Set<string>();
   const items: ItemFacts[] = [];
   let skipped = 0;
-  // **回收站分类不进这一批。** 根那一层已经按 `isTrash` 筛过(大类那条路),但后代里
+  // **回收站分类不进这一批。** 根那一层已经按回收站筛过(大类那条路),但后代里
   // 照样可能挂着回收站分类 —— 条目那一层有 `trashedItemIds` 兜着,分类这一层从前没有,
   // 于是"这个分类里还在用的东西"这句话在两层上说的不是同一件事。
-  const trashCollections = new Set(all.filter((c) => c.isTrash).map((c) => c.id));
   for (const cid of collectCollectionIds(all, roots)) {
-    if (trashCollections.has(cid)) continue;
+    if (trashIds.has(cid)) continue;
     for (const item of LibraryRepo.listByCollection(cid)) {
       if (trashed.has(item.id) || seen.has(item.id)) continue;
       seen.add(item.id);
@@ -114,7 +119,8 @@ function runInContext(input: CustomUiRunAutomationInput): Promise<CustomUiRunAut
   }
   const collection = CollectionRepo.list().find((c) => c.id === target.collectionId);
   if (!collection) return Promise.resolve({ ok: false, error: "这个分类已经不存在了" });
-  if (collection.isTrash) return Promise.resolve({ ok: false, error: "回收站不能作为落点" });
+  // 同 `expand`:判据是 `allTrashCollectionIds`,不是恒为 false 的 `c.isTrash`。
+  if (allTrashCollectionIds().includes(collection.id)) return Promise.resolve({ ok: false, error: "回收站不能作为落点" });
   if (input.dryRun === true) return Promise.resolve({ ok: true, count: 0, skipped: 0 });
   return automationRunner
     .runWithTarget(input.workflowId, input.triggerNodeId, { collectionId: target.collectionId }, input.input)

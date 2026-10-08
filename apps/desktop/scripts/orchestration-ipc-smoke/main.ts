@@ -123,9 +123,10 @@ const fakeIpc = {
 const { IPC } = await import("@contracts/ipc");
 const { registerWorkflowHandlers, sanitizeFileBase } = await import("@main/ipc/orchestration.js");
 const { initDb, getDb } = await import("@main/store/db.js");
-const { SessionRepo, SettingRepo, ProjectRepo, WorkflowRunRepo } = await import(
+const { SessionRepo, SettingRepo, ProjectRepo, WorkflowRunRepo, CollectionRepo } = await import(
   "@main/store/repositories.js"
 );
+const { ensureTrashCollection } = await import("@main/library/trash.js");
 const { loadNodeTypes } = await import("@main/orchestration/nodeTypes.js");
 const { isNodeRunnable, IMPLEMENTED_RUNNER_KINDS, RESERVED_NODE_TYPE_PREFIX } = await import(
   "@contracts/nodeType"
@@ -1594,6 +1595,38 @@ console.log("\n出厂版更新");
   }
   eq("不是自带的 id:应用被拒", obj(await callAsync(IPC.WORKFLOW_APPLY_SHIPPED_UPDATE, { id: "wf_nowindow" })).ok, false);
   eq("不是自带的 id:忽略被拒", obj(await callAsync(IPC.WORKFLOW_DISMISS_SHIPPED_UPDATE, { id: "wf_nowindow" })).ok, false);
+}
+
+/* ──────────────── 20. 自定义 UI 运行自动化:回收站不能当落点 ──────────────── */
+
+/**
+ * `targetMode: "context"`(文献导入那种「只定位不展开」)要拒绝**回收站分类**。
+ *
+ * ⚠️ 这道筛子曾经是死的:它读 `collection.isTrash`,而 `CollectionRepo.list()` 里那一格
+ * 恒为 `false`(回收站标记是 `ipc/library.ts` 那层 `markTrashCollections` 事后贴的)。
+ * 于是「回收站不能作为落点」永远不生效 —— 用户在回收站上右键「文献导入」,东西会被
+ * 收进回收站。判据只能走 `allTrashCollectionIds`(回收站的唯一真相)。
+ */
+console.log("\n自定义 UI 运行自动化(回收站)");
+{
+  const trashId = ensureTrashCollection();
+  const resTrash = obj(
+    await callAsync(IPC.CUSTOM_UI_RUN_AUTOMATION, {
+      workflowId: "wf_不存在", triggerNodeId: "t", target: { kind: "collection", collectionId: trashId },
+      targetMode: "context",
+    }),
+  );
+  eq("回收站分类不能当 context 落点", resTrash.error, "回收站不能作为落点");
+
+  // 普通分类仍放行到「找触发器」那一步(证明被拒的是回收站身份,不是别的)。
+  const normal = CollectionRepo.create("普通分类", null, "paper");
+  const resNormal = obj(
+    await callAsync(IPC.CUSTOM_UI_RUN_AUTOMATION, {
+      workflowId: "wf_不存在", triggerNodeId: "t", target: { kind: "collection", collectionId: normal.id },
+      targetMode: "context",
+    }),
+  );
+  check("普通分类不当场被拒(继续去找触发器)", resNormal.error !== "回收站不能作为落点", resNormal);
 }
 
 /* ──────────────── 收尾 ──────────────── */
