@@ -22,6 +22,8 @@ import "./prelude.js";
 import { collectCommands } from "../../src/renderer/lib/commands.js";
 import type { SessionState } from "../../src/renderer/stores/sessionStore.js";
 import { isPathWithin, relativePath, resolveRelativePath, dirname, basename } from "../../src/renderer/lib/path.js";
+import { checkoutArgsFor, remoteShortName } from "../../src/renderer/lib/branchRef.js";
+import type { GitBranchInfo } from "@contracts/ipc";
 import {
   resolveShortcut,
   resolveAllShortcuts,
@@ -230,6 +232,28 @@ section("4. Monaco 模型缓存：注册保 baseline、处置即回收");
   eq("displayedPath 往返", getDisplayedPath(), "/p/x.ts");
   setDisplayedPath(null);
   eq("displayedPath 清空", getDisplayedPath(), null);
+}
+
+/* ─────────────────── 5. 分支行点击:两个切换器共用一条判据 ─────────────────── */
+
+section("5. 分支切换:远端短名 + 跟踪分支(两个切换器共用一条规则)");
+
+{
+  const b = (name: string, type: "local" | "remote" | "tag", current = false): GitBranchInfo =>
+    ({ name, type, current, label: "", commit: "abc" }) as GitBranchInfo;
+
+  eq("远端 origin/foo → 短名 foo", remoteShortName("origin/foo"), "foo");
+  eq("远端多段 a/b/foo → 短名 b/foo(只去第一段)", remoteShortName("a/b/foo"), "b/foo");
+  eq("无斜杠原样", remoteShortName("foo"), "foo");
+
+  eq("当前分支 → 不 checkout", checkoutArgsFor(b("main", "local", true), new Set()), null);
+  // 对象结果用 JSON 比(§5 的返回是 `{branch,newBranch?}`,Object.is 比不了)。
+  const deep = (name: string, a: unknown, e: unknown): void => check(name, JSON.stringify(a) === JSON.stringify(e), { a, e });
+  deep("本地分支 → 按名切", checkoutArgsFor(b("dev", "local"), new Set()), { branch: "dev" });
+  deep("tag → 按名切(当本地分支处理)", checkoutArgsFor(b("v1.0", "tag"), new Set()), { branch: "v1.0" });
+  // ★ 远端分支:本地已有同名短名 → 直接切;没有 → 建跟踪分支。
+  deep("远端 + 本地已有同名 → 切本地短名", checkoutArgsFor(b("origin/foo", "remote"), new Set(["foo"])), { branch: "foo" });
+  deep("远端 + 本地没有 → 建跟踪分支", checkoutArgsFor(b("origin/foo", "remote"), new Set()), { branch: "origin/foo", newBranch: "foo" });
 }
 
 console.log(`\nrenderer-lib-audit-smoke:${total - failures}/${total} 通过`);

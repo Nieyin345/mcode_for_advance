@@ -4,6 +4,7 @@ import { ContextMenu } from "@base-ui/react/context-menu";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { joinPath, basename } from "@renderer/lib/path.js";
+import { checkoutArgsFor } from "@renderer/lib/branchRef.js";
 import { formatRelativeTime, formatFullTime } from "@renderer/lib/time.js";
 import { browserUuid } from "@renderer/lib/uuid.js";
 import type { GitRepo, GitStatusResult, GitFileStatus, GitBranchInfo, GitBranchListResult, GitMergePreviewResult } from "@contracts/ipc";
@@ -1398,18 +1399,9 @@ function BranchGroup({
 }) {
   const { t } = useI18n();
   const handleClick = (b: GitBranchInfo) => {
-    if (b.current) return;
-    if (b.type === "remote") {
-      // `origin/foo` -> short name `foo`. Track if no local branch yet.
-      const shortName = b.name.includes("/") ? b.name.slice(b.name.indexOf("/") + 1) : b.name;
-      if (localNames.has(shortName)) {
-        onCheckout(shortName);
-      } else {
-        onCheckout(b.name, shortName);
-      }
-    } else {
-      onCheckout(b.name);
-    }
+    // 判据走共享的 checkoutArgsFor(与 ProjectBranchIndicator 的切换器同一条规则)。
+    const args = checkoutArgsFor(b, localNames);
+    if (args) onCheckout(args.branch, args.newBranch);
   };
   return (
     <div className="py-0.5">
