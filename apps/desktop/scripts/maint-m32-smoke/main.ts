@@ -29,6 +29,7 @@ import {
 } from "./fakeReact.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { MobileGitScreen } from "@renderer/components/mobile/MobileGitScreen.js";
+import { parsePatch } from "@renderer/components/mobile/PatchView.js";
 import type { GitRepo, GitStatusResult } from "@contracts/ipc";
 import type { Project } from "@contracts/session";
 
@@ -157,6 +158,38 @@ console.log("\n[2] 切项目:discoverRepos(旧) 后到");
     "没有为旧项目的仓库补发 status",
     !callsOf("git:status").some((i) => i.repoPath === "/w/p1/a"),
     callsOf("git:status"),
+  );
+}
+
+// ── 3. PatchView:git diff 结尾的换行标记不能变成幽灵上下文行 ──────────────
+// `git diff` 输出**总是以 `\n` 结尾**(那是 diff 那一行自身的终止符,不是被改文件
+// 的内容)。旧 `parsePatch` 直接 `patch.split("\n")`,那记尾随换行就成了一个空串,
+// 落进 `line === ""` 分支 —— 被当成"空格被传输剥掉的上下文行",于是每份 diff 底部
+// 都多画一行空行,行号还比文件实际多 1。真·空上下文行在 git 输出里是 `" "`(一个
+// 空格),不是 `""`。这条把两种情形一起钉死。
+console.log("\n[3] PatchView:尾随换行不留幽灵行,内部空行仍算上下文");
+{
+  const patch =
+    "diff --git a/f.txt b/f.txt\n" +
+    "index 111..222 100644\n" +
+    "--- a/f.txt\n" +
+    "+++ b/f.txt\n" +
+    "@@ -1,3 +1,3 @@\n" +
+    " a\n" +        // 真实上下文行
+    " \n" +          // 文件里的空行(git 前缀一个空格)
+    "-b\n" +
+    "+B\n";          // 尾随换行标记
+  const rows = parsePatch(patch);
+  const last = rows[rows.length - 1];
+  check(
+    "diff 尾随换行不产生幽灵上下文行",
+    !(last.kind === "ctx" && last.text === "" && last.oldNo === 4),
+    rows,
+  );
+  check(
+    "文件里真正的空行仍按上下文行渲染",
+    rows.some((r) => r.kind === "ctx" && r.text === "" && r.oldNo === 2 && r.newNo === 2),
+    rows,
   );
 }
 

@@ -24,7 +24,14 @@ export function parsePatch(patch: string): PatchRow[] {
   let inHunk = false;
   let oldNo = 0;
   let newNo = 0;
-  for (const line of patch.split("\n")) {
+  const lines = patch.split("\n");
+  // A newline-terminated patch is what git always emits, and `split` turns that
+  // final "\n" into a phantom trailing "". Left in, it renders as a spurious
+  // context row one line past EOF (an empty line with wrong old/new numbers)
+  // at the bottom of every diff. A genuinely blank context line is " " (one
+  // space) in git's output — never "" — so only the terminator artifact is dropped.
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  for (const line of lines) {
     if (line.startsWith("@@")) {
       inHunk = true;
       const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
