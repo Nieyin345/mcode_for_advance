@@ -27,7 +27,7 @@
  */
 import "../../scripts/renderer-pure-smoke/prelude.js";
 import { countContentLines } from "@renderer/components/chat/MessageBlocks.js";
-import { lineDiff, diffSummary } from "@renderer/lib/lineDiff.js";
+import { lineDiff, diffSummary, countLines } from "@renderer/lib/lineDiff.js";
 
 let failures = 0;
 let checks = 0;
@@ -55,6 +55,17 @@ check("中间空行算一行", countContentLines("a\n\nb\n"), 3);
   const diffAdds = diffSummary(lineDiff("", content)).adds;
   check("与同一张卡的 diff 行数口径一致", countContentLines(content), diffAdds);
 }
+
+// 共享的 `countLines`(lib/lineDiff.ts)是**唯一一份**行数判据 —— Write 卡的徽标、
+// NodeInspector 代码卡片的「共 N 行」、以及别处任何"N 行"都必须走它。这几条钉的
+// 就是"这一份实现本身"的口径:撤掉它(退回 `split("\n").length`)时全红。
+console.log("\n共享行数判据 countLines(lib/lineDiff.ts)");
+check("★ 末尾带 \n 的三行文件 → 3", countLines("a\nb\nc\n"), 3);
+check("末尾不带 \n → 3", countLines("a\nb\nc"), 3);
+check("空串 → 0", countLines(""), 0);
+check("单个 \n → 1(不是 2)", countLines("\n"), 1);
+check("只握手一个空行''→0", countLines(""), 0);
+check("Write 卡徽标与 countLines 同源", countContentLines("x\ny\n"), countLines("x\ny\n"));
 
 console.log(`\nchat-linecount-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exitCode = 1;

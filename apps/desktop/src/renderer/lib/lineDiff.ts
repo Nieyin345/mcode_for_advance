@@ -101,3 +101,12 @@ function splitLines(s: string): string[] {
   }
   return parts;
 }
+
+/** 一段文本有几行 —— **判据与 {@link splitLines} 同一份**(末尾单个 `\n` 是终止符,
+ *  不是幽灵行)。凡是界面上要报"N 行"的地方都走这里,别再各写一句
+ *  `text.split("\n").length`:那样一个以换行结尾的文件会被多算一行,而且**同一屏上
+ *  两个"N 行"会用不同的口径**(实测:NodeInspector 的代码卡片与 Write 卡的徽标、
+ *  与它们各自的预览/diff 全都不一样)。 */
+export function countLines(s: string): number {
+  return splitLines(s).length;
+}

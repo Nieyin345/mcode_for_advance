@@ -43,7 +43,7 @@ import { CurrentOpTicker } from "./CurrentOpTicker.js";
 import { ModelBadge } from "./ModelAvatar.js";
 import { fmtTokens } from "@renderer/lib/contextWindow.js";
 import { RenderErrorBoundary } from "./RenderErrorBoundary.js";
-import { lineDiff, diffSummary } from "@renderer/lib/lineDiff.js";
+import { lineDiff, diffSummary, countLines } from "@renderer/lib/lineDiff.js";
 import { FileLink } from "./FileLink.js";
 import { ImageWithPreview } from "@renderer/components/ui/index.js";
 import { TagPopover } from "./TagPopover.js";
@@ -1755,18 +1755,12 @@ function summarize(text: string): string {
 }
 
 /** Line count for the Write card's "N 行" badge when there is no pre-turn
- *  snapshot to diff against. A file ending in a single `\n` is N lines, yet a
- *  naive `content.split("\n").length` counts the terminator as an extra empty
- *  line (the phantom-row class — same rule as `lineDiff`'s `splitLines` in
- *  lib/lineDiff.ts and main's fileSnapshot.ts, which both drop that trailing
- *  empty). Keep this on the SAME basis as the adjacent +N/-M diff, which runs
- *  through lineDiff: otherwise the badge and the diff on one card would
- *  disagree about how many lines the file has. */
+ *  snapshot to diff against. Thin wrapper over the shared {@link countLines}
+ *  (lib/lineDiff.ts) so this badge, the adjacent +N/-M diff, and every other
+ *  "N 行" in the app all agree that a final `\n` is a terminator, not a
+ *  phantom empty line. */
 export function countContentLines(content: string): number {
-  if (content === "") return 0;
-  const lines = content.split("\n");
-  if (lines[lines.length - 1] === "" && content.endsWith("\n")) lines.pop();
-  return lines.length;
+  return countLines(content);
 }
 
 /** Format a wall-clock ms timestamp as HH:MM:SS (local time). Mirrors the

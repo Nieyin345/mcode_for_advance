@@ -31,6 +31,7 @@ import { Suspense, lazy, useId, useState } from "react";
 import { Button, Spinner } from "@renderer/components/ui/index.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { IconCode } from "@renderer/lib/icons.js";
+import { countLines } from "@renderer/lib/lineDiff.js";
 
 const CodeParamDialog = lazy(async () => ({
   default: (await import("./CodeParamDialog.js")).CodeParamDialog,
@@ -55,7 +56,11 @@ export function CodeParamField({
   const [open, setOpen] = useState(false);
   // 每个挂载实例一个,免得两个节点的「代码」共用一个 Monaco model —— 那会串内容。
   const modelId = useId();
-  const lines = value === "" ? 0 : value.split("\n").length;
+  // ⚠️ 行数走共享的 `countLines`(lib/lineDiff.ts),**别写 `value.split("\n").length`** ——
+  // 那样一个以换行结尾的代码块会被多算一行,而且它与旁边那条预览(`slice(0, 6)`)
+  // 以及用户心里的行数对不上。仓库对"末尾 \n 不是一行"早有定论,这是那份实现的
+  // 又一个调用点。
+  const lines = countLines(value);
   const preview = value.split("\n").slice(0, PREVIEW_LINES).join("\n");
 
   return (
