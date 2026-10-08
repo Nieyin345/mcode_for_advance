@@ -969,6 +969,27 @@ console.log("\n[15c] 删会话时排队提示词桶也要收掉");
   eq("★ 删会话后队列桶被收掉", store.getState().promptQueueBySession[SID], undefined);
 }
 
+console.log("\n[15d] 删会话时「回合未完成」提示桶也要收掉");
+{
+  // 与 `promptQueueBySession` 同一类:`dropSessionBuckets` 逐条列了三十来个 per-session
+  // 桶,`turnIncompleteBySession`(「这一轮没说完」那条提示的旗标,见 `turn.incomplete`
+  // 的处理)却不在名单里。旗标按会话 id 累积、删掉的会话永远清不掉 —— 与 #56/#80 同款
+  // 的"清理清单漏了某一个桶"。
+  const SID = "incomplete-then-deleted";
+  seed([mkSession(SID)], { total: 1 });
+  const store = useSessionStore;
+  store.getState().ingestEvent({
+    type: "turn.incomplete",
+    sessionId: SID,
+    kind: "empty-response",
+    pendingToolCalls: [],
+  } as never);
+  eq("前置:未完成旗标已立", store.getState().turnIncompleteBySession[SID], true);
+
+  store.getState().ingestEvent({ type: "session.deleted", sessionId: SID });
+  eq("★ 删会话后未完成旗标被收掉", store.getState().turnIncompleteBySession[SID], undefined);
+}
+
 // ── 14. ingestEvent:时序敏感的那几条 ───────────────────────────────────────
 //
 // 上面三条是"给一个事件、断言状态"。这一节的三条不一样:**中间隔着 rAF 缓冲**,

@@ -910,6 +910,10 @@ function dropSessionBuckets(s: SessionState, id: string) {
   // 都留着** —— 而这条清理本来就是"把这一行有关的东西全收掉"。
   const promptQueueBySession = { ...s.promptQueueBySession };
   delete promptQueueBySession[id];
+  // 「这一轮没说完」那条提示的旗标(见 `turn.incomplete` 的处理)。与上面的队列桶
+  // 同一类:它也是按会话 id 累积的 per-session 桶,漏删的话删掉的会话永远留着一条。
+  const turnIncompleteBySession = { ...s.turnIncompleteBySession };
+  delete turnIncompleteBySession[id];
   const pendingApprovals = s.pendingApprovals.filter((p) => p.sessionId !== id);
   return {
     messagesBySession,
@@ -944,6 +948,7 @@ function dropSessionBuckets(s: SessionState, id: string) {
     sideChatSeedBySession,
     composerDraftTouchBySession,
     promptQueueBySession,
+    turnIncompleteBySession,
     pendingApprovals,
   };
 }
