@@ -136,7 +136,7 @@ await test('LIFECYCLE cancellation is terminal despite late capability completio
 await test('LIFECYCLE real host 30s timeout aborts task and does not report success',async()=>{
   let aborted=false;const h=controlled(signal=>new Promise(resolve=>signal.addEventListener('abort',()=>{aborted=true;resolve({bytes:1});},{once:true})));
   const start=Date.now();const task=await terminal(h,await h.invokeForWorkflow(call('core.controlled')));
-  assert.equal(task.status,'failed');assert.match(task.error??'',/timed out/);assert.ok(Date.now()-start>=29000);assert.equal(aborted,true);
+  assert.equal(task.status,'failed');assert.match(task.error??'',/模块能力任务超时/);assert.ok(Date.now()-start>=29000);assert.equal(aborted,true);
 });
 await test('LIFECYCLE evicted and restarted task handles fail explicitly',async()=>{
   const h=controlled(async()=>({bytes:1}));let first:ModuleTask|undefined;

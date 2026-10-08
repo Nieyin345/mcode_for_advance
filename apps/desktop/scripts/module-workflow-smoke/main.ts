@@ -76,7 +76,9 @@ await check("missing executor fails closed despite installed model fallback", as
   const empty = new ExecutionEngine().setDefault({ execute: async () => { calls++; return { status: "success", summary: "model" }; } });
   const outcome = await empty.execute(contextFor());
   assert.equal(outcome.status, "failed");
-  assert.match(outcome.error ?? "", /No executor registered/);
+  // 这句会画在失败节点卡片上;执行引擎里未知执行器的失败原因一律中文
+  // (见底层修复记录 #111 / executionEngine.ts)。断言跟着源码走,别再钉英文。
+  assert.match(outcome.error ?? "", /没有能执行这种节点的执行器/);
   assert.equal(calls, 0);
 });
 await check("legacy prompt fallback behavior is unchanged", async () => {

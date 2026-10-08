@@ -192,7 +192,10 @@ export class ModuleHost {
     const job: LiveTask = {
       snapshot: {id,moduleId:module.id,contributionId:contribution.id,resource,view:structuredClone(contribution.view),status:"running",progress:0,createdAt:Date.now(),updatedAt:Date.now()},
       controller, requestKey, fingerprint,
-      timer: setTimeout(() => { this.finish(job,"failed",undefined,"Task timed out"); controller.abort(); }, 30_000),
+      // 这句 `error` 经 `moduleCapabilityExecutor` 的 `failedOutcome(snapshot.error)`
+      // 直接**画在失败节点卡片上**,与执行器里其它失败原因(「模块能力执行入参不合法」
+      // 「模块能力任务已经不可用」「模块能力任务失败」)同一口径,一律中文。
+      timer: setTimeout(() => { this.finish(job,"failed",undefined,"模块能力任务超时(30 秒)"); controller.abort(); }, 30_000),
     };
     job.timer.unref(); this.jobs.set(id,job); this.requests.set(requestKey,id);
     void Promise.resolve().then(() => definition.run(resource, {
