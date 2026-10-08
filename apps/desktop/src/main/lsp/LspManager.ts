@@ -264,7 +264,7 @@ class LspManagerImpl {
 
     return this.runInstall(language, cmd, () => {
       // post-install: nothing extra for the package-manager languages
-    });
+    }, { verifyBinary: true });
   }
 
   async uninstall(language: LspLanguageId): Promise<LspOpResult> {
@@ -281,9 +281,13 @@ class LspManagerImpl {
       return { ok: false, error: `暂不支持在 ${pf} 上卸载 ${spec.displayName}` };
     }
 
+    // ⚠️ **不校验二进制还在不在。** `runInstall` 里那个 `detectServer(spec)` 校验是给
+    // 「装」用的:装完 server 应该出现。而卸载成功**必然**让 `detectServer` 变 null ——
+    // 拿同一道校验去判卸载,每次正常卸载都会走进"命令成功但找不到 server"那条分支,面板上
+    // 弹一句 `卸载失败:安装命令成功完成,但未找到 server 可执行文件…`。所以卸载只判退出码。
     return this.runInstall(language, cmd, () => {
       // post-uninstall: nothing extra
-    });
+    }, { verifyBinary: false });
   }
 
   /** Install from a user-downloaded archive or binary. For Java, the archive
@@ -367,12 +371,18 @@ class LspManagerImpl {
     return { ok: true };
   }
 
-  /** Run a package-manager command, streaming stdout/stderr to the install log. */
+  /** Run a package-manager command, streaming stdout/stderr to the install log.
+   *
+   *  `opts.verifyBinary`(默认 true)决定退出码 0 之后**是否**再核一遍 server 可执行文件
+   *  在不在 —— 装要用(该出现),卸**不能**用(成功卸载必然让它消失,否则每次卸载都
+   *  被误报成失败)。 */
   private runInstall(
     language: LspLanguageId,
     cmd: string[],
     _onDone: () => void,
+    opts: { verifyBinary?: boolean } = {},
   ): Promise<LspOpResult> {
+    const verifyBinary = opts.verifyBinary !== false;
     return new Promise((resolveP) => {
       const [exe, ...args] = cmd;
       log.info(`lsp: install ${language}: ${cmd.join(" ")}`);
@@ -406,7 +416,7 @@ class LspManagerImpl {
         if (ok) {
           // Verify the binary is now findable.
           const spec = LANGUAGE_SPECS[language];
-          const found = this.detectServer(spec);
+          const found = !verifyBinary || this.detectServer(spec);
           resolveP(
             found
               ? { ok: true }

@@ -862,6 +862,38 @@ console.log("\n§6c 退出时安装进程要一起收走");
   void installing;
 }
 
+/* ─────────────── 6f. 卸载成功不许被报成失败 ─────────────── */
+
+console.log("\n§6f 卸载成功必须回 ok:true(装的校验不能用在卸上)");
+
+{
+  // `uninstall()` 复用 `runInstall()`。而 `runInstall` 退出码 0 之后会再核一遍
+  // `detectServer(spec)` —— "装完 server 应该出现"。**卸载成功恰恰让 server 消失**,
+  // 于是拿同一道校验去判卸载,每次正常卸载都走进"命令成功但找不到 server"那条分支,
+  // 面板上弹 `卸载失败:安装命令成功完成,但未找到 server 可执行文件…`。
+  //
+  // 做法:假包管理器**正常退出**(记档 + code 0),不登记任何 server(binaryResolve 桩
+  // 默认什么都找不到,正是"卸载之后"的机器状态)。卸载应回 ok:true。
+  const FAKE_BIN2 = join(FIX, "fakebin-uninstall");
+  mkdirSync(FAKE_BIN2, { recursive: true });
+  const OKLOG = join(FIX, "uninstall-ok.log");
+  for (const name of ["npm", "pip", "go", "brew"]) {
+    // 正常退出的假包管理器:写一行档、code 0。不用 sleeper —— 卸载是短命令。
+    const js = join(SRV, `uninstall-${name}.mjs`);
+    writeFileSync(js, `import { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(OKLOG)}, ${JSON.stringify(name)} + "\\n");\nprocess.exit(0);\n`);
+    writeCmdShim(join(FAKE_BIN2, `${name}.cmd`), [`"${process.execPath}" "${js}" %*`]);
+  }
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${FAKE_BIN2};${oldPath}`;
+
+  clearBinaries(); // 「卸载之后」:一个 server 都找不到
+  const un = await lspManager.uninstall("typescript");
+  eq("★ 卸载命令正常退出 → 回 ok:true(不是'未找到 server'的假失败)", un.ok, true);
+  if (!un.ok) says("失败理由(如果真红)", String(un.error), "");
+
+  process.env.PATH = oldPath;
+}
+
 /* ─────────────── 6e. Java 的 javaHome override 存得进去也读得回来 ─────────────── */
 
 console.log("\n§6e Java 的 JDK override(javaHome)必须能往返,不能是只写的");
