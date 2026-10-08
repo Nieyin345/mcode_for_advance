@@ -1,11 +1,11 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { AGENT_FILE_NAMES, ProjectInitDraftSchema, buildAgentFilePrompt, type AgentFileConfig, type ProjectInitDraft, type ProjectInitTemplate } from "@contracts/ipc/projectInit";
+import { AGENT_FILE_NAMES, ProjectInitDraftSchema, PROJECT_INIT_CHANGED_EVENT, buildAgentFilePrompt, type AgentFileConfig, type ProjectInitDraft, type ProjectInitTemplate } from "@contracts/ipc/projectInit";
 import { MEMORY_CATEGORIES } from "@contracts/memory";
 import { api } from "@renderer/lib/api.js";
 import { useRpc } from "@renderer/hooks/useRpc.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, ConfirmDialog, ErrorNote, Input } from "@renderer/components/ui/index.js";
-export const INIT_CHANGED = "mcode:project-initializers-changed";
+export const INIT_CHANGED = PROJECT_INIT_CHANGED_EVENT;
 type Draft = { draft: ProjectInitDraft; id?: string; revision?: string; baseline: string };
 // 新场景默认带上「AI 生成说明文件」:这是 /init 最常用的那一步。
 const empty = (): Draft => ({draft:{name:"",description:"",directories:[],files:[],memories:[],agentFile:{enabled:true,filename:"AGENTS.md",focus:""}},baseline:""});

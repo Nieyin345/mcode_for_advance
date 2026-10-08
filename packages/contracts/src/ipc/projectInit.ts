@@ -2,6 +2,11 @@
 import { z } from "zod";
 import { MEMORY_CATEGORIES } from "../memory.js";
 export const INIT_NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N}_-]{0,47}$/u;
+/** 窗口级自定义事件:模板被设置页改过,让对话里的 `/init` 选择框刷新。**只有一份** ——
+ *  从前 `useProjectInitializer.tsx` 与 `ProjectInitManager.tsx` 各写了一份字面量(前者
+ *  刻意不 import 后者,免得把整个设置编辑器拉进每个对话),于是改一处漏一处就静默不刷新。
+ *  放进契约里两边都能便宜地 import。 */
+export const PROJECT_INIT_CHANGED_EVENT = "mcode:project-initializers-changed";
 export function initCommand(name: string): string { return `init-${name}`; }
 export function initNameKey(name: string): string { return name.normalize("NFKC").toLowerCase(); }
 /** Portable relative paths only; no URL decoding or ambient cwd resolution. */

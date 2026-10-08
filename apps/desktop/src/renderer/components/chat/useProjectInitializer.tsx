@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { INIT_NAME_RE, appendInitNote, type ProjectInitResult } from "@contracts/ipc/projectInit";
+import { INIT_NAME_RE, PROJECT_INIT_CHANGED_EVENT, appendInitNote, type ProjectInitResult } from "@contracts/ipc/projectInit";
 import { api } from "@renderer/lib/api.js";
 import { useRpc } from "@renderer/hooks/useRpc.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -7,8 +7,9 @@ import { useToastStore } from "@renderer/stores/toastStore.js";
 import { Button, ErrorNote } from "@renderer/components/ui/index.js";
 import { Dialog } from "@renderer/components/ui/dialog.js";
 import type { BuiltInCommand } from "@renderer/lib/slashCommands.js";
-// Do not import the settings editor into every conversation.
-const CHANGED = "mcode:project-initializers-changed";
+// 事件名走契约(与设置页 `ProjectInitManager` 同一份),不在这里再写一遍字面量;
+// 仍不 import 那个组件本身 —— 免得把整个设置编辑器拉进每个对话。
+const CHANGED = PROJECT_INIT_CHANGED_EVENT;
 /** `command` is null while the bare `/init` chooser has not resolved a scenario yet. */
 interface Request {sessionId:string;command:string|null;original?:string;chooser:boolean;}
 export interface InitComposerSnapshot {text:string;attached:boolean;}

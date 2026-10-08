@@ -243,5 +243,21 @@ try {
   }
   assert.match(await readFile(join(thesisRoot,"manuscript/README.md"),"utf8"),/main.tex/);assert.match(readMemoryFile("projects/p1/rules/写作约定.md").content,/不编造文献/);
  });
+ // 事件名**只有一份**:设置页改了模板要通知对话里的 `/init` 选择框刷新。
+ // 它曾经在 `useProjectInitializer.tsx` 与 `ProjectInitManager.tsx` 各写了一份字面量
+ // (前者刻意不 import 后者,免得把设置编辑器拉进每个对话),于是**改一处漏一处就静默不刷新**。
+ // 现在两份都引用契约里的同一个常量;这条断言盯的就是"别再回去各写一份"。
+ await test("project-init 变更事件名只有一份,两处都引用契约常量",async()=>{
+  const { PROJECT_INIT_CHANGED_EVENT } = await import("@contracts/ipc/projectInit.js");
+  assert.equal(PROJECT_INIT_CHANGED_EVENT,"mcode:project-initializers-changed","契约里的字面量是唯一那份,值别改(改了旧窗口监听不上)");
+  const dir = join(process.cwd(), "src/renderer/components");
+  const fromUse=await readFile(join(dir,"chat/useProjectInitializer.tsx"),"utf8");
+  const fromManager=await readFile(join(dir,"memory/ProjectInitManager.tsx"),"utf8");
+  assert.match(fromUse,/PROJECT_INIT_CHANGED_EVENT/,"useProjectInitializer 必须引用契约常量");
+  assert.match(fromManager,/PROJECT_INIT_CHANGED_EVENT/,"ProjectInitManager 必须引用契约常量");
+  // 两处都不得再出现裸字面量(引用契约变量不算)。
+  assert.doesNotMatch(fromUse,/"mcode:project-initializers-changed"/,"useProjectInitializer 里不该再有裸字面量");
+  assert.doesNotMatch(fromManager,/"mcode:project-initializers-changed"/,"ProjectInitManager 里不该再有裸字面量");
+ });
 } finally { await rm(base,{recursive:true,force:true}); }
 console.log(`Project init smoke: ${passed} pass, ${failed} fail`);process.exitCode=failed?1:0;
