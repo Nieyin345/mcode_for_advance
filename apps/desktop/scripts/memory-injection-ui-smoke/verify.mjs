@@ -137,6 +137,23 @@ await withAuditPage(dir,async page=>{
   const enAlert=await alertText();
   assert.match(enAlert,/Preview failed/);assert.doesNotMatch(enAlert,/Markdown 预览失败/);
  });
+ await test('receipt-turn-and-node-labels-follow-locale-not-hardcoded-english',async()=>{
+  // 回执一行里「第 N 轮」「节点：X」此前是**硬编码英文**(`· turn ${n}` / `node: ${id}`),
+  // 而同一行里的 phase 标签走 t()。中文界面里于是冒出 "已提交到引擎 · turn 2" 这种中英混排。
+  // 判据:这两个标签必须跟着语言走。
+  const nodeReceipt='document.querySelector(\'[data-memory-receipt="a-node"] summary\')';
+  const openAny=async()=>click("[...document.querySelectorAll('button')].find(e=>e.offsetParent!==null&&/记忆与交接|Memory and handoff/.test(e.textContent))");
+  await go();await open();await injection();
+  await page.waitFor(nodeReceipt);
+  const zh=await page.eval(`${nodeReceipt}.innerText`);
+  assert.match(zh,/第 2 轮/);assert.match(zh,/节点：audit/);
+  assert.doesNotMatch(zh,/turn 2|node: audit/);
+  await go('?lang=en');await openAny();await injection();
+  await page.waitFor(nodeReceipt);
+  const en=await page.eval(`${nodeReceipt}.innerText`);
+  assert.match(en,/turn 2/);assert.match(en,/node: audit/);
+  assert.doesNotMatch(en,/第 2 轮|节点/);
+ });
 });
 const failed=results.filter(r=>!r.ok).length;writeFileSync(join(dir,'results.json'),JSON.stringify({passed:results.length-failed,failed,checks:results},null,2));
 console.log(`${results.length-failed}/${results.length} memory injection UI checks passed; ${failed} failed`);if(failed)throw Error(`${failed} UI checks failed; artifacts: ${dir}`);

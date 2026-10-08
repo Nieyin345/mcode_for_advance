@@ -214,6 +214,8 @@ export const zh = {
   "memory.assistant.injectionsState.notAutomatic": "非自动注入会话",
   "memory.assistant.injectionsState.unavailable": "注入材料不可用",
   "memory.assistant.injectionsTruncated": "（预览已截断）",
+  "memory.assistant.injectionsTurn": "第 {n} 轮",
+  "memory.assistant.injectionsNode": "节点：{id}",
   "memory.assistant.refresh": "刷新",
   "memory.assistant.retry": "重试",
 } as const;

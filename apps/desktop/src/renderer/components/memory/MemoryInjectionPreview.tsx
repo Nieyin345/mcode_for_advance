@@ -32,8 +32,8 @@ export function MemoryInjectionPreview({ receipts }: { receipts?: MemoryInjectio
                 <summary className="cursor-pointer font-medium text-content hover:text-accent">
                   <span>{displayName}</span>
                   <span className="ml-2 font-normal text-content-muted">
-                    ({r.kind === "node" ? `node: ${r.nodeId ?? ""} · ` : ""}
-                    {phaseLabel} · turn {r.turnNumber})
+                    ({r.kind === "node" ? `${t("memory.assistant.injectionsNode", { id: r.nodeId ?? "" })} · ` : ""}
+                    {phaseLabel} · {t("memory.assistant.injectionsTurn", { n: r.turnNumber })})
                   </span>
                 </summary>
                 <div className="mt-2 space-y-2 border-t border-edge/60 pt-2">

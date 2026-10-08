@@ -211,6 +211,8 @@ export const en = {
   "memory.assistant.injectionsState.notAutomatic": "Non-automatic session",
   "memory.assistant.injectionsState.unavailable": "Injection material unavailable",
   "memory.assistant.injectionsTruncated": "(preview truncated)",
+  "memory.assistant.injectionsTurn": "turn {n}",
+  "memory.assistant.injectionsNode": "node: {id}",
   "memory.assistant.refresh": "Refresh",
   "memory.assistant.retry": "Retry",
 } as const;
