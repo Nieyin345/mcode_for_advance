@@ -259,6 +259,12 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
     many.isError === true || !textOf(many).includes("RU5DSVBIRVJFRF9BUFBfS0VZ"),
     textOf(many),
   );
+  // 同一形状的另两个密钥本体(piProviderKeys / codexProviderKeys),以及它们的结构性
+  // 名字 —— 逐个往名单里加是追着漏,判据要落在**键名的形状**上。
+  for (const key of ["piProviderKeys", "codexProviderKeys"]) {
+    const r = await call("setting.get", { key }, ctx);
+    check(`★ setting.get 不许直读 ${key}`, r.isError === true, textOf(r));
+  }
 }
 {
   const { ctx } = ctxWith({ mode: "bypassPermissions" });

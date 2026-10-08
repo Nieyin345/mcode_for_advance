@@ -64,12 +64,22 @@ const SECRET_SETTING_KEYS: ReadonlySet<string> = new Set([
   "customModels",
 ]);
 /** 兜底:名字里带密钥词的设置键也不给。宁可多拦一个键,也不漏一个。 */
-const SECRET_SETTING_KEY_RE = /(api[-_]?keys?|apikeys?|tokens?|secrets?|passw(or)?ds?|credentials?|cookieVault)/i;
+const SECRET_SETTING_KEY_RE =
+  /(api[-_.]?keys?|apikeys?|tokens?|secrets?|passw(or)?ds?|credentials?|cookies?|authorization|private[-_.]?keys?|cookieVault)/i;
+/** 密钥本体的**结构性**名字(见 `settingsTransfer.ts` 里 `SECRET_STORE_KEY_RE` 那段:
+ *  加密凭据 map 全仓都是 `<东西>+Keys/Tokens/Secrets` 收尾)。逐个往集合里加是追着漏,
+ *  这里按键名的形状一次挡住 —— `customModelKeys` / `piProviderKeys` / `codexProviderKeys`
+ *  都在内。 */
+const SECRET_SETTING_STORE_RE = /(Keys|Tokens|Secrets|Credentials|Passwords)$/;
 
 /** 这个设置键是不是"密钥本体",不能经 `setting.get*` 交给模型。 */
 export function isSecretSettingKey(key: unknown): boolean {
   if (typeof key !== "string" || key.length === 0) return false;
-  return SECRET_SETTING_KEYS.has(key) || SECRET_SETTING_KEY_RE.test(key);
+  return (
+    SECRET_SETTING_KEYS.has(key) ||
+    SECRET_SETTING_KEY_RE.test(key) ||
+    SECRET_SETTING_STORE_RE.test(key)
+  );
 }
 
 /** `setting.get` / `setting.getMany` 的入参里,有没有踩到密钥键。 */

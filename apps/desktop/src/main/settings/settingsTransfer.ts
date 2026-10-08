@@ -32,6 +32,14 @@ export const SETTINGS_EXPORT_VERSION = 1;
 const SECRET_KEY_RE =
   /(api[-_.]?keys?|apikeys?|tokens?|secrets?|passw(or)?ds?|credentials?|cookies?|authorization|private[-_.]?keys?|paireddevices|passwordlogin|\.enc$)/i;
 
+/** **密钥本体**那批键的**结构性**名字:`<某个东西>+Keys/Tokens/Secrets` 结尾
+ *  (驼峰或点分)。加密的凭据 map 全仓都是这个形状 —— `customModelKeys`、
+ *  `piProviderKeys`、`codexProviderKeys`、`publicMcp.*Secret`。它们**不在**
+ *  {@link SECRET_KEY_RE} 里(那个只认 `apiKey`/`token` 这种通用词),而逐个往
+ *  `EXCLUDED_KEYS` 里加是**追着漏**的写法 —— 下一个人再加一个 `xxxKeys` 又会忘。
+ *  这里按键名的**形状**一次挡住,和 `.enc` 尾缀是同一类判据。 */
+const SECRET_STORE_KEY_RE = /(Keys|Tokens|Secrets|Credentials|Passwords)$/i;
+
 /** 精确排除的键(本机路径 / 运行状态 / 含密钥的整块配置)。 */
 const EXCLUDED_KEYS = new Set<string>([
   // ⚠️ **自定义模型的密钥本体。** 这个键名**不会**被 `SECRET_KEY_RE` 命中 —— 正则认的是
@@ -98,6 +106,7 @@ const EXCLUDED_PREFIXES = [
 export function isTransferableSettingKey(key: string): boolean {
   if (!key || key.length > 200) return false;
   if (SECRET_KEY_RE.test(key)) return false;
+  if (SECRET_STORE_KEY_RE.test(key)) return false;
   if (EXCLUDED_KEYS.has(key)) return false;
   return !EXCLUDED_PREFIXES.some((p) => key.startsWith(p));
 }

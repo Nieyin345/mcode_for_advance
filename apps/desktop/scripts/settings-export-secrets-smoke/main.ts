@@ -45,6 +45,9 @@ function check(name: string, cond: boolean, detail?: unknown): void {
 const SECRET_KEYS = [
   // 自定义模型密钥本体(密文或降级后的明文 base64)。
   "customModelKeys",
+  // Pi / Codex 的密钥本体(同样是 safeStorage 密文,与 customModelKeys 同一个形状)。
+  "piProviderKeys",
+  "codexProviderKeys",
   // 其它已知的密钥/凭据类键,一并钉住。
   "browser.cookieVault",
   "browser.cookieVault.enc",
