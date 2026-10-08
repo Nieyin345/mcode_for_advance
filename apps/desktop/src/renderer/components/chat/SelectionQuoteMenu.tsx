@@ -244,6 +244,10 @@ export function SelectionQuoteMenu({
               setIndex(0);
             }}
             onKeyDown={(e) => {
+              // IME 守卫:引用搜索框里用拼音打中文、按回车确认候选词时 keydown 带
+              // isComposing —— 那不是"选中这一条",是输入法自己的按键。少了它,
+              // 中文用户搜引用时会误选错的条目。与 FileMentionPicker 同款。
+              if (e.nativeEvent.isComposing || e.keyCode === 229) return;
               if (e.key === "ArrowDown") {
                 e.preventDefault();
                 setIndex((i) => Math.min(i + 1, shown.length - 1));

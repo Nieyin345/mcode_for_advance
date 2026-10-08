@@ -64,7 +64,7 @@ import { collectCollectionIds, isInsideAnyProject, itemFactsOf, shouldSkipItem }
 import { describeTriggerPayload, payloadFactsOf } from "../../src/main/orchestration/automationPayload.js";
 import { LIT_IMPORT_PY } from "../../src/main/workflows/assets.js";
 import { spawnSync } from "node:child_process";
-import { buildDefaultLibraryItems } from "../../src/renderer/components/customUi/seedDefaults.js";
+import { buildDefaultLibraryItems, type SeedResult } from "../../src/renderer/components/customUi/seedDefaults.js";
 import {
   AUTO_CONVERT_TRIGGER_NODE_ID,
   AUTO_CONVERT_WORKFLOW_ID,
@@ -506,6 +506,22 @@ check("RunAutomation 输入接受 input 值表", CustomUiRunAutomationSchema.saf
   const r = buildDefaultLibraryItems([], []);
   check("没有自动化 → 只有信息卡 + 两条缺失说明", r.items.length === 1 && r.items[0]?.id === "seed-item-info"
     && r.notes.filter((n) => n.kind === "missingTranscribe" || n.kind === "missingImport").length === 2, r);
+}
+{
+  // 条目信息卡的正文**跟着界面语言走**(2026-10-08):从前它硬编码中文,英文界面
+  // 首次启动右键条目看到的是 `**语言**`/`**链接**` 那一整张中文卡,而设置页里同一个
+  // 模板一直是走词典的 —— 两处正文同源才对。判据立在**用户看到的那几个字**上。
+  const zh = buildDefaultLibraryItems([], [], "zh");
+  const en = buildDefaultLibraryItems([], [], "en");
+  const bodyOf = (r: SeedResult): string => {
+    const a = r.items.find((i) => i.id === "seed-item-info")?.action;
+    return a?.type === "view" ? a.body : "";
+  };
+  check("条目信息卡正文:中文界面仍是中文标签", bodyOf(zh).includes("**语言**"), bodyOf(zh));
+  check("条目信息卡正文:英文界面必须是英文标签(不硬编码中文)",
+    bodyOf(en).includes("**Language**") && !/[一-鿿]/.test(bodyOf(en)), bodyOf(en));
+  check("条目信息卡正文:两种语言都保留了模板变量",
+    bodyOf(en).includes("{{item.language}}") && bodyOf(en).includes("{{item.abstract}}"), bodyOf(en));
 }
 {
   const r = buildDefaultLibraryItems(

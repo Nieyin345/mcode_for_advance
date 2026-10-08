@@ -794,7 +794,13 @@ function BranchSheet({
                 autoFocus
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && createNew()}
+                onKeyDown={(e) => {
+                  // 中文输入法里敲拼音、按回车**确认候选词**时 keydown 带 isComposing ——
+                  // 那不是"建分支",是输入法自己的按键。少了守卫,用户用拼音起分支名、
+                  // 一确认候选词就把分支建了出来(名字还没打完)。与桌面 GitRepoCard 同款。
+                  if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+                  if (e.key === "Enter") createNew();
+                }}
                 placeholder={t("ide.git.newBranchNamePlaceholder")}
                 className="h-10 min-w-0 flex-1 rounded-xl border border-input-edge bg-surface/60 px-3 text-base text-content outline-none focus:border-accent"
               />

@@ -16,6 +16,8 @@
  * 调用方在 `customUiStore.load()`:构建 → save → 按 notes 弹 toast。
  */
 import type { CustomUiItem } from "@contracts/customUi";
+import type { Locale } from "@contracts/ipc";
+import { translate } from "@renderer/lib/i18n/core.js";
 
 export interface SeedWorkflow {
   id: string;
@@ -62,26 +64,19 @@ function isAt(t: SeedTrigger, at: { workflowId: string; nodeId: string }): boole
   return t.workflowId === at.workflowId && t.nodeId === at.nodeId;
 }
 
-/** 条目信息卡正文(view 模板;与设置页 itemInfo 模板同一张卡)。 */
-const INFO_BODY = [
-  "**语言**:{{item.language}}",
-  "",
-  "**链接**:{{item.url}}",
-  "",
-  "**PDF**:{{item.pdfPath}}",
-  "",
-  "**转录**:{{item.mdPath}}",
-  "",
-  "**文件**:{{item.filePath}}",
-  "",
-  "---",
-  "",
-  "{{item.abstract}}",
-].join("\n");
+/** 条目信息卡正文。**按当前界面语言取词典**,不再硬编码中文 —— 英文界面的用户
+ *  首次启动右键看到的是一整张中文卡(`**语言**` / `**链接**`……),而设置页里同一个
+ *  模板(`CustomUiPanel` 的 itemInfo)一直是走 `customUi.template.itemInfo.body` 的,
+ *  两处正文本来就该同源。这里是模板变量拼的 Markdown,走 `translate` 纯函数即可
+ *  (与 `CustomUiPanel.templateDraft` 同一条路)。 */
+function infoBody(locale: Locale): string {
+  return translate(locale, "customUi.template.itemInfo.body");
+}
 
 export function buildDefaultLibraryItems(
   workflows: readonly SeedWorkflow[],
   triggers: readonly SeedTrigger[],
+  locale: Locale = "zh",
 ): SeedResult {
   const items: CustomUiItem[] = [];
   const notes: SeedNote[] = [];
@@ -93,7 +88,7 @@ export function buildDefaultLibraryItems(
     slot: "library.item",
     label: { zh: "条目信息", en: "Item info" },
     icon: "eye",
-    action: { type: "view", title: "{{item.title}}", body: INFO_BODY },
+    action: { type: "view", title: "{{item.title}}", body: infoBody(locale) },
   });
 
   // 2) 转录(手动兜漏 + 分类/小类批量,全部带 skipWhen: 已有转录跳过)。

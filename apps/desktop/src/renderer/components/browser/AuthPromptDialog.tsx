@@ -77,6 +77,10 @@ export function AuthPromptDialog({
               onChange={(e) => setPassword(e.target.value)}
               spellCheck={false}
               onKeyDown={(e) => {
+                // 中文输入法里敲拼音、按回车**确认候选词**时 keydown 带 isComposing ——
+                // 那不是"提交登录",是输入法自己的按键。少了守卫,用户名带中文(或
+                // 密码框里用拼音输入法)的用户一确认候选词就把登录表单发了出去。
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                 if (e.key === "Enter" && username) answer(username, password);
               }}
             />

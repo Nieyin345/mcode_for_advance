@@ -129,6 +129,7 @@ async function seedDefaults(save: (next: CustomUiConfig) => Promise<boolean>, cu
     const { items, notes } = buildDefaultLibraryItems(
       (wf.workflows ?? []).map((w) => ({ id: w.id, name: w.name, hasTrigger: w.trigger !== undefined })),
       (facts ?? []).map((f) => ({ workflowId: f.workflowId, nodeId: f.nodeId, title: f.title, kind: f.kind })),
+      locale,
     );
     if (items.length === 0) return;
     // **合进现在这一份,不整份覆盖。** 取清单是异步的,这几百毫秒里用户完全可能已经在

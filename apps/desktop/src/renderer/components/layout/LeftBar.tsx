@@ -2401,6 +2401,10 @@ function GroupDialog({ state, onClose, onSubmit }: GroupDialogProps) {
               placeholder={t("layout.groupNamePlaceholder")}
               onChange={(e) => setValue((e.target as HTMLInputElement).value)}
               onKeyDown={(e) => {
+                // 中文输入法里敲拼音、按回车**确认候选词**时 keydown 带 isComposing ——
+                // 那不是"提交",是输入法自己的按键。少了这道守卫,用户用拼音起个分组名、
+                // 一确认候选词就把分组建了出来(名字还没打完)。与下面会话行那条同款。
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                 if (e.key === "Enter") { e.preventDefault(); submit(); }
                 if (e.key === "Escape") { e.preventDefault(); onClose(); }
               }}
