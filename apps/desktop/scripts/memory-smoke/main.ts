@@ -508,6 +508,24 @@ eq("限定类目时只搜那一类", searchMemory("变量", { category: "project
 // 整句当一个词的话第一条早就命不中了。
 check("中文双字切词:「引用格式」切出「引用」", queryTerms("引用格式").includes("引用"));
 check("西文按非字母数字切", queryTerms("APA cite").includes("apa"));
+// ★ 「单字查询才退回单字」—— 整条查询就一个字时才把那个字当词;多字查询里的孤立单字
+//   (「写 引用规范」的「写」)不该进来当命中词(否则给所有含「写」字的记忆加噪声分,
+//   把不相关记忆顶进结果)。从前判的是"任何长度为 1 的汉字段",与文档相反。
+check("整条查询就一个字 → 那个字是命中词", queryTerms("写").includes("写"));
+check("★ 多字查询里的孤立单字不当命中词", !queryTerms("写 引用规范").includes("写"), queryTerms("写 引用规范"));
+check("…而它里面的双字词照常切出", queryTerms("写 引用规范").includes("引用"));
+
+// ★ 项目 id 的形状判据**只有一份**(契约 `MEMORY_PROJECT_ID_RE`)。主进程 `memory/paths.ts`
+//   与 `MemoryManageSchema.projectId` 从前各写一份字面量,改一处漏一处会让"导入成功但
+//   AI 永远搜不到"。这条钉住两处用的是同一个对象。
+{
+  const { MEMORY_PROJECT_ID_RE } = await import("@contracts/memory.js");
+  const { MEMORY_PROJECT_ID } = await import("@main/memory/paths.js");
+  check("★ 记忆项目 id 正则两处同一份(paths 直接用契约那个)", MEMORY_PROJECT_ID === MEMORY_PROJECT_ID_RE, {
+    paths: String(MEMORY_PROJECT_ID),
+    contracts: String(MEMORY_PROJECT_ID_RE),
+  });
+}
 
 /* ────────────────────────── 入口节点:那一段不进聊天框 ────────────────────────── */
 

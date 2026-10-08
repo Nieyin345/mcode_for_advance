@@ -46,9 +46,6 @@ export function memoryRoot(): string {
 
 /* ── 路径校验与解析 ── */
 
-/** 文件名上限:frontmatter 里只有两行,名字本身超长只可能是构造出来的。 */
-const MAX_FILE_NAME = 120;
-
 /**
  * memory 根下的相对路径 → 绝对路径。**不合法返回 null,调用方负责拒绝。**
  *

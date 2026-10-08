@@ -126,10 +126,15 @@ export function queryTerms(query: string): string[] {
   for (const word of q.split(/[^a-z0-9_]+/)) {
     if (word.length >= 2) terms.add(word);
   }
+  // 「单字查询」= **整条查询就一个字**(用户只敲了一个汉字)。只有那时才退回单字 ——
+  // 不是"任何长度为 1 的汉字段"。从前判的是后者:查询「写 引用规范」里那个孤立的「写」
+  // 会被当成命中词,给所有含「写」字的记忆加噪声分(标题命中 +3),把不相关记忆顶进结果 ——
+  // 与本文档头写的"单字查询才退回单字"相反。
+  const singleCharQuery = q.length === 1;
   // 中文:连续汉字段按双字滑窗
   for (const run of q.match(/[一-鿿]+/g) ?? []) {
     if (run.length === 1) {
-      terms.add(run);
+      if (singleCharQuery) terms.add(run);
       continue;
     }
     for (let i = 0; i + 2 <= run.length; i++) terms.add(run.slice(i, i + 2));

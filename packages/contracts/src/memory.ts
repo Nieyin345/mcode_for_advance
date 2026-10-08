@@ -92,6 +92,16 @@ export interface MemoryReviewResult {
 /* ── 节点参数 ── */
 
 /**
+ * 项目 id 的合法形状 —— **唯一一份**。
+ *
+ * 主进程的 `memory/paths.ts`(`memoryAddress` 判一个 `projects/<id>/…` 路径是不是项目
+ * 记忆)与这里的 `MemoryManageSchema.projectId` 都拿它判同一个东西。从前两处各写一份
+ * 字面量,改一处漏一处:放宽一处后,`manage.ts` 的导入会成功,而 `paths.ts` 随后判它
+ * "不属于本项目",表现为"导入成功了但 AI 永远搜不到"。
+ */
+export const MEMORY_PROJECT_ID_RE = /^[A-Za-z0-9_-]{1,120}$/;
+
+/**
  * 节点参数上「记忆注入」开关的键。params 是字符串记录(界面开关存的就是字符串),
  * 值为 `"on"` / `"true"`(布尔 `true` 也认)时,模型节点的输入会追加记忆快照。
  */
@@ -184,7 +194,7 @@ export const MemoryManageSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("list") }),
   z.object({ action: z.literal("preview"), source: z.string().min(1).max(500) }),
   z.object({ action: z.literal("import"), source: z.string().min(1).max(500), digest: MemoryRevisionSchema,
-    category: z.enum(MEMORY_CATEGORIES), projectId: z.string().regex(/^[A-Za-z0-9_-]{1,120}$/).optional(),
+    category: z.enum(MEMORY_CATEGORIES), projectId: z.string().regex(MEMORY_PROJECT_ID_RE).optional(),
     global: z.boolean(), confirmed: z.literal(true) }),
   z.object({ action: z.literal("history"), id: z.string().min(1).max(100) }),
   z.object({ action: z.literal("restore"), id: z.string().min(1).max(100), digest: MemoryRevisionSchema, confirmed: z.literal(true) }),
