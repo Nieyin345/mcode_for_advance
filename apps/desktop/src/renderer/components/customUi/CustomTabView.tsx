@@ -12,7 +12,7 @@
  *
  * 页签是常驻显示区:这里不跑动作。点页签只是显示,改显示什么去设置页。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   customUiLabel,
   localDateString,
@@ -70,19 +70,28 @@ export function CustomTabView({ item, target }: { item: CustomUiItem; target: Wo
   );
 }
 
-function FileTab({ title, abs, projectPath }: { title: string; abs: string | null; projectPath: string | undefined }) {
+/** 导出仅供无头回归(custom-tab-race-smoke)直接驱动 —— 它是 `CustomTabView`
+ *  的子组件,fake-react 只跑根组件,测不到里面的 effect。 */
+export function FileTab({ title, abs, projectPath }: { title: string; abs: string | null; projectPath: string | undefined }) {
   const { t } = useI18n();
   const [content, setContent] = useState<string | null>(null);
   /** 读**失败**(不存在 / 在项目外 / 不是文本)与"文件确实是空的"是两回事,见下。 */
   const [unreadable, setUnreadable] = useState(false);
+  /** 请求序号:只有最新一次 `load` 的响应能写 `content`。`abs` 变化(切到别的自定义
+   *  页签 = 同一个组件实例换 prop)时,先发起的那次 `readFile` 若后回来,会把上一个
+   *  文件的内容画到**新页签的标题**底下。 */
+  const loadSeqRef = useRef(0);
 
   const load = useCallback(async () => {
     if (abs === null) return;
+    const seq = ++loadSeqRef.current;
     try {
       const res = await api.file.readFile({ filePath: abs });
+      if (seq !== loadSeqRef.current) return; // superseded (tab switched)
       setUnreadable(false);
       setContent(res.content);
     } catch {
+      if (seq !== loadSeqRef.current) return;
       // 从前这里也 `setContent("")`,于是**路径写错**和**文件是空的**在界面上是同一句话,
       // 用户没有任何线索去查 —— 而路径写错才是这两者里更常见、也更需要说出来的那个。
       setUnreadable(true);
