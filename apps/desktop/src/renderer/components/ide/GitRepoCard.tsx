@@ -987,7 +987,10 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
               value={newBranchName}
               onChange={(e) => setNewBranchName(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && newBranchName.trim()) void handleCreateBranch();
+                // 中文/日文输入法按 Enter 是"确认候选词",不是提交;组词期间 React
+                // 的 keydown 仍会以 `key === "Enter"` 到达,漏了这条守卫就会用半截
+                // 的拼音去建分支。兄弟处理器(FileTree/SearchDialog)都带这一条。
+                if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) && newBranchName.trim()) void handleCreateBranch();
               }}
               autoFocus
               placeholder={t("ide.git.branchNamePlaceholder")}

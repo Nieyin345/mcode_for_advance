@@ -72,6 +72,8 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
   const [error, setError] = useState<string | null>(null);
   /** 列表加载的请求序号 —— 过期响应不许写状态(见 `loadCommits`)。 */
   const commitsSeqRef = useRef(0);
+  /** 详情加载的请求序号 —— 过期响应不许写状态(见 `openCommit`)。 */
+  const detailSeqRef = useRef(0);
 
   // Detail view
   const [selected, setSelected] = useState<GitCommitInfo | null>(null);
@@ -155,6 +157,10 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
   const gutterW = LANE_PAD * 2 + (Math.min(graph.laneCount, MAX_LANES) - 1) * LANE_W;
 
   const openCommit = async (commit: GitCommitInfo) => {
+    // **详情请求序号:只有最新一次响应能写状态。** 与 `loadCommits` 的 `commitsSeqRef`
+    // 同一类竞态 —— 点提交 A(A 慢)→ 点提交 B(B 快)→ A 后到:没有这条守卫,旧回包会把
+    // 屏幕盖回 A 的详情,用户明明点了 B 却看到 A 的文件列表。
+    const seq = ++detailSeqRef.current;
     setSelected(commit);
     setFiles([]);
     setDetailError(null);
@@ -165,6 +171,7 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
         repoPath,
         commitHash: commit.hash,
       });
+      if (seq !== detailSeqRef.current) return; // superseded by a newer open
       if (!detail) {
         setDetailError(t("ide.git.loadCommitFailed"));
         return;
@@ -172,9 +179,10 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
       setSelected(detail.commit);
       setFiles(detail.files);
     } catch (err) {
+      if (seq !== detailSeqRef.current) return;
       setDetailError((err as Error).message || t("ide.git.loadDetailFailed"));
     } finally {
-      setDetailLoading(false);
+      if (seq === detailSeqRef.current) setDetailLoading(false);
     }
   };
 

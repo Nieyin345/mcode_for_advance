@@ -381,7 +381,10 @@ export function SearchDialog() {
               value={fileType}
               onChange={(e) => setFileType(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && fileType.trim()) rememberFileType(fileType);
+                // 与主搜索框(line 309)同一类守卫:中文/日文输入法按 Enter 是"确认
+                // 候选词",不是提交 —— 组词期间不该把半截的值记进文件类型历史。
+                if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) && fileType.trim())
+                  rememberFileType(fileType);
               }}
               placeholder={t("ide.search.fileTypePlaceholder")}
               title={t("ide.search.fileTypeHint")}

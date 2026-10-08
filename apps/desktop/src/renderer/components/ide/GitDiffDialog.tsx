@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
 import { basename, joinPath } from "@renderer/lib/path.js";
@@ -64,6 +64,8 @@ export function GitDiffDialog() {
 
   const [status, setStatus] = useState<GitStatusResult | null>(null);
   const [statusLoading, setStatusLoading] = useState(false);
+  /** 左栏 status 加载的请求序号 —— 过期响应不许写状态(见 `refreshStatus`)。 */
+  const statusSeqRef = useRef(0);
   // Fullscreen is a transient view toggle — resets each time the dialog opens.
   const [fullscreen, setFullscreen] = useState(false);
 
@@ -77,14 +79,20 @@ export function GitDiffDialog() {
   useSuppressBrowserView(dialogVisible);
 
   const refreshStatus = useCallback(async (repoPath: string) => {
+    // **请求序号:只有最新一次响应能写状态。** 与 GitPanel 的 `scanSeqRef` /
+    // GitHistoryView 的 `commitsSeqRef` 同一类守卫(见底层修复记录 #38)—— 切到慢的
+    // 仓库 B、再切到快仓库 A 时,B 的旧回包不许把 A 的文件列表盖掉。
+    const seq = ++statusSeqRef.current;
     setStatusLoading(true);
     try {
       const { status: next } = await api.git.status({ repoPath });
+      if (seq !== statusSeqRef.current) return; // superseded by a newer refresh
       setStatus(next);
     } catch {
+      if (seq !== statusSeqRef.current) return;
       setStatus(null);
     } finally {
-      setStatusLoading(false);
+      if (seq === statusSeqRef.current) setStatusLoading(false);
     }
   }, []);
 
