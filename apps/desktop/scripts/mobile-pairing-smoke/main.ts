@@ -43,6 +43,7 @@
  */
 import { createServer, type Server } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1000,6 +1001,48 @@ console.log("\ndiscoverRepos:rootOnly");
   eq("rootOnly 时项目根不是仓库 → 返回空(与桌面一致)", rootOnlyRepos.length, 0);
 
   rmSync(rootNoRepo, { recursive: true, force: true });
+}
+
+/* ────────────── 7f. generateCommitMessage 的 scope 必须转发 ──────────────
+ *
+ * 桌面 `git:generateCommitMessage`(`ipc/git.ts`)把 `scope` 转给共享核心
+ * `generateCommitMessageForRepo`;手机这条一开始漏了它。`scope: "worktree"` 走的是
+ * `git diff HEAD`(未暂存 + 已暂存全都要),默认 `staged` 走 `git diff --cached`(只看
+ * 索引)。共享对话框 `WorktreeMergeBack` 正是拿整个工作树去生成 —— 手机这条漏掉 scope
+ * 就会退化成 `--cached`,而工作树里 agent 的改动**常常还没 `git add`**,于是"生成提交
+ * 信息"直接回"没有已暂存的更改"。
+ *
+ * 判别法:在**干净**仓库上两条路的错误串不同 —— worktree 说"没有未提交的更改",
+ * staged 说"没有已暂存的更改"。断言错误串就等价于断言 scope 到没到。全程不调模型
+ * (diff 为空时提前返回)。
+ */
+console.log("\ngenerateCommitMessage:scope 转发");
+
+{
+  const { registerMobileGitRpc } = await import("@main/mobile/mobileGitRpc.js");
+  const { ProjectRepo } = await import("@main/store/repositories.js");
+  const repo = mkdtempSync(join(tmpdir(), "mcode-mobile-genmsg-"));
+  // pathGuard 通过 ProjectRepo 认这个仓库,所以先登记成项目。
+  const now = Date.now();
+  ProjectRepo.create({ id: "gm_p", name: "gm_p", path: repo, archived: false, pinnedAt: null, sortOrder: 0, createdAt: now, updatedAt: now } as never);
+  const g = (...args: string[]) => execFileSync("git", args, {
+    cwd: repo, encoding: "utf-8",
+    env: { ...process.env, GIT_AUTHOR_NAME: "smoke", GIT_AUTHOR_EMAIL: "s@smoke", GIT_COMMITTER_NAME: "smoke", GIT_COMMITTER_EMAIL: "s@smoke" },
+  });
+  g("init", "-q", "-b", "main");
+  g("commit", "--allow-empty", "-qm", "init"); // 需要 HEAD 才谈得上 worktree 那路 diff
+  registerMobileGitRpc();
+
+  const base = { repoPath: repo, customModelId: null, customModelRole: null, prompt: "x" };
+  const worktree = JSON.parse((await rpcTok(tA, "git:generateCommitMessage", { ...base, scope: "worktree" })).text) as { result: { ok: boolean; error?: string } };
+  eq("干净仓库 + scope:worktree → ok:false", worktree.result.ok, false);
+  check("scope:worktree 走的是 worktree 那路(错误串为『未提交』)", /未提交/.test(worktree.result.error ?? ""), worktree.result);
+
+  const staged = JSON.parse((await rpcTok(tA, "git:generateCommitMessage", { ...base })).text) as { result: { ok: boolean; error?: string } };
+  eq("干净仓库 + 默认 scope → ok:false", staged.result.ok, false);
+  check("默认 scope 走 staged 那路(错误串为『已暂存』)", /已暂存/.test(staged.result.error ?? ""), staged.result);
+
+  rmSync(repo, { recursive: true, force: true });
 }
 
 /* ───────────────────── 8. 出厂状态 ───────────────────── */

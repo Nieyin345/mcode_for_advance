@@ -8,7 +8,8 @@
  * the same encodings, caching headers and fallbacks as before.
  */
 import { createServer, request, type Server } from "node:http";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { brotliCompressSync, brotliDecompressSync, gunzipSync } from "node:zlib";
 import { randomBytes } from "node:crypto";
@@ -50,7 +51,7 @@ writeFileSync(join(WEB, "assets", "legacy-abc123.js"), LEGACY);
 writeFileSync(join(WEB, "assets", "legacy-abc123.js.br"), LEGACY_BR);
 process.env.MCODE_WEB_DIST = WEB;
 
-const { serveMobileAsset, mobileCompressedCacheStats } = await import("@main/mobile/serveMobileStatic.js");
+const { serveMobileAsset, mobileCompressedCacheStats, invalidateMobileDistCache } = await import("@main/mobile/serveMobileStatic.js");
 
 const server: Server = createServer((req, res) => serveMobileAsset(req, res));
 await new Promise<void>((ok, bad) => {
@@ -157,6 +158,27 @@ console.log("E. build no longer emits .gz/.br copies");
 {
   const cfg = readFileSync(resolve("electron.vite.config.ts"), "utf8");
   check("electron.vite.config.ts has no precompress plugin", !/precompressAssets\s*\(|brotliCompressSync|gzipSync/.test(cfg));
+}
+
+/* F. 没构建 bundle 时的占位页是中文(与同文件的配对页兜底同一块面)。
+ *
+ * `sendPlaceholder` 是用户真会看到的一页(手机/电脑打开网包没构建的地址时),
+ * 而同文件 26 行外的 `servePairingPage` 兜底页一直是中文。钉住:整页不能是英文。
+ * 强制走"没有 bundle"分支:`MCODE_WEB_DIST` 指向不存在的目录 + 清掉已解析的缓存
+ * (本机 out/renderer 也不存在,所以三个候选都落空)。 */
+console.log("F. 未构建占位页:中文");
+{
+  const missing = mkdtempSync(join(tmpdir(), "mcode-no-bundle-"));
+  process.env.MCODE_WEB_DIST = join(missing, "does-not-exist");
+  invalidateMobileDistCache();
+  const r = await get("/");
+  check("占位页 200 且是 HTML", r.status === 200 && String(r.headers["content-type"]).includes("text/html"));
+  check("占位页正文是中文(不硬编码英文)", /网页包尚未构建|尚未构建|未构建/.test(r.body.toString()), r.body.toString().slice(0, 120));
+  check("占位页不再出现英文原句", !/web bundle not built|Run .*pnpm dev/i.test(r.body.toString()));
+  // 还原:后续断言(若有)按原 bundle 走。
+  process.env.MCODE_WEB_DIST = WEB;
+  invalidateMobileDistCache();
+  rmSync(missing, { recursive: true, force: true });
 }
 
 server.close();

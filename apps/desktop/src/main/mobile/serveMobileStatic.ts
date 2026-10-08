@@ -103,11 +103,14 @@ export function invalidateMobileDistCache(): void {
 }
 
 function sendPlaceholder(res: ServerResponse): void {
+  // 用户可见(手机/电脑上打开的就是这一页),与同文件 `servePairingPage` 的兜底页
+  // 同一块面,那边一直是中文 —— 这里也走中文,别一屏英文(仓库既有的「同一界面元素
+  // 同一说法」规矩)。
   const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mcode</title>
 <body style="font:14px/1.6 system-ui;margin:2rem;color:#333">
-<h2>Mcode (web bundle not built)</h2>
-<p>Run <code>pnpm dev</code> (or <code>pnpm build</code>) in apps/desktop, then reload this page.</p>
-<p>If you set <code>MCODE_WEB_DIST</code>, make sure it points at a folder containing <code>index.html</code>.</p>
+<h2>Mcode 网页包尚未构建</h2>
+<p>请先在 apps/desktop 执行 <code>pnpm dev</code>(或 <code>pnpm build</code>),然后刷新本页。</p>
+<p>若设置了 <code>MCODE_WEB_DIST</code>,请确认它指向的目录里有 <code>index.html</code>。</p>
 </body>`;
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(html);

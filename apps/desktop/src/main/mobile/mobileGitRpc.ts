@@ -211,6 +211,12 @@ const handlers: Record<string, RpcHandler> = {
       customModelId: input.customModelId ?? undefined,
       customModelRole: input.customModelRole ?? undefined,
       requestId: input.requestId,
+      // ⚠️ `scope` 必须照传,和桌面 ipc/git.ts 一样。`worktree` = 工作树 vs HEAD
+      // (已暂存 + 未暂存),用于工作树合并回主干的对话框;漏掉它就一直走默认的
+      // `--cached`(索引 vs HEAD),对"agent 改了但没 git add"的常见工作树场景会
+      // 回"没有已暂存的更改可生成提交信息" —— 而共享对话框 `WorktreeMergeBack`
+      // 正是拿 whole working tree 去生成。Mirrors ipc/git.ts.
+      scope: input.scope,
     });
   },
 
