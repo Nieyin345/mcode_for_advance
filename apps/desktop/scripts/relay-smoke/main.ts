@@ -1030,6 +1030,18 @@ console.log("\n══ 10. IPC handler");
   // 坏输入:zod 拦住它,主进程必须告知失败,不能谎报已保存。
   const bad = await call(IPC.RELAY_SAVE_CONFIG, { host: "", sshPort: 99999, username: "" });
   eq("坏输入不抛异常且报告失败", (bad as { ok: boolean }).ok, false);
+  // ★ 失败理由必须是**人话**。这句经 `RemoteConnectPanel` 的 `saved.error` 直接画在
+  //   面板上,而裸 `Schema.parse` 抛的 `ZodError.message` 是一整段 JSON 数组文本。
+  check(
+    "★ 坏输入的失败理由是人话(入参不合法…),不是一段 zod JSON",
+    ((bad as { error?: string }).error ?? "").startsWith("入参不合法"),
+    (bad as { error?: string }).error,
+  );
+  check(
+    "★ 错误里没有 zod 的 JSON 形状",
+    !/\[[\s\S]*"code"[\s\S]*\]/.test((bad as { error?: string }).error ?? ""),
+    (bad as { error?: string }).error,
+  );
   const afterBad = (await call(IPC.RELAY_GET_CONFIG)) as { config: { host: string } | null };
   eq("坏输入没有覆盖掉刚才那份配置", afterBad.config?.host, "127.0.0.1");
   check(
