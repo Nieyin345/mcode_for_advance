@@ -5,7 +5,7 @@
  * 跟随总库(行上标「跟随总库」);改过的标「本项目」,可一键恢复跟随。会话的工作目录
  * 落在这个项目里时按这里的结果投递(下一轮生效)。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Project } from "@contracts/session";
 import type { PluginEngineId, PluginProjectRow } from "@contracts/ipc";
 import { api } from "@renderer/lib/api.js";
@@ -40,13 +40,19 @@ export function ProjectPluginsView({
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const projectPath = project?.path;
+  /** 请求序号:切项目(或 refreshKey 变)时同一个实例重跑 `load`,先发起的那次
+   *  `projectList` 若后回来,会把上一个项目的插件行画到**新项目**的这一页。 */
+  const loadSeqRef = useRef(0);
 
   const load = useCallback(async () => {
     if (!projectPath) return;
+    const seq = ++loadSeqRef.current;
     try {
       const res = await api.plugins.projectList({ projectPath });
+      if (seq !== loadSeqRef.current) return; // superseded (project switched)
       setRows(res.plugins);
     } catch (err) {
+      if (seq !== loadSeqRef.current) return;
       setError((err as Error).message);
       setRows([]);
     }

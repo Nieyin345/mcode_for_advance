@@ -10,7 +10,7 @@
  *
  * Claude 与 Codex 每轮读这份文件;Pi 不支持 MCP。项目条目不进引擎开关矩阵(同项目技能)。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Project } from "@contracts/session";
 import type { McpProjectListResult, McpProjectServer, McpServerEntry } from "@contracts/ipc";
 import { api } from "@renderer/lib/api.js";
@@ -48,18 +48,25 @@ export function ProjectMcpView({
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
   const [pendingRemove, setPendingRemove] = useState<{ projectPath: string; name: string } | null>(null);
   const projectPath = project?.path;
+  /** 请求序号:切项目(或 refreshKey 变)时同一个实例重跑 `load`,先发起的那次
+   *  `projectList` 若后回来,会把上一个项目的 MCP 服务器列表画到**新项目**这一页 ——
+   *  用户以为看的是新项目的 .mcp.json。 */
+  const loadSeqRef = useRef(0);
 
   const load = useCallback(async () => {
     if (!projectPath) return;
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     try {
       const res = await api.mcp.projectList({ projectPath });
+      if (seq !== loadSeqRef.current) return; // superseded (project switched)
       setData(res);
     } catch (err) {
+      if (seq !== loadSeqRef.current) return;
       setError((err as Error).message);
       setData(null);
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, [projectPath]);
 
