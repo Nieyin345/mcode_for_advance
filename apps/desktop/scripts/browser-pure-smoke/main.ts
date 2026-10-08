@@ -56,7 +56,14 @@ console.log("\nnormalizeKeyName(模型给的键名 → sendInputEvent 的键码)
   eq("ArrowUp → Up", normalizeKeyName("ArrowUp"), "Up");
   eq("Up 也认", normalizeKeyName("up"), "Up");
   eq("Escape → Esc", normalizeKeyName("escape"), "Esc");
-  eq("Delete → Del(Electron 的键码是 Del 不是 Delete)", normalizeKeyName("delete"), "Del");
+  // ★ Delete/Insert 必须映射到 Electron 认可的键码名(**Delete / Insert**)。
+  //   从前映射成 `Del`/`Ins` —— 那两个不在 sendInputEvent 的表里,解析成 VKEY_UNKNOWN,
+  //   键事件被丢掉:模型按 Delete 清输入框,工具回成功而字段没变(no-op 报成成功)。
+  //   `Esc` 是唯一有短别名的那个(等同 Escape),别把这条"规律"套到 Delete 上。
+  eq("★ Delete → Delete(Electron 的键码就叫 Delete)", normalizeKeyName("delete"), "Delete");
+  eq("★ del 也 → Delete", normalizeKeyName("del"), "Delete");
+  eq("★ Insert → Insert(不是 Ins)", normalizeKeyName("insert"), "Insert");
+  eq("★ ins 也 → Insert", normalizeKeyName("ins"), "Insert");
   eq("Space → Space", normalizeKeyName("space"), "Space");
   eq("spacebar 也认", normalizeKeyName("spacebar"), "Space");
   eq("裸空格 → null(先 trim,空白被当空串)", normalizeKeyName(" "), null);

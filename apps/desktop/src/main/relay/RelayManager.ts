@@ -104,6 +104,17 @@ class RelayManagerImpl {
       return { ok: true };
     }
 
+    // ⚠️ **先撤掉还挂着的那只重连定时器。** 上个连接掉线后 `scheduleReconnect` 会留一只
+    // （最多 32 秒后才响）。用户此时手动点「连接」（或 agent 经 `relay.connect`、或
+    // autoStart）会在这里建起一条**新的好连接**；而那只旧定时器到点后照样 fire、
+    // 调 `doConnect()` —— 它把 `this.conn`（刚建好的那条）当成 stale 收掉，于是
+    // "刚连上、过一两秒又断一下、再重连"。`disconnect()`/`disposeAll()` 都会撤这只定时器，
+    // `connect()` 从前漏了。
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
     // Load config if not already loaded.
     if (!this.config) {
       this.config = this.getConfig();

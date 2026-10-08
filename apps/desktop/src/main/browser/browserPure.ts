@@ -32,6 +32,11 @@ export function chromeLikeUserAgent(ua: string): string {
 export function normalizeKeyName(raw: string): string | null {
   const key = raw.trim();
   if (!key) return null;
+  // ⚠️ 右边的键名必须落在 Electron 认可的 `sendInputEvent` keyCode 表里
+  // (https://www.electronjs.org/docs/latest/api/web-contents 的 "Valid keyCodes")。
+  // 表里是 **Delete / Insert**,不是 `Del` / `Ins` —— 后者解析成 VKEY_UNKNOWN,键事件被
+  // 悄悄丢掉:模型调 `browser_keys({keys:"Delete"})` 清输入框,工具回 `已按下 Delete`,
+  // 而字段纹丝不动(把 no-op 报成成功)。`Esc` 是**唯一**有短别名的那个(等同 Escape)。
   const named: Record<string, string> = {
     enter: "Enter",
     return: "Enter",
@@ -41,8 +46,8 @@ export function normalizeKeyName(raw: string): string | null {
     space: "Space",
     spacebar: "Space",
     backspace: "Backspace",
-    delete: "Del",
-    del: "Del",
+    delete: "Delete",
+    del: "Delete",
     up: "Up",
     arrowup: "Up",
     down: "Down",
@@ -55,8 +60,8 @@ export function normalizeKeyName(raw: string): string | null {
     pagedown: "PageDown",
     home: "Home",
     end: "End",
-    insert: "Ins",
-    ins: "Ins",
+    insert: "Insert",
+    ins: "Insert",
   };
   const lower = key.toLowerCase();
   if (named[lower]) return named[lower];

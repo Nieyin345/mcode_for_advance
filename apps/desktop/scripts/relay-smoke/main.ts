@@ -335,6 +335,48 @@ console.log("\n══ 0. 指纹守卫(没有这一节,退避那几条断言会�
   await realSleep(60);
 }
 
+/* ═══════════════════════ 0b. 手动连接要撤掉挂着的重连定时器 ═══════════════════════ */
+
+console.log("\n══ 0b. 手动连接撤掉挂着的重连定时器");
+
+{
+  // 上个连接掉线 → `scheduleReconnect` 排一只重连定时器(最多 32 秒后才响)。用户此时
+  // 手动点「连接」(或 agent 经 relay.connect / autoStart)会建起一条**新的好连接**;
+  // 若那只旧定时器不被撤掉,它到点后照样调 `doConnect()`,把刚建好的连接当 stale 收掉
+  // —— "刚连上、过一两秒又断一下"。`disconnect()`/`disposeAll()` 都会撤,`connect()` 漏了。
+  const vps = await startFakeVps({ execReplies: NORMAL_EXEC });
+  saveVps(vps.port);
+  windowStub.__reset();
+  timers.reset();
+  await relayManager.connect();
+
+  // 「hold」= 退避定时器**排了不执行**,于是它会一直挂着。
+  //
+  // ⚠️ 判据用 `all()` 里那条退避记录的 **`cleared` 标志**,不用 `pendingWith()` ——
+  //    这个 bundle 里 `scheduleReconnect` 的栈被 `isThirdParty` 判成了第三方(它底下是
+  //    ssh2 的 `client.js`),于是 `pendingWith` 恒为 0、压根区分不出来。`cleared` 是
+  //    `clearTimeout` 桩直接翻的标志,不受第三方分类影响。
+  timers.setMode("hold");
+  vps.killClients();
+  await waitUntil("0b:断开后排出一只挂着不执行的重连定时器", () => timers.all().some((e) => e.stack.includes(timers.BACKOFF_FP)), 8000);
+  const armed = timers.all().filter((e) => e.stack.includes(timers.BACKOFF_FP));
+  check("前提:断开后确有一只退避定时器", armed.length > 0, { armed: armed.length });
+
+  // 现在手动连接 —— 它必须把那只挂着的定时器撤掉。
+  await relayManager.connect();
+  const cleared = timers.all().filter((e) => e.stack.includes(timers.BACKOFF_FP)).every((e) => e.cleared);
+  check(
+    "★ 手动连接撤掉了挂着的重连定时器(不会过一会儿又把新连接收掉)",
+    cleared,
+    { entries: timers.all().filter((e) => e.stack.includes(timers.BACKOFF_FP)) },
+  );
+
+  timers.setMode("fast");
+  await relayManager.disconnect();
+  await vps.close();
+  await realSleep(60);
+}
+
 /* ═══════════════════════ 1. 前置条件与文案 ═══════════════════════ */
 
 console.log("\n══ 1. 前置条件");
