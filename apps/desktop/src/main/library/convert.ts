@@ -3,6 +3,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, isAbsolute } from "node:path";
 import type { LibraryConversionRow, LibraryItem } from "@contracts/library";
 import { fromLibraryRelative } from "@main/library/paths.js";
+import { assetRefsOf, decodeRefPath } from "@main/library/adoptMarkdown.js";
 import { LibraryRepo } from "@main/store/repositories.js";
 
 export type ConvertSource = "mineru";
@@ -60,22 +61,21 @@ export function conversionReport(selectedItems?: LibraryItem[]): LibraryConversi
       try {
         const md = readFileSync(mdAbs, "utf8");
         const dir = dirname(mdAbs);
-        // 只认相对引用 —— http(s): 和 data: 是外链,不在我们的库里
-        for (const m of md.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) {
-          const ref = m[1].trim();
-          if (/^(https?:|data:)/i.test(ref)) continue;
+        // ⚠️ **配图引用的解析只有一处实现**(`adoptMarkdown.assetRefsOf`)。它认行内式、
+        // 引用式与裸 HTML `<img>` 三种写法 —— 用户手上那份 md 出自哪个工具不定,采纳
+        // 那条路早为这三种写法补过(commit 92f72b1f),这里从前却只认行内式:`![图][id]`
+        // 或 `<img src=…>` 写法的转录**缺了图也照样报完整**,设置页说它齐,预览全是断图。
+        // 两处各写一份就是漂移(硬规矩 2),所以直接共用那一份。
+        for (const ref of assetRefsOf(md)) {
+          // 只认相对引用 —— http(s): 和 data: 是外链,不在我们的库里(assetRefsOf 已经
+          // 滤过一轮,这里对解码后的结果再确认一次,免得 `data:` 被解出来当本地路径查)。
+          const decoded = decodeRefPath(ref);
+          if (decoded.length === 0) continue;
+          if (/^(https?:|data:|blob:|file:)/i.test(decoded)) continue;
           imageRefs += 1;
-          // 图片路径可能带 %20 之类,解码后再查。
-          // 转义不合法(`100%.png`、单个 `%`)时按原文查 —— 查不到就只把**这一条**
-          // 记成不齐,别把整篇判成"没转完"(外面那个 catch 是这么写的)。
-          const raw = ref.split(/[?#]/)[0];
-          let rel = raw;
-          try {
-            rel = decodeURIComponent(raw);
-          } catch {
-            /* 按原文查 */
-          }
-          if (!existsSync(join(dir, ...rel.split("/")))) assetsOk = false;
+          // 图片路径可能带 %20 之类,解码后再查。转义不合法(`100%.png`、单个 `%`)时
+          // 按原文查 —— 查不到就只把**这一条**记成不齐,别把整篇判成"没转完"。
+          if (!existsSync(join(dir, ...decoded.split("/")))) assetsOk = false;
         }
       } catch {
         // 读不了就当资源不齐 —— 这正是需要用户重转的情况

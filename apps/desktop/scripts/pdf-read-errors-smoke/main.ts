@@ -14,5 +14,13 @@ try{
  await test("probe shares resource error classification",async()=>{state.cmapFail=true;const r=await probePdf(file);assert.equal(r.ok,false);});
  await test("invalid page limit does not silently produce empty success",async()=>{const r=await extractPdfText(file,0);assert.equal(r.ok,false);assert.equal(state.opened,0);});
  await test("cleanup failure does not replace a valid extraction",async()=>{state.cleanupFail=true;const r=await extractPdfText(file);assert.equal(r.ok,true);assert.equal(state.destroyed,1);});
+ // 「这是不是 PDF」这条规则只有一份实现(`pdfFile.hasPdfMagic`),导入关卡(verifyPdf)与
+ // 这里(`readPdfBytes`)必须同口径:关卡放行的文件,读取时不能反过来说"缺少 %PDF- 魔数"。
+ // 从前 readPdfBytes 要求第 0 字节严格等于 `%PDF-`,而关卡允许正文前有 BOM / 空白 ——
+ // 一份带 BOM 的论文导入成功、点开却报"不是 PDF"(实测)。
+ const bom=join(root,"bom.pdf");writeFileSync(bom,Buffer.concat([Buffer.from([0xEF,0xBB,0xBF]),Buffer.from("%PDF-1.4\n")]));
+ await test("a leading UTF-8 BOM still reads as PDF (agrees with the import gate)",async()=>{const r=await extractPdfText(bom);assert.equal(r.ok,true);assert.equal(state.opened,1);});
+ await test("probePdf agrees with the reader on BOM-prefixed PDFs",async()=>{const r=await probePdf(bom);assert.equal(r.ok,true);});
+ await test("a non-PDF is still rejected (the magic check was not gutted)",async()=>{const notpdf=join(root,"n.pdf");writeFileSync(notpdf,"just text, no magic");const r=await extractPdfText(notpdf);assert.equal(r.ok,false);assert.ok(!r.ok&&r.error.includes("不是 PDF"));});
  console.log(`PDF error contract: ${passed} passed, ${failed} failed`);if(failed)process.exitCode=1;
 }finally{rmSync(root,{recursive:true,force:true});}

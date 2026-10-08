@@ -7,6 +7,7 @@
 import { createRequire } from "node:module";
 import { readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { hasPdfMagic } from "@main/library/pdfFile.js";
 
 /** 超过这个大小直接拒 —— 本地解析不该为一份超大 PDF 吃掉这么多内存。 */
 const MAX_BYTES = 200 * 1024 * 1024;
@@ -66,7 +67,11 @@ function readPdfBytes(absPath: string): { ok: true; data: Uint8Array } | { ok: f
       return { ok: false, error: `文件 ${(st.size / 1024 / 1024).toFixed(0)}MB 超过 200MB 上限` };
     }
     const buf = readFileSync(absPath);
-    if (buf.subarray(0, 5).toString("latin1") !== "%PDF-") {
+    // ⚠️ 用 `hasPdfMagic`(与导入关卡 `pdfFile.verifyPdf` **同一份**判据),不是"第 0 字节
+    // 等于 `%PDF-`"。导入那边允许正文前带 BOM / 空白,这里若要求偏移 0 处严格相等,
+    // 就会出现"关卡放行的文件,读取时被自己判成不是 PDF"的漂移 —— 一份带 BOM 的论文导入
+    // 成功、点开却报"缺少 %PDF- 魔数"。pdf.js 实际能解开这种(实测),所以放宽的是这一侧。
+    if (!hasPdfMagic(buf.subarray(0, 1024).toString("latin1"))) {
       return { ok: false, error: "不是 PDF(缺少 %PDF- 魔数)" };
     }
     return { ok: true, data: new Uint8Array(buf) };

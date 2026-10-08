@@ -13,6 +13,19 @@ export function hashFile(path: string): string {
 }
 
 /**
+ * 一段文件头里有没有 PDF 魔数 `%PDF-`。**这是"这是不是 PDF"这条规则的唯一实现** ——
+ * 导入的关卡({@link verifyPdf})与读取那一路(`pdfText.readPdfBytes`)都调它,免得两份
+ * 判据漂移:关卡放行的文件,读取时又说不认识。
+ *
+ * 用 `includes` 而不是"第 0 字节等于 `%PDF-`":有些生成器会在正文前带一段 UTF-8 BOM
+ * 或几行空白(见 {@link verifyPdf} 的文件头),那种文件的魔数不在偏移 0。pdf.js 自己也能
+ * 解开这种(实测),所以关卡与读取这一侧都不该因一个 BOM 把它判成"不是 PDF"。
+ */
+export function hasPdfMagic(head: string): boolean {
+  return head.includes("%PDF-");
+}
+
+/**
  * 校验一份文件是不是能用的 PDF。通过返回 `null`,否则返回一句给用户看的原因。
  *
  * 只看两样:非空、以及 `%PDF-` 魔数(允许前面有少量 BOM / 空白 —— 有些生成器会
@@ -31,7 +44,7 @@ export function verifyPdf(path: string): string | null {
     const buf = Buffer.alloc(Math.min(1024, size));
     readSync(fd, buf, 0, buf.length, 0);
     const head = buf.toString("latin1");
-    if (!head.includes("%PDF-")) {
+    if (!hasPdfMagic(head)) {
       return /<html|<!doctype html/i.test(head) ? "这不是 PDF(内容看起来是网页)" : "这不是 PDF 文件";
     }
     return null;

@@ -130,8 +130,12 @@ function stagedDirFor(id: string, tag: string): string {
  * 返回的是**去重后的、原样的引用串**(不在这里解码、不在这里拼绝对路径)—— 解码与
  * 越界判断在 {@link copyReferencedAssets} 里做,那边才知道源目录是谁。
  */
-/** 去掉 `#片段` / `?查询` 再做百分号解码。转义不合法时按原文返回(md 是数据)。 */
-function decodeRefPath(ref: string): string {
+/** 去掉 `#片段` / `?查询` 再做百分号解码。转义不合法时按原文返回(md 是数据)。
+ *
+ *  **导出**是为了让"这份 md 引用了哪些图、怎么解码"只有一处判据:`convert.ts` 的
+ *  `conversionReport`(设置页那条"这一篇转录完整吗")复用它,而不是自己再写一份只认
+ *  行内式 / 各自处理 `%` 的扫描 —— 两份实现会漂移(见 {@link assetRefsOf})。 */
+export function decodeRefPath(ref: string): string {
   const raw = ref.split(/[?#]/)[0] ?? "";
   try {
     return decodeURIComponent(raw);
@@ -140,7 +144,7 @@ function decodeRefPath(ref: string): string {
   }
 }
 
-function assetRefsOf(mdText: string): string[] {
+export function assetRefsOf(mdText: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   const push = (candidate: string): void => {
