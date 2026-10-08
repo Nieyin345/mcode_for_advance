@@ -50,5 +50,13 @@ try {
   // 就"写进 A、放行的却是 B",粘贴的图片在编辑器里打不开。这条盯住它别再分家。
   const filesSrc = readFileSync(join(process.cwd(), "src/main/ipc/files.ts"), "utf8");
   check("粘贴目录名只有一份字面量(读/写共用 pasteTempDir)", (filesSrc.match(/"mcode-pastes"/g) ?? []).length, 1);
-  console.log("maint-p1-path-smoke: 15/15 passed");
+  // 「`where <name>` 取第一个**真实存在**的命中」这条规则从前在 `binaryResolve.which()`
+  // (只看第一行)与 `bashEnv.whereFirst()`(逐行)各写一份、方向还相反 —— LSP 装没装、
+  // 终端用哪个 shell 两处判据不一致。现在两边都走 `binaryResolve.whereFirstOnPath`,
+  // `"where.exe"` 这个调用只允许出现在那一处。
+  const binSrc = readFileSync(join(process.cwd(), "src/main/lib/binaryResolve.ts"), "utf8");
+  const bashSrc = readFileSync(join(process.cwd(), "src/main/lib/bashEnv.ts"), "utf8");
+  check("where.exe 探测只有一份实现(binaryResolve.whereFirstOnPath)", (binSrc.match(/"where\.exe"/g) ?? []).length, 1);
+  check("bashEnv 不再自己 spawn `where`(改用共享判据)", !/"where"/.test(bashSrc) || bashSrc.includes("whereFirstOnPath"), true);
+  console.log("maint-p1-path-smoke: 17/17 passed");
 } finally { rmSync(base, { recursive: true, force: true }); }

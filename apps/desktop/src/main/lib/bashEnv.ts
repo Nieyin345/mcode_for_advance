@@ -34,7 +34,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { resolveGitBash } from "./binaryResolve.js";
+import { resolveGitBash, whereFirstOnPath } from "./binaryResolve.js";
 import { decodeOutput } from "./outBuf.js";
 
 export type BashEnvKind = "unix" | "wsl" | "native" | "unknown";
@@ -61,23 +61,12 @@ function classifyBashPath(shellPath: string): BashEnvKind | null {
  *  alias) can fail `existsSync` with EACCES depending on the Node/libuv
  *  version, so we skip matches that don't exist and take the first one that
  *  does — matching the shell the SDK effectively ends up spawning. Returns
- *  null off-win32 / not found. */
+ *  null off-win32 / not found.
+ *
+ *  ⚠️ 判据只此一份,落在 `binaryResolve.whereFirstOnPath`(`which()` 走的也是它)
+ *  —— 从前这里与 `which()` 各写一份、且一个逐行一个只看第一行。 */
 function whereFirst(name: string): string | null {
-  if (process.platform !== "win32") return null;
-  try {
-    // 中文 Windows 上 where.exe 按系统代码页(GBK)输出 —— 按 UTF-8 解码,用户目录带中文的
-    // 路径就成了乱码,existsSync 不过,工具被误报成"没装"。decodeOutput 会在 UTF-8/GBK 间择优。
-    const res = spawnSync("where", [name], { timeout: 5000, windowsHide: true });
-    if (res.status === 0 && res.stdout) {
-      for (const line of decodeOutput(res.stdout).split(/\r?\n/)) {
-        const p = line.trim();
-        if (p && existsSync(p)) return p;
-      }
-    }
-  } catch {
-    // `where` unavailable — treat as not found
-  }
-  return null;
+  return whereFirstOnPath(name);
 }
 
 /** Git Bash in the two locations both SDKs check on win32. */
