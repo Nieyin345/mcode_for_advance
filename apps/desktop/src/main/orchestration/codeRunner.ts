@@ -167,7 +167,10 @@ export async function runCodeNode(a: {
         summary: stdout,
         outputs,
         ...artifactPayload,
-        error: `code node timed out after ${a.timeoutMs} ms`,
+        // 用户可见(失败节点卡片上的那行字)—— 与命令节点 `commandRunner` 里「命令超过 N
+        // 毫秒还没完…」同一件事、同一说法。这行从前是英文,而同一文件上下的失败原因
+        // (「代码节点没有填写代码」/「无法启动代码进程」)都是中文。
+        error: `代码超过 ${a.timeoutMs} 毫秒还没跑完,被中止了 —— 要等它就调大超时,或先缩短代码`,
       };
     }
     if (run.spawnError !== undefined) {

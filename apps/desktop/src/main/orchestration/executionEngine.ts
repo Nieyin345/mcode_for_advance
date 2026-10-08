@@ -122,7 +122,9 @@ export class ExecutionEngine {
       return {
         status: "failed",
         summary: "",
-        error: `No executor registered: ${kind}`,
+        // 用户可见(失败节点卡片)。生产里 `setDefault` 总会兜底,只有"清单声明了一个
+        // 没注册的 runner kind"才走得到这里 —— 一句配置错误。与编排其它节点错误同用中文。
+        error: `没有能执行这种节点的执行器:${kind}`,
         execution: executionOf(finishedAt),
       };
     }

@@ -57,7 +57,7 @@ ok(duplicateRejected, "rejects duplicate executor registration");
 
 const missing = await engine.execute(context("missing"));
 ok(missing.status === "failed", "unknown executor fails deterministically");
-ok(missing.error === "No executor registered: missing", "unknown executor reports its kind");
+ok(missing.error === "没有能执行这种节点的执行器:missing", "unknown executor reports its kind (in Chinese, like its sibling node errors)");
 ok(missing.execution?.executorKind === "missing", "unknown executor still records metadata");
 
 // —— 兜底执行器:setDefault 之后,注册表没有的 kind 落到它 ——

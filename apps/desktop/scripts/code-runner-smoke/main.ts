@@ -45,6 +45,9 @@ console.log("\nNode · timeout / cancellation");
   const timed = await runCodeNode({ code: "setInterval(() => {}, 1000);", language: "node", timeoutMs: 300, signal: controller().signal });
   eq("timeout is failed", timed.status, "failed");
   check("timeout says how long", String(timed.error).includes("300"), timed.error);
+  // 这行会画在**失败节点卡片**上 —— 与同一文件上下其它失败原因(「代码节点没有填写代码」
+  // 「无法启动代码进程」)以及命令节点 `commandRunner` 一样是中文。曾经它是英文。
+  check("timeout error is Chinese (matches its sibling node errors)", /超过/.test(String(timed.error)) && !/timed out/.test(String(timed.error)), timed.error);
 
   const abort = controller();
   const pending = runCodeNode({ code: "setInterval(() => {}, 1000);", language: "node", timeoutMs: 0, signal: abort.signal });
