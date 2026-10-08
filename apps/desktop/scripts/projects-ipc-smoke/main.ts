@@ -708,6 +708,26 @@ console.log("\n5. 项目内会话列表:分页与过滤口径");
 console.log("\n6. 跨项目列表(sidebar 的「全部项目」)");
 
 {
+  // ⚠️ **无参调用。** `session.listAll` 的入参(limit/offset/projectIds/worktreeKey)
+  // **全是可选的** —— 于是它在 `app_api_call` 里是**无参方法**:说明明写「无参方法省略
+  // input」,模型会整个不传,handler 收到的 `raw` 就是 `undefined`。从前这里写的是
+  // `SessionListAllSchema.parse(raw)`,对 `undefined` 会报根级
+  // `[{path: [], message: "Required"}]`(zod 3.25 对 undefined 输入的空对象),
+  // 而这个功能对 agent 就**永远调不通**,报错里没有一个字提示"它其实不需要参数"。
+  //
+  // 渲染端那两条调用都显式传 `{offset, limit, ...streamScopeQuery}` 对象,所以老断言
+  // `call(..., {})` 一路是绿的 —— **漏的正是"整个不传"这条路**。下面两条专门钉它。
+  fresh();
+  const threw = await catching(IPC.SESSION_LIST_ALL);
+  eq("无参调用 session.listAll 不抛(模型照说明省略 input)", threw, "");
+  const noArg = await call<{ sessions: Array<{ id: string }>; total: number }>(IPC.SESSION_LIST_ALL);
+  const emptyObj = await call<{ sessions: Array<{ id: string }>; total: number }>(IPC.SESSION_LIST_ALL, {});
+  // 无参**不等于**被收窄成空集:两条必须拿到同一份全量聚合。
+  eq("raw=undefined 与 raw={} 是同一份聚合(不是被当成空作用域)", noArg.total, emptyObj.total);
+  eq("而且确实返回了 sessions 数组", Array.isArray(noArg.sessions), true);
+}
+
+{
   fresh();
   // ⚠️ 这个套件**整份共用一个库**,前面几节建的会话全在。所以「全量」这个词在这里
   // 只有一个意思 —— 库里所有活动 chat。要验数字就得**按项目收窄**,不能拿全部。

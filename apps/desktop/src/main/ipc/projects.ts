@@ -234,7 +234,15 @@ export function registerProjectHandlers(ipcMain: IpcMain): void {
   // — without them the bottom "显示更多" button keeps the unfiltered
   // aggregate's count after a project switch.
   ipcMain.handle(IPC.SESSION_LIST_ALL, (_evt, raw) => {
-    const input = SessionListAllSchema.parse(raw);
+    // ⚠️ `?? {}` 不是可有可无的。这个 schema 的**入参全是可选的** —— 于是它是
+    // `app_api_call` 里的**无参方法**(说明明写「无参方法省略 input」),模型会整个
+    // 不传 `raw`。而 `SessionListAllSchema.parse(undefined)` 会报根级
+    // `[{path: [], message: "Required"}]`(zod 3.25 对 undefined 输入的空对象),
+    // 报错里没有一个字提示"它其实不需要参数"。补空对象:全可选 schema 照常过,与
+    // 各 handler 里 `parse(raw ?? {})` 同一条约定(见 ipc/context.ts / ipc/mcp.ts /
+    // ipc/library.ts)。渲染端两条调用都显式传 `{offset, limit, ...}` 所以不受影响,
+    // 但 `app_api_call`(经 appControl/tools.ts 的 `invokeAppTool`)走的是同一条 handler。
+    const input = SessionListAllSchema.parse(raw ?? {});
     const limit = input.limit ?? 10;
     const offset = input.offset ?? 0;
     const scope = { projectIds: input.projectIds, worktreeKey: input.worktreeKey };
