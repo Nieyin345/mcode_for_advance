@@ -56,6 +56,7 @@ import {
   type McpScope,
   type McpServerConfig,
   type McpServerEntry,
+  MCP_NAME_RE,
 } from "@contracts/ipc";
 
 /** Group key for the global scope. A plain string so the project-path groups
@@ -72,9 +73,6 @@ const GLOBAL_ORIGIN_KEY = "<global>";
 function originKey(origin: McpImportOrigin): string {
   return origin.kind === "global" ? GLOBAL_ORIGIN_KEY : origin.path;
 }
-
-/** MCP server name charset — mirrored from the zod schema in the contract. */
-const MCP_NAME_RE = /^[A-Za-z0-9_-]+$/;
 
 /** Stable empty array (avoids per-render new references — store convention). */
 const EMPTY_SERVERS: McpServerEntry[] = [];

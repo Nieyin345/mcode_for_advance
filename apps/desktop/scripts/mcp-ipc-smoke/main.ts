@@ -200,6 +200,16 @@ const fakeIpc = {
 } as unknown as IpcMain;
 
 const { IPC, MCP_MANAGEMENT_SETTING_KEY, MCP_RESERVED_NAME } = await import("@contracts/ipc");
+// 名字校验正则**只有契约那一份**:设置页新建/编辑前会即时挡一道(见 McpPanel /
+// SkillsPanel / McpMarketView),它们从前各自抄了一份 /^[A-Za-z0-9_-]+$/ —— 抄的那份
+// 一旦与契约分家,用户会看到"界面允许、保存却被拒"(或反过来)。这三处现在都 import 契约,
+// 这条盯住 MCP_NAME_RE(它此前是 mcp.ts 里的私有 const,现已 export)。
+{
+  const { MCP_NAME_RE } = await import("@contracts/ipc");
+  eq("契约导出 MCP_NAME_RE", MCP_NAME_RE.source, "^[A-Za-z0-9_-]+$");
+  eq("MCP_NAME_RE 接受普通名", MCP_NAME_RE.test("my-server_1"), true);
+  eq("MCP_NAME_RE 拒绝带空格的", MCP_NAME_RE.test("my server"), false);
+}
 const { initDb } = await import("@main/store/db.js");
 const { SettingRepo } = await import("@main/store/repositories.js");
 const mcpConfig = await import("@main/lib/mcpConfig.js");

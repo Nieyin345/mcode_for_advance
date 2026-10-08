@@ -12,6 +12,7 @@ import {
   type McpMarketEntry,
   type McpMarketInput,
   type McpMarketSource,
+  MCP_NAME_RE as NAME_RE,
 } from "@contracts/ipc";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
@@ -19,8 +20,6 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, Dialog, Input } from "@renderer/components/ui/index.js";
 import { IconLoader2 } from "@renderer/lib/icons.js";
 import { MarketView, type MarketRow } from "./MarketView.js";
-
-const NAME_RE = /^[A-Za-z0-9_-]+$/;
 
 export function McpMarketView({
   className,

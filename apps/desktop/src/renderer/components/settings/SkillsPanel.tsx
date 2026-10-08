@@ -67,11 +67,7 @@ import type {
   SkillEngineState,
   SkillBundle,
 } from "@contracts/ipc";
-
-/** Skill name charset — mirrored from the zod schema in the contract. The
- *  editor disables the name field for existing skills, so this only gates the
- *  "create new" form. */
-const SKILL_NAME_RE = /^[A-Za-z0-9_-]+$/;
+import { SKILL_NAME_RE } from "@contracts/ipc";
 
 /** Stable empty array so the panel's skill list has a stable reference when
  *  empty (avoiding needless re-renders — same convention as sessionStore's

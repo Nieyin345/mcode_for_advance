@@ -187,8 +187,10 @@ export type McpUnauthorizeInput = McpAuthorizeInput;
 
 /** MCP server name charset — same family as skill names (letters, digits,
  *  underscore, hyphen). The name becomes a JSON object key, not a path, but
- *  staying conservative costs nothing. */
-const MCP_NAME_RE = /^[A-Za-z0-9_-]+$/;
+ *  staying conservative costs nothing. **导出**:设置页新增/编辑前的即时校验
+ *  引用这一份,别再抄一份字面量 —— 抄的那份一旦与这里分家,用户会看到"界面
+ *  允许、保存却被拒"(或反过来)。 */
+export const MCP_NAME_RE = /^[A-Za-z0-9_-]+$/;
 
 /** Reserved server name — collides with the built-in in-process server. */
 export const MCP_RESERVED_NAME = "mcode-browser";
