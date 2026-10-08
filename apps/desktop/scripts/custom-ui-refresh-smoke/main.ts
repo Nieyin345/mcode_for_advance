@@ -19,8 +19,11 @@ assert.ok(JSON.stringify(list).includes('setting.set'),'legacy UI config must be
 const describe = await invokeAppTool('app_api_describe',{method:'setting.set',setting_key:KEY},'test',ctx(false));
 assert.ok(JSON.stringify(describe).includes('rightPanel.tab'),'describe includes actual UI JSON schema');
 assert.throws(()=>validateCustomUiWrite('bad JSON'));
-assert.throws(()=>validateCustomUiWrite(JSON.stringify({...before,items:[before.items[0],before.items[0]]})),/Duplicate/);
-assert.throws(()=>validateCustomUiWrite(JSON.stringify({...before,items:[{...before.items[0],action:{type:'shell',command:'echo ok'}}]})),/not allowed/);
+// 重复 id 与非法动作组合这两条理由**原样进 toast**(`customUiStore.save` 把 err.message 当 body),
+// 所以判据钉在中文的那句话上 —— 从前这里钉的是英文单词 /Duplicate/、/not allowed/,改成中文
+// 后它们就没用了,而且那正说明这些句子会漂到用户眼前。
+assert.throws(()=>validateCustomUiWrite(JSON.stringify({...before,items:[before.items[0],before.items[0]]})),/id 相同/);
+assert.throws(()=>validateCustomUiWrite(JSON.stringify({...before,items:[{...before.items[0],action:{type:'shell',command:'echo ok'}}]})),/不能挂在/);
 assert.deepEqual(validateCustomUiWrite(JSON.stringify(before)),before);
 assert.throws(()=>validateCustomUiWrite(JSON.stringify({...before,items:[{...before.items[0],slot:'toolbar',action:{type:'shell',command:'echo {{file.path}}'}}]})),/JSON stdin/);
 state.value=JSON.stringify(before);await store.getState().load();
