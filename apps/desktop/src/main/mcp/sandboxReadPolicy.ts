@@ -11,7 +11,7 @@
  *
  * 所以这里给沙箱开**只读**的两扇门(写工具仍然只认项目目录,一行没放宽):
  *   - **技能库**:整棵树可读、可列、可搜(里面只有用户装的技能)。
- *   - **资料库**:可读,但**守屏蔽规则**(设置 → 资料库类型):
+ *   - **资料库**:可读,但**守屏蔽规则**(设置 → 文档管理,见 `LIBRARY_BLOCK_SETTINGS_PAGE`):
  *       · 属于被屏蔽条目的文件(整条挡)→ 拒;
  *       · 按文件类型屏蔽的扩展名 → 拒;
  *       · 设了任何屏蔽规则时,不许在库里**全文搜索**(grep 会把被挡的内容带出来)——
@@ -26,7 +26,7 @@ import path from "node:path";
 import { defaultSkillsRoot } from "@main/lib/skillEngines.js";
 import { libraryRoot, markdownArtifact } from "@main/library/paths.js";
 import { aiVisibleFilesOf, readableFilesOf } from "@main/library/fileImport.js";
-import { isFileSuppressed, loadSuppress, suppressionReasonOfItem } from "@main/library/suppress.js";
+import { isFileSuppressed, loadSuppress, suppressionReasonOfItem, LIBRARY_BLOCK_SETTINGS_PAGE } from "@main/library/suppress.js";
 import { trashedItemIds } from "@main/library/trash.js";
 import { LibraryRepo } from "@main/store/repositories.js";
 
@@ -114,12 +114,12 @@ export const sandboxReadCheck: SandboxReadCheck = (abs, kind) => {
   const blocked = owners.find((o) => o.reason);
   if (blocked) {
     return (
-      `这份文件属于资料库里被屏蔽的条目(${blocked.reason}被屏蔽了,设置 → 资料库类型),不能读。` +
+      `这份文件属于资料库里被屏蔽的条目(${blocked.reason}被屏蔽了,设置 → ${LIBRARY_BLOCK_SETTINGS_PAGE}),不能读。` +
       `如实告诉用户"被屏蔽了",不要当不存在,也不要凭空引用。`
     );
   }
   if (kind === "read" && isFileSuppressed(abs)) {
-    return `${path.extname(abs).toLowerCase()} 文件在资料库里被屏蔽了(设置 → 资料库类型),不能读。如实告诉用户。`;
+    return `${path.extname(abs).toLowerCase()} 文件在资料库里被屏蔽了(设置 → ${LIBRARY_BLOCK_SETTINGS_PAGE}),不能读。如实告诉用户。`;
   }
   if (kind === "search") {
     const rule = loadSuppress();

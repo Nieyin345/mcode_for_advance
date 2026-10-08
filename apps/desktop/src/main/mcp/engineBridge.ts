@@ -24,11 +24,19 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import type { ProviderContext } from "@contracts/provider";
 import { fail, type McpToolSpec, type ToolResult } from "./sdk.js";
 
-export interface EngineToolDescriptor {
+/**
+ * 一个引擎工具的描述符。
+ *
+ * ⚠️ **必须是 `type` 别名,不能写成 `interface`。** `CodexAgentSdkProvider.buildDynamicTools`
+ * 把它们塞进 `Array<Record<string, unknown>>`,而 TypeScript 给**接口**不做隐式索引签名
+ * —— 接口类型不可赋值给 `Record<string, unknown>`(对象字面量与 `type` 别名可以)。写成
+ * interface 会让那 8 处展开全报 TS2322,而它看上去像"工具表类型不对",不像"关键字选错了"。
+ */
+export type EngineToolDescriptor = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-}
+};
 
 export interface EngineBridge {
   /** 这个名字是不是这套工具里的。 */

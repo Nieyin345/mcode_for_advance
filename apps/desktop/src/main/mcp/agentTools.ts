@@ -2418,7 +2418,7 @@ export function agentMcpTools(deps: AgentToolsDeps): McpToolSpec[] {
             structured: { writable_project: snap.currentProjectPath, projects: snap.projects },
           };
 
-          // **守屏蔽规则**(设置 → 资料库类型):整条挡的不列,按文件类型挡的那份不给路径 ——
+          // **守屏蔽规则**(设置 → 文档管理,见 `LIBRARY_BLOCK_SETTINGS_PAGE`):整条挡的不列,按文件类型挡的那份不给路径 ——
           // 与 `library_search` 同一口径(`suppressionReasonOfItem` / `aiVisibleFilesOf`)。
           // 路径给**绝对路径**:库里存的是相对库根的,原样给出去,模型在公网那条路上会按
           // 项目目录去解析,读不到。

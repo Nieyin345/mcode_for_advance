@@ -57,6 +57,25 @@ import { loadLibraryGroups } from "./groupRegistry.js";
 import { log } from "@main/lib/logger.js";
 import { extname } from "node:path";
 
+/**
+ * 「去哪改屏蔽规则」那句话里的**设置页名** —— 给 AI 的话(清单、翻库工具、`library.py`)
+ * 里,凡是让用户自己去解除屏蔽的地方,都引用这一份。
+ *
+ * ## 为什么单拎出来
+ *
+ * 这个页面改过名:从前叫「资料库类型」,现在界面上是「文档管理」(`settings.nav.
+ * libraryTypes` / `settings.libraryTypes.title` 都是「文档管理」)。而主进程这边
+ * 前后有**五处**逐字写着旧名(`manifest.ts` / `libraryServer.ts` ×3 /
+ * `sandboxReadPolicy.ts` ×2 / `assets.ts` 里的 python 镜像)—— 改一处漏一处,模型就会
+ * 指给用户一个**不存在**的设置页。
+ *
+ * 主进程没有 i18n(那是渲染端的事),所以这里只能是一份中文常量;界面那侧对应的
+ * 提示走 `library.attach.blockedHint` 的 `{page}`(值取自 `settings.nav.libraryTypes`)。
+ * 改设置页名时,**这两处**(渲染端 i18n + 本常量)都要跟着改,以及 `assets.ts` 里
+ * python 镜像的那份。
+ */
+export const LIBRARY_BLOCK_SETTINGS_PAGE = "文档管理";
+
 let cache: LibrarySuppressRule | null = null;
 
 /** 读当前规则。没存过 / 存坏了 → 空规则(什么都不挡)。 */

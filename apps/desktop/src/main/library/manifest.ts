@@ -20,7 +20,7 @@ import { trashedItemIds } from "./trash.js";
 import { groupPromptOf, loadLibraryGroups } from "./groupRegistry.js";
 import { CollectionRepo, LibraryLinkRepo, LibraryRepo, NoteRepo } from "@main/store/repositories.js";
 import { aiVisibleFilesOf, extOf, importGenericFiles } from "./fileImport.js";
-import { suppressionReasonOfItem } from "./suppress.js";
+import { suppressionReasonOfItem, LIBRARY_BLOCK_SETTINGS_PAGE } from "./suppress.js";
 import { sendToRenderer } from "@main/window.js";
 import { libraryRoot } from "./paths.js";
 
@@ -361,7 +361,7 @@ export function attachToChat(
   if (prefix === "i:" && id) {
     const reason = suppressionReasonOfItem(id);
     if (reason) {
-      return { ok: false, error: `${reason}被屏蔽了(设置 → 资料库类型)` };
+      return { ok: false, error: `${reason}被屏蔽了(设置 → ${LIBRARY_BLOCK_SETTINGS_PAGE})` };
     }
     // **回收站里的挂不上**，与屏蔽同一条理由：用户在左栏把一篇丢进回收站，意思就是
     // "我不要它了"。挂进上下文是"让 AI 读它"，两件事直接冲突 —— 而它比屏蔽更隐蔽：

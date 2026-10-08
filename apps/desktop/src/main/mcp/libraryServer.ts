@@ -60,7 +60,7 @@ import { loadLibraryGroups } from "@main/library/groupRegistry.js";
 import { trashedItemIds } from "@main/library/trash.js";
 import { MCP_LIBRARY_SERVER } from "@contracts/ipc";
 import { notifyLibraryChanged } from "@main/library/broadcast.js";
-import { suppressionReasonOfItem } from "@main/library/suppress.js";
+import { suppressionReasonOfItem, LIBRARY_BLOCK_SETTINGS_PAGE } from "@main/library/suppress.js";
 import { fail, loadCreateMcpServer, text, toSdkTools, type McpToolContext, type McpToolSpec } from "./sdk.js";
 
 /** MCP server 名。SDK 把工具暴露成 `mcp__<这个名字>__<工具名>`。
@@ -153,7 +153,7 @@ function collectionLines(): string[] {
  * 这里只负责把原因拼成一句人话,不重写判定。
  */
 function suppressedNote(reason: string): string {
-  return `${reason}被屏蔽了(设置 → 资料库类型)`;
+  return `${reason}被屏蔽了(设置 → ${LIBRARY_BLOCK_SETTINGS_PAGE})`;
 }
 
 /**
@@ -246,7 +246,7 @@ export function libraryMcpTools(): McpToolSpec[] {
             if (hidden > 0) {
               return text(
                 `匹配「${args.query}」的 ${hidden} 条都不可见(${hiddenNote(trashed, suppressed)};` +
-                  `屏蔽在设置 → 资料库类型,回收站里的可在左栏还原)。` +
+                  `屏蔽在设置 → ${LIBRARY_BLOCK_SETTINGS_PAGE},回收站里的可在左栏还原)。` +
                   `如实告诉用户,不要当不存在,也不要凭空引用。`,
               );
             }
@@ -282,7 +282,7 @@ export function libraryMcpTools(): McpToolSpec[] {
             if (hidden > 0) {
               return text(
                 `这个分类里的 ${hidden} 条都不可见(${hiddenNote(trashed, suppressed)};` +
-                  `屏蔽在设置 → 资料库类型,回收站里的可在左栏还原)。如实告诉用户。`,
+                  `屏蔽在设置 → ${LIBRARY_BLOCK_SETTINGS_PAGE},回收站里的可在左栏还原)。如实告诉用户。`,
               );
             }
             return text("(这个分类里还没有条目)");

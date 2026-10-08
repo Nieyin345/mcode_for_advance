@@ -68,7 +68,7 @@ const { LibraryRepo, LibraryLinkRepo, CollectionRepo, SettingRepo, NoteRepo } =
   await import("@main/store/repositories.js");
 const { libraryMcpTools, LIBRARY_READONLY_TOOLS } = await import("@main/mcp/libraryServer.js");
 const { libraryRoot, fromLibraryRelative, pdfPathForHash } = await import("@main/library/paths.js");
-const { saveSuppress, resetSuppressCacheForTest } = await import("@main/library/suppress.js");
+const { saveSuppress, resetSuppressCacheForTest, LIBRARY_BLOCK_SETTINGS_PAGE } = await import("@main/library/suppress.js");
 
 await initDb();
 eq("库根就是临时数据根下面那个", libraryRoot(), ROOT);
@@ -602,7 +602,15 @@ console.log("\n屏蔽只管给 AI 看的");
   CollectionRepo.assign(col3.id, [supId], true);
   saveSuppress({ nodes: [`collection:${col3.id}`], extensions: [] });
   resetSuppressCacheForTest();
-  const GATE = "被屏蔽了(设置 → 资料库类型)";
+  // ★ 这句话里的设置页名是**共享常量**(`LIBRARY_BLOCK_SETTINGS_PAGE`),而它曾漂过:
+  //   页面在界面上叫「文档管理」,主进程这边五处却还写着旧名「资料库类型」,模型会把用户
+  //   指去一个不存在的页面。判据:那句话里的页名**等于**常量,且常量等于界面上的名字。
+  const GATE = `被屏蔽了(设置 → ${LIBRARY_BLOCK_SETTINGS_PAGE})`;
+  check(
+    "★ 屏蔽提示里的设置页名与界面一致(不再是过时的「资料库类型」)",
+    GATE === "被屏蔽了(设置 → 文档管理)",
+    { GATE, page: LIBRARY_BLOCK_SETTINGS_PAGE },
+  );
 
   // 先确认判据是活的 —— 否则下面「照做」的几条说明不了什么。
   const asListed = await call("library_search", { query: "不给 AI 看的那一篇" });

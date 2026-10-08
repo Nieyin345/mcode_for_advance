@@ -614,7 +614,7 @@ def cmd_show(cur, root, args, sup):
             kept.append(row)
     if not kept:
         sys.exit("匹配 " + args.query + " 的 " + str(len(reasons)) + " 条被屏蔽规则挡下了("
-                 + "、".join(dict.fromkeys(reasons)) + ")。要去掉屏蔽:设置 → 资料库类型。")
+                 + "、".join(dict.fromkeys(reasons)) + ")。要去掉屏蔽:设置 → 文档管理。")
     rows = kept
     if len(rows) > 1:
         print("匹配到 " + str(len(rows)) + " 条,请用更精确的 id 或标题:")
