@@ -9,8 +9,8 @@ BASH = GIT_BASH if os.path.exists(GIT_BASH) else "bash"
 
 MUT = [
     ('R1 隧道掉了不重连(退回"只标 failed"的老行为)',
-     "    if (livePort !== null) {\n      scheduleReconnect(livePort, code);\n      return;\n    }",
-     "    // MUTANT: 不重连"),
+     "      if (livePort !== null) {\n        scheduleReconnect(livePort, code);\n        return;\n      }",
+     "      // MUTANT: 不重连"),
     ('R2 重连时也把计数清零(退回"上限永远到不了"的无限重试)',
      "  if (!isReconnect) reconnectAttempt = 0;",
      "  reconnectAttempt = 0;"),
