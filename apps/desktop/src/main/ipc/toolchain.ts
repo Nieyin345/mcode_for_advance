@@ -19,29 +19,10 @@
  */
 import type { IpcMain } from "electron";
 import { z } from "zod";
+import { errText, describeInputError } from "@main/lib/ipcError.js";
 import { IPC, ToolchainInstallSchema, ToolchainRemoveSchema } from "@contracts/ipc";
 import { checkToolchain } from "@main/env/toolchain.js";
 import { installTool, isToolInstalling, lastToolError, removeTool } from "@main/env/toolInstall.js";
-
-/**
- * 把校验错翻译成**一行人话**:`字段名: 那句话`。
- *
- * ⚠️ 不能直接把 `err.message` 交出去:zod 的 `ZodError.message` 是一整段 JSON 数组
- * 文本,而这一层的 error 会被面板原样写进那一行。格式与 `ipc/terminal.ts` 那处一致
- * (`mcp/webToolHost.ts` 的 `describeIssues` 也是 `字段名: 那句话`,只是那边多个字段
- * 用 `;` 串起来 —— 这里给用户看第一句就够)。
- */
-function describeInputError(err: z.ZodError): string {
-  const first = err.issues[0];
-  const where = first && first.path.length > 0 ? `${first.path.join(".")}: ` : "";
-  return `入参不合法(${where}${first?.message ?? "没通过校验"})`;
-}
-
-/** catch 里唯一的出口 —— zod 走人话,别的照原样(那些 message 本来就是人写的)。 */
-function errText(err: unknown): string {
-  if (err instanceof z.ZodError) return describeInputError(err);
-  return err instanceof Error ? err.message : String(err);
-}
 
 export function registerToolchainHandlers(ipcMain: IpcMain): void {
   // **无参 handler 不接 raw、也不 parse** —— 与 runtimes.list 同一个写法。

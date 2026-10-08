@@ -423,6 +423,9 @@ const ZOD_JSON = /\[[\s\S]*"code"[\s\S]*\]/;
   check("★ 错误里没有 zod 的 JSON 形状", !ZOD_JSON.test(message), message);
   check("★ 错误里点出了是哪个字段", message.includes("name"), message);
   check("★ 错误里没有堆栈", !message.includes("\n"), message);
+  // 「入参不合法」那句是**共享的一份**(`@main/lib/ipcError`)—— 从前 6 个 handler 各写一份,
+  // 其中 customModel.ts 那份悄悄用成了**全角括号**。这条钉住半角,以后谁再分叉成全角就红。
+  check("★ 括号是半角(与其余 handler 一致,不再有人抄成全角)", message.includes("入参不合法(") && !message.includes("入参不合法（"), message);
 }
 
 // 删档案:不存在的 id 是**幂等**的(删了又删不该报错),但空 id 该被拒绝。

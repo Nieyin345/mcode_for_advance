@@ -40,30 +40,7 @@ import { AddressHistory } from "@main/browser/addressHistory.js";
 import { Bookmarks } from "@main/browser/bookmarks.js";
 import { log } from "@main/lib/logger.js";
 import { z } from "zod";
-
-/**
- * 把校验错翻译成**一行人话**。
- *
- * ⚠️ 不能直接把 `err.message` 交出去:zod 的 `ZodError.message` 是一整段 JSON 数组文本
- * (`[{ "code": "too_small", … "path": ["width"] }]`)。这一层的 error 会被渲染端原样
- * 显示 —— `BrowserPanel.tsx` 的 `setError(res.error)` 把那句话画在浏览器面板**正中间**
- * (那层 `absolute inset-0` 的覆盖),所以用户看到的就是一屏 JSON,还看不出是哪一项不对。
- * 那不是"报错说清楚了",是把内部错误对象的形状漏了出去。
- *
- * 格式与本仓库既有的两处一致(`ipc/terminal.ts` 的 `describeInputError`、
- * `mcp/webToolHost.ts` 的 `describeIssues`,都是 `字段名: 那句话`)。
- */
-function describeInputError(err: z.ZodError): string {
-  const first = err.issues[0];
-  const where = first && first.path.length > 0 ? `${first.path.join(".")}: ` : "";
-  return `入参不合法(${where}${first?.message ?? "没通过校验"})`;
-}
-
-/** catch 里唯一的出口 —— zod 走人话,别的照原样(那些 message 本来就是人写的)。 */
-function errText(err: unknown): string {
-  if (err instanceof z.ZodError) return describeInputError(err);
-  return err instanceof Error ? err.message : String(err);
-}
+import { errText, describeInputError } from "@main/lib/ipcError.js";
 
 export function registerBrowserHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.BROWSER_CREATE, async (_evt, raw) => {

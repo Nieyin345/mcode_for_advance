@@ -12,6 +12,7 @@
 import type { IpcMain } from "electron";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { errText, describeInputError } from "@main/lib/ipcError.js";
 import {
   IPC,
   SaveCustomModelSchema,
@@ -46,34 +47,6 @@ import { log } from "@main/lib/logger.js";
 /** Probe timeout — a healthy endpoint should answer the init handshake within
  *  a few seconds. We abort the SDK query after this to avoid hanging the UI. */
 const TEST_TIMEOUT_MS = 30_000;
-
-/**
- * 把校验错翻译成**一行人话**，再交给渲染端。
- *
- * ⚠️ 不能直接把 `err.message` 交出去：zod 的 `ZodError.message` 是一整段 JSON 数组
- * 文本（`[{"code":"too_small","minimum":1,…,"path":["name"]}]`），而这条通道的 error
- * 会被渲染端**原样写进设置页那行红字**（`CustomModelsPanel.tsx` 的 `{error}`）。用户
- * 看到的就是一屏 JSON —— 那不是"报错说清楚了"，那是把内部错误对象的形状漏了出去。
- *
- * 格式与本仓库既有的那两处一致（`ipc/terminal.ts` 的 `describeInputError`、
- * `mcp/webToolHost.ts` 的 `describeIssues`）：`字段名: 那句话`。这里再补一件事 ——
- * schema 自己写的那几句中文（`网页端必须选择站点`、`不认识的网页端站点：…`）要**原样
- * 透出去**，它们本来就是给用户看的。
- *
- * 只取**第一条** issue：用户一次改一个地方，报第一条就够；把十几条串起来反而没人读。
- */
-function describeInputError(err: z.ZodError): string {
-  const first = err.issues[0];
-  const where = first && first.path.length > 0 ? `${first.path.join(".")}: ` : "";
-  return `入参不合法（${where}${first?.message ?? "没通过校验"}）`;
-}
-
-/** catch 里唯一的出口 —— zod 走人话，别的照原样（那些 message 本来就是人写的，
- *  比如「更新一个不存在的配置」和「新建时必须给密钥」）。 */
-function errText(err: unknown): string {
-  if (err instanceof z.ZodError) return describeInputError(err);
-  return err instanceof Error ? err.message : String(err);
-}
 
 export function registerCustomModelHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.CUSTOM_MODEL_LIST, () => {

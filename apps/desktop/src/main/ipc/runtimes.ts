@@ -26,6 +26,7 @@
  */
 import type { IpcMain } from "electron";
 import { z } from "zod";
+import { errText, describeInputError } from "@main/lib/ipcError.js";
 import {
   IPC,
   RuntimesInstallSchema,
@@ -39,31 +40,6 @@ import {
   installRuntimeFromLocalPath,
   removeRuntime,
 } from "@main/runtimes/runtimeInstaller.js";
-
-/**
- * 把校验错翻译成**一行人话**。
- *
- * ⚠️ 不能直接把 `err.message` 交出去:zod 的 `ZodError.message` 是一整段 JSON 数组文本
- * (`[{"code":"invalid_enum_value","options":[…],"path":["agent"],…}]`),而这一层的
- * `error` 会被面板原样写进 `settings.runtimes.removeFailed` 的 `{error}` 槽位。
- * 用户看到的就是一屏 JSON —— 那不是"报错说清楚了",那是把内部错误对象的形状漏了出去。
- *
- * 格式与 `ipc/terminal.ts` 那处一致(`字段名: 那句话`),那边也是同一个坑修出来的。
- * 措辞再往细里做(把 zod 自带的英文 message 翻成中文)要按 `issue.code` 映射一张表,
- * 那是整个 `main/ipc/` 的收口,不该由这一个文件单独开头 —— 十几处各写一份不一致的
- * 比现在还糟。
- */
-function describeInputError(err: z.ZodError): string {
-  const first = err.issues[0];
-  const where = first && first.path.length > 0 ? `${first.path.join(".")}: ` : "";
-  return `入参不合法(${where}${first?.message ?? "没通过校验"})`;
-}
-
-/** catch 里唯一的出口 —— zod 走人话,别的照原样(那些 message 本来就是人写的)。 */
-function errText(err: unknown): string {
-  if (err instanceof z.ZodError) return describeInputError(err);
-  return err instanceof Error ? err.message : String(err);
-}
 
 export function registerRuntimesHandlers(ipcMain: IpcMain): void {
   // list takes no input (mirrors lsp.list) — nothing to parse.
