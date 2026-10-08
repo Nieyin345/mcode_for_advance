@@ -148,6 +148,20 @@ const zodHandler = async (_e: unknown, raw: unknown) => {
   return z.object({ id: z.string() }).parse(raw);
 };
 recordRpcHandler("session:archive", zodHandler);
+// ★ **无参/全可选方法:agent 省略 `input` 时必须调得通。** 真实 `projects.ts` 的
+// `session:listAll` handler **照抄**在这里(它的入参 limit/offset/projectIds/worktreeKey
+// **全可选**,所以 `app_api_call { method: "session.listAll" }` 不带 input 是合法调用)。
+// 若 `callRpc` 不把 `undefined` 补成 `{}`,`z.object({...all optional}).parse(undefined)`
+// 会报根级 `Required` —— agent 永远调不通这个功能,而 `app_api_describe` 明说它的参数都可选。
+{
+  const { SessionListAllSchema } = await import("@contracts/ipc/session");
+  recordRpcHandler("session:listAll", async (_e, raw) => {
+    const input = SessionListAllSchema.parse(raw); // 与 src/main/ipc/projects.ts:237 一字不差
+    // `parsedOk` 是显式标记 —— `limit` 全缺省时 `JSON.stringify` 会把它整条丢掉,
+    // 拿 `gotLimit` 当"解析成功"的证据会假红。
+    return { sessions: [], hasMore: false, total: 0, parsedOk: true, limit: input.limit ?? null };
+  });
+}
 
 interface Asked { req: ApprovalRequest }
 function ctxWith(opts: { mode?: string; allow?: boolean; always?: Set<string>; noApproval?: boolean } = {}): { ctx: ProviderContext; asked: Asked[] } {
@@ -236,14 +250,24 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
 {
   const calls2: Record<string, unknown[]> = {};
   // 不 clearRpcHandlers():本文件后面的断言还要用先前那批 handler。只覆盖这两条。
+  // 每一条都是**真实存在**的设置键,值是它真正的形状(整块 JSON 字符串、里面嵌着凭据)。
+  const SECRET_VALUES: Record<string, string> = {
+    customModelKeys: JSON.stringify({ c1: "RU5DSVBIRVJFRF9BUFBfS0VZ" }),
+    piProviderKeys: JSON.stringify({ p1: "RU5DSVBIRVJFRF9BUFBfS0VZ" }),
+    codexProviderKeys: JSON.stringify({ c1: "RU5DSVBIRVJFRF9BUFBfS0VZ" }),
+    "relay.vpsConfig": JSON.stringify({ host: "1.2.3.4", sshPort: 22, username: "root", password: "S3cr3t-vps-pw!", publicPort: 7331 }),
+    "onlyoffice.config": JSON.stringify({ baseUrl: "http://x", jwtSecret: "my-jwt-signing-secret-abc" }),
+    "publicMcp.projectLinks": JSON.stringify([{ projectId: "p1", secret: "Pr0j3ctL1nkS3cr3t-abcdefghijklmnop", sessionId: null }]),
+    "mobile.pairedDevices": JSON.stringify([{ deviceId: "dev_ab12", name: "Pixel", pairedAt: 1, lastSeenAt: 1, deviceToken: "0123456789abcdef".repeat(4) }]),
+  };
   recordRpcHandler("setting:get", async (_e, raw) => {
-    const k = (raw as { key?: string }).key;
+    const k = (raw as { key?: string }).key ?? "";
     // 真实 handler 直读设置表,这里照抄那份"密钥本体在表里"的事实。
-    return { value: k === "customModelKeys" ? JSON.stringify({ c1: "RU5DSVBIRVJFRF9BUFBfS0VZ" }) : "ok" };
+    return { value: SECRET_VALUES[k] ?? "ok" };
   });
   recordRpcHandler("setting:getMany", async (_e, raw) => {
     const keys = (raw as { keys?: string[] }).keys ?? [];
-    return Object.fromEntries(keys.map((k) => [k, k === "customModelKeys" ? JSON.stringify({ c1: "RU5DSVBIRVJFRF9BUFBfS0VZ" }) : "ok"]));
+    return Object.fromEntries(keys.map((k) => [k, SECRET_VALUES[k] ?? "ok"]));
   });
   void calls2;
   const { ctx } = ctxWith();
@@ -265,11 +289,50 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
     const r = await call("setting.get", { key }, ctx);
     check(`★ setting.get 不许直读 ${key}`, r.isError === true, textOf(r));
   }
+  // ⚠️ **"整块 JSON、键名不含密钥词"的另几个实例(2026-10-09)。** 它们的键名
+  // (`relay.vpsConfig` / `onlyoffice.config` / `publicMcp.projectLinks` / `mobile.pairedDevices`)
+  // 两道键名正则都不命中,而值是**一个字符串**,里面嵌着 `password`/`jwtSecret`/`secret`/
+  // `deviceToken`。`renderResult` 只按值的**形态**认密钥,认不出前面三个 —— 而
+  // `mobile.pairedDevices` 的令牌**恰好**是 64 位十六进制、被"值的形态"那道偶然拦下,
+  // 但那条判据依赖令牌恰好是这个编码,换个编码就漏。
+  //
+  // 判据立在**`isError === true`(按键名拒读)**上 —— 这是与 customModelKeys 同一条规矩,
+  // 而不是"碰巧被值打码拦下"。撤掉名单 → 这几条立刻红。marker 只作额外保险(证明明文
+  // 确实没进返回文本)。
+  const LEAK_KEYS: Array<[string, string]> = [
+    ["relay.vpsConfig", "S3cr3t-vps-pw!"],
+    ["onlyoffice.config", "my-jwt-signing-secret-abc"],
+    ["publicMcp.projectLinks", "Pr0j3ctL1nkS3cr3t-abcdefghijklmnop"],
+    ["mobile.pairedDevices", "dev_ab12"],
+  ];
+  for (const [key, marker] of LEAK_KEYS) {
+    const r = await call("setting.get", { key }, ctx);
+    check(`★ setting.get 按键名拒读密钥设置键(${key})`, r.isError === true && !textOf(r).includes(marker), textOf(r));
+  }
+  // getMany 夹带同样要拦(与逐条读同一条规矩)。
+  for (const [key, marker] of LEAK_KEYS) {
+    const r = await call("setting.getMany", { keys: ["ui.locale", key] }, ctx);
+    check(`★ setting.getMany 不许夹带 ${key}`, r.isError === true && !textOf(r).includes(marker), textOf(r));
+  }
 }
 {
   const { ctx } = ctxWith({ mode: "bypassPermissions" });
   const r = await call("session.archive", { nope: 1 }, ctx);
   check("参数错误说人话", r.isError === true && textOf(r).includes("参数不对") && textOf(r).includes("app_api_describe"), textOf(r));
+}
+{
+  // ★ **`app_api_call` 明说「无参方法省略 `input`」—— 省略时必须真的调得通。**
+  // 全可选的 `session.listAll` 不带 input 调一次;若 `callRpc` 不补 `{}`,handler 里那句
+  // `SessionListAllSchema.parse(raw)`(与生产一字不差)会抛根级 `Required`,这条立刻红。
+  // 与它并列的还有 `undefined` 与 `null` 两种"空参"写法,一并钉住。
+  const { ctx } = ctxWith();
+  const omitted = await invokeAppTool("app_api_call", { method: "session.listAll" }, "me", ctx);
+  check("★ 全可选方法省略 input 也能调通(不再 (根) Required)", omitted.isError !== true && textOf(omitted).includes("parsedOk"), textOf(omitted));
+  const explicitNull = await call("session.listAll", null, ctx);
+  check("★ input: null 也当无参处理", explicitNull.isError !== true, textOf(explicitNull));
+  // 反向控制:真缺**必填**参数的方法仍然照常报错(补 `{}` 不能把必填校验一起放行)。
+  const stillRejects = await call("session.archive", undefined, ctx);
+  check("正控:缺必填参数的方法仍被拦(未吞掉校验)", stillRejects.isError === true, textOf(stillRejects));
 }
 {
   const { ctx } = ctxWith();

@@ -62,6 +62,27 @@ export const APP_APPROVAL_PREFIX = "mcode-app:";
 const SECRET_SETTING_KEYS: ReadonlySet<string> = new Set([
   "customModelKeys",
   "customModels",
+  // ⚠️ **下面这几条是同一种洞的另几个实例(2026-10-09)。** 它们同样把凭据存成**一整块
+  //    JSON 字符串**、键名又**不含** `key`/`token`/`secret`/`password` 那几个词 ——
+  //   于是 `SECRET_SETTING_KEY_RE` 和 `SECRET_SETTING_STORE_RE` 两道**都绕过去**,
+  //   而它们的**值**里嵌着 `password` / `jwtSecret` / `secret` 这些字段。`setting.get`
+  //   把整块 JSON 当**一个字符串**返回,`redactString` 只按值的**形态**认密钥
+  //   (`sk-…`/`ghp_…`/40+ 位十六进制…),认不出 `"password":"S3cr3t-vps-pw!"` 这种 ——
+  //   于是整段凭据原样交给模型。这与 #105/#106 是同一类"密钥换条路就漏",改法也一样:
+  //   按键名拦在调用之前。判据来自同仓另两处**已经把这几条当密钥**的地方 ——
+  //   `settings/transfer.ts` 的 `EXCLUDED_KEYS`(导出即分享,绝不带密钥)与
+  //   `mobile/MobileHttpServer.ts` 的 `LAN_UNREADABLE_SETTING_KEYS`(局域网可读的手机端
+  //   都不给)。照抄它们的名单,别让同一个事实在三处各写一遍还写岔。
+  /** SSH 主机 + 用户 + **password**(见 `contracts/relay.ts` 的 `RelayVpsConfig`)。 */
+  "relay.vpsConfig",
+  /** 服务地址 + **JWT 签名密钥**(`jwtSecret`,能签发/伪造 OnlyOffice 令牌)。 */
+  "onlyoffice.config",
+  /** 每条项目链接的 `/mcp/<secret>` 明文密钥(见 `publicMcpSession.ts`)。 */
+  "publicMcp.projectLinks",
+  /** 已配对手机的 `{ deviceToken }`(bearer 令牌)。值是 64 位十六进制,现在**恰好**
+   *  被"值的形态"那道拦住,但那条判据依赖令牌恰好是十六进制 —— 换一种编码就漏。按
+   *  键名钉死(手机侧 `LAN_UNREADABLE_SETTING_KEYS` 也是这么钉的)。 */
+  "mobile.pairedDevices",
 ]);
 /** 兜底:名字里带密钥词的设置键也不给。宁可多拦一个键,也不漏一个。 */
 const SECRET_SETTING_KEY_RE =
@@ -184,11 +205,24 @@ export async function gateAppAction(
 
 /* ───────────────────────── 调用 RPC ───────────────────────── */
 
-/** 直接调 handler(不过审批 —— 调用方先 gate)。 */
+/**
+ * 直接调 handler(不过审批 —— 调用方先 gate)。
+ *
+ * ⚠️ **`input === undefined` 要补成 `{}`。** `app_api_call` 的说明明写着「无参方法省略
+ * `input`」,于是模型对 `project.list` / `session.listAll` / `runtimes.list` 这类方法会
+ * **整个不传** —— 到了这里就是 `undefined`。而无参 handler 有的根本不接 `raw`(如
+ * `workflow.list`,没问题),有的却照常 `schema.parse(raw)`;其中**入参全可选的 schema**
+ * (`session.listAll` 的 limit/offset/projectIds/worktreeKey)`z.object({}).parse(undefined)`
+ * 会报根级 `Required`——这个功能对 agent 就**永远调不通**,而报错里没有一个字提示"它其实
+ * 不需要参数"。补一个空对象:全可选/空 schema 照常过,真缺必填参数的方法则拿到更准的
+ * `字段 Required`(而不是根级一句 `(根) Required`)。与各 handler 里 `parse(raw ?? {})`
+ * 同一条约定(见 `ipc/context.ts` / `ipc/mcp.ts`),只是收在这一层做,新加的无参方法
+ * 不必各自记得补。
+ */
 export async function callRpc(entry: { channel: string }, input: unknown): Promise<unknown> {
   const handler = rpcHandlerFor(entry.channel);
   if (!handler) throw new Error(`这个功能在当前版本里没有注册(${entry.channel})`);
-  return handler({}, input);
+  return handler({}, input ?? {});
 }
 
 function errText(err: unknown): string {
