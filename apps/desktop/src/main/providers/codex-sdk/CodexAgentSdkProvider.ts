@@ -353,6 +353,10 @@ export class CodexAgentSdkProvider implements AgentProvider {
     // freeze (there is no pre-write hook; approval params carry only
     // grantRoot, so no recordPre path exists on this provider).
     const snapshot = getOrSetFileSnapshot(req.sessionId, () => new CodexFileSnapshot(req.cwd)) as CodexFileSnapshot;
+    // "providerId/modelId"（与 composer 的 codexAvailableModels 同一形状）——
+    // ContextSnapshot.model 读它就显示在上下文环 / 用量面板的按模型分桶里；
+    // codex 的 tokenUsage 通知不带模型名，只能由这里递进去。
+    const modelAnchor = providerId && modelId ? `${providerId}/${modelId}` : undefined;
     // User-configured per-model context window doubles as the occupancy
     // fallback when the server never reports modelContextWindow (third-party
     // endpoints often don't) — the adapter's hardcoded default would
@@ -371,7 +375,7 @@ export class CodexAgentSdkProvider implements AgentProvider {
         for (const it of turn.items ?? []) items.push(it);
       }
       return items as import("./CodexMessageAdapter.js").ThreadItem[];
-    });
+    }, modelAnchor);
     // 结构化输出（StartTurnRequest.structuredOutput）：Codex 没有原生
     // structured-output —— schema 指令拼进输入文本，轮末 parse 校验；失败附
     // 错误同 thread 追一轮纠错，再失败 turn.notice(structured_invalid) +

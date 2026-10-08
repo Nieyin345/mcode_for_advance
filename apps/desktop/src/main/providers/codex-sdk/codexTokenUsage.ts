@@ -29,11 +29,18 @@ export interface CodexUsage {
  *
  *  ⚠️ Codex/OpenAI `inputTokens` already INCLUDES `cachedInputTokens`
  *  (upstream `non_cached_input = input - cached`, `total = input + output`).
- *  Adding the cached count on top double-counted every cache hit. */
+ *  Adding the cached count on top double-counted every cache hit.
+ *
+ *  `modelId` is the active model ("providerId/modelId") — the codex protocol
+ *  carries no model on the usage notification, so the provider hands it in.
+ *  `ContextSnapshot.model` is read by the context ring (`chat.context.modelLine`)
+ *  and the usage-stats per-model buckets; leaving it unset put every Codex turn
+ *  in the panel's "未知模型" bucket while Claude/Pi sessions showed their model. */
 export function buildCodexTokenSnapshot(
   usage: CodexUsage | null,
   modelContextWindow?: number,
   turnUsage?: CodexUsage | null,
+  modelId?: string,
 ): ContextSnapshot | undefined {
   if (!usage) return undefined;
   const inputTokens = Math.max(0, usage.inputTokens ?? 0);
@@ -65,6 +72,7 @@ export function buildCodexTokenSnapshot(
     maxTokens,
     outputTokens,
     cacheReadTokens: cacheRead,
+    ...(modelId ? { model: modelId } : {}),
     pct,
     warning,
     warnings,

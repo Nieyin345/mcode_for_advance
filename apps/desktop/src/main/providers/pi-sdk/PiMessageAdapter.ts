@@ -190,7 +190,18 @@ export class PiMessageAdapter {
         // completed — emit it as plain content, don't drop it) before the
         // block ids are cleared.
         this.flushThinkHold();
-        if (this.lastMessageId) {
+        // Only an ASSISTANT message is a completed chat message. The SDK also
+        // emits `message_end` for the user-prompt echo and for every
+        // `toolResult` message (see pi-agent-core's agent-loop) — and those
+        // carry no deltas, so `lastMessageId` still points at the previous
+        // assistant message. Emitting `message.complete` for them reused a
+        // stale message id AND made a K-tool-round turn fire ~2K+1 completions,
+        // which the host counts one-per-turn toward the `maxTurns` budget
+        // (RuntimeManager: "message.complete → budgetTurns++"), tripping the
+        // budget many rounds early and truncating the turn. Codex emits exactly
+        // one per assistant message; mirror that here.
+        const role = (event.message as { role?: string } | undefined)?.role;
+        if (role === "assistant" && this.lastMessageId) {
           this.emit({ type: "message.complete", sessionId: this.sessionId, messageId: this.lastMessageId });
         }
         this.blockMessageIds.clear();
@@ -256,13 +267,22 @@ export class PiMessageAdapter {
         }
         break;
       case "compaction_end": {
+        // `compaction_end` fires for aborted (user hit stop) and failed/retrying
+        // compactions too — carrying `aborted` / `willRetry` / `errorMessage`
+        // and an undefined `result`. Emitting the card unconditionally showed a
+        // "上下文被压缩" summary even when NOTHING was compacted, with a bogus
+        // "preTokens: 0" (the placeholder the old comment complained about).
+        // Only a real, completed compaction (a CompactionResult in hand) has a
+        // card to show — mirroring Claude, which emits compact.result solely on
+        // a real `compact_boundary`.
+        if (event.aborted || event.willRetry || event.errorMessage || !event.result) break;
         // Pi's CompactionResult carries real token counts (tokensBefore /
         // estimatedTokensAfter) — surface them in the compact card instead of
         // the 0 placeholder. estimatedTokensAfter may be absent; the card
         // simply omits the "after" readout then.
         const result = event.result;
-        const preTokens = result?.tokensBefore ?? 0;
-        const postTokens = result?.estimatedTokensAfter;
+        const preTokens = result.tokensBefore;
+        const postTokens = result.estimatedTokensAfter;
         this.emit({
           type: "compact.result",
           sessionId: this.sessionId,

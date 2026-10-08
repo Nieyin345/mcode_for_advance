@@ -122,6 +122,9 @@ export class CodexMessageAdapter {
    *  their difference is what THIS turn processed across all its requests. */
   private turnBaseTotal: CodexUsage | null = null;
   private latestTotal: CodexUsage | null = null;
+  /** Active model ("providerId/modelId") for ContextSnapshot.model. Set by
+   *  the provider at construction (the usage notification has no model). */
+  private readonly modelId?: string;
   /** Per-subagent live transcripts, keyed by subagent thread id. Fed by two
    *  sources: live item notifications for the subagent's thread (primary) and
    *  a thread/read reconciliation (bootstrap fallback — fires only while the
@@ -142,8 +145,15 @@ export class CodexMessageAdapter {
      *  only while the live notification path has emitted nothing for the
      *  thread — see handleSubAgentActivity. */
     private readonly readSubagentItems?: (threadId: string) => Promise<ThreadItem[]>,
+    /** Active model ("providerId/modelId"). The codex tokenUsage notification
+     *  carries no model id, so the provider hands it in here — it becomes
+     *  ContextSnapshot.model, which the context ring and the usage-stats
+     *  per-model buckets read. Mirrors Claude/Pi, which set it from their own
+     *  usage messages. */
+    modelId?: string,
   ) {
     this.contextWindowFallback = contextWindowFallback;
+    this.modelId = modelId;
   }
 
   setMainThreadId(id: string): void {
@@ -1012,6 +1022,7 @@ export class CodexMessageAdapter {
       this.lastUsage,
       this.modelContextWindow ?? this.contextWindowFallback,
       turnUsage,
+      this.modelId,
     );
     if (!snapshot) return;
     this.emit({ type: "token-usage.updated", sessionId: this.sessionId, snapshot });

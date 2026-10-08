@@ -114,6 +114,72 @@ test("Pi abort/error finalization never double-emits turn.done after agent_end",
   );
 });
 
+test("Pi emits message.complete once per ASSISTANT message, not per message boundary", () => {
+  // The host counts each `message.complete` as one turn for the `maxTurns`
+  // budget (RuntimeManager.ts: "message.complete → budgetTurns++"). Pi's SDK
+  // emits `message_end` for the user-prompt echo AND for every toolResult
+  // message — not just assistant messages — so emitting one `message.complete`
+  // per message_end made a K-tool-round turn count ~2K+1 turns and tripped the
+  // budget many rounds early (the turn was cut short). Codex emits exactly one
+  // per assistant message (CodexMessageAdapter: on `agentMessage` completed).
+  const { adapter, events } = adapterWithEvents();
+  // User prompt echo.
+  const user = { role: "user", content: [{ type: "text", text: "do it" }] };
+  adapter.dispatch({ type: "message_start", message: user });
+  adapter.dispatch({ type: "message_end", message: user });
+  // Assistant round 1 streams text (allocates the block messageId).
+  adapter.dispatch({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "hi" } });
+  adapter.dispatch({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "hi" }] } });
+  // Two toolResult messages — each fires its own message_end.
+  for (let i = 0; i < 2; i++) {
+    const tr = { role: "toolResult", content: [] };
+    adapter.dispatch({ type: "message_start", message: tr });
+    adapter.dispatch({ type: "message_end", message: tr });
+  }
+  // Assistant round 2 (terminal).
+  adapter.dispatch({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "done" } });
+  adapter.dispatch({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
+
+  const completes = events.filter((e) => e.type === "message.complete");
+  assert.equal(completes.length, 2, `2 assistant rounds → 2 message.complete, got ${completes.length}`);
+});
+
+test("Pi emits no compact card for an aborted / failed / resultless compaction", () => {
+  // `compaction_end` carries `aborted`, `willRetry`, `errorMessage` and a
+  // possibly-undefined `result`. Reading only `result`/`reason` produced a
+  // "上下文被压缩" card even when the compaction was aborted (user hit stop)
+  // or errored and NOTHING was compacted — a plausible-looking-but-wrong
+  // result, since the card then shows a bogus "preTokens: 0". Claude only
+  // emits compact.result on a real `compact_boundary`.
+  const aborted = adapterWithEvents();
+  aborted.adapter.dispatch({
+    type: "compaction_end", reason: "manual", result: undefined, aborted: true, willRetry: false,
+  });
+  assert.equal(
+    aborted.events.filter((e) => e.type === "compact.result").length, 0,
+    "an aborted compaction must not report a completed compaction",
+  );
+
+  const failed = adapterWithEvents();
+  failed.adapter.dispatch({
+    type: "compaction_end", reason: "threshold", result: undefined, aborted: false, willRetry: true,
+    errorMessage: "upstream 500",
+  });
+  assert.equal(failed.events.filter((e) => e.type === "compact.result").length, 0, "a retrying/failed compaction emits no card");
+
+  // Control: a real compaction still surfaces its card + real token counts.
+  const ok = adapterWithEvents();
+  ok.adapter.dispatch({
+    type: "compaction_end", reason: "manual",
+    result: { tokensBefore: 120000, estimatedTokensAfter: 24000 },
+    aborted: false, willRetry: false,
+  });
+  const cards = ok.events.filter((e) => e.type === "compact.result");
+  assert.equal(cards.length, 1, "a completed compaction still emits its card");
+  assert.equal(cards[0].preTokens, 120000);
+  assert.equal(cards[0].postTokens, 24000);
+});
+
 test("Pi per-turn budget reads the turn delta, not the session-cumulative total", () => {
   // Regression: piTokenUsage filled totalProcessedTokens from the SESSION
   // total, and the budget (RuntimeManager reads turnProcessedTokens ??

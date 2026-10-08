@@ -15,6 +15,10 @@ import { turnContextSections } from "@main/providers/contextPrompt.js";
 // 从**纯的那个模块**导入 —— `envPrompt.ts` 拉了 repositories(→ db → electron),
 // 这套 smoke 没桩它。格式化那半本来就是纯的,拆出来才测得到。
 import { formatEnvSections, selectVisibleItems } from "@main/providers/envPromptFormat.js";
+// 三引擎"上下文快照带模型名"的一致性 ---------- 真适配器 + 纯换算,不起模型。
+import { buildCodexTokenSnapshot } from "@main/providers/codex-sdk/codexTokenUsage.js";
+import { buildPiTokenSnapshot } from "@main/providers/pi-sdk/piTokenUsage.js";
+import { CodexMessageAdapter } from "@main/providers/codex-sdk/CodexMessageAdapter.js";
 
 void (0 as unknown as RuntimeManagerSingleton | ClaudeAgentSdkProvider | PiAgentSdkProvider | CodexAgentSdkProvider | BuildPiSkillLoaderOptions);
 
@@ -185,6 +189,41 @@ check(
 );
 check("bridge 没 localUrl 时不静默退回上游地址", !runtime.includes("baseUrl: localUrl ?? cfg.baseUrl"));
 check("bridge 启动失败给用户真实原因", runtime.includes("自定义模型翻译桥启动失败"));
+
+console.log("\n三引擎一致:上下文快照都带模型名");
+// 用量面板 / 上下文环 / 每轮用量记录都读 `snapshot.model`(见 ContextRing 的
+// `chat.context.modelLine`、usageStats 的按模型分桶)。Claude 与 Pi 的适配器都往
+// 快照里写了模型名,只有 Codex 这条**从来没写过** —— 于是 Codex 会话在用量面板里
+// 永远落进"未知模型"那一类,上下文环也不显示模型行。这是"字段一个适配器写了、
+// 另一个从来不写"的跨引擎缺口。
+{
+  const u = { inputTokens: 10_000, cachedInputTokens: 8_000, outputTokens: 500, reasoningOutputTokens: 0 };
+  const direct = buildCodexTokenSnapshot(u, 200_000, null, "openai/gpt-5-codex");
+  check("Codex 快照带模型名(纯换算)", direct?.model === "openai/gpt-5-codex", direct?.model);
+
+  // 端到端:真适配器收一条 tokenUsage 通知,发出的快照要带模型名。
+  const events: Array<{ type: string; snapshot?: { model?: string } }> = [];
+  const mkCtx = () => ({ emit: (e: never) => events.push(e), log: { info() {}, warn() {}, error() {}, debug() {} } });
+  const snap = { setTurnDiff() {}, async freeze() { return []; } };
+  const adapter = new CodexMessageAdapter(
+    mkCtx() as never, "s1", snap as never, undefined, undefined, "openai/gpt-5-codex",
+  );
+  adapter.setMainThreadId("thr-main");
+  adapter.handleNotification({
+    method: "thread/tokenUsage/updated",
+    params: { threadId: "thr-main", turnId: "t", tokenUsage: { last: u, total: u, modelContextWindow: 100_000 } },
+  } as never);
+  adapter.handleNotification({ method: "turn/completed", params: { threadId: "thr-main", turn: { id: "t", status: "completed" } } } as never);
+  const tu = events.filter((e) => e.type === "token-usage.updated");
+  check("Codex 适配器发出快照", tu.length > 0, tu.length);
+  check("★ Codex 快照带模型名(端到端)", tu[tu.length - 1]?.snapshot?.model === "openai/gpt-5-codex", tu[tu.length - 1]?.snapshot?.model);
+}
+
+// 反向钉住:另两家确实都写了(这条能红即说明"一致"这个前提本身被破坏)。
+{
+  const pi = buildPiTokenSnapshot({ tokens: 3000, contextWindow: 200_000, percent: 1.5 }, undefined, "openai/gpt-4o");
+  check("对照:Pi 快照带模型名", pi?.model === "openai/gpt-4o", pi?.model);
+}
 
 console.log(`\nprovider-context smoke: ${total - failures}/${total} passed`);
 if (failures > 0) process.exit(1);
