@@ -740,5 +740,16 @@ console.log("\n安装目录里有个同名的残留文件");
 
 uninstall();
 
+// Windows GNU tar 把 `C:\...` 当远端主机的判据**只有一份**
+// (`@main/lib/tarHostWorkaround.js`)。它从前在 rgInstall 与 pluginManager 各写一份,
+// 分岔时没有任何东西会报 —— 一个坑只在一处绕开,另一条路上用户还是解压失败。这条钉住
+// 那个共享助手认得这个特征串(pluginManager 现在也 import 它)。
+{
+  const { isTarRemoteHostFailure, TAR_REMOTE_HOST_RE } = await import("@main/lib/tarHostWorkaround.js");
+  check("共享判据正则识别 GNU tar 的远端主机报错", TAR_REMOTE_HOST_RE.test("tar: Cannot connect to C: resolve failed"), true);
+  check("该特征串在 win32 上判为真(才触发 --force-local 重试)", isTarRemoteHostFailure("Cannot connect to C: resolve failed") === (process.platform === "win32"), true);
+  check("无关报错不误判", isTarRemoteHostFailure("tar: Unexpected EOF in archive") === false, true);
+}
+
 console.log(`\nrg-install-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exit(1);

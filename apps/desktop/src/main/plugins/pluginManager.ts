@@ -36,6 +36,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { z } from "zod";
 import { matchProjectKey, sameProjectKey } from "@main/lib/projectScope.js";
+import { isTarRemoteHostFailure } from "@main/lib/tarHostWorkaround.js";
 import {
   BUILTIN_MARKETPLACES,
   PLUGINS_ENABLED_SETTING_KEY,
@@ -461,9 +462,8 @@ async function downloadFile(url: string, dest: string): Promise<void> {
   );
 }
 
-/** GNU tar's message when `C:\...` is misread as a remote `host:file` target
- *  (an MSYS/Git Bash tar sitting ahead of System32's bsdtar in PATH). */
-const TAR_REMOTE_HOST_RE = /Cannot connect to .* resolve failed/i;
+/** GNU tar 把 `C:\...` 当成远端 `host:file` 的判据 —— **共享一份**
+ *  (见 `@main/lib/tarHostWorkaround.js`,rg 安装那条解压路也用它)。 */
 
 /** Reject archive members that can resolve outside the fresh staging folder.
  * Platform tar/unzip versions disagree on whether such names are rejected,
@@ -526,7 +526,7 @@ async function extractZip(zipPath: string, dest: string): Promise<void> {
     const tarBin = existsSync(systemTar) ? systemTar : "tar";
     await inspectArchive(zipPath, tarBin);
     let viaTar = await runCommand(tarBin, ["-xf", zipPath, "-C", dest], { timeoutMs: 60_000 });
-    if (!viaTar.ok && TAR_REMOTE_HOST_RE.test(viaTar.message)) {
+    if (!viaTar.ok && isTarRemoteHostFailure(viaTar.message)) {
       viaTar = await runCommand(tarBin, ["--force-local", "-xf", zipPath, "-C", dest], { timeoutMs: 60_000 });
     }
     if (viaTar.ok) return;

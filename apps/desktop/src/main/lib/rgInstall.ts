@@ -39,6 +39,7 @@ import { join } from "node:path";
 import { bundledRgPath, resetRgCache } from "@main/lib/rgSearch.js";
 import { OutBuf } from "@main/lib/outBuf.js";
 import { log } from "@main/lib/logger.js";
+import { isTarRemoteHostFailure } from "@main/lib/tarHostWorkaround.js";
 
 /** Pinned ripgrep release. Kept exact (no ranges) so the download URL stays
  *  deterministic; bump here to update. 14.1.1 is the latest stable. */
@@ -341,10 +342,6 @@ function systemTar(): string {
   return "tar";
 }
 
-/** GNU tar's message when it reads `C:\...` as a remote `host:file` target
- *  (an MSYS/Git Bash tar landing on PATH ahead of System32's bsdtar). */
-const TAR_REMOTE_HOST_RE = /Cannot connect to .* resolve failed/i;
-
 /** Extract with the system tar: bsdtar (Windows/macOS) handles zip AND
  *  tar.gz; GNU tar (Linux) handles tar.gz. */
 function extractArchive(archivePath: string, destDir: string, kind: "zip" | "tgz"): Promise<void> {
@@ -354,7 +351,8 @@ function extractArchive(archivePath: string, destDir: string, kind: "zip" | "tgz
       // A PATH tar that is GNU tar rejects the Windows path before it even looks
       // at the archive. `--force-local` is GNU's own opt-in for colon paths (a
       // healthy bsdtar never needs it), so retry once before giving up.
-      if (process.platform !== "win32" || !TAR_REMOTE_HOST_RE.test(err.message)) throw err;
+      // 判据是共享的(见 tarHostWorkaround.ts,pluginManager 那条解压路也用它)。
+      if (!isTarRemoteHostFailure(err.message)) throw err;
       return runTar(archivePath, destDir, kind, true).then(() => undefined);
     },
   );
