@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-05T00:27:41Z",
-  "updated_at": "2026-10-08T20:33:09Z",
+  "updated_at": "2026-10-08T21:10:16Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -71,9 +71,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "ac9bc06ab50ddd5aaed17f0ce5af0ca3705d103a1595fa7628ae9f10a4de6ccd",
-      "size": 857329,
-      "normalized_sha256": "ac9bc06ab50ddd5aaed17f0ce5af0ca3705d103a1595fa7628ae9f10a4de6ccd"
+      "sha256": "ade1838cad71f6c3c16d646a7aa591b58df564cf42ad1507b2b7953322ba25ca",
+      "size": 857509,
+      "normalized_sha256": "ade1838cad71f6c3c16d646a7aa591b58df564cf42ad1507b2b7953322ba25ca"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -2855,9 +2855,9 @@
     },
     "apps/desktop/scripts/maint-p1-path-smoke/main.ts": {
       "role": "index",
-      "sha256": "245ae0128076d95cd8cad583821d98f54b79d2332d5e4672b61162a3f720075c",
-      "size": 3381,
-      "normalized_sha256": "245ae0128076d95cd8cad583821d98f54b79d2332d5e4672b61162a3f720075c"
+      "sha256": "8897ee3c9691f12affef630c52f81238bf2a711a13dde00793875c8700d0d197",
+      "size": 3983,
+      "normalized_sha256": "81e30aea88ba899cea4a7693e8e38f7a0470f3db053e45bcab70371a48b6e76e"
     },
     "apps/desktop/scripts/maint-p1-path-smoke/run.cjs": {
       "role": "index",
@@ -2999,9 +2999,9 @@
     },
     "apps/desktop/scripts/mcode-admin-smoke/main.ts": {
       "role": "index",
-      "sha256": "9464853e14ae4b1afc237a18d1f075d09a64ad83fdcb8107b9d1bbc8de729e50",
-      "size": 75923,
-      "normalized_sha256": "9464853e14ae4b1afc237a18d1f075d09a64ad83fdcb8107b9d1bbc8de729e50"
+      "sha256": "4d3cf773f574f4200bb9751ab2926d8f1c3a547bd96dae5b1633ab576117c7a6",
+      "size": 77805,
+      "normalized_sha256": "52f232547b7adf42f24eb23d60f6d96b8b0e86ab7afffc54ff75a49cd8b6758e"
     },
     "apps/desktop/scripts/mcode-admin-smoke/run.sh": {
       "role": "index",
@@ -4445,9 +4445,9 @@
     },
     "apps/desktop/scripts/project-init-smoke/main.ts": {
       "role": "index",
-      "sha256": "78c5894f5c3bfc12c5ad46b159a9e1b40e3a48cd271defd7cf9637d8207ef023",
-      "size": 24006,
-      "normalized_sha256": "78c5894f5c3bfc12c5ad46b159a9e1b40e3a48cd271defd7cf9637d8207ef023"
+      "sha256": "e022bf622854520a2e5d1e39a9e4ba3dadb03ff544cedcd8adc96e6044fb5a17",
+      "size": 25543,
+      "normalized_sha256": "e022bf622854520a2e5d1e39a9e4ba3dadb03ff544cedcd8adc96e6044fb5a17"
     },
     "apps/desktop/scripts/project-init-smoke/routes.cjs": {
       "role": "index",
@@ -6071,9 +6071,9 @@
     },
     "apps/desktop/src/main/ipc/files.ts": {
       "role": "index",
-      "sha256": "e13cea2d380dc202c8ddef2551f33b92700d628f8b44fe7674e8f7bc44c39994",
-      "size": 39550,
-      "normalized_sha256": "e13cea2d380dc202c8ddef2551f33b92700d628f8b44fe7674e8f7bc44c39994"
+      "sha256": "33facf98f0c71934caa5a9ea30251072ba2ae4ea512dc1270494295481c479b8",
+      "size": 39898,
+      "normalized_sha256": "33facf98f0c71934caa5a9ea30251072ba2ae4ea512dc1270494295481c479b8"
     },
     "apps/desktop/src/main/ipc/git.ts": {
       "role": "index",
@@ -6857,9 +6857,9 @@
     },
     "apps/desktop/src/main/mcp/toolRules.ts": {
       "role": "index",
-      "sha256": "0a7c513d3f0c34ae42bed410a791b63b130d134f16386749df2b7089c2b0f290",
-      "size": 11475,
-      "normalized_sha256": "0a7c513d3f0c34ae42bed410a791b63b130d134f16386749df2b7089c2b0f290"
+      "sha256": "179ce1e15123d14ee86c5948d7f7db84502d93c31fe480087960fdab334b4362",
+      "size": 11845,
+      "normalized_sha256": "179ce1e15123d14ee86c5948d7f7db84502d93c31fe480087960fdab334b4362"
     },
     "apps/desktop/src/main/mcp/webToolHost.ts": {
       "role": "index",
@@ -8182,9 +8182,9 @@
     },
     "apps/desktop/src/renderer/components/chat/useProjectInitializer.tsx": {
       "role": "index",
-      "sha256": "8ee5162c2f42a913af23e9b7b5ad3bab1922a2aa2e38b0d503d7fe2e6b998ba2",
-      "size": 11746,
-      "normalized_sha256": "8ee5162c2f42a913af23e9b7b5ad3bab1922a2aa2e38b0d503d7fe2e6b998ba2"
+      "sha256": "1992f433950bbfd175e7394f8c73700f128e69d72ab48943e52d2cc358117e6b",
+      "size": 11899,
+      "normalized_sha256": "1992f433950bbfd175e7394f8c73700f128e69d72ab48943e52d2cc358117e6b"
     },
     "apps/desktop/src/renderer/components/customUi/CustomSlotHosts.tsx": {
       "role": "index",
@@ -8632,9 +8632,9 @@
     },
     "apps/desktop/src/renderer/components/memory/ProjectInitManager.tsx": {
       "role": "index",
-      "sha256": "16dc41c1d9f2eba77a88212435d68f78eca75a0237e0903642381c0a01d802b9",
-      "size": 12935,
-      "normalized_sha256": "16dc41c1d9f2eba77a88212435d68f78eca75a0237e0903642381c0a01d802b9"
+      "sha256": "077b638602724e16de96a1241d33805b271409b09ab4b54bacb542de95edacfc",
+      "size": 12953,
+      "normalized_sha256": "077b638602724e16de96a1241d33805b271409b09ab4b54bacb542de95edacfc"
     },
     "apps/desktop/src/renderer/components/memory/reviewSelection.ts": {
       "role": "index",
@@ -11415,9 +11415,9 @@
     },
     "docs/底层修复记录-2026-10-07.md": {
       "role": "index",
-      "sha256": "59631af37e012037a5a0f20b9db8bd693181f9313f7fed92ef23afbc185f58dd",
-      "size": 112370,
-      "normalized_sha256": "dde72722c16f03b1ef89668c2042e90784880e2a244ddeae69d00917d12ca62b"
+      "sha256": "af930d8e8f7130ea5a7e4aa4bae1f1af5850bc9644c7086cdfc6af84df9e1bf3",
+      "size": 114274,
+      "normalized_sha256": "ef44c27fa59e2f017f0851df3f864255d6575ae11de24a8f1090d9f1198793d6"
     },
     "docs/文档代码对照复核-2026-10-03.md": {
       "role": "index",
@@ -11625,9 +11625,9 @@
     },
     "packages/contracts/src/ipc/projectInit.ts": {
       "role": "index",
-      "sha256": "a53326d5f52a8ce14c856fcd34e35e869505b5e760690d82ba801654c0cd8ab2",
-      "size": 11199,
-      "normalized_sha256": "a53326d5f52a8ce14c856fcd34e35e869505b5e760690d82ba801654c0cd8ab2"
+      "sha256": "9f250907758e4f56e63fc7979508605ad33cef8d5740839071889d6739ee15b9",
+      "size": 11677,
+      "normalized_sha256": "9f250907758e4f56e63fc7979508605ad33cef8d5740839071889d6739ee15b9"
     },
     "packages/contracts/src/ipc/providers.ts": {
       "role": "index",
