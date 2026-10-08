@@ -27,6 +27,7 @@ import { getMainWindow, sendToRenderer } from "@main/window.js";
 import { SettingRepo } from "@main/store/repositories.js";
 import { SessionRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
+import { registerSessionCleanupHook } from "@main/lib/sessionCleanupHooks.js";
 import { translate, type MessageId } from "@renderer/lib/i18n/core.js";
 
 /** Path to the app icon for OS notifications. Same source image as the
@@ -81,6 +82,20 @@ class NotificationManager {
 
   setPrefs(prefs: NotificationPrefs): void {
     this.prefs = { ...prefs };
+  }
+
+  /**
+   * 会话真删了 —— 把它那条子代理花名册摘掉。
+   *
+   * `prevSubagents` 只在某会话发出**空花名册**的 `subagent.update` 时才会自己删条目
+   * (`next.size === 0`),而删会话走的是 `rowDeletion.ts`,那条路上**没有** `subagent.update`。
+   * 于是任何开过后台子代理的会话,它的条目会一直留在这个单例里到应用退出 —— 长跑 + 多会话
+   * 就是一张只涨不落的表(与 `dropAgentMail` 同一类;那个也曾漏在 `rowDeletion` 之外)。
+   *
+   * 只删自己那份状态:不影响运行时(它由 `rowDeletion` 自己按顺序收尾)。
+   */
+  forgetSession(sessionId: string): void {
+    this.prevSubagents.delete(sessionId);
   }
 
   /** The main event observer. Decides whether an OS notification is warranted. */
@@ -285,3 +300,9 @@ class NotificationManager {
 
 /** Singleton. Started in index.ts after DB init. */
 export const notificationManager = new NotificationManager();
+
+// 删会话/删项目时把该会话的花名册摘掉。**在加载时登记,而不是让 `rowDeletion` import 本
+// 模块** —— 本模块 `import { Notification } from "electron"`,被 `rowDeletion` 直接 import
+// 会把 electron 拖进每一套 bundle 了 `rowDeletion` 的 smoke 的打包图(那些桩不含
+// `Notification`),十几套会在 esbuild 阶段就红。走零依赖的叶子注册表最稳。
+registerSessionCleanupHook((sessionId) => notificationManager.forgetSession(sessionId));

@@ -576,7 +576,34 @@ console.log("\n设完之后这一刻的行为");
 }
 
 
-/* ──────────────── 8. setPrefs 的坏形状也走同一份人话出口 ──────────────── */
+/* ──────────────── 8. 会话删除要摘掉子代理花名册(只涨不落那一类) ──────────────── */
+
+console.log("\n删会话时花名册要摘掉");
+
+{
+  // `prevSubagents` 只在该会话发出**空花名册**时才自己删条目;删会话那条路
+  // (`rowDeletion.ts`)不发 `subagent.update`,所以要靠收尾钩子显式摘。不摘的话开过后台
+  // 子代理的会话会一直留在这个单例里直到应用退出。
+  //
+  // ⚠️ 走的是 `rowDeletion` 真正调的那个入口(`runSessionCleanupHooks`)—— 不是直接
+  // 调 `forgetSession`,否则这条断言验的是"方法存在",不是"删会话时真的会摘"。
+  const { runSessionCleanupHooks } = await import("@main/lib/sessionCleanupHooks.js");
+  const rosterSize = () =>
+    ((notificationManager as unknown as { prevSubagents: Map<string, unknown> }).prevSubagents).size;
+
+  const sid = "s_roster_leak";
+  // 喂一条带着 running 子代理的花名册 —— 它会 `set` 进 `prevSubagents`。
+  mgrOnEvent({ type: "subagent.update", sessionId: sid, agents: [{ taskId: "t1", status: "running" }] } as RuntimeEvent);
+  check("★ 花名册进了 prevSubagents(前置条件成立)", rosterSize() >= 1, rosterSize());
+
+  // 会话被删 —— 生产里 `rowDeletion` 就是调这个。
+  runSessionCleanupHooks(sid);
+  const after = (notificationManager as unknown as { prevSubagents: Map<string, unknown> }).prevSubagents;
+  check("★ 删会话的收尾钩子摘掉了该会话的花名册", !after.has(sid), [...after.keys()]);
+}
+
+
+/* ──────────────── 9. setPrefs 的坏形状也走同一份人话出口 ──────────────── */
 
 console.log("\nsetPrefs 的入参失败也是人话");
 

@@ -13,6 +13,7 @@ import { broadcastProjectsChanged, broadcastSessionDeleted } from "@main/lib/ses
 import { cancelWorkflowRun } from "@main/orchestration/runner.js";
 import { dropBackflow } from "@main/lib/pendingBackflow.js";
 import { dropAgentMail } from "@main/lib/agentMail.js";
+import { runSessionCleanupHooks } from "@main/lib/sessionCleanupHooks.js";
 import { disposeAgentSession } from "@main/mcp/agentSessionCleanup.js";
 
 /** 系统项目(后台自动化的外键归属)不能删 —— 调用方据此给出各自的错误形态。 */
@@ -38,6 +39,10 @@ export function deleteSessionEverywhere(id: string): void {
   // 也一直被 `agent-mail-smoke` 逐条测着,却**没有任何生产代码调它** —— 两个模块级 Map
   // 于是只涨不落,删掉的会话的条目留到应用退出。
   dropAgentMail(id);
+  // 带 electron 依赖的那些模块(如 `NotificationManager` 按会话留的子代理花名册)在
+  // 加载时把自己登记进 `lib/sessionCleanupHooks.ts` —— 这里跑一遍,不必 import 它们
+  // (直接 import 会把 electron 拖进每一套 bundle 了 `rowDeletion` 的 smoke)。
+  runSessionCleanupHooks(id);
   // Release the runtime (interrupt + approval/bridge/snapshot cleanup)
   // BEFORE the row goes. Without this the runtime entry leaked for the
   // app's lifetime, and a running turn kept streaming into the dead
@@ -81,6 +86,7 @@ export function deleteProjectEverywhere(id: string): { sessions: number; stopped
     if (cancelWorkflowRun(sid)) stopped += 1;
     dropBackflow(sid);
     dropAgentMail(sid);
+    runSessionCleanupHooks(sid);
     disposeAgentSession(sid);
     // 按会话残留状态(`lastEnvFingerprint`)同理 —— 级联把这个项目的会话全带走,每一条
     // 都欠一遍(见 `deleteSessionEverywhere` 上那条的同款理由)。
