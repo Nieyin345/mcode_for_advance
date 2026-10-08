@@ -46,14 +46,14 @@ await test('shared workspace guard rejects library symlink into private app stat
 });
 await test('root symlink outside authorized documents cannot be promoted to a workspace', async () => {
   assert.equal(await realpath(escape), await realpath(dataRoot));
-  await assert.rejects(resolveModuleResource(leaked, isKnownWorkspaceRoot), /workspace|outside|root/i);
+  await assert.rejects(resolveModuleResource(leaked, isKnownWorkspaceRoot), /未知工作区|工作区在其受信根之外|资源在工作区之外/);
 });
 await test('production workflow query rejects an implicitly trusted symlink-root escape', async () => {
-  await assert.rejects(host.invokeForWorkflow(call('core.file-report', 'info', escape, leakedPath, 'wf-escape')), /workspace|outside|root/i);
+  await assert.rejects(host.invokeForWorkflow(call('core.file-report', 'info', escape, leakedPath, 'wf-escape')), /未知工作区|工作区在其受信根之外|资源在工作区之外/);
 });
 await test('imported menu module cannot use the same symlink root to read app state', async () => {
   await host.install(EXAMPLE_MODULE);
-  await assert.rejects(host.invoke(call(EXAMPLE_MODULE.id, 'inspect', escape, leakedPath, 'menu-escape')), /workspace|outside|root/i);
+  await assert.rejects(host.invoke(call(EXAMPLE_MODULE.id, 'inspect', escape, leakedPath, 'menu-escape')), /未知工作区|工作区在其受信根之外|资源在工作区之外/);
   assert.ok(host.catalog().workflowTargets?.every(target => target.moduleId !== EXAMPLE_MODULE.id));
 });
 await test('explicitly relocated library and its nested documents remain usable', async () => {
@@ -75,7 +75,7 @@ await test('a file symlink leaving a legitimate root remains denied', async () =
   // Use a directory junction on Windows, where creating a file symlink needs
   // developer privileges; the target is still a regular file outside the root.
   await symlink(internal, join(docs, 'external-directory'), linkKind);
-  await assert.rejects(host.invokeForWorkflow(call('core.file-report', 'info', library, join(library, 'external-directory', 'private.txt'), 'file-escape')), /workspace|outside|root/i);
+  await assert.rejects(host.invokeForWorkflow(call('core.file-report', 'info', library, join(library, 'external-directory', 'private.txt'), 'file-escape')), /未知工作区|工作区在其受信根之外|资源在工作区之外/);
 });
 await test('uninstall cancels its running task and removes only its menu contribution', async () => {
   const { ModuleHost } = await import('../../src/main/modules/ModuleHost.js');

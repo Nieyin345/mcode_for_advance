@@ -507,7 +507,7 @@ try {
       contextOf({ cwd: root, moduleCall: callOf({ moduleId: "user.demo", requestId: "wf:user" }) }),
     );
     assert.equal(outcome.status, "failed");
-    assert.match(outcome.error ?? "", /builtin read-only/);
+    assert.match(outcome.error ?? "", /工作流需要一个已注册的内置只读贡献/);
   });
 
   await test("real host: a forged core id without builtin registration is denied", async () => {
