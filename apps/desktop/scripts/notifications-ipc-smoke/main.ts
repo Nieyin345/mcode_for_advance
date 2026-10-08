@@ -45,7 +45,6 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { z } from "zod";
 import type { IpcMain } from "electron";
 import type { RuntimeEvent } from "@contracts/runtime";
 import type { NotificationPrefs } from "@contracts/ipc";
@@ -498,13 +497,22 @@ console.log("\n点通知之后窗口怎么被拉起来");
 
   // ⑤ 入参本身:缺 sessionId 要被 schema 挡住(silent 落成一个空字符串的话,渲染端
   //    会去跳一个不存在的会话 —— 看起来就是"点了没反应")。
+  //
+  //    ⚠️ 挡住**不够**,理由还必须是**人话**:`NotificationsPanel` 的 catch 把
+  //    `err.message` 原样弹成 toast。裸 `Schema.parse(raw)` 抛的是 `ZodError`,它的
+  //    `.message` 是一整段 JSON 数组文本 —— 用户看到的是内部 JSON。所以判据钉在两处:
+  //    (1) 确实被挡下;(2) 信息是「入参不合法(字段: 原因)」而不是 zod JSON。
   let schemaThrew = false;
+  let schemaMsg = "";
   try {
     await focusSession({});
   } catch (err) {
-    schemaThrew = err instanceof z.ZodError;
+    schemaThrew = true;
+    schemaMsg = err instanceof Error ? err.message : String(err);
   }
   check("缺 sessionId 的入参被 schema 挡住", schemaThrew);
+  check("★ 挡住时说的是人话(入参不合法…),不是一段 zod JSON", schemaMsg.startsWith("入参不合法"), schemaMsg);
+  check("★ 错误里没有 zod 的 JSON 形状", !/\[[\s\S]*"code"[\s\S]*\]/.test(schemaMsg), schemaMsg);
 }
 
 /* ──────────────── 7. focus 这条路不该顺手弹通知 ──────────────── */
@@ -565,6 +573,25 @@ console.log("\n设完之后这一刻的行为");
   });
   resetShown();
   eq("再打开:又弹了(证明上面是被偏好挡住的)", wouldNotify(turnDoneEvt), true);
+}
+
+
+/* ──────────────── 8. setPrefs 的坏形状也走同一份人话出口 ──────────────── */
+
+console.log("\nsetPrefs 的入参失败也是人话");
+
+{
+  let msg = "";
+  let threw = false;
+  try {
+    await setPrefs({ mutedProjectIds: 42 });
+  } catch (err) {
+    threw = true;
+    msg = err instanceof Error ? err.message : String(err);
+  }
+  check("mutedProjectIds 给非数组 → 被挡下", threw, msg);
+  check("★ setPrefs 也说的是人话(入参不合法…)", msg.startsWith("入参不合法"), msg);
+  check("★ setPrefs 错误里没有 zod JSON", !/\[[\s\S]*"code"[\s\S]*\]/.test(msg), msg);
 }
 
 /* ──────────────── 收尾 ──────────────── */
