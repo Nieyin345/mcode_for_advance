@@ -26,6 +26,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { Button, ConfirmDialog, EmptyState, ErrorNote, Field, InfoHint, Input, Select, Switch } from "@renderer/components/ui/index.js";
@@ -235,8 +236,16 @@ export function HooksPanel() {
 
   const remove = async (): Promise<void> => {
     if (!draft) return;
+    setSaveError(null);
     try {
-      await api.hooks.remove({ id: draft.id });
+      // `hooks.remove` 写盘失败时回 `{ok:false, error}`(见 `main/hooks/store.ts`
+      // 的 `commitHooks` —— 临时文件写不进去 / 改名失败)。从前不看它:用户确认删除、
+      // 编辑器被关掉、列表重拉后那条**还在**,而屏幕上没有任何一句话。
+      const res = await api.hooks.remove({ id: draft.id });
+      if (!res.ok) {
+        setSaveError(t("settings.hooks.removeFailed", { error: res.error ?? "" }));
+        return;
+      }
       await load();
       select(null);
     } catch (err) {
@@ -249,11 +258,27 @@ export function HooksPanel() {
   const toggleEnabled = async (hook: HookSpec): Promise<void> => {
     const next = { ...hook, enabled: !hook.enabled };
     try {
-      await api.hooks.save({ hook: next });
+      // `hooks.save` 写盘失败时回 `{ok:false, error}`。从前不看它:开关被乐观地拨过去、
+      // 又 `load()` 重拉 → 开关**弹回原位**,用户以为"点了没反应";而正在编辑同一条时
+      // 草稿的 `enabled` 也被改成了那个**从没落盘**的值。
+      //
+      // 走 toast 而不是 `setSaveError`:这个开关在**列表行**上,没选中任何一条时编辑器
+      // 根本不渲染(`saveError` 也就没地方显示)—— 错误必须挂在一条**始终可见**的通道上。
+      const res = await api.hooks.save({ hook: next });
+      if (!res.ok) {
+        useToastStore.getState().push({
+          kind: "error",
+          title: t("settings.hooks.toggleFailed", { error: res.error ?? t("settings.hooks.saveFailed") }),
+        });
+        return;
+      }
       await load();
       setDraft((cur) => (cur && cur.id === hook.id ? { ...cur, enabled: next.enabled } : cur));
     } catch (err) {
-      setSaveError((err as Error).message);
+      useToastStore.getState().push({
+        kind: "error",
+        title: t("settings.hooks.toggleFailed", { error: (err as Error).message }),
+      });
     }
   };
 

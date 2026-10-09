@@ -816,6 +816,43 @@ console.log("\n渲染端的旧回包竞态");
   );
 }
 
+/* ────────────────────────── 14. 钩子面板:写盘失败的出口 ────────────────────────── */
+
+console.log("\n钩子面板的写盘失败出口");
+
+// ★ `hooks:save` / `hooks:remove` 写盘失败时回 `{ok:false, error}`（`main/hooks/store.ts`
+//   的 `commitHooks` → `writeRaw`：临时文件写不进去 / 改名失败 / 数据根只读）。设置页里
+//   有**三处**调它们，其中 `save()`（编辑器里那颗保存按钮）一直有 `if (!res.ok)` 出口，
+//   而列表上的**开关** `toggleEnabled`（乐观拨过去 + 重拉）与 `remove`（确认删除后）
+//   **从前不看返回值** —— 用户点了、开关弹回原位 / 那条还在，屏幕上却一句话没有（"点了没
+//   反应"那一类）。判据钉源码：这两条都必须在拿到结果后检查 `res.ok` 并报错，且
+//   `toggleEnabled` 的错误要挂在**始终可见**的 toast 通道上（没选中任何一条时编辑器不渲染，
+//   `saveError` 没地方显示）。
+{
+  const { readFileSync } = await import("node:fs");
+  const hooksPanel = readFileSync(join(process.cwd(), "src/renderer/components/settings/HooksPanel.tsx"), "utf8");
+  const code = hooksPanel.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+
+  // `remove`：拿到的回包必须检查 ok，失败时写进保存错误（编辑器仍开着，可见）。
+  check(
+    "★ 钩子 remove 检查 {ok:false} 并报错(从前不看返回值,删失败静默)",
+    /const res = await api\.hooks\.remove\(\{[^}]*\}\);\s*if \(!res\.ok\)\s*\{\s*setSaveError\(/.test(code),
+    code.match(/api\.hooks\.remove\([^\n]*/g),
+  );
+
+  // `toggleEnabled`：拿到的回包必须检查 ok，失败时走 toast（列表行上、编辑器可能没开）。
+  check(
+    "★ 钩子开关 toggleEnabled 检查 {ok:false} 并走 toast 报错(从前开关静默弹回)",
+    /const res = await api\.hooks\.save\(\{ hook: next \}\);\s*if \(!res\.ok\)\s*\{\s*useToastStore\.getState\(\)\.push\(/.test(code),
+    code.match(/api\.hooks\.save\(\{ hook: next \}\)/g),
+  );
+  check(
+    "★ 钩子开关使用了 toast 通道(错误在列表上始终可见)",
+    code.includes("useToastStore.getState().push("),
+    "",
+  );
+}
+
 /* ────────────────────────── 收尾 ────────────────────────── */
 
 console.log(`\nsettings-panel-smoke:${total - failures}/${total} 通过`);
