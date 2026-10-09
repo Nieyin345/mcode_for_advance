@@ -772,13 +772,17 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
     const input = LibraryRevealFileSchema.parse(raw);
     const item = LibraryRepo.get(input.id);
     if (!item) return { ok: false, error: "找不到这篇文献" };
-    const wantMd = input.which === "md";
-    const rel = wantMd ? item.mdPath : item.pdfPath;
-    if (!rel) {
-      return { ok: false, error: wantMd ? "还没有转换产物" : "还没有 PDF" };
+    // ⚠️ 路径来源走**共享的 `entryRootAbsPath`** —— 与 `openFile` / `entryPath` 同一条。
+    // 从前这里只读 `item.pdfPath` / `item.mdPath`,于是**通用文件条目**(导入的 .docx/
+    // 图片,只有 `filePath`、没有 pdfPath)永远回「还没有 PDF」,而调用方
+    // (`LibraryItemContextMenu` 的「在文件夹中打开」)是 `void api…` 无 toast ——
+    // 用户点了什么都不发生,也没有任何报错。三条来源(filePath → pdfPath → mdPath)
+    // 的优先顺序在那一个函数里,不该在这里各写一份。
+    const abs = entryRootAbsPath(item, input.which === "md" ? "md" : undefined);
+    if (!abs) {
+      return { ok: false, error: input.which === "md" ? "还没有转换产物" : "这个文件找不到" };
     }
-    const abs = fromLibraryRelative(rel);
-    if (!existsSync(abs)) return { ok: false, error: `文件不在了:${rel}` };
+    if (!existsSync(abs)) return { ok: false, error: `文件不在了:${abs}` };
     // 打开**所在文件夹**。原来用 `shell.showItemInFolder`(在父目录里选中该文件),
     // 但那个 API 在这台机器上不成(原因见 main/lib/reveal.ts)—— 用户报的就是
     // 「在文件夹中显示点不开」。打开所在文件夹同样达到目的。

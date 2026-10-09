@@ -282,6 +282,30 @@ console.log("\n6. readMarkdown 的图片解析不许越界（符号链接/juncti
 
 /* ──────────────── 收尾 ──────────────── */
 
+// 附:revealFile 必须与 entryPath/openFile 同源地取路径(filePath → pdfPath → mdPath),
+// 否则**通用文件条目**(导入的 .docx/图片,只有 filePath)的「在文件夹中打开」会静默失效
+// (主进程回「还没有 PDF」,而调用方 `void api…` 无 toast —— 用户点了什么都不发生)。
+{
+  const { openedDirectories, resetReveal } = await import("./stubs/reveal.js");
+  const revealFile = (raw: unknown): Promise<{ ok: boolean; error?: string }> => {
+    const fn = handlers.get(IPC.LIBRARY_REVEAL_FILE);
+    if (!fn) throw new Error("没注册 LIBRARY_REVEAL_FILE");
+    return Promise.resolve(fn(null, raw)) as Promise<{ ok: boolean; error?: string }>;
+  };
+  resetReveal();
+  const sha = "e".repeat(64);
+  const rel = join("imported", "ee", "ee", `${sha}.docx`);
+  const abs = join(LIB, rel);
+  mkdirSync(join(LIB, "imported", "ee", "ee"), { recursive: true });
+  writeFileSync(abs, "docx bytes");
+  const item = LibraryRepo.upsert({ title: "导入的 Word" });
+  LibraryRepo.setFilePath(item.id, rel); // 通用条目只有 filePath,没有 pdfPath
+
+  const res = await revealFile({ id: item.id });
+  check("★ 通用文件条目(只有 filePath)的「在文件夹中打开」不再静默失败", res.ok === true, res);
+  eq("★ 揭的就是它本体所在的目录", openedDirectories[0], join(LIB, "imported", "ee", "ee"));
+}
+
 rmSync(TMP, { recursive: true, force: true });
 console.log(`\nlibrary-entry-path-smoke: ${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exit(1);

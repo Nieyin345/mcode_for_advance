@@ -36,6 +36,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --alias:@main/claude/RuntimeManager.js=./scripts/fixtures/library-stubs/runtimeManager.ts \
   --alias:@main/browser/BrowserManager.js=./scripts/fixtures/library-stubs/browserManager.ts \
   --alias:@main/workflows/seed.js=./scripts/library-delete-smoke/stubs/workflowsSeed.ts \
+  --alias:@main/lib/reveal.js=./scripts/library-entry-path-smoke/stubs/reveal.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 export MCODE_SMOKE_DATA_ROOT="$DATA"
