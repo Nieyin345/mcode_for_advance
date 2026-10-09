@@ -772,6 +772,28 @@ eq("调了一圈没往设置表里写输出风格的选择", SettingRepo.get(AGE
 const stillOnDisk = stylesOf(await outputStyleList({})).filter((s) => s.source === "user").map((s) => s.id);
 eq("  用户写进去的那几个风格都还在(没有被顺手改写)", stillOnDisk.includes("早安"), true);
 
+/* ────────────────────────── 13. 渲染端加载的旧回包竞态守卫 ────────────────────────── */
+
+console.log("\n渲染端的旧回包竞态");
+
+// ★ `UsagePanel` 切换预设(今天/7天/30天/全部)时会 `await api.usage.stats({preset})`。
+//   按钮虽 `disabled={loading}`,但从点击到重渲染之间有一小段窗口能再点一次 —— 两个
+//   in-flight 请求按完成先后写 state 的话,后回的那次会盖掉先用那个,面板显示的是
+//   **上一次预设**的数据(与按钮高亮对不上)。仓库里同类加载都补了请求序号守卫
+//   (GitPanel 的 scanSeqRef / GitHistoryView 的 commitsSeqRef / libraryStore 的
+//   openItemSeqRef),这里判据钉在**源码**上(组件本身跑不进无头,只能这样守)。
+{
+  const { readFileSync } = await import("node:fs");
+  const usagePanel = readFileSync(join(process.cwd(), "src/renderer/components/settings/UsagePanel.tsx"), "utf8");
+  // 两件都要有:①每次调用**自增**序号(只检查"有个 ref"会假绿 —— 光删自增那一行,
+  // 回包核对那句还在,断言照样绿);②回包时比对。
+  check(
+    "★ UsagePanel 加载有 *Seq 守卫(每次自增 + 回包核对)",
+    /const seq = \+\+loadSeqRef\.current;/.test(usagePanel) && usagePanel.includes("seq !== loadSeqRef.current"),
+    usagePanel.match(/loadSeqRef[^\n]*/g),
+  );
+}
+
 /* ────────────────────────── 收尾 ────────────────────────── */
 
 console.log(`\nsettings-panel-smoke:${total - failures}/${total} 通过`);

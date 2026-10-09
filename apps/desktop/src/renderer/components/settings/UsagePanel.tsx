@@ -122,17 +122,24 @@ export function UsagePanel() {
     el.style.left = `${Math.min(Math.max(tip.x, half + 4), max)}px`;
   }, [tip]);
 
+  const loadSeqRef = useRef(0);
   const load = useCallback(async (p: UsageStatsPreset) => {
+    // ⚠️ **请求序号挡住旧回包。** 预设按钮虽 `disabled={loading}`,但从点击到重渲染之间
+    // 有一小段窗口能再点一次(两次点击 → 两个 in-flight 的 load);按完成先后写 state 的话,
+    // 后回的那次会盖掉先用那个,面板显示的是**上一次预设**的数据 —— 与按钮高亮对不上。
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     try {
       const res = await api.usage.stats({ preset: p });
+      if (seq !== loadSeqRef.current) return; // 有更新的一次在飞,这次作废
       setResult(res);
       setError(null);
     } catch (err) {
+      if (seq !== loadSeqRef.current) return;
       console.error("UsagePanel load failed:", err);
       setError((err as Error).message);
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, []);
 
