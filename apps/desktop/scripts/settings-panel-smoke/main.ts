@@ -806,6 +806,14 @@ console.log("\n渲染端的旧回包竞态");
     !/throw new Error\("[A-Z][a-z]+ /.test(skillsPanel),
     skillsPanel.match(/throw new Error\("[^"]*"/g),
   );
+  // ★ `localStorage.getItem("mcode.skills.leftW")` 跑在 `useState` 初始化器里 —— 读抛
+  //   (`SecurityError`:存储被禁用 / 嵌入式上下文)会让整块面板渲染不出来(白屏)。同文件的
+  //   `expanded` 那条同款读取**早就 guard 了**,这条曾漏 —— 判据:那一行必须在 `try` 里。
+  check(
+    "★ SkillsPanel 读 localStorage 的 leftW 有 try 守卫(存储被禁时不白屏)",
+    /try \{[^}]*localStorage\.getItem\("mcode\.skills\.leftW"\)/s.test(skillsPanel),
+    skillsPanel.match(/localStorage\.getItem\([^)]*\)/g),
+  );
 }
 
 /* ────────────────────────── 收尾 ────────────────────────── */

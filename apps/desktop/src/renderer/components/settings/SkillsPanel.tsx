@@ -320,8 +320,16 @@ export function SkillsPanel() {
   // ── Resizable left column ── persisted width, dragged via the handle on
   // the aside's right edge.
   const [leftW, setLeftW] = useState<number>(() => {
-    const v = Number(localStorage.getItem("mcode.skills.leftW"));
-    return Number.isFinite(v) && v >= 160 && v <= 480 ? v : 220;
+    // ⚠️ **与上面 `expanded` 那条同款守卫。** `localStorage` 在读时也可能抛
+    // (`SecurityError`:存储被禁用 / 嵌入式上下文),而这里跑在 `useState` 初始化器里
+    // —— 抛出去就是整块面板渲染不出来。缺守卫时,一个禁用了存储的环境打开「技能」页
+    // 会白屏;上面那条早就 guard 了,这条漏了。
+    try {
+      const v = Number(localStorage.getItem("mcode.skills.leftW"));
+      return Number.isFinite(v) && v >= 160 && v <= 480 ? v : 220;
+    } catch {
+      return 220;
+    }
   });
   const dragRef = useRef<{ startX: number; startW: number } | null>(null);
   const onDragHandleMouseDown = (e: React.MouseEvent) => {
