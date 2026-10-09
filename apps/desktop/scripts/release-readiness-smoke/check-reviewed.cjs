@@ -51,8 +51,13 @@ function picker() {
   const cls = sf.statements.find(n => ts.isClassDeclaration(n) && n.name?.text === 'BrowserManagerImpl');
   const method = cls.members.find(n => n.name?.getText(sf) === 'installPickerListener'); assert.ok(method);
   const constants = sf.statements.filter(n => ts.isVariableStatement(n) && n.declarationList.declarations.some(d => d.name.getText(sf).startsWith('PICK_')));
+  // `PICK_HTML_CAP` 现在是 `PICKER_HTML_CAP + 1`(从 pickerScript 导入,防止两处常量漂开),
+  // 而本夹具只抽顶层 `PICK_*` 声明 —— 少了这个绑定,顶层那句 `const PICK_HTML_CAP =
+  // PICKER_HTML_CAP + 1` 会抛 "PICKER_HTML_CAP is not defined"。按真值从 pickerScript 取。
+  const pickerCap = /\bPICKER_HTML_CAP\s*=\s*(\d+)/.exec(read('src/main/browser/pickerScript.ts'))?.[1];
+  assert.ok(pickerCap, 'harness must read PICKER_HTML_CAP from pickerScript');
   const sent = []; let listener;
-  const Factory = new Function('ipcMain', 'sendToRenderer', 'IPC', compile(constants.map(n => n.getText(sf)).join('\n') + '\nclass Fixture {' + method.getText(sf) + '}\n') + 'return Fixture;')({ on: (_, fn) => { listener = fn; } }, (...args) => sent.push(args), { BROWSER_EVENT: 'browser:event' });
+  const Factory = new Function('ipcMain', 'sendToRenderer', 'IPC', 'PICKER_HTML_CAP', compile(constants.map(n => n.getText(sf)).join('\n') + '\nclass Fixture {' + method.getText(sf) + '}\n') + 'return Fixture;')({ on: (_, fn) => { listener = fn; } }, (...args) => sent.push(args), { BROWSER_EVENT: 'browser:event' }, Number(pickerCap));
   const object = new Factory(); object.wcToBrowser = new Map([[7, 'tab']]); object.browsers = new Map([['tab', { pickMode: false }]]); object.installPickerListener();
   return { object, sent, send: (value, id = 7) => listener({ sender: { id, getURL: () => 'https://actual.example/' } }, value) };
 }
