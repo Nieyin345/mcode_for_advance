@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import type { MemoryManageInput, MemoryManageResult } from "@contracts/memory";
 import { ProjectRepo } from "@main/store/repositories.js";
-import { memoryRoot, listMemoryFiles, readMemoryFileWithRaw, saveMemoryFile, memoryHistory, readHistory, restoreMemory } from "./store.js";
+import { listMemoryFiles, readMemoryFileWithRaw, saveMemoryFile, memoryHistory, readHistory, restoreMemory } from "./store.js";
 import { notifyMemoryChanged } from "@main/memory/broadcast.js";
 const digest = (s: string) => createHash("sha256").update(s).digest("hex");
 /** 原生记忆源的扫描上限(每 owner)。超出的部分会被**报出来**,不是静默丢弃。 */
