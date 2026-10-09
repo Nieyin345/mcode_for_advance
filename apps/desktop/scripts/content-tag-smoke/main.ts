@@ -25,6 +25,7 @@ import {
   makeContentTag,
   makeFileTag,
   makeQuoteTag,
+  pasteBlock,
   TAG_PREVIEW_CHARS,
 } from "@renderer/lib/contentTag.js";
 
@@ -137,6 +138,19 @@ check(
   promptWithPaste.includes("pasted content"),
   promptWithPaste,
 );
+
+// ★ 粘贴块的分隔文本是**唯一一份**(`pasteBlock`):composer 与消息气泡的「复制」共用它。
+//   从前两处各拼一遍,而且已经漂了 —— 气泡那边漏了全局序号。判据:composer 产出的那段
+//   必须**逐字等于** `pasteBlock(1, content)`。
+{
+  const content = makeContentTag("粘贴正文").content;
+  const one = composePromptWithTags("", [makeContentTag("粘贴正文")]);
+  check("★ composer 的粘贴块逐字等于共享 pasteBlock(1, …)", one === pasteBlock(1, content), { one, expect: pasteBlock(1, content) });
+  // 序号是全局第几个:两个粘贴块 → 1 与 2。
+  const two = composePromptWithTags("", [makeContentTag("甲"), makeContentTag("乙")]);
+  check("★ 第二个粘贴块序号是 2", two.includes("pasted content 2 "), two);
+  check("★ 序号从 1 起(不是 0)", pasteBlock(1, "x").startsWith("--- pasted content 1 "), pasteBlock(1, "x"));
+}
 
 // 对照：文件 tag 仍然只是一行 `@路径`。
 const fileTag = makeFileTag("D:/proj/x.ts");

@@ -326,6 +326,20 @@ function cryptoRandomId(): string {
   return browserUuid();
 }
 
+/**
+ * 粘贴块的分隔文本 —— **唯一的一份**。
+ *
+ * composer 发给模型的那段(`composePromptWithTags`)与消息气泡「复制」时重建文本的
+ * `blocksToText`(MessageRow)必须**逐字一致**,否则用户复制出来的东西 ≠ 实际发出去
+ * 的东西。从前两处各拼一遍字符串,而且已经漂了:这里带全局序号 `N`,气泡那边漏了 ——
+ * 复制出来的文本跟发给模型的对不上。
+ *
+ * `index` 是**全局第几个粘贴块**(从 1 起),与 `composePromptWithTags` 里那个 `pasteIdx` 同义。
+ */
+export function pasteBlock(index: number, content: string): string {
+  return `--- pasted content ${index} (${content.length} chars) ---\n${content}\n--- end ---`;
+}
+
 /** Compose the final prompt string from the textarea text + all tags.
  *  Tags are appended so the model can clearly see "user typed X, plus these
  *  N attachments". Order: typed text first, then tags in array order.
@@ -366,9 +380,7 @@ export function composePromptWithTags(
       parts.push(tag.content);
     } else {
       pasteIdx += 1;
-      parts.push(
-        `--- pasted content ${pasteIdx} (${tag.content.length} chars) ---\n${tag.content}\n--- end ---`,
-      );
+      parts.push(pasteBlock(pasteIdx, tag.content));
     }
   }
   const tagBlock = parts.join("\n\n");

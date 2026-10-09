@@ -49,10 +49,16 @@ export function isImagePath(filePath: string): boolean {
   ].some((ext) => lower.endsWith(ext));
 }
 
-/** True for binary file types the editor can neither edit nor preview (Office
- *  docs, archives, binaries, audio/video, fonts, PDF). Mirrors `isUnsupported()`
- *  in FileEditor.tsx. These default to preview mode so the user sees the
- *  "can't preview" notice instead of garbled Monaco content. */
+/** True for file types that should **default to preview mode** on first open:
+ *  binary/archival/audio-video/fonts, plus Office 老格式与 PDF —— 这些都不该直接丢进
+ *  Monaco 变成乱码。
+ *
+ *  ⚠️ **不是 `FileEditor.isUnsupported()` 的镜像。** 从前这句注释写着 "Mirrors
+ *  `isUnsupported()` in FileEditor.tsx",而两份早就不同了:FileEditor 那份**刻意**拿掉了
+ *  `.pdf`(归 `PdfPreviewPane`,见它那里的注释),也从来没有 Office 老格式(归 OnlyOffice)。
+ *  两份判据服务的是**两件事**:这份决定"首次打开默认用哪个视图",那份决定"Monaco 能不能
+ *  编辑"。服务不同目的的两份清单本来就不该是同一份 —— 别再照"镜像"去对齐(对齐会把 PDF
+ *  从"默认预览"里踢出去,反而错)。 */
 export function isUnsupportedPath(filePath: string): boolean {
   const lower = filePath.toLowerCase();
   return [

@@ -7,6 +7,7 @@
  */
 import { useState, useRef, useEffect, useMemo, memo } from "react";
 import { cn } from "@renderer/lib/cn.js";
+import { pasteBlock } from "@renderer/lib/contentTag.js";
 import { MessageCustomMenu } from "@renderer/components/customUi/CustomSlotHosts.js";
 import { IconSend2, IconCopy, IconCheck, IconPaperclip, IconX, IconPencil, IconRefresh } from "@renderer/lib/icons.js";
 import type { Block, ChatMessage, TurnMeta, PromptImage } from "@renderer/stores/sessionStore.js";
@@ -377,6 +378,10 @@ export const MessageRow = memo(function MessageRow({
  *  assistant replies. */
 function blocksToText(blocks: Block[]): string {
   const out: string[] = [];
+  // 粘贴块在 composer 那边编号是**按全局第几个粘贴**走的(`composePromptWithTags` 的
+  // `pasteIdx`),所以这里也得跟着数 —— 照抄 "--- pasted content (N chars) ---" 是**漏了
+  // 编号**的旧格式,与真正发出去的那份对不上,用户复制出来的文本自然也不等于发给模型的那份。
+  let pasteIdx = 0;
   for (const b of blocks) {
     if (b.kind === "text") {
       out.push(b.text);
@@ -384,9 +389,10 @@ function blocksToText(blocks: Block[]): string {
       const t = b.text.trim();
       if (t) out.push(`> ${t.replace(/\n/g, "\n> ")}`);
     } else if (b.kind === "attachment") {
-      // Mirror the composer's delimited format so copied output matches
-      // what was actually sent to the model.
-      out.push(`--- pasted content (${b.content.length} chars) ---\n${b.content}\n--- end ---`);
+      // 与 composer 的分隔格式**逐字一致** —— 共用 `pasteBlock`(见 contentTag.ts):
+      // 从前两处各拼一遍字符串,而且已经漂了(这里漏了全局序号)。
+      pasteIdx += 1;
+      out.push(pasteBlock(pasteIdx, b.content));
     }
     // tool_use and error blocks are intentionally omitted — they're
     // procedural UI, not part of the conversational payload to copy.

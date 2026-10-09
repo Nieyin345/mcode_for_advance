@@ -817,8 +817,6 @@ export function TurnPanel({
   const startedAt = turnMeta?.startedAt ?? now;
   const duration = Math.max(0, (turnMeta?.endedAt ?? now) - startedAt);
 
-  // 明细里的工具调用数 —— 运行中台头右侧的"N 步"用它显示。
-  const liveStepCount = toolBlocks.length;
   const running = !completed;
 
   return (
