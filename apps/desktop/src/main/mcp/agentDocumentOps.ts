@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { ConsoleTextDecoder } from "@main/lib/outBuf.js";
 
 export type AgentPdfOperation =
   | { type: "delete"; pageIndexes: number[] }
@@ -16,21 +17,27 @@ interface Captured {
 
 let pythonExecutablePromise: Promise<string | null> | null = null;
 
-function runCaptured(exe: string, args: string[], timeoutMs = 120_000): Promise<Captured> {
+function runCaptured(exe: string, args: string[], timeoutMs = 120_000, env?: NodeJS.ProcessEnv): Promise<Captured> {
   return new Promise((resolve, reject) => {
-    const child = spawn(exe, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(exe, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"], ...(env ? { env: { ...process.env, ...env } } : {}) });
     let stdout = "";
     let stderr = "";
     let settled = false;
     const cap = 4 * 1024 * 1024;
+    // 每条流**各一份**流式解码器 —— `data` 给的是字节块,边界能落在多字节字符中间,
+    // 逐块 `toString("utf8")` 会把那个字符切成两半、各自变 U+FFFD(整份输出从此损坏)。
+    // 别在数据里存半个字符,与 `agentTools.ts` / `agentProcessSessions.ts` 的孪生同款:
+    // 用共享的 ConsoleTextDecoder(顺带也扛中文 Windows 上 cmd 的 GBK 输出)。
+    const outDec = new ConsoleTextDecoder();
+    const errDec = new ConsoleTextDecoder();
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       try { child.kill("SIGKILL"); } catch { /* already gone */ }
       reject(new Error(`${exe} 超过 ${timeoutMs}ms 没结束`));
     }, timeoutMs);
-    child.stdout.on("data", (d: Buffer) => { if (stdout.length < cap) stdout += d.toString("utf8"); });
-    child.stderr.on("data", (d: Buffer) => { if (stderr.length < cap) stderr += d.toString("utf8"); });
+    child.stdout.on("data", (d: Buffer) => { if (stdout.length < cap) stdout += outDec.write(d); });
+    child.stderr.on("data", (d: Buffer) => { if (stderr.length < cap) stderr += errDec.write(d); });
     child.once("error", (err) => {
       if (settled) return;
       settled = true;
@@ -41,6 +48,9 @@ function runCaptured(exe: string, args: string[], timeoutMs = 120_000): Promise<
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      // 进程结束时解码器里可能还压着最后半个字符 —— 吐出来。
+      if (stdout.length < cap) stdout += outDec.end();
+      if (stderr.length < cap) stderr += errDec.end();
       resolve({ stdout, stderr, code });
     });
   });
@@ -69,6 +79,21 @@ async function requirePython(): Promise<string> {
   if (!py) throw new Error("这个文档操作需要 Python；当前 PATH 里没有可用的 python/python3/py");
   return py;
 }
+
+/**
+ * 交给 Python 子进程的环境变量 —— **强制它按 UTF-8 输出**。
+ *
+ * 这里是 `agentTools.ts`(`PYTHON_DOCUMENT_ENV`)那份的孪生。`runCaptured` 只把
+ * `stdout`/`stderr` 当 **UTF-8** 解码(`d.toString("utf8")`),可 Python 默认按**系统
+ * 代码页**写重定向流 —— 中文 Windows 上是 **GBK**。于是同一份文档工具,`agentTools`
+ * 那条(早已强制 UTF-8)读得对,DOCX XML / Excel 这条(DOCX 正文、sheet 名、错误消息)
+ * 却是一串 U+FFFD:`DOCX part 里带中文 → 拿回去是乱码`,带 emoji 时更直接
+ * `UnicodeEncodeError` 让整个操作失败。(2026-10-10 审查发现,与 866815e5 漏改的这一处同型。)
+ *
+ * `errors.replace` 只是兜底,真正的修法是让 Python **别用 GBK 写**。只改我们自己起的
+ * 子进程环境,**绝不**动 `process.env`、也不改任意 shell 命令的编码。
+ */
+const PYTHON_DOCUMENT_ENV = { PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" };
 
 function tempPath(ext: string): string {
   return path.join(tmpdir(), `mcode-agent-${randomUUID()}${ext}`);
@@ -132,7 +157,7 @@ async function renderMarkdownPdf(markdown: string, outputPath: string): Promise<
       " pages.append(im)",
       "pages[0].save(out,save_all=True,append_images=pages[1:],resolution=150.0)",
     ].join("\n");
-    const second = await runCaptured(py, ["-c", fallback, mdPath, outputPath], 120_000);
+    const second = await runCaptured(py, ["-c", fallback, mdPath, outputPath], 120_000, PYTHON_DOCUMENT_ENV);
     if (second.code !== 0) {
       throw new Error(`PDF 生成失败。pandoc:${first.stderr.trim()}；Pillow:${second.stderr.trim()}`);
     }
@@ -215,7 +240,7 @@ export async function writePdf(input: {
         "with open(dst,'xb') as f: w.write(f)",
         "print(len(pages))",
       ].join("\n");
-      const res = await runCaptured(py, ["-c", script, source, out, opsPath], 120_000);
+      const res = await runCaptured(py, ["-c", script, source, out, opsPath], 120_000, PYTHON_DOCUMENT_ENV);
       if (res.code !== 0) {
         await fs.rm(out, { force: true }).catch(() => undefined);
         throw new Error(`修改 PDF 失败:${res.stderr.trim() || res.stdout.trim()}`);
@@ -231,7 +256,7 @@ export async function writePdf(input: {
 
 async function pdfPageCount(abs: string): Promise<number> {
   const py = await requirePython();
-  const res = await runCaptured(py, ["-c", "from pypdf import PdfReader;import sys;print(len(PdfReader(sys.argv[1]).pages))", abs], 30_000);
+  const res = await runCaptured(py, ["-c", "from pypdf import PdfReader;import sys;print(len(PdfReader(sys.argv[1]).pages))", abs], 30_000, PYTHON_DOCUMENT_ENV);
   if (res.code !== 0) throw new Error(`读取 PDF 页数失败:${res.stderr.trim()}`);
   return Number.parseInt(res.stdout.trim(), 10) || 0;
 }
@@ -276,7 +301,7 @@ export async function editExcelRange(input: {
       "wb.save(tmp)",
       "print(json.dumps({'sheet':sheet,'range':coords,'cells':height*width},ensure_ascii=False))",
     ].join("\n");
-    const res = await runCaptured(py, ["-c", script, abs, input.range, payload, tmp], 120_000);
+    const res = await runCaptured(py, ["-c", script, abs, input.range, payload, tmp], 120_000, PYTHON_DOCUMENT_ENV);
     if (res.code !== 0) throw new Error(`Excel range 写入失败:${res.stderr.trim() || res.stdout.trim()}`);
     await fs.rename(tmp, abs);
     const meta = JSON.parse(res.stdout.trim()) as { sheet: string; range: string; cells: number };
@@ -318,7 +343,7 @@ export async function readDocxXml(input: {
     " pretty=MD.parseString(raw).toprettyxml(indent='  ')",
     " print(pretty,end='')",
   ].join("\n");
-  const res = await runCaptured(py, ["-c", script, abs, part], 60_000);
+  const res = await runCaptured(py, ["-c", script, abs, part], 60_000, PYTHON_DOCUMENT_ENV);
   if (res.code !== 0) throw new Error(`读取 DOCX XML 失败:${res.stderr.trim() || res.stdout.trim()}`);
   const lines = res.stdout.split(/\r?\n/);
   const slice = lines.slice(offset - 1, offset - 1 + limit);
@@ -368,7 +393,7 @@ export async function editDocxXml(input: {
       " print(json.dumps({'replacements':total,'parts':touched},ensure_ascii=False))",
     ].join("\n");
     const part = input.part ? normalizeDocxPart(input.part) : "";
-    const res = await runCaptured(py, ["-c", script, abs, payload, tmp, part, String(expected)], 120_000);
+    const res = await runCaptured(py, ["-c", script, abs, payload, tmp, part, String(expected)], 120_000, PYTHON_DOCUMENT_ENV);
     if (res.code !== 0) throw new Error(`DOCX XML 修改失败:${res.stderr.trim() || res.stdout.trim()}`);
     await fs.rename(tmp, abs);
     const meta = JSON.parse(res.stdout.trim()) as { replacements: number; parts: string[] };

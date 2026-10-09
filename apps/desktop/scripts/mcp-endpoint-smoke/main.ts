@@ -1335,6 +1335,63 @@ const docxAfter = await host.callTool(
 check("DOCX XML 修改后可再次读取且内容已变化", docxAfter.text.includes("<w:t>After Marker</w:t>"), docxAfter.text);
 eq("Excel/DOCX 结构化编辑在 acceptEdits 档不重复弹卡", approvalCalls.length, 0);
 
+// ★ 文档工具那条私有 `runCaptured`(`agentDocumentOps.ts`)只把 Python 的 stdout 当
+//   UTF-8 解码,却**没**像 `agentTools.ts` 的孪生(866815e5 的 `PYTHON_DOCUMENT_ENV`)
+//   那样强制 Python 按 UTF-8 输出。Python 默认按系统代码页写重定向流 —— 中文 Windows
+//   上是 GBK —— **GBK 编不出的字符(emoji、生僻字)会让整个操作直接 UnicodeEncodeError
+//   失败**(不是"读回来是乱码"那么轻)。这一条用带 emoji 的 `<w:t>` 钉住 env 那一半。
+{
+  const zhDocxPath = path.join(CWD, "zh-body.docx");
+  await runFixturePython(
+    [
+      "import sys,zipfile",
+      "p=sys.argv[1]",
+      // \u / \U 转义保持源码纯 ASCII(argv 编码无关);写进 zip 的是真正的 UTF-8 中文+emoji。
+      "doc='<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body><w:p><w:r><w:t>\\u7814\\u7a76\\u8bba\\u6587\\U0001f600</w:t></w:r></w:p></w:body></w:document>'",
+      "with zipfile.ZipFile(p,'w') as z: z.writestr('word/document.xml',doc)",
+    ].join("\n"),
+    [zhDocxPath],
+  );
+  const zhDocx = await host.callTool(
+    "agent_read_docx_xml",
+    { path: "zh-body.docx", limit: 200 },
+    { sessionId: "s1" },
+  );
+  check(
+    "★ 正文里的中文+emoji 读回来无损(Python 子进程按 UTF-8 输出,否则 GBK 编码直接失败)",
+    !zhDocx.isError && zhDocx.text.includes("研究论文😀"),
+    zhDocx.text,
+  );
+
+  // ★ 同一条 `runCaptured` 还漏了**跨块多字节**这半:它逐块 `d.toString("utf8")`,
+  //   而 `data` 是字节块、边界能落在一个多字节字符中间 —— 那个字符被切成两半、各自变
+  //   U+FFFD(整份 DOCX XML 从此损坏)。`agentTools.ts` / `agentProcessSessions.ts` 的孪生
+  //   都走共享的 `ConsoleTextDecoder`(半个字符留到下一块),只有这里手搓了一份裸解码。
+  //   一份大正文(全多字节、跨好几个 64KB 管道块)能稳定踩出来。
+  const bigDocxPath = path.join(CWD, "big-body.docx");
+  await runFixturePython(
+    [
+      "import sys,zipfile",
+      "p=sys.argv[1]",
+      // 在 Python 里现造大正文,免得 argv 塞不下。'\\u' 转义让 argv 保持纯 ASCII。
+      "body='\\u6c49\\u5b57\\u6d4b\\u8bd5'*15000",
+      "doc='<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body><w:p><w:r><w:t>'+body+'</w:t></w:r></w:p></w:body></w:document>'",
+      "with zipfile.ZipFile(p,'w') as z: z.writestr('word/document.xml',doc)",
+    ].join("\n"),
+    [bigDocxPath],
+  );
+  const bigDocx = await host.callTool(
+    "agent_read_docx_xml",
+    { path: "big-body.docx", limit: 200 },
+    { sessionId: "s1" },
+  );
+  check(
+    "★ 大正文跨管道块时多字节字符不被切坏(流式解码器,与 agentTools 那份同款)",
+    !bigDocx.isError && bigDocx.text.includes("汉字测试") && !bigDocx.text.includes("�"),
+    bigDocx.text.length,
+  );
+}
+
 const wrote = await host.callTool(
   "agent_write_file",
   { path: "note.md", content: "第一行:桥冒烟\n第二行:替换前\n" },
