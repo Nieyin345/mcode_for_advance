@@ -490,6 +490,16 @@ if (MODE === "write") {
   check("missing in-flight journal fails closed", workflowReplayError(doc, undefined) !== null);
   const command = new Map([["extension.condition", { runner: { kind: "command" as const } }]]);
   check("a condition-like name cannot whitelist a command", workflowReplayError(custom, ["pure"], command) !== null);
+
+  // 报错点名的是节点的**标题**(用户在图上认的那个),不是存档里的内部 id ——
+  // 与同仓每一条点名节点的消息同规矩(library.ts / workflowValidation / runner.ts)。
+  // 用户画一张带命令节点「训练脚本」的图,被中断后看到的是「n_cmd_1」等于什么都没说。
+  const titled = { ...doc, nodes: [
+    { id: "n_cmd_1", type: "mcode.command", title: "训练脚本", params: {}, position: { x: 0, y: 0 } },
+  ] };
+  const replayMsg = workflowReplayError(titled, ["n_cmd_1"]);
+  check("被中断的危险节点按标题点名", replayMsg !== null && replayMsg.includes("训练脚本"), replayMsg);
+  check("报错里不出现内部节点 id", replayMsg !== null && !replayMsg.includes("n_cmd_1"), replayMsg);
 }
 
 console.log(`\n${total - failures}/${total} passed`);

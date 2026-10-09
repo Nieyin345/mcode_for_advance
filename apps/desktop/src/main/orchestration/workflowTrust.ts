@@ -155,19 +155,27 @@ export function workflowReplayError(
   if (inFlightNodeIds === undefined) {
     return "旧版运行未记录中断时正在执行的节点，可能重复命令或写入；请检查结果后重新发起运行";
   }
-  const risky = inFlightNodeIds.filter((id) => {
+  // 报给用户的是节点的**标题**(退回 id),不是它在存档里的内部 id —— 与同仓每一条
+  // 点名节点的消息同一条规矩(`library.ts` 的 `where`、`workflowValidation` 的 `labelOf`、
+  // `runner.ts` 的 `displayTitle`)。用户在图上是按标题认节点的:画一张带「训练脚本」
+  // 的图,报出的是「n_l8x2k_ab12」等于什么都没说,只能照着 id 去图上一个个找。
+  const risky = inFlightNodeIds.flatMap((id): string[] => {
     const node = doc.nodes.find((entry) => entry.id === id);
-    // Branch and trigger nodes don't run external code. All other nodes,
-    // including missing/third-party types and model agents, may have effects.
-    if (!node) return true;
+    // 图上找不到这个节点(存档比图旧,或 id 对不上):没有标题可显示,只能退回原 id,
+    // 且**失败关闭**(当成可能有副作用)。
+    if (!node) return [id];
     // With a runtime catalog, missing types fail closed. The fallback is only
     // for callers without a catalog and recognizes reserved pure builtins.
     const kind = manifests ? manifests.get(node.type)?.runner.kind
       : ({ "mcode.branch": "branch", "mcode.trigger": "trigger", "mcode.condition": "condition" } as Record<string, string>)[node.type];
-    return kind !== "branch" && kind !== "trigger" && kind !== "condition";
+    // 分支、触发器、条件不跑外部代码 —— 不算危险节点。
+    return kind === "branch" || kind === "trigger" || kind === "condition"
+      ? [] : [node.title || node.id];
   });
-  if (risky.length > 0) {
-    return `旧运行中「${risky.join("、")}」被中断时可能已产生文件、命令或网络副作用；为避免自动重放，请先核对结果，再重新发起运行`;
+  // 标题可能重名(用户给两个节点起同一个名字),去重后仍保留出现顺序。
+  const named = [...new Set(risky)];
+  if (named.length > 0) {
+    return `旧运行中「${named.join("、")}」被中断时可能已产生文件、命令或网络副作用；为避免自动重放，请先核对结果，再重新发起运行`;
   }
   return null;
 }
