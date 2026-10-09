@@ -31,7 +31,7 @@
  * "等它跑完",不是"断言它成功"。真的失败只有三种:spawn 起不来、超时被杀、被信号终止。
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { isAbsolute, resolve, sep } from "node:path";
 import {
   COMMAND_OUTPUT_TAIL_CHARS,
@@ -51,10 +51,13 @@ interface ProtocolResult {
 /**
  * 把 `entry` 解析成一个绝对路径。**落在清单目录外就返回 null,调用方负责拒绝。**
  *
- * 两道闸:
+ * 三道闸:
  *  1. 词法层:绝对路径直接拒(`entry` 的定义就是"相对清单目录");
  *  2. 终审:resolve 之后必须仍在清单目录内 —— 挡的是 `../../x` 这种**词法上合法、
- *     语义上越界**的写法。
+ *     语义上越界**的写法;
+ *  3. realpath:清单目录里一个 **junction / 符号链接**指向目录外时,词法层看着仍在里
+ *     层、物理上已经出了目录 —— 与 `pluginManifest.resolveInRoot` 同一道闸(这个函数
+ *     头上本来就写着"规则与它同一条",少了这一闸就是那两处**又分了家**)。
  *
  * `manifestDir` 缺席(内置类型没有文件)也返回 null。
  */
@@ -64,6 +67,19 @@ export function resolveEntryScript(entry: string, manifestDir: string | undefine
   const root = resolve(manifestDir);
   const target = resolve(root, entry);
   if (target !== root && !target.startsWith(root + sep)) return null;
+  // 只有真存在的路径才谈得上"物理上在不在里层":不存在时没有可解的物理路径,行为与
+  // 从前一字不变(照样返回词法路径,由调用方的 `existsSync` 报「脚本不在」)。存在时
+  // 再解链接 —— 目录里一个 junction 指向目录外,词法层看着在里、物理上已经出了目录。
+  if (existsSync(target)) {
+    try {
+      const realRoot = realpathSync(root);
+      const realTarget = realpathSync(target);
+      if (realTarget !== realRoot && !realTarget.startsWith(realRoot + sep)) return null;
+    } catch {
+      // 解不动(权限/坏链接)—— 证明不了它在里层,按越界处理(失败关闭)。
+      return null;
+    }
+  }
   return target;
 }
 
@@ -88,7 +104,19 @@ function consumeProtocolLine(
         ...(typeof value.message === "string" ? { message: value.message } : {}),
       });
     } else if (match[1] === "result" && payload && typeof payload === "object") {
-      state.result = payload as ProtocolResult;
+      // **逐字段收,不把 payload 原样当结果用。** 这里的 payload 是**第三方脚本**打的,
+      // 而它一个手滑(把 summary 打成一个对象、把 outputs 打成数组)就会让
+      // `NodeOutcome.summary` 变成非字符串 —— 下游调度器 `producedTextOf` 拿它
+      // `.trim()`,整条运行当场抛,不止这一步失败。同一个协议 `commandRunner` 早就是
+      // 逐字段收的(见那边的 `consumeProtocolLine`),这一支与它对齐。
+      const value = payload as Record<string, unknown>;
+      state.result = {
+        ...(typeof value.summary === "string" ? { summary: value.summary } : {}),
+        ...(value.outputs && typeof value.outputs === "object" && !Array.isArray(value.outputs)
+          ? { outputs: value.outputs as Record<string, unknown> }
+          : {}),
+        ...(Array.isArray(value.artifacts) ? { artifacts: value.artifacts as NodeArtifact[] } : {}),
+      };
     }
   } catch {
     /* 协议行解析不了就当普通输出 —— 不因为它让整步失败 */

@@ -24,7 +24,8 @@
  */
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveEntryScript, runEntryScript } from "@main/orchestration/entryRunner.js";
@@ -106,6 +107,39 @@ eq(
   resolveEntryScript("./count.py", undefined),
   null,
 );
+
+// ★ **junction / 符号链接不许借"看着在里层"的路径逃出去。** 清单目录里一个指向目录外
+//   的 junction,词法层(`resolve` 后的前缀比较)认不出它 —— 只有解析链接(realpath)
+//   之后才知道物理上已经出了目录。这正是 `pluginManifest.resolveInRoot` 那道闸,本函数
+//   头上写着"规则与它同一条"(少了这一闸就是又分了家)。
+{
+  const LINK = join(PLUGIN, "escape");
+  let made = false;
+  try {
+    if (process.platform === "win32") {
+      execFileSync("cmd", ["/c", "mklink", "/J", LINK, OUTSIDE], { stdio: "pipe" });
+    } else {
+      symlinkSync(OUTSIDE, LINK, "dir");
+    }
+    made = true;
+  } catch {
+    // 造不出来(权限/平台)就跳过这一档,别把结论押在造夹具上。
+  }
+  if (made) {
+    eq(
+      "★ 清单目录里的 junction 指向目录外 → 越界被拒",
+      resolveEntryScript("escape/secret.py", PLUGIN),
+      null,
+    );
+    check(
+      "★ 里层的正常文件仍照常解析(junction 那道闸不误伤)",
+      resolveEntryScript("./count.py", PLUGIN) === join(PLUGIN, "count.py"),
+      resolveEntryScript("./count.py", PLUGIN),
+    );
+  } else {
+    check("（跳过:这个环境建不出 junction 夹具）", true);
+  }
+}
 
 /* ──────────────── 2. 命令行怎么拼 ──────────────── */
 
@@ -217,6 +251,28 @@ console.log("\n协议与失败");
   eq("★ 协议行的 summary 盖过输出尾部", out.summary, "数完了");
   check("★ 协议行的 outputs 进产出", (out.outputs as { count?: number })?.count === 42, out.outputs);
   check("协议行进进度回调", progress.some((p) => p.percent === 50), progress);
+}
+
+{
+  // ★ **畸形协议 payload 不许把结果污染成非字符串。** 协议行是**第三方脚本**打的,
+  //   一个手滑(把 summary 打成一个对象/数字)曾会让 `state.result` 原样收下整个 payload
+  //   —— 于是 `NodeOutcome.summary` 变成非字符串,而下游调度器的 `producedTextOf` 拿它
+  //   `.trim()`,**整条运行当场抛**(不止这一步失败)。`commandRunner` 早就是逐字段收的,
+  //   这一支必须与它对齐。
+  const fake = recordingSpawn({
+    stdout:
+      '@@mcode:result {"summary":{"中":"毒"},"outputs":[1,2]}\n' +
+      "hello\n",
+    code: 0,
+  });
+  const out = await runEntryScript(
+    { script: "./count.py", manifestDir: PLUGIN, timeoutMs: 0, signal: new AbortController().signal },
+    { spawn: fake.spawn },
+  );
+  eq("★ 畸形协议的 summary(对象)被丢,退回输出尾部", out.summary, "hello");
+  check("★ summary 一定是字符串(下游 .trim() 不会抛)", typeof out.summary === "string", out.summary);
+  // 数组不是合法的 outputs —— 原样收的话会把下标 `0`/`1` 铺进产出对象。
+  check("★ 非对象的 outputs 被丢(没有把数组下标铺进产出)", !("0" in (out.outputs ?? {})), out.outputs);
 }
 
 {

@@ -119,8 +119,29 @@ export async function runCodeNode(a: {
       if (!payload) return true;
       try {
         const value = JSON.parse(payload[2]);
-        if (payload[1] === "progress") a.onProgress?.(value);
-        if (payload[1] === "result") result = value;
+        // **逐字段收,不把解析出来的 JSON 原样塞进去。** 这里消费的是**用户代码**
+        // 打的协议行:一个手滑(`progress null`、`result {"summary": {...}}`)就会让
+        // 下游出事 —— `progress null` 会让 `emitProgress` 读 `null.percent` 当场抛;
+        // 非字符串的 `summary` 会让 `NodeOutcome.summary` 变成非字符串,调度器的
+        // `producedTextOf` 拿它 `.trim()` 时整条运行抛。同一个协议 `commandRunner` /
+        // `entryRunner` 都是逐字段收的,这一支与它们对齐。
+        if (payload[1] === "progress" && value && typeof value === "object") {
+          const v = value as Record<string, unknown>;
+          a.onProgress?.({
+            ...(typeof v.percent === "number" && Number.isFinite(v.percent) ? { percent: v.percent } : {}),
+            ...(typeof v.message === "string" ? { message: v.message } : {}),
+          });
+        }
+        if (payload[1] === "result" && value && typeof value === "object") {
+          const v = value as Record<string, unknown>;
+          result = {
+            ...(typeof v.summary === "string" ? { summary: v.summary } : {}),
+            ...(v.outputs && typeof v.outputs === "object" && !Array.isArray(v.outputs)
+              ? { outputs: v.outputs as Record<string, unknown> }
+              : {}),
+            ...(Array.isArray(v.artifacts) ? { artifacts: v.artifacts as NodeOutcome["artifacts"] } : {}),
+          };
+        }
       } catch {
         // 用户代码可以往 stdout 打任意文本;坏掉的协议行忽略即可。
       }
@@ -190,7 +211,7 @@ export async function runCodeNode(a: {
         summary: result?.summary ?? stdout,
         outputs,
         ...artifactPayload,
-        error: stderr || `进程退出码 ${run.code ?? "unknown"}`,
+        error: stderr || `进程退出码 ${run.code ?? "未知"}`,
       };
     }
     return { status: "success", summary: result?.summary ?? stdout, outputs, ...artifactPayload };
