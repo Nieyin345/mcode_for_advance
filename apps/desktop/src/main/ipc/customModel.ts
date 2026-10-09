@@ -329,7 +329,10 @@ async function probeEndpoint(
       // keep reading; nothing before the turn closes may return success.
       if (m.type === "system" && (m as { subtype?: string }).subtype === "init") {
         const ver = (m as { claude_code_version?: string }).claude_code_version;
-        sawInit = ver ? `connected (SDK v${ver})` : "connected";
+        // ⚠️ 这两句 `detail` **会画在设置页那一行绿字上**(`CustomModelsPanel.tsx` 的
+        //   `testStatus.detail`,成功态原样渲染)—— 不是内部标记。所以用中文,和同一个
+        //   catch 里其它给用户看的句子一条口径。
+        sawInit = ver ? `连接成功（SDK v${ver}）` : "连接成功";
         continue;
       }
       // A real endpoint emits `assistant` frames carrying this turn's content
@@ -352,7 +355,7 @@ async function probeEndpoint(
         const text = (m as { result?: unknown }).result;
         const words = typeof text === "string" && text.trim() ? text.trim() : "";
         if (answered && !(m as { is_error?: boolean }).is_error) {
-          return { ok: true, detail: sawInit ?? "model responded" };
+          return { ok: true, detail: sawInit ?? "连接成功" };
         }
         if (words) return { ok: false, error: words };
         // ⚠️ 下面两句是**用户会看到的那行字**(渲染端把 `error` 原样画在设置页的红字上,

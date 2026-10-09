@@ -123,6 +123,36 @@ try {
     check("rename:同一条路径外层认下了,就不能被内层判越界", renamed.ok, true);
     check("rename:文件真的改了名", existsSync(join(projectRoot, "src", "renamed2.ts")), true);
     check("rename:没有 escapes root 的越界日志", warnings.filter((w) => w.includes("escapes root")).length, 0);
+
+    // ★ **只改大小写的重命名必须放行。** 那道"目标已存在"守卫 `access(newPath)` 在大小写
+    //   不敏感的文件系统上解析到**源文件自己** —— 于是 `readme.md` → `README.md` 这种常见
+    //   操作永远失败。渲染端本来就允许(它把条目自身从冲突检查里排除),两处判据得对得上。
+    {
+      const mixed = join(projectRoot, "src", "CaseOnly.ts");
+      writeFileSync(mixed, "export const c = 1;\n", "utf-8");
+      const upper = join(projectRoot, "src", "CASEONLY.ts");
+      check("前提:两个大小写写法指的是同一个文件", existsSync(upper), true);
+      const res = await call(IPC.FILE_RENAME, { oldPath: mixed, newPath: upper });
+      check("★ 只改大小写的重命名被放行(不再误报「目标已存在」)", res.ok, true);
+    }
+  }
+
+  /* ── 4. 空查询的 file.grep 不能把主进程钉死 ───────────────────────────── */
+  // 高亮循环用 indexOf(needle, from):needle === "" 时恒返回 from、from 原地踏步,
+  // 内层 for(;;) 无限 push → 主进程 OOM。rg 快路径会掩盖它,但没 rg 的机器/起不来时会
+  // 走这段 JS,而 agent 那条 app_api_call 直达 handler(渲染端才挡空串)。
+  // 判据:必须**立刻**返回空结果;用超时兜底 —— 真钉死了这里会红而不是把套件挂住。
+  console.log("\n空查询的 grep 立即返回,不进入无限高亮循环");
+  {
+    const raced = await Promise.race([
+      call(IPC.FILE_GREP, { projectPath: projectRoot, query: "" }) as Promise<{ matches?: unknown[] }>,
+      new Promise<"timeout">((r) => setTimeout(() => r("timeout"), 2000)),
+    ]);
+    check("★ 空查询不挂起(2 秒内返回)", raced !== "timeout", true);
+    check("★ 空查询返回空匹配集", raced === "timeout" ? "挂起" : (raced.matches?.length ?? -1), 0);
+    // 对照:非空查询照常工作(证明上面那条红不是"handler 整个坏了")。
+    const hit = (await call(IPC.FILE_GREP, { projectPath: projectRoot, query: "export" })) as { matches?: unknown[] };
+    check("对照:非空查询照常命中", (hit.matches?.length ?? 0) > 0, true);
   }
 
   console.log(`\nmaint-m07-smoke: ${checks - failures}/${checks} checks passed`);

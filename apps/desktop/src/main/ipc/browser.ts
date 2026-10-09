@@ -39,8 +39,7 @@ import { BrowserManager } from "@main/browser/BrowserManager.js";
 import { AddressHistory } from "@main/browser/addressHistory.js";
 import { Bookmarks } from "@main/browser/bookmarks.js";
 import { log } from "@main/lib/logger.js";
-import { z } from "zod";
-import { errText, describeInputError } from "@main/lib/ipcError.js";
+import { errText } from "@main/lib/ipcError.js";
 
 export function registerBrowserHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.BROWSER_CREATE, async (_evt, raw) => {

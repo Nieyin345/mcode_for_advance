@@ -517,6 +517,13 @@ export async function grepFilesGuarded(input: FileGrepInput): Promise<FileGrepRe
   const limit = input.limit ?? 200;
   const maxPerFile = input.maxResultsPerFile ?? 10;
   const query = input.query;
+  // ⚠️ **空查询直接返回空结果,不进任何扫描。** 高亮循环用 `indexOf(needle, from)` ——
+  // 当 `needle === ""` 时它**恒返回 `from`**,而 `from = idx + needle.length` 原地踏步,
+  // 于是内层 `for(;;)` 无限 push、把主进程钉死(OOM)。rg 快路径会把它掩盖(`-F ''`
+  // 匹配每行、被 limit 收口),但**没有 rg 的机器**(正常路径,`rgInstall` 就是为它而存在)
+  // 或 rg 起不来时会走这段 JS。渲染端会挡空串,而 agent 那条 `app_api_call { method:
+  // "file.grep", input: { query: "" } }` 直达 handler。空查询本来也没有"匹配什么"可言。
+  if (query.length === 0) return { matches: [], truncated: false, incompleteScan: false };
   const needle = input.caseSensitive ? query : query.toLowerCase();
   const includeExts = new Set((input.includeExts ?? []).map((e) => e.toLowerCase()));
 
@@ -781,6 +788,12 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
     if (input.oldPath === input.newPath) {
       return { ok: true };
     }
+    // **只改大小写的重命名**(`readme.md` → `README.md`)在大小写不敏感的文件系统上
+    // (win32/darwin)必须放行。下面那道"目标已存在"守卫会 `access(newPath)` —— 而在这个
+    // 文件系统上它解析到**源文件自己**,于是每次都报"目标已存在",一个常见的改大小写操作
+    // 永远失败。渲染端(`FileTree`)本来就允许这种重命名(它把条目自身从冲突检查里排掉),
+    // 两处判据得对得上。`samePath` 正是"按文件系统的大小写规则是否同一条路径"。
+    const caseOnly = samePath(input.oldPath, input.newPath);
     try {
       // POSIX `rename` silently overwrites an existing destination, which would
       // silently clobber a sibling. Refuse if the destination already exists so
@@ -788,8 +801,11 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
       // authoritative guard). ENOENT from access() is the "ok to rename" path.
       try {
         await access(input.newPath);
-        log.warn(`file.rename refused — destination already exists: ${input.newPath}`);
-        return { ok: false };
+        // 大小写不敏感的文件系统上,"目标存在"可能就是**源自己** —— 那不是冲突,是改名。
+        if (!caseOnly) {
+          log.warn(`file.rename refused — destination already exists: ${input.newPath}`);
+          return { ok: false };
+        }
       } catch (existsErr) {
         // Rethrow anything that isn't ENOENT (e.g. permission), which would
         // also make the rename fail anyway.

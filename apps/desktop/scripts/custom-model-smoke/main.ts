@@ -489,6 +489,14 @@ check(
   typeof happy.result?.detail === "string" && happy.result.detail.includes("9.9.9-smoke"),
   happy.result,
 );
+// ★ 这句 detail **原样画在设置页的成功那行绿字上**(CustomModelsPanel 的
+//   `testStatus.detail`),不是内部标记 —— 必须是中文,与同一个 catch 里其它给用户
+//   看的句子一条口径。别因为旁边 `error` 分支是英文就跟着写英文。
+check(
+  "★ 成功那句 detail 是中文(它直接画在设置页上,不是内部标记)",
+  typeof happy.result?.detail === "string" && happy.result.detail.includes("连接成功"),
+  happy.result?.detail,
+);
 check("探测不把异常漏给界面（契约说返回 {ok:false}）", happy.threw === undefined, happy.threw);
 
 const opts = happy.options ?? {};
