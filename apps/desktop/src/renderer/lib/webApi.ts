@@ -394,7 +394,15 @@ function subscribeRuntime(fn: RuntimeSubscriber): () => void {
 /* ────────────────────────── local (no-server) impls ────────────────────────── */
 
 function themeGet(): Promise<ThemeState> {
-  const stored = localStorage.getItem(THEME_KEY);
+  // ⚠️ **与 `themeSet` / `readAuth` 同款守卫。** `localStorage` 读时也会抛
+  // (`SecurityError`:存储被禁 / 嵌入式上下文),而这条在手机端 boot 的 hydrate 路上被调
+  // —— 抛出去会把整个手机壳卡住。同文件的 `themeSet` 早就 try 了,这一条漏了。
+  let stored: string | null = null;
+  try {
+    stored = localStorage.getItem(THEME_KEY);
+  } catch {
+    /* 存储不可用 —— 退回默认 system */
+  }
   const theme: ThemeState["theme"] =
     stored === "dark" || stored === "light" || stored === "system" ? stored : "system";
   const effective: ThemeState["effective"] =

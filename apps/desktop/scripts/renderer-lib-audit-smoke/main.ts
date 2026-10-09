@@ -279,5 +279,30 @@ section("6. 右栏标签白名单不许手抄一份枚举");
   check("契约 schema 里含 browser(派生白名单据此收下它)", RightPanelTabSchema.options.includes("browser"), [...RightPanelTabSchema.options]);
 }
 
+/* ─────── 7. webApi 的 localStorage 读取都要有 try 守卫 ─────── */
+
+section("7. 手机壳的 localStorage 读取不许裸调");
+
+{
+  // `localStorage` 读时也会抛(`SecurityError`:存储被禁 / 嵌入式上下文)。`webApi` 里
+  // `readAuth` / `readLocalSetting` / `themeSet` 都 guard 了,而 `themeGet` 那条**漏了**
+  // —— 它在手机端 boot 的 hydrate 路上被调,抛出去会卡住整个手机壳。判据钉源码上:
+  // 每一处 `localStorage.getItem(` 都得在它前面最近的 `try {` 之后。
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const src = fs.readFileSync(path.join(process.cwd(), "src/renderer/lib/webApi.ts"), "utf8");
+  const unguarded: number[] = [];
+  for (const m of src.matchAll(/localStorage\.getItem\(/g)) {
+    const before = src.slice(0, m.index);
+    // 从最近的函数体起点算:只要那一段里有 `try {` 就认它被守住了(webApi 里所有读取都在
+    // 单个函数体内,不会跨函数)。
+    const sinceFn = before.split(/\bfunction\s|\bconst\s+\w+\s*=\s*(?:async\s*)?\(/).pop() ?? before;
+    if (!sinceFn.includes("try {") && !sinceFn.includes("try{")) {
+      unguarded.push(src.slice(0, m.index).split("\n").length);
+    }
+  }
+  check("★ webApi 里每处 localStorage.getItem 都有 try 守卫(存储被禁时不卡住手机壳)", unguarded.length === 0, unguarded);
+}
+
 console.log(`\nrenderer-lib-audit-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;
