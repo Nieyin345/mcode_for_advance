@@ -1211,6 +1211,30 @@ console.log("\n健康检查:库未就绪时也不崩");
   }
   eq("库已关闭时 /api/health 仍照常 200(不把主进程带崩)", healthStatus, 200);
   check("且如实报 dbReady:false", /"dbReady":false/.test(healthText), healthText);
+
+  // ★ 同一个窗口的另一条路:未知 /api 路由。请求处理器在**任何** /api/* 上都会
+  //   调 `authorize()` 并把结果存进 `authPromise`,而这条落空的路由从前从不消费它。
+  //   带 `Authorization` 头时 `authorize → validateToken → getDb()` 在库已拆时**抛**
+  //   → 那个 `authPromise` 变成**没人接的 rejected promise** → Node 默认升级成未捕获
+  //   异常,能把主进程带崩(与上面 /api/health 同一道守卫要防的东西)。
+  //   用临时 `unhandledRejection` 监听器观察它 —— 监听器只是**观察**,有它在 Node 才
+  //   不会当场 throw;修复在时它一条都不来(断言绿),撤掉修复它必来(断言红)。
+  {
+    const rejections: unknown[] = [];
+    const onRejection = (r: unknown): void => { rejections.push(r); };
+    process.on("unhandledRejection", onRejection);
+    const probe = await req("/api/nonexistent", { token: "deadbeef" });
+    await new Promise((r) => setTimeout(r, 80));
+    process.off("unhandledRejection", onRejection);
+    eq("库已关闭时,未知 /api 路由仍照常 404", probe.status, 404);
+    const leaks = rejections.filter((r) => /getDb\(\) called before initDb/.test(String(r)));
+    check(
+      "★ 库已关闭时,未鉴权未知路由不会漏出没人接的 authorize() rejection",
+      leaks.length === 0,
+      { leaks: leaks.map(String), all: rejections.map(String) },
+    );
+  }
+
   await initDb();
 }
 

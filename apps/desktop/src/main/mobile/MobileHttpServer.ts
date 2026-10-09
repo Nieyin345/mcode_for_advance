@@ -478,6 +478,15 @@ export function createMobileRequestHandler(
         return;
       }
       // Unknown /api route.
+      //
+      // ⚠️ `authPromise` 在上面**已经启动**了(RPC / SSE 两条路各自接住了它)。
+      // 这条落空的路由从不消费它 —— 于是当 `authorize()` 自己 reject(唯一场景:
+      // 库被拆掉时 `validateToken` 里的 `getDb()` 抛;`/api/health` 那条就是为这个
+      // 窗口补的守卫)而请求又带了 `Authorization` 头时,这就是一个**没人接的
+      // rejected promise** —— Node 默认 `--unhandled-rejections=throw` 会把它升级成
+      // 未捕获异常,直接把主进程带崩,而它跑在 request 监听器里、没有任何 catch。
+      // 显式观察它:404 照常发,异常只记一行日志。
+      authPromise.catch((error) => log.warn(`mobile: authorization failed on unknown route: ${String(error)}`));
       sendJson(res, 404, { error: "not found" });
       return;
     }
