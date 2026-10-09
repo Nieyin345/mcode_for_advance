@@ -1743,10 +1743,16 @@ registerProjectCleanupHook((_projectId, projectPath) => {
   if (projectPath) lspManager.stopWorkspace(projectPath);
 });
 
-/** 路径相等(大小写、分隔符归一)—— 与 `pathGuard.samePath` 同口径,这里不 import
- *  它以免把后者那条链拉进来。工作树路径来自库,不会带 `..`。 */
+/** 路径相等(分隔符归一 + **按平台**折叠大小写)—— 与 `pathGuard.samePath` 同口径。
+ *  ⚠️ 大小写折叠**只在 win32/darwin**(那里的文件系统不区分大小写);Linux 上 `/WT` 与
+ *  `/wt` 是两个不同目录,无条件小写会把它们当成同一个,删一条会话可能顺手停掉那条大小写
+ *  相异的兄弟工作树的 server。 */
 function samePathLoose(a: string, b: string): boolean {
-  const norm = (p: string) => resolve(p).replace(/[\\/]+/g, "/").replace(/\/$/, "").toLowerCase();
+  const fold = process.platform === "win32" || process.platform === "darwin";
+  const norm = (p: string) => {
+    const r = resolve(p).replace(/[\\/]+/g, "/").replace(/\/$/, "");
+    return fold ? r.toLowerCase() : r;
+  };
   return norm(a) === norm(b);
 }
 
