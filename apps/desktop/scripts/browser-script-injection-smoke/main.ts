@@ -213,6 +213,69 @@ console.log("\nbuildSelector 三个入口共用一份");
     picker: c?.slice(0, 80),
   });
   check("★ 深度上限统一为 5(漂过一次的 4 不许回来)", !!a && a.includes("parts.length >= 5"), a?.slice(-60));
+
+  // ★★ 判据不能只停在"三份逐字相同" —— 三份**同样错**时那条照样绿。
+  //   这里把 `buildSelector` **真的跑一遍**,喂一个"同标签兄弟之间夹着别的标签"的
+  //   DOM,断言生成的选择器**真的命中那个元素**。
+  //
+  //   曾经的写法是 `:nth-child(sameTag.indexOf(node)+1)` —— 位置算的是同标签兄弟里的
+  //   第几个,而 `:nth-child` 数的是**全部**元素子节点。`<div><h1/><p/><p/></div>` 里
+  //   第二个 `<p>` 会算出 `:nth-child(2)`,而 `:nth-child(2)` 命中的是第一个 `<p>`。
+  //   模型拿这个选择器去 click 就落到错的元素上。正确的 CSS 是 `:nth-of-type`。
+  {
+    type FakeEl = {
+      tagName: string; id: string; classList: string[]; nodeType: number;
+      parentElement: FakeEl | null; children: FakeEl[];
+    };
+    const el = (tagName: string, children: FakeEl[] = []): FakeEl => {
+      const node: FakeEl = { tagName, id: "", classList: [], nodeType: 1, parentElement: null, children };
+      for (const c of children) c.parentElement = node;
+      return node;
+    };
+    // <div><h1/><p/><p/></div> —— 两个 <p> 之间/之前夹着 <h1>。
+    const p1 = el("P");
+    const p2 = el("P");
+    const root = el("DIV", [el("H1"), p1, p2]);
+
+    // 提取真正的 buildSelector 源码(**保留换行** —— 折叠成一行会让 `//` 注释把整行吞掉),
+    // 在一个提供了假 document/CSS 的作用域里跑。
+    const dumpRaw = (s: string): string => {
+      const i = s.indexOf("function buildSelector(");
+      const b = s.indexOf("{", i);
+      let d = 0;
+      for (let j = b; j < s.length; j += 1) {
+        if (s[j] === "{") d += 1;
+        else if (s[j] === "}") {
+          d -= 1;
+          if (d === 0) return s.slice(i, j + 1);
+        }
+      }
+      return "";
+    };
+    const snippet = dumpRaw(SNAPSHOT_SCRIPT).replace(/function buildSelector/, "return function buildSelector");
+    const fakeDocument = { documentElement: el("HTML") };
+    const fakeCss = { escape: (s: string) => s };
+    const buildSelector = new Function("document", "CSS", snippet)(fakeDocument, fakeCss) as (n: FakeEl) => string;
+
+    const sel2 = buildSelector(p2);
+    check("同标签兄弟夹着别的标签时,生成的是 nth-of-type(不是 nth-child)", sel2.includes(":nth-of-type(2)") && !sel2.includes(":nth-child("), sel2);
+
+    // 用一个**真的** CSS 选择器匹配器验证它命中的是 p2 而不是 p1 —— 免得只是字符串对。
+    // 极简匹配:只支持 `tag > tag:nth-of-type(n)` 这种本用例会产生的形状。
+    const matches = (sel: string, target: FakeEl, sibling: FakeEl): boolean => {
+      const last = sel.split(" > ").pop() ?? "";
+      const m = /^p:nth-of-type\((\d+)\)$/i.exec(last);
+      if (!m) return false;
+      const parent = target.parentElement!;
+      const sameTag = parent.children.filter((c) => c.tagName === target.tagName);
+      const idx = sameTag.indexOf(target) + 1;
+      return sameTag.includes(target) && idx === Number(m[1]) && sibling !== target;
+    };
+    check("★ 该选择器真的命中目标元素(不是命中的第一个同标签兄弟)", matches(sel2, p2, p1), { sel2, p2IsFirst: false });
+
+    const sel1 = buildSelector(p1);
+    check("第一个同标签兄弟依然可选中", matches(sel1, p1, p2) && sel1.includes(":nth-of-type(1)"), sel1);
+  }
 }
 
 console.log(`\nbrowser-script-injection-smoke:${total - failures}/${total} 通过`);
