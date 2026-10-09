@@ -163,6 +163,9 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
     // 同一类竞态 —— 点提交 A(A 慢)→ 点提交 B(B 快)→ A 后到:没有这条守卫,旧回包会把
     // 屏幕盖回 A 的详情,用户明明点了 B 却看到 A 的文件列表。
     const seq = ++detailSeqRef.current;
+    // 换提交 = 换打开文件差异的上下文:让在飞的 `openFile` 作废,免得旧提交的
+    // 文件 blob 回包后到,把新提交的文件差异塞进编辑器(同类竞态的第二条路径)。
+    fileSeqRef.current++;
     setSelected(commit);
     setFiles([]);
     setDetailError(null);
@@ -190,6 +193,10 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
 
   const openFile = async (file: GitCommitFile) => {
     if (!selected) return;
+    // **打开文件的请求序号:只有最新一次响应能写状态。** 与 `openCommit` 的
+    // `detailSeqRef` 同一类竞态 —— 点文件 A(A 慢)→ 点文件 B(B 快)→ A 后到:没有这条
+    // 守卫,`showFile` 的旧回包会把 A 的 diff 塞进对话框/编辑器,用户明明点了 B 却看到 A。
+    const seq = ++fileSeqRef.current;
     setFileError(null);
     try {
       const { before, after } = await api.git.showFile({
@@ -198,6 +205,7 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
         filePath: file.path,
         oldPath: file.oldPath,
       });
+      if (seq !== fileSeqRef.current) return; // superseded by a newer open
       // Both empty usually means binary / missing - still open so the user sees empty panes.
       const absPath = joinPath(repoPath, file.path);
       const store = useSessionStore.getState();
@@ -220,6 +228,7 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
       store.setGitDiffPair(absPath, { before, after });
       store.openFileInIde(absPath, { diff: true });
     } catch (err) {
+      if (seq !== fileSeqRef.current) return;
       setFileError((err as Error).message || t("ide.git.openFileDiffFailed"));
     }
   };
