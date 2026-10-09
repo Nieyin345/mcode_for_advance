@@ -307,7 +307,7 @@ export const SessionRepo = {
     if (opts?.archived === false) {
       where.push("pinned_at IS NULL");
     }
-    let sql = `SELECT * FROM sessions WHERE ${where.join(" AND ")} ORDER BY updated_at DESC, created_at DESC`;
+    let sql = `SELECT * FROM sessions WHERE ${where.join(" AND ")} ORDER BY updated_at DESC, created_at DESC, id DESC`;
     if (opts?.limit !== undefined) {
       sql += " LIMIT ?";
       params.push(v(opts.limit));
@@ -423,7 +423,7 @@ export const SessionRepo = {
     }
     const wtKey = opts?.worktreeKey;
     if (wtKey !== undefined) where.push("worktree_path IS NOT NULL");
-    let sql = `SELECT * FROM sessions WHERE ${where.join(" AND ")} ORDER BY updated_at DESC, created_at DESC`;
+    let sql = `SELECT * FROM sessions WHERE ${where.join(" AND ")} ORDER BY updated_at DESC, created_at DESC, id DESC`;
     if (wtKey === undefined && opts?.limit !== undefined) {
       sql += " LIMIT ?";
       params.push(v(opts.limit));

@@ -29,7 +29,7 @@
  *
  * Run: scripts/projects-ipc-smoke/run.sh
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IpcMain } from "electron";
@@ -915,6 +915,29 @@ console.log("\n项目行变动 → projects.changed");
   eqArr("下划线按字面搜", underscore.sessions.map((s) => s.title), ["a_b"]);
   const pct = await call<{ sessions: { title: string }[] }>(IPC.SESSION_SEARCH, { query: "%" });
   eqArr("百分号按字面搜", pct.sessions.map((s) => s.title), ["100% 完成"]);
+}
+
+/* ──────────────── 分页 SQL 必须带 id 兜底排序 ──────────────── */
+
+console.log("\n分页 SQL 的排序要有 id 兜底(否则翻页可能跳过一条)");
+
+{
+  // listByProject / listAll 带 LIMIT/OFFSET 翻页。若 ORDER BY 只按 updated_at,created_at
+  // 两列,而两条会话**恰好撞在同一毫秒**(Date.now() 写入,批量/自动化建会话很容易撞),
+  // SQLite 不保证并列行的顺序 —— 同一窗口在"第一页"与"加载更多"两次查询里可能排得不一样,
+  // 于是某条会话在翻页时被**静默跳过**(渲染端按 id 去重只挡得住重复,挡不住跳过)。
+  // 同文件的兄弟分页器(WorkflowRunRepo.listForSession / pruneSession / 消息游标)都带了
+  // id 兜底,这两条从前漏了。判据钉在源码上:两处 LIMIT 分页 SQL 都必须以 `, id DESC` 收尾。
+  const repo = readFileSync(join(process.cwd(), "src/main/store/repositories.ts"), "utf8");
+  // 翻页那两条是 `let sql = \`SELECT ... ORDER BY updated_at DESC, created_at DESC[, id DESC]\`;`
+  // —— 赋给 `sql` 之后才追加 LIMIT/OFFSET。逐字匹配这个形状,其余 `LIMIT 1` 的单行查询不在此列。
+  const paginated = repo.match(/let sql = `SELECT \* FROM sessions[^`]*ORDER BY updated_at DESC, created_at DESC([^`]*)`/g) ?? [];
+  check("源码里能扫到会翻页的 sessions 查询(防断言空过)", paginated.length >= 2, paginated.length);
+  check(
+    "★ 会翻页的 sessions 查询都以 `, id DESC` 收尾(并列行顺序稳定、翻页不跳条)",
+    paginated.every((s) => /created_at DESC, id DESC`$/.test(s.replace(/\s+$/, ""))),
+    paginated.filter((s) => !/created_at DESC, id DESC`$/.test(s.replace(/\s+$/, ""))),
+  );
 }
 
 /* ──────────────── 收尾 ──────────────── */
