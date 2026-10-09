@@ -769,6 +769,12 @@ console.log("\n流程记录:这一层只负责照搬,不自己判谁该读");
   check("归档编号不能穿越路径", blocked);
   blocked = false; try { saveMemoryFile({ path: "global/rules/secret.md", content: "sk-" + "a".repeat(40) }); } catch { blocked = true; }
   check("真实密钥样式拒绝落库", blocked);
+  // ★ 截断/畸形的私钥块(只有 BEGIN、没有 END)同样拒收。
+  //   两个理由:① 本模块的裁剪会制造这种形状;② 这是**保存闸门与面向模型的遮蔽漂开**
+  //   的地方 —— 从前闸门只认 BEGIN(会拒)、遮蔽要求完整 BEGIN…END(会漏)。现在两处共用
+  //   同一份判据(`secretShape.ts`),所以闸门与遮蔽对同一条内容给出同样的答案。
+  blocked = false; try { saveMemoryFile({ path: "global/rules/secret.md", content: "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA" }); } catch { blocked = true; }
+  check("★ 只有 BEGIN 的残块也拒绝落库(与遮蔽同一份判据)", blocked);
   const preview = manageMemory({ action: "preview", source: `legacy:${legacy}` });
   check("旧记录可预览并带摘要", preview.ok && !!preview.digest && !!preview.content?.includes("legacy-private-needle"));
   const imported = manageMemory({ action: "import", source: `legacy:${legacy}`, digest: preview.digest!, category: "rules", projectId: "p_memory", global: false, confirmed: true });

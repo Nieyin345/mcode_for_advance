@@ -1,5 +1,6 @@
 import type { MemoryWriteOrigin } from "@contracts/memory";
 import { memoryAddress } from "./paths.js";
+import { looksLikeSecret } from "./secretShape.js";
 /**
  * 记忆库的存储层(MEM-01)—— `<数据根>/memory/<类目>/*.md`。
  *
@@ -215,7 +216,9 @@ function assertRevision(raw: string | null, expected: string | null | undefined)
 export function saveMemoryFile(input: MemorySaveInput, origin?: MemoryWriteOrigin): { updatedAt: number; revision: string } {
   const target = resolveSafeMemoryRelPath(input.path);
   if (target === null) throw new Error(`不是合法的记忆路径:「${input.path}」(应为 <类目>/<文件名>.md,类目限定六类)`);
-  if (/(?:-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----|\bsk-(?:proj-)?[A-Za-z0-9_-]{24,}|\bAKIA[A-Z0-9]{16}\b)/.test(input.content)) {
+  // 判据与「送进模型前遮蔽」共用同一份(见 `secretShape.ts`)—— 从前两处各写一遍,
+  // PEM 那支已经漂了(闸门只要求 BEGIN,遮蔽要求完整 BEGIN…END)。
+  if (looksLikeSecret(input.content)) {
     throw new Error("记忆包含疑似私钥或访问密钥，未保存；请仅记录凭据的管理位置，不记录值。");
   }
   const before = currentRaw(target);

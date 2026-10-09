@@ -59,6 +59,16 @@ check("AKIA 访问密钥被替换", redactSecrets("AKIAABCDEFGHIJKLMNOP x").incl
 check("遮蔽是幂等的", redactSecrets(redactSecrets(pemBlock)) === redactSecrets(pemBlock));
 check("普通文本不被误伤", redactSecrets("这是一段普通说明 sk-short") === "这是一段普通说明 sk-short");
 
+// ★ 截断 / 畸形的私钥块(**只有 BEGIN、没有 END**)也必须被遮掉。
+//
+// ① 这恰恰是本模块的裁剪(见 §B)会制造出来的形状 —— 切口落在块中间,END 被切掉;
+// ② 而且这是**两处规则漂开**的地方:保存闸门(`store.ts`)只要求 BEGIN,遮蔽
+//    (`redactSecrets`)从前要求完整 BEGIN…END —— 同一条被裁断的私钥能过遮蔽、进到
+//    模型上下文,却被保存拒收。判据:只有 BEGIN 的那半截,不该把正文漏给模型。
+const pemHeadOnly = `${PEM_HEAD}\nMIIEowIBAAKCAQEA${"A".repeat(60)}`;
+check("★ 只有 BEGIN 的残块也被遮掉(截断/畸形私钥不漏给模型)", !redactSecrets(pemHeadOnly).includes("MIIEowIBAAKCAQEA"), redactSecrets(pemHeadOnly).slice(0, 40));
+check("★ …且残块带占位符", redactSecrets(pemHeadOnly).includes("[已隐藏私钥]"), redactSecrets(pemHeadOnly).slice(0, 40));
+
 console.log("B. 总预算裁剪:切口落在密钥块中间时不得漏出");
 // 切口刻意落在 PEM 块内部:BEGIN 在预算之内,END 在预算之外。
 const straddling = `${"x".repeat(SOURCE_BUDGET - 100)}${pemBlock}尾部`;
