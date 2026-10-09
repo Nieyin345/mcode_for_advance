@@ -153,5 +153,29 @@ console.log("C. per-message caching");
   check("★ 撤销失败时卡片报出来(不再无条件画「已撤销 ✓」)", cAt >= 0 && /catch\s*\([^)]*\)\s*\{[\s\S]*?useToastStore[\s\S]*?push\(/.test(cBody) && cBody.includes("store.toast.rewindFailed"), cBody.slice(0, 300));
 }
 
+/**
+ * `PlanViewer`(PlanViewer.tsx)编辑模式下的 Ctrl+S 必须**存的是当前草稿**。
+ *
+ * `@monaco-editor/react` 把 `onMount` 存进一个只读一次的 ref(`useRef(onMount)`,
+ * 从不重赋),而键位是在 onMount 里 `addCommand` 注册的 —— 于是绑的永远是**进入编辑
+ * 那一刻**的 `handleSave` 闭包,那时 `draft` 还是种子值(原计划文本)。用户敲完按
+ * Ctrl+S,存进去的是**改之前**的文本,却照报「已保存」。(组件无头跑不出渲染结果,
+ * 判据钉源码;`FileEditor` 的同一键位早用 `handleSaveRef` 兜住了这层。)
+ *
+ * 撤掉修复(键位回调改回直接 `void handleSave()`)时,第一条断言转红。
+ */
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const strip = (s: string) => s.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const v = strip(readFileSync(join(process.cwd(), "src/renderer/components/chat/PlanViewer.tsx"), "utf8"));
+  check("★ PlanViewer 为 Ctrl+S 保留 live handleSave ref", /const\s+handleSaveRef\s*=\s*useRef\(handleSave\)/.test(v) && /handleSaveRef\.current\s*=\s*handleSave/.test(v));
+  const mountAt = v.indexOf("const handleEditorMount");
+  // 窗口取到 onMount 回调之后足够长的一段(addCommand 跨了多行)。
+  const mountBody = v.slice(mountAt, mountAt + 500);
+  check("★ Ctrl+S 键位读 ref(不再钉死在挂载那一刻的闭包)", mountAt >= 0 && /addCommand\([\s\S]*?handleSaveRef\.current\(\)/.test(mountBody));
+  check("★ 键位回调不再直接调用闭包里的 handleSave()", mountAt >= 0 && !/addCommand\([\s\S]*?void\s+handleSave\(\)/.test(mountBody));
+}
+
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures) process.exit(1);

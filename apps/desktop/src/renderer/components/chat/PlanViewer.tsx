@@ -135,16 +135,29 @@ export function PlanViewer({
     }
   }, [editing, sessionId, draft, isApprovalPending, updatePlanDrawerPlan, setPlanApprovalDraft]);
 
+  // Keep a live ref to handleSave for the Ctrl+S keybinding below. ⚠️ 不这样
+  // 不行:`@monaco-editor/react` 把 `onMount` 存进一个 **只读一次** 的 ref
+  // (`useRef(onMount)`,从不重赋),而 `addCommand` 是在 onMount 里注册的 —— 所以
+  // 键位绑的是**进入编辑那一刻**的 `handleSave` 闭包,那时 `draft` 还是种子值(原
+  // 计划文本)。用户敲完字再按 Ctrl+S,绑定的仍是旧闭包,存进去的是**改之前的**
+  // 文本,却照报「已保存」。`FileEditor` 的同一个 Ctrl+S 早用 `handleSaveRef` 兜住
+  // 了这层(见 ide/FileEditor.tsx),这里照抄同一份规矩,别让两张编辑面漂开。
+  const handleSaveRef = useRef(handleSave);
+  useEffect(() => {
+    handleSaveRef.current = handleSave;
+  }, [handleSave]);
+
   // Wire Ctrl+S / Cmd+S to save. Monaco passes its monaco namespace into
   // onMount, which is where we register the keybinding.
   const handleEditorMount = useCallback(
     (editor_: editor.IStandaloneCodeEditor, monaco: typeof import("monaco-editor")) => {
       editorRef.current = editor_;
       editor_.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-        void handleSave();
+        // 读 ref 而不是闭包里的 handleSave —— 否则键位永远停在首次挂载的 draft。
+        void handleSaveRef.current();
       });
     },
-    [handleSave],
+    [],
   );
 
   // Enter edit mode: seed the draft from the current plan text.
