@@ -44,7 +44,7 @@ import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 /** A single git operation log entry - one per pull/push/commit/sync/etc. */
 type GitOpLogEntry = {
   id: string;
-  op: "pull" | "push" | "commit" | "sync" | "stage" | "unstage" | "discard" | "merge" | "mergeAbort" | "deleteBranch";
+  op: "pull" | "push" | "commit" | "sync" | "stage" | "unstage" | "discard" | "merge" | "mergeAbort" | "deleteBranch" | "checkout";
   /** "success" for ok results, "failure" for !ok results or thrown exceptions. */
   status: "success" | "failure";
   /** Full error message (only for failures). Omitted for successes. */
@@ -66,6 +66,7 @@ const OP_LABEL_KEYS: Record<GitOpLogEntry["op"], MessageId> = {
   merge: "ide.git.merge",
   mergeAbort: "ide.git.mergeAbort",
   deleteBranch: "ide.git.deleteBranch",
+  checkout: "ide.git.switchBranch",
 };
 
 /** Max number of log entries kept per repo. Older entries are dropped. */
@@ -215,15 +216,15 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
         const res = await api.git.checkout({ repoPath: repo.path, branch, newBranch });
         if (!res.ok) {
           setError(res.error ?? t("ide.git.checkoutFailed"));
-          prependLog({ op: "discard", status: "failure", message: res.error });
+          prependLog({ op: "checkout", status: "failure", message: res.error });
         } else {
-          prependLog({ op: "discard", status: "success" });
+          prependLog({ op: "checkout", status: "success" });
         }
         await refresh();
       } catch (err) {
         const msg = (err as Error).message ?? t("ide.git.checkoutFailed");
         setError(msg);
-        prependLog({ op: "discard", status: "failure", message: msg });
+        prependLog({ op: "checkout", status: "failure", message: msg });
       } finally {
         setCheckingOut(false);
       }

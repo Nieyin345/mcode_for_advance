@@ -60,6 +60,13 @@ function newBranchInput(): El {
   return el;
 }
 
+/** 操作日志里已记账的 op 序列。`OperationLog` 是子组件(fakeReact 不调用它),
+ *  但树里那个元素节点的 props 带着 `logs` —— 那正是"日志里记成了什么 op"的直接判据。 */
+function logOps(): string[] {
+  const n = __nodes().find((x) => Array.isArray((x.props as { logs?: unknown }).logs));
+  return ((n?.props.logs as Array<{ op: string }> | undefined) ?? []).map((e) => e.op);
+}
+
 /** 造一个键盘事件对象(React 的合成事件在假的运行时里就是普通对象)。 */
 function keyEvent(key: string, opts: { isComposing?: boolean; keyCode?: number } = {}): unknown {
   const native = { isComposing: opts.isComposing ?? false, keyCode: opts.keyCode ?? 0 };
@@ -113,6 +120,12 @@ async function scenario() {
   calls.length = 0;
   await pressEnter();
   check("正常 Enter 建分支一次(正控)", callsOf("git.checkout").length === 1, calls);
+
+  // ④ 操作日志记的 op 必须是「切换分支」,不是「放弃更改」。
+  //    ⚠️ 判据立在**用户看到那行字的 op** 上:日志条目的标签由 `OP_LABEL_KEYS[op]`
+  //    渲染,而 ③ 那次成功切换分支若记成 `discard`,用户会在操作日志里看到
+  //    「放弃更改」——一次他根本没做过的操作。op 就是那行字的唯一决定因素。
+  check("★ 切分支记进日志的是 checkout,不是 discard", logOps().includes("checkout"), logOps());
 }
 
 /**
