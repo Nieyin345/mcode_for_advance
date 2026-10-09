@@ -49,6 +49,16 @@ function run(...args: string[]): string {
   return execFileSync("python", [PY, ...args], { encoding: "utf8", cwd: OUT });
 }
 
+/** 跑一遍**允许非零退出**的脚本,stdout + stderr 一起拿。
+ *
+ * `cmd_show` 在"一条都没剩下"时走 `sys.exit(一句人话)`,Python 把那句话写到 **stderr**
+ * 并以退出码 1 收场 —— 那一句正是"被谁挡下的、怎么让它回来",判据就立在那上面。
+ * `run()` 是 `execFileSync`,非零退出会抛,拿不到那句话。 */
+function runBoth(...args: string[]): { out: string; err: string } {
+  const r = spawnSync("python", [PY, ...args], { encoding: "utf8", cwd: OUT });
+  return { out: r.stdout ?? "", err: r.stderr ?? "" };
+}
+
 /** 建一个临时库。列形状照**新装** Mcode：学术字段在新库根本不存在。 */
 function seed(root: string): void {
   mkdirSync(join(root, "library", "markdown"), { recursive: true });
@@ -93,6 +103,13 @@ c.executemany("INSERT INTO library_items(id,title,abstract,url,md_path,pdf_path,
   # ★ 挂在**回收站子分类**里的条目 —— 回收站是普通集合,用户可以把别的分类移到它下面。
   #   单层查询收不到它,丢进去的东西(连同绝对路径)照常进上下文(见 3b 段)。
   ("li_nested_trash", "回收站子分类里的一篇", None, None, "markdown/nt.md", None, None, 1000, 1000),
+  # ★ show 的**分档报退路**用(见 4 段):同一个标题片段「展示挡的」命中三条 ——
+  #   一条被屏蔽规则挡(只有 pdf,被 extensions 的 .pdf 整条挡)、一条在回收站里、一条保留。
+  #   三条的"退路"不同:屏蔽改设置、回收站去左栏还原 —— 从前 cmd_show 一律说成
+  #   "被屏蔽规则挡下了……要去掉屏蔽:设置",把丢进回收站的条目指到一个它根本不在的地方。
+  ("li_show_sup", "展示挡的-被屏蔽", None, None, None, "papers/show-sup.pdf", None, 1000, 1000),
+  ("li_show_trash", "展示挡的-在回收站", None, None, "markdown/st.md", None, None, 1000, 1000),
+  ("li_show_keep", "展示挡的-保留", None, None, None, None, "files/show-keep.txt", 1000, 1000),
 ])
 c.executemany("INSERT INTO library_collections(id,name,parent_id,group_id,sort_order) VALUES(?,?,?,?,?)", [
   ("lc_aw", "精读队列", None, "docs", 0),
@@ -111,6 +128,7 @@ c.executemany("INSERT INTO library_collection_items(collection_id,item_id) VALUE
   ("lc_trash", "li_trash"),
   ("lc_legacy_trash", "li_legacy_trash"),
   ("lc_nested_under_trash", "li_nested_trash"),
+  ("lc_trash", "li_show_trash"),
 ])
 c.execute("INSERT INTO settings(key,value) VALUES(?,?)", ("library.groups", json.dumps([
   # NOTE: 老库里这份 JSON 仍然带着 kinds —— 代码停写但没删列。脚本必须忽略它,
@@ -279,6 +297,15 @@ console.log("\n其余几条命令都还跑得通");
   check("find 能查到简介而不依赖旧的作者/期刊列", inAbstract.includes("注意力就是全部"), inAbstract);
   const miss = at("find", "根本不存在的东西");
   check("find 找不到时如实说", miss.includes("库里没有匹配的条目"), miss);
+
+  // ★ find 的"全被挡"那句提示也要分开报(与 show 同一条规则的两个出口)。
+  //   从前一律说「匹配的都在这几行屏蔽里……如实告诉用户『被屏蔽了』」—— 而匹配的那条
+  //   明明**只在回收站里**(与屏蔽无关),模型会照着说"被设置挡住了",用户去设置里翻
+  //   根本找不到它(它没被任何规则挡,只在左栏回收站里)。与 cmd_show 的 sys.exit 那条
+  //   同源,别再漂开。
+  const findTrash = at("find", "被丢进回收站的那一篇");
+  check("★ find 全在回收站时:不说成「被屏蔽了」", !findTrash.includes("被屏蔽了"), findTrash);
+  check("★ find 全在回收站时:说「在回收站里」并给还原退路", findTrash.includes("在回收站里") && findTrash.includes("还原"), findTrash);
 }
 
 {
@@ -296,6 +323,38 @@ console.log("\n其余几条命令都还跑得通");
   check("保留的那条照常显示", mixed.includes("混合匹配的保留条"), mixed);
   check("★ 被挡住的那条也要报出来(不静默少列)", /另有\s*1\s*条被屏蔽/.test(mixed), mixed);
   check("★ 提示里点名屏蔽原因与设置页", mixed.includes("设置 → 文档管理"), mixed);
+}
+
+/* ──── 4a. show 报"被谁挡下"时,回收站与屏蔽的退路必须分开(2026-10-10 补) ──── */
+
+console.log("\nshow · 被挡时的退路分档");
+
+// 回收站与屏蔽是**两条不同的退路**:屏蔽改设置,回收站去左栏还原。而 cmd_show 从前
+// **一律**说成"被屏蔽规则挡下了……要去掉屏蔽:设置 → 文档管理" —— 一条**就在回收站里**
+// 的条目于是被指到一个根本找不到它的地方(它没被任何规则挡,设置里翻不出来)。它的孪生
+// `report_suppressed` 早就把两者分开报了,这条 sys.exit 那条路漏了(与它共享父链/回收站
+// 判定,是"同一条规则两个出口漂了"的形状)。
+//
+// 同一个标题片段「展示挡的」命中三条:一条被屏蔽规则挡、一条在回收站里、一条保留。
+{
+  // ① 只有屏蔽挡的:文案与退役前**逐字一致**(绝大多数情形,不能改坏了)。
+  const onlySup = runBoth("--root", ROOT, "show", "展示挡的-被屏蔽");
+  check("★ 只有屏蔽挡时:仍说「屏蔽规则挡下了」", onlySup.err.includes("被屏蔽规则挡下了"), onlySup);
+  check("★ 只有屏蔽挡时:仍指向设置页", onlySup.err.includes("设置 → 文档管理"), onlySup);
+  check("★ 只有屏蔽挡时:不说回收站(没被回收站挡)", !onlySup.err.includes("回收站"), onlySup);
+
+  // ② 只有回收站挡的:**不许**说成屏蔽、**不许**把用户支去设置 —— 那条目在左栏回收站里。
+  const onlyTrash = runBoth("--root", ROOT, "show", "展示挡的-在回收站");
+  check("★ 只有回收站挡时:说「被回收站挡下了」", onlyTrash.err.includes("被回收站挡下了"), onlyTrash);
+  check("★ 只有回收站挡时:指向左栏还原(不是设置)", onlyTrash.err.includes("左栏") && !onlyTrash.err.includes("设置 → 文档管理"), onlyTrash);
+
+  // ③ 两种都有的:各说各的退路,一条都不能漏。**不能**把整批都算在"屏蔽规则"头上。
+  const both = at("show", "展示挡的");
+  check("保留的那条照常显示", both.includes("展示挡的-保留"), both);
+  // 旧文案对**整批**说"N 条被屏蔽规则挡下" —— 那里面明明有一条是在回收站里(与屏蔽无关)。
+  check("★ 混合:不许把整批都说成「被屏蔽规则挡下」", !/条被屏蔽规则挡下/.test(both), both);
+  check("★ 混合:分开报两类(「其中…是屏蔽规则…在回收站里」)", both.includes("其中") && both.includes("屏蔽规则") && both.includes("回收站"), both);
+  check("★ 混合:两条退路都给(设置 + 左栏还原)", both.includes("设置 → 文档管理") && both.includes("左栏还原"), both);
 }
 
 /* ──────────────── 5. 转录与原件 ──────────────── */

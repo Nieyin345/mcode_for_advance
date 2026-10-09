@@ -517,6 +517,27 @@ def split_suppressed(cur, sup, rows):
     return kept, reasons
 
 
+def blocked_by(reasons):
+    """被谁挡下的、以及**怎么让它们回来** —— 一句「谁是凶手 + 去哪儿解」。
+
+    回收站与屏蔽是**两条不同的退路**:屏蔽改设置,回收站去左栏还原。cmd_show 从前一律
+    说成"被屏蔽规则挡下了……要去掉屏蔽:设置 → 文档管理" —— 一条**就在回收站里**的条目
+    会因此被指到一个根本找不到它的地方(它没被任何规则挡,设置里翻不出来)。判据与
+    report_suppressed 同一条:分开报,各说各的退路。全是被屏蔽时文案与从前逐字一致
+    (那是绝大多数情形),只有掺进回收站才换说法。
+    """
+    trash_n = reasons.count(TRASH_REASON)
+    supp_n = len(reasons) - trash_n
+    if trash_n == 0:
+        return "被屏蔽规则挡下了", "要去掉屏蔽:设置 → 文档管理。"
+    if supp_n == 0:
+        return "被回收站挡下了", "要它们回来:在左栏的回收站里还原。"
+    return (
+        "被挡下了(其中 " + str(supp_n) + " 条是屏蔽规则、" + str(trash_n) + " 条在回收站里)",
+        "屏蔽的去掉屏蔽:设置 → 文档管理;回收站里的在左栏还原。",
+    )
+
+
 def report_suppressed(reasons):
     """挡掉了几条、因为什么 —— **必须说出来**。
 
@@ -586,10 +607,20 @@ def cmd_find(cur, root, args, sup):
         print("    id=" + row["id"] + "  文件:" + file_of(root, row["md_path"], row["pdf_path"], row["file_path"], sup))
     if not kept:
         if reasons:
-            # **"被屏蔽了"与"库里没有"是两句话。** 混成一句的话,模型会据此回答用户
-            # "库里没有这一篇" —— 而它在设置里明明留着。
-            print("(匹配的都在这几行屏蔽里,不在上面。如实告诉用户「被屏蔽了」,不要当它不存在,"
-                  "也不要凭空引用。)")
+            # **"被屏蔽了"与"库里没有"是两句话**(混成一句,模型会据此回答"库里没有这一篇");
+            # 而"屏蔽"与"在回收站里"又是**两句** —— 退路不同(屏蔽改设置、回收站左栏还原,
+            # 见 report_suppressed)。全说成"被屏蔽了"会让模型把丢进回收站的东西说成"被设置
+            # 挡住了",用户去设置里翻根本找不到它(它没被任何规则挡)。判据与 cmd_show 那条
+            # sys.exit 同源(那里也分了档),别再漂开。
+            if all(r == TRASH_REASON for r in reasons):
+                print("(匹配的都在回收站里,不在上面。如实告诉用户「在回收站里」——在左栏能还原,"
+                      "不要当它不存在,也不要凭空引用。)")
+            elif any(r == TRASH_REASON for r in reasons):
+                print("(匹配的都在这几行挡下的条目里(有屏蔽规则挡的、也有在回收站里的),不在上面。"
+                      "如实告诉用户,不要当它不存在,也不要凭空引用。)")
+            else:
+                print("(匹配的都在这几行屏蔽里,不在上面。如实告诉用户「被屏蔽了」,不要当它不存在,"
+                      "也不要凭空引用。)")
         else:
             print("(库里没有匹配的条目。不要因此凭记忆引用 —— 要么换关键词再找,要么如实说库里没有。)")
 
@@ -624,14 +655,20 @@ def cmd_show(cur, root, args, sup):
         else:
             kept.append(row)
     if not kept:
-        sys.exit("匹配 " + args.query + " 的 " + str(len(reasons)) + " 条被屏蔽规则挡下了("
-                 + "、".join(dict.fromkeys(reasons)) + ")。要去掉屏蔽:设置 → 文档管理。")
+        # ⚠️ **分开报**:回收站与屏蔽是两条不同的退路(见 blocked_by)。从前这里一律说
+        # "被屏蔽规则挡下了……要去掉屏蔽:设置",于是丢进回收站的条目把用户指到一个
+        # 根本找不到它的地方 —— 它没被任何规则挡,设置里翻不出来。与 report_suppressed
+        # 同一条口径(那边早就分开了,这条 sys.exit 那条路漏了)。
+        who, how = blocked_by(reasons)
+        sys.exit("匹配 " + args.query + " 的 " + str(len(reasons)) + " 条" + who + "("
+                 + "、".join(dict.fromkeys(reasons)) + ")。" + how)
     # ⚠️ **留下来的有,但被挡掉的也有时,也要说一声。** 从前只有"一条都没剩下"才报屏蔽 ——
     # 于是"匹配 2 条、其中 1 条被屏蔽"时只打印留下那条,用户以为库里就一条。与
     # cmd_list / cmd_find 的口径对齐(它们都会附一句挡掉了几条)。
     if reasons:
-        print("⚠️ 另有 " + str(len(reasons)) + " 条被屏蔽规则挡下("
-              + "、".join(dict.fromkeys(reasons)) + ";设置 → 文档管理)。")
+        who, how = blocked_by(reasons)
+        print("⚠️ 另有 " + str(len(reasons)) + " 条" + who + "("
+              + "、".join(dict.fromkeys(reasons)) + ")。" + how)
     rows = kept
     if len(rows) > 1:
         print("匹配到 " + str(len(rows)) + " 条,请用更精确的 id 或标题:")
