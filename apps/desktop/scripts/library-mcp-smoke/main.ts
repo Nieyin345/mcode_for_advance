@@ -801,6 +801,16 @@ console.log("\n跨引擎桥(library/engineTools.ts)");
   const cxSrc = readFileSync(join(process.cwd(), "src/main/providers/codex-sdk/CodexAgentSdkProvider.ts"), "utf8");
   check("Codex:动态工具表带上库工具", cxSrc.includes("...libraryToolDescriptors()"));
   check("Codex:库工具走带审批的派发", cxSrc.includes("invokeLibraryToolGated("));
+
+  // ★ 「新建笔记」的起名行必须**两条渲染路都画得到**:二级分类是横排 tab、内容走
+  //   `renderSubContent`;三级分类行走 `renderCollectionRow`。从前只在后者里内联,
+  //   右键一个二级分类 tab 选「新建笔记」→ `namingNoteIn` 设上了却没人读 → 界面什么都
+  //   不出现。判据:抽出的 `newNoteInputRow` 被两处都调用,且不再有第二份内联副本。
+  const libSrc = readFileSync(join(process.cwd(), "src/renderer/components/library/LibrarySection.tsx"), "utf8");
+  check("起名行抽成一份 helper", libSrc.includes("const newNoteInputRow ="));
+  const newNoteRowCalls = (libSrc.match(/newNoteInputRow\(c\)/g) ?? []).length;
+  check("★ 起名行被 renderSubContent 与 renderCollectionRow 两处调用", newNoteRowCalls >= 2, newNoteRowCalls);
+  check("★ 不再有第二份内联的 InlineInputRow(namingNoteIn 那处)", (libSrc.match(/namingNoteIn === c\.id && \(/g) ?? []).length === 0, libSrc.match(/namingNoteIn === c\.id/g));
 }
 
 /* ──────────────── 10. AI 建的分类必须挂在大类下(否则左栏看不见) ──────────────── */

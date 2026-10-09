@@ -1146,9 +1146,32 @@ export function LibrarySection({
           </>
         )}
         {creatingSubInputFor(c)}
+        {/* ⚠️ **新建笔记的起名行这里也要画。** 二级分类是横排 tab,它自己的内容走的是
+            这个函数;从前它只在 `renderCollectionRow` 里画 —— 于是右键一个二级分类 tab
+            选「新建笔记」,`startNewNote` 把 `namingNoteIn` 设上了却没人读它,界面**什么都
+            不出现**,用户以为点了没反应。 */}
+        {namingNoteIn === c.id && newNoteInputRow(c)}
       </>
     );
   };
+
+  /** 「新建笔记」的起名行 —— 挂在那个分类下面,用户一眼看得出笔记建到哪去。
+   *  抽成一份:二级分类 tab(走 `renderSubContent`)与三级分类行(走 `renderCollectionRow`)
+   *  都要画它,两处各抄一份迟早漂开(从前就漏了 tab 那处)。 */
+  const newNoteInputRow = (c: LibraryCollection) => (
+    <InlineInputRow
+      value={noteName}
+      onChange={setNoteName}
+      onSubmit={() => void submitNewNote(c)}
+      onCancel={() => {
+        setNamingNoteIn(null);
+        setNoteName("");
+      }}
+      onBlur={() => void submitNewNote(c)}
+      placeholder={t("library.note.placeholder")}
+      error={error}
+    />
+  );
 
   /**
    * 「全部显示」开着时的列表 —— **只平铺这一类下的全部条目,不画分类那一层**。
@@ -1294,21 +1317,8 @@ export function LibrarySection({
           }
         />
 
-        {/* 新建笔记的起名行 —— 挂在这个分类下面,用户一眼看得出笔记建到哪去 */}
-        {namingNoteIn === c.id && (
-          <InlineInputRow
-            value={noteName}
-            onChange={setNoteName}
-            onSubmit={() => void submitNewNote(c)}
-            onCancel={() => {
-              setNamingNoteIn(null);
-              setNoteName("");
-            }}
-            onBlur={() => void submitNewNote(c)}
-            placeholder={t("library.note.placeholder")}
-            error={error}
-          />
-        )}
+        {/* 新建笔记的起名行 —— 与二级分类 tab 那条路共用一份(见 `newNoteInputRow`) */}
+        {namingNoteIn === c.id && newNoteInputRow(c)}
 
         {/* 展开 —— 子列表的缩进/描边与 ProjectNode 展开会话列表时逐字一致。
             没有内容但**有子分类**时也画:箭头点开应当有反应。 */}
