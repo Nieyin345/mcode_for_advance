@@ -22,11 +22,11 @@
  * Run: scripts/ide-diff-dialog-smoke/run.sh
  */
 import "./prelude.js";
-import { gitHooks, mkStatus, resetHooks } from "./api-stub.js";
+import { gitHooks, mkPatch, mkStatus, mkStatusMulti, resetHooks } from "./api-stub.js";
 import { __mount, __flush, __nodes } from "./fakeReact.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { GitDiffDialog } from "@renderer/components/ide/GitDiffDialog.js";
-import type { GitStatusResult } from "@contracts/ipc";
+import type { GitFileStatus, GitStatusResult } from "@contracts/ipc";
 
 let failures = 0;
 let checks = 0;
@@ -101,7 +101,91 @@ async function scenario() {
   check("★ 左栏列的是 B 仓的文件", sidebarFiles().includes("B-only") && !sidebarFiles().includes("A-only"), sidebarFiles());
 }
 
+/**
+ * 左栏**点文件打开 diff** 的回包竞态(与 GitHistoryView 的 `openFile` 同一类)。
+ *
+ * `openWorkingFile` 从前没有请求序号守卫:它 `await api.git.diff(...)` 之后直接
+ * `openGitDiffDialogTab`(开 tab + 设活动 tab)。于是"点文件 A(A 慢,在飞)→ 点文件
+ * B(B 快,先回)→ A 后到"这一序,会让 **A 开了自己的 tab 并把活动 tab 抢走** —— 用户
+ * 明明点了 B,左侧高亮/右侧内容却跳去 A。判据立在"现在活动的那个 tab 是谁的"。
+ */
+async function openWorkingFileRaceScenario() {
+  resetHooks();
+  const REPO = "/w/proj/repoC";
+  // 左栏列出两个文件 A、B。
+  gitHooks.status = async () => ({ status: mkStatusMulti("main", ["AA.ts", "BB.ts"]) });
+  // diff:A 挂起(慢),B 立即回(快)。
+  const heldA = deferred<{ patch: string }>();
+  gitHooks.diff = async (input: { filePath: string }) => {
+    if (input.filePath.endsWith("AA.ts")) return heldA.promise;
+    return { patch: mkPatch("B") };
+  };
+
+  useSessionStore.setState({
+    locale: "zh",
+    gitDiffDialogOpen: true,
+    gitDiffDialogTabs: [],
+    gitDiffDialogActiveId: null,
+    gitDiffDialogViewMode: "single",
+    widePanelOpen: false,
+  });
+  // 一张只含本仓的 tab,让 sidebarRepoPath(活动 tab 的 repo)指向 REPO。
+  useSessionStore.getState().openGitDiffDialogTab({
+    id: `${REPO}/seed.ts::work`,
+    filePath: `${REPO}/seed.ts`,
+    before: "",
+    title: "seed.ts",
+    repoPath: REPO,
+    source: "working",
+    staged: false,
+  });
+  __mount(() => GitDiffDialog());
+  await __flush();
+
+  // 左栏分组(`SidebarFileGroup` 是子组件,不被调用,但它的 props 带 `files` 与
+  // `onSelect` —— `onSelect` 就是用户点那一行文件时走的函数,接收该文件的 GitFileStatus)。
+  const groupOnSelect = (): ((f: GitFileStatus) => void) => {
+    const g = __nodes().find(
+      (x) =>
+        typeof (x.props as { onSelect?: unknown }).onSelect === "function" &&
+        Array.isArray((x.props as { files?: unknown }).files),
+    );
+    if (!g) throw new Error("找不到左栏文件分组");
+    return g.props.onSelect as (f: GitFileStatus) => void;
+  };
+  const fileOf = (name: string): GitFileStatus => {
+    const g = __nodes().find((x) => Array.isArray((x.props as { files?: unknown }).files))!;
+    const f = (g.props.files as GitFileStatus[]).find((x) => x.path.endsWith(name));
+    if (!f) throw new Error(`找不到左栏文件:${name}`);
+    return f;
+  };
+
+  // 点 A(慢,先不回来)…紧接着点 B(B 快,先回)。
+  groupOnSelect()(fileOf("AA.ts"));
+  await __flush();
+  groupOnSelect()(fileOf("BB.ts"));
+  await __flush();
+
+  const activeTab = () => {
+    const s = useSessionStore.getState();
+    return s.gitDiffDialogTabs.find((t) => t.id === s.gitDiffDialogActiveId);
+  };
+  check("B 的文件差异先落地(正控)", activeTab()?.filePath.endsWith("BB.ts") === true, activeTab()?.filePath);
+
+  // A 的慢回包此刻才到 —— 它就是那条"旧回包"。
+  heldA.resolve({ patch: mkPatch("A") });
+  await __flush();
+
+  check("★ 迟到的 A 文件打开没有抢走活动 tab", activeTab()?.filePath.endsWith("BB.ts") === true, activeTab()?.filePath);
+  check(
+    "★ A 的过期打开没有凭空多开一个 tab",
+    !useSessionStore.getState().gitDiffDialogTabs.some((t) => t.filePath.endsWith("AA.ts")),
+    useSessionStore.getState().gitDiffDialogTabs.map((t) => t.filePath),
+  );
+}
+
 await scenario();
+await openWorkingFileRaceScenario();
 
 console.log(`\nide-diff-dialog-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exitCode = 1;

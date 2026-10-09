@@ -66,6 +66,11 @@ export function GitDiffDialog() {
   const [statusLoading, setStatusLoading] = useState(false);
   /** 左栏 status 加载的请求序号 —— 过期响应不许写状态(见 `refreshStatus`)。 */
   const statusSeqRef = useRef(0);
+  /** 左栏点文件打开 diff 的请求序号 —— **与 GitHistoryView 的 `fileSeqRef` 同一类**。
+   *  点文件 A(A 慢,在飞)→ 点文件 B(B 快,先回)→ A 后到时,没有这条守卫就会替 A 开一个
+   *  tab 并把它设为活动 tab —— 用户明明点了 B,左栏高亮/右侧内容却跳去 A。过期的那次
+   *  打开必须作废(同「切提交会让在飞的文件打开作废」那条纪律)。 */
+  const openSeqRef = useRef(0);
   // Fullscreen is a transient view toggle — resets each time the dialog opens.
   const [fullscreen, setFullscreen] = useState(false);
 
@@ -122,6 +127,13 @@ export function GitDiffDialog() {
       const absPath = joinPath(sidebarRepoPath, file.path);
       const tabId = `${absPath}::${stagedSide ? "staged" : "work"}`;
 
+      // **请求序号:只有最新一次打开能落地。** 点文件 A(慢,在飞)→ 点文件 B(快)→
+      // A 后到:没有这条守卫 A 会替自己开 tab 并抢走活动 tab(同 GitHistoryView 的
+      // `fileSeqRef`,见 docs/底层修复记录 #38 那一族)。⚠️ 自增必须在**最开头** ——
+      // 也包括下面"已开就只切活动 tab"那条早返回:用户点了已开的 B 之后,在飞的 A 同样
+      // 必须作废,否则 A 的慢回包会把活动 tab 从 B 抢走。
+      const seq = ++openSeqRef.current;
+
       // If the tab is already open, just activate it (content was snapshot at
       // open time; re-clicking the Git panel row refreshes — sidebar navigate
       // prefers snappy switch).
@@ -147,6 +159,7 @@ export function GitDiffDialog() {
       } catch {
         // fall through with empty before
       }
+      if (seq !== openSeqRef.current) return; // superseded by a newer open
 
       openGitDiffDialogTab({
         id: tabId,
