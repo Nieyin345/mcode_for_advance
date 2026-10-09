@@ -670,6 +670,37 @@ const originalRunSave = repo.save;
     let twice = false; try { store.dropAssistantJobs(doomedSrc.id); twice = true; } catch { /* */ }
     check("重复收尾幂等", twice);
   }
+
+  // ★ 坏掉的记忆助手行报的是**同一句中文**,不是 `SyntaxError`/`ZodError` 的英文原句。
+  //   `SettingRepo.get` 的值可能不是合法 JSON(半截写盘、外部改库、旧 schema),而 `op:"list"`
+  //   轮询每 2 秒打一次这条路、渲染端把异常原样摆进红色危险面板。同一文件下面那句"索引形状
+  //   不对"的守卫早就用了中文,坏行却分两种口径 —— 这里把两种坏法(JSON 本身坏 / job schema
+  //   不合)都钉住,并且禁止英文/ZodError 字样漏出去(与 `custom-model-smoke` 同一条判据)。
+  {
+    const looksEnglish = (msg: string) => /zod|ZodError|invalid_|Unexpected token|\{\s*"|\[\s*\{/i.test(msg);
+    const catchMsg = (run: () => unknown): string => { try { run(); return ""; } catch (e) { return (e as Error).message; } };
+
+    SettingRepo.set(`memory.assistant.source.${source.id}`, "not-json{");
+    const idxMsg = catchMsg(() => store.listAssistantJobs(source.id));
+    check("★ 索引是坏 JSON 时报中文坏了、不是英文 SyntaxError",
+      idxMsg.length > 0 && !looksEnglish(idxMsg) && idxMsg.includes("损坏"), idxMsg);
+
+    SettingRepo.set(`memory.assistant.source.${source.id}`, JSON.stringify([123]));
+    const shapeMsg = catchMsg(() => store.listAssistantJobs(source.id));
+    check("★ 索引里混进非字符串 id 也报同一句中文",
+      shapeMsg.length > 0 && !looksEnglish(shapeMsg) && shapeMsg.includes("损坏"), shapeMsg);
+
+    SettingRepo.set(`memory.assistant.job.corrupt-job`, "{ broken");
+    const jobMsg = catchMsg(() => store.readAssistantJob("corrupt-job"));
+    check("★ job 本体是坏 JSON 时报中文坏了、不是英文 SyntaxError",
+      jobMsg.length > 0 && !looksEnglish(jobMsg) && jobMsg.includes("损坏"), jobMsg);
+
+    SettingRepo.set(`memory.assistant.job.corrupt-job`, JSON.stringify({ id: "corrupt-job", status: "nonsense" }));
+    const schemaMsg = catchMsg(() => store.readAssistantJob("corrupt-job"));
+    check("★ job 本体 schema 不合报中文,不是 ZodError JSON",
+      schemaMsg.length > 0 && !looksEnglish(schemaMsg) && schemaMsg.includes("损坏"), schemaMsg);
+    SettingRepo.deleteMany([`memory.assistant.source.${source.id}`, `memory.assistant.job.corrupt-job`]);
+  }
 }
 
 // Ordinary launches (not only memory workers) reserve and cancel during preflight.

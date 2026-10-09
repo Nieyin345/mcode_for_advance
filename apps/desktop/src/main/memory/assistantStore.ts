@@ -8,10 +8,28 @@ const targetKey = (id: string) => `memory.assistant.target.${id}`;
 const JOB_PREFIX = "memory.assistant.job.";
 /** `targetKey()` 的键前缀 —— 收尾时也要扫,把指向已删 job 的悬挂指针一起清掉。 */
 const TARGET_PREFIX = "memory.assistant.target.";
+/**
+ * 坏数据一律用这**同一句**中文报出来。
+ *
+ * `SettingRepo.get` 的值可能不是合法 JSON(半截写盘、外部改库、旧 schema),而
+ * `JSON.parse` / `MemoryAssistantJobSchema.parse` 抛的是 **`SyntaxError` / `ZodError`
+ * 的英文原句** —— `memoryAssistant`(含界面每 2 秒一次的 `op:"list"` 轮询)不 try,
+ * IPC 直接 reject,渲染端 `setError(String(e))` 把那串英文/ZodError JSON 原样摆进
+ * 红色危险面板。同一文件下面那句"索引形状不对"的守卫已经用了中文(`调用方会原样显示`),
+ * 这里对齐它:同样的处境、同一句人话,别让坏行分两种口径。
+ */
+const CORRUPT = "记忆助手记录损坏，未覆盖原记录";
+function parseJob(raw: string): MemoryAssistantJob {
+  try {
+    return MemoryAssistantJobSchema.parse(JSON.parse(raw));
+  } catch {
+    throw new Error(CORRUPT);
+  }
+}
 export function readAssistantJob(id: string): MemoryAssistantJob | null {
   const raw = SettingRepo.get(key(id));
   if (!raw) return null;
-  const job = MemoryAssistantJobSchema.parse(JSON.parse(raw));
+  const job = parseJob(raw);
   if (job.status !== "running" && job.expiresAt < Date.now() && job.result) {
     job.result = ""; job.status = "expired"; saveAssistantJob(job);
   }
@@ -19,8 +37,10 @@ export function readAssistantJob(id: string): MemoryAssistantJob | null {
 }
 export function saveAssistantJob(job: MemoryAssistantJob): void { SettingRepo.set(key(job.id), JSON.stringify(job)); }
 export function listAssistantJobs(sourceId: string): MemoryAssistantJob[] {
-  const ids: unknown = JSON.parse(SettingRepo.get(indexKey(sourceId)) ?? "[]");
-  if (!Array.isArray(ids) || ids.some(id => typeof id !== "string")) throw new Error("记忆助手记录损坏，未覆盖原记录");
+  let ids: unknown;
+  try { ids = JSON.parse(SettingRepo.get(indexKey(sourceId)) ?? "[]"); }
+  catch { throw new Error(CORRUPT); }
+  if (!Array.isArray(ids) || ids.some(id => typeof id !== "string")) throw new Error(CORRUPT);
   return ids.map(id => readAssistantJob(id as string)).filter((j): j is MemoryAssistantJob => j !== null && j.sourceSessionId === sourceId && j.projectId === SessionRepo.get(sourceId)?.projectId);
 }
 export function createAssistantJob(sourceSessionId: string, projectId: string, workerSessionId: string, kind: MemoryAssistantKind): MemoryAssistantJob {
