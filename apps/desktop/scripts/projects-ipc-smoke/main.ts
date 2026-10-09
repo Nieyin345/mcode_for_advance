@@ -47,6 +47,7 @@ import { dropped, queueBackflow, resetBackflowStub } from "./stubs/pendingBackfl
 import { mailDropped, resetAgentMailStub } from "./stubs/agentMail.js";
 import { assistantDropped, resetAssistantStoreStub } from "./stubs/assistantStore.js";
 import { callTrace, resetCallTrace } from "./stubs/callTrace.js";
+import { registerProjectCleanupHook } from "@main/lib/sessionCleanupHooks.js";
 import {
   disposedIds,
   disposedProjectIds,
@@ -55,6 +56,11 @@ import {
 } from "./stubs/runtimeManager.js";
 
 const DATA = mkdtempSync(join(tmpdir(), "projects-ipc-smoke-"));
+
+/** 项目收尾钩子的调用记档(见 `assertProjectCleanupHook` 里那条断言)。注册一次即可 ——
+ *  注册表是零依赖的叶子,这里登记的就是生产代码会跑的那一份。 */
+const projectCleanupCalls: Array<{ id: string; path: string }> = [];
+registerProjectCleanupHook((id, path) => { projectCleanupCalls.push({ id, path }); });
 
 let failures = 0;
 let checks = 0;
@@ -316,6 +322,7 @@ console.log("\n2. 删项目 —— 级联删掉的每一条会话,收尾做全�
 {
   fresh();
   const pid = mkProject("要删的");
+  const pidPath = ProjectRepo.list().find((p) => p.id === pid)!.path;
   const other = mkProject("别动我");
   const a = mkSession("s_a", pid, { title: "对话甲" });
   const b = mkSession("s_b", pid, { title: "对话乙" });
@@ -367,6 +374,13 @@ console.log("\n2. 删项目 —— 级联删掉的每一条会话,收尾做全�
     "**每一条**的记忆助手状态行也清了",
     [a, b, side].every((id) => assistantDropped.includes(id)),
     assistantDropped,
+  );
+  // 项目级收尾钩子(按**路径**留的资源,如 LSP 的 workspace server)。判据:钩子拿到的
+  // **路径**必须是这个项目的根 —— 删完就再也问不到它了(见 `runProjectCleanupHooks`)。
+  check(
+    "项目收尾钩子被调到了,且拿到的是这个项目的根路径(不是别的)",
+    projectCleanupCalls.some((c) => c.id === pid && c.path === pidPath),
+    projectCleanupCalls,
   );
   // `RuntimeManager` 上按会话留的 `lastEnvFingerprint` 同理:每轮 chat 写一条、从不删,
   // 会话键的表随会话数只涨不落。判据同样立在"每一条"(项目级走逐会话循环)。**刻意不并进

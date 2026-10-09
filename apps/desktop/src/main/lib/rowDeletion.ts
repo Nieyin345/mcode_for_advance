@@ -14,7 +14,7 @@ import { cancelWorkflowRun } from "@main/orchestration/runner.js";
 import { dropBackflow } from "@main/lib/pendingBackflow.js";
 import { dropAgentMail } from "@main/lib/agentMail.js";
 import { dropAssistantJobs } from "@main/memory/assistantStore.js";
-import { runSessionCleanupHooks } from "@main/lib/sessionCleanupHooks.js";
+import { runSessionCleanupHooks, runProjectCleanupHooks } from "@main/lib/sessionCleanupHooks.js";
 import { disposeAgentSession } from "@main/mcp/agentSessionCleanup.js";
 
 /** 系统项目(后台自动化的外键归属)不能删 —— 调用方据此给出各自的错误形态。 */
@@ -85,6 +85,9 @@ export function deleteProjectEverywhere(id: string): { sessions: number; stopped
   // ⚠️ 循环体里那两句是**分别**被测的:`projects-ipc-smoke` §2 里"只停甲不停乙"
   // 和"乙的待并回内容也在"是两条独立断言,拿掉其中一句只红对应那条。
   const doomed = SessionRepo.listIdsByProject(id);
+  // 项目根路径也要**删之前**读 —— 有些资源(如 LSP 的 workspace 键)是按**路径**留的,
+  // 而删完就再也问不到这个项目的根了(见 `runProjectCleanupHooks` 的签名)。
+  const projectPath = ProjectRepo.get(id)?.path ?? "";
   let stopped = 0;
   for (const sid of doomed) {
     // 返回值说的正是"这个会话上真有一张图被掐掉"。
@@ -102,6 +105,9 @@ export function deleteProjectEverywhere(id: string): { sessions: number; stopped
   // (disposeProject reads them to know what to dispose). Also interrupts a
   // running turn instead of letting it stream into a deleted project.
   runtimeManager.disposeProject(id);
+  // 项目级的收尾(按**路径**留的资源,如 LSP 的 workspace server)—— 放在 `delete`
+  // 之前:钩子拿到的路径是上面读下来的那份,但语义上"这个项目还在"时收最稳。
+  runProjectCleanupHooks(id, projectPath);
   ProjectRepo.delete(id);
   // 另一端这几条会话也是"刚才还在列表里"的,逐条告诉它;项目列表本身另发一条。
   for (const sid of doomed) broadcastSessionDeleted(sid);

@@ -1247,6 +1247,94 @@ console.log("\n§8 并发 ensureServer:同一个 key 只起一个进程");
   same("disposeAll 把它收干净了(没有杀不到的孤儿)", pidsFor("ts").filter(alive), []);
 }
 
+/* ─────────── 6h. 项目被删 → 它的语言服务器必须跟着走 ─────────── */
+
+console.log("\n§6h 删项目收掉它 workspace 下的 server");
+
+{
+  // 服务器按 `${resolve(workspacePath)}::${language}` 存,而 workspacePath 就是项目根。
+  // 项目一删,那个 workspaase 再也没人开文件,可子进程还活着(jdtls 一个 1GB+),
+  // 直到应用退出 —— 本仓库点名的"只涨不落",只是这次涨的是真进程。
+  //
+  // 判据立在**进程还在不在**上:起一个 → 删项目 → 那几个 pid 必须没了。
+  clearBinaries();
+  configure([{ language: "typescript", enabled: true, serverPath: GOOD_TS }]);
+  resetPidLog();
+
+  await lspManager.openDocument(WS3, join(WS3, "c.ts"), "typescript");
+  await sleep(500);
+  const before = pidsFor("ts");
+  eq("删项目之前:WS3 下有一个 server 在跑", before.filter(alive).length, 1);
+
+  // 走**收尾钩子注册表**(零依赖,`rowDeletion.ts` 正是调它)—— 直接 import
+  // `rowDeletion.js` 会顺带把整个运行时(ssh2 → cpu-features 原生模块)拖进打包图,
+  // 而这里要验的只是"LspManager 登记的那个钩子会收掉 workspace"。rowDeletion 真的
+  // 调了这个注册表这一环由 `projects-ipc-smoke` 经**真 handler** 断言。
+  const { runProjectCleanupHooks } = await import("@main/lib/sessionCleanupHooks.js");
+  runProjectCleanupHooks("p-gamma", WS3);
+  await sleep(1500);
+
+  same("★ 项目收尾后:它 workspace 下的 server 真的没了(不是拖到应用退出)", before.filter(alive), []);
+}
+
+/* ─────────── 6i. 删一条物化了工作树的会话 → 收掉那条检出下的 server ─────────── */
+
+{
+  // 工作树会话的 LSP workspace 是**它的隔离检出目录**(见渲染端 selectActiveEnvPath),
+  // 而不是项目根 —— 所以删这条会话时收的必须是那个检出,不能误伤同一项目下别的会话
+  // 共用的项目根 workspace。判据:被删会话的工作树那个 server 没了,而同项目另一条
+  // 会话(跑在项目根上)的 server 还在。
+  clearBinaries();
+  configure([{ language: "typescript", enabled: true, serverPath: GOOD_TS }]);
+  resetPidLog();
+
+  const { SessionRepo } = await import("@main/store/repositories.js");
+  const { runSessionCleanupHooks } = await import("@main/lib/sessionCleanupHooks.js");
+
+  // 一条工作树检出目录(独立于任何项目根),登记成合法 workspace。
+  const WT = mkWorkspace("wt-session");
+  writeFileSync(join(WT, "w.ts"), "const w = 1;\n");
+  registerWorkspaceRoot(WT);
+
+  const now = Date.now();
+  const mkSess = (id: string, worktreePath: string | null): void => {
+    SessionRepo.create({
+      id, projectId: "p-alpha", providerId: "claude-sdk", claudeSessionId: null, kind: "chat",
+      parentSessionId: null, nodeId: null, title: id, status: "idle",
+      model: "default", effort: "default", permissionMode: "default", workflowId: "default",
+      customModelId: null, envMode: worktreePath ? "worktree" : "local", worktreePath,
+      archived: false, pinnedAt: null, contextSnapshot: null, todos: null, subagents: null,
+      planDraft: null, usageHistory: null, turnFiles: null, bookmarks: null,
+      subagentTranscripts: null, createdAt: now, updatedAt: now,
+    } as never);
+  };
+  // A:物化在工作树里;B:跑在项目根上(与 A 同项目)。
+  mkSess("sess_wt", WT);
+  mkSess("sess_root", null);
+
+  await lspManager.openDocument(WT, join(WT, "w.ts"), "typescript");
+  await sleep(500);
+  const wtPid = pidsFor("ts");
+  eq("删会话之前:工作树里有一个 server", wtPid.filter(alive).length, 1);
+
+  // 删的是**工作树那条**会话 —— 钩子该收掉 WT,而不是 sess_root 用的项目根。
+  runSessionCleanupHooks("sess_wt");
+  await sleep(1500);
+
+  same("★ 删工作树会话后:那条检出的 server 没了", wtPid.filter(alive), []);
+
+  // 项目根那条不该被误伤:再起一个在 WS1(A 的项目根),只删**它**的会话,核对它还在。
+  await lspManager.openDocument(WS1, join(WS1, "a.ts"), "typescript");
+  await sleep(500);
+  const rootPid = pidsFor("ts").filter(alive);
+  // `sess_root` 没有工作树 → 钩子里那句 `if (!wt) return` 直接放过,项目根 server 不受影响。
+  runSessionCleanupHooks("sess_root");
+  await sleep(800);
+  same("项目根那种共享 workspace 不会被单删会话误伤", rootPid, pidsFor("ts").filter(alive));
+  lspManager.stopWorkspace(WS1);
+  await sleep(800);
+}
+
 /* ─────────────────────────── 收尾 ─────────────────────────── */
 
 lspManager.disposeAll();

@@ -22,7 +22,13 @@
  */
 export type SessionCleanupHook = (sessionId: string) => void;
 
+/** 「项目真的被删了」的收尾钩子。第二个参数是**删之前**读到的项目根路径 ——
+ *  行删掉之后就问不到了,而有些资源是按**路径**(不是项目 id)留的(如 LSP 的
+ *  workspace 键)。 */
+export type ProjectCleanupHook = (projectId: string, projectPath: string) => void;
+
 const hooks = new Set<SessionCleanupHook>();
+const projectHooks = new Set<ProjectCleanupHook>();
 
 /** 登记一个"会话被删时"的收尾。返回注销函数(组件/测试用得上)。 */
 export function registerSessionCleanupHook(fn: SessionCleanupHook): () => void {
@@ -33,6 +39,17 @@ export function registerSessionCleanupHook(fn: SessionCleanupHook): () => void {
 /** 跑一遍全部收尾钩子。空表是合法的(没有谁登记时什么都不做)。 */
 export function runSessionCleanupHooks(sessionId: string): void {
   for (const fn of hooks) fn(sessionId);
+}
+
+/** 登记一个"项目被删时"的收尾(与 {@link registerSessionCleanupHook} 同一套路)。 */
+export function registerProjectCleanupHook(fn: ProjectCleanupHook): () => void {
+  projectHooks.add(fn);
+  return () => projectHooks.delete(fn);
+}
+
+/** 跑一遍全部项目收尾钩子。`projectPath` 是**删之前**读到的根路径。 */
+export function runProjectCleanupHooks(projectId: string, projectPath: string): void {
+  for (const fn of projectHooks) fn(projectId, projectPath);
 }
 
 /** 只给 smoke 用:当前登记了几个。 */

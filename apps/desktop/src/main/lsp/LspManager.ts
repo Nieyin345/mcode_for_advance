@@ -42,7 +42,8 @@ import {
 } from "@contracts/ipc";
 import { log } from "@main/lib/logger.js";
 import { sendToRenderer } from "@main/window.js";
-import { SettingRepo } from "@main/store/repositories.js";
+import { SettingRepo, SessionRepo } from "@main/store/repositories.js";
+import { registerSessionCleanupHook, registerProjectCleanupHook } from "@main/lib/sessionCleanupHooks.js";
 import { isKnownWorkspaceRoot, findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { which } from "@main/lib/binaryResolve.js";
 import {
@@ -1406,6 +1407,38 @@ class LspManagerImpl {
     return false;
   }
 
+  /**
+   * Stop every server rooted at `workspacePath`(任意语言)。项目 / 会话被删时调。
+   *
+   * 服务器是按 `${resolve(workspacePath)}::${language}` 存的 —— 一个 workspace 可能
+   * 同时挂着好几个语言的 server,所以这里按**路径**整片收,而不是按语言。
+   *
+   * ## 为什么必须有这一步
+   *
+   * 服务器的生命周期从前**只**由 `disposeAll`(应用退出)和用户的显式开关
+   * (`toggle` / `setPath` / `restart`)管。项目一删,它的 workspace 再也不会有人开
+   * 文件,可那个子进程还活着 —— jdtls 一个实例就是 1GB+,而且它继续占着工作区的
+   * 索引与文件锁,**直到应用退出**。这与本仓库点名的"模块级 Map 只涨不落"是同一类,
+   * 只是这次涨的是**真的进程**。
+   *
+   * 幂等:没有对应 server 时什么都不做。路径比较用 `resolve` 归一(与 `serverKey` 同口径)。
+   */
+  stopWorkspace(workspacePath: string): void {
+    const target = resolve(workspacePath);
+    const keys: string[] = [];
+    for (const [key, handle] of this.servers) {
+      if (resolve(handle.workspacePath) === target) keys.push(key);
+    }
+    for (const key of keys) {
+      const handle = this.servers.get(key);
+      if (handle) this.removeServer(key, handle);
+    }
+    // 崩溃计数也按 `${workspacePath}::${language}` 存 —— 同一个"只涨不落"。
+    for (const key of [...this.spawnFailures.keys()]) {
+      if (key.startsWith(`${target}::`)) this.spawnFailures.delete(key);
+    }
+  }
+
   /** Kill every server (app shutdown). Best-effort; swallows errors. */
   disposeAll(): void {
     for (const [key, handle] of [...this.servers]) {
@@ -1678,6 +1711,44 @@ class LspManagerImpl {
 }
 
 export const lspManager = new LspManagerImpl();
+
+/* ── 会话 / 项目被删时,收掉它们的语言服务器 ──
+ *
+ * LSP server 按 `${resolve(workspacePath)}::${language}` 存 —— workspacePath 是一个
+ * 项目的根,或某条**工作树会话**的隔离检出目录(见渲染端 `selectActiveEnvPath`)。
+ * 所以:
+ *   - 一条会话被删:若它物化过工作树,它的 workspace 就是那个检出目录;项目根那种
+ *     共享 workspace **不能**在这里收(同一个项目下别的会话还在用)。判据是"这个
+ *     路径是不是**某条已经不存在**的会话的 worktree"。
+ *   - 一个项目被删:它的根就是 workspace,整片收掉。
+ *
+ * 这两条挂在**注册表**上(而不是让 `rowDeletion.ts` import 本模块):本模块带着
+ * electron 依赖,直接 import 会把 electron 拖进每一套 bundle 了 `rowDeletion` 的
+ * smoke(见 `sessionCleanupHooks.ts` 文件头那条理由)。
+ */
+registerSessionCleanupHook((sessionId) => {
+  // 会话行可能已经没了(删项目是级联),也可能还在(单删会话时这条在删除**之前**跑)。
+  const sess = SessionRepo.get(sessionId);
+  const wt = sess?.worktreePath;
+  if (!wt) return; // 项目根那种共享 workspace 不在这里收。
+  // 只有当这条 worktree 再没有任何**别的**会话引用时才收 —— 一条检出理论上只属于一条
+  // 会话,但删项目是逐会话循环,保险起见问一句。
+  const stillUsed = SessionRepo.listAll().some(
+    (s) => s.id !== sessionId && !!s.worktreePath && samePathLoose(s.worktreePath, wt),
+  );
+  if (!stillUsed) lspManager.stopWorkspace(wt);
+});
+
+registerProjectCleanupHook((_projectId, projectPath) => {
+  if (projectPath) lspManager.stopWorkspace(projectPath);
+});
+
+/** 路径相等(大小写、分隔符归一)—— 与 `pathGuard.samePath` 同口径,这里不 import
+ *  它以免把后者那条链拉进来。工作树路径来自库,不会带 `..`。 */
+function samePathLoose(a: string, b: string): boolean {
+  const norm = (p: string) => resolve(p).replace(/[\\/]+/g, "/").replace(/\/$/, "").toLowerCase();
+  return norm(a) === norm(b);
+}
 
 /* ───────────────────────── path / uri helpers ───────────────────────── */
 
