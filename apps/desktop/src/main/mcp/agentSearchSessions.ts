@@ -238,7 +238,22 @@ async function runSearch(
   } catch (err) {
     if (state.status === "running") {
       state.status = "error";
-      state.error = err instanceof Error ? err.message : String(err);
+      // **给模型看的句子要说人话。** 这条 `error` 经 `page()` 原样回到模型手上
+      // (`agent_search_read` 的 `error` 字段)。`fs.stat` 在起点不存在/不可读时抛的是
+      // 原始英文 OS 错误(`ENOENT: no such file or directory, stat '…'`),而孪生的
+      // `agent_grep` 在同一个处境给的是「路径不存在:…」。翻译常见那几种,其余原样保留
+      // (至少比吞掉强) —— 与 `agent_grep` 一条口径。
+      const code = (err as NodeJS.ErrnoException)?.code;
+      state.error =
+        code === "ENOENT"
+          ? `搜索起点不存在:${state.root}`
+          : code === "EACCES" || code === "EPERM"
+            ? `搜索起点没有读取权限:${state.root}`
+            : code === "ENOTDIR"
+              ? `搜索起点不是目录:${state.root}`
+              : err instanceof Error
+                ? err.message
+                : String(err);
     }
   } finally {
     state.finishedAt = Date.now();

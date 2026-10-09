@@ -89,5 +89,29 @@ try {
       !/const SKIP_DIRS = new Set/.test(toolsSrc) && /import \{[^}]*SKIP_DIRS[^}]*\} from "\.\/agentSearchSessions\.js"/.test(toolsSrc),
     );
   }
+  // ★ 搜索起点不存在时,交给模型的那句 `error` 要说人话(中文),不是原始英文 OS 错误。
+  //   这条 `error` 经 `agent_search_read` 的 `error` 字段原样回到模型手上,模型再学给
+  //   用户。`fs.stat` 在起点不存在时抛 `ENOENT: no such file or directory, stat '…'`,
+  //   而孪生的 `agent_grep` 同一处境给的是「路径不存在:…」。判据钉行为。
+  {
+    const started = await call("agent_search_start", {
+      search_type: "content",
+      pattern: "anything",
+      path: path.join(root, "no-such-dir-xyz"),
+    });
+    const startedBody = body(started);
+    // 起点不存在时,错误可能当场回(同步 stat)或稍后经 read 回(异步)。两条都查:取
+    // searchId 去 read 一次,把任一处的 error 拿来断言。
+    const idMatch = /"searchId"\s*:\s*"([^"]+)"/.exec(startedBody);
+    let errText = startedBody;
+    if (idMatch) {
+      const read = await call("agent_search_read", { searchId: idMatch[1], offset: 0, length: 10 });
+      errText += "\n" + body(read);
+    }
+    check(
+      "★ 搜索起点不存在时的 error 是中文,不是原始 ENOENT 英文",
+      /搜索起点不存在/.test(errText) && !/ENOENT/.test(errText),
+    );
+  }
   console.log(`MCP text contract: ${checks} checks passed`);
 } finally { rmSync(root, { recursive: true, force: true }); }
