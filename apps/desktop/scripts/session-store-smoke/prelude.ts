@@ -12,6 +12,7 @@ let sendTurnStub: ((input: unknown) => Promise<unknown>) | null = null;
 let sessionMessagesStub: ((input: unknown) => Promise<unknown>) | null = null;
 let skillsListStub: ((input: unknown) => Promise<unknown>) | null = null;
 let truncateStub: ((input: unknown) => Promise<unknown>) | null = null;
+let interruptStub: ((input: unknown) => Promise<unknown>) | null = null;
 export function setSendTurnStub(fn: ((input: unknown) => Promise<unknown>) | null): void {
   sendTurnStub = fn;
 }
@@ -25,6 +26,10 @@ export function setSkillsListStub(fn: ((input: unknown) => Promise<unknown>) | n
 /** 覆盖 `session.truncateAndInsertMessages`(验"编辑重发的落库失败要报出来")。 */
 export function setTruncateStub(fn: ((input: unknown) => Promise<unknown>) | null): void {
   truncateStub = fn;
+}
+/** 覆盖 `claude.interrupt`(验"点停止时 IPC 失败不能把界面钉在运行中")。 */
+export function setInterruptStub(fn: ((input: unknown) => Promise<unknown>) | null): void {
+  interruptStub = fn;
 }
 
 function deepApiStub(path: string[] = []): unknown {
@@ -41,6 +46,8 @@ function deepApiStub(path: string[] = []): unknown {
           ? sessionMessagesStub(args[0])
           : path.join(".") === "session.truncateAndInsertMessages" && truncateStub
             ? truncateStub(args[0])
+          : path.join(".") === "claude.interrupt" && interruptStub
+            ? interruptStub(args[0])
           : path.join(".") === "skills.list" && skillsListStub
             ? skillsListStub(args[0])
             : Promise.resolve(undefined),

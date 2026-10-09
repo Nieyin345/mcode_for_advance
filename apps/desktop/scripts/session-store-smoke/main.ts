@@ -13,7 +13,7 @@
  *
  * Run: scripts/session-store-smoke/run.sh
  */
-import { setSendTurnStub, setSessionMessagesStub, setSkillsListStub, setTruncateStub } from "./prelude.js";
+import { setSendTurnStub, setSessionMessagesStub, setSkillsListStub, setTruncateStub, setInterruptStub } from "./prelude.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { ChatMessage, SessionState } from "@renderer/stores/sessionStore.js";
@@ -951,8 +951,25 @@ await (async () => {
   check("★ 这一轮的内容不再被丢", JSON.stringify(after).includes("这轮的回复"), after.length);
 })();
 
-console.log("\n[15c] 删会话时排队提示词桶也要收掉");
+console.log("\n[15b-2] 点停止时 IPC 失败也不能把界面钉在「运行中」");
 {
+  const SID = "interrupt-ipc-fails";
+  seed([mkSession(SID)], { total: 1 });
+  const store = useSessionStore;
+  store.setState((s) => ({ runningBySession: { ...s.runningBySession, [SID]: true } }));
+  eq("前置:会话在运行中", store.getState().runningBySession[SID], true);
+
+  // IPc 拒了(401/断网/超时)—— 从前这里是裸 await,一 reject 就跳过下面整段收尾:
+  // 界面永远停在"运行中",用户点了停止像没反应。
+  setInterruptStub(async () => { throw new Error("interrupt IPC failed"); });
+  useToastStore.getState().clear();
+  await store.getState().interrupt(SID);
+  eq("★ IPC 失败后本地仍解锁(不再钉在运行中)", store.getState().runningBySession[SID], false);
+  check("★ 而且如实报了失败(不是静默)", useToastStore.getState().toasts.some((tt) => tt.body?.includes("interrupt IPC failed")), useToastStore.getState().toasts.map((tt) => tt.body));
+  setInterruptStub(null);
+}
+
+console.log("\n[15c] 删会话时排队提示词桶也要收掉");{
   // `dropSessionBuckets` 清了三十来个 per-session 桶,却漏了 `promptQueueBySession`
   // —— 一条删掉/归档的会话在队列里留下的那队(连同附件、图片 data URL)会**留到进程结束**。
   const SID = "queued-then-deleted";

@@ -5216,7 +5216,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // 先登记「欠一条中断收口」,再发 IPC:收口可能在 await 期间就到(那时哨兵还没立,
     // 守卫会把它当陈旧事件丢掉 —— 无妨,下面这段本来就把运行标志/计时/落库都做了)。
     pendingInterruptDone.add(sessionId);
-    await api.claude.interrupt({ sessionId });
+    // ⚠️ **IPC 失败也必须往下走完本地收尾。** 从前这里裸 `await`,IPC 一 reject
+    // (401/断网/超时)就跳过下面那一大段:界面**一直停在"运行中"**、`pendingInterruptDone`
+    // 也留着一个悬空条目,用户点了停止像没反应。主进程那边可能没真停(如实报出来),
+    // 但本地这份收尾(解锁输入框、冻结计时、落库已产出的内容)不该跟着失败。
+    try {
+      await api.claude.interrupt({ sessionId });
+    } catch (err) {
+      console.error("claude.interrupt failed:", err);
+      useToastStore.getState().push({
+        kind: "error",
+        title: translate(get().locale, "store.toast.errorOccurred"),
+        body: err instanceof Error ? err.message : String(err),
+      });
+    }
     // Drop this session's buffered deltas: after abort, flushFinal may emit a
     // few straggler text.delta/thinking while the generator unwinds, but the
     // user asked to STOP — none of it should reach the page. Combined with
