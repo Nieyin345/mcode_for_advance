@@ -375,8 +375,12 @@ export const MessageRow = memo(function MessageRow({
 /** Flatten a message's blocks into the plain-text payload that the copy
  *  button yields. text→text, thinking→quoted, tool_use→summary, errors
  *  skipped. Keeps copy output predictable for both user prompts and
- *  assistant replies. */
-function blocksToText(blocks: Block[]): string {
+ *  assistant replies.
+ *
+ *  Exported so the copy payload can be asserted headlessly (the composer's
+ *  counterpart `composePromptWithTags` is what the model actually receives —
+ *  the two must agree block-for-block). */
+export function blocksToText(blocks: Block[]): string {
   const out: string[] = [];
   // 粘贴块在 composer 那边编号是**按全局第几个粘贴**走的(`composePromptWithTags` 的
   // `pasteIdx`),所以这里也得跟着数 —— 照抄 "--- pasted content (N chars) ---" 是**漏了
@@ -389,10 +393,21 @@ function blocksToText(blocks: Block[]): string {
       const t = b.text.trim();
       if (t) out.push(`> ${t.replace(/\n/g, "\n> ")}`);
     } else if (b.kind === "attachment") {
-      // 与 composer 的分隔格式**逐字一致** —— 共用 `pasteBlock`(见 contentTag.ts):
-      // 从前两处各拼一遍字符串,而且已经漂了(这里漏了全局序号)。
-      pasteIdx += 1;
-      out.push(pasteBlock(pasteIdx, b.content));
+      // **三种 kind 各有各的落法** —— 必须与 `composePromptWithTags` 逐字一致(见
+      // contentTag.ts 的 `pasteBlock` 注释),否则复制出来的东西 ≠ 实际发出去的那份:
+      //   · paste  → `pasteBlock(全局序号, …)`(带序号的分隔块);
+      //   · file   → 原样的 `@path` 一行(file/library tag 的 content 就是它,**不包块**);
+      //   · quote  → content 自带「user's quote(…)+ source」抬头,**原样发出**。
+      // 从前这里把**每一个**附件都塞进 `pasteBlock` —— 于是一份被引用的文件复制出来变成
+      // "--- pasted content N (…chars) ---\n@路径\n--- end ---",与真正发送的 `@路径`
+      // 一行对不上(粘贴块的序号修正只堵了 paste 那一支,file / quote 两支仍旧漂着)。
+      const kind = b.attachmentKind;
+      if (kind === "file" || kind === "quote") {
+        out.push(b.content);
+      } else {
+        pasteIdx += 1;
+        out.push(pasteBlock(pasteIdx, b.content));
+      }
     }
     // tool_use and error blocks are intentionally omitted — they're
     // procedural UI, not part of the conversational payload to copy.
