@@ -13,7 +13,7 @@ import { getMainWindow } from "@main/window.js";
 import { notificationManager } from "@main/notifications/NotificationManager.js";
 import { log } from "@main/lib/logger.js";
 import { dialogText } from "@main/lib/dialogText.js";
-import { broadcastSettingChanged } from "@main/lib/sessionSync.js";
+import { broadcastSettingChangedToAll } from "@main/lib/sessionSync.js";
 import { isSyncedSettingKey } from "@contracts/ipc/settingsSync";
 import { buildSettingsExport, parseSettingsImport } from "@main/settings/settingsTransfer.js";
 
@@ -78,9 +78,12 @@ export function registerSettingsTransferHandlers(ipc: IpcMain): void {
 
       for (const [k, v] of parsed.entries) {
         SettingRepo.set(k, v);
-        // 「跟着人走」的键照常推一次(和 setting.set 一样):已配对的手机当场生效,
-        // 桌面自己也会收到回声,语言 / 强调色 / 快捷键这类不用重启就换上。
-        if (isSyncedSettingKey(k)) broadcastSettingChanged(k, v);
+        // 「跟着人走」的键推给**所有**端 —— 已配对的手机当场生效,**桌面本端也要收到**
+        // (语言 / 强调色 / 快捷键这类不用重启就换上)。⚠️ 这里必须用 `...ToAll`:普通的
+        // `broadcastSettingChanged(k, v)` 不带 origin,只发手机、**不给桌面回声**
+        // (那是为了别的写入者不被自己的回声拽回上一个按键)。导入这条路桌面端没有"乐观
+        // 更新" —— 不推就一直是旧值,直到重启。
+        if (isSyncedSettingKey(k)) broadcastSettingChangedToAll(k, v);
       }
       // 主进程里缓存了设置的服务:通知偏好当场重读;其余多数是用时现读。
       try {

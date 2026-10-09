@@ -529,6 +529,21 @@ console.log("\n⑦ 询问:记账、发出去、立刻返回(不阻塞)");
   check("★ 留下的是最近那些(最早的被挤出去了)", asks.some((a) => a.question === "灌第 119 条"), asks.slice(-2));
   check("★ 最早那条确实被挤出去了", !asks.some((a) => a.question === "灌第 0 条"), asks.slice(0, 2));
 
+  /* ── ★ 删会话要把落盘的挂账也收掉 ──
+   *
+   * 收件箱是内存态的,`dropAgentMail` 一直清它;但挂账写在设置键里,从前只清内存 ——
+   * 会话一删,它名下(作提问方或回答方)的挂账行永远留着:没人会来销账,还越攒越多,
+   * 而设置表每写一次都要重写整个 `mcode.db`。判据立在**表里还剩没剩这个会话的行**上。 */
+  const beforeDrop = JSON.parse(SettingRepo.get("agentMail.pendingAsks") ?? "[]") as Array<{ fromSessionId?: string; toSessionId?: string }>;
+  check("前置:删之前表里有这个会话的挂账", beforeDrop.some((a) => a.fromSessionId === main.id), beforeDrop.length);
+  dropAgentMail(main.id);
+  const afterDrop = JSON.parse(SettingRepo.get("agentMail.pendingAsks") ?? "[]") as Array<{ fromSessionId?: string; toSessionId?: string }>;
+  check(
+    "★ 删会话后:它作为提问方的挂账行被清掉了(不再只增不减)",
+    !afterDrop.some((a) => a.fromSessionId === main.id || a.toSessionId === main.id),
+    { before: beforeDrop.length, after: afterDrop.length },
+  );
+
   graphBlocked.delete(expert.id);
   graphBlocked.delete(main.id);
   dropAgentMail(main.id);

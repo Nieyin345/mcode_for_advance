@@ -114,6 +114,10 @@ const EXCLUDED_PREFIXES = [
   // 同族的 `.source.<sessionId>` / `.target.<sessionId>` 也按会话 id 存,换台机器全是
   // 悬空 id,没有任何搬运价值。
   "memory.assistant.",
+  // ⚠️ **代理挂账(未答提问)。** 值里带着模型问出去的那句 `question`、发起方名字,以及
+  // **机器本地的会话 id**(fromSessionId / toSessionId)—— 换台机器全是悬空 id。与
+  // `memory.assistant.*` 同一类:不是密钥,但同样不该进那个"拿去分享"的 JSON。
+  "agentMail.",
 ];
 
 export function isTransferableSettingKey(key: string): boolean {

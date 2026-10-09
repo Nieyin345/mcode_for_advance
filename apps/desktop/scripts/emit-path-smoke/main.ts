@@ -686,6 +686,35 @@ check(
   })(),
 );
 
+/* ────────────────── 检查 5:导入设置要给桌面本端回声 ────────────────── */
+
+/**
+ * `broadcastSettingChanged(k, v)`(不带 origin)**只发手机、不给桌面回声** ——
+ * 那是为了"用户正在输入框里敲"那种写入者不被自己的回声拽回上一个按键。
+ *
+ * 但**导入设置**是另一种情形:桌面端没有"乐观更新",那些键是刚从文件里读出来的,
+ * 桌面内存里还是旧值 —— 不走 `ToAll` 就一直是旧的(语言/强调色/快捷键要等重启)。
+ * 这曾经真的错着:源码注释还写着"桌面自己也会收到回声",而那条路径根本不发桌面。
+ *
+ * 判据立在**源码用了哪条广播**上(sessionSync 真实现要窗口,无头跑不了行为)。
+ */
+console.log("\n导入设置:必须给桌面本端也发回声");
+{
+  const src = readFileSync(join(MAIN, "ipc/settingsTransfer.ts"), "utf-8");
+  check(
+    "★ 导入设置的「跟着人走」键走 ToAll 广播(不发桌面回声就等于导入无效)",
+    src.includes("broadcastSettingChangedToAll("),
+    src.slice(src.indexOf("for (const [k, v] of parsed.entries)"), src.indexOf("for (const [k, v] of parsed.entries)") + 400),
+  );
+  // 剥掉注释再查,免得**注释里提到**这条调用名就算命中(那是自家注释,不是代码)。
+  const codeOnly = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  check(
+    "★ 且没有退回那条只发手机的调用",
+    !codeOnly.replace(/broadcastSettingChangedToAll\(/g, "").includes("broadcastSettingChanged("),
+    codeOnly.match(/broadcastSettingChanged\w*\(/g),
+  );
+}
+
 /* ────────────────────── 收尾 ────────────────────── */
 
 if (failures > 0) {

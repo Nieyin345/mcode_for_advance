@@ -49,6 +49,9 @@ export const dismissed: string[] = [];
 export const planApprovals: Array<{ requestId: string; payload: unknown }> = [];
 /** 按顺序记下 `bindSession`。 */
 export const bound: string[] = [];
+/** 按顺序记下 `bindSession` 收到的**整份会话快照** —— 运行时正是拿它解析引擎 / 工作流的,
+ *  所以"这一轮实际用了什么"要看这里,不是看库里的行(见 §3d)。 */
+export const boundSessions: Array<{ id: string; providerId?: string; workflowId?: string }> = [];
 /** 按顺序记下 `setPermissionMode`。 */
 export const permissionModes: Array<{ sessionId: string; mode: string }> = [];
 
@@ -92,6 +95,7 @@ export function resetStub(): void {
   dismissed.length = 0;
   planApprovals.length = 0;
   bound.length = 0;
+  boundSessions.length = 0;
   permissionModes.length = 0;
   nextResolve.clear();
   defaults.clear();
@@ -106,8 +110,9 @@ export function setRewindResult(v: string[]): void {
 }
 
 export const runtimeManager = {
-  bindSession(session: { id: string }): void {
+  bindSession(session: { id: string; providerId?: string; workflowId?: string }): void {
     bound.push(session.id);
+    boundSessions.push({ id: session.id, providerId: session.providerId, workflowId: session.workflowId });
   },
   async sendTurn(
     session: { id: string },

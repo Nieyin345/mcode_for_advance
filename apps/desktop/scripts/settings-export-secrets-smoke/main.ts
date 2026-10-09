@@ -86,6 +86,8 @@ console.log("\n导出设置:会话派生的记忆助手状态不导出");
     "memory.assistant.job.7f3a-uuid",
     "memory.assistant.source.sess-abc",
     "memory.assistant.target.sess-def",
+    // 代理挂账:值里带着模型问出去的那句 question + 机器本地会话 id。
+    "agentMail.pendingAsks",
   ];
   const all: Record<string, string | null> = {};
   for (const k of LOCAL_STATE_KEYS) {

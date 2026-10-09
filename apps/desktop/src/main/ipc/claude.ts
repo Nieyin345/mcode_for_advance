@@ -48,7 +48,6 @@ import {
   graphRunIntent,
   launchContinuation,
   parkedRunTeardown,
-  startWorkflowRun,
 } from "@main/orchestration/runner.js";
 import { getWorkflow } from "@main/orchestration/library.js";
 import { workflowReviewError } from "@main/orchestration/workflowTrust.js";
@@ -243,8 +242,16 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     const cwd = await resolveSessionCwd(updated, project);
     // Materialization may have backfilled worktreePath — refresh the
     // snapshot so the returned session (and the renderer's badge) carries it.
+    //
+    // ⚠️ **只补 `worktreePath`,不能整行重读。** 上面刚把这一轮的覆盖值
+    // (model / effort / permissionMode / workflowId / customModelId / providerId)打进
+    // `updated`;整行重读会把它们全丢掉。`providerId` 尤其要紧 —— 它**刻意不落库**
+    // (见上面那条注释),库里那份是 null,丢的就是用户这一轮选的引擎。`workflowId` 也会
+    // 退回库里的旧值(输入框那条落库 RPC 是 fire-and-forget,正在抢跑),
+    // `graphRunIntent` 于是返回 none,选好的工作流静默退化成普通回合。
     if (updated.envMode === "worktree" && !updated.worktreePath) {
-      updated = SessionRepo.get(session.id) ?? updated;
+      const freshWt = SessionRepo.get(session.id)?.worktreePath;
+      if (freshWt) updated = { ...updated, worktreePath: freshWt };
     }
     runtimeManager.bindSession(updated);
     // Background auto-title generation: on the first user message, fire a

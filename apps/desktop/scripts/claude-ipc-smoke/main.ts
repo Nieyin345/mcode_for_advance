@@ -44,6 +44,7 @@ import { registerClaudeHandlers } from "@main/ipc/claude.js";
 import {
   approvals,
   bound,
+  boundSessions,
   dismissed,
   injected,
   interrupts,
@@ -277,13 +278,49 @@ console.log("\n3b. providerId 是同一套规矩,理由不同(返回赢、落库
 }
 
 console.log("\n3c. 状态与绑定");
-
 {
   fresh();
   const s = mkSession(nid("s"));
   await call(IPC.CLAUDE_SEND_TURN, { sessionId: s, prompt: "你好" });
   eq("发出去之后这个会话是 running", SessionRepo.get(s)?.status, "running");
   check("把会话交给了运行时(那一轮的桥要有它)", bound.includes(s), bound);
+}
+
+console.log("\n3d. 工作树首轮:补 worktreePath 时不能把这一轮的覆盖值一起冲掉");
+{
+  // 物化之后 `resolveSessionCwd` 会把 worktreePath 写回库,handler 于是要重读一次把这个
+  // 字段补进内存快照。⚠️ **只该补这一个字段。** 曾经的写法是整行
+  // `updated = SessionRepo.get(...)`,而那一刻 `updated` 上刚打过这一轮的覆盖值
+  // (model/effort/permissionMode/workflowId/customModelId/providerId)—— 整行重读把它们
+  // 全丢了。`providerId` 尤其致命:它**刻意不落库**(见 handler 里那条注释),库里那份是
+  // null,丢的就是用户这一轮选的引擎。`workflowId` 也会退回库里的旧值,选好的工作流静默
+  // 退化成普通回合。
+  //
+  // 判据立在"这一轮实际用了什么"上:`bindSession` 拿到的会话快照 —— 那正是运行时解析
+  // 引擎/工作流用的那份。
+  fresh();
+  const s = mkSession(nid("s"), { providerId: "库里那个引擎" });
+  // 把它摆成"没物化的工作树意图":envMode=worktree 但 worktreePath 还是 null。
+  // 本项目根**不是** git 仓库 → 物化会**降级**回 local(不建 worktree),但
+  // `updated.envMode` 仍是 "worktree"、`updated.worktreePath` 仍是 null —— 于是那句重读
+  // 的条件恰好成立,正是我们要考的那一步。
+  SessionRepo.updateSettings(s, { envMode: "worktree" });
+
+  const res = await call<{ session: { providerId: string; workflowId: string } }>(
+    IPC.CLAUDE_SEND_TURN,
+    {
+      sessionId: s,
+      prompt: "你好",
+      providerId: "这一次要用的引擎",
+      workflowId: "read",
+    },
+  );
+
+  eq("★ 工作树首轮:这一轮选的引擎没被整行重读冲掉(返回快照)", res.session.providerId, "这一次要用的引擎");
+  eq("★ 工作树首轮:这一轮选的工作流也没被冲掉", res.session.workflowId, "read");
+  const boundTo = boundSessions.find((b) => b.id === s);
+  eq("★ 交给运行时的快照也带着这一轮的引擎(不是库里的 null)", boundTo?.providerId, "这一次要用的引擎");
+  eq("★ 交给运行时的快照也带着这一轮的工作流", boundTo?.workflowId, "read");
 }
 
 /* ──────────────── 4. 首条消息:标题、广播、子会话不广播 ──────────────── */

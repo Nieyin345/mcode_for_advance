@@ -76,6 +76,19 @@ export function broadcastSettingChanged(key: string, value: string, originDevice
   broadcastRuntimeEvent({ type: "setting.changed", sessionId: "", key, value, originDeviceId });
 }
 
+/** 写入方**有意**要让**包括本桌面端在内**的所有端都套用这个设置。
+ *
+ *  ⚠️ **与 {@link broadcastSettingChanged} 的区别正是"发不发桌面本端"。** 那条刻意
+ *  不给桌面回声,因为写入者(用户在输入框里敲)已经乐观更新过,晚到的回声会把一个受控
+ *  文本字段拽回上一个按键的值。但**导入设置**不是这种情形:桌面端没有"乐观更新"这一说
+ *  —— 那些键是刚从文件里读出来的,桌面内存里还是旧值,不推就一直是旧值(语言、强调色、
+ *  快捷键要等重启才换)。所以导入这条路要发全景回声。
+ *
+ *  手机端两种广播都会收到(设置要跟人走)。 */
+export function broadcastSettingChangedToAll(key: string, value: string): void {
+  broadcastRuntimeEvent({ type: "setting.changed", sessionId: "", key, value });
+}
+
 /** The project list changed (create / delete / archive / rename / pin /
  *  group / reorder). Receivers re-fetch `project.list()` and diff. */
 export function broadcastProjectsChanged(): void {

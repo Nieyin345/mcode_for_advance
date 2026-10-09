@@ -370,6 +370,13 @@ export function clearAgentMail(sessionId: string, through: number): void {
 export function dropAgentMail(sessionId: string): void {
   inbox.delete(sessionId);
   counts.delete(sessionId);
+  // ⚠️ **落盘的那份挂账也要收。** 收件箱是内存态的,挂账不是 —— 它写在设置键
+  // `agentMail.pendingAsks` 里,而这里从前只清内存那两个 Map。会话一删,它名下(作
+  // 提问方或回答方)的那些挂账行**永远留着**:既没人会来销账(两条会话可能都没了),
+  // 又随着每一次删除越攒越多,而设置表每写一次都要重写整个 `mcode.db`。与收件箱同理。
+  const asked = loadAsks();
+  const kept = asked.filter((a) => a.fromSessionId !== sessionId && a.toSessionId !== sessionId);
+  if (kept.length !== asked.length) saveAsks(kept);
 }
 
 /* ────────────────────── 图跑完之后的「叫醒」 ────────────────────── */
