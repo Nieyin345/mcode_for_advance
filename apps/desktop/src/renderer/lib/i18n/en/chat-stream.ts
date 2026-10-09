@@ -327,6 +327,7 @@ export const en = {
   "chatStream.bookmark.renamePlaceholder": "Bookmark name",
   "chatStream.bookmark.stale": "Message removed",
   "chatStream.bookmark.addedToast": "Bookmark added",
+  "chatStream.bookmark.saveFailed": "Couldn't save the bookmark",
 
   // ── Quote to context (select text → pick a target session, lands in its composer draft) ──
   "chatStream.quote.action": "Quote to context",

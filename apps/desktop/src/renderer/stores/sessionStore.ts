@@ -2533,6 +2533,17 @@ function reportSettingSaveFailed(err: unknown): void {
   });
 }
 
+/** 书签的新增/删除/重命名落库失败(`session.updateBookmarks`)。这三处都已经把 UI
+ *  回滚了 —— 但"刚加的书签自己消失了、一句话没有"仍是静默失败:用户会以为点错了、
+ *  再点一次,或者以为书签功能坏了。 */
+function reportBookmarkSaveFailed(err: unknown): void {
+  useToastStore.getState().push({
+    kind: "error",
+    title: translate(useSessionStore.getState().locale, "chatStream.bookmark.saveFailed"),
+    body: err instanceof Error ? err.message : String(err),
+  });
+}
+
 export const useSessionStore = create<SessionState>((set, get) => ({
   /**
    * 一次关闭请求被守卫拦下(callback 返回了 `blocked`)时,把"哪些文件没关、
@@ -4639,6 +4650,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       set((s) => patchSessionRowBookmarks(s, sessionId, session.projectId, next));
     } catch (err) {
       console.error("[store] addBookmark failed, rolling back", err);
+      reportBookmarkSaveFailed(err);
       set((s) => {
         const bucket = { ...s.bookmarksBySession };
         const cur = bucket[sessionId];
@@ -4668,6 +4680,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       set((s) => patchSessionRowBookmarks(s, sessionId, session.projectId, next));
     } catch (err) {
       console.error("[store] removeBookmark failed, rolling back", err);
+      reportBookmarkSaveFailed(err);
       set((s) => ({ bookmarksBySession: { ...s.bookmarksBySession, [sessionId]: prev } }));
     }
   },
@@ -4686,6 +4699,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       set((s) => patchSessionRowBookmarks(s, sessionId, session.projectId, next));
     } catch (err) {
       console.error("[store] renameBookmark failed, rolling back", err);
+      reportBookmarkSaveFailed(err);
       set((s) => ({ bookmarksBySession: { ...s.bookmarksBySession, [sessionId]: prev } }));
     }
   },

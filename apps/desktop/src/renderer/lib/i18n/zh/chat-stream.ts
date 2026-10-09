@@ -312,6 +312,9 @@ export const zh = {
   "chatStream.bookmark.renamePlaceholder": "书签名称",
   "chatStream.bookmark.stale": "原消息已移除",
   "chatStream.bookmark.addedToast": "已添加书签",
+  // 书签的新增/删除/重命名都落库(`session.updateBookmarks`)。失败时 store 会回滚 UI,
+  // 但从前只 `console.error` —— 用户刚加的书签自己消失了,一句话没有。
+  "chatStream.bookmark.saveFailed": "书签没能保存",
 
   // ── 引用到上下文(选中文字 → 选一个目标会话,落进它的输入框草稿)──
   "chatStream.quote.action": "引用到上下文",

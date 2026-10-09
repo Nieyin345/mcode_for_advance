@@ -13,7 +13,7 @@
  *
  * Run: scripts/session-store-smoke/run.sh
  */
-import { setSendTurnStub, setSessionMessagesStub, setSkillsListStub, setTruncateStub, setInterruptStub, setUpdateSettingsStub } from "./prelude.js";
+import { setSendTurnStub, setSessionMessagesStub, setSkillsListStub, setTruncateStub, setInterruptStub, setUpdateSettingsStub, setUpdateBookmarksStub } from "./prelude.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { ChatMessage, SessionState } from "@renderer/stores/sessionStore.js";
@@ -986,6 +986,26 @@ console.log("\n[15f] 切换会话工作目录被主进程拒了,要报出来(不
     useToastStore.getState().toasts.map((tt) => tt.body),
   );
   setUpdateSettingsStub(null);
+}
+
+console.log("\n[15g] 书签落库失败:UI 回滚了但也要说一句");{
+  // 书签的新增/删除/重命名都落库(`session.updateBookmarks`)。失败时 store 会把 UI 回滚
+  // —— 这一点是对的,但从前只 `console.error`:用户刚加的书签自己消失了、一句话没有,
+  // 会以为点错了或书签坏了。判据立在**用户看到的那条 toast** 上。
+  const SID = "bookmark-ipc-fails";
+  seed([mkSession(SID)], { total: 1 });
+  const store = useSessionStore;
+  setUpdateBookmarksStub(async () => { throw new Error("updateBookmarks IPC failed"); });
+  useToastStore.getState().clear();
+  await store.getState().addBookmark(SID, { messageId: "m1", excerpt: "一段原文", role: "assistant" });
+  check(
+    "★ 加书签落库失败时如实报出来(不是静默回滚)",
+    useToastStore.getState().toasts.some((tt) => tt.body?.includes("updateBookmarks IPC failed")),
+    useToastStore.getState().toasts.map((tt) => tt.body),
+  );
+  // 正控:UI 确实回滚了(书签没有留在 store 里)—— 证明这条测的是"报不报",不是"回滚对不对"。
+  eq("书签已从 UI 回滚", (store.getState().bookmarksBySession[SID] ?? []).length, 0);
+  setUpdateBookmarksStub(null);
 }
 
 console.log("\n[15c] 删会话时排队提示词桶也要收掉");{
