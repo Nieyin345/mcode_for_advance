@@ -1844,55 +1844,11 @@ export function ToolIcon({ name, className }: { name: string; className?: string
 }
 
 /** A one-line hint for common tools (Read/Edit/Bash etc.) shown on the card header.
- *  Exported for reuse by the floating "current operation" card. */
-export function toolSummary(name: string, input: unknown): string {
-  if (!input || typeof input !== "object") return "";
-  const obj = input as Record<string, unknown>;
-  switch (name) {
-    case "Read":
-    case "Write":
-    case "Edit":
-      return String(obj.file_path ?? "");
-    case "Bash":
-    case "PowerShell":
-      return String(obj.command ?? obj.description ?? "");
-    case "Glob":
-      return String(obj.pattern ?? "");
-    case "Grep":
-      return String(obj.pattern ?? "");
-    case "TodoWrite":
-      return "todos";
-    case "AskUserQuestion": {
-      // input is { questions: [{ header, question, multiSelect, options }] }
-      // (or a { item: [...] } wrapper). Show the first question's text so the
-      // collapsed card reads as an actual question, not "[object Object]".
-      const raw = (obj.questions ?? obj.item) as unknown;
-      const first = Array.isArray(raw) ? raw[0] : null;
-      if (first && typeof first === "object") {
-        const q = (first as Record<string, unknown>).question;
-        if (typeof q === "string") return q;
-      }
-      return "";
-    }
-    // Pi (lowercase) tool names. Pi's read/write/edit take a `path` field
-    // (not Claude's `file_path`); accept either so summaries survive if a
-    // future pi version renames the field. find = Pi's glob, ls = Pi-only.
-    case "read":
-    case "write":
-    case "edit":
-      return String(obj.file_path ?? obj.path ?? "");
-    case "bash":
-      return String(obj.command ?? obj.description ?? "");
-    case "find":
-      return String(obj.pattern ?? "");
-    case "grep":
-      return String(obj.pattern ?? "");
-    case "ls":
-      return String(obj.path ?? "");
-    default:
-      return Object.values(obj).slice(0, 1).map(String).join("").slice(0, 60);
-  }
-}
+ *  抽到 `activityShared`(叶子显示助手模块)**只有一份**后,审批卡(`ApprovalPrompt`)
+ *  与这里共用。这里再导出一次,让既有的 import 方(`CurrentOpTicker` / `TurnFlowPanel`)
+ *  不必改。 */
+import { toolSummary } from "./activityShared.js";
+export { toolSummary };
 
 function safeStringify(v: unknown): string {
   try {

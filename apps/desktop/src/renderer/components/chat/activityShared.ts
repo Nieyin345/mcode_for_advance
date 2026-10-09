@@ -285,3 +285,60 @@ export function useActivityTabs(): {
   }, []);
   return { tabs, setTab };
 }
+
+/**
+ * 工具调用的**单行摘要** —— 消息气泡里折叠的工具卡、以及审批卡顶部那行提示,
+ * 都要靠它把 `{ file_path }`/`{ pattern }` 这类入参压成一句话。
+ *
+ * ⚠️ **只有这一份。** 从前 `ApprovalPrompt` 里另有一份**裁剪过的**副本(少了
+ * `AskUserQuestion` 分支和全部 Pi 小写工具名),两份迟早漂开:同一个工具在气泡里
+ * 显示的是问题正文、在审批卡里却显示 `[object Object]`。抽到这个叶子模块(它已经被
+ * 多处当显示助手 import,不引入环)后两边共用。
+ */
+export function toolSummary(name: string, input: unknown): string {
+  if (!input || typeof input !== "object") return "";
+  const obj = input as Record<string, unknown>;
+  switch (name) {
+    case "Read":
+    case "Write":
+    case "Edit":
+      return String(obj.file_path ?? "");
+    case "Bash":
+    case "PowerShell":
+      return String(obj.command ?? obj.description ?? "");
+    case "Glob":
+    case "Grep":
+      return String(obj.pattern ?? "");
+    case "TodoWrite":
+      return "todos";
+    case "AskUserQuestion": {
+      // input is { questions: [{ header, question, multiSelect, options }] }
+      // (or a { item: [...] } wrapper). Show the first question's text so the
+      // collapsed card reads as an actual question, not "[object Object]".
+      const raw = (obj.questions ?? obj.item) as unknown;
+      const first = Array.isArray(raw) ? raw[0] : null;
+      if (first && typeof first === "object") {
+        const q = (first as Record<string, unknown>).question;
+        if (typeof q === "string") return q;
+      }
+      return "";
+    }
+    // Pi (lowercase) tool names. Pi's read/write/edit take a `path` field
+    // (not Claude's `file_path`); accept either so summaries survive if a
+    // future pi version renames the field. find = Pi's glob, ls = Pi-only.
+    case "read":
+    case "write":
+    case "edit":
+      return String(obj.file_path ?? obj.path ?? "");
+    case "bash":
+      return String(obj.command ?? obj.description ?? "");
+    case "find":
+      return String(obj.pattern ?? "");
+    case "grep":
+      return String(obj.pattern ?? "");
+    case "ls":
+      return String(obj.path ?? "");
+    default:
+      return Object.values(obj).slice(0, 1).map(String).join("").slice(0, 60);
+  }
+}

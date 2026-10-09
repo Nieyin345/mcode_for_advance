@@ -3,6 +3,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button } from "@renderer/components/ui/index.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { toolSummary } from "./activityShared.js";
 import { APP_DANGER_APPROVAL_PREFIX } from "@contracts/appControl";
 import {
   IconAlertTriangle,
@@ -71,9 +72,9 @@ export function ApprovalPrompt({
   const allowRef = useRef<HTMLButtonElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
 
-  // One-line hint mirroring MessageBlocks.toolSummary so the user sees what
+  // One-line hint via the shared toolSummary (activityShared) so the user sees what
   // the tool is about without expanding.
-  const summary = summarizeTool(toolName, input);
+  const summary = toolSummary(toolName, input);
   // mcode-app 的高风险操作每次都要本人点:不给「始终允许」(主进程那头也不认)。
   const allowAlways = !toolName.startsWith(APP_DANGER_APPROVAL_PREFIX);
 
@@ -223,29 +224,6 @@ export function ApprovalPrompt({
 
 /* ──────────────────────────── helpers ──────────────────────────── */
 
-/** One-line hint for common tools. Mirrors MessageBlocks.toolSummary but kept
- * local to avoid a cross-module import for a pure display helper. */
-function summarizeTool(name: string, input: unknown): string {
-  if (!input || typeof input !== "object") return "";
-  const obj = input as Record<string, unknown>;
-  switch (name) {
-    case "Read":
-    case "Write":
-    case "Edit":
-      return String(obj.file_path ?? "");
-    case "Bash":
-    case "PowerShell":
-      return String(obj.command ?? obj.description ?? "");
-    case "Glob":
-      return String(obj.pattern ?? "");
-    case "Grep":
-      return String(obj.pattern ?? "");
-    case "TodoWrite":
-      return "todos";
-    default:
-      return Object.values(obj).slice(0, 1).map(String).join("").slice(0, 60);
-  }
-}
 
 function safeStringify(v: unknown): string {
   try {

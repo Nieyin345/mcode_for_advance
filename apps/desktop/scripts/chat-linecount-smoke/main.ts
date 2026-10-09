@@ -67,5 +67,19 @@ check("单个 \n → 1(不是 2)", countLines("\n"), 1);
 check("只握手一个空行''→0", countLines(""), 0);
 check("Write 卡徽标与 countLines 同源", countContentLines("x\ny\n"), countLines("x\ny\n"));
 
+/* ── toolSummary 只有一份(气泡卡与审批卡共用) ── */
+
+console.log("\ntoolSummary 单一真源");
+// ★ 从前 `ApprovalPrompt` 里另有一份**裁剪过的** `summarizeTool`(少了 AskUserQuestion 分支
+//   和全部 Pi 小写工具名)。同一个工具在气泡里显示问题正文、在审批卡里却会显示 `[object Object]`。
+//   现在两份都指到 `activityShared` 的 `toolSummary`。下面钉住"裁剪副本会漏"的那两种形状。
+{
+  const { toolSummary } = await import("@renderer/components/chat/MessageBlocks.js");
+  check("AskUserQuestion 取第一条问题正文(裁剪副本曾漏)", toolSummary("AskUserQuestion", { questions: [{ question: "要覆盖吗?" }] }), "要覆盖吗?");
+  check("Pi 小写 read 取 path(裁剪副本曾漏)", toolSummary("read", { path: "/x/y.ts" }), "/x/y.ts");
+  check("Pi 小写 bash 取 command", toolSummary("bash", { command: "ls -la" }), "ls -la");
+  check("Claude Edit 取 file_path", toolSummary("Edit", { file_path: "/a/b.ts" }), "/a/b.ts");
+}
+
 console.log(`\nchat-linecount-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exitCode = 1;
