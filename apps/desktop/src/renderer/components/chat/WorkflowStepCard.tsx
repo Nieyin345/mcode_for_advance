@@ -249,7 +249,12 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
         <p className="mt-1 text-[0.9em] text-content-subtle">
           {t("chatStream.workflowStep.engine", {
             provider: providerName,
-            model: block.model || "default",
+            // `block.model` 可能是主进程写死的哨兵串 `"default"`(见
+            // `runner.ts` 的 `executionSession.model || "default"`)—— 直接摊出来就是
+            // 一句「模型 default」:中文界面上冒出一个英文词,而它根本不是模型名。
+            // 哨兵要翻成人话(与 `statusBarPresentation` 对 `model === "default"` 的
+            // 处置同一条口径),真模型名原样显示。
+            model: !block.model || block.model === "default" ? t("chat.model.default") : block.model,
           })}
         </p>
       )}

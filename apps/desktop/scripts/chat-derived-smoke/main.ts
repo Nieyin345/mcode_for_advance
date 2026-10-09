@@ -110,5 +110,25 @@ console.log("C. per-message caching");
   check("warm derivation is cheap (<2ms per flush for ~400 messages)", per < 2, per);
 }
 
+/**
+ * 工作流步骤卡上的「引擎 · 模型」那行,不许把主进程的哨兵串 `"default"` 原样摊出来。
+ *
+ * `runner.ts` 落 `NodeExecutionRecord.model` 时写的是 `executionSession.model || "default"`,
+ * 于是没显式选模型的节点,`block.model` 就是字面量 `"default"`。卡片从前直接
+ * `block.model || "default"` 填进模板 `chatStream.workflowStep.engine` =「引擎 {provider} · 模型 {model}」
+ * —— 中文界面上冒出一句「模型 default」,而 "default" 根本不是模型名。判据钉在**源码**上
+ * (组件在无头下跑不出渲染结果):哨兵那一支必须交给 i18n 键,不许出现裸的 `"default"` 字面量。
+ */
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const src = readFileSync(join(process.cwd(), "src/renderer/components/chat/WorkflowStepCard.tsx"), "utf8");
+  // 去掉行注释,免得注释里提到的 "default" 造成假绿。
+  const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  check("★ 步骤卡的模型哨兵走 i18n(不是裸 \"default\")", code.includes('t("chat.model.default")'));
+  check("★ 不再有 `block.model || \"default\"` 那种原样摊出哨兵", !/block\.model\s*\|\|\s*"default"/.test(code));
+  check("★ 真模型名仍然原样显示(不是把非哨兵也吞掉)", /block\.model === "default"\s*\?\s*t\("chat\.model\.default"\)\s*:\s*block\.model/.test(code));
+}
+
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures) process.exit(1);
