@@ -50,6 +50,8 @@ export function resetRecorder(): void {
 let resultText = "";
 /** 还要返回几次真文本,然后变空 —— 真的 `getResult()` 在 `reset()` 之后就是空的。 */
 let resultLeft = Number.POSITIVE_INFINITY;
+/** `reset()` 之后 `getResult()` 是否仍然吐出文字(见 `__keepAfterReset`)。 */
+let keepAfterReset = false;
 /** `isReady()` 还会返回几次 true。0 = 永远不 ready(默认,不 decode)。 */
 let readyLeft = 0;
 
@@ -60,6 +62,13 @@ export function __setResultText(text: string): void {
 export function __stopDecoder(): void {
   readyLeft = 0;
   resultLeft = 1;
+}
+/** 让 `reset()` 之后 `getResult()` **仍然**有文字 —— 模拟「引擎没扛住 reset,
+ *  把上下文留着了」那种 build。真包的两个 catalog 模型 reset 后都是空的,但代码里
+ *  那条「reset 后还有文字就换掉整条流」的分支只有在真出现时才跑得到;这个开关就是
+ *  为了能验到它(换流时必须先把旧流 inputFinished,否则悬着的原生流累积)。 */
+export function __keepAfterReset(on: boolean): void {
+  keepAfterReset = on;
 }
 /** 让 `while (isReady())` 循环跑 `n` 圈然后停。真的 `isReady()` 会在排空之后
  *  变 false,这里必须自己收敛,否则 `while` 是个死循环。 */
@@ -122,7 +131,8 @@ export class OnlineRecognizer {
     // 真的 `reset()` 之后 `getResult()` 是空的 —— 这一条**必须**有,否则
     // `commitSegment` 里那句"reset 之后还有文字就换掉整条流"会被触发,而那条
     // 分支本套没打算验(它会给每个会话换流,污染"没有多开流"那条断言)。
-    resultLeft = 0;
+    // `__keepAfterReset(true)` 时反过来:让那条分支能被验到。
+    if (!keepAfterReset) resultLeft = 0;
   }
   getResult(): { text: string } {
     if (resultLeft <= 0) return { text: "" };

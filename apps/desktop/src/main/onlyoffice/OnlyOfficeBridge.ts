@@ -74,6 +74,12 @@ async function documentKey(filePath: string, mtimeMs: number, size: number): Pro
   if (size <= KEY_HASH_MAX_BYTES) {
     try {
       const hash = createHash("sha1");
+      // 路径**必须**一起进哈希(与下面退回分支、以及文件头写的 `路径 + 内容 sha1` 一致)。
+      // 只哈希内容的话,两份字节完全相同但路径不同的文件会撞到同一个 key —— 而 key 既
+      // 是 DS 的缓存身份、又是 `sessionsByKey` 的寻址键,于是第二份文件打开的编辑器
+      // 拿到的是第一份的字节,保存也写回第一份的路径。空文档 / 同一模板复制出来的
+      // 文档太常见了,这不是理论碰撞。
+      hash.update(`${filePath}|`);
       await pipeline(createReadStream(filePath), hash);
       return hash.digest("hex").slice(0, 40);
     } catch {

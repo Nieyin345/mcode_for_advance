@@ -922,6 +922,39 @@ console.log("\n§5 模型缺失:是显式报错还是静默不工作");
     );
   }
 
+  // ★★ 同一条纪律的另一处:commitSegment 里那条「reset 之后引擎还留着上下文 →
+  //    换掉整条流」的分支(`speechRecognizer.ts` `s.stream = rec.createStream()`)。
+  //    丢掉旧原生流之前必须 `inputFinished()`,否则每触发一次就漏一个悬着的
+  //    OnlineStream —— 与 cancelSession 那次(M19)是同形状的泄漏。
+  //    真包 reset 后是空的,所以这一支平时跑不到;`__keepAfterReset(true)` 把
+  //    「引擎没扛住 reset」那种 build 造出来,才能验到它。
+  {
+    resetRecognizerCache();
+    sherpaStub.resetRecorder();
+    installModel(M1);
+    setSelectedModel(M1);
+    await startSession("v-rebuild", "zh-CN", "zipformer");
+    sherpaStub.__setResultText("重复的句子");
+    sherpaStub.__keepAfterReset(true);
+    sherpaStub.resetRecorder();
+    // 喂够 1.2 s 的静音(16000×1.2 = 19200 采样),触发我们自己的静音兜底 →
+    // commitSegment → reset 后仍有文字 → 走换流分支。5×4000 = 20000 采样。
+    for (let i = 0; i < 5; i++) feedPcm("v-rebuild", new Float32Array(4000));
+    sherpaStub.__keepAfterReset(false);
+    sherpaStub.__setResultText("");
+    eq(
+      "★ reset 后引擎还留着上下文时确实换了整条流(这一支真的被触发了,不是空过)",
+      sherpaStub.createdStreams.length,
+      1,
+    );
+    eq(
+      "★★ 换流之前对**被丢掉的那条**原生流调了 inputFinished(漏了就是每触发一次漏一条原生流)",
+      sherpaStub.calls.filter((c) => c === "inputFinished").length,
+      1,
+    );
+    stopSession("v-rebuild");
+  }
+
   // ── (e) 识别产出文字时,推的那一帧要带上 `channel` ──
   //  preload 是按 `msg.channel === IPC.VOICE_RESULT` 过滤的 —— 缺了它渲染端
   //  一条都收不到,而主进程这边看起来"发出去了"。

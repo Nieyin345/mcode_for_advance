@@ -89,6 +89,15 @@ try {
 
   const concurrent = await Promise.all([open("concurrent-a.docx"), open("concurrent-b.docx")]);
   check("concurrent first opens share one callback server", new URL(concurrent[0].fileUrl).origin === new URL(concurrent[1].fileUrl).origin);
+  // Two DIFFERENT files whose bytes are identical (every `open()` writes the same
+  // "original test document") must never share a document.key: the key is both the
+  // Document Server cache identity and the `sessionsByKey` address, so a collision
+  // serves one file's bytes/saves for the other. Mutation: hash content-only in
+  // `documentKey` → these two keys come back equal.
+  check("identical-content files in different paths get different document keys",
+    concurrent[0].key !== concurrent[1].key);
+  check("each file's own path is served, not the colliding sibling's",
+    concurrent[0].fileUrl !== concurrent[1].fileUrl);
   for (const doc of concurrent) { closeSession(doc.key); await callback(doc.callbackUrl, doc.key, 4); }
   const doc = await open("failure.docx");
   downloadFails = true;

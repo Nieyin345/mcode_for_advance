@@ -294,6 +294,14 @@ function commitSegment(s: Session, rec: OnlineRecognizer): void {
     log.warn(
       `[voice] decoder kept ${after.text.length} chars after reset — rebuilding the stream`,
     );
+    // 与 cancelSession 同一条纪律:丢掉原生流之前先**优雅关闭**它,否则那个
+    // OnlineStream 悬着等 GC,而这个分支一旦被触发就是每个停顿都换一次流 ——
+    // 正是 M19 修过的"反复取消累积悬着的原生流"同形状的泄漏。
+    try {
+      s.stream.inputFinished();
+    } catch (err) {
+      log.warn(`[voice] rebuild: inputFinished failed: ${(err as Error).message}`);
+    }
     s.stream = rec.createStream();
     s.lastCommittedSegment = "";
   }
