@@ -22,9 +22,12 @@
  * ## 边界：只实现被测代码用到的那几个方法
  *
  * `listPublic` / `save` / `remove` / `resolveApiConfig`。各自的行为**照真那份写**，
- * 特别是 `save` 找不到 id 时**抛**那句 `custom model not found` —— 这一套有一条断言
+ * 特别是 `save` 找不到 id 时**抛**那句「找不到要更新的模型配置」—— 这一套有一条断言
  * 钉的就是「更新一个不存在的 id 是报错，不是静默新建」。如果替身在这里悄悄兜底，
  * 那条断言测的就是替身而不是被测代码。
+ *
+ * ⚠️ 报错的**文案也要跟真那份对齐**(它是给用户看的,而且是中文):本套有两条断言
+ * 直接检查 handler 抛出来的 message 里有汉字 —— 替身留着英文的话,红的是替身而不是被测代码。
  */
 import type {
   ApiConfig,
@@ -96,7 +99,7 @@ export const CustomModelStore = {
       input.subagentModel && validIds.has(input.subagentModel) ? input.subagentModel : undefined;
     if (input.id) {
       const idx = records.findIndex((r) => r.id === input.id);
-      if (idx < 0) throw new Error(`custom model not found: ${input.id}`);
+      if (idx < 0) throw new Error(`找不到要更新的模型配置(${input.id})——它可能已经在别处删掉了,请刷新后重试`);
       const prev = records[idx];
       records[idx] = {
         ...prev,
@@ -116,7 +119,7 @@ export const CustomModelStore = {
     } else {
       const isWebProtocol = protocol === "web";
       if (!isWebProtocol && !input.authToken) {
-        throw new Error("authToken is required when creating a custom model");
+        throw new Error("新建自定义模型必须填写 API Key(网页端模型除外)");
       }
       seq += 1;
       records.push({

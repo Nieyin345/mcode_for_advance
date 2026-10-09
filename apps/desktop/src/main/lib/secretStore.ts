@@ -335,7 +335,12 @@ export const CustomModelStore = {
 
     if (input.id) {
       const idx = metas.findIndex((m) => m.id === input.id);
-      if (idx < 0) throw new Error(`custom model not found: ${input.id}`);
+      // 这两句都**原样显示给用户**(`CustomModelsPanel` 把 handler 抛出的 message 贴进
+      // 那块 danger 面板),所以要说人话、而且跟兄弟 store(`piModelsStore` /
+      // `codexModelsStore` 的「新建 Provider 必须填写 API Key」)同一条口径 —— 从前这里
+      // 是英文("authToken is required when creating a custom model" / "custom model not
+      // found: …"),中文界面上冒出来一句英文。
+      if (idx < 0) throw new Error(`找不到要更新的模型配置(${input.id})——它可能已经在别处删掉了,请刷新后重试`);
       // Strip the legacy `roles` ghost — once the user re-saves in the flat
       // UI, pre-refactor sessions can no longer resolve role keys and fall
       // back to the first model (the config was edited anyway).
@@ -359,7 +364,7 @@ export const CustomModelStore = {
       // 身份靠那个分区里的登录 cookie，不是 token。为它要 token 只会让用户卡死。
       const isWebProtocol = resolveProtocol(input.protocol) === "web";
       if (!isWebProtocol && !input.authToken) {
-        throw new Error("authToken is required when creating a custom model");
+        throw new Error("新建自定义模型必须填写 API Key(网页端模型除外)");
       }
       const id = `cm_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
       metas.push({

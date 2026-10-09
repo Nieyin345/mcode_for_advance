@@ -260,6 +260,14 @@ const beforeStray = ((await call(IPC.CUSTOM_MODEL_LIST)) as { models: unknown[] 
 const strayErr = await rejected(IPC.CUSTOM_MODEL_SAVE, { ...BASE_INPUT, id: "cm_根本不存在" });
 check("更新一个不存在的 id → 报错", strayErr !== null, strayErr);
 check("报的那句话里带着那个 id", (strayErr ?? "").includes("cm_根本不存在"), strayErr);
+// ★ 这句话是**原样显示给用户**的(`CustomModelsPanel` 把 message 贴进 danger 面板),
+//   中文界面上不许冒英文。从前这条报的是 "custom model not found: …" —— 同文件里那条
+//   「新建必须给密钥」也是英文("authToken is required when creating a custom model"),
+//   而兄弟 store(`piModelsStore` / `codexModelsStore`)同处境是中文。
+//   ⚠️ 判据要**先把那句 id 抠掉**再找汉字:测试 id 本身就是中文(`cm_根本不存在`),
+//   不抠的话英文原句也会因为 id 而"含汉字",断言就成了恒真。
+const strayWithoutId = (strayErr ?? "").replace("cm_根本不存在", "");
+check("★ 报错本身是中文(抠掉 id 后仍有汉字,不是英文原句)", /[一-鿿]/.test(strayWithoutId), strayErr);
 eq(
   "更新不存在的 id 不会静默新建一条",
   ((await call(IPC.CUSTOM_MODEL_LIST)) as { models: unknown[] }).models.length,
@@ -330,11 +338,14 @@ eq(
   ((await call(IPC.CUSTOM_MODEL_GET_TOKEN, { id: secretId })) as { token: unknown }).token,
   "sk-new-token-9876543210",
 );
+const noTokenErr = await rejected(IPC.CUSTOM_MODEL_SAVE, { ...BASE_INPUT, authToken: undefined });
 eq(
   "新建时不给 token → 报错，而不是存一条没有密钥的配置",
-  (await rejected(IPC.CUSTOM_MODEL_SAVE, { ...BASE_INPUT, authToken: undefined })) !== null,
+  noTokenErr !== null,
   true,
 );
+// ★ 同上:这句话也是原样给用户看的,必须是中文(从前是英文 authToken is required …)。
+check("★ 「必须给密钥」那句也是中文", /[一-鿿]/.test(noTokenErr ?? ""), noTokenErr);
 
 /* ────────────────────────── 5. 参数不合法时报出来的是人话 ────────────────────────── */
 
