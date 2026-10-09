@@ -811,6 +811,10 @@ console.log("\n跨引擎桥(library/engineTools.ts)");
   const newNoteRowCalls = (libSrc.match(/newNoteInputRow\(c\)/g) ?? []).length;
   check("★ 起名行被 renderSubContent 与 renderCollectionRow 两处调用", newNoteRowCalls >= 2, newNoteRowCalls);
   check("★ 不再有第二份内联的 InlineInputRow(namingNoteIn 那处)", (libSrc.match(/namingNoteIn === c\.id && \(/g) ?? []).length === 0, libSrc.match(/namingNoteIn === c\.id/g));
+
+  // ★ 「打开中间栏」那条 async 路必须先记序号、回包时核对 —— 连点两篇时旧回包会后到,
+  //   不挡就会把已经打开的 B 覆盖成 A(点的是 B,中间栏却是 A)。
+  check("★ openItemInCenter 有 *Seq 守卫(记序号 + 回包核对)", libSrc.includes("openItemSeqRef") && libSrc.includes("seq !== openItemSeqRef.current"));
 }
 
 /* ──────────────── 10. AI 建的分类必须挂在大类下(否则左栏看不见) ──────────────── */

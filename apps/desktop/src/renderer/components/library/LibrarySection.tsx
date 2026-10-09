@@ -273,6 +273,10 @@ export function LibrarySection({
   const [name, setName] = useState("");
   /** 回车和失焦都可能提交，同一次输入只发一次新建请求。 */
   const creatingPending = useRef(false);
+  /** 「打开中间栏」那条路是异步的(`api.library.entryPath` 一来一回),而用户可能连点
+   *  两篇 —— 两个 promise 会乱序回来,旧那篇(A)若后到,就会把已经打开的 B 覆盖成 A。
+   *  这是本仓库点名的"缺 *Seq 守卫"那一类;用单调递增的序号丢弃过期回包。 */
+  const openItemSeqRef = useRef(0);
   /** 正在重命名的库 id + 输入框内容。同时只有一个。 */
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -588,6 +592,7 @@ export function LibrarySection({
     if (collectionId) setActive(collectionId);
     setActiveItem(item.id);
     const which = item.filePath ?? item.pdfPath ? undefined : "md";
+    const seq = ++openItemSeqRef.current;
     void (async () => {
       type EntryPathRes = { path: string | null; isDir?: boolean; error?: string };
       let res: EntryPathRes = { path: null };
@@ -597,6 +602,9 @@ export function LibrarySection({
         // 手机端没有 `library` 命名空间（走 Proxy 兜底，见 webApi.ts）—— 当作换不出来。
         res = { path: null };
       }
+      // 旧那篇的回包晚到时丢掉:否则它会把已经打开的 B 覆盖成 A(用户看到"点的是 B,
+      // 中间栏却是 A")。
+      if (seq !== openItemSeqRef.current) return;
       if (res.path && !res.isDir) {
         // **可编辑的那一支**：和文件树双击落到同一个组件。
         openFileInIde(res.path, { displayName: item.title });
