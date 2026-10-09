@@ -16,6 +16,7 @@ let interruptStub: ((input: unknown) => Promise<unknown>) | null = null;
 let updateSettingsStub: ((input: unknown) => Promise<unknown>) | null = null;
 let updateBookmarksStub: ((input: unknown) => Promise<unknown>) | null = null;
 let projectReorderStub: ((input: unknown) => Promise<unknown>) | null = null;
+let settingSetStub: ((input: unknown) => Promise<unknown>) | null = null;
 export function setSendTurnStub(fn: ((input: unknown) => Promise<unknown>) | null): void {
   sendTurnStub = fn;
 }
@@ -46,6 +47,10 @@ export function setUpdateBookmarksStub(fn: ((input: unknown) => Promise<unknown>
 export function setProjectReorderStub(fn: ((input: unknown) => Promise<unknown>) | null): void {
   projectReorderStub = fn;
 }
+/** 覆盖 `setting.set`(验用户显式改的偏好落盘失败要报出来)。 */
+export function setSettingSetStub(fn: ((input: unknown) => Promise<unknown>) | null): void {
+  settingSetStub = fn;
+}
 
 function deepApiStub(path: string[] = []): unknown {
   return new Proxy(asyncNoop, {
@@ -69,6 +74,8 @@ function deepApiStub(path: string[] = []): unknown {
             ? updateBookmarksStub(args[0])
           : path.join(".") === "project.reorder" && projectReorderStub
             ? projectReorderStub(args[0])
+          : path.join(".") === "setting.set" && settingSetStub
+            ? settingSetStub(args[0])
           : path.join(".") === "skills.list" && skillsListStub
             ? skillsListStub(args[0])
             : Promise.resolve(undefined),

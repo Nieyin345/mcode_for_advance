@@ -6569,6 +6569,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await api.setting.set({ key: AUTO_ARCHIVE_SETTING_KEY, value: JSON.stringify(config) });
     } catch (err) {
       console.error("setting.set(autoArchive) failed:", err);
+      reportSettingSaveFailed(err);
+      reportSettingSaveFailed(err);
     }
   },
 
@@ -6738,6 +6740,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
     } catch (err) {
       console.error("setting.set(chatFontSize) failed:", err);
+      reportSettingSaveFailed(err);
+      reportSettingSaveFailed(err);
     }
   },
 
@@ -6751,6 +6755,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
     } catch (err) {
       console.error("setting.set(rightPanelFontSize) failed:", err);
+      reportSettingSaveFailed(err);
+      reportSettingSaveFailed(err);
     }
   },
 
@@ -6764,6 +6770,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
     } catch (err) {
       console.error("setting.set(pasteTagThresholdChars) failed:", err);
+      reportSettingSaveFailed(err);
+      reportSettingSaveFailed(err);
     }
   },
 
@@ -6777,6 +6785,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
     } catch (err) {
       console.error("setting.set(workflowMaxParallel) failed:", err);
+      reportSettingSaveFailed(err);
+      reportSettingSaveFailed(err);
     }
   },
 
@@ -6786,6 +6796,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await api.setting.set({ key: UI_VOICE_LANG_SETTING_KEY, value: lang });
     } catch (err) {
       console.error("setting.set(voiceLang) failed:", err);
+      reportSettingSaveFailed(err);
+      reportSettingSaveFailed(err);
     }
   },
 
@@ -6795,6 +6807,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await api.setting.set({ key: UI_VOICE_ENGINE_SETTING_KEY, value: engine });
     } catch (err) {
       console.error("setting.set(voiceEngine) failed:", err);
+      reportSettingSaveFailed(err);
+      reportSettingSaveFailed(err);
     }
   },
 
@@ -6804,6 +6818,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await api.setting.set({ key: UI_VOICE_MIC_PERMISSION_SETTING_KEY, value: perm });
     } catch (err) {
       console.error("setting.set(voiceMicPermission) failed:", err);
+      reportSettingSaveFailed(err);
+      reportSettingSaveFailed(err);
     }
   },
 
@@ -6813,6 +6829,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await api.setting.set({ key: UI_VOICE_MODEL_DIR_SETTING_KEY, value: dir });
     } catch (err) {
       console.error("setting.set(voiceModelDir) failed:", err);
+      reportSettingSaveFailed(err);
+      reportSettingSaveFailed(err);
     }
     // The model root moved — the downloaded set (and thus readiness) may have
     // changed with it (the new dir can already contain catalog models).
@@ -6845,6 +6863,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
     } catch (err) {
       console.error("setting.set(userMessageColor) failed:", err);
+      reportSettingSaveFailed(err);
+      reportSettingSaveFailed(err);
     }
   },
 
@@ -6860,6 +6880,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
     } catch (err) {
       console.error("setting.set(accentColor) failed:", err);
+      reportSettingSaveFailed(err);
+      reportSettingSaveFailed(err);
     }
   },
 
@@ -6876,6 +6898,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
     } catch (err) {
       console.error("setting.set(editorTheme) failed:", err);
+      reportSettingSaveFailed(err);
+      reportSettingSaveFailed(err);
     }
   },
 

@@ -13,7 +13,7 @@
  *
  * Run: scripts/session-store-smoke/run.sh
  */
-import { setSendTurnStub, setSessionMessagesStub, setSkillsListStub, setTruncateStub, setInterruptStub, setUpdateSettingsStub, setUpdateBookmarksStub, setProjectReorderStub } from "./prelude.js";
+import { setSendTurnStub, setSessionMessagesStub, setSkillsListStub, setTruncateStub, setInterruptStub, setUpdateSettingsStub, setUpdateBookmarksStub, setProjectReorderStub, setSettingSetStub } from "./prelude.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { ChatMessage, SessionState } from "@renderer/stores/sessionStore.js";
@@ -1030,6 +1030,39 @@ console.log("\n[15h] 拖拽调整项目顺序落盘失败:顺序收回去了,也
     useToastStore.getState().toasts.map((tt) => tt.body),
   );
   setProjectReorderStub(null);
+}
+
+console.log("\n[15i] 用户显式改的偏好落盘失败,一票 setter 都要报出来(不只 displayMode 那几只)");{
+  // `reportSettingSaveFailed` 是"用户显式改的偏好落盘失败要报给用户"的共享出口 ——
+  // 它已经接在 setDisplayMode / setLocale / setThemeStyle / setChatDensity / … 上,
+  // 但**同族的另一批**(字号 / 语音档 / 消息色 / 强调色 / 编辑器主题 / 自动归档 / 并行上限…)
+  // 一直只 `console.error`:落盘失败时界面已是新值,重启才静默弹回旧值。这里逐条驱动,
+  // 每条都必须弹 toast。抽一个内联探针,覆盖全族。
+  const st = useSessionStore.getState();
+  const cases: Array<[string, () => Promise<unknown>]> = [
+    ["chatFontSize", () => st.setChatFontSize(15)],
+    ["rightPanelFontSize", () => st.setRightPanelFontSize(13)],
+    ["pasteTagThresholdChars", () => st.setPasteTagThresholdChars(4000)],
+    ["workflowMaxParallel", () => st.setWorkflowMaxParallel(2)],
+    ["voiceLang", () => st.setVoiceLang("zh")],
+    ["voiceEngine", () => st.setVoiceEngine("parakeet")],
+    ["voiceMicPermission", () => st.setVoiceMicPermission("granted")],
+    ["voiceModelDir", () => st.setVoiceModelDir("/tmp/x")],
+    ["userMessageColor", () => st.setUserMessageColor("1 2 3")],
+    ["accentColor", () => st.setAccentColor("4 5 6")],
+    ["editorTheme", () => st.setEditorTheme("light", "mcode-light")],
+    ["autoArchiveConfig", () => st.setAutoArchiveConfig({ enabled: true, defaultDays: 7, overrides: {} } as never)],
+  ];
+  const silent: string[] = [];
+  for (const [name, run] of cases) {
+    setSettingSetStub(async () => { throw new Error(`${name} persist failed`); });
+    useToastStore.getState().clear();
+    await run();
+    const got = useToastStore.getState().toasts.some((tt) => tt.body?.includes(`${name} persist failed`));
+    if (!got) silent.push(name);
+  }
+  setSettingSetStub(null);
+  check("★ 全族偏好 setter 落盘失败都报出来(无静默弹回)", silent.length === 0, silent);
 }
 
 console.log("\n[15c] 删会话时排队提示词桶也要收掉");{
