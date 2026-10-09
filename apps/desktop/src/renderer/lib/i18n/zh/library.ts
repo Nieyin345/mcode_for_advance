@@ -261,6 +261,12 @@ export const zh = {
   "library.itemNote.empty": "还没有笔记。读的时候随手记两句，对话时 AI 也能看到。",
   "library.itemNote.deleteConfirm": "删除这条笔记？",
   "library.itemNote.loadFailed": "读不出笔记",
+  /* 笔记行上那对悬停小按钮的 tip / 可访问名。从前错用了 `library.collection.rename`
+     ("重命名")与 `library.collection.delete`("删除分类")—— 那是**分类**的标签,
+     用户在一条笔记上悬停读到「删除分类」,和他要删的东西对不上(见下面 renameFailed
+     那条,同一个错用模式)。 */
+  "library.itemNote.edit": "编辑这条笔记",
+  "library.itemNote.delete": "删除这条笔记",
   /* 改条目显示标题失败 —— 主进程找不到这条(多半是别的端刚删了它)。
      从前这里错用了 `library.itemNote.loadFailed`("读不出笔记"),用户点改名看到的是
      "读不出笔记",和他在做的事对不上。 */

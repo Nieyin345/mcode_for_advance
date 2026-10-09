@@ -206,20 +206,25 @@ export function ItemNotes({ item }: { item: LibraryItem }) {
                     <div className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[0.8571em] leading-relaxed text-content">
                       {n.content}
                     </div>
-                    {/* 悬停才出现的行内操作 —— 与左栏其它行同一套 */}
-                    <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
+                    {/* 悬停才出现的行内操作 —— 与左栏其它行同一套:**键盘聚焦也要露出来**。
+                        `hidden`(`display:none`)的按钮根本进不了 Tab 序列,只写 `group-hover:flex`
+                        的话键盘用户永远够不着「改/删」这一对(兄弟组件 `ItemLinks`、`Sidebar` 行
+                        都带 `group-focus-within`)。`focus-visible` 那颗再补一道,单独聚焦时也稳。 */}
+                    <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex group-focus-within:flex">
                       <button
                         onClick={() => startEdit(n)}
-                        title={t("library.collection.rename")}
-                        className="rounded p-0.5 text-content-subtle hover:bg-surface hover:text-content"
+                        title={t("library.itemNote.edit")}
+                        aria-label={t("library.itemNote.edit")}
+                        className="rounded p-0.5 text-content-subtle hover:bg-surface hover:text-content focus-visible:ring-2 focus-visible:ring-accent-strong"
                       >
                         <IconPencil size={12} />
                       </button>
                       <button
                         onClick={() => void remove(n)}
                         disabled={busy}
-                        title={t("library.collection.delete")}
-                        className="rounded p-0.5 text-content-subtle hover:bg-surface hover:text-red-500 disabled:opacity-40"
+                        title={t("library.itemNote.delete")}
+                        aria-label={t("library.itemNote.delete")}
+                        className="rounded p-0.5 text-content-subtle hover:bg-surface hover:text-red-500 disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent-strong"
                       >
                         <IconTrash size={12} />
                       </button>

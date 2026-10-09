@@ -93,4 +93,21 @@ node "$OUT/links.mjs" || status=1
   --alias:@renderer/stores/libraryStore.js=./scripts/maint-m35-smoke/stubs/importDeps.ts \
   --outfile="$OUT/import.mjs" --log-level=error
 node "$OUT/import.mjs" || status=1
+
+# LibraryPicker / ItemNotes 两处渲染端回归(见 pickers.ts 头):autoExpandItems 要真拉
+# 条目;笔记的改/删在键盘聚焦时要露出来。用有真状态的 fakeReact,其余依赖换桩。
+"$ESBUILD" scripts/maint-m35-smoke/pickers.ts \
+  --bundle --platform=node --format=esm --tsconfig=tsconfig.json \
+  --alias:react=./scripts/maint-m35-smoke/fakeReact.ts \
+  --alias:react/jsx-runtime=./scripts/maint-m35-smoke/stubs/reactEffects/jsx-runtime.ts \
+  --alias:@tabler/icons-react=./scripts/maint-m35-smoke/stubs/icons.cjs \
+  --alias:@renderer/lib/icons.js=./scripts/maint-m35-smoke/stubs/icons.cjs \
+  --alias:@renderer/lib/i18n/index.js=./scripts/maint-m35-smoke/stubs/i18n.ts \
+  --alias:@renderer/lib/cn.js=./scripts/maint-m35-smoke/stubs/cn.ts \
+  --alias:@renderer/stores/libraryStore.js=./scripts/maint-m35-smoke/stubs/pickerStore.ts \
+  --alias:@renderer/lib/api.js=./scripts/maint-m35-smoke/stubs/pickerApi.ts \
+  --alias:@renderer/components/ui/dialog.js=./scripts/maint-m35-smoke/stubs/pickerUi.ts \
+  --alias:@renderer/components/ui/button.js=./scripts/maint-m35-smoke/stubs/pickerUi.ts \
+  --outfile="$OUT/pickers.mjs" --log-level=error
+node "$OUT/pickers.mjs" || status=1
 exit "$status"

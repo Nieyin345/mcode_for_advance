@@ -246,6 +246,11 @@ export function DeleteItemsDialog({
                             <input
                               type="checkbox"
                               className="mt-[3px] h-3.5 w-3.5 shrink-0 accent-current"
+                              // **可访问名**:旁边的 `link.title` 是兄弟节点,screen reader
+                              // 不会把它当成这个 checkbox 的名字 —— 不写的话它只会念
+                              // "复选框,已选中",用户不知道勾的是哪一条。左栏 `ItemList`
+                              // 的每个 checkbox 都带 `aria-label`(同一套规则)。
+                              aria-label={link.title}
                               checked={checked}
                               onChange={(e) => {
                                 if (link.form === "transcript") {

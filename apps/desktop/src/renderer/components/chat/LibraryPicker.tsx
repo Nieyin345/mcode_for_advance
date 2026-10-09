@@ -77,15 +77,41 @@ export function LibraryPicker({
 
   const excluded = useMemo(() => new Set(excludeCollectionIds), [excludeCollectionIds]);
 
+  /** 已经发过条目请求的分类 —— **同步**守卫,与 `itemsOf` 那份异步 state 无关。
+   *
+   *  为什么要单独一份:预展开是在 effect 里调的,而 React 18/19 的 StrictMode 会把
+   *  挂载 effect 跑两遍(开发期)—— 只靠 `itemsOf`(异步生效)挡不住,第二遍会**再发一次**
+   *  `library.list`。ref 同步写,第二遍读得到,才真正只发一次。 */
+  const loadedRef = useRef<Set<string>>(new Set());
+
+  /** 拉一个分类的条目（首次）。手动点 chevron（`expand`）与 `autoExpandItems` 的
+   *  预展开共用这一份。
+   *
+   *  ⚠️ **只标展开、不拉条目是不够的**:分类会显示成"展开着"却一行条目都没有 ——
+   *  正是那个 prop 想解决的"看着是空的"（见它的说明）。 */
+  const loadItems = (id: string) => {
+    if (loadedRef.current.has(id)) return;
+    loadedRef.current.add(id);
+    setItemsOf((prev) => ({ ...prev, [id]: prev[id] ?? "loading" }));
+    void api.library
+      .list({ collectionId: id, limit: 200 })
+      .then((res) => setItemsOf((cur) => ({ ...cur, [id]: res.items })))
+      // 拉不到就当空列表 —— 选择器不该因为一个分类读不动就整个崩掉
+      .catch(() => setItemsOf((cur) => ({ ...cur, [id]: [] })));
+  };
+
   useEffect(() => {
     if (open) {
       setQuery("");
       setActiveIdx(0);
       setSelected(new Set());
-      // `autoExpandItems` 时**预展开**（见那个 prop 的说明）。
+      // `autoExpandItems` 时**预展开**（见那个 prop 的说明），并**同时把条目拉回来** ——
+      // 只标展开不拉,用户会以为"没东西可挑"。
       // ⚠️ 展开要在 `collections` 到位之后才有意义，所以不只在这里设一次 ——
-      // 下面还有一个跟着 `collections` 走的 effect 兜底。
-      setExpanded(autoExpandItems ? new Set(collections.map((c) => c.id)) : new Set());
+      // 下面还有一个跟着 `collections` 走的 effect 兜底，那里同样要拉。
+      const pre = autoExpandItems ? collections.map((c) => c.id) : [];
+      setExpanded(new Set(pre));
+      for (const id of pre) loadItems(id);
       void loadCollections();
       // 打开即聚焦搜索框,用户可以直接打字过滤
       const id = setTimeout(() => inputRef.current?.focus(), 0);
@@ -146,10 +172,14 @@ export function LibraryPicker({
   }, [options.length]);
 
   // `autoExpandItems` 的兜底：首次打开时 `collections` 可能还没拉回来（上面那个
-  // effect 里展开到的是空集合）。等它到位、且用户还没手动改过展开态时，补展开一次。
+  // effect 里展开到的是空集合）。等它到位、且用户还没手动改过展开态时，补展开一次，
+  // **并把条目一起拉回来** —— 否则补展开只是把分类标成"展开着"，里面还是空的。
   useEffect(() => {
     if (!open || !autoExpandItems || collections.length === 0) return;
-    setExpanded((prev) => (prev.size === 0 ? new Set(collections.map((c) => c.id)) : prev));
+    if (expanded.size !== 0) return; // 已经展开过了(上面那个 effect 或用户手动)—— 不再动
+    for (const c of collections) loadItems(c.id);
+    setExpanded(new Set(collections.map((c) => c.id)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, autoExpandItems, collections]);
 
   const toggle = (key: string) => {
@@ -164,37 +194,47 @@ export function LibraryPicker({
 
   /** 展开一个分类 —— 第一次展开时把它的条目拉回来。 */
   const expand = (id: string) => {
+    const willExpand = !expanded.has(id);
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-        return next;
-      }
-      next.add(id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
-    setItemsOf((prev) => {
-      if (prev[id]) return prev;
-      void api.library
-        .list({ collectionId: id, limit: 200 })
-        .then((res) => setItemsOf((cur) => ({ ...cur, [id]: res.items })))
-        // 拉不到就当空列表 —— 选择器不该因为一个分类读不动就整个崩掉
-        .catch(() => setItemsOf((cur) => ({ ...cur, [id]: [] })));
-      return { ...prev, [id]: "loading" };
-    });
+    // 拉条目放在 updater **外面** —— updater 要纯,别在里面发请求(StrictMode 会跑两遍)。
+    // 只在"展开"这一支拉(收起不用),`loadItems` 自己按 ref 去重。
+    if (willExpand) loadItems(id);
   };
+
+  /**
+   * 附件键 → 显示名,**不受当前搜索词影响**。
+   *
+   * `confirm` 不能拿上面那个 `rows` 找名字 —— `rows` 是按 `query` 过滤过的:勾完一条
+   * 再打字把它的标题滤掉,`rows.find` 就找不到它,那条勾选会被**静默丢掉**(`confirm`
+   * 的注释承诺"不能悄悄丢掉",但 `rows` 恰恰做得到)。名字来源是缓存里的 collections
+   * 与 itemsOf,与搜索框无关。
+   */
+  const nameByKey = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of collections) map.set(`c:${c.id}`, c.name);
+    for (const items of Object.values(itemsOf)) {
+      if (items === "loading") continue;
+      for (const item of items) map.set(`i:${item.id}`, item.title);
+    }
+    return map;
+  }, [collections, itemsOf]);
 
   const confirm = () => {
     if (selected.size === 0) {
       onClose();
       return;
     }
-    // 从**全量**行里取名字 —— 勾完再改搜索词时,被过滤掉的那几条仍然是勾选状态,
-    // 不能悄悄丢掉,也不能拿不到名字
+    // **从与搜索无关的名字表里取**（见 `nameByKey`）—— 勾完再改搜索词时,被过滤掉的
+    // 那几条仍然是勾选状态,不能悄悄丢掉,也不能拿不到名字。
     const picked: Array<{ key: string; name: string }> = [];
     for (const key of selected) {
-      const row = rows.find((r) => r.key === key);
-      if (row) picked.push({ key, name: row.collection?.name ?? row.item?.title ?? key });
+      const name = nameByKey.get(key);
+      if (name !== undefined) picked.push({ key, name });
     }
     onPick(picked);
     onClose();
