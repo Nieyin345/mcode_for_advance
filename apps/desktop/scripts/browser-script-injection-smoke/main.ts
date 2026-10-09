@@ -303,6 +303,31 @@ console.log("\nBrowserManager 源码不变量");
   // ★ 选取结果的二次裁剪上限不能与 pickerScript 的常量各写一份 —— 那边改了这边会静默裁错。
   check("★ PICK_HTML_CAP 由 PICKER_HTML_CAP 现填(不是第二个字面量)", mgrSrc.includes("PICK_HTML_CAP = PICKER_HTML_CAP"), mgrSrc.match(/PICK_HTML_CAP = [^\n]+/)?.[0]);
   check("…且真的从 pickerScript 导入了那个常量", mgrSrc.includes("PICKER_HTML_CAP") && mgrSrc.includes("./pickerScript.js"));
+
+  // ★ `waitForLoad` 的 backstop 定时器必须在**结算时**被清掉。它原来是一个裸
+  //   `setTimeout(...)` 表达式语句:页面正常加载(did-finish-load)时它照样挂到
+  //   `timeoutMs`(默认 8s)——既白占事件循环,更糟的是回调**先算参数再进 finish**,
+  //   参数里有 `wc.getURL()`/`wc.getTitle()`;标签被关掉销毁 webContents 之后定时器
+  //   才到点,就对已销毁的 webContents 调 `getURL()` → 抛 "Object has been destroyed",
+  //   而抛出发生在 setTimeout 回调里 = 主进程未捕获异常。
+  //   判据钉在结构上:① 定时器的句柄被**赋值给一个变量**(裸语句根本 clear 不了);
+  //   ② `finish` 的函数体里调了 `clearTimeout` 清那个句柄。
+  {
+    const wi = mgrSrc.indexOf("async waitForLoad(");
+    const wbody = wi >= 0 ? mgrSrc.slice(wi, wi + 4500) : "";
+    // ① 句柄被接住:`<name> = setTimeout(...)`(不是 `setTimeout(...)` 当一个语句丢掉返回值)。
+    const handle = /\b(\w+)\s*=\s*setTimeout\s*\(/.exec(wbody)?.[1] ?? "";
+    check("★ waitForLoad 的 backstop 定时器句柄被接住(不是裸 setTimeout 丢掉)", handle.length > 0, wbody.slice(0, 200));
+    // ② `finish` 里清掉它 —— 取 finish 定义到下一个 `};` 的块。
+    const fi = wbody.indexOf("const finish = ");
+    const fend = fi >= 0 ? wbody.indexOf("};", fi) : -1;
+    const fbody = fi >= 0 && fend >= 0 ? wbody.slice(fi, fend) : "";
+    check(
+      `★ waitForLoad 结算时清掉 backstop 定时器(clearTimeout(${handle || "<handle>"}))`,
+      handle.length > 0 && new RegExp(`clearTimeout\\s*\\(\\s*${handle}\\s*\\)`).test(fbody),
+      { handle, finishBody: fbody.slice(0, 260) },
+    );
+  }
 }
 
 console.log(`\nbrowser-script-injection-smoke:${total - failures}/${total} 通过`);

@@ -1065,9 +1065,18 @@ class BrowserManagerImpl {
     }
     return new Promise((resolve) => {
       let settled = false;
+      let backstop: NodeJS.Timeout | null = null;
       const finish = (result: { ok: boolean; url?: string; title?: string; error?: string }) => {
         if (settled) return;
         settled = true;
+        // ⚠️ **必须清掉那个 backstop 定时器。** 页面正常加载(did-finish-load)时它还在挂
+        // 到 `timeoutMs`(默认 8s):既白占着事件循环,更糟的是——**定时器的回调先算参数再进
+        // `finish`**,而参数里有 `wc.getURL()` / `wc.getTitle()`。页崩了/标签被关掉
+        // (销毁 webContents)之后定时器才到点的话,对一个已销毁的 webContents 调 `getURL()`
+        // 会抛 "Object has been destroyed" —— 在一个 `setTimeout` 回调里抛出 = 主进程的未捕获
+        // 异常。`browserNavigation` 之后 agent 关标签 / 渲染端重载清场都可能落在这一秒多的窗口里。
+        // (与 `browserPure.withTimeout` 同一个做法:结算即清定时器。)
+        if (backstop !== null) clearTimeout(backstop);
         wc.removeListener("did-finish-load", onLoad);
         wc.removeListener("did-fail-load", onFail);
         resolve(result);
@@ -1093,8 +1102,11 @@ class BrowserManagerImpl {
       wc.on("did-fail-load", onFail);
       // Backstop: some pages never fire did-finish-load (permanent spinners,
       // streaming responses). Resolve with whatever we have so the agent isn't
-      // blocked indefinitely.
-      setTimeout(() => finish({ ok: true, url: wc.getURL(), title: wc.getTitle() }), timeoutMs);
+      // blocked indefinitely. Cleared by `finish` on every other exit path.
+      backstop = setTimeout(
+        () => finish({ ok: true, url: wc.getURL(), title: wc.getTitle() }),
+        timeoutMs,
+      );
     });
   }
 
