@@ -73,10 +73,17 @@ function ScreenshotDirRow() {
   }, []);
 
   const pickDir = async () => {
-    const { path } = await api.pickFolder();
-    if (path) {
-      setDir(path);
-      setSaved(false);
+    // 选目录对话框失败要说出来 —— 与 DataRootPanel.move 同一条规矩:裸 `void`
+    // 会让 IPC 拒绝落进 unhandled rejection(渲染端没有全局监听),用户点了按钮、
+    // 屏幕上一句话没有。接进本行已有的错误出口。
+    try {
+      const { path } = await api.pickFolder();
+      if (path) {
+        setDir(path);
+        setSaved(false);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -158,10 +165,16 @@ function DataDirRow() {
   }, []);
 
   const pickDir = async () => {
-    const { path } = await api.pickFolder();
-    if (path) {
-      setDir(path);
-      setSaved(false);
+    // 与 ScreenshotDirRow / DataRootPanel.move 同一条规矩:选目录失败不能落成
+    // unhandled rejection,接进本行已有的错误出口。
+    try {
+      const { path } = await api.pickFolder();
+      if (path) {
+        setDir(path);
+        setSaved(false);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -233,6 +246,7 @@ function PersistLoginRow() {
   const { t } = useI18n();
   const [enabled, setEnabled] = useState(true);
   const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -244,12 +258,17 @@ function PersistLoginRow() {
 
   const toggle = async (checked: boolean) => {
     setEnabled(checked);
+    setError(null);
     try {
       await api.setting.set({
         key: BROWSER_PERSIST_LOGIN_SETTING_KEY,
         value: checked ? "1" : "0",
       });
-    } catch {
+    } catch (err) {
+      // 回弹开关**只是**把界面拨回原样,并没说清"为什么没生效" —— 与同文件另两行
+      // (目录保存失败画 ErrorNote)、以及 HooksPanel 开关(失败走 toast)是同一条规矩:
+      // 写失败要在看得见的地方报出来,不能只是静默回弹。
+      setError(err instanceof Error ? err.message : String(err));
       setEnabled(!checked); // revert the optimistic flip on failure
     }
   };
@@ -259,6 +278,13 @@ function PersistLoginRow() {
       layout="horizontal"
       title={t("settings.browser.persistLogin")}
       desc={t("settings.browser.persistLoginDesc")}
+      descExtra={
+        error !== null ? (
+          <ErrorNote title={t("settings.saveFailed")} className="mt-1">
+            {error}
+          </ErrorNote>
+        ) : undefined
+      }
     >
       <Switch
         checked={enabled}

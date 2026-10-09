@@ -1573,6 +1573,11 @@ function ImportSkillsDialog({
   // per-skill picking. Result mirrors the local import's lists + bundle label.
   const [ghUrl, setGhUrl] = useState("");
   const [ghBusy, setGhBusy] = useState(false);
+  // **同步**的提交闸 —— 这个导入由按钮点击**和** URL 框回车两条路进,而 `ghBusy`
+  // 是异步生效的 React state:从 `setGhBusy(true)` 到重渲染之间有一小段窗口,回车键
+  // 在这段里能再进一次 `doGithubImport`,发第二次 `importGithub`(会**再克隆一遍仓库**)。
+  // 按钮的 `disabled` 挡不住回车,所以用 ref 同步拦一道(同 PluginsPanel 的 submittingRef)。
+  const ghBusyRef = useRef(false);
   const [ghResult, setGhResult] = useState<{
     imported: string[];
     skipped: string[];
@@ -1749,7 +1754,8 @@ function ImportSkillsDialog({
   // result card stays visible until the dialog reopens.
   const doGithubImport = async () => {
     const url = ghUrl.trim();
-    if (!url || ghBusy) return;
+    if (!url || ghBusyRef.current) return;
+    ghBusyRef.current = true;
     setGhBusy(true);
     setError(null);
     setGhResult(null);
@@ -1770,6 +1776,7 @@ function ImportSkillsDialog({
     } catch (err) {
       setError((err as Error).message);
     } finally {
+      ghBusyRef.current = false;
       setGhBusy(false);
     }
   };

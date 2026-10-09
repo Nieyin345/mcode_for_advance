@@ -27,7 +27,7 @@ import {
   IconShieldCheck,
   IconTrash,
 } from "@renderer/lib/icons.js";
-import { Button, Input } from "@renderer/components/ui/index.js";
+import { Button, ErrorNote, Input } from "@renderer/components/ui/index.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { SettingRow } from "./SettingRow.js";
@@ -62,6 +62,11 @@ export function InstitutionAuthPanel() {
   const [sites, setSites] = useState<AuthSiteStatus[]>([]);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [loading, setLoading] = useState(false);
+  /** 这条路上每一处 IPC 都可能抛:保存/删除会因 schema 或"机构配置不存在"抛,
+   *  `clearCookies` 会把 BrowserManager 的异常原样再抛。从前它们全是裸 `void` ——
+   *  抛出来只落进 unhandled rejection(渲染端没有全局监听),用户点了按钮,屏幕上一句
+   *  话都没有。挂一条始终可见的横幅接住。 */
+  const [error, setError] = useState<string | null>(null);
 
   const reloadStatus = useCallback(async () => {
     const res = await api.institution.authStatus({});
@@ -70,15 +75,20 @@ export function InstitutionAuthPanel() {
 
   useEffect(() => {
     void (async () => {
-      const res = await api.institution.list();
-      setProfiles(res.profiles);
-      await reloadStatus();
+      try {
+        const res = await api.institution.list();
+        setProfiles(res.profiles);
+        await reloadStatus();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     })();
   }, [reloadStatus]);
 
   const saveDraft = async () => {
     if (!draft || !draft.name.trim()) return;
     setLoading(true);
+    setError(null);
     try {
       const res = await api.institution.save({
         id: draft.id,
@@ -95,26 +105,43 @@ export function InstitutionAuthPanel() {
       setProfiles(res.profiles);
       setDraft(null);
       await reloadStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
   };
 
   const removeProfile = async (id: string) => {
-    const res = await api.institution.delete({ id });
-    setProfiles(res.profiles);
-    await reloadStatus();
+    setError(null);
+    try {
+      const res = await api.institution.delete({ id });
+      setProfiles(res.profiles);
+      await reloadStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   };
 
   const clearDomain = async (domain: string) => {
-    const res = await api.institution.clearCookies({ domains: [domain] });
-    setSites(res.sites);
+    setError(null);
+    try {
+      const res = await api.institution.clearCookies({ domains: [domain] });
+      setSites(res.sites);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   };
 
   const clearAll = async () => {
     if (!window.confirm(t("institution.clearAllConfirm"))) return;
-    const res = await api.institution.clearCookies({});
-    setSites(res.sites);
+    setError(null);
+    try {
+      const res = await api.institution.clearCookies({});
+      setSites(res.sites);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   };
 
   // 版式与其它设置页**完全一致**(见 PanelHeader 顶部的三级说明):
@@ -141,6 +168,10 @@ export function InstitutionAuthPanel() {
           </Button>
         }
       />
+
+      {error && (
+        <ErrorNote title={t("settings.operationFailed")}>{error}</ErrorNote>
+      )}
 
       {/* ── 已登录站点(从 cookie 实时推导)── */}
       <SettingsSection title={t("institution.authStatus")} desc={t("institution.desc")}>

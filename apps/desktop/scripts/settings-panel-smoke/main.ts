@@ -814,6 +814,67 @@ console.log("\n渲染端的旧回包竞态");
     /try \{[^}]*localStorage\.getItem\("mcode\.skills\.leftW"\)/s.test(skillsPanel),
     skillsPanel.match(/localStorage\.getItem\([^)]*\)/g),
   );
+  // ★ GitHub 导入的提交由**按钮点击**和 **URL 框回车**两条路进(`ImportSkillsDialog` 的
+  //   URL 输入框那个 `onKeyDown`),而 `ghBusy` 是异步生效的 React state —— 从
+  //   `setGhBusy(true)` 到重渲染之间有一小段窗口,回车键能再进一次 `doGithubImport`,
+  //   发第二次 `importGithub`(真的会**再克隆一遍仓库**)。按钮的 `disabled` 挡不住回车,
+  //   需要一个**同步** ref 闸(同 PluginsPanel 的 submittingRef)。判据钉源码:进入闸前
+  //   检查、进入后立刻置位、结束时复位。
+  check(
+    "★ SkillsPanel 的 GitHub 导入有同步 ghBusyRef 闸(回车绕过 disabled 时挡双提交)",
+    /const ghBusyRef = useRef\(false\);/.test(skillsPanel) &&
+      /if \(!url \|\| ghBusyRef\.current\) return;/.test(skillsPanel) &&
+      /ghBusyRef\.current = true;/.test(skillsPanel),
+    skillsPanel.match(/ghBusyRef\.current[^\n]*/g),
+  );
+}
+
+/* ────────────────────────── 13b. 机构认证面板:失败静默 ────────────────────────── */
+
+console.log("\n机构认证面板:写操作的失败出口");
+
+// ★ 机构认证整条路的每一处 IPC 都会**抛**(不是回 `{ok:false}`):`save`/`delete` 会因为
+//   入参 schema 或「机构配置不存在」(拿一个过期 id)抛,`clearCookies` 会把 BrowserManager
+//   的异常原样再抛。从前它们是四处裸 `void api.institution.*()` —— 抛出来只落进 unhandled
+//   rejection(渲染端**没有**全局监听),用户点了按钮、屏幕上一句话都没有。判据钉源码:
+//   四处写操作 + 初始加载都必须有 `catch → setError` 出口,且面板画出了 `<ErrorNote>`。
+{
+  const { readFileSync } = await import("node:fs");
+  const institution = readFileSync(
+    join(process.cwd(), "src/renderer/components/settings/InstitutionAuthPanel.tsx"),
+    "utf8",
+  );
+  const code = institution.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const catchSetError = (code.match(/catch \(err\) \{\s*setError\(/g) ?? []).length;
+  check(
+    "★ 机构认证四处写操作 + 初始加载都有 catch → setError 出口(从前裸 void,失败静默)",
+    catchSetError >= 5 && /<ErrorNote/.test(code),
+    { catchSetError, hasErrorNote: /<ErrorNote/.test(code) },
+  );
+}
+
+/* ────────────────────────── 13c. 浏览器设置面板:失败静默 ────────────────────────── */
+
+console.log("\n浏览器设置面板:选目录与登录开关的失败出口");
+
+// ★ 同文件里两行的目录保存(`save`)早有 `catch → setError`,而**选目录**(`pickDir`)与
+//   **持久登录开关**(`toggle`)从前是裸 `void` / 静默回弹:`pickFolder` IPC 拒绝落进
+//   unhandled rejection;`setting.set` 失败只把开关拨回原位、不说为什么(同 HooksPanel
+//   开关那条规矩:写失败要在看得见的地方报出来)。判据钉源码:三处新出口都在
+//   `catch → setError`(连原有两处 `save` 共 5 处)。
+{
+  const { readFileSync } = await import("node:fs");
+  const browser = readFileSync(
+    join(process.cwd(), "src/renderer/components/settings/SettingsBrowserPanel.tsx"),
+    "utf8",
+  );
+  const code = browser.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const catchSetError = (code.match(/catch \(err\) \{\s*setError\(/g) ?? []).length;
+  check(
+    "★ 浏览器设置:两处 pickDir + 持久登录开关都有 catch → setError 出口(从前静默)",
+    catchSetError >= 5,
+    { catchSetError },
+  );
 }
 
 /* ────────────────────────── 14. 钩子面板:写盘失败的出口 ────────────────────────── */
