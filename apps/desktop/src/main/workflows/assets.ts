@@ -53,7 +53,7 @@ Mcode 把整个数据库放在内存里,任何一次变更都会把整份文件�
 
 屏蔽规则
 ========
-用户在「设置 → 资料库屏蔽」里可以把某些分类 / 大类设为屏蔽,也可以按文件后缀屏蔽。
+用户在「设置 → 文档管理」里可以把某些分类 / 大类设为屏蔽,也可以按文件后缀屏蔽。
 被屏蔽的条目**不进这个脚本的任何结果**,判定与界面、与 AI 工具那边是同一套
 (主进程的 main/library/suppress.ts)。
 
@@ -529,7 +529,7 @@ def report_suppressed(reasons):
         counts[r] += 1
     trash_n = reasons.count(TRASH_REASON)
     if order:
-        print("⚠️ 屏蔽规则挡掉了 " + str(sum(counts.values())) + " 条(设置 → 资料库屏蔽),它们不在下面:")
+        print("⚠️ 屏蔽规则挡掉了 " + str(sum(counts.values())) + " 条(设置 → 文档管理),它们不在下面:")
         for r in order:
             print("    - " + r + ":" + str(counts[r]) + " 条")
     if trash_n:
@@ -615,6 +615,12 @@ def cmd_show(cur, root, args, sup):
     if not kept:
         sys.exit("匹配 " + args.query + " 的 " + str(len(reasons)) + " 条被屏蔽规则挡下了("
                  + "、".join(dict.fromkeys(reasons)) + ")。要去掉屏蔽:设置 → 文档管理。")
+    # ⚠️ **留下来的有,但被挡掉的也有时,也要说一声。** 从前只有"一条都没剩下"才报屏蔽 ——
+    # 于是"匹配 2 条、其中 1 条被屏蔽"时只打印留下那条,用户以为库里就一条。与
+    # cmd_list / cmd_find 的口径对齐(它们都会附一句挡掉了几条)。
+    if reasons:
+        print("⚠️ 另有 " + str(len(reasons)) + " 条被屏蔽规则挡下("
+              + "、".join(dict.fromkeys(reasons)) + ";设置 → 文档管理)。")
     rows = kept
     if len(rows) > 1:
         print("匹配到 " + str(len(rows)) + " 条,请用更精确的 id 或标题:")

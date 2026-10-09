@@ -82,6 +82,10 @@ c.executemany("INSERT INTO library_items(id,title,abstract,url,md_path,pdf_path,
   # 通用文件只有 file_path —— 从前 file_of 只认 md / pdf,于是说它「没有文件」
   ("li_doc", "课题报告", None, None, None, None, "files/li_doc-report.docx", 1000, 1000),
   ("li_dm", "转录过的 Word", None, None, "markdown/imported/li_dm/full.md", None, "files/li_dm-a.docx", 1000, 1000),
+  # ★ show 的"部分匹配被挡掉"用:同一个标题片段命中**一条保留、一条被挡**。
+  #   前者没有任何 pdf/md(不被挡);后者只有 pdf(被 extensions 的 .pdf 整条挡下)。
+  ("li_mix_keep", "混合匹配的保留条", None, None, None, None, "files/mix-keep.txt", 1000, 1000),
+  ("li_mix_block", "混合匹配的被挡条", None, None, None, "papers/mix-block.pdf", None, 1000, 1000),
   # 回收站里的条目 —— 用户"我不要它了"的意思,不该进模型上下文(见下面 3b 段)
   ("li_trash", "被丢进回收站的那一篇", None, None, "markdown/t.md", None, None, 1000, 1000),
   # ★ 改过名的**老回收站**:名字不是「回收站」,只有老的**每库键**认得它(见 3b 段)
@@ -186,6 +190,19 @@ console.log("\nlist · 全量、按大类、屏蔽");
   check("★ --group docs 不给别的大类的条目", !docs.includes("LaTeX 论文模版"), docs);
 }
 
+/* ─── 3a¾. 交给模型这份脚本里指的设置页名必须是**当前那个** ─── */
+
+console.log("\n屏蔽指路的设置页名");
+
+// 屏蔽规则的说明会进**模型和用户的视野**(docstring 经 `--help` 出来、打印的提示也照读)。
+// 「屏蔽在设置 → X」里的 X 曾经漂过:页面在界面上叫「文档管理」,而这里有几处还写着旧名
+// 「资料库屏蔽」。用户照读,去找一个不存在的页面。判据直接落在**这份脚本的正文**上 ——
+// 它与主进程的 `LIBRARY_BLOCK_SETTINGS_PAGE` 必须指同一个页面。
+{
+  check("★ 脚本正文不再出现退役的页名「资料库屏蔽」", !LIBRARY_PY.includes("资料库屏蔽"), LIBRARY_PY.match(/设置[^」\n]*屏蔽[^」\n]*/g));
+  check("★ 脚本正文用的是当前页名「文档管理」", LIBRARY_PY.includes("文档管理"), LIBRARY_PY.match(/设置[^\n]*文档管理[^\n]*/g));
+}
+
 /* ──────────────── 3b. 回收站里的条目也不该进上下文(2026-10-08 补) ──────────────── */
 
 console.log("\nlist · 回收站那道门");
@@ -251,6 +268,14 @@ console.log("\n其余几条命令都还跑得通");
   // show 的 SELECT 里从前带 kind / type 那两列(一个已停写、一个是自由文本)——
   // 列名错一个就是一次运行期崩溃,这条钉住整条 SELECT 是好的。
   check("show 没有崩(整条 SELECT 是好的)", show.length > 0, show.length);
+
+  // ★ 一部分匹配被屏蔽挡住时也要**说一声**。从前只有"一条都没剩下"才报屏蔽 ——
+  //   于是"匹配 2 条、其中 1 条被屏蔽"时只打印留下那条,用户以为库里就一条。
+  //   判据:同标题片段命中的两条里,保留的那条照常显示,而被挡那条**要有提示**。
+  const mixed = at("show", "混合匹配");
+  check("保留的那条照常显示", mixed.includes("混合匹配的保留条"), mixed);
+  check("★ 被挡住的那条也要报出来(不静默少列)", /另有\s*1\s*条被屏蔽/.test(mixed), mixed);
+  check("★ 提示里点名屏蔽原因与设置页", mixed.includes("设置 → 文档管理"), mixed);
 }
 
 /* ──────────────── 5. 转录与原件 ──────────────── */
