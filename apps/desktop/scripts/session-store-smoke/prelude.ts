@@ -52,6 +52,17 @@ export function setSettingSetStub(fn: ((input: unknown) => Promise<unknown>) | n
   settingSetStub = fn;
 }
 
+/**
+ * 按**方法全路径**覆盖任意 api 方法(如 `session.delete` / `project.archive`)。
+ * 会话/项目**行操作**失败要报出来的那批断言要逐个驱动 9 个动作、让底层 IPC 抛,专用
+ * setter 会把 prelude 撑爆,所以给一个通用口。返回 null 清除。优先级高于上面的专用口。
+ */
+const apiOverrides = new Map<string, (input: unknown) => Promise<unknown>>();
+export function setApiStub(path: string, fn: ((input: unknown) => Promise<unknown>) | null): void {
+  if (fn) apiOverrides.set(path, fn);
+  else apiOverrides.delete(path);
+}
+
 function deepApiStub(path: string[] = []): unknown {
   return new Proxy(asyncNoop, {
     get: (_target, prop) => {
@@ -59,8 +70,11 @@ function deepApiStub(path: string[] = []): unknown {
       if (prop === "constructor") return Object;
       return deepApiStub([...path, String(prop)]);
     },
-    apply: (_target, _this, args: unknown[]) =>
-      path.join(".") === "claude.sendTurn" && sendTurnStub
+    apply: (_target, _this, args: unknown[]) => {
+      const method = path.join(".");
+      const override = apiOverrides.get(method);
+      if (override) return override(args[0]);
+      return method === "claude.sendTurn" && sendTurnStub
         ? sendTurnStub(args[0])
         : path.join(".") === "session.messages" && sessionMessagesStub
           ? sessionMessagesStub(args[0])
@@ -78,7 +92,8 @@ function deepApiStub(path: string[] = []): unknown {
             ? settingSetStub(args[0])
           : path.join(".") === "skills.list" && skillsListStub
             ? skillsListStub(args[0])
-            : Promise.resolve(undefined),
+            : Promise.resolve(undefined);
+    },
   });
 }
 

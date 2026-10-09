@@ -24,6 +24,12 @@ export const zh = {
   // store 把错误吞了、照样 resolve —— 用户看到成功、文件其实一个字节没回滚。
   "store.toast.rewindFailed": "撤销本轮改动失败(文件可能没还原)",
   "store.toast.settingSaveFailed": "设置没能保存",
+  // 会话 / 项目行操作(改名、归档、删除、置顶、分组)落库失败 —— 主进程会抛
+  // (`session not found` / `project not found` / zod / IO),而渲染端**没有**全局
+  // unhandledrejection 监听,调用点几乎全是裸 `void storeAction(...)`。抛出去只落进
+  // unhandled rejection:用户点了「删除」、那一行还在,屏幕上一个字都没有("点了没反应")。
+  // 这些操作就地报出来,正文放主进程给的那句具体原因。
+  "store.toast.sessionOpFailed": "操作失败",
   // 关闭标签时被守卫拦下的未保存文件 —— 编辑器没有自动保存,静默关掉就是丢改动。
   "store.toast.ideCloseBlockedTitle": "有文件没关：内容还没保存",
   "store.toast.ideCloseBlockedBody": "{names} 有未保存的修改，已保留。保存或撤销后即可关闭。",

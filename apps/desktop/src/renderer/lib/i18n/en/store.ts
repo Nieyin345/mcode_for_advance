@@ -17,6 +17,7 @@ export const en = {
   "store.toast.persistFailed": "Couldn't save the conversation (this turn may not be stored)",
   "store.toast.rewindFailed": "Couldn't undo this turn's changes (files may not be restored)",
   "store.toast.settingSaveFailed": "Couldn't save the setting",
+  "store.toast.sessionOpFailed": "Action failed",
   "store.toast.ideCloseBlockedTitle": "Some tabs weren't closed: unsaved changes",
   "store.toast.ideCloseBlockedBody": "{names} have unsaved changes and were kept open. Save or undo them to close.",
   "store.toast.ideCloseBlockedMany": "{count} files have unsaved changes and were kept open. Save or undo them to close.",

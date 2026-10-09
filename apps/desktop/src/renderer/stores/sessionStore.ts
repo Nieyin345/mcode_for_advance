@@ -2544,6 +2544,33 @@ function reportBookmarkSaveFailed(err: unknown): void {
   });
 }
 
+/**
+ * 会话 / 项目**行操作**(改名、归档、删除、置顶、分组)落库失败时报给用户。
+ *
+ * 为什么在 store 层就地收口(而不是逐个调用点补 `.catch`):这些动作的**桌面端调用点
+ * 几乎全是裸 `void storeAction(...)`** —— `LeftBar` / `StreamSidebar` / `SideChatPanel` /
+ * `SessionDirectoryChip` 都是。而主进程在"那行已不在 / zod 校验失败 / IO 失败"时会**抛**
+ * (`session not found` / `project not found`),渲染端又**没有**全局 `unhandledrejection`
+ * 监听:抛出去只落进 unhandled rejection —— 用户点了「删除」、那一行还在,屏幕上**一个字
+ * 都没有**("点了没反应"那一类)。手机抽屉早就用 `reportActionFailure` 补了同一课
+ * (见 `MobileSessionDrawer`),但桌面侧**每一个调用点**都补一遍既散、又必然漏
+ * (`SessionDirectoryChip` 那两处就是明证)。这些动作只有一个实现,就在这里统一收口 ——
+ * 与 `reportSettingSaveFailed` 同一条"用户显式做的操作落库失败要说出来"的规矩。
+ *
+ * **吞掉(而不是 rethrow)是有意的**:两个 `await renameSession(...)` 的调用点
+ * (`LeftBar` / `StreamSidebar` 的 `RenameDialog.onSubmit`)只把 await 当"这次提交结束了",
+ * 失败时若继续抛出,紧随其后的 `setRenaming(null)` 就不跑了 —— 对话框会卡在屏幕上。
+ * 收口后它们照常闭合,并收到一条 toast(与手机侧行为一致)。(toastStore 按标题去重,
+ * 连续失败不会刷屏。)
+ */
+function reportSessionOpFailed(err: unknown): void {
+  useToastStore.getState().push({
+    kind: "error",
+    title: translate(useSessionStore.getState().locale, "store.toast.sessionOpFailed"),
+    body: err instanceof Error ? err.message : String(err),
+  });
+}
+
 export const useSessionStore = create<SessionState>((set, get) => ({
   /**
    * 一次关闭请求被守卫拦下(callback 返回了 `blocked`)时,把"哪些文件没关、
@@ -4262,7 +4289,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   /** Hard-delete a project; its sessions + messages cascade-delete in the DB.
    *  If it was active, fall back to the first remaining project. */
   deleteProject: async (id) => {
-    await api.project.delete({ id });
+    try {
+      await api.project.delete({ id });
+    } catch (err) {
+      console.error("project.delete failed:", err);
+      reportSessionOpFailed(err);
+      return;
+    }
     // Model cache: none of the deleted project's files will be in any open
     // list after this, so dispose their models — except the DISPLAYED one
     // (still attached to the live editor; EditPane's teardown owns it once
@@ -4427,7 +4460,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   /** Set a project's archived flag (soft-delete; restorable from the archived view). */
   archiveProject: async (id, archived) => {
-    const { project } = await api.project.archive({ id, archived });
+    let project: Project;
+    try {
+      ({ project } = await api.project.archive({ id, archived }));
+    } catch (err) {
+      console.error("project.archive failed:", err);
+      reportSessionOpFailed(err);
+      return;
+    }
     set((s) => {
       const projects = s.projects.map((p) => (p.id === id ? project : p));
       // If we just archived the active project, jump to the next active one.
@@ -4457,7 +4497,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    *  archived). If it was active, fall back to the next session in the same
    *  project. */
   deleteSession: async (id) => {
-    await api.session.delete({ id });
+    try {
+      await api.session.delete({ id });
+    } catch (err) {
+      console.error("session.delete failed:", err);
+      reportSessionOpFailed(err);
+      return;
+    }
     // Shared cleanup — a remote `session.deleted` event runs the same state
     // surgery (see applySessionDeletedState) so phone-side deletes behave
     // identically to local ones.
@@ -4474,7 +4520,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    *  "已归档" bin, also grouped by project. Totals are recomputed from the
    *  server response so `hasMore` / the load-more button stay accurate. */
   archiveSession: async (id, archived) => {
-    const { session } = await api.session.archive({ id, archived });
+    let session: Session;
+    try {
+      ({ session } = await api.session.archive({ id, archived }));
+    } catch (err) {
+      console.error("session.archive failed:", err);
+      reportSessionOpFailed(err);
+      return;
+    }
     const previousActiveId = get().activeSessionId;
     set((s) => {
       const projectId = session.projectId;
@@ -4586,7 +4639,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   renameSession: async (id, title) => {
-    const { session } = await api.session.rename({ id, title });
+    let session: Session;
+    try {
+      ({ session } = await api.session.rename({ id, title }));
+    } catch (err) {
+      console.error("session.rename failed:", err);
+      reportSessionOpFailed(err);
+      return;
+    }
     set((s) => {
       const projectId = session.projectId;
       // Update the row in whichever cache holds it (active page or archived
@@ -4617,7 +4677,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   setSessionPinned: async (id, pinned) => {
-    const { session } = await api.session.pin({ id, pinned });
+    let session: Session;
+    try {
+      ({ session } = await api.session.pin({ id, pinned }));
+    } catch (err) {
+      console.error("session.pin failed:", err);
+      reportSessionOpFailed(err);
+      return;
+    }
     // Pinning MOVES the row: out of the project's active window and into the
     // global pinned section above the project tree (unpinning moves it back).
     // The shared state builder also runs for the cross-client
@@ -6660,7 +6727,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   /** Assign a project to a group (left-bar "grouped" view). Pass null to
    *  remove it. The returned project replaces the stale copy in state. */
   setProjectGroup: async (id, group) => {
-    const { project } = await api.project.setGroup({ id, group });
+    let project: Project;
+    try {
+      ({ project } = await api.project.setGroup({ id, group }));
+    } catch (err) {
+      console.error("project.setGroup failed:", err);
+      reportSessionOpFailed(err);
+      return;
+    }
     set((s) => ({ projects: s.projects.map((p) => (p.id === id ? project : p)) }));
   },
 
@@ -6668,7 +6742,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    *  stale copy in state — every consumer (left bar, archive bin, settings
    *  project pickers) reads the same `projects` array and follows along. */
   renameProject: async (id, name) => {
-    const { project } = await api.project.rename({ id, name });
+    let project: Project;
+    try {
+      ({ project } = await api.project.rename({ id, name }));
+    } catch (err) {
+      console.error("project.rename failed:", err);
+      reportSessionOpFailed(err);
+      return;
+    }
     set((s) => ({ projects: s.projects.map((p) => (p.id === id ? project : p)) }));
   },
 
@@ -6677,9 +6758,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    *  list query — rather than hand-maintaining that order in the renderer,
    *  refetch the whole (small) list after the write. */
   setProjectPinned: async (id, pinned) => {
-    await api.project.setPinned({ id, pinned });
-    const { projects } = await api.project.list();
-    set({ projects });
+    try {
+      await api.project.setPinned({ id, pinned });
+      const { projects } = await api.project.list();
+      set({ projects });
+    } catch (err) {
+      console.error("project.setPinned failed:", err);
+      reportSessionOpFailed(err);
+    }
   },
 
   /** Persist a drag-to-reorder. The renderer sends the full ordered id list

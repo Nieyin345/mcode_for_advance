@@ -13,7 +13,7 @@
  *
  * Run: scripts/session-store-smoke/run.sh
  */
-import { setSendTurnStub, setSessionMessagesStub, setSkillsListStub, setTruncateStub, setInterruptStub, setUpdateSettingsStub, setUpdateBookmarksStub, setProjectReorderStub, setSettingSetStub } from "./prelude.js";
+import { setSendTurnStub, setSessionMessagesStub, setSkillsListStub, setTruncateStub, setInterruptStub, setUpdateSettingsStub, setUpdateBookmarksStub, setProjectReorderStub, setSettingSetStub, setApiStub } from "./prelude.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { ChatMessage, SessionState } from "@renderer/stores/sessionStore.js";
@@ -1030,6 +1030,50 @@ console.log("\n[15h] 拖拽调整项目顺序落盘失败:顺序收回去了,也
     useToastStore.getState().toasts.map((tt) => tt.body),
   );
   setProjectReorderStub(null);
+}
+
+console.log("\n[15j] 会话 / 项目行操作落库失败要在 store 层就地报出来(桌面侧每个裸 void 调用点)");{
+  // 行操作(改名 / 归档 / 删除 / 置顶 / 分组,会话与项目)在主进程"那行已不在 / zod /
+  // IO 失败"时会**抛**(`session not found` / `project not found`)。桌面端调用点几乎全是
+  // 裸 `void storeAction(...)`(LeftBar / StreamSidebar / SideChatPanel / SessionDirectoryChip),
+  // 而渲染端**没有**全局 unhandledrejection 监听 —— 抛出去只落进 unhandled rejection:
+  // 用户点了「删除」、那一行还在,屏幕上一个字都没有("点了没反应")。手机抽屉早已补上
+  // (`reportActionFailure`),桌面侧在 **store 层统一收口**(`reportSessionOpFailed`)。
+  //
+  // 判据立在**用户看到的那条 toast** 上,逐个驱动 9 个动作。撤掉 store 里的收口,这条会
+  // 变红(不再有 toast)。toastStore 按标题去重(2s 内同标题只留一条),所以每条**先 clear**。
+  const store = useSessionStore;
+  type RowOp = [string, string, () => Promise<unknown>];
+  const cases: RowOp[] = [
+    ["deleteSession", "session.delete", () => store.getState().deleteSession("s-x")],
+    ["archiveSession", "session.archive", () => store.getState().archiveSession("s-x", true)],
+    ["renameSession", "session.rename", () => store.getState().renameSession("s-x", "新名字")],
+    ["setSessionPinned", "session.pin", () => store.getState().setSessionPinned("s-x", true)],
+    ["archiveProject", "project.archive", () => store.getState().archiveProject("p-x", true)],
+    ["deleteProject", "project.delete", () => store.getState().deleteProject("p-x")],
+    ["renameProject", "project.rename", () => store.getState().renameProject("p-x", "新名字")],
+    ["setProjectGroup", "project.setGroup", () => store.getState().setProjectGroup("p-x", "组")],
+    ["setProjectPinned", "project.setPinned", () => store.getState().setProjectPinned("p-x", true)],
+  ];
+  const silent: string[] = [];
+  const rethrew: string[] = [];
+  for (const [name, apiPath, run] of cases) {
+    const msg = `${name} rejected`;
+    setApiStub(apiPath, async () => { throw new Error(msg); });
+    useToastStore.getState().clear();
+    // 收口必须**吞掉**(不 rethrow):两个 `await renameSession(...)` 的调用点靠它继续跑到
+    // 对话框闭合。若这里改成 rethrow,`rethrew` 会捕到 —— 与桌面行为相对的另一条判据。
+    let threw = false;
+    await run().catch(() => { threw = true; });
+    if (threw) rethrew.push(name);
+    const got = useToastStore.getState().toasts.some(
+      (tt) => tt.kind === "error" && (tt.body ?? "").includes(msg),
+    );
+    if (!got) silent.push(name);
+    setApiStub(apiPath, null);
+  }
+  check("★ 9 个行操作落库失败都就地报了(无静默的'点了没反应')", silent.length === 0, silent);
+  check("★ 收口吞掉异常(await 调用点能继续跑到对话框闭合)", rethrew.length === 0, rethrew);
 }
 
 console.log("\n[15i] 用户显式改的偏好落盘失败,一票 setter 都要报出来(不只 displayMode 那几只)");{
