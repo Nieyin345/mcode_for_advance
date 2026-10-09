@@ -383,6 +383,22 @@ console.log("\n1. 文件 / 目录选择:取消、空、多选");
   );
 }
 
+{
+  // ★ 无参省略:`DialogPickFilesSchema` 全字段可选(title/filters 都 `.optional()`),
+  //   而省略 input 时 `raw` 是 `undefined` —— `z.object({…}).parse(undefined)` 抛根级
+  //   "Required"。渲染端走 `api.pickFiles({})` 掩盖了它;任何省略 input 的调用方拿到的是
+  //   一句 zod 报错而不是空结果。这与同文件的 `file:pickImages`(下面 §2)是**同一规矩的
+  //   孪生** —— 那条早已 `parse(raw ?? {})`(见提交 1ac3deab,fixed #126),这条当时漏了。
+  //   判据:省略 input 时不炸在入参上、且返回形状与 `{}` 一致。
+  resetDialog();
+  pushDialogResult({ canceled: true, filePaths: [] });
+  const [omitErr, omitRes] = await settled(() =>
+    call<{ paths: string[] }>(IPC.DIALOG_PICK_FILES, undefined),
+  );
+  eq("★ dialog:pickFiles 接受省略的 input(undefined)", omitErr, "");
+  check("省略 input 时返回的是空路径数组(不是 undefined/半截对象)", Array.isArray(omitRes?.paths) && omitRes.paths.length === 0, omitRes);
+}
+
 /* ──────────────── 2. file:pickImages:白名单 / 上限 / 坏文件 ──────────────── */
 
 console.log("\n2. 图片选择:白名单、上限、坏文件");

@@ -59,7 +59,12 @@ function pickImageMime(ext: string): PickedImage["mimeType"] | undefined {
 export function registerDialogHandlers(ipcMain: IpcMain): void {
   // ── multi-file picker (project-external files allowed) ──
   ipcMain.handle(IPC.DIALOG_PICK_FILES, async (_evt, raw) => {
-    const input = DialogPickFilesSchema.parse(raw);
+    // 全字段可选(`title` / `filters` 都 `.optional()`),所以无参调用收到 `undefined`
+    // 时 `z.object({}).parse(undefined)` 会抛根级 `Required` —— 与 `file:pickImages`
+    // (同文件下面那条)是**同一条规矩的孪生**:那条已经写成 `parse(raw ?? {})`
+    // (见 fix-record #126 / 提交 1ac3deab),这条当时漏了。渲染端走 `api.pickFiles({})`
+    // 掩盖了它,但任何省略 input 的调用方(如 AI 通路)拿到的是 zod 报错而不是空结果。
+    const input = DialogPickFilesSchema.parse(raw ?? {});
     const result = await dialog.showOpenDialog({
       title: input.title ?? dialogText("common.dialog.pickFiles"),
       properties: ["openFile", "multiSelections"],
