@@ -15,6 +15,7 @@ let truncateStub: ((input: unknown) => Promise<unknown>) | null = null;
 let interruptStub: ((input: unknown) => Promise<unknown>) | null = null;
 let updateSettingsStub: ((input: unknown) => Promise<unknown>) | null = null;
 let updateBookmarksStub: ((input: unknown) => Promise<unknown>) | null = null;
+let projectReorderStub: ((input: unknown) => Promise<unknown>) | null = null;
 export function setSendTurnStub(fn: ((input: unknown) => Promise<unknown>) | null): void {
   sendTurnStub = fn;
 }
@@ -41,6 +42,10 @@ export function setUpdateSettingsStub(fn: ((input: unknown) => Promise<unknown>)
 export function setUpdateBookmarksStub(fn: ((input: unknown) => Promise<unknown>) | null): void {
   updateBookmarksStub = fn;
 }
+/** 覆盖 `project.reorder`(验拖拽排序落盘失败要报出来)。 */
+export function setProjectReorderStub(fn: ((input: unknown) => Promise<unknown>) | null): void {
+  projectReorderStub = fn;
+}
 
 function deepApiStub(path: string[] = []): unknown {
   return new Proxy(asyncNoop, {
@@ -62,6 +67,8 @@ function deepApiStub(path: string[] = []): unknown {
             ? updateSettingsStub(args[0])
           : path.join(".") === "session.updateBookmarks" && updateBookmarksStub
             ? updateBookmarksStub(args[0])
+          : path.join(".") === "project.reorder" && projectReorderStub
+            ? projectReorderStub(args[0])
           : path.join(".") === "skills.list" && skillsListStub
             ? skillsListStub(args[0])
             : Promise.resolve(undefined),

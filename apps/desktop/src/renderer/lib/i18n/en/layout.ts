@@ -108,6 +108,7 @@ export const en = {
   "layout.projectManageIcon": "Manage project (rename / group / color)",
   "layout.resetColor": "Reset to default",
   "layout.dissolveGroup": "Dissolve group (projects are kept)",
+  "layout.projectReorderFailed": "Could not save the project order",
   "layout.color.emerald": "Emerald",
   "layout.color.sky": "Sky blue",
   "layout.color.indigo": "Indigo",

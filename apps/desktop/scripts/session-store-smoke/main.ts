@@ -13,7 +13,7 @@
  *
  * Run: scripts/session-store-smoke/run.sh
  */
-import { setSendTurnStub, setSessionMessagesStub, setSkillsListStub, setTruncateStub, setInterruptStub, setUpdateSettingsStub, setUpdateBookmarksStub } from "./prelude.js";
+import { setSendTurnStub, setSessionMessagesStub, setSkillsListStub, setTruncateStub, setInterruptStub, setUpdateSettingsStub, setUpdateBookmarksStub, setProjectReorderStub } from "./prelude.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { ChatMessage, SessionState } from "@renderer/stores/sessionStore.js";
@@ -1006,6 +1006,30 @@ console.log("\n[15g] 书签落库失败:UI 回滚了但也要说一句");{
   // 正控:UI 确实回滚了(书签没有留在 store 里)—— 证明这条测的是"报不报",不是"回滚对不对"。
   eq("书签已从 UI 回滚", (store.getState().bookmarksBySession[SID] ?? []).length, 0);
   setUpdateBookmarksStub(null);
+}
+
+console.log("\n[15h] 拖拽调整项目顺序落盘失败:顺序收回去了,也要说一句");{
+  // `reorderProjects` 是乐观排序 + 落盘。失败时 store 会重读列表**收回顺序**,但从前只
+  // `console.error`:用户拖好的顺序自己弹回去了,而屏幕上没有一个字 —— 他会以为自己拖错了
+  // 或软件坏了,再拖一次还是一样的结果。判据立在**用户看到的那条 toast** 上。
+  const P1 = "rp1", P2 = "rp2";
+  useSessionStore.setState({
+    projects: [
+      { id: P1, name: "A", path: "/w/a", archived: false } as never,
+      { id: P2, name: "B", path: "/w/b", archived: false } as never,
+    ],
+    activeProjectId: P1,
+  });
+  const store = useSessionStore;
+  setProjectReorderStub(async () => { throw new Error("project.reorder IPC failed"); });
+  useToastStore.getState().clear();
+  await store.getState().reorderProjects([P2, P1]);
+  check(
+    "★ 项目排序落盘失败时如实报出来(不是静默弹回)",
+    useToastStore.getState().toasts.some((tt) => tt.body?.includes("project.reorder IPC failed")),
+    useToastStore.getState().toasts.map((tt) => tt.body),
+  );
+  setProjectReorderStub(null);
 }
 
 console.log("\n[15c] 删会话时排队提示词桶也要收掉");{

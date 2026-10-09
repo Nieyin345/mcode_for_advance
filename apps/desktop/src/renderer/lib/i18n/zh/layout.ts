@@ -117,6 +117,8 @@ export const zh = {
   "layout.projectManageIcon": "管理项目（重命名 / 分组 / 颜色）",
   "layout.resetColor": "恢复默认",
   "layout.dissolveGroup": "解散分组（不删除项目）",
+  /* 拖动调整项目顺序落盘失败 —— 顺序会弹回,不说一句的话用户以为"我拖好的自己变回去了"。 */
+  "layout.projectReorderFailed": "项目顺序没能保存",
   "layout.color.emerald": "翠绿",
   "layout.color.sky": "天蓝",
   "layout.color.indigo": "靛蓝",

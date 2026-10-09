@@ -6714,6 +6714,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // 自己变回去了",查无对证。这里重读一次列表收回乐观改动(与 `setProjectPinned`
       // 失败后同一条路)。
       console.error("project.reorder failed:", err);
+      useToastStore.getState().push({
+        kind: "error",
+        title: translate(useSessionStore.getState().locale, "layout.projectReorderFailed"),
+        body: err instanceof Error ? err.message : String(err),
+      });
       try {
         const { projects } = await api.project.list();
         set({ projects });
