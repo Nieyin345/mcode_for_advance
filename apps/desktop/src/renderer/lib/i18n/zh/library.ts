@@ -65,6 +65,7 @@ export const zh = {
   "library.list.searchPlaceholder": "搜索标题、简介、来源地址",
   "library.list.selected": "已选中 {n} 篇",
   "library.list.empty": "资料库还是空的",
+  "library.list.truncated": "还有 {n} 篇更早的没列出来（这里只显示最近 200 篇）。",
   "library.list.emptyHint": "导入本地文档；联网检索与下载需要已配置的工作流和外部工具，Markdown 转录由自动化触发。",
   "library.list.noMatch": "没有匹配的资料",
   "library.list.emptyInCollection": "分类只是视图 —— 东西还在库里，只是不属于这个分类。",

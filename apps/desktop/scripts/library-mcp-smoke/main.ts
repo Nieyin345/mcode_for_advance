@@ -704,6 +704,34 @@ console.log("\n写工具的那道门只在有屏蔽时才拦");
     listed <= 60 && /只列|前 \d+ 条|未列出|还有 \d+ 条/.test(many),
     { listed, tail: many.slice(-160) },
   );
+
+  // ★ **`LibraryRepo.list({query})` 的搜索字段必须与 `operations.searchItems`(MCP
+  //   `library_search` 的底)一致。** 后者搜 title/abstract/file_path/**url**,前者从前漏了
+  //   url —— 于是按 DOI/arXiv 链接搜,AI 找得到、Ctrl+K 面板与自定义 UI 面板找不到。
+  {
+    const byUrl = LibraryRepo.upsert({ title: "只有链接能命中的一篇", url: "https://arxiv.org/abs/2402.99999" });
+    check("★ list({query}) 命中了 url 里的串(与 searchItems 同一套字段)", LibraryRepo.list({ query: "arxiv.org/abs/2402.99999" }).items.some((it) => it.id === byUrl.id));
+    check("对照:searchItems 也命中同一串(两处一起才算一致)", (await import("@main/library/operations.js")).searchItems("arxiv.org/abs/2402.99999").some((it) => it.id === byUrl.id));
+    LibraryRepo.delete([byUrl.id]);
+  }
+
+  // ★ **分页要有稳定的兜底排序列。** `added_at` 是毫秒,一批导入会在同一毫秒里建很多行;
+  //   SQLite 对并列行的顺序未定义,`LIMIT/OFFSET` 翻页时并列组跨页边界会**静默跳条**。
+  //   ⚠️ 这条**不能靠"跑两次比并集"验** —— SQLite 在同一会话里给的是确定顺序,重复查询必一致,
+  //   撤掉兜底序也照样绿(实测),是个假绿。判据钉在**源码**上(同 `projects-ipc-smoke` 对
+  //   sessions 翻页那条),撤掉 `, id DESC` 会红。
+  {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    // run.sh 里 `cd apps/desktop` 再跑,所以 cwd 就是 apps/desktop(同 ipc-wiring-smoke)。
+    const src = readFileSync(join(process.cwd(), "src/main/store/repositories.ts"), "utf8");
+    const paginated = src.match(/SELECT i\.\* FROM library_items i \$\{whereSql\} ORDER BY [^`]*LIMIT \? OFFSET \?/g) ?? [];
+    check(
+      "★ 会翻页的 library_items 查询以 `, id DESC` 收尾(并列行顺序稳定、翻页不跳条)",
+      paginated.length > 0 && paginated.every((s) => /added_at DESC, i\.id DESC LIMIT \? OFFSET \?$/.test(s.trim())),
+      paginated,
+    );
+  }
 }
 
 /* ──────────────── 9. 跨引擎桥:Pi / Codex 也拿得到库工具(2026-09-30) ──────────────── */

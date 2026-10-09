@@ -55,6 +55,7 @@ export const en = {
   "library.list.searchPlaceholder": "Search title, description, source URL",
   "library.list.selected": "{n} selected",
   "library.list.empty": "Your library is empty",
+  "library.list.truncated": "{n} older item(s) not listed (only the latest 200 are shown).",
   "library.list.emptyHint": "Import local documents. Online paper search and downloads require a configured workflow and external tools; Markdown transcription runs through automation.",
   "library.list.noMatch": "No matching items",
   "library.list.emptyInCollection": "A collection is just a view — your items are still in the library, they are simply not in this collection.",

@@ -91,6 +91,10 @@ interface LibraryState {
    */
   /** 「全部显示」时拿的条目缓存（全库口径）。 */
   allItems: LibraryItem[] | null;
+  /** 全库条目**总数**(主进程 `library.list` 的 `total`)。`allItems` 只取前
+   *  {@link TREE_PAGE} 条,`total > allItems.length` 时"全部显示"视图要如实写一句
+   *  "还有 N 条" —— 否则孤儿条目(不属于任何分类、只在"全部"里看得见)会被静默漏掉。 */
+  allItemsTotal: number;
 
   loadCollections: () => Promise<void>;
   /** 新建并返回 id。归属必须来自触发新建的那个大类，不能沿用上次选中分类的大类。 */
@@ -129,6 +133,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   expandedIds: {},
   itemsByCollection: {},
   allItems: null,
+  allItemsTotal: 0,
 
   loadCollections: async () => {
     const request = ++collectionsRequest;
@@ -214,7 +219,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     const request = ++allItemsRequest;
     try {
       const res = await api.library.list({ limit: TREE_PAGE });
-      if (request === allItemsRequest) set({ allItems: res.items });
+      if (request === allItemsRequest) set({ allItems: res.items, allItemsTotal: res.total });
     } catch {
       // 主进程未就绪 —— 保持空,不抛
     }

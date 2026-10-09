@@ -1838,11 +1838,14 @@ export const LibraryRepo = {
     if (filter.query?.trim()) {
       // LIKE 的转义:用户输入里的 % 和 _ 是通配符,必须转义才能当字面量搜
       const needle = `%${filter.query.trim().toLowerCase().replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+      // ⚠️ 字段集合必须与 `operations.searchItems`(MCP `library_search` 的底)**一致**:
+      // 那个搜 title / abstract / file_path / **url**,这里从前漏了 url —— 于是按 DOI/arXiv
+      // 链接搜,AI 找得到、Ctrl+K 面板找不到。
       where.push(
         `(LOWER(i.title) LIKE ? ESCAPE '\\' OR LOWER(IFNULL(i.abstract,'')) LIKE ? ESCAPE '\\'
-          OR LOWER(IFNULL(i.file_path,'')) LIKE ? ESCAPE '\\')`,
+          OR LOWER(IFNULL(i.file_path,'')) LIKE ? ESCAPE '\\' OR LOWER(IFNULL(i.url,'')) LIKE ? ESCAPE '\\')`,
       );
-      params.push(v(needle), v(needle), v(needle));
+      params.push(v(needle), v(needle), v(needle), v(needle));
     }
     if (filter.hasFile === true) {
       where.push("(i.pdf_path IS NOT NULL OR i.file_path IS NOT NULL)");
@@ -1859,8 +1862,12 @@ export const LibraryRepo = {
 
     const limit = filter.limit ?? 200;
     const offset = filter.offset ?? 0;
+    // ⚠️ **带 `, id DESC` 兜底。** `added_at` 是 `Date.now()`(毫秒),一批导入会在同一
+    // 毫秒里建很多行(SQLite 对并列行的顺序是未定义的,两次执行可能不同),而分页是
+    // `LIMIT ? OFFSET ?` —— 并列组恰好跨在页边界时,条会被**静默跳过**(渲染端按 id 去重
+    // 也发现不了)。这与会话分页(`listByProject`/`listAll`)是同一条,那边已补。
     const stmt = db.prepare(
-      `SELECT i.* FROM library_items i ${whereSql} ORDER BY i.added_at DESC LIMIT ? OFFSET ?`,
+      `SELECT i.* FROM library_items i ${whereSql} ORDER BY i.added_at DESC, i.id DESC LIMIT ? OFFSET ?`,
     );
     stmt.bind([...params, v(limit), v(offset)]);
     const items: LibraryItem[] = [];

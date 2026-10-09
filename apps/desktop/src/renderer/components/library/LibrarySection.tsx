@@ -204,6 +204,7 @@ export function LibrarySection({
   const loadCollectionItems = useLibraryStore((s) => s.loadCollectionItems);
   const itemsByCollection = useLibraryStore((s) => s.itemsByCollection);
   const allItems = useLibraryStore((s) => s.allItems);
+  const allItemsTotal = useLibraryStore((s) => s.allItemsTotal);
   const loadAllItems = useLibraryStore((s) => s.loadAllItems);
   const loadEveryCollectionItems = useLibraryStore((s) => s.loadEveryCollectionItems);
   const refreshItems = useLibraryStore((s) => s.refreshItems);
@@ -1202,16 +1203,24 @@ export function LibrarySection({
    */
   const renderShowAllList = () => {
     const items = allItems;
+    // ⚠️ **取的是前 200 条,超了要说出来。** 孤儿条目(不属于任何分类)只在"全部"里
+    // 看得见,静默截断会让更旧的那些在左栏里彻底消失 —— 仓规:少列了东西要显式写一句。
+    const hidden = items === null ? 0 : Math.max(0, allItemsTotal - items.length);
     return (
-      <ul className="space-y-0.5">
-        {items === null ? (
-          <HintRow>…</HintRow>
-        ) : items.length === 0 ? (
-          <HintRow>{t("library.list.empty")}</HintRow>
-        ) : (
-          items.map((item) => renderItemRow(item, null))
+      <>
+        <ul className="space-y-0.5">
+          {items === null ? (
+            <HintRow>…</HintRow>
+          ) : items.length === 0 ? (
+            <HintRow>{t("library.list.empty")}</HintRow>
+          ) : (
+            items.map((item) => renderItemRow(item, null))
+          )}
+        </ul>
+        {hidden > 0 && (
+          <HintRow>{t("library.list.truncated", { n: hidden })}</HintRow>
         )}
-      </ul>
+      </>
     );
   };
 
