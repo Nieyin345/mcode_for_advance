@@ -1230,8 +1230,15 @@ export function syncConfigFromSession(
   // project. Fire-and-forget: a failed write just falls back to the default
   // selection on next boot. Both session-activation entry points (selectSession
   // / openTab) route through here, so this single write covers them.
-  void api.setting.set({ key: UI_LAST_SESSION_SETTING_KEY, value: sessionId });
-  void api.setting.set({ key: UI_LAST_PROJECT_SETTING_KEY, value: sess.projectId });
+  //
+  // ⚠️ **必须带 catch。** 从前是裸 `void`,IPC 一 reject(401/断网/超时)就变成**未处理的
+  // rejection**(渲染端没有 unhandledrejection 监听)。这里不能 import sessionStore 的
+  // `saveSetting`(会成环),就地吞掉、只记一行 —— 丢一次"上次打开的项目"不值得打扰用户,
+  // 但不能留下未处理的 rejection。
+  void api.setting.set({ key: UI_LAST_SESSION_SETTING_KEY, value: sessionId })
+    .catch((err: unknown) => console.error("setting.set(ui.lastSession) failed:", err));
+  void api.setting.set({ key: UI_LAST_PROJECT_SETTING_KEY, value: sess.projectId })
+    .catch((err: unknown) => console.error("setting.set(ui.lastProject) failed:", err));
 }
 
 /** 只在最近一条用户消息之后找错;重试同一份坏配置仍要重新显示失败。 */

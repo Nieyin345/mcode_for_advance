@@ -79,6 +79,12 @@ function decide(method: string, dflt: boolean): boolean {
   return take(method) ?? defaults.get(method) ?? dflt;
 }
 
+/** 下一次 `sendTurn` 抛错(模拟 provider 预检失败)。验"状态必须放回 idle"。 */
+let failNextSendTurn = false;
+export function setFailNextSendTurn(): void {
+  failNextSendTurn = true;
+}
+
 /** `setNextResolve` 的兜底值(不设时默认 true)。 */
 const defaults = new Map<string, boolean>();
 export function setDefaultResolve(method: string, value: boolean): void {
@@ -99,6 +105,7 @@ export function resetStub(): void {
   permissionModes.length = 0;
   nextResolve.clear();
   defaults.clear();
+  failNextSendTurn = false;
 }
 
 /** 按顺序记下每一次 `rewindTurn`。 */
@@ -126,6 +133,10 @@ export const runtimeManager = {
       images: opts.images,
       userMessage: opts.userMessage,
     });
+    if (failNextSendTurn) {
+      failNextSendTurn = false;
+      throw new Error("provider preflight failed");
+    }
   },
   interrupt(sessionId: string): void {
     interrupts.push(sessionId);

@@ -725,7 +725,16 @@ const HANDLERS: Record<string, RpcHandler> = {
         // 工作树会话在第一次发言时就已经物化过了(这个 sentinel 追问只可能在那一轮
         // 之后出现),所以这里要按 sendTurn 的同一条优先级取 cwd —— 写成 `project.path`
         // 会把这一轮送进用户的**主检出**,而它本该跑在隔离工作树里。
-        await runtimeManager.sendTurn(session, { prompt, cwd: session.worktreePath ?? project.path });
+        //
+        // ⚠️ **与桌面同一条:抛错时把状态放回。** 上面刚置 running,若 sendTurn 抛错而
+        // 不收回,会话被永久钉在 running(所有端都显示"运行中",也再不被 `findFreshByProject`
+        // 复用)。桌面那条路(ipc/claude.ts)同样套了 try/catch。
+        try {
+          await runtimeManager.sendTurn(session, { prompt, cwd: session.worktreePath ?? project.path });
+        } catch (err) {
+          SessionRepo.updateStatus(session.id, "idle");
+          throw err;
+        }
       }
       return { ok: true };
     }

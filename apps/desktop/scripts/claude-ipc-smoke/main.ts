@@ -55,6 +55,7 @@ import {
   rewinds,
   sendTurns,
   setDefaultResolve,
+  setFailNextSendTurn,
   setRewindResult,
   userAnswers,
 } from "./stubs/runtimeManager.js";
@@ -613,6 +614,21 @@ console.log("\n10. 回答问题 —— 普通路 / 关卡片 / sentinel 那条�
   check("跳过的那个(null)不出现在提示里", !prompt.includes("跳过的那个"), prompt);
   eq("状态落成 running", SessionRepo.get(s)?.status, "running");
   check("也把会话交给了运行时(新的一轮要有桥)", bound.includes(s), bound);
+}
+
+{
+  // ★ sentinel 路 sendTurn 抛错 → 状态必须放回 idle,不能把会话永久钉在 running。
+  //   主发送那条路(run==="start"之前)正是为此套了 try/catch;sentinel 这条从前漏了。
+  fresh();
+  const s = mkSession(nid("s"));
+  setFailNextSendTurn();
+  const threw = await catching(IPC.CLAUDE_RESPOND_QUESTION, {
+    sessionId: s,
+    requestId: "sentinel_fail",
+    answers: { 问题: "答案" },
+  });
+  check("sendTurn 抛错时如实抛出去(不静默吞)", threw.includes("provider preflight failed"), threw);
+  eq("★ 抛错后会话状态放回 idle(不再钉死在 running)", SessionRepo.get(s)?.status, "idle");
 }
 
 {

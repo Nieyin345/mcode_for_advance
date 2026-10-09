@@ -418,10 +418,20 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       // Worktree sessions are always materialized by the time a sentinel
       // follow-up exists (the first turn created it) — route the cwd the
       // same way sendTurn does so the answer lands in the right checkout.
-      await runtimeManager.sendTurn(session, {
-        prompt,
-        cwd: session.worktreePath ?? project.path,
-      });
+      //
+      // ⚠️ **必须与主发送那条路一样把状态放回。** 上面刚把 status 置成 running,若
+      // provider 预检在这一步抛错而没人收尾,会话就被**永久钉在 running**:
+      // `findFreshByProject` 不会再复用它、所有端都显示"运行中"。主发送那条路正是
+      // 为此套了 try/catch(见下面 `sendTurn` 的 catch),这里从前漏了。
+      try {
+        await runtimeManager.sendTurn(session, {
+          prompt,
+          cwd: session.worktreePath ?? project.path,
+        });
+      } catch (err) {
+        SessionRepo.updateStatus(session.id, "idle");
+        throw err;
+      }
       return;
     }
 
