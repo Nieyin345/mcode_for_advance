@@ -9,9 +9,14 @@
  *   - `settings.templates.kind.*` —— `templateLabels.ts` 的类目名映射(活的);
  *   - `templates.section.all` —— 挂「整个类目」时 chip 上的字(活的);
  *   - `templates.ctx.openExternal` —— `FileViewer` 顶栏那条出口;
- *   - `templates.preview.*Failed` / `rendering` / `emptyFile` —— office 预览组件
- *     (`DocxPreview` / `PptxPreview` / `XlsxPreview`)还在用,它们同时服务
- *     统一资料库里的条目。
+ *   - `templates.preview.emptyFile` —— **`library/FileViewer` 与 `library/FilePreview`
+ *     在用**(空文件要说「是空的」,不然一片白与"坏了"分不清)。这不是孤儿,别跟着下面
+ *     那几条一起删。
+ *   - `templates.preview.*Failed` / `rendering` —— 只被 `templates/DocxPreview` /
+ *     `PptxPreview` / `XlsxPreview` 三个组件引用,而**那三个组件自 2026-09-28
+ *     (`78625786`) 起已成孤儿**:office 预览整体改走 `OnlyOfficeEditorPane`,资料库里
+ *     那三个本地渲染器不再被任何地方挂载。这几条**随组件一起**才该删(组件留着,它们
+ *     就还用着,不算孤儿)。
  */
 export const zh = {
   "settings.templates.kind.ppt": "PPT",
