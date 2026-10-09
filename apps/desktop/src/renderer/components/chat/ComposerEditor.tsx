@@ -595,6 +595,12 @@ export const ComposerEditor = forwardRef<
         editor.state.doc.descendants((node) => {
           if (node.isText) {
             offset += node.text?.length ?? 0;
+          } else if (node.type.name === "hardBreak") {
+            // ⚠️ **硬换行也要 +1**(序列化成 `"\n"`,与 `textWithSkills` / `caretOffset` /
+            // `textOffsetToPos` 一致)。少了这一支,pill 的 range 会比真实 offset 少算
+            // 每个前置换行一个字符,`inPill()` 于是判空 —— 徽章后面那个 `/` 会被当成
+            // 斜杠触发,已插入的 pill 上又弹出 SlashCommandPicker。
+            offset += 1;
           } else if (node.type.name === "skill") {
             const len = `/${node.attrs.label ?? node.attrs.id ?? ""}`.length;
             ranges.push([offset, offset + len]);
