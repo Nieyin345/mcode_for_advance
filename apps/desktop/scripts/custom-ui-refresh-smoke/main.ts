@@ -3,6 +3,10 @@ import { validateCustomUiWrite } from '@main/customUi/configValidation.js';
 import { invokeAppTool } from '@main/appControl/tools.js';
 import { clearRpcHandlers, recordRpcHandler } from '@main/appControl/registry.js';
 import { useCustomUiStore as store } from '@renderer/stores/customUiStore.js';
+// `@renderer/stores/toastStore.js` 在打包时被 alias 到本目录的 stubs/toast.ts;这里用相对
+// 路径直接引同一个文件 —— 保证拿到的是**同一个模块实例**的记录数组,而 tsc(按真实源码
+// 解析 @renderer)不会因为桩才有这两个导出而报 TS2305。
+import { __toasts, resetToasts } from './stubs/toast.js';
 import { CUSTOM_UI_SETTING_KEY as KEY, CustomUiConfigSchema } from '@contracts/customUi';
 import { isMobileAccessibleSettingKey } from '@contracts/ipc/settingsSync';
 import { state } from './stubs/api.js';
@@ -85,5 +89,17 @@ await regression('repeated save of the same object: first failure cannot hide th
   assert.equal(state.value,JSON.stringify(after));assert.deepEqual(store.getState().config,after);
 });
 state.write=null;
+await regression('toolbar collapse persist failure surfaces a toast, not a silent revert',async()=>{
+  // `setToolbarCollapsed` 是"先乐观改内存、再落盘":落盘失败只打日志的话,界面上工具栏
+  // 已经收起了 —— 用户看到"改动生效了",直到重启才静默弹回。这里桩注入写入失败,断言
+  // 必须弹出一条 toast(body 是原错误)。撤掉修复 → __toasts 为空,断言真红。
+  resetToasts();
+  state.write=()=>Promise.reject(new Error('toolbar persist failed'));
+  store.getState().setToolbarCollapsed(true);
+  await new Promise(r=>setTimeout(r,10));
+  state.write=null;
+  assert.equal(store.getState().toolbarCollapsed,true,'optimistic memory flip stays in-session');
+  assert.ok(__toasts.some(t=>t.body?.includes('toolbar persist failed')),'failed toolbar persist must toast (was: silent revert on restart)');
+});
 if(regressionFailures)process.exitCode=1;
 clearRpcHandlers();setSink(null);if(!regressionFailures)console.log('Custom UI refresh: approval, live panel, invalid data, removal, read/write race, persistence failure and mobile boundary PASS');

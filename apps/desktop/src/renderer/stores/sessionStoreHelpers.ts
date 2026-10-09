@@ -19,6 +19,7 @@ import { isValidSnapshot } from "@renderer/lib/contextWindow.js";
 import { getLastCursor, type NavEntry } from "@renderer/lib/editorNav.js";
 import type { CustomModelPublic } from "@contracts/customModel";
 import { api } from "@renderer/lib/api.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 import { normWorktreeKey } from "@renderer/lib/worktree.js";
 import { translate } from "@renderer/lib/i18n/core.js";
 import { createProviderHealthRequestGate } from "@renderer/lib/providerHealthRequestGate.js";
@@ -1363,10 +1364,18 @@ export function rememberedEntryOf(
 
 /** Persist the composer's current provider/model choice — the "next session"
  *  defaults — so the next launch pre-selects the same SDK + model the user
- *  last picked (setProvider / setModel / setCustomModel call this). Fire-and-
- *  forget, like the other setting.set callers. */
+ *  last picked (setProvider / setModel / setCustomModel / setEffort /
+ *  setPermissionMode call this).
+ *
+ *  **落盘失败要说出来**,不是只记日志。这是一条**用户显式改的偏好**,而且中招的正是同族
+ *  setter 里已被 {@link sessionStore} 补过的那一批(`setModel` / `setProvider` / `setEffort`
+ *  / `setPermissionMode`):它们**马上**又调一次 `persistComposerSelection`,所以哪怕
+ *  `api.session.updateSettings` 那条路接了 `reportSettingSaveFailed`,这一次写照样只
+ *  `console.error` —— 用户看到的是"选了就生效了",直到重启才**静默**弹回上一个会话的
+ *  模型 / 引擎(数据根磁盘写满 / 被占用 / sql.js 导出失败都会走到)。走共享出口
+ *  (`store.toast.settingSaveFailed`),与 sessionStore / uiPrefs 同一句。 */
 export function persistComposerSelection(
-  s: Pick<SessionState, "providerId" | "model" | "customModelId" | "lastModelByProvider">,
+  s: Pick<SessionState, "locale" | "providerId" | "model" | "customModelId" | "lastModelByProvider">,
 ): void {
   void api.setting
     .set({
@@ -1380,6 +1389,11 @@ export function persistComposerSelection(
     })
     .catch((err) => {
       console.error("setting.set(composerModel) failed:", err);
+      useToastStore.getState().push({
+        kind: "error",
+        title: translate(s.locale, "store.toast.settingSaveFailed"),
+        body: err instanceof Error ? err.message : String(err),
+      });
     });
 }
 

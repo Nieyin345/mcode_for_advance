@@ -279,9 +279,19 @@ export const useCustomUiStore = create<CustomUiState>((set, get) => ({
 
   toolbarCollapsed: false,
   setToolbarCollapsed: (collapsed) => {
+    // 先乐观改内存、再落盘(与 `save` 同一套)。**落盘失败要说出来** —— 从前这里只
+    // `console.error`:界面上工具栏已经收起了,用户看到的是"改动生效了",直到重启才
+    // **静默**弹回收起前的样子(数据根磁盘写满 / 被占用 / sql.js 导出失败都会走到)。
+    // 与 sessionStore / uiPrefs 那两批外观 setter 走同一个共享出口
+    // (`store.toast.settingSaveFailed`,toastStore 按标题去重)。
     set({ toolbarCollapsed: collapsed });
     void api.setting.set({ key: CUSTOM_UI_TOOLBAR_COLLAPSED_KEY, value: collapsed ? "1" : "0" }).catch((err: unknown) => {
       console.error("setting.set(customUi.toolbar.collapsed) failed:", err);
+      useToastStore.getState().push({
+        kind: "error",
+        title: translate(useSessionStore.getState().locale, "store.toast.settingSaveFailed"),
+        body: err instanceof Error ? err.message : String(err),
+      });
     });
   },
 }));

@@ -1052,6 +1052,11 @@ console.log("\n[15i] 用户显式改的偏好落盘失败,一票 setter 都要�
     ["accentColor", () => st.setAccentColor("4 5 6")],
     ["editorTheme", () => st.setEditorTheme("light", "mcode-light")],
     ["autoArchiveConfig", () => st.setAutoArchiveConfig({ enabled: true, defaultDays: 7, overrides: {} } as never)],
+    // `setModel` 走的正是同族那一批:先乐观改、再 `api.session.updateSettings`,**同时又**
+    // 调一次 `persistComposerSelection` 写 `ui.composerModel`(下一会话默认)。后一条路从前
+    // 只 `console.error` —— 落盘失败界面照旧是新模型,重启才静默弹回旧值。这里由它代表
+    // "composerModel 落盘失败也要报"。
+    ["composerModel", async () => { st.setModel("smoke-model"); }],
   ];
   const silent: string[] = [];
   for (const [name, run] of cases) {
