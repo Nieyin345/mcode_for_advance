@@ -27,6 +27,7 @@ import { MobileLoginCard } from "@renderer/components/mobile/MobileLoginCard.js"
 import type { PairingStartResult, PairedDevice } from "@contracts/mobile";
 import type { RelayStatus } from "@contracts/ipc";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 
 /** Self-contained trigger button + dialog, rendered in the left sidebar's quick
  *  actions (below 搜索). The trigger matches the search/new-session button
@@ -251,10 +252,18 @@ function MobileConnectPanel({ open }: { open: boolean }) {
         await api.mobile.revokeDevice({ deviceId });
         await refreshDevices();
       } catch (err) {
+        // **失败要说出来。** 这是用户主动踢一台手机(安全动作),而 `mobile.revokeDevice`
+        // 会抛(zod 失败 / 主进程 IO 失败)—— 从前只 `console.error`,于是那台手机
+        // 还连着、用户却以为断了。走 toast(本处没有别的错误位)。
         console.error("revoke failed", err);
+        useToastStore.getState().push({
+          kind: "error",
+          title: t("layout.revokeDeviceFailed"),
+          body: err instanceof Error ? err.message : String(err),
+        });
       }
     },
-    [refreshDevices],
+    [refreshDevices, t],
   );
 
   const serverDown = status && !status.running;

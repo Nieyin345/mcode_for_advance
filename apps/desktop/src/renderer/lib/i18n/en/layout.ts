@@ -249,6 +249,7 @@ export const en = {
   "layout.noDevices": "No devices paired yet",
   "layout.pairedAt": "Paired {time}",
   "layout.revokeDevice": "Disconnect this device",
+  "layout.revokeDeviceFailed": "Could not disconnect the device",
   "layout.refreshDevices": "Refresh device list",
   "layout.relayAutoStart": "Start remote access automatically on launch",
   "layout.relayAutoStartOn": "On",

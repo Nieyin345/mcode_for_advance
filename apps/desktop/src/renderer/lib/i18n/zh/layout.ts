@@ -259,6 +259,9 @@ export const zh = {
   "layout.noDevices": "还没有设备配对",
   "layout.pairedAt": "配对于 {time}",
   "layout.revokeDevice": "断开该设备",
+  /* 断开设备失败要说出来:这是用户主动踢一台手机(安全动作),失败了却静默的话
+     那台手机还连着,而用户以为断了。 */
+  "layout.revokeDeviceFailed": "断开设备失败",
   "layout.refreshDevices": "刷新设备列表",
   "layout.relayAutoStart": "启动时自动开启远程访问",
   "layout.relayAutoStartOn": "开启",

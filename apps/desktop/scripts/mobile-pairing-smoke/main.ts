@@ -1167,6 +1167,25 @@ console.log("\n账号密码登录");
 }
 eq("收尾:设备清单空了", (await pairingManager.listDevices()).length, 0);
 
+// —— 渲染端:断开设备失败必须报出来(源码不变量,组件在无头下跑不出来)——
+// `MobileConnectDialog.handleRevoke` 从前只 `console.error`,而 `mobile.revokeDevice`
+// 会抛(zod 失败 / 主进程 IO 失败)—— 用户点了「断开该设备」,那台手机还连着、屏幕上一个
+// 字都没有,而这是个安全动作(他以为踢掉了)。判据钉在源码上:失败分支必须把错报出来。
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const src = readFileSync(join(process.cwd(), "src/renderer/components/layout/MobileConnectDialog.tsx"), "utf8");
+  const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  // handleRevoke 体内必须有一段 `catch (...) { ... useToastStore...push(...) }`
+  const revoke = code.slice(code.indexOf("handleRevoke"));
+  const body = revoke.slice(0, revoke.indexOf("\n  );"));
+  check(
+    "★ 断开设备失败会报出来(不是只 console.error)",
+    /catch[^)]*\)\s*\{[\s\S]*?useToastStore[\s\S]*?push\(/.test(body) && body.includes("layout.revokeDeviceFailed"),
+    body.slice(0, 300),
+  );
+}
+
 // —— 全局泄露扫描:除"配对成功那一发"之外,**一个**令牌原文都不许出现 ——
 // 只逐条看"这个响应"是不够的:令牌登记在这次会话里,漏出去的那条未必是正在看的那条。
 // 所以扫的是 `req()` 攒下来的**全部**响应。
