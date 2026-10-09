@@ -111,6 +111,17 @@ export type McpAudience = "local" | "public";
 export interface McpToolHost {
   listTools(audience?: McpAudience): McpToolInfo[];
   /**
+   * 一个**已合并/改名**的工具名对应的新用法(`library_search` → `library_query（action=search）`),
+   * 没有就给 undefined。
+   *
+   * 为什么放在这里、而不是等 `callTool` 自己回:`handleCall` 在调 `callTool` **之前** 已经
+   * 把"表里没有的名字"用 `-32602 unknown tool` 挡掉了(见下面)。于是只写在 `callTool` 里
+   * 的那句迁移提示**永远到不了** —— 客户端缓存的旧工具名,拿到的是泛泛的 "unknown tool",
+   * 而不是"它被合并成了谁"。这条路是公网合成会话唯一的调用入口,所以必须在这层就问到。
+   * 可选:没有这一项(如冒烟里的简单桩)就退回原来的 "unknown tool"。
+   */
+  migrationHint?(name: string, audience?: McpAudience): string | undefined;
+  /**
    * 调用一个工具。
    *
    * `ctx.sessionId` 可能是 null(扩展没带会话头)—— 那时**由宿主决定怎么办**:
@@ -344,8 +355,11 @@ async function handleCall(
     return;
   }
   if (!host.listTools(opts.audience).some((tool) => tool.name === name)) {
-    // 协议层错误:这个名字根本不在表里(不是"工具跑失败了")。
-    rpcError(res, body.id, -32602, `unknown tool: ${name}`);
+    // 协议层错误:这个名字根本不在表里(不是"工具跑失败了")。但先问宿主这是不是一个
+    // **已合并的旧名** —— 客户端缓存了旧 tools/list 时,拿到"它被合并成了谁"远比
+    // 一句泛泛的 unknown tool 有用(见 McpToolHost.migrationHint)。
+    const hint = host.migrationHint?.(name, opts.audience);
+    rpcError(res, body.id, -32602, hint ? `工具已合并，请刷新工具列表并使用 ${hint}` : `unknown tool: ${name}`);
     return;
   }
 

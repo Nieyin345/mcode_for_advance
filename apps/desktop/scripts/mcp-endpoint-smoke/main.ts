@@ -1531,7 +1531,12 @@ check("…而且真的写出来了", existsSync(path.join(CWD, "bash-inside.txt"
     for (const name of removed) {
       check(`compact absent ${name}`, !host.listTools("public").some(t => t.name === name));
       check(`compact rejects legacy call ${name}`, (await invoke(name)).isError === true);
+      // ★ 光"拒了"不够 —— 客户端缓存了旧 tools/list 时,得告诉他**合并成了谁**。
+      //   而这句提示过去只写在 `callTool` 里,`handleCall` 在它之前就用 `-32602 unknown tool`
+      //   挡掉了 → 永远到不了。现在走 `host.migrationHint`,由 endpoint 在拒绝前问一句。
+      check(`★ 旧名 ${name} 能问出迁移提示`, (host.migrationHint?.(name, "public") ?? "").includes("→") || (host.migrationHint?.(name, "public") ?? "").includes("（"), host.migrationHint?.(name, "public"));
     }
+    check("★ migrationHint 对现役工具名返回 undefined(不是所有名字都给提示)", host.migrationHint?.("agent_skill", "public") === undefined, host.migrationHint?.("agent_skill", "public"));
     check("desktop batch and skill tools retained", host.listTools().some(t => t.name === "agent_read_files") && host.listTools().some(t => t.name === "agent_skill_list"));
     for (const name of ["agent_skill", "library_query", "agent_read_file"]) {
       check(`compact readonly annotation ${name}`, host.listTools("public").find(t => t.name === name)?.annotations?.readOnlyHint === true);
@@ -1917,6 +1922,25 @@ const schemasWithoutText = allTools
   })
   .map((t) => t.name);
 eq("每个 outputSchema 的 required 里都有 text", schemasWithoutText, []);
+
+// ★ **声明了 outputSchema,就不能让"分支返回"被它判成失败。** 同一个工具的
+//   不同分支返回**不同形状**:`agent_process_read` 省略 `process_id` 时是"列进程"
+//   (只回 text),`agent_skill` 的 list 分支多给 `has_more`/`next_offset`。若 schema 把
+//   声明字段全钉进 `required`、又置 `additionalProperties:false`(zodToJsonSchema 的默认),
+//   这两支都会被严格客户端判成调用失败 —— 而那恰恰是它是**成功**返回。
+//   所以判据:每个 outputSchema 的 `required` **只有 text**、且 `additionalProperties` 不为
+//   false。真返回里的字段仍由 properties 描述(模型据此读),只是不钉死"这一支必须有"。
+const badRequired = allTools
+  .filter((t) => {
+    const req = (t.outputSchema as { required?: unknown[] }).required;
+    return !Array.isArray(req) || req.length !== 1 || req[0] !== "text";
+  })
+  .map((t) => t.name);
+eq("★ 每个 outputSchema 的 required 只有 text(不钉死分支专属字段)", badRequired, []);
+const closedSchemas = allTools
+  .filter((t) => (t.outputSchema as { additionalProperties?: unknown }).additionalProperties === false)
+  .map((t) => t.name);
+eq("★ 每个 outputSchema 都不关闭 additionalProperties(不然多返回的字段被判失败)", closedSchemas, []);
 
 const processOutputSchema = host.listTools().find((t) => t.name === "agent_process_read")?.outputSchema;
 check(

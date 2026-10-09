@@ -240,17 +240,23 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
     if (!spec.outputSchema) return DEFAULT_TEXT_OUTPUT_SHAPE;
     const shape = shapeToJsonSchema(spec.outputSchema);
     const props = (shape.properties ?? {}) as Record<string, unknown>;
-    const required = Array.isArray(shape.required) ? (shape.required as string[]) : [];
     return {
       ...shape,
       properties: {
         ...props,
         // `callTool` 总是把文本投影塞进 `text` —— schema 里不能认它的话，客户端会因
-        // "多出一个未声明的字段"而拒绝（取决于校验严格程度）。所以补上，并**列进
-        // required**（它确实总会给）。
+        // "多出一个未声明的字段"而拒绝（取决于校验严格程度）。所以补上。
         text: { type: "string", description: "工具返回的文本内容（总会给）" },
       },
-      required: required.includes("text") ? required : [...required, "text"],
+      // ⚠️ **只有 `text` 进 required，且放开 `additionalProperties`。** 一个工具的不同
+      // 分支返回**不同形状**（`agent_process_read` 省略 `process_id` 时是"列进程"、
+      // 不是一次读取结果；`agent_skill` 的 list 分支另给 `has_more`/`next_offset`）。
+      // 而 `zodToJsonSchema` 会把声明里的字段全列进 `required`、并置
+      // `additionalProperties:false` —— 于是那些分支要么缺必填字段、要么多出未声明字段，
+      // 严格客户端直接判这次调用失败。声明里的具名属性仍描述**类型**（模型据此读字段），
+      // 但"哪些字段这一支真的有"由返回值决定，不由 schema 钉死。
+      required: ["text"],
+      additionalProperties: true,
     };
   };
   let listed: McpToolInfo[] | null = null;
@@ -285,10 +291,18 @@ export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
       return dynamic.length ? [...base, ...dynamic.map(toInfo)] : base;
     },
 
+    /** 旧(已合并)工具名 → 新用法。`handleCall` 在 `callTool` 之前就把表里没有的名字
+     *  挡掉了,所以迁移提示必须在那一层问得到(见 `McpToolHost.migrationHint`)。 */
+    migrationHint(name): string | undefined {
+      return Object.hasOwn(PUBLIC_TOOL_MIGRATIONS, name) ? PUBLIC_TOOL_MIGRATIONS[name] : undefined;
+    },
+
     async callTool(name, args, ctx): Promise<McpToolCallResult> {
       const table = ctx.audience === "public" ? byNamePublic : byName;
       const spec = table.get(name) ?? (ctx.audience === "public" ? undefined : delegateSpecs().find((s) => s.name === name));
-      if (!spec) return { text: ctx.audience === "public" && Object.hasOwn(PUBLIC_TOOL_MIGRATIONS, name) ? `工具已合并，请刷新工具列表并使用 ${PUBLIC_TOOL_MIGRATIONS[name]}` : `没有这个工具:${name}`, isError: true };
+      // 到这儿还没有:要么名字根本不存在(`handleCall` 已用协议错挡过一遍,这里只有
+      // 绕开 `handleCall` 的直接调用者会撞到),要么公网会话要一个只在 local 表的工具。
+      if (!spec) return { text: `没有这个工具:${name}`, isError: true };
 
       const sessionId = ctx.sessionId;
       if (!sessionId) return { text: NO_SESSION_TEXT, isError: true };
