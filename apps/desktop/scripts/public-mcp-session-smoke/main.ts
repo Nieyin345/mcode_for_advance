@@ -12,6 +12,7 @@ import {
   setPublicMcpEnabled,
   startPublicMcpTunnel,
   setPublicMcpTunnelConfig,
+  configurePublicMcpRuntime,
 } from "../../src/main/providers/bridge/publicMcpSession.js";
 import { resetRepositories, SessionRepo, SettingRepo } from "./stubs/repositories.js";
 import { extrasForTest, resetServer, serverCounts, setStartFailure, storeForTest } from "./stubs/publicMcpServer.js";
@@ -71,6 +72,22 @@ equal("link session is reused", store.linkSessionId("p-a"), sa);
 equal("link session belongs to its project", SessionRepo.get(sa)?.projectId, "p-a");
 equal("link session title names the project", SessionRepo.get(sb)?.title, "ChatGPT 直连 · Beta");
 equal("link session is bypass", SessionRepo.get(sa)?.permissionMode, "bypassPermissions");
+// ★ 「模式不可覆盖」这条规矩对**每条**链接都成立(与默认链接 `ensureSyntheticSession` 同一条)。
+//   从前项目链接用一张只增不减的 `armedLinkSessions` 判"钉过没",用户改一次模式后就再也
+//   不钉回去了。判据:注入一个记录调用的运行时,**第二次**取同一链接会话时仍须再钉一次。
+{
+  const pins: string[] = [];
+  configurePublicMcpRuntime({
+    setSessionPermissionMode: (id, mode) => void pins.push(`${id}:${mode}`),
+    bindSession: () => {},
+    broadcastSessionChanged: () => {},
+  });
+  pins.length = 0;
+  store.linkSessionId("p-a"); // 第一次(已存在):必须钉
+  store.linkSessionId("p-a"); // 第二次:仍必须钉(不可覆盖 = 每次都钉)
+  equal("★ 每次取链接会话都重新钉 bypass(不可覆盖)", pins.filter((x) => x === `${sa}:bypassPermissions`).length, 2);
+  configurePublicMcpRuntime(null);
+}
 equal("sandbox root of link A", publicMcpSandboxRoot(sa), "/tmp/alpha");
 equal("sandbox root of link B", publicMcpSandboxRoot(sb), "/tmp/beta");
 equal("unrelated session has no sandbox", publicMcpSandboxRoot("sess-other"), null);

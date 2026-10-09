@@ -347,9 +347,6 @@ function writeProjectLinks(links: StoredProjectLink[]): void {
   SettingRepo.set(PUBLIC_MCP_PROJECT_LINKS_SETTING_KEY, JSON.stringify(links));
 }
 
-/** 本进程里已经把权限模式钉成 bypass 的会话 —— 每次请求都来一遍没必要。 */
-const armedLinkSessions = new Set<string>();
-
 /**
  * 某条项目链接的合成会话:有就用(并确认还属于这个项目),没有/被删了就现建一条
  * 「ChatGPT 直连 · 项目名」。项目已经不在 → null(请求回 404)。
@@ -365,16 +362,17 @@ function ensureLinkSession(projectId: string): string | null {
   if (!link) return null;
   const existing = link.sessionId ? SessionRepo.get(link.sessionId) : null;
   if (existing && existing.projectId === projectId) {
-    if (!armedLinkSessions.has(existing.id)) {
-      runtime?.setSessionPermissionMode(existing.id, "bypassPermissions");
-      armedLinkSessions.add(existing.id);
-    }
+    // ⚠️ **每次都重新钉**(与默认链接 `ensureSyntheticSession` 一字不差的规矩)。
+    // 从前这里用一个只增不减的 `armedLinkSessions` 判"钉过没",于是用户在界面上把这条
+    // 链接会话的权限模式改掉后,下一次公网调用**不会**再钉回去 —— 文件头承诺的"模式不可
+    // 覆盖"就漏了,而默认链接那条每次都钉。两条路本就是同一条规矩;每次钉一次的代价只是一次
+    // 内存写,不值得为此维护一张会只涨不落的会话表。
+    runtime?.setSessionPermissionMode(existing.id, "bypassPermissions");
     return existing.id;
   }
   const id = createSyntheticSession(projectId, `${PUBLIC_MCP_SESSION_TITLE} · ${project.name}`);
   link.sessionId = id;
   writeProjectLinks(links);
-  armedLinkSessions.add(id);
   return id;
 }
 
