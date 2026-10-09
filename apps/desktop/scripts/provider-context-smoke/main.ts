@@ -149,6 +149,14 @@ check(
   "…且按内容指纹去重（内容没变不重复灌）",
   runtime.includes("envPromptFingerprint") && runtime.includes("lastEnvFingerprint"),
 );
+// 指纹必须**等回合真起来了才记**。记在算的时候(从前是),引擎没起成(配置/桥/引擎抛错,
+// `handle === null`)那一轮一个字都没发出去,指纹却已经写进表 —— 用户改好配置重试时
+// `envPromptFingerprint(built) === lastEnvFingerprint` 为真,**环境块再也不注入**,而模型
+// 不会报错,只是从此不知道有哪些项目、库在哪。判据:写表只出现在 `handle !== null` 那一支。
+check(
+  "环境块指纹等到回合真起来才提交（失败那一轮不吞注入）",
+  /handle !== null && envFingerprintToCommit !== undefined[\s\S]{0,200}lastEnvFingerprint\.set\(/.test(runtime),
+);
 check("普通聊天记忆走 memorySectionFrom + scopedMemorySnapshot", runtime.includes("memorySectionFrom") && runtime.includes("scopedMemorySnapshot"));
 
 check("工作流控制的轮次不叠加聊天自动记忆", runtime.includes("input.memoryManagedByWorkflow") && runtime.includes("automaticMemoryForTurn"));

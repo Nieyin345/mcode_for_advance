@@ -1356,12 +1356,21 @@ class RuntimeManager {
     // ⚠️ 注意"下次"的粒度：**同一会话内**注入过的那份已经留在历史里了，刷新不掉。
     // "删了文档它就不知道"只在**新会话**成立(见 `@contracts/provider` 的 envPrompt 注释)。
     let envPrompt: string | undefined;
+    // 指纹**先算下来、等回合真的起来了才记**(见下面 `handle !== null` 那一处)。
+    // ⚠️ 记在这里就是同一个坑的另一处:引擎没起成(配置/桥/引擎哪一步抛错)时这一轮
+    // 一个字都没发出去,指纹却已经写进表 —— 用户改好配置、点重试,第二轮
+    // `envPromptFingerprint(built) === lastEnvFingerprint` 为真,**环境块再也不注入**。
+    // 判据必须是"这一轮真的发出去了",不是"这一轮试过要发"。
+    let envFingerprintToCommit: string | undefined;
     if (session.kind === "chat") {
       try {
         const built = buildEnvPrompt(this.cwdFor(session.id));
-        if (built && envPromptFingerprint(built) !== this.lastEnvFingerprint.get(session.id)) {
-          envPrompt = built;
-          this.lastEnvFingerprint.set(session.id, envPromptFingerprint(built));
+        if (built) {
+          const fingerprint = envPromptFingerprint(built);
+          if (fingerprint !== this.lastEnvFingerprint.get(session.id)) {
+            envPrompt = built;
+            envFingerprintToCommit = fingerprint;
+          }
         }
       } catch (err) {
         log.warn(`[env] 构建环境块失败，本轮不注入: ${(err as Error).message}`);
@@ -1451,6 +1460,13 @@ class RuntimeManager {
       // 只确认本轮 peek 时读到的前缀。startTurn 尚未返回时新来的信
       // 不在 req.prompt 里,绝不能用“清空整份收件箱”把它也删掉。
       if (mail.length > 0) clearAgentMail(session.id, mailBatch.through);
+    }
+    // 环境块的指纹**也等回合真的起来了才记**(见上面 `envFingerprintToCommit` 那段)。
+    // `handle === null` 表示这一步一个字都没发出去(引擎侧拒绝起轮);那时记下指纹
+    // 会让"改好配置、重试"这一轮的提示词里再也没有环境块,而模型不会报错 —— 它只是
+    // 从此不知道有哪些项目、库在哪。
+    if (handle !== null && envFingerprintToCommit !== undefined) {
+      this.lastEnvFingerprint.set(session.id, envFingerprintToCommit);
     }
     // 回退重发的输入快照：req 里的最终形态（prompt 已拼好 backflow / 工作流
     // 片段）。回合失败要原样重发，就从这里取。
