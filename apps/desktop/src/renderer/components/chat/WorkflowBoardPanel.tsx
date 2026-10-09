@@ -158,32 +158,32 @@ export function WorkflowBoardPanel() {
   /** 展开了哪一张卡 —— **一次只开一张**(手风琴):展开的卡会把列表推下去,同时展开几张
    *  的话"我刚点的是哪张"又要靠找。 */
   const [openId, setOpenId] = useState<string | null>(null);
-  /** 选中一条会话（子对话 / 节点会话都走它）—— 见下面 `onPick` 那段。 */
+  /** 选中一条会话（子对话 / 节点会话都走它）—— 见下面 `openNode` 那段。 */
   const selectSideChat = useSessionStore((s) => s.selectSideChat);
 
   /**
-   * **点流程图上一格 = 同时打开下面那条对话**（2026-09-21，用户要求）。
+   * **打开图上某一格 = 高亮那一格 + 切到它那条会话。** 三个入口(点格子、顶部那条
+   * 「停在这一步」、右键「从这一步开始跑」)说的是同一件事,所以只有这一份实现。
    *
-   * ## 为什么不是"只选中"
+   * ⚠️ **两件都要做**(2026-09-21 用户要求):`setOpenId` 让图上那一格高亮,`selectSideChat`
+   * 让下半部分切到那条会话。只做后者图上是灰的,分不清点的是哪一格;只做前者(本项目
+   * 换掉步骤卡、下半部分改成对话列表之后就是这一种)——**点下去除了图上一亮什么都不发生**,
+   * 用户得自己在下半部分那条列表里再去把人找出来。`pickNode`(点格子)当初一起改了这两件,
+   * 顶部那条失败提示和右键菜单**漏改了** —— 它们仍然只 `setOpenId`,于是"点开看看"点下去
+   * 没有任何东西打开。
    *
-   * 从前点一格只是把它选中、展开它那张**步骤卡**。而步骤卡已经删了（下面换成了对话
-   * 列表，见那一段注释）—— 所以"选中"不再有受体，点下去什么都不会发生。
+   * `toggle`:点格子那一路再点一下是**收起**(和手风琴一致);顶部提示与右键菜单是"打开某一
+   * 格"的明确指令,重复点不该把它收起来,所以传 `false`。
    *
-   * 图上每一格背后本来就是**一条会话**（`live.nodes[id].nodeSessionId`），而下面那个
-   * 列表正是列它们的。所以点一格最自然的语义就是"**打开这一格的会话**"——
-   * 用户的原话：「可以点击上面的工作流节点就能**同时打开下面的对话窗口**」。
-   *
-   * ⚠️ **选中态和打开会话是两件事，都要做**：`setOpenId` 让图上那一格高亮（看得出
-   * "我现在在看谁"），`selectSideChat` 让下半部分切到那条会话。只做后者的话图上是
-   * 灰的，用户分不清自己点的是哪一格。
-   *
-   * 没跑过的格子**没有会话**（`nodeSessionId` 缺席）—— 那时只选中，不切面板。
+   * 没跑过的格子**没有会话**(`nodeSessionId` 缺席)—— 那时只高亮,不切面板。
    */
-  const pickNode = (nodeId: string): void => {
-    setOpenId((prev) => (prev === nodeId ? null : nodeId));
+  const openNode = (nodeId: string, toggle: boolean): void => {
+    setOpenId((prev) => (toggle && prev === nodeId ? null : nodeId));
     const nodeSessionId = run?.nodes[nodeId]?.nodeSessionId;
     if (nodeSessionId) void selectSideChat(nodeSessionId);
   };
+  /** 点流程图上一格 —— 再点一下收起,所以走 **toggle** 那一档(见 `openNode`)。 */
+  const pickNode = (nodeId: string): void => openNode(nodeId, true);
   /** 库里**还留着会话**的那几步(见 `viewOfStored`)。
    *
    *  看板上半部分的现场跟着进程存活,重启即空 —— 而节点会话是落库的。这一份就是那个
@@ -384,7 +384,7 @@ export function WorkflowBoardPanel() {
           <HaltedBanner
             reason={halted.reason}
             title={run?.nodes[halted.nodeId]?.title || halted.nodeId}
-            onOpen={() => setOpenId(halted.nodeId)}
+            onOpen={() => openNode(halted.nodeId, false)}
           />
         </div>
       )}
@@ -418,7 +418,7 @@ export function WorkflowBoardPanel() {
         runId={continuationRunId}
         sessionId={sessionId}
         onClose={() => setCtxNode(null)}
-        onOpenCard={(nodeId) => setOpenId(nodeId)}
+        onOpenCard={(nodeId) => openNode(nodeId, false)}
       />
     </div>
   );

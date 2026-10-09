@@ -3184,5 +3184,49 @@ console.log("\n保存归并、撤销重做、多入口与标签布局回归");
   const live = { runId: "live-run", sessionId: "owner", workflowId: "graph", startedAt: 3, touchedAt: 3, nodes: {}, order: [] };
   eq("late history cannot override current live execution", boardContinuationRunId(live, [row], "owner", "graph"), "live-run");
 }
+
+// ★ 看板上「打开某一格」这条规则只许有一份实现。`WorkflowBoardPanel` 换掉步骤卡、
+//   下半部分改成对话列表之后，「打开一格」= **高亮那一格 + 切到它那条会话**两件事。
+//   点格子那一路(`pickNode`)一起改了这两件，而**顶部那条「停在这一步」提示**与**右键
+//   「从这一步开始跑」**漏改了 —— 它们仍然只 `setOpenId`，于是点下去除了图上一亮什么都
+//   不发生(用户得自己在下面那条列表里再去把人找出来)。判据钉在**源码**上(组件挂在
+//   workflowLive 的常驻订阅上，无头 SSR 跑不出这次点击)：
+//   ①三个入口都经同一个 helper；②那个 helper 里 `selectSideChat` 那一句必须在。
+{
+  const panel = readFileSync(
+    "src/renderer/components/chat/WorkflowBoardPanel.tsx",
+    "utf8",
+  );
+  // 去注释，免得注释里提到的旧写法造成假绿。
+  const code = panel.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  // ① helper 自己两件都做：先把「切到那条会话」这一步钉住。
+  check(
+    "★ 打开一格的 helper 会 selectSideChat(不只是高亮)",
+    /const openNode[\s\S]{0,400}?selectSideChat\(/.test(code),
+    code.match(/selectSideChat[^\n]*/g),
+  );
+  // ② 三个入口都走它 —— 少改哪个，哪条就红。
+  check(
+    "★ 点流程图一格经 openNode(仍可 toggle 收起)",
+    /onPick=\{pickNode\}/.test(code) && /const pickNode[\s\S]{0,120}?openNode\(nodeId, true\)/.test(code),
+    code.match(/onPick=\{[^}]*\}/g),
+  );
+  check(
+    "★ 顶部「停在这一步」提示经 openNode(从前只 setOpenId，点开没反应)",
+    /onOpen=\{\(\) => openNode\(halted\.nodeId, false\)\}/.test(code),
+    code.match(/onOpen=\{[^}]*\}/g),
+  );
+  check(
+    "★ 右键「从这一步开始跑」经 openNode(同上)",
+    /onOpenCard=\{\(nodeId\) => openNode\(nodeId, false\)\}/.test(code),
+    code.match(/onOpenCard=\{[^}]*\}/g),
+  );
+  // ③ 反向：那两个入口不许再出现裸 `setOpenId`(就是这次的漂移本身)。
+  check(
+    "★ 两个入口不再绕过 helper 直接 setOpenId",
+    !/onOpen=\{\(\) => setOpenId\(/.test(code) && !/onOpenCard=\{\(nodeId\) => setOpenId\(/.test(code),
+    code.match(/setOpenId\([^\n]*/g),
+  );
+}
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures > 0) process.exit(1);
