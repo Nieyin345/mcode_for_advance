@@ -331,6 +331,31 @@ console.log("\n1. 文件 / 目录选择:取消、空、多选");
     await call(IPC.FILE_PICK_IMAGES, {});
     const zh = dialogCalls[0] as { title?: string };
     check("★ 中文界面:同一条变回中文", zh?.title === "选择图片", zh?.title);
+
+    // ★ **界面语言规则只有一份。** `SettingRepo.get(UI_LOCALE_SETTING_KEY) === "en" ? "en" : "zh"`
+    //   曾在 onlyoffice / titleGen / orchestration.library(两处) / mobileRpc 各内联一遍
+    //   (那些副本还没有 DB 未就绪的兜底)。现在都走 `dialogText.uiLocale`。判据钉在源码上:
+    //   那几个文件里不许再出现内联的三元。
+    {
+      const { readFileSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const root = process.cwd();
+      const files = [
+        "src/main/ipc/onlyoffice.ts",
+        "src/main/ipc/titleGen.ts",
+        "src/main/orchestration/library.ts",
+        "src/main/mobile/mobileRpc.ts",
+      ];
+      const inline = files.filter((rel) =>
+        /UI_LOCALE_SETTING_KEY\)\s*===\s*"en"\s*\?\s*"en"\s*:\s*"zh"/.test(readFileSync(join(root, rel), "utf8")),
+      );
+      check("★ 界面语言规则不再内联在多处(统一走 dialogText.uiLocale)", inline.length === 0, inline);
+      // 防空过:确认真源还在(dialogText 里那条就是唯一真源)。
+      check(
+        "对照:dialogText.uiLocale 仍是唯一真源",
+        /UI_LOCALE_SETTING_KEY\)\s*===\s*"en"\s*\?\s*"en"\s*:\s*"zh"/.test(readFileSync(join(root, "src/main/lib/dialogText.ts"), "utf8")),
+      );
+    }
   } finally {
     if (saved === null) SettingRepo.set(UI_LOCALE_SETTING_KEY, "");
     else SettingRepo.set(UI_LOCALE_SETTING_KEY, saved);

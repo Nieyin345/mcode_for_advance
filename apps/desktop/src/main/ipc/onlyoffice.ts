@@ -9,9 +9,8 @@ import {
   OnlyOfficeOpenSchema,
   OnlyOfficeSessionSchema,
   OnlyOfficeSetConfigSchema,
-  UI_LOCALE_SETTING_KEY,
 } from "@contracts/ipc";
-import { SettingRepo } from "@main/store/repositories.js";
+import { uiLocale } from "@main/lib/dialogText.js";
 import {
   closeSession,
   forceSave,
@@ -25,9 +24,9 @@ import { detectLocal } from "@main/onlyoffice/localInstall.js";
 export function registerOnlyOfficeHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC.ONLYOFFICE_OPEN, async (_evt, raw) => {
     const { filePath, mode, deviceType } = OnlyOfficeOpenSchema.parse(raw);
-    // 界面语言跟着 Mcode 走（DS 的 lang 用 BCP-47 前两段就够）
-    const locale = SettingRepo.get(UI_LOCALE_SETTING_KEY);
-    const lang = locale === "en" ? "en" : "zh";
+    // 界面语言跟着 Mcode 走（DS 的 lang 用 BCP-47 前两段就够）。规则只有一份
+    // (`dialogText.uiLocale`,带 DB 未就绪兜底)。
+    const lang = uiLocale();
     return openOnlyOfficeSession(filePath, {
       lang,
       dark: nativeTheme.shouldUseDarkColors,

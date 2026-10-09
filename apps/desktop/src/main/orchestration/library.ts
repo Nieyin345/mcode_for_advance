@@ -1,4 +1,3 @@
-import { UI_LOCALE_SETTING_KEY } from "@contracts/ipc";
 /**
  * 工作流库 —— **内置默认版 + 用户覆盖** 合并之后的那一层。
  *
@@ -29,6 +28,7 @@ import { makeWorkflowId, uniqueWorkflowName } from "@contracts/workflow";
 import type { NodeTypeManifest } from "@contracts/nodeType";
 import { parseTriggerSpec, WORKFLOW_TRIGGER_OF_TRIGGER_KIND } from "@contracts/nodeType";
 import { SettingRepo, WorkflowRepo } from "@main/store/repositories.js";
+import { uiLocale } from "@main/lib/dialogText.js";
 import { BUILTIN_WORKFLOWS } from "./builtins.js";
 import { loadNodeTypes } from "./nodeTypes.js";
 import { workflowSaveIsStale, workflowSaveVersion } from "./workflowSaveVersion.js";
@@ -275,7 +275,7 @@ export async function saveWorkflow(
   //  - **类型认不出来不算硬错误**(见 `@contracts/workflow` 文件头):存盘这一关走
   //    `unknownTypeSeverity: "warning"`,分享来的工作流照样能存能看。import 是另一条
   //    门(那边默认 error)—— 环、参数、引用这些**硬错误**两处都拦。
-  const report = validateWorkflowDoc(doc, { types, unknownTypeSeverity: "warning", locale: SettingRepo.get(UI_LOCALE_SETTING_KEY) === "en" ? "en" : "zh" });
+  const report = validateWorkflowDoc(doc, { types, unknownTypeSeverity: "warning", locale: uiLocale() });
   if (!report.ok) {
     const first = report.errors[0];
     return { ok: false, error: first ? first.message : "校验未通过" };
@@ -493,7 +493,7 @@ export async function importWorkflowInto(
   // mcode.trigger,会把一张正确的事件自动化误判成「没有触发器」。
   // 缺失的第三方类型仍按分享语义给 warning,与 saveWorkflow 同一档。
   const types = new Map((await loadNodeTypes()).entries.map((entry) => [entry.id, entry.manifest]));
-  const parsed = parseWorkflowText(text, { types, unknownTypeSeverity: "warning", locale: SettingRepo.get(UI_LOCALE_SETTING_KEY) === "en" ? "en" : "zh" });
+  const parsed = parseWorkflowText(text, { types, unknownTypeSeverity: "warning", locale: uiLocale() });
   if (!parsed.ok) {
     return { ok: false, errors: parsed.report.errors.map((e) => e.message), warnings: [] };
   }

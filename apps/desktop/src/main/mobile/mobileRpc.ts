@@ -68,7 +68,6 @@ import {
   ProviderCommandsSchema,
   OnlyOfficeOpenSchema,
   OnlyOfficeSessionSchema,
-  UI_LOCALE_SETTING_KEY,
 } from "@contracts/ipc";
 import { nativeTheme } from "electron";
 import type {
@@ -81,6 +80,7 @@ import { SessionRepo, ProjectRepo, MessageRepo, SettingRepo } from "@main/store/
 import { probeProviderHealth, providerRegistry } from "@main/providers/registry.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { log } from "@main/lib/logger.js";
+import { uiLocale } from "@main/lib/dialogText.js";
 import {
   broadcastProjectsChanged,
   broadcastSessionChanged,
@@ -285,9 +285,9 @@ const HANDLERS: Record<string, RpcHandler> = {
   // transport deliberately never exposes forceSave or write permissions.
   "onlyoffice:open": async (raw) => {
     const input = OnlyOfficeOpenSchema.parse(raw);
-    const locale = SettingRepo.get(UI_LOCALE_SETTING_KEY);
+    // 界面语言规则只有一份(`dialogText.uiLocale`,带 DB 未就绪兜底)。
     return openOnlyOfficeSession(input.filePath, {
-      lang: locale === "en" ? "en" : "zh",
+      lang: uiLocale(),
       dark: nativeTheme.shouldUseDarkColors,
       userName: "Mcode",
       mode: "view",

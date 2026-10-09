@@ -26,7 +26,6 @@ import {
   IPC,
   UI_TITLE_GEN_ENABLED_SETTING_KEY,
   UI_TITLE_GEN_MODEL_SETTING_KEY,
-  UI_LOCALE_SETTING_KEY,
   UI_TITLE_GEN_PROMPT_SETTING_KEY,
   UI_TITLE_GEN_MAX_LEN_SETTING_KEY,
   UI_TITLE_GEN_LANG_SETTING_KEY,
@@ -39,6 +38,7 @@ import type { Session } from "@contracts/session";
 import { SessionRepo, SettingRepo } from "@main/store/repositories.js";
 import { sendToRenderer } from "@main/window.js";
 import { broadcastSessionChanged } from "@main/lib/sessionSync.js";
+import { uiLocale } from "@main/lib/dialogText.js";
 import { resolveModelForGitOp } from "@main/ipc/git.js";
 import { buildCustomEnv, resolveActiveModel } from "@main/providers/claude-sdk/customEnv.js";
 import { resolveSdkBinaryPath } from "@main/providers/claude-sdk/sdkBinaryPath.js";
@@ -80,8 +80,7 @@ function titleGenSystemPrompt(): string {
   // 语言:设置 → 会话标题生成 →「标题语言」。auto(默认)= 跟界面语言。
   const langParsed = TitleGenLangSchema.safeParse(SettingRepo.get(UI_TITLE_GEN_LANG_SETTING_KEY) ?? "auto");
   const langSetting = langParsed.success ? langParsed.data : "auto";
-  const lang =
-    langSetting === "auto" ? (SettingRepo.get(UI_LOCALE_SETTING_KEY) === "en" ? "en" : "zh") : langSetting;
+  const lang = langSetting === "auto" ? uiLocale() : langSetting;
   // 长度:设置里的「标题最长字数」,默认 30。
   const maxLen = parseTitleGenMaxLen(SettingRepo.get(UI_TITLE_GEN_MAX_LEN_SETTING_KEY));
   let prompt = TITLE_GEN_SYSTEM_PROMPT.replace("标题长度不超过 30 个字符", `标题长度不超过 ${maxLen} 个字符`);
