@@ -32,12 +32,19 @@ export function hasPdfMagic(head: string): boolean {
  * 这么干)。不解析结构:真坏掉的文件在预览时自然会报错,这里只挡明显的"不是 PDF"。
  */
 export function verifyPdf(path: string): string | null {
-  let size: number;
+  let stat: ReturnType<typeof statSync>;
   try {
-    size = statSync(path).size;
+    stat = statSync(path);
   } catch {
     return "文件不存在";
   }
+  // ⚠️ **目录也能 stat 成功、且 `isFile() === false`。** 从前只看 `size === 0`,
+  // 而目录的 `size` 恒为 0 —— 用户选了一个文件夹来导入,得到的是一句「文件是空的」,
+  // 那句话是假的(文件夹里有东西,它不是空的)。`importOne` / `attachPdfToItem`
+  // 那道 `existsSync` 闸拦不住目录,所以这条要在这里挡住。
+  if (stat.isDirectory()) return "这是一个文件夹,不是 PDF 文件";
+  if (!stat.isFile()) return "这不是 PDF 文件";
+  const size = stat.size;
   if (size === 0) return "文件是空的";
   const fd = openSync(path, "r");
   try {
