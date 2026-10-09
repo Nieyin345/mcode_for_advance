@@ -1,9 +1,12 @@
 // FilePreview's hook states are injected to exercise its real render decisions.
 let values: unknown[] = [];
 export function setRenderStates(...states: unknown[]): void { values = [...states]; }
+/** 记录 state setter 收到的值 —— 用来观察"某个按钮点了以后 relPath 变成什么"。
+ *  现有用例只注入初值、不点 setter,所以加这个数组不影响它们。 */
+export const setterCalls: unknown[] = [];
 export function useState<T>(initial: T): [T, (value: unknown) => void] {
   if (!values.length) throw new Error("Missing injected hook state");
-  return [values.shift() as T, () => {}];
+  return [values.shift() as T, (value: unknown) => { setterCalls.push(value); }];
 }
 export function useRef<T>(initial: T | null) { return { current: initial }; }
 export function useEffect(_effect: () => unknown, _deps?: unknown[]): void {}

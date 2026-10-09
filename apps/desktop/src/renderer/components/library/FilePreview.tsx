@@ -201,8 +201,14 @@ export function FilePreview({
    * ⚠️ 论文那类条目 `filePath` 是空的,所以这条链**必须**跟着 `which` 走 ——
    * 否则 `ext` 退化成空串,一份 **Markdown 转录会被当成普通文本塞进 `<pre>`**
    * (用户看到的是一堆 `#` 和 `*` 的源码)。见下面 `ext === "md"` 那个分支。
+   *
+   * ⚠️ **本体那一支必须带上 `item.mdPath`。** 笔记(以及只挂转录、没有 PDF 的论文)
+   * 的本体**就是它们的 markdown** —— 没有 `filePath`、也没有 `pdfPath`。从前这条链
+   * 只兜 `filePath ?? pdfPath ?? item.id`,于是这类条目退到 `item.id`(如 `li_note_…`,
+   * 无扩展名)→ `ext` 为空 → 走 `<pre>`,单击一条笔记看到的是满屏 `#` 与 `*` 的源码。
+   * 主进程 `entryRootAbsPath` 的未指名顺序(filePath → pdfPath → mdPath)与本链一致。
    */
-  const viewing = relPath ?? (which === "md" ? (pdfPath ?? item.mdPath ?? "transcript.md") : (item.filePath ?? item.pdfPath ?? item.id));
+  const viewing = relPath ?? (which === "md" ? (pdfPath ?? item.mdPath ?? "transcript.md") : (item.filePath ?? item.pdfPath ?? item.mdPath ?? item.id));
   const ext = extOf(viewing);
 
   const open = (name: string, isDir: boolean) => {
@@ -241,7 +247,10 @@ export function FilePreview({
           {relPath && (
             <div className="flex shrink-0 items-center border-b border-edge px-2 py-1">
               <button
-                onClick={() => setRelPath(null)}
+                // 「返回上级」只退**一级**,与中间栏孪生 `FileViewer` 逐字一致。
+                // 从前这里把 relPath 整个清成 null —— 翻进 `a/b` 再点它直接弹回条目根,
+                // 越过了 `a`,而按钮上印的明明是「返回上级」。
+                onClick={() => setRelPath(relPath.includes("/") ? relPath.slice(0, relPath.lastIndexOf("/")) : null)}
                 className="flex items-center gap-1 rounded px-1 py-0.5 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content"
               >
                 <IconArrowLeft size={12} />
@@ -289,6 +298,13 @@ export function FilePreview({
 
     // ── 文本 ──
     if (content.type === "text") {
+      // 空文件要说出来 —— 一张白板子和"坏了"在界面上长得一模一样。
+      // 与中间栏孪生 `FileViewer` 同一条判据(那份早就守着;右栏这一处从前没守)。
+      if (content.text.trim().length === 0) {
+        return (
+          <div className="p-4 text-[0.8571em] text-content-muted">{t("templates.preview.emptyFile")}</div>
+        );
+      }
       if (ext === "md" || ext === "markdown") {
         return (
           <div className="h-full overflow-y-auto">
