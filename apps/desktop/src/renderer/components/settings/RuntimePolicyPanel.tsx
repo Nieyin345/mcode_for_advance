@@ -26,14 +26,17 @@ const fallbackDraft = createPolicyDraft<string>();
 
 function decodeBudget(value: string | null): BudgetDraft {
   const parsed: unknown = value ? JSON.parse(value) : {};
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid turn budget configuration");
+  // ⚠️ 这句话会经 `read.error.message` **原样画在面板的 ErrorNote 上**(见下面
+  //   `{read.error.message}`),不是内部诊断 —— 必须中文。
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("轮次预算的配置格式不对(不是 JSON 对象)");
   const data = parsed as Record<string, unknown>;
   const num = (key: string) => typeof data[key] === "number" ? String(data[key]) : "";
   return { enabled: data.enabled === true, form: { maxTurns: num("maxTurns"), maxUsd: num("maxUsd"), maxTotalTokens: num("maxTotalTokens") } };
 }
 function decodeFallback(value: string | null): string {
   const parsed: unknown = value ? JSON.parse(value) : [];
-  if (!Array.isArray(parsed) || !parsed.every((v) => typeof v === "string")) throw new Error("Invalid fallback model configuration");
+  // 同上:会画在 ErrorNote 上。
+  if (!Array.isArray(parsed) || !parsed.every((v) => typeof v === "string")) throw new Error("回退模型的配置格式不对(应是模型名数组)");
   return parsed.join(", ");
 }
 /** Empty is an explicit opt-out. Invalid and in-progress text is never an opt-out. */

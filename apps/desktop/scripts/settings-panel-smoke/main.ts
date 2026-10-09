@@ -792,6 +792,20 @@ console.log("\n渲染端的旧回包竞态");
     /const seq = \+\+loadSeqRef\.current;/.test(usagePanel) && usagePanel.includes("seq !== loadSeqRef.current"),
     usagePanel.match(/loadSeqRef[^\n]*/g),
   );
+
+  // ★ **画在面板上的错误文案必须是中文。** `RuntimePolicyPanel` 的两个 `decode*` 抛出的
+  //   句子会经 `read.error.message` 原样渲染进 `ErrorNote`(不是内部诊断),而它们从前是
+  //   英文("Invalid turn budget configuration" / "Invalid fallback model configuration")。
+  //   `SkillsPanel` 的 `sourceQuery` 抛错同理经 `readError` 画出来。判据钉源码上。
+  const runtimePolicy = readFileSync(join(process.cwd(), "src/renderer/components/settings/RuntimePolicyPanel.tsx"), "utf8");
+  const englishThrows = (runtimePolicy.match(/throw new Error\("[A-Z][a-z]+ /g) ?? []).length;
+  check("★ RuntimePolicyPanel 的 decode 错误文案是中文(它画在面板 ErrorNote 上)", englishThrows === 0, runtimePolicy.match(/throw new Error\("[^"]*"/g));
+  const skillsPanel = readFileSync(join(process.cwd(), "src/renderer/components/settings/SkillsPanel.tsx"), "utf8");
+  check(
+    "★ SkillsPanel 的 sourceQuery 错误文案是中文(它经 readError 画出来)",
+    !/throw new Error\("[A-Z][a-z]+ /.test(skillsPanel),
+    skillsPanel.match(/throw new Error\("[^"]*"/g),
+  );
 }
 
 /* ────────────────────────── 收尾 ────────────────────────── */

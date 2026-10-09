@@ -459,7 +459,7 @@ export function SkillsPanel() {
   const editorKey = selected?.kind === "skill"
     ? JSON.stringify([selected.source, selected.name, selected.projectPath ?? null, readVersion]) : null;
   const sourceQuery = useRpc(async () => {
-    if (!selected || selected.kind !== "skill") throw new Error("No skill selected");
+    if (!selected || selected.kind !== "skill") throw new Error("没有选中的技能");
     const { kind: _kind, ...target } = selected;
     const result = await api.skills.read(target);
     return { key: editorKey, content: result.content };
