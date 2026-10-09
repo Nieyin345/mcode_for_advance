@@ -256,5 +256,28 @@ section("5. 分支切换:远端短名 + 跟踪分支(两个切换器共用一条
   deep("远端 + 本地没有 → 建跟踪分支", checkoutArgsFor(b("origin/foo", "remote"), new Set()), { branch: "origin/foo", newBranch: "foo" });
 }
 
+/* ─────────────────── 6. 右栏标签 hydration 白名单须从 schema 派生 ─────────────────── */
+
+section("6. 右栏标签白名单不许手抄一份枚举");
+
+{
+  // `sessionStore` 重启时给 `rightPanelTab` 做 hydration。从前那是一份**手抄的枚举**
+  // (`tabRaw === "files" || … || "tasks"`),与 `RightPanelTabSchema` 漂过一次:
+  // `browser` 只加进 schema、忘了那一行,用户选了它重启后右栏**悄悄**回到 files。
+  // 判据:白名单必须从 `RightPanelTabSchema.options` 派生,不许再手抄枚举。
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const src = fs.readFileSync(path.join(process.cwd(), "src/renderer/stores/sessionStore.ts"), "utf8");
+  const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  check(
+    "★ 右栏标签 hydration 从 RightPanelTabSchema.options 派生(不手抄枚举)",
+    code.includes("RightPanelTabSchema.options"),
+    "",
+  );
+  // `browser` 必须能被 hydration 接受(那次漏的正是它)—— 借契约 schema 验它确实在里面。
+  const { RightPanelTabSchema } = await import("@contracts/ipc");
+  check("契约 schema 里含 browser(派生白名单据此收下它)", RightPanelTabSchema.options.includes("browser"), [...RightPanelTabSchema.options]);
+}
+
 console.log(`\nrenderer-lib-audit-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;
