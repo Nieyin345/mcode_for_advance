@@ -2159,6 +2159,19 @@ for (const file of readdirSync(WORKFLOW_SRC_DIR)) {
 check("确实扫到了 var() 引用(否则上一条是空过)", varRefs > 0, varRefs);
 check("用到的 CSS 变量都在 styles.css 里定义了", unknownVars.length === 0, unknownVars.join("; "));
 
+// ★ **导入失败的报错只列前 3 条,但后面还有几条要说出来。** `TransferSection` 的
+//   `describeErrors` 从前 `errors.slice(0,3).join("; ")` —— 用户以为就这 3 条,改完再导一次
+//   才发现还有,一轮轮试(与 `workflowValidation` 报 schema 错误同一条口径)。判据钉源码上
+//   (helper 不导出,跑不进无头)。
+{
+  const src = readFileSync(`${WORKFLOW_SRC_DIR}/TransferSection.tsx`, "utf8");
+  check(
+    "★ 导入错误的 describeErrors 超过 3 条时明说还有几处(不静默截断)",
+    /errors\.length > 3/.test(src) && src.includes("errorsMore"),
+    src.match(/describeErrors[^\n]*/g),
+  );
+}
+
 console.log("\nWorkflowsPanel(页签容器)");
 // 回归锚:藏一个页签用的是 `hidden` **类**,不是 `hidden` **属性**。这个 div 同时带
 // `flex`,而 preflight 的 `[hidden]{display:none}` 与 `.flex` 同特异性、又排在

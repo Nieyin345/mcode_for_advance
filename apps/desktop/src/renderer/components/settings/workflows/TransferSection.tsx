@@ -35,9 +35,12 @@ import type { WorkflowDoc } from "@contracts/workflow";
 import { Field } from "./ParamField.js";
 
 /** 失败时把原因摆出来 —— 可能是好几条(校验报告里每一条都说清了哪里不对)。 */
-function describeErrors(errors: readonly string[], fallback: string): string {
+function describeErrors(errors: readonly string[], fallback: string, more: (n: number) => string): string {
   if (errors.length === 0) return fallback;
-  return errors.slice(0, 3).join("; ");
+  // ⚠️ **只列 3 条是对的(一行好读),但后面还有几条必须说出来** —— 否则用户以为就这 3 条,
+  // 改完再导一次才发现还有,一轮轮试(与 `workflowValidation` 报 schema 错误同一条口径)。
+  const shown = errors.slice(0, 3).join("; ");
+  return errors.length > 3 ? `${shown}; ${more(errors.length - 3)}` : shown;
 }
 
 export function TransferSection({
@@ -94,7 +97,11 @@ export function TransferSection({
       if (!res.ok) {
         if (!res.canceled) {
           setError(
-            describeErrors(res.errors ?? [], res.error ?? t("settings.workflows.unknownError")),
+            describeErrors(
+              res.errors ?? [],
+              res.error ?? t("settings.workflows.unknownError"),
+              (n) => t("settings.workflows.errorsMore", { n }),
+            ),
           );
         }
         return;

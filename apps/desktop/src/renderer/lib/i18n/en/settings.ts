@@ -1656,6 +1656,7 @@ export const en = {
   "settings.workflows.newWorkflowName": "New workflow",
   "settings.workflows.actionFailed": "That did not work: {error}",
   "settings.workflows.unknownError": "unknown error",
+  "settings.workflows.errorsMore": "{n} more issue(s) not shown",
   "settings.workflows.reset": "Restore default",
   "settings.workflows.resetTitle": "Restore the default?",
   "settings.workflows.resetDesc":

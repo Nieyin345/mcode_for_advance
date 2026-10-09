@@ -1648,6 +1648,7 @@ export const zh = {
   "settings.workflows.newWorkflowName": "新工作流",
   "settings.workflows.actionFailed": "操作失败：{error}",
   "settings.workflows.unknownError": "未知错误",
+  "settings.workflows.errorsMore": "另有 {n} 处问题未列出",
   "settings.workflows.reset": "恢复默认",
   "settings.workflows.resetTitle": "恢复默认？",
   "settings.workflows.resetDesc": "将丢掉「{name}」当前的版本，回到你「设为默认」钉住的那一版。这一步不能撤销。",
