@@ -79,6 +79,22 @@ if (process.argv.includes("--recover")) {
     await assert.rejects(() => useLibraryStore.getState().createCollection("模版分类", "templates"), /已经有叫/);
     console.log("  ok   重名失败会抛给 UI，而不是静默返回成功");
 
+    // ★ expandCollection 必须**幂等**(已是展开态就不动),而 toggleExpanded 是纯翻转。
+    //   新建笔记那条路要用前者:它先确保展开、之后再 setActive —— 用两次 toggleExpanded
+    //   会互相抵消,库反而**收起**,用户看不到刚建的那篇。
+    {
+      const st = () => useLibraryStore.getState();
+      st().expandCollection(docsId);
+      equal("expandCollection 把库展开", st().expandedIds[docsId], true);
+      st().expandCollection(docsId);
+      equal("★ expandCollection 再调一次仍是展开(幂等,不是翻转)", st().expandedIds[docsId], true);
+      // 对照:toggleExpanded 两次就翻回收起 —— 这正是那个 bug 的机理。
+      st().toggleExpanded(docsId);
+      equal("对照:toggleExpanded 会把展开态翻掉", st().expandedIds[docsId], false);
+      st().toggleExpanded(docsId);
+      equal("对照:再 toggle 一次回到展开", st().expandedIds[docsId], true);
+    }
+
     // ★ 无参方法:`library.convert` 的 schema 全字段可选(ids/collectionId/force),
     //   而 `app_api_call` 对无参方法**明确让模型省略 input**(tools.ts 的 `input` 是
     //   `.optional()`),那时 handler 收到 `undefined`。`Schema.parse(undefined)` 会抛

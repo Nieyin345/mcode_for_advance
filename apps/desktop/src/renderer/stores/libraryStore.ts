@@ -104,6 +104,10 @@ interface LibraryState {
   setChatCollection: (id: string | null) => void;
   /** 展开/收起某个库;展开时顺带拉一次它的文献列表。 */
   toggleExpanded: (id: string) => void;
+  /** **确保**某个库是展开的(已是展开态则不动)。与 `toggleExpanded` 的区别:那个是"翻转",
+   *  这个在 `submitNewNote` 那类"先展开、再走 openCollection(内部又翻转一次)"的地方才安全
+   *  —— 两次翻转会抵消,库反而**收起**,用户看不到刚建的那篇。 */
+  expandCollection: (id: string) => void;
   loadCollectionItems: (id: string) => Promise<void>;
   /** 拉全库条目（「全部显示」用）。 */
   loadAllItems: () => Promise<void>;
@@ -185,6 +189,12 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     set((s) => ({ expandedIds: { ...s.expandedIds, [id]: next } }));
     // 只在没缓存时拉。收起不清缓存 —— 再展开应当是即时的。
     if (next && !get().itemsByCollection[id]) void get().loadCollectionItems(id);
+  },
+
+  expandCollection: (id) => {
+    if (get().expandedIds[id]) return; // 已是展开态:什么都不做(这正是与 toggle 的区别)
+    set((s) => ({ expandedIds: { ...s.expandedIds, [id]: true } }));
+    if (!get().itemsByCollection[id]) void get().loadCollectionItems(id);
   },
 
   loadCollectionItems: async (id) => {

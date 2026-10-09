@@ -200,6 +200,7 @@ export function LibrarySection({
   const loadCollections = useLibraryStore((s) => s.loadCollections);
   const expandedIds = useLibraryStore((s) => s.expandedIds);
   const toggleExpanded = useLibraryStore((s) => s.toggleExpanded);
+  const expandCollection = useLibraryStore((s) => s.expandCollection);
   const loadCollectionItems = useLibraryStore((s) => s.loadCollectionItems);
   const itemsByCollection = useLibraryStore((s) => s.itemsByCollection);
   const allItems = useLibraryStore((s) => s.allItems);
@@ -759,11 +760,14 @@ export function LibrarySection({
     setNoteName("");
     if (!res.item) return;
 
-    // 先展开(展开本身会拉一次),再补一次 —— 两次都留着:展开是"以后看得到",
-    // 补拉是"现在就有",中间可能撞上并发,重拉一次代价极小。
-    if (!expandedIds[c.id]) toggleExpanded(c.id);
+    // ⚠️ **用 `expandCollection`(确保展开),不能用两次 toggle。** 从前这里是
+    // `if (!expandedIds[c.id]) toggleExpanded(c.id)` 再 `openCollection(c.id)`,而
+    // `openCollection` 内部又是一次 `toggleExpanded`(纯翻转)—— 两次翻转互相抵消,
+    // 库反而**收起**了,刚建的那篇笔记在左栏压根看不到。`expandCollection` 幂等:
+    // 已是展开态就不动。
+    expandCollection(c.id);
+    setActive(c.id);
     await useLibraryStore.getState().loadCollectionItems(c.id);
-    openCollection(c.id);
     const store = useLibraryStore.getState();
     store.setActiveItem(res.item.id);
     store.setDetailTab("edit");
