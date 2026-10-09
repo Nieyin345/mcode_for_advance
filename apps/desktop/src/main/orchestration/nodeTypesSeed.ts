@@ -56,6 +56,30 @@ export const NODE_TYPES_FILES: ReadonlyArray<[name: string, body: string]> = [
   ["README.md", readmeMd],
 ];
 
+/**
+ * 还没有 `.mcode-shipped-node-types.json` 的老安装,靠这张表认「这是某次发过的原版」。
+ *
+ * ⚠️ **非有不可。** `seedShippedFiles` 的判据是「记录文件里的 hash == 磁盘上那份 ⇒ 没改过,
+ * 可以升」;而 2026-09-26 之前的老安装**从来没有过记录文件**,磁盘上那份旧 README 的 hash
+ * 在记录里查不到 —— 于是被判成"用户改过",原样留着。那份旧 README 写着「`runner.kind`
+ * 只有四个值」,模型照它写不出 `command`/`trigger`/`condition`/`code`,而**这正是本文件
+ * 存在的理由**。没有这张表,升级对老用户从来没生效过(`seed.ts` 那份流程脚本表就是为此
+ * 而设,见 `LEGACY_SHIPPED_SHA256`;这里漏了同一份)。
+ *
+ * 每项是**历次随应用发布过**的 `node-types-README.md` 内容(LF 归一后)的 sha256,由
+ * git 历史算出。有了记录文件之后新版本自己会被记下,这张表**不用再加**;它只为更早装的那批。
+ */
+export const LEGACY_NODE_TYPES_README_SHA256: readonly string[] = [
+  "d1ff664daa41ba4c0d6b6edfd6d8ec9ebbf19ae3595373737967233b4b5befeb", // a49d3c7a
+  "0125d64f5c8635907bb7fc10040853d7922e4f43c740641ca99c01a7d78421f5", // dd8acea6
+  "f017550f83d8c15e91ffe92c940d0735c3403f349c34c44441ed2baf6ad5d5a7", // 4fc265ed
+  "9e4ab2a0cabbebfb82f43419fd73995c144f608354e79df721ed4ad44ed00a2c", // 65edc870
+  "808490588febad6f6cade6d7049abdaf5873de89299b9353fe797490936f3844", // ef745009
+  "a6fb8bc6558d73113015f3f9a07797f6f60f9c1c00f5dd6e6082845574169aa1", // fb42b6e2
+  "0ac0a684cc4d376d3ea40fa146b74d29a77d01dbb4daf7920afc91b82e5deebb", // 281fe4da
+  "4a12ad714bec9f0e5d25a1939b15db8857df07b8655aaf16b527b358bda3b0b2", // 943c9b89
+];
+
 /** 记录表文件名 —— **放在 `workflows/` 父目录、用独立的名字**。
  *
  *  ① 不能放 `node-types/` 里:那个目录的加载器扫 `*.json` 当节点清单,记录文件会被当成
@@ -76,6 +100,9 @@ export function ensureLocalNodeTypesDir(): void {
       recordDir: path.dirname(dir),
       recordFile: SHIPPED_RECORD_FILE,
       label: "node-types",
+      // 老安装(还没有记录文件)靠它认「这是发过的原版 README」——没有它,升级对那批用户
+      // 从来没生效过(见上面那张表的注释)。
+      legacyHashes: { "README.md": LEGACY_NODE_TYPES_README_SHA256 },
     },
   );
 }

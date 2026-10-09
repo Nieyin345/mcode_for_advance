@@ -409,6 +409,26 @@ console.log("\n没改过的旧版 README 升级成新版");
   writeFileSync(readme, userEdited, "utf8");
   ensureLocalNodeTypesDir();
   eq("★ 用户改过的仍然不动(升级逻辑没破坏那条规矩)", readFileSync(readme, "utf8"), userEdited);
+
+  // ★★ **真正的老安装**:磁盘上有旧 README,但**根本没有记录文件**(2026-09-26 之前
+  //    的版本从不写它)。这一条才是那张 `legacyHashes` 表存在的理由 —— 上面那条会写
+  //    记录文件,验的是"有记录时能升",而老用户**从来没有过记录**。
+  //    没有 legacyHashes 时,旧 README 的 hash 在空记录里查不到 → 被判"用户改过" → 原样留着,
+  //    而那份旧 README 写着「runner.kind 只有四个值」,模型照它写不出新 kind。
+  {
+    rmSync(recordFile, { force: true });
+    // 摆一份**发过的**老版 README(用最早那一版的真实 hash 对应的内容做不到逐字复刻,
+    // 所以这里直接改用一个**签名可靠**的做法:把 legacy 表里第一个 hash 对应的历史内容
+    // 当作"已发过的原版" —— 用 git 历史那一版的文本写盘)。
+    const legacyOld = readFileSync(
+      join(process.cwd(), "scripts/orchestration-ipc-smoke/fixtures/legacy-node-types-README.md"),
+      "utf8",
+    );
+    writeFileSync(readme, legacyOld, "utf8");
+    check("前提:那份老 README 与当前版不同", legacyOld !== current, { len: legacyOld.length });
+    ensureLocalNodeTypesDir();
+    eq("★ 没有记录文件的老安装,旧 README 也升级成当前版(legacyHashes 生效)", readFileSync(readme, "utf8"), current);
+  }
 }
 
 /* ──────────────── 4b. 一个文件写失败,后面的还铺不铺 ──────────────── */
