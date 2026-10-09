@@ -20,6 +20,9 @@ export const zh = {
   // 复制对话失败。正文给的是主进程抛上来的那句具体原因(引擎不支持 / 会话文件不在了),
   // 因为那是用户唯一能据此做点什么的信息。
   "store.toast.persistFailed": "存对话记录失败(这一轮可能没保存下来)",
+  // 撤销本轮文件改动失败(`claude.rewindTurn` 抛)。这张卡会显示「已撤销 ✓」,从前
+  // store 把错误吞了、照样 resolve —— 用户看到成功、文件其实一个字节没回滚。
+  "store.toast.rewindFailed": "撤销本轮改动失败(文件可能没还原)",
   "store.toast.settingSaveFailed": "设置没能保存",
   // 关闭标签时被守卫拦下的未保存文件 —— 编辑器没有自动保存,静默关掉就是丢改动。
   "store.toast.ideCloseBlockedTitle": "有文件没关：内容还没保存",

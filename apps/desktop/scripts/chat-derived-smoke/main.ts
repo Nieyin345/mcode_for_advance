@@ -130,5 +130,28 @@ console.log("C. per-message caching");
   check("★ 真模型名仍然原样显示(不是把非哨兵也吞掉)", /block\.model === "default"\s*\?\s*t\("chat\.model\.default"\)\s*:\s*block\.model/.test(code));
 }
 
+/**
+ * 撤销本轮文件改动(`claude.rewindTurn`)失败必须是**用户看得见**的失败。
+ *
+ * `TurnFilesCard.handleRewind` 是 `await rewindTurn(...)` 之后**无条件** `setDone(true)`
+ * —— 卡上画出「已撤销 ✓」。而 store 的 `rewindTurn` 从前把 IPC rejection 吞成
+ * `console.error`、照样 resolve,于是真正失败时用户看到"撤销成功"、文件一个字节没回滚
+ * (破坏性动作,他不会再去看)。判据钉源码:store 必须**抛出**真错,卡片必须接住并
+ * 报一句(toast)。
+ */
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const strip = (s: string) => s.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const store = strip(readFileSync(join(process.cwd(), "src/renderer/stores/sessionStore.ts"), "utf8"));
+  const at = store.indexOf("rewindTurn: async");
+  const body = store.slice(at, store.indexOf("\n  },", at));
+  check("★ store 的 rewindTurn 失败会抛出(不再吞成 console.error)", at >= 0 && /console\.error\([^)]*rewindTurn failed[\s\S]{0,120}throw err;/.test(body), body.slice(-260));
+  const card = strip(readFileSync(join(process.cwd(), "src/renderer/components/chat/TurnFilesCard.tsx"), "utf8"));
+  const cAt = card.indexOf("const handleRewind");
+  const cBody = card.slice(cAt, card.indexOf("\n  };", cAt));
+  check("★ 撤销失败时卡片报出来(不再无条件画「已撤销 ✓」)", cAt >= 0 && /catch\s*\([^)]*\)\s*\{[\s\S]*?useToastStore[\s\S]*?push\(/.test(cBody) && cBody.includes("store.toast.rewindFailed"), cBody.slice(0, 300));
+}
+
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures) process.exit(1);

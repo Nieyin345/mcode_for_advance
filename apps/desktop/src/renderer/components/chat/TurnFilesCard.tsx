@@ -5,6 +5,7 @@ import { basename } from "@renderer/lib/path.js";
 import { api } from "@renderer/lib/api.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 import { isElectron } from "@renderer/lib/platform.js";
 import { ConfirmDialog } from "@renderer/components/ui/index.js";
 import {
@@ -94,6 +95,15 @@ export function TurnFilesCard({
       // history calm. The card itself stays in the stream with the 已撤销
       // badge (conversation record preserved).
       setOpen(false);
+    } catch (err) {
+      // **撤销失败不能说成功。** store 的 `rewindTurn` 从前把错误吞了、照样 resolve,
+      // 于是这张卡画出「已撤销 ✓」而文件一个字节没回滚 —— 这是个破坏性动作,用户
+      // 不会再回头看。现在 store 把真错抛出来,这里如实报一句。
+      useToastStore.getState().push({
+        kind: "error",
+        title: t("store.toast.rewindFailed"),
+        body: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       setRewinding(false);
     }

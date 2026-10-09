@@ -7789,7 +7789,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // partway through restore, the (smaller) restored list still
       // arrives via the event and we clear from there.
     } catch (err) {
+      // **别吞掉。** `TurnFilesCard` 是 `await rewindTurn(...)` 之后无条件
+      // `setDone(true)` —— 把「已撤销 ✓」画在卡上。从前这里只 `console.error`、
+      // 照样 resolve,于是 IPC / 主进程那一层真失败时,用户看到"撤销成功",而文件
+      // 一个字节没回滚(这是个**破坏性**动作,他不会再去看)。抛出真错,由调用方
+      // 决定怎么显示 —— 它已经会用 toast 报出来。
       console.error("claude.rewindTurn failed:", err);
+      throw err;
     }
   },
 
