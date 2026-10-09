@@ -188,7 +188,13 @@ export function buildCustomEnv(
   // the Task tool on third-party gateways.
   const entry = resolveSelectedEntry(cfg);
   if (entry) {
-    const bare = entry.id;
+    // ⚠️ **必须剥掉 `[1m]`。** 注释与文件头都写着这些档位变量"never the `[1m]` suffix",
+    //   但 `entry.id` 是用户输入,可能手打成了 `deepseek-v4-pro[1m]` 这种(IPC schema 只
+    //   是 `z.string().min(1)`,不归一化)。不剥的话每个档位变量连同
+    //   `ANTHROPIC_DEFAULT_SONNET_MODEL_NAME` 都带上后缀,网关侧就会拿一个它不认的模型名
+    //   去路由 —— 正是文档记的那条"haiku 通道收到 `…[1m]`"的错配。桥那条路早就用
+    //   `strip1MSuffix` 了(`requestTranslator.ts`),这里没跟上。
+    const bare = strip1MSuffix(entry.id);
     env.ANTHROPIC_DEFAULT_HAIKU_MODEL = bare;
     env.ANTHROPIC_DEFAULT_SONNET_MODEL = bare;
     env.ANTHROPIC_DEFAULT_OPUS_MODEL = bare;

@@ -161,6 +161,24 @@ function cfgFor(protocol: "anthropic" | "openai", baseUrl: string, headers?: Rec
 }
 
 {
+  // ★ **档位变量必须剥掉 `[1m]`。** 文件头与那段注释都写着这些"never the `[1m]` suffix",
+  //   而 `entry.id` 是用户输入,可能手打成了 `m1[1m]`(IPC schema 只 `z.string().min(1)`)。
+  //   不剥的话每个档位变量(含 DeepSeek 的 `ANTHROPIC_DEFAULT_SONNET_MODEL_NAME`)都带后缀,
+  //   网关会拿一个它不认的名字去路由 —— 就是文档记的那条"haiku 通道收到 …[1m]"的错配。
+  //   桥那条路早用 strip1MSuffix 了,这里得跟上。
+  const cfg = cfgFor("anthropic", DEEPSEEK);
+  cfg.selectedModel = "m1[1m]";
+  cfg.models = [{ id: "m1[1m]", supports1m: true }];
+  const env = buildCustomEnv(cfg);
+  eq("★ 档位变量 ANTHROPIC_DEFAULT_HAIKU_MODEL 剥掉了 [1m]", env.ANTHROPIC_DEFAULT_HAIKU_MODEL, "m1");
+  eq("★ 档位变量 ANTHROPIC_DEFAULT_SONNET_MODEL 剥掉了 [1m]", env.ANTHROPIC_DEFAULT_SONNET_MODEL, "m1");
+  eq("★ 子代理档位 CLAUDE_CODE_SUBAGENT_MODEL 剥掉了 [1m]", env.CLAUDE_CODE_SUBAGENT_MODEL, "m1");
+  eq("★ DeepSeek 的 MODEL_NAME 也剥掉了 [1m]", env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, "m1");
+  // 对照:主模型仍带后缀(1M 声明靠它)。
+  check("对照:ANTHROPIC_MODEL 仍带 [1m](那是 1M 声明的载体)", String(env.ANTHROPIC_MODEL ?? "").includes("[1m]"), env.ANTHROPIC_MODEL);
+}
+
+{
   const env = buildCustomEnv(cfgFor("anthropic", OPENCODE), { sessionId: "sess-42" });
   eq(
     "anthropic + opencode: session header named after the Mcode session",

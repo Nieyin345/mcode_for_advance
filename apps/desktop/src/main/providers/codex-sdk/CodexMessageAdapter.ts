@@ -556,7 +556,7 @@ export class CodexMessageAdapter {
         this.emit({
           type: "error",
           sessionId: this.sessionId,
-          message: (item as { message?: string }).message ?? "codex item error",
+          message: (item as { message?: string }).message ?? "Codex 返回了一条错误(没有附带说明)",
           code: "CODEX_ITEM_ERROR",
         });
         break;

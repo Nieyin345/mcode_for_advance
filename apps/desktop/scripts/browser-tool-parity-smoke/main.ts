@@ -232,5 +232,35 @@ console.log("\nbrowser:event 的每个类型消费端都有人处理");
   check("★ crashed 有消费端(从前没有 → 崩溃=永久空白)", panel.includes('msg.type === "crashed"'));
 }
 
+console.log("\n浏览器工具的**广告**也得按同一个开关来");
+
+{
+  // 工具定义按"内建浏览器开没开"砍;而**系统提示里那段工具用法**是一份**广告** ——
+  // 工具没注册就不能广告,否则关掉浏览器后模型照提示去调一个不存在的工具。
+  // 三引擎各自拼自己的提示词,所以这条是**跨引擎不变量**:每处 `browserToolsUsagePrompt()`
+  // 都必须被 `browserToolsEnabled`(或等价的开关)守着。
+  const claudeSrc = readFileSync(join(process.cwd(), "src/main/providers/claude-sdk/ClaudeAgentSdkProvider.ts"), "utf8");
+  const codexSrc = readFileSync(join(process.cwd(), "src/main/providers/codex-sdk/CodexAgentSdkProvider.ts"), "utf8");
+  const piSrc = readFileSync(join(process.cwd(), "src/main/providers/pi-sdk/mcodeExtension.ts"), "utf8");
+
+  // 每处调用点,取它所在那一行的上下文,必须能看到开关守卫。
+  const usageCallers = (src: string): string[] =>
+    src.split("\n").filter((l) => l.includes("browserToolsUsagePrompt()"));
+  const guarded = (l: string): boolean => /browserToolsEnabled|browserDisabled|BROWSER_MCP_SERVER/.test(l);
+
+  for (const [name, src] of [["Claude", claudeSrc], ["Codex", codexSrc], ["Pi", piSrc]] as const) {
+    const callers = usageCallers(src);
+    // Claude 走 MCP 注入表,可能根本不出现这个符号 —— 出现的那几处才要守。
+    const unguarded = callers.filter((l) => !guarded(l));
+    check(`★ ${name}:浏览器工具广告都被开关守着(没注册就不广告)`, unguarded.length === 0, { callers, unguarded });
+  }
+  // 防断言空过:至少有一处真的调了这个函数(否则上面全是空判)。
+  check(
+    "对照:确实扫到了 browserToolsUsagePrompt 的调用点",
+    usageCallers(claudeSrc).length + usageCallers(codexSrc).length + usageCallers(piSrc).length > 0,
+    { claude: usageCallers(claudeSrc).length, codex: usageCallers(codexSrc).length, pi: usageCallers(piSrc).length },
+  );
+}
+
 console.log(`\nbrowser-tool-parity-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

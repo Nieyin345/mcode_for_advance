@@ -225,5 +225,17 @@ console.log("\n图片生成失败的文案是中文(用户可见,不是给模型
   check("失败说明里带上额度标识", content.includes("img-gen"), content);
 }
 
+console.log("\nCodex error item 缺 message 时的兜底文案也是中文");
+{
+  // `error` 类型 item 没带 `message` 时,兜底文案会直接画在界面的错误块上 —— 必须中文。
+  // (兄弟三处英文文案在 486cb444 改过中文,这第四处当时漏了。)
+  const h = harness();
+  h.send("item/completed", { threadId: MAIN, item: { id: "err1", type: "error" } });
+  const err = h.events.find((e) => e.type === "error");
+  const msg = String((err as { message?: unknown })?.message ?? "");
+  check("★ 缺 message 的 error item 兜底文案是中文", /错误|失败|出错/.test(msg), msg);
+  check("★ 不是英文原文(codex item error)", !/codex item error/i.test(msg), msg);
+}
+
 console.log(`\n${checks - failures}/${checks} passed`);
 process.exit(failures === 0 ? 0 : 1);

@@ -283,7 +283,19 @@ export class CodexAgentSdkProvider implements AgentProvider {
       return failTurn(ctx, req.sessionId, "CODEX_NO_MODEL", "Codex 未配置任何模型:请先在「设置 → 模型配置 → Codex」中添加模型端点后再发送。");
     }
     await CodexModelsStore.ensureConfigMaterialized();
-    const hostIdentity = await ensureCodexHomeIdentity();
+    // ⚠️ **`browserToolsEnabled` 必须在拼 AGENTS.md 之前算出来。** AGENTS.md 里那段
+    // 「浏览器工具用法」是一份**工具广告** —— 工具没注册就不能广告(Pi/Claude 都按这个
+    // 闸门来:见 `mcodeExtension.ts` 的 `browserToolsEnabled ? [...usage] : []` 与 Claude
+    // 只在启用时注入浏览器 MCP)。从前这里无条件拼进去,而工具定义在别处按开关砍掉 ——
+    // 用户关掉内建浏览器后,Codex 仍从 AGENTS.md 读到 18 个 `browser_*` 工具与调用流程,
+    // 于是去调一个根本没注册的工具,报错/空转;而 AGENTS.md 只在内容漂移时重写,拨开关
+    // 不会重写它,那条陈旧广告会一直挂着。
+    const mcpManagement = await getMcpManagement();
+    const browserToolsEnabled =
+      !mcpManagement.browserDisabled &&
+      mcpEngineEnabled(readMcpEnginesMap(), BROWSER_MCP_SERVER, "codex") &&
+      codexTurnAllowsMcpServer(BROWSER_MCP_SERVER, req.mcpServerNames);
+    const hostIdentity = await ensureCodexHomeIdentity(browserToolsEnabled);
     const mcpScopeArgs =
       req.mcpServerNames?.length || req.pluginNames?.length
         ? codexMcpDisableArgs(
@@ -302,11 +314,6 @@ export class CodexAgentSdkProvider implements AgentProvider {
       mcpServerNames: req.mcpServerNames,
       pluginNames: req.pluginNames,
     });
-    const mcpManagement = await getMcpManagement();
-    const browserToolsEnabled =
-      !mcpManagement.browserDisabled &&
-      mcpEngineEnabled(readMcpEnginesMap(), BROWSER_MCP_SERVER, "codex") &&
-      codexTurnAllowsMcpServer(BROWSER_MCP_SERVER, req.mcpServerNames);
 
     /* ── 2. Model resolution ("providerId/modelId", Pi-style) ── */
     const configured = new Set(providers.map((p) => p.id));
@@ -879,7 +886,7 @@ async function pluginSkillRootsFor(
  *  组装链里并入「全局指令」(设置面板的事实源 <dataRoot>/context/instructions.md,
  *  见 lib/appContext.ts):claude 的同名内容物化到 ~/.mcode/CLAUDE.md,pi 会话启动
  *  时直读同一份 —— 三引擎共用一条指令配置。空内容时不加段(组装链语义)。 */
-async function ensureCodexHomeIdentity(): Promise<string> {
+async function ensureCodexHomeIdentity(browserToolsEnabled: boolean): Promise<string> {
   const dir = codexHomePath();
   await fs.mkdir(dir, { recursive: true });
   const instructions = readInstructionsSource(instructionsSourcePath(dataRoot())).trim();
@@ -892,7 +899,11 @@ async function ensureCodexHomeIdentity(): Promise<string> {
     fileArchitecturePrompt(dataRoot(), scriptsDir()),
     ASK_NATIVE_TOOL_PROMPT,
     PLAN_MODE_PROMPT,
-    browserToolsUsagePrompt(),
+    // ⚠️ **浏览器工具广告只在启用时才拼。** 工具定义按同一个开关砍(见
+    // `buildDynamicTools`),广告不能比工具更宽 —— 否则关掉内建浏览器后模型照 AGENTS.md
+    // 去调一个没注册的工具。`browserToolsEnabled` 进了 content,所以拨开关会让下面的
+    // 漂移比较判不等、当场重写(不再是"拨了不生效")。
+    browserToolsEnabled ? browserToolsUsagePrompt() : "",
     process.platform === "win32" ? WIN32_PATH_HINT : "",
   )}\n`;
   const file = path.join(dir, "AGENTS.md");
