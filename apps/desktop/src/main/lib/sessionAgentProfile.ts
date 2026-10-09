@@ -28,6 +28,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import * as path from "node:path";
 import {
+  AGENT_PROFILE_ID_RE,
   agentProfileInstruction,
   agentProfileRef,
   isSessionAgentProfile,
@@ -55,12 +56,20 @@ export interface SessionProfileSeed {
  *
  * ⚠️ 这里**故意不走 `readAgentProfiles()`**(一次读整个目录、连带 `problems`):那一条路
  * 是给"列出全部"的界面用的;建会话只要一份,按 id 读一份不需要把整个目录的坏文件都算
- * 进来。文件名即 id(`AGENT_PROFILE_ID_RE` 限制了字符集,拼不出路径穿越)。
+ * 进来。文件名即 id,而 id 必须过 {@link AGENT_PROFILE_ID_RE}。
  */
 export function loadAgentProfileForSession(
   id: string,
   dir: string,
 ): { ok: true; profile: AgentProfile } | { ok: false; error: string } {
+  // ⚠️ **纵深防御:id 必须先过字符集校验再拼路径。** 调用方(IPC handler)走的是
+  // `StartSessionSchema`,那里已经用 `AGENT_PROFILE_ID_RE` 卡过;但这个函数是**导出的**,
+  // 任何后来新增的调用方(或将来被复核掉校验的那条路)都可能塞进 `../`。`path.join`
+  // 不拒绝 `..`,会真的拼出目录外的路径。与其把"安全"押在"每个调用方都记得校验"上,
+  // 不如在这里独立再挡一次 —— 与那些路径闸(safeMemoryRelPath 等)同一套做法。
+  if (!AGENT_PROFILE_ID_RE.test(id)) {
+    return { ok: false, error: `档案编号不合法:${id}` };
+  }
   const file = path.join(dir, `${id}.json`);
   if (!existsSync(file)) return { ok: false, error: `档案不在了:${id}` };
   let text: string;

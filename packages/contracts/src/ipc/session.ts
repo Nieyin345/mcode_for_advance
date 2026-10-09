@@ -9,6 +9,7 @@
 import { z } from "zod";
 import type { SessionBookmark, MessageRecord } from "../session.js";
 import type { UserInputAnswers } from "../provider.js";
+import { AGENT_PROFILE_ID_RE } from "../agentProfile.js";
 
 /**
  * Permission modes are now open strings (see `PermissionMode` in runtime.ts).
@@ -74,7 +75,7 @@ export const StartSessionSchema = z.object({
    *
    *  读不到、类型不对、参数过不了校验时**明确失败**(handler 抛错),不退回"建一个没有
    *  角色的空会话":那会让用户拿到一个看着建成了、实际没有角色的对话,而他完全没有线索。 */
-  agentProfileId: z.string().optional(),
+  agentProfileId: z.string().regex(AGENT_PROFILE_ID_RE, "档案 id 必须形如 p_xxxx").optional(),
   /** kind="side" + 「档案+记忆」:建会话时把记忆库的一份快照挂进去(第一轮带上)。
    *
    *  ⚠️ **只是"要不要挂"的意图,具体内容由主进程现取** —— 与 `agentProfileId` 那边

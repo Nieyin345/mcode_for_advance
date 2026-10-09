@@ -535,6 +535,29 @@ console.log("\n右侧问答页签那条路:不传档案 = 「空白」,照旧复
   eq("标题照旧是占位符", b.session.title, "Quick ask");
 }
 
+console.log("\n档案编号:path traversal 一律拒");
+{
+  // 档案文件名即 id,拼路径时**必须先过字符集校验** —— `path.join` 不拒 `..`,裸 join 会
+  // 拼出目录外的路径。这里挡两层:契约 schema(IPC 入口)与 loader(导出的函数,纵深防御)。
+  let schemaRejected = false;
+  try {
+    StartSessionSchema.parse({ projectId: PROJECT, kind: "side", parentSessionId: "x", agentProfileId: "../../../etc/passwd" });
+  } catch { schemaRejected = true; }
+  check("★ 契约 schema 拒绝带 ../ 的 agentProfileId(IPC 入口)", schemaRejected);
+
+  const { loadAgentProfileForSession } = await import("@main/lib/sessionAgentProfile.js");
+  // 判据钉在**拒绝的理由**上,不只是"失败了" —— 没有那道守卫时,它也会返回 {ok:false}
+  // (只是理由是"档案不在了"或解析失败),那样"ok===false"根本分不出挡没挡。
+  const traversal = loadAgentProfileForSession("../../../etc/passwd", agentProfilesDir());
+  check(
+    "★ loader 独立再挡一次(导出的函数不押调用方都记得校验)",
+    traversal.ok === false && traversal.error.includes("档案编号不合法"),
+    traversal,
+  );
+  const okId = loadAgentProfileForSession("p_not_there_at_all", agentProfilesDir());
+  check("对照:合法形状的编号照常走'档案不在了'那条路", okId.ok === false && okId.error.includes("档案不在了"), okId);
+}
+
 console.log(`\n${total - failures}/${total} 通过`);
 if (failures > 0) {
   console.log(`${failures} 条失败`);
