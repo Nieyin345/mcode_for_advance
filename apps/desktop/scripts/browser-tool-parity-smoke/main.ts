@@ -209,5 +209,28 @@ console.log("\n3. Codex 的 handler 只读自己 schema 里声明过的参数");
   check("★ Codex 没有『handler 读 args.X 而 schema 没声明 X』(newTab 那个 bug 的形状)", Object.keys(undeclared).length === 0, undeclared);
 }
 
+console.log("\nbrowser:event 的每个类型消费端都有人处理");
+
+{
+  // 主进程发出去的 browser:event 类型,渲染端 BrowserPanel 必须**每一种都有分支** ——
+  // 少了哪一种,那一类事件就是"发了没人听"的静默失败。实测 `crashed` 从前正是如此:
+  // 页面渲染进程崩了(render-process-gone),主进程一直发,而渲染端没有分支 → 用户看到
+  // 一块永久空白、无报错也无重载入口。
+  const panel = readFileSync(join(process.cwd(), "src/renderer/components/browser/BrowserPanel.tsx"), "utf8");
+  // 主进程侧发的事件类型:find(`type: "<x>"` 里那几个 browser:event 的)。
+  const mgr = readFileSync(join(process.cwd(), "src/main/browser/BrowserManager.ts"), "utf8");
+  const produced = new Set<string>();
+  // push("navigation" ...) / type: "crashed" 两种写法都抓。
+  for (const m of mgr.matchAll(/push\(\s*"(\w+)"/g)) produced.add(m[1]!);
+  for (const m of mgr.matchAll(/type:\s*"(\w+)"/g)) produced.add(m[1]!);
+  // 只保留渲染端**认识**的那几类事件名(过滤掉 push() 抓到的别的字符串)。
+  const KNOWN = ["navigation", "loading", "tabOpened", "pickResult", "download", "authRequest", "crashed"];
+  const events = KNOWN.filter((k) => produced.has(k));
+  check("扫到主进程发的 browser:event 类型(防断言空过)", events.length >= 5, events);
+  const unhandled = events.filter((k) => !panel.includes(`msg.type === "${k}"`));
+  check("★ 每种 browser:event 渲染端都有分支(不然就是发了没人听的静默失败)", unhandled.length === 0, unhandled);
+  check("★ crashed 有消费端(从前没有 → 崩溃=永久空白)", panel.includes('msg.type === "crashed"'));
+}
+
 console.log(`\nbrowser-tool-parity-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

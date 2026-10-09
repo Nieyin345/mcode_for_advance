@@ -29,6 +29,7 @@ import { PickedElementsBar } from "./PickedElementsBar.js";
 import { DownloadBar, type DownloadBarItem } from "./DownloadBar.js";
 import { AuthPromptDialog } from "./AuthPromptDialog.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 
 /**
  * Browser panel — multi-tab, shared between two containers.
@@ -888,6 +889,20 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
         adoptWindowOpenTab(msg.browserId, p);
         return;
       }
+      // 页面渲染进程崩了(render-process-gone)。主进程一直在发这个事件,但渲染端从前**没有
+      // 任何分支读它** —— 用户看到的是一块永久空白、没有报错也没有重载入口(本仓库点名的
+      // "静默失败")。这里至少弹一条 toast,并把该标签页的 loading 清掉(否则工具栏一直转圈)。
+      // 摆在 browserId 查找**之前**:崩掉的可能是 agent 打开的、还没有被采纳成 tab 的视图。
+      if (msg.type === "crashed") {
+        const tab = tabsRef.current.find((t) => t.browserId === msg.browserId);
+        if (tab) patchTabInStore(msg.browserId, { loading: false });
+        useToastStore.getState().push({
+          kind: "error",
+          title: t("browser.crashed"),
+          body: t("browser.crashedBody"),
+        });
+        return;
+      }
       const tab = tabsRef.current.find((t) => t.browserId === msg.browserId);
       if (!tab) return; // not one of our tabs (e.g. stale view)
       if (msg.type === "navigation") {
@@ -918,7 +933,7 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
       }
     });
     return unsub;
-  }, [isActive, mode, adoptWindowOpenTab, enqueueChatElement, patchTabInStore, refreshHistory]);
+  }, [isActive, mode, adoptWindowOpenTab, enqueueChatElement, patchTabInStore, refreshHistory, t]);
 
   // Clear the pick flash + floating preview after a moment.
   useEffect(() => {

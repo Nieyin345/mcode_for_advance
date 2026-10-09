@@ -81,4 +81,6 @@ export const en = {
   "browser.downloadOpenFile": "Open file",
   "browser.downloadRevealFolder": "Show in folder",
   "browser.downloadDismiss": "Dismiss",
+  "browser.crashed": "Browser page crashed",
+  "browser.crashedBody": "This tab's renderer process exited unexpectedly. Reload it, or close and reopen it.",
 } as const;

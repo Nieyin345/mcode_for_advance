@@ -84,4 +84,6 @@ export const zh = {
   "browser.downloadOpenFile": "打开文件",
   "browser.downloadRevealFolder": "在文件夹中显示",
   "browser.downloadDismiss": "移除",
+  "browser.crashed": "浏览器页面已崩溃",
+  "browser.crashedBody": "这个标签页的渲染进程意外退出。重新加载或关掉它再打开。",
 } as const;
