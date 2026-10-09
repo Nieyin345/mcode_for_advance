@@ -254,6 +254,32 @@ console.log("\n协议与失败");
 }
 
 {
+  // ★ **非有限 `percent` 不许进回调。** `1e999` 是合法 JSON 数字,`JSON.parse` 却把它
+  //   解成 `Infinity` —— 只判 `typeof === "number"` 拦不住。放它过去会让进度事件带上
+  //   `Infinity`,而两端处置还不一样:桌面端夹到 100%、手机端过 `JSON.stringify` 变成
+  //   `null` 再夹到 0%(同一步在两端显示成两个数)。兄弟 `commandRunner` / `codeRunner`
+  //   的同名函数都有 `Number.isFinite` 守卫(`codeRunner` 是 af9ccaa1 补的),这一支漏了。
+  const fake = recordingSpawn({
+    stdout: '@@mcode:progress {"percent":1e999,"message":"疯进度"}\n',
+    code: 0,
+  });
+  const progress: Array<{ percent?: number; message?: string }> = [];
+  await runEntryScript(
+    {
+      script: "./count.py",
+      manifestDir: PLUGIN,
+      timeoutMs: 0,
+      signal: new AbortController().signal,
+      onProgress: (p) => progress.push(p),
+    },
+    { spawn: fake.spawn },
+  );
+  // message 是字符串,照样收;只有非有限的 percent 被丢。
+  check("★ message 照常进回调(只丢非有限的 percent)", progress.some((p) => p.message === "疯进度"), progress);
+  check("★ 非有限 percent 被丢(不进回调,跟 commandRunner/codeRunner 对齐)", progress.every((p) => p.percent === undefined), progress);
+}
+
+{
   // ★ **畸形协议 payload 不许把结果污染成非字符串。** 协议行是**第三方脚本**打的,
   //   一个手滑(把 summary 打成一个对象/数字)曾会让 `state.result` 原样收下整个 payload
   //   —— 于是 `NodeOutcome.summary` 变成非字符串,而下游调度器的 `producedTextOf` 拿它

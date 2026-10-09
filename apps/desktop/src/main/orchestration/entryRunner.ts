@@ -99,8 +99,14 @@ function consumeProtocolLine(
     const payload = JSON.parse(match[2]) as unknown;
     if (match[1] === "progress" && payload && typeof payload === "object") {
       const value = payload as Record<string, unknown>;
+      // `percent` 多一道**有限性**守卫:payload 是第三方脚本打的,而 `1e999` 在 JSON
+      // 里是合法数字、`JSON.parse` 出来却是 `Infinity` —— 只判 `typeof === "number"`
+      // 拦不住它。非有限值会原样进进度事件,而两端处置还不一样:桌面端夹到 100%、手机端
+      // 过 SSE 的 `JSON.stringify(Infinity)` 变成 `null` 再夹到 0% —— 同一步在两端显示
+      // 成两个数。兄弟 `commandRunner` / `codeRunner` 的同名函数都有这一道
+      // (`codeRunner` 是 af9ccaa1 补的),这一支当时漏了。
       onProgress?.({
-        ...(typeof value.percent === "number" ? { percent: value.percent } : {}),
+        ...(typeof value.percent === "number" && Number.isFinite(value.percent) ? { percent: value.percent } : {}),
         ...(typeof value.message === "string" ? { message: value.message } : {}),
       });
     } else if (match[1] === "result" && payload && typeof payload === "object") {
