@@ -19,6 +19,17 @@
  * 钩子的调用顺序**不保证**,所以每个钩子只该动自己那份状态、不要互相依赖;`rowDeletion`
  * 保证"行删掉之前"全跑一遍。钩子必须**幂等**(同一 id 调两次不得报错),因为删项目那条
  * 路会为项目下每个会话各调一次。
+ *
+ * ## 一个钩子抛错不能带垮收尾
+ *
+ * `rowDeletion` 调 `runSessionCleanupHooks(id)` 是在 `SessionRepo.delete(id)` **之前**
+ * (见那里的顺序注释)。所以某个钩子抛出来 = 删会话整个半途而废:行还在,后面每一条
+ * (`dispose` / `disposeAgentSession` / `forgetSession` / 广播)一步都不做 —— 用户点了
+ * 删除却没删掉。这与本模块**自己指名的**那个兄弟 `mcp/agentSessionCleanup.ts` 是同一个
+ * 处境(那边 `disposeAgentSession` / `disposeAllAgentResources` 逐个 try/catch,理由写的
+ * 就是"调用方正走在删除流程里,不能因为清理失败半途而废")。所以这里也逐个兜住:坏的那个
+ * 记一行,其余照跑。用 `console.warn`(不是 `@main/lib/logger`)是为了保住这个叶子的
+ * **零依赖** —— 那个 logger 会 `import { app } from "electron"`(见文件头那条理由)。
  */
 export type SessionCleanupHook = (sessionId: string) => void;
 
@@ -36,9 +47,16 @@ export function registerSessionCleanupHook(fn: SessionCleanupHook): () => void {
   return () => hooks.delete(fn);
 }
 
-/** 跑一遍全部收尾钩子。空表是合法的(没有谁登记时什么都不做)。 */
+/** 跑一遍全部收尾钩子。空表是合法的(没有谁登记时什么都不做)。
+ *  单个钩子抛错不影响其余几个,也不抛给调用方(调用方正走在删除流程里)。 */
 export function runSessionCleanupHooks(sessionId: string): void {
-  for (const fn of hooks) fn(sessionId);
+  for (const fn of hooks) {
+    try {
+      fn(sessionId);
+    } catch (err) {
+      console.warn(`runSessionCleanupHooks(${sessionId}) failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 }
 
 /** 登记一个"项目被删时"的收尾(与 {@link registerSessionCleanupHook} 同一套路)。 */
@@ -47,9 +65,18 @@ export function registerProjectCleanupHook(fn: ProjectCleanupHook): () => void {
   return () => projectHooks.delete(fn);
 }
 
-/** 跑一遍全部项目收尾钩子。`projectPath` 是**删之前**读到的根路径。 */
+/** 跑一遍全部项目收尾钩子。`projectPath` 是**删之前**读到的根路径。
+ *  同 {@link runSessionCleanupHooks}:单个钩子抛错不拖垮其余几个,也不抛给调用方。 */
 export function runProjectCleanupHooks(projectId: string, projectPath: string): void {
-  for (const fn of projectHooks) fn(projectId, projectPath);
+  for (const fn of projectHooks) {
+    try {
+      fn(projectId, projectPath);
+    } catch (err) {
+      console.warn(
+        `runProjectCleanupHooks(${projectId}) failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 }
 
 /** 只给 smoke 用:当前登记了几个。 */

@@ -47,7 +47,7 @@ import { dropped, queueBackflow, resetBackflowStub } from "./stubs/pendingBackfl
 import { mailDropped, resetAgentMailStub } from "./stubs/agentMail.js";
 import { assistantDropped, resetAssistantStoreStub } from "./stubs/assistantStore.js";
 import { callTrace, resetCallTrace } from "./stubs/callTrace.js";
-import { registerProjectCleanupHook } from "@main/lib/sessionCleanupHooks.js";
+import { registerProjectCleanupHook, registerSessionCleanupHook } from "@main/lib/sessionCleanupHooks.js";
 import {
   disposedIds,
   disposedProjectIds,
@@ -515,6 +515,64 @@ console.log("\n3. 删一条会话");
     cancelAsked.length === first + 1,
     { before: first, after: cancelAsked.length },
   );
+}
+
+/* ────────── 3b. 收尾钩子抛错,不能带垮整条删除 ────────── */
+
+console.log("\n3b. 一个收尾钩子抛错,其余收尾照跑、行照样删");
+
+{
+  // `rowDeletion` 调 `runSessionCleanupHooks(id)` 是在 `SessionRepo.delete(id)` **之前**。
+  // 从前那两个跑钩子的循环**逐个裸调**、不兜错 —— 于是任何一个钩子抛出来,删会话就整个
+  // 半途而废:行还在,后面每一条(dispose / disposeAgentSession / forgetSession / 广播)
+  // 一步不做,用户点了删除却没删掉。这与本模块自己指名的兄弟 `mcp/agentSessionCleanup.ts`
+  // 是同一个处境(那边 `disposeAgentSession` 逐个 try/catch,理由就是"调用方正走在删除
+  // 流程里,不能因为清理失败半途而废")。
+  //
+  // 判据两条,缺一不可:①抛错的那个钩子之后,**别的钩子仍被跑到**;②会话**真被删掉了**。
+  const SENTINEL = "s_hook_throws";
+  const ranAfterThrow: string[] = [];
+  // 登记顺序 = 迭代顺序:先登记"会抛的",再登记"记录用的" —— 后者能跑到,才说明
+  // 前面那个抛错被兜住了(裸调的话循环当场中止,后面这个 `for` 到不了)。
+  const offThrow = registerSessionCleanupHook((id) => {
+    if (id === SENTINEL) throw new Error("这个钩子故意炸");
+  });
+  const offRecord = registerSessionCleanupHook((id) => {
+    if (id === SENTINEL) ranAfterThrow.push(id);
+  });
+
+  fresh();
+  const pid = mkProject("p3-hook");
+  const s = mkSession(SENTINEL, pid);
+  const threw = await catching(IPC.SESSION_DELETE, { id: s });
+  eq("钩子抛错时,SESSION_DELETE 本身不抛(用户看不到一句凭空错误)", threw, "");
+  check("★ 抛错钩子之后的钩子仍被跑到(不是整条循环当场中止)", ranAfterThrow.includes(SENTINEL), ranAfterThrow);
+  check("★ 行**真被删掉了**(半途而废的话它还留在库里)", SessionRepo.get(s) === undefined, SessionRepo.get(s));
+  offThrow();
+  offRecord();
+}
+
+{
+  // 项目收尾钩子同理:`deleteProjectEverywhere` 里 `runProjectCleanupHooks` 也在
+  // `ProjectRepo.delete` 之前 —— 抛错会把删项目整条掐断(项目还在、会话删除还没广播)。
+  // ⚠️ 真正的 id 由 `mkProject` 生成(`proj_<name>`),所以先建项目拿到 id 再登记钩子。
+  fresh();
+  const pid = mkProject("hook_throws");
+  mkSession("s_hook_proj", pid);
+  let ranAfterThrow = false;
+  const offThrow = registerProjectCleanupHook((id) => {
+    if (id === pid) throw new Error("这个项目钩子故意炸");
+  });
+  const offRecord = registerProjectCleanupHook((id) => {
+    if (id === pid) ranAfterThrow = true;
+  });
+
+  const threw = await catching(IPC.PROJECT_DELETE, { id: pid });
+  eq("钩子抛错时,PROJECT_DELETE 本身不抛", threw, "");
+  check("★ 抛错项目钩子之后的钩子仍被跑到", ranAfterThrow, ranAfterThrow);
+  check("★ 项目**真被删掉了**", ProjectRepo.get(pid) === undefined, ProjectRepo.get(pid));
+  offThrow();
+  offRecord();
 }
 
 /* ──────────────── 4. 会话的改名 / 归档 / 钉住 / 书签 ──────────────── */
