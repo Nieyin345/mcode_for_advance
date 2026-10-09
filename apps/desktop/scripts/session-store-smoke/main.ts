@@ -13,7 +13,7 @@
  *
  * Run: scripts/session-store-smoke/run.sh
  */
-import { setSendTurnStub, setSessionMessagesStub, setSkillsListStub, setTruncateStub, setInterruptStub } from "./prelude.js";
+import { setSendTurnStub, setSessionMessagesStub, setSkillsListStub, setTruncateStub, setInterruptStub, setUpdateSettingsStub } from "./prelude.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { ChatMessage, SessionState } from "@renderer/stores/sessionStore.js";
@@ -967,6 +967,25 @@ console.log("\n[15b-2] 点停止时 IPC 失败也不能把界面钉在「运行�
   eq("★ IPC 失败后本地仍解锁(不再钉在运行中)", store.getState().runningBySession[SID], false);
   check("★ 而且如实报了失败(不是静默)", useToastStore.getState().toasts.some((tt) => tt.body?.includes("interrupt IPC failed")), useToastStore.getState().toasts.map((tt) => tt.body));
   setInterruptStub(null);
+}
+
+console.log("\n[15f] 切换会话工作目录被主进程拒了,要报出来(不再静默什么都不发生)");{
+  // `moveSession` 走 `session.updateSettings({projectId})`,主进程在"已经有消息 / 已物化
+  // 工作树"时会**拒**这次搬移。从前 store 只 `console.error` 就 `return` —— 编辑框上方
+  // 那个目录菜单关了、目录没变、屏幕上一句话没有,用户以为切过去了(下一次发消息才发现
+  // 还在旧目录)。判据立在**用户看到的那条 toast** 上。
+  const SID = "move-ipc-fails";
+  seed([mkSession(SID)], { total: 1 });
+  const store = useSessionStore;
+  setUpdateSettingsStub(async () => { throw new Error("会话已经有消息了,引擎不能再改"); });
+  useToastStore.getState().clear();
+  await store.getState().moveSession(SID, "p2");
+  check(
+    "★ 目录搬移被拒时如实报了失败(不是静默)",
+    useToastStore.getState().toasts.some((tt) => tt.body?.includes("已经有消息")),
+    useToastStore.getState().toasts.map((tt) => tt.body),
+  );
+  setUpdateSettingsStub(null);
 }
 
 console.log("\n[15c] 删会话时排队提示词桶也要收掉");{

@@ -3904,7 +3904,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     try {
       await api.session.updateSettings({ sessionId, projectId: toProjectId });
     } catch (err) {
+      // 主进程在"已经有消息 / 已物化工作树"时会拒这次目录切换(守卫在
+      // `SESSION_UPDATE_SETTINGS`)。从前的裸 `console.error` 意味着:菜单关了、
+      // 目录没变、屏幕上一句话没有 —— 用户以为切过去了。
       console.error("moveSession: updateSettings rejected the move:", err);
+      useToastStore.getState().push({
+        kind: "error",
+        title: translate(useSessionStore.getState().locale, "chat.directory.moveFailed"),
+        body: err instanceof Error ? err.message : String(err),
+      });
       return;
     }
     set((s) => {

@@ -369,6 +369,9 @@ export const zh = {
   "chat.directory.rowHint": "点击切换新会话目录",
   "chat.directory.manageIconTitle": "管理项目(重命名 / 分组 / 颜色)",
   "chat.directory.manageHint": "行末 ⋯ 可管理项目(重命名 / 分组 / 颜色)",
+  /* 切换新会话目录失败(主进程在"已有消息 / 已物化工作树"时会拒)——
+     静默的话菜单关了、目录没变,用户以为切了。 */
+  "chat.directory.moveFailed": "切换工作目录失败",
   "chat.worktree.local": "本地",
   "chat.worktree.hintLocal": "在项目根目录工作",
   "chat.worktree.optionWtDetached": "工作树 · 沙盒",

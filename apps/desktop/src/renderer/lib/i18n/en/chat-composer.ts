@@ -350,6 +350,7 @@ export const en = {
   "chat.directory.rowHint": "Click to switch the new session's directory",
   "chat.directory.manageIconTitle": "Manage project (rename / group / color)",
   "chat.directory.manageHint": "Use the ⋯ at a row's end to manage the project (rename / group / color)",
+  "chat.directory.moveFailed": "Could not switch the working directory",
   "chat.worktree.local": "Local",
   "chat.worktree.hintLocal": "Work in the project root",
   "chat.worktree.optionWtDetached": "Worktree · Sandbox",
