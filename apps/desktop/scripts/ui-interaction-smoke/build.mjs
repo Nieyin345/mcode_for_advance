@@ -25,7 +25,7 @@ const stubs={
  '@renderer/stores/toastStore.js':'export const useToastStore={getState:()=>({push:()=>{}})};',
  '@renderer/lib/i18n/core.js':'export const translate=(_locale,key)=>key;',
  '@renderer/stores/fileViewStore.js':'export const useFileViewStore={getState:()=>({open:()=>{}})};',
- '@renderer/lib/icons.js':"export { SiClaude, SiGoogle } from 'react-icons/si';export function OpenAIBrandIcon(){return null;}export * from '@tabler/icons-react';",
+ '@renderer/lib/icons.js':"export { SiClaude, SiGoogle } from 'react-icons/si';export { PiRobot } from 'react-icons/pi';export function OpenAIBrandIcon(){return null;}export * from '@tabler/icons-react';",
  '@renderer/lib/commands.js':'export const collectCommands=()=>[];export const commandMatches=()=>true;',
  '@renderer/lib/shortcuts.js':'export const resolveShortcut=()=>null;export const acceleratorToDisplayString=()=>"";',
  '@renderer/lib/providerIcon.js':'export const getProviderIcon=()=>null;',
