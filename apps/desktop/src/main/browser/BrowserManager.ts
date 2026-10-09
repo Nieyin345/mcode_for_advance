@@ -1773,7 +1773,7 @@ class BrowserManagerImpl {
    *  registry, so no renderer-supplied filesystem path is ever trusted.
    *  "open" (launch with the OS default app) is refused unless the download
    *  completed — opening a half-written or cancelled file is never useful. */
-  downloadAction(downloadId: string, action: "open" | "reveal"): BrowserOpResult {
+  async downloadAction(downloadId: string, action: "open" | "reveal"): Promise<BrowserOpResult> {
     const entry = this.downloads.find((d) => d.id === downloadId);
     if (!entry) return { ok: false, error: "下载记录不存在或已被清理" };
     try {
@@ -1781,11 +1781,17 @@ class BrowserManagerImpl {
         if (entry.state !== "completed") {
           return { ok: false, error: "下载尚未完成,无法打开" };
         }
-        void shell.openPath(entry.path).then((err) => {
-          if (err) log.warn(`browser download openPath failed: ${entry.path} ${err}`);
-        });
+        // ⚠️ `shell.openPath` **返回一个错误串**("" 表示成功)。从前这里是
+        // `void …then(log.warn)` 一丢了事、**照样回 `{ok:true}`** —— 于是"系统没有
+        // 关联程序 / 文件下完又被挪走"时,用户点了下载栏那颗「打开文件」,屏幕上一个
+        // 字都没有(渲染端已经按 `{ok:false}` 报错,只是主进程从不给这个原因)。
+        // 同族的 `library.openFile` 就是 `await` 后带原因回 `{ok:false}`,这里对齐它。
+        const err = await shell.openPath(entry.path);
+        if (err) return { ok: false, error: `打开文件失败:${err}` };
       } else {
         // Selects the item inside its folder (opens the folder when needed).
+        // 与上面 open 分支的差别:showItemInFolder **没有错误返回**(失败时系统就是
+        // 什么都不做),没有可报的原因 —— 别把这条的静默当成上面那条也静默的借口。
         shell.showItemInFolder(entry.path);
       }
       return { ok: true };

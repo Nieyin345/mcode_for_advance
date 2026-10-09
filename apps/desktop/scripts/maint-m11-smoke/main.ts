@@ -116,4 +116,47 @@ await test('download path: will-download call site passes the in-flight reservat
  assert.equal(callArgCounts.length,1,'exactly one production call site expected');
  assert.equal(callArgCounts[0],3,'call site must pass in-flight download paths as the third argument');
 });
+// ── 下载栏「打开文件」失败必须报出来(downloadAction 的 open 分支)──
+// `shell.openPath` **返回一个错误串**("" 表示成功)。从前 open 分支是
+// `void shell.openPath(entry.path).then(log.warn)` 一丢了事、**照样回 `{ok:true}`** ——
+// 系统没有关联程序 / 文件下完又被挪走时,用户点下载栏那颗「打开文件」屏幕上一个字都没有
+// (渲染端的 `handleDownloadOpen` 已经按 `{ok:false}` 报错,只是主进程从不给这个原因)。
+// 同族的 `library.openFile` 就是 `await` 后带原因回 `{ok:false}`,这里对齐它。
+// downloadAction 是 BrowserManagerImpl 的方法、模块顶层 import electron,无头起不来 ——
+// 与上面 uniqueDownloadPath 同样用 AST 按边界取出方法体、转译后以替身 shell 真跑。
+const daMethod:{body?:ts.Block}={};
+function visitDownload(n:ts.Node):void{
+ if(ts.isMethodDeclaration(n)&&ts.isIdentifier(n.name)&&n.name.text==='downloadAction')daMethod.body=n.body;
+ ts.forEachChild(n,visitDownload);
+}
+visitDownload(bmSource);
+assert.ok(daMethod.body,'production downloadAction method required (BrowserManager.ts)');
+const daJs=ts.transpileModule(`async function downloadAction(downloadId, action) ${daMethod.body!.getText(bmSource)}\nreturn downloadAction;`,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;
+type ShellStub={openPath:(p:string)=>Promise<string>;showItemInFolder:(p:string)=>void};
+const makeAction=(shell:ShellStub,downloads:Array<Record<string,unknown>>)=>(new Function('shell','log',daJs)(shell,{warn:()=>{},error:()=>{},info:()=>{},debug:()=>{}}) as (id:string,a:string)=>Promise<{ok:boolean;error?:string}>).bind({downloads});
+await test('download open: openPath 报错串时必须回 {ok:false,error}(不是一丢了事)',async()=>{
+ let opened='';
+ const run=makeAction({openPath:async(p)=>{opened=p;return 'No application is associated with the specified file';},showItemInFolder:()=>{}},[{id:'d1',state:'completed',path:'C:/dl/a.pdf'}]);
+ const res=await run('d1','open');
+ assert.equal(opened,'C:/dl/a.pdf','open 分支要把记录的落点交给 shell.openPath');
+ assert.equal(res.ok,false,'openPath 失败时不能回 {ok:true}(用户点了「打开文件」却什么都没发生)');
+ assert.match(res.error??'',/No application is associated/,'openPath 那句错误串要带出来给用户看');
+});
+await test('download open: openPath 成功("")才回 {ok:true}',async()=>{
+ const run=makeAction({openPath:async()=>'' ,showItemInFolder:()=>{}},[{id:'d1',state:'completed',path:'C:/dl/a.pdf'}]);
+ assert.deepEqual(await run('d1','open'),{ok:true});
+});
+await test('download reveal: 走 showItemInFolder 且不受 openPath 影响',async()=>{
+ let revealed='';
+ const run=makeAction({openPath:async()=>'should-not-be-used',showItemInFolder:(p)=>{revealed=p;}},[{id:'d1',state:'completed',path:'C:/dl/a.pdf'}]);
+ assert.deepEqual(await run('d1','reveal'),{ok:true});
+ assert.equal(revealed,'C:/dl/a.pdf');
+});
+await test('download open: 未下完仍拒绝,不去调 shell',async()=>{
+ let called=false;
+ const run=makeAction({openPath:async()=>{called=true;return '';},showItemInFolder:()=>{}},[{id:'d1',state:'progressing',path:'C:/dl/a.pdf'}]);
+ const res=await run('d1','open');
+ assert.equal(res.ok,false);
+ assert.equal(called,false,'未下完就点打开不该打给 shell.openPath');
+});
 writeFileSync(join(dir,'checks.json'),JSON.stringify(results,null,2));console.log(results.filter(r=>r.status==='PASS').length+' passed; '+results.filter(r=>r.status==='FAIL').length+' failed');process.exitCode=results.some(r=>r.status==='FAIL')?1:0;
