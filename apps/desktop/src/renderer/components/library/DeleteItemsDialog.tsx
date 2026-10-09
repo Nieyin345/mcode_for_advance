@@ -140,7 +140,10 @@ export function DeleteItemsDialog({
       const failureMessage = [
         t("library.del.failureSummary", { n: String(result.failed.length) }),
         ...result.failed.map((failure: LibraryDeleteFailure) =>
-          `${failure.kind}: ${failure.path}\n${failure.error}\n${t(
+          // `failure.kind` 是机器哨兵(`pdf` / `markdown` / `file`),直接把英文摊在
+          // 中文界面上就是一句「file: C:\…」。按三档翻成人话 —— 与上面的
+          // `library.del.form.*` 同一条口径。
+          `${t(`library.del.kind.${failure.kind}`)}: ${failure.path}\n${failure.error}\n${t(
             failure.recordRetained ? "library.del.recordRetained" : "library.del.recordRemoved",
           )}`,
         ),

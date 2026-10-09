@@ -14,7 +14,7 @@
  * **拖入**不在这里处理：整块文献面板都接受从资源管理器拖进来的文件，见
  * LibraryPanel 的 onDrop —— 拖放的目标区域大一点才好用。
  */
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
@@ -36,6 +36,10 @@ export function ImportBar({
 }: Props) {
   const { t } = useI18n();
   const [busy, setBusy] = useState(false);
+  /** 导入/新建是否在进行 —— 用 ref 做重入守卫(理由见 `createNoteNow`)。
+   *  `busy` 是异步生效的:标题框上的 Enter 与按钮的 `disabled` 各自读渲染时的值,
+   *  两次连按之间还没重渲染,只靠 state 挡不住,得靠同步的 ref。 */
+  const busyRef = useRef(false);
   const [message, setMessage] = useState<string | null>(null);
   /** 新建笔记时的标题输入。 */
   const [noteTitle, setNoteTitle] = useState("");
@@ -65,6 +69,8 @@ export function ImportBar({
 
   /** 通用文件导入：全类型，主进程按扩展名分派（pdf/md/其他三条管线）。 */
   const pickFiles = async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     setMessage(null);
     try {
@@ -90,6 +96,7 @@ export function ImportBar({
     } catch (error) {
       reportError(error);
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   };
@@ -99,6 +106,12 @@ export function ImportBar({
    * 不再限制"只有笔记分类能建 md"）。
    */
   const createNoteNow = async () => {
+    // 重入守卫。那颗「新建」按钮 `disabled={busy}`,但标题输入框**没有** —— 它上面
+    // 的 Enter 也会走这条路。`createNote` 期间输入框还开着、标题也还没清,连按两下
+    // Enter 就插进**两条同名的笔记**。`busy` 异步生效挡不住(两次之间还没重渲染),
+    // 用同步的 ref 收口;其余三个入口也照同一条规矩守。
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     setMessage(null);
     try {
@@ -117,6 +130,7 @@ export function ImportBar({
     } catch (error) {
       reportError(error);
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   };
@@ -127,6 +141,8 @@ export function ImportBar({
    * "一个文件夹是一个整体"的资料用这条。
    */
   const pickFolder = async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     setMessage(null);
     try {
@@ -142,6 +158,7 @@ export function ImportBar({
     } catch (error) {
       reportError(error);
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   };
@@ -151,6 +168,8 @@ export function ImportBar({
    * 与"文件夹=条目"是两个不同的动作 —— 用户按需选。
    */
   const explodeFolder = async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     setMessage(null);
     try {
@@ -166,6 +185,7 @@ export function ImportBar({
     } catch (error) {
       reportError(error);
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   };

@@ -15,7 +15,7 @@
  * 用户记的"这一章的重点""这里推导没看懂"对模型是最直接的信号,而清单正是它读文献时
  * 唯一会看的东西 —— 记了不给它看,等于白记。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { LibraryItem, LibraryNote } from "@contracts/library";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
@@ -34,6 +34,13 @@ export function ItemNotes({ item }: { item: LibraryItem }) {
   const [editing, setEditing] = useState<"new" | string | null>(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  /** 保存/删除是否正在进行 —— 用 ref 而不是只靠 `busy` state。
+   *
+   *  `busy` 是异步生效的:两次 Ctrl/Cmd+Enter 之间 React 还没重渲染,textarea 的
+   *  `onKeyDown` 闭包读到的仍是旧的 `busy=false` —— 只靠 state 挡不住"按住回车"
+   *  这一档,新建笔记会连着插两条(与 `QuestionPrompt.submittingRef` 同一条做法)。
+   *  ref 是同步写、下个 tick 就能读到,才真正堵得住重入。 */
+  const savingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -73,11 +80,17 @@ export function ItemNotes({ item }: { item: LibraryItem }) {
   };
 
   const save = useCallback(async () => {
+    // 重入守卫:保存按钮 `disabled={busy}`,但 textarea 的 Ctrl/Cmd+Enter 不经过
+    // 那颗按钮 —— 按住不放时长按重复会连着触发好几次 `save`,新建笔记那一路
+    // (editing === "new")会**插进两条一模一样的笔记**。`busy` 异步生效挡不住
+    // (两次之间还没重渲染),所以用同步的 ref 收口(见它上面的说明)。
+    if (savingRef.current) return;
     const content = draft.trim();
     if (!content) {
       setEditing(null);
       return;
     }
+    savingRef.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -93,6 +106,7 @@ export function ItemNotes({ item }: { item: LibraryItem }) {
     } catch (err) {
       setError((err as Error).message);
     } finally {
+      savingRef.current = false;
       setBusy(false);
     }
   }, [draft, editing, item.id]);

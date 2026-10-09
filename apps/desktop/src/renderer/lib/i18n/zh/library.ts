@@ -183,6 +183,11 @@ export const zh = {
   "library.del.form.item": "库内条目",
   "library.del.form.path": "库外文件（只删关联记录，不动你的文件）",
   "library.del.form.transcript": "转录产物 + 图床（{n} 张图）",
+  /* 失败回报里那句「删不掉的是哪一份文件」—— 主进程给的是 kind 哨兵
+     (pdf / markdown / file),直排会冒出英文,按三档翻成人话。 */
+  "library.del.kind.pdf": "PDF 文件",
+  "library.del.kind.markdown": "Markdown 转录文件",
+  "library.del.kind.file": "库内文件",
   "library.del.noLinks": "它没有关联别的东西。",
   "library.del.failureSummary": "有 {n} 个文件未能删除：",
   "library.del.recordRetained": "记录仍在回收站，可以修正后重试。",
