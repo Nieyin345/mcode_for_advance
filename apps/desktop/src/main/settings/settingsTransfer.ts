@@ -107,6 +107,13 @@ const EXCLUDED_PREFIXES = [
   "session.lastModel.",
   "migration.",
   "internal.",
+  // ⚠️ **记忆助手的运行时状态。** `memory.assistant.job.<id>` 的值里带着 `result`
+  // —— AI 从**用户对话**里整理出来的交接材料/摘要。键名不含任何密钥词(所以两道密钥
+  // 筛子都拦不住它),但导出设置的文件正是用户拿去**分享 / 搬机器**的那个 JSON ——
+  // 把自己对话的正文总结写进去与文件头「绝不导出…按项目 id 存的东西」那句相悖。
+  // 同族的 `.source.<sessionId>` / `.target.<sessionId>` 也按会话 id 存,换台机器全是
+  // 悬空 id,没有任何搬运价值。
+  "memory.assistant.",
 ];
 
 export function isTransferableSettingKey(key: string): boolean {

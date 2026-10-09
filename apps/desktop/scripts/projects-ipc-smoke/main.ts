@@ -45,6 +45,7 @@ import { mobileEvents, resetMobileEvents } from "./stubs/mobileEventBus.js";
 import { cancelAsked, markRunActive, resetRunnerStub, stoppedRuns } from "./stubs/runner.js";
 import { dropped, queueBackflow, resetBackflowStub } from "./stubs/pendingBackflow.js";
 import { mailDropped, resetAgentMailStub } from "./stubs/agentMail.js";
+import { assistantDropped, resetAssistantStoreStub } from "./stubs/assistantStore.js";
 import { callTrace, resetCallTrace } from "./stubs/callTrace.js";
 import {
   disposedIds,
@@ -151,6 +152,7 @@ function fresh(): void {
   resetRunnerStub();
   resetBackflowStub();
   resetAgentMailStub();
+  resetAssistantStoreStub();
   resetRuntimeStub();
   resetCallTrace();
 }
@@ -358,6 +360,14 @@ console.log("\n2. 删项目 —— 级联删掉的每一条会话,收尾做全�
     [a, b, side].every((id) => mailDropped.includes(id)),
     mailDropped,
   );
+  // 记忆助手按会话/任务 id 存在设置表里(`memory.assistant.*`),值里还带着 AI 从对话
+  // 整理的摘要。会话一删它们再也不会被读到 —— 留着就是只增不减的设置行,而设置表每写
+  // 一次都要重写整个 `mcode.db`。判据同样立在"每一条"(项目级走逐会话循环)。
+  check(
+    "**每一条**的记忆助手状态行也清了",
+    [a, b, side].every((id) => assistantDropped.includes(id)),
+    assistantDropped,
+  );
   // `RuntimeManager` 上按会话留的 `lastEnvFingerprint` 同理:每轮 chat 写一条、从不删,
   // 会话键的表随会话数只涨不落。判据同样立在"每一条"(项目级走逐会话循环)。**刻意不并进
   // dispose**:归档也走 dispose、归档会话重开时环境块已在历史里,那时清指纹会重复注入 ——
@@ -446,6 +456,7 @@ console.log("\n3. 删一条会话");
   check("停的是这一条", stoppedRuns[0] === s, stoppedRuns);
   check("待并回内容清了", dropped.includes(s), dropped);
   check("代理收件箱也清了(会话级)", mailDropped.includes(s), mailDropped);
+  check("记忆助手状态行也清了(会话级)", assistantDropped.includes(s), assistantDropped);
   check("环境指纹残留也摘了(会话级,会话键的表不能只涨不落)", forgot.includes(s), forgot);
   check(
     "运行时也放掉了(逐条的那一句 —— 会话级的 dispose)",

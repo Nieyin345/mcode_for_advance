@@ -639,6 +639,30 @@ const originalRunSave = repo.save;
   await new Promise(resolve => setTimeout(resolve, 30));
   eq("在引擎预检期间取消不会偷偷启动模型", rt.sentPrompts.length, beforeCancel);
   eq("被取消的后台任务不反弹成成功", store.readAssistantJob(launching.id)?.status, "cancelled");
+
+  // ★ 会话没了 → 它名下的记忆助手行一起删掉(值里带着 AI 从对话整理的摘要)。
+  //   三族键都按会话/job id 存,会话一删它们再也不会被读到,留着就是只增不减的设置行,
+  //   而设置表每写一次都要重写整个 `mcode.db`。`createAssistantJob` 只"留最近 20 条"
+  //   并把老的标过期、**不删行**,所以光靠它兜不住 —— 必须有这条会话级收尾。
+  {
+    const doomedSrc = SessionRepo.get(source.id)!;
+    const cleanupJob = store.createAssistantJob(doomedSrc.id, doomedSrc.projectId, "cleanup-worker", "checkpoint");
+    store.saveAssistantJob({ ...store.readAssistantJob(cleanupJob.id)!, status: "ready", result: "会话删掉后不该留存的摘要" });
+    store.queueAssistantHandoff(cleanupJob.id, doomedSrc.id, delivered.target!.id);
+    const jobKey = `memory.assistant.job.${cleanupJob.id}`;
+    const srcKey = `memory.assistant.source.${doomedSrc.id}`;
+    const tgtKey = `memory.assistant.target.${delivered.target!.id}`;
+    check("收尾前:该会话的三族键都在表里", SettingRepo.get(jobKey) !== null && SettingRepo.get(srcKey) !== null && SettingRepo.get(tgtKey) !== null);
+
+    store.dropAssistantJobs(doomedSrc.id);
+
+    eq("★ 收尾删掉了 job 本体(带 AI 摘要的那条)", SettingRepo.get(jobKey), null);
+    eq("★ 收尾删掉了该会话的 job 索引", SettingRepo.get(srcKey), null);
+    eq("★ 收尾删掉了指向它的交接指针", SettingRepo.get(tgtKey), null);
+    // 幂等:同一 id 再调一次不得报错(删项目那条路会为每个会话各调一次)。
+    let twice = false; try { store.dropAssistantJobs(doomedSrc.id); twice = true; } catch { /* */ }
+    check("重复收尾幂等", twice);
+  }
 }
 
 // Ordinary launches (not only memory workers) reserve and cancel during preflight.

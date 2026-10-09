@@ -75,7 +75,30 @@ for (const key of SECRET_KEYS) {
   check("正控:另一条普通键也不受影响", isTransferableSettingKey("ui.accentColor"), true);
 }
 
-// ── 值里的密钥字段:深度清洗不能只认恰好等于 `apiKey` 的那种名字 ──
+// ── 会话派生内容:不是密钥,但同样不能进那个"拿去分享"的 JSON ──
+//
+// 文件头承诺的还有"绝不导出…按项目 id 存的东西(换台电脑对不上)"。记忆助手的
+// `memory.assistant.job.<id>` 值里带着 `result` —— AI 从用户对话里整理出的交接材料。
+// 键名不含任何密钥词,两道密钥筛子都拦不住,只能按前缀排。
+console.log("\n导出设置:会话派生的记忆助手状态不导出");
+{
+  const LOCAL_STATE_KEYS = [
+    "memory.assistant.job.7f3a-uuid",
+    "memory.assistant.source.sess-abc",
+    "memory.assistant.target.sess-def",
+  ];
+  const all: Record<string, string | null> = {};
+  for (const k of LOCAL_STATE_KEYS) {
+    all[k] = JSON.stringify({ result: "用户对话的 AI 摘要,不该出现在分享文件里" });
+  }
+  all["ui.locale"] = "zh"; // 正控
+  const { doc } = buildSettingsExport(all, { appVersion: "0.0.0" });
+  const leaked = LOCAL_STATE_KEYS.filter((k) => k in doc.settings);
+  check("★ 记忆助手的运行时状态键不导出", leaked.length === 0, { leaked });
+  check("正控:普通偏好键仍导出", doc.settings["ui.locale"] === "zh", doc.settings);
+}
+
+// ── 值里的密钥字段:深度清洗不能只认恰好等于 `apiKey` 的那种名 ──
 //
 // `customModels` 是**公开元数据**(该导出),但它的 `customHeaders` 里放的常常就是网关
 // 的鉴权头 —— 而用户管它叫 `x-api-key` / `x-auth-token` / `Authorization` 都属常见。
