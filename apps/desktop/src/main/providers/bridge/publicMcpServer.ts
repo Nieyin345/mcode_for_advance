@@ -145,10 +145,13 @@ export function publicMcpPort(): number {
  * 宁可在这里报一句"17331 被占了",那是他三十秒能处理掉的事。
  */
 export async function startPublicMcp(): Promise<void> {
-  if (!store?.getEnabled()) throw new Error("公网 MCP 端点已关闭");
+  // ⚠️ **store 判空必须在 `getEnabled()` 之前。** 从前写的是 `if (!store?.getEnabled())`,
+  // 而 `store` 为 null 时 `store?.getEnabled()` 是 `undefined`(falsy)→ 先抛出「端点已关闭」,
+  // 下面那句 `if (!store)` 永远走不到 —— 真正的原因(store 没配)被报成了另一件事。
+  if (!store) throw new Error("public mcp: store is not configured");
+  if (!store.getEnabled()) throw new Error("公网 MCP 端点已关闭");
   if (server) return;
   if (starting) return starting;
-  if (!store) throw new Error("public mcp: store is not configured");
 
   const generation = lifecycleGeneration;
   const pending = (async () => {

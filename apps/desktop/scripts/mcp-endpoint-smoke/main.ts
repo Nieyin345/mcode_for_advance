@@ -319,6 +319,20 @@ stopExtensionBridge();
 const PUBLIC_SESSION = "sess_smoke_synthetic";
 let publicStoreEnabled = true;
 let observedPublicRequest: (() => void) | null = null;
+// ★ 判据立在**用户看到的那句话**上:store 没配(null)时,报的必须是"store 没配",
+//   不是"端点已关闭"。从前的写法 `if (!store?.getEnabled())` 会先抛「端点已关闭」,
+//   把真正的原因报成另一件事 —— 而 `if (!store)` 那句永远走不到。
+//   (这一段的 store 还没装配,正好是 null。)
+{
+  let nullStoreError: string | null = null;
+  try {
+    await startPublicMcp();
+  } catch (err) {
+    nullStoreError = (err as Error).message;
+  }
+  check("★ store 未装配时报的是'set store is not configured',不是'端点已关闭'", (nullStoreError ?? "").includes("store is not configured"), nullStoreError);
+  check("★ store 未装配时不会谎称'端点已关闭'", !(nullStoreError ?? "").includes("端点已关闭"), nullStoreError);
+}
 // 上一段末尾把宿主卸了（验"宿主缺席"那两条）；这里重新装回同一份 —— 公网端点读的
 // 是**共享的**那份工具表，正是要验"两条通路的工具表是同一份"。
 configureMcpToolHost({
