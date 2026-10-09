@@ -31,16 +31,23 @@ import { allTrashCollectionIds, shouldSweepAfterRemoval, sweepToTrash } from "./
  * 移出来时,如果它因此成了孤儿,收进回收站而不是让它凭空消失(用户的原话是
  * 「在哪里,我也移不了呀」—— 条目不能有"不在任何地方"这个状态)。
  */
-export function assignToCollection(collectionId: string, itemIds: string[], add: boolean): void {
-  if (itemIds.length === 0) return;
-  CollectionRepo.assign(collectionId, itemIds, add);
+export function assignToCollection(collectionId: string, itemIds: string[], add: boolean): string[] {
+  if (itemIds.length === 0) return [];
+  // **只把真正存在、真的动了的条目算数。** 从前返回 void,调用方(如 MCP 的
+  // `library_move`)只好拿**请求的**条数去报——模型传了一串不存在的 id 也会得到
+  // "已把 N 条移到该分类",而实际一条没动。与 `removeItemsToTrash` 同形:回 treated 列表。
+  // `LibraryRepo.get` 找不到时返回 **null**(不是 undefined)—— 判据要认 null。
+  const moved = itemIds.filter((id) => LibraryRepo.get(id) !== null);
+  if (moved.length === 0) return [];
+  CollectionRepo.assign(collectionId, moved, add);
   if (add) {
     for (const trashId of allTrashCollectionIds()) {
-      if (trashId !== collectionId) CollectionRepo.assign(trashId, itemIds, false);
+      if (trashId !== collectionId) CollectionRepo.assign(trashId, moved, false);
     }
   } else if (shouldSweepAfterRemoval(collectionId)) {
-    sweepToTrash(itemIds);
+    sweepToTrash(moved);
   }
+  return moved;
 }
 
 /** 导入时归入选定分类；重复导入现有条目也要归入，且在发导入事件之前完成。

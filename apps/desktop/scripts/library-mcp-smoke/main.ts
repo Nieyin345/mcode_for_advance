@@ -526,6 +526,21 @@ console.log("\n回收站:翻库的路");
   check("前提:library_remove 真把它移进了回收站", trashedItemIds().has(doomed.id), { removed, trashed: [...trashedItemIds()] });
   ensureTrashCollection();
 
+  // ★ **library_move 报的条数必须是真的动了的,不是请求的。** 从前它报 `args.itemIds.length`
+  //   (请求数),模型传一串不存在的 id 也会得到"已把 N 条移到该分类",而一条没动 ——
+  //   与上面的 library_remove(报 `moved.length`)口径不一致。
+  {
+    const target = CollectionRepo.create("移动冒烟目标分类", null, "paper");
+    const real = LibraryRepo.upsert({ title: "真的存在的一条" });
+    const moveRes = await call("library_move", { itemIds: [real.id, "li_根本不存在"], collectionId: target.id });
+    check("★ library_move 报的是真动了的条数(不存在的 id 不计入)", /已把 1 条移到/.test(moveRes), moveRes);
+    check("★ …并对没动的 id 明说(不静默)", /找不到/.test(moveRes), moveRes);
+    check("…真的那条确实进了目标分类", CollectionRepo.collectionsOfItem(real.id).includes(target.id));
+    // 全都不存在时不算"移动成功"。
+    const none = await call("library_move", { itemIds: ["li_也没有", "li_还是没有"], collectionId: target.id });
+    check("★ 全都找不到时报失败而不是「已移 0 条」", /没找到|没有|失败/.test(none), none);
+  }
+
   // ① library_search —— 不能把它当"库里的一篇"报给模型。
   const searched = await call("library_search", { query: "要丢进回收站的那一篇" });
   check("★ library_search:回收站里的条目不出现", !searched.includes(doomed.id), searched);

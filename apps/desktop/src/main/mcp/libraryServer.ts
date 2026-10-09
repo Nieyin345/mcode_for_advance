@@ -375,9 +375,16 @@ export function libraryMcpTools(): McpToolSpec[] {
           if (!CollectionRepo.list().some((c) => c.id === args.collectionId)) {
             return fail(`分类 ${args.collectionId} 不存在`);
           }
-          assignToCollection(args.collectionId, args.itemIds, true);
+          const moved = assignToCollection(args.collectionId, args.itemIds, true);
+          if (moved.length === 0) return fail("这些 id 一条都没找到");
           notifyLibraryChanged("move");
-          return text(`已把 ${args.itemIds.length} 条移到该分类。`);
+          // 报**真的动了的**条数,不是请求的条数 —— 模型传了不存在的 id 时不能对它
+          // 说"已移 N 条"(与下面的 library_remove 同一条口径)。
+          const skipped = args.itemIds.length - moved.length;
+          return text(
+            `已把 ${moved.length} 条移到该分类。` +
+              (skipped > 0 ? `(另有 ${skipped} 条 id 找不到,没动)` : ""),
+          );
         },
       },
       {
