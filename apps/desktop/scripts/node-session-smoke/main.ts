@@ -615,6 +615,13 @@ const originalRunSave = repo.save;
   check("使用当前对话最近保存的内容", prompt.includes("LATEST_CONTEXT") && !prompt.includes("OUTSIDE_RECENT_WINDOW"));
   check("读取实际关联运行证据", prompt.includes("LINKED_RUN_EVIDENCE"));
   check("不序列化图片或明显密钥", !prompt.includes("NEVER_SEND_IMAGE_DATA") && !prompt.includes(`sk-${"A".repeat(30)}`));
+  // ★ 提示词里对模型说的那个「文本最多 N 字」必须是**真的那个预算**,不是手抄的副本。
+  //   从前这里硬编码 32000,与 `sourceText.SOURCE_BUDGET` 是同一事实的两处字面量 ——
+  //   改了预算漏改这里,模型就会被喂一个与实际不符的数。
+  {
+    const { SOURCE_BUDGET } = await import("@main/memory/sourceText.js");
+    check("★ 提示词里报的预算与 SOURCE_BUDGET 一致(不是手抄的数字)", prompt.includes(`文本最多${SOURCE_BUDGET}字`), SOURCE_BUDGET);
+  }
   rt.nodeEmit(node.id)?.({ type: "text.delta", sessionId: node.id, messageId: "handoff-answer", text: "已完成 A；证据是测试记录；下一步 B。" });
   rt.finishTurn(node.id);
   await waitFor("交接结果被真实宿主保存", () => store.readAssistantJob(job.id)?.status === "ready");
