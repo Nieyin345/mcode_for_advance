@@ -713,10 +713,14 @@ export function importWorkflowDoc(text: string, opts: WorkflowValidationOptions 
 
   const shape = WorkflowDocSchema.safeParse(parsed);
   if (!shape.success) {
-    const detail = shape.error.issues
-      .slice(0, 3)
+    // 只列前 3 条(报错一行就好读),但**后面还有几条必须说出来** —— 否则调用方以为
+    // 就这 3 条,改完再导一次才发现还有,一轮轮试。仓规:少列了东西要显式写一句。
+    const issues = shape.error.issues;
+    const shown = issues.slice(0, 3);
+    const rest = issues.length - shown.length;
+    const detail = shown
       .map((i) => `${i.path.length > 0 ? i.path.join(".") : "(根)"}:${i.message}`)
-      .join("; ");
+      .join("; ") + (rest > 0 ? `;…(还有 ${rest} 处同类问题未列出)` : "");
     return {
       ok: false,
       report: {

@@ -401,8 +401,19 @@ def load_trash_ids(cur):
             trash_cols.add(str(legacy_id))
     for cid in trash_cols:
         try:
+            # ⚠️ **按整棵子树收,不是只看一层。** 回收站是普通集合,用户可以把别的分类
+            # 「移动到…」它下面,也可给它建子分类 —— 那时条目挂在**子分类**里,单层
+            # collection_id = ? 那种查询收不到,丢进回收站的东西(连同绝对路径)照常进
+            # 模型上下文。与主进程 trash.ts 的 listByCollectionTree(递归 CTE)同一套
+            # 语义 —— 那边 2026-10-09 修的就是这件事,这份 Python 镜像是它的孪生,不能只修一边。
             for row in cur.execute(
-                "SELECT item_id FROM library_collection_items WHERE collection_id = ?", [cid]
+                "WITH RECURSIVE subtree(id) AS ("
+                " SELECT id FROM library_collections WHERE id = ?"
+                " UNION"
+                " SELECT c.id FROM library_collections c JOIN subtree s ON c.parent_id = s.id"
+                ") SELECT item_id FROM library_collection_items"
+                " WHERE collection_id IN (SELECT id FROM subtree)",
+                [cid],
             ):
                 ids.add(str(row["item_id"]))
         except sqlite3.Error:

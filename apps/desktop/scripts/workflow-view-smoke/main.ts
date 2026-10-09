@@ -1091,6 +1091,11 @@ eq(
 eq("卡片标题:用户起的优先", nodeTitle({ title: "检索", type: "mcode.agent" }, AGENT_ENTRY), "检索");
 eq("卡片标题:没起就用清单里的名字", nodeTitle({ title: "", type: "mcode.agent" }, AGENT_ENTRY), "子 agent");
 eq("卡片标题:类型没装就退回类型 id", nodeTitle({ title: "", type: "x.y" }, undefined), "x.y");
+// ★ 纯空白标题要**与主进程 runner.displayTitle 同判**(它文件头写着这条链"必须一样"):
+//   NodeInspector 往 title 里写的是输入框原值、没 trim,于是 `   ` 这种标题在一个地方回退成
+//   清单名(`子 agent`)、在另一个地方画成空白卡。判据都得用 trim()。
+eq("★ 纯空白标题回退到清单名(与 runner.displayTitle 同判)", nodeTitle({ title: "   ", type: "mcode.agent" }, AGENT_ENTRY), "子 agent");
+eq("★ 纯空白标题且类型没装时退回类型 id", nodeTitle({ title: "\t\n", type: "x.y" }, undefined), "x.y");
 eq("找得到清单", findNodeType(CATALOG.entries, "mcode.agent")?.manifest.name, "子 agent");
 eq("找不到返回 undefined(不是错误)", findNodeType(CATALOG.entries, "x.y"), undefined);
 

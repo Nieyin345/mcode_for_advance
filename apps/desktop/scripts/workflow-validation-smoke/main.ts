@@ -909,6 +909,13 @@ check("非法 JSON 被拒", !badJson.ok && badJson.report.errors[0]?.code === "s
 
 const badShapeDoc = importWorkflowDoc(JSON.stringify({ id: "x" }), OPTS);
 check("形状不符契约被拒", !badShapeDoc.ok && badShapeDoc.report.errors[0]?.code === "schema.invalid", badShapeDoc.ok ? badShapeDoc : badShapeDoc.report.errors);
+// ★ 只列前 3 条是对的(一行报错好读),但**后面还有几条必须说出来** —— 否则调用方以为就这 3 条,
+//   改完再导一次才发现还有,一轮轮试。这条只在一个"明显超过 3 条问题"的文档上才有意义。
+check(
+  "★ 问题超过 3 条时明说还有几处(不静默截断)",
+  !badShapeDoc.ok && /还有 \d+ 处/.test(badShapeDoc.report.errors[0]?.message ?? ""),
+  badShapeDoc.ok ? badShapeDoc : badShapeDoc.report.errors[0]?.message,
+);
 
 const futureVersion = importWorkflowDoc(JSON.stringify({ ...validDoc, schemaVersion: "9" }), OPTS);
 check("不支持的 schemaVersion 被拒", !futureVersion.ok && futureVersion.report.errors[0]?.code === "schema.version-unsupported", futureVersion.ok ? futureVersion : futureVersion.report.errors);

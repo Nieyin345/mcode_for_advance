@@ -90,6 +90,9 @@ c.executemany("INSERT INTO library_items(id,title,abstract,url,md_path,pdf_path,
   ("li_trash", "被丢进回收站的那一篇", None, None, "markdown/t.md", None, None, 1000, 1000),
   # ★ 改过名的**老回收站**:名字不是「回收站」,只有老的**每库键**认得它(见 3b 段)
   ("li_legacy_trash", "老回收站里改过名的那一篇", None, None, "markdown/lt.md", None, None, 1000, 1000),
+  # ★ 挂在**回收站子分类**里的条目 —— 回收站是普通集合,用户可以把别的分类移到它下面。
+  #   单层查询收不到它,丢进去的东西(连同绝对路径)照常进上下文(见 3b 段)。
+  ("li_nested_trash", "回收站子分类里的一篇", None, None, "markdown/nt.md", None, None, 1000, 1000),
 ])
 c.executemany("INSERT INTO library_collections(id,name,parent_id,group_id,sort_order) VALUES(?,?,?,?,?)", [
   ("lc_aw", "精读队列", None, "docs", 0),
@@ -99,12 +102,15 @@ c.executemany("INSERT INTO library_collections(id,name,parent_id,group_id,sort_o
   ("lc_trash", "回收站", None, "docs", 2),
   # 改过名的老回收站:它叫「归档处」,名字那条来源认不出 —— 只有老的每库键认它。
   ("lc_legacy_trash", "归档处(改过名的老回收站)", None, "docs", 3),
+  # ★ 回收站的**子分类** —— 用户把别的分类移到了回收站下面。
+  ("lc_nested_under_trash", "被移进回收站的分类", "lc_trash", "docs", 4),
 ])
 c.executemany("INSERT INTO library_collection_items(collection_id,item_id) VALUES(?,?)", [
   ("lc_aw", "li_p1"), ("lc_sub", "li_p1"), ("lc_tpl", "li_t1"), ("lc_orphan", "li_orphan"),
   ("lc_aw", "li_pm"), ("lc_aw", "li_po"), ("lc_aw", "li_doc"), ("lc_aw", "li_dm"),
   ("lc_trash", "li_trash"),
   ("lc_legacy_trash", "li_legacy_trash"),
+  ("lc_nested_under_trash", "li_nested_trash"),
 ])
 c.execute("INSERT INTO settings(key,value) VALUES(?,?)", ("library.groups", json.dumps([
   # NOTE: 老库里这份 JSON 仍然带着 kinds —— 代码停写但没删列。脚本必须忽略它,
@@ -231,6 +237,20 @@ console.log("\nlist · 回收站那道门");
     "★ find 也拿不到老回收站里那条",
     !at("find", "老回收站").includes("老回收站里改过名的那一篇"),
     at("find", "老回收站"),
+  );
+
+  // ★ **挂在回收站子分类里的条目**也得挡。回收站是普通集合,用户可以把别的分类移到它
+  //   下面 —— 那时条目挂在子分类里,单层查询收不到。这份 Python 是主进程 `trash.ts` 的
+  //   孪生(那边用 listByCollectionTree 递归 CTE),不能只修一边、让这条出口漏出去。
+  check(
+    "★ 回收站子分类里的条目不出现(按整棵子树收)",
+    !all.includes("回收站子分类里的一篇"),
+    all,
+  );
+  check(
+    "★ find 也拿不到回收站子分类里那条",
+    !at("find", "回收站子分类").includes("回收站子分类里的一篇"),
+    at("find", "回收站子分类"),
   );
 }
 

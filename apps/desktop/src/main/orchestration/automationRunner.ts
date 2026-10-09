@@ -305,11 +305,12 @@ interface PendingFire {
 /** 一次手动运行的结论。IPC 那一路要把它变成给用户看的一句话。 */
 export type AutomationRunResult = { ok: true } | { ok: false; error: string };
 
-/** 一个项目目录的监听 `fs.watch` 只开一个,多个触发器共享。 */
+/** 一个项目目录的监听 `fs.watch` 只开一个,多个触发器共享。
+ *  `watcher === null` 就是"这个目录上现在没挂上"——`rebuildWatchers` 据此每次 reload
+ *  重试(目录回来了就该复活)。(曾有个 `watchOk` 字段,注释写着"不可用时不再反复重试",
+ *  但它只被写过、从没被读过,重试一直按 `watcher === null` 走 —— 是死状态,删。) */
 interface WatcherEntry {
   watcher: FSWatcher | null;
-  /** 这个平台上/这个目录上监听是否可用。不可用时不再反复重试(同 walkCache)。 */
-  watchOk: boolean;
 }
 
 class AutomationRunner {
@@ -676,7 +677,7 @@ class AutomationRunner {
         if (existing.watcher === null) this.armWatcher(dir);
         continue;
       }
-      this.watchers.set(dir, { watcher: null, watchOk: false });
+      this.watchers.set(dir, { watcher: null });
       this.armWatcher(dir);
     }
   }
@@ -715,7 +716,6 @@ class AutomationRunner {
         }
       });
       watcher.on("error", (err) => {
-        entry.watchOk = false;
         log.warn(`[automation] 监听 ${dir} 出错,文件触发在这个目录上停了:${err.message}`);
         // **失效处理**(AUTO-06):这个目录上的文件触发器当场记成挂不住 —— 用户看着
         // 一条填好的触发器等它响,是这一路最坏的坏法。
@@ -732,7 +732,6 @@ class AutomationRunner {
         entry.watcher = null;
       });
       entry.watcher = watcher;
-      entry.watchOk = true;
       // 挂上了:把上次「监听失效」记的那笔还回来(reload 重试成功的那条路走这里)。
       // **经 `markArmed`**:用户关掉的那条不会被这笔说成"响着"。
       for (const t of this.all()) {

@@ -203,9 +203,12 @@ export function isLoopGate(catalog: NodeTypeCatalog, doc: WorkflowDoc, nodeId: s
   );
 }
 
-/** 画布上那张卡片显示什么标题:用户起的 > 清单里的名字 > 类型 id。 */
+/** 画布上那张卡片显示什么标题:用户起的 > 清单里的名字 > 类型 id。
+ *  ⚠️ 判据用 `trim()` —— 与主进程 `runner.ts` 的 `displayTitle` **同一条**
+ *  (它文件头写着这条链"必须一样")。`NodeInspector` 往 title 里写的是输入框原值、
+ *  没 trim,于是**纯空白**的标题在一处回退成清单名、在另一处画成空白卡。 */
 export function nodeTitle(node: { title: string; type: string }, entry?: NodeTypeEntry): string {
-  if (node.title.length > 0) return node.title;
+  if (node.title.trim().length > 0) return node.title;
   return entry?.manifest.name ?? node.type;
 }
 
