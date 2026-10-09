@@ -18,6 +18,7 @@ import { dataRoot } from "@main/lib/dataRoot.js";
 import { MEMORY_PROJECT_ID } from "@main/memory/paths.js";
 import { saveMemoryFile } from "@main/memory/store.js";
 import { notifyMemoryChanged } from "@main/memory/broadcast.js";
+import { errText } from "@main/lib/ipcError.js";
 import { SHIPPED_INITIALIZERS } from "./shipped.js";
 const PREFIX = "projectInit.template.";
 const MAX_TEMPLATES = 200;
@@ -29,7 +30,15 @@ function stored(id: string): ProjectInitTemplate {
   if (raw === null) throw new Error("初始化方案不存在");
   let value: unknown;
   try { value = JSON.parse(raw); } catch { throw new Error("初始化方案无法读取;未替换它"); }
-  return { ...ProjectInitDraftSchema.parse(value), id, revision: hash(raw) };
+  // ⚠️ schema 校验失败也必须翻成人话。`ZodError.message` 是一整段英文 JSON 数组,而
+  // `stored()` 的调用方(`list`/`get`/`delete` 与渲染端 `ProjectInitManager`)把
+  // `err.message` 原样画在设置页的 ErrorNote 上 —— 一条"JSON 合法但 schema 不符"的坏模板
+  // (外部/旧版写入、名字不再匹配 `INIT_NAME_RE`、files 非数组…)会让整块面板蹦出英文 JSON。
+  // 紧邻的 JSON 解析失败已经译成中文了,这条不该漏。
+  let parsed: ReturnType<typeof ProjectInitDraftSchema.parse>;
+  try { parsed = ProjectInitDraftSchema.parse(value); }
+  catch (err) { throw new Error(`初始化方案内容不合法,已跳过:${errText(err)}`); }
+  return { ...parsed, id, revision: hash(raw) };
 }
 const DEFAULT_KEY = "projectInit.defaultId";
 export function listProjectInitializers(): ProjectInitList {

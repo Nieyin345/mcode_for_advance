@@ -51,6 +51,20 @@ try {
   const t=saveProjectInitializer({draft:draft()});settings.set("projectInit.template."+t.id,"{broken");
   assert.throws(()=>saveProjectInitializer({id:t.id,expectedRevision:t.revision,draft:draft()}));assert.equal(settings.get("projectInit.template."+t.id),"{broken");
  });
+ await test("schema-invalid stored template fails with a human message, not raw zod JSON",()=>{
+  // "JSON 合法但 schema 不符" —— 从前这条会原样抛 `ZodError.message`(一整段英文 JSON 数组),
+  // 而 `list/get/delete` 与渲染端 `ProjectInitManager` 把它画在设置页上。紧邻的 JSON 解析失败
+  // 一直是中文,这条不该漏。判据:抛出的理由是中文、且不含 zod 的 JSON 形状。
+  const t=saveProjectInitializer({draft:draft()});
+  settings.set("projectInit.template."+t.id, JSON.stringify({name:"x", files:"不是数组"}));
+  let msg="";
+  try { listProjectInitializers(); } catch (err) { msg=err instanceof Error?err.message:String(err); }
+  assert.ok(msg.length>0,"应当抛出");
+  assert.ok(/[一-鿿]/.test(msg),`理由应当含中文:${msg}`);
+  assert.ok(!/\[[\s\S]*"code"[\s\S]*\]/.test(msg),`不该是 zod JSON:${msg}`);
+  // 坏模板没被悄悄替换/删除。
+  assert.equal(settings.get("projectInit.template."+t.id), JSON.stringify({name:"x", files:"不是数组"}));
+ });
  for (const path of ["../x","a/../x","/tmp/x","C:/x","a\\b","a//b",".git/config","CON.txt","name.","name ","a\u0000b"]) await test(`reject unsafe path ${JSON.stringify(path)}`,()=>{
   assert.equal(ProjectInitDraftSchema.safeParse({...draft(),files:[{path,content:"x"}]}).success,false);
  });
