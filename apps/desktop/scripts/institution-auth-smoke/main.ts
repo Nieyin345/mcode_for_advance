@@ -129,6 +129,21 @@ eq("名字改了", updated.profiles[0]!.name, "改过名的图书馆");
 same("域名跟着改了", updated.profiles[0]!.domains, ["example.edu"]);
 check("删掉的域名没留在库里", !JSON.stringify(updated.profiles[0]).includes("cnki.net"));
 
+// ★ 带一个**不存在**的 id 保存 → 明确抛错,不返回一条 id/name 全 undefined 的幽灵记录。
+//   从前 InstitutionRepo.save 在 UPDATE 打不中时忽略 `step()` 的结果,`getAsObject()` 返回
+//   `{}`,`rowToInstitution({})` 造出一条空记录交回去(过期/伪造 id 是个真实入口)。
+{
+  let threw = "";
+  try {
+    await invoke(IPC.INSTITUTION_SAVE, { id: "inst_根本不存在", name: "幽灵" });
+  } catch (err) {
+    threw = err instanceof Error ? err.message : String(err);
+  }
+  check("★ 用不存在的 id 保存会抛错(不返回幽灵记录)", threw.includes("机构配置不存在"), threw);
+  const after = (await invoke(IPC.INSTITUTION_LIST)) as { profiles: Array<Record<string, unknown>> };
+  eq("而且没有多出一行", after.profiles.length, 1);
+}
+
 // 用户会往输入框里粘空串 / 多打逗号 —— 渲染端会先 trim 掉空项,这里钉一条空串
 // 也是"没有域名"而不是"域名是空字符串"(后者会被当成 `endsWith(".")` 一类的东西)。
 const blankDomains = (await invoke(IPC.INSTITUTION_SAVE, {

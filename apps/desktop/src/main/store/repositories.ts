@@ -2546,9 +2546,16 @@ export const InstitutionRepo = {
       persist();
       const stmt = db.prepare("SELECT * FROM institution_profiles WHERE id = ?");
       stmt.bind([v(input.id)]);
-      stmt.step();
-      const row = rowToInstitution(stmt.getAsObject() as unknown as InstitutionRow);
+      // ⚠️ **`step()` 的结果不能丢。** 传了 id 却查不到那一行(过期/伪造 id,或那条记录
+      // 刚被删)时,`UPDATE` 打不中任何行、`SELECT` 也空手 —— 而 `getAsObject()` 在没
+      // `step()` 时返回 `{}`,于是 `rowToInstitution({})` 会造出一个 `id`/`name` 全是
+      // undefined 的"记录"返回给调用方。宁可明确抛错,也不要返回一条幽灵记录。
+      const found = stmt.step();
+      const row = found
+        ? rowToInstitution(stmt.getAsObject() as unknown as InstitutionRow)
+        : null;
       stmt.free();
+      if (!row) throw new Error(`机构配置不存在:${input.id}`);
       return row;
     }
 
