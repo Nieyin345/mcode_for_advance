@@ -212,5 +212,18 @@ const u = (i: number, c: number, o: number, r = 0) => ({ inputTokens: i, cachedI
   eq("overflow reports one error, not one per late frame", h.events.filter(e => e.type === "error").length, 1);
 }
 
+console.log("\n图片生成失败的文案是中文(用户可见,不是给模型看的)");
+{
+  const h = harness();
+  h.send("item/completed", { threadId: MAIN, item: { id: "img1", type: "imageGeneration", status: "failed",
+    failure: { type: "usageLimitExceeded", limitId: "img-gen" } } });
+  const result = h.events.find((e) => e.type === "tool.result");
+  const content = String((result as { content?: unknown })?.content ?? "");
+  check("★ 用量超限的失败说明是中文", /用量超限/.test(content), content);
+  check("★ 不是英文原文", !/image generation/i.test(content), content);
+  // 额度 id 这种**数据**照旧带上(它是变量,不是文案)。
+  check("失败说明里带上额度标识", content.includes("img-gen"), content);
+}
+
 console.log(`\n${checks - failures}/${checks} passed`);
 process.exit(failures === 0 ? 0 : 1);

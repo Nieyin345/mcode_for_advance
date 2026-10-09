@@ -1904,7 +1904,8 @@ const costUsd = m.total_cost_usd ?? (muCost > 0 ? muCost : undefined);
       this.ctx.emit({
         type: "error",
         sessionId: this.sessionId,
-        message: (m as { result?: string }).result ?? "Unknown error",
+        // 兜底文案用中文 —— 这是**用户能看到**的那行(error 事件直接进界面),不是给模型看的。
+        message: (m as { result?: string }).result ?? "Claude 返回了错误但没有说明原因",
         code: "CLAUDE_ERROR",
       } satisfies ErrorEvent);
       this.state.lastResultReason = "error";

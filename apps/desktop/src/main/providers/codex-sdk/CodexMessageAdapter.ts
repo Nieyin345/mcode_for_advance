@@ -232,7 +232,7 @@ export class CodexMessageAdapter {
       if (this.pendingThreadNotifications.length >= 1024) {
         this.pendingThreadNotifications = [];
         this.emit({ type: "error", sessionId: this.sessionId,
-          message: "Codex thread initialization notification limit exceeded", code: "CODEX_TURN_FAILED" });
+          message: "Codex 线程初始化通知超过上限,已中止本轮", code: "CODEX_TURN_FAILED" });
         this.aborted = true;
         this.finalizeError();
       } else {
@@ -592,8 +592,8 @@ export class CodexMessageAdapter {
         isError: true,
         content:
           failure.type === "usageLimitExceeded"
-            ? `image generation usage limit exceeded (limit ${failure.limitId ?? "unknown"})`
-            : `image generation failed (${failure.type ?? item.status ?? "unknown"})`,
+            ? `图片生成用量超限(额度 ${failure.limitId ?? "未知"})`
+            : `图片生成失败(${failure.type ?? item.status ?? "未知"})`,
       });
       return;
     }
