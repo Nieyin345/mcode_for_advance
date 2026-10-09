@@ -1185,6 +1185,70 @@ console.log("\n§10 别的路径");
 }
 
 {
+  // ★ 变更类 handler(toggle / setPath)失败必须**抛**,不能折叠成 `{ languages: [] }`。
+  //
+  // `lspManager.toggle` 走 `list()`,那份列表永远是**全部四种语言** —— 所以
+  // `{ languages: [] }` 在**成功路径上根本不可能**出现,它只能是被吞掉的失败。
+  // 契约(`RpcMap["lsp.toggle"]`)也没有 error 字段,渲染端
+  // `LspLanguagesPanel.doToggle` 唯一能察觉失败的途径就是这条 invoke 抛(它那段
+  // 注释写着「失败要说出来」,配了一个 `catch`)。handler 不抛时,那句 catch 就是
+  // **死分支**:用户点开关没反应、也没有任何报错。
+  //
+  // 判据立在**用户点按钮时真正跑的那个 handler**上(不是复述 manager 内部写法):
+  // 给一个 schema 通不过的入参,它要么抛,要么回一个"看着像成功"的空列表。
+  clearBinaries();
+  configure([]);
+
+  let toggleThrew = "";
+  let toggleOut: unknown = null;
+  try {
+    toggleOut = await call(IPC.LSP_TOGGLE, { language: "ruby", enabled: true });
+  } catch (err) {
+    toggleThrew = err instanceof Error ? err.message : String(err);
+  }
+  check("★ toggle 入参不合法时抛出请求方(不是回 ok 形状的空列表)", toggleThrew !== "", {
+    threw: toggleThrew,
+    out: toggleOut,
+  });
+  says("★ toggle 抛出的理由是给人看的那句话(经共享 errText)", toggleThrew, "入参不合法");
+  check(
+    "★ toggle 失败**绝不**回成 { languages: [] }(那种形状成功路径根本产生不了)",
+    !(toggleOut !== null && Array.isArray((toggleOut as { languages?: unknown }).languages) &&
+      (toggleOut as { languages: unknown[] }).languages.length === 0),
+    toggleOut,
+  );
+
+  let setPathThrew = "";
+  let setPathOut: unknown = null;
+  try {
+    setPathOut = await call(IPC.LSP_SET_PATH, { language: "ruby" });
+  } catch (err) {
+    setPathThrew = err instanceof Error ? err.message : String(err);
+  }
+  check("★ setPath 入参不合法时也抛出请求方(不是回空列表)", setPathThrew !== "", {
+    threw: setPathThrew,
+    out: setPathOut,
+  });
+  says("★ setPath 抛出的理由也是给人看的那句话", setPathThrew, "入参不合法");
+  check(
+    "★ setPath 失败**绝不**回成 { languages: [] }",
+    !(setPathOut !== null && Array.isArray((setPathOut as { languages?: unknown }).languages) &&
+      (setPathOut as { languages: unknown[] }).languages.length === 0),
+    setPathOut,
+  );
+
+  // 反过来:合法入参仍要正常回完整列表(别把成功路径改坏)。
+  const okToggle = (await call(IPC.LSP_TOGGLE, { language: "go", enabled: true })) as {
+    languages: Array<{ language: string }>;
+  };
+  same(
+    "toggle 合法入参照常回四种语言(成功路径没被改坏)",
+    okToggle.languages.map((l) => l.language),
+    ["typescript", "python", "go", "java"],
+  );
+}
+
+{
   // 用户手动指定一个**不存在**的路径 -> 不能当成找到了。
   clearBinaries();
   configure([{ language: "go", enabled: true, serverPath: join(FIX, "no-such-gopls.exe") }]);

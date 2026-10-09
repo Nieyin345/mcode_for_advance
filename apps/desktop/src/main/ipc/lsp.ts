@@ -77,9 +77,17 @@ export function registerLspHandlers(ipcMain: IpcMain): void {
       const input = LspToggleSchema.parse(raw);
       return await lspManager.toggle(input.language, input.enabled);
     } catch (err) {
+      // ⚠️ **变更类 handler 失败必须抛,不能折成一个「成功形状的空列表」。**
+      // 从前这里是 `return { languages: [] }`:而 `lspManager.toggle` 走 `list()`,
+      // 那份列表永远是**全部四种语言**,所以 `{ languages: [] }` 在成功路径上
+      // **根本不可能出现** —— 它只能是被吞掉的失败(一种恒为失败的分支)。
+      // 契约(`RpcMap["lsp.toggle"]`)也没有 error 字段,渲染端 `LspLanguagesPanel.doToggle`
+      // 唯一能察觉失败的途径就是这条 invoke **抛**;handler 不抛,那句专门写的 catch
+      // (注释:「失败要说出来」)就永远是死分支 —— 开关点了没反应、也不报错。
+      // 改成抛出(与 institutionAuth 同口径,错误经共享 errText 翻成人话)。
       const msg = errText(err);
       log.error(`lsp.toggle failed: ${msg}`);
-      return { languages: [] };
+      throw new Error(msg);
     }
   });
 
@@ -88,9 +96,10 @@ export function registerLspHandlers(ipcMain: IpcMain): void {
       const input = LspSetPathSchema.parse(raw);
       return await lspManager.setPath(input.language, input.serverPath, input.args, input.javaHome);
     } catch (err) {
+      // 同 LSP_TOGGLE:成功路径只会回完整列表,`{ languages: [] }` 是失败被伪装成成功。
       const msg = errText(err);
       log.error(`lsp.setPath failed: ${msg}`);
-      return { languages: [] };
+      throw new Error(msg);
     }
   });
 
