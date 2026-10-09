@@ -124,11 +124,14 @@ interface SessionRuntime {
   /** S4 失败回退链的**剩余**部分（chat-only 会话才解析；custom 网关会话为
    *  空 —— 链里的全局模型 id 对第三方配置没有意义）。turn.done reason="error"
    *  时 shift 出下一个换模型重发；每轮 sendTurn 重新解析（回退重试的那轮
-   *  除外 —— 见 fallbackRetryModel，否则 shift 会被重置成完整链无限重试）。 */
+   *  除外 —— 见 `sendTurn` 入参里的 `fallbackRetryModel`，否则 shift 会被重置成
+   *  完整链无限重试）。
+   *
+   *  ⚠️ **回退重发的标记不在这里**(曾有一个 `fallbackRetryModel?` 字段)。它是**会话级
+   *  共享状态**,会被任何**先到**的 sendTurnBound 抢先消费 —— 失败那轮之后排队的用户
+   *  消息(或用户手快再发一条)先跑起来时,就会把用户那一轮悄悄换成回退模型。改成随
+   *  **那一次调用自己的入参**传,不再有跨调用残留。 */
   fallbackModels: string[];
-  /** 回退重试的下一个模型。emit 闭包 shift 后经它递进 sendTurn；sendTurn
-   *  消费掉（置回 undefined）并据此跳过本轮回退链的重新解析。 */
-  fallbackRetryModel?: string;
   /** 当前 handle 已发出 turn.done(引擎可能还在收尾:Codex 冻结文件快照等)。
    *  渲染端收到 turn.done 就回到空闲、排队消息会立刻发来 —— sendTurn 据此短暂
    *  等待收尾,而不是把这条消息当「正在运行」丢掉。每次 startTurn 前复位。 */
@@ -747,31 +750,27 @@ class RuntimeManager {
             kind: "fallback",
             message: `模型 ${from} 本回合失败，自动改用 ${nextModel} 重试`,
           });
-          const retryInput = { ...rt.lastTurnInput, automationOrigin: automationOriginOf(e) };
-          rt.fallbackRetryModel = nextModel;
+          const retryInput = { ...rt.lastTurnInput, automationOrigin: automationOriginOf(e), fallbackRetryModel: nextModel };
           // 等失败那一轮的 handle 真正收尾再发：turn.done 并不等于 isRunning()
           // 已为 false —— Codex 先发 turn.done 再 await flushFinal()(冻结文件快照,
           // 真实 I/O),固定的 setTimeout(0) 会撞上「already running」被静默丢弃,
           // 用户只看到「自动改用 X 重试」却什么也没发生。也别在 emit 调用栈里递归
           // sendTurn(那会让嵌套事件和持久化交错)。
-          // 重发没真正启动(返回 null / 抛错)时清掉 fallbackRetryModel,否则它会
-          // 残留到用户下一次手动发送,把那一轮悄悄换成回退模型。
-          const failedTurnDone = rt.handle?.done ?? Promise.resolve();
-          const clearStaleRetry = (): void => {
-            if (rt.fallbackRetryModel === nextModel) rt.fallbackRetryModel = undefined;
-          };
-          void failedTurnDone
+          //
+          // ⚠️ 回退模型**随这次调用的入参**传(`retryInput.fallbackRetryModel`),不再挂
+          // 在 `rt` 上。挂 `rt` 那份会被任何先到的发送抢先消费(排队的用户消息 / 用户手快
+          // 再发一条),把用户那一轮悄悄换成回退模型;这次重发反而撞上 busy 返回 null。
+          // 作为入参传之后,"是不是重发"只由这一次调用自己决定,不存在残留与抢用。
+          void (rt.handle?.done ?? Promise.resolve())
             .catch(() => undefined)
             .then(() => new Promise<void>((resolve) => setTimeout(resolve, 0).unref()))
             .then(() => this.sendTurn(session, retryInput))
             .then((handle) => {
               if (handle === null) {
-                clearStaleRetry();
                 log.warn(`fallback resend to ${nextModel} did not start (session busy or unbound)`);
               }
             })
             .catch((err) => {
-              clearStaleRetry();
               log.error(`fallback resend failed: ${(err as Error).message}`);
             });
         }
@@ -999,6 +998,20 @@ class RuntimeManager {
         blocks: unknown[];
         editedMessageId?: string;
       };
+      /**
+       * **仅供失败回退重发内部使用**(不经过 IPC / provider 契约)。
+       *
+       * 从前这个标记挂在 `rt.fallbackRetryModel` 上(`SessionRuntime` 级共享状态),于是
+       * 任何一条**先到**的 `sendTurnBound` 都会把它消费掉 —— 失败那一轮之后若正好有一条
+       * 排队的用户消息(或用户手快再发一条)先跑起来,它就会 `isFallbackRetry===true`,
+       * 用户这一轮被**悄悄换成回退模型**跑;真正的重发那一下反而撞上"already running"
+       * 返回 null,而 `clearStaleRetry` 已是空操作(标记早被人拿走了)。
+       *
+       * 判据应当是"**这一次调用**是不是那次重发",而不是"会话上有没有一个待消费的标记"。
+       * 所以把它作为**这次调用自己的入参**传:重发那条路带上它,别的一律不带,标记不再
+       * 跨调用残留,也就不存在"被别的发送抢先消费"这回事。
+       */
+      fallbackRetryModel?: string;
     },
   ): Promise<TurnHandle | null> {
     const rt = this.sessions.get(session.id);
@@ -1116,7 +1129,10 @@ class RuntimeManager {
     // 调度器纠缠；custom 网关会话也不做 —— 链里的全局模型 id 对第三方配置
     // 没有意义）。回退重试的那轮**不**重新解析 —— 否则 shift 掉的链会被
     // 重置成完整链，同一个模型无限重试。
-    const isFallbackRetry = rt.fallbackRetryModel !== undefined;
+    //
+    // ⚠️ 判据取自**这次调用自己的入参**(`input.fallbackRetryModel`),不再读会话级共享
+    // 状态 —— 共享那份会被任何先到的发送抢先消费掉(见 `sendTurn` 入参里那段注释)。
+    const isFallbackRetry = input.fallbackRetryModel !== undefined;
     if (!isFallbackRetry) {
       rt.fallbackModels =
         session.kind !== "node" && !session.workflowId && !session.customModelId
@@ -1188,11 +1204,10 @@ class RuntimeManager {
     // or the fallback chain's next model when this is a failure retry
     // (consumed here; a fresh user-sent turn re-parses the chain instead).
     let modelForReq: string | undefined = isFallbackRetry
-      ? rt.fallbackRetryModel
+      ? input.fallbackRetryModel
       : session.model !== "default"
         ? session.model
         : undefined;
-    rt.fallbackRetryModel = undefined;
     if (session.customModelId && customConfig) {
       const cfg = customConfig;
       // OpenAI-protocol endpoints need an in-process bridge that impersonates

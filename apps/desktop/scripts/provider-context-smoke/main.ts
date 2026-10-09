@@ -152,7 +152,16 @@ check(
 check("普通聊天记忆走 memorySectionFrom + scopedMemorySnapshot", runtime.includes("memorySectionFrom") && runtime.includes("scopedMemorySnapshot"));
 
 check("工作流控制的轮次不叠加聊天自动记忆", runtime.includes("input.memoryManagedByWorkflow") && runtime.includes("automaticMemoryForTurn"));
-const runner = source("src/main/orchestration/runner.ts");
+
+console.log("\n失败回退重发:标记随调用走,不挂会话共享状态");
+// 「下一轮该用回退模型」曾经挂在 `rt.fallbackRetryModel`(会话级共享状态)上,会被**任何
+// 先到**的 sendTurnBound 抢先消费 —— 失败那轮之后排队的用户消息(或手快再发一条)先跑,
+// 就会把用户那一轮悄悄换成回退模型。判据:标记从**入参**取、且不再有 `rt.fallbackRetryModel`。
+// 剥掉注释再查 —— 源码注释里专门**提到**这个旧名字来解释改动,那不是代码。
+const runtimeCode = runtime.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+check("回退标记从这次调用的入参取(不是会话级共享状态)", runtimeCode.includes("input.fallbackRetryModel !== undefined"));
+check("…且不再有 rt.fallbackRetryModel 这种会话级残留", !runtimeCode.includes("fallbackRetryModel") || !/rt\.fallbackRetryModel/u.test(runtimeCode));
+check("重发时把回退模型随入参带上", runtimeCode.includes("fallbackRetryModel: nextModel"));const runner = source("src/main/orchestration/runner.ts");
 check("图型主对话节点明确交接记忆所有权", runner.includes("memoryManagedByWorkflow: true"));
 
 console.log("\n插件边界：仅保留全局启用和工作流逐轮覆盖");
