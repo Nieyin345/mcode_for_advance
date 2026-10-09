@@ -1297,6 +1297,9 @@ async function loadCommitDetail(
   const files = parseNameStatus(nameStatusRaw);
 
   // numstat for +/- tallies (best-effort; binary files report "-" ).
+  // `-z`: NUL-terminate each record so a rename's old/new paths come as two
+  // separate fields instead of git's display form (`old => new` /
+  // `dir/{old => new}`) — see applyNumstat for why that form never matched.
   try {
     const numstatRaw = await git.raw([
       "-c",
@@ -1304,6 +1307,7 @@ async function loadCommitDetail(
       "diff-tree",
       "--no-commit-id",
       "--numstat",
+      "-z",
       "-r",
       "-M",
       "--root",
@@ -1360,22 +1364,41 @@ function mapCommitFileStatus(letter: string): GitCommitFileStatus {
   }
 }
 
-/** Merge `git diff-tree --numstat` tallies into an existing file list. */
+/** Merge `git diff-tree --numstat -z` tallies into an existing file list.
+ *
+ *  `-z` is required, not cosmetic: without it git renders a rename's paths as
+ *  one display field (`old => new`, or `dir/{old => new}.txt` when only the
+ *  basename changed), so `parts[parts.length-1]` was the whole `old => new`
+ *  string — never equal to the new path the name-status pass keyed the file
+ *  under, so **every renamed file silently lost its +/- tallies**. With `-z`
+ *  each record is NUL-terminated and a rename's two paths are separate tokens
+ *  (`<add>\t<del>\t\0<old>\0<new>\0`); the empty third field is the tell. */
 function applyNumstat(files: GitCommitFile[], raw: string): void {
   const byPath = new Map(files.map((f) => [f.path, f]));
-  for (const line of raw.split("\n")) {
-    const trimmed = line.trimEnd();
-    if (!trimmed) continue;
-    // numstat: additions\tdeletions\tpath
-    // rename:  additions\tdeletions\told\tnew  OR path with => 
-    const parts = trimmed.split("\t");
-    if (parts.length < 3) continue;
-    const addStr = parts[0] ?? "0";
-    const delStr = parts[1] ?? "0";
+  const tokens = raw.split("\0");
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (!token) continue;
+    // Each record begins with `<additions>\t<deletions>\t`.
+    const t1 = token.indexOf("\t");
+    if (t1 === -1) continue;
+    const t2 = token.indexOf("\t", t1 + 1);
+    if (t2 === -1) continue;
+    const addStr = token.slice(0, t1);
+    const delStr = token.slice(t1 + 1, t2);
+    const inlinePath = token.slice(t2 + 1);
     const additions = addStr === "-" ? undefined : Number.parseInt(addStr, 10);
     const deletions = delStr === "-" ? undefined : Number.parseInt(delStr, 10);
-    // For renames, last field is the new path.
-    const path = parts[parts.length - 1] ?? "";
+    // Rename form: the counts token ends right after the second tab and the
+    // old + new paths follow as two more NUL-terminated tokens. Key on the NEW
+    // path (what name-status stored as `path` for an R/C entry).
+    let path: string;
+    if (inlinePath === "") {
+      path = tokens[i + 2] ?? "";
+      i += 2; // consume the old-path and new-path tokens
+    } else {
+      path = inlinePath;
+    }
     const file = byPath.get(path);
     if (!file) continue;
     if (additions != null && !Number.isNaN(additions)) file.additions = additions;

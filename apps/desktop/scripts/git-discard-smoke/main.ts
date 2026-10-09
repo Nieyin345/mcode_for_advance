@@ -201,6 +201,51 @@ section("§5 围栏:仓库路径不在任何已添加的项目内");
   }
 }
 
+/* ──────────────── §6 提交详情:改名文件也要带 +/- 行数 ──────────────── */
+
+// git.showCommit 的 numstat 那一趟从前**永远匹配不上改名文件**:`diff-tree
+// --numstat`(不带 -z)把改名渲染成一个展示字段 `old => new`(或同目录改名时的
+// `dir/{old => new}.txt`),而文件名那一趟(diff-tree --name-status)把该文件记在
+// **新路径**下。于是 `parts[parts.length - 1]`(='"old => new"')和 `byPath` 里的
+// 新路径对不上,改名文件的 +/- 行数被静默丢光 —— 详情面板里只剩一个没有加号减号
+// 的行。`-z` 让改名的新旧路径成为两个独立的 NUL 段,才拿得到新路径。
+section("§6 提交详情:改名文件带 +/- 行数(不是静默丢)");
+
+{
+  const repo = makeRepo("rename-tally");
+  // 加一个多行文件并改名 + 改两行,使 numstat 报出非零计数。
+  const body = Array.from({ length: 30 }, (_, i) => `line ${i + 1} untouched`).join("\n") + "\n";
+  writeFileSync(join(repo, "oldname.txt"), body, "utf8");
+  git(repo, "add", "oldname.txt");
+  git(repo, "commit", "-qm", "add file to rename");
+  git(repo, "mv", "oldname.txt", "newname.txt");
+  writeFileSync(
+    join(repo, "newname.txt"),
+    body.replace("line 5 untouched", "line 5 EDITED").replace("line 9 untouched", "line 9 EDITED"),
+    "utf8",
+  );
+  git(repo, "add", "newname.txt");
+  git(repo, "commit", "-qm", "rename + edit");
+
+  // 前提:git 自己确实把这次改动识别为改名(R 开头)。
+  const ns = git(repo, "-c", "core.quotePath=false", "diff-tree", "--no-commit-id", "--name-status", "-r", "-M", "--root", "HEAD");
+  check("夹具:这次提交被识别为改名(R 开头)", ns.startsWith("R"), ns);
+
+  // commitHash 的 schema 限定十六进制(git.showCommit / git.showFile),所以要真 hash。
+  const headHash = git(repo, "rev-parse", "HEAD");
+  const detail = await call<{ files: Array<{ path: string; status: string; oldPath?: string; additions?: number; deletions?: number }> } | null>(
+    IPC.GIT_SHOW_COMMIT,
+    { repoPath: repo, commitHash: headHash },
+  );
+  const renamed = detail?.files.find((f) => f.path === "newname.txt");
+  check("改名后的新路径出现在文件列表里", !!renamed, detail?.files);
+  eq("夹具:它是 renamed 档", renamed?.status, "renamed");
+  eq("记录了旧路径", renamed?.oldPath, "oldname.txt");
+  // ★ 判据立在"用户看到的那两个数"上:改名文件必须带出 +2/−2(不是 undefined)。
+  eq("★ 改名文件带出新增行数(不是静默丢)", renamed?.additions, 2);
+  eq("★ 改名文件带出删除行数(不是静默丢)", renamed?.deletions, 2);
+}
+
 rmSync(ROOT, { recursive: true, force: true });
 
 console.log(`\ngit-discard-smoke:${total - failures}/${total} 通过`);
