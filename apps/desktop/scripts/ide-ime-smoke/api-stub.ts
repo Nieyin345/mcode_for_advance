@@ -6,8 +6,14 @@
  * 建分支),所以判据是 `calls` 里有没有那条 `git.checkout`。
  */
 export const calls: Array<{ method: string; input: unknown }> = [];
+/** 按方法名覆盖回包(默认一律 `{ok:true}`)。用来制造"某个 git 动作失败"的场景。 */
+export const overrides = new Map<string, unknown>();
+export function setOverride(method: string, result: unknown): void {
+  overrides.set(method, result);
+}
 export function resetCalls(): void {
   calls.length = 0;
+  overrides.clear();
 }
 export function callsOf(method: string): unknown[] {
   return calls.filter((c) => c.method === method).map((c) => c.input);
@@ -21,6 +27,8 @@ function makeNs(ns: string): unknown {
         if (typeof prop !== "string") return undefined;
         return (...args: unknown[]) => {
           calls.push({ method: `${ns}.${prop}`, input: args[0] });
+          const key = `${ns}.${prop}`;
+          if (overrides.has(key)) return Promise.resolve(overrides.get(key));
           return Promise.resolve({ ok: true });
         };
       },

@@ -309,6 +309,10 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
     setError(null);
     try {
       const res = await api.git.merge({ repoPath: repo.path, source: mergeTarget.name });
+      setMergeTarget(null);
+      // 同 checkout:错误横幅必须在 `refresh()` 之后挂 —— refresh 开头的 `setError(null)`
+      // 会把刚写上的失败一起清掉。
+      await refresh();
       if (!res.ok) {
         setError(res.error ?? t("ide.git.mergeFailed"));
         prependLog({ op: "merge", status: "failure", message: res.error });
@@ -319,8 +323,6 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
       } else {
         prependLog({ op: "merge", status: "success" });
       }
-      setMergeTarget(null);
-      await refresh();
     } catch (err) {
       const msg = (err as Error).message ?? t("ide.git.mergeFailed");
       setError(msg);
@@ -397,13 +399,14 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
         repoPath: repo.path,
         filePaths: unstaged.map((f) => f.path),
       });
+      // 同 checkout:先 refresh 再挂错误(refresh 开头 setError(null) 会清掉这次的失败。
+      await refresh();
       if (!res.ok) {
         setError(res.error ?? t("ide.git.stageFailed"));
         prependLog({ op: "stage", status: "failure", message: res.error });
       } else {
         prependLog({ op: "stage", status: "success" });
       }
-      await refresh();
     } catch (err) {
       const msg = (err as Error).message ?? t("ide.git.stageFailed");
       setError(msg);
@@ -421,13 +424,14 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
         repoPath: repo.path,
         filePaths: staged.map((f) => f.path),
       });
+      // 同 checkout:先 refresh 再挂错误。
+      await refresh();
       if (!res.ok) {
         setError(res.error ?? t("ide.git.unstageFailed"));
         prependLog({ op: "unstage", status: "failure", message: res.error });
       } else {
         prependLog({ op: "unstage", status: "success" });
       }
-      await refresh();
     } catch (err) {
       const msg = (err as Error).message ?? t("ide.git.unstageFailed");
       setError(msg);

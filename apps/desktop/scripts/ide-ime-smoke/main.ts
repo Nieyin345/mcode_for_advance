@@ -23,12 +23,12 @@
  * Run: scripts/ide-ime-smoke/run.sh
  */
 import "./prelude.js";
-import { calls, callsOf, resetCalls } from "./api-stub.js";
-import { __mount, __flush, __nodes } from "./fakeReact.js";
+import { calls, callsOf, resetCalls, setOverride } from "./api-stub.js";
+import { __mount, __flush, __nodes, __text } from "./fakeReact.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { GitRepoCard } from "@renderer/components/ide/GitRepoCard.js";
 import { SearchDialog } from "@renderer/components/ide/SearchDialog.js";
-import type { GitRepo } from "@contracts/ipc";
+import type { GitFileStatus, GitRepo, GitStatusResult } from "@contracts/ipc";
 
 let failures = 0;
 let checks = 0;
@@ -126,6 +126,78 @@ async function scenario() {
   //    渲染,而 ③ 那次成功切换分支若记成 `discard`,用户会在操作日志里看到
   //    「放弃更改」——一次他根本没做过的操作。op 就是那行字的唯一决定因素。
   check("★ 切分支记进日志的是 checkout,不是 discard", logOps().includes("checkout"), logOps());
+}
+
+/**
+ * GitRepoCard 的**操作失败横幅被 refresh 清掉**。
+ *
+ * `refresh()` 开头会 `setError(null)`(给"上次的错误横幅别黏住"用的),而卡片上每一条
+ * git 操作从前一律写成 `if (!res.ok) setError(...); … await refresh();` —— `refresh`
+ * 成功回来时把**这一次**刚挂上的失败横幅一起清掉:切分支被拒、推送失败、放弃更改失败,
+ * 屏幕上一个字都没有(用户只会以为"点了没反应")。与 `McpPanel` 的 toggle/delete 是同
+ * 一族(见 `settings-panel-smoke` §15)。判据立在**屏幕上那行字**上:失败那句在操作走完
+ * (含 refresh)之后仍须出现在卡片里。
+ */
+async function gitErrorBannerScenario(): Promise<void> {
+  const stagedStatus: GitStatusResult = {
+    branch: "main",
+    ahead: 0,
+    behind: 0,
+    files: [{ path: "a.ts", index: "modified", workingTree: "unmodified" } as GitFileStatus],
+  };
+
+  // ① 切分支失败(git 拒了:本地有未提交改动会被覆盖等)—— 新建分支框回车那条路。
+  resetCalls();
+  useSessionStore.setState({ locale: "zh", activeProjectId: "p1", gitChangeVersionByRepo: {} });
+  setOverride("git.checkout", { ok: false, error: "SENTINEL_CHECKOUT_FAILED" });
+  __mount(() => GitRepoCard({ repo: REPO }));
+  await __flush();
+  (newBranchInput().props.onChange as (e: unknown) => void)({ target: { value: "feature-x" } });
+  await __flush();
+  (newBranchInput().props.onKeyDown as (e: unknown) => void)(keyEvent("Enter"));
+  await __flush();
+  check("checkout 确实被触发了(正控)", callsOf("git.checkout").length === 1, callsOf("git.checkout"));
+  check("★ 切分支失败的话没被 refresh 的 setError(null) 清掉", __text().includes("SENTINEL_CHECKOUT_FAILED"), __text());
+
+  // ② 提交成功但**推送**失败(commit+push 这条路)—— 子步骤的失败同样不许被清掉。
+  resetCalls();
+  useSessionStore.setState({ locale: "zh", activeProjectId: "p1", gitChangeVersionByRepo: {} });
+  setOverride("git.status", { status: stagedStatus });
+  setOverride("git.push", { ok: false, error: "SENTINEL_PUSH_FAILED" });
+  __mount(() => GitRepoCard({ repo: REPO }));
+  await __flush();
+  const findCommitBox = () =>
+    __nodes().find((n) => typeof (n.props as { onCommit?: unknown }).onCommit === "function") as
+      | { props: Record<string, unknown> }
+      | undefined;
+  check("有已暂存文件时 CommitBox 渲染出来(正控)", !!findCommitBox());
+  if (findCommitBox()) {
+    // ⚠️ onChange 会重渲染整棵树,CommitBox 元素是**新的一份** —— 必须重新取,
+    // 否则拿的是旧闭包,它捕获的 `commitMsg` 还是空串(handleCommit 开头 `if (!msg) return`)。
+    (findCommitBox()!.props.onChange as (v: string) => void)("feat: x");
+    await __flush();
+    (findCommitBox()!.props.onCommit as (m: string) => void)("push");
+    await __flush();
+    check("★ 提交成功但推送失败的话没被 refresh 清掉", __text().includes("SENTINEL_PUSH_FAILED"), __text());
+  }
+
+  // ③ header 的推送按钮(handlePush 那条独立路径)。
+  resetCalls();
+  useSessionStore.setState({ locale: "zh", activeProjectId: "p1", gitChangeVersionByRepo: {} });
+  setOverride("git.push", { ok: false, error: "SENTINEL_PUSH2_FAILED" });
+  __mount(() => GitRepoCard({ repo: REPO }));
+  await __flush();
+  const pushBtn = __nodes().find(
+    (n) => typeof (n.props as { onClick?: unknown }).onClick === "function" &&
+      typeof (n.props as { title?: unknown }).title === "string" &&
+      /Push/.test((n.props as { title: string }).title),
+  );
+  check("找到 header 的推送按钮(正控)", !!pushBtn);
+  if (pushBtn) {
+    (pushBtn.props.onClick as () => void)();
+    await __flush();
+    check("★ header 推送失败的话没被 refresh 清掉", __text().includes("SENTINEL_PUSH2_FAILED"), __text());
+  }
 }
 
 /**
@@ -266,6 +338,7 @@ async function branchSwitchFailureScenario(): Promise<void> {
 }
 
 await scenario();
+await gitErrorBannerScenario();
 await searchDialogScenario();
 await statusCodeParityScenario();
 await fileTreeDeleteFailureScenario();

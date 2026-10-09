@@ -39,6 +39,7 @@ import type { LibraryItem } from "@contracts/library";
 import { PDFViewer, ZoomMode, type PDFViewerRef } from "@embedpdf/react-pdf-viewer";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 import { cn } from "@renderer/lib/cn.js";
 import {
   IconExternalLink,
@@ -148,8 +149,21 @@ export function PdfPreview({
 
   const open = useCallback(() => {
     if (onOpenExternal) onOpenExternal();
-    else void api.library.openFile({ id: item.id, which: "pdf" });
-  }, [onOpenExternal, item.id]);
+    // 兜底那条走 `library.openFile`,它带原因回 `{ok:false}`(文件不在了 / 还没关联
+    // 文件 / `shell.openPath` 失败)。这一格只在**内置阅读器已经渲染失败**时才出现,
+    // 用户就是来看"到底怎么了"的 —— 再静默一次等于什么都告诉他不了。
+    else {
+      void api.library.openFile({ id: item.id, which: "pdf" }).then((res) => {
+        if (!res.ok) {
+          useToastStore.getState().push({
+            kind: "error",
+            title: t("library.openExternalFailed"),
+            body: res.error ?? "",
+          });
+        }
+      });
+    }
+  }, [onOpenExternal, item.id, t]);
 
   /**
    * **保存批注** —— 让 EmbedPDF 导出一份带批注的 PDF，交给主进程写回原文件。

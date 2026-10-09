@@ -278,6 +278,9 @@ export const zh = {
   "library.pdfViewer.zoomOut": "缩小",
   "library.pdfViewer.fitWidth": "适应宽度",
   "library.pdfViewer.openExternal": "用外部程序打开",
+  /* 内置阅读器已经失败、用户点「用外部程序打开」时,`library.openFile` 失败(文件不在 /
+     还没关联文件)也必须报出来 —— 这一格就是来看"到底怎么了"的。 */
+  "library.openExternalFailed": "用外部程序打开失败",
   "library.pdfViewer.failed": "打不开这个 PDF",
 
   /* ── PDF 阅读 / 保存批注（EmbedPDF，2026-09-22）── */

@@ -240,6 +240,7 @@ export const en = {
   "library.pdfViewer.zoomOut": "Zoom out",
   "library.pdfViewer.fitWidth": "Fit width",
   "library.pdfViewer.openExternal": "Open in external app",
+  "library.openExternalFailed": "Could not open in the external app",
   "library.pdfViewer.failed": "Could not open this PDF",
 
   "library.pdfViewer.saveAnnotations": "Save annotations",

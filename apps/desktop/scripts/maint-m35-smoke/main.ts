@@ -120,25 +120,28 @@ await scenario("corrupt annotation index is recoverable after the next save", ()
 //   产物),而三处调用方从前都是 `void api…` 一丢了事 —— 用户点了那颗按钮,屏幕上
 //   一个字都没有(主进程 handler 的注释里点名了这一类)。判据钉在源码上(这几个组件
 //   跑不进无头,本套没有渲染端 host)。
-await scenario("revealFile 的 {ok:false} 在每个调用方都报出来", () => {
-  const zh = join(process.cwd(), "src/renderer/components/library/ItemDetail.tsx");
-  const menu = join(process.cwd(), "src/renderer/components/library/LibraryItemContextMenu.tsx");
+await scenario("revealFile / openFile 的 {ok:false} 在每个调用方都报出来", () => {
+  const targets: Array<[string, string, RegExp]> = [
+    ["ItemDetail", join(process.cwd(), "src/renderer/components/library/ItemDetail.tsx"), /api\.library\s*\.\s*revealFile/g],
+    ["LibraryItemContextMenu", join(process.cwd(), "src/renderer/components/library/LibraryItemContextMenu.tsx"), /api\.library\s*\.\s*revealFile/g],
+    ["PdfPreviewImpl", join(process.cwd(), "src/renderer/components/library/PdfPreviewImpl.tsx"), /api\.library\s*\.\s*openFile/g],
+  ];
   // 去掉注释,免得注释里的示例调用把判据喂饱。
   const strip = (s: string) => s.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
-  for (const [label, path] of [["ItemDetail", zh], ["LibraryItemContextMenu", menu]] as const) {
+  for (const [label, path, re] of targets) {
     const code = strip(readFileSync(path, "utf8"));
     // **每一个**调用点都要查 —— 只查第一处会让"三处里修了一处"假绿
     // (ItemDetail 自己就有两处:PDF 那颗与 md 那颗)。写成 `api.library.revealFile`
     // 会被换行拆开(`api.library\n  .revealFile(`),所以按正则容忍空白。
     let sites = 0;
-    for (const m of code.matchAll(/api\.library\s*\.\s*revealFile/g)) {
+    for (const m of code.matchAll(re)) {
       sites++;
       const body = code.slice(m.index!, m.index! + 500);
-      assert.ok(/\.then\(/.test(body), `${label} 第 ${sites} 处: revealFile 没接回包(仍是 void 一丢了事)`);
-      assert.ok(/!res\.ok/.test(body), `${label} 第 ${sites} 处: revealFile 不看 {ok:false}`);
-      assert.ok(body.includes("useToastStore"), `${label} 第 ${sites} 处: revealFile 失败没报出来`);
+      assert.ok(/\.then\(/.test(body), `${label} 第 ${sites} 处: 没接回包(仍是 void 一丢了事)`);
+      assert.ok(/!res\.ok/.test(body), `${label} 第 ${sites} 处: 不看 {ok:false}`);
+      assert.ok(body.includes("useToastStore"), `${label} 第 ${sites} 处: 失败没报出来`);
     }
-    assert.ok(sites >= 1, `${label}: 找不到 revealFile 调用(判据失效)`);
+    assert.ok(sites >= 1, `${label}: 找不到调用(判据失效 —— 源码可能改了形状)`);
   }
 });
 console.log(`M35 store/accessibility/annotations: ${8 - failures}/8 passed`);
