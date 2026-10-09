@@ -68,9 +68,20 @@ export function InstitutionAuthPanel() {
    *  话都没有。挂一条始终可见的横幅接住。 */
   const [error, setError] = useState<string | null>(null);
 
+  /** 拉一次登录站点概览。这条路**会抛** —— `authStatus` handler 要经
+   *  `BrowserManager.browserSession()` 读分区 cookie,而它内部的 `session.fromPath()`
+   *  对坏的数据目录会抛,handler 原样再抛回来。就地接住,一条出口覆盖全部调用方:
+   *  六条调用路里(初始加载、保存、删除、单单清一个域、清全部,以及**头部那颗「重新
+   *  加载」按钮**),前五条各自裹了 try/catch,只有按钮那条从前是裸 `void reloadStatus()` ——
+   *  抛出来只落进 unhandled rejection(渲染端没有全局监听),用户点了「重新加载」,
+   *  屏幕上一句话都没有。 */
   const reloadStatus = useCallback(async () => {
-    const res = await api.institution.authStatus({});
-    setSites(res.sites);
+    try {
+      const res = await api.institution.authStatus({});
+      setSites(res.sites);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }, []);
 
   useEffect(() => {
