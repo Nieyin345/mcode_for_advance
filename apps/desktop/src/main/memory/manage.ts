@@ -61,6 +61,7 @@ export function manageMemory(input: MemoryManageInput): MemoryManageResult {
   try {
     if (input.action === "list") {
       const native = nativeSources();
+      const history = memoryHistory();
       return { ok: true,
         projects: ProjectRepo.list().map(p => ({ id: p.id, name: p.name })),
         sources: [...listMemoryFiles().filter(m => m.scope === "legacy").map(m => ({ id: `legacy:${m.path}`, label: `MCode legacy · ${m.path}` })),
@@ -70,7 +71,8 @@ export function manageMemory(input: MemoryManageInput): MemoryManageResult {
           })],
         // 被上限挡掉的数如实报出(0 也带上,界面据此决定显不显示那句话)。
         truncatedSources: native.truncatedProjects + native.truncatedFiles,
-        history: memoryHistory() };
+        history: history.entries,
+        historyTruncated: history.truncated };
     }
     if (input.action === "history") { const raw = readHistory(input.id).raw; return { ok: true, content: raw, digest: digest(raw) }; }
     if (input.action === "restore") {

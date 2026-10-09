@@ -87,6 +87,9 @@ export function MemoryTransferPanel() {
           <option value="">{t("memory.chooseHistory")}</option>
           {list.data?.history?.map(h => <option key={h.id} value={h.id}>{new Date(h.at).toLocaleString()} — {h.path}</option>)}
         </select>
+        {(list.data?.historyTruncated ?? 0) > 0 && (
+          <p className="text-xs text-warning">{t("memory.historyTruncated", { n: list.data?.historyTruncated ?? 0 })}</p>
+        )}
         {history && <>
           {historyResult?.error && <ErrorNote>{historyResult.error}</ErrorNote>}
           <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded border border-edge bg-surface-subtle p-3 text-xs">{archived.loading ? t("common.loading") : historyResult?.content}</pre>

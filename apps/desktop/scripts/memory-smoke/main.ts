@@ -757,14 +757,24 @@ console.log("\n流程记录:这一层只负责照搬,不自己判谁该读");
   }
   const before = readMemoryFileWithRaw(own);
   saveMemoryFile({ path: own, content: "updated", expectedRevision: before.revision });
-  const history = memoryHistory().find(h => h.path === own && h.reason === "before-update")!;
+  const history = memoryHistory().entries.find(h => h.path === own && h.reason === "before-update")!;
   eq("更新前归档保留原始字节", readHistory(history.id).raw, before.raw);
   let blocked = false; try { restoreMemory(history.id); } catch { blocked = true; }
   check("恢复不能覆盖现有记录", blocked);
   deleteMemoryFile(own, readMemoryFile(own).revision);
   restoreMemory(history.id);
   eq("恢复原字节与版本", readMemoryFileWithRaw(own).raw, before.raw);
-  check("删除前有恢复点", memoryHistory().some(h => h.path === own && h.reason === "before-delete"));
+  check("删除前有恢复点", memoryHistory().entries.some(h => h.path === own && h.reason === "before-delete"));
+  // ★ 恢复点列表截断要**报出来**。归档目录只增不减(不自动清理),而"恢复记忆"的下拉框只吃
+  //   这里的返回 —— 静默 `.slice(0,200)` 会让用户以为更早的恢复点不存在。与 `truncatedSources`
+  //   同一口径。这里直接断言返回值带 `truncated` 字段(0 也带),界面据此决定显不显示那句话。
+  {
+    const h = memoryHistory();
+    check("memoryHistory 报出被 200 上限挡掉的条数(即使为 0 也带这个字段)", typeof h.truncated === "number" && h.truncated >= 0, h.truncated);
+    const listed = manageMemory({ action: "list" });
+    check("list 动作把 historyTruncated 一起返回", listed.ok && typeof listed.historyTruncated === "number", listed);
+    check("…且和 memoryHistory 的口径一致", listed.historyTruncated === h.truncated, { list: listed.historyTruncated, direct: h.truncated });
+  }
   blocked = false; try { readHistory("../escape"); } catch { blocked = true; }
   check("归档编号不能穿越路径", blocked);
   blocked = false; try { saveMemoryFile({ path: "global/rules/secret.md", content: "sk-" + "a".repeat(40) }); } catch { blocked = true; }

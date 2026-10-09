@@ -140,6 +140,7 @@ export const en = {
   "memory.confirmImport": "Confirm import after preview",
   "memory.refreshSources": "Refresh",
   "memory.historyTitle": "Restore memory",
+  "memory.historyTruncated": "{n} older restore point(s) not listed (only the latest 200 are shown; old archives are not auto-pruned).",
   "memory.historyHint": "Snapshots are created automatically before edits and deletions. Restore uses the original path and never overwrites an existing file.",
   "memory.chooseHistory": "Choose a history snapshot",
   "memory.restore": "Restore to original path",

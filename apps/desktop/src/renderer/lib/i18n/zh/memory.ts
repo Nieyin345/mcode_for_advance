@@ -143,6 +143,7 @@ export const zh = {
   "memory.confirmImport": "预览后确认导入",
   "memory.refreshSources": "刷新",
   "memory.historyTitle": "恢复记忆",
+  "memory.historyTruncated": "还有 {n} 个更早的恢复点未列出（列表只显示最近 200 条；旧归档不自动清理）。",
   "memory.historyHint": "仅显示编辑或删除前自动保留的快照。恢复到原路径，且绝不覆盖现有文件。",
   "memory.chooseHistory": "选择一个历史快照",
   "memory.restore": "恢复到原路径",

@@ -208,6 +208,9 @@ export interface MemoryManageResult {
   /** `action: "list"` 时,被扫描上限挡掉的原生来源数(项目 slug + 记忆文件)。
    *  >0 表示"列表里少了东西",界面必须显式说出来 —— 静默截断会让用户以为那份记忆不存在。 */
   truncatedSources?: number;
+  /** `action: "list"` 时,被 200 条上限挡掉的**历史恢复点**数。归档只增不减(不自动清理),
+   *  静默 `.slice(0,200)` 会让用户以为更早的恢复点不存在。>0 时界面须提示。 */
+  historyTruncated?: number;
 }
 
 /** Attribution only, never an authorization source; raw Markdown is user-editable. */
