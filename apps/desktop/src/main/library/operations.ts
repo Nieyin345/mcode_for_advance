@@ -20,7 +20,7 @@
 import type { LibraryItem } from "@contracts/library";
 import { LibraryRepo, CollectionRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
-import { allTrashCollectionIds, shouldSweepAfterRemoval, sweepToTrash } from "./trash.js";
+import { allTrashCollectionIds, shouldSweepAfterRemoval, sweepToTrash, trashCollectionTreeIds } from "./trash.js";
 
 /**
  * 把条目加进/移出某个分类。
@@ -41,7 +41,10 @@ export function assignToCollection(collectionId: string, itemIds: string[], add:
   if (moved.length === 0) return [];
   CollectionRepo.assign(collectionId, moved, add);
   if (add) {
-    for (const trashId of allTrashCollectionIds()) {
+    // **按整棵子树摘**(不是平层根集):回收站是普通集合、可有子分类,条目挂在子
+    // 分类里时也算在回收站里 —— 只看平层根的话,"归入普通分类"之后它仍留在回收站
+    // 子分类里(`trashedItemIds` 的树判据还说它在回收站里),用户的分类里看不见它。
+    for (const trashId of trashCollectionTreeIds()) {
       if (trashId !== collectionId) CollectionRepo.assign(trashId, moved, false);
     }
   } else if (shouldSweepAfterRemoval(collectionId)) {
@@ -79,7 +82,9 @@ export function removeItemsToTrash(itemIds: string[]): string[] {
   for (const id of itemIds) {
     const item = LibraryRepo.get(id);
     if (!item) continue;
-    // 先摘出它现在所属的全部分类(回收站除外 —— 摘了还得再放回去)
+    // 先摘出它现在所属的全部分类(回收站**根**除外 —— 摘了还得再放回去。这里刻意用
+    // 平层根集而非整棵子树:条目本来就在回收站子分类里的话,它已经是"在回收站里"了,
+    // 不必再当孤儿扫一遍)。
     const trashIds = new Set(allTrashCollectionIds());
     for (const cid of CollectionRepo.collectionsOfItem(id)) {
       if (!trashIds.has(cid)) CollectionRepo.assign(cid, [id], false);

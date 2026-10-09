@@ -20,7 +20,7 @@
  *
  * Run: scripts/library-import-smoke/run.sh
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 
@@ -156,6 +156,40 @@ const inner = readEntryFile(dirItem.id, "说明.txt");
 eq("能读目录里的文件", inner.type, "text");
 eq("内容对", inner.type === "text" ? inner.text : "", "正文");
 
+/* ──────────────── 2b. 一个坏条目不该让整份目录列表打不开 ──────────────── */
+//
+// 目录分支逐条 `statSync(child).isDirectory()`。列表里若有一个**断链的连接点/符号
+// 链接**(指向的目标被删了 —— 用户从别处搬来一堆东西、顺手删了源目录,很常见),
+// `statSync` 会抛 ENOENT。而那一句在 `names.map(...)` 里、没有 per-entry 兜底 ——
+// 于是**整次读取抛出去**,`readEntryFile` 从"返回一份列表"变成"崩",用户对着一个
+// 明明存在的文件夹看到报错。坏的那一门该如实标出来(比如 isDir=false),其余照列。
+{
+  const dirWithLink = join(SRC, "有断链的文件夹");
+  mkdirSync(dirWithLink, { recursive: true });
+  writeFileSync(join(dirWithLink, "正常文件.txt"), "正文", "utf8");
+  // 断链的连接点指向一个**不存在**的目标。造不出来(权限/平台)就跳过这一档 ——
+  // 不能因为夹具建不出就把断言弄成假绿(仓库既有套件同款处理)。
+  let madeLink = false;
+  try {
+    symlinkSync(join(SRC, "根本不存在的目标"), join(dirWithLink, "断链"), "junction");
+    madeLink = true;
+  } catch {
+    /* 环境建不出 junction —— 跳过 */
+  }
+  const linkItem = importGenericFiles({ paths: [dirWithLink], mode: "linked" });
+  const linkRead = readEntryFile(linkItem.items[0]!.id);
+  if (madeLink) {
+    eq("★ 目录里有一个断链条目,整个列表仍然读得出来(不是崩)", linkRead.type, "dir");
+    if (linkRead.type === "dir") {
+      const names = linkRead.files.map((f) => f.name);
+      check("★ 正常文件照常列出来", names.includes("正常文件.txt"), names);
+      check("★ 断链那一门也列出来(如实报,不静默少一条)", names.includes("断链"), names);
+    }
+  } else {
+    check("（跳过:这个环境建不出 junction 夹具）", true);
+  }
+}
+
 /* ──────────────── 3. 目录内寻址不能逃出去 ──────────────── */
 
 console.log("\nreadEntryFile · relPath 越界");
@@ -249,14 +283,15 @@ const emitted = importedIds();
 check("attached 那条发了", emitted.includes(attachedItem.id), { emitted, want: attachedItem.id });
 check("linked 那条发了", emitted.includes(linkedItem!.id), { emitted, want: linkedItem!.id });
 check("目录条目也发了", emitted.includes(dirItem.id), { emitted, want: dirItem.id });
-// 一次导入一条,不多不少:**十条**进过库(linked 的文件、那个目录、linked 同源另存的
-// attached 副本、同一批里那第二条路径首次入库、attached 的 md、那个不认识的扩展名、
+// 一次导入一条,不多不少:**十一条**进过库(linked 的文件、那个目录、linked 同源另存
+// 的 attached 副本、同一批里那第二条路径首次入库、attached 的 md、那个不认识的扩展名、
 // 上面那条 attached 重复导入(它确实又进了一条,那是这个落法的形态代价)、
-// attached 同一批里的第二条路径首次入库、点文件那一份、以及普通文件那一份)。上面被
-// 跳过的那三次(重复导入、同一批里的第二次、同源另存之后再按 attached 存一次)以及
-// 那个不存在的路径都**不该**发 —— 计数正好把这一点也钉住(数目对不上就是"跳过/失败
-// 也发了",那种假信号会让自动化对着一条根本没进库的东西跑起来)。
-eq("一次导入一条,不多不少", emitted.length, 10);
+// attached 同一批里的第二条路径首次入库、点文件那一份、普通文件那一份,以及 §2b
+// 那个「有断链的文件夹」目录条目)。上面被跳过的那三次(重复导入、同一批里的第二次、
+// 同源另存之后再按 attached 存一次)以及那个不存在的路径都**不该**发 —— 计数正好把
+// 这一点也钉住(数目对不上就是"跳过/失败也发了",那种假信号会让自动化对着一条根本
+// 没进库的东西跑起来)。
+eq("一次导入一条,不多不少", emitted.length, 11);
 
 // 而 attached 那条**真的复制了一份进库** —— 去重若按来源路径判,这里会被当成
 // "已经导过"而跳过,文件就不会出现在库里(条目还在,点开是空的)。

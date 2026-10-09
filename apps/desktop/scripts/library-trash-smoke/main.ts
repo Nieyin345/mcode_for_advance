@@ -266,6 +266,49 @@ eq("它不在 trashedItemIds 里", trashedItemIds().has(kept), false);
   LibraryRepo.delete([inSub]);
 }
 
+/* ──────────────── 3c. 「回收站里有什么」在所有判定上必须是同一套(整棵子树) ──────────────── */
+//
+// `trashedItemIds` / `mergeTrashCollections` 早已按**整棵子树**收(上面 §3 那条),但
+// **判定同一件事的另外几处**从前还停在平层的根集上:还原的目标与摘除、移除后要不要扫
+// 回收站、归入普通分类时"顺手从回收站摘出来"。回收站是个普通集合、可以有子分类,条目
+// 挂在子分类里时那几处全部失灵 —— 同一份"回收站里有什么"的判据在两处说的不是同一件事
+// (硬规矩:同一规则只能有一份)。这一段把它们钉住。
+{
+  // ① 还原目标**不能**是回收站子树里的分类:放回它等于没还原(它自己就在回收站里)。
+  const subTarget = CollectionRepo.create("回收站里的子分类(还原目标)", trash, "paper").id;
+  check("★ 还原目标不能是回收站子树里的分类", restoredTargetOf() !== subTarget, {
+    got: restoredTargetOf(),
+    subTarget,
+  });
+  CollectionRepo.delete(subTarget);
+
+  // ② 挂在回收站**子分类**里的条目必须能还原 —— 与 §3 里"它算在 trashedItemIds 里"
+  //    同一条边界。还原成功的判据是那一条**权威**的树判据(trashedItemIds)不再有它。
+  const sub2 = CollectionRepo.create("回收站里的子分类(还原)", trash, "paper").id;
+  const deep = LibraryRepo.upsert({ title: "在回收站子分类里、要还原的一条" }).id;
+  CollectionRepo.assign(sub2, [deep], true);
+  check("① 它先被算在回收站里(树判据)", trashedItemIds().has(deep));
+  same("★ 回收站子分类里的条目能还原(不是空操作)", restoreItemsFromTrash([deep]), [deep]);
+  eq("★ 还原后它不在回收站的树判据里了", trashedItemIds().has(deep), false);
+  CollectionRepo.delete(sub2);
+  LibraryRepo.delete([deep]);
+
+  // ④ 归入普通分类时,条目在回收站**子树**里的归属也要一起摘掉 —— 否则它同时属于一个
+  //    普通分类和回收站子分类(树判据仍说它在回收站里),用户"移进分类"了却还看不见它。
+  const { assignToCollection } = await import("@main/library/operations.js");
+  const sub4 = CollectionRepo.create("回收站里的子分类(归入)", trash, "paper").id;
+  const it4 = LibraryRepo.upsert({ title: "在回收站子分类里、又被归入普通分类" }).id;
+  CollectionRepo.assign(sub4, [it4], true);
+  assignToCollection(home, [it4], true);
+  check(
+    "★ 归入普通分类时,回收站子树里的归属也被摘掉(树判据不再有它)",
+    !trashedItemIds().has(it4),
+    [...CollectionRepo.collectionsOfItem(it4)],
+  );
+  CollectionRepo.delete(sub4);
+  LibraryRepo.delete([it4]);
+}
+
 // 空批次与全都不是孤儿,都返回 false(调用方据此决定要不要回传新列表)。
 eq("空数组 → false", sweepToTrash([]), false);
 eq("全都不是孤儿 → false", sweepToTrash([kept]), false);

@@ -326,6 +326,21 @@ export function aiVisibleFilesOf(item: LibraryItem): { markdown: string | null; 
 }
 
 /**
+ * 目录里某一门是不是目录 —— **每条都兜底**,`statSync` 抛了就按"不是目录"降级。
+ *
+ * 断链的连接点/符号链接(目标已被删)上 `statSync` 抛 ENOENT;那一门仍要如实列出来
+ * (见 `readEntryFile` 目录分支的注释),不能因为一门坏掉让整份列表崩掉。仓库既有的
+ * "坏东西显式报出来"在这里体现为:这一门照出现在列表里(名字还在),只是标成非目录。
+ */
+function isDirEntry(p: string): boolean {
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 读一个条目(或目录条目内的某个文件)。**linked 与 attached 同一条路**:
  * `entryRootAbsPath` 已经把几种来源折成绝对路径,这里只管分型。
  *
@@ -362,7 +377,13 @@ export function readEntryFile(
     const names = readdirSync(target).sort();
     return {
       type: "dir",
-      files: names.map((name) => ({ name, isDir: statSync(join(target, name)).isDirectory() })),
+      // ⚠️ **逐条兜底,不是 `names.map(statSync)`**(2026-10-10)。列表里可能有一个
+      // **断链的连接点/符号链接**(用户从别处搬来一堆东西、顺手删了源目录,很常见):
+      // `statSync` 对它会抛 ENOENT,而那一句在 `map` 里、没有 per-entry 守卫 —— 于是
+      // **整次读取抛出去**,`readEntryFile` 从"返回一份列表"变成"崩",用户对着一个
+      // 明明存在的文件夹只看到报错。坏的那一门如实列出来(标成非目录),其余照列:
+      // 少列一门是"用户看不见它";整份崩掉是"用户什么都看不见",后者更糟。
+      files: names.map((name) => ({ name, isDir: isDirEntry(join(target, name)) })),
     };
   }
 

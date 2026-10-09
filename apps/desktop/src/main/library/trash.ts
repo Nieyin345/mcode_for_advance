@@ -103,6 +103,47 @@ export function trashCollectionId(): string | null {
 }
 
 /**
+ * 回收站**整棵子树**里的全部集合 id —— 根(回收站本身)加上它下面所有后代。
+ *
+ * ## 为什么必须有它
+ *
+ * 「回收站里有什么」是一条判据,而它**只能有一份**(2026-10-09 修)。回收站是个
+ * **普通集合**:用户可以给它建子分类,也可以把别的分类「移动到…」它下面
+ * (`CollectionRepo.move` 不挡这个)。那时条目挂在**子分类**里。
+ *
+ * 从前这条判据在两处各写一份、而且**说的不是同一件事**:
+ *   - `trashedItemIds` / `mergeTrashCollections` 按整棵子树收(`listByCollectionTree`);
+ *   - 但**还原目标、还原时从哪摘、移除后要不要扫、归入普通分类时又该从哪摘**这几处
+ *     只拿平层的 [`allTrashCollectionIds`] —— 条目挂在子分类里时它们全部失灵:同一
+ *     一条"在回收站里",一处说在、另一处说不在。用户看到的是「还原点了没反应」
+ *     (它不在平层根集里,还原时连"它本来就在回收站"都判不出来),或"移进普通分类
+ *     了却还在回收站里"。
+ *
+ * 子树展开只做一次、给所有判定共用(硬规矩:同一规则只能有一份)。`out` 顺带挡住
+ * 数据被写坏时父链上的环(`a → b → a`),与 `listByCollectionTree` 的 `UNION` 同一条
+ * 讲究 —— 那里也把环算作"到达过"。
+ */
+export function trashCollectionTreeIds(): Set<string> {
+  const all = CollectionRepo.list();
+  const childrenOf = new Map<string, string[]>();
+  for (const c of all) {
+    if (!c.parentId) continue;
+    const arr = childrenOf.get(c.parentId);
+    if (arr) arr.push(c.id);
+    else childrenOf.set(c.parentId, [c.id]);
+  }
+  const out = new Set<string>();
+  const stack = [...allTrashCollectionIds()];
+  while (stack.length > 0) {
+    const id = stack.pop()!;
+    if (out.has(id)) continue;
+    out.add(id);
+    for (const child of childrenOf.get(id) ?? []) stack.push(child);
+  }
+  return out;
+}
+
+/**
  * 现在**在回收站里的全部条目 id**。
  *
  * 这是「回收站里的东西不进上下文」那道筛子的**唯一判据**。早先的写法是逐个库去问
@@ -223,7 +264,13 @@ export function sweepToTrash(itemIds: string[]): boolean {
   return true;
 }
 
-/** 「移除之后要不要顺手收进回收站」 —— 从**任何一个**回收站移除时不收,否则用户删不掉。 */
+/** 「移除之后要不要顺手收进回收站」 —— 从**任何一个**回收站移除时不收,否则用户删不掉。
+ *
+ * ⚠️ 判据刻意用**平层的根集**(`allTrashCollectionIds`),不是整棵子树:这里问的是
+ * "这次移除是不是把条目**拿出回收站**"。只有从回收站的**根**里移除才是那个意思(用户
+ * 要在那里彻底删掉它);从回收站的**子分类**里移除只是"在回收站内部挪一下",条目仍该
+ * 被扫回回收站根 —— 用子树判据会让它成为无人认领的僵尸(既不在任何分类、又不在回收站
+ * 里,`trashCollectionTreeIds` 的树判据也找不到它),那正是本模块文件头警告的那一类。 */
 export function shouldSweepAfterRemoval(fromCollectionId: string): boolean {
   return !allTrashCollectionIds().includes(fromCollectionId);
 }
@@ -248,7 +295,7 @@ export function shouldSweepAfterRemoval(fromCollectionId: string): boolean {
  *  3. 一个都没有 → `null`,放回最外层。
  */
 export function restoredTargetOf(): string | null {
-  const trashIds = new Set(allTrashCollectionIds());
+  const trashIds = trashCollectionTreeIds();
   const candidates = CollectionRepo.list().filter((c) => !trashIds.has(c.id));
   if (candidates.length === 0) return null;
   // 「最后用过」没有直接的记录,用"最后建的那个"当代理 —— 用户删东西时看的是分类名,
@@ -267,7 +314,7 @@ export function restoredTargetOf(): string | null {
  * 返回真正被搬动的条目 id(供调用方如实回报)。
  */
 export function restoreItemsFromTrash(itemIds: readonly string[]): string[] {
-  const trashIds = new Set(allTrashCollectionIds());
+  const trashIds = trashCollectionTreeIds();
   if (trashIds.size === 0 || itemIds.length === 0) return [];
   const target = restoredTargetOf();
   const moved: string[] = [];
