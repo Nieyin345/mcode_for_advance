@@ -73,14 +73,15 @@ import { getOsPrefersDark, getThemePreference } from "@main/lib/theme.js";
 import { log } from "@main/lib/logger.js";
 import { externalWindowUrl } from "@main/lib/windowNavigation.js";
 import { SettingRepo } from "@main/store/repositories.js";
-import { PICKER_INJECT_SCRIPT, PICKER_REMOVE_SCRIPT } from "./pickerScript.js";
+import { PICKER_INJECT_SCRIPT, PICKER_REMOVE_SCRIPT, PICKER_HTML_CAP } from "./pickerScript.js";
 import { SNAPSHOT_SCRIPT, buildClickScript, buildCheckFileInputScript, buildElementCenterScript, buildTypeScript, buildEvaluateScript, buildScrollScript, buildWaitScript, buildSelectScript, buildFindScript } from "./snapshotScript.js";
 import { AddressHistory } from "./addressHistory.js";
 
-/** Caps for a forwarded pick result. `PICK_HTML_CAP` mirrors pickerScript's
- *  PICKER_HTML_CAP (2000) plus the one-char ellipsis it appends; the others
- *  are generous bounds for what the picker actually produces. */
-const PICK_HTML_CAP = 2001;
+/** Caps for a forwarded pick result. `PICK_HTML_CAP` 用 pickerScript 的 `PICKER_HTML_CAP`
+ *  **现填**再加一个省略号位 —— 两边各写一份数字,改成一处另一处会静默裁错(见
+ *  `pickerScript.ts` 那条注释)。`PICK_SELECTOR_CAP` / `PICK_PREVIEW_CAP` 是主进程侧
+ *  对选择器/预览串的宽松上界。 */
+const PICK_HTML_CAP = PICKER_HTML_CAP + 1;
 const PICK_SELECTOR_CAP = 1000;
 const PICK_PREVIEW_CAP = 200;
 const PICK_URL_CAP = 4096;
@@ -1072,8 +1073,22 @@ class BrowserManagerImpl {
         resolve(result);
       };
       const onLoad = () => finish({ ok: true, url: wc.getURL(), title: wc.getTitle() });
-      const onFail = (_e: unknown, errorCode: number, errorDesc: string) =>
+      // ⚠️ **只有主文档加载失败才算这一页加载失败。** `did-fail-load` 对**子框架**(广告/
+      // 跟踪 iframe、跨域嵌入、返回 404/500 的 iframe,以及 Chromium 对被打断的子资源导航
+      // 常报的 `-3 ERR_ABORTED`)同样会触发,并带 `isMainFrame === false`。从前不看这个参数,
+      // 于是一个**主文档好好加载了**的页面会被判成"页面加载失败",`browserNavigate` 把
+      // 失败报给模型 —— 模型于是重试或放弃一个其实已经打开的页面。与 `window.ts` /
+      // `windowNavigation.ts` 里那些守卫同一个做法:只在 `isMainFrame !== false` 时才认。
+      const onFail = (
+        _e: unknown,
+        errorCode: number,
+        errorDesc: string,
+        _validatedURL: string,
+        isMainFrame: boolean,
+      ) => {
+        if (isMainFrame === false) return; // 子框架失败不影响这一页
         finish({ ok: false, error: `页面加载失败(${errorCode}): ${errorDesc}` });
+      };
       wc.on("did-finish-load", onLoad);
       wc.on("did-fail-load", onFail);
       // Backstop: some pages never fire did-finish-load (permanent spinners,
@@ -2570,12 +2585,12 @@ class BrowserManagerImpl {
       const q = (await dbg.sendCommand("DOM.querySelector", { nodeId: root, selector })) as {
         nodeId?: number;
       };
-      if (!q?.nodeId) throw new Error(`element not found for selector: ${selector}`);
+      if (!q?.nodeId) throw new Error(`找不到选择器对应的元素: ${selector}`);
       await dbg.sendCommand("DOM.setFileInputFiles", { files: paths, nodeId: q.nodeId });
       return true;
     });
     if (!res.ok) {
-      if (/element not found/.test(res.error)) return { ok: false, error: res.error };
+      if (/找不到选择器对应的元素/.test(res.error)) return { ok: false, error: res.error };
       return { ok: false, error: `设置文件失败: ${res.error}` };
     }
     await new Promise((r) => setTimeout(r, 200));

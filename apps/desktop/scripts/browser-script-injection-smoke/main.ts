@@ -42,6 +42,8 @@ import {
   SNAPSHOT_SCRIPT,
 } from "../../src/main/browser/snapshotScript.js";
 import { PICKER_INJECT_SCRIPT } from "../../src/main/browser/pickerScript.js";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 let failures = 0;
 let total = 0;
@@ -276,6 +278,31 @@ console.log("\nbuildSelector 三个入口共用一份");
     const sel1 = buildSelector(p1);
     check("第一个同标签兄弟依然可选中", matches(sel1, p1, p2) && sel1.includes(":nth-of-type(1)"), sel1);
   }
+}
+
+/* ── 5. 主进程侧的两条源码不变量(要真 BrowserWindow,无头跑不了行为) ── */
+
+console.log("\nBrowserManager 源码不变量");
+
+{
+  const mgrSrc = readFileSync(join(process.cwd(), "src/main/browser/BrowserManager.ts"), "utf8");
+
+  // ★ `waitForLoad` 的 did-fail-load 必须**只看主文档**。子框架(广告/跟踪 iframe、
+  //   跨域嵌入、子资源被打断时的 -3 ERR_ABORTED)失败同样会触发 did-fail-load,不看
+  //   `isMainFrame` 就会把一个**主文档已经加载好**的页面判成"加载失败"报给模型,模型
+  //   于是重试/放弃一个其实打开了的页面。
+  {
+    // 取 `onFail` 那段(从 did-fail-load 的 onFail 定义到它的 finish 调用)。
+    const i = mgrSrc.indexOf("const onFail = (");
+    const body = i >= 0 ? mgrSrc.slice(i, i + 400) : "";
+    // 判据钉在**守卫本身**(`isMainFrame === false` 时 return),不是只看到参数名 ——
+    // 只查名字的话,签名里留着参数、函数体里却不用它,照样"绿"。
+    check("★ waitForLoad 的 onFail 在子框架失败时直接放过(子框架失败不算这一页)", /isMainFrame === false\)\s*return/.test(body), body.slice(0, 220));
+  }
+
+  // ★ 选取结果的二次裁剪上限不能与 pickerScript 的常量各写一份 —— 那边改了这边会静默裁错。
+  check("★ PICK_HTML_CAP 由 PICKER_HTML_CAP 现填(不是第二个字面量)", mgrSrc.includes("PICK_HTML_CAP = PICKER_HTML_CAP"), mgrSrc.match(/PICK_HTML_CAP = [^\n]+/)?.[0]);
+  check("…且真的从 pickerScript 导入了那个常量", mgrSrc.includes("PICKER_HTML_CAP") && mgrSrc.includes("./pickerScript.js"));
 }
 
 console.log(`\nbrowser-script-injection-smoke:${total - failures}/${total} 通过`);

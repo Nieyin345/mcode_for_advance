@@ -15,8 +15,10 @@
 import { SELECTOR_BUILDER_SNIPPET } from "./selectorBuilder.js";
 
 
-/** Cap the outerHTML we forward so a giant subtree can't blow up the prompt. */
-const PICKER_HTML_CAP = 2000;
+/** Cap the outerHTML we forward so a giant subtree can't blow up the prompt.
+ *  **导出**给 `BrowserManager` 那边的二次裁剪切口用 —— 主进程收到的 outerHTML 已经是
+ *  页内截过的(可能还带一个省略号),再裁一次时上限要跟着这个走,不能各写一份。 */
+export const PICKER_HTML_CAP = 2000;
 
 /**
  * Inject the picker: hover to highlight, click to pick (multi-select - stays
