@@ -923,16 +923,21 @@ class RuntimeManager {
     });
   }
 
-  /** IDs of every session with a currently running turn. Used by the mobile
-   *  SSE endpoint to publish a running-state snapshot on (re)connect, so a
-   *  phone that missed `turn.done` while backgrounded can self-correct its
-   *  client-side running state. */
+  /** IDs of every session with a currently running turn.
+   *
+   *  ⚠️ **`startingSessions` 也算。** 一轮的启动是异步的(自定义模型要 `BridgeRegistry.acquire`、
+   *  工作树要物化),这段时间里 `rt.handle` **还没有** —— 只看 `handle.isRunning()` 的话,
+   *  一个**正在起来**的回合会被报成"没在跑"。而这个名字的用途全都是"别在回合跑着时动它":
+   *  `runtimes.remove` / `plugins.remove` 拿它挡卸载(卸载会把回合正攥着的二进制 / 插件目录删掉)、
+   *  `worktreeOps.removeWorktree` 拿它挡删目录、手机 SSE 拿它发 running 快照。漏掉启动窗口,
+   *  用户就能在一个回合刚开始(还没拿到 handle 的那几百毫秒)点「卸载」,把它脚下的东西抽走。
+   *  `isBusy()` 早就是这两个来源的并集(见它上面那条注释),这里与它对齐。 */
   runningSessionIds(): string[] {
-    const ids: string[] = [];
+    const ids = new Set<string>(this.startingSessions);
     for (const [id, rt] of this.sessions) {
-      if (rt.handle?.isRunning()) ids.push(id);
+      if (rt.handle?.isRunning()) ids.add(id);
     }
-    return ids;
+    return [...ids];
   }
 
   /** Append the deferred per-turn usage-history record (stashed by the

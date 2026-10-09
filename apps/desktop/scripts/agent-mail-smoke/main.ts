@@ -754,6 +754,16 @@ console.log("\n⑭ 图收尾唤醒:收件箱不重复注入,启动期间新信�
     eq("★ 启动未完成时第二封信排队,不能再起一轮", arriving.outcome, "queued");
     check("★ 排队说明也要包含正在启动这一种原因", arriving.detail.includes("启动"), arriving.detail);
     eq("★ 不会并行启动第二轮", requests.length, 1);
+    // ★ 启动窗口里的会话必须在 `runningSessionIds()` 里。它在**这一轮还没拿到 handle**
+    //   的那几百毫秒里就已经"在跑"了,而 `runtimes.remove` / `plugins.remove` /
+    //   `removeWorktree` 都拿 `runningSessionIds()` 当"别动,回合正跑着"的判据 —— 漏掉这个
+    //   窗口,用户就能在回合刚起来的瞬间卸载掉它脚下的内核 / 插件、或删掉它的工作树目录。
+    //   `isBusy()` 早就是这两个来源的并集,`runningSessionIds()` 与它对齐。
+    check(
+      "★ 启动中(还没拿到 handle)的会话也算 runningSessionIds",
+      runtimeManager.runningSessionIds().includes(node.id),
+      runtimeManager.runningSessionIds(),
+    );
     check("前置:新信确实进入收件箱", peekAgentMail(node.id).includes("新信唯一标记"));
 
     const handle: TurnHandle = { done: new Promise<void>(() => {}), interrupt: () => {}, isRunning: () => true };
