@@ -1894,7 +1894,13 @@ function ChatPaneForSession({
         .then((buf) => toBase64(new Uint8Array(buf)))
         .then((data) => stageImage(name, `data:${mime};base64,${data}`))
         .catch((err) => {
+          // 静默失败 = 用户以为"点了没反应"。贴一张图进来失败时必须说一句。
           console.warn("stage pasted image failed:", err);
+          useToastStore.getState().push({
+            kind: "error",
+            title: t("chat.toast.attachFailed"),
+            body: t("chat.toast.attachFailedBody", { reason: err instanceof Error ? err.message : String(err) }),
+          });
         });
     },
     [stageImage, t],
@@ -1919,6 +1925,11 @@ function ChatPaneForSession({
       }
     } catch (err) {
       console.warn("pickImages failed:", err);
+      useToastStore.getState().push({
+        kind: "error",
+        title: t("chat.toast.attachFailed"),
+        body: t("chat.toast.attachFailedBody", { reason: err instanceof Error ? err.message : String(err) }),
+      });
     }
   }, [inputBlocked, stageImage, t, locale]);
 
@@ -1966,11 +1977,22 @@ function ChatPaneForSession({
           if (path) {
             setTags((prev) => [...prev, makeFileTag(path, name)]);
           } else {
+            // `clipboardFile.save` 回了 ok:false —— 别只在 console 里说。
             console.warn("clipboardFile.save failed:", res.error);
+            useToastStore.getState().push({
+              kind: "error",
+              title: t("chat.toast.attachFailed"),
+              body: t("chat.toast.attachFailedBody", { reason: res.error ?? name }),
+            });
           }
         })
         .catch((err) => {
           console.warn("paste external file failed:", err);
+          useToastStore.getState().push({
+            kind: "error",
+            title: t("chat.toast.attachFailed"),
+            body: t("chat.toast.attachFailedBody", { reason: err instanceof Error ? err.message : String(err) }),
+          });
         });
     }
   }, [stageImageFile, t]);

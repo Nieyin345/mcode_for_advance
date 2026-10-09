@@ -15,6 +15,8 @@ export const en = {
   "chat.toast.tooLargeBody": "{name} exceeds 50 MB and was not attached",
   "chat.toast.imagesSkipped": "Some images were skipped",
   "chat.toast.imagesSkippedBody": "{names} exceed 50 MB or are not a supported image format",
+  "chat.toast.attachFailed": "Could not attach",
+  "chat.toast.attachFailedBody": "{reason}",
   "chat.toast.imageNotSent": "Image not sent",
   "chat.imageN": "Image {n}",
   "chat.removeImageName": "Remove image {name}",

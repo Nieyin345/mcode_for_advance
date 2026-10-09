@@ -21,6 +21,8 @@ export const zh = {
   "chat.toast.tooLargeBody": "{name} 超过 50MB,未添加",
   "chat.toast.imagesSkipped": "已跳过部分图片",
   "chat.toast.imagesSkippedBody": "{names} 过大或不是支持的图片格式",
+  "chat.toast.attachFailed": "没能把内容加进来",
+  "chat.toast.attachFailedBody": "{reason}",
   "chat.toast.imageNotSent": "图片未发送",
   "chat.imageN": "图片 {n}",
   "chat.removeImageName": "移除图片 {name}",
