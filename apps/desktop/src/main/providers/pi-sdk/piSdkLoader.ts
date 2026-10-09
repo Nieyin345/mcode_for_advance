@@ -93,7 +93,7 @@ export async function loadPiSdk(): Promise<typeof import("@earendil-works/pi-cod
     polyfillWorkerThreads();
     const managed = await importManagedPiSdk().catch((err) => {
       throw new Error(
-        `Pi runtime failed to load from the managed install: ${err instanceof Error ? err.message : String(err)}`,
+        `Pi 运行时从托管安装加载失败:${err instanceof Error ? err.message : String(err)}`,
       );
     });
     if (managed) {
@@ -105,7 +105,7 @@ export async function loadPiSdk(): Promise<typeof import("@earendil-works/pi-cod
         const code = (err as NodeJS.ErrnoException)?.code;
         if (code === "ERR_MODULE_NOT_FOUND") {
           throw new Error(
-            "Pi is not installed. Open Settings → Agent and install it (设置 → Agent → 安装).",
+            "Pi 未安装。请到 设置 → Agent 点击安装(Pi is not installed — open Settings → Agent and install it).",
           );
         }
         throw err;

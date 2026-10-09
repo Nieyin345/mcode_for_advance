@@ -373,8 +373,20 @@ export class CodexMessageAdapter {
         }
         const willRetry = p.willRetry === true;
         const err = p.error as { message?: string } | undefined;
-        if (!willRetry && err?.message) {
-          this.emit({ type: "error", sessionId: this.sessionId, message: err.message, code: "CODEX_TURN_FAILED" });
+        // A TERMINAL error (willRetry=false) must ALWAYS surface, even with no
+        // message: the event `{error, willRetry}` doesn't guarantee a message,
+        // and gating on `err?.message` swallowed a terminal failure into a log
+        // line (mislabelled "retryable") — the user saw the turn die with no
+        // error card. The fallback line matches the error-item twin below and
+        // Claude/Pi's own no-explanation fallbacks. Only the retryable branch
+        // stays log-only (the internal retry will follow).
+        if (!willRetry) {
+          this.emit({
+            type: "error",
+            sessionId: this.sessionId,
+            message: err?.message || "Codex 返回了一条错误(没有附带说明)",
+            code: "CODEX_TURN_FAILED",
+          });
         } else {
           this.ctx.log.info(`codex: retryable turn error: ${err?.message ?? "unknown"}`);
         }

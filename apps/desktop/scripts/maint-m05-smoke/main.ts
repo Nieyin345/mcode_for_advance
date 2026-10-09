@@ -237,5 +237,28 @@ console.log("\nCodex error item 缺 message 时的兜底文案也是中文");
   check("★ 不是英文原文(codex item error)", !/codex item error/i.test(msg), msg);
 }
 
+console.log("\n终结性 error 帧没有 message 也必须冒泡(不能只写日志)");
+{
+  // `{error, willRetry}` 的 error 里 message 是可选的。原来判据写成
+  // `!willRetry && err?.message` —— 终结错误一旦不带 message 就落进 else,只写一行
+  // 日志(还被误标成 "retryable turn error"),界面上一张错误卡都没有,用户只看到
+  // 回合没了。兄弟 Claude/Pi 的终结错误、以及 Codex 自己的 error item,缺 message
+  // 时都有中文兜底。逐帧驱动真适配器钉住。
+  const h = harness();
+  h.send("error", { threadId: MAIN, willRetry: false, error: { code: "turn_failed" } });
+  const err = h.events.find((e) => e.type === "error");
+  const msg = String((err as { message?: unknown })?.message ?? "");
+  check("★ 无 message 的终结错误仍发出错误卡", !!err, h.events);
+  check("★ 兜底文案是中文", /错误|失败|出错/.test(msg), msg);
+  check("★ 没有把终结错误误标成可重试", !h.logs.some((l) => /retryable/.test(l)), h.logs);
+}
+
+console.log("\n对照:可重试的中途错误仍只记账,不发错误卡(内部会重试)");
+{
+  const h = harness();
+  h.send("error", { threadId: MAIN, willRetry: true, error: {} });
+  eq("可重试错误不发错误卡", h.events.filter((e) => e.type === "error").length, 0);
+}
+
 console.log(`\n${checks - failures}/${checks} passed`);
 process.exit(failures === 0 ? 0 : 1);
