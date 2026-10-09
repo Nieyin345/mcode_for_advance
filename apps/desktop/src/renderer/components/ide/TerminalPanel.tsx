@@ -144,6 +144,23 @@ export function TerminalPanel({ active }: { active: boolean }) {
   // PTYs (cleanup), which is harmless.
   useEffect(() => {
     const livePaths = new Set(projects.map((p) => p.path));
+    // ⚠️ **桶是按「环境路径」存的,不是项目根。** 工作树会话的终端开在
+    // `session.worktreePath`(`userData/worktrees/…` 下),那个路径**不在任何
+    // 项目根里** —— 只拿项目根判活的话,任何一次 `projects` 数组换身份(改名 /
+    // 分组 / 排序 / 别端碰项目触发的 refreshProjects)都会把工作树终端的桶当成
+    // 「项目没了」清掉,用户正开着的终端连同回滚缓冲**无声消失**。把仍被引用的
+    // 工作树路径一并算作活的;只有引用它的会话也没了(项目被删)才轮到清理。
+    // 读当前快照即可 —— 这个 effect 只该在 `projects` 变化时跑,不必为会话再加订阅。
+    const snapshot = useSessionStore.getState();
+    const lists = [
+      ...Object.values(snapshot.sessionsByProject),
+      ...Object.values(snapshot.archivedSessionsByProject),
+      snapshot.sessions,
+      snapshot.pinnedSessions,
+    ];
+    for (const list of lists) {
+      for (const sess of list ?? []) if (sess.worktreePath) livePaths.add(sess.worktreePath);
+    }
     let changed = false;
     for (const [p, st] of termsRef.current) {
       if (livePaths.has(p)) continue;
