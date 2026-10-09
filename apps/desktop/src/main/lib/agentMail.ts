@@ -581,24 +581,6 @@ export function takeAsk(askId: string): PendingAsk | undefined {
   return hit;
 }
 
-/**
- * 一条回信没带 `re` 时,按"最近一条**来自对方**的未答提问"匹配。
- *
- * 这是**尽力而为**的一档(模型可能忘了带 `re`),所以限定得很死:`toSessionId` 必须是
- * 我这个提问方、`fromSessionId` 必须是回信那个人。两边都对不上就返回 undefined,
- * 由调用方如实报错 —— **不猜**。
- */
-export function takeLatestAskFrom(replierSessionId: string, askerSessionId: string): PendingAsk | undefined {
-  const asks = loadAsks();
-  const candidates = asks
-    .filter((a) => a.fromSessionId === askerSessionId && a.toSessionId === replierSessionId)
-    .sort((a, b) => b.at - a.at);
-  const hit = candidates[0];
-  if (hit === undefined) return undefined;
-  saveAsks(asks.filter((a) => a.askId !== hit.askId));
-  return hit;
-}
-
 /** 名册上要显式报出的"还没送达的回复"数(按目标会话)。不静默丢掉。 */
 export function undeliveredCount(sessionId: string): number {
   return loadAsks().filter((a) => a.fromSessionId === sessionId).length;
