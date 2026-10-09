@@ -36,6 +36,8 @@ export const en = {
   "browser.clearCache": "Clear browsing cache…",
   "browser.clearCookies": "Clear sign-in state (cookies)…",
   "browser.clearCookiesConfirm": "This signs you out of all sites and wipes the remembered sign-in state; it will not come back after a restart. Continue?",
+  "browser.clearCacheFailed": "Could not clear the browsing cache",
+  "browser.clearCookiesFailed": "Could not clear the sign-in state",
 
   /* ── panel ── */
   "browser.selectProjectFirst": "Select a project first",

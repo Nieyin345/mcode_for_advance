@@ -853,6 +853,71 @@ console.log("\n钩子面板的写盘失败出口");
   );
 }
 
+/* ────────────────────────── 15. MCP 面板:写失败横幅被重拉清掉 ────────────────────────── */
+
+console.log("\nMCP 面板:操作失败的话不许被重拉清掉");
+
+// ★ `toggle` / `confirmDelete` / `authorize` / `unauthorize` 四条都「拿回包 → 更新 UI」。
+//   它们各自会 `await load()` 重拉列表,而 `load()` **成功时会 `setError(null)`**
+//   (那是给"上次的错误横幅别黏住"用的)。从前四条一律写成
+//   `if (!res.ok) setError(...); await load();` —— `load()` 成功回包把刚挂上的失败横幅
+//   一起清掉:用户点开关失败、开关弹回、屏幕上一句话没有("点了没反应"那一类)。
+//   判据钉源码:**`await load()` 必须出现在 `if (!res.ok)` 之前**(错误在之后挂才留住)。
+{
+  const { readFileSync } = await import("node:fs");
+  const mcp = readFileSync(join(process.cwd(), "src/renderer/components/settings/McpPanel.tsx"), "utf8");
+  const code = mcp.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  // 四条都要:有 `if (!res.ok) setError` 的地方,同一 try 内的 `await load()` 必须排在它前面。
+  const badOrder = [...code.matchAll(/if \(!res\.ok\)[^\n]*setError\([^\n]*\);\s*await load\(\);/g)].length;
+  const goodOrder = [...code.matchAll(/await load\(\);\s*if \(!res\.ok\)[^\n]*setError\(/g)].length;
+  check("★ MCP 面板的写操作先重拉再报错(错误横幅不被 load 的 setError(null) 清掉)", goodOrder === 4 && badOrder === 0, {
+    goodOrder,
+    badOrder,
+  });
+}
+
+/* ────────────────────────── 16. 标题生成面板:设置写失败走 toast ────────────────────────── */
+
+console.log("\n标题生成面板:设置写失败的出口");
+
+// ★ `TitleGenPanel.saveSetting()` 直写设置表(语言 / 长度 / 风格偏好三项),从前写失败
+//   只 `console.error` —— 输入框里还是新值,用户以为改好了,实际主进程下一轮生成仍按
+//   旧值走(这几项是"现读",没有 store 兜底)。仓库里同类设置写(见 AppearancePanel 主题、
+//   SettingsBrowserPanel 目录)都有可见出口。判据钉源码:那条 catch 必须把错误推到
+//   **始终可见的 toast** 通道上。
+{
+  const { readFileSync } = await import("node:fs");
+  const titleGen = readFileSync(join(process.cwd(), "src/renderer/components/settings/TitleGenPanel.tsx"), "utf8");
+  const code = titleGen.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  check(
+    "★ 标题生成面板的设置写失败走 toast(从前只 console.error,静默)",
+    /api\.setting\.set\(\{ key, value \}\)\.catch\([^)]*\)\s*=>\s*\{[\s\S]*?useToastStore\.getState\(\)\.push\(/.test(code),
+    code.match(/api\.setting\.set\([^\n]*/g),
+  );
+}
+
+/* ────────────────────────── 17. 插件面板:git 安装的同步防重入 ────────────────────────── */
+
+console.log("\n插件面板:git 安装的同步防重入");
+
+// ★ `GitInstallForm` 的 `submit()` 由按钮点击**和**输入框回车两条路进。按钮上
+//   `disabled={busy}` 里的 `busy` 是 `ops.busyKey` 派生的 React state,`onBusy()` 到重
+//   渲染之间有一小段窗口 —— 回车键在这段里能再进一次 `submit()`,发第二次 installGit
+//   (真的会再克隆一遍仓库)。按钮的 `disabled` 挡不住回车,所以需要一个**同步** ref 闸。
+//   判据钉源码:submit 开头必须有 ref 守卫、进入后立刻置位、结束时复位。
+{
+  const { readFileSync } = await import("node:fs");
+  const plugins = readFileSync(join(process.cwd(), "src/renderer/components/settings/PluginsPanel.tsx"), "utf8");
+  const code = plugins.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  check(
+    "★ git 安装的 submit 有同步 submittingRef 闸(回车路径绕过 disabled 时挡双提交)",
+    /const submittingRef = useRef\(false\);/.test(code) &&
+      /if \(submittingRef\.current\) return;/.test(code) &&
+      /submittingRef\.current = true;/.test(code),
+    code.match(/submittingRef\.current[^\n]*/g),
+  );
+}
+
 /* ────────────────────────── 收尾 ────────────────────────── */
 
 console.log(`\nsettings-panel-smoke:${total - failures}/${total} 通过`);

@@ -14,6 +14,7 @@ import {
 } from "@contracts/ipc";
 import { api } from "@renderer/lib/api.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Input, Select, Switch } from "@renderer/components/ui/index.js";
@@ -96,7 +97,18 @@ export function TitleGenPanel() {
     };
   }, []);
   const saveSetting = (key: string, value: string) => {
-    void api.setting.set({ key, value }).catch((err: unknown) => console.error(`setting.set(${key}) failed:`, err));
+    // **写失败要说出来。** 从前只 `console.error`:语言 / 长度 / 风格偏好这几项
+    // 都是**直接写设置表**(主进程生成时现读),写失败时输入框里还是新值 ——
+    // 用户以为改好了,实际下一轮生成仍按旧值走。跟 AppearancePanel 的主题那处
+    // 同一个出口(始终可见的 toast,这个 section 没有自己的错误行)。
+    void api.setting.set({ key, value }).catch((err: unknown) => {
+      console.error(`setting.set(${key}) failed:`, err);
+      useToastStore.getState().push({
+        kind: "error",
+        title: t("settings.saveFailed"),
+        body: err instanceof Error ? err.message : String(err),
+      });
+    });
   };
   const commitMaxLen = () => {
     const n = parseTitleGenMaxLen(maxLenText);

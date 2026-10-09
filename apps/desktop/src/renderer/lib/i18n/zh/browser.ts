@@ -39,6 +39,10 @@ export const zh = {
   "browser.clearCache": "清除浏览缓存…",
   "browser.clearCookies": "清除登录状态(Cookie)…",
   "browser.clearCookiesConfirm": "将退出所有网站的登录状态,并清空记忆的登录信息,重启后不会恢复。确定继续?",
+  /* 两条清除失败要说出来。尤其清 Cookie 是**安全动作**(用户在确认框里点了"退出所有
+     网站"),静默失败会让他以为已经退出,而登录令牌还活着。 */
+  "browser.clearCacheFailed": "清除浏览缓存失败",
+  "browser.clearCookiesFailed": "清除登录状态失败",
 
   /* ── panel ── */
   "browser.selectProjectFirst": "请先选择一个项目",

@@ -21,6 +21,7 @@ import {
   type BrowserHistoryEntry,
   type BrowserAuthRequest,
   type BrowserDownloadProgress,
+  type BrowserOpResult,
 } from "@contracts/ipc";
 import { BrowserToolbar } from "./BrowserToolbar.js";
 import { DeviceToolbar } from "./DeviceToolbar.js";
@@ -818,13 +819,32 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
 
   /** Privacy rows in the More-menu tree: cache clear keeps cookies (main is
    *  deliberate about the split); cookie clear also wipes the persisted
-   *  vault, so sign-ins cannot resurrect on restart. */
+   *  vault, so sign-ins cannot resurrect on restart. Both return
+   *  `BrowserOpResult` — a `{ok:false}` must be surfaced, not swallowed: the
+   *  cookie path in particular is a **security action** the user confirmed in
+   *  a dialog ("sign me out everywhere"), so a silent failure leaves them
+   *  believing they are signed out while the session token is still live. */
+  const reportBrowserOpFailure = useCallback(
+    (res: BrowserOpResult, title: string) => {
+      if (res.ok) return;
+      useToastStore.getState().push({
+        kind: "error",
+        title,
+        body: res.error ?? "",
+      });
+    },
+    [],
+  );
   const handleClearCache = useCallback(() => {
-    void api.browser.clearCache();
-  }, []);
+    void api.browser
+      .clearCache()
+      .then((res) => reportBrowserOpFailure(res, t("browser.clearCacheFailed")));
+  }, [reportBrowserOpFailure, t]);
   const handleClearCookies = useCallback(() => {
-    void api.browser.clearCookies();
-  }, []);
+    void api.browser
+      .clearCookies()
+      .then((res) => reportBrowserOpFailure(res, t("browser.clearCookiesFailed")));
+  }, [reportBrowserOpFailure, t]);
   // Unmount: clear every pending auto-dismiss timer (the container swap on
   // mode switch unmounts this component mid-download routinely).
   useEffect(() => {

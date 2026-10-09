@@ -548,6 +548,44 @@ console.log("\nIPC:authRespond 的合法入参");
   eq("authRespond: 契约是 Promise<void>,所以没有返回值", out, undefined);
 }
 
+/* ──────────────── 渲染端:清除缓存 / Cookie 的失败出口 ────────────────
+ *
+ * `browser.clearCache` / `browser.clearCookies` 回的是 `BrowserOpResult`(`{ok, error?}`),
+ * 主进程两条 handler 的 catch 都如实回 `{ok:false, error}`(`BrowserManager.clearBrowser*`
+ * 内部 catch 后 `return { ok:false, error: msg }`)。而渲染端两个入口从前**不看返回值**
+ * —— `void api.browser.clearCache()` 一丢了事。清 Cookie 是**安全动作**(用户在确认框里
+ * 点了"退出所有网站、重启不恢复"),静默失败会让用户以为已经退出,而会话里的登录令牌
+ * 还活着。判据钉在源码上(组件无头跑不出来,本套没有渲染端 host)。 */
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const src = readFileSync(join(process.cwd(), "src/renderer/components/browser/BrowserPanel.tsx"), "utf8");
+  const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  for (const [fn, key] of [
+    ["handleClearCache", "browser.clearCacheFailed"],
+    ["handleClearCookies", "browser.clearCookiesFailed"],
+  ] as const) {
+    const at = code.indexOf(fn);
+    // 从函数声明起截到下一个 `}, [` —— 恰好是这个 useCallback 的结尾。
+    const body = code.slice(at, code.indexOf("}, [", at));
+    check(
+      `★ ${fn} 检查 {ok:false} 并报出来(从前一丢了事)`,
+      at >= 0 && /\.then\(/.test(body) && /reportBrowserOpFailure/.test(body) && body.includes(key),
+      body.slice(0, 260),
+    );
+  }
+  // 共用出口必须真的按 ok 判、并走 toast。
+  {
+    const at = code.indexOf("reportBrowserOpFailure");
+    const body = code.slice(at, code.indexOf("}, [", at));
+    check(
+      "★ 浏览器操作失败出口按 ok 判并走 toast",
+      at >= 0 && /if\s*\(res\.ok\)\s*return;/.test(body) && body.includes("useToastStore.getState().push("),
+      body.slice(0, 300),
+    );
+  }
+}
+
 /* ──────────────── 收尾 ──────────────── */
 
 rmSync(DATA, { recursive: true, force: true });

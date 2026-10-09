@@ -1337,10 +1337,17 @@ function GitInstallForm({
   const { t } = useI18n();
   const [url, setUrl] = useState("");
   const [ref, setRef] = useState("");
+  // **同步**的提交闸 —— `busy` 是 `ops.busyKey` 派生来的 React state,`onBusy()`
+  // 到重渲染之间有一小段窗口:这段里回车键(和按钮连点)能再进 `submit()`,
+  // 发第二次 `installGit`(会真的重新克隆一遍)。按钮的 `disabled` 挡不住回车,
+  // 所以这里用 ref 同步拦一道(同 QuestionPrompt / FileTree 的 submittingRef 写法)。
+  const submittingRef = useRef(false);
 
   const submit = async () => {
+    if (submittingRef.current) return;
     const trimmed = url.trim();
     if (!trimmed) return;
+    submittingRef.current = true;
     onBusy();
     try {
       const res = await api.plugins.installGit({
@@ -1352,6 +1359,8 @@ function GitInstallForm({
       onDone(res);
     } catch (err) {
       onError((err as Error).message);
+    } finally {
+      submittingRef.current = false;
     }
   };
 

@@ -302,8 +302,10 @@ export function McpPanel() {
         scope: s.scope,
         enabled: !s.enabled,
       });
-      if (!res.ok) setError(res.error ?? t("settings.operationFailed"));
+      // 先 `load()` 再报错:`load` 成功时会 `setError(null)` 清旧横幅 —— 顺序反了
+      // 就把这次的失败横幅一起清掉,toggle 失败时用户看到开关弹回、屏幕上一句话没有。
       await load();
+      if (!res.ok) setError(res.error ?? t("settings.operationFailed"));
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -343,8 +345,9 @@ export function McpPanel() {
     setError(null);
     try {
       const res = await api.mcp.remove({ name: target.name });
-      if (!res.ok) setError(res.error ?? t("settings.deleteFailed"));
+      // 同 `toggle`:先重拉(它成功会清旧横幅)再挂这次的错误,否则删失败的提示被 `load` 清掉。
       await load();
+      if (!res.ok) setError(res.error ?? t("settings.deleteFailed"));
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -370,8 +373,9 @@ export function McpPanel() {
         // exist in both user and plugin scope.
         scope: s.scope,
       });
-      if (!res.ok) setError(t("settings.mcp.authorizeFailed", { error: res.error ?? "" }));
+      // 同 `toggle`:授权失败那句话必须在 `load()` 之后写,否则被成功重拉的 `setError(null)` 清掉。
       await load();
+      if (!res.ok) setError(t("settings.mcp.authorizeFailed", { error: res.error ?? "" }));
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -391,8 +395,9 @@ export function McpPanel() {
         kind: s.kind === "sse" ? "sse" : "http",
         scope: s.scope,
       });
-      if (!res.ok) setError(t("settings.mcp.unauthorizeFailed", { error: res.error ?? "" }));
+      // 同 `toggle`:取消授权失败的话也要在 `load()` 之后挂,否则被清。
       await load();
+      if (!res.ok) setError(t("settings.mcp.unauthorizeFailed", { error: res.error ?? "" }));
     } catch (err) {
       setError((err as Error).message);
     } finally {
