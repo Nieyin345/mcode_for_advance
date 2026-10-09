@@ -43,7 +43,7 @@
  */
 
 import * as net from "node:net";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -554,6 +554,14 @@ await scenario("端口上没人监听", { connectPhone: false }, async (vps) => 
   eq("connect() 报失败", result.ok, false);
   check("文案提到了连不上 SSH 服务", /SSH/.test(result.error ?? ""), { error: result.error });
   check("文案是人话(不是 ECONNREFUSED)", !/ECONNREFUSED/.test(result.error ?? ""), { error: result.error });
+  // ★ 源码不变量:`connect ECONNREFUSED …` 这条分支里不许再出现 `msg.includes("port")`
+  //   那种假判断 —— 走到这里的是 `connect ECONNREFUSED 1.2.3.4:22`,永不含小写 "port",
+  //   三元恒取一支、看着在区分端口/地址其实分不出来。
+  {
+    const src = readFileSync(join(process.cwd(), "src/main/relay/RelayManager.ts"), "utf8");
+    const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+    check("★ RelayManager 的 ECONNREFUSED 分支没有 msg.includes(\"port\") 假判断", !/includes\("port"\)/.test(code), "");
+  }
   void vps;
 });
 

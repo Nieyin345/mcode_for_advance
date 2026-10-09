@@ -626,7 +626,10 @@ function friendlySshError(err: Error): string {
     return "SSH 认证失败：请检查用户名和密码/密钥是否正确";
   }
   if (/connect ECONNREFUSED|Connection refused/i.test(msg)) {
-    return `无法连接到 SSH 服务：请确认 ${msg.includes("port") ? "端口" : "地址"}正确且 SSH 服务正在运行`;
+    // ⚠️ 不要去判 `msg.includes("port")` —— 走到这里的是 `connect ECONNREFUSED 1.2.3.4:22`
+    // 这种串,永远不含小写的 "port",那个三元恒取「地址」一支,是个假判断(从前正是这么写的)。
+    // 端口与地址两种可能一起说,反正用户的下一步动作一样:核对着两样 + 确认 SSH 在跑。
+    return "无法连接到 SSH 服务:请确认地址与端口都正确,且 SSH 服务正在运行";
   }
   if (/ENOTFOUND|getaddrinfo/i.test(msg)) {
     return "无法解析服务器地址：请检查 IP/域名是否正确";
