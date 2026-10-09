@@ -351,6 +351,10 @@ export const zh = {
   // ── project / branch indicator ──
   "chat.branch.switchTitle": "切换分支",
   "chat.branch.searchPlaceholder": "搜索分支或标签...",
+  /* 输入框那个分支 chip 切换失败要说话:同一个动作在仓库卡片(`GitRepoCard`)把失败
+     摆进 op-log,这里从前 `catch {}` 吞掉 —— 用户点了另一个分支、菜单关了、分支没变,
+     屏幕上一个字都没有。 */
+  "chat.branch.switchFailed": "切换分支失败",
   "chat.branch.loadFailed": "无法读取分支",
   "chat.branch.switching": "切换中...",
   "chat.branch.noMatch": "无匹配结果",

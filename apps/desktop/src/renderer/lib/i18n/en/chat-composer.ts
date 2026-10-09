@@ -335,6 +335,7 @@ export const en = {
   // ── project / branch indicator ──
   "chat.branch.switchTitle": "Switch branch",
   "chat.branch.searchPlaceholder": "Search branches or tags...",
+  "chat.branch.switchFailed": "Could not switch branch",
   "chat.branch.loadFailed": "Could not read branches",
   "chat.branch.switching": "Switching...",
   "chat.branch.noMatch": "No matches",

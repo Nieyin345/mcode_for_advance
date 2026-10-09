@@ -246,10 +246,30 @@ async function fileTreeDeleteFailureScenario(): Promise<void> {
   check("★ 删除失败文案走 i18n(不是硬编码中文)", src.includes('useRowFailure("ide.tree.deleteFailed")'));
 }
 
+/**
+ * 两个分支切换器(仓库卡片 `GitRepoCard` 的、输入框 chip `ProjectBranchIndicator` 的)
+ * 必须**同样**把切换失败说出来。
+ *
+ * 同一个用户动作(git checkout)有两个入口,而 git 会拒它(本地有未提交改动会被覆盖
+ * 等)。`GitRepoCard` 把失败同时摆进 `setError` 与 op-log;`ProjectBranchIndicator`
+ * 从前是 `catch {}` —— 外加**连 `res.ok === false` 都不看**,于是用户点了另一个分支、
+ * 菜单关了、当前分支没变,屏幕上一个字都没有。判据钉在源码上(组件无头跑不出这个差异):
+ * chip 那条路必须检查 `res.ok` 且把失败报出来(toast)。
+ */
+async function branchSwitchFailureScenario(): Promise<void> {
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const chip = readFileSync(join(process.cwd(), "src/renderer/components/chat/ProjectBranchIndicator.tsx"), "utf8");
+  const code = chip.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  check("★ 分支 chip 检查 git.checkout 的 {ok:false}(不是只看抛错)", /const res = await api\.git\.checkout\(/.test(code) && /if \(!res\.ok\)/.test(code));
+  check("★ 分支 chip 切换失败会报出来(不是静默 catch)", /useToastStore\.getState\(\)\.push\(/.test(code) && code.includes("chat.branch.switchFailed"));
+}
+
 await scenario();
 await searchDialogScenario();
 await statusCodeParityScenario();
 await fileTreeDeleteFailureScenario();
+await branchSwitchFailureScenario();
 
 console.log(`\nide-ime-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exitCode = 1;

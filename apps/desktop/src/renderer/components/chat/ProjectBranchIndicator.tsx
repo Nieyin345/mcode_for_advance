@@ -19,6 +19,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { relativePath } from "@renderer/lib/path.js";
 import { checkoutArgsFor } from "@renderer/lib/branchRef.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 import type {
   GitRepo,
   GitStatusResult,
@@ -135,16 +136,28 @@ export function ProjectBranchIndicator({
     async (branch: string, newBranch?: string) => {
       if (!repo) return;
       setCheckingOut(true);
+      // 失败要说出来:git 会拒(`res.ok === false`,比如本地有未提交改动会被覆盖),
+      // 也可能抛(IPC 挂了)。从前这里是 `catch {}` —— 用户点了另一个分支、菜单关了、
+      // 当前分支没变,屏幕上一个字都没有。仓库卡片里同一个动作(`GitRepoCard`)把失败
+      // 摆进 op-log,这里没有 op-log,走一条 toast(与本组件其它失败路径同一条通道)。
+      const fail = (detail?: string): void => {
+        useToastStore.getState().push({
+          kind: "error",
+          title: t("chat.branch.switchFailed"),
+          ...(detail ? { body: detail } : {}),
+        });
+      };
       try {
-        await api.git.checkout({ repoPath: repo.path, branch, newBranch });
+        const res = await api.git.checkout({ repoPath: repo.path, branch, newBranch });
+        if (!res.ok) fail(res.error);
         await refresh();
-      } catch {
-        // Checkout failed — leave the current branch shown as-is.
+      } catch (err) {
+        fail(err instanceof Error ? err.message : String(err));
       } finally {
         setCheckingOut(false);
       }
     },
-    [repo, refresh],
+    [repo, refresh, t],
   );
 
   /** Filtered branch groups for the search box (matches name or commit subject). */
