@@ -144,6 +144,7 @@ export const en = {
   "library.convert.adoptHint":
     "Already have a converted .md? Attach it instead of spending another conversion. A sibling images/ folder comes along.",
   "library.convert.adoptDone": "Attached ({n} images)",
+  "library.convert.adoptMissing": "⚠️ {n} image reference(s) not found next to the source; those previews will be broken",
 
   // Left-bar item context menu
   "library.ctx.moveTo": "Move to",

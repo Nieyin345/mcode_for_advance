@@ -160,6 +160,7 @@ export const zh = {
   "library.convert.adoptHint":
     "已经有转录好的 md？直接挂上，不用再花一次转录额度。同级目录里的 images/ 会一起收进来。",
   "library.convert.adoptDone": "已挂上（含 {n} 张配图）",
+  "library.convert.adoptMissing": "⚠️ 有 {n} 处配图在源目录里找不到，那几处预览会是断图",
 
   // 左栏文献行的右键菜单
   "library.ctx.moveTo": "移动到",

@@ -392,9 +392,15 @@ export function ItemDetail({ item, onChanged }: Props) {
     setConvertMsg(null);
     try {
       const res = await api.library.adoptMarkdown({ id: item.id, path });
+      // 引用不到的配图要**说出来** —— 否则用户只会看到一张断图,软件一声不吭。
+      // (MCP 那条同操作早就报了,两边口径必须一致。)
+      const missLine =
+        res.ok && res.missing.length > 0
+          ? `\n${t("library.convert.adoptMissing", { n: res.missing.length })}`
+          : "";
       setConvertMsg(
         res.ok
-          ? t("library.convert.adoptDone", { n: res.imageCount })
+          ? t("library.convert.adoptDone", { n: res.imageCount }) + missLine
           : (res.error ?? t("library.convert.failed")),
       );
       if (res.ok) onChanged?.();

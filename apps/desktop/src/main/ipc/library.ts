@@ -871,7 +871,11 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
     const input = LibraryAdoptMarkdownSchema.parse(raw);
     const res = adoptMarkdownFile(input.id, input.path);
     if (res.ok) notifyLibraryChanged(`adopt_markdown:${input.id}`);
-    return { ok: res.ok, error: res.error, imageCount: res.imageCount };
+    // `missing`(**引用不到、预览会是断图**的那几处)必须一起带出去 —— 返回类型上写着
+    // "如实报出来,不静默丢",而 MCP 那条同操作会把它们印给模型。从前这里只转
+    // imageCount,于是同一件事对 AI 说了、对用户没说:用户在详情页看到一张断图,
+    // 软件一句解释都没有。
+    return { ok: res.ok, error: res.error, imageCount: res.imageCount, missing: res.missing };
   });
 
   /**

@@ -251,6 +251,21 @@ eq("它还在原来的分类里", LibraryRepo.listByCollection(home).length, 1);
 eq("它没进回收站", LibraryRepo.listByCollection(trash).some((i) => i.id === kept), false);
 eq("它不在 trashedItemIds 里", trashedItemIds().has(kept), false);
 
+// ★ 挂在回收站**子分类**里的条目也算"在回收站里"。回收站是个普通集合,用户可以把别的
+//   分类「移动到…」它下面(`CollectionRepo.move` 不挡这个),那时条目挂在子分类里 ——
+//   只看一层(`listByCollection`)的写法收不到,于是用户丢进回收站的东西照常进 AI 上下文。
+//   本文件里 `mergeTrashCollections` 早已按整棵子树收,同一份判据必须两边一致。
+{
+  const sub = CollectionRepo.create("回收站里的子分类", trash, "paper").id;
+  const inSub = LibraryRepo.upsert({ title: "挂在回收站子分类里" }).id;
+  CollectionRepo.assign(sub, [inSub], true);
+  check("★ 回收站子分类里的条目也在 trashedItemIds 里(按整棵子树收)", trashedItemIds().has(inSub));
+  eq("…但它不在只看一层的 listByCollection(回收站) 里(证明这条真走了树)", LibraryRepo.listByCollection(trash).some((i) => i.id === inSub), false);
+  // 清掉,别影响后面按"正好三条"数的断言。
+  CollectionRepo.delete(sub);
+  LibraryRepo.delete([inSub]);
+}
+
 // 空批次与全都不是孤儿,都返回 false(调用方据此决定要不要回传新列表)。
 eq("空数组 → false", sweepToTrash([]), false);
 eq("全都不是孤儿 → false", sweepToTrash([kept]), false);

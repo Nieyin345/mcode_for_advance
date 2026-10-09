@@ -115,7 +115,14 @@ export function trashCollectionId(): string | null {
 export function trashedItemIds(): Set<string> {
   const ids = new Set<string>();
   for (const trashId of allTrashCollectionIds()) {
-    for (const item of LibraryRepo.listByCollection(trashId)) ids.add(item.id);
+    // ⚠️ **按整棵子树收,不是只看一层。** 回收站是个**普通集合**,用户可以把别的分类
+    // 「移动到…」回收站下面(`CollectionRepo.move` 只挡自己/子孙/目标不存在,回收站是
+    // 合法落点),也可以给回收站建子分类。那时条目挂在**子分类**里,`listByCollection`
+    // (只看这一层)收不到 → 用户"我不要它了"丢进去的东西照常进 AI 上下文
+    // (library_search / 三处 manifest / envPrompt 系统提示 / 公网 agent_context 读口 /
+    // runAutomation 展开全都信这个 set)。本文件里 `mergeTrashCollections` 早已用
+    // `listByCollectionTree`,同一份"回收站里有什么"的判据必须两边一致。
+    for (const item of LibraryRepo.listByCollectionTree(trashId)) ids.add(item.id);
   }
   return ids;
 }

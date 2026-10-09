@@ -1169,6 +1169,9 @@ export interface RpcMap {
     ok: boolean;
     error?: string;
     imageCount: number;
+    /** md 里引用了、源目录里找不到的图(按引用原样列出)。**如实报出来,不静默丢** ——
+     *  与 MCP 那条 `library_adopt_markdown` 同一口径(它会把这句印给模型)。 */
+    missing: string[];
   }>;
   "library.readPdf": (input: LibraryReadPdfInput) => Promise<{
     ok: boolean;

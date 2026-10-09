@@ -304,6 +304,27 @@ console.log("\n采纳 · md 里有不合法的百分号转义");
   eq("图数报的是 1", res.imageCount, 1);
   check("坏的那一条进了 missing", res.missing.some((m) => m.includes("100%")), res.missing);
   check("落点下面没有暂存残渣", !packageOnly(bomItem).match(/stage|\.tmp|adopt-/i), packageOnly(bomItem));
+
+  // ★ **IPC 那条路也得把 `missing` 带出去。** MCP 那条同操作会把引用不到的配图印给模型
+  //   (见 `libraryServer.ts` 的 missLine),而 IPC handler 从前只转 imageCount ——
+  //   同一件事对 AI 说了、对用户没说:详情页一张断图,软件一声不吭。判据钉在**真 handler
+  //   的返回值**上(走假 ipcMain 收注册进来的那个函数),不是复述源码。
+  {
+    const handlers = new Map<string, (event: unknown, input: unknown) => unknown>();
+    const fakeIpc = {
+      handle(channel: string, fn: (event: unknown, input: unknown) => unknown) { handlers.set(channel, fn); },
+    };
+    const { registerLibraryHandlers } = await import("@main/ipc/library.js");
+    const { IPC } = await import("@contracts/ipc");
+    registerLibraryHandlers(fakeIpc as never);
+    const handler = handlers.get(IPC.LIBRARY_ADOPT_MARKDOWN);
+    check("拿到了 adoptMarkdown 的 IPC handler", handler !== undefined);
+    const ipcItem = LibraryRepo.upsert({ title: "走 IPC 采纳的那一篇" }).id;
+    const ipcDir = mkdtempSync(join(tmpdir(), "mcode-adopt-ipc-"));
+    writeFileSync(join(ipcDir, "full.md"), "# 正文\n\n![坏图](images/missing.png)\n", "utf8");
+    const ipcRes = (await Promise.resolve(handler!(null, { id: ipcItem, path: join(ipcDir, "full.md") }))) as { missing?: string[] };
+    check("★ IPC handler 把 missing 带出来了(与 MCP 那条同一口径,别只说给 AI 听)", Array.isArray(ipcRes.missing) && ipcRes.missing!.some((m) => m.includes("missing.png")), ipcRes);
+  }
 }
 
 /* ──────────────── 3d. 老包挪不动时的"整体放弃":暂存也必须清干净 ──────────────── */
