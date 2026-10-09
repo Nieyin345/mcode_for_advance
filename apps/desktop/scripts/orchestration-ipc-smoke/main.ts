@@ -55,7 +55,7 @@ import type { RpcMap } from "@contracts/ipc";
  */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { IpcMain } from "electron";
 import type { NodeTypeManifest } from "@contracts/nodeType";
 import type { WorkflowDoc } from "@contracts/workflow";
@@ -380,6 +380,35 @@ console.log("\n幂等 · 不覆盖用户改过的");
     readFileSync(readme, "utf8"),
     NODE_TYPES_FILES.find(([n]) => n === "README.md")?.[1],
   );
+}
+
+/* ──────────────── 4a. 没改过的旧版要升到新版 ──────────────── */
+
+console.log("\n没改过的旧版 README 升级成新版");
+
+{
+  // 节点类型 README 从前是"存在就跳过"(从不升级),于是老安装永久停在首发出厂那一版 ——
+  // 而它是系统提示词指给模型的规范(旧版只列 4 种 kind,现版 9 种)。这里把规则逼出来:
+  // 盘上的 README 与**记录里写过的某一版**一致(=没改过),再铺一次必须换成当前版。
+  const readme = join(dir, "README.md");
+  const current = NODE_TYPES_FILES.find(([n]) => n === "README.md")?.[1]!;
+  const recordFile = join(dirname(dir), ".mcode-shipped-node-types.json");
+
+  // 造"一个没改过的旧版":内容任意,**只要记录里记的就是它** —— 那就是"上次我们写出去的"。
+  const oldShipped = "# 旧版 README(我们上次铺的)\n\n旧内容。\n";
+  writeFileSync(readme, oldShipped, "utf8");
+  const { shippedHashOf } = await import("@main/workflows/seed.js");
+  writeFileSync(recordFile, JSON.stringify({ "README.md": shippedHashOf(oldShipped) }), "utf8");
+
+  ensureLocalNodeTypesDir();
+  eq("★ 没改过的旧版被换成当前版", readFileSync(readme, "utf8"), current);
+
+  // 正控:用户**改过**的(记录里对不上、也不在任何历史版里)不许动 —— §4 已逐字验过,
+  // 这里只确认升级逻辑没把那条规矩破坏掉。
+  const userEdited = "# 我又改了\n\n别动我。\n";
+  writeFileSync(readme, userEdited, "utf8");
+  ensureLocalNodeTypesDir();
+  eq("★ 用户改过的仍然不动(升级逻辑没破坏那条规矩)", readFileSync(readme, "utf8"), userEdited);
 }
 
 /* ──────────────── 4b. 一个文件写失败,后面的还铺不铺 ──────────────── */

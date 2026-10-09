@@ -1,8 +1,21 @@
 /**
  * 把 `<数据根>/workflows/node-types/` 铺出来 —— 目录本身,和写它需要的规范。
  *
- * 命名和做法都照 `main/workflows/seed.ts`(那套 Python 脚本的落盘器),规矩也一样:
- * **已存在就跳过,绝不覆盖** —— 用户改过的东西不能被启动流程冲掉。
+ * 落盘规则**唯一实现在 `main/workflows/shippedFiles.ts`**(与流程脚本那份共用):
+ * **没改过的换新版、改过的才不动**。
+ *
+ * ## 为什么不是"已存在就跳过"
+ *
+ * ⚠️ 这里从前写的是 `if (existsSync(file)) continue; // 用户改过的留着`,而文件头
+ * 还声称"规矩照 `main/workflows/seed.ts`" —— 可 `seed.ts` 早在 2026-09-26 就把"只在
+ * 缺失时写"改掉了(见那边的文件头),因为那条规矩让老安装**永远停在第一次装的那一版**。
+ * 本文件停在被修掉的旧版上,于是:
+ *
+ * `<数据根>/workflows/node-types/README.md` 是系统提示词明确指给模型的规范。它首发出厂
+ * (2026-09)写着「`runner.kind` 只有四个值」;现版已列 9 种。老用户升级 App 后,磁盘上
+ * 那份**逐字没动**,模型照陈旧 README 以为只有 4 种 kind、`command` 不能跑,写不出
+ * `trigger`/`condition`/`code` 这些合法种类。改走共享判据后,没改过的老 README 会在
+ * 启动时换成新版。
  *
  * ## 为什么要铺一份 README
  *
@@ -33,10 +46,9 @@
  * ⚠️ 这里以前写着"不能被无头探针直接 import",于是**那句话本身成了这个文件零覆盖的
  * 理由**。那句话对纯 Node 成立、对 esbuild 不成立 —— 别再按它跳过这一份。
  */
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import readmeMd from "./node-types-README.md?raw";
-import { log } from "@main/lib/logger.js";
+import { seedShippedFiles } from "@main/workflows/shippedFiles.js";
 import { localNodeTypesDir } from "./nodeTypes.js";
 
 /** 相对 `<数据根>/workflows/node-types/` 的文件名 → 正文。 */
@@ -44,32 +56,26 @@ export const NODE_TYPES_FILES: ReadonlyArray<[name: string, body: string]> = [
   ["README.md", readmeMd],
 ];
 
+/** 记录表文件名 —— **放在 `workflows/` 父目录、用独立的名字**。
+ *
+ *  ① 不能放 `node-types/` 里:那个目录的加载器扫 `*.json` 当节点清单,记录文件会被当成
+ *     一个坏清单(报 "id: Required")。② 不能与流程脚本那份同名:两条记录都以 `rel` 为键
+ *     (这里也有一项叫 `README.md`),共用一份会互相覆盖。 */
+const SHIPPED_RECORD_FILE = ".mcode-shipped-node-types.json";
+
 /** 建目录 + 铺 README。跑在启动路径上,**任何失败都只记日志,不往外抛** —— 用户可能
- *  把数据根放到了只读位置或网盘上,那不该让整个应用起不来。
- *
- * ## 为什么是**每个文件一个 try**,而不是整个循环外面一个
- *
- * 照 `main/workflows/seed.ts` 那份的做法。差别在**一个文件写失败时,后面的还铺不铺**:
- *
- *  - 整个循环一个 try(以前这里)→ 第一个文件写失败,**后面每一个都不再尝试**。今天
- *    `NODE_TYPES_FILES` 只有一项,所以看不出差别 —— 等哪天加了第二项,磁盘上少一份
- *    文件、日志里也只有一条(而且那条报的是第一个文件的错),排查时得从第一个开始猜。
- *  - 每个文件一个 try(这里)→ 坏的那一份自己报自己,其余照铺。 */
+ *  把数据根放到了只读位置或网盘上,那不该让整个应用起不来。判据(哪些算原版、写失败
+ *  怎么办)全在 `seedShippedFiles`;每个文件各自 try,一个坏不影响其余。 */
 export function ensureLocalNodeTypesDir(): void {
   const dir = localNodeTypesDir();
-  try {
-    mkdirSync(dir, { recursive: true });
-  } catch (err) {
-    log.warn(`[orchestration] 节点类型目录没建出来(${dir}):${(err as Error).message}`);
-    return;
-  }
-  for (const [name, body] of NODE_TYPES_FILES) {
-    const file = path.join(dir, name);
-    if (existsSync(file)) continue; // 用户改过的留着
-    try {
-      writeFileSync(file, body, "utf-8");
-    } catch (err) {
-      log.warn(`[orchestration] 节点类型文件没铺出来(${file}):${(err as Error).message}`);
-    }
-  }
+  seedShippedFiles(
+    NODE_TYPES_FILES.map(([rel, body]) => ({ rel, body })),
+    {
+      rootDir: dir,
+      // 记录放在 node-types 的**父目录**(`workflows/`)——见上面那条理由。
+      recordDir: path.dirname(dir),
+      recordFile: SHIPPED_RECORD_FILE,
+      label: "node-types",
+    },
+  );
 }

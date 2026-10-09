@@ -30,12 +30,15 @@
  *   - 其余一律当作用户改过:不动,启动日志记一条(那份脚本不会有新版的屏蔽逻辑)。
  * 哈希按 LF 归一再算 —— Windows 上 git / 编辑器把换行变成 CRLF 不算「改过」。
  */
-import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync, existsSync, chmodSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { log } from "@main/lib/logger.js";
 import { LIBRARY_PY, CHECK_CITATIONS_PY, MINERU_PY } from "./assets.js";
+import { seedShippedFiles, shippedHashOf, type SeedReport, type ShippedFile } from "./shippedFiles.js";
+
+/** 比对用的哈希 —— 唯一实现在 `./shippedFiles.js`,这里再导出供既有调用方(`seed-smoke` 等)复用。 */
+export { shippedHashOf };
+export type { SeedReport };
 
 /** 流程目录。与 `library/`、`templates/` 平级,同在数据根下。 */
 export function workflowsRoot(): string {
@@ -119,35 +122,6 @@ export const LEGACY_SHIPPED_SHA256: Readonly<Record<string, readonly string[]>> 
   "README.md": ["7e89e005d1f72982574aa83b8cbff8259b266272dd92ff017859152ffc816223"],
 };
 
-/** 比对用的哈希:LF 归一后的 sha256。 */
-export function shippedHashOf(body: string): string {
-  return createHash("sha256").update(body.replace(/\r\n/g, "\n"), "utf8").digest("hex");
-}
-
-/** 一次 `ensureWorkflows()` 做了什么。启动流程只拿它记日志;smoke 拿它断言。 */
-export interface SeedReport {
-  /** 原来没有、新写的。 */
-  written: string[];
-  /** 原来是没改过的旧版、换成了这一版的。 */
-  upgraded: string[];
-  /** 和任何发过的版本都对不上 —— 当作用户改过,没动。 */
-  keptModified: string[];
-}
-
-function readShippedRecord(): Record<string, string> {
-  try {
-    const raw = JSON.parse(readFileSync(join(workflowsRoot(), SHIPPED_RECORD_FILE), "utf8")) as unknown;
-    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-      const out: Record<string, string> = {};
-      for (const [k, v] of Object.entries(raw as Record<string, unknown>)) if (typeof v === "string") out[k] = v;
-      return out;
-    }
-  } catch {
-    /* 没有或坏了:当老安装处理,靠 LEGACY_SHIPPED_SHA256 认 */
-  }
-  return {};
-}
-
 /**
  * 确保流程目录与脚本存在。幂等,启动时调一次。
  *
@@ -155,22 +129,12 @@ function readShippedRecord(): Record<string, string> {
  * 警告:用户至少还能用清单文件那条老路读库。
  */
 export function ensureWorkflows(): SeedReport {
-  const report: SeedReport = { written: [], upgraded: [], keptModified: [] };
-  try {
-    mkdirSync(scriptsDir(), { recursive: true });
-  } catch (err) {
-    log.warn(`workflows: 建目录失败:${(err as Error).message}`);
-    return report;
-  }
-  const record = readShippedRecord();
-  let recordDirty = false;
-
-  const files: Array<[string, string]> = [
-    ["README.md", README],
-    ["scripts/library.py", LIBRARY_PY],
-    ["scripts/check_citations.py", CHECK_CITATIONS_PY],
+  const files: ShippedFile[] = [
+    { rel: "README.md", body: README },
+    { rel: "scripts/library.py", body: LIBRARY_PY },
+    { rel: "scripts/check_citations.py", body: CHECK_CITATIONS_PY },
     // 内置自动化「下载完自动转 Markdown」那一步跑的转录脚本(见 `builtins.ts`)。
-    ["scripts/mineru_transcribe.py", MINERU_PY],
+    { rel: "scripts/mineru_transcribe.py", body: MINERU_PY },
     // ⚠️ **外部检索脚本已移除**（2026-09-22 用户要求）。
     //
     // 原先这里还会铺一整套 `scripts/search-scripts/`（多源检索客户端、PubMed、
@@ -183,61 +147,13 @@ export function ensureWorkflows(): SeedReport {
     // 要恢复的话，别手抄：去 `github.com/Imbad0202/academic-research-skills` 重新
     // 克隆，再按当初那套生成脚本(一次性的，已随 `.scholar_tmp/` 移出源码树)重新生成。
   ];
-
-  for (const [rel, body] of files) {
-    const abs = join(workflowsRoot(), rel);
-    const want = shippedHashOf(body);
-    let kind: "written" | "upgraded" = "written";
-    if (existsSync(abs)) {
-      let have: string;
-      try {
-        have = shippedHashOf(readFileSync(abs, "utf8"));
-      } catch (err) {
-        log.warn(`workflows: 读 ${rel} 失败,不动它:${(err as Error).message}`);
-        report.keptModified.push(rel);
-        continue;
-      }
-      if (have === want) {
-        // 已经是这一版(包括只差换行的)。补记录 —— 老安装第一次跑到这里时还没有。
-        if (record[rel] !== want) { record[rel] = want; recordDirty = true; }
-        continue;
-      }
-      const pristine = record[rel] === have || (LEGACY_SHIPPED_SHA256[rel] ?? []).includes(have);
-      if (!pristine) {
-        report.keptModified.push(rel);
-        log.warn(`workflows: ${rel} 被改过,不覆盖 —— 它拿不到新版的修复(想要新版就删掉它再重启)`);
-        continue;
-      }
-      kind = "upgraded";
-    }
-    try {
-      // 剩下的两个脚本都在 `scripts/` 一层里；`recursive` 留着无妨
-      // （从前 search-scripts 是嵌套的，现在没有了）。
-      mkdirSync(dirname(abs), { recursive: true });
-      writeFileSync(abs, body, "utf8");
-      // 可执行位:非 Windows 上直接 ./library.py 就能跑。Windows 忽略它,不影响。
-      if (rel.endsWith(".py") || rel.endsWith(".mjs")) {
-        try {
-          chmodSync(abs, 0o755);
-        } catch {
-          /* 文件系统不支持就跳过 */
-        }
-      }
-      report[kind].push(rel);
-      record[rel] = want;
-      recordDirty = true;
-    } catch (err) {
-      log.warn(`workflows: 写 ${rel} 失败:${(err as Error).message}`);
-    }
-  }
-
-  if (recordDirty) {
-    try {
-      writeFileSync(join(workflowsRoot(), SHIPPED_RECORD_FILE), `${JSON.stringify(record, null, 2)}\n`, "utf8");
-    } catch (err) {
-      log.warn(`workflows: 写 ${SHIPPED_RECORD_FILE} 失败:${(err as Error).message}`);
-    }
-  }
-  if (report.upgraded.length > 0) log.info(`workflows: 已把没改过的旧版换成新版:${report.upgraded.join("、")}`);
-  return report;
+  // 判据(原版认哪些、改过的不动、写失败只记日志)全在 `seedShippedFiles` —— 与
+  // 节点类型 README 那一份**共用一条规则**(从前两个文件各长了一遍、还漂了)。
+  return seedShippedFiles(files, {
+    rootDir: workflowsRoot(),
+    recordFile: SHIPPED_RECORD_FILE,
+    label: "workflows",
+    legacyHashes: LEGACY_SHIPPED_SHA256,
+    executableExts: [".py", ".mjs"],
+  });
 }
