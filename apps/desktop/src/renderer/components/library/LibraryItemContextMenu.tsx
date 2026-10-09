@@ -205,7 +205,18 @@ export function LibraryItemContextMenu({
           label: item.mdPath ? undefined : t("library.ctx.viewTranscriptMissing"),
         },
         openMdExternal: {
-          run: () => void api.library.openFile({ id: item.id, which: "md" }),
+          run: () => {
+            // 同「在文件夹中打开」:openFile 带原因回 {ok:false},静默的话这一项像没反应。
+            void api.library.openFile({ id: item.id, which: "md" }).then((res) => {
+              if (!res.ok) {
+                useToastStore.getState().push({
+                  kind: "error",
+                  title: t("library.openExternalFailed"),
+                  body: res.error ?? "",
+                });
+              }
+            });
+          },
           disabled: !item.mdPath,
         },
         links: { run: () => onManageLinks(item) },

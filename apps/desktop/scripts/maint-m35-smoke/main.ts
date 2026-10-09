@@ -123,7 +123,8 @@ await scenario("corrupt annotation index is recoverable after the next save", ()
 await scenario("revealFile / openFile 的 {ok:false} 在每个调用方都报出来", () => {
   const targets: Array<[string, string, RegExp]> = [
     ["ItemDetail", join(process.cwd(), "src/renderer/components/library/ItemDetail.tsx"), /api\.library\s*\.\s*revealFile/g],
-    ["LibraryItemContextMenu", join(process.cwd(), "src/renderer/components/library/LibraryItemContextMenu.tsx"), /api\.library\s*\.\s*revealFile/g],
+    ["LibraryItemContextMenu-reveal", join(process.cwd(), "src/renderer/components/library/LibraryItemContextMenu.tsx"), /api\.library\s*\.\s*revealFile/g],
+    ["LibraryItemContextMenu-openFile", join(process.cwd(), "src/renderer/components/library/LibraryItemContextMenu.tsx"), /api\.library\s*\.\s*openFile/g],
     ["PdfPreviewImpl", join(process.cwd(), "src/renderer/components/library/PdfPreviewImpl.tsx"), /api\.library\s*\.\s*openFile/g],
   ];
   // 去掉注释,免得注释里的示例调用把判据喂饱。

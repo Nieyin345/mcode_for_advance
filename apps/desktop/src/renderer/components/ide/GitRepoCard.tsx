@@ -445,13 +445,14 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
     setBusy("commit");
     try {
       const res = await api.git.stage({ repoPath: repo.path, filePaths: [filePath] });
+      // 同 checkout:先 refresh 再挂错误。
+      await refresh();
       if (!res.ok) {
         setError(res.error ?? t("ide.git.stageFailed"));
         prependLog({ op: "stage", status: "failure", message: res.error });
       } else {
         prependLog({ op: "stage", status: "success" });
       }
-      await refresh();
     } catch (err) {
       const msg = (err as Error).message ?? t("ide.git.stageFailed");
       setError(msg);
@@ -465,13 +466,14 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
     setBusy("commit");
     try {
       const res = await api.git.unstage({ repoPath: repo.path, filePaths: [filePath] });
+      // 同 checkout:先 refresh 再挂错误。
+      await refresh();
       if (!res.ok) {
         setError(res.error ?? t("ide.git.unstageFailed"));
         prependLog({ op: "unstage", status: "failure", message: res.error });
       } else {
         prependLog({ op: "unstage", status: "success" });
       }
-      await refresh();
     } catch (err) {
       const msg = (err as Error).message ?? t("ide.git.unstageFailed");
       setError(msg);
@@ -489,16 +491,21 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
     try {
       const res = await api.git.commit({ repoPath: repo.path, message: msg });
       if (!res.ok) {
+        // commit 失败时不再 refresh,错误横幅本就在(这条 return 不会经过 setError(null))。
         setError(res.error ?? t("ide.git.commitFailed"));
         prependLog({ op: "commit", status: "failure", message: res.error });
         return;
       }
       prependLog({ op: "commit", status: "success" });
       setCommitMsg("");
+      // ⚠️ 提交后的 push/sync 子步骤会失败,但它们后面跟着 `await refresh()`,而 refresh
+      // 开头会 `setError(null)` —— 把错误攒在这里、refresh 之后再挂,否则"提交成功但推送
+      // 失败"的那句话会被刷新清掉(用户以为推上去了)。同 checkout 那一族。
+      let subError: string | null = null;
       if (mode === "push") {
         const pushRes = await api.git.push({ repoPath: repo.path });
         if (!pushRes.ok) {
-          setError(pushRes.error ?? t("ide.git.pushFailed"));
+          subError = pushRes.error ?? t("ide.git.pushFailed");
           prependLog({ op: "push", status: "failure", message: pushRes.error });
         } else {
           prependLog({ op: "push", status: "success" });
@@ -506,19 +513,20 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
       } else if (mode === "sync") {
         const pullRes = await api.git.pull({ repoPath: repo.path });
         if (!pullRes.ok) {
-          setError(pullRes.error ?? t("ide.git.pullFailed"));
+          subError = pullRes.error ?? t("ide.git.pullFailed");
           prependLog({ op: "sync", status: "failure", message: pullRes.error });
-          return; // don't push if pull failed
-        }
-        const pushRes = await api.git.push({ repoPath: repo.path });
-        if (!pushRes.ok) {
-          setError(pushRes.error ?? t("ide.git.pushFailed"));
-          prependLog({ op: "push", status: "failure", message: pushRes.error });
         } else {
-          prependLog({ op: "push", status: "success" });
+          const pushRes = await api.git.push({ repoPath: repo.path });
+          if (!pushRes.ok) {
+            subError = pushRes.error ?? t("ide.git.pushFailed");
+            prependLog({ op: "push", status: "failure", message: pushRes.error });
+          } else {
+            prependLog({ op: "push", status: "success" });
+          }
         }
       }
       await refresh();
+      if (subError) setError(subError);
     } catch (err) {
       const errMsg = (err as Error).message ?? t("ide.git.commitFailed");
       setError(errMsg);
@@ -533,13 +541,14 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
     setError(null);
     try {
       const res = await api.git.push({ repoPath: repo.path });
+      // 同 checkout:先 refresh 再挂错误(refresh 开头的 setError(null) 会清掉这次的失败)。
+      await refresh();
       if (!res.ok) {
         setError(res.error ?? t("ide.git.pushFailed"));
         prependLog({ op: "push", status: "failure", message: res.error });
       } else {
         prependLog({ op: "push", status: "success" });
       }
-      await refresh();
     } catch (err) {
       const msg = (err as Error).message ?? t("ide.git.pushFailed");
       setError(msg);
@@ -554,6 +563,9 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
     setError(null);
     try {
       const res = await api.git.pull({ repoPath: repo.path });
+      // 同 checkout:先 refresh 再挂错误。conflict 分支设的是独立状态(conflictFiles),
+      // 不受 refresh 影响,但也一并放到 refresh 之后,保持四条分支同一时序。
+      await refresh();
       if (!res.ok) {
         setError(res.error ?? t("ide.git.pullFailed"));
         prependLog({ op: "pull", status: "failure", message: res.error });
@@ -566,7 +578,6 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
       } else {
         prependLog({ op: "pull", status: "success" });
       }
-      await refresh();
     } catch (err) {
       const msg = (err as Error).message ?? t("ide.git.pullFailed");
       setError(msg);
@@ -584,14 +595,15 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
         repoPath: repo.path,
         filePaths: pendingDiscard,
       });
+      setPendingDiscard(null);
+      // 同 checkout:先 refresh 再挂错误(refresh 开头的 setError(null) 会清掉这次的失败)。
+      await refresh();
       if (!res.ok) {
         setError(res.error ?? t("ide.git.discardFailed"));
         prependLog({ op: "discard", status: "failure", message: res.error });
       } else {
         prependLog({ op: "discard", status: "success" });
       }
-      setPendingDiscard(null);
-      await refresh();
     } catch (err) {
       const msg = (err as Error).message ?? t("ide.git.discardFailed");
       setError(msg);
