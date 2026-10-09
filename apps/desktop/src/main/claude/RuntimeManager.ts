@@ -26,7 +26,7 @@ import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
 import { mobileEventBus } from "@main/mobile/MobileEventBus.js";
 import { invalidateUsageStats } from "@main/lib/usageStats.js";
 import { log } from "@main/lib/logger.js";
-import { pendingBackflowPrompt, pendingCreationMemoryPrompt, clearBackflow, peekBackflow } from "@main/lib/pendingBackflow.js";
+import { pendingBackflowPrompt, pendingCreationMemoryPrompt, clearBackflow } from "@main/lib/pendingBackflow.js";
 import { clearAgentMail, mailNoticeText, peekAgentMailBatch, setDeliveryPort, type MailNotice } from "@main/lib/agentMail.js";
 import { resolveAgentPrompt, resolveWorkflowPrompt } from "@main/orchestration/prompt.js";
 import { memorySectionFrom, type MemoryInjectionSection, type MemoryInjectionTrace } from "@contracts/memory";
@@ -238,6 +238,12 @@ const TURN_FINALIZE_WAIT_MS = 5_000;
 /** 同时在内存里留着的「节点过程」份数上限(见 `evictNodeTranscripts`)。64 是个手感值:
  *  一张十来步的图跑几轮都装得下,同时又把"开一整天自动化"那种场景兜住了。 */
 const NODE_TRANSCRIPT_LIMIT = 64;
+
+/** 每会话保留的「每轮用量」条数上限。`usageHistory` 每轮追加一条、整份 JSON 写回会话
+ *  行(`updateUsageHistory`),从前**没有上限** —— 一条长命对话每轮都多一行、整表跟着
+ *  重写,永远只涨不落。渲染端那个"历史"表是**可滚动**的,200 轮足够看很久;多出来的从
+ *  最早的丢掉。 */
+const USAGE_HISTORY_LIMIT = 200;
 
 class RuntimeManager {
   private sessions = new Map<string, SessionRuntime>();
@@ -958,7 +964,7 @@ class RuntimeManager {
         usedTokens: snap.usedTokens,
         model: snap.model,
       };
-      rt.usageHistory = [...rt.usageHistory, record];
+      rt.usageHistory = [...rt.usageHistory, record].slice(-USAGE_HISTORY_LIMIT);
       SessionRepo.updateUsageHistory(sessionId, rt.usageHistory);
       invalidateUsageStats();
     } catch (err) {

@@ -175,6 +175,10 @@ check("全局插件 handler 继续注册", source("src/main/ipc/index.ts").inclu
 console.log("\n三引擎一致消费");
 // Codex 请求超时定时器必须 unref,否则一个未回应的请求会把进程钉住最多 120s(退出被拖)。
 check("Codex app-server 请求超时定时器 unref(不拖住进程退出)", source("src/main/providers/codex-sdk/CodexAppServerClient.ts").includes("timer.unref"));
+// usageHistory 每轮追加一条、整份写回会话行 —— 必须有上限,否则长命对话只涨不落。
+check("★ usageHistory 每轮追加时有上限(不无界增长)", runtime.includes("USAGE_HISTORY_LIMIT") && /usageHistory = \[\.\.\.rt\.usageHistory, record\]\.slice\(-USAGE_HISTORY_LIMIT\)/.test(runtime));
+// peekBackflow 是死 import(只有注释按名字提到它),不该挂在 import 里。
+check("RuntimeManager 不再 import 用不到的 peekBackflow", !/import \{[^}]*\bpeekBackflow\b[^}]*\} from "@main\/lib\/pendingBackflow/.test(runtime));
 for (const [name, text] of [["Claude", claude], ["Pi", pi], ["Codex", codex]] as const) {
   check(`${name} 用共享 turnContextSections`, text.includes("turnContextSections(req)"));
 }
