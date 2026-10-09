@@ -259,6 +259,8 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
     "onlyoffice.config": JSON.stringify({ baseUrl: "http://x", jwtSecret: "my-jwt-signing-secret-abc" }),
     "publicMcp.projectLinks": JSON.stringify([{ projectId: "p1", secret: "Pr0j3ctL1nkS3cr3t-abcdefghijklmnop", sessionId: null }]),
     "mobile.pairedDevices": JSON.stringify([{ deviceId: "dev_ab12", name: "Pixel", pairedAt: 1, lastSeenAt: 1, deviceToken: "0123456789abcdef".repeat(4) }]),
+    // MCP server 的 env/headers 里常放 API key / Authorization 头,而键名不含密钥词。
+    "mcp.management": JSON.stringify({ userServers: { gh: { type: "stdio", command: "npx", env: { GITHUB_TOKEN: "ghp_SENTINEL_MCP_TOKEN_1234567890" } } } }),
   };
   recordRpcHandler("setting:get", async (_e, raw) => {
     const k = (raw as { key?: string }).key ?? "";
@@ -304,6 +306,7 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
     ["onlyoffice.config", "my-jwt-signing-secret-abc"],
     ["publicMcp.projectLinks", "Pr0j3ctL1nkS3cr3t-abcdefghijklmnop"],
     ["mobile.pairedDevices", "dev_ab12"],
+    ["mcp.management", "ghp_SENTINEL_MCP_TOKEN_1234567890"],
   ];
   for (const [key, marker] of LEAK_KEYS) {
     const r = await call("setting.get", { key }, ctx);

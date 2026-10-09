@@ -49,6 +49,12 @@ const EXCLUDED_KEYS = new Set<string>([
   // 而用户导出它正是为了分享 / 搬机器 —— 与文件头「绝不导出密钥」那句直接相悖。
   // (`customModels` 那一条是**公开元数据**、不含密钥,该照常导出,不要一起排掉。)
   "customModelKeys",
+  // ⚠️ **MCP 服务器配置里的凭据。** 每个 server 的 `env`(stdio,常放 `GITHUB_TOKEN`
+  // 之类)与 `headers`(http/sse,常放 `Authorization`)是原样保存的 —— 导出设置即是分享,
+  // 带着这些键就等于把 API key 写进那个 JSON 文件。键名 `mcp.management` 不被
+  // `SECRET_KEY_RE` 命中,所以必须显式列出(与 `appControl/tools.ts` 的 `SECRET_SETTING_KEYS`
+  // 同一条:同一个事实两处都要认,别只在一边拦)。
+  "mcp.management",
   "app.dataRoot",
   "browser.dataDir",
   "browser.screenshotDir",

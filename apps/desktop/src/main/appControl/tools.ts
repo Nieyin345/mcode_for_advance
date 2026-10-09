@@ -83,6 +83,13 @@ const SECRET_SETTING_KEYS: ReadonlySet<string> = new Set([
    *  被"值的形态"那道拦住,但那条判据依赖令牌恰好是十六进制 —— 换一种编码就漏。按
    *  键名钉死(手机侧 `LAN_UNREADABLE_SETTING_KEYS` 也是这么钉的)。 */
   "mobile.pairedDevices",
+  /** MCP 服务器的配置(每个 server 的 `env` / `headers`)。stdio server 的 `env` 里常放
+   *  **API key**(如 `GITHUB_TOKEN`),http/sse server 的 `headers` 里常放 `Authorization`
+   *  —— `contracts/ipc/mcp.ts` 明说 headers 原样保存。键名 `mcp.management` 两道正则
+   *  (`SECRET_SETTING_KEY_RE` / `SECRET_SETTING_STORE_RE`)都不命中,而 `setting.get`
+   *  是 read/自动批准、把整块 JSON 当一个字符串返回 → 凭据原样交给模型。与 #133 那四条
+   *  同一种洞,改法一样:按键名拦在调用之前。 */
+  "mcp.management",
 ]);
 /** 兜底:名字里带密钥词的设置键也不给。宁可多拦一个键,也不漏一个。 */
 const SECRET_SETTING_KEY_RE =
