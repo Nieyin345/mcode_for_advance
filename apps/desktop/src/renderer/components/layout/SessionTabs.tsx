@@ -301,7 +301,10 @@ export function SortableSessionTab({
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: sessionId });
 
-  const title = session?.title ?? "(unknown)";
+  // 未知会话用**词条**(同上面那个 ⋯ 溢出菜单的 `布局.unknownSession`)—— 从前写死英文
+  // `"(unknown)"`,于是初始化竞态 / 未知 id 时,标签体是英文而同一个 tab 的 ⋯ 菜单却是
+  // 「未知会话」。用户可见的字符串一律走 t()。
+  const title = session?.title ?? t("layout.unknownSession");
 
   // Merge the dnd-kit node ref with our registry ref.
   const setRefs = useCallback(

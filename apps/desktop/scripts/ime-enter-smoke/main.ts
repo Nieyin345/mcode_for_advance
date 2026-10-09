@@ -215,5 +215,19 @@ async function quoteMenuScenario(): Promise<void> {
 await authPromptScenario();
 await quoteMenuScenario();
 
+/* ─────────────────── ComposerEditor(ProseMirror):Enter 也要 229 守卫 ─────────────────── */
+
+// 主输入框是 ProseMirror 的 `handleKeyDown`(不是 DOM input),这套假 react 驱动不了它,
+// 所以判据立在**源码层**:三处拦截 Enter / 方向键的判据都必须同时含 `isComposing` 与
+// `keyCode !== 229`。Safari/macOS 上 CJK 输入法"确认候选"的那次 Enter 是
+// `isComposing === false` 但 `keyCode === 229` —— 只查 isComposing 会**在组词中途把消息发出去**。
+{
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const src = fs.readFileSync(path.join(process.cwd(), "src/renderer/components/chat/ComposerEditor.tsx"), "utf8");
+  const guardCount = (src.match(/keyCode !== 229/g) ?? []).length;
+  check("★ ComposerEditor 的 Enter/方向键判据带 keyCode !== 229(Safari CJK 上屏)", guardCount >= 3, { guardCount });
+}
+
 console.log(`\nime-enter-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exitCode = 1;

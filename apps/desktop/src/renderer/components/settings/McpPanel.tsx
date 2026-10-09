@@ -14,7 +14,7 @@
  * 改动自下一轮对话起生效(startTurn 每轮重建 options);Claude / Codex 生效,
  * Pi 没有 MCP。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
 import { api } from "@renderer/lib/api.js";
@@ -267,17 +267,25 @@ export function McpPanel() {
   const [dialogProject, setDialogProject] = useState<string | null>(null);
   const [projectRefresh, setProjectRefresh] = useState(0);
 
+  /** `load` 的序号守卫 —— 它在挂载/每次 toggle/authorize/import 后都会并发触发,
+   *  旧回包(成功或失败)不能盖掉更新的那次。 */
+  const loadSeqRef = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     try {
       const { servers: list } = await api.mcp.list({});
+      if (seq !== loadSeqRef.current) return; // 有更新的一次在飞,这次作废
       setServers(list.length ? list : EMPTY_SERVERS);
+      setError(null); // 成功即清掉旧错误横幅,否则一次失败会黏住
     } catch (err) {
+      if (seq !== loadSeqRef.current) return;
       console.error("McpPanel load failed:", err);
       setError((err as Error).message);
-      setServers(EMPTY_SERVERS);
+      // ⚠️ **不清空列表。** 一次瞬时 list 失败不该把用户已配置的行全抹掉 —— 那比
+      // 保留旧数据 + 一条错误横幅糟得多(用户得重开面板才恢复)。保留上次成功的列表。
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, []);
 

@@ -320,6 +320,7 @@ export const ComposerEditor = forwardRef<
         if (
           event.key === "Enter" &&
           !event.isComposing &&
+          event.keyCode !== 229 &&
           useUiPrefsStore.getState().sendKey === "modEnter"
         ) {
           const mod = event.ctrlKey || event.metaKey;
@@ -333,7 +334,7 @@ export const ComposerEditor = forwardRef<
           }
           return true;
         }
-        if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
           event.preventDefault();
           onEnterRef.current({ ctrl: event.ctrlKey || event.metaKey });
           return true;
@@ -349,7 +350,8 @@ export const ComposerEditor = forwardRef<
           !event.altKey &&
           !event.ctrlKey &&
           !event.metaKey &&
-          !event.isComposing
+          !event.isComposing &&
+          event.keyCode !== 229
         ) {
           event.preventDefault();
           if (event.key === "ArrowUp") onHistoryUpRef.current?.();
