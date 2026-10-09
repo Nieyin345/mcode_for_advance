@@ -127,12 +127,23 @@ function buildWebEnvBlock(cwd: string): string {
 }
 
 /**
- * 这一轮要不要拼环境块?拼了就顺手把"已注入"记下。
+ * 这一轮要不要拼环境块?**只算不记** —— 记在回合真的把话发出去之后(见
+ * {@link markWebEnvInjected})。
  *
- * 只有**有正文要发**时才调用 —— 否则一次空正文失败的请求也会把 cwd 记成已注入,
- * 下一轮就再也不注入了。cwd 取不到(没有会话头 / 会话查不到项目)直接跳过。
+ * ⚠️ **从前是"算的时候就记"**,那是一个会永久吞掉环境块的 bug:第一轮里最常见的一种
+ * 失败恰恰是"扩展还没连上"(`runPrompt` 当场抛),而那时 cwd 已经被记成"已注入"。
+ * 用户装好扩展、重试之后,同一个会话的第二轮 `injectedCwdByKey.get(key) === cwd` 为
+ * 真,于是**再也不注入** —— 网页模型这一整条会话都拿不到"工作目录在哪、有哪些
+ * agent_* 工具",而它没有任何办法自己发现。判据必须是"这一轮**真的发出去了**",
+ * 不是"这一轮**试过要发**"。
+ *
+ * 只有**有正文要发**时才调用 —— 否则一次空正文失败的请求也会把 cwd 记成已注入。
+ * cwd 取不到(没有会话头 / 会话查不到项目)直接跳过。
  */
-function webEnvBlockFor(sessionKey: string, mcodeSessionId: string | null): string | null {
+function webEnvBlockFor(
+  sessionKey: string,
+  mcodeSessionId: string | null,
+): { block: string; sessionKey: string; cwd: string } | null {
   const provider = webEnvProvider;
   if (!provider || !mcodeSessionId) return null;
   let cwd: string | null = null;
@@ -145,8 +156,12 @@ function webEnvBlockFor(sessionKey: string, mcodeSessionId: string | null): stri
   }
   if (!cwd) return null;
   if (injectedCwdByKey.get(sessionKey) === cwd) return null;
+  return { block: buildWebEnvBlock(cwd), sessionKey, cwd };
+}
+
+/** 这一轮**真的把话发出去了** → 记下"这个会话的这个 cwd 已注过环境块"。 */
+function markWebEnvInjected(sessionKey: string, cwd: string): void {
   injectedCwdByKey.set(sessionKey, cwd);
-  return buildWebEnvBlock(cwd);
 }
 
 /**
@@ -185,8 +200,10 @@ export async function handleWebMessages(
 
   const prompt = promptFromAnthropicRequest(body);
   // 环境块只在有正文要发时才算(见 webEnvBlockFor 的说明),拼在用户消息之前。
-  const envBlock = prompt ? webEnvBlockFor(sessionKeyOf(body), mcodeSessionId) : null;
-  const fullText = envBlock ? `${envBlock}\n\n${prompt}` : prompt;
+  // **算与记分开**:这里只算,`markWebEnvInjected` 等回合真发出去之后才记 —— 否则
+  // 第一轮「扩展没连上」的失败会把 cwd 记成已注入,这条会话再也拿不到环境块。
+  const env = prompt ? webEnvBlockFor(sessionKeyOf(body), mcodeSessionId) : null;
+  const fullText = env ? `${env.block}\n\n${prompt}` : prompt;
   const translator = new OpenAiToAnthropicSse();
   /**
    * 流式还是非流式。claude 在流式那一轮失败之后会补一次**非流式重试**，而这条路
@@ -253,6 +270,10 @@ export async function handleWebMessages(
         onConversation: (id) => log.info(`web upstream: 网页侧会话 ${id}`),
       },
     });
+
+    // 回合真的走完了才把"已注入"记下(见 webEnvBlockFor 的文件头)。失败路径
+    // (最常见的:扩展还没连上)不记 —— 否则用户装好扩展重试时环境块已经被吞掉了。
+    if (env) markWebEnvInjected(env.sessionKey, env.cwd);
 
     if (!produced) {
       // 回合正常结束了却一个字都没有：站点/扩展侧出问题的第一个信号。

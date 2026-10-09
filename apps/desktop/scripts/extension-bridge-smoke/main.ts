@@ -506,19 +506,25 @@ check(
 // 第一条消息前。这里钉三条:首轮有、同 key 二轮没有、cwd 变了重注;外加
 // "没有 mcode 会话头就不注入"。
 
-/** 走一轮非流式请求,抓到下发给扩展的 prompt 文本。 */
-async function promptTextFor(text: string, sessionId: string | null): Promise<string> {
+/** 走一轮非流式请求,抓到下发给扩展的 prompt 文本。`body`/`key` 可选,默认用
+ *  标准 body 与 `user_env_account__session_env-1`。 */
+async function promptTextFor(
+  text: string,
+  sessionId: string | null,
+  body?: AnthropicRequest,
+  key = "user_env_account__session_env-1",
+): Promise<string> {
   const rr = makeReqRes();
   const run = handleWebMessages(
     rr.req,
     rr.res,
-    {
+    body ?? ({
       model: "deepseek-web",
       max_tokens: 16,
       stream: false,
-      metadata: { user_id: "user_env_account__session_env-1" },
+      metadata: { user_id: key },
       messages: [{ role: "user", content: text }],
-    } as AnthropicRequest,
+    } as AnthropicRequest),
     WEB_UPSTREAM,
     sessionId,
   );
@@ -544,6 +550,40 @@ check("cwd 变了 → 重新注入一份", movedText.includes("D:\\proj\\web-smo
 
 const noHeaderText = await promptTextFor("第四轮", null);
 eq("没有会话头 → 不注入(也没法知道 cwd)", noHeaderText, "第四轮");
+
+/* ── 首轮**失败**不该吞掉环境块(修:算与记分开) ──
+ *
+ * 第一轮最常见的失败是"扩展还没连上",而那时如果就把 cwd 记成"已注入",用户装好扩展
+ * 重试时同一会话再也拿不到环境块。这里用一个**全新的 sessionKey**(老键已被上面那几轮
+ * 置脏)验:失败一轮 → 不记;同键再跑一轮 → 环境块**仍然在**。 */
+
+{
+  const retryKey = "user_retry_account__session_retry";
+  envCwd = "D:\\proj\\retry";
+  const reqBody = (text: string) => ({
+    model: "deepseek-web",
+    max_tokens: 16,
+    stream: false,
+    metadata: { user_id: retryKey },
+    messages: [{ role: "user", content: text }],
+  } as AnthropicRequest);
+
+  // 第一轮:扩展回一个 error 事件 → 本轮失败。
+  const rr1 = makeReqRes();
+  const failedRun = handleWebMessages(rr1.req, rr1.res, reqBody("失败的第一轮"), WEB_UPSTREAM, "sess-env-1");
+  const f1 = await ext.next();
+  eq("失败首轮的 prompt 下发了", f1?.event, "prompt");
+  await postEvent(url, token, { type: "error", turnId: f1?.data.turnId, message: "扩展还没连上" });
+  await withDeadline("env retry fail", failedRun);
+
+  // 第二轮:同键成功 → 环境块**必须还在**(失败那轮没把它吞掉)。
+  const retryText = await promptTextFor("重试成功的一轮", "sess-env-1", reqBody("重试成功的一轮"), retryKey);
+  check(
+    "首轮失败后重试 → 环境块仍在(失败不吞注入)",
+    retryText.includes("D:\\proj\\retry"),
+    retryText,
+  );
+}
 
 /* ─────────────── error events, aborts, and a mid-turn disconnect ─────────────── */
 
