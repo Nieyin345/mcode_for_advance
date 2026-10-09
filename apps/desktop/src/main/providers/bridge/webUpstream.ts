@@ -106,8 +106,28 @@ export function configureWebEnvProvider(provider: WebEnvProvider): void {
   webEnvProvider = provider;
 }
 
-/** sessionKey → 上次已注入的 cwd。值相等就不重注;变了(用户换了项目)才重发一份。 */
+/** sessionKey → 上次已注入的 cwd。值相等就不重注;变了(用户换了项目)才重发一份。
+ *
+ *  ⚠️ **这是个按会话累积、只涨不落的表。** key 是网页端那条会话的
+ *  `metadata.user_id`(形如 `user_…_account__session_…`),**不是** mcode 的
+ *  sessionId —— 所以 `lib/rowDeletion.ts` 那套「删会话 ⇒ 摘掉 per-session 状态」
+ *  够不到它(它按 mcode sessionId 收尾)。长跑 + 多对话 = 一条会话一项、永不回收。
+ *  它一不驱动渲染、二只是"要不要重注"的判据(值一个字串),所以用 **有上限的 MRU**
+ *  兜住:满了挤掉最久没用的那条 —— 被挤掉的代价只是下一次那个会话**重注一次**环境块,
+ *  而环境块是幂等的操作说明(重注无害,不会串会话:内容只取决于该会话自己的 cwd)。 */
 const injectedCwdByKey = new Map<string, string>();
+const INJECTED_CWD_MAX = 512;
+
+function rememberInjectedCwd(sessionKey: string, cwd: string): void {
+  // 删了再插 → 把这一条挪到队尾(Map 按插入序迭代,队头即最久未用)。
+  injectedCwdByKey.delete(sessionKey);
+  injectedCwdByKey.set(sessionKey, cwd);
+  while (injectedCwdByKey.size > INJECTED_CWD_MAX) {
+    const oldest = injectedCwdByKey.keys().next().value;
+    if (oldest === undefined) break;
+    injectedCwdByKey.delete(oldest);
+  }
+}
 
 /**
  * 首轮发给网页模型的操作说明。
@@ -161,7 +181,7 @@ function webEnvBlockFor(
 
 /** 这一轮**真的把话发出去了** → 记下"这个会话的这个 cwd 已注过环境块"。 */
 function markWebEnvInjected(sessionKey: string, cwd: string): void {
-  injectedCwdByKey.set(sessionKey, cwd);
+  rememberInjectedCwd(sessionKey, cwd);
 }
 
 /**

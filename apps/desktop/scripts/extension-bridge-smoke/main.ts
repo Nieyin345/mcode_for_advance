@@ -585,6 +585,36 @@ eq("没有会话头 → 不注入(也没法知道 cwd)", noHeaderText, "第四�
   );
 }
 
+/* ── `injectedCwdByKey` 只涨不落:必须有上限,满了挤掉最久未用的 ──
+ *
+ * 那张表按**网页端会话**(`metadata.user_id`)累积,而删会话的收尾(`lib/rowDeletion.ts`)
+ * 按 mcode sessionId 走、够不到它 —— 长跑 + 多对话就是一条会话一项、永不回收。这里
+ * 用一个**全新的 cwd** 把这条键重新弄成"没注入过",然后跑超过上限(512)条不同的
+ * sessionKey:上限生效的话,最早那条**必须被挤掉**,于是它下一轮**重新注入**环境块。 */
+{
+  envCwd = "D:\\proj\\evict";
+  const evictKey = "user_evict_account__session_first";
+  // 先把这条键置成"已注入 evict"(用与后面不同的 cwd 也行,只要记进去)。
+  const seedText = await promptTextFor("占位", "sess-env-1", undefined, evictKey);
+  check("前置:evictKey 首轮注入了", seedText.includes("D:\\proj\\evict"), seedText);
+  // 换一个 cwd,让"若这条键还在表里"这一轮**不该**注入(值不等……不,值不等会重注)。
+  // 直接验"同 cwd 二轮不注入"更干净:表里有这条键 ⇒ 不注入。
+  const againText = await promptTextFor("再来", "sess-env-1", undefined, evictKey);
+  eq("前置:同 cwd 二轮不注入(表里有这条键)", againText, "再来");
+
+  // 跑过上限:512 条不同的键把它挤出去。上限是 512,跑 520 条足够。
+  for (let i = 0; i < 520; i++) {
+    await promptTextFor(`填充${i}`, "sess-env-1", undefined, `user_fill_${i}__session_x`);
+  }
+  // evictKey 已被挤掉 ⇒ 下一轮重新注入(环境块重新出现 = 表确实有上限)。
+  const afterEvict = await promptTextFor("被挤之后", "sess-env-1", undefined, evictKey);
+  check(
+    "★ injectedCwdByKey 有上限:被挤掉的会话重新注入(不再只涨不落)",
+    afterEvict.includes("D:\\proj\\evict") && afterEvict.endsWith("被挤之后"),
+    afterEvict,
+  );
+}
+
 /* ─────────────── error events, aborts, and a mid-turn disconnect ─────────────── */
 
 const failTurn = runPrompt({ sessionKey: "session-2", siteId: "deepseek", text: "会失败的" });
