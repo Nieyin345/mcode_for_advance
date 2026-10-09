@@ -42,7 +42,14 @@ export function codexHomePath(): string {
 }
 
 /** The env var name a provider's key is injected under (referenced from the
- *  TOML `env_key` field). Uppercased slug-safe transformation of the id. */
+ *  TOML `env_key` field). Uppercased slug-safe transformation of the id.
+ *
+ *  ⚠️ **这不是单射**:`-` 与 `_` 都折成 `_`、大小写也被抹平,于是 `my-provider`
+ *  与 `my_provider`、`DeepSeek` 与 `deepseek` 会算出**同一个**环境变量名。而环境变量
+ *  在 Windows 上**本身就不分大小写**,所以后者无论如何都区分不开。两个供应商撞同一个
+ *  `env_key` 时,`CodexAgentSdkProvider` 按 id 逐条 `env[name] = key`,后写的那条
+ *  覆盖前一条 —— 前一个供应商**静默地用上另一个的 API Key**,只在 401/账单异常时才
+ *  显形。所以 `saveProvider` 建新条目时按这个名字查重,撞了就明确拒绝(见那里)。 */
 export function codexKeyEnvVar(providerId: string): string {
   const slug = providerId.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase();
   return `MCODE_CODEX_KEY_${slug}`;
@@ -280,6 +287,20 @@ export const CodexModelsStore = {
   ): Promise<CodexProviderPublic[]> {
     const err = validateProvider(id, config);
     if (err) throw new Error(err);
+
+    // 新建时按**环境变量名**查重。`codexKeyEnvVar` 会把 `-`/`_` 折平和大小写抹平
+    // (`my-provider` 与 `my_provider` 同名),而环境变量在 Windows 上还不分大小写 ——
+    // 两个供应商撞同一个 `env_key`,app-server 就会拿后写的那条 Key 覆盖前一条,
+    // 前一个供应商**静默地用上另一个的 Key**(只在 401 / 账单异常时才显形)。
+    // 明确拒绝,并把撞上的是谁说出来。更新自己(id 相同)不算撞。
+    const envName = codexKeyEnvVar(id);
+    const clash = readProviders().find((p) => p.id !== id && codexKeyEnvVar(p.id) === envName);
+    if (clash) {
+      throw new Error(
+        `Provider id「${id}」与已有的「${clash.id}」会算出同一个环境变量名(${envName})——` +
+          `两个供应商的 Key 会互相覆盖。请换一个 id(避免只用大小写、连字符与下划线的差别区分)。`,
+      );
+    }
 
     const keys = readKeyMap();
     const isNew = !(id in keys);

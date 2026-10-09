@@ -697,6 +697,27 @@ console.log("\nCodex 供应商:delete 之后两边都干净");
   }
   check("一个模型都不配会被拒", noModel.length > 2, noModel);
 
+  // env_key 重名必须被拒:`codexKeyEnvVar` 把 `-`/`_` 折平、抹平大小写,两个 id 会算出
+  // 同一个环境变量名 → app-server 拿后写的 Key 覆盖前一条,前一个供应商**静默地用上
+  // 另一个的 Key**。先存一条,再用一个只差连字符/下划线的 id 去存,必须明确拒绝。
+  await call(IPC.CODEX_MODELS_SAVE, { ...PROVIDER, id: "clash-a-b", apiKey: "k1" });
+  let clashThrew = "";
+  try {
+    await call(IPC.CODEX_MODELS_SAVE, { ...PROVIDER, id: "clash_a_b", apiKey: "k2" });
+  } catch (err) {
+    clashThrew = (err as Error).message;
+  }
+  check("env_key 会撞的 id 被拒(不是静默覆盖)", clashThrew.includes("clash-a-b"), clashThrew);
+  // 更新**自己**不算撞(同一个 id 再存一次照常成功)。
+  let selfUpdateThrew = "";
+  try {
+    await call(IPC.CODEX_MODELS_SAVE, { ...PROVIDER, id: "clash-a-b", name: "改名" });
+  } catch (err) {
+    selfUpdateThrew = (err as Error).message;
+  }
+  check("同一个 id 改自己不算重名", selfUpdateThrew === "", selfUpdateThrew);
+  await call(IPC.CODEX_MODELS_DELETE, { id: "clash-a-b" });
+
   await call(IPC.CODEX_MODELS_DELETE, { id: PROVIDER.id });
 }
 
