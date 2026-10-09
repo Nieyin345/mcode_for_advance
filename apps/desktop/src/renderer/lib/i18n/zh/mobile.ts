@@ -79,6 +79,9 @@ export const zh = {
   "mobile.drawer.cancelRename": "取消重命名",
   "mobile.drawer.moreActions": "更多操作",
   "mobile.drawer.archivedActions": "归档项操作",
+  /* 抽屉里行操作（置顶/改名/归档/删除，会话与项目）失败的兜底标题 —— 这些 RPC 会抛,
+     而手机壳没有全局 unhandledrejection 监听:不说出来就是"点了没反应"。 */
+  "mobile.drawer.actionFailed": "操作失败",
 
   /* ── settings sheet ── */
   "mobile.settings.close": "关闭设置",

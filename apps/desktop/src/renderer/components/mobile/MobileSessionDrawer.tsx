@@ -35,6 +35,7 @@ import { api } from "@renderer/lib/api.js";
 import { getProviderIcon } from "@renderer/lib/providerIcon.js";
 import { formatRelativeTime } from "@renderer/lib/time.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import type { MessageId } from "@renderer/lib/i18n/core.js";
 import { Input } from "@renderer/components/ui/index.js";
@@ -189,6 +190,23 @@ export function MobileSessionDrawer({
     setSheet(next);
   }, []);
 
+  // 抽屉里每一处行操作（pin / rename / archive / delete，会话与项目）的失败出口。
+  // 从前它们全是裸 `void setSessionPinned(...)` 之类 —— 而这些 RPC **会抛**
+  // （zod 校验失败 / 那行已不在 / 主进程 IO 失败），手机壳又**没有**全局
+  // unhandledrejection 监听：抛出去只落进 unhandled rejection，用户点了「删除」、
+  // 那一行还在，屏幕上一个字都没有（"点了没反应"那一类）。抽屉是手机上这些操作的
+  // **唯一**入口，没有别处能画这个错，所以必须报到始终可见的 toast 上。
+  const reportActionFailure = useCallback(
+    (err: unknown) => {
+      useToastStore.getState().push({
+        kind: "error",
+        title: t("mobile.drawer.actionFailed"),
+        body: err instanceof Error ? err.message : String(err),
+      });
+    },
+    [t],
+  );
+
   // Pick a session: switch project first when jumping across projects
   // (openTab assumes the owning project is active), then open the tab.
   const pickSession = useCallback(
@@ -199,18 +217,20 @@ export function MobileSessionDrawer({
           await store.selectProject(s.projectId);
         }
         await store.openTab(s.id);
-      })();
+      })().catch(reportActionFailure);
       onPickSession();
     },
-    [onPickSession],
+    [onPickSession, reportActionFailure],
   );
 
   const startNewSession = useCallback(
     (projectId: string) => {
-      void startSession(projectId);
+      // `startSession` 因坏项目行 / 引擎未激活而 reject 时（见 FZ17），从前手机上
+      // 什么都没发生 —— 用户点了「新建会话」，不弹不跳、也不说话。报出来。
+      void startSession(projectId).catch(reportActionFailure);
       onPickSession();
     },
-    [startSession, onPickSession],
+    [startSession, onPickSession, reportActionFailure],
   );
 
   const activeProjects = projects.filter((p) => !p.archived);
@@ -420,7 +440,7 @@ export function MobileSessionDrawer({
                               <li>
                                 <button
                                   type="button"
-                                  onClick={() => void loadMoreSessions(p.id)}
+                                  onClick={() => void loadMoreSessions(p.id).catch(reportActionFailure)}
                                   className="flex min-h-[44px] w-full items-center rounded-lg px-3 text-left text-sm text-content-subtle active:bg-surface-hover"
                                 >
                                   {t("layout.loadMore")}
@@ -504,7 +524,7 @@ export function MobileSessionDrawer({
           onArmDelete={() => setArmDelete(true)}
           onClose={() => setSheet(null)}
           onTogglePin={(s) => {
-            void setSessionPinned(s.id, s.pinnedAt == null);
+            void setSessionPinned(s.id, s.pinnedAt == null).catch(reportActionFailure);
             setSheet(null);
           }}
           onRename={(s) => {
@@ -512,23 +532,23 @@ export function MobileSessionDrawer({
             setSheet(null);
           }}
           onArchive={(s) => {
-            void archiveSession(s.id, true);
+            void archiveSession(s.id, true).catch(reportActionFailure);
             setSheet(null);
           }}
           onRestoreSession={(s) => {
-            void archiveSession(s.id, false);
+            void archiveSession(s.id, false).catch(reportActionFailure);
             setSheet(null);
           }}
           onDeleteSession={(s) => {
-            void deleteSession(s.id);
+            void deleteSession(s.id).catch(reportActionFailure);
             setSheet(null);
           }}
           onRestoreProject={(pid) => {
-            void archiveProject(pid, false);
+            void archiveProject(pid, false).catch(reportActionFailure);
             setSheet(null);
           }}
           onDeleteProject={(pid) => {
-            void deleteProject(pid);
+            void deleteProject(pid).catch(reportActionFailure);
             setSheet(null);
           }}
         />
@@ -538,7 +558,7 @@ export function MobileSessionDrawer({
           session={renaming}
           onClose={() => setRenaming(null)}
           onSubmit={(title) => {
-            void renameSession(renaming.id, title);
+            void renameSession(renaming.id, title).catch(reportActionFailure);
             setRenaming(null);
           }}
         />

@@ -66,6 +66,7 @@ export const en = {
   "mobile.drawer.cancelRename": "Cancel rename",
   "mobile.drawer.moreActions": "More actions",
   "mobile.drawer.archivedActions": "Archived item actions",
+  "mobile.drawer.actionFailed": "Action failed",
 
   /* ── settings sheet ── */
   "mobile.settings.close": "Close settings",

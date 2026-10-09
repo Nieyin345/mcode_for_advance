@@ -1254,6 +1254,52 @@ eq("收尾:设备清单空了", (await pairingManager.listDevices()).length, 0);
   }
 }
 
+// —— 渲染端:手机抽屉的行操作失败必须报出来(源码不变量,组件无头跑不出来) ——
+// `MobileSessionDrawer` 里每一处行操作(置顶/改名/归档/删除,会话与项目)、新建会话、
+// 跨项目点会话、加载更多,从前都是裸 `void setSessionPinned(...)` 之类 —— 而这些 RPC
+// **会抛**(zod 失败 / 那行已不在 / 主进程 IO 失败),手机壳又**没有**全局
+// unhandledrejection 监听:抛出去只落进 unhandled rejection,用户点了「删除」、那一行
+// 还在,屏幕上一个字都没有。抽屉是手机上这些操作的**唯一**入口,没有别处能画这个错。
+// 判据钉源码:每一处用户动作都必须接到同一个 `reportActionFailure`(它走 toast)。
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const src = readFileSync(join(process.cwd(), "src/renderer/components/mobile/MobileSessionDrawer.tsx"), "utf8");
+  const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  // 出口本体:push 到 toast,且用抽屉自己的键(不能在手机上弹一句空白)。
+  check(
+    "★ 手机抽屉有共享失败出口(reportActionFailure 走 toast)",
+    /const reportActionFailure = useCallback\(\s*\(err[^)]*\) => \{[\s\S]*?useToastStore\.getState\(\)\.push\([\s\S]*?mobile\.drawer\.actionFailed/.test(code),
+    code.match(/reportActionFailure[^\n]*/g),
+  );
+  // 每一处用户动作都要接到它。10 处:`pickSession` / `startSession` / `loadMoreSessions`
+  // / pin / archive(true) / archive(false) / deleteSession / archiveProject(false)
+  // / deleteProject / renameSession。少接一处就是一个静默的"点了没反应"。
+  const wired = (code.match(/\.catch\(reportActionFailure\)/g) ?? []).length;
+  check(
+    "★ 手机抽屉全部 10 处行操作都接了失败出口(少一处就是一次静默)",
+    wired === 10,
+    { wired },
+  );
+}
+
+// —— 渲染端:手机文件查看器空文件要说出来(与桌面孪生同一条判据) ——
+// `file.readFile` 对空文件与二进制退回的都是空串(见 `readFileGuarded`),`MobileFileViewer`
+// 从前一律渲染成一片白 —— 与"预览坏了"长得一模一样。桌面两个孪生
+// (`library/FileViewer` / `library/FilePreview`)早就用 `templates.preview.emptyFile`
+// 说出来,只有手机这处没守。判据钉源码。
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const src = readFileSync(join(process.cwd(), "src/renderer/components/mobile/MobileFileViewer.tsx"), "utf8");
+  const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  check(
+    "★ 手机文件查看器空文件会说「是空的」(不是一片白,与桌面孪生一致)",
+    /content\.trim\(\)\.length === 0/.test(code) && code.includes("templates.preview.emptyFile"),
+    code.match(/emptyFile[^\n]*/g),
+  );
+}
+
 // —— 全局泄露扫描:除"配对成功那一发"之外,**一个**令牌原文都不许出现 ——
 // 只逐条看"这个响应"是不够的:令牌登记在这次会话里,漏出去的那条未必是正在看的那条。
 // 所以扫的是 `req()` 攒下来的**全部**响应。

@@ -174,6 +174,17 @@ export function FileViewerContent({ name, path }: { name: string; path: string }
       </div>
     );
   }
+  // 空文件（0 字节 / 纯空白）—— 也包括 `file.readFile` 对二进制退回的空串（见上面那条
+  // 注释：二进制与空文件都落成 ""）—— 渲染成一片白，与"预览坏了"长得一模一样。
+  // 桌面两个孪生（`library/FileViewer` 与 `library/FilePreview`）早就用同一句
+  // `templates.preview.emptyFile` 把它说出来，只有这里没守。复用同一条文案。
+  if (content.trim().length === 0) {
+    return (
+      <div className="flex flex-1 items-center justify-center p-4 text-xs text-content-subtle">
+        {t("templates.preview.emptyFile")}
+      </div>
+    );
+  }
   return (
     <div className="relative min-h-0 flex-1">
       <div ref={scrollRef} className="absolute inset-0 overflow-auto px-3 py-2">
