@@ -2868,6 +2868,34 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     } finally { setRunBusy(sessionId, false); runner.dispose(); }
   }
 
+  /* 事件触发器**没写 `project` 键**时不许被静默丢掉(2026-10-09)。`parseTriggerSpec` 对
+   * 「事件发生时」故意允许缺项目(退回宿主目录),但它不会把缺的键补成空串 —— 而
+   * `buildTriggers` 从前要求 `typeof projectId === "string"`,于是这种自动化命中 `continue`:
+   * 不入 entries、不 log.warn、也不记 setup 事实,`automation:statusAll` 里连一行"为什么没挂上"
+   * 都没有。用户看到一条参数填得好好的自动化永远不响、无迹可循(内置模板正是没写 project 的那种)。 */
+  {
+    resetRuns();
+    const wf = nextId(), nodeId = "t_event_no_project";
+    makeAutomation({ workflowId: wf, nodeId, params: {
+      // 用 undefined 覆盖 `makeAutomation` 预置的 project —— 等价于"这个触发器没写 project 键"。
+      [NODE_TRIGGER_PROJECT_PARAM_KEY]: undefined,
+      [NODE_TRIGGER_KIND_PARAM_KEY]: "event",
+      [NODE_TRIGGER_EVENTS_PARAM_KEY]: "library.item.downloaded",
+      [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0,
+      task: "没写项目的也要挂上",
+    } });
+    const runner = await startRunner();
+    try {
+      // ★ 进了事实表(挂上了)—— 静默丢弃时 `statusOf` 是空的。
+      const status = runner.statusOf(wf);
+      check("★ 没写 project 的事件触发器仍然进了事实表(不是静默丢弃)", status.length > 0, status);
+      check("★ 也没被记成「没挂上」", !(status[0]?.lastError ?? "").length, status);
+      // ★ 真的会响。
+      runtimeManager.emit({ type: "library.item.downloaded", sessionId: "(system)", itemId: "no-proj", title: "no-proj", pdfPath: "no-proj.pdf" } as unknown as RuntimeEvent);
+      await sleep(50);
+      eq("★ 它真的被事件触发了(不是挂了却不响)", runsOfNode(nodeId).length, 1);
+    } finally { runner.dispose(); }
+  }
 
   /* 屏蔽只管给 AI 看的,不管自动化(2026-09-26 用户定的规矩)。屏蔽了 pdf,要的正是「只给
    * 模型看转录后的 md」—— 自动化不下载、不转录,那份 md 就永远不会有。同一天早些时候这里
