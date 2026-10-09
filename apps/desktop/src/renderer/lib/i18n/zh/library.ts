@@ -253,6 +253,10 @@ export const zh = {
   "library.itemNote.empty": "还没有笔记。读的时候随手记两句，对话时 AI 也能看到。",
   "library.itemNote.deleteConfirm": "删除这条笔记？",
   "library.itemNote.loadFailed": "读不出笔记",
+  /* 改条目显示标题失败 —— 主进程找不到这条(多半是别的端刚删了它)。
+     从前这里错用了 `library.itemNote.loadFailed`("读不出笔记"),用户点改名看到的是
+     "读不出笔记",和他在做的事对不上。 */
+  "library.item.renameFailed": "改名失败：这条已不在库里，可能已被删除。请刷新后再试。",
   "library.detail.notesSoon": "笔记功能将在后续版本提供",
   "library.detail.collections": "所属分类",
   "library.detail.preview": "原文",

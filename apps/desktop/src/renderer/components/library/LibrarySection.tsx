@@ -963,7 +963,10 @@ export function LibrarySection({
     if (!title) return;
     const res = await api.library.renameItem({ id, title });
     if (!res.item) {
-      setError(t("library.itemNote.loadFailed"));
+      // 主进程只有"这条不在库里"时回 `{ item: null }`(见 ipc/library.ts 的
+      // `LIBRARY_RENAME_ITEM`)。从前这里错用了 `library.itemNote.loadFailed`
+      // ("读不出笔记")—— 用户点了改名,看到的却是一句和改名无关的话。
+      setError(t("library.item.renameFailed"));
       return;
     }
     await refreshItems();

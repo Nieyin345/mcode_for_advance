@@ -858,6 +858,15 @@ console.log("\n跨引擎桥(library/engineTools.ts)");
   // ★ 「打开中间栏」那条 async 路必须先记序号、回包时核对 —— 连点两篇时旧回包会后到,
   //   不挡就会把已经打开的 B 覆盖成 A(点的是 B,中间栏却是 A)。
   check("★ openItemInCenter 有 *Seq 守卫(记序号 + 回包核对)", libSrc.includes("openItemSeqRef") && libSrc.includes("seq !== openItemSeqRef.current"));
+
+  // ★ 条目改名失败必须说**改名**失败,不能说成"读不出笔记"。`renameItem` 只在
+  //   这条已不在库里(`{ item: null }`)时走到失败分支,而从前那里错用了
+  //   `library.itemNote.loadFailed`(笔记读取的文案)—— 用户点了改名,看到的是
+  //   一句和他做的事无关的话。判据立在**用户看到的那行字**上:失败分支引用的键
+  //   必须是改名自己的键,不许是 notes 那条。
+  const renameFailLine = libSrc.split("\n").find((l) => l.includes("library.item.renameFailed")) ?? "";
+  check("★ 条目改名失败用的是改名自己的文案(不是笔记读取那条)", renameFailLine.includes("library.item.renameFailed"), renameFailLine.trim());
+  check("★ 条目改名失败不再错用 library.itemNote.loadFailed", !/setError\(t\("library\.itemNote\.loadFailed"\)\)/.test(libSrc));
 }
 
 /* ──────────────── 10. AI 建的分类必须挂在大类下(否则左栏看不见) ──────────────── */

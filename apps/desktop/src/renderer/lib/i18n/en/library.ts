@@ -223,6 +223,7 @@ export const en = {
   "library.itemNote.empty": "No notes yet. Anything you jot down here is shown to the AI in chat.",
   "library.itemNote.deleteConfirm": "Delete this note?",
   "library.itemNote.loadFailed": "Could not load notes",
+  "library.item.renameFailed": "Rename failed: this item is no longer in the library (it may have been deleted). Refresh and try again.",
   "library.detail.notesSoon": "Notes are coming in a later version",
   "library.detail.collections": "Categories",
   "library.detail.preview": "Full text",
