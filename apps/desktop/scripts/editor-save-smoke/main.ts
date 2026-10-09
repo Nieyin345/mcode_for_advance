@@ -129,5 +129,32 @@ disk.delete("gone.md");
 await textFileWrites.enqueue("gone.md", "recreated", "old");
 eq("文件被删 → 照常写回", disk.get("gone.md"), "recreated");
 
+/* ── 「本进程上次写下的内容」那张表必须有上限 ──
+ *
+ * `markdownFileWrites` 里按路径记了一份"进程里最后一次成功写下的正文"(`lastWritten`),
+ * 用来判"另一个面板刚存的那版不算外部修改"。值是**整份文件正文**,键是"这个进程里被
+ * 编辑过的每个路径" —— 不加封顶,翻一遍大仓库就是几百份正文常驻内存、只涨不落。这里
+ * 连写 205 个不同的路径,再从**最早**那个路径触发"同进程另一面板刚写"的判据:上限生效
+ * 的话它已被挤掉,于是这次会被判成冲突(表里没有它了)。 */
+{
+  const CAP_FILL = 205; // 源码里 LAST_WRITTEN_MAX = 200
+  // 先给最早那个路径留一份"本进程写下"的痕迹,再灌满别的路径把它挤出窗口。
+  disk.set("evict-0.md", "base");
+  await textFileWrites.enqueue("evict-0.md", "pane B", "base"); // 记进 lastWritten
+  for (let i = 1; i < CAP_FILL; i++) {
+    const p = `evict-${i}.md`;
+    disk.set(p, "b");
+    await textFileWrites.enqueue(p, "w", "b");
+  }
+  // evict-0 应已被挤出 lastWritten。把磁盘设成**正是那张表本来会记的值**
+  // ("pane B"),而 expected 用另一个值,这样判据只剩"表里还有没有这条":
+  //   有(无上限)→ disk === lastWritten → 放行(不冲突);
+  //   没有(有上限,已被挤掉)→ disk 既非 expected 也非 content 也非 lastWritten → 冲突。
+  disk.set("evict-0.md", "pane B");
+  let evictedConflict: unknown = null;
+  await textFileWrites.enqueue("evict-0.md", "new", "stale").catch((e: unknown) => { evictedConflict = e; });
+  check("★ lastWritten 有上限:最早那条被挤掉后不再当作\"本进程写过\"", evictedConflict instanceof FileConflictError);
+}
+
 console.log(`\n${checks - failures}/${checks} passed`);
 if (failures) process.exitCode = 1;
