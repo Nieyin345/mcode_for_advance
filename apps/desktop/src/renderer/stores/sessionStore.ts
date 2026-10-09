@@ -2494,6 +2494,21 @@ function persistMessages(req: Parameters<typeof api.session.upsertMessages>[0]):
   });
 }
 
+/** 编辑重发那条路：先截断旧尾巴、再插入新的用户消息。**与 `persistMessages` 同一套
+ *  「必须带 catch」的规矩** —— 从前这里是裸 `void`,IPC/RPC 一 reject(401、断网、超时)
+ *  截断就**静默没发生**:库里的旧尾巴还在,用户下次重开那条对话时被删掉的消息又冒出来,
+ *  而界面上一句提示都没有。 */
+function persistTruncateAndInsert(req: Parameters<typeof api.session.truncateAndInsertMessages>[0]): void {
+  api.session.truncateAndInsertMessages(req).catch((err: unknown) => {
+    console.error("session.truncateAndInsertMessages failed:", err);
+    useToastStore.getState().push({
+      kind: "error",
+      title: translate(useSessionStore.getState().locale, "store.toast.persistFailed"),
+      body: err instanceof Error ? err.message : String(err),
+    });
+  });
+}
+
 /** 写一条界面设置(fire-and-forget)。失败只记日志 —— 丢一次「上次打开的项目」不值得打扰用户,
  *  但不能变成未处理的 rejection。 */
 function saveSetting(req: Parameters<typeof api.setting.set>[0]): void {
@@ -5106,13 +5121,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     //    and lose them. The cursor is the edited message's (createdAt, id);
     //    the new user message is the only row inserted now (subsequent turn
     //    events stream in via upsertMessages on terminal events).
-    void api.session.truncateAndInsertMessages({
+    persistTruncateAndInsert({
       sessionId,
       cursorCreatedAt: editedMsg.createdAt,
       cursorId: editedMsg.id,
       messages: toRecords(sessionId, [userMsg]),
     });
-
     // 5. Fire the turn; events stream back via ingestEvent. Same per-turn
     //    override pattern as sendPrompt (model pair from resolvedModel above),
     //    and same BACKGROUND dispatch: the truncated stream + new user message

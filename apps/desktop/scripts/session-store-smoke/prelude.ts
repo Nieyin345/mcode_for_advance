@@ -11,6 +11,7 @@ const asyncNoop = (): Promise<undefined> => Promise.resolve(undefined);
 let sendTurnStub: ((input: unknown) => Promise<unknown>) | null = null;
 let sessionMessagesStub: ((input: unknown) => Promise<unknown>) | null = null;
 let skillsListStub: ((input: unknown) => Promise<unknown>) | null = null;
+let truncateStub: ((input: unknown) => Promise<unknown>) | null = null;
 export function setSendTurnStub(fn: ((input: unknown) => Promise<unknown>) | null): void {
   sendTurnStub = fn;
 }
@@ -20,6 +21,10 @@ export function setSessionMessagesStub(fn: ((input: unknown) => Promise<unknown>
 /** 覆盖 `skills.list`(验 reloadSkills 的旧回包竞态用)。 */
 export function setSkillsListStub(fn: ((input: unknown) => Promise<unknown>) | null): void {
   skillsListStub = fn;
+}
+/** 覆盖 `session.truncateAndInsertMessages`(验"编辑重发的落库失败要报出来")。 */
+export function setTruncateStub(fn: ((input: unknown) => Promise<unknown>) | null): void {
+  truncateStub = fn;
 }
 
 function deepApiStub(path: string[] = []): unknown {
@@ -34,6 +39,8 @@ function deepApiStub(path: string[] = []): unknown {
         ? sendTurnStub(args[0])
         : path.join(".") === "session.messages" && sessionMessagesStub
           ? sessionMessagesStub(args[0])
+          : path.join(".") === "session.truncateAndInsertMessages" && truncateStub
+            ? truncateStub(args[0])
           : path.join(".") === "skills.list" && skillsListStub
             ? skillsListStub(args[0])
             : Promise.resolve(undefined),

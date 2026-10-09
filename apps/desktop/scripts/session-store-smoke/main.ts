@@ -13,7 +13,7 @@
  *
  * Run: scripts/session-store-smoke/run.sh
  */
-import { setSendTurnStub, setSessionMessagesStub, setSkillsListStub } from "./prelude.js";
+import { setSendTurnStub, setSessionMessagesStub, setSkillsListStub, setTruncateStub } from "./prelude.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { ChatMessage, SessionState } from "@renderer/stores/sessionStore.js";
@@ -1247,6 +1247,24 @@ await (async () => {
     await flushRpc();
     deepEq("★ 编辑重发失败也显示原因", errors(), [message]);
     eq("编辑重发释放运行标志", store.getState().runningBySession[SID], false);
+
+    // ★ 编辑重发那条**落库**路(truncateAndInsertMessages)失败也必须报出来。
+    //   从前它是裸 `void`,IPC/RPC 一 reject 截断就静默没发生 —— 库里的旧尾巴还在,
+    //   用户下次重开对话时被删掉的消息又冒出来,一句提示都没有。
+    //   (sendTurn 那侧的桩保持"抛错"不变 —— 这里只考落库那条路。)
+    setTruncateStub(async () => { throw new Error("truncate failed: 断网"); });
+    useToastStore.getState().clear();
+    // 用**当前**的第一条用户消息 —— 上一次编辑重发已经把它换成了新的那条。
+    const editableNow = store.getState().messagesBySession[SID]?.find((m) => m.role === "user");
+    if (!editableNow) throw new Error("smoke: missing editable user message (2nd)");
+    await store.getState().editAndResendMessage(SID, editableNow.id, "再改一次");
+    await flushRpc();
+    check(
+      "★ 编辑重发的落库失败弹出提示(不再静默)",
+      useToastStore.getState().toasts.some((tt) => tt.kind === "error" && (tt.body ?? "").includes("truncate failed")),
+      useToastStore.getState().toasts.map((tt) => tt.body),
+    );
+    setTruncateStub(null);
 
     // 背景会话不在屏幕上,这里不是靠聊天气泡而是靠 toast + 未读提醒。
     const BG = "custom-model-send-rejected-background";
