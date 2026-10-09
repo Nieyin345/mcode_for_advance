@@ -29,6 +29,7 @@ import {
 } from "@contracts/customUi";
 import { CollectionRepo, LibraryRepo, ProjectRepo } from "@main/store/repositories.js";
 import { allTrashCollectionIds, trashedItemIds } from "@main/library/trash.js";
+import { loadLibraryGroups } from "@main/library/groupRegistry.js";
 import { automationRunner } from "@main/orchestration/automationRunner.js";
 import { collectCollectionIds, isInsideAnyProject, itemFactsOf, shouldSkipItem, type ItemFacts } from "./targets.js";
 
@@ -83,6 +84,12 @@ function expand(target: CustomUiRunTarget, skipWhen: CustomUiWhen | undefined): 
     if (!all.some((c) => c.id === target.collectionId)) return { ok: false, error: "这个分类已经不存在了" };
     roots = [target.collectionId];
   } else {
+    // 分类那条路要查"分类还在不在",大类这条同理要查**大类还在不在** —— 否则一个被删掉的
+    // 大类(或过时的右键菜单)会一路走到下面 `roots` 为空,报成「这个范围里没有条目」,
+    // 而用户真正的问题是"这个大类没了"。两句话指的不是一回事。
+    if (!loadLibraryGroups().some((g) => g.id === target.groupId)) {
+      return { ok: false, error: "这个大类已经不存在了" };
+    }
     roots = all.filter((c) => c.groupId === target.groupId && !trashIds.has(c.id)).map((c) => c.id);
   }
   const trashed = trashedItemIds();

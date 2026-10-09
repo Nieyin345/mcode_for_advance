@@ -1689,6 +1689,15 @@ console.log("\n自定义 UI 运行自动化(回收站)");
     }),
   );
   eq("回收站里的条目不能当 scope 目标", resItemTrash.error, "这一条在回收站里,先还原再运行");
+
+  // 大类目标同样要查"大类还在不在":被删的大类会一路走到 roots 为空,报成
+  // 「这个范围里没有条目」—— 那说的是另一回事,用户以为范围空,其实是大类没了。
+  const resGroupGone = obj(
+    await callAsync(IPC.CUSTOM_UI_RUN_AUTOMATION, {
+      workflowId: "wf_不存在", triggerNodeId: "t", target: { kind: "group", groupId: "grp_已被删掉" },
+    }),
+  );
+  eq("不存在的大类不当成空范围", resGroupGone.error, "这个大类已经不存在了");
 }
 
 /* ──────────────── 收尾 ──────────────── */
