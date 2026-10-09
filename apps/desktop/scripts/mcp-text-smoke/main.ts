@@ -79,5 +79,16 @@ try {
   check("no PDF-is-ZIP claim", !prompt.includes("那四个格式都是压缩包"));
   check("no permanent helper failure claim", !prompt.includes("Windows 上**必崩**"));
   check("no lossless transcription promise", !prompt.includes("公式表格都不丢"));
+  // ★ "哪些目录不往里走"的名单**只有一份**(`agentSearchSessions.SKIP_DIRS`)。从前
+  //   `agentTools.ts` 与 `agentSearchSessions.ts` 各写一份、且已漂了(前者多了 `coverage`),
+  //   于是 `agent_search` 会翻进 `coverage/` 报生成产物的命中,而 `agent_grep` 不会。
+  {
+    const toolsSrc = readFileSync("src/main/mcp/agentTools.ts", "utf8");
+    check(
+      "★ agentTools 不再自带一份 SKIP_DIRS(改用 agentSearchSessions 那份)",
+      !/const SKIP_DIRS = new Set/.test(toolsSrc) && /import \{[^}]*SKIP_DIRS[^}]*\} from "\.\/agentSearchSessions\.js"/.test(toolsSrc),
+      "",
+    );
+  }
   console.log(`MCP text contract: ${checks} checks passed`);
 } finally { rmSync(root, { recursive: true, force: true }); }

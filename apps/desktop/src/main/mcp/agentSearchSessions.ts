@@ -10,7 +10,16 @@ const MAX_SEARCH_SESSIONS_PER_OWNER = 12;
 const MAX_STORED_RESULTS = 5_000;
 const MAX_RESULT_LINE_CHARS = 500;
 const COMPLETED_TTL_MS = 10 * 60_000;
-const SKIP_DIRS = new Set([".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "out"]);
+/**
+ * 遍历项目时**不往里走**的目录名 —— **唯一一份**。
+ *
+ * `agent_search_start`(本文件)与 `agent_grep`/`agent_glob`(`agentTools.walkFiles`)判的
+ * 是同一件事("哪些目录不值得进去"),从前两处各写一份、**已经漂了**:`agentTools` 那份多了
+ * `coverage`。于是同一个项目里 `agent_search` 会翻进 `coverage/lcov-report/` 报生成产物里的
+ * 命中,而 `agent_grep` 不会 —— 同一件事两个答案,还可能把 `max_results`/扫描预算耗在产物上。
+ * 导出这一份,`agentTools` 直接引用。
+ */
+export const SKIP_DIRS = new Set([".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "out", "coverage"]);
 
 interface SearchSession {
   id: string;

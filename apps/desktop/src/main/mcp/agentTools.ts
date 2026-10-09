@@ -65,7 +65,7 @@ import {
   MAX_PROCESS_WAIT_MS,
   type AgentProcessReadResult,
 } from "./agentProcessSessions.js";
-import { createAgentSearchSessions, type AgentSearchReadResult } from "./agentSearchSessions.js";
+import { createAgentSearchSessions, SKIP_DIRS, type AgentSearchReadResult } from "./agentSearchSessions.js";
 import { registerAgentSessionDisposer, registerAgentShutdownHook } from "./agentSessionCleanup.js";
 import { createAgentRemoteSshManager, type RemoteConnectionInfo, type RemoteJobStatus, DEFAULT_SSH_EXEC_TIMEOUT_MS, MAX_SSH_EXEC_TIMEOUT_MS, DEFAULT_JOB_LOG_WAIT_MS, MAX_JOB_LOG_WAIT_MS } from "./agentRemoteSsh.js";
 import {
@@ -176,7 +176,6 @@ const MAX_WALK_VISITS = 200_000;
 const MAX_GREP_FILES = 20_000;
 const MAX_GREP_FILE_BYTES = 8 * 1024 * 1024;
 /** 这些目录在任何递归遍历里都不进去 —— 搜索工具的基本卫生。 */
-const SKIP_DIRS = new Set([".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "out", "coverage"]);
 
 /**
  * 解析一个路径,并在给了**沙箱根**时把越界的拒掉。

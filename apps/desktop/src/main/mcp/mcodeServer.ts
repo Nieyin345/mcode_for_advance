@@ -72,6 +72,7 @@ import {
   NodeParamSpecSchema,
   NodeRunnerSchema,
   RESERVED_NODE_TYPE_PREFIX,
+  isNodeRunnable,
   renderNodeTypeCatalog,
   validateNodeParams,
   validateNodeTypeManifest,
@@ -235,7 +236,10 @@ const WORKFLOW_IN = z.object({
     .enum(WORKFLOW_TRIGGERS)
     .optional()
     .describe(
-      "填了 = 这是一条**自动化**,值是它打算靠什么跑起来(manual / schedule / file / webhook)。⚠️ 现在只存不跑,别对用户承诺它会自己动",
+      "填了 = 这是一条**自动化**,值是它打算靠什么跑起来。" +
+        "manual(只手动跑)/ schedule(定时)/ file(文件变化)/ event(某件事发生)都会真的自己动起来" +
+        "(`automationRunner` 在启动后按这几种挂 watcher/定时器);" +
+        "webhook **尚未实现** —— 填了它不会自己跑。别把 webhook 说成「会自己动」",
     ),
   nodes: z
     .array(NODE_IN)
@@ -956,7 +960,14 @@ export function workflowMcpTools(opts?: { includeSessionLogs?: boolean }): McpTo
         }
 
         notifyWorkflowsChanged(`mcp:node_type_write:${manifest.id}`);
-        const runnable = manifest.runner.kind === "prompt";
+        // ⚠️ **判据只有一处:`isNodeRunnable`。** 从前这里写的是
+        // `manifest.runner.kind === "prompt"` —— 那是**第二份**"跑不跑得起来"的实现,而且判错:
+        // `conversation`/`branch`/`command`/`code`/`condition`/`trigger`/`module-capability`
+        // 都实现了、都跑得起来(见 `IMPLEMENTED_RUNNER_KINDS`),这里只认 `prompt`。于是模型
+        // 写一个 `conversation` 节点类型,工具回一句"现在跑不了、只能画进图里" —— 错的,还与
+        // **本工具自己的描述**矛盾(`node-types-README.md` 也白纸黑字写着"唯一函数是
+        // `isNodeRunnable`…不要只看 `runner.kind` 自己判")。
+        const runnable = isNodeRunnable(manifest);
         return text(
           `已写入节点类型 \`${manifest.id}\`(${manifest.params.length} 个参数)。` +
             `用户在画布的「添加节点」菜单里就能看到它了。` +

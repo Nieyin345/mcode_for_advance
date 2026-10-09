@@ -1204,6 +1204,24 @@ async function main(): Promise<void> {
     },
   });
   check("node_type_write 写进去了", typeOut.includes("已写入"), typeOut);
+  // ★ "跑不跑得起来"的判据只有一处(`isNodeRunnable`)。从前这里写的是
+  //   `runner.kind === "prompt"`,于是模型写一个 `conversation`/`command` 类型的节点会被
+  //   错误告知"现在跑不了、只能画进图里" —— 与本工具自己的描述矛盾,且是错的。
+  const convOut = await call(tools, "node_type_write", {
+    manifest: {
+      id: "demo.chatty", name: "对话节点", description: "跑一轮对话。",
+      runner: { kind: "conversation" },
+      params: [{ key: "text", kind: "longtext", label: "提示", required: true }],
+    },
+  });
+  check("★ 写了 conversation 型节点不谎报「跑不了」(isNodeRunnable 认它)", !convOut.includes("跑不了"), convOut);
+  // 顺带断言判据与该工具的**唯一权威**一致:`isNodeRunnable`。目前每个合法 runner.kind
+  // 都实现了,所以"跑不了"那一支对合法清单**走不到** —— 这条把"判据 == isNodeRunnable"
+  // 这件事钉在源码层(有人加了个新 kind 却没进 IMPLEMENTED_RUNNER_KINDS 时,这一致性仍在)。
+  {
+    const src = readFileSync("src/main/mcp/mcodeServer.ts", "utf8");
+    check("★ node_type_write 的 runnable 判据用 isNodeRunnable(不是 kind === \"prompt\")", /const runnable = isNodeRunnable\(manifest\)/.test(src), "");
+  }
   const afterWrite = await call(tools, "node_types_list", {});
   check("写完立刻能在列表里看到", afterWrite.includes("demo.summarize"), afterWrite);
   check(
