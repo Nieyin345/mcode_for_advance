@@ -40,6 +40,7 @@
  * (那会把它又建出来)。
  */
 import { SettingRepo, CollectionRepo, LibraryRepo } from "@main/store/repositories.js";
+import { loadLibraryGroups } from "./groupRegistry.js";
 import type { LibraryCollection } from "@contracts/library";
 // （老代码遍历 LIBRARY_KINDS 读每库回收站键；kind 退役后这三处循环改为读旧的固定三个键名。）
 const LEGACY_TRASH_KINDS = ["paper", "textbook", "note"] as const;
@@ -137,9 +138,29 @@ export function ensureTrashCollection(): string {
     mergeTrashCollections(existing);
     return existing;
   }
-  const id = CollectionRepo.create(TRASH_NAME, null, "paper").id;
+  const id = CollectionRepo.create(TRASH_NAME, null, trashGroupId()).id;
   SettingRepo.set(LIBRARY_TRASH_COLLECTION_SETTING_KEY, id);
   return id;
+}
+
+/**
+ * 回收站建在哪个大类下。
+ *
+ * ⚠️ **从前这里写的是 `"paper"`** —— 那是 kind 退役(`bcd3a2e`)前的"论文库"。
+ * 那次改动把 `CollectionRepo.create` 的第 3 个参数从 `kind` 改成了 `groupId`,这一行
+ * 却没跟着改,于是回收站被写上一个**不存在的大类 id**:模型跑
+ * `<数据根>/workflows/scripts/library.py collections` 时会凭空打印一段 `paper:`
+ * 标题(还带着回收站),`suppress.ts` 也给它配一个永远命中不了的 `group:paper` 屏蔽键。
+ * 界面上看不出来(回收站由 `isTrash` 独立渲染,不按大类过滤),但那是给模型看的脏数据。
+ *
+ * 为什么不是 `undefined`(NULL):空 `group_id` 在左栏里**任何大类下都看不见**,而且
+ * `db.ts` 的启动回填会把它们都归到第一个大类 —— 回收站会先"消失"、下次启动又莫名
+ * 出现在「模版」段里。回收站是个 **全局** 分类,不属于任何一篇资料,所以按 IPC 层
+ * (`ipc/library.ts` 建分类时的兜底)同一个约定,挂到**第一个大类**下。用户之后可以在
+ * 设置里把它挪到别处,那与任何普通分类无异。
+ */
+function trashGroupId(): string | undefined {
+  return loadLibraryGroups()[0]?.id;
 }
 
 /**

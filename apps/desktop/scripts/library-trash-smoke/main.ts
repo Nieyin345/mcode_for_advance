@@ -149,6 +149,24 @@ const rebuilt = ensureTrashCollection();
 check("指向不存在的集合 → 重新建一个", rebuilt !== "lc_早就没了" && rebuilt.length > 0);
 eq("库里只有一个叫回收站的分类", CollectionRepo.list().filter((c) => c.name === "回收站").length, 1);
 
+// ★ 回收站建出来时挂的大类必须是**真实存在的大类**,不能是空(`NULL`)、也不能是
+//   某个退役的 kind 字面量。判据落在**用户/模型看到的那个事实**上:
+//   - 挂 `NULL`:左栏按 `group_id` 过滤,回收站会先"消失",而 `db.ts` 的启动回填又
+//     会把它归到第一个大类 —— 下次启动它莫名出现在「模版」段里;
+//   - 挂 `"paper"`(kind 退役前的"论文库"):模型跑 `library.py collections` 时会
+//     凭空看到一段 `paper:` 标题(还带着回收站)。
+//   两条都是同一个病根:`CollectionRepo.create` 的第 3 个参数从 kind 改成 groupId 时,
+//   调用点没跟着改。
+{
+  const groups = (await import("@main/library/groupRegistry.js")).loadLibraryGroups();
+  const trashGroup = CollectionRepo.list().find((c) => c.id === rebuilt)?.groupId;
+  check(
+    "★ 回收站挂在一个真实存在的大类下(不是 NULL、也不是退役的 paper)",
+    typeof trashGroup === "string" && groups.some((g) => g.id === trashGroup),
+    { trashGroup, knownGroups: groups.map((g) => g.id) },
+  );
+}
+
 // ② 老的**每库键**是升级线索:老库里那个回收站建在论文库下,不能因为键改名了就
 // 凭空多出第二个「回收站」。
 SettingRepo.set(LIBRARY_TRASH_COLLECTION_SETTING_KEY, "");
