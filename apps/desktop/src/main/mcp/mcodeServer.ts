@@ -433,11 +433,22 @@ export async function normalizeWorkflow(raw: Obj): Promise<NormalizeResult> {
         ? { x: n.position.x, y: n.position.y }
         : undefined;
     if (!position) hasBareNode = true;
+    // 标题留空时退回类型名 —— 卡片上一行空白比一行 `mcode.agent` 更难认。
+    const rawTitle = str(n.title) || manifest?.name || type;
+    // ⚠️ **截断要明说,不静默。** schema 的 `title` 上限就是 80(`WorkflowNodeSchema`)——
+    // 不截的话整份文档会在 `WorkflowDocSchema` 那步被拒(报一句泛泛的"格式不对"),而
+    // 截了却不提,用户看到的标题就和模型以为的不是一回事,模型也无从知道。所以照仓规
+    // "坏东西显式报出来":截可以,但附一条 note 告诉模型它写长了。
+    if (rawTitle.length > 80) {
+      notes.push(
+        `ℹ️ nodes[${i}] 的标题超过 80 字,已经截到前 80 字(卡片上显示的就是截过的那个)。` +
+          `想改就重存一次,把标题写短一点。`,
+      );
+    }
     nodes.push({
       id: nodeId,
       type,
-      // 标题留空时退回类型名 —— 卡片上一行空白比一行 `mcode.agent` 更难认。
-      title: (str(n.title) || manifest?.name || type).slice(0, 80),
+      title: rawTitle.slice(0, 80),
       params,
       ...(n.capability === undefined ? {} : { capability: n.capability as WorkflowNode["capability"] }),
       position: position ?? { x: 0, y: 0 },

@@ -254,6 +254,26 @@ async function main(): Promise<void> {
   eq("没给标题 → 退回类型名", bare.doc.nodes[1].title, "子 agent");
   check("params 省略 → 空对象", Object.keys(bare.doc.nodes[2].params).length === 0);
 
+  // ⚠️ **标题超 80 字是截断,必须明说** —— 静默截断会让"用户看到的标题"和"模型以为
+  // 写进去的标题"不是一回事,而 schema 的 80 上限又要求它不能原样存。
+  const longTitle = "题".repeat(120);
+  const truncated = await ok(twoStep({ nodes: [
+    { id: "n1", type: "mcode.main", params: { instruction: "查" } },
+    { id: "n2", type: "mcode.agent", params: { instruction: "总结" }, title: longTitle },
+  ] }));
+  eq("超长标题被截到 80 字", (truncated.doc.nodes[1].title as string).length, 80);
+  check(
+    "…并且通知里明说了截断(不静默)",
+    truncated.notes.join(" ").includes("80"),
+    truncated.notes,
+  );
+  // 反向:标题没超长时**不能**冒出一条截断提示(否则每条都报,提示等于噪声)。
+  const exact80 = await ok(twoStep({ nodes: [
+    { id: "n1", type: "mcode.main", params: { instruction: "查" } },
+    { id: "n2", type: "mcode.agent", params: { instruction: "总结" }, title: "题".repeat(80) },
+  ] }));
+  check("刚好 80 字的标题不报截断", !exact80.notes.join(" ").includes("截"), exact80.notes);
+
   check(
     "两个节点用同一个 id → 拒",
     (await rejected(twoStep({ nodes: [{ id: "n1", type: "mcode.agent" }, { id: "n1", type: "mcode.agent" }] }))).includes(

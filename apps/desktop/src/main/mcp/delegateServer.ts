@@ -152,14 +152,19 @@ function render(job: DelegateJob): string {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/** 只有**同一条链接**起的任务才看得见(别的链接拿到任务号也当不存在,不透露它有过)。 */
+/** 只有**同一条链接**起的任务才看得见(别的链接拿到任务号也当不存在,不透露它有过)。
+ *
+ *  ⚠️ **两边都得带链接身份才算"同一条"(fail closed）。** 从前只在**两边都非空**时
+ *  才比较,于是 `job.callerSessionId === null` 的任务(`mcode_agent_start` 被直接以空
+ *  会话调、绕过了 `webToolHost` 那道会话闸时)对**任何**链接都可见 —— 别的项目能取到它
+ *  的结果、也能打断它。`callTool` 那条路会先挡掉没有会话的调用,所以这是**第二道**:
+ *  直接驱 handler 的调用方、或将来放宽了那道门,都不能借一个 null 越界。任一边为 null
+ *  一律当作"对不上",宁可让合法调用拿一句"没有这个任务号",也不 fail open。 */
 function visibleJob(jobId: string, callerSessionId: string | null): DelegateJob | undefined {
   const job = jobs.get(jobId);
   if (!job) return undefined;
-  if (job.callerSessionId !== null && callerSessionId !== null && job.callerSessionId !== callerSessionId) {
-    return undefined;
-  }
-  return job;
+  if (job.callerSessionId === null || callerSessionId === null) return undefined;
+  return job.callerSessionId === callerSessionId ? job : undefined;
 }
 
 export const DELEGATE_MCP_TOOLS = [

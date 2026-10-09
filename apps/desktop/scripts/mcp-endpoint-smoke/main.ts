@@ -56,7 +56,7 @@ import { SESSION_LOG_TOOLS, WORKFLOW_READONLY_TOOLS, workflowMcpTools } from "@m
 import type { PermissionMode } from "@contracts/runtime";
 import type { ApprovalRequest } from "@contracts/provider";
 import { __handlerCalls, libraryMcpTools } from "./stubs/libraryServer.js";
-import { configureDelegateDeps } from "@main/mcp/delegateServer.js";
+import { configureDelegateDeps, delegateMcpTools, __resetDelegateJobs } from "@main/mcp/delegateServer.js";
 // 会话夹具的灌入口 —— 与 `run.sh` 里 `@main/store/repositories.js` 的 alias 指向
 // **同一个文件**（`mcode-admin-smoke/stubs/repositories.ts`）。不能写成
 // `./stubs/repositories.js`：那个文件不存在，而 esbuild 会按真实路径去找。
@@ -763,6 +763,34 @@ check("表里有替身库的工具", names.includes("library_probe"), names);
   for (const r of releases.splice(0)) r();
   const own = await host.callTool("mcode_agent_result", { job_id: jobOf(startA.text), wait_seconds: 2 }, { sessionId: "linkA" });
   check("★ 委派:A 自己取得到结果", !own.isError && own.text.includes("done deleg-linkA"), own.text);
+
+  // ★ **fail closed:空会话起的任务不能被任何链接看见。** 从前 `visibleJob` 只在
+  //   两边都非空时才比较,于是 `callerSessionId === null` 的 job 对谁都可见 —— 别的
+  //   项目能读到它的结果、也能打断它。这里直接驱 handler(绕过 webToolHost 那道会话
+  //   闸)造出那个形状,证 isolation 是**两道**,不只靠 `callTool` 那一层。
+  {
+    __resetDelegateJobs();
+    const runtime = new Set<string>();
+    configureDelegateDeps({
+      enabled: () => true,
+      ensureSession: async (caller) => ({ sessionId: `deleg-${caller ?? "none"}`, cwd: CWD }),
+      isBusy: (sid) => runtime.has(sid),
+      runTurn: ({ sessionId }) => { runtime.add(sessionId); return new Promise(() => {}); },
+      interrupt: () => {},
+    });
+    const startTool = delegateMcpTools().find((s) => s.name === "mcode_agent_start")!;
+    const asNull = await startTool.handler({ prompt: "x" }, { sessionId: null } as never);
+    const nullJobId = /任务号 (job_[0-9a-f]+)/.exec(
+      (asNull as { content: Array<{ text?: string }> }).content.map((c) => c.text ?? "").join("\n"),
+    )?.[1] ?? "";
+    check("★ 无会话(直接驱 handler)也能起任务,拿到 job 号", nullJobId.startsWith("job_"), nullJobId);
+    const peekNull = await host.callTool("mcode_agent_result", { job_id: nullJobId, wait_seconds: 0 }, { sessionId: "linkA" });
+    check("★ 空会话起的任务:链接 A 看不见(fail closed,不是 fail open)", peekNull.isError === true, peekNull.text);
+    const cancelNull = await host.callTool("mcode_agent_cancel", { job_id: nullJobId }, { sessionId: "linkA" });
+    check("★ 空会话起的任务:链接 A 也打断不了", cancelNull.isError === true, cancelNull.text);
+    __resetDelegateJobs();
+  }
+
   mode = savedMode;
   configureDelegateDeps(null);
 }
@@ -924,17 +952,30 @@ check(
   !WORKFLOW_READONLY_TOOLS.has("session_list"),
 );
 
-/* ── ⚠️ 公网那条路**看不到**用户的对话记录（2026-09-24）────────────────────
-   用户明确要求「公网不给」。`session_read_log` + `session_list` 合起来 = 枚举这台
-   机器上每一个项目的对话并读全文，而这条路是**免审批**的 —— 拿到链接的人就能读光
-   用户所有对话。所以整组从公网的工具体里摘掉（`workflowMcpTools({includeSessionLogs:false})`）。 */
-const webToolNames = host.listTools().map((t) => t.name);
+/* ── ⚠️ 网页/扩展那条路**看不到**用户的对话记录（2026-09-24）────────────────
+   `host.listTools()` **不带 audience = 本机浏览器扩展那条路（`/mcp`）** —— 这条路
+   也有审批闸门（不是免审批），但读会话记录那组仍被摘掉：`session_read_log` +
+   `session_list` 合起来 = 枚举这台机器上每一个项目的对话并读全文，`contentTag.ts`
+   也白纸黑字记着「网页模型那条路的表里就没有 session_read_log」。所以摘掉是**有意**
+   的（见 `webToolHost` 里那段注释）。公网那条路（audience=public）由 `compactPublicTools`
+   从 `agentSpecs` 起建，结构上就够不到工作流工具，另有一条断言钉住。
+
+   ⚠️ 从前这条断言的名字写着「公网工具体里没有」而调的是 `host.listTools()`（本地），
+   名实不符 —— 正是它让"本地该不该带这两个工具"看起来暧昧。现在名字对回它实际验的表。 */
+const localWebToolNames = host.listTools().map((t) => t.name);
 for (const name of SESSION_LOG_TOOLS) {
   check(
-    `公网工具体里没有 ${name}`,
-    !webToolNames.includes(name),
-    webToolNames.filter((n) => n.includes("session")),
+    `本机浏览器扩展表(/mcp)里没有 ${name}`,
+    !localWebToolNames.includes(name),
+    localWebToolNames.filter((n) => n.includes("session")),
   );
+}
+// 公网那条路同样看不到（它连工作流那组都没有，结构上就到不了这两个）。
+{
+  const pubNames = host.listTools("public").map((t) => t.name);
+  for (const name of SESSION_LOG_TOOLS) {
+    check(`公网表里没有 ${name}`, !pubNames.includes(name), pubNames.filter((n) => n.includes("session")));
+  }
 }
 // 反向确认：桌面本机那条路**照旧带着**它们（不传参数 = 带上）。
 const localToolNames = workflowMcpTools().map((t) => t.name);
