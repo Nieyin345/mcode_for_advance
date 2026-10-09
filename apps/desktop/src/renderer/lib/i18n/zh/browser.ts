@@ -88,6 +88,10 @@ export const zh = {
   "browser.downloadOpenFile": "打开文件",
   "browser.downloadRevealFolder": "在文件夹中显示",
   "browser.downloadDismiss": "移除",
+  /* 打开 / 在文件夹中显示失败要说出来:主进程会带原因拒(记录已被清理、还没下完),
+     静默的话那一下点击看起来是死的。 */
+  "browser.downloadOpenFailed": "打开下载文件失败",
+  "browser.downloadRevealFailed": "在文件夹中显示失败",
   "browser.crashed": "浏览器页面已崩溃",
   "browser.crashedBody": "这个标签页的渲染进程意外退出。重新加载或关掉它再打开。",
 } as const;

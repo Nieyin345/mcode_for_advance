@@ -799,31 +799,14 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
     [isActive, freezeViewForMenu, unfreezeViewForMenu, refreshBookmarks],
   );
 
-  /** Download-bar actions. The renderer only ever passes the downloadId —
-   *  main resolves the path from its own registry (BrowserDownloadActionSchema
-   *  carries no path), so no renderer-supplied filesystem path is trusted. */
-  const handleDownloadOpen = useCallback((downloadId: string) => {
-    void api.browser.downloadAction({ downloadId, action: "open" });
-  }, []);
-  const handleDownloadReveal = useCallback((downloadId: string) => {
-    void api.browser.downloadAction({ downloadId, action: "reveal" });
-  }, []);
-  const handleDownloadDismiss = useCallback((downloadId: string) => {
-    const timer = downloadTimersRef.current.get(downloadId);
-    if (timer) {
-      clearTimeout(timer);
-      downloadTimersRef.current.delete(downloadId);
-    }
-    setDownloads((cur) => cur.filter((d) => d.downloadId !== downloadId));
-  }, []);
-
-  /** Privacy rows in the More-menu tree: cache clear keeps cookies (main is
-   *  deliberate about the split); cookie clear also wipes the persisted
-   *  vault, so sign-ins cannot resurrect on restart. Both return
-   *  `BrowserOpResult` — a `{ok:false}` must be surfaced, not swallowed: the
-   *  cookie path in particular is a **security action** the user confirmed in
-   *  a dialog ("sign me out everywhere"), so a silent failure leaves them
-   *  believing they are signed out while the session token is still live. */
+  /** Shared failure exit for `browser.*` ops that return `BrowserOpResult`.
+   *  A `{ok:false}` must be surfaced, not swallowed — these are user-initiated
+   *  actions (clear cache/cookies, open/reveal a download) that look dead when
+   *  the error is dropped. The cookie clear in particular is a **security
+   *  action** the user confirmed in a dialog ("sign me out everywhere"), so a
+   *  silent failure leaves them believing they are signed out while the
+   *  session token is still live. Declared before its first users (the
+   *  download handlers) — `const` is not hoisted. */
   const reportBrowserOpFailure = useCallback(
     (res: BrowserOpResult, title: string) => {
       if (res.ok) return;
@@ -835,6 +818,41 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
     },
     [],
   );
+
+  /** Download-bar actions. The renderer only ever passes the downloadId —
+   *  main resolves the path from its own registry (BrowserDownloadActionSchema
+   *  carries no path), so no renderer-supplied filesystem path is trusted.
+   *  Same `{ok:false}` contract as the privacy rows: main refuses with a
+   *  reason ("下载记录不存在或已被清理") which the user must see, else the
+   *  click looks dead. */
+  const handleDownloadOpen = useCallback(
+    (downloadId: string) => {
+      void api.browser
+        .downloadAction({ downloadId, action: "open" })
+        .then((res) => reportBrowserOpFailure(res, t("browser.downloadOpenFailed")));
+    },
+    [reportBrowserOpFailure, t],
+  );
+  const handleDownloadReveal = useCallback(
+    (downloadId: string) => {
+      void api.browser
+        .downloadAction({ downloadId, action: "reveal" })
+        .then((res) => reportBrowserOpFailure(res, t("browser.downloadRevealFailed")));
+    },
+    [reportBrowserOpFailure, t],
+  );
+  const handleDownloadDismiss = useCallback((downloadId: string) => {
+    const timer = downloadTimersRef.current.get(downloadId);
+    if (timer) {
+      clearTimeout(timer);
+      downloadTimersRef.current.delete(downloadId);
+    }
+    setDownloads((cur) => cur.filter((d) => d.downloadId !== downloadId));
+  }, []);
+
+  /** Privacy rows in the More-menu tree: cache clear keeps cookies (main is
+   *  deliberate about the split); cookie clear also wipes the persisted
+   *  vault, so sign-ins cannot resurrect on restart. */
   const handleClearCache = useCallback(() => {
     void api.browser
       .clearCache()

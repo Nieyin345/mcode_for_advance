@@ -574,14 +574,28 @@ console.log("\nIPC:authRespond 的合法入参");
       body.slice(0, 260),
     );
   }
-  // 共用出口必须真的按 ok 判、并走 toast。
+  // 共用出口必须真的按 ok 判、并走 toast。(锚在**声明**上 —— `const
+  // reportBrowserOpFailure = useCallback` —— 否则 indexOf 会先撞上某个调用点。)
   {
-    const at = code.indexOf("reportBrowserOpFailure");
+    const at = code.indexOf("const reportBrowserOpFailure");
     const body = code.slice(at, code.indexOf("}, [", at));
     check(
       "★ 浏览器操作失败出口按 ok 判并走 toast",
       at >= 0 && /if\s*\(res\.ok\)\s*return;/.test(body) && body.includes("useToastStore.getState().push("),
       body.slice(0, 300),
+    );
+  }
+  // 下载栏两处(打开文件 / 在文件夹中显示)与清除那两条同一契约 —— 主进程会带原因拒。
+  for (const [fn, key] of [
+    ["handleDownloadOpen", "browser.downloadOpenFailed"],
+    ["handleDownloadReveal", "browser.downloadRevealFailed"],
+  ] as const) {
+    const at = code.indexOf(fn);
+    const body = code.slice(at, code.indexOf("}, [", at));
+    check(
+      `★ ${fn} 检查 {ok:false} 并报出来(从前一丢了事)`,
+      at >= 0 && /\.then\(/.test(body) && /reportBrowserOpFailure/.test(body) && body.includes(key),
+      body.slice(0, 260),
     );
   }
 }
