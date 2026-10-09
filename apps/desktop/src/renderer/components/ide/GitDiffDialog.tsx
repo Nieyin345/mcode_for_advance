@@ -428,28 +428,36 @@ function SidebarFileItem({
   );
 }
 
+/** 状态码 → 一个字母 + 一种颜色。**与 `GitRepoCard` 里那份同款**(两处各画一处 git
+ *  文件列表,而它们是两个各自独立的组件)。⚠️ 两处必须列出**同一组**代码:
+ *  `unmerged`(合并冲突)曾只在这一份里漏掉,于是冲突文件在 diff 对话框的左栏画成一个
+ *  灰色 `·`,而在仓库卡片里是红色的 `U` —— 同一个文件两处两种样子,用户会以为其中一处
+ *  显示错了。`GitFileStatus.index` 的联合里有 `unmerged` 这一档,而本对话框的文件列表
+ *  (只排 `unmodified`/`untracked`)会把冲突文件列出来,所以这一档真的走得到。 */
 function StatusCodeIcon({ code }: { code: GitFileStatus["index"] }) {
   const label =
-    code === "modified"
-      ? "M"
-      : code === "added"
-        ? "A"
-        : code === "deleted"
-          ? "D"
-          : code === "untracked"
-            ? "?"
-            : code === "renamed"
-              ? "R"
-              : code === "copied"
-                ? "C"
-                : "·";
+    code === "unmerged"
+      ? "U"
+      : code === "modified"
+        ? "M"
+        : code === "added"
+          ? "A"
+          : code === "deleted"
+            ? "D"
+            : code === "untracked"
+              ? "?"
+              : code === "renamed"
+                ? "R"
+                : code === "copied"
+                  ? "C"
+                  : "·";
   const color =
-    code === "added" || code === "untracked"
-      ? "text-accent"
-      : code === "modified" || code === "renamed" || code === "copied"
-        ? "text-warning"
-        : code === "deleted"
-          ? "text-danger"
+    code === "unmerged" || code === "deleted"
+      ? "text-danger"
+      : code === "added" || code === "untracked"
+        ? "text-accent"
+        : code === "modified" || code === "renamed" || code === "copied"
+          ? "text-warning"
           : "text-content-subtle";
   return (
     <span

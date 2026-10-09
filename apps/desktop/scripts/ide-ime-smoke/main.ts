@@ -200,8 +200,31 @@ async function searchDialogScenario() {
   check("文件类型框:正常 Enter 记历史(正控)", remembered().includes("java"), remembered());
 }
 
+/**
+ * 两份 `StatusCodeIcon`(GitRepoCard / GitDiffDialog 各画一处 git 文件列表)必须列出
+ * **同一组**状态码。它们从前漂了:`unmerged`(合并冲突)只在 GitRepoCard 那份里有,
+ * 于是冲突文件在仓库卡片里是红色 `U`、在 diff 对话框左栏是一个灰色 `·` —— 同一个文件
+ * 两处两种样子。这是"同一规则写两遍然后漂移"那一类,而组件在无头下跑不出这个差异,
+ * 所以判据钉在**源码**上:两份都得处理 `unmerged`。
+ */
+async function statusCodeParityScenario(): Promise<void> {
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const root = process.cwd();
+  for (const rel of [
+    "src/renderer/components/ide/GitRepoCard.tsx",
+    "src/renderer/components/ide/GitDiffDialog.tsx",
+  ]) {
+    const src = readFileSync(join(root, rel), "utf8");
+    const at = src.indexOf("function StatusCodeIcon(");
+    const body = at >= 0 ? src.slice(at, at + 900) : "";
+    check(`★ ${rel} 的 StatusCodeIcon 处理 unmerged(冲突文件显示红色 U)`, body.includes('code === "unmerged"'), rel);
+  }
+}
+
 await scenario();
 await searchDialogScenario();
+await statusCodeParityScenario();
 
 console.log(`\nide-ime-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exitCode = 1;
