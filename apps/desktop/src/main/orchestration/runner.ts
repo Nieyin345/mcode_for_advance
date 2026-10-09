@@ -1,5 +1,5 @@
-import { UI_LOCALE_SETTING_KEY } from "@contracts/ipc";
 import { scopedMemorySnapshot } from "@main/memory/retrieval.js";
+import { uiLocale } from "@main/lib/dialogText.js";
 import { readAutomationEventChain, runWithAutomationOrigin, snapshotAutomationOrigin, withAutomationOrigin } from "./automationEventOrigin.js";
 /**
  * 一个节点在界面上叫什么:**用户起的标题 > 清单里的名字 > 类型 id**。
@@ -1666,7 +1666,7 @@ export async function startWorkflowRun(args: {
     });
 
   const ports: RunPorts = {
-    locale: () => SettingRepo.get(UI_LOCALE_SETTING_KEY) === "en" ? "en" : "zh",
+    locale: () => uiLocale(),
     buildInput: createWorkflowInputBuilder({ sessionId: session.id, runId }),
     memorySnapshot: (query) => scopedMemorySnapshot(session.projectId, query ?? prompt),
     // 清单**一次读完**再按 id 查:`loadNodeTypes()` 是刻意不缓存的(每次都要扫插件

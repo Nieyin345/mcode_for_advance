@@ -344,6 +344,7 @@ console.log("\n1. 文件 / 目录选择:取消、空、多选");
         "src/main/ipc/onlyoffice.ts",
         "src/main/ipc/titleGen.ts",
         "src/main/orchestration/library.ts",
+        "src/main/orchestration/runner.ts",
         "src/main/mobile/mobileRpc.ts",
       ];
       const inline = files.filter((rel) =>
