@@ -46,6 +46,7 @@ import {
 } from "@renderer/components/customUi/CustomUiMenuItems.js";
 import { useLibraryStore } from "@renderer/stores/libraryStore.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 import {
   IconArrowLeft,
   IconArrowsExchange,
@@ -335,11 +336,23 @@ export function LibraryItemContextMenu({
                   onClick={() => {
                     // 笔记没有 PDF,要揭的是它自己的 .md —— 不然这一项点了没反应
                     // (主进程会回「还没有 PDF」)。三个库共用这一个菜单,所以按 kind 分。
+                    // **失败要说出来**(主进程带原因回 `{ok:false}`) —— 从前是 `void …`
+                    // 一丢了事,用户点了「在文件夹中打开」什么也看不到。
                     if (item) {
-                      void api.library.revealFile({
-                        id: item.id,
-                        which: !item.pdfPath && item.mdPath ? "md" : "pdf",
-                      });
+                      void api.library
+                        .revealFile({
+                          id: item.id,
+                          which: !item.pdfPath && item.mdPath ? "md" : "pdf",
+                        })
+                        .then((res) => {
+                          if (!res.ok) {
+                            useToastStore.getState().push({
+                              kind: "error",
+                              title: t("library.revealFailed"),
+                              body: res.error ?? "",
+                            });
+                          }
+                        });
                     }
                     onClose();
                   }}

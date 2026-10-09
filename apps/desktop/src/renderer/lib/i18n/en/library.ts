@@ -178,6 +178,7 @@ export const en = {
   "library.del.confirm": "Delete",
   "library.del.cancel": "Cancel",
   "library.ctx.openFolder": "Open containing folder",
+  "library.revealFailed": "Could not open the containing folder",
   "library.ctx.openMd": "Preview full text (in app)",
   "library.ctx.viewTranscript": "View transcript",
   "library.ctx.viewTranscriptMissing": "View transcript (not converted yet)",

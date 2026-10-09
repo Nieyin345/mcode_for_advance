@@ -214,13 +214,17 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
       setCheckingOut(true);
       try {
         const res = await api.git.checkout({ repoPath: repo.path, branch, newBranch });
+        // ⚠️ 先 `refresh()` 再挂错误:`refresh` 开头会 `setError(null)`(给"上次的错误
+        // 别黏住"用的)。顺序反了就把**这一次**的失败横幅一起清掉 —— 切分支被 git 拒了
+        // (本地有未提交改动会被覆盖),菜单关了、分支没变、屏幕上一个字没有。同一族
+        // 缺陷见 McpPanel 的 toggle/delete。
+        await refresh();
         if (!res.ok) {
           setError(res.error ?? t("ide.git.checkoutFailed"));
           prependLog({ op: "checkout", status: "failure", message: res.error });
         } else {
           prependLog({ op: "checkout", status: "success" });
         }
-        await refresh();
       } catch (err) {
         const msg = (err as Error).message ?? t("ide.git.checkoutFailed");
         setError(msg);

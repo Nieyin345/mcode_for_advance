@@ -198,6 +198,9 @@ export const zh = {
   "library.del.confirm": "删除",
   "library.del.cancel": "取消",
   "library.ctx.openFolder": "在文件夹中打开",
+  /* 「在文件夹中显示 / 打开所在文件夹」失败要说出来:主进程带原因回 `{ok:false}`
+     (条目不在了 / 文件不在了 / 还没有转换产物),静默的话那一下点击看起来是死的。 */
+  "library.revealFailed": "在文件夹中打开失败",
   "library.ctx.openMd": "预览原文（应用内）",
   /**
    * 条目行右键 → **看这一条的转录文本**（2026-09-21）。

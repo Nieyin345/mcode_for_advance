@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { LibraryItem, LibraryLinkView, LibraryCollection } from "@contracts/library";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";import { api } from "@renderer/lib/api.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 import { Dialog } from "@renderer/components/ui/dialog.js";
 import { cn } from "@renderer/lib/cn.js";
 import {
@@ -436,7 +437,20 @@ export function ItemDetail({ item, onChanged }: Props) {
           <PdfBadge state={fileState} />
           {fileState === "ready" && (
             <button
-              onClick={() => void api.library.revealFile({ id: item.id, which: item.pdfPath ? "pdf" : undefined })}
+              onClick={() => {
+                // 同下面的 revealMd:失败必须报出来,否则点了像没反应。
+                void api.library
+                  .revealFile({ id: item.id, which: item.pdfPath ? "pdf" : undefined })
+                  .then((res) => {
+                    if (!res.ok) {
+                      useToastStore.getState().push({
+                        kind: "error",
+                        title: t("library.revealFailed"),
+                        body: res.error ?? "",
+                      });
+                    }
+                  });
+              }}
               className="inline-flex items-center gap-1 rounded border border-edge px-2 py-0.5 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content"
             >
               <IconFolderOpen size={12} />
@@ -456,7 +470,20 @@ export function ItemDetail({ item, onChanged }: Props) {
           <div className="flex shrink-0 items-center gap-1">
             {item.mdPath && (
               <button
-                onClick={() => void api.library.revealFile({ id: item.id, which: "md" })}
+                onClick={() => {
+                  // **失败要说出来。** `library.revealFile` 会带着原因回 `{ok:false}`
+                  // (条目/文件不在了、还没转换产物),从前是 `void …` 一丢了事 —— 用户点了
+                  // 那颗「在文件夹中显示」,屏幕上一个字都没有,像点了个死按钮。
+                  void api.library.revealFile({ id: item.id, which: "md" }).then((res) => {
+                    if (!res.ok) {
+                      useToastStore.getState().push({
+                        kind: "error",
+                        title: t("library.revealFailed"),
+                        body: res.error ?? "",
+                      });
+                    }
+                  });
+                }}
                 title={t("library.convert.revealMd")}
                 className="rounded border border-edge p-0.5 text-content-muted hover:bg-surface-hover hover:text-content"
               >

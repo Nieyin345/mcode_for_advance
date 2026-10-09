@@ -76,6 +76,7 @@ NODE
   --alias:@renderer/lib/i18n/index.js=./scripts/maint-m35-smoke/stubs/i18n.ts \
   --alias:@renderer/lib/icons.js=./scripts/maint-m35-smoke/stubs/icons.cjs \
   --alias:@renderer/stores/sessionStore.js=./scripts/maint-m35-smoke/stubs/linksDeps.ts \
+  --alias:@renderer/stores/toastStore.js=./scripts/maint-m35-smoke/stubs/linksDeps.ts \
   --alias:@renderer/components/ui/dialog.js=./scripts/maint-m35-smoke/stubs/linksDeps.ts \
   --alias:@renderer/components/chat/LibraryPicker.js=./scripts/maint-m35-smoke/stubs/linksDeps.ts \
   --outfile="$OUT/links.mjs" --log-level=error

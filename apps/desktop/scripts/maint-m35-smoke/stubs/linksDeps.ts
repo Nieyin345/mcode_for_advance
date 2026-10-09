@@ -7,6 +7,8 @@ export const api = { library: {
   deletePreview: async (_opts: unknown) => ({ entries: [] }),
 } };
 export const useSessionStore = (_selector: unknown) => ({ openUrlInBrowser: () => {} });
+/** revealFile 失败会走 toast;这里只提供那个形状,不让它真弹。 */
+export const useToastStore = { getState: () => ({ push: (_opts: unknown) => {} }) };
 export const Dialog = {};
 export const LibraryPicker = () => null;
 export const PdfBadge = () => null;
