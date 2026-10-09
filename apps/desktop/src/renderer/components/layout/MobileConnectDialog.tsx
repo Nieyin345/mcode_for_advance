@@ -152,9 +152,16 @@ function MobileConnectPanel({ open }: { open: boolean }) {
       });
       setQrDataUrl(dataUrl);
     } catch (err) {
+      // **失败要说出来。** 这一格失败时,二维码永远停在"生成中…",用户对着一个
+      // 打不开的配对页毫无线索(与远程页签的 `RemoteConnectPanel.generatePairing` 同一类)。
       console.error("startPairing failed", err);
+      useToastStore.getState().push({
+        kind: "error",
+        title: t("layout.pairingFailed"),
+        body: err instanceof Error ? err.message : String(err),
+      });
     }
-  }, []);
+  }, [t]);
 
   /** Regenerate the pairing using a specific LAN IP (when the phone can't reach
    *  the auto-detected one). */
@@ -173,8 +180,10 @@ function MobileConnectPanel({ open }: { open: boolean }) {
     if (!pairing) return;
     const ok = await copyText(pairing.qrUrl);
     if (ok) setCopied(true);
-    else console.error("copy pairing link failed");
-  }, [pairing]);
+    // 复制失败也要说出来 —— 按钮上写着「复制链接」,静默的话用户以为拷到了、
+    // 粘出来却是空的(`layout.image.copyFailed` 就是这条先例)。
+    else useToastStore.getState().push({ kind: "error", title: t("layout.image.copyFailed") });
+  }, [pairing, t]);
 
   // Auto-reset the "已复制" feedback after 2s.
   useEffect(() => {

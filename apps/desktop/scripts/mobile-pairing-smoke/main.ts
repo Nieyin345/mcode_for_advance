@@ -1216,6 +1216,42 @@ eq("收尾:设备清单空了", (await pairingManager.listDevices()).length, 0);
     const body = code.slice(at, code.indexOf("\n  },", at));
     check("★ autoStart 写失败会把开关拨回原值", /setAutoStart\(!checked\)/.test(body), body.slice(0, 300));
   }
+  // 两个页签的「复制链接」都只把成功当成功 —— 失败静默 = 用户以为拷到了。
+  {
+    const at = code.indexOf("const copyLink");
+    const body = code.slice(at, code.indexOf("\n  },", at));
+    check(
+      "★ 远程页签复制链接失败会报出来",
+      at >= 0 && /else[\s\S]*?useToastStore[\s\S]*?push\(/.test(body) && body.includes("layout.image.copyFailed"),
+      body.slice(0, 300),
+    );
+  }
+}
+
+// —— 局域网页签(默认页签)的同一处:生成失败 / 复制失败都要报出来 ——
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const src = readFileSync(join(process.cwd(), "src/renderer/components/layout/MobileConnectDialog.tsx"), "utf8");
+  const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  {
+    const at = code.indexOf("const beginPairing");
+    const body = code.slice(at, code.indexOf("\n  },", at));
+    check(
+      "★ 局域网页签生成配对码失败会报出来(不是只 console.error)",
+      at >= 0 && /catch[^)]*\)\s*\{[\s\S]*?useToastStore[\s\S]*?push\(/.test(body) && body.includes("layout.pairingFailed"),
+      body.slice(0, 300),
+    );
+  }
+  {
+    const at = code.indexOf("const copyPairingLink");
+    const body = code.slice(at, code.indexOf("\n  },", at));
+    check(
+      "★ 局域网页签复制链接失败会报出来",
+      at >= 0 && /else[\s\S]*?useToastStore[\s\S]*?push\(/.test(body) && body.includes("layout.image.copyFailed"),
+      body.slice(0, 300),
+    );
+  }
 }
 
 // —— 全局泄露扫描:除"配对成功那一发"之外,**一个**令牌原文都不许出现 ——

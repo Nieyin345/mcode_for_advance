@@ -242,8 +242,9 @@ export function RemoteConnectPanel() {
     if (!pairingUrl) return;
     const ok = await copyText(pairingUrl);
     if (ok) setCopied(true);
-    else console.error("copy pairing link failed");
-  }, [pairingUrl]);
+    // 复制失败也要说出来(同 `layout.image.copyFailed` 那条先例)。
+    else useToastStore.getState().push({ kind: "error", title: t("layout.image.copyFailed") });
+  }, [pairingUrl, t]);
 
   useEffect(() => {
     if (!copied) return;

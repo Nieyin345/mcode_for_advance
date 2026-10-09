@@ -235,6 +235,7 @@ export const en = {
   "layout.domainTunnelFailed": "Tunnel error: {error}",
   "layout.mobileServerDown": "The mobile service is not running (port in use or disabled). Check it in settings, or restart the app.",
   "layout.pairingQr": "Pairing QR code",
+  "layout.pairingFailed": "Could not generate a pairing code",
   "layout.generating": "Generating…",
   "layout.refreshQr": "Refresh QR code",
   "layout.copyPairingLinkTitle": "Copy the pairing link to test it in a desktop browser",

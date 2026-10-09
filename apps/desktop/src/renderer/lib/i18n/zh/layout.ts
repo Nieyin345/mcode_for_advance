@@ -245,6 +245,8 @@ export const zh = {
   "layout.domainTunnelFailed": "隧道出错：{error}",
   "layout.mobileServerDown": "手机服务未运行（端口被占用或已禁用）。请在设置中检查，或重启应用。",
   "layout.pairingQr": "配对二维码",
+  /* 生成配对二维码失败(局域网页签)—— 静默的话那一格永远停在"生成中…"。 */
+  "layout.pairingFailed": "生成配对码失败",
   "layout.generating": "生成中…",
   "layout.refreshQr": "刷新二维码",
   "layout.copyPairingLinkTitle": "复制配对链接，可在电脑浏览器中打开测试",
