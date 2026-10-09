@@ -161,7 +161,8 @@ console.log("\n失败回退重发:标记随调用走,不挂会话共享状态");
 const runtimeCode = runtime.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
 check("回退标记从这次调用的入参取(不是会话级共享状态)", runtimeCode.includes("input.fallbackRetryModel !== undefined"));
 check("…且不再有 rt.fallbackRetryModel 这种会话级残留", !runtimeCode.includes("fallbackRetryModel") || !/rt\.fallbackRetryModel/u.test(runtimeCode));
-check("重发时把回退模型随入参带上", runtimeCode.includes("fallbackRetryModel: nextModel"));const runner = source("src/main/orchestration/runner.ts");
+check("重发时把回退模型随入参带上", runtimeCode.includes("fallbackRetryModel: nextModel"));
+const runner = source("src/main/orchestration/runner.ts");
 check("图型主对话节点明确交接记忆所有权", runner.includes("memoryManagedByWorkflow: true"));
 
 console.log("\n插件边界：仅保留全局启用和工作流逐轮覆盖");
@@ -172,6 +173,8 @@ check("会话持久化不再迁移/读写插件名单", !source("src/main/store/
 check("全局插件 handler 继续注册", source("src/main/ipc/index.ts").includes("registerPluginsHandlers(ipc)"));
 
 console.log("\n三引擎一致消费");
+// Codex 请求超时定时器必须 unref,否则一个未回应的请求会把进程钉住最多 120s(退出被拖)。
+check("Codex app-server 请求超时定时器 unref(不拖住进程退出)", source("src/main/providers/codex-sdk/CodexAppServerClient.ts").includes("timer.unref"));
 for (const [name, text] of [["Claude", claude], ["Pi", pi], ["Codex", codex]] as const) {
   check(`${name} 用共享 turnContextSections`, text.includes("turnContextSections(req)"));
 }

@@ -160,6 +160,10 @@ export class CodexAppServerClient {
         this.pending.delete(id);
         reject(new Error(`codex app-server 请求超时(${method})`));
       }, REQUEST_TIMEOUT_MS);
+      // ⚠️ **必须 unref。** 一个已发出但没等到回应的请求会让这个 120s 定时器把进程**钉住**
+      // 直到它到期 —— 应用在退出时会被拖住最多两分钟。与 Claude 那条路的 path-B 超时同一个
+      // 做法(那边显式 .unref())。清掉定时器的那几条路(pending 结算/进程退出)不受影响。
+      timer.unref?.();
       this.pending.set(id, { resolve, reject, timer });
       this.writeFrame(frame);
     });
