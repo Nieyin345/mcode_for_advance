@@ -25,7 +25,7 @@ assert.throws(()=>validateCustomUiWrite('bad JSON'));
 assert.throws(()=>validateCustomUiWrite(JSON.stringify({...before,items:[before.items[0],before.items[0]]})),/id 相同/);
 assert.throws(()=>validateCustomUiWrite(JSON.stringify({...before,items:[{...before.items[0],action:{type:'shell',command:'echo ok'}}]})),/不能挂在/);
 assert.deepEqual(validateCustomUiWrite(JSON.stringify(before)),before);
-assert.throws(()=>validateCustomUiWrite(JSON.stringify({...before,items:[{...before.items[0],slot:'toolbar',action:{type:'shell',command:'echo {{file.path}}'}}]})),/JSON stdin/);
+assert.throws(()=>validateCustomUiWrite(JSON.stringify({...before,items:[{...before.items[0],slot:'toolbar',action:{type:'shell',command:'echo {{file.path}}'}}]})),/只支持固定命令/);
 state.value=JSON.stringify(before);await store.getState().load();
 assert.deepEqual(store.getState().config,before);
 store.setState({activeTab:'panel',panel:{id:'p-existing',item:before.items[0]!,target:{kind:'workspace',today:'2026-10-04'}}});

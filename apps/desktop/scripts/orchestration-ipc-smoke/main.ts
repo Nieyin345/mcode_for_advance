@@ -123,7 +123,7 @@ const fakeIpc = {
 const { IPC } = await import("@contracts/ipc");
 const { registerWorkflowHandlers, sanitizeFileBase } = await import("@main/ipc/orchestration.js");
 const { initDb, getDb } = await import("@main/store/db.js");
-const { SessionRepo, SettingRepo, ProjectRepo, WorkflowRunRepo, CollectionRepo } = await import(
+const { SessionRepo, SettingRepo, ProjectRepo, WorkflowRunRepo, CollectionRepo, LibraryRepo } = await import(
   "@main/store/repositories.js"
 );
 const { ensureTrashCollection } = await import("@main/library/trash.js");
@@ -1676,6 +1676,19 @@ console.log("\n自定义 UI 运行自动化(回收站)");
     }),
   );
   check("普通分类不当场被拒(继续去找触发器)", resNormal.error !== "回收站不能作为落点", resNormal);
+
+  // `targetMode: "scope"`(默认,展开成条目批次)在**条目**目标上也要剔回收站。
+  // 条目不是软删(回收站只是集合归属),`LibraryRepo.get` 照样捞得回来;这条路从前
+  // 只查 get + shouldSkipItem,漏了回收站 —— 右键回收站里的一条就能对已删的东西跑自动化。
+  const trashed = LibraryRepo.upsert({ title: "已被丢进回收站的一条" }).id;
+  CollectionRepo.assign(trashId, [trashed], true);
+  check("夹具:这条确实落进了回收站", LibraryRepo.listByCollection(trashId).some((i) => i.id === trashed));
+  const resItemTrash = obj(
+    await callAsync(IPC.CUSTOM_UI_RUN_AUTOMATION, {
+      workflowId: "wf_不存在", triggerNodeId: "t", target: { kind: "item", itemId: trashed },
+    }),
+  );
+  eq("回收站里的条目不能当 scope 目标", resItemTrash.error, "这一条在回收站里,先还原再运行");
 }
 
 /* ──────────────── 收尾 ──────────────── */

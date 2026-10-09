@@ -97,8 +97,11 @@ const SECRET_SETTING_KEY_RE =
 /** 密钥本体的**结构性**名字(见 `settingsTransfer.ts` 里 `SECRET_STORE_KEY_RE` 那段:
  *  加密凭据 map 全仓都是 `<东西>+Keys/Tokens/Secrets` 收尾)。逐个往集合里加是追着漏,
  *  这里按键名的形状一次挡住 —— `customModelKeys` / `piProviderKeys` / `codexProviderKeys`
- *  都在内。 */
-const SECRET_SETTING_STORE_RE = /(Keys|Tokens|Secrets|Credentials|Passwords)$/;
+ *  都在内。
+ *  ⚠️ 末尾的 `/i` **不能省**:`settingsTransfer.ts` 里那条同名规则带 `/i`(导出时按它剔),
+ *  这里不带就会**判据漂开** —— 一个 `providerkeys` 这样的全小写键能在导出时被剔掉、
+ *  却仍能经 `setting.get` 交给模型。两条判据必须逐字同形。 */
+const SECRET_SETTING_STORE_RE = /(Keys|Tokens|Secrets|Credentials|Passwords)$/i;
 
 /** 这个设置键是不是"密钥本体",不能经 `setting.get*` 交给模型。 */
 export function isSecretSettingKey(key: unknown): boolean {

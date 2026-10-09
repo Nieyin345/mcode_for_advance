@@ -363,12 +363,18 @@ console.log("\n══ 0b. 手动连接撤掉挂着的重连定时器");
   check("前提:断开后确有一只退避定时器", armed.length > 0, { armed: armed.length });
 
   // 现在手动连接 —— 它必须把那只挂着的定时器撤掉。
+  //
+  // ⚠️ 只认**连接前**已经挂着的那几只(`armed.length` 是它们在前面的条数),不能对
+  //    连接后 `all()` 里的全部退避定时器 `.every(cleared)` —— 新连接若自己也排了一只
+  //    (它刚建起来又抖一下),那只**正当**不 cleared,于是这条会偶发假红(实测三次跑一次红)。
+  //    前 N 条就是连接前那几只(entries 追加有序)。
   await relayManager.connect();
-  const cleared = timers.all().filter((e) => e.stack.includes(timers.BACKOFF_FP)).every((e) => e.cleared);
+  const backoffs = timers.all().filter((e) => e.stack.includes(timers.BACKOFF_FP));
+  const preConnectCleared = backoffs.slice(0, armed.length).every((e) => e.cleared);
   check(
     "★ 手动连接撤掉了挂着的重连定时器(不会过一会儿又把新连接收掉)",
-    cleared,
-    { entries: timers.all().filter((e) => e.stack.includes(timers.BACKOFF_FP)) },
+    preConnectCleared,
+    { entries: backoffs },
   );
 
   timers.setMode("fast");

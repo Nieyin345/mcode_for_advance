@@ -18,7 +18,7 @@ import type { ProviderContext, ApprovalRequest, ProviderApprovalDecision } from 
 import { APP_DANGER_APPROVAL_PREFIX, APP_CONTROL_RENDERER_GLOBAL } from "@contracts/appControl";
 import { API_CATALOG } from "@main/appControl/apiCatalog.generated.js";
 import { policyFor } from "@main/appControl/policy.js";
-import { redactValue, renderResult, REDACTED } from "@main/appControl/redact.js";
+import { redactValue, redactString, renderResult, REDACTED } from "@main/appControl/redact.js";
 import { clearRpcHandlers, recordRpcHandler } from "@main/appControl/registry.js";
 import { invokeAppTool, appMcpTools } from "@main/appControl/tools.js";
 import { appToolDescriptors, isAppToolName } from "@main/appControl/engineTools.js";
@@ -126,6 +126,27 @@ check("sk- 形态打码", !String(red.note).includes("sk-ant-1234"), red.note);
 check("二进制只报长度", red.bin === "[二进制 10 字节]", red.bin);
 check("布尔/数字不被当密钥", red.enabled === true && red.tokenCount === 0 && (red.usage as { inputTokens: number }).inputTokens === 1200, red);
 check("凭据字段之下的字符串全隐藏", JSON.stringify(red.credentials) === JSON.stringify({ user: REDACTED, nested: { v: REDACTED }, n: 3 }), red.credentials);
+// 「长十六进制一律当密钥」那条会误伤 **git 的 40 位 SHA** 与**库的内容哈希**(64 位 sha256):
+// 它们不是秘密,而是 `appControl` 交给模型的真数据 —— 打码后 agent 拿到的 `hash` 是
+// `[已隐藏]`,既串不起 `git.log` → `git.showCommit`,也按不了 sha 引用库文件。
+// 修法:字段名**像哈希**(hash/sha…/parent/etag…)时豁免那格,但字段名**像凭据**仍严格优先。
+const hex40 = "abcdef0123456789abcdef0123456789abcdef01";
+const hex64 = "a".repeat(64);
+const hashRed = redactValue({
+  hash: hex40,
+  shortHash: hex40.slice(0, 8),
+  parents: [hex40],
+  pdfSha256: hex64,
+  actionToken: hex40,
+  privateKeyHash: hex40,
+}) as Record<string, unknown>;
+check("git 提交 SHA 原样给模型(不是密钥)", hashRed.hash === hex40, hashRed.hash);
+check("父提交 SHA 也原样", (hashRed.parents as string[])[0] === hex40, hashRed.parents);
+check("库内容哈希(pdfSha256)原样", hashRed.pdfSha256 === hex64, hashRed.pdfSha256);
+check("同名但不像哈希的短 sha 也不动", hashRed.shortHash === hex40.slice(0, 8), hashRed.shortHash);
+check("★字段名像凭据仍严格优先(actionToken 命中 token)", hashRed.actionToken === REDACTED, hashRed.actionToken);
+check("★字段名像凭据仍严格优先(privateKeyHash 命中 private…key)", hashRed.privateKeyHash === REDACTED, hashRed.privateKeyHash);
+check("裸字符串那句(redactString 默认仍认长十六进制)", redactString(hex40) === REDACTED, redactString(hex40));
 check("超长截断并说明", renderResult("x".repeat(50), 10).includes("已截断"));
 
 /* ── 3. 审批闸门 ── */
@@ -290,6 +311,13 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   for (const key of ["piProviderKeys", "codexProviderKeys"]) {
     const r = await call("setting.get", { key }, ctx);
     check(`★ setting.get 不许直读 ${key}`, r.isError === true, textOf(r));
+  }
+  // 结构性判据必须**不分大小写**:`settingsTransfer.ts` 的孪生规则(导出时剔)带 `/i`,
+  // 这边若不带就会漂开 —— 一个全小写的 `providerkeys` 能经 setting.get 交给模型、
+  // 却在导出时被剔掉。全小写/全大写两种写法都要被挡。
+  for (const key of ["providerkeys", "PROVIDERTOKENS"]) {
+    const r = await call("setting.get", { key }, ctx);
+    check(`★ 结构性判据不分大小写:${key} 也被挡`, r.isError === true, textOf(r));
   }
   // ⚠️ **"整块 JSON、键名不含密钥词"的另几个实例(2026-10-09)。** 它们的键名
   // (`relay.vpsConfig` / `onlyoffice.config` / `publicMcp.projectLinks` / `mobile.pairedDevices`)

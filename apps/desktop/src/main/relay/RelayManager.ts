@@ -18,7 +18,7 @@
  * to the renderer via `relay:event`.
  */
 import { readFileSync } from "node:fs";
-import { verifyRelayHostKey } from "./hostKey.js";
+import { verifyRelayHostKey, isWellFormedHostKeyFingerprint } from "./hostKey.js";
 import * as nodeNet from "node:net";
 import {
   Client,
@@ -41,8 +41,10 @@ import { isMobileServerRunning, getMobileServer } from "@main/mobile/MobileHttpS
 // of a co-located file fails with ENOENT in dev/prod.
 import FORWARDER_PY from "./forwarder.py?raw";
 
-/** The local port the mobile HTTP server listens on. */
-const MOBILE_LOCAL_PORT = 7331;
+/** 本机手机端 HTTP 服务的端口。用契约里的默认值,别再写死一份 —— 三份 7331(`contracts/mobile.ts`
+ *  的 `MOBILE_DEFAULT_PORT`、`contracts/relay.ts` 的 `RELAY_DEFAULT_PUBLIC_PORT`、这里)迟早漂开。
+ *  这只是在 `getMobileServer().port` 拿不到时的兜底,契约默认值就是它。 */
+const MOBILE_LOCAL_PORT = RELAY_DEFAULT_PUBLIC_PORT;
 
 /** SSH keepalive interval (seconds). */
 const KEEPALIVE_INTERVAL = 15;
@@ -124,7 +126,7 @@ class RelayManagerImpl {
       this.setState({ state: "error", error: msg });
       return { ok: false, error: msg };
     }
-    if (!/^SHA256:[A-Za-z0-9+/]{43}$/.test(this.config.hostKeyFingerprint ?? "")) {
+    if (!isWellFormedHostKeyFingerprint(this.config.hostKeyFingerprint)) {
       const msg = "缺少可信的 SSH 主机密钥 SHA256 指纹；请独立核对 VPS 指纹并重新保存配置";
       this.setState({ state: "error", error: msg });
       return { ok: false, error: msg };
@@ -494,11 +496,10 @@ class RelayManagerImpl {
       conn.sftp((err: Error | undefined, sftp: SFTPWrapper) => {
         if (err) return rejectP(err);
         // Ensure ~/.mcode/ exists.
-        sftp.mkdir(".mcode", (mkdirErr) => {
-          // EEXIST is fine.
-          if (mkdirErr && (mkdirErr as NodeJS.ErrnoException).code !== "FAILURE") {
-            // ignore — directory likely exists
-          }
+        // mkdir 的错误**有意忽略**:目录通常已存在(EEXIST),真正的失败(权限不足等)会在
+        // 下一条 `createWriteStream` 上以 `stream.on("error")` 冒出来 —— 那里才是判据。
+        // 早先这里挂了个 `if (mkdirErr && …) { /* 空体 */ }`,两头都不做事,是死守卫。
+        sftp.mkdir(".mcode", () => {
           const remotePath = ".mcode/forwarder.py";
           const stream = sftp.createWriteStream(remotePath, { mode: 0o755 });
           stream.on("error", rejectP);

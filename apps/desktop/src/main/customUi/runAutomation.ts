@@ -61,6 +61,13 @@ function expand(target: CustomUiRunTarget, skipWhen: CustomUiWhen | undefined): 
   if (target.kind === "item") {
     const item = LibraryRepo.get(target.itemId);
     if (!item) return { ok: false, error: "这一条已经不在库里了" };
+    // 文件头写着「回收站里的条目一律不带」—— 分类那条路两层都筛了(见下),条目这条路
+    // 从前只查 `LibraryRepo.get` + `shouldSkipItem`,漏了回收站。条目不是软删(回收站
+    // 只是集合归属,见 `trash.ts`),`get` 照旧把它捞回来,于是右键回收站里的一条就能
+    // 对着已被删的东西跑自动化 —— 与同文件的不变量和兄弟路径都相悖。
+    if (trashedItemIds().has(item.id)) {
+      return { ok: false, error: "这一条在回收站里,先还原再运行" };
+    }
     if (shouldSkipItem(item, skipWhen)) return { ok: true, items: [], skipped: 1 };
     return { ok: true, items: [itemFactsOf(item)], skipped: 0 };
   }
