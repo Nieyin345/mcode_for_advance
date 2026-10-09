@@ -48,6 +48,9 @@ export function MemoryTransferPanel() {
               <option value="">{t("memory.chooseSource")}</option>
               {list.data?.sources?.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
             </select>
+            {(list.data?.truncatedSources ?? 0) > 0 && (
+              <p className="mt-1 text-xs text-warning">{t("memory.sourcesTruncated", { n: list.data?.truncatedSources ?? 0 })}</p>
+            )}
           </label>
           <label className="text-sm text-content-muted">{t("memory.destination")}
             <select value={destination} onChange={e => setDestination(e.target.value)} className={`mt-1 ${selectClass}`}>

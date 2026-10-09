@@ -30,7 +30,7 @@ import { z } from "zod";
  *
  * Run: scripts/memory-smoke/run.sh
  */
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { MEMORY_CATEGORIES, MEMORY_PARAM_KEY } from "@contracts/memory";
@@ -794,6 +794,17 @@ console.log("\n流程记录:这一层只负责照搬,不自己判谁该读");
   eq("未选项目不能导入", manageMemory({ action: "import", source: ".claude/unknown-owner/MEMORY.md", digest: np.digest!, category: "project", global: false, confirmed: true }).ok, false);
   eq("确认原生导入成功", manageMemory({ action: "import", source: ".claude/unknown-owner/MEMORY.md", digest: np.digest!, category: "project", global: true, confirmed: true }).ok, true);
   eq("原生文件原封不动", readFileSync(join(nativeDir, "MEMORY.md"), "utf8"), "native-preserved");
+  // ★ 扫描上限挡掉的来源数必须**报出来**,不能静默少列。
+  //   每个项目下的 .md 有上限(100),超出的从前凭空不在列表里 —— 用户以为那份记忆不存在。
+  //   判据:多摆 >100 个文件,list 必须给出 truncatedSources>0,而不是沉默地只列 100 个。
+  {
+    const before = manageMemory({ action: "list" });
+    eq("未超上限时截断数为 0", before.truncatedSources, 0);
+    for (let i = 0; i < 130; i += 1) writeFileSync(join(nativeDir, `bulk-${String(i).padStart(3, "0")}.md`), `x${i}`);
+    const after = manageMemory({ action: "list" });
+    check("★ 超过单项目文件上限时如实报出被挡掉的数(不静默)", (after.truncatedSources ?? 0) > 0, after.truncatedSources);
+    for (let i = 0; i < 130; i += 1) rmSync(join(nativeDir, `bulk-${String(i).padStart(3, "0")}.md`), { force: true });
+  }
   const root = join(memoryRoot(), ".instruction-fixture"), child = join(root, "sub");
   mkdirSync(child, { recursive: true });
   writeFileSync(join(root, "AGENTS.md"), "root-agents"); writeFileSync(join(root, "CLAUDE.md"), "root-claude-ignored");

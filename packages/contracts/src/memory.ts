@@ -205,6 +205,9 @@ export interface MemoryManageResult {
   sources?: Array<{ id: string; label: string }>;
   projects?: Array<{ id: string; name: string }>;
   history?: Array<{ id: string; path: string; at: number; reason: string }>;
+  /** `action: "list"` 时,被扫描上限挡掉的原生来源数(项目 slug + 记忆文件)。
+   *  >0 表示"列表里少了东西",界面必须显式说出来 —— 静默截断会让用户以为那份记忆不存在。 */
+  truncatedSources?: number;
 }
 
 /** Attribution only, never an authorization source; raw Markdown is user-editable. */

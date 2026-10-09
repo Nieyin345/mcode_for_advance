@@ -134,6 +134,7 @@ export const zh = {
   "memory.importHint": "旧版 CLI 文件只是导入来源，不会自动注入。请选择来源、归属和类别，预览后再确认；原文件始终保留。",
   "memory.source": "来源",
   "memory.chooseSource": "选择旧版来源",
+  "memory.sourcesTruncated": "还有 {n} 个来源因数量上限未列出（可按类别/项目自行清理后重试）。",
   "memory.destination": "归属",
   "memory.chooseDestination": "选择项目或全局",
   "memory.category": "类别",

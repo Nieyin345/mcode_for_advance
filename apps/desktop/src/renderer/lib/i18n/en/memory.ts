@@ -131,6 +131,7 @@ export const en = {
   "memory.importHint": "Legacy CLI files are import sources only and are never injected automatically. Choose a source, owner and category, then preview before confirming. The original is retained.",
   "memory.source": "Source",
   "memory.chooseSource": "Choose a legacy source",
+  "memory.sourcesTruncated": "{n} more source(s) not listed because of the count limit (clear some by category/project and retry).",
   "memory.destination": "Owner",
   "memory.chooseDestination": "Choose a project or global",
   "memory.category": "Category",
