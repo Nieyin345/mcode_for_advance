@@ -65,15 +65,24 @@ export function registerSettingsTransferHandlers(ipc: IpcMain): void {
       if (!parsed.ok) return { ok: false as const, error: parsed.error };
 
       // 导入前先备份当前设置(同样不含密钥),导坏了能用「导入」再导回来。
-      let backupPath: string | undefined;
+      //
+      // ⚠️ **备份写不出去就地中止,绝不继续往下覆盖。** 这份备份是导入唯一的后路 ——
+      // 而导入会把整张表盖掉。备份失败还照样走完,等于把「导坏了能找回来」这条后路
+      // 也一起丢了,而界面上那句「导入前会先把当前设置备份一份」(settings.transfer.
+      // importDesc)照旧说着有,返回值里只是悄悄少了 backupPath —— 用户看到的是一次
+      // **成功**的、却无法回退的覆盖。宁可让他看到一次明确的失败、当前设置一个字节
+      // 不动,也不要用一次静默的覆盖换掉他的全部偏好。(磁盘满 / 目录只读这些真实
+      // 入口都会走到这里,原先是 catch 成一行 warn 然后照常覆盖。)
+      const dir = join(app.getPath("userData"), "settings-backups");
+      let backupPath: string;
       try {
-        const dir = join(app.getPath("userData"), "settings-backups");
         await mkdir(dir, { recursive: true });
         backupPath = join(dir, `before-import-${stamp()}.json`);
         await writeFile(backupPath, `${JSON.stringify(buildSettingsExport(allSettings(), { appVersion: app.getVersion() }).doc, null, 2)}\n`, "utf8");
       } catch (err) {
-        log.warn(`settings.import: backup failed: ${(err as Error).message}`);
-        backupPath = undefined;
+        const why = (err as Error).message;
+        log.warn(`settings.import: backup failed, aborting import: ${why}`);
+        return { ok: false as const, error: `导入前的设置备份失败,已中止导入(当前设置未改动):${why}` };
       }
 
       for (const [k, v] of parsed.entries) {
@@ -96,7 +105,8 @@ export function registerSettingsTransferHandlers(ipc: IpcMain): void {
         ok: true as const,
         count: parsed.entries.length,
         skipped: parsed.skipped.length,
-        ...(backupPath ? { backupPath } : {}),
+        // 走到这里备份一定写成过(写不成上面就 return 了)—— 所以这条恒在。
+        backupPath,
       };
     } catch (err) {
       log.warn(`settings.import failed: ${(err as Error).message}`);
