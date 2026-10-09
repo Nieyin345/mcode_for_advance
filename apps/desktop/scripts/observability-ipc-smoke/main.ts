@@ -198,7 +198,7 @@ registerMonitoringHandlers(mon.ipc);
 
 console.log("\n监控 · 种 600 条运行摘要");
 
-/** NDJSON 里一行就是一次收口的运行。条数要 > 500 才验得出上界。 */
+/** NDJSON 里一行就是一次收口的运行。条数要 > 50 才验得出上界。 */
 const SEEDED = 600;
 {
   for (let i = 0; i < SEEDED; i += 1) {
@@ -245,7 +245,7 @@ const monitoringRuns = callerOf(mon.handlers, IPC.MONITORING_RUNS);
 
 /**
  * 每一条都单独钉。夹取写的是
- * `Math.min(Math.max(Math.trunc(n), 1), 500)`,坏值(non-finite / 非 number /
+ * `Math.min(Math.max(Math.trunc(n), 1), 50)`,坏值(non-finite / 非 number /
  * 缺席)回落 50。
  *
  * `expected` 是**代码算出来的那个数**,不是盘上真有几条 —— 下面有专门一条把
@@ -255,9 +255,9 @@ const LIMIT_CASES: Array<{ name: string; arg: unknown; expected: number }> = [
   { name: "limit=0 → 夹到 1,不是 0 条", arg: { limit: 0 }, expected: 1 },
   { name: "limit=-1 → 也夹到 1", arg: { limit: -1 }, expected: 1 },
   { name: "limit=-1e9 → 同样夹到 1", arg: { limit: -1e9 }, expected: 1 },
-  { name: "limit=1e9 → 被上限 500 挡住", arg: { limit: 1e9 }, expected: 500 },
-  { name: "limit=501 → 被上限 500 挡住", arg: { limit: 501 }, expected: 500 },
-  { name: "limit=500 是上界本身 → 放行", arg: { limit: 500 }, expected: 500 },
+  { name: "limit=1e9 → 被上限 50 挡住(契约那个界)", arg: { limit: 1e9 }, expected: 50 },
+  { name: "limit=51 → 被上限 50 挡住", arg: { limit: 51 }, expected: 50 },
+  { name: "limit=50 是上界本身 → 放行", arg: { limit: 50 }, expected: 50 },
   { name: "limit=7 → 原样放行", arg: { limit: 7 }, expected: 7 },
   { name: "limit=1 是下界本身 → 放行", arg: { limit: 1 }, expected: 1 },
   { name: "limit=2.9 → 先 trunc 成 2(不是四舍五入成 3)", arg: { limit: 2.9 }, expected: 2 },
@@ -299,7 +299,7 @@ const LIMIT_CASES: Array<{ name: string; arg: unknown; expected: number }> = [
   // 但那是"依赖一个没承诺的行为":`store.ts` 的入参约定写着"`limit` 是去重之后
   // 还要多少条",给它 0 / 负数就是越界调用。哪天那条循环改成"先比再 push"
   // (或换一份实现),越界立刻变成"传 0 拿到 0 条" —— 用户看到面板空着。
-  // 所以判据立在这里:handler 传下去的每一个 limit 都必须是 [1, 500] 里的整数。
+  // 所以判据立在这里:handler 传下去的每一个 limit 都必须是 [1, 50] 里的整数(契约的上界)。
   const probeLimit = async (arg: unknown): Promise<number | undefined> => {
     const mark = limitsCount();
     await monitoringRuns(arg);
@@ -314,22 +314,22 @@ const LIMIT_CASES: Array<{ name: string; arg: unknown; expected: number }> = [
   same("★ 传 -1e9 时下去的也是 1", await probeLimit({ limit: -1e9 }), 1);
   same("★ 传 0.9(trunc 成 0)下去的是 1", await probeLimit({ limit: 0.9 }), 1);
   same(
-    "★ 传 1e9 时下去的是 500(不是 1e9)—— 上限夹取在这",
+    "★ 传 1e9 时下去的是 50(不是 1e9)—— 上限夹取在这",
     await probeLimit({ limit: 1e9 }),
-    500,
+    50,
   );
   same("★ 传 NaN 时下去的是默认 50(不是 NaN)", await probeLimit({ limit: NaN }), 50);
   same("★ 不传 raw 时下去的是默认 50", await probeLimit(undefined), 50);
 
-  // ★ 上界真的存在吗?—— `expected` 与盘上真实条数为 600 时,`limit=500` 与
-  // `limit=1e9` 都会给出 500。要证明"500 那个数是上限夹出来的、不是盘上只有
-  // 500 条",得同时看"不夹的话会给多少":直接读 600 条应当得到 600。
+  // ★ 上界真的存在吗?—— `expected` 与盘上真实条数为 600 时,`limit=50` 与
+  // `limit=1e9` 都会给出 50。要证明"50 那个数是上限夹出来的、不是盘上只有
+  // 50 条",得同时看"不夹的话会给多少":直接读 600 条应当得到 600。
   const all = readRunSummaries(DATA).length;
   const capped = ((await monitoringRuns({ limit: 1e9 })) as unknown[]).length;
   same(
-    "★ 1e9 经 handler 后是 500,而不带 limit 直接读盘是 600 —— 上限真的是夹出来的",
+    "★ 1e9 经 handler 后是 50,而不带 limit 直接读盘是 600 —— 上限真的是夹出来的",
     [capped, all],
-    [500, 600],
+    [50, 600],
   );
   // 倒序切片也要对:limit=3 给的必须是**最新**三条,不是最旧三条。
   const three = (await monitoringRuns({ limit: 3 })) as Array<{ runId: string }>;

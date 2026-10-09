@@ -22,6 +22,7 @@ import {
 } from "@contracts/ipc";
 import type { McpToolSpec } from "@main/mcp/sdk.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
+import { errText } from "@main/lib/ipcError.js";
 import { estimateToolTokens } from "@main/lib/tokenEstimate.js";
 import { workflowMcpTools } from "@main/mcp/mcodeServer.js";
 import { libraryMcpTools } from "@main/mcp/libraryServer.js";
@@ -67,7 +68,15 @@ export function registerContextHandlers(ipcMain: IpcMain): void {
   });
 
   ipcMain.handle(IPC.CONTEXT_SAVE, (_evt, raw) => {
-    const input = ContextSaveSchema.parse(raw);
+    // 入参校验失败经共享 `errText` 翻成人话 —— 渲染端 `MemoryExplorerPanel` 把
+    // `err.message` 直接显示,而裸 `ZodError.message` 是一整段 JSON 数组文本
+    // (同 `lsp.ts` / `notifications.ts` / `relay.ts` 那一类)。
+    let input;
+    try {
+      input = ContextSaveSchema.parse(raw);
+    } catch (err) {
+      throw new Error(errText(err));
+    }
     // force=true:用户在面板里显式按了保存 —— 面板即管理者,覆盖无标记的
     // 手写消费点(收养流程已保证用户在编辑器里见过它的原内容)。
     return writeInstructionsAt(

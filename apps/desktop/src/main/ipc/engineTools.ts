@@ -23,6 +23,7 @@ import {
   type EngineToolPolicy,
 } from "@main/lib/engineToolPolicy.js";
 import { log } from "@main/lib/logger.js";
+import { errText } from "@main/lib/ipcError.js";
 
 /** 每个引擎**已知**的内置工具名，供 UI 列出来勾选。
  *
@@ -68,7 +69,14 @@ export function registerEngineToolHandlers(ipcMain: IpcMain): void {
   });
 
   ipcMain.handle(IPC.ENGINE_TOOLS_SET, async (_evt, raw) => {
-    const input = EngineToolsSetInputSchema.parse(raw);
+    // 校验放 try 里:zod 失败要翻成人话给面板(`EngineToolsPanel` 显示 `err.message`),
+    // 而不是把裸 `ZodError`(整段 JSON)冒出去 —— 与下方 catch 用 errText 一致。
+    let input;
+    try {
+      input = EngineToolsSetInputSchema.parse(raw);
+    } catch (err) {
+      return { ok: false, error: errText(err) };
+    }
     try {
       const policy = readEngineToolPolicy();
       // 全量替换该引擎的 exclude（空数组 = 不设限，条目会被 minimize 掉）。
@@ -77,8 +85,8 @@ export function registerEngineToolHandlers(ipcMain: IpcMain): void {
       const updated = readEngineToolPolicy();
       return { ok: true, snapshot: snapshotOf(updated) };
     } catch (err) {
-      log.warn(`engineTools.set failed: ${(err as Error).message}`);
-      return { ok: false, error: (err as Error).message };
+      log.warn(`engineTools.set failed: ${errText(err)}`);
+      return { ok: false, error: errText(err) };
     }
   });
 }

@@ -5,11 +5,12 @@
  * 次 IPC 来了才订阅,已经跑完的那次运行就丢了),查询直接读 NDJSON 存储。
  * 聚合、存储、事件匹配的语义都在 `main/monitoring/` 那边,这里不重复实现。
  *
- * 渠道名先在这里就地定义 —— `@contracts/ipc` 的 `IPC.MONITORING_*` 常量由
- * contracts 侧统一补(gate 时换成 `IPC.*` 引用,字符串两边必须一字不差):
- * 与现有 `usage:stats` / `workflow:list` 同一条命名法。
+ * 渠道名直接用 `@contracts/ipc` 的 `IPC.MONITORING_*`(契约里已有,见 `rpcMap.ts`)——
+ * 从前这里手写了一份字符串、注释还说"由 contracts 侧统一补",其实早就补好了。两份字面量
+ * 靠一套 smoke 断言相等兜底,不如直接引用。
  */
 import type { IpcMain } from "electron";
+import { IPC, MONITORING_RUNS_LIMIT_MAX } from "@contracts/ipc";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { log } from "@main/lib/logger.js";
 import { SessionRepo } from "@main/store/repositories.js";
@@ -17,15 +18,8 @@ import { startMonitoringCollector } from "@main/monitoring/collector.js";
 import { readRunSummaries } from "@main/monitoring/store.js";
 import { aggregateOverview } from "@main/monitoring/aggregate.js";
 
-/** `api.monitoring.overview()` 的渠道。 */
-const MONITORING_OVERVIEW = "monitoring:overview";
-/** `api.monitoring.runs({ limit? })` 的渠道。 */
-const MONITORING_RUNS = "monitoring:runs";
-
 /** 查询端默认最多回多少条 —— 仪表盘先看最近的,更多等用户翻。 */
 const DEFAULT_RUNS_LIMIT = 50;
-/** 上限挡一手:一次 invoke 拖全量历史出来是自找的内存峰值。 */
-const MAX_RUNS_LIMIT = 500;
 
 /** 采集器只挂一次(重复挂 = 同一事件写两遍盘)。 */
 let collectorStarted = false;
@@ -60,15 +54,18 @@ export function registerMonitoringHandlers(ipcMain: IpcMain): void {
   ensureCollector();
 
   // 无参 handler 不接 raw —— 与 `workflow.list` 同一条纪律
-  ipcMain.handle(MONITORING_OVERVIEW, async () => aggregateOverview(readRunSummaries(dataRoot())));
+  ipcMain.handle(IPC.MONITORING_OVERVIEW, async () => aggregateOverview(readRunSummaries(dataRoot())));
 
-  ipcMain.handle(MONITORING_RUNS, async (_evt, raw: unknown) => {
-    // 入参就一个可选的 limit:手解而不是 zod schema —— contracts 那边的入参
-    // 类型由 contracts 侧统一补,这里先把形状守死(坏值回落默认,不抛给渲染端)
+  ipcMain.handle(IPC.MONITORING_RUNS, async (_evt, raw: unknown) => {
+    // 入参就一个可选的 limit:手解而不是 zod schema —— 坏值回落默认,不抛给渲染端。
+    // ⚠️ **上限用契约那个常量**(`MONITORING_RUNS_LIMIT_MAX`)。从前这里自己钉了
+    // `MAX_RUNS_LIMIT = 500`,而契约 `MonitoringRunsSchema` 写的是 `.max(50)` —— 两份上界
+    // 漂了:`app_api_call` 传 limit:300 会真回 300 行,既越过 declared 类型又是内存峰值入口。
+    // 现在两处同一个数(契约里那一份)。
     const limitInput = (raw as { limit?: unknown } | undefined)?.limit;
     const limit =
       typeof limitInput === "number" && Number.isFinite(limitInput)
-        ? Math.min(Math.max(Math.trunc(limitInput), 1), MAX_RUNS_LIMIT)
+        ? Math.min(Math.max(Math.trunc(limitInput), 1), MONITORING_RUNS_LIMIT_MAX)
         : DEFAULT_RUNS_LIMIT;
     return readRunSummaries(dataRoot(), limit);
   });

@@ -170,8 +170,9 @@ export interface MonitoringOverview {
 }
 
 /** 取最近的运行摘要(新的在前)。 */
+export const MONITORING_RUNS_LIMIT_MAX = 50;
 export const MonitoringRunsSchema = z.object({
-  limit: z.number().int().min(1).max(50).optional(),
+  limit: z.number().int().min(1).max(MONITORING_RUNS_LIMIT_MAX).optional(),
 });
 export type MonitoringRunsInput = z.infer<typeof MonitoringRunsSchema>;
 
