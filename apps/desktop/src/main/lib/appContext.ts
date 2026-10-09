@@ -201,11 +201,20 @@ export function writeInstructionsAt(
 
 /** 自动补物化:事实源存在且非空、消费点缺失或已托管但内容过期时重写。
  *  供 CONTEXT_GET 触发(惰性,不动 index.ts)—— 面板打开即修复漂移;
- *  引擎侧(如 codex 组装链)有自己的会话启动时机,不走这里。 */
+ *  引擎侧(如 codex 组装链)有自己的会话启动时机,不走这里。
+ *
+ *  ⚠️ **事实源缺失时什么都不做。** 从前这里不看存在性,直接把
+ *  `readInstructionsSource` 的结果(缺失与"明确写空"都返回 `""`)交给
+ *  `materializeManagedFile`,而它见「空 + 已托管」就 `rmSync` —— 于是
+ *  `<数据根>/context/instructions.md` 不存在、而 `~/.mcode/CLAUDE.md` 仍是托管文件(内容在)时,
+ *  **用户只是打开一次设置面板**,CLAUDE.md 就被删掉,紧接着的 `readInstructionsState`
+ *  收养分支已无文件可收养 → 面板显示空、全局指令静默丢失。
+ *  缺失 ≠ 明确为空:后者才该清消费点,前者要让收养逻辑接手。 */
 export function ensureMaterialized(
   sourcePath: string,
   targets: string[],
 ): MaterializeResult[] {
+  if (!existsSync(sourcePath)) return [];
   const source = readInstructionsSource(sourcePath);
   // Empty canonical source must also clear stale managed output, never handwritten files.
   return targets.map((t) => materializeManagedFile(t, source, { force: false }))

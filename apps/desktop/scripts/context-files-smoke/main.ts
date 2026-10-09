@@ -124,6 +124,26 @@ st = readInstructionsState(source, [claudeMd]);
 eq("源存在:不收养", st.adopted, false);
 eq("源存在:内容=源(空)", st.content, "");
 
+/* ★ 源**缺失**时,`ensureMaterialized`(CONTEXT_GET 先调它)绝不能把可收养的托管
+ *   消费点删掉 —— 否则用户只是打开一次设置面板,全局指令就被静默清空。
+ *   这两个动作从前顺序冲突:`ensureMaterialized` 见「空源 + 已托管」就 rmSync,
+ *   而它读的源在**缺失**与「明确写空」两种情况下都返回 `""`,于是缺失也被当成
+ *   "明确为空",把 `~/.mcode/CLAUDE.md`(有正文)删了,紧接着的收养分支已无文件可收养。 */
+{
+  const srcMissing = join(root, "context", "never-written.md"); // 故意不创建
+  rmSync(srcMissing, { force: true });
+  writeFileSync(claudeMd, `${MANAGED_MARKER}\n\n# 别删我\n正文\n`, "utf-8");
+  ensureMaterialized(srcMissing, [claudeMd]); // 缺失 ≠ 明确为空
+  check(
+    "★ 源缺失时托管消费点没被删",
+    existsSync(claudeMd) && readFileSync(claudeMd, "utf-8").includes("# 别删我"),
+    existsSync(claudeMd) ? "存在但内容不对" : "文件被删了(数据丢失)",
+  );
+  const s2 = readInstructionsState(srcMissing, [claudeMd]);
+  eq("★ 源缺失时照常收养到它(内容还在)", s2.adopted, true);
+  check("★ 收养到的正文完整", s2.content.trim() === "# 别删我\n正文", JSON.stringify(s2.content));
+}
+
 // stripManagedMarker 单独钉一下(收养 codex/pi 侧组装产物时也会用到)。
 eq("剥标记:只有标记时归空", stripManagedMarker(`${MANAGED_MARKER}\n\n`), "");
 
