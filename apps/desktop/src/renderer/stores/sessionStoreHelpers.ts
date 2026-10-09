@@ -1101,7 +1101,12 @@ export function applySessionDeletedState(s: SessionState, id: string): Partial<S
     ...(hadSideChats ? { sideChatsByParent } : {}),
     ...(activeSideChatId !== s.activeSideChatId ? { activeSideChatId } : {}),
     openTabs,
-    sessions: isActiveProject ? nextList : s.sessions,
+    // ⚠️ `sessions` 是**当前项目的活跃窗口**的别名(见 SessionState.sessions 的注释)——
+    // 删的若是**已固定**的一行,`nextList` 是 pinned 桶,不能拿它当项目列表:否则
+    // `s.sessions.find(activeId)` 找不到刚接上的那条,标题栏的会话名 chip 消失、
+    // EmptyThreadWelcome 的「接着聊」列出别的项目的行。pinned 桶在
+    // `pinnedSessions` 那一格已经更新过了,这里项目窗口原样(它本就没动)。
+    sessions: isActiveProject ? (inPinned ? s.sessions : nextList) : s.sessions,
     activeSessionId: finalActive,
     model: sess?.model ?? s.model,
     effort: sess?.effort ?? s.effort,

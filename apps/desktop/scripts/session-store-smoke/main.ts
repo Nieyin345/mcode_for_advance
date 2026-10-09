@@ -16,8 +16,8 @@
 import { setSendTurnStub, setSessionMessagesStub } from "./prelude.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
-import type { ChatMessage } from "@renderer/stores/sessionStore.js";
-import { applyDeltaEntries } from "@renderer/stores/sessionStoreHelpers.js";
+import type { ChatMessage, SessionState } from "@renderer/stores/sessionStore.js";
+import { applyDeltaEntries, applySessionDeletedState } from "@renderer/stores/sessionStoreHelpers.js";
 import { outputRowsOf } from "@renderer/components/chat/outputRows.js";
 import { normWorktreeKey } from "@renderer/lib/worktree.js";
 import { ideDirtyTracker } from "@renderer/lib/ideDirty.js";
@@ -1585,6 +1585,40 @@ console.log("\n[delta] flush: segment merge, turn open, ended-turn freeze");
     eq("第二条内容", (next[1].blocks[0] as { text: string }).text, "two");
   }
 }
+
+console.log("\n[22] 删掉「已固定」的当前会话:sessions 别名不能指向 pinned 桶");
+await (async () => {
+  // `sessions` 是**当前项目活跃窗口**的别名。删一条**已固定**的行时,内部 `nextList`
+  // 是 pinned 桶 —— 从前 `sessions: isActiveProject ? nextList : s.sessions` 会把它
+  // 当成项目列表,于是 `s.sessions.find(activeId)` 找不到刚接上的那条:标题栏的会话名
+  // chip 消失,EmptyThreadWelcome 的「接着聊」列出别的项目。
+  const PIN = "pinned-active";
+  const OTHER = "other-proj-row";
+  const st = { ...useSessionStore.getState() } as SessionState;
+  const s: SessionState = {
+    ...st,
+    activeProjectId: PROJECT,
+    activeSessionId: PIN,
+    openTabs: [PIN],
+    sessionsByProject: { [PROJECT]: [mkSession(OTHER)] },
+    sessions: [mkSession(OTHER)],
+    pinnedSessions: [mkSession(PIN)],
+    sessionsTotalByProject: { [PROJECT]: 1 },
+    sessionsHasMoreByProject: { [PROJECT]: false },
+    archivedSessionsByProject: {},
+    worktreeViewByProject: {},
+  };
+  const patch = applySessionDeletedState(s, PIN);
+  const sessions = (patch.sessions ?? s.sessions) as Session[];
+  const pinned = (patch.pinnedSessions ?? s.pinnedSessions) as Session[];
+  eq("★ 删固定的当前会话后,pinned 桶里没有它了", pinned.some((x) => x.id === PIN), false);
+  check(
+    "★ sessions(项目窗口)别名没有被 pinned 桶顶替",
+    sessions.every((x) => x.id !== PIN) && sessions.some((x) => x.id === OTHER),
+    sessions.map((x) => x.id),
+  );
+  eq("★ 接到的新的 activeSessionId 能在 sessions 里找到", sessions.some((x) => x.id === patch.activeSessionId), true);
+})();
 
 console.log(`\n${checks - failures}/${checks} checks passed`);
 if (failures > 0) {
