@@ -19,6 +19,7 @@ import {
   removeSkillMarket,
   skillMarketBundle,
 } from "@main/lib/skillMarket.js";
+import { parseGithubSkillIndex } from "@main/lib/githubSkillCatalog.js";
 import { defaultSkillsRoot, parseSkillFrontmatter } from "@main/lib/skillEngines.js";
 
 let passed = 0;
@@ -175,6 +176,36 @@ await test("skill market: local catalog add / scan / install / remove", async ()
   assert.equal((await removeSkillMarket("anthropic-skills")).ok, false);
   assert.equal((await removeSkillMarket(add.name!)).ok, true);
   assert.ok(existsSync(cat), "removing a local market never deletes the user's folder");
+});
+
+// 坏的技能索引:抛出的句子**必须给用户看**(它经 `installSkillsFromMarket` 的 catch
+// 原样回给设置面板)。同一函数里三句判据,从前只有第一句是中英双语,后两句是**纯英文**
+// (`Invalid cached skill` / `Invalid cached file`)—— 中文用户点「安装」只见一行英文。
+// 判据:三句都要含中文,不只是前一句。
+await test("技能索引损坏时的报错是给用户看的中文", () => {
+  const good = {
+    version: 1,
+    source: { owner: "o", repo: "r", ref: "main" },
+    commit: "a".repeat(40),
+    skills: [{ name: "alpha", description: "A", relPath: ".", dir: "/x" }],
+    files: [],
+  };
+  const hasCjk = (s: string) => /[一-鿿]/.test(s);
+  const throwText = (idx: unknown): string => {
+    try { parseGithubSkillIndex(JSON.stringify(idx)); return ""; }
+    catch (err) { return (err as Error).message; }
+  };
+  // ① 顶层形状不对(一直是双语的)
+  const top = throwText({ ...good, version: 2 });
+  assert.ok(hasCjk(top), `顶层判据应是中文:${top}`);
+  // ② 技能条目坏 —— 从前是纯英文
+  const skillBad = throwText({ ...good, skills: [{ name: "bad name!", description: "A", relPath: "." }] });
+  assert.ok(hasCjk(skillBad), `技能条目判据应是中文(从前是 'Invalid cached skill'):${skillBad}`);
+  // ③ 文件条目坏 —— 从前是纯英文
+  const fileBad = throwText({ ...good, files: [{ path: "a.py", sha: "zzz", size: 1, mode: "644", type: "blob" }] });
+  assert.ok(hasCjk(fileBad), `文件条目判据应是中文(从前是 'Invalid cached file'):${fileBad}`);
+  // 正控:好的索引不该抛(否则上面三条是"总是抛"造成的假绿)。
+  assert.equal(throwText(good), "", "合法索引不应抛");
 });
 
 console.log(`market-smoke: ${passed} passed`);

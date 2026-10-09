@@ -153,8 +153,12 @@ export async function fetchGithubSkillIndex(input: string, marketName: string, p
 export function parseGithubSkillIndex(text: string): GithubSkillIndex {
   const index = JSON.parse(text) as GithubSkillIndex;
   if (index?.version !== 1 || !index.source || !slug(index.source.owner) || !slug(index.source.repo) || !SHA.test(index.commit) || !Array.isArray(index.skills) || !Array.isArray(index.files) || index.skills.length > 2000 || index.files.length > 100_000) throw new Error("技能索引缓存无效，请刷新 / Invalid skill index; refresh required");
-  for (const s of index.skills) if (!s || typeof s.name !== "string" || (!SKILL_NAME_RE.test(s.name) || !safePath(s.name)) || typeof s.description !== "string" || (s.relPath !== "." && !safePath(s.relPath))) throw new Error("Invalid cached skill");
-  for (const f of index.files) if (!f || typeof f.path !== "string" || !SHA.test(f.sha) || !Number.isSafeInteger(f.size) || f.size < 0 || typeof f.mode !== "string" || typeof f.type !== "string") throw new Error("Invalid cached file");
+  // ⚠️ 下面两条**从前是纯英文**(`Invalid cached skill` / `Invalid cached file`),而同一函数
+  // 上行那句是**中英双语** —— 这份索引坏了时,`cachedGithubIndex` 抛出的句子会经
+  // `installSkillsFromMarket` 的 catch 原样回给设置面板(用户点「安装」看到的就是它)。
+  // 与兄弟说法统一成中文(末尾保留英文,便于按日志定位)。
+  for (const s of index.skills) if (!s || typeof s.name !== "string" || (!SKILL_NAME_RE.test(s.name) || !safePath(s.name)) || typeof s.description !== "string" || (s.relPath !== "." && !safePath(s.relPath))) throw new Error("技能索引里的技能条目无效，请刷新 / Invalid cached skill");
+  for (const f of index.files) if (!f || typeof f.path !== "string" || !SHA.test(f.sha) || !Number.isSafeInteger(f.size) || f.size < 0 || typeof f.mode !== "string" || typeof f.type !== "string") throw new Error("技能索引里的文件条目无效，请刷新 / Invalid cached file");
   return index;
 }
 
