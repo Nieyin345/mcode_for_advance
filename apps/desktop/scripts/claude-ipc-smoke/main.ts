@@ -1177,7 +1177,8 @@ console.log("\n16. 分叉一条对话");
 {
   resetRegistryStub();
   const threw = await catching(IPC.SESSION_FORK, { id: "根本不存在的会话", title: "x" });
-  check("分叉一条不存在的会话会抛(不静默造一条空的)", threw.includes("unknown session"), threw);
+  check("分叉一条不存在的会话会抛(不静默造一条空的)", threw.includes("要复制的对话已经不在了"), threw);
+  check("★ 而且那句话是中文(它原样进失败 toast 的正文)", !/unknown session/i.test(threw), threw);
 }
 
 /* ──────────────── 17. 引擎清单 ──────────────── */

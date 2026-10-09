@@ -133,7 +133,14 @@ const TEXT_A = "帮我写引言";
 const TEXT_B = "先看看这两篇";
 
 function seedSource(over: Partial<Session> = {}): void {
-  SessionRepo.create(mkSession(over));
+  // 源带一条**锚在消息 id 上的书签**与上一轮的 turnFiles/planDraft —— 分叉必须把书签
+  // 按新消息 id 重映射、并且**不**把本轮的临时态带过去(见下面那两条断言)。
+  SessionRepo.create(mkSession({
+    bookmarks: [{ id: "bm1", messageId: "m2", excerpt: "先看看这两篇", title: null, role: "user", createdAt: 20 }],
+    turnFiles: [{ path: "notes/a.md", before: null, after: "x", status: "modified" } as never],
+    planDraft: { plan: "上一轮的计划", updatedAt: 20 } as never,
+    ...over,
+  }));
   MessageRepo.replaceAll("s_src", [
     mkMessage("m1", "s_src", TEXT_A, 10),
     mkMessage("m2", "s_src", TEXT_B, 20),
@@ -180,6 +187,24 @@ eq("源那两条一条没少", srcMsgs.length, 2);
 // 少了一条就是"内容一样"那句在骗人 —— 这里逐条对一遍正文。
 eq("第一条正文一样", JSON.stringify(forkMsgs[0]?.content), JSON.stringify(srcMsgs[0]?.content));
 eq("第二条正文一样", JSON.stringify(forkMsgs[1]?.content), JSON.stringify(srcMsgs[1]?.content));
+
+console.log("\n书签跟着新消息 id 重映射;本轮临时态不带过去");
+{
+  // 源的书签锚在 m2 上,而 m2 在分叉里被重编成了别的 id —— 不重映射的话书签会指向
+  // 源对话那条(分叉里根本不存在),渲染端一律判 stale、跳不过去。
+  const srcBm = SessionRepo.get("s_src")?.bookmarks?.[0];
+  const forkBm = SessionRepo.get(fork.id)?.bookmarks?.[0];
+  check("源有书签(前提)", !!srcBm && srcBm.messageId === "m2");
+  check("分叉保留了书签", !!forkBm, SessionRepo.get(fork.id)?.bookmarks);
+  check("★ 分叉的书签锚到了分叉自己的那条消息(不是源那条)", !!forkBm && forkBm.messageId !== "m2" && forkMsgs.some((m) => m.id === forkBm.messageId), forkBm);
+  eq("书签正文照抄", forkBm?.excerpt, "先看看这两篇");
+  // 本轮的临时态(turnFiles/planDraft)描述的是源上一轮的动作,不该带过来。
+  eq("★ 上一轮 turnFiles 不带过来(否则 rewind 会撤源那轮的改动)", SessionRepo.get(fork.id)?.turnFiles ?? null, null);
+  eq("★ 上一轮 planDraft 不带过来", SessionRepo.get(fork.id)?.planDraft ?? null, null);
+  // 源自己的这两样不能被动。
+  check("源的 turnFiles 没被动", (SessionRepo.get("s_src")?.turnFiles?.length ?? 0) > 0);
+  check("源的 planDraft 没被动", !!SessionRepo.get("s_src")?.planDraft);
+}
 
 console.log("\n新会话真的广播出去了(不广播它不会出现在左栏)");
 eq("广播了新会话", broadcastIds.includes(fork.id), true);
