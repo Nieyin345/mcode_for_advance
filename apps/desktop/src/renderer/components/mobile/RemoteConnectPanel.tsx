@@ -29,6 +29,7 @@ import { copyText } from "@renderer/lib/clipboard.js";
 import type { RelayStatus, RelayVpsConfig, RelayForwarderChoice } from "@contracts/ipc";
 import { RELAY_AUTO_START_SETTING_KEY } from "@contracts/relay";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 
 /** Relay state → dictionary key. A key map (not resolved strings) because
  *  this is a module-level table — it has no access to the locale hook. */
@@ -129,9 +130,17 @@ export function RemoteConnectPanel() {
       });
       setQrDataUrl(dataUrl);
     } catch (err) {
+      // **失败要说出来。** 这一步生成的是「扫哪张码、输哪个数字」——它静默失败时
+      // 面板停在「已连接」上,二维码那一格永远显示"生成中…",用户对着一台连上了却
+      // 拿不到码的机器,没有任何线索。走 toast(本处没有别的错误位)。
       console.error("remote pairing failed", err);
+      useToastStore.getState().push({
+        kind: "error",
+        title: t("mobile.relay.pairingFailed"),
+        body: err instanceof Error ? err.message : String(err),
+      });
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (status?.state === "connected" && status.endpoint && !pairingUrl) {
@@ -217,9 +226,17 @@ export function RemoteConnectPanel() {
     try {
       await api.setting.set({ key: RELAY_AUTO_START_SETTING_KEY, value: checked ? "1" : "0" });
     } catch (err) {
+      // 开关是**乐观翻转**的:先改 UI 再落库。写失败却静默的话,开关停在用户刚
+      // 拨过去的位置,下次启动却发现没生效 —— 所以把开关拨回去再说一声。
+      setAutoStart(!checked);
       console.error("set autoStart failed", err);
+      useToastStore.getState().push({
+        kind: "error",
+        title: t("mobile.relay.autoStartFailed"),
+        body: err instanceof Error ? err.message : String(err),
+      });
     }
-  }, []);
+  }, [t]);
 
   const copyLink = useCallback(async () => {
     if (!pairingUrl) return;

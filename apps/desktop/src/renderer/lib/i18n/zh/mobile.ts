@@ -138,4 +138,8 @@ export const zh = {
   "mobile.relay.step1": "将上面的链接发送到手机",
   "mobile.relay.step2": "在手机浏览器中打开",
   "mobile.relay.step3": "输入上面的验证码完成配对",
+  /* 生成远程配对码失败 / 「启动时自动开启」写库失败 —— 两处都是静默 catch,
+     失败时用户看不到任何东西(码永远"生成中…"、开关拨过去却没落库)。 */
+  "mobile.relay.pairingFailed": "生成配对码失败",
+  "mobile.relay.autoStartFailed": "保存「启动时自动开启」失败",
 } as const;

@@ -74,6 +74,8 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
   const commitsSeqRef = useRef(0);
   /** 详情加载的请求序号 —— 过期响应不许写状态(见 `openCommit`)。 */
   const detailSeqRef = useRef(0);
+  /** 打开文件差异的请求序号 —— 过期响应不许写状态(见 `openFile`)。 */
+  const fileSeqRef = useRef(0);
 
   // Detail view
   const [selected, setSelected] = useState<GitCommitInfo | null>(null);

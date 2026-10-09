@@ -127,4 +127,6 @@ export const en = {
   "mobile.relay.step1": "Send the link above to your phone",
   "mobile.relay.step2": "Open it in the phone's browser",
   "mobile.relay.step3": "Enter the code above to finish pairing",
+  "mobile.relay.pairingFailed": "Could not generate a pairing code",
+  "mobile.relay.autoStartFailed": "Could not save \"start automatically on launch\"",
 } as const;

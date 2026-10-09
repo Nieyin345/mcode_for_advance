@@ -1186,6 +1186,38 @@ eq("收尾:设备清单空了", (await pairingManager.listDevices()).length, 0);
   );
 }
 
+// —— 渲染端:远程面板两处静默 catch 也要报出来(同一类,同一套判据)——
+// `RemoteConnectPanel` 里两处 `catch` 从前只有 `console.error`:
+//   1. `generatePairing` —— 失败时面板停在「已连接」、二维码那格永远"生成中…",
+//      用户对着一台连上了却拿不到码的机器毫无线索;
+//   2. `handleAutoStartChange` —— 开关**乐观翻转**,写库失败却静默:开关停在用户
+//      拨过去的位置,下次启动才发现没生效。
+// 两处都在没有别处展示错误的位置,所以必须走 toast。判据同样钉在源码上。
+{
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const src = readFileSync(join(process.cwd(), "src/renderer/components/mobile/RemoteConnectPanel.tsx"), "utf8");
+  const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  for (const [fn, key] of [
+    ["generatePairing", "mobile.relay.pairingFailed"],
+    ["handleAutoStartChange", "mobile.relay.autoStartFailed"],
+  ] as const) {
+    const at = code.indexOf(fn);
+    const body = code.slice(at, code.indexOf("\n  },", at));
+    check(
+      `★ ${fn} 的失败会报出来(不是只 console.error)`,
+      at >= 0 && /catch[^)]*\)\s*\{[\s\S]*?useToastStore[\s\S]*?push\(/.test(body) && body.includes(key),
+      body.slice(0, 300),
+    );
+  }
+  // 乐观翻转的后半句:写失败要把开关拨回去,否则 UI 与落库状态不一致。
+  {
+    const at = code.indexOf("handleAutoStartChange");
+    const body = code.slice(at, code.indexOf("\n  },", at));
+    check("★ autoStart 写失败会把开关拨回原值", /setAutoStart\(!checked\)/.test(body), body.slice(0, 300));
+  }
+}
+
 // —— 全局泄露扫描:除"配对成功那一发"之外,**一个**令牌原文都不许出现 ——
 // 只逐条看"这个响应"是不够的:令牌登记在这次会话里,漏出去的那条未必是正在看的那条。
 // 所以扫的是 `req()` 攒下来的**全部**响应。
