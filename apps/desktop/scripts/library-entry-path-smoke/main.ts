@@ -280,6 +280,50 @@ console.log("\n6. readMarkdown 的图片解析不许越界（符号链接/juncti
   }
 }
 
+/* ──────────────── 7. 预览内联的图片引用:三种写法都要认(与 convert 共用一份) ──────────────── */
+
+console.log("\n7. readMarkdown 认全三种图片引用写法（行内 / 引用式 / 裸 HTML）");
+
+// `readMarkdownForPreview` 要内联的图片哪几张,靠的也是"这份 md 引用了哪些本地配图"
+// 这条规则。它只有一处实现(`adoptMarkdown.assetRefsOf`,认行内式 / 引用式 / 裸 HTML
+// 三种),而与它孪生的 `conversionReport` 早在 commit 3cf0ff22 就换成了共用那份 ——
+// 预览这里却是**各写一份**、只扫行内式与 HTML。于是**引用式**写的转录(`![图][id]`
+// + `[id]: path`,pandoc / 某些 OCR 工具的默认输出)在预览里**一张图都内联不出来**,
+// 而设置页的转录报告反过来算得齐 —— 两处漂移。这一条钉住"三写法都要内联"。
+{
+  const { readMarkdownForPreview } = await import("@main/library/markdownPreview.js");
+  const mdDirRel = join("markdown", "imported", "li_imgforms");
+  const mdDirAbs = join(LIB, mdDirRel);
+  mkdirSync(join(mdDirAbs, "images"), { recursive: true });
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+  writeFileSync(join(mdDirAbs, "images", "inline.png"), png);
+  writeFileSync(join(mdDirAbs, "images", "ref.png"), png);
+  writeFileSync(join(mdDirAbs, "images", "html.png"), png);
+  writeFileSync(
+    join(mdDirAbs, "full.md"),
+    [
+      "# 三种写法",
+      "",
+      "![行内](images/inline.png)",
+      "",
+      "![引用式][a]",
+      "",
+      '[a]: images/ref.png "标题"',
+      "",
+      '<img src="images/html.png" alt="裸 HTML">',
+      "",
+    ].join("\n"),
+  );
+  const item = LibraryRepo.upsert({ title: "三种图片写法的一篇" });
+  await setMdPath(item.id, join(mdDirRel, "full.md"));
+  const preview = readMarkdownForPreview(item.id);
+  check("预览成功", preview.ok, preview);
+  check("★ 行内式内联", preview.images["images/inline.png"]?.startsWith("data:image/png") === true, Object.keys(preview.images));
+  // ★ 症结:只扫行内式 + HTML 的那份实现,认不出引用式 —— 这一张内联不进来。
+  check("★ 引用式也内联", preview.images["images/ref.png"]?.startsWith("data:image/png") === true, Object.keys(preview.images));
+  check("裸 HTML 也内联", preview.images["images/html.png"]?.startsWith("data:image/png") === true, Object.keys(preview.images));
+}
+
 /* ──────────────── 收尾 ──────────────── */
 
 // 附:revealFile 必须与 entryPath/openFile 同源地取路径(filePath → pdfPath → mdPath),

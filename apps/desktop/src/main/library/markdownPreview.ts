@@ -24,6 +24,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname, dirname, join } from "node:path";
 import { LibraryRepo } from "@main/store/repositories.js";
 import { fromLibraryRelative } from "./paths.js";
+import { assetRefsOf } from "@main/library/adoptMarkdown.js";
 import { pathWithin } from "@main/lib/pathGuard.js";
 import { log } from "@main/lib/logger.js";
 
@@ -67,12 +68,18 @@ export interface MarkdownPreview {
   skipped: string[];
 }
 
-/** 正文明文里出现的所有图片引用(两种写法:`![]()` 和 `<img src>`)。 */
+/**
+ * 正文里引用的所有本地配图(引用写法由 `adoptMarkdown.assetRefsOf` 一份说了算)。
+ *
+ * ⚠️ **这份引用扫描只有一处实现**(`assetRefsOf`)。它认**三种**写法 —— 行内式
+ * `![](path)`、引用式 `![alt][id]` + `[id]: path`、裸 HTML `<img src=…>` —— 因为
+ * 用户手上那份 md 出自哪个工具不定。这里从前**各写一份**、只扫行内式与 HTML:一份
+ * 用引用式写的转录,预览里那些图**一张都内联不出来**,而同一份 md 在 `conversionReport`
+ * 那边(早已改用 `assetRefsOf`)却算得齐 —— 两处判据漂移(硬规矩 2)。两处各写一份
+ * 就是这次的病根,所以直接共用那一份,连 `%` 解码/`#` 片段那套也一并交给它。
+ */
 function extractImageRefs(markdown: string): string[] {
-  const refs = new Set<string>();
-  for (const m of markdown.matchAll(/!\[[^\]]*\]\(([^)\s]+)/g)) refs.add(m[1]!);
-  for (const m of markdown.matchAll(/<img[^>]+src=["']([^"']+)["']/gi)) refs.add(m[1]!);
-  return [...refs];
+  return assetRefsOf(markdown);
 }
 
 /** 读一张图并转成 data URL;不该内联就返回 null。 */
