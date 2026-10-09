@@ -18,6 +18,9 @@
 import { useEffect } from "react";
 import { create } from "zustand";
 import { api } from "@renderer/lib/api.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
+import { translate } from "@renderer/lib/i18n/core.js";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
 
 export const UI_FONT_SANS_SETTING_KEY = "ui.font.sans";
 export const UI_FONT_MONO_SETTING_KEY = "ui.font.mono";
@@ -84,7 +87,16 @@ interface UiPrefsState {
 
 function persist(key: string, value: string): void {
   void api.setting.set({ key, value }).catch((err: unknown) => {
+    // **落盘失败要说出来。** 这几个 setter 都是"先乐观改 store、再落盘"——失败时界面上
+    // 已是新值,只打日志的话用户看到"改动生效了",直到重启才静默弹回旧值。与
+    // `sessionStore` 那批外观 setter 走同一个共享出口(`store.toast.settingSaveFailed`,
+    // toastStore 按标题去重)。`uiPrefs` 不 import i18n 的 hook,用 core 的纯函数取词。
     console.error(`setting.set(${key}) failed:`, err);
+    useToastStore.getState().push({
+      kind: "error",
+      title: translate(useSessionStore.getState().locale, "store.toast.settingSaveFailed"),
+      body: err instanceof Error ? err.message : String(err),
+    });
   });
 }
 

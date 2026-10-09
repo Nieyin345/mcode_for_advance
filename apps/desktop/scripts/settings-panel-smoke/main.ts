@@ -993,6 +993,26 @@ console.log("\n插件面板:git 安装的同步防重入");
   );
 }
 
+/* ────────────────────────── 18. uiPrefs.persist:落盘失败要报出来 ────────────────────────── */
+
+console.log("\nuiPrefs 落盘失败出口");
+
+// ★ `uiPrefs.persist`(字体/代码字体/内容宽度/自定义CSS/发送键)与 `sessionStore` 那批
+//   外观 setter 同一处境:先乐观改 store、再落盘。失败只 `console.error` 的话,界面已是
+//   新值,用户以为改好了 —— 直到重启才静默弹回旧值。判据钉在源码上(小 store 跑不进无头)。
+{
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(join(process.cwd(), "src/renderer/lib/uiPrefs.ts"), "utf8");
+  const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const at = code.indexOf("function persist(");
+  const body = code.slice(at, code.indexOf("\n}", at));
+  check(
+    "★ uiPrefs.persist 落盘失败走 toast(不再只 console.error 静默弹回)",
+    at >= 0 && /useToastStore\.getState\(\)\.push\(/.test(body) && body.includes("store.toast.settingSaveFailed"),
+    body.slice(0, 300),
+  );
+}
+
 /* ────────────────────────── 收尾 ────────────────────────── */
 
 console.log(`\nsettings-panel-smoke:${total - failures}/${total} 通过`);
