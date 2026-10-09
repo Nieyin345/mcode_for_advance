@@ -22,6 +22,10 @@ export const zh = {
   "ide.tree.paste": "粘贴",
   "ide.tree.copyNameSuffix": "副本",
   "ide.tree.pasteFailed": "粘贴失败",
+  /* 删除失败必须显式报出来:主进程在"路径不在任何项目里 / 目标是项目根 / 系统回收站
+     抛错"三种情况下回 `{ok:false}`,而调用方从前是 `if (!result.ok) return;` ——
+     菜单关了、行还在,用户完全不知道为什么没删掉。 */
+  "ide.tree.deleteFailed": "删除失败",
   "ide.tree.addToChat": "添加到聊天",
   "ide.tree.openInBrowser": "在浏览器中打开",
   "ide.tree.deleteFolderTitle": "删除文件夹",

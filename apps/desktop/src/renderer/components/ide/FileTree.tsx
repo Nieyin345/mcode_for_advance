@@ -30,6 +30,7 @@ import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
 import { localPathToFileUrl } from "@renderer/lib/browserUrl.js";
 import { ConfirmDialog } from "@renderer/components/ui/confirm-dialog.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import type { MessageId } from "@renderer/lib/i18n/core.js";
 
 /** Stable empty array for the expanded-dirs selector (Zustand Object.is). */
 const EMPTY_EXPANDED: string[] = [];
@@ -187,14 +188,16 @@ function useCopyFeedback() {
   return { copy, flash, toast };
 }
 
-/** Paste-failure feedback: a brief danger toast pinned like the copy toast.
+/** Row-action failure feedback: a brief danger toast pinned to the row, sharing
+ *  one timer/state so a row runs at most one at a time. `key` is the message
+ *  shown — 粘贴失败 / 删除失败 … (see `usePasteFailure`/`useDeleteFailure`).
  *  Success needs no toast — the refreshed tree (plus the auto-expanded target
  *  directory) is the feedback. */
-function usePasteFailure() {
+function useRowFailure(key: MessageId) {
   const { t } = useI18n();
   const [failed, setFailed] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const reportPasteFailed = useCallback(() => {
+  const reportFailure = useCallback(() => {
     setFailed(true);
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => setFailed(false), 2000);
@@ -203,10 +206,10 @@ function usePasteFailure() {
   const toast = failed ? (
     <div className="pointer-events-none absolute right-2 top-0 z-50 flex -translate-y-full items-center gap-1 rounded-md bg-danger/15 px-1.5 py-0.5 text-danger [font-size:var(--right-panel-font-size)] shadow-sm">
       <IconAlertCircle size={10} />
-      {t("ide.tree.pasteFailed")}
+      {t(key)}
     </div>
   ) : null;
-  return { reportPasteFailed, toast };
+  return { reportFailure, toast };
 }
 
 /* ───────────────────────── inline new-entry row ───────────────────────── */
@@ -548,7 +551,7 @@ export function FileTree({ projectPath }: { projectPath: string }) {
     () => ({ copiedFile, copyFile: setCopiedFile }),
     [copiedFile],
   );
-  const { reportPasteFailed, toast: pasteFailedToast } = usePasteFailure();
+  const { reportFailure: reportPasteFailed, toast: pasteFailedToast } = useRowFailure("ide.tree.pasteFailed");
   // Paste the stashed file into the project root. Name clashes are resolved
   // main-side ("name 副本.ext", never overwrites); failure pins a danger toast.
   const handlePasteRoot = useCallback(async () => {
@@ -900,7 +903,8 @@ function DirNode({
   // Pending delete confirmation dialog state.
   const [pendingDelete, setPendingDelete] = useState(false);
   const { copy: copyWithFeedback, toast: copiedToast } = useCopyFeedback();
-  const { reportPasteFailed, toast: pasteFailedToast } = usePasteFailure();
+  const { reportFailure: reportPasteFailed, toast: pasteFailedToast } = useRowFailure("ide.tree.pasteFailed");
+  const { reportFailure: reportDeleteFailed, toast: deleteFailedToast } = useRowFailure("ide.tree.deleteFailed");
   const fileClipboard = useContext(FileClipboardContext);
   const closeFilesUnderDir = useSessionStore((s) => s.closeFilesUnderDir);
   const renamePathInIde = useSessionStore((s) => s.renamePathInIde);
@@ -1004,10 +1008,16 @@ function DirNode({
     deletingRef.current = true;
     const result = await api.file.delete({ targetPath: endPath });
     deletingRef.current = false;
-    if (!result.ok) return;
+    // 失败要显式报出来:主进程在"路径不在任何项目里 / 目标是项目根 / 系统回收站抛错"
+    // 三种情况下回 `{ok:false}`,从前这里直接 return —— 菜单关了、行还在,用户完全
+    // 不知道为什么没删掉(与粘贴失败同一条纪律)。
+    if (!result.ok) {
+      reportDeleteFailed();
+      return;
+    }
     actions?.bumpReload();
     closeFilesUnderDir(endPath);
-  }, [actions, endPath, closeFilesUnderDir]);
+  }, [actions, endPath, closeFilesUnderDir, reportDeleteFailed]);
 
   // Paste the tree's stashed file into this directory. On success the row is
   // expanded (a collapsed dir would otherwise swallow the result silently)
@@ -1136,6 +1146,7 @@ function DirNode({
         )}
         {copiedToast}
         {pasteFailedToast}
+        {deleteFailedToast}
         <ConfirmDialog
           open={pendingDelete}
           title={t("ide.tree.deleteFolderTitle")}
@@ -1211,7 +1222,7 @@ function FileNodeRow({
   // nearest container (the file's parent dir). Null outside a FileTree.
   const startNewInParent = useContext(NewInParentContext);
   const { copy: copyWithFeedback, flash: flashCopied, toast: copiedToast } = useCopyFeedback();
-  const { reportPasteFailed, toast: pasteFailedToast } = usePasteFailure();
+  const { reportFailure: reportPasteFailed, toast: pasteFailedToast } = useRowFailure("ide.tree.pasteFailed");
   // Tree-scoped file clipboard: stash this file for a later 粘贴 into any
   // directory (or the project root). Null outside a FileTree — item hidden.
   const fileClipboard = useContext(FileClipboardContext);
@@ -1229,6 +1240,7 @@ function FileNodeRow({
   const [pendingDelete, setPendingDelete] = useState(false);
   // In-flight delete guard so a double-confirm can't fire twice.
   const deletingRef = useRef(false);
+  const { reportFailure: reportDeleteFailed, toast: deleteFailedToast } = useRowFailure("ide.tree.deleteFailed");
 
   const handleRenamed = useCallback(
     (newPath: string) => {
@@ -1244,11 +1256,15 @@ function FileNodeRow({
     deletingRef.current = true;
     const result = await api.file.delete({ targetPath: path });
     deletingRef.current = false;
-    if (!result.ok) return;
+    if (!result.ok) {
+      // 与 DirNode 的删除同一条纪律:失败要显式报出来(见那边的注释)。
+      reportDeleteFailed();
+      return;
+    }
     actions?.bumpReload();
     // force:文件已经被删掉了,留着它的标签只会指向空气 —— 未保存的守卫在这里无意义。
     closeFileInIde(path, true);
-  }, [actions, path, closeFileInIde]);
+  }, [actions, path, closeFileInIde, reportDeleteFailed]);
 
   // Paste the tree's stashed file into this file's parent dir (VS Code parity:
   // pasting on a file targets its containing folder). The parent is necessarily
@@ -1417,6 +1433,7 @@ function FileNodeRow({
       )}
       {copiedToast}
       {pasteFailedToast}
+      {deleteFailedToast}
       <ConfirmDialog
         open={pendingDelete}
         title={t("ide.tree.deleteFileTitle")}

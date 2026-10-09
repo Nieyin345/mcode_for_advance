@@ -19,6 +19,7 @@ export const en = {
   "ide.tree.paste": "Paste",
   "ide.tree.copyNameSuffix": "copy",
   "ide.tree.pasteFailed": "Paste failed",
+  "ide.tree.deleteFailed": "Delete failed",
   "ide.tree.addToChat": "Add to chat",
   "ide.tree.openInBrowser": "Open in browser",
   "ide.tree.deleteFolderTitle": "Delete folder",

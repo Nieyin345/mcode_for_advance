@@ -222,9 +222,34 @@ async function statusCodeParityScenario(): Promise<void> {
   }
 }
 
+/**
+ * 文件树上删文件/删目录失败必须显式报出来。
+ *
+ * 主进程的 `file:delete` 在三种情况下回 `{ok:false}`:路径不在任何项目里、目标是项目
+ * 根本身、`shell.trashItem` 抛错(见 `ipc/files.ts`)。而 `FileTree.tsx` 里**两处**
+ * 删除回调从前都是 `if (!result.ok) return;` —— 用户点了删除、确认了,菜单关了、行
+ * 还在,什么提示都没有,他只会以为"这个功能坏了"。粘贴一直有失败 toast
+ * (`usePasteFailure`),删除却被漏掉 —— 同一类反馈只做了一半。判据钉在**源码**上
+ * (组件在无头下跑不出这个差异):每个 `if (!result.ok)` 之后必须紧跟一句 `reportDeleteFailed()`。
+ */
+async function fileTreeDeleteFailureScenario(): Promise<void> {
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const src = readFileSync(join(process.cwd(), "src/renderer/components/ide/FileTree.tsx"), "utf8");
+  // 每个删除回调里的 `const result = await api.file.delete(...)` 到下一个 `},` 之间,
+  // 失败分支必须报出来。
+  const deleteBlocks = src.match(/const result = await api\.file\.delete\([^]*?\n  \}, \[/g) ?? [];
+  check("★ FileTree 里两处 file.delete 都被这条断言看到", deleteBlocks.length >= 2, deleteBlocks.length);
+  for (const [i, block] of deleteBlocks.entries()) {
+    check(`★ 第 ${i + 1} 处删除失败会报出来(不是静默 return)`, /if \(!result\.ok\) \{\s*[\s\S]*?reportDeleteFailed\(\)/.test(block), block.slice(0, 200));
+  }
+  check("★ 删除失败文案走 i18n(不是硬编码中文)", src.includes('useRowFailure("ide.tree.deleteFailed")'));
+}
+
 await scenario();
 await searchDialogScenario();
 await statusCodeParityScenario();
+await fileTreeDeleteFailureScenario();
 
 console.log(`\nide-ime-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exitCode = 1;
