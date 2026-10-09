@@ -2144,6 +2144,9 @@ function persistIdeBuckets(get: () => SessionState): void {
  *  "切了项目列表又跳回去" race). */
 let streamFetchSeq = 0;
 
+/** 挡 `reloadSkills` 的旧回包 —— 切项目时快速连切,先发的那次可能后回来把新清单盖掉。 */
+let reloadSkillsSeq = 0;
+
 /** Raise the send-time model guard UI after resolveSendModel returned null:
  *  selectable-but-unpicked → bump `modelGuardPulse` so the ModelDropdown chip
  *  nudges in place (shake + floating hint — far lighter than a global toast);
@@ -7351,14 +7354,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // .claude/skills in addition to the user-global dir; without a project
     // there's nothing project-scoped to add (global-only would mislead the
     // menu into showing skills that may not apply), so we no-op.
+    //
+    // ⚠️ **旧回包会盖新状态。** 这是一条 fire-and-forget 的路(`selectProject` /
+    // `addProjectFromFolder` 都不 await 它),而 `api.skills.list` 要扫盘、挺慢。快速连切
+    // 两个项目时,先发的 A 那次可能**后**回来,把 B 的清单盖成 A 的项目级技能 —— `/` 菜单
+    // 在 B 下列出 A 的技能。用一个序号挡:回来时若已不是最新那次,丢弃。
+    const seq = ++reloadSkillsSeq;
     const pid = get().activeProjectId;
     const project = pid ? get().projects.find((p) => p.id === pid) : undefined;
     if (!project) {
-      set({ skills: EMPTY_SKILLS });
+      if (seq === reloadSkillsSeq) set({ skills: EMPTY_SKILLS });
       return;
     }
     try {
       const { skills } = await api.skills.list({ projectPath: project.path });
+      if (seq !== reloadSkillsSeq) return; // 已有更新的一次在飞,这次的结果作废
       set({ skills: skills.length ? skills : EMPTY_SKILLS });
     } catch (err) {
       console.error("reloadSkills failed:", err);

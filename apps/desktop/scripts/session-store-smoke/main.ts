@@ -13,7 +13,7 @@
  *
  * Run: scripts/session-store-smoke/run.sh
  */
-import { setSendTurnStub, setSessionMessagesStub } from "./prelude.js";
+import { setSendTurnStub, setSessionMessagesStub, setSkillsListStub } from "./prelude.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { ChatMessage, SessionState } from "@renderer/stores/sessionStore.js";
@@ -22,6 +22,7 @@ import { outputRowsOf } from "@renderer/components/chat/outputRows.js";
 import { normWorktreeKey } from "@renderer/lib/worktree.js";
 import { ideDirtyTracker } from "@renderer/lib/ideDirty.js";
 import type { Session } from "@contracts/session";
+import type { SkillInfo } from "@contracts/ipc";
 import type { ContextSnapshot, SessionListEntry, TurnFileEntry } from "@contracts/runtime";
 
 const PROJECT = "p1";
@@ -1618,6 +1619,52 @@ await (async () => {
     sessions.map((x) => x.id),
   );
   eq("★ 接到的新的 activeSessionId 能在 sessions 里找到", sessions.some((x) => x.id === patch.activeSessionId), true);
+})();
+
+console.log("\n[23] reloadSkills 的旧回包不能盖新状态(切项目竞态)");
+await (async () => {
+  // `reloadSkills` 是 fire-and-forget(切项目时发起,不 await),`skills.list` 要扫盘。
+  // 快速连切两个项目时先发的 A 可能后回来,把 B 的项目级技能盖成 A 的。
+  const skill = (name: string): SkillInfo => ({ name, description: "", source: "global" } as SkillInfo);
+  const store = useSessionStore;
+  const PA = "proj-A";
+  const PB = "proj-B";
+  store.setState({
+    projects: [
+      { id: PA, name: "A", path: "/a" },
+      { id: PB, name: "B", path: "/b" },
+    ] as unknown as SessionState["projects"],
+    activeProjectId: PB,
+    skills: [],
+  });
+
+  // A 的应答**晚于** B 返回(用可控的 promise 制造乱序)。
+  let resolveA: (v: unknown) => void = () => {};
+  let resolveB: (v: unknown) => void = () => {};
+  const calls: string[] = [];
+  setSkillsListStub((input) => {
+    const p = (input as { projectPath?: string }).projectPath;
+    calls.push(p ?? "");
+    return new Promise((res) => {
+      if (p === "/a") resolveA = res;
+      else resolveB = res;
+    });
+  });
+
+  store.setState({ activeProjectId: PA });
+  const pA = store.getState().reloadSkills();
+  store.setState({ activeProjectId: PB });
+  const pB = store.getState().reloadSkills();
+
+  // B 先回,再回 A(乱序)。
+  resolveB({ skills: [skill("b-only")] });
+  await pB;
+  resolveA({ skills: [skill("a-only")] });
+  await pA;
+
+  const names = store.getState().skills.map((s) => s.name);
+  check("★ 迟到的 A 清单没有盖掉 B(仍是 b-only)", names.includes("b-only") && !names.includes("a-only"), names);
+  setSkillsListStub(null);
 })();
 
 console.log(`\n${checks - failures}/${checks} checks passed`);
