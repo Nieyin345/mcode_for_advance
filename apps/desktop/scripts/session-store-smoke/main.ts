@@ -17,7 +17,7 @@ import { setSendTurnStub, setSessionMessagesStub, setSkillsListStub, setTruncate
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { ChatMessage, SessionState } from "@renderer/stores/sessionStore.js";
-import { applyDeltaEntries, applySessionDeletedState } from "@renderer/stores/sessionStoreHelpers.js";
+import { applyDeltaEntries, applySessionDeletedState, pendingInterruptDone, resyncAfterTurn } from "@renderer/stores/sessionStoreHelpers.js";
 import { outputRowsOf } from "@renderer/components/chat/outputRows.js";
 import { normWorktreeKey } from "@renderer/lib/worktree.js";
 import { ideDirtyTracker } from "@renderer/lib/ideDirty.js";
@@ -1006,6 +1006,27 @@ console.log("\n[15d] 删会话时「回合未完成」提示桶也要收掉");
 
   store.getState().ingestEvent({ type: "session.deleted", sessionId: SID });
   eq("★ 删会话后未完成旗标被收掉", store.getState().turnIncompleteBySession[SID], undefined);
+}
+
+console.log("\n[15e] 删会话时两个模块级 Set 也要销账");{
+  // 与 #15c/#15d 同一类,但这两个状态**不在 store 里** —— 它们是模块级的
+  // `pendingInterruptDone`(本端按了停止、还没收到 `turn.done` 收口的会话)与
+  // `resyncAfterTurn`(重连时要重拉的会话)。两者都只在收到 `turn.done` 时才 `delete`,
+  // 而**一条被删掉的会话再也不会来 `turn.done`** —— 条目就永远留着,长跑 + 多会话只涨
+  // 不落。而 `applySessionDeletedState` 已经把「按会话累积的桶」逐条列了一遍,这两个
+  // 模块级 Set 却漏在名单外(与 `upstreamIssueDecayTimers` 那条同款,那个已经在
+  // `dropSessionBuckets` 里补了)。
+  const SID = "interrupted-then-deleted";
+  seed([mkSession(SID)], { total: 1 });
+  const store = useSessionStore;
+  pendingInterruptDone.add(SID);
+  resyncAfterTurn.add(SID);
+  check("前置:pendingInterruptDone 有条目", pendingInterruptDone.has(SID));
+  check("前置:resyncAfterTurn 有条目", resyncAfterTurn.has(SID));
+
+  store.getState().ingestEvent({ type: "session.deleted", sessionId: SID });
+  check("★ 删会话后 pendingInterruptDone 已销账", !pendingInterruptDone.has(SID));
+  check("★ 删会话后 resyncAfterTurn 已销账", !resyncAfterTurn.has(SID));
 }
 
 // ── 14. ingestEvent:时序敏感的那几条 ───────────────────────────────────────

@@ -873,6 +873,16 @@ function dropSessionBuckets(s: SessionState, id: string) {
     clearTimeout(issueTimer);
     upstreamIssueDecayTimers.delete(id);
   }
+  // 两个**模块级**的按会话 Set 也要摘掉(与上面那条 decay 定时器同一类:状态不在
+  // store 里,所以 `dropSessionBuckets` 不显式清就没人清)。它们都是"按会话 id 累积、
+  // 只在特定事件里才销账"的:`pendingInterruptDone` 只在收到任一 `turn.done` 时
+  // `delete`,而 `resyncAfterTurn` 只在 `turn.done` 到达时 `delete` —— 一条**被删掉**
+  // 的会话再也不会来 `turn.done`,它留下的条目就永远留在表里(长跑 + 多会话 = 只涨不落,
+  // 与 `upstreamIssueDecayTimers` 同一类)。删掉这一行也**顺带修掉一个行为错**:
+  // 残留的 `pendingInterruptDone` 会让那条守卫把**下一个复用同一 id 的回合**的合法
+  // interrupted 收口当陈旧事件丢掉。
+  pendingInterruptDone.delete(id);
+  resyncAfterTurn.delete(id);
   const unreadBySession = { ...s.unreadBySession };
   delete unreadBySession[id];
   const todosBySession = { ...s.todosBySession };
