@@ -30,8 +30,8 @@ export const runtimeManager = {
   },
   /** 本套只在 sentinel-回答那一段走到真 turn —— 把 cwd 记下来供断言核对。
    *  别的 `claude:*` RPC 本套不发;除了 sendTurn 的几个伴生调用,其余真被调到要立刻显形。 */
-  sendTurn(session: { id: string }, input: { cwd?: string }): { done: Promise<void> } {
-    turnCwds.push({ sessionId: session.id, cwd: input.cwd ?? "" });
+  sendTurn(session: { id: string; workflowId?: string }, input: { cwd?: string }): { done: Promise<void> } {
+    turnCwds.push({ sessionId: session.id, cwd: input.cwd ?? "", workflowId: session.workflowId ?? "" });
     return { done: Promise.resolve() };
   },
   bindSession(): void {
@@ -49,4 +49,4 @@ export const runtimeManager = {
 };
 
 /** 脚本读它来核对"那一轮被送进了哪个目录"(sentinel 断言用)。 */
-export const turnCwds: Array<{ sessionId: string; cwd: string }> = [];
+export const turnCwds: Array<{ sessionId: string; cwd: string; workflowId: string }> = [];

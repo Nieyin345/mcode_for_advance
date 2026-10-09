@@ -1045,6 +1045,50 @@ console.log("\ngenerateCommitMessage:scope 转发");
   rmSync(repo, { recursive: true, force: true });
 }
 
+/* ────────────── 7g. 本轮工作流的覆盖值必须先落进 updated ──────────────
+ *
+ * 输入框把 `workflowId` 经 `session.updateSettings` 落库是 **fire-and-forget**,
+ * 与 `claude:sendTurn` 抢跑。桌面 handler(`ipc/claude.ts`)因此把 `input.workflowId`
+ * 在**内存里**打进 `updated`,再交给 `graphRunIntent`;手机这条一开始漏了这一句 ——
+ * 行还没落地时读到的是旧的 `"default"`,用户选好的工作流**静默退化成普通回合**。
+ *
+ * 判别法:库里的行存 `default`,这一轮传 `read`(提示词型、非图,走普通回合那条路)。
+ * 桩记下 `sendTurn` 收到的 `session.workflowId` —— 覆盖值没打进去就是 `default`。
+ */
+console.log("\n本轮工作流覆盖值");
+
+{
+  const { ProjectRepo, SessionRepo } = await import("@main/store/repositories.js");
+  const { turnCwds } = (await import("@main/claude/RuntimeManager.js")) as unknown as {
+    turnCwds: Array<{ sessionId: string; cwd: string; workflowId: string }>;
+  };
+  const pathT = mkdtempSync(join(tmpdir(), "mcode-mobile-wf-proj-"));
+  const now = Date.now();
+  ProjectRepo.create({ id: "wf_p", name: "wf_p", path: pathT, archived: false, pinnedAt: null, sortOrder: 0, createdAt: now, updatedAt: now } as never);
+  SessionRepo.create({
+    id: "wf_s", projectId: "wf_p", providerId: "claude-sdk", claudeSessionId: null, kind: "chat",
+    parentSessionId: null, nodeId: null, title: "New session", status: "idle",
+    model: "default", effort: "default", permissionMode: "default",
+    // ★ 库里的行是旧的 `default` —— 模拟"落库那条 RPC 还没到"。
+    workflowId: "default",
+    customModelId: null, envMode: "local", worktreePath: null, archived: false, pinnedAt: null,
+    contextSnapshot: null, todos: null, subagents: null, planDraft: null, turnFiles: null,
+    usageHistory: null, bookmarks: null, subagentTranscripts: null, createdAt: now, updatedAt: now,
+  } as never);
+
+  turnCwds.length = 0;
+  const sent = await rpcTok(tA, "claude:sendTurn", { sessionId: "wf_s", prompt: "读一下这篇", workflowId: "read" });
+  eq("带 workflowId 的 sendTurn → 200", sent.status, 200);
+  const rec = turnCwds.find((c) => c.sessionId === "wf_s");
+  eq(
+    "★ 本轮选的工作流打进这一轮了(不是库里的旧 default)",
+    rec?.workflowId,
+    "read",
+  );
+
+  rmSync(pathT, { recursive: true, force: true });
+}
+
 /* ───────────────────── 8. 出厂状态 ───────────────────── */
 
 console.log("\n收尾");
@@ -1139,6 +1183,35 @@ eq("收尾:设备清单空了", (await pairingManager.listDevices()).length, 0);
     leaked.length === 0,
     leaked,
   );
+}
+
+/* ────────────── 9. 健康检查在库没就绪时不能崩主进程 ──────────────
+ *
+ * `/api/health` 是**不鉴权**、手机端轮询最频繁的一条。它从前直接 `!!getDb()`,
+ * 而 `getDb()` 在库未初始化/已拆掉时**抛** —— 同步抛在 Node 的 `request` 监听器里
+ * 没有 catch 接住,能把主进程带崩。暴露窗口窄(正常生命周期里库在服务在听期间是就绪的),
+ * 但与兄弟路由 `/api/auth/methods` 的守卫不一致,值得钉住。
+ *
+ * 判别法:真的把库关掉,再打一次 `/api/health` —— 必须照常 200,而不是让请求处理器抛出。
+ * 跑完立刻重新 `initDb()` 收尾(后续没有别的断言依赖库,但保持进程状态干净)。
+ */
+console.log("\n健康检查:库未就绪时也不崩");
+
+{
+  const { closeDb, initDb } = await import("@main/store/db.js");
+  closeDb();
+  let healthStatus = 0;
+  let healthText = "";
+  try {
+    const r = await req("/api/health");
+    healthStatus = r.status;
+    healthText = r.text;
+  } catch (err) {
+    healthText = `threw: ${(err as Error).message}`;
+  }
+  eq("库已关闭时 /api/health 仍照常 200(不把主进程带崩)", healthStatus, 200);
+  check("且如实报 dbReady:false", /"dbReady":false/.test(healthText), healthText);
+  await initDb();
 }
 
 await new Promise<void>((resolve) => server.close(() => resolve()));

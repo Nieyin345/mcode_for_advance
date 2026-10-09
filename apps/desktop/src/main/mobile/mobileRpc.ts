@@ -380,6 +380,13 @@ const HANDLERS: Record<string, RpcHandler> = {
     if (input.model !== undefined) updated = { ...updated, model: input.model };
     if (input.effort !== undefined) updated = { ...updated, effort: input.effort };
     if (input.permissionMode !== undefined) updated = { ...updated, permissionMode: input.permissionMode };
+    // ⚠️ **这一轮选的工作流必须在 `graphRunIntent` 之前打进 `updated`。** 桌面端
+    // (`ipc/claude.ts` 的同一段)也是这么做的,而手机端从前漏了这一句 —— 输入框把
+    // `workflowId` 经 `session.updateSettings` 落库是 **fire-and-forget**,与 sendTurn
+    // 抢跑;行还没落地时 `SessionRepo.get` 读到的仍是旧的 `"default"`,`graphRunIntent`
+    // 于是返回 `"none"`,用户选好的工作流**静默退化成普通回合**(不报错、界面无提示)。
+    const workflowId = workflowIdFromInput(input);
+    if (workflowId !== undefined) updated = { ...updated, workflowId };
     if (input.customModelId !== undefined) updated = { ...updated, customModelId: input.customModelId };
     if (input.providerId !== undefined) updated = { ...updated, providerId: input.providerId };
 

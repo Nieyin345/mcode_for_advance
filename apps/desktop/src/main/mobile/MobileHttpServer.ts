@@ -410,7 +410,12 @@ export function createMobileRequestHandler(
 
     // ── Unauthenticated routes ──────────────────────────────────────────
     if (path === "/api/health") {
-      sendJson(res, 200, { ok: true, endpoint, dbReady: !!getDb() });
+      // ⚠️ `getDb()` 在库还没初始化(或已拆掉)时会**抛**,而这段跑在 Node 的
+      // `request` 监听器里 —— 同步抛出去没有任何 catch 接住,能把主进程带崩。健康检查
+      // 是手机端轮询最频繁的一条,不该有这种可能。与下面 `/api/auth/methods` 同一道守卫。
+      let dbReady = false;
+      try { dbReady = !!getDb(); } catch { dbReady = false; }
+      sendJson(res, 200, { ok: true, endpoint, dbReady });
       return;
     }
     if (path === "/api/pair/verify" && req.method === "POST") {
