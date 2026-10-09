@@ -49,6 +49,7 @@ import { ProjectMcpView } from "./ProjectMcpView.js";
 import { SkillNodesView } from "./SkillNodesView.js";
 import {
   MCP_RESERVED_NAME,
+  isReservedMcpServerName,
   type McpImportOrigin,
   type McpImportSource,
   type McpKind,
@@ -842,7 +843,11 @@ function AddServerDialog({
       setError(t("settings.nameCharsError"));
       return;
     }
-    if (trimmedName === MCP_RESERVED_NAME) {
+    // ⚠️ 用契约的**整段前缀**判据(`isReservedMcpServerName`),不是单个字面名。从前这里
+    // 写的是 `trimmedName === MCP_RESERVED_NAME`,只挡 `mcode-browser` —— 用户建
+    // `mcode-app` / `mcode-memory` 时面板放行、点保存被主进程 `ipc/mcp.ts` 拒
+    // ("界面允许、保存却被拒")。与项目级 `.mcp.json` 那条路也才对得齐。
+    if (isReservedMcpServerName(trimmedName)) {
       setError(t("settings.mcp.errReserved", { name: MCP_RESERVED_NAME }));
       return;
     }

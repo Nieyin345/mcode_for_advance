@@ -13,6 +13,7 @@ import {
   type McpMarketInput,
   type McpMarketSource,
   MCP_NAME_RE as NAME_RE,
+  isReservedMcpServerName,
 } from "@contracts/ipc";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
@@ -311,7 +312,7 @@ function McpMarketInstallDialog({
     ? t("settings.mcpMarket.nameRequired")
     : !NAME_RE.test(trimmedName)
       ? t("settings.mcpMarket.nameInvalid")
-      : /^mcode[-_]/i.test(trimmedName)
+      : isReservedMcpServerName(trimmedName)
         ? t("settings.mcpMarket.nameReserved")
         : takenNames.has(trimmedName)
           ? t("settings.mcpMarket.nameTaken")

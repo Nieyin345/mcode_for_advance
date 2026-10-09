@@ -210,6 +210,20 @@ const { IPC, MCP_MANAGEMENT_SETTING_KEY, MCP_RESERVED_NAME } = await import("@co
   eq("MCP_NAME_RE 接受普通名", MCP_NAME_RE.test("my-server_1"), true);
   eq("MCP_NAME_RE 拒绝带空格的", MCP_NAME_RE.test("my server"), false);
 }
+// ★ **保留名的判据只有一份**(`isReservedMcpServerName` 的整段 `mcode[-_]` 前缀)。
+//   主进程 `ipc/mcp.ts` 一直用它;渲染端从前两处各写一份更弱的:`McpPanel` 只比字面名
+//   `MCP_RESERVED_NAME`(挡不住 `mcode-app`)、`McpMarketView` 内联 `/^mcode[-_]/i`。
+//   两份都改走契约那一个函数 —— 否则用户建 `mcode-app` 时"界面允许、保存却被拒"。
+{
+  const { isReservedMcpServerName, MCP_RESERVED_NAME } = await import("@contracts/ipc");
+  eq("保留名判据:整段前缀拒绝(不只字面名)", JSON.stringify([isReservedMcpServerName("mcode-app"), isReservedMcpServerName("mcode-memory")]), "[true,true]");
+  eq("字面名当然也拒", isReservedMcpServerName(MCP_RESERVED_NAME), true);
+  eq("普通名放行", isReservedMcpServerName("my-server"), false);
+  const panel = readFileSync("src/renderer/components/settings/McpPanel.tsx", "utf8");
+  const market = readFileSync("src/renderer/components/settings/McpMarketView.tsx", "utf8");
+  check("★ McpPanel 用共享 isReservedMcpServerName(不再只比字面名)", panel.includes("isReservedMcpServerName(trimmedName)"), "");
+  check("★ McpMarketView 用共享判据(不再内联前缀正则)", market.includes("isReservedMcpServerName(trimmedName)") && !market.includes("/^mcode["), "");
+}
 const { initDb } = await import("@main/store/db.js");
 const { SettingRepo } = await import("@main/store/repositories.js");
 const mcpConfig = await import("@main/lib/mcpConfig.js");
