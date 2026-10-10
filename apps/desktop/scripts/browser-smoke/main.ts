@@ -598,6 +598,43 @@ console.log("\nIPC:authRespond 的合法入参");
       body.slice(0, 260),
     );
   }
+  // 收藏 / 历史那四条增删也是 `browser.*` 的 `{ok:false}` 契约,同一共用出口。
+  // 主进程 `browser.bookmarkAdd/Remove`、`historyRemove/Clear` 一律回 `{ok:false,
+  // error}`,从前渲染端这四处只 `.then(refresh…)`(或对 bookmark 干脆把回包丢了),
+  // 于是点"取消收藏"那一行还在、点"清空历史"列表纹丝不动 —— 看着就是点了没反应。
+  // ⚠️ 锚在**声明**上(`const handleX = useCallback`),否则 `indexOf` 会先撞上某个
+  // 调用点(如 `handleRemoveBookmark` 也出现在 `handleMoreMenuOpenChange` 附近)。
+  for (const [decl, key] of [
+    ["const handleToggleBookmark = useCallback", "browser.bookmark"],
+    ["const handleRemoveBookmark = useCallback", "browser.bookmarkRemoveFailed"],
+    ["const handleRemoveHistoryEntry = useCallback", "browser.historyRemoveFailed"],
+    ["const handleClearHistory = useCallback", "browser.historyClearFailed"],
+  ] as const) {
+    const at = code.indexOf(decl);
+    const body = code.slice(at, code.indexOf("}, [", at));
+    check(
+      `★ ${decl.replace("const ", "").replace(" = useCallback", "")} 把 {ok:false} 交给共用失败出口`,
+      at >= 0 &&
+        /\.then\(/.test(body) &&
+        /reportBrowserOpFailure/.test(body) &&
+        body.includes(key),
+      body.slice(0, 300),
+    );
+  }
+  // 正控(防断言空过):这四处从前长什么样 —— 直接 `.then(refresh…)`,没有任何
+  // `reportBrowserOpFailure`。这里要求**两者都在场且失败出口在前**,`indexOf` 的
+  // -1 也算"在场"会让正控恒真。
+  {
+    const at = code.indexOf("const handleClearHistory = useCallback");
+    const body = code.slice(at, code.indexOf("}, [", at));
+    const report = body.indexOf("reportBrowserOpFailure");
+    const refresh = body.indexOf("refreshHistory()");
+    check(
+      "…正控:清空历史**先报失败再刷新**(两者都在场,失败出口在前)",
+      at >= 0 && report >= 0 && refresh >= 0 && report < refresh,
+      body.slice(0, 300),
+    );
+  }
 }
 
 /* ──────────────── 收尾 ──────────────── */

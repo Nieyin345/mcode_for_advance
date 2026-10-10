@@ -43,6 +43,13 @@ export const zh = {
      网站"),静默失败会让他以为已经退出,而登录令牌还活着。 */
   "browser.clearCacheFailed": "清除浏览缓存失败",
   "browser.clearCookiesFailed": "清除登录状态失败",
+  /* 收藏 / 历史那四条增删失败同样要说出来。主进程的 handler 一律回 `{ok:false,
+     error}`,从前这四处把回包一丢了事 —— 点"取消收藏"那一行还在、点"清空历史"
+     列表纹丝不动,看着就是点了没反应。 */
+  "browser.bookmarkAddFailed": "收藏失败",
+  "browser.bookmarkRemoveFailed": "取消收藏失败",
+  "browser.historyRemoveFailed": "删除这条历史记录失败",
+  "browser.historyClearFailed": "清空历史记录失败",
 
   /* ── panel ── */
   "browser.selectProjectFirst": "请先选择一个项目",

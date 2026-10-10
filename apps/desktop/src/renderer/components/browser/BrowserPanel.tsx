@@ -760,6 +760,26 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
     refreshBookmarks();
   }, [refreshBookmarks]);
 
+  /** Shared failure exit for `browser.*` ops that return `BrowserOpResult`.
+   *  A `{ok:false}` must be surfaced, not swallowed — these are user-initiated
+   *  actions (bookmark add/remove, history remove/clear, clear cache/cookies,
+   *  open/reveal a download) that look dead when the error is dropped. The
+   *  cookie clear in particular is a **security action** the user confirmed in
+   *  a dialog ("sign me out everywhere"), so a silent failure leaves them
+   *  believing they are signed out while the session token is still live.
+   *  Declared before its first users — `const` is not hoisted. */
+  const reportBrowserOpFailure = useCallback(
+    (res: BrowserOpResult, title: string) => {
+      if (res.ok) return;
+      useToastStore.getState().push({
+        kind: "error",
+        title,
+        body: res.error ?? "",
+      });
+    },
+    [],
+  );
+
   /** Bookmark / unbookmark the active page (by URL match against the list). */
   const handleToggleBookmark = useCallback(() => {
     const tab = activeTabIdRef.current
@@ -770,14 +790,25 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
     const req = already
       ? api.browser.bookmarkRemove({ url: tab.url })
       : api.browser.bookmarkAdd({ url: tab.url, title: tab.title });
-    void req.then(refreshBookmarks);
-  }, [bookmarks, refreshBookmarks]);
+    // Main refuses with a reason when the write fails; dropping it made the
+    // star / row look unchanged for a click that never landed.
+    void req.then((res) => {
+      reportBrowserOpFailure(
+        res,
+        already ? t("browser.bookmarkRemoveFailed") : t("browser.bookmarkAddFailed"),
+      );
+      refreshBookmarks();
+    });
+  }, [bookmarks, refreshBookmarks, reportBrowserOpFailure, t]);
 
   const handleRemoveBookmark = useCallback(
     (url: string) => {
-      void api.browser.bookmarkRemove({ url }).then(refreshBookmarks);
+      void api.browser
+        .bookmarkRemove({ url })
+        .then((res) => reportBrowserOpFailure(res, t("browser.bookmarkRemoveFailed")))
+        .then(refreshBookmarks);
     },
-    [refreshBookmarks],
+    [refreshBookmarks, reportBrowserOpFailure, t],
   );
 
   /** More-menu open/close — same freeze-frame contract as the history
@@ -797,26 +828,6 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
       }
     },
     [isActive, freezeViewForMenu, unfreezeViewForMenu, refreshBookmarks],
-  );
-
-  /** Shared failure exit for `browser.*` ops that return `BrowserOpResult`.
-   *  A `{ok:false}` must be surfaced, not swallowed — these are user-initiated
-   *  actions (clear cache/cookies, open/reveal a download) that look dead when
-   *  the error is dropped. The cookie clear in particular is a **security
-   *  action** the user confirmed in a dialog ("sign me out everywhere"), so a
-   *  silent failure leaves them believing they are signed out while the
-   *  session token is still live. Declared before its first users (the
-   *  download handlers) — `const` is not hoisted. */
-  const reportBrowserOpFailure = useCallback(
-    (res: BrowserOpResult, title: string) => {
-      if (res.ok) return;
-      useToastStore.getState().push({
-        kind: "error",
-        title,
-        body: res.error ?? "",
-      });
-    },
-    [],
   );
 
   /** Download-bar actions. The renderer only ever passes the downloadId —
@@ -1218,14 +1229,20 @@ export function BrowserPanel({ mode }: BrowserPanelProps) {
 
   const handleRemoveHistoryEntry = useCallback(
     (url: string) => {
-      void api.browser.historyRemove({ url }).then(() => refreshHistory());
+      void api.browser
+        .historyRemove({ url })
+        .then((res) => reportBrowserOpFailure(res, t("browser.historyRemoveFailed")))
+        .then(() => refreshHistory());
     },
-    [refreshHistory],
+    [refreshHistory, reportBrowserOpFailure, t],
   );
 
   const handleClearHistory = useCallback(() => {
-    void api.browser.historyClear({}).then(() => refreshHistory());
-  }, [refreshHistory]);
+    void api.browser
+      .historyClear({})
+      .then((res) => reportBrowserOpFailure(res, t("browser.historyClearFailed")))
+      .then(() => refreshHistory());
+  }, [refreshHistory, reportBrowserOpFailure, t]);
 
   /** Auth dialog closed: restore the (previously hidden) active view. */
   const handleAuthClose = useCallback(() => {

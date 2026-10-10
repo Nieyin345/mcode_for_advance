@@ -38,6 +38,10 @@ export const en = {
   "browser.clearCookiesConfirm": "This signs you out of all sites and wipes the remembered sign-in state; it will not come back after a restart. Continue?",
   "browser.clearCacheFailed": "Could not clear the browsing cache",
   "browser.clearCookiesFailed": "Could not clear the sign-in state",
+  "browser.bookmarkAddFailed": "Could not add the bookmark",
+  "browser.bookmarkRemoveFailed": "Could not remove the bookmark",
+  "browser.historyRemoveFailed": "Could not remove that history entry",
+  "browser.historyClearFailed": "Could not clear the history",
 
   /* ── panel ── */
   "browser.selectProjectFirst": "Select a project first",
