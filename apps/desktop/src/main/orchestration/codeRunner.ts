@@ -218,7 +218,11 @@ export async function runCodeNode(a: {
         summary: result?.summary ?? stdout,
         outputs,
         ...artifactPayload,
-        error: stderr || `进程退出码 ${run.code ?? "未知"}`,
+        // ⚠️ 回退链**必须包含脚本自己的 summary**(报告 D9):脚本失败时往往用协议行的
+        // `summary` 写明原因("没有配置 MinerU token"),却不一定往 stderr 写东西。
+        // 从前这里只 `stderr || 进程退出码 N` —— 于是那句"为什么失败"被丢掉,卡片上
+        // 只剩一个裸的退出码,用户看不出错在哪。
+        error: stderr || result?.summary?.trim() || `进程退出码 ${run.code ?? "未知"}`,
       };
     }
     return { status: "success", summary: result?.summary ?? stdout, outputs, ...artifactPayload };

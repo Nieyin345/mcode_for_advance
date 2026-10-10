@@ -41,6 +41,23 @@ console.log("\nNode · non-zero exit / stderr");
   eq("stderr exposed", out.outputs?.stderr, "boom");
 }
 
+console.log("\n非零退出但只有 summary、没有 stderr —— 失败原因不能退化成裸退出码");
+{
+  // 报告 D9：`wf_auto_convert` 失败时卡片只显示「进程退出码 1」，而脚本自己的
+  // summary（"没有 MinerU token"）被丢了 —— 用户看不出错在哪。脚本**用协议行给出
+  // 了原因**、又没往 stderr 写东西时，error 必须带上那段 summary。
+  const code = [
+    "const p=process.argv;",
+    `process.stdout.write(${JSON.stringify(NODE_STDOUT_PROTOCOL_PREFIX)} + "result " + JSON.stringify({summary:"没有配置 MinerU token，跳过这次转换"}) + "\\n");`,
+    "process.exit(1);",
+  ].join("\n");
+  const out = await runCodeNode({ code, language: "node", timeoutMs: 5000, signal: controller().signal });
+  eq("still failed", out.status, "failed");
+  check("★ 失败原因带上脚本自己给的 summary（不是裸退出码）",
+    String(out.error).includes("没有配置 MinerU token"), out.error);
+  check("summary 仍原样保留在产出里", String(out.summary).includes("没有配置 MinerU token"), out.summary);
+}
+
 console.log("\nNode · timeout / cancellation");
 {
   const timed = await runCodeNode({ code: "setInterval(() => {}, 1000);", language: "node", timeoutMs: 300, signal: controller().signal });
