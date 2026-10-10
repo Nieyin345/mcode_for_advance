@@ -11,7 +11,7 @@ import {
 // 真调度器 + 真命令执行器跑一遍时,那张产出变量表到底被判成什么。手抄一份进夹具测的是
 // 抄本 —— 而这两条偏偏只在真货上才有意义(抄本没有"跟实现说同一件事"这回事)。
 // run.sh 为此带了 stubs + banner。
-import { builtinCommandManifest } from "@main/orchestration/nodeTypes.js";
+import { builtinCommandManifest, builtinManifestById } from "@main/orchestration/nodeTypes.js";
 import { runCommandNode } from "@main/orchestration/commandRunner.js";
 import { runWorkflow, type RunPorts, type RunReport } from "@main/orchestration/scheduler.js";
 import type { SpawnFn } from "@main/lib/spawnRun.js";
@@ -901,6 +901,33 @@ check(
   terminalOutcome?.status === "success",
   terminalOutcome,
 );
+
+/* ── 4i. 「自动整段拼」与「{{}} 点名取」是两个作用域,给模型的说明要讲到(报告 P2) ──
+ *
+ * 这两条判据在代码里本来就不同:`upstreamTextOf`(自动整段)走**直接入边**,
+ * `upstreamNames`(`{{}}` 点名)走**传递闭包**(见 `scheduler.ts` 两处)。作者
+ * (人写指令、或模型代写节点类型)最容易踩的坑是以为"没整段拼进来的步骤就拿不到",
+ * 于是要么放弃引用、要么把上游整段重复灌进每一步。
+ *
+ * `mcode.agent` 的 `usage` 是**模型写节点/指令时读到的说明**(和 README 同源,但这条
+ * 是随清单走的) —— 它必须把"整段只给直接上游、点名能取整条上游链"讲出来。钉的是
+ * "它讲了这件事",不是某个具体措辞。
+ */
+{
+  const agentManifest = builtinManifestById("mcode.agent");
+  check("4i-1 内置子 agent 清单在", agentManifest !== undefined);
+  const usage = agentManifest?.usage ?? "";
+  check(
+    "4i-2 说明里点破了「整条上游链」可点名取(不是只有直接上游)",
+    usage.includes("整条上游链"),
+    usage.slice(0, 200),
+  );
+  check(
+    "4i-3 说明里也点明了「自动整段拼」只给直接上游",
+    usage.includes("只指直接上游"),
+    usage.slice(0, 200),
+  );
+}
 
 /* ── 5. 导入 / 导出(WF-08) ── */
 

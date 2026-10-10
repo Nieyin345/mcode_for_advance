@@ -248,6 +248,17 @@ if (existsSync(promptReadme)) {
   const text = readFileSync(promptReadme, "utf8");
   check("README 不是空文件", text.trim().length > 500, text.length);
   check("README 讲了执行方式(模型照着它选 kind)", text.includes("执行方式"), text.length);
+  // ★ **README 要把「自动整段拼」和「{{}} 点名取」两个作用域说清是两回事**(报告 P2)。
+  //
+  // 这两条判据在代码里本来就是**不同**的:`upstreamTextOf` 走直接入边,`upstreamNames`
+  // 走传递闭包。作者最容易踩的坑是**以为没整段拼进来的步骤就拿不到** —— 于是要么放弃
+  // 引用,要么整段重复灌。README 是系统提示词指给读的那一份,必须把这层边界写出来。
+  // 钉的是"它讲了这件事",不是某个具体措辞 —— 换种写法只要还说清边界就不该红。
+  check(
+    "★ README 说明了「直接上游」和「整条上游链」是两个范围",
+    text.includes("直接上游") && text.includes("整条上游链"),
+    { 有直接上游: text.includes("直接上游"), 有整条上游链: text.includes("整条上游链") },
+  );
 }
 
 // ★ **README 承诺的执行方式和代码里那份清单要对得上。**

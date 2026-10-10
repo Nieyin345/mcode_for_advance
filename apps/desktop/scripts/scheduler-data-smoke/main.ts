@@ -1003,6 +1003,59 @@ const upstreamFixture = (): Harness =>
   check("整段那一段还在(给 C 的)", prompt.includes("### C"), prompt);
 }
 
+console.log("\n两条取法的边界不同:整段拼给**直接上游**,{{}} 点名能取**整条上游链**(报告 P2)");
+
+/**
+ * A → B → C。两个作用域**本来就是不同的、也不该相同**(report P2 把它们的边界说成
+ * "文档没讲清")。这里**分开两段钉**,因为两段各走一条判据、互不遮蔽:
+ *
+ *  - **自动整段拼**的判据是**直接入边**(`scheduler.ts` 的 `upstreamTextOf` →
+ *    `effectiveUpstreamOf` → `liveUpstreamOf`,只走 `edges.filter(e => e.to === nodeId)`);
+ *  - **`{{}}` 点名**的判据是**传递闭包**(`upstreamNames` → `@contracts/workflow` 的
+ *    `upstreamClosure`,全祖先)。
+ *
+ * ⚠️ **两段不能合到一起**:第一段若让 C 引用 A,`upstreamTextOf` 的 `referenced` 跳过
+ * 会替 A "挡掉"整段,于是"没整段给 A"在**错误的机制**下也成立 —— 那样把作用域统一成
+ * 闭包也照样绿(实测过)。所以第一段**一处 `{{}}` 都不写**。
+ */
+{
+  // 第一个节点的产出文本和别处区分开,免得拿它当判据时撞上别的字。
+  const h = makePorts({ summary: (id) => (id === "A" ? "祖父步骤的整段产出" : `${id} 交出来的整段东西`) });
+  const doc = docOf(
+    [node("A", AGENT.id, "先规划"), node("B", AGENT.id, "照着做"), node("C", AGENT.id, "收个尾")],
+    [edge("A", "B"), edge("B", "C")],
+  );
+  await runWorkflow({ doc, prompt: "开始", ports: h.ports, signal: controller().signal });
+
+  const cPrompt = h.calls.find((c) => c.id === "C")?.prompt ?? "";
+  // ① 直接上游 B 的整段**照给** —— "默认看到直接上游"那一半。
+  check("直接上游 B 的整段拼进来了", cPrompt.includes("B 交出来的整段东西"), cPrompt);
+  // ② 隔一跳的 A **不**被整段拼 —— "整段只给直接上游"那一半。这段**没写任何 `{{}}`**,
+  //    所以 `referenced` 跳过不参与,A 只在"作用域"这一个变量上被挡下。
+  check("隔一跳的祖父 A 没被整段拼进来", !cPrompt.includes("祖父步骤的整段产出"), cPrompt);
+  check("也没有 A 那一节整段", !cPrompt.includes("### A"), cPrompt);
+}
+
+{
+  // 第二段:点名取**祖父** A 的变量。这里 C 的**直接上游只有 B**,A 隔着一跳 ——
+  // 闭包作用域下 `{{A.计划}}` 解得出来(直接作用域下会报「不是这一步的上游」)。
+  const h = makePorts({
+    summary: (id) => (id === "A" ? '```json\n{"计划": "先查文献再写稿"}\n```' : `${id} 交出来的整段东西`),
+  });
+  const doc = docOf(
+    [
+      node("A", AGENT.id, "先规划", { outputVars: [{ name: "计划", example: "先查文献再写稿" }] }),
+      node("B", AGENT.id, "照着做"),
+      node("C", AGENT.id, "按 {{A.计划}} 收个尾"),
+    ],
+    [edge("A", "B"), edge("B", "C")],
+  );
+  await runWorkflow({ doc, prompt: "开始", ports: h.ports, signal: controller().signal });
+
+  const cPrompt = h.calls.find((c) => c.id === "C")?.prompt ?? "";
+  check("跨层点名取到了祖父 A 的变量", cPrompt.includes("按 先查文献再写稿 收个尾"), cPrompt);
+}
+
 console.log("\n产出变量:模型看得见,下游也取得着");
 
 {
